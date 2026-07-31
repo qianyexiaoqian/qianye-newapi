@@ -341,6 +341,7 @@ type RecordConsumeLogParams struct {
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
+	QyOnConsumeLog(c, userId, params)
 	if !common.LogConsumeEnabled {
 		return
 	}
@@ -417,6 +418,7 @@ type RecordTaskBillingLogParams struct {
 }
 
 func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
+	QyOnTaskBillingLog(params)
 	if params.LogType == LogTypeConsume && !common.LogConsumeEnabled {
 		return
 	}

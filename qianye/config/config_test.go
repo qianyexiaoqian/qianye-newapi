@@ -96,8 +96,8 @@ func TestValidate_Database(t *testing.T) {
 			wantErr: "缺少库名",
 		},
 		{
-			name: "max_open 小于 max_idle",
-			yaml: "enabled: true\ndatabase:\n  dsn: \"u:p@tcp(h:3306)/d\"\n  max_idle_conns: 50\n  max_open_conns: 10\n",
+			name:    "max_open 小于 max_idle",
+			yaml:    "enabled: true\ndatabase:\n  dsn: \"u:p@tcp(h:3306)/d\"\n  max_idle_conns: 50\n  max_open_conns: 10\n",
 			wantErr: "不得小于",
 		},
 		{

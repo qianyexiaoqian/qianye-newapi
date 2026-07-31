@@ -18,7 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
-	"github.com/QuantumNous/new-api/qianye/service/hooks"
+	"github.com/QuantumNous/new-api/qianye/module"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
 	"github.com/QuantumNous/new-api/qianye/service/twophase"
 )
@@ -46,7 +46,7 @@ func Init() error {
 	if err := db.Init(config.Get().Database); err != nil {
 		return err
 	}
-	if err := db.Migrate(qymodel.AllTables()...); err != nil {
+	if err := db.Migrate(allTables()...); err != nil {
 		return err
 	}
 
@@ -62,10 +62,21 @@ func Init() error {
 
 	// 给上游包里的 hook 变量赋值。此刻早于任何 HTTP 请求与后台协程,
 	// 因此不存在并发读写窗口。
-	hooks.Install()
+	for _, m := range module.All() {
+		m.InstallHooks()
+	}
 
 	common.SysLog("qianye: 扩展初始化完成")
 	return nil
+}
+
+// allTables 汇总地基表与各模块表。
+func allTables() []any {
+	tables := qymodel.FoundationTables()
+	for _, m := range module.All() {
+		tables = append(tables, m.Tables()...)
+	}
+	return tables
 }
 
 // StartBackgroundTasks 启动后台常驻任务。
@@ -90,6 +101,10 @@ func StartBackgroundTasks() {
 
 	lease.Run("twophase.compensate", twophase.Interval(), twophase.Compensate)
 	lease.Run("twophase.prune_outbox", 6*time.Hour, twophase.PruneOutbox)
+
+	for _, m := range module.All() {
+		m.StartTasks()
+	}
 
 	if config.Get().Runtime.ConfigReloadSeconds > 0 {
 		config.WatchReload()

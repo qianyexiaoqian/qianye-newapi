@@ -154,6 +154,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.SetEstimatePromptTokens(tokens)
 
 	priceData, err := helper.ModelPriceHelper(c, relayInfo, tokens, meta)
+	err = service.QyPreRelayGuard(c, relayInfo, meta, err)
 	if err != nil {
 		newAPIError = types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
 		return
@@ -178,6 +179,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				relayInfo.Billing.Refund(c)
 			}
 			service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
+			service.QyPostRelayGuard(c, relayInfo, newAPIError)
 		}
 	}()
 

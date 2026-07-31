@@ -52,6 +52,7 @@ func RecordRelaySample(info *relaycommon.RelayInfo, success bool, outputTokens i
 		OutputTokens: outputTokens,
 		GenerationMs: generationMs,
 	})
+	QyOnRelaySample(info, success, outputTokens)
 }
 
 func Record(sample Sample) {

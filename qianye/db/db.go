@@ -170,11 +170,11 @@ func Close() error {
 // Stats 返回连接池与熔断状态,供管理端健康面板展示。
 func Stats() map[string]any {
 	m := map[string]any{
-		"available":        Available(),
+		"available":          Available(),
 		"breaker_open_until": openUntil.Load(),
-		"fail_streak":      failStreak.Load(),
-		"last_ping_ms":     lastPingMs.Load(),
-		"last_ping_at":     lastPingAt.Load(),
+		"fail_streak":        failStreak.Load(),
+		"last_ping_ms":       lastPingMs.Load(),
+		"last_ping_at":       lastPingAt.Load(),
 	}
 	gdb := handle.Load()
 	if gdb == nil {

@@ -4,6 +4,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/qianye/config"
 	qyctl "github.com/QuantumNous/new-api/qianye/controller"
+	"github.com/QuantumNous/new-api/qianye/module"
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
@@ -44,14 +45,18 @@ func RegisterRoutes(engine *gin.Engine) {
 	registerAdminRoutes(admin)
 }
 
-// registerUserRoutes 挂载普通用户接口。各业务模块在此追加。
+// registerUserRoutes 挂载普通用户接口。各业务模块通过注册表自行挂载。
 func registerUserRoutes(g *gin.RouterGroup) {
-	// P2 划转 / P4 返佣 / P5 提现 的用户接口在此注册。
-	_ = g
+	for _, m := range module.All() {
+		m.RegisterUserRoutes(g)
+	}
 }
 
 // registerAdminRoutes 挂载管理端接口。
 func registerAdminRoutes(g *gin.RouterGroup) {
+	for _, m := range module.All() {
+		m.RegisterAdminRoutes(g)
+	}
 	g.GET("/health", qyctl.AdminHealth)
 	g.GET("/fund-orders", qyctl.AdminListFundOrders)
 	g.POST("/fund-orders/:order_no/reprobe", qyctl.AdminReprobeFundOrder)

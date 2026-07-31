@@ -146,19 +146,19 @@ type Commission struct {
 // Withdraw 佣金提现。两种方式并存,用户自选:
 // quota = 佣金兑换为平台余额(审核通过自动到账);fiat = 线下法币打款(人工)。
 type Withdraw struct {
-	Enabled         bool     `yaml:"enabled"`
-	Methods         []string `yaml:"methods"`
-	MinQuota        int64    `yaml:"min_quota"`
-	MinFiatAmount   string   `yaml:"min_fiat_amount"`
-	FiatCurrency    string   `yaml:"fiat_currency"`
-	FiatFeeBps      int      `yaml:"fiat_fee_bps"`
-	RateFreezeMode  string   `yaml:"rate_freeze_mode"`
-	RateFreezeFixed string   `yaml:"rate_freeze_fixed"`
-	AutoCreditOnApprove *bool `yaml:"auto_credit_on_approve"`
-	DailyMaxCount       int   `yaml:"daily_max_count"`
-	PayeeAccountMax     int   `yaml:"payee_account_max"`
-	ReviewSLAHours      int   `yaml:"review_sla_hours"`
-	RemarkMaxRunes      int   `yaml:"remark_max_runes"`
+	Enabled             bool     `yaml:"enabled"`
+	Methods             []string `yaml:"methods"`
+	MinQuota            int64    `yaml:"min_quota"`
+	MinFiatAmount       string   `yaml:"min_fiat_amount"`
+	FiatCurrency        string   `yaml:"fiat_currency"`
+	FiatFeeBps          int      `yaml:"fiat_fee_bps"`
+	RateFreezeMode      string   `yaml:"rate_freeze_mode"`
+	RateFreezeFixed     string   `yaml:"rate_freeze_fixed"`
+	AutoCreditOnApprove *bool    `yaml:"auto_credit_on_approve"`
+	DailyMaxCount       int      `yaml:"daily_max_count"`
+	PayeeAccountMax     int      `yaml:"payee_account_max"`
+	ReviewSLAHours      int      `yaml:"review_sla_hours"`
+	RemarkMaxRunes      int      `yaml:"remark_max_runes"`
 	// PIIKey 是收款信息的 AES-GCM 密钥(base64,32 字节)。为空则禁止 fiat 方式:
 	// 收款信息属 PII,明文落库不可接受。
 	PIIKey        string `yaml:"pii_key"`
@@ -224,12 +224,12 @@ type Violation struct {
 	AutoBanWindowHours        int    `yaml:"auto_ban_window_hours"`
 	// GlobalBlockRateLimitBps / GlobalBanRateLimitPerHour 是熔断阈值:
 	// 拦截率或封号速率异常时自动回落影子模式,防止规则写错造成全站事故。
-	GlobalBlockRateLimitBps  int `yaml:"global_block_rate_limit_bps"`
+	GlobalBlockRateLimitBps   int `yaml:"global_block_rate_limit_bps"`
 	GlobalBanRateLimitPerHour int `yaml:"global_ban_rate_limit_per_hour"`
-	EvidenceMaxBytes         int `yaml:"evidence_max_bytes"`
-	EvidenceRetentionDays    int `yaml:"evidence_retention_days"`
-	RuleCacheSeconds         int `yaml:"rule_cache_seconds"`
-	ScanTimeoutMs            int `yaml:"scan_timeout_ms"`
+	EvidenceMaxBytes          int `yaml:"evidence_max_bytes"`
+	EvidenceRetentionDays     int `yaml:"evidence_retention_days"`
+	RuleCacheSeconds          int `yaml:"rule_cache_seconds"`
+	ScanTimeoutMs             int `yaml:"scan_timeout_ms"`
 }
 
 // ───────────────────────────── 布尔取值辅助 ─────────────────────────────
@@ -247,24 +247,24 @@ func boolOr(p *bool, def bool) bool {
 
 func (d Database) ShouldAutoMigrate() bool { return boolOr(d.AutoMigrate, true) }
 
-func (r Runtime) FailOpen() bool          { return boolOr(r.HotPathFailOpen, true) }
-func (r Runtime) BackgroundOn() bool      { return boolOr(r.BackgroundEnabled, true) }
-func (t TwoPhase) OutboxEnabled() bool    { return boolOr(t.MainOutboxEnabled, true) }
-func (a Audit) On() bool                  { return boolOr(a.Enabled, true) }
-func (a Audit) ShouldRecordIP() bool      { return boolOr(a.RecordIP, true) }
+func (r Runtime) FailOpen() bool               { return boolOr(r.HotPathFailOpen, true) }
+func (r Runtime) BackgroundOn() bool           { return boolOr(r.BackgroundEnabled, true) }
+func (t TwoPhase) OutboxEnabled() bool         { return boolOr(t.MainOutboxEnabled, true) }
+func (a Audit) On() bool                       { return boolOr(a.Enabled, true) }
+func (a Audit) ShouldRecordIP() bool           { return boolOr(a.RecordIP, true) }
 func (t Transfer) ReceiverMustBeEnabled() bool { return boolOr(t.RequireReceiverEnabled, true) }
-func (w Withdraw) AutoCredit() bool       { return boolOr(w.AutoCreditOnApprove, true) }
-func (w Wallet) TransferEntry() bool      { return boolOr(w.ShowTransferEntry, true) }
-func (w Wallet) CommissionEntry() bool    { return boolOr(w.ShowCommissionEntry, true) }
-func (w Wallet) WithdrawEntry() bool      { return boolOr(w.ShowWithdrawEntry, true) }
-func (l LogMetrics) ReasoningColumn() bool { return boolOr(l.ShowReasoningEffort, true) }
-func (l LogMetrics) CacheRatioColumn() bool { return boolOr(l.ShowCacheRatio, true) }
-func (g GroupVisibility) On() bool         { return boolOr(g.Enabled, true) }
-func (g GroupVisibility) PricingOn() bool  { return boolOr(g.FilterPricing, true) }
-func (g GroupVisibility) PerfMetricsOn() bool { return boolOr(g.FilterPerfMetrics, true) }
-func (g GroupVisibility) GroupAPIOn() bool { return boolOr(g.FilterGroupAPI, true) }
-func (g GroupVisibility) KeepAutoGroup() bool { return boolOr(g.IncludeAutoGroup, true) }
-func (v Violation) IsShadow() bool         { return boolOr(v.ShadowMode, true) }
+func (w Withdraw) AutoCredit() bool            { return boolOr(w.AutoCreditOnApprove, true) }
+func (w Wallet) TransferEntry() bool           { return boolOr(w.ShowTransferEntry, true) }
+func (w Wallet) CommissionEntry() bool         { return boolOr(w.ShowCommissionEntry, true) }
+func (w Wallet) WithdrawEntry() bool           { return boolOr(w.ShowWithdrawEntry, true) }
+func (l LogMetrics) ReasoningColumn() bool     { return boolOr(l.ShowReasoningEffort, true) }
+func (l LogMetrics) CacheRatioColumn() bool    { return boolOr(l.ShowCacheRatio, true) }
+func (g GroupVisibility) On() bool             { return boolOr(g.Enabled, true) }
+func (g GroupVisibility) PricingOn() bool      { return boolOr(g.FilterPricing, true) }
+func (g GroupVisibility) PerfMetricsOn() bool  { return boolOr(g.FilterPerfMetrics, true) }
+func (g GroupVisibility) GroupAPIOn() bool     { return boolOr(g.FilterGroupAPI, true) }
+func (g GroupVisibility) KeepAutoGroup() bool  { return boolOr(g.IncludeAutoGroup, true) }
+func (v Violation) IsShadow() bool             { return boolOr(v.ShadowMode, true) }
 
 // HasWithdrawMethod 判断某种提现方式是否启用。
 func (w Withdraw) HasWithdrawMethod(m string) bool {
