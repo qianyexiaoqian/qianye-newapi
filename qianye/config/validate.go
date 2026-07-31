@@ -1,0 +1,308 @@
+package config
+
+import (
+	"encoding/base64"
+	"fmt"
+	"strings"
+
+	"github.com/QuantumNous/new-api/common"
+
+	"github.com/shopspring/decimal"
+)
+
+// 枚举取值。集中定义避免各模块用字符串字面量各写一份。
+const (
+	RecipientLookupID      = "id"
+	RecipientLookupIDEmail = "id_or_email"
+
+	WithdrawMethodQuota = "quota"
+	WithdrawMethodFiat  = "fiat"
+
+	RateFreezeOperationSetting = "operation_setting"
+	RateFreezeFixed            = "fixed"
+
+	InsufficientClamp    = "clamp"
+	InsufficientNegative = "negative"
+	InsufficientBan      = "ban"
+
+	LogLevelSilent = "silent"
+	LogLevelError  = "error"
+	LogLevelWarn   = "warn"
+	LogLevelInfo   = "info"
+)
+
+// maxBps 是万分比的上限(100%)。
+const maxBps = 10000
+
+// validate 在加载后校验配置自洽性。
+//
+// 校验失败一律返回 error 让主程序 FatalLog:配置写错就该在启动时炸,
+// 而不是带着一半失效的风控开关跑起来。
+func validate(c *Config) error {
+	if !c.Enabled {
+		// 扩展未启用时不校验其余字段:用户可能只是把整段配置留着备用。
+		return nil
+	}
+
+	if err := validateDatabase(&c.Database); err != nil {
+		return err
+	}
+	if err := validateRuntime(&c.Runtime); err != nil {
+		return err
+	}
+	if err := validateTransfer(&c.Transfer); err != nil {
+		return err
+	}
+	if err := validateCommission(&c.Commission); err != nil {
+		return err
+	}
+	if err := validateWithdraw(&c.Withdraw); err != nil {
+		return err
+	}
+	if err := validateAvailability(&c.Availability); err != nil {
+		return err
+	}
+	return validateViolation(&c.Violation)
+}
+
+func validateDatabase(d *Database) error {
+	if strings.TrimSpace(d.DSN) == "" {
+		return fmt.Errorf("qianye: database.dsn 不能为空(扩展需要独立的 MySQL)")
+	}
+	lower := strings.ToLower(strings.TrimSpace(d.DSN))
+	for _, bad := range []string{"postgres://", "postgresql://", "clickhouse://", "sqlite:", "file:"} {
+		if strings.HasPrefix(lower, bad) {
+			return fmt.Errorf("qianye: 本扩展仅支持 MySQL,database.dsn 不能以 %q 开头", bad)
+		}
+	}
+	if lower == "local" || strings.HasPrefix(lower, "local ") {
+		return fmt.Errorf("qianye: 本扩展仅支持 MySQL,不支持 SQLite(database.dsn = local)")
+	}
+	if !strings.Contains(d.DSN, "/") {
+		return fmt.Errorf("qianye: database.dsn 格式不像 MySQL DSN(缺少库名)," +
+			`期望形如 user:pass@tcp(host:3306)/dbname?charset=utf8mb4&parseTime=true`)
+	}
+	if d.MaxIdleConns <= 0 {
+		return fmt.Errorf("qianye: database.max_idle_conns 必须大于 0")
+	}
+	if d.MaxOpenConns < d.MaxIdleConns {
+		return fmt.Errorf("qianye: database.max_open_conns(%d) 不得小于 max_idle_conns(%d)",
+			d.MaxOpenConns, d.MaxIdleConns)
+	}
+	switch d.LogLevel {
+	case LogLevelSilent, LogLevelError, LogLevelWarn, LogLevelInfo:
+	default:
+		return fmt.Errorf("qianye: database.log_level 取值非法: %q(可选 silent|error|warn|info)", d.LogLevel)
+	}
+	return nil
+}
+
+func validateRuntime(r *Runtime) error {
+	// 续租必须显著快于过期,否则一次网络抖动就丢租约、任务反复易主。
+	if r.LeaseRenewSeconds*2 >= r.LeaseTTLSeconds {
+		return fmt.Errorf("qianye: runtime.lease_renew_seconds(%d) 必须小于 lease_ttl_seconds(%d) 的一半",
+			r.LeaseRenewSeconds, r.LeaseTTLSeconds)
+	}
+	if r.HotHookQueueSize <= 0 {
+		return fmt.Errorf("qianye: runtime.hot_hook_queue_size 必须大于 0")
+	}
+	if r.HotHookWorkers <= 0 {
+		return fmt.Errorf("qianye: runtime.hot_hook_workers 必须大于 0")
+	}
+	if !r.FailOpen() {
+		// 不阻止,但必须让部署者意识到自己把扩展变成了主业务的单点故障。
+		common.SysError("qianye: runtime.hot_path_fail_open 被设为 false —— " +
+			"新库故障时 relay 热路径将受影响,除非你确知后果,否则请改回 true")
+	}
+	return nil
+}
+
+func validateTransfer(t *Transfer) error {
+	if err := checkBps("transfer.fee_bps", t.FeeBps); err != nil {
+		return err
+	}
+	if err := checkQuotaCap("transfer.min_quota", t.MinQuota); err != nil {
+		return err
+	}
+	if err := checkQuotaCap("transfer.max_per_tx_quota", t.MaxPerTxQuota); err != nil {
+		return err
+	}
+	if t.MinQuota > t.MaxPerTxQuota {
+		return fmt.Errorf("qianye: transfer.min_quota(%d) 不得大于 max_per_tx_quota(%d)",
+			t.MinQuota, t.MaxPerTxQuota)
+	}
+	switch t.RecipientLookup {
+	case RecipientLookupID, RecipientLookupIDEmail:
+	default:
+		return fmt.Errorf("qianye: transfer.recipient_lookup 取值非法: %q(可选 id|id_or_email;"+
+			"刻意不提供用户名模糊搜索,那等于开放用户枚举)", t.RecipientLookup)
+	}
+	return nil
+}
+
+func validateCommission(cm *Commission) error {
+	if err := checkBps("commission.topup_rate_bps", cm.TopupRateBps); err != nil {
+		return err
+	}
+	if err := checkBps("commission.consume_rate_bps", cm.ConsumeRateBps); err != nil {
+		return err
+	}
+	if cm.Levels != 1 {
+		return fmt.Errorf("qianye: commission.levels 当前仅支持 1 级,收到 %d", cm.Levels)
+	}
+	if err := checkQuotaCap("commission.max_per_order_quota", cm.MaxPerOrderQuota); err != nil {
+		return err
+	}
+	if cm.MinSettleQuota <= 0 {
+		return fmt.Errorf("qianye: commission.min_settle_quota 必须大于 0" +
+			"(佣金按 decimal 累计,达到该值才结算为整数 quota,否则小额佣金会被截断归零)")
+	}
+	return nil
+}
+
+func validateWithdraw(w *Withdraw) error {
+	if !w.Enabled {
+		return nil
+	}
+	if len(w.Methods) == 0 {
+		return fmt.Errorf("qianye: withdraw.methods 不能为空")
+	}
+	for _, m := range w.Methods {
+		if m != WithdrawMethodQuota && m != WithdrawMethodFiat {
+			return fmt.Errorf("qianye: withdraw.methods 含非法取值 %q(可选 quota|fiat)", m)
+		}
+	}
+	// 收款信息属 PII,没有密钥就绝不允许开启法币提现 —— 明文落库不可接受。
+	if w.HasWithdrawMethod(WithdrawMethodFiat) {
+		if err := checkAESKey("withdraw.pii_key", w.PIIKey); err != nil {
+			return err
+		}
+		if strings.TrimSpace(w.DigestKey) == "" {
+			return fmt.Errorf("qianye: withdraw.digest_key 不能为空" +
+				"(用于收款账号的风控指纹,必须独立于 pii_key 且不随其轮换)")
+		}
+	}
+	switch w.RateFreezeMode {
+	case RateFreezeOperationSetting, RateFreezeFixed:
+	default:
+		return fmt.Errorf("qianye: withdraw.rate_freeze_mode 取值非法: %q(可选 operation_setting|fixed)",
+			w.RateFreezeMode)
+	}
+	if err := checkDecimal("withdraw.min_fiat_amount", w.MinFiatAmount); err != nil {
+		return err
+	}
+	if err := checkDecimal("withdraw.rate_freeze_fixed", w.RateFreezeFixed); err != nil {
+		return err
+	}
+	if err := checkBps("withdraw.fiat_fee_bps", w.FiatFeeBps); err != nil {
+		return err
+	}
+	if err := checkQuotaCap("withdraw.min_quota", w.MinQuota); err != nil {
+		return err
+	}
+	if w.RemarkMaxRunes <= 0 || w.RemarkMaxRunes > 2000 {
+		return fmt.Errorf("qianye: withdraw.remark_max_runes 必须在 1..2000 之间,收到 %d", w.RemarkMaxRunes)
+	}
+	return nil
+}
+
+func validateAvailability(a *Availability) error {
+	if !a.Enabled {
+		return nil
+	}
+	if a.BucketSeconds <= 0 || 3600%a.BucketSeconds != 0 {
+		return fmt.Errorf("qianye: availability.bucket_seconds(%d) 必须是 3600 的因数,"+
+			"否则小时级汇总会跨桶错位", a.BucketSeconds)
+	}
+	if a.FlushIntervalSeconds <= 0 {
+		return fmt.Errorf("qianye: availability.flush_interval_seconds 必须大于 0")
+	}
+	return nil
+}
+
+func validateViolation(v *Violation) error {
+	if !v.Enabled {
+		return nil
+	}
+	switch v.InsufficientBalancePolicy {
+	case InsufficientClamp, InsufficientNegative, InsufficientBan:
+	default:
+		return fmt.Errorf("qianye: violation.insufficient_balance_policy 取值非法: %q"+
+			"(可选 clamp|negative|ban)", v.InsufficientBalancePolicy)
+	}
+	mult, err := decimal.NewFromString(strings.TrimSpace(v.FeeMultiplier))
+	if err != nil {
+		return fmt.Errorf("qianye: violation.fee_multiplier 不是合法数值: %q", v.FeeMultiplier)
+	}
+	if mult.IsNegative() || mult.GreaterThan(decimal.NewFromInt(100)) {
+		return fmt.Errorf("qianye: violation.fee_multiplier 必须在 0..100 之间,收到 %s", v.FeeMultiplier)
+	}
+	if err := checkDecimal("violation.fixed_fee_amount", v.FixedFeeAmount); err != nil {
+		return err
+	}
+	if err := checkQuotaCap("violation.max_fee_quota", v.MaxFeeQuota); err != nil {
+		return err
+	}
+	if v.AutoBanThreshold < 0 {
+		return fmt.Errorf("qianye: violation.auto_ban_threshold 不得为负数(0 表示不自动封号)")
+	}
+	if err := checkBps("violation.global_block_rate_limit_bps", v.GlobalBlockRateLimitBps); err != nil {
+		return err
+	}
+	if !v.IsShadow() && (v.PrecheckEnabled || v.PostChargeEnabled) {
+		// 不阻止,但必须警告:规则写错的破坏力极大。
+		common.SysError("qianye: violation.shadow_mode 已关闭,违规规则将真实扣费/封号 —— " +
+			"务必确认已在影子模式下观察过命中分布")
+	}
+	return nil
+}
+
+// ───────────────────────────── 通用校验辅助 ─────────────────────────────
+
+func checkBps(name string, v int) error {
+	if v < 0 || v > maxBps {
+		return fmt.Errorf("qianye: %s 必须在 0..%d 之间(万分比,5%% = 500),收到 %d", name, maxBps, v)
+	}
+	return nil
+}
+
+// checkQuotaCap 校验额度上限类字段不超过主库 users.quota 的 int32 容量。
+// 超过则跨库写入时必然溢出,必须在配置阶段就拒绝。
+func checkQuotaCap(name string, v int64) error {
+	if v < 0 {
+		return fmt.Errorf("qianye: %s 不得为负数,收到 %d", name, v)
+	}
+	if v > int64(common.MaxQuota) {
+		return fmt.Errorf("qianye: %s(%d)超过主库额度上限 %d(users.quota 是 int32)",
+			name, v, common.MaxQuota)
+	}
+	return nil
+}
+
+func checkDecimal(name, raw string) error {
+	d, err := decimal.NewFromString(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("qianye: %s 不是合法数值: %q", name, raw)
+	}
+	if d.IsNegative() {
+		return fmt.Errorf("qianye: %s 不得为负数,收到 %s", name, raw)
+	}
+	return nil
+}
+
+// checkAESKey 校验 base64 编码的 32 字节 AES-256 密钥。
+func checkAESKey(name, raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fmt.Errorf("qianye: %s 不能为空 —— 启用法币提现必须配置密钥,"+
+			"收款信息属个人敏感信息,不允许明文落库", name)
+	}
+	key, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return fmt.Errorf("qianye: %s 不是合法的 base64: %v", name, err)
+	}
+	if len(key) != 32 {
+		return fmt.Errorf("qianye: %s 解码后必须是 32 字节(AES-256),实际 %d 字节", name, len(key))
+	}
+	return nil
+}

@@ -1,0 +1,226 @@
+# ============================================================================
+# 千夜扩展配置示例
+#
+# 放置位置(按优先级):
+#   1. $QIANYE_CONFIG 指定的路径
+#   2. ./qianye.yaml
+#   3. ./data/qianye.yaml
+#
+# Docker 下容器 WORKDIR=/data 且 compose 把宿主 ./data 挂到 /data,
+# 因此容器内的 ./qianye.yaml 就是宿主机的 ./data/qianye.yaml。
+#
+# 本文件含数据库密码与密钥。/data/ 已在 .gitignore 中,不会被误提交。
+# 建议把文件权限设为 0600(启动时若检测到其他用户可读会告警)。
+#
+# 配置文件不存在 = 整个扩展静默禁用,主程序行为与上游完全一致。
+#
+# 注意:配置采用严格解析,写错的字段名会导致启动失败而不是被忽略 ——
+# 风控开关拼错却静默不生效,是最危险的失败模式。
+# ============================================================================
+
+enabled: true
+
+# ---------------------------------------------------------------------------
+# 独立 MySQL。仅支持 MySQL 5.7.8+ / 8.x
+#
+# 所有表都带 qy_ 前缀,因此可以安全地与主库指向同一个 schema ——
+# 小规模部署不必真的开第二个库,大规模部署仍然完全独立。
+# ---------------------------------------------------------------------------
+database:
+  dsn: "qy_user:CHANGE_ME@tcp(127.0.0.1:3306)/qianye?charset=utf8mb4&parseTime=true&loc=Local"
+  max_idle_conns: 20
+  max_open_conns: 100
+  conn_max_lifetime_seconds: 600
+  conn_max_idle_time_seconds: 120
+  connect_timeout_seconds: 5
+  slow_threshold_ms: 200
+  log_level: warn          # silent | error | warn | info
+  auto_migrate: true       # 仅主节点(NODE_TYPE != slave)实际执行,且有跨节点互斥锁
+
+# ---------------------------------------------------------------------------
+# 运行时与降级策略
+# ---------------------------------------------------------------------------
+runtime:
+  # 扩展库故障时,relay 热路径一律放行。
+  # 不要改成 false —— 那会让扩展变成主业务的单点故障。
+  hot_path_fail_open: true
+  hot_path_timeout_ms: 200
+  cold_path_timeout_ms: 3000
+  health_interval_seconds: 15
+  breaker_failure_threshold: 5
+  breaker_open_seconds: 30
+  background_enabled: true
+  lease_ttl_seconds: 60
+  lease_renew_seconds: 20        # 必须小于 lease_ttl_seconds 的一半
+  config_reload_seconds: 0       # 0 = 关闭热载;大于 0 时轮询文件修改时间(database 段永不热载)
+  hot_hook_queue_size: 4096
+  hot_hook_workers: 2
+
+# ---------------------------------------------------------------------------
+# 跨库两阶段(划转 / 佣金兑现 / 提现到账 共用)
+# ---------------------------------------------------------------------------
+two_phase:
+  # 在主库建一张 qy_fund_outbox 探针表,与资金变更写在同一个事务里。
+  # 这是判定"主库到底动没动钱"的唯一精确手段。关掉它意味着放弃自动对账,
+  # 所有中间态都只能转人工。强烈建议保持 true。
+  main_outbox_enabled: true
+  compensate_interval_seconds: 30
+  pending_grace_seconds: 60
+  max_probe_attempts: 10
+  batch_size: 200
+  manual_review_after_seconds: 900   # 超过此时长仍无法判定则转人工并告警
+  outbox_retention_days: 30
+
+audit:
+  enabled: true
+  record_ip: true
+  snapshot_max_bytes: 4096
+  retention_days: 0                  # 0 = 永久保留(资金审计默认不清理)
+
+# ===========================================================================
+# 以下为各业务功能。当前仅地基(P0)已实现,功能模块尚在开发中,
+# 因此默认全部关闭。对应阶段落地后再逐个打开。
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 用户间余额划转(P2)
+# ---------------------------------------------------------------------------
+transfer:
+  enabled: false
+  min_quota: 500000                  # 500000 quota = $1
+  max_per_tx_quota: 50000000         # $100
+  daily_max_quota: 200000000
+  daily_max_count: 20
+  fee_bps: 0                         # 万分比,5% 写 500
+  fee_min_quota: 0
+  cooldown_seconds: 10
+  # 收款人查找方式。刻意不提供用户名模糊搜索:那等于开放用户枚举,
+  # 也与"已邀请用户列表要脱敏"的隐私要求自相矛盾。
+  recipient_lookup: "id"             # id | id_or_email
+  new_account_freeze_hours: 24       # 新注册账号多久内不可转出(防套现洗号)
+  require_receiver_enabled: true
+
+# ---------------------------------------------------------------------------
+# 邀请返佣(P4)
+#
+# 口径默认宽松(全返)。三个排除开关默认关闭,上线后若发现套利再逐个打开,
+# 不需要改代码。
+# ---------------------------------------------------------------------------
+commission:
+  enabled: false
+  topup_rate_bps: 1000               # 充值返佣 10%
+  consume_rate_bps: 500              # 消费返佣 5%
+  levels: 1                          # 当前仅支持一级邀请
+  # 佣金按 decimal 全精度累计,累到该值才结算成整数额度。
+  # 没有这个机制的话,单次几十额度的消费按 5% 算会被整数截断成 0,
+  # 用户会觉得"用了一天一分佣金没有"。
+  min_settle_quota: 1000
+  max_per_order_quota: 50000000
+  holding_days: 7                    # 佣金成熟期,防"充值拿佣金→提现→退款"套利
+  settle_interval_seconds: 300
+  inviter_cache_seconds: 300         # 邀请关系缓存,避免给主库加上与 relay 等量的读压力
+  topup_scan_interval_seconds: 60
+  topup_scan_lookback_hours: 72      # top_ups 表没有 updated_at,只能低水位 + 回扫窗口去重
+
+  # ↓ 三个风控开关。默认宽松,打开即收紧。
+  exclude_redemption_and_manual: false  # true = 兑换码充值与管理员补单不返佣
+                                        # (关闭时管理员给小号送额度也会产生佣金,可被套利)
+  exclude_subscription_consume: false   # true = 订阅额度消费不返佣
+                                        # (关闭时用户用订阅套餐消费也返佣,平台重复出血)
+  refund_clawback: false                # true = 退款时冲正已发放的佣金
+                                        # (关闭时"充值→拿佣金→退款"可循环套利)
+  # 无开关的硬排除:违规扣费产生的消费日志永不返佣 ——
+  # 用户被罚款而邀请人赚钱属于逻辑错误,不是口径偏好。
+
+# ---------------------------------------------------------------------------
+# 佣金提现(P5)。两种方式并存,用户自选。
+# ---------------------------------------------------------------------------
+withdraw:
+  enabled: false
+  # quota = 佣金兑换为平台余额,审核通过自动到账
+  # fiat  = 线下法币打款,人工审核 + 人工打款
+  methods: ["quota", "fiat"]
+  min_quota: 500000
+  min_fiat_amount: "100"
+  fiat_currency: "CNY"
+  fiat_fee_bps: 0
+  # 佣金产生时冻结当时汇率。USDExchangeRate 是管理员可随时修改的全局变量,
+  # 不冻结的话历史对账永远对不上。
+  rate_freeze_mode: "operation_setting"   # operation_setting | fixed
+  rate_freeze_fixed: "7.3"
+  auto_credit_on_approve: true
+  daily_max_count: 3
+  payee_account_max: 3
+  review_sla_hours: 72
+  remark_max_runes: 200              # 用户自定义说明的字数上限(按字符计,中文算一个)
+  # 收款信息属个人敏感信息,必须加密存储。
+  # 启用 fiat 方式时以下两项必填,否则启动会直接报错。
+  pii_key: ""                        # base64 编码的 32 字节 AES-256 密钥
+  pii_key_version: 1
+  # 风控指纹用的独立密钥。必须与 pii_key 分开且不轮换,
+  # 否则密钥轮换后历史指纹全部失效,跨账户风控索引作废。
+  digest_key: ""
+
+# ---------------------------------------------------------------------------
+# 钱包页入口(P1)
+# ---------------------------------------------------------------------------
+wallet:
+  show_transfer_entry: true
+  show_commission_entry: true
+  show_withdraw_entry: true
+
+# ---------------------------------------------------------------------------
+# 使用日志新增列(P3)
+# ---------------------------------------------------------------------------
+log_metrics:
+  show_reasoning_effort: true
+  show_cache_ratio: true
+  enable_filter: false               # 开启 SQL 层筛选/排序需要旁路物化表,成本显著上升
+
+# ---------------------------------------------------------------------------
+# 无权分组泄漏修复(P1)
+# ---------------------------------------------------------------------------
+group_visibility:
+  enabled: true
+  filter_pricing: true
+  filter_perf_metrics: true
+  filter_group_api: true
+  include_auto_group: true           # "auto" 分组始终保留
+
+# ---------------------------------------------------------------------------
+# 模型可用率监控(P6)
+# ---------------------------------------------------------------------------
+availability:
+  enabled: false
+  sample_attempt_level: true
+  bucket_seconds: 300                # 必须是 3600 的因数
+  flush_interval_seconds: 60
+  retention_days: 30
+  max_series_per_query: 200
+  count_client_errors: false         # 4xx 用户错误是否计入不可用(默认不计)
+  count_rate_limited: false          # 限流是否计入不可用(默认不计)
+
+# ---------------------------------------------------------------------------
+# 违规检测(P7)
+# ---------------------------------------------------------------------------
+violation:
+  enabled: false
+  # 影子模式:只记录,不扣费不封号。
+  # 上线必须先跑影子模式观察命中分布 —— 一条 `.*` 正则能在 30 秒内封掉全站用户。
+  shadow_mode: true
+  precheck_enabled: false            # 转发前检查提示词并拒绝
+  post_charge_enabled: true          # 事后按模型价格倍数扣费
+  fee_multiplier: "1.0"              # 扣费倍数,乘以本次请求的计费额
+  fixed_fee_amount: "0.05"           # 拿不到模型价格时的固定扣费(美元)
+  max_fee_quota: 5000000             # 单次违规扣费硬上限($10)
+  # 上游的额度扣减没有余额校验,不指定策略会把用户余额扣成负数。
+  insufficient_balance_policy: "clamp"   # clamp(扣到 0 为止) | negative | ban
+  auto_ban_threshold: 0              # 0 = 不自动封号
+  auto_ban_window_hours: 24
+  # 熔断:拦截率或封号速率异常时自动回落影子模式,防止规则写错造成全站事故。
+  global_block_rate_limit_bps: 500   # 拦截率超过 5% 即熔断
+  global_ban_rate_limit_per_hour: 20
+  evidence_max_bytes: 8192           # 违规上下文的留存上限(超出截断)
+  evidence_retention_days: 90
+  rule_cache_seconds: 60
+  scan_timeout_ms: 20

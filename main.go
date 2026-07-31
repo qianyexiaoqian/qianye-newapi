@@ -24,6 +24,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/oauth"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
+	"github.com/QuantumNous/new-api/qianye"
 	"github.com/QuantumNous/new-api/relay"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/router"
@@ -151,6 +152,8 @@ func main() {
 	controller.RegisterScheduledSystemTasks()
 	service.StartSystemTaskRunner()
 
+	qianye.StartBackgroundTasks()
+
 	if os.Getenv("BATCH_UPDATE_ENABLED") == "true" {
 		common.BatchUpdateEnabled = true
 		common.SysLog("batch update enabled with interval " + strconv.Itoa(common.BatchUpdateInterval) + "s")
@@ -193,6 +196,10 @@ func main() {
 	middleware.SetUpLogger(server)
 	InjectUmamiAnalytics()
 	InjectGoogleAnalytics()
+
+	// 千夜扩展路由必须注册在 SetRouter 之前:SetWebRouter 会在 engine 上挂
+	// gzip / 限流 / 缓存 / 静态文件服务,之后注册的路由会被这些中间件污染
+	qianye.RegisterRoutes(server)
 
 	// 设置路由
 	router.SetRouter(server, router.WebAssets{
@@ -363,6 +370,11 @@ func InitResources() error {
 	}
 
 	service.StartAuthArtifactCleanup()
+
+	// 千夜扩展:配置文件不存在时静默禁用,主程序行为与上游一致
+	if err := qianye.Init(); err != nil {
+		return err
+	}
 
 	return nil
 }
