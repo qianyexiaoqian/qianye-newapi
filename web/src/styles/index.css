@@ -29,6 +29,8 @@ For commercial licensing, please contact support@quantumnous.com
 
 @import './theme.css';
 @import './theme-presets.css';
+/* 千夜扩展的预设。单独成文件以避免与上游 theme-presets.css 的改动冲突。 */
+@import './qy-theme-presets.css';
 
 /* Shiki dual themes: token colors follow dark theme (pre background stays `bg-background` on the block) */
 @layer components {

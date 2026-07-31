@@ -38,6 +38,13 @@ export const THEME_PRESETS = [
     swatches: ['oklch(0.984 0.005 95)', 'oklch(0.685 0.142 38)'],
   },
   {
+    // 编辑感暖色系:米白纸面 + 锈橙强调,深色版翻转为暖近黑 + 偏红强调。
+    // 色值由参考稿的十六进制精确换算,定义在 styles/qy-theme-presets.css。
+    value: 'steins-gate',
+    name: 'Steins Gate',
+    swatches: ['oklch(0.959 0.016 86.4)', 'oklch(0.575 0.157 41.5)'],
+  },
+  {
     value: 'simple-large',
     name: 'Simple Large-font',
     swatches: ['oklch(0.15 0 0)', 'oklch(0.99 0 0)'],
