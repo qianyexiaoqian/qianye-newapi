@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/groupname"
 	"github.com/QuantumNous/new-api/qianye/guard"
 
 	"github.com/shopspring/decimal"
@@ -175,22 +176,45 @@ func maybeRefresh() {
 		return // 别的请求已经抢到刷新权
 	}
 	guard.HotAsync("grouppricing.rule_refresh", func(ctx context.Context) error {
-		return reload(false)
+		return reloadCtx(ctx, false)
 	})
 }
 
-// reload 重新构建快照。force=false 时先比对版本号,版本未变直接返回,
+// reload 用冷路径预算重载快照,供管理端写入后刷新与启动预热使用。
+//
+// 这两个调用点手上都没有现成的 ctx,而"没有 ctx"不等于"不需要上界":
+// 管理端保存规则时若扩展库正病态,不接预算就会一直等到 DSN readTimeout(30 秒),
+// 整个 HTTP 请求跟着挂住。热路径刷新走 reloadCtx,直接沿用 guard worker 的预算。
+//
+// 与 violation/rules.go 的同名函数刻意保持逐字相同:这两份拷贝已经因为
+// "各自漂移"被审计出过一次,形状不同才是下一次漂移的开始。
+func reload(force bool) error {
+	ctx, cancel := guard.ColdContext(context.Background())
+	defer cancel()
+	return reloadCtx(ctx, force)
+}
+
+// reloadCtx 重新构建快照。force=false 时先比对版本号,版本未变直接返回,
 // 避免每个刷新周期都全表拉规则。
 //
 // 失败时**不动 current**:保留上一次成功的快照,由 activeSnapshot 的陈旧上限
 // 决定它还能用多久。这不是"读失败当成有覆盖"—— 那指的是把错误当成命中;
 // 这里用的是一份确实成功读到过的规则,而且有硬性时效。
-func reload(force bool) error {
+//
+// ctx 必须一路挂到 GORM 语句上:guard.HotAsync 承诺的 hot_async_timeout_ms(3 秒)
+// 只对 WithContext(ctx) 的语句生效。漏接的后果不只是这条语句慢 —— 本模块与
+// violation 的刷新周期同为 60 秒、由同一批 relay 流量触发,很容易同时占满仅有的
+// 2 个 hot worker 长达 readTimeout(30 秒),这期间 commission.consume 事件会把
+// 4096 槽队列填满并溢出丢弃,而丢弃是"用户该拿的钱没拿到"的唯一路径。
+// 次生问题:不带 ctx 时 db.WithOpProbe 认不到这些语句,hotRunWithBudget 就只会在
+// 失败时 MarkFailure、成功时永不 MarkSuccess,熔断的健康票被单向截断。
+func reloadCtx(ctx context.Context, force bool) error {
 	gdb := db.Get()
 	if gdb == nil {
 		refreshFails.Add(1)
 		return db.ErrNotReady
 	}
+	gdb = gdb.WithContext(ctx)
 
 	var ver RuleVersion
 	if err := gdb.Where("id = ?", 1).Take(&ver).Error; err != nil {
@@ -355,13 +379,12 @@ func ValidateValue(mode string, v decimal.Decimal) error {
 }
 
 // normalizeGroup 归一分组名。空分组名归一成 default,与主库 users.group 的列默认值一致。
-func normalizeGroup(g string) string {
-	g = strings.TrimSpace(g)
-	if g == "" {
-		return "default"
-	}
-	return g
-}
+//
+// 口径与 commission/transfer 共用 groupname 包(去空白 + 折叠大小写 + 空串→default)。
+// 这是全仓第三张以分组名为键的**money 表**:不折叠大小写时,管理端给 VIP 配的分组价
+// 在 MySQL 上会写进 vip 那一行(列排序规则大小写不敏感),而热路径又按 VIP 精确查、
+// 查不到 —— 结果是"配了折扣、界面显示已保存、实际按原价扣钱"。
+func normalizeGroup(g string) string { return groupname.Effective(g) }
 
 // normalizeDecimal 给出十进制值的规范字面量,用作影子桶的唯一键。
 //

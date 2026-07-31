@@ -1,6 +1,7 @@
 package commission
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"strconv"
@@ -10,8 +11,10 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/guard"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -82,13 +85,42 @@ var (
 	settingsMu     sync.Mutex
 	settingsCache  *opSettings
 	settingsLoaded int64
+	// settingsEpoch 是缓存的代次,每次失效自增。
+	//
+	// 查库放到临界区之外之后,"SELECT 返回"与"写回缓存"之间就出现了一个窗口:
+	// 管理员在这中间改了费率并调 invalidateSettings(),在途的旧快照会把它
+	// 静默盖掉,此后 60 秒全按旧费率计佣,而 RateUnits 会被冻结进 accrual 行,
+	// 与合法行长得一模一样、事后无法区分。代次让写回方能发现"我读的那一版
+	// 已经作废了"并丢弃本次结果。
+	settingsEpoch uint64
 
 	saltOnce  sync.Mutex
 	saltCache string
 )
 
 // effective 返回当前生效的运营配置。禁止在 relay 线程调用 —— 它可能查库。
+//
+// 给拿不到调用方 ctx 的调用点用(结算任务、计佣写入路径)。它自带一个冷路径
+// 预算而不是裸查:裸查会一直等到扩展库 DSN 的 readTimeout(默认 30 秒),
+// 而调用点里就有正持着 qy_commission_balance 行锁的结算事务。
+// 能拿到 ctx 的地方(HTTP 处理器)一律改调 effectiveCtx。
 func effective() opSettings {
+	ctx, cancel := guard.ColdContext(context.Background())
+	defer cancel()
+	return effectiveCtx(ctx)
+}
+
+// effectiveCtx 是接调用方预算的形式。
+//
+// 查库这一步刻意放在 settingsMu 的临界区之外。持锁查库时,一条慢 SELECT 会把
+// 所有读配置的协程 —— 结算 worker、用户端"我的推广"、管理端健康面板 ——
+// 串在同一把互斥锁上,一次行锁等待就能让整条返佣链路停摆。
+//
+// 代价是并发首次加载时可能有几个协程各查一次 qy_settings(几行的表),比把
+// 它们排成一队便宜得多。刻意不用 singleflight:合并执行时用的是首个调用方的
+// ctx(见 inviter.go 对同一取舍的说明),而这里的调用方预算从 HTTP 的几秒到
+// 后台任务的分钟级都有,一个用户按下取消不该连累结算任务读不到费率。
+func effectiveCtx(ctx context.Context) opSettings {
 	base := opSettings{}
 	cm := config.Get().Commission
 	base.TopupRateUnits = configRateUnits("topup_rate_percent", cm.TopupRatePercent)
@@ -98,24 +130,38 @@ func effective() opSettings {
 	base.HoldingDays = cm.HoldingDays
 
 	settingsMu.Lock()
-	defer settingsMu.Unlock()
-	now := common.GetTimestamp()
-	if settingsCache != nil && now-settingsLoaded < settingsCacheSeconds {
+	if settingsCache != nil && common.GetTimestamp()-settingsLoaded < settingsCacheSeconds {
 		merged := *settingsCache
+		settingsMu.Unlock()
 		return merged
 	}
-	overrides, err := loadOverrides()
+	epoch := settingsEpoch
+	settingsMu.Unlock()
+
+	overrides, err := loadOverrides(ctx)
 	if err != nil {
-		// 读不到覆盖值时退回 YAML,而不是让计佣停摆:少一个运营微调
-		// 远比"整条返佣链路挂掉"轻。
+		// 读不到覆盖值时退回上一份快照、再退回 YAML,而不是让计佣停摆:
+		// 少一个运营微调远比"整条返佣链路挂掉"轻。但必须留痕 —— 降级算出来的
+		// 佣金和正常佣金在流水上长得一模一样,不计数事后就无从复核。
+		settingsDegrade.note("读取运营配置失败: " + err.Error())
+		settingsMu.Lock()
+		defer settingsMu.Unlock()
 		if settingsCache != nil {
 			return *settingsCache
 		}
 		return base
 	}
 	applyOverrides(&base, overrides)
-	settingsCache = &base
-	settingsLoaded = now
+	settingsMu.Lock()
+	// 代次变了说明这份快照在途期间已经被 invalidateSettings 作废(管理端改了
+	// 费率并提交)。此时只把结果返给本次调用方,绝不写回缓存 —— 写回等于把
+	// 一次已经生效的调价按回去,而且会盖上一个新鲜的时间戳,让后续 60 秒
+	// 都读不到真值。
+	if settingsEpoch == epoch {
+		settingsCache = &base
+		settingsLoaded = common.GetTimestamp()
+	}
+	settingsMu.Unlock()
 	return base
 }
 
@@ -124,16 +170,21 @@ func invalidateSettings() {
 	settingsMu.Lock()
 	settingsCache = nil
 	settingsLoaded = 0
+	settingsEpoch++
 	settingsMu.Unlock()
 }
 
-func loadOverrides() (map[string]string, error) {
+// loadOverrides 读出本模块在 qy_settings 里的全部运营覆盖。
+//
+// 必须接 ctx:它是调用方预算的唯一着力点,也是熔断可用性探针(db.WithOpProbe)
+// 唯一认得的形式 —— 没接 ctx 的语句既没有超时保护,也没资格给熔断投健康票。
+func loadOverrides(ctx context.Context) (map[string]string, error) {
 	gdb := db.Get()
 	if gdb == nil {
 		return nil, db.ErrNotReady
 	}
 	var rows []qymodel.Setting
-	if err := gdb.Where("scope = ?", settingScope).Find(&rows).Error; err != nil {
+	if err := gdb.WithContext(ctx).Where("scope = ?", settingScope).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		return nil, err
 	}
@@ -219,10 +270,17 @@ func int64Override(dst *int64, raw string) {
 	}
 }
 
-// writeSetting 落一条运营覆盖。调用方负责写审计 —— 费率变更必须可追溯到人。
-func writeSetting(key, value string, operatorId int) error {
-	gdb := db.Get()
-	if gdb == nil {
+// writeSetting 在给定事务内落一条运营覆盖。
+//
+// 接 tx 而不是自取 db.Get():一次批量保存里的多个键必须要么全生效要么全不生效。
+// 逐条自取连接时,第一个键写成功、第二个撞上死锁,库里就留下了一个谁都没有
+// 批准的中间费率组合 —— 而所有节点会在 settingsCacheSeconds 内开始按它计佣,
+// 接口那边只回了一个 500。这不是理论风险:死锁不是连接级错误,熔断不会开,
+// 运营看到 500 会直接重试。
+//
+// 调用方负责写审计,成功与失败都要写 —— 费率变更必须可追溯到人。
+func writeSetting(tx *gorm.DB, key, value string, operatorId int) error {
+	if tx == nil {
 		return db.ErrNotReady
 	}
 	row := qymodel.Setting{
@@ -232,7 +290,7 @@ func writeSetting(key, value string, operatorId int) error {
 		OperatorId: operatorId,
 		UpdatedAt:  common.GetTimestamp(),
 	}
-	err := gdb.Clauses(clause.OnConflict{
+	err := tx.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "scope"}, {Name: "k"}},
 		DoUpdates: clause.AssignmentColumns([]string{"v", "operator_id", "updated_at"}),
 	}).Create(&row).Error
@@ -246,13 +304,14 @@ func writeSetting(key, value string, operatorId int) error {
 //
 // 只服务于"新键写入后清掉同义的旧键"这一个场景:两个语义相同的键长期
 // 并存,迟早会有人在库里改了旧的那个然后奇怪为什么不生效。
-// 删不掉不算致命错误 —— 新键已经写进去并且优先级更高。
-func dropSetting(key string) {
+// 删不掉不算致命错误 —— 新键已经写进去并且优先级更高。正因如此它刻意留在
+// 主事务之外:一次清理失败不该把一笔已经批准的调价整个回滚掉。
+func dropSetting(ctx context.Context, key string) {
 	gdb := db.Get()
 	if gdb == nil {
 		return
 	}
-	if err := gdb.Where("scope = ? AND k = ?", settingScope, key).
+	if err := gdb.WithContext(ctx).Where("scope = ? AND k = ?", settingScope, key).
 		Delete(&qymodel.Setting{}).Error; err != nil {
 		db.MarkFailure(err)
 		warnf("清理已废弃的运营配置键 %s 失败: %v", key, err)
@@ -263,40 +322,112 @@ func dropSetting(key string) {
 //
 // 首次使用时自动生成并持久化。刻意不放 YAML:它必须"部署一次、永不轮换"
 // (轮换会让所有历史 ref 失效),自动生成比依赖运维记得改默认值更可靠。
+//
+// 查库与首次生成都在 saltOnce 之外完成,只有写缓存那一步持锁。持锁查库时,
+// 首次调用撞上一次慢查询会把所有计佣写入协程一起钉在这把锁上 —— 与
+// effectiveCtx 那里是同一个形状,只是这里更隐蔽:它一个进程只发生一次。
+// 同样自带冷路径预算,唯一调用点在计佣写入路径上,拿不到调用方 ctx。
 func refSalt() string {
 	saltOnce.Lock()
-	defer saltOnce.Unlock()
-	if saltCache != "" {
-		return saltCache
+	cached := saltCache
+	saltOnce.Unlock()
+	if cached != "" {
+		return cached
 	}
 	gdb := db.Get()
 	if gdb == nil {
 		return ""
 	}
-	var row qymodel.Setting
-	err := gdb.Where("scope = ? AND k = ?", settingScope, keyRefSalt).First(&row).Error
-	if err == nil && row.V != "" {
-		saltCache = row.V
-		return saltCache
-	}
+	ctx, cancel := guard.ColdContext(context.Background())
+	defer cancel()
 
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		common.SysError("qianye: 生成下线标识盐失败: " + err.Error())
+	var row qymodel.Setting
+	err := gdb.WithContext(ctx).Where("scope = ? AND k = ?", settingScope, keyRefSalt).
+		First(&row).Error
+	if err != nil || row.V == "" {
+		buf := make([]byte, 32)
+		if _, err := rand.Read(buf); err != nil {
+			common.SysError("qianye: 生成下线标识盐失败: " + err.Error())
+			return ""
+		}
+		// DoNothing:多节点同时首启(以及本进程内多个协程同时首次调用)时
+		// 只有一个写入生效,之后统一重读,保证全网取到同一个盐。
+		create := qymodel.Setting{
+			Scope: settingScope, K: keyRefSalt, V: hex.EncodeToString(buf),
+			UpdatedAt: common.GetTimestamp(),
+		}
+		if err := gdb.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
+			Create(&create).Error; err != nil {
+			db.MarkFailure(err)
+			return ""
+		}
+		if err := gdb.WithContext(ctx).Where("scope = ? AND k = ?", settingScope, keyRefSalt).
+			First(&row).Error; err != nil {
+			return ""
+		}
+	}
+	if row.V == "" {
 		return ""
 	}
-	generated := hex.EncodeToString(buf)
-	// DoNothing:多节点同时首启时只有一个写入生效,之后统一重读。
-	create := qymodel.Setting{
-		Scope: settingScope, K: keyRefSalt, V: generated, UpdatedAt: common.GetTimestamp(),
+	saltOnce.Lock()
+	if saltCache == "" {
+		saltCache = row.V
 	}
-	if err := gdb.Clauses(clause.OnConflict{DoNothing: true}).Create(&create).Error; err != nil {
-		db.MarkFailure(err)
-		return ""
+	value := saltCache
+	saltOnce.Unlock()
+	return value
+}
+
+// ───────────────────────── 降级留痕 ─────────────────────────
+
+// degradeRecord 记录一类"配置读不到,于是按默认口径继续算钱"的降级。
+//
+// 回落本身是对的:停止计佣比少一个运营微调糟得多。问题在于降级算出来的那批
+// 账目与正常账目在流水上长得一模一样 —— 事后无法区分"这一行是降级"还是
+// "当时配的就是这个费率"。计数 + 最近一次时间与原因经管理端健康接口暴露,
+// 运营至少能知道"那段时间的佣金要复核"。
+type degradeRecord struct {
+	mu       sync.Mutex
+	count    int64
+	lastAt   int64
+	lastWarn int64
+	reason   string
+}
+
+// degradeWarnThrottleSeconds 限制降级告警的打印频率。降级往往意味着扩展库整体
+// 不可用,每条计佣事件都打一行会把日志淹掉,反而看不见。
+const degradeWarnThrottleSeconds = 60
+
+var (
+	// settingsDegrade 计"运营配置读不到,本次按上一份快照或 YAML 默认费率计佣"。
+	// 消费方是本文件的 effectiveCtx。
+	settingsDegrade = &degradeRecord{}
+
+	// groupRateDegrade 计"分组费率读不到,本次按全局默认费率计佣"。
+	// 消费方是 grouprate.go 的 groupRates(),它两条**返回空表**的回落路径
+	// 各上报一次(沿用旧快照不上报 —— 那是缓存的正常语义,费率仍然是对的)。
+	groupRateDegrade = &degradeRecord{}
+)
+
+func (d *degradeRecord) note(reason string) {
+	now := common.GetTimestamp()
+	d.mu.Lock()
+	d.count++
+	d.lastAt = now
+	d.reason = reason
+	count := d.count
+	shouldWarn := now-d.lastWarn >= degradeWarnThrottleSeconds
+	if shouldWarn {
+		d.lastWarn = now
 	}
-	if err := gdb.Where("scope = ? AND k = ?", settingScope, keyRefSalt).First(&row).Error; err != nil {
-		return ""
+	d.mu.Unlock()
+	if shouldWarn {
+		warnf("配置降级,本次按默认口径计佣(累计 %d 次,期间的佣金需复核): %s", count, reason)
 	}
-	saltCache = row.V
-	return saltCache
+}
+
+func (d *degradeRecord) stats() map[string]any {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return map[string]any{"count": d.count, "last_at": d.lastAt, "last_reason": d.reason}
 }

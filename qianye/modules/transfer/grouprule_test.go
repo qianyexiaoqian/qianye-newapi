@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/qianye/groupname"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -527,6 +528,78 @@ func TestValidateGroupRuleOutputStaysParseable(t *testing.T) {
 	assert.NoError(t, set.allowsGroup("vip", "svip"))
 	assert.NoError(t, set.allowsGroup("vip", "vip"), "@self 必须在往返之后依然生效")
 	assert.Same(t, errGroupTargetDenied, set.allowsGroup("vip", "other"))
+}
+
+// TestGroupRuleNamesAreCaseFolded 锁定分组名的大小写口径。
+//
+// 缺陷:from_group / to_groups 都是 varchar(64) 且没有指定排序规则,而扩展库固定
+// 是 MySQL —— AutoMigrate 建表时继承库默认排序规则(5.7 utf8mb4_general_ci、
+// 8.0 utf8mb4_0900_ai_ci),两者都**大小写不敏感**;而 byGroup 是 Go map 的精确
+// 匹配。一条 deny_all 配在 VIP 上、用户的 users.group 是 vip,map 查不到就落到
+// 兜底规则,没有兜底就是完全不设防 —— 一道资金闸门静默失效,且规则列表里
+// 那条 deny_all 还好端端地摆在那儿。
+//
+// 这条测试跑在 sqlite 上照样有意义,因为修复走的是"代码跟上存储"(全链路折叠
+// 大小写)而不是 ALTER TABLE:判定与写入两侧都只产生小写键,与数据库的排序规则
+// 无关,因此在任何数据库上都可断言。把 normalizeGroupName / parseGroupList 里的
+// 折叠去掉,下面每一组断言都会翻面。
+func TestGroupRuleNamesAreCaseFolded(t *testing.T) {
+	// ① 最要命的一侧:禁止发起的闸门不能因为大小写变体而失效。
+	blocked := buildGroupRuleSet([]GroupRule{rule("VIP", GroupPolicyDenyAll, "")})
+	for _, from := range []string{"vip", "VIP", "Vip", "  vIp  "} {
+		assert.ErrorIs(t, blocked.allowsGroup(from, "default"), errGroupSendBlocked,
+			"deny_all 对 %q 失效了 —— 这条规则等于完全不设防", from)
+	}
+	assert.ErrorIs(t, enforceGroupPolicy(
+		&model.User{Id: 1, Group: "vip"}, &model.User{Id: 2, Group: "default"}, blocked),
+		errGroupSendBlocked,
+		"判定入口读的是 users 行上的原始大小写,它必须和规则表对得上")
+
+	// ② 黑名单里的大小写变体:漏掉就是静默放走本该被拦的资金。
+	deny := buildGroupRuleSet([]GroupRule{rule("a", GroupPolicyDenyList, "B")})
+	assert.ErrorIs(t, deny.allowsGroup("a", "b"), errGroupTargetDenied)
+	assert.ErrorIs(t, deny.allowsGroup("A", "B"), errGroupTargetDenied)
+
+	// ③ 白名单里的大小写变体:漏掉是反方向的错 —— 名单静默变窄,合法划转被拒。
+	allow := buildGroupRuleSet([]GroupRule{rule("A", GroupPolicyAllowList, "B,C")})
+	assert.NoError(t, allow.allowsGroup("a", "b"))
+	assert.NoError(t, allow.allowsGroup("a", "C"))
+	assert.ErrorIs(t, allow.allowsGroup("a", "d"), errGroupTargetDenied)
+
+	// ④ @self 判"同组"用的是归一化后的两个值,不能因为大小写不同就变成跨组。
+	self := buildGroupRuleSet([]GroupRule{rule("VIP", GroupPolicyAllowList, groupSelfToken)})
+	assert.NoError(t, self.allowsGroup("vip", "VIP"))
+	assert.ErrorIs(t, self.allowsGroup("vip", "default"), errGroupTargetDenied)
+
+	// ⑤ 写入侧:from_group 与名单一起落成小写。有了这一步,"一个分组至多一条
+	//    规则"这个唯一索引承诺在大小写不敏感与敏感的数据库上是同一个结论。
+	row := GroupRule{FromGroup: " VIP ", Policy: GroupPolicyAllowList, ToGroups: "B, b ,C"}
+	require.NoError(t, validateGroupRule(&row))
+	assert.Equal(t, "vip", row.FromGroup)
+	assert.Equal(t, "b,c", row.ToGroups, "只差大小写的两项必须被折叠成一项")
+
+	// ⑥ 归一化后的规则必须能被判定端原样读回(与 …OutputStaysParseable 同理,
+	//    但这里锁的是大小写往返)。
+	set := buildGroupRuleSet([]GroupRule{{FromGroup: row.FromGroup, Policy: row.Policy,
+		ToGroups: row.ToGroups, Enabled: true}})
+	assert.NoError(t, set.allowsGroup("VIP", "B"))
+	assert.ErrorIs(t, set.allowsGroup("VIP", "D"), errGroupTargetDenied)
+}
+
+// TestTransferGroupNameFollowsSharedContract 把本模块的分组名口径钉在共享实现上。
+//
+// 存在理由:commission 的费率表与本模块的规则表都以分组名为键,同仓一度有三份
+// 各自演化的 normalizeGroup,其中出钱的那一份恰好是最宽松的(只 TrimSpace、
+// 不折叠大小写、空串逃逸)。两个模块现在都只转调 qianye/groupname,这条断言
+// 保证的是"没有人把它悄悄换回一份私有实现" —— 换回去的那一刻两个模块就会
+// 再次分叉,而分叉的表现是一边放行一边拦截,极难归因。
+func TestTransferGroupNameFollowsSharedContract(t *testing.T) {
+	for _, in := range []string{"vip", "VIP", " Vip ", "", "   ", "DEFAULT", "*", groupSelfToken, "内部测试组"} {
+		assert.Equal(t, groupname.Effective(in), normalizeGroupName(in),
+			"分组名口径必须与 qianye/groupname 一致(输入 %q)", in)
+	}
+	assert.Equal(t, defaultGroupName, groupname.Default,
+		"本模块的 default 常量必须与共享口径折叠出的空值一致")
 }
 
 // TestGroupBlockedReasonsAreDistinct 前端要按 code/reason 分流两种截然不同的处置:

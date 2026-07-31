@@ -30,6 +30,11 @@ func RegisterResolver(kind string, r Resolver) { resolverRegistry[kind] = r }
 //
 // 这是整个资金系统的安全网:任何"主库已提交但扩展库没回写"的中间态,
 // 最终都由它收敛。没有它,那些单会永远停在 pending,钱动了却查不出来。
+//
+// 补偿链路上的每一条语句都用租约 ctx,包括 finalizeFailed / markUncertain / backoff
+// 这些状态回写:这里与 Execute 的收尾路径不同 —— 租约丢失意味着**别的节点已经接管**,
+// 继续写就是双跑。写不进去的单仍是 pending,下一轮(由接管节点或本节点重新拿到租约后)
+// 会原样重扫,不会丢。
 func Compensate(ctx context.Context) {
 	cfg := config.Get().TwoPhase
 	grace := int64(cfg.PendingGraceSeconds)
@@ -40,7 +45,7 @@ func Compensate(ctx context.Context) {
 	now := common.GetTimestamp()
 
 	var orders []qymodel.FundOrder
-	err := db.Get().
+	err := db.Get().WithContext(ctx).
 		Where("status = ? AND updated_at < ? AND next_probe_at <= ?",
 			qymodel.StatusPending, now-grace, now).
 		Order("id asc").Limit(batch).Find(&orders).Error
@@ -69,14 +74,14 @@ func compensateOne(ctx context.Context, order *qymodel.FundOrder) {
 	if !cfg.OutboxEnabled() {
 		// 没有 outbox 探针时无法区分"主库没动"和"主库动了但记录丢了"。
 		// 这种情况一律转人工,绝不猜测 —— 猜错就是资损。
-		markUncertain(order, "未启用主库 outbox 探针,无法自动判定,请人工核对")
+		markUncertain(ctx, order, "未启用主库 outbox 探针,无法自动判定,请人工核对")
 		return
 	}
 
 	applied, err := model.QyProbeFundOutbox(order.OrderNo)
 	if err != nil {
 		// 主库不可用只退避,绝不改状态。
-		backoff(order, err)
+		backoff(ctx, order, err)
 		return
 	}
 
@@ -88,21 +93,21 @@ func compensateOne(ctx context.Context, order *qymodel.FundOrder) {
 	// 主库确定没动。但要等足够久才敢判失败 —— 可能只是主库事务还没提交。
 	age := common.GetTimestamp() - order.CreatedAt
 	if age > int64(cfg.ManualReviewAfterSeconds) {
-		finalizeFailed(order)
+		finalizeFailed(ctx, order)
 		return
 	}
-	backoff(order, nil)
+	backoff(ctx, order, nil)
 }
 
 func resolveApplied(ctx context.Context, order *qymodel.FundOrder) {
 	if r, ok := resolverRegistry[order.Kind]; ok {
 		if err := r(ctx, order); err != nil {
-			backoff(order, err)
+			backoff(ctx, order, err)
 			return
 		}
 	}
 	now := common.GetTimestamp()
-	res := db.Get().Model(&qymodel.FundOrder{}).
+	res := db.Get().WithContext(ctx).Model(&qymodel.FundOrder{}).
 		Where("order_no = ? AND status = ?", order.OrderNo, qymodel.StatusPending).
 		Updates(map[string]any{
 			"status":     qymodel.StatusSuccess,
@@ -121,9 +126,9 @@ func resolveApplied(ctx context.Context, order *qymodel.FundOrder) {
 	auditTransition(order, qymodel.ResultOK, "补偿任务确认主库已生效")
 }
 
-func finalizeFailed(order *qymodel.FundOrder) {
+func finalizeFailed(ctx context.Context, order *qymodel.FundOrder) {
 	now := common.GetTimestamp()
-	res := db.Get().Model(&qymodel.FundOrder{}).
+	res := db.Get().WithContext(ctx).Model(&qymodel.FundOrder{}).
 		Where("order_no = ? AND status = ?", order.OrderNo, qymodel.StatusPending).
 		Updates(map[string]any{
 			"status":     qymodel.StatusFailed,
@@ -143,7 +148,7 @@ func finalizeFailed(order *qymodel.FundOrder) {
 
 // backoff 指数退避,防止一条坏单反复打爆主库。
 // 重试次数耗尽后转 Uncertain 交人工,而不是无限重试。
-func backoff(order *qymodel.FundOrder, cause error) {
+func backoff(ctx context.Context, order *qymodel.FundOrder, cause error) {
 	cfg := config.Get().TwoPhase
 	attempts := order.Attempts + 1
 
@@ -152,7 +157,7 @@ func backoff(order *qymodel.FundOrder, cause error) {
 		if cause != nil {
 			reason += ": " + cause.Error()
 		}
-		markUncertain(order, reason)
+		markUncertain(ctx, order, reason)
 		return
 	}
 
@@ -172,7 +177,7 @@ func backoff(order *qymodel.FundOrder, cause error) {
 		// 退避信息与重试计数一起丢失。
 		updates["last_error"] = audit.Truncate(cause.Error(), maxErrBytes)
 	}
-	if err := db.Get().Model(&qymodel.FundOrder{}).
+	if err := db.Get().WithContext(ctx).Model(&qymodel.FundOrder{}).
 		Where("order_no = ?", order.OrderNo).Updates(updates).Error; err != nil {
 		db.MarkFailure(err)
 	}
@@ -182,12 +187,12 @@ func backoff(order *qymodel.FundOrder, cause error) {
 //
 // 资金系统必须有"我不知道,交给人"这个合法出口。
 // 没有它,补偿任务只能在"重试到死"和"猜一个结果"之间选,两者都不可接受。
-func markUncertain(order *qymodel.FundOrder, reason string) {
+func markUncertain(ctx context.Context, order *qymodel.FundOrder, reason string) {
 	now := common.GetTimestamp()
 	// 转人工是这套系统里最不能丢的一条记录:理由被裸字节切断会让整行 UPDATE
 	// 与审计写入双双被 utf8mb4 列拒绝,单据留在 pending 继续被补偿任务空转。
 	reason = audit.Truncate(reason, maxErrBytes)
-	res := db.Get().Model(&qymodel.FundOrder{}).
+	res := db.Get().WithContext(ctx).Model(&qymodel.FundOrder{}).
 		Where("order_no = ? AND status = ?", order.OrderNo, qymodel.StatusPending).
 		Updates(map[string]any{
 			"status":     qymodel.StatusUncertain,
@@ -229,7 +234,7 @@ func PruneOutbox(ctx context.Context) {
 
 	// 只清理扩展库侧已终态的单,避免删掉还需要探针判定的记录。
 	var stuck int64
-	if err := db.Get().Model(&qymodel.FundOrder{}).
+	if err := db.Get().WithContext(ctx).Model(&qymodel.FundOrder{}).
 		Where("created_at < ? AND status IN ?", before,
 			[]int8{qymodel.StatusPending, qymodel.StatusUncertain}).
 		Count(&stuck).Error; err != nil {

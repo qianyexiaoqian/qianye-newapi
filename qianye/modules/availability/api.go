@@ -9,16 +9,34 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	maxModelFilter  = 200
+	maxModelFilter = 200
+	// maxGroupFilter 与 maxModelFilter 同理:groups 参数是逗号分隔的自由文本,
+	// 不设上限的话一条 URL 就能构造出几十万项的 IN 子句。
+	maxGroupFilter = 200
+	// maxCSVItems 既是 splitCSV 的兜底值也是它的封顶值:limit<=0 或大于它,
+	// 一律回落到它。刻意不让 limit<=0 表示"不限" —— 本仓库反复出现的失败形状
+	// 就是"能力做对了、调用点没接上",而 splitCSV(x, 0) 正是那个形状。
+	// 忘了传上限应当退化成一个安全的默认值,而不是退化成无限。
+	maxCSVItems     = 200
 	maxPageSize     = 200
 	defaultPageSize = 50
 )
+
+// listPaging 是看板的分页口径。注意它与扩展其余模块**不同**:参数名是 ?page=
+// 而不是 ?p=,默认 50 条、上限 200 条 —— 前端 availability 页面按这套发请求,
+// 收敛到 httpq 时逐字段核对过,一个都没改。
+//
+// 页码上界(httpq.MaxPage)不是可选项:没有它,?page=184467440737095518 能被
+// 解析成功,(page-1)*pageSize 溢出成负数,httpq.Slice 里的 names[start:end]
+// 直接 panic —— 一个只读看板端点被一个查询参数打崩。
+var listPaging = httpq.Spec{PageKey: "page", DefaultSize: defaultPageSize, MaxSize: maxPageSize}
 
 // ─────────────────────────────── 用户端 ───────────────────────────────
 
@@ -48,13 +66,13 @@ func getMatrix(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagAvailability) {
 		return
 	}
-	r := resolveRange(queryInt64(c, "start_ts"), queryInt64(c, "end_ts"), queryInt(c, "hours", 24))
+	r := resolveRange(httpq.Int64(c, "start_ts", 0), httpq.Int64(c, "end_ts", 0), httpq.Int(c, "hours", 24))
 	d := definitionOf(config.Get().Availability)
 
 	// 权限:服务端强制裁剪,绝不依赖前端传什么就查什么。
 	// groups 参数只用于在可见集合内进一步收窄,永远先取交集。
 	visible := visibleGroups(c)
-	groups := intersectGroups(splitCSV(c.Query("groups"), 0), visible)
+	groups := intersectGroups(splitCSV(c.Query("groups"), maxGroupFilter), visible)
 	if len(groups) == 0 {
 		// 交集为空返回空矩阵而不是 403:用"有没有权限"的差异去探测分组是否存在,
 		// 本身就是一条侧信道。
@@ -76,12 +94,15 @@ func getMatrix(c *gin.Context) {
 	sortMode := c.Query("sort")
 	sortModels(names, cells, groups, d, sortMode)
 
-	page, pageSize := pageParams(c)
+	page, pageSize := httpq.Paginate(c, listPaging)
 	total := len(names)
-	pageModels := paginate(names, page, pageSize)
+	pageModels := httpq.Slice(names, page, pageSize)
 
 	limit := maxSeries()
-	out := make([]cell, 0, len(pageModels)*len(groups))
+	// 预分配必须先被 limit 夹住。下面的循环到 limit 就会 break,但容量是在循环
+	// 之前一次性算出来的:平台分组数一多,这里就先按 页内模型数 × 分组数 分配了
+	// 一大片内存,而真正用到的永远不超过 limit。
+	out := make([]cell, 0, min(limit, len(pageModels)*len(groups)))
 	truncated := false
 	for _, name := range pageModels {
 		for _, g := range groups {
@@ -152,12 +173,12 @@ func getSeries(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "qy_avail_model_required", "缺少 model 参数")
 		return
 	}
-	r := resolveRange(queryInt64(c, "start_ts"), queryInt64(c, "end_ts"), queryInt(c, "hours", 24))
+	r := resolveRange(httpq.Int64(c, "start_ts", 0), httpq.Int64(c, "end_ts", 0), httpq.Int(c, "hours", 24))
 	d := definitionOf(config.Get().Availability)
 
 	visible := visibleGroups(c)
-	requested := splitCSV(c.Query("group"), 0)
-	requested = append(requested, splitCSV(c.Query("groups"), 0)...)
+	requested := splitCSV(c.Query("group"), maxGroupFilter)
+	requested = append(requested, splitCSV(c.Query("groups"), maxGroupFilter)...)
 	groups := intersectGroups(requested, visible)
 
 	points, err := querySeriesPoints(r, modelName, groups)
@@ -227,7 +248,7 @@ func adminStats(c *gin.Context) {
 	}
 	cfg := config.Get().Availability
 	d := definitionOf(cfg)
-	r := resolveRange(0, 0, queryInt(c, "hours", 24))
+	r := resolveRange(0, 0, httpq.Int(c, "hours", 24))
 
 	data := gin.H{
 		"definition": d,
@@ -379,19 +400,37 @@ func visibleGroups(c *gin.Context) map[string]string {
 }
 
 // intersectGroups 把请求的分组收窄到可见集合。requested 为空表示"全部可见分组"。
+//
+// 这是两个只读端点唯一的分组取值入口,因此去重与上限都钉在这里,而不是钉在
+// 各个调用点上:调用点会被复制、会被新增,漏掉一处就等于没做。
+// 上限用 requested 的口径 —— 可见集合是服务端算出来的,不是用户输入,
+// 截断它只会让有很多分组的用户静默看不到数据。
 func intersectGroups(requested []string, visible map[string]string) []string {
-	out := make([]string, 0, len(visible))
 	if len(requested) == 0 {
+		out := make([]string, 0, len(visible))
 		for g := range visible {
 			out = append(out, g)
 		}
 		sort.Strings(out)
 		return out
 	}
+	out := make([]string, 0, min(len(requested), maxGroupFilter))
+	seen := make(map[string]struct{}, cap(out))
 	for _, g := range requested {
-		if _, ok := visible[g]; ok {
-			out = append(out, g)
+		if len(out) >= maxGroupFilter {
+			break
 		}
+		if _, ok := visible[g]; !ok {
+			continue
+		}
+		// 去重:?groups=vip,vip,vip 会让同一个分组在 IN 子句里出现 N 次,
+		// 更要命的是矩阵里同一个格子被渲染 N 遍,而 maxSeries 的截断
+		// 会被这些重复项吃掉,真实分组反而挤不进结果。
+		if _, dup := seen[g]; dup {
+			continue
+		}
+		seen[g] = struct{}{}
+		out = append(out, g)
 	}
 	sort.Strings(out)
 	return out
@@ -550,64 +589,36 @@ func granularityLabel(r timeRange) string {
 	return strconv.FormatInt(bucketSeconds(), 10) + "s"
 }
 
-func paginate(names []string, page, pageSize int) []string {
-	start := (page - 1) * pageSize
-	if start >= len(names) {
-		return []string{}
-	}
-	end := start + pageSize
-	if end > len(names) {
-		end = len(names)
-	}
-	return names[start:end]
-}
-
-func pageParams(c *gin.Context) (int, int) {
-	page := queryInt(c, "page", 1)
-	if page < 1 {
-		page = 1
-	}
-	size := queryInt(c, "page_size", defaultPageSize)
-	if size < 1 || size > maxPageSize {
-		size = defaultPageSize
-	}
-	return page, size
-}
-
+// splitCSV 解析逗号分隔的过滤参数。
+//
+// limit<=0 表示"用兜底上限",而不是"不限":调用点忘了传上限是常态,
+// 而"不限"意味着一条 URL 就能让服务端解析出几十万个字符串并塞进 IN 子句。
+// 让默认行为是安全的,那么少传一个参数就只是收窄了过滤范围,不是开了个洞。
+//
+// 逐段扫描而不是 strings.Split 整串:Split 会先把全部分段都物化出来,
+// 之后再截断已经晚了 —— 上限要在分配之前生效,而不是在分配之后。
 func splitCSV(s string, limit int) []string {
+	if limit <= 0 || limit > maxCSVItems {
+		limit = maxCSVItems
+	}
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
 	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
+	out := make([]string, 0, min(strings.Count(s, ",")+1, limit))
+	for s != "" && len(out) < limit {
+		part := s
+		if i := strings.IndexByte(s, ','); i >= 0 {
+			part, s = s[:i], s[i+1:]
+		} else {
+			s = ""
+		}
+		if part = strings.TrimSpace(part); part == "" {
 			continue
 		}
-		out = append(out, p)
-		if limit > 0 && len(out) >= limit {
-			break
-		}
+		out = append(out, part)
 	}
 	return out
-}
-
-func queryInt(c *gin.Context, key string, def int) int {
-	v, err := strconv.Atoi(c.Query(key))
-	if err != nil || v < 0 {
-		return def
-	}
-	return v
-}
-
-func queryInt64(c *gin.Context, key string) int64 {
-	v, err := strconv.ParseInt(c.Query(key), 10, 64)
-	if err != nil || v < 0 {
-		return 0
-	}
-	return v
 }
 
 func respond(c *gin.Context, data any) {

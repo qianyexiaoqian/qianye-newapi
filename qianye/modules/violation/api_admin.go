@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/qianye/service/twophase"
@@ -106,7 +107,7 @@ func adminListRules(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return
 	}
-	page, size := pageParams(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&Rule{})
 	if v := c.Query("phase"); v != "" {
 		q = q.Where("phase = ?", v)
@@ -121,7 +122,7 @@ func adminListRules(c *gin.Context) {
 	}
 	var rows []Rule
 	if err := q.Order("priority asc, id asc").
-		Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+		Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
 	}
@@ -290,9 +291,9 @@ func adminListRecords(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return
 	}
-	page, size := pageParams(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&Record{})
-	if v := queryInt(c, "user_id", 0); v > 0 {
+	if v := httpq.Int(c, "user_id", 0); v > 0 {
 		q = q.Where("user_id = ?", v)
 	}
 	if v := c.Query("model"); v != "" {
@@ -307,13 +308,13 @@ func adminListRecords(c *gin.Context) {
 	if v := c.Query("request_id"); v != "" {
 		q = q.Where("request_id = ?", v)
 	}
-	if v := queryInt64(c, "rule_id", 0); v > 0 {
+	if v := httpq.Int64(c, "rule_id", 0); v > 0 {
 		q = q.Where("rule_id = ?", v)
 	}
-	if v := queryInt64(c, "start_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "start_ts", 0); v > 0 {
 		q = q.Where("created_at >= ?", v)
 	}
-	if v := queryInt64(c, "end_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "end_ts", 0); v > 0 {
 		q = q.Where("created_at <= ?", v)
 	}
 	var total int64
@@ -322,7 +323,7 @@ func adminListRecords(c *gin.Context) {
 		return
 	}
 	var rows []Record
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
 	}
@@ -741,12 +742,12 @@ func adminListBans(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return
 	}
-	page, size := pageParams(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&Ban{})
 	if v := c.Query("status"); v != "" {
 		q = q.Where("status = ?", v)
 	}
-	if v := queryInt(c, "user_id", 0); v > 0 {
+	if v := httpq.Int(c, "user_id", 0); v > 0 {
 		q = q.Where("user_id = ?", v)
 	}
 	var total int64
@@ -755,7 +756,7 @@ func adminListBans(c *gin.Context) {
 		return
 	}
 	var rows []Ban
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
 	}
@@ -766,7 +767,7 @@ func adminUnban(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return
 	}
-	userId := queryIntParam(c, "userId")
+	userId := pathIntParam(c, "userId")
 	if userId <= 0 {
 		badRequest(c, "非法的用户 id")
 		return
@@ -873,12 +874,12 @@ func adminListAppeals(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return
 	}
-	page, size := pageParams(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&Appeal{})
 	if v := c.Query("status"); v != "" {
 		q = q.Where("status = ?", v)
 	}
-	if v := queryInt(c, "user_id", 0); v > 0 {
+	if v := httpq.Int(c, "user_id", 0); v > 0 {
 		q = q.Where("user_id = ?", v)
 	}
 	var total int64
@@ -887,7 +888,7 @@ func adminListAppeals(c *gin.Context) {
 		return
 	}
 	var rows []Appeal
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
 	}
@@ -980,7 +981,7 @@ func adminStats(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return
 	}
-	hours := queryInt(c, "hours", 24)
+	hours := httpq.Int(c, "hours", 24)
 	if hours <= 0 || hours > 24*90 {
 		hours = 24
 	}
@@ -1061,9 +1062,14 @@ func adminResetBreaker(c *gin.Context) {
 	respond(c, breakerStats())
 }
 
-func queryIntParam(c *gin.Context, key string) int {
+// pathIntParam 读的是**路径**参数(/:userId),不是查询参数。
+//
+// 它以前叫 queryIntParam —— 一个读 c.Param 却叫 query 的名字。这类命名漂移
+// 正是"同一概念的第 N 份拷贝"能悄悄长出来的土壤:下一个人搜 queryInt 会搜到它,
+// 以为查询参数解析在本包里还有一份,于是照着再抄一份。
+func pathIntParam(c *gin.Context, key string) int {
 	v, ok := pathInt64(c, key)
-	if !ok || v > int64(^uint32(0)>>1) {
+	if !ok || v > httpq.MaxQueryInt {
 		return 0
 	}
 	return int(v)

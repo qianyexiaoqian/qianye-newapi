@@ -142,7 +142,7 @@ func asyncBudget() time.Duration {
 }
 
 func hotRunWithBudget(name string, fn func(ctx context.Context) error, budget time.Duration) {
-	defer recoverHot(name)
+	defer RecoverHot(name)
 
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
@@ -291,7 +291,13 @@ func QueueStats() map[string]any {
 	}
 }
 
-func recoverHot(name string) {
+// RecoverHot 是热路径 hook 的 panic 拦截器,用法固定为函数首行 defer。
+//
+// 导出是因为不是所有热路径都经过 HotAsync:hook 的**同步段**(把上游的结构体
+// 压成值快照那一步)必须在调用方自己的栈上跑,那一段的 panic 会一路冒泡进
+// relay,把"扩展功能出错"变成"用户请求 500"。扩展模块相对主业务永远是附加物,
+// 任何一处都不该有能力打死它。
+func RecoverHot(name string) {
 	if r := recover(); r != nil {
 		common.SysError(fmt.Sprintf("qianye: 热路径 hook %s 发生 panic(已拦截,不影响主流程): %v\n%s",
 			name, r, debug.Stack()))

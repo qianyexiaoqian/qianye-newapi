@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/groupname"
 
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
@@ -153,12 +154,67 @@ func TestBuildSnapshotSkipsInvalidRows(t *testing.T) {
 
 // TestNormalizeGroupMatchesUsersDefault 锁定空分组名归一成 default。
 // 主库 users.group 的列默认值就是 default,不归一会让默认分组永远匹配不到规则。
+//
+// 大小写拼写一并纳入:原用例只有 {"default","","  ","  default  "},
+// 对"把折叠大小写改回 TrimSpace"这个变异完全免疫。
 func TestNormalizeGroupMatchesUsersDefault(t *testing.T) {
 	s := buildSnapshot([]Rule{enabledRule("default", "gpt-4o", ModeRatio, "0.5")}, 1)
-	for _, g := range []string{"default", "", "  ", "  default  "} {
+	for _, g := range []string{"default", "", "  ", "  default  ", "DEFAULT", "Default", "  DeFaUlT  "} {
 		_, ok := s.lookup(g, "gpt-4o")
 		assert.True(t, ok, "分组 %q 应当归一到 default", g)
 	}
+}
+
+// TestLookupFoldsGroupNameCase —— 判定侧的大小写折叠回归。
+//
+// 生产形态:规则配在 "vip",而 relayInfo.UsingGroup 来自主库 users.group 或
+// 令牌指定分组,两者都原样保留运营填进去的大小写。判定不折叠时
+// rules.go 的精确匹配落空 → 按全局价扣钱,而规则列表里那条折扣好端端摆着、
+// 管理端回显"已保存"。这是全仓第三张以分组名为键的 money 表,
+// commission / transfer 两张已各有回归,这条补上第三张。
+func TestLookupFoldsGroupNameCase(t *testing.T) {
+	s := buildSnapshot([]Rule{enabledRule("vip", "gpt-4o", ModeRatio, "0.5")}, 1)
+	for _, g := range []string{"vip", "VIP", "Vip", "  vIp  "} {
+		r, ok := s.lookup(g, "gpt-4o")
+		require.True(t, ok, "分组 %q 必须命中配在 vip 上的那条规则,否则这笔请求按全局价扣钱", g)
+		assert.Equal(t, "0.5", r.Value.String(), "分组 %q 命中的必须是同一条规则", g)
+	}
+}
+
+// TestGroupNameFoldedOnWrite —— 写入侧的大小写折叠回归。
+//
+// 两条写入路径都要钉住:管理端 ruleUpsertReq.apply 决定落库的那个字符串,
+// compile 决定快照 map 的键。任一处漏折叠,写入与判定就会落在两个不同的桶里。
+func TestGroupNameFoldedOnWrite(t *testing.T) {
+	var dst Rule
+	req := &ruleUpsertReq{GroupName: "  VIP  ", ModelName: " gpt-4o ", Mode: ModeRatio, Value: "0.5", Enabled: true}
+	require.NoError(t, req.apply(&dst))
+	assert.Equal(t, "vip", dst.GroupName,
+		"管理端写入必须折叠大小写后再落库:扩展库列是 ci 排序规则,VIP 会写进 vip 那一行,而热路径按 VIP 精确查")
+	assert.Equal(t, "gpt-4o", dst.ModelName)
+
+	cr, err := compile(Rule{GroupName: " VIP ", ModelName: "gpt-4o", Mode: ModeRatio, Value: dec("0.5"), Enabled: true})
+	require.NoError(t, err)
+	assert.Equal(t, "vip", cr.GroupName, "快照编译侧必须与写入侧同口径,否则手改数据库的历史行永远查不到")
+}
+
+// TestGroupPricingGroupKeyFollowsSharedContract 把本模块的分组名口径钉在共享实现上。
+//
+// 存在理由与 commission / transfer 的同名断言一致:同仓一度有三份各自演化的
+// normalizeGroup,而出钱的那几份恰好是最宽松的。三个模块现在都只转调
+// qianye/groupname,这条逐输入断言保证的是"没有人把它悄悄换回一份私有实现"——
+// 共享包本身不构成防御,这条断言才是。
+//
+// 本模块用的是 Effective 而不是 Normalize:分组名为空在这里的语义是
+// "默认分组的规则"(与主库 users.group 的列默认值一致),不是"没填分组名"。
+func TestGroupPricingGroupKeyFollowsSharedContract(t *testing.T) {
+	for _, in := range []string{"vip", "VIP", "Vip", "  vIp  ", "", "   ", "default", "DEFAULT", "内部测试组"} {
+		assert.Equal(t, groupname.Effective(in), normalizeGroup(in),
+			"分组名口径必须与 qianye/groupname 一致(输入 %q)", in)
+	}
+	assert.Equal(t, "vip", normalizeGroup("  VIP  "),
+		"不折叠大小写就等于:配了折扣、界面显示已保存、实际按原价扣钱")
+	assert.Equal(t, "default", normalizeGroup("  "))
 }
 
 // ─────────────────── 缓存:读库失败只能回落成「无覆盖」 ───────────────────

@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/groupname"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
@@ -75,8 +76,16 @@ const (
 type GroupRule struct {
 	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
 
-	// FromGroup 是发起方分组;groupWildcard 表示兜底规则。
+	// FromGroup 是发起方分组,**一律以归一化后的形式存储**
+	// (groupname.Effective:去空白 + 小写);groupWildcard 表示兜底规则。
 	// 唯一索引是本模块可读性的支点:一个分组只能有一条规则。
+	//
+	// 列上刻意没有写 COLLATE:扩展库是 MySQL,建表继承的库默认排序规则
+	// (5.7 general_ci / 8.0 0900_ai_ci)大小写不敏感,而 byGroup 是 Go map
+	// 的精确匹配。这个错位在这里比费率表严重 —— 一条 deny_all 配在 VIP 上、
+	// 用户的 users.group 是 vip,map 查不到就落到兜底规则,没有兜底就是完全
+	// 不设防。消掉它的办法是让写入与判定都只产生小写键(理由与残留边界见
+	// groupname 包),而不是加一条 auto_migrate=false 的部署不会执行的 ALTER。
 	FromGroup string `json:"from_group" gorm:"type:varchar(64);not null;uniqueIndex:uk_qy_tr_grp_from"`
 
 	Policy string `json:"policy" gorm:"type:varchar(16);not null;default:'allow_list'"`
@@ -327,29 +336,37 @@ func knownGroups() []string {
 
 // ─────────────────────────── 归一化与校验 ───────────────────────────
 
-// normalizeGroupName 归一化分组名。
+// normalizeGroupName 归一化分组名:去空白、折叠大小写、空串归一成 default。
+//
+// 折叠大小写的理由见 groupname 包:存储层的排序规则大小写不敏感,而这里是
+// Go map 的精确匹配,不折叠就会出现"规则写在 VIP 上、用户是 vip、闸门形同虚设"。
+// 对一道限制类闸门,折叠是 fail-closed 的那一侧 —— 宁可多盖一个大小写变体,
+// 不能漏一个。
 //
 // 空串归一成 default:主库 users.group 的列默认值就是 'default',但历史行、
 // 以及被直接改过库的账号可能留着空串。不归一的话,一条"default 只能转给 vip"
-// 的白名单对这些账号完全不生效 —— 而它们恰恰是最可疑的那批账号。
-func normalizeGroupName(g string) string {
-	g = strings.TrimSpace(g)
-	if g == "" {
-		return defaultGroupName
-	}
-	return g
-}
+// 的白名单对这些账号完全不生效 —— 而它们恰恰是最可疑的那批账号。写入侧不受
+// 影响:validateGroupRule 在归一之前就拒了空的 from_group。
+func normalizeGroupName(g string) string { return groupname.Effective(g) }
 
-// parseGroupList 按逗号/分号/换行拆分名单,去空白并丢弃空项。
+// parseGroupList 按逗号/分号/换行拆分名单,丢弃空项,并把每一项归一成
+// 与判定端同一个口径的分组名。
+//
+// 归一化放在拆分这一步而不是留给三个调用方(matchGroupList / resolveGroupList /
+// validateGroupRule)各自处理:名单里的项最终都要和 normalizeGroupName 过的
+// from/to 比较,漏一处的后果是静默的 —— 白名单里的 "VIP" 永远匹配不上 vip
+// (名单静默变窄),黑名单里的 "VIP" 则永远拦不住 vip(名单静默变宽,这一侧
+// 直接放走本该被拦的资金)。
 func parseGroupList(raw string) []string {
 	parts := strings.FieldsFunc(raw, func(r rune) bool {
 		return r == ',' || r == ';' || r == '\n' || r == '\r'
 	})
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
+		if strings.TrimSpace(p) == "" {
+			continue
 		}
+		out = append(out, normalizeGroupName(p))
 	}
 	return out
 }
@@ -381,10 +398,12 @@ func validateGroupRule(r *GroupRule) error {
 		return fmt.Errorf("发起分组不能为空,兜底规则请填 %q", groupWildcard)
 	}
 	if r.FromGroup != groupWildcard {
+		// 先归一再校验,不能反过来:落库的必须就是被校验过的那个值,
+		// 否则"校验通过的字符串"与"实际存进去的字符串"是两个东西。
+		r.FromGroup = normalizeGroupName(r.FromGroup)
 		if err := checkGroupToken(r.FromGroup); err != nil {
 			return err
 		}
-		r.FromGroup = normalizeGroupName(r.FromGroup)
 	}
 
 	entries := parseGroupList(r.ToGroups)

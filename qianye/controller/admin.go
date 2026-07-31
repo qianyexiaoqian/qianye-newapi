@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
@@ -51,11 +52,11 @@ func AdminListFundOrders(c *gin.Context) {
 	if !requireCore(c) {
 		return
 	}
-	page, size := pagination(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&qymodel.FundOrder{})
 
 	if v := c.Query("status"); v != "" {
-		q = q.Where("status = ?", intQuery(c, "status", 0))
+		q = q.Where("status = ?", httpq.Int(c, "status", 0))
 	}
 	if v := c.Query("kind"); v != "" {
 		q = q.Where("kind = ?", v)
@@ -66,13 +67,18 @@ func AdminListFundOrders(c *gin.Context) {
 	if v := c.Query("ref_id"); v != "" {
 		q = q.Where("ref_id = ?", v)
 	}
-	if v := intQuery(c, "user_id", 0); v > 0 {
+	if v := httpq.Int(c, "user_id", 0); v > 0 {
 		q = q.Where("user_id = ? OR peer_user_id = ?", v, v)
 	}
-	if v := intQuery(c, "start_ts", 0); v > 0 {
+	// 时间戳走 Int64。此前这两行用的是本包那份上界为 100 万的 intQuery,
+	// 而任何真实 Unix 时间戳都远大于 100 万 —— 解析恒回落 0,`v > 0` 恒不成立,
+	// WHERE 从来没有被拼上去:资金单列表的时间范围筛选一直是死的,
+	// 而前端只会觉得"筛选没生效"。这是给分页加上界时波及到同一个 helper 的
+	// 其他调用点造成的,也是本次收敛要根治的那种漂移。
+	if v := httpq.Int64(c, "start_ts", 0); v > 0 {
 		q = q.Where("created_at >= ?", v)
 	}
-	if v := intQuery(c, "end_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "end_ts", 0); v > 0 {
 		q = q.Where("created_at <= ?", v)
 	}
 
@@ -83,7 +89,7 @@ func AdminListFundOrders(c *gin.Context) {
 		return
 	}
 	var items []qymodel.FundOrder
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&items).Error; err != nil {
 		db.MarkFailure(err)
 		serverError(c, err)
 		return
@@ -235,7 +241,7 @@ func AdminListAuditLogs(c *gin.Context) {
 	if !requireCore(c) {
 		return
 	}
-	page, size := pagination(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&qymodel.AuditLog{})
 
 	if v := c.Query("category"); v != "" {
@@ -247,16 +253,16 @@ func AdminListAuditLogs(c *gin.Context) {
 	if v := c.Query("trace_no"); v != "" {
 		q = q.Where("trace_no = ?", v)
 	}
-	if v := intQuery(c, "actor_user_id", 0); v > 0 {
+	if v := httpq.Int(c, "actor_user_id", 0); v > 0 {
 		q = q.Where("actor_user_id = ?", v)
 	}
-	if v := intQuery(c, "target_user_id", 0); v > 0 {
+	if v := httpq.Int(c, "target_user_id", 0); v > 0 {
 		q = q.Where("target_user_id = ?", v)
 	}
-	if v := intQuery(c, "start_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "start_ts", 0); v > 0 {
 		q = q.Where("created_at >= ?", v)
 	}
-	if v := intQuery(c, "end_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "end_ts", 0); v > 0 {
 		q = q.Where("created_at <= ?", v)
 	}
 
@@ -267,7 +273,7 @@ func AdminListAuditLogs(c *gin.Context) {
 		return
 	}
 	var items []qymodel.AuditLog
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&items).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&items).Error; err != nil {
 		db.MarkFailure(err)
 		serverError(c, err)
 		return

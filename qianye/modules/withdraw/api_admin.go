@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
@@ -26,13 +27,13 @@ func handleAdminList(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
 	}
-	page, size := paginate(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&Withdrawal{})
 	q = applyStatusFilter(q, c.Query("status"))
 	if v := strings.TrimSpace(c.Query("method")); v != "" {
 		q = q.Where("method = ?", v)
 	}
-	if v := intQuery(c, "user_id", 0); v > 0 {
+	if v := httpq.Int(c, "user_id", 0); v > 0 {
 		q = q.Where("user_id = ?", v)
 	}
 	if v := strings.TrimSpace(c.Query("withdraw_no")); v != "" {
@@ -44,10 +45,10 @@ func handleAdminList(c *gin.Context) {
 	if c.Query("risk_only") == "true" {
 		q = q.Where("risk_flags <> ''")
 	}
-	if v := int64Query(c, "start_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "start_ts", 0); v > 0 {
 		q = q.Where("created_at >= ?", v)
 	}
-	if v := int64Query(c, "end_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "end_ts", 0); v > 0 {
 		q = q.Where("created_at <= ?", v)
 	}
 
@@ -63,7 +64,7 @@ func handleAdminList(c *gin.Context) {
 	if c.Query("order") == "desc" {
 		order = "id desc"
 	}
-	if err := q.Order(order).Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order(order).Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, err)
 		return
@@ -213,6 +214,30 @@ func handleAdminMarkPaid(c *gin.Context) {
 	respondOK(c, view)
 }
 
+// handleAdminCreditNow 对一张 approved 的 quota 单显式触发兑现。
+//
+// 这是 withdraw.auto_credit_on_approve = false 时 quota 提现唯一的正向出口:
+// 关掉自动到账后 approved → paying 没有任何自动触发者,单据会无限期停在
+// approved(详见 creditNow 的注释)。开着自动到账时它也有用 —— 对账任务
+// 拿不到租约、或某张单反复卡住时,管理员不必等下一轮扫描。
+// 重复点击安全:startPaying 的 approved → paying CAS 是全集群唯一准入闸门。
+func handleAdminCreditNow(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagCore) {
+		return
+	}
+	id, ok := pathId(c)
+	if !ok {
+		respondErr(c, errInvalidParam)
+		return
+	}
+	view, err := creditNow(c, id)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	respondOK(c, view)
+}
+
 func handleAdminFail(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
@@ -319,12 +344,12 @@ func handleAdminPiiAudits(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
 	}
-	page, size := paginate(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&PiiAudit{})
-	if v := intQuery(c, "admin_id", 0); v > 0 {
+	if v := httpq.Int(c, "admin_id", 0); v > 0 {
 		q = q.Where("admin_id = ?", v)
 	}
-	if v := intQuery(c, "target_user_id", 0); v > 0 {
+	if v := httpq.Int(c, "target_user_id", 0); v > 0 {
 		q = q.Where("target_user_id = ?", v)
 	}
 
@@ -335,7 +360,7 @@ func handleAdminPiiAudits(c *gin.Context) {
 		return
 	}
 	var rows []PiiAudit
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, err)
 		return

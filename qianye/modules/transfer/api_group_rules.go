@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
@@ -239,11 +240,7 @@ func groupRuleTaken(fromGroup string, excludeId int64) (bool, error) {
 }
 
 func groupRuleIdParam(c *gin.Context) (int64, bool) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || id <= 0 {
-		return 0, false
-	}
-	return id, true
+	return httpq.PathInt64(c, "id")
 }
 
 // respondRuleInvalid 把逐条校验消息原样透出。

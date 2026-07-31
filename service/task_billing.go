@@ -302,6 +302,7 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	if group == "" {
 		return
 	}
+	modelRatio = QyGroupTaskRatio(group, modelName, modelRatio)
 
 	groupRatio := ratio_setting.GetGroupRatio(group)
 	userGroupRatio, hasUserGroupRatio := ratio_setting.GetGroupGroupRatio(group, group)

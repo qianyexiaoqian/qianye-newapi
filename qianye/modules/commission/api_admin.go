@@ -4,6 +4,7 @@ import (
 	"encoding/json" // 仅取 RawMessage 类型;编解码一律走 common.*
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -11,10 +12,12 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // adminGetConfig 返回生效配置 + YAML 只读快照。
@@ -25,15 +28,16 @@ func adminGetConfig(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCommission) {
 		return
 	}
-	overrides, err := loadOverrides()
+	ctx := c.Request.Context()
+	overrides, err := loadOverrides(ctx)
 	if err != nil {
 		internalError(c, err)
 		return
 	}
 	presentLegacyOverridesAsPercent(overrides)
-	s := effective()
+	s := effectiveCtx(ctx)
 	cm := config.Get().Commission
-	rules, err := listGroupRates(c.Request.Context())
+	rules, err := listGroupRates(ctx)
 	if err != nil {
 		internalError(c, err)
 		return
@@ -124,26 +128,68 @@ func adminPutConfig(c *gin.Context) {
 		normalized[k] = strconv.FormatInt(v, 10)
 	}
 
-	before := effective()
+	ctx := c.Request.Context()
+	before := effectiveCtx(ctx)
 	operatorId := c.GetInt("id")
-	for k, v := range normalized {
-		if err := writeSetting(k, v, operatorId); err != nil {
-			internalError(c, err)
-			return
-		}
+
+	gdb := db.Get()
+	if gdb == nil {
+		internalError(c, db.ErrNotReady)
+		return
 	}
+	// 按键名排序后写入。两个理由:失败留痕可复现;更要紧的是给并发的两次调价
+	// 一个固定的加锁顺序 —— 两个管理员同时保存互相交叉的键集时,乱序写正是
+	// 死锁的配方,而死锁恰好是这段代码原先最怕的那种失败。
+	keys := make([]string, 0, len(normalized))
+	for k := range normalized {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// 整批包进一个事务。前面的校验只挡住了"一半写进去一半 400";写库过程中
+	// 第二个键失败同样会留下一个谁都没有批准的中间费率组合,而且更糟 ——
+	// 那时接口已经改过库了,却只回了个 500,运营重试一次就可能再改一遍。
+	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, k := range keys {
+			if err := writeSetting(tx, k, normalized[k], operatorId); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		// 审计必须落在事务之外,否则它会跟着一起回滚 —— 而"有人在这一刻试图
+		// 改费率、失败了"正是最需要留痕的事实。
+		//
+		// after 取的是**回滚之后重新读库**的真实值,不是这次想写的值:
+		// 万一回滚没有生效(连接被掐、DDL 混进来),这条记录就是唯一能看出
+		// "库里已经变了"的地方。事实本身必须留痕,哪怕它与预期不符。
+		invalidateSettings()
+		writeConfigUpdateAudit(c, operatorId, qymodel.ResultFail,
+			"修改返佣运营参数失败(事务已回滚): "+err.Error(), before, effectiveCtx(ctx))
+		internalError(c, err)
+		return
+	}
+
 	// 新键落地后清掉同义的 1.x 万分比键,避免两个键长期并存、谁生效说不清。
 	if _, ok := normalized[keyTopupRatePercent]; ok {
-		dropSetting(legacyKeyTopupRateBps)
+		dropSetting(ctx, legacyKeyTopupRateBps)
 	}
 	if _, ok := normalized[keyConsumeRatePercent]; ok {
-		dropSetting(legacyKeyConsumeRateBps)
+		dropSetting(ctx, legacyKeyConsumeRateBps)
 	}
 	invalidateSettings()
-	after := effective()
+	after := effectiveCtx(ctx)
+	writeConfigUpdateAudit(c, operatorId, qymodel.ResultOK, "修改返佣运营参数", before, after)
+	respond(c, gin.H{"effective": settingsSnapshot(after)})
+}
 
-	// 审计快照走百分比视图而不是裸结构体:事后翻审计的是人,
-	// 让他去把 1025 心算回 10.25% 就是在给自己埋坑。
+// writeConfigUpdateAudit 落一条运营参数变更审计,成功与失败共用。
+//
+// 快照走百分比视图而不是裸结构体:事后翻审计的是人,让他去把 1025 心算回
+// 10.25% 就是在给自己埋坑。失败那条同样带前后快照 —— 它回答的是
+// "有人在这个时刻想把费率改成什么、库里现在实际是什么"。
+func writeConfigUpdateAudit(c *gin.Context, operatorId int, result, reason string, before, after opSettings) {
 	beforeSnap, _ := common.Marshal(settingsSnapshot(before))
 	afterSnap, _ := common.Marshal(settingsSnapshot(after))
 	audit.Write(c, audit.Entry{
@@ -152,12 +198,11 @@ func adminPutConfig(c *gin.Context) {
 		ActorType:   qymodel.ActorAdmin,
 		ActorUserId: operatorId,
 		ActorName:   c.GetString("username"),
-		Result:      qymodel.ResultOK,
-		Reason:      "修改返佣运营参数",
+		Result:      result,
+		Reason:      reason,
 		BeforeSnap:  string(beforeSnap),
 		AfterSnap:   string(afterSnap),
 	})
-	respond(c, gin.H{"effective": settingsSnapshot(after)})
 }
 
 func editable(key string) bool {
@@ -382,13 +427,13 @@ func adminListRecords(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCommission) {
 		return
 	}
-	page, size := pageParams(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&Accrual{})
 
-	if v := queryInt(c, "inviter_id", 0); v > 0 {
+	if v := httpq.Int(c, "inviter_id", 0); v > 0 {
 		q = q.Where("inviter_id = ?", v)
 	}
-	if v := queryInt(c, "invitee_id", 0); v > 0 {
+	if v := httpq.Int(c, "invitee_id", 0); v > 0 {
 		q = q.Where("invitee_id = ?", v)
 	}
 	if v := c.Query("source_type"); v != "" {
@@ -400,10 +445,10 @@ func adminListRecords(c *gin.Context) {
 	if v := c.Query("accrual_no"); v != "" {
 		q = q.Where("accrual_no = ?", v)
 	}
-	if v := queryInt64(c, "start_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "start_ts", 0); v > 0 {
 		q = q.Where("created_at >= ?", v)
 	}
-	if v := queryInt64(c, "end_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "end_ts", 0); v > 0 {
 		q = q.Where("created_at <= ?", v)
 	}
 
@@ -413,7 +458,7 @@ func adminListRecords(c *gin.Context) {
 		return
 	}
 	var rows []Accrual
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
 	}
@@ -483,7 +528,7 @@ func adminSettle(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCommission) {
 		return
 	}
-	userId := queryInt(c, "user_id", 0)
+	userId := httpq.Int(c, "user_id", 0)
 	if userId <= 0 {
 		badRequest(c, "qy_invalid_param", "必须指定 user_id")
 		return
@@ -541,9 +586,13 @@ func adminInvalidateCache(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCommission) {
 		return
 	}
-	invalidateInviter(queryInt(c, "user_id", 0))
+	invalidateInviter(httpq.Int(c, "user_id", 0))
 	invalidateSettings()
 	invalidateBlocked()
+	// 分组费率也必须清(D4)。漏掉它的后果最隐蔽:运营改完分组费率、
+	// 按了"失效缓存"、看到成功提示,却仍要等最长 settingsCacheSeconds
+	// 才真正生效 —— 这期间发出去的佣金按旧费率冻结进账本,追不回来。
+	invalidateGroupRates()
 	respond(c, gin.H{"invalidated": true})
 }
 
@@ -551,10 +600,15 @@ func adminInvalidateCache(c *gin.Context) {
 //
 // hot_queue.dropped > 0 必须告警:那是本模块唯一会造成
 // "用户该拿的钱没拿到"的路径。
+//
+// degraded.* > 0 是第二类必须盯着的信号,性质与丢队列相反:钱照发了,但发的
+// 是按默认口径算出来的钱。降级行与正常行在 qy_commission_accrual 里长得
+// 一模一样,只有这个计数器能告诉运营"哪段时间的佣金要复核"。
 func adminHealth(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCommission) {
 		return
 	}
+	ctx := c.Request.Context()
 	pending, _ := pendingInviters(settleInviterBatch)
 	respond(c, gin.H{
 		"metrics":            metricsSnapshot(),
@@ -562,7 +616,11 @@ func adminHealth(c *gin.Context) {
 		"inviter_cache":      inviterCacheStats(),
 		"topup_low_water":    peekTopupCursor(),
 		"pending_inviters":   len(pending),
-		"blocked_relations":  len(blockedInvitees(c.Request.Context())),
-		"effective_settings": effective(),
+		"blocked_relations":  len(blockedInvitees(ctx)),
+		"effective_settings": effectiveCtx(ctx),
+		"degraded": gin.H{
+			"settings":   settingsDegrade.stats(),
+			"group_rate": groupRateDegrade.stats(),
+		},
 	})
 }

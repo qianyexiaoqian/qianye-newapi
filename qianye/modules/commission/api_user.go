@@ -7,6 +7,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -108,7 +109,7 @@ func listInvitees(c *gin.Context) {
 		return
 	}
 	userId := c.GetInt("id")
-	page, size := pageParams(c)
+	page, size := httpq.Paginate(c, listPaging)
 	gdb := db.Get()
 
 	var total int64
@@ -120,7 +121,7 @@ func listInvitees(c *gin.Context) {
 	var rows []InviteRelation
 	if err := gdb.Where("inviter_id = ?", userId).
 		Order("bound_at desc, invitee_id desc").
-		Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+		Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
 	}
@@ -186,7 +187,7 @@ func listRecords(c *gin.Context) {
 		return
 	}
 	userId := c.GetInt("id")
-	page, size := pageParams(c)
+	page, size := httpq.Paginate(c, listPaging)
 
 	q := db.Get().Model(&Accrual{}).Where("inviter_id = ?", userId)
 	if v := c.Query("source_type"); v != "" {
@@ -195,10 +196,10 @@ func listRecords(c *gin.Context) {
 	if v := c.Query("status"); v != "" {
 		q = q.Where("status = ?", v)
 	}
-	if v := queryInt64(c, "start_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "start_ts", 0); v > 0 {
 		q = q.Where("created_at >= ?", v)
 	}
-	if v := queryInt64(c, "end_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "end_ts", 0); v > 0 {
 		q = q.Where("created_at <= ?", v)
 	}
 
@@ -208,7 +209,7 @@ func listRecords(c *gin.Context) {
 		return
 	}
 	var rows []Accrual
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
 	}

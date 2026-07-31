@@ -2,13 +2,13 @@ package transfer
 
 import (
 	"errors"
-	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -148,7 +148,7 @@ func handleListRecords(c *gin.Context) {
 		return
 	}
 	me := c.GetInt("id")
-	page, size := paginate(c)
+	page, size := httpq.Paginate(c, listPaging)
 
 	q := db.Get().Model(&Order{})
 	switch c.Query("direction") {
@@ -170,7 +170,7 @@ func handleListRecords(c *gin.Context) {
 		return
 	}
 	var rows []Order
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, err)
 		return
@@ -290,10 +290,10 @@ func handleAdminListRecords(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
 	}
-	page, size := paginate(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&Order{})
 
-	if v := intQuery(c, "user_id", 0); v > 0 {
+	if v := httpq.Int(c, "user_id", 0); v > 0 {
 		q = q.Where("(from_user_id = ? OR to_user_id = ?)", v, v)
 	}
 	if v := c.Query("order_no"); v != "" {
@@ -302,13 +302,13 @@ func handleAdminListRecords(c *gin.Context) {
 	if v := c.Query("status"); v != "" {
 		q = q.Where("status = ?", v)
 	}
-	if v := int64Query(c, "min_amount", 0); v > 0 {
+	if v := httpq.Int64(c, "min_amount", 0); v > 0 {
 		q = q.Where("amount >= ?", v)
 	}
-	if v := int64Query(c, "start_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "start_ts", 0); v > 0 {
 		q = q.Where("created_at >= ?", v)
 	}
-	if v := int64Query(c, "end_ts", 0); v > 0 {
+	if v := httpq.Int64(c, "end_ts", 0); v > 0 {
 		q = q.Where("created_at <= ?", v)
 	}
 
@@ -319,7 +319,7 @@ func handleAdminListRecords(c *gin.Context) {
 		return
 	}
 	var rows []Order
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, err)
 		return
@@ -327,31 +327,10 @@ func handleAdminListRecords(c *gin.Context) {
 	respondOK(c, gin.H{"items": rows, "total": total, "p": page, "page_size": size})
 }
 
-// paginate 解析分页参数。上限 100,防止管理端一次把整张表拉进内存。
-func paginate(c *gin.Context) (page, size int) {
-	page = intQuery(c, "p", 1)
-	if page < 1 {
-		page = 1
-	}
-	size = intQuery(c, "page_size", 20)
-	if size < 1 || size > 100 {
-		size = 20
-	}
-	return page, size
-}
-
-func intQuery(c *gin.Context, key string, def int) int {
-	v, err := strconv.Atoi(c.Query(key))
-	if err != nil {
-		return def
-	}
-	return v
-}
-
-func int64Query(c *gin.Context, key string, def int64) int64 {
-	v, err := strconv.ParseInt(c.Query(key), 10, 64)
-	if err != nil {
-		return def
-	}
-	return v
-}
+// listPaging 是划转流水接口的分页口径:?p= / ?page_size=,默认 20、上限 100。
+//
+// 这里原本是一份从 controller 复制出去的私有实现,而且是没有跟上补丁的那一份:
+// 裸 strconv.Atoi 没有任何上界,paginate 只夹了 page<1。
+// ?p=184467440737095518&page_size=100 会让 (page-1)*size 溢出成负数,
+// 直接喂进 GORM 的 Offset() —— 而这是一个登录用户就能打到的资金流水只读接口。
+var listPaging = httpq.Spec{}

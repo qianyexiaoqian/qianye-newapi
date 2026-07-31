@@ -7,6 +7,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm/clause"
@@ -65,7 +66,7 @@ func userListRecords(c *gin.Context) {
 		badRequest(c, "无法识别当前用户")
 		return
 	}
-	page, size := pageParams(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&Record{}).Where("user_id = ? AND shadow = ?", userId, false)
 
 	var total int64
@@ -74,7 +75,7 @@ func userListRecords(c *gin.Context) {
 		return
 	}
 	var rows []Record
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
 	}

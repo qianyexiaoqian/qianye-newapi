@@ -23,6 +23,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/guard"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
@@ -150,6 +151,15 @@ func (r Request) Digest(extra ...string) string {
 //  4. 【扩展库事务】回写 success + 业务副作用。
 //
 // 若步骤 2 提交成功但步骤 4 失败,单据停在 pending,由补偿任务通过 outbox 探针修复。
+//
+// ctx 的分工必须逐步骤区分,不能一路直传到底(见 settleContext):
+//   - 步骤 1、2 是**正向**路径,还没有任何结果定局,一律用调用方的 ctx。
+//     调用方专门造了 guard.ColdContext(3 秒)的预算,漏接就只剩主库
+//     innodb_lock_wait_timeout(50 秒)与扩展库 DSN readTimeout(30 秒)兜底,
+//     而"等一个空闲连接"这一段在 context.Background() 下根本没有上界。
+//   - 步骤 4(以及步骤 2 失败后的 markFailed)是**收尾**路径,主库那一侧已经定局。
+//     它们必须切断调用方的取消链,否则一次超时会连带把收尾也打掉,单据永远停在
+//     pending —— 那正是把"慢一点"升级成"人工单"的路径。
 func Execute(ctx context.Context, req Request) (*qymodel.FundOrder, error) {
 	if !db.Available() {
 		return nil, db.ErrNotReady
@@ -164,6 +174,10 @@ func Execute(ctx context.Context, req Request) (*qymodel.FundOrder, error) {
 	if gdb == nil {
 		return nil, db.ErrNotReady
 	}
+	// 正向路径的每一条扩展库语句都必须带上调用方的预算。绑在句柄上而不是
+	// 逐条 WithContext:createOrLoadOrder 拿到的是这个句柄,事务内的 tx 也从它派生,
+	// 漏一条就等于这条链路上开了一个没有上界的口子。
+	gdb = gdb.WithContext(ctx)
 
 	order, existing, err := createOrLoadOrder(gdb, req)
 	if err != nil {
@@ -174,9 +188,9 @@ func Execute(ctx context.Context, req Request) (*qymodel.FundOrder, error) {
 	}
 
 	// ── 阶段二:主库事务 ──
-	applied, mainErr := applyOnMainDB(req, order)
+	applied, mainErr := applyOnMainDB(ctx, req, order)
 	if mainErr != nil {
-		markFailed(gdb, order, mainErr)
+		markFailed(ctx, gdb, order, mainErr)
 		return order, mainErr
 	}
 
@@ -186,7 +200,7 @@ func Execute(ctx context.Context, req Request) (*qymodel.FundOrder, error) {
 	}
 
 	// ── 阶段四:回写扩展库 ──
-	won, err := markSuccess(gdb, order, req.LocalCommit)
+	won, err := markSuccess(ctx, gdb, order, req.LocalCommit)
 	if err != nil {
 		// 主库已经生效,这里失败不能回滚。留 pending 交给补偿任务。
 		common.SysError(fmt.Sprintf(
@@ -284,9 +298,14 @@ func resolveExisting(order *qymodel.FundOrder, want string) (*qymodel.FundOrder,
 
 // applyOnMainDB 在主库事务内登记 outbox 并执行资金变更。
 // 返回值表示本次是否真正执行了资金变更(false = 此前已生效)。
-func applyOnMainDB(req Request, order *qymodel.FundOrder) (bool, error) {
+//
+// 用调用方的 ctx:这一步还在"正向"一侧,预算耗尽时事务回滚 = 主库没动,
+// 是一个确定的、安全的结局(outbox 探针随后也能复核出来)。反过来若不接 ctx,
+// 同一个收款账号上的并发划转会在行锁上一直等到 innodb_lock_wait_timeout,
+// 整段时间里一条主库连接被钉住。
+func applyOnMainDB(ctx context.Context, req Request, order *qymodel.FundOrder) (bool, error) {
 	appliedNow := false
-	err := model.DB.Transaction(func(tx *gorm.DB) error {
+	err := model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if config.Get().TwoPhase.OutboxEnabled() {
 			claimed, err := model.QyClaimFundOutbox(tx, &model.QyFundOutbox{
 				OrderNo: order.OrderNo,
@@ -317,10 +336,17 @@ func applyOnMainDB(req Request, order *qymodel.FundOrder) (bool, error) {
 // 返回值 won 表示本次是否赢下了 CAS。false 意味着补偿任务或人工裁决已抢先推进
 // 这张单:此时 order 已被刷成回读到的真实状态,LocalCommit 不执行(赢家的
 // Resolver 负责补做),调用方也不能按"本次成功"收尾。
-func markSuccess(gdb *gorm.DB, order *qymodel.FundOrder, localCommit func(*gorm.DB, *qymodel.FundOrder) error) (bool, error) {
+//
+// 这一步走 settleContext:主库已经提交,钱已经动了。沿用调用方那个可能刚好耗尽的
+// ctx 会让回写立刻 DeadlineExceeded,单据停在 pending 等补偿任务 —— 用户看到的是
+// 一笔"没成功"的划转,而钱已经扣了。
+func markSuccess(ctx context.Context, gdb *gorm.DB, order *qymodel.FundOrder, localCommit func(*gorm.DB, *qymodel.FundOrder) error) (bool, error) {
+	ctx, cancel := settleContext(ctx)
+	defer cancel()
+
 	now := common.GetTimestamp()
 	won := false
-	err := gdb.Transaction(func(tx *gorm.DB) error {
+	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		res := tx.Model(&qymodel.FundOrder{}).
 			Where("order_no = ? AND status = ?", order.OrderNo, qymodel.StatusPending).
 			Updates(map[string]any{
@@ -347,9 +373,24 @@ func markSuccess(gdb *gorm.DB, order *qymodel.FundOrder, localCommit func(*gorm.
 		return false, err
 	}
 	if !won {
-		reloadStatus(gdb, order)
+		reloadStatus(ctx, gdb, order)
 	}
 	return won, nil
+}
+
+// settleContext 返回**收尾回写**应使用的 ctx:切断调用方的取消链,另配一个独立预算。
+//
+// 为什么不能直传调用方的 ctx:markFailed 恰恰常常是因为调用方预算耗尽才被触发的
+// (applyOnMainDB 超时 → mainErr)。用同一个已过期的 ctx 去写 failed,第一条语句就
+// DeadlineExceeded,单据留在 pending;而 transfer/service.go 的 releaseOnFailure 只在
+// order.Status == Failed 时才回滚风控预占 —— 于是每一笔慢划转都变成一张人工单。
+// markSuccess 同理:那时钱已经动了。
+//
+// 为什么也不能干脆不接 ctx:那等于把上界交给主库 innodb_lock_wait_timeout(50 秒)
+// 与扩展库 DSN readTimeout(30 秒),而"等一个空闲连接"这一段在 Background 下无界。
+// 收尾要的是"不被调用方取消",不是"永远等下去"。
+func settleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return guard.ColdContext(context.WithoutCancel(ctx))
 }
 
 // markFailed 把 pending 单回写成 failed。
@@ -364,10 +405,16 @@ func markSuccess(gdb *gorm.DB, order *qymodel.FundOrder, localCommit func(*gorm.
 //
 // 所以 CAS 落空时必须回读真实状态交还给调用方(它们都按 order.Status == Failed
 // 才回滚),并且不写审计:这条转移不是我们做的。
-func markFailed(gdb *gorm.DB, order *qymodel.FundOrder, cause error) {
+//
+// 走 settleContext 而不是调用方的 ctx:见 settleContext 的说明,这一步最常见的
+// 触发原因就是调用方预算已经耗尽。
+func markFailed(ctx context.Context, gdb *gorm.DB, order *qymodel.FundOrder, cause error) {
+	ctx, cancel := settleContext(ctx)
+	defer cancel()
+
 	now := common.GetTimestamp()
 	msg := audit.Truncate(cause.Error(), maxErrBytes)
-	res := gdb.Model(&qymodel.FundOrder{}).
+	res := gdb.WithContext(ctx).Model(&qymodel.FundOrder{}).
 		Where("order_no = ? AND status = ?", order.OrderNo, qymodel.StatusPending).
 		Updates(map[string]any{
 			"status":     qymodel.StatusFailed,
@@ -380,7 +427,7 @@ func markFailed(gdb *gorm.DB, order *qymodel.FundOrder, cause error) {
 		return
 	}
 	if res.RowsAffected == 0 {
-		reloadStatus(gdb, order)
+		reloadStatus(ctx, gdb, order)
 		common.SysError(fmt.Sprintf(
 			"qianye: 单号 %s 标记失败态时发现单据已被其他路径推进为 %s(原始错误: %v),本次不改写状态、不写审计",
 			order.OrderNo, qymodel.StatusName(order.Status), cause))
@@ -396,9 +443,12 @@ func markFailed(gdb *gorm.DB, order *qymodel.FundOrder, cause error) {
 //
 // 回读失败时刻意保留内存里的 pending:调用方对 pending 的处理是"不回滚,交给补偿
 // 任务",这是所有分支里最安全的那个。绝不能猜一个终态。
-func reloadStatus(gdb *gorm.DB, order *qymodel.FundOrder) {
+//
+// ctx 由调用方(markSuccess / markFailed)传入,那两处都已经换成 settleContext:
+// 回读是收尾判定的一部分,不该被调用方的取消打断。
+func reloadStatus(ctx context.Context, gdb *gorm.DB, order *qymodel.FundOrder) {
 	var cur qymodel.FundOrder
-	if err := gdb.Where("order_no = ?", order.OrderNo).Take(&cur).Error; err != nil {
+	if err := gdb.WithContext(ctx).Where("order_no = ?", order.OrderNo).Take(&cur).Error; err != nil {
 		db.MarkFailure(err)
 		common.SysError(fmt.Sprintf("qianye: 单号 %s 回读状态失败,按 pending 交给补偿任务: %v",
 			order.OrderNo, err))

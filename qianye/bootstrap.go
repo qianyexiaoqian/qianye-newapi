@@ -52,9 +52,20 @@ func Init() error {
 	if err := db.Init(config.Get().Database); err != nil {
 		return err
 	}
-	if err := db.Migrate(allTables()...); err != nil {
+	// 缺表自检在 db.Migrate 内部完成,但它的结论是分级的(见 db.Migrate 的契约):
+	//   - 本节点刚亲自跑完 AutoMigrate 却仍缺表 → 返回 error,在此 FatalLog;
+	//     那是本节点自己的 bug(模型漏登记 / DDL 没生效),重启多少次都一样。
+	//   - 从节点、auto_migrate=false、另一节点正在迁移 → 绝不返回缺表 error。
+	//     这些节点结构性地建不出表,让整台网关(含全部上游 relay 流量)退出
+	//     既修不好 schema,又会在主节点尚未迁移完的窗口里把从节点打进重启循环。
+	tables := allTables()
+	if err := db.Migrate(tables...); err != nil {
 		return err
 	}
+	// 上面那条"不阻断"换来的可见性在这里补齐:确认缺表时扩展进入 schema 降级态,
+	// 后台每分钟点名一次缺哪张表,主节点/DBA 把表建出来后自动解除,无需重启本节点。
+	// 启动时那一行日志会被滚走,这个循环不会。
+	db.StartSchemaRecheck(tables...)
 
 	// 主库探针表。它与资金变更写在同一个主库事务里,是判定
 	// "主库副作用是否已生效"的唯一权威依据。

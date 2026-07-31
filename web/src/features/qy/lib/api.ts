@@ -141,6 +141,9 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_wd_rate_unavailable: 'qy_err_wd_rate_unavailable',
   qy_wd_payee_undecryptable: 'qy_err_wd_payee_undecryptable',
 
+  // ── 站点主题（qianye/modules/sitetheme/api.go）──
+  qy_unknown_preset: 'qy_st_err_unknown_preset',
+
   // ── 返佣管理端（qianye/modules/commission/api_admin.go）──
   qy_reason_required: 'qy_err_cm_reason_required',
   qy_clawback_failed: 'qy_err_cm_clawback_failed',

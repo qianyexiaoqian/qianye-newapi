@@ -1,6 +1,7 @@
 package twophase
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -83,7 +84,7 @@ func TestMarkFailed_DoesNotOverrideOtherPath(t *testing.T) {
 			gdb := newStateDB(t)
 			order := seedOrder(t, gdb, "TR-"+tc.name, tc.seeded)
 
-			markFailed(gdb, order, errors.New("主库事务返回确定性错误"))
+			markFailed(context.Background(), gdb, order, errors.New("主库事务返回确定性错误"))
 
 			assert.Equal(t, tc.wantRow, loadOrder(t, gdb, order.OrderNo).Status,
 				"库里的状态只能由赢下 CAS 的那一方改写")
@@ -103,7 +104,7 @@ func TestMarkFailed_ErrorMessageStaysValidUTF8(t *testing.T) {
 	order := seedOrder(t, gdb, "TR-utf8", qymodel.StatusPending)
 
 	long := strings.Repeat("主库锁等待超时", 200) // 每字符 3 字节,远超 512
-	markFailed(gdb, order, errors.New(long))
+	markFailed(context.Background(), gdb, order, errors.New(long))
 
 	got := loadOrder(t, gdb, order.OrderNo)
 	assert.Equal(t, qymodel.StatusFailed, got.Status)
@@ -133,7 +134,7 @@ func TestMarkSuccess_YieldsToOtherPath(t *testing.T) {
 			order := seedOrder(t, gdb, "TR-ms-"+tc.name, tc.seeded)
 
 			localRan := false
-			won, err := markSuccess(gdb, order, func(tx *gorm.DB, o *qymodel.FundOrder) error {
+			won, err := markSuccess(context.Background(), gdb, order, func(tx *gorm.DB, o *qymodel.FundOrder) error {
 				localRan = true
 				return nil
 			})
@@ -162,7 +163,7 @@ func TestReloadStatus_KeepsPendingWhenRowMissing(t *testing.T) {
 	gdb := newStateDB(t)
 	order := &qymodel.FundOrder{OrderNo: "TR-missing", Status: qymodel.StatusPending}
 
-	reloadStatus(gdb, order)
+	reloadStatus(context.Background(), gdb, order)
 
 	assert.Equal(t, qymodel.StatusPending, order.Status,
 		"回读不到就绝不猜终态,pending 才是安全默认值")

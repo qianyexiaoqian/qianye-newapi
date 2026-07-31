@@ -114,17 +114,37 @@ func maybeRefresh() {
 		return // 别的请求已经抢到刷新权
 	}
 	guard.HotAsync("violation.rule_refresh", func(ctx context.Context) error {
-		return reload(false)
+		return reloadCtx(ctx, false)
 	})
 }
 
-// reload 重新构建快照。force=false 时先比对版本号,版本未变直接返回,
-// 避免每个刷新周期都全表拉规则。
+// reload 用冷路径预算重载快照,供管理端写入后刷新与启动预热使用。
+//
+// 这两个调用点手上都没有现成的 ctx,而"没有 ctx"不等于"不需要上界":
+// 管理端保存规则时若扩展库正病态,不接预算就会一直等到 DSN readTimeout(30 秒),
+// 整个 HTTP 请求跟着挂住。热路径刷新走 reloadCtx,直接沿用 guard worker 的预算。
 func reload(force bool) error {
+	ctx, cancel := guard.ColdContext(context.Background())
+	defer cancel()
+	return reloadCtx(ctx, force)
+}
+
+// reloadCtx 重新构建快照。force=false 时先比对版本号,版本未变直接返回,
+// 避免每个刷新周期都全表拉规则。
+//
+// ctx 必须一路挂到 GORM 语句上:guard.HotAsync 承诺的 hot_async_timeout_ms(3 秒)
+// 只对 WithContext(ctx) 的语句生效。漏接的后果不只是这条语句慢 —— 两个模块的刷新
+// 周期同为 60 秒、由同一批 relay 流量触发,很容易同时占满仅有的 2 个 hot worker
+// 长达 readTimeout(30 秒),这期间 commission.consume 事件会把 4096 槽队列填满并
+// 溢出丢弃,而丢弃是"用户该拿的钱没拿到"的唯一路径,返佣没有 outbox 补偿。
+// 次生问题:不带 ctx 时 db.WithOpProbe 认不到这些语句,hotRunWithBudget 就只会在
+// 失败时 MarkFailure、成功时永不 MarkSuccess,熔断的健康票被单向截断。
+func reloadCtx(ctx context.Context, force bool) error {
 	gdb := db.Get()
 	if gdb == nil {
 		return db.ErrNotReady
 	}
+	gdb = gdb.WithContext(ctx)
 
 	var ver RuleVersion
 	if err := gdb.Where("id = ?", 1).Take(&ver).Error; err != nil {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
+	"github.com/QuantumNous/new-api/qianye/groupname"
 
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
@@ -104,23 +105,26 @@ func TestResolveRateByInviteeGroup(t *testing.T) {
 		{"未配置的分组回落全局默认", "default", SourceConsume, 500, false},
 		{"未配置的分组回落全局默认(充值)", "default", SourceTopup, 1000, false},
 		{"被禁用的规则等同未配置", "paused", SourceConsume, 500, false},
-		{"分组为空回落全局默认", "", SourceTopup, 1000, false},
+		// 空分组按 default 判定(见 billingGroup)。这里没有配 default 的规则,
+		// 因此仍然回落全局默认 —— 但记录下来的分组是 default,不是空串。
+		{"分组为空按 default 判定", "", SourceTopup, 1000, false},
 		{"两侧空白不影响匹配", "  vip  ", SourceConsume, 825, true},
 		{"兑换码走充值那一档", "vip", SourceRedemption, 1250, true},
+		// 大小写折叠:存储层的排序规则大小写不敏感,库里根本不可能同时存在
+		// VIP 与 vip 两行。不折叠得到的不是"两条独立规则",而是判定查不到、
+		// 而管理端的保存却改掉了另一行的三方错位。
+		{"大小写变体命中同一条规则", "VIP", SourceConsume, 825, true},
+		{"大小写变体命中同一条规则(充值)", "Vip", SourceTopup, 1250, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := resolveRate(ctx, tc.group, tc.source, s)
 			assert.Equal(t, tc.wantUnits, got.Units)
 			assert.Equal(t, tc.wantMatched, got.Matched)
-			assert.Equal(t, normalizeGroup(tc.group), got.Group,
-				"下线分组必须原样记录,回落时也要记 —— 否则事后无从复盘")
+			assert.Equal(t, billingGroup(tc.group), got.Group,
+				"冻结进流水的分组必须是判定用的那个值 —— 否则拿着流水行复算会得出另一个费率")
 		})
 	}
-
-	// 大小写不折叠:主库的 users.group 区分大小写,在这里折叠等于把 VIP 的
-	// 费率悄悄套到 vip 头上,那是一笔谁都没批准的加价。
-	assert.False(t, resolveRate(ctx, "VIP", SourceConsume, s).Matched)
 }
 
 // TestAccrueConsumeFreezesGroupRate 是"调度层真的接上了"的那一条。
@@ -273,6 +277,126 @@ func TestGroupRateCrudTakesEffectImmediately(t *testing.T) {
 	assert.False(t, removed, "删不存在的规则要能被调用方识别为 404,而不是假装成功")
 
 	_ = gdb
+}
+
+// TestGroupRateKeyIsCaseFolded 锁定分组费率表的大小写口径。
+//
+// 缺陷:group_name 是 varchar(64) 且没有指定排序规则,而扩展库固定是 MySQL ——
+// AutoMigrate 建表时继承库默认排序规则(5.7 utf8mb4_general_ci、8.0
+// utf8mb4_0900_ai_ci),两者都**大小写不敏感**;而 Go 侧的 map 查表是精确匹配。
+// 于是给 VIP 配费率时 ON DUPLICATE KEY 会命中已有的 vip 那一行,而 group_name
+// 不在 DoUpdates 里,那行仍叫 vip:管理端显示"VIP 已保存 50%",实际是 vip 的
+// 用户按 50% 返佣,审计日志指向一个库里不存在的分组名。
+//
+// 修复走的是"代码跟上存储"(全链路折叠大小写)而不是 ALTER TABLE,所以这条
+// 测试在 sqlite 上同样是真防线:sqlite 的 varchar 是二进制比较,缺了归一化
+// 第二次 upsert 会插出**第二行**,下面的 require.Len(all, 1) 直接翻红。
+// 两个数据库的失败表现不同,但归一化让两边都只可能有一行。
+func TestGroupRateKeyIsCaseFolded(t *testing.T) {
+	newTestDB(t)
+	useConfig(t, commissionRateConfig("10", "5"))
+	ctx := context.Background()
+
+	up := GroupRate{GroupName: " VIP ", TopupRateUnits: 1250, ConsumeRateUnits: 825, Enabled: true}
+	require.NoError(t, upsertGroupRate(ctx, &up))
+	assert.Equal(t, "vip", up.GroupName,
+		"写库前必须归一:落进去一个没归一的键,ci 排序规则下会改掉别人那一行")
+
+	low := GroupRate{GroupName: "vip", TopupRateUnits: 300, ConsumeRateUnits: 200, Enabled: true}
+	require.NoError(t, upsertGroupRate(ctx, &low))
+
+	all, err := listGroupRates(ctx)
+	require.NoError(t, err)
+	require.Len(t, all, 1, "只差大小写的两次保存必须落在同一行,而不是两条影子规则")
+	assert.Equal(t, "vip", all[0].GroupName)
+	assert.Equal(t, 200, all[0].ConsumeRateUnits, "第二次保存必须是覆盖")
+
+	// 判定侧:任何大小写写法都必须命中同一条规则、拿到同一个费率。
+	s := effective()
+	for _, g := range []string{"vip", "VIP", "Vip", "  vIp  "} {
+		d := resolveRate(ctx, g, SourceConsume, s)
+		assert.True(t, d.Matched, "%q 没有命中 vip 的费率规则", g)
+		assert.Equal(t, 200, d.Units)
+		assert.Equal(t, "vip", d.Group)
+	}
+
+	// 读与删同样按归一化后的键走。否则管理端用 VIP 删会得到 404,
+	// 而那条规则还在按 vip 生效 —— 运营会以为已经删掉了。
+	got, err := findGroupRate(ctx, "VIP")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "vip", got.GroupName)
+
+	removed, err := deleteGroupRate(ctx, "  VIP ")
+	require.NoError(t, err)
+	assert.True(t, removed)
+	assert.False(t, resolveRate(ctx, "vip", SourceConsume, effective()).Matched,
+		"删掉之后必须回落全局默认")
+}
+
+// TestEmptyGroupBillsAtDefaultGroupRate 是审计 F7:出钱这一侧不能是全仓最宽松的口径。
+//
+// 主库 users.group 的列默认值就是 'default',但历史行与被直接改过库的账号可能
+// 留着空串,它们在业务上就是默认分组的用户。旧口径下 resolveRate 对空分组直接
+// 早退回落**全局默认费率**,于是给 default 配的低费率对这批账号完全不生效 ——
+// 平台按更高的全局默认费率给他们的邀请人付钱,而流水行上什么都看不出来。
+// transfer 的分组规则早就把空串折叠成 default 并写了理由,同仓两套口径。
+func TestEmptyGroupBillsAtDefaultGroupRate(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, commissionRateConfig("10", "5"))
+	seedGroupRate(t, gdb, "default", "1", "1", true)
+	ctx := context.Background()
+	s := effective()
+
+	for _, g := range []string{"", "   ", "default", "DEFAULT"} {
+		d := resolveRate(ctx, g, SourceConsume, s)
+		assert.True(t, d.Matched, "%q 必须按 default 分组判定,而不是逃到全局默认费率", g)
+		assert.Equal(t, 100, d.Units, "应当按 default 的 1% 返,而不是全局默认的 5%")
+		assert.Equal(t, "default", d.Group)
+	}
+	// 充值那一档同样。
+	assert.Equal(t, 100, resolveRate(ctx, "", SourceTopup, s).Units)
+}
+
+// TestGroupRateWriteRejectsEmptyGroup 空分组名不能落库。
+//
+// 它既不等于 default(判定侧会把空串折叠成 default,于是这一行永远查不到),
+// 又占着 group_name 的唯一索引位,是一条只能靠人工删库收拾的僵尸规则。
+// 校验放在数据层而不是只放在 HTTP 处理器里:新的调用点不该有机会绕过它。
+func TestGroupRateWriteRejectsEmptyGroup(t *testing.T) {
+	newTestDB(t)
+	ctx := context.Background()
+
+	row := GroupRate{GroupName: "   ", TopupRateUnits: 1000, ConsumeRateUnits: 500, Enabled: true}
+	require.ErrorIs(t, upsertGroupRate(ctx, &row), errEmptyGroupName)
+
+	_, err := deleteGroupRate(ctx, "")
+	require.ErrorIs(t, err, errEmptyGroupName)
+
+	all, err := listGroupRates(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, all, "空分组名的规则不能落库")
+}
+
+// TestCommissionGroupKeyFollowsSharedContract 把本模块的分组名口径钉在共享实现上。
+//
+// 存在理由:本模块的费率表与 transfer 的规则表都以分组名为键,同仓一度有三份
+// 各自演化的 normalizeGroup,而出钱的这一份恰好是最宽松的(只 TrimSpace、
+// 不折叠大小写、空串逃逸)。两个模块现在都只转调 qianye/groupname,这条断言
+// 保证的是"没有人把它悄悄换回一份私有实现"。
+//
+// 两个函数的分工也一并钉住:normalizeGroup 保留空串(api_admin 靠 `== ""`
+// 拒绝没填分组名的请求),billingGroup 才折叠成 default。
+func TestCommissionGroupKeyFollowsSharedContract(t *testing.T) {
+	for _, in := range []string{"vip", "VIP", " Vip ", "", "   ", "DEFAULT", "内部测试组"} {
+		assert.Equal(t, groupname.Normalize(in), normalizeGroup(in),
+			"比较键口径必须与 qianye/groupname 一致(输入 %q)", in)
+		assert.Equal(t, groupname.Effective(in), billingGroup(in),
+			"计费口径必须与 qianye/groupname 一致(输入 %q)", in)
+	}
+	assert.Equal(t, "", normalizeGroup("  "),
+		"normalizeGroup 不能折叠空串,否则 api_admin 的空值校验会静默失效")
+	assert.Equal(t, "default", billingGroup("  "))
 }
 
 // TestSettingsPercentOverride 锁定运营覆盖的费率读写口径。

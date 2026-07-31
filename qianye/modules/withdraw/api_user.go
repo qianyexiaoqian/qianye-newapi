@@ -1,12 +1,12 @@
 package withdraw
 
 import (
-	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 	"github.com/QuantumNous/new-api/qianye/modules/commission"
 
 	"github.com/gin-gonic/gin"
@@ -96,7 +96,7 @@ func handleListRecords(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagWithdraw) {
 		return
 	}
-	page, size := paginate(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&Withdrawal{}).Where("user_id = ?", c.GetInt("id"))
 	q = applyStatusFilter(q, c.Query("status"))
 	if v := strings.TrimSpace(c.Query("method")); v != "" {
@@ -110,7 +110,7 @@ func handleListRecords(c *gin.Context) {
 		return
 	}
 	var rows []Withdrawal
-	if err := q.Order("id desc").Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, err)
 		return
@@ -234,41 +234,16 @@ func handleDeletePayee(c *gin.Context) {
 // ─────────────────────────── 查询参数辅助 ───────────────────────────
 
 func pathId(c *gin.Context) (int64, bool) {
-	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || id <= 0 {
-		return 0, false
-	}
-	return id, true
+	return httpq.PathInt64(c, "id")
 }
 
-// paginate 解析分页参数。上限 100,防止一次把整张表拉进内存。
-func paginate(c *gin.Context) (page, size int) {
-	page = intQuery(c, "p", 1)
-	if page < 1 {
-		page = 1
-	}
-	size = intQuery(c, "page_size", 20)
-	if size < 1 || size > 100 {
-		size = 20
-	}
-	return page, size
-}
-
-func intQuery(c *gin.Context, key string, def int) int {
-	v, err := strconv.Atoi(c.Query(key))
-	if err != nil {
-		return def
-	}
-	return v
-}
-
-func int64Query(c *gin.Context, key string, def int64) int64 {
-	v, err := strconv.ParseInt(c.Query(key), 10, 64)
-	if err != nil {
-		return def
-	}
-	return v
-}
+// listPaging 是提现列表接口的分页口径:?p= / ?page_size=,默认 20、上限 100。
+//
+// 这里原本是一份从 controller 复制出去的私有实现,而且是没有跟上补丁的那一份:
+// 裸 strconv.Atoi 没有任何上界,paginate 只夹了 page<1。
+// ?p=184467440737095518&page_size=100 会让 (page-1)*size 溢出成负数,
+// 直接喂进 GORM 的 Offset() —— 而这是一个登录用户就能打到的提现历史只读接口。
+var listPaging = httpq.Spec{}
 
 // applyStatusFilter 支持逗号分隔的多状态筛选。
 // 只接受已知状态,拒绝把任意字符串拼进 SQL 的可能。

@@ -140,13 +140,9 @@ func TestBuildCellNoDataStates(t *testing.T) {
 	assert.False(t, notOffered.HasChannel)
 }
 
-func TestPaginate(t *testing.T) {
-	names := []string{"a", "b", "c", "d", "e"}
-	assert.Equal(t, []string{"a", "b"}, paginate(names, 1, 2))
-	assert.Equal(t, []string{"e"}, paginate(names, 3, 2))
-	assert.Empty(t, paginate(names, 9, 2))
-	assert.Equal(t, names, paginate(names, 1, 50))
-}
+// 原 TestPaginate 已随本地 paginate 一起收敛到 httpq.Slice:
+// 切片分页的正常路径由 qianye/httpq/httpq_test.go 覆盖,越界与溢出路径由
+// 本包 api_test.go 的 TestPaginateNeverPanicsOnOutOfRangePage 覆盖。
 
 func TestSplitCSV(t *testing.T) {
 	assert.Nil(t, splitCSV("  ", 0))

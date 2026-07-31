@@ -45,6 +45,15 @@ func onRelaySample(info *relaycommon.RelayInfo, success bool, outputTokens int64
 	if !config.Get().Availability.Enabled {
 		return
 	}
+	// 同步段必须自己吞掉 panic —— 这是 pkg/perf_metrics/qy_export.go 对实现方
+	// 明写的契约。guard.HotAsync 内部的 recover 只保护闭包体(observe),
+	// 保护不到下面这行 buildSample。
+	//
+	// buildSample 当前逐个字段都有 nil 判,没有可达的 panic 路径;加这行是因为
+	// RelayInfo 有多条构造路径且由上游维护,哪天多一个空指针字段,后果是
+	// 每一次 relay 请求 500 —— 可用率监控是附加物,不该有能力打死主业务。
+	defer guard.RecoverHot("availability.sample")
+
 	s, ok := buildSample(info, success, outputTokens)
 	if !ok {
 		return

@@ -301,31 +301,42 @@ var (
 	blockedMu     sync.Mutex
 	blockedSet    map[int]bool
 	blockedLoaded int64
+	// blockedEpoch 与 settingsEpoch 同一语义:见 settings.go 的说明。
+	blockedEpoch uint64
 )
 
 // blockedInvitees 返回被拉黑的邀请关系集合。
 //
 // 拉黑是极少数情形,整表拉进内存(每 60 秒刷一次)远比每条计佣事件
 // 回一次库便宜。
+//
+// 结构与 effectiveCtx / groupRates 完全一致:持锁只做读/写快照,SELECT 在
+// 临界区之外发出,写回缓存时用代次判断这份快照是否已被 invalidateBlocked 作废
+// (拉黑一个下线之后还按旧快照继续给他计佣,正是这把锁要防的那件事)。
 func blockedInvitees(ctx context.Context) map[int]bool {
 	blockedMu.Lock()
-	defer blockedMu.Unlock()
 	now := common.GetTimestamp()
 	if blockedSet != nil && now-blockedLoaded < settingsCacheSeconds {
-		return blockedSet
+		cached := blockedSet
+		blockedMu.Unlock()
+		return cached
 	}
+	epoch := blockedEpoch
+	snapshot := blockedSet
+	blockedMu.Unlock()
+
 	gdb := db.Get()
 	if gdb == nil {
-		if blockedSet != nil {
-			return blockedSet
+		if snapshot != nil {
+			return snapshot
 		}
 		return map[int]bool{}
 	}
 	var ids []int
 	if err := gdb.WithContext(ctx).Model(&InviteRelation{}).Where("blocked = ?", true).Pluck("invitee_id", &ids).Error; err != nil {
 		db.MarkFailure(err)
-		if blockedSet != nil {
-			return blockedSet
+		if snapshot != nil {
+			return snapshot
 		}
 		return map[int]bool{}
 	}
@@ -333,8 +344,12 @@ func blockedInvitees(ctx context.Context) map[int]bool {
 	for _, id := range ids {
 		m[id] = true
 	}
-	blockedSet = m
-	blockedLoaded = now
+	blockedMu.Lock()
+	if blockedEpoch == epoch {
+		blockedSet = m
+		blockedLoaded = common.GetTimestamp()
+	}
+	blockedMu.Unlock()
 	return m
 }
 
@@ -342,6 +357,7 @@ func invalidateBlocked() {
 	blockedMu.Lock()
 	blockedSet = nil
 	blockedLoaded = 0
+	blockedEpoch++
 	blockedMu.Unlock()
 }
 

@@ -109,6 +109,8 @@ export const qyKeys = {
   adminUserGroupConfig: () =>
     [...qyKeys.all, 'admin', 'user-group', 'config'] as const,
 
+  adminSiteTheme: () => [...qyKeys.all, 'admin', 'site-theme'] as const,
+
   /**
    * 分组定价的公共前缀。
    *

@@ -56,6 +56,14 @@ func reconcile(ctx context.Context) {
 }
 
 // resumeApproved 重新拾起卡在 approved 的自动到账单。
+//
+// 关掉 auto_credit_on_approve 时这里必须一起停手,否则"审核通过不自动到账"
+// 只是把自动到账推迟了一个对账周期。此时 quota 单由管理员在管理端手动兑现
+// (handleAdminCreditNow → creditNow),那条路径与这里共用 startPaying 的
+// approved → paying CAS,不会双跑。
+//
+// 注意开关只门住"从 approved 起步"这一步:一旦有人(自动或手动)把单据推进
+// paying,settlePaying 与 twophase 的补偿任务都不看这个开关,崩溃恢复照常。
 func resumeApproved(ctx context.Context, stale int64, batch int) {
 	if !config.Get().Withdraw.AutoCredit() {
 		return

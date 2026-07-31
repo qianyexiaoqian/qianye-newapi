@@ -79,6 +79,15 @@ var (
 	errStatusConflict    = newBizError("qy_wd_status_conflict", "该申请已被处理,请刷新后重试", http.StatusConflict)
 	errIllegalTransition = newBizError("qy_wd_illegal_transition", "当前状态不允许该操作", http.StatusConflict)
 	errInProgress        = newBizError("qy_wd_in_progress", "该请求正在处理中,请稍候", http.StatusConflict)
+
+	// 两条方式闸门。刻意不复用 errIllegalTransition:状态与方式是两回事,
+	// 一个批量脚本对着 approved 队列无差别调用时,"当前状态不允许该操作"
+	// 会把作者引向状态机,而真正的原因是他挑错了单据的提现方式。
+	//
+	// errNotFiatOrder 守的是资金安全边界:markPaid 会核销佣金却不碰主库额度,
+	// 对 quota 单执行等于把佣金吃掉(paid 是终态、不可逆、对账也扫不到)。
+	errNotFiatOrder  = newBizError("qy_wd_not_fiat_order", "站内额度提现不能标记为线下打款,请使用「立即兑现」或「标记打款失败」", http.StatusConflict)
+	errNotQuotaOrder = newBizError("qy_wd_not_quota_order", "线下法币提现不能兑现为站内额度,请使用「标记已打款」", http.StatusConflict)
 )
 
 // 配置与密钥错误。

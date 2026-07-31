@@ -30,30 +30,73 @@ const keyDefaultGroup = "default_group"
 // 裸 goroutine 是纯负担。管理端保存后会直接把新值写进缓存,不必等这 60 秒。
 const cacheSeconds = 60
 
+// failureBackoffSeconds 是一次回源失败之后的负缓存周期。
+//
+// 没有它,「扩展库可达但慢」这一窄带会把整个注册链路拖垮:一条打爆预算的
+// SELECT 让 ok=false、cachedAt 不被推进,于是**下一次注册必然再查一次**,
+// 而每一次注册都攥着一个已经打开的主库事务(hook 跑在 prepareForInsert 里,
+// 位于 DB.Transaction + withNormalizedEmailLock 内部)。促销时的注册洪峰会
+// 逐个撞上同一条慢查询,把主库连接池一起吃掉。
+//
+// 取 5 秒而不是 cacheSeconds:失败期间要的是「别每次都回源」,而不是
+// 「一分钟内都不许恢复」——扩展库恢复之后至多 5 秒新用户就回到正确分组。
+const failureBackoffSeconds = 5
+
 var (
 	cacheMu     sync.Mutex
 	cachedGroup string
 	// cachedAt 为 0 表示缓存从未成功填充过(冷启动或历次读取都失败)。
 	cachedAt int64
+	// retryAt 是负缓存到期时间戳:在此之前不再回源,直接沿用 cachedGroup。
+	retryAt int64
+	// cacheEpoch 是快照的代次,每次管理端写入或重置都自增。
+	//
+	// 查库挪出临界区之后,「SELECT 返回」与「写回缓存」之间出现了一个窗口:
+	// 管理员刚好在这中间保存了新分组(storeDefaultGroup 已经把新值写进缓存),
+	// 在途的旧快照会把它静默盖掉,此后 60 秒的新用户全部落进旧分组。
+	// 代次让写回方能发现「我读的那一版已经作废了」并丢弃本次结果。
+	cacheEpoch uint64
 )
 
 // currentDefaultGroup 返回运营配置的默认分组,"" 表示未配置。
 //
 // 读取失败时返回上一次成功读到的快照(冷启动时即空串),绝不返回错误 ——
 // 调用方在主库事务里,没有任何合理的错误处理方式,只能 fail-open。
+//
+// 查库这一步刻意放在 cacheMu 的临界区之外,与 commission 的 effectiveCtx 同形:
+// 持锁查库时,一条慢 SELECT 会把全进程所有注册串在这把互斥锁上,每个约一个
+// hot_path_timeout_ms(默认 200ms,即 ≈5 次/秒的注册上限),而每一个排队者
+// 都攥着一个已打开的主库事务。锁只用来读/写快照。
 func currentDefaultGroup() string {
+	now := common.GetTimestamp()
+
+	cacheMu.Lock()
+	if cachedAt > 0 && now-cachedAt < cacheSeconds {
+		group := cachedGroup
+		cacheMu.Unlock()
+		return group
+	}
+	if now < retryAt {
+		group := cachedGroup
+		cacheMu.Unlock()
+		return group
+	}
+	epoch := cacheEpoch
+	cacheMu.Unlock()
+
+	value, ok := readDefaultGroup()
+
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
-
-	now := common.GetTimestamp()
-	if cachedAt > 0 && now-cachedAt < cacheSeconds {
-		return cachedGroup
-	}
-	value, ok := readDefaultGroup()
 	if !ok {
+		retryAt = common.GetTimestamp() + failureBackoffSeconds
 		return cachedGroup
 	}
-	cachedGroup, cachedAt = value, now
+	if cacheEpoch != epoch {
+		// 本次在途期间管理端已经写入了新值,缓存里那份比手上这份新。
+		return cachedGroup
+	}
+	cachedGroup, cachedAt, retryAt = value, common.GetTimestamp(), 0
 	return cachedGroup
 }
 
@@ -63,14 +106,16 @@ func currentDefaultGroup() string {
 // 失败,那时会退回上一次快照,表现为「保存成功了但新用户还是进旧分组」。
 func storeDefaultGroup(value string) {
 	cacheMu.Lock()
-	cachedGroup, cachedAt = value, common.GetTimestamp()
+	cachedGroup, cachedAt, retryAt = value, common.GetTimestamp(), 0
+	cacheEpoch++
 	cacheMu.Unlock()
 }
 
 // resetCache 让下一次读取重新回源。仅测试与配置重载使用。
 func resetCache() {
 	cacheMu.Lock()
-	cachedGroup, cachedAt = "", 0
+	cachedGroup, cachedAt, retryAt = "", 0, 0
+	cacheEpoch++
 	cacheMu.Unlock()
 }
 

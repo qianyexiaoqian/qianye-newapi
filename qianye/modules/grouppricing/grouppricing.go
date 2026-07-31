@@ -25,7 +25,8 @@
 //
 // ═══════════════════════════ 覆盖了哪些计价路径 ═══════════════════════════
 //
-// relay/helper/price.go 的三个入口全部覆盖,共 5 个插入点(见 qy_pricing_export.go):
+// 覆盖分两段:计价侧三个入口(relay/helper/price.go,共 5 个插入点,
+// 见 relay/helper/qy_pricing_export.go),结算侧一个入口(service/qy_pricing_export.go)。
 //
 //	ModelPriceHelper        对话/文本/音频/实时,含 Claude、OpenAI、Gemini 等全部 relay 格式
 //	ModelPriceHelperPerCall MJ / Task 按次计费
@@ -33,11 +34,33 @@
 //
 // 结算侧(service/text_quota.go、service/quota.go 的 PostWss/PostAudio)读的是
 // relayInfo.PriceData.ModelRatio / ModelPrice,而 PriceData 就是上面三个函数的
-// 产物,所以覆盖这三处即覆盖全部扣费,不需要在结算侧再挂钩子。
+// 产物,所以那几条路径不需要再挂钩子。唯一的例外是 Task 的异步差额重算:
+//
+//	service/task_billing.go RecalculateTaskQuotaByTokens
+//	                                          Task(视频/MJ 等)拿到实际 token 数后的
+//	                                          差额重算。它跑在任务轮询协程上,不经过
+//	                                          RelayInfo、也不经过 PriceData,上面三个
+//	                                          挂载点全都够不到,因此单独挂了第四处
+//	                                          service.QyGroupTaskRatio(实现体
+//	                                          applyTaskRatio)。它存在的唯一理由是让
+//	                                          预扣与结算同口径:预扣走
+//	                                          ModelPriceHelperPerCall(已覆盖),结算若
+//	                                          仍按全局倍率,分组折扣在任务类模型上等于
+//	                                          不存在,而且是以**追扣**的形式发生。
+//
+// ⚠ 这一处**只认 ratio 口径**。给任务类模型配 price(按次)规则时,
+// applyTaskRatio 刻意返回入参原值 —— 那条路径的预扣走的是分组级按次价,
+// 而 RecalculateTaskQuotaByTokens 只在模型配了全局倍率、没有按次价时才会跑,
+// 两者根本不在同一个分支上,在这里跟着改倍率只会制造出第二种不一致。
+// **代价是这一档确实留着一个口径缺口**:如果同一个任务类模型既有全局倍率、
+// 又被配了分组级 price 规则,预扣按分组按次价、结算按全局倍率重算,差额仍会追扣。
+// 这个残留没有被消除,也没有任何管理端告警会提示它(effective.go 的
+// modeMismatchWarning 只判「规则口径 vs 模型全局计费口径」,这个组合不触发它)——
+// 给任务类模型配规则时请用 ratio 口径。
 //
 // ═══════════════════════════ 已知不覆盖范围(必须知道)═══════════════════════════
 //
-// 以下三处直接调用 ratio_setting,不经过 PriceData,因此**不受分组价影响**。
+// 以下两处直接调用 ratio_setting,不经过 PriceData,因此**不受分组价影响**。
 // 它们不是遗漏,是刻意不碰 —— 每一条都会额外消耗上游改动预算,而收益不成比例:
 //
 //	service/quota.go  PreWssConsumeQuota      Realtime 会话中途的增量预扣。
@@ -45,15 +68,6 @@
 //	                                          结算走 PostWssConsumeQuota(读 PriceData,
 //	                                          已覆盖)。分组价更低时这道闸偏严,
 //	                                          偏严不会多扣钱。
-//	service/task_billing.go RecalculateTaskQuotaByTokens
-//	                                          Task 按 token 的异步差额重算。
-//	                                          预扣走 ModelPriceHelperPerCall(已覆盖),
-//	                                          重算这一步仍按全局倍率 —— 对配了分组价的
-//	                                          视频/任务类模型,差额结算会回到全局价。
-//	                                          ⚠ 这是唯一一处"预扣与结算口径不一致",
-//	                                          切真实模式前必须确认没有给 Task 类模型
-//	                                          配 ratio 覆盖;api_admin.go 的写入校验
-//	                                          会对这类规则返回显式告警。
 //	model/pricing.go                          模型广场的价格展示,与扣费无关。
 //
 // ═══════════════════════════ 为什么不覆盖补全倍率 ═══════════════════════════
@@ -77,6 +91,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/module"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
 	relayhelper "github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -94,7 +109,8 @@ func (Mod) Tables() []any {
 	}
 }
 
-// InstallHooks 注入 relay/helper 的三个计价挂载点,并预热一次规则快照。
+// InstallHooks 注入四个挂载点(relay/helper 的三个计价点 + service 的一个结算点),
+// 并预热一次规则快照。
 //
 // 预热是必要的:第一个请求到来时快照若还是空的,那次请求就按全局价计费。
 // 影子模式下这只是少一条记录,真实模式下就是一次计错的账。失败不阻塞启动 ——
@@ -106,6 +122,9 @@ func (Mod) InstallHooks() {
 	relayhelper.QyGroupModelPrice = applyModelPrice
 	relayhelper.QyGroupModelRatio = applyModelRatio
 	relayhelper.QyGroupTieredQuota = applyTieredQuota
+	// 第四处在结算侧,不在计价链路上:Task 的 token 差额重算不经过 PriceData。
+	// 少这一行,给任务类模型配的分组折扣会在差额结算时被追扣回全局价。
+	service.QyGroupTaskRatio = applyTaskRatio
 
 	if err := reload(true); err != nil {
 		common.SysError("qianye/grouppricing: 规则快照预热失败(本次启动后的请求先按全局价计费,稍后自动重试): " + err.Error())

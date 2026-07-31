@@ -42,27 +42,40 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 	}
 	gdb = gdb.WithContext(ctx)
 
-	var origin Accrual
-	err := gdb.Where("invitee_id = ? AND gross_amount > 0", inviteeId).
-		Order("id desc").Take(&origin).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil // 这个下线从未产生过佣金,无需冲正
-	}
-	if err != nil {
-		db.MarkFailure(err)
-		return err
-	}
-
-	amount := calcGross(refundQuota, origin.RateUnits)
 	remaining, err := netAccrued(gdb, inviteeId)
 	if err != nil {
 		return err
 	}
 	// 冲正上限是"这个下线到目前为止一共产生过多少净佣金"。
-	// 超额冲正会让邀请人为别的下线挣的钱买单。
+	// 超额冲正会让邀请人为别的下线挣的钱买单。净额为零时这个下线要么
+	// 从未产生过佣金、要么已经被冲平,两种情况都无事可做。
 	if remaining.LessThanOrEqual(decimal.Zero) {
 		return nil
 	}
+
+	origin, err := consumeOriginForRefund(gdb, inviteeId, bucketDate(common.GetTimestamp()))
+	if err != nil {
+		return err
+	}
+	if origin == nil {
+		// 一条消费计佣行都取不到(消费行还没落库、或全部被作废)。此时宁可按
+		// **当前的消费费率**冲正 —— 口径至少是对的,只是时点偏新;借用一条
+		// 充值行的费率则连方向都是随机的。
+		e, _, err := resolveInviter(ctx, inviteeId)
+		if err != nil {
+			return err
+		}
+		if e.InviterId == 0 || e.InviterId == inviteeId {
+			return nil
+		}
+		d := resolveRate(ctx, e.InviteeGroup, SourceConsume, effectiveCtx(ctx))
+		// RefAccrualId 留 0:确实没有可指向的原单,随便挂一行会让管理端
+		// "这笔被冲了多少"的溯源指向一笔无关的账。UsdRate 留零,
+		// writeAccrual 会取当前汇率。
+		origin = &Accrual{InviterId: e.InviterId, RateUnits: d.Units, RateGroup: d.Group}
+	}
+
+	amount := calcGross(refundQuota, origin.RateUnits)
 	if amount.GreaterThan(remaining) {
 		amount = remaining
 	}
@@ -77,8 +90,8 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 		InviterId:  origin.InviterId,
 		InviteeId:  inviteeId,
 		BaseQuota:  -refundQuota,
-		// 冲正原样复制原单冻结的费率与分组,绝不用当前值:原单按 8% 发出去、
-		// 退款时按现行的 5% 冲回来,差额就永久留在邀请人账上。
+		// 冲正原样复制**被退款那笔消费**冻结的费率与分组,绝不用当前值:
+		// 原单按 8% 发出去、退款时按现行的 5% 冲回来,差额就永久留在邀请人账上。
 		// 这与复制 UsdRate 是同一个道理。
 		RateUnits: origin.RateUnits,
 		RateGroup: origin.RateGroup,
@@ -100,6 +113,47 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 		clawbackCreated.Add(1)
 	}
 	return nil
+}
+
+// consumeOriginForRefund 找出一笔消费退款应当按哪一行冻结的费率冲正。
+//
+// 只认 source_type = consume 的正额行,并优先命中被退款那一天的日聚合桶。
+//
+// 为什么不能取"该下线最近一条正额行":那一行可以是任意来源。默认配置充值
+// 10%、消费 5%,于是"当天先消费(落 5% 的日聚合行)、晚些时候充值(落 10%
+// 的 topup 行,id 更大)"这种普通用量,就会让随后的一笔任务退款按 10% 去冲
+// 一笔只发过 5% 的佣金 —— 正好 2 倍超额冲正。方向由两个费率的大小关系决定:
+// 反过来配则是冲正不足,平台永久少收回。账本 append-only,冲错了改不回来。
+//
+// 返回 nil 表示这个下线没有任何消费计佣行,调用方须改用当前的消费费率,
+// 而不是退而求其次去拿一条充值行。
+func consumeOriginForRefund(gdb *gorm.DB, inviteeId int, day string) (*Accrual, error) {
+	// 两次 Find 而不是一条带 CASE 的 ORDER BY:后者要写方言相关的原生 SQL,
+	// 而冲正本身是低频路径,两条查询都走 invitee_id 索引。
+	// 用 Find 而不是 Take,是为了让"没有这样的行"是空切片而不是一个要靠
+	// errors.Is 分辨的错误。
+	var rows []Accrual
+	err := gdb.Where("invitee_id = ? AND source_type = ? AND bucket_date = ? AND gross_amount > 0",
+		inviteeId, SourceConsume, day).Order("id desc").Limit(1).Find(&rows).Error
+	if err != nil {
+		db.MarkFailure(err)
+		return nil, err
+	}
+	if len(rows) > 0 {
+		return &rows[0], nil
+	}
+	// 跨天退款(异步任务隔夜结算、上游延迟上报)回落到该下线最近的一条消费行:
+	// 费率口径仍然是对的,只是可能不是被退款那一天的那条桶。
+	err = gdb.Where("invitee_id = ? AND source_type = ? AND gross_amount > 0",
+		inviteeId, SourceConsume).Order("id desc").Limit(1).Find(&rows).Error
+	if err != nil {
+		db.MarkFailure(err)
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	return &rows[0], nil
 }
 
 // netAccrued 返回某个下线名下的净计佣额(已扣除历史冲正)。

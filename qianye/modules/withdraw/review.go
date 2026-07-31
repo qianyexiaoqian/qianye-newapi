@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
@@ -64,7 +65,7 @@ func cancelByUser(c *gin.Context, userId int, id int64) (*orderView, error) {
 	if err != nil {
 		return nil, err
 	}
-	writeDecisionAudit(c, w, "withdraw.cancel", qymodel.ActorUser, a, "")
+	writeDecisionAudit(c, w, "withdraw.cancel", qymodel.ActorUser, a, "", qymodel.ResultOK)
 	return toUserView(w, nil), nil
 }
 
@@ -93,7 +94,7 @@ func approve(c *gin.Context, id int64) (*adminOrderView, error) {
 		return nil, err
 	}
 	w.ReviewerId, w.ReviewerName, w.ReviewedAt = a.Id, a.Name, now
-	writeDecisionAudit(c, w, "withdraw.approve", qymodel.ActorAdmin, a, "")
+	writeDecisionAudit(c, w, "withdraw.approve", qymodel.ActorAdmin, a, "", qymodel.ResultOK)
 
 	if shouldAutoCredit(w) {
 		// 刻意不用 c.Request.Context():管理员的浏览器断开不该中断一笔已经在动钱的操作。
@@ -105,6 +106,51 @@ func approve(c *gin.Context, id int64) (*adminOrderView, error) {
 			// 语焉不详的错误更有用。
 			common.SysError("qianye/withdraw: 单号 " + w.WithdrawNo + " 兑现未完成: " + err.Error())
 		}
+	}
+	return toAdminView(w, nil), nil
+}
+
+// creditNow 由管理员对一张 approved 的 quota 单显式触发兑现。
+//
+// 存在的理由是 withdraw.auto_credit_on_approve 这个开关的 false 分支:
+// approved → paying 是 quota 单走到 paid 的唯一入边,而它只由 startPaying 写、
+// startPaying 只在 creditQuota 里被调用。审核后自动兑现与对账重试这两个
+// creditQuota 调用点都被 AutoCredit() 门住,所以开关置 false 后 quota 单会
+// 无限期停在 approved:用户既拿不到额度,管理端也只剩下"标记打款失败"
+// (退回佣金、用户白等)与 markPaid(核销佣金、一分钱不付)两条错路。
+// 本接口把 false 的语义从"quota 提现静默失效"变成"兑现改由管理员手动确认"。
+//
+// 幂等由 startPaying 的 approved → paying CAS 保证 —— 与自动到账、对账重试
+// 共用同一道全集群准入闸门,连点两次不会加两次额度。因此这里的状态与方式
+// 判断只是给管理员一个明确的拒绝理由,不是防重的依据。
+func creditNow(c *gin.Context, id int64) (*adminOrderView, error) {
+	w, err := loadWithdrawal(id)
+	if err != nil {
+		return nil, err
+	}
+	if w.Method != config.WithdrawMethodQuota {
+		return nil, errNotQuotaOrder
+	}
+	if w.Status != StatusApproved {
+		return nil, errIllegalTransition
+	}
+	a := actorOf(c)
+
+	// 与审核通过同一口径:管理员的浏览器断开不该中断一笔已经在动钱的操作。
+	ctx, cancel := guard.ColdContext(context.Background())
+	defer cancel()
+	creditErr := creditQuota(ctx, w)
+
+	// 成败都要落审计:这是一次人工的动钱决策,"谁在什么时候按了这个按钮"
+	// 不能只在成功时才留痕。
+	result, reason := qymodel.ResultOK, ""
+	if creditErr != nil {
+		result, reason = qymodel.ResultFail, creditErr.Error()
+	}
+	writeDecisionAudit(c, w, "withdraw.credit", qymodel.ActorAdmin, a, reason, result)
+	if creditErr != nil {
+		common.SysError("qianye/withdraw: 单号 " + w.WithdrawNo + " 手动兑现未完成: " + creditErr.Error())
+		return nil, creditErr
 	}
 	return toAdminView(w, nil), nil
 }
@@ -140,7 +186,7 @@ func reject(c *gin.Context, id int64, rawReason string) (*adminOrderView, error)
 		return nil, err
 	}
 	w.ReviewerId, w.ReviewerName, w.ReviewedAt, w.RejectReason = a.Id, a.Name, now, reason
-	writeDecisionAudit(c, w, "withdraw.reject", qymodel.ActorAdmin, a, reason)
+	writeDecisionAudit(c, w, "withdraw.reject", qymodel.ActorAdmin, a, reason, qymodel.ResultOK)
 	return toAdminView(w, nil), nil
 }
 
@@ -148,6 +194,16 @@ func reject(c *gin.Context, id int64, rawReason string) (*adminOrderView, error)
 //
 // 法币路径完全不触碰主库,因此不存在两阶段问题:一个扩展库事务里
 // 改状态 + 核销佣金即可。
+//
+// 【方式闸门是资金安全边界,不是参数校验】本函数会把佣金从 frozen 直接转成
+// withdrawn(SettleFrozen),而它全程不碰主库 users.quota。对 method=quota 的单
+// 执行一次,结果就是"佣金被永久核销、用户一分钱没拿到":paid 是终态、
+// allowedTransitions 没有出边、没有反向接口、order_no 为空的 paid 单也不会再被
+// 对账扫到 —— 静默、不可逆、无检测。
+// 前端按 method === 'fiat' 隐藏按钮不算防线(见 acceptCreate 的注释:绕过前端
+// 只需要一个 curl),批量"标记已打款"的运维脚本更是一发就中。
+// quota 单的正确正向出口只有 creditQuota(自动到账或管理员手动兑现),
+// 反向出口是 markFailed(退回佣金)。
 func markPaid(c *gin.Context, id int64, payoutRef string, paidAt int64, note string) (*adminOrderView, error) {
 	ref, err := checkRunes(payoutRef, maxPayoutRefRunes)
 	if err != nil || ref == "" {
@@ -156,6 +212,9 @@ func markPaid(c *gin.Context, id int64, payoutRef string, paidAt int64, note str
 	w, err := loadWithdrawal(id)
 	if err != nil {
 		return nil, err
+	}
+	if w.Method != config.WithdrawMethodFiat {
+		return nil, errNotFiatOrder
 	}
 
 	now := common.GetTimestamp()
@@ -187,7 +246,7 @@ func markPaid(c *gin.Context, id int64, payoutRef string, paidAt int64, note str
 		return nil, err
 	}
 	w.PaidAt, w.PayoutRef = paidAt, ref
-	writeDecisionAudit(c, w, "withdraw.pay", qymodel.ActorAdmin, a, ref)
+	writeDecisionAudit(c, w, "withdraw.pay", qymodel.ActorAdmin, a, ref, qymodel.ResultOK)
 	return toAdminView(w, nil), nil
 }
 
@@ -218,7 +277,7 @@ func markFailed(c *gin.Context, id int64, rawReason string) (*adminOrderView, er
 		return nil, err
 	}
 	w.FailReason = reason
-	writeDecisionAudit(c, w, "withdraw.fail", qymodel.ActorAdmin, a, reason)
+	writeDecisionAudit(c, w, "withdraw.fail", qymodel.ActorAdmin, a, reason, qymodel.ResultOK)
 	return toAdminView(w, nil), nil
 }
 
@@ -274,14 +333,17 @@ func resolveHold(c *gin.Context, id int64, decision, rawEvidence string) (*admin
 	if err != nil {
 		return nil, err
 	}
-	writeDecisionAudit(c, w, "withdraw.resolve."+decision, qymodel.ActorAdmin, a, evidence)
+	writeDecisionAudit(c, w, "withdraw.resolve."+decision, qymodel.ActorAdmin, a, evidence, qymodel.ResultOK)
 	return toAdminView(w, nil), nil
 }
 
 // writeDecisionAudit 记录一次人工决策。
 //
 // 每一次人工决策都必须落审计:没有它,"这笔为什么被拒""谁批准的"事后无法自证。
-func writeDecisionAudit(c *gin.Context, w *Withdrawal, action, actorType string, a actor, reason string) {
+//
+// result 由调用方给出而不是写死 ResultOK:动钱的人工决策(手动兑现)可能失败,
+// 把失败的尝试记成成功,事后复盘会得出"管理员兑现过一次"的错误结论。
+func writeDecisionAudit(c *gin.Context, w *Withdrawal, action, actorType string, a actor, reason, result string) {
 	audit.Write(c, audit.Entry{
 		TraceNo:      w.WithdrawNo,
 		Category:     qymodel.AuditCategoryWithdraw,
@@ -294,7 +356,7 @@ func writeDecisionAudit(c *gin.Context, w *Withdrawal, action, actorType string,
 		AmountFiat:   w.NetAmount,
 		Currency:     w.Currency,
 		FrozenRate:   w.FrozenFxRate,
-		Result:       qymodel.ResultOK,
+		Result:       result,
 		Reason:       reason,
 		AfterSnap:    common.MapToJsonStr(map[string]any{"status": w.Status, "method": w.Method}),
 	})

@@ -164,6 +164,16 @@ withdraw:
   # 不冻结的话历史对账永远对不上。
   rate_freeze_mode: "operation_setting"   # operation_setting | fixed
   rate_freeze_fixed: "7.3"
+  # quota 方式审核通过后是否立即自动兑现成平台余额。
+  #
+  # true (默认):管理员点"通过"即触发跨库兑现;进程崩在中途时对账任务会重新拾起。
+  # false:审核与兑现拆成两步,approved 的 quota 单不会自动到账,必须由管理员在
+  #        管理端对该单点"立即兑现"(POST /api/qy/admin/withdraw/:id/credit)才会
+  #        真正加额度。这条路径与自动兑现共用同一道 approved → paying CAS 闸门,
+  #        重复点击不会重复加钱;此时对账任务也不再自动重试 approved 单。
+  #
+  # 注意:填 false 之后**绝不能**改用"标记已打款"来了结 quota 单 —— 那条路只核销
+  # 佣金、不加额度,而且 paid 是不可逆终态。后端已强制拒绝(qy_wd_not_fiat_order)。
   auto_credit_on_approve: true
   daily_max_count: 3
   cooldown_seconds: 60               # 两次申请之间的最小间隔

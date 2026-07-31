@@ -20,17 +20,6 @@ type consumeEvent struct {
 	InviteeId int
 	Quota     int64
 	At        int64
-	// Group 是本次请求**实际计价所用**的分组,来自 RecordConsumeLogParams.Group
-	// (它等于 relayInfo.UsingGroup)。
-	//
-	// 必须用它而不是 users.group 来解析分组费率:两者会不一致 ——
-	// 令牌可以指定分组(middleware/auth.go 会据此覆盖 UsingGroup),auto 分组
-	// 更是逐请求变化。用账号分组解析费率会开出一条主动套利路径:
-	// 下线把令牌指到低毛利分组(平台按薄利收钱),而佣金仍按账号分组的高费率
-	// 计算 —— 平台按批发价收钱、按零售价付佣金,且流水行自洽,事后查不出来。
-	//
-	// 为空时(理论上不该发生)由 accrueConsume 回落到账号分组。
-	Group string
 }
 
 // installHooks 把实现注入上游 model 包的 hook 变量。
@@ -66,7 +55,6 @@ func onConsumeLog(c *gin.Context, userId int, params model.RecordConsumeLogParam
 		InviteeId: userId,
 		Quota:     int64(params.Quota),
 		At:        common.GetTimestamp(),
-		Group:     params.Group,
 	}
 	consumeEvents.Add(1)
 	guard.HotAsync("commission.consume", func(ctx context.Context) error {
@@ -132,20 +120,18 @@ func accrueConsume(ctx context.Context, ev consumeEvent) error {
 		accrualSkipped.Add(1)
 		return nil
 	}
-	// 费率按【本次请求实际计价的分组】解析,并连同分组一起冻结进这一行。
+	// 费率按【下线的账号分组】(users.group)解析,并连同分组一起冻结进这一行。
 	//
-	// 用 ev.Group(= relayInfo.UsingGroup)而不是账号分组 e.InviteeGroup:
-	// 令牌可以指定分组、auto 分组还会逐请求变化,两者经常不同。用账号分组会开出
-	// 一条主动套利路径 —— 下线把令牌指到低毛利分组(平台按薄利收钱),佣金却按
-	// 账号分组的高费率计算。口径的完整说明见 grouprate.go。
+	// 这是选定的口径:佣金档位跟人走,不跟单次请求走 —— "这个下线是 VIP 客户,
+	// 所以他的消费按 8% 返" 是运营能直接讲清楚的规则,四条来源(消费、充值、
+	// 兑换码、任务补扣)也因此共用同一个档位,对账时一个下线一天只对应一个费率。
 	//
-	// ev.Group 为空只可能出现在上游日后新增了不带分组的计费路径,
-	// 此时回落账号分组,总比完全拿不到费率好。
-	rateGroup := ev.Group
-	if rateGroup == "" {
-		rateGroup = e.InviteeGroup
-	}
-	rate := resolveRate(ctx, rateGroup, SourceConsume, s)
+	// 已知的代价:令牌可以指定分组、auto 分组还会逐请求变化,所以本次请求的
+	// **计价分组**可能与账号分组不同。上下线串通时,下线把令牌指到低毛利分组
+	// (平台按薄利收钱)、佣金仍按账号分组的高费率算,能占到差价。需要事后排查时,
+	// 主库 logs 表本身就按请求记了实际计价分组,与本表按 (下线, 日期) join 即可
+	// 比对 —— 不需要在扩展库再存一份。
+	rate := resolveRate(ctx, e.InviteeGroup, SourceConsume, s)
 	gross := capGross(calcGross(ev.Quota, rate.Units), s.MaxPerOrderQuota)
 	if gross.IsZero() {
 		return nil
@@ -205,7 +191,6 @@ func onTaskBillingLog(params model.RecordTaskBillingLogParams) {
 			InviteeId: userId,
 			Quota:     quota,
 			At:        common.GetTimestamp(),
-			Group:     params.Group,
 		}
 		guard.HotAsync("commission.task_consume", func(ctx context.Context) error {
 			return accrueConsume(ctx, ev)
@@ -245,9 +230,7 @@ func accrueOneShot(ctx context.Context, inviteeId int, baseQuota int64, baseMone
 		return nil
 	}
 	s := effective()
-	// 充值/兑换码没有"本次请求的计价分组"这个概念 —— 它不经过 relay,
-	// 所以这里用账号分组是正确的,与消费路径的不对称是有意的而非遗漏。
-	// (消费路径必须用 relayInfo.UsingGroup,理由见 accrueConsume 处的说明。)
+	// 与消费路径同口径:按下线的账号分组解析费率(见 accrueConsume 处的说明)。
 	//
 	// 幂等键在这里是订单号,不掺费率 —— 一笔充值无论如何只能返一次佣,
 	// 费率变了也不能变成两行。

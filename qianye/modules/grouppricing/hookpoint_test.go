@@ -37,6 +37,11 @@ import (
 
 const priceGoPath = "../../../relay/helper/price.go"
 
+// taskBillingGoPath 是第四个挂载点所在的文件。它不在 relay 计价链路上,
+// 所以 priceGoPath 那份 AST 够不到它 —— 复核实测:把那一行调用整行删掉,
+// 全仓测试全绿。
+const taskBillingGoPath = "../../../service/task_billing.go"
+
 // pricingEntries 是上游的三个计价入口。它们的产物(PriceData)被结算侧直接使用,
 // 所以覆盖这三个函数即覆盖全部扣费。
 var pricingEntries = []string{"ModelPriceHelper", "ModelPriceHelperPerCall", "modelPriceHelperTiered"}
@@ -168,6 +173,32 @@ func TestPricingEntriesUseOnlyKnownRatioSources(t *testing.T) {
 	assert.Equal(t, known, got,
 		"上游计价入口用到的 ratio_setting 取值口集合变了。新增的那一个是不是也该走分组价?"+
 			"想清楚再改这张表 —— 本扩展已经四次栽在「没有人去判断」上")
+}
+
+// TestTaskSettlementHookPointExists:第四个挂载点的调用点锁。
+//
+// RecalculateTaskQuotaByTokens 是 Task 类模型(视频、MJ)拿到实际 token 数之后的
+// 差额重算。它直接读 ratio_setting、不经过 PriceData,所以 relay/helper 的三个
+// 挂载点全都够不到;少了这一行,预扣按分组折扣价、结算按全局倍率,差额以**追扣**
+// 形式落到用户头上 —— 正是 AGENTS.md「预扣与结算必须同口径」直指的情形。
+//
+// 顺序也一并锁住:分组要先从 task.Group 解析(为空时回落 users.group)才有意义,
+// 把 hook 提到那段之前会用空分组去查规则,永远查不到,等于这一行不存在。
+func TestTaskSettlementHookPointExists(t *testing.T) {
+	seq := callsByFunc(t, taskBillingGoPath)["RecalculateTaskQuotaByTokens"]
+	require.NotEmpty(t, seq,
+		"service/task_billing.go 里找不到 RecalculateTaskQuotaByTokens —— 上游改了函数名?")
+
+	hookIdx := indexOf(seq, "QyGroupTaskRatio")
+	require.GreaterOrEqual(t, hookIdx, 0,
+		"RecalculateTaskQuotaByTokens 里缺少 QyGroupTaskRatio 挂载点:"+
+			"任务类模型的分组折扣会在差额结算时被追扣回全局价,而管理界面上看不出来")
+
+	fallbackIdx := indexOf(seq, "GetUserById")
+	require.GreaterOrEqual(t, fallbackIdx, 0,
+		"RecalculateTaskQuotaByTokens 里找不到分组回落(task.Group 为空时读 users.group)")
+	assert.Greater(t, hookIdx, fallbackIdx,
+		"QyGroupTaskRatio 必须排在分组解析之后:提前调用会拿空分组去查规则,永远查不到")
 }
 
 // ─────────────────────────────── 测试辅助 ───────────────────────────────

@@ -326,8 +326,17 @@ withdrawal:
 | T7 | `paying` → `failed` | 系统 | **仅当主库返回确定性业务错误**；`Commission.Release`；`fail_reason`；event `settle_failed`；通知 |
 | T8 | `paying` → `reconcile_state=hold` | 系统（补偿任务） | 主库结果不确定时；event `hold`；**告警管理员** |
 | T9 | hold → `paid` / `failed` | 管理员裁决 | event `resolve`，`Detail` 记裁决依据 |
-| T10 | `approved` → `paid` | 管理员（fiat） | 校验 `payout_ref` 非空；`Commission.Commit`；`paid_at/payout_operator/payout_ref/payout_note`；event `pay`；通知 |
+| T10 | `approved` → `paid` | 管理员（fiat） | 校验 `payout_ref` 非空；**后端硬校验 `method=fiat`**；`Commission.Commit`；`paid_at/payout_operator/payout_ref/payout_note`；event `pay`；通知 |
 | T11 | `approved` → `failed` | 管理员（fiat） | `fail_reason` 必填；`Commission.Release`；event `fail`；通知 |
+| T12 | `approved` → `paying` | 管理员（quota，手动） | 与 T5 同一条边、同一道 CAS，只是触发者是人：管理员点「立即兑现」显式调 `creditQuota`。`auto_credit_on_approve=false` 时这是 quota 单唯一的正向出口 |
+
+> **T10 的 `method=fiat` 是资金安全边界，不是参数校验。** `markPaid` 会把佣金
+> `frozen → withdrawn`，而它全程不碰主库 `users.quota`。对 quota 单执行一次即
+> 「佣金被永久核销、用户一分钱没拿到」，且 `paid` 无出边、无反向接口、`order_no`
+> 为空的 `paid` 单不会被对账再看一眼 —— 静默、不可逆、无检测。前端隐藏按钮不算
+> 防线（绕过它只需一个 curl，批量运维脚本更是一发就中），后端返回
+> `qy_wd_not_fiat_order`。反之，`method=fiat` 的单也不能走 T12（`qy_wd_not_quota_order`）：
+> 线下已经打过款，再加一笔站内额度就是重复支付。
 
 **非法转移一律靠 `UPDATE ... WHERE id=? AND status=?` 的 `RowsAffected==0` 拒绝**，不靠先读后写（先读后写在多节点下必错）。
 
@@ -466,6 +475,18 @@ withdrawal:
 
 **扫尾任务**：`approved` 且 `method=quota` 且 `updated_at < now-60s` 的单（说明 T4 后 auto-settle 未启动，如进程崩在 T4 与 S1 之间）→ 重新进 S1。S1 的 CAS 天然幂等。
 
+> **`auto_credit_on_approve: false` 的语义**（对应实现里的 `withdraw.auto_credit_on_approve`）：
+> 该开关只门住「从 `approved` 自动起步」这一件事 —— T4 之后不自动兑现，上面这个扫尾任务也一并停手。
+> 此时 quota 单由管理员在管理端点「立即兑现」显式触发（T12 / A7b），走的是与自动兑现**完全相同**的
+> `creditQuota` 与 S1 CAS 闸门，因此重复点击不会重复加钱。
+> 一旦单据进入 `paying`，收尾与补偿（S2、扫尾任务的 paying 分支、twophase 的 Resolver）都不再看这个开关，
+> 崩溃恢复照常。
+>
+> **这个开关不能没有手动出口**：`approved → paying` 是 quota 单走到 `paid` 的唯一入边，缺了手动兑现，
+> 关掉自动到账就等于让佣金无限期冻在 `frozen` —— 用户拿不到钱，管理端看起来可用的按钮只剩
+> 「标记打款失败」（退回佣金、用户白等）与 T10 的「标记已打款」（核销佣金、一分钱不付）。
+> 后者已被后端硬拒（见 T10 下方的说明）。
+
 ### 4.3 线下法币打款（无跨库风险）
 
 ```
@@ -580,7 +601,8 @@ C1–C5 用一条聚合 SQL（走 `idx_qywd_user_created`）拿到 `count_today 
 | A4 | POST | `/api/qy/admin/withdrawal/:id/payee` | **查看明文收款信息**（写 PII 审计） |
 | A5 | POST | `/api/qy/admin/withdrawal/:id/approve` | 审核通过 |
 | A6 | POST | `/api/qy/admin/withdrawal/:id/reject` | 拒绝（`reason` 必填） |
-| A7 | POST | `/api/qy/admin/withdrawal/:id/pay` | 标记已打款（`payout_ref` 必填） |
+| A7 | POST | `/api/qy/admin/withdrawal/:id/pay` | 标记已打款（`payout_ref` 必填，**仅 `method=fiat`**，见 T10） |
+| A7b | POST | `/api/qy/admin/withdrawal/:id/credit` | 立即兑现（**仅 `method=quota` 的 `approved` 单**，见 T12） |
 | A8 | POST | `/api/qy/admin/withdrawal/:id/fail` | 标记打款失败（`fail_reason` 必填） |
 | A9 | POST | `/api/qy/admin/withdrawal/:id/resolve` | 对账异常裁决 |
 | A10 | POST | `/api/qy/admin/withdrawal/batch` | 批量 approve / reject（≤100 条） |

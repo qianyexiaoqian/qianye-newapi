@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 	// sitetheme 是叶子模块(只依赖 guard/db/model/audit),不会形成循环依赖。
 	// 站点默认主题必须由引导端点下发:前端要在首屏渲染之前拿到它,
 	// 单开一个接口会先渲染出默认主题再闪一下变成站点主题。
@@ -104,39 +105,11 @@ func serverError(c *gin.Context, err error) {
 	fail(c, http.StatusInternalServerError, "qy_internal_error", "处理失败,请稍后重试")
 }
 
-// 分页参数。上限 100,防止管理端一次拉爆内存。
-func pagination(c *gin.Context) (page, size int) {
-	page = intQuery(c, "p", 1)
-	if page < 1 {
-		page = 1
-	}
-	size = intQuery(c, "page_size", 20)
-	if size < 1 {
-		size = 20
-	}
-	if size > 100 {
-		size = 100
-	}
-	return page, size
-}
-
-func intQuery(c *gin.Context, key string, def int) int {
-	v := c.Query(key)
-	if v == "" {
-		return def
-	}
-	n := 0
-	for _, ch := range v {
-		if ch < '0' || ch > '9' {
-			return def
-		}
-		n = n*10 + int(ch-'0')
-		if n > 1_000_000 {
-			return def
-		}
-	}
-	return n
-}
+// listPaging 是本包所有列表接口的分页口径:?p= / ?page_size=,默认 20、上限 100。
+//
+// 解析、上界与 offset 换算全部在 qianye/httpq —— 这套逻辑曾经在仓库里有七份
+// 各自漂移的拷贝,收敛的理由见该包的包注释。
+var listPaging = httpq.Spec{}
 
 // requireCore 是管理端接口的统一前置判断。
 func requireCore(c *gin.Context) bool { return guard.RequireAPI(c, guard.FlagCore) }

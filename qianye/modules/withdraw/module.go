@@ -58,6 +58,9 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.POST("/withdraw/:id/approve", crit, handleAdminApprove)
 	g.POST("/withdraw/:id/reject", crit, handleAdminReject)
 	g.POST("/withdraw/:id/mark-paid", crit, handleAdminMarkPaid)
+	// quota 单的手动兑现入口。auto_credit_on_approve = false 时它是这类单据
+	// 唯一的正向终态出口,缺了它这个开关就是一个吃佣金的稳态。
+	g.POST("/withdraw/:id/credit", crit, handleAdminCreditNow)
 	g.POST("/withdraw/:id/fail", crit, handleAdminFail)
 	g.POST("/withdraw/:id/resolve", crit, handleAdminResolve)
 }

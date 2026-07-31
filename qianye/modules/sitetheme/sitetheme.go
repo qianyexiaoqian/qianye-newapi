@@ -11,6 +11,7 @@
 package sitetheme
 
 import (
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/module"
 
 	"github.com/gin-gonic/gin"
@@ -24,6 +25,18 @@ func (Mod) Name() string { return "sitetheme" }
 // Tables 返回空:配置复用地基提供的 qy_settings 表,不另建表。
 // 一个只有一行的表不值得单独建 —— 那正是 qy_settings 存在的理由。
 func (Mod) Tables() []any { return nil }
+
+// InstallHooks 不往上游注入任何 hook,只预热一次主题缓存。
+//
+// 预热收掉的是"进程启动 → 第一次 GET /api/qy/config"这段窗口:那一次请求
+// 若正好撞上扩展库抖动,访客拿到的是上游默认主题,而前端会无条件把它写进
+// localStorage。预热失败不影响启动,也不写缓存 —— 负缓存到期后下一次请求
+// 会自己重试。
+func (Mod) InstallHooks() {
+	if preset, force := Current(); preset != DefaultPreset || force {
+		common.SysLog("qianye/sitetheme: 站点默认主题已配置为 " + preset)
+	}
+}
 
 func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/site-theme", handleGetSiteTheme)

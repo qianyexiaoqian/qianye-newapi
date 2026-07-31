@@ -1,11 +1,16 @@
 package commission
 
 import (
+	"context"
+	"reflect"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestHardExcluded 锁定"无开关"的排除项。
@@ -53,61 +58,76 @@ func TestIsSubscriptionConsume(t *testing.T) {
 	assert.False(t, isSubscriptionConsume(nil))
 }
 
-// 消费返佣的费率必须按【本次请求实际计价的分组】解析,不能用账号分组。
+// TestAllSourcesUseAccountGroupForRate 锁定四条来源共用同一个分组口径:
+// 下线的【账号分组】(users.group,即 inviterEntry.InviteeGroup)。
 //
-// 这是一条可被用户主动利用的套利路径:令牌可以指定分组(middleware/auth.go 会据此
-// 覆盖 relayInfo.UsingGroup),而 RecordConsumeLogParams.Group 带的正是那个值。
-// 若改用 users.group 解析费率,下线只要把令牌指到低毛利分组,就能让平台按批发价
-// 收钱、按零售价付佣金 —— 而流水行本身自洽(基数 × 费率 = 佣金),事后查不出来。
+// 这是选定的口径 —— 佣金档位跟人走,不跟单次请求走。四条来源必须一致:
+// 只要有一条改成按"本次请求的计价分组"解析,同一个下线同一天就会同时出现
+// 两个费率档,日聚合桶按 (下线, 日期, 费率) 建键,于是裂成多行,
+// 对账时"这个下线这天返了多少"再也不是一个数。
 //
-// 这条测试钉的是"Group 有没有从 hook 参数一路传到费率解析",不是算术。
-func TestConsumeEventCarriesRequestGroup(t *testing.T) {
-	cases := []struct {
-		name      string
-		params    model.RecordConsumeLogParams
-		wantGroup string
-	}{
-		{
-			name:      "令牌指定了分组",
-			params:    model.RecordConsumeLogParams{Quota: 100, Group: "wholesale"},
-			wantGroup: "wholesale",
-		},
-		{
-			name:      "auto 分组解析后的实际分组",
-			params:    model.RecordConsumeLogParams{Quota: 100, Group: "vip"},
-			wantGroup: "vip",
-		},
-		{
-			name:      "上游未提供分组时留空,由 accrueConsume 回落账号分组",
-			params:    model.RecordConsumeLogParams{Quota: 100},
-			wantGroup: "",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ev := consumeEvent{
-				InviteeId: 7,
-				Quota:     int64(tc.params.Quota),
-				Group:     tc.params.Group,
-			}
-			assert.Equal(t, tc.wantGroup, ev.Group,
-				"计价分组必须原样带出 relay 线程 —— 丢掉它等于把费率口径交给账号分组")
+// 消费与任务补扣走 accrueConsume,充值与兑换码走 accrueOneShot ——
+// 两条独立的代码路径,所以两边都要落库回读,不能只测一条。
+func TestAllSourcesUseAccountGroupForRate(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, commissionRateConfig("10", "5"))
+	// vip 分组:充值 12%、消费 8%,都与全局默认(10%/5%)不同,
+	// 这样"没按分组走"会直接体现成金额不同,而不是碰巧相等。
+	seedGroupRate(t, gdb, "vip", "12", "8", true)
+
+	newInvitee := func(id int) {
+		getInviterCache().Set(id, inviterEntry{
+			InviterId:      42,
+			InviteeName:    "u" + itoa(id),
+			InviteeCreated: common.GetTimestamp() - 30*86400,
+			InviteeGroup:   "vip",
 		})
 	}
+	for _, id := range []int{910, 911, 912} {
+		newInvitee(id)
+	}
+
+	ctx := context.Background()
+	at := common.GetTimestamp()
+
+	// 消费(= relay 结算)与任务补扣共用 accrueConsume。
+	require.NoError(t, accrueConsume(ctx, consumeEvent{InviteeId: 910, Quota: 10000, At: at}))
+	// 充值与兑换码共用 accrueOneShot,各自一条订单号。
+	require.NoError(t, accrueOneShot(ctx, 911, 10000, decimal.Zero,
+		SourceTopup, topupIdemKey("TX-910"), "TX-910"))
+	require.NoError(t, accrueOneShot(ctx, 912, 10000, decimal.Zero,
+		SourceRedemption, redemptionIdemKey(77), "RD77"))
+
+	consumeRow := accrualOfInvitee(t, gdb, 910)
+	assert.Equal(t, "vip", consumeRow.RateGroup, "消费必须按账号分组计佣")
+	assert.Equal(t, 800, consumeRow.RateUnits)
+	assert.Equal(t, "800", consumeRow.GrossAmount.String(), "10000 × 8% = 800")
+
+	topupRow := accrualOfInvitee(t, gdb, 911)
+	assert.Equal(t, "vip", topupRow.RateGroup, "充值必须按账号分组计佣")
+	assert.Equal(t, 1200, topupRow.RateUnits)
+	assert.Equal(t, "1200", topupRow.GrossAmount.String(), "10000 × 12% = 1200")
+
+	// 兑换码走充值那一档,不是自己一档。
+	redeemRow := accrualOfInvitee(t, gdb, 912)
+	assert.Equal(t, "vip", redeemRow.RateGroup, "兑换码必须按账号分组计佣")
+	assert.Equal(t, 1200, redeemRow.RateUnits)
 }
 
-// 任务计费(MJ/视频等)走的是另一条 hook,同样必须带上分组。
-// 漏掉这一条就等于给套利留了一个只针对任务类模型的后门。
-func TestTaskBillingCarriesRequestGroup(t *testing.T) {
-	params := model.RecordTaskBillingLogParams{
-		UserId: 7, Quota: 100, Group: "wholesale",
-		LogType: model.LogTypeConsume,
+// consumeEvent 刻意不带"本次请求的计价分组"。
+//
+// 带上它就等于给日后的自己留了个诱惑:在 accrueConsume 里改用它解析费率,
+// 于是同一个下线同一天裂成多个费率档。类型里没有这个字段,是让这条口径
+// 在编译期就成立,而不是靠注释提醒。
+//
+// 这条断言是结构性的:字段数变了就说明有人往事件里塞了新东西,
+// 需要重新想清楚"它会不会成为第二个费率来源"。
+func TestConsumeEventCarriesNoPricingGroup(t *testing.T) {
+	typ := reflect.TypeOf(consumeEvent{})
+	var names []string
+	for i := 0; i < typ.NumField(); i++ {
+		names = append(names, typ.Field(i).Name)
 	}
-	ev := consumeEvent{
-		InviteeId: params.UserId,
-		Quota:     int64(params.Quota),
-		Group:     params.Group,
-	}
-	assert.Equal(t, "wholesale", ev.Group,
-		"任务计费与普通消费必须同一个分组口径")
+	assert.Equal(t, []string{"InviteeId", "Quota", "At"}, names,
+		"consumeEvent 只该带下线、金额、时刻 —— 分组口径固定取账号分组")
 }

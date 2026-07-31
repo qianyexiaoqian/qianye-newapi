@@ -82,6 +82,33 @@ func applyTieredQuota(info *relaycommon.RelayInfo, quotaBeforeGroup float64) flo
 	return quotaBeforeGroup * rule.ValueFloat
 }
 
+// applyTaskRatio 覆盖 Task 异步差额结算所用的模型倍率。
+//
+// 与上面三个的区别:它跑在任务轮询协程上,不在 relay 链路上,拿不到 RelayInfo。
+// 分组由调用方从 task.Group 取(为空回落 users.group),与预扣当时的分组同源。
+//
+// 存在的理由只有一条:让预扣与结算同口径。预扣走 ModelPriceHelperPerCall
+// (已被 applyModelRatio 覆盖),结算若仍按全局倍率算,分组折扣在任务类模型上
+// 等于不存在,而且是以**追扣**的形式发生 —— 用户先看到便宜的预扣,再被补一刀。
+//
+// 影子模式返回入参原值,与上游逐位一致。影子差额在这条路径上不落账(note 需要
+// RelayInfo),这是有意的:影子模式下本函数不改变任何金额,没有差额可记。
+func applyTaskRatio(group, modelName string, ratio float64) float64 {
+	if !config.Get().GroupPricing.Enabled || config.Get().GroupPricing.IsShadow() {
+		return ratio
+	}
+	maybeRefresh()
+
+	rule, ok := lookupOverride(group, modelName)
+	// 只认 ratio 口径。给任务模型配 price(按次)规则时,预扣那一侧走的是
+	// 按次价、根本不进入本函数所在的 token 重算分支,这里跟着改倍率反而会
+	// 制造出预扣与结算的第二种不一致。
+	if !ok || rule.Mode != ModeRatio {
+		return ratio
+	}
+	return rule.ValueFloat
+}
+
 // resolve 查出本次请求在指定口径下生效的覆盖规则。
 //
 // 分组取 info.UsingGroup 而不是 info.UserGroup。理由必须写清楚,因为这两个

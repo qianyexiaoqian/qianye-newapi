@@ -4,13 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
@@ -89,7 +89,7 @@ func adminListRules(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagGroupPricing) {
 		return
 	}
-	page, size := pageParams(c)
+	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&Rule{})
 	if v := strings.TrimSpace(c.Query("group_name")); v != "" {
 		q = q.Where("group_name = ?", normalizeGroup(v))
@@ -107,7 +107,7 @@ func adminListRules(c *gin.Context) {
 	}
 	var rows []Rule
 	if err := q.Order("group_name asc, model_name asc, id asc").
-		Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+		Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
 	}
@@ -296,8 +296,8 @@ func adminShadowSummary(c *gin.Context) {
 		return
 	}
 	now := common.GetTimestamp()
-	start := queryInt64(c, "start", now-7*86400)
-	end := queryInt64(c, "end", now)
+	start := httpq.Int64(c, "start", now-7*86400)
+	end := httpq.Int64(c, "end", now)
 	sum, err := buildShadowSummary(start, end)
 	if err != nil {
 		badRequest(c, err.Error())
@@ -428,38 +428,11 @@ func internalError(c *gin.Context, err error) {
 	respondFail(c, http.StatusInternalServerError, "qy_internal_error", "处理失败,请稍后重试")
 }
 
-func pageParams(c *gin.Context) (page, size int) {
-	page = queryInt(c, "p", 1)
-	if page < 1 {
-		page = 1
-	}
-	size = queryInt(c, "page_size", 20)
-	if size < 1 || size > 100 {
-		size = 20
-	}
-	return page, size
-}
-
-func queryInt(c *gin.Context, key string, def int) int {
-	v, err := strconv.Atoi(c.Query(key))
-	if err != nil || v < 0 {
-		return def
-	}
-	return v
-}
-
-func queryInt64(c *gin.Context, key string, def int64) int64 {
-	v, err := strconv.ParseInt(c.Query(key), 10, 64)
-	if err != nil || v < 0 {
-		return def
-	}
-	return v
-}
+// listPaging 是分组定价规则列表的分页口径:?p= / ?page_size=,默认 20、上限 100。
+//
+// 页码上限(httpq.MaxPage)是收敛到 httpq 时补上的 —— 这份拷贝原本只夹了页长。
+var listPaging = httpq.Spec{}
 
 func pathInt64(c *gin.Context, key string) (int64, bool) {
-	v, err := strconv.ParseInt(c.Param(key), 10, 64)
-	if err != nil || v <= 0 {
-		return 0, false
-	}
-	return v, true
+	return httpq.PathInt64(c, key)
 }
