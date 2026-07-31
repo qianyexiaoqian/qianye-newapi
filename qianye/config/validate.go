@@ -116,7 +116,46 @@ func validate(c *Config) error {
 	if err := validateAvailability(&c.Availability); err != nil {
 		return err
 	}
-	return validateViolation(&c.Violation)
+	if err := validateViolation(&c.Violation); err != nil {
+		return err
+	}
+	return validateGroupPricing(&c.GroupPricing)
+}
+
+// validateGroupPricing 校验分组定价的运行参数。
+//
+// 这里只管"参数本身合不合法";单条规则的价格上下界由
+// qianye/modules/grouppricing 在写入与快照编译两处各校验一次 ——
+// 手改数据库绕过接口是这套系统最现实的攻击面。
+func validateGroupPricing(g *GroupPricing) error {
+	if !g.Enabled {
+		return nil
+	}
+	if g.RuleCacheSeconds <= 0 {
+		return fmt.Errorf("qianye: group_pricing.rule_cache_seconds 必须大于 0")
+	}
+	if g.MaxStaleSeconds < g.RuleCacheSeconds {
+		return fmt.Errorf(
+			"qianye: group_pricing.max_stale_seconds(%d)不得小于 rule_cache_seconds(%d),"+
+				"否则规则快照每次刷新前都会先过期一次,分组价会在生效与不生效之间来回抖动",
+			g.MaxStaleSeconds, g.RuleCacheSeconds)
+	}
+	if g.ShadowFlushIntervalSeconds <= 0 {
+		return fmt.Errorf("qianye: group_pricing.shadow_flush_interval_seconds 必须大于 0")
+	}
+	if g.ShadowRetentionDays <= 0 {
+		return fmt.Errorf("qianye: group_pricing.shadow_retention_days 必须大于 0")
+	}
+	if g.MaxRules <= 0 {
+		return fmt.Errorf("qianye: group_pricing.max_rules 必须大于 0")
+	}
+	if !g.IsShadow() {
+		// 与 violation 同理:不阻止,但必须喊出来。这条开关一旦关掉,
+		// 每一笔请求都按分组价真实扣费,而扣走的钱退不回来。
+		common.SysError("qianye: group_pricing.shadow_mode 已关闭,分组级价格将真实参与扣费 —— " +
+			"务必确认已在影子模式下用 /api/qy/admin/group-pricing/shadow/summary 对过账")
+	}
+	return nil
 }
 
 func validateDatabase(d *Database) error {

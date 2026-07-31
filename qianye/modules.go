@@ -10,9 +10,12 @@ package qianye
 import (
 	_ "github.com/QuantumNous/new-api/qianye/modules/availability"
 	_ "github.com/QuantumNous/new-api/qianye/modules/commission"
+	_ "github.com/QuantumNous/new-api/qianye/modules/grouppricing"
 	_ "github.com/QuantumNous/new-api/qianye/modules/groupvis"
 	_ "github.com/QuantumNous/new-api/qianye/modules/logmetrics"
+	_ "github.com/QuantumNous/new-api/qianye/modules/sitetheme"
 	_ "github.com/QuantumNous/new-api/qianye/modules/transfer"
+	_ "github.com/QuantumNous/new-api/qianye/modules/usergroup"
 	_ "github.com/QuantumNous/new-api/qianye/modules/violation"
 	_ "github.com/QuantumNous/new-api/qianye/modules/withdraw"
 )

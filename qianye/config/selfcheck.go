@@ -211,6 +211,17 @@ var fieldConsumers = map[string]consumer{
 	"violation.evidence_retention_days":        {"qianye/modules/violation/tasks.go", "证据保留天数"},
 	"violation.rule_cache_seconds":             {"qianye/modules/violation/rules.go", "规则缓存时长"},
 	"violation.scan_timeout_ms":                {"qianye/modules/violation/rules.go", "单次正则扫描的预算"},
+
+	// ─────────────────────────── group_pricing ───────────────────────────
+	"group_pricing.enabled":     {"qianye/guard/guard.go", "featureOn(FlagGroupPricing):关掉后计价 hook 恒等返回,管理端接口 404"},
+	"group_pricing.shadow_mode": {"qianye/modules/grouppricing/hook.go", "影子模式:算出分组价并记差额,但返回原值,实际扣费不变"},
+	"group_pricing.rule_cache_seconds": {"qianye/modules/grouppricing/rules.go",
+		"规则内存快照的刷新周期(规则读取在 relay 热路径上)"},
+	"group_pricing.max_stale_seconds": {"qianye/modules/grouppricing/rules.go",
+		"快照陈旧上限,超过即回落成「无覆盖」走全局价"},
+	"group_pricing.shadow_flush_interval_seconds": {"qianye/modules/grouppricing/shadow.go", "影子差额从内存落库的周期"},
+	"group_pricing.shadow_retention_days":         {"qianye/modules/grouppricing/shadow.go", "影子差额聚合行的保留天数"},
+	"group_pricing.max_rules":                     {"qianye/modules/grouppricing/api_admin.go", "规则总数上限,写入时判定"},
 }
 
 // leafField 是展开后的一个配置项。

@@ -40,6 +40,7 @@ type Config struct {
 	GroupVisibility GroupVisibility `yaml:"group_visibility"`
 	Availability    Availability    `yaml:"availability"`
 	Violation       Violation       `yaml:"violation"`
+	GroupPricing    GroupPricing    `yaml:"group_pricing"`
 }
 
 // Database 独立 MySQL 连接配置。仅支持 MySQL —— 扩展自建连接,
@@ -301,6 +302,34 @@ type Violation struct {
 	ScanTimeoutMs             int `yaml:"scan_timeout_ms"`
 }
 
+// GroupPricing 模型按分组单独定价。
+//
+// 语义(用户已拍板,不可改):分组级价格与分组倍率是**相乘**关系,
+// 最终扣费 = 分组级模型价 × 分组倍率。没有配置分组级价格的模型完全走原路径
+// (全局价 × 分组倍率),升级不改变任何既有计费结果。
+//
+// ShadowMode 与 violation 的同名开关是同一种东西,而且更严格:这里改错的不是
+// "要不要封号",而是每一笔请求实际扣走多少钱,且扣完不可逆。默认 true 表示
+// 完整算出"若启用会扣多少"并记录差额,但实际仍按旧价扣费;运营对账确认后
+// 再显式改 false。
+type GroupPricing struct {
+	Enabled    bool  `yaml:"enabled"`
+	ShadowMode *bool `yaml:"shadow_mode"`
+	// RuleCacheSeconds 是规则内存快照的刷新周期。规则读取在 relay 热路径上,
+	// 每次请求查库不可接受。
+	RuleCacheSeconds int `yaml:"rule_cache_seconds"`
+	// MaxStaleSeconds 是快照允许的最大陈旧时间。超过它仍未刷新成功,
+	// 查找一律回落成"无覆盖"(走全局价),绝不继续按一份来历不明的旧规则扣钱。
+	MaxStaleSeconds int `yaml:"max_stale_seconds"`
+	// ShadowFlushIntervalSeconds 是影子差额从内存落库的周期。
+	ShadowFlushIntervalSeconds int `yaml:"shadow_flush_interval_seconds"`
+	// ShadowRetentionDays 是影子差额聚合行的保留天数。
+	ShadowRetentionDays int `yaml:"shadow_retention_days"`
+	// MaxRules 是规则总数上限。规则表每个刷新周期被全量拉取,不设上界的话
+	// 一次脚本误操作就会让每个节点定期拉一张大表。
+	MaxRules int `yaml:"max_rules"`
+}
+
 // ───────────────────────────── 布尔取值辅助 ─────────────────────────────
 //
 // *bool 承载"默认为 true"的开关:普通 bool 的零值是 false,无法区分
@@ -333,6 +362,9 @@ func (g GroupVisibility) PricingOn() bool      { return boolOr(g.FilterPricing, 
 func (g GroupVisibility) PerfMetricsOn() bool  { return boolOr(g.FilterPerfMetrics, true) }
 func (g GroupVisibility) KeepAutoGroup() bool  { return boolOr(g.IncludeAutoGroup, true) }
 func (v Violation) IsShadow() bool             { return boolOr(v.ShadowMode, true) }
+
+// IsShadow 为 true 时分组定价只记录差额、不改变实际扣费。默认 true。
+func (g GroupPricing) IsShadow() bool { return boolOr(g.ShadowMode, true) }
 
 // HasWithdrawMethod 判断某种提现方式是否启用。
 func (w Withdraw) HasWithdrawMethod(m string) bool {

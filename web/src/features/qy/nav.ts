@@ -119,6 +119,10 @@ const ADMIN_PAGES: QyPageEntry[] = [
   },
   // 无 feature 键：新用户默认分组没有独立开关，扩展开着就能配。
   { titleKey: 'qy_nav_a_user_group', url: '/qy/admin/user-group' },
+  // 分组定价同样暂无独立开关（`QyFeatures` 里没有对应字段）。后端若为它加了
+  // `features.group_pricing`，这里补一个 `feature:` 即可；在那之前入口常驻，
+  // 功能关闭时页面会走 guard 的 404 → `QyPageBoundary` 的中性空态，不弹红。
+  { titleKey: 'qy_nav_a_group_pricing', url: '/qy/admin/group-pricing' },
   { titleKey: 'qy_nav_a_fund_orders', url: '/qy/admin/fund-orders' },
   { titleKey: 'qy_nav_a_audit_logs', url: '/qy/admin/audit-logs' },
   { titleKey: 'qy_nav_a_health', url: '/qy/admin/health' },

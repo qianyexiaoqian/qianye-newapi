@@ -57,21 +57,18 @@ func Acquire(name string, ttlSeconds int) (bool, int64, error) {
 	}
 	holder := Holder()
 
-	// 先尝试插入(首次运行时表里没有这一行)。
-	err := gdb.Exec(`INSERT INTO qy_task_leases
-		(name, holder, fence, lease_until, acquired_at, updated_at)
-		VALUES (?, ?, 1, UNIX_TIMESTAMP()+?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP())`,
-		name, holder, ttlSeconds).Error
-	if err == nil {
-		return true, 1, nil
-	}
-	if !isDuplicateKey(err) {
-		db.MarkFailure(err)
-		return false, 0, err
-	}
-
-	// 已存在:只有在租约确实过期时才抢占。条件写入是原子的,
-	// 多个节点同时抢只会有一个 RowsAffected == 1。
+	// 先 UPDATE 抢占过期租约,撞不到行才 INSERT。
+	//
+	// 顺序很要紧。原先是"先 INSERT、撞唯一键再 UPDATE",而表里那一行在首次运行
+	// 之后就一直存在 —— 于是**每个任务每个周期都必然制造一次唯一键冲突**。
+	// 在 PrepareStmt 开启的连接上(qianye/db 默认开),一条预编译语句执行失败会
+	// 让 GORM 把它从缓存里作废,同一条连接上紧随其后的语句可能拿到
+	// "statement is closed",整轮任务被打掉。多个任务在同一个周期对齐点一起跑时
+	// 尤其明显 —— 被打掉的包括 twophase.compensate 与 withdraw.reconcile,
+	// 那是资金中间态的收尾。
+	//
+	// 换成"先 UPDATE"之后,稳态路径一条 UPDATE 就结束,零冲突;
+	// INSERT 只在表里确实没有这一行时执行一次,那是真正的首次运行。
 	res := gdb.Exec(`UPDATE qy_task_leases
 		SET holder = ?, fence = fence + 1,
 		    lease_until = UNIX_TIMESTAMP()+?, acquired_at = UNIX_TIMESTAMP(), updated_at = UNIX_TIMESTAMP()
@@ -82,7 +79,20 @@ func Acquire(name string, ttlSeconds int) (bool, int64, error) {
 		return false, 0, res.Error
 	}
 	if res.RowsAffected == 0 {
-		return false, 0, nil // 别的节点正持有,不是错误
+		// 两种可能:别人正持有(常态),或这一行还不存在(首次运行)。
+		// 用条件插入区分:撞键说明是前者,不算错误。
+		err := gdb.Exec(`INSERT INTO qy_task_leases
+			(name, holder, fence, lease_until, acquired_at, updated_at)
+			VALUES (?, ?, 1, UNIX_TIMESTAMP()+?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP())`,
+			name, holder, ttlSeconds).Error
+		if err == nil {
+			return true, 1, nil
+		}
+		if isDuplicateKey(err) {
+			return false, 0, nil // 别的节点正持有
+		}
+		db.MarkFailure(err)
+		return false, 0, err
 	}
 
 	var fence int64

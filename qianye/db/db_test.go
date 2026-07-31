@@ -240,3 +240,21 @@ func TestContextDeadlineIsNotAConnectionFailure(t *testing.T) {
 	// 业务错误依旧不计入。
 	assert.False(t, isConnLevelError(errors.New("Error 1062: Duplicate entry")))
 }
+
+// 迁移专用连接池必须容得下"锁 + DDL"两条连接。
+//
+// GET_LOCK 是连接级的,Migrate 会一直持有那条连接直到函数返回;AutoMigrate 再从
+// 同一个池要一条跑 DDL。池上限设成 1 会让 DDL 永远等那条被锁占着的连接 ——
+// 进程静默卡死在迁移阶段,数据库端一条语句都看不到,日志停在"已连接"之后没有下文。
+// 这个死锁编译和单测都发现不了,只有真跑起来才暴露,所以用一条结构性断言钉住。
+func TestMigrationPoolLeavesRoomForBothLockAndDDL(t *testing.T) {
+	sqlDB, err := openMigrationConnWith(config.Database{
+		DSN: "u:p@tcp(127.0.0.1:3306)/qy_test",
+	})
+	require.NoError(t, err)
+	defer sqlDB.Close()
+
+	stats := sqlDB.Stats()
+	assert.GreaterOrEqual(t, stats.MaxOpenConnections, 2,
+		"迁移池至少要 2 条连接:一条被 GET_LOCK 占着,另一条跑 DDL")
+}

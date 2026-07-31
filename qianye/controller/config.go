@@ -11,6 +11,10 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	// sitetheme 是叶子模块(只依赖 guard/db/model/audit),不会形成循环依赖。
+	// 站点默认主题必须由引导端点下发:前端要在首屏渲染之前拿到它,
+	// 单开一个接口会先渲染出默认主题再闪一下变成站点主题。
+	"github.com/QuantumNous/new-api/qianye/modules/sitetheme"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,9 +36,17 @@ func GetConfig(c *gin.Context) {
 		return
 	}
 
+	// 站点默认主题。前端在用户没有个人偏好(cookie)时用它作为兜底,
+	// 从而让"默认主题"成为运营可改的配置而不是前端硬编码。
+	themePreset, themeForce := sitetheme.Current()
+
 	ok(c, gin.H{
 		"enabled":   true,
 		"available": db.Available(),
+		"theme": gin.H{
+			"default_preset": themePreset,
+			"force_preset":   themeForce,
+		},
 		"features": gin.H{
 			"transfer":     cfg.Transfer.Enabled,
 			"commission":   cfg.Commission.Enabled,

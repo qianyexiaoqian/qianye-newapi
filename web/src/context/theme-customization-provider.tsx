@@ -42,6 +42,7 @@ import {
   type ThemeRadius,
   type ThemeScale,
 } from '@/lib/theme-customization'
+import { qyResolveDefaultPreset } from '@/features/qy/lib/site-theme'
 
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 365 // 1 year
 
@@ -101,7 +102,9 @@ export function ThemeCustomizationProvider(props: {
     readCookie<ThemePreset>(
       THEME_COOKIE_KEYS.preset,
       THEME_PRESET_VALUES,
-      DEFAULT_THEME_CUSTOMIZATION.preset
+      // 站点默认主题由管理员在后台配置,取代硬编码的默认值;
+      // 未配置或取不到时原样回落到上游默认。
+      qyResolveDefaultPreset(DEFAULT_THEME_CUSTOMIZATION.preset) as ThemePreset
     )
   )
   const [font, _setFont] = useState<ThemeFont>(() =>

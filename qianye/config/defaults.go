@@ -157,6 +157,13 @@ func applyDefaults(c *Config) {
 	intDefault(&v.EvidenceRetentionDays, 90)
 	intDefault(&v.RuleCacheSeconds, 60)
 	intDefault(&v.ScanTimeoutMs, 20)
+
+	gp := &c.GroupPricing
+	intDefault(&gp.RuleCacheSeconds, 60)
+	intDefault(&gp.MaxStaleSeconds, 300)
+	intDefault(&gp.ShadowFlushIntervalSeconds, 60)
+	intDefault(&gp.ShadowRetentionDays, 90)
+	intDefault(&gp.MaxRules, 2000)
 }
 
 func intDefault(p *int, def int) {
