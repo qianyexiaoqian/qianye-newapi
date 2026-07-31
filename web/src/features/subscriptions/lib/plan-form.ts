@@ -26,7 +26,9 @@ import type { SubscriptionPlan, PlanPayload } from '../types'
 export function getPlanFormSchema(t: TFunction) {
   return z.object({
     title: z.string().min(1, t('Please enter plan title')),
-    subtitle: z.string().optional(),
+    // The column is varchar(255); without this the admin either gets an opaque
+    // "Data too long" from MySQL or a silently truncated description.
+    subtitle: z.string().max(255, t('qy_plan_subtitle_too_long')).optional(),
     price_amount: z.coerce.number().min(0, t('Please enter amount')),
     duration_unit: z.enum(['year', 'month', 'day', 'hour', 'custom']),
     duration_value: z.coerce.number().min(1),

@@ -62,6 +62,7 @@ import { LogCostDisplay } from '../log-cost-display'
 import { ModelBadge } from '../model-badge'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
 import { useUsageLogsContext } from '../usage-logs-provider'
+import { useQyLogMetricColumns } from './qy-metric-columns'
 
 interface DetailSegment {
   text: string
@@ -285,6 +286,8 @@ function buildTypeDetailSegments(
 
 export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
   const { t } = useTranslation()
+  // qianye 扩展的「推理强度」「缓存命中率」两列；扩展未启用时返回空数组。
+  const qyMetricColumns = useQyLogMetricColumns()
   const columns: ColumnDef<UsageLog>[] = [
     {
       accessorKey: 'created_at',
@@ -689,6 +692,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         )
       },
     },
+    ...qyMetricColumns,
     {
       accessorKey: 'quota',
       header: t('Cost'),

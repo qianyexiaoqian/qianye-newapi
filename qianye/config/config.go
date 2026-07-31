@@ -114,6 +114,13 @@ type Transfer struct {
 	RecipientLookup        string `yaml:"recipient_lookup"`
 	NewAccountFreezeHours  int    `yaml:"new_account_freeze_hours"`
 	RequireReceiverEnabled *bool  `yaml:"require_receiver_enabled"`
+	// ReceiverDailyMaxInCount 限制单个收款人每日可接收的划转笔数。
+	// 不限制的话,一个账号可以被无数小号集中打款,是典型的洗号路径。
+	// 0 表示不限制。
+	ReceiverDailyMaxInCount int `yaml:"receiver_daily_max_in_count"`
+	// LookupLogRetainDays 收款人查找日志的保留天数。这些日志用于发现
+	// 批量探测用户 ID 的行为,但含用户输入,不宜长期保留。
+	LookupLogRetainDays int `yaml:"lookup_log_retain_days"`
 }
 
 // Commission 邀请返佣。
@@ -166,6 +173,18 @@ type Withdraw struct {
 	// DigestKey 独立于 PIIKey 且不轮换,用于跨账户风控索引。
 	// 与加密密钥分离,否则轮换后历史 digest 全部失效。
 	DigestKey string `yaml:"digest_key"`
+	// CooldownSecs 两次提现申请之间的最小间隔。0 表示不限制。
+	CooldownSecs int `yaml:"cooldown_seconds"`
+	// MaxPendingOrders 限制同时存在的未终态提现单数量。资金安全由佣金冻结
+	// 保证(不会超提),但没有这个限制时审核队列会被大量小额单淹没。0 表示不限制。
+	MaxPendingOrders int `yaml:"max_pending_orders"`
+	// MaxQuotaPerOrder / DailyMaxQuota 提现额度上限。不设的话单笔上界只有
+	// 主库 int32 容量,一次异常申请就会占满整个佣金池。0 表示不限制。
+	MaxQuotaPerOrder int64 `yaml:"max_quota_per_order"`
+	DailyMaxQuota    int64 `yaml:"daily_max_quota"`
+	// PIIRetentionDays 收款信息的保留天数,到期后清除密文只保留脱敏串。
+	// 收款信息属个人敏感信息,不应在提现完成后无限期留存。0 表示不清理。
+	PIIRetentionDays int `yaml:"pii_retention_days"`
 }
 
 // Wallet 钱包页入口开关。
@@ -209,10 +228,13 @@ type Availability struct {
 // ShadowMode 是安全阀而非可选项:一条 `.*` 正则能在 30 秒内封掉全站用户。
 // 上线必须先跑影子模式观察命中分布,确认误判率后再切真实模式。
 type Violation struct {
-	Enabled           bool  `yaml:"enabled"`
-	ShadowMode        *bool `yaml:"shadow_mode"`
-	PrecheckEnabled   bool  `yaml:"precheck_enabled"`
-	PostChargeEnabled bool  `yaml:"post_charge_enabled"`
+	Enabled    bool  `yaml:"enabled"`
+	ShadowMode *bool `yaml:"shadow_mode"`
+	// PrecheckEnabled / PostChargeEnabled 是普通 bool,零值为 false。
+	// 也就是说只写 enabled: true 而不显式打开这两个开关,两个挂载点都是空转 ——
+	// 这是安全的默认,但运维容易误以为"开了却不生效",示例配置里已注明。
+	PrecheckEnabled   bool `yaml:"precheck_enabled"`
+	PostChargeEnabled bool `yaml:"post_charge_enabled"`
 	// FeeMultiplier 为 decimal 字符串(如 "1.0"),避免浮点误差进入计费。
 	FeeMultiplier  string `yaml:"fee_multiplier"`
 	FixedFeeAmount string `yaml:"fixed_fee_amount"`

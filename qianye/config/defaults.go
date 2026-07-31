@@ -43,6 +43,8 @@ func applyDefaults(c *Config) {
 	intDefault(&tr.CooldownSecs, 10)
 	strDefault(&tr.RecipientLookup, RecipientLookupID)
 	intDefault(&tr.NewAccountFreezeHours, 24)
+	intDefault(&tr.ReceiverDailyMaxInCount, 50)
+	intDefault(&tr.LookupLogRetainDays, 30)
 
 	cm := &c.Commission
 	intDefault(&cm.TopupRateBps, 1000)
@@ -70,6 +72,11 @@ func applyDefaults(c *Config) {
 	intDefault(&w.ReviewSLAHours, 72)
 	intDefault(&w.RemarkMaxRunes, 200)
 	intDefault(&w.PIIKeyVersion, 1)
+	intDefault(&w.CooldownSecs, 60)
+	intDefault(&w.MaxPendingOrders, 3)
+	int64Default(&w.MaxQuotaPerOrder, 500000000)
+	int64Default(&w.DailyMaxQuota, 1000000000)
+	intDefault(&w.PIIRetentionDays, 180)
 
 	av := &c.Availability
 	intDefault(&av.BucketSeconds, 300)

@@ -58,6 +58,7 @@ import { Button } from '@/components/ui/button'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { Label } from '@/components/ui/label'
 import { DynamicPricingBreakdown } from '@/features/pricing/components/dynamic-pricing-breakdown'
+import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
@@ -76,6 +77,13 @@ import {
   getResponseTimeColor,
   renderAuditContent,
 } from '../../lib/format'
+import {
+  formatCacheRate,
+  getCacheRate,
+  getReasoning,
+  reasoningLabelKey,
+  reasoningVariant,
+} from '../../lib/qy-log-metrics'
 import {
   getLogTypeConfig,
   isPerCallBilling,
@@ -405,6 +413,7 @@ function BillingBreakdown(props: {
 
 function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
   const { t } = useTranslation()
+  const qyConfig = useQyConfig()
   const { log, other } = props
 
   const promptTokens = log.prompt_tokens || 0
@@ -460,6 +469,20 @@ function TokenBreakdown(props: { log: UsageLog; other: LogOtherData }) {
     })
   }
 
+  // 缓存命中率：弹窗有空间同时展示分子与分母，这里是用户排查"这次为什么贵"
+  // 的主入口。分母不可判定时显示 `—`，绝不猜一个百分比出来。
+  const showCacheRate =
+    qyConfig.enabled && qyConfig.log_metrics.show_cache_ratio && cacheRead > 0
+  if (showCacheRate) {
+    const rate = getCacheRate(log, other)
+    rows.push({
+      label: t('qy_log_cache_hit_rate'),
+      value: rate
+        ? `${formatCacheRate(rate.pct)} (${rate.cacheRead.toLocaleString()} / ${rate.inputTotal.toLocaleString()})`
+        : '—',
+    })
+  }
+
   return (
     <DetailSection label={t('Token Breakdown')}>
       {rows.map((row) => (
@@ -478,6 +501,7 @@ interface DetailsDialogProps {
 
 export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
+  const qyConfig = useQyConfig()
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const details = props.log.content ?? ''
   const other = parseLogOther(props.log.other)
@@ -604,6 +628,13 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const useChannel = other?.admin_info?.use_channel
   const channelChain =
     useChannel && useChannel.length > 0 ? useChannel.join(' → ') : undefined
+  // 推理强度：扩展开启时走 qy-log-metrics 的归一化 —— 它覆盖 Claude thinking、
+  // Gemini 数值预算、Qwen 等 other.reasoning_effort 完全拿不到的场景，并且与
+  // 表格列、移动端卡片共用同一份配色。扩展关闭时保持上游原样，做到零痕迹。
+  const qyReasoning =
+    qyConfig.enabled && qyConfig.log_metrics.show_reasoning_effort
+      ? getReasoning(other)
+      : null
   let reasoningEffortVariant: StatusBadgeProps['variant'] = 'green'
   if (other?.reasoning_effort === 'high') {
     reasoningEffortVariant = 'orange'
@@ -1014,18 +1045,48 @@ export function DetailsDialog(props: DetailsDialogProps) {
         )}
 
         {/* Reasoning effort */}
-        {other?.reasoning_effort && (
-          <DetailRow
-            label={t('Reasoning Effort')}
-            value={
-              <StatusBadge
-                label={other.reasoning_effort}
-                variant={reasoningEffortVariant}
-                size='sm'
-                copyable={false}
+        {qyReasoning ? (
+          <>
+            <DetailRow
+              label={t('Reasoning Effort')}
+              value={
+                <span className='inline-flex flex-wrap items-center gap-1.5'>
+                  <StatusBadge
+                    label={t(reasoningLabelKey(qyReasoning.level))}
+                    variant={reasoningVariant(qyReasoning.level)}
+                    size='sm'
+                    copyable={false}
+                  />
+                  {qyReasoning.raw !== '' && (
+                    <span className='text-muted-foreground font-mono text-xs break-all'>
+                      {qyReasoning.raw}
+                    </span>
+                  )}
+                </span>
+              }
+            />
+            {qyReasoning.budget > 0 && (
+              <DetailRow
+                label={t('qy_log_thinking_budget')}
+                value={qyReasoning.budget.toLocaleString()}
+                mono
               />
-            }
-          />
+            )}
+          </>
+        ) : (
+          other?.reasoning_effort && (
+            <DetailRow
+              label={t('Reasoning Effort')}
+              value={
+                <StatusBadge
+                  label={other.reasoning_effort}
+                  variant={reasoningEffortVariant}
+                  size='sm'
+                  copyable={false}
+                />
+              }
+            />
+          )
         )}
 
         {/* System prompt override */}

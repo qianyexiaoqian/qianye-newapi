@@ -51,7 +51,7 @@ import {
   updateBillingPreference,
 } from '@/features/subscriptions/api'
 import { SubscriptionPurchaseDialog } from '@/features/subscriptions/components/dialogs/subscription-purchase-dialog'
-import { formatDuration, formatResetPeriod } from '@/features/subscriptions/lib'
+import { buildPlanFacts, formatPlanPrice } from '@/features/subscriptions/lib'
 import type {
   PlanRecord,
   UserSubscriptionRecord,
@@ -243,9 +243,10 @@ export function SubscriptionPlansCard({
         </CardHeader>
         <CardContent className='space-y-4 p-3 sm:p-5'>
           <Skeleton className='h-20 w-full' />
-          <div className='grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3'>
+          {/* Mirrors the real plan grid below so nothing jumps on load. */}
+          <div className='grid grid-cols-1 gap-3 2xl:grid-cols-2 2xl:gap-4'>
             {['first', 'second', 'third'].map((key) => (
-              <Skeleton key={key} className='h-48 w-full' />
+              <Skeleton key={key} className='h-56 w-full' />
             ))}
           </div>
         </CardContent>
@@ -527,26 +528,14 @@ export function SubscriptionPlansCard({
             {plans.map((p, index) => {
               const plan = p?.plan
               if (!plan) return null
-              const totalAmount = Number(plan.total_amount || 0)
-              const price = Number(plan.price_amount || 0).toFixed(2)
               const isPopular = index === 0 && plans.length > 1
               const limit = Number(plan.max_purchase_per_user || 0)
               const count = planPurchaseCountMap.get(plan.id) || 0
               const reached = limit > 0 && count >= limit
-
-              const benefits = [
-                `${t('Validity Period')}: ${formatDuration(plan, t)}`,
-                formatResetPeriod(plan, t) !== t('No Reset')
-                  ? `${t('Quota Reset')}: ${formatResetPeriod(plan, t)}`
-                  : null,
-                totalAmount > 0
-                  ? `${t('Total Quota')}: ${formatQuota(totalAmount)}`
-                  : `${t('Total Quota')}: ${t('Unlimited')}`,
-                limit > 0 ? `${t('Purchase Limit')}: ${limit}` : null,
-                plan.upgrade_group
-                  ? `${t('Upgrade Group')}: ${plan.upgrade_group}`
-                  : null,
-              ].filter(Boolean) as string[]
+              const facts = buildPlanFacts(plan, t, {
+                includeGroups: true,
+                purchaseCount: count,
+              })
 
               return (
                 <Card
@@ -557,13 +546,28 @@ export function SubscriptionPlansCard({
                   <CardContent className='flex h-full flex-col p-3.5 sm:p-4'>
                     <div className='mb-2 flex items-start justify-between gap-3'>
                       <div className='min-w-0'>
-                        <h4 className='truncate font-semibold'>
+                        {/* No truncate: a clipped plan name is unusable.
+                            overflow-wrap guards against unbroken strings. */}
+                        <h4 className='font-semibold [overflow-wrap:anywhere]'>
                           {plan.title || t('Subscription Plans')}
                         </h4>
                         {plan.subtitle && (
-                          <p className='text-muted-foreground truncate text-xs'>
-                            {plan.subtitle}
-                          </p>
+                          <Tooltip>
+                            {/* Clamped rather than fully expanded: cards sit in
+                                a stretch grid, so one long subtitle would drag
+                                every sibling card taller. The uncut text lives
+                                in the purchase dialog (and this tooltip). */}
+                            <TooltipTrigger
+                              render={
+                                <p className='text-muted-foreground mt-0.5 line-clamp-3 cursor-help text-xs leading-relaxed [overflow-wrap:anywhere] whitespace-pre-line' />
+                              }
+                            >
+                              {plan.subtitle}
+                            </TooltipTrigger>
+                            <TooltipContent className='max-w-xs whitespace-pre-line'>
+                              {plan.subtitle}
+                            </TooltipContent>
+                          </Tooltip>
                         )}
                       </div>
                       {isPopular && (
@@ -580,18 +584,20 @@ export function SubscriptionPlansCard({
 
                     <div className='py-2'>
                       <span className='text-primary text-2xl font-bold'>
-                        ${price}
+                        {formatPlanPrice(plan)}
                       </span>
                     </div>
 
                     <div className='flex-1 space-y-1.5 pb-3'>
-                      {benefits.map((label) => (
+                      {facts.map((fact) => (
                         <div
-                          key={label}
+                          key={fact.id}
                           className='text-muted-foreground flex items-center gap-2 text-xs'
                         >
                           <Check className='text-primary h-3 w-3 shrink-0' />
-                          <span>{label}</span>
+                          <span className='[overflow-wrap:anywhere]'>
+                            {fact.label}: {fact.value}
+                          </span>
                         </div>
                       ))}
                     </div>

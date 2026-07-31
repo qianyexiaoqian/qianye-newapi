@@ -18,6 +18,13 @@ For commercial licensing, please contact support@quantumnous.com
 */
 export { formatDuration, formatResetPeriod, formatTimestamp } from './format'
 export {
+  buildPlanFacts,
+  formatPlanExpiryPreview,
+  formatPlanPrice,
+  type BuildPlanFactsOptions,
+  type PlanFact,
+} from './plan-facts'
+export {
   getPlanFormSchema,
   PLAN_FORM_DEFAULTS,
   planToFormValues,

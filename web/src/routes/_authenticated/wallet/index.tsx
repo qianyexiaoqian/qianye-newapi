@@ -20,9 +20,16 @@ import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 
 import { Wallet } from '@/features/wallet'
+import {
+  DEFAULT_WALLET_TAB,
+  WALLET_TAB_VALUES,
+} from '@/features/wallet/constants'
 
 const walletSearchSchema = z.object({
   show_history: z.boolean().optional(),
+  // `.catch` keeps a hand-edited `?tab=bogus` from throwing inside route
+  // validation, which would blank the whole page instead of the tab.
+  tab: z.enum(WALLET_TAB_VALUES).optional().catch(DEFAULT_WALLET_TAB),
 })
 
 export const Route = createFileRoute('/_authenticated/wallet/')({
@@ -31,6 +38,6 @@ export const Route = createFileRoute('/_authenticated/wallet/')({
 })
 
 function RouteComponent() {
-  const { show_history } = Route.useSearch()
-  return <Wallet initialShowHistory={show_history} />
+  const { show_history, tab } = Route.useSearch()
+  return <Wallet initialShowHistory={show_history} initialTab={tab} />
 }

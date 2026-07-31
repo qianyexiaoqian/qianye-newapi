@@ -34,6 +34,7 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -41,6 +42,15 @@ import { cn } from '@/lib/utils'
 import { LOG_TYPE_ENUM } from '../constants'
 import type { UsageLog } from '../data/schema'
 import { parseLogOther } from '../lib/format'
+import {
+  cacheRateTextClass,
+  formatCacheRate,
+  getCacheRate,
+  getLogOtherCached,
+  getReasoning,
+  reasoningLabelKey,
+  reasoningVariant,
+} from '../lib/qy-log-metrics'
 import {
   getLogTypeConfig,
   isDisplayableLogType,
@@ -190,6 +200,9 @@ function MobileLogTimeStatus({
 /** Mobile-only Tokens block: always show cache ↓/↑ when present (no label). */
 function MobileTokensField({ log }: { log: UsageLog }) {
   const { t } = useTranslation()
+  // 移动端卡片是手工枚举 cell 的（见 CommonLogsCard），不读 meta.mobileOrder，
+  // 所以扩展的两个指标必须在这里手工挂载，否则手机上永远看不到。
+  const qyConfig = useQyConfig()
 
   if (!isDisplayableLogType(log.type)) return null
 
@@ -203,7 +216,7 @@ function MobileTokensField({ log }: { log: UsageLog }) {
     )
   }
 
-  const other = parseLogOther(log.other)
+  const other = getLogOtherCached(log)
   const cacheReadTokens = other?.cache_tokens || 0
   const cacheWrite5m = other?.cache_creation_tokens_5m || 0
   const cacheWrite1h = other?.cache_creation_tokens_1h || 0
@@ -213,12 +226,45 @@ function MobileTokensField({ log }: { log: UsageLog }) {
     : other?.cache_creation_tokens || 0
   const showCache = cacheReadTokens > 0 || cacheWriteTokens > 0
 
+  const reasoning =
+    qyConfig.enabled && qyConfig.log_metrics.show_reasoning_effort
+      ? getReasoning(other)
+      : null
+  // 命中率只在已有缓存 token 的那一行追加：分子为 0 时上面那个 `—` 已经
+  // 表达了"没用到缓存"，再补一个 0% 是重复噪声。不可判定时同样不补，
+  // 绝不在手机上显示一个可能错误的百分比。
+  const cacheRate =
+    showCache && qyConfig.enabled && qyConfig.log_metrics.show_cache_ratio
+      ? getCacheRate(log, other)
+      : null
+
   return (
     <div className='bg-muted/20 min-w-0 rounded-md px-2 py-1.5'>
       <div className='flex flex-col gap-0.5'>
-        <span className='font-mono text-xs font-medium tabular-nums'>
-          {promptTokens.toLocaleString()} / {completionTokens.toLocaleString()}
-        </span>
+        <div className='flex min-w-0 items-center justify-between gap-2'>
+          <span className='truncate font-mono text-xs font-medium tabular-nums'>
+            {promptTokens.toLocaleString()} /{' '}
+            {completionTokens.toLocaleString()}
+          </span>
+          {reasoning && (
+            <span
+              className={cn(
+                'inline-flex shrink-0 items-center gap-1 text-[11px] leading-none',
+                textColorMap[reasoningVariant(reasoning.level)]
+              )}
+              title={`${t('Reasoning Effort')}: ${t(reasoningLabelKey(reasoning.level))}${reasoning.raw ? ` (${reasoning.raw})` : ''}`}
+            >
+              <span
+                className={cn(
+                  'size-1.5 shrink-0 rounded-full',
+                  dotColorMap[reasoningVariant(reasoning.level)]
+                )}
+                aria-hidden='true'
+              />
+              {t(reasoningLabelKey(reasoning.level))}
+            </span>
+          )}
+        </div>
         {showCache ? (
           <div className='text-muted-foreground flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-none'>
             {cacheReadTokens > 0 && (
@@ -228,6 +274,20 @@ function MobileTokensField({ log }: { log: UsageLog }) {
             )}
             {cacheWriteTokens > 0 && (
               <span>↑ {cacheWriteTokens.toLocaleString()}</span>
+            )}
+            {cacheRate && (
+              <span
+                className={cn(
+                  'tabular-nums',
+                  cacheRateTextClass(cacheRate.pct)
+                )}
+                title={t('qy_log_cache_detail_tip', {
+                  read: cacheRate.cacheRead.toLocaleString(),
+                  total: cacheRate.inputTotal.toLocaleString(),
+                })}
+              >
+                · {formatCacheRate(cacheRate.pct)}
+              </span>
             )}
           </div>
         ) : (

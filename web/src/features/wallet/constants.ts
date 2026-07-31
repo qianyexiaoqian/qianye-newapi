@@ -64,3 +64,18 @@ export const DEFAULT_DISCOUNT_RATE = 1.0
  * Default minimum topup amount
  */
 export const DEFAULT_MIN_TOPUP = 1
+
+/**
+ * Wallet page tabs. Also the accepted values of the `?tab=` search param, so
+ * the list is the single source of truth shared by the route schema and the UI.
+ */
+export const WALLET_TAB_VALUES = ['funds', 'plans'] as const
+
+export type WalletTab = (typeof WALLET_TAB_VALUES)[number]
+
+/**
+ * Default tab. Intentionally constant instead of "smart" (e.g. open the plans
+ * tab when the user already has a subscription): a shared wallet link must land
+ * every recipient on the same page.
+ */
+export const DEFAULT_WALLET_TAB: WalletTab = 'funds'

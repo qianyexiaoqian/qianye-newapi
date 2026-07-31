@@ -194,6 +194,28 @@ export interface LogOtherData {
   expr_b64?: string
   matched_tier?: string
   reasoning_effort?: string
+  // Written by the upstream billing path but previously undeclared here.
+  // usage_semantic is only set when the billing semantic is Anthropic, so a
+  // missing value is ambiguous — never treat it as "OpenAI semantic".
+  usage_semantic?: string
+  cache_write_tokens?: number
+  input_tokens_total?: number
+  // qianye extension (qianye/modules/logmetrics). qy_ver is the per-row
+  // watermark that separates logs this module processed from historical ones;
+  // qy_input_total is the authoritative cache-ratio denominator, computed
+  // server-side while the billing semantic is still known.
+  qy_ver?: number
+  qy_semantic?: 'anthropic' | 'openai'
+  qy_input_total?: number
+  qy_cache_read?: number
+  qy_cache_write?: number
+  qy_cache_anomaly?: boolean
+  qy_reasoning?: {
+    level?: string
+    raw?: string
+    budget?: number
+    src?: string
+  }
   image?: boolean
   image_ratio?: number
   image_output?: number

@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Crown, CalendarClock, Package } from 'lucide-react'
+import { Crown } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -45,7 +45,7 @@ import {
   paySubscriptionWaffoPancake,
   paySubscriptionBalance,
 } from '../../api'
-import { formatDuration, formatResetPeriod } from '../../lib'
+import { buildPlanFacts, formatPlanPrice } from '../../lib'
 import type { PlanRecord } from '../../types'
 
 interface PaymentMethod {
@@ -97,8 +97,6 @@ export function SubscriptionPurchaseDialog(props: Props) {
       ?.name ||
     selectedEpayMethod ||
     t('Select payment method')
-  const totalAmount = Number(plan.total_amount || 0)
-  const price = Number(plan.price_amount || 0).toFixed(2)
   const quotaPerUnit =
     currency?.quotaPerUnit && currency.quotaPerUnit > 0
       ? currency.quotaPerUnit
@@ -113,6 +111,12 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const limitReached =
     (props.purchaseLimit || 0) > 0 &&
     (props.purchaseCount || 0) >= (props.purchaseLimit || 0)
+  // Groups are excluded here because the dialog renders them as GroupBadge
+  // below rather than as plain text rows.
+  const facts = buildPlanFacts(plan, t, {
+    includeGroups: false,
+    purchaseCount: props.purchaseCount,
+  })
 
   const handlePayStripe = async () => {
     setPaying(true)
@@ -265,59 +269,67 @@ export function SubscriptionPurchaseDialog(props: Props) {
           {t('Purchase Subscription')}
         </>
       }
-      contentClassName='max-sm:w-[calc(100vw-1.5rem)] sm:max-w-md'
+      contentClassName='max-sm:w-[calc(100vw-1.5rem)] sm:max-w-lg'
       titleClassName='flex items-center gap-2'
       contentHeight='auto'
       bodyClassName='space-y-4'
     >
       <div className='space-y-3 sm:space-y-4'>
-        <div className='bg-muted/50 space-y-2.5 rounded-lg border p-3 sm:space-y-3 sm:p-4'>
-          <div className='flex justify-between'>
-            <span className='text-muted-foreground text-sm'>
-              {t('Plan Name')}
-            </span>
-            <span className='max-w-[200px] truncate text-sm font-medium'>
+        {/* Plan header. This is the one place the full, uncut description is
+            shown — the plan cards clamp it, and mobile has no hover tooltip,
+            so anything omitted here is effectively unreadable to the user. */}
+        <div className='bg-muted/50 space-y-1.5 rounded-lg border p-3 sm:p-4'>
+          <div className='flex items-baseline justify-between gap-2'>
+            <h3 className='min-w-0 text-base font-semibold [overflow-wrap:anywhere]'>
               {plan.title}
+            </h3>
+            <span className='text-muted-foreground shrink-0 text-xs'>
+              #{plan.id}
             </span>
           </div>
-          <div className='flex items-center justify-between'>
-            <span className='text-muted-foreground text-sm'>
-              {t('Validity Period')}
-            </span>
-            <span className='flex items-center gap-1 text-sm'>
-              <CalendarClock className='h-3.5 w-3.5' />
-              {formatDuration(plan, t)}
-            </span>
-          </div>
-          {formatResetPeriod(plan, t) !== t('No Reset') && (
-            <div className='flex justify-between'>
-              <span className='text-muted-foreground text-sm'>
-                {t('Reset Period')}
+          <p className='text-muted-foreground text-xs leading-relaxed [overflow-wrap:anywhere] whitespace-pre-line'>
+            {plan.subtitle || t('qy_plan_no_description')}
+          </p>
+        </div>
+
+        <div className='bg-muted/50 space-y-2.5 rounded-lg border p-3 sm:space-y-3 sm:p-4'>
+          {facts.map((fact) => (
+            <div
+              key={fact.id}
+              className='flex items-baseline justify-between gap-3'
+            >
+              <span className='text-muted-foreground shrink-0 text-sm'>
+                {fact.label}
               </span>
-              <span className='text-sm'>{formatResetPeriod(plan, t)}</span>
+              <span className='min-w-0 text-right text-sm [overflow-wrap:anywhere]'>
+                {fact.value}
+              </span>
             </div>
-          )}
-          <div className='flex items-center justify-between'>
-            <span className='text-muted-foreground text-sm'>
-              {t('Plan Quota')}
-            </span>
-            <span className='flex items-center gap-1 text-sm'>
-              <Package className='h-3.5 w-3.5' />
-              {totalAmount > 0 ? formatQuota(totalAmount) : t('Unlimited')}
-            </span>
-          </div>
+          ))}
           {plan.upgrade_group && (
-            <div className='flex items-center justify-between'>
+            <div className='flex items-center justify-between gap-3'>
               <span className='text-muted-foreground text-sm'>
                 {t('Upgrade Group')}
               </span>
               <GroupBadge group={plan.upgrade_group} />
             </div>
           )}
+          {/* Which group the account drops to after expiry decides whether the
+              user keeps any access at all, so it belongs in the buy decision. */}
+          {plan.downgrade_group && (
+            <div className='flex items-center justify-between gap-3'>
+              <span className='text-muted-foreground text-sm'>
+                {t('Downgrade Group')}
+              </span>
+              <GroupBadge group={plan.downgrade_group} />
+            </div>
+          )}
           <Separator />
-          <div className='flex items-center justify-between'>
+          <div className='flex items-center justify-between gap-3'>
             <span className='text-sm font-medium'>{t('Amount Due')}</span>
-            <span className='text-primary text-lg font-bold'>${price}</span>
+            <span className='text-primary text-lg font-bold'>
+              {formatPlanPrice(plan)}
+            </span>
           </div>
         </div>
 

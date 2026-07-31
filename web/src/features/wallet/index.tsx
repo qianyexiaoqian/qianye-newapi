@@ -16,10 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { getRouteApi } from '@tanstack/react-router'
+import { Crown, WalletCards } from 'lucide-react'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { QyWalletEntryCard } from '@/features/qy/wallet-entry'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
@@ -32,7 +36,13 @@ import { TransferDialog } from './components/dialogs/transfer-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
 import { SubscriptionPlansCard } from './components/subscription-plans-card'
 import { WalletStatsCard } from './components/wallet-stats-card'
-import { DEFAULT_DISCOUNT_RATE, PAYMENT_TYPES } from './constants'
+import {
+  DEFAULT_DISCOUNT_RATE,
+  DEFAULT_WALLET_TAB,
+  PAYMENT_TYPES,
+  WALLET_TAB_VALUES,
+  type WalletTab,
+} from './constants'
 import {
   useTopupInfo,
   usePayment,
@@ -57,7 +67,10 @@ import type {
 
 interface WalletProps {
   initialShowHistory?: boolean
+  initialTab?: WalletTab
 }
+
+const walletRoute = getRouteApi('/_authenticated/wallet/')
 
 export function Wallet(props: WalletProps) {
   const { t } = useTranslation()
@@ -79,7 +92,11 @@ export function Wallet(props: WalletProps) {
   const [selectedCreemProduct, setSelectedCreemProduct] =
     useState<CreemProduct | null>(null)
   const [showSubscriptionPanel, setShowSubscriptionPanel] = useState(true)
+  const [activeTab, setActiveTab] = useState<WalletTab>(
+    props.initialTab ?? DEFAULT_WALLET_TAB
+  )
 
+  const navigate = walletRoute.useNavigate()
   const { status } = useStatus()
   const { currency } = useSystemConfig()
   const { topupInfo, presetAmounts, loading: topupLoading } = useTopupInfo()
@@ -132,9 +149,57 @@ export function Wallet(props: WalletProps) {
   useEffect(() => {
     if (props.initialShowHistory) {
       setBillingDialogOpen(true)
-      window.history.replaceState({}, '', window.location.pathname)
+      // Must go through the router: a raw `replaceState(pathname)` drops the
+      // whole query string (including `?tab=`) and leaves the router's own
+      // search state out of sync with the address bar.
+      void navigate({
+        search: (prev) => ({ ...prev, show_history: undefined }),
+        replace: true,
+      })
     }
-  }, [props.initialShowHistory])
+  }, [props.initialShowHistory, navigate])
+
+  // URL -> state, so browser back/forward and shared deep links stay honoured.
+  useEffect(() => {
+    const next = props.initialTab ?? DEFAULT_WALLET_TAB
+    setActiveTab((prev) => (prev === next ? prev : next))
+  }, [props.initialTab])
+
+  // state -> URL. The default tab is written as `undefined` so the common case
+  // keeps a clean URL, and `replace` keeps tab flipping out of the history
+  // stack (Back should leave the wallet, not undo a tab switch).
+  const handleTabChange = useCallback(
+    (value: WalletTab) => {
+      setActiveTab(value)
+      void navigate({
+        search: (prev) => ({
+          ...prev,
+          tab: value === DEFAULT_WALLET_TAB ? undefined : value,
+        }),
+        replace: true,
+      })
+    },
+    [navigate]
+  )
+
+  // Base UI types the tab value as `any` and may emit `null` when it falls back
+  // automatically, so whitelist the value before it can reach the URL.
+  const handleTabValueChange = useCallback(
+    (value: string | null) => {
+      const next = WALLET_TAB_VALUES.find((tab) => tab === value)
+      if (!next) return
+      handleTabChange(next)
+    },
+    [handleTabChange]
+  )
+
+  // `?tab=plans` on a site with no plans configured: fall back silently once
+  // the plans card reports itself unavailable, instead of showing a blank tab.
+  useEffect(() => {
+    if (!showSubscriptionPanel && activeTab === 'plans') {
+      handleTabChange(DEFAULT_WALLET_TAB)
+    }
+  }, [showSubscriptionPanel, activeTab, handleTabChange])
 
   // Initialize topup amount when topup info is loaded
   const topupAmountInitializedRef = useRef(false)
@@ -290,54 +355,79 @@ export function Wallet(props: WalletProps) {
           <div className='mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-5'>
             <WalletStatsCard user={user} loading={userLoading} />
 
-            <div
-              className={
-                showSubscriptionPanel
-                  ? 'grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] xl:items-start'
-                  : 'grid gap-4'
-              }
+            <Tabs
+              value={activeTab}
+              onValueChange={handleTabValueChange}
+              className='gap-4'
             >
-              <div id='wallet-add-funds' className='scroll-mt-4'>
-                <RechargeFormCard
-                  topupInfo={topupInfo}
-                  presetAmounts={presetAmounts}
-                  selectedPreset={selectedPreset}
-                  onSelectPreset={handleSelectPreset}
-                  topupAmount={topupAmount}
-                  onTopupAmountChange={handleTopupAmountChange}
-                  paymentAmount={paymentAmount}
-                  calculating={calculating}
-                  onPaymentMethodSelect={handlePaymentMethodSelect}
-                  paymentLoading={paymentLoading}
-                  redemptionCode={redemptionCode}
-                  onRedemptionCodeChange={setRedemptionCode}
-                  onRedeem={handleRedeem}
-                  redeeming={redeeming}
-                  topupLink={topupInfo?.topup_link}
-                  loading={topupLoading}
-                  priceRatio={(status?.price as number) || 1}
-                  usdExchangeRate={effectiveUsdExchangeRate}
-                  onOpenBilling={() => setBillingDialogOpen(true)}
-                  creemProducts={topupInfo?.creem_products}
-                  enableCreemTopup={topupInfo?.enable_creem_topup}
-                  onCreemProductSelect={handleCreemProductSelect}
-                  enableWaffoTopup={topupInfo?.enable_waffo_topup}
-                  waffoPayMethods={topupInfo?.waffo_pay_methods}
-                  waffoMinTopup={topupInfo?.waffo_min_topup}
-                  onWaffoMethodSelect={handleWaffoMethodSelect}
-                  enableWaffoPancakeTopup={
-                    topupInfo?.enable_waffo_pancake_topup
-                  }
-                />
-              </div>
+              {showSubscriptionPanel && (
+                <TabsList
+                  aria-label={t('Wallet')}
+                  className='grid w-full grid-cols-2 sm:inline-flex sm:w-auto'
+                >
+                  <TabsTrigger value='funds' className='gap-1.5 px-3'>
+                    <WalletCards className='size-3.5' />
+                    {t('Add Funds')}
+                  </TabsTrigger>
+                  <TabsTrigger value='plans' className='gap-1.5 px-3'>
+                    <Crown className='size-3.5' />
+                    {t('Subscription Plans')}
+                  </TabsTrigger>
+                </TabsList>
+              )}
 
-              <SubscriptionPlansCard
-                topupInfo={topupInfo}
-                onAvailabilityChange={handleSubscriptionAvailabilityChange}
-                userQuota={user?.quota}
-                onPurchaseSuccess={fetchUser}
-              />
-            </div>
+              {/*
+                keepMounted is load-bearing, not cosmetic: Base UI 1.6.0's
+                Tabs.Panel returns null when hidden (`keepMounted || mounted`),
+                so without it every tab switch would remount both cards and
+                refire their fetches, and the purchase dialog mounted inside
+                SubscriptionPlansCard would be torn down mid-payment.
+              */}
+              <TabsContent value='funds' keepMounted>
+                <div id='wallet-add-funds' className='scroll-mt-4'>
+                  <RechargeFormCard
+                    topupInfo={topupInfo}
+                    presetAmounts={presetAmounts}
+                    selectedPreset={selectedPreset}
+                    onSelectPreset={handleSelectPreset}
+                    topupAmount={topupAmount}
+                    onTopupAmountChange={handleTopupAmountChange}
+                    paymentAmount={paymentAmount}
+                    calculating={calculating}
+                    onPaymentMethodSelect={handlePaymentMethodSelect}
+                    paymentLoading={paymentLoading}
+                    redemptionCode={redemptionCode}
+                    onRedemptionCodeChange={setRedemptionCode}
+                    onRedeem={handleRedeem}
+                    redeeming={redeeming}
+                    topupLink={topupInfo?.topup_link}
+                    loading={topupLoading}
+                    priceRatio={(status?.price as number) || 1}
+                    usdExchangeRate={effectiveUsdExchangeRate}
+                    onOpenBilling={() => setBillingDialogOpen(true)}
+                    creemProducts={topupInfo?.creem_products}
+                    enableCreemTopup={topupInfo?.enable_creem_topup}
+                    onCreemProductSelect={handleCreemProductSelect}
+                    enableWaffoTopup={topupInfo?.enable_waffo_topup}
+                    waffoPayMethods={topupInfo?.waffo_pay_methods}
+                    waffoMinTopup={topupInfo?.waffo_min_topup}
+                    onWaffoMethodSelect={handleWaffoMethodSelect}
+                    enableWaffoPancakeTopup={
+                      topupInfo?.enable_waffo_pancake_topup
+                    }
+                  />
+                </div>
+              </TabsContent>
+
+              <TabsContent value='plans' keepMounted>
+                <SubscriptionPlansCard
+                  topupInfo={topupInfo}
+                  onAvailabilityChange={handleSubscriptionAvailabilityChange}
+                  userQuota={user?.quota}
+                  onPurchaseSuccess={fetchUser}
+                />
+              </TabsContent>
+            </Tabs>
 
             <AffiliateRewardsCard
               user={user}
@@ -348,6 +438,8 @@ export function Wallet(props: WalletProps) {
               }
               loading={affiliateLoading}
             />
+
+            <QyWalletEntryCard />
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>

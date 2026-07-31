@@ -200,6 +200,13 @@ func validateWithdraw(w *Withdraw) error {
 	if err := checkQuotaCap("withdraw.min_quota", w.MinQuota); err != nil {
 		return err
 	}
+	if err := checkQuotaCap("withdraw.max_quota_per_order", w.MaxQuotaPerOrder); err != nil {
+		return err
+	}
+	if w.MaxQuotaPerOrder > 0 && w.MinQuota > w.MaxQuotaPerOrder {
+		return fmt.Errorf("qianye: withdraw.min_quota(%d) 不得大于 max_quota_per_order(%d)",
+			w.MinQuota, w.MaxQuotaPerOrder)
+	}
 	if w.RemarkMaxRunes <= 0 || w.RemarkMaxRunes > 2000 {
 		return fmt.Errorf("qianye: withdraw.remark_max_runes 必须在 1..2000 之间,收到 %d", w.RemarkMaxRunes)
 	}

@@ -52,16 +52,21 @@ export function useSubscriptionsColumns(): ColumnDef<PlanRecord>[] {
           const plan = row.original.plan
           return (
             <div className='max-w-full min-w-0'>
-              <div className='truncate font-medium'>{plan.title}</div>
+              <div className='font-medium [overflow-wrap:anywhere]'>
+                {plan.title}
+              </div>
+              {/* Two lines instead of one: the same cell backs the mobile card
+                  list (meta.mobileTitle), where a one-line subtitle hid almost
+                  the entire description. */}
               {plan.subtitle && (
-                <div className='text-muted-foreground truncate text-xs'>
+                <div className='text-muted-foreground line-clamp-2 text-xs [overflow-wrap:anywhere] whitespace-pre-line'>
                   {plan.subtitle}
                 </div>
               )}
             </div>
           )
         },
-        size: 200,
+        size: 280,
       },
       {
         accessorFn: (row) => row.plan.price_amount,

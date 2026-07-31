@@ -37,6 +37,7 @@ import {
 import { useTranslation } from 'react-i18next'
 
 import { type SidebarData } from '@/components/layout/types'
+import { useQySidebarGroups } from '@/features/qy/nav'
 import { ROLE } from '@/lib/roles'
 
 /**
@@ -158,6 +159,7 @@ export function useSidebarData(): SidebarData {
           },
         ],
       },
+      ...useQySidebarGroups(),
     ],
   }
 }

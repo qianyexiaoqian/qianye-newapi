@@ -61,6 +61,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 
 import {
@@ -307,8 +308,12 @@ export function SubscriptionsMutateDrawer({
                   <FormItem>
                     <FormLabel>{t('Plan Subtitle')}</FormLabel>
                     <FormControl>
-                      <Input
+                      {/* Textarea, not Input: the field holds up to 255 chars
+                          and the user-facing views render its line breaks. */}
+                      <Textarea
                         {...field}
+                        rows={3}
+                        maxLength={255}
                         placeholder={t('e.g. Suitable for light usage')}
                       />
                     </FormControl>

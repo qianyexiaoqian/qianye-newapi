@@ -99,6 +99,8 @@ transfer:
   recipient_lookup: "id"             # id | id_or_email
   new_account_freeze_hours: 24       # 新注册账号多久内不可转出(防套现洗号)
   require_receiver_enabled: true
+  receiver_daily_max_in_count: 50    # 单账号每日最多接收多少笔(防大量小号向一个账号集中打款)
+  lookup_log_retain_days: 30         # 收款人查找日志保留天数(用于发现批量探测用户ID的行为)
 
 # ---------------------------------------------------------------------------
 # 邀请返佣(P4)
@@ -150,6 +152,11 @@ withdraw:
   rate_freeze_fixed: "7.3"
   auto_credit_on_approve: true
   daily_max_count: 3
+  cooldown_seconds: 60               # 两次申请之间的最小间隔
+  max_pending_orders: 3              # 同时存在的未终态单上限,防审核队列被小额单淹没
+  max_quota_per_order: 500000000     # 单笔提现上限
+  daily_max_quota: 1000000000        # 单日提现总额上限
+  pii_retention_days: 180            # 收款信息保留天数,到期清除密文只留脱敏串
   payee_account_max: 3
   review_sla_hours: 72
   remark_max_runes: 200              # 用户自定义说明的字数上限(按字符计,中文算一个)
@@ -208,6 +215,8 @@ violation:
   # 影子模式:只记录,不扣费不封号。
   # 上线必须先跑影子模式观察命中分布 —— 一条 `.*` 正则能在 30 秒内封掉全站用户。
   shadow_mode: true
+  # ⚠️ 下面两个开关默认为 false。只写 enabled: true 而不打开它们,
+  # 两个检测挂载点都是空转 —— 这是安全的默认,但别误以为"开了却不生效"。
   precheck_enabled: false            # 转发前检查提示词并拒绝
   post_charge_enabled: true          # 事后按模型价格倍数扣费
   fee_multiplier: "1.0"              # 扣费倍数,乘以本次请求的计费额

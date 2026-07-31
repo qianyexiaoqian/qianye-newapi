@@ -1,0 +1,106 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+/**
+ * qy 扩展的 react-query key 规范。
+ *
+ * **硬性约定：所有 qy 的 queryKey 必须以 `'qy'` 开头。**
+ * 跨库两阶段下前端无法判断一次资金操作到底影响了哪些视图，
+ * `invalidateQueries({ queryKey: qyKeys.all })` 全量失效是唯一安全的收尾方式，
+ * 而它成立的前提就是这个统一前缀。
+ *
+ * 新增页面时在下面加一行即可；带参数的列表 key 一律把整个 params 对象放最后一段，
+ * react-query 会做结构化比较，分页/筛选变化天然是不同的缓存条目。
+ */
+export const qyKeys = {
+  all: ['qy'] as const,
+
+  config: () => [...qyKeys.all, 'config'] as const,
+
+  // ── 用户端 ──
+  transferLimits: () => [...qyKeys.all, 'transfer', 'limits'] as const,
+  transferRecords: (params: unknown) =>
+    [...qyKeys.all, 'transfer', 'records', params] as const,
+  transferPreview: (params: unknown) =>
+    [...qyKeys.all, 'transfer', 'preview', params] as const,
+
+  commissionSummary: () => [...qyKeys.all, 'commission', 'summary'] as const,
+  commissionInvitees: (params: unknown) =>
+    [...qyKeys.all, 'commission', 'invitees', params] as const,
+  commissionRecords: (params: unknown) =>
+    [...qyKeys.all, 'commission', 'records', params] as const,
+
+  withdrawConfig: () => [...qyKeys.all, 'withdraw', 'config'] as const,
+  withdrawRecords: (params: unknown) =>
+    [...qyKeys.all, 'withdraw', 'records', params] as const,
+  withdrawRecord: (id: number | string) =>
+    [...qyKeys.all, 'withdraw', 'record', id] as const,
+  withdrawPayees: () => [...qyKeys.all, 'withdraw', 'payees'] as const,
+
+  violationMyRecords: (params: unknown) =>
+    [...qyKeys.all, 'violation', 'my-records', params] as const,
+  violationMySummary: () => [...qyKeys.all, 'violation', 'my-summary'] as const,
+
+  availabilityMatrix: (params: unknown) =>
+    [...qyKeys.all, 'availability', 'matrix', params] as const,
+  availabilitySeries: (params: unknown) =>
+    [...qyKeys.all, 'availability', 'series', params] as const,
+
+  // ── 管理端 ──
+  adminHealth: () => [...qyKeys.all, 'admin', 'health'] as const,
+  adminFundOrders: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'fund-orders', params] as const,
+  adminAuditLogs: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'audit-logs', params] as const,
+  adminLeases: () => [...qyKeys.all, 'admin', 'leases'] as const,
+
+  adminCommissionConfig: () =>
+    [...qyKeys.all, 'admin', 'commission', 'config'] as const,
+  adminCommissionRecords: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'commission', 'records', params] as const,
+  adminCommissionHealth: () =>
+    [...qyKeys.all, 'admin', 'commission', 'health'] as const,
+
+  adminTransferRecords: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'transfer', 'records', params] as const,
+
+  adminWithdrawals: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'withdraw', 'list', params] as const,
+  adminWithdrawal: (id: number | string) =>
+    [...qyKeys.all, 'admin', 'withdraw', 'detail', id] as const,
+  adminWithdrawStats: () =>
+    [...qyKeys.all, 'admin', 'withdraw', 'stats'] as const,
+  adminWithdrawPiiAudits: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'withdraw', 'pii-audits', params] as const,
+
+  adminViolationRules: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'violation', 'rules', params] as const,
+  adminViolationRecords: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'violation', 'records', params] as const,
+  adminViolationEvidence: (id: number | string) =>
+    [...qyKeys.all, 'admin', 'violation', 'evidence', id] as const,
+  adminViolationBans: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'violation', 'bans', params] as const,
+  adminViolationAppeals: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'violation', 'appeals', params] as const,
+  adminViolationStats: () =>
+    [...qyKeys.all, 'admin', 'violation', 'stats'] as const,
+
+  adminAvailabilityStats: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'availability', 'stats', params] as const,
+} as const

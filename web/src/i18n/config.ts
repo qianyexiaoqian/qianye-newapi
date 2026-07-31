@@ -28,6 +28,7 @@ import ru from './locales/ru.json'
 import vi from './locales/vi.json'
 import zhTW from './locales/zh-TW.json'
 import zhCN from './locales/zh.json'
+import { registerQyResources } from './qy'
 
 export const resources = {
   en,
@@ -60,5 +61,8 @@ i18n
       convertDetectedLanguage,
     },
   })
+
+// qy 扩展的翻译独立成 bundle 合并进来，避免往上游 7 个 locale 大文件里插键。
+registerQyResources(i18n)
 
 export default i18n
