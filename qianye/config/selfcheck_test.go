@@ -77,8 +77,13 @@ func TestFieldConsumers_CoversEveryConfigField(t *testing.T) {
 // 已知的空闸门必须逐个列出来,新增一个就要显式改这里。
 //
 // 允许存在空闸门(启动期会告警),但不允许"悄悄多一个"。
+//
+// 目前这个集合是**空的**:最后一个空闸门 audit.retention_days 已经接上
+// qianye/service/audit/retention.go 的 Prune。清空这条断言是刻意的 ——
+// 每次启动都出现、却没人能修的告警会训练运维忽略整套自检输出,
+// 而自检正是本扩展为"配置项空转"这个形状建立的主要防线。
 func TestFieldConsumers_KnownUnconsumedFieldsAreExactlyThese(t *testing.T) {
-	assert.Equal(t, []string{"audit.retention_days"}, CheckFieldConsumers().Unconsumed,
+	assert.Empty(t, CheckFieldConsumers().Unconsumed,
 		"空闸门的集合变了:新增的请先接消费方,确实接不上再登记为空并在这里列出")
 }
 

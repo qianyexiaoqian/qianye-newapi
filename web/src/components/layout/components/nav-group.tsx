@@ -46,6 +46,7 @@ import {
   SidebarMenuSubItem,
   useSidebar,
 } from '@/components/ui/sidebar'
+import { useQyNavEnLabel } from '@/features/qy/hooks/use-qy-nav-en-label'
 
 import { checkIsActive } from '../lib/url-utils'
 import {
@@ -122,6 +123,10 @@ function NavBadge({ children }: { children: ReactNode }) {
  */
 function SidebarMenuLink({ item, href }: { item: NavLink; href: string }) {
   const { setOpenMobile } = useSidebar()
+  // Steins Gate 主题的英文小号大写副标（design-11 §1.3：中文大字 + 英文副标
+  // 成对出现，是该主题最强的识别特征）。其它预设下恒为 null，此时走下面的
+  // else 分支，渲染出的 DOM 与本次改造前逐字节一致。
+  const enLabel = useQyNavEnLabel(item.url)
   return (
     <SidebarMenuItem>
       <SidebarMenuButton
@@ -130,7 +135,23 @@ function SidebarMenuLink({ item, href }: { item: NavLink; href: string }) {
         render={<Link to={item.url} onClick={() => setOpenMobile(false)} />}
       >
         {item.icon && <item.icon className='shrink-0' />}
-        <span className='min-w-0 flex-1 truncate'>{item.title}</span>
+        {enLabel ? (
+          // 主标题与副标各自成块、各自 truncate：若沿用单个 truncate 的 span
+          // 再往里塞块级子元素，中文那半会掉进匿名块盒，text-overflow 的省略号
+          // 归属就不再确定。
+          <span className='min-w-0 flex-1'>
+            <span className='block truncate'>{item.title}</span>
+            <span
+              data-qy-sg-nav-en=''
+              aria-hidden='true'
+              className='block truncate'
+            >
+              {enLabel}
+            </span>
+          </span>
+        ) : (
+          <span className='min-w-0 flex-1 truncate'>{item.title}</span>
+        )}
         {item.badge && <NavBadge>{item.badge}</NavBadge>}
       </SidebarMenuButton>
     </SidebarMenuItem>

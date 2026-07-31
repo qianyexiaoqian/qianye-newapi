@@ -24,13 +24,13 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table'
-import { SectionPageLayout } from '@/components/layout'
 import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyKeys } from '../../lib/query-keys'
 import { qyOpsErrorMessage } from '../ops/errors'
 import { formatQyTs, QY_EMPTY_TEXT } from '../ops/format'
@@ -82,11 +82,11 @@ export function QyAdminTransferGroupRules() {
   const atLimit = data != null && rules.length >= data.max_rule_count
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_nav_a_transfer_group_rules')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Actions>
         <Button
           variant='outline'
           size='sm'
@@ -106,8 +106,8 @@ export function QyAdminTransferGroupRules() {
           <Plus aria-hidden='true' />
           {t('qy_trg_create')}
         </Button>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Actions>
+      <QySectionPageLayout.Content>
         <QyPageBoundary query={query}>
           {data != null && (
             <div className='space-y-4'>
@@ -240,7 +240,7 @@ export function QyAdminTransferGroupRules() {
             </div>
           )}
         </QyPageBoundary>
-      </SectionPageLayout.Content>
+      </QySectionPageLayout.Content>
 
       <QyGroupRuleFormSheet
         open={sheetOpen}
@@ -269,7 +269,7 @@ export function QyAdminTransferGroupRules() {
           if (pendingDelete != null) deleteMutation.mutate(pendingDelete)
         }}
       />
-    </SectionPageLayout>
+    </QySectionPageLayout>
   )
 }
 

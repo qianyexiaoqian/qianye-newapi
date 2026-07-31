@@ -26,12 +26,18 @@ For commercial licensing, please contact support@quantumnous.com
  * that activates it. Loaded globally so font-switching is instantaneous
  * with no FOUT once the variable is fetched. */
 @import '@fontsource-variable/lora';
+/* 等宽轴。Steins Gate 主题把一切数字、标识符、状态标签、列标题都排成等宽 +
+ * 宽字距(见 `--qy-sg-mono`),需要一款本地托管的等宽字体 —— 参考稿用的
+ * Google Fonts <link> 属于外部网络资源,不能照搬。与 Lora 同理全局加载,
+ * 切主题时字体已经在,不会闪一下再换。 */
+@import '@fontsource-variable/jetbrains-mono';
 
 @import './theme.css';
 @import './theme-presets.css';
 /* 千夜扩展的预设。单独成文件以避免与上游 theme-presets.css 的改动冲突。
- * qy-theme-presets 只定义颜色变量,qy-steins-gate 负责构图与组件形态 ——
- * 后者必须排在所有基础组件样式之后才能覆盖它们。 */
+ * qy-theme-presets 收纳纯配色型的 qy 预设;qy-steins-gate 是 Steins Gate
+ * 主题的汇总入口(色板 + 构图 + 组件形态),它必须排在所有基础组件样式
+ * 之后才能覆盖它们。 */
 @import './qy-theme-presets.css';
 @import './qy-steins-gate.css';
 

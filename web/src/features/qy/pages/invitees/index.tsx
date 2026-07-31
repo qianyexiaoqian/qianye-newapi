@@ -26,13 +26,13 @@ import {
   staticDataTableClassNames,
   type StaticDataTableColumn,
 } from '@/components/data-table'
-import { SectionPageLayout } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyCommissionRecordsQuery, qyInviteesQuery } from '../affiliate/api'
 import type { QyCommissionRecord, QyInvitee } from '../affiliate/types'
 import { QyPager } from '../components/qy-pager'
@@ -52,9 +52,11 @@ export function QyInvitees() {
   const { t } = useTranslation()
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>{t('qy_nav_invitees')}</SectionPageLayout.Title>
-      <SectionPageLayout.Content>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
+        {t('qy_nav_invitees')}
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Content>
         <Tabs defaultValue='invitees' className='gap-3'>
           <TabsList>
             <TabsTrigger value='invitees'>{t('qy_aff_tab_people')}</TabsTrigger>
@@ -67,8 +69,8 @@ export function QyInvitees() {
             <CommissionRecordsTable />
           </TabsContent>
         </Tabs>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }
 

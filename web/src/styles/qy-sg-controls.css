@@ -1,0 +1,1249 @@
+/* Steins Gate 主题 —— 控件(设计规范 §3):按钮、输入、选择、开关、
+ * 复选、单选、滑块、切换、field、kbd。取值一律取自 qy-sg-tokens.css 的
+ * --qy-sg-*;实心按钮的昼夜差异已收在 --qy-sg-ink-btn-* 里,此处不写昼夜分支。
+ *
+ * ── 怎么挂进去的 ──
+ * 上游组件源码一行未改。锚点有两类:
+ *   1. `data-slot` 属性(shadcn 的官方扩展点),用于组件本体;
+ *   2. Tailwind 变体类名,用于区分 button 的六个 variant ——
+ *      button.tsx 的 cva 只把 variant 写进 className,没有 data-variant 属性,
+ *      所以变体只能按类名判定。逐个核对过 button.tsx 与运行时 DOM:
+ *        default     → .bg-primary
+ *        outline     → .bg-background        (六个变体里唯一带 bg-background 的)
+ *        secondary   → .bg-secondary
+ *        destructive → [class*='bg-destructive']  (base 类里没有别的 bg-destructive*)
+ *        link        → .underline-offset-4
+ *        ghost       → 以上皆非(用 :not 链兜底)
+ *      注意不要拿 hover:bg-muted 判 ghost:调用点若写 hover:bg-muted/50,
+ *      tailwind-merge 会把原类删掉,实测 outline 按钮的 border-border 就是这样没的。
+ *
+ * ── 层叠 ──
+ * 本文件在 index.css 里以裸 @import 引入,不在任何 @layer 中;
+ * Tailwind v4 的工具类都在 @layer utilities 里,无层的规则永远压过有层的规则,
+ * 因此这里不需要写 !important,也不要写。
+ *
+ * ── 半透明色一律写 oklch(from X l c h / n%),不写 color-mix(…, transparent) ──
+ * 实测(Chrome,dist 构建产物,昼间纸面):
+ *   color-mix(in oklch, var(--card) 50%, transparent)
+ *     → 计算值 oklch(0.945 0.019 none / 0.5),【色相塌成 none】,
+ *       渲染时按 0 处理,即品红方向;叠在纸面上得 #f8ece9(偏粉)。
+ *   oklch(from var(--card) l c h / 50%)
+ *     → 计算值 oklch(0.945 0.019 86.1 / 0.5),色相原样保留。
+ * 与 transparent 混合时,transparent 的色相是缺失分量,浏览器把结果的色相
+ * 也判为缺失 —— 基色彩度越高,偏得越明显。相对颜色语法只改 alpha,
+ * l/c/h 三个分量原样透传,既精确又仍然是"从标准变量派生",
+ * 调色板改了 --card / --primary,这里立刻跟随。
+ *
+ * ── 位移一律用 translate 属性而非 transform ──
+ * Tailwind v4 的 translate-* 工具类改用 CSS `translate` 属性(button 基类里的
+ * active:translate-y-px 就是),用同一个属性才能干净地覆盖;若写 transform,
+ * 两者会叠加,按下时的位移会算两次。
+ */
+
+/* ══════════════════════════════════════════════════════════════
+ * 控件级切角(第二版规范 design-11 §1.7 / §1.6)
+ *
+ * frame 层(qy-sg-frame.css)的切角框是【四角 + 双回路 ::before 环】,
+ * 那是给整块面板用的。控件不能照搬,两条硬理由,都是查过源码才定的:
+ *
+ *  (1) <input> / <textarea> / <select> 是替换元素,浏览器【不渲染】它们的
+ *      ::before / ::after。frame 的环全靠伪元素承载,在这三个标签上等于
+ *      写了永远不生效的 CSS —— 所以输入族的切角必须画在元素自己身上。
+ *  (2) 控件要的是"两角切"(左上 / 右下),不是四角切。四角切读作徽章,
+ *      两角切读作"一条被削过的边",这是 design-11 §1.7 的原话。
+ *
+ * ── 元素自身 clip-path 之后,边框怎么画 ──
+ * clip-path 会把 border 的两个切角连同边框一起切掉,切口上没有线。
+ * 补线的办法是两层 linear-gradient,一个切角一层:
+ *   左上切口的可见边是 (0,notch)→(notch,0),即 notch×notch 方块的【反对角线】;
+ *   135deg(指向右下)的渐变,其等色带正好平行于反对角线,所以带宽 = 线宽。
+ *   右下切口方向相同但"朝内"是左上,所以那一层用 315deg。
+ * frame 层实测过 45° 硬停渐变没有几何抗锯齿(中间调像素 0),这里不用硬停:
+ * 色标写成 50% → +0.35px → +1.05px → +1.75px,自己造两段过渡带;
+ * 外侧那一半反正被 clip-path 切掉,切口本身由 Skia 抗锯齿。
+ * 即"外缘吃 clip 的抗锯齿,内缘吃渐变的软过渡",两侧都不是二值阶梯。
+ *
+ * 这四个数是【比出来的】,不是拍的。foreignObject → canvas → getImageData
+ * 扫描左上切口 16 行,以同一张图上那条 1px 直边框的墨量(垂直方向 1.000)
+ * 为基准,量每行横向墨量(45° 线要 √2≈1.414 才等于 1px 的垂直厚度):
+ *   +0.05/+0.75/+1.45  → 每行 1.051(= 0.74px 厚,偏细 26%),
+ *                        相邻像素 0 与 242,基本还是二值
+ *   +0.35/+1.05/+1.75  → 每行 1.478(= 1.045px 厚,与直边差 4.5%),
+ *                        相邻像素 0 与 133,有真正的中间调  ← 选它
+ *   三角形软脊(+1/+1/+2)→ 每行 1.290(0.91px,偏细),中间调两枚但整条偏虚
+ *   +0.5/+1.2/+2.0 与 +0.2/+1.2/+1.9 → 1.73 / 1.69,比直边粗两成,补边比正边重
+ *
+ * ── 为什么点表与渐变【写在规则里】,而不是收进一个 --qy-sg-ctl-clip 配方 ──
+ * 自定义属性里的 var() 是在【声明它的那个元素】上做替换的,替换后的结果才向下
+ * 继承。所以把 polygon() 收进 --qy-sg-ctl-clip 之后,子元素再覆写
+ * --qy-sg-ctl-notch 【不会】改变继承下来的 clip:后代拿到的是 body 上早就算好
+ * 的那串字面量。把 var() 直接写在 clip-path / background-image 这两个真属性上,
+ * 替换才发生在控件元素自己身上,textarea 就地把 --qy-sg-ctl-notch 调大才生效。
+ * (frame 层交接说明里"就地覆写 --qy-sg-notch,clip 会跟着变"的写法有这个坑,
+ *  本文件因此没有采用配方式导出。)
+ *
+ * ── clip-path 会把 box-shadow 和 outline 一起切掉(实测)──
+ * 同一套 foreignObject → canvas 读像素:一个带 clip-path 的黑块,
+ *   box-shadow: 0 0 0 6px 红  → 环所在的像素读回 (255,255,255,255),没画出来
+ *   outline: 4px 蓝 + offset 3px → 同样读回纯白,outline 也不是逃生口
+ * 所以"外环焦点提示"在被切的元素上不存在第二条路,只能改内辉光。
+ *
+ * 这是必须一起改掉焦点态的原因:第一版输入框的焦点是外柔光环
+ * `box-shadow: 0 0 0 3px glow`,切角之后它整圈都在裁剪区之外,等于没有焦点提示。
+ * 被切的元素一律改成【内辉光描边】:inset 1px 强调色实边 + inset 12px 柔光,
+ * 再把边框与两条补边一起转强调色。这也正好是 design-11 要的"发光描边"观感。
+ * 反过来,勾选框 / 单选 / 开关【不切自己】(理由见下面各节),外柔光环原样保留。
+ * ══════════════════════════════════════════════════════════════ */
+
+[data-theme-preset='steins-gate'] {
+  /* 控件切角尺寸 = frame 层面板切角的一半。这是【引用】不是另起一套:
+   * frame 把 --qy-sg-notch 从 12px 调成别的值,控件跟着变。
+   * 不直接用 12px 的理由是量出来的:输入框高 h-8 = 32px,12px 切角会啃掉
+   * 三分之一多的边高,读起来不像削角而像缺了一块。 */
+  --qy-sg-ctl-notch: calc(var(--qy-sg-notch) / 2);
+
+  /* 两条补边的颜色。各变体 / 各状态就地覆写它,共用同一条 background-image
+   * 声明 —— 因为那条声明写在真属性上,替换发生在控件元素自己身上。 */
+  --qy-sg-ctl-edge-color: var(--qy-sg-hair);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 按钮(规范 §3 第一节)
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 基座:胶囊 + 宽字距 + 统一缓动。
+ * 胶囊形状【刻意】不写成 calc(var(--radius) * n) —— 999px 是本主题的身份标识,
+ * 不跟随调色板的 radius 轴,这是规范 §1 末段明文要求的例外,不是漏了。 */
+[data-theme-preset='steins-gate'] [data-slot='button'] {
+  border-radius: var(--qy-sg-pill);
+  letter-spacing: 0.08em;
+  transition: all 0.28s var(--qy-sg-ease);
+  cursor: pointer;
+}
+
+[data-theme-preset='steins-gate'] [data-slot='button']:disabled,
+[data-theme-preset='steins-gate'] [data-slot='button'][data-disabled] {
+  cursor: not-allowed;
+}
+
+/* 按钮组与切换组里的按钮维持方角:它们要拼成一条连续的分段控件,
+ * 每一段都做成胶囊会散架。整组的外形由 qy-sg-nav.css 负责。 */
+[data-theme-preset='steins-gate']
+  :is([data-slot='button-group'], [data-slot='toggle-group'])
+  [data-slot='button'] {
+  border-radius: var(--radius);
+}
+
+/* 横向留白。参考稿 .btn 是 14px 30px,那是首屏 CTA 的尺度;
+ * 后台的密集工具栏照搬会挤爆,这里按字号取 em,既保持胶囊的舒展感
+ * 又随 scale 轴与各 size 变体一起缩放。
+ * 方形图标按钮(size-6/7/8/9)与 icon-* 尺寸的输入组按钮必须排除:
+ * 它们宽高被写死,再加内边距会把图标挤出边界。
+ * 用 [class~=] 而不是 [class*=] —— 后者会误命中基类里的
+ * `[&_svg:not([class*='size-'])]:size-4` 这个字面量。 */
+[data-theme-preset='steins-gate']
+  [data-slot='button']:not([class~='size-6']):not([class~='size-7']):not(
+    [class~='size-8']
+  ):not([class~='size-9']):not([data-size^='icon']):not(
+    [class~='underline-offset-4']
+  ) {
+  padding-inline: 1.05em;
+}
+
+/* 尾随图标 = 参考稿的 .arr。上游把它标成 data-icon='inline-end'
+ * (button 基类里的 has-data-[icon=inline-end]:pr-2 就是冲它去的),
+ * 分页的"下一页"、若干对话框的确认按钮都在用。 */
+[data-theme-preset='steins-gate']
+  [data-slot='button']
+  [data-icon='inline-end'] {
+  transition: translate 0.28s var(--qy-sg-ease);
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='button']:hover:not(:disabled)
+  [data-icon='inline-end'] {
+  translate: 4px 0;
+}
+
+/* ── 实心(variant=default)——本主题最容易做错的一处 ──
+ * 昼间是【墨色】底,强调色只在 hover 时出现;夜间才由强调色直接坐镇。
+ * 这里不写昼夜分支,差异全部在 --qy-sg-ink-btn-* 里。 */
+[data-theme-preset='steins-gate'] [data-slot='button'].bg-primary {
+  background-color: var(--qy-sg-ink-btn-bg);
+  color: var(--qy-sg-ink-btn-fg);
+  border-color: transparent;
+  box-shadow: var(--qy-sg-ink-btn-shadow);
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='button'].bg-primary:hover:not(:disabled):not([data-disabled]) {
+  background-color: var(--qy-sg-ink-btn-bg-hover);
+  color: var(--qy-sg-ink-btn-fg);
+  /* design-11 要的是"发光描边"而不只是投影。第一版这里只有
+   * --qy-sg-ink-btn-shadow-hover 一层 40px 的远投影 —— 那是"块浮起来",
+   * 图里的观感是"边缘在发光"。补两层:贴边 1px 的强调色实环负责"描边",
+   * 0 偏移 16px 的晕负责"发光",原来的远投影留在最后维持悬浮层次。
+   * 实心按钮【没有】clip-path,所以外发光是安全的(切角的那几个变体
+   * 只能走内辉光,见下)。 */
+  box-shadow:
+    0 0 0 1px oklch(from var(--primary) l c h / 55%),
+    0 0 16px oklch(from var(--primary) l c h / 38%),
+    var(--qy-sg-ink-btn-shadow-hover);
+  translate: 0 -2px;
+}
+
+/* 按下时压回去。基类的 active:translate-y-px 会被上面的 hover 规则盖掉
+ * (无层规则压过 utilities 层),所以按压反馈要在这里补回来。 */
+[data-theme-preset='steins-gate']
+  [data-slot='button'].bg-primary:active:not(:disabled) {
+  translate: 0 1px;
+  box-shadow: var(--qy-sg-ink-btn-shadow);
+}
+
+/* ── 描边(variant=outline)= 参考稿的 .btn.line ──
+ * 发丝线 + 半透明纸底;hover 只加深边框、提亮底色,【不做位移】——
+ * 位移是实心按钮的特权,参考稿如此。 */
+[data-theme-preset='steins-gate'] [data-slot='button'].bg-background {
+  background-color: oklch(from var(--card) l c h / 50%);
+  border-color: var(--qy-sg-hair);
+  /* 切角处的两条斜补边永远跟 border-color 写在一起,理由见下面「补边颜色的归属」*/
+  --qy-sg-ctl-edge-color: var(--qy-sg-hair);
+  color: var(--foreground);
+  box-shadow: none;
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='button'].bg-background:hover:not(:disabled):not([data-disabled]) {
+  background-color: oklch(from var(--card) l c h / 92%);
+  border-color: var(--qy-sg-hair-strong);
+  --qy-sg-ctl-edge-color: var(--qy-sg-hair-strong);
+  color: var(--foreground);
+}
+
+/* ── 次级(variant=secondary):填色的 line,同样不位移 ── */
+[data-theme-preset='steins-gate'] [data-slot='button'].bg-secondary {
+  background-color: var(--secondary);
+  border-color: var(--qy-sg-hair);
+  --qy-sg-ctl-edge-color: var(--qy-sg-hair);
+  box-shadow: none;
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='button'].bg-secondary:hover:not(:disabled):not([data-disabled]) {
+  background-color: color-mix(in oklch, var(--secondary) 82%, var(--primary));
+  border-color: var(--qy-sg-hair-strong);
+  --qy-sg-ctl-edge-color: var(--qy-sg-hair-strong);
+}
+
+/* ── 危险(variant=destructive):独立的红色 line ──
+ * 昼间主按钮是墨色、强调色是锈橙,两者都离危险色不远,
+ * 所以危险按钮靠"描边 + 淡染"而不是靠实心红来区分层级。 */
+[data-theme-preset='steins-gate']
+  [data-slot='button'][class*='bg-destructive'] {
+  background-color: oklch(from var(--destructive) l c h / 12%);
+  border-color: oklch(from var(--destructive) l c h / 32%);
+  --qy-sg-ctl-edge-color: oklch(from var(--destructive) l c h / 32%);
+  color: var(--destructive);
+  box-shadow: none;
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='button'][class*='bg-destructive']:hover:not(:disabled):not(
+    [data-disabled]
+  ) {
+  background-color: oklch(from var(--destructive) l c h / 20%);
+  border-color: oklch(from var(--destructive) l c h / 52%);
+  --qy-sg-ctl-edge-color: oklch(from var(--destructive) l c h / 52%);
+  color: var(--destructive);
+}
+
+/* ── 幽灵(variant=ghost):没有任何背景类,只能用 :not 链兜底 ──
+ * 只改 hover 底色,静息态一律不碰,免得误伤调用点自带背景的按钮。 */
+[data-theme-preset='steins-gate']
+  [data-slot='button']:not(.bg-primary):not(.bg-background):not(
+    .bg-secondary
+  ):not([class*='bg-destructive']):not(.underline-offset-4):hover:not(
+    :disabled
+  ):not([data-disabled]) {
+  background-color: var(--qy-sg-accent-soft);
+  color: var(--foreground);
+}
+
+/* ── 文字(variant=link):在文本流里,不能有胶囊、内边距和位移 ──
+ * 位移会顶乱行高,胶囊会在正文里凭空多出一块圆底。 */
+[data-theme-preset='steins-gate'] [data-slot='button'].underline-offset-4 {
+  border-radius: 0;
+  padding-inline: 0;
+  letter-spacing: 0.04em;
+  background-color: transparent;
+  box-shadow: none;
+  translate: none;
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='button'].underline-offset-4:hover:not(:disabled) {
+  background-color: transparent;
+  color: var(--qy-sg-accent-deep);
+  translate: none;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 线框按钮的切角(design-11 §1.7 / §1.6 的取舍落点)
+ *
+ * ── 这是一个取舍,理由写在这里 ──
+ * design-10 §1 把 999px 胶囊定为本主题的身份标识,design-11 §1.6 又要求
+ * 徽章与线框控件改成切角方框。两条不可能在同一个元素上同时成立,所以按
+ * 【填充方式】分工,而不是按组件分工:
+ *   实心(variant=default,.bg-primary)= 胶囊。它是页面上唯一的"实体块",
+ *     胶囊让它读作一颗按钮,并且它不带 clip-path,外发光/位移全部可用。
+ *   线框(outline / secondary / destructive / ghost)= 切角。它们是"框",
+ *     框才有轮廓可削;削角之后,遮住颜色只看轮廓也能一眼认出不是默认主题。
+ * 这条分工同时推翻了第一版"所有按钮一律 999px"的写法,不是遗漏。
+ *
+ * 排除项都是必须的,不是保守:
+ *   .bg-primary          实心,保持胶囊(上面那条分工)
+ *   .underline-offset-4  link 变体在正文流里,本来就没有框
+ *   size-6/7/8/9 与 data-size^='icon'  方形图标按钮宽高写死,
+ *                        6px 切角占掉四分之一边长,读成缺角而不是削角
+ *   用 [class~=] 而不是 [class*=],理由同上面的内边距规则(会误命中
+ *   基类里 `[&_svg:not([class*='size-'])]:size-4` 这个字面量)
+ *
+ * 排除链整个包在 :where() 里,是为了把它的特异度归零:七个 :not() 每个都带
+ * 一个类 / 属性选择器,不裹 :where() 这条规则会是 (0,9,0),把上面那条
+ * 「按钮组里的按钮维持方角」(0,3,0)连同下面的还原规则一起压掉,
+ * 分段控件会跟着变成 border-radius: 0。裹上之后本规则是 (0,2,0)。
+ * ══════════════════════════════════════════════════════════════ */
+
+[data-theme-preset='steins-gate']
+  [data-slot='button']:where(
+    :not(.bg-primary):not(.underline-offset-4):not([class~='size-6']):not(
+      [class~='size-7']
+    ):not([class~='size-8']):not([class~='size-9']):not([data-size^='icon'])
+  ) {
+  border-radius: 0;
+  clip-path: polygon(
+    var(--qy-sg-ctl-notch) 0,
+    100% 0,
+    100% calc(100% - var(--qy-sg-ctl-notch)),
+    calc(100% - var(--qy-sg-ctl-notch)) 100%,
+    0 100%,
+    0 var(--qy-sg-ctl-notch)
+  );
+  /* 基类带 bg-clip-padding,不改回 border-box 的话两条补边会被 padding 盒
+   * 再切掉 1px,与直边接不上 */
+  background-clip: border-box;
+  background-origin: border-box;
+  background-repeat: no-repeat;
+  background-image:
+    linear-gradient(
+      135deg,
+      transparent 50%,
+      var(--qy-sg-ctl-edge-color) calc(50% + 0.35px),
+      var(--qy-sg-ctl-edge-color) calc(50% + 1.05px),
+      transparent calc(50% + 1.75px)
+    ),
+    linear-gradient(
+      315deg,
+      transparent 50%,
+      var(--qy-sg-ctl-edge-color) calc(50% + 0.35px),
+      var(--qy-sg-ctl-edge-color) calc(50% + 1.05px),
+      transparent calc(50% + 1.75px)
+    );
+  background-size: var(--qy-sg-ctl-notch) var(--qy-sg-ctl-notch);
+  background-position:
+    left top,
+    right bottom;
+}
+
+/* ── 补边颜色的归属:一律与 border-color【写在同一条规则里】 ──
+ *
+ * 这是实测踩出来的。最初把各变体的 --qy-sg-ctl-edge-color 单独拆成几条规则,
+ * 结果是两个属性走了两条特异度不同的路:把 outline 按钮同时置为 hover + 焦点,
+ * 量到 border-top-color = 发丝线 0.28、而补边 = 强调色 —— 四条直边一个颜色、
+ * 两条斜切口另一个颜色,轮廓从切角处断开。
+ * 只要两者永远在同一条规则里出现,不管哪条规则赢,它们都是一致的。
+ * 所以下面各变体的 edge-color 都并回了 border-color 所在的那条规则,
+ * 这里只留 ghost 一条特例。
+ *
+ * ghost 静息态没有边框,补边必须跟着消失,否则会凭空出现两截悬空的斜线。
+ * 切角本身留着 —— hover 底色一铺,削角的轮廓就现出来了。
+ * 排除链裹 :where() 把本条压到 (0,2,0):高于根上的默认值 (0,1,0),
+ * 低于焦点规则的 (0,3,0) —— ghost 只有在聚焦时才有边框,那时补边就该跟着亮。 */
+[data-theme-preset='steins-gate']
+  [data-slot='button']:where(
+    :not(.bg-primary):not(.bg-background):not(.bg-secondary):not(
+      [class*='bg-destructive']
+    ):not(.underline-offset-4)
+  ) {
+  --qy-sg-ctl-edge-color: transparent;
+}
+
+/* 线框按钮 hover 的"发光描边":它们带 clip-path,外发光会被整圈裁掉,
+ * 只能走内辉光。10px 的 inset 晕贴着削角轮廓亮起来,与实心按钮的外发光
+ * 是同一门语言的两种说法。 */
+[data-theme-preset='steins-gate']
+  [data-slot='button']:where(
+    :not(.bg-primary):not(.underline-offset-4):not([class~='size-6']):not(
+      [class~='size-7']
+    ):not([class~='size-8']):not([class~='size-9']):not([data-size^='icon'])
+  ):hover:not(:disabled):not([data-disabled]) {
+  box-shadow: inset 0 0 10px oklch(from var(--primary) l c h / 16%);
+}
+
+/* 分段控件与输入组里的按钮不切角:
+ * 前者要拼成一条连续的条带(整组外形归 qy-sg-nav.css),每段各削一角会散架;
+ * 后者本身就装在一个已经削过角的输入框里,再削一次是两层缺口。 */
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='button-group'],
+    [data-slot='toggle-group'],
+    [data-slot='input-group']
+  )
+  [data-slot='button'] {
+  clip-path: none;
+  background-image: none;
+}
+
+/* 输入组里的按钮回到胶囊。这一条【不能】并进上面那个 :is() 里:
+ * 那样会连按钮组/切换组一起改,而它们的方角是分段条带的前提
+ * (两条规则特异度同为 (0,3,0),后写的赢)。 */
+[data-theme-preset='steins-gate']
+  [data-slot='input-group']
+  [data-slot='button'] {
+  border-radius: var(--qy-sg-pill);
+}
+
+/* ── 焦点环 ──
+ * 上游用 Tailwind 的 ring-3(本质是 box-shadow)。实心按钮在静息态就带投影,
+ * 我们的 box-shadow 覆盖了 ring 的合成结果,所以焦点态必须把柔光环显式写回来,
+ * 否则键盘用户会完全看不到焦点。规范 §3:0 0 0 3px 强调色柔光环。 */
+[data-theme-preset='steins-gate'] [data-slot='button']:focus-visible {
+  box-shadow: 0 0 0 3px var(--qy-sg-glow);
+  border-color: var(--primary);
+  outline: none;
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='button'].bg-primary:focus-visible {
+  box-shadow:
+    0 0 0 3px var(--qy-sg-glow),
+    var(--qy-sg-ink-btn-shadow);
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='button'][class*='bg-destructive']:focus-visible {
+  /* 三层都要:危险按钮既有被切角的常规尺寸,也有【不】切角的方形图标尺寸。
+   * 外环给后者,两层 inset 给前者 —— 实测发现只写外环时,切角的危险按钮
+   * 焦点完全不可见(本规则 (0,4,0) 压过下面那条通用切角焦点 (0,3,0),
+   * 后者的 inset 根本没机会生效)。 */
+  box-shadow:
+    0 0 0 3px oklch(from var(--destructive) l c h / 30%),
+    inset 0 0 0 1px var(--destructive),
+    inset 0 0 12px oklch(from var(--destructive) l c h / 26%);
+  border-color: oklch(from var(--destructive) l c h / 55%);
+  --qy-sg-ctl-edge-color: var(--destructive);
+}
+
+/* 切角按钮的焦点必须改写成【内】辉光 —— 这不是审美选择:
+ * clip-path 把元素的整块渲染结果一起裁掉,外柔光环 0 0 0 3px 全部落在裁剪区
+ * 之外,键盘用户会完全看不到焦点。
+ * 特异度:排除链裹在 :where(),本规则是 (0,3,0),靠源序赢过上面那条同为
+ * (0,3,0) 的通用焦点环。它【赢不过】destructive 那条 (0,4,0) —— 所以危险
+ * 按钮的 inset 是在那条规则里自己写的,不是靠这里兜底(实测确认过)。 */
+[data-theme-preset='steins-gate']
+  [data-slot='button']:where(
+    :not(.bg-primary):not(.underline-offset-4):not([class~='size-6']):not(
+      [class~='size-7']
+    ):not([class~='size-8']):not([class~='size-9']):not([data-size^='icon'])
+  ):focus-visible {
+  box-shadow:
+    inset 0 0 0 1px var(--primary),
+    inset 0 0 12px var(--qy-sg-glow);
+  border-color: var(--primary);
+  --qy-sg-ctl-edge-color: var(--primary);
+  outline: none;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 输入类(规范 §3「输入控件」)
+ * 圆角跟随 --radius 轴:上游用 rounded-lg,而 theme.css 里
+ * --radius-lg: var(--radius),所以不必在这里再写一遍圆角。
+ *
+ * ⚠ form-control 这一条不能漏。form.tsx 的 <FormControl> 用 useRender 把
+ *   `data-slot: 'form-control'` 注入被包裹的控件,【覆盖掉】控件自己的 slot ——
+ *   也就是说 React Hook Form 表单里的每一个 Input / Textarea / SelectTrigger
+ *   都不再是 [data-slot='input'],而是 [data-slot='form-control']。
+ *   本项目按 AGENTS.md 3.7 全线使用 RHF,漏掉它等于后台绝大多数表单都不生效。
+ *   实测:登录页的两个输入框 data-slot 全是 form-control,只挂 [data-slot='input']
+ *   时它们的边框仍是上游的 --input(#dcd6ca),不是发丝线。
+ *   (这个 slot 在 `grep "data-slot="` 里查不到,它写成对象字面量的键。)
+ *
+ *   form-control 是通用壳,里面可能是输入框也可能是勾选框/开关,
+ *   所以一律按【标签名 + role】收窄,不写裸的 [data-slot='form-control']:
+ *     input / textarea / select 三个标签   → 输入族
+ *     role='combobox'(base-ui Select.Trigger)→ 输入族
+ *     role='checkbox' / 'switch' / 'radio' → 各自的族,见下面几节
+ * ══════════════════════════════════════════════════════════════ */
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='input'],
+    [data-slot='textarea'],
+    [data-slot='select-trigger'],
+    [data-slot='native-select'],
+    [data-slot='input-group'],
+    [data-slot='combobox-chips'],
+    input[data-slot='form-control'],
+    textarea[data-slot='form-control'],
+    select[data-slot='form-control'],
+    [data-slot='form-control'][role='combobox']
+  ) {
+  background-color: oklch(from var(--card) l c h / 45%);
+  border-color: var(--qy-sg-hair);
+  /* 补边与 border-color 同一条规则,理由见按钮那节「补边颜色的归属」 */
+  --qy-sg-ctl-edge-color: var(--qy-sg-hair);
+  transition:
+    border-color 0.28s var(--qy-sg-ease),
+    box-shadow 0.28s var(--qy-sg-ease),
+    background-color 0.28s var(--qy-sg-ease);
+}
+
+/* ── 输入族的两角切(design-11 §1.7)──
+ *
+ * 名单是逐个核对过的,不是照规范抄的:
+ *   规范 §1.7 点名的 `combobox-trigger` 在本仓库【不是输入框】。
+ *   combobox.tsx:141-149 里它是 InputGroupAddon 内的一颗 icon-xs ghost 按钮
+ *   (render={<ComboboxTrigger />}),没有边框也没有背景。给它切角等于在
+ *   输入框右端的小图标上再啃一个缺口。组合框真正的"框"是外层 input-group,
+ *   已经在名单里。
+ *   反过来补进来的是 combobox-chips —— 它才是多选组合框那个带边框的字段
+ *   (combobox.tsx:301-307,rounded-lg border)。
+ *
+ * input-group 的内层控件 data-slot 是 input-group-control 而不是 input
+ * (input-group.tsx:142),所以不会跟外层一起被切两次,不必写 :not()。
+ *
+ * bg-clip-padding 只有 combobox-chips 带,但 background-clip / origin 统一写
+ * border-box:两条补边必须画到边框盒的最外沿才接得上直边。 */
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='input'],
+    [data-slot='textarea'],
+    [data-slot='select-trigger'],
+    [data-slot='native-select'],
+    [data-slot='input-group'],
+    [data-slot='combobox-chips'],
+    input[data-slot='form-control'],
+    textarea[data-slot='form-control'],
+    select[data-slot='form-control'],
+    [data-slot='form-control'][role='combobox']
+  ) {
+  border-radius: 0;
+  border-width: var(--qy-sg-frame-line);
+  clip-path: polygon(
+    var(--qy-sg-ctl-notch) 0,
+    100% 0,
+    100% calc(100% - var(--qy-sg-ctl-notch)),
+    calc(100% - var(--qy-sg-ctl-notch)) 100%,
+    0 100%,
+    0 var(--qy-sg-ctl-notch)
+  );
+  background-clip: border-box;
+  background-origin: border-box;
+  background-repeat: no-repeat;
+  background-image:
+    linear-gradient(
+      135deg,
+      transparent 50%,
+      var(--qy-sg-ctl-edge-color) calc(50% + 0.35px),
+      var(--qy-sg-ctl-edge-color) calc(50% + 1.05px),
+      transparent calc(50% + 1.75px)
+    ),
+    linear-gradient(
+      315deg,
+      transparent 50%,
+      var(--qy-sg-ctl-edge-color) calc(50% + 0.35px),
+      var(--qy-sg-ctl-edge-color) calc(50% + 1.05px),
+      transparent calc(50% + 1.75px)
+    );
+  background-size: var(--qy-sg-ctl-notch) var(--qy-sg-ctl-notch);
+  background-position:
+    left top,
+    right bottom;
+}
+
+/* 文本域是整张手稿面,不是一行读数条:高度按 min-h-16 起步、常见到 200px 以上,
+ * 6px 的切角在这个尺度上会小到看不出来。就地把 --qy-sg-ctl-notch 调回 frame 的
+ * 整档。这条【只改自定义属性】就能生效,是因为上面那条规则把 var() 写在
+ * clip-path / background-size 两个真属性上,替换发生在 textarea 自己身上;
+ * 若把点表收进 --qy-sg-ctl-clip 再 var() 引用,这里就会失效(文件头已详述)。 */
+[data-theme-preset='steins-gate']
+  :is([data-slot='textarea'], textarea[data-slot='form-control']) {
+  --qy-sg-ctl-notch: var(--qy-sg-notch);
+}
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='input'],
+    [data-slot='textarea'],
+    [data-slot='select-trigger'],
+    [data-slot='native-select'],
+    [data-slot='input-group'],
+    input[data-slot='form-control'],
+    textarea[data-slot='form-control'],
+    select[data-slot='form-control'],
+    [data-slot='form-control'][role='combobox']
+  ):hover:not(:disabled):not([data-disabled]) {
+  border-color: var(--qy-sg-hair-strong);
+  --qy-sg-ctl-edge-color: var(--qy-sg-hair-strong);
+}
+
+/* 焦点:边框与两条补边一起转强调色 +【内】辉光描边。
+ * 第一版这里是 `box-shadow: 0 0 0 3px glow` 的外柔光环。切角之后那圈光整个
+ * 落在 clip-path 的裁剪区外(clip-path 连同 box-shadow 一起裁),等于没有
+ * 焦点提示 —— 所以必须换成 inset:1px 实边 + 12px 柔晕,沿着削角轮廓亮起来。
+ * 上游的 focus-visible:ring-inset 也是 box-shadow,被这一条整体覆盖,
+ * 不会出现两种焦点语言并存。 */
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='input'],
+    [data-slot='textarea'],
+    [data-slot='select-trigger'],
+    [data-slot='native-select'],
+    input[data-slot='form-control'],
+    textarea[data-slot='form-control'],
+    select[data-slot='form-control'],
+    [data-slot='form-control'][role='combobox']
+  ):focus-visible,
+[data-theme-preset='steins-gate']
+  [data-slot='input-group']:has(
+    [data-slot='input-group-control']:focus-visible
+  ),
+[data-theme-preset='steins-gate'] [data-slot='combobox-chips']:focus-within {
+  border-color: var(--primary);
+  box-shadow:
+    inset 0 0 0 1px var(--primary),
+    inset 0 0 12px var(--qy-sg-glow);
+  --qy-sg-ctl-edge-color: var(--primary);
+  outline: none;
+}
+
+/* 无效态优先级高于焦点态:红环压过强调色环,否则填错的字段在获得焦点后
+ * 会伪装成一切正常。 */
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='input'],
+    [data-slot='textarea'],
+    [data-slot='select-trigger'],
+    [data-slot='native-select'],
+    input[data-slot='form-control'],
+    textarea[data-slot='form-control'],
+    select[data-slot='form-control'],
+    [data-slot='form-control'][role='combobox']
+  )[aria-invalid='true'] {
+  border-color: var(--destructive);
+  /* 同样必须是 inset:外环会被切角一起裁掉 */
+  box-shadow:
+    inset 0 0 0 1px var(--destructive),
+    inset 0 0 12px oklch(from var(--destructive) l c h / 26%);
+  --qy-sg-ctl-edge-color: var(--destructive);
+}
+
+/* 占位符退到第三档文字,让已填内容与提示文案拉开层次 */
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='input'],
+    [data-slot='textarea'],
+    input[data-slot='form-control'],
+    textarea[data-slot='form-control']
+  )::placeholder {
+  color: var(--qy-sg-faint);
+  letter-spacing: 0.02em;
+}
+
+/* 数值输入等宽(规范 §3:数值输入用等宽)。
+ * 覆盖 number / 数字键盘 / 密码三类:密码点阵在等宽下才对得齐。 */
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='input'],
+    [data-slot='input-group-control'],
+    input[data-slot='form-control']
+  ):is(
+    [type='number'],
+    [type='password'],
+    [inputmode='numeric'],
+    [inputmode='decimal']
+  ) {
+  font-family: var(--qy-sg-mono);
+  letter-spacing: 0.05em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 文本域是"手稿"面:行高按 Claude 式的松呼吸,而不是后台常见的 1.4 */
+[data-theme-preset='steins-gate']
+  :is([data-slot='textarea'], textarea[data-slot='form-control']) {
+  line-height: 1.75;
+}
+
+/* 选择器触发器的值区维持正文,但下拉箭头与占位走第三档 */
+[data-theme-preset='steins-gate']
+  [data-slot='select-trigger'][data-placeholder] {
+  color: var(--qy-sg-faint);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 标签与 field(规范 §2 三分工:标签一律等宽 + 宽字距 + 大写)
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 包裹了控件本身的 label(勾选框/单选/开关的说明文字)是整句,
+ * 不能大写也不该等宽,用 :has() 排除掉。剩下的才是字段名。
+ * form-label 是 RHF 表单里 Label 的实际 slot(form.tsx 覆盖了 data-slot),
+ * 与 form-control 同理,漏了它后台表单的标签就全不生效。
+ * 排除项里同时列出两种写法:表单里的勾选框可能是 [data-slot='checkbox'],
+ * 也可能已被 FormControl 换成 [data-slot='form-control'][role='checkbox']。 */
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='label'],
+    [data-slot='field-label'],
+    [data-slot='field-legend'],
+    [data-slot='form-label']
+  ):not(:has([data-slot='checkbox'])):not(
+    :has([data-slot='radio-group-item'])
+  ):not(:has([data-slot='switch'])):not(:has([data-slot='field'])):not(
+    :has([role='checkbox'])
+  ):not(:has([role='switch'])):not(:has([role='radio'])) {
+  font-family: var(--qy-sg-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+
+/* 字段说明退到第三档,和标签、正文形成三级 */
+[data-theme-preset='steins-gate']
+  :is([data-slot='field-description'], [data-slot='form-description']) {
+  color: var(--qy-sg-faint);
+  letter-spacing: 0.01em;
+}
+
+/* 错误信息用等宽:它是"仪器报错"而不是散文 */
+[data-theme-preset='steins-gate']
+  :is([data-slot='field-error'], [data-slot='form-message']) {
+  font-family: var(--qy-sg-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+}
+
+/* field 之间的分隔线走发丝线 */
+[data-theme-preset='steins-gate'] [data-slot='field-separator-content'] {
+  font-family: var(--qy-sg-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--qy-sg-faint);
+  background-color: var(--background);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 勾选框 / 单选 / 开关(规范 §3:选中态用强调色,轨道用发丝线)
+ *
+ * 同样要接住 FormControl 换过的 slot。base-ui 给三者写死了 ARIA role
+ * (CheckboxRoot → role='checkbox'、RadioRoot → 'radio'、SwitchRoot → 'switch',
+ * 已在 node_modules 的源码里核对过),按 role 认族最稳,
+ * 因为 role 是这些控件的语义契约,不会像类名那样被调用点覆盖。
+ * ══════════════════════════════════════════════════════════════ */
+
+/* ── 勾选框:切角方块,不是圆角(design-11 §1.6 / §1.7)──
+ *
+ * 【为什么切角画在 ::before 上,而不是像输入框那样切宿主自己】
+ * 两条,都在源码里核对过:
+ *  (1) checkbox.tsx 的基类带 `after:absolute after:-inset-x-3 after:-inset-y-2` ——
+ *      那是一层看不见的扩大点击区,把 16px 的方块撑成约 40×32 的靶子。
+ *      clip-path 连同溢出的子盒一起裁(frame 层已经用 elementFromPoint 量过:
+ *      被裁掉的溢出子元素连命中区一起消失),切宿主等于把这块靶子还回去。
+ *  (2) 宿主不带 clip-path,选中态与焦点态的【外】柔光环就仍然能用。输入框
+ *      那边是没得选才改成内辉光,这里有得选就不该跟着降级。
+ *
+ * 做法:宿主自身完全透明(边框与底色都交出去),视觉整块交给 ::before ——
+ * 一个 inset:0、带 1px 边框、带两条 45° 补边、被 clip-path 削掉左上右下的方块。
+ * ::before 是绝对定位的,会盖在静态流里的 Indicator(对勾)上面,所以下面
+ * 单独把 checkbox-indicator 抬到 z-index:1;pointer-events 不必关,
+ * 伪元素本来就不参与命中测试。
+ *
+ * 切角取 --qy-sg-notch 的三分之一(4px):16px 的方块上 6px 会切掉近一半边长。 */
+[data-theme-preset='steins-gate']
+  :is([data-slot='checkbox'], [data-slot='form-control'][role='checkbox']) {
+  --qy-sg-ctl-notch: calc(var(--qy-sg-notch) / 3);
+  --qy-sg-ctl-edge-color: var(--qy-sg-hair-strong);
+  /* border: 0 而不是 border-color: transparent —— 绝对定位的 ::before 的
+   * inset: 0 对齐的是宿主的【内边距盒】,留着 1px 透明边框,削角板会比宿主
+   * 小一圈(16px 的方块只剩 14px)。size-4 在 border-box 下写死了 16px,
+   * 去掉边框不改变外尺寸,内边距盒因此正好等于边框盒。 */
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
+  transition: all 0.28s var(--qy-sg-ease);
+}
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='checkbox'],
+    [data-slot='form-control'][role='checkbox']
+  )::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: var(--qy-sg-frame-line) solid var(--qy-sg-ctl-edge-color);
+  background-color: oklch(from var(--card) l c h / 55%);
+  clip-path: polygon(
+    var(--qy-sg-ctl-notch) 0,
+    100% 0,
+    100% calc(100% - var(--qy-sg-ctl-notch)),
+    calc(100% - var(--qy-sg-ctl-notch)) 100%,
+    0 100%,
+    0 var(--qy-sg-ctl-notch)
+  );
+  background-clip: border-box;
+  background-origin: border-box;
+  background-repeat: no-repeat;
+  background-image:
+    linear-gradient(
+      135deg,
+      transparent 50%,
+      var(--qy-sg-ctl-edge-color) calc(50% + 0.35px),
+      var(--qy-sg-ctl-edge-color) calc(50% + 1.05px),
+      transparent calc(50% + 1.75px)
+    ),
+    linear-gradient(
+      315deg,
+      transparent 50%,
+      var(--qy-sg-ctl-edge-color) calc(50% + 0.35px),
+      var(--qy-sg-ctl-edge-color) calc(50% + 1.05px),
+      transparent calc(50% + 1.75px)
+    );
+  background-size: var(--qy-sg-ctl-notch) var(--qy-sg-ctl-notch);
+  background-position:
+    left top,
+    right bottom;
+  transition:
+    background-color 0.28s var(--qy-sg-ease),
+    border-color 0.28s var(--qy-sg-ease);
+}
+
+/* 对勾必须抬到削角板上面:::before 是绝对定位的,Indicator 是静态流里的
+ * grid 盒,同一个层叠上下文里定位盒画在非定位盒之上。 */
+[data-theme-preset='steins-gate'] [data-slot='checkbox-indicator'] {
+  position: relative;
+  z-index: 1;
+}
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='checkbox'],
+    [data-slot='form-control'][role='checkbox']
+  )[data-checked] {
+  --qy-sg-ctl-edge-color: var(--primary);
+  background-color: transparent;
+  /* 宿主没有 clip-path,外辉光是安全的。第一版只有一圈 3px 的柔色环,
+   * design-11 要"辉光",所以再叠一层 0 偏移的晕。 */
+  box-shadow:
+    0 0 0 3px var(--qy-sg-accent-soft),
+    0 0 10px var(--qy-sg-glow);
+}
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='checkbox'],
+    [data-slot='form-control'][role='checkbox']
+  )[data-checked]::before {
+  background-color: var(--primary);
+}
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='radio-group-item'],
+    [data-slot='form-control'][role='radio']
+  ) {
+  border-color: var(--qy-sg-hair-strong);
+  background-color: oklch(from var(--card) l c h / 55%);
+  transition: all 0.28s var(--qy-sg-ease);
+}
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='radio-group-item'],
+    [data-slot='form-control'][role='radio']
+  )[data-checked] {
+  background-color: var(--primary);
+  border-color: var(--primary);
+  /* 单选保持【圆】—— 它与勾选框的形状差异是语义(单选/多选)的唯一视觉线索,
+   * 把它也削成方块等于把这条线索抹掉。辉光按 design-11 加一层。 */
+  box-shadow:
+    0 0 0 3px var(--qy-sg-accent-soft),
+    0 0 10px var(--qy-sg-glow);
+}
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='checkbox'],
+    [data-slot='radio-group-item'],
+    [data-slot='form-control'][role='checkbox'],
+    [data-slot='form-control'][role='radio']
+  ):focus-visible {
+  border-color: var(--primary);
+  /* 勾选框的边框已经交给 ::before,焦点要点亮的是那块板的边与两条补边 */
+  --qy-sg-ctl-edge-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--qy-sg-glow);
+  outline: none;
+}
+
+/* 开关:未选中是"空轨道"——发丝线边框 + 极淡填充,而不是一条灰色实心条。
+ * 选中转强调色并点亮辉光,呼应参考稿徽章状态点的发光。
+ * 【不要】在 switch-thumb 上写 translate:上游用 translate 属性驱动滑块位移,
+ * 覆盖它等于把开关焊死。 */
+[data-theme-preset='steins-gate']
+  :is([data-slot='switch'], [data-slot='form-control'][role='switch']) {
+  border-color: var(--qy-sg-hair-strong);
+  transition: all 0.28s var(--qy-sg-ease);
+}
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='switch'],
+    [data-slot='form-control'][role='switch']
+  )[data-unchecked] {
+  /* design-11 §1.7「轨道用发丝线」:未选中的轨道退成一圈发丝线包着的空槽,
+   * 不再是一条灰色实心条 —— 第一版那 10% 的墨色填充读起来还是"块"。
+   * 边框由上一条规则给的 hair-strong 承担,这里只负责让槽内近乎见底。 */
+  background-color: oklch(from var(--card) l c h / 40%);
+}
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='switch'],
+    [data-slot='form-control'][role='switch']
+  )[data-checked] {
+  background-color: var(--primary);
+  border-color: transparent;
+  /* 贴边 1px 实环负责"描边",0 偏移 14px 的晕负责"发光" —— 与实心按钮
+   * hover 同一门语言。开关不带 clip-path,外发光安全。 */
+  box-shadow:
+    0 0 0 1px oklch(from var(--primary) l c h / 55%),
+    0 0 14px var(--qy-sg-glow);
+}
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='switch'],
+    [data-slot='form-control'][role='switch']
+  ):focus-visible {
+  box-shadow: 0 0 0 3px var(--qy-sg-glow);
+  outline: none;
+}
+
+[data-theme-preset='steins-gate'] [data-slot='switch-thumb'] {
+  background-color: var(--background);
+  box-shadow: 0 1px 3px oklch(from var(--foreground) l c h / 22%);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 滑块 —— 参考稿的世界线读数尺
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 轨道走发丝线(design-11 §1.7):空槽 + 一圈 1px 的线,而不是一条实心灰条。
+ * 用 inset box-shadow 而不是 border —— slider-track 的高度是上游用工具类写死的,
+ * 加 border 会在 border-box 下把可用高度吃掉 2px,滑块与轨道就对不齐了。 */
+[data-theme-preset='steins-gate'] [data-slot='slider-track'] {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 var(--qy-sg-frame-line) var(--qy-sg-hair-strong);
+}
+
+[data-theme-preset='steins-gate'] [data-slot='slider-range'] {
+  background-color: var(--primary);
+  box-shadow: 0 0 8px var(--qy-sg-glow);
+}
+
+/* 上游把滑块把手写死成 bg-white,暗色下是一块刺眼的纯白;
+ * 换成纸面色 + 强调色描边,昼夜都成立。 */
+[data-theme-preset='steins-gate'] [data-slot='slider-thumb'] {
+  background-color: var(--background);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--qy-sg-accent-soft);
+  transition:
+    box-shadow 0.28s var(--qy-sg-ease),
+    border-color 0.28s var(--qy-sg-ease);
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='slider-thumb']:is(:hover, :focus-visible, :active) {
+  box-shadow: 0 0 0 5px var(--qy-sg-glow);
+  outline: none;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 切换按钮(单个 Toggle;成组的 toggle-group 归 qy-sg-nav.css)
+ * ══════════════════════════════════════════════════════════════ */
+
+[data-theme-preset='steins-gate'] [data-slot='toggle'] {
+  border-radius: var(--qy-sg-pill);
+  letter-spacing: 0.08em;
+  transition: all 0.28s var(--qy-sg-ease);
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='toggle']:is(
+    [aria-pressed='true'],
+    [data-pressed],
+    [data-state='on']
+  ) {
+  background-color: var(--qy-sg-accent-soft);
+  color: var(--primary);
+  border-color: oklch(from var(--primary) l c h / 30%);
+}
+
+[data-theme-preset='steins-gate'] [data-slot='toggle']:focus-visible {
+  box-shadow: 0 0 0 3px var(--qy-sg-glow);
+  outline: none;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 输入组 / 组合框
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 输入组内的前后缀走第三档等宽,让它读起来像仪器上的单位刻度 */
+[data-theme-preset='steins-gate'] [data-slot='input-group-addon'] {
+  font-family: var(--qy-sg-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--qy-sg-faint);
+}
+
+/* 组合框的已选项改成切角小方块。
+ * 【这里推翻了第一版的一条】design-10 把它做成 999px 胶囊「与按钮同一门语言」;
+ * design-11 §1.6 把标签类元素统一收进"带切角的方框",而胶囊留给实心按钮。
+ * chip 与徽章是同一种东西(一小块状态标签),不能一个圆一个切,
+ * 所以跟着徽章走。切角取三分之一档,chip 只有 ~20px 高。 */
+[data-theme-preset='steins-gate'] [data-slot='combobox-chip'] {
+  --qy-sg-ctl-notch: calc(var(--qy-sg-notch) / 3);
+  border-radius: 0;
+  border: var(--qy-sg-frame-line) solid var(--qy-sg-hair);
+  background-color: var(--qy-sg-accent-soft);
+  font-family: var(--qy-sg-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  clip-path: polygon(
+    var(--qy-sg-ctl-notch) 0,
+    100% 0,
+    100% calc(100% - var(--qy-sg-ctl-notch)),
+    calc(100% - var(--qy-sg-ctl-notch)) 100%,
+    0 100%,
+    0 var(--qy-sg-ctl-notch)
+  );
+  background-clip: border-box;
+  background-origin: border-box;
+  background-repeat: no-repeat;
+  background-image:
+    linear-gradient(
+      135deg,
+      transparent 50%,
+      var(--qy-sg-hair) calc(50% + 0.35px),
+      var(--qy-sg-hair) calc(50% + 1.05px),
+      transparent calc(50% + 1.75px)
+    ),
+    linear-gradient(
+      315deg,
+      transparent 50%,
+      var(--qy-sg-hair) calc(50% + 0.35px),
+      var(--qy-sg-hair) calc(50% + 1.05px),
+      transparent calc(50% + 1.75px)
+    );
+  background-size: var(--qy-sg-ctl-notch) var(--qy-sg-ctl-notch);
+  background-position:
+    left top,
+    right bottom;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 一次性验证码 —— 参考稿里那种"逐位读数"
+ * ══════════════════════════════════════════════════════════════ */
+
+[data-theme-preset='steins-gate'] [data-slot='input-otp-slot'] {
+  font-family: var(--qy-sg-mono);
+  font-size: 1rem;
+  letter-spacing: 0.1em;
+  border-color: var(--qy-sg-hair);
+  --qy-sg-ctl-edge-color: var(--qy-sg-hair);
+  background-color: oklch(from var(--card) l c h / 45%);
+  transition: all 0.28s var(--qy-sg-ease);
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='input-otp-slot'][data-active='true'] {
+  border-color: var(--primary);
+  --qy-sg-ctl-edge-color: var(--primary);
+  /* 首/末格带 clip-path,外环会被裁掉;中间格不带,外环仍然有效。
+   * 两种都写上,任何一格获得焦点都至少有一层看得见的提示。 */
+  box-shadow:
+    0 0 0 3px var(--qy-sg-glow),
+    inset 0 0 0 1px var(--primary),
+    inset 0 0 10px var(--qy-sg-glow);
+  z-index: 10;
+}
+
+/* 验证码格是【一条】共享边框的连体条(input-otp.tsx:75 是 border-y border-r
+ * + first:border-l + first/last:rounded-*),所以切角要切整条的两端,
+ * 不是每一格都切 —— 每格都切会把连体条剁成一串齿。
+ * 首格削左上、末格削右下,与输入框同一套两角切。 */
+[data-theme-preset='steins-gate'] [data-slot='input-otp-slot'] {
+  --qy-sg-ctl-notch: calc(var(--qy-sg-notch) / 2);
+  border-radius: 0;
+}
+
+[data-theme-preset='steins-gate'] [data-slot='input-otp-slot']:first-child {
+  clip-path: polygon(
+    var(--qy-sg-ctl-notch) 0,
+    100% 0,
+    100% 100%,
+    0 100%,
+    0 var(--qy-sg-ctl-notch)
+  );
+  background-image: linear-gradient(
+    135deg,
+    transparent 50%,
+    var(--qy-sg-ctl-edge-color) calc(50% + 0.35px),
+    var(--qy-sg-ctl-edge-color) calc(50% + 1.05px),
+    transparent calc(50% + 1.75px)
+  );
+  background-origin: border-box;
+  background-clip: border-box;
+  background-repeat: no-repeat;
+  background-size: var(--qy-sg-ctl-notch) var(--qy-sg-ctl-notch);
+  background-position: left top;
+}
+
+[data-theme-preset='steins-gate'] [data-slot='input-otp-slot']:last-child {
+  clip-path: polygon(
+    0 0,
+    100% 0,
+    100% calc(100% - var(--qy-sg-ctl-notch)),
+    calc(100% - var(--qy-sg-ctl-notch)) 100%,
+    0 100%
+  );
+  background-image: linear-gradient(
+    315deg,
+    transparent 50%,
+    var(--qy-sg-ctl-edge-color) calc(50% + 0.35px),
+    var(--qy-sg-ctl-edge-color) calc(50% + 1.05px),
+    transparent calc(50% + 1.75px)
+  );
+  background-origin: border-box;
+  background-clip: border-box;
+  background-repeat: no-repeat;
+  background-size: var(--qy-sg-ctl-notch) var(--qy-sg-ctl-notch);
+  background-position: right bottom;
+}
+
+[data-theme-preset='steins-gate'] [data-slot='input-otp-separator'] {
+  color: var(--qy-sg-faint);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 键位提示 —— 上游是 font-sans,本主题一切标识符走等宽
+ * ══════════════════════════════════════════════════════════════ */
+
+/* kbd 也切角(design-11 §1.7 第 4 条)。它高 h-5 = 20px,切角取三分之一档
+ * 的 4px;kbd 基类带 pointer-events-none,没有焦点态要保,clip-path 无副作用。 */
+[data-theme-preset='steins-gate'] [data-slot='kbd'] {
+  --qy-sg-ctl-notch: calc(var(--qy-sg-notch) / 3);
+  --qy-sg-ctl-edge-color: var(--qy-sg-hair);
+  font-family: var(--qy-sg-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  border: var(--qy-sg-frame-line) solid var(--qy-sg-ctl-edge-color);
+  border-radius: 0;
+  background-color: oklch(from var(--card) l c h / 60%);
+  color: var(--qy-sg-faint);
+  clip-path: polygon(
+    var(--qy-sg-ctl-notch) 0,
+    100% 0,
+    100% calc(100% - var(--qy-sg-ctl-notch)),
+    calc(100% - var(--qy-sg-ctl-notch)) 100%,
+    0 100%,
+    0 var(--qy-sg-ctl-notch)
+  );
+  background-clip: border-box;
+  background-origin: border-box;
+  background-repeat: no-repeat;
+  background-image:
+    linear-gradient(
+      135deg,
+      transparent 50%,
+      var(--qy-sg-ctl-edge-color) calc(50% + 0.35px),
+      var(--qy-sg-ctl-edge-color) calc(50% + 1.05px),
+      transparent calc(50% + 1.75px)
+    ),
+    linear-gradient(
+      315deg,
+      transparent 50%,
+      var(--qy-sg-ctl-edge-color) calc(50% + 0.35px),
+      var(--qy-sg-ctl-edge-color) calc(50% + 1.05px),
+      transparent calc(50% + 1.75px)
+    );
+  background-size: var(--qy-sg-ctl-notch) var(--qy-sg-ctl-notch);
+  background-position:
+    left top,
+    right bottom;
+}
+
+/* input-group 的 addon 里上游写死了 `[&>kbd]:rounded-sm`(0,1,1 的
+ * 子选择器 + 类),它只改圆角不改 clip-path,所以这里把圆角再压回 0 就够了。 */
+[data-theme-preset='steins-gate']
+  [data-slot='input-group-addon']
+  [data-slot='kbd'] {
+  border-radius: 0;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 规范 §5:prefers-reduced-motion 下停掉位移与过渡,静态效果全部保留。
+ * 本文件没有循环动画,但 hover 位移同属"运动",一并关掉。
+ * ══════════════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme-preset='steins-gate']
+    :is(
+      [data-slot='button'],
+      [data-slot='toggle'],
+      [data-slot='input'],
+      [data-slot='textarea'],
+      [data-slot='select-trigger'],
+      [data-slot='native-select'],
+      [data-slot='input-group'],
+      [data-slot='checkbox'],
+      [data-slot='radio-group-item'],
+      [data-slot='switch'],
+      [data-slot='slider-thumb'],
+      [data-slot='input-otp-slot'],
+      [data-slot='form-control'],
+      [data-slot='button'] [data-icon='inline-end']
+    ) {
+    transition: none;
+  }
+
+  /* 勾选框的削角板在 ::before 上,它有自己的一条过渡,要单独停。
+   * 形态(切角、补边、辉光)全部保留 —— 规范 §3.5 停的是运动不是造型。 */
+  [data-theme-preset='steins-gate']
+    :is(
+      [data-slot='checkbox'],
+      [data-slot='form-control'][role='checkbox']
+    )::before {
+    transition: none;
+  }
+
+  [data-theme-preset='steins-gate']
+    [data-slot='button']:hover
+    [data-icon='inline-end'],
+  [data-theme-preset='steins-gate'] [data-slot='button']:hover,
+  [data-theme-preset='steins-gate'] [data-slot='button']:active {
+    translate: none;
+  }
+}

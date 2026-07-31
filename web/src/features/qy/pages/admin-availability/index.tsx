@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table'
 import { GroupBadge } from '@/components/group-badge'
-import { SectionPageLayout } from '@/components/layout'
 import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -37,6 +36,7 @@ import {
 import { TitledCard } from '@/components/ui/titled-card'
 
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyKeys } from '../../lib/query-keys'
 import { QyAvailabilityDefinition } from '../availability/components/availability-definition'
 import {
@@ -83,11 +83,11 @@ export function QyAdminAvailability() {
     stats.config.sample_attempt_level_supported === false
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_avl_admin_title')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Content>
         <div className='space-y-3'>
           <QyFilterBar>
             <QyFilterField label={t('qy_avl_range')}>
@@ -284,8 +284,8 @@ export function QyAdminAvailability() {
             )}
           </QyPageBoundary>
         </div>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }
 

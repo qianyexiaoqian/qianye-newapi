@@ -130,6 +130,17 @@ const ADMIN_PAGES: QyPageEntry[] = [
   { titleKey: 'qy_nav_a_health', url: '/qy/admin/health' },
 ]
 
+/**
+ * 页面的**静态声明顺序**，Steins Gate 主题的区段头序号（`LAB MEMO — 07`）由它派生。
+ *
+ * 刻意用声明顺序而不是"当前侧边栏里可见的顺序"：后者随功能开关增删，同一个页面
+ * 昨天是 05 今天变 03，序号就失去了"实验记录编号"的含义。
+ */
+export const QY_PAGE_URL_ORDER: readonly string[] = [
+  ...WORKSPACE_PAGES,
+  ...ADMIN_PAGES,
+].map((page) => page.url)
+
 function toNavItems(
   pages: QyPageEntry[],
   features: QyFeatures,

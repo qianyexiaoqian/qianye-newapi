@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table'
 import { EmptyState } from '@/components/empty-state'
-import { SectionPageLayout } from '@/components/layout'
 import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -31,6 +30,7 @@ import { Progress } from '@/components/ui/progress'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { useQyConfig } from '../../hooks/use-qy-config'
 import { qyKeys } from '../../lib/query-keys'
 import { QyPager } from '../components/qy-pager'
@@ -84,18 +84,18 @@ export function QyMyViolations() {
 
   if (featureOff) {
     return (
-      <SectionPageLayout>
-        <SectionPageLayout.Title>
+      <QySectionPageLayout>
+        <QySectionPageLayout.Title>
           {t('qy_vio_my_title')}
-        </SectionPageLayout.Title>
-        <SectionPageLayout.Content>
+        </QySectionPageLayout.Title>
+        <QySectionPageLayout.Content>
           <EmptyState
             icon={CloudOff}
             title={t('qy_err_feature_off')}
             description={t('qy_cfg_disabled_desc')}
           />
-        </SectionPageLayout.Content>
-      </SectionPageLayout>
+        </QySectionPageLayout.Content>
+      </QySectionPageLayout>
     )
   }
 
@@ -107,9 +107,11 @@ export function QyMyViolations() {
       : Math.min(100, (summary.hit_count / summary.ban_threshold) * 100)
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>{t('qy_vio_my_title')}</SectionPageLayout.Title>
-      <SectionPageLayout.Content>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
+        {t('qy_vio_my_title')}
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Content>
         <div className='space-y-3'>
           {summary != null && (
             <div className='space-y-2'>
@@ -253,7 +255,7 @@ export function QyMyViolations() {
             }}
           />
         </div>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }

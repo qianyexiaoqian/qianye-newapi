@@ -22,7 +22,6 @@ import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table'
-import { SectionPageLayout } from '@/components/layout'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -37,6 +36,7 @@ import { TableCell, TableRow } from '@/components/ui/table'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyKeys } from '../../lib/query-keys'
 import { QyPager } from '../components/qy-pager'
 import { formatQySnapshot, formatQyTs, qySinceHours } from '../ops/format'
@@ -105,11 +105,11 @@ export function QyAdminAuditLogs() {
   const logs = query.data?.items ?? []
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_cfg_audit_title')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Content>
         <div className='space-y-3'>
           <QyFilterBar>
             <QyFilterField label={t('qy_cfg_audit_category')}>
@@ -231,8 +231,8 @@ export function QyAdminAuditLogs() {
             </div>
           </QyPageBoundary>
         </div>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }
 

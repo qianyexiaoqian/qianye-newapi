@@ -1,0 +1,244 @@
+/*
+ * Steins Gate 主题 —— qy 页面的落地层。
+ *
+ * 前面七个文件分别管"组件长什么样"(data-slot)与"排版工具类长什么样"
+ * (qy-sg-editorial)。本文件管最后一公里:把那些工具类真正装进 qy 的页面骨架里,
+ * 并处理由此产生的两类冲突 ——
+ *
+ *   1. 上游 `SectionPageLayout` 把标题塞进 `<h2 class="truncate text-base
+ *      font-bold">`。区段头是三行两列的构图,`truncate`(nowrap + overflow
+ *      hidden)会把它裁成一行,`text-base font-bold` 又会污染没有显式声明
+ *      字重/字号的子元素。必须在这里复位。
+ *   2. `qy-sg-editorial.css` 的取值是按**落地页**校准的(标题 26~40px、
+ *      区段头下留白 44~68px)。后台页头用不了那个量级,本文件按页头档收窄,
+ *      但字体族 / 字重 / 字距三项原样保留 —— 那才是识别特征,尺寸不是。
+ *
+ * 作用域与前面七个文件一致:每条规则都带 [data-theme-preset='steins-gate'],
+ * 切到别的预设时 qy 页面逐像素回到上游形态(新增的序号与日文副标由 React 侧
+ * 条件渲染,连 DOM 都不会产生,见 features/qy/components/qy-section-page-layout.tsx)。
+ * 颜色一律走标准变量或 --qy-sg-* 派生量,不硬编码十六进制。
+ */
+
+/* ══════════════════════════════════════════════════════════════
+ * 1. 页头区段头
+ *    消费 qy-sg-editorial.css 的 .qy-sg-no / .qy-sg-sec-title / .qy-sg-jp
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 上游 <h2> 的 truncate 复位。用 :has() 而不是给 h2 加类 —— h2 由上游组件
+ * 渲染,我们能控制的只有塞进去的那个 span,只能自下而上选。
+ * 命中范围严格限定为"直接包着区段头的那个 h2",页面里别处的 h2 不受影响。 */
+[data-theme-preset='steins-gate'] h2:has(> .qy-sg-page-head) {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
+  /* 字号/字重/字距三项由内部的 .qy-sg-no / .qy-sg-sec-title / .qy-sg-jp 各自
+   * 声明;这里归零是为了兜住它们没声明的那一项(例如 .qy-sg-jp 不写 font-weight,
+   * 继承到 font-bold 会让日文副标变粗、失去"丝印"感)。 */
+  font-size: 1rem;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+
+/* 参考稿 .sec-head —— 左侧「序号 + 大标题」,右侧日文副标,基线对齐。
+ * 不直接用 .qy-sg-sec-head:那个类带 margin-bottom: var(--qy-sg-head-gap)
+ * (44~68px),是落地页区段头与正文之间的留白;页头下面紧跟的是内容区,
+ * 再加 68px 会把首屏推出视口。 */
+[data-theme-preset='steins-gate'] .qy-sg-page-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.375rem 1.5rem;
+  min-width: 0;
+}
+
+[data-theme-preset='steins-gate'] .qy-sg-page-head-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* 页头档标题:字体族(衬线)、800 字重、.04em 字距全部沿用 editorial 的声明,
+ * 只把字号从落地页的 clamp(26px,3.4vw,40px) 收到 clamp(22px,2.4vw,30px),
+ * 并去掉那 12px 的 margin-top(列间距已由 flex gap 提供)。 */
+[data-theme-preset='steins-gate'] .qy-sg-page-head .qy-sg-sec-title {
+  margin-top: 0;
+  font-size: clamp(1.375rem, 2.4vw, 1.875rem);
+  overflow-wrap: anywhere;
+}
+
+/* 页头的序号与副标比落地页克制半档:落地页一屏只有一个区段头,后台是每页都有。 */
+[data-theme-preset='steins-gate'] .qy-sg-page-head .qy-sg-no {
+  font-size: 11px;
+  letter-spacing: 0.26em;
+}
+
+[data-theme-preset='steins-gate'] .qy-sg-page-head .qy-sg-jp {
+  font-size: 10.5px;
+  letter-spacing: 0.32em;
+  white-space: nowrap;
+}
+
+/* 页头整块:上下呼吸拉开 + 一条下发丝线,取代上游那条"标题小、贴着内容"的紧凑
+ * 页头。选择器自下而上锁定 SectionPageLayout 的页头容器
+ * (A > B > C > h2 > .qy-sg-page-head,面包屑在时是 A 的另一个子节点,不影响)。
+ * 只有当页头里确实渲染了区段头时才生效,上游四个页面(channels/dashboard/
+ * keys/models)共用同一个组件但不会渲染这个 span,因此不受影响。 */
+[data-theme-preset='steins-gate'] div:has(> div > div > h2 > .qy-sg-page-head) {
+  padding-bottom: 1.25rem;
+  position: relative;
+  /* 第二版起这条实线换成电路走线(design-11 §1.2「区段头下方一条走线」)。
+   * 实线必须撤掉,否则走线的主线与它并排成两条。 */
+  border-bottom: 0;
+}
+
+/* 区段头下方的走线 —— 规范 §1.2 的第一个消费方。
+ *
+ * 【为什么复制 qy-sg-frame.css 的那几行声明,而不是给元素加个工具类】
+ * 宿主是上游 SectionPageLayout 渲染的页头容器 div,我们能往 DOM 里写的只有
+ * 塞进 <h2> 的那个 span(见 features/qy/components/qy-section-page-layout.tsx),
+ * 容器本身加不了 class,只能靠 :has() 自下而上选中它。走线的另外四个消费方
+ * (表头 th、侧板头、命令面板搜索框、顶栏)同样都是上游元素,
+ * 所以形状层最终只导出变量、不导出工具类。共享到变量这一层为止:
+ * 改瓦片图案或走线色,五处一起变;而密度与垂直位置本来就该各自定。
+ *
+ * 取【疏档】:页头容器是整页宽(1000px 以上),密档 56px 一个周期会让
+ * 节点圆点密到读作虚线;疏档 132px 一个周期,一屏出现七八个节点。
+ * bottom: -h/2 把整条带子的垂直中心对准原 border-bottom 的位置。 */
+[data-theme-preset='steins-gate']
+  div:has(> div > div > h2 > .qy-sg-page-head)::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--qy-sg-trace-h) / -2);
+  height: var(--qy-sg-trace-h);
+  pointer-events: none;
+  background-color: var(--qy-sg-trace-color);
+  -webkit-mask-image: var(--qy-sg-trace-sparse);
+  mask-image: var(--qy-sg-trace-sparse);
+  -webkit-mask-size: var(--qy-sg-trace-sparse-tile);
+  mask-size: var(--qy-sg-trace-sparse-tile);
+  -webkit-mask-repeat: repeat-x;
+  mask-repeat: repeat-x;
+  -webkit-mask-position: left center;
+  mask-position: left center;
+}
+
+@media (min-width: 640px) {
+  [data-theme-preset='steins-gate']
+    div:has(> div > div > h2 > .qy-sg-page-head) {
+    padding-top: 2rem;
+    padding-bottom: 1.5rem;
+  }
+}
+
+/* 窄屏日文副标会把标题挤成一列窄条,直接收起 —— 它是装饰件,不是信息。 */
+@media (max-width: 640px) {
+  [data-theme-preset='steins-gate'] .qy-sg-page-head .qy-sg-jp {
+    display: none;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 2. 概览数字栏(QyStatGrid)
+ *    消费 .qy-sg-stats / .qy-sg-stat / -num / -label / -sub
+ * ══════════════════════════════════════════════════════════════ */
+
+/* editorial 里写死 repeat(4, ...) 是照参考稿的四宫格;qy 的概览栏是 3~4 项
+ * 不定(提现页 4 项、影子面板 3 项)。项数少于 4 时固定四栏会留一个空格子,
+ * 而且 .qy-sg-stat:first-child 的"首栏不画左竖线"会错位。列数由组件按项数
+ * 写进 --qy-sg-stat-cols(见 pages/components/qy-stat-grid.tsx)。 */
+[data-theme-preset='steins-gate'] .qy-sg-stats {
+  grid-template-columns: repeat(var(--qy-sg-stat-cols, 4), minmax(0, 1fr));
+}
+
+/* emphasis 项(可提现余额、丢弃数)提一档字号。刻意**不**改颜色:
+ * 页面会在数值内部套 text-destructive / text-success 表达业务状态,
+ * 本主题的样式表是无层级规则,改这里的 color 会连那层语义一起压掉。 */
+[data-theme-preset='steins-gate']
+  .qy-sg-stat[data-emphasis='true']
+  .qy-sg-stat-num {
+  font-size: clamp(1.875rem, 3.8vw, 2.75rem);
+}
+
+/* 数值里嵌的徽章(健康页的「数据库在线」)不该被拉到 38px 的显示级字号 */
+[data-theme-preset='steins-gate']
+  .qy-sg-stat-num
+  :where([data-slot='status-badge'], [data-slot='badge']) {
+  font-size: 11.5px;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 3. 键值行(QyKeyValue)
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 健康页、违规详情、可用率抽屉里成片的「标签 / 数值」行。参考稿没有对应元件,
+ * 但规范 §2 的分工铁律直接适用:标签是标注(等宽 + 宽字距 + 大写),
+ * 数值是数据(等宽 + tabular-nums)。锚点是组件无条件写出的 data-qy-kv 属性,
+ * 其他预设下没有任何规则消费它,零影响。 */
+[data-theme-preset='steins-gate'] [data-qy-kv] {
+  border-color: var(--qy-sg-hair);
+}
+
+[data-theme-preset='steins-gate'] [data-qy-kv] > :first-child {
+  font-family: var(--qy-sg-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--qy-sg-faint);
+}
+
+[data-theme-preset='steins-gate'] [data-qy-kv] > :last-child {
+  font-family: var(--qy-sg-mono);
+  font-size: 0.8125rem;
+  letter-spacing: 0.06em;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 4. 工作区索引(qy 首页)
+ *    消费 .qy-sg-rows / .qy-sg-row / .qy-sg-idx / -row-title / -row-code
+ * ══════════════════════════════════════════════════════════════ */
+
+/* editorial 的 .qy-sg-row 是三列(序号 / 标题 / 正文)。工作区索引没有正文,
+ * 只有「序号 + 页面名 + 路径代号」,所以收成两列,让标题占满右侧。 */
+[data-theme-preset='steins-gate'] .qy-sg-index > .qy-sg-row {
+  grid-template-columns: 5.625rem 1fr;
+  padding-block: 1.125rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+@media (max-width: 760px) {
+  [data-theme-preset='steins-gate'] .qy-sg-index > .qy-sg-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 索引行是链接,hover 时除了 editorial 已提供的整行右移,再把标题转强调色 */
+[data-theme-preset='steins-gate']
+  .qy-sg-index
+  > .qy-sg-row:hover
+  .qy-sg-row-title {
+  color: var(--primary);
+}
+
+[data-theme-preset='steins-gate'] .qy-sg-index-group {
+  margin-top: clamp(2rem, 5vw, 3.5rem);
+}
+
+[data-theme-preset='steins-gate'] .qy-sg-index-group:first-child {
+  margin-top: 0;
+}
+
+/* 分组标题走与侧栏分组标题同一枚标注排版(规范 §3「侧栏分组标题」) */
+[data-theme-preset='steins-gate'] .qy-sg-index-label {
+  display: block;
+  margin-bottom: 0.75rem;
+  font-family: var(--qy-sg-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--qy-sg-faint);
+}

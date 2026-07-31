@@ -21,10 +21,10 @@ import { Link } from '@tanstack/react-router'
 import { History } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { SectionPageLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { useQyConfig } from '../../hooks/use-qy-config'
 import { qyTransferLimitsQuery } from './api'
 import { TransferForm } from './components/transfer-form'
@@ -42,9 +42,11 @@ export function QyTransfer() {
   const limitsQuery = useQuery(qyTransferLimitsQuery())
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>{t('qy_nav_transfer')}</SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
+        {t('qy_nav_transfer')}
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Actions>
         <Button
           variant='outline'
           size='sm'
@@ -53,8 +55,8 @@ export function QyTransfer() {
           <History aria-hidden='true' />
           {t('qy_nav_transfer_logs')}
         </Button>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Actions>
+      <QySectionPageLayout.Content>
         <QyPageBoundary query={limitsQuery}>
           {limitsQuery.data != null && (
             <div className='grid gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] lg:items-start'>
@@ -66,7 +68,7 @@ export function QyTransfer() {
             </div>
           )}
         </QyPageBoundary>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }

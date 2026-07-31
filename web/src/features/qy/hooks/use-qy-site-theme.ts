@@ -6,12 +6,12 @@ import {
   type ThemePreset,
 } from '@/lib/theme-customization'
 
-import { useQyConfig } from './use-qy-config'
 import {
   qyCacheSiteTheme,
   qySitePreset,
   qySiteThemeForced,
 } from '../lib/site-theme'
+import { useQyConfig } from './use-qy-config'
 
 /**
  * 把后端下发的站点默认主题同步到本地并按需应用。

@@ -34,6 +34,28 @@ const (
 // maxBps 是万分比的上限(100%)。仍被 transfer / withdraw / violation 使用。
 const maxBps = 10000
 
+// MinAuditRetentionDays 是 audit.retention_days 允许的最小**非零**取值。
+//
+// # 下限的依据
+//
+// qy_audit_logs 是这套资金系统事后仲裁的唯一凭据(见 qianye/model/audit_log.go):
+// 划转、佣金、提现、违规扣费的每一次判定都只在这里留痕。删掉一行,就再也无法回答
+// "这笔钱当时为什么这么算、谁批的"。下限由两条外部时限中更长的那条决定:
+//
+//   - 资金纠纷与拒付:各卡组织与支付渠道的拒付(chargeback)受理窗口普遍延伸到
+//     180 天,争议一旦进入仲裁还要再往后拖数周;
+//   - 税务与审计留存:按**年**计,一个完整会计年度是可用的最小粒度。
+//
+// 取二者上界并进到一个完整年度 = 365 天。低于它的取值不是"省点磁盘",
+// 是把仲裁凭据删在争议窗口还没关上的时候。
+//
+// # 为什么是拒绝启动而不是静默夹到下限
+//
+// 静默夹取会让运维以为自己配的是 7 天、实际跑的是 365 天 —— 那正是本扩展反复
+// 栽跟头的"以为改了其实没改"。配置写错就该在启动那一刻炸,而不是留一个
+// 与运维认知不符的实际行为。
+const MinAuditRetentionDays = 365
+
 // 返佣比例的对外单位是**百分比**,内部单位是"百分比 × 100"的整数。
 //
 // 为什么是两套单位:百分比给人看(运营说的是"返 10.25%",不是"返 1025 个万分之一"),
@@ -102,6 +124,9 @@ func validate(c *Config) error {
 		return err
 	}
 	if err := validateRuntime(&c.Runtime); err != nil {
+		return err
+	}
+	if err := validateAudit(&c.Audit); err != nil {
 		return err
 	}
 	if err := validateTransfer(&c.Transfer); err != nil {
@@ -191,6 +216,34 @@ func validateDatabase(d *Database) error {
 	case LogLevelSilent, LogLevelError, LogLevelWarn, LogLevelInfo:
 	default:
 		return fmt.Errorf("qianye: database.log_level 取值非法: %q(可选 silent|error|warn|info)", d.LogLevel)
+	}
+	return nil
+}
+
+// validateAudit 校验审计保留期。
+//
+// 刻意不因 audit.enabled=false 而跳过:开关今天关着不代表明天不打开,而一个
+// 非法的保留期只有在被打开之后才会显形 —— 显形的地方是那个删数据的任务。
+//
+// 全程只判定、不改写 *a:任何一次静默修正都会让运维读到的 YAML 与实际行为分叉。
+func validateAudit(a *Audit) error {
+	switch {
+	case a.RetentionDays == 0:
+		// 0 = 永久保留。这是默认值,也与扩展上线以来的实际行为逐位一致 ——
+		// 升级到带清理任务的版本不改变任何现存部署的行为。
+		return nil
+	case a.RetentionDays < 0:
+		return fmt.Errorf("qianye: audit.retention_days 不得为负数,收到 %d"+
+			"(0 表示永久保留;大于 0 表示按天清理,最小 %d)",
+			a.RetentionDays, MinAuditRetentionDays)
+	case a.RetentionDays < MinAuditRetentionDays:
+		return fmt.Errorf(
+			"qianye: audit.retention_days(%d)低于硬下限 %d 天 —— qy_audit_logs 是资金"+
+				"事后仲裁的唯一凭据,拒付争议窗口普遍到 180 天、税务与审计留存按年计,"+
+				"删早了就再也无法自证「这笔钱当时为什么这么算」。"+
+				"要永久保留请填 0;确需清理请填 %d 或更大。"+
+				"这里不做静默夹取:那会让你以为配的是 %d 天,而实际跑的是别的值",
+			a.RetentionDays, MinAuditRetentionDays, MinAuditRetentionDays, a.RetentionDays)
 	}
 	return nil
 }

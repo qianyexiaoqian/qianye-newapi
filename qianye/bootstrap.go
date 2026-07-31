@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/module"
+	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
 	"github.com/QuantumNous/new-api/qianye/service/twophase"
 )
@@ -118,6 +119,11 @@ func StartBackgroundTasks() {
 
 	lease.Run("twophase.compensate", twophase.Interval(), twophase.Compensate)
 	lease.Run("twophase.prune_outbox", 6*time.Hour, twophase.PruneOutbox)
+	// 无条件注册,即使当前 audit.retention_days 是 0(永久保留)。
+	// retention_days 可以被 config_reload_seconds 热载改成非零值,按启动那一刻的
+	// 取值决定要不要注册,就会得到一个"改了配置却没有任何效果"的空闸门 ——
+	// 正是这个配置项本身刚刚被修掉的那个形状。Prune 自己判定 0 并直接返回。
+	lease.Run("audit.prune", audit.PruneInterval, audit.Prune)
 
 	for _, m := range module.All() {
 		m.StartTasks()

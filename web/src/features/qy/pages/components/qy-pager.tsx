@@ -51,7 +51,10 @@ export function QyPager(props: QyPagerProps) {
 
   return (
     <div className='flex flex-wrap items-center justify-between gap-2 pt-3'>
-      <span className='text-muted-foreground text-xs'>
+      {/* qy-sg-readout:参考稿的"仪器读数"一行（等宽 + .12em 字距）。类名无条件
+          输出——它的规则全部限定在 [data-theme-preset='steins-gate'] 内，
+          其他预设下没有任何规则消费它，DOM 里多一个类名而已，零像素影响。 */}
+      <span className='qy-sg-readout text-muted-foreground text-xs'>
         {t('qy_common_page_summary', {
           page,
           pages: lastPage,

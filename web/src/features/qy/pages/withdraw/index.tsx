@@ -21,11 +21,11 @@ import { Link } from '@tanstack/react-router'
 import { History } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { SectionPageLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { useQyConfig } from '../../hooks/use-qy-config'
 import { QyStatGrid, type QyStatItem } from '../components/qy-stat-grid'
 import { qyWithdrawConfigQuery } from './api'
@@ -81,9 +81,11 @@ export function QyWithdraw() {
         ]
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>{t('qy_nav_withdraw')}</SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
+        {t('qy_nav_withdraw')}
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Actions>
         <Button
           variant='outline'
           size='sm'
@@ -92,8 +94,8 @@ export function QyWithdraw() {
           <History aria-hidden='true' />
           {t('qy_nav_withdrawals')}
         </Button>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Actions>
+      <QySectionPageLayout.Content>
         <QyPageBoundary query={configQuery}>
           {config != null && (
             <div className='space-y-4'>
@@ -105,7 +107,7 @@ export function QyWithdraw() {
             </div>
           )}
         </QyPageBoundary>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }

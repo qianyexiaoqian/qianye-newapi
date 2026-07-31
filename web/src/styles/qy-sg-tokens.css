@@ -1,0 +1,323 @@
+/*
+ * Steins Gate 主题 —— 令牌层(设计规范 §1 色板 + §2 字体轴)
+ *
+ * 本文件是整套主题唯一的取值来源:其余六个 qy-sg-*.css 只写规则,
+ * 一律引用这里的变量,不再自行调色。这样做的直接目的是避免同一个量
+ * 在两处定义 —— 后加载的那份会静默覆盖前一份,是最难查的一类样式 bug。
+ *
+ * 分两段:
+ *   1. shadcn 标准变量(--background / --foreground / --primary / ...)
+ *      —— 由 qy-theme-presets.css 迁移而来,取值经过往返验证。
+ *   2. 主题私有派生量(--qy-sg-*)—— 全部用 color-mix(in oklch, ...)
+ *      从第 1 段的标准变量派生,不硬编码十六进制。preset 换了色,
+ *      发丝线/辉光/柔光叠加自动跟着换。
+ *
+ * ── 色值的来历 ──
+ * 参考稿的十六进制原值写在每一行的注释里。换算是精确换算而非目测取近似:
+ * 十个基色由 oklch 反解回 sRGB 后与原十六进制的 RGB 距离均为 0。
+ *
+ * ── 与调色板五轴的关系 ──
+ * preset  —— 本文件的两个选择器就是 preset 轴的落点。
+ * font    —— 本文件刻意【不】设置 --font-body。steins-gate 未登记在
+ *            PRESET_DEFAULT_FONT 里,因此解析为 sans,与参考稿一致
+ *            (参考稿 body 用 --sans,衬线只用于标题)。若在这里写死
+ *            --font-body,由于本文件排在 theme-presets.css 的
+ *            [data-theme-font='...'] 之后,会把整条 font 轴顶掉。
+ * radius  —— --radius 照常生效于卡片/输入框/浮层。按钮与徽章的
+ *            999px 胶囊(--qy-sg-pill)是本主题的身份标识,刻意不跟随
+ *            radius 轴,见规范 §1 末段。
+ * scale   —— 本文件的尺寸量一律 rem / clamp(),跟随根字号缩放。
+ */
+
+/* ══════════════════════════ 昼 ══════════════════════════ */
+
+[data-theme-preset='steins-gate'] {
+  /* ── §1 纸面与墨色:定义整套主题的一对基色 ── */
+  --background: oklch(0.959 0.016 86.4); /* #f6f1e6 暖米白纸面 */
+  --foreground: oklch(0.231 0.016 71.2); /* #221c15 深褐墨 */
+
+  /* 层次面。参考稿只给了两级纸面,中间层由这两级插值得到,
+   * 保证卡片浮在底色之上而不是突兀地跳一个色阶。 */
+  --card: oklch(0.945 0.019 86.1); /* 介于 bg 与 bg2 之间 */
+  --card-foreground: oklch(0.231 0.016 71.2);
+  --popover: oklch(0.968 0.014 86.5); /* 浮层比纸面再亮一点 */
+  --popover-foreground: oklch(0.231 0.016 71.2);
+
+  /* 锈橙 —— 参考稿的唯一强调色。注意昼间主按钮【不】用它(见 --qy-sg-ink-btn-bg),
+   * 它只出现在 hover、焦点环、序号与读数上,克制是参考稿的气质来源。 */
+  --primary: oklch(0.575 0.157 41.5); /* #c2511f */
+  --primary-foreground: oklch(0.98 0.012 86.5);
+
+  --secondary: oklch(0.932 0.021 85.9); /* #efe8d9 次级纸面 */
+  --secondary-foreground: oklch(0.29 0.016 71.2);
+
+  --muted: oklch(0.938 0.02 86);
+  --muted-foreground: oklch(0.547 0.028 77.3); /* #7a6f5f 次级文字 */
+  --accent: oklch(0.92 0.023 85.8);
+  --accent-foreground: oklch(0.231 0.016 71.2);
+
+  /* 语义色。锈橙本身接近危险色,因此把 destructive 压到更深更红的一侧,
+   * 否则"删除"按钮会和主按钮撞色,用户分不清。 */
+  --destructive: oklch(0.505 0.185 27);
+  --destructive-foreground: oklch(0.98 0.012 86.5);
+  --success: oklch(0.56 0.085 140); /* 苔绿,与暖底同调 */
+  --success-foreground: oklch(0.98 0.012 86.5);
+  --warning: oklch(0.75 0.13 68); /* 琥珀 */
+  --warning-foreground: oklch(0.231 0.016 71.2);
+  --info: oklch(0.6 0.075 240); /* 灰蓝,刻意低饱和以免抢锈橙的戏 */
+  --info-foreground: oklch(0.98 0.012 86.5);
+  --neutral: oklch(0.547 0.028 77.3);
+  --neutral-foreground: oklch(0.231 0.016 71.2);
+
+  /* 发丝级边框。参考稿用的是 rgba(34,28,21,.16),即墨色的低透明度叠加,
+   * 这里换算成不透明色以避免在半透明浮层上叠加两次而变深;
+   * 需要真正半透明的场合用 --qy-sg-hair。 */
+  --border: oklch(0.878 0.018 84);
+  --input: oklch(0.878 0.018 84);
+  --ring: oklch(0.575 0.157 41.5);
+
+  /* 图表色板由强调色出发向暖色域展开,保持同一调性 */
+  --chart-1: oklch(0.575 0.157 41.5); /* 锈橙 */
+  --chart-2: oklch(0.56 0.085 140); /* 苔绿 */
+  --chart-3: oklch(0.6 0.075 240); /* 灰蓝 */
+  --chart-4: oklch(0.485 0.132 41.8); /* #9a3f16 深锈 */
+  --chart-5: oklch(0.703 0.03 81.4); /* #a99e8b 灰褐 */
+
+  --sidebar: oklch(0.941 0.02 86);
+  --sidebar-foreground: oklch(0.29 0.016 71.2);
+  --sidebar-primary: oklch(0.575 0.157 41.5);
+  --sidebar-primary-foreground: oklch(0.98 0.012 86.5);
+  --sidebar-accent: oklch(0.912 0.023 85.7);
+  --sidebar-accent-foreground: oklch(0.231 0.016 71.2);
+  --sidebar-border: oklch(0.878 0.018 84);
+  --sidebar-ring: oklch(0.575 0.157 41.5);
+
+  --skeleton-base: oklch(0.925 0.02 86);
+  --skeleton-highlight: oklch(0.955 0.016 86.4);
+
+  /* --radius 刻意【不】在这个块里声明,见文件下方紧跟着的独立规则。 */
+
+  /* ══ §2 字体三分工 ══
+   * 铁律:凡是"数字""标识符""状态标签""列标题",一律等宽 + 宽字距 + 大写。
+   * 这是参考稿最强的识别特征 —— 它让界面看起来像仪器面板而不是表格。 */
+
+  /* 衬线:标题、卡片标题、弹窗标题。--font-serif 已含完整 CJK 回退栈 */
+  --qy-sg-serif: var(--font-serif);
+  /* 无衬线:正文。参考稿 body 就是无衬线,衬线只用在标题上 */
+  --qy-sg-sans: var(--font-sans);
+  /* 等宽:一切数据、标签、序号、读数。
+   * JetBrains Mono 由 @fontsource-variable/jetbrains-mono 本地提供
+   * (index.css 里 @import),注册名带 Variable 后缀;
+   * 后面几档是系统等宽回退,不走任何外部网络资源。 */
+  --qy-sg-mono:
+    'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'Cascadia Mono',
+    'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* ══ 主题私有派生量 ══ */
+
+  /* 发丝线两档。参考稿昼间 rgba(34,28,21,.16) = 墨色 16% 透明叠加,
+   * 这里用 color-mix 到 transparent 精确复现(oklch 混合按预乘透明度插值,
+   * 结果就是 --foreground 带 16% alpha)。
+   * strong 档给表头下边框、输入框边框这类需要"看得见"的分隔。 */
+  --qy-sg-hair: color-mix(in oklch, var(--foreground) 16%, transparent);
+  --qy-sg-hair-strong: color-mix(in oklch, var(--foreground) 28%, transparent);
+
+  /* 强调色低透明度叠加。参考稿 --accent-soft: rgba(194,81,31,.12)。
+   * 用于行 hover 底色、标题高亮衬底、徽章底。 */
+  --qy-sg-accent-soft: color-mix(in oklch, var(--primary) 12%, transparent);
+
+  /* 深强调色。参考稿 --accent-deep: #9a3f16,是实心按钮 hover 的落点。
+   * 与黑混合而非与墨色混合:黑的 chroma 为 0,oklch 里色相是 powerless,
+   * 混出来严格保持 --primary 的色相,只压亮度与彩度 ——
+   * 84% 反解为 rgb(153,62,22),参考稿是 rgb(154,63,22)。 */
+  --qy-sg-accent-deep: color-mix(in oklch, var(--primary) 84%, black);
+
+  /* 三级文字(参考稿 --faint: #a99e8b)。shadcn 只有 foreground /
+   * muted-foreground 两档,序号、日文副标、图表轴标需要更淡的第三档。
+   * 由次级文字向纸面退 38%,反解 rgb(167,158,144) vs 参考稿 rgb(169,158,139)。 */
+  --qy-sg-faint: color-mix(
+    in oklch,
+    var(--muted-foreground) 62%,
+    var(--background)
+  );
+
+  /* 辉光。焦点柔光环、徽章状态点的外发光都用它。 */
+  --qy-sg-glow: color-mix(in oklch, var(--primary) 26%, transparent);
+
+  /* 参考稿全局统一的缓动,所有过渡都引它,不要各写各的 */
+  --qy-sg-ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* 胶囊圆角。刻意【不】写成 calc(var(--radius) * n):999px 是本主题的
+   * 身份标识,不跟随 radius 轴,见规范 §1 末段。 */
+  --qy-sg-pill: 999px;
+
+  /* 浮层磨砂。dialog / popover / dropdown / sheet / 顶栏统一用这一档 */
+  --qy-sg-blur: blur(16px) saturate(1.1);
+
+  /* Claude 风格的"松呼吸"。参考稿区段间距 clamp(90px,11vw,140px)、
+   * 区段头下方 clamp(44px,6vw,68px)、正文行高 1.9~2.05。
+   * 用 rem 而不是 px,以便跟随 scale 轴。 */
+  --qy-sg-sec-gap: clamp(5.625rem, 11vw, 8.75rem);
+  --qy-sg-head-gap: clamp(2.75rem, 6vw, 4.25rem);
+  --qy-sg-leading: 1.95;
+
+  /* ── 实心按钮:昼夜语义不同,这是本主题最容易做错的一处 ──
+   * 昼间实心按钮是【墨色】的,强调色只在 hover 时才出现;
+   * 夜间才由强调色直接坐镇(锈橙在暗底上对比度不足,夜间转红)。
+   * 把差异收在这三个变量里,控件文件因此不需要写任何昼夜分支。 */
+  --qy-sg-ink-btn-bg: var(
+    --foreground
+  ); /* 参考稿 .btn.solid background: var(--ink) */
+  --qy-sg-ink-btn-bg-hover: var(
+    --qy-sg-accent-deep
+  ); /* hover 转 --accent-deep */
+  /* 参考稿 #fdfaf3 = rgb(253,250,243):比纸面再亮一档的暖白。
+   * 直接用 --primary-foreground(实测 rgb(252,248,240),距参考稿 3.7),
+   * 而不是 color-mix(--background, white):white 的色相是 0 而非"无",
+   * 在 oklch 里混合会把结果往品红拽 —— 实测那种写法得到 rgb(253,247,249),
+   * 蓝比绿高,是冷调,与暖纸面主题正好相反。 */
+  --qy-sg-ink-btn-fg: var(--primary-foreground);
+  /* 参考稿 0 10px 30px rgba(34,28,21,.22),hover 时投影转赭色 */
+  --qy-sg-ink-btn-shadow: 0 10px 30px
+    color-mix(in oklch, var(--foreground) 22%, transparent);
+  --qy-sg-ink-btn-shadow-hover: 0 16px 40px
+    color-mix(in oklch, var(--primary) 30%, transparent);
+
+  /* 唯一允许的投影:图表容器这类需要"浮起来"的块。
+   * 参考稿 0 20px 50px rgba(34,28,21,.06);夜间置为 none(见下方夜块),
+   * 因此消费方直接写 box-shadow: var(--qy-sg-lift-shadow) 即可。 */
+  --qy-sg-lift-shadow: 0 20px 50px
+    color-mix(in oklch, var(--foreground) 6%, transparent);
+
+  /* 遮罩层。参考稿昼 rgba(34,28,21,.35) */
+  --qy-sg-overlay: color-mix(in oklch, var(--foreground) 35%, transparent);
+
+  /* 选中文本。参考稿昼 rgba(194,81,31,.25),不改前景色 */
+  --qy-sg-selection-bg: color-mix(in oklch, var(--primary) 25%, transparent);
+  --qy-sg-selection-fg: var(--foreground);
+
+  /* 装饰层强度(规范 §4)。数值而非颜色,便于 decor 文件直接吃。 */
+  --qy-sg-grain-opacity: 0.05;
+  --qy-sg-gear-opacity: 0.045;
+}
+
+/* ── radius 轴 ───────────────────────────────────────────────────────────
+ * 本预设的默认圆角:参考稿是偏方正的印刷感,不用大圆角。
+ *
+ * 【必须带 :not([data-theme-radius])】。上游 theme-presets.css 把 radius 轴块
+ * 刻意放在所有预设块【之后】(见该文件开头第 31 行的注释),靠源序让用户的显式
+ * 选择赢过预设默认值。而 index.css 里 qy-steins-gate.css 排在 theme-presets.css
+ * 之后 —— 无条件写 `[data-theme-preset='steins-gate'] { --radius: … }` 与
+ * `[data-theme-radius='xl']` 特异度同为 (0,1,0),源序上反而是本文件赢,
+ * 结果是 radius 轴在本预设下【完全失效】(实测把 data-theme-radius 从 none 拨到
+ * xl,--radius 恒为 .375rem)。加 :not() 之后特异度变 (0,2,0)... 仍然会赢,
+ * 所以真正起作用的是选择器本身:用户一旦显式选了档位,body 上就有该属性,
+ * 本规则直接不匹配,轴块的值原样生效。 */
+[data-theme-preset='steins-gate']:not([data-theme-radius]) {
+  --radius: 0.375rem;
+}
+
+/* ══════════════════════════ 夜 ══════════════════════════
+ * 两个选择器命中的是同一个元素(preset 写在 <body> 上,.dark 写在 <html> 上),
+ * 因此这里只需要覆写"公式本身就不同"的量:
+ *   - 标准色板整套换值;
+ *   - --qy-sg-hair / accent-soft / glow 的百分比昼夜不同;
+ *   - --qy-sg-ink-btn-* 的语义昼夜相反(墨底 → 强调色底);
+ *   - --qy-sg-lift-shadow 夜间取消,--qy-sg-overlay 换基色;
+ *   - --qy-sg-selection-* 夜间加重并翻转前景;--qy-sg-grain-opacity 略提。
+ * 其余派生量(serif/sans/mono、ease、pill、blur、三个间距量、leading、
+ * faint、accent-deep、gear-opacity)公式两边一致,不重复声明 ——
+ * 它们 var() 引用的标准变量已经在本块换了值,会自动跟着翻转。
+ * 重复声明才是危险的:同一个量两处定义,后加载的静默覆盖前一处。 */
+
+.dark [data-theme-preset='steins-gate'] {
+  /* 暖近黑而非纯黑:纯黑会丢掉参考稿的暖调,看起来像另一套主题 */
+  --background: oklch(0.148 0.006 40); /* #0d0a09 */
+  --foreground: oklch(0.939 0.024 85.8); /* #f2ead9 米色墨 */
+
+  --card: oklch(0.179 0.008 18); /* #151010 */
+  --card-foreground: oklch(0.939 0.024 85.8);
+  --popover: oklch(0.205 0.008 30);
+  --popover-foreground: oklch(0.939 0.024 85.8);
+
+  /* 深色版强调色转为偏红(参考稿 #e5484d):锈橙在暗底上对比度不足 */
+  --primary: oklch(0.626 0.193 23);
+  --primary-foreground: oklch(0.148 0.006 40);
+
+  --secondary: oklch(0.235 0.009 35);
+  --secondary-foreground: oklch(0.92 0.022 85.8);
+
+  --muted: oklch(0.225 0.008 35);
+  --muted-foreground: oklch(0.681 0.023 65.2); /* #a3968a */
+  --accent: oklch(0.255 0.01 35);
+  --accent-foreground: oklch(0.939 0.024 85.8);
+
+  /* 深色版的强调色本身就是红色,destructive 必须再拉开距离,
+   * 否则"删除"与主按钮在暗底上几乎同色。 */
+  --destructive: oklch(0.55 0.21 12);
+  --destructive-foreground: oklch(0.97 0.02 85.8);
+  --success: oklch(0.66 0.11 145);
+  --success-foreground: oklch(0.148 0.006 40);
+  --warning: oklch(0.79 0.135 72);
+  --warning-foreground: oklch(0.148 0.006 40);
+  --info: oklch(0.68 0.09 240);
+  --info-foreground: oklch(0.148 0.006 40);
+  --neutral: oklch(0.681 0.023 65.2);
+  --neutral-foreground: oklch(0.939 0.024 85.8);
+
+  --border: oklch(0.29 0.011 40);
+  --input: oklch(0.29 0.011 40);
+  --ring: oklch(0.626 0.193 23);
+
+  --chart-1: oklch(0.626 0.193 23);
+  --chart-2: oklch(0.66 0.11 145);
+  --chart-3: oklch(0.68 0.09 240);
+  --chart-4: oklch(0.72 0.15 45);
+  --chart-5: oklch(0.478 0.02 67.3); /* #655b51 */
+
+  --sidebar: oklch(0.172 0.007 30);
+  --sidebar-foreground: oklch(0.92 0.022 85.8);
+  --sidebar-primary: oklch(0.626 0.193 23);
+  --sidebar-primary-foreground: oklch(0.148 0.006 40);
+  --sidebar-accent: oklch(0.245 0.01 35);
+  --sidebar-accent-foreground: oklch(0.939 0.024 85.8);
+  --sidebar-border: oklch(0.29 0.011 40);
+  --sidebar-ring: oklch(0.626 0.193 23);
+
+  --skeleton-base: oklch(0.215 0.008 35);
+  --skeleton-highlight: oklch(0.26 0.01 35);
+
+  /* 发丝线在暗底上要更收敛,参考稿夜间是 rgba(242,234,217,.13) */
+  --qy-sg-hair: color-mix(in oklch, var(--foreground) 13%, transparent);
+  --qy-sg-hair-strong: color-mix(in oklch, var(--foreground) 24%, transparent);
+
+  /* 参考稿夜间 --accent-soft: rgba(229,72,77,.14),比昼间高两个点 */
+  --qy-sg-accent-soft: color-mix(in oklch, var(--primary) 14%, transparent);
+
+  /* 暗底吃光,辉光要更亮才看得见(参考稿夜间按钮投影 alpha .32) */
+  --qy-sg-glow: color-mix(in oklch, var(--primary) 32%, transparent);
+
+  /* 夜间实心按钮直接由强调色坐镇,hover 不换底色、只加强投影 ——
+   * 这正是与昼间语义相反的一处,昼间是墨底 hover 才转强调色。 */
+  --qy-sg-ink-btn-bg: var(--primary);
+  --qy-sg-ink-btn-bg-hover: var(--primary);
+  /* 参考稿夜间按钮文字是纯白;这里从米色墨向白推,保留一丝暖意
+   * 又不硬编码 #fff,反解 rgb(253,252,250) */
+  --qy-sg-ink-btn-fg: color-mix(in oklch, var(--foreground) 12%, white);
+  /* 参考稿 0 8px 30px rgba(229,72,77,.32) */
+  --qy-sg-ink-btn-shadow: 0 8px 30px var(--qy-sg-glow);
+  --qy-sg-ink-btn-shadow-hover: 0 14px 44px
+    color-mix(in oklch, var(--primary) 44%, transparent);
+
+  /* 夜间一律不投影:暗底上的投影只会糊成一团脏色,层次靠发丝线做 */
+  --qy-sg-lift-shadow: none;
+
+  /* 遮罩层。参考稿夜 rgba(13,10,9,.6) —— 基于底色而非墨色 */
+  --qy-sg-overlay: color-mix(in oklch, var(--background) 60%, transparent);
+
+  /* 参考稿夜 rgba(229,72,77,.35) + color:#fff */
+  --qy-sg-selection-bg: color-mix(in oklch, var(--primary) 35%, transparent);
+  --qy-sg-selection-fg: color-mix(in oklch, var(--foreground) 12%, white);
+
+  --qy-sg-grain-opacity: 0.055;
+}

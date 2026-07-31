@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table'
-import { SectionPageLayout } from '@/components/layout'
 import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -38,6 +37,7 @@ import {
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyKeys } from '../../lib/query-keys'
 import { QyPager } from '../components/qy-pager'
 import { qyOpsErrorMessage } from '../ops/errors'
@@ -124,11 +124,11 @@ export function QyAdminViolationRules() {
   const rules = rulesQuery.data?.items ?? []
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_vio_rules_title')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Actions>
         <Button
           type='button'
           onClick={() => {
@@ -139,8 +139,8 @@ export function QyAdminViolationRules() {
           <Plus aria-hidden='true' />
           {t('qy_vio_rule_create')}
         </Button>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Actions>
+      <QySectionPageLayout.Content>
         <div className='space-y-3'>
           <QyViolationShadowBanner
             stats={statsQuery.data}
@@ -353,7 +353,7 @@ export function QyAdminViolationRules() {
             }}
           />
         </div>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }

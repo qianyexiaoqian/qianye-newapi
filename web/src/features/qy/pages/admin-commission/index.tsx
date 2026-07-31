@@ -23,7 +23,6 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { SectionPageLayout } from '@/components/layout'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -38,6 +37,7 @@ import { Label } from '@/components/ui/label'
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyErrorMessage } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import {
@@ -76,11 +76,11 @@ export function QyAdminCommission() {
   const config = query.data
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_nav_a_commission')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Actions>
         <Button
           variant='outline'
           size='sm'
@@ -89,8 +89,8 @@ export function QyAdminCommission() {
           <ScrollText aria-hidden='true' />
           {t('qy_nav_a_commission_records')}
         </Button>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Actions>
+      <QySectionPageLayout.Content>
         <QyPageBoundary query={query}>
           {config != null && (
             <div className='space-y-4'>
@@ -102,8 +102,8 @@ export function QyAdminCommission() {
             </div>
           )}
         </QyPageBoundary>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }
 

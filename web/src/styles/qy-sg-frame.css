@@ -1,0 +1,418 @@
+/*
+ * Steins Gate 主题 —— 结构层 · 公共形状(第二版规范 design-11 §1.1 / §1.2)
+ *
+ * 第一版把上游组件的【形状】原样留着,只换了皮:面板还是圆角卡片、
+ * 表格还是普通表格。第二版的验收标准是「遮住颜色只看轮廓,也能认出
+ * 这不是默认主题」,所以本文件做的是形状本身,而不是配色。
+ *
+ * 本文件是【形状基元层】,排在 tokens 之后、其余五个文件之前:
+ *   §A 切角框   —— 四角切角的双层框线 + 四个 L 形角标,取代圆角卡片
+ *   §B 电路走线 —— PCB 式细线 + 节点圆点 + 一处分叉,取代实线分隔
+ * 两组基元各自导出一套 CSS 自定义属性,controls / surfaces / data / nav
+ * 四个文件【直接引用,不要重新实现】——同一个形状在两处定义,
+ * 后加载的那份会静默覆盖前一份,是本项目最难查的一类样式 bug。
+ *
+ * ── 关于 --qy-sg-* 的归属 ──
+ * qy-sg-tokens.css 是【色板与色彩派生量】的唯一来源,本文件不碰颜色取值,
+ * 只从它已有的 --qy-sg-hair-strong / --primary / --foreground 派生。
+ * 本文件新增的是【几何量】(切角尺寸、线宽、角标长度、走线瓦片),
+ * 它们在整套主题里同样只声明这一次,声明点就是下面这个块。
+ *
+ * 全部规则限定在 [data-theme-preset='steins-gate'] 内,切到其他预设逐像素
+ * 不受影响;上游组件源码一行未改,挂载点全是 shadcn 已有的 data-slot
+ * (card / table-container 已用 `grep -rhoE "data-slot=..." src/components/ui/`
+ *  核对过确实存在)。
+ */
+
+/* ══════════════════════════════════════════════════════════════════
+ * §A 切角框(规范 §1.1)
+ *
+ * ── 三条路都试过了,实测结论在这里 ──
+ *
+ * 难点是 clip-path 与 border 不能共存:切角会把边框一起切掉。
+ * 规范要求三条路都试并说明取舍。三条路各写了一份最小实现,
+ * 用 foreignObject → canvas → getImageData 读真实像素、
+ * 用 document.elementFromPoint 做命中测试,量出来的结果如下
+ * (切角 40px / 线宽 3px / 120×120 画布,扫描左上切角区域 29 行):
+ *
+ * 【路 1】多重 linear-gradient 在切角形状上画框线(4 条直边 + 4 条 45° 对角)
+ *   对角线扫描:全黑像素 145、【中间调像素 0】。
+ *   即 45° 对角线是硬停渐变,逐像素求值、没有任何几何抗锯齿 ——
+ *   边缘是纯二值的阶梯。这是它出局的第一条理由。
+ *   第二条理由更硬:这一路要把宿主的 background-image 整个占掉(8 层),
+ *   而 qy-sg-surfaces.css 已经用 [data-slot='card'] 的 background-image
+ *   画卡片顶部的受光渐变。两个文件抢同一个属性 = 后加载的静默赢掉。
+ *
+ * 【路 2】一层绝对定位的 ::before 承载框线,自身被 clip-path 切成"环" ← 选它
+ *   同一处扫描:全黑 87、【中间调 58】,恰好每行 2 个(对角线两侧各一个,
+ *   y=20 行实测亮度 131 / 87)—— 这是 Skia 的路径抗锯齿,边缘是平滑的。
+ *   宿主不带 clip-path,所以子元素的溢出、box-shadow、focus 环都不受影响:
+ *   命中测试里那个故意溢出到框外的子元素 elementFromPoint 仍然返回它自己。
+ *
+ * 【路 3】border-image / padding-box 双层背景(宿主自身 clip-path)
+ *   两处都卡死,都是量出来的,不是推测:
+ *   (a) 吃掉子元素的溢出 —— 溢出子元素的 elementFromPoint 返回的是它【背后
+ *       的 h3】,即该子元素被整块裁掉了,连命中区域一起没了;box-shadow 同理。
+ *   (b) 切角处根本画不出线 —— 扫描左上切角区域得到【全黑像素 0】,
+ *       而同一张图的直边段有 33 个全黑像素。原因是 padding-box 那层表面色
+ *       在切角三角形里盖住了 border-box 的线色,对角线只剩一条无线的裸切口。
+ *
+ * ── 环是怎么切出来的 ──
+ * clip-path: polygon() 只能给一条路径,但可以在一条点表里塞两个闭合回路,
+ * 再显式声明 evenodd 填充规则:外圈八边形 - 内圈八边形 = 一个 1px 宽的环。
+ * 两个回路之间靠一段"缝"连接,缝的往返两次完全重合、面积为零,
+ * evenodd 下穿越两次等于没穿越,所以缝不会显形(选 evenodd 而不是默认的
+ * nonzero,是因为 evenodd 与回路的绕行方向无关,后人调点表时不会因为
+ * 写反了方向而把环填成实心)。
+ *
+ * 内圈的切角尺寸不等于外圈:把一个 135° 顶点向内偏移 w,顶点会沿角平分线
+ * 移动,切角需要放大 w·(√2-1) ≈ 0.4142w,否则对角线只有 0.707w 粗、
+ * 比四条直边细一截,肉眼能看出来。--qy-sg-notch-in 就是这个补偿。
+ * ══════════════════════════════════════════════════════════════════ */
+
+[data-theme-preset='steins-gate'] {
+  /* ── 几何量。这里是它们在整套主题里唯一的声明点 ──
+   *
+   * ⚠ 在别的元素上就地覆写这几个值【改不动下面那些配方】(--qy-sg-frame-clip /
+   * --qy-sg-frame-marks*):自定义属性里的 var() 在声明它的元素上就替换完了,
+   * 配方拿到的永远是这里的取值。实测与正确做法见文件末尾的"更正一"。 */
+
+  /* 切角尺寸。刻意【不】写成 calc(var(--radius) * n):切角是第二版的身份
+   * 标识,与按钮的 999px 胶囊同性质,不跟随调色板的 radius 轴 ——
+   * 否则用户把 radius 拨到 none,整套 HUD 轮廓就退回成普通方框。
+   * 同理用 px 而不是 rem:它是装饰性的几何常量,跟着字号缩放没有意义。 */
+  --qy-sg-notch: 12px;
+
+  /* 外框线宽 */
+  --qy-sg-frame-line: 1px;
+
+  /* L 形角标:2px 粗、14px 长(规范 §1.1 原值) */
+  --qy-sg-corner-w: 2px;
+  --qy-sg-corner-len: 14px;
+
+  /* 第二层线的内缩量(规范 §1.1:内缩 3px) */
+  --qy-sg-frame-inset: 3px;
+
+  /* 角标自己的内缩量。它比第二层线更靠里,不是随手取的数:
+   * 角标是一个真正的 L(两条臂在同一个顶点交汇),而这个顶点必须落在
+   * 八边形【里面】。切角把 x+y < notch 的那块三角形整个切掉了,所以顶点
+   * (o, o) 必须满足 2o > notch;取 9px 时 18 > 12,离对角线还有
+   * (18-12)/√2 ≈ 4.2px 的余量。若把角标直接放在 3px 处(与第二层线齐平),
+   * 顶点 (3,3) 的 x+y = 6 < 12,L 的拐角会从切角的缺口里戳出框外。 */
+  --qy-sg-corner-inset: 9px;
+
+  /* ── 颜色:全部从标准变量 color-mix 派生,不硬编码十六进制 ── */
+
+  /* 外框线。第一版卡片边框用的是 --qy-sg-hair(昼 16% / 夜 13%),
+   * 那个强度是给"发丝线分栏"用的;切角框是整块面板的轮廓,
+   * 验收标准又恰好是"遮住颜色只看轮廓",所以取强档。 */
+  --qy-sg-frame-color: var(--qy-sg-hair-strong);
+
+  /* 第二层线:规范 §1.1 指定 foreground 6% */
+  --qy-sg-frame-inner-color: color-mix(
+    in oklch,
+    var(--foreground) 6%,
+    transparent
+  );
+
+  /* 角标:规范 §1.1 指定强调色 55% */
+  --qy-sg-corner-color: color-mix(in oklch, var(--primary) 55%, transparent);
+
+  /* 内圈切角的偏移补偿,理由见上方注释 */
+  --qy-sg-notch-in: calc(var(--qy-sg-notch) + var(--qy-sg-frame-line) * 0.4142);
+
+  /* 第二层线在切角处的起点。同一条补偿公式,只是偏移量换成 3px:
+   * 把八边形整体向内偏移 i,切角要放大 i·(√2-1)。第二层线的四条直边
+   * 就从这里开始,再往外就会戳出切角的缺口。 */
+  --qy-sg-inner-notch: calc(
+    var(--qy-sg-notch) + var(--qy-sg-frame-inset) * 0.4142
+  );
+
+  /* ── 导出给其他文件的"配方" ──
+   * 消费方不必重抄这一大坨点表,只需在自己的 ::before 上写
+   * clip-path: var(--qy-sg-frame-clip)。 */
+  --qy-sg-frame-clip: polygon(
+    evenodd,
+    var(--qy-sg-notch) 0,
+    calc(100% - var(--qy-sg-notch)) 0,
+    100% var(--qy-sg-notch),
+    100% calc(100% - var(--qy-sg-notch)),
+    calc(100% - var(--qy-sg-notch)) 100%,
+    var(--qy-sg-notch) 100%,
+    0 calc(100% - var(--qy-sg-notch)),
+    0 var(--qy-sg-notch),
+    var(--qy-sg-notch) 0,
+    var(--qy-sg-notch-in) var(--qy-sg-frame-line),
+    var(--qy-sg-frame-line) var(--qy-sg-notch-in),
+    var(--qy-sg-frame-line) calc(100% - var(--qy-sg-notch-in)),
+    var(--qy-sg-notch-in) calc(100% - var(--qy-sg-frame-line)),
+    calc(100% - var(--qy-sg-notch-in)) calc(100% - var(--qy-sg-frame-line)),
+    calc(100% - var(--qy-sg-frame-line)) calc(100% - var(--qy-sg-notch-in)),
+    calc(100% - var(--qy-sg-frame-line)) var(--qy-sg-notch-in),
+    calc(100% - var(--qy-sg-notch-in)) var(--qy-sg-frame-line),
+    var(--qy-sg-notch-in) var(--qy-sg-frame-line)
+  );
+
+  /* 第二层线 + 四个 L 形角标,合计 12 个 background 层,画在同一个 ::after 上。
+   * 前 8 层是角标(每角两条臂共用一个顶点,拼成 L),后 4 层是内缩 3px 的
+   * 第二层线。整块面板因此是三层轮廓,由外向内:
+   *   外圈八边形(1px,hair-strong) → 第二层线(1px,foreground 6%,内缩 3px)
+   *   → L 形角标(2px,强调色 55%,内缩 9px)
+   *
+   * 第二层线【只画四条直边,不画四条对角线】。这是从路 1 的实测结论倒推的:
+   * 45° 对角线用 linear-gradient 画必然是二值阶梯(中间调像素 0),而这一层
+   * 只有 6% 的浓度,为它单开一个 clip-path 环又没有伪元素可用了 ——
+   * 每个元素只有 ::before / ::after 两个,::before 已经被外圈环占掉。
+   * 省掉之后缺口在切角处,而外圈那条抗锯齿的对角线就在 3px 外平行经过,
+   * 视觉上读作"内框在切角处让位给外框",不是断线。
+   *
+   * 四条直边的起点是 --qy-sg-inner-notch 而不是 --qy-sg-frame-inset:
+   * 直边一旦从 3px 处就开始,左端点 (3,3) 落在被切掉的三角形里,会戳出框外。 */
+  --qy-sg-frame-marks:
+    linear-gradient(var(--qy-sg-corner-color), var(--qy-sg-corner-color)),
+    linear-gradient(var(--qy-sg-corner-color), var(--qy-sg-corner-color)),
+    linear-gradient(var(--qy-sg-corner-color), var(--qy-sg-corner-color)),
+    linear-gradient(var(--qy-sg-corner-color), var(--qy-sg-corner-color)),
+    linear-gradient(var(--qy-sg-corner-color), var(--qy-sg-corner-color)),
+    linear-gradient(var(--qy-sg-corner-color), var(--qy-sg-corner-color)),
+    linear-gradient(var(--qy-sg-corner-color), var(--qy-sg-corner-color)),
+    linear-gradient(var(--qy-sg-corner-color), var(--qy-sg-corner-color)),
+    linear-gradient(
+      var(--qy-sg-frame-inner-color),
+      var(--qy-sg-frame-inner-color)
+    ),
+    linear-gradient(
+      var(--qy-sg-frame-inner-color),
+      var(--qy-sg-frame-inner-color)
+    ),
+    linear-gradient(
+      var(--qy-sg-frame-inner-color),
+      var(--qy-sg-frame-inner-color)
+    ),
+    linear-gradient(
+      var(--qy-sg-frame-inner-color),
+      var(--qy-sg-frame-inner-color)
+    );
+
+  --qy-sg-frame-marks-size:
+    var(--qy-sg-corner-len) var(--qy-sg-corner-w),
+    var(--qy-sg-corner-w) var(--qy-sg-corner-len),
+    var(--qy-sg-corner-len) var(--qy-sg-corner-w),
+    var(--qy-sg-corner-w) var(--qy-sg-corner-len),
+    var(--qy-sg-corner-len) var(--qy-sg-corner-w),
+    var(--qy-sg-corner-w) var(--qy-sg-corner-len),
+    var(--qy-sg-corner-len) var(--qy-sg-corner-w),
+    var(--qy-sg-corner-w) var(--qy-sg-corner-len),
+    calc(100% - 2 * var(--qy-sg-inner-notch)) 1px,
+    calc(100% - 2 * var(--qy-sg-inner-notch)) 1px,
+    1px calc(100% - 2 * var(--qy-sg-inner-notch)),
+    1px calc(100% - 2 * var(--qy-sg-inner-notch));
+
+  --qy-sg-frame-marks-pos:
+    left var(--qy-sg-corner-inset) top var(--qy-sg-corner-inset),
+    left var(--qy-sg-corner-inset) top var(--qy-sg-corner-inset),
+    right var(--qy-sg-corner-inset) top var(--qy-sg-corner-inset),
+    right var(--qy-sg-corner-inset) top var(--qy-sg-corner-inset),
+    left var(--qy-sg-corner-inset) bottom var(--qy-sg-corner-inset),
+    left var(--qy-sg-corner-inset) bottom var(--qy-sg-corner-inset),
+    right var(--qy-sg-corner-inset) bottom var(--qy-sg-corner-inset),
+    right var(--qy-sg-corner-inset) bottom var(--qy-sg-corner-inset),
+    left var(--qy-sg-inner-notch) top var(--qy-sg-frame-inset),
+    left var(--qy-sg-inner-notch) bottom var(--qy-sg-frame-inset),
+    left var(--qy-sg-frame-inset) top var(--qy-sg-inner-notch),
+    right var(--qy-sg-frame-inset) top var(--qy-sg-inner-notch);
+}
+
+/* ── 宿主:清掉圆角矩形的痕迹,给伪元素让出定位上下文 ──
+ *
+ * 【特异度是刻意抬高的】body 前缀把这条规则抬到 (0,3,1)。
+ * qy-sg-surfaces.css 的 `[data-theme-preset][data-slot='card']` 是 (0,2,0)、
+ * qy-sg-data.css 的 table-container 同样是 (0,2,0)。本文件在汇总入口里排在
+ * tokens 之后、那两个文件【之前】,如果特异度相同就会被它们的 border /
+ * border-radius 覆盖回圆角发丝线框,切角框等于白写。抬高特异度之后,
+ * 无论 @import 顺序怎么调,形状层都稳定胜出。
+ *
+ * border-radius: 0 是【刻意推翻第一版】:design-10 §3 给卡片定的是
+ * calc(var(--radius) + .5rem) ≈ 14px 圆角,design-11 §1.1 明确用切角框取代
+ * 「圆角 + 发丝线」的卡片形状。圆角与切角同时存在会变成"圆角上剁一刀",
+ * 两种造型互相抵消。 */
+body[data-theme-preset='steins-gate']
+  :is(.qy-sg-frame, [data-slot='card'], [data-slot='table-container']) {
+  position: relative;
+  border: 0;
+  border-radius: 0;
+}
+
+body[data-theme-preset='steins-gate']
+  :is(.qy-sg-frame, [data-slot='card'], [data-slot='table-container'])::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  /* 必须有:这一层铺满整个面板并压在内容之上,不关掉指针事件会吃掉所有点击 */
+  pointer-events: none;
+  background-color: var(--qy-sg-frame-color);
+  clip-path: var(--qy-sg-frame-clip);
+  transition: background-color 0.28s var(--qy-sg-ease);
+}
+
+body[data-theme-preset='steins-gate']
+  :is(.qy-sg-frame, [data-slot='card'], [data-slot='table-container'])::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--qy-sg-frame-marks);
+  background-size: var(--qy-sg-frame-marks-size);
+  background-position: var(--qy-sg-frame-marks-pos);
+  background-repeat: no-repeat;
+}
+
+/* hover:参考稿的交互语言是"线变深",不是"块浮起"。
+ * 第一版已经把卡片的 hover 位移与投影掐掉了(surfaces),这里补上切角框
+ * 自己的那一份 —— 框线转强调色 40%,角标不动(它本来就是强调色)。 */
+body[data-theme-preset='steins-gate']
+  :is(.qy-sg-frame, [data-slot='card']):hover::before {
+  background-color: color-mix(in oklch, var(--primary) 40%, transparent);
+}
+
+/* 嵌套面板不重复画框:一个已经带切角框的卡片里再套一个表格容器,
+ * 两层框线会挤在一起,把"发丝"这个词彻底毁掉。qy-sg-data.css 对 border
+ * 做过同样的排除,这里对伪元素做一次对应的排除,两处的清单保持一致。
+ * content: none 比 display: none 更彻底 —— 伪元素根本不生成盒子。 */
+body[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='card'],
+    [data-slot='card-content'],
+    [data-slot='dialog-content'],
+    [data-slot='sheet-content'],
+    [data-slot='popover-content'],
+    .qy-sg-frame
+  )
+  [data-slot='table-container']::before,
+body[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='card'],
+    [data-slot='card-content'],
+    [data-slot='dialog-content'],
+    [data-slot='sheet-content'],
+    [data-slot='popover-content'],
+    .qy-sg-frame
+  )
+  [data-slot='table-container']::after {
+  content: none;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * §B 电路走线(规范 §1.2)
+ *
+ * 水平细线 + 两个节点圆点 + 一处 45° 分叉,内联 SVG data-uri,repeat-x。
+ *
+ * 颜色照抄 qy-sg-decor.css 里齿轮水印的手法:SVG 只当【遮罩】用,
+ * 实际颜色由 background-color 提供。background-image 里的 SVG 是独立文档,
+ * 读不到宿主的 CSS 自定义属性,直接把 stroke 写死成十六进制会让调色板
+ * 定制器改了色而走线不跟随(规范 §3.4)。走 mask 之后换预设、切昼夜,
+ * 走线自动跟着换色。
+ *
+ * 两档密度是两张【不同的图】而不是同一张图拉伸:mask-size 拉伸会把
+ * 节点圆点压成椭圆、把线宽拉粗。所以疏档单独画一张更宽的瓦片,
+ * 只是把特征之间的空线拉长,线宽与圆点半径保持不变。
+ *   密档 56×8   给表头下边框
+ *   疏档 132×8  给区段头下方
+ * 瓦片高 8px,主线画在垂直中心(y=4),分叉挂在下半部分 —— 这样把它当
+ * 下边框用时,只要把整条带子的中心对准元素下沿(bottom: -h/2),
+ * 主线就正好落在原来 border-bottom 的位置上。
+ * ══════════════════════════════════════════════════════════════════ */
+
+[data-theme-preset='steins-gate'] {
+  --qy-sg-trace-h: 8px;
+  --qy-sg-trace-color: var(--qy-sg-hair-strong);
+
+  --qy-sg-trace-dense: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='8' viewBox='0 0 56 8'%3E%3Cg fill='none' stroke='%23000' stroke-width='1'%3E%3Cpath d='M0 4H56'/%3E%3Cpath d='M24 4l3 3h7'/%3E%3C/g%3E%3Cg fill='%23000'%3E%3Ccircle cx='10' cy='4' r='1.7'/%3E%3Ccircle cx='46' cy='4' r='1.7'/%3E%3Ccircle cx='35.5' cy='7' r='1.2'/%3E%3C/g%3E%3C/svg%3E");
+  --qy-sg-trace-dense-tile: 56px 8px;
+
+  --qy-sg-trace-sparse: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='132' height='8' viewBox='0 0 132 8'%3E%3Cg fill='none' stroke='%23000' stroke-width='1'%3E%3Cpath d='M0 4H132'/%3E%3Cpath d='M60 4l3 3h9'/%3E%3C/g%3E%3Cg fill='%23000'%3E%3Ccircle cx='22' cy='4' r='1.7'/%3E%3Ccircle cx='110' cy='4' r='1.7'/%3E%3Ccircle cx='73.5' cy='7' r='1.2'/%3E%3C/g%3E%3C/svg%3E");
+  --qy-sg-trace-sparse-tile: 132px 8px;
+}
+
+/* ── 本层【只导出变量,不导出工具类】 ──
+ *
+ * 这里原本还有 .qy-sg-trace / .qy-sg-trace-rule 两个工具类和两个密度修饰符。
+ * 五个消费方全部落地之后,它们的实际使用次数是 0 —— 定义了却没有消费方,
+ * 正是本项目反复栽跟头的头号形状,所以删掉,只留变量。
+ *
+ * 零消费不是巧合,是结构决定的:走线的五处宿主全都是**上游组件渲染的元素**
+ * (表头 th、侧板头、命令面板搜索框、顶栏、页头容器),我们加不了类名,
+ * 只能按 data-slot / :has() 自下而上选中它们再挂 ::after。工具类要能用,
+ * 前提是能往 DOM 上写 class —— 这个前提在本主题里一处都不成立。
+ *
+ * 而且每个消费方要改的那一项各不相同:密度(表头/搜索框用密档,顶栏/侧板头/
+ * 页头这些宽元素用疏档)、垂直位置、以及要不要连宿主的 border-bottom 一起撤。
+ * 真正可共享的东西就是下面这五个变量,共享到这一层为止。
+ *
+ * 当前消费方(改动瓦片或走线色时这五处一起变):
+ *   qy-sg-data.css      [data-slot='table-head']::after            密档
+ *   qy-sg-surfaces.css  sheet-header / drawer-header::after        疏档
+ *   qy-sg-surfaces.css  command-input-wrapper::after               密档
+ *   qy-sg-nav.css       sidebar-wrapper > header::before           疏档
+ *   qy-sg-pages.css     页头容器 ::after(规范 §1.2 区段头下方)     疏档 */
+
+/* ══════════════════════ prefers-reduced-motion(规范 §3.5)══════════════════════
+ *
+ * 本层【刻意不含任何循环动画】:切角框与走线会出现在页面上的每一块面板上,
+ * 给它们加呼吸 / 流光会让整个后台一直在动,那是噪音不是质感。
+ * 这里唯一要停的是 hover 时框线转色的过渡 —— 静态形态(切角、角标、走线)
+ * 全部原样保留,规范要求的正是"停循环动画、留静态形态"。
+ */
+@media (prefers-reduced-motion: reduce) {
+  body[data-theme-preset='steins-gate']
+    :is(
+      .qy-sg-frame,
+      [data-slot='card'],
+      [data-slot='table-container']
+    )::before {
+    transition: none;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * 其余文件怎么引用本层(落地后重写 —— 原来的交接稿里有两条是错的)
+ *
+ * ⚠ 更正一:「就地覆写 --qy-sg-notch 就能改切角大小,--qy-sg-frame-clip 是
+ *   引用式的会跟着变」——【不成立】。自定义属性里的 var() 在【声明它的那个
+ *   元素上】就已经替换完了,--qy-sg-frame-clip 声明在主题根上,12px 被烘进
+ *   计算值后原样继承下去。surfaces 与 controls 两边各自实测:在宿主上写
+ *   --qy-sg-notch: 8px,getPropertyValue 确实读到 8px,而 clipPath 纹丝不动
+ *   地停在 polygon(12px 0px, …)。想要别的尺寸只能把 polygon 直接写进
+ *   clip-path 声明里 —— 那样 var() 才在匹配元素自己身上求值
+ *   (controls 把 textarea 调回 12px 就是这么做的)。
+ *
+ * ⚠ 更正二:「[data-slot='sidebar-menu-button'] 在本仓库不存在」——【写错了】。
+ *   它存在,只是 grep "data-slot=" 扫不到:sidebar.tsx:543 走的是 Base UI 的
+ *   useRender({ state: { slot: 'sidebar-menu-button', … } }),Base UI 会把
+ *   state 的每个键渲染成 data-*。badge / sidebar-menu-sub-button 等同款写法
+ *   同理。核对 slot 时两路都要扫:
+ *     grep -rhoE "data-slot=[\"'{][^\"'}]*" src/components/ui/
+ *     grep -rhoE "slot: '[^']*'"            src/components/ui/
+ *
+ * 导出物(括号里是已落地的引用方,改这些变量会同时影响它们):
+ *   几何  --qy-sg-notch / -frame-line / -corner-w / -corner-len /
+ *         -frame-inset / -corner-inset,派生 -notch-in / -inner-notch
+ *   颜色  --qy-sg-frame-color / -frame-inner-color / -corner-color
+ *   配方  --qy-sg-frame-clip / -frame-marks / -marks-size / -marks-pos
+ *         (surfaces 的十四个浮层、data 的表格外壳都直接引这四个,未重写点表)
+ *   走线  --qy-sg-trace-h / -trace-color / -trace-dense(-tile) /
+ *         -trace-sparse(-tile)(五个消费方列在 §B 末尾)
+ *   工具类 .qy-sg-frame —— 给非 slot 元素上切角框的逃生口。data 的表格外壳
+ *         规则把它列进了排除名单,所以给任意容器加上这个类,里面的表格
+ *         就不会再画第二层框。
+ *
+ * 形状分工(已落地,不要重复实现):
+ *   四角切角环    本层的 card / table-container,加 surfaces 的十四个浮层
+ *   实心八边形    surfaces 的 --qy-sg-surface-clip。浮层必须裁宿主本身,
+ *                 否则 86% 不透明底会从八边形框线外戳出四块矩形
+ *   两角切角      nav 的侧栏板、controls 的输入族与徽章。形状不同,点表各写
+ *                 (理由见更正一),但几何量仍引本层的 --qy-sg-notch /
+ *                 --qy-sg-frame-line,不另起一套
+ * ══════════════════════════════════════════════════════════════════ */

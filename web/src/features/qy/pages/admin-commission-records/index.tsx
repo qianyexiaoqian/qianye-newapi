@@ -28,7 +28,6 @@ import {
   staticDataTableClassNames,
   type StaticDataTableColumn,
 } from '@/components/data-table'
-import { SectionPageLayout } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -37,6 +36,7 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyErrorMessage } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import {
@@ -217,11 +217,11 @@ export function QyAdminCommissionRecords() {
   const resetPage = () => setPage(1)
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_nav_a_commission_records')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Actions>
         <Button
           variant='outline'
           size='sm'
@@ -230,8 +230,8 @@ export function QyAdminCommissionRecords() {
           <Settings2 aria-hidden='true' />
           {t('qy_nav_a_commission')}
         </Button>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Actions>
+      <QySectionPageLayout.Content>
         <div className='space-y-3'>
           <div className='flex flex-wrap items-center gap-2'>
             <NativeSelect
@@ -308,12 +308,12 @@ export function QyAdminCommissionRecords() {
             />
           </QyPageBoundary>
         </div>
-      </SectionPageLayout.Content>
+      </QySectionPageLayout.Content>
 
       <ClawbackDialog
         accrual={clawbackTarget}
         onClose={() => setClawbackTarget(null)}
       />
-    </SectionPageLayout>
+    </QySectionPageLayout>
   )
 }

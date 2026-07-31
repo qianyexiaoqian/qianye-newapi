@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table'
-import { SectionPageLayout } from '@/components/layout'
 import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -31,6 +30,7 @@ import { TitledCard } from '@/components/ui/titled-card'
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyKeys } from '../../lib/query-keys'
 import { QyStatGrid } from '../components/qy-stat-grid'
 import { qyOpsErrorMessage } from '../ops/errors'
@@ -90,11 +90,11 @@ export function QyAdminHealth() {
   const uncertain = health?.two_phase.uncertain ?? 0
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_cfg_health_title')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Actions>
         <Button
           type='button'
           variant='outline'
@@ -120,8 +120,8 @@ export function QyAdminHealth() {
           <RotateCw aria-hidden='true' />
           {t('qy_cfg_health_reload')}
         </Button>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Actions>
+      <QySectionPageLayout.Content>
         <QyPageBoundary query={healthQuery}>
           {health != null && (
             <div className='space-y-3'>
@@ -336,7 +336,7 @@ export function QyAdminHealth() {
             </div>
           )}
         </QyPageBoundary>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }

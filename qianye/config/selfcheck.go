@@ -103,9 +103,9 @@ var fieldConsumers = map[string]consumer{
 	"audit.enabled":            {"qianye/service/audit/audit.go", "false 时不写审计记录"},
 	"audit.record_ip":          {"qianye/service/audit/audit.go", "是否记录操作者 IP"},
 	"audit.snapshot_max_bytes": {"qianye/service/audit/audit.go", "审计快照的截断上限"},
-	"audit.retention_days": {"",
-		"⚠ 无消费方:qy_audit_logs 没有任何清理任务,改这个值不会有任何效果。" +
-			"当前实际行为是永久保留(资金审计确实应当长期保留,但那应该由代码显式表达,而不是让配置项空转)"},
+	"audit.retention_days": {"qianye/service/audit/retention.go",
+		"Prune 的保留期。0(默认)= 永久保留;大于 0 时按主键开窗分批删除超期行," +
+			"取值不得低于 config.MinAuditRetentionDays(365 天),低于下限直接拒绝启动而非静默夹取"},
 
 	// ─────────────────────────── transfer ───────────────────────────
 	"transfer.enabled":                     {"qianye/guard/guard.go", "featureOn(FlagTransfer):关掉后划转接口一律返回 qy_feature_off"},

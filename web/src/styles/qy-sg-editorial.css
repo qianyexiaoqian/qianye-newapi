@@ -1,0 +1,543 @@
+/*
+ * Steins Gate 主题 —— 构图工具类(设计规范 §3)
+ *
+ * 前面六个文件靠 data-slot 把样式挂到上游 shadcn 组件上,管的是"组件长什么样";
+ * 本文件管的是"页面怎么排版"—— 参考稿真正的识别特征不在按钮圆角上,而在
+ * 区段头的三段式、编辑式编号行、竖排侧标、等宽读数这一整套构图语言里。
+ * 这些没有对应的上游组件,只能以显式类名的形式提供,由 qy 的页面直接消费。
+ *
+ * ── 与参考稿的对应关系 ──
+ * 每个类的注释里写明它对应参考稿(newapi-shujv/steins-gate-day-浅色.html 与
+ * steins-gate-night-深色.html 的 <style> 块)的哪个选择器,便于日后逐条核对。
+ * 昼夜两稿的这部分 CSS 除颜色外完全相同,而颜色已全部收进 qy-sg-tokens.css,
+ * 所以本文件【不含任何 .dark 分支】—— 变量自己会翻转。
+ *
+ * ── 取值纪律 ──
+ * 不在此声明任何 --qy-sg-*(同一个量两处定义,后加载的会静默覆盖)。
+ * 颜色一律 var(--foreground) / var(--primary) / var(--qy-sg-faint) ... 或
+ * color-mix(in oklch, 标准变量, ...),不硬编码十六进制,否则调色板定制器失效。
+ * 正文级尺寸用 rem/clamp() 以跟随 scale 轴;10~12px 的标注类小字保留 px ——
+ * 规范 §1 末段明确这一档本就不该跟着根字号缩放。
+ *
+ * ── 作用域 ──
+ * 每条规则都带 [data-theme-preset='steins-gate'] 前缀。类名本身带 qy-sg- 前缀
+ * 已经不会撞名,但仍然加前缀:切到别的预设时,这些页面元素必须退回中性排版,
+ * 而不是残留一套 Steins Gate 的字距和发丝线。
+ */
+
+/* ══════════════════════════════════════════════════════════════
+ * 1. 区段容器与区段头
+ *    参考稿 .sec / .sec-head / .sec-head .no / .sec-head h2 / .sec-head .jp
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 参考稿 .sec —— 区段之间不用卡片、不用分割线组件,靠一条发丝线加上
+ * 极大的上下留白(Claude 式"松呼吸",规范 §1 混入 Claude 的第 1 条)。
+ * 间距量在 tokens 里是 clamp(5.625rem, 11vw, 8.75rem),即参考稿的
+ * clamp(90px, 11vw, 140px) 换成 rem。 */
+[data-theme-preset='steins-gate'] .qy-sg-sec {
+  padding-block: var(--qy-sg-sec-gap);
+  border-top: 1px solid var(--qy-sg-hair);
+}
+
+/* 第一个区段紧接页头时不重复画线 */
+[data-theme-preset='steins-gate'] .qy-sg-sec:first-child {
+  border-top: none;
+}
+
+/* 参考稿 .sec-head —— 左侧「序号 + 大标题」,右侧日文副标,基线对齐。
+ * 这是参考稿最核心的一处构图:一眼就能认出是实验记录而不是后台页面。 */
+[data-theme-preset='steins-gate'] .qy-sg-sec-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  margin-bottom: var(--qy-sg-head-gap);
+}
+
+/* 参考稿 .sec-head .no —— "LAB MEMO — 01"。等宽 + .3em 字距 + 强调色。
+ * 独立成类(不限定在 .qy-sg-sec-head 内)是因为参考稿终章的
+ * .final .quote("// DECEIVE THE WORLD · 世界を騙せ")用的是同一套排版,
+ * 只是字距更宽 —— 见下方 --wide 变体。 */
+[data-theme-preset='steins-gate'] .qy-sg-no {
+  font-family: var(--qy-sg-mono);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--primary);
+}
+
+/* 参考稿 .final .quote —— 同一枚序号排版,字距拉到 .42em 作为终章题记 */
+[data-theme-preset='steins-gate'] .qy-sg-no--wide {
+  font-size: 11.5px;
+  letter-spacing: 0.42em;
+}
+
+/* 参考稿 .sec-head h2 —— 衬线 800,clamp(26px,3.4vw,40px),.04em 字距。
+ * :where() 让元素选择器不贡献特异度,页面用 <h2> 或 .qy-sg-sec-title 都行。 */
+[data-theme-preset='steins-gate'] .qy-sg-sec-title,
+[data-theme-preset='steins-gate'] .qy-sg-sec-head :where(h1, h2, h3) {
+  margin-top: 0.75rem;
+  font-family: var(--qy-sg-serif);
+  font-weight: 800;
+  font-size: clamp(1.625rem, 3.4vw, 2.5rem);
+  line-height: 1.3;
+  letter-spacing: 0.04em;
+  color: var(--foreground);
+}
+
+/* 参考稿 .sec-head .jp —— "未来道具 · 機能一覧"。第三档文字色 + .4em 字距。
+ * 日文副标是 gal-game 排版的签名动作,不翻译、不参与 i18n(它是装饰性字形),
+ * 页面用它时应加 aria-hidden。 */
+[data-theme-preset='steins-gate'] .qy-sg-jp {
+  font-family: var(--qy-sg-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: 0.4em;
+  color: var(--qy-sg-faint);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 2. 编辑式编号行
+ *    参考稿 .feat-row / .idx / h3 / h3 small / p
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 参考稿 .feat-row —— 规范 §3「表格 = 仪表面板」那一节的原型:
+ * 没有卡片、没有斑马纹,只有一条上发丝线,hover 时【整行右移 14px】。
+ * 三列 90px / 1fr / 1.15fr:序号、标题、正文。 */
+[data-theme-preset='steins-gate'] .qy-sg-row {
+  display: grid;
+  grid-template-columns: 5.625rem 1fr 1.15fr;
+  align-items: baseline;
+  gap: clamp(1rem, 3vw, 2.5rem);
+  padding-block: 1.875rem;
+  border-top: 1px solid var(--qy-sg-hair);
+  transition: padding-left 0.3s var(--qy-sg-ease);
+}
+
+/* 参考稿 .feat-row:last-child —— 末行补下边框,让整组行成为一个闭合的块。
+ * 参考稿是静态页面,一组 .feat-row 恰好是父容器的最后几个孩子,:last-child 成立;
+ * React 页面里行的后面往往还跟着"加载更多""空态"之类的兄弟节点,:last-child
+ * 会落空(实测过:行组后面多一个 <div>,闭合线就没了)。所以给行组提供一个
+ * 显式容器 .qy-sg-rows 来画这条闭合线,:last-child 仅作为无容器时的兜底。 */
+[data-theme-preset='steins-gate'] .qy-sg-rows {
+  border-bottom: 1px solid var(--qy-sg-hair);
+}
+
+[data-theme-preset='steins-gate'] .qy-sg-row:last-child {
+  border-bottom: 1px solid var(--qy-sg-hair);
+}
+
+/* 有容器时末行不要再画一次(两条 1px 线会叠成一条 2px 的粗线) */
+[data-theme-preset='steins-gate'] .qy-sg-rows > .qy-sg-row:last-child {
+  border-bottom: none;
+}
+
+[data-theme-preset='steins-gate'] .qy-sg-row:hover {
+  padding-left: 0.875rem;
+}
+
+/* 参考稿 .feat-row .idx —— "/ 01"。等宽 + .2em 字距,静态是第三档文字色,
+ * hover 时转强调色。整行位移 + 序号变色这两件事同时发生,是参考稿
+ * 「翻阅实验记录」手感的全部来源。 */
+[data-theme-preset='steins-gate'] .qy-sg-idx {
+  font-family: var(--qy-sg-mono);
+  font-size: 0.8125rem;
+  letter-spacing: 0.2em;
+  font-variant-numeric: tabular-nums;
+  color: var(--qy-sg-faint);
+  transition: color 0.3s var(--qy-sg-ease);
+}
+
+[data-theme-preset='steins-gate'] .qy-sg-row:hover .qy-sg-idx {
+  color: var(--primary);
+}
+
+/* 参考稿 .feat-row h3 —— 衬线 600 / 19px / .05em */
+[data-theme-preset='steins-gate'] .qy-sg-row-title,
+[data-theme-preset='steins-gate'] .qy-sg-row :where(h2, h3, h4) {
+  font-family: var(--qy-sg-serif);
+  font-size: 1.1875rem;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0.05em;
+  color: var(--foreground);
+}
+
+/* 参考稿 .feat-row h3 small —— 标题下的等宽英文代号("WORLD LINE ROUTER"),
+ * 另起一行、.3em 字距、第三档色。这是把中文标题"仪器化"的关键一笔。 */
+[data-theme-preset='steins-gate'] .qy-sg-row-code,
+[data-theme-preset='steins-gate'] .qy-sg-row-title :where(small) {
+  display: block;
+  margin-top: 0.3125rem;
+  font-family: var(--qy-sg-mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--qy-sg-faint);
+}
+
+/* 参考稿 .feat-row p —— 正文 14px / line-height 1.95(tokens 的 --qy-sg-leading) */
+[data-theme-preset='steins-gate'] .qy-sg-row-desc,
+[data-theme-preset='steins-gate'] .qy-sg-row :where(p) {
+  font-size: 0.875rem;
+  line-height: var(--qy-sg-leading);
+  color: var(--muted-foreground);
+}
+
+/* 参考稿 @media (max-width:760px) —— 窄屏塌成单列,并取消 hover 位移
+ * (触屏没有 hover,留着位移只会在点击后卡住一个偏移状态)。 */
+@media (max-width: 760px) {
+  [data-theme-preset='steins-gate'] .qy-sg-row {
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+    padding-block: 1.625rem;
+  }
+
+  [data-theme-preset='steins-gate'] .qy-sg-row:hover {
+    padding-left: 0;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 3. 变动率读数
+ *    参考稿 .readout / .readout .val / .readout .val b
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 参考稿 .readout —— "> OBS // 1.048596 FIELD β · STABLE"。
+ * 等宽 + .12em 字距 + 第三档色的一行,基线对齐。它不是数据展示,
+ * 是"仪器正在读数"的氛围件,适合放在页面主标题下方或图表脚注处。 */
+[data-theme-preset='steins-gate'] .qy-sg-readout {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.875rem;
+  font-family: var(--qy-sg-mono);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+  color: var(--qy-sg-faint);
+}
+
+/* 参考稿 .readout .val —— 数值本体:字号提一档,字距拉到 .2em,用主文字色 */
+[data-theme-preset='steins-gate'] .qy-sg-readout-val {
+  font-size: 0.875rem;
+  letter-spacing: 0.2em;
+  color: var(--foreground);
+}
+
+/* 参考稿 .readout .val b —— 数值里真正"在变"的那几位用强调色。
+ * 同时支持 <b>/<strong> 与显式类名,页面两种写法都能用。 */
+[data-theme-preset='steins-gate'] .qy-sg-readout-hi,
+[data-theme-preset='steins-gate'] .qy-sg-readout-val :where(b, strong) {
+  font-weight: 500;
+  color: var(--primary);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 4. 竖排侧标
+ *    参考稿 .hero-side("世界線変動率 · 観測記録 — 0.571024 → 1.048596")
+ * ══════════════════════════════════════════════════════════════ */
+
+/* gal-game 最典型的排版元素:一列竖排的等宽小字贴在版面边缘。
+ * 参考稿把它绝对定位在 hero 右缘垂直居中;定位交给页面(位置随容器而变),
+ * 本类只负责"竖排 + 等宽 + .5em 字距 + 半透明墨色"这套字形。
+ * 它是纯装饰,页面用它时必须 aria-hidden —— 屏幕阅读器逐字读竖排文本没有意义。 */
+[data-theme-preset='steins-gate'] .qy-sg-vert {
+  writing-mode: vertical-rl;
+  font-family: var(--qy-sg-mono);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.5em;
+  white-space: nowrap;
+  user-select: none;
+  color: color-mix(in oklch, var(--foreground) 45%, transparent);
+}
+
+/* 参考稿 @media (max-width:860px) 里 .hero-side 直接 display:none ——
+ * 窄屏没有富余的边缘空间,竖排文字会压到正文上。 */
+@media (max-width: 860px) {
+  [data-theme-preset='steins-gate'] .qy-sg-vert {
+    display: none;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 5. 统计读数
+ *    参考稿 .stats / .stat / .stat .num / .lbl / .sub
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 参考稿 .stats —— 四栏,【用左发丝线分栏,不用卡片】。
+ * 规范 §1 混入 Claude 的第 2 条"纸面而非卡片"在这里体现得最直接:
+ * 同样的信息,shadcn 默认会给四个 Card,参考稿只画三条竖线。 */
+[data-theme-preset='steins-gate'] .qy-sg-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+[data-theme-preset='steins-gate'] .qy-sg-stat {
+  padding: 2.125rem 1.625rem;
+  border-left: 1px solid var(--qy-sg-hair);
+}
+
+[data-theme-preset='steins-gate'] .qy-sg-stat:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+
+/* 参考稿 .stat .num —— 等宽 500 / clamp(26px,3.2vw,38px)。
+ * tabular-nums 让数字在轮询刷新时不跳动宽度。 */
+[data-theme-preset='steins-gate'] .qy-sg-stat-num {
+  font-family: var(--qy-sg-mono);
+  font-weight: 500;
+  font-size: clamp(1.625rem, 3.2vw, 2.375rem);
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+}
+
+/* 参考稿 .stat .num i —— 数字里的单位/后缀("+"、"%"、小数部分)转强调色。
+ * 保留 <i>/<em> 写法的同时给一个显式类,避免页面为了配色去滥用语义标签。 */
+[data-theme-preset='steins-gate'] .qy-sg-stat-unit,
+[data-theme-preset='steins-gate'] .qy-sg-stat-num :where(i, em) {
+  font-style: normal;
+  color: var(--primary);
+}
+
+/* 参考稿 .stat .lbl —— 中文标签,13px / .16em / 次级文字色 */
+[data-theme-preset='steins-gate'] .qy-sg-stat-label {
+  margin-top: 0.625rem;
+  font-size: 0.8125rem;
+  letter-spacing: 0.16em;
+  color: var(--muted-foreground);
+}
+
+/* 参考稿 .stat .sub —— 英文代号,9.5px / .24em / 第三档色。
+ * 中文标签 + 等宽英文代号的双层结构与编号行的 h3 small 是同一个手法。 */
+[data-theme-preset='steins-gate'] .qy-sg-stat-sub {
+  margin-top: 0.25rem;
+  font-family: var(--qy-sg-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--qy-sg-faint);
+}
+
+/* 参考稿 @media (max-width:760px) —— 塌成两栏,分栏线由左竖线改为上横线 */
+@media (max-width: 760px) {
+  [data-theme-preset='steins-gate'] .qy-sg-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  [data-theme-preset='steins-gate'] .qy-sg-stat {
+    padding: 1.5rem 0;
+    border-left: none;
+    border-top: 1px solid var(--qy-sg-hair);
+  }
+
+  [data-theme-preset='steins-gate'] .qy-sg-stat:first-child {
+    border-top: none;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 6. 脚注行
+ *    参考稿 .chart-cap("DIVERGENCE CHART · 変動観測" / "YOU ARE HERE — 1.048596")
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 图表/图片下方的两端对齐等宽脚注。参考稿用它给图表加标题与定位说明,
+ * 比 shadcn 的 CardDescription 更像仪器面板上的丝印。 */
+[data-theme-preset='steins-gate'] .qy-sg-cap {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.125rem;
+  font-family: var(--qy-sg-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.24em;
+  color: var(--qy-sg-faint);
+}
+
+[data-theme-preset='steins-gate'] .qy-sg-cap :where(b, strong) {
+  font-weight: 500;
+  color: var(--primary);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 7. 带脉冲圆点的胶囊徽章
+ *    参考稿 .badge / .badge i / .badge b
+ * ══════════════════════════════════════════════════════════════ */
+
+/* 参考稿 hero 顶部那枚 "● DIVERGENCE 1.048596 · STEINS;GATE 観測中"。
+ * 与 data 文件里挂在 [data-slot='badge'] 上的通用徽章【刻意不同】:
+ * 这一枚更大、字距更宽、带磨砂底与呼吸圆点,是页面级的"状态铭牌",
+ * 只出现在区段顶部或页面主标题上方,不用于表格里的状态列。
+ * 999px 与 --qy-sg-pill 同源(胶囊是本主题身份标识,不跟随 radius 轴)。 */
+[data-theme-preset='steins-gate'] .qy-sg-badge-lab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5625rem;
+  padding: 0.5rem 1rem;
+  font-family: var(--qy-sg-mono);
+  font-size: 11.5px;
+  line-height: 1.2;
+  letter-spacing: 0.18em;
+  color: var(--foreground);
+  /* 参考稿昼 rgba(255,252,245,.6) / 夜 rgba(21,16,16,.55):
+   * 两边都是"比底色再亮一档"的半透明面,恰好是 --popover 的语义。 */
+  background: color-mix(in oklch, var(--popover) 62%, transparent);
+  border: 1px solid var(--qy-sg-hair);
+  border-radius: var(--qy-sg-pill);
+  /* 只写不带前缀的这一行。实测:同时写 backdrop-filter 与
+   * -webkit-backdrop-filter,lightningcss 会按前缀组折叠,输出【只剩】
+   * -webkit- 那条,标准属性反而被删掉(见构建产物 index.*.css)。
+   * 需要前缀时由构建自己补,手写反而把标准属性挤掉。 */
+  backdrop-filter: blur(8px);
+}
+
+/* 参考稿 .badge i —— 6px 圆点 + 强调色辉光 + pulse 2s 呼吸。
+ * 支持 <i> 与显式类两种写法。圆点是装饰,状态语义应由文字承担。 */
+[data-theme-preset='steins-gate'] .qy-sg-badge-dot,
+[data-theme-preset='steins-gate'] .qy-sg-badge-lab :where(i) {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 8px var(--qy-sg-glow);
+  animation: qy-sg-badge-pulse 2s ease-in-out infinite;
+}
+
+/* 参考稿 .badge b —— 徽章里的数值转强调色 */
+[data-theme-preset='steins-gate'] .qy-sg-badge-lab :where(b, strong) {
+  font-weight: 500;
+  color: var(--primary);
+}
+
+@keyframes qy-sg-badge-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 8. 滚动显现
+ *    参考稿 .rv / .rv.in + 页面底部的 IntersectionObserver
+ * ══════════════════════════════════════════════════════════════ */
+
+/*
+ * 这是本文件唯一需要想清楚的一处。参考稿的 .rv 默认 opacity:0,靠页面自带的
+ * IntersectionObserver 加 .in 才显现 —— 一旦忘了接那段 JS,整页内容全部不可见。
+ * 「定义了没有消费方」在这里不是浪费,是把页面变成白屏。
+ *
+ * 因此这里把默认状态反过来:.qy-sg-reveal 本身【是可见的】,只声明过渡。
+ * 隐藏必须由某一方主动开启,有两条互斥的路径:
+ *
+ *   A. JS 路径 —— 脚本先给元素加 .qy-sg-reveal--armed(此时才隐藏),
+ *      再由 IntersectionObserver 加 .in 触发显现。加 --armed 的代码和加 .in
+ *      的代码在同一个 effect 里,不存在"armed 了但没人加 in"的中间态。
+ *      适用于滚动容器不是视口的场景(本项目的控制台内容区就在自定义滚动容器里)。
+ *
+ *   B. 纯 CSS 路径 —— .qy-sg-reveal--scroll 用 animation-timeline: view(),
+ *      不需要任何 JS。@supports 兜底:浏览器不认这个属性时整条规则不生效,
+ *      元素保持可见,而不是永远隐藏。
+ *
+ * 两条路径都保证"最坏情况 = 没有动画",而不是"最坏情况 = 看不见内容"。
+ */
+[data-theme-preset='steins-gate'] .qy-sg-reveal {
+  transition:
+    opacity 0.9s ease,
+    transform 0.9s var(--qy-sg-ease);
+}
+
+/* A. JS 路径:参考稿 .rv 的隐藏态(opacity 0 + translateY(26px)) */
+[data-theme-preset='steins-gate'] .qy-sg-reveal--armed {
+  opacity: 0;
+  transform: translateY(1.625rem);
+}
+
+/* 参考稿 .rv.in */
+[data-theme-preset='steins-gate'] .qy-sg-reveal--armed.in {
+  opacity: 1;
+  transform: none;
+}
+
+/* B. 纯 CSS 路径。三层限定,每一层都是必需的:
+ *
+ *   @media (prefers-reduced-motion: no-preference)
+ *     —— 减弱动画时【整条规则不存在】。不能靠下面 §9 的 reduce 块去覆盖它:
+ *        本选择器带 :not(),特异度 (0,3,0),比 §9 里的 (0,2,0) 高,
+ *        覆盖不掉。实测过:只写 §9 时 reduce 下仍量到
+ *        animation-name: qy-sg-reveal-in。用 no-preference 从源头关掉,
+ *        才是真正互斥的两半。
+ *   @supports (animation-timeline: view())
+ *     —— 浏览器不认时整条规则不生效,元素保持可见(而不是永远隐藏)。
+ *   :not(.qy-sg-reveal--armed)
+ *     —— --armed 在场时让位给 JS 路径,否则 animation 的 fill 会压过
+ *        class 上的 opacity(动画属性优先级高于普通声明),
+ *        结果是 JS 加了 .in 也不显现。
+ */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    [data-theme-preset='steins-gate']
+      .qy-sg-reveal--scroll:not(.qy-sg-reveal--armed) {
+      animation: qy-sg-reveal-in 0.9s var(--qy-sg-ease) both;
+      animation-timeline: view();
+      animation-range: entry 10% cover 30%;
+    }
+  }
+}
+
+@keyframes qy-sg-reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(1.625rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * 9. 降级(规范 §5)
+ * ══════════════════════════════════════════════════════════════ */
+
+/*
+ * prefers-reduced-motion: reduce —— 停掉循环动画与位移,保留静态效果:
+ *   - 徽章圆点:不再呼吸,但仍是带辉光的强调色圆点(状态提示不能消失);
+ *   - 滚动显现:两条路径都直接落到终态(可见),而不是停在隐藏态 ——
+ *     "尊重减弱动画"绝不能等于"看不到内容"。纯 CSS 路径已由上面的
+ *     no-preference 从源头关闭,这里再写一次 --scroll 是冗余的兜底,
+ *     防止将来有人把 no-preference 那层去掉;
+ *   - 编号行 hover 位移与序号变色:位移取消(它是动效),
+ *     颜色变化保留(它是 hover 反馈,属于可用性而非动效)。
+ */
+@media (prefers-reduced-motion: reduce) {
+  [data-theme-preset='steins-gate'] .qy-sg-badge-dot,
+  [data-theme-preset='steins-gate'] .qy-sg-badge-lab :where(i) {
+    animation: none;
+  }
+
+  [data-theme-preset='steins-gate'] .qy-sg-reveal,
+  [data-theme-preset='steins-gate'] .qy-sg-reveal--armed,
+  [data-theme-preset='steins-gate'] .qy-sg-reveal--armed.in,
+  [data-theme-preset='steins-gate'] .qy-sg-reveal--scroll {
+    opacity: 1;
+    transform: none;
+    transition: none;
+    animation: none;
+  }
+
+  [data-theme-preset='steins-gate'] .qy-sg-row,
+  [data-theme-preset='steins-gate'] .qy-sg-row:hover {
+    padding-left: 0;
+    transition: none;
+  }
+}

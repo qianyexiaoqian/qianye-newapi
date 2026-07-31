@@ -22,7 +22,6 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { SectionPageLayout } from '@/components/layout'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -49,6 +48,7 @@ import {
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyErrorMessage } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import { qySaveSiteTheme, qySiteThemeQuery } from './api'
@@ -138,11 +138,11 @@ export function QyAdminSiteTheme() {
     !config.allowed_presets.includes(draftPreset)
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_nav_a_site_theme')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Content>
         <QyPageBoundary query={query}>
           {config != null && (
             <div className='grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-start'>
@@ -265,7 +265,7 @@ export function QyAdminSiteTheme() {
             </div>
           )}
         </QyPageBoundary>
-      </SectionPageLayout.Content>
+      </QySectionPageLayout.Content>
 
       <QyConfirmDialog
         open={confirmOpen}
@@ -290,7 +290,7 @@ export function QyAdminSiteTheme() {
           })
         }
       />
-    </SectionPageLayout>
+    </QySectionPageLayout>
   )
 }
 

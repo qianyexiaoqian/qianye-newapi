@@ -26,7 +26,6 @@ import {
   staticDataTableClassNames,
   type StaticDataTableColumn,
 } from '@/components/data-table'
-import { SectionPageLayout } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -36,6 +35,7 @@ import { cn } from '@/lib/utils'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
 import { QyFiatText } from '../components/qy-fiat-text'
 import { QyPager } from '../components/qy-pager'
@@ -219,11 +219,11 @@ export function QyAdminWithdrawals() {
   const resetPage = () => setPage(1)
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_nav_a_withdrawals')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Content>
         <div className='space-y-3'>
           <QyStatGrid items={statItems} />
 
@@ -326,7 +326,7 @@ export function QyAdminWithdrawals() {
             />
           </QyPageBoundary>
         </div>
-      </SectionPageLayout.Content>
+      </QySectionPageLayout.Content>
 
       <ReviewDialog
         withdrawalId={reviewId}
@@ -337,7 +337,7 @@ export function QyAdminWithdrawals() {
         withdrawalId={revealId}
         onClose={() => setRevealId(null)}
       />
-    </SectionPageLayout>
+    </QySectionPageLayout>
   )
 }
 

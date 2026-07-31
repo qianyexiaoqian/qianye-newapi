@@ -1,276 +1,36 @@
 /*
- * Steins Gate 主题的构图层。
+ * Steins Gate 主题 —— 汇总入口。
  *
- * 与 qy-theme-presets.css 的分工:那个文件只定义颜色变量,这个文件改造
- * 组件的形态 —— 按钮形状、边框语言、字体轴、装饰层。光换配色做不出
- * gal-game 的观感,真正决定气质的是构图。
+ * 本文件【只做 @import】,不写任何规则。这样 index.css 里那一行
+ * `@import './qy-steins-gate.css'` 永远不用动,主题内部怎么拆分文件
+ * 都不外溢。
  *
- * 全部规则都限定在 [data-theme-preset='steins-gate'] 作用域内,
- * 切回任何其他主题都完全不受影响;上游组件源码一行未改,
+ * 顺序即层叠顺序,不要随手调换:
+ *   tokens     所有取值的唯一来源,必须第一个加载,后面几个都引用它的 --qy-sg-*
+ *   frame      形状基元层(切角框、电路走线),第二版新增。排在 tokens 之后、
+ *              组件层之前:controls / surfaces / data / nav 都引用它导出的
+ *              --qy-sg-frame-* / --qy-sg-trace-*,不重新实现同一个形状
+ *   decor      装饰层(颗粒、齿轮、选中、滚动条),挂在 body 伪元素上,与组件无关
+ *   controls   控件形态
+ *   surfaces   表面与浮层(浮层要盖住控件,故排在 controls 之后)
+ *   data       数据展示
+ *   nav        导航
+ *   editorial  构图工具类,它是页面级的显式类名,
+ *              应当能覆盖前面按 data-slot 挂上去的组件级规则
+ *   pages      落地层,排最后:把 editorial 的工具类装进 qy 的页面骨架,
+ *              并按页头/概览栏的实际语境收窄 editorial 里按落地页校准的取值
+ *
+ * 全部规则限定在 [data-theme-preset='steins-gate'] 作用域内,
+ * 切到任何其他预设都逐像素不受影响;上游组件源码一行未改,
  * 靠 shadcn 的 data-slot 锚点挂进去。
- *
- * ── 设计依据(取自参考稿)──
- *   胶片颗粒     全屏叠加,极低透明度 + 逐帧抖动,模拟 CRT/胶片信号
- *   胶囊按钮     999px 圆角 + 强调色辉光 + hover 上浮
- *   仪表读数     等宽字体 + 宽字距,数字像世界线变动率仪的示数
- *   发丝线       用 1px 细线分隔,不用卡片阴影堆层次
- *   序号标记     区块用等宽序号 + 超宽字距起头
  */
 
-/* ══════════════════════ 字体轴 ══════════════════════ */
-
-[data-theme-preset='steins-gate'] {
-  /* 数据用等宽:参考稿里所有数字都是仪表读数的观感 */
-  --qy-mono:
-    'JetBrains Mono', 'Cascadia Mono', 'SF Mono', Consolas, 'Liberation Mono',
-    monospace;
-  /* 发丝线。用颜色变量派生,深浅主题自动跟随 */
-  --qy-hair: color-mix(in oklch, var(--foreground) 14%, transparent);
-  --qy-hair-strong: color-mix(in oklch, var(--foreground) 24%, transparent);
-  --qy-glow: color-mix(in oklch, var(--primary) 32%, transparent);
-}
-
-/* ══════════════════════ 胶片颗粒叠加层 ══════════════════════
- *
- * 用 body 的伪元素实现,不需要往 DOM 里插节点(那要改上游组件)。
- * 颗粒本身是一段内联 SVG 噪声,避免引入外部资源。
- * 透明度刻意压到 5%:再高就影响正文可读性,而这层的作用是让画面
- * "有颗粒感"而不是"看得见噪点"。
- *
- * prefers-reduced-motion 下停掉抖动 —— 逐帧位移对前庭敏感的用户不友好。
- */
-[data-theme-preset='steins-gate']::after {
-  content: '';
-  position: fixed;
-  inset: -50%;
-  z-index: 9999;
-  pointer-events: none;
-  opacity: 0.05;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
-  animation: qy-grain 1.1s steps(3) infinite;
-}
-
-.dark [data-theme-preset='steins-gate']::after {
-  opacity: 0.07; /* 暗底上颗粒更容易被吃掉,略提 */
-}
-
-@keyframes qy-grain {
-  0% {
-    transform: translate(0, 0);
-  }
-  33% {
-    transform: translate(-2%, 1%);
-  }
-  66% {
-    transform: translate(1%, -2%);
-  }
-  100% {
-    transform: translate(0, 0);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  [data-theme-preset='steins-gate']::after {
-    animation: none;
-  }
-}
-
-/* ══════════════════════ 按钮:胶囊 + 辉光 ══════════════════════ */
-
-[data-theme-preset='steins-gate'] [data-slot='button'] {
-  border-radius: 999px;
-  letter-spacing: 0.08em;
-  transition: all 0.28s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* 主按钮带强调色辉光。参考稿的 solid 按钮是整套视觉的锚点。
- *
- * 按钮组件没有 data-variant 属性,变体只体现在 Tailwind 类名上
- * (default 是 .bg-primary,destructive 是 .bg-destructive/10),
- * 所以只能按类名挂。ghost / link / outline 没有背景色类,自然不会命中 ——
- * 它们本来就不该发光。 */
-[data-theme-preset='steins-gate'] [data-slot='button'].bg-primary {
-  box-shadow: 0 8px 30px var(--qy-glow);
-}
-
-[data-theme-preset='steins-gate'] [data-slot='button']:hover:not(:disabled) {
-  transform: translateY(-2px);
-}
-
-[data-theme-preset='steins-gate']
-  [data-slot='button'].bg-primary:hover:not(:disabled) {
-  box-shadow: 0 14px 40px var(--qy-glow);
-}
-
-/* 链接型按钮不做位移 —— 它在文本流里,上浮会把行高顶乱 */
-[data-theme-preset='steins-gate']
-  [data-slot='button'].underline-offset-4:hover:not(:disabled) {
-  transform: none;
-}
-
-/* 图标按钮是正方形(size-6/7/8/9),胶囊圆角正好让它变成圆形,无需额外规则 */
-
-/* ══════════════════════ 徽章:等宽 + 宽字距 ══════════════════════ */
-
-[data-theme-preset='steins-gate'] [data-slot='badge'] {
-  border-radius: 999px;
-  font-family: var(--qy-mono);
-  font-size: 11.5px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-/* ══════════════════════ 卡片:发丝线,不用阴影堆层次 ══════════════════════ */
-
-[data-theme-preset='steins-gate'] [data-slot='card'] {
-  border-radius: 14px;
-  border-color: var(--qy-hair);
-  box-shadow: none;
-  background-image: linear-gradient(
-    180deg,
-    color-mix(in oklch, var(--foreground) 2.5%, transparent),
-    transparent
-  );
-}
-
-/* 卡片标题用衬线,和正文拉开层次 —— 参考稿的编辑感来源 */
-[data-theme-preset='steins-gate'] [data-slot='card-title'] {
-  font-family: var(--font-serif);
-  font-weight: 700;
-  letter-spacing: 0.03em;
-}
-
-/* ══════════════════════ 表格:仪表盘观感 ══════════════════════ */
-
-[data-theme-preset='steins-gate'] [data-slot='table'] {
-  border-collapse: separate;
-  border-spacing: 0;
-}
-
-/* 表头:等宽小字 + 超宽字距,像仪器面板的列标 */
-[data-theme-preset='steins-gate'] [data-slot='table-head'] {
-  font-family: var(--qy-mono);
-  font-size: 11px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
-  border-bottom: 1px solid var(--qy-hair-strong);
-}
-
-[data-theme-preset='steins-gate'] [data-slot='table-row'] {
-  border-bottom: 1px solid var(--qy-hair);
-  transition: background-color 0.2s ease;
-}
-
-/* 行 hover 用强调色的极淡叠加,而不是灰色高亮 */
-[data-theme-preset='steins-gate'] [data-slot='table-row']:hover {
-  background-color: color-mix(in oklch, var(--primary) 6%, transparent);
-}
-
-/* 数字单元格自动切等宽并启用等宽数字,让列对齐 */
-[data-theme-preset='steins-gate'] [data-slot='table-cell'] {
-  font-variant-numeric: tabular-nums;
-}
-
-/* ══════════════════════ 输入控件 ══════════════════════ */
-
-[data-theme-preset='steins-gate'] [data-slot='input'],
-[data-theme-preset='steins-gate'] [data-slot='textarea'],
-[data-theme-preset='steins-gate'] [data-slot='select-trigger'] {
-  border-radius: 8px;
-  border-color: var(--qy-hair-strong);
-  letter-spacing: 0.02em;
-}
-
-[data-theme-preset='steins-gate'] [data-slot='input']:focus-visible,
-[data-theme-preset='steins-gate'] [data-slot='textarea']:focus-visible {
-  box-shadow: 0 0 0 3px var(--qy-glow);
-}
-
-/* ══════════════════════ 弹窗:磨砂 + 发丝边 ══════════════════════ */
-
-[data-theme-preset='steins-gate'] [data-slot='dialog-content'],
-[data-theme-preset='steins-gate'] [data-slot='alert-dialog-content'],
-[data-theme-preset='steins-gate'] [data-slot='popover-content'],
-[data-theme-preset='steins-gate'] [data-slot='dropdown-menu-content'] {
-  border-color: var(--qy-hair-strong);
-  backdrop-filter: blur(16px) saturate(1.1);
-}
-
-[data-theme-preset='steins-gate'] [data-slot='dialog-title'],
-[data-theme-preset='steins-gate'] [data-slot='alert-dialog-title'] {
-  font-family: var(--font-serif);
-  font-weight: 700;
-  letter-spacing: 0.03em;
-}
-
-/* ══════════════════════ 侧边栏 ══════════════════════ */
-
-[data-theme-preset='steins-gate'] [data-slot='sidebar-group-label'] {
-  font-family: var(--qy-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-}
-
-/* 选中项用左侧强调色竖线标记,而不是整块填充 —— 更接近参考稿的克制 */
-[data-theme-preset='steins-gate']
-  [data-slot='sidebar-menu-button'][data-active='true'] {
-  position: relative;
-}
-
-[data-theme-preset='steins-gate']
-  [data-slot='sidebar-menu-button'][data-active='true']::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2px;
-  height: 60%;
-  border-radius: 999px;
-  background: var(--primary);
-}
-
-/* ══════════════════════ 通用工具类 ══════════════════════
- *
- * 供千夜自己的页面使用。命名带 qy- 前缀,不与上游冲突。
- */
-
-/* 仪表读数:大号等宽数字,用于统计卡片的主数值 */
-[data-theme-preset='steins-gate'] .qy-readout {
-  font-family: var(--qy-mono);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
-  font-weight: 500;
-}
-
-/* 区块序号:等宽 + 超宽字距 + 强调色,如 "01" */
-[data-theme-preset='steins-gate'] .qy-index {
-  font-family: var(--qy-mono);
-  font-size: 12px;
-  letter-spacing: 0.3em;
-  color: var(--primary);
-}
-
-/* 日文副标题:参考稿用它在英文标题下压一行日文,是 gal-game 的典型排版 */
-[data-theme-preset='steins-gate'] .qy-jp {
-  font-size: 12px;
-  letter-spacing: 0.24em;
-  color: var(--muted-foreground);
-  opacity: 0.85;
-}
-
-/* 标签:等宽小字 + 宽字距 */
-[data-theme-preset='steins-gate'] .qy-label {
-  font-family: var(--qy-mono);
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
-}
-
-/* 发丝线分隔 */
-[data-theme-preset='steins-gate'] .qy-hairline {
-  border-color: var(--qy-hair);
-}
+@import './qy-sg-tokens.css';
+@import './qy-sg-frame.css';
+@import './qy-sg-decor.css';
+@import './qy-sg-controls.css';
+@import './qy-sg-surfaces.css';
+@import './qy-sg-data.css';
+@import './qy-sg-nav.css';
+@import './qy-sg-editorial.css';
+@import './qy-sg-pages.css';

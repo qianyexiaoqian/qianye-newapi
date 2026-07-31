@@ -22,11 +22,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { EmptyState } from '@/components/empty-state'
-import { SectionPageLayout } from '@/components/layout'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useDebounce } from '@/hooks'
 
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { useQyConfig } from '../../hooks/use-qy-config'
 import { qyKeys } from '../../lib/query-keys'
 import { QyPager } from '../components/qy-pager'
@@ -124,23 +124,25 @@ export function QyAvailability() {
 
   if (featureOff) {
     return (
-      <SectionPageLayout>
-        <SectionPageLayout.Title>{t('qy_avl_title')}</SectionPageLayout.Title>
-        <SectionPageLayout.Content>
+      <QySectionPageLayout>
+        <QySectionPageLayout.Title>
+          {t('qy_avl_title')}
+        </QySectionPageLayout.Title>
+        <QySectionPageLayout.Content>
           <EmptyState
             icon={CloudOff}
             title={t('qy_err_feature_off')}
             description={t('qy_cfg_disabled_desc')}
           />
-        </SectionPageLayout.Content>
-      </SectionPageLayout>
+        </QySectionPageLayout.Content>
+      </QySectionPageLayout>
     )
   }
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>{t('qy_avl_title')}</SectionPageLayout.Title>
-      <SectionPageLayout.Content>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>{t('qy_avl_title')}</QySectionPageLayout.Title>
+      <QySectionPageLayout.Content>
         <div className='space-y-3'>
           <QyAvailabilityToolbar
             hours={hours}
@@ -280,7 +282,7 @@ export function QyAvailability() {
             )}
           </QyPageBoundary>
 
-          {/* 抽屉必须放在 Content 插槽内：SectionPageLayout 只渲染
+          {/* 抽屉必须放在 Content 插槽内：QySectionPageLayout 只渲染
               Title / Actions / Content 三个具名插槽，其余子节点会被直接丢弃。 */}
           <QyAvailabilityCellSheet
             cell={selectedCell}
@@ -290,7 +292,7 @@ export function QyAvailability() {
             onClose={() => setSelectedCell(null)}
           />
         </div>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }

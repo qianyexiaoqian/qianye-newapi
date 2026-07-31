@@ -27,13 +27,13 @@ import {
   staticDataTableClassNames,
   type StaticDataTableColumn,
 } from '@/components/data-table'
-import { SectionPageLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
 import { QyFiatText } from '../components/qy-fiat-text'
 import { QyPager } from '../components/qy-pager'
@@ -136,17 +136,17 @@ export function QyWithdrawals() {
   ]
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_nav_withdrawals')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Actions>
         <Button variant='outline' size='sm' render={<Link to='/qy/withdraw' />}>
           <Banknote aria-hidden='true' />
           {t('qy_nav_withdraw')}
         </Button>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Actions>
+      <QySectionPageLayout.Content>
         <div className='space-y-3'>
           <NativeSelect
             size='sm'
@@ -191,13 +191,13 @@ export function QyWithdrawals() {
             />
           </QyPageBoundary>
         </div>
-      </SectionPageLayout.Content>
+      </QySectionPageLayout.Content>
 
       <WithdrawalDetailDialog
         withdrawalId={detailId}
         onClose={() => setDetailId(null)}
       />
-    </SectionPageLayout>
+    </QySectionPageLayout>
   )
 }
 

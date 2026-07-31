@@ -21,7 +21,6 @@ import { Link } from '@tanstack/react-router'
 import { TriangleAlert, Users, Wallet } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { SectionPageLayout } from '@/components/layout'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -35,6 +34,7 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { useQyConfig } from '../../hooks/use-qy-config'
 import { QyFiatText } from '../components/qy-fiat-text'
 import { QyStatGrid, type QyStatItem } from '../components/qy-stat-grid'
@@ -103,9 +103,11 @@ export function QyAffiliate() {
         ]
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>{t('qy_nav_affiliate')}</SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
+        {t('qy_nav_affiliate')}
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Actions>
         <Button variant='outline' size='sm' render={<Link to='/qy/invitees' />}>
           <Users aria-hidden='true' />
           {t('qy_nav_invitees')}
@@ -116,8 +118,8 @@ export function QyAffiliate() {
             {t('qy_nav_withdraw')}
           </Button>
         )}
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Actions>
+      <QySectionPageLayout.Content>
         <QyPageBoundary query={summaryQuery}>
           {summary != null && (
             <div className='space-y-4'>
@@ -141,8 +143,8 @@ export function QyAffiliate() {
             </div>
           )}
         </QyPageBoundary>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }
 

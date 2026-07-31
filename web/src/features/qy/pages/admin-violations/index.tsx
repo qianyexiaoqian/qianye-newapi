@@ -19,9 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
-import { SectionPageLayout } from '@/components/layout'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyKeys } from '../../lib/query-keys'
 import { getQyViolationStats } from '../admin-violation-rules/api'
 import { QyViolationShadowBanner } from '../admin-violation-rules/components/violation-shadow-banner'
@@ -46,11 +46,11 @@ export function QyAdminViolations() {
   })
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_vio_records_title')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Content>
         <div className='space-y-3'>
           <QyViolationShadowBanner stats={statsQuery.data} />
 
@@ -75,7 +75,7 @@ export function QyAdminViolations() {
             </TabsContent>
           </Tabs>
         </div>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }

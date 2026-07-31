@@ -16,10 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 
 import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
+
+import { useQyIsSteinsGate } from '../../hooks/use-qy-theme-preset'
 
 export type QyStatItem = {
   key: string
@@ -43,7 +45,46 @@ type QyStatGridProps = {
  * 同一个数字在两处用不同字号和颜色，用户会怀疑它们不是一回事。
  */
 export function QyStatGrid(props: QyStatGridProps) {
+  const steinsGate = useQyIsSteinsGate()
+
   if (props.items.length === 0) return null
+
+  // Steins Gate 的"纸面而非卡片"(规范 §1):同样四项数字，改用发丝线分栏 +
+  // 等宽显示级数值 + 标注式标签，去掉四张卡片与它们的边框/圆角/内边距。
+  // 这是本主题与默认主题在同一屏上差别最大的一处，卡片化会立刻把它打回原形。
+  //
+  // 第二版(design-11 §1.5)进一步做成【仪表读数条】:每栏左侧一条 3px 色条，
+  // 标签移到数值上方并改成极小号大写宽字距。标签上移是真的换 DOM 顺序，
+  // 不是用 flex order 做视觉换位 —— 读屏顺序也应该是"这是什么 → 是多少"，
+  // order 只改绘制顺序、不改朗读顺序，那样两种用户看到的是两个不同的界面。
+  // 样式挂在 .qy-sg-readout 上，见 styles/qy-sg-data.css 里关于特异度的说明。
+  if (steinsGate) {
+    return (
+      <div
+        className={cn('qy-sg-stats qy-sg-readout', props.className)}
+        style={
+          // 列数跟随实际项数（上限 4）——见 styles/qy-sg-pages.css 里的说明。
+          {
+            '--qy-sg-stat-cols': Math.min(props.items.length, 4),
+          } as CSSProperties
+        }
+      >
+        {props.items.map((item) => (
+          <div
+            key={item.key}
+            className='qy-sg-stat'
+            data-emphasis={item.emphasis === true ? 'true' : undefined}
+          >
+            <div className='qy-sg-stat-label'>{item.label}</div>
+            <div className='qy-sg-stat-num'>{item.value}</div>
+            {item.hint != null && (
+              <div className='qy-sg-stat-sub'>{item.hint}</div>
+            )}
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div

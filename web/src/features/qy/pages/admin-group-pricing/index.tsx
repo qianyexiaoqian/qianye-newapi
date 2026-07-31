@@ -22,13 +22,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { SectionPageLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useDebounce } from '@/hooks'
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyKeys } from '../../lib/query-keys'
 import { QyPager } from '../components/qy-pager'
 import { qyOpsErrorMessage } from '../ops/errors'
@@ -111,11 +111,11 @@ export function QyAdminGroupPricing() {
   const enabledRuleCount = rules.filter((rule) => rule.enabled).length
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_nav_a_group_pricing')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Actions>
         <Button
           type='button'
           disabled={data == null}
@@ -127,8 +127,8 @@ export function QyAdminGroupPricing() {
           <Plus aria-hidden='true' />
           {t('qy_gp_create')}
         </Button>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Actions>
+      <QySectionPageLayout.Content>
         <QyPageBoundary query={query}>
           {data != null && (
             <div className='space-y-4'>
@@ -199,7 +199,7 @@ export function QyAdminGroupPricing() {
             </div>
           )}
         </QyPageBoundary>
-      </SectionPageLayout.Content>
+      </QySectionPageLayout.Content>
 
       <QyGpRuleFormSheet
         open={sheetOpen}
@@ -231,6 +231,6 @@ export function QyAdminGroupPricing() {
           if (pendingDelete != null) deleteMutation.mutate(pendingDelete)
         }}
       />
-    </SectionPageLayout>
+    </QySectionPageLayout>
   )
 }

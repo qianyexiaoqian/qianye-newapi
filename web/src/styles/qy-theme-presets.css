@@ -4,140 +4,16 @@
  * 单独成文件而不是往上游的 theme-presets.css 里追加:那个文件上游会随新预设
  * 不断改动,插进去每次合并都冲突。这里只需在 index.css 里 @import 一行。
  *
- * ── steins-gate ──
- * 取自参考稿的编辑感配色:暖米白纸面配深褐墨色,强调色是锈橙;
- * 深色版翻转为暖近黑配米色墨,强调色转为偏红以在暗底上保持可读性。
- * 与冷灰系的默认主题相比,整体偏暖,标题用衬线,更接近纸质印刷品的观感。
+ * ── 当前为空,这是刻意的 ──
+ * 唯一的 qy 预设 steins-gate 已经不在这里了:它的色板与主题私有变量全部
+ * 迁到 `qy-sg-tokens.css`,和该主题的组件规则放在一起(见
+ * `qianye/docs/design-10-steins-gate-theme.md` §6 的文件划分)。
  *
- * 所有颜色由参考稿的十六进制值精确换算为 oklch(而非目测取近似值),
- * 以保证与参考稿一致。原始值写在注释里便于日后核对。
+ * 迁走的原因是**避免同一个变量在两处定义** —— qy-sg-tokens.css 排在本文件
+ * 之后加载,两边都写 `--primary` 的话后者会静默覆盖前者,而两份值一旦漂移
+ * 就极难排查。因此:
+ *
+ *   往后新增 qy 预设,如果它只是一套配色,写在本文件里;
+ *   如果它像 steins-gate 那样自带一整套组件规则,单独开一组 qy-<name>-*.css。
+ *   无论哪种,**都不要把 steins-gate 的任何变量再写回这里**。
  */
-
-[data-theme-preset='steins-gate'] {
-  /* 纸面与墨色 —— 定义整套主题的一对基色 */
-  --background: oklch(0.959 0.016 86.4); /* #f6f1e6 暖米白 */
-  --foreground: oklch(0.231 0.016 71.2); /* #221c15 深褐墨 */
-
-  /* 层次面。参考稿只给了两级纸面,中间层由这两级插值得到,
-   * 保证卡片浮在底色之上而不是突兀地跳一个色阶。 */
-  --card: oklch(0.945 0.019 86.1); /* 介于 bg 与 bg2 之间 */
-  --card-foreground: oklch(0.231 0.016 71.2);
-  --popover: oklch(0.968 0.014 86.5); /* 浮层比纸面再亮一点 */
-  --popover-foreground: oklch(0.231 0.016 71.2);
-
-  /* 锈橙 —— 参考稿的唯一强调色,克制地用在主按钮与焦点环上 */
-  --primary: oklch(0.575 0.157 41.5); /* #c2511f */
-  --primary-foreground: oklch(0.98 0.012 86.5);
-
-  --secondary: oklch(0.932 0.021 85.9); /* #efe8d9 */
-  --secondary-foreground: oklch(0.29 0.016 71.2);
-
-  --muted: oklch(0.938 0.02 86);
-  --muted-foreground: oklch(0.547 0.028 77.3); /* #7a6f5f */
-  --accent: oklch(0.92 0.023 85.8);
-  --accent-foreground: oklch(0.231 0.016 71.2);
-
-  /* 语义色。锈橙本身接近危险色,因此把 destructive 压到更深更红的一侧,
-   * 否则"删除"按钮会和主按钮撞色,用户分不清。 */
-  --destructive: oklch(0.505 0.185 27);
-  --destructive-foreground: oklch(0.98 0.012 86.5);
-  --success: oklch(0.56 0.085 140); /* 苔绿,与暖底同调 */
-  --success-foreground: oklch(0.98 0.012 86.5);
-  --warning: oklch(0.75 0.13 68); /* 琥珀 */
-  --warning-foreground: oklch(0.231 0.016 71.2);
-  --info: oklch(0.6 0.075 240); /* 灰蓝,刻意低饱和以免抢锈橙的戏 */
-  --info-foreground: oklch(0.98 0.012 86.5);
-  --neutral: oklch(0.547 0.028 77.3);
-  --neutral-foreground: oklch(0.231 0.016 71.2);
-
-  /* 发丝级边框。参考稿用的是 rgba(34,28,21,.16),即墨色的低透明度叠加,
-   * 换算成不透明色以避免在半透明浮层上叠加两次而变深。 */
-  --border: oklch(0.878 0.018 84);
-  --input: oklch(0.878 0.018 84);
-  --ring: oklch(0.575 0.157 41.5);
-
-  /* 图表色板由强调色出发向暖色域展开,保持同一调性 */
-  --chart-1: oklch(0.575 0.157 41.5); /* 锈橙 */
-  --chart-2: oklch(0.56 0.085 140); /* 苔绿 */
-  --chart-3: oklch(0.6 0.075 240); /* 灰蓝 */
-  --chart-4: oklch(0.485 0.132 41.8); /* #9a3f16 深锈 */
-  --chart-5: oklch(0.703 0.03 81.4); /* #a99e8b 灰褐 */
-
-  --sidebar: oklch(0.941 0.02 86);
-  --sidebar-foreground: oklch(0.29 0.016 71.2);
-  --sidebar-primary: oklch(0.575 0.157 41.5);
-  --sidebar-primary-foreground: oklch(0.98 0.012 86.5);
-  --sidebar-accent: oklch(0.912 0.023 85.7);
-  --sidebar-accent-foreground: oklch(0.231 0.016 71.2);
-  --sidebar-border: oklch(0.878 0.018 84);
-  --sidebar-ring: oklch(0.575 0.157 41.5);
-
-  --skeleton-base: oklch(0.925 0.02 86);
-  --skeleton-highlight: oklch(0.955 0.016 86.4);
-
-  --radius: 0.375rem; /* 参考稿是偏方正的印刷感,不用大圆角 */
-
-  /* 参考稿正文用无衬线、标题用衬线。这里把正文设为衬线以贴合其编辑气质,
-   * 用户仍可用字体轴(data-theme-font='sans')切回无衬线。 */
-  --font-body: var(--font-serif);
-}
-
-.dark [data-theme-preset='steins-gate'] {
-  /* 暖近黑而非纯黑:纯黑会丢掉参考稿的暖调,看起来像另一套主题 */
-  --background: oklch(0.148 0.006 40); /* #0d0a09 */
-  --foreground: oklch(0.939 0.024 85.8); /* #f2ead9 米色墨 */
-
-  --card: oklch(0.179 0.008 18); /* #151010 */
-  --card-foreground: oklch(0.939 0.024 85.8);
-  --popover: oklch(0.205 0.008 30);
-  --popover-foreground: oklch(0.939 0.024 85.8);
-
-  /* 深色版强调色转为偏红(参考稿 #e5484d):锈橙在暗底上对比度不足 */
-  --primary: oklch(0.626 0.193 23);
-  --primary-foreground: oklch(0.148 0.006 40);
-
-  --secondary: oklch(0.235 0.009 35);
-  --secondary-foreground: oklch(0.92 0.022 85.8);
-
-  --muted: oklch(0.225 0.008 35);
-  --muted-foreground: oklch(0.681 0.023 65.2); /* #a3968a */
-  --accent: oklch(0.255 0.01 35);
-  --accent-foreground: oklch(0.939 0.024 85.8);
-
-  /* 深色版的强调色本身就是红色,destructive 必须再拉开距离,
-   * 否则"删除"与主按钮在暗底上几乎同色。 */
-  --destructive: oklch(0.55 0.21 12);
-  --destructive-foreground: oklch(0.97 0.02 85.8);
-  --success: oklch(0.66 0.11 145);
-  --success-foreground: oklch(0.148 0.006 40);
-  --warning: oklch(0.79 0.135 72);
-  --warning-foreground: oklch(0.148 0.006 40);
-  --info: oklch(0.68 0.09 240);
-  --info-foreground: oklch(0.148 0.006 40);
-  --neutral: oklch(0.681 0.023 65.2);
-  --neutral-foreground: oklch(0.939 0.024 85.8);
-
-  --border: oklch(0.29 0.011 40);
-  --input: oklch(0.29 0.011 40);
-  --ring: oklch(0.626 0.193 23);
-
-  --chart-1: oklch(0.626 0.193 23);
-  --chart-2: oklch(0.66 0.11 145);
-  --chart-3: oklch(0.68 0.09 240);
-  --chart-4: oklch(0.72 0.15 45);
-  --chart-5: oklch(0.478 0.02 67.3); /* #655b51 */
-
-  --sidebar: oklch(0.172 0.007 30);
-  --sidebar-foreground: oklch(0.92 0.022 85.8);
-  --sidebar-primary: oklch(0.626 0.193 23);
-  --sidebar-primary-foreground: oklch(0.148 0.006 40);
-  --sidebar-accent: oklch(0.245 0.01 35);
-  --sidebar-accent-foreground: oklch(0.939 0.024 85.8);
-  --sidebar-border: oklch(0.29 0.011 40);
-  --sidebar-ring: oklch(0.626 0.193 23);
-
-  --skeleton-base: oklch(0.215 0.008 35);
-  --skeleton-highlight: oklch(0.26 0.01 35);
-
-  --font-body: var(--font-serif);
-}

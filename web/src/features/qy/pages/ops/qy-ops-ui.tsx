@@ -37,6 +37,10 @@ export function QyKeyValue(props: {
 }) {
   return (
     <div
+      // Steins Gate 主题按「标签=标注、数值=数据」重排这一行（见
+      // styles/qy-sg-pages.css §3）。属性无条件输出：其他预设下没有任何
+      // 规则消费它，只是 DOM 上多一个属性。
+      data-qy-kv=''
       className={cn(
         'flex items-start justify-between gap-3 border-b py-1.5 text-sm last:border-b-0',
         props.className

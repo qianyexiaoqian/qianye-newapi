@@ -27,7 +27,6 @@ import {
   staticDataTableClassNames,
   type StaticDataTableColumn,
 } from '@/components/data-table'
-import { SectionPageLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { formatTimestampToDate } from '@/lib/format'
@@ -36,6 +35,7 @@ import { cn } from '@/lib/utils'
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyMaskedUser } from '../../components/qy-masked-user'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
@@ -157,17 +157,17 @@ export function QyTransferLogs() {
   }
 
   return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
+    <QySectionPageLayout>
+      <QySectionPageLayout.Title>
         {t('qy_nav_transfer_logs')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
+      </QySectionPageLayout.Title>
+      <QySectionPageLayout.Actions>
         <Button variant='outline' size='sm' render={<Link to='/qy/transfer' />}>
           <ArrowLeftRight aria-hidden='true' />
           {t('qy_nav_transfer')}
         </Button>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
+      </QySectionPageLayout.Actions>
+      <QySectionPageLayout.Content>
         <div className='space-y-3'>
           <div className='flex flex-wrap items-center gap-2'>
             <NativeSelect
@@ -232,7 +232,7 @@ export function QyTransferLogs() {
             />
           </QyPageBoundary>
         </div>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+      </QySectionPageLayout.Content>
+    </QySectionPageLayout>
   )
 }
