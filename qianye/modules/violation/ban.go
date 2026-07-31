@@ -1,6 +1,7 @@
 package violation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -28,7 +29,16 @@ var errBanSkipped = errors.New("qianye/violation: 封禁已跳过")
 //
 // 刻意不用 user.Update(false):它是 Updates(struct)、零值跳过、无 RowsAffected
 // 幂等保护,多节点并发会双写、双 bump、双吊销、双审计。
-func disableUserForViolation(userId int, ban *Ban) error {
+//
+// ctx 由调用方(guard 的热路径 worker / 封禁补偿任务)注入并透传到主库事务上。
+// 不接 ctx 的话,这条链路上最重的一步 —— 带 FOR UPDATE 的主库事务 —— 完全没有
+// 上界,慢查询会把 worker 长期占死(C3)。
+//
+// 仍然没有 ctx 的三步是上游函数,签名里就没有 ctx:PublishUserAuthCache、
+// InvalidateUserTokensCache、RevokeAllUserSessions(后者是无上限的批循环)。
+// 它们的风险由 guard 侧兜住:封号作业不在 syncSafeJobs 里,永远不会同步跑在
+// relay 线程上,最坏只是占用一个后台 worker。
+func disableUserForViolation(ctx context.Context, userId int, ban *Ban) error {
 	u, err := model.GetUserById(userId, false)
 	if err != nil {
 		return err
@@ -44,7 +54,7 @@ func disableUserForViolation(userId int, ban *Ban) error {
 		return errBanSkipped
 	}
 
-	err = model.DB.Transaction(func(tx *gorm.DB) error {
+	err = model.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		res := tx.Model(&model.User{}).
 			Where("id = ? AND status = ? AND role < ?",
 				userId, common.UserStatusEnabled, common.RoleRootUser).
@@ -98,6 +108,10 @@ func disableUserForViolation(userId int, ban *Ban) error {
 //
 // 同样是条件 UPDATE + 同事务 bump auth_version:auth_version 递增会让封禁期间
 // 签发的任何残留凭证一并失效,解封后用户重新登录拿到干净的会话。
+//
+// 只对"可能真的禁用过用户"的封禁行调用(banned / pending / failed)。BanDeferred
+// 从来没有执行过主库那六步,对它调这里会把一个因别的原因被停用的账号放出来 ——
+// 判定在 unbanUser 里,见那里的说明。
 func enableUserAfterUnban(userId int, ban *Ban, operatorId int) error {
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		res := tx.Model(&model.User{}).

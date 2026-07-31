@@ -22,11 +22,14 @@ var (
 	accrualFailed      = newCounter()
 	accrualSkipped     = newCounter() // 风控/口径排除
 	topupScanned       = newCounter()
-	clawbackCreated    = newCounter()
-	settleRuns         = newCounter()
-	settleGranted      = newCounter() // 累计发放的整数额度
-	settleReclaimed    = newCounter()
-	settleFailed       = newCounter()
+	// topupHeld 是"因为有订单计佣失败,本轮游标被钉住"的次数。
+	// 持续增长意味着有一笔充值返佣卡住了,后面的订单也在排队等它。
+	topupHeld       = newCounter()
+	clawbackCreated = newCounter()
+	settleRuns      = newCounter()
+	settleGranted   = newCounter() // 累计发放的整数额度
+	settleReclaimed = newCounter()
+	settleFailed    = newCounter()
 )
 
 func metricsSnapshot() map[string]any {
@@ -37,6 +40,7 @@ func metricsSnapshot() map[string]any {
 		"accrual_failed":      accrualFailed.Load(),
 		"accrual_skipped":     accrualSkipped.Load(),
 		"topup_scanned":       topupScanned.Load(),
+		"topup_cursor_held":   topupHeld.Load(),
 		"clawback_created":    clawbackCreated.Load(),
 		"settle_runs":         settleRuns.Load(),
 		"settle_granted":      settleGranted.Load(),

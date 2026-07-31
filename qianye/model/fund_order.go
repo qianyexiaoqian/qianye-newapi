@@ -22,6 +22,17 @@ type FundOrder struct {
 	// 都会命中这个唯一索引,直接返回已有单而不是重复动钱。
 	IdemScope string `json:"idem_scope" gorm:"type:varchar(32);not null;uniqueIndex:uk_qy_fund_idem,priority:1"`
 	IdemKey   string `json:"idem_key" gorm:"type:varchar(96);not null;uniqueIndex:uk_qy_fund_idem,priority:2"`
+	// Fingerprint 是本单资金要素(金额/费用/双方/业务引用)的摘要。
+	//
+	// 唯一索引只保证"同一个键不会被重复执行",它保证不了"重放的是同一个请求"。
+	// client_request_id 由前端生成,换个金额、换个收款人复用同一个键,幂等命中
+	// 会返回原单成功,调用方据此写下金额虚高的成功审计 —— 资金侧毫无痕迹,
+	// 而审计表是事后仲裁的唯一凭据。指纹就是用来堵这个洞的。
+	//
+	// 可选:空字符串表示"未参与校验"。AutoMigrate 给历史行补的默认值就是空,
+	// 尚未接入指纹的调用方也是空;两种情况都必须跳过校验而不是判为不匹配,
+	// 否则升级瞬间所有历史单的幂等重放都会变成 409。
+	Fingerprint string `json:"fingerprint" gorm:"type:varchar(64);not null;default:''"`
 
 	UserId     int `json:"user_id" gorm:"not null;index:idx_qy_fund_user,priority:1"`
 	PeerUserId int `json:"peer_user_id" gorm:"not null;default:0;index"`

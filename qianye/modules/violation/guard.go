@@ -236,7 +236,7 @@ func persist(rec *Record, payload *Payload) {
 			return err
 		}
 		if !shadow {
-			maybeAutoBan(ctx, rec, st)
+			maybeAutoBan(ctx, gdb, rec, st)
 		}
 		return nil
 	})

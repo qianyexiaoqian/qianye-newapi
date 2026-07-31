@@ -54,7 +54,7 @@ func onConsumeLog(c *gin.Context, userId int, params model.RecordConsumeLogParam
 	ev := consumeEvent{InviteeId: userId, Quota: int64(params.Quota), At: common.GetTimestamp()}
 	consumeEvents.Add(1)
 	guard.HotAsync("commission.consume", func(ctx context.Context) error {
-		return accrueConsume(ev)
+		return accrueConsume(ctx, ev)
 	})
 }
 
@@ -83,8 +83,12 @@ func isSubscriptionConsume(other map[string]interface{}) bool {
 }
 
 // accrueConsume 在后台 worker 里完成邀请关系解析与日聚合写入。
-func accrueConsume(ev consumeEvent) error {
-	e, fromSource, err := resolveInviter(ev.InviteeId)
+//
+// ctx 由 guard 注入(hot_path_timeout_ms),必须一路透传到每一个 GORM 调用:
+// 少接一处,那一处就会一直等到 MySQL 的 innodb_lock_wait_timeout(默认 50 秒),
+// 把 worker 全部占满 —— guard 承诺的 200ms 上界只对接了 ctx 的语句成立。
+func accrueConsume(ctx context.Context, ev consumeEvent) error {
+	e, fromSource, err := resolveInviter(ctx, ev.InviteeId)
 	if err != nil {
 		warnUnknownInviter(ev.InviteeId, err)
 		return err
@@ -98,9 +102,9 @@ func accrueConsume(ev consumeEvent) error {
 		return nil
 	}
 	if fromSource {
-		ensureRelation(e.InviterId, ev.InviteeId, e.InviteeName, e.InviteeCreated)
+		ensureRelation(ctx, e.InviterId, ev.InviteeId, e.InviteeName, e.InviteeCreated)
 	}
-	if blockedInvitees()[ev.InviteeId] {
+	if blockedInvitees(ctx)[ev.InviteeId] {
 		accrualSkipped.Add(1)
 		return nil
 	}
@@ -112,24 +116,28 @@ func accrueConsume(ev consumeEvent) error {
 		accrualSkipped.Add(1)
 		return nil
 	}
-	gross := capGross(calcGross(ev.Quota, s.ConsumeRateBps), s.MaxPerOrderQuota)
+	// 费率按【下线】所在分组解析,并连同分组一起冻结进这一行(口径见 grouprate.go)。
+	rate := resolveRate(ctx, e.InviteeGroup, SourceConsume, s)
+	gross := capGross(calcGross(ev.Quota, rate.Units), s.MaxPerOrderQuota)
 	if gross.IsZero() {
 		return nil
 	}
 	day := bucketDate(ev.At)
-	return writeAccrual(accrualInput{
+	_, err = writeAccrual(ctx, accrualInput{
 		SourceType: SourceConsume,
-		IdemKey:    consumeIdemKey(ev.InviteeId, day),
+		IdemKey:    consumeIdemKey(ev.InviteeId, day, rate),
 		InviterId:  e.InviterId,
 		InviteeId:  ev.InviteeId,
 		BaseQuota:  ev.Quota,
-		RateBps:    s.ConsumeRateBps,
+		RateUnits:  rate.Units,
+		RateGroup:  rate.Group,
 		Gross:      gross,
 		MatureAt:   bucketMatureAt(day, s.HoldingDays),
 		BucketDate: day,
 		Status:     StatusAccrued,
 		Accumulate: true,
 	})
+	return err
 }
 
 // onRedeemSuccess 处理兑换码充值返佣。
@@ -146,7 +154,7 @@ func onRedeemSuccess(userId int, redemptionId int, quota int) {
 	}
 	guard.HotAsync("commission.redeem", func(ctx context.Context) error {
 		// 兑换码没有付款金额,法币域留空。
-		return accrueOneShot(userId, int64(quota), decimal.Zero, SourceRedemption,
+		return accrueOneShot(ctx, userId, int64(quota), decimal.Zero, SourceRedemption,
 			redemptionIdemKey(redemptionId), "RD"+itoa(redemptionId))
 	})
 }
@@ -167,7 +175,7 @@ func onTaskBillingLog(params model.RecordTaskBillingLogParams) {
 	case model.LogTypeConsume:
 		ev := consumeEvent{InviteeId: userId, Quota: quota, At: common.GetTimestamp()}
 		guard.HotAsync("commission.task_consume", func(ctx context.Context) error {
-			return accrueConsume(ev)
+			return accrueConsume(ctx, ev)
 		})
 	case model.LogTypeRefund:
 		if !cm.RefundClawback {
@@ -177,18 +185,18 @@ func onTaskBillingLog(params model.RecordTaskBillingLogParams) {
 		// 否则一次退款会被冲正两次。
 		key := clawbackIdemKey(taskId, userId, quota)
 		guard.HotAsync("commission.task_refund", func(ctx context.Context) error {
-			return clawback(userId, quota, key, taskId, "task refund")
+			return clawback(ctx, userId, quota, key, taskId, "task refund")
 		})
 	}
 }
 
 // accrueOneShot 处理"一笔订单一条计佣行"的来源(充值、兑换码)。
-func accrueOneShot(inviteeId int, baseQuota int64, baseMoney decimal.Decimal,
+func accrueOneShot(ctx context.Context, inviteeId int, baseQuota int64, baseMoney decimal.Decimal,
 	sourceType, idemKey, sourceRef string) error {
 	if baseQuota <= 0 {
 		return nil
 	}
-	e, fromSource, err := resolveInviter(inviteeId)
+	e, fromSource, err := resolveInviter(ctx, inviteeId)
 	if err != nil {
 		warnUnknownInviter(inviteeId, err)
 		return err
@@ -197,19 +205,23 @@ func accrueOneShot(inviteeId int, baseQuota int64, baseMoney decimal.Decimal,
 		return nil
 	}
 	if fromSource {
-		ensureRelation(e.InviterId, inviteeId, e.InviteeName, e.InviteeCreated)
+		ensureRelation(ctx, e.InviterId, inviteeId, e.InviteeName, e.InviteeCreated)
 	}
-	if blockedInvitees()[inviteeId] {
+	if blockedInvitees(ctx)[inviteeId] {
 		accrualSkipped.Add(1)
 		return nil
 	}
 	s := effective()
-	gross := capGross(calcGross(baseQuota, s.TopupRateBps), s.MaxPerOrderQuota)
+	// 与消费路径同一个口径:按【下线】所在分组取费率,并冻结进行。
+	// 幂等键在这里是订单号,不掺费率 —— 一笔充值无论如何只能返一次佣,
+	// 费率变了也不能变成两行。
+	rate := resolveRate(ctx, e.InviteeGroup, sourceType, s)
+	gross := capGross(calcGross(baseQuota, rate.Units), s.MaxPerOrderQuota)
 	if gross.IsZero() {
 		return nil
 	}
 	now := common.GetTimestamp()
-	return writeAccrual(accrualInput{
+	_, err = writeAccrual(ctx, accrualInput{
 		SourceType: sourceType,
 		IdemKey:    idemKey,
 		SourceRef:  sourceRef,
@@ -217,9 +229,11 @@ func accrueOneShot(inviteeId int, baseQuota int64, baseMoney decimal.Decimal,
 		InviteeId:  inviteeId,
 		BaseQuota:  baseQuota,
 		BaseMoney:  baseMoney,
-		RateBps:    s.TopupRateBps,
+		RateUnits:  rate.Units,
+		RateGroup:  rate.Group,
 		Gross:      gross,
 		MatureAt:   now + int64(s.HoldingDays)*86400,
 		Status:     StatusAccrued,
 	})
+	return err
 }

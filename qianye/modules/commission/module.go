@@ -23,6 +23,7 @@ func (Mod) Tables() []any {
 		&Settlement{},
 		&InviteRelation{},
 		&FreezeRecord{},
+		&GroupRate{},
 	}
 }
 
@@ -43,6 +44,8 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 写接口一律挂关键操作限流:它们要么直接改钱,要么改决定钱的参数。
 	crit := middleware.CriticalRateLimit()
 	g.PUT("/commission/config", crit, adminPutConfig)
+	g.PUT("/commission/group-rates", crit, adminPutGroupRate)
+	g.DELETE("/commission/group-rates", crit, adminDeleteGroupRate)
 	g.POST("/commission/clawback", crit, adminClawback)
 	g.POST("/commission/settle", crit, adminSettle)
 	g.POST("/commission/relations/block", crit, adminBlockRelation)

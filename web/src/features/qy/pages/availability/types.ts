@@ -55,11 +55,29 @@ export type QyAvailOutcome =
   | (string & {})
 
 /**
+ * 性能维度：端到端延迟、首字延迟、生成速度。
+ *
+ * 三个均值都可能是 `null`，含义与 `availability` 的 `null` 完全一致：
+ * **样本不足以下结论**。渲染成 0 会被读成「延迟 0ms / 一个字都吐不出来」，
+ * 两种误读都会让人对着一个根本不存在的数字做决策。
+ *
+ * 三个样本数一并下发，页面据此解释「这一格为什么是横杠」。
+ */
+export type QyAvailPerf = {
+  avg_latency_ms: number | null
+  avg_ttft_ms: number | null
+  avg_tps: number | null
+  latency_samples: number
+  ttft_samples: number
+  speed_samples: number
+}
+
+/**
  * 矩阵的一个格子（分组 × 模型）。
  *
  * `availability` 为 `null` 表示「无数据 / 样本不足」，前端**绝不能**渲染成 0%。
  */
-export type QyAvailCell = {
+export type QyAvailCell = QyAvailPerf & {
   group: string
   model: string
   availability: number | null
@@ -69,9 +87,6 @@ export type QyAvailCell = {
   success: number
   excluded_total: number
   top_reason?: string
-  avg_latency_ms: number
-  avg_ttft_ms: number
-  avg_tps: number
   has_channel: boolean
 }
 
@@ -88,6 +103,8 @@ export type QyAvailDefinition = {
   count_client_errors: boolean
   count_rate_limited: boolean
   min_samples: number
+  /** 延迟 / 首字 / 速度的样本下限。与 `min_samples` 不同，见后端 `perf.go`。 */
+  perf_min_samples: number
   ok_threshold: number
   degraded_threshold: number
   note: string
@@ -116,15 +133,13 @@ export type QyAvailMatrix = {
   overall: QyAvailCell
 }
 
-export type QyAvailSeriesPoint = {
+export type QyAvailSeriesPoint = QyAvailPerf & {
   ts: number
   availability: number | null
   state: QyAvailState
   req_total: number
   counted: number
   success: number
-  avg_latency_ms: number
-  avg_ttft_ms: number
 }
 
 export type QyAvailSeriesLine = {
@@ -153,5 +168,20 @@ export type QyAvailMatrixParams = {
   page_size: number
 }
 
-/** 排序模式。默认按可用率升序 —— 打开页面先看最烂的那几个。 */
-export type QyAvailSortMode = 'availability_asc' | 'model_asc' | 'requests_desc'
+/**
+ * 排序模式。默认按可用率升序 —— 打开页面先看最烂的那几个。
+ *
+ * 三个性能模式同样是「最差优先」：延迟 / 首字取最慢，速度取最慢。
+ * **排序必须走服务端**：分页是按模型切的，前端只拿得到当前页，
+ * 在本地重排永远排不出「全站最慢的那个模型」。
+ */
+export type QyAvailSortMode =
+  | 'availability_asc'
+  | 'latency_desc'
+  | 'model_asc'
+  | 'requests_desc'
+  | 'tps_asc'
+  | 'ttft_desc'
+
+/** 矩阵的主指标。切换它只换展示与排序，不改变已经拿到的数据。 */
+export type QyAvailMetricKey = 'availability' | 'latency' | 'tps' | 'ttft'

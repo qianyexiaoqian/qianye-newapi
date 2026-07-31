@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -108,6 +109,13 @@ func runSettle(ctx context.Context) {
 	}
 }
 
+// pendingInviters 选出本轮需要结算的邀请人,来源有两路。
+//
+// 第二路(只剩余数、没有新增计佣行)不能省:被日封顶或结算门槛削掉的部分
+// 全额留在 unsettled_amount 里,而 absorbAccruals 会把本批**全部** accrual
+// 的 settled_amount 写成 gross_amount。只按第一路选人的话,那笔 carry 就只能
+// 等这个邀请人名下再产生新的计佣行才有机会发出 —— 下线一旦停止消费,
+// 这笔钱永远拿不到。computeSettlement 的算术一直是对的,断链在调度层。
 func pendingInviters(limit int) ([]int, error) {
 	gdb := db.Get()
 	if gdb == nil {
@@ -122,7 +130,77 @@ func pendingInviters(limit int) ([]int, error) {
 		db.MarkFailure(err)
 		return nil, err
 	}
-	return ids, nil
+
+	// 门槛取 minSettle 而不是 1:net 要 >= minSettle 才发得出去(见
+	// computeSettlement),按 >= 1 选人会让每个零头在 1..minSettle 之间的
+	// 邀请人每个周期都白跑一次加锁事务,而且永远发不出来。
+	var carry []int
+	err = gdb.Model(&Balance{}).
+		Where("unsettled_amount >= ?", carryFloor(effective().MinSettleQuota)).
+		Order("user_id").Limit(limit).Pluck("user_id", &carry).Error
+	if err != nil {
+		db.MarkFailure(err)
+		return nil, err
+	}
+	return mergeInviterIds(ids, carry, limit), nil
+}
+
+// carryFloor 是"值得为它跑一轮 carry-only 结算"的余数下界。
+func carryFloor(minSettle int64) int64 {
+	if minSettle < 1 {
+		return 1
+	}
+	return minSettle
+}
+
+// mergeInviterIds 合并两路待结算来源:去重、升序、截断到 limit。
+//
+// 升序而不是保持原顺序,是为了让"下一轮从哪继续"这件事在两路来源之间
+// 有确定的口径;截断在合并之后做,否则第二路可能被第一路整批挤掉。
+func mergeInviterIds(a, b []int, limit int) []int {
+	seen := make(map[int]struct{}, len(a)+len(b))
+	merged := make([]int, 0, len(a)+len(b))
+	for _, src := range [][]int{a, b} {
+		for _, id := range src {
+			if id <= 0 {
+				continue
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			merged = append(merged, id)
+		}
+	}
+	sort.Ints(merged)
+	if limit > 0 && len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged
+}
+
+// batchRate 返回本批发放该用哪个冻结汇率折算法币。
+//
+// delta 为零意味着本批没有任何计佣增量(carry-only 结算,或正负增量恰好抵消),
+// 加权平均无从算起。这里绝不能退回 0:applyFiat 会因此一分法币都不加,
+// 而额度照加,AvailableFiat 与 AvailableQuota 就此永久漂移,提现模块按
+// AvailableFiat 折算会少给用户钱。取当前汇率与既有口径一致 —— 混合轮里
+// carry 本来就是按"发放当时那一批的汇率"折算的。
+func batchRate(weightedSum, delta decimal.Decimal) decimal.Decimal {
+	if delta.IsZero() {
+		return currentUsdRate()
+	}
+	return weightedSum.Div(delta)
+}
+
+// settleNeeded 判断本轮是否真的要落一张结算单。
+//
+// accrualCount > 0 时必须落单:结算单是 absorbAccruals 回写 settlement_id 的
+// 载体,即使本轮 net 为 0(全部进了余数)也要留痕,否则那批 accrual 会被
+// 反复读出来重算。accrualCount == 0 是 carry-only 结算,此时 net == 0 说明
+// 余数还不够发 —— 落一张全零单只会让审计表按"邀请人数 × 结算周期"膨胀。
+func settleNeeded(accrualCount int, net int64) bool {
+	return accrualCount > 0 || net != 0
 }
 
 // repairStrandedAccruals 把"已标记 settled 但金额又长了"的行放回待结算队列。
@@ -170,21 +248,33 @@ func settleUser(inviterId int) error {
 			return err
 		}
 		if len(rows) == 0 {
-			return nil
+			// carry-only 结算:没有新的计佣增量,但上一轮被日封顶 / 结算门槛
+			// 削掉的余数还留在 unsettled_amount 里。这里直接早退,那笔钱就只能
+			// 等新的计佣行出现才有机会发出 —— 必须继续往下走一遍。
+			//
+			// 先做一次不加锁的预筛:余数不足 1 额度时连行锁都不必取,
+			// 也避免管理端对任意 user_id 调 settleOne 时凭空建出余额行。
+			var peek Balance
+			err := tx.Where("user_id = ?", inviterId).Take(&peek).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if peek.UnsettledAmount.LessThan(decimal.NewFromInt(1)) {
+				return nil
+			}
 		}
 
 		delta := decimal.Zero
-		weighted := decimal.Zero
+		weightedSum := decimal.Zero
 		for _, r := range rows {
 			d := r.GrossAmount.Sub(r.SettledAmount)
 			delta = delta.Add(d)
-			weighted = weighted.Add(d.Mul(r.UsdRate))
+			weightedSum = weightedSum.Add(d.Mul(r.UsdRate))
 		}
-		if !delta.IsZero() {
-			weighted = weighted.Div(delta)
-		} else {
-			weighted = decimal.Zero
-		}
+		weighted := batchRate(weightedSum, delta)
 
 		bal, err := lockBalance(tx, inviterId)
 		if err != nil {
@@ -201,6 +291,9 @@ func settleUser(inviterId int) error {
 			// 未发完的部分仍在 CarryAfter 里,下轮继续。
 			clampNote = out.Clamp.Error()
 			warnf("邀请人 %d 结算金额触顶: %s", inviterId, clampNote)
+		}
+		if !settleNeeded(len(rows), out.NetQuota) {
+			return nil
 		}
 
 		settlement := Settlement{

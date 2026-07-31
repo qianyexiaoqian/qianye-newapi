@@ -167,11 +167,10 @@ func backoff(order *qymodel.FundOrder, cause error) {
 		"updated_at":    now,
 	}
 	if cause != nil {
-		msg := cause.Error()
-		if len(msg) > 512 {
-			msg = msg[:512]
-		}
-		updates["last_error"] = msg
+		// 用 rune 安全截断:last_error 是 utf8mb4 的 varchar(512),
+		// 裸字节切会把中文错误信息切出非法尾巴,整条 UPDATE 被 1366 拒绝,
+		// 退避信息与重试计数一起丢失。
+		updates["last_error"] = audit.Truncate(cause.Error(), maxErrBytes)
 	}
 	if err := db.Get().Model(&qymodel.FundOrder{}).
 		Where("order_no = ?", order.OrderNo).Updates(updates).Error; err != nil {
@@ -185,9 +184,9 @@ func backoff(order *qymodel.FundOrder, cause error) {
 // 没有它,补偿任务只能在"重试到死"和"猜一个结果"之间选,两者都不可接受。
 func markUncertain(order *qymodel.FundOrder, reason string) {
 	now := common.GetTimestamp()
-	if len(reason) > 512 {
-		reason = reason[:512]
-	}
+	// 转人工是这套系统里最不能丢的一条记录:理由被裸字节切断会让整行 UPDATE
+	// 与审计写入双双被 utf8mb4 列拒绝,单据留在 pending 继续被补偿任务空转。
+	reason = audit.Truncate(reason, maxErrBytes)
 	res := db.Get().Model(&qymodel.FundOrder{}).
 		Where("order_no = ? AND status = ?", order.OrderNo, qymodel.StatusPending).
 		Updates(map[string]any{
@@ -243,13 +242,34 @@ func PruneOutbox(ctx context.Context) {
 		return
 	}
 
-	deleted, err := model.QyPruneFundOutbox(before, cfg.BatchSize)
-	if err != nil {
-		common.SysError("qianye: 清理主库 outbox 失败: " + err.Error())
-		return
+	batch := cfg.BatchSize
+	if batch <= 0 {
+		batch = 200
 	}
-	if deleted > 0 {
-		common.SysLog(fmt.Sprintf("qianye: 已清理 %d 行历史 outbox", deleted))
+
+	// 分批循环而不是一轮一批:任务间隔是 6 小时,单轮只删 batch 行时,
+	// 日均资金笔数一旦超过 batch,outbox 就是净增长,保留期永远追不上。
+	// 上限 maxPruneRounds 是为了让单轮工作量有界(默认 200×50 = 1 万行/轮),
+	// 每轮之间让出并检查租约:失去租约后继续删会与接管节点双跑。
+	const maxPruneRounds = 50
+	var total int64
+	for i := 0; i < maxPruneRounds; i++ {
+		if ctx.Err() != nil {
+			break
+		}
+		deleted, err := model.QyPruneFundOutbox(before, batch)
+		if err != nil {
+			common.SysError("qianye: 清理主库 outbox 失败: " + err.Error())
+			break
+		}
+		total += deleted
+		if deleted < int64(batch) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if total > 0 {
+		common.SysLog(fmt.Sprintf("qianye: 已清理 %d 行历史 outbox", total))
 	}
 }
 

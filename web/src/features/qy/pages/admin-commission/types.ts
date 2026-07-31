@@ -21,10 +21,14 @@ For commercial licensing, please contact support@quantumnous.com
  *
  * 生效配置的 key 与后端 `settings.go` 的常量逐字一致 —— 它们同时是
  * `qy_settings` 表里的行键与 PUT 请求体的字段名，改一个字就写不进去。
+ *
+ * **返佣比例一律是百分比字符串**（"10"、"10.25"）。用字符串而不是 number
+ * 是刻意的：10.25 在 JS 的 Number 里同样是二进制浮点，回填输入框时可能变成
+ * 10.249999999999998，运营再点一次保存就把这个数字存进了资金配置。
  */
 export type QyCommissionEffective = {
-  topup_rate_bps: number
-  consume_rate_bps: number
+  topup_rate_percent: string
+  consume_rate_percent: string
   min_settle_quota: number
   max_per_order_quota: number
   holding_days: number
@@ -42,8 +46,8 @@ export type QyCommissionEffective = {
  */
 export type QyCommissionYamlReadonly = {
   enabled: boolean
-  topup_rate_bps: number
-  consume_rate_bps: number
+  topup_rate_percent: string
+  consume_rate_percent: string
   exclude_redemption_and_manual: boolean
   exclude_subscription_consume: boolean
   refund_clawback: boolean
@@ -53,11 +57,31 @@ export type QyCommissionYamlReadonly = {
   inviter_cache_seconds: number
 }
 
+/**
+ * 一条分组差异化费率规则。
+ *
+ * 口径是**被邀请人（下线）的分组**，不是邀请人的分组 —— 理由见后端
+ * `qianye/modules/commission/grouprate.go` 的文件头。
+ * 没有规则的分组按上面的全局默认费率返。
+ */
+export type QyCommissionGroupRate = {
+  group_name: string
+  topup_rate_percent: string
+  consume_rate_percent: string
+  enabled: boolean
+  remark: string
+  operator_id: number
+  updated_at: number
+}
+
 export type QyCommissionAdminConfig = {
   effective: QyCommissionEffective
   /** `qy_settings` 里的运营覆盖，值一律是字符串。 */
   overrides: Record<string, string>
   editable_keys: string[]
+  /** 这些键的取值是百分比字符串，其余键是整数。由后端给出，前端不猜。 */
+  percent_keys: string[]
+  group_rates: QyCommissionGroupRate[]
   yaml_readonly: QyCommissionYamlReadonly
 }
 
@@ -73,7 +97,10 @@ export type QyAdminAccrual = {
   source_ref: string
   base_quota: number
   base_money: string
+  /** 冻结的费率，单位是"百分比 × 100"（1025 = 10.25%）。列名沿用历史。 */
   rate_bps: number
+  /** 冻结的下线分组。空串表示计佣时没有分组信息。 */
+  rate_group: string
   gross_amount: string
   settled_amount: string
   usd_rate: string

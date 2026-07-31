@@ -35,7 +35,7 @@ const idemScopeCredit = "withdraw_credit"
 // 回滚路径严格区分两类失败:主库【确定未生效】才退回佣金;结果不可判定一律
 // 转人工(holdForReview),绝不自动退。
 func creditQuota(ctx context.Context, w *Withdrawal) error {
-	order, err := twophase.Execute(ctx, twophase.Request{
+	req := twophase.Request{
 		Kind:        qymodel.KindWithdrawQuota,
 		IdemScope:   idemScopeCredit,
 		IdemKey:     w.WithdrawNo,
@@ -56,7 +56,14 @@ func creditQuota(ctx context.Context, w *Withdrawal) error {
 		LocalCommit: func(tx *gorm.DB, o *qymodel.FundOrder) error {
 			return finishPaid(tx, w, o.OrderNo)
 		},
-	})
+	}
+	// 指纹让幂等命中时能验出"同一个键、不同的资金要素"。这里的幂等键是服务端
+	// 生成的 withdraw_no,正常路径下不可能换参重放;但资金单一旦被人手工改过
+	// (或将来有人把幂等键改成客户端可影响的值),没有指纹就只能默默按原单返回。
+	// 代价是一次 sha256,收益是这条路径永远不会变成 B4 那种"审计可伪造"。
+	req.Fingerprint = req.Digest()
+
+	order, err := twophase.Execute(ctx, req)
 	if err == nil {
 		return nil
 	}

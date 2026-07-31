@@ -74,14 +74,24 @@ func canTransit(from, to string) bool {
 	return allowedTransitions[from][to]
 }
 
+// activeStatuses / terminalStatuses 是同一套状态的切片投影,供 SQL 的 `status IN ?` 使用。
+//
+// isTerminal 由 terminalStatuses 派生而不是各写一份 switch:新增状态却忘了登记,
+// 一边会让"未终态单上限"漏掉它,另一边会让保留期清理提前抹掉还要打款的单据密文。
+// 两处必须由同一个真相派生。
+var (
+	activeStatuses   = []string{StatusPending, StatusApproved, StatusPaying}
+	terminalStatuses = []string{StatusPaid, StatusRejected, StatusCancelled, StatusFailed}
+)
+
 // isTerminal 表示该状态不会再变化,佣金已经落定(核销或退回)。
 func isTerminal(s string) bool {
-	switch s {
-	case StatusPaid, StatusRejected, StatusCancelled, StatusFailed:
-		return true
-	default:
-		return false
+	for _, t := range terminalStatuses {
+		if s == t {
+			return true
+		}
 	}
+	return false
 }
 
 // transition 描述一次状态跃迁及其副作用。

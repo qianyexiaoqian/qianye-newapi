@@ -1,6 +1,7 @@
 package commission
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
@@ -18,7 +20,12 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-var bpsDivisor = decimal.NewFromInt(10000)
+// rateUnitsDivisor 把内部整数费率还原成比例。
+//
+// 内部整数 = 百分比 × 100(10.25% → 1025),而百分比本身再除以 100 才是比例,
+// 所以分母是 100 × 100 = 10000。这个数值恰好与旧的万分比分母相同 ——
+// 对外从万分比改成百分比,并没有动内部的运算精度。
+var rateUnitsDivisor = decimal.NewFromInt(config.RatePercentScale * 100)
 
 // calcGross 计算一笔佣金的精确金额,永不截断。
 //
@@ -26,14 +33,16 @@ var bpsDivisor = decimal.NewFromInt(10000)
 // 5% 的佣金是 0.5~25。用 int(float64(base)*rate) 会把 0.5 直接变成 0,
 // 一天几千次请求全部归零,用户看到"用了一天没佣金"而钱被平台吞掉。
 //
-// bps 是整数万分比,除以 10000 在 decimal 下无精度损失(0.05 可精确表示)。
-func calcGross(baseQuota int64, rateBps int) decimal.Decimal {
-	if baseQuota <= 0 || rateBps <= 0 {
+// rateUnits 是整数(百分比 × 100),除以 10000 在 decimal 下无精度损失
+// (0.05、0.1025 都可精确表示)。费率从配置读进来的那一刻就已经是整数,
+// 整条链路上没有任何一步经过 float64。
+func calcGross(baseQuota int64, rateUnits int) decimal.Decimal {
+	if baseQuota <= 0 || rateUnits <= 0 {
 		return decimal.Zero
 	}
 	return decimal.NewFromInt(baseQuota).
-		Mul(decimal.NewFromInt(int64(rateBps))).
-		Div(bpsDivisor)
+		Mul(decimal.NewFromInt(int64(rateUnits))).
+		Div(rateUnitsDivisor)
 }
 
 // capGross 对单笔佣金封顶。
@@ -123,7 +132,10 @@ type accrualInput struct {
 
 	BaseQuota int64
 	BaseMoney decimal.Decimal
-	RateBps   int
+	// RateUnits 是本次生效的费率(百分比 × 100),RateGroup 是它来自哪个
+	// 被邀请人分组。两者一起冻结进行,事后才解释得清"这笔为什么是这个数"。
+	RateUnits int
+	RateGroup string
 	Gross     decimal.Decimal
 
 	// UsdRate 为零时取当前汇率。冲正必须显式传入原单的汇率,
@@ -144,18 +156,27 @@ type accrualInput struct {
 
 // writeAccrual 幂等地落一条计佣行。
 //
+// 第一个返回值表示"本次真的插入了一条新行"。调用方必须据此区分"新建"与
+// "幂等命中":OnConflict{DoNothing} 命中冲突时不报错,只看 error 的调用方
+// 会把一次重放当成新建 —— 计数器虚增,更糟的是管理端会照着**本次请求的**
+// 参数写下一条金额虚高的成功审计,而审计表是资金系统事后仲裁的唯一凭据。
+//
 // 返回 error 只表示写库失败;幂等命中不是错误。
-func writeAccrual(in accrualInput) error {
+//
+// ctx 必须一路传到 GORM 调用上:热路径 worker 的 200ms 上界只对
+// WithContext(ctx) 的语句生效,漏接就会一直等到 innodb_lock_wait_timeout。
+func writeAccrual(ctx context.Context, in accrualInput) (bool, error) {
 	gdb := db.Get()
 	if gdb == nil {
-		return db.ErrNotReady
+		return false, db.ErrNotReady
 	}
+	gdb = gdb.WithContext(ctx)
 	if in.Gross.IsZero() {
-		return nil
+		return false, nil
 	}
 	if !amountSane(in.Gross) {
 		warnf("拒绝写入异常佣金金额 %s(来源 %s/%s)", in.Gross.String(), in.SourceType, in.IdemKey)
-		return errors.New("commission: 佣金金额超出合理范围")
+		return false, errors.New("commission: 佣金金额超出合理范围")
 	}
 	now := common.GetTimestamp()
 	usdRate := in.UsdRate
@@ -172,7 +193,8 @@ func writeAccrual(in accrualInput) error {
 		SourceRef:    truncate(in.SourceRef, 128),
 		BaseQuota:    in.BaseQuota,
 		BaseMoney:    in.BaseMoney,
-		RateBps:      in.RateBps,
+		RateUnits:    in.RateUnits,
+		RateGroup:    truncate(in.RateGroup, 64),
 		GrossAmount:  in.Gross,
 		UsdRate:      usdRate,
 		Status:       in.Status,
@@ -206,15 +228,18 @@ func writeAccrual(in accrualInput) error {
 	if res.Error != nil {
 		db.MarkFailure(res.Error)
 		accrualFailed.Add(1)
-		return res.Error
+		return false, res.Error
 	}
+	// RowsAffected 口径(MySQL):新插入 1,ON DUPLICATE KEY UPDATE 命中 2,
+	// DoNothing 命中 0。因此 == 1 在累加与非累加两种模式下都恰好是"新插入"。
+	inserted := res.RowsAffected == 1
 	if in.Accumulate {
 		accrualAccumulated.Add(1)
-	} else if res.RowsAffected == 1 {
+	} else if inserted {
 		accrualCreated.Add(1)
 	}
 	alertLargeAccrual(in)
-	return nil
+	return inserted, nil
 }
 
 // alertLargeAccrual 对异常大额计佣告警。
@@ -238,15 +263,16 @@ func alertLargeAccrual(in accrualInput) {
 //
 // 脱敏名在这里算好并缓存,列表页因此零主库访问 —— 邀请人永远拿不到
 // 下线的真实用户名与邮箱。
-func ensureRelation(inviterId, inviteeId int, rawName string, boundAt int64) {
+func ensureRelation(ctx context.Context, inviterId, inviteeId int, rawName string, boundAt int64) {
 	gdb := db.Get()
 	if gdb == nil {
 		return
 	}
+	gdb = gdb.WithContext(ctx)
 	risk := ""
 	blocked := false
 	// 互邀环路:A 邀 B 且 B 邀 A,是最常见的双账号自刷手法。
-	if peer, _, err := resolveInviter(inviterId); err == nil && peer.InviterId == inviteeId {
+	if peer, _, err := resolveInviter(ctx, inviterId); err == nil && peer.InviterId == inviteeId {
 		risk = "reciprocal_invite"
 		blocked = true
 	}
@@ -281,7 +307,7 @@ var (
 //
 // 拉黑是极少数情形,整表拉进内存(每 60 秒刷一次)远比每条计佣事件
 // 回一次库便宜。
-func blockedInvitees() map[int]bool {
+func blockedInvitees(ctx context.Context) map[int]bool {
 	blockedMu.Lock()
 	defer blockedMu.Unlock()
 	now := common.GetTimestamp()
@@ -296,7 +322,7 @@ func blockedInvitees() map[int]bool {
 		return map[int]bool{}
 	}
 	var ids []int
-	if err := gdb.Model(&InviteRelation{}).Where("blocked = ?", true).Pluck("invitee_id", &ids).Error; err != nil {
+	if err := gdb.WithContext(ctx).Model(&InviteRelation{}).Where("blocked = ?", true).Pluck("invitee_id", &ids).Error; err != nil {
 		db.MarkFailure(err)
 		if blockedSet != nil {
 			return blockedSet
@@ -334,9 +360,19 @@ func truncate(s string, max int) string {
 
 func itoa(v int) string { return strconv.Itoa(v) }
 
-// consumeIdemKey 是消费日聚合的幂等键:同一个下线、同一自然日只有一行。
-func consumeIdemKey(inviteeId int, day string) string {
-	return SourceConsume + ":" + itoa(inviteeId) + ":" + day
+// consumeIdemKey 是消费日聚合的幂等键。
+//
+// 除了(下线、自然日)之外还带上**冻结的费率与分组**,因为日聚合行是
+// "边增长边结算"的:桶会跨越一整天,而这一天里下线可能换了分组、运营
+// 可能调了费率。只按(下线、日期)聚合的话,后来的增量会按新费率算出
+// gross 累加进一行标着旧费率的记录里,那一行从此 base × rate ≠ gross,
+// 永远对不平,也没法向用户解释。
+//
+// 费率变了就落新的一行:唯一索引照样防重复,每一行仍然自洽。代价只是
+// 改费率当天多出一行,而这正是账面上应该看得见的事实。
+func consumeIdemKey(inviteeId int, day string, rate rateDecision) string {
+	return SourceConsume + ":" + itoa(inviteeId) + ":" + day +
+		":" + rate.Group + ":" + itoa(rate.Units)
 }
 
 func topupIdemKey(tradeNo string) string { return SourceTopup + ":" + strings.TrimSpace(tradeNo) }

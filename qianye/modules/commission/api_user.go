@@ -59,9 +59,14 @@ func getSummary(c *gin.Context) {
 		"available_fiat":       bal.AvailableFiat.Round(2).String(),
 		"fiat_currency":        config.Get().Withdraw.FiatCurrency,
 		"last_settled_at":      bal.LastSettledAt,
+		// 比例对外一律是百分比字符串。旧的 *_bps 键继续下发是为了不打断
+		// 已在跑的前端页面(它们自己再除以 100),等页面切到 *_percent 之后
+		// 可以直接删掉这两行。
 		"rate": gin.H{
-			"topup_bps":   s.TopupRateBps,
-			"consume_bps": s.ConsumeRateBps,
+			"topup_percent":   s.TopupRatePercent(),
+			"consume_percent": s.ConsumeRatePercent(),
+			"topup_bps":       s.TopupRateUnits,
+			"consume_bps":     s.ConsumeRateUnits,
 		},
 		"policy": gin.H{
 			"holding_days":            s.HoldingDays,
@@ -224,13 +229,16 @@ func listRecords(c *gin.Context) {
 			"invitee_ref":         rel.InviteeRef,
 			"invitee_masked_name": rel.MaskedName,
 			"base_quota":          r.BaseQuota,
-			"rate_bps":            r.RateBps,
-			"gross_amount":        r.GrossAmount.String(),
-			"settled_amount":      r.SettledAmount.String(),
-			"status":              r.Status,
-			"mature_at":           r.MatureAt,
-			"bucket_date":         r.BucketDate,
-			"created_at":          r.CreatedAt,
+			// rate_percent 是本行冻结的费率(百分比);rate_bps 是同一个数字的
+			// 旧口径,留给尚未切换的前端页面。
+			"rate_percent":   config.FormatRatePercent(r.RateUnits),
+			"rate_bps":       r.RateUnits,
+			"gross_amount":   r.GrossAmount.String(),
+			"settled_amount": r.SettledAmount.String(),
+			"status":         r.Status,
+			"mature_at":      r.MatureAt,
+			"bucket_date":    r.BucketDate,
+			"created_at":     r.CreatedAt,
 		})
 	}
 	respond(c, gin.H{"items": items, "total": total, "p": page, "page_size": size})

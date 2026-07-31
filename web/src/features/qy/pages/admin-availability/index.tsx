@@ -40,6 +40,7 @@ import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { qyKeys } from '../../lib/query-keys'
 import { QyAvailabilityDefinition } from '../availability/components/availability-definition'
 import {
+  formatQyTps,
   getQyAvailStateStyle,
   QY_AVAIL_RANGES,
   qyAvailOutcomeKey,
@@ -49,6 +50,7 @@ import { QyStatGrid } from '../components/qy-stat-grid'
 import {
   formatQyAvailability,
   formatQyCount,
+  formatQyMs,
   formatQyTs,
   QY_EMPTY_TEXT,
 } from '../ops/format'
@@ -349,6 +351,26 @@ function QyAvailabilityCellTable(props: {
             row.top_reason == null || row.top_reason === ''
               ? QY_EMPTY_TEXT
               : t(qyAvailOutcomeKey(row.top_reason)),
+        },
+        // 运维视角同样要看延迟与速度：可用率 100% 但首字 20 秒，
+        // 用户的体感就是「挂了」，只看可用率会漏掉整整一类故障。
+        {
+          id: 'latency',
+          header: t('qy_avl_latency'),
+          cellClassName: 'tabular-nums',
+          cell: (row: QyAvailCell) => formatQyMs(row.avg_latency_ms),
+        },
+        {
+          id: 'ttft',
+          header: t('qy_avl_ttft'),
+          cellClassName: 'tabular-nums',
+          cell: (row: QyAvailCell) => formatQyMs(row.avg_ttft_ms),
+        },
+        {
+          id: 'tps',
+          header: t('qy_avl_tps'),
+          cellClassName: 'tabular-nums',
+          cell: (row: QyAvailCell) => formatQyTps(row.avg_tps),
         },
       ]}
     />

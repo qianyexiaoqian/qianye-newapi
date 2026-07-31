@@ -50,18 +50,51 @@ var (
 	errInsufficientQuota = newBizError("qy_insufficient_quota", "余额不足", http.StatusBadRequest)
 )
 
+// 分组限制错误(见 grouprule.go)。
+//
+// 用 403 而不是 400/429:这既不是请求写错了,也不是"过会儿再来" ——
+// 它是一条运营策略上的"你不被允许",重试多少次结果都一样。
+// code 一旦发布就不能改:前端按 code 映射 i18n,改 code 会让所有翻译静默回落。
+var (
+	errGroupSendBlocked = newBizError("qy_transfer_group_blocked",
+		"你所在的用户组暂不支持发起划转", http.StatusForbidden)
+	errGroupTargetDenied = newBizError("qy_transfer_group_denied",
+		"你所在的用户组不允许向该账号所在的用户组划转", http.StatusForbidden)
+)
+
+// 分组规则管理端的错误。
+var (
+	errGroupRuleNotFound = newBizError("qy_transfer_group_rule_not_found",
+		"该分组规则不存在", http.StatusNotFound)
+	// errGroupRuleDuplicate 对应 from_group 的唯一索引:一个分组只能有一条规则,
+	// 否则"谁能转给谁"就取决于扫描顺序,而那是这套规则最不能有的性质。
+	errGroupRuleDuplicate = newBizError("qy_transfer_group_rule_duplicate",
+		"该发起分组已存在一条规则,请直接编辑它", http.StatusConflict)
+)
+
 // 风控错误。用 429 而不是 400:这些不是请求写错了,而是"现在不行,过会儿再来"。
 var (
 	errDailyLimitExceeded = newBizError("qy_daily_limit_exceeded", "已达今日划转额度上限", http.StatusTooManyRequests)
 	errDailyCountExceeded = newBizError("qy_daily_count_exceeded", "已达今日划转次数上限", http.StatusTooManyRequests)
 	errCooldown           = newBizError("qy_cooldown", "操作过于频繁,请稍后再试", http.StatusTooManyRequests)
 	errPendingExists      = newBizError("qy_pending_exists", "你有一笔划转正在处理中,请稍后再试", http.StatusConflict)
+	// errReceiverDailyInExceeded 是收款方侧的闸门(洗号防护)。
+	// 文案刻意不点明"对方今天已收了多少笔":那是别人的账户活动,
+	// 但又必须让发起方知道问题不在自己这边,否则只会不停重试。
+	errReceiverDailyInExceeded = newBizError("qy_receiver_daily_in_exceeded",
+		"该账号今日接收划转的笔数已达上限,请稍后再试", http.StatusTooManyRequests)
 )
 
 // 两阶段中间态相关的错误。
 var (
 	errInProgress     = newBizError("qy_in_progress", "该请求正在处理中,请稍候", http.StatusConflict)
 	errTransferFailed = newBizError("qy_transfer_failed", "该划转此前已失败", http.StatusBadRequest)
+	// errIdemKeyConflict 表示同一个 client_request_id 上一次带的资金要素与本次不同。
+	//
+	// 文案要把用户引向"去记录里核对",而不是"重试" —— 原单可能已经成功,
+	// 提示重试会诱导用户换一个 client_request_id 再发一次,变成真的转了两笔。
+	errIdemKeyConflict = newBizError("qy_idem_key_conflict",
+		"该请求标识已用于另一笔划转,请到划转记录中核对后再操作", http.StatusConflict)
 )
 
 // respondErr 把内部错误翻译成稳定的响应信封。

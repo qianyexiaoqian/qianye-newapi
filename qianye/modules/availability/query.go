@@ -1,7 +1,6 @@
 package availability
 
 import (
-	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -267,10 +266,9 @@ type cell struct {
 	Success       int64    `json:"success"`
 	ExcludedTotal int64    `json:"excluded_total"`
 	TopReason     string   `json:"top_reason,omitempty"`
-	AvgLatencyMs  int64    `json:"avg_latency_ms"`
-	AvgTtftMs     int64    `json:"avg_ttft_ms"`
-	AvgTps        float64  `json:"avg_tps"`
 	HasChannel    bool     `json:"has_channel"`
+	// 延迟 / 首字 / 速度。内嵌摊平成同级 JSON 字段,口径见 perf.go。
+	perf
 }
 
 func buildCell(key cellKey, b *Bucket, hasChannel bool, d Definition) cell {
@@ -288,29 +286,16 @@ func buildCell(key cellKey, b *Bucket, hasChannel bool, d Definition) cell {
 		Success:       b.SuccessCount,
 		ExcludedTotal: b.excludedTotal(),
 		TopReason:     topReason(b),
-		AvgLatencyMs:  avgOf(b.LatencySumMs, b.LatencyCount),
-		AvgTtftMs:     avgOf(b.TtftSumMs, b.TtftCount),
-		AvgTps:        tpsOf(b),
 		HasChannel:    hasChannel,
+		perf:          perfOf(b),
 	}
-}
-
-func avgOf(sum, count int64) int64 {
-	if count <= 0 {
-		return 0
-	}
-	return sum / count
-}
-
-func tpsOf(b *Bucket) float64 {
-	if b.OutputTokens <= 0 || b.GenerationMs <= 0 {
-		return 0
-	}
-	return math.Round(float64(b.OutputTokens)/(float64(b.GenerationMs)/1000)*100) / 100
 }
 
 // sortCells 默认按可用率升序 —— 打开页面先看最烂的那几个,这是监控页的本分。
 // 无数据的格子永远排在最后:它们不是"最好"也不是"最差",不该抢占视线。
+//
+// latency_desc / tps_asc 是同一条原则在性能维度上的复制:切到「延迟」主指标
+// 却仍按可用率排序,第一页看到的是一堆延迟正常的格子,等于没切。
 func sortCells(cells []cell, mode string) {
 	sort.SliceStable(cells, func(i, j int) bool {
 		a, b := cells[i], cells[j]
@@ -322,6 +307,27 @@ func sortCells(cells []cell, mode string) {
 		case "model_asc":
 			if a.Model != b.Model {
 				return a.Model < b.Model
+			}
+		case "latency_desc":
+			if (a.AvgLatencyMs == nil) != (b.AvgLatencyMs == nil) {
+				return a.AvgLatencyMs != nil
+			}
+			if a.AvgLatencyMs != nil && *a.AvgLatencyMs != *b.AvgLatencyMs {
+				return *a.AvgLatencyMs > *b.AvgLatencyMs
+			}
+		case "ttft_desc":
+			if (a.AvgTtftMs == nil) != (b.AvgTtftMs == nil) {
+				return a.AvgTtftMs != nil
+			}
+			if a.AvgTtftMs != nil && *a.AvgTtftMs != *b.AvgTtftMs {
+				return *a.AvgTtftMs > *b.AvgTtftMs
+			}
+		case "tps_asc":
+			if (a.AvgTps == nil) != (b.AvgTps == nil) {
+				return a.AvgTps != nil
+			}
+			if a.AvgTps != nil && *a.AvgTps != *b.AvgTps {
+				return *a.AvgTps < *b.AvgTps
 			}
 		default: // availability_asc
 			if (a.Availability == nil) != (b.Availability == nil) {

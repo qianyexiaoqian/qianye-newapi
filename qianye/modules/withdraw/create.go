@@ -23,6 +23,17 @@ import (
 // idemScope 与 qy_withdrawals.(idem_scope, idem_key) 的双列唯一索引配套(裁定 C11)。
 const idemScope = "withdraw"
 
+// dailySubmitFactor 是"提交总数"相对 daily_max_count 的放宽倍数。
+//
+// 已撤销的单刻意不计入 daily_max_count —— 填错收款信息撤销重填是正常操作,
+// 把它算进次数等于惩罚一次手滑。但完全不计会让"申请-撤销"变成一个无上限循环:
+// 每一轮都写单据、写事件、冻结再解冻佣金,而次数闸门永远看不见它。
+// 因此再加一道只看提交总数(含已撤销)的宽松闸门:允许手滑,不允许刷。
+//
+// 固化在代码里而不是新增配置项:它的语义完全依附于 daily_max_count,
+// 单独放出来会变成又一个"定义了却没人调"的旋钮。
+const dailySubmitFactor = 4
+
 // create 提交一笔提现申请。
 //
 // 关键设计:申请阶段【完全不碰主库】,全部副作用都在一个扩展库事务里完成。
@@ -62,42 +73,28 @@ func create(c *gin.Context, userId int, req createRequest) (*orderView, error) {
 		return nil, err
 	}
 
+	var replay *Withdrawal
 	err = db.Get().Transaction(func(tx *gorm.DB) error {
-		if err := checkDailyCount(tx, userId, cfg.DailyMaxCount); err != nil {
-			return err
-		}
-		// 先落单再冻结:单据的唯一索引冲突要在动佣金之前就把事务打断,
-		// 否则一次重复提交会白白走一遍冻结再回滚。
-		if err := tx.Create(w).Error; err != nil {
-			return err
-		}
-		if payee != nil {
-			payee.WithdrawalId = w.Id
-			if err := tx.Create(payee).Error; err != nil {
-				return err
-			}
-		}
-		if err := commission.FreezeForWithdraw(tx, userId, w.Quota, w.WithdrawNo); err != nil {
-			return err
-		}
-		return writeEvent(tx, w, transition{
-			To:        StatusPending,
-			Action:    ActionSubmit,
-			ActorType: qymodel.ActorUser,
-			ActorId:   userId,
-			ActorName: user.Username,
-			IP:        w.ClientIp,
-			Detail:    submitDetail(w),
-		})
+		var txErr error
+		replay, txErr = submitInTx(tx, w, payee, acc, cfg, user.Username)
+		return txErr
 	})
 	if err != nil {
 		if isDuplicateKey(err) {
-			// 幂等命中:同一个 client_request_id 重复提交,返回原单而不是报错。
-			// 这是双击、多标签、客户端超时重试的正常结果,不该让用户看到失败。
-			return loadByIdemKey(userId, acc.IdemKey)
+			// 预读没看到而唯一索引挡下了:两个完全相同的请求同时进来。
+			// 返回原单而不是报错 —— 这是双击、多标签、客户端超时重试的正常结果。
+			return loadByIdemKey(userId, acc)
 		}
 		db.MarkFailure(err)
 		return nil, err
+	}
+	if replay != nil {
+		// 幂等命中:本次没有产生任何副作用,因此也不写 submit 审计 ——
+		// 审计表是事后仲裁的唯一凭据,一次点击重试三次不该看起来像申请了三笔。
+		if err := ensureReplayMatches(replay, acc); err != nil {
+			return nil, err
+		}
+		return toUserView(replay, nil), nil
 	}
 
 	audit.Write(c, audit.Entry{
@@ -115,6 +112,50 @@ func create(c *gin.Context, userId int, req createRequest) (*orderView, error) {
 		Result:       qymodel.ResultOK,
 	})
 	return toUserView(w, nil), nil
+}
+
+// submitInTx 是提交申请的全部扩展库副作用,跑在同一个事务里。
+//
+// 顺序不变量:【幂等重放判定必须排在风控闸门之前】。
+// 同一个 client_request_id 的重试是原单的重放,不是第二笔申请。放在闸门之后的话,
+// 原单自己占掉的冷却窗口与日限额会把它自己的重试判成违规 —— 用户看到的是
+// "提现失败",而单其实已经落库、佣金已经冻结。这条顺序写反了只在冷却窗口内
+// 复现,人工测试极难碰上,所以必须由回归测试钉住。
+//
+// 返回非 nil 的 *Withdrawal 表示本次是重放,调用方应原样回原单且不写审计。
+func submitInTx(tx *gorm.DB, w *Withdrawal, payee *Payee, acc acceptedRequest,
+	cfg config.Withdraw, actorName string) (*Withdrawal, error) {
+
+	replay, err := findByIdemKey(tx, w.UserId, acc.IdemKey)
+	if err != nil || replay != nil {
+		return replay, err
+	}
+	if err := enforceCreateLimits(tx, w.UserId, w.Quota, cfg, w.CreatedAt); err != nil {
+		return nil, err
+	}
+	// 先落单再冻结:单据的唯一索引冲突要在动佣金之前就把事务打断,
+	// 否则一次重复提交会白白走一遍冻结再回滚。
+	if err := tx.Create(w).Error; err != nil {
+		return nil, err
+	}
+	if payee != nil {
+		payee.WithdrawalId = w.Id
+		if err := tx.Create(payee).Error; err != nil {
+			return nil, err
+		}
+	}
+	if err := commission.FreezeForWithdraw(tx, w.UserId, w.Quota, w.WithdrawNo); err != nil {
+		return nil, err
+	}
+	return nil, writeEvent(tx, w, transition{
+		To:        StatusPending,
+		Action:    ActionSubmit,
+		ActorType: qymodel.ActorUser,
+		ActorId:   w.UserId,
+		ActorName: actorName,
+		IP:        w.ClientIp,
+		Detail:    submitDetail(w),
+	})
 }
 
 // buildWithdrawal 组装待落库的提现单与收款信息快照。
@@ -136,7 +177,7 @@ func buildWithdrawal(c *gin.Context, user *model.User, acc acceptedRequest, cfg 
 		// math/rand 可预测,资金单号可预测意味着可以被枚举和伪造。
 		WithdrawNo:         twophase.NewOrderNo(kind),
 		IdemScope:          idemScope,
-		IdemKey:            strconv.Itoa(user.Id) + ":" + acc.IdemKey,
+		IdemKey:            idemKeyOf(user.Id, acc.IdemKey),
 		UserId:             user.Id,
 		Username:           truncate(user.Username, 64),
 		Method:             acc.Method,
@@ -184,22 +225,87 @@ func buildWithdrawal(c *gin.Context, user *model.User, acc acceptedRequest, cfg 
 	return w, payee, nil
 }
 
-// checkDailyCount 限制单日提现次数。
+// dailyUsage 是用户当日的提现用量快照。
 //
-// 已撤销的单不计入:用户填错收款信息撤销重填是正常操作,把它算进次数
-// 等于惩罚一次手滑。次数限流的目标是脚本刷单与人工审核工作量。
-func checkDailyCount(tx *gorm.DB, userId, max int) error {
-	if max <= 0 {
-		return nil
-	}
-	var cnt int64
-	if err := tx.Model(&Withdrawal{}).
-		Where("user_id = ? AND created_at >= ? AND status <> ?", userId, dayStart(), StatusCancelled).
-		Count(&cnt).Error; err != nil {
+// 三个口径一次查出来:分成三条 COUNT/SUM 只是把同一张表按同一个 WHERE 扫三遍,
+// 而且更容易出现"这条加了排除撤销、那条忘了"的口径漂移。
+type dailyUsage struct {
+	// Submitted 是今日提交的全部申请数,含已撤销 —— 用来堵"申请-撤销"循环。
+	Submitted int64
+	// Active 不含已撤销,对应 daily_max_count 的口径。
+	Active int64
+	// Quota 是不含已撤销的额度合计,对应 daily_max_quota 的口径。
+	Quota int64
+}
+
+func loadDailyUsage(tx *gorm.DB, userId int) (dailyUsage, error) {
+	var u dailyUsage
+	err := tx.Model(&Withdrawal{}).
+		Select("COUNT(*) AS submitted, "+
+			"COALESCE(SUM(CASE WHEN status <> ? THEN 1 ELSE 0 END), 0) AS active, "+
+			"COALESCE(SUM(CASE WHEN status <> ? THEN quota ELSE 0 END), 0) AS quota",
+			StatusCancelled, StatusCancelled).
+		Where("user_id = ? AND created_at >= ?", userId, dayStart()).
+		Scan(&u).Error
+	return u, err
+}
+
+// enforceCreateLimits 是申请阶段的额度与频率闸门。
+//
+// 必须与落单在【同一个扩展库事务】内:判定与写入之间只要存在提交间隙,
+// 并发请求就会同时读到旧计数、同时通过校验 —— 这与 checkDailyCount 一直以来
+// 待在事务里的理由完全一样。
+//
+// 诚实说明它挡不住什么:同事务不等于串行化。两笔并发申请可能都在各自的快照里
+// 读到旧计数,随后被 FreezeForWithdraw 的余额行锁排成一队先后提交,于是限额被
+// 多放行一笔。要根治得在判定之前就锁住该用户的余额行,而那把锁属于 commission
+// 模块。频率闸门多放行一笔不构成资损(佣金冻结才是准入判定),因此按当前形态
+// 收敛;真正的硬闸门是 FreezeForWithdraw 的 `WHERE available_quota >= ?`。
+//
+// 这四项(max_quota_per_order 在 acceptCreate、其余三项在这里)此前定义了、
+// 校验了、赋了默认值,却没有任何消费方。运维看着一份写满上限的 YAML,
+// 实际上一道闸门都没有关。
+func enforceCreateLimits(tx *gorm.DB, userId int, quota int64, cfg config.Withdraw, now int64) error {
+	usage, err := loadDailyUsage(tx, userId)
+	if err != nil {
 		return err
 	}
-	if cnt >= int64(max) {
-		return errDailyCountReached
+	if cfg.DailyMaxCount > 0 {
+		if usage.Active >= int64(cfg.DailyMaxCount) {
+			return errDailyCountReached
+		}
+		if usage.Submitted >= int64(cfg.DailyMaxCount)*dailySubmitFactor {
+			return errDailySubmitReached
+		}
+	}
+	if cfg.DailyMaxQuota > 0 && usage.Quota+quota > cfg.DailyMaxQuota {
+		return errDailyQuotaReached
+	}
+
+	if cfg.CooldownSecs > 0 {
+		var recent int64
+		// 冷却窗口刻意把已撤销的单也算进来:"撤销后立刻重发"正是刷单循环的驱动力,
+		// 按 status 过滤等于专门给这个循环留一道门。
+		if err := tx.Model(&Withdrawal{}).
+			Where("user_id = ? AND created_at > ?", userId, now-int64(cfg.CooldownSecs)).
+			Count(&recent).Error; err != nil {
+			return err
+		}
+		if recent > 0 {
+			return errCooldown
+		}
+	}
+
+	if cfg.MaxPendingOrders > 0 {
+		var pending int64
+		if err := tx.Model(&Withdrawal{}).
+			Where("user_id = ? AND status IN ?", userId, activeStatuses).
+			Count(&pending).Error; err != nil {
+			return err
+		}
+		if pending >= int64(cfg.MaxPendingOrders) {
+			return errPendingLimit
+		}
 	}
 	return nil
 }
@@ -227,17 +333,55 @@ func submitDetail(w *Withdrawal) string {
 	})
 }
 
-// loadByIdemKey 幂等命中时回读已有单。
-func loadByIdemKey(userId int, clientKey string) (*orderView, error) {
+// idemKeyOf 拼出落库的幂等键。用户 id 必须是前缀:client_request_id 由前端生成,
+// 不带 user 前缀的话,两个用户碰巧用了同一个 UUID 就会互相顶掉对方的申请。
+func idemKeyOf(userId int, clientKey string) string {
+	return strconv.Itoa(userId) + ":" + clientKey
+}
+
+// findByIdemKey 按幂等键取原单。没有原单时返回 (nil, nil)。
+func findByIdemKey(tx *gorm.DB, userId int, clientKey string) (*Withdrawal, error) {
 	var w Withdrawal
-	err := db.Get().
-		Where("idem_scope = ? AND idem_key = ?", idemScope, strconv.Itoa(userId)+":"+clientKey).
+	err := tx.Where("idem_scope = ? AND idem_key = ?", idemScope, idemKeyOf(userId, clientKey)).
 		Take(&w).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &w, nil
+}
+
+// loadByIdemKey 在唯一索引冲突后回读已有单。
+func loadByIdemKey(userId int, acc acceptedRequest) (*orderView, error) {
+	w, err := findByIdemKey(db.Get(), userId, acc.IdemKey)
 	if err != nil {
 		db.MarkFailure(err)
 		return nil, fmt.Errorf("qianye/withdraw: 幂等冲突但无法回读原单: %w", err)
 	}
-	return toUserView(&w, nil), nil
+	if w == nil {
+		// 唯一索引刚刚拦下、回读却查不到,只能是原单在这两步之间被删掉了。
+		// 这是数据异常,不能静默当成"没申请过"再放一次。
+		return nil, fmt.Errorf("qianye/withdraw: 幂等冲突但原单不存在(用户 %d)", userId)
+	}
+	if err := ensureReplayMatches(w, acc); err != nil {
+		return nil, err
+	}
+	return toUserView(w, nil), nil
+}
+
+// ensureReplayMatches 校验这次重放确实是同一笔申请。
+//
+// 唯一索引只保证"不重复执行",保证不了"重放的是同一个请求":client_request_id
+// 由前端在打开弹窗时生成并缓存(裁定 C10),用户在同一个弹窗里改完金额再提交
+// 仍然沿用它。此时把原单当成本次结果返回,用户会把"那笔 300 的申请"读成
+// "我这笔 500 成功了" —— 必须 409 让前端刷新。
+func ensureReplayMatches(w *Withdrawal, acc acceptedRequest) error {
+	if w.Quota != acc.Quota || w.Method != acc.Method {
+		return errIdemConflict
+	}
+	return nil
 }
 
 // isDuplicateKey 判断错误是否为唯一索引冲突。

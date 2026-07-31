@@ -9,6 +9,9 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
+
+	"gorm.io/gorm"
 )
 
 // gcBatchSize 是单批删除的行数。
@@ -70,6 +73,62 @@ func runRetentionGC(ctx context.Context) {
 	}
 }
 
+// runRefundStateReconcile 收敛"退款资金单已 Success、违规记录却仍写着已扣费"的行。
+//
+// 这批行的来源是升级:旧版补偿任务还没有 Resolver,确认主库生效后直接把资金单标成
+// Success 就完事,fee_status 永久停在 charged —— 用户端的"本月违规扣费"会一直把这笔
+// 已退的钱算进去,而管理员再点一次退款只会撞上幂等键(见 confirmRefundSettled)。
+// 靠管理员逐条重点是碰运气,必须有一条自动收敛路径。
+//
+// 收敛动作复用 markRecordRefunded(带 fee_status 条件,幂等),所以这个任务重复跑、
+// 与补偿任务并跑都不会把 refund_quota 写第二遍。收敛成功的行会立刻掉出扫描集合,
+// 任务因此是自限的,不会每轮全表扫。
+func runRefundStateReconcile(ctx context.Context) {
+	reconcileRefundStates(ctx, db.Get())
+}
+
+// reconcileRefundStates 是上面那条收敛逻辑的本体,gdb 由调用方注入。
+//
+// 独立出来是为了能直接测:"哪些单算错位、哪些不算"是这里唯一的判断,
+// 放宽任何一条(不限 kind、不限 idem_scope、不要求 Success)都会把一笔还没落定、
+// 甚至根本不是违规退款的操作写成"已退款"。
+func reconcileRefundStates(ctx context.Context, gdb *gorm.DB) {
+	if gdb == nil {
+		return
+	}
+	// 子查询而不是先捞记录再逐条查单:退款是低频操作,资金单侧按
+	// (idem_scope, idem_key) 唯一索引定位,一次往返就能圈出全部错位行。
+	staleRecords := gdb.Model(&Record{}).Select("rec_no").
+		Where("fee_status IN ?", []string{FeeStatusCharged, FeeStatusTruncated})
+
+	var orders []qymodel.FundOrder
+	if err := gdb.WithContext(ctx).
+		Where("kind = ? AND idem_scope = ? AND status = ? AND idem_key IN (?)",
+			qymodel.KindViolationFee, idemScopeViolationRefund,
+			qymodel.StatusSuccess, staleRecords).
+		Order("id asc").Limit(gcBatchSize).Find(&orders).Error; err != nil {
+		db.MarkFailure(err)
+		common.SysError("qianye/violation: 扫描错位的退款单失败: " + err.Error())
+		return
+	}
+	for i := range orders {
+		if ctx.Err() != nil {
+			return
+		}
+		// IdemKey 就是 rec_no,见 refundFee。
+		if err := markRecordRefunded(gdb.WithContext(ctx),
+			orders[i].IdemKey, orders[i].AmountQuota); err != nil {
+			db.MarkFailure(err)
+			common.SysError("qianye/violation: 收敛退款单 " + orders[i].OrderNo +
+				" 的记录状态失败: " + err.Error())
+			return
+		}
+		common.SysLog(fmt.Sprintf(
+			"qianye/violation: 退款单 %s 已生效但记录仍写着已扣费,已补写为已退款(记录 %s,额度 %d)",
+			orders[i].OrderNo, orders[i].IdemKey, orders[i].AmountQuota))
+	}
+}
+
 // maxBanAttempts 是封禁执行的重试上限。超过后转 failed 并等人工处理:
 // 无限重试只会在主库真的坏掉时把日志刷爆。
 const maxBanAttempts = 5
@@ -77,8 +136,14 @@ const maxBanAttempts = 5
 // runBanCompensate 收敛认领成功但主库六步未完成的封禁。
 //
 // 存在理由:认领(扩展库)与执行(主库)跨两个数据库,没有分布式事务。
-// 认领后进程崩溃会留下 pending 行,不补偿就等于"计数到了阈值但人没被封",
-// 而计数已经推过阈值,正常路径再也不会触发第二次。
+// 认领后进程崩溃会留下 pending 行,不补偿就等于"计数到了阈值但人没被封"。
+//
+// 刻意不扫 BanDeferred:那是速率闸主动做出的"先让人看一眼"的决定,
+// 自动补做等于把速率闸彻底架空(限 10 人/小时,补偿任务 5 分钟就能把 100 行全封了)。
+// deferred 行有且只有两个出口,都不在这里:
+//   - 管理员在封禁列表里对该行调 /violation/bans/:userId/unban,判定"不予封禁"
+//     (unbanUser 接受 deferred,见那里的说明);
+//   - 速率窗口滚过之后,该用户的下一次违规在 resolveBanClaim 里把它提升成 pending。
 func runBanCompensate(ctx context.Context) {
 	gdb := db.Get()
 	if gdb == nil {
@@ -109,14 +174,14 @@ func runBanCompensate(ctx context.Context) {
 		if res.Error != nil || res.RowsAffected == 0 {
 			continue
 		}
-		err := disableUserForViolation(b.UserId, &b)
+		err := disableUserForViolation(ctx, b.UserId, &b)
 		switch {
 		case err == nil:
-			markBan(b.Id, BanBanned, "")
+			markBan(gdb, b.Id, BanBanned, "")
 		case isSkipped(err):
-			markBan(b.Id, BanSkipped, "")
+			markBan(gdb, b.Id, BanSkipped, "")
 		default:
-			markBan(b.Id, BanFailed, err.Error())
+			markBan(gdb, b.Id, BanFailed, err.Error())
 			common.SysError(fmt.Sprintf(
 				"qianye/violation: 补偿封禁失败(ban=%d user=%d attempts=%d): %v",
 				b.Id, b.UserId, b.Attempts+1, err))

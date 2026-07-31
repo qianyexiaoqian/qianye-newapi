@@ -3,6 +3,7 @@ package transfer
 import (
 	"context"
 	"errors"
+	"strconv"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
@@ -32,7 +33,19 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 		return nil, err
 	}
 
-	sender, receiver, err := loadParties(acc, cfg)
+	// 分组规则在这里一次性读出并冻结,后面两处判定共用同一份快照。
+	//
+	// 为什么冻结:受理与主库落账之间若各读各的,运营在这中间改一次规则就会出现
+	// "受理放行、锁内拒绝"—— 用户白吃一次冷却与风控预占,而他提交那一刻看到的
+	// 规则确实是允许的。用户提交时看到什么规则,这一笔就按什么规则算。
+	//
+	// 读失败绝不回落成"不限制"(见 loadGroupRules):空表才是"不限制"。
+	groupRules, err := loadGroupRules()
+	if err != nil {
+		return nil, err
+	}
+
+	sender, receiver, err := loadParties(acc, cfg, groupRules)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +75,67 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 	ctx, cancel := guard.ColdContext(context.Background())
 	defer cancel()
 
-	order, execErr := twophase.Execute(ctx, twophase.Request{
+	fundReq := fundingFacts(acc)
+	fundReq.LocalDetail = func(tx *gorm.DB, o *qymodel.FundOrder) error {
+		// 风控与落单同事务:两者之间只要有提交间隙,
+		// 并发请求就会同时读到旧计数、同时通过日限额校验。
+		if err := reserveRisk(tx, acc, now); err != nil {
+			return err
+		}
+		detail.OrderNo = o.OrderNo
+		return tx.Create(&detail).Error
+	}
+	fundReq.MainApply = func(tx *gorm.DB, o *qymodel.FundOrder) error {
+		if err := applyQuotaTransfer(tx, acc, cfg, groupRules, &snap); err != nil {
+			return err
+		}
+		mainApplied = true
+		return nil
+	}
+	fundReq.AfterCommit = func(o *qymodel.FundOrder) {
+		if !mainApplied {
+			return
+		}
+		afterMainCommit(o.OrderNo, detail, snap)
+	}
+	fundReq.LocalCommit = func(tx *gorm.DB, o *qymodel.FundOrder) error {
+		return settleDetailTx(tx, o.OrderNo, settlement{status: statusSuccess, snap: &snap})
+	}
+
+	order, execErr := twophase.Execute(ctx, fundReq)
+
+	if execErr != nil {
+		// 指纹冲突意味着"另一笔请求复用了同一个 client_request_id",本次与原单毫无关系。
+		// 必须在 releaseOnFailure 之前拦掉:那条路径会拿本次的失败原因去结算**原单**的
+		// 明细行与风控预占,等于让攻击者用一个伪造请求去污染别人已经成交的单据。
+		if errors.Is(execErr, twophase.ErrIdemConflict) {
+			// 只记日志不写审计:审计表是事后仲裁的唯一凭据,不能让任何人凭一个
+			// 被拒绝的请求往里塞行。SysError 一样可观测,而且写不进仲裁表。
+			common.SysError("qianye/transfer: 用户 " + strconv.Itoa(acc.FromUserId) +
+				" 用同一个 client_request_id 提交了资金要素不同的划转,已拒绝: " + execErr.Error())
+			return nil, errIdemKeyConflict
+		}
+		releaseOnFailure(order, execErr)
+		return nil, execErr
+	}
+
+	audit.Write(c, transferCreatedAudit(order, c.GetString("username")))
+	return buildCreateResponse(order, detail, snap), nil
+}
+
+// fundingFacts 把受理后的请求翻译成 twophase 的资金要素,并算好幂等指纹。
+//
+// 单独成函数不是为了缩短 create:指纹是"同一个 client_request_id 到底代表哪一笔钱"
+// 的唯一判据,一旦它漏算某个要素(比如漏了 PeerUserId),换收款人重放就会被当成
+// 正常的幂等命中直接返回成功。这条不变量必须能脱离数据库被直接测到。
+//
+// 刻意不含 Remark:备注不是资金要素,改文案重试不该被判成冲突。
+//
+// acc.Fee 照常写进 FeeQuota(资金单要如实记账),但它**不参与指纹** —— 见
+// twophase.Digest 的说明:手续费是受理时按当时的 transfer.fee_* 算出的服务端派生量,
+// 把它算进指纹会让"用户重试期间运营调了费率"变成 409,而原单根本没成功。
+func fundingFacts(acc acceptedRequest) twophase.Request {
+	req := twophase.Request{
 		Kind:        qymodel.KindTransfer,
 		IdemScope:   idemScope,
 		IdemKey:     acc.IdemKey,
@@ -70,51 +143,16 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 		PeerUserId:  acc.ToUserId,
 		AmountQuota: acc.Amount,
 		FeeQuota:    acc.Fee,
-
-		LocalDetail: func(tx *gorm.DB, o *qymodel.FundOrder) error {
-			// 风控与落单同事务:两者之间只要有提交间隙,
-			// 并发请求就会同时读到旧计数、同时通过日限额校验。
-			if err := reserveRisk(tx, acc, now); err != nil {
-				return err
-			}
-			detail.OrderNo = o.OrderNo
-			return tx.Create(&detail).Error
-		},
-
-		MainApply: func(tx *gorm.DB, o *qymodel.FundOrder) error {
-			if err := applyQuotaTransfer(tx, acc, cfg, &snap); err != nil {
-				return err
-			}
-			mainApplied = true
-			return nil
-		},
-
-		AfterCommit: func(o *qymodel.FundOrder) {
-			if !mainApplied {
-				return
-			}
-			afterMainCommit(o.OrderNo, detail, snap)
-		},
-
-		LocalCommit: func(tx *gorm.DB, o *qymodel.FundOrder) error {
-			return settleDetailTx(tx, o.OrderNo, settlement{status: statusSuccess, snap: &snap})
-		},
-	})
-
-	if execErr != nil {
-		releaseOnFailure(order, execErr)
-		return nil, execErr
 	}
-
-	writeCreateAudit(c, order, acc)
-	return buildCreateResponse(order, detail, snap), nil
+	req.Fingerprint = req.Digest()
+	return req
 }
 
 // loadParties 读取并校验双方在主库中的状态。
 //
-// 这一轮校验会在主库事务里再做一次:两次之间用户可能被封禁,
+// 这一轮校验会在主库事务里再做一次:两次之间用户可能被封禁、分组可能被调整,
 // 锁外的结论只是为了尽早给用户明确错误,不能当作最终依据。
-func loadParties(acc acceptedRequest, cfg config.Transfer) (*model.User, *model.User, error) {
+func loadParties(acc acceptedRequest, cfg config.Transfer, rules groupRuleSet) (*model.User, *model.User, error) {
 	sender, err := model.GetUserById(acc.FromUserId, false)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -142,6 +180,16 @@ func loadParties(acc acceptedRequest, cfg config.Transfer) (*model.User, *model.
 	if cfg.ReceiverMustBeEnabled() && receiver.Status != common.UserStatusEnabled {
 		return nil, nil, errReceiverDisabled
 	}
+	// 分组限制的受理阶段判定,与上面的额度/状态门槛并列。
+	//
+	// 排在收款人存在性与状态之后是刻意的:抢在它们前面报出去,等于用一句
+	// "分组不允许"回答了"这个账号存不存在",凭空多一条枚举旁路。
+	//
+	// 这一轮只是为了尽早给出明确错误。真正作数的是 applyQuotaTransfer 在主库
+	// 行锁内的复检 —— 见那里的注释。
+	if err := enforceGroupPolicy(sender, receiver, rules); err != nil {
+		return nil, nil, err
+	}
 	return sender, receiver, nil
 }
 
@@ -153,7 +201,7 @@ func loadParties(acc acceptedRequest, cfg config.Transfer) (*model.User, *model.
 //     那里 lockForUpdate 是空操作,CAS 条件是唯一的正确性保障
 //   - 加款必须带上限条件:users.quota 是 int32,上游全无溢出校验
 //   - 绝不调用 user.Update()/IncrementUserAuthVersionWithTx —— 那会吊销双方会话
-func applyQuotaTransfer(tx *gorm.DB, acc acceptedRequest, cfg config.Transfer, snap *quotaSnapshot) error {
+func applyQuotaTransfer(tx *gorm.DB, acc acceptedRequest, cfg config.Transfer, rules groupRuleSet, snap *quotaSnapshot) error {
 	first, second := acc.FromUserId, acc.ToUserId
 	if first > second {
 		first, second = second, first
@@ -177,6 +225,19 @@ func applyQuotaTransfer(tx *gorm.DB, acc acceptedRequest, cfg config.Transfer, s
 	}
 	if cfg.ReceiverMustBeEnabled() && receiver.Status != common.UserStatusEnabled {
 		return errReceiverDisabled
+	}
+	// 分组限制的**权威判定点**:以主库行锁那一刻读到的 users.group 为准。
+	//
+	// 受理阶段那次(loadParties)只是为了尽早报错,两者之间存在真实窗口:
+	// 管理员把用户从 vip 降到 default、或把收款方调进一个受限分组,都会落在这个
+	// 窗口里。锁内的这两行是本次划转唯一"不会再变"的事实,只有基于它们的判定
+	// 才拦得住"提交时合规、落账时已不合规"。
+	//
+	// 规则快照仍是受理时冻结的那一份(见 create):分组是"这个人现在属于谁"的
+	// 事实,必须取最新;规则是"提交那一刻的约定",中途被收紧不该让一笔已经在
+	// 动钱的请求拿到与用户所见不同的结论。
+	if err := enforceGroupPolicy(sender, receiver, rules); err != nil {
+		return err
 	}
 	if int64(sender.Quota) < acc.Total {
 		return errInsufficientQuota
@@ -318,19 +379,27 @@ func failureOf(err error) (string, string) {
 	return "qy_transfer_failed", truncate(err.Error(), 255)
 }
 
-func writeCreateAudit(c *gin.Context, order *qymodel.FundOrder, acc acceptedRequest) {
-	audit.Write(c, audit.Entry{
+// transferCreatedAudit 构造"划转创建成功"的审计记录。
+//
+// 参数里刻意没有本次请求(acceptedRequest):金额、收款人、发起人一律取自
+// **真实生效的资金单**。两者在幂等命中时可能完全不同 —— 指纹校验只能拦住
+// 双方指纹都非空的情况,升级前落库的历史单指纹是空的,那类单的重放依旧会命中
+// 并返回成功。拿本次请求的参数去写审计,就会在仲裁表里留下一条
+// "金额 5000 万、收款人是另一个人、单号却是真实单号"的成功记录,
+// 而资金侧毫无痕迹 —— 审计表是这套资金系统事后仲裁的唯一凭据,不能是可伪造的。
+func transferCreatedAudit(order *qymodel.FundOrder, actorName string) audit.Entry {
+	return audit.Entry{
 		TraceNo:      order.OrderNo,
 		Category:     qymodel.AuditCategoryTransfer,
 		Action:       "transfer.create",
 		ActorType:    qymodel.ActorUser,
-		ActorUserId:  acc.FromUserId,
-		ActorName:    c.GetString("username"),
-		TargetUserId: acc.ToUserId,
-		AmountQuota:  acc.Amount,
+		ActorUserId:  order.UserId,
+		ActorName:    actorName,
+		TargetUserId: order.PeerUserId,
+		AmountQuota:  order.AmountQuota,
 		Result:       qymodel.ResultOK,
 		Reason:       qymodel.StatusName(order.Status),
-	})
+	}
 }
 
 // buildCreateResponse 以落库的明细为准构造响应;读不到时退回内存快照。

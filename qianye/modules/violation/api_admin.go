@@ -2,6 +2,7 @@ package violation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -13,12 +14,18 @@ import (
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/qianye/service/twophase"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/shopspring/decimal"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+// idemScopeViolationRefund 是违规退款的幂等域,与 qy_fund_orders 的
+// (idem_scope, idem_key) 双列唯一索引配套;幂等键是 Record.RecNo。
+// 提成常量是因为对账任务要按同一个域反查资金单,两处写死字面量迟早会漂。
+const idemScopeViolationRefund = "violation_refund"
 
 // ruleUpsertReq 是规则的新建/编辑入参。
 //
@@ -406,32 +413,32 @@ func adminRevokeRecord(c *gin.Context) {
 // revokeRecord 撤销一条违规记录,可选退还扣费。
 //
 // 三步都必须幂等:
-//   - 状态条件 UPDATE(WHERE status='active')保证连点两次只退一次款;
+//   - 撤销是状态条件 UPDATE,连点两次只有一次会真正翻转状态;
 //   - 退款走 twophase,以 rec_no 为幂等键,即使补偿任务重跑也不会重复退;
 //   - 计数回退带窗口条件,窗口滚动后不回退(旧值已经不在窗口内)。
+//
+// 但"幂等"不等于"第二次什么都不做":撤销与退款是两步跨库操作,第一次点击完全
+// 可能停在"记录已 revoked、退款没成功"的中间态。所以第二次点击必须继续往下走到
+// 退款分支(由 fee_status 决定要不要补做),这是唯一的自愈入口。
 func revokeRecord(c *gin.Context, rec *Record, reason string, refund bool, operatorId int) (int64, error) {
-	now := common.GetTimestamp()
-	// 条件里必须同时接受 appealed:用户提交申诉时记录已经从 active 变成 appealed,
-	// 只认 active 会让"申诉通过"永远撤销不了任何记录 —— 申诉闭环直接断掉。
-	res := db.Get().Model(&Record{}).
-		Where("id = ? AND status IN ?", rec.Id, []string{RecordActive, RecordAppealed}).
-		Updates(map[string]any{
-			"status":        RecordRevoked,
-			"revoked_by":    operatorId,
-			"revoked_at":    now,
-			"revoke_reason": truncate(reason, 512),
-		})
-	if res.Error != nil {
-		return 0, res.Error
+	gdb := db.Get()
+	if gdb == nil {
+		return 0, db.ErrNotReady
 	}
-	if res.RowsAffected == 0 {
-		return 0, nil // 已撤销,幂等返回
+	first, err := claimRevoke(gdb, rec, reason, operatorId)
+	if err != nil {
+		return 0, err
+	}
+	if rec.Status != RecordRevoked {
+		return 0, nil // 记录不在可撤销集合内,保持幂等
 	}
 
 	// 计数回退。撤销一条误判记录后,用户不该继续背着这次计数走向封号。
-	if rec.Counted && rec.CountWeight > 0 {
+	// 只在本次真正完成撤销时做:revertCounter 是无条件减法,重复执行会把当前窗口里
+	// 其他违规的合法计数一起扣掉,反而放过真正的违规用户。
+	if first && rec.Counted && rec.CountWeight > 0 {
 		var counter Counter
-		if err := db.Get().Where("user_id = ?", rec.UserId).Take(&counter).Error; err == nil {
+		if err := gdb.Where("user_id = ?", rec.UserId).Take(&counter).Error; err == nil {
 			if e := revertCounter(rec.UserId, rec.CountWeight, counter.WindowStart); e != nil {
 				common.SysError("qianye/violation: 撤销时回退计数失败: " + e.Error())
 			}
@@ -441,14 +448,16 @@ func revokeRecord(c *gin.Context, rec *Record, reason string, refund bool, opera
 	var refunded int64
 	if refund && rec.FeeQuota > 0 &&
 		(rec.FeeStatus == FeeStatusCharged || rec.FeeStatus == FeeStatusTruncated) {
-		if err := refundFee(rec); err != nil {
+		got, err := refundFee(rec)
+		if err != nil {
 			// 退款失败不回滚撤销:记录已经标记为误判是正确的,
-			// 钱可以由管理员重试或人工补,但把误判标记撤回去只会更混乱。
+			// 钱可以由管理员重试(见上面的自愈说明)或人工补,
+			// 但把误判标记撤回去只会更混乱。
 			common.SysError("qianye/violation: 违规扣费退还失败: " + err.Error())
 		} else {
-			refunded = rec.FeeQuota
-			_ = db.Get().Model(&Record{}).Where("id = ?", rec.Id).
-				Updates(map[string]any{"fee_status": FeeStatusRefunded, "refund_quota": refunded}).Error
+			// 金额取 refundFee 回读到的 refund_quota,不是本次算出来的 rec.FeeQuota:
+			// 只有库里真的写着"已退款"才承认退过。见 confirmRefundSettled。
+			refunded = got
 		}
 	}
 
@@ -466,44 +475,115 @@ func revokeRecord(c *gin.Context, rec *Record, reason string, refund bool, opera
 	return refunded, nil
 }
 
-// refundFee 通过跨库两阶段把违规扣费退还给用户。
+// claimRevoke 把记录置为 revoked,并回答"本次是否是首次撤销"。
+//
+// CAS 落空(RowsAffected == 0)时绝不能早退。撤销与退款是两步跨库操作,第一次点击
+// 可能停在"记录已 revoked、退款还没成功"的中间态:退款失败只记日志不回滚,扩展库
+// 回写超时、进程重启同理。早退会把这里变成死路 —— 管理员再点一次连 refundFee 都
+// 进不去,只能走人工补单,而人工补单必然重复退款。所以落空时回读记录,让调用方基于
+// 最新的 fee_status 决定要不要补做退款。
+func claimRevoke(gdb *gorm.DB, rec *Record, reason string, operatorId int) (bool, error) {
+	now := common.GetTimestamp()
+	// 条件里必须同时接受 appealed:用户提交申诉时记录已经从 active 变成 appealed,
+	// 只认 active 会让"申诉通过"永远撤销不了任何记录 —— 申诉闭环直接断掉。
+	res := gdb.Model(&Record{}).
+		Where("id = ? AND status IN ?", rec.Id, []string{RecordActive, RecordAppealed}).
+		Updates(map[string]any{
+			"status":        RecordRevoked,
+			"revoked_by":    operatorId,
+			"revoked_at":    now,
+			"revoke_reason": truncate(reason, 512),
+		})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	if res.RowsAffected > 0 {
+		rec.Status = RecordRevoked
+		rec.RevokedBy = operatorId
+		rec.RevokedAt = now
+		rec.RevokeReason = truncate(reason, 512)
+		return true, nil
+	}
+	var latest Record
+	if err := gdb.Where("id = ?", rec.Id).Take(&latest).Error; err != nil {
+		return false, err
+	}
+	*rec = latest
+	return false, nil
+}
+
+// markRecordRefunded 幂等地把记录标成已退款。
+//
+// 条件里的 fee_status 集合就是幂等保证:重复执行(LocalCommit 一次、补偿
+// Resolver 再来一次)不会把 refund_quota 写第二遍。
+func markRecordRefunded(gdb *gorm.DB, recNo string, amount int64) error {
+	return gdb.Model(&Record{}).
+		Where("rec_no = ? AND fee_status IN ?", recNo,
+			[]string{FeeStatusCharged, FeeStatusTruncated}).
+		Updates(map[string]any{
+			"fee_status":   FeeStatusRefunded,
+			"refund_quota": amount,
+		}).Error
+}
+
+// resolveAfterCompensation 由 twophase 补偿任务在确认主库已生效后回调。
+//
+// 没有它,"主库已退款但扩展库回写没跑成"这个中间态会永远停在 fee_status=charged:
+// 补偿任务会把资金单直接标成 success,而用户端的 SUM(fee_quota) 仍显示罚款在被收取。
+// 管理员再点一次退款只会撞上幂等键拿到原单,最终走人工补单 —— 同一笔退两次。
+// 必须幂等:同一单可能被补偿多轮。
+func resolveAfterCompensation(ctx context.Context, order *qymodel.FundOrder) error {
+	gdb := db.Get()
+	if gdb == nil {
+		return db.ErrNotReady
+	}
+	// IdemKey 就是 rec_no,见 refundFee。
+	return markRecordRefunded(gdb.WithContext(ctx), order.IdemKey, order.AmountQuota)
+}
+
+// refundFee 通过跨库两阶段把违规扣费退还给用户,并返回**确实**退还的额度。
 //
 // 必须走 twophase 而不是裸 IncreaseUserQuota:退款是"扩展库记账 + 主库动钱",
 // 中间崩溃会留下"记录已标记退款但钱没到账"的悬案,而 outbox 探针是唯一
 // 能精确判定主库到底动没动的手段。
-func refundFee(rec *Record) error {
+//
+// 返回值是回读到的 refund_quota 而不是入参金额:twophase 的幂等命中不会执行
+// LocalCommit,光凭 Execute 返回 nil 断言"退款完成"会报出并不存在的退款。
+// 详见 confirmRefundSettled。
+func refundFee(rec *Record) (int64, error) {
+	gdb := db.Get()
+	if gdb == nil {
+		return 0, db.ErrNotReady
+	}
 	amount := rec.FeeQuota
 	if amount <= 0 || amount > int64(common.MaxQuota) {
-		return fmt.Errorf("退款金额越界: %d", amount)
+		return 0, fmt.Errorf("退款金额越界: %d", amount)
 	}
 	ctx, cancel := guard.ColdContext(context.Background())
 	defer cancel()
 
-	_, err := twophase.Execute(ctx, twophase.Request{
+	order, err := twophase.Execute(ctx, twophase.Request{
 		Kind:        qymodel.KindViolationFee,
-		IdemScope:   "violation_refund",
+		IdemScope:   idemScopeViolationRefund,
 		IdemKey:     rec.RecNo,
 		UserId:      rec.UserId,
 		AmountQuota: amount,
 		RefType:     "violation_record",
 		RefId:       fmt.Sprint(rec.Id),
 		MainApply: func(tx *gorm.DB, order *qymodel.FundOrder) error {
-			// 加款前的上限校验:users.quota 是 int32,加爆会翻成负数,
-			// 那等于把误判赔偿变成账号清零。
-			res := tx.Model(&model.User{}).
-				Where("id = ? AND quota <= ?", rec.UserId, int64(common.MaxQuota)-amount).
-				Update("quota", gorm.Expr("quota + ?", amount))
-			if res.Error != nil {
-				return res.Error
-			}
-			if res.RowsAffected == 0 {
-				return fmt.Errorf("退款会导致额度溢出,已拒绝(user=%d)", rec.UserId)
-			}
-			return nil
+			return applyRefundOnMainDB(tx, rec, amount)
 		},
 		AfterCommit: func(order *qymodel.FundOrder) {
-			if e := model.QyApplyUserQuotaCacheDelta(rec.UserId, amount); e != nil {
-				common.SysError("qianye/violation: 退款后刷新额度缓存失败: " + e.Error())
+			// 用整体失效而不是增量刷新缓存:退款现在同时动了钱包/订阅池、令牌额度
+			// 与 used_quota,增量刷新只能覆盖其中一处;而令牌缓存的键是明文密钥,
+			// 本来也只能整体失效。失效是幂等的,重复执行不会让缓存漂移。
+			if e := model.InvalidateUserCache(rec.UserId); e != nil {
+				common.SysError("qianye/violation: 退款后失效用户缓存失败: " + e.Error())
+			}
+			if rec.TokenId > 0 {
+				if e := model.InvalidateUserTokensCache(rec.UserId); e != nil {
+					common.SysError("qianye/violation: 退款后失效令牌缓存失败: " + e.Error())
+				}
 			}
 			// 用 LogTypeRefund 而不是 LogTypeConsume:退款计进消费统计
 			// 会让"本月消费"凭空变小,财务对账直接对不上。
@@ -512,10 +592,147 @@ func refundFee(rec *Record) error {
 				order.OrderNo, map[string]interface{}{
 					"qy_violation_rec_no": rec.RecNo,
 					"qy_refund_quota":     amount,
+					"qy_billing_source":   rec.BillingSource,
+					"qy_token_id":         rec.TokenId,
 				})
 		},
+		// LocalCommit 与资金单回写 success 同事务:不会出现"钱退了但记录还写着
+		// charged",也不会出现"记录标了 refunded 但资金单还是 pending"。
+		LocalCommit: func(tx *gorm.DB, order *qymodel.FundOrder) error {
+			return markRecordRefunded(tx, rec.RecNo, amount)
+		},
 	})
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return confirmRefundSettled(gdb.WithContext(ctx), rec, order, amount)
+}
+
+// confirmRefundSettled 在 twophase 返回成功之后,确认记录**真的**被标成了 refunded。
+//
+// 为什么不能省:twophase 的幂等命中走 resolveExisting,原单已经是 Success 时直接
+// `return order, nil`,LocalCommit 在这条路径上根本不执行。升级前那批由旧补偿任务
+// (当时还没有 Resolver)推成 Success、fee_status 却仍是 charged 的退款单,因此会
+// 变成一个纯误报面:管理员每点一次"撤销+退款"都拿到 200 + refunded_quota,还写下
+// 一条 records.revoke 成功审计,而库里纹丝不动 —— 点几次写几条假审计。
+// markSuccess 的 CAS 落空(补偿任务抢先推成 Success)也是同一形状。
+//
+// 这里先补做一次幂等回写 —— 用的就是 LocalCommit 与补偿 Resolver 同一个
+// markRecordRefunded,重复执行不会把 refund_quota 写第二遍 —— 再回读确认。
+// 仍然收敛不了就必须报错:接口宁可让管理员看到"退款未落定",也不能对外声称
+// 退了一笔并不存在的款。
+func confirmRefundSettled(gdb *gorm.DB, rec *Record, order *qymodel.FundOrder, amount int64) (int64, error) {
+	if order == nil || order.Status != qymodel.StatusSuccess {
+		// Execute 返回 nil 但单据没到 Success,只有一种情况:主库已生效、扩展库回写
+		// 失败,单据留在 pending 等补偿任务。钱大概率已经动了,但此刻不能声称完成
+		// (也不能重试,幂等键已经被占住)。
+		status := "缺失"
+		if order != nil {
+			status = qymodel.StatusName(order.Status)
+		}
+		return 0, fmt.Errorf("记录 %s 的退款单尚未落定(状态 %s),请稍后在资金单列表复核",
+			rec.RecNo, status)
+	}
+	if err := markRecordRefunded(gdb, rec.RecNo, amount); err != nil {
+		return 0, err
+	}
+	var latest Record
+	if err := gdb.Where("id = ?", rec.Id).Take(&latest).Error; err != nil {
+		return 0, err
+	}
+	rec.FeeStatus = latest.FeeStatus
+	rec.RefundQuota = latest.RefundQuota
+	if latest.FeeStatus != FeeStatusRefunded {
+		return 0, fmt.Errorf("记录 %s 的扣费状态仍是 %s,退款未落定,请人工核对资金单",
+			rec.RecNo, latest.FeeStatus)
+	}
+	return latest.RefundQuota, nil
+}
+
+// applyRefundOnMainDB 在主库事务内把罚款退回"当初扣走它的那个池"。
+//
+// 扣费经 service.PostConsumeQuota 一次动了两处:钱包或订阅池(按 BillingSource
+// 路由)+ tokens.remain_quota;chargeFee 之后还额外把 users.used_quota 加了一笔。
+// 退款必须把这三处全部回冲,少任何一处都是"退错了账户":
+//   - 只加钱包 → 订阅用户的订阅池消耗永不归还,钱包却凭空多出等额额度;
+//   - 不还令牌 → 该令牌永久少掉这笔可用额度,用户看得见却无法自证;
+//   - 不回冲 used_quota → 用户的"已用额度"与消费统计永远虚高。
+//
+// 三处全部放进同一个主库事务(而不是 AfterCommit),是为了让 outbox 探针
+// "执行且只执行一次"的保证同时覆盖它们,而不只覆盖钱包那一处。
+func applyRefundOnMainDB(tx *gorm.DB, rec *Record, amount int64) error {
+	if rec.BillingSource == service.BillingSourceSubscription && rec.SubscriptionId > 0 {
+		if err := refundToSubscription(tx, rec, amount); err != nil {
+			return err
+		}
+	} else if err := creditWallet(tx, rec.UserId, amount); err != nil {
+		return err
+	}
+
+	// used_quota 的下界用 CASE WHEN 夹住:主库可以是 MySQL / PostgreSQL / SQLite,
+	// GREATEST 在 SQLite 上不存在,CASE WHEN 是三种方言都支持的写法。
+	// 夹下界是必要的 —— 用户的 used_quota 可能在扣费之后被管理员重置过。
+	if err := tx.Model(&model.User{}).Where("id = ?", rec.UserId).
+		Update("used_quota", gorm.Expr(
+			"CASE WHEN used_quota >= ? THEN used_quota - ? ELSE 0 END", amount, amount)).Error; err != nil {
+		return err
+	}
+
+	if rec.TokenId <= 0 {
+		return nil
+	}
+	// 令牌可能已被用户删除,那就没有可退的令牌额度。这里刻意不检查 RowsAffected:
+	// 为一个已经不存在的令牌回滚整笔退款,只会让用户连钱包里的钱也拿不回来。
+	return tx.Model(&model.Token{}).
+		Where("id = ? AND user_id = ?", rec.TokenId, rec.UserId).
+		Updates(map[string]any{
+			"remain_quota": gorm.Expr("remain_quota + ?", amount),
+			"used_quota": gorm.Expr(
+				"CASE WHEN used_quota >= ? THEN used_quota - ? ELSE 0 END", amount, amount),
+		}).Error
+}
+
+// creditWallet 把额度加回钱包。
+func creditWallet(tx *gorm.DB, userId int, amount int64) error {
+	// 加款前的上限校验:users.quota 是 int32,加爆会翻成负数,
+	// 那等于把误判赔偿变成账号清零。
+	res := tx.Model(&model.User{}).
+		Where("id = ? AND quota <= ?", userId, int64(common.MaxQuota)-amount).
+		Update("quota", gorm.Expr("quota + ?", amount))
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("退款会导致额度溢出,已拒绝(user=%d)", userId)
+	}
+	return nil
+}
+
+// refundToSubscription 把额度退回订阅池。
+func refundToSubscription(tx *gorm.DB, rec *Record, amount int64) error {
+	var sub model.UserSubscription
+	err := model.QyLockForUpdate(tx).
+		Where("id = ? AND user_id = ?", rec.SubscriptionId, rec.UserId).Take(&sub).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// 订阅已经不存在(到期清理 / 管理员作废)。钱确实是从订阅池扣走的,但那个池
+		// 没了,只能退到钱包。不这样兜底的话本次 MainApply 报错 → 资金单落 failed,
+		// 而幂等键(rec_no)决定它再也不会成功,这笔误判罚款永远退不回去。
+		common.SysError(fmt.Sprintf(
+			"qianye/violation: 记录 %s 的订阅 %d 已不存在,退款回落到钱包",
+			rec.RecNo, rec.SubscriptionId))
+		return creditWallet(tx, rec.UserId, amount)
+	}
+	if err != nil {
+		return err
+	}
+	newUsed := sub.AmountUsed - amount
+	if newUsed < 0 {
+		// 订阅池可能在扣费之后被按周期重置,下界夹到 0,
+		// 与 model.PostConsumeUserSubscriptionDelta 的口径保持一致。
+		newUsed = 0
+	}
+	return tx.Model(&model.UserSubscription{}).Where("id = ?", sub.Id).
+		Update("amount_used", newUsed).Error
 }
 
 // ───────────────────────────── 封禁 ─────────────────────────────
@@ -568,33 +785,24 @@ func adminUnban(c *gin.Context) {
 }
 
 func unbanUser(c *gin.Context, userId int, note string, resetCounter bool, operatorId int) error {
-	var ban Ban
-	err := db.Get().Where("user_id = ? AND status IN ?", userId,
-		[]string{BanBanned, BanPending, BanFailed}).Order("id desc").Take(&ban).Error
+	ban, err := claimUnban(db.Get(), userId, note, operatorId)
 	if err != nil {
-		return fmt.Errorf("该用户没有待解除的违规封禁")
+		return err
 	}
-	now := common.GetTimestamp()
-	res := db.Get().Model(&Ban{}).
-		Where("id = ? AND status <> ?", ban.Id, BanUnbanned).
-		Updates(map[string]any{
-			"status":      BanUnbanned,
-			"unbanned_at": now,
-			"unbanned_by": operatorId,
-			"unban_note":  truncate(note, 512),
-		})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return nil // 已解封,幂等
-	}
-	// 周期 +1 必须与解封同时发生,否则该用户的自动封号从此静默失效。
+	// 周期 +1 必须与解封同时发生,否则该用户的自动封号从此静默失效:
+	// 下次达阈值时 claimBan 的 (user_id, ban_cycle) 唯一键会撞上这一行,
+	// 而它已经是 unbanned,既不会被提升也不会被补偿任务执行。
 	if e := openNewBanCycle(userId, resetCounter); e != nil {
 		common.SysError("qianye/violation: 解封时推进封禁周期失败: " + e.Error())
 	}
-	if e := enableUserAfterUnban(userId, &ban, operatorId); e != nil {
-		return e
+	// deferred 是速率闸挡下的认领:主库那六步一次都没跑过,这个账号从来没有被
+	// 这一行禁用。对它调 enableUserAfterUnban 会把一个正因别的原因(管理员手动停用、
+	// 风控停用)被禁用的账号直接放出来,并给用户日志里写一条从未发生过的"封禁已解除"。
+	// 判定用的是被 CAS 真正命中的那个状态,claimUnban 保证它不是旧值。
+	if ban.Status != BanDeferred {
+		if e := enableUserAfterUnban(userId, ban, operatorId); e != nil {
+			return e
+		}
 	}
 	audit.Write(c, audit.Entry{
 		Category:     qymodel.AuditCategoryViolation,
@@ -604,9 +812,59 @@ func unbanUser(c *gin.Context, userId int, note string, resetCounter bool, opera
 		ActorName:    c.GetString("username"),
 		TargetUserId: userId,
 		TraceNo:      fmt.Sprintf("ban:%d", ban.Id),
-		Reason:       truncate(note, 512),
+		// 了结前的状态必须进审计:deferred 是"不予封禁"的裁决,banned 才是解封,
+		// 两者在封禁列表上都会变成 unbanned,事后只能靠这里分辨。
+		BeforeSnap: common.MapToJsonStr(map[string]any{"ban_status": ban.Status}),
+		Reason:     truncate(note, 512),
 	})
 	return nil
+}
+
+// claimUnban 找出该用户待人工了结的封禁行,原子地把它标成 unbanned,
+// 并回答"了结之前它是什么状态"。
+//
+// 状态集合里必须有 BanDeferred。速率闸挡下的封号以 deferred 落行,语义是
+// "先让人看一眼";但在此之前 adminUnban 只认 banned/pending/failed,管理员在封禁
+// 列表里看得见这一行却动不了它 —— 速率闸承诺的人工出口根本不存在,deferred 行唯一
+// 的归宿是"等该用户再违规一次被自动提升执行"。那等于速率闸只是延迟了封号,
+// 而不是把决定权交给人,与它自身的语义相反。
+//
+// CAS 精确锁定读到的那个状态,落空就重读重试,而不是用宽松的 `status <> unbanned`:
+// 调用方要拿这个状态决定要不要去主库放人,读到写之间 resolveBanClaim 可能刚把
+// deferred 提升成 pending 并真的把人禁用了。拿旧状态走"不予封禁"分支,会让用户
+// 永久留在禁用态而封禁行却写着已解除。
+func claimUnban(gdb *gorm.DB, userId int, note string, operatorId int) (*Ban, error) {
+	if gdb == nil {
+		return nil, db.ErrNotReady
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		var ban Ban
+		err := gdb.Where("user_id = ? AND status IN ?", userId,
+			[]string{BanBanned, BanPending, BanFailed, BanDeferred}).
+			Order("id desc").Take(&ban).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, fmt.Errorf("该用户没有待解除的违规封禁")
+			}
+			return nil, err
+		}
+		res := gdb.Model(&Ban{}).
+			Where("id = ? AND status = ?", ban.Id, ban.Status).
+			Updates(map[string]any{
+				"status":      BanUnbanned,
+				"unbanned_at": common.GetTimestamp(),
+				"unbanned_by": operatorId,
+				"unban_note":  truncate(note, 512),
+			})
+		if res.Error != nil {
+			return nil, res.Error
+		}
+		if res.RowsAffected > 0 {
+			return &ban, nil
+		}
+	}
+	// 连续三轮都被别的路径抢先改写。宁可让管理员重试,也不能猜一个状态往下走。
+	return nil, fmt.Errorf("该用户的封禁状态正在变化中,请稍后重试")
 }
 
 // ───────────────────────────── 申诉 ─────────────────────────────

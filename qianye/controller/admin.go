@@ -1,7 +1,10 @@
 package controller
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -115,6 +118,36 @@ func AdminReprobeFundOrder(c *gin.Context) {
 	})
 }
 
+// maxResolveReasonRunes 与提现审核的拒绝理由上限保持一致(withdraw 的
+// maxReasonRunes),两处理由最终都落进同一张审计表的 varchar(512)。
+const maxResolveReasonRunes = 200
+
+// checkResolveReason 校验并规范化人工裁决理由。
+// 第二、三个返回值分别是给前端做 i18n 的错误码与可读提示,code 为空表示通过。
+//
+// 上限必须在写库之前校验,而不是等数据库报错:理由要拼进 qy_fund_orders.last_error
+// 与审计 reason 两个 varchar(512),超长在 MySQL 严格模式下是 1406 Data too long,
+// 而 serverError 只回"处理失败,请稍后重试" —— 管理员看不出是理由太长,原样重试
+// 只会再失败一次,这笔资金单就永远停在 uncertain,而 uncertain 单不会被补偿任务
+// 收敛(它只扫 pending),人工裁决是它唯一的出口。
+//
+// 按字符而不是字节计:一个汉字 3 字节,按字节卡会让 170 字的中文理由被拒,
+// 与提现审核 checkRunes 的口径也会不一致。
+func checkResolveReason(raw string) (reason, code, msg string) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		// 人工改动资金状态必须留下理由,否则事后无法复盘。
+		return "", "qy_reason_required", "必须填写裁决理由"
+	}
+	// 先用字节数做廉价上界剪枝:rune 最多 4 字节,超过 4*max 必然超限,
+	// 不必对一个超大请求体做完整遍历。
+	if len(s) > maxResolveReasonRunes*4 || utf8.RuneCountInString(s) > maxResolveReasonRunes {
+		return "", "qy_reason_too_long",
+			fmt.Sprintf("裁决理由过长,请控制在 %d 字以内", maxResolveReasonRunes)
+	}
+	return s, "", ""
+}
+
 // AdminResolveFundOrder 人工裁决一笔无法自动判定的资金单。
 //
 // 只允许裁决 Uncertain 态:Pending 应交给补偿任务自动收敛,
@@ -132,9 +165,9 @@ func AdminResolveFundOrder(c *gin.Context) {
 		badRequest(c, "qy_invalid_param", "请求格式错误")
 		return
 	}
-	if req.Reason == "" {
-		// 人工改动资金状态必须留下理由,否则事后无法复盘。
-		badRequest(c, "qy_reason_required", "必须填写裁决理由")
+	reason, code, msg := checkResolveReason(req.Reason)
+	if code != "" {
+		badRequest(c, code, msg)
 		return
 	}
 	var target int8
@@ -166,7 +199,10 @@ func AdminResolveFundOrder(c *gin.Context) {
 			"status":     target,
 			"settled_at": now,
 			"updated_at": now,
-			"last_error": "人工裁决: " + req.Reason,
+			// 前置校验已按字符卡过 200,这里再按 last_error 的字节宽度做一次
+			// rune 安全兜底:列宽是按字符还是按字节取决于方言与字符集,
+			// 兜底不依赖那个判断。
+			"last_error": audit.Truncate("人工裁决: "+reason, 512),
 		})
 	if res.Error != nil {
 		serverError(c, res.Error)
@@ -187,7 +223,7 @@ func AdminResolveFundOrder(c *gin.Context) {
 		TargetUserId: order.UserId,
 		AmountQuota:  order.AmountQuota,
 		Result:       qymodel.ResultOK,
-		Reason:       req.Reason,
+		Reason:       reason,
 		BeforeSnap:   `{"status":"uncertain"}`,
 		AfterSnap:    `{"status":"` + qymodel.StatusName(target) + `"}`,
 	})

@@ -6,8 +6,10 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/qianye/config"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/module"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
+	"github.com/QuantumNous/new-api/qianye/service/twophase"
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
@@ -30,11 +32,16 @@ func (Mod) Tables() []any {
 	}
 }
 
-// InstallHooks 注入上游 service 包的两个挂载点,并预热一次规则快照。
+// InstallHooks 注册补偿回调、注入上游 service 包的两个挂载点,并预热一次规则快照。
 //
 // 预热是必要的:第一个请求到来时如果快照还是空的,那次请求就检查不到任何规则。
 // 失败不阻塞启动 —— 扩展库连不上时热路径必须 fail-open。
 func (Mod) InstallHooks() {
+	// Resolver 必须在 enabled 判断之前注册:关掉违规检测不会让历史退款单消失,
+	// 停在 pending 的那些单仍要被补偿任务推进,而补偿任务找不到 Resolver 时会
+	// 直接把资金单标成 success,把 fee_status 永久留在 charged。
+	twophase.RegisterResolver(qymodel.KindViolationFee, resolveAfterCompensation)
+
 	if !config.Get().Violation.Enabled {
 		return
 	}
@@ -76,6 +83,11 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 }
 
 func (Mod) StartTasks() {
+	// 与 Resolver 注册同理,退款状态收敛必须排在 enabled 判断之前:关掉违规检测
+	// 不会让历史退款单消失,而"资金单已成功、记录仍写着已扣费"的错位行只要不收敛,
+	// 用户端就一直把这笔已退的钱算作违规扣费。
+	lease.Run("violation.refund_reconcile", 10*time.Minute, runRefundStateReconcile)
+
 	if !config.Get().Violation.Enabled {
 		return
 	}

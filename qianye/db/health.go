@@ -56,10 +56,23 @@ func probe() {
 	lastPingMs.Store(time.Since(start).Milliseconds())
 	lastPingAt.Store(common.GetTimestamp())
 
-	if !healthy.Load() {
+	if markProbeHealthy() {
 		common.SysLog("qianye: 扩展数据库已恢复")
+	}
+}
+
+// markProbeHealthy 在探测成功后收敛熔断状态,返回是否发生了"不健康 → 健康"的转变。
+//
+// 只有这一次转变才清零失败计数与熔断窗口。原先每 15 秒 Ping 成功就无条件
+// failStreak.Store(0),而 Ping 走的是另一条连接、只验证 TCP 与握手 —— 扩展库处于
+// "可达但查询慢"的状态时,业务侧每积累一次超时,下一次探测就把它抹掉,
+// 连续失败数永远到不了阈值,熔断在唯一重要的场景下形同虚设(C4)。
+func markProbeHealthy() bool {
+	if healthy.Load() {
+		return false
 	}
 	healthy.Store(true)
 	failStreak.Store(0)
 	openUntil.Store(0)
+	return true
 }

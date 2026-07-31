@@ -8,11 +8,9 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
-)
 
-// lookupLogRetainDays 是收款人解析日志的保留期。
-// 配置里目前没有对应字段,先固化在代码里;它只影响一张审计表的体积。
-const lookupLogRetainDays = 30
+	"gorm.io/gorm"
+)
 
 // resolveAfterCompensation 由 twophase 补偿任务在确认主库已生效后回调。
 //
@@ -67,15 +65,15 @@ func backfillLedger(orderNo string) {
 // 若业务线程恰好已经退出,明细行会永远停在 pending、风控计数永远不释放,
 // 用户从此发不出第二笔划转。
 func reconcile(ctx context.Context) {
-	syncStuckOrders(ctx)
-	pruneLookupLogs(ctx)
-}
-
-func syncStuckOrders(ctx context.Context) {
 	gdb := db.Get()
 	if gdb == nil {
 		return
 	}
+	syncStuckOrders(ctx, gdb)
+	pruneLookupLogs(ctx, gdb)
+}
+
+func syncStuckOrders(ctx context.Context, gdb *gorm.DB) {
 	cfg := config.Get().TwoPhase
 	batch := cfg.BatchSize
 	if batch <= 0 {
@@ -145,15 +143,20 @@ func applyFundOrderStatus(orderNo string, order qymodel.FundOrder) error {
 
 // pruneLookupLogs 清理过期的收款人解析日志。
 // 这张表按请求量增长,不清理会在高流量站点上变成最大的一张表。
-func pruneLookupLogs(ctx context.Context) {
-	if ctx.Err() != nil {
+//
+// 保留期必须读 transfer.lookup_log_retain_days,不能写死:这张表记的是
+// "谁查过谁的收款人",是可关联到个人的行为日志 —— 合规口径可能要求 7 天,
+// 风控排查又可能要求 90 天。写死成常量的话,运维照着 YAML 改完重启,
+// 闸门其实一动没动,而且没有任何迹象能让他发现(原审计 C1/C2 就是这个形状)。
+//
+// 与 withdraw.pii_retention_days 同口径:<=0 表示关掉清理。填 0 会被
+// applyDefaults 补成 30(少配一个键不该让行为日志永久留存),要彻底关掉必须显式填负数。
+func pruneLookupLogs(ctx context.Context, gdb *gorm.DB) {
+	days := config.Get().Transfer.LookupLogRetainDays
+	if days <= 0 || ctx.Err() != nil {
 		return
 	}
-	gdb := db.Get()
-	if gdb == nil {
-		return
-	}
-	before := common.GetTimestamp() - int64(lookupLogRetainDays)*86400
+	before := common.GetTimestamp() - int64(days)*86400
 	res := gdb.Where("created_at < ?", before).Limit(1000).Delete(&LookupLog{})
 	if res.Error != nil {
 		db.MarkFailure(res.Error)

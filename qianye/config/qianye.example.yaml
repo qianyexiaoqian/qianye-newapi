@@ -33,6 +33,13 @@ database:
   conn_max_lifetime_seconds: 600
   conn_max_idle_time_seconds: 120
   connect_timeout_seconds: 5
+  # 驱动层的硬上界,会被写进 DSN(运维在 dsn 里显式写过就以 dsn 为准)。
+  # 这是连接级的兜底闸门:没有它时,一条撞上行锁的语句会一直等到 MySQL 的
+  # innodb_lock_wait_timeout(默认 50 秒),把连接池逐个占死。
+  # 必须大于最慢的一次合法后台操作(结算事务、批量清理),否则正常业务会被
+  # 驱动层随机切断。热路径的 200ms 精确上界由 hot_path_timeout_ms 的 ctx 负责。
+  read_timeout_seconds: 30
+  write_timeout_seconds: 30
   slow_threshold_ms: 200
   log_level: warn          # silent | error | warn | info
   auto_migrate: true       # 仅主节点(NODE_TYPE != slave)实际执行,且有跨节点互斥锁
@@ -110,8 +117,15 @@ transfer:
 # ---------------------------------------------------------------------------
 commission:
   enabled: false
-  topup_rate_bps: 1000               # 充值返佣 10%
-  consume_rate_bps: 500              # 消费返佣 5%
+  # 返佣比例直接写百分比,支持两位小数:10 / 10.5 / 10.25。
+  # 内部会换算成整数(百分比 × 100)参与运算,不经过浮点。
+  #
+  # 这两项是**全局默认值**。想给不同分组不同比例,在管理端
+  #「佣金配置 → 分组费率」里加规则;未配规则的分组回落到这里。
+  topup_rate_percent: "10"           # 充值返佣 10%
+  consume_rate_percent: "5"          # 消费返佣 5%
+  # 旧字段 topup_rate_bps / consume_rate_bps(万分比)仍可解析,但已废弃:
+  # 启动时会打告警并换算进上面两项,与上面两项矛盾时直接启动失败。请尽快改名。
   levels: 1                          # 当前仅支持一级邀请
   # 佣金按 decimal 全精度累计,累到该值才结算成整数额度。
   # 没有这个机制的话,单次几十额度的消费按 5% 算会被整数截断成 0,
@@ -156,14 +170,22 @@ withdraw:
   max_pending_orders: 3              # 同时存在的未终态单上限,防审核队列被小额单淹没
   max_quota_per_order: 500000000     # 单笔提现上限
   daily_max_quota: 1000000000        # 单日提现总额上限
-  pii_retention_days: 180            # 收款信息保留天数,到期清除密文只留脱敏串
+  # 收款信息保留天数,到期清除密文只留脱敏串(脱敏串与风控指纹永久保留)。
+  # 不填等于 180;要彻底关掉清理请填负数 —— 填 0 会被默认值补回 180。
+  pii_retention_days: 180
   payee_account_max: 3
   review_sla_hours: 72
   remark_max_runes: 200              # 用户自定义说明的字数上限(按字符计,中文算一个)
   # 收款信息属个人敏感信息,必须加密存储。
   # 启用 fiat 方式时以下两项必填,否则启动会直接报错。
   pii_key: ""                        # base64 编码的 32 字节 AES-256 密钥
-  pii_key_version: 1
+  pii_key_version: 1                 # 写进每一行密文,解密时按它选密钥
+  # 轮换密钥的唯一正确做法:把旧的 pii_key 连同它的版本号搬到这里,再填新的
+  # pii_key 与更大的 pii_key_version。直接换掉 pii_key 而不登记旧钥,队列里
+  # 全部待打款单的收款账号会同时变成不可解密 —— 钱打不出去,佣金还锁在 frozen 里。
+  # 旧钥要留到对应密文被 pii_retention_days 清干净为止。
+  pii_keys_retired: {}
+  #   1: "<上一代 base64 32 字节密钥>"
   # 风控指纹用的独立密钥。必须与 pii_key 分开且不轮换,
   # 否则密钥轮换后历史指纹全部失效,跨账户风控索引作废。
   digest_key: ""
@@ -189,10 +211,10 @@ log_metrics:
 # ---------------------------------------------------------------------------
 group_visibility:
   enabled: true
-  filter_pricing: true
-  filter_perf_metrics: true
-  filter_group_api: true
+  filter_pricing: true               # 模型广场:裁剪每个模型的 enable_groups
+  filter_perf_metrics: true          # 运营数据:汇总白名单 + ?group= 归属校验
   include_auto_group: true           # "auto" 分组始终保留
+  # 没有 filter_group_api:分组 API 本身已与可用分组白名单求过交集,无泄漏可修
 
 # ---------------------------------------------------------------------------
 # 模型可用率监控(P6)

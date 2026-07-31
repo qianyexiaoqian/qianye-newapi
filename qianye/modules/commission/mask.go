@@ -37,13 +37,21 @@ func MaskUsername(raw string) string {
 //
 // 短名字(1~2 字符,中文昵称的常见形态)不能只遮中间 —— 那样等于没遮,
 // 所以统一只保留首字符。
+//
+// 单字符是这条原则的极端情形:保留首字符就是原样回显,一个字都没遮住。
+// 用户名没有长度下限(model/user.go 的 validate 只有 max=20),单字符用户名
+// 与单字符邮箱本地部分都是可以注册出来的,所以这里必须整个遮掉,
+// 与 transfer 模块的口径一致。邀请人要区分下线用 invitee_ref,不靠人名。
 func maskCore(s string) string {
 	r := []rune(s)
 	switch n := len(r); {
 	case n == 0:
 		return "***"
-	case n <= 2:
-		// "王" → "王**";"张三" → "张**"
+	case n == 1:
+		// "王" → "**";"a" → "**"
+		return "**"
+	case n == 2:
+		// "张三" → "张**"
 		return string(r[0]) + "**"
 	case n <= 4:
 		// "abcd" → "a**d"

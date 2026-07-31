@@ -85,7 +85,9 @@ import { Route as AuthenticatedQyAdminCommissionRecordsIndexRouteImport } from '
 import { Route as AuthenticatedQyAdminCommissionIndexRouteImport } from './routes/_authenticated/qy/admin/commission/index'
 import { Route as AuthenticatedQyAdminFundOrdersIndexRouteImport } from './routes/_authenticated/qy/admin/fund-orders/index'
 import { Route as AuthenticatedQyAdminHealthIndexRouteImport } from './routes/_authenticated/qy/admin/health/index'
+import { Route as AuthenticatedQyAdminTransferGroupRulesIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-group-rules/index'
 import { Route as AuthenticatedQyAdminTransferRecordsIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-records/index'
+import { Route as AuthenticatedQyAdminUserGroupIndexRouteImport } from './routes/_authenticated/qy/admin/user-group/index'
 import { Route as AuthenticatedQyAdminViolationRulesIndexRouteImport } from './routes/_authenticated/qy/admin/violation-rules/index'
 import { Route as AuthenticatedQyAdminViolationsIndexRouteImport } from './routes/_authenticated/qy/admin/violations/index'
 import { Route as AuthenticatedQyAdminWithdrawalsIndexRouteImport } from './routes/_authenticated/qy/admin/withdrawals/index'
@@ -514,10 +516,22 @@ const AuthenticatedQyAdminHealthIndexRoute =
     path: '/health/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
+const AuthenticatedQyAdminTransferGroupRulesIndexRoute =
+  AuthenticatedQyAdminTransferGroupRulesIndexRouteImport.update({
+    id: '/transfer-group-rules/',
+    path: '/transfer-group-rules/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
 const AuthenticatedQyAdminTransferRecordsIndexRoute =
   AuthenticatedQyAdminTransferRecordsIndexRouteImport.update({
     id: '/transfer-records/',
     path: '/transfer-records/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
+const AuthenticatedQyAdminUserGroupIndexRoute =
+  AuthenticatedQyAdminUserGroupIndexRouteImport.update({
+    id: '/user-group/',
+    path: '/user-group/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
 const AuthenticatedQyAdminViolationRulesIndexRoute =
@@ -614,7 +628,9 @@ export interface FileRoutesByFullPath {
   '/qy/admin/commission/': typeof AuthenticatedQyAdminCommissionIndexRoute
   '/qy/admin/fund-orders/': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/qy/admin/health/': typeof AuthenticatedQyAdminHealthIndexRoute
+  '/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/qy/admin/transfer-records/': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
+  '/qy/admin/user-group/': typeof AuthenticatedQyAdminUserGroupIndexRoute
   '/qy/admin/violation-rules/': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/qy/admin/violations/': typeof AuthenticatedQyAdminViolationsIndexRoute
   '/qy/admin/withdrawals/': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
@@ -691,7 +707,9 @@ export interface FileRoutesByTo {
   '/qy/admin/commission': typeof AuthenticatedQyAdminCommissionIndexRoute
   '/qy/admin/fund-orders': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/qy/admin/health': typeof AuthenticatedQyAdminHealthIndexRoute
+  '/qy/admin/transfer-group-rules': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/qy/admin/transfer-records': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
+  '/qy/admin/user-group': typeof AuthenticatedQyAdminUserGroupIndexRoute
   '/qy/admin/violation-rules': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/qy/admin/violations': typeof AuthenticatedQyAdminViolationsIndexRoute
   '/qy/admin/withdrawals': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
@@ -774,7 +792,9 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/commission/': typeof AuthenticatedQyAdminCommissionIndexRoute
   '/_authenticated/qy/admin/fund-orders/': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/_authenticated/qy/admin/health/': typeof AuthenticatedQyAdminHealthIndexRoute
+  '/_authenticated/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/_authenticated/qy/admin/transfer-records/': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
+  '/_authenticated/qy/admin/user-group/': typeof AuthenticatedQyAdminUserGroupIndexRoute
   '/_authenticated/qy/admin/violation-rules/': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/_authenticated/qy/admin/violations/': typeof AuthenticatedQyAdminViolationsIndexRoute
   '/_authenticated/qy/admin/withdrawals/': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
@@ -856,7 +876,9 @@ export interface FileRouteTypes {
     | '/qy/admin/commission/'
     | '/qy/admin/fund-orders/'
     | '/qy/admin/health/'
+    | '/qy/admin/transfer-group-rules/'
     | '/qy/admin/transfer-records/'
+    | '/qy/admin/user-group/'
     | '/qy/admin/violation-rules/'
     | '/qy/admin/violations/'
     | '/qy/admin/withdrawals/'
@@ -933,7 +955,9 @@ export interface FileRouteTypes {
     | '/qy/admin/commission'
     | '/qy/admin/fund-orders'
     | '/qy/admin/health'
+    | '/qy/admin/transfer-group-rules'
     | '/qy/admin/transfer-records'
+    | '/qy/admin/user-group'
     | '/qy/admin/violation-rules'
     | '/qy/admin/violations'
     | '/qy/admin/withdrawals'
@@ -1015,7 +1039,9 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/commission/'
     | '/_authenticated/qy/admin/fund-orders/'
     | '/_authenticated/qy/admin/health/'
+    | '/_authenticated/qy/admin/transfer-group-rules/'
     | '/_authenticated/qy/admin/transfer-records/'
+    | '/_authenticated/qy/admin/user-group/'
     | '/_authenticated/qy/admin/violation-rules/'
     | '/_authenticated/qy/admin/violations/'
     | '/_authenticated/qy/admin/withdrawals/'
@@ -1574,11 +1600,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminHealthIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
+    '/_authenticated/qy/admin/transfer-group-rules/': {
+      id: '/_authenticated/qy/admin/transfer-group-rules/'
+      path: '/transfer-group-rules'
+      fullPath: '/qy/admin/transfer-group-rules/'
+      preLoaderRoute: typeof AuthenticatedQyAdminTransferGroupRulesIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
     '/_authenticated/qy/admin/transfer-records/': {
       id: '/_authenticated/qy/admin/transfer-records/'
       path: '/transfer-records'
       fullPath: '/qy/admin/transfer-records/'
       preLoaderRoute: typeof AuthenticatedQyAdminTransferRecordsIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
+    '/_authenticated/qy/admin/user-group/': {
+      id: '/_authenticated/qy/admin/user-group/'
+      path: '/user-group'
+      fullPath: '/qy/admin/user-group/'
+      preLoaderRoute: typeof AuthenticatedQyAdminUserGroupIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
     '/_authenticated/qy/admin/violation-rules/': {
@@ -1639,7 +1679,9 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminCommissionIndexRoute: typeof AuthenticatedQyAdminCommissionIndexRoute
   AuthenticatedQyAdminFundOrdersIndexRoute: typeof AuthenticatedQyAdminFundOrdersIndexRoute
   AuthenticatedQyAdminHealthIndexRoute: typeof AuthenticatedQyAdminHealthIndexRoute
+  AuthenticatedQyAdminTransferGroupRulesIndexRoute: typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   AuthenticatedQyAdminTransferRecordsIndexRoute: typeof AuthenticatedQyAdminTransferRecordsIndexRoute
+  AuthenticatedQyAdminUserGroupIndexRoute: typeof AuthenticatedQyAdminUserGroupIndexRoute
   AuthenticatedQyAdminViolationRulesIndexRoute: typeof AuthenticatedQyAdminViolationRulesIndexRoute
   AuthenticatedQyAdminViolationsIndexRoute: typeof AuthenticatedQyAdminViolationsIndexRoute
   AuthenticatedQyAdminWithdrawalsIndexRoute: typeof AuthenticatedQyAdminWithdrawalsIndexRoute
@@ -1659,8 +1701,12 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
     AuthenticatedQyAdminFundOrdersIndexRoute:
       AuthenticatedQyAdminFundOrdersIndexRoute,
     AuthenticatedQyAdminHealthIndexRoute: AuthenticatedQyAdminHealthIndexRoute,
+    AuthenticatedQyAdminTransferGroupRulesIndexRoute:
+      AuthenticatedQyAdminTransferGroupRulesIndexRoute,
     AuthenticatedQyAdminTransferRecordsIndexRoute:
       AuthenticatedQyAdminTransferRecordsIndexRoute,
+    AuthenticatedQyAdminUserGroupIndexRoute:
+      AuthenticatedQyAdminUserGroupIndexRoute,
     AuthenticatedQyAdminViolationRulesIndexRoute:
       AuthenticatedQyAdminViolationRulesIndexRoute,
     AuthenticatedQyAdminViolationsIndexRoute:

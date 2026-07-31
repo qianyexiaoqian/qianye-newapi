@@ -27,13 +27,18 @@ const (
 	blockedNotFound = "not_found"
 	blockedSelf     = "self"
 	blockedDisabled = "disabled"
+	// blockedGroupDenied 对方所在分组不在本用户的可转范围内。
+	blockedGroupDenied = "group_denied"
+	// blockedGroupBlocked 本用户所在分组整体禁止发起划转。
+	// 与上面那条分开,是因为前者该去换一个收款人,后者换谁都没用。
+	blockedGroupBlocked = "group_blocked"
 )
 
 // resolveRecipient 按配置允许的方式精确查找收款人并返回脱敏信息。
 //
-// 结果里绝不出现:真实用户名全文、真实邮箱全文、余额、分组、角色、注册时间。
+// 结果里绝不出现:真实用户名全文、真实邮箱全文、余额、分组名、角色、注册时间。
 // 确认弹窗要展示的只有"这是不是我要转的那个人",脱敏名 + 用户 ID 足够。
-func resolveRecipient(c *gin.Context, meId int, identifier string) previewResponse {
+func resolveRecipient(c *gin.Context, meId int, identifier string, rules groupRuleSet) previewResponse {
 	cfg := config.Get().Transfer
 	raw := strings.TrimSpace(identifier)
 
@@ -69,8 +74,42 @@ func resolveRecipient(c *gin.Context, meId int, identifier string) previewRespon
 	case cfg.ReceiverMustBeEnabled() && user.Status != common.UserStatusEnabled:
 		resp.Receivable = false
 		resp.BlockedReason = blockedDisabled
+	default:
+		if reason := previewGroupBlock(meId, user, rules); reason != "" {
+			resp.Receivable = false
+			resp.BlockedReason = reason
+		}
 	}
 	return resp
+}
+
+// previewGroupBlock 返回预校验阶段的分组阻断原因,空串表示放行。
+//
+// 为什么在预校验就判:不判的话,用户要把金额填完、确认"不可撤销"、点下提交,
+// 才会吃到一个 403。分组限制是"换个收款人也许就行"的那类拒绝,越早说越好。
+//
+// 代价是它泄漏一位信息:"这个账号在你转不到的分组里"。这一位无法真正藏住 ——
+// 提交同样会拒,只是慢一步。缓解手段沿用本模块已有的两道:解析接口按用户限流
+// (SearchRateLimit,抗代理轮换),且每次解析都落一条 qy_transfer_lookup_logs
+// 供事后追溯慢速枚举。绝不额外下发对方的分组名。
+//
+// 读不到发起方主库行时一律放行:这里只是提前提示,真正的闸门在 loadParties 与
+// applyQuotaTransfer;为一次读失败就谎报"不能转"是更差的结果。
+func previewGroupBlock(meId int, receiver *model.User, rules groupRuleSet) string {
+	me, err := model.GetUserById(meId, false)
+	if err != nil {
+		common.SysError("qianye/transfer: 预校验读取发起方失败,跳过分组判定: " + err.Error())
+		return ""
+	}
+	verdict := enforceGroupPolicy(me, receiver, rules)
+	switch {
+	case verdict == nil:
+		return ""
+	case errors.Is(verdict, errGroupSendBlocked):
+		return blockedGroupBlocked
+	default:
+		return blockedGroupDenied
+	}
 }
 
 // classifyIdentifier 判断用户输入该按哪种方式解析。
@@ -110,9 +149,14 @@ func isAllDigits(s string) bool {
 	return len(s) > 0
 }
 
-// findRecipient 只做全等查询。列也收窄到最少的四个,避免把整行用户数据读进内存。
+// findRecipient 只做全等查询。列收窄到判定与展示真正用得到的五个,
+// 避免把整行用户数据读进内存。
+//
+// group 是分组规则的判定输入,必须查出来 —— 但它只参与判定,绝不下发。
+// 列名交给 GORM 按 schema 映射并加引号:group 在 MySQL 与 PostgreSQL 都是
+// 保留字,裸拼字符串会在其中一种方言上直接语法错误。
 func findRecipient(byType, value string) (*model.User, error) {
-	q := model.DB.Model(&model.User{}).Select("id", "username", "email", "status")
+	q := model.DB.Model(&model.User{}).Select("id", "username", "email", "status", "group")
 	if byType == lookupByID {
 		q = q.Where("id = ?", value)
 	} else {

@@ -78,6 +78,8 @@ export const qyKeys = {
 
   adminTransferRecords: (params: unknown) =>
     [...qyKeys.all, 'admin', 'transfer', 'records', params] as const,
+  adminTransferGroupRules: () =>
+    [...qyKeys.all, 'admin', 'transfer', 'group-rules'] as const,
 
   adminWithdrawals: (params: unknown) =>
     [...qyKeys.all, 'admin', 'withdraw', 'list', params] as const,
@@ -103,4 +105,7 @@ export const qyKeys = {
 
   adminAvailabilityStats: (params: unknown) =>
     [...qyKeys.all, 'admin', 'availability', 'stats', params] as const,
+
+  adminUserGroupConfig: () =>
+    [...qyKeys.all, 'admin', 'user-group', 'config'] as const,
 } as const

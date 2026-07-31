@@ -122,8 +122,8 @@ type seriesPoint struct {
 	ReqTotal     int64    `json:"req_total"`
 	Counted      int64    `json:"counted"`
 	Success      int64    `json:"success"`
-	AvgLatencyMs int64    `json:"avg_latency_ms"`
-	AvgTtftMs    int64    `json:"avg_ttft_ms"`
+	// 与矩阵共用 perfOf 的口径:趋势图能画哪几条线,取决于这里有哪几个字段。
+	perf
 }
 
 type seriesLine struct {
@@ -197,8 +197,7 @@ func getSeries(c *gin.Context) {
 				ReqTotal:     b.ReqTotal,
 				Counted:      counted(b, d),
 				Success:      b.SuccessCount,
-				AvgLatencyMs: avgOf(b.LatencySumMs, b.LatencyCount),
-				AvgTtftMs:    avgOf(b.TtftSumMs, b.TtftCount),
+				perf:         perfOf(b),
 			})
 		}
 		lines = append(lines, line)
@@ -428,8 +427,17 @@ func modelNames(cells map[cellKey]*Bucket, q string) []string {
 
 // sortModels 决定模型的展示顺序。默认按该模型在各分组中最差的可用率升序,
 // 让最需要关注的模型出现在第一页。
+//
+// 排序必须在这一层做而不能交给前端:分页是按模型切的,前端只拿得到当前页,
+// 切到「最慢优先」时真正最慢的那个模型可能压根不在这一页里。
+//
+// 「该模型的表现」= 各分组中最差的那个分组:一个模型只要在任意一个分组上
+// 挂了/变慢,它就值得被排到前面,按平均会把单分组故障稀释掉。
 func sortModels(names []string, cells map[cellKey]*Bucket, groups []string, d Definition, mode string) {
-	worst := make(map[string]*float64, len(names))
+	worstAv := make(map[string]*float64, len(names))
+	worstLatency := make(map[string]*int64, len(names))
+	worstTtft := make(map[string]*int64, len(names))
+	worstTps := make(map[string]*float64, len(names))
 	totals := make(map[string]int64, len(names))
 	for _, name := range names {
 		for _, g := range groups {
@@ -438,13 +446,31 @@ func sortModels(names []string, cells map[cellKey]*Bucket, groups []string, d De
 				continue
 			}
 			totals[name] += b.ReqTotal
+
+			p := perfOf(b)
+			if p.AvgLatencyMs != nil {
+				if cur, ok := worstLatency[name]; !ok || *p.AvgLatencyMs > *cur {
+					worstLatency[name] = p.AvgLatencyMs
+				}
+			}
+			if p.AvgTtftMs != nil {
+				if cur, ok := worstTtft[name]; !ok || *p.AvgTtftMs > *cur {
+					worstTtft[name] = p.AvgTtftMs
+				}
+			}
+			if p.AvgTps != nil {
+				if cur, ok := worstTps[name]; !ok || *p.AvgTps < *cur {
+					worstTps[name] = p.AvgTps
+				}
+			}
+
 			_, av := stateOf(b, true, d)
 			if av == nil {
 				continue
 			}
-			if cur, ok := worst[name]; !ok || *av < *cur {
+			if cur, ok := worstAv[name]; !ok || *av < *cur {
 				v := *av
-				worst[name] = &v
+				worstAv[name] = &v
 			}
 		}
 	}
@@ -457,8 +483,32 @@ func sortModels(names []string, cells map[cellKey]*Bucket, groups []string, d De
 			if totals[a] != totals[b] {
 				return totals[a] > totals[b]
 			}
+		case "latency_desc":
+			av, bv := worstLatency[a], worstLatency[b]
+			if (av == nil) != (bv == nil) {
+				return av != nil // 无延迟数据的排最后
+			}
+			if av != nil && *av != *bv {
+				return *av > *bv
+			}
+		case "ttft_desc":
+			av, bv := worstTtft[a], worstTtft[b]
+			if (av == nil) != (bv == nil) {
+				return av != nil
+			}
+			if av != nil && *av != *bv {
+				return *av > *bv
+			}
+		case "tps_asc":
+			av, bv := worstTps[a], worstTps[b]
+			if (av == nil) != (bv == nil) {
+				return av != nil
+			}
+			if av != nil && *av != *bv {
+				return *av < *bv
+			}
 		default:
-			av, bv := worst[a], worst[b]
+			av, bv := worstAv[a], worstAv[b]
 			if (av == nil) != (bv == nil) {
 				return av != nil // 无可用率的排最后
 			}

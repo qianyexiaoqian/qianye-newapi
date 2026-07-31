@@ -29,22 +29,31 @@ func handleGetConfig(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	usedToday, err := countToday(userId)
+	usage, err := loadDailyUsage(db.Get(), userId)
 	if err != nil {
+		db.MarkFailure(err)
 		respondErr(c, err)
 		return
 	}
 
+	// 四项额度/频率上限必须下发:后端拦得住不代表用户知道为什么被拦。
+	// 不下发的话,用户只会在填完整张表单之后收到一句"已达上限",
+	// 而"上限是多少、我今天还剩多少"全靠猜。
 	data := gin.H{
-		"methods":            cfg.Methods,
-		"min_quota":          cfg.MinQuota,
-		"remark_max_runes":   cfg.RemarkMaxRunes,
-		"daily_max_count":    cfg.DailyMaxCount,
-		"used_today":         usedToday,
-		"payee_account_max":  cfg.PayeeAccountMax,
-		"review_sla_hours":   cfg.ReviewSLAHours,
-		"auto_credit":        cfg.AutoCredit(),
-		"withdrawable_quota": withdrawable,
+		"methods":             cfg.Methods,
+		"min_quota":           cfg.MinQuota,
+		"remark_max_runes":    cfg.RemarkMaxRunes,
+		"daily_max_count":     cfg.DailyMaxCount,
+		"max_quota_per_order": cfg.MaxQuotaPerOrder,
+		"daily_max_quota":     cfg.DailyMaxQuota,
+		"cooldown_seconds":    cfg.CooldownSecs,
+		"max_pending_orders":  cfg.MaxPendingOrders,
+		"used_today":          usage.Active,
+		"used_today_quota":    usage.Quota,
+		"payee_account_max":   cfg.PayeeAccountMax,
+		"review_sla_hours":    cfg.ReviewSLAHours,
+		"auto_credit":         cfg.AutoCredit(),
+		"withdrawable_quota":  withdrawable,
 	}
 	if cfg.HasWithdrawMethod(config.WithdrawMethodFiat) {
 		fiat := gin.H{
@@ -220,19 +229,6 @@ func handleDeletePayee(c *gin.Context) {
 		return
 	}
 	respondOK(c, gin.H{"ref": ref})
-}
-
-// countToday 统计今日已提交(未撤销)的申请数。
-func countToday(userId int) (int64, error) {
-	var cnt int64
-	err := db.Get().Model(&Withdrawal{}).
-		Where("user_id = ? AND created_at >= ? AND status <> ?", userId, dayStart(), StatusCancelled).
-		Count(&cnt).Error
-	if err != nil {
-		db.MarkFailure(err)
-		return 0, err
-	}
-	return cnt, nil
 }
 
 // ─────────────────────────── 查询参数辅助 ───────────────────────────

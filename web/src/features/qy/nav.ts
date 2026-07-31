@@ -93,6 +93,11 @@ const ADMIN_PAGES: QyPageEntry[] = [
     feature: 'transfer',
   },
   {
+    titleKey: 'qy_nav_a_transfer_group_rules',
+    url: '/qy/admin/transfer-group-rules',
+    feature: 'transfer',
+  },
+  {
     titleKey: 'qy_nav_a_withdrawals',
     url: '/qy/admin/withdrawals',
     feature: 'withdraw',
@@ -112,6 +117,8 @@ const ADMIN_PAGES: QyPageEntry[] = [
     url: '/qy/admin/availability',
     feature: 'availability',
   },
+  // 无 feature 键：新用户默认分组没有独立开关，扩展开着就能配。
+  { titleKey: 'qy_nav_a_user_group', url: '/qy/admin/user-group' },
   { titleKey: 'qy_nav_a_fund_orders', url: '/qy/admin/fund-orders' },
   { titleKey: 'qy_nav_a_audit_logs', url: '/qy/admin/audit-logs' },
   { titleKey: 'qy_nav_a_health', url: '/qy/admin/health' },

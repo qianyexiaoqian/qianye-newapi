@@ -43,7 +43,9 @@ func reserveRisk(tx *gorm.DB, req acceptedRequest, now int64) error {
 	rollDay(sender, bucket)
 	rollDay(receiver, bucket)
 
-	if err := evaluateRisk(*sender, config.Get().Transfer, req.Total, now); err != nil {
+	// 收款方的入账笔数闸门也在这里判:两行都已在本事务内按升序加锁,
+	// 判定放在 applyReservation 之前就自动串行化了,不需要额外加锁。
+	if err := evaluateRisk(*sender, *receiver, config.Get().Transfer, req.Total, now); err != nil {
 		return err
 	}
 
@@ -54,11 +56,15 @@ func reserveRisk(tx *gorm.DB, req acceptedRequest, now int64) error {
 	return saveState(tx, receiver)
 }
 
-// evaluateRisk 判定发起方当前是否被风控拦截。
+// evaluateRisk 判定本次划转是否被风控拦截:发起方四项 + 收款方入账笔数。
 //
 // 纯函数,不碰数据库:限额判定是本模块最容易写错的一段(边界差一、
 // 配置 0 表示不限、跨日重置),必须能被直接测到。
-func evaluateRisk(sender UserState, cfg config.Transfer, total, now int64) error {
+//
+// 两侧都要判是硬性要求:发起方限额只能约束"一个账号能转出多少",
+// 对"200 个小号各转一笔到同一个汇集账号"完全无效 —— 每一笔都在各自的
+// 发起方额度内,而这正是洗号/套现要走的形状。收款方的闸门是唯一能拦住它的。
+func evaluateRisk(sender, receiver UserState, cfg config.Transfer, total, now int64) error {
 	// 未结算的划转会让"余额"与"流水"的差额无法归因,人工对账时判断不出该退哪一笔,
 	// 因此中间态期间硬闸门,不允许叠加第二笔。
 	if sender.PendingCount > 0 {
@@ -72,6 +78,14 @@ func evaluateRisk(sender UserState, cfg config.Transfer, total, now int64) error
 	}
 	if cfg.DailyMaxQuota > 0 && sender.DayOutQuota+total > cfg.DailyMaxQuota {
 		return errDailyLimitExceeded
+	}
+	// 收款方的判定放在最后:发起方自己的问题优先报出来,
+	// 顺带避免在请求本就不合法时泄露"对方账户今天很忙"这一位信息。
+	//
+	// DayInCount 由调用方在 rollDay 之后传入,跨日已被清零;它在预占时 +1、
+	// 失败时由 undoReservation 原路退还,所以失败的划转不会永久吃掉收款方的名额。
+	if cfg.ReceiverDailyMaxInCount > 0 && receiver.DayInCount+1 > cfg.ReceiverDailyMaxInCount {
+		return errReceiverDailyInExceeded
 	}
 	return nil
 }

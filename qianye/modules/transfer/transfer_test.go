@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -170,6 +171,131 @@ func TestComputeFee(t *testing.T) {
 	}
 }
 
+// acceptedFor 是一份"已通过受理校验"的请求,单个用例只改自己关心的字段。
+func acceptedFor(toUserId int, amount, fee int64) acceptedRequest {
+	return acceptedRequest{
+		FromUserId: 5,
+		ToUserId:   toUserId,
+		Amount:     amount,
+		Fee:        fee,
+		Total:      amount + fee,
+		IdemKey:    "5:abc",
+	}
+}
+
+// TestFundingFactsFingerprintCoversEveryFundingElement 锁定幂等指纹的覆盖面。
+//
+// 复现的缺陷:用户提交 {to:7, amount:100, client_request_id:"abc"} 成功后,
+// 再提交 {to:9, amount:50000000, client_request_id:"abc"} —— 唯一索引只保证
+// "不重复执行",幂等命中会直接返回原单成功。指纹是唯一能识破"这是另一笔请求"
+// 的判据,漏掉任何一个资金要素(尤其是 PeerUserId 与 AmountQuota),
+// 换收款人/换金额的重放就会被当成正常重试放过去。
+func TestFundingFactsFingerprintCoversEveryFundingElement(t *testing.T) {
+	base := acceptedFor(7, 100, 5)
+	baseFp := fundingFacts(base).Fingerprint
+	require.NotEmpty(t, baseFp, "指纹不能为空:空值在 twophase 侧一律跳过校验")
+	require.Len(t, baseFp, 64, "必须放得进 qy_fund_orders.fingerprint(varchar(64))")
+
+	cases := []struct {
+		name     string
+		mutate   func(*acceptedRequest)
+		wantSame bool
+	}{
+		{name: "换收款人", mutate: func(a *acceptedRequest) { a.ToUserId = 9 }},
+		{name: "换金额", mutate: func(a *acceptedRequest) { a.Amount = 50000000 }},
+		{name: "换发起人", mutate: func(a *acceptedRequest) { a.FromUserId = 6 }},
+		// 手续费不是资金要素而是服务端派生量:它由受理时的 transfer.fee_* 算出,
+		// 用户在请求里说不了它。用户首次提交超时、运营在这中间调了费率,同一个
+		// client_request_id 的重试会算出不同的 Fee —— 判成 409 会让一笔根本没成功的
+		// 划转既转不成也不敢重发。详见 twophase.Request.Digest。
+		{name: "费率被运营调过", mutate: func(a *acceptedRequest) { a.Fee = 999 }, wantSame: true},
+		// 备注不是资金要素:改文案后重试是正常行为,判成 409 会把用户逼去换一个
+		// client_request_id 重发,那才真的会转两笔。
+		{name: "只改备注", mutate: func(a *acceptedRequest) { a.Remark = "换个备注" }, wantSame: true},
+		{name: "完全相同的重试", mutate: func(*acceptedRequest) {}, wantSame: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := base
+			tc.mutate(&req)
+			got := fundingFacts(req).Fingerprint
+			if tc.wantSame {
+				assert.Equal(t, baseFp, got)
+				return
+			}
+			assert.NotEqual(t, baseFp, got)
+		})
+	}
+}
+
+// TestFundingFactsCarriesRequestIntoOrder 指纹之外,资金单本身也必须如实记录本次要素 ——
+// 审计与响应体都以它为准。
+func TestFundingFactsCarriesRequestIntoOrder(t *testing.T) {
+	acc := acceptedFor(7, 100, 5)
+	req := fundingFacts(acc)
+
+	assert.Equal(t, qymodel.KindTransfer, req.Kind)
+	assert.Equal(t, idemScope, req.IdemScope)
+	assert.Equal(t, acc.IdemKey, req.IdemKey)
+	assert.Equal(t, acc.FromUserId, req.UserId)
+	assert.Equal(t, acc.ToUserId, req.PeerUserId)
+	assert.Equal(t, acc.Amount, req.AmountQuota)
+	assert.Equal(t, acc.Fee, req.FeeQuota)
+	// 指纹必须与 twophase 侧用同一套要素算出来,否则正常重试会被误判成冲突。
+	assert.Equal(t, req.Digest(), req.Fingerprint)
+}
+
+// TestTransferCreatedAuditUsesOrderNotRequest 复现审计表被污染的那一步。
+//
+// 场景:攻击者用已成功单据的 client_request_id 重提一笔 {to:9, amount:5000万}。
+// 幂等命中返回的是原单(to:7, amount:100),资金侧毫无变化 —— 但只要审计取的是
+// **本次请求**的金额与收款人,qy_audit_logs 就会多出一条
+// "trace_no=真实单号 / amount=5000万 / target=9 / result=ok" 的记录。
+// 审计表是这套资金系统事后仲裁的唯一凭据,它必须只反映真实生效的单据。
+//
+// 指纹校验会拦住绝大多数这类重放,但拦不住升级前落库的历史单(指纹为空一律跳过
+// 校验),所以这一层不能省。
+func TestTransferCreatedAuditUsesOrderNotRequest(t *testing.T) {
+	stored := &qymodel.FundOrder{
+		OrderNo:     "TR20260730000001",
+		Status:      qymodel.StatusSuccess,
+		UserId:      5,
+		PeerUserId:  7,
+		AmountQuota: 100,
+		FeeQuota:    5,
+	}
+	// 本次请求(攻击者构造)刻意与原单完全不同,任何一项串到审计里都是伪造。
+	replay := acceptedFor(9, 50000000, 0)
+
+	entry := transferCreatedAudit(stored, "alice")
+
+	assert.Equal(t, stored.OrderNo, entry.TraceNo)
+	assert.Equal(t, stored.AmountQuota, entry.AmountQuota)
+	assert.Equal(t, stored.PeerUserId, entry.TargetUserId)
+	assert.Equal(t, stored.UserId, entry.ActorUserId)
+	assert.NotEqual(t, replay.Amount, entry.AmountQuota, "审计金额取了本次请求的值")
+	assert.NotEqual(t, replay.ToUserId, entry.TargetUserId, "审计收款人取了本次请求的值")
+
+	assert.Equal(t, qymodel.AuditCategoryTransfer, entry.Category)
+	assert.Equal(t, "transfer.create", entry.Action)
+	assert.Equal(t, qymodel.ActorUser, entry.ActorType)
+	assert.Equal(t, qymodel.ResultOK, entry.Result)
+	assert.Equal(t, "success", entry.Reason)
+	assert.Equal(t, "alice", entry.ActorName)
+}
+
+// TestTransferCreatedAuditReflectsOrderStatus 幂等命中一笔已冲正的单据时,
+// 审计的 reason 必须说它是 reversed,不能因为"本次 Execute 没报错"就写成 success。
+func TestTransferCreatedAuditReflectsOrderStatus(t *testing.T) {
+	for status, want := range map[int8]string{
+		qymodel.StatusSuccess:  "success",
+		qymodel.StatusReversed: "reversed",
+	} {
+		entry := transferCreatedAudit(&qymodel.FundOrder{OrderNo: "TR1", Status: status}, "bob")
+		assert.Equal(t, want, entry.Reason)
+	}
+}
+
 // TestBuildIdemKey 幂等键是防重复扣款的唯一可靠防线,它的构造必须逐字节确定。
 func TestBuildIdemKey(t *testing.T) {
 	key, err := buildIdemKey(42, "  b1d9f0aa-1111-2222-3333-444455556666  ")
@@ -222,7 +348,7 @@ func TestEvaluateRisk(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := evaluateRisk(tc.state, cfg, tc.total, now)
+			err := evaluateRisk(tc.state, UserState{UserId: 2}, cfg, tc.total, now)
 			if tc.wantErr == nil {
 				assert.NoError(t, err)
 				return
@@ -233,12 +359,77 @@ func TestEvaluateRisk(t *testing.T) {
 	}
 }
 
+// TestEvaluateRiskGuardsReceiverDailyInCount 锁定 receiver_daily_max_in_count 这道洗号闸门。
+//
+// 它拦的是发起方限额天然拦不住的形状:N 个小号各转一笔到同一个汇集账号 ——
+// 每一笔都在各自的发起方额度内,只有收款方侧的计数会涨。这道闸门曾经只有配置项
+// 没有消费方,200 个小号可以全部通过。
+func TestEvaluateRiskGuardsReceiverDailyInCount(t *testing.T) {
+	const now int64 = 1_700_000_000
+
+	cases := []struct {
+		name     string
+		limit    int
+		receiver UserState
+		wantErr  *bizError
+	}{
+		{name: "首次收款放行", limit: 50, receiver: UserState{}},
+		{name: "刚好用满收款笔数放行", limit: 50, receiver: UserState{DayInCount: 49}},
+		{name: "超出收款笔数即拒绝", limit: 50, receiver: UserState{DayInCount: 50}, wantErr: errReceiverDailyInExceeded},
+		{name: "远超上限仍然拒绝", limit: 50, receiver: UserState{DayInCount: 200}, wantErr: errReceiverDailyInExceeded},
+		{name: "上限为一时第二笔即拒绝", limit: 1, receiver: UserState{DayInCount: 1}, wantErr: errReceiverDailyInExceeded},
+		// 与其它四项同口径:0 表示不限制。改成"0 = 禁止"会让沿用旧配置的部署全线拒收。
+		{name: "配置为零表示不限制", limit: 0, receiver: UserState{DayInCount: math.MaxInt32 - 1}},
+		{name: "配置为负同样表示不限制", limit: -1, receiver: UserState{DayInCount: 9999}},
+		// DayInCount 由调用方在 rollDay 之后传入,跨日后是 0,不该继续沿用昨天的计数。
+		{name: "跨日清零后放行", limit: 50, receiver: UserState{DayBucket: 20260730, DayInCount: 0}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := baseConfig()
+			cfg.ReceiverDailyMaxInCount = tc.limit
+			// 发起方一侧全部留空,确保命中的确实是收款方闸门而不是别的判定。
+			err := evaluateRisk(UserState{UserId: 1}, tc.receiver, cfg, 1, now)
+			if tc.wantErr == nil {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Same(t, tc.wantErr, err)
+		})
+	}
+}
+
+// TestEvaluateRiskAccumulatesReceiverCountAcrossSenders 复现审计里的攻击形状:
+// 多个互不相干的小号先后向同一个账号打款,发起方一侧永远干净,
+// 只有收款方的 DayInCount 在涨,闸门必须在第 limit+1 笔上关闭。
+func TestEvaluateRiskAccumulatesReceiverCountAcrossSenders(t *testing.T) {
+	const now int64 = 1_700_000_000
+	const limit = 3
+	cfg := baseConfig()
+	cfg.ReceiverDailyMaxInCount = limit
+
+	receiver := UserState{UserId: 999}
+	bucket := dayBucket(now)
+	for i := 1; i <= limit; i++ {
+		sender := UserState{UserId: i} // 每笔都是一个全新的小号
+		require.NoError(t, evaluateRisk(sender, receiver, cfg, 1, now), "第 %d 笔应放行", i)
+		applyReservation(&sender, &receiver, 1, 1, now, bucket)
+	}
+	assert.Equal(t, limit, receiver.DayInCount)
+
+	err := evaluateRisk(UserState{UserId: limit + 1}, receiver, cfg, 1, now)
+	require.Error(t, err)
+	assert.Same(t, errReceiverDailyInExceeded, err)
+}
+
 // TestEvaluateRiskTreatsZeroAsUnlimited 固化"配置 0 = 不限制"的口径。
 // 若哪天改成"0 = 禁止",所有沿用默认配置的部署会在升级瞬间全线拒绝划转。
 func TestEvaluateRiskTreatsZeroAsUnlimited(t *testing.T) {
 	cfg := config.Transfer{}
-	state := UserState{DayOutQuota: math.MaxInt32, DayOutCount: 9999, LastOutAt: 1_700_000_000}
-	assert.NoError(t, evaluateRisk(state, cfg, math.MaxInt32, 1_700_000_000))
+	sender := UserState{DayOutQuota: math.MaxInt32, DayOutCount: 9999, LastOutAt: 1_700_000_000}
+	receiver := UserState{DayInCount: 9999}
+	assert.NoError(t, evaluateRisk(sender, receiver, cfg, math.MaxInt32, 1_700_000_000))
 }
 
 // TestReservationRoundTrip 预占与退还必须完全对称,否则失败的划转会永久吃掉用户额度。

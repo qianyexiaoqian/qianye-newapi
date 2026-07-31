@@ -18,7 +18,13 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { StatusVariant } from '@/components/status-badge'
 
-import type { QyAvailState } from './types'
+import { formatQyAvailability, formatQyMs, QY_EMPTY_TEXT } from '../ops/format'
+import type {
+  QyAvailMetricKey,
+  QyAvailPerf,
+  QyAvailSortMode,
+  QyAvailState,
+} from './types'
 
 /** 时间范围。上限 720 小时（30 天）与后端 `maxRangeHours` 对齐。 */
 export const QY_AVAIL_RANGES = [
@@ -31,9 +37,180 @@ export const QY_AVAIL_RANGES = [
 
 export const QY_AVAIL_SORTS = [
   { value: 'availability_asc', labelKey: 'qy_avl_sort_worst' },
+  { value: 'latency_desc', labelKey: 'qy_avl_sort_latency' },
+  { value: 'ttft_desc', labelKey: 'qy_avl_sort_ttft' },
+  { value: 'tps_asc', labelKey: 'qy_avl_sort_tps' },
   { value: 'requests_desc', labelKey: 'qy_avl_sort_requests' },
   { value: 'model_asc', labelKey: 'qy_avl_sort_model' },
 ] as const
+
+/** 生成速度。`null` 与 `<= 0` 一律占位符 —— 见 {@link QY_EMPTY_TEXT} 的理由。 */
+export function formatQyTps(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value <= 0) {
+    return QY_EMPTY_TEXT
+  }
+  return `${value.toFixed(2)} t/s`
+}
+
+/**
+ * 主指标取值所需的最小字段集。矩阵格子与趋势点都满足它，
+ * 于是热力图、表格、趋势图三处共用同一份取值与格式化 ——
+ * 不会出现「矩阵里 1.2s、点开抽屉变成 1200」这种自相矛盾。
+ */
+export type QyAvailMetricRow = QyAvailPerf & {
+  availability: number | null
+  counted: number
+}
+
+export type QyAvailMetricDef = {
+  key: QyAvailMetricKey
+  labelKey: string
+  /** 该指标的「最差优先」排序。主指标一变就跟着变，理由见 QyAvailSortMode。 */
+  sort: QyAvailSortMode
+  /** 取值。`null` = 无数据 / 样本不足，调用方一律渲染成占位符，绝不补 0。 */
+  valueOf: (row: QyAvailMetricRow) => number | null
+  /** 该指标在这一格 / 这个时间点上的样本数，用来解释「为什么是横杠」。 */
+  samplesOf: (row: QyAvailMetricRow) => number
+  format: (value: number | null | undefined) => string
+  /** 数值越大越好？可用率与速度是，两个延迟不是。 */
+  higherIsBetter: boolean
+  /** 图表 y 轴的单位后缀。空串表示不加后缀。 */
+  axisSuffix: string
+}
+
+/**
+ * 矩阵可切换的四个主指标。
+ *
+ * 用户的原话是「按照分组显示该分组模型可用率，延迟，速度等等」——
+ * 这四项就是那句话的全部内容，一个不多一个不少。数据在一次矩阵请求里
+ * 已经全部拿到，切换主指标只换展示与排序，不会多打一次请求。
+ */
+export const QY_AVAIL_METRICS: QyAvailMetricDef[] = [
+  {
+    key: 'availability',
+    labelKey: 'qy_avl_availability',
+    sort: 'availability_asc',
+    valueOf: (row) => row.availability,
+    samplesOf: (row) => row.counted,
+    format: formatQyAvailability,
+    higherIsBetter: true,
+    axisSuffix: '%',
+  },
+  {
+    key: 'latency',
+    labelKey: 'qy_avl_latency',
+    sort: 'latency_desc',
+    valueOf: (row) => row.avg_latency_ms,
+    samplesOf: (row) => row.latency_samples,
+    format: formatQyMs,
+    higherIsBetter: false,
+    axisSuffix: ' ms',
+  },
+  {
+    key: 'ttft',
+    labelKey: 'qy_avl_ttft',
+    sort: 'ttft_desc',
+    valueOf: (row) => row.avg_ttft_ms,
+    samplesOf: (row) => row.ttft_samples,
+    format: formatQyMs,
+    higherIsBetter: false,
+    axisSuffix: ' ms',
+  },
+  {
+    key: 'tps',
+    labelKey: 'qy_avl_tps',
+    sort: 'tps_asc',
+    valueOf: (row) => row.avg_tps,
+    samplesOf: (row) => row.speed_samples,
+    format: formatQyTps,
+    higherIsBetter: true,
+    axisSuffix: ' t/s',
+  },
+]
+
+export function getQyAvailMetric(key: QyAvailMetricKey): QyAvailMetricDef {
+  return QY_AVAIL_METRICS.find((m) => m.key === key) ?? QY_AVAIL_METRICS[0]
+}
+
+/** 一行（同一个模型）中各分组的最好 / 最差取值。`null` 表示不值得比。 */
+export type QyAvailRowScale = { best: number; worst: number } | null
+
+/** 相对分档的显著性下限：差距不到 15% 一律不着色。 */
+const QY_AVAIL_TONE_MIN_SPREAD = 0.15
+
+/**
+ * 性能指标的着色是「同一个模型在各可见分组之间的相对快慢」，**不是绝对阈值**。
+ *
+ * 绝对阈值在这里是错的：端到端延迟含完整生成时间，一个长回复 30 秒完全正常，
+ * 而 gpt-5-nano 的 30 秒是灾难 —— 拿同一条线去卡所有模型，结果不是信息是噪声。
+ * 而「同一个模型，哪个分组更快」恰好就是用户打开这一页要问的问题。
+ *
+ * 只有一个分组有数据时不着色：一个点没有「相对」可言。
+ */
+export function qyAvailRowScale(
+  values: number[],
+  higherIsBetter: boolean
+): QyAvailRowScale {
+  if (values.length < 2) return null
+  const max = Math.max(...values)
+  const min = Math.min(...values)
+  if (max === min) return null
+  // 分母取 max(|best|, 1)：best 接近 0 时（例如 TTFT 只有几毫秒）
+  // 任何绝对差都会被算成巨大的相对差，凭空造出红绿。
+  const best = higherIsBetter ? max : min
+  const worst = higherIsBetter ? min : max
+  if (
+    Math.abs(max - min) / Math.max(Math.abs(best), 1) <
+    QY_AVAIL_TONE_MIN_SPREAD
+  ) {
+    return null
+  }
+  return { best, worst }
+}
+
+export type QyAvailTone = 'bad' | 'good' | 'none'
+
+export function qyAvailToneOf(
+  value: number | null,
+  scale: QyAvailRowScale
+): QyAvailTone {
+  if (value == null || scale == null) return 'none'
+  if (value === scale.best) return 'good'
+  if (value === scale.worst) return 'bad'
+  return 'none'
+}
+
+/**
+ * 相对分档的样式。沿用六态那套「颜色 + 符号」双编码：
+ * 色盲用户只看颜色分不出好坏，而这一页的信息量全在颜色上。
+ */
+export const QY_AVAIL_TONE_STYLES: Record<
+  QyAvailTone,
+  { cellClass: string; glyph: string; labelKey: string }
+> = {
+  good: {
+    cellClass: 'bg-success/15 text-success',
+    glyph: '✓',
+    labelKey: 'qy_avl_tone_best',
+  },
+  bad: {
+    cellClass: 'bg-destructive/15 text-destructive',
+    glyph: '!',
+    labelKey: 'qy_avl_tone_worst',
+  },
+  none: {
+    cellClass: 'bg-muted/40',
+    glyph: '·',
+    labelKey: 'qy_avl_tone_plain',
+  },
+}
+
+/** 有格子但该指标没有取值时的样式。绝不复用六态的绿色 —— 那会把
+ *  「可用率正常但延迟样本不足」画成一个绿色的空格。 */
+export const QY_AVAIL_NO_VALUE_STYLE = {
+  cellClass: 'bg-transparent text-muted-foreground',
+  glyph: '·',
+}
 
 type QyAvailStateStyle = {
   labelKey: string

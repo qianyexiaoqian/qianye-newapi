@@ -18,10 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { queryOptions } from '@tanstack/react-query'
 
-import { qyGet, qyPost, qyPut } from '../../lib/api'
+import { qyDelete, qyGet, qyPost, qyPut } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import type { QyPage } from '../../lib/types'
-import type { QyAdminAccrual, QyCommissionAdminConfig } from './types'
+import type {
+  QyAdminAccrual,
+  QyCommissionAdminConfig,
+  QyCommissionGroupRate,
+} from './types'
 
 export function qyAdminCommissionConfigQuery() {
   return queryOptions({
@@ -33,16 +37,42 @@ export function qyAdminCommissionConfigQuery() {
 /**
  * 修改运营参数。
  *
- * 请求体是 `{key: int64}` 的稀疏 map，只传改动过的键 —— 后端逐键写
- * `qy_settings` 并各写一条审计，把没改的键一起发过去会污染"谁在什么时候
+ * 请求体是 `{key: string}` 的稀疏 map，只传改动过的键 —— 后端逐键写
+ * `qy_settings` 并写一条审计，把没改的键一起发过去会污染"谁在什么时候
  * 把 3% 改成 8%"的追溯轨迹。
  *
- * 刻意忽略响应体：后端返回的 `effective` 用的是 Go 结构体字段名
- * （`TopupRateBps` 而非 `topup_rate_bps`），与 GET 的形状不一致。
- * 调用方成功后重新 GET 一次即可，别去适配那份大小写。
+ * 取值一律用**字符串**发送：返佣比例支持两位小数，而 JSON number 到了
+ * JS 这一侧就是二进制浮点，10.25 有可能被序列化成 10.249999999999998。
+ * 字符串把运营填的那个数字原样交给后端的 decimal 解析。
+ *
+ * 调用方成功后重新 GET 一次即可，别去适配响应体。
  */
-export function qyUpdateCommissionConfig(patch: Record<string, number>) {
+export function qyUpdateCommissionConfig(patch: Record<string, string>) {
   return qyPut<unknown>('/admin/commission/config', patch)
+}
+
+/**
+ * 新增或覆盖一条分组费率规则（按分组名 upsert）。
+ *
+ * 比例是百分比字符串，同上：不经过 JS 的 Number。
+ * 后端每次都会写审计 —— 分组费率比全局费率更隐蔽，只影响一部分用户，
+ * 不看审计根本查不出是谁改的。
+ */
+export function qyUpsertCommissionGroupRate(input: {
+  group_name: string
+  topup_rate_percent: string
+  consume_rate_percent: string
+  enabled: boolean
+  remark: string
+}) {
+  return qyPut<QyCommissionGroupRate>('/admin/commission/group-rates', input)
+}
+
+/** 删除一条分组费率规则。该分组随即回落到全局默认费率，不是变成零费率。 */
+export function qyDeleteCommissionGroupRate(groupName: string) {
+  return qyDelete<{ group_name: string; deleted: boolean }>(
+    `/admin/commission/group-rates?group_name=${encodeURIComponent(groupName)}`
+  )
 }
 
 export type QyAdminAccrualFilters = {

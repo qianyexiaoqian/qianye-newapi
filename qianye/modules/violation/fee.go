@@ -151,6 +151,57 @@ func applyBalancePolicy(res *feeResult, available int64) {
 	}
 }
 
+// poolBalance 读"这次扣款实际会命中的那个池"的可用余额。
+//
+// 分支判据必须与 service.PostConsumeQuota 完全一致(service/quota.go 按
+// relayInfo.BillingSource 路由到钱包或订阅池),否则"判定池"与"扣款池"会错位:
+//   - 订阅用户的钱包通常是 0。读钱包 → clamp 策略下永远罚不到款,记录还写着
+//     "余额不足"误导管理员;ban 策略下 available(0) < want 直接 ForceBanWeight,
+//     订阅池里明明有钱却首次违规即自动封号。
+//   - 反向:钱包有钱、订阅池快空 → 判定通过,但 PostConsumeUserSubscriptionDelta
+//     会因超出 amount_total 报错,罚款静默丢失。
+//
+// PreRelayGuard 阶段 BillingSource 尚未赋值(PreConsumeBilling 在挂载点之后),
+// 此时走钱包分支与那一刻的实际扣款目标一致 —— 错位只出现在 post 阶段,
+// 所以只测 prompt 阶段永远发现不了这个问题。
+//
+// 第二个返回值为 false 表示余额未知(订阅 id 缺失或读库失败),调用方必须按
+// "不扣费也不据此封号"处理,绝不能拿 0 顶上去当成"余额不足"。
+func poolBalance(info *relaycommon.RelayInfo) (int64, bool) {
+	if info == nil {
+		return 0, false
+	}
+	if info.BillingSource != service.BillingSourceSubscription {
+		q, err := model.GetUserQuota(info.UserId, false)
+		if err != nil {
+			common.SysError("qianye/violation: 读取用户钱包余额失败,本次不扣费: " + err.Error())
+			return 0, false
+		}
+		return int64(q), true
+	}
+	if info.SubscriptionId <= 0 {
+		// PostConsumeQuota 在这种状态下会直接返回 "subscription id is missing",
+		// 扣费注定失败,更不该据此判定"余额不足"去封号。
+		common.SysError("qianye/violation: 计费来源为订阅但缺少订阅 id,本次不扣费")
+		return 0, false
+	}
+	var sub model.UserSubscription
+	if err := model.DB.Where("id = ?", info.SubscriptionId).Take(&sub).Error; err != nil {
+		common.SysError("qianye/violation: 读取订阅池余额失败,本次不扣费: " + err.Error())
+		return 0, false
+	}
+	// amount_total <= 0 在 PostConsumeUserSubscriptionDelta 里表示不限额,
+	// 此处按主库单笔上限处理即可(computeFee 已经把 want 压在这个上限内)。
+	if sub.AmountTotal <= 0 {
+		return int64(common.MaxQuota), true
+	}
+	remain := sub.AmountTotal - sub.AmountUsed
+	if remain < 0 {
+		remain = 0
+	}
+	return remain, true
+}
+
 // chargeFee 执行扣费并写主库计费日志。
 //
 // 影子模式在调用方就已经拦下,这里只处理真实扣费。任何失败都只落 fee_status,
@@ -160,12 +211,18 @@ func chargeFee(c *gin.Context, info *relaycommon.RelayInfo, cr *compiledRule, re
 		return
 	}
 
-	// 读的是缓存里的余额快照,与扣费不是同一个原子操作。并发违规扣费仍可能把
+	// 读到的是一个余额快照,与扣费不是同一个原子操作。并发违规扣费仍可能把
 	// 余额扣成小额负数(上界 = 并发数 × 单笔费用),这个残留竞态已知且可接受:
 	// fee_quota_want / fee_quota 两列 + 管理端负余额告警足以事后发现与纠正。
-	available := int64(0)
-	if q, err := model.GetUserQuota(info.UserId, false); err == nil {
-		available = int64(q)
+	available, known := poolBalance(info)
+	if !known && config.Get().Violation.InsufficientBalancePolicy != config.InsufficientNegative {
+		// 余额读失败时绝不把它当成 0:clamp 策略会写下一条"余额不足"的假记录,
+		// ban 策略会把一次 Redis/DB 抖动直接变成一次自动封号。
+		// (negative 策略压根不看余额,所以那条分支不受影响。)
+		res.Status = FeeStatusFailed
+		res.Err = "余额读取失败,本次不扣费"
+		res.Charged = 0
+		return
 	}
 	applyBalancePolicy(res, available)
 	if res.Charged <= 0 {
@@ -176,6 +233,10 @@ func chargeFee(c *gin.Context, info *relaycommon.RelayInfo, cr *compiledRule, re
 	if res.Charged > int64(common.MaxQuota) {
 		res.Charged = int64(common.MaxQuota)
 	}
+
+	// 冻结扣费路由:退款必须退回同一个池、同一个令牌,事后无法反推。详见 Record 的注释。
+	rec.BillingSource = info.BillingSource
+	rec.SubscriptionId = info.SubscriptionId
 
 	if err := service.PostConsumeQuota(info, int(res.Charged), 0, true); err != nil {
 		res.Status = FeeStatusFailed

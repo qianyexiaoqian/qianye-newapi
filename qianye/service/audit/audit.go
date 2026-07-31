@@ -5,6 +5,8 @@
 package audit
 
 import (
+	"unicode/utf8"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
@@ -83,16 +85,16 @@ func build(e Entry) *qymodel.AuditLog {
 		Action:       e.Action,
 		ActorType:    e.ActorType,
 		ActorUserId:  e.ActorUserId,
-		ActorName:    truncate(e.ActorName, 64),
+		ActorName:    Truncate(e.ActorName, 64),
 		TargetUserId: e.TargetUserId,
 		AmountQuota:  e.AmountQuota,
 		AmountFiat:   e.AmountFiat,
 		Currency:     e.Currency,
 		FrozenRate:   e.FrozenRate,
 		Result:       e.Result,
-		Reason:       truncate(e.Reason, 512),
-		BeforeSnap:   truncate(e.BeforeSnap, maxSnap),
-		AfterSnap:    truncate(e.AfterSnap, maxSnap),
+		Reason:       Truncate(e.Reason, 512),
+		BeforeSnap:   Truncate(e.BeforeSnap, maxSnap),
+		AfterSnap:    Truncate(e.AfterSnap, maxSnap),
 		NodeName:     common.NodeName,
 		CreatedAt:    common.GetTimestamp(),
 	}
@@ -103,20 +105,44 @@ func fillFromContext(c *gin.Context, row *qymodel.AuditLog) {
 		return
 	}
 	if config.Get().Audit.ShouldRecordIP() {
-		row.IP = truncate(c.ClientIP(), 64)
-		row.UserAgent = truncate(c.Request.UserAgent(), 256)
+		row.IP = Truncate(c.ClientIP(), 64)
+		row.UserAgent = Truncate(c.Request.UserAgent(), 256)
 	}
-	row.RequestId = truncate(c.GetString(common.RequestIdKey), 64)
+	row.RequestId = Truncate(c.GetString(common.RequestIdKey), 64)
 }
 
-// truncate 按字节截断并标注,避免超长字段被数据库静默切掉。
-func truncate(s string, max int) string {
+// Truncate 按字节上限截断并标注,切点保证落在 UTF-8 字符边界上。
+//
+// 为什么必须对齐 rune 边界:切点落在多字节字符中间会产生非法 UTF-8 尾巴,
+// 而扩展库 DSN 强制 charset=utf8mb4,MySQL 在 STRICT_TRANS_TABLES 下会以
+// 1366(Incorrect string value)拒绝**整行**。审计写入是 fail-open 的
+// (只 SysError 不阻塞业务),于是丢的不是理由的尾巴,而是"谁在什么时候拒了
+// 这笔提现、理由是什么"这条记录本身 —— 这套资金系统事后仲裁的唯一凭据。
+// 中英混排的 512 字节切点落在非边界上的概率约 2/3,不是理论风险。
+//
+// 上限按字节而不按字符是刻意的:目标列是 varchar(N)(MySQL 按字符计),
+// 按字节卡只会更保守,永远不会溢出。
+//
+// 导出是为了让 twophase 的 last_error / uncertain 理由复用同一套语义 ——
+// 那几处落的也是 varchar(512),同一类裸字节切。
+func Truncate(s string, max int) string {
 	if max <= 0 || len(s) <= max {
 		return s
 	}
 	const mark = "...[truncated]"
 	if max <= len(mark) {
-		return s[:max]
+		return s[:safeCut(s, max)]
 	}
-	return s[:max-len(mark)] + mark
+	return s[:safeCut(s, max-len(mark))] + mark
+}
+
+// safeCut 返回不超过 n 且落在 rune 起始位上的切点。
+func safeCut(s string, n int) int {
+	if n >= len(s) {
+		return len(s)
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return n
 }

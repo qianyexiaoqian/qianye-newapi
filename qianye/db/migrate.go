@@ -18,6 +18,24 @@ const migrateLockName = "qy_schema_migrate"
 // 超时不是错误 —— 说明别的节点正在迁移,本节点跳过即可。
 const migrateLockTimeoutSeconds = 30
 
+// migrateTimeout 是整个迁移过程的预算。DDL 在大表上很慢,给足。
+const migrateTimeout = 30 * time.Minute
+
+// openMigrationConn 打开一条迁移专用连接。
+//
+// 独立于业务连接池,DSN 里去掉了读写超时(见 migrationDSN),
+// 且只允许一条连接 —— GET_LOCK 是连接级的,多一条都可能让释放打错地方。
+func openMigrationConn() (*sql.DB, error) {
+	cfg := config.Get().Database
+	sqlDB, err := sql.Open("mysql", migrationDSN(cfg))
+	if err != nil {
+		return nil, fmt.Errorf("qianye: 打开迁移专用连接失败: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	return sqlDB, nil
+}
+
 // Migrate 执行扩展库的自动迁移。
 //
 // 两道门缺一不可:
@@ -42,15 +60,29 @@ func Migrate(models ...any) error {
 		return nil
 	}
 
-	sqlDB, err := gdb.DB()
+	// 迁移必须走一条独立的、不受 readTimeout 约束的连接。
+	//
+	// 业务连接池的 DSN 里带 readTimeout(默认 30 秒),那是给热路径兜底用的:
+	// 它是驱动层"每次读结果包"的硬 deadline,与 ctx 无关,也不区分语句类型。
+	// 而迁移里有两类必然超过它的读:
+	//   1. SELECT GET_LOCK(name, 30) —— 从节点抢锁时会阻塞满 30 秒,与 readTimeout
+	//      恰好相等,谁先触发不确定。readTimeout 先到就变成错误,主程序 FatalLog,
+	//      而正确行为是"另一节点在迁移,本节点跳过"后正常启动。
+	//   2. 大表 ADD COLUMN —— 千万行的 DDL 超过 30 秒是常态。被驱动掐断后
+	//      MySQL 的 DDL 不可回滚,表会停在半迁移态。
+	//
+	// 所以这里单开一个只有一条连接的 sql.DB,DSN 去掉读写超时。
+	migDB, err := openMigrationConn()
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer migDB.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), migrateTimeout)
 	defer cancel()
 
 	// GET_LOCK / RELEASE_LOCK 必须打在同一条连接上,否则释放会作用到别的连接。
-	conn, err := sqlDB.Conn(ctx)
+	conn, err := migDB.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("qianye: 获取迁移专用连接失败: %w", err)
 	}

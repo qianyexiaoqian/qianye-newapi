@@ -27,8 +27,8 @@ For commercial licensing, please contact support@quantumnous.com
 export type QyCommissionFieldMeta = {
   labelKey: string
   hintKey: string
-  /** `bps` 万分比整数；`quota` 站内额度；`plain` 纯计数。 */
-  unit: 'bps' | 'plain' | 'quota'
+  /** `percent` 百分比（最多两位小数）；`quota` 站内额度；`plain` 纯计数。 */
+  unit: 'percent' | 'plain' | 'quota'
   min: number
   max: number
   /** 0 是否表示"不限"。是的话要在输入框旁提示，否则运营会以为填 0 等于关掉。 */
@@ -36,19 +36,19 @@ export type QyCommissionFieldMeta = {
 }
 
 export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
-  topup_rate_bps: {
+  topup_rate_percent: {
     labelKey: 'qy_cm_f_topup_rate',
-    hintKey: 'qy_cm_f_bps_hint',
-    unit: 'bps',
+    hintKey: 'qy_cm_f_percent_hint',
+    unit: 'percent',
     min: 0,
-    max: 10000,
+    max: 100,
   },
-  consume_rate_bps: {
+  consume_rate_percent: {
     labelKey: 'qy_cm_f_consume_rate',
-    hintKey: 'qy_cm_f_bps_hint',
-    unit: 'bps',
+    hintKey: 'qy_cm_f_percent_hint',
+    unit: 'percent',
     min: 0,
-    max: 10000,
+    max: 100,
   },
   min_settle_quota: {
     labelKey: 'qy_cm_f_min_settle',
@@ -102,4 +102,31 @@ export function qyCommissionFieldMeta(
   key: string
 ): QyCommissionFieldMeta | null {
   return QY_COMMISSION_FIELDS[key] ?? null
+}
+
+/** 百分比的最大小数位。与后端 `config.RatePercentUnits` 的判定一致。 */
+export const QY_PERCENT_DECIMALS = 2
+
+/**
+ * 校验一个百分比输入。
+ *
+ * 刻意不用 `Number()` 判小数位：`Number('10.005')` 之后就再也看不出原始
+ * 写了几位小数了。这里对字面量做正则，与后端"超过两位小数直接拒绝、
+ * 不四舍五入"的口径逐字对齐 —— 前端悄悄替运营把 10.005 变成 10.01，
+ * 就是一次没有人签字的加薪。
+ */
+export function qyIsValidPercent(raw: string): boolean {
+  const s = raw.trim()
+  if (!/^\d+(\.\d{1,2})?$/.test(s)) return false
+  const value = Number(s)
+  return Number.isFinite(value) && value >= 0 && value <= 100
+}
+
+/** 去掉尾随零，与后端 `FormatRatePercent` 的输出形状对齐（"10.250" → "10.25"）。 */
+export function qyNormalizePercent(raw: string): string {
+  const s = raw.trim()
+  if (!qyIsValidPercent(s)) return s
+  if (!s.includes('.')) return String(Number(s))
+  const trimmed = s.replace(/0+$/, '').replace(/\.$/, '')
+  return String(Number(trimmed))
 }

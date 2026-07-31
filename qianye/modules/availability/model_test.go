@@ -62,7 +62,7 @@ func TestAddFromAccumulatesEveryCounter(t *testing.T) {
 	src.ExcQuota, src.ExcViolation, src.ExcClientGone, src.ExcChannelTest = 8, 9, 10, 11
 	src.LatencySumMs, src.LatencyCount = 100, 5
 	src.TtftSumMs, src.TtftCount = 50, 5
-	src.OutputTokens, src.GenerationMs = 200, 1000
+	src.OutputTokens, src.GenerationMs, src.SpeedCount = 200, 1000, 5
 
 	dst := &Bucket{}
 	dst.addFrom(src)

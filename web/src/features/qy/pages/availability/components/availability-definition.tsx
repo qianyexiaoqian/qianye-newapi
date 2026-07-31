@@ -108,6 +108,13 @@ export function QyAvailabilityDefinition(props: {
                 min: props.definition.min_samples,
               })}
             </p>
+            {/* 性能维度自己的样本下限：可用率有 1000 条样本不代表首字延迟也有，
+                不写清楚，用户看到延迟列一片横杠只会以为页面坏了。 */}
+            <p>
+              {t('qy_avl_definition_perf', {
+                min: props.definition.perf_min_samples,
+              })}
+            </p>
             {/* 覆盖面的局限必须在 UI 上声明：异步任务路径不产生样本，
                 那些模型显示「无数据」而不是 0%，不写清楚就会被当成故障。 */}
             <p>{props.definition.note}</p>

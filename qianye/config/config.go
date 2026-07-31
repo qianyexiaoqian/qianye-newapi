@@ -54,17 +54,29 @@ type Database struct {
 	ConnMaxLifetimeSeconds int    `yaml:"conn_max_lifetime_seconds"`
 	ConnMaxIdleTimeSeconds int    `yaml:"conn_max_idle_time_seconds"`
 	ConnectTimeoutSeconds  int    `yaml:"connect_timeout_seconds"`
-	SlowThresholdMs        int    `yaml:"slow_threshold_ms"`
-	LogLevel               string `yaml:"log_level"`
-	AutoMigrate            *bool  `yaml:"auto_migrate"`
+	// ReadTimeoutSeconds / WriteTimeoutSeconds 是写进 DSN 的驱动层硬上界。
+	// 它们是连接级的兜底闸门(防止一条撞锁的语句占着连接等满
+	// innodb_lock_wait_timeout),不是热路径的 200ms 上界 —— 后者由 ctx 负责。
+	// 必须大于最慢的一次合法后台操作,否则正常的结算事务会被驱动层切断。
+	ReadTimeoutSeconds  int    `yaml:"read_timeout_seconds"`
+	WriteTimeoutSeconds int    `yaml:"write_timeout_seconds"`
+	SlowThresholdMs     int    `yaml:"slow_threshold_ms"`
+	LogLevel            string `yaml:"log_level"`
+	AutoMigrate         *bool  `yaml:"auto_migrate"`
 }
 
 // Runtime 运行期行为与降级策略。
 type Runtime struct {
 	// HotPathFailOpen 决定新库不可用时 relay 热路径的行为。
 	// 必须保持 true:置 false 会让扩展成为主业务的单点故障。
-	HotPathFailOpen         *bool `yaml:"hot_path_fail_open"`
-	HotPathTimeoutMs        int   `yaml:"hot_path_timeout_ms"`
+	HotPathFailOpen  *bool `yaml:"hot_path_fail_open"`
+	HotPathTimeoutMs int   `yaml:"hot_path_timeout_ms"`
+	// HotAsyncTimeoutMs 是队列 worker 的预算,与 HotPathTimeoutMs 分开。
+	//
+	// worker 跑在自己的 goroutine 上,不占 relay 线程,因此没有理由套用为
+	// "别拖住 relay"设计的几百毫秒。返佣的一次冷缓存轮需要五六次数据库往返,
+	// 用同步预算去卡它,超时后既无重试也无补偿,佣金直接永久丢失。
+	HotAsyncTimeoutMs       int   `yaml:"hot_async_timeout_ms"`
 	ColdPathTimeoutMs       int   `yaml:"cold_path_timeout_ms"`
 	HealthIntervalSeconds   int   `yaml:"health_interval_seconds"`
 	BreakerFailureThreshold int   `yaml:"breaker_failure_threshold"`
@@ -129,9 +141,27 @@ type Transfer struct {
 // 违规扣费产生的消费日志(other.violation_fee == true)永不返佣 —— 那属于逻辑
 // 错误而非口径偏好,因此不设开关。
 type Commission struct {
-	Enabled            bool  `yaml:"enabled"`
-	TopupRateBps       int   `yaml:"topup_rate_bps"`
-	ConsumeRateBps     int   `yaml:"consume_rate_bps"`
+	Enabled bool `yaml:"enabled"`
+
+	// TopupRatePercent / ConsumeRatePercent 是全局默认返佣比例,单位是**百分比**,
+	// 最多两位小数:"10"、"10.5"、"10.25"。
+	//
+	// 用字符串而不是 float64:10.25 在二进制浮点里不可精确表示,而这是决定
+	// 平台要付多少钱的参数。加载后由 RatePercentUnits 换算成整数
+	// (百分比 × 100,10.25% → 1025),之后全程整数运算,绝不引入浮点。
+	TopupRatePercent   string `yaml:"topup_rate_percent"`
+	ConsumeRatePercent string `yaml:"consume_rate_percent"`
+
+	// TopupRateBpsDeprecated / ConsumeRateBpsDeprecated 是 1.x 的万分比字段。
+	//
+	// Deprecated: 请改用 topup_rate_percent / consume_rate_percent。
+	// 保留它们只为兼容:本包是严格解析(KnownFields(true)),直接删字段会让
+	// 所有已有部署在升级二进制的那一刻启动失败。加载时换算进新字段并告警。
+	//
+	// 必须是指针:0 是合法费率(关掉返佣),普通 int 无法区分"写了 0"和"没写"。
+	TopupRateBpsDeprecated   *int `yaml:"topup_rate_bps"`
+	ConsumeRateBpsDeprecated *int `yaml:"consume_rate_bps"`
+
 	Levels             int   `yaml:"levels"`
 	MinSettleQuota     int64 `yaml:"min_settle_quota"`
 	MaxPerOrderQuota   int64 `yaml:"max_per_order_quota"`
@@ -170,6 +200,15 @@ type Withdraw struct {
 	// 收款信息属 PII,明文落库不可接受。
 	PIIKey        string `yaml:"pii_key"`
 	PIIKeyVersion int    `yaml:"pii_key_version"`
+	// PIIKeysRetired 是已停用的历史密钥(版本号 → base64 密钥),用于解密轮换之前
+	// 写入的密文。KeyVersion 列存在的全部意义就在这里。
+	//
+	// 轮换步骤:把当前 pii_key 连同它的 pii_key_version 搬进本表,再填新的 pii_key
+	// 与更大的 pii_key_version。少了搬运这一步,队列里全部待打款单的收款账号会
+	// 同时变成不可解密 —— 钱打不出去,而佣金还锁在 frozen 里。
+	//
+	// 旧密钥要留到对应密文被 pii_retention_days 清干净为止,不能提前删。
+	PIIKeysRetired map[int]string `yaml:"pii_keys_retired"`
 	// DigestKey 独立于 PIIKey 且不轮换,用于跨账户风控索引。
 	// 与加密密钥分离,否则轮换后历史 digest 全部失效。
 	DigestKey string `yaml:"digest_key"`
@@ -183,7 +222,10 @@ type Withdraw struct {
 	MaxQuotaPerOrder int64 `yaml:"max_quota_per_order"`
 	DailyMaxQuota    int64 `yaml:"daily_max_quota"`
 	// PIIRetentionDays 收款信息的保留天数,到期后清除密文只保留脱敏串。
-	// 收款信息属个人敏感信息,不应在提现完成后无限期留存。0 表示不清理。
+	// 收款信息属个人敏感信息,不应在提现完成后无限期留存。
+	//
+	// 未配置(0)会被 applyDefaults 补成 180 —— 清理默认开着是刻意的:
+	// 少配一个键就让一批银行卡号永久留存,不该是默认结局。要彻底关掉请填负数。
 	PIIRetentionDays int `yaml:"pii_retention_days"`
 }
 
@@ -203,11 +245,16 @@ type LogMetrics struct {
 }
 
 // GroupVisibility 无权分组泄漏修复。
+//
+// 刻意没有 filter_group_api:分组 API(controller.GetUserGroups)本身就是
+// GroupRatio ∩ service.GetUserUsableGroups 的交集,匿名请求退化为运营方
+// 主动配置的公开分组,不存在泄漏,没有任何东西可过滤。留着一个恒真却
+// 不接任何代码的开关,只会让运维以为那一路也被"关掉过滤"影响 —— 详见
+// qianye/modules/groupvis/groupvis.go 的说明。
 type GroupVisibility struct {
 	Enabled           *bool `yaml:"enabled"`
 	FilterPricing     *bool `yaml:"filter_pricing"`
 	FilterPerfMetrics *bool `yaml:"filter_perf_metrics"`
-	FilterGroupAPI    *bool `yaml:"filter_group_api"`
 	IncludeAutoGroup  *bool `yaml:"include_auto_group"`
 }
 
@@ -284,7 +331,6 @@ func (l LogMetrics) CacheRatioColumn() bool    { return boolOr(l.ShowCacheRatio,
 func (g GroupVisibility) On() bool             { return boolOr(g.Enabled, true) }
 func (g GroupVisibility) PricingOn() bool      { return boolOr(g.FilterPricing, true) }
 func (g GroupVisibility) PerfMetricsOn() bool  { return boolOr(g.FilterPerfMetrics, true) }
-func (g GroupVisibility) GroupAPIOn() bool     { return boolOr(g.FilterGroupAPI, true) }
 func (g GroupVisibility) KeepAutoGroup() bool  { return boolOr(g.IncludeAutoGroup, true) }
 func (v Violation) IsShadow() bool             { return boolOr(v.ShadowMode, true) }
 

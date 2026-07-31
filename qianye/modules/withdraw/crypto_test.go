@@ -3,6 +3,7 @@ package withdraw
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/QuantumNous/new-api/qianye/config"
@@ -11,11 +12,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// 两把 base64 编码的 32 字节测试密钥。内容无所谓,长度必须正确 ——
+// 三把 base64 编码的 32 字节测试密钥。内容无所谓,长度必须正确 ——
 // 配置校验会拒绝任何非 32 字节的密钥。
 const (
 	testPIIKeyA = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 	testPIIKeyB = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="
+	testPIIKeyC = "Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0M="
 )
 
 // loadTestConfig 用一份临时 YAML 驱动 config 全局快照。
@@ -24,6 +26,30 @@ const (
 // 本身就是被测行为的一部分,绕过它们的测试证明不了线上会怎么跑。
 func loadTestConfig(t *testing.T, piiKey, digestKey string) {
 	t.Helper()
+	loadTestConfigYAML(t, `
+enabled: true
+database:
+  dsn: "u:p@tcp(127.0.0.1:3306)/qy"
+withdraw:
+  enabled: true
+  methods: ["quota", "fiat"]
+  pii_key: "`+piiKey+`"
+  digest_key: "`+digestKey+`"
+`)
+}
+
+func loadTestConfigYAML(t *testing.T, yaml string) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "qianye.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(yaml), 0o600))
+	t.Setenv(config.EnvConfigPath, p)
+	require.NoError(t, config.Load())
+}
+
+// loadRotatedConfig 模拟一次完整的密钥轮换:新钥启用为 v2,旧钥登记进
+// pii_keys_retired[1]。这正是运维按注释操作之后应有的配置形态。
+func loadRotatedConfig(t *testing.T, activeKey string, activeVersion int, retired map[int]string) {
+	t.Helper()
 	yaml := `
 enabled: true
 database:
@@ -31,13 +57,15 @@ database:
 withdraw:
   enabled: true
   methods: ["quota", "fiat"]
-  pii_key: "` + piiKey + `"
-  digest_key: "` + digestKey + `"
+  pii_key: "` + activeKey + `"
+  pii_key_version: ` + strconv.Itoa(activeVersion) + `
+  digest_key: "digest-secret"
+  pii_keys_retired:
 `
-	p := filepath.Join(t.TempDir(), "qianye.yaml")
-	require.NoError(t, os.WriteFile(p, []byte(yaml), 0o600))
-	t.Setenv(config.EnvConfigPath, p)
-	require.NoError(t, config.Load())
+	for v, k := range retired {
+		yaml += "    " + strconv.Itoa(v) + `: "` + k + `"` + "\n"
+	}
+	loadTestConfigYAML(t, yaml)
 }
 
 func samplePayee() map[string]string {
@@ -52,14 +80,17 @@ func TestSealOpenPayee_RoundTrip(t *testing.T) {
 	loadTestConfig(t, testPIIKeyA, "digest-secret")
 	data := samplePayee()
 
-	nonce, ciphertext, err := sealPayee(data, withdrawAAD("WD1"))
+	nonce, ciphertext, version, err := sealPayee(data, withdrawAAD("WD1"))
 	require.NoError(t, err)
 	require.Len(t, nonce, 12)
 	require.NotEmpty(t, ciphertext)
+	// 版本号必须由 sealPayee 一并返回:调用方另读一次配置的话,
+	// 恰好落在热更新两侧就会把 v1 的密文标成 v2,那一行从此永远解不开。
+	assert.Equal(t, 1, version)
 	// 明文绝不能以任何形式出现在密文里。
 	assert.NotContains(t, string(ciphertext), "6214830112345678")
 
-	got, err := openPayee(nonce, ciphertext, withdrawAAD("WD1"))
+	got, err := openPayee(nonce, ciphertext, withdrawAAD("WD1"), version)
 	require.NoError(t, err)
 	assert.Equal(t, data, got)
 }
@@ -68,33 +99,104 @@ func TestSealOpenPayee_RoundTrip(t *testing.T) {
 // 解密必须失败,而不是安静地解出一份属于别人的银行卡号。
 func TestOpenPayee_RejectsForeignAAD(t *testing.T) {
 	loadTestConfig(t, testPIIKeyA, "digest-secret")
-	nonce, ciphertext, err := sealPayee(samplePayee(), withdrawAAD("WD1"))
+	nonce, ciphertext, version, err := sealPayee(samplePayee(), withdrawAAD("WD1"))
 	require.NoError(t, err)
 
-	_, err = openPayee(nonce, ciphertext, withdrawAAD("WD2"))
+	_, err = openPayee(nonce, ciphertext, withdrawAAD("WD2"), version)
 	assert.ErrorIs(t, err, errPayeeUndecryptable)
 }
 
 func TestOpenPayee_RejectsTamperedCipher(t *testing.T) {
 	loadTestConfig(t, testPIIKeyA, "digest-secret")
-	nonce, ciphertext, err := sealPayee(samplePayee(), withdrawAAD("WD1"))
+	nonce, ciphertext, version, err := sealPayee(samplePayee(), withdrawAAD("WD1"))
 	require.NoError(t, err)
 
 	ciphertext[0] ^= 0xFF
-	_, err = openPayee(nonce, ciphertext, withdrawAAD("WD1"))
+	_, err = openPayee(nonce, ciphertext, withdrawAAD("WD1"), version)
 	assert.ErrorIs(t, err, errPayeeUndecryptable)
 }
 
-func TestOpenPayee_RejectsRotatedKey(t *testing.T) {
-	loadTestConfig(t, testPIIKeyA, "digest-secret")
-	nonce, ciphertext, err := sealPayee(samplePayee(), withdrawAAD("WD1"))
+// B8:密钥轮换是 KeyVersion 列存在的全部理由。
+//
+// 修复前 openPayee 永远只读"当前"那把钥匙:运维按注释把 pii_key 换成新的、
+// pii_key_version 从 1 改成 2、重启,此后队列里【全部】待打款单的收款账号
+// 一起变成不可解密 —— 钱打不出去,而佣金还锁在 frozen 里。
+func TestOpenPayee_RotatedKeyStillOpensOldCiphertext(t *testing.T) {
+	loadRotatedConfig(t, testPIIKeyA, 1, nil)
+	nonce, ciphertext, version, err := sealPayee(samplePayee(), withdrawAAD("WD1"))
+	require.NoError(t, err)
+	require.Equal(t, 1, version)
+
+	// 轮换:新钥启用为 v2,旧钥登记为 v1。
+	loadRotatedConfig(t, testPIIKeyB, 2, map[int]string{1: testPIIKeyA})
+
+	got, err := openPayee(nonce, ciphertext, withdrawAAD("WD1"), version)
+	require.NoError(t, err)
+	assert.Equal(t, samplePayee(), got)
+
+	// 新写入的密文用新钥、标新版本,而且不能被旧钥解开。
+	newNonce, newCipher, newVersion, err := sealPayee(samplePayee(), withdrawAAD("WD2"))
+	require.NoError(t, err)
+	assert.Equal(t, 2, newVersion)
+	_, err = openPayee(newNonce, newCipher, withdrawAAD("WD2"), 1)
+	assert.ErrorIs(t, err, errPayeeUndecryptable)
+}
+
+// 轮换时忘了把旧钥搬进 pii_keys_retired 是最典型的运维事故。
+// 它必须与"密文坏了"区分开:前者要让人去补配置(500),后者才是
+// "请联系用户重新提供"(400)。混成一个 code 会把配置疏漏包装成一批用户的锅。
+func TestOpenPayee_MissingRetiredKeyIsAnOpsError(t *testing.T) {
+	loadRotatedConfig(t, testPIIKeyA, 1, nil)
+	nonce, ciphertext, _, err := sealPayee(samplePayee(), withdrawAAD("WD1"))
 	require.NoError(t, err)
 
-	loadTestConfig(t, testPIIKeyB, "digest-secret")
-	_, err = openPayee(nonce, ciphertext, withdrawAAD("WD1"))
-	// 换钥之后旧密文解不开是可预期的运维状态,必须是一个可识别的业务错误
-	// (前端据此提示"请联系用户重新提供"),而不是 500。
-	assert.ErrorIs(t, err, errPayeeUndecryptable)
+	loadRotatedConfig(t, testPIIKeyB, 2, nil) // 忘了登记 v1
+
+	_, err = openPayee(nonce, ciphertext, withdrawAAD("WD1"), 1)
+	assert.ErrorIs(t, err, errPIIKeyMissingVersion)
+	assert.NotErrorIs(t, err, errPayeeUndecryptable)
+}
+
+// 版本选钥必须逐行生效:同一次请求里既有旧版本行也有新版本行是轮换期的常态
+// (队列里的老单 + 新提交的单)。
+func TestPiiKeyForVersion_PicksPerRow(t *testing.T) {
+	loadRotatedConfig(t, testPIIKeyC, 3, map[int]string{1: testPIIKeyA, 2: testPIIKeyB})
+
+	cases := []struct {
+		name    string
+		version int
+		want    string
+	}{
+		{"当前版本", 3, testPIIKeyC},
+		{"上一代", 2, testPIIKeyB},
+		{"更早的一代", 1, testPIIKeyA},
+		// 0 出现在 KeyVersion 列加上之前的历史行与脏数据上:按当前钥匙试是
+		// 唯一有根据的猜测,解不开也只会回落到 errPayeeUndecryptable。
+		{"未记录版本按当前钥匙试", 0, testPIIKeyC},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := piiKeyForVersion(tc.version)
+			require.NoError(t, err)
+			want, err := decodePIIKey(tc.want)
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+		})
+	}
+
+	_, err := piiKeyForVersion(9)
+	assert.ErrorIs(t, err, errPIIKeyMissingVersion)
+}
+
+// pii_key_version 未配置时必须与 applyDefaults、以及 KeyVersion 列的默认值
+// 一起归一到 1。三者取值一旦不同,新写入的行就会被标成一个查不到密钥的版本。
+func TestActiveKeyVersion_DefaultsToOne(t *testing.T) {
+	loadTestConfig(t, testPIIKeyA, "digest-secret") // YAML 里没写 pii_key_version
+	_, _, version, err := sealPayee(samplePayee(), withdrawAAD("WD1"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, version)
+	assert.Equal(t, 1, activeKeyVersion(config.Withdraw{}))
+	assert.Equal(t, 1, activeKeyVersion(config.Withdraw{PIIKeyVersion: -3}))
 }
 
 // 指纹必须与加密密钥完全解耦:密钥轮换后历史指纹若失效,
@@ -160,20 +262,16 @@ func TestCanonicalPayee_NoDelimiterAmbiguity(t *testing.T) {
 func TestPayeeCrypto_FailsWithoutKeys(t *testing.T) {
 	// 密钥缺失时法币方式在配置校验阶段就会被拒,这里模拟"只开 quota"的部署:
 	// 此时任何 PII 操作都必须失败,绝不允许降级为明文落库。
-	yaml := `
+	loadTestConfigYAML(t, `
 enabled: true
 database:
   dsn: "u:p@tcp(127.0.0.1:3306)/qy"
 withdraw:
   enabled: true
   methods: ["quota"]
-`
-	p := filepath.Join(t.TempDir(), "qianye.yaml")
-	require.NoError(t, os.WriteFile(p, []byte(yaml), 0o600))
-	t.Setenv(config.EnvConfigPath, p)
-	require.NoError(t, config.Load())
+`)
 
-	_, _, err := sealPayee(samplePayee(), withdrawAAD("WD1"))
+	_, _, _, err := sealPayee(samplePayee(), withdrawAAD("WD1"))
 	assert.ErrorIs(t, err, errPIIKeyUnavailable)
 
 	_, err = payeeDigest(ChannelBank, samplePayee())

@@ -18,7 +18,7 @@ type Mod struct{ module.Base }
 
 func (Mod) Name() string { return "transfer" }
 
-func (Mod) Tables() []any { return []any{&Order{}, &UserState{}, &LookupLog{}} }
+func (Mod) Tables() []any { return []any{&Order{}, &UserState{}, &LookupLog{}, &GroupRule{}} }
 
 // InstallHooks 注册补偿回调。
 // 这里没有上游 hook 要注入,只有 twophase 需要知道"确认主库生效之后找谁收尾"。
@@ -40,6 +40,13 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 // RegisterAdminRoutes 挂载管理端接口。传入的组已挂 AdminAuth(自带操作审计)。
 func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/transfer/records", handleAdminListRecords)
+
+	// 分组划转限制。写接口都挂关键操作限流:一条规则能瞬间放开或掐断
+	// 整个分组的资金流向,不该允许被脚本高频改写。
+	g.GET("/transfer/group-rules", handleAdminListGroupRules)
+	g.POST("/transfer/group-rules", middleware.CriticalRateLimit(), handleAdminCreateGroupRule)
+	g.PUT("/transfer/group-rules/:id", middleware.CriticalRateLimit(), handleAdminUpdateGroupRule)
+	g.DELETE("/transfer/group-rules/:id", middleware.CriticalRateLimit(), handleAdminDeleteGroupRule)
 }
 
 // StartTasks 启动对账任务。

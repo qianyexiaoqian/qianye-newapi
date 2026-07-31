@@ -62,6 +62,7 @@ type counters struct {
 	ttftCount    atomic.Int64
 	outputTokens atomic.Int64
 	generationMs atomic.Int64
+	speedCount   atomic.Int64
 }
 
 var (
@@ -137,9 +138,12 @@ func (c *counters) record(s sample) {
 		c.ttftSum.Add(s.TtftMs)
 		c.ttftCount.Add(1)
 	}
+	// 三个量必须同进同出:少加 speedCount 会让样本下限凭空放宽,
+	// 少加另两个则会让下限卡住一个其实算得出来的速度。
 	if s.OutputTokens > 0 && s.GenerationMs > 0 {
 		c.outputTokens.Add(s.OutputTokens)
 		c.generationMs.Add(s.GenerationMs)
+		c.speedCount.Add(1)
 	}
 }
 
@@ -190,6 +194,7 @@ func (c *counters) drain() Bucket {
 		TtftCount:       c.ttftCount.Swap(0),
 		OutputTokens:    c.outputTokens.Swap(0),
 		GenerationMs:    c.generationMs.Swap(0),
+		SpeedCount:      c.speedCount.Swap(0),
 	}
 }
 
@@ -215,6 +220,7 @@ func (c *counters) snapshot() Bucket {
 		TtftCount:       c.ttftCount.Load(),
 		OutputTokens:    c.outputTokens.Load(),
 		GenerationMs:    c.generationMs.Load(),
+		SpeedCount:      c.speedCount.Load(),
 	}
 }
 
@@ -239,6 +245,7 @@ func (c *counters) restore(b *Bucket) {
 	c.ttftCount.Add(b.TtftCount)
 	c.outputTokens.Add(b.OutputTokens)
 	c.generationMs.Add(b.GenerationMs)
+	c.speedCount.Add(b.SpeedCount)
 }
 
 // bucketSeconds 返回生效的桶粒度。

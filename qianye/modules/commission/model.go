@@ -62,7 +62,23 @@ type Accrual struct {
 	// common.QuotaPerUnit 是可改的全局变量,从 quota 反算付款金额,
 	// 只要它被调过一次,历史订单的法币对账就全错。
 	BaseMoney decimal.Decimal `json:"base_money" gorm:"type:decimal(18,6);not null;default:0"`
-	RateBps   int             `json:"rate_bps" gorm:"not null;default:0"`
+
+	// RateUnits 是计佣当刻冻结的费率,单位是"百分比 × 100"(10.25% = 1025)。
+	//
+	// 列名保持 rate_bps 不变:数值口径与万分比完全一致(百分比 × 100 就是
+	// 万分之一),改名只能换来一次资金账本表的数据迁移和一批需要同步改的
+	// 历史查询,换不来任何东西。对外(YAML、管理端、前端)一律是百分比。
+	RateUnits int `json:"rate_bps" gorm:"column:rate_bps;not null;default:0"`
+
+	// RateGroup 是计佣当刻冻结的【被邀请人(下线)】分组。
+	//
+	// 为什么按下线的分组而不是邀请人的分组,见 grouprate.go 的口径说明。
+	// 冻结的理由与 UsdRate 完全一样:分组费率是运营可随时改的,不冻结的话
+	// 事后没有任何办法解释"这条 2 月的佣金为什么是 8% 而不是现在的 5%"。
+	//
+	// 空串表示计佣时该下线没有分组信息;费率是否命中了分组规则要看
+	// RateUnits 与当时的全局默认是否一致,本列只负责记录事实。
+	RateGroup string `json:"rate_group" gorm:"type:varchar(64);not null;default:''"`
 
 	// GrossAmount 是不截断的精确佣金,GrossAmount - SettledAmount 即待结算增量。
 	// 用增量而非 status 翻转来驱动结算,日聚合行才能"边增长边结算"。

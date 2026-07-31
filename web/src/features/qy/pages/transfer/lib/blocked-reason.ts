@@ -20,11 +20,14 @@ For commercial licensing, please contact support@quantumnous.com
  * `blocked_reason` → i18n key。
  *
  * 后端在两处下发这个字段且取值不重叠：
- *   - `preview` 回 `not_found` / `self` / `disabled`（收款人侧）
- *   - `limits`  回 `pending_exists` / `account_too_new`（发起人侧）
+ *   - `preview` 回 `not_found` / `self` / `disabled` / `group_denied`（收款人侧）
+ *   - `limits`  回 `pending_exists` / `account_too_new` / `group_blocked`（发起人侧）
  *
  * 合成一张表是因为两者最终都渲染成同一个位置的一行红字，拆两张只会让调用方
  * 记不清该查哪一张。未知取值返回 `null`，调用方回落到通用文案而不是显示裸 key。
+ *
+ * `group_denied` 与 `group_blocked` 必须是两条不同的文案：前者是「换个收款人
+ * 也许就行」，后者是「换谁都不行」。塌缩成一句，用户只会不停重试。
  */
 const BLOCKED_REASON_I18N: Record<string, string> = {
   not_found: 'qy_tr_blk_not_found',
@@ -32,6 +35,8 @@ const BLOCKED_REASON_I18N: Record<string, string> = {
   disabled: 'qy_tr_blk_disabled',
   pending_exists: 'qy_tr_blk_pending_exists',
   account_too_new: 'qy_tr_blk_account_too_new',
+  group_denied: 'qy_tr_blk_group_denied',
+  group_blocked: 'qy_tr_blk_group_blocked',
 }
 
 export function qyTransferBlockedKey(

@@ -60,27 +60,10 @@ func runTopupScan(ctx context.Context) {
 			return
 		}
 
-		var minPending int64
-		var maxScanned int64
-		for idx := range rows {
-			r := &rows[idx]
-			id := int64(r.Id)
-			if id > maxScanned {
-				maxScanned = id
-			}
-			switch r.Status {
-			case common.TopUpStatusSuccess:
-				accrueTopUp(r)
-			case common.TopUpStatusPending:
-				if r.CreateTime >= lookback && (minPending == 0 || id < minPending) {
-					minPending = id
-				}
-			}
-		}
-
-		next := maxScanned
-		if minPending > 0 {
-			next = minPending - 1
+		out := scanBatch(rows, lookback, func(r *model.TopUp) error { return accrueTopUp(ctx, r) })
+		next := lowWaterAfter(out)
+		if out.MinFailed > 0 {
+			topupHeld.Add(1)
 		}
 		// 游标只能前进。倒退会让已计佣的订单被重扫(唯一索引兜得住,
 		// 但会白白打一遍库),前进过头则会漏单。
@@ -92,10 +75,75 @@ func runTopupScan(ctx context.Context) {
 			return
 		}
 		low = next
+		if out.MinFailed > 0 {
+			// 游标已被钉在失败订单之前,继续下一批只会把同一笔再打一遍库。
+			// 本轮到此为止,剩下的窗口下一个扫描周期再处理。
+			return
+		}
 		if len(rows) < topupScanBatch {
 			return
 		}
 	}
+}
+
+// scanOutcome 汇总一批订单扫描出来的三个游标约束。
+type scanOutcome struct {
+	MaxScanned int64 // 本批实际扫到的最大 id
+	MinPending int64 // 窗口内最早的未决订单 id,0 表示没有
+	MinFailed  int64 // 本批首个计佣失败的订单 id,0 表示没有
+}
+
+// scanBatch 处理一批订单并汇总游标约束。
+//
+// accrue 作为参数传入(而不是直接调 accrueTopUp)是为了让这段"哪些订单
+// 允许游标越过"的策略能被独立验证。审计结论里这一类缺陷的共同形状正是
+// "纯函数算对了、调度层断链",而调度层恰恰是最难在集成环境里复现的一层。
+func scanBatch(rows []model.TopUp, lookback int64, accrue func(*model.TopUp) error) scanOutcome {
+	var out scanOutcome
+	for idx := range rows {
+		r := &rows[idx]
+		id := int64(r.Id)
+		if id > out.MaxScanned {
+			out.MaxScanned = id
+		}
+		switch r.Status {
+		case common.TopUpStatusSuccess:
+			if err := accrue(r); err != nil && (out.MinFailed == 0 || id < out.MinFailed) {
+				out.MinFailed = id
+				// 只对本批首个失败的订单告警。游标会被钉在它之前,后面的订单
+				// 下一轮连着它一起重扫;逐条打印会在持续失败时把日志刷爆。
+				warnf("充值订单 id=%d trade_no=%s 计佣失败,游标不再前进: %v", id, r.TradeNo, err)
+			}
+		case common.TopUpStatusPending:
+			// 窗口外的未决订单视为死单(epay 订单会过期),不再守候,
+			// 否则一笔永不支付的订单会把游标永久钉死。
+			if r.CreateTime >= lookback && (out.MinPending == 0 || id < out.MinPending) {
+				out.MinPending = id
+			}
+		}
+	}
+	return out
+}
+
+// lowWaterAfter 计算一批扫描之后低水位游标能推进到哪里,取三个约束的最小值。
+//
+// MinFailed 这一路是必须的:扫描语句是 `WHERE id > low`,单向且不可回头。
+// 计佣失败绝大多数是死锁 / 锁等待超时这类可重试错误 —— db.isConnLevelError
+// 不认它们,熔断不会打开,扫描会照常跑完整批。旧实现在失败分支只打一行
+// "下轮重扫会重试"的日志却照样把游标推到 MaxScanned,与日志描述正好相反:
+// 那笔订单再也不会被扫到,佣金永久丢失,而 trade_no 唯一索引只防重复、不防遗漏。
+//
+// 代价是一笔持续失败的订单会把游标钉住、后面的订单一起等。这是刻意的取舍:
+// 漏发是静默且不可逆的,停滞则会被 topup_cursor_held 指标与日志立刻暴露出来。
+func lowWaterAfter(o scanOutcome) int64 {
+	next := o.MaxScanned
+	if o.MinPending > 0 && o.MinPending-1 < next {
+		next = o.MinPending - 1
+	}
+	if o.MinFailed > 0 && o.MinFailed-1 < next {
+		next = o.MinFailed - 1
+	}
+	return next
 }
 
 func lookbackStart() int64 {
@@ -108,19 +156,20 @@ func lookbackStart() int64 {
 
 // accrueTopUp 为一笔成功的充值订单计佣。幂等键是 trade_no,
 // 扫描、人工重扫、未来可能补的实时回调三条路径任意重叠都不会重复返佣。
-func accrueTopUp(t *model.TopUp) {
+//
+// 返回 error 是有意义的:调用方要用它把游标钉在这笔订单之前(见 lowWaterAfter)。
+// "口径排除"与"基数为零"不是失败,返回 nil,游标照常越过。
+func accrueTopUp(ctx context.Context, t *model.TopUp) error {
 	topupScanned.Add(1)
 	if excludedTopUp(t) {
-		return
+		return nil
 	}
 	baseQuota, money := topUpBaseQuota(t)
 	if baseQuota <= 0 {
-		return
+		return nil
 	}
-	if err := accrueOneShot(t.UserId, baseQuota, money, SourceTopup,
-		topupIdemKey(t.TradeNo), t.TradeNo); err != nil {
-		warnf("充值订单 %s 计佣失败(下轮重扫会重试): %v", t.TradeNo, err)
-	}
+	return accrueOneShot(ctx, t.UserId, baseQuota, money, SourceTopup,
+		topupIdemKey(t.TradeNo), t.TradeNo)
 }
 
 // excludedTopUp 判断这笔充值是否不该返佣。

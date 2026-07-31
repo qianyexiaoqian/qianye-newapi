@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +22,9 @@ func mustCompile(t *testing.T, r Rule) *compiledRule {
 // 这些是风控的判定核心:一旦某种匹配方式静默失效,规则看起来"配好了"
 // 但线上一次都不会命中,而没有任何报错。
 func TestMatchTypes(t *testing.T) {
+	// 顺序要紧:useTestConfig 会重新 Load 覆盖全局配置,放宽预算必须排在它之后。
 	useTestConfig(t)
+	useGenerousScanBudget(t)
 
 	t.Run("keyword 不区分大小写且只回报本规则的命中词", func(t *testing.T) {
 		cr := mustCompile(t, Rule{
@@ -119,6 +122,7 @@ func TestScopeFiltering(t *testing.T) {
 //
 // 若返回多条,扣费与计数都会翻倍 —— 一次请求扣两次钱在任何口径下都是错的。
 func TestPriorityWins(t *testing.T) {
+	useGenerousScanBudget(t)
 	low := mustCompile(t, Rule{
 		Id: 1, Priority: 10, Phase: PhasePrompt, MatchType: MatchKeyword,
 		Action: ActionRecord, Pattern: "炸弹",
@@ -164,6 +168,40 @@ func TestValidateRuleRejectsSilentlyBrokenConfigs(t *testing.T) {
 	ok := Rule{Name: "a", Phase: PhasePrompt, MatchType: MatchKeyword, Pattern: "危险",
 		Action: ActionBlockAndCharge, FeeMode: FeeFixed}
 	assert.NoError(t, ValidateRule(&ok))
+}
+
+// TestValidateRuleBoundsFeeMultiple 固化"规则级倍数不得绕过全局限制"。
+//
+// YAML 的 violation.fee_multiplier 被 config/validate.go 严格限在 0..100,
+// 而规则级 fee_multiple 只校验非负,就是一条绕过它的旁路:管理端存一个 1e9,
+// 一旦运维把 violation.max_fee_quota 设成 0(checkQuotaCap 允许,含义是"不限"),
+// computeFee 的两道 clamp 全部失效,单条规则即可一次扣光用户余额。
+func TestValidateRuleBoundsFeeMultiple(t *testing.T) {
+	cases := []struct {
+		name     string
+		multiple string
+		wantErr  bool
+	}{
+		{"未配置时回落到 YAML 默认", "0", false},
+		{"常规倍数", "3", false},
+		{"恰好等于上界", "100", false},
+		{"刚越过上界", "100.000001", true},
+		{"配置事故:多打了几个零", "1000000000", true},
+		{"负数", "-1", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Rule{Name: "a", Phase: PhaseUpstreamErr, MatchType: MatchErrorCode,
+				Pattern: "x", Action: ActionCharge, FeeMode: FeeModelPriceMultiple,
+				FeeMultiple: decimal.RequireFromString(tc.multiple)}
+			err := ValidateRule(&r)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
 }
 
 // TestClipHeadTailKeepsRuneBoundary 是写库安全的硬要求:

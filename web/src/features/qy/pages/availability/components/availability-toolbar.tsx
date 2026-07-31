@@ -32,13 +32,20 @@ import {
 } from '@/components/ui/select'
 
 import { QyFilterBar, QyFilterField } from '../../ops/qy-ops-ui'
-import { QY_AVAIL_RANGES, QY_AVAIL_SORTS } from '../constants'
-import type { QyAvailDefinition, QyAvailSortMode } from '../types'
+import { QY_AVAIL_METRICS, QY_AVAIL_RANGES, QY_AVAIL_SORTS } from '../constants'
+import type {
+  QyAvailDefinition,
+  QyAvailMetricKey,
+  QyAvailSortMode,
+} from '../types'
 import { QyAvailabilityDefinition } from './availability-definition'
 
 type QyAvailabilityToolbarProps = {
   hours: number
   onHoursChange: (hours: number) => void
+  /** 主指标：可用率 / 延迟 / 首字 / 速度。 */
+  metric: QyAvailMetricKey
+  onMetricChange: (metric: QyAvailMetricKey) => void
   /** 全部可见分组（服务端已按白名单裁剪，前端只做二次收窄）。 */
   groupOptions: string[]
   selectedGroups: string[]
@@ -57,9 +64,30 @@ export function QyAvailabilityToolbar(props: QyAvailabilityToolbarProps) {
   const searchId = useId()
   const rangeId = useId()
   const sortId = useId()
+  const metricId = useId()
 
   return (
     <QyFilterBar>
+      <QyFilterField label={t('qy_avl_metric')} htmlFor={metricId}>
+        <Select
+          value={props.metric}
+          onValueChange={(value) =>
+            props.onMetricChange((value ?? props.metric) as QyAvailMetricKey)
+          }
+        >
+          <SelectTrigger id={metricId} className='w-32'>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {QY_AVAIL_METRICS.map((metric) => (
+              <SelectItem key={metric.key} value={metric.key}>
+                {t(metric.labelKey)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </QyFilterField>
+
       <QyFilterField label={t('qy_avl_range')} htmlFor={rangeId}>
         <Select
           value={String(props.hours)}

@@ -6,6 +6,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,6 +21,28 @@ func TestQueryCellsRefusesEmptyGroupSet(t *testing.T) {
 	points, err := querySeriesPoints(timeRange{StartTs: 0, EndTs: 1}, "gpt-5", nil)
 	require.NoError(t, err)
 	assert.Empty(t, points)
+}
+
+// 可用率看板是给全体登录用户的,而管理端 stats 不做任何分组裁剪(它必须能
+// 看到隐藏分组与 unknown 行)。两者一旦挂错路由组:矩阵挂到 admin 就是把功能
+// 从用户手里拿走,stats 挂到 user 就是把全站分组名直接下发 —— 后者正是本项目
+// 刚修过的那类泄漏。用一条结构性断言钉死这条边界。
+func TestRoutesSplitUserAndAdminScopes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	Mod{}.RegisterUserRoutes(engine.Group("/user"))
+	Mod{}.RegisterAdminRoutes(engine.Group("/admin"))
+
+	paths := map[string]struct{}{}
+	for _, r := range engine.Routes() {
+		paths[r.Path] = struct{}{}
+	}
+	assert.Contains(t, paths, "/user/availability/matrix", "矩阵必须对全体登录用户开放")
+	assert.Contains(t, paths, "/user/availability/series")
+	assert.Contains(t, paths, "/admin/availability/stats")
+	assert.NotContains(t, paths, "/user/availability/stats",
+		"管理端总览不做分组裁剪,挂到用户组等于下发全站分组名")
+	assert.NotContains(t, paths, "/admin/availability/matrix")
 }
 
 func TestIntersectGroups(t *testing.T) {

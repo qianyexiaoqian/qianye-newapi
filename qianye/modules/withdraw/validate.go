@@ -108,6 +108,12 @@ func acceptCreate(req createRequest, cfg config.Withdraw) (acceptedRequest, erro
 	if req.Quota <= 0 || req.Quota > int64(common.MaxQuota) {
 		return acceptedRequest{}, errAmountOutOfRange
 	}
+	// 单笔上限必须在这里拦。只靠 common.MaxQuota 的话,上界就是主库 int32 容量:
+	// 一个长期累积的邀请人可以一次申请 20 亿额度,把整个佣金池冻在一张单上。
+	// 申请即冻结不构成超发,但它会让运营在一张单面前直接失去处置空间。
+	if cfg.MaxQuotaPerOrder > 0 && req.Quota > cfg.MaxQuotaPerOrder {
+		return acceptedRequest{}, errAmountOutOfRange
+	}
 	if req.Quota < cfg.MinQuota {
 		return acceptedRequest{}, errAmountTooSmall
 	}

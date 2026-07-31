@@ -16,7 +16,14 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/service"
+
+	"github.com/shopspring/decimal"
 )
+
+// maxFeeMultiple 是 model_price_multiple 模式下的倍数上界,与 YAML 的
+// violation.fee_multiplier(config/validate.go 校验 0..100)必须同口径 ——
+// 两处不一致时,严的那一处就形同虚设。
+const maxFeeMultiple = 100
 
 // maxScanBytes 是单次请求参与匹配的文本上限(头尾各取一半)。
 //
@@ -269,6 +276,13 @@ func ValidateRule(r *Rule) error {
 	}
 	if r.FeeFixed.IsNegative() || r.FeeMultiple.IsNegative() {
 		return fmt.Errorf("fee_fixed / fee_multiple 不得为负数")
+	}
+	// 上界必须与 YAML 的 violation.fee_multiplier 同口径(config/validate.go 校验 0..100)。
+	// 只校验非负的话,规则级倍数就是一条绕过全局限制的旁路:管理端存一个 1e9,
+	// 一旦运维把 violation.max_fee_quota 设成 0(在 checkQuotaCap 里合法,含义是"不限"),
+	// computeFee 的两道 clamp 全部失效,单条规则即可一次扣光用户余额。
+	if r.FeeMultiple.GreaterThan(decimal.NewFromInt(maxFeeMultiple)) {
+		return fmt.Errorf("fee_multiple 必须在 0..%d 之间", maxFeeMultiple)
 	}
 	_, err := compile(*r)
 	return err

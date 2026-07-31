@@ -47,8 +47,28 @@ export type QyTransferLimits = {
   /** unix 秒。大于当前时间表示仍在冷却中。 */
   cooldown_until: number
   transferable_quota: number
-  /** `pending_exists` | `account_too_new` | `''`。 */
+  /** `pending_exists` | `account_too_new` | `group_blocked` | `''`。 */
   blocked_reason: string
+  group_policy: QyTransferGroupPolicy
+}
+
+/**
+ * 当前用户的分组划转策略（`qianye/modules/transfer/grouprule.go`）。
+ *
+ * 只包含**发起方自己**的策略，绝不含其他人的分组归属。后端刻意把
+ * `allow_all` 与「没有规则」都收敛成 `unrestricted`：对用户而言两者完全等价，
+ * 区分它们只会多一种解释不清的文案。
+ *
+ * `my_group` 为空串表示后端没能读到用户主库行，此时不应渲染任何分组提示 ——
+ * 拿一个不属于他的分组的规则去提示，比不提示更糟。
+ */
+export type QyTransferGroupPolicy = {
+  policy: 'allow_list' | 'blocked' | 'deny_list' | 'unrestricted'
+  my_group: string
+  /** 仅 `allow_list` 有意义；后端已把 `@self` 解析成真实分组名。 */
+  allowed_groups: string[]
+  /** 仅 `deny_list` 有意义。 */
+  denied_groups: string[]
 }
 
 /** `POST /api/qy/transfer/preview` 的请求体。 */

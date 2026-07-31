@@ -69,10 +69,19 @@ const (
 
 // 封禁状态。
 const (
-	BanPending  = "pending" // 已认领,主库六步尚未完成 → 补偿任务扫描
-	BanBanned   = "banned"
-	BanSkipped  = "skipped" // 目标是 root / 已禁用 / 已删除
-	BanFailed   = "failed"
+	BanPending = "pending" // 已认领,主库六步尚未完成 → 补偿任务扫描
+	BanBanned  = "banned"
+	BanSkipped = "skipped" // 目标是 root / 已禁用 / 已删除
+	BanFailed  = "failed"
+	// BanDeferred 表示"计数确实达到了阈值,但当时的策略不允许执行封号"
+	// (目前只有小时封号速率闸会产生它)。
+	//
+	// 它存在的唯一理由是把这个事实持久化。没有它,"该封号"只活在一次函数调用里:
+	// 速率闸一挡,信号就消失了,管理端也看不到任何痕迹。deferred 行不会被补偿任务
+	// 自动执行 —— 速率闸的语义就是"先让人看一眼",自动补做等于把它彻底架空 ——
+	// 而是由管理员在封禁列表里判定"不予封禁"(unbanUser 接受 deferred),
+	// 或等该用户下一次违规时在条件允许的情况下被提升执行。
+	BanDeferred = "deferred"
 	BanUnbanned = "unbanned"
 )
 
@@ -201,6 +210,20 @@ type Record struct {
 	FeeQuota     int64           `json:"fee_quota" gorm:"not null;default:0"`
 	FeeStatus    string          `json:"fee_status" gorm:"type:varchar(24);not null;default:'none'"`
 	FeeError     string          `json:"fee_error" gorm:"type:varchar(512);not null;default:''"`
+
+	// BillingSource / SubscriptionId 冻结"这笔罚款当时到底从哪个池扣走"。
+	//
+	// service.PostConsumeQuota 按 relayInfo.BillingSource 把扣款路由到钱包或订阅池,
+	// 并且无条件同步扣减 tokens.remain_quota(TokenId 那一列)。退款如果一律加回钱包:
+	// 订阅用户的订阅池消耗永远不会归还、钱包却凭空多出等额额度;令牌额度则永久少掉
+	// 这一笔。这两件事都无法事后从主库反推(计费日志里没有路由信息),所以扣费当时
+	// 必须把上下文冻结进记录 —— 退款只能退回"当初扣的那个池、那个令牌"。
+	//
+	// 刻意不冻结 token_key:那是明文 API 密钥,落进扩展库等于把凭证复制一份,
+	// 而且 Record 会被管理端列表接口整行返回。退款时按 TokenId 直接改 tokens 行,
+	// 缓存则用 InvalidateUserTokensCache 整体失效,不需要密钥原文。
+	BillingSource  string `json:"billing_source" gorm:"type:varchar(16);not null;default:''"`
+	SubscriptionId int    `json:"subscription_id" gorm:"not null;default:0"`
 	// QuotaClamp 落 common.QuotaClamp.AuditMap() 的 JSON。额度饱和几乎必然意味着
 	// 规则配错,必须能在管理端单独筛出来。
 	QuotaClamp string `json:"quota_clamp" gorm:"type:varchar(512);not null;default:''"`

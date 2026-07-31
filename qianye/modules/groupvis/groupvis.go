@@ -18,6 +18,22 @@
 // 全仓没有任何分组可见性字段,分组只是散落在几个 map 里的字符串 key,
 // 为一个泄漏 BUG 引入一套分组实体体系不成比例。
 //
+// # 为什么只有两个出口,没有第三个
+//
+// 分组 API(controller.GetUserGroups,挂在 /api/user/groups 与
+// /api/user/self/groups)不在修复范围内,因为它本来就不泄漏:它把
+// ratio_setting.GetGroupRatioCopy() 与 service.GetUserUsableGroups(userGroup)
+// 求交集后才下发,匿名请求(userGroup 为空串)退化成运营方主动配置的
+// 公开可用分组 —— 与本包 usableGroupsOf("") 的口径完全一致。
+// 它与上面两个出口的差别正在于:那两处的过滤基准是"全站事实清单"
+// (abilities 聚合 / GroupRatio),这一处的基准一开始就是用户白名单。
+//
+// 曾经存在的 group_visibility.filter_group_api 开关因此被删除:它有默认值、
+// 写进了示例 YAML,却没有任何代码读它。硬接一个恒等变换的 hook 只会让
+// 运维误以为"关掉它"能改变那一路的行为,而实际上那里没有任何东西可过滤。
+// 如果哪天上游把 GetUserGroups 改成下发全量分组,该补的是那里的交集,
+// 而不是把开关加回来。
+//
 // 本模块不碰数据库、不注册路由、不起后台任务,因此也不需要 guard:
 // guard.Feature 会把「扩展库不可用」判成功能不可用,而分组裁剪是纯内存计算,
 // 数据库挂掉时更不该退回泄漏状态。

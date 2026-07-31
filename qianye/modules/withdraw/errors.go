@@ -56,6 +56,23 @@ var (
 	errFeeEatsAll        = newBizError("qy_wd_fee_eats_all", "扣除手续费后实付金额为 0", http.StatusBadRequest)
 )
 
+// 申请阶段的风控闸门(withdraw.max_quota_per_order / daily_max_quota /
+// cooldown_seconds / max_pending_orders)。
+//
+// 这四项配置此前定义了、校验了、赋了默认值,却没有任何消费方 ——
+// 运维完全无法察觉闸门是空的。文案一律说清"是哪一道闸拦的",
+// 否则用户只会反复重试同一个必然失败的请求。
+var (
+	errDailyQuotaReached  = newBizError("qy_wd_daily_quota_reached", "已达今日提现额度上限", http.StatusTooManyRequests)
+	errDailySubmitReached = newBizError("qy_wd_daily_submit_reached", "今日提交的申请过多,请明天再试", http.StatusTooManyRequests)
+	errCooldown           = newBizError("qy_wd_cooldown", "两次提现申请之间需要间隔一段时间,请稍后再试", http.StatusTooManyRequests)
+	errPendingLimit       = newBizError("qy_wd_pending_limit", "存在过多未完成的提现申请,请等待处理完成", http.StatusTooManyRequests)
+	// errIdemConflict:同一个 client_request_id 换了金额或方式再提交。
+	// 这不是重复提交,而是"用同一个键提交了另一笔申请",绝不能把原单的结果
+	// 当成本次的结果返回 —— 用户会把"原来那笔 300 的单"读成"我这笔 500 成功了"。
+	errIdemConflict = newBizError("qy_wd_idem_conflict", "该请求标识已用于另一笔申请,请刷新后重试", http.StatusConflict)
+)
+
 // 状态机与并发错误。
 var (
 	errNotFound          = newBizError("qy_wd_not_found", "提现单不存在", http.StatusNotFound)
@@ -69,8 +86,13 @@ var (
 // 这些是运维事故而非用户错误,一律 500 并只回模糊文案 ——
 // "PII 密钥长度不对"这种信息不该出现在用户浏览器里。
 var (
-	errPIIKeyUnavailable  = newBizError("qy_wd_pii_key_unavailable", "法币提现暂不可用,请联系管理员", http.StatusInternalServerError)
-	errDigestKeyMissing   = newBizError("qy_wd_pii_key_unavailable", "法币提现暂不可用,请联系管理员", http.StatusInternalServerError)
+	errPIIKeyUnavailable = newBizError("qy_wd_pii_key_unavailable", "法币提现暂不可用,请联系管理员", http.StatusInternalServerError)
+	errDigestKeyMissing  = newBizError("qy_wd_pii_key_unavailable", "法币提现暂不可用,请联系管理员", http.StatusInternalServerError)
+	// errPIIKeyMissingVersion 与 errPayeeUndecryptable 刻意分开:前者是"轮换时忘了
+	// 保留旧密钥"这一运维事故,要让人去补配置;后者是密文本身坏了,才该联系用户
+	// 重新提供。混成一个 code 会把一次配置疏漏包装成一批用户的锅。
+	errPIIKeyMissingVersion = newBizError("qy_wd_pii_key_version_missing",
+		"收款信息所用的密钥版本未配置,请联系管理员", http.StatusInternalServerError)
 	errRateUnavailable    = newBizError("qy_wd_rate_unavailable", "计费参数异常,请联系管理员", http.StatusInternalServerError)
 	errPayeeUndecryptable = newBizError("qy_wd_payee_undecryptable", "收款信息无法解密,请联系用户重新提供", http.StatusBadRequest)
 )

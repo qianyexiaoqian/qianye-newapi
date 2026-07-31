@@ -31,13 +31,14 @@ import { useQyConfig } from '../../hooks/use-qy-config'
 import { qyKeys } from '../../lib/query-keys'
 import { QyPager } from '../components/qy-pager'
 import { QyStatGrid } from '../components/qy-stat-grid'
-import { formatQyAvailability, formatQyCount } from '../ops/format'
+import { formatQyAvailability, formatQyCount, formatQyMs } from '../ops/format'
 import { getQyAvailabilityMatrix } from './api'
 import { QyAvailabilityCellSheet } from './components/availability-cell-sheet'
 import { QyAvailabilityMatrix } from './components/availability-matrix'
 import { QyAvailabilityTable } from './components/availability-table'
 import { QyAvailabilityToolbar } from './components/availability-toolbar'
-import type { QyAvailCell, QyAvailSortMode } from './types'
+import { formatQyTps, getQyAvailMetric } from './constants'
+import type { QyAvailCell, QyAvailMetricKey, QyAvailSortMode } from './types'
 
 const PAGE_SIZE = 30
 
@@ -59,8 +60,11 @@ export function QyAvailability() {
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState<QyAvailSortMode>('availability_asc')
+  const [metricKey, setMetricKey] = useState<QyAvailMetricKey>('availability')
   const [page, setPage] = useState(1)
   const [selectedCell, setSelectedCell] = useState<QyAvailCell | null>(null)
+
+  const metric = getQyAvailMetric(metricKey)
 
   const debouncedSearch = useDebounce(search, 300)
   const featureOff =
@@ -141,6 +145,13 @@ export function QyAvailability() {
           <QyAvailabilityToolbar
             hours={hours}
             onHoursChange={setHours}
+            metric={metricKey}
+            onMetricChange={(next) => {
+              setMetricKey(next)
+              // 排序跟着主指标走。分页在服务端按模型切，排序不跟着切的话，
+              // 切到「延迟」后第一页仍是可用率最差的模型，最慢的那个可能在第 7 页。
+              setSort(getQyAvailMetric(next).sort)
+            }}
             groupOptions={groupOptions}
             selectedGroups={selectedGroups}
             onGroupsChange={setSelectedGroups}
@@ -164,6 +175,9 @@ export function QyAvailability() {
           >
             {matrix != null && (
               <div className='space-y-3'>
+                {/* KPI 行固定展示四个维度，**不跟随主指标切换**：卡片标题写死
+                    「整体可用率」却填一个延迟数字，是最容易被误读的一种错。
+                    主指标只影响矩阵、趋势图与排序。 */}
                 <QyStatGrid
                   items={[
                     {
@@ -172,6 +186,30 @@ export function QyAvailability() {
                       value: formatQyAvailability(overall?.availability),
                       hint: t('qy_avl_kpi_overall_hint'),
                       emphasis: true,
+                    },
+                    {
+                      key: 'latency',
+                      label: t('qy_avl_latency'),
+                      value: formatQyMs(overall?.avg_latency_ms),
+                      hint: t('qy_avl_samples_n', {
+                        n: formatQyCount(overall?.latency_samples),
+                      }),
+                    },
+                    {
+                      key: 'ttft',
+                      label: t('qy_avl_ttft'),
+                      value: formatQyMs(overall?.avg_ttft_ms),
+                      hint: t('qy_avl_samples_n', {
+                        n: formatQyCount(overall?.ttft_samples),
+                      }),
+                    },
+                    {
+                      key: 'tps',
+                      label: t('qy_avl_tps'),
+                      value: formatQyTps(overall?.avg_tps),
+                      hint: t('qy_avl_samples_n', {
+                        n: formatQyCount(overall?.speed_samples),
+                      }),
                     },
                     {
                       key: 'worst_group',
@@ -220,6 +258,7 @@ export function QyAvailability() {
                   <TabsContent value='heatmap'>
                     <QyAvailabilityMatrix
                       matrix={matrix}
+                      metric={metric}
                       onSelectCell={setSelectedCell}
                     />
                   </TabsContent>
@@ -246,6 +285,7 @@ export function QyAvailability() {
           <QyAvailabilityCellSheet
             cell={selectedCell}
             hours={hours}
+            metric={metric}
             definition={matrix?.definition ?? null}
             onClose={() => setSelectedCell(null)}
           />

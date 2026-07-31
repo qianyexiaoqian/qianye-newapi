@@ -262,8 +262,8 @@ func handleAdminResolve(c *gin.Context) {
 // 这是全模块唯一能拿到明文的出口,因此:
 //   - 强制填写事由(≥4 字符),没有事由的访问事后无法区分正常核对与顺手看看
 //   - 每次调用写一条 qy_pii_audits + 一条全局审计,只增不改
-//   - 解密失败不回 500,而是回脱敏值与明确提示 —— 密钥轮换后旧密文解不开是
-//     可预期的运维状态,不是程序错误
+//   - 密文损坏 / AAD 不符回 400 与明确提示(联系用户重新提供);密钥版本没配
+//     则回 500 —— 后者是运维事故,让管理员去找用户要一遍银行卡号是错的解法
 func handleAdminRevealPayee(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
@@ -291,7 +291,7 @@ func handleAdminRevealPayee(c *gin.Context) {
 		return
 	}
 
-	data, err := openPayee(payee.Nonce, payee.Cipher, withdrawAAD(payee.WithdrawNo))
+	data, err := openPayee(payee.Nonce, payee.Cipher, withdrawAAD(payee.WithdrawNo), payee.KeyVersion)
 	if err != nil {
 		// 失败的访问同样要留痕:反复解不开也是一种需要被发现的异常。
 		recordPiiAccess(c, &payee, reason, "view_plain_failed", "")

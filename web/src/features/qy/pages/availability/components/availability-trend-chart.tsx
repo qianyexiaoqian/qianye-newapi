@@ -25,54 +25,62 @@ import { useChartTheme } from '@/lib/use-chart-theme'
 import { cn } from '@/lib/utils'
 import { VCHART_OPTION } from '@/lib/vchart'
 
+import type { QyAvailMetricDef } from '../constants'
 import type { QyAvailSeriesLine } from '../types'
 
-/** 全部点都 ≥ 该值时把 y 轴下限抬到 90，让 99.x 的波动看得见。 */
+/** 可用率全部点都 ≥ 该值时把 y 轴下限抬到 90，让 99.x 的波动看得见。 */
 const FOCUSED_AXIS_MIN = 90
 
 type QyAvailabilityTrendChartProps = {
   series: QyAvailSeriesLine[]
+  /** 主指标。与矩阵共用同一份取值与格式化，两处数字必然一致。 */
+  metric: QyAvailMetricDef
   /** 桶粒度（秒）。决定 x 轴标签是「HH:mm」还是「MM-DD HH:mm」。 */
   bucketSeconds: number
   className?: string
 }
 
 /**
- * 可用率趋势折线图（每个分组一条线）。
+ * 趋势折线图（每个分组一条线），可切换可用率 / 延迟 / 首字 / 速度。
  *
  * 用项目已在用的 `@visactor/react-vchart`（`model-details-charts.tsx`、
  * `dashboard/**` 全部是它），不引入 recharts —— 两套图表库共存会带来
  * 两套主题切换时序与两份体积。
  *
- * **`availability` 为 null 的点直接丢弃而不是补 0**：补 0 会在图上画出
- * 一条掉到底的假故障线，正是这个页面最需要避免的误导。
+ * **取值为 null 的点直接丢弃而不是补 0**：补 0 会在图上画出一条掉到底的
+ * 假故障线（可用率）或一条假的「零延迟」谷底，正是这个页面最需要避免的误导。
  */
 export function QyAvailabilityTrendChart(props: QyAvailabilityTrendChartProps) {
   const { t } = useTranslation()
   const { resolvedTheme, themeReady } = useChartTheme()
+  const metric = props.metric
 
   const points = useMemo(() => {
     const pattern = props.bucketSeconds >= 3600 ? 'MM-DD HH:mm' : 'HH:mm'
     return props.series.flatMap((line) =>
       line.points
-        .filter((point) => point.availability != null)
         .map((point) => ({
           time: dayjs(point.ts * 1000).format(pattern),
           group: line.group,
-          availability: point.availability as number,
-          counted: point.counted,
+          value: metric.valueOf(point),
+          samples: metric.samplesOf(point),
         }))
+        .filter((point) => point.value != null)
+        .map((point) => ({ ...point, value: point.value as number }))
     )
-  }, [props.bucketSeconds, props.series])
+  }, [metric, props.bucketSeconds, props.series])
 
   const spec = useMemo(() => {
     if (points.length === 0) return null
-    const min = Math.min(...points.map((point) => point.availability))
+    const min = Math.min(...points.map((point) => point.value))
+    // 可用率是有天花板的比例，固定 0~100 才能横向对比；延迟与速度没有上限，
+    // 钉死一个 max 会把大部分曲线压成贴地的直线。
+    const focused = metric.key === 'availability' && min >= FOCUSED_AXIS_MIN
     return {
       type: 'line' as const,
-      data: [{ id: 'availability', values: points }],
+      data: [{ id: 'metric', values: points }],
       xField: 'time',
-      yField: 'availability',
+      yField: 'value',
       seriesField: 'group',
       smooth: false,
       point: { visible: points.length <= 120, style: { size: 4 } },
@@ -87,10 +95,11 @@ export function QyAvailabilityTrendChart(props: QyAvailabilityTrendChartProps) {
         },
         {
           orient: 'left' as const,
-          min: min >= FOCUSED_AXIS_MIN ? FOCUSED_AXIS_MIN : 0,
-          max: 100,
+          min: focused ? FOCUSED_AXIS_MIN : 0,
+          max: metric.key === 'availability' ? 100 : undefined,
           label: {
-            formatMethod: (value: number | string) => `${value}%`,
+            formatMethod: (value: number | string) =>
+              `${value}${metric.axisSuffix}`,
             style: { fontSize: 10 },
           },
           grid: { visible: true, style: { lineDash: [3, 3] } },
@@ -102,18 +111,17 @@ export function QyAvailabilityTrendChart(props: QyAvailabilityTrendChartProps) {
           content: [
             {
               key: (datum: { group: string }) => datum.group,
-              value: (datum: { availability: number }) =>
-                `${datum.availability.toFixed(2)}%`,
+              value: (datum: { value: number }) => metric.format(datum.value),
             },
             {
-              key: t('qy_avl_counted'),
-              value: (datum: { counted: number }) => String(datum.counted),
+              key: t('qy_avl_samples'),
+              value: (datum: { samples: number }) => String(datum.samples),
             },
           ],
         },
       },
     }
-  }, [points, t])
+  }, [metric, points, t])
 
   if (spec == null) {
     return (
@@ -132,7 +140,7 @@ export function QyAvailabilityTrendChart(props: QyAvailabilityTrendChartProps) {
     <div className={cn('h-52 sm:h-64', props.className)}>
       {themeReady && (
         <VChart
-          key={`qy-avail-${resolvedTheme}`}
+          key={`qy-avail-${metric.key}-${resolvedTheme}`}
           spec={{
             ...spec,
             theme: resolvedTheme === 'dark' ? 'dark' : 'light',

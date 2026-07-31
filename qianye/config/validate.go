@@ -31,8 +31,62 @@ const (
 	LogLevelInfo   = "info"
 )
 
-// maxBps 是万分比的上限(100%)。
+// maxBps 是万分比的上限(100%)。仍被 transfer / withdraw / violation 使用。
 const maxBps = 10000
+
+// 返佣比例的对外单位是**百分比**,内部单位是"百分比 × 100"的整数。
+//
+// 为什么是两套单位:百分比给人看(运营说的是"返 10.25%",不是"返 1025 个万分之一"),
+// 整数给机器算(资金参数不允许出现浮点误差)。两位小数的精度需求恰好落在
+// ×100 上,换算全程只做整数与 decimal 运算。
+const (
+	// RatePercentScale 是百分比 → 内部整数的倍率。两位小数 ⇒ 100。
+	RatePercentScale = 100
+	// MaxRatePercent 是费率上限:返佣不可能超过收入本身。
+	MaxRatePercent = 100
+	// MaxRateUnits 是内部整数的上限(100% × 100)。
+	MaxRateUnits = MaxRatePercent * RatePercentScale
+)
+
+// RatePercentUnits 把对外的百分比字符串换算成内部整数(百分比 × 100)。
+//
+// 全程走 decimal,一次都不经过 float64:10.25 在二进制浮点里不可精确表示,
+// 而这个数字决定平台要为每一笔消费付出多少钱。
+//
+// 超过两位小数一律拒绝,不做四舍五入。静默把 10.005 变成 10.01 是一次
+// 没有人签字的加薪 —— 资金参数宁可让人重新填一遍,也不能替他猜。
+//
+// 返回的 error 不带字段名,由调用方补上("commission.topup_rate_percent " + err),
+// 这样同一段换算能服务 YAML、管理端接口和分组费率三处。
+func RatePercentUnits(raw string) (int, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, fmt.Errorf("不能为空(填百分比,如 10 或 10.25 表示 10%% / 10.25%%)")
+	}
+	d, err := decimal.NewFromString(s)
+	if err != nil {
+		return 0, fmt.Errorf("不是合法数值: %q", raw)
+	}
+	if d.IsNegative() {
+		return 0, fmt.Errorf("不得为负数,收到 %s", s)
+	}
+	if d.GreaterThan(decimal.NewFromInt(MaxRatePercent)) {
+		return 0, fmt.Errorf("不得超过 %d(百分比),收到 %s", MaxRatePercent, s)
+	}
+	scaled := d.Mul(decimal.NewFromInt(RatePercentScale))
+	if !scaled.Equal(scaled.Truncate(0)) {
+		return 0, fmt.Errorf("最多两位小数,收到 %s", s)
+	}
+	// 上面已把取值钳在 0..MaxRateUnits,这里的窄化转换不可能溢出。
+	return int(scaled.IntPart()), nil
+}
+
+// FormatRatePercent 是 RatePercentUnits 的逆:内部整数 → 对外百分比字符串。
+// 1025 → "10.25",1000 → "10",0 → "0"。
+func FormatRatePercent(units int) string {
+	return decimal.NewFromInt(int64(units)).
+		Div(decimal.NewFromInt(RatePercentScale)).String()
+}
 
 // validate 在加载后校验配置自洽性。
 //
@@ -89,6 +143,11 @@ func validateDatabase(d *Database) error {
 		return fmt.Errorf("qianye: database.max_open_conns(%d) 不得小于 max_idle_conns(%d)",
 			d.MaxOpenConns, d.MaxIdleConns)
 	}
+	// 负值会渲染出 "readTimeout=-1s" 这种 DSN,驱动直接拒绝解析,
+	// 报出来的错与"超时配错了"毫无关联 —— 在这里就拦掉。
+	if d.ReadTimeoutSeconds < 0 || d.WriteTimeoutSeconds < 0 {
+		return fmt.Errorf("qianye: database.read_timeout_seconds / write_timeout_seconds 不能为负数")
+	}
 	switch d.LogLevel {
 	case LogLevelSilent, LogLevelError, LogLevelWarn, LogLevelInfo:
 	default:
@@ -141,10 +200,12 @@ func validateTransfer(t *Transfer) error {
 }
 
 func validateCommission(cm *Commission) error {
-	if err := checkBps("commission.topup_rate_bps", cm.TopupRateBps); err != nil {
+	if err := checkRatePair(
+		"topup", cm.TopupRatePercent, cm.TopupRateBpsDeprecated); err != nil {
 		return err
 	}
-	if err := checkBps("commission.consume_rate_bps", cm.ConsumeRateBps); err != nil {
+	if err := checkRatePair(
+		"consume", cm.ConsumeRatePercent, cm.ConsumeRateBpsDeprecated); err != nil {
 		return err
 	}
 	if cm.Levels != 1 {
@@ -180,6 +241,23 @@ func validateWithdraw(w *Withdraw) error {
 		if strings.TrimSpace(w.DigestKey) == "" {
 			return fmt.Errorf("qianye: withdraw.digest_key 不能为空" +
 				"(用于收款账号的风控指纹,必须独立于 pii_key 且不随其轮换)")
+		}
+	}
+	if w.PIIKeyVersion < 0 {
+		return fmt.Errorf("qianye: withdraw.pii_key_version 不能为负数,收到 %d", w.PIIKeyVersion)
+	}
+	// 历史密钥在这里就必须校验格式:等到解密某一行时才发现密钥是坏的,那一刻
+	// 队列里已经有一批打不了款的单据,而错误信息只会说"无法解密"。
+	for version, key := range w.PIIKeysRetired {
+		if version <= 0 {
+			return fmt.Errorf("qianye: withdraw.pii_keys_retired 的版本号必须大于 0,收到 %d", version)
+		}
+		if version == w.PIIKeyVersion {
+			return fmt.Errorf("qianye: withdraw.pii_keys_retired 不得包含当前启用的版本 %d"+
+				"(当前密钥只在 pii_key 里配一份,两处不一致会让新密文用一把钥匙、解密用另一把)", version)
+		}
+		if err := checkAESKey(fmt.Sprintf("withdraw.pii_keys_retired[%d]", version), key); err != nil {
+			return err
 		}
 	}
 	switch w.RateFreezeMode {
@@ -269,6 +347,42 @@ func validateViolation(v *Violation) error {
 func checkBps(name string, v int) error {
 	if v < 0 || v > maxBps {
 		return fmt.Errorf("qianye: %s 必须在 0..%d 之间(万分比,5%% = 500),收到 %d", name, maxBps, v)
+	}
+	return nil
+}
+
+// checkRatePair 校验一对"新百分比字段 + 已废弃万分比字段"。
+//
+// 三步的顺序本身是有意义的:
+//
+//  1. 先按**旧字段自己的口径**校验。运维写的是 topup_rate_bps: 20000,
+//     错误信息就必须点名 topup_rate_bps,而不是它换算之后的百分比 ——
+//     否则报出来的字段名在配置文件里根本搜不到。
+//  2. 再校验新字段本身(格式、范围、小数位)。
+//  3. 最后比对两者。新旧字段同时存在且互相矛盾时直接拒绝启动:
+//     替运维挑一个生效值,正是本项目反复吃过亏的"以为改了其实没改"。
+//
+// 数值上 units 与 bps 恰好同尺度(百分比 × 100 = 万分之一),所以第 3 步
+// 可以直接比较,不需要再换算一次。
+func checkRatePair(kind, percent string, deprecatedBps *int) error {
+	percentKey := "commission." + kind + "_rate_percent"
+	bpsKey := "commission." + kind + "_rate_bps"
+
+	if deprecatedBps != nil {
+		if err := checkBps(bpsKey, *deprecatedBps); err != nil {
+			return err
+		}
+	}
+	units, err := RatePercentUnits(percent)
+	if err != nil {
+		return fmt.Errorf("qianye: %s %w", percentKey, err)
+	}
+	if deprecatedBps != nil && *deprecatedBps != units {
+		return fmt.Errorf(
+			"qianye: %s(%s)与已废弃的 %s(%d)同时存在且互相矛盾 —— "+
+				"请删掉 %s,只保留百分比写法(%d bps 等于 %s)",
+			percentKey, strings.TrimSpace(percent), bpsKey, *deprecatedBps,
+			bpsKey, *deprecatedBps, FormatRatePercent(*deprecatedBps))
 	}
 	return nil
 }

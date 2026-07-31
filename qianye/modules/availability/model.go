@@ -55,6 +55,15 @@ type Bucket struct {
 	OutputTokens int64 `json:"output_tokens" gorm:"column:output_tokens;not null;default:0"`
 	GenerationMs int64 `json:"generation_ms" gorm:"column:generation_ms;not null;default:0"`
 
+	// SpeedCount 是「贡献了生成速度的成功样本数」,与 LatencyCount 同理必须独立计数。
+	//
+	// 没有它就只剩 token 总量与生成毫秒总量:能算出一个 t/s,却回答不了
+	// 「这是 1 次请求还是 1000 次请求算出来的」,于是样本下限无从执行 ——
+	// 一次 3 token 的回复足以产生一个荒唐的速度并被当成模型特性。
+	// 本列是后加的,升级前的历史行为 0,那些时段的速度按「无数据」呈现
+	// (宁可留白,也不能拿一个不知来源的数字当结论)。
+	SpeedCount int64 `json:"speed_count" gorm:"column:speed_count;not null;default:0"`
+
 	// UpdatedAt 手工赋值(禁用 autoUpdateTime,GORM 对 int64 的单位推断跨版本不稳定)。
 	UpdatedAt int64 `json:"updated_at" gorm:"column:updated_at;not null;default:0;index:idx_qy_avail_updated"`
 }
@@ -104,6 +113,7 @@ func (b *Bucket) counterMap() map[string]int64 {
 		"ttft_count":        b.TtftCount,
 		"output_tokens":     b.OutputTokens,
 		"generation_ms":     b.GenerationMs,
+		"speed_count":       b.SpeedCount,
 	}
 }
 
@@ -139,6 +149,7 @@ func (b *Bucket) addFrom(o *Bucket) {
 	b.TtftCount += o.TtftCount
 	b.OutputTokens += o.OutputTokens
 	b.GenerationMs += o.GenerationMs
+	b.SpeedCount += o.SpeedCount
 }
 
 // excludedTotal 是被硬排除的样本数(与口径开关无关的那几类)。

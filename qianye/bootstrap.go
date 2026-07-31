@@ -43,6 +43,12 @@ func Init() error {
 		return nil
 	}
 
+	// 配置项自检:把"定义了、有默认值、写进了 YAML,却没有任何代码读它"的开关
+	// 打成启动告警。这类缺陷已经出现过四次(C1/C2/OLD-1/OLD-2),而且对运维完全
+	// 不可见 —— 改完 YAML 重启,日志一切正常,闸门却是空的。不阻断启动:
+	// 空闸门本身不造成资损,让主程序起不来才会。
+	config.LogFieldConsumerCheck()
+
 	if err := db.Init(config.Get().Database); err != nil {
 		return err
 	}

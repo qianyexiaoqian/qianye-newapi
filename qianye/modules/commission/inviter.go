@@ -1,6 +1,7 @@
 package commission
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"sync"
@@ -24,6 +25,13 @@ type inviterEntry struct {
 	InviterId      int
 	InviteeName    string
 	InviteeCreated int64
+	// InviteeGroup 是下线所在的分组,分组差异化费率按它取值(口径见 grouprate.go)。
+	//
+	// 与邀请关系一起缓存而不是另开一次查询:两者出自同一行 users,
+	// 分开查等于把主库读压力翻倍。代价是换组后最多 InviterCacheSecs
+	// 才反映到费率上,这对一个按天聚合的返佣账本可以接受;要立刻生效
+	// 可以走管理端的"失效缓存"。
+	InviteeGroup string
 }
 
 const inviterCacheCapacity = 200000
@@ -72,7 +80,12 @@ func peekInviter(userId int) (inviterEntry, bool) {
 //
 // singleflight 防缓存击穿:某个热门邀请人的上千个下线同时首次消费时,
 // 对主库只打一次查询。
-func resolveInviter(userId int) (inviterEntry, bool, error) {
+//
+// ctx 是热路径的 hot_path_timeout_ms 上界。回主库这一步同样要受它约束 ——
+// 主库慢查询会把 worker 占满,后果与扩展库慢一模一样。
+// (singleflight 的已知取舍:合并执行时用的是首个调用方的 ctx。这里所有调用方
+// 的预算相同,不构成问题。)
+func resolveInviter(ctx context.Context, userId int) (inviterEntry, bool, error) {
 	if e, ok := peekInviter(userId); ok {
 		return e, false, nil
 	}
@@ -85,9 +98,12 @@ func resolveInviter(userId int) (inviterEntry, bool, error) {
 			Username  string
 			Email     string
 			CreatedAt int64
+			Group     string
 		}
-		err := model.DB.Model(&model.User{}).
-			Select("inviter_id", "username", "email", "created_at").
+		// group 是 MySQL/PostgreSQL 的保留字。这里用多参数形式的 Select,
+		// GORM 会把每个名字当列名并交给方言加引号,不能拼成一个字符串。
+		err := model.DB.WithContext(ctx).Model(&model.User{}).
+			Select("inviter_id", "username", "email", "created_at", "group").
 			Where("id = ?", userId).
 			Take(&row).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -106,6 +122,7 @@ func resolveInviter(userId int) (inviterEntry, bool, error) {
 			InviterId:      row.InviterId,
 			InviteeName:    name,
 			InviteeCreated: row.CreatedAt,
+			InviteeGroup:   row.Group,
 		}
 		getInviterCache().Set(userId, e)
 		return resolved{entry: e}, nil

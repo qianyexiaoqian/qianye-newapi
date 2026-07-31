@@ -1,8 +1,10 @@
 // Package guard 是扩展所有调用点的统一降级判断入口。
 //
 // 核心原则:扩展绝不能拖垮主业务。
-//   - 热路径(relay、消费日志、采样):fail-open。扩展不可用就静默跳过,
-//     绝不阻塞、绝不报错、绝不让 panic 冒泡到 relay。
+//   - 热路径(relay、消费日志、采样):fail-open。扩展不可用就跳过(计入 skipped
+//     并限频告警),绝不阻塞、绝不报错、绝不让 panic 冒泡到 relay。
+//     "跳过"只发生在入队之前;已经进了队列的作业出队后一律执行 —— 那些事件
+//     只存在于内存闭包里,没有任何补偿路径,丢一条就是永久丢一条。
 //   - 非热路径(划转、佣金、提现的 HTTP 接口):fail-closed。不可用时返回 503,
 //     宁可让用户重试,也不能在账目不确定的情况下动钱。
 package guard
@@ -86,7 +88,7 @@ func featureOn(f Flag) bool {
 // Hot 同步执行热路径 hook。
 //
 // 保证:
-//  1. 扩展禁用 / 库不可用 / 熔断打开 → 直接返回,什么都不做
+//  1. 扩展禁用 / 库不可用 / 熔断打开 → 直接返回并计入 skipped(不会静默消失)
 //  2. panic 一律吞掉并记日志,绝不冒泡到 relay
 //  3. 在 hot_path_timeout_ms 的 ctx 下执行,超时即放弃
 //  4. 错误只写日志(按 name 限频防刷屏),永不返回给调用方
@@ -94,23 +96,66 @@ func featureOn(f Flag) bool {
 // 只适用于必须同步完成的极轻量操作。凡是要查库的,一律用 HotAsync。
 func Hot(name string, fn func(ctx context.Context) error) {
 	if !Available() {
+		recordSkip(name)
 		return
 	}
+	hotRun(name, fn)
+}
+
+// hotRun 是不做可用性判断的执行体。
+//
+// 与 Hot 分开是 A3 的修复:worker 从队列取出作业后必须无条件执行。
+// 原先 worker 直接复用 Hot,入队时可用、出队时刚好探测失败(单次 3 秒 ping
+// 超时即置 healthy=false)就会让整个积压队列被逐条静默丢弃 —— 既不计数
+// 也不告警,而消费返佣没有任何 outbox 补偿路径,那些佣金就是永久丢失。
+// 执行失败至少会走 MarkFailure + 限频日志,是可观测的。
+func hotRun(name string, fn func(ctx context.Context) error) {
+	hotRunWithBudget(name, fn, syncBudget())
+}
+
+// syncBudget 是真正跑在 relay 线程上的作业的预算,必须很短。
+func syncBudget() time.Duration {
+	ms := config.Get().Runtime.HotPathTimeoutMs
+	if ms <= 0 {
+		ms = 200
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// asyncBudget 是队列 worker 的预算。
+//
+// 它不能沿用同步路径的 200ms:worker 跑在自己的 goroutine 上,不占 relay 线程,
+// 而返佣的一次冷缓存轮要依次做 resolveInviter(回主库)、ensureRelation、
+// blockedInvitees、writeAccrual 共五六次往返,200ms 根本跑不完。
+// 超时之后没有重试也没有 outbox 补偿,那笔佣金就是永久丢失 —— 用一个为
+// "别拖住 relay"设计的预算去卡一条本来就不在 relay 线程上的链路,是把
+// 保护措施用成了资损来源。
+func asyncBudget() time.Duration {
+	ms := config.Get().Runtime.HotAsyncTimeoutMs
+	if ms <= 0 {
+		ms = 3000
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func hotRunWithBudget(name string, fn func(ctx context.Context) error, budget time.Duration) {
 	defer recoverHot(name)
 
-	timeout := config.Get().Runtime.HotPathTimeoutMs
-	if timeout <= 0 {
-		timeout = 200
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
+	ctx, touchedDB := db.WithOpProbe(ctx)
 
 	if err := fn(ctx); err != nil {
 		db.MarkFailure(err)
 		logThrottled(name, err)
 		return
 	}
-	db.MarkSuccess()
+	// 只有真正跑过扩展库语句的 hook 才有资格清零熔断的失败计数(C4)。
+	// 纯内存 hook(可用率采样)必然返回 nil 且频率远高于失败频率,
+	// 无条件 MarkSuccess 会让熔断在"库可达但查询变慢"时永远打不开。
+	if touchedDB() {
+		db.MarkSuccess()
+	}
 }
 
 type hotJob struct {
@@ -122,26 +167,49 @@ var (
 	queue     chan hotJob
 	queueOnce sync.Once
 	dropped   atomic.Int64
+	skipped   atomic.Int64
 	submitted atomic.Int64
 )
+
+// syncSafeJobs 列出允许在队列高水位时同步执行(直接跑在 relay 线程上)的作业。
+//
+// 默认是"不允许"。要进这张表,作业必须被证明是纯内存、O(1)、无任何 I/O:
+// 一旦作业会碰扩展库或主库,同步执行就等于把不可控的等待搬回 relay 结算线程,
+// hot_path_timeout_ms 只能让 Go 侧放弃等待,却拦不住底层连接继续被占着,
+// 而封号链路里还有主库事务 + Redis + 逐批会话撤销这类没有上界的 I/O(C3)。
+// 宁可在队列真正满时丢弃并告警,也不接受 relay 被拖住。
+var syncSafeJobs = map[string]bool{
+	"availability.sample": true, // 纯内存 sync.Map + atomic 累加,见 availability/aggregate.go
+}
+
+// inlineAtHighWater 判断队列高水位时,该作业能否直接跑在调用方(relay)线程上。
+//
+// 80% 水位是背压信号。对纯内存作业,同步执行的代价是几十纳秒,换来"绝不丢数据";
+// 对会碰数据库的作业,同步执行的代价没有上界,必须拒绝 —— 队列没满就继续排队,
+// 满了就按 dropped 计数并告警。
+func inlineAtHighWater(name string, pending, capacity int) bool {
+	if capacity <= 0 || pending*5 < capacity*4 {
+		return false
+	}
+	return syncSafeJobs[name]
+}
 
 // HotAsync 把工作丢进有界队列,由独立 worker 消费。
 //
 // relay 线程绝不能等待扩展库 —— 消费返佣、可用率采样这类 hook 必须走这里。
 //
-// 队列水位超过 80% 时降级为同步执行:宁可给 relay 增加一点延迟,
-// 也不能丢掉用户该拿的佣金。只有队列真正满了才丢弃并计数。
+// 队列高水位时只有 syncSafeJobs 里的纯内存作业会降级为同步执行(产生背压而
+// 不丢数据);会碰数据库的作业照常尝试入队,只有队列真正满了才丢弃并告警。
 func HotAsync(name string, fn func(ctx context.Context) error) {
 	if !Available() {
+		recordSkip(name)
 		return
 	}
 	startWorkers()
 	submitted.Add(1)
 
-	capacity := cap(queue)
-	if capacity > 0 && len(queue)*5 >= capacity*4 {
-		// 高水位:同步执行,产生背压而不是丢数据。
-		Hot(name, fn)
+	if inlineAtHighWater(name, len(queue), cap(queue)) {
+		hotRun(name, fn)
 		return
 	}
 
@@ -171,22 +239,47 @@ func startWorkers() {
 		}
 		queue = make(chan hotJob, size)
 		for i := 0; i < workers; i++ {
-			gopool.Go(func() {
-				for job := range queue {
-					Hot(job.name, job.fn)
-				}
-			})
+			gopool.Go(func() { drainQueue(queue) })
 		}
 	})
 }
 
-// QueueStats 暴露队列水位与丢弃数,供管理端健康面板告警。
+// drainQueue 是 worker 的循环体:出队即执行,不再判可用性(见 hotRun)。
+//
+// 用异步预算而非同步预算:worker 不占 relay 线程,没有理由套用为
+// "别拖住 relay"设计的 200ms(见 asyncBudget)。
+func drainQueue(ch <-chan hotJob) {
+	for job := range ch {
+		hotRunWithBudget(job.name, job.fn, asyncBudget())
+	}
+}
+
+// recordSkip 记录"因扩展不可用而未执行"的作业。
+//
+// 与 dropped 同级别的告警:入队前被挡掉同样意味着用户该拿的佣金没有落账,
+// 静默返回会让这类丢失完全不可观测。
+func recordSkip(name string) {
+	n := skipped.Add(1)
+	if n == 1 || n%1000 == 0 {
+		common.SysError(fmt.Sprintf(
+			"qianye: 扩展不可用,累计跳过 %d 个热路径事件(最近: %s)—— "+
+				"这些事件没有补偿路径,请检查扩展库健康状态", n, name))
+	}
+}
+
+// QueueStats 暴露队列水位、丢弃数与跳过数,供管理端健康面板告警。
+//
+// 开头的 startWorkers() 不能省:queue 只在 queueOnce 里赋值,绕过它直接读
+// cap/len 与首个 HotAsync 的写构成数据竞争(进程刚起、还没有 relay 流量时
+// 打开健康面板即可命中),按 Go 内存模型是未定义行为(D2)。
 func QueueStats() map[string]any {
+	startWorkers()
 	return map[string]any{
 		"capacity":  cap(queue),
 		"pending":   len(queue),
 		"submitted": submitted.Load(),
 		"dropped":   dropped.Load(),
+		"skipped":   skipped.Load(),
 	}
 }
 

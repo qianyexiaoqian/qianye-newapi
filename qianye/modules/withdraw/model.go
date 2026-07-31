@@ -143,13 +143,22 @@ type PayeeAccount struct {
 	CipherAlg  string `json:"-" gorm:"type:varchar(24);not null;default:'aes-256-gcm'"`
 	KeyVersion int    `json:"-" gorm:"not null;default:1"`
 	Nonce      []byte `json:"-" gorm:"type:varbinary(16);not null"`
-	Cipher     []byte `json:"-" gorm:"type:varbinary(4096)"`
-	Digest     string `json:"-" gorm:"type:char(64);not null;default:'';index:idx_qy_wda_digest"`
-	Masked     string `json:"masked" gorm:"type:varchar(128);not null;default:''"`
+	// Cipher 与 Payee.Cipher 装的是同一份银行卡号,因此也必须受同一个保留期约束:
+	// 用户删掉收款方式之后,这里的密文到期同样要清空(见 prunePayeeAccounts)。
+	Cipher []byte `json:"-" gorm:"type:varbinary(4096)"`
+	Digest string `json:"-" gorm:"type:char(64);not null;default:'';index:idx_qy_wda_digest"`
+	Masked string `json:"masked" gorm:"type:varchar(128);not null;default:''"`
 
 	// DeletedAt 是软删除标记(0 = 未删除)。不用 gorm.DeletedAt:
 	// 本项目统一手工写 unix 秒时间戳,混用两套时间语义会让人读不懂。
 	DeletedAt int64 `json:"-" gorm:"not null;default:0"`
+	// PurgedAt 是保留期清理的时间戳(0 = 未清理)。与 Payee 同口径:只把 Cipher
+	// 置空,Masked/Digest 留着 —— 风控索引与事后追查不该跟着解密能力一起作废。
+	//
+	// 独立于 DeletedAt 存在,因为两者回答的是不同问题:DeletedAt 是"用户还要不要
+	// 用它",PurgedAt 是"密文还在不在"。合并成一个字段就没法再区分"删了但还没到期"
+	// 与"删了且已清理",清理任务会反复扫到同一批行。
+	PurgedAt  int64 `json:"-" gorm:"not null;default:0"`
 	CreatedAt int64 `json:"created_at" gorm:"not null;default:0"`
 	UpdatedAt int64 `json:"-" gorm:"not null;default:0"`
 }

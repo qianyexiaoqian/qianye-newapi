@@ -258,9 +258,12 @@ type Definition struct {
 	CountClientErrors bool     `json:"count_client_errors"`
 	CountRateLimited  bool     `json:"count_rate_limited"`
 	MinSamples        int      `json:"min_samples"`
-	OkThreshold       float64  `json:"ok_threshold"`
-	DegradedThreshold float64  `json:"degraded_threshold"`
-	Note              string   `json:"note"`
+	// PerfMinSamples 是延迟 / 首字 / 速度的样本下限,与 MinSamples 不同,理由见 perf.go。
+	// 下发它是为了让页面能当场解释「延迟这一列为什么是横杠」。
+	PerfMinSamples    int     `json:"perf_min_samples"`
+	OkThreshold       float64 `json:"ok_threshold"`
+	DegradedThreshold float64 `json:"degraded_threshold"`
+	Note              string  `json:"note"`
 }
 
 // definitionOf 由配置推导口径。分母清单按开关动态拼装,前端直接渲染这份清单,
@@ -291,6 +294,7 @@ func definitionOf(cfg config.Availability) Definition {
 		CountClientErrors: cfg.CountClientErrors,
 		CountRateLimited:  cfg.CountRateLimited,
 		MinSamples:        defaultMinSamples,
+		PerfMinSamples:    perfMinSamples,
 		OkThreshold:       defaultOkThreshold,
 		DegradedThreshold: defaultDegradedThreshold,
 		Note:              "端到端口径:一次请求内部重试多个渠道,只要最终成功即计为成功;不含 Midjourney / 视频 / 音乐等异步任务",

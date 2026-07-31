@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { Badge } from '@/components/ui/badge'
 import {
   Card,
   CardContent,
@@ -29,7 +30,7 @@ import {
 import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../../components/qy-amount-text'
-import type { QyTransferLimits } from '../types'
+import type { QyTransferGroupPolicy, QyTransferLimits } from '../types'
 
 type TransferLimitsCardProps = {
   limits: QyTransferLimits
@@ -67,6 +68,43 @@ export function TransferLimitsCard(props: TransferLimitsCardProps) {
       ),
     },
   ]
+
+  // 分组范围排在"今日剩余"之前：它决定"能不能转给这个人"，而剩余额度只决定
+  // "还能转多少"。一个转不出去的对象，剩多少额度都没用。
+  //
+  // `my_group` 为空表示后端没读到用户主库行，此时一个字都不显示 ——
+  // 拿一份不属于他的规则去提示，比不提示更糟。
+  const groupPolicy = limits.group_policy
+  if (groupPolicy != null && groupPolicy.my_group !== '') {
+    rows.push({
+      key: 'my-group',
+      label: t('qy_tr_my_group'),
+      value: <Badge variant='outline'>{groupPolicy.my_group}</Badge>,
+    })
+    if (groupPolicy.policy === 'allow_list') {
+      rows.push({
+        key: 'group-allowed',
+        label: t('qy_tr_group_allowed'),
+        value: <GroupList groups={groupPolicy.allowed_groups} />,
+      })
+    }
+    if (groupPolicy.policy === 'deny_list') {
+      rows.push({
+        key: 'group-denied',
+        label: t('qy_tr_group_denied'),
+        value: <GroupList groups={groupPolicy.denied_groups} />,
+      })
+    }
+    if (groupPolicy.policy === 'blocked') {
+      rows.push({
+        key: 'group-blocked',
+        label: t('qy_tr_group_scope'),
+        value: (
+          <span className='text-destructive'>{t('qy_tr_group_blocked')}</span>
+        ),
+      })
+    }
+  }
 
   // 限额为 0 表示"不限"，此时展示"剩余 0"会被理解成"已经用光了"。
   if (limits.daily_max_quota > 0) {
@@ -130,5 +168,27 @@ export function TransferLimitsCard(props: TransferLimitsCardProps) {
         </dl>
       </CardContent>
     </Card>
+  )
+}
+
+/**
+ * 分组名单。
+ *
+ * 换行显示而不是逗号拼接：分组名可以很长，一行 `default, vip, svip, partner`
+ * 在窄屏上会被 `truncate` 截掉尾巴，而被截掉的那个恰恰可能是用户要转的那个组。
+ */
+function GroupList(props: { groups: QyTransferGroupPolicy['allowed_groups'] }) {
+  const { t } = useTranslation()
+  if (props.groups.length === 0) {
+    return <span className='text-muted-foreground'>{t('qy_common_none')}</span>
+  }
+  return (
+    <span className='flex flex-wrap justify-end gap-1'>
+      {props.groups.map((group) => (
+        <Badge key={group} variant='secondary' className='font-normal'>
+          {group}
+        </Badge>
+      ))}
+    </span>
   )
 }

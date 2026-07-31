@@ -17,9 +17,16 @@ import (
 type counterState struct {
 	HitCount int
 	BanCycle int
-	// Crossed 表示本次推进恰好跨过了封号阈值。
-	// 注意是"跨越"而不是"大于等于":后者会让阈值之后的每一次违规都尝试封号。
-	Crossed bool
+	// Reached 表示推进后的计数已经达到封号阈值。
+	//
+	// 刻意用"已达"而不是"恰好跨越":跨越是一个只出现一次的瞬时信号,一旦被
+	// 速率闸、影子模式或一次执行失败消费掉,下一次违规的 after-weight 就已经
+	// 越过阈值了,判据永远为假 —— 该用户在整个滚动窗口(默认 24 小时)内再也
+	// 不会被封号,而补偿任务只扫已存在的封禁行,对"从未认领成功"的跨越无能为力。
+	// 改成"已达"之后,判据完全由持久化的 hit_count 推导,不再是一次性的:
+	// 阻碍解除后的下一次违规会重新走到封号判定。
+	// 重复封号由 (user_id, ban_cycle) 唯一索引兜住,代价只是一次冲突插入。
+	Reached bool
 }
 
 // bumpCounter 原子地推进用户的滚动窗口计数。
@@ -81,30 +88,23 @@ func bumpCounter(ctx context.Context, userId, weight int) (counterState, error) 
 		return counterState{}, err
 	}
 
-	st.Crossed = crossedThreshold(st.HitCount, weight, cfg.AutoBanThreshold)
+	st.Reached = reachedThreshold(st.HitCount, cfg.AutoBanThreshold)
 	return st, nil
 }
 
-// crossedThreshold 判断本次推进是否"恰好跨过"阈值。
-//
-// 判据是跨越(推进前 < 阈值 且 推进后 >= 阈值)而不是"达到"(推进后 >= 阈值):
-// 后者会让阈值之后的每一次违规都去尝试封号。配合 bumpCounter 保证的
-// "每个并发 worker 拿到唯一的推进后计数",跨越者必然有且只有一个。
-func crossedThreshold(after, weight, threshold int) bool {
-	if threshold <= 0 || weight <= 0 {
-		return false
-	}
-	return after >= threshold && after-weight < threshold
+// reachedThreshold 判断计数是否已经达到封号阈值。阈值 <= 0 表示关闭自动封号。
+func reachedThreshold(after, threshold int) bool {
+	return threshold > 0 && after >= threshold
 }
 
 // claimBan 尝试认领一次封号。
 //
 // (user_id, ban_cycle) 唯一索引就是分布式互斥锁:一个封禁周期内只可能有一个
-// 节点插入成功。返回 nil 表示别人已经认领,本节点必须什么都不做。
-func claimBan(ctx context.Context, userId, cycle, hitCount int, recordId int64) (*Ban, error) {
-	gdb := db.Get()
+// 节点插入成功。created == false 表示本周期已被认领,此时返回库里那一行 ——
+// 调用方需要看它的状态才能判断"是已有结论"还是"被速率闸推迟、现在可以提升执行"。
+func claimBan(ctx context.Context, gdb *gorm.DB, userId, cycle, hitCount int, recordId int64, status string) (*Ban, bool, error) {
 	if gdb == nil {
-		return nil, db.ErrNotReady
+		return nil, false, db.ErrNotReady
 	}
 	row := &Ban{
 		UserId:          userId,
@@ -112,18 +112,24 @@ func claimBan(ctx context.Context, userId, cycle, hitCount int, recordId int64) 
 		TriggerRecordId: recordId,
 		HitCountAt:      hitCount,
 		Threshold:       config.Get().Violation.AutoBanThreshold,
-		Status:          BanPending,
+		Status:          status,
 		CreatedAt:       common.GetTimestamp(),
 	}
 	res := gdb.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(row)
 	if res.Error != nil {
 		db.MarkFailure(res.Error)
-		return nil, res.Error
+		return nil, false, res.Error
 	}
-	if res.RowsAffected == 0 {
-		return nil, nil // 已被其他节点认领
+	if res.RowsAffected == 1 {
+		return row, true, nil
 	}
-	return row, nil
+	var existing Ban
+	if err := gdb.WithContext(ctx).
+		Where("user_id = ? AND ban_cycle = ?", userId, cycle).Take(&existing).Error; err != nil {
+		db.MarkFailure(err)
+		return nil, false, err
+	}
+	return &existing, false, nil
 }
 
 // revertCounter 在管理员撤销违规记录时回退计数。
@@ -150,6 +156,12 @@ func revertCounter(userId, weight int, windowStart int64) error {
 //
 // 不 +1 的后果:下次达到阈值时 claimBan 的唯一键必然冲突,自动封号从此
 // 对该用户静默失效。这是本模块最隐蔽的失效模式,必须与解封绑定执行。
+//
+// resetCount 的语义在封号判据改成"已达阈值"之后变得更实在了:不清零就意味着
+// 这些次数仍然算数,该用户解封后只要再违规一次就会立刻被重新封禁。
+// 想给一次真正的重新开始,解封时必须勾上 reset_counter。
+// (旧的"恰好跨越"判据下不清零等于白留 —— 计数摆在那里却永远不会再触发封号,
+// 那正是 B3 要消除的静默失效。)
 func openNewBanCycle(userId int, resetCount bool) error {
 	gdb := db.Get()
 	if gdb == nil {
@@ -164,50 +176,91 @@ func openNewBanCycle(userId int, resetCount bool) error {
 		append(args, userId)...).Error
 }
 
-// maybeAutoBan 在计数跨越阈值时执行封号。返回是否真的封了。
-func maybeAutoBan(ctx context.Context, rec *Record, st counterState) bool {
-	cfg := config.Get().Violation
-	if cfg.AutoBanThreshold <= 0 || !st.Crossed {
-		return false
+// resolveBanClaim 决定本次是否要执行封号,并把这个决定持久化。
+//
+// 返回非 nil 表示本节点拿到了执行权,调用方必须紧接着执行主库封号。返回 nil 的
+// 每一种情况都在库里或日志里留了痕:绝不允许"该封没封"只活在一次函数调用里。
+//
+// 三条分支的取舍:
+//   - 影子模式:一行封禁记录都不写。影子的定义就是"只观察、不产生任何处置副作用",
+//     写认领行会污染管理端的封禁列表。信号不会因此丢失 —— 判据是持久化的 hit_count,
+//     影子解除后该用户的下一次违规会重新走到这里。
+//   - 速率闸:直接以 deferred 状态落行(而不是"先落 pending 再改状态"),
+//     进程在两步之间崩溃会留下一行会被补偿任务执行的 pending,那等于绕过速率闸。
+//   - 已存在的行:只有 deferred 可以被提升。pending / failed 是补偿任务的地盘,
+//     banned / skipped / unbanned 是已经有结论的终态。
+func resolveBanClaim(ctx context.Context, gdb *gorm.DB, rec *Record, st counterState) *Ban {
+	if gdb == nil || !st.Reached {
+		return nil
 	}
 	if shadow, reason := shadowActive(); shadow {
 		shadowHits.Add(1)
 		common.SysLog(fmt.Sprintf(
 			"qianye/violation: 影子模式(%s),用户 %d 违规计数已达 %d,未执行自动封号",
 			reason, rec.UserId, st.HitCount))
-		return false
-	}
-	// 速率闸在认领之前:超限时连认领都不做,这样恢复后仍能正常触发,
-	// 而不是留下一堆 pending 的假认领把后续周期堵死。
-	if banRateExceeded() {
-		common.SysError(fmt.Sprintf(
-			"qianye/violation: 每小时自动封号已达上限,用户 %d 的封号被推迟为人工处理", rec.UserId))
-		return false
+		return nil
 	}
 
-	ban, err := claimBan(ctx, rec.UserId, st.BanCycle, st.HitCount, rec.Id)
+	rateExceeded := banRateExceeded()
+	status := BanPending
+	if rateExceeded {
+		status = BanDeferred
+	}
+	ban, created, err := claimBan(ctx, gdb, rec.UserId, st.BanCycle, st.HitCount, rec.Id, status)
 	if err != nil || ban == nil {
-		return false
+		return nil
+	}
+	if rateExceeded {
+		if created {
+			common.SysError(fmt.Sprintf(
+				"qianye/violation: 每小时自动封号已达上限,用户 %d 的封号已记为 deferred(ban=%d)待人工处理",
+				rec.UserId, ban.Id))
+		}
+		return nil
+	}
+	if !created {
+		if ban.Status != BanDeferred {
+			return nil
+		}
+		// deferred → pending 的 CAS 是这条提升路径唯一的互斥手段。
+		res := gdb.WithContext(ctx).Model(&Ban{}).
+			Where("id = ? AND status = ?", ban.Id, BanDeferred).
+			Update("status", BanPending)
+		if res.Error != nil {
+			db.MarkFailure(res.Error)
+			return nil
+		}
+		if res.RowsAffected == 0 {
+			return nil
+		}
+		ban.Status = BanPending
 	}
 	noteBan()
+	return ban
+}
 
-	if err := disableUserForViolation(rec.UserId, ban); err != nil {
+// maybeAutoBan 在计数达到阈值时执行封号。返回是否真的封了。
+func maybeAutoBan(ctx context.Context, gdb *gorm.DB, rec *Record, st counterState) bool {
+	ban := resolveBanClaim(ctx, gdb, rec, st)
+	if ban == nil {
+		return false
+	}
+	if err := disableUserForViolation(ctx, rec.UserId, ban); err != nil {
 		if errors.Is(err, errBanSkipped) {
-			markBan(ban.Id, BanSkipped, "")
+			markBan(gdb, ban.Id, BanSkipped, "")
 			return false
 		}
-		markBan(ban.Id, BanFailed, err.Error())
+		markBan(gdb, ban.Id, BanFailed, err.Error())
 		common.SysError(fmt.Sprintf("qianye/violation: 用户 %d 自动封禁失败: %v", rec.UserId, err))
 		return false
 	}
-	markBan(ban.Id, BanBanned, "")
+	markBan(gdb, ban.Id, BanBanned, "")
 	return true
 }
 
 // markBan 更新封禁执行结果。失败时只记日志:封禁本身已经生效,
 // 状态回写失败会被补偿任务收敛。
-func markBan(id int64, status, lastErr string) {
-	gdb := db.Get()
+func markBan(gdb *gorm.DB, id int64, status, lastErr string) {
 	if gdb == nil {
 		return
 	}

@@ -31,21 +31,24 @@ import {
 } from '@/components/ui/sheet'
 
 import { qyKeys } from '../../../lib/query-keys'
-import {
-  formatQyAvailability,
-  formatQyCount,
-  formatQyMs,
-  QY_EMPTY_TEXT,
-} from '../../ops/format'
+import { formatQyCount, formatQyMs, QY_EMPTY_TEXT } from '../../ops/format'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
 import { getQyAvailabilitySeries } from '../api'
-import { getQyAvailStateStyle, qyAvailOutcomeKey } from '../constants'
+import {
+  formatQyTps,
+  getQyAvailStateStyle,
+  qyAvailOutcomeKey,
+  type QyAvailMetricDef,
+} from '../constants'
 import type { QyAvailCell, QyAvailDefinition } from '../types'
 import { QyAvailabilityTrendChart } from './availability-trend-chart'
 
 type QyAvailabilityCellSheetProps = {
   cell: QyAvailCell | null
   hours: number
+  /** 页面当前的主指标，趋势图跟着它走 —— 切到「速度」再点开格子，
+   *  看到的仍是可用率曲线的话，切换就等于没生效。 */
+  metric: QyAvailMetricDef
   definition: QyAvailDefinition | null
   onClose: () => void
 }
@@ -97,9 +100,16 @@ export function QyAvailabilityCellSheet(props: QyAvailabilityCellSheetProps) {
         </SheetHeader>
 
         <div className='min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pb-4'>
+          {/* 大字跟着主指标走，状态徽章始终是可用率六态：
+              「延迟 1.2s」旁边配一个「不可用」，两条信息缺一不可。 */}
           <div className='flex items-baseline gap-3'>
             <span className='text-3xl font-semibold tabular-nums'>
-              {formatQyAvailability(cell?.availability)}
+              {props.metric.format(
+                cell == null ? null : props.metric.valueOf(cell)
+              )}
+            </span>
+            <span className='text-muted-foreground text-xs'>
+              {t(props.metric.labelKey)}
             </span>
             <StatusBadge
               label={t(style.labelKey)}
@@ -129,26 +139,36 @@ export function QyAvailabilityCellSheet(props: QyAvailabilityCellSheetProps) {
                 ? QY_EMPTY_TEXT
                 : t(qyAvailOutcomeKey(cell.top_reason))}
             </QyKeyValue>
+            {/* 三个性能指标各带自己的样本数：可用率有 1000 条样本，不代表
+                首字延迟也有 —— 非流式请求根本不产生首字样本。没有这一列，
+                「为什么这里是横杠」就永远解释不清。 */}
             <QyKeyValue label={t('qy_avl_latency')}>
-              {formatQyMs(cell?.avg_latency_ms)}
+              {`${formatQyMs(cell?.avg_latency_ms)} · ${t('qy_avl_samples_n', {
+                n: formatQyCount(cell?.latency_samples),
+              })}`}
             </QyKeyValue>
             <QyKeyValue label={t('qy_avl_ttft')}>
-              {formatQyMs(cell?.avg_ttft_ms)}
+              {`${formatQyMs(cell?.avg_ttft_ms)} · ${t('qy_avl_samples_n', {
+                n: formatQyCount(cell?.ttft_samples),
+              })}`}
             </QyKeyValue>
             <QyKeyValue label={t('qy_avl_tps')}>
-              {cell == null || cell.avg_tps <= 0
-                ? QY_EMPTY_TEXT
-                : `${cell.avg_tps.toFixed(2)} t/s`}
+              {`${formatQyTps(cell?.avg_tps)} · ${t('qy_avl_samples_n', {
+                n: formatQyCount(cell?.speed_samples),
+              })}`}
             </QyKeyValue>
           </div>
 
           <div>
-            <h3 className='mb-2 text-sm font-medium'>{t('qy_avl_trend')}</h3>
+            <h3 className='mb-2 text-sm font-medium'>
+              {`${t('qy_avl_trend')} · ${t(props.metric.labelKey)}`}
+            </h3>
             {seriesQuery.isLoading ? (
               <LoadingState />
             ) : (
               <QyAvailabilityTrendChart
                 series={seriesQuery.data?.series ?? []}
+                metric={props.metric}
                 bucketSeconds={seriesQuery.data?.bucket_seconds ?? 300}
               />
             )}

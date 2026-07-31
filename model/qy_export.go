@@ -112,8 +112,28 @@ func QyProbeFundOutbox(orderNo string) (bool, error) {
 }
 
 // QyPruneFundOutbox 清理历史 outbox 行。调用方必须确保对应资金单已处于终态。
+//
+// 先查主键再按主键删,不能写成 DB.Where(...).Limit(batch).Delete(...):
+// GORM 的 LIMIT 子句只有在方言把 "LIMIT" 列进 DeleteClauses 时才会被渲染,
+// 而这只有 MySQL 驱动做了 —— postgres 与 sqlite 的 DeleteClauses 里没有 LIMIT,
+// 它们会静默生成一条不带 LIMIT 的 DELETE 把整段历史一次删光。主库可以是这三种
+// 中的任何一种(见 AGENTS.md 的跨库要求),在全平台业务库上产生长事务、
+// 大量 WAL 与锁等待,而且没有任何报错提示。
+//
+// SELECT 上的 Limit 三种方言都支持,因此这个写法在哪个主库上都真正按批执行。
 func QyPruneFundOutbox(before int64, batch int) (int64, error) {
-	res := DB.Where("created_at < ?", before).Limit(batch).Delete(&QyFundOutbox{})
+	if batch <= 0 {
+		batch = 200
+	}
+	var ids []int64
+	if err := DB.Model(&QyFundOutbox{}).Where("created_at < ?", before).
+		Order("id").Limit(batch).Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res := DB.Where("id IN ?", ids).Delete(&QyFundOutbox{})
 	return res.RowsAffected, res.Error
 }
 

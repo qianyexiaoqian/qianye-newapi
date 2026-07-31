@@ -87,6 +87,9 @@ type limitsResponse struct {
 	CooldownUntil       int64  `json:"cooldown_until"`
 	TransferableQuota   int64  `json:"transferable_quota"`
 	BlockedReason       string `json:"blocked_reason"`
+	// GroupPolicy 让用户在填收款人**之前**就知道自己能转给哪些分组。
+	// 只包含发起方自己的策略,不含任何其他人的分组归属。
+	GroupPolicy groupPolicyView `json:"group_policy"`
 }
 
 // handleCreate 是唯一会动钱的入口,已挂 CriticalRateLimit。
@@ -117,7 +120,14 @@ func handlePreview(c *gin.Context) {
 		respondErr(c, errInvalidParam)
 		return
 	}
-	resp := resolveRecipient(c, c.GetInt("id"), req.Identifier)
+	// 规则读失败一律报错而不是按"不限制"预览:预览如果比提交宽松,
+	// 用户会先看到绿色的"收款人已确认",再在提交时吃一个 403。
+	rules, err := loadGroupRules()
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	resp := resolveRecipient(c, c.GetInt("id"), req.Identifier, rules)
 	if req.Amount > 0 {
 		cfg := config.Get().Transfer
 		// 金额非法时不报错,只是不回填:预览的主要用途是确认收款人,
@@ -207,6 +217,12 @@ func handleGetLimits(c *gin.Context) {
 	me := c.GetInt("id")
 	now := common.GetTimestamp()
 
+	rules, err := loadGroupRules()
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+
 	var state UserState
 	// 从未参与过划转的用户没有状态行,那不是错误,零值就是正确答案。
 	if err := db.Get().Where("user_id = ?", me).First(&state).Error; err != nil &&
@@ -226,6 +242,14 @@ func handleGetLimits(c *gin.Context) {
 		FeeMinQuota:     cfg.FeeMinQuota,
 		CooldownSecs:    cfg.CooldownSecs,
 		RecipientLookup: cfg.RecipientLookup,
+		// 读不到主库用户行时(下面那个 if 不成立)保持这份中性值:my_group 为空,
+		// 前端据此不渲染任何分组提示。绝不用 default 分组的结论顶替 ——
+		// 那会给 vip 用户看一份不属于他的规则。
+		GroupPolicy: groupPolicyView{
+			Policy:        groupViewUnrestricted,
+			AllowedGroups: []string{},
+			DeniedGroups:  []string{},
+		},
 	}
 	if cfg.DailyMaxQuota > 0 {
 		resp.RemainingDailyQuota = clampNonNegative64(cfg.DailyMaxQuota - state.DayOutQuota)
@@ -249,6 +273,12 @@ func handleGetLimits(c *gin.Context) {
 		if freeze := int64(cfg.NewAccountFreezeHours) * 3600; freeze > 0 &&
 			user.CreatedAt > 0 && now-user.CreatedAt < freeze {
 			resp.BlockedReason = "account_too_new"
+		}
+		resp.GroupPolicy = describeGroupPolicy(rules, user.Group)
+		// 分组级禁止转出排在最后覆盖:未结算与新账号都是会自行消失的临时状态,
+		// 而这一条要等运营改规则才会解除,对用户来说是更要紧的那个原因。
+		if resp.GroupPolicy.Policy == groupViewBlocked {
+			resp.BlockedReason = blockedGroupBlocked
 		}
 	}
 	respondOK(c, resp)

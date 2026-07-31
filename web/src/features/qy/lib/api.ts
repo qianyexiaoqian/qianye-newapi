@@ -110,6 +110,10 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_pending_exists: 'qy_err_pending_exists',
   qy_in_progress: 'qy_err_in_progress',
   qy_transfer_failed: 'qy_err_transfer_failed',
+  // 分组限制（qianye/modules/transfer/grouprule.go）。两个 code 必须映射到
+  // 两句不同的话：blocked 是「换谁都不行」，denied 是「换个收款人也许就行」。
+  qy_transfer_group_blocked: 'qy_err_transfer_group_blocked',
+  qy_transfer_group_denied: 'qy_err_transfer_group_denied',
 
   // ── 提现（qianye/modules/withdraw/errors.go）──
   qy_wd_method_not_allowed: 'qy_err_wd_method_not_allowed',

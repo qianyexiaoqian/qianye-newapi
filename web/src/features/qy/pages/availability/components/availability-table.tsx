@@ -30,7 +30,11 @@ import {
   formatQyMs,
   QY_EMPTY_TEXT,
 } from '../../ops/format'
-import { getQyAvailStateStyle, qyAvailOutcomeKey } from '../constants'
+import {
+  formatQyTps,
+  getQyAvailStateStyle,
+  qyAvailOutcomeKey,
+} from '../constants'
 import type { QyAvailCell } from '../types'
 
 /**
@@ -107,6 +111,8 @@ export function QyAvailabilityTable(props: {
             ? QY_EMPTY_TEXT
             : t(qyAvailOutcomeKey(row.top_reason)),
       },
+      // 三个性能列一律走 formatQyMs / formatQyTps：样本不足时后端下发 null，
+      // 这里必须渲染成占位符而不是 0 —— 「延迟 0ms」会被读成「快得离谱」。
       {
         id: 'latency',
         header: t('qy_avl_latency'),
@@ -118,6 +124,12 @@ export function QyAvailabilityTable(props: {
         header: t('qy_avl_ttft'),
         cellClassName: 'tabular-nums',
         cell: (row: QyAvailCell) => formatQyMs(row.avg_ttft_ms),
+      },
+      {
+        id: 'tps',
+        header: t('qy_avl_tps'),
+        cellClassName: 'tabular-nums',
+        cell: (row: QyAvailCell) => formatQyTps(row.avg_tps),
       },
     ],
     [props, t]

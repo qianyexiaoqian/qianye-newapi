@@ -14,23 +14,26 @@ import (
 )
 
 func TestCalcGrossKeepsFullPrecision(t *testing.T) {
+	// units 是内部整数费率(百分比 × 100):500 = 5%,1025 = 10.25%。
 	cases := []struct {
-		base int64
-		bps  int
-		want string
+		base  int64
+		units int
+		want  string
 	}{
 		{10, 500, "0.5"},   // 裸 int 转换会变成 0
 		{1, 500, "0.05"},   // 裸 int 转换会变成 0
-		{3, 333, "0.0999"}, // 万分之一级别的比例也不能丢
+		{3, 333, "0.0999"}, // 3.33% 这种带小数的比例也不能丢
 		{200, 500, "10"},
 		{1_000_000, 1000, "100000"},
+		{10000, 1025, "1025"}, // 两位小数的百分比必须精确
+		{1, 1, "0.0001"},      // 0.01% 是最小可配的非零费率
 		{0, 500, "0"},
 		{100, 0, "0"},
 		{-100, 500, "0"}, // 负基数由冲正路径显式构造,正向计佣拒绝
 	}
 	for _, tc := range cases {
-		got := calcGross(tc.base, tc.bps)
-		assert.Equal(t, tc.want, got.String(), "base=%d bps=%d", tc.base, tc.bps)
+		got := calcGross(tc.base, tc.units)
+		assert.Equal(t, tc.want, got.String(), "base=%d units=%d", tc.base, tc.units)
 	}
 }
 
@@ -61,7 +64,20 @@ func TestNormalizeIdemKeyIsInjective(t *testing.T) {
 }
 
 func TestIdemKeyShapes(t *testing.T) {
-	assert.Equal(t, "consume:7:20260730", consumeIdemKey(7, "20260730"))
+	vip := rateDecision{Units: 500, Group: "vip"}
+	assert.Equal(t, "consume:7:20260730:vip:500", consumeIdemKey(7, "20260730", vip))
+
+	// 费率或分组一变就必须换一行:日聚合桶是"边增长边结算"的,把新费率
+	// 算出的 gross 累加进一行标着旧费率的记录里,那一行从此
+	// base × rate ≠ gross,永远对不平也没法向用户解释。
+	assert.NotEqual(t, consumeIdemKey(7, "20260730", vip),
+		consumeIdemKey(7, "20260730", rateDecision{Units: 800, Group: "vip"}))
+	assert.NotEqual(t, consumeIdemKey(7, "20260730", vip),
+		consumeIdemKey(7, "20260730", rateDecision{Units: 500, Group: "default"}))
+	// Matched 只用于日志与管理端解释,不参与算钱,更不该影响幂等键。
+	assert.Equal(t, consumeIdemKey(7, "20260730", vip),
+		consumeIdemKey(7, "20260730", rateDecision{Units: 500, Group: "vip", Matched: true}))
+
 	assert.Equal(t, "topup:TX-1", topupIdemKey(" TX-1 "))
 	assert.Equal(t, "redemption:99", redemptionIdemKey(99))
 
