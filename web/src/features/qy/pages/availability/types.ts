@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 /**
  * 与 `qianye/modules/availability/api.go` + `query.go` + `outcome.go` 的
- * 响应体一一对应。管理端的 `admin-availability` 也复用本文件的 cell / 口径类型。
+ * 响应体一一对应。管理端总览页已移除，本文件现在只服务用户端可用率页。
  */
 
 /**

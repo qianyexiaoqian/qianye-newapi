@@ -27,7 +27,29 @@ const idemScope = "transfer"
 // 全流程只有一个跨库写入点(twophase.Execute),这里不自己写跨库事务:
 // 资金中间态的判定依赖主库 outbox 探针,自建一套只会多一个无法对账的状态机。
 func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse, error) {
-	cfg := config.Get().Transfer
+	// 门槛快照**在这里取唯一一次**,受理校验、主库锁内复检、扩展库锁内风控
+	// 判定三处共用它。
+	//
+	// 分三次读是资损:门槛已经可以被管理端在线改(见 settings.go),运营在
+	// 受理与落账之间保存一次,就会出现"受理时按旧门槛放行、锁内按新门槛拒绝"
+	// —— 用户白吃一次冷却与风控预占,而他提交那一刻看到的门槛确实是允许的。
+	// 反过来同样成立。用户提交时看到什么门槛,这一笔就按什么门槛算。
+	//
+	// 这一步单独用一个冷路径预算,不与下面那个共用:共用会让读配置花掉的时间
+	// 从资金操作的预算里扣,一次慢查询就能让 twophase.Execute 在几乎耗尽的
+	// ctx 上启动。它一读完就 cancel,拿到的是值不是句柄,没有后续依赖。
+	settingsCtx, settingsCancel := guard.ColdContext(context.Background())
+	settings, err := effectiveCtx(settingsCtx)
+	settingsCancel()
+	if err != nil {
+		return nil, err
+	}
+	cfg := settings.Transfer
+
+	// 刻意不用 c.Request.Context():客户端断开连接不该中断一笔已经在动钱的操作。
+	ctx, cancel := guard.ColdContext(context.Background())
+	defer cancel()
+
 	acc, err := validateCreate(fromUserId, req, cfg)
 	if err != nil {
 		return nil, err
@@ -71,15 +93,11 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 		mainApplied bool
 	)
 
-	// 刻意不用 c.Request.Context():客户端断开连接不该中断一笔已经在动钱的操作。
-	ctx, cancel := guard.ColdContext(context.Background())
-	defer cancel()
-
 	fundReq := fundingFacts(acc)
 	fundReq.LocalDetail = func(tx *gorm.DB, o *qymodel.FundOrder) error {
 		// 风控与落单同事务:两者之间只要有提交间隙,
 		// 并发请求就会同时读到旧计数、同时通过日限额校验。
-		if err := reserveRisk(tx, acc, now); err != nil {
+		if err := reserveRisk(tx, acc, cfg, now); err != nil {
 			return err
 		}
 		detail.OrderNo = o.OrderNo

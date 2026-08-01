@@ -18,7 +18,9 @@ type Mod struct{ module.Base }
 
 func (Mod) Name() string { return "transfer" }
 
-func (Mod) Tables() []any { return []any{&Order{}, &UserState{}, &LookupLog{}, &GroupRule{}} }
+func (Mod) Tables() []any {
+	return []any{&Order{}, &UserState{}, &LookupLog{}, &GroupRule{}, &Contact{}}
+}
 
 // InstallHooks 注册补偿回调。
 // 这里没有上游 hook 要注入,只有 twophase 需要知道"确认主库生效之后找谁收尾"。
@@ -35,11 +37,29 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 	g.POST("/transfer/preview", middleware.SearchRateLimit(), handlePreview)
 	g.GET("/transfer/records", handleListRecords)
 	g.GET("/transfer/limits", handleGetLimits)
+
+	// 联系人簿(需求 3-C)。它**只**用来把收款人字段填好,不是信任凭据:
+	// 不豁免支付密码、不豁免分组限制、不豁免任何限额。见 contacts.go 顶部
+	// 的不变量说明,以及 contacts_isolation_test.go 的双向 AST 断言。
+	g.GET("/transfer/contacts", handleListContacts)
+	// 添加走的是与 /transfer/preview 同一套收款人解析,因此必须挂同一个
+	// 限流器:「输入一个标识看它存不存在」在这里和在预览接口是同一个动作,
+	// 只给其中一个入口设防等于没设防。
+	g.POST("/transfer/contacts", middleware.SearchRateLimit(), handleAddContact)
+	// 改备注与删除都只作用于调用者自己的行(WHERE 带 owner_user_id),
+	// 不解析任何标识,因此不构成枚举面,不需要 SearchRateLimit。
+	g.PUT("/transfer/contacts/:id", handleRenameContact)
+	g.DELETE("/transfer/contacts/:id", handleDeleteContact)
 }
 
 // RegisterAdminRoutes 挂载管理端接口。传入的组已挂 AdminAuth(自带操作审计)。
 func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/transfer/records", handleAdminListRecords)
+
+	// 划转门槛(qy_settings, scope=transfer)。写接口挂关键操作限流:
+	// 一次保存就能把全站的日额度放大一个数量级,不该允许被脚本高频改写。
+	g.GET("/transfer/config", adminGetTransferConfig)
+	g.PUT("/transfer/config", middleware.CriticalRateLimit(), adminPutTransferConfig)
 
 	// 分组划转限制。写接口都挂关键操作限流:一条规则能瞬间放开或掐断
 	// 整个分组的资金流向,不该允许被脚本高频改写。

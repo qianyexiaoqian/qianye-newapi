@@ -9,8 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// resetBreaker 清空进程级熔断状态。熔断计数是包级 atomic,
-// 不清会让用例之间互相污染,断言变成看运行顺序的玄学。
+// resetBreaker 清空进程级熔断状态与全局影子开关快照。
+//
+// 两者都是包级 atomic,不清会让用例之间互相污染,断言变成看运行顺序的玄学。
+// 影子开关快照必须一起清:它是进程内缓存,一个用例把覆盖设成"真实执行"之后,
+// 后面所有依赖"默认影子"的用例都会莫名其妙地跑在真实模式下。
 func resetBreaker() {
 	winStart.Store(common.GetTimestamp())
 	winScanned.Store(0)
@@ -19,6 +22,13 @@ func resetBreaker() {
 	banWinCount.Store(0)
 	forcedShadowUntil.Store(0)
 	forcedShadowReason.Store("")
+
+	shadowOverride.Store(shadowUnset)
+	modeLoadedAt.Store(0)
+	modeLoadFail.Store(0)
+	modeWarnAt.Store(0)
+	// 代次自增 = 作废所有在途刷新;刷新时间清零 = 下一次读立刻回源。
+	invalidateMode()
 }
 
 // TestShadowModeIsDefaultOn 固化"影子模式是默认状态"这条安全阀。

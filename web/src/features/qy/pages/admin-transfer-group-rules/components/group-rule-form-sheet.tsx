@@ -25,6 +25,7 @@ import { toast } from 'sonner'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ComboboxInput } from '@/components/ui/combobox-input'
 import {
   Form,
   FormControl,
@@ -57,16 +58,24 @@ import { qyOpsErrorMessage } from '../../ops/errors'
 import { qyCreateTransferGroupRule, qyUpdateTransferGroupRule } from '../api'
 import {
   QY_GROUP_POLICIES,
+  qyAppendGroup,
   qyEmptyGroupRule,
+  qyGroupOptionLabel,
   qyGroupPolicyNeedsList,
   qyGroupRuleSchema,
   qyGroupRuleToForm,
   qyGroupRuleToPayload,
+  qyIsSelfToken,
+  qyNormalizeGroupName,
+  qyRuleGroupNames,
+  qySplitGroupList,
+  qyUnknownGroupNames,
   type QyGroupRuleFormValues,
 } from '../lib/rule-form'
 import {
   QY_GROUP_SELF_TOKEN,
   QY_GROUP_WILDCARD,
+  type QyTransferGroupOption,
   type QyTransferGroupRule,
 } from '../types'
 
@@ -75,8 +84,15 @@ type QyGroupRuleFormSheetProps = {
   onOpenChange: (open: boolean) => void
   /** `null` 表示新建。 */
   rule: QyTransferGroupRule | null
-  /** 已知分组候选，只作为填写提示；后端允许任意分组名。 */
-  knownGroups: string[]
+  /**
+   * 站点定义过的分组，带倍率 / 渠道 / 公开可选三项元数据。
+   *
+   * 它是下拉的取值域，也是「这个名字站点定义过没有」的判据 —— 但**不是闸门**：
+   * 两个输入都允许自由填写，历史分组必须仍然能配规则。
+   */
+  groupOptions: QyTransferGroupOption[]
+  /** abilities 探测是否成功。false 时不能拿 `has_channels` 说事。 */
+  channelsProbeOk: boolean
   onSaved: () => void
 }
 
@@ -113,8 +129,17 @@ export function QyGroupRuleFormSheet(props: QyGroupRuleFormSheetProps) {
         ? qyCreateTransferGroupRule(payload)
         : qyUpdateTransferGroupRule(props.rule.id, payload)
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
       toast.success(t('qy_trg_saved'))
+      // 后端在 200 的回执里带软告警：保存成功 ≠ 这条规则会命中。
+      // 抽屉这时已经关了，所以必须靠 toast 说出来。
+      if (saved.unknown_groups.length > 0) {
+        toast.warning(
+          t('qy_trg_unknown_warning', {
+            groups: saved.unknown_groups.join('、'),
+          })
+        )
+      }
       props.onSaved()
       props.onOpenChange(false)
     },
@@ -124,7 +149,14 @@ export function QyGroupRuleFormSheet(props: QyGroupRuleFormSheetProps) {
   })
 
   const policy = form.watch('policy')
+  const fromGroup = form.watch('from_group')
+  const toGroups = form.watch('to_groups')
   const needsList = qyGroupPolicyNeedsList(policy)
+  // 未定义分组是**当场**算的：等保存回执才提示，运营已经点完确认了。
+  const unknown = qyUnknownGroupNames(
+    qyRuleGroupNames(fromGroup, toGroups, policy),
+    props.groupOptions
+  )
 
   return (
     <Sheet open={props.open} onOpenChange={props.onOpenChange}>
@@ -144,6 +176,11 @@ export function QyGroupRuleFormSheet(props: QyGroupRuleFormSheetProps) {
               saveMutation.mutate(values)
             )}
           >
+            {/* 分组的定义方不是这一页。说清楚它，否则运营会在这里找"新建分组"。 */}
+            <p className='text-muted-foreground rounded-md border border-dashed p-3 text-xs'>
+              {t('qy_trg_group_source_note')}
+            </p>
+
             <FormField
               control={form.control}
               name='from_group'
@@ -151,19 +188,33 @@ export function QyGroupRuleFormSheet(props: QyGroupRuleFormSheetProps) {
                 <FormItem>
                   <FormLabel>{t('qy_trg_field_from')}</FormLabel>
                   <FormControl>
-                    <Input
-                      {...field}
-                      list='qy-trg-known-groups'
+                    {/* 裸 datalist 只提示、不校验、不告警：名字打错一个字母不会
+                        有任何信号，而那条规则会静默变成永不命中。换成带元数据的
+                        下拉，同时保留自由输入（历史分组仍要能配）。 */}
+                    <ComboboxInput
+                      options={[
+                        {
+                          value: QY_GROUP_WILDCARD,
+                          label: `${QY_GROUP_WILDCARD} · ${t('qy_trg_fallback_label')}`,
+                        },
+                        ...props.groupOptions.map((option) => ({
+                          value: option.name,
+                          label: qyGroupOptionLabel(
+                            option,
+                            props.channelsProbeOk,
+                            t
+                          ),
+                        })),
+                      ]}
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      allowCustomValue
+                      emptyText='qy_trg_group_picker_empty'
                       placeholder={t('qy_trg_field_from_ph', {
                         wildcard: QY_GROUP_WILDCARD,
                       })}
                     />
                   </FormControl>
-                  <datalist id='qy-trg-known-groups'>
-                    {props.knownGroups.map((group) => (
-                      <option key={group} value={group} />
-                    ))}
-                  </datalist>
                   <FormDescription>
                     {t('qy_trg_field_from_desc', {
                       wildcard: QY_GROUP_WILDCARD,
@@ -211,9 +262,55 @@ export function QyGroupRuleFormSheet(props: QyGroupRuleFormSheetProps) {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>{t('qy_trg_field_to')}</FormLabel>
+                    {/* 选一个就追加一项。名单本身仍然可以直接编辑文本框：
+                        下拉解决"有哪些分组、它们什么样"，自由输入解决
+                        "站点已经不认的历史分组仍要能配"。 */}
+                    <ComboboxInput
+                      options={[
+                        {
+                          value: QY_GROUP_SELF_TOKEN,
+                          label: `${QY_GROUP_SELF_TOKEN} · ${t('qy_trg_self_label')}`,
+                        },
+                        ...props.groupOptions.map((option) => ({
+                          value: option.name,
+                          label: qyGroupOptionLabel(
+                            option,
+                            props.channelsProbeOk,
+                            t
+                          ),
+                        })),
+                      ]}
+                      value=''
+                      onValueChange={(picked) =>
+                        field.onChange(qyAppendGroup(field.value, picked))
+                      }
+                      emptyText='qy_trg_group_picker_empty'
+                      placeholder={t('qy_trg_to_picker_ph')}
+                    />
                     <FormControl>
                       <Textarea rows={3} className='font-mono' {...field} />
                     </FormControl>
+                    {field.value.trim() !== '' && (
+                      <div className='flex flex-wrap gap-1'>
+                        {/* 文本框是自由编辑的，名单里可能出现重复项（后端保存时
+                            才会去重），因此 key 必须带序号。 */}
+                        {qySplitGroupList(field.value).map((entry, index) => (
+                          <Badge
+                            key={`${entry}-${index}`}
+                            variant={
+                              unknown.includes(qyNormalizeGroupName(entry))
+                                ? 'warning'
+                                : 'secondary'
+                            }
+                            className='font-normal'
+                          >
+                            {qyIsSelfToken(entry)
+                              ? t('qy_trg_self_label')
+                              : entry}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
                     <FormDescription className='space-y-1'>
                       <span className='block'>{t('qy_trg_field_to_desc')}</span>
                       <span className='block'>
@@ -227,6 +324,14 @@ export function QyGroupRuleFormSheet(props: QyGroupRuleFormSheetProps) {
                   </FormItem>
                 )}
               />
+            )}
+
+            {/* 软告警，不是错误：不禁用提交按钮，也不进 zod schema。
+                历史分组恰恰是最需要限制转出的一批账号。 */}
+            {unknown.length > 0 && (
+              <p className='text-warning text-xs'>
+                {t('qy_trg_unknown_warning', { groups: unknown.join('、') })}
+              </p>
             )}
 
             <FormField

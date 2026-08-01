@@ -138,6 +138,7 @@ func applyDefaults(c *Config) {
 	int64Default(&w.MaxQuotaPerOrder, 500000000)
 	int64Default(&w.DailyMaxQuota, 1000000000)
 	intDefault(&w.PIIRetentionDays, 180)
+	int64Default(&w.ProofMaxBytes, 2<<20)
 
 	av := &c.Availability
 	intDefault(&av.BucketSeconds, 300)

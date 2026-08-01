@@ -114,6 +114,27 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   // 两句不同的话：blocked 是「换谁都不行」，denied 是「换个收款人也许就行」。
   qy_transfer_group_blocked: 'qy_err_transfer_group_blocked',
   qy_transfer_group_denied: 'qy_err_transfer_group_denied',
+  // 划转联系人（qianye/modules/transfer/contacts.go）。
+  qy_contact_not_found: 'qy_err_contact_not_found',
+  qy_contact_user_not_found: 'qy_err_contact_user_not_found',
+  qy_contact_self: 'qy_err_contact_self',
+  qy_contact_duplicate: 'qy_err_contact_duplicate',
+  qy_contact_limit: 'qy_err_contact_limit',
+
+  // ── 支付密码（qianye/modules/paypass/errors.go）──
+  // 四个验密结果必须映射到四句不同的话：引导去设置 / 请输入 / 输错了 /
+  // 已锁定，它们要求用户做的下一步动作完全不同，混成一句用户就不知道该干嘛。
+  qy_pay_pwd_not_set: 'qy_pp_err_not_set',
+  qy_pay_pwd_required: 'qy_pp_err_required',
+  qy_pay_pwd_wrong: 'qy_pp_err_wrong',
+  qy_pay_pwd_locked: 'qy_pp_err_locked',
+  qy_pay_pwd_already_set: 'qy_pp_err_already_set',
+  qy_pay_pwd_weak: 'qy_pp_err_weak',
+  qy_pay_pwd_same_as_old: 'qy_pp_err_same_as_old',
+  qy_pay_pwd_email_unbound: 'qy_pp_err_email_unbound',
+  qy_pay_pwd_code_invalid: 'qy_pp_err_code_invalid',
+  qy_pay_pwd_mail_unavailable: 'qy_pp_err_mail_unavailable',
+  qy_pay_pwd_user_not_found: 'qy_pp_err_user_not_found',
 
   // ── 提现（qianye/modules/withdraw/errors.go）──
   qy_wd_method_not_allowed: 'qy_err_wd_method_not_allowed',
@@ -140,6 +161,17 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_wd_pii_key_unavailable: 'qy_err_wd_pii_unavailable',
   qy_wd_rate_unavailable: 'qy_err_wd_rate_unavailable',
   qy_wd_payee_undecryptable: 'qy_err_wd_payee_undecryptable',
+  // 凭证图片（qianye/modules/withdraw/proof.go）。后端把它拆成八个 code 正是因为
+  // 用户能做的下一步完全不同：换一张图 / 压缩一下 / 先把已传的用掉 / 找管理员，
+  // 前端合并成一句"上传失败"会让人反复重试同一张必然失败的图。
+  qy_wd_proof_disabled: 'qy_err_wd_proof_disabled',
+  qy_wd_proof_required: 'qy_err_wd_proof_required',
+  qy_wd_proof_too_large: 'qy_err_wd_proof_too_large',
+  qy_wd_proof_type: 'qy_err_wd_proof_type',
+  qy_wd_proof_not_found: 'qy_err_wd_proof_not_found',
+  qy_wd_proof_pending_limit: 'qy_err_wd_proof_pending_limit',
+  qy_wd_proof_purged: 'qy_err_wd_proof_purged',
+  qy_wd_proof_store_failed: 'qy_err_wd_proof_store_failed',
 
   // ── 站点主题（qianye/modules/sitetheme/api.go）──
   qy_unknown_preset: 'qy_st_err_unknown_preset',
@@ -309,6 +341,29 @@ function unwrap<T>(data: unknown, status: number): T {
 const QY_BASE_CONFIG: ApiRequestConfig = {
   skipErrorHandler: true,
   skipBusinessError: true,
+}
+
+/**
+ * 把 `responseType: 'blob'` 请求的失败还原成 {@link QyError}。
+ *
+ * axios 的 `responseType` 对**错误响应一视同仁**：接口回 410 + JSON 信封时，
+ * `response.data` 拿到的仍然是一个 Blob，`readCode` 从它身上读不到任何 code，
+ * 于是所有业务错误都会塌缩成按状态码归类的那一档 —— 一句"请求参数不合法"。
+ *
+ * 因此这里只做一件事：把 Blob 解回普通对象，再交还给 {@link toQyError}。
+ * **刻意不在此处复写状态码→kind 的映射**，那一份必须只有 kindFromStatus 一处。
+ */
+export async function qyErrorFromBlobFailure(error: unknown): Promise<QyError> {
+  const response = (error as AxiosLikeError)?.response
+  if (!(response?.data instanceof Blob)) return toQyError(error)
+  let parsed: unknown = null
+  try {
+    parsed = JSON.parse(await response.data.text())
+  } catch {
+    // 不是 JSON（比如反代回的 HTML 错误页）：当作没有 code，按状态码归类。
+    parsed = null
+  }
+  return toQyError({ response: { status: response.status, data: parsed } })
 }
 
 /** GET。走 `api.get` 以继承上游的在途请求去重。 */

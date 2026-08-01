@@ -20,6 +20,7 @@ import { qyDelete, qyGet, qyPost, qyPut } from '../../lib/api'
 import type { QyPage } from '../../lib/types'
 import type {
   QyViolationBreaker,
+  QyViolationCounterPage,
   QyViolationRule,
   QyViolationRuleInput,
   QyViolationRuleTestResult,
@@ -78,7 +79,52 @@ export function getQyViolationStats(params: {
   return qyGet<QyViolationStats>('/admin/violation/stats', params)
 }
 
-/** 手动解除「自动回落到影子模式」。规则确认修正后才该点。 */
+/**
+ * 手动解除「熔断自动回落到影子模式」。规则确认修正后才该点。
+ *
+ * 它**管不到全局影子开关**（YAML 或 qy_settings 的覆盖）—— 那条路走
+ * `setQyViolationShadowMode`。两者分开是刻意的：熔断是系统自己踩的刹车，
+ * 全局开关是人定的发布口径，一个按钮同时松开两者会让一次熔断恢复顺手
+ * 把还没准备好的规则全部放出去。
+ */
 export function resetQyViolationBreaker(): Promise<QyViolationBreaker> {
   return qyPost<QyViolationBreaker>('/admin/violation/breaker/reset')
+}
+
+/**
+ * 设置**全局**影子开关。
+ *
+ * `shadow: null` = 清掉覆盖，重新跟随 YAML 的 `violation.shadow_mode`。
+ * 后端不会因此改动任何一条规则的 `dry_run` —— 全局关掉时若顺手把规则转正，
+ * 一次熔断自动恢复就会把全部灰度规则一起放出去。
+ */
+export function setQyViolationShadowMode(
+  shadow: boolean | null
+): Promise<QyViolationBreaker> {
+  return qyPut<QyViolationBreaker>('/admin/violation/mode', { shadow })
+}
+
+export function listQyViolationCounters(params: {
+  p: number
+  page_size: number
+  user_id?: number
+}): Promise<QyViolationCounterPage> {
+  return qyGet<QyViolationCounterPage>('/admin/violation/counters', params)
+}
+
+/**
+ * 把某个用户当前窗口的违规计数清零。
+ *
+ * 存在理由是历史脏数据：本轮之前影子命中也会推进 `hit_count`，现网的计数器
+ * 因此被污染，而历史行无法分辨哪几次来自影子。后端只清 `hit_count` 与窗口起点，
+ * `total_count`（终身累计）与 `ban_cycle`（封禁认领互斥键）都不动。
+ */
+export function resetQyViolationCounter(
+  userId: number,
+  reason: string
+): Promise<{ reset: boolean; hit_count_before: number }> {
+  return qyPost<{ reset: boolean; hit_count_before: number }>(
+    `/admin/violation/counters/${userId}/reset`,
+    { reason }
+  )
 }

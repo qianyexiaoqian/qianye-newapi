@@ -82,13 +82,55 @@ export type QyTransferGroupMatrixRow = {
   to_groups: string[]
 }
 
+/**
+ * 分组下拉的一项。
+ *
+ * 字段与 `qianye/modules/usergroup` 的 `groupOption` 逐字一致 —— 同一个「分组
+ * 下拉」概念在两个管理页出现，字段名分叉就要写两套渲染。后端
+ * `TestGroupCandidateShapeMatchesUserGroupModule` 在分叉时会变红。
+ */
+export type QyTransferGroupOption = {
+  name: string
+  ratio: number
+  /** 该分组下是否还有启用的渠道。false 意味着该分组的用户一个模型都调不通。 */
+  has_channels: boolean
+  /** 是否在「用户可选分组」白名单里。仅供参考。 */
+  public_usable: boolean
+}
+
 export type QyTransferGroupRulesPage = {
   items: QyTransferGroupRule[]
-  /** 运营配置过的分组候选清单。表单允许自由填写，这里只是下拉建议。 */
+  /**
+   * 矩阵的取值域（行与列同一份）。
+   *
+   * **包含规则表自己引用到的分组**，不只是站点定义过的那些：少了这一层，
+   * 刚给一个未定义分组配好的规则在矩阵里既不成行也不成列，那一行看起来
+   * 就是「谁都转不了」。
+   */
   known_groups: string[]
+  /** 带元数据的下拉候选，只含站点定义过的分组。 */
+  group_options: QyTransferGroupOption[]
+  /**
+   * abilities 探测是否成功。false 时全部 `has_channels` 都是「不确定」而非
+   * 「确实没有」，前端必须收起警告。
+   */
+  channels_probe_ok: boolean
+  /**
+   * 规则引用了、但站点没定义过的分组。
+   *
+   * **软告警，不是错误。** 历史分组（倍率表里已删、users 里还有人挂着）恰恰是
+   * 最需要限制转出的一批账号，必须仍然能配规则。前端只打黄标。
+   */
+  unknown_groups: string[]
   matrix: QyTransferGroupMatrixRow[]
   /** 规则条数上限。到顶时禁用「新建」并说明原因，而不是让人保存后才吃 400。 */
   max_rule_count: number
+}
+
+/** 新建 / 编辑的回执。`unknown_groups` 是保存**成功**之后的软告警。 */
+export type QyTransferGroupRuleSaved = {
+  id: number
+  unknown_groups: string[]
 }
 
 /** 新建 / 编辑入参。 */

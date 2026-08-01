@@ -20,9 +20,9 @@ type counterState struct {
 	// Reached 表示推进后的计数已经达到封号阈值。
 	//
 	// 刻意用"已达"而不是"恰好跨越":跨越是一个只出现一次的瞬时信号,一旦被
-	// 速率闸、影子模式或一次执行失败消费掉,下一次违规的 after-weight 就已经
-	// 越过阈值了,判据永远为假 —— 该用户在整个滚动窗口(默认 24 小时)内再也
-	// 不会被封号,而补偿任务只扫已存在的封禁行,对"从未认领成功"的跨越无能为力。
+	// 速率闸或一次执行失败消费掉,下一次违规的 after-weight 就已经越过阈值了,
+	// 判据永远为假 —— 该用户在整个滚动窗口(默认 24 小时)内再也不会被封号,
+	// 而补偿任务只扫已存在的封禁行,对"从未认领成功"的跨越无能为力。
 	// 改成"已达"之后,判据完全由持久化的 hit_count 推导,不再是一次性的:
 	// 阻碍解除后的下一次违规会重新走到封号判定。
 	// 重复封号由 (user_id, ban_cycle) 唯一索引兜住,代价只是一次冲突插入。
@@ -30,6 +30,10 @@ type counterState struct {
 }
 
 // bumpCounter 原子地推进用户的滚动窗口计数。
+//
+// **调用方只有一处,且必须先排除影子命中**(guard.go 的 persist)。
+// 这张表是自动封号判据的唯一数据源,往里写一次影子命中就等于把"不会真实执行"
+// 变成"延迟几分钟之后真实执行"。
 //
 // 并发正确性是这个函数存在的全部理由:多节点同时把计数推过阈值时,
 // 必须保证只有一个节点观察到"跨越",否则会重复封号、重复告警。
@@ -41,12 +45,11 @@ type counterState struct {
 //     提交,因此这次读到的必然是本次推进的结果,而不会读到别人已经推进过的值。
 //     (刻意不用 LAST_INSERT_ID():它是会话级变量,GORM 连接池会把 Exec 与 Raw
 //     发到不同连接上,跨连接读到的是别人的值 —— 这是最隐蔽的一类 bug。)
-func bumpCounter(ctx context.Context, userId, weight int) (counterState, error) {
+func bumpCounter(ctx context.Context, gdb *gorm.DB, userId, weight int) (counterState, error) {
 	var st counterState
 	if weight <= 0 {
 		return st, nil
 	}
-	gdb := db.Get()
 	if gdb == nil {
 		return st, db.ErrNotReady
 	}
@@ -152,6 +155,50 @@ func revertCounter(userId, weight int, windowStart int64) error {
 		weight, weight, common.GetTimestamp(), userId, windowStart).Error
 }
 
+// resetUserCounter 把某个用户当前窗口的违规计数清零,并返回清零前的那一行。
+//
+// # 它为什么必须存在
+//
+// 本轮之前,影子命中会照常推进 hit_count(见 persist 的说明)。也就是说
+// **现网的计数器里已经混进了影子命中**,而修复只能保证从此以后不再混入,
+// 无法分辨历史行里哪几次是影子。静默把这张表清掉是不可接受的:
+// 那会连真实违规的累计一起抹掉,等于给所有正在攒次数的用户一次赦免,
+// 而且没有任何记录说明这件事发生过。
+//
+// 所以给管理员一个显式动作:看得见、要人点、写审计。
+//
+// # 为什么只清 hit_count 与 window_start
+//
+// hit_count 是自动封号判据的唯一输入,它是被污染的那一个。
+// total_count 是终身累计的展示值,清掉它会让"这个账号历史上违规过多少次"
+// 这条运营信息永久消失;ban_cycle 更不能动 —— 它是封禁认领的互斥键,
+// 回退它会让该用户的自动封号撞上历史唯一键从此静默失效。
+func resetUserCounter(ctx context.Context, gdb *gorm.DB, userId int) (Counter, bool, error) {
+	if gdb == nil {
+		return Counter{}, false, db.ErrNotReady
+	}
+	var before Counter
+	err := gdb.WithContext(ctx).Where("user_id = ?", userId).Take(&before).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return Counter{}, false, nil
+	}
+	if err != nil {
+		db.MarkFailure(err)
+		return Counter{}, false, err
+	}
+	now := common.GetTimestamp()
+	if err := gdb.WithContext(ctx).Model(&Counter{}).Where("user_id = ?", userId).
+		Updates(map[string]any{
+			"hit_count":    0,
+			"window_start": now,
+			"updated_at":   now,
+		}).Error; err != nil {
+		db.MarkFailure(err)
+		return before, false, err
+	}
+	return before, true, nil
+}
+
 // openNewBanCycle 在解封时把周期 +1。
 //
 // 不 +1 的后果:下次达到阈值时 claimBan 的唯一键必然冲突,自动封号从此
@@ -183,8 +230,13 @@ func openNewBanCycle(userId int, resetCount bool) error {
 //
 // 三条分支的取舍:
 //   - 影子模式:一行封禁记录都不写。影子的定义就是"只观察、不产生任何处置副作用",
-//     写认领行会污染管理端的封禁列表。信号不会因此丢失 —— 判据是持久化的 hit_count,
-//     影子解除后该用户的下一次违规会重新走到这里。
+//     写认领行会污染管理端的封禁列表。
+//     这条分支现在只可能被一种时序命中:命中当时是真实模式(于是 persist 推进了
+//     计数),而异步 worker 跑到这里时全局开关刚被切成影子。影子命中本身根本走不
+//     到这里 —— persist 在 bumpCounter 之前就返回了。
+//     注意与旧注释的区别:影子期间的命中**不再**累积到 hit_count,所以"影子解除
+//     后下一次违规会重新走到这里"依赖的是那次**真实**命中自己的权重,而不是影子
+//     期间攒下的计数。这正是裁决 2 要的语义:影子观察期不给用户留下任何处置负债。
 //   - 速率闸:直接以 deferred 状态落行(而不是"先落 pending 再改状态"),
 //     进程在两步之间崩溃会留下一行会被补偿任务执行的 pending,那等于绕过速率闸。
 //   - 已存在的行:只有 deferred 可以被提升。pending / failed 是补偿任务的地盘,

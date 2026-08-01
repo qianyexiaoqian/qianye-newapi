@@ -22,6 +22,7 @@ import { qyDelete, qyGet, qyPost, qyPut } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import type {
   QyTransferGroupRuleInput,
+  QyTransferGroupRuleSaved,
   QyTransferGroupRulesPage,
 } from './types'
 
@@ -43,15 +44,24 @@ export function qyAdminTransferGroupRulesQuery() {
   })
 }
 
+/**
+ * 保存成功的回执里带 `unknown_groups`。
+ *
+ * 它是**软告警**：分组名不在站点定义清单里不构成拒绝（历史分组必须仍然能配
+ * 规则），因此它出现在 200 的响应体里而不是 400 的错误里。
+ */
 export function qyCreateTransferGroupRule(body: QyTransferGroupRuleInput) {
-  return qyPost<{ id: number }>('/admin/transfer/group-rules', body)
+  return qyPost<QyTransferGroupRuleSaved>('/admin/transfer/group-rules', body)
 }
 
 export function qyUpdateTransferGroupRule(
   id: number,
   body: QyTransferGroupRuleInput
 ) {
-  return qyPut<{ id: number }>(`/admin/transfer/group-rules/${id}`, body)
+  return qyPut<QyTransferGroupRuleSaved>(
+    `/admin/transfer/group-rules/${id}`,
+    body
+  )
 }
 
 /** 硬删。后端在删除前把完整内容写进了审计的 before 快照。 */

@@ -111,17 +111,35 @@ export type QyViolationRuleTestResult = {
 }
 
 /**
+ * 全局影子开关的覆盖态。
+ *
+ * `unset` 表示 `qy_settings` 里没有这一行，全局模式跟随 YAML 的
+ * `violation.shadow_mode`（默认 `true`）。`on` / `off` 是管理端写下的覆盖，
+ * 覆盖存在时**不再回落 YAML** —— 否则永远退不出影子模式。
+ */
+export type QyViolationShadowOverride = 'off' | 'on' | 'unset'
+
+/**
  * 熔断与影子模式状态。
  *
- * `shadow=true` 表示当前**只记录、不扣费、不阻断、不封号**。这是规则编辑
- * 界面必须最醒目展示的一件事：不知道自己在影子模式下改规则，会以为规则没生效
- * 而不断加码，等到关掉影子模式就是一次全站事故。
+ * `shadow=true` 表示当前**只记录、不扣费、不阻断、不封号、也不累计违规次数**。
+ * 这是规则编辑界面必须最醒目展示的一件事：不知道自己在影子模式下改规则，
+ * 会以为规则没生效而不断加码，等到关掉影子模式就是一次全站事故。
  */
 export type QyViolationBreaker = {
   shadow: boolean
-  /** `config` = YAML 配置的影子；其余为熔断自动回落时的触发原因。 */
+  /**
+   * `settings` = 管理端在 qy_settings 里开的；`config` = YAML 的兜底默认值；
+   * 其余为熔断自动回落时的触发原因。
+   */
   shadow_reason: string
+  /** YAML 那一行的原值：清掉覆盖之后全局模式会回到它。 */
   config_shadow: boolean
+  shadow_override: QyViolationShadowOverride
+  /** 全局取值（YAML + 覆盖合并后，尚未叠加熔断与规则级 `dry_run`）。 */
+  global_shadow: boolean
+  shadow_loaded_at: number
+  shadow_load_fails: number
   forced_shadow_until: number
   forced_shadow_count: number
   window_scanned: number
@@ -167,4 +185,28 @@ export type QyViolationStats = {
     auto_ban_window_h: number
     max_fee_quota: number
   }
+}
+
+/**
+ * 用户维度的滚动窗口违规计数。
+ *
+ * `hit_count` 是自动封号判据的唯一输入。本轮之前影子命中也会推进它，
+ * 所以现网的这一列里混着影子命中，而历史行无法分辨 —— 重置动作因此存在。
+ */
+export type QyViolationCounter = {
+  user_id: number
+  window_start: number
+  hit_count: number
+  total_count: number
+  ban_cycle: number
+  last_hit_at: number
+  updated_at: number
+}
+
+export type QyViolationCounterPage = {
+  items: QyViolationCounter[]
+  total: number
+  /** 自动封号阈值。由后端下发，前端不再抄一份。 */
+  threshold: number
+  window_hours: number
 }

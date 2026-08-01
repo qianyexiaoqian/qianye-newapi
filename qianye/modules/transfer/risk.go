@@ -16,7 +16,12 @@ import (
 //
 // 两行状态记录必须按 user_id 升序加锁 —— A→B 与 B→A 同时发起时,
 // 反序加锁会在扩展库里形成死锁环。
-func reserveRisk(tx *gorm.DB, req acceptedRequest, now int64) error {
+//
+// cfg 由 create() 在受理时取一次快照后传进来,这里**绝不自己再读一次配置**。
+// 门槛已经可以被管理端在线改(见 settings.go):受理与锁内各读各的时,
+// 运营在这中间保存一次就会出现"受理放行、锁内拒绝",用户白吃一次冷却与
+// 风控预占;方向相反时更糟 —— 用户看到的是旧门槛,实际按新门槛放行了。
+func reserveRisk(tx *gorm.DB, req acceptedRequest, cfg config.Transfer, now int64) error {
 	first, second := req.FromUserId, req.ToUserId
 	if first > second {
 		first, second = second, first
@@ -45,7 +50,7 @@ func reserveRisk(tx *gorm.DB, req acceptedRequest, now int64) error {
 
 	// 收款方的入账笔数闸门也在这里判:两行都已在本事务内按升序加锁,
 	// 判定放在 applyReservation 之前就自动串行化了,不需要额外加锁。
-	if err := evaluateRisk(*sender, *receiver, config.Get().Transfer, req.Total, now); err != nil {
+	if err := evaluateRisk(*sender, *receiver, cfg, req.Total, now); err != nil {
 		return err
 	}
 

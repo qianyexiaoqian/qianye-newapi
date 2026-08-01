@@ -1,0 +1,383 @@
+/*
+ * Steins Gate 主题 —— 落地页(features/home)。
+ *
+ * ══ 为什么需要单独一个文件 ══
+ *
+ * 落地页在【主题体系之外】。上一轮勘察实测:整页只渲染 4 种 data-slot
+ * (button×7 / badge×1 / dropdown-menu-trigger×3 / popover-trigger×1),
+ * 而首屏 CSS 里 400 余条 steins-gate 作用域的规则几乎一条都打不到 ——
+ * 因为其余八个 qy-sg-*.css 全部按 shadcn 的 data-slot 锚点挂载,
+ * 而 features/home/ 是一张手写营销页,通篇 Tailwind 工具类,没有 slot。
+ *
+ * 后果:未登录用户第一眼看到的页面,主题管不着。这一条不解决,
+ * "全面改造"的观感交付为 0。
+ *
+ * ══ 锚点 ══
+ *
+ * 上游组件源码一行未改,所以只能拿现有的类名与结构当锚点。
+ *
+ * 作用域根写作 `.min-h-svh:has(> section .landing-animate-fade-up)`:
+ *   - `.min-h-svh` 是 PublicLayout 根 div 的类
+ *     (`bg-background text-foreground relative min-h-svh overflow-x-clip`);
+ *   - `:has()` 里的 `.landing-animate-fade-up` 只可能来自两处:
+ *     hero.tsx 的静态 className,以及 components/animate-in-view.tsx 在
+ *     进入视口时补挂的类。后者【只被 features/home 的三个 section 使用】
+ *     (cta / features / how-it-works,全仓 grep AnimateInView 只有这三个消费方),
+ *     因此这条 :has() 对 pricing / rankings / about / legal 恒为 false ——
+ *     它们同样走 PublicLayout、同样 showMainContainer={false},
+ *     只靠 `.min-h-svh` 会全部误伤。
+ *   - `> section` 这一段不能省:hero 是根 div 的【直接子】section,
+ *     写成后代选择符的话,将来任何嵌在卡片里的营销片段都会把整页拖进作用域。
+ *
+ * 用 CSS 嵌套写(`&`)只是为了不把这条长选择器抄四十遍;
+ * 它编译成 `:is(根) 子`,特异度与摊平写法一致。
+ *
+ * ══ 层叠 ══
+ *
+ * 本文件由 qy-steins-gate.css 以顶层 @import 引入,属于【无 layer】来源,
+ * 而 Tailwind 工具类全在 @layer utilities 里 —— 无 layer 恒胜有 layer,
+ * 与特异度无关,所以下面压 `opacity-25`、`text-blue-600`、`rounded-xl`
+ * 这类工具类都不需要 !important。
+ *
+ * 唯一用到 !important 的是 hero / cta 那两块背景:上游把三层
+ * radial-gradient 写在 React 的 `style` 属性里(hero.tsx:88、cta.tsx:44),
+ * 行内样式只有 !important 压得住。这两处各自标注了原因。
+ *
+ * ══ 取值 ══
+ *
+ * 一律引 qy-sg-tokens.css 的 --qy-sg-* 或就地 color-mix(in oklch, ...)
+ * 从标准变量派生。本文件【不声明任何 --qy-sg-*】(声明唯一性由
+ * styles/__tests__/qy-sg-tokens.test.ts 第 3 组用例把关),不写十六进制,
+ * 也没有 .dark 分支 —— 昼夜差异已经全部收在 tokens 里。
+ *
+ * 排版量刻意与 qy-sg-editorial.css 对齐(标题 serif 800 / clamp、
+ * 眉标等宽 .3em、读数等宽 clamp),而不是另配一套:
+ * 落地页与控制台是同一个主题,标题不能两个样。
+ */
+
+[data-theme-preset='steins-gate']
+  .min-h-svh:has(> section .landing-animate-fade-up) {
+  /* ══════════════════════════════════════════════════════════
+     一、英雄区与 CTA 的背景
+     ══════════════════════════════════════════════════════════
+     上游那两层是蓝→青→紫的 radial-gradient(hero.tsx:88 / cta.tsx:44),
+     配色写死在行内 style 里,不跟随任何 CSS 变量。整页最抢眼的一块颜色
+     如果留着,主题换了个寂寞。
+
+     这里连同上游给的 `opacity-25 dark:opacity-[0.12]` 一起接管:
+     不透明度回到 1,由渐变自己的 color-mix 百分比控制强度,
+     免得"改了颜色又被 12% 抹掉"。
+
+     第三层是暗角(--qy-sg-vignette):游戏画面四周压暗的那一圈。
+     夜间它是 #1E2221,昼间是墨色 8% 落在纸面上(几乎看不见)——
+     结构昼夜一致,不写分支。 */
+  & section > div[aria-hidden][style*='radial-gradient'] {
+    opacity: 1;
+    /* !important:上游写在行内 style 里,别无他法。 */
+    background:
+      radial-gradient(
+        ellipse 62% 52% at 18% 14%,
+        color-mix(in oklch, var(--primary) 24%, transparent) 0%,
+        transparent 68%
+      ),
+      radial-gradient(
+        ellipse 54% 44% at 84% 10%,
+        color-mix(in oklch, var(--qy-sg-ember) 22%, transparent) 0%,
+        transparent 70%
+      ),
+      radial-gradient(
+        ellipse 118% 82% at 50% 46%,
+        transparent 42%,
+        var(--qy-sg-vignette) 100%
+      ) !important;
+  }
+
+  /* 网格底纹(hero.tsx:99,唯一一个没有 style 属性的 aria-hidden 装饰层)。
+     它本来就画的是 var(--border),会自动跟着主题走,只是 8% 太淡 ——
+     混凝土底上等于不存在。抬到 16%,让它读成仪器面板的刻度网格。 */
+  & section > div[aria-hidden]:not([style]) {
+    opacity: 0.16;
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     二、版式:标题、眉标、读数
+     ══════════════════════════════════════════════════════════ */
+
+  /* 主标题与区块标题。取值与 qy-sg-editorial.css 的 .qy-sg-sec-title 同源
+     (serif 800 / .04em),只把 h1 的字号留给上游那条 clamp —— 它是
+     `text-[clamp(2.25rem,4.5vw,3.25rem)]`,比区块标题大一档,是对的。 */
+  & :is(h1, h2) {
+    font-family: var(--qy-sg-serif);
+    font-weight: 800;
+    letter-spacing: 0.04em;
+  }
+
+  /* 渐变标题字。上游是 `from-blue-400 via-violet-400 to-purple-500` +
+     bg-clip-text,三段蓝紫。换成金→橙(夜)/ 陶土→book cloth(昼)。
+
+     这里【不能】直接用 --qy-sg-band:那条带子昼间被刻意压成"几乎看不见的
+     陶土洗色"(14%/9% 兑背景),拿去做 bg-clip-text 的字会在纸面上消失。
+     band 是给填充块用的,不是给字用的。 */
+  & :is(h1, h2) > span.text-transparent {
+    background-image: linear-gradient(
+      100deg,
+      var(--primary) 0%,
+      var(--qy-sg-ember) 100%
+    );
+  }
+
+  /* 眉标 —— "SUPPORTED APPLICATIONS" / "CORE FEATURES" / "HOW IT WORKS"。
+     上游已经是 uppercase + tracking,这里换成等宽 + .3em + 强调色,
+     与 editorial 的 .qy-sg-no(参考稿的 "LAB MEMO — 01")同一套排版。 */
+  & .uppercase {
+    font-family: var(--qy-sg-mono);
+    font-weight: 500;
+    letter-spacing: 0.3em;
+    color: var(--primary);
+  }
+
+  /* 一切数字读数走等宽。Stats 的 <Counter> 与 Features 的编号章都挂
+     tabular-nums,是个现成且语义正确的锚点。 */
+  & .tabular-nums {
+    font-family: var(--qy-sg-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     三、顶部徽章胶囊
+     ══════════════════════════════════════════════════════════
+     hero.tsx:107 那枚 "AI Application Infrastructure Foundation"。
+     它是唯一一个 inline-flex 的 .landing-animate-fade-up,
+     其余五个是 block / flex,所以这个复合类是稳定锚点。 */
+  & .landing-animate-fade-up.inline-flex {
+    border-color: color-mix(in oklch, var(--primary) 45%, transparent);
+    background: var(--qy-sg-accent-soft);
+    color: var(--primary);
+    font-family: var(--qy-sg-mono);
+    font-weight: 500;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    box-shadow: none;
+  }
+
+  /* 徽章里那两颗蓝点(ping + 实心)。结构是 span > span,只有这一处。 */
+  & .landing-animate-fade-up.inline-flex > span > span {
+    background-color: var(--primary);
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     四、STATS 横幅 —— 本页最强的一处构图
+     ══════════════════════════════════════════════════════════
+     上游 stats.tsx 是 `border-y bg-muted/10` 的一条通栏。
+     它的形状与游戏截图里那条金→橙渐变的列标题带完全对得上,
+     所以直接换成 --qy-sg-band(tokens 里为表头/横幅准备的那个令牌):
+     夜间是游戏原样的金→橙带,昼间是几乎看不见的陶土洗色 ——
+     同一条声明,不写昼夜分支。
+
+     `> div.border-y` 用直接子限定:落地页根 div 的直接子里只有 Stats
+     这一块带 border-y,不会波及 section 内部任何分隔线。 */
+  & > div.border-y {
+    background: var(--qy-sg-band);
+    border-color: var(--qy-sg-vignette);
+  }
+
+  /* 横幅上的字色。band-fg 夜间是暗角色(压橙端 5.41:1、金端 11.92:1),
+     昼间是墨色(15.4:1)—— 两端都读得清,这是 tokens 里特意为可读性
+     偏离截图的一处,不要"修回去"。
+     次级标签用同色降透明度而不是换色:换成 muted-foreground 会在
+     金色带上彻底糊掉。 */
+  & > div.border-y :is(span, div) {
+    color: var(--qy-sg-band-fg);
+  }
+
+  & > div.border-y .text-muted-foreground {
+    color: color-mix(in oklch, var(--qy-sg-band-fg) 72%, transparent);
+    font-family: var(--qy-sg-mono);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     五、宫格与卡片:收方、发丝线、凿进去的面
+     ══════════════════════════════════════════════════════════ */
+
+  /* Features 的 bento 宫格(features.tsx:`grid gap-px overflow-hidden
+     rounded-xl border`)。gap-px + 容器底色 = 用间隙画分隔线的手法,
+     把那层底色换成发丝线,圆角收方,再补一层主题唯一允许的投影。 */
+  & .gap-px {
+    border-radius: 0;
+    border-color: var(--qy-sg-hair-strong);
+    background-color: var(--qy-sg-hair-strong);
+    box-shadow: var(--qy-sg-lift-shadow);
+  }
+
+  /* 宫格单元的面。上游给的是 bg-background(与页面同色,靠 gap 分隔),
+     换成 --card:夜间比底色【凹】一档,正是游戏里面板从混凝土上凿进去
+     的关系;昼间是 Claude 的白卡片。 */
+  & .gap-px > * {
+    background-color: var(--card);
+  }
+
+  /* 图标盒 / 步骤圆盘 / 盾牌块统一收方。落地页里 rounded-xl 与 rounded-2xl
+     只出现在这些装饰方块上;按钮走 data-slot='button',由 qy-sg-controls.css
+     给 --qy-sg-pill 胶囊,不在这条规则的射程内(它们的类是 rounded-lg)。 */
+  & :is(.rounded-xl, .rounded-2xl) {
+    border-radius: 0;
+  }
+
+  /* 图标盒与步骤圆盘的描边换发丝线 + 强调色底纹。
+     锚点用 `.size-12 / .size-16` 而不是 `.rounded-xl.border`:后者在实测里
+     还命中了两个【装内容的容器】—— bento 宫格本身(它是
+     `grid gap-px … rounded-xl border`)和 hero 终端演示的外壳
+     (`rounded-2xl border … bg-white/95`,内含 391 字)。命中它们的后果不是
+     "颜色不太对",而是 `color: var(--primary)` 被整块继承下去:实测特性卡的
+     <h3> 标题色变成 #d97757,四张卡的正文全成了橙色。
+     图标盒清一色是 size-12 / size-16 的居中方块且不含文本,用尺寸类锚定
+     既准确又不会随将来加卡片而扩散。 */
+  & :is(.size-12, .size-16):is(.rounded-xl, .rounded-2xl) {
+    border-color: var(--qy-sg-hair-strong);
+    background-color: var(--qy-sg-accent-soft);
+    color: var(--primary);
+  }
+
+  /* hero 终端演示的外壳。上游把面色写成字面量 `bg-white/95` 与
+     `dark:bg-[#0b0f17]/95`,两者都不跟随任何变量 —— 夜间那块近黑蓝
+     压在混凝土上像一个洞。统一换成 --card(夜间比底色凹一档、昼间纯白)。 */
+  & [class*='bg-white/95'],
+  & [class*='bg-[#0b0f17]'] {
+    background-color: var(--card);
+  }
+
+  & [class*='border-white/'] {
+    border-color: var(--qy-sg-hair);
+  }
+
+  /* HowItWorks 的步骤序号:上游是墨底反白圆点,换成强调色 + 等宽,
+     与"一切数字用等宽"的铁律一致。 */
+  & .bg-foreground.text-background {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+    font-family: var(--qy-sg-mono);
+    border-radius: 0;
+  }
+
+  /* 应用支持那三枚圆角胶囊(Cherry Studio / CC Switch / More Apps)。
+     保留胶囊形态 —— --qy-sg-pill 是本主题的身份标识 —— 只把描边与底
+     换成主题色。
+
+     锚点必须带 `.group`。第一版写成 `a.rounded-full, div.rounded-full.border`,
+     实测多命中两类东西:顶部那枚徽章(它也是 `rounded-full border` 的 div,
+     底色被本条覆盖成白 60%,而不是第三节给它的 --qy-sg-accent-soft),
+     以及 Features「全球覆盖」里那三枚 size-6 的步骤圆点。
+     这三枚应用胶囊都带 Tailwind 的 `group` 标记(它们各自有 hover 子元素效果),
+     徽章与圆点都没有 —— 落地页作用域内 `.rounded-full.group` 恰好只有这三个。 */
+  & a.rounded-full.group,
+  & div.rounded-full.border.group {
+    border-color: var(--qy-sg-hair-strong);
+    background-color: color-mix(in oklch, var(--card) 60%, transparent);
+  }
+
+  & a.rounded-full.group:hover,
+  & div.rounded-full.border.group:hover {
+    border-color: color-mix(in oklch, var(--primary) 55%, transparent);
+    background-color: var(--qy-sg-accent-soft);
+  }
+
+  /* 区块之间的分隔线(HowItWorks 的 border-t、Stats 的 border-y 已单独处理) */
+  & section.border-t {
+    border-color: var(--qy-sg-hair);
+  }
+
+  /* ══════════════════════════════════════════════════════════
+     六、去蓝化
+     ══════════════════════════════════════════════════════════
+     落地页与 hero-terminal-demo 把强调色硬编码成 Tailwind 的
+     blue / violet / purple / emerald / amber 五个色阶(共 30 余处)。
+     本主题只有金与橙两色,逐处改上游源码是不允许的,所以按【用途】
+     分四组一次性改写,而不是按色阶逐条列举:
+
+       (a) 前景色   text-*      → --primary
+       (b) 半透明底 bg-*-N/A    → --qy-sg-accent-soft
+       (c) 半透明描边 border-*-N/A → --primary 40%
+       (d) 实色块   bg-*-N(无斜杠)→ --primary,其上的字转 --primary-foreground
+
+     判别 (b)(d) 靠类名里有没有那个斜杠:Tailwind 的透明度修饰符写作
+     `bg-blue-500/5`,实色是 `bg-blue-500`。属性子串匹配带上斜杠就能分开,
+     `[class~=...]` 则匹配完整 token,不会被 `bg-blue-500/5` 命中。 */
+
+  /* (a) */
+  & [class*='text-blue-'],
+  & [class*='text-violet-'],
+  & [class*='text-purple-'],
+  & [class*='text-emerald-'],
+  & [class*='text-amber-'] {
+    color: var(--primary);
+  }
+
+  /* (b) */
+  & [class*='bg-blue-400/'],
+  & [class*='bg-blue-500/'],
+  & [class*='bg-violet-400/'],
+  & [class*='bg-violet-500/'],
+  & [class*='bg-emerald-400/'],
+  & [class*='bg-emerald-500/'],
+  & [class*='bg-amber-400/'],
+  & [class*='bg-amber-500/'] {
+    background-color: var(--qy-sg-accent-soft);
+  }
+
+  /* (c) */
+  & [class*='border-blue-400/'],
+  & [class*='border-blue-500/'],
+  & [class*='border-emerald-400/'],
+  & [class*='border-emerald-500/'],
+  & [class*='border-amber-400/'],
+  & [class*='border-violet-400/'] {
+    border-color: color-mix(in oklch, var(--primary) 40%, transparent);
+  }
+
+  /* (d) */
+  & [class~='bg-blue-400'],
+  & [class~='bg-blue-500'],
+  & [class~='bg-emerald-500'],
+  & [class~='bg-amber-500'],
+  & [class~='bg-violet-500'] {
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+  }
+
+  /* 实色块里的图标是 `text-white`,(d) 的 color 传不进 svg 的 stroke,
+     单独指过来。 */
+  & [class~='bg-emerald-500'] .text-white,
+  & [class~='bg-blue-500'] .text-white {
+    color: var(--primary-foreground);
+  }
+
+  /* hover 变体是独立的工具类,不写就还是蓝的 */
+  & [class*='hover:border-blue-']:hover,
+  & [class*='hover:border-emerald-']:hover {
+    border-color: color-mix(in oklch, var(--primary) 55%, transparent);
+  }
+
+  & [class*='hover:bg-blue-']:hover,
+  & [class*='hover:bg-emerald-']:hover {
+    background-color: var(--qy-sg-accent-soft);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   七、prefers-reduced-motion
+   ══════════════════════════════════════════════════════════════
+   本文件【没有新增任何循环动画】,所以这里不需要 animation: none ——
+   写一条空转的 @media 反而会让后人以为有东西被停掉了。
+
+   唯一与动效相关的一处是上游徽章里的 `animate-ping`(hero.tsx:110)。
+   它属于上游行为,由 index.css 的全局 reduced-motion 块处理,
+   本文件只换了它的颜色,没有碰 animation。
+
+   记录一条本机注意事项:这台机器的
+   `matchMedia('(prefers-reduced-motion: reduce)').matches === true`,
+   因此 index.css 里 `.landing-animate-*` 那组会被
+   `animation: none !important; opacity: 1 !important` 接管 ——
+   落地页的入场动画本来就看不到,任何"动画没生效"的观察都不能据此下结论。 */

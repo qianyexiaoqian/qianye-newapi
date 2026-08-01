@@ -46,6 +46,30 @@ export type QyWithdrawFiatConfig = {
   /** 仅供预览。真正生效的是提交那一刻冻结进单据的汇率。 */
   preview_quota_per_unit?: string
   preview_fx_rate?: string
+
+  /**
+   * 凭证图片开关。后端 `Withdraw.ProofOn()` = `methods 含 fiat && proof_enabled`，
+   * 所以这三项只在本段里出现，且一旦本段存在就一定同时下发（`handleGetConfig`）。
+   */
+  proof_enabled: boolean
+  /** 单张字节上限。**用于在选文件那一刻拦住超大图**，而不是让用户等一次 413。 */
+  proof_max_bytes: number
+  /** 后端 `ProofAcceptMimes()`，直接拼进 `<input accept>`。真正的判定是服务端魔数。 */
+  proof_accept: string[]
+}
+
+/**
+ * `POST /withdraw/proofs` 的返回。
+ *
+ * `ref` 是提交申请时要放进 `proof_ref` 的凭证标识。它在被某张单认领之前一直有效，
+ * 但**未认领的上传只保留 24 小时**（后端 `proofOrphanSeconds`），过期后会被清理任务
+ * 连文件带元数据一起删掉，此时再拿它提交会得到 `qy_wd_proof_not_found`。
+ */
+export type QyWithdrawProof = {
+  ref: string
+  mime_type: string
+  size: number
+  created_at: number
 }
 
 export type QyWithdrawConfig = {
@@ -110,6 +134,11 @@ export type QyWithdrawal = {
   payee_channel: string
   payee_masked: string
   remark: string
+  /**
+   * 本单**附过**凭证图片。不代表现在还下载得到 —— 单据被拒绝/撤销/打款失败，
+   * 或已过 `pii_retention_days`，图片都会被清掉，此时下载接口回 `qy_wd_proof_purged`。
+   */
+  has_proof: boolean
 
   reviewed_at: number
   reject_reason: string
@@ -152,6 +181,13 @@ export type QyWithdrawCreateRequest = {
   payee_ref?: string
   payee_channel?: string
   payee?: Record<string, string>
+  /**
+   * 先经 `POST /withdraw/proofs` 拿到的凭证 ref，可选。
+   *
+   * **只能出现在 `method === 'fiat'` 的请求里**：后端 `acceptCreate` 对 quota 单带
+   * `proof_ref` 是直接报错而不是静默忽略的（`qy_wd_proof_disabled`）。
+   */
+  proof_ref?: string
 }
 
 /** 审核队列角标。 */

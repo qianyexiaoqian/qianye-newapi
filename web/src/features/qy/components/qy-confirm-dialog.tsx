@@ -43,6 +43,13 @@ type QyConfirmDialogProps = {
   confirmText?: string
   cancelText?: string
   isLoading?: boolean
+  /**
+   * 额外的提交前置条件（与"必须勾选"是并列关系，两者都满足才能提交）。
+   *
+   * 用途是 details 区里放了必填输入时——例如划转的支付密码格。
+   * 这只是不让用户白按一次，**不是权限判断**：真正说了算的永远是后端。
+   */
+  confirmDisabled?: boolean
   onConfirm: () => void
 }
 
@@ -73,7 +80,7 @@ export function QyConfirmDialog(props: QyConfirmDialogProps) {
       desc={<div className='space-y-3'>{props.description}</div>}
       destructive={props.irreversible}
       isLoading={props.isLoading}
-      disabled={needsAcknowledge && !acknowledged}
+      disabled={(needsAcknowledge && !acknowledged) || props.confirmDisabled === true}
       confirmText={props.confirmText}
       cancelBtnText={props.cancelText}
       handleConfirm={props.onConfirm}

@@ -57,6 +57,12 @@ const WORKSPACE_PAGES: QyPageEntry[] = [
     url: '/qy/transfer-logs',
     feature: 'transfer',
   },
+  // 支付密码只保护余额划转（裁决 1），所以挂在 transfer 开关下、排在划转之后。
+  {
+    titleKey: 'qy_nav_pay_password',
+    url: '/qy/pay-password',
+    feature: 'transfer',
+  },
   { titleKey: 'qy_nav_withdraw', url: '/qy/withdraw', feature: 'withdraw' },
   {
     titleKey: 'qy_nav_withdrawals',
@@ -98,6 +104,11 @@ const ADMIN_PAGES: QyPageEntry[] = [
     feature: 'transfer',
   },
   {
+    titleKey: 'qy_nav_a_transfer_config',
+    url: '/qy/admin/transfer-config',
+    feature: 'transfer',
+  },
+  {
     titleKey: 'qy_nav_a_withdrawals',
     url: '/qy/admin/withdrawals',
     feature: 'withdraw',
@@ -112,11 +123,8 @@ const ADMIN_PAGES: QyPageEntry[] = [
     url: '/qy/admin/violations',
     feature: 'violation',
   },
-  {
-    titleKey: 'qy_nav_a_availability',
-    url: '/qy/admin/availability',
-    feature: 'availability',
-  },
+  // 管理端可用率总览已按项目方要求移除；可用率是给全体用户看的，
+  // 入口只保留工作台的 `/qy/availability`。
   // 无 feature 键：新用户默认分组没有独立开关，扩展开着就能配。
   { titleKey: 'qy_nav_a_user_group', url: '/qy/admin/user-group' },
   // 分组定价同样暂无独立开关（`QyFeatures` 里没有对应字段）。后端若为它加了

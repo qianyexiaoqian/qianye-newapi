@@ -17,8 +17,13 @@
  *   nav        导航
  *   editorial  构图工具类,它是页面级的显式类名,
  *              应当能覆盖前面按 data-slot 挂上去的组件级规则
- *   pages      落地层,排最后:把 editorial 的工具类装进 qy 的页面骨架,
+ *   pages      落地层:把 editorial 的工具类装进 qy 的页面骨架,
  *              并按页头/概览栏的实际语境收窄 editorial 里按落地页校准的取值
+ *   landing    公共落地页(features/home)。排最后是因为它是全文件里唯一
+ *              一个【不靠 data-slot】的消费方:上游那张营销页没有 slot,
+ *              只能拿 Tailwind 工具类当锚点,层叠上必须能压过前面按 slot
+ *              挂上去的组件级规则。它的作用域被一条 :has() 收死在落地页
+ *              根节点内,压不到 qy 的任何页面
  *
  * 全部规则限定在 [data-theme-preset='steins-gate'] 作用域内,
  * 切到任何其他预设都逐像素不受影响;上游组件源码一行未改,
@@ -34,3 +39,4 @@
 @import './qy-sg-nav.css';
 @import './qy-sg-editorial.css';
 @import './qy-sg-pages.css';
+@import './qy-sg-landing.css';

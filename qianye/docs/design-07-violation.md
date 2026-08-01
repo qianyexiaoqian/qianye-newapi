@@ -1311,14 +1311,91 @@ type breaker struct {
 **建议指标**:规则维度的 `申诉通过数 / 命中数 > 20%` 时管理端自动标红该规则。
 
 ### 12.2 影子模式(Shadow Mode)—— 最重要的一条建议
-新增全局配置 `shadow_mode: false`。开启时:
-- 规则照常匹配、照常记录、照常计数;
-- **但不扣费、不阻断、不封号**;
-- 记录 `record.shadow = true`(表加一个 bool 字段)。
+
+> **本节已按第六批「裁决 2」重写。** 早期版本写的是「规则照常匹配、照常记录、
+> **照常计数**;但不扣费、不阻断、不封号」—— 这两句自相矛盾,而代码当时是照着
+> 前半句实现的。详见下面的 12.2.1。
+
+影子模式开启时:
+- 规则照常匹配、照常落一条 `qy_violation_record`(含证据与请求上下文)、照常进统计;
+- **不扣费、不阻断、不封号,也不推进违规计数**;
+- 记录 `record.shadow = true`,`record.counted = false`,
+  `record.counter_after = -1`(哨兵值,见 `violation.CounterAfterShadow`);
+- `fee_quota_want` 仍然算准并落库 —— 「若真实执行会扣多少钱」是影子模式的全部价值。
 
 **理由**:一条正则或词表上线即刻作用于全量流量。没有影子模式,任何配置失误的后果是「几分钟内几百个用户被误扣费/误封号」,且**扣费与封号都很难完全回滚**(用户已经收到错误、已经登出、已经发工单)。影子模式让管理员先跑一周看命中分布再切真实模式。
 
-同时支持**规则级** `dry_run` 字段(`qy_violation_rule` 加一列 `DryRun bool`),允许单条规则灰度。
+同时支持**规则级** `dry_run` 字段(`qy_violation_rule` 的 `DryRun bool`),允许单条规则灰度。
+
+#### 12.2.1 影子命中为什么必须一次都不碰计数器
+
+自动封号的判据是 `reachedThreshold(after, threshold)`,也就是
+`hit_count >= auto_ban_threshold`,**完全由持久化的 `qy_violation_counter.hit_count` 推导**。
+
+早期实现只跳过了最后一步(不执行封号),`bumpCounter` 照常调用。后果是延迟发作的:
+
+| 时刻 | 事件 | `hit_count` | 结果 |
+|---|---|---|---|
+| T1 | 影子命中 | 1 | 只记录 |
+| T2 | 影子命中 | 2 | 只记录 |
+| T3 | **真实**命中 | 3 | 达阈值 → 落 `qy_violation_ban(status=pending)` → `runBanCompensate` 5 分钟内执行封号 |
+
+也就是说,阈值为 3 时**用户只真实违规了一次就被封号**,而封禁行的
+`trigger_record_id` 指向的是那条真实记录,事后从库里完全看不出前两次是影子。
+「影子模式不会真实执行」在那个版本里是假的。
+
+现在的口径(裁决 2 原话:「不扣费,不封号,**不记录违规次数**,存入日志,请求上下文,
+供管理员核查」):`guard.persistRecord` 在写完记录与证据之后、调用 `bumpCounter` 之前
+就返回,影子命中一个字节都不写 `qy_violation_counter`。
+
+**已知代价,不糊过去**:管理员因此失去了 O(1) 的「这个用户在影子期间已经攒了多少次」。
+要得到这个数只能对 `qy_violation_record` 按 `(user_id, shadow = 1, created_at >= 窗口起点)`
+做一次 `COUNT`,在这张增长最快的表上是一次范围扫描,比读计数器贵得多。
+这是裁决 2 明确接受的代价 —— 另加一列「影子计数」本身就是在记录违规次数,
+而它一旦存在,下一次改动就会有人把它接回封号判据。
+
+#### 12.2.2 全局开关放在哪里(第六批新增)
+
+| 层 | 位置 | 谁能改 | 用途 |
+|---|---|---|---|
+| 兜底默认 | YAML `violation.shadow_mode`(`*bool`,默认 `true`) | 改文件 + 重载 | 发布口径 |
+| 运营覆盖 | `qy_settings` `scope='violation'`, `k='shadow_mode'`, `v='1'/'0'` | 管理端 `PUT /api/qy/admin/violation/mode`,**写审计** | 上线安全阀的日常开关 |
+| 熔断回落 | 进程内 `forcedShadowUntil` | 自动触发;`POST /api/qy/admin/violation/breaker/reset` 解除 | 规则事故自愈 |
+
+覆盖存在时**不再回落 YAML** —— 否则永远退不出影子模式,这正是需求原文
+「违规规则无法调整模式」的根因:YAML 默认为真,而 `shadowActive()` 见到配置为真就
+无条件返回 shadow,规则级 `dry_run` 无从覆盖;而当时唯一的写入口
+`POST /api/qy/admin/config/reload` 只是重读磁盘上的 YAML。
+
+覆盖值在热路径上不能查库,因此走的是 `rules.go` 的 `maybeRefresh` 同一形状:
+进程内 atomic 快照 + 到期后经 `guard.HotAsync` 异步重载(周期 30 秒),
+读端只做一次 atomic 比较。读库失败时沿用上一份快照并计数告警(回落 YAML 会让
+扩展库抖一下就把已经确认过的真实模式静默退回「只记录」);值被手工改坏时强制影子。
+
+**叠加语义**(`guard.effectiveShadow`,取更保守者胜):
+
+```
+effective_shadow = 全局影子(qy_settings 覆盖 / YAML / 熔断回落) OR rule.dry_run
+```
+
+全局开关是一票否决的总闸;规则级只能让单条规则更保守。
+反过来,**全局关掉时绝不去动各条规则的 `dry_run`** —— 那样一次熔断自动恢复
+就会把全部灰度规则一起转正。
+
+#### 12.2.3 升级影响与历史数据
+
+- **现存规则保持当前行为**。`dry_run` 列早已存在且默认 `false`,`qy_settings` 里
+  也不会凭空多出覆盖行,因此升级后全局与规则级取值都与升级前一致。
+  静默把生产风控降级成「只记录」是资损,所以这一条不做任何默认值变更;
+  新建规则在表单上默认 `dry_run = true`,那只是前端默认值。
+- **计数器里已经混有影子命中**。修复只能保证从此不再混入,历史行无法分辨。
+  静默清库不可接受(会连真实违规的累计一起抹掉,且没有任何记录说明发生过),
+  因此提供一个显式动作:管理端「违规规则」页的**违规计数器**卡片
+  → `POST /api/qy/admin/violation/counters/:userId/reset`,**写审计**。
+  它只清 `hit_count` 与窗口起点;`total_count`(终身累计展示值)与
+  `ban_cycle`(封禁认领的互斥键,回退它会让该用户的自动封号永久静默失效)都不动。
+  配套的 `GET /api/qy/admin/violation/counters` 列出计数并下发阈值,
+  否则重置就是盲操作。
 
 ### 12.3 全局熔断阈值(防规则事故)
 配置 `global_block_rate_limit`(默认 `0.05`)与 `global_ban_rate_limit`(默认 `20/hour`)。滑动窗口内:

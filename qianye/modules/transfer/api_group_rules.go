@@ -57,14 +57,25 @@ func handleAdminListGroupRules(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	groups := knownGroups()
+	// 取值域必须把规则表自己引用的分组算进去,否则刚配好的分组在矩阵里
+	// 既不成行也不成列(见 knownGroups 的缺陷回归说明)。
+	groups := knownGroups(rows)
+	candidates, probeOK := listGroupCandidates()
 	// 刻意不下发策略枚举、@self、通配符这三样:前端必须为每个策略准备一条
 	// i18n 文案,拿到一个它不认识的策略也只能渲染出裸 key。下发一份没有消费方的
 	// 数据,正是本扩展反复栽跟头的那个形状。前端用自己的常量,靠
 	// types.ts 的注释与后端保持同步。
 	respondOK(c, gin.H{
-		"items":          rows,
-		"known_groups":   groups,
+		"items":        rows,
+		"known_groups": groups,
+		// 带元数据的下拉候选。裸 datalist 只提示、不校验、不告警,运营把分组名
+		// 打错一个字母时得不到任何信号。
+		"group_options": candidates,
+		// abilities 探测是否成功。false 时 has_channels 一律是"不确定"而非"没有"。
+		"channels_probe_ok": probeOK,
+		// 规则引用了、但站点没定义过的分组。**软告警** —— 历史分组仍然要能配规则,
+		// 前端据此打黄标而不是拦下保存。
+		"unknown_groups": unknownRuleGroups(rows),
 		"matrix":         buildGroupMatrix(buildGroupRuleSet(rows), groups),
 		"max_rule_count": maxGroupRuleCount,
 	})
@@ -117,7 +128,9 @@ func handleAdminCreateGroupRule(c *gin.Context) {
 		return
 	}
 	writeGroupRuleAudit(c, "transfer.group_rule.create", "", &row)
-	respondOK(c, gin.H{"id": row.Id})
+	// 保存成功之后才回执告警:分组名不认识**不构成拒绝**,只是提醒运营确认
+	// 是不是打错了字。放在成功响应里而不是 400,是这条口径的落点。
+	respondOK(c, gin.H{"id": row.Id, "unknown_groups": unknownRuleGroups([]GroupRule{row})})
 }
 
 func handleAdminUpdateGroupRule(c *gin.Context) {
@@ -169,7 +182,7 @@ func handleAdminUpdateGroupRule(c *gin.Context) {
 		return
 	}
 	writeGroupRuleAudit(c, "transfer.group_rule.update", before, &row)
-	respondOK(c, gin.H{"id": row.Id})
+	respondOK(c, gin.H{"id": row.Id, "unknown_groups": unknownRuleGroups([]GroupRule{row})})
 }
 
 // handleAdminDeleteGroupRule 硬删一条规则。

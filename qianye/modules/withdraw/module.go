@@ -20,7 +20,7 @@ type Mod struct{ module.Base }
 func (Mod) Name() string { return "withdraw" }
 
 func (Mod) Tables() []any {
-	return []any{&Withdrawal{}, &Payee{}, &PayeeAccount{}, &Event{}, &PiiAudit{}}
+	return []any{&Withdrawal{}, &Payee{}, &PayeeAccount{}, &Event{}, &PiiAudit{}, &Proof{}}
 }
 
 // InstallHooks 注册补偿回调。
@@ -40,7 +40,14 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 	g.GET("/withdraw/payees", handleListPayees)
 	g.POST("/withdraw/payees", middleware.CriticalRateLimit(), handleCreatePayee)
 	g.DELETE("/withdraw/payees/:ref", handleDeletePayee)
+	// 上传要落磁盘,是本模块唯一一条能消耗宿主机存储的用户入口 ——
+	// 必须挂关键操作限流,而不是只靠 proofPendingMax 那道计数闸门。
+	g.POST("/withdraw/proofs", middleware.CriticalRateLimit(), handleUploadProof)
 	g.GET("/withdraw/:id", handleGetRecord)
+	// 凭证下载只对本人开放。挂在 /:id 下而不是用凭证 ref 直接寻址,是刻意的:
+	// 越权判定因此天然落在"这张单是不是你的"这个已有的口径上
+	// (loadUserWithdrawal 把 user_id 写进 WHERE),不必再造第二套。
+	g.GET("/withdraw/:id/proof", handleGetProof)
 	g.POST("/withdraw/:id/cancel", middleware.CriticalRateLimit(), handleCancel)
 }
 
@@ -52,6 +59,9 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/withdraw/:id", handleAdminGet)
 	// 查看明文是被审计的高敏操作,挂关键操作限流可以让"批量扒库"变得昂贵。
 	g.GET("/withdraw/:id/payee", middleware.CriticalRateLimit(), handleAdminRevealPayee)
+	// 凭证图片与收款账号同属 PII,因此走同一套口径:必填事由 + 写 qy_pii_audits
+	// + 关键操作限流。差别只在它没有"脱敏版"可看 —— 一张图要么看得到要么看不到。
+	g.GET("/withdraw/:id/proof", middleware.CriticalRateLimit(), handleAdminGetProof)
 
 	// 人工决策一律挂关键操作限流:它们要么改钱,要么决定钱去哪。
 	crit := middleware.CriticalRateLimit()

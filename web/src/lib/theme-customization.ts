@@ -161,6 +161,36 @@ export const CONTENT_LAYOUT_VALUES: ReadonlySet<ContentLayout> = new Set([
   'centered',
 ])
 
+/**
+ * 「轴锁」——在这些预设下,调色板只剩亮/暗一个可调项。
+ *
+ * 由来:design-12-batch6-decisions.md 裁决 4,项目方原话
+ * 「这个主题移除掉调色板,固定UI显示即可……白昼/暗色,2个样式吧」。
+ * Steins Gate 的构图是照游戏截图逐像素配的,四个轴任意一个被拨动都会破坏它
+ * (等宽读数在 scale=xl 下换行、胶囊按钮在 radius=none 下与切角框打架、
+ * serif 轴会把游戏那套等宽标签排成衬线)。
+ *
+ * 【为什么是一个 Set 而不是写死 `preset === 'steins-gate'`】
+ * 消费方有两处(config-drawer 的条件渲染、resolveThemeFont 的解析),
+ * 两处各写一遍 `=== 'steins-gate'` 就是同一个概念的第二份拷贝,
+ * 将来加第二个锁定预设时必然漏掉一处。
+ *
+ * 【锁定 ≠ 藏起来】
+ * 只把控件藏掉是不够的:font/radius/scale/contentLayout 四个轴各自有
+ * 独立 cookie,藏掉控件而 cookie 仍在,轴会继续生效 —— "看不见但还在起作用"
+ * 比不隐藏更糟。因此:
+ *   - font 轴在这里就地掐断(见 resolveThemeFont),对匿名落地页同样有效;
+ *   - 其余三个轴由 config-drawer 挂载时把 cookie 归位(它是这三个轴的唯一入口)。
+ */
+export const AXIS_LOCKED_PRESETS: ReadonlySet<ThemePreset> = new Set([
+  'steins-gate',
+])
+
+/** 该预设是否锁定了 font / radius / scale / contentLayout 四个轴。 */
+export function isThemeAxisLocked(preset: ThemePreset): boolean {
+  return AXIS_LOCKED_PRESETS.has(preset)
+}
+
 export const THEME_COOKIE_KEYS = {
   preset: 'theme_preset',
   font: 'theme_font',
@@ -197,7 +227,10 @@ export function resolveThemeFont(
   font: ThemeFont,
   preset: ThemePreset
 ): ResolvedThemeFont {
-  if (font === 'default') {
+  // 轴锁预设无视用户偏好,直接解析成该预设的签名字体。这一句让 font 轴在
+  // 【任何】渲染路径上都失效 —— 包括没有调色板可点的匿名落地页,那里
+  // 一个陈旧的 theme_font=serif cookie 本来会把游戏那套等宽标签排成衬线。
+  if (font === 'default' || isThemeAxisLocked(preset)) {
     return PRESET_DEFAULT_FONT[preset] ?? 'sans'
   }
   return font

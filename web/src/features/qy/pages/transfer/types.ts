@@ -105,6 +105,14 @@ export type QyTransferCreateRequest = {
   client_request_id: string
   /** 服务端二次确认标记，后端 `validateCreate` 缺它直接 400。 */
   confirm: true
+  /**
+   * 支付密码（裁决 1）。后端 `handleCreate` 在进入 `create()` 之前必过
+   * `paypass.Require`，缺它直接 403 `qy_pay_pwd_required`。
+   *
+   * 必填而非可选：设成可选会让"忘了传"变成一个类型检查抓不到的运行期 403。
+   * 选中联系人只影响 `to_user_id` 怎么填，**不构成任何豁免**。
+   */
+  pay_password: string
 }
 
 export type QyTransferCreated = {

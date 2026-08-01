@@ -313,12 +313,18 @@ func buildGroupMatrix(rules groupRuleSet, known []string) []groupMatrixRow {
 	return rows
 }
 
-// knownGroups 汇总运营配置过的分组名,供管理端下拉与矩阵使用。
+// definedGroups 返回"站点正式定义过"的分组集合(已归一)。
+//
+// 三个来源都是分组的**定义方**:users.group 的列默认值、分组倍率表(运营声明
+// "本站有哪些分组"的唯一事实清单,与 usergroup.groupExists 同一判据)、
+// 以及"用户可选分组"白名单。
+//
+// 规则表刻意**不在**这里:规则是分组的**引用方**。把引用方也算成定义方,
+// unknownRuleGroups 就永远返回空,那条软告警会变成一句永真的废话。
 //
 // 刻意不做 SELECT DISTINCT `group` FROM users:那是主库最大的表,而且该列没有
-// 索引。这里只是给管理端一份候选清单 —— 表单允许自由填写,少列一个分组不影响
-// 任何判定,判定读的始终是 users 行上的真实值。
-func knownGroups() []string {
+// 索引。少列一个分组不影响任何判定,判定读的始终是 users 行上的真实值。
+func definedGroups() map[string]bool {
 	seen := map[string]bool{defaultGroupName: true}
 	for name := range ratio_setting.GetGroupRatioCopy() {
 		seen[normalizeGroupName(name)] = true
@@ -326,12 +332,161 @@ func knownGroups() []string {
 	for name := range setting.GetUserUsableGroupsCopy() {
 		seen[normalizeGroupName(name)] = true
 	}
+	return seen
+}
+
+// ruleReferencedGroups 收集规则表自己引用到的分组名(已归一)。
+//
+// 通配符与 @self 都不是分组名,不收:前者是"所有没有专属规则的分组",
+// 后者要到判定时才知道指的是谁,把它们当分组会在矩阵里多出两行永远没人能命中
+// 的伪分组。
+//
+// 停用的规则同样收:运营打开一条停用规则、想在矩阵里确认"启用之后会变成什么样",
+// 前提是那一行存在。丢掉它们等于让人在看不见的情况下按下开关。
+func ruleReferencedGroups(rows []GroupRule, into map[string]bool) {
+	for i := range rows {
+		from := normalizeGroupName(rows[i].FromGroup)
+		if from != groupWildcard {
+			into[from] = true
+		}
+		for _, to := range parseGroupList(rows[i].ToGroups) {
+			if to == groupSelfToken || to == groupWildcard {
+				continue
+			}
+			into[to] = true
+		}
+	}
+}
+
+// knownGroups 汇总管理端矩阵的取值域(行与列取的是同一份),也用作表单的候选清单。
+//
+// # 缺陷回归(96-audit-r3 transfer #1)
+//
+// 本函数一度只有 definedGroups 那三个来源,规则表自身完全不参与。于是运营给一个
+// 不在分组倍率表里的分组(历史分组、或刚建出来还没配倍率的分组)配规则时:
+// 规则确实落库了、判定也确实生效了,但矩阵既不给它一行也不给它一列 ——
+// 管理员看到的是"我刚配的分组根本不存在"。矩阵是这一页存在的理由,取值域漏掉
+// 规则自己引用的分组,等于让人照着一张看不见自己刚配那条规则的图做决定。
+//
+// 取值域变完整**不改变任何判定**:矩阵的每一格仍旧是 allowsGroup 逐格算出来的,
+// 这里只决定"算哪些格"。
+func knownGroups(rows []GroupRule) []string {
+	seen := definedGroups()
+	ruleReferencedGroups(rows, seen)
 	out := make([]string, 0, len(seen))
 	for name := range seen {
 		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out
+}
+
+// unknownRuleGroups 返回规则引用了、但站点没有定义过的分组名。
+//
+// **这是软告警,不是闸门。** 历史分组(倍率表里已经删掉、users 里还有人挂着)
+// 恰恰是最需要限制转出的一批账号,拦下来会让运营在最需要配置的时刻配不进去。
+// usergroup 的 groupExists 是硬闸门,因为它决定"新用户默认落到哪个分组",
+// 配错等于新用户一个模型都调不通;而这里配错的后果只是一条永不命中的规则。
+// 两处口径不同是刻意的,不是遗漏。
+//
+// 返回值一律非 nil:前端拿到 null 还要各自兜一次底。
+func unknownRuleGroups(rows []GroupRule) []string {
+	defined := definedGroups()
+	referenced := map[string]bool{}
+	ruleReferencedGroups(rows, referenced)
+
+	out := []string{}
+	for name := range referenced {
+		if !defined[name] {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// groupCandidate 是管理端分组下拉的一项。
+//
+// 四个 JSON 字段与 usergroup 的 groupOption 逐字一致(name / ratio /
+// has_channels / public_usable):同一个"分组下拉"概念在两个管理页出现,字段名
+// 一旦分叉,前端就会为同一件事写两套渲染。两个模块各自持有实现而不共享一个包,
+// 是因为它们的候选范围口径不同(那边排除 auto 伪分组、这边不排除),
+// TestGroupCandidateShapeMatchesUserGroupModule 负责在字段名分叉时报警。
+type groupCandidate struct {
+	Name  string  `json:"name"`
+	Ratio float64 `json:"ratio"`
+	// HasChannels 表示 abilities 里至少有一条启用的行落在该分组。
+	HasChannels bool `json:"has_channels"`
+	// PublicUsable 表示该分组在"用户可选分组"白名单里。
+	PublicUsable bool `json:"public_usable"`
+}
+
+// listGroupCandidates 汇总下拉选项。第二个返回值表示 abilities 探测是否成功 ——
+// 探测失败时全部 has_channels 都是 false,前端必须知道那是"不确定"而不是
+// "确实没有渠道",否则运营会被一片警告吓住。
+//
+// 只列 definedGroups 里的分组,并且带上元数据。规则引用到的未定义分组不进下拉:
+// 它们没有倍率、没有渠道信息,混进来会让"下拉里有的就是站点定义过的"这个前提
+// 失效 —— 而软告警要靠这个前提才能判断该不该标黄。
+func listGroupCandidates() ([]groupCandidate, bool) {
+	withChannels, probeOK := groupsWithEnabledAbilities()
+
+	// 三份来源的键都按判定端的口径归一后再合并:名字必须与"保存后落库的那个值"
+	// 逐字相同,否则运营从下拉里选一项、保存、再回来看,会发现自己选的那项
+	// 已经不在下拉里了(倍率表写 "VIP"、规则表存 vip)。
+	usable := map[string]bool{}
+	for name := range setting.GetUserUsableGroupsCopy() {
+		usable[normalizeGroupName(name)] = true
+	}
+	ratios := map[string]float64{defaultGroupName: 1}
+	for name, ratio := range ratio_setting.GetGroupRatioCopy() {
+		ratios[normalizeGroupName(name)] = ratio
+	}
+	for name := range usable {
+		if _, ok := ratios[name]; !ok {
+			ratios[name] = 1
+		}
+	}
+
+	out := make([]groupCandidate, 0, len(ratios))
+	for name, ratio := range ratios {
+		out = append(out, groupCandidate{
+			Name:         name,
+			Ratio:        ratio,
+			HasChannels:  withChannels[name],
+			PublicUsable: usable[name],
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, probeOK
+}
+
+// groupsWithEnabledAbilities 取 abilities 里所有仍有启用渠道的分组。
+//
+// 走 GORM 的 Model + Pluck 而不是拼 SQL:group 是三种数据库里的保留字,只有让
+// GORM 拿着 model.Ability 的 schema 去渲染,引号规则才会自动跟着方言走
+// (MySQL/SQLite 反引号、PostgreSQL 双引号)。手写 "DISTINCT group" 在任何一种
+// 数据库上都是语法错误。
+//
+// 探测失败一律返回 (nil, false) 而不是向上抛:这是一条纯提示信息,主库抖一下
+// 不该让"谁能转给谁"这张矩阵整页打不开。
+func groupsWithEnabledAbilities() (map[string]bool, bool) {
+	if model.DB == nil {
+		return nil, false
+	}
+	var names []string
+	err := model.DB.Model(&model.Ability{}).
+		Where("enabled = ?", true).
+		Distinct().
+		Pluck("group", &names).Error
+	if err != nil {
+		return nil, false
+	}
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[normalizeGroupName(name)] = true
+	}
+	return set, true
 }
 
 // ─────────────────────────── 归一化与校验 ───────────────────────────

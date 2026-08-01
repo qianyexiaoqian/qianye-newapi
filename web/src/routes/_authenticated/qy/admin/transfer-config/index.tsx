@@ -18,9 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { createFileRoute } from '@tanstack/react-router'
 
-import { QyAdminAvailability } from '@/features/qy/pages/admin-availability'
+import { QyAdminTransferConfig } from '@/features/qy/pages/admin-transfer-config'
 
-// 管理员门槛由 `qy/admin/route.tsx` 统一保证，这里不重复写守卫。
-export const Route = createFileRoute('/_authenticated/qy/admin/availability/')({
-  component: QyAdminAvailability,
+// 叶子路由不写守卫：登录由 `_authenticated/route.tsx` 保证，扩展启用由
+// `qy/route.tsx` 保证，管理员由 `qy/admin/route.tsx` 保证，各一处、零重复。
+export const Route = createFileRoute(
+  '/_authenticated/qy/admin/transfer-config/'
+)({
+  component: QyAdminTransferConfig,
 })

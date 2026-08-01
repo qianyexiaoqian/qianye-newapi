@@ -33,7 +33,16 @@ import type { QyTransferGroupMatrixRow } from '../types'
 
 type QyGroupMatrixCardProps = {
   matrix: QyTransferGroupMatrixRow[]
+  /**
+   * 行与列的取值域，由后端下发。
+   *
+   * **包含规则表自己引用到的分组**：只取「站点定义过的分组」时，刚给一个未定义
+   * 分组配好的规则在这张表里既不成行也不成列 —— 那一行看起来就是「谁都转不了」，
+   * 而实际判定是放行的。矩阵与判定说的话必须是同一句。
+   */
   knownGroups: string[]
+  /** 站点没定义过的分组名（已归一）。只打黄标，不影响任何格子的取值。 */
+  unknownGroups: Set<string>
 }
 
 /**
@@ -77,9 +86,25 @@ export function QyGroupMatrixCard(props: QyGroupMatrixCardProps) {
                   <th
                     key={group}
                     scope='col'
-                    className='text-muted-foreground border-b p-2 text-center text-xs font-medium'
+                    className={cn(
+                      'border-b p-2 text-center text-xs font-medium',
+                      props.unknownGroups.has(group)
+                        ? 'text-warning'
+                        : 'text-muted-foreground'
+                    )}
+                    title={
+                      props.unknownGroups.has(group)
+                        ? t('qy_trg_unknown_group_hint')
+                        : undefined
+                    }
                   >
                     {group}
+                    {props.unknownGroups.has(group) && (
+                      <span className='sr-only'>
+                        {' '}
+                        {t('qy_trg_unknown_group_hint')}
+                      </span>
+                    )}
                   </th>
                 ))}
                 <th
@@ -97,9 +122,24 @@ export function QyGroupMatrixCard(props: QyGroupMatrixCardProps) {
                   <tr key={row.from_group}>
                     <th
                       scope='row'
-                      className='border-b p-2 text-start font-medium whitespace-nowrap'
+                      className={cn(
+                        'border-b p-2 text-start font-medium whitespace-nowrap',
+                        props.unknownGroups.has(row.from_group) &&
+                          'text-warning'
+                      )}
+                      title={
+                        props.unknownGroups.has(row.from_group)
+                          ? t('qy_trg_unknown_group_hint')
+                          : undefined
+                      }
                     >
                       {row.from_group}
+                      {props.unknownGroups.has(row.from_group) && (
+                        <span className='sr-only'>
+                          {' '}
+                          {t('qy_trg_unknown_group_hint')}
+                        </span>
+                      )}
                     </th>
                     {columns.map((group) => (
                       <MatrixCell

@@ -19,9 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 /**
  * 运维页面共用的后端结构。
  *
- * `hot_queue` 同时出现在 `/admin/health` 与 `/admin/availability/stats`
- * 两个响应里（都来自 `guard.QueueStats()`），因此类型收敛在这里，
- * 避免两个页面各写一份、日后字段变更漏改一处。
+ * `hot_queue` 来自 `guard.QueueStats()`，目前的唯一出口是 `/admin/health`
+ * （`/admin/availability/stats` 已随管理端可用率页一并移除）。类型仍收敛在这里：
+ * 它是后端一份结构的镜像，下一个消费方直接引用即可，不必再抄一遍。
  */
 
 /**

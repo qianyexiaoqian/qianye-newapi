@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -81,8 +82,7 @@ func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.Toke
 		return nil
 	}
 
-	shadow, _ := shadowActive()
-	shadow = shadow || v.Rule.R.DryRun
+	shadow, _ := effectiveShadow(v.Rule)
 	block := blocks(v.Rule.R.Action) && !shadow
 	noteScan(block)
 
@@ -145,8 +145,7 @@ func PostRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, apiErr *types.N
 		return
 	}
 
-	shadow, _ := shadowActive()
-	shadow = shadow || v.Rule.R.DryRun
+	shadow, _ := effectiveShadow(v.Rule)
 	// 去重:上游内置的 Grok 违规扣费(service.ChargeViolationFeeIfNeeded)已经
 	// 就同一个错误扣过一次。这里只记录不扣费,零改动地避免重复罚款。
 	if service.IsViolationFeeCode(apiErr.GetErrorCode()) {
@@ -156,6 +155,29 @@ func PostRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, apiErr *types.N
 		return
 	}
 	handleHit(c, info, PhaseUpstreamErr, in, v, shadow, false)
+}
+
+// effectiveShadow 是叠加语义的唯一实现:
+//
+//	effective_shadow = 全局影子(qy_settings 覆盖 / YAML / 熔断回落) OR 规则级 dry_run
+//
+// 取更保守者胜。两条职责各自成立,合并会让其中一条失效:
+//   - 全局开关是上线安全阀与熔断自愈,必须能一票否决所有规则;
+//   - 规则级 dry_run 是单条新规则的灰度,全局已经放开时它仍要拦住自己那一条。
+//
+// 反过来,**全局关掉时绝不去动各条规则的 dry_run** —— 那样一次熔断自动恢复
+// 就会把全部灰度规则一起转正。
+//
+// 提成函数是因为 PreRelayGuard 与 PostRelayGuard 都要算它:同一个两行表达式
+// 抄两份,迟早有一处漏掉 dry_run 那一半,而漏掉的表现是"灰度规则悄悄开始扣钱"。
+func effectiveShadow(cr *compiledRule) (bool, string) {
+	if on, reason := shadowActive(); on {
+		return true, reason
+	}
+	if cr != nil && cr.R.DryRun {
+		return true, "rule_dry_run"
+	}
+	return false, ""
 }
 
 // handleHit 是"命中之后要做的全部事情":扣费(同步,主库)+ 归档/计数/封号(异步,扩展库)。
@@ -186,8 +208,13 @@ func handleHit(c *gin.Context, info *relaycommon.RelayInfo, phase string, in sca
 	weight := v.Rule.R.CountWeight
 	if res.ForceBanWeight {
 		// insufficient_balance_policy = ban:扣不到钱就直接顶到阈值,立刻进入封号判定。
+		// (只可能来自 chargeFee → applyBalancePolicy,而影子分支根本不调 chargeFee,
+		// 所以这一条不会在影子模式下发生。)
 		weight = config.Get().Violation.AutoBanThreshold
 	}
+	// 影子记录也留下 count_weight:它回答"若真实执行,这一次会给计数加几"。
+	// 它**不会**被写进计数器(persist 里影子直接跳过 bumpCounter),
+	// counted 恒为 false,因此撤销记录时也不会触发计数回退。
 	rec.CountWeight = weight
 
 	persist(rec, payload)
@@ -197,6 +224,19 @@ func handleHit(c *gin.Context, info *relaycommon.RelayInfo, phase string, in sca
 //
 // relay 线程绝不等待扩展库:扩展库慢一秒就是全站 relay 慢一秒。
 // 队列满时丢弃,并由 guard 统一告警 —— 丢一条违规记录远好过拖垮主业务。
+//
+// # 影子命中止步于"落一条记录"
+//
+// 裁决 2 的原话是「不扣费,不封号,**不记录违规次数**,存入日志,请求上下文,
+// 供管理员核查」。此前的实现只跳过了最后一步(不执行封号),计数照常推进 ——
+// 而封号判据 reachedThreshold(after, threshold) 完全由持久化的 hit_count 推导,
+// 于是影子命中把用户一路推到封号线上,下一次**真实**命中读到被污染的计数,
+// 立刻落封禁行,再由 runBanCompensate 每 5 分钟扫 pending 执行封号。
+// 也就是说"影子模式不会真实执行"在旧实现里是假的,而且是延迟发作、
+// 事后从记录表里完全看不出因果的那种假。
+//
+// 现在影子命中一个字节都不碰 qy_violation_counter。代价写在 CounterAfterShadow
+// 的注释里:管理员失去了 O(1) 的"这个用户已经攒了多少次"。
 func persist(rec *Record, payload *Payload) {
 	if !db.Available() {
 		recordDrops.Add(1)
@@ -209,37 +249,46 @@ func persist(rec *Record, payload *Payload) {
 		if gdb == nil {
 			return db.ErrNotReady
 		}
-		// rec_no 唯一索引兜住一切重入路径,冲突直接跳过而不是报错。
-		res := gdb.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(rec)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return nil
-		}
-		if payload != nil {
-			payload.RecordId = rec.Id
-			if err := gdb.WithContext(ctx).Create(payload).Error; err != nil {
-				// 证据写失败不影响记录本身:主表已经有命中片段可供研判。
-				common.SysError("qianye/violation: 归档证据写入失败: " + err.Error())
-			}
-		}
-		if weight <= 0 {
-			return nil
-		}
-		st, err := bumpCounter(ctx, rec.UserId, weight)
-		if err != nil {
-			return err
-		}
-		if err := gdb.WithContext(ctx).Model(&Record{}).Where("id = ?", rec.Id).
-			Updates(map[string]any{"counted": true, "counter_after": st.HitCount}).Error; err != nil {
-			return err
-		}
-		if !shadow {
-			maybeAutoBan(ctx, gdb, rec, st)
-		}
-		return nil
+		return persistRecord(ctx, gdb, rec, payload, weight, shadow)
 	})
+}
+
+// persistRecord 是落库那一段的本体,gdb 由调用方注入。
+//
+// 独立成函数不是为了缩短 persist,而是因为"影子命中不得推进计数"这条不变量
+// 只能在这里被直接测到:它上面那层是 guard.HotAsync,测试环境里扩展库不可用,
+// 队列作业根本不会执行,断言会永远为真(经典的假回归)。
+func persistRecord(ctx context.Context, gdb *gorm.DB, rec *Record, payload *Payload, weight int, shadow bool) error {
+	// rec_no 唯一索引兜住一切重入路径,冲突直接跳过而不是报错。
+	res := gdb.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(rec)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil
+	}
+	if payload != nil {
+		payload.RecordId = rec.Id
+		if err := gdb.WithContext(ctx).Create(payload).Error; err != nil {
+			// 证据写失败不影响记录本身:主表已经有命中片段可供研判。
+			common.SysError("qianye/violation: 归档证据写入失败: " + err.Error())
+		}
+	}
+	// 影子命中在这里止步:记录与证据已经落好(供管理员核查),
+	// 真实计数器一个字节都不动。
+	if shadow || weight <= 0 {
+		return nil
+	}
+	st, err := bumpCounter(ctx, gdb, rec.UserId, weight)
+	if err != nil {
+		return err
+	}
+	if err := gdb.WithContext(ctx).Model(&Record{}).Where("id = ?", rec.Id).
+		Updates(map[string]any{"counted": true, "counter_after": st.HitCount}).Error; err != nil {
+		return err
+	}
+	maybeAutoBan(ctx, gdb, rec, st)
+	return nil
 }
 
 // newRecord 在 relay 线程里同步组装记录。
@@ -247,6 +296,11 @@ func persist(rec *Record, payload *Payload) {
 // 必须同步:gin.Context 在请求结束后不能再访问,用户名/令牌名/IP 这些字段
 // 只能在这一刻取到。异步 worker 只负责写库。
 func newRecord(c *gin.Context, info *relaycommon.RelayInfo, phase string, in scanInput, v *verdict, shadow, blocked bool) *Record {
+	// 影子记录不参与计数,counter_after 因此没有真实答案,统一取哨兵值。
+	counterAfter := 0
+	if shadow {
+		counterAfter = CounterAfterShadow
+	}
 	channelId := 0
 	// ChannelMeta 是内嵌指针,prompt 阶段还没选渠道,直接读 info.ChannelId 会 panic。
 	if info.ChannelMeta != nil {
@@ -277,6 +331,7 @@ func newRecord(c *gin.Context, info *relaycommon.RelayInfo, phase string, in sca
 		Ip:           truncate(c.ClientIP(), 64),
 		MatchedTerms: truncate(joinTerms(v.Terms), 1024),
 		MatchSnippet: truncate(v.Snippet, 2048),
+		CounterAfter: counterAfter,
 		Status:       RecordActive,
 		FeeStatus:    FeeStatusNone,
 		CreatedAt:    common.GetTimestamp(),

@@ -23,14 +23,20 @@ func TestQueryCellsRefusesEmptyGroupSet(t *testing.T) {
 	assert.Empty(t, points)
 }
 
-// 可用率看板是给全体登录用户的,而管理端 stats 不做任何分组裁剪(它必须能
-// 看到隐藏分组与 unknown 行)。两者一旦挂错路由组:矩阵挂到 admin 就是把功能
-// 从用户手里拿走,stats 挂到 user 就是把全站分组名直接下发 —— 后者正是本项目
-// 刚修过的那类泄漏。用一条结构性断言钉死这条边界。
-func TestRoutesSplitUserAndAdminScopes(t *testing.T) {
+// 可用率看板是给全体登录用户的;管理端总览 /admin/availability/stats 已按项目方
+// 要求整体移除。这条断言现在钉两件事:
+//  1. 用户端两个接口必须还在 —— 「移除管理页」不能顺手把用户功能一起拿走;
+//  2. 管理端不得再挂出任何 availability 路由,尤其不能是那个不做分组裁剪的
+//     stats(它会把全站分组名、含隐藏分组一起下发)。
+//
+// 注意断言的是 engine.Routes() 的实际结果,而不是「Mod 有没有实现
+// RegisterAdminRoutes」:module.Base 的空实现让漏删一行调用也能编译通过,
+// 只有看最终路由表才抓得住。
+func TestRoutesKeepUserScopeAndDropAdminScope(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	Mod{}.RegisterUserRoutes(engine.Group("/user"))
+	// 与 qianye/router.go 一致:管理端路由组照常调用,Mod 不实现即什么都不挂。
 	Mod{}.RegisterAdminRoutes(engine.Group("/admin"))
 
 	paths := map[string]struct{}{}
@@ -39,10 +45,14 @@ func TestRoutesSplitUserAndAdminScopes(t *testing.T) {
 	}
 	assert.Contains(t, paths, "/user/availability/matrix", "矩阵必须对全体登录用户开放")
 	assert.Contains(t, paths, "/user/availability/series")
-	assert.Contains(t, paths, "/admin/availability/stats")
+	assert.NotContains(t, paths, "/admin/availability/stats",
+		"管理端可用率总览已移除,不得再挂出")
 	assert.NotContains(t, paths, "/user/availability/stats",
 		"管理端总览不做分组裁剪,挂到用户组等于下发全站分组名")
-	assert.NotContains(t, paths, "/admin/availability/matrix")
+	for p := range paths {
+		assert.NotContains(t, p, "/admin/availability",
+			"管理端不得残留任何 availability 路由")
+	}
 }
 
 func TestIntersectGroups(t *testing.T) {

@@ -372,8 +372,12 @@ withdraw:
 	assert.Equal(t, []string{"ancient"}, auditReasons(t, gdb), "失去租约后不该继续写库")
 }
 
-// 一轮清理必须扫过全部三个 PII 面。少接一个,pii_retention_days 就是半个摆设 ——
+// 一轮清理必须扫过全部四个 PII 面。少接一个,pii_retention_days 就是半个摆设 ——
 // 这正是 OLD-3 的形状:清理任务看起来在跑,银行卡号密文却还在另一张表里躺着。
+//
+// 第四个面(凭证图片)是唯一一个 PII 不在数据库里的,也因此最容易在
+// pruneExpiredPii 这一层被漏接 —— 断链的典型形状:pruneProofs 自己测得好好的,
+// 调度入口没接上,线上一张图都没清。所以这里断言的是【入口】,不是 pruneProofs。
 func TestPruneExpiredPii_CoversEveryPiiSurface(t *testing.T) {
 	loadRetentionConfig(t)
 	gdb := newTestDB(t)
@@ -383,12 +387,15 @@ func TestPruneExpiredPii_CoversEveryPiiSurface(t *testing.T) {
 	seedPayeeFor(t, gdb, paid, now-181*86400)
 	seedPayeeAccount(t, gdb, "acc-purge", now-400*86400, now-181*86400)
 	seedPiiAudit(t, gdb, "expired", now-546*86400)
+	proof := seedProof(t, gdb, paid, now-181*86400)
 
 	pruneExpiredPii(context.Background(), gdb, 100)
 
 	assert.Empty(t, loadPayee(t, gdb, "WD-paid").Cipher, "提现单收款快照未被清理")
 	assert.Empty(t, loadPayeeAccount(t, gdb, "acc-purge").Cipher, "已删除收款方式未被清理")
 	assert.Empty(t, auditReasons(t, gdb), "到期明文访问审计未被清理")
+	assert.NotZero(t, reloadProof(t, gdb, proof.Ref).PurgedAt, "到期凭证未被清理")
+	assert.NoFileExists(t, proofFullPath(t, proof.StoredName), "凭证元数据标记了已清理,文件却还在磁盘上")
 }
 
 // batch 是删除作用域的硬上界:审计行不可恢复,一轮扫掉整张表的风险不能只靠

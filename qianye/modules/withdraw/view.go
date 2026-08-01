@@ -42,6 +42,9 @@ type orderView struct {
 	PayeeChannel string `json:"payee_channel"`
 	PayeeMasked  string `json:"payee_masked"`
 	Remark       string `json:"remark"`
+	// HasProof 只说明"这张单附过凭证",不保证现在还下载得到 ——
+	// 保留期到期或单据被拒绝之后图片会被清掉,那时下载接口回 qy_wd_proof_purged。
+	HasProof bool `json:"has_proof"`
 
 	// 需求原文的三个问题在这里闭环:
 	// 什么时候拒绝的 → ReviewedAt;拒绝理由 → RejectReason;什么时候打的款 → PaidAt。
@@ -94,6 +97,7 @@ func baseView(w *Withdrawal) orderView {
 		PayeeChannel:       w.PayeeChannel,
 		PayeeMasked:        w.PayeeMasked,
 		Remark:             w.Remark,
+		HasProof:           w.HasProof,
 		ReviewedAt:         w.ReviewedAt,
 		RejectReason:       w.RejectReason,
 		PaidAt:             w.PaidAt,

@@ -40,7 +40,11 @@ import {
 } from './api'
 import { QyGroupMatrixCard } from './components/group-matrix-card'
 import { QyGroupRuleFormSheet } from './components/group-rule-form-sheet'
-import { qyIsSelfToken, qySplitGroupList } from './lib/rule-form'
+import {
+  qyIsSelfToken,
+  qyNormalizeGroupName,
+  qySplitGroupList,
+} from './lib/rule-form'
 import { QY_GROUP_WILDCARD, type QyTransferGroupRule } from './types'
 
 /**
@@ -80,6 +84,8 @@ export function QyAdminTransferGroupRules() {
   const data = query.data
   const rules = data?.items ?? []
   const atLimit = data != null && rules.length >= data.max_rule_count
+  // 站点没定义过的分组。**软告警** —— 只打黄标，不阻止任何操作。
+  const unknownGroups = new Set(data?.unknown_groups ?? [])
 
   return (
     <QySectionPageLayout>
@@ -114,7 +120,22 @@ export function QyAdminTransferGroupRules() {
               <QyGroupMatrixCard
                 matrix={data.matrix}
                 knownGroups={data.known_groups}
+                unknownGroups={unknownGroups}
               />
+
+              {/* 分组的定义方不是这一页。不写这一句，运营会在这里找「新建分组」，
+                  找不到就得出「无法添加分组定义」的结论。 */}
+              <p className='text-muted-foreground text-xs'>
+                {t('qy_trg_group_source_note')}
+              </p>
+
+              {unknownGroups.size > 0 && (
+                <p className='text-warning text-xs'>
+                  {t('qy_trg_unknown_warning', {
+                    groups: [...unknownGroups].join('、'),
+                  })}
+                </p>
+              )}
 
               {rules.length === 0 ? (
                 /* 空表 = 完全不限制。不说清楚的话，管理员看到一张空表
@@ -139,13 +160,18 @@ export function QyAdminTransferGroupRules() {
                       {
                         id: 'from_group',
                         header: t('qy_trg_field_from'),
-                        cell: (row: QyTransferGroupRule) => (
-                          <span className='font-medium'>
-                            {row.from_group === QY_GROUP_WILDCARD
-                              ? t('qy_trg_fallback_label')
-                              : row.from_group}
-                          </span>
-                        ),
+                        cell: (row: QyTransferGroupRule) =>
+                          row.from_group === QY_GROUP_WILDCARD ? (
+                            <span className='font-medium'>
+                              {t('qy_trg_fallback_label')}
+                            </span>
+                          ) : (
+                            <GroupName
+                              name={row.from_group}
+                              unknown={unknownGroups}
+                              className='font-medium'
+                            />
+                          ),
                       },
                       {
                         id: 'policy',
@@ -166,7 +192,7 @@ export function QyAdminTransferGroupRules() {
                         id: 'to_groups',
                         header: t('qy_trg_field_to'),
                         cell: (row: QyTransferGroupRule) => (
-                          <ToGroupsCell rule={row} />
+                          <ToGroupsCell rule={row} unknown={unknownGroups} />
                         ),
                       },
                       {
@@ -246,7 +272,8 @@ export function QyAdminTransferGroupRules() {
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         rule={editing}
-        knownGroups={data?.known_groups ?? []}
+        groupOptions={data?.group_options ?? []}
+        channelsProbeOk={data?.channels_probe_ok ?? false}
         onSaved={() => {
           void queryClient.invalidateQueries({
             queryKey: qyKeys.adminTransferGroupRules(),
@@ -278,8 +305,14 @@ export function QyAdminTransferGroupRules() {
  *
  * `@self` 一律渲染成人话（「同组」），不把令牌原样丢给运营 —— 那是内部编码，
  * 而这一列要回答的是「这条规则允许转给谁」。
+ *
+ * 站点没定义过的分组打黄标：那多半是打错了字（一条永不命中的规则），
+ * 也可能是历史分组（完全合法）。两种情况都只提示，不拦。
  */
-function ToGroupsCell(props: { rule: QyTransferGroupRule }) {
+function ToGroupsCell(props: {
+  rule: QyTransferGroupRule
+  unknown: Set<string>
+}) {
   const { t } = useTranslation()
   const rule = props.rule
 
@@ -292,11 +325,58 @@ function ToGroupsCell(props: { rule: QyTransferGroupRule }) {
   }
   return (
     <span className='flex flex-wrap gap-1'>
-      {entries.map((entry) => (
-        <Badge key={entry} variant='secondary' className='font-normal'>
-          {qyIsSelfToken(entry) ? t('qy_trg_self_label') : entry}
-        </Badge>
-      ))}
+      {entries.map((entry) =>
+        qyIsSelfToken(entry) ? (
+          <Badge key={entry} variant='secondary' className='font-normal'>
+            {t('qy_trg_self_label')}
+          </Badge>
+        ) : (
+          <GroupName key={entry} name={entry} unknown={props.unknown} asBadge />
+        )
+      )}
+    </span>
+  )
+}
+
+/**
+ * 一个分组名，未定义时打黄标。
+ *
+ * 黄标必须配 `title` 文字：只靠颜色区分「站点定义过 / 没定义过」，
+ * 色觉障碍用户拿到的是一串一模一样的名字。
+ */
+function GroupName(props: {
+  name: string
+  unknown: Set<string>
+  asBadge?: boolean
+  className?: string
+}) {
+  const { t } = useTranslation()
+  const isUnknown = props.unknown.has(qyNormalizeGroupName(props.name))
+  const title = isUnknown ? t('qy_trg_unknown_group_hint') : undefined
+
+  if (props.asBadge === true) {
+    return (
+      <Badge
+        variant={isUnknown ? 'warning' : 'secondary'}
+        className='font-normal'
+        title={title}
+      >
+        {props.name}
+        {isUnknown && <span className='sr-only'> {title}</span>}
+      </Badge>
+    )
+  }
+  return (
+    <span className={props.className} title={title}>
+      {props.name}
+      {isUnknown && (
+        <>
+          <Badge variant='warning' className='ms-1 font-normal'>
+            ?
+          </Badge>
+          <span className='sr-only'> {title}</span>
+        </>
+      )}
     </span>
   )
 }

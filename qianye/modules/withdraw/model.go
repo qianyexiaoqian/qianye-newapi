@@ -72,6 +72,17 @@ type Withdrawal struct {
 	// MySQL 的 varchar(N) 按字符计,与 Go 的 rune 口径一致,emoji 都算 1。
 	Remark string `json:"remark" gorm:"type:varchar(2000);not null;default:''"`
 
+	// HasProof 表示本单附了一张凭证图片(文件在磁盘上,元数据在 qy_withdrawal_proofs)。
+	//
+	// 这是一份刻意的冗余,但它只有【一个】写入点:submitInTx 里与 bindProof 同一个
+	// 事务,而 bindProof 的 CAS 失败会让整个事务回滚。因此不存在
+	// "HasProof=true 却没有凭证"的中间态 —— 那正是本项目反复栽的"第 N 份拷贝漂移"。
+	// 不冗余的话,列表页每渲染一行就要多一次 qy_withdrawal_proofs 查询。
+	//
+	// 保留期到了图片被删除,本字段仍为 true:它回答的是"当时传没传",
+	// 不是"现在还能不能下载"。下载接口会以 qy_wd_proof_purged 明确作答。
+	HasProof bool `json:"has_proof" gorm:"not null;default:false"`
+
 	// ── 审核:回答"什么时候拒绝的、拒绝理由是什么" ──────────────────────
 	ReviewerId   int    `json:"reviewer_id" gorm:"not null;default:0"`
 	ReviewerName string `json:"reviewer_name" gorm:"type:varchar(64);not null;default:''"`
@@ -164,6 +175,45 @@ type PayeeAccount struct {
 }
 
 func (PayeeAccount) TableName() string { return "qy_withdrawal_payee_accounts" }
+
+// Proof 是提现凭证图片的元数据。图片本体在【本地磁盘】上,本表只存指针。
+//
+// 为什么不入库(裁决 3):本仓 violation/evidence.go 已经就"二进制入库"算过一次
+// 体积账并明确反对 —— 一张 2 MiB 的手机截图进 MySQL,等于让每一次 SELECT *、
+// 每一次 mysqldump、每一次主从复制都拖着它走。图片是只在争议时被看一眼的冷数据,
+// 放数据库里付的是全链路的热成本。
+//
+// 已知限制:多节点部署时本地磁盘各存各的,A 节点收到的上传 B 节点下载不到。
+// 单节点部署无碍;多节点需要共享存储或后续接对象存储。这条写在配置注释里。
+type Proof struct {
+	Id int64 `json:"-" gorm:"primaryKey;autoIncrement"`
+	// Ref 是对外唯一标识,与 PayeeAccount.Ref 同口径:绝不下发自增 id。
+	Ref    string `json:"ref" gorm:"type:varchar(64);not null;uniqueIndex:uk_qy_wdf_ref"`
+	UserId int    `json:"-" gorm:"not null;index:idx_qy_wdf_user,priority:1"`
+
+	// WithdrawalId = 0 表示"上传了但还没提交单据"。孤儿清理正是扫这个条件 ——
+	// 用户传完图关掉页面是常态,不清理就是一个只增不减的磁盘泄漏。
+	WithdrawalId int64  `json:"-" gorm:"not null;default:0;index:idx_qy_wdf_wid"`
+	WithdrawNo   string `json:"-" gorm:"type:varchar(64);not null;default:''"`
+
+	// StoredName 是【服务端生成】的落盘文件名(32 位十六进制 + 白名单扩展名)。
+	// 用户提供的文件名从不落盘、也从不拼进路径:那是路径穿越最短的一条路。
+	// 用户原始文件名连存都不存 —— 它本身就可能是 PII(比如"张三身份证.jpg")。
+	StoredName string `json:"-" gorm:"type:varchar(64);not null;default:''"`
+	// MimeType 由【魔数】判定,不信任扩展名,也不信任 Content-Type 请求头。
+	MimeType string `json:"mime_type" gorm:"type:varchar(32);not null;default:''"`
+	Size     int64  `json:"size" gorm:"not null;default:0"`
+	// Sha256 用于事后自证"下载到的与当初上传的是同一张图",也顺带能发现重复上传。
+	Sha256 string `json:"-" gorm:"type:char(64);not null;default:''"`
+
+	CreatedAt int64 `json:"created_at" gorm:"not null;default:0;index:idx_qy_wdf_user,priority:2"`
+	BoundAt   int64 `json:"-" gorm:"not null;default:0"`
+	// PurgedAt 是文件已从磁盘删除的时间戳(0 = 文件还在)。与 Payee.PurgedAt 同口径:
+	// 元数据行留着(它是"这张单当时附过凭证"的证据),可读取的内容销毁。
+	PurgedAt int64 `json:"-" gorm:"not null;default:0;index:idx_qy_wdf_purge,priority:1"`
+}
+
+func (Proof) TableName() string { return "qy_withdrawal_proofs" }
 
 // Event 是提现单的状态机流水,也是前端时间线的唯一数据源。
 //

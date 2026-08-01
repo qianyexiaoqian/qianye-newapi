@@ -1046,6 +1046,181 @@ func adminStats(c *gin.Context) {
 	})
 }
 
+// adminPutMode 修改**全局**影子开关。
+//
+// 需求原文的「违规规则无法调整模式」指的就是这一处:规则级 dry_run 端到端是通的,
+// 但全局开关此前只存在于 YAML,IsShadow() 默认 true,而叠加语义取更保守者胜 ——
+// 全局为真时规则级怎么调都没用,页面上也没有任何可点的控件。
+//
+// 请求体 {"shadow": true|false} 写覆盖,{"shadow": null} 清覆盖回落 YAML。
+// 刻意用 *bool 而不是两个接口:"设为真实模式"与"跟随配置文件"是两件不同的事,
+// 后者是把临时处置收回去,合成一个动作会让人分不清当前到底跟不跟 YAML。
+//
+// 注意这里**不动任何规则的 dry_run**。全局开关承担的是"上线安全阀 / 熔断自愈"
+// 职责,必须能一票否决所有规则;顺手把规则转正的话,一次熔断自动恢复就会把
+// 全部灰度规则一起放出去。
+func adminPutMode(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagViolation) {
+		return
+	}
+	var req struct {
+		Shadow *bool `json:"shadow"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, "请求体格式错误")
+		return
+	}
+	gdb := db.Get()
+	if gdb == nil {
+		internalError(c, db.ErrNotReady)
+		return
+	}
+	ctx := c.Request.Context()
+	operatorId := c.GetInt("id")
+	before := modeSnapshot()
+
+	var err error
+	action := "跟随配置文件"
+	if req.Shadow == nil {
+		err = dropShadowSetting(ctx, gdb)
+	} else {
+		action = "切换为真实执行"
+		if *req.Shadow {
+			action = "切换为影子模式"
+		}
+		err = writeShadowSetting(ctx, gdb, *req.Shadow, operatorId)
+	}
+
+	// 无论成败都要重新回源:失败路径上库里到底变没变是未知的,
+	// 拿一个推算值当审计的 after 会掩盖"回滚没生效"这种最需要留痕的情况。
+	invalidateMode()
+	if e := refreshModeWith(ctx, gdb); e != nil {
+		common.SysError("qianye/violation: 切换全局模式后回读失败: " + e.Error())
+	}
+
+	result, reason := qymodel.ResultOK, "全局影子模式:"+action
+	if err != nil {
+		result, reason = qymodel.ResultFail, "全局影子模式:"+action+"(失败: "+err.Error()+")"
+	}
+	audit.Write(c, audit.Entry{
+		Category:    qymodel.AuditCategoryViolation,
+		Action:      "mode.update",
+		ActorType:   qymodel.ActorAdmin,
+		ActorUserId: operatorId,
+		ActorName:   c.GetString("username"),
+		Result:      result,
+		Reason:      reason,
+		BeforeSnap:  common.MapToJsonStr(before),
+		AfterSnap:   common.MapToJsonStr(modeSnapshot()),
+	})
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	respond(c, breakerStats())
+}
+
+// modeSnapshot 是审计用的模式快照:覆盖态 + YAML 兜底 + 合并后的生效值。
+// 三个都留是刻意的 —— 只记生效值的话,事后无法分辨"是谁把它变成这样的"。
+func modeSnapshot() map[string]any {
+	shadow, source := globalShadowMode()
+	return map[string]any{
+		"override":      overrideName(),
+		"yaml_shadow":   config.Get().Violation.IsShadow(),
+		"global_shadow": shadow,
+		"source":        source,
+	}
+}
+
+// ───────────────────────────── 违规计数器 ─────────────────────────────
+
+// adminListCounters 列出用户维度的滚动窗口违规计数。
+//
+// 没有它,"重置计数器"这个动作就是盲操作:管理员根本不知道该重置谁。
+// 影响自动封号的是 hit_count,所以默认按它倒序 —— 排在最前面的就是"最接近
+// 封号线"的那批账号。
+func adminListCounters(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagViolation) {
+		return
+	}
+	page, size := httpq.Paginate(c, listPaging)
+	q := db.Get().Model(&Counter{})
+	if v := httpq.Int(c, "user_id", 0); v > 0 {
+		q = q.Where("user_id = ?", v)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		internalError(c, err)
+		return
+	}
+	var rows []Counter
+	if err := q.Order("hit_count desc, user_id asc").
+		Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
+		internalError(c, err)
+		return
+	}
+	respond(c, gin.H{
+		"items": rows, "total": total,
+		// 阈值一并下发:光看 hit_count 无法判断"离封号还有几次",
+		// 而前端自己抄一份阈值就是同一个值的第二份拷贝。
+		"threshold":    config.Get().Violation.AutoBanThreshold,
+		"window_hours": config.Get().Violation.AutoBanWindowHours,
+	})
+}
+
+// adminResetCounter 把某个用户当前窗口的违规计数清零。
+//
+// 本轮之前影子命中会照常推进计数(见 persist),现网的计数器因此已经被污染,
+// 而历史行无法区分哪几次来自影子。这个动作是唯一的补救出口:显式、逐个、写审计。
+// 绝不提供"一键清全库"—— 那会把真实违规的累计一起抹掉,且事后无从解释。
+func adminResetCounter(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagViolation) {
+		return
+	}
+	userId := pathIntParam(c, "userId")
+	if userId <= 0 {
+		badRequest(c, "非法的用户 id")
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	before, reset, err := resetUserCounter(c.Request.Context(), db.Get(), userId)
+	// 审计写在返回之前,成功与失败都写:清零会直接改变"这个账号离封号还有几次",
+	// 事后必须能追溯到人。
+	result, reason := qymodel.ResultOK, truncate(req.Reason, 512)
+	if err != nil {
+		result = qymodel.ResultFail
+		reason = truncate(req.Reason, 400) + "(失败: " + err.Error() + ")"
+	}
+	audit.Write(c, audit.Entry{
+		Category:     qymodel.AuditCategoryViolation,
+		Action:       "counters.reset",
+		ActorType:    qymodel.ActorAdmin,
+		ActorUserId:  c.GetInt("id"),
+		ActorName:    c.GetString("username"),
+		TargetUserId: userId,
+		Result:       result,
+		Reason:       reason,
+		BeforeSnap: common.MapToJsonStr(map[string]any{
+			"hit_count": before.HitCount, "window_start": before.WindowStart,
+			"total_count": before.TotalCount, "ban_cycle": before.BanCycle,
+		}),
+	})
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	respond(c, gin.H{"reset": reset, "hit_count_before": before.HitCount})
+}
+
+// adminResetBreaker 手动解除**熔断**导致的强制影子回落。
+//
+// 它管不到全局影子开关(YAML 或 qy_settings 的覆盖)—— 那条路走 adminPutMode。
+// 两者必须分开:熔断是"系统自己踩的刹车",全局开关是"人定的发布口径",
+// 让一个按钮同时松开两者,会让一次熔断恢复顺手把还没准备好的规则全部放出去。
 func adminResetBreaker(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return

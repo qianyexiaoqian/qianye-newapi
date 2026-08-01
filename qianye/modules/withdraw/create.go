@@ -144,6 +144,14 @@ func submitInTx(tx *gorm.DB, w *Withdrawal, payee *Payee, acc acceptedRequest,
 			return nil, err
 		}
 	}
+	// 凭证绑定要在同一个事务里,且必须在 Create 之后 —— 它认领的是 w.Id。
+	// CAS 失败(凭证不存在 / 不是本人的 / 已被别的单用掉)会让整笔申请回滚,
+	// 于是 w.HasProof 这份冗余永远不会与凭证表脱节。
+	if acc.ProofRef != "" {
+		if err := bindProof(tx, w, acc.ProofRef); err != nil {
+			return nil, err
+		}
+	}
 	if err := commission.FreezeForWithdraw(tx, w.UserId, w.Quota, w.WithdrawNo); err != nil {
 		return nil, err
 	}
@@ -186,6 +194,7 @@ func buildWithdrawal(c *gin.Context, user *model.User, acc acceptedRequest, cfg 
 		FrozenQuotaPerUnit: rates.QuotaPerUnit,
 		FrozenFxRate:       rates.FxRate,
 		Remark:             acc.Remark,
+		HasProof:           acc.ProofRef != "",
 		ClientIp:           truncate(c.ClientIP(), 64),
 		CreatedAt:          now,
 		UpdatedAt:          now,

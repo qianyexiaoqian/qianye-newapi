@@ -1,107 +1,179 @@
 /*
- * Steins Gate 主题 —— 表面与浮层(设计规范 §3):卡片、弹窗、抽屉、
- * 浮层、菜单、提示、命令面板、折叠、警告条。层次靠 --qy-sg-hair 发丝线做,
- * 投影只用 --qy-sg-lift-shadow(夜间该变量已是 none)。
+ * Steins Gate 主题 —— 表面与浮层(第三版):卡片、弹窗、抽屉、浮层、菜单、
+ * 提示、命令面板、折叠、警告条。
+ *
+ * ══ 取材来源换了,这是本次重做的全部理由 ══
+ *
+ * 前两版取材于一份 HTML 稿(newapi-shujv/steins-gate-*.html),那不是游戏。
+ * 第三版取材于项目方给的游戏截图:
+ *   QQ20260801-092529.png  游戏内 UI(CONTROLLER 按键说明页)
+ *   QQ20260801-091815.png  对话场景
+ *
+ * 从截图里【逐处核对】出来的浮层语言,与第二版规范冲突的地方一律照截图改:
+ *
+ *  1. 全画面【没有任何切角】。CONTROLLER 标题框、每一格表格单元、页码框、
+ *     "更多"提示框,四角全是 90°。唯一的圆角是右下角那条按键提示带,
+ *     它是一条完整的胶囊(半径=半高),而且它是【提示带】不是按钮。
+ *     → 推翻 design-11 §1.1「浮层与面板共用四角切角框 + L 形角标」。
+ *       本文件不再引用 --qy-sg-surface-clip / --qy-sg-frame-clip /
+ *       --qy-sg-frame-marks,浮层一律直角 + 1px 描边。
+ *     顺带解决的三件事(第二版为切角付出的代价,现在全部退回):
+ *       · clip-path 会连 box-shadow / outline 一起裁掉,焦点提示当时只能改内辉光;
+ *       · 菜单滚动时绝对定位的框线与角标会漂(第二版 3.6 记的已知限度);
+ *       · 同一张八边形点表在 frame / surfaces / controls 三处各存一份。
+ *
+ *  2. 浮层的边框语言是【顶边一道发光金线】,不是四周一圈发丝线。
+ *     对话场景底部那块文字板:板身近黑半透明,只有上沿一条金线。
+ *     沿 x 扫描实测(1922px 宽的窗口,y≈810~815):
+ *       x=20 峰值 #F9E88A · x=500 #EAC74F · x=900 #C9A200 · x=1300 #CB920F
+ *       x=1700 #7E584D · x=1900 #7B7373(两端被做旧削弱)
+ *     → §3 用一条横向渐变复刻:左端起亮、中段满金、右端渐隐。
+ *
+ *  3. 面板的"表头"是一条【渐变填充的横幅】(功能/配置那一行),
+ *     沿 x 从淡金 #FFDF7B 走到橙 #EF7131,深色字压在上面。
+ *     这正是 --qy-sg-band / --qy-sg-band-fg 两个令牌的来源。
+ *     → §4 把弹窗与侧板的头部做成这条横幅。
+ *
+ *  4. "HELP" 的排版:大号衬线 + 细下划线 + 小号大写副标。
+ *     → §1 的卡片标题借这一手(横幅留给弹窗/侧板,卡片数量太多,
+ *       每张都铺一条横幅会把版面吵死)。
  *
  * ── 三条贯穿全文件的约定 ──
  *
- * 1. 发丝线走 border,深度走 box-shadow,两者不混用。
+ * 1. 描边走 border,深度走 box-shadow,两者不混用。
  *    上游把卡片/浮层的 1px 描边做成了 `ring-1`(Tailwind 的 ring 是 box-shadow),
- *    于是描边和投影抢同一个属性。而 --qy-sg-lift-shadow 夜间的值是 `none`,
- *    `box-shadow: 0 0 0 1px hair, none` 是非法语法、整条声明会被丢弃 ——
- *    所以这里一律 `box-shadow: none` 掐掉 ring,改用真 border 画发丝线,
- *    box-shadow 便腾出来专门写 var(--qy-sg-lift-shadow) 这一个值。
- *    border-box 是全局默认,加 border 不会引起布局位移。
+ *    于是描边和投影抢同一个属性。所以这里一律 `box-shadow: none` 掐掉 ring,
+ *    改用真 border 画线,box-shadow 便腾出来专门写 var(--qy-sg-lift-shadow)。
+ *    (夜间 lift-shadow 第三版已从 none 改成实值 —— 中间调混凝土底上投影不糊,
+ *     所以昼夜两边都有一层真实的浮起,不再有"none 混进 box-shadow 列表
+ *     导致整条声明作废"的语法陷阱。)
  *
- * 2. 圆角从 --radius 轴派生,不写死。
- *    参考稿卡片是 14px、标注块是 6px;本主题 --radius 默认 0.375rem(6px),
- *    因此卡片写 calc(var(--radius) + 0.5rem) 在默认档正好落在 14px,
- *    菜单 +0.25rem 落在 10px,小标注直接用 var(--radius) 落在 6px。
- *    调色板的 radius 轴照常生效(胶囊按钮那条例外由 controls 文件负责)。
+ * 2. 直角。border-radius 一律 0,不再从 --radius 轴派生。
+ *    截图里没有一处圆角浮层,而 --radius 轴在本预设下仍然生效于别处
+ *    (调色板裁决 4 之后 radius 轴对本预设已隐藏,但预设默认值仍在)。
  *
- * 3. 磨砂是渐进增强。
- *    浮层默认不透明;只有在 backdrop-filter 可用时才降到 86% 并开模糊,
- *    否则不支持磨砂的浏览器上会得到一块半透明、读不清字的面板。
+ * 3. 磨砂是渐进增强。浮层默认不透明;只有 backdrop-filter 可用时才降到 86%
+ *    并开模糊,否则不支持磨砂的浏览器上会得到一块半透明、读不清字的面板。
+ *
+ * 4. 半透明色一律写 oklch(from X l c h / n%),不写 color-mix(…, transparent)。
+ *    与 qy-sg-controls.css 的头注释同一条,第二版的本文件没有跟上,这次一起改掉。
+ *    实测(夜间,foreignObject → canvas 读回像素,底色 #4E5252):
+ *      color-mix(in oklch, var(--popover) 86%, transparent)
+ *        计算值 oklch(0.363 0.007 none / 0.86) ——【色相塌成 none】,
+ *        合成 #433F40,R 比 B 高 3,读起来是一块【偏粉的灰】;
+ *      oklch(from var(--popover) l c h / 86%)
+ *        合成 #3D4141,与不透明的 --popover #3A3F3F 同一个冷灰家族  ← 用它
+ *    与 transparent 混合时 transparent 的色相是缺失分量,浏览器把结果的色相
+ *    也判为缺失,再按 0(品红方向)渲染。彩度越低偏得越明显:同一组对比里
+ *    --primary(彩度 0.175)两种写法都是 #8B7B35,完全一致;
+ *    --foreground 2.5% 差 1/255;而近中性的 --popover 差到肉眼可辨。
+ *    相对颜色语法只改 alpha,l/c/h 三个分量原样透传,仍然是"从标准变量派生"。
+ *
+ * ── 与 qy-sg-frame.css 的分工(交接)──
+ * 卡片与表格容器的【外轮廓】归 frame.css:它在 body 前缀下以 (0,3,1) 声明
+ * `border: 0; border-radius: 0` 并在 ::before 上画框。本文件因此【不再】声明
+ * 卡片的 border / border-radius —— 第二版写了,但特异度 (0,2,0) 永远打不过,
+ * 是一段谁都测不出来的死代码(本项目"断链"缺陷的标准形状)。
+ * 本文件对卡片只保留 frame 不管的那几项:掐 ring、受光渐变、标题排版、hover。
  *
  * 全部选择器限定在 [data-theme-preset='steins-gate'] 内;上游组件源码一行未改,
  * 挂载点全是 shadcn/Base UI 已有的 data-slot。
+ * 本文件【不声明任何 --qy-sg-* 变量】—— 取值一律来自 qy-sg-tokens.css,
+ * 几何量来自 qy-sg-frame.css,同一个量两处声明后加载的会静默覆盖。
  */
 
 /* ══════════════════ 1. 卡片 ══════════════════
- * 参考稿 .chart-box:1px 发丝线 + 14px 圆角 + 顶部极淡渐变,
- * 夜间完全无投影。层次靠线,不靠阴影堆叠。 */
+ * 截图里的"面板"是 CONTROLLER 那种直角细框 + 内部极淡的暖色洗。
+ * 外框归 frame.css(见文件头交接),这里只做四件事。 */
 
 [data-theme-preset='steins-gate'] [data-slot='card'] {
-  border: 1px solid var(--qy-sg-hair);
-  border-radius: calc(var(--radius) + 0.5rem);
-  /* 掐掉上游的 ring-1(它本身就是一条 box-shadow),发丝线改由 border 画 */
+  /* 掐掉上游的 ring-1(它本身就是一条 box-shadow),描边由 frame 的框线承担 */
   box-shadow: none;
-  /* 参考稿夜间 .chart-box 的 linear-gradient(180deg, rgba(ink,.025), transparent)。
-   * 只在顶部四成高度内渐隐,给纸面一点"受光"的方向感。 */
+  /* 顶部四成高度内的受光渐隐,给纸面一点方向感。
+   * 截图里 CONTROLLER 框内是一层暖红洗色,同样是"从上往下退"的关系。 */
   background-image: linear-gradient(
     180deg,
-    color-mix(in oklch, var(--foreground) 2.5%, transparent),
+    oklch(from var(--foreground) l c h / 2.5%),
     transparent 40%
   );
 }
 
-/* 头/脚的圆角要跟卡片对齐,否则内容会从圆角处切出直角 */
-[data-theme-preset='steins-gate'] [data-slot='card-header'] {
-  border-start-start-radius: calc(var(--radius) + 0.5rem);
-  border-start-end-radius: calc(var(--radius) + 0.5rem);
-}
-
-[data-theme-preset='steins-gate'] [data-slot='card-footer'] {
-  border-end-start-radius: calc(var(--radius) + 0.5rem);
-  border-end-end-radius: calc(var(--radius) + 0.5rem);
-  /* 上游给页脚一块 bg-muted/50 的灰底;参考稿没有这种"分区填充",
-   * 分区一律靠一条发丝线完成。 */
-  background-color: transparent;
-}
-
+/* 头/脚跟着卡片一起直角:上游给的是 rounded-t-xl / rounded-b-xl,
+ * 宿主已经被 frame 改成直角,子块留着圆角会在边角处露出一道错位。 */
 [data-theme-preset='steins-gate']
   :is([data-slot='card-header'], [data-slot='card-footer']) {
+  border-radius: 0;
   border-color: var(--qy-sg-hair);
 }
 
-/* 卡片标题 = 衬线 700 + .03em(规范 §3)。这是"衬线标题 / 无衬线正文 /
- * 等宽数据"三分工里的第一档,也是与参考稿并排时最先被认出来的一处。 */
+[data-theme-preset='steins-gate'] [data-slot='card-footer'] {
+  /* 上游给页脚一块 bg-muted/50 的灰底;截图里没有这种"分区填充",
+   * 分区一律靠一条线完成。 */
+  background-color: transparent;
+}
+
+/* 卡片标题 = 截图左下角 "HELP" 那一档:大号衬线 + 一条细下划线,
+ * 副标(card-description)退成小号大写等宽,对应 OPERATING INSTRUCTIONS。
+ * 下划线画在 ::after 上,宽度跟着标题块走;颜色用强调色 —— 截图里
+ * HELP 的字与线都是金的。 */
 [data-theme-preset='steins-gate'] [data-slot='card-title'] {
+  position: relative;
   font-family: var(--qy-sg-serif);
   font-weight: 700;
   letter-spacing: 0.03em;
+  padding-bottom: 0.35rem;
 }
 
+[data-theme-preset='steins-gate'] [data-slot='card-title']::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: var(--qy-sg-frame-line, 1px);
+  pointer-events: none;
+  /* 与 §3 的浮层顶线同一条配方(左端起亮、右端渐隐),只是薄一档。
+   * 截图里 HELP 的下划线也是左端实、右端被做旧削弱的。 */
+  background-image: linear-gradient(
+    90deg,
+    var(--primary) 0,
+    var(--primary) 46%,
+    oklch(from var(--primary) l c h / 30%) 78%,
+    transparent 100%
+  );
+}
+
+/* 副标 = OPERATING INSTRUCTIONS 那一档 */
 [data-theme-preset='steins-gate'] [data-slot='card-description'] {
   line-height: var(--qy-sg-leading);
   letter-spacing: 0.02em;
 }
 
-/* 唯一允许的投影:图表容器这类需要"浮起来"的块(规范 §1 第 2 条)。
- * 用 :has() 精确锁定"里面真的装了图表的卡片",而不是给所有卡片撒阴影。
- * 第二条选择器是为了在 hover 态里把它再赋值一次 —— 下面那条 hover 规则
- * 特异度更高,不重申的话浮起效果会在鼠标移上去时消失。 */
+/* 需要"浮起来"的块:装了图表的卡片。用 :has() 精确锁定,不给所有卡片撒阴影。
+ * 第二条选择器是为了在 hover 态里再赋值一次 —— 下面那条 hover 规则特异度更高,
+ * 不重申的话浮起效果会在鼠标移上去时消失。 */
 [data-theme-preset='steins-gate'] [data-slot='card']:has([data-slot='chart']),
 body[data-theme-preset='steins-gate']
   [data-slot='card']:has([data-slot='chart']):hover {
   box-shadow: var(--qy-sg-lift-shadow);
 }
 
-/* hover 反馈改写:参考稿的交互语言是"线变深",不是"块浮起"。
+/* hover 反馈:截图的交互语言是"线变亮",不是"块浮起"。
  * 这里必须压过 index.css 末尾那条通用微交互
  * `[data-slot='card']:not([data-card-hover='false']):hover`(特异度 0,3,0):
  * 它给卡片加 translateY(-1px) 和一条硬编码的黑色投影,两样都与本主题相悖。
- * 加 body 前缀把特异度抬到 (0,4,1),稳定胜出。 */
+ * 加 body 前缀把特异度抬到 (0,4,1),稳定胜出。
+ * 框线本身的 hover 转色在 frame.css 的 ::before 上,这里不重复。 */
 body[data-theme-preset='steins-gate']
   [data-slot='card']:not([data-card-hover='false']):hover {
   transform: none;
   box-shadow: none;
-  border-color: var(--qy-sg-hair-strong);
 }
 
 /* ══════════════════ 2. 遮罩层 ══════════════════
- * 规范 §3:昼 --foreground 35% / 夜 60%(--qy-sg-overlay 已按昼夜取好基色),
- * 都带轻微模糊。上游用的是硬编码 bg-black/10,在暖纸面上会发灰。 */
+ * --qy-sg-overlay 已按昼夜取好基色(夜间是把画面压向暗角色 #1E2221,
+ * 正是对话场景里上半屏被压暗、只留文字板的那种关系)。
+ * 上游用的是硬编码 bg-black/10,在暖纸面上会发灰。 */
 
 [data-theme-preset='steins-gate']
   :is(
@@ -119,70 +191,33 @@ body[data-theme-preset='steins-gate']
   backdrop-filter: blur(3px);
 }
 
-/* ══════════════════ 3. 浮层公共形态:切角框 ══════════════════
+/* ══════════════════ 3. 浮层公共形态:直角 + 顶边发光线 ══════════════════
  *
- * 第二版 §1.1:浮层与面板共用同一个切角框。形状本身由 qy-sg-frame.css 定义,
- * 本节【只引用不重写】—— 点表、线宽、角标长度、角标内缩全部走 frame 导出的
- * --qy-sg-frame-clip / --qy-sg-frame-marks*。同一个形状在两个文件里各写一遍,
- * 迟早漂成两种切角尺寸(本项目"第 N 份拷贝各自漂移"已经发生过 6 组)。
- * 全站只有一档切角尺寸,不按浮层大小分档 —— 3.2 记着这个决定是怎么被实测
- * 逼出来的,以及 frame 交接注释里"就地覆写 --qy-sg-notch 即可"那句话为什么不成立。
+ * 对话场景底部那块文字板是本主题浮层的原型:
+ *   直角、近黑半透明板身、【只有上沿一条金线】、四周没有别的框。
+ * 这比第二版的八边形切角框更好认,也更省 —— 一层 background 就画完了。
  *
- * ── 本节唯一自己写的形状:实心八边形 ──
- * frame 导出的是【环】(evenodd 双回路,给 ::before 画那条 1px 框线)。
- * 宿主要把自己的底色和磨砂裁成八边形,需要的是【实心】那一份,frame 没有导出,
- * 所以这里补一条 --qy-sg-surface-clip。它的八个点就是 frame 那条环的外圈,
- * 几何量继续引 --qy-sg-notch —— 尺寸不可能与 frame 漂开,两者只差"实心/环"。
+ * ── 为什么金线画在宿主的 background-image 上,不画在 ::before 上 ──
+ * dropdown-menu-content / context-menu-content 上游带
+ * `max-h-(--available-height) overflow-y-auto`。绝对定位的伪元素相对的是
+ * 【未滚动的 padding box】,菜单一滚,画在 ::before 上的线就会跟着内容跑
+ * (第二版 3.6 把这一条记成了"已知限度")。而 background-attachment 的初始值
+ * scroll 的语义是"背景相对元素本身固定,不随其内容滚动",所以画进背景就没有
+ * 这个问题。顺带把 ::before / ::after 两个伪元素完整地空出来给别人用。
  *
- * ── 为什么浮层的宿主必须自己也裁,而卡片不用 ──
- * frame 对卡片的做法是【宿主不裁,只在 ::before 上画环】(它的路 3 实测过:
- * 宿主上 clip-path 会吃掉子元素的溢出与 box-shadow)。卡片能这么做,是因为
- * 卡片底色近乎透明,四角多出来的那两个直角三角形看不出来。
- * 浮层不行:它有 86% 不透明底色 + 16px 磨砂,不裁的话四个角各留一块矩形实底
- * 戳在八边形框线外面,读起来是"方面板上画了个装饰八边形"——正好是第二版
- * 要推翻的那种换皮。浮层又恰好没有需要溢出的子元素(关闭按钮、菜单项都在框内),
- * 这条代价付得起。
+ * ── 线为什么是 3px 而不是 1px ──
+ * 上边框声明成 transparent 之后,背景仍然铺到 border-box 的最外沿
+ * (background-clip 初始值就是 border-box),透明边框那一格因此透出金线。
+ * 高度取 3 倍线宽:1px 落在边框格里补上被 transparent 掉的那条边,
+ * 另外 2px 落进 padding box —— 截图里那条线在 1922px 宽的画面上约 4~5px,
+ * 折算到后台的浮层尺度正好是这一档。
+ * §4 的横幅头部因此要下移 2 倍线宽才不会把它盖住,那条 margin 与这里
+ * 同源同式,改一处两处一起变。
  *
- * ── clip-path 与 backdrop-filter 共存:实测 ──
- * 在真实 app 里量过(见本节末尾的注释),两者可以共存,磨砂被裁成八边形、
- * 切角处是抗锯齿的斜边而不是硬阶梯 —— 因为裁的是【元素整体的渲染结果】,
- * 模糊在被裁之前就已经算完了,不存在"模糊边缘被切出硬边"的问题。
- * 所以不需要把模糊挪到内层。
- *
- * ── 代价:box-shadow 被一起裁掉(已验证,是取舍不是遗漏)──
- * clip-path 裁的是元素的全部绘制,box-shadow 画在边框盒之外,自然一起没了。
- * 夜间 --qy-sg-lift-shadow 本来就是 none,只有昼间会少一层浮起。
- * 这与本文件开头第 1 条("层次靠线,深度靠 box-shadow")的分工并不冲突:
- * 切角框把"轮廓"这一职能做得比投影强得多,而对话框背后还压着一层
- * --qy-sg-overlay 遮罩。因此这里显式写 box-shadow: none,不留一条会被裁掉
- * 的死声明 —— 留着只会让后人以为投影还在,查半天。
- * (试过 filter: drop-shadow(var(--qy-sg-lift-shadow)):昼间可行,夜间该变量
- *  是 none、drop-shadow(none) 非法会让整条 filter 退回 unset —— 靠"非法值
- *  恰好退回想要的结果"来工作,正是本文件开头第 1 条踩过的那个坑,不采用。) */
+ * ── 渐变的四个停靠点是量出来的 ──
+ * 左端起亮、中段满金、右端被做旧削弱(实测值见文件头第 2 条)。
+ * 淡金端不硬编码,直接用 --primary 加两段 alpha 渐隐,昼间自动变成陶土色。 */
 
-[data-theme-preset='steins-gate'] {
-  --qy-sg-surface-clip: polygon(
-    var(--qy-sg-notch) 0,
-    calc(100% - var(--qy-sg-notch)) 0,
-    100% var(--qy-sg-notch),
-    100% calc(100% - var(--qy-sg-notch)),
-    calc(100% - var(--qy-sg-notch)) 100%,
-    var(--qy-sg-notch) 100%,
-    0 calc(100% - var(--qy-sg-notch)),
-    0 var(--qy-sg-notch)
-  );
-}
-
-/* 3.1 宿主:清掉圆角矩形的痕迹,把底色与磨砂裁成八边形。
- *
- * 【特异度是刻意抬高的】body 前缀 → (0,3,1),与 frame 的宿主规则同档。
- * 上游给这些浮层的是 rounded-lg/xl + ring-1 + shadow-md,都要掐掉;
- * ring 本身就是一条 box-shadow,和上面那条 box-shadow: none 是同一次清理。
- *
- * command 的 rounded-xl! 带 !important,border-radius: 0 压不过它 ——
- * 但不影响结果:clip-path 的切角三角形(x+y < notch)完整包住了圆角被削掉的
- * 那块月牙(圆角半径 12px 时,月牙最外的点在对角线上 x+y ≈ 7 < 12),
- * 所以圆角在视觉上被切角完全吃掉。这里不为它单开 !important。 */
 body[data-theme-preset='steins-gate']
   :is(
     [data-slot='dialog-content'],
@@ -196,136 +231,35 @@ body[data-theme-preset='steins-gate']
     [data-slot='menubar-content'],
     [data-slot='menubar-sub-content'],
     [data-slot='sheet-content'],
-    [data-slot='drawer-content'],
-    [data-slot='command']
+    [data-slot='drawer-content']
   ) {
-  position: relative;
-  border: 0;
+  /* 上游给这些浮层的是 rounded-lg/xl + ring-1 + shadow-md,全部掐掉:
+   * ring 本身就是一条 box-shadow,和 box-shadow 的清理是同一次。
+   * 特异度用 body 前缀抬到 (0,3,1),压过上游工具类之外的一切。 */
+  border: var(--qy-sg-frame-line, 1px) solid var(--qy-sg-hair);
+  border-top-color: transparent;
   border-radius: 0;
-  box-shadow: none;
-  clip-path: var(--qy-sg-surface-clip);
-}
-
-/* 3.2 全站【只有一档切角尺寸】(12px),菜单也不缩小。这是实测逼出来的结论,
- * 不是偷懒 —— 而且它推翻了 frame 交接注释里的一句话,记在这里避免后人重踩。
- *
- * frame 的交接写的是「浮层想要更小的切角就地覆写 --qy-sg-notch 即可,
- * --qy-sg-frame-clip 是引用式的,会跟着一起变」。这句话是错的。
- * 曾经照它写过一版:给菜单类 --qy-sg-notch: 8px、给 alert 6px。实测:
- *
- *   getComputedStyle(menu).getPropertyValue('--qy-sg-notch')  →  "8px"   ← 覆写生效了
- *   getComputedStyle(menu).clipPath                           →  "polygon(12px 0px, …"
- *   getComputedStyle(menu).getPropertyValue('--qy-sg-frame-clip')
- *                                                             →  "polygon(evenodd, 12px 0, …"
- *
- * 原因是自定义属性的 var() 在【声明它的那个元素上】就已经算完了:
- * --qy-sg-frame-clip / --qy-sg-surface-clip 都声明在主题根上,那里的
- * --qy-sg-notch 是 12px,于是 12 被烘进计算值,再原样继承给子元素。
- * 后代改 --qy-sg-notch 只影响后来【直接引用它】的声明,影响不到已经算完的配方。
- *
- * 要让某个浮层用别的切角,只能把整张点表在该元素上重新声明一遍 ——
- * 宿主的实心八边形还好办,frame 那条 evenodd 双回路环也得跟着抄一份,
- * 于是同一个形状立刻有了第二份定义,正是交接注释开宗明义要避免的漂移。
- * 用一个尺寸换掉这份拷贝,是划算的:12px 放在最小的下拉菜单(min-w-32、
- * 两行高)上,上边横段仍有 104px、左边竖段仍有 32px,读起来是切角不是削角。 */
-
-/* 3.3 框线环 + 角标,声明照抄 frame 的宿主伪元素(它把三段写在文件末尾的
- * 交接注释里就是给这里用的)。z-index / pointer-events 一并照抄:
- * 这两层铺满整个浮层压在内容之上,不关掉指针事件会吃掉全部点击。 */
-body[data-theme-preset='steins-gate']
-  :is(
-    [data-slot='dialog-content'],
-    [data-slot='alert-dialog-content'],
-    [data-slot='popover-content'],
-    [data-slot='hover-card-content'],
-    [data-slot='dropdown-menu-content'],
-    [data-slot='dropdown-menu-sub-content'],
-    [data-slot='context-menu-content'],
-    [data-slot='context-menu-sub-content'],
-    [data-slot='menubar-content'],
-    [data-slot='menubar-sub-content'],
-    [data-slot='sheet-content'],
-    [data-slot='drawer-content'],
-    [data-slot='command']
-  )::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-color: var(--qy-sg-frame-color);
-  clip-path: var(--qy-sg-frame-clip);
-}
-
-body[data-theme-preset='steins-gate']
-  :is(
-    [data-slot='dialog-content'],
-    [data-slot='alert-dialog-content'],
-    [data-slot='popover-content'],
-    [data-slot='hover-card-content'],
-    [data-slot='dropdown-menu-content'],
-    [data-slot='dropdown-menu-sub-content'],
-    [data-slot='context-menu-content'],
-    [data-slot='context-menu-sub-content'],
-    [data-slot='menubar-content'],
-    [data-slot='menubar-sub-content'],
-    [data-slot='sheet-content'],
-    [data-slot='drawer-content'],
-    [data-slot='command']
-  )::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-image: var(--qy-sg-frame-marks);
-  background-size: var(--qy-sg-frame-marks-size);
-  background-position: var(--qy-sg-frame-marks-pos);
+  box-shadow: var(--qy-sg-lift-shadow);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0,
+    var(--primary) 8%,
+    var(--primary) 66%,
+    oklch(from var(--primary) l c h / 35%) 88%,
+    transparent 100%
+  );
   background-repeat: no-repeat;
+  background-size: 100% calc(var(--qy-sg-frame-line, 1px) * 3);
+  background-position: top left;
+  /* 必须显式写:sheet-content 基类带 bg-clip-padding。留着它的话背景从
+   * padding box 起铺,透明的上边框那一格就不再透出金线,而是漏出背后的遮罩,
+   * 结果是金线上方多出一条 1px 的缝。 */
+  background-clip: border-box;
+  background-origin: border-box;
 }
 
-/* 3.4 嵌套不重复画框。
- * CommandDialog 的结构是 DialogContent > Command(见 ui/command.tsx),
- * 两层都挂框的话会得到两圈框线 + 八个角标挤在一起。命令面板此时是对话框的
- * 内容而不是一块独立浮层,所以把里层的框整个撤掉:clip-path 复位成 none,
- * 伪元素 content: none(比 display: none 彻底,盒子根本不生成)。
- * frame 对"卡片里的表格容器"做的是同一件事,两处口径一致。 */
-body[data-theme-preset='steins-gate']
-  :is(
-    [data-slot='dialog-content'],
-    [data-slot='alert-dialog-content'],
-    [data-slot='sheet-content'],
-    [data-slot='drawer-content'],
-    [data-slot='popover-content']
-  )
-  [data-slot='command'] {
-  clip-path: none;
-}
-
-body[data-theme-preset='steins-gate']
-  :is(
-    [data-slot='dialog-content'],
-    [data-slot='alert-dialog-content'],
-    [data-slot='sheet-content'],
-    [data-slot='drawer-content'],
-    [data-slot='popover-content']
-  )
-  [data-slot='command']::before,
-body[data-theme-preset='steins-gate']
-  :is(
-    [data-slot='dialog-content'],
-    [data-slot='alert-dialog-content'],
-    [data-slot='sheet-content'],
-    [data-slot='drawer-content'],
-    [data-slot='popover-content']
-  )
-  [data-slot='command']::after {
-  content: none;
-}
-
-/* 3.5 底色。上游给的是 bg-popover(不透明),磨砂那一档在下面的 @supports 里。
- * sheet/drawer 用 --background(整块侧板,不是浮层),command 透明(它要么在
- * 对话框里、要么在浮层里,自己不该再叠一层底)—— 后两者的规则在第 4、6 节。 */
+/* 底色。上游给的是 bg-popover(不透明),磨砂那一档在下面的 @supports 里。
+ * sheet/drawer 用 --background(它们是整块侧板,不是浮层)。 */
 [data-theme-preset='steins-gate']
   :is(
     [data-slot='dialog-content'],
@@ -342,14 +276,6 @@ body[data-theme-preset='steins-gate']
   background-color: var(--popover);
 }
 
-/* 3.6 已知限度:dropdown-menu-content / context-menu-content 上游带
- * `max-h-(--available-height) overflow-y-auto`,菜单长到需要滚动时,
- * 绝对定位的伪元素会跟着内容一起滚(它相对的是未滚动的 padding box),
- * 框线与角标会往上跑。宿主自己的 clip-path 不受影响 —— 八边形轮廓与磨砂
- * 任何时候都是对的,只有画上去的那两层会漂。
- * frame 在 table-container 上记的是同一个限度,两处成因完全一样。
- * 本仓库的菜单都是十来项以内,不触发;真出现超长菜单再考虑给它单独关掉角标。 */
-
 /* 磨砂只在浏览器真支持时才降低不透明度 —— 见文件头第 3 条。 */
 @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
   [data-theme-preset='steins-gate']
@@ -365,21 +291,13 @@ body[data-theme-preset='steins-gate']
       [data-slot='menubar-content'],
       [data-slot='menubar-sub-content']
     ) {
-    background-color: color-mix(in oklch, var(--popover) 86%, transparent);
+    background-color: oklch(from var(--popover) l c h / 86%);
     /* 同上:只写标准属性,补 -webkit- 反而会把它折叠掉。 */
     backdrop-filter: var(--qy-sg-blur);
   }
 }
 
-/* 第一版在这里按 --radius 轴给对话框 14px / 菜单 10px 两档圆角。
- * 第二版把这两条【删掉】而不是改小:切角与圆角同时存在会变成"圆角上剁一刀",
- * 两种造型互相抵消(frame 对卡片写的是同一条理由)。
- * "对话框大一档、菜单小一档"这个层级关系也一并放弃了,原因见 3.2 ——
- * 分档的代价是把整张点表拷第二份,不值。
- * 切角刻意不跟随调色板的 radius 轴:它是第二版的身份标识,与按钮的 999px 胶囊
- * 同性质,否则用户把 radius 拨到 none 整套 HUD 轮廓就退回普通方框。 */
-
-/* 弹窗标题:与卡片标题同一档衬线 700。规范 §3「浮层……标题衬线 700」 */
+/* 弹窗标题:与卡片标题同一档衬线 700(横幅上的那几个另见 §4)。 */
 [data-theme-preset='steins-gate']
   :is(
     [data-slot='dialog-title'],
@@ -405,16 +323,111 @@ body[data-theme-preset='steins-gate']
   letter-spacing: 0.02em;
 }
 
-/* ══════════════════ 4. 抽屉与侧板 ══════════════════
- * sheet/drawer 是不透明的整块面板,不磨砂(背后整屏都被遮罩盖住了,
- * 磨砂只会糊出一片脏色)。切角框在 3.1/3.3 里已经一并挂上,这里只补底色。
+/* ══════════════════ 4. 头部横幅 ══════════════════
  *
- * ── 为什么侧板也切四个角,而不是只切朝内的两个 ──
- * 侧板贴着视口边缘,切掉贴边那两个角会在屏幕角上露出一小块遮罩。
- * 试过给它单写一份"两角切角"的点表,但那要把 frame 那条 evenodd 双回路
- * 环重抄一遍并改点 —— 一旦 frame 调整线宽或补偿公式,这份拷贝就地漂移,
- * 正是交接注释里点名要避免的那种缺陷。四角切角的读法是"面板悬在屏幕上、
- * 不与边框焊死",与 HUD 的语气一致,这条取舍换来的是形状只有一处定义。 */
+ * 截图里最强的一处构图:功能 / 配置 那条列标题带,沿 x 从淡金走到橙,
+ * 深色字压在上面,直角,与下方表格严丝合缝。--qy-sg-band 与 --qy-sg-band-fg
+ * 就是照它取的,而且【昼夜结构一致】(昼间填充退成几乎看不见的陶土洗色),
+ * 所以本节不写任何昼夜分支。
+ *
+ * 适用范围:弹窗与侧板的头部 —— 它们是"有标题的面板"。
+ * 【不】给 alert-dialog:它是居中的确认提示,常带一枚 alert-dialog-media 图标
+ * (自带 bg-muted 圆角方块),铺一条橙带会在带子上戳出一块灰;而且提示类
+ * 浮层在截图里对应的正是对话场景那块【只有顶线、没有横幅】的文字板。
+ *
+ * ── 全宽的做法,以及为什么它是安全的 ──
+ * sheet-header / drawer-header 上游自带 p-4 且是 sheet-content 的第一个子块
+ * (sheet-content 无内边距),本来就顶到边,直接铺底即可。
+ * dialog-header 装在 p-4 的 dialog-content 里,要靠 -1rem 的负外边距出血。
+ * 这不是我发明的写法:上游的 dialog-footer 自己就写着 `-mx-4 -mb-4 … p-4`,
+ * 说明"内容区固定 p-4"是组件自己的契约。核对过全仓 51 处 DialogContent /
+ * AlertDialogContent 调用点,className 只出现过 max-w-* 与视口宽度限制,
+ * 没有一处改内边距。
+ *
+ * 上边的 margin 不是 0 而是 -1rem + 2×线宽:给 §3 那条顶边金线让出位置,
+ * 否则横幅会把它盖掉。两处同源同式(3 倍线宽画线、2 倍线宽让位)。 */
+
+[data-theme-preset='steins-gate']
+  :is([data-slot='sheet-header'], [data-slot='drawer-header']) {
+  margin-top: calc(var(--qy-sg-frame-line, 1px) * 2);
+  border-bottom: 0;
+  background-image: var(--qy-sg-band);
+  color: var(--qy-sg-band-fg);
+}
+
+[data-theme-preset='steins-gate'] [data-slot='dialog-header'] {
+  margin: calc(-1rem + var(--qy-sg-frame-line, 1px) * 2) -1rem 0;
+  padding: 0.75rem 1rem;
+  background-image: var(--qy-sg-band);
+  color: var(--qy-sg-band-fg);
+}
+
+/* 横幅上的文字:标题仍是衬线,但字色要跟着横幅走 —— --qy-sg-band-fg 夜间是
+ * 暗角色(压在橙端 5.41:1、金端 11.92:1),昼间是墨色(15.4:1)。
+ * 说明文字不能退到 muted-foreground(那是给纸面配的,压在橙带上读不清),
+ * 改用同一个 band-fg 降透明度。 */
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='sheet-header'],
+    [data-slot='drawer-header'],
+    [data-slot='dialog-header']
+  )
+  :is(
+    [data-slot='sheet-title'],
+    [data-slot='drawer-title'],
+    [data-slot='dialog-title']
+  ) {
+  color: var(--qy-sg-band-fg);
+}
+
+[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='sheet-header'],
+    [data-slot='drawer-header'],
+    [data-slot='dialog-header']
+  )
+  :is(
+    [data-slot='sheet-description'],
+    [data-slot='drawer-description'],
+    [data-slot='dialog-description']
+  ) {
+  color: oklch(from var(--qy-sg-band-fg) l c h / 72%);
+}
+
+/* 关闭按钮压在横幅上,字色必须跟着翻。
+ * DialogContent / SheetContent 在 children 之后自己渲染一颗
+ * `absolute top-2/3 right-2/3` 的 icon-sm 幽灵按钮(dialog.tsx:79-92、
+ * sheet.tsx:94-107),它是横幅的【兄弟】不是后代,继承不到 band-fg ——
+ * 夜间就是浅色图标压在金带上(#E7EBE7 / #FFC800 ≈ 1.3:1)。
+ * 用 :has() 收窄到"真的有横幅头部"的那些面板,没有头部的面板不受影响。
+ *
+ * 第二个选择器组是给 hover 态的:qy-sg-controls.css 里方形图标按钮的 hover
+ * 是 (0,5,0),不写这一组的话鼠标一移上去字色又被翻回 --foreground。
+ * 本组同为 (0,5,0),surfaces 在 controls 之后加载,靠源序赢。 */
+[data-theme-preset='steins-gate']
+  [data-slot='dialog-content']:has([data-slot='dialog-header'])
+  [data-slot='dialog-close'],
+[data-theme-preset='steins-gate']
+  [data-slot='sheet-content']:has([data-slot='sheet-header'])
+  [data-slot='sheet-close'],
+[data-theme-preset='steins-gate']
+  [data-slot='drawer-content']:has([data-slot='drawer-header'])
+  [data-slot='drawer-close'],
+[data-theme-preset='steins-gate']
+  [data-slot='dialog-content']:has([data-slot='dialog-header'])
+  [data-slot='dialog-close']:hover,
+[data-theme-preset='steins-gate']
+  [data-slot='sheet-content']:has([data-slot='sheet-header'])
+  [data-slot='sheet-close']:hover,
+[data-theme-preset='steins-gate']
+  [data-slot='drawer-content']:has([data-slot='drawer-header'])
+  [data-slot='drawer-close']:hover {
+  color: var(--qy-sg-band-fg);
+}
+
+/* ══════════════════ 5. 抽屉与侧板 ══════════════════
+ * sheet/drawer 是不透明的整块面板,不磨砂(背后整屏都被遮罩盖住了,
+ * 磨砂只会糊出一片脏色)。直角与顶边金线在 §3 里已经一并挂上。 */
 
 [data-theme-preset='steins-gate']
   :is([data-slot='sheet-content'], [data-slot='drawer-content']) {
@@ -423,59 +436,31 @@ body[data-theme-preset='steins-gate']
 
 [data-theme-preset='steins-gate']
   :is(
-    [data-slot='sheet-header'],
     [data-slot='sheet-footer'],
-    [data-slot='drawer-header'],
-    [data-slot='drawer-footer'],
-    [data-slot='dialog-header'],
     [data-slot='dialog-footer'],
     [data-slot='alert-dialog-header'],
-    [data-slot='alert-dialog-footer']
+    [data-slot='alert-dialog-footer'],
+    [data-slot='drawer-footer']
   ) {
   border-color: var(--qy-sg-hair);
 }
 
-/* 侧板的头部与正文之间那条分隔线,第一版是 1px 发丝线,第二版换成【电路走线】
- * (规范 §1.2)。侧板是全站最大的一块浮层,一条 PCB 走线放在这里的信息密度
- * 刚好;对话框仍然不加 —— 它本来就窄,再切一刀会显得局促。
- *
- * 声明是从 frame 的 .qy-sg-trace-rule::after 抄过来的,不是另起一套:
- * 改不了上游组件、加不上类名,只能复制那一段(frame 的交接注释对表头也是
- * 同一句话)。抄的是【声明】,mask 图与几何量仍然全部引用 frame 导出的变量,
- * 所以瓦片一改两处同步。
- * bottom: calc(-h/2) 把整条带子的垂直中心对准头部下沿,主线因此正好落在
- * 原来 border-bottom 的位置上。 */
+/* 页脚的 rounded-b-xl 与 bg-muted/50 一并撤掉:直角 + 不做分区填充。 */
 [data-theme-preset='steins-gate']
-  :is([data-slot='sheet-header'], [data-slot='drawer-header']) {
-  position: relative;
-  border-bottom: 0;
+  :is(
+    [data-slot='dialog-footer'],
+    [data-slot='alert-dialog-footer'],
+    [data-slot='sheet-footer'],
+    [data-slot='drawer-footer']
+  ) {
+  border-radius: 0;
+  background-color: transparent;
 }
 
-[data-theme-preset='steins-gate']
-  :is([data-slot='sheet-header'], [data-slot='drawer-header'])::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(var(--qy-sg-trace-h) / -2);
-  height: var(--qy-sg-trace-h);
-  pointer-events: none;
-  background-color: var(--qy-sg-trace-color);
-  -webkit-mask-image: var(--qy-sg-trace-sparse);
-  mask-image: var(--qy-sg-trace-sparse);
-  -webkit-mask-size: var(--qy-sg-trace-sparse-tile);
-  mask-size: var(--qy-sg-trace-sparse-tile);
-  -webkit-mask-repeat: repeat-x;
-  mask-repeat: repeat-x;
-  -webkit-mask-position: left center;
-  mask-position: left center;
-}
-
-/* ══════════════════ 5. 菜单项 ══════════════════
- * 规范 §3:「菜单项 hover:强调色低透明度叠加,不用灰色高亮」。
- * 上游用的是 bg-accent(一块中性灰)。这里换成 --qy-sg-accent-soft,
- * 再补一条 2px 强调色内嵌竖线 —— 与侧栏选中项、表格行 hover 是同一句话,
- * 参考稿里那个"选中即在左侧立一条线"的手势在全站保持一致。
+/* ══════════════════ 6. 菜单项 ══════════════════
+ * 上游 hover 用的是 bg-accent(一块中性灰)。换成 --qy-sg-accent-soft
+ * (夜间是金光落在混凝土上的暖橄榄),再补一条 2px 强调色内嵌竖线 ——
+ * 与侧栏选中项、表格行 hover 是同一句话。
  *
  * 竖线用 inset box-shadow 而不是 ::before:菜单项上游已经是 position:relative
  * 且带勾选指示器,再插伪元素容易和它们打架。
@@ -498,6 +483,7 @@ body[data-theme-preset='steins-gate']
     [data-slot='menubar-sub-trigger'],
     [data-slot='command-item']
   ):not([data-variant='destructive']) {
+  border-radius: 0;
   transition:
     background-color 0.2s var(--qy-sg-ease),
     box-shadow 0.2s var(--qy-sg-ease);
@@ -531,10 +517,10 @@ body[data-theme-preset='steins-gate']
   box-shadow: inset 2px 0 0 var(--primary);
 }
 
-/* 菜单分组标题 = 等宽 + 宽字距 + 大写 + 第三档文字色。
- * 规范 §2 的分工铁律:「凡是标识符、状态标签、列标题,一律等宽 + 宽字距 + 大写」。
- * 参考稿 .sec-head .jp / footer .l 就是这一档(10.5~11px / .22~.26em)。
- * 尺寸用 px 是刻意的 —— 这类标注本就不该跟着 scale 轴放大(规范 §1 末段)。 */
+/* 菜单分组标题 = 等宽 + 宽字距 + 大写。
+ * 规范 §2 的分工铁律:「凡是标识符、状态标签、列标题,一律等宽 + 宽字距 + 大写」,
+ * 截图里 OPERATING INSTRUCTIONS 就是这一档。
+ * 尺寸用 px 是刻意的 —— 这类标注本就不该跟着 scale 轴放大。 */
 [data-theme-preset='steins-gate']
   :is(
     [data-slot='dropdown-menu-label'],
@@ -576,7 +562,7 @@ body[data-theme-preset='steins-gate']
   background-color: var(--qy-sg-hair);
 }
 
-/* 菜单栏顶级触发器:参考稿里所有"导航性的短标签"都是等宽大写 */
+/* 菜单栏顶级触发器:一切"导航性的短标签"都是等宽大写 */
 [data-theme-preset='steins-gate'] [data-slot='menubar-trigger'] {
   font-family: var(--qy-sg-mono);
   font-size: 11.5px;
@@ -586,25 +572,25 @@ body[data-theme-preset='steins-gate']
 
 [data-theme-preset='steins-gate'] [data-slot='menubar'] {
   border-color: var(--qy-sg-hair);
+  border-radius: 0;
   background-color: transparent;
 }
 
-/* ══════════════════ 6. 命令面板 ══════════════════
- * 参考稿的 .readout(`> OBS // 1.048596 FIELD β · STABLE`)是一条终端读数行,
- * 命令面板正是这一手势在组件上的落点:整块排成等宽,搜索框下方一条发丝线。 */
-
-/* 底色透明:命令面板要么装在对话框里、要么装在浮层里,宿主已经有底色了,
- * 自己再叠一层只会在磨砂上糊出一块死板。切角框见 3.1/3.3(嵌套时由 3.4 撤掉)。 */
+/* ══════════════════ 7. 命令面板 ══════════════════
+ * 命令面板要么装在对话框里、要么装在浮层里,宿主已经有底色、边框和顶线了,
+ * 自己再叠一层只会得到两圈框 —— 所以它整块透明、不画线。
+ * command 基类带 `rounded-xl!`(!important),圆角这一项要用同样的强度压回去;
+ * 这是全文件唯一一处 !important,因为上游把它写成了 important。 */
 [data-theme-preset='steins-gate'] [data-slot='command'] {
   background-color: transparent;
+  border-radius: 0 !important;
 }
 
-/* 搜索框下面那条线同样换成走线,与侧板头部同一句话。这里用【密档】:
- * 输入框比侧板头部窄得多,疏档 132px 的瓦片在这个宽度里连一个完整周期都排不下,
- * 会退化成一条光秃秃的直线。密档 56px 至少能排到两个节点圆点与一处分叉。 */
+/* 搜索框下面那条线 = §3 顶边金线的同一门语言,只是落在输入框下沿。
+ * command-input-wrapper 不是滚动容器(滚动的是 command-list),
+ * 所以这里可以放心用 ::after。 */
 [data-theme-preset='steins-gate'] [data-slot='command-input-wrapper'] {
   position: relative;
-  border-bottom: 0;
   padding-bottom: 0.25rem;
 }
 
@@ -613,18 +599,17 @@ body[data-theme-preset='steins-gate']
   position: absolute;
   left: 0;
   right: 0;
-  bottom: calc(var(--qy-sg-trace-h) / -2);
-  height: var(--qy-sg-trace-h);
+  bottom: 0;
+  height: calc(var(--qy-sg-frame-line, 1px) * 2);
   pointer-events: none;
-  background-color: var(--qy-sg-trace-color);
-  -webkit-mask-image: var(--qy-sg-trace-dense);
-  mask-image: var(--qy-sg-trace-dense);
-  -webkit-mask-size: var(--qy-sg-trace-dense-tile);
-  mask-size: var(--qy-sg-trace-dense-tile);
-  -webkit-mask-repeat: repeat-x;
-  mask-repeat: repeat-x;
-  -webkit-mask-position: left center;
-  mask-position: left center;
+  background-image: linear-gradient(
+    90deg,
+    transparent 0,
+    var(--primary) 8%,
+    var(--primary) 66%,
+    oklch(from var(--primary) l c h / 35%) 88%,
+    transparent 100%
+  );
 }
 
 [data-theme-preset='steins-gate'] [data-slot='command-input'] {
@@ -641,44 +626,34 @@ body[data-theme-preset='steins-gate']
   color: var(--qy-sg-faint);
 }
 
-/* ══════════════════ 7. 工具提示 ══════════════════
- * 参考稿 .art-caption:等宽 10.5px / .22em / 6px 圆角 / 发丝线 / 半透明磨砂。
- * 这里保留上游的反相配色(墨底浅字)—— 箭头是 bg-foreground fill-foreground
- * 且没有自己的 data-slot,改底色会让箭头脱节。只把字排成标注体。 */
+/* ══════════════════ 8. 工具提示 ══════════════════
+ * 截图里那个"更多"提示是一块【直角】的小板,白底深字,没有描边。
+ * 上游的反相配色(墨底浅字)保留 —— 箭头是 bg-foreground fill-foreground
+ * 且没有自己的 data-slot,改底色会让箭头脱节。只把角改直、把字排成标注体。 */
 
 [data-theme-preset='steins-gate'] [data-slot='tooltip-content'] {
   font-family: var(--qy-sg-mono);
   font-size: 10.5px;
   letter-spacing: 0.14em;
-  border-radius: var(--radius);
+  border-radius: 0;
 }
 
-/* ══════════════════ 8. 警告条 ══════════════════
- * 第一版是「左侧 2px 竖线 + 向右渐隐的一道底色」。第二版改两处:
- *   ① 整条 alert 套切角框(第二版 §1.1 把 alert 也列进了框的适用范围);
- *   ② 左侧竖线换成 3px 切角色条,与表格行的状态指示条同口径(§1.4 的 3px)。
- * 渐隐底色保留 —— 参考稿 .hero h1 em::after 那种"擦过去一笔"的强调方式,
- * 不是平涂色块,第一版这条是对的。
+/* ══════════════════ 9. 警告条 ══════════════════
+ * 直角 + 左侧 3px 强调色条 + 向右渐隐的一道底色。
+ * 渐隐底色不是平涂色块 —— 截图里 CONTROLLER 框内的暖红洗也是往里退的。
  *
- * ── 色条的切角是【白拿的】,不是第二份点表 ──
- * 宿主已经被 --qy-sg-surface-clip 裁成八边形,而伪元素受宿主的 clip-path 约束。
- * 于是把色条画成 left:0 / top:0 / bottom:0 / width:3px 的一条整高矩形,
- * 它的上下两端会被宿主的切角自动斜切掉:在 x∈[0,3] 这一段,八边形的上边界是
- * y = 12 - x,色条顶端因此从 y=12 斜到 y=9 —— 正好是一条 45° 切角色条,
- * 而且与外框的切角严丝合缝(同一条 clip 路径切出来的,不可能对不齐)。
- * 不需要用三层 linear-gradient 去拼"带斜角的条",也就不会有第二份几何量。
- * (切角尺寸跟着全站那一档 12px,不单独调小 —— 理由见 3.2 的实测。)
- *
- * ── 不画 L 形角标 ──
- * 刻意的:14px 长的角标在一条两行高的提示条上会直接压到图标和文字上,
- * 而且四个橙色 L 会把"这是一条提示"读成"这是一块面板"。
- * alert 的强调由左侧那条 3px 色条承担,::after 让给它。 */
+ * 第二版这里套的是切角框 + 切角色条(靠宿主的 clip-path 把色条两端斜切)。
+ * 切角整体推翻(文件头第 1 条),色条因此退回一条规规矩矩的整高矩形,
+ * 反而少了一处"依赖宿主 clip-path 几何"的隐式耦合。
+ * 刻意不画 L 形角标:两行高的提示条上,四个角标会把"这是一条提示"
+ * 读成"这是一块面板"。 */
 
 [data-theme-preset='steins-gate'] [data-slot='alert'] {
   position: relative;
-  border: 0;
+  border: var(--qy-sg-frame-line, 1px) solid var(--qy-sg-hair);
+  border-left-width: 3px;
+  border-left-color: var(--primary);
   border-radius: 0;
-  clip-path: var(--qy-sg-surface-clip);
   background-color: transparent;
   background-image: linear-gradient(
     90deg,
@@ -687,44 +662,16 @@ body[data-theme-preset='steins-gate']
   );
 }
 
-/* 框线环:用弱档发丝线。alert 内嵌在正文里,浮层那档 hair-strong 会让
- * 一条提示比周围的卡片还抢眼。 */
-[data-theme-preset='steins-gate'] [data-slot='alert']::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-color: var(--qy-sg-hair);
-  clip-path: var(--qy-sg-frame-clip);
-}
-
-/* 3px 切角色条。它盖住框线环在左边那 1px,读作"这条边被指示条顶替了"。 */
-[data-theme-preset='steins-gate'] [data-slot='alert']::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  z-index: 0;
-  pointer-events: none;
-  background-color: var(--primary);
-}
-
 /* destructive 变体没有 data-attribute 可挂,但它的 cva 类串里一定带
  * `text-destructive`(见 ui/alert.tsx 的 variants.destructive)。
  * 用这个类名做锚点,同样没有改动上游源码。 */
 [data-theme-preset='steins-gate'] [data-slot='alert'].text-destructive {
+  border-left-color: var(--destructive);
   background-image: linear-gradient(
     90deg,
-    color-mix(in oklch, var(--destructive) 12%, transparent),
+    oklch(from var(--destructive) l c h / 12%),
     transparent 70%
   );
-}
-
-[data-theme-preset='steins-gate'] [data-slot='alert'].text-destructive::after {
-  background-color: var(--destructive);
 }
 
 [data-theme-preset='steins-gate'] [data-slot='alert-title'] {
@@ -737,11 +684,10 @@ body[data-theme-preset='steins-gate']
   line-height: var(--qy-sg-leading);
 }
 
-/* ══════════════════ 9. 折叠面板 ══════════════════
- * 这是参考稿「编辑式编号行」(.feat-row)在组件上最直接的落点:
- *   每行只有一条上发丝线、末行补下边线;
- *   hover 时整行右移 14px,过渡 .3s cubic-bezier(.16,1,.3,1);
- *   标题衬线 600 / .05em。
+/* ══════════════════ 10. 折叠面板 ══════════════════
+ * 截图的表格是"一行一格、每格一条细框"的编辑式排布,Accordion 是它在
+ * 组件上最直接的落点:每行只有一条上发丝线、末行补下边线;
+ * hover 时整行右移,标题衬线 600。
  * 上游默认的 hover 是 text-decoration: underline —— 下划线是文档语言,
  * 不是仪表盘语言,这里换掉。 */
 
@@ -750,15 +696,14 @@ body[data-theme-preset='steins-gate']
 }
 
 [data-theme-preset='steins-gate'] [data-slot='accordion-item']:first-child {
-  border-top: 1px solid var(--qy-sg-hair);
+  border-top: var(--qy-sg-frame-line, 1px) solid var(--qy-sg-hair);
 }
 
 [data-theme-preset='steins-gate'] [data-slot='accordion-item']:last-child {
-  border-bottom: 1px solid var(--qy-sg-hair);
+  border-bottom: var(--qy-sg-frame-line, 1px) solid var(--qy-sg-hair);
 }
 
 [data-theme-preset='steins-gate'] [data-slot='accordion-trigger'] {
-  /* 参考稿 .feat-row h3:衬线 600 / 19px / .05em */
   font-family: var(--qy-sg-serif);
   font-size: 1.1875rem;
   font-weight: 600;
@@ -784,7 +729,6 @@ body[data-theme-preset='steins-gate']
   }
 
   [data-theme-preset='steins-gate'] [data-slot='accordion-trigger']:hover {
-    /* 参考稿 .feat-row:hover { padding-left:14px } */
     padding-inline-start: 0.875rem;
   }
 }
@@ -794,19 +738,19 @@ body[data-theme-preset='steins-gate']
   line-height: var(--qy-sg-leading);
 }
 
-/* ══════════════════ 10. Item(列表条目)══════════════════
- * Item 是 shadcn 的通用"一行条目",语义上等同参考稿的编号行。
+/* ══════════════════ 11. Item(列表条目)══════════════════
+ * Item 是 shadcn 的通用"一行条目",语义上等同截图表格里的一格。
  * 它的 data-slot="item" 由 Base UI 的 useRender state 在运行时生成
- * (见 ui/item.tsx 的 `state: { slot: 'item' }`,getStateAttributesProps
- * 会把它渲染成 data-slot 属性),组件源码同样一行未改。 */
+ * (见 ui/item.tsx 的 `state: { slot: 'item' }`),组件源码同样一行未改。
+ * 直角 —— 截图里每一格都是直角细框。 */
 
 [data-theme-preset='steins-gate'] [data-slot='item'][data-variant='outline'] {
   border-color: var(--qy-sg-hair);
-  border-radius: calc(var(--radius) + 0.25rem);
+  border-radius: 0;
 }
 
 [data-theme-preset='steins-gate'] [data-slot='item'][data-variant='muted'] {
-  background-color: color-mix(in oklch, var(--foreground) 3.5%, transparent);
+  background-color: oklch(from var(--foreground) l c h / 3.5%);
 }
 
 [data-theme-preset='steins-gate'] [data-slot='item-title'] {
@@ -830,7 +774,7 @@ body[data-theme-preset='steins-gate']
   box-shadow: inset 2px 0 0 var(--primary);
 }
 
-/* ══════════════════ 11. Collapsible ══════════════════
+/* ══════════════════ 12. Collapsible ══════════════════
  *
  * 刻意【不写任何规则】,这是结论不是遗漏。
  *
@@ -840,6 +784,45 @@ body[data-theme-preset='steins-gate']
  * 无法区分"一个裸触发器"和"一个已经有完整形态的按钮"。给它加内边距位移或
  * 前景色,会在后一种情况下与调用方自己的样式打架,而且打得毫无规律。
  *
- * 折叠这一族的视觉语言由上面第 9 节的 Accordion 承担(它有真实的
+ * 折叠这一族的视觉语言由 §10 的 Accordion 承担(它有真实的
  * accordion-item / accordion-trigger 表面可挂);Collapsible 的观感跟随它
  * 被 render 成的那个组件,由 controls / data 两个文件负责。 */
+
+/* ══════════════════ 13. prefers-reduced-motion ══════════════════
+ * 规范 §5:停循环动画与位移,静态形态(直角、顶边金线、横幅)全部保留。
+ * 本文件没有循环动画;要停的是菜单项与折叠行的过渡。
+ *
+ * ⚠ 选择器必须与 §6 那条声明过渡的规则【同特异度】,这是实测出来的:
+ *   §6 是 `[preset] :is(13 个 slot):not([data-variant='destructive'])`
+ *   —— :is() 取参数里的最大值 (0,1,0),再加 [preset] 与 :not() 各一个,
+ *   合计 (0,3,0)。第一版这里写成扁平的 `[preset] :is(...)` = (0,2,0),
+ *   @media 不贡献任何特异度,于是这条规则【一次都没生效过】:
+ *   实测 reduce 生效的机器上 getComputedStyle(menuItem).transitionProperty
+ *   仍然是 "background-color, box-shadow",不是 "none"。
+ *   补上同一个 :not() 之后两者同为 (0,3,0),本文件排在最后,靠源序赢。
+ *   accordion-trigger 那条基准规则是 (0,2,0),单独一条即可,不必凑特异度。 */
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme-preset='steins-gate']
+    :is(
+      [data-slot='dropdown-menu-item'],
+      [data-slot='dropdown-menu-checkbox-item'],
+      [data-slot='dropdown-menu-radio-item'],
+      [data-slot='dropdown-menu-sub-trigger'],
+      [data-slot='context-menu-item'],
+      [data-slot='context-menu-checkbox-item'],
+      [data-slot='context-menu-radio-item'],
+      [data-slot='context-menu-sub-trigger'],
+      [data-slot='menubar-item'],
+      [data-slot='menubar-checkbox-item'],
+      [data-slot='menubar-radio-item'],
+      [data-slot='menubar-sub-trigger'],
+      [data-slot='command-item']
+    ):not([data-variant='destructive']) {
+    transition: none;
+  }
+
+  [data-theme-preset='steins-gate'] [data-slot='accordion-trigger'] {
+    transition: none;
+  }
+}

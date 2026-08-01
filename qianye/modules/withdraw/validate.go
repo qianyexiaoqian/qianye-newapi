@@ -77,6 +77,11 @@ type createRequest struct {
 	PayeeRef     string            `json:"payee_ref"`
 	PayeeChannel string            `json:"payee_channel"`
 	Payee        map[string]string `json:"payee"`
+
+	// ProofRef 是先经 POST /withdraw/proofs 上传得到的凭证标识,可选。
+	// 图片本体从不随本请求走 —— JSON 里塞 base64 会让整条申请链路(含幂等重放)
+	// 拖着几 MiB 的负载,而这条路径上真正稀缺的是事务时间。
+	ProofRef string `json:"proof_ref"`
 }
 
 // acceptedRequest 是通过受理校验后的规范化请求。
@@ -89,6 +94,7 @@ type acceptedRequest struct {
 	PayeeRef     string
 	PayeeChannel string
 	Payee        map[string]string
+	ProofRef     string
 }
 
 // acceptCreate 做全部与数据库无关的校验并规范化入参。
@@ -130,7 +136,17 @@ func acceptCreate(req createRequest, cfg config.Withdraw) (acceptedRequest, erro
 		Remark:  remark,
 	}
 	if method != config.WithdrawMethodFiat {
+		// 凭证只服务于法币打款。quota 单带着 proof_ref 提交必须报错而不是静默忽略:
+		// 静默忽略的话那张图会永远停在"未绑定"状态,用户以为交了、审核看不到,
+		// 而它最终被孤儿清理悄悄删掉。
+		if strings.TrimSpace(req.ProofRef) != "" {
+			return acceptedRequest{}, errProofDisabled
+		}
 		return acc, nil
+	}
+	acc.ProofRef, err = acceptProofRef(req.ProofRef, cfg)
+	if err != nil {
+		return acceptedRequest{}, err
 	}
 
 	// 法币路径必须有收款信息:要么引用已保存的,要么本次现填。
@@ -144,6 +160,24 @@ func acceptCreate(req createRequest, cfg config.Withdraw) (acceptedRequest, erro
 	}
 	acc.PayeeChannel, acc.Payee = channel, payee
 	return acc, nil
+}
+
+// acceptProofRef 校验可选的凭证标识。
+//
+// 长度上界不是形式主义:ref 会直接进 WHERE 条件,不设上界意味着一个 1 MiB 的
+// 字符串会被原样发给数据库比较。空串是合法的 —— 需求原文写的就是"(可选)"。
+func acceptProofRef(raw string, cfg config.Withdraw) (string, error) {
+	ref := strings.TrimSpace(raw)
+	if ref == "" {
+		return "", nil
+	}
+	if !cfg.ProofOn() {
+		return "", errProofDisabled
+	}
+	if len(ref) > 64 {
+		return "", errProofNotFound
+	}
+	return ref, nil
 }
 
 // acceptPayee 校验并规范化收款信息。

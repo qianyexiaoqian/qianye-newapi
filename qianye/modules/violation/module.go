@@ -68,6 +68,7 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/violation/bans", adminListBans)
 	g.GET("/violation/appeals", adminListAppeals)
 	g.GET("/violation/stats", adminStats)
+	g.GET("/violation/counters", adminListCounters)
 
 	// 写接口一律挂关键操作限流:它们要么直接改钱/改账号状态,
 	// 要么改的是决定这两者的规则。
@@ -80,6 +81,9 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.POST("/violation/bans/:userId/unban", crit, adminUnban)
 	g.POST("/violation/appeals/:id/review", crit, adminReviewAppeal)
 	g.POST("/violation/breaker/reset", crit, adminResetBreaker)
+	// 全局影子开关:此前只在 YAML 里,管理端一个可点的控件都没有。
+	g.PUT("/violation/mode", crit, adminPutMode)
+	g.POST("/violation/counters/:userId/reset", crit, adminResetCounter)
 }
 
 func (Mod) StartTasks() {

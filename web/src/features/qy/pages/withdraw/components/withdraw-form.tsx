@@ -46,6 +46,7 @@ import { qyRuneLength } from '../../lib/constants'
 import { useQyRequestId } from '../../lib/request-id'
 import { qyCreateWithdrawal, qyWithdrawPayeesQuery } from '../api'
 import { QY_PAYEE_NEW } from '../lib/payee-spec'
+import { QY_PROOF_NONE, type QyProofSelection } from '../lib/proof'
 import { normalizeQyPayee, validateQyPayee } from '../lib/validate'
 import type {
   QyPayeeChannel,
@@ -54,6 +55,7 @@ import type {
   QyWithdrawMethod,
 } from '../types'
 import { PayeeSection } from './payee-section'
+import { ProofUploadField } from './proof-upload-field'
 
 type WithdrawFormProps = {
   config: QyWithdrawConfig
@@ -93,6 +95,9 @@ export function WithdrawForm(props: WithdrawFormProps) {
   const [payeeErrors, setPayeeErrors] = useState<Record<string, string>>({})
   const [amountErrorKey, setAmountErrorKey] = useState<string | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [proof, setProof] = useState<QyProofSelection>(QY_PROOF_NONE)
+  /** 提交成功后靠换 key 把上传控件整个重挂，顺带触发它的 revokeObjectURL。 */
+  const [proofKey, setProofKey] = useState(0)
 
   const payeesQuery = useQuery({
     ...qyWithdrawPayeesQuery(),
@@ -117,6 +122,8 @@ export function WithdrawForm(props: WithdrawFormProps) {
       setQuota(0)
       setRemark('')
       setPayeeValues({})
+      setProof(QY_PROOF_NONE)
+      setProofKey((value) => value + 1)
       await afterMoneyChange()
       await navigate({ to: '/qy/withdrawals' })
     },
@@ -137,7 +144,12 @@ export function WithdrawForm(props: WithdrawFormProps) {
       quota,
       remark: remark.trim(),
     }
+    // 凭证只服务于法币打款。**quota 单绝不能带 proof_ref** —— 后端
+    // `acceptCreate` 对此直接报错而不是静默忽略（静默忽略会让那张图永远停在
+    // 未绑定状态：用户以为交了、审核看不到，最后被孤儿清理悄悄删掉）。
+    // 因此这一行必须留在下面这个 early return 之后。
     if (method !== 'fiat') return body
+    if (proof.ref != null) body.proof_ref = proof.ref
     if (payeeRef !== QY_PAYEE_NEW) {
       body.payee_ref = payeeRef
       return body
@@ -197,9 +209,14 @@ export function WithdrawForm(props: WithdrawFormProps) {
           <RadioGroup
             value={method}
             disabled={!canSubmit}
-            onValueChange={(value) =>
-              setMethod(String(value) as QyWithdrawMethod)
-            }
+            onValueChange={(value) => {
+              const next = String(value) as QyWithdrawMethod
+              setMethod(next)
+              // 切离法币路径时必须把凭证一起丢掉。上传控件挂在 fiat 分支里，
+              // 切走即卸载并撤销预览，而 ref 留在这里的话会变成一张
+              // "用户已经看不见、却仍会随申请提交上去"的图。
+              if (next !== 'fiat') setProof(QY_PROOF_NONE)
+            }}
             className='sm:grid-cols-2'
           >
             {config.methods.map((value) => (
@@ -256,6 +273,16 @@ export function WithdrawForm(props: WithdrawFormProps) {
               errors={payeeErrors}
               disabled={!canSubmit}
             />
+            {/* 后端 ProofOn() = methods 含 fiat && proof_enabled，站点没开就整块不渲染。 */}
+            {config.fiat?.proof_enabled === true && (
+              <ProofUploadField
+                key={proofKey}
+                fiat={config.fiat}
+                disabled={!canSubmit}
+                selection={proof}
+                onSelectionChange={setProof}
+              />
+            )}
             <FiatRateNotice config={config} />
           </>
         )}
@@ -287,11 +314,13 @@ export function WithdrawForm(props: WithdrawFormProps) {
           </p>
         </div>
 
+        {/* 上传在途时必须禁掉：放行的话请求会带着一个还没拿到的 ref 走，
+            而用户以为凭证已经交上去了。 */}
         <Button
-          disabled={!canSubmit || createMutation.isPending}
+          disabled={!canSubmit || createMutation.isPending || proof.uploading}
           onClick={openConfirm}
         >
-          {t('qy_wd_submit')}
+          {proof.uploading ? t('qy_wd_proof_uploading') : t('qy_wd_submit')}
         </Button>
       </CardContent>
 

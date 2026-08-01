@@ -48,8 +48,10 @@ import {
   getQyViolationStats,
   listQyViolationRules,
   resetQyViolationBreaker,
+  setQyViolationShadowMode,
 } from './api'
 import { QyRuleFormSheet } from './components/rule-form-sheet'
+import { QyViolationCounterCard } from './components/violation-counter-card'
 import { QyViolationShadowBanner } from './components/violation-shadow-banner'
 import { QY_VIOLATION_PHASES } from './lib/rule-form'
 import type { QyViolationRule } from './types'
@@ -111,6 +113,22 @@ export function QyAdminViolationRules() {
     onError: (error) => toast.error(qyOpsErrorMessage(error, t)),
   })
 
+  /**
+   * 全局影子开关。刻意与 breakerMutation 分开：熔断是系统自己踩的刹车，
+   * 全局开关是人定的发布口径，合成一个动作会让一次熔断恢复顺手把还没准备好的
+   * 规则全部放出去。
+   */
+  const modeMutation = useMutation({
+    mutationFn: (shadow: boolean | null) => setQyViolationShadowMode(shadow),
+    onSuccess: () => {
+      toast.success(t('qy_vio_mode_saved'))
+      void queryClient.invalidateQueries({
+        queryKey: qyKeys.adminViolationStats(),
+      })
+    },
+    onError: (error) => toast.error(qyOpsErrorMessage(error, t)),
+  })
+
   const deleteMutation = useMutation({
     mutationFn: (rule: QyViolationRule) => deleteQyViolationRule(rule.id),
     onSuccess: () => {
@@ -144,6 +162,8 @@ export function QyAdminViolationRules() {
         <div className='space-y-3'>
           <QyViolationShadowBanner
             stats={statsQuery.data}
+            onSetShadow={(shadow) => modeMutation.mutate(shadow)}
+            isSaving={modeMutation.isPending}
             onResetBreaker={() => breakerMutation.mutate()}
             isResetting={breakerMutation.isPending}
           />
@@ -336,6 +356,10 @@ export function QyAdminViolationRules() {
               void queryClient.invalidateQueries({ queryKey: qyKeys.all })
             }}
           />
+
+          {/* 计数器维护紧挨着模式开关:两者说的是同一件事的两面 ——
+              影子期间不再累计违规次数,而切换之前累计下来的那些是脏的。 */}
+          <QyViolationCounterCard />
 
           <QyConfirmDialog
             open={pendingDelete != null}

@@ -55,9 +55,9 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 	g.GET("/availability/series", middleware.SearchRateLimit(), getSeries)
 }
 
-func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
-	g.GET("/availability/stats", adminStats)
-}
+// 管理端总览(/admin/availability/stats)已按项目方要求整体移除,
+// 本模块因此不实现 RegisterAdminRoutes,沿用 module.Base 的空实现。
+// 可用率是给全体用户看的,用户端两个接口与采样/聚合/落库/清理全部保留。
 
 func (Mod) StartTasks() { startTasks() }
 

@@ -5,10 +5,10 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
+	"github.com/QuantumNous/new-api/qianye/modules/paypass"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -26,6 +26,12 @@ type createRequest struct {
 	// 点击时才生成会让每次重试变成一笔新划转,幂等彻底失效(裁定 C10)。
 	ClientRequestId string `json:"client_request_id"`
 	Confirm         bool   `json:"confirm"`
+	// PayPassword 是裁决 1 的支付密码,只在这一个入口出现。
+	//
+	// 走请求体而不是请求头:它与本次划转是同一笔提交,分开传会让"这个密码
+	// 授权的是哪一笔"变成一个需要额外约定的问题。paypass 另有 Middleware()
+	// 形态供将来接入的、密码不随体走的路径使用。
+	PayPassword string `json:"pay_password"`
 }
 
 type createResponse struct {
@@ -102,6 +108,21 @@ func handleCreate(c *gin.Context) {
 		respondErr(c, errInvalidParam)
 		return
 	}
+	// 裁决 1 的验密闸门。位置有讲究:
+	//
+	//  - 必须在 ShouldBindJSON **之后** —— 密码随请求体来的;
+	//  - 必须在 create() **之前** —— create 里就开始占额度、写单据了,
+	//    放进去等于"先动钱再问密码";
+	//  - 必须在**这一个**入口,不能挪进 create():handlePreview 也会调到
+	//    create 附近的校验链,验密点一旦下沉就会连预览一起挡住,
+	//    而预览不动钱、不该要密码。裁决 1 写的是"验密点只有一处"。
+	//
+	// Require 不通过时已写好响应并 Abort,这里直接 return。
+	// 它没有任何可以表达豁免的入参 —— 联系人不构成豁免(裁决 1),
+	// 想加豁免的人必须先改 paypass.Require 的签名,那是一次看得见的动作。
+	if !paypass.Require(c, c.GetInt("id"), req.PayPassword) {
+		return
+	}
 	resp, err := create(c, c.GetInt("id"), req)
 	if err != nil {
 		respondErr(c, err)
@@ -127,9 +148,17 @@ func handlePreview(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	// 门槛读失败一律报错,理由同上:预览若比提交宽松,用户会先看到一个
+	// "手续费 0",再在提交时被另一个数字收费。
+	settings, err := effectiveCtx(c.Request.Context())
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+
 	resp := resolveRecipient(c, c.GetInt("id"), req.Identifier, rules)
 	if req.Amount > 0 {
-		cfg := config.Get().Transfer
+		cfg := settings.Transfer
 		// 金额非法时不报错,只是不回填:预览的主要用途是确认收款人,
 		// 真正的金额判定在提交时统一做,两处各判一次会出现口径漂移。
 		if fee, err := computeFee(req.Amount, cfg.FeeBps, cfg.FeeMinQuota); err == nil &&
@@ -213,7 +242,7 @@ func handleGetLimits(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagTransfer) {
 		return
 	}
-	cfg := config.Get().Transfer
+	ctx := c.Request.Context()
 	me := c.GetInt("id")
 	now := common.GetTimestamp()
 
@@ -223,9 +252,19 @@ func handleGetLimits(c *gin.Context) {
 		return
 	}
 
+	// 回显的必须是**提交时真正会生效的那份门槛**(YAML + qy_settings 覆盖)。
+	// 这里读 YAML 而提交读覆盖后的值,就会出现"界面说还能转 100 万、
+	// 提交却被拒"—— 而用户看不出问题出在哪。
+	settings, err := effectiveCtx(ctx)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	cfg := settings.Transfer
+
 	var state UserState
 	// 从未参与过划转的用户没有状态行,那不是错误,零值就是正确答案。
-	if err := db.Get().Where("user_id = ?", me).First(&state).Error; err != nil &&
+	if err := db.Get().WithContext(ctx).Where("user_id = ?", me).First(&state).Error; err != nil &&
 		!errors.Is(err, gorm.ErrRecordNotFound) {
 		db.MarkFailure(err)
 		respondErr(c, err)

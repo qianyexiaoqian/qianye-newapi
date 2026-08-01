@@ -69,7 +69,13 @@ var (
 	hotBuckets sync.Map // dimKey → *counters
 	hotSeries  atomic.Int64
 
-	// 采样与落库的可观测指标。管理端据此区分「没人用这个模型」与「hook 没生效」。
+	// 采样与落库的可观测指标。
+	//
+	// 注意:**读侧已随管理页移除** —— 原先唯一的消费方是
+	// api.go 的 adminStats(/admin/availability/stats),该页面按项目方要求整体删除,
+	// 因此下面这批计数器目前只写不读。刻意保留而不是一并删掉:它们是采样链路的
+	// 唯一自检信号(区分「没人用这个模型」与「hook 没生效」),将来接告警或
+	// 运维自检端点时直接读即可,删了就得把 flush/rollup/cleanup 三处再改一遍。
 	statObserved   atomic.Int64
 	statNoModel    atomic.Int64
 	statSeriesFull atomic.Int64

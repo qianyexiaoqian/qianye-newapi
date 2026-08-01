@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/qianye/config"
-	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
 	"github.com/QuantumNous/new-api/service"
@@ -236,156 +235,15 @@ func getSeries(c *gin.Context) {
 	})
 }
 
-// ─────────────────────────────── 管理端 ───────────────────────────────
-
-// adminStats 是运维视角的总览:口径、采样与落库健康度、存储水位、全分组可用率。
+// ─────────────────────────────── 已移除:管理端 ───────────────────────────────
 //
-// 与用户端的根本差别是不做任何分组裁剪 —— 管理员必须看得到隐藏分组,
-// 以及 UsingGroup 解析失败留下的 unknown 行(它是 hook 或渠道配置出问题的信号)。
-func adminStats(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagAvailability) {
-		return
-	}
-	cfg := config.Get().Availability
-	d := definitionOf(cfg)
-	r := resolveRange(0, 0, httpq.Int(c, "hours", 24))
-
-	data := gin.H{
-		"definition": d,
-		"config": gin.H{
-			"bucket_seconds":         bucketSeconds(),
-			"flush_interval_seconds": int64(flushInterval().Seconds()),
-			"retention_days":         cfg.RetentionDays,
-			"max_series_per_query":   maxSeries(),
-			"hot_series_limit":       hotSeriesLimit,
-			// attempt 级采样需要在 controller/relay.go 增加挂载点,本期未实现。
-			// 明确回传 false,避免运维以为已经开启。
-			"sample_attempt_level_requested": cfg.SampleAttemptLevel,
-			"sample_attempt_level_supported": false,
-		},
-		"sampler": gin.H{
-			"observed":             statObserved.Load(),
-			"dropped_no_model":     statNoModel.Load(),
-			"dropped_series_limit": statSeriesFull.Load(),
-			"truncated_names":      statTruncated.Load(),
-			"hot_series":           hotSeries.Load(),
-		},
-		"flush": gin.H{
-			"runs":     statFlushRuns.Load(),
-			"rows":     statFlushRows.Load(),
-			"failures": statFlushFail.Load(),
-			"last_at":  statFlushAt.Load(),
-		},
-		"rollup": gin.H{
-			"rows":    statRollupRows.Load(),
-			"last_at": statRollupAt.Load(),
-		},
-		"cleanup": gin.H{
-			"rows":    statCleanupRow.Load(),
-			"last_at": statCleanupAt.Load(),
-		},
-		"hot_queue": guard.QueueStats(),
-	}
-
-	if storage, err := storageStats(); err == nil {
-		data["storage"] = storage
-	}
-
-	groups, err := allGroupsInRange(r)
-	if err != nil {
-		unavailable(c)
-		return
-	}
-	cells, err := queryCells(r, groups, nil)
-	if err != nil {
-		unavailable(c)
-		return
-	}
-
-	perGroup := map[string]*Bucket{}
-	for key, b := range cells {
-		if perGroup[key.group] == nil {
-			perGroup[key.group] = &Bucket{}
-		}
-		perGroup[key.group].addFrom(b)
-	}
-	summaries := make([]cell, 0, len(perGroup))
-	for g, b := range perGroup {
-		summaries = append(summaries, buildCell(cellKey{group: g, model: "*"}, b, true, d))
-	}
-	sortCells(summaries, "availability_asc")
-
-	worst := make([]cell, 0, len(cells))
-	for key, b := range cells {
-		worst = append(worst, buildCell(key, b, true, d))
-	}
-	sortCells(worst, "availability_asc")
-	if len(worst) > 20 {
-		worst = worst[:20]
-	}
-
-	data["start_ts"] = r.StartTs
-	data["end_ts"] = r.EndTs
-	data["groups"] = summaries
-	data["worst_cells"] = worst
-	respond(c, data)
-}
-
-// allGroupsInRange 取时间范围内出现过的全部分组(管理端专用,不做白名单裁剪)。
-func allGroupsInRange(r timeRange) ([]string, error) {
-	gdb := db.Get()
-	if gdb == nil {
-		return nil, db.ErrNotReady
-	}
-	var groups []string
-	err := gdb.Table(r.tableName()).
-		Where("bucket_ts >= ? AND bucket_ts <= ?", r.StartTs, r.EndTs).
-		Distinct("group_name").
-		Pluck("group_name", &groups).Error
-	if err != nil {
-		db.MarkFailure(err)
-		return nil, err
-	}
-	// 内存热桶里可能有刚出现、DB 还没有的分组。
-	seen := toSet(groups)
-	hotBuckets.Range(func(key, _ any) bool {
-		k := key.(dimKey)
-		if k.bucketTs < r.StartTs || k.bucketTs > r.EndTs {
-			return true
-		}
-		if _, ok := seen[k.group]; !ok {
-			groups = append(groups, k.group)
-			if seen == nil {
-				seen = map[string]struct{}{}
-			}
-			seen[k.group] = struct{}{}
-		}
-		return true
-	})
-	sort.Strings(groups)
-	return groups, nil
-}
-
-func storageStats() (gin.H, error) {
-	gdb := db.Get()
-	if gdb == nil {
-		return nil, db.ErrNotReady
-	}
-	var bucketRows, hourRows, oldest int64
-	if err := gdb.Table(bucketTable).Count(&bucketRows).Error; err != nil {
-		db.MarkFailure(err)
-		return nil, err
-	}
-	if err := gdb.Table(hourTable).Count(&hourRows).Error; err != nil {
-		db.MarkFailure(err)
-		return nil, err
-	}
-	if err := gdb.Table(bucketTable).Select("COALESCE(MIN(bucket_ts), 0)").Scan(&oldest).Error; err != nil {
-		db.MarkFailure(err)
-		return nil, err
-	}
-	return gin.H{"bucket_rows": bucketRows, "hour_rows": hourRows, "oldest_bucket_ts": oldest}, nil
-}
+// 原 adminStats(/admin/availability/stats)与它的两个专属查询
+// allGroupsInRange / storageStats 已按项目方要求整体删除。
+// 它们只服务管理端页面,与采样/聚合/落库/清理零耦合,因此删除不影响数据链路。
+//
+// 副作用(已知,不修):aggregate.go 里的采样/落库计数器失去了唯一读侧,
+// 变成只写不读;dropped_series_limit、truncated_names、rollup/cleanup 进度与
+// 存储水位不再有任何 UI 出口。
 
 // ─────────────────────────────── 公共辅助 ───────────────────────────────
 

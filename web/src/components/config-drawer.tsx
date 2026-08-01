@@ -18,8 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { Radio as RadioPrimitive } from '@base-ui/react/radio'
 import { RadioGroup as Radio } from '@base-ui/react/radio-group'
-import { CircleCheck, Palette, RotateCcw } from 'lucide-react'
-import type { SVGProps } from 'react'
+import { CircleCheck, Lock, Palette, RotateCcw } from 'lucide-react'
+import { useEffect, type SVGProps } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { IconDir } from '@/assets/custom/icon-dir'
@@ -54,6 +54,7 @@ import { useThemeCustomization } from '@/context/theme-customization-provider'
 import { useTheme } from '@/context/theme-provider'
 import {
   type ContentLayout,
+  isThemeAxisLocked,
   THEME_PRESETS,
   type ThemeFont,
   type ThemePreset,
@@ -66,13 +67,62 @@ import { useSidebar } from './ui/sidebar'
 
 const Item = RadioPrimitive.Root
 
+/**
+ * 轴锁生效时把四个轴的持久化偏好归位。
+ *
+ * 藏掉控件只解决"看得见"这一半。font/radius/scale/contentLayout 各有独立
+ * cookie,不归位的话它们会继续往 <body> 上挂 data-theme-* 属性 ——
+ * 用户既看不到控件又改不回来,比不隐藏更糟。
+ *
+ * 这里【不】做 `if (locked) return` 之外的判断:setter 自身在值等于默认值时
+ * 会 removeCookie,再次调用是幂等的;但仍逐项比对后才调用,否则每次 effect
+ * 都会 setState 一轮,把父树拖着重渲染。
+ *
+ * 放在 ConfigDrawer 里而不是 provider 里,是因为这三个轴(font 轴已在
+ * resolveThemeFont 就地掐断)在全站【只有本抽屉一个入口】:能改它们的人
+ * 必然登录过、必然加载过 AppHeader,也就必然挂载过本组件。
+ */
+function useLockedAxisReset(locked: boolean) {
+  const {
+    defaults,
+    customization,
+    setFont,
+    setRadius,
+    setScale,
+    setContentLayout,
+  } = useThemeCustomization()
+
+  useEffect(() => {
+    if (!locked) return
+    if (customization.font !== defaults.font) setFont(defaults.font)
+    if (customization.radius !== defaults.radius) setRadius(defaults.radius)
+    if (customization.scale !== defaults.scale) setScale(defaults.scale)
+    if (customization.contentLayout !== defaults.contentLayout) {
+      setContentLayout(defaults.contentLayout)
+    }
+  }, [
+    locked,
+    defaults,
+    customization,
+    setFont,
+    setRadius,
+    setScale,
+    setContentLayout,
+  ])
+}
+
 export function ConfigDrawer() {
   const { t } = useTranslation()
   const { setOpen } = useSidebar()
   const { resetDir } = useDirection()
   const { resetTheme } = useTheme()
   const { resetLayout } = useLayout()
-  const { resetCustomization } = useThemeCustomization()
+  const { resetCustomization, customization } = useThemeCustomization()
+
+  // 裁决 4:仅 Steins Gate 预设下固定 UI,只留亮/暗。预设轴本身必须留着,
+  // 否则用户被锁在这个主题里换不回去。
+  const axisLocked = isThemeAxisLocked(customization.preset)
+  useLockedAxisReset(axisLocked)
 
   const handleReset = () => {
     setOpen(true)
@@ -107,12 +157,21 @@ export function ConfigDrawer() {
         <div className={sideDrawerFormClassName()}>
           <ThemeConfig />
           <PresetConfig />
-          <FontConfig />
-          <RadiusConfig />
-          <ScaleConfig />
+          {axisLocked ? (
+            <div className='text-muted-foreground border-border flex items-start gap-2 rounded-md border border-dashed px-3 py-2.5 text-xs leading-relaxed'>
+              <Lock className='mt-0.5 size-3.5 shrink-0' aria-hidden='true' />
+              <span>{t('qy_theme_axes_locked')}</span>
+            </div>
+          ) : (
+            <>
+              <FontConfig />
+              <RadiusConfig />
+              <ScaleConfig />
+            </>
+          )}
           <SidebarConfig />
           <LayoutConfig />
-          <ContentLayoutConfig />
+          {!axisLocked && <ContentLayoutConfig />}
           <DirConfig />
         </div>
         <SheetFooter className={sideDrawerFooterClassName('grid-cols-1')}>

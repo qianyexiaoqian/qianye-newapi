@@ -61,6 +61,12 @@ func handleGetConfig(c *gin.Context) {
 			"min_amount":     cfg.MinFiatAmount,
 			"fee_bps":        cfg.FiatFeeBps,
 			"payee_channels": SupportedChannels(),
+			// 凭证的三项必须下发:前端要据此决定渲不渲染上传控件、accept 填什么、
+			// 以及在【选文件的那一刻】就告诉用户"这张 9 MB 的图不行",
+			// 而不是让他等一次完整上传之后才收到 413。
+			"proof_enabled":   cfg.ProofOn(),
+			"proof_max_bytes": cfg.ProofMaxBytes,
+			"proof_accept":    ProofAcceptMimes(),
 		}
 		// 汇率只是预览值。真正生效的是提交那一刻冻结进单据的汇率,
 		// 前端必须把这一点显式告诉用户,否则汇率一变就会有人来投诉。
@@ -229,6 +235,53 @@ func handleDeletePayee(c *gin.Context) {
 		return
 	}
 	respondOK(c, gin.H{"ref": ref})
+}
+
+// handleUploadProof 接收一张凭证图片,返回可用于提交申请的 ref。
+//
+// 分两步(先传图拿 ref、再提交申请)而不是一次性 multipart 提交,是刻意的:
+// 申请那一步跑在一个会冻结佣金的扩展库事务里,把几 MiB 的图片解析、魔数校验
+// 与磁盘写入塞进去,等于让事务持有时间跟着用户的上行带宽走。
+func handleUploadProof(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagWithdraw) {
+		return
+	}
+	row, err := acceptProofUpload(c, c.GetInt("id"))
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	respondOK(c, gin.H{
+		"ref":        row.Ref,
+		"mime_type":  row.MimeType,
+		"size":       row.Size,
+		"created_at": row.CreatedAt,
+	})
+}
+
+// handleGetProof 回给本人自己的凭证图片。
+//
+// 越权判定靠 loadUserWithdrawal —— user_id 进 WHERE 条件,而不是取回来再比。
+func handleGetProof(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagWithdraw) {
+		return
+	}
+	id, ok := pathId(c)
+	if !ok {
+		respondErr(c, errInvalidParam)
+		return
+	}
+	w, err := loadUserWithdrawal(c.GetInt("id"), id)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	p, err := loadProofOfWithdrawal(w.Id)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	serveProof(c, p)
 }
 
 // ─────────────────────────── 查询参数辅助 ───────────────────────────

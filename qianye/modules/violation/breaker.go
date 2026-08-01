@@ -52,12 +52,19 @@ var (
 // 窗口太长,事故要很久才被发现;太短,样本量凑不够。
 const windowSeconds = 300
 
-// shadowActive 返回当前是否处于影子模式,以及原因。
+// shadowActive 返回当前**全局**是否处于影子模式,以及原因。
 //
-// 影子模式下:规则照常匹配、照常记录、照常统计,但不扣费、不阻断、不封号。
+// 影子模式下:规则照常匹配、照常落一条记录、照常进统计,但
+// **不扣费、不阻断、不封号、也不推进违规计数**(裁决 2)。
+// 最后一条是本轮修的 P0:此前影子命中照样调 bumpCounter,而封号判据完全由
+// 持久化的 hit_count 推导,于是影子命中把用户推过封号线、下一次真实命中直接落
+// 封禁行 —— 正好是"不会真实执行"的反面。计数跳过点在 guard.go 的 persist。
+//
+// 全局取值有两个来源:管理端写在 qy_settings 的覆盖(优先),没有覆盖时回落
+// YAML 的 violation.shadow_mode。叠加规则级 dry_run 在调用方完成,取更保守者胜。
 func shadowActive() (bool, string) {
-	if config.Get().Violation.IsShadow() {
-		return true, "config"
+	if on, source := globalShadowMode(); on {
+		return true, source
 	}
 	if common.GetTimestamp() < forcedShadowUntil.Load() {
 		r, _ := forcedShadowReason.Load().(string)
@@ -145,7 +152,12 @@ func tripShadow(reason string) {
 		" —— 请立即检查最近改动的规则")
 }
 
-// clearForcedShadow 供管理端在确认规则已修正后手动解除。
+// clearForcedShadow 供管理端在确认规则已修正后手动解除**熔断**。
+//
+// 它只清 forcedShadowUntil。全局影子开关(qy_settings 覆盖 / YAML)不在它的
+// 管辖范围内 —— 那条路要走 adminPutMode。这一点必须由界面区分清楚:
+// 界面上曾经只在 forced 为真时才渲染这个按钮,于是配置态影子下整页一个可点的
+// 控件都没有,"无法调整模式"的直接观感就来自这里。
 func clearForcedShadow() {
 	forcedShadowUntil.Store(0)
 	forcedShadowReason.Store("")
@@ -153,10 +165,19 @@ func clearForcedShadow() {
 
 func breakerStats() map[string]any {
 	shadow, reason := shadowActive()
+	globalShadow, _ := globalShadowMode()
 	return map[string]any{
-		"shadow":               shadow,
-		"shadow_reason":        reason,
+		"shadow":        shadow,
+		"shadow_reason": reason,
+		// config_shadow 是 YAML 那一行的原值(覆盖被清掉后会回到它),
+		// shadow_override 是管理端写在 qy_settings 的覆盖态(on/off/unset),
+		// global_shadow 是两者合并后、尚未叠加熔断与规则级 dry_run 的全局取值。
+		// 三个都下发是刻意的:界面必须能回答"现在这个模式是谁定的、清掉覆盖会变成什么"。
 		"config_shadow":        config.Get().Violation.IsShadow(),
+		"shadow_override":      overrideName(),
+		"global_shadow":        globalShadow,
+		"shadow_loaded_at":     modeLoadedAt.Load(),
+		"shadow_load_fails":    modeLoadFail.Load(),
 		"forced_shadow_until":  forcedShadowUntil.Load(),
 		"forced_shadow_count":  forcedShadowCount.Load(),
 		"window_scanned":       winScanned.Load(),

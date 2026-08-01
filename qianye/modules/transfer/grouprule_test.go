@@ -4,11 +4,15 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/groupname"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -600,6 +604,183 @@ func TestTransferGroupNameFollowsSharedContract(t *testing.T) {
 	}
 	assert.Equal(t, defaultGroupName, groupname.Default,
 		"本模块的 default 常量必须与共享口径折叠出的空值一致")
+}
+
+// useGroupRatio 把分组倍率表换成用例自己的清单,并在结束后原样还原。
+//
+// 必须显式设置:倍率表有进程级默认值(default/vip/svip),依赖它会让"这个分组
+// 到底定义没定义"取决于别的用例有没有动过全局状态。
+func useGroupRatio(t *testing.T, jsonStr string) {
+	t.Helper()
+	prev := ratio_setting.GroupRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(jsonStr))
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(prev))
+	})
+}
+
+// TestGroupMatrixCoversGroupsReferencedByRules 是 96-audit-r3 transfer #1 的回归。
+//
+// # 缺陷原样
+//
+// 规则能成功创建(HTTP 200 落库)、判定也真的生效,但矩阵的取值域只有
+// definedGroups 那三个来源(users.group 默认值 / 分组倍率表 / 可选分组白名单),
+// 规则表自身的 from_group 与 to_groups 完全不参与。于是给一个不在倍率表里的
+// 分组配规则之后:
+//   - 它不成行 —— 管理员在矩阵里找不到自己刚配的那条规则;
+//   - 它不成列 —— 别的分组"能不能转给它"这一格根本不存在;
+//   - 更糟的是,若该分组恰好是别人白名单里唯一的目标,那一行会显示成
+//     "谁都转不了",而实际判定是放行的。
+//
+// 矩阵是这一页存在的理由("矩阵在上"是页面注释里写死的),取值域漏掉规则自己
+// 引用的分组,等于让管理员照着一张看不见那条规则的图做决定。
+//
+// 把 knownGroups 改回只读 definedGroups(三来源),下面每一组断言都会翻面。
+func TestGroupMatrixCoversGroupsReferencedByRules(t *testing.T) {
+	// 站点定义过的分组里刻意**不含** qingxin 与 agent:它们只存在于规则表里,
+	// 正是勘察实测的那条 `清芯 → allow_list[agent]`。
+	useGroupRatio(t, `{"default":1,"vip":1}`)
+
+	rows := []GroupRule{
+		rule("qingxin", GroupPolicyAllowList, "agent"),
+		// 停用的规则同样要贡献取值域:运营要能在矩阵里先看清"启用之后会怎样"。
+		{FromGroup: "legacy", Policy: GroupPolicyDenyAll, Enabled: false},
+	}
+	known := knownGroups(rows)
+
+	assert.Contains(t, known, "qingxin", "规则的发起分组必须进入矩阵取值域")
+	assert.Contains(t, known, "agent", "白名单里的目标分组必须进入矩阵取值域")
+	assert.Contains(t, known, "legacy", "停用规则引用的分组同样要能在矩阵里看到")
+	assert.Contains(t, known, "default")
+	assert.Contains(t, known, "vip")
+	assert.NotContains(t, known, groupWildcard, "通配符不是分组名")
+	assert.NotContains(t, known, groupSelfToken, "@self 不是分组名")
+
+	set := buildGroupRuleSet(rows)
+	byFrom := map[string]groupMatrixRow{}
+	for _, row := range buildGroupMatrix(set, known) {
+		byFrom[row.FromGroup] = row
+	}
+
+	// ① 行:规则的发起分组必须有自己的一行,且策略是它自己的策略。
+	row, ok := byFrom["qingxin"]
+	require.True(t, ok, "规则的发起分组在矩阵里连一行都没有 —— 页面看起来就是规则没保存上")
+	assert.Equal(t, GroupPolicyAllowList, row.Policy)
+
+	// ② 列:白名单里的目标必须成为一列,并且这一格显示为放行。
+	assert.Equal(t, []string{"agent"}, row.ToGroups,
+		"矩阵里 qingxin 那一行必须正好列出 agent,而不是空成『谁都转不了』")
+
+	// ③ 矩阵与真实判定必须逐格一致 —— 取值域变完整不能顺手改动任何判定。
+	for _, from := range known {
+		allowed := map[string]bool{}
+		for _, to := range byFrom[from].ToGroups {
+			allowed[to] = true
+		}
+		for _, to := range known {
+			assert.Equal(t, set.allowsGroup(from, to) == nil, allowed[to],
+				"矩阵格 %s→%s 与真实判定不一致", from, to)
+		}
+	}
+	// 判定端本来就是放行的(勘察实测过的那一条),矩阵现在终于说了同一件事。
+	assert.NoError(t, set.allowsGroup("qingxin", "agent"))
+}
+
+// TestUnknownRuleGroupsIsWarningNotGate 锁定"未知分组"是软告警而不是硬闸门。
+//
+// 两个方向都要钉住:
+//   - 报得出来 —— 打错一个字母的分组名会静默变成一条永不命中的规则,
+//     不告警运营就只能靠肉眼对拼写;
+//   - 拦不下来 —— 历史分组(倍率表里已删、users 里还有人挂着)恰恰是最需要
+//     限制转出的那批账号。把 unknownRuleGroups 的结论接进 validateGroupRule
+//     当拒绝条件,运营就会在最需要配置的时刻配不进去。
+func TestUnknownRuleGroupsIsWarningNotGate(t *testing.T) {
+	useGroupRatio(t, `{"default":1,"vip":1}`)
+
+	rows := []GroupRule{
+		rule("vip", GroupPolicyAllowList, "default,agent"),
+		rule("qingxin", GroupPolicyDenyAll, ""),
+		rule(groupWildcard, GroupPolicyAllowList, groupSelfToken),
+	}
+	assert.Equal(t, []string{"agent", "qingxin"}, unknownRuleGroups(rows),
+		"只有站点没定义过的分组才该被标黄;通配符与 @self 不是分组名")
+
+	// 全部分组都定义过时必须是**空切片而不是 nil**:前端拿到 null 还要各自兜底。
+	clean := unknownRuleGroups([]GroupRule{rule("vip", GroupPolicyAllowList, "default")})
+	require.NotNil(t, clean)
+	assert.Empty(t, clean)
+
+	// 闸门方向:同一条规则必须照样能通过写入校验。
+	row := GroupRule{FromGroup: "qingxin", Policy: GroupPolicyAllowList, ToGroups: "agent"}
+	require.NoError(t, validateGroupRule(&row),
+		"未知分组是告警不是拒绝 —— 历史分组必须仍然能配规则")
+	assert.Equal(t, "qingxin", row.FromGroup)
+	assert.Equal(t, "agent", row.ToGroups)
+}
+
+// TestListGroupCandidatesCarriesMetadata 锁定下拉候选带着运营下判断需要的元数据。
+//
+// 裸 datalist 只提示、不校验、不告警。换成带元数据的下拉之后,"这个分组倍率
+// 多少 / 底下还有没有启用的渠道 / 是不是公开可选"这三件事必须真的下发,
+// 否则换掉 datalist 只是换了个外观。
+func TestListGroupCandidatesCarriesMetadata(t *testing.T) {
+	mainDB := newMainDB(t)
+	require.NoError(t, mainDB.AutoMigrate(&model.Ability{}))
+	useGroupRatio(t, `{"default":1,"vip":0.8,"ghost":1}`)
+
+	require.NoError(t, mainDB.Create(&model.Ability{
+		Group: "vip", Model: "gpt-4o", ChannelId: 1, Enabled: true,
+	}).Error)
+	require.NoError(t, mainDB.Create(&model.Ability{
+		Group: "default", Model: "gpt-4o", ChannelId: 2, Enabled: false,
+	}).Error)
+
+	options, probeOK := listGroupCandidates()
+	require.True(t, probeOK)
+
+	byName := map[string]groupCandidate{}
+	for _, o := range options {
+		byName[o.Name] = o
+	}
+	require.Contains(t, byName, "vip")
+	assert.InDelta(t, 0.8, byName["vip"].Ratio, 1e-9)
+	assert.True(t, byName["vip"].HasChannels)
+	assert.False(t, byName["default"].HasChannels, "禁用的 ability 不算可用渠道")
+	assert.False(t, byName["ghost"].HasChannels)
+	// 候选清单只列站点定义过的分组:软告警要靠"下拉里有的就是定义过的"这个前提。
+	assert.NotContains(t, byName, "agent")
+
+	// 名字必须与落库口径一致,否则运营选一项保存后再回来会发现它不在下拉里。
+	useGroupRatio(t, `{"VIP":0.8}`)
+	folded, _ := listGroupCandidates()
+	names := []string{}
+	for _, o := range folded {
+		names = append(names, o.Name)
+	}
+	assert.Contains(t, names, "vip")
+	assert.NotContains(t, names, "VIP")
+}
+
+// TestGroupCandidateShapeMatchesUserGroupModule 挡住"同一概念的第 N 份拷贝各自漂移"。
+//
+// 「带元数据的分组下拉」在本模块与 usergroup 各有一份实现(候选范围口径不同,
+// 那边要排除 auto 伪分组)。字段名一旦分叉,前端就要为同一件事写两套渲染,
+// 而这正是本仓库已经出现过六组的那个缺陷形状。
+//
+// 这里锁的是**跨模块的 JSON 契约**,不是实现细节:任何一侧改名,这条断言变红。
+func TestGroupCandidateShapeMatchesUserGroupModule(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "usergroup", "groups.go"))
+	require.NoError(t, err)
+
+	mine := reflect.TypeOf(groupCandidate{})
+	require.Equal(t, 4, mine.NumField())
+	for i := 0; i < mine.NumField(); i++ {
+		tag := mine.Field(i).Tag.Get("json")
+		require.NotEmpty(t, tag)
+		assert.Contains(t, string(src), `json:"`+tag+`"`,
+			"字段 %q 在 usergroup 的 groupOption 上找不到同名 JSON 字段 —— "+
+				"两份『分组下拉』已经开始漂移,前端会被迫为同一件事写两套渲染", tag)
+	}
 }
 
 // TestGroupBlockedReasonsAreDistinct 前端要按 code/reason 分流两种截然不同的处置:

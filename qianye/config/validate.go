@@ -129,7 +129,7 @@ func validate(c *Config) error {
 	if err := validateAudit(&c.Audit); err != nil {
 		return err
 	}
-	if err := validateTransfer(&c.Transfer); err != nil {
+	if err := ValidateTransfer(&c.Transfer); err != nil {
 		return err
 	}
 	if err := validateCommission(&c.Commission); err != nil {
@@ -268,7 +268,17 @@ func validateRuntime(r *Runtime) error {
 	return nil
 }
 
-func validateTransfer(t *Transfer) error {
+// ValidateTransfer 校验一份划转配置的自洽性。
+//
+// 导出是因为它有第二个调用方:划转门槛已经可以被管理端在线覆盖
+// (qy_settings, scope=transfer),而覆盖后的组合必须过同一道校验 ——
+// 逐字段的区间检查看不出 min_quota > max_per_tx_quota 这种跨字段矛盾,
+// 而那个组合会让**任何金额**都不合法,等于把划转静默关停。
+//
+// 管理端写入前用它挡住非法组合,读取合并后再用它兜一次底(qy_settings
+// 是可以被人手工 UPDATE 的)。绝不在模块里另写一份:这里加一条规则、
+// 那边忘了跟上,正是本仓库反复出现的"第 N 份拷贝各自漂移"。
+func ValidateTransfer(t *Transfer) error {
 	if err := checkBps("transfer.fee_bps", t.FeeBps); err != nil {
 		return err
 	}
@@ -326,13 +336,26 @@ func validateWithdraw(w *Withdraw) error {
 		}
 	}
 	// 收款信息属 PII,没有密钥就绝不允许开启法币提现 —— 明文落库不可接受。
+	//
+	// 这两条错误会让 config.Load() 失败 → main.go FatalLog → 【站点起不来】。
+	// 因此文案必须直接给出补救动作:运维往 methods 里加一个 "fiat" 就重启,
+	// 只看到"密钥不能为空"是猜不出还要生成两把、且必须是两把不同的钥匙的。
 	if w.HasWithdrawMethod(WithdrawMethodFiat) {
 		if err := checkAESKey("withdraw.pii_key", w.PIIKey); err != nil {
-			return err
+			return fmt.Errorf("%w\n"+
+				"    withdraw.methods 里有 \"fiat\" 时,pii_key 与 digest_key 两项都是必填前置条件。\n"+
+				"    分别用 `openssl rand -base64 32` 生成两串【互不相同】的随机值填进去,再重启。", err)
 		}
 		if strings.TrimSpace(w.DigestKey) == "" {
 			return fmt.Errorf("qianye: withdraw.digest_key 不能为空" +
-				"(用于收款账号的风控指纹,必须独立于 pii_key 且不随其轮换)")
+				"(用于收款账号的风控指纹,必须独立于 pii_key 且不随其轮换)。\n" +
+				"    用 `openssl rand -base64 32` 另生成一串,不要与 pii_key 填同一个值 ——" +
+				"合成一把之后,pii_key 一轮换历史指纹就全部失效。")
+		}
+		if strings.TrimSpace(w.DigestKey) == strings.TrimSpace(w.PIIKey) {
+			return fmt.Errorf("qianye: withdraw.digest_key 不得与 pii_key 相同" +
+				"(pii_key 可轮换、digest_key 永不轮换,共用一个值意味着轮换那天" +
+				"跨账户风控指纹会全部作废,而那正是提现场景最有价值的风控信号)")
 		}
 	}
 	if w.PIIKeyVersion < 0 {
@@ -379,6 +402,14 @@ func validateWithdraw(w *Withdraw) error {
 	}
 	if w.RemarkMaxRunes <= 0 || w.RemarkMaxRunes > 2000 {
 		return fmt.Errorf("qianye: withdraw.remark_max_runes 必须在 1..2000 之间,收到 %d", w.RemarkMaxRunes)
+	}
+	// 凭证图片要整张读进内存才能校验魔数,上限必须有硬顶。
+	// 校验放在 fiat 之外:proof_max_bytes 配成 0 或天文数字都是配置错误,
+	// 不该等到某个站点某天打开 fiat 才第一次暴露出来。
+	if w.ProofMaxBytes <= 0 || w.ProofMaxBytes > MaxWithdrawProofBytes {
+		return fmt.Errorf("qianye: withdraw.proof_max_bytes 必须在 1..%d 字节之间,收到 %d"+
+			"(凭证需整张读进内存做魔数校验,不设硬顶等于把堆交给上传者)",
+			MaxWithdrawProofBytes, w.ProofMaxBytes)
 	}
 	return nil
 }

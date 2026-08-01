@@ -226,16 +226,20 @@ func prunePii(ctx context.Context, gdb *gorm.DB, batch int) {
 	}
 }
 
-// pruneExpiredPii 跑一轮保留期清理,覆盖全部三个 PII 面。
+// pruneExpiredPii 跑一轮保留期清理,覆盖全部四个 PII 面。
 //
-// 三个面收拢成一个入口,而不是让 reconcile 逐个调用:PII 面漏掉一个,
+// 四个面收拢成一个入口,而不是让 reconcile 逐个调用:PII 面漏掉一个,
 // pii_retention_days 就是半个摆设 —— 第一版正是这么翻车的(只清了 Payee 快照,
 // 漏了 PayeeAccount 里那份一模一样的银行卡号密文,用户删了收款方式也白删)。
 // 收拢之后"新增一张存 PII 的表却忘了接清理"能被一条测试钉住,而不是等下一次审计。
+//
+// 第四个面(凭证图片)是唯一一个 PII 不在数据库里的:它清的是磁盘文件。
+// 正因为如此它最容易被漏 —— 一次 `DELETE FROM` 的审计习惯看不见磁盘。
 func pruneExpiredPii(ctx context.Context, gdb *gorm.DB, batch int) {
 	prunePii(ctx, gdb, batch)
 	prunePayeeAccounts(ctx, gdb, batch)
 	prunePiiAudits(ctx, gdb, batch)
+	pruneProofs(ctx, gdb, batch)
 }
 
 // prunePayeeAccounts 清除已删除收款方式的银行卡号密文。

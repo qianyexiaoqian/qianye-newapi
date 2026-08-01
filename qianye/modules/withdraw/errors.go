@@ -45,6 +45,25 @@ var (
 	errPayoutRefMissing = newBizError("qy_wd_payout_ref_required", "请填写打款单号", http.StatusBadRequest)
 )
 
+// 凭证图片错误。
+//
+// 分得比"上传失败"细,是因为这四种情况用户能做的事完全不同:换一张图、
+// 压缩一下、先去用掉已传的、还是找管理员 —— 合并成一条只会让人反复重试同一张图。
+var (
+	errProofDisabled     = newBizError("qy_wd_proof_disabled", "当前站点未开放上传凭证", http.StatusBadRequest)
+	errProofRequired     = newBizError("qy_wd_proof_required", "请选择要上传的图片", http.StatusBadRequest)
+	errProofTooLarge     = newBizError("qy_wd_proof_too_large", "图片超出大小上限", http.StatusRequestEntityTooLarge)
+	errProofType         = newBizError("qy_wd_proof_type", "只接受 JPEG / PNG / WebP 图片", http.StatusBadRequest)
+	errProofNotFound     = newBizError("qy_wd_proof_not_found", "凭证不存在或已被使用", http.StatusBadRequest)
+	errProofPendingLimit = newBizError("qy_wd_proof_pending_limit",
+		"已有多张上传好的凭证尚未提交,请先完成申请", http.StatusBadRequest)
+	// errProofPurged 与 errProofNotFound 分开:前者是"确实传过,但按保留期
+	// (或单据被拒绝/撤销)已经清理了",后者是"从来没有这张"。
+	// 合成一条会让管理员在争议单上误以为用户根本没提交过凭证。
+	errProofPurged = newBizError("qy_wd_proof_purged", "凭证已按保留期清理,无法再查看", http.StatusGone)
+	errProofStore  = newBizError("qy_wd_proof_store_failed", "凭证保存失败,请稍后重试", http.StatusInternalServerError)
+)
+
 // 账户与余额错误。
 var (
 	errUserUnavailable   = newBizError("qy_wd_user_unavailable", "当前账号状态无法提现", http.StatusForbidden)

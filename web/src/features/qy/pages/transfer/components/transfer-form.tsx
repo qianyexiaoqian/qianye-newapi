@@ -51,6 +51,7 @@ import { QyAmountInput } from '../../../components/qy-amount-input'
 import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
 import { QyMaskedUser } from '../../../components/qy-masked-user'
+import { QyPayPasswordField } from '../../../components/qy-pay-password-field'
 import { useQyAfterMoneyChange } from '../../../hooks/use-qy-after-money-change'
 import { isQyError, qyErrorMessage } from '../../../lib/api'
 import { QY_TRANSFER_REMARK_MAX_RUNES, qyRuneLength } from '../../lib/constants'
@@ -58,6 +59,7 @@ import { useQyRequestId } from '../../lib/request-id'
 import { qyCreateTransfer, qyPreviewTransfer } from '../api'
 import { qyTransferBlockedKey } from '../lib/blocked-reason'
 import type { QyTransferLimits, QyTransferPreview } from '../types'
+import { TransferContacts } from './transfer-contacts'
 
 type TransferFormProps = {
   limits: QyTransferLimits
@@ -85,6 +87,11 @@ export function TransferForm(props: TransferFormProps) {
 
   const [preview, setPreview] = useState<QyTransferPreview | null>(null)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  // 支付密码只活在确认弹窗这一屏里(裁决 1:验密点只有执行入口一处)。
+  // 不进 react-hook-form:表单值会随预览一起被回填/复用,而密码不该有生命周期
+  // 长于"这一次提交"的存放处。弹窗一关就清掉,见下面的 onOpenChange。
+  const [payPassword, setPayPassword] = useState('')
+  const [payBlocked, setPayBlocked] = useState(false)
 
   const limits = props.limits
   const acceptsEmail = limits.recipient_lookup === 'id_or_email'
@@ -211,6 +218,25 @@ export function TransferForm(props: TransferFormProps) {
           </Alert>
         )}
 
+        {/* 联系人簿。选中一个联系人**只**把收款人输入框填好 —— 它不是信任
+            凭据，之后仍要走 preview → 二次确认 → 提交（支付密码、分组限制、
+            日限额）这条完整链路，一步不少（裁决 1）。
+            这里刻意用 setValue 写回同一个受控字段，而不是另存一份"已选联系人"
+            状态：多一份状态就多一条"显示的是 A、提交的是 B"的路径，
+            而下面那个 watch 订阅会在 identifier 变化时作废上一次预校验，
+            填表与手输走的是同一套作废逻辑。 */}
+        <TransferContacts
+          acceptsEmail={acceptsEmail}
+          pickDisabled={!canSubmit}
+          degraded={props.degraded}
+          onPick={(contact) => {
+            form.setValue('identifier', String(contact.user_id), {
+              shouldDirty: true,
+              shouldValidate: true,
+            })
+          }}
+        />
+
         <Form {...form}>
           <form
             className='space-y-4'
@@ -335,13 +361,34 @@ export function TransferForm(props: TransferFormProps) {
 
       <QyConfirmDialog
         open={confirmOpen}
-        onOpenChange={setConfirmOpen}
+        onOpenChange={(open) => {
+          setConfirmOpen(open)
+          // 关掉就清密码。留着的话,用户改完金额再打开弹窗会看到一个已填好的
+          // 密码格 —— 那正是"刻意动作"退化成"连点两下"的开始。
+          if (!open) setPayPassword('')
+        }}
         irreversible
         isLoading={createMutation.isPending}
         title={t('qy_tr_confirm_title')}
         description={t('qy_tr_confirm_desc')}
         confirmText={t('qy_tr_confirm_submit')}
-        details={preview == null ? null : <TransferSummary preview={preview} />}
+        confirmDisabled={payBlocked || payPassword.length === 0}
+        details={
+          preview == null ? null : (
+            <div className='space-y-3'>
+              <TransferSummary preview={preview} />
+              {/* 支付密码格放在确认弹窗里而不是主表单:它对应的是"这一次提交",
+                  而主表单的值会被预览流程反复复用。组件的 props 里没有收款人、
+                  也没有联系人 —— 它压根不知道钱要转给谁,也就没有能力分流。 */}
+              <QyPayPasswordField
+                value={payPassword}
+                onChange={setPayPassword}
+                disabled={createMutation.isPending}
+                onBlockedChange={setPayBlocked}
+              />
+            </div>
+          )
+        }
         onConfirm={() => {
           if (preview == null) return
           // 提交那一刻现取表单值，不用渲染期快照：快照会在"改了备注但没触发
@@ -353,6 +400,7 @@ export function TransferForm(props: TransferFormProps) {
             remark: current.remark,
             client_request_id: requestId.peek(),
             confirm: true,
+            pay_password: payPassword,
           })
         }}
       />

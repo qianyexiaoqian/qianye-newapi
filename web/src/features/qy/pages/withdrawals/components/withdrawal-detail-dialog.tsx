@@ -34,6 +34,7 @@ import { useQyAfterMoneyChange } from '../../../hooks/use-qy-after-money-change'
 import { qyErrorMessage } from '../../../lib/api'
 import { QyFiatText } from '../../components/qy-fiat-text'
 import { qyCancelWithdrawal, qyWithdrawRecordQuery } from '../../withdraw/api'
+import { QyWithdrawProofImage } from '../../withdraw/components/withdraw-proof-image'
 import { qyPayeeChannelKey } from '../../withdraw/lib/payee-spec'
 import { buildQyWithdrawTimeline, qyWithdrawActionKey } from '../lib/timeline'
 
@@ -160,6 +161,15 @@ export function WithdrawalDetailDialog(props: WithdrawalDetailDialogProps) {
               value={formatTimestampToDate(withdrawal.created_at)}
             />
           </dl>
+
+          {/* has_proof 只说明"附过"，图片可能已随单据终结被清理 ——
+              那种情况由 QyWithdrawProofImage 转述后端的 qy_wd_proof_purged。 */}
+          {withdrawal.has_proof && (
+            <div className='space-y-2'>
+              <h4 className='text-sm font-medium'>{t('qy_wd_proof_title')}</h4>
+              <QyWithdrawProofImage withdrawalId={withdrawal.id} />
+            </div>
+          )}
 
           <Separator />
 

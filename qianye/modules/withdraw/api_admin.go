@@ -319,7 +319,12 @@ func handleAdminRevealPayee(c *gin.Context) {
 	data, err := openPayee(payee.Nonce, payee.Cipher, withdrawAAD(payee.WithdrawNo), payee.KeyVersion)
 	if err != nil {
 		// 失败的访问同样要留痕:反复解不开也是一种需要被发现的异常。
-		recordPiiAccess(c, &payee, reason, "view_plain_failed", "")
+		recordPiiAccess(c, piiTarget{
+			Resource:   "withdrawal_payee",
+			ResourceId: payee.WithdrawalId,
+			UserId:     payee.UserId,
+			WithdrawNo: payee.WithdrawNo,
+		}, reason, "view_plain_failed", "")
 		respondErr(c, err)
 		return
 	}
@@ -329,7 +334,12 @@ func handleAdminRevealPayee(c *gin.Context) {
 		fields = append(fields, k)
 	}
 	sort.Strings(fields)
-	recordPiiAccess(c, &payee, reason, "view_plain", strings.Join(fields, ","))
+	recordPiiAccess(c, piiTarget{
+		Resource:   "withdrawal_payee",
+		ResourceId: payee.WithdrawalId,
+		UserId:     payee.UserId,
+		WithdrawNo: payee.WithdrawNo,
+	}, reason, "view_plain", strings.Join(fields, ","))
 
 	respondOK(c, gin.H{
 		"channel":     payee.Channel,
@@ -368,14 +378,62 @@ func handleAdminPiiAudits(c *gin.Context) {
 	respondOK(c, gin.H{"items": rows, "total": total, "p": page, "page_size": size})
 }
 
+// handleAdminGetProof 回给管理员一张凭证图片。
+//
+// 与 handleAdminRevealPayee 严格同口径(裁决 3 要求"与 payeeAccount 对齐"):
+// 必填事由 ≥4 字符、写 qy_pii_audits + 全局审计、挂关键操作限流。
+// 图片没有"脱敏版"这一层,所以它比收款账号更需要那条访问记录 ——
+// 管理员看一眼就拿到了全部内容,事后唯一能追的只有"谁在什么时候、以什么事由看的"。
+func handleAdminGetProof(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagCore) {
+		return
+	}
+	id, ok := pathId(c)
+	if !ok {
+		respondErr(c, errInvalidParam)
+		return
+	}
+	reason := strings.TrimSpace(c.Query("reason"))
+	if len([]rune(reason)) < 4 {
+		respondErr(c, errReasonRequired)
+		return
+	}
+	p, err := loadProofOfWithdrawal(id)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	// 先留痕再回文件:反过来的话,一次在传输中途断掉的下载就没有任何记录,
+	// 而管理员浏览器里的图片已经渲染出来了。
+	recordPiiAccess(c, piiTarget{
+		Resource:   "withdrawal_proof",
+		ResourceId: p.WithdrawalId,
+		UserId:     p.UserId,
+		WithdrawNo: p.WithdrawNo,
+	}, reason, "view_proof", p.MimeType)
+	serveProof(c, p)
+}
+
+// piiTarget 指明这次明文访问看的是谁的哪一份 PII。
+//
+// 收款账号与凭证图片是同一类东西的两个载体,因此共用同一张审计表与同一段写入
+// 逻辑 —— 各写一份的话,合规导出必然只导出其中一半(而且是先写的那一半)。
+type piiTarget struct {
+	// Resource 区分 withdrawal_payee 与 withdrawal_proof,导出时按它分类。
+	Resource   string
+	ResourceId int64
+	UserId     int
+	WithdrawNo string
+}
+
 // recordPiiAccess 记录一次明文访问。写失败只告警不阻断 ——
 // 但这是必须被发现的异常:审计静默丢失会让事故无法复盘。
-func recordPiiAccess(c *gin.Context, payee *Payee, reason, action, fields string) {
+func recordPiiAccess(c *gin.Context, target piiTarget, reason, action, fields string) {
 	a := actorOf(c)
 	row := &PiiAudit{
-		Resource:     "withdrawal_payee",
-		ResourceId:   payee.WithdrawalId,
-		TargetUserId: payee.UserId,
+		Resource:     target.Resource,
+		ResourceId:   target.ResourceId,
+		TargetUserId: target.UserId,
 		AdminId:      a.Id,
 		AdminName:    truncate(a.Name, 64),
 		Action:       action,
@@ -390,13 +448,13 @@ func recordPiiAccess(c *gin.Context, payee *Payee, reason, action, fields string
 		common.SysError("qianye/withdraw: 写入 PII 访问审计失败: " + err.Error())
 	}
 	audit.Write(c, audit.Entry{
-		TraceNo:      payee.WithdrawNo,
+		TraceNo:      target.WithdrawNo,
 		Category:     qymodel.AuditCategoryWithdraw,
 		Action:       "withdraw.payee." + action,
 		ActorType:    qymodel.ActorAdmin,
 		ActorUserId:  a.Id,
 		ActorName:    a.Name,
-		TargetUserId: payee.UserId,
+		TargetUserId: target.UserId,
 		Result:       qymodel.ResultOK,
 		Reason:       reason,
 	})

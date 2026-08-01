@@ -16,17 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { qyGet } from '../../lib/api'
-import type { QyAdminAvailabilityStats } from './types'
+import { createFileRoute } from '@tanstack/react-router'
 
-/**
- * 管理端可用率总览。
- *
- * 与用户端矩阵的根本差别是**不做任何分组裁剪** —— 管理员必须看得到隐藏分组，
- * 以及 UsingGroup 解析失败留下的 `unknown` 行（它是 hook 或渠道配置出问题的信号）。
- */
-export function getQyAdminAvailabilityStats(params: {
-  hours: number
-}): Promise<QyAdminAvailabilityStats> {
-  return qyGet<QyAdminAvailabilityStats>('/admin/availability/stats', params)
-}
+import { QyPayPassword } from '@/features/qy/pages/pay-password'
+
+// 叶子路由不写守卫：登录由 `_authenticated/route.tsx` 保证，扩展启用由
+// `qy/route.tsx` 保证，各一处、零重复。
+export const Route = createFileRoute('/_authenticated/qy/pay-password/')({
+  component: QyPayPassword,
+})

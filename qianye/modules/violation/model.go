@@ -3,8 +3,10 @@
 //
 // 三条铁律,违反任何一条都会造成全站事故或资损:
 //
-//  1. 影子模式是默认状态,不是可选项。一条 `.*` 正则能在 30 秒内封掉全站用户,
-//     所以还叠加了熔断:拦截率或封号速率越界时强制回落影子模式。
+//  1. 影子模式是默认状态。一条 `.*` 正则能在 30 秒内封掉全站用户,所以还叠加了
+//     熔断:拦截率或封号速率越界时强制回落影子模式。全局开关可由管理端在
+//     qy_settings 里切换(见 settings.go),YAML 只是它的兜底默认值;
+//     影子命中除了不扣费不阻断不封号,**也不推进违规计数**(裁决 2)。
 //  2. 热路径永不阻塞。规则只读进程内快照,所有落库走 guard.HotAsync;
 //     扩展库故障一律 fail-open(放行),扩展绝不能成为 relay 的单点故障。
 //  3. 扣费金额只走 common.Quota* 转换并强制上限。违规扣费是"惩罚"而不是"计费",
@@ -54,6 +56,21 @@ const (
 	RecordRevoked  = "revoked"
 	RecordAppealed = "appealed"
 )
+
+// CounterAfterShadow 是影子记录 counter_after 列的固定取值。
+//
+// 影子命中不推进违规计数(裁决 2:「不扣费,不封号,不记录违规次数」),
+// 所以"命中之后计数是多少"这个问题对它根本没有答案。取 0 会与"计数确实是 0"
+// 混淆;-1 是 bumpCounter 不可能产生的哨兵值,直接查库的人也能一眼看出这一行
+// 从未参与计数。管理端列表按 counted=false 显示 "-",不读这一列。
+//
+// **已知代价(不要在文档里糊过去)**:管理员因此失去了 O(1) 的
+// "这个用户在影子模式下已经攒了多少次"。要得到这个数只能去 qy_violation_record
+// 按 (user_id, shadow=true, created_at >= 窗口起点) 做一次 COUNT ——
+// 在这张增长最快的表上是一次范围扫描,比读计数器贵得多。
+// 这是裁决 2 明确接受的代价:另加一列"影子计数"就是在记录违规次数,
+// 而它一旦存在,下一次改动就会有人把它接回封号判据。
+const CounterAfterShadow = -1
 
 // 扣费结果。want 与实际两列并存,是"余额不足被截断"这类偏差唯一的可审计留痕。
 const (
@@ -184,7 +201,9 @@ type Record struct {
 	PublicReason string `json:"public_reason" gorm:"type:varchar(128);not null;default:''"`
 	Phase        string `json:"phase" gorm:"type:varchar(24);not null"`
 	Action       string `json:"action" gorm:"type:varchar(24);not null"`
-	// Shadow = true 表示影子模式(全局或规则级)下的记录:只记不罚。
+	// Shadow = true 表示影子模式(全局开关、熔断回落或规则级 dry_run)下的记录:
+	// 不扣费、不阻断、不封号、**不计违规次数**,只留这一行 + 证据供管理员核查。
+	// fee_quota_want 仍然是算准的("若真实执行会扣多少钱"),那是影子模式的全部价值。
 	Shadow  bool `json:"shadow" gorm:"not null;default:false"`
 	Blocked bool `json:"blocked" gorm:"not null;default:false"`
 
@@ -228,9 +247,14 @@ type Record struct {
 	// 规则配错,必须能在管理端单独筛出来。
 	QuotaClamp string `json:"quota_clamp" gorm:"type:varchar(512);not null;default:''"`
 
-	CountWeight  int  `json:"count_weight" gorm:"not null;default:0"`
-	Counted      bool `json:"counted" gorm:"not null;default:false"`
-	CounterAfter int  `json:"counter_after" gorm:"not null;default:0"`
+	// CountWeight 是这次命中**本该**给违规计数加的权重。影子记录也写它
+	// (回答"若真实执行会加几"),但影子命中不会推进计数器,见 CounterAfterShadow。
+	CountWeight int `json:"count_weight" gorm:"not null;default:0"`
+	// Counted 表示这次命中是否真的推进了 qy_violation_counter。
+	// 影子记录恒为 false —— 撤销记录时的计数回退因此不会对它做无中生有的减法。
+	Counted bool `json:"counted" gorm:"not null;default:false"`
+	// CounterAfter 是推进之后的窗口内计数。影子记录取 CounterAfterShadow。
+	CounterAfter int `json:"counter_after" gorm:"not null;default:0"`
 
 	Status       string `json:"status" gorm:"type:varchar(16);not null;default:'active';index:idx_qy_vrec_status"`
 	RevokedBy    int    `json:"revoked_by" gorm:"not null;default:0"`
@@ -272,10 +296,14 @@ type Payload struct {
 
 func (Payload) TableName() string { return "qy_violation_payload" }
 
-// Counter 是用户维度的滚动窗口违规计数。
+// Counter 是用户维度的滚动窗口违规计数,也是自动封号判据的唯一数据源。
 //
-// 单行 upsert + LAST_INSERT_ID 回读是"多节点并发把计数推过阈值"唯一的正确解法:
-// 每个 worker 拿到唯一的新计数,只有观察到"跨越阈值"的那一个才会去认领封号。
+// 单行 upsert(窗口过期判断与重置都在同一条语句里)+ 同事务回读,是"多节点并发
+// 把计数推过阈值"唯一的正确解法。刻意不用 LAST_INSERT_ID():它是会话级变量,
+// GORM 连接池会把 Exec 与 Raw 发到不同连接上 —— 详见 bumpCounter 的说明。
+//
+// **只有真实命中会写这张表。** 影子命中一律不推进(裁决 2),否则影子模式会把
+// 用户推过封号线,而这条线上的下一次真实命中就会立刻落封禁行。
 type Counter struct {
 	UserId      int   `json:"user_id" gorm:"primaryKey;autoIncrement:false"`
 	WindowStart int64 `json:"window_start" gorm:"not null;default:0"`

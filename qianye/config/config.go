@@ -228,7 +228,24 @@ type Withdraw struct {
 	// 未配置(0)会被 applyDefaults 补成 180 —— 清理默认开着是刻意的:
 	// 少配一个键就让一批银行卡号永久留存,不该是默认结局。要彻底关掉请填负数。
 	PIIRetentionDays int `yaml:"pii_retention_days"`
+	// ProofEnabled 决定是否允许用户给法币提现附一张收款/打款凭证图片。
+	//
+	// 图片落在【本地磁盘】(与本配置文件同级的 qy-withdraw-proofs/),不入库。
+	// 因此它带着一条部署约束:多节点各存各的,A 节点收到的上传 B 节点下载不到。
+	// 单节点部署无碍;多节点需要共享存储(NFS/EFS)或后续接对象存储。
+	// 不想在磁盘上留 PII 图片就显式置 false —— 上传接口会直接拒绝。
+	ProofEnabled *bool `yaml:"proof_enabled"`
+	// ProofMaxBytes 单张凭证的字节上限,上界见 MaxWithdrawProofBytes。
+	// 请求体在读第一个字节之前就被 http.MaxBytesReader 按它截断。
+	ProofMaxBytes int64 `yaml:"proof_max_bytes"`
 }
+
+// MaxWithdrawProofBytes 是 withdraw.proof_max_bytes 的硬上界。
+//
+// 存在的理由是上传缓冲:校验魔数需要把整张图读进内存,配得越大,一次
+// CriticalRateLimit 放行的并发上传能吃掉的堆就越多。凭证是手机拍的收款截图,
+// 8 MiB 足够,再大只说明配错了。
+const MaxWithdrawProofBytes = 8 << 20
 
 // Wallet 钱包页入口开关。
 type Wallet struct {
@@ -374,6 +391,16 @@ func (w Withdraw) HasWithdrawMethod(m string) bool {
 		}
 	}
 	return false
+}
+
+// ProofOn 表示凭证图片功能当前是否可用。
+//
+// 把"法币方式已开放"并进这一个判定,而不是让每个调用点各写一遍
+// `HasWithdrawMethod(fiat) && ProofEnabled`:凭证只服务于法币打款(站内额度
+// 兑换没有任何要凭证的场景),两个条件漏写一个的方向恰好是"quota-only 的站点
+// 也开始往磁盘上收 PII 图片"。
+func (w Withdraw) ProofOn() bool {
+	return w.HasWithdrawMethod(WithdrawMethodFiat) && boolOr(w.ProofEnabled, true)
 }
 
 // ───────────────────────────── 加载与访问 ─────────────────────────────

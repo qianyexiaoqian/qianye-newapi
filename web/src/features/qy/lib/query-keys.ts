@@ -38,6 +38,7 @@ export const qyKeys = {
     [...qyKeys.all, 'transfer', 'records', params] as const,
   transferPreview: (params: unknown) =>
     [...qyKeys.all, 'transfer', 'preview', params] as const,
+  transferContacts: () => [...qyKeys.all, 'transfer', 'contacts'] as const,
 
   commissionSummary: () => [...qyKeys.all, 'commission', 'summary'] as const,
   commissionInvitees: (params: unknown) =>
@@ -51,6 +52,9 @@ export const qyKeys = {
   withdrawRecord: (id: number | string) =>
     [...qyKeys.all, 'withdraw', 'record', id] as const,
   withdrawPayees: () => [...qyKeys.all, 'withdraw', 'payees'] as const,
+
+  /** 支付密码状态（是否已设置 / 是否锁定 / 剩余次数）。 */
+  payPassword: () => [...qyKeys.all, 'pay-password'] as const,
 
   violationMyRecords: (params: unknown) =>
     [...qyKeys.all, 'violation', 'my-records', params] as const,
@@ -80,6 +84,8 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'transfer', 'records', params] as const,
   adminTransferGroupRules: () =>
     [...qyKeys.all, 'admin', 'transfer', 'group-rules'] as const,
+  adminTransferConfig: () =>
+    [...qyKeys.all, 'admin', 'transfer', 'config'] as const,
 
   adminWithdrawals: (params: unknown) =>
     [...qyKeys.all, 'admin', 'withdraw', 'list', params] as const,
@@ -102,9 +108,8 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'violation', 'appeals', params] as const,
   adminViolationStats: () =>
     [...qyKeys.all, 'admin', 'violation', 'stats'] as const,
-
-  adminAvailabilityStats: (params: unknown) =>
-    [...qyKeys.all, 'admin', 'availability', 'stats', params] as const,
+  adminViolationCounters: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'violation', 'counters', params] as const,
 
   adminUserGroupConfig: () =>
     [...qyKeys.all, 'admin', 'user-group', 'config'] as const,

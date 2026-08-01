@@ -109,17 +109,17 @@ var fieldConsumers = map[string]consumer{
 
 	// ─────────────────────────── transfer ───────────────────────────
 	"transfer.enabled":                     {"qianye/guard/guard.go", "featureOn(FlagTransfer):关掉后划转接口一律返回 qy_feature_off"},
-	"transfer.min_quota":                   {"qianye/modules/transfer/validate.go", "单笔下限,受理时拒绝"},
-	"transfer.max_per_tx_quota":            {"qianye/modules/transfer/validate.go", "单笔上限,受理时拒绝"},
-	"transfer.daily_max_quota":             {"qianye/modules/transfer/risk.go", "日累计额度,在加锁事务内判定"},
-	"transfer.daily_max_count":             {"qianye/modules/transfer/risk.go", "日累计笔数,在加锁事务内判定"},
-	"transfer.fee_bps":                     {"qianye/modules/transfer/validate.go", "手续费率,computeFee 的输入"},
-	"transfer.fee_min_quota":               {"qianye/modules/transfer/validate.go", "手续费下限"},
-	"transfer.cooldown_seconds":            {"qianye/modules/transfer/risk.go", "两笔划转之间的最小间隔"},
+	"transfer.min_quota":                   {"qianye/modules/transfer/validate.go", "单笔下限,受理时拒绝;YAML 是默认值,可被管理端在 qy_settings(scope=transfer)在线覆盖"},
+	"transfer.max_per_tx_quota":            {"qianye/modules/transfer/validate.go", "单笔上限,受理时拒绝;同上,可被 qy_settings 在线覆盖"},
+	"transfer.daily_max_quota":             {"qianye/modules/transfer/risk.go", "日累计额度,在加锁事务内判定;可被 qy_settings 在线覆盖"},
+	"transfer.daily_max_count":             {"qianye/modules/transfer/risk.go", "日累计笔数,在加锁事务内判定;可被 qy_settings 在线覆盖"},
+	"transfer.fee_bps":                     {"qianye/modules/transfer/validate.go", "手续费率,computeFee 的输入;可被 qy_settings 在线覆盖"},
+	"transfer.fee_min_quota":               {"qianye/modules/transfer/validate.go", "手续费下限;可被 qy_settings 在线覆盖"},
+	"transfer.cooldown_seconds":            {"qianye/modules/transfer/risk.go", "两笔划转之间的最小间隔;可被 qy_settings 在线覆盖"},
 	"transfer.recipient_lookup":            {"qianye/modules/transfer/lookup.go", "收款人可按什么解析(id / id_or_email)"},
-	"transfer.new_account_freeze_hours":    {"qianye/modules/transfer/service.go", "新注册账号多久内不可转出"},
+	"transfer.new_account_freeze_hours":    {"qianye/modules/transfer/service.go", "新注册账号多久内不可转出;可被 qy_settings 在线覆盖"},
 	"transfer.require_receiver_enabled":    {"qianye/modules/transfer/lookup.go", "收款方被封禁时是否拒绝"},
-	"transfer.receiver_daily_max_in_count": {"qianye/modules/transfer/risk.go", "单账号每日可接收的笔数上限"},
+	"transfer.receiver_daily_max_in_count": {"qianye/modules/transfer/risk.go", "单账号每日可接收的笔数上限;可被 qy_settings 在线覆盖"},
 	"transfer.lookup_log_retain_days":      {"qianye/modules/transfer/reconcile.go", "收款人解析日志的保留天数,pruneLookupLogs 的扫描下界"},
 
 	// ─────────────────────────── commission ───────────────────────────
@@ -166,6 +166,11 @@ var fieldConsumers = map[string]consumer{
 	"withdraw.max_quota_per_order":    {"qianye/modules/withdraw/validate.go", "单笔提现上限"},
 	"withdraw.daily_max_quota":        {"qianye/modules/withdraw/create.go", "单日提现总额上限"},
 	"withdraw.pii_retention_days":     {"qianye/modules/withdraw/payee.go", "收款信息密文的保留天数"},
+	"withdraw.proof_enabled": {"qianye/modules/withdraw/proof.go",
+		"是否允许给法币提现附一张凭证图片(经 ProofOn(),已并入「法币方式已开放」这一前提);" +
+			"关掉后上传接口直接拒绝,已存在的图片仍可下载直到被清理"},
+	"withdraw.proof_max_bytes": {"qianye/modules/withdraw/proof.go",
+		"单张凭证的字节上限,在读第一个字节之前就作为 http.MaxBytesReader 的参数生效"},
 
 	// ─────────────────────────── wallet ───────────────────────────
 	"wallet.show_transfer_entry":   {"qianye/controller/config.go", "下发给前端,决定钱包页是否渲染划转入口"},
@@ -196,7 +201,7 @@ var fieldConsumers = map[string]consumer{
 
 	// ─────────────────────────── violation ───────────────────────────
 	"violation.enabled":                        {"qianye/guard/guard.go", "featureOn(FlagViolation)"},
-	"violation.shadow_mode":                    {"qianye/modules/violation/breaker.go", "影子模式:命中只记录不拦截、不扣费、不封号"},
+	"violation.shadow_mode":                    {"qianye/modules/violation/settings.go", "影子模式的兜底默认值(只记录,不拦截/扣费/封号/计数);qy_settings 的管理端覆盖优先"},
 	"violation.precheck_enabled":               {"qianye/modules/violation/guard.go", "relay 前置扫描挂载点是否生效"},
 	"violation.post_charge_enabled":            {"qianye/modules/violation/guard.go", "计费后扫描挂载点是否生效"},
 	"violation.fee_multiplier":                 {"qianye/modules/violation/fee.go", "违规扣费倍数"},

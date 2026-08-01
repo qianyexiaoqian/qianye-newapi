@@ -24,7 +24,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	// 内存库按连接隔离,多连接会各看到一个空库。
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, gdb.AutoMigrate(&Withdrawal{}, &Payee{}, &PayeeAccount{}, &Event{}, &PiiAudit{}))
+	require.NoError(t, gdb.AutoMigrate(&Withdrawal{}, &Payee{}, &PayeeAccount{}, &Event{}, &PiiAudit{}, &Proof{}))
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return gdb
 }
