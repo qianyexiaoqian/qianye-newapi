@@ -103,6 +103,9 @@ var fieldConsumers = map[string]consumer{
 	"audit.enabled":            {"qianye/service/audit/audit.go", "false 时不写审计记录"},
 	"audit.record_ip":          {"qianye/service/audit/audit.go", "是否记录操作者 IP"},
 	"audit.snapshot_max_bytes": {"qianye/service/audit/audit.go", "审计快照的截断上限"},
+	"audit.request_enabled": {"qianye/service/audit/middleware.go",
+		"HTTP 请求台账(qy_request_audits)的开关。false 时中间件直接放行、异步写入器一条都不入队;" +
+			"与 audit.enabled 是与关系,后者关掉时它也不生效"},
 	"audit.retention_days": {"qianye/service/audit/retention.go",
 		"Prune 的保留期。0(默认)= 永久保留;大于 0 时按主键开窗分批删除超期行," +
 			"取值不得低于 config.MinAuditRetentionDays(365 天),低于下限直接拒绝启动而非静默夹取"},

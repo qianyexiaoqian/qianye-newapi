@@ -117,7 +117,7 @@ func TestPruneExpired_ZeroAndNegativeDaysDeleteNothing(t *testing.T) {
 			seedAges(t, gdb, now, 10000, 5000, 3000, 800, 400)
 			rec.reset()
 
-			deleted, err := pruneExpired(context.Background(), gdb, days, now)
+			deleted, err := pruneExpired(context.Background(), gdb, &qymodel.AuditLog{}, days, now)
 			require.NoError(t, err)
 			// 先取语句快照再查行数 —— countRows 自己也会发一条 SELECT。
 			deletes, selects := rec.statements("DELETE"), rec.statements("SELECT")
@@ -145,7 +145,7 @@ func TestPruneExpired_RefusesBelowFloorEvenIfConfigWasBypassed(t *testing.T) {
 			seedAges(t, gdb, now, 10000, 5000, 400)
 			rec.reset()
 
-			deleted, err := pruneExpired(context.Background(), gdb, days, now)
+			deleted, err := pruneExpired(context.Background(), gdb, &qymodel.AuditLog{}, days, now)
 			require.NoError(t, err)
 			deletes := rec.statements("DELETE") // countRows 之前取,它自己也发语句
 
@@ -172,7 +172,7 @@ func TestPruneExpired_DeletesOnlyRowsStrictlyOlderThanCutoff(t *testing.T) {
 		0,             // 刚写的
 	)
 
-	deleted, err := pruneExpired(context.Background(), gdb, days, now)
+	deleted, err := pruneExpired(context.Background(), gdb, &qymodel.AuditLog{}, days, now)
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, deleted)
 
@@ -200,7 +200,7 @@ func TestPruneExpired_DeletesInPrimaryKeyWindowsNotOneBigDelete(t *testing.T) {
 	seedAges(t, gdb, now, ages...)
 	rec.reset()
 
-	deleted, err := pruneExpired(context.Background(), gdb, config.MinAuditRetentionDays, now)
+	deleted, err := pruneExpired(context.Background(), gdb, &qymodel.AuditLog{}, config.MinAuditRetentionDays, now)
 	require.NoError(t, err)
 	// 语句快照必须在 countRows 之前取:那一条 SELECT count(*) 也会被记进来。
 	deletes, selects := rec.statements("DELETE"), rec.statements("SELECT")
@@ -238,13 +238,66 @@ func TestPruneExpired_StopsScanningOnceInsideRetentionWindow(t *testing.T) {
 	seedAges(t, gdb, now, int64(days)+10, int64(days)+5, 1, 0)
 	rec.reset()
 
-	deleted, err := pruneExpired(context.Background(), gdb, days, now)
+	deleted, err := pruneExpired(context.Background(), gdb, &qymodel.AuditLog{}, days, now)
 	require.NoError(t, err)
 	selects := rec.statements("SELECT") // countRows 之前取
 
 	assert.EqualValues(t, 2, deleted)
 	assert.EqualValues(t, 2, countRows(t, gdb))
 	assert.Len(t, selects, 1, "一窗就看到了保留期内的行,不该再扫第二窗")
+}
+
+// ── ⑤ 两张审计表都必须被清理 ──────────────────────────────────────────
+//
+// qy_request_audits 加进来的时候,pruneExpired 里的 `&qymodel.AuditLog{}` 是
+// 硬编码的。只加表、不加清理目标,是本仓最典型的断链形状:表建出来了、
+// 中间件在写、保留期配置也在,但那张表永远只增不减,而且没有任何报错。
+//
+// 断言直接对着 pruneTargets:它是唯一决定"哪些表会被清"的地方,
+// 逐表跑一遍 pruneExpired 反而验不到"某张表压根没进列表"。
+func TestPruneTargets_CoversEveryAuditTable(t *testing.T) {
+	gdb, _ := newAuditDB(t)
+	require.NoError(t, gdb.AutoMigrate(&qymodel.RequestAudit{}))
+	now := time.Now().Unix()
+	days := config.MinAuditRetentionDays
+	old := now - int64(days+1)*day
+
+	seedAges(t, gdb, now, int64(days)+1, 0)
+	require.NoError(t, gdb.CreateInBatches(&[]qymodel.RequestAudit{
+		{Action: "transfer.create", CreatedAt: old},
+		{Action: "transfer.create", CreatedAt: now},
+	}, 10).Error)
+
+	labels := make([]string, 0, len(pruneTargets))
+	for _, target := range pruneTargets {
+		labels = append(labels, target.label)
+		deleted, err := pruneExpired(context.Background(), gdb, target.model, days, now)
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, deleted, "%s 应当只删掉那一行过期记录", target.label)
+	}
+	assert.ElementsMatch(t, []string{"qy_audit_logs", "qy_request_audits"}, labels,
+		"每一张受 audit.retention_days 管辖的表都必须登记进 pruneTargets,"+
+			"否则它只增不减,而且不会有任何报错")
+
+	// 另一半断链:模型没登记进 FoundationTables 时,表压根不会被建出来。
+	// 那种情况下 AutoMigrate 不报错、编译不报错,只有第一次写入才失败,
+	// 而写入是 fail-open 的(只 SysError)—— 台账会永远为空。
+	registered := make(map[string]bool, len(qymodel.FoundationTables()))
+	for _, m := range qymodel.FoundationTables() {
+		named, ok := m.(interface{ TableName() string })
+		require.Truef(t, ok, "地基表 %T 必须实现 TableName()(表名硬编码为 qy_ 前缀)", m)
+		registered[named.TableName()] = true
+	}
+	for _, target := range pruneTargets {
+		assert.Truef(t, registered[target.label],
+			"%s 在 pruneTargets 里,却没有登记进 model.FoundationTables() —— 表根本不会被建出来",
+			target.label)
+	}
+
+	var reqLeft int64
+	require.NoError(t, gdb.Model(&qymodel.RequestAudit{}).Count(&reqLeft).Error)
+	assert.EqualValues(t, 1, reqLeft)
+	assert.EqualValues(t, 1, countRows(t, gdb))
 }
 
 // 租约丢失后必须立刻停手:继续删就是与接管节点双跑。
@@ -257,7 +310,7 @@ func TestPruneExpired_StopsWhenLeaseContextIsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	deleted, err := pruneExpired(ctx, gdb, config.MinAuditRetentionDays, now)
+	deleted, err := pruneExpired(ctx, gdb, &qymodel.AuditLog{}, config.MinAuditRetentionDays, now)
 	require.NoError(t, err)
 	deletes := rec.statements("DELETE") // countRows 之前取
 

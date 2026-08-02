@@ -33,6 +33,26 @@ const (
 	MatchErrorCode    = "error_code"    // 逗号分隔的 types.ErrorCode 精确值
 	MatchStatusCode   = "status_code"   // 逗号分隔 HTTP 状态码或区间 "400-499"
 	MatchUpstreamText = "upstream_text" // 换行分隔子串,匹配上游错误文本
+	// MatchRequestRate 是唯一一种不看文本的匹配方式:pattern 是一个整数阈值,
+	// 命中条件为"该用户 rateWindowSeconds 内已通过校验、即将发往上游的**非流式**
+	// 请求条数 >= 阈值"。这条判据服务于"防蒸馏":批量采集训练语料的一方要的是
+	// 完整 JSON,不会开 stream;开 stream 的通常是真人在等字。
+	//
+	// **它的局限必须公开写在管理端表单里**:客户端加一行 "stream": true 就能
+	// 完全绕过。它是一道减速带,不是一堵墙。判据本身无法根治这一点 ——
+	// 逐字节比对流式与非流式的产出没有可行的在线实现。
+	MatchRequestRate = "request_rate"
+)
+
+// 分组作用域的名单方向。
+//
+// 只加这一列、不加第二份名单:两张能互相矛盾的名单(白名单 + 黑名单)必然漂移,
+// 而"到底哪张说了算"没有任何一个取值组合能自解释。空 GroupScope 时这一列恒为
+// include(见 ruleUpsertReq.apply),因为"空黑名单"与"空白名单"语义完全相同,
+// 留两个等价状态只会让人以为它们不同。
+const (
+	GroupScopeInclude = "include" // 名单非空 = 只对名单内的分组生效
+	GroupScopeExclude = "exclude" // 名单非空 = 对名单内的分组豁免,其余全部生效
 )
 
 // 处置动作。
@@ -137,6 +157,10 @@ type Rule struct {
 	// 空 = 全部;否则逗号分隔,模型支持 "gpt-4*" / "*-vision" 前后缀通配。
 	ModelScope string `json:"model_scope" gorm:"type:varchar(2048);not null;default:''"`
 	GroupScope string `json:"group_scope" gorm:"type:varchar(1024);not null;default:''"`
+	// GroupScopeMode 决定 GroupScope 是白名单还是黑名单(include / exclude)。
+	// 空串按 include 处理:滚动升级期间旧节点写下的行、以及 DBA 手工建的表都可能
+	// 留空,而 include 正是这一列出现之前的唯一语义,回落到它不改变任何既有规则。
+	GroupScopeMode string `json:"group_scope_mode" gorm:"type:varchar(8);not null;default:'include'"`
 
 	Action  string `json:"action" gorm:"type:varchar(24);not null;default:'record'"`
 	FeeMode string `json:"fee_mode" gorm:"type:varchar(24);not null;default:'none'"`

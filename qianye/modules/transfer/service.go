@@ -134,6 +134,19 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 			return nil, errIdemKeyConflict
 		}
 		releaseOnFailure(order, execErr)
+		// 被风控拒绝的划转在此之前零留痕:资金审计里只有成功的那些,
+		// 于是"这个账号连续 20 次撞日限额、每次都换一个收款人"这种最典型的
+		// 洗号形状,事后一行都查不到。
+		//
+		// 只在 order != nil 时写:资金单已经落库意味着这是一次被受理并被判定
+		// 失败的真实尝试,行数与资金单一一对应,不会因为参数校验失败被灌爆
+		// 仲裁表(那一类由请求台账 qy_request_audits 覆盖)。
+		if order != nil {
+			e := transferCreatedAudit(order, c.GetString("username"))
+			e.Result = qymodel.ResultFail
+			e.Reason = audit.Truncate("划转被拒: "+execErr.Error(), 500)
+			audit.Write(c, e)
+		}
 		return nil, execErr
 	}
 

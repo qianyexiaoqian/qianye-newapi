@@ -86,10 +86,55 @@ export function QySectionPageLayout(props: SectionPageLayoutProps) {
     })
   }, [props.children, steinsGate, pathname, t])
 
+  // 上游 SectionPageLayout 只认四类插槽（Title/Actions/Content/Breadcrumb），
+  // **其余 children 一律丢弃** —— 它的 Children.forEach 只把认识的那几个赋给
+  // 局部变量，认不出的连引用都不保留。
+  //
+  // 而 qy 的页面普遍把弹窗写在插槽外面：
+  //
+  //     <QySectionPageLayout.Content>…</QySectionPageLayout.Content>
+  //     <QyGroupRuleFormSheet … />      ← 这一行从来没有被渲染过
+  //     <QyConfirmDialog … />
+  //
+  // 后果是这些页面上所有的确认框、编辑抽屉、详情弹窗全是死的：点击按钮确实改了
+  // state，但组件压根不在 DOM 里，什么都不会发生。实测受影响 14 个页面。
+  // 「划转分组点新建规则没反应」就是它的一个表现。
+  //
+  // 在这里把非插槽 children 收集出来、与 SectionPageLayout 并列渲染。
+  // 弹窗类组件本身都走 portal 渲染到 body，挂在哪个父节点下不影响表现。
+  //
+  // 为什么不逐页把弹窗塞进 <Content> 里：那是 14 个文件的改动，而且下一个新页面
+  // 照着现有页面抄，还会再犯一次 —— 这正是本项目累计出现十几次的「断链」形状。
+  // 修在唯一的公共外壳上，新页面天然不会踩。
+  const extras = useMemo(() => {
+    const slots = new Set<unknown>([
+      SectionPageLayout.Title,
+      SectionPageLayout.Actions,
+      SectionPageLayout.Content,
+      SectionPageLayout.Breadcrumb,
+    ])
+    const rest: React.ReactNode[] = []
+    // `children` 在 steinsGate 分支下是 Children.map 的产物（已归一），
+    // 非 steinsGate 分支下是原始的 props.children —— 后者的类型里含 `false`
+    // （页面里 `{cond && <Dialog/>}` 的写法），而 Children.forEach 的签名不收它。
+    // 转成 ReactNode 走一遍即可，运行时行为不变。
+    Children.forEach(children as React.ReactNode, (node) => {
+      // 非元素（字符串/数字/null）本来也会被上游丢掉，但它们出现在这里
+      // 基本都是排版空白，捞回来反而会渲染出多余文本，故只收元素。
+      if (!isValidElement(node)) return
+      if (slots.has(node.type)) return
+      rest.push(node)
+    })
+    return rest
+  }, [children])
+
   return (
-    <SectionPageLayout fixedContent={props.fixedContent}>
-      {children}
-    </SectionPageLayout>
+    <>
+      <SectionPageLayout fixedContent={props.fixedContent}>
+        {children}
+      </SectionPageLayout>
+      {extras}
+    </>
   )
 }
 

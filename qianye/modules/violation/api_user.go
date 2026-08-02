@@ -1,6 +1,7 @@
 package violation
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -8,6 +9,8 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm/clause"
@@ -194,5 +197,23 @@ func userCreateAppeal(c *gin.Context) {
 	}
 	_ = db.Get().Model(&Record{}).Where("id = ? AND status = ?", rec.Id, RecordActive).
 		Update("status", RecordAppealed).Error
+
+	// 申诉提交要与裁决成对留痕。只记裁决那一半,时间线上就少了"用户什么时候
+	// 提的、提的是哪条记录、扣了多少" —— 而争议里被质疑的往往正是这一段。
+	// TraceNo 与 appeals.review 取同一个形状,两条记录能被串起来。
+	audit.Write(c, audit.Entry{
+		TraceNo:      fmt.Sprintf("appeal-%d", row.Id),
+		Category:     qymodel.AuditCategoryViolation,
+		Action:       "appeals.create",
+		ActorType:    qymodel.ActorUser,
+		ActorUserId:  userId,
+		ActorName:    c.GetString("username"),
+		TargetUserId: userId,
+		AmountQuota:  rec.FeeQuota,
+		Result:       qymodel.ResultPending,
+		Reason:       truncate("提交违规申诉: "+reason, 500),
+		AfterSnap: fmt.Sprintf(`{"appeal_id":%d,"record_id":%d,"rule_name":%q,"fee_quota":%d}`,
+			row.Id, rec.Id, rec.RuleName, rec.FeeQuota),
+	})
 	respond(c, gin.H{"id": row.Id})
 }

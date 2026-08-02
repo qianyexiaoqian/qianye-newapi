@@ -50,7 +50,11 @@ export function useSidebarData(): SidebarData {
   const { t } = useTranslation()
 
   return {
-    navGroups: [
+    // qy 扩展的页面不再自成一坨，而是由 `useQySidebarGroups` 按语义并入下面的
+    // 上游分组（可用率 → General、支付密码/划转/提现 → Personal、分组定价等
+    // → Admin），另外只补三个受控大小的新分组。落点表见
+    // `features/qy/lib/pages.ts`；扩展未启用时原样返回入参。
+    navGroups: useQySidebarGroups([
       {
         id: 'chat',
         title: t('Chat'),
@@ -159,7 +163,6 @@ export function useSidebarData(): SidebarData {
           },
         ],
       },
-      ...useQySidebarGroups(),
-    ],
+    ]),
   }
 }

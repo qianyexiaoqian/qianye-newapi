@@ -18,6 +18,7 @@ func FoundationTables() []any {
 	return []any{
 		&FundOrder{},
 		&AuditLog{},
+		&RequestAudit{},
 		&TaskLease{},
 		&KV{},
 		&Setting{},

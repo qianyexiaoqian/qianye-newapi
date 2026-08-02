@@ -2,41 +2,31 @@
  * Steins Gate 主题 —— 汇总入口。
  *
  * 本文件【只做 @import】,不写任何规则。这样 index.css 里那一行
- * `@import './qy-steins-gate.css'` 永远不用动,主题内部怎么拆分文件
- * 都不外溢。
+ * `@import './qy-steins-gate.css'` 永远不用动,主题内部怎么拆分文件都不外溢。
  *
  * 顺序即层叠顺序,不要随手调换:
- *   tokens     所有取值的唯一来源,必须第一个加载,后面几个都引用它的 --qy-sg-*
- *   frame      形状基元层(切角框、电路走线),第二版新增。排在 tokens 之后、
- *              组件层之前:controls / surfaces / data / nav 都引用它导出的
- *              --qy-sg-frame-* / --qy-sg-trace-*,不重新实现同一个形状
- *   decor      装饰层(颗粒、齿轮、选中、滚动条),挂在 body 伪元素上,与组件无关
- *   controls   控件形态
- *   surfaces   表面与浮层(浮层要盖住控件,故排在 controls 之后)
- *   data       数据展示
- *   nav        导航
- *   editorial  构图工具类,它是页面级的显式类名,
- *              应当能覆盖前面按 data-slot 挂上去的组件级规则
- *   pages      落地层:把 editorial 的工具类装进 qy 的页面骨架,
- *              并按页头/概览栏的实际语境收窄 editorial 里按落地页校准的取值
- *   landing    公共落地页(features/home)。排最后是因为它是全文件里唯一
- *              一个【不靠 data-slot】的消费方:上游那张营销页没有 slot,
- *              只能拿 Tailwind 工具类当锚点,层叠上必须能压过前面按 slot
- *              挂上去的组件级规则。它的作用域被一条 :has() 收死在落地页
- *              根节点内,压不到 qy 的任何页面
+ *   tokens  所有取值(色板、字体轴、派生量)的唯一来源,必须第一个加载
+ *   shape   六条签名形状的配方(几何量、clip-path 点表、走线瓦片),
+ *           只声明自定义属性、不写选择器规则,引用 tokens 的颜色
+ *   apply   把形状挂到 ~25 个 data-slot 与 qy 页面骨架上。
+ *           一条形状 = 一条规则,属性集合只写一次
  *
- * 全部规则限定在 [data-theme-preset='steins-gate'] 作用域内,
- * 切到任何其他预设都逐像素不受影响;上游组件源码一行未改,
- * 靠 shadcn 的 data-slot 锚点挂进去。
+ * 全部规则限定在 [data-theme-preset='steins-gate'] 作用域内,切到任何其他预设
+ * 都逐像素不受影响;上游组件源码一行未改,靠 shadcn 的 data-slot 锚点挂进去。
+ *
+ * 第四版把第三版的十个文件 6068 行压到三个文件。删掉的是:
+ * 装饰层(颗粒/暗角/齿轮/滚动条 —— 遮住颜色看轮廓一样都读不出)、
+ * 落地页的版式重排(只留去色,见 apply §12)、
+ * 15 个零引用的类,以及按钮/表单/分段控件上那 103 个逐槽规则块。
+ *
+ * 被删掉的那几个文件里有大量"某条设计规范为什么被推翻"的论证注释。它们没有
+ * 迁进新文件,也没有另写文档 —— 它们是【已经结案的历史】,留在版本库里即可:
+ *   git log -p -- web/src/styles/qy-sg-frame.css     切角与 L 形角标的推翻过程
+ *   git log -p -- web/src/styles/qy-sg-landing.css   落地页版式重排的完整版
+ *   git log -p -- web/src/styles/qy-sg-decor.css     颗粒/齿轮/滚动条的取材
+ * 现行设计规范仍在 qianye/docs/design-10 与 design-11。
  */
 
 @import './qy-sg-tokens.css';
-@import './qy-sg-frame.css';
-@import './qy-sg-decor.css';
-@import './qy-sg-controls.css';
-@import './qy-sg-surfaces.css';
-@import './qy-sg-data.css';
-@import './qy-sg-nav.css';
-@import './qy-sg-editorial.css';
-@import './qy-sg-pages.css';
-@import './qy-sg-landing.css';
+@import './qy-sg-shape.css';
+@import './qy-sg-apply.css';

@@ -105,7 +105,21 @@ func createPayeeAccount(userId int, channel string, data map[string]string, labe
 //
 // 软删除而非物理删除:历史提现单的 digest 风控线索要留着,
 // 且"这个账号曾经绑过某张卡"本身就是事后追查的证据。
-func deletePayeeAccount(userId int, ref string) error {
+// 返回被删那一条的脱敏快照,供审计记录"删掉的是哪一张卡"。软删之后再去查
+// 只能看到 deleted_at,而这正是提现欺诈复盘要问的第一个问题。快照读不到不算
+// 失败:权威判定仍然是下面 Updates 的 RowsAffected。
+func deletePayeeAccount(userId int, ref string) (*payeeView, error) {
+	var row PayeeAccount
+	var snap *payeeView
+	if err := db.Get().
+		Where("user_id = ? AND ref = ? AND deleted_at = 0", userId, ref).
+		Take(&row).Error; err == nil {
+		snap = &payeeView{
+			Ref: row.Ref, Channel: row.Channel, Label: row.Label,
+			Masked: row.Masked, CreatedAt: row.CreatedAt,
+		}
+	}
+
 	res := db.Get().Model(&PayeeAccount{}).
 		Where("user_id = ? AND ref = ? AND deleted_at = 0", userId, ref).
 		Updates(map[string]any{
@@ -114,12 +128,12 @@ func deletePayeeAccount(userId int, ref string) error {
 		})
 	if res.Error != nil {
 		db.MarkFailure(res.Error)
-		return res.Error
+		return snap, res.Error
 	}
 	if res.RowsAffected == 0 {
-		return errPayeeNotFound
+		return snap, errPayeeNotFound
 	}
-	return nil
+	return snap, nil
 }
 
 // resolvePayee 取出本次申请要用的收款信息明文。

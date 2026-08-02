@@ -19,16 +19,23 @@ For commercial licensing, please contact support@quantumnous.com
 /*
  * Steins Gate 令牌层的契约测试。
  *
- * 这里钉的是三件"改坏了肉眼看不出来、但用户会中招"的事:
+ * 这里钉的是六件"改坏了肉眼看不出来、但用户会中招"的事:
  *
- * 1. 昼夜覆写完整性。夜块只覆写"公式本身不同"的量,漏掉一个,夜间就会静默
- *    继承昼间的值(例如 --qy-sg-ember 漏覆写,夜间表头会变成 Claude 的陶土色)。
- *    这类断链在渲染上不报错,只是"颜色有点怪",评审极易放过。
- * 2. 声明唯一性。--qy-sg-* 的颜色派生量只允许在 qy-sg-tokens.css 声明;
- *    别的 qy-sg-*.css 一旦也声明同名量,后加载的会静默覆盖,是最难查的一类样式 bug。
- * 3. 对比度下限。夜间底色是【中间调】混凝土灰,它把语义色两头都挤住;
- *    这套值的亮度是按"压在底色上 ≥4.5:1"反解出来的。有人为了"更红更醒目"
- *    把 destructive 调回饱和红,正文就会掉到 3:1 以下 —— 只有算出来才知道。
+ * 1. 昼夜同族。第四版把昼间从夜间派生出来 —— 三个色相角(混凝土 197、
+ *    金 88.5、橙 46.1)昼夜共用,只改明度与彩度。前三版的昼间是另一套品牌
+ *    (Anthropic 色板,陶土色相 38.8),仓库里因此躺着两份色板,而且拨一下
+ *    dark 开关看到的是另一个产品。第 1 组用例把色相角钉死:谁再塞一个族外
+ *    的强调色进来,直接红。
+ * 2. 层次方向镜像。夜间的面是从墙上凿【进去】的(card/popover/sidebar 比底色暗),
+ *    昼间是纸上浮【起来】的。方向搞反在渲染上不报错,只是"层次有点怪"。
+ * 3. 取材锚点。夜间每个基色都是从游戏截图里逐像素量出来的。
+ * 4. 昼夜覆写完整性。夜块只覆写"公式本身不同"的量,漏掉一个,夜间就会静默
+ *    继承昼间的值;反过来,公式一致的量在夜块重复声明,就是同一概念的第二份
+ *    拷贝,迟早各自漂移。
+ * 5. 声明唯一性。--qy-sg-* 在三个文件里合起来只能声明一次。
+ * 6. 对比度下限。夜间底色是【中间调】混凝土灰,把语义色两头都挤住;
+ *    昼间强调色被压到 L≈0.54 才能当文字色用。这套值的明度是反解出来的,
+ *    有人为了"更亮更醒目"往回调,正文就会掉到 3:1 以下 —— 只有算出来才知道。
  *
  * 测试直接解析 CSS 源文件而不是跑浏览器:本仓库前端测试跑在 node:test 下,
  * 没有渲染引擎。oklch → sRGB 的换算在下面自带一份(公式来自 Björn Ottosson
@@ -92,14 +99,27 @@ function declarationsOf(block: string): Map<string, string> {
 const light = declarationsOf(blockOf(LIGHT_SELECTOR))
 const dark = declarationsOf(blockOf(DARK_SELECTOR))
 
-/* ── oklch → sRGB → WCAG 相对亮度 ────────────────────────────────────── */
+/* ── oklch 解析与换算 ─────────────────────────────────────────────────── */
+
+interface Oklch {
+  l: number
+  c: number
+  h: number
+}
+
+/** 解析一个可能是 oklch(...) 或 var(--other) 的取值,var 在同块内解一层。 */
+function oklchOf(name: string, scope: Map<string, string>): Oklch {
+  const value = scope.get(name) ?? light.get(name)
+  assert.ok(value, `${name} 未声明`)
+  const varMatch = /^var\(\s*(--[a-z0-9-]+)\s*\)$/i.exec(value)
+  if (varMatch) return oklchOf(varMatch[1], scope)
+  const m = /^oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\)$/i.exec(value)
+  assert.ok(m, `${name} 的取值 ${value} 不是可解析的 oklch()`)
+  return { l: Number(m[1]), c: Number(m[2]), h: Number(m[3]) }
+}
 
 /** 返回【线性光】三分量:relativeLuminance 直接吃它,不要再做一次传输函数。 */
-function oklchToLinearRgb(
-  l: number,
-  c: number,
-  hDeg: number
-): [number, number, number] {
+function toLinearRgb({ l, c, h: hDeg }: Oklch): [number, number, number] {
   const h = (hDeg * Math.PI) / 180
   const a = c * Math.cos(h)
   const b = c * Math.sin(h)
@@ -114,78 +134,159 @@ function oklchToLinearRgb(
   return lin.map((v) => Math.min(1, Math.max(0, v))) as [number, number, number]
 }
 
-/** 解析一个可能是 oklch(...) 或 var(--other) 的取值,var 在同块内解一层。 */
-function resolveColor(
-  name: string,
-  scope: Map<string, string>
-): [number, number, number] {
-  const value = scope.get(name) ?? light.get(name)
-  assert.ok(value, `${name} 未声明`)
-  const varMatch = /^var\(\s*(--[a-z0-9-]+)\s*\)$/i.exec(value)
-  if (varMatch) return resolveColor(varMatch[1], scope)
-  const m = /^oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\)$/i.exec(value)
-  assert.ok(m, `${name} 的取值 ${value} 不是可解析的 oklch()`)
-  return oklchToLinearRgb(Number(m[1]), Number(m[2]), Number(m[3]))
-}
-
 function relativeLuminance([r, g, b]: [number, number, number]): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
 function contrast(a: string, b: string, scope: Map<string, string>): number {
-  const la = relativeLuminance(resolveColor(a, scope))
-  const lb = relativeLuminance(resolveColor(b, scope))
+  const la = relativeLuminance(toLinearRgb(oklchOf(a, scope)))
+  const lb = relativeLuminance(toLinearRgb(oklchOf(b, scope)))
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
 }
 
-/* ── 1. 取材锚点 ─────────────────────────────────────────────────────── */
+/* ── 1. 昼夜同族:色相角共用 ─────────────────────────────────────────── */
 
-describe('qy-sg-tokens 取材锚点', () => {
-  // 暗色的锚点全部是从游戏截图里逐像素量出来的;昼间的锚点是 Anthropic 官方品牌色。
-  // 钉住它们是为了让"有人凭手感把颜色挪一挪"必须先解释清楚新的取材来源。
-  const anchors: Array<[string, Map<string, string>, string]> = [
-    ['--background', dark, 'oklch(0.435 0.005 197)'], // #4E5252 混凝土
-    ['--foreground', dark, 'oklch(0.936 0.007 145.5)'], // #E7EBE7 字形峰值
-    ['--primary', dark, 'oklch(0.857 0.175 88.5)'], // #FFC800 金
-    ['--qy-sg-ember', dark, 'oklch(0.689 0.175 46.1)'], // #EF7129 橙
-    ['--qy-sg-vignette', dark, 'oklch(0.247 0.006 179.1)'], // #1E2221 暗角
-    ['--background', light, 'oklch(0.982 0.005 95.1)'], // #FAF9F5 Anthropic Light
-    ['--foreground', light, 'oklch(0.191 0.002 106.6)'], // #141413 Anthropic Dark
-    ['--primary', light, 'oklch(0.672 0.131 38.8)'], // #D97757 Anthropic Orange
+describe('qy-sg-tokens 昼夜同族', () => {
+  // 夜间的三个色相角是从游戏截图里逐像素量出来的;昼间原样沿用,只改明度/彩度。
+  // 这一组是第四版最核心的契约:它把"昼间是另一套品牌色板"这条路彻底堵死。
+  const sharedHue: Array<[string, string]> = [
+    ['--primary', '金'],
+    ['--qy-sg-ember', '橙'],
   ]
-  for (const [name, scope, expected] of anchors) {
-    const theme = scope === dark ? '夜' : '昼'
-    test(`${theme} ${name}`, () => {
-      assert.equal(scope.get(name), expected)
+  for (const [name, label] of sharedHue) {
+    test(`${name}(${label})昼夜共用同一个色相角`, () => {
+      assert.equal(
+        oklchOf(name, light).h,
+        oklchOf(name, dark).h,
+        `${name} 的色相角昼夜不一致 —— 昼间又变成另一套品牌色了`
+      )
+    })
+  }
+
+  test('昼间强调色是夜间的"压深"档而不是另换一色', () => {
+    // 明度必须降(纸面上才读得出),彩度不许暴涨(否则就不是同一个金了)。
+    for (const [name] of sharedHue) {
+      const day = oklchOf(name, light)
+      const night = oklchOf(name, dark)
+      assert.ok(
+        day.l < night.l,
+        `${name} 昼间明度 ${day.l} 应低于夜间 ${night.l}`
+      )
+      assert.ok(
+        day.c <= night.c,
+        `${name} 昼间彩度 ${day.c} 不应高于夜间 ${night.c}`
+      )
+    }
+  })
+
+  test('纸面与墨色落在族内的两个色相角上', () => {
+    // 纸面走金的色相角(所以是暖白不是冷白),墨色走混凝土的色相角。
+    assert.equal(oklchOf('--background', light).h, oklchOf('--primary', dark).h)
+    assert.equal(oklchOf('--foreground', light).h, 197)
+    assert.equal(oklchOf('--background', dark).h, 197)
+  })
+
+  test('中性档的彩度足够低,不会把纸面染成有色底', () => {
+    for (const name of ['--background', '--card', '--popover']) {
+      assert.ok(
+        oklchOf(name, light).c <= 0.012,
+        `${name} 昼间彩度过高,纸面会读成有色底`
+      )
+    }
+  })
+})
+
+/* ── 2. 层次方向昼夜镜像 ─────────────────────────────────────────────── */
+
+describe('qy-sg-tokens 层次方向镜像', () => {
+  // 夜:面从混凝土墙上凿【进去】,card/popover/sidebar 比底色暗;
+  //     muted/secondary/accent 是抬起来的交互面,比底色亮。
+  // 昼:整套翻过来。方向搞反在渲染上不报错,只是"层次有点怪"。
+  const recessedAtNight = ['--card', '--popover', '--sidebar']
+  const raisedAtNight = ['--muted', '--secondary', '--accent']
+
+  for (const name of recessedAtNight) {
+    test(`${name} 夜间比底色暗、昼间比纸面亮`, () => {
+      assert.ok(
+        oklchOf(name, dark).l < oklchOf('--background', dark).l,
+        `${name} 夜间应比底色暗(面是凿进去的)`
+      )
+      assert.ok(
+        oklchOf(name, light).l > oklchOf('--background', light).l,
+        `${name} 昼间应比纸面亮(面是浮起来的)`
+      )
+    })
+  }
+
+  for (const name of raisedAtNight) {
+    test(`${name} 夜间比底色亮、昼间比纸面暗`, () => {
+      assert.ok(
+        oklchOf(name, dark).l > oklchOf('--background', dark).l,
+        `${name} 夜间应比底色亮`
+      )
+      assert.ok(
+        oklchOf(name, light).l < oklchOf('--background', light).l,
+        `${name} 昼间应比纸面暗`
+      )
     })
   }
 })
 
-/* ── 2. 昼夜覆写完整性 ───────────────────────────────────────────────── */
+/* ── 3. 取材锚点 ─────────────────────────────────────────────────────── */
+
+describe('qy-sg-tokens 取材锚点', () => {
+  // 夜间的锚点全部是从游戏截图里逐像素量出来的。钉住它们是为了让"有人凭手感
+  // 把颜色挪一挪"必须先解释清楚新的取材来源。
+  const anchors: Array<[string, string]> = [
+    ['--background', 'oklch(0.435 0.005 197)'], // #4E5252 混凝土
+    ['--foreground', 'oklch(0.936 0.007 145.5)'], // #E7EBE7 字形峰值
+    ['--primary', 'oklch(0.857 0.175 88.5)'], // #FFC800 金
+    ['--qy-sg-ember', 'oklch(0.689 0.175 46.1)'], // #EF7129 橙
+    ['--qy-sg-vignette', 'oklch(0.247 0.006 179.1)'], // #1E2221 暗角
+  ]
+  for (const [name, expected] of anchors) {
+    test(`夜 ${name}`, () => {
+      assert.equal(dark.get(name), expected)
+    })
+  }
+})
+
+/* ── 4. 昼夜覆写完整性 ───────────────────────────────────────────────── */
+
+// 昼夜取值必须不同的私有派生量。漏一个,夜间就静默继承昼间的值。
+const mustOverride = [
+  '--qy-sg-hair',
+  '--qy-sg-hair-strong',
+  '--qy-sg-accent-soft',
+  '--qy-sg-glow',
+  '--qy-sg-ember',
+  '--qy-sg-vignette',
+  '--qy-sg-lift-shadow',
+  '--qy-sg-overlay',
+  '--qy-sg-selection-bg',
+  '--qy-sg-selection-fg',
+]
+
+// 公式两边一致的量【不能】在夜块重复声明:同一个概念两处定义会各自漂移。
+// 它们 var() 引用的标准变量已经在夜块换了值,会自动跟着翻转。
+const sharedFormula = [
+  '--qy-sg-serif',
+  '--qy-sg-sans',
+  '--qy-sg-mono',
+  '--qy-sg-ease',
+  '--qy-sg-pill',
+  '--qy-sg-blur',
+  '--qy-sg-sec-gap',
+  '--qy-sg-head-gap',
+  '--qy-sg-leading',
+  '--qy-sg-faint',
+  '--qy-sg-accent-deep',
+  // 第四版新增的两个:昼间强调色压到可读档之后,表头横幅终于可以昼夜同公式
+  '--qy-sg-band',
+  '--qy-sg-band-fg',
+]
 
 describe('qy-sg-tokens 昼夜覆写', () => {
-  // 昼夜取值必须不同的私有派生量。漏一个,夜间就静默继承昼间的值。
-  const mustOverride = [
-    '--qy-sg-hair',
-    '--qy-sg-hair-strong',
-    '--qy-sg-accent-soft',
-    '--qy-sg-glow',
-    '--qy-sg-ember',
-    '--qy-sg-vignette',
-    '--qy-sg-band',
-    '--qy-sg-band-fg',
-    '--qy-sg-ink-btn-bg',
-    '--qy-sg-ink-btn-fg',
-    '--qy-sg-ink-btn-shadow',
-    '--qy-sg-ink-btn-shadow-hover',
-    '--qy-sg-lift-shadow',
-    '--qy-sg-overlay',
-    '--qy-sg-selection-bg',
-    '--qy-sg-selection-fg',
-    '--qy-sg-grain-opacity',
-    '--qy-sg-gear-opacity',
-  ]
-
   for (const name of mustOverride) {
     test(`夜块覆写 ${name}`, () => {
       assert.ok(light.has(name), `${name} 必须先在昼块声明`)
@@ -198,23 +299,6 @@ describe('qy-sg-tokens 昼夜覆写', () => {
     })
   }
 
-  // 公式两边一致的量【不能】在夜块重复声明:同一个概念两处定义会各自漂移,
-  // 这是本项目已经踩过六组的坑。它们 var() 引用的标准变量已经在夜块换了值。
-  const sharedFormula = [
-    '--qy-sg-serif',
-    '--qy-sg-sans',
-    '--qy-sg-mono',
-    '--qy-sg-ease',
-    '--qy-sg-pill',
-    '--qy-sg-blur',
-    '--qy-sg-sec-gap',
-    '--qy-sg-head-gap',
-    '--qy-sg-leading',
-    '--qy-sg-faint',
-    '--qy-sg-accent-deep',
-    // hover 落点两边都是 accent-deep,夜间靠 accent-deep 自己跟着 --primary 翻转
-    '--qy-sg-ink-btn-bg-hover',
-  ]
   for (const name of sharedFormula) {
     test(`夜块不重复声明 ${name}`, () => {
       assert.ok(light.has(name), `${name} 必须在昼块声明`)
@@ -225,30 +309,45 @@ describe('qy-sg-tokens 昼夜覆写', () => {
       )
     })
   }
+
+  test('昼块的 --qy-sg-* 清单与上面两组完全吻合', () => {
+    // 防止新增一个派生量却忘了归类 —— 忘了归类就等于没人检查它的昼夜行为。
+    const declared = [...light.keys()]
+      .filter((k) => k.startsWith('--qy-sg-'))
+      .sort()
+    assert.deepEqual(declared, [...mustOverride, ...sharedFormula].sort())
+  })
 })
 
-/* ── 3. 声明唯一性 ───────────────────────────────────────────────────── */
+/* ── 5. 声明唯一性 ───────────────────────────────────────────────────── */
 
-test('--qy-sg-* 的颜色派生量只在 qy-sg-tokens.css 声明', () => {
-  const owned = new Set(
-    [...light.keys(), ...dark.keys()].filter((k) => k.startsWith('--qy-sg-'))
-  )
+test('每个 --qy-sg-* 在三个文件里合起来只声明一次', () => {
+  // tokens 管颜色与字体轴,shape 管几何量与配方,两者不许有交集;
+  // apply 一个都不许声明 —— 它只写 var()。
+  const owner = new Map<string, string>()
   const offenders: string[] = []
   for (const file of readdirSync(stylesDir)) {
     if (!file.startsWith('qy-sg-') || !file.endsWith('.css')) continue
-    if (file === 'qy-sg-tokens.css') continue
     const text = readFileSync(join(stylesDir, file), 'utf8').replaceAll(
       /\/\*[\s\S]*?\*\//g,
       ''
     )
     for (const m of text.matchAll(/(--qy-sg-[a-z0-9-]+)\s*:/g)) {
-      if (owned.has(m[1])) offenders.push(`${file}: ${m[1]}`)
+      // tokens 自己的昼/夜两块是同一个量的两个档位,不算重复声明
+      const previous = owner.get(m[1])
+      if (previous && previous !== file) {
+        offenders.push(`${m[1]}: ${previous} 与 ${file}`)
+        continue
+      }
+      owner.set(m[1], file)
     }
   }
   assert.deepEqual(offenders, [])
+  assert.equal(owner.get('--qy-sg-frame-clip'), 'qy-sg-shape.css')
+  assert.equal(owner.get('--qy-sg-band'), 'qy-sg-tokens.css')
 })
 
-/* ── 4. 对比度下限 ───────────────────────────────────────────────────── */
+/* ── 6. 对比度下限 ───────────────────────────────────────────────────── */
 
 describe('qy-sg-tokens 对比度', () => {
   const cases: Array<[string, Map<string, string>, string, string, number]> = [
@@ -257,7 +356,7 @@ describe('qy-sg-tokens 对比度', () => {
     ['夜 次级正文', dark, '--muted-foreground', '--background', 4.5],
     ['昼 正文', light, '--foreground', '--background', 4.5],
     ['昼 次级正文', light, '--muted-foreground', '--background', 4.5],
-    // 四个语义色会被当作正文色用(controls 里 destructive 幽灵按钮就是 color:)
+    // 四个语义色会被当作正文色用(幽灵按钮就是 color: var(--destructive))
     ['夜 destructive', dark, '--destructive', '--background', 4.5],
     ['夜 success', dark, '--success', '--background', 4.5],
     ['夜 warning', dark, '--warning', '--background', 4.5],
@@ -266,11 +365,16 @@ describe('qy-sg-tokens 对比度', () => {
     ['昼 success', light, '--success', '--background', 4.5],
     ['昼 warning', light, '--warning', '--background', 4.5],
     ['昼 info', light, '--info', '--background', 4.5],
+    // 强调色本身是文字色:LAB MEMO 序号、编号行序号、铭牌全是 color: var(--primary)。
+    // 昼间正是这一条把 --primary 逼到 L≈0.54 的。
+    ['夜 强调色当文字', dark, '--primary', '--background', 4.5],
+    ['昼 强调色当文字', light, '--primary', '--background', 4.5],
     // 压在强调色上的字(shadcn 的 bg-primary text-primary-foreground)
     ['夜 强调色上的字', dark, '--primary-foreground', '--primary', 4.5],
     ['昼 强调色上的字', light, '--primary-foreground', '--primary', 4.5],
-    // 表头横幅:夜间刻意不用游戏原本的烧橙字(那只有 1.78:1),改用暗角色
+    // 表头横幅昼夜同一条公式,两端(金 / 橙)的字都必须读得清
     ['夜 横幅字压在橙端', dark, '--qy-sg-band-fg', '--qy-sg-ember', 4.5],
+    ['昼 横幅字压在橙端', light, '--qy-sg-band-fg', '--qy-sg-ember', 4.5],
   ]
   for (const [label, scope, fg, bg, floor] of cases) {
     test(`${label} ≥ ${floor}:1`, () => {

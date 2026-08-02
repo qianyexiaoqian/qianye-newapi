@@ -68,6 +68,72 @@ func WriteTx(tx *gorm.DB, e Entry) error {
 	return tx.Create(build(e)).Error
 }
 
+// ConfigChange 是一次管理员配置变更的审计输入。
+//
+// Before/After 可以是任意可序列化的值,也可以直接给一段已经拼好的文本/JSON ——
+// 后者原样透传(见 snapshotJSON)。运营参数、门槛、默认分组、站点主题这四类
+// 快照的形态本来就不同,强行统一成同一个结构体只会逼每个模块再写一层适配。
+type ConfigChange struct {
+	// Action 是稳定英文标识,形如 commission.config.update。
+	Action string
+	// Result 为空时按 ResultOK 处理(见 build)。失败路径必须显式传 ResultFail:
+	// "有人在这一刻试图改配置、失败了"是最需要留痕的事实之一。
+	Result string
+	Reason string
+	Before any
+	After  any
+}
+
+// WriteConfigUpdate 落一条配置变更审计,成功与失败共用同一条路径。
+//
+// # 为什么这一份必须住在这里
+//
+// 在它之前,commission 与 transfer 各有一份 writeConfigUpdateAudit,除了
+// Action 字符串以外逐字节相同;而 grouppricing / usergroup / sitetheme 三个
+// 同样在改配置的模块,一份都没有 —— 于是它们的失败路径零留痕,
+// grouppricing 更糟:审计写在 WriteTx 里,事务一回滚连"试过"都查不到。
+//
+// 这正是本仓反复出现的"同一概念的第 N 份拷贝各自漂移":两份拷贝在被复制的
+// 当天都是对的,但后来给其中一份补的东西另一份不会跟上,而没有拷贝的那三个
+// 模块连"应该有这件事"都不知道。
+//
+// 操作者不从参数取而是直接读 context:两份旧拷贝的调用方传的都是
+// c.GetInt("id"),多一个参数只是多一个能传错的地方。
+func WriteConfigUpdate(c *gin.Context, ch ConfigChange) {
+	Write(c, Entry{
+		Category:    qymodel.AuditCategoryConfig,
+		Action:      ch.Action,
+		ActorType:   qymodel.ActorAdmin,
+		ActorUserId: c.GetInt("id"),
+		ActorName:   c.GetString("username"),
+		Result:      ch.Result,
+		Reason:      ch.Reason,
+		BeforeSnap:  snapshotJSON(ch.Before),
+		AfterSnap:   snapshotJSON(ch.After),
+	})
+}
+
+// snapshotJSON 把快照值转成入库文本。
+//
+// 字符串原样透传:usergroup 的快照是一句人话、sitetheme 的是手工拼的 JSON,
+// 再 Marshal 一次只会把它们变成带转义引号的字符串字面量。
+//
+// 序列化失败返回显式标记而不是空串:空串在审计详情里与"本来就没有快照"
+// (新增操作的 before、删除操作的 after)无法区分,而这两件事的含义相反。
+func snapshotJSON(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	b, err := common.Marshal(v)
+	if err != nil {
+		return "<snapshot marshal failed: " + err.Error() + ">"
+	}
+	return string(b)
+}
+
 func build(e Entry) *qymodel.AuditLog {
 	maxSnap := config.Get().Audit.SnapshotMaxBytes
 	if maxSnap <= 0 {

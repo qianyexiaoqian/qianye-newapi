@@ -110,6 +110,12 @@ type Audit struct {
 	RecordIP         *bool `yaml:"record_ip"`
 	SnapshotMaxBytes int   `yaml:"snapshot_max_bytes"`
 	RetentionDays    int   `yaml:"retention_days"`
+	// RequestEnabled 单独控制 HTTP 请求台账(qy_request_audits)。
+	//
+	// 与 Enabled 分开是因为两张表的量级差三个数量级:资金审计一天几十行,
+	// 请求台账一天几千行。运维需要能在"扩展库写入吃紧"时先关掉后者,
+	// 而不是被迫连资金仲裁凭据一起关掉。默认开 —— 默认没有留痕才是缺陷。
+	RequestEnabled *bool `yaml:"request_enabled"`
 }
 
 // Transfer 用户间余额划转。
@@ -362,11 +368,17 @@ func boolOr(p *bool, def bool) bool {
 
 func (d Database) ShouldAutoMigrate() bool { return boolOr(d.AutoMigrate, true) }
 
-func (r Runtime) FailOpen() bool               { return boolOr(r.HotPathFailOpen, true) }
-func (r Runtime) BackgroundOn() bool           { return boolOr(r.BackgroundEnabled, true) }
-func (t TwoPhase) OutboxEnabled() bool         { return boolOr(t.MainOutboxEnabled, true) }
-func (a Audit) On() bool                       { return boolOr(a.Enabled, true) }
-func (a Audit) ShouldRecordIP() bool           { return boolOr(a.RecordIP, true) }
+func (r Runtime) FailOpen() bool       { return boolOr(r.HotPathFailOpen, true) }
+func (r Runtime) BackgroundOn() bool   { return boolOr(r.BackgroundEnabled, true) }
+func (t TwoPhase) OutboxEnabled() bool { return boolOr(t.MainOutboxEnabled, true) }
+func (a Audit) On() bool               { return boolOr(a.Enabled, true) }
+func (a Audit) ShouldRecordIP() bool   { return boolOr(a.RecordIP, true) }
+
+// RequestOn 表示是否写 HTTP 请求台账。
+//
+// 与 audit.enabled 是**与**的关系:整套审计关掉时,请求台账不该还在写 ——
+// 否则"我把审计关了"这句话在两张表上含义不同,而运维只会记住一句。
+func (a Audit) RequestOn() bool                { return a.On() && boolOr(a.RequestEnabled, true) }
 func (t Transfer) ReceiverMustBeEnabled() bool { return boolOr(t.RequireReceiverEnabled, true) }
 func (w Withdraw) AutoCredit() bool            { return boolOr(w.AutoCreditOnApprove, true) }
 func (w Wallet) TransferEntry() bool           { return boolOr(w.ShowTransferEntry, true) }

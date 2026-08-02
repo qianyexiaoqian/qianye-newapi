@@ -86,6 +86,25 @@ func create(c *gin.Context, userId int, req createRequest) (*orderView, error) {
 			return loadByIdemKey(userId, acc)
 		}
 		db.MarkFailure(err)
+		// 被风控闸门(冷却、日限额、频次)挡下的申请在此之前零留痕:
+		// 审计里只有成功提交的那些,于是"这个账号在被封之前连续尝试提现 30 次"
+		// 事后完全查不到。单号已经生成,失败那条与将来可能成功的那条共用
+		// 同一个 trace_no,时间线能串起来。
+		audit.Write(c, audit.Entry{
+			TraceNo:      w.WithdrawNo,
+			Category:     qymodel.AuditCategoryWithdraw,
+			Action:       "withdraw.submit",
+			ActorType:    qymodel.ActorUser,
+			ActorUserId:  userId,
+			ActorName:    user.Username,
+			TargetUserId: userId,
+			AmountQuota:  w.Quota,
+			AmountFiat:   w.NetAmount,
+			Currency:     w.Currency,
+			FrozenRate:   w.FrozenFxRate,
+			Result:       qymodel.ResultFail,
+			Reason:       audit.Truncate("提现申请被拒: "+err.Error(), 500),
+		})
 		return nil, err
 	}
 	if replay != nil {

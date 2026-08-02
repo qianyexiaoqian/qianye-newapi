@@ -191,5 +191,11 @@ func breakerStats() map[string]any {
 		"record_drops":         recordDrops.Load(),
 		"scan_timeouts":        scanTimeouts.Load(),
 		"rule_refresh_fails":   refreshFails.Load(),
+		// 频率计数的降级可见性。rate_local_hits > 0 表示计数正落在**每节点各数各的**
+		// 进程内兜底上,多节点部署时单节点看到的条数只有真实值的约 1/N ——
+		// 不把它摆出来,运营会照着被稀释的数字一路调低阈值。
+		"rate_redis_fails": rateRedisFails.Load(),
+		"rate_local_hits":  rateLocalHits.Load(),
+		"rate_local_full":  rateLocalFull.Load(),
 	}
 }

@@ -89,20 +89,27 @@ func adminPutConfig(c *gin.Context) {
 
 	operatorId := c.GetInt("id")
 	if err := writeDefaultGroup(target, operatorId); err != nil {
+		// 失败同样留痕。写失败时库里到底变没变是不确定的(连接被掐、
+		// 部分提交),而"有人在这一刻试图把默认分组改成 vip"这个事实本身
+		// 与成功的那次同等重要 —— 只在成功路径写审计,等于把攻击者最可能
+		// 反复尝试的那一段完全抹掉。
+		audit.WriteConfigUpdate(c, audit.ConfigChange{
+			Action: "usergroup.default.update",
+			Result: qymodel.ResultFail,
+			Reason: "修改新用户默认分组失败: " + err.Error(),
+			Before: snapshot(before),
+			After:  snapshot(target),
+		})
 		internalError(c, err)
 		return
 	}
 
-	audit.Write(c, audit.Entry{
-		Category:    qymodel.AuditCategoryConfig,
-		Action:      "usergroup.default.update",
-		ActorType:   qymodel.ActorAdmin,
-		ActorUserId: operatorId,
-		ActorName:   c.GetString("username"),
-		Result:      qymodel.ResultOK,
-		Reason:      "修改新用户默认分组",
-		BeforeSnap:  snapshot(before),
-		AfterSnap:   snapshot(target),
+	audit.WriteConfigUpdate(c, audit.ConfigChange{
+		Action: "usergroup.default.update",
+		Result: qymodel.ResultOK,
+		Reason: "修改新用户默认分组",
+		Before: snapshot(before),
+		After:  snapshot(target),
 	})
 
 	respond(c, gin.H{"default_group": target, "effective_group": effectiveGroup(target)})

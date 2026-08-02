@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/groupname"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/service"
 
@@ -42,6 +43,14 @@ const (
 	maxMatchedTermLen = 64
 )
 
+// maxRequestRateThreshold 是 request_rate 规则阈值的上界。
+//
+// 上界的作用不是"防止阈值太大"(太大只是永不命中),而是把 pattern 锁死成一个
+// 能被 strconv.Atoi 无溢出解析的十进制整数:没有上界时 "99999999999999999999"
+// 会在 32 位平台上解析失败、在 64 位平台上解析成功,同一条规则在两台机器上
+// 一条编译不过、一条永不命中,而两边都不会报错。
+const maxRequestRateThreshold = 1_000_000
+
 // statusRange 表示 status_code 规则里的一段 HTTP 状态码区间。
 type statusRange struct{ lo, hi int }
 
@@ -56,9 +65,15 @@ type compiledRule struct {
 	codes    map[string]struct{}
 	statuses []statusRange
 
+	// rateThreshold 是 request_rate 规则的每分钟阈值,其余匹配方式恒为 0。
+	rateThreshold int
+
 	// modelPats 为空表示全部模型;groups 为空表示全部分组。
+	// groups 的键一律是 groupname.Effective 归一后的比较键。
 	modelPats []string
 	groups    map[string]struct{}
+	// groupExclude 为真时 groups 是黑名单(豁免分组),否则是白名单。
+	groupExclude bool
 }
 
 // snapshot 是规则的只读内存视图。整体替换(atomic.Pointer),读端零锁;
@@ -69,6 +84,14 @@ type snapshot struct {
 
 	promptRules []*compiledRule
 	postRules   []*compiledRule
+
+	// hasRate 表示快照里存在至少一条 request_rate 规则。
+	//
+	// 它决定热路径要不要去推进请求频率计数(一次 Redis 往返)。没有这个标志就只有
+	// 两种选择:每个请求都数(为一个没人用的功能给全站加一次 Redis 往返),
+	// 或者在扫描到规则时才懒惰地数(那样同一个请求会不会被计入取决于前面有没有
+	// 更高优先级的规则先命中 —— 计数会随规则表的形状漂移,彻底不可解释)。
+	hasRate bool
 
 	// promptWords / postWords 是各阶段全部 keyword 规则的词表并集,
 	// 一次 AC 扫描服务全部关键词规则,而不是每条规则扫一遍。
@@ -175,6 +198,9 @@ func reloadCtx(ctx context.Context, force bool) error {
 		case PhasePrompt:
 			s.promptRules = append(s.promptRules, cr)
 			s.promptWords = append(s.promptWords, cr.words...)
+			if cr.R.MatchType == MatchRequestRate {
+				s.hasRate = true
+			}
 		default:
 			s.postRules = append(s.postRules, cr)
 			s.postWords = append(s.postWords, cr.words...)
@@ -238,16 +264,35 @@ func compile(r Rule) (*compiledRule, error) {
 		if len(cr.subs) == 0 {
 			return nil, fmt.Errorf("upstream_text 规则的子串表为空")
 		}
+	case MatchRequestRate:
+		n, err := strconv.Atoi(strings.TrimSpace(r.Pattern))
+		if err != nil {
+			return nil, fmt.Errorf("request_rate 规则的阈值必须是整数: %q", r.Pattern)
+		}
+		// 下界是 1 而不是 0:阈值 0 会让每一个非流式请求都命中,包括那些根本没有
+		// 推进过计数的(计数失败时热路径 fail-open 返回 0)。热路径也依赖这条下界 ——
+		// PreRelayGuard 在"没有 prompt 文本且计数为 0"时直接返回,前提就是
+		// 计数 0 不可能命中任何频率规则。
+		if n < 1 || n > maxRequestRateThreshold {
+			return nil, fmt.Errorf("request_rate 阈值必须在 1..%d 之间,当前为 %d",
+				maxRequestRateThreshold, n)
+		}
+		cr.rateThreshold = n
 	default:
 		return nil, fmt.Errorf("未知的 match_type: %q", r.MatchType)
 	}
 
 	cr.modelPats = splitList(strings.ToLower(r.ModelScope))
+	// 分组名必须走 groupname:扩展库与主库的分组列都是大小写不敏感的排序规则,
+	// 而 Go 的 map 查表是精确匹配。管理端配 "VIP"、用户实际分组是 "vip" 时,
+	// 这里不归一就是一条保存成功、界面正常、线上永不命中的规则 ——
+	// 同形缺陷在 commission 与 transfer 已经各出过一次。
 	if g := splitList(r.GroupScope); len(g) > 0 {
 		cr.groups = make(map[string]struct{}, len(g))
 		for _, v := range g {
-			cr.groups[v] = struct{}{}
+			cr.groups[groupname.Effective(v)] = struct{}{}
 		}
+		cr.groupExclude = r.GroupScopeMode == GroupScopeExclude
 	}
 	return cr, nil
 }
@@ -285,6 +330,17 @@ func ValidateRule(r *Rule) error {
 			return fmt.Errorf("match_type %q 只能用于上游阶段", r.MatchType)
 		}
 	}
+	// 反过来:请求频率只有在"即将发往上游"这一刻才有意义。挂在上游阶段的话,
+	// 只有失败的请求会被评估,而蒸馏采集方的请求绝大多数是成功的 —— 那是一条
+	// 保存得下去、也确实会执行、但永远数不到真实频率的规则。
+	if r.MatchType == MatchRequestRate && r.Phase != PhasePrompt {
+		return fmt.Errorf("match_type %q 只能用于 %q 阶段", MatchRequestRate, PhasePrompt)
+	}
+	switch r.GroupScopeMode {
+	case "", GroupScopeInclude, GroupScopeExclude:
+	default:
+		return fmt.Errorf("group_scope_mode 取值非法: %q", r.GroupScopeMode)
+	}
 	if len(r.Pattern) > 8192 {
 		return fmt.Errorf("pattern 过长(%d 字节,上限 8192)", len(r.Pattern))
 	}
@@ -319,9 +375,16 @@ func charges(action string) bool {
 // ───────────────────────────── 作用域 ─────────────────────────────
 
 // inScope 判断规则是否作用于当前模型与分组。空作用域 = 全部。
+//
+// 分组名两侧都走 groupname.Effective:编译时归一了名单,判定时不归一等于没归一。
+// 顺带把 UsingGroup 为空的历史账号折叠进 default —— 那批账号恰恰最可疑,
+// 而在此之前任何一条挂在 default 上的规则都盖不住它们。
 func (cr *compiledRule) inScope(model, group string) bool {
 	if len(cr.groups) > 0 {
-		if _, ok := cr.groups[group]; !ok {
+		_, listed := cr.groups[groupname.Effective(group)]
+		// include 模式(groupExclude=false):不在名单里 → 不生效。
+		// exclude 模式(groupExclude=true):在名单里 → 豁免,不生效。
+		if listed == cr.groupExclude {
 			return false
 		}
 	}
@@ -362,6 +425,11 @@ type scanInput struct {
 	Group string
 
 	Text string // prompt 归一化文本
+
+	// RateCount 是本次请求推进之后、该用户在 rateWindowSeconds 窗口内的非流式
+	// 请求条数(含本次)。只有 prompt 阶段会填,且只有快照里存在 request_rate
+	// 规则时才会真的去数;计数失败一律 fail-open 落回 0。
+	RateCount int
 
 	ErrCode      string
 	StatusCode   int
@@ -434,10 +502,16 @@ func scan(rules []*compiledRule, dict []string, in scanInput, text string) *verd
 		if len(terms) == 0 {
 			continue
 		}
+		// 频率命中与文本无关,截一段 prompt 当"证据"只会把与判定无关的用户内容
+		// 抄进一张管理端列表直接返回的表。要看上下文的规则自己开 archive_context。
+		snippet := ""
+		if cr.R.MatchType != MatchRequestRate {
+			snippet = snippetAround(text, terms[0])
+		}
 		return &verdict{
 			Rule:    cr,
 			Terms:   clipTerms(terms),
-			Snippet: snippetAround(text, terms[0]),
+			Snippet: snippet,
 			Elapsed: time.Since(start),
 		}
 	}
@@ -499,6 +573,13 @@ func matchRule(cr *compiledRule, in scanInput, text, lower string, hitWords map[
 			}
 		}
 		return out
+	case MatchRequestRate:
+		if in.RateCount < cr.rateThreshold {
+			return nil
+		}
+		// 命中词写"实测值/阈值":这是管理端复核误判时唯一能用的数字,
+		// 只写阈值的话每一条记录都长得一样,分不出"刚过线"和"高出十倍"。
+		return []string{fmt.Sprintf("req_rate %d>=%d/%ds", in.RateCount, cr.rateThreshold, rateWindowSeconds)}
 	}
 	return nil
 }

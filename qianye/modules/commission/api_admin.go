@@ -165,7 +165,7 @@ func adminPutConfig(c *gin.Context) {
 		// 万一回滚没有生效(连接被掐、DDL 混进来),这条记录就是唯一能看出
 		// "库里已经变了"的地方。事实本身必须留痕,哪怕它与预期不符。
 		invalidateSettings()
-		writeConfigUpdateAudit(c, operatorId, qymodel.ResultFail,
+		writeConfigUpdateAudit(c, qymodel.ResultFail,
 			"修改返佣运营参数失败(事务已回滚): "+err.Error(), before, effectiveCtx(ctx))
 		internalError(c, err)
 		return
@@ -180,7 +180,7 @@ func adminPutConfig(c *gin.Context) {
 	}
 	invalidateSettings()
 	after := effectiveCtx(ctx)
-	writeConfigUpdateAudit(c, operatorId, qymodel.ResultOK, "修改返佣运营参数", before, after)
+	writeConfigUpdateAudit(c, qymodel.ResultOK, "修改返佣运营参数", before, after)
 	respond(c, gin.H{"effective": settingsSnapshot(after)})
 }
 
@@ -189,19 +189,18 @@ func adminPutConfig(c *gin.Context) {
 // 快照走百分比视图而不是裸结构体:事后翻审计的是人,让他去把 1025 心算回
 // 10.25% 就是在给自己埋坑。失败那条同样带前后快照 —— 它回答的是
 // "有人在这个时刻想把费率改成什么、库里现在实际是什么"。
-func writeConfigUpdateAudit(c *gin.Context, operatorId int, result, reason string, before, after opSettings) {
-	beforeSnap, _ := common.Marshal(settingsSnapshot(before))
-	afterSnap, _ := common.Marshal(settingsSnapshot(after))
-	audit.Write(c, audit.Entry{
-		Category:    qymodel.AuditCategoryConfig,
-		Action:      "commission.config.update",
-		ActorType:   qymodel.ActorAdmin,
-		ActorUserId: operatorId,
-		ActorName:   c.GetString("username"),
-		Result:      result,
-		Reason:      reason,
-		BeforeSnap:  string(beforeSnap),
-		AfterSnap:   string(afterSnap),
+//
+// 组装与写入本身住在 audit.WriteConfigUpdate:这段代码曾经在 commission 与
+// transfer 各有一份、除 Action 外逐字节相同。这里只剩"哪个 Action、
+// 快照取什么视图"这两件模块自己的事。operatorId 不再往下传 ——
+// 共享实现直接读 context,与这里的 c.GetInt("id") 是同一个来源。
+func writeConfigUpdateAudit(c *gin.Context, result, reason string, before, after opSettings) {
+	audit.WriteConfigUpdate(c, audit.ConfigChange{
+		Action: "commission.config.update",
+		Result: result,
+		Reason: reason,
+		Before: settingsSnapshot(before),
+		After:  settingsSnapshot(after),
 	})
 }
 
@@ -533,7 +532,26 @@ func adminSettle(c *gin.Context) {
 		badRequest(c, "qy_invalid_param", "必须指定 user_id")
 		return
 	}
-	if err := settleOne(userId); err != nil {
+	// 手动结算会把成熟的冻结佣金变成可提现余额,也就是真的动钱。
+	// 定时结算走 system 身份、有租约日志;手动这一路在此之前没有任何审计 ——
+	// 事后能看到"这笔佣金在某个时刻结算了",看不到"是谁按的按钮"。
+	// 成功与失败都写:失败那条回答"有人在这一刻试图给某个用户结算"。
+	err := settleOne(userId)
+	result, reason := qymodel.ResultOK, "管理员手动触发结算"
+	if err != nil {
+		result, reason = qymodel.ResultFail, "管理员手动触发结算失败: "+err.Error()
+	}
+	audit.Write(c, audit.Entry{
+		Category:     qymodel.AuditCategoryCommission,
+		Action:       "commission.settle.manual",
+		ActorType:    qymodel.ActorAdmin,
+		ActorUserId:  c.GetInt("id"),
+		ActorName:    c.GetString("username"),
+		TargetUserId: userId,
+		Result:       result,
+		Reason:       reason,
+	})
+	if err != nil {
 		internalError(c, err)
 		return
 	}
@@ -593,6 +611,19 @@ func adminInvalidateCache(c *gin.Context) {
 	// 按了"失效缓存"、看到成功提示,却仍要等最长 settingsCacheSeconds
 	// 才真正生效 —— 这期间发出去的佣金按旧费率冻结进账本,追不回来。
 	invalidateGroupRates()
+	// 失效缓存本身不改任何账目,但它是"改完费率立刻让新价生效"这条动作链的
+	// 最后一步 —— 排查"这笔佣金为什么按新费率算"时,需要知道这一步发生在
+	// 哪个时刻、是谁做的。
+	audit.Write(c, audit.Entry{
+		Category:     qymodel.AuditCategoryCommission,
+		Action:       "commission.cache.invalidate",
+		ActorType:    qymodel.ActorAdmin,
+		ActorUserId:  c.GetInt("id"),
+		ActorName:    c.GetString("username"),
+		TargetUserId: httpq.Int(c, "user_id", 0),
+		Result:       qymodel.ResultOK,
+		Reason:       "手动失效返佣缓存(邀请人/运营参数/拉黑名单/分组费率)",
+	})
 	respond(c, gin.H{"invalidated": true})
 }
 

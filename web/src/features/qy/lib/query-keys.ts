@@ -71,6 +71,8 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'fund-orders', params] as const,
   adminAuditLogs: (params: unknown) =>
     [...qyKeys.all, 'admin', 'audit-logs', params] as const,
+  adminRequestAudits: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'request-audits', params] as const,
   adminLeases: () => [...qyKeys.all, 'admin', 'leases'] as const,
 
   adminCommissionConfig: () =>

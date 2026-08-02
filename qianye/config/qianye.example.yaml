@@ -82,6 +82,17 @@ audit:
   enabled: true
   record_ip: true
   snapshot_max_bytes: 4096
+  # HTTP 请求台账(qy_request_audits)。消费方:qianye/service/audit/middleware.go,
+  # 挂在 /api/qy 根组上,自动记录全部写请求(POST/PUT/PATCH/DELETE)与少数
+  # 会泄露明文的 GET(收款信息解密、打款凭证原图)。
+  #
+  # 它与 qy_audit_logs 的分工:后者记「判定」(按什么费率、前后快照、冻结汇率),
+  # 靠调用点手写埋点,漏一处就是永久盲区;前者记「调用」(谁、何时、成没成功),
+  # 由中间件兜底,新接口天然有痕。请求体与 query 均按键名脱敏后入库,
+  # 支付密码/收款账号这类整体由凭证构成的路由 body 完全不入库。
+  #
+  # 关掉它只会让写请求失去 HTTP 留痕,不影响资金审计。
+  request_enabled: true
   # qy_audit_logs 的保留天数。消费方:qianye/service/audit/retention.go 的 Prune,
   # 由 lease.Run("audit.prune", ...) 每 6 小时调度一次(走租约,多节点不会双跑)。
   #

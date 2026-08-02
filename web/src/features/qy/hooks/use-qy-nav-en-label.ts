@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useTranslation } from 'react-i18next'
 
+import { QY_PAGES } from '../lib/pages'
 import { useQyIsSteinsGate } from './use-qy-theme-preset'
 
 /**
@@ -37,34 +38,24 @@ import { useQyIsSteinsGate } from './use-qy-theme-preset'
  * 拿到的 `item.title` 已经是**翻译后的字符串**（中文环境下是中文），
  * 反查 i18n key 不可能；`item.url` 才是稳定标识。这与 `lib/page-meta.ts`
  * 给区段头取日文副标的做法一致。
+ *
+ * ── 映射表从 `lib/pages.ts` 派生 ──
+ * 曾经是本文件里的第三份 url→文案硬编码表，与 `nav.ts`、`page-meta.ts` 的
+ * 两份并列，加页面时必然漏掉其中一份。
+ *
+ * ── 已知边界：折叠项内的二级页面拿不到副标 ──
+ * `nav-group.tsx` 只在 `SidebarMenuLink`（一级链接）里调用本 hook，
+ * `SidebarMenuSubItem` 与 `SidebarMenuCollapsedDropdown` 没有接。所以
+ * 收进折叠项的 6 个页面（划转/划转记录、提现申请/提现记录、划转门槛配置/
+ * 划转分组限制）在 Steins Gate 下只显示中文 —— 与上游 system-settings 的
+ * 二级菜单一致（那里同样没有副标），视觉上不突兀。它们的 `enKey` 仍然登记
+ * 在表里而不是删掉：一旦这几页改回一级项，副标自动回来，不需要再补数据。
+ * `__tests__/pages-table.test.ts` 里 `renders an en subtitle only for
+ * top-level pages` 一条把"当前谁有副标"钉死，改动折叠结构时会红。
  */
-const EN_LABEL_KEY: Readonly<Record<string, string>> = {
-  '/qy': 'qy_sg_nav_en_workspace',
-  '/qy/admin': 'qy_sg_nav_en_admin_workspace',
-  '/qy/affiliate': 'qy_sg_nav_en_affiliate',
-  '/qy/invitees': 'qy_sg_nav_en_invitees',
-  '/qy/transfer': 'qy_sg_nav_en_transfer',
-  '/qy/transfer-logs': 'qy_sg_nav_en_transfer_logs',
-  '/qy/pay-password': 'qy_sg_nav_en_pay_password',
-  '/qy/withdraw': 'qy_sg_nav_en_withdraw',
-  '/qy/withdrawals': 'qy_sg_nav_en_withdrawals',
-  '/qy/violations': 'qy_sg_nav_en_violations',
-  '/qy/availability': 'qy_sg_nav_en_availability',
-  '/qy/admin/commission': 'qy_sg_nav_en_a_commission',
-  '/qy/admin/commission-records': 'qy_sg_nav_en_a_commission_records',
-  '/qy/admin/transfer-records': 'qy_sg_nav_en_a_transfer_records',
-  '/qy/admin/transfer-group-rules': 'qy_sg_nav_en_a_transfer_group_rules',
-  '/qy/admin/transfer-config': 'qy_sg_nav_en_a_transfer_config',
-  '/qy/admin/withdrawals': 'qy_sg_nav_en_a_withdrawals',
-  '/qy/admin/violation-rules': 'qy_sg_nav_en_a_violation_rules',
-  '/qy/admin/violations': 'qy_sg_nav_en_a_violations',
-  '/qy/admin/user-group': 'qy_sg_nav_en_a_user_group',
-  '/qy/admin/group-pricing': 'qy_sg_nav_en_a_group_pricing',
-  '/qy/admin/site-theme': 'qy_sg_nav_en_a_site_theme',
-  '/qy/admin/fund-orders': 'qy_sg_nav_en_a_fund_orders',
-  '/qy/admin/audit-logs': 'qy_sg_nav_en_a_audit_logs',
-  '/qy/admin/health': 'qy_sg_nav_en_a_health',
-}
+const EN_LABEL_KEY: Readonly<Record<string, string>> = Object.fromEntries(
+  QY_PAGES.map((page) => [page.url, page.enKey])
+)
 
 /**
  * 返回该导航项的英文副标；非 Steins Gate 预设、或该 url 未登记时返回 `null`

@@ -62,6 +62,7 @@ import {
 import {
   QY_VIOLATION_ACTIONS,
   QY_VIOLATION_FEE_MODES,
+  QY_VIOLATION_GROUP_SCOPE_MODES,
   QY_VIOLATION_MATCH_TYPES,
   QY_VIOLATION_PHASES,
   qyEmptyViolationRule,
@@ -102,6 +103,11 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
         : qyViolationRuleToForm(props.rule)
     )
   }, [form, props.open, props.rule])
+
+  // 匹配方式决定了下面好几块的文案与校验，订阅它比读 getValues 更直接：
+  // 「选了频率判据却还看着关键词的说明」是这一页最容易误导人的状态。
+  const matchType = form.watch('match_type')
+  const isRate = matchType === 'request_rate'
 
   const saveMutation = useMutation({
     mutationFn: (values: QyViolationRuleFormValues) => {
@@ -253,17 +259,39 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
               name='pattern'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>{t('qy_vio_field_pattern')}</FormLabel>
+                  <FormLabel>
+                    {isRate
+                      ? t('qy_vio_field_rate_threshold')
+                      : t('qy_vio_field_pattern')}
+                  </FormLabel>
                   <FormControl>
-                    <Textarea rows={5} className='font-mono' {...field} />
+                    {isRate ? (
+                      <Input inputMode='numeric' placeholder='60' {...field} />
+                    ) : (
+                      <Textarea rows={5} className='font-mono' {...field} />
+                    )}
                   </FormControl>
                   <FormDescription>
-                    {t('qy_vio_field_pattern_desc')}
+                    {isRate
+                      ? t('qy_vio_field_rate_threshold_desc')
+                      : t('qy_vio_field_pattern_desc')}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
             />
+
+            {/* 频率判据的三条局限必须写在管理员配置它的那一刻，而不是文档里。
+                运营看不到它们就会把这条规则当成一堵墙，而它只是一道减速带。 */}
+            {isRate && (
+              <div className='border-warning/40 bg-warning/5 space-y-1 rounded-lg border p-3 text-xs'>
+                <p className='font-medium'>{t('qy_vio_rate_caveat_title')}</p>
+                <p>{t('qy_vio_rate_caveat_stream')}</p>
+                <p>{t('qy_vio_rate_caveat_false_positive')}</p>
+                <p>{t('qy_vio_rate_caveat_nodes')}</p>
+                <p>{t('qy_vio_rate_caveat_ladder')}</p>
+              </div>
+            )}
 
             <div className='grid gap-3 sm:grid-cols-2'>
               <FormField
@@ -299,6 +327,37 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
                 )}
               />
             </div>
+
+            {/* 「指定分组开启」与「豁免分组」是同一份名单的两个方向。
+                刻意不开第二列黑名单：两张能互相矛盾的名单必然漂移，
+                而「哪张说了算」没有任何取值组合能自解释。 */}
+            <FormField
+              control={form.control}
+              name='group_scope_mode'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_group_scope_mode')}</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger className='w-full sm:w-64'>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {QY_VIOLATION_GROUP_SCOPE_MODES.map((mode) => (
+                        <SelectItem key={mode} value={mode}>
+                          {t(`qy_vio_group_scope_mode_${mode}`)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    {t('qy_vio_field_group_scope_mode_desc')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
             <div className='grid gap-3 sm:grid-cols-2'>
               <FormField
@@ -505,7 +564,7 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
               />
             </div>
 
-            <QyRuleTester getValues={form.getValues} />
+            <QyRuleTester getValues={form.getValues} isRate={isRate} />
           </form>
 
           <SheetFooter className='flex-row justify-end gap-2 border-t'>
@@ -566,11 +625,14 @@ function QyRuleSwitchField(props: {
  */
 function QyRuleTester(props: {
   getValues: UseFormGetValues<QyViolationRuleFormValues>
+  /** 频率规则不看样本文本，看的是「假设这一分钟已经发了多少条」。 */
+  isRate: boolean
 }) {
   const { t } = useTranslation()
   const [sample, setSample] = useState('')
   const [model, setModel] = useState('')
   const [group, setGroup] = useState('')
+  const [rateCount, setRateCount] = useState('')
   const [result, setResult] = useState<QyViolationRuleTestResult | null>(null)
 
   const testMutation = useMutation({
@@ -580,6 +642,7 @@ function QyRuleTester(props: {
         sample_text: sample,
         model,
         group,
+        rate_count: Number(rateCount.trim()) || 0,
       }),
     onSuccess: setResult,
     onError: (error) => {
@@ -588,19 +651,36 @@ function QyRuleTester(props: {
     },
   })
 
+  // 少了这一步，频率规则在这里永远显示「未命中」—— 一个看起来权威、
+  // 实则只是没有输入的结论，比不给试跑更容易让人放心上线。
+  const canRun = props.isRate ? rateCount.trim() !== '' : sample.trim() !== ''
+
   return (
     <div className='space-y-2 rounded-lg border p-3'>
       <div>
         <h3 className='text-sm font-medium'>{t('qy_vio_test_title')}</h3>
-        <p className='text-muted-foreground text-xs'>{t('qy_vio_test_desc')}</p>
+        <p className='text-muted-foreground text-xs'>
+          {props.isRate ? t('qy_vio_test_rate_desc') : t('qy_vio_test_desc')}
+        </p>
       </div>
-      <Textarea
-        rows={3}
-        value={sample}
-        onChange={(event) => setSample(event.target.value)}
-        placeholder={t('qy_vio_test_sample_placeholder')}
-      />
+      {!props.isRate && (
+        <Textarea
+          rows={3}
+          value={sample}
+          onChange={(event) => setSample(event.target.value)}
+          placeholder={t('qy_vio_test_sample_placeholder')}
+        />
+      )}
       <div className='flex flex-wrap gap-2'>
+        {props.isRate && (
+          <Input
+            className='w-40'
+            inputMode='numeric'
+            value={rateCount}
+            onChange={(event) => setRateCount(event.target.value)}
+            placeholder={t('qy_vio_test_rate_count')}
+          />
+        )}
         <Input
           className='w-40'
           value={model}
@@ -616,7 +696,7 @@ function QyRuleTester(props: {
         <Button
           type='button'
           variant='secondary'
-          disabled={testMutation.isPending || sample.trim() === ''}
+          disabled={testMutation.isPending || !canRun}
           onClick={() => testMutation.mutate()}
         >
           {t('qy_vio_test_run')}

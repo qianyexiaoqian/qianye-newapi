@@ -5,6 +5,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	qyctl "github.com/QuantumNous/new-api/qianye/controller"
 	"github.com/QuantumNous/new-api/qianye/module"
+	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
@@ -31,6 +32,10 @@ func RegisterRoutes(engine *gin.Engine) {
 	root.Use(middleware.RouteTag("api"))
 	root.Use(gzip.Gzip(gzip.DefaultCompression))
 	root.Use(middleware.GlobalAPIRateLimit())
+	// 写请求台账。必须挂在 UserAuth/AdminAuth **之前**:c.Next() 之后一样读得到
+	// 认证写进 context 的身份,却额外记下被认证挡掉的 401/403 —— 那正是越权探测
+	// 的形状,挂在认证之后会把这类请求整个漏掉。
+	root.Use(audit.Middleware())
 
 	// 引导端点:匿名可访问且永远返回 200。前端据此决定是渲染入口还是完全隐藏。
 	root.GET("/config", qyctl.GetConfig)
@@ -63,6 +68,7 @@ func registerAdminRoutes(g *gin.RouterGroup) {
 	// 人工裁决会直接改写资金状态,挂关键操作限流。
 	g.POST("/fund-orders/:order_no/resolve", middleware.CriticalRateLimit(), qyctl.AdminResolveFundOrder)
 	g.GET("/audit-logs", qyctl.AdminListAuditLogs)
+	g.GET("/request-audits", qyctl.AdminListRequestAudits)
 	g.GET("/leases", qyctl.AdminListLeases)
 	g.POST("/config/reload", middleware.CriticalRateLimit(), qyctl.AdminReloadConfig)
 }

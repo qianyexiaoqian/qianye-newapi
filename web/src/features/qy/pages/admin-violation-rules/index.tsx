@@ -17,13 +17,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pencil, Plus, RefreshCw, ShieldAlert, Trash2 } from 'lucide-react'
+import {
+  Gauge,
+  Pencil,
+  Plus,
+  RefreshCw,
+  ShieldAlert,
+  Trash2,
+} from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table'
 import { StatusBadge } from '@/components/status-badge'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -168,6 +176,20 @@ export function QyAdminViolationRules() {
             isResetting={breakerMutation.isPending}
           />
 
+          {/* 频率判据的计数降级。这个计数器只在存在 request_rate 规则时才会被
+              推进，所以它自己就是「这一页需不需要看这条提示」的开关。
+              不摆出来的话，运营会照着被稀释成 1/N 的数字一路调低阈值，
+              等 Redis 恢复、真实计数回来时一次性误伤一大批人。 */}
+          {(statsQuery.data?.breaker.rate_local_hits ?? 0) > 0 && (
+            <Alert className='border-warning/40 bg-warning/5 [&>svg]:text-warning'>
+              <Gauge />
+              <AlertTitle>{t('qy_vio_rate_degraded_title')}</AlertTitle>
+              <AlertDescription>
+                {t('qy_vio_rate_degraded_desc')}
+              </AlertDescription>
+            </Alert>
+          )}
+
           <QyFilterBar>
             <QyFilterField label={t('qy_vio_field_phase')}>
               <Select
@@ -270,8 +292,15 @@ export function QyAdminViolationRules() {
                   {
                     id: 'scope',
                     header: t('qy_vio_field_scope'),
+                    // 豁免方向必须在列表就看得见：同一串分组名在两种方向下
+                    // 的含义完全相反，只显示名单等于把最要紧的一半藏起来。
                     cell: (row: QyViolationRule) =>
-                      [row.model_scope, row.group_scope]
+                      [
+                        row.model_scope,
+                        row.group_scope === ''
+                          ? ''
+                          : `${t(`qy_vio_group_scope_mode_${row.group_scope_mode === 'exclude' ? 'exclude' : 'include'}`)}: ${row.group_scope}`,
+                      ]
                         .filter((item) => item !== '')
                         .join(' / ') || t('qy_vio_scope_all'),
                   },

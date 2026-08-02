@@ -69,6 +69,8 @@ export function testQyViolationRule(body: {
   sample_text: string
   model: string
   group: string
+  /** `request_rate` 规则的试跑输入：假设这一分钟内已有多少条非流式请求。 */
+  rate_count: number
 }): Promise<QyViolationRuleTestResult> {
   return qyPost<QyViolationRuleTestResult>('/admin/violation/rules/test', body)
 }

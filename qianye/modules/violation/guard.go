@@ -66,15 +66,34 @@ func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.Toke
 		return nil
 	}
 
+	// 请求频率(防蒸馏)判据的计数必须在扫描之前推进,而且只在这个挂载点成立:
+	// info.IsStream 要等 GenRelayInfo 之后才确定,而计数又必须早于预扣费 ——
+	// 本函数恰好夹在两者之间,零上游改动。
+	//
+	// 只数非流式请求:批量采集训练语料的一方要完整 JSON,不会开 stream。
+	// 排除 Playground:那是站内调试点击,把管理员自己数进封号线只会制造工单。
+	// (渠道测试走的是另一条路径,根本到不了这里。)
+	rate := 0
+	if snap.hasRate && !info.IsStream && !info.IsPlayground {
+		ctx := context.Background()
+		if c.Request != nil {
+			ctx = c.Request.Context()
+		}
+		rate = bumpRequestRate(ctx, info.UserId)
+	}
+
 	text := promptText(meta, info)
-	if text == "" {
+	// 没有 prompt 文本时仍可能有频率规则要判。计数为 0 才是真的没有任何规则
+	// 可能命中 —— compile 把频率阈值的下界钉在 1 就是为了让这一步成立。
+	if text == "" && rate <= 0 {
 		return nil
 	}
 
 	in := scanInput{
-		Model: info.OriginModelName,
-		Group: info.UsingGroup,
-		Text:  clipHeadTail(text, maxScanBytes),
+		Model:     info.OriginModelName,
+		Group:     info.UsingGroup,
+		Text:      clipHeadTail(text, maxScanBytes),
+		RateCount: rate,
 	}
 	v := scanPrompt(snap, in)
 	if v == nil || v.Rule == nil {

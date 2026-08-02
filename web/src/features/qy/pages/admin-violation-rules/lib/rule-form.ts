@@ -21,6 +21,7 @@ import { z } from 'zod'
 import type {
   QyViolationAction,
   QyViolationFeeMode,
+  QyViolationGroupScopeMode,
   QyViolationMatchType,
   QyViolationPhase,
   QyViolationRule,
@@ -45,9 +46,15 @@ export const QY_VIOLATION_PHASES: QyViolationPhase[] = [
 export const QY_VIOLATION_MATCH_TYPES: QyViolationMatchType[] = [
   'keyword',
   'regex',
+  'request_rate',
   'error_code',
   'status_code',
   'upstream_text',
+]
+
+export const QY_VIOLATION_GROUP_SCOPE_MODES: QyViolationGroupScopeMode[] = [
+  'include',
+  'exclude',
 ]
 
 export const QY_VIOLATION_ACTIONS: QyViolationAction[] = [
@@ -69,6 +76,10 @@ const UPSTREAM_ONLY_MATCH_TYPES = new Set<QyViolationMatchType>([
   'status_code',
   'upstream_text',
 ])
+
+/** `request_rate` 阈值的取值区间，与后端 `maxRequestRateThreshold` 同口径。 */
+export const QY_VIOLATION_RATE_MIN = 1
+export const QY_VIOLATION_RATE_MAX = 1_000_000
 
 function isBlocking(action: QyViolationAction): boolean {
   return action === 'block' || action === 'block_and_charge'
@@ -97,6 +108,7 @@ export const qyViolationRuleSchema = z
     match_type: z.enum([
       'keyword',
       'regex',
+      'request_rate',
       'error_code',
       'status_code',
       'upstream_text',
@@ -105,6 +117,7 @@ export const qyViolationRuleSchema = z
     case_sensitive: z.boolean(),
     model_scope: z.string().max(2048),
     group_scope: z.string().max(1024),
+    group_scope_mode: z.enum(['include', 'exclude']),
     action: z.enum(['record', 'charge', 'block', 'block_and_charge']),
     fee_mode: z.enum(['none', 'fixed', 'model_price_multiple']),
     fee_fixed: decimalString,
@@ -141,6 +154,30 @@ export const qyViolationRuleSchema = z
         message: 'qy_vio_err_match_phase',
       })
     }
+    if (data.match_type !== 'request_rate') return
+    // 频率判据数的是「即将发往上游的非流式请求」，只有转发前这一刻存在。
+    // 挂在上游阶段的规则照样会执行，却只数得到失败的请求 —— 又一条
+    // 保存成功、界面正常、线上永远不对的规则。
+    if (data.phase !== 'prompt') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['phase'],
+        message: 'qy_vio_err_rate_phase',
+      })
+    }
+    const threshold = Number(data.pattern.trim())
+    if (
+      !/^\d+$/.test(data.pattern.trim()) ||
+      threshold < QY_VIOLATION_RATE_MIN ||
+      threshold > QY_VIOLATION_RATE_MAX
+    ) {
+      // 阈值 0 会让每一个非流式请求都命中，包括计数失败时 fail-open 的那些。
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['pattern'],
+        message: 'qy_vio_err_rate_pattern',
+      })
+    }
   })
 
 export type QyViolationRuleFormValues = z.infer<typeof qyViolationRuleSchema>
@@ -165,6 +202,7 @@ export function qyEmptyViolationRule(): QyViolationRuleFormValues {
     case_sensitive: false,
     model_scope: '',
     group_scope: '',
+    group_scope_mode: 'include',
     action: 'record',
     fee_mode: 'none',
     fee_fixed: '0',
@@ -193,6 +231,10 @@ export function qyViolationRuleToForm(
     case_sensitive: rule.case_sensitive,
     model_scope: rule.model_scope,
     group_scope: rule.group_scope,
+    // 历史行（这一列出现之前写入的）可能是空串，按 include 读 ——
+    // 那正是这一列出现之前的唯一语义。
+    group_scope_mode:
+      rule.group_scope_mode === 'exclude' ? 'exclude' : 'include',
     action: rule.action,
     fee_mode: rule.fee_mode,
     fee_fixed: rule.fee_fixed,

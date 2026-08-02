@@ -45,6 +45,7 @@ type ruleUpsertReq struct {
 	CaseSensitive  bool   `json:"case_sensitive"`
 	ModelScope     string `json:"model_scope"`
 	GroupScope     string `json:"group_scope"`
+	GroupScopeMode string `json:"group_scope_mode"`
 	Action         string `json:"action"`
 	FeeMode        string `json:"fee_mode"`
 	FeeFixed       string `json:"fee_fixed"`
@@ -81,6 +82,12 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 	dst.CaseSensitive = r.CaseSensitive
 	dst.ModelScope = truncate(r.ModelScope, 2048)
 	dst.GroupScope = truncate(r.GroupScope, 1024)
+	// 名单为空时把方向强制回 include:"空黑名单"与"空白名单"都表示"全部分组生效",
+	// 留两个等价状态只会让界面上出现一个看得见、却什么都不改变的开关。
+	dst.GroupScopeMode = strings.ToLower(strings.TrimSpace(r.GroupScopeMode))
+	if dst.GroupScopeMode == "" || len(splitList(dst.GroupScope)) == 0 {
+		dst.GroupScopeMode = GroupScopeInclude
+	}
 	dst.Action = r.Action
 	dst.FeeMode = r.FeeMode
 	dst.FeeFixed = fixed
@@ -257,6 +264,10 @@ func adminTestRule(c *gin.Context) {
 		Sample string        `json:"sample_text"`
 		Model  string        `json:"model"`
 		Group  string        `json:"group"`
+		// RateCount 让 request_rate 规则也能试跑。没有它,频率规则在试跑面板里
+		// 永远显示"未命中" —— 一个看起来权威、实则只是没有输入的结论,
+		// 比不给试跑更容易让人放心上线。
+		RateCount int `json:"rate_count"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, "请求体格式错误")
@@ -272,7 +283,12 @@ func adminTestRule(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
-	in := scanInput{Model: req.Model, Group: req.Group, Text: clipHeadTail(req.Sample, maxScanBytes)}
+	in := scanInput{
+		Model:     req.Model,
+		Group:     req.Group,
+		Text:      clipHeadTail(req.Sample, maxScanBytes),
+		RateCount: req.RateCount,
+	}
 	inScope := cr.inScope(req.Model, req.Group)
 	v := scan([]*compiledRule{cr}, cr.words, in, in.Text)
 	out := gin.H{"scope_ok": inScope, "matched": false, "terms": []string{}, "snippet": ""}
@@ -968,6 +984,30 @@ func adminReviewAppeal(c *gin.Context) {
 			Where("id = ? AND status = ?", ap.RecordId, RecordAppealed).
 			Update("status", RecordActive).Error
 	}
+
+	// 申诉裁决本身必须留痕。这个函数能一次性撤销封禁 + 翻转扣费(退款),
+	// 在这条埋点之前它整个是零审计的:revokeRecord 与 unbanUser 各自写的是
+	// "记录被撤销""用户被解封",没有任何一行回答"是谁、依据哪条申诉批的"。
+	// 而这两个子操作还都是 fail-open 的(失败只 SysError),裁决记录与它们的
+	// 实际结果对不上正是事后要查的东西,所以 refunded/unbanned 一并入快照。
+	refunded, _ := out["refunded_quota"].(int64)
+	audit.Write(c, audit.Entry{
+		TraceNo:      fmt.Sprintf("appeal-%d", ap.Id),
+		Category:     qymodel.AuditCategoryViolation,
+		Action:       "appeals.review",
+		ActorType:    qymodel.ActorAdmin,
+		ActorUserId:  c.GetInt("id"),
+		ActorName:    c.GetString("username"),
+		TargetUserId: ap.UserId,
+		AmountQuota:  refunded,
+		Result:       qymodel.ResultOK,
+		Reason:       truncate("申诉裁决("+req.Decision+"): "+req.Note, 500),
+		BeforeSnap: fmt.Sprintf(`{"appeal_id":%d,"record_id":%d,"status":%q}`,
+			ap.Id, ap.RecordId, AppealPending),
+		AfterSnap: fmt.Sprintf(
+			`{"status":%q,"refund_requested":%t,"unban_requested":%t,"reset_counter":%t,"refunded_quota":%d,"unbanned":%t}`,
+			req.Decision, req.Refund, req.Unban, req.ResetCounter, refunded, out["unbanned"] == true),
+	})
 	respond(c, out)
 }
 

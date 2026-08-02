@@ -74,19 +74,45 @@ func Prune(ctx context.Context) {
 	if gdb == nil {
 		return
 	}
-	// 句柄在进入 pruneExpired 之前就绑上 ctx:租约一丢 ctx 即 cancel,
-	// 正在等连接池/等锁的那条语句也要跟着断,而不是只在下一个窗口开头才发现。
-	deleted, err := pruneExpired(ctx, gdb.WithContext(ctx),
-		config.Get().Audit.RetentionDays, common.GetTimestamp())
-	if err != nil {
-		db.MarkFailure(err)
-		common.SysError("qianye: 审计清理失败: " + err.Error())
+	days := config.Get().Audit.RetentionDays
+	now := common.GetTimestamp()
+	for _, target := range pruneTargets {
+		// 句柄在进入 pruneExpired 之前就绑上 ctx:租约一丢 ctx 即 cancel,
+		// 正在等连接池/等锁的那条语句也要跟着断,而不是只在下一个窗口开头才发现。
+		deleted, err := pruneExpired(ctx, gdb.WithContext(ctx), target.model, days, now)
+		if err != nil {
+			db.MarkFailure(err)
+			common.SysError("qianye: 审计清理失败(" + target.label + "): " + err.Error())
+			// 不 return:两张表互不依赖,一张扫不动不该连累另一张。
+			continue
+		}
+		if deleted > 0 {
+			// 删除审计凭据本身是需要留痕的动作,而它显然不能记进正在被删的那张表。
+			common.SysLog(fmt.Sprintf(
+				"qianye: 已清理 %s 的 %d 行过期记录(保留期 %d 天)", target.label, deleted, days))
+		}
 	}
-	if deleted > 0 {
-		// 删除审计凭据本身是需要留痕的动作,而它显然不能记进正在被删的那张表。
-		common.SysLog(fmt.Sprintf(
-			"qianye: 已清理 %d 行过期审计(保留期 %d 天)", deleted, config.Get().Audit.RetentionDays))
-	}
+}
+
+// pruneTarget 是一张受同一个保留期管辖的审计表。
+type pruneTarget struct {
+	label string
+	// model 只用于让 GORM 解析表名与主键。这里存零值实例而不是构造函数:
+	// Find 写的是另一个目标切片,Delete 读到的主键是零值(因此不会额外拼条件),
+	// 两者都不会写回这个实例,复用是安全的。
+	model any
+}
+
+// pruneTargets 列出全部按 audit.retention_days 清理的表。
+//
+// qy_request_audits 与 qy_audit_logs 共用同一个保留期,不另立配置项:
+// 再开一个 request_retention_days 就是把"审计留多久"这件事拆成两个可以互相
+// 矛盾的答案,而运维只会记住其中一个。共用的代价是请求台账也享受 365 天硬下限
+// (它的体积是资金审计的几十倍),这是刻意选的方向 —— 台账留得太久只是磁盘问题,
+// 留得太短是"当时到底谁调了这个接口"永远查不到。
+var pruneTargets = []pruneTarget{
+	{label: "qy_audit_logs", model: &qymodel.AuditLog{}},
+	{label: "qy_request_audits", model: &qymodel.RequestAudit{}},
 }
 
 // pruneExpired 删除 created_at 早于 now-days 的审计行,返回实际删除的行数。
@@ -106,7 +132,7 @@ func Prune(ctx context.Context) {
 // "自增主键 + 写入时取当前时间",多节点时钟漂移会让这个关系在局部反转。
 // 逐行判定意味着漂移最多让某几行**多留一轮**,永远不会让它们早删 —— 对仲裁
 // 凭据来说,这是唯一可接受的失败方向。
-func pruneExpired(ctx context.Context, gdb *gorm.DB, days int, now int64) (int64, error) {
+func pruneExpired(ctx context.Context, gdb *gorm.DB, model any, days int, now int64) (int64, error) {
 	if days <= 0 {
 		// 0 = 永久保留(默认);负数已被 validateAudit 拒绝,这里一并兜住。
 		//
@@ -130,7 +156,7 @@ func pruneExpired(ctx context.Context, gdb *gorm.DB, days int, now int64) (int64
 			return deleted, nil // 租约已丢失,立刻停手,否则就是双跑
 		}
 		var window []pruneRow
-		if err := gdb.WithContext(ctx).Model(&qymodel.AuditLog{}).
+		if err := gdb.WithContext(ctx).Model(model).
 			Select("id", "created_at").
 			Where("id > ?", cursor).
 			Order("id asc").Limit(pruneScanSize).
@@ -150,7 +176,7 @@ func pruneExpired(ctx context.Context, gdb *gorm.DB, days int, now int64) (int64
 			}
 		}
 		if len(expired) > 0 {
-			res := gdb.WithContext(ctx).Where("id IN ?", expired).Delete(&qymodel.AuditLog{})
+			res := gdb.WithContext(ctx).Where("id IN ?", expired).Delete(model)
 			if res.Error != nil {
 				return deleted, fmt.Errorf("删除过期审计行失败: %w", res.Error)
 			}

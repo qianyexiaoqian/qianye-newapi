@@ -28,13 +28,31 @@ For commercial licensing, please contact support@quantumnous.com
 /** 规则生效阶段。 */
 export type QyViolationPhase = 'prompt' | 'reject_reason' | 'upstream_err'
 
-/** 匹配方式。后三种只能用于上游阶段（prompt 阶段拿不到上游错误）。 */
+/**
+ * 匹配方式。
+ *
+ * `error_code` / `status_code` / `upstream_text` 只能用于上游阶段（prompt 阶段
+ * 拿不到上游错误）；`request_rate` 恰好相反，只能用于转发前 —— 它数的是
+ * 「即将发往上游的非流式请求条数」，挂在上游阶段就只会数到失败的那些。
+ */
 export type QyViolationMatchType =
   | 'error_code'
   | 'keyword'
   | 'regex'
+  | 'request_rate'
   | 'status_code'
   | 'upstream_text'
+
+/**
+ * 分组作用域的名单方向。
+ *
+ * `include`（默认）：名单非空时只对名单内的分组生效。
+ * `exclude`：名单非空时对名单内的分组**豁免**，其余分组全部生效。
+ *
+ * 名单为空时后端强制折回 `include` —— 「空黑名单」与「空白名单」都表示
+ * 「全部分组生效」，留两个等价状态只会让界面上出现一个什么都不改变的开关。
+ */
+export type QyViolationGroupScopeMode = 'exclude' | 'include'
 
 /** 处置动作。含 block 的动作只在 prompt 阶段有意义。 */
 export type QyViolationAction =
@@ -61,6 +79,7 @@ export type QyViolationRule = {
   case_sensitive: boolean
   model_scope: string
   group_scope: string
+  group_scope_mode: QyViolationGroupScopeMode
   action: QyViolationAction
   fee_mode: QyViolationFeeMode
   fee_fixed: string
@@ -90,6 +109,7 @@ export type QyViolationRuleInput = {
   case_sensitive: boolean
   model_scope: string
   group_scope: string
+  group_scope_mode: QyViolationGroupScopeMode
   action: QyViolationAction
   fee_mode: QyViolationFeeMode
   fee_fixed: string
@@ -153,6 +173,17 @@ export type QyViolationBreaker = {
   record_drops: number
   scan_timeouts: number
   rule_refresh_fails: number
+  /**
+   * `request_rate` 判据的计数降级可见性。
+   *
+   * `rate_local_hits > 0` 表示计数正落在**每节点各数各的**进程内兜底上
+   * （站点没配 Redis，或 Redis 正在报错）。多节点部署时单节点看到的条数只有真实值
+   * 的约 1/N，阈值等于被放大了 N 倍。不把它摆出来，运营会照着被稀释的数字一路
+   * 调低阈值，等 Redis 恢复、真实计数回来时一次性误伤一大批人。
+   */
+  rate_redis_fails: number
+  rate_local_hits: number
+  rate_local_full: number
 }
 
 export type QyViolationStatBucket = {

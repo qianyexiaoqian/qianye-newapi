@@ -47,6 +47,8 @@ func handlePutSiteTheme(c *gin.Context) {
 	}
 
 	before, beforeForce := Current()
+	beforeSnap := `{"default_preset":"` + before + `","force_preset":` + boolStr(beforeForce) + `}`
+	afterSnap := `{"default_preset":"` + req.DefaultPreset + `","force_preset":` + boolStr(req.ForcePreset) + `}`
 	if err := save(req.DefaultPreset, req.ForcePreset, c.GetInt("id")); err != nil {
 		if err == ErrUnknownPreset {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -55,6 +57,16 @@ func handlePutSiteTheme(c *gin.Context) {
 			})
 			return
 		}
+		// 落库失败也要留痕:save 内部已经动过库的可能性存在,而只在成功路径
+		// 写审计会让"改过但没成功"这一类完全不可见。未知预设那一条不写 ——
+		// 它在写库之前就被挡下,库的状态一定没变,记下来只是噪音。
+		audit.WriteConfigUpdate(c, audit.ConfigChange{
+			Action: "site_theme.update",
+			Result: qymodel.ResultFail,
+			Reason: "保存站点主题失败: " + err.Error(),
+			Before: beforeSnap,
+			After:  afterSnap,
+		})
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false, "code": "qy_internal_error", "message": "保存失败,请稍后重试",
 		})
@@ -62,15 +74,11 @@ func handlePutSiteTheme(c *gin.Context) {
 	}
 
 	// 主题变更影响全站观感,且"谁在什么时候改的"事后需要可查。
-	audit.Write(c, audit.Entry{
-		Category:    qymodel.AuditCategoryConfig,
-		Action:      "site_theme.update",
-		ActorType:   qymodel.ActorAdmin,
-		ActorUserId: c.GetInt("id"),
-		ActorName:   c.GetString("username"),
-		Result:      qymodel.ResultOK,
-		BeforeSnap:  `{"default_preset":"` + before + `","force_preset":` + boolStr(beforeForce) + `}`,
-		AfterSnap:   `{"default_preset":"` + req.DefaultPreset + `","force_preset":` + boolStr(req.ForcePreset) + `}`,
+	audit.WriteConfigUpdate(c, audit.ConfigChange{
+		Action: "site_theme.update",
+		Result: qymodel.ResultOK,
+		Before: beforeSnap,
+		After:  afterSnap,
 	})
 
 	c.JSON(http.StatusOK, gin.H{

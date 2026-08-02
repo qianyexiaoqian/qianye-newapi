@@ -1,13 +1,17 @@
 package withdraw
 
 import (
+	"strconv"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/modules/commission"
+	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -214,10 +218,59 @@ func handleCreatePayee(c *gin.Context) {
 	}
 	view, err := createPayeeAccount(c.GetInt("id"), channel, data, req.Label)
 	if err != nil {
+		writePayeeAudit(c, payeeAudit{Action: "withdraw.payee.create",
+			Result: qymodel.ResultFail, Reason: "新增收款账号失败: " + err.Error()})
 		respondErr(c, err)
 		return
 	}
+	// 收款账号决定这个人的钱最终打到哪里。改收款人是提现欺诈的第一步,
+	// 而在这条埋点之前,新增/删除收款账号在资金审计里完全没有痕迹 ——
+	// 事后只能看到"打给了这张卡",看不到"这张卡是什么时候、从哪个 IP 绑上来的"。
+	writePayeeAudit(c, payeeAudit{Action: "withdraw.payee.create",
+		Result: qymodel.ResultOK, Ref: view.Ref, After: view, Reason: "新增收款账号"})
 	respondOK(c, view)
+}
+
+// payeeAudit 是一次收款账号变更的审计输入。
+type payeeAudit struct {
+	Action string
+	Result string
+	Reason string
+	Ref    string
+	Before *payeeView
+	After  *payeeView
+}
+
+// writePayeeAudit 落一条收款账号变更审计。
+//
+// 快照走 payeeView(masked)而不是明文:明文的访问本身有独立的、保留期更长的
+// qy_pii_audits,把它复制进这张表等于绕过那套管控。
+func writePayeeAudit(c *gin.Context, a payeeAudit) {
+	userId := c.GetInt("id")
+	audit.Write(c, audit.Entry{
+		TraceNo:      a.Ref,
+		Category:     qymodel.AuditCategoryWithdraw,
+		Action:       a.Action,
+		ActorType:    qymodel.ActorUser,
+		ActorUserId:  userId,
+		ActorName:    c.GetString("username"),
+		TargetUserId: userId,
+		Result:       a.Result,
+		Reason:       a.Reason,
+		BeforeSnap:   payeeSnapshot(a.Before),
+		AfterSnap:    payeeSnapshot(a.After),
+	})
+}
+
+func payeeSnapshot(v *payeeView) string {
+	if v == nil {
+		return ""
+	}
+	b, err := common.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // handleDeletePayee 删除一个收款方式(软删除,保留风控指纹)。
@@ -230,10 +283,16 @@ func handleDeletePayee(c *gin.Context) {
 		respondErr(c, errInvalidParam)
 		return
 	}
-	if err := deletePayeeAccount(c.GetInt("id"), ref); err != nil {
+	before, err := deletePayeeAccount(c.GetInt("id"), ref)
+	if err != nil {
+		writePayeeAudit(c, payeeAudit{Action: "withdraw.payee.delete", Ref: ref,
+			Result: qymodel.ResultFail, Before: before,
+			Reason: "删除收款账号失败: " + err.Error()})
 		respondErr(c, err)
 		return
 	}
+	writePayeeAudit(c, payeeAudit{Action: "withdraw.payee.delete", Ref: ref,
+		Result: qymodel.ResultOK, Before: before, Reason: "删除收款账号"})
 	respondOK(c, gin.H{"ref": ref})
 }
 
@@ -246,11 +305,31 @@ func handleUploadProof(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagWithdraw) {
 		return
 	}
-	row, err := acceptProofUpload(c, c.GetInt("id"))
+	userId := c.GetInt("id")
+	row, err := acceptProofUpload(c, userId)
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
+	// 打款凭证是线下法币打款争议里唯一的物证。上传这一步在此之前没有任何
+	// 资金审计:事后能看到图,却看不到"这张图是谁、什么时候、从哪个 IP 传的",
+	// 而伪造凭证恰恰是这条链路上最容易发生的事。
+	//
+	// 只在成功后写:失败的上传(格式不对、超限)没有产生物证,
+	// 它的调用事实由请求台账(qy_request_audits)覆盖。
+	audit.Write(c, audit.Entry{
+		TraceNo:      row.Ref,
+		Category:     qymodel.AuditCategoryWithdraw,
+		Action:       "withdraw.proof.upload",
+		ActorType:    qymodel.ActorUser,
+		ActorUserId:  userId,
+		ActorName:    c.GetString("username"),
+		TargetUserId: userId,
+		Result:       qymodel.ResultOK,
+		Reason:       "上传打款凭证",
+		AfterSnap: `{"ref":"` + row.Ref + `","mime_type":"` + row.MimeType +
+			`","size":` + strconv.FormatInt(row.Size, 10) + `}`,
+	})
 	respondOK(c, gin.H{
 		"ref":        row.Ref,
 		"mime_type":  row.MimeType,

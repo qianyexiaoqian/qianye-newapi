@@ -29,8 +29,12 @@ func AdminHealth(c *gin.Context) {
 	ok(c, gin.H{
 		"db":        db.Stats(),
 		"hot_queue": guard.QueueStats(),
-		"two_phase": twophase.Stats(),
-		"leases":    leases,
+		// request_audit.dropped > 0 意味着那段时间的写请求没有 HTTP 留痕。
+		// 台账允许异步、允许丢,但绝不允许**静默**丢 —— 悄悄缺失的审计
+		// 比没有审计更危险,因为它看起来是完整的。
+		"request_audit": audit.RequestQueueStats(),
+		"two_phase":     twophase.Stats(),
+		"leases":        leases,
 		"migrate": gin.H{
 			"table_count": db.TableCount(),
 		},
@@ -248,7 +252,16 @@ func AdminListAuditLogs(c *gin.Context) {
 		q = q.Where("category = ?", v)
 	}
 	if v := c.Query("action"); v != "" {
-		q = q.Where("action = ?", v)
+		q = ApplyActionPrefix(q, v)
+	}
+	if v := c.Query("result"); v != "" {
+		q = q.Where("result = ?", v)
+	}
+	if v := c.Query("actor_type"); v != "" {
+		q = q.Where("actor_type = ?", v)
+	}
+	if v := c.Query("ip"); v != "" {
+		q = q.Where("ip = ?", v)
 	}
 	if v := c.Query("trace_no"); v != "" {
 		q = q.Where("trace_no = ?", v)

@@ -164,6 +164,7 @@ func adminCreateRule(c *gin.Context) {
 		return audit.WriteTx(tx, ruleAuditEntry(c, "create", nil, row))
 	})
 	if err != nil {
+		writeRuleFailure(c, "create", nil, row, err)
 		if isDuplicateRule(err) {
 			badRequest(c, "该分组下该模型已存在规则,请直接编辑那一条")
 			return
@@ -190,12 +191,15 @@ func adminUpdateRule(c *gin.Context) {
 		return
 	}
 
-	var updated Rule
+	// before/loaded 提到事务之外:失败审计要在回滚之后才写,
+	// 那时闭包里的局部变量已经不可见,而"改之前是什么"正是那条审计的一半价值。
+	var before, updated Rule
+	loaded := false
 	err := db.Get().Transaction(func(tx *gorm.DB) error {
-		var before Rule
 		if err := tx.Where("id = ?", id).Take(&before).Error; err != nil {
 			return err
 		}
+		loaded = true
 		after := before
 		if err := req.apply(&after); err != nil {
 			return err
@@ -211,6 +215,12 @@ func adminUpdateRule(c *gin.Context) {
 		updated = after
 		return audit.WriteTx(tx, ruleAuditEntry(c, "update", &before, &after))
 	})
+	if err != nil && loaded {
+		// 规则本身不存在(ErrRecordNotFound)时 loaded 为 false,不写审计:
+		// 那是一次打空的请求,记进资金审计只会稀释它 —— 请求台账
+		// (qy_request_audits)已经记下了这次调用。
+		writeRuleFailure(c, "update", &before, nil, err)
+	}
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		notFound(c)
@@ -238,11 +248,14 @@ func adminDeleteRule(c *gin.Context) {
 		badRequest(c, "id 非法")
 		return
 	}
+	// 同 adminUpdateRule:before 必须活到事务之外,失败审计才拿得到它。
+	var before Rule
+	loaded := false
 	err := db.Get().Transaction(func(tx *gorm.DB) error {
-		var before Rule
 		if err := tx.Where("id = ?", id).Take(&before).Error; err != nil {
 			return err
 		}
+		loaded = true
 		if err := tx.Delete(&Rule{}, id).Error; err != nil {
 			return err
 		}
@@ -251,6 +264,9 @@ func adminDeleteRule(c *gin.Context) {
 		}
 		return audit.WriteTx(tx, ruleAuditEntry(c, "delete", &before, nil))
 	})
+	if err != nil && loaded {
+		writeRuleFailure(c, "delete", &before, nil, err)
+	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		notFound(c)
 		return
@@ -343,6 +359,19 @@ func refreshAfterWrite() {
 	if err := reload(false); err != nil {
 		common.SysError("qianye/grouppricing: 写入后刷新快照失败(其它节点仍会按周期刷新): " + err.Error())
 	}
+}
+
+// writeRuleFailure 在规则写入事务回滚之后补一条失败审计。
+//
+// 成功路径的审计写在 WriteTx 里(与规则变更同生共死),这是对的;
+// 但它的副作用是**失败路径零留痕** —— 事务一回滚,那条审计跟着消失,
+// 于是"有人反复尝试把某个分组的价格改成 0、每次都被唯一索引挡回去"
+// 在库里查不到任何痕迹。这条补写必须在事务之外。
+func writeRuleFailure(c *gin.Context, action string, before, after *Rule, err error) {
+	e := ruleAuditEntry(c, action, before, after)
+	e.Result = qymodel.ResultFail
+	e.Reason = "分组定价写入失败(事务已回滚): " + err.Error() + " | " + e.Reason
+	audit.Write(c, e)
 }
 
 func ruleAuditEntry(c *gin.Context, action string, before, after *Rule) audit.Entry {

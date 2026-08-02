@@ -1,0 +1,64 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+
+/**
+ * `LAB MEMO — NN` 序号的唯一真源。
+ *
+ * ── 为什么是一张冻结的字面量表，而不是从导航结构派生 ──
+ * 序号原本取自 `nav.ts` 里页面的声明顺序。那等于把「实验记录编号」这个**对外
+ * 可见的稳定标识**绑死在「侧边栏怎么排」这个**随时会调整的展示决定**上：这次
+ * 把 23 个页面按语义拆进上游分组，声明顺序必然重排，23 个编号会集体错位 ——
+ * 用户昨天记下的 `LAB MEMO — 14` 今天指向另一个页面。
+ *
+ * 所以这里把编号显式冻结成字面量，导航怎么重排都不影响它。
+ *
+ * ── 维护规则 ──
+ *   1. **新页面一律追加到末尾**，取下一个空号；
+ *   2. **不要重排、不要插空**，中间的页面下线时保留空洞或直接删行都会让后面
+ *      所有页面移位 —— 若真要下线一个页面，删行是可接受的（历史编号本就随
+ *      页面消失），但绝不允许为了"好看"重新排序；
+ *   3. 本表与 `lib/pages.ts` 的 url 集合必须完全一致，由
+ *      `__tests__/page-order.test.ts` 双向断言（少一个 = 新页面忘了登记编号，
+ *      多一个 = 页面已删但编号残留）。
+ */
+export const QY_PAGE_URL_ORDER: readonly string[] = [
+  '/qy/affiliate',
+  '/qy/invitees',
+  '/qy/transfer',
+  '/qy/transfer-logs',
+  '/qy/pay-password',
+  '/qy/withdraw',
+  '/qy/withdrawals',
+  '/qy/violations',
+  '/qy/availability',
+  '/qy/admin/commission',
+  '/qy/admin/commission-records',
+  '/qy/admin/transfer-records',
+  '/qy/admin/transfer-group-rules',
+  '/qy/admin/transfer-config',
+  '/qy/admin/withdrawals',
+  '/qy/admin/violation-rules',
+  '/qy/admin/violations',
+  '/qy/admin/user-group',
+  '/qy/admin/group-pricing',
+  '/qy/admin/site-theme',
+  '/qy/admin/fund-orders',
+  '/qy/admin/audit-logs',
+  '/qy/admin/health',
+]

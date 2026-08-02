@@ -174,7 +174,7 @@ func adminPutTransferConfig(c *gin.Context) {
 		// 万一回滚没有生效(连接被掐、DDL 混进来),这条记录就是唯一能看出
 		// "库里已经变了"的地方。事实本身必须留痕,哪怕它与预期不符。
 		invalidateSettings()
-		writeConfigUpdateAudit(c, operatorId, qymodel.ResultFail,
+		writeConfigUpdateAudit(c, qymodel.ResultFail,
 			"修改划转门槛失败(事务已回滚): "+txErr.Error(), before, reReadSettings(c, before))
 		respondErr(c, txErr)
 		return
@@ -186,12 +186,12 @@ func adminPutTransferConfig(c *gin.Context) {
 		// 写已经成功了,只是回读失败。审计仍然要写,after 用"这次批准的值",
 		// 并在原因里点明它是推算值而不是回读值 —— 否则事后翻审计的人会把
 		// 一个没有被证实过的快照当成库里的事实。
-		writeConfigUpdateAudit(c, operatorId, qymodel.ResultOK,
+		writeConfigUpdateAudit(c, qymodel.ResultOK,
 			"修改划转门槛(写入成功,回读失败,after 为本次批准值): "+err.Error(), before, candidate)
 		respondErr(c, err)
 		return
 	}
-	writeConfigUpdateAudit(c, operatorId, qymodel.ResultOK, "修改划转门槛", before, after)
+	writeConfigUpdateAudit(c, qymodel.ResultOK, "修改划转门槛", before, after)
 	respondOK(c, gin.H{"effective": settingsSnapshot(after)})
 }
 
@@ -209,19 +209,17 @@ func reReadSettings(c *gin.Context, fallback opSettings) opSettings {
 //
 // 失败那条同样带前后快照 —— 它回答的是"有人在这个时刻想把门槛改成什么、
 // 库里现在实际是什么"。
-func writeConfigUpdateAudit(c *gin.Context, operatorId int, result, reason string, before, after opSettings) {
-	beforeSnap, _ := common.Marshal(settingsSnapshot(before))
-	afterSnap, _ := common.Marshal(settingsSnapshot(after))
-	audit.Write(c, audit.Entry{
-		Category:    qymodel.AuditCategoryConfig,
-		Action:      "transfer.config.update",
-		ActorType:   qymodel.ActorAdmin,
-		ActorUserId: operatorId,
-		ActorName:   c.GetString("username"),
-		Result:      result,
-		Reason:      reason,
-		BeforeSnap:  string(beforeSnap),
-		AfterSnap:   string(afterSnap),
+//
+// 组装与写入住在 audit.WriteConfigUpdate,与 commission 共用同一份实现;
+// 这里只剩 Action 与快照视图。operatorId 不再往下传 —— 共享实现直接读
+// context,与这里的 c.GetInt("id") 是同一个来源。
+func writeConfigUpdateAudit(c *gin.Context, result, reason string, before, after opSettings) {
+	audit.WriteConfigUpdate(c, audit.ConfigChange{
+		Action: "transfer.config.update",
+		Result: result,
+		Reason: reason,
+		Before: settingsSnapshot(before),
+		After:  settingsSnapshot(after),
 	})
 }
 
