@@ -27,12 +27,11 @@ import { useQyConfig } from './hooks/use-qy-config'
 import { getQyConfigSnapshot } from './lib/config-query'
 import { QY_PAGE_URL_ORDER } from './lib/page-order'
 import {
-  QY_NAV_CLUSTERS,
   QY_NAV_GROUPS,
+  QY_SETTINGS_GROUP,
   QY_TAB_GROUPS,
   isQyAdminPage,
   qyEntryPages,
-  type QyClusterId,
   type QyNavGroupId,
   type QyPageDef,
 } from './lib/pages'
@@ -45,8 +44,10 @@ import type { QyFeatures } from './lib/types'
  * 此前 23 个页面全塞进一个 drill-in 工作区，侧栏上是一长条平铺列表；项目方的
  * 反馈正是"新增的功能菜单都聚在一起"。现在按语义拆开：
  *
- *   · 能挂进上游分组的就挂进去（可用率 → General、分组定价/新用户分组/
- *     扩展健康 → Admin，各自紧跟语义最近的上游项）；
+ *   · 能挂进上游分组的就挂进去（可用率 → General、扩展健康 → Admin，
+ *     各自紧跟语义最近的上游项）；
+ *   · 配置类的管理页干脆不进根侧栏，并进上游「系统设置」抽屉
+ *     （需求 8，见 `system-settings.ts`）；
  *   · 确实无处可挂的才建新组，且新组行数受控（均不超过上游 admin 组的 7 行）；
  *   · drill-in 工作区视图**已删除** —— 见下方 §为什么删掉 drill-in。
  *
@@ -55,7 +56,7 @@ import type { QyFeatures } from './lib/types'
  * 它们是宿主页上的标签而不是独立页面，因此 `qyEntryPages` 会把它们滤掉。
  * 侧栏因此比上一轮少了两个折叠项与两行 —— 这正是项目方要的。
  *
- * 落点、图标、日文/英文副标全部来自 `lib/pages.ts` 的单张表，本文件只负责
+ * 落点、图标、日文副标全部来自 `lib/pages.ts` 的单张表，本文件只负责
  * "把表变成上游要的 NavGroup 结构"。
  *
  * ── 为什么删掉 drill-in ──
@@ -91,8 +92,14 @@ function toNavLink(page: QyPageDef, t: TFunction): NavLink {
 /**
  * 按分组收集要插入的导航项。
  *
- * 折叠项的位置由它**第一个可见子项**在 `QY_PAGES` 里的位置决定，所以只要按
- * 想要的顺序声明页面即可，不用再给折叠项单独维护一个 order 字段。
+ * 同一分组内的顺序 = 页面在 `QY_PAGES` 里的声明顺序；组内位置由 `after`
+ * 锚点决定，找不到锚点就追加到组尾（见 {@link withQyItems}）。
+ *
+ * ── 折叠项（`NavCollapsible`）已经不再产出 ──
+ * 上一轮的「划转设置」折叠项只有两个子项，需求 8 之后这两页都并进了系统设置
+ * 抽屉，折叠项随之空掉。空壳没有留：留着就是一条永远走不到的分支，
+ * 而"写了但没接上"是这个仓库反复出现的形状。真需要二级菜单时再加回来，
+ * 那时它至少有成员可测。
  */
 function collectInsertions(
   features: QyFeatures,
@@ -106,37 +113,16 @@ function collectInsertions(
     else byGroup.set(group, [insertion])
   }
 
-  const clusterSubItems = new Map<QyClusterId, NavLink[]>()
-
   // `qyEntryPages` 已经把"角色 × 功能开关 × 是否已被收进别人的选择夹"三件事
   // 一起判完。这里不再自己 filter 一遍：判定多一处就多一处会漂移的地方，而
   // 被收进选择夹的页面留在侧栏里会得到一行点了就被重定向甩走的死链。
   for (const page of qyEntryPages(features, isAdmin)) {
-    if (page.cluster == null) {
-      if (page.group != null) {
-        push(page.group, { item: toNavLink(page, t), after: page.after })
-      }
-      continue
-    }
-
-    const cluster = QY_NAV_CLUSTERS.find((c) => c.id === page.cluster)
-    if (cluster == null) continue
-
-    // 子项不带图标：上游二级菜单本来就不带，混着给会让缩进看起来是坏的。
-    const sub = { title: t(page.titleKey), url: page.url }
-    const existing = clusterSubItems.get(cluster.id)
-    if (existing) {
-      existing.push(sub)
-      continue
-    }
-    // 第一个可见子项才决定折叠项的插入位置；`items` 是同一个数组引用，
-    // 后续子项 push 进去即可，不用二次回填。
-    const items: NavLink[] = [sub]
-    clusterSubItems.set(cluster.id, items)
-    push(cluster.group, {
-      item: { title: t(cluster.titleKey), icon: cluster.icon, items },
-      after: cluster.after,
-    })
+    if (page.group == null) continue
+    // 系统设置抽屉里的页面**不进根侧栏**（需求 8）。必须显式跳过：靠
+    // "byGroup 里多出一个没人认领的键、后面自然被丢掉"来实现，是这个仓库
+    // 反复出现的断链形状 —— 哪天上游真出现同名分组，它们就会凭空冒出来。
+    if (page.group === QY_SETTINGS_GROUP) continue
+    push(page.group, { item: toNavLink(page, t), after: page.after })
   }
 
   return byGroup

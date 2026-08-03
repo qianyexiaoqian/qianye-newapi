@@ -297,8 +297,13 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 
 	// Expression coefficients are $/1M tokens prices; convert to quota the same way per-call billing does.
 	quotaBeforeGroup := rawCost / 1_000_000 * common.QuotaPerUnit
-	quotaBeforeGroup = QyGroupTieredQuota(info, quotaBeforeGroup)
-	preConsumedQuota, err := billingexpr.QuotaRoundStrict(quotaBeforeGroup * groupRatioInfo.GroupRatio)
+	// 分组级乘数是**当前分组**的属性,和分组倍率一样会随 auto 重试切组而变,
+	// 因此它只作用在本次预扣的金额上,绝不能写进快照:
+	// service.refreshTieredBillingGroup 会拿快照里的 before-group 值重算预留额,
+	// 快照里若存的是已乘乘数的值,切到新分组后原分组的乘数会被带进新分组的预留额。
+	// 快照存未乘任何分组因子的原始表达式结果,两侧各按当前分组现算乘数。
+	quotaWithGroupMultiplier := QyGroupTieredQuota(info, quotaBeforeGroup)
+	preConsumedQuota, err := billingexpr.QuotaRoundStrict(quotaWithGroupMultiplier * groupRatioInfo.GroupRatio)
 	if err != nil {
 		return hosttypes.PriceData{}, err
 	}
@@ -335,7 +340,7 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 		QuotaToPreConsume: preConsumedQuota,
 	}
 
-	logger.LogDebug(c, "model_price_helper_tiered result: model=%s preConsume=%d quotaBeforeGroup=%.2f groupRatio=%.2f tier=%s", info.OriginModelName, preConsumedQuota, quotaBeforeGroup, groupRatioInfo.GroupRatio, trace.MatchedTier)
+	logger.LogDebug(c, "model_price_helper_tiered result: model=%s preConsume=%d quotaBeforeGroup=%.2f groupMultiplied=%.2f groupRatio=%.2f tier=%s", info.OriginModelName, preConsumedQuota, quotaBeforeGroup, quotaWithGroupMultiplier, groupRatioInfo.GroupRatio, trace.MatchedTier)
 
 	info.PriceData = priceData
 	return priceData, nil

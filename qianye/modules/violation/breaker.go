@@ -10,9 +10,21 @@ import (
 
 // 熔断:规则事故的最后一道闸。
 //
+// # 为什么删掉了全局模式,熔断却留着
+//
+// 项目方拍板"删掉全局开关,模式只绑在规则上"。熔断看起来像是要被一起删掉的
+// 那类东西 —— 它确实也会让规则不执行 —— 但它不是一个"模式":
+//
+//   - 模式是**人表达的意图**,人要理解它、切换它、为它负责;
+//   - 熔断是**机器踩的刹车**,没有人打开过它,人只需要在它响的时候收到告警。
+//
 // 一条 `.*` 正则能在 30 秒内拦掉全站请求并把用户全部封号,而扣费与封号都很难
-// 完全回滚(用户已经收到错误、已经被登出、已经发工单)。所以除了默认开启的
-// 影子模式,还必须有"跑着跑着发现不对就自动退回影子模式"的自愈能力。
+// 完全回滚(用户已经收到错误、已经被登出、已经发工单)。把这道自愈能力删掉,
+// 换来的只是"少一个概念",代价是深夜无人值守时一次规则手滑没有任何东西拦得住。
+// 所以这里的取舍是:**保留能力,取消它的"模式"身份** ——
+//   - 它不再参与任何"当前是什么模式"的表达(shadowActive 已删除);
+//   - 它是 effectiveShadow 里的一个运行期钳位:触发期间把**全部**规则按影子执行;
+//   - 管理端只在它触发时显示一条告警 + 一个"解除"按钮,平时整块 UI 不存在。
 //
 // 判据刻意选了两个正交的量:
 //   - 拦截率(命中/评估):规则写得太宽的直接信号;
@@ -52,28 +64,19 @@ var (
 // 窗口太长,事故要很久才被发现;太短,样本量凑不够。
 const windowSeconds = 300
 
-// shadowActive 返回当前**全局**是否处于影子模式,以及原因。
+// breakerTripped 返回熔断当前是否正在把全部规则钳成影子,以及触发描述。
 //
-// 影子模式下:规则照常匹配、照常落一条记录、照常进统计,但
-// **不扣费、不阻断、不封号、也不推进违规计数**(裁决 2)。
-// 最后一条是本轮修的 P0:此前影子命中照样调 bumpCounter,而封号判据完全由
-// 持久化的 hit_count 推导,于是影子命中把用户推过封号线、下一次真实命中直接落
-// 封禁行 —— 正好是"不会真实执行"的反面。计数跳过点在 guard.go 的 persist。
-//
-// 全局取值有两个来源:管理端写在 qy_settings 的覆盖(优先),没有覆盖时回落
-// YAML 的 violation.shadow_mode。叠加规则级 dry_run 在调用方完成,取更保守者胜。
-func shadowActive() (bool, string) {
-	if on, source := globalShadowMode(); on {
-		return true, source
+// 只看 forcedShadowUntil 一个量。它**不是**"当前模式",唯一的调用方是
+// effectiveShadow —— 那里先看规则自己的 Mode,规则说 enforce 时才轮到这道钳位。
+func breakerTripped() (bool, string) {
+	if common.GetTimestamp() >= forcedShadowUntil.Load() {
+		return false, ""
 	}
-	if common.GetTimestamp() < forcedShadowUntil.Load() {
-		r, _ := forcedShadowReason.Load().(string)
-		if r == "" {
-			r = "breaker"
-		}
-		return true, r
+	r, _ := forcedShadowReason.Load().(string)
+	if r == "" {
+		r = ShadowReasonBreaker
 	}
-	return false, ""
+	return true, r
 }
 
 // noteScan 记录一次规则评估,并在拦截率越界时自动回落影子模式。
@@ -152,32 +155,25 @@ func tripShadow(reason string) {
 		" —— 请立即检查最近改动的规则")
 }
 
-// clearForcedShadow 供管理端在确认规则已修正后手动解除**熔断**。
+// clearForcedShadow 供管理端在确认规则已修正后手动解除熔断。
 //
-// 它只清 forcedShadowUntil。全局影子开关(qy_settings 覆盖 / YAML)不在它的
-// 管辖范围内 —— 那条路要走 adminPutMode。这一点必须由界面区分清楚:
-// 界面上曾经只在 forced 为真时才渲染这个按钮,于是配置态影子下整页一个可点的
-// 控件都没有,"无法调整模式"的直接观感就来自这里。
+// 它只清 forcedShadowUntil。规则各自的 Mode 一个字节都不动 —— 解除熔断的语义是
+// "刹车松开,各条规则回到它们自己声明的模式",顺手把规则转正就是替运营做了一个
+// 他没做过的决定。
 func clearForcedShadow() {
 	forcedShadowUntil.Store(0)
 	forcedShadowReason.Store("")
 }
 
 func breakerStats() map[string]any {
-	shadow, reason := shadowActive()
-	globalShadow, _ := globalShadowMode()
+	tripped, reason := breakerTripped()
 	return map[string]any{
-		"shadow":        shadow,
-		"shadow_reason": reason,
-		// config_shadow 是 YAML 那一行的原值(覆盖被清掉后会回到它),
-		// shadow_override 是管理端写在 qy_settings 的覆盖态(on/off/unset),
-		// global_shadow 是两者合并后、尚未叠加熔断与规则级 dry_run 的全局取值。
-		// 三个都下发是刻意的:界面必须能回答"现在这个模式是谁定的、清掉覆盖会变成什么"。
-		"config_shadow":        config.Get().Violation.IsShadow(),
-		"shadow_override":      overrideName(),
-		"global_shadow":        globalShadow,
-		"shadow_loaded_at":     modeLoadedAt.Load(),
-		"shadow_load_fails":    modeLoadFail.Load(),
+		// forced_shadow 是唯一的"全站被钳成影子"信号。旧的 shadow /
+		// shadow_reason / config_shadow / shadow_override / global_shadow 五个字段
+		// 一起删掉了:它们描述的是已经不存在的全局模式层,留着只会让界面继续
+		// 渲染一个改不动任何东西的开关。
+		"forced_shadow":        tripped,
+		"forced_shadow_reason": reason,
 		"forced_shadow_until":  forcedShadowUntil.Load(),
 		"forced_shadow_count":  forcedShadowCount.Load(),
 		"window_scanned":       winScanned.Load(),

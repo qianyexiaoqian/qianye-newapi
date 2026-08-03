@@ -16,55 +16,50 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useTranslation } from 'react-i18next'
+import { TabsContent } from '@/components/ui/tabs'
 
 import { useQyConfig } from '../../hooks/use-qy-config'
+import {
+  QY_WALLET_TRANSFER_TAB,
+  qyWalletTransferVisible,
+} from '../../wallet-entry/tab'
 import { QyPageTabs } from '../components/qy-page-tabs'
 import { QyPayPasswordBody } from '../pay-password'
 import { QyTransferBody } from '../transfer'
 import { QyTransferLogsBody } from '../transfer-logs'
 
 /**
- * 钱包页的「余额划转」板块（需求 2）。
+ * 钱包页「余额划转」标签的面板（需求 2 + 需求 5）。
  *
- * 项目方原话：「余额划转移动到钱包页面，选择夹新增一个余额划转板块。
- * 这个选择夹下包含：发起划转、划转记录、支付密码。」
+ * ── 与上一轮的差别 ──
+ * 上一轮这里是钱包页**底部**另起的一块 `<section>`，自带一行小标题「余额划转」。
+ * 项目方原话：「余额划转这个 tab 你和 添加资金/订阅套餐 这样放到一起，不要在
+ * 底部添加，丑死了。」所以整块搬进上游那组 Tabs 里，成为第三个面板：
+ *   · 小标题删掉 —— 标签本身就写着「余额划转」，再来一行是同一个词说两遍；
+ *   · 面板里仍是原来那三张标签（发起划转 / 划转记录 / 支付密码），
+ *     顺序与可见性照旧由 `QY_TAB_GROUPS` × `isQyPageVisible` 决定。
  *
- * ── 为什么是钱包页里的一个板块，而不是钱包页顶部 Tabs 的第三格 ──
- * 上游那组 Tabs（充值 / 订阅套餐）**整条 TabsList 挂在 `showSubscriptionPanel`
- * 之下**：站点没配套餐时它压根不渲染。把划转塞进去，就等于让"有没有配订阅
- * 套餐"决定"能不能看到划转入口"，那是两件无关的事。而且改动会落在上游
- * `constants.ts`（tab 取值表）、`index.tsx`（触发器 + 面板）与钱包路由的
- * `validateSearch` 三个上游文件上。所以这里另起一个自带标题的板块，挂在
- * qy 已有的那个唯一挂载点上，上游钱包页的改动仍然是 1 个 import + 1 行 JSX。
+ * ── 挂载位置 ──
+ * 必须渲染在上游 `<Tabs>` 的**内部**（Base UI 的 `Tabs.Panel` 靠 context 找根）。
+ * 上游 `features/wallet/index.tsx` 里因此多了一行 `<QyWalletTransferPanel />`，
+ * 与触发器 `<QyWalletTransferTrigger />` 一起，是 qy 在钱包页 Tabs 上的全部占用。
+ * `wallet-entry/__tests__/wallet-tab.test.ts` 用 AST 断言这两行确实分别落在
+ * `<Tabs>` 与 `<TabsList>` 里面 —— "组件写了但挂在插槽外从没被渲染" 是本仓
+ * 反复出现的形状。
  *
- * 标签状态走 URL hash（`#qy-transfer-logs`），原因见 `pages/lib/tabs.ts`。
+ * ── 为什么面板自己也判一次可见性 ──
+ * 触发器不渲染时，面板留着并不会显示（没有触发器就选不中它），但 Base UI 的
+ * `Tabs.Panel` 仍会在树里存在。更要紧的是里面那三个 body 各自带查询，
+ * 划转功能关掉时不该有任何一个被挂起来。判定共用 `qyWalletTransferVisible`，
+ * 与触发器同一处实现。
  */
-export function QyWalletTransferSection() {
-  const { t } = useTranslation()
+export function QyWalletTransferPanel() {
   const config = useQyConfig()
 
-  // 与入口卡同一套开关：功能关掉、或站点把钱包入口关掉时整块不渲染。
-  // 不看 `available`：扩展库降级时板块仍然在，由各标签自己显示"暂不可用"，
-  // 比整块凭空消失更好排查（热路径 fail-open）。
-  if (
-    !config.enabled ||
-    !config.features.transfer ||
-    !config.wallet.show_transfer_entry
-  ) {
-    return null
-  }
+  if (!qyWalletTransferVisible(config)) return null
 
   return (
-    <section className='space-y-3' aria-labelledby='qy-wallet-transfer-title'>
-      <div className='space-y-0.5'>
-        <h3 id='qy-wallet-transfer-title' className='text-sm font-semibold'>
-          {t('qy_nav_transfer')}
-        </h3>
-        <p className='text-muted-foreground text-xs'>
-          {t('qy_common_wallet_entry_transfer_desc')}
-        </p>
-      </div>
+    <TabsContent value={QY_WALLET_TRANSFER_TAB}>
       <QyPageTabs
         host='/wallet'
         bodies={{
@@ -73,6 +68,6 @@ export function QyWalletTransferSection() {
           '/qy/pay-password': <QyPayPasswordBody />,
         }}
       />
-    </section>
+    </TabsContent>
   )
 }

@@ -291,3 +291,85 @@ func TestTieredSettleHookPointExists(t *testing.T) {
 	assert.Greater(t, roundIdx, hookIdx,
 		"重算必须排在乘数之后")
 }
+
+// TestTieredRetryReservationHookPointExists 锁住第五个挂载点的**第二个调用点**。
+//
+// refreshTieredBillingGroup 跑在 auto 重试切分组之后,拿
+// snap.EstimatedQuotaBeforeGroup 乘新分组的倍率重算预留额。分组级乘数和分组倍率
+// 一样是"当前分组"的属性,这里不重算就会把原分组的乘数带进新分组的预留额。
+//
+// 为什么单靠 TestTieredSettleHookPointExists 不够:那条锁的是 TryTieredSettle
+// (最终扣费),这条锁的是预留额。两者是两个函数、两条后果 ——
+// 最终扣费一直是对的,错的是预扣多了(冻结用户额度)或少了(误判余额不足)。
+func TestTieredRetryReservationHookPointExists(t *testing.T) {
+	seq := callsByFunc(t, tieredSettleGoPath)["refreshTieredBillingGroup"]
+	require.NotEmpty(t, seq,
+		"service/tiered_settle.go 里找不到 refreshTieredBillingGroup —— 上游改了函数名?")
+
+	hookIdx := indexOf(seq, "QyGroupTieredSettle")
+	require.GreaterOrEqual(t, hookIdx, 0,
+		"refreshTieredBillingGroup 里缺少 QyGroupTieredSettle 挂载点:"+
+			"auto 重试切分组后预留额仍按原分组的乘数算")
+
+	roundIdx := indexOf(seq, "QuotaRoundStrict")
+	require.GreaterOrEqual(t, roundIdx, 0,
+		"refreshTieredBillingGroup 里找不到额度换算调用 —— 预留额换算路径变了?")
+	assert.Greater(t, roundIdx, hookIdx,
+		"乘数必须在乘分组倍率、换算成额度之前应用")
+}
+
+// TestTieredSnapshotStoresUnmultipliedQuota 锁住上面那条修复的配套前提。
+//
+// refreshTieredBillingGroup 之所以能"按当前分组重算乘数",前提是快照里
+// EstimatedQuotaBeforeGroup 存的是**未乘乘数**的原始表达式结果。
+// 若 price.go 把 QyGroupTieredQuota 的返回值写回同一个变量再存进快照
+// (改动前的写法),两处就会各乘一次,同一个分组下预留额被平方级放大。
+//
+// 这条断言的是源码形状而不是数值:数值侧由
+// relay/helper/qy_tiered_group_switch_test.go 端到端覆盖,
+// 但那份测试看不出"哪个变量被存进了快照",而这正是缺陷的落点。
+func TestTieredSnapshotStoresUnmultipliedQuota(t *testing.T) {
+	file := parseFileOrFail(t, priceGoPath)
+
+	var hookAssignedTo []string
+	var snapshotField string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil || fn.Name.Name != "modelPriceHelperTiered" {
+			continue
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			// 收集 `x := QyGroupTieredQuota(...)` / `x = QyGroupTieredQuota(...)` 的左值
+			if as, ok := n.(*ast.AssignStmt); ok && len(as.Rhs) == 1 {
+				if call, ok := as.Rhs[0].(*ast.CallExpr); ok {
+					if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "QyGroupTieredQuota" {
+						for _, lhs := range as.Lhs {
+							if lid, ok := lhs.(*ast.Ident); ok {
+								hookAssignedTo = append(hookAssignedTo, lid.Name)
+							}
+						}
+					}
+				}
+			}
+			// 找 BillingSnapshot 字面量里 EstimatedQuotaBeforeGroup 的取值变量
+			if kv, ok := n.(*ast.KeyValueExpr); ok {
+				if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "EstimatedQuotaBeforeGroup" {
+					if v, ok := kv.Value.(*ast.Ident); ok {
+						snapshotField = v.Name
+					}
+				}
+			}
+			return true
+		})
+	}
+
+	require.NotEmpty(t, snapshotField,
+		"modelPriceHelperTiered 里找不到 BillingSnapshot.EstimatedQuotaBeforeGroup 的赋值 —— 快照结构变了?")
+	require.NotEmpty(t, hookAssignedTo,
+		"modelPriceHelperTiered 里 QyGroupTieredQuota 的返回值没有被赋给任何变量 —— "+
+			"若它被内联进了别的表达式,请手工确认它没有流进快照")
+	assert.NotContains(t, hookAssignedTo, snapshotField,
+		"EstimatedQuotaBeforeGroup 存的是 %q,而它正是 QyGroupTieredQuota 的返回值。"+
+			"快照必须存未乘分组乘数的原始额度,否则 refreshTieredBillingGroup 会再乘一次",
+		snapshotField)
+}

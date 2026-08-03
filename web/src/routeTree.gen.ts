@@ -93,6 +93,7 @@ import { Route as AuthenticatedQyAdminUserGroupIndexRouteImport } from './routes
 import { Route as AuthenticatedQyAdminViolationRulesIndexRouteImport } from './routes/_authenticated/qy/admin/violation-rules/index'
 import { Route as AuthenticatedQyAdminViolationsIndexRouteImport } from './routes/_authenticated/qy/admin/violations/index'
 import { Route as AuthenticatedQyAdminWithdrawalsIndexRouteImport } from './routes/_authenticated/qy/admin/withdrawals/index'
+import { Route as AuthenticatedQyAdminCommissionRecordsBalancesIndexRouteImport } from './routes/_authenticated/qy/admin/commission-records/balances/index'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -566,6 +567,12 @@ const AuthenticatedQyAdminWithdrawalsIndexRoute =
     path: '/withdrawals/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
+const AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute =
+  AuthenticatedQyAdminCommissionRecordsBalancesIndexRouteImport.update({
+    id: '/commission-records/balances/',
+    path: '/commission-records/balances/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -650,6 +657,7 @@ export interface FileRoutesByFullPath {
   '/qy/admin/violation-rules/': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/qy/admin/violations/': typeof AuthenticatedQyAdminViolationsIndexRoute
   '/qy/admin/withdrawals/': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
+  '/qy/admin/commission-records/balances/': typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -731,6 +739,7 @@ export interface FileRoutesByTo {
   '/qy/admin/violation-rules': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/qy/admin/violations': typeof AuthenticatedQyAdminViolationsIndexRoute
   '/qy/admin/withdrawals': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
+  '/qy/admin/commission-records/balances': typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -818,6 +827,7 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/violation-rules/': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/_authenticated/qy/admin/violations/': typeof AuthenticatedQyAdminViolationsIndexRoute
   '/_authenticated/qy/admin/withdrawals/': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
+  '/_authenticated/qy/admin/commission-records/balances/': typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -904,6 +914,7 @@ export interface FileRouteTypes {
     | '/qy/admin/violation-rules/'
     | '/qy/admin/violations/'
     | '/qy/admin/withdrawals/'
+    | '/qy/admin/commission-records/balances/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -985,6 +996,7 @@ export interface FileRouteTypes {
     | '/qy/admin/violation-rules'
     | '/qy/admin/violations'
     | '/qy/admin/withdrawals'
+    | '/qy/admin/commission-records/balances'
   id:
     | '__root__'
     | '/'
@@ -1071,6 +1083,7 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/violation-rules/'
     | '/_authenticated/qy/admin/violations/'
     | '/_authenticated/qy/admin/withdrawals/'
+    | '/_authenticated/qy/admin/commission-records/balances/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -1682,6 +1695,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminWithdrawalsIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
+    '/_authenticated/qy/admin/commission-records/balances/': {
+      id: '/_authenticated/qy/admin/commission-records/balances/'
+      path: '/commission-records/balances'
+      fullPath: '/qy/admin/commission-records/balances/'
+      preLoaderRoute: typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
   }
 }
 
@@ -1726,6 +1746,7 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminViolationRulesIndexRoute: typeof AuthenticatedQyAdminViolationRulesIndexRoute
   AuthenticatedQyAdminViolationsIndexRoute: typeof AuthenticatedQyAdminViolationsIndexRoute
   AuthenticatedQyAdminWithdrawalsIndexRoute: typeof AuthenticatedQyAdminWithdrawalsIndexRoute
+  AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute: typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
 }
 
 const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChildren =
@@ -1756,6 +1777,8 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
       AuthenticatedQyAdminViolationsIndexRoute,
     AuthenticatedQyAdminWithdrawalsIndexRoute:
       AuthenticatedQyAdminWithdrawalsIndexRoute,
+    AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute:
+      AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute,
   }
 
 const AuthenticatedQyAdminRouteRouteWithChildren =

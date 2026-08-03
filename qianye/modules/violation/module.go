@@ -48,6 +48,11 @@ func (Mod) InstallHooks() {
 	service.QyPreRelayGuard = PreRelayGuard
 	service.QyPostRelayGuard = PostRelayGuard
 
+	// 迁移必须排在预热之前:预热会把规则编译进快照,而未迁移的行 mode 是空串,
+	// 编译出来一律按影子跑 —— 结果是对的,但管理端列表会显示一个渲染不出来的
+	// 第三种模式,运营看到的就是"我这条规则既不是影子也不是真实"。
+	runRuleModeMigration()
+
 	if err := reload(true); err != nil {
 		common.SysError("qianye/violation: 规则快照预热失败(热路径将放行,稍后自动重试): " + err.Error())
 	}
@@ -63,7 +68,13 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 
 func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/violation/rules", adminListRules)
+	// 内置防护规则包的目录。刻意放在 /rules/builtin 而不是 /rules?source=builtin:
+	// 它返回的是**代码里的模板 + 站点上的导入状态**,与规则列表不是同一种东西。
+	g.GET("/violation/rules/builtin", adminListBuiltinRules)
 	g.GET("/violation/records", adminListRecords)
+	// 导出与列表共用 recordQuery,筛选参数完全一致。挂在 records 下面而不是单独
+	// 一个 /export:导出的语义就是"当前这张列表,不分页"。
+	g.GET("/violation/records/export", adminExportRecords)
 	g.GET("/violation/records/:id/evidence", adminGetEvidence)
 	g.GET("/violation/bans", adminListBans)
 	g.GET("/violation/appeals", adminListAppeals)
@@ -77,12 +88,15 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.PUT("/violation/rules/:id", crit, adminUpdateRule)
 	g.DELETE("/violation/rules/:id", crit, adminDeleteRule)
 	g.POST("/violation/rules/test", adminTestRule)
+	// 一键导入内置防护规则包。导入出来一律是影子模式的普通规则行,
+	// 可编辑、可删除、可单独开关。
+	g.POST("/violation/rules/import-builtin", crit, adminImportBuiltinRules)
 	g.POST("/violation/records/:id/revoke", crit, adminRevokeRecord)
 	g.POST("/violation/bans/:userId/unban", crit, adminUnban)
 	g.POST("/violation/appeals/:id/review", crit, adminReviewAppeal)
+	// 解除熔断。全局影子开关(PUT /violation/mode)已删除 —— 模式绑在规则上,
+	// 改模式就是改那条规则,不再有第二个入口。
 	g.POST("/violation/breaker/reset", crit, adminResetBreaker)
-	// 全局影子开关:此前只在 YAML 里,管理端一个可点的控件都没有。
-	g.PUT("/violation/mode", crit, adminPutMode)
 	g.POST("/violation/counters/:userId/reset", crit, adminResetCounter)
 }
 

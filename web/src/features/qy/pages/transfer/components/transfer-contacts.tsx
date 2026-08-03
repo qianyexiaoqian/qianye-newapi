@@ -22,7 +22,6 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { Dialog } from '@/components/dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,6 +30,7 @@ import { Spinner } from '@/components/ui/spinner'
 
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
 import { QyMaskedUser } from '../../../components/qy-masked-user'
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyErrorMessage } from '../../../lib/api'
 import { qyKeys } from '../../../lib/query-keys'
 import { qyRuneLength } from '../../lib/constants'
@@ -66,6 +66,14 @@ type TransferContactsDialogProps = {
 
 /**
  * 联系人簿（弹窗）。
+ *
+ * ## 桌面居中、手机侧出
+ *
+ * 外壳是 {@link QyResponsiveDialog}：桌面端一个居中的完整窗口（够宽，搜索框、
+ * 添加表单、整列联系人一屏摆得开），手机端从侧边伸出的抽屉。项目方原话是
+ * 「你需要让他居中显示出一个完整的窗口，展示完整的内容」。这里刻意**不再**
+ * 自己写 `contentClassName='sm:max-w-lg'`：那个宽度正是内容被压扁的原因，
+ * 而且各页各写一个宽度就会漂移成"每个弹窗都不一样宽"。
  *
  * ## 为什么从页面里搬进弹窗
  *
@@ -164,12 +172,11 @@ export function TransferContactsDialog(props: TransferContactsDialogProps) {
     !addMutation.isPending
 
   return (
-    <Dialog
+    <QyResponsiveDialog
       open={props.open}
       onOpenChange={props.onOpenChange}
       title={t('qy_tr_ct_title')}
       description={t('qy_tr_ct_desc')}
-      contentClassName='sm:max-w-lg'
     >
       <div className='space-y-3'>
         <div className='flex flex-wrap items-center gap-2'>
@@ -432,7 +439,7 @@ export function TransferContactsDialog(props: TransferContactsDialogProps) {
           deleteMutation.mutate(pendingDelete.id)
         }}
       />
-    </Dialog>
+    </QyResponsiveDialog>
   )
 }
 

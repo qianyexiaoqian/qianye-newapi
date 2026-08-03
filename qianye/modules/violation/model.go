@@ -3,10 +3,11 @@
 //
 // 三条铁律,违反任何一条都会造成全站事故或资损:
 //
-//  1. 影子模式是默认状态。一条 `.*` 正则能在 30 秒内封掉全站用户,所以还叠加了
-//     熔断:拦截率或封号速率越界时强制回落影子模式。全局开关可由管理端在
-//     qy_settings 里切换(见 settings.go),YAML 只是它的兜底默认值;
+//  1. 模式绑定在规则上,而且默认影子。一条 `.*` 正则能在 30 秒内封掉全站用户,
+//     所以每条规则自带 Mode(shadow / enforce),新建与内置导入一律落 shadow;
 //     影子命中除了不扣费不阻断不封号,**也不推进违规计数**(裁决 2)。
+//     此外还有一道熔断:拦截率或封号速率越界时,把**全部**规则临时按影子执行
+//     (见 breaker.go)—— 那是运行期的自动刹车,不是第二个"模式"。
 //  2. 热路径永不阻塞。规则只读进程内快照,所有落库走 guard.HotAsync;
 //     扩展库故障一律 fail-open(放行),扩展绝不能成为 relay 的单点故障。
 //  3. 扣费金额只走 common.Quota* 转换并强制上限。违规扣费是"惩罚"而不是"计费",
@@ -53,6 +54,34 @@ const (
 const (
 	GroupScopeInclude = "include" // 名单非空 = 只对名单内的分组生效
 	GroupScopeExclude = "exclude" // 名单非空 = 对名单内的分组豁免,其余全部生效
+)
+
+// 规则的执行模式。**这是"影子 / 真实"唯一的开关**。
+//
+// # 为什么只剩这一层
+//
+// 在此之前是两层:全局开关(YAML violation.shadow_mode + qy_settings 覆盖 +
+// PUT /violation/mode)与规则级 DryRun,叠加时取更保守者胜。项目方的原话是
+// 「影子模式、真实模式是绑定到规则上,当前你这个切来切去的本来简单的功能搞得
+// 那么复杂」——他要的用例只有一个:**把某一条规则设成影子,只记录不处罚,
+// 拿它抓到的日志和上下文做分析**。两层结构让这个用例需要先确认全局在哪一档,
+// 因为全局为影子时规则级怎么调都不生效。所以全局层整体删除,Mode 是唯一权威。
+//
+// # 未知取值一律按影子处理
+//
+// 空串(滚动升级期间旧节点写下的行、DBA 手工插的行、迁移尚未跑到的行)与任何
+// 无法识别的值都不是 enforce。判据一律写成 `Mode == ModeEnforce` 而不是
+// `Mode != ModeShadow`:前者对一切未知取值给出"不扣费不封号",后者给出
+// "真实扣费封号",而这两种写法在正常数据上完全等价 —— 差别只在事故那天出现。
+const (
+	ModeShadow  = "shadow"  // 只匹配、只记录:不扣费、不阻断、不封号、不计数
+	ModeEnforce = "enforce" // 真实执行
+)
+
+// 规则来源。区分"内置规则包导入的"与"运营自己写的",两者的升级策略不同。
+const (
+	SourceManual  = "manual"  // 管理端手写(空串按 manual 读,那是这一列出现之前的唯一语义)
+	SourceBuiltin = "builtin" // 由内置防护规则包导入,见 builtin.go
 )
 
 // 处置动作。
@@ -143,9 +172,26 @@ type Rule struct {
 	PublicReason string `json:"public_reason" gorm:"type:varchar(128);not null;default:''"`
 
 	Enabled bool `json:"enabled" gorm:"not null;index:idx_qy_vr_enabled_phase,priority:1"`
-	// DryRun 是规则级影子:允许单条新规则先灰度观察,而不必把全局 shadow_mode 打开。
-	DryRun   bool `json:"dry_run" gorm:"not null;default:false"`
-	Priority int  `json:"priority" gorm:"not null;default:100"` // 升序,小者先判
+	// Mode 是这条规则的执行模式:ModeShadow(影子)或 ModeEnforce(真实)。
+	//
+	// 取代了旧的 DryRun 布尔列。默认值刻意写在 gorm tag 上而不是只靠代码:
+	// AutoMigrate 给已有行 ADD COLUMN 时会用它回填,于是**现网每一条历史规则
+	// 都会落在 shadow**,这正是迁移策略要的结果(见 migrate.go)。
+	Mode     string `json:"mode" gorm:"type:varchar(16);not null;default:'shadow'"`
+	Priority int    `json:"priority" gorm:"not null;default:100"` // 升序,小者先判
+
+	// Source / BuiltinKey / BuiltinVersion / BuiltinFingerprint 只对内置规则包
+	// 导入出来的规则有意义,手写规则一律留空。四列合起来回答升级时的唯一问题:
+	// 「这条规则运营改过没有」—— 改过就绝不覆盖。详见 builtin.go。
+	Source     string `json:"source" gorm:"type:varchar(16);not null;default:''"`
+	BuiltinKey string `json:"builtin_key" gorm:"type:varchar(64);not null;default:'';index:idx_qy_vr_builtin"`
+	// BuiltinVersion 是导入(或上一次升级)时内置目录里那条规则的版本号。
+	BuiltinVersion int `json:"builtin_version" gorm:"not null;default:0"`
+	// BuiltinFingerprint 是导入时**我们发出去的** pattern 的指纹。升级时拿它跟
+	// 规则当前 pattern 的指纹比:相等 = 运营没动过 = 可以安全替换;不等 = 运营
+	// 改过 = 跳过并如实上报。存指纹而不是存原文,是因为原文最长 8KB,
+	// 而每条内置规则的原文本来就在代码里,重复存一份只会漂移。
+	BuiltinFingerprint string `json:"builtin_fingerprint" gorm:"type:varchar(64);not null;default:''"`
 
 	Phase     string `json:"phase" gorm:"type:varchar(24);not null;index:idx_qy_vr_enabled_phase,priority:2"`
 	MatchType string `json:"match_type" gorm:"type:varchar(24);not null"`
@@ -225,11 +271,21 @@ type Record struct {
 	PublicReason string `json:"public_reason" gorm:"type:varchar(128);not null;default:''"`
 	Phase        string `json:"phase" gorm:"type:varchar(24);not null"`
 	Action       string `json:"action" gorm:"type:varchar(24);not null"`
-	// Shadow = true 表示影子模式(全局开关、熔断回落或规则级 dry_run)下的记录:
-	// 不扣费、不阻断、不封号、**不计违规次数**,只留这一行 + 证据供管理员核查。
-	// fee_quota_want 仍然是算准的("若真实执行会扣多少钱"),那是影子模式的全部价值。
-	Shadow  bool `json:"shadow" gorm:"not null;default:false"`
-	Blocked bool `json:"blocked" gorm:"not null;default:false"`
+	// Shadow = true 表示这次命中按影子处理(规则 Mode=shadow,或熔断期间全部规则
+	// 被临时按影子执行):不扣费、不阻断、不封号、**不计违规次数**,只留这一行
+	// + 证据供管理员核查。fee_quota_want 仍然是算准的("若真实执行会扣多少钱"),
+	// 那是影子模式的全部价值。
+	//
+	// 索引是为了"按规则筛影子命中做误判分析"这个用例:那是项目方给影子模式定的
+	// 唯一目的,而它落到 SQL 上就是 (rule_id, shadow, created_at) 三个条件。
+	Shadow bool `json:"shadow" gorm:"not null;default:false;index:idx_qy_vrec_shadow"`
+	// ShadowReason 回答"这一条为什么没有真实执行"。取值是 ShadowReason* 常量。
+	//
+	// 必须落库:规则今天是 shadow、明天被运营切成 enforce,事后光看记录无法区分
+	// "当时规则本身就是影子"与"当时规则是真实的,只是撞上了熔断"—— 而这两种
+	// 记录在做误判分析时的含义完全相反(前者是预期内的观察样本,后者是事故现场)。
+	ShadowReason string `json:"shadow_reason" gorm:"type:varchar(64);not null;default:''"`
+	Blocked      bool   `json:"blocked" gorm:"not null;default:false"`
 
 	ModelName   string `json:"model_name" gorm:"type:varchar(128);not null;default:''"`
 	UsingGroup  string `json:"using_group" gorm:"column:using_group;type:varchar(64);not null;default:''"`

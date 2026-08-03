@@ -49,6 +49,14 @@ var QyGroupTaskRatio = func(group, modelName string, ratio float64) float64 {
 
 // QyGroupTieredSettle 覆盖「阶梯表达式计价」在**结算侧**的分组乘数。
 //
+// 同一个变量被两个调用点共用,两处都在 service/tiered_settle.go:
+//
+//	TryTieredSettle             最终结算金额
+//	refreshTieredBillingGroup   auto 重试切分组后重算**预留额**
+//
+// 共用是刻意的:两处都是"把当前分组的乘数作用在未乘分组因子的 quota 上",
+// 拆成两个变量只会给「同一概念的第 N 份拷贝各自漂移」再开一个口子。
+//
 // ─────────────────── 为什么这一处也必须单独挂 ───────────────────
 //
 // 阶梯计价的扣费同样分两步,而两步走的是**两条不同的代码路径**:

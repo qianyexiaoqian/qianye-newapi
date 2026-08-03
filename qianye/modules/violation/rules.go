@@ -85,6 +85,14 @@ type snapshot struct {
 	promptRules []*compiledRule
 	postRules   []*compiledRule
 
+	// shadowRules / enforceRules 是已启用规则按模式的分布。
+	//
+	// 摆出来是因为删掉全局开关之后,"现在到底有没有规则在真实扣钱"不再是一个
+	// 布尔值。管理端必须能一眼回答它,否则运营会以为自己还在观察期,
+	// 而其实已经有几条规则在扣费 —— 那正是旧的全局横幅唯一还算有用的功能。
+	shadowRules  int
+	enforceRules int
+
 	// hasRate 表示快照里存在至少一条 request_rate 规则。
 	//
 	// 它决定热路径要不要去推进请求频率计数(一次 Redis 往返)。没有这个标志就只有
@@ -193,6 +201,13 @@ func reloadCtx(ctx context.Context, force bool) error {
 			common.SysError(fmt.Sprintf("qianye/violation: 规则 %d(%s)编译失败,已跳过: %v",
 				rows[i].Id, rows[i].Name, err))
 			continue
+		}
+		// 判据与 effectiveShadow 完全一致(`== ModeEnforce`),不能写成
+		// `== ModeShadow`:那样空 mode 的行会既不算影子也不算真实,统计里凭空少掉。
+		if cr.R.Mode == ModeEnforce {
+			s.enforceRules++
+		} else {
+			s.shadowRules++
 		}
 		switch cr.R.Phase {
 		case PhasePrompt:
@@ -309,6 +324,14 @@ func ValidateRule(r *Rule) error {
 	case ActionRecord, ActionCharge, ActionBlock, ActionBlockAndCharge:
 	default:
 		return fmt.Errorf("action 取值非法: %q", r.Action)
+	}
+	// mode 在这里必须是枚举里的值。运行期对未知取值是按影子兜底的(见 effectiveShadow),
+	// 但写入口不能靠兜底放行:那会让"保存成功"与"我设成了真实执行"之间出现一个
+	// 只有读源码才能发现的落差。
+	switch r.Mode {
+	case ModeShadow, ModeEnforce:
+	default:
+		return fmt.Errorf("mode 取值非法: %q(只能是 %q 或 %q)", r.Mode, ModeShadow, ModeEnforce)
 	}
 	switch r.FeeMode {
 	case FeeNone, FeeFixed, FeeModelPriceMultiple:

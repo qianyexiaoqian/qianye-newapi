@@ -105,12 +105,20 @@ func refreshTieredBillingGroup(relayInfo *relaycommon.RelayInfo) (*billingexpr.B
 	}
 
 	groupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
-	if snap.GroupRatio == groupRatio {
-		return snap, nil
-	}
 
-	estimatedQuotaAfterGroup := snap.EstimatedQuotaBeforeGroup * groupRatio
-	estimatedQuota, err := billingexpr.QuotaRoundStrict(estimatedQuotaAfterGroup)
+	// snap.EstimatedQuotaBeforeGroup 是**未乘任何分组因子**的表达式结果
+	// (见 relay/helper/price.go modelPriceHelperTiered)。分组级乘数和分组倍率
+	// 一样是"当前分组"的属性,auto 重试切组后两者都必须按新分组重算。
+	// 调用方 controller.getChannel 刚跑过 HandleGroupRatio,此刻
+	// relayInfo.UsingGroup 已是新分组、PriceData.GroupRatioInfo 已是新倍率,
+	// QyGroupTieredSettle 内部按 UsingGroup 查规则,拿到的就是新分组的乘数。
+	//
+	// 刻意不做「GroupRatio 没变就跳过」的短路:两个分组完全可以共用同一个倍率
+	// (例如都配 1.0),而分组级乘数是按**分组名**查的,倍率相同不代表乘数相同。
+	// 短路掉的那条路径正是"切组后仍按原分组乘数预留"的缺陷本体。
+	// 少这一层短路不改变任何行为:调用方本来就每次尝试都无条件 Reserve 一次。
+	beforeGroup := QyGroupTieredSettle(relayInfo, snap.EstimatedQuotaBeforeGroup)
+	estimatedQuota, err := billingexpr.QuotaRoundStrict(beforeGroup * groupRatio)
 	if err != nil {
 		return nil, err
 	}

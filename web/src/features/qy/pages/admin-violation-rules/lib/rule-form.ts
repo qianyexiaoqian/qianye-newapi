@@ -21,6 +21,7 @@ import { z } from 'zod'
 import type {
   QyViolationAction,
   QyViolationFeeMode,
+  QyViolationMode,
   QyViolationGroupScopeMode,
   QyViolationMatchType,
   QyViolationPhase,
@@ -56,6 +57,12 @@ export const QY_VIOLATION_GROUP_SCOPE_MODES: QyViolationGroupScopeMode[] = [
   'include',
   'exclude',
 ]
+
+/**
+ * 执行模式的取值。顺序即界面上的顺序 —— 影子在前，因为它是安全的那一侧，
+ * 而这一页最重的一个动作就是把某条规则从影子切成真实。
+ */
+export const QY_VIOLATION_MODES: QyViolationMode[] = ['shadow', 'enforce']
 
 export const QY_VIOLATION_ACTIONS: QyViolationAction[] = [
   'record',
@@ -102,7 +109,7 @@ export const qyViolationRuleSchema = z
     public_reason: z.string().max(128),
     remark: z.string().max(512),
     enabled: z.boolean(),
-    dry_run: z.boolean(),
+    mode: z.enum(['shadow', 'enforce']),
     priority: z.number().int().min(0).max(100000),
     phase: z.enum(['prompt', 'upstream_err', 'reject_reason']),
     match_type: z.enum([
@@ -185,8 +192,10 @@ export type QyViolationRuleFormValues = z.infer<typeof qyViolationRuleSchema>
 /**
  * 新规则的默认值。
  *
- * `dry_run: true` 是刻意的：一条 `.*` 正则能在 30 秒内封掉全站用户。
- * 新规则默认只观察不执行，管理员确认命中分布之后再手动关掉。
+ * `mode: 'shadow'` 是刻意的：一条 `.*` 正则能在 30 秒内封掉全站用户。
+ * 新规则默认只观察不执行，管理员确认命中分布之后再手动切成真实模式。
+ * 后端 `ruleUpsertReq.apply` 也把空 mode 折回 shadow —— 两处同向，
+ * 漏传字段的默认永远落在不扣钱的那一侧。
  */
 export function qyEmptyViolationRule(): QyViolationRuleFormValues {
   return {
@@ -194,7 +203,7 @@ export function qyEmptyViolationRule(): QyViolationRuleFormValues {
     public_reason: '',
     remark: '',
     enabled: true,
-    dry_run: true,
+    mode: 'shadow',
     priority: 100,
     phase: 'prompt',
     match_type: 'keyword',
@@ -223,7 +232,9 @@ export function qyViolationRuleToForm(
     public_reason: rule.public_reason,
     remark: rule.remark,
     enabled: rule.enabled,
-    dry_run: rule.dry_run,
+    // 未知取值一律读成影子。后端的判据是 `mode === 'enforce'`，前端读成真实
+    // 会让界面显示一个与线上行为相反的状态 —— 而那正是最贵的一种误判。
+    mode: rule.mode === 'enforce' ? 'enforce' : 'shadow',
     priority: rule.priority,
     phase: rule.phase,
     match_type: rule.match_type,

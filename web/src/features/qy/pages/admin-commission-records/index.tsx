@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ScrollText, Settings2 } from 'lucide-react'
+import { ScrollText, Settings2, Wallet } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -222,6 +222,17 @@ export function QyAdminCommissionRecords() {
         {t('qy_nav_a_commission_records')}
       </QySectionPageLayout.Title>
       <QySectionPageLayout.Actions>
+        {/* 佣金余额总览没有独立的侧栏入口（qy-settlement 分组已占满 7 行，见
+            该页路由文件的说明），这个按钮是它唯一的入口 —— 删掉它等于把整页
+            变成只能靠背 URL 才能到达的死链。 */}
+        <Button
+          variant='outline'
+          size='sm'
+          render={<Link to='/qy/admin/commission-records/balances' />}
+        >
+          <Wallet aria-hidden='true' />
+          {t('qy_cb_title')}
+        </Button>
         <Button
           variant='outline'
           size='sm'

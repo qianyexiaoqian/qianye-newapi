@@ -17,7 +17,7 @@ import (
 func scopedRule(scope, mode string) Rule {
 	return Rule{
 		Name: "s", Phase: PhasePrompt, MatchType: MatchKeyword, Pattern: "x",
-		Action: ActionRecord, FeeMode: FeeNone,
+		Mode: ModeShadow, Action: ActionRecord, FeeMode: FeeNone,
 		GroupScope: scope, GroupScopeMode: mode,
 	}
 }

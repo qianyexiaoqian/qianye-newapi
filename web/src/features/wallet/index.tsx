@@ -23,10 +23,19 @@ import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { QyWalletSections } from '@/features/qy/wallet-entry'
+import {
+  QyWalletSections,
+  QyWalletTransferPanel,
+  QyWalletTransferTrigger,
+} from '@/features/qy/wallet-entry'
+import {
+  QY_WALLET_TRANSFER_TAB,
+  useQyWalletTransferTab,
+} from '@/features/qy/wallet-entry/tab'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
+import { cn } from '@/lib/utils'
 
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
@@ -97,6 +106,9 @@ export function Wallet(props: WalletProps) {
   )
 
   const navigate = walletRoute.useNavigate()
+  // qy 扩展的「余额划转」格。扩展关掉时 `visible` 恒为 false，下面三处
+  // 全部退化成上游原样（触发器/面板返回 null，`active` 恒为 false）。
+  const qyTransferTab = useQyWalletTransferTab()
   const { status } = useStatus()
   const { currency } = useSystemConfig()
   const { topupInfo, presetAmounts, loading: topupLoading } = useTopupInfo()
@@ -184,13 +196,23 @@ export function Wallet(props: WalletProps) {
 
   // Base UI types the tab value as `any` and may emit `null` when it falls back
   // automatically, so whitelist the value before it can reach the URL.
+  //
+  // qy 的「余额划转」格不走 `?tab=`：它的取值不在 `WALLET_TAB_VALUES` 里，
+  // 而路由 schema 的 `.catch(DEFAULT_WALLET_TAB)` 会把未登记的取值改写回
+  // `funds`，标签会立刻自己弹回去。它的状态载体是 URL hash，见
+  // `features/qy/wallet-entry/tab.ts`。
   const handleTabValueChange = useCallback(
     (value: string | null) => {
+      if (value === QY_WALLET_TRANSFER_TAB) {
+        qyTransferTab.activate()
+        return
+      }
       const next = WALLET_TAB_VALUES.find((tab) => tab === value)
       if (!next) return
+      qyTransferTab.clear()
       handleTabChange(next)
     },
-    [handleTabChange]
+    [handleTabChange, qyTransferTab]
   )
 
   // `?tab=plans` on a site with no plans configured: fall back silently once
@@ -356,23 +378,37 @@ export function Wallet(props: WalletProps) {
             <WalletStatsCard user={user} loading={userLoading} />
 
             <Tabs
-              value={activeTab}
+              value={qyTransferTab.active ? QY_WALLET_TRANSFER_TAB : activeTab}
               onValueChange={handleTabValueChange}
               className='gap-4'
             >
-              {showSubscriptionPanel && (
+              {/*
+                这排标签原本整条挂在 `showSubscriptionPanel` 之下 —— 站点没配
+                订阅套餐时它压根不渲染。qy 的「余额划转」格进来之后不能再这样：
+                否则"有没有配套餐"会决定"看不看得到划转"，两件无关的事。
+                所以条件放宽成"还剩几格"，而「订阅套餐」那一格自己保留原条件。
+              */}
+              {(showSubscriptionPanel || qyTransferTab.visible) && (
                 <TabsList
                   aria-label={t('Wallet')}
-                  className='grid w-full grid-cols-2 sm:inline-flex sm:w-auto'
+                  className={cn(
+                    'grid w-full sm:inline-flex sm:w-auto',
+                    showSubscriptionPanel && qyTransferTab.visible
+                      ? 'grid-cols-3'
+                      : 'grid-cols-2'
+                  )}
                 >
                   <TabsTrigger value='funds' className='gap-1.5 px-3'>
                     <WalletCards className='size-3.5' />
                     {t('Add Funds')}
                   </TabsTrigger>
-                  <TabsTrigger value='plans' className='gap-1.5 px-3'>
-                    <Crown className='size-3.5' />
-                    {t('Subscription Plans')}
-                  </TabsTrigger>
+                  {showSubscriptionPanel && (
+                    <TabsTrigger value='plans' className='gap-1.5 px-3'>
+                      <Crown className='size-3.5' />
+                      {t('Subscription Plans')}
+                    </TabsTrigger>
+                  )}
+                  <QyWalletTransferTrigger />
                 </TabsList>
               )}
 
@@ -427,6 +463,10 @@ export function Wallet(props: WalletProps) {
                   onPurchaseSuccess={fetchUser}
                 />
               </TabsContent>
+
+              {/* qy 扩展的第三格。刻意不加 keepMounted：里面那三张标签各自
+                  带查询，一进钱包页就全挂上等于白打三个接口。 */}
+              <QyWalletTransferPanel />
             </Tabs>
 
             <AffiliateRewardsCard

@@ -26,7 +26,8 @@
 // ═══════════════════════════ 覆盖了哪些计价路径 ═══════════════════════════
 //
 // 覆盖分两段:计价侧三个入口(relay/helper/price.go,共 5 个插入点,
-// 见 relay/helper/qy_pricing_export.go),结算侧一个入口(service/qy_pricing_export.go)。
+// 见 relay/helper/qy_pricing_export.go),结算侧两个挂载点、三个调用点
+// (service/qy_pricing_export.go)。
 //
 //	ModelPriceHelper        对话/文本/音频/实时,含 Claude、OpenAI、Gemini 等全部 relay 格式
 //	ModelPriceHelperPerCall MJ / Task 按次计费
@@ -34,7 +35,8 @@
 //
 // 结算侧(service/text_quota.go、service/quota.go 的 PostWss/PostAudio)读的是
 // relayInfo.PriceData.ModelRatio / ModelPrice,而 PriceData 就是上面三个函数的
-// 产物,所以那几条路径不需要再挂钩子。**有两个例外**,它们都不读 PriceData:
+// 产物,所以那几条路径不需要再挂钩子。**有两条例外路径**(阶梯计价、Task 差额重算),
+// 它们都不读 PriceData;其中阶梯计价那条有两个调用点:
 //
 //	service/tiered_settle.go TryTieredSettle
 //	                                          阶梯计价的结算。它从 snap.ExprString
@@ -47,7 +49,18 @@
 //	                                          billingexpr 的同一公式重算,而不是乘已取整的
 //	                                          最终值 —— 后者会引入与预扣侧不同的第二次舍入。
 //
-//	service/task_billing.go RecalculateTaskQuotaByTokens
+//	service/tiered_settle.go refreshTieredBillingGroup
+//	                                          第五处挂载点的**第二个调用点**(同一个变量,
+//	                                          不是第六处):auto 重试切分组后重算预留额。
+//	                                          它拿 snap.EstimatedQuotaBeforeGroup 乘新分组的
+//	                                          倍率 —— 而分组级乘数和分组倍率一样是"当前分组"
+//	                                          的属性,不重算就会把原分组的乘数带进新分组的
+//	                                          预留额。影响面只到**预留额**(预扣少了会误判
+//	                                          余额不足,多了会冻结用户额度),最终扣费仍由
+//	                                          TryTieredSettle 按最终分组算对。
+//	                                          配套约束:relay/helper 那一侧的
+//	                                          EstimatedQuotaBeforeGroup 必须存**未乘乘数**的
+//	                                          原始表达式结果,否则这里会二次相乘。
 //
 //	service/task_billing.go RecalculateTaskQuotaByTokens
 //	                                          Task(视频/MJ 等)拿到实际 token 数后的
@@ -122,7 +135,7 @@ func (Mod) Tables() []any {
 	}
 }
 
-// InstallHooks 注入四个挂载点(relay/helper 的三个计价点 + service 的一个结算点),
+// InstallHooks 注入五个挂载点(relay/helper 的三个计价点 + service 的两个结算点),
 // 并预热一次规则快照。
 //
 // 预热是必要的:第一个请求到来时快照若还是空的,那次请求就按全局价计费。

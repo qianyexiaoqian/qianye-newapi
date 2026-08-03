@@ -21,7 +21,7 @@ import (
 // 计费行为依赖 defaults.go 补出来的默认值,绕过它测出来的金额不代表线上行为。
 func useTestConfig(t *testing.T, violationYAML ...string) {
 	t.Helper()
-	section := "  enabled: true\n  shadow_mode: false\n  max_fee_quota: 2000000000\n"
+	section := "  enabled: true\n  max_fee_quota: 2000000000\n"
 	if len(violationYAML) > 0 {
 		section = violationYAML[0]
 	}
@@ -135,13 +135,13 @@ func TestComputeFeeCaps(t *testing.T) {
 	})
 
 	t.Run("全局上限", func(t *testing.T) {
-		useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  max_fee_quota: 7777\n")
+		useTestConfig(t, "  enabled: true\n  max_fee_quota: 7777\n")
 		res := computeFee(chargingRule(FeeFixed, "100", "0", 0), info)
 		assert.EqualValues(t, 7777, res.Want)
 	})
 
 	t.Run("两道上限同时存在时取更严的一道", func(t *testing.T) {
-		useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  max_fee_quota: 7777\n")
+		useTestConfig(t, "  enabled: true\n  max_fee_quota: 7777\n")
 		res := computeFee(chargingRule(FeeFixed, "100", "0", 100), info)
 		assert.EqualValues(t, 100, res.Want)
 	})
@@ -149,7 +149,7 @@ func TestComputeFeeCaps(t *testing.T) {
 	// 额度饱和必须被记录:它几乎必然意味着倍数或单价配错了,
 	// 静默截断会让这次事故没有任何线索。
 	t.Run("超出 int32 时饱和并留痕", func(t *testing.T) {
-		useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  max_fee_quota: 2000000000\n")
+		useTestConfig(t, "  enabled: true\n  max_fee_quota: 2000000000\n")
 		res := computeFee(chargingRule(FeeFixed, "999999999", "0", 0), info)
 		assert.NotEmpty(t, res.Clamp, "饱和必须写进 quota_clamp 供管理端告警")
 		assert.LessOrEqual(t, res.Want, int64(common.MaxQuota))
@@ -179,7 +179,7 @@ func TestBalancePolicies(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.policy+"/"+itoa(tc.available), func(t *testing.T) {
-			useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  insufficient_balance_policy: "+tc.policy+"\n")
+			useTestConfig(t, "  enabled: true\n  insufficient_balance_policy: "+tc.policy+"\n")
 			res := feeResult{Want: tc.want, Status: FeeStatusNone}
 			applyBalancePolicy(&res, tc.available)
 			assert.Equal(t, tc.charged, res.Charged)

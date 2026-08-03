@@ -74,6 +74,12 @@ var (
 	// 表达式,没法用一个标量替换,因此分组级覆盖在这条路径上的语义是**乘数**:
 	// 最终 quota = 表达式结果 × 分组乘数 × 分组倍率,与另外两条路径的
 	// "分组级价 × 分组倍率"保持同一个相乘形状。
+	//
+	// ⚠ 返回值只用于算本次预扣的金额,**不能**写回
+	// BillingSnapshot.EstimatedQuotaBeforeGroup。快照里那个字段的语义是
+	// "未乘任何分组因子的表达式结果":auto 重试切分组后
+	// service.refreshTieredBillingGroup 会拿它按新分组重算预留额,
+	// 存进去的若是已乘乘数的值,原分组的乘数就会被带进新分组的预留额。
 	QyGroupTieredQuota = func(info *relaycommon.RelayInfo, quotaBeforeGroup float64) float64 {
 		return quotaBeforeGroup
 	}

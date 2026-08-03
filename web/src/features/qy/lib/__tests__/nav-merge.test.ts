@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url'
 
 import type { TFunction } from 'i18next'
 
-import type { NavCollapsible, NavGroup } from '@/components/layout/types'
+import type { NavGroup } from '@/components/layout/types'
 import type { QyFeatures } from '@/features/qy/lib/types'
 import { mergeQyNavGroups } from '@/features/qy/nav'
 import { ROLE } from '@/lib/roles'
@@ -107,16 +107,6 @@ function urlsOf(groups: NavGroup[], id: string): (string | undefined)[] {
   )
 }
 
-function subUrlsOf(groups: NavGroup[], id: string, title: string): string[] {
-  const group = groups.find((g) => g.id === id)
-  assert.ok(group != null, `找不到分组 ${id}`)
-  const item = group.items.find((i) => i.title === title) as
-    | NavCollapsible
-    | undefined
-  assert.ok(item?.items != null, `分组 ${id} 里没有折叠项 ${title}`)
-  return item.items.map((sub) => String(sub.url))
-}
-
 describe('qy nav merge — admin, all features on', () => {
   const merged = mergeQyNavGroups(baseGroups(), ALL_ON, ROLE.ADMIN, t)
 
@@ -174,17 +164,41 @@ describe('qy nav merge — admin, all features on', () => {
     }
   })
 
-  test('Admin：四个管理页各自紧跟语义最近的上游项', () => {
+  test('Admin：只剩扩展健康，且紧跟 /system-info', () => {
+    // 需求 8 之后，分组定价与新用户默认分组并进了系统设置抽屉
+    // （`system-settings.ts`），根侧栏的 Admin 组里不再有它们。
     assert.deepEqual(urlsOf(merged, 'admin'), [
       '/channels',
       '/models/metadata',
-      '/qy/admin/group-pricing',
       '/users',
-      '/qy/admin/user-group',
       '/system-info',
       '/qy/admin/health',
       '/system-settings/site',
     ])
+  })
+
+  test('并进系统设置抽屉的 6 页在根侧栏里一次都不出现（需求 8）', () => {
+    const all = new Set(
+      merged.flatMap((group) =>
+        group.items.flatMap((item) => [
+          typeof item.url === 'string' ? item.url : '',
+          ...(item.items ?? []).map((sub) => String(sub.url)),
+        ])
+      )
+    )
+    for (const url of [
+      '/qy/admin/commission',
+      '/qy/admin/transfer-config',
+      '/qy/admin/transfer-group-rules',
+      '/qy/admin/group-pricing',
+      '/qy/admin/user-group',
+      '/qy/admin/violation-rules',
+    ]) {
+      assert.ok(
+        !all.has(url),
+        `${url} 同时出现在根侧栏与系统设置抽屉里：同一个入口两处，迟早对不上`
+      )
+    }
   })
 
   test('三个新分组的内容与规模', () => {
@@ -193,19 +207,12 @@ describe('qy nav merge — admin, all features on', () => {
       '/qy/violations',
     ])
     assert.deepEqual(urlsOf(merged, 'qy-settlement'), [
-      '/qy/admin/commission',
       '/qy/admin/commission-records',
       '/qy/admin/withdrawals',
       '/qy/admin/transfer-records',
       '/qy/admin/fund-orders',
-      '[collapsible:qy_nav_cluster_transfer_settings]',
     ])
-    assert.deepEqual(
-      subUrlsOf(merged, 'qy-settlement', 'qy_nav_cluster_transfer_settings'),
-      ['/qy/admin/transfer-config', '/qy/admin/transfer-group-rules']
-    )
     assert.deepEqual(urlsOf(merged, 'qy-risk'), [
-      '/qy/admin/violation-rules',
       '/qy/admin/violations',
       '/qy/admin/audit-logs',
     ])
@@ -299,7 +306,7 @@ describe('qy nav merge — 边界', () => {
     assert.deepEqual(mergeQyNavGroups(base, ALL_OFF, ROLE.USER, t), base)
   })
 
-  test('折叠项在子项被功能开关关光时不生成空壳', () => {
+  test('关掉划转只影响划转自己的项', () => {
     const merged = mergeQyNavGroups(
       baseGroups(),
       { ...ALL_ON, transfer: false },
@@ -307,10 +314,8 @@ describe('qy nav merge — 边界', () => {
       t
     )
     assert.ok(
-      !urlsOf(merged, 'qy-settlement').includes(
-        '[collapsible:qy_nav_cluster_transfer_settings]'
-      ),
-      '划转功能关掉后仍然渲染了一个没有子项的折叠菜单'
+      !urlsOf(merged, 'qy-settlement').includes('/qy/admin/transfer-records'),
+      '划转功能关掉后划转流水还在'
     )
     assert.ok(
       urlsOf(merged, 'qy-settlement').includes('/qy/admin/fund-orders'),
@@ -344,16 +349,16 @@ describe('qy nav merge — 边界', () => {
     const base = baseGroups()
     const admin = base.find((group) => group.id === 'admin')
     assert.ok(admin != null)
-    // 模拟上游把 Models 的 url 改成了 /models
-    admin.items = admin.items.filter((item) => item.url !== '/models/metadata')
+    // 模拟上游把 /system-info 改名或被 sidebar_modules 关掉
+    admin.items = admin.items.filter((item) => item.url !== '/system-info')
 
     const merged = mergeQyNavGroups(base, ALL_ON, ROLE.ADMIN, t)
     const urls = urlsOf(merged, 'admin')
     assert.ok(
-      urls.includes('/qy/admin/group-pricing'),
-      '锚点消失就把分组定价入口丢了 —— 热路径必须 fail-open'
+      urls.includes('/qy/admin/health'),
+      '锚点消失就把扩展健康入口丢了 —— 热路径必须 fail-open'
     )
-    assert.equal(urls.at(-1), '/qy/admin/group-pricing')
+    assert.equal(urls.at(-1), '/qy/admin/health')
   })
 })
 

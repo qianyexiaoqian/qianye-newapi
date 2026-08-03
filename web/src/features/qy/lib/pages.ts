@@ -19,19 +19,14 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   ClipboardList,
   Gauge,
-  Gavel,
   HandCoins,
   HeartPulse,
   Megaphone,
-  Percent,
   ReceiptText,
   Repeat,
   ScrollText,
   ShieldAlert,
-  SlidersHorizontal,
-  Tags,
   TriangleAlert,
-  UsersRound,
 } from 'lucide-react'
 import type { ElementType } from 'react'
 
@@ -63,6 +58,11 @@ import type { QyFeatures } from './types'
  *
  * `qy-*` 是新增分组，只在语义上确实无处可挂时才建，且每组行数受控
  * （最大 6 行，不超过上游 admin 组的 7 行）。
+ *
+ * {@link QY_SETTINGS_GROUP} 是个**哨兵**而不是根侧栏上的分组：标了它的页面
+ * 根本不出现在根侧栏，而是并进上游「系统设置」的抽屉里（见 `system-settings.ts`）。
+ * 用同一个 `group` 字段表达是刻意的 —— 落点始终是"恰好一个"，多加一个布尔
+ * 字段就会出现"既声明了分组又声明了进设置"这种自相矛盾的行。
  */
 export type QyNavGroupId =
   | 'general'
@@ -71,9 +71,16 @@ export type QyNavGroupId =
   | 'qy-growth'
   | 'qy-settlement'
   | 'qy-risk'
+  | typeof QY_SETTINGS_GROUP
 
-/** 折叠项（上游 `NavCollapsible`）的标识。 */
-export type QyClusterId = 'transfer-settings'
+/**
+ * 「并进上游系统设置抽屉」的落点标记（需求 8）。
+ *
+ * 项目方原话：「对于管理员的一些菜单，你可以加入到系统设置里面的菜单去。」
+ * 界线是**配置 vs 流水**：改了会影响后续计费/风控行为的页面进设置抽屉，
+ * 审核与记录类留在根侧栏 —— 后者是日常运营每天要开的，埋进抽屉里反而难找。
+ */
+export const QY_SETTINGS_GROUP = 'system-settings'
 
 /** 新增分组的定义。上游分组不在此列 —— 它们由上游自己声明。 */
 export type QyNavGroupDef = {
@@ -111,25 +118,6 @@ export const QY_NAV_GROUPS: readonly QyNavGroupDef[] = [
     id: 'qy-risk',
     titleKey: 'qy_nav_group_risk',
     afterGroup: 'admin',
-  },
-]
-
-/** 折叠项定义。折叠项自身的可见性由"是否还有可见子项"决定。 */
-export type QyClusterDef = {
-  id: QyClusterId
-  titleKey: string
-  icon: ElementType
-  group: QyNavGroupId
-  /** 同 {@link QyPageDef.after}。 */
-  after?: string
-}
-
-export const QY_NAV_CLUSTERS: readonly QyClusterDef[] = [
-  {
-    id: 'transfer-settings',
-    titleKey: 'qy_nav_cluster_transfer_settings',
-    icon: SlidersHorizontal,
-    group: 'qy-settlement',
   },
 ]
 
@@ -228,13 +216,12 @@ export type QyPageDef = {
   /** 该页依赖的功能开关；`undefined` 表示只要扩展开着就显示。 */
   feature?: keyof QyFeatures
   /**
-   * 侧栏落点。与 {@link QyPageDef.cluster} 二选一，恰好一个 —— 除非本页已被
-   * {@link QY_TAB_GROUPS} 收进别人的选择夹，那时**两个都不写**（它没有独立
+   * 落点：根侧栏的某个分组，或 {@link QY_SETTINGS_GROUP}（并进系统设置抽屉）。
+   *
+   * 本页若已被 {@link QY_TAB_GROUPS} 收进别人的选择夹，则**不写**（它没有独立
    * 入口了）。`__tests__/pages-table.test.ts` 双向断言。
    */
   group?: QyNavGroupId
-  /** 归入某个折叠项。此时分组由折叠项的 `group` 决定。 */
-  cluster?: QyClusterId
   /**
    * 插到该 url 之后（仅对上游分组有意义）。缺省 = 追加到组尾。
    * 锚点在上游改名/消失时不会吞掉本项，合并函数会兜底追加到组尾。
@@ -242,10 +229,18 @@ export type QyPageDef = {
   after?: string
   /** lucide 图标。折叠项的子项不需要（上游二级菜单本来就不带图标）。 */
   icon?: ElementType
-  /** Steins Gate 区段头的日文副标 key（见 `lib/page-meta.ts`）。 */
+  /**
+   * Steins Gate 区段头的日文副标 key（见 `lib/page-meta.ts`）。
+   *
+   * ── 为什么没有对应的 `enKey` ──
+   * 曾经有：侧栏每个 qy 菜单项下面挂一行英文小号大写副标。项目方的反馈是
+   * 「新增的二开功能下面你都加了英文，原有的你没有加，好丑，你要统一下」。
+   * 统一的方向选了做减法 —— 给上游 20+ 个菜单项编英文副标既要长期维护，
+   * 又会在上游增删菜单时漂移回"有的有、有的没有"，正是这次被投诉的形态。
+   * 区段头的日文副标留着：它挂在 qy 自己的页面标题上，不与上游菜单并排，
+   * 不存在"隔壁那一行没有"的对照。
+   */
   jpKey: string
-  /** Steins Gate 侧栏项的英文副标 key（见 `hooks/use-qy-nav-en-label.ts`）。 */
-  enKey: string
 }
 
 /**
@@ -265,7 +260,6 @@ export const QY_PAGES: readonly QyPageDef[] = [
     after: '/dashboard/models',
     icon: Gauge,
     jpKey: 'qy_sg_jp_availability',
-    enKey: 'qy_sg_nav_en_availability',
   },
 
   // ── 钱包页「余额划转」选项卡组（需求 2）──
@@ -276,21 +270,18 @@ export const QY_PAGES: readonly QyPageDef[] = [
     titleKey: 'qy_nav_transfer_send',
     feature: 'transfer',
     jpKey: 'qy_sg_jp_transfer',
-    enKey: 'qy_sg_nav_en_transfer',
   },
   {
     url: '/qy/transfer-logs',
     titleKey: 'qy_nav_transfer_logs',
     feature: 'transfer',
     jpKey: 'qy_sg_jp_transfer_logs',
-    enKey: 'qy_sg_nav_en_transfer_logs',
   },
   {
     url: '/qy/pay-password',
     titleKey: 'qy_nav_pay_password',
     feature: 'transfer',
     jpKey: 'qy_sg_jp_pay_password',
-    enKey: 'qy_sg_nav_en_pay_password',
   },
 
   // ── 新组「推广」──
@@ -303,28 +294,24 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'qy-growth',
     icon: Megaphone,
     jpKey: 'qy_sg_jp_affiliate',
-    enKey: 'qy_sg_nav_en_affiliate',
   },
   {
     url: '/qy/invitees',
     titleKey: 'qy_nav_invitees',
     feature: 'commission',
     jpKey: 'qy_sg_jp_invitees',
-    enKey: 'qy_sg_nav_en_invitees',
   },
   {
     url: '/qy/withdraw',
     titleKey: 'qy_nav_withdraw',
     feature: 'withdraw',
     jpKey: 'qy_sg_jp_withdraw',
-    enKey: 'qy_sg_nav_en_withdraw',
   },
   {
     url: '/qy/withdrawals',
     titleKey: 'qy_nav_withdrawals',
     feature: 'withdraw',
     jpKey: 'qy_sg_jp_withdrawals',
-    enKey: 'qy_sg_nav_en_withdrawals',
   },
   {
     url: '/qy/violations',
@@ -333,28 +320,9 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'qy-growth',
     icon: ShieldAlert,
     jpKey: 'qy_sg_jp_violations',
-    enKey: 'qy_sg_nav_en_violations',
   },
 
   // ── 上游 admin：各自紧跟语义最近的上游管理项 ──
-  {
-    url: '/qy/admin/group-pricing',
-    titleKey: 'qy_nav_a_group_pricing',
-    group: 'admin',
-    after: '/models/metadata',
-    icon: Tags,
-    jpKey: 'qy_sg_jp_a_group_pricing',
-    enKey: 'qy_sg_nav_en_a_group_pricing',
-  },
-  {
-    url: '/qy/admin/user-group',
-    titleKey: 'qy_nav_a_user_group',
-    group: 'admin',
-    after: '/users',
-    icon: UsersRound,
-    jpKey: 'qy_sg_jp_a_user_group',
-    enKey: 'qy_sg_nav_en_a_user_group',
-  },
   {
     url: '/qy/admin/health',
     titleKey: 'qy_nav_a_health',
@@ -362,19 +330,9 @@ export const QY_PAGES: readonly QyPageDef[] = [
     after: '/system-info',
     icon: HeartPulse,
     jpKey: 'qy_sg_jp_a_health',
-    enKey: 'qy_sg_nav_en_a_health',
   },
 
   // ── 新组「结算」：钱怎么流动，管理员视角 ──
-  {
-    url: '/qy/admin/commission',
-    titleKey: 'qy_nav_a_commission',
-    feature: 'commission',
-    group: 'qy-settlement',
-    icon: Percent,
-    jpKey: 'qy_sg_jp_a_commission',
-    enKey: 'qy_sg_nav_en_a_commission',
-  },
   {
     url: '/qy/admin/commission-records',
     titleKey: 'qy_nav_a_commission_records',
@@ -382,7 +340,6 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'qy-settlement',
     icon: ReceiptText,
     jpKey: 'qy_sg_jp_a_commission_records',
-    enKey: 'qy_sg_nav_en_a_commission_records',
   },
   {
     url: '/qy/admin/withdrawals',
@@ -391,7 +348,6 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'qy-settlement',
     icon: HandCoins,
     jpKey: 'qy_sg_jp_a_withdrawals',
-    enKey: 'qy_sg_nav_en_a_withdrawals',
   },
   {
     url: '/qy/admin/transfer-records',
@@ -400,7 +356,6 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'qy-settlement',
     icon: Repeat,
     jpKey: 'qy_sg_jp_a_transfer_records',
-    enKey: 'qy_sg_nav_en_a_transfer_records',
   },
   {
     url: '/qy/admin/fund-orders',
@@ -408,35 +363,9 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'qy-settlement',
     icon: ScrollText,
     jpKey: 'qy_sg_jp_a_fund_orders',
-    enKey: 'qy_sg_nav_en_a_fund_orders',
-  },
-  {
-    url: '/qy/admin/transfer-config',
-    titleKey: 'qy_nav_a_transfer_config',
-    feature: 'transfer',
-    cluster: 'transfer-settings',
-    jpKey: 'qy_sg_jp_a_transfer_config',
-    enKey: 'qy_sg_nav_en_a_transfer_config',
-  },
-  {
-    url: '/qy/admin/transfer-group-rules',
-    titleKey: 'qy_nav_a_transfer_group_rules',
-    feature: 'transfer',
-    cluster: 'transfer-settings',
-    jpKey: 'qy_sg_jp_a_transfer_group_rules',
-    enKey: 'qy_sg_nav_en_a_transfer_group_rules',
   },
 
   // ── 新组「风控与审计」──
-  {
-    url: '/qy/admin/violation-rules',
-    titleKey: 'qy_nav_a_violation_rules',
-    feature: 'violation',
-    group: 'qy-risk',
-    icon: Gavel,
-    jpKey: 'qy_sg_jp_a_violation_rules',
-    enKey: 'qy_sg_nav_en_a_violation_rules',
-  },
   {
     url: '/qy/admin/violations',
     titleKey: 'qy_nav_a_violations',
@@ -444,7 +373,6 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'qy-risk',
     icon: TriangleAlert,
     jpKey: 'qy_sg_jp_a_violations',
-    enKey: 'qy_sg_nav_en_a_violations',
   },
   {
     url: '/qy/admin/audit-logs',
@@ -452,7 +380,53 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'qy-risk',
     icon: ClipboardList,
     jpKey: 'qy_sg_jp_a_audit_logs',
-    enKey: 'qy_sg_nav_en_a_audit_logs',
+  },
+
+  // ── 并进上游「系统设置」抽屉（需求 8）──
+  // 全是"改一次影响后续每一笔"的配置项：佣金比例、划转额度与分组限制、
+  // 分组定价、新用户默认分组、违规判定规则。它们与上游的费率/风控设置同类，
+  // 打开频率也一样低。审核与流水页（佣金审核 / 提现审核 / 划转流水 / 资金对账 /
+  // 违规记录 / 审计留存）刻意**留在根侧栏**：那些是每天要开的，埋进抽屉里更难找。
+  // 顺序 = 抽屉里那一组的显示顺序。
+  {
+    url: '/qy/admin/commission',
+    titleKey: 'qy_nav_a_commission',
+    feature: 'commission',
+    jpKey: 'qy_sg_jp_a_commission',
+    group: QY_SETTINGS_GROUP,
+  },
+  {
+    url: '/qy/admin/transfer-config',
+    titleKey: 'qy_nav_a_transfer_config',
+    feature: 'transfer',
+    jpKey: 'qy_sg_jp_a_transfer_config',
+    group: QY_SETTINGS_GROUP,
+  },
+  {
+    url: '/qy/admin/transfer-group-rules',
+    titleKey: 'qy_nav_a_transfer_group_rules',
+    feature: 'transfer',
+    jpKey: 'qy_sg_jp_a_transfer_group_rules',
+    group: QY_SETTINGS_GROUP,
+  },
+  {
+    url: '/qy/admin/group-pricing',
+    titleKey: 'qy_nav_a_group_pricing',
+    jpKey: 'qy_sg_jp_a_group_pricing',
+    group: QY_SETTINGS_GROUP,
+  },
+  {
+    url: '/qy/admin/user-group',
+    titleKey: 'qy_nav_a_user_group',
+    jpKey: 'qy_sg_jp_a_user_group',
+    group: QY_SETTINGS_GROUP,
+  },
+  {
+    url: '/qy/admin/violation-rules',
+    titleKey: 'qy_nav_a_violation_rules',
+    feature: 'violation',
+    jpKey: 'qy_sg_jp_a_violation_rules',
+    group: QY_SETTINGS_GROUP,
   },
 ]
 
@@ -468,6 +442,17 @@ export const QY_INDEX_PAGES: readonly { url: string; jpKey: string }[] = [
   { url: '/qy', jpKey: 'qy_sg_jp_workspace' },
   { url: '/qy/admin', jpKey: 'qy_sg_jp_admin_workspace' },
 ]
+
+/**
+ * 并进系统设置抽屉的那几页，按 {@link QY_PAGES} 的声明顺序。
+ *
+ * 派生而不是再抄一份 url 清单：`system-settings.ts` 要用它生成菜单项，
+ * 还要用它生成 drill-in 视图的 `pathPattern`，两处各抄一份必然漂移成
+ * "菜单里点得到、点进去侧栏却掉回根导航"。
+ */
+export const QY_SETTINGS_PAGES: readonly QyPageDef[] = QY_PAGES.filter(
+  (page) => page.group === QY_SETTINGS_GROUP
+)
 
 /** `/qy/admin/*` 前缀即管理页。 */
 export function isQyAdminPage(url: string): boolean {

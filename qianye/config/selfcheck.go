@@ -203,8 +203,9 @@ var fieldConsumers = map[string]consumer{
 	"availability.count_rate_limited":     {"qianye/modules/availability/outcome.go", "限流是否计入不可用"},
 
 	// ─────────────────────────── violation ───────────────────────────
+	// violation.shadow_mode 已删除:影子/真实绑定在规则行上(qy_violation_rule.mode),
+	// 不再有全局开关,也就没有对应的配置项。
 	"violation.enabled":                        {"qianye/guard/guard.go", "featureOn(FlagViolation)"},
-	"violation.shadow_mode":                    {"qianye/modules/violation/settings.go", "影子模式的兜底默认值(只记录,不拦截/扣费/封号/计数);qy_settings 的管理端覆盖优先"},
 	"violation.precheck_enabled":               {"qianye/modules/violation/guard.go", "relay 前置扫描挂载点是否生效"},
 	"violation.post_charge_enabled":            {"qianye/modules/violation/guard.go", "计费后扫描挂载点是否生效"},
 	"violation.fee_multiplier":                 {"qianye/modules/violation/fee.go", "违规扣费倍数"},

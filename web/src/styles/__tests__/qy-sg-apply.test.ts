@@ -96,7 +96,7 @@ describe('Steins Gate 主题的文件结构', () => {
 
 /* ── 2. 挂载面冻结 ───────────────────────────────────────────────────── */
 
-test('挂载的 data-slot 就是冻结的这 26 个', () => {
+test('挂载的 data-slot 就是冻结的这 24 个', () => {
   // 第三版挂了 184 个。多出来的那些在"遮住颜色只看轮廓"的验收下一条也读不出来,
   // 却让每次上游升级都要重新核对。要加就先改这份名单。
   const mounted = [
@@ -120,8 +120,6 @@ test('挂载的 data-slot 就是冻结的这 26 个', () => {
     'sheet-content',
     'sidebar-group-label',
     'sidebar-header',
-    'sidebar-menu-button',
-    'sidebar-menu-sub-button',
     'status-badge',
     'table',
     'table-body',
@@ -156,8 +154,8 @@ const sourceFiles = collectSources(srcDir)
 /**
  * 组件侧用到的 qy-sg-* 类名。
  *
- * 前面必须不是 `-`:这样 `--qy-sg-stat-cols`(自定义属性)与
- * `data-qy-sg-nav-en`(属性锚点)都会被排除,它们各有自己的用例。
+ * 前面必须不是 `-`:这样 `--qy-sg-stat-cols`(自定义属性)与 `data-qy-kv`
+ * 这类属性锚点都会被排除,它们各有自己的用例。
  * 扫描前先剥掉注释里的 `qy-sg-xxx.css` 文件名引用,否则文件名会被当成类名。
  */
 const usedClasses = new Map<string, string[]>()
@@ -214,9 +212,8 @@ describe('qy-sg-* 类名双向对账', () => {
 /* ── 4. 属性锚点与自定义属性的接线 ───────────────────────────────────── */
 
 describe('属性锚点接线', () => {
-  // 这三个锚点不是类名,上面的双向对账扫不到,单独钉。
+  // 这两个锚点不是类名,上面的双向对账扫不到,单独钉。
   const wires: Array<[string, string]> = [
-    ['data-qy-sg-nav-en', '侧栏菜单项的英文副标'],
     ['data-qy-kv', '键值明细行'],
     ['--qy-sg-stat-cols', '概览数字栏的列数'],
   ]

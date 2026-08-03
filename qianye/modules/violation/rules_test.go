@@ -161,13 +161,28 @@ func TestValidateRuleRejectsSilentlyBrokenConfigs(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := tc.rule
+			// 每条用例都显式补一个合法 mode。不补的话它们会因为"mode 为空"报错,
+			// 于是每一条都变成绿的、却全都没在测自己声称的那件事 —— 经典的假回归。
+			r.Mode = ModeShadow
 			assert.Error(t, ValidateRule(&r))
 		})
 	}
 
-	ok := Rule{Name: "a", Phase: PhasePrompt, MatchType: MatchKeyword, Pattern: "危险",
-		Action: ActionBlockAndCharge, FeeMode: FeeFixed}
-	assert.NoError(t, ValidateRule(&ok))
+	// mode 自己也必须被校验。运行期对未知取值是按影子兜底的,但写入口靠兜底放行
+	// 会让"保存成功"与"我设成了真实执行"之间出现一个只有读源码才能发现的落差。
+	for _, bad := range []string{"", "dry_run", "ENFORCE", "true"} {
+		t.Run("非法 mode 被拒:"+bad, func(t *testing.T) {
+			r := Rule{Name: "a", Phase: PhasePrompt, MatchType: MatchKeyword, Pattern: "危险",
+				Mode: bad, Action: ActionRecord, FeeMode: FeeNone}
+			assert.Error(t, ValidateRule(&r))
+		})
+	}
+
+	for _, mode := range []string{ModeShadow, ModeEnforce} {
+		ok := Rule{Name: "a", Phase: PhasePrompt, MatchType: MatchKeyword, Pattern: "危险",
+			Mode: mode, Action: ActionBlockAndCharge, FeeMode: FeeFixed}
+		assert.NoError(t, ValidateRule(&ok), "mode=%q 必须合法", mode)
+	}
 }
 
 // TestValidateRuleBoundsFeeMultiple 固化"规则级倍数不得绕过全局限制"。
@@ -192,7 +207,7 @@ func TestValidateRuleBoundsFeeMultiple(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Rule{Name: "a", Phase: PhaseUpstreamErr, MatchType: MatchErrorCode,
-				Pattern: "x", Action: ActionCharge, FeeMode: FeeModelPriceMultiple,
+				Pattern: "x", Mode: ModeShadow, Action: ActionCharge, FeeMode: FeeModelPriceMultiple,
 				FeeMultiple: decimal.RequireFromString(tc.multiple)}
 			err := ValidateRule(&r)
 			if tc.wantErr {

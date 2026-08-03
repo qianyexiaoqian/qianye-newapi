@@ -29,6 +29,22 @@ For commercial licensing, please contact support@quantumnous.com
 export type QyViolationPhase = 'prompt' | 'reject_reason' | 'upstream_err'
 
 /**
+ * 规则的执行模式 —— **「影子 / 真实」唯一的开关**。
+ *
+ * 曾经是两层:全局开关(YAML + qy_settings + 一条已删除的 PUT 路由)与一个规则级的
+ * 布尔开关，叠加时取更保守者胜。项目方拍板删掉全局层，因为他要的用例只有一个：
+ * 把某一条规则设成影子、只记录不处罚、拿它抓到的日志做分析 —— 而两层结构让这个
+ * 用例必须先确认全局在哪一档，全局默认为影子时规则级怎么调都不生效。
+ *
+ * 后端对**未知取值一律按影子处理**(判据是 `mode === 'enforce'`)，所以前端
+ * 读到空串或陌生值时也必须显示成影子，不能显示成真实。
+ */
+export type QyViolationMode = 'enforce' | 'shadow'
+
+/** 规则来源。空串按 `manual` 读 —— 那是这一列出现之前的唯一语义。 */
+export type QyViolationSource = '' | 'builtin' | 'manual'
+
+/**
  * 匹配方式。
  *
  * `error_code` / `status_code` / `upstream_text` 只能用于上游阶段（prompt 阶段
@@ -70,8 +86,21 @@ export type QyViolationRule = {
   /** 写给用户看的对外文案。与内部 `name` 分开，后者常含规则代号。 */
   public_reason: string
   enabled: boolean
-  /** 规则级影子：新规则可以先灰度观察，不必打开全局 shadow_mode。 */
-  dry_run: boolean
+  /** 影子 / 真实。这是决定「要不要真的扣钱、封号」的唯一开关。 */
+  mode: QyViolationMode
+  /** `builtin` 表示由内置防护规则包导入；空串或 `manual` 表示运营自己写的。 */
+  source: QyViolationSource
+  /** 内置规则的稳定标识（如 `jailbreak.dan_persona`），手写规则为空串。 */
+  builtin_key: string
+  /** 导入（或上次升级）时内置目录里那条规则的版本号。 */
+  builtin_version: number
+  /**
+   * 导入时**后端发出去的** pattern 的 sha256。
+   *
+   * 升级判据的另一半：它与规则当前 pattern 的指纹不等就表示运营改过，
+   * 而改过的规则**任何情况下都不会被升级覆盖**。
+   */
+  builtin_fingerprint: string
   priority: number
   phase: QyViolationPhase
   match_type: QyViolationMatchType
@@ -101,7 +130,7 @@ export type QyViolationRuleInput = {
   remark: string
   public_reason: string
   enabled: boolean
-  dry_run: boolean
+  mode: QyViolationMode
   priority: number
   phase: QyViolationPhase
   match_type: QyViolationMatchType
@@ -131,35 +160,21 @@ export type QyViolationRuleTestResult = {
 }
 
 /**
- * 全局影子开关的覆盖态。
+ * 熔断状态。
  *
- * `unset` 表示 `qy_settings` 里没有这一行，全局模式跟随 YAML 的
- * `violation.shadow_mode`（默认 `true`）。`on` / `off` 是管理端写下的覆盖，
- * 覆盖存在时**不再回落 YAML** —— 否则永远退不出影子模式。
- */
-export type QyViolationShadowOverride = 'off' | 'on' | 'unset'
-
-/**
- * 熔断与影子模式状态。
+ * **这里没有「全局模式」了。** 曾经的 `shadow` / `shadow_reason` /
+ * `config_shadow` / `shadow_override` / `global_shadow` 五个字段随全局层一起
+ * 删除 —— 它们描述的是一个已经不存在的开关，留着只会让界面继续渲染一个
+ * 改不动任何东西的控件。
  *
- * `shadow=true` 表示当前**只记录、不扣费、不阻断、不封号、也不累计违规次数**。
- * 这是规则编辑界面必须最醒目展示的一件事：不知道自己在影子模式下改规则，
- * 会以为规则没生效而不断加码，等到关掉影子模式就是一次全站事故。
+ * 剩下的 `forced_shadow` 是熔断:拦截率或封号速率异常时**自动**把全部规则临时
+ * 按影子执行。它不是模式，是机器踩的刹车 —— 没有人打开过它，人只需要在它响的
+ * 时候收到告警，所以界面只在 `forced_shadow === true` 时才渲染那块告警。
  */
 export type QyViolationBreaker = {
-  shadow: boolean
-  /**
-   * `settings` = 管理端在 qy_settings 里开的；`config` = YAML 的兜底默认值；
-   * 其余为熔断自动回落时的触发原因。
-   */
-  shadow_reason: string
-  /** YAML 那一行的原值：清掉覆盖之后全局模式会回到它。 */
-  config_shadow: boolean
-  shadow_override: QyViolationShadowOverride
-  /** 全局取值（YAML + 覆盖合并后，尚未叠加熔断与规则级 `dry_run`）。 */
-  global_shadow: boolean
-  shadow_loaded_at: number
-  shadow_load_fails: number
+  forced_shadow: boolean
+  /** 熔断的触发描述，由后端拼好（如 `block_rate 43/200 超过 500 bps`）。 */
+  forced_shadow_reason: string
   forced_shadow_until: number
   forced_shadow_count: number
   window_scanned: number
@@ -209,6 +224,15 @@ export type QyViolationStats = {
     loaded_at: number
     prompt_rule: number
     post_rule: number
+    /**
+     * 已启用规则按模式的分布。
+     *
+     * 删掉全局开关之后，「现在到底有没有规则在真实扣钱」不再是一个布尔值。
+     * 这两个数由后端从规则快照直接算出 —— 前端自己按分页拉规则再数一遍
+     * 既是同一事实的第二份拷贝，也数不全（列表是分页的）。
+     */
+    shadow_rule: number
+    enforce_rule: number
   }
   policy: {
     insufficient_balance: string
@@ -240,4 +264,134 @@ export type QyViolationCounterPage = {
   /** 自动封号阈值。由后端下发，前端不再抄一份。 */
   threshold: number
   window_hours: number
+}
+
+/* ─────────────────────────── 内置防护规则包 ─────────────────────────── */
+
+/** 四大类，与后端 `builtin.go` 的 Cat* 常量一一对应。 */
+export type QyViolationBuiltinCategoryId =
+  | 'distill'
+  | 'jailbreak'
+  | 'pressure'
+  | 'reverse'
+
+export type QyViolationBuiltinCategory = {
+  id: QyViolationBuiltinCategoryId
+  name_zh: string
+  name_en: string
+  desc: string
+}
+
+/**
+ * 一条内置规则在**这个站点**上的状态。
+ *
+ * `modified` 是最要紧的一档：它表示运营改过这条规则的 pattern，因此升级
+ * **任何情况下都不会覆盖它**（哪怕版本很旧）。界面必须把这一档单独标出来，
+ * 否则「为什么点了升级它没变」就成了一个只能读源码才能回答的问题。
+ */
+export type QyViolationBuiltinState =
+  | 'modified'
+  | 'not_imported'
+  | 'up_to_date'
+  | 'upgradable'
+
+export type QyViolationBuiltinItem = {
+  key: string
+  category: QyViolationBuiltinCategoryId
+  version: number
+  name: string
+  public_reason: string
+  /** 这条防什么。 */
+  guards: string
+  /** 典型误杀场景。缺了它，运营在收到第一个工单时无从判断该改窄还是该停用。 */
+  false_positive: string
+  /** 模式串的出处，便于核对。 */
+  origin: string
+  /** 建议阈值 / 建议用法。 */
+  advice: string
+  phase: QyViolationPhase
+  match_type: QyViolationMatchType
+  pattern: string
+  case_sensitive: boolean
+  priority: number
+  count_weight: number
+  severity: number
+
+  state: QyViolationBuiltinState
+  /** 未导入时为 0。 */
+  rule_id: number
+  imported_version: number
+  rule_enabled: boolean
+  /** 已导入规则**当前**的模式；未导入时为空串。 */
+  rule_mode: '' | QyViolationMode
+}
+
+export type QyViolationBuiltinCatalog = {
+  categories: QyViolationBuiltinCategory[]
+  items: QyViolationBuiltinItem[]
+  /** 导入时统一落的模式。由后端下发而不是前端写死一句文案。 */
+  import_mode: QyViolationMode
+}
+
+export type QyViolationImportOutcome = {
+  key: string
+  action: 'created' | 'skipped' | 'upgraded'
+  reason?: string
+  rule_id?: number
+}
+
+export type QyViolationImportResult = {
+  results: QyViolationImportOutcome[]
+  changed: number
+  mode: QyViolationMode
+}
+
+/* ─────────────────────────── 影子命中分析 ─────────────────────────── */
+
+/**
+ * 影子原因。与后端 `guard.go` 的 ShadowReason* 常量对齐。
+ *
+ * 必须分开统计：`rule_mode` 是预期内的观察样本，`breaker` 是事故现场，
+ * 混在一起算出来的误判率没有意义。
+ */
+export type QyViolationShadowReason =
+  | ''
+  | 'breaker'
+  | 'dup_builtin_fee'
+  | 'rule_mode'
+
+/**
+ * 命中记录（管理端列表口径，与后端 `Record` 对齐的子集）。
+ *
+ * 这一页只用它做「按规则看影子命中」的分析，不做处置 —— 撤销 / 退款 / 申诉
+ * 都在违规记录页。
+ */
+export type QyViolationRecord = {
+  id: number
+  rec_no: string
+  request_id: string
+  user_id: number
+  username: string
+  token_id: number
+  token_name: string
+  ip: string
+  rule_id: number
+  rule_name: string
+  phase: QyViolationPhase
+  action: QyViolationAction
+  shadow: boolean
+  shadow_reason: QyViolationShadowReason
+  blocked: boolean
+  model_name: string
+  using_group: string
+  matched_terms: string
+  match_snippet: string
+  /** 若真实执行会扣多少（quota）。影子模式的全部价值就在这一列。 */
+  fee_quota_want: number
+  fee_quota: number
+  fee_status: string
+  count_weight: number
+  counted: boolean
+  has_payload: boolean
+  created_at: number
 }

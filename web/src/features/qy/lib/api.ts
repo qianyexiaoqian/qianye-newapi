@@ -176,6 +176,12 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   // ── 返佣管理端（qianye/modules/commission/api_admin.go）──
   qy_reason_required: 'qy_err_cm_reason_required',
   qy_clawback_failed: 'qy_err_cm_clawback_failed',
+  // 已提现额度迁移编辑（qianye/modules/commission/api_admin_balance.go）。
+  // 三个 code 必须映射到三句不同的话：over_available 是「这个数填大了」，
+  // over_earned 是「这行账本本来就是坏的」，overflow 是「回退幅度越界」。
+  qy_withdrawn_over_available: 'qy_err_cb_over_available',
+  qy_withdrawn_over_earned: 'qy_err_cb_over_earned',
+  qy_withdrawn_overflow: 'qy_err_cb_overflow',
 }
 
 /**

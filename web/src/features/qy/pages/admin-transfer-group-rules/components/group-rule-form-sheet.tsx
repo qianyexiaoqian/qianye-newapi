@@ -43,17 +43,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { qyCreateTransferGroupRule, qyUpdateTransferGroupRule } from '../api'
 import {
@@ -159,218 +152,15 @@ export function QyGroupRuleFormSheet(props: QyGroupRuleFormSheetProps) {
   )
 
   return (
-    <Sheet open={props.open} onOpenChange={props.onOpenChange}>
-      <SheetContent side='right' className='sm:max-w-xl'>
-        <SheetHeader>
-          <SheetTitle className='pr-8'>
-            {props.rule == null ? t('qy_trg_create') : t('qy_trg_edit')}
-          </SheetTitle>
-          <SheetDescription>{t('qy_trg_form_desc')}</SheetDescription>
-        </SheetHeader>
-
-        <Form {...form}>
-          <form
-            id='qy-transfer-group-rule-form'
-            className='min-h-0 flex-1 space-y-4 overflow-y-auto px-4'
-            onSubmit={form.handleSubmit((values) =>
-              saveMutation.mutate(values)
-            )}
-          >
-            {/* 分组的定义方不是这一页。说清楚它，否则运营会在这里找"新建分组"。 */}
-            <p className='text-muted-foreground rounded-md border border-dashed p-3 text-xs'>
-              {t('qy_trg_group_source_note')}
-            </p>
-
-            <FormField
-              control={form.control}
-              name='from_group'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_trg_field_from')}</FormLabel>
-                  <FormControl>
-                    {/* 裸 datalist 只提示、不校验、不告警：名字打错一个字母不会
-                        有任何信号，而那条规则会静默变成永不命中。换成带元数据的
-                        下拉，同时保留自由输入（历史分组仍要能配）。 */}
-                    <ComboboxInput
-                      options={[
-                        {
-                          value: QY_GROUP_WILDCARD,
-                          label: `${QY_GROUP_WILDCARD} · ${t('qy_trg_fallback_label')}`,
-                        },
-                        ...props.groupOptions.map((option) => ({
-                          value: option.name,
-                          label: qyGroupOptionLabel(
-                            option,
-                            props.channelsProbeOk,
-                            t
-                          ),
-                        })),
-                      ]}
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      allowCustomValue
-                      emptyText='qy_trg_group_picker_empty'
-                      placeholder={t('qy_trg_field_from_ph', {
-                        wildcard: QY_GROUP_WILDCARD,
-                      })}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    {t('qy_trg_field_from_desc', {
-                      wildcard: QY_GROUP_WILDCARD,
-                    })}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='policy'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_trg_field_policy')}</FormLabel>
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <FormControl>
-                      <SelectTrigger className='w-full'>
-                        <SelectValue />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {QY_GROUP_POLICIES.map((item) => (
-                        <SelectItem key={item} value={item}>
-                          {t(`qy_trg_policy_${item}`)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <FormDescription>
-                    {t(`qy_trg_policy_${policy}_desc`)}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {/* 非名单策略下把输入框整个撤掉而不是禁用：留一个灰着的框，
-                下一个人打开这条规则时仍会以为里面的名单还算数。 */}
-            {needsList && (
-              <FormField
-                control={form.control}
-                name='to_groups'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_trg_field_to')}</FormLabel>
-                    {/* 选一个就追加一项。名单本身仍然可以直接编辑文本框：
-                        下拉解决"有哪些分组、它们什么样"，自由输入解决
-                        "站点已经不认的历史分组仍要能配"。 */}
-                    <ComboboxInput
-                      options={[
-                        {
-                          value: QY_GROUP_SELF_TOKEN,
-                          label: `${QY_GROUP_SELF_TOKEN} · ${t('qy_trg_self_label')}`,
-                        },
-                        ...props.groupOptions.map((option) => ({
-                          value: option.name,
-                          label: qyGroupOptionLabel(
-                            option,
-                            props.channelsProbeOk,
-                            t
-                          ),
-                        })),
-                      ]}
-                      value=''
-                      onValueChange={(picked) =>
-                        field.onChange(qyAppendGroup(field.value, picked))
-                      }
-                      emptyText='qy_trg_group_picker_empty'
-                      placeholder={t('qy_trg_to_picker_ph')}
-                    />
-                    <FormControl>
-                      <Textarea rows={3} className='font-mono' {...field} />
-                    </FormControl>
-                    {field.value.trim() !== '' && (
-                      <div className='flex flex-wrap gap-1'>
-                        {/* 文本框是自由编辑的，名单里可能出现重复项（后端保存时
-                            才会去重），因此 key 必须带序号。 */}
-                        {qySplitGroupList(field.value).map((entry, index) => (
-                          <Badge
-                            key={`${entry}-${index}`}
-                            variant={
-                              unknown.includes(qyNormalizeGroupName(entry))
-                                ? 'warning'
-                                : 'secondary'
-                            }
-                            className='font-normal'
-                          >
-                            {qyIsSelfToken(entry)
-                              ? t('qy_trg_self_label')
-                              : entry}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
-                    <FormDescription className='space-y-1'>
-                      <span className='block'>{t('qy_trg_field_to_desc')}</span>
-                      <span className='block'>
-                        <Badge variant='outline' className='me-1 font-mono'>
-                          {QY_GROUP_SELF_TOKEN}
-                        </Badge>
-                        {t('qy_trg_self_token_desc')}
-                      </span>
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            )}
-
-            {/* 软告警，不是错误：不禁用提交按钮，也不进 zod schema。
-                历史分组恰恰是最需要限制转出的一批账号。 */}
-            {unknown.length > 0 && (
-              <p className='text-warning text-xs'>
-                {t('qy_trg_unknown_warning', { groups: unknown.join('、') })}
-              </p>
-            )}
-
-            <FormField
-              control={form.control}
-              name='remark'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_common_remark')}</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder={t('qy_trg_remark_ph')} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='enabled'
-              render={({ field }) => (
-                <FormItem className='flex items-start justify-between gap-4 rounded-lg border p-3'>
-                  <div className='min-w-0'>
-                    <FormLabel>{t('qy_trg_field_enabled')}</FormLabel>
-                    <FormDescription>
-                      {t('qy_trg_field_enabled_desc')}
-                    </FormDescription>
-                  </div>
-                  <FormControl>
-                    <Switch
-                      checked={field.value}
-                      onCheckedChange={field.onChange}
-                    />
-                  </FormControl>
-                </FormItem>
-              )}
-            />
-          </form>
-
-          <SheetFooter className='flex-row justify-end gap-2 border-t'>
+    <Form {...form}>
+      <QyResponsiveDialog
+        open={props.open}
+        onOpenChange={props.onOpenChange}
+        title={props.rule == null ? t('qy_trg_create') : t('qy_trg_edit')}
+        description={t('qy_trg_form_desc')}
+        contentClassName='sm:max-w-xl'
+        footer={
+          <>
             <Button
               type='button'
               variant='outline'
@@ -385,9 +175,208 @@ export function QyGroupRuleFormSheet(props: QyGroupRuleFormSheetProps) {
             >
               {t('qy_common_submit')}
             </Button>
-          </SheetFooter>
-        </Form>
-      </SheetContent>
-    </Sheet>
+          </>
+        }
+      >
+        <form
+          id='qy-transfer-group-rule-form'
+          className='space-y-4'
+          onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}
+        >
+          {/* 分组的定义方不是这一页。说清楚它，否则运营会在这里找"新建分组"。 */}
+          <p className='text-muted-foreground rounded-md border border-dashed p-3 text-xs'>
+            {t('qy_trg_group_source_note')}
+          </p>
+
+          <FormField
+            control={form.control}
+            name='from_group'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_trg_field_from')}</FormLabel>
+                <FormControl>
+                  {/* 裸 datalist 只提示、不校验、不告警：名字打错一个字母不会
+                        有任何信号，而那条规则会静默变成永不命中。换成带元数据的
+                        下拉，同时保留自由输入（历史分组仍要能配）。 */}
+                  <ComboboxInput
+                    options={[
+                      {
+                        value: QY_GROUP_WILDCARD,
+                        label: `${QY_GROUP_WILDCARD} · ${t('qy_trg_fallback_label')}`,
+                      },
+                      ...props.groupOptions.map((option) => ({
+                        value: option.name,
+                        label: qyGroupOptionLabel(
+                          option,
+                          props.channelsProbeOk,
+                          t
+                        ),
+                      })),
+                    ]}
+                    value={field.value}
+                    onValueChange={field.onChange}
+                    allowCustomValue
+                    emptyText='qy_trg_group_picker_empty'
+                    placeholder={t('qy_trg_field_from_ph', {
+                      wildcard: QY_GROUP_WILDCARD,
+                    })}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t('qy_trg_field_from_desc', {
+                    wildcard: QY_GROUP_WILDCARD,
+                  })}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='policy'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_trg_field_policy')}</FormLabel>
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <FormControl>
+                    <SelectTrigger className='w-full'>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {QY_GROUP_POLICIES.map((item) => (
+                      <SelectItem key={item} value={item}>
+                        {t(`qy_trg_policy_${item}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormDescription>
+                  {t(`qy_trg_policy_${policy}_desc`)}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* 非名单策略下把输入框整个撤掉而不是禁用：留一个灰着的框，
+                下一个人打开这条规则时仍会以为里面的名单还算数。 */}
+          {needsList && (
+            <FormField
+              control={form.control}
+              name='to_groups'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_trg_field_to')}</FormLabel>
+                  {/* 选一个就追加一项。名单本身仍然可以直接编辑文本框：
+                        下拉解决"有哪些分组、它们什么样"，自由输入解决
+                        "站点已经不认的历史分组仍要能配"。 */}
+                  <ComboboxInput
+                    options={[
+                      {
+                        value: QY_GROUP_SELF_TOKEN,
+                        label: `${QY_GROUP_SELF_TOKEN} · ${t('qy_trg_self_label')}`,
+                      },
+                      ...props.groupOptions.map((option) => ({
+                        value: option.name,
+                        label: qyGroupOptionLabel(
+                          option,
+                          props.channelsProbeOk,
+                          t
+                        ),
+                      })),
+                    ]}
+                    value=''
+                    onValueChange={(picked) =>
+                      field.onChange(qyAppendGroup(field.value, picked))
+                    }
+                    emptyText='qy_trg_group_picker_empty'
+                    placeholder={t('qy_trg_to_picker_ph')}
+                  />
+                  <FormControl>
+                    <Textarea rows={3} className='font-mono' {...field} />
+                  </FormControl>
+                  {field.value.trim() !== '' && (
+                    <div className='flex flex-wrap gap-1'>
+                      {/* 文本框是自由编辑的，名单里可能出现重复项（后端保存时
+                            才会去重），因此 key 必须带序号。 */}
+                      {qySplitGroupList(field.value).map((entry, index) => (
+                        <Badge
+                          key={`${entry}-${index}`}
+                          variant={
+                            unknown.includes(qyNormalizeGroupName(entry))
+                              ? 'warning'
+                              : 'secondary'
+                          }
+                          className='font-normal'
+                        >
+                          {qyIsSelfToken(entry)
+                            ? t('qy_trg_self_label')
+                            : entry}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                  <FormDescription className='space-y-1'>
+                    <span className='block'>{t('qy_trg_field_to_desc')}</span>
+                    <span className='block'>
+                      <Badge variant='outline' className='me-1 font-mono'>
+                        {QY_GROUP_SELF_TOKEN}
+                      </Badge>
+                      {t('qy_trg_self_token_desc')}
+                    </span>
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
+
+          {/* 软告警，不是错误：不禁用提交按钮，也不进 zod schema。
+                历史分组恰恰是最需要限制转出的一批账号。 */}
+          {unknown.length > 0 && (
+            <p className='text-warning text-xs'>
+              {t('qy_trg_unknown_warning', { groups: unknown.join('、') })}
+            </p>
+          )}
+
+          <FormField
+            control={form.control}
+            name='remark'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_common_remark')}</FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder={t('qy_trg_remark_ph')} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='enabled'
+            render={({ field }) => (
+              <FormItem className='flex items-start justify-between gap-4 rounded-lg border p-3'>
+                <div className='min-w-0'>
+                  <FormLabel>{t('qy_trg_field_enabled')}</FormLabel>
+                  <FormDescription>
+                    {t('qy_trg_field_enabled_desc')}
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+        </form>
+      </QyResponsiveDialog>
+    </Form>
   )
 }

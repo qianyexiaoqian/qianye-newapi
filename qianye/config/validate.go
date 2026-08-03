@@ -457,11 +457,10 @@ func validateViolation(v *Violation) error {
 	if err := checkBps("violation.global_block_rate_limit_bps", v.GlobalBlockRateLimitBps); err != nil {
 		return err
 	}
-	if !v.IsShadow() && (v.PrecheckEnabled || v.PostChargeEnabled) {
-		// 不阻止,但必须警告:规则写错的破坏力极大。
-		common.SysError("qianye: violation.shadow_mode 已关闭,违规规则将真实扣费/封号 —— " +
-			"务必确认已在影子模式下观察过命中分布")
-	}
+	// 这里曾经有一条"shadow_mode 已关闭"的启动告警。它随全局开关一起删除了:
+	// 现在"会不会真实扣费"取决于库里有几条 mode=enforce 的规则,不是一个配置项,
+	// 启动期读不到也不该猜。等价的可见性由 GET /admin/violation/stats 的
+	// rules.enforce_rule 提供,管理端每次打开规则页都会看到。
 	return nil
 }
 

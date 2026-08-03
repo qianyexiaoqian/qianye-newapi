@@ -16,11 +16,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { qyDelete, qyGet, qyPost, qyPut } from '../../lib/api'
+import { api } from '@/lib/api'
+
+import {
+  qyDelete,
+  qyErrorFromBlobFailure,
+  qyGet,
+  qyPost,
+  qyPut,
+  QY_API_PREFIX,
+} from '../../lib/api'
 import type { QyPage } from '../../lib/types'
 import type {
   QyViolationBreaker,
+  QyViolationBuiltinCatalog,
   QyViolationCounterPage,
+  QyViolationImportResult,
+  QyViolationRecord,
   QyViolationRule,
   QyViolationRuleInput,
   QyViolationRuleTestResult,
@@ -82,28 +94,93 @@ export function getQyViolationStats(params: {
 }
 
 /**
- * 手动解除「熔断自动回落到影子模式」。规则确认修正后才该点。
+ * 手动解除熔断。规则确认修正后才该点。
  *
- * 它**管不到全局影子开关**（YAML 或 qy_settings 的覆盖）—— 那条路走
- * `setQyViolationShadowMode`。两者分开是刻意的：熔断是系统自己踩的刹车，
- * 全局开关是人定的发布口径，一个按钮同时松开两者会让一次熔断恢复顺手
- * 把还没准备好的规则全部放出去。
+ * 它**一个字节都不动规则的 mode** —— 解除熔断的语义是「刹车松开，各条规则回到
+ * 它们自己声明的模式」。顺手把规则转正就是替运营做了一个他没做过的决定。
+ *
+ * 全局影子开关（`PUT /violation/mode`）已随全局模式层一起删除：模式绑在规则上，
+ * 改模式就是去改那条规则，不再有第二个入口。
  */
 export function resetQyViolationBreaker(): Promise<QyViolationBreaker> {
   return qyPost<QyViolationBreaker>('/admin/violation/breaker/reset')
 }
 
 /**
- * 设置**全局**影子开关。
+ * 内置防护规则包的目录 + 每条在本站点的导入状态。
  *
- * `shadow: null` = 清掉覆盖，重新跟随 YAML 的 `violation.shadow_mode`。
- * 后端不会因此改动任何一条规则的 `dry_run` —— 全局关掉时若顺手把规则转正，
- * 一次熔断自动恢复就会把全部灰度规则一起放出去。
+ * 返回的是**代码里的模板 + 库里的状态**，与规则列表不是同一种东西 ——
+ * 所以它是独立的一条路由，而不是 `/rules?source=builtin`。
  */
-export function setQyViolationShadowMode(
-  shadow: boolean | null
-): Promise<QyViolationBreaker> {
-  return qyPut<QyViolationBreaker>('/admin/violation/mode', { shadow })
+export function getQyViolationBuiltinCatalog(): Promise<QyViolationBuiltinCatalog> {
+  return qyGet<QyViolationBuiltinCatalog>('/admin/violation/rules/builtin')
+}
+
+/**
+ * 一键导入内置防护规则包。
+ *
+ * `keys` 为空 = 全部。导入出来一律是**影子模式**的普通规则行，可编辑、可删除、
+ * 可单独开关。`upgrade: true` 时额外把「未被运营改过」的旧版规则替换成新版
+ * 模式串 —— 改过的一律跳过并在 `results` 里如实说明，任何情况下都不覆盖。
+ */
+export function importQyViolationBuiltinRules(body: {
+  keys?: string[]
+  upgrade?: boolean
+}): Promise<QyViolationImportResult> {
+  return qyPost<QyViolationImportResult>(
+    '/admin/violation/rules/import-builtin',
+    body
+  )
+}
+
+export type QyViolationRecordListParams = {
+  p: number
+  page_size: number
+  rule_id?: number
+  /** 三态：不传 = 全部；`1` = 只看影子；`0` = 只看真实。 */
+  shadow?: '0' | '1'
+  shadow_reason?: string
+  user_id?: number
+  start_ts?: number
+  end_ts?: number
+}
+
+/** 命中记录列表。这一页只用它做「按规则看影子命中」的分析，不做处置。 */
+export function listQyViolationRecords(
+  params: QyViolationRecordListParams
+): Promise<QyPage<QyViolationRecord>> {
+  return qyGet<QyPage<QyViolationRecord>>('/admin/violation/records', params)
+}
+
+/**
+ * 导出命中记录为 CSV。
+ *
+ * 走鉴权接口 + Blob，而不是拼一个 `<a href>` 直链：这条路由要管理员身份，
+ * 直链会因为缺 Bearer 直接 401，而浏览器下载失败时不会有任何可见提示。
+ *
+ * 不能用 `qyGet`：那条路会把响应体当 `{success,data}` 信封解，而这里的成功
+ * 响应就是 CSV 文本本身。失败时 axios 给回的 `response.data` 也是 Blob
+ * （responseType 对错误响应一视同仁），所以错误还原走 `qyErrorFromBlobFailure`。
+ */
+export async function exportQyViolationRecords(
+  params: Omit<QyViolationRecordListParams, 'p' | 'page_size'>
+): Promise<Blob> {
+  try {
+    const res = await api.get(
+      `${QY_API_PREFIX}/admin/violation/records/export`,
+      {
+        skipErrorHandler: true,
+        skipBusinessError: true,
+        responseType: 'blob',
+        params,
+        // 上游的在途 GET 去重只按 url + params 归并，认不出 responseType 的差异。
+        disableDuplicate: true,
+      }
+    )
+    return res.data as Blob
+  } catch (error) {
+    throw await qyErrorFromBlobFailure(error)
+  }
 }
 
 export function listQyViolationCounters(params: {

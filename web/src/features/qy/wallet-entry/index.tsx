@@ -17,18 +17,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Link, type LinkProps } from '@tanstack/react-router'
-import { ArrowRight, Banknote, Megaphone } from 'lucide-react'
+import { ArrowRight, Banknote, Megaphone, Repeat } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Card, CardContent } from '@/components/ui/card'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
+import { TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 
 import { useQyConfig } from '../hooks/use-qy-config'
 import { qyTabTarget } from '../lib/pages'
 import type { QyConfig } from '../lib/types'
-import { QyWalletTransferSection } from '../pages/wallet-transfer'
+import { QY_WALLET_TRANSFER_TAB, useQyWalletTransferTab } from './tab'
 
 /**
  * 钱包页的扩展功能入口卡。
@@ -39,10 +40,10 @@ import { QyWalletTransferSection } from '../pages/wallet-transfer'
  * 卡片刻意放在 Tabs **之外**：它既不属于"添加资金"也不属于"订阅套餐"，
  * 而且塞进任一 Tab 都会让另一个 Tab 的用户找不到入口。
  *
- * ── 需求 2 之后：划转不再是一个"入口"──
- * 余额划转已经作为一个完整板块落在钱包页上（`QyWalletTransferSection`），
+ * ── 需求 2 / 5 之后：划转不再是一个"入口"──
+ * 余额划转已经是钱包页顶部那排标签里的一格（`QyWalletTransferPanel`），
  * 所以入口卡里那条指向 `/qy/transfer` 的链接删掉了：同一屏上放一个"点了之后
- * 滚到本屏另一处"的链接，只会让人以为还有别的页面。
+ * 跳到本屏另一张标签"的链接，只会让人以为还有别的页面。
  */
 
 type QyWalletEntry = {
@@ -143,20 +144,43 @@ export function QyWalletEntryCard() {
 }
 
 /**
- * 钱包页上 qy 的**唯一挂载点**。
+ * 钱包页上游那排标签里，「余额划转」那一格的触发器（需求 5）。
  *
- * 上游 `features/wallet/index.tsx` 里只有一行 `<QyWalletSections />`。
- * 划转板块与入口卡都从这里挂出去：每加一块就往上游钱包页加一行 JSX，
- * 是这个文件当初被合并成一张卡的原因，同一个理由在这里同样成立。
+ * 只渲染一个 `TabsTrigger`，**必须放进上游的 `<TabsList>` 里面** —— Base UI
+ * 的 `Tabs.Tab` 靠 list 的 context 拿索引与键盘导航，放在外面会得到一个
+ * 按不动、Tab 键也走不到的按钮。这一条由
+ * `__tests__/wallet-tab.test.ts` 的 AST 断言钉住。
  *
- * 顺序：划转板块在前、入口卡在后 —— 入口卡是"去别的页面"的导航，
- * 放在一个可以直接操作的板块上面会让人以为必须先点进去。
+ * 图标用 `Repeat`（与侧栏「划转流水」同一个），与上游那两格的 `size-3.5`
+ * 对齐；不给它 `aria-hidden` 之外的语义，标签文字本身就是标签名。
  */
-export function QyWalletSections() {
+export function QyWalletTransferTrigger() {
+  const { t } = useTranslation()
+  const { visible } = useQyWalletTransferTab()
+
+  if (!visible) return null
+
   return (
-    <>
-      <QyWalletTransferSection />
-      <QyWalletEntryCard />
-    </>
+    <TabsTrigger value={QY_WALLET_TRANSFER_TAB} className='gap-1.5 px-3'>
+      <Repeat className='size-3.5' aria-hidden='true' />
+      {t('qy_nav_transfer')}
+    </TabsTrigger>
   )
 }
+
+/**
+ * 钱包页 Tabs **之外**那一块的挂载点。
+ *
+ * 上游 `features/wallet/index.tsx` 里是一行 `<QyWalletSections />`。
+ * 需求 5 之后这里只剩入口卡：划转已经进了 Tabs（触发器 + 面板各一行 JSX）。
+ * 名字保留复数，是因为它仍是"Tabs 之外的 qy 内容"的唯一落点 —— 下一块
+ * 要加的东西照样挂这里，而不是再往上游钱包页加第四行。
+ */
+export function QyWalletSections() {
+  return <QyWalletEntryCard />
+}
+
+// 只再导出组件。取值常量与 hook 留在 `./tab`，由钱包页直接从那里 import：
+// 组件文件里混着导出非组件会让 Vite 的 fast refresh 整个文件失效
+// （oxlint 的 react/only-export-components 就是在盯这个）。
+export { QyWalletTransferPanel } from '../pages/wallet-transfer'

@@ -41,17 +41,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { formatQyMicros } from '../../ops/format'
 import {
@@ -64,6 +57,7 @@ import {
   QY_VIOLATION_FEE_MODES,
   QY_VIOLATION_GROUP_SCOPE_MODES,
   QY_VIOLATION_MATCH_TYPES,
+  QY_VIOLATION_MODES,
   QY_VIOLATION_PHASES,
   qyEmptyViolationRule,
   qyViolationRuleSchema,
@@ -127,447 +121,17 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
   })
 
   return (
-    <Sheet open={props.open} onOpenChange={props.onOpenChange}>
-      <SheetContent side='right' className='sm:max-w-2xl'>
-        <SheetHeader>
-          <SheetTitle className='pr-8'>
-            {props.rule == null
-              ? t('qy_vio_rule_create')
-              : t('qy_vio_rule_edit')}
-          </SheetTitle>
-          <SheetDescription>{t('qy_vio_rule_form_desc')}</SheetDescription>
-        </SheetHeader>
-
-        <Form {...form}>
-          <form
-            id='qy-violation-rule-form'
-            className='min-h-0 flex-1 space-y-4 overflow-y-auto px-4'
-            onSubmit={form.handleSubmit((values) =>
-              saveMutation.mutate(values)
-            )}
-          >
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <FormField
-                control={form.control}
-                name='name'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_name')}</FormLabel>
-                    <FormControl>
-                      <Input {...field} />
-                    </FormControl>
-                    <FormDescription>
-                      {t('qy_vio_field_name_desc')}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='public_reason'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_public_reason')}</FormLabel>
-                    <FormControl>
-                      <Input {...field} />
-                    </FormControl>
-                    <FormDescription>
-                      {t('qy_vio_field_public_reason_desc')}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-
-            <div className='grid gap-3 sm:grid-cols-3'>
-              <FormField
-                control={form.control}
-                name='phase'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_phase')}</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger className='w-full'>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {QY_VIOLATION_PHASES.map((phase) => (
-                          <SelectItem key={phase} value={phase}>
-                            {t(`qy_vio_phase_${phase}`)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='match_type'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_match_type')}</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger className='w-full'>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {QY_VIOLATION_MATCH_TYPES.map((matchType) => (
-                          <SelectItem key={matchType} value={matchType}>
-                            {t(`qy_vio_match_${matchType}`)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='priority'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_priority')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        type='number'
-                        value={field.value}
-                        onChange={(event) =>
-                          field.onChange(Number(event.target.value))
-                        }
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      {t('qy_vio_field_priority_desc')}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-
-            <FormField
-              control={form.control}
-              name='pattern'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>
-                    {isRate
-                      ? t('qy_vio_field_rate_threshold')
-                      : t('qy_vio_field_pattern')}
-                  </FormLabel>
-                  <FormControl>
-                    {isRate ? (
-                      <Input inputMode='numeric' placeholder='60' {...field} />
-                    ) : (
-                      <Textarea rows={5} className='font-mono' {...field} />
-                    )}
-                  </FormControl>
-                  <FormDescription>
-                    {isRate
-                      ? t('qy_vio_field_rate_threshold_desc')
-                      : t('qy_vio_field_pattern_desc')}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {/* 频率判据的三条局限必须写在管理员配置它的那一刻，而不是文档里。
-                运营看不到它们就会把这条规则当成一堵墙，而它只是一道减速带。 */}
-            {isRate && (
-              <div className='border-warning/40 bg-warning/5 space-y-1 rounded-lg border p-3 text-xs'>
-                <p className='font-medium'>{t('qy_vio_rate_caveat_title')}</p>
-                <p>{t('qy_vio_rate_caveat_stream')}</p>
-                <p>{t('qy_vio_rate_caveat_false_positive')}</p>
-                <p>{t('qy_vio_rate_caveat_nodes')}</p>
-                <p>{t('qy_vio_rate_caveat_ladder')}</p>
-              </div>
-            )}
-
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <FormField
-                control={form.control}
-                name='model_scope'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_model_scope')}</FormLabel>
-                    <FormControl>
-                      <Input placeholder='gpt-4*,claude-*' {...field} />
-                    </FormControl>
-                    <FormDescription>
-                      {t('qy_vio_field_model_scope_desc')}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='group_scope'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_group_scope')}</FormLabel>
-                    <FormControl>
-                      <Input placeholder='default,vip' {...field} />
-                    </FormControl>
-                    <FormDescription>
-                      {t('qy_vio_field_group_scope_desc')}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-
-            {/* 「指定分组开启」与「豁免分组」是同一份名单的两个方向。
-                刻意不开第二列黑名单：两张能互相矛盾的名单必然漂移，
-                而「哪张说了算」没有任何取值组合能自解释。 */}
-            <FormField
-              control={form.control}
-              name='group_scope_mode'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_vio_field_group_scope_mode')}</FormLabel>
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <FormControl>
-                      <SelectTrigger className='w-full sm:w-64'>
-                        <SelectValue />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {QY_VIOLATION_GROUP_SCOPE_MODES.map((mode) => (
-                        <SelectItem key={mode} value={mode}>
-                          {t(`qy_vio_group_scope_mode_${mode}`)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <FormDescription>
-                    {t('qy_vio_field_group_scope_mode_desc')}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <FormField
-                control={form.control}
-                name='action'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_action')}</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger className='w-full'>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {QY_VIOLATION_ACTIONS.map((action) => (
-                          <SelectItem key={action} value={action}>
-                            {t(`qy_vio_action_${action}`)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='fee_mode'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_fee_mode')}</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger className='w-full'>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {QY_VIOLATION_FEE_MODES.map((mode) => (
-                          <SelectItem key={mode} value={mode}>
-                            {t(`qy_vio_fee_${mode}`)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-
-            <div className='grid gap-3 sm:grid-cols-3'>
-              <FormField
-                control={form.control}
-                name='fee_fixed'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_fee_fixed')}</FormLabel>
-                    <FormControl>
-                      {/* 金额走字符串：JSON number 往返一次 0.1 会变成
-                          0.10000000000000001，而它会被直接乘进用户账单。 */}
-                      <Input inputMode='decimal' {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='fee_multiple'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_fee_multiple')}</FormLabel>
-                    <FormControl>
-                      <Input inputMode='decimal' {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='fee_max_quota'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_fee_max_quota')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        type='number'
-                        value={field.value}
-                        onChange={(event) =>
-                          field.onChange(Number(event.target.value))
-                        }
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      {t('qy_vio_field_fee_max_quota_desc')}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <FormField
-                control={form.control}
-                name='count_weight'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_count_weight')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        type='number'
-                        value={field.value}
-                        onChange={(event) =>
-                          field.onChange(Number(event.target.value))
-                        }
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      {t('qy_vio_field_count_weight_desc')}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='severity'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('qy_vio_field_severity')}</FormLabel>
-                    <FormControl>
-                      <Input
-                        type='number'
-                        value={field.value}
-                        onChange={(event) =>
-                          field.onChange(Number(event.target.value))
-                        }
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-
-            <FormField
-              control={form.control}
-              name='block_message'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_vio_field_block_message')}</FormLabel>
-                  <FormControl>
-                    <Input {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    {t('qy_vio_field_block_message_desc')}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='remark'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_common_remark')}</FormLabel>
-                  <FormControl>
-                    <Textarea rows={2} {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <div className='space-y-2 rounded-lg border p-3'>
-              <QyRuleSwitchField
-                control={form.control}
-                name='enabled'
-                label={t('qy_vio_field_enabled')}
-                description={t('qy_vio_field_enabled_desc')}
-              />
-              <QyRuleSwitchField
-                control={form.control}
-                name='dry_run'
-                label={t('qy_vio_field_dry_run')}
-                description={t('qy_vio_field_dry_run_desc')}
-              />
-              <QyRuleSwitchField
-                control={form.control}
-                name='case_sensitive'
-                label={t('qy_vio_field_case_sensitive')}
-              />
-              <QyRuleSwitchField
-                control={form.control}
-                name='archive_context'
-                label={t('qy_vio_field_archive_context')}
-                description={t('qy_vio_field_archive_context_desc')}
-              />
-            </div>
-
-            <QyRuleTester getValues={form.getValues} isRate={isRate} />
-          </form>
-
-          <SheetFooter className='flex-row justify-end gap-2 border-t'>
+    <Form {...form}>
+      <QyResponsiveDialog
+        open={props.open}
+        onOpenChange={props.onOpenChange}
+        title={
+          props.rule == null ? t('qy_vio_rule_create') : t('qy_vio_rule_edit')
+        }
+        description={t('qy_vio_rule_form_desc')}
+        contentClassName='sm:max-w-2xl'
+        footer={
+          <>
             <Button
               type='button'
               variant='outline'
@@ -582,17 +146,471 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
             >
               {t('qy_common_submit')}
             </Button>
-          </SheetFooter>
-        </Form>
-      </SheetContent>
-    </Sheet>
+          </>
+        }
+      >
+        <form
+          id='qy-violation-rule-form'
+          className='space-y-4'
+          onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}
+        >
+          <div className='grid gap-3 sm:grid-cols-2'>
+            <FormField
+              control={form.control}
+              name='name'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_name')}</FormLabel>
+                  <FormControl>
+                    <Input {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    {t('qy_vio_field_name_desc')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='public_reason'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_public_reason')}</FormLabel>
+                  <FormControl>
+                    <Input {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    {t('qy_vio_field_public_reason_desc')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <div className='grid gap-3 sm:grid-cols-3'>
+            <FormField
+              control={form.control}
+              name='phase'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_phase')}</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger className='w-full'>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {QY_VIOLATION_PHASES.map((phase) => (
+                        <SelectItem key={phase} value={phase}>
+                          {t(`qy_vio_phase_${phase}`)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='match_type'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_match_type')}</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger className='w-full'>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {QY_VIOLATION_MATCH_TYPES.map((matchType) => (
+                        <SelectItem key={matchType} value={matchType}>
+                          {t(`qy_vio_match_${matchType}`)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='priority'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_priority')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      value={field.value}
+                      onChange={(event) =>
+                        field.onChange(Number(event.target.value))
+                      }
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t('qy_vio_field_priority_desc')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <FormField
+            control={form.control}
+            name='pattern'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>
+                  {isRate
+                    ? t('qy_vio_field_rate_threshold')
+                    : t('qy_vio_field_pattern')}
+                </FormLabel>
+                <FormControl>
+                  {isRate ? (
+                    <Input inputMode='numeric' placeholder='60' {...field} />
+                  ) : (
+                    <Textarea rows={5} className='font-mono' {...field} />
+                  )}
+                </FormControl>
+                <FormDescription>
+                  {isRate
+                    ? t('qy_vio_field_rate_threshold_desc')
+                    : t('qy_vio_field_pattern_desc')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* 频率判据的三条局限必须写在管理员配置它的那一刻，而不是文档里。
+                运营看不到它们就会把这条规则当成一堵墙，而它只是一道减速带。 */}
+          {isRate && (
+            <div className='border-warning/40 bg-warning/5 space-y-1 rounded-lg border p-3 text-xs'>
+              <p className='font-medium'>{t('qy_vio_rate_caveat_title')}</p>
+              <p>{t('qy_vio_rate_caveat_stream')}</p>
+              <p>{t('qy_vio_rate_caveat_false_positive')}</p>
+              <p>{t('qy_vio_rate_caveat_nodes')}</p>
+              <p>{t('qy_vio_rate_caveat_ladder')}</p>
+            </div>
+          )}
+
+          <div className='grid gap-3 sm:grid-cols-2'>
+            <FormField
+              control={form.control}
+              name='model_scope'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_model_scope')}</FormLabel>
+                  <FormControl>
+                    <Input placeholder='gpt-4*,claude-*' {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    {t('qy_vio_field_model_scope_desc')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='group_scope'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_group_scope')}</FormLabel>
+                  <FormControl>
+                    <Input placeholder='default,vip' {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    {t('qy_vio_field_group_scope_desc')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          {/* 「指定分组开启」与「豁免分组」是同一份名单的两个方向。
+                刻意不开第二列黑名单：两张能互相矛盾的名单必然漂移，
+                而「哪张说了算」没有任何取值组合能自解释。 */}
+          <FormField
+            control={form.control}
+            name='group_scope_mode'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_vio_field_group_scope_mode')}</FormLabel>
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <FormControl>
+                    <SelectTrigger className='w-full sm:w-64'>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {QY_VIOLATION_GROUP_SCOPE_MODES.map((mode) => (
+                      <SelectItem key={mode} value={mode}>
+                        {t(`qy_vio_group_scope_mode_${mode}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormDescription>
+                  {t('qy_vio_field_group_scope_mode_desc')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <div className='grid gap-3 sm:grid-cols-2'>
+            <FormField
+              control={form.control}
+              name='action'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_action')}</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger className='w-full'>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {QY_VIOLATION_ACTIONS.map((action) => (
+                        <SelectItem key={action} value={action}>
+                          {t(`qy_vio_action_${action}`)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='fee_mode'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_fee_mode')}</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger className='w-full'>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {QY_VIOLATION_FEE_MODES.map((mode) => (
+                        <SelectItem key={mode} value={mode}>
+                          {t(`qy_vio_fee_${mode}`)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <div className='grid gap-3 sm:grid-cols-3'>
+            <FormField
+              control={form.control}
+              name='fee_fixed'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_fee_fixed')}</FormLabel>
+                  <FormControl>
+                    {/* 金额走字符串：JSON number 往返一次 0.1 会变成
+                          0.10000000000000001，而它会被直接乘进用户账单。 */}
+                    <Input inputMode='decimal' {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='fee_multiple'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_fee_multiple')}</FormLabel>
+                  <FormControl>
+                    <Input inputMode='decimal' {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='fee_max_quota'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_fee_max_quota')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      value={field.value}
+                      onChange={(event) =>
+                        field.onChange(Number(event.target.value))
+                      }
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t('qy_vio_field_fee_max_quota_desc')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <div className='grid gap-3 sm:grid-cols-2'>
+            <FormField
+              control={form.control}
+              name='count_weight'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_count_weight')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      value={field.value}
+                      onChange={(event) =>
+                        field.onChange(Number(event.target.value))
+                      }
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t('qy_vio_field_count_weight_desc')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='severity'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_severity')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      value={field.value}
+                      onChange={(event) =>
+                        field.onChange(Number(event.target.value))
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <FormField
+            control={form.control}
+            name='block_message'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_vio_field_block_message')}</FormLabel>
+                <FormControl>
+                  <Input {...field} />
+                </FormControl>
+                <FormDescription>
+                  {t('qy_vio_field_block_message_desc')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='remark'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_common_remark')}</FormLabel>
+                <FormControl>
+                  <Textarea rows={2} {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* 模式是这一页最重的一个字段：它单独决定这条规则要不要真的扣钱、封号。
+              刻意做成下拉单选而不是开关 —— 「影子 / 真实」是二选一，
+              而开关的心智是「要不要打开某个东西」，后者会让人看着一个关着的开关
+              以为规则没生效。全局模式开关已删除，这里就是唯一的入口。 */}
+          <FormField
+            control={form.control}
+            name='mode'
+            render={({ field }) => (
+              <FormItem className='rounded-lg border p-3'>
+                <FormLabel>{t('qy_vio_field_mode')}</FormLabel>
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <FormControl>
+                    <SelectTrigger className='w-full sm:w-72'>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {QY_VIOLATION_MODES.map((mode) => (
+                      <SelectItem key={mode} value={mode}>
+                        {t(`qy_vio_mode_${mode}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormDescription>
+                  {field.value === 'enforce'
+                    ? t('qy_vio_field_mode_enforce_desc')
+                    : t('qy_vio_field_mode_shadow_desc')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <div className='space-y-2 rounded-lg border p-3'>
+            <QyRuleSwitchField
+              control={form.control}
+              name='enabled'
+              label={t('qy_vio_field_enabled')}
+              description={t('qy_vio_field_enabled_desc')}
+            />
+            <QyRuleSwitchField
+              control={form.control}
+              name='case_sensitive'
+              label={t('qy_vio_field_case_sensitive')}
+            />
+            <QyRuleSwitchField
+              control={form.control}
+              name='archive_context'
+              label={t('qy_vio_field_archive_context')}
+              description={t('qy_vio_field_archive_context_desc')}
+            />
+          </div>
+
+          <QyRuleTester getValues={form.getValues} isRate={isRate} />
+        </form>
+      </QyResponsiveDialog>
+    </Form>
   )
 }
 
-/** 开关行。四个布尔字段的排版完全一致，抽出来避免四份重复的 JSX。 */
+/** 开关行。三个布尔字段的排版完全一致，抽出来避免三份重复的 JSX。 */
 function QyRuleSwitchField(props: {
   control: Control<QyViolationRuleFormValues>
-  name: 'archive_context' | 'case_sensitive' | 'dry_run' | 'enabled'
+  name: 'archive_context' | 'case_sensitive' | 'enabled'
   label: string
   description?: string
 }) {

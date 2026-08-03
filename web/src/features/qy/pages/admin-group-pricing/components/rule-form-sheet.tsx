@@ -42,17 +42,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { qyCreateGpRule, qyUpdateGpRule } from '../api'
 import {
@@ -158,176 +151,15 @@ export function QyGpRuleFormSheet(props: QyGpRuleFormSheetProps) {
   )
 
   return (
-    <Sheet open={props.open} onOpenChange={props.onOpenChange}>
-      <SheetContent side='right' className='sm:max-w-xl'>
-        <SheetHeader>
-          <SheetTitle className='pr-8'>
-            {props.rule == null ? t('qy_gp_create') : t('qy_gp_edit')}
-          </SheetTitle>
-          <SheetDescription>{t('qy_gp_form_desc')}</SheetDescription>
-        </SheetHeader>
-
-        <Form {...form}>
-          <form
-            id={FORM_ID}
-            className='min-h-0 flex-1 space-y-4 overflow-y-auto px-4'
-            onSubmit={form.handleSubmit((values) => {
-              // 影子模式下保存不动任何人的余额，直接存；真实模式下每一次保存都会
-              // 立刻改变扣费金额，必须先把「改前 → 改后」复述一遍再让人点确认。
-              if (props.shadowMode) {
-                saveMutation.mutate(values)
-                return
-              }
-              setConfirmOpen(true)
-            })}
-          >
-            <FormField
-              control={form.control}
-              name='group_name'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_gp_field_group')}</FormLabel>
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <FormControl>
-                      <SelectTrigger className='w-full'>
-                        <SelectValue placeholder={t('qy_gp_field_group_ph')} />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {groupOptions.map((group) => (
-                        <SelectItem key={group} value={group}>
-                          {group}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <FormDescription>
-                    {t('qy_gp_field_group_desc')}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='model_name'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_gp_field_model')}</FormLabel>
-                  <FormControl>
-                    <Combobox
-                      options={props.models.map((model) => ({
-                        value: model,
-                        label: model,
-                      }))}
-                      value={field.value}
-                      onValueChange={(next) => field.onChange(next ?? '')}
-                      searchPlaceholder={t('qy_gp_field_model_ph')}
-                      emptyText={t('qy_gp_field_model_empty')}
-                      allowCustomValue
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    {t('qy_gp_field_model_desc', {
-                      wildcard: QY_GP_MODEL_WILDCARD,
-                    })}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='mode'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_gp_field_mode')}</FormLabel>
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <FormControl>
-                      <SelectTrigger className='w-full'>
-                        <SelectValue />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {QY_GP_MODES.map((item) => (
-                        <SelectItem key={item} value={item}>
-                          {t(`qy_gp_mode_${item}`)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <FormDescription>
-                    {t(`qy_gp_mode_${mode}_desc`)}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='value'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t(`qy_gp_field_value_${mode}`)}</FormLabel>
-                  <FormControl>
-                    <Input
-                      {...field}
-                      inputMode='decimal'
-                      autoComplete='off'
-                      className='font-mono'
-                      placeholder={t('qy_gp_field_value_ph')}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    {t('qy_gp_field_value_desc')}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            {preview}
-
-            <FormField
-              control={form.control}
-              name='remark'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_common_remark')}</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder={t('qy_gp_remark_ph')} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='enabled'
-              render={({ field }) => (
-                <FormItem className='flex items-start justify-between gap-4 rounded-lg border p-3'>
-                  <div className='min-w-0'>
-                    <FormLabel>{t('qy_gp_field_enabled')}</FormLabel>
-                    <FormDescription>
-                      {t('qy_gp_field_enabled_desc')}
-                    </FormDescription>
-                  </div>
-                  <FormControl>
-                    <Switch
-                      checked={field.value}
-                      onCheckedChange={field.onChange}
-                    />
-                  </FormControl>
-                </FormItem>
-              )}
-            />
-          </form>
-
-          <SheetFooter className='flex-row justify-end gap-2 border-t'>
+    <Form {...form}>
+      <QyResponsiveDialog
+        open={props.open}
+        onOpenChange={props.onOpenChange}
+        title={props.rule == null ? t('qy_gp_create') : t('qy_gp_edit')}
+        description={t('qy_gp_form_desc')}
+        contentClassName='sm:max-w-xl'
+        footer={
+          <>
             <Button
               type='button'
               variant='outline'
@@ -342,26 +174,181 @@ export function QyGpRuleFormSheet(props: QyGpRuleFormSheetProps) {
             >
               {t('qy_common_submit')}
             </Button>
-          </SheetFooter>
-        </Form>
-
-        <QyConfirmDialog
-          open={confirmOpen}
-          onOpenChange={setConfirmOpen}
-          title={t('qy_gp_save_live_title')}
-          description={t('qy_gp_save_live_desc', {
-            group: groupName,
-            model: modelName,
+          </>
+        }
+      >
+        <form
+          id={FORM_ID}
+          className='space-y-4'
+          onSubmit={form.handleSubmit((values) => {
+            // 影子模式下保存不动任何人的余额，直接存；真实模式下每一次保存都会
+            // 立刻改变扣费金额，必须先把「改前 → 改后」复述一遍再让人点确认。
+            if (props.shadowMode) {
+              saveMutation.mutate(values)
+              return
+            }
+            setConfirmOpen(true)
           })}
-          details={preview}
-          // 只有「启用」的规则才会立刻改变扣费。存一条未启用的草稿不需要
-          // 强制勾选，否则这道闸门会因为太常出现而被人条件反射地划过去。
-          irreversible={enabled}
-          confirmText={t('qy_gp_save_live_confirm')}
-          isLoading={saveMutation.isPending}
-          onConfirm={() => saveMutation.mutate(form.getValues())}
-        />
-      </SheetContent>
-    </Sheet>
+        >
+          <FormField
+            control={form.control}
+            name='group_name'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_gp_field_group')}</FormLabel>
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <FormControl>
+                    <SelectTrigger className='w-full'>
+                      <SelectValue placeholder={t('qy_gp_field_group_ph')} />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {groupOptions.map((group) => (
+                      <SelectItem key={group} value={group}>
+                        {group}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormDescription>{t('qy_gp_field_group_desc')}</FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='model_name'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_gp_field_model')}</FormLabel>
+                <FormControl>
+                  <Combobox
+                    options={props.models.map((model) => ({
+                      value: model,
+                      label: model,
+                    }))}
+                    value={field.value}
+                    onValueChange={(next) => field.onChange(next ?? '')}
+                    searchPlaceholder={t('qy_gp_field_model_ph')}
+                    emptyText={t('qy_gp_field_model_empty')}
+                    allowCustomValue
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t('qy_gp_field_model_desc', {
+                    wildcard: QY_GP_MODEL_WILDCARD,
+                  })}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='mode'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_gp_field_mode')}</FormLabel>
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <FormControl>
+                    <SelectTrigger className='w-full'>
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {QY_GP_MODES.map((item) => (
+                      <SelectItem key={item} value={item}>
+                        {t(`qy_gp_mode_${item}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormDescription>
+                  {t(`qy_gp_mode_${mode}_desc`)}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='value'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t(`qy_gp_field_value_${mode}`)}</FormLabel>
+                <FormControl>
+                  <Input
+                    {...field}
+                    inputMode='decimal'
+                    autoComplete='off'
+                    className='font-mono'
+                    placeholder={t('qy_gp_field_value_ph')}
+                  />
+                </FormControl>
+                <FormDescription>{t('qy_gp_field_value_desc')}</FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {preview}
+
+          <FormField
+            control={form.control}
+            name='remark'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_common_remark')}</FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder={t('qy_gp_remark_ph')} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='enabled'
+            render={({ field }) => (
+              <FormItem className='flex items-start justify-between gap-4 rounded-lg border p-3'>
+                <div className='min-w-0'>
+                  <FormLabel>{t('qy_gp_field_enabled')}</FormLabel>
+                  <FormDescription>
+                    {t('qy_gp_field_enabled_desc')}
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+        </form>
+      </QyResponsiveDialog>
+
+      <QyConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={t('qy_gp_save_live_title')}
+        description={t('qy_gp_save_live_desc', {
+          group: groupName,
+          model: modelName,
+        })}
+        details={preview}
+        // 只有「启用」的规则才会立刻改变扣费。存一条未启用的草稿不需要
+        // 强制勾选，否则这道闸门会因为太常出现而被人条件反射地划过去。
+        irreversible={enabled}
+        confirmText={t('qy_gp_save_live_confirm')}
+        isLoading={saveMutation.isPending}
+        onConfirm={() => saveMutation.mutate(form.getValues())}
+      />
+    </Form>
   )
 }

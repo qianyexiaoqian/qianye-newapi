@@ -34,31 +34,27 @@ import type { QyViolationStats } from '../types'
 type QyViolationShadowBannerProps = {
   stats: QyViolationStats | undefined
   /**
-   * 设置全局影子开关；`null` = 清掉覆盖，重新跟随 YAML。
+   * 解除熔断。省略即只读展示（违规记录页复用这个横幅时就是只读的）。
    *
-   * 省略即只读展示。违规记录页复用这个横幅是为了「不要对着一堆没真正扣钱的
-   * 记录做处置」，改模式是规则页的职责，两处都能改会让人不知道自己刚改的是哪个。
+   * **这里不再有任何模式开关。** 曾经的「切到影子 / 切到真实 / 跟随配置文件」
+   * 三个按钮改的是一个全局层，而项目方的原话是「切来切去的本来简单的功能搞得
+   * 那么复杂」—— 模式现在绑在每条规则上，改模式就是去改那条规则。
    */
-  onSetShadow?: (shadow: boolean | null) => void
-  isSaving?: boolean
   onResetBreaker?: () => void
   isResetting?: boolean
   className?: string
 }
 
 /**
- * 影子模式 / 熔断状态横幅，同时是**全局模式的唯一控制入口**。
+ * 规则模式概览 + 熔断告警。
  *
- * **规则编辑界面必须一眼看到当前是不是影子模式。** 两种误判都很贵：
- *   - 以为在影子模式、其实在真实模式 → 一条正则上线就是全站误封；
- *   - 以为在真实模式、其实在影子模式 → 管理员会不断加码规则，
- *     等到影子模式关闭时全部同时生效。
+ * 这一块回答两个问题，都是删掉全局开关之后**只能由数据回答**的：
  *
- * 因此真实模式也要显示（绿色），而不是「有问题才提示」。
- *
- * 这一版补上了控件。上一版只在熔断（`forced`）时才渲染「解除熔断」按钮，
- * 而全局影子的默认来源是 YAML —— 于是最常见的那种影子状态下，整页一个可点的
- * 控件都没有，这就是需求原文说的「违规规则无法调整模式」的直接观感。
+ *  1. **现在到底有没有规则在真实扣钱？** 以前这是一个全局布尔，一眼能看到；
+ *     现在它是「N 条真实 / M 条影子」。不摆出来的话，运营会以为自己还在观察期，
+ *     而其实已经有几条规则在扣费 —— 那正是旧横幅唯一还算有用的功能。
+ *  2. **熔断响了吗？** 熔断不是模式，是机器踩的刹车。所以它平时整块不渲染，
+ *     只在触发时以红色告警出现，并给出唯一的动作：解除。
  */
 export function QyViolationShadowBanner(props: QyViolationShadowBannerProps) {
   const { t } = useTranslation()
@@ -67,128 +63,97 @@ export function QyViolationShadowBanner(props: QyViolationShadowBannerProps) {
 
   const breaker = stats.breaker
   const now = Math.floor(Date.now() / 1000)
-  const forced = breaker.forced_shadow_until > now
-  const overridden = breaker.shadow_override !== 'unset'
+  // 以 forced_shadow_until 为准而不是只信 forced_shadow：后者是服务端算好的
+  // 快照值，而这份统计会被缓存 30 秒，熔断到期后不应继续挂着红色告警。
+  const tripped = breaker.forced_shadow && breaker.forced_shadow_until > now
 
-  /**
-   * 模式切换按钮。全局影子与熔断是两回事：熔断期间照样允许改全局口径，
-   * 只是熔断没解除之前它不会立刻生效 —— 描述里已经写明当前的真实原因。
-   *
-   * 没有传处理器就是只读展示，一个按钮都不渲染。
-   */
-  const setShadow = props.onSetShadow
-  const resetBreaker = props.onResetBreaker
-  const modeButtons =
-    setShadow == null ? null : (
-      <AlertAction>
-        <div className='flex flex-wrap items-center gap-2'>
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            disabled={props.isSaving === true || breaker.global_shadow}
-            onClick={() => setShadow(true)}
-          >
-            {t('qy_vio_mode_set_shadow')}
-          </Button>
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            disabled={props.isSaving === true || !breaker.global_shadow}
-            onClick={() => setShadow(false)}
-          >
-            {t('qy_vio_mode_set_live')}
-          </Button>
-          {overridden && (
-            <Button
-              type='button'
-              variant='ghost'
-              size='sm'
-              disabled={props.isSaving === true}
-              onClick={() => setShadow(null)}
-            >
-              {t('qy_vio_mode_follow_yaml', {
-                value: breaker.config_shadow
-                  ? t('qy_vio_mode_word_shadow')
-                  : t('qy_vio_mode_word_live'),
-              })}
-            </Button>
-          )}
-          {forced && resetBreaker != null && (
+  const enforcing = stats.rules.enforce_rule
+  const shadowing = stats.rules.shadow_rule
+
+  if (tripped) {
+    return (
+      <Alert variant='destructive' className={props.className}>
+        <ShieldAlert />
+        <AlertTitle>{t('qy_vio_breaker_title')}</AlertTitle>
+        <AlertDescription>
+          <span className='block'>{t('qy_vio_breaker_desc')}</span>
+          <span className='block'>
+            {t('qy_vio_breaker_reason', {
+              reason: breaker.forced_shadow_reason,
+            })}
+          </span>
+          <span className='block'>
+            {t('qy_vio_breaker_until', {
+              time: formatQyTs(breaker.forced_shadow_until),
+            })}
+          </span>
+        </AlertDescription>
+        {props.onResetBreaker != null && (
+          <AlertAction>
             <Button
               type='button'
               variant='outline'
               size='sm'
               disabled={props.isResetting === true}
-              onClick={resetBreaker}
+              onClick={props.onResetBreaker}
             >
               {t('qy_vio_breaker_reset')}
             </Button>
-          )}
-        </div>
-      </AlertAction>
+          </AlertAction>
+        )}
+      </Alert>
     )
+  }
 
-  if (!breaker.shadow) {
+  // 没有任何规则在真实执行 = 整站还在观察期。这不是错误状态，但必须说清楚，
+  // 否则管理员会以为规则已经在拦人。
+  if (enforcing === 0) {
     return (
       <Alert
         className={cn(
-          'border-success/40 bg-success/5 [&>svg]:text-success',
+          'border-warning/40 bg-warning/5 [&>svg]:text-warning',
           props.className
         )}
       >
-        <ShieldCheck />
-        <AlertTitle>{t('qy_vio_mode_live_title')}</AlertTitle>
+        <EyeOff />
+        <AlertTitle>{t('qy_vio_mode_all_shadow_title')}</AlertTitle>
         <AlertDescription>
           <span className='block'>
-            {t('qy_vio_mode_live_desc', {
-              rules: stats.rules.prompt_rule + stats.rules.post_rule,
-              blocked: stats.blocked,
+            {t('qy_vio_mode_all_shadow_desc', { shadow: shadowing })}
+          </span>
+          {/* shadow_hits 回答「若把这些规则切成真实，过去 N 小时会发生什么」。
+              那是切模式之前唯一的决策依据。 */}
+          <span className='block'>
+            {t('qy_vio_mode_shadow_hits', {
+              hits: formatQyCount(stats.shadow_count),
               hours: stats.hours,
             })}
           </span>
-          <span className='block'>
-            {breaker.shadow_override === 'unset'
-              ? t('qy_vio_mode_source_yaml')
-              : t('qy_vio_mode_source_settings')}
-          </span>
         </AlertDescription>
-        {modeButtons}
       </Alert>
     )
   }
 
   return (
     <Alert
-      variant={forced ? 'destructive' : 'default'}
       className={cn(
-        !forced && 'border-warning/40 bg-warning/5 [&>svg]:text-warning',
+        'border-success/40 bg-success/5 [&>svg]:text-success',
         props.className
       )}
     >
-      {forced ? <ShieldAlert /> : <EyeOff />}
+      <ShieldCheck />
       <AlertTitle>
-        {forced
-          ? t('qy_vio_mode_breaker_title')
-          : t('qy_vio_mode_shadow_title')}
+        {t('qy_vio_mode_mixed_title', { count: enforcing })}
       </AlertTitle>
       <AlertDescription>
-        <span className='block'>{t('qy_vio_mode_shadow_desc')}</span>
         <span className='block'>
-          {t('qy_vio_mode_shadow_reason', {
-            reason: reasonText(breaker.shadow_reason, t),
+          {t('qy_vio_mode_mixed_desc', {
+            enforce: enforcing,
+            shadow: shadowing,
+            blocked: stats.blocked,
+            hours: stats.hours,
           })}
         </span>
-        {forced && (
-          <span className='block'>
-            {t('qy_vio_mode_breaker_until', {
-              time: formatQyTs(breaker.forced_shadow_until),
-            })}
-          </span>
-        )}
-        {/* shadow_hits 是切真实模式前唯一的决策依据：它回答
-            「如果现在打开真实模式，过去 N 小时会有多少用户被扣费或封号」。 */}
         <span className='block'>
           {t('qy_vio_mode_shadow_hits', {
             hits: formatQyCount(stats.shadow_count),
@@ -196,21 +161,6 @@ export function QyViolationShadowBanner(props: QyViolationShadowBannerProps) {
           })}
         </span>
       </AlertDescription>
-      {modeButtons}
     </Alert>
   )
-}
-
-/**
- * 把后端的影子原因翻成人话。
- *
- * `settings` / `config` 是两个必须分清的来源：前者能在这一页改回去，
- * 后者要改文件再重载（或者在这里写一条覆盖）。其余是熔断的触发描述，
- * 由后端拼好，原样展示。
- */
-function reasonText(reason: string, t: (key: string) => string): string {
-  if (reason === 'settings') return t('qy_vio_mode_reason_settings')
-  if (reason === 'config' || reason === '')
-    return t('qy_vio_mode_reason_config')
-  return reason
 }

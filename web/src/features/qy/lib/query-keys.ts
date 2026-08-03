@@ -81,6 +81,8 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'commission', 'records', params] as const,
   adminCommissionHealth: () =>
     [...qyKeys.all, 'admin', 'commission', 'health'] as const,
+  adminCommissionBalances: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'commission', 'balances', params] as const,
 
   adminTransferRecords: (params: unknown) =>
     [...qyKeys.all, 'admin', 'transfer', 'records', params] as const,
@@ -100,6 +102,9 @@ export const qyKeys = {
 
   adminViolationRules: (params: unknown) =>
     [...qyKeys.all, 'admin', 'violation', 'rules', params] as const,
+  /** 内置防护规则包的目录（代码里的模板 + 本站点的导入状态）。 */
+  adminViolationBuiltin: () =>
+    [...qyKeys.all, 'admin', 'violation', 'builtin'] as const,
   adminViolationRecords: (params: unknown) =>
     [...qyKeys.all, 'admin', 'violation', 'records', params] as const,
   adminViolationEvidence: (id: number | string) =>

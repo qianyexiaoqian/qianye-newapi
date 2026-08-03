@@ -596,7 +596,7 @@ func (user *User) Insert(inviterId int) error {
 				return err
 			}
 			user.Quota = common.QuotaForNewUser
-			user.AffCode = common.GetRandomString(4)
+			user.AffCode = NewAffCode(tx)
 
 			// 初始化用户设置，包括默认的边栏配置
 			if user.Setting == "" {
@@ -660,7 +660,7 @@ func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 			return err
 		}
 		user.Quota = common.QuotaForNewUser
-		user.AffCode = common.GetRandomString(4)
+		user.AffCode = NewAffCode(tx)
 
 		// 初始化用户设置
 		if user.Setting == "" {

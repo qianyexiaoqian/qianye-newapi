@@ -90,7 +90,7 @@ func TestBanSignalSurvivesBlockedAttempt(t *testing.T) {
 // 管理端查不到,信号同时被消费掉。这里断言它变成一行 deferred,
 // 并且在速率窗口滚过之后能被同一用户的下一次违规提升执行。
 func TestResolveBanClaimPersistsRateLimitedCrossing(t *testing.T) {
-	useTestConfig(t, "  enabled: true\n  shadow_mode: false\n"+
+	useTestConfig(t, "  enabled: true\n"+
 		"  auto_ban_threshold: 5\n  global_ban_rate_limit_per_hour: 1\n")
 	isolateBreaker(t)
 	gdb := newBanDB(t)
@@ -143,7 +143,7 @@ func TestResolveBanClaimRespectsExistingOutcome(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.status, func(t *testing.T) {
-			useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  auto_ban_threshold: 5\n")
+			useTestConfig(t, "  enabled: true\n  auto_ban_threshold: 5\n")
 			isolateBreaker(t)
 			gdb := newBanDB(t)
 			require.NoError(t, gdb.Create(&Ban{
@@ -166,23 +166,26 @@ func TestResolveBanClaimRespectsExistingOutcome(t *testing.T) {
 	}
 }
 
-// TestResolveBanClaimWritesNothingInShadowMode 固化影子模式的定义。
+// TestResolveBanClaimWritesNothingWhileBreakerTripped 固化熔断钳位的定义。
 //
-// 影子模式是"只观察、不产生任何处置副作用",写认领行会污染管理端的封禁列表。
-// 信号不会因此丢失:判据是持久化的 hit_count,影子解除后的下一次违规会重新走到这里。
-func TestResolveBanClaimWritesNothingInShadowMode(t *testing.T) {
-	useTestConfig(t, "  enabled: true\n  shadow_mode: true\n  auto_ban_threshold: 5\n")
+// 钳位期间是"只观察、不产生任何处置副作用",写认领行会污染管理端的封禁列表。
+// 信号不会因此丢失:判据是持久化的 hit_count,熔断解除后的下一次违规会重新走到这里。
+//
+// (全局影子开关删除后,这里唯一能让 resolveBanClaim 罢工的就只剩熔断。)
+func TestResolveBanClaimWritesNothingWhileBreakerTripped(t *testing.T) {
+	useTestConfig(t, "  enabled: true\n  auto_ban_threshold: 5\n")
 	isolateBreaker(t)
 	gdb := newBanDB(t)
 	st := counterState{HitCount: 5, Reached: true}
 
+	tripShadow("block_rate 测试触发")
 	assert.Nil(t, resolveBanClaim(context.Background(), gdb, banRecord(9), st))
 	var cnt int64
 	require.NoError(t, gdb.Model(&Ban{}).Count(&cnt).Error)
-	assert.EqualValues(t, 0, cnt, "影子模式下不得写任何封禁行")
+	assert.EqualValues(t, 0, cnt, "熔断钳位期间不得写任何封禁行")
 
-	// 关掉影子模式,同一个计数状态必须立刻能封 —— 信号没有被消费掉。
-	useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  auto_ban_threshold: 5\n")
+	// 解除熔断,同一个计数状态必须立刻能封 —— 信号没有被消费掉。
+	clearForcedShadow()
 	require.NotNil(t, resolveBanClaim(context.Background(), gdb, banRecord(9), st))
 }
 
@@ -202,7 +205,7 @@ func TestResolveBanClaimAfterUnban(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  auto_ban_threshold: 5\n")
+			useTestConfig(t, "  enabled: true\n  auto_ban_threshold: 5\n")
 			isolateBreaker(t)
 			gdb := newBanDB(t)
 			// 上一周期留下的已解封行。周期已经 +1,不该挡住新周期的认领。
@@ -230,7 +233,7 @@ func TestResolveBanClaimAfterUnban(t *testing.T) {
 
 // TestResolveBanClaimIgnoresUnreachedCounter 是反向保护:没达阈值就绝不认领。
 func TestResolveBanClaimIgnoresUnreachedCounter(t *testing.T) {
-	useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  auto_ban_threshold: 5\n")
+	useTestConfig(t, "  enabled: true\n  auto_ban_threshold: 5\n")
 	isolateBreaker(t)
 	gdb := newBanDB(t)
 

@@ -74,7 +74,7 @@ func TestRedact(t *testing.T) {
 // TestBuildEvidenceTruncatesAndRoundTrips 验证三层闸门:剥离 → 截断 → 压缩,
 // 以及归档能被原样读回(读不回来的证据等于没存)。
 func TestBuildEvidenceTruncatesAndRoundTrips(t *testing.T) {
-	useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  evidence_max_bytes: 1024\n")
+	useTestConfig(t, "  enabled: true\n  evidence_max_bytes: 1024\n")
 
 	huge := strings.Repeat("违规内容片段", 5000) // 约 90KB
 	rec := &Record{RecNo: "vr_test_1", RequestId: "req-1", ModelName: "gpt-4o", CreatedAt: 100}

@@ -101,11 +101,11 @@ func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.Toke
 		return nil
 	}
 
-	shadow, _ := effectiveShadow(v.Rule)
+	shadow, shadowReason := effectiveShadow(v.Rule)
 	block := blocks(v.Rule.R.Action) && !shadow
 	noteScan(block)
 
-	handleHit(c, info, PhasePrompt, in, v, shadow, block)
+	handleHit(c, info, PhasePrompt, in, v, shadow, shadowReason, block)
 	if !block {
 		return nil
 	}
@@ -164,44 +164,59 @@ func PostRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, apiErr *types.N
 		return
 	}
 
-	shadow, _ := effectiveShadow(v.Rule)
+	shadow, shadowReason := effectiveShadow(v.Rule)
 	// 去重:上游内置的 Grok 违规扣费(service.ChargeViolationFeeIfNeeded)已经
 	// 就同一个错误扣过一次。这里只记录不扣费,零改动地避免重复罚款。
 	if service.IsViolationFeeCode(apiErr.GetErrorCode()) {
-		rec := newRecord(c, info, PhaseUpstreamErr, in, v, true, false)
+		// 这一条被强制记成影子,原因是"上游已扣过"而不是规则模式或熔断 ——
+		// 拿 shadowReason 顶上去会让统计里凭空多出一批并不存在的熔断样本。
+		rec := newRecord(c, info, PhaseUpstreamErr, in, v, true, ShadowReasonDupBuiltin, false)
 		rec.FeeStatus = FeeStatusSkippedDup
 		persist(rec, nil)
 		return
 	}
-	handleHit(c, info, PhaseUpstreamErr, in, v, shadow, false)
+	handleHit(c, info, PhaseUpstreamErr, in, v, shadow, shadowReason, false)
 }
 
-// effectiveShadow 是叠加语义的唯一实现:
+// 影子原因。落进 Record.ShadowReason,是"这一条为什么没有真实执行"的唯一答案。
+const (
+	// ShadowReasonRuleMode:规则自己声明的就是影子(Mode != enforce)。
+	// 这是项目方要的那个用例产生的记录:预期内的观察样本。
+	ShadowReasonRuleMode = "rule_mode"
+	// ShadowReasonBreaker:规则声明的是真实执行,但熔断正在把全部规则钳成影子。
+	// 这类记录是事故现场,不能和上一类混在一起做误判率统计。
+	ShadowReasonBreaker = "breaker"
+	// ShadowReasonDupBuiltin:上游内置的 Grok 违规扣费已经就同一个错误扣过一次,
+	// 本模块只记录。与模式无关,单独一个取值。
+	ShadowReasonDupBuiltin = "dup_builtin_fee"
+)
+
+// effectiveShadow 判定这次命中要不要按影子处理,并给出原因。
 //
-//	effective_shadow = 全局影子(qy_settings 覆盖 / YAML / 熔断回落) OR 规则级 dry_run
+// 只有两层,顺序不能反:
 //
-// 取更保守者胜。两条职责各自成立,合并会让其中一条失效:
-//   - 全局开关是上线安全阀与熔断自愈,必须能一票否决所有规则;
-//   - 规则级 dry_run 是单条新规则的灰度,全局已经放开时它仍要拦住自己那一条。
+//  1. **规则自己的 Mode**。这是运营表达的意图,是唯一的"模式"。判据写成
+//     `== ModeEnforce` 而不是 `!= ModeShadow`:空串与任何未知取值都必须落在
+//     影子一侧(滚动升级、手工 SQL、迁移没跑到的行都会产生空串)。
+//  2. **熔断钳位**。规则说 enforce 时才轮到它。它不是模式,是刹车,
+//     所以原因单独一个取值 —— 事后要能把"预期内的影子样本"和"熔断期间被迫
+//     变成影子的真实规则"分开统计,否则误判率会被稀释得毫无意义。
 //
-// 反过来,**全局关掉时绝不去动各条规则的 dry_run** —— 那样一次熔断自动恢复
-// 就会把全部灰度规则一起转正。
-//
-// 提成函数是因为 PreRelayGuard 与 PostRelayGuard 都要算它:同一个两行表达式
-// 抄两份,迟早有一处漏掉 dry_run 那一半,而漏掉的表现是"灰度规则悄悄开始扣钱"。
+// 提成函数是因为 PreRelayGuard 与 PostRelayGuard 都要算它:同一个判据抄两份,
+// 迟早有一处漏掉熔断那一半,而漏掉的表现是"熔断响了却照样扣钱"。
 func effectiveShadow(cr *compiledRule) (bool, string) {
-	if on, reason := shadowActive(); on {
-		return true, reason
+	if cr == nil || cr.R.Mode != ModeEnforce {
+		return true, ShadowReasonRuleMode
 	}
-	if cr != nil && cr.R.DryRun {
-		return true, "rule_dry_run"
+	if on, reason := breakerTripped(); on {
+		return true, reason
 	}
 	return false, ""
 }
 
 // handleHit 是"命中之后要做的全部事情":扣费(同步,主库)+ 归档/计数/封号(异步,扩展库)。
-func handleHit(c *gin.Context, info *relaycommon.RelayInfo, phase string, in scanInput, v *verdict, shadow, blocked bool) {
-	rec := newRecord(c, info, phase, in, v, shadow, blocked)
+func handleHit(c *gin.Context, info *relaycommon.RelayInfo, phase string, in scanInput, v *verdict, shadow bool, shadowReason string, blocked bool) {
+	rec := newRecord(c, info, phase, in, v, shadow, shadowReason, blocked)
 
 	res := computeFee(v.Rule, info)
 	if shadow {
@@ -314,11 +329,15 @@ func persistRecord(ctx context.Context, gdb *gorm.DB, rec *Record, payload *Payl
 //
 // 必须同步:gin.Context 在请求结束后不能再访问,用户名/令牌名/IP 这些字段
 // 只能在这一刻取到。异步 worker 只负责写库。
-func newRecord(c *gin.Context, info *relaycommon.RelayInfo, phase string, in scanInput, v *verdict, shadow, blocked bool) *Record {
+func newRecord(c *gin.Context, info *relaycommon.RelayInfo, phase string, in scanInput, v *verdict, shadow bool, shadowReason string, blocked bool) *Record {
 	// 影子记录不参与计数,counter_after 因此没有真实答案,统一取哨兵值。
 	counterAfter := 0
 	if shadow {
 		counterAfter = CounterAfterShadow
+	} else {
+		// 真实执行的记录不该带影子原因:留着会让"按原因分组"的统计里出现一批
+		// shadow=false 却写着 rule_mode 的行,而那是自相矛盾的。
+		shadowReason = ""
 	}
 	channelId := 0
 	// ChannelMeta 是内嵌指针,prompt 阶段还没选渠道,直接读 info.ChannelId 会 panic。
@@ -341,6 +360,7 @@ func newRecord(c *gin.Context, info *relaycommon.RelayInfo, phase string, in sca
 		Phase:        phase,
 		Action:       v.Rule.R.Action,
 		Shadow:       shadow,
+		ShadowReason: truncate(shadowReason, 64),
 		Blocked:      blocked,
 		ModelName:    truncate(info.OriginModelName, 128),
 		UsingGroup:   truncate(info.UsingGroup, 64),

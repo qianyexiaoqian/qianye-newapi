@@ -33,11 +33,14 @@ const idemScopeViolationRefund = "violation_refund"
 // 金额与倍数走字符串:JSON number 在前端是 float64,0.1 这类值往返一次就会
 // 变成 0.10000000000000001,而它会被直接乘进用户的账单。
 type ruleUpsertReq struct {
-	Name           string `json:"name"`
-	Remark         string `json:"remark"`
-	PublicReason   string `json:"public_reason"`
-	Enabled        bool   `json:"enabled"`
-	DryRun         bool   `json:"dry_run"`
+	Name         string `json:"name"`
+	Remark       string `json:"remark"`
+	PublicReason string `json:"public_reason"`
+	Enabled      bool   `json:"enabled"`
+	// Mode 是 "shadow" / "enforce"。收字符串而不是布尔:管理端表单上这一项叫
+	// 「影子模式 / 真实模式」,是个二选一的单选,不是"要不要打开某个东西"。
+	// 空串在 apply 里被折回 shadow —— 漏传字段的默认必须是不扣钱的那一侧。
+	Mode           string `json:"mode"`
 	Priority       int    `json:"priority"`
 	Phase          string `json:"phase"`
 	MatchType      string `json:"match_type"`
@@ -74,7 +77,13 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 	dst.Remark = truncate(r.Remark, 512)
 	dst.PublicReason = truncate(strings.TrimSpace(r.PublicReason), 128)
 	dst.Enabled = r.Enabled
-	dst.DryRun = r.DryRun
+	// 空串折回影子。漏传字段(旧前端、脚本、curl 手敲)必须落在不扣钱的那一侧;
+	// 其余非法取值交给 ValidateRule 明确报错,而不是在这里静默纠正成 shadow ——
+	// 静默纠正会让"我明明填了 enforce"变成一个查不出来的问题。
+	dst.Mode = strings.ToLower(strings.TrimSpace(r.Mode))
+	if dst.Mode == "" {
+		dst.Mode = ModeShadow
+	}
 	dst.Priority = r.Priority
 	dst.Phase = r.Phase
 	dst.MatchType = r.MatchType
@@ -178,7 +187,9 @@ func adminUpdateRule(c *gin.Context) {
 		notFound(c)
 		return
 	}
-	before := common.MapToJsonStr(map[string]any{"enabled": row.Enabled, "action": row.Action, "pattern": row.Pattern})
+	before := common.MapToJsonStr(map[string]any{
+		"enabled": row.Enabled, "mode": row.Mode, "action": row.Action, "pattern": row.Pattern,
+	})
 	if err := req.apply(&row); err != nil {
 		badRequest(c, err.Error())
 		return
@@ -232,7 +243,10 @@ func afterRuleChange(c *gin.Context, action string, row *Rule, before string) {
 		AfterSnap: common.MapToJsonStr(map[string]any{
 			"id": row.Id, "name": row.Name, "enabled": row.Enabled,
 			"phase": row.Phase, "action": row.Action, "fee_mode": row.FeeMode,
-			"dry_run": row.DryRun, "pattern": truncate(row.Pattern, 1024),
+			// mode 是本模块唯一决定"要不要真的扣钱/封号"的开关,
+			// 把它改成 enforce 是这一页最重的一个动作,必须在审计里看得见。
+			"mode": row.Mode, "source": row.Source, "builtin_key": row.BuiltinKey,
+			"pattern": truncate(row.Pattern, 1024),
 		}),
 	})
 }
@@ -303,12 +317,11 @@ func adminTestRule(c *gin.Context) {
 
 // ───────────────────────────── 记录 ─────────────────────────────
 
-func adminListRecords(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagViolation) {
-		return
-	}
-	page, size := httpq.Paginate(c, listPaging)
-	q := db.Get().Model(&Record{})
+// recordQuery 把查询参数翻成 WHERE 条件。
+//
+// 列表与导出必须共用它:两个入口各写一份筛选,导出出来的 CSV 迟早与屏幕上看到的
+// 不是同一批行 —— 而导出的用途恰恰是"把屏幕上这批行拿去分析"。
+func recordQuery(c *gin.Context, q *gorm.DB) *gorm.DB {
 	if v := httpq.Int(c, "user_id", 0); v > 0 {
 		q = q.Where("user_id = ?", v)
 	}
@@ -327,12 +340,34 @@ func adminListRecords(c *gin.Context) {
 	if v := httpq.Int64(c, "rule_id", 0); v > 0 {
 		q = q.Where("rule_id = ?", v)
 	}
+	// shadow 是项目方那个用例的核心筛选:「把规则设成影子 → 抓涉嫌违规用户的
+	// 日志和上下文来分析」。没有它,影子命中混在真实命中里,分析的第一步就做不了。
+	//
+	// 三态:不传 = 全部;1 = 只看影子;0 = 只看真实。刻意不用 httpq.Int 的默认值
+	// 兜 —— "没传"与"传了 0"必须区分开,否则永远筛不出真实命中。
+	if v := c.Query("shadow"); v == "1" || v == "true" {
+		q = q.Where("shadow = ?", true)
+	} else if v == "0" || v == "false" {
+		q = q.Where("shadow = ?", false)
+	}
+	if v := c.Query("shadow_reason"); v != "" {
+		q = q.Where("shadow_reason = ?", v)
+	}
 	if v := httpq.Int64(c, "start_ts", 0); v > 0 {
 		q = q.Where("created_at >= ?", v)
 	}
 	if v := httpq.Int64(c, "end_ts", 0); v > 0 {
 		q = q.Where("created_at <= ?", v)
 	}
+	return q
+}
+
+func adminListRecords(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagViolation) {
+		return
+	}
+	page, size := httpq.Paginate(c, listPaging)
+	q := recordQuery(c, db.Get().Model(&Record{}))
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		internalError(c, err)
@@ -1076,6 +1111,11 @@ func adminStats(c *gin.Context) {
 			"loaded_at":   snap.loadAt,
 			"prompt_rule": len(snap.promptRules),
 			"post_rule":   len(snap.postRules),
+			// 删掉全局开关之后,"现在有没有规则在真实扣钱"由这两个数回答。
+			// 不下发的话前端只能自己按分页拉规则再数一遍 —— 那是同一个事实的
+			// 第二份拷贝,而且拉不全(列表是分页的)。
+			"shadow_rule":  snap.shadowRules,
+			"enforce_rule": snap.enforceRules,
 		},
 		"policy": gin.H{
 			"insufficient_balance": config.Get().Violation.InsufficientBalancePolicy,
@@ -1084,92 +1124,6 @@ func adminStats(c *gin.Context) {
 			"max_fee_quota":        config.Get().Violation.MaxFeeQuota,
 		},
 	})
-}
-
-// adminPutMode 修改**全局**影子开关。
-//
-// 需求原文的「违规规则无法调整模式」指的就是这一处:规则级 dry_run 端到端是通的,
-// 但全局开关此前只存在于 YAML,IsShadow() 默认 true,而叠加语义取更保守者胜 ——
-// 全局为真时规则级怎么调都没用,页面上也没有任何可点的控件。
-//
-// 请求体 {"shadow": true|false} 写覆盖,{"shadow": null} 清覆盖回落 YAML。
-// 刻意用 *bool 而不是两个接口:"设为真实模式"与"跟随配置文件"是两件不同的事,
-// 后者是把临时处置收回去,合成一个动作会让人分不清当前到底跟不跟 YAML。
-//
-// 注意这里**不动任何规则的 dry_run**。全局开关承担的是"上线安全阀 / 熔断自愈"
-// 职责,必须能一票否决所有规则;顺手把规则转正的话,一次熔断自动恢复就会把
-// 全部灰度规则一起放出去。
-func adminPutMode(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagViolation) {
-		return
-	}
-	var req struct {
-		Shadow *bool `json:"shadow"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		badRequest(c, "请求体格式错误")
-		return
-	}
-	gdb := db.Get()
-	if gdb == nil {
-		internalError(c, db.ErrNotReady)
-		return
-	}
-	ctx := c.Request.Context()
-	operatorId := c.GetInt("id")
-	before := modeSnapshot()
-
-	var err error
-	action := "跟随配置文件"
-	if req.Shadow == nil {
-		err = dropShadowSetting(ctx, gdb)
-	} else {
-		action = "切换为真实执行"
-		if *req.Shadow {
-			action = "切换为影子模式"
-		}
-		err = writeShadowSetting(ctx, gdb, *req.Shadow, operatorId)
-	}
-
-	// 无论成败都要重新回源:失败路径上库里到底变没变是未知的,
-	// 拿一个推算值当审计的 after 会掩盖"回滚没生效"这种最需要留痕的情况。
-	invalidateMode()
-	if e := refreshModeWith(ctx, gdb); e != nil {
-		common.SysError("qianye/violation: 切换全局模式后回读失败: " + e.Error())
-	}
-
-	result, reason := qymodel.ResultOK, "全局影子模式:"+action
-	if err != nil {
-		result, reason = qymodel.ResultFail, "全局影子模式:"+action+"(失败: "+err.Error()+")"
-	}
-	audit.Write(c, audit.Entry{
-		Category:    qymodel.AuditCategoryViolation,
-		Action:      "mode.update",
-		ActorType:   qymodel.ActorAdmin,
-		ActorUserId: operatorId,
-		ActorName:   c.GetString("username"),
-		Result:      result,
-		Reason:      reason,
-		BeforeSnap:  common.MapToJsonStr(before),
-		AfterSnap:   common.MapToJsonStr(modeSnapshot()),
-	})
-	if err != nil {
-		internalError(c, err)
-		return
-	}
-	respond(c, breakerStats())
-}
-
-// modeSnapshot 是审计用的模式快照:覆盖态 + YAML 兜底 + 合并后的生效值。
-// 三个都留是刻意的 —— 只记生效值的话,事后无法分辨"是谁把它变成这样的"。
-func modeSnapshot() map[string]any {
-	shadow, source := globalShadowMode()
-	return map[string]any{
-		"override":      overrideName(),
-		"yaml_shadow":   config.Get().Violation.IsShadow(),
-		"global_shadow": shadow,
-		"source":        source,
-	}
 }
 
 // ───────────────────────────── 违规计数器 ─────────────────────────────

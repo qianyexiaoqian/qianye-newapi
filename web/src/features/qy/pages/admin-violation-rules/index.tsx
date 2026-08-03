@@ -18,7 +18,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Eye,
   Gauge,
+  PackagePlus,
   Pencil,
   Plus,
   RefreshCw,
@@ -56,9 +58,10 @@ import {
   getQyViolationStats,
   listQyViolationRules,
   resetQyViolationBreaker,
-  setQyViolationShadowMode,
 } from './api'
+import { QyBuiltinPackSheet } from './components/builtin-pack-sheet'
 import { QyRuleFormSheet } from './components/rule-form-sheet'
+import { QyShadowHitsSheet } from './components/shadow-hits-sheet'
 import { QyViolationCounterCard } from './components/violation-counter-card'
 import { QyViolationShadowBanner } from './components/violation-shadow-banner'
 import { QY_VIOLATION_PHASES } from './lib/rule-form'
@@ -86,6 +89,10 @@ export function QyAdminViolationRules() {
   const [pendingDelete, setPendingDelete] = useState<QyViolationRule | null>(
     null
   )
+  const [builtinOpen, setBuiltinOpen] = useState(false)
+  // 影子命中面板挂在规则行上：从「我改了这条规则」到「我看它抓到了什么」
+  // 必须是一次点击 —— 那正是项目方给影子模式定的唯一用途。
+  const [shadowRule, setShadowRule] = useState<QyViolationRule | null>(null)
 
   const params = useMemo(
     () => ({
@@ -121,22 +128,6 @@ export function QyAdminViolationRules() {
     onError: (error) => toast.error(qyOpsErrorMessage(error, t)),
   })
 
-  /**
-   * 全局影子开关。刻意与 breakerMutation 分开：熔断是系统自己踩的刹车，
-   * 全局开关是人定的发布口径，合成一个动作会让一次熔断恢复顺手把还没准备好的
-   * 规则全部放出去。
-   */
-  const modeMutation = useMutation({
-    mutationFn: (shadow: boolean | null) => setQyViolationShadowMode(shadow),
-    onSuccess: () => {
-      toast.success(t('qy_vio_mode_saved'))
-      void queryClient.invalidateQueries({
-        queryKey: qyKeys.adminViolationStats(),
-      })
-    },
-    onError: (error) => toast.error(qyOpsErrorMessage(error, t)),
-  })
-
   const deleteMutation = useMutation({
     mutationFn: (rule: QyViolationRule) => deleteQyViolationRule(rule.id),
     onSuccess: () => {
@@ -155,6 +146,17 @@ export function QyAdminViolationRules() {
         {t('qy_vio_rules_title')}
       </QySectionPageLayout.Title>
       <QySectionPageLayout.Actions>
+        {/* 内置防护规则包。放在「新建规则」左边是刻意的：一张空规则表面前,
+            「让我自己想出攻击特征串」这件事没有人做得到,先导入再改窄才是
+            可行的路径。 */}
+        <Button
+          type='button'
+          variant='outline'
+          onClick={() => setBuiltinOpen(true)}
+        >
+          <PackagePlus aria-hidden='true' />
+          {t('qy_vio_builtin_open')}
+        </Button>
         <Button
           type='button'
           onClick={() => {
@@ -170,8 +172,6 @@ export function QyAdminViolationRules() {
         <div className='space-y-3'>
           <QyViolationShadowBanner
             stats={statsQuery.data}
-            onSetShadow={(shadow) => modeMutation.mutate(shadow)}
-            isSaving={modeMutation.isPending}
             onResetBreaker={() => breakerMutation.mutate()}
             isResetting={breakerMutation.isPending}
           />
@@ -318,11 +318,22 @@ export function QyAdminViolationRules() {
                           variant={row.enabled ? 'success' : 'neutral'}
                           copyable={false}
                         />
-                        {/* 规则级影子必须在列表就看得见：否则管理员会以为
-                            这条规则已经在扣费，实际只是在记录。 */}
-                        {row.dry_run && (
-                          <Badge variant='outline'>
-                            {t('qy_vio_field_dry_run')}
+                        {/* 模式必须在列表就看得见,而且两种取值都要显示。
+                            只在影子时才挂一个 Badge 的话,「真实执行」就成了
+                            一个靠"没有标记"表达的状态 —— 而那与"这一列还没
+                            加载出来"在视觉上完全一样。 */}
+                        <Badge
+                          variant={
+                            row.mode === 'enforce' ? 'destructive' : 'outline'
+                          }
+                        >
+                          {t(
+                            `qy_vio_mode_${row.mode === 'enforce' ? 'enforce' : 'shadow'}`
+                          )}
+                        </Badge>
+                        {row.source === 'builtin' && (
+                          <Badge variant='secondary'>
+                            {t('qy_vio_source_builtin')}
                           </Badge>
                         )}
                       </span>
@@ -341,6 +352,15 @@ export function QyAdminViolationRules() {
                     header: t('qy_common_actions'),
                     cell: (row: QyViolationRule) => (
                       <span className='flex items-center gap-1'>
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='icon-sm'
+                          aria-label={t('qy_vio_shadow_hits_open')}
+                          onClick={() => setShadowRule(row)}
+                        >
+                          <Eye aria-hidden='true' />
+                        </Button>
                         <Button
                           type='button'
                           variant='ghost'
@@ -376,6 +396,22 @@ export function QyAdminViolationRules() {
               />
             </div>
           </QyPageBoundary>
+
+          <QyBuiltinPackSheet
+            open={builtinOpen}
+            onOpenChange={setBuiltinOpen}
+            onImported={() => {
+              void queryClient.invalidateQueries({ queryKey: qyKeys.all })
+            }}
+          />
+
+          <QyShadowHitsSheet
+            open={shadowRule != null}
+            onOpenChange={(open) => {
+              if (!open) setShadowRule(null)
+            }}
+            rule={shadowRule}
+          />
 
           <QyRuleFormSheet
             open={sheetOpen}

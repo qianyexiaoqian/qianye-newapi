@@ -42,10 +42,16 @@ func localRateCount(userId int) int {
 	return 0
 }
 
+// rateRule 造一条**真实执行**的频率规则。
+//
+// Mode 必须是 enforce:TestPreRelayGuardDrivesRequestRate 断言的是"第三条请求
+// 真的被拦下来",而影子模式下 blocks() 的结果会被 effectiveShadow 抹平 ——
+// 用 shadow 建规则的话那条测试会在"没拦住"上失败,或者更糟:被人改成断言不拦,
+// 于是频率判据的挂载点从此没有任何回归保护。
 func rateRule(id int64, threshold string, action string) Rule {
 	return Rule{
 		Id: id, Name: "rate", Phase: PhasePrompt, MatchType: MatchRequestRate,
-		Pattern: threshold, Action: action, FeeMode: FeeNone, CountWeight: 1,
+		Pattern: threshold, Mode: ModeEnforce, Action: action, FeeMode: FeeNone, CountWeight: 1,
 	}
 }
 
@@ -174,7 +180,7 @@ func TestBumpRequestRateFailsOpen(t *testing.T) {
 // 这是本改动最容易出现的失效形状 —— 规则能存、能编译、能匹配,试跑面板也绿,
 // 只是线上永远拿不到输入。这里从真实入口进去,断言拦截确实发生。
 func TestPreRelayGuardDrivesRequestRate(t *testing.T) {
-	useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  precheck_enabled: true\n"+
+	useTestConfig(t, "  enabled: true\n  precheck_enabled: true\n"+
 		"  scan_timeout_ms: 5000\n")
 	resetRequestRateLocal(t)
 

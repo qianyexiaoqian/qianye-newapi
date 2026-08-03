@@ -229,14 +229,14 @@ func openNewBanCycle(userId int, resetCount bool) error {
 // 每一种情况都在库里或日志里留了痕:绝不允许"该封没封"只活在一次函数调用里。
 //
 // 三条分支的取舍:
-//   - 影子模式:一行封禁记录都不写。影子的定义就是"只观察、不产生任何处置副作用",
+//   - 熔断钳位:一行封禁记录都不写。影子的定义就是"只观察、不产生任何处置副作用",
 //     写认领行会污染管理端的封禁列表。
-//     这条分支现在只可能被一种时序命中:命中当时是真实模式(于是 persist 推进了
-//     计数),而异步 worker 跑到这里时全局开关刚被切成影子。影子命中本身根本走不
-//     到这里 —— persist 在 bumpCounter 之前就返回了。
-//     注意与旧注释的区别:影子期间的命中**不再**累积到 hit_count,所以"影子解除
-//     后下一次违规会重新走到这里"依赖的是那次**真实**命中自己的权重,而不是影子
-//     期间攒下的计数。这正是裁决 2 要的语义:影子观察期不给用户留下任何处置负债。
+//     全局模式删除后,这条分支只可能被一种时序命中:命中当时规则是 enforce
+//     且熔断未触发(于是 persist 推进了计数),而异步 worker 跑到这里时熔断刚好
+//     跳闸。影子命中本身根本走不到这里 —— persist 在 bumpCounter 之前就返回了。
+//     影子期间的命中**不会**累积到 hit_count,所以"熔断解除后下一次违规会重新
+//     走到这里"依赖的是那次**真实**命中自己的权重,而不是影子期间攒下的计数。
+//     这正是裁决 2 要的语义:观察期不给用户留下任何处置负债。
 //   - 速率闸:直接以 deferred 状态落行(而不是"先落 pending 再改状态"),
 //     进程在两步之间崩溃会留下一行会被补偿任务执行的 pending,那等于绕过速率闸。
 //   - 已存在的行:只有 deferred 可以被提升。pending / failed 是补偿任务的地盘,
@@ -245,10 +245,10 @@ func resolveBanClaim(ctx context.Context, gdb *gorm.DB, rec *Record, st counterS
 	if gdb == nil || !st.Reached {
 		return nil
 	}
-	if shadow, reason := shadowActive(); shadow {
+	if tripped, reason := breakerTripped(); tripped {
 		shadowHits.Add(1)
 		common.SysLog(fmt.Sprintf(
-			"qianye/violation: 影子模式(%s),用户 %d 违规计数已达 %d,未执行自动封号",
+			"qianye/violation: 熔断已触发(%s),全部规则临时按影子执行;用户 %d 违规计数已达 %d,未执行自动封号",
 			reason, rec.UserId, st.HitCount))
 		return nil
 	}

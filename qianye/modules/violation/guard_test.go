@@ -48,7 +48,7 @@ func TestBlockErrorSurvivesUpstreamWrapping(t *testing.T) {
 // 扩展是附加物,relay 是主业务:上游已经失败时必须原样透传,
 // 未启用或参数缺失时必须放行,绝不能在这里制造新的失败模式。
 func TestPreRelayGuardIsFailOpen(t *testing.T) {
-	useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  precheck_enabled: true\n")
+	useTestConfig(t, "  enabled: true\n  precheck_enabled: true\n")
 
 	t.Run("上游错误原样透传", func(t *testing.T) {
 		upstream := errors.New("model price error")

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
-	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 
 	"github.com/gin-gonic/gin"
@@ -18,15 +17,13 @@ import (
 
 // shadow_test.go —— 影子模式的行为回归。
 //
-// 这里锁的是两件事,它们此前都是坏的:
+// 本轮之后这里锁的是三件事:
 //
-//  1. **影子命中不得推进违规计数**(裁决 2 的 P0)。旧实现只跳过了"执行封号"
-//     那一步,bumpCounter 照常调用;而封号判据 reachedThreshold(after, threshold)
-//     完全由持久化的 hit_count 推导,于是影子命中把用户推过封号线,
-//     下一次**真实**命中直接落封禁行,再由 runBanCompensate 执行封号。
-//  2. **全局影子开关必须能被管理端改**。旧实现里它只存在于 YAML、默认 true,
-//     而叠加语义取更保守者胜 —— 全局为真时规则级 dry_run 怎么调都没用,
-//     这就是需求原文说的「违规规则无法调整模式」。
+//  1. **影子命中不得推进违规计数**(裁决 2 的 P0,沿用)。
+//  2. **模式只由规则的 Mode 决定**,未知取值一律落影子;熔断只在规则说 enforce
+//     时才起作用,并且给出一个**可区分**的原因。
+//  3. **影子记录必须带齐做分析所需的上下文**,包括"若真实执行会扣多少钱"
+//     与"这一条为什么是影子"。
 
 // newPersistDB 建一个只承载 qy_violation_record / qy_violation_payload 的内存库。
 //
@@ -48,19 +45,6 @@ func newPersistDB(t *testing.T) *gorm.DB {
 	return gdb
 }
 
-// newSettingsDB 建一个只承载 qy_settings 的内存库。
-func newSettingsDB(t *testing.T) *gorm.DB {
-	t.Helper()
-	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	sqlDB, err := gdb.DB()
-	require.NoError(t, err)
-	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, gdb.AutoMigrate(&qymodel.Setting{}))
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	return gdb
-}
-
 func hitRecord(recNo string, userId int, shadow bool, weight int) *Record {
 	counterAfter := 0
 	if shadow {
@@ -74,12 +58,12 @@ func hitRecord(recNo string, userId int, shadow bool, weight int) *Record {
 	}
 }
 
-// TestShadowHitNeverTouchesTheBanCounter 是本轮 P0 的核心回归。
+// TestShadowHitNeverTouchesTheBanCounter 是裁决 2 的核心回归。
 //
-// 勘察实测复现过的形状:阈值 3,两条 dry_run 命中把 hit_count 推到 2,
+// 勘察实测复现过的形状:阈值 3,两条影子命中把 hit_count 推到 2,
 // 第三条**真实**命中读到 3 就落了一行 pending 封禁 —— 影子模式把用户封了。
 func TestShadowHitNeverTouchesTheBanCounter(t *testing.T) {
-	useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  auto_ban_threshold: 3\n")
+	useTestConfig(t, "  enabled: true\n  auto_ban_threshold: 3\n")
 	ctx := context.Background()
 
 	t.Run("影子命中止步于落记录,一个字节都不写计数器", func(t *testing.T) {
@@ -119,16 +103,61 @@ func TestShadowHitNeverTouchesTheBanCounter(t *testing.T) {
 	})
 }
 
-// TestNewRecordFreezesShadowContext 固化影子记录必须带上的核查上下文。
+// TestEffectiveShadowIsDecidedByRuleModeAlone 是本轮 A 的核心回归。
 //
-// 影子模式的全部价值就是让管理员在切真实模式之前回答"这些命中如果真执行会怎样"。
-// 少了模型/分组/令牌/命中片段就无从判断,少了 counter_after 的哨兵值就会被当成
-// "计数确实是 0"。
-func TestNewRecordFreezesShadowContext(t *testing.T) {
-	useTestConfig(t, "  enabled: true\n  shadow_mode: true\n")
+// 项目方拍板"模式绑在规则上,删掉全局开关"。这张表把新语义逐格钉死,并且刻意
+// 覆盖两种未知取值 —— 滚动升级期间旧节点写下的行 mode 是空串,DBA 手工插的行
+// 可能是任意字符串,而这两种行**绝不能**被当成真实执行。
+func TestEffectiveShadowIsDecidedByRuleModeAlone(t *testing.T) {
+	useTestConfig(t, "  enabled: true\n")
+
+	cases := []struct {
+		name       string
+		mode       string
+		breaker    bool
+		want       bool
+		wantReason string
+	}{
+		{"规则声明影子 = 影子", ModeShadow, false, true, ShadowReasonRuleMode},
+		{"规则声明真实 = 真实执行", ModeEnforce, false, false, ""},
+		{"空 mode 一律按影子(滚动升级/未迁移的行)", "", false, true, ShadowReasonRuleMode},
+		{"无法识别的 mode 也按影子(手工 SQL 写坏)", "ENFORCE_", false, true, ShadowReasonRuleMode},
+		{"熔断只钳住声明为真实的规则", ModeEnforce, true, true, ShadowReasonBreaker},
+		{"熔断期间影子规则的原因仍是 rule_mode", ModeShadow, true, true, ShadowReasonRuleMode},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateBreaker(t)
+			if tc.breaker {
+				// 直接用熔断的公开触发点,而不是手写 forcedShadowUntil:
+				// 后者会让"tripShadow 忘了设 until"这种缺陷从这条测试底下溜过去。
+				tripShadow(ShadowReasonBreaker)
+			}
+			on, reason := effectiveShadow(&compiledRule{R: Rule{Id: 1, Mode: tc.mode}})
+			assert.Equal(t, tc.want, on)
+			assert.Equal(t, tc.wantReason, reason)
+		})
+	}
+
+	t.Run("规则为 nil 时按影子", func(t *testing.T) {
+		isolateBreaker(t)
+		on, reason := effectiveShadow(nil)
+		assert.True(t, on)
+		assert.Equal(t, ShadowReasonRuleMode, reason)
+	})
+}
+
+// TestNewRecordFreezesShadowAnalysisContext 固化影子记录必须带上的分析上下文。
+//
+// 项目方给影子模式定的用途是「抓取涉嫌违规用户的日志、上下文,我要进行分析」。
+// 这条测试就是那句话的可执行版本:逐项断言分析必需的字段都在记录上。
+// 少了模型/分组/令牌/命中片段就无从判断,少了 counter_after 的哨兵值会被当成
+// "计数确实是 0",少了 shadow_reason 就分不清"预期内的观察样本"与"熔断现场"。
+func TestNewRecordFreezesShadowAnalysisContext(t *testing.T) {
+	useTestConfig(t, "  enabled: true\n")
 	gin.SetMode(gin.TestMode)
 
-	build := func(shadow bool) *Record {
+	build := func(shadow bool, reason string) *Record {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 		c.Set("username", "alice")
@@ -142,159 +171,27 @@ func TestNewRecordFreezesShadowContext(t *testing.T) {
 			Terms:   []string{"badword"},
 			Snippet: "...badword...",
 		}
-		return newRecord(c, info, PhasePrompt, scanInput{}, v, shadow, false)
+		return newRecord(c, info, PhasePrompt, scanInput{}, v, shadow, reason, false)
 	}
 
-	shadowRec := build(true)
+	shadowRec := build(true, ShadowReasonRuleMode)
 	assert.Equal(t, CounterAfterShadow, shadowRec.CounterAfter)
 	assert.Equal(t, "gpt-4o", shadowRec.ModelName)
 	assert.Equal(t, "vip", shadowRec.UsingGroup)
 	assert.Equal(t, 7, shadowRec.TokenId)
 	assert.Equal(t, "sk-main", shadowRec.TokenName)
 	assert.Equal(t, "badword", shadowRec.MatchedTerms)
+	assert.Equal(t, "...badword...", shadowRec.MatchSnippet)
 	assert.Equal(t, int64(9), shadowRec.RuleId)
+	assert.Equal(t, "req-1", shadowRec.RequestId)
 	assert.NotZero(t, shadowRec.CreatedAt)
+	assert.Equal(t, ShadowReasonRuleMode, shadowRec.ShadowReason)
 
-	assert.Equal(t, 0, build(false).CounterAfter,
+	live := build(false, ShadowReasonBreaker)
+	assert.Equal(t, 0, live.CounterAfter,
 		"真实记录的 counter_after 由 persistRecord 回写,建记录时必须是 0 而不是哨兵值")
-}
-
-// TestGlobalShadowModeIsAdminAdjustable 是「无法调整模式」的回归。
-//
-// 关键的一条是第二个子用例:YAML 写着 shadow_mode: true(而且它的默认值也是
-// true),管理端把覆盖写成 0 之后必须真的退出影子模式。旧实现里
-// shadowActive() 见到配置为真就无条件返回 shadow,规则级与管理端都无从覆盖。
-func TestGlobalShadowModeIsAdminAdjustable(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("没有覆盖时回落 YAML", func(t *testing.T) {
-		useTestConfig(t, "  enabled: true\n  shadow_mode: true\n")
-		isolateBreaker(t)
-		gdb := newSettingsDB(t)
-
-		require.NoError(t, refreshModeWith(ctx, gdb))
-		on, reason := shadowActive()
-		assert.True(t, on)
-		assert.Equal(t, shadowSourceConfig, reason)
-		assert.Equal(t, "unset", overrideName())
-	})
-
-	t.Run("覆盖为真实执行时不再回落 YAML", func(t *testing.T) {
-		useTestConfig(t, "  enabled: true\n  shadow_mode: true\n")
-		isolateBreaker(t)
-		gdb := newSettingsDB(t)
-
-		require.NoError(t, writeShadowSetting(ctx, gdb, false, 1))
-		invalidateMode()
-		require.NoError(t, refreshModeWith(ctx, gdb))
-
-		on, _ := shadowActive()
-		assert.False(t, on, "管理端关掉影子模式后必须真的退出,否则规则模式永远调不动")
-		assert.Equal(t, "off", overrideName())
-	})
-
-	t.Run("覆盖为影子时压过 YAML 的真实执行", func(t *testing.T) {
-		useTestConfig(t, "  enabled: true\n  shadow_mode: false\n")
-		isolateBreaker(t)
-		gdb := newSettingsDB(t)
-
-		require.NoError(t, writeShadowSetting(ctx, gdb, true, 1))
-		invalidateMode()
-		require.NoError(t, refreshModeWith(ctx, gdb))
-
-		on, reason := shadowActive()
-		assert.True(t, on)
-		assert.Equal(t, shadowSourceSettings, reason)
-	})
-
-	t.Run("清掉覆盖后重新跟随 YAML", func(t *testing.T) {
-		useTestConfig(t, "  enabled: true\n  shadow_mode: false\n")
-		isolateBreaker(t)
-		gdb := newSettingsDB(t)
-
-		require.NoError(t, writeShadowSetting(ctx, gdb, true, 1))
-		invalidateMode()
-		require.NoError(t, refreshModeWith(ctx, gdb))
-		require.True(t, func() bool { on, _ := shadowActive(); return on }())
-
-		require.NoError(t, dropShadowSetting(ctx, gdb))
-		invalidateMode()
-		require.NoError(t, refreshModeWith(ctx, gdb))
-
-		on, _ := shadowActive()
-		assert.False(t, on)
-		assert.Equal(t, "unset", overrideName())
-	})
-
-	t.Run("被手工改坏的取值一律按影子处理", func(t *testing.T) {
-		useTestConfig(t, "  enabled: true\n  shadow_mode: false\n")
-		isolateBreaker(t)
-		gdb := newSettingsDB(t)
-
-		require.NoError(t, gdb.Create(&qymodel.Setting{
-			Scope: settingScope, K: keyShadowMode, V: "yes-please",
-			UpdatedAt: common.GetTimestamp(),
-		}).Error)
-		invalidateMode()
-		require.NoError(t, refreshModeWith(ctx, gdb))
-
-		on, _ := shadowActive()
-		assert.True(t, on,
-			"没人知道现在该是什么模式时,唯一不会造成不可逆损失的选择是不扣费不封号")
-	})
-
-	t.Run("在途刷新不得盖掉刚提交的切换", func(t *testing.T) {
-		useTestConfig(t, "  enabled: true\n  shadow_mode: true\n")
-		isolateBreaker(t)
-		gdb := newSettingsDB(t)
-
-		// 模拟一次已经读完库、还没写回缓存的旧刷新。
-		staleEpoch := modeEpoch.Load()
-
-		require.NoError(t, writeShadowSetting(ctx, gdb, false, 1))
-		invalidateMode()
-		require.NoError(t, refreshModeWith(ctx, gdb))
-		require.Equal(t, "off", overrideName())
-
-		// 旧刷新此刻才写回:它读到的是切换之前的"没有覆盖",必须被丢弃。
-		storeMode(staleEpoch, shadowUnset)
-		assert.Equal(t, "off", overrideName(),
-			"在途的旧快照把新值盖掉的话,此后一个刷新周期内全站仍按旧模式跑")
-	})
-}
-
-// TestEffectiveShadowSuperposition 固化叠加语义:取更保守者胜。
-//
-// 两条职责必须各自独立成立:全局开关是上线安全阀与熔断自愈(要能一票否决所有
-// 规则),规则级 dry_run 是单条规则的灰度(全局放开时仍要拦住自己那一条)。
-func TestEffectiveShadowSuperposition(t *testing.T) {
-	ctx := context.Background()
-	cases := []struct {
-		name         string
-		globalShadow bool
-		dryRun       bool
-		want         bool
-		wantReason   string
-	}{
-		{"全局真实 + 规则真实 = 真实执行", false, false, false, ""},
-		{"全局真实 + 规则灰度 = 只有这条规则影子", false, true, true, "rule_dry_run"},
-		{"全局影子 + 规则真实 = 全局一票否决", true, false, true, shadowSourceSettings},
-		{"全局影子 + 规则灰度 = 影子", true, true, true, shadowSourceSettings},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			useTestConfig(t, "  enabled: true\n  shadow_mode: false\n")
-			isolateBreaker(t)
-			gdb := newSettingsDB(t)
-			require.NoError(t, writeShadowSetting(ctx, gdb, tc.globalShadow, 1))
-			invalidateMode()
-			require.NoError(t, refreshModeWith(ctx, gdb))
-
-			on, reason := effectiveShadow(&compiledRule{R: Rule{Id: 1, DryRun: tc.dryRun}})
-			assert.Equal(t, tc.want, on)
-			assert.Equal(t, tc.wantReason, reason)
-		})
-	}
+	assert.Equal(t, "", live.ShadowReason,
+		"shadow=false 却带着影子原因是自相矛盾的行,会污染按原因分组的统计")
 }
 
 // TestResetUserCounterClearsOnlyTheBanDriver 固化历史脏数据的补救出口。
@@ -334,4 +231,37 @@ func TestResetUserCounterClearsOnlyTheBanDriver(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, reset)
 	})
+}
+
+// TestSnapshotCountsRulesByMode 固化「现在有几条规则在真实扣钱」这个数。
+//
+// 删掉全局开关之后它不再是一个布尔值,而管理端横幅完全靠它判断要不要提示
+// 「整站还在观察期」。判据必须与 effectiveShadow 完全一致(`== ModeEnforce`):
+// 写成 `!= ModeShadow` 的话,空 mode 的行会被算成真实执行,横幅就会声称
+// 有规则在扣钱 —— 而那些行在热路径上其实是影子。
+func TestSnapshotCountsRulesByMode(t *testing.T) {
+	useTestConfig(t, "  enabled: true\n")
+	gdb := newRuleDB(t) // 建库 + 接到 db.Get(),自带一条 mode 为默认值的规则
+	// 自带的那一条走 GORM default,mode = shadow。再补三条覆盖其余取值。
+	base := func(name, mode string) *Rule {
+		return &Rule{
+			Name: name, Enabled: true, Priority: 2, Mode: mode,
+			Phase: PhasePrompt, MatchType: MatchKeyword, Pattern: "x",
+			Action: ActionRecord, FeeMode: FeeNone, CountWeight: 1,
+			CreatedAt: 1, UpdatedAt: 1,
+		}
+	}
+	require.NoError(t, gdb.Create(base("真实-1", ModeEnforce)).Error)
+	require.NoError(t, gdb.Create(base("真实-2", ModeEnforce)).Error)
+	legacy := base("未迁移", ModeShadow)
+	require.NoError(t, gdb.Create(legacy).Error)
+	// mode 带 gorm default tag,Create 造不出空值,只能裸 SQL 改。
+	require.NoError(t, gdb.Exec(
+		"UPDATE qy_violation_rule SET mode = '' WHERE id = ?", legacy.Id).Error)
+
+	require.NoError(t, reload(true))
+	snap := Snapshot()
+	assert.Equal(t, 2, snap.enforceRules, "只有显式 enforce 的两条算真实执行")
+	assert.Equal(t, 2, snap.shadowRules,
+		"默认那条 + 空 mode 那条都必须算进影子;空 mode 被算成真实,横幅就会谎报有规则在扣钱")
 }

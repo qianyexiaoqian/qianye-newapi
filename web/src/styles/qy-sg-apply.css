@@ -66,13 +66,14 @@
  * §2 形状一(丝印档)· 副标
  *
  * 中文大字 + 等宽英文/日文小字成对出现,是本主题第二强的识别特征:
- * 侧栏每个菜单项的英文副标、区段头右侧的日文副标、统计块的英文代号、
- * 工作区索引的分组标签。
+ * 区段头右侧的日文副标、统计块的英文代号、工作区索引的分组标签。
  * 它们全是装饰性字形,消费方一律 aria-hidden。
+ *
+ * 侧栏菜单项曾经也在这一档(英文小号大写副标),已整体去掉 —— 只有 qy 的项
+ * 有副标、上游的没有,那不是识别特征而是不齐。
  * ══════════════════════════════════════════════════════════════ */
 
-[data-theme-preset='steins-gate']
-  :is([data-qy-sg-nav-en], .qy-sg-jp, .qy-sg-stat-sub) {
+[data-theme-preset='steins-gate'] :is(.qy-sg-jp, .qy-sg-stat-sub) {
   font-family: var(--qy-sg-mono);
   font-size: var(--qy-sg-micro-size);
   font-weight: 400;
@@ -302,18 +303,6 @@ body[data-theme-preset='steins-gate']
   mask-size: var(--qy-sg-trace-tile-size);
   mask-repeat: repeat-x;
   mask-position: left center;
-}
-
-/* 侧栏菜单项:中文主标 + 英文副标是两行,默认的单行高度装不下 */
-[data-theme-preset='steins-gate']
-  :is(
-    [data-slot='sidebar-menu-button'],
-    [data-slot='sidebar-menu-sub-button']
-  ):has([data-qy-sg-nav-en]) {
-  height: auto;
-  align-items: flex-start;
-  padding-block: 0.375rem;
-  border-radius: 0;
 }
 
 /* 侧栏分组标题下方一条发丝线,把"组"这件事画出来(§1 已给它标注排版) */

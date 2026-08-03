@@ -89,7 +89,7 @@ func TestPoolBalanceFollowsBillingSource(t *testing.T) {
 // 也就是"这次违规的计数权重顶到阈值,立刻封号"。如果调用方在余额读失败时拿 0 顶上去,
 // 一次 Redis 抖动就等于一次自动封号 —— 所以 chargeFee 必须在余额未知时整体放弃扣费。
 func TestUnknownBalanceNeverForcesBan(t *testing.T) {
-	useTestConfig(t, "  enabled: true\n  shadow_mode: false\n  insufficient_balance_policy: ban\n")
+	useTestConfig(t, "  enabled: true\n  insufficient_balance_policy: ban\n")
 
 	// 先固化被规避的那个行为:0 余额在 ban 策略下确实会触发强制封号权重。
 	zero := feeResult{Want: 1000, Status: FeeStatusNone}

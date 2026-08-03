@@ -296,11 +296,13 @@ type Availability struct {
 
 // Violation 违规检测。
 //
-// ShadowMode 是安全阀而非可选项:一条 `.*` 正则能在 30 秒内封掉全站用户。
-// 上线必须先跑影子模式观察命中分布,确认误判率后再切真实模式。
+// **这里没有 shadow_mode。** 影子/真实是每条规则自己的属性(qy_violation_rule.mode),
+// 新建与内置导入一律落影子,改模式就是改那条规则。曾经存在的全局 shadow_mode
+// 已随 qy_settings 覆盖与 PUT /violation/mode 一并删除:两层结构让"把这条规则设成
+// 影子来观察"这个用例需要先确认全局在哪一档,而全局默认为影子时规则级怎么调都不生效。
+// 规则事故的兜底仍在,由下面两个熔断阈值负责(见 modules/violation/breaker.go)。
 type Violation struct {
-	Enabled    bool  `yaml:"enabled"`
-	ShadowMode *bool `yaml:"shadow_mode"`
+	Enabled bool `yaml:"enabled"`
 	// PrecheckEnabled / PostChargeEnabled 是普通 bool,零值为 false。
 	// 也就是说只写 enabled: true 而不显式打开这两个开关,两个挂载点都是空转 ——
 	// 这是安全的默认,但运维容易误以为"开了却不生效",示例配置里已注明。
@@ -390,7 +392,6 @@ func (g GroupVisibility) On() bool             { return boolOr(g.Enabled, true) 
 func (g GroupVisibility) PricingOn() bool      { return boolOr(g.FilterPricing, true) }
 func (g GroupVisibility) PerfMetricsOn() bool  { return boolOr(g.FilterPerfMetrics, true) }
 func (g GroupVisibility) KeepAutoGroup() bool  { return boolOr(g.IncludeAutoGroup, true) }
-func (v Violation) IsShadow() bool             { return boolOr(v.ShadowMode, true) }
 
 // IsShadow 为 true 时分组定价只记录差额、不改变实际扣费。默认 true。
 func (g GroupPricing) IsShadow() bool { return boolOr(g.ShadowMode, true) }
