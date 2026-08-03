@@ -21,13 +21,13 @@ import { useEffect, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 import { QyAmountText } from '../../../components/qy-amount-text'
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { useQyAfterMoneyChange } from '../../../hooks/use-qy-after-money-change'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
@@ -81,7 +81,7 @@ export function QyViolationRevokeDialog(props: {
   })
 
   return (
-    <Dialog
+    <QyResponsiveDialog
       open={record != null}
       onOpenChange={(open) => {
         if (!open) props.onClose()
@@ -147,6 +147,6 @@ export function QyViolationRevokeDialog(props: {
           />
         </div>
       </div>
-    </Dialog>
+    </QyResponsiveDialog>
   )
 }

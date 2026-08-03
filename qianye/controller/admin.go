@@ -25,7 +25,13 @@ func AdminHealth(c *gin.Context) {
 	if !requireCore(c) {
 		return
 	}
-	leases, _ := lease.List()
+	// 健康页刻意吞掉租约读取错误(扩展库不可用时其余各段仍然有诊断价值),
+	// 但吞错误的代价是 leases 会是 nil —— 而这是排障页最需要能打开的时刻。
+	// nil 切片序列化成 null,前端对着 null 调 .map 直接白屏。
+	leases, err := lease.List()
+	if err != nil || leases == nil {
+		leases = []qymodel.TaskLease{}
+	}
 	ok(c, gin.H{
 		"db":        db.Stats(),
 		"hot_queue": guard.QueueStats(),
@@ -92,7 +98,10 @@ func AdminListFundOrders(c *gin.Context) {
 		serverError(c, err)
 		return
 	}
-	var items []qymodel.FundOrder
+	// 下发给前端的数组一律显式初始化:nil 切片会被序列化成 null 而不是 [],
+	// 前端对着 null 调 .find/.map 直接白屏。判据与机器校验见
+	// qianye/json_array_guard_test.go。
+	items := make([]qymodel.FundOrder, 0, size)
 	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&items).Error; err != nil {
 		db.MarkFailure(err)
 		serverError(c, err)
@@ -285,7 +294,7 @@ func AdminListAuditLogs(c *gin.Context) {
 		serverError(c, err)
 		return
 	}
-	var items []qymodel.AuditLog
+	items := make([]qymodel.AuditLog, 0, size)
 	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&items).Error; err != nil {
 		db.MarkFailure(err)
 		serverError(c, err)

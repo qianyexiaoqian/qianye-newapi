@@ -23,12 +23,12 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { CopyButton } from '@/components/copy-button'
-import { Dialog } from '@/components/dialog'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyErrorMessage } from '../../../lib/api'
 import { qyPayeeChannelKey } from '../../withdraw/lib/payee-spec'
 import type { QyPayeePlain } from '../../withdraw/types'
@@ -74,7 +74,7 @@ export function RevealPayeeDialog(props: RevealPayeeDialogProps) {
   const reasonTooShort = [...reason.trim()].length < MIN_REASON_RUNES
 
   return (
-    <Dialog
+    <QyResponsiveDialog
       open={props.withdrawalId != null}
       onOpenChange={(open) => {
         if (!open) props.onClose()
@@ -143,6 +143,6 @@ export function RevealPayeeDialog(props: RevealPayeeDialogProps) {
           </dl>
         )}
       </div>
-    </Dialog>
+    </QyResponsiveDialog>
   )
 }

@@ -30,6 +30,7 @@ import {
 } from '@/components/ui/select'
 
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
+import { qyArray } from '../../../lib/array'
 import { QyStatGrid } from '../../components/qy-stat-grid'
 import { formatQyCount, formatQyTs } from '../../ops/format'
 import { QyFilterBar, QyFilterField } from '../../ops/qy-ops-ui'
@@ -73,9 +74,20 @@ export function QyGpShadowPanel(props: { shadowMode: boolean }) {
   const query = useQuery(qyGpShadowQuery(range))
   const summary = query.data?.summary
 
+  // segments 在这里一次性收敛成真数组：下面有三处消费它（空态判定、分桶聚合、
+  // 明细表），每处各兜一次底就是同一个判断的第三份拷贝，而漏掉任何一处的后果
+  // 都是整页白屏 —— 提现队列角标就是这么炸的。
+  //
+  // 必须过 useMemo：契约违约那一支每次渲染都会 new 一个 []，直接当依赖会让
+  // 下面那个 useMemo 每帧重算，而它正是为了避开重算才存在的。
+  const segments = useMemo(
+    () => qyArray(summary?.segments),
+    [summary?.segments]
+  )
+
   const buckets = useMemo(
-    () => qyAggregateShadow(summary?.segments, dimension),
-    [dimension, summary?.segments]
+    () => qyAggregateShadow(segments, dimension),
+    [dimension, segments]
   )
 
   return (
@@ -124,7 +136,7 @@ export function QyGpShadowPanel(props: { shadowMode: boolean }) {
 
       <QyPageBoundary
         query={query}
-        isEmpty={summary != null && summary.segments.length === 0}
+        isEmpty={summary != null && segments.length === 0}
         emptyIcon={Scale}
         emptyTitle={t('qy_gp_sh_empty_title')}
         emptyDescription={t('qy_gp_sh_empty_desc')}
@@ -191,7 +203,7 @@ export function QyGpShadowPanel(props: { shadowMode: boolean }) {
 
             <QyGpShadowDeltaChart buckets={buckets} />
 
-            <QyGpShadowSegmentsTable segments={summary.segments} />
+            <QyGpShadowSegmentsTable segments={segments} />
 
             {summary.truncated && (
               <p className='text-muted-foreground text-xs'>

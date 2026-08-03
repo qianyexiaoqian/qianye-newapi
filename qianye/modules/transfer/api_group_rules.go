@@ -221,12 +221,15 @@ func handleAdminDeleteGroupRule(c *gin.Context) {
 
 // ─────────────────────────── 辅助 ───────────────────────────
 
+// listGroupRuleRows 成功时**一律返回非 nil 切片** —— 返回值会原样进
+// handleAdminListGroupRules 的 items 字段,nil 切片序列化成 null 而不是 [],
+// 前端对着 null 调 .map 直接白屏。判据与机器校验见 qianye/json_array_guard_test.go。
 func listGroupRuleRows() ([]GroupRule, error) {
 	gdb := db.Get()
 	if gdb == nil {
 		return nil, db.ErrNotReady
 	}
-	var rows []GroupRule
+	rows := make([]GroupRule, 0, 16)
 	if err := gdb.Order("from_group asc").Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		return nil, err

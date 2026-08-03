@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table'
-import { Dialog } from '@/components/dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -40,6 +39,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { useQyAfterMoneyChange } from '../../../hooks/use-qy-after-money-change'
 import { qyKeys } from '../../../lib/query-keys'
 import { QyPager } from '../../components/qy-pager'
@@ -279,7 +279,7 @@ function QyAppealReviewDialog(props: {
   const approved = decision === 'approved'
 
   return (
-    <Dialog
+    <QyResponsiveDialog
       open={props.appeal != null}
       onOpenChange={(open) => {
         if (!open) props.onClose()
@@ -368,6 +368,6 @@ function QyAppealReviewDialog(props: {
           </div>
         )}
       </div>
-    </Dialog>
+    </QyResponsiveDialog>
   )
 }

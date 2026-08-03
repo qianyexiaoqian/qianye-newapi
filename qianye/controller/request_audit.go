@@ -120,7 +120,8 @@ func AdminListRequestAudits(c *gin.Context) {
 		serverError(c, err)
 		return
 	}
-	var items []qymodel.RequestAudit
+	// 下发给前端的数组一律显式初始化,理由见 qianye/json_array_guard_test.go。
+	items := make([]qymodel.RequestAudit, 0, size)
 	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&items).Error; err != nil {
 		db.MarkFailure(err)
 		serverError(c, err)

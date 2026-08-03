@@ -21,7 +21,6 @@ import { useEffect, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { Dialog } from '@/components/dialog'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -29,6 +28,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 
 import { QyAmountText } from '../../../components/qy-amount-text'
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyErrorMessage } from '../../../lib/api'
 import { qyKeys } from '../../../lib/query-keys'
 import { qySetCommissionWithdrawn } from '../api'
@@ -107,7 +107,7 @@ export function SetWithdrawnDialog(props: SetWithdrawnDialogProps) {
   }
 
   return (
-    <Dialog
+    <QyResponsiveDialog
       open={balance != null}
       onOpenChange={(open) => {
         if (!open) props.onClose()
@@ -209,6 +209,6 @@ export function SetWithdrawnDialog(props: SetWithdrawnDialogProps) {
           </Button>
         </div>
       )}
-    </Dialog>
+    </QyResponsiveDialog>
   )
 }

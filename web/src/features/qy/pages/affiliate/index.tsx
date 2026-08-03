@@ -36,6 +36,7 @@ import { QyFiatText } from '../components/qy-fiat-text'
 import { QyStatGrid, type QyStatItem } from '../components/qy-stat-grid'
 import { qyAffiliateCodeQuery, qyCommissionSummaryQuery } from './api'
 import { InviteLinkCard } from './components/invite-link-card'
+import { QyReferralProgramCard } from './components/referral-program-card'
 import type { QyCommissionSummary } from './types'
 
 /**
@@ -98,29 +99,38 @@ export function QyAffiliateOverviewBody() {
         ]
 
   return (
-    <QyPageBoundary query={summaryQuery}>
-      {summary != null && (
-        <div className='space-y-3'>
-          {summary.debt_blocked && (
-            <Alert variant='destructive'>
-              <TriangleAlert />
-              <AlertTitle>{t('qy_aff_debt_title')}</AlertTitle>
-              <AlertDescription>{t('qy_aff_debt_desc')}</AlertDescription>
-            </Alert>
-          )}
+    <div className='space-y-3'>
+      {/*
+        上游「推荐计划」卡（原本在钱包页底部）。刻意放在 `QyPageBoundary`
+        **外面**：它读的是主库 `users.aff_*`，与 qy 的佣金接口没有依赖关系，
+        放进去的话 `/commission/summary` 一挂，推荐计划会跟着一起消失。
+      */}
+      <QyReferralProgramCard />
 
-          <QyStatGrid items={stats} />
+      <QyPageBoundary query={summaryQuery}>
+        {summary != null && (
+          <div className='space-y-3'>
+            {summary.debt_blocked && (
+              <Alert variant='destructive'>
+                <TriangleAlert />
+                <AlertTitle>{t('qy_aff_debt_title')}</AlertTitle>
+                <AlertDescription>{t('qy_aff_debt_desc')}</AlertDescription>
+              </Alert>
+            )}
 
-          <div className='grid gap-3 lg:grid-cols-2 lg:items-start'>
-            <InviteLinkCard
-              code={codeQuery.data ?? ''}
-              isLoading={codeQuery.isLoading}
-            />
-            <PolicyCard summary={summary} />
+            <QyStatGrid items={stats} />
+
+            <div className='grid gap-3 lg:grid-cols-2 lg:items-start'>
+              <InviteLinkCard
+                code={codeQuery.data ?? ''}
+                isLoading={codeQuery.isLoading}
+              />
+              <PolicyCard summary={summary} />
+            </div>
           </div>
-        </div>
-      )}
-    </QyPageBoundary>
+        )}
+      </QyPageBoundary>
+    </div>
   )
 }
 

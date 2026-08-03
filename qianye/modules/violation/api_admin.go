@@ -136,7 +136,10 @@ func adminListRules(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	var rows []Rule
+	// 下发给前端的数组一律显式初始化:nil 切片会被序列化成 null 而不是 [],
+	// 前端对着 null 调 .find/.map 直接白屏。判据与机器校验见
+	// qianye/json_array_guard_test.go。本文件下面四个列表接口同理。
+	rows := make([]Rule, 0, size)
 	if err := q.Order("priority asc, id asc").
 		Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
@@ -373,7 +376,7 @@ func adminListRecords(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	var rows []Record
+	rows := make([]Record, 0, size)
 	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
@@ -806,7 +809,7 @@ func adminListBans(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	var rows []Ban
+	rows := make([]Ban, 0, size)
 	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
@@ -938,7 +941,7 @@ func adminListAppeals(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	var rows []Appeal
+	rows := make([]Appeal, 0, size)
 	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
@@ -1067,7 +1070,12 @@ func adminStats(c *gin.Context) {
 		Cnt      int64  `json:"cnt"`
 		FeeQuota int64  `json:"fee_quota"`
 	}
-	var byRule, byModel []bucket
+	// 这两个桶走的是 db.Scan():GORM 在结果集一行都没有时**根本不会碰 dest**
+	// (finisher_api.go 先 rows.Next() 再 ScanRows),nil 切片序列化成 null
+	// 而不是 [] —— 与提现队列角标炸掉的是同一个形状,新站点第一天打开统计页
+	// 就会命中。判据与机器校验见 qianye/json_array_guard_test.go。
+	byRule := make([]bucket, 0, 50)
+	byModel := make([]bucket, 0, 50)
 	gdb := db.Get()
 	if err := gdb.Model(&Record{}).
 		Select("rule_name as `key`, COUNT(*) as cnt, COALESCE(SUM(fee_quota),0) as fee_quota").
@@ -1147,7 +1155,7 @@ func adminListCounters(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	var rows []Counter
+	rows := make([]Counter, 0, size)
 	if err := q.Order("hit_count desc, user_id asc").
 		Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)

@@ -21,13 +21,13 @@ import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { Dialog } from '@/components/dialog'
 import { LoadingState } from '@/components/loading-state'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../../components/qy-amount-text'
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
 import { QyTimeline } from '../../../components/qy-timeline'
 import { useQyAfterMoneyChange } from '../../../hooks/use-qy-after-money-change'
@@ -72,7 +72,7 @@ export function WithdrawalDetailDialog(props: WithdrawalDetailDialogProps) {
   })
 
   return (
-    <Dialog
+    <QyResponsiveDialog
       open={props.withdrawalId != null}
       onOpenChange={(open) => {
         if (!open) props.onClose()
@@ -203,7 +203,7 @@ export function WithdrawalDetailDialog(props: WithdrawalDetailDialogProps) {
           )}
         </div>
       )}
-    </Dialog>
+    </QyResponsiveDialog>
   )
 }
 

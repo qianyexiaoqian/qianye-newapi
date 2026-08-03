@@ -21,13 +21,13 @@ import { ScrollText, TriangleAlert } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Dialog } from '@/components/dialog'
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyKeys } from '../../../lib/query-keys'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { formatQyCount } from '../../ops/format'
@@ -71,7 +71,7 @@ export function QyViolationEvidenceDialog(
   })
 
   return (
-    <Dialog
+    <QyResponsiveDialog
       open={record != null}
       onOpenChange={(open) => {
         if (!open) props.onClose()
@@ -163,6 +163,6 @@ export function QyViolationEvidenceDialog(
           )}
         </div>
       )}
-    </Dialog>
+    </QyResponsiveDialog>
   )
 }

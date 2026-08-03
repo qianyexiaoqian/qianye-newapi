@@ -21,11 +21,11 @@ import { useEffect, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { createQyViolationAppeal, QY_APPEAL_MIN_RUNES } from '../api'
 import type { QyMyViolationRecord } from '../types'
@@ -68,7 +68,7 @@ export function QyViolationAppealDialog(props: {
   })
 
   return (
-    <Dialog
+    <QyResponsiveDialog
       open={props.record != null}
       onOpenChange={(open) => {
         if (!open) props.onClose()
@@ -116,6 +116,6 @@ export function QyViolationAppealDialog(props: {
           })}
         </p>
       </div>
-    </Dialog>
+    </QyResponsiveDialog>
   )
 }

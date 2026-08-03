@@ -357,7 +357,8 @@ func handleAdminListRecords(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	var rows []Order
+	// 下发给前端的数组一律显式初始化,理由见 qianye/json_array_guard_test.go。
+	rows := make([]Order, 0, size)
 	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, err)

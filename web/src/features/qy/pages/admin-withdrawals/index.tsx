@@ -37,6 +37,7 @@ import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
+import { qyArray } from '../../lib/array'
 import { QyFiatText } from '../components/qy-fiat-text'
 import { QyPager } from '../components/qy-pager'
 import { QyStatGrid, type QyStatItem } from '../components/qy-stat-grid'
@@ -341,9 +342,18 @@ export function QyAdminWithdrawals() {
   )
 }
 
+/**
+ * 从队列角标里取某个状态的单量。
+ *
+ * `qyArray` 不是多余的：这一行曾经让整页白屏 ——
+ * 库里没有 pending/approved/paying 单据时后端把 nil 切片写成了 `null`，
+ * `null.find(...)` 直接抛 `Cannot read properties of null (reading 'find')`。
+ * 后端已经修好并配了机器校验，但类型声明 `{...}[]` 对运行期 JSON 没有任何
+ * 约束力，一个空态就把整页干掉的代价太大，所以这里留一道。
+ */
 function bucketCount(
   buckets: { status: string; count: number }[],
   status: string
 ): number {
-  return buckets.find((bucket) => bucket.status === status)?.count ?? 0
+  return qyArray(buckets).find((bucket) => bucket.status === status)?.count ?? 0
 }

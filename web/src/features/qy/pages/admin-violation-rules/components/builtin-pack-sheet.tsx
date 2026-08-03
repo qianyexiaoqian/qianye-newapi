@@ -28,6 +28,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
+import { qyArray } from '../../../lib/array'
 import { qyKeys } from '../../../lib/query-keys'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import {
@@ -88,7 +89,12 @@ export function QyBuiltinPackSheet(props: QyBuiltinPackSheetProps) {
       // 逐条上报而不是一句"导入成功"：一次导入完全可能是「新建 3 条、跳过 9 条」，
       // 而被跳过的那些正是管理员最需要知道的（已存在 / 你改过 / 已是最新）。
       toast.success(t('qy_vio_builtin_import_done', { count: result.changed }))
-      const skipped = result.results.filter((r) => r.action === 'skipped')
+      // qyArray：与提现队列角标白屏同形 —— 后端一旦把这个数组序列化成
+      // null，这里的 .filter 会在导入**已经成功**之后把整页干掉，
+      // 用户看到的是"导入失败"，而库里其实已经写进去了。
+      const skipped = qyArray(result.results).filter(
+        (r) => r.action === 'skipped'
+      )
       for (const item of skipped.slice(0, 3)) {
         toast.info(`${item.key}: ${item.reason ?? ''}`)
       }

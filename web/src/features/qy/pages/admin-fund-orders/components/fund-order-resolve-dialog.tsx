@@ -22,7 +22,6 @@ import { useEffect, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { Dialog } from '@/components/dialog'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -30,6 +29,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Textarea } from '@/components/ui/textarea'
 
 import { QyAmountText } from '../../../components/qy-amount-text'
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { useQyAfterMoneyChange } from '../../../hooks/use-qy-after-money-change'
 import type { QyFundOrder } from '../../../lib/types'
 import { qyOpsErrorMessage } from '../../ops/errors'
@@ -75,7 +75,7 @@ export function QyFundOrderResolveDialog(props: {
   })
 
   return (
-    <Dialog
+    <QyResponsiveDialog
       open={order != null}
       onOpenChange={(open) => {
         if (!open) props.onClose()
@@ -162,6 +162,6 @@ export function QyFundOrderResolveDialog(props: {
           />
         </div>
       </div>
-    </Dialog>
+    </QyResponsiveDialog>
   )
 }

@@ -23,7 +23,6 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table'
-import { Dialog } from '@/components/dialog'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -39,6 +38,7 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyKeys } from '../../../lib/query-keys'
 import { QyPager } from '../../components/qy-pager'
 import { qyOpsErrorMessage } from '../../ops/errors'
@@ -265,7 +265,7 @@ function QyUnbanDialog(props: {
   })
 
   return (
-    <Dialog
+    <QyResponsiveDialog
       open={props.ban != null}
       onOpenChange={(open) => {
         if (!open) props.onClose()
@@ -321,6 +321,6 @@ function QyUnbanDialog(props: {
           />
         </div>
       </div>
-    </Dialog>
+    </QyResponsiveDialog>
   )
 }

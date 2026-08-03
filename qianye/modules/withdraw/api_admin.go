@@ -87,7 +87,14 @@ func handleAdminStats(c *gin.Context) {
 		Count  int64  `json:"count"`
 		Quota  int64  `json:"quota"`
 	}
-	var rows []bucket
+	// 显式初始化不是形式主义,这里是本轮唯一一处**线上已经炸过**的位置:
+	// GORM 的 db.Scan() 在结果集一行都没有时根本不会碰 dest(finisher_api.go
+	// 先 rows.Next() 再 ScanRows),于是 rows 保持 nil,序列化出来是
+	// {"buckets":null} 而不是 {"buckets":[]},前端 buckets.find(...) 直接
+	// 整页白屏。Find() 走的是另一条路(gorm.Scan 里 MakeSlice)不会留 nil,
+	// 但两者的差别是 GORM 的内部实现细节,不该成为我们 JSON 契约的依据。
+	// 判据与机器校验见 qianye/json_array_guard_test.go。
+	rows := make([]bucket, 0, 3)
 	if err := db.Get().Model(&Withdrawal{}).
 		Select("status, COUNT(*) AS count, COALESCE(SUM(quota), 0) AS quota").
 		Where("status IN ?", []string{StatusPending, StatusApproved, StatusPaying}).
@@ -369,7 +376,7 @@ func handleAdminPiiAudits(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	var rows []PiiAudit
+	rows := make([]PiiAudit, 0, size)
 	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, err)

@@ -38,6 +38,7 @@ import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 import { qyAdminTransferRecordsQuery } from '../transfer-logs/api'
 import type { QyAdminTransferRecord } from '../transfer-logs/types'
+import { QyBalanceSnapshot } from './components/balance-snapshot'
 
 const STATUS_OPTIONS = ['pending', 'success', 'failed', 'uncertain'] as const
 
@@ -110,10 +111,25 @@ export function QyAdminTransferRecords() {
       id: 'snapshot',
       header: t('qy_tr_a_snapshot'),
       className: staticDataTableClassNames.compactHeaderCell,
-      cellClassName: staticDataTableClassNames.compactMutedCodeCell,
+      cellClassName: staticDataTableClassNames.compactCell,
       // 余额快照是争议仲裁的唯一凭据，必须能一眼看到"扣之前/扣之后"。
-      cell: (row) =>
-        `${row.from_quota_before} → ${row.from_quota_after} / ${row.to_quota_before} → ${row.to_quota_after}`,
+      // 转出方与收款方各一行：挤在一行里用 `/` 分隔时，四个数字看上去是一串，
+      // 分不清哪两个是同一个人的。展示口径与金额列一致（USD/展示币种），
+      // quota 原始值挂在 hover 上，见 `components/balance-snapshot.tsx`。
+      cell: (row) => (
+        <div className='space-y-0.5'>
+          <QyBalanceSnapshot
+            label={t('qy_common_out')}
+            before={row.from_quota_before}
+            after={row.from_quota_after}
+          />
+          <QyBalanceSnapshot
+            label={t('qy_common_in')}
+            before={row.to_quota_before}
+            after={row.to_quota_after}
+          />
+        </div>
+      ),
     },
     {
       id: 'status',

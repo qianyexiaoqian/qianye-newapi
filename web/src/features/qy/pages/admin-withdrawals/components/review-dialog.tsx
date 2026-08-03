@@ -22,7 +22,6 @@ import { useEffect, useId, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { Dialog } from '@/components/dialog'
 import { LoadingState } from '@/components/loading-state'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -33,6 +32,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../../components/qy-amount-text'
+import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
 import { QyTimeline } from '../../../components/qy-timeline'
 import { isQyError, qyErrorMessage } from '../../../lib/api'
@@ -155,7 +155,7 @@ export function ReviewDialog(props: ReviewDialogProps) {
   const reasonInvalid = reasonLength === 0 || reasonLength > MAX_REASON_RUNES
 
   return (
-    <Dialog
+    <QyResponsiveDialog
       open={props.withdrawalId != null}
       onOpenChange={(open) => {
         if (!open) props.onClose()
@@ -481,7 +481,7 @@ export function ReviewDialog(props: ReviewDialogProps) {
           )}
         </div>
       )}
-    </Dialog>
+    </QyResponsiveDialog>
   )
 }
 

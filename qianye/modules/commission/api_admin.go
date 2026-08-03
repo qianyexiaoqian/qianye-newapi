@@ -456,7 +456,8 @@ func adminListRecords(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	var rows []Accrual
+	// 下发给前端的数组一律显式初始化,理由见 qianye/json_array_guard_test.go。
+	rows := make([]Accrual, 0, size)
 	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
