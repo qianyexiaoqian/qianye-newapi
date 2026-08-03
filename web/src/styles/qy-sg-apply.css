@@ -122,6 +122,25 @@
  *
  * 【表格不在名单里】截图里的表格没有外框,只有一格一格的独立盒(见 §5)。
  * 外壳再画一圈框就是"框套格子",两种分隔语言叠在一起。
+ *
+ * 【position 必须与外观分成两条规则】外观(border / radius)七个 slot 通吃,
+ * 但 `position: relative` 只能给**原本就是 static** 的那三个。
+ *
+ * 这里踩过一次:七个 slot 写在同一条规则里一起吃 `position: relative`。
+ * 上游给 dialog / alert-dialog / sheet / drawer 的 `.fixed` 是 (0,1,0) 的
+ * Tailwind 工具类,而本规则被 body 前缀抬到了 (0,2,1) —— **主题赢,浮层被打回
+ * 文档流**。portal 挂在 `<body>` 末尾,于是弹窗不再悬浮在视口中央,而是掉到
+ * 整页内容的最下面,`top: 50%` 又把它再往下推半个页高。项目方看到的
+ * 「弹窗从下面伸出来、怎么改都没用」就是这个 —— 组件侧改多少次居中都无效,
+ * 因为定位根本没轮到组件说话。
+ *
+ * 反过来,原本 static 的三个(card 与两种菜单浮层,后两者真正的定位在
+ * Base UI 的 Positioner 包一层上)不给 relative,::before / ::after 的
+ * `inset: 0` 就会去找更外层的定位祖先,框跑到别的盒子上。
+ *
+ * 判据:`__tests__/qy-sg-overlay-position.test.ts` 会读这个文件,逐个 slot
+ * 比对 `components/ui/*.tsx` 里的原生定位,主题再敢给 fixed/absolute 的
+ * slot 写 position 就直接失败。
  * ══════════════════════════════════════════════════════════════ */
 
 body[data-theme-preset='steins-gate']
@@ -134,9 +153,20 @@ body[data-theme-preset='steins-gate']
     [data-slot='popover-content'],
     [data-slot='dropdown-menu-content']
   ) {
-  position: relative;
   border: 0;
   border-radius: 0;
+}
+
+/* 只有这三个是 static,需要主题补一个定位上下文出来。
+ * 另外四个(dialog / alert-dialog / sheet / drawer)自带 `fixed`,
+ * 本身就是合格的包含块,主题**一个字都不能碰它们的 position**。 */
+body[data-theme-preset='steins-gate']
+  :is(
+    [data-slot='card'],
+    [data-slot='popover-content'],
+    [data-slot='dropdown-menu-content']
+  ) {
+  position: relative;
 }
 
 body[data-theme-preset='steins-gate']
