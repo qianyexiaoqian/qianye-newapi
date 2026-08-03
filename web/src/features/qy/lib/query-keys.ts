@@ -67,6 +67,8 @@ export const qyKeys = {
 
   // ── 管理端 ──
   adminHealth: () => [...qyKeys.all, 'admin', 'health'] as const,
+  /** 版本三元组。编译期常量，进程不重启就不会变。 */
+  adminVersion: () => [...qyKeys.all, 'admin', 'version'] as const,
   adminFundOrders: (params: unknown) =>
     [...qyKeys.all, 'admin', 'fund-orders', params] as const,
   adminAuditLogs: (params: unknown) =>

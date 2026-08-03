@@ -49,6 +49,22 @@ export type QyAdminHealth = {
   node: { name: string; is_master: boolean; holder: string }
 }
 
+/**
+ * 与 `qianye/controller/version.go` 的 `AdminVersion` 响应对齐。
+ *
+ * 三个值都是构建期 ldflags 注入的编译期常量，进程不重启就不会变。
+ * 未注入时后端返回 `"unknown"`（而不是伪造一个版本号），前端原样展示 ——
+ * 排障时被假版本号误导，比看不到版本号更糟。
+ */
+export type QyVersionInfo = {
+  /** 二开当前版本，`git describe --tags` 原样输出。 */
+  build: string
+  /** 最近一次同步到的上游 tag。 */
+  upstream: string
+  /** 上游自己的版本号（`common.Version`），未注入时是它的默认值 `v0.0.0`。 */
+  core: string
+}
+
 export type QyTaskLease = {
   name: string
   /** `NodeName:PID`。同机多实例会重名，所以不能只看 NodeName。 */

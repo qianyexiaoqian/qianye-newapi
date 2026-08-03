@@ -16,12 +16,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { qyGet, qyPost, qyPut } from '@/features/qy/lib/api'
 import { api } from '@/lib/api'
 
 import type {
   ApiResponse,
+  DeletePlanRequest,
+  DeletePlanResult,
+  SetPlanSeatLimitResult,
   PlanRecord,
   PlanPayload,
+  PlanUsage,
+  SubscriptionPlan,
   UserSubscriptionRecord,
   CreateUserSubscriptionRequest,
   ResetUserSubscriptionsRequest,
@@ -41,9 +47,12 @@ export async function getAdminPlans(): Promise<ApiResponse<PlanRecord[]>> {
   return res.data
 }
 
+// 返回的是**扁平的套餐对象**而不是 `{plan:...}`：后端 `AdminCreateSubscriptionPlan`
+// 直接 `ApiSuccess(c, req.Plan)`。调用方要靠 `data.id` 才能接着写扩展库里的总名额，
+// 所以这里按真实形状标注，不再沿用与响应对不上的 PlanRecord。
 export async function createPlan(
   data: PlanPayload
-): Promise<ApiResponse<PlanRecord>> {
+): Promise<ApiResponse<SubscriptionPlan>> {
   const res = await api.post('/api/subscription/admin/plans', data)
   return res.data
 }
@@ -64,6 +73,55 @@ export async function patchPlanStatus(
     enabled,
   })
   return res.data
+}
+
+// ============================================================================
+// Admin Plan Seats & Deletion (qy extension)
+// ============================================================================
+
+/**
+ * 这三个接口挂在 qy 扩展自己的管理端路由下，不是上游 `/api/subscription/admin`：
+ * 总名额是扩展库里的新数据，删除套餐则是上游根本没有的能力（上游连未挂路由的
+ * 删除函数都没有）。走 `qyGet/qyPut/qyPost` 而不是裸 `api.*`，是为了继承 qy 的
+ * 信封解包与失败分类 —— 扩展未启用时抛出的 QyError 带 `isHidden`，调用方据此
+ * **静默隐藏入口**，而不是给管理员糊一脸 404。
+ *
+ * 路径与请求体必须与 `qianye/modules/subscription/subscription.go` 的路由逐字
+ * 一致。拼错一个词的表现不是"报错"而是 404 → `kindFromStatus` 把无 code 的 404
+ * 一律归类成 `disabled` → 调用方静默隐藏入口：运营看到的是"这个功能没有"，
+ * 排查方向直接指反。后端有 `TestAdminRoutesMatchTheContractTheFrontendCalls`
+ * 逐字锁着这三条路径。
+ */
+const QY_ADMIN_PLAN_PATH = '/admin/subscription/plans'
+
+export function getPlanUsage(planId: number): Promise<PlanUsage> {
+  return qyGet<PlanUsage>(`${QY_ADMIN_PLAN_PATH}/${planId}/usage`)
+}
+
+export function setPlanSeatLimit(
+  planId: number,
+  capacity: number
+): Promise<SetPlanSeatLimitResult> {
+  return qyPut<SetPlanSeatLimitResult>(
+    `${QY_ADMIN_PLAN_PATH}/${planId}/seat-limit`,
+    { capacity }
+  )
+}
+
+/**
+ * 删除走 POST `/…/delete` 而不是 `DELETE /…`：删除必须带 body（force 与强制时
+ * 必填的 reason），而 DELETE 携带请求体在反向代理、CDN 与部分 HTTP 客户端上属于
+ * "允许但没人保证"的灰色地带。丢 body 的表现是 reason 变空 → 400，排查起来完全
+ * 指错方向。后端注释里写的是同一条理由。
+ */
+export function deletePlan(
+  planId: number,
+  data: DeletePlanRequest
+): Promise<DeletePlanResult> {
+  return qyPost<DeletePlanResult>(
+    `${QY_ADMIN_PLAN_PATH}/${planId}/delete`,
+    data
+  )
 }
 
 // ============================================================================

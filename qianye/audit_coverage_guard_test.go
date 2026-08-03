@@ -41,6 +41,7 @@ var auditWriteFuncs = map[string]bool{
 	"writeConfigUpdateAudit": true,
 	"writePayeeAudit":        true,
 	"writeRuleFailure":       true,
+	"writeDeleteAudit":       true,
 }
 
 // auditRequired 列出必须留痕的资金路径,值是该函数体内审计写入的**最少**次数。
@@ -82,6 +83,11 @@ var auditRequired = []struct {
 		"分组定价的成功审计写在 WriteTx 里,事务一回滚就消失,失败必须在事务外补一条"},
 	{"modules/grouppricing/api_admin.go", "adminUpdateRule", 2, "同上"},
 	{"modules/grouppricing/api_admin.go", "adminDeleteRule", 2, "同上"},
+	{"modules/subscription/delete.go", "adminDeletePlan", 2,
+		"删套餐会级联作废用户订阅与待处理订单,且套餐行本身会消失 —— " +
+			"before 快照是事后唯一能回答「删的是什么」的东西;被拒绝的那次同样要留痕"},
+	{"modules/subscription/api_admin.go", "adminPutSeat", 2,
+		"全站总名额决定这个套餐还能不能卖出去,改小之后立刻生效;写失败同样要留痕"},
 }
 
 func TestFundPathsKeepTheirAuditWrites(t *testing.T) {

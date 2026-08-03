@@ -25,7 +25,16 @@ RUN go mod download
 
 COPY . .
 COPY --from=builder /build/web/dist ./web/dist
-RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$(cat VERSION)'" -o new-api
+# Fork version stamps. .dockerignore excludes .git, so `git describe` cannot run
+# inside the build; the values must be passed in:
+#   docker build --build-arg QY_BUILD_VERSION="$(git describe --tags --always --dirty)" \
+#                --build-arg QY_UPSTREAM_VERSION="$(git describe --tags --abbrev=0)" .
+# Left empty, qianye/version reports "unknown" rather than a fabricated tag.
+# The symbol paths must be the FULL module path — the linker silently drops a
+# -X whose path does not match, with no error and a successful build.
+ARG QY_BUILD_VERSION=
+ARG QY_UPSTREAM_VERSION=
+RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$(cat VERSION)' -X 'github.com/QuantumNous/new-api/qianye/version.Build=${QY_BUILD_VERSION}' -X 'github.com/QuantumNous/new-api/qianye/version.Upstream=${QY_UPSTREAM_VERSION}'" -o new-api
 
 FROM debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a
 

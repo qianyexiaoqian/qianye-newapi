@@ -89,6 +89,70 @@ export interface PlanPayload {
   plan: Partial<SubscriptionPlan>
 }
 
+// ============================================================================
+// Plan Seats & Deletion (qy extension)
+// ============================================================================
+
+/**
+ * 套餐的名额占用与删除影响面（`GET /api/qy/admin/subscription/plans/{id}/usage`）。
+ *
+ * 字段名与后端 `qianye/modules/subscription/api_admin.go` 的 `planUsage` 逐字
+ * 对应。这里对不上不会有任何编译错误 —— `qyGet<PlanUsage>` 是纯类型断言，
+ * 没有运行时校验 —— 只会在界面上渲染成 undefined，而 `undefined > 0` 恒为
+ * false，于是一个有 500 个活跃订阅的套餐会被显示成"可以安全删除"。
+ *
+ * 这些字段**不在**上游 `subscription_plans` 表上（扩展不给上游表加列），由 qy
+ * 扩展库单独存放并现算，所以走 `/api/qy/...` 而不是 `/api/subscription/admin/...`。
+ *
+ * `used_seats` 与 `active_subscriptions` 是两个数，不要互相替代：前者按 user_id
+ * 去重（名额是按人算的），后者是订阅行数。同一个人持有同套餐的两条 active 订阅时
+ * 两者会不相等，而删除影响面要报的是"多少条订阅会被取消"。
+ */
+export interface PlanUsage {
+  plan_id: number
+  /** 全站总名额上限；0 = 不限。 */
+  capacity: number
+  /** 当前持有该套餐 active 订阅的去重用户数。 */
+  used_seats: number
+  /** 该套餐下 status='active' 的订阅行数。 */
+  active_subscriptions: number
+  /** 该套餐下仍未回调完成的订单数。 */
+  pending_orders: number
+  /** 上游的"每人限购次数"，一并回来只为在同一处对照，避免运营混淆两个上限。 */
+  max_purchase_per_user: number
+}
+
+export interface SetPlanSeatLimitResult {
+  plan_id: number
+  capacity: number
+  /** 值与库里相同时后端会短路：不写库、不写审计。 */
+  changed: boolean
+}
+
+export interface DeletePlanRequest {
+  /**
+   * `false`：存在活跃订阅或待处理订单时后端必须拒绝并回报占用数量。
+   * `true`：级联把活跃订阅置为 cancelled、待处理订单置为失败，再删套餐。
+   */
+  force: boolean
+  /** 强制删除时必填（后端空则 400）；默认路径可留空。 */
+  reason: string
+}
+
+/**
+ * 删除结果。两个级联数字取的是**实际影响行数**而不是删除前测得的影响面 ——
+ * 竞态下两者会不一致，而管理员要拿来判断"要人工退多少钱"的是前者。
+ */
+export interface DeletePlanResult {
+  plan_id: number
+  deleted: boolean
+  forced: boolean
+  cancelled_subscriptions: number
+  failed_orders: number
+  /** 套餐在本次请求之前就已经不存在（重试删除的幂等路径）。 */
+  already_gone: boolean
+}
+
 export interface SubscriptionPayRequest {
   plan_id: number
   payment_method?: string
@@ -150,6 +214,7 @@ export interface SelfSubscriptionData {
 
 export type SubscriptionsDialogType =
   | 'create'
+  | 'delete'
   | 'update'
   | 'toggle-status'
   | 'reset-subscriptions'

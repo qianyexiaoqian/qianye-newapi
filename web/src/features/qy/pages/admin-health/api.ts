@@ -17,10 +17,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { qyGet, qyPost } from '../../lib/api'
-import type { QyAdminHealth, QyLeaseList } from './types'
+import type { QyAdminHealth, QyLeaseList, QyVersionInfo } from './types'
 
 export function getQyAdminHealth(): Promise<QyAdminHealth> {
   return qyGet<QyAdminHealth>('/admin/health')
+}
+
+/**
+ * 版本三元组。
+ *
+ * 刻意与 `/admin/health` 分成两个请求：后端那一侧 `/admin/version` 不走
+ * `requireCore`，扩展库不可用时仍然是 200，而 `/admin/health` 会 503。
+ * 合并成一个请求就把这个降级能力白白丢掉了 —— 排障的第一个问题正是
+ * 「现在跑的到底是哪个版本」。
+ */
+export function getQyVersion(): Promise<QyVersionInfo> {
+  return qyGet<QyVersionInfo>('/admin/version')
 }
 
 /** 租约持有情况。用于确认多节点没有双跑同一个后台任务。 */

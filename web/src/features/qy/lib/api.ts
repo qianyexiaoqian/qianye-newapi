@@ -182,6 +182,15 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_withdrawn_over_available: 'qy_err_cb_over_available',
   qy_withdrawn_over_earned: 'qy_err_cb_over_earned',
   qy_withdrawn_overflow: 'qy_err_cb_overflow',
+
+  // ── 订阅套餐（qianye/modules/subscription）──
+  // 不登记的话这四个 code 会被按 HTTP 状态码归类：409 → `qy_err_conflict`
+  //（"该申请已被其他人处理"，与套餐毫不相干）、400 → "请求参数有误"。
+  // 管理员拿不到任何可执行的下一步，只能去猜。
+  qy_subscription_plan_in_use: 'qy_err_plan_in_use',
+  qy_subscription_delete_reason_required: 'qy_err_plan_delete_reason_required',
+  qy_subscription_seat_invalid: 'qy_err_plan_seat_invalid',
+  qy_subscription_plan_not_found: 'qy_err_plan_not_found',
 }
 
 /**

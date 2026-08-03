@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { Row } from '@tanstack/react-table'
-import { Pencil, Power, PowerOff, RotateCcw } from 'lucide-react'
+import { Pencil, Power, PowerOff, RotateCcw, Trash2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -26,6 +26,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
 
 import type { PlanRecord } from '../types'
 import { useSubscriptions } from './subscriptions-provider'
@@ -37,8 +38,13 @@ interface DataTableRowActionsProps {
 export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const { t } = useTranslation()
   const { setOpen, setCurrentRow, complianceConfirmed } = useSubscriptions()
+  const qyConfig = useQyConfig()
   const isEnabled = row.original.plan.enabled
   const toggleLabel = isEnabled ? t('Disable') : t('Enable')
+  // 删除是扩展提供的能力（上游没有这个接口）。扩展明确关闭时按 qy 的口径零痕迹
+  // 隐藏入口，而不是留一个点了必然 404 的按钮；status 还是 'unknown' 时先显示，
+  // 真按下去也只是在弹窗里报一次失败，比入口忽隐忽现好。
+  const canDelete = qyConfig.status !== 'disabled'
 
   const handleEdit = () => {
     setCurrentRow(row.original)
@@ -53,6 +59,11 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const handleResetSubscriptions = () => {
     setCurrentRow(row.original)
     setOpen('reset-subscriptions')
+  }
+
+  const handleDelete = () => {
+    setCurrentRow(row.original)
+    setOpen('delete')
   }
 
   return (
@@ -112,6 +123,26 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         </TooltipTrigger>
         <TooltipContent>{toggleLabel}</TooltipContent>
       </Tooltip>
+
+      {canDelete && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant='ghost'
+                size='icon-sm'
+                disabled={!complianceConfirmed}
+                onClick={handleDelete}
+                aria-label={t('qy_plan_delete_title')}
+                className='text-destructive hover:text-destructive'
+              />
+            }
+          >
+            <Trash2 />
+          </TooltipTrigger>
+          <TooltipContent>{t('qy_plan_delete_title')}</TooltipContent>
+        </Tooltip>
+      )}
     </div>
   )
 }

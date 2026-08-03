@@ -505,6 +505,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	nowUnix := GetDBTimestamp()
 	now := time.Unix(nowUnix, 0)
 	endUnix, err := calcPlanEndTime(now, plan)
+	err = QyGateSubscriptionSeat(tx, plan, userId, source, err)
 	if err != nil {
 		return nil, err
 	}

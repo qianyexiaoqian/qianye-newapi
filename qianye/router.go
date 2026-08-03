@@ -63,6 +63,9 @@ func registerAdminRoutes(g *gin.RouterGroup) {
 		m.RegisterAdminRoutes(g)
 	}
 	g.GET("/health", qyctl.AdminHealth)
+	// 版本端点刻意与 /health 分开:/health 走 requireCore,扩展库不可用时 503,
+	// 而那正是最需要先确认"跑的是哪个版本"的时刻。理由详见 AdminVersion 的注释。
+	g.GET("/version", qyctl.AdminVersion)
 	g.GET("/fund-orders", qyctl.AdminListFundOrders)
 	g.POST("/fund-orders/:order_no/reprobe", qyctl.AdminReprobeFundOrder)
 	// 人工裁决会直接改写资金状态,挂关键操作限流。

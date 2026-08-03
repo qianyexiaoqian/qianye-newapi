@@ -25,10 +25,6 @@ import { toast } from 'sonner'
 
 import {
   SideDrawerSection,
-  sideDrawerContentClassName,
-  sideDrawerFooterClassName,
-  sideDrawerFormClassName,
-  sideDrawerHeaderClassName,
   sideDrawerSwitchItemClassName,
 } from '@/components/drawer-layout'
 import { Button } from '@/components/ui/button'
@@ -51,23 +47,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  Sheet,
-  SheetClose,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { QyResponsiveDialog } from '@/features/qy/components/qy-responsive-dialog'
+import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
+import { isQyError, qyErrorMessage } from '@/features/qy/lib/api'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
+import { cn } from '@/lib/utils'
 
 import {
   createPlan,
   updatePlan,
   getGroups,
+  getPlanUsage,
+  setPlanSeatLimit,
   createWaffoPancakeSubscriptionProduct,
   listWaffoPancakeSubscriptionProductOptions,
 } from '../api'
@@ -79,7 +72,7 @@ import {
   formValuesToPlanPayload,
   type PlanFormValues,
 } from '../lib'
-import type { PlanRecord } from '../types'
+import type { PlanRecord, PlanUsage } from '../types'
 import { useSubscriptions } from './subscriptions-provider'
 
 interface Props {
@@ -87,6 +80,16 @@ interface Props {
   onOpenChange: (open: boolean) => void
   currentRow?: PlanRecord
 }
+
+/**
+ * 总名额那一格的可用状态。
+ *
+ * `error` 与 `hidden` 必须分开：`hidden` 是"这套后端根本没这功能"（扩展关闭或
+ * 接口未部署），零痕迹不显示；`error` 是"功能在、这次没读到"，要把格子显示出来
+ * 但禁用并说明原因 —— 此时表单里的 0 是占位而不是真值，允许提交就会把已设好的
+ * 名额上限悄悄抹成"不限"。
+ */
+type SeatCapState = 'error' | 'hidden' | 'loading' | 'ready'
 
 export function SubscriptionsMutateDrawer({
   open,
@@ -99,7 +102,11 @@ export function SubscriptionsMutateDrawer({
   const { meta: currencyMeta } = getCurrencyDisplay()
   const tokensOnly = currencyMeta.kind === 'tokens'
   const currencyLabel = getCurrencyLabel()
+  const qyConfig = useQyConfig()
+  const seatCapSupported = qyConfig.status !== 'disabled'
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [seatUsage, setSeatUsage] = useState<PlanUsage | null>(null)
+  const [seatCapState, setSeatCapState] = useState<SeatCapState>('hidden')
   const [groupOptions, setGroupOptions] = useState<string[]>([])
   const [creatingPancakeProduct, setCreatingPancakeProduct] = useState(false)
   const [pancakeProducts, setPancakeProducts] = useState<
@@ -144,6 +151,46 @@ export function SubscriptionsMutateDrawer({
     }
   }, [open, currentRow, form])
 
+  // 总名额存在扩展库里，和套餐本体不是同一次请求，所以单独一个 effect：
+  // 混进上面那个会让"扩展配置从 unknown 变成 disabled"顺带把整张表单 reset 掉，
+  // 管理员填了一半的内容就没了。
+  useEffect(() => {
+    if (!open) return
+    if (!seatCapSupported) {
+      setSeatUsage(null)
+      setSeatCapState('hidden')
+      return
+    }
+    const planId = currentRow?.plan?.id
+    if (planId == null || planId <= 0) {
+      // 新建：没有 id 可查，空占用 + 可编辑，保存成功后再写。
+      setSeatUsage(null)
+      setSeatCapState('ready')
+      return
+    }
+    setSeatUsage(null)
+    setSeatCapState('loading')
+    let stale = false
+    getPlanUsage(planId)
+      .then((usage) => {
+        if (stale) return
+        setSeatUsage(usage)
+        setSeatCapState('ready')
+        // 只在用户没动过这一格时回填：请求在途期间改的值不能被覆盖掉。
+        if (!form.getFieldState('max_total_users').isDirty) {
+          form.setValue('max_total_users', usage.capacity)
+        }
+      })
+      .catch((error) => {
+        if (stale) return
+        setSeatUsage(null)
+        setSeatCapState(isQyError(error) && error.isHidden ? 'hidden' : 'error')
+      })
+    return () => {
+      stale = true
+    }
+  }, [open, currentRow, form, seatCapSupported])
+
   const durationUnit = form.watch('duration_unit')
   const resetPeriod = form.watch('quota_reset_period')
   // Gate "+ Create on Pancake" on the same checks the mint handler runs.
@@ -158,21 +205,42 @@ export function SubscriptionsMutateDrawer({
     setIsSubmitting(true)
     try {
       const payload = formValuesToPlanPayload(values)
-      if (isEdit && currentRow?.plan?.id) {
-        const res = await updatePlan(currentRow.plan.id, payload)
-        if (res.success) {
-          toast.success(t('Update succeeded'))
-          onOpenChange(false)
-          triggerRefresh()
-        }
+      let planId = currentRow?.plan?.id ?? 0
+      if (isEdit && planId > 0) {
+        const res = await updatePlan(planId, payload)
+        if (!res.success) return
       } else {
         const res = await createPlan(payload)
-        if (res.success) {
-          toast.success(t('Create succeeded'))
-          onOpenChange(false)
-          triggerRefresh()
+        if (!res.success) return
+        planId = res.data?.id ?? 0
+      }
+
+      // 套餐本体（上游表）与总名额（扩展库）是两次写入，中间没有事务。
+      // 只在值真的变了时才写第二次，避免每次保存都往审计里塞一条没有内容的改动；
+      // 第二次失败时不能报"保存成功"，否则运营会以为名额已经生效。
+      const nextSeatCap = Number(values.max_total_users || 0)
+      let seatCapError: unknown = null
+      if (
+        seatCapState === 'ready' &&
+        planId > 0 &&
+        nextSeatCap !== (seatUsage?.capacity ?? 0)
+      ) {
+        try {
+          await setPlanSeatLimit(planId, nextSeatCap)
+        } catch (error) {
+          seatCapError = error
         }
       }
+
+      if (seatCapError == null) {
+        toast.success(isEdit ? t('Update succeeded') : t('Create succeeded'))
+      } else {
+        toast.error(
+          `${t('qy_plan_seat_cap_save_failed')}: ${qyErrorMessage(seatCapError, t)}`
+        )
+      }
+      onOpenChange(false)
+      triggerRefresh()
     } catch {
       toast.error(t('Request failed'))
     } finally {
@@ -205,7 +273,10 @@ export function SubscriptionsMutateDrawer({
         typeof res.data === 'object' &&
         res.data
       ) {
-        const created = res.data as { product_id: string; product_name: string }
+        const created = res.data as {
+          product_id: string
+          product_name: string
+        }
         form.setValue('waffo_pancake_product_id', created.product_id, {
           shouldDirty: true,
         })
@@ -250,7 +321,10 @@ export function SubscriptionsMutateDrawer({
   const resetPeriodOpts = getResetPeriodOptions(t)
 
   return (
-    <Sheet
+    // 桌面居中窗口 / 手机侧出抽屉，且头尾固定只有正文滚 —— 全部由外壳负责。
+    // 提交按钮落在 footer（不随正文滚走），靠 HTML 原生的 form 属性跨出 <form>
+    // 触发提交，所以表单主体不需要挪位置。
+    <QyResponsiveDialog
       open={open}
       onOpenChange={(v) => {
         onOpenChange(v)
@@ -258,234 +332,284 @@ export function SubscriptionsMutateDrawer({
           form.reset()
         }
       }}
-    >
-      <SheetContent className={sideDrawerContentClassName('sm:max-w-[600px]')}>
-        <SheetHeader className={sideDrawerHeaderClassName()}>
-          <SheetTitle>
-            {isEdit ? t('Update plan info') : t('Create new subscription plan')}
-          </SheetTitle>
-          <SheetDescription>
-            {isEdit
-              ? t('Modify existing subscription plan configuration')
-              : t(
-                  'Fill in the following info to create a new subscription plan'
-                )}
-          </SheetDescription>
-        </SheetHeader>
-        <Form {...form}>
-          <form
-            id='subscription-form'
-            onSubmit={form.handleSubmit(onSubmit)}
-            className={sideDrawerFormClassName()}
+      // 移动分支的抽屉默认只有 sm:max-w-sm(384px)，而表单内部大量
+      // `sm:grid-cols-2` 在 640px 就已经生效 —— useIsMobile 的阈值是 768，
+      // 两个断点错开的那一档（640~767px）会变成"384px 宽的抽屉里塞两列"，
+      // 标签折成三行、数字输入框只剩几十像素。放宽到 md 让两者重新对齐。
+      sheetClassName='sm:max-w-md'
+      title={isEdit ? t('Update plan info') : t('Create new subscription plan')}
+      description={
+        isEdit
+          ? t('Modify existing subscription plan configuration')
+          : t('Fill in the following info to create a new subscription plan')
+      }
+      footer={
+        <>
+          <Button
+            type='button'
+            variant='outline'
+            onClick={() => onOpenChange(false)}
           >
-            {/* Basic Info */}
-            <SideDrawerSection>
-              <h3 className='flex items-center gap-2 text-sm font-medium'>
-                <IconBadge tone='info' size='xs'>
-                  <Settings2 />
-                </IconBadge>
-                {t('Basic Info')}
-              </h3>
+            {t('Close')}
+          </Button>
+          <Button
+            form='subscription-form'
+            type='submit'
+            disabled={isSubmitting}
+          >
+            {isSubmitting ? t('Saving...') : t('Save changes')}
+          </Button>
+        </>
+      }
+    >
+      <Form {...form}>
+        <form
+          id='subscription-form'
+          onSubmit={form.handleSubmit(onSubmit)}
+          className='flex flex-col gap-6 py-2'
+        >
+          {/* Basic Info */}
+          <SideDrawerSection>
+            <h3 className='flex items-center gap-2 text-sm font-medium'>
+              <IconBadge tone='info' size='xs'>
+                <Settings2 />
+              </IconBadge>
+              {t('Basic Info')}
+            </h3>
 
-              <FormField
-                control={form.control}
-                name='title'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Plan Title')}</FormLabel>
-                    <FormControl>
-                      <Input {...field} placeholder={t('e.g. Basic Plan')} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+            <FormField
+              control={form.control}
+              name='title'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Plan Title')}</FormLabel>
+                  <FormControl>
+                    <Input {...field} placeholder={t('e.g. Basic Plan')} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
-              <FormField
-                control={form.control}
-                name='subtitle'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Plan Subtitle')}</FormLabel>
-                    <FormControl>
-                      {/* Textarea, not Input: the field holds up to 255 chars
+            <FormField
+              control={form.control}
+              name='subtitle'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Plan Subtitle')}</FormLabel>
+                  <FormControl>
+                    {/* Textarea, not Input: the field holds up to 255 chars
                           and the user-facing views render its line breaks. */}
-                      <Textarea
+                    <Textarea
+                      {...field}
+                      rows={3}
+                      maxLength={255}
+                      placeholder={t('e.g. Suitable for light usage')}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+              <FormField
+                control={form.control}
+                name='price_amount'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Plan Price')}</FormLabel>
+                    <FormControl>
+                      <Input
                         {...field}
-                        rows={3}
-                        maxLength={255}
-                        placeholder={t('e.g. Suitable for light usage')}
+                        type='number'
+                        step='0.01'
+                        min={0}
+                        onChange={(e) =>
+                          field.onChange(Number.parseFloat(e.target.value) || 0)
+                        }
                       />
                     </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Amount the user pays to purchase this plan; the actual currency depends on the payment gateway.'
+                      )}
+                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
 
-              <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
-                <FormField
-                  control={form.control}
-                  name='price_amount'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Plan Price')}</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          type='number'
-                          step='0.01'
-                          min={0}
-                          onChange={(e) =>
-                            field.onChange(
-                              Number.parseFloat(e.target.value) || 0
-                            )
-                          }
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        {t(
-                          'Amount the user pays to purchase this plan; the actual currency depends on the payment gateway.'
-                        )}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name='total_amount'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>
-                        {t('Quota ({{currency}})', { currency: currencyLabel })}
-                      </FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          type='number'
-                          min={0}
-                          step={tokensOnly ? 1 : 0.01}
-                          placeholder={
-                            tokensOnly
-                              ? t('Enter quota in tokens')
-                              : t('Enter quota in {{currency}}', {
-                                  currency: currencyLabel,
-                                })
-                          }
-                          onChange={(e) =>
-                            field.onChange(
-                              Number.parseFloat(e.target.value) || 0
-                            )
-                          }
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        {t(
-                          'Total quota included in the plan, usable per billing period. 0 means unlimited.'
-                        )}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-
-              <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
-                <FormField
-                  control={form.control}
-                  name='upgrade_group'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Upgrade Group')}</FormLabel>
-                      <Select
-                        items={[
-                          { value: '__none__', label: t('No Upgrade') },
-                          ...groupOptions.map((g) => ({ value: g, label: g })),
-                        ]}
-                        onValueChange={(v) =>
-                          field.onChange(v === '__none__' ? '' : v)
+              <FormField
+                control={form.control}
+                name='total_amount'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>
+                      {t('Quota ({{currency}})', { currency: currencyLabel })}
+                    </FormLabel>
+                    <FormControl>
+                      <Input
+                        {...field}
+                        type='number'
+                        min={0}
+                        step={tokensOnly ? 1 : 0.01}
+                        placeholder={
+                          tokensOnly
+                            ? t('Enter quota in tokens')
+                            : t('Enter quota in {{currency}}', {
+                                currency: currencyLabel,
+                              })
                         }
-                        value={field.value || ''}
-                      >
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder={t('No Upgrade')} />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent alignItemWithTrigger={false}>
-                          <SelectGroup>
-                            <SelectItem value='__none__'>
-                              {t('No Upgrade')}
-                            </SelectItem>
-                            {groupOptions.map((g) => (
-                              <SelectItem key={g} value={g}>
-                                {g}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name='downgrade_group'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Downgrade Group')}</FormLabel>
-                      <Select
-                        items={[
-                          {
-                            value: '__none__',
-                            label: t('Downgrade to pre-purchase group'),
-                          },
-                          ...groupOptions.map((g) => ({ value: g, label: g })),
-                        ]}
-                        onValueChange={(v) =>
-                          field.onChange(v === '__none__' ? '' : v)
+                        onChange={(e) =>
+                          field.onChange(Number.parseFloat(e.target.value) || 0)
                         }
-                        value={field.value || ''}
-                      >
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue
-                              placeholder={t('Downgrade to pre-purchase group')}
-                            />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent alignItemWithTrigger={false}>
-                          <SelectGroup>
-                            <SelectItem value='__none__'>
-                              {t('Downgrade to pre-purchase group')}
-                            </SelectItem>
-                            {groupOptions.map((g) => (
-                              <SelectItem key={g} value={g}>
-                                {g}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      <FormDescription>
-                        {t(
-                          'Downgrade to this group after the subscription expires'
-                        )}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Total quota included in the plan, usable per billing period. 0 means unlimited.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
 
+            <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+              <FormField
+                control={form.control}
+                name='upgrade_group'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Upgrade Group')}</FormLabel>
+                    <Select
+                      items={[
+                        { value: '__none__', label: t('No Upgrade') },
+                        ...groupOptions.map((g) => ({ value: g, label: g })),
+                      ]}
+                      onValueChange={(v) =>
+                        field.onChange(v === '__none__' ? '' : v)
+                      }
+                      value={field.value || ''}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder={t('No Upgrade')} />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          <SelectItem value='__none__'>
+                            {t('No Upgrade')}
+                          </SelectItem>
+                          {groupOptions.map((g) => (
+                            <SelectItem key={g} value={g}>
+                              {g}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='downgrade_group'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Downgrade Group')}</FormLabel>
+                    <Select
+                      items={[
+                        {
+                          value: '__none__',
+                          label: t('Downgrade to pre-purchase group'),
+                        },
+                        ...groupOptions.map((g) => ({ value: g, label: g })),
+                      ]}
+                      onValueChange={(v) =>
+                        field.onChange(v === '__none__' ? '' : v)
+                      }
+                      value={field.value || ''}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue
+                            placeholder={t('Downgrade to pre-purchase group')}
+                          />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          <SelectItem value='__none__'>
+                            {t('Downgrade to pre-purchase group')}
+                          </SelectItem>
+                          {groupOptions.map((g) => (
+                            <SelectItem key={g} value={g}>
+                              {g}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      {t(
+                        'Downgrade to this group after the subscription expires'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            {/*
+              两个限购维度必须放在同一个框里并排显示，且各自说清楚"数的是什么"。
+              拆开摆、或者两格都只写一句"0 表示不限"，运营就会把"全站只招 100 人"
+              填进左边那格，实际生效的是"每人可买 100 次" —— 一个卖爆一个卖不动，
+              而且两种填错都不会报错，只能等出事了才发现。
+            */}
+            {/* 名额格子不显示时（扩展关闭 / 接口不可用），这圈边框、标题与
+                "左边管…右边管…"的说明必须一起消失：只剩左边一格却还留着一句
+                描述两格的说明，运营的合理推断是"右边那格被合并进左边了"，
+                于是把"全站只招 100 人"填进"限购"，实际生效的是"每人可买 100 次"，
+                全站不限量 —— 而两种填法都不会报错。 */}
+            <div
+              className={cn(
+                'flex flex-col gap-3',
+                seatCapState !== 'hidden' &&
+                  'border-border/60 rounded-md border p-3'
+              )}
+            >
+              {seatCapState !== 'hidden' && (
+                <div>
+                  <h4 className='text-sm font-medium'>
+                    {t('qy_plan_limits_title')}
+                  </h4>
+                  <p className='text-muted-foreground mt-1 text-xs leading-5'>
+                    {t('qy_plan_limits_desc')}
+                  </p>
+                </div>
+              )}
+
+              <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
                 <FormField
                   control={form.control}
                   name='max_purchase_per_user'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>{t('Purchase Limit')}</FormLabel>
+                      <FormLabel>
+                        {t('Purchase Limit')}
+                        {seatCapState !== 'hidden' && (
+                          <span className='text-muted-foreground ml-1 text-xs font-normal'>
+                            {t('qy_plan_scope_per_user')}
+                          </span>
+                        )}
+                      </FormLabel>
                       <FormControl>
                         <Input
                           {...field}
@@ -499,24 +623,320 @@ export function SubscriptionsMutateDrawer({
                         />
                       </FormControl>
                       <FormDescription>
+                        {/* 上游原文，7 个语种都有译文。换成 qy_ 前缀的自造 key
+                            会让法/日/越/俄/繁中这 5 个语种退回英文 —— 而这是
+                            上游既有字段的既有文案，不是本轮新增的东西。
+                            两个上限的区分由上面的标题与 · 按人次 / · 按全站人数
+                            这两个 scope 标签负责，不靠这一句。 */}
                         {t('0 means unlimited')}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
+
+                {seatCapState !== 'hidden' && (
+                  <FormField
+                    control={form.control}
+                    name='max_total_users'
+                    render={({ field }) => {
+                      // 占用数拿现存数据、名额拿输入框的当前值，这样把名额往下调到
+                      // 低于已占用时当场就能看见（后端不会因此清退已有订阅，只是从此
+                      // 卖不出去，界面不说的话没人会发现这一格填小了）。
+                      const capValue = Number(field.value || 0)
+                      const overCap =
+                        seatUsage != null &&
+                        capValue > 0 &&
+                        seatUsage.used_seats > capValue
+                      return (
+                        <FormItem>
+                          <FormLabel>
+                            {t('qy_plan_seat_cap_label')}
+                            <span className='text-muted-foreground ml-1 text-xs font-normal'>
+                              {t('qy_plan_scope_site_wide')}
+                            </span>
+                          </FormLabel>
+                          <FormControl>
+                            <Input
+                              {...field}
+                              type='number'
+                              min={0}
+                              disabled={seatCapState !== 'ready'}
+                              onChange={(e) =>
+                                field.onChange(
+                                  Number.parseInt(e.target.value, 10) || 0
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            {t('qy_plan_seat_cap_hint')}
+                          </FormDescription>
+                          {seatCapState === 'loading' && (
+                            <p className='text-muted-foreground text-xs'>
+                              {t('qy_plan_seat_cap_loading')}
+                            </p>
+                          )}
+                          {seatCapState === 'error' && (
+                            <p className='text-destructive text-xs'>
+                              {t('qy_plan_seat_cap_unavailable')}
+                            </p>
+                          )}
+                          {seatUsage != null && (
+                            <p
+                              className={cn(
+                                'text-xs tabular-nums',
+                                overCap
+                                  ? 'text-destructive'
+                                  : 'text-muted-foreground'
+                              )}
+                            >
+                              {t('qy_plan_seat_usage', {
+                                used: seatUsage.used_seats,
+                                cap:
+                                  capValue > 0
+                                    ? capValue
+                                    : t('qy_plan_seat_unlimited'),
+                              })}
+                              {overCap ? ` ${t('qy_plan_seat_over_cap')}` : ''}
+                            </p>
+                          )}
+                          <FormMessage />
+                        </FormItem>
+                      )
+                    }}
+                  />
+                )}
               </div>
+            </div>
+
+            <FormField
+              control={form.control}
+              name='sort_order'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Sort Order')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      type='number'
+                      onChange={(e) =>
+                        field.onChange(Number.parseInt(e.target.value, 10) || 0)
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <div className='flex flex-col gap-3'>
+              <FormField
+                control={form.control}
+                name='enabled'
+                render={({ field }) => (
+                  <FormItem className={sideDrawerSwitchItemClassName()}>
+                    <FormLabel className='!mt-0'>
+                      {t('Enabled Status')}
+                    </FormLabel>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
 
               <FormField
                 control={form.control}
-                name='sort_order'
+                name='allow_balance_pay'
+                render={({ field }) => (
+                  <FormItem className={sideDrawerSwitchItemClassName()}>
+                    <FormLabel className='!mt-0'>
+                      {t('Allow balance redemption')}
+                    </FormLabel>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='allow_wallet_overflow'
+                render={({ field }) => (
+                  <FormItem className={sideDrawerSwitchItemClassName()}>
+                    <FormLabel className='!mt-0'>
+                      {t('Allow wallet balance after quota used up')}
+                    </FormLabel>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </div>
+          </SideDrawerSection>
+
+          {/* Duration Settings */}
+          <SideDrawerSection>
+            <h3 className='flex items-center gap-2 text-sm font-medium'>
+              <IconBadge tone='chart-4' size='xs'>
+                <CalendarClock />
+              </IconBadge>
+              {t('Duration Settings')}
+            </h3>
+
+            <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+              <FormField
+                control={form.control}
+                name='duration_unit'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>{t('Sort Order')}</FormLabel>
+                    <FormLabel>{t('Duration Unit')}</FormLabel>
+                    <Select
+                      items={durationUnitOpts.map((o) => ({
+                        value: o.value,
+                        label: o.label,
+                      }))}
+                      onValueChange={field.onChange}
+                      value={field.value}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          {durationUnitOpts.map((o) => (
+                            <SelectItem key={o.value} value={o.value}>
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {durationUnit === 'custom' ? (
+                <FormField
+                  control={form.control}
+                  name='custom_seconds'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Custom Seconds')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type='number'
+                          min={1}
+                          onChange={(e) =>
+                            field.onChange(
+                              Number.parseInt(e.target.value, 10) || 0
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              ) : (
+                <FormField
+                  control={form.control}
+                  name='duration_value'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Duration Value')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type='number'
+                          min={1}
+                          onChange={(e) =>
+                            field.onChange(
+                              Number.parseInt(e.target.value, 10) || 0
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+            </div>
+          </SideDrawerSection>
+
+          {/* Quota Reset */}
+          <SideDrawerSection>
+            <h3 className='flex items-center gap-2 text-sm font-medium'>
+              <IconBadge tone='success' size='xs'>
+                <RefreshCw />
+              </IconBadge>
+              {t('Quota Reset')}
+            </h3>
+
+            <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+              <FormField
+                control={form.control}
+                name='quota_reset_period'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Reset Cycle')}</FormLabel>
+                    <Select
+                      items={resetPeriodOpts.map((o) => ({
+                        value: o.value,
+                        label: o.label,
+                      }))}
+                      onValueChange={field.onChange}
+                      value={field.value}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          {resetPeriodOpts.map((o) => (
+                            <SelectItem key={o.value} value={o.value}>
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='quota_reset_custom_seconds'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Custom Seconds')}</FormLabel>
                     <FormControl>
                       <Input
                         {...field}
                         type='number'
+                        min={0}
+                        disabled={resetPeriod !== 'custom'}
                         onChange={(e) =>
                           field.onChange(
                             Number.parseInt(e.target.value, 10) || 0
@@ -528,341 +948,107 @@ export function SubscriptionsMutateDrawer({
                   </FormItem>
                 )}
               />
+            </div>
+          </SideDrawerSection>
 
-              <div className='flex flex-col gap-3'>
-                <FormField
-                  control={form.control}
-                  name='enabled'
-                  render={({ field }) => (
-                    <FormItem className={sideDrawerSwitchItemClassName()}>
-                      <FormLabel className='!mt-0'>
-                        {t('Enabled Status')}
-                      </FormLabel>
-                      <FormControl>
-                        <Switch
-                          checked={field.value}
-                          onCheckedChange={field.onChange}
-                        />
-                      </FormControl>
-                    </FormItem>
-                  )}
-                />
+          {/* Payment Config */}
+          <SideDrawerSection>
+            <h3 className='flex items-center gap-2 text-sm font-medium'>
+              <IconBadge tone='warning' size='xs'>
+                <CreditCard />
+              </IconBadge>
+              {t('Third-party Payment Config')}
+            </h3>
 
-                <FormField
-                  control={form.control}
-                  name='allow_balance_pay'
-                  render={({ field }) => (
-                    <FormItem className={sideDrawerSwitchItemClassName()}>
-                      <FormLabel className='!mt-0'>
-                        {t('Allow balance redemption')}
-                      </FormLabel>
-                      <FormControl>
-                        <Switch
-                          checked={field.value}
-                          onCheckedChange={field.onChange}
-                        />
-                      </FormControl>
-                    </FormItem>
-                  )}
-                />
+            <FormField
+              control={form.control}
+              name='stripe_price_id'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Stripe Price ID</FormLabel>
+                  <FormControl>
+                    <Input {...field} placeholder='price_...' />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
-                <FormField
-                  control={form.control}
-                  name='allow_wallet_overflow'
-                  render={({ field }) => (
-                    <FormItem className={sideDrawerSwitchItemClassName()}>
-                      <FormLabel className='!mt-0'>
-                        {t('Allow wallet balance after quota used up')}
-                      </FormLabel>
-                      <FormControl>
-                        <Switch
-                          checked={field.value}
-                          onCheckedChange={field.onChange}
-                        />
-                      </FormControl>
-                    </FormItem>
-                  )}
-                />
-              </div>
-            </SideDrawerSection>
+            <FormField
+              control={form.control}
+              name='creem_product_id'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Creem Product ID</FormLabel>
+                  <FormControl>
+                    <Input {...field} placeholder='prod_...' />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
-            {/* Duration Settings */}
-            <SideDrawerSection>
-              <h3 className='flex items-center gap-2 text-sm font-medium'>
-                <IconBadge tone='chart-4' size='xs'>
-                  <CalendarClock />
-                </IconBadge>
-                {t('Duration Settings')}
-              </h3>
-
-              <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
-                <FormField
-                  control={form.control}
-                  name='duration_unit'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Duration Unit')}</FormLabel>
+            <FormField
+              control={form.control}
+              name='waffo_pancake_product_id'
+              render={({ field }) => {
+                // Raw-ID fallback for IDs not yet in the catalog.
+                const items = pancakeProducts.map((p) => ({
+                  value: p.id,
+                  label: `${p.name} (${p.id})`,
+                }))
+                if (
+                  field.value &&
+                  !pancakeProducts.some((p) => p.id === field.value)
+                ) {
+                  items.push({ value: field.value, label: field.value })
+                }
+                return (
+                  <FormItem>
+                    <FormLabel>Waffo Pancake Product ID</FormLabel>
+                    <div className='flex gap-2'>
                       <Select
-                        items={durationUnitOpts.map((o) => ({
-                          value: o.value,
-                          label: o.label,
-                        }))}
-                        onValueChange={field.onChange}
-                        value={field.value}
+                        items={items}
+                        value={field.value || ''}
+                        onValueChange={(v) => field.onChange(v)}
+                        disabled={items.length === 0}
                       >
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent alignItemWithTrigger={false}>
-                          <SelectGroup>
-                            {durationUnitOpts.map((o) => (
-                              <SelectItem key={o.value} value={o.value}>
-                                {o.label}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
+                        <SelectTrigger className='w-full flex-1'>
+                          <SelectValue placeholder={t('Select a product')} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {items.map((item) => (
+                            <SelectItem key={item.value} value={item.value}>
+                              {item.label}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                {durationUnit === 'custom' ? (
-                  <FormField
-                    control={form.control}
-                    name='custom_seconds'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Custom Seconds')}</FormLabel>
-                        <FormControl>
-                          <Input
-                            {...field}
-                            type='number'
-                            min={1}
-                            onChange={(e) =>
-                              field.onChange(
-                                Number.parseInt(e.target.value, 10) || 0
-                              )
-                            }
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                ) : (
-                  <FormField
-                    control={form.control}
-                    name='duration_value'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Duration Value')}</FormLabel>
-                        <FormControl>
-                          <Input
-                            {...field}
-                            type='number'
-                            min={1}
-                            onChange={(e) =>
-                              field.onChange(
-                                Number.parseInt(e.target.value, 10) || 0
-                              )
-                            }
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                )}
-              </div>
-            </SideDrawerSection>
-
-            {/* Quota Reset */}
-            <SideDrawerSection>
-              <h3 className='flex items-center gap-2 text-sm font-medium'>
-                <IconBadge tone='success' size='xs'>
-                  <RefreshCw />
-                </IconBadge>
-                {t('Quota Reset')}
-              </h3>
-
-              <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
-                <FormField
-                  control={form.control}
-                  name='quota_reset_period'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Reset Cycle')}</FormLabel>
-                      <Select
-                        items={resetPeriodOpts.map((o) => ({
-                          value: o.value,
-                          label: o.label,
-                        }))}
-                        onValueChange={field.onChange}
-                        value={field.value}
+                      <Button
+                        type='button'
+                        variant='outline'
+                        onClick={handleCreatePancakeProduct}
+                        disabled={creatingPancakeProduct || !pancakeCreateReady}
+                        className='shrink-0'
                       >
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent alignItemWithTrigger={false}>
-                          <SelectGroup>
-                            {resetPeriodOpts.map((o) => (
-                              <SelectItem key={o.value} value={o.value}>
-                                {o.label}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name='quota_reset_custom_seconds'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Custom Seconds')}</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          type='number'
-                          min={0}
-                          disabled={resetPeriod !== 'custom'}
-                          onChange={(e) =>
-                            field.onChange(
-                              Number.parseInt(e.target.value, 10) || 0
-                            )
-                          }
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-            </SideDrawerSection>
-
-            {/* Payment Config */}
-            <SideDrawerSection>
-              <h3 className='flex items-center gap-2 text-sm font-medium'>
-                <IconBadge tone='warning' size='xs'>
-                  <CreditCard />
-                </IconBadge>
-                {t('Third-party Payment Config')}
-              </h3>
-
-              <FormField
-                control={form.control}
-                name='stripe_price_id'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Stripe Price ID</FormLabel>
-                    <FormControl>
-                      <Input {...field} placeholder='price_...' />
-                    </FormControl>
+                        {creatingPancakeProduct
+                          ? t('Creating...')
+                          : `+ ${t('Create')}`}
+                      </Button>
+                    </div>
+                    <FormDescription>
+                      {t(
+                        'Creates a Pancake product in the saved store using this plan’s title and price. Requires Waffo Pancake to be fully configured in Payment settings first.'
+                      )}
+                    </FormDescription>
                     <FormMessage />
                   </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='creem_product_id'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Creem Product ID</FormLabel>
-                    <FormControl>
-                      <Input {...field} placeholder='prod_...' />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='waffo_pancake_product_id'
-                render={({ field }) => {
-                  // Raw-ID fallback for IDs not yet in the catalog.
-                  const items = pancakeProducts.map((p) => ({
-                    value: p.id,
-                    label: `${p.name} (${p.id})`,
-                  }))
-                  if (
-                    field.value &&
-                    !pancakeProducts.some((p) => p.id === field.value)
-                  ) {
-                    items.push({ value: field.value, label: field.value })
-                  }
-                  return (
-                    <FormItem>
-                      <FormLabel>Waffo Pancake Product ID</FormLabel>
-                      <div className='flex gap-2'>
-                        <Select
-                          items={items}
-                          value={field.value || ''}
-                          onValueChange={(v) => field.onChange(v)}
-                          disabled={items.length === 0}
-                        >
-                          <SelectTrigger className='w-full flex-1'>
-                            <SelectValue placeholder={t('Select a product')} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {items.map((item) => (
-                              <SelectItem key={item.value} value={item.value}>
-                                {item.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          type='button'
-                          variant='outline'
-                          onClick={handleCreatePancakeProduct}
-                          disabled={
-                            creatingPancakeProduct || !pancakeCreateReady
-                          }
-                          className='shrink-0'
-                        >
-                          {creatingPancakeProduct
-                            ? t('Creating...')
-                            : `+ ${t('Create')}`}
-                        </Button>
-                      </div>
-                      <FormDescription>
-                        {t(
-                          'Creates a Pancake product in the saved store using this plan’s title and price. Requires Waffo Pancake to be fully configured in Payment settings first.'
-                        )}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )
-                }}
-              />
-            </SideDrawerSection>
-          </form>
-        </Form>
-        <SheetFooter className={sideDrawerFooterClassName()}>
-          <SheetClose render={<Button variant='outline' />}>
-            {t('Close')}
-          </SheetClose>
-          <Button
-            form='subscription-form'
-            type='submit'
-            disabled={isSubmitting}
-          >
-            {isSubmitting ? t('Saving...') : t('Save changes')}
-          </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
+                )
+              }}
+            />
+          </SideDrawerSection>
+        </form>
+      </Form>
+    </QyResponsiveDialog>
   )
 }

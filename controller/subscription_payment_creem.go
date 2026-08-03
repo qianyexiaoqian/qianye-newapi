@@ -42,6 +42,7 @@ func SubscriptionRequestCreemPay(c *gin.Context) {
 	}
 
 	plan, err := model.GetSubscriptionPlanById(req.PlanId)
+	err = model.QyGateSubscriptionSeat(nil, plan, c.GetInt("id"), "precheck", err)
 	if err != nil {
 		common.ApiError(c, err)
 		return

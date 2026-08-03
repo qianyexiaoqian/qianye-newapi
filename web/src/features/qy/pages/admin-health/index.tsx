@@ -42,7 +42,12 @@ import {
   QY_EMPTY_TEXT,
 } from '../ops/format'
 import { QyKeyValue } from '../ops/qy-ops-ui'
-import { getQyAdminHealth, listQyLeases, reloadQyConfig } from './api'
+import {
+  getQyAdminHealth,
+  getQyVersion,
+  listQyLeases,
+  reloadQyConfig,
+} from './api'
 import type { QyLeaseListItem } from './types'
 
 /**
@@ -71,6 +76,14 @@ export function QyAdminHealth() {
     queryFn: listQyLeases,
     staleTime: 10_000,
     refetchInterval: 30_000,
+  })
+
+  // 版本是编译期常量，进程不重启就不会变，所以既不轮询也不过期。
+  // 刷新按钮仍然带上它：那是「部署到底生效没有」在同一页里的确认方式。
+  const versionQuery = useQuery({
+    queryKey: qyKeys.adminVersion(),
+    queryFn: getQyVersion,
+    staleTime: Infinity,
   })
 
   const reloadMutation = useMutation({
@@ -103,6 +116,7 @@ export function QyAdminHealth() {
           onClick={() => {
             void healthQuery.refetch()
             void leasesQuery.refetch()
+            void versionQuery.refetch()
           }}
         >
           <RefreshCw
@@ -122,220 +136,253 @@ export function QyAdminHealth() {
         </Button>
       </QySectionPageLayout.Actions>
       <QySectionPageLayout.Content>
-        <QyPageBoundary query={healthQuery}>
-          {health != null && (
-            <div className='space-y-3'>
-              {/* 丢弃 = 佣金 / 违规记录 / 采样事件被永久丢掉，无法补回。 */}
-              {dropped > 0 && (
-                <Alert variant='destructive'>
-                  <TriangleAlert />
-                  <AlertTitle>{t('qy_cfg_health_drop_title')}</AlertTitle>
-                  <AlertDescription>
-                    {t('qy_cfg_health_drop_desc', { n: dropped })}
-                  </AlertDescription>
-                </Alert>
-              )}
-              {breakerOpen && (
-                <Alert variant='destructive'>
-                  <TriangleAlert />
-                  <AlertTitle>{t('qy_cfg_health_breaker_title')}</AlertTitle>
-                  <AlertDescription>
-                    {t('qy_cfg_health_breaker_desc', {
-                      time: formatQyTs(health.db.breaker_open_until),
-                    })}
-                  </AlertDescription>
-                </Alert>
-              )}
+        <div className='space-y-3'>
+          {/* 版本卡刻意放在 QyPageBoundary **外面**，而不是接进下面
+              「两阶段与节点」那张卡里。
 
-              <QyStatGrid
-                items={[
-                  {
-                    key: 'db',
-                    label: t('qy_cfg_health_db'),
-                    value: (
-                      <StatusBadge
-                        label={
-                          health.db.available
-                            ? t('qy_cfg_health_db_up')
-                            : t('qy_cfg_health_db_down')
-                        }
-                        variant={health.db.available ? 'success' : 'danger'}
-                        copyable={false}
-                        size='md'
-                      />
-                    ),
-                    hint: t('qy_cfg_health_ping', {
-                      ms: formatQyMs(health.db.last_ping_ms),
-                    }),
-                  },
-                  {
-                    key: 'queue',
-                    label: t('qy_cfg_health_queue'),
-                    value: `${health.hot_queue.pending} / ${health.hot_queue.capacity}`,
-                    hint: t('qy_cfg_health_submitted', {
-                      n: formatQyCount(health.hot_queue.submitted),
-                    }),
-                  },
-                  {
-                    key: 'dropped',
-                    label: t('qy_cfg_health_dropped'),
-                    // 丢弃是本页最重要的一个数字：非零意味着有影响资金的
-                    // 事件被永久丢掉，必须一眼看到。
-                    value: (
-                      <span
-                        className={
-                          dropped > 0 ? 'text-destructive' : 'text-success'
-                        }
-                      >
-                        {formatQyCount(dropped)}
-                      </span>
-                    ),
-                    hint: t('qy_cfg_health_dropped_hint'),
-                    emphasis: true,
-                  },
-                  {
-                    key: 'uncertain',
-                    label: t('qy_cfg_health_uncertain'),
-                    value: (
-                      <span
-                        className={uncertain > 0 ? 'text-warning' : undefined}
-                      >
-                        {formatQyCount(uncertain)}
-                      </span>
-                    ),
-                    hint: t('qy_cfg_health_uncertain_hint'),
-                  },
-                ]}
-              />
+              理由是后端把 `/admin/version` 单独拆出来的那条：扩展库不可用时
+              `/admin/health` 会 503，boundary 随即把整个内容区换成错误态 ——
+              而那正是最需要先确认「现在跑的是哪个版本」的时刻。放进 boundary
+              里等于把这个能力白拆一遍。
 
-              <div className='grid gap-3 lg:grid-cols-2'>
-                <TitledCard title={t('qy_cfg_health_db_pool')}>
-                  <QyKeyValue label={t('qy_cfg_health_connected')}>
-                    {health.db.connected
-                      ? t('qy_cfg_health_yes')
-                      : t('qy_cfg_health_no')}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_cfg_health_fail_streak')}>
-                    {health.db.fail_streak}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_cfg_health_last_ping_at')}>
-                    {formatQyTs(health.db.last_ping_at)}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_cfg_health_open_conns')}>
-                    {health.db.open_conns == null
-                      ? QY_EMPTY_TEXT
-                      : `${health.db.open_conns} / ${health.db.max_open ?? 0}`}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_cfg_health_in_use')}>
-                    {health.db.in_use ?? QY_EMPTY_TEXT}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_cfg_health_idle')}>
-                    {health.db.idle ?? QY_EMPTY_TEXT}
-                  </QyKeyValue>
-                  {/* wait_count 持续增长 = 连接池太小，请求在排队等连接。 */}
-                  <QyKeyValue label={t('qy_cfg_health_wait_count')}>
-                    {health.db.wait_count ?? QY_EMPTY_TEXT}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_cfg_health_tables')}>
-                    {health.migrate.table_count}
-                  </QyKeyValue>
-                </TitledCard>
+              `versionQuery.data != null` 而不是渲染错误态：扩展整体被关掉时
+              这个请求会 404，此时下面的 boundary 已经在解释原因了，这里再叠一个
+              红框只是噪声，安静消失即可。 */}
+          {versionQuery.data != null && (
+            <TitledCard
+              title={t('qy_cfg_health_version')}
+              description={t('qy_cfg_health_version_desc')}
+            >
+              <QyKeyValue label={t('qy_cfg_health_version_build')}>
+                {versionQuery.data.build}
+              </QyKeyValue>
+              <QyKeyValue label={t('qy_cfg_health_version_upstream')}>
+                {versionQuery.data.upstream}
+              </QyKeyValue>
+              <QyKeyValue label={t('qy_cfg_health_version_core')}>
+                {versionQuery.data.core}
+              </QyKeyValue>
+            </TitledCard>
+          )}
 
-                <TitledCard title={t('qy_cfg_health_two_phase')}>
-                  <QyKeyValue label={t('qy_common_st_pending')}>
-                    {health.two_phase.pending ?? QY_EMPTY_TEXT}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_common_st_uncertain')}>
-                    {health.two_phase.uncertain ?? QY_EMPTY_TEXT}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_cfg_health_oldest_pending')}>
-                    {formatQyDuration(health.two_phase.oldest_pending_age_sec)}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_common_order_no')}>
-                    {health.two_phase.oldest_pending_order_no ?? QY_EMPTY_TEXT}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_cfg_health_node')}>
-                    {health.node.name}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_cfg_health_is_master')}>
-                    {health.node.is_master
-                      ? t('qy_cfg_health_yes')
-                      : t('qy_cfg_health_no')}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_cfg_health_config_path')}>
-                    {health.config.path}
-                  </QyKeyValue>
-                  <QyKeyValue label={t('qy_cfg_health_config_loaded')}>
-                    {formatQyTs(health.config.loaded_at)}
-                  </QyKeyValue>
-                </TitledCard>
-              </div>
+          <QyPageBoundary query={healthQuery}>
+            {health != null && (
+              <div className='space-y-3'>
+                {/* 丢弃 = 佣金 / 违规记录 / 采样事件被永久丢掉，无法补回。 */}
+                {dropped > 0 && (
+                  <Alert variant='destructive'>
+                    <TriangleAlert />
+                    <AlertTitle>{t('qy_cfg_health_drop_title')}</AlertTitle>
+                    <AlertDescription>
+                      {t('qy_cfg_health_drop_desc', { n: dropped })}
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {breakerOpen && (
+                  <Alert variant='destructive'>
+                    <TriangleAlert />
+                    <AlertTitle>{t('qy_cfg_health_breaker_title')}</AlertTitle>
+                    <AlertDescription>
+                      {t('qy_cfg_health_breaker_desc', {
+                        time: formatQyTs(health.db.breaker_open_until),
+                      })}
+                    </AlertDescription>
+                  </Alert>
+                )}
 
-              <TitledCard
-                title={t('qy_cfg_health_leases')}
-                description={t('qy_cfg_health_leases_desc')}
-              >
-                <StaticDataTable
-                  data={leasesQuery.data?.items ?? []}
-                  getRowKey={(row) => row.name}
-                  emptyContent={t('qy_cfg_health_leases_empty')}
-                  columns={[
+                <QyStatGrid
+                  items={[
                     {
-                      id: 'name',
-                      header: t('qy_cfg_health_lease_name'),
-                      cell: (row: QyLeaseListItem) => row.name,
-                    },
-                    {
-                      id: 'holder',
-                      header: t('qy_cfg_health_lease_holder'),
-                      cell: (row: QyLeaseListItem) =>
-                        row.holder === leasesQuery.data?.self
-                          ? `${row.holder} (${t('qy_cfg_health_lease_self')})`
-                          : row.holder,
-                    },
-                    {
-                      id: 'fence',
-                      header: t('qy_cfg_health_lease_fence'),
-                      cellClassName: 'tabular-nums',
-                      cell: (row: QyLeaseListItem) => row.fence,
-                    },
-                    {
-                      id: 'lease_until',
-                      header: t('qy_cfg_health_lease_until'),
-                      cell: (row: QyLeaseListItem) =>
-                        formatQyTs(row.lease_until),
-                    },
-                    {
-                      id: 'expired',
-                      header: t('qy_common_status'),
-                      cell: (row: QyLeaseListItem) => (
+                      key: 'db',
+                      label: t('qy_cfg_health_db'),
+                      value: (
                         <StatusBadge
                           label={
-                            row.expired
-                              ? t('qy_cfg_health_lease_expired')
-                              : t('qy_cfg_health_lease_held')
+                            health.db.available
+                              ? t('qy_cfg_health_db_up')
+                              : t('qy_cfg_health_db_down')
                           }
-                          variant={row.expired ? 'warning' : 'success'}
+                          variant={health.db.available ? 'success' : 'danger'}
                           copyable={false}
+                          size='md'
                         />
                       ),
+                      hint: t('qy_cfg_health_ping', {
+                        ms: formatQyMs(health.db.last_ping_ms),
+                      }),
+                    },
+                    {
+                      key: 'queue',
+                      label: t('qy_cfg_health_queue'),
+                      value: `${health.hot_queue.pending} / ${health.hot_queue.capacity}`,
+                      hint: t('qy_cfg_health_submitted', {
+                        n: formatQyCount(health.hot_queue.submitted),
+                      }),
+                    },
+                    {
+                      key: 'dropped',
+                      label: t('qy_cfg_health_dropped'),
+                      // 丢弃是本页最重要的一个数字：非零意味着有影响资金的
+                      // 事件被永久丢掉，必须一眼看到。
+                      value: (
+                        <span
+                          className={
+                            dropped > 0 ? 'text-destructive' : 'text-success'
+                          }
+                        >
+                          {formatQyCount(dropped)}
+                        </span>
+                      ),
+                      hint: t('qy_cfg_health_dropped_hint'),
+                      emphasis: true,
+                    },
+                    {
+                      key: 'uncertain',
+                      label: t('qy_cfg_health_uncertain'),
+                      value: (
+                        <span
+                          className={uncertain > 0 ? 'text-warning' : undefined}
+                        >
+                          {formatQyCount(uncertain)}
+                        </span>
+                      ),
+                      hint: t('qy_cfg_health_uncertain_hint'),
                     },
                   ]}
                 />
-              </TitledCard>
 
-              <QyConfirmDialog
-                open={reloadOpen}
-                onOpenChange={setReloadOpen}
-                title={t('qy_cfg_health_reload')}
-                description={t('qy_cfg_health_reload_desc')}
-                confirmText={t('qy_cfg_health_reload')}
-                isLoading={reloadMutation.isPending}
-                onConfirm={() => reloadMutation.mutate()}
-              />
-            </div>
-          )}
-        </QyPageBoundary>
+                <div className='grid gap-3 lg:grid-cols-2'>
+                  <TitledCard title={t('qy_cfg_health_db_pool')}>
+                    <QyKeyValue label={t('qy_cfg_health_connected')}>
+                      {health.db.connected
+                        ? t('qy_cfg_health_yes')
+                        : t('qy_cfg_health_no')}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_fail_streak')}>
+                      {health.db.fail_streak}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_last_ping_at')}>
+                      {formatQyTs(health.db.last_ping_at)}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_open_conns')}>
+                      {health.db.open_conns == null
+                        ? QY_EMPTY_TEXT
+                        : `${health.db.open_conns} / ${health.db.max_open ?? 0}`}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_in_use')}>
+                      {health.db.in_use ?? QY_EMPTY_TEXT}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_idle')}>
+                      {health.db.idle ?? QY_EMPTY_TEXT}
+                    </QyKeyValue>
+                    {/* wait_count 持续增长 = 连接池太小，请求在排队等连接。 */}
+                    <QyKeyValue label={t('qy_cfg_health_wait_count')}>
+                      {health.db.wait_count ?? QY_EMPTY_TEXT}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_tables')}>
+                      {health.migrate.table_count}
+                    </QyKeyValue>
+                  </TitledCard>
+
+                  <TitledCard title={t('qy_cfg_health_two_phase')}>
+                    <QyKeyValue label={t('qy_common_st_pending')}>
+                      {health.two_phase.pending ?? QY_EMPTY_TEXT}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_common_st_uncertain')}>
+                      {health.two_phase.uncertain ?? QY_EMPTY_TEXT}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_oldest_pending')}>
+                      {formatQyDuration(
+                        health.two_phase.oldest_pending_age_sec
+                      )}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_common_order_no')}>
+                      {health.two_phase.oldest_pending_order_no ??
+                        QY_EMPTY_TEXT}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_node')}>
+                      {health.node.name}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_is_master')}>
+                      {health.node.is_master
+                        ? t('qy_cfg_health_yes')
+                        : t('qy_cfg_health_no')}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_config_path')}>
+                      {health.config.path}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_config_loaded')}>
+                      {formatQyTs(health.config.loaded_at)}
+                    </QyKeyValue>
+                  </TitledCard>
+                </div>
+
+                <TitledCard
+                  title={t('qy_cfg_health_leases')}
+                  description={t('qy_cfg_health_leases_desc')}
+                >
+                  <StaticDataTable
+                    data={leasesQuery.data?.items ?? []}
+                    getRowKey={(row) => row.name}
+                    emptyContent={t('qy_cfg_health_leases_empty')}
+                    columns={[
+                      {
+                        id: 'name',
+                        header: t('qy_cfg_health_lease_name'),
+                        cell: (row: QyLeaseListItem) => row.name,
+                      },
+                      {
+                        id: 'holder',
+                        header: t('qy_cfg_health_lease_holder'),
+                        cell: (row: QyLeaseListItem) =>
+                          row.holder === leasesQuery.data?.self
+                            ? `${row.holder} (${t('qy_cfg_health_lease_self')})`
+                            : row.holder,
+                      },
+                      {
+                        id: 'fence',
+                        header: t('qy_cfg_health_lease_fence'),
+                        cellClassName: 'tabular-nums',
+                        cell: (row: QyLeaseListItem) => row.fence,
+                      },
+                      {
+                        id: 'lease_until',
+                        header: t('qy_cfg_health_lease_until'),
+                        cell: (row: QyLeaseListItem) =>
+                          formatQyTs(row.lease_until),
+                      },
+                      {
+                        id: 'expired',
+                        header: t('qy_common_status'),
+                        cell: (row: QyLeaseListItem) => (
+                          <StatusBadge
+                            label={
+                              row.expired
+                                ? t('qy_cfg_health_lease_expired')
+                                : t('qy_cfg_health_lease_held')
+                            }
+                            variant={row.expired ? 'warning' : 'success'}
+                            copyable={false}
+                          />
+                        ),
+                      },
+                    ]}
+                  />
+                </TitledCard>
+
+                <QyConfirmDialog
+                  open={reloadOpen}
+                  onOpenChange={setReloadOpen}
+                  title={t('qy_cfg_health_reload')}
+                  description={t('qy_cfg_health_reload_desc')}
+                  confirmText={t('qy_cfg_health_reload')}
+                  isLoading={reloadMutation.isPending}
+                  onConfirm={() => reloadMutation.mutate()}
+                />
+              </div>
+            )}
+          </QyPageBoundary>
+        </div>
       </QySectionPageLayout.Content>
     </QySectionPageLayout>
   )

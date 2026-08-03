@@ -46,6 +46,10 @@ export function getPlanFormSchema(t: TFunction) {
     allow_balance_pay: z.boolean(),
     allow_wallet_overflow: z.boolean(),
     max_purchase_per_user: z.coerce.number().min(0),
+    // 全站总名额（按人去重），与上面的"每人限购次数"是两个独立维度。
+    // 它不是上游 subscription_plans 的列，只是搭表单的顺风车一起编辑，
+    // 因此不会出现在 formValuesToPlanPayload 的结果里。
+    max_total_users: z.coerce.number().min(0),
     total_amount: z.coerce.number().min(0),
     upgrade_group: z.string().optional(),
     downgrade_group: z.string().optional(),
@@ -71,6 +75,7 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   allow_balance_pay: true,
   allow_wallet_overflow: true,
   max_purchase_per_user: 0,
+  max_total_users: 0,
   total_amount: 0,
   upgrade_group: '',
   downgrade_group: '',
@@ -94,6 +99,10 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     allow_balance_pay: plan.allow_balance_pay !== false,
     allow_wallet_overflow: plan.allow_wallet_overflow !== false,
     max_purchase_per_user: Number(plan.max_purchase_per_user || 0),
+    // 只能给占位 0：总名额在 qy 扩展库里，`SubscriptionPlan` 上没有这个字段。
+    // 真值由弹窗单独请求回来后回填 —— 也就是说读取失败时这里的 0 **不是**"不限"，
+    // 调用方必须自己挡住"没读到就照着 0 保存"，否则会悄悄抹掉已设的名额上限。
+    max_total_users: 0,
     total_amount: quotaUnitsToDollars(Number(plan.total_amount || 0)),
     upgrade_group: plan.upgrade_group || '',
     downgrade_group: plan.downgrade_group || '',
@@ -104,9 +113,13 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
 }
 
 export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
+  // 总名额必须在这里摘掉：上游 `AdminUpsertSubscriptionPlanRequest` 绑到
+  // `model.SubscriptionPlan`，多出来的键会被 Go 静默丢弃 —— 表单显示"保存成功"
+  // 而名额压根没落库。它由 setPlanSeatLimit 单独写进扩展库。
+  const { max_total_users, ...planValues } = values
   return {
     plan: {
-      ...values,
+      ...planValues,
       price_amount: Number(values.price_amount || 0),
       currency: 'USD',
       duration_value: Number(values.duration_value || 0),
