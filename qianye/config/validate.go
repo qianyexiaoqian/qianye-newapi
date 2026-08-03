@@ -129,6 +129,9 @@ func validate(c *Config) error {
 	if err := validateAudit(&c.Audit); err != nil {
 		return err
 	}
+	if err := validateTwoPhase(&c.TwoPhase); err != nil {
+		return err
+	}
 	if err := ValidateTransfer(&c.Transfer); err != nil {
 		return err
 	}
@@ -248,6 +251,39 @@ func validateAudit(a *Audit) error {
 	return nil
 }
 
+// validateTwoPhase 校验补偿任务的三个判定刻度。
+//
+// 这三项与本文件其余闸门的方向相反:多数闸门上 0 表示"不设这道限制",而
+// 补偿任务的 0 表示"不等了,立刻下判决"。最重的一条是 manual_review_after_seconds:
+// 补偿任务探到"主库没动"之后要等足够久才敢判失败,因为很可能只是主库事务
+// 还没提交(见 service/twophase/compensate.go);阈值为 0 时任何存活超过一秒的
+// pending 单都会被判 failed,而主库随后提交 —— 钱动了,新库却记着没动。
+//
+// 因此这里拒绝启动,不做静默兜底:兜底会让运维读到的 YAML 与实际跑的值分叉,
+// 那正是本扩展反复栽跟头的地方。compensate_interval_seconds 与 batch_size
+// 不在此列,它们的消费方本来就带 <=0 回落,且判错只影响节奏不影响判定。
+func validateTwoPhase(t *TwoPhase) error {
+	for _, f := range []struct {
+		name string
+		val  int
+		why  string
+	}{
+		{"pending_grace_seconds", t.PendingGraceSeconds,
+			"补偿任务会在主库事务尚未提交时就介入探针"},
+		{"max_probe_attempts", t.MaxProbeAttempts,
+			"第一次退避就把资金单转成 uncertain 交人工裁决"},
+		{"manual_review_after_seconds", t.ManualReviewAfterSeconds,
+			"存活超过一秒的 pending 单会被直接判 failed,而主库随后提交,两库账目分叉"},
+	} {
+		if f.val <= 0 {
+			return fmt.Errorf("qianye: two_phase.%s 必须大于 0,收到 %d"+
+				"(这里的 0 不是「不设限制」而是「立刻下判决」:%s)。"+
+				"想恢复默认值请【删掉这一行】,而不是填 0", f.name, f.val, f.why)
+		}
+	}
+	return nil
+}
+
 func validateRuntime(r *Runtime) error {
 	// 续租必须显著快于过期,否则一次网络抖动就丢租约、任务反复易主。
 	if r.LeaseRenewSeconds*2 >= r.LeaseTTLSeconds {
@@ -288,7 +324,10 @@ func ValidateTransfer(t *Transfer) error {
 	if err := checkQuotaCap("transfer.max_per_tx_quota", t.MaxPerTxQuota); err != nil {
 		return err
 	}
-	if t.MinQuota > t.MaxPerTxQuota {
+	// MaxPerTxQuota == 0 表示不设单笔上限(validate.go 的 `cfg.MaxPerTxQuota > 0` 守卫),
+	// 此时 min > max 是空谈。与 withdraw.max_quota_per_order 同口径:少了这个前置,
+	// "只关掉单笔上限"这个合法意图会撞上一条本不适用的跨字段规则,直接起不来。
+	if t.MaxPerTxQuota > 0 && t.MinQuota > t.MaxPerTxQuota {
 		return fmt.Errorf("qianye: transfer.min_quota(%d) 不得大于 max_per_tx_quota(%d)",
 			t.MinQuota, t.MaxPerTxQuota)
 	}

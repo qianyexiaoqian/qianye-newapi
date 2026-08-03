@@ -131,9 +131,9 @@ func TestPrunePii_StuckOrdersDoNotBlockTheBatch(t *testing.T) {
 	assert.NotEmpty(t, loadPayee(t, gdb, "WD-stuck").Cipher)
 }
 
-// 保留期配负数表示关掉清理(填 0 会被 applyDefaults 补成 180,这是刻意的:
-// 少配一个键不该让一批银行卡号永久留存);失去租约(ctx 取消)必须立刻停手,
-// 否则会与接管节点双跑。
+// 保留期 <=0 表示关掉清理:显式写 0 就是关掉(密文永久留存),【不写这个键】
+// 才取默认的 180 天 —— 少配一个键不该让一批银行卡号永久留存。这里仍用 -1 是
+// 为了同时盖住负数入参。失去租约(ctx 取消)必须立刻停手,否则会与接管节点双跑。
 func TestPrunePii_SkipsWhenDisabledOrCancelled(t *testing.T) {
 	gdb := newTestDB(t)
 	old := common.GetTimestamp() - 400*86400

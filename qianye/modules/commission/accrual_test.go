@@ -1,12 +1,15 @@
 package commission
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/qianye/config"
 
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
@@ -104,6 +107,37 @@ func TestBucketBoundaries(t *testing.T) {
 	// 晚些时候的消费提前成熟,削弱成熟期的防套利作用。
 	assert.Equal(t, dayStart+86400+7*86400, bucketMatureAt("20260730", 7))
 	assert.Equal(t, dayStart+86400, bucketMatureAt("20260730", 0))
+}
+
+// TestHoldingDaysZeroFromYAMLMaturesSameDay 走完整条链路:YAML 里的 0 →
+// config.Load → 计提行的 mature_at。
+//
+// 上一条测试只喂常量 0,而实际出事的地方在配置层:holding_days: 0 被
+// 静默补成默认的 7,mature_at 落在"当天结束 + 7 天",结算条件
+// mature_at <= now 于是要等 8 天才成立,qy_commission_balance 一直空着。
+// 运营查配置看到 0,用户看到可提现佣金为 0,双方都以为是对方的问题。
+func TestHoldingDaysZeroFromYAMLMaturesSameDay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qianye.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+enabled: true
+database:
+  dsn: "u:p@tcp(127.0.0.1:3306)/qy"
+commission:
+  enabled: true
+  holding_days: 0
+`), 0o600))
+	t.Setenv(config.EnvConfigPath, path)
+
+	prev := qyConfig.Load()
+	t.Cleanup(func() { qyConfig.Store(prev) })
+	require.NoError(t, config.Load())
+
+	holding := config.Get().Commission.HoldingDays
+	require.Equal(t, 0, holding, "显式写的 0 不得被默认值替换")
+
+	dayStart := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC).Unix()
+	assert.Equal(t, dayStart+86400, bucketMatureAt("20260730", holding),
+		"成熟期为 0 时佣金应当在当天结束即可结算,而不是再等 7 天")
 }
 
 func TestAmountSaneRejectsAbsurdValues(t *testing.T) {

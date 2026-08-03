@@ -290,7 +290,13 @@ func Enabled() bool { return Get().Enabled }
 func Path() string { p, _ := loadedPath.Load().(string); return p }
 ```
 
-`applyDefaults` 逐字段兜底（0 值 → 上表默认值）。布尔量的默认值问题用「**显式指针 + 反解**」处理不划算，改用约定：**所有 `Enabled` 类布尔的语义都是「false=关」，示例文件里全部写全**；`hot_path_fail_open` / `main_outbox_enabled` / `auto_migrate` 这三个「默认应为 true」的字段用 `*bool` 承载：
+`applyDefaults` 逐字段兜底，判据是「**这个键在 YAML 里出现过没有**」，不是「值是不是 0」。
+
+> 这里曾经写的是「0 值 → 上表默认值」，那是个真缺陷：0 在本配置里遍地都是有含义的取值（冷却期 0 = 不限制、成熟期 0 = 当天结算、上限 0 = 不设限），业务代码里那些 `if cfg.X > 0` 的守卫就是证据，而旧判据让 else 分支永远点不亮。实测形态是 `commission.holding_days: 0` 被补成 7，佣金要多等 8 天才结算，而配置文件上仍写着 0。
+>
+> 现在的做法：解析前用 `markNumbersUnset` 把每个数值字段填成哨兵（`math.MinInt`），解析后仍是哨兵的就是「文件里没这个键」。**新增数值配置项时不要另写 `if x == 0 { x = def }`**，照旧调用 `intDefault` / `int64Default` 即可，判据已经在里面。详见 `qianye/config/defaults.go` 末尾那段说明。
+
+布尔量的默认值问题用「**显式指针 + 反解**」处理不划算，改用约定：**所有 `Enabled` 类布尔的语义都是「false=关」，示例文件里全部写全**；`hot_path_fail_open` / `main_outbox_enabled` / `auto_migrate` 这三个「默认应为 true」的字段用 `*bool` 承载：
 
 ```go
 HotPathFailOpen   *bool `yaml:"hot_path_fail_open"`   // nil → true

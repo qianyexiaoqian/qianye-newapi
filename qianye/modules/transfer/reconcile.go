@@ -149,8 +149,8 @@ func applyFundOrderStatus(orderNo string, order qymodel.FundOrder) error {
 // 风控排查又可能要求 90 天。写死成常量的话,运维照着 YAML 改完重启,
 // 闸门其实一动没动,而且没有任何迹象能让他发现(原审计 C1/C2 就是这个形状)。
 //
-// 与 withdraw.pii_retention_days 同口径:<=0 表示关掉清理。填 0 会被
-// applyDefaults 补成 30(少配一个键不该让行为日志永久留存),要彻底关掉必须显式填负数。
+// 与 withdraw.pii_retention_days 同口径:<=0 表示关掉清理。显式写 0 就是关掉;
+// 【不写这个键】才会取默认的 30 天 —— 少配一个键不该让行为日志永久留存。
 func pruneLookupLogs(ctx context.Context, gdb *gorm.DB) {
 	days := config.Get().Transfer.LookupLogRetainDays
 	if days <= 0 || ctx.Err() != nil {

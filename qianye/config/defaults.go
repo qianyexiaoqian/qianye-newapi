@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"math"
+	"reflect"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
@@ -57,10 +59,15 @@ func bpsToPercent(bps int) string {
 	return fmt.Sprintf("%d.%02d", whole, frac)
 }
 
-// applyDefaults 把零值字段补成默认值。
+// applyDefaults 把 YAML 里没有出现的键补成默认值。
 //
-// 只处理"零值即未配置"的数值与字符串字段;布尔开关的默认值由 *bool + boolOr
-// 承载(见 config.go),因为 bool 的零值 false 无法与"用户显式写 false"区分。
+// 判据是"键缺失",不是"值为零" —— 见本文件末尾 markNumbersUnset 的说明。
+// 因此必须与解析前的 markNumbersUnset 成对调用:数值字段进来时带着哨兵,
+// 出去时要么是文件里写的值、要么是默认值、要么是 0(没写也没默认值)。
+//
+// 字符串字段仍以空串为判据:pii_key、log_level 这些字段上"填了空串"与
+// "没填"确实是同一件事,再套一层哨兵只会多一个可漂移的地方。
+// 布尔开关的默认值由 *bool + boolOr 承载(见 config.go)。
 func applyDefaults(c *Config) {
 	d := &c.Database
 	intDefault(&d.MaxIdleConns, 20)
@@ -165,16 +172,21 @@ func applyDefaults(c *Config) {
 	intDefault(&gp.ShadowFlushIntervalSeconds, 60)
 	intDefault(&gp.ShadowRetentionDays, 90)
 	intDefault(&gp.MaxRules, 2000)
+
+	// 走到这里仍是哨兵的字段,是"文件里没写、也没有默认值"的那一批
+	// (transfer.fee_bps、audit.retention_days、violation.auto_ban_threshold……)。
+	// 它们的语义就是零值,还原成 0 之后 validate 与业务代码看到的东西与从前一致。
+	clearUnsetNumbers(reflect.ValueOf(c).Elem())
 }
 
 func intDefault(p *int, def int) {
-	if *p == 0 {
+	if *p == missingInt {
 		*p = def
 	}
 }
 
 func int64Default(p *int64, def int64) {
-	if *p == 0 {
+	if *p == missingInt64 {
 		*p = def
 	}
 }
@@ -182,5 +194,81 @@ func int64Default(p *int64, def int64) {
 func strDefault(p *string, def string) {
 	if *p == "" {
 		*p = def
+	}
+}
+
+// ─────────────────── "这个键到底写没写" 的判定 ───────────────────
+//
+// 判据曾经是"零值即未配置"。它错在 0 在本配置里遍地都是**有含义的取值**:
+// 冷却期 0 = 不限制、成熟期 0 = 当天结算、上限 0 = 不设限 —— 业务代码里那些
+// `if cfg.X > 0` 的守卫就是证据,而旧判据让 else 分支永远点不亮,配置层
+// 一直在悄悄替运维改主意。
+//
+// 实测抓到的形态:commission.holding_days 显式写 0,被补成默认的 7,计提行
+// 要多等 8 天才结算。运营查配置看到的是 0,用户看到可提现佣金是 0,双方都
+// 以为是对方的问题,而且没有任何一行日志。
+//
+// 换判据的做法是:解析前先把每个数值字段填成一个不可能被写出来的哨兵,
+// 解析后仍是哨兵的就是"文件里没这个键"。
+//
+// 为什么不改成一份 "commission.holding_days" 这样的路径表:那种表里一个
+// 拼写错误就等于该字段静默退回旧行为,而且没人看得出来 —— 与本缺陷是同一种
+// 形状。走哨兵的话调用点传的仍是字段本身(intDefault(&cm.HoldingDays, 7)),
+// 由编译器保证指不错。
+//
+// 为什么不把这 15 个字段改成 *int:调用点要加大量解引用,且会留下"有的字段
+// 是指针有的不是"的第 N 份拷贝,下一个新增字段照哪份抄全看运气。
+const (
+	// 取整型下界当哨兵。它与真实取值的距离是这个方案唯一的假设,所以说清楚:
+	// 一个运维要写出 -9223372036854775808 才会撞上它,而那个数在任何一个字段上
+	// 都不表达任何意图。撞上之后该字段会被当成"没写"从而取默认值 —— 不是每个
+	// 字段都有 validate 规则能把它拦成负数(commission.holding_days 就没有),
+	// 因此这里不承诺兜底,只承诺撞不上。
+	missingInt   = math.MinInt
+	missingInt64 = math.MinInt64
+)
+
+// markNumbersUnset 在 YAML 解析【之前】给全部数值字段打上哨兵。
+//
+// 递归而不展平路径:嵌套段(Transfer / Withdraw 这类)与顶层字段走同一段代码,
+// 新增一个配置段不需要在这里补任何东西。*int(已废弃的 *_rate_bps)不在此列 ——
+// 指针本来就能区分"写了 0"和"没写",那正是本判据要补齐的能力。
+func markNumbersUnset(v reflect.Value) {
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		if !f.CanSet() {
+			continue
+		}
+		switch f.Kind() {
+		case reflect.Struct:
+			markNumbersUnset(f)
+		case reflect.Int:
+			f.SetInt(missingInt)
+		case reflect.Int64:
+			f.SetInt(missingInt64)
+		}
+	}
+}
+
+// clearUnsetNumbers 把 applyDefaults 之后残留的哨兵还原成 0。
+// 少了这一步,没有默认值的字段会带着 math.MinInt 进入业务代码。
+func clearUnsetNumbers(v reflect.Value) {
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		if !f.CanSet() {
+			continue
+		}
+		switch f.Kind() {
+		case reflect.Struct:
+			clearUnsetNumbers(f)
+		case reflect.Int:
+			if f.Int() == missingInt {
+				f.SetInt(0)
+			}
+		case reflect.Int64:
+			if f.Int() == missingInt64 {
+				f.SetInt(0)
+			}
+		}
 	}
 }

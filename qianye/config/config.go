@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync/atomic"
 
@@ -97,11 +98,21 @@ type TwoPhase struct {
 	// "主库已提交但新库回写失败"的中间态将无法判定。强烈建议保持 true。
 	MainOutboxEnabled         *bool `yaml:"main_outbox_enabled"`
 	CompensateIntervalSeconds int   `yaml:"compensate_interval_seconds"`
-	PendingGraceSeconds       int   `yaml:"pending_grace_seconds"`
-	MaxProbeAttempts          int   `yaml:"max_probe_attempts"`
 	BatchSize                 int   `yaml:"batch_size"`
-	ManualReviewAfterSeconds  int   `yaml:"manual_review_after_seconds"`
-	OutboxRetentionDays       int   `yaml:"outbox_retention_days"`
+	// PendingGraceSeconds / MaxProbeAttempts / ManualReviewAfterSeconds 是补偿任务
+	// 判定"这笔跨库操作已经久到不像还在正常执行中"的三个刻度。
+	//
+	// 与本文件其余闸门相反,这三项【不接受 0】:这里的 0 不是"不设这道限制",
+	// 而是"立刻下判决"。宽限期 0 会在主库事务尚未提交时就去探针;重试次数 0
+	// 让第一次退避直接把单子转人工裁决;人工复核阈值 0 让任何存活超过一秒的
+	// pending 单被判 failed —— 主库随后提交,两库账目就此分叉。
+	// 因此由 validateTwoPhase 拒绝启动,而不是静默替运维补一个值。
+	PendingGraceSeconds      int `yaml:"pending_grace_seconds"`
+	MaxProbeAttempts         int `yaml:"max_probe_attempts"`
+	ManualReviewAfterSeconds int `yaml:"manual_review_after_seconds"`
+	// OutboxRetentionDays 主库探针行的保留天数。0 表示关掉清理(永久保留);
+	// 不写这个键则取默认的 30 天。
+	OutboxRetentionDays int `yaml:"outbox_retention_days"`
 }
 
 // Audit 统一审计。资金审计默认永久保留。
@@ -119,15 +130,23 @@ type Audit struct {
 }
 
 // Transfer 用户间余额划转。
+//
+// 下面几道闸门一律是"0 表示不设这道限制"(业务代码里对应 `if cfg.X > 0` 的守卫)。
+// 只有【不写这个键】才会拿到默认值 —— 判据是键缺失而不是零值,见 defaults.go。
 type Transfer struct {
-	Enabled       bool  `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+	// MinQuota / MaxPerTxQuota 单笔金额的上下界,0 表示该侧不限制。
+	// 两侧都大于 0 时必须 min <= max,否则任何金额都不合法(等于把划转静默关停),
+	// 那个组合由 ValidateTransfer 拒绝启动。
 	MinQuota      int64 `yaml:"min_quota"`
 	MaxPerTxQuota int64 `yaml:"max_per_tx_quota"`
+	// DailyMaxQuota / DailyMaxCount 单个发起方每日的总额与笔数上限,0 表示不限制。
 	DailyMaxQuota int64 `yaml:"daily_max_quota"`
 	DailyMaxCount int   `yaml:"daily_max_count"`
 	FeeBps        int   `yaml:"fee_bps"`
 	FeeMinQuota   int64 `yaml:"fee_min_quota"`
-	CooldownSecs  int   `yaml:"cooldown_seconds"`
+	// CooldownSecs 两次划转之间的最小间隔。0 表示不限制。
+	CooldownSecs int `yaml:"cooldown_seconds"`
 	// RecipientLookup 限定收款人查找方式。刻意不提供用户名模糊搜索:
 	// 那等于开放用户枚举,且与"已邀请用户列表要脱敏"的隐私要求自相矛盾。
 	RecipientLookup        string `yaml:"recipient_lookup"`
@@ -139,6 +158,7 @@ type Transfer struct {
 	ReceiverDailyMaxInCount int `yaml:"receiver_daily_max_in_count"`
 	// LookupLogRetainDays 收款人查找日志的保留天数。这些日志用于发现
 	// 批量探测用户 ID 的行为,但含用户输入,不宜长期保留。
+	// 0 表示关掉清理(永久保留);不写这个键则取默认的 30 天。
 	LookupLogRetainDays int `yaml:"lookup_log_retain_days"`
 }
 
@@ -169,11 +189,14 @@ type Commission struct {
 	TopupRateBpsDeprecated   *int `yaml:"topup_rate_bps"`
 	ConsumeRateBpsDeprecated *int `yaml:"consume_rate_bps"`
 
-	Levels             int   `yaml:"levels"`
-	MinSettleQuota     int64 `yaml:"min_settle_quota"`
-	MaxPerOrderQuota   int64 `yaml:"max_per_order_quota"`
-	HoldingDays        int   `yaml:"holding_days"`
-	SettleIntervalSecs int   `yaml:"settle_interval_seconds"`
+	Levels           int   `yaml:"levels"`
+	MinSettleQuota   int64 `yaml:"min_settle_quota"`
+	MaxPerOrderQuota int64 `yaml:"max_per_order_quota"`
+	// HoldingDays 佣金成熟期,从消费所在自然日结束起算(见 modules/commission
+	// 的 bucketMatureAt)。0 是合法策略:当天结束即可结算,不设防套利延迟。
+	// 不写这个键才取默认的 7 天。
+	HoldingDays        int `yaml:"holding_days"`
+	SettleIntervalSecs int `yaml:"settle_interval_seconds"`
 	// InviterCacheSecs 缓存 users.inviter_id。消费返佣挂在 relay 结算路径上,
 	// 裸查会给主库加上与 relay QPS 等量的读压力。
 	InviterCacheSecs     int `yaml:"inviter_cache_seconds"`
@@ -199,10 +222,15 @@ type Withdraw struct {
 	RateFreezeMode      string   `yaml:"rate_freeze_mode"`
 	RateFreezeFixed     string   `yaml:"rate_freeze_fixed"`
 	AutoCreditOnApprove *bool    `yaml:"auto_credit_on_approve"`
-	DailyMaxCount       int      `yaml:"daily_max_count"`
-	PayeeAccountMax     int      `yaml:"payee_account_max"`
-	ReviewSLAHours      int      `yaml:"review_sla_hours"`
-	RemarkMaxRunes      int      `yaml:"remark_max_runes"`
+	// DailyMaxCount 单个用户每日可提交的提现单数,0 表示不限制。
+	DailyMaxCount int `yaml:"daily_max_count"`
+	// PayeeAccountMax 单个用户可保存的收款方式数量,0 表示不限制。
+	PayeeAccountMax int `yaml:"payee_account_max"`
+	// ReviewSLAHours 审核时限,超时的待审单在队列里标红。0 表示不计时限。
+	ReviewSLAHours int `yaml:"review_sla_hours"`
+	// RemarkMaxRunes 用户自定义说明的字数上限,必须落在 1..2000 —— 0 不是
+	// "不限制"而是"一个字都不许填",validateWithdraw 会拒绝启动。
+	RemarkMaxRunes int `yaml:"remark_max_runes"`
 	// PIIKey 是收款信息的 AES-GCM 密钥(base64,32 字节)。为空则禁止 fiat 方式:
 	// 收款信息属 PII,明文落库不可接受。
 	PIIKey        string `yaml:"pii_key"`
@@ -231,8 +259,8 @@ type Withdraw struct {
 	// PIIRetentionDays 收款信息的保留天数,到期后清除密文只保留脱敏串。
 	// 收款信息属个人敏感信息,不应在提现完成后无限期留存。
 	//
-	// 未配置(0)会被 applyDefaults 补成 180 —— 清理默认开着是刻意的:
-	// 少配一个键就让一批银行卡号永久留存,不该是默认结局。要彻底关掉请填负数。
+	// 不写这个键会取默认的 180 天 —— 清理默认开着是刻意的:少配一个键就让
+	// 一批银行卡号永久留存,不该是默认结局。要彻底关掉清理请显式写 0。
 	PIIRetentionDays int `yaml:"pii_retention_days"`
 	// ProofEnabled 决定是否允许用户给法币提现附一张收款/打款凭证图片。
 	//
@@ -243,6 +271,8 @@ type Withdraw struct {
 	ProofEnabled *bool `yaml:"proof_enabled"`
 	// ProofMaxBytes 单张凭证的字节上限,上界见 MaxWithdrawProofBytes。
 	// 请求体在读第一个字节之前就被 http.MaxBytesReader 按它截断。
+	// 必须落在 1..MaxWithdrawProofBytes:0 不是"不限制"(那等于把堆交给上传者),
+	// validateWithdraw 会拒绝启动。不想收凭证请用 proof_enabled: false。
 	ProofMaxBytes int64 `yaml:"proof_max_bytes"`
 }
 
@@ -311,7 +341,9 @@ type Violation struct {
 	// FeeMultiplier 为 decimal 字符串(如 "1.0"),避免浮点误差进入计费。
 	FeeMultiplier  string `yaml:"fee_multiplier"`
 	FixedFeeAmount string `yaml:"fixed_fee_amount"`
-	MaxFeeQuota    int64  `yaml:"max_fee_quota"`
+	// MaxFeeQuota 单次违规扣费的全局硬上限(规则级上限另有 FeeMaxQuota)。
+	// 0 表示不设全局上限,此时只剩规则级上限与主库 int32 容量兜底。
+	MaxFeeQuota int64 `yaml:"max_fee_quota"`
 	// InsufficientBalancePolicy: clamp(扣到 0 为止) | negative(允许负数) | ban。
 	// 上游的 DecreaseUserQuota 没有余额校验,不指定策略会把余额扣成负数。
 	InsufficientBalancePolicy string `yaml:"insufficient_balance_policy"`
@@ -466,6 +498,10 @@ func parseFile(path string) (*Config, int64, error) {
 	}
 
 	c := &Config{}
+	// 解析前给数值字段打哨兵,解析后由 applyDefaults 判定"这个键写没写"。
+	// yaml.v3 只写它在文件里见到的键,没见到的字段原样留着哨兵。
+	markNumbersUnset(reflect.ValueOf(c).Elem())
+
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	// 严格模式:未知字段一律报错,绝不降级为宽松解析。
 	//

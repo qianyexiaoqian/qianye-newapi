@@ -101,9 +101,10 @@ func TestPruneLookupLogs_LongerRetentionKeepsOlderRows(t *testing.T) {
 		"保留期配成 90 天时,40 天前的解析日志不该被清掉")
 }
 
-// 保留期填负数表示关掉清理(填 0 会被 applyDefaults 补成 30,这是刻意的:
-// 少配一个键不该让行为日志永久留存);失去租约(ctx 取消)必须立刻停手,
-// 否则会与接管节点双跑。
+// 保留期 <=0 表示关掉清理:显式写 0 就是关掉,【不写这个键】才取默认的 30 天
+// (少配一个键不该让行为日志永久留存)。这里仍用 -1 是为了同时盖住负数入参 ——
+// 显式 0 那条路由 config 包的 TestExplicitZeroIsNeverReplacedByDefault 守着。
+// 失去租约(ctx 取消)必须立刻停手,否则会与接管节点双跑。
 func TestPruneLookupLogs_SkipsWhenDisabledOrCancelled(t *testing.T) {
 	gdb := newLookupLogDB(t)
 	seedLookupLog(t, gdb, "ancient", 400)

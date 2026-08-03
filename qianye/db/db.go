@@ -83,8 +83,11 @@ func Init(cfg config.Database) error {
 	sqlDB.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetimeSeconds) * time.Second)
 	sqlDB.SetConnMaxIdleTime(time.Duration(cfg.ConnMaxIdleTimeSeconds) * time.Second)
 
+	// 与 DSN 里的 timeout= 走同一个回落值:配置层的 0 表示"这个键没写过头"
+	// 而不是"零秒",直接 WithTimeout(0) 会造出一个已经过期的 ctx,首次 Ping
+	// 必然 DeadlineExceeded,而报出来的错只会说"请检查 dsn 与网络"。
 	ctx, cancel := context.WithTimeout(context.Background(),
-		time.Duration(cfg.ConnectTimeoutSeconds)*time.Second)
+		time.Duration(effectiveSeconds(cfg.ConnectTimeoutSeconds, 5))*time.Second)
 	defer cancel()
 	start := time.Now()
 	if err := sqlDB.PingContext(ctx); err != nil {
@@ -327,13 +330,21 @@ func replaceParam(dsn, key, value string) string {
 	return dsn[:idx] + kv + dsn[idx+end:]
 }
 
-// secondsParam 把秒数渲染成 go-sql-driver 认识的 duration 字符串。
-// 非正值一律回落到默认值:0 在驱动语义里是"永不超时",那正是我们要消灭的状态。
-func secondsParam(v, fallback int) string {
+// effectiveSeconds 是这些超时项"配了 0 或负数算没配"的唯一口径。
+//
+// 非正值一律回落到默认值:0 在驱动语义里是"永不超时",那正是我们要消灭的状态;
+// 而在 context.WithTimeout 里 0 恰好相反,是"立刻超时"。DSN 参数与首次 Ping 的
+// ctx 必须走同一个值,否则同一个 0 会在两处变成两种极端,谁也对不上谁。
+func effectiveSeconds(v, fallback int) int {
 	if v <= 0 {
-		v = fallback
+		return fallback
 	}
-	return strconv.Itoa(v) + "s"
+	return v
+}
+
+// secondsParam 把秒数渲染成 go-sql-driver 认识的 duration 字符串。
+func secondsParam(v, fallback int) string {
+	return strconv.Itoa(effectiveSeconds(v, fallback)) + "s"
 }
 
 func parseLogLevel(s string) gormlogger.LogLevel {

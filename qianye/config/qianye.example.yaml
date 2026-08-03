@@ -16,6 +16,25 @@
 #
 # 注意:配置采用严格解析,写错的字段名会导致启动失败而不是被忽略 ——
 # 风控开关拼错却静默不生效,是最危险的失败模式。
+#
+# 数值项的 0 与"不写这个键"含义不同:0 是一个会生效的取值,只有【删掉整行】
+# 才会拿到下面注释里写的默认值。0 具体表示什么由字段自己决定,分三类:
+#
+#   * 限额、冷却、保留期这类闸门:0 = 不设这道限制(逐个字段在下面注明);
+#   * 周期、超时、批量这类节奏参数:0 会被消费方回落成内置值,写了等于没写;
+#   * 少数核心参数:0 非法,启动时报错退出,错误信息会点名字段。全集如下
+#     (带 † 的只在该功能段 enabled: true 时才校验):
+#       database.max_idle_conns / max_open_conns
+#       runtime.lease_ttl_seconds / hot_hook_queue_size / hot_hook_workers
+#       two_phase.pending_grace_seconds / max_probe_attempts / manual_review_after_seconds
+#       commission.levels / min_settle_quota
+#       withdraw.remark_max_runes / proof_max_bytes †
+#       availability.bucket_seconds / flush_interval_seconds †
+#       group_pricing 段的全部 5 个数值项 †
+#     这份清单由 config 包的 zeroExemptions 逐条断言,多一条少一条测试都会红。
+#
+# 升级提示:旧版本把所有数值项的 0 当成"没填"静默补默认值。若你的配置里
+# 显式写着上面第三类中的某个 0,升级后进程会起不来 —— 删掉那一行即可。
 # ============================================================================
 
 enabled: true
@@ -156,7 +175,9 @@ commission:
   # 用户会觉得"用了一天一分佣金没有"。
   min_settle_quota: 1000
   max_per_order_quota: 50000000
-  holding_days: 7                    # 佣金成熟期,防"充值拿佣金→提现→退款"套利
+  # 佣金成熟期,防"充值拿佣金→提现→退款"套利。从消费所在自然日结束起算。
+  # 0 是合法策略:当天结束即可结算,不设延迟。删掉这一行才取默认的 7 天。
+  holding_days: 7
   settle_interval_seconds: 300
   inviter_cache_seconds: 300         # 邀请关系缓存,避免给主库加上与 relay 等量的读压力
   topup_scan_interval_seconds: 60
@@ -237,7 +258,8 @@ withdraw:
   max_quota_per_order: 500000000     # 单笔提现上限
   daily_max_quota: 1000000000        # 单日提现总额上限
   # 收款信息保留天数,到期清除密文只留脱敏串(脱敏串与风控指纹永久保留)。
-  # 不填等于 180;要彻底关掉清理请填负数 —— 填 0 会被默认值补回 180。
+  # 删掉这一行等于 180;要彻底关掉清理请显式填 0 —— 那意味着一批银行卡号密文
+  # 永久留在库里,请确认这是合规上想要的结果。
   pii_retention_days: 180
   payee_account_max: 3
   review_sla_hours: 72
