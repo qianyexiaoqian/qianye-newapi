@@ -107,16 +107,6 @@ export type QyTransferOptions = {
  * 响应是"部分对象"。`normalizeQyConfig()` 会补齐成本类型，让所有调用方都能
  * 无条件读 `config.features.transfer`，不必到处写可选链。
  */
-/**
- * 站点主题。默认预设由超级管理员在后台设置,取代上游硬编码的默认值。
- *
- * force_preset 为真时忽略用户的个人偏好 —— 用于需要统一品牌观感的部署。
- */
-export type QySiteTheme = {
-  default_preset: string
-  force_preset: boolean
-}
-
 export type QyConfig = {
   enabled: boolean
   available: boolean
@@ -125,7 +115,6 @@ export type QyConfig = {
   log_metrics: QyLogMetricsOptions
   withdraw_options: QyWithdrawOptions
   transfer_options: QyTransferOptions
-  theme: QySiteTheme
 }
 
 /** 引导端点的原始响应形状（字段可能缺失）。 */
@@ -137,7 +126,6 @@ export type QyConfigPayload = {
   log_metrics?: Partial<QyLogMetricsOptions>
   withdraw_options?: Partial<QyWithdrawOptions>
   transfer_options?: Partial<QyTransferOptions>
-  theme?: Partial<QySiteTheme>
 }
 
 // ───────────────────────────── 状态机 ─────────────────────────────

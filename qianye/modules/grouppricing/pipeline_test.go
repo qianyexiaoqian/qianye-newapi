@@ -61,11 +61,13 @@ func installHooksForTest(t *testing.T) {
 	prevRatio := relayhelper.QyGroupModelRatio
 	prevTiered := relayhelper.QyGroupTieredQuota
 	prevTask := service.QyGroupTaskRatio
+	prevTieredSettle := service.QyGroupTieredSettle
 	t.Cleanup(func() {
 		relayhelper.QyGroupModelPrice = prevPrice
 		relayhelper.QyGroupModelRatio = prevRatio
 		relayhelper.QyGroupTieredQuota = prevTiered
 		service.QyGroupTaskRatio = prevTask
+		service.QyGroupTieredSettle = prevTieredSettle
 	})
 	Mod{}.InstallHooks()
 }
@@ -335,4 +337,68 @@ func TestDisabledModuleLeavesUpstreamPricingUntouched(t *testing.T) {
 	assert.Equal(t, float64(100),
 		relayhelper.QyGroupTieredQuota(relayInfo(pipelineGroup, pipelineGroup, pipelineModel), 100))
 	assert.Equal(t, float64(2), service.QyGroupTaskRatio(pipelineGroup, pipelineModel, 2))
+}
+
+// TestTieredSettleHookVariableIsWiredAndApplies 覆盖第五个挂载点:阶梯计价的**结算侧**。
+//
+// # 这条补的是什么缺口
+//
+// 阶梯计价的扣费分两步,而两步走的是两条不同的代码路径:
+//
+//	预扣  relay/helper.modelPriceHelperTiered → relayhelper.QyGroupTieredQuota
+//	结算  service.TryTieredSettle → billingexpr.ComputeTieredQuotaWithRequest
+//	      ← 从 snap.ExprString **重跑表达式**,只乘 snap.GroupRatio
+//
+// 结算这一步不读 PriceData、不经过 relay/helper,所以上面那条
+// TestTieredHookVariableIsWiredAndApplies 一个字都碰不到它。
+//
+// 缺陷是在同步上游时被翻出来的:本包的包注释当时还写着「结算侧读 PriceData,
+// 所以覆盖三个计价点即覆盖全部扣费」—— 那句话对 tiered 分支**不成立**。
+// 生产后果与 Task 路径那一处完全同形:给分组配了折扣时,预扣按折扣价、
+// 结算按原价,差额以**追扣**落到用户头上。
+//
+// 与 hook_test.go 直接调 applyTieredQuota 的关键差别:这里调的是
+// tiered_settle.go 真正调用的那个变量 service.QyGroupTieredSettle ——
+// 少了 InstallHooks 里那行赋值,这条会红,那条不会。
+func TestTieredSettleHookVariableIsWiredAndApplies(t *testing.T) {
+	t.Run("真实模式下结算侧乘数生效", func(t *testing.T) {
+		useConfig(t, true, false)
+		syncHotAsync(t)
+		gdb := newTestDB(t)
+		installHooksForTest(t)
+		replaceRule(t, gdb, pipelineGroup, pipelineModel, ModeTiered, "0.5")
+
+		assert.Equal(t, float64(50),
+			service.QyGroupTieredSettle(relayInfo(pipelineGroup, pipelineGroup, pipelineModel), 100),
+			"tiered_settle.go 调的是这个变量:没被 InstallHooks 赋值时它是恒等函数,结果会是 100")
+	})
+
+	t.Run("预扣与结算必须是同一个乘数", func(t *testing.T) {
+		// 这一条是本缺陷的本质:两侧各自都"有 hook"还不够,
+		// 它们必须得出**同一个数**。分别挂两份实现、或哪天有人给结算侧
+		// 单独加个开关,都会让这条变红。
+		useConfig(t, true, false)
+		syncHotAsync(t)
+		gdb := newTestDB(t)
+		installHooksForTest(t)
+		replaceRule(t, gdb, pipelineGroup, pipelineModel, ModeTiered, "0.25")
+
+		info := relayInfo(pipelineGroup, pipelineGroup, pipelineModel)
+		assert.Equal(t,
+			relayhelper.QyGroupTieredQuota(info, 400),
+			service.QyGroupTieredSettle(info, 400),
+			"预扣与结算同口径是 AGENTS.md 的计费不变量,两侧算出不同的数就是资损")
+	})
+
+	t.Run("影子模式下结算侧同样不改扣费", func(t *testing.T) {
+		useConfig(t, true, true)
+		syncHotAsync(t)
+		gdb := newTestDB(t)
+		installHooksForTest(t)
+		replaceRule(t, gdb, pipelineGroup, pipelineModel, ModeTiered, "0.5")
+
+		assert.Equal(t, float64(100),
+			service.QyGroupTieredSettle(relayInfo(pipelineGroup, pipelineGroup, pipelineModel), 100),
+			"影子模式下实际扣费必须一分不变")
+	})
 }

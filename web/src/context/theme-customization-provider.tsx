@@ -16,244 +16,47 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react'
+import { createContext, useContext, useEffect } from 'react'
 
-import { getCookie, removeCookie, setCookie } from '@/lib/cookies'
 import {
-  CONTENT_LAYOUT_VALUES,
-  type ContentLayout,
   DEFAULT_THEME_CUSTOMIZATION,
-  resolveThemeFont,
-  THEME_COOKIE_KEYS,
-  THEME_FONT_VALUES,
-  THEME_PRESET_VALUES,
-  THEME_RADIUS_VALUES,
-  THEME_SCALE_VALUES,
+  FIXED_THEME_PRESET,
+  THEME_PRESET_ATTRIBUTE,
   type ThemeCustomization,
-  type ThemeFont,
-  type ThemePreset,
-  type ThemeRadius,
-  type ThemeScale,
 } from '@/lib/theme-customization'
-import { qyResolveDefaultPreset } from '@/features/qy/lib/site-theme'
 
-const COOKIE_MAX_AGE = 60 * 60 * 24 * 365 // 1 year
-
-function readCookie<T extends string>(
-  name: string,
-  allowed: ReadonlySet<T>,
-  fallback: T
-): T {
-  const value = getCookie(name)
-  return value && allowed.has(value as T) ? (value as T) : fallback
-}
-
-function applyAttribute(name: string, value: string | null) {
-  if (typeof document === 'undefined') return
-  const body = document.body
-  if (!body) return
-  if (value === null) {
-    body.removeAttribute(name)
-  } else {
-    body.setAttribute(name, value)
-  }
-}
-
-type ThemeCustomizationContextType = {
-  defaults: ThemeCustomization
-  customization: ThemeCustomization
-  setPreset: (preset: ThemePreset) => void
-  setFont: (font: ThemeFont) => void
-  setRadius: (radius: ThemeRadius) => void
-  setScale: (scale: ThemeScale) => void
-  setContentLayout: (contentLayout: ContentLayout) => void
-  resetCustomization: () => void
-}
-
-// Fallback used when a consumer renders outside the provider (e.g. an error
-// route mounted before providers are ready, or stale HMR boundaries). Keeping
-// it permissive prevents the whole tree from crashing — the UI just behaves
-// like the defaults until the real provider re-mounts.
-const FALLBACK_CONTEXT: ThemeCustomizationContextType = {
-  defaults: DEFAULT_THEME_CUSTOMIZATION,
+/**
+ * 主题定制的读取入口。
+ *
+ * ── 千夜:这里已经没有任何可调的东西了 ──
+ * 项目方裁决「移除主题设置功能」,五个可调轴(preset / font / radius / scale /
+ * contentLayout)连同它们的 cookie 读写、setter、`data-theme-*` 属性写入一并
+ * 删除。留下来的只有一件事:**把固定预设写到 `<body>` 上**。
+ *
+ * 那一个属性不能省:整套 Steins Gate 主题 CSS 都挂在
+ * `[data-theme-preset='steins-gate']` 作用域下,不写等于主题整个失效。
+ *
+ * Provider 本身保留(而不是把 `<ThemeCustomizationProvider>` 从 `__root.tsx`
+ * 摘掉),因为上游三张图表仍在调 {@link useThemeCustomization} 取刷新键;
+ * 换成直接 import 常量要动三个上游文件,合并上游时白白多三处冲突。
+ */
+const CONTEXT_VALUE: { customization: ThemeCustomization } = {
   customization: DEFAULT_THEME_CUSTOMIZATION,
-  setPreset: () => {},
-  setFont: () => {},
-  setRadius: () => {},
-  setScale: () => {},
-  setContentLayout: () => {},
-  resetCustomization: () => {},
 }
 
-const ThemeCustomizationContext =
-  createContext<ThemeCustomizationContextType>(FALLBACK_CONTEXT)
+const ThemeCustomizationContext = createContext(CONTEXT_VALUE)
 
 export function ThemeCustomizationProvider(props: {
   children: React.ReactNode
 }) {
-  const [preset, _setPreset] = useState<ThemePreset>(() =>
-    readCookie<ThemePreset>(
-      THEME_COOKIE_KEYS.preset,
-      THEME_PRESET_VALUES,
-      // 站点默认主题由管理员在后台配置,取代硬编码的默认值;
-      // 未配置或取不到时原样回落到上游默认。
-      qyResolveDefaultPreset(DEFAULT_THEME_CUSTOMIZATION.preset) as ThemePreset
-    )
-  )
-  const [font, _setFont] = useState<ThemeFont>(() =>
-    readCookie<ThemeFont>(
-      THEME_COOKIE_KEYS.font,
-      THEME_FONT_VALUES,
-      DEFAULT_THEME_CUSTOMIZATION.font
-    )
-  )
-  const [radius, _setRadius] = useState<ThemeRadius>(() =>
-    readCookie<ThemeRadius>(
-      THEME_COOKIE_KEYS.radius,
-      THEME_RADIUS_VALUES,
-      DEFAULT_THEME_CUSTOMIZATION.radius
-    )
-  )
-  const [scale, _setScale] = useState<ThemeScale>(() =>
-    readCookie<ThemeScale>(
-      THEME_COOKIE_KEYS.scale,
-      THEME_SCALE_VALUES,
-      DEFAULT_THEME_CUSTOMIZATION.scale
-    )
-  )
-  const [contentLayout, _setContentLayout] = useState<ContentLayout>(() =>
-    readCookie<ContentLayout>(
-      THEME_COOKIE_KEYS.contentLayout,
-      CONTENT_LAYOUT_VALUES,
-      DEFAULT_THEME_CUSTOMIZATION.contentLayout
-    )
-  )
-
-  // Mirror state to the <body> via data-* attributes so theme-presets.css can
-  // override CSS variables at the right cascade layer.
+  // 属性写在 <body> 而不是 <html>:上游 theme-presets.css 与 qy-sg-*.css 的
+  // 选择器口径都是 body,换一个挂载点会让全部预设选择器一起失配。
   useEffect(() => {
-    applyAttribute(
-      'data-theme-preset',
-      preset === DEFAULT_THEME_CUSTOMIZATION.preset ? null : preset
-    )
-  }, [preset])
-
-  // Font is the one axis where we resolve before writing the attribute:
-  // the persisted preference may be `default`, but CSS works in terms of
-  // the concrete `sans`/`serif` choice that should drive the cascade.
-  // Resolving here (instead of in CSS via `:not()` selectors) keeps the
-  // stylesheet to one simple `[data-theme-font='serif']` selector and lets
-  // future presets opt into typography via `PRESET_DEFAULT_FONT` alone.
-  useEffect(() => {
-    applyAttribute('data-theme-font', resolveThemeFont(font, preset))
-  }, [font, preset])
-
-  useEffect(() => {
-    applyAttribute(
-      'data-theme-radius',
-      radius === DEFAULT_THEME_CUSTOMIZATION.radius ? null : radius
-    )
-  }, [radius])
-
-  useEffect(() => {
-    applyAttribute(
-      'data-theme-scale',
-      scale === DEFAULT_THEME_CUSTOMIZATION.scale ? null : scale
-    )
-  }, [scale])
-
-  useEffect(() => {
-    applyAttribute('data-theme-content-layout', contentLayout)
-  }, [contentLayout])
-
-  const setPreset = useCallback((value: ThemePreset) => {
-    _setPreset(value)
-    if (value === DEFAULT_THEME_CUSTOMIZATION.preset) {
-      removeCookie(THEME_COOKIE_KEYS.preset)
-    } else {
-      setCookie(THEME_COOKIE_KEYS.preset, value, COOKIE_MAX_AGE)
-    }
+    document.body?.setAttribute(THEME_PRESET_ATTRIBUTE, FIXED_THEME_PRESET)
   }, [])
-
-  const setFont = useCallback((value: ThemeFont) => {
-    _setFont(value)
-    if (value === DEFAULT_THEME_CUSTOMIZATION.font) {
-      removeCookie(THEME_COOKIE_KEYS.font)
-    } else {
-      setCookie(THEME_COOKIE_KEYS.font, value, COOKIE_MAX_AGE)
-    }
-  }, [])
-
-  const setRadius = useCallback((value: ThemeRadius) => {
-    _setRadius(value)
-    if (value === DEFAULT_THEME_CUSTOMIZATION.radius) {
-      removeCookie(THEME_COOKIE_KEYS.radius)
-    } else {
-      setCookie(THEME_COOKIE_KEYS.radius, value, COOKIE_MAX_AGE)
-    }
-  }, [])
-
-  const setScale = useCallback((value: ThemeScale) => {
-    _setScale(value)
-    if (value === DEFAULT_THEME_CUSTOMIZATION.scale) {
-      removeCookie(THEME_COOKIE_KEYS.scale)
-    } else {
-      setCookie(THEME_COOKIE_KEYS.scale, value, COOKIE_MAX_AGE)
-    }
-  }, [])
-
-  const setContentLayout = useCallback((value: ContentLayout) => {
-    _setContentLayout(value)
-    if (value === DEFAULT_THEME_CUSTOMIZATION.contentLayout) {
-      removeCookie(THEME_COOKIE_KEYS.contentLayout)
-    } else {
-      setCookie(THEME_COOKIE_KEYS.contentLayout, value, COOKIE_MAX_AGE)
-    }
-  }, [])
-
-  const resetCustomization = useCallback(() => {
-    setPreset(DEFAULT_THEME_CUSTOMIZATION.preset)
-    setFont(DEFAULT_THEME_CUSTOMIZATION.font)
-    setRadius(DEFAULT_THEME_CUSTOMIZATION.radius)
-    setScale(DEFAULT_THEME_CUSTOMIZATION.scale)
-    setContentLayout(DEFAULT_THEME_CUSTOMIZATION.contentLayout)
-  }, [setPreset, setFont, setRadius, setScale, setContentLayout])
-
-  const value = useMemo<ThemeCustomizationContextType>(
-    () => ({
-      defaults: DEFAULT_THEME_CUSTOMIZATION,
-      customization: { preset, font, radius, scale, contentLayout },
-      setPreset,
-      setFont,
-      setRadius,
-      setScale,
-      setContentLayout,
-      resetCustomization,
-    }),
-    [
-      preset,
-      font,
-      radius,
-      scale,
-      contentLayout,
-      setPreset,
-      setFont,
-      setRadius,
-      setScale,
-      setContentLayout,
-      resetCustomization,
-    ]
-  )
 
   return (
-    <ThemeCustomizationContext.Provider value={value}>
+    <ThemeCustomizationContext.Provider value={CONTEXT_VALUE}>
       {props.children}
     </ThemeCustomizationContext.Provider>
   )

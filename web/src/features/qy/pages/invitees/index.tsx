@@ -32,45 +32,40 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
-import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyCommissionRecordsQuery, qyInviteesQuery } from '../affiliate/api'
 import type { QyCommissionRecord, QyInvitee } from '../affiliate/types'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 
 /**
- * 已邀请用户 + 我的佣金流水。
+ * 已邀请用户 + 我的佣金流水（「推广佣金」选择夹的第二张标签，需求 3）。
  *
- * 两张表合成一页两个标签：用户问"这个人给我带来了多少佣金"时看第一张，
- * 问"这笔 3.27 是怎么来的"时看第二张。分成两个路由会让这个对照过程变成
- * 来回跳页。
+ * 两张表合成一张标签下的两个次级标签：用户问"这个人给我带来了多少佣金"时看
+ * 第一张，问"这笔 3.27 是怎么来的"时看第二张。拆成两张同级标签会让这个对照
+ * 过程和"提现"挤在同一排，四张变六张。
+ *
+ * 次级标签**刻意不进 hash**：hash 只表达"选择夹选了哪一格"这一层。两层都写
+ * 进同一个 hash 需要一套编码规则，而它换来的只是一个更长的分享链接。
  *
  * **列表里的用户名已由后端脱敏**（`commission/mask.go`），前端不得再处理，
  * 也不要试图去补一个真实用户名 —— 后端刻意连 user_id 都没下发。
  */
-export function QyInvitees() {
+export function QyInviteesBody() {
   const { t } = useTranslation()
 
   return (
-    <QySectionPageLayout>
-      <QySectionPageLayout.Title>
-        {t('qy_nav_invitees')}
-      </QySectionPageLayout.Title>
-      <QySectionPageLayout.Content>
-        <Tabs defaultValue='invitees' className='gap-3'>
-          <TabsList>
-            <TabsTrigger value='invitees'>{t('qy_aff_tab_people')}</TabsTrigger>
-            <TabsTrigger value='records'>{t('qy_aff_tab_records')}</TabsTrigger>
-          </TabsList>
-          <TabsContent value='invitees'>
-            <InviteesTable />
-          </TabsContent>
-          <TabsContent value='records'>
-            <CommissionRecordsTable />
-          </TabsContent>
-        </Tabs>
-      </QySectionPageLayout.Content>
-    </QySectionPageLayout>
+    <Tabs defaultValue='invitees' className='gap-3'>
+      <TabsList>
+        <TabsTrigger value='invitees'>{t('qy_aff_tab_people')}</TabsTrigger>
+        <TabsTrigger value='records'>{t('qy_aff_tab_records')}</TabsTrigger>
+      </TabsList>
+      <TabsContent value='invitees'>
+        <InviteesTable />
+      </TabsContent>
+      <TabsContent value='records'>
+        <CommissionRecordsTable />
+      </TabsContent>
+    </Tabs>
   )
 }
 

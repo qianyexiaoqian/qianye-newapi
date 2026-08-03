@@ -17,16 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import {
-  ArrowRightLeft,
-  Banknote,
   ClipboardList,
   Gauge,
   Gavel,
   HandCoins,
   HeartPulse,
-  KeyRound,
   Megaphone,
-  Palette,
   Percent,
   ReceiptText,
   Repeat,
@@ -35,7 +31,6 @@ import {
   SlidersHorizontal,
   Tags,
   TriangleAlert,
-  UserPlus,
   UsersRound,
 } from 'lucide-react'
 import type { ElementType } from 'react'
@@ -78,7 +73,7 @@ export type QyNavGroupId =
   | 'qy-risk'
 
 /** 折叠项（上游 `NavCollapsible`）的标识。 */
-export type QyClusterId = 'transfer' | 'withdraw' | 'transfer-settings'
+export type QyClusterId = 'transfer-settings'
 
 /** 新增分组的定义。上游分组不在此列 —— 它们由上游自己声明。 */
 export type QyNavGroupDef = {
@@ -131,24 +126,98 @@ export type QyClusterDef = {
 
 export const QY_NAV_CLUSTERS: readonly QyClusterDef[] = [
   {
-    id: 'transfer',
-    titleKey: 'qy_nav_cluster_transfer',
-    icon: ArrowRightLeft,
-    group: 'personal',
-  },
-  {
-    id: 'withdraw',
-    titleKey: 'qy_nav_cluster_withdraw',
-    icon: Banknote,
-    group: 'personal',
-  },
-  {
     id: 'transfer-settings',
     titleKey: 'qy_nav_cluster_transfer_settings',
     icon: SlidersHorizontal,
     group: 'qy-settlement',
   },
 ]
+
+// ─────────────────────────── 选项卡组 ───────────────────────────
+
+/**
+ * 「选择夹」——把若干张页面收进同一个宿主页面的一组标签页。
+ *
+ * ── 为什么是一张表而不是各写各的 ──
+ * 这件事有三个消费方：① 侧栏（被收进去的页面**不再有独立入口**）；
+ * ② 宿主页面（要按同一顺序渲染标签）；③ 旧路由（要重定向到宿主 + 对应
+ * 标签）。三处各写一份清单就是本仓反复出现的「同一概念的第 N 份拷贝」，
+ * 迟早出现"侧栏删了但页面还在旧位置"这类断链。所以清单只此一张。
+ *
+ * `pages[0]` 允许等于 `host` 本身：推广佣金的第一张标签就是宿主页
+ * `/qy/affiliate` 自己（它仍然要有侧栏入口，所以它不算"被收进去"）。
+ *
+ * 宿主是**上游页面**时（`/wallet`），标签状态只能走 URL hash：上游钱包路由
+ * 的 `validateSearch` 用 zod object 校验，未登记的 query 参数会被路由器
+ * 直接抹掉，而 hash 不经过校验。两个宿主统一用 hash，省得出现两套机制。
+ */
+export type QyTabGroupDef = {
+  /** 宿主页面 url。 */
+  host: string
+  /**
+   * 选项卡组自己的名字。
+   *
+   * 宿主页是 qy 页面时（`/qy/affiliate`），它同时也是**侧栏那一行的标题** ——
+   * 侧栏上写「推广佣金」而第一张标签写「推广概览」，是刻意的：前者命名的是
+   * 整组，后者命名的是组里的一张表。
+   */
+  titleKey: string
+  /** 标签顺序。可见性仍由 {@link isQyPageVisible} 逐页判定。 */
+  pages: readonly string[]
+}
+
+export const QY_TAB_GROUPS: readonly QyTabGroupDef[] = [
+  {
+    // 需求 2：余额划转移进钱包页，选择夹含发起划转 / 划转记录 / 支付密码。
+    host: '/wallet',
+    titleKey: 'qy_nav_transfer',
+    pages: ['/qy/transfer', '/qy/transfer-logs', '/qy/pay-password'],
+  },
+  {
+    // 需求 3：提现移进推广板块，选择夹含概览 / 已邀请用户 / 提现 / 提现记录。
+    host: '/qy/affiliate',
+    titleKey: 'qy_nav_commission_hub',
+    pages: ['/qy/affiliate', '/qy/invitees', '/qy/withdraw', '/qy/withdrawals'],
+  },
+]
+
+/**
+ * 该页是否已被收进别人的选项卡组（因而**不该有独立的导航入口**）。
+ *
+ * 宿主页自己不算：`/qy/affiliate` 是选项卡组的第一张标签，同时仍是侧栏入口。
+ */
+export function isQyPageHosted(url: string): boolean {
+  return QY_TAB_GROUPS.some(
+    (group) => group.host !== url && group.pages.includes(url)
+  )
+}
+
+/**
+ * 页面 url → 标签的 hash 片段（不含 `#`）。
+ *
+ * 纯函数、可逆、无表可漂移：`/qy/transfer-logs` → `qy-transfer-logs`。
+ * 旧路由重定向与宿主页选中标签用的是同一个函数，所以不可能对不上。
+ */
+export function qyTabHash(url: string): string {
+  return url.replace(/^\/+/, '').replaceAll('/', '-')
+}
+
+/**
+ * 页面 url → 现在真正该去的地方。
+ *
+ * 收进选择夹之后，`navigate({ to: '/qy/transfer-logs' })` 仍然能到 —— 旧路由
+ * 会重定向 —— 但那是**先离开宿主页再被弹回来**：整个钱包页会卸载重挂一次，
+ * 用户看到的是一次白闪。发起划转成功后跳去划转记录、提交提现后跳去提现记录，
+ * 都是这种"跳到自己隔壁那张标签"的场景。
+ *
+ * 所以动作完成后的跳转一律走这个函数，直接落到宿主页 + 对应 hash。
+ * 不在选择夹里的页面原样返回，调用方不需要分支。
+ */
+export function qyTabTarget(url: string): { to: string; hash?: string } {
+  const group = QY_TAB_GROUPS.find((item) => item.pages.includes(url))
+  if (group == null) return { to: url }
+  return { to: group.host, hash: qyTabHash(url) }
+}
 
 // ───────────────────────────── 页面 ─────────────────────────────
 
@@ -159,8 +228,9 @@ export type QyPageDef = {
   /** 该页依赖的功能开关；`undefined` 表示只要扩展开着就显示。 */
   feature?: keyof QyFeatures
   /**
-   * 侧栏落点。与 {@link QyPageDef.cluster} 二选一，恰好一个
-   * （`__tests__/pages-table.test.ts` 断言）。
+   * 侧栏落点。与 {@link QyPageDef.cluster} 二选一，恰好一个 —— 除非本页已被
+   * {@link QY_TAB_GROUPS} 收进别人的选择夹，那时**两个都不写**（它没有独立
+   * 入口了）。`__tests__/pages-table.test.ts` 双向断言。
    */
   group?: QyNavGroupId
   /** 归入某个折叠项。此时分组由折叠项的 `group` 决定。 */
@@ -198,23 +268,13 @@ export const QY_PAGES: readonly QyPageDef[] = [
     enKey: 'qy_sg_nav_en_availability',
   },
 
-  // ── 上游 personal：账户安全 + 两个资金动作折叠 ──
-  {
-    // 支付密码是账户安全设置而不是资金动作，所以紧跟 Profile 而不是进折叠。
-    url: '/qy/pay-password',
-    titleKey: 'qy_nav_pay_password',
-    feature: 'transfer',
-    group: 'personal',
-    after: '/profile',
-    icon: KeyRound,
-    jpKey: 'qy_sg_jp_pay_password',
-    enKey: 'qy_sg_nav_en_pay_password',
-  },
+  // ── 钱包页「余额划转」选项卡组（需求 2）──
+  // 三页都收进 /wallet 的选择夹，因此**不声明 group / cluster / icon**：
+  // 它们已经没有独立的侧栏入口，旧路由只做重定向。
   {
     url: '/qy/transfer',
     titleKey: 'qy_nav_transfer_send',
     feature: 'transfer',
-    cluster: 'transfer',
     jpKey: 'qy_sg_jp_transfer',
     enKey: 'qy_sg_nav_en_transfer',
   },
@@ -222,29 +282,21 @@ export const QY_PAGES: readonly QyPageDef[] = [
     url: '/qy/transfer-logs',
     titleKey: 'qy_nav_transfer_logs',
     feature: 'transfer',
-    cluster: 'transfer',
     jpKey: 'qy_sg_jp_transfer_logs',
     enKey: 'qy_sg_nav_en_transfer_logs',
   },
   {
-    url: '/qy/withdraw',
-    titleKey: 'qy_nav_withdraw',
-    feature: 'withdraw',
-    cluster: 'withdraw',
-    jpKey: 'qy_sg_jp_withdraw',
-    enKey: 'qy_sg_nav_en_withdraw',
-  },
-  {
-    url: '/qy/withdrawals',
-    titleKey: 'qy_nav_withdrawals',
-    feature: 'withdraw',
-    cluster: 'withdraw',
-    jpKey: 'qy_sg_jp_withdrawals',
-    enKey: 'qy_sg_nav_en_withdrawals',
+    url: '/qy/pay-password',
+    titleKey: 'qy_nav_pay_password',
+    feature: 'transfer',
+    jpKey: 'qy_sg_jp_pay_password',
+    enKey: 'qy_sg_nav_en_pay_password',
   },
 
-  // ── 新组「推广」：面向所有用户的自助页面 ──
+  // ── 新组「推广」──
   {
+    // 选项卡组的宿主：侧栏那一行写组名「推广佣金」（QY_TAB_GROUPS.titleKey），
+    // 组内第一张标签才写本行的 `titleKey`（推广概览）。
     url: '/qy/affiliate',
     titleKey: 'qy_nav_affiliate',
     feature: 'commission',
@@ -257,10 +309,22 @@ export const QY_PAGES: readonly QyPageDef[] = [
     url: '/qy/invitees',
     titleKey: 'qy_nav_invitees',
     feature: 'commission',
-    group: 'qy-growth',
-    icon: UserPlus,
     jpKey: 'qy_sg_jp_invitees',
     enKey: 'qy_sg_nav_en_invitees',
+  },
+  {
+    url: '/qy/withdraw',
+    titleKey: 'qy_nav_withdraw',
+    feature: 'withdraw',
+    jpKey: 'qy_sg_jp_withdraw',
+    enKey: 'qy_sg_nav_en_withdraw',
+  },
+  {
+    url: '/qy/withdrawals',
+    titleKey: 'qy_nav_withdrawals',
+    feature: 'withdraw',
+    jpKey: 'qy_sg_jp_withdrawals',
+    enKey: 'qy_sg_nav_en_withdrawals',
   },
   {
     url: '/qy/violations',
@@ -299,15 +363,6 @@ export const QY_PAGES: readonly QyPageDef[] = [
     icon: HeartPulse,
     jpKey: 'qy_sg_jp_a_health',
     enKey: 'qy_sg_nav_en_a_health',
-  },
-  {
-    url: '/qy/admin/site-theme',
-    titleKey: 'qy_nav_a_site_theme',
-    group: 'admin',
-    after: '/system-settings/site',
-    icon: Palette,
-    jpKey: 'qy_sg_jp_a_site_theme',
-    enKey: 'qy_sg_nav_en_a_site_theme',
   },
 
   // ── 新组「结算」：钱怎么流动，管理员视角 ──
@@ -431,4 +486,24 @@ export function isQyPageVisible(
 ): boolean {
   if (isQyAdminPage(page.url) && !isAdmin) return false
   return page.feature == null || features[page.feature]
+}
+
+/**
+ * 当前应当**拥有自己那一行入口**的页面。
+ *
+ * 侧栏（`nav.ts` 的 `mergeQyNavGroups`）与工作区索引页
+ * （`getQyWorkspaceNavGroups`）都走这一个函数，因为"哪些页面还算独立入口"
+ * 必须只有一处判定：两边各写一遍 filter 的话，收进选择夹的页面会在其中一边
+ * 留下一行点了就被重定向甩走的死链 —— 那正是本仓反复出现的断链形状。
+ *
+ * 返回顺序 = `QY_PAGES` 的声明顺序；索引页另按 `LAB MEMO` 编号重排。
+ */
+export function qyEntryPages(
+  features: QyFeatures,
+  isAdmin: boolean
+): QyPageDef[] {
+  return QY_PAGES.filter(
+    (page) =>
+      isQyPageVisible(page, features, isAdmin) && !isQyPageHosted(page.url)
+  )
 }

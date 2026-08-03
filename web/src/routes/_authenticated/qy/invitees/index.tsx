@@ -16,12 +16,25 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
-import { QyInvitees } from '@/features/qy/pages/invitees'
+import { qyTabHash } from '@/features/qy/lib/pages'
 
-// 叶子路由不写守卫：登录由 `_authenticated/route.tsx` 保证，扩展启用由
-// `qy/route.tsx` 保证，管理员由 `qy/admin/route.tsx` 保证，各一处、零重复。
+/**
+ * 旧路由 —— 本页已被收进 `/qy/affiliate` 的选择夹（`QY_TAB_GROUPS`）。
+ *
+ * 保留成重定向而不是删掉：用户的书签、历史记录、以及扩展里其它页面里可能
+ * 还留着的 `Link to='/qy/invitees'` 都要落到实处。目标 hash 由 `qyTabHash` 现算，
+ * 与宿主页认标签用的是同一个函数 —— 不可能出现"跳过去了但选中的是另一张"。
+ *
+ * `replace`：旧地址不该留在历史栈里，否则用户按返回键会被立刻再弹回来。
+ */
 export const Route = createFileRoute('/_authenticated/qy/invitees/')({
-  component: QyInvitees,
+  beforeLoad: () => {
+    throw redirect({
+      to: '/qy/affiliate',
+      hash: qyTabHash('/qy/invitees'),
+      replace: true,
+    })
+  },
 })

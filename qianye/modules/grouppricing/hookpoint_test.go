@@ -42,6 +42,10 @@ const priceGoPath = "../../../relay/helper/price.go"
 // 全仓测试全绿。
 const taskBillingGoPath = "../../../service/task_billing.go"
 
+// tieredSettleGoPath 是第五个挂载点所在的文件:阶梯计价的结算侧。
+// 它从表达式重跑、不读 PriceData,所以计价链路那三个挂载点够不到它。
+const tieredSettleGoPath = "../../../service/tiered_settle.go"
+
 // pricingEntries 是上游的三个计价入口。它们的产物(PriceData)被结算侧直接使用,
 // 所以覆盖这三个函数即覆盖全部扣费。
 var pricingEntries = []string{"ModelPriceHelper", "ModelPriceHelperPerCall", "modelPriceHelperTiered"}
@@ -254,4 +258,36 @@ func indexOf(seq []string, name string) int {
 
 func contains(list []string, v string) bool {
 	return indexOf(list, v) >= 0
+}
+
+// TestTieredSettleHookPointExists 锁住第五个挂载点:service/tiered_settle.go。
+//
+// 为什么单靠 pipeline_test 不够:那条断言的是"InstallHooks 给变量赋了值",
+// 而这条断言的是"结算函数真的调了那个变量"。回滚验证实测过 ——
+// 把 TryTieredSettle 里的调用换成恒等表达式(即缺陷原样),
+// 全仓 go test 一条都不红,只有这条 AST 断言能抓到。
+//
+// 生产后果:阶梯计价的分组折扣在结算时丢失,预扣按折扣价、结算按原价,
+// 差额以追扣落到用户头上。
+func TestTieredSettleHookPointExists(t *testing.T) {
+	seq := callsByFunc(t, tieredSettleGoPath)["TryTieredSettle"]
+	require.NotEmpty(t, seq,
+		"service/tiered_settle.go 里找不到 TryTieredSettle —— 上游改了函数名?")
+
+	hookIdx := indexOf(seq, "QyGroupTieredSettle")
+	require.GreaterOrEqual(t, hookIdx, 0,
+		"TryTieredSettle 里缺少 QyGroupTieredSettle 挂载点:"+
+			"阶梯计价的分组折扣会在结算时丢失,差额以追扣形式落到用户头上")
+
+	computeIdx := indexOf(seq, "ComputeTieredQuotaWithRequest")
+	require.GreaterOrEqual(t, computeIdx, 0,
+		"TryTieredSettle 里找不到 ComputeTieredQuotaWithRequest —— 结算路径变了?")
+	assert.Greater(t, hookIdx, computeIdx,
+		"乘数必须作用在表达式重跑之后:提前调用拿到的不是 ActualQuotaBeforeGroup")
+
+	roundIdx := indexOf(seq, "QuotaRoundChecked")
+	require.GreaterOrEqual(t, roundIdx, 0,
+		"乘数作用后必须按 billingexpr 同一公式重算 after-group,否则两侧舍入口径不同")
+	assert.Greater(t, roundIdx, hookIdx,
+		"重算必须排在乘数之后")
 }

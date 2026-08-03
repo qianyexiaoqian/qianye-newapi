@@ -17,58 +17,38 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { History } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
-
-import { Button } from '@/components/ui/button'
 
 import { QyPageBoundary } from '../../components/qy-page-boundary'
-import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { useQyConfig } from '../../hooks/use-qy-config'
 import { qyTransferLimitsQuery } from './api'
 import { TransferForm } from './components/transfer-form'
 import { TransferLimitsCard } from './components/transfer-limits-card'
 
 /**
- * 余额划转页。
+ * 发起划转（钱包页「余额划转」选择夹的第一张标签，需求 2）。
  *
- * 页面本身只负责取限额与排版；不可逆确认、幂等键、错误分流全部收敛在
+ * 只导出正文：区段头、以及原来指向「划转记录」的那个按钮都由选择夹接管 ——
+ * 记录现在就是隔壁一张标签，再放一个跳转按钮等于让用户离开当前这一屏去到
+ * 同一屏的另一个位置。
+ *
+ * 本组件只负责取限额与排版；不可逆确认、幂等键、错误分流全部收敛在
  * `TransferForm` 里，因为那三件事必须一起看才说得清。
  */
-export function QyTransfer() {
-  const { t } = useTranslation()
+export function QyTransferBody() {
   const config = useQyConfig()
   const limitsQuery = useQuery(qyTransferLimitsQuery())
 
   return (
-    <QySectionPageLayout>
-      <QySectionPageLayout.Title>
-        {t('qy_nav_transfer')}
-      </QySectionPageLayout.Title>
-      <QySectionPageLayout.Actions>
-        <Button
-          variant='outline'
-          size='sm'
-          render={<Link to='/qy/transfer-logs' />}
-        >
-          <History aria-hidden='true' />
-          {t('qy_nav_transfer_logs')}
-        </Button>
-      </QySectionPageLayout.Actions>
-      <QySectionPageLayout.Content>
-        <QyPageBoundary query={limitsQuery}>
-          {limitsQuery.data != null && (
-            <div className='grid gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)] lg:items-start'>
-              <TransferForm
-                limits={limitsQuery.data}
-                degraded={config.status === 'enabled' && !config.available}
-              />
-              <TransferLimitsCard limits={limitsQuery.data} />
-            </div>
-          )}
-        </QyPageBoundary>
-      </QySectionPageLayout.Content>
-    </QySectionPageLayout>
+    <QyPageBoundary query={limitsQuery}>
+      {limitsQuery.data != null && (
+        <div className='grid gap-3 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] lg:items-start'>
+          <TransferForm
+            limits={limitsQuery.data}
+            degraded={config.status === 'enabled' && !config.available}
+          />
+          <TransferLimitsCard limits={limitsQuery.data} />
+        </div>
+      )}
+    </QyPageBoundary>
   )
 }

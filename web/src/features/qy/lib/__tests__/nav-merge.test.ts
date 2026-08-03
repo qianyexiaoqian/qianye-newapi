@@ -144,22 +144,34 @@ describe('qy nav merge — admin, all features on', () => {
     ])
   })
 
-  test('Personal：支付密码紧跟 Profile，两个资金动作收进折叠项', () => {
-    assert.deepEqual(urlsOf(merged, 'personal'), [
-      '/wallet',
-      '/profile',
-      '/qy/pay-password',
-      '[collapsible:qy_nav_cluster_transfer]',
-      '[collapsible:qy_nav_cluster_withdraw]',
-    ])
-    assert.deepEqual(subUrlsOf(merged, 'personal', 'qy_nav_cluster_transfer'), [
+  test('Personal 回到上游原样：划转三页已收进钱包页的选择夹', () => {
+    // 需求 2 之后，支付密码 / 发起划转 / 划转记录都是 `/wallet` 上的标签，
+    // 侧栏不再为它们各留一行 —— 这正是项目方要的"菜单少几行"。
+    assert.deepEqual(urlsOf(merged, 'personal'), ['/wallet', '/profile'])
+  })
+
+  test('收进选择夹的 6 个页面在整棵导航里一次都不出现', () => {
+    const all = new Set(
+      merged.flatMap((group) =>
+        group.items.flatMap((item) => [
+          typeof item.url === 'string' ? item.url : '',
+          ...(item.items ?? []).map((sub) => String(sub.url)),
+        ])
+      )
+    )
+    for (const url of [
       '/qy/transfer',
       '/qy/transfer-logs',
-    ])
-    assert.deepEqual(subUrlsOf(merged, 'personal', 'qy_nav_cluster_withdraw'), [
+      '/qy/pay-password',
+      '/qy/invitees',
       '/qy/withdraw',
       '/qy/withdrawals',
-    ])
+    ]) {
+      assert.ok(
+        !all.has(url),
+        `${url} 还留在侧栏里：点进去会被立刻重定向到宿主页，侧栏高亮跟着跳走`
+      )
+    }
   })
 
   test('Admin：四个管理页各自紧跟语义最近的上游项', () => {
@@ -172,14 +184,12 @@ describe('qy nav merge — admin, all features on', () => {
       '/system-info',
       '/qy/admin/health',
       '/system-settings/site',
-      '/qy/admin/site-theme',
     ])
   })
 
   test('三个新分组的内容与规模', () => {
     assert.deepEqual(urlsOf(merged, 'qy-growth'), [
       '/qy/affiliate',
-      '/qy/invitees',
       '/qy/violations',
     ])
     assert.deepEqual(urlsOf(merged, 'qy-settlement'), [
@@ -274,10 +284,10 @@ describe('qy nav merge — 普通用户', () => {
 
   test('用户自己的页面照常并入上游分组', () => {
     assert.ok(urlsOf(merged, 'general').includes('/qy/availability'))
-    assert.ok(urlsOf(merged, 'personal').includes('/qy/pay-password'))
+    // Personal 组不再有 qy 项：划转三页已经是钱包页上的标签了。
+    assert.deepEqual(urlsOf(merged, 'personal'), ['/wallet', '/profile'])
     assert.deepEqual(urlsOf(merged, 'qy-growth'), [
       '/qy/affiliate',
-      '/qy/invitees',
       '/qy/violations',
     ])
   })
@@ -292,21 +302,30 @@ describe('qy nav merge — 边界', () => {
   test('折叠项在子项被功能开关关光时不生成空壳', () => {
     const merged = mergeQyNavGroups(
       baseGroups(),
-      { ...ALL_ON, withdraw: false },
+      { ...ALL_ON, transfer: false },
       ROLE.ADMIN,
       t
     )
     assert.ok(
-      !urlsOf(merged, 'personal').includes(
-        '[collapsible:qy_nav_cluster_withdraw]'
+      !urlsOf(merged, 'qy-settlement').includes(
+        '[collapsible:qy_nav_cluster_transfer_settings]'
       ),
-      '提现功能关掉后仍然渲染了一个没有子项的折叠菜单'
+      '划转功能关掉后仍然渲染了一个没有子项的折叠菜单'
     )
     assert.ok(
-      urlsOf(merged, 'personal').includes(
-        '[collapsible:qy_nav_cluster_transfer]'
-      ),
-      '关掉提现不应该连带影响划转折叠项'
+      urlsOf(merged, 'qy-settlement').includes('/qy/admin/fund-orders'),
+      '关掉划转不应该连带影响同组里与划转无关的项'
+    )
+  })
+
+  test('宿主页那一行显示的是组名而不是第一张标签的名字', () => {
+    const merged = mergeQyNavGroups(baseGroups(), ALL_ON, ROLE.USER, t)
+    const growth = merged.find((group) => group.id === 'qy-growth')
+    const hub = growth?.items.find((item) => item.url === '/qy/affiliate')
+    assert.equal(
+      hub?.title,
+      'qy_nav_commission_hub',
+      '侧栏用「推广概览」给整组命名，会让另外三张标签看起来像是藏起来的'
     )
   })
 

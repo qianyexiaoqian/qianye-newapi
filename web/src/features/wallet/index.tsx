@@ -23,7 +23,7 @@ import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { QyWalletEntryCard } from '@/features/qy/wallet-entry'
+import { QyWalletSections } from '@/features/qy/wallet-entry'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
@@ -439,7 +439,7 @@ export function Wallet(props: WalletProps) {
               loading={affiliateLoading}
             />
 
-            <QyWalletEntryCard />
+            <QyWalletSections />
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>

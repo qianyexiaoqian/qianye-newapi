@@ -17,27 +17,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { History } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-
-import { Button } from '@/components/ui/button'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
-import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { useQyConfig } from '../../hooks/use-qy-config'
 import { QyStatGrid, type QyStatItem } from '../components/qy-stat-grid'
 import { qyWithdrawConfigQuery } from './api'
 import { WithdrawForm } from './components/withdraw-form'
 
 /**
- * 提现申请页。
+ * 佣金提现（「推广佣金」选择夹的第三张标签，需求 3）。
  *
  * 门槛数字（可提额度、今日已提交、审核时效）全部先于表单展示：用户在填完
  * 一整张收款信息之后才被告知"低于最低提现额"，是这条链路上最常见的挫败点。
  */
-export function QyWithdraw() {
+export function QyWithdrawBody() {
   const { t } = useTranslation()
   const qyConfig = useQyConfig()
   const configQuery = useQuery(qyWithdrawConfigQuery())
@@ -81,33 +76,16 @@ export function QyWithdraw() {
         ]
 
   return (
-    <QySectionPageLayout>
-      <QySectionPageLayout.Title>
-        {t('qy_nav_withdraw')}
-      </QySectionPageLayout.Title>
-      <QySectionPageLayout.Actions>
-        <Button
-          variant='outline'
-          size='sm'
-          render={<Link to='/qy/withdrawals' />}
-        >
-          <History aria-hidden='true' />
-          {t('qy_nav_withdrawals')}
-        </Button>
-      </QySectionPageLayout.Actions>
-      <QySectionPageLayout.Content>
-        <QyPageBoundary query={configQuery}>
-          {config != null && (
-            <div className='space-y-4'>
-              <QyStatGrid items={stats} />
-              <WithdrawForm
-                config={config}
-                degraded={qyConfig.status === 'enabled' && !qyConfig.available}
-              />
-            </div>
-          )}
-        </QyPageBoundary>
-      </QySectionPageLayout.Content>
-    </QySectionPageLayout>
+    <QyPageBoundary query={configQuery}>
+      {config != null && (
+        <div className='space-y-3'>
+          <QyStatGrid items={stats} />
+          <WithdrawForm
+            config={config}
+            degraded={qyConfig.status === 'enabled' && !qyConfig.available}
+          />
+        </div>
+      )}
+    </QyPageBoundary>
   )
 }

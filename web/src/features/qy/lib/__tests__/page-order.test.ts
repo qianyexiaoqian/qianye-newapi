@@ -54,7 +54,6 @@ const FROZEN_ORDER = [
   '/qy/admin/violations',
   '/qy/admin/user-group',
   '/qy/admin/group-pricing',
-  '/qy/admin/site-theme',
   '/qy/admin/fund-orders',
   '/qy/admin/audit-logs',
   '/qy/admin/health',

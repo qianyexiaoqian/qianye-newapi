@@ -86,7 +86,6 @@ import { Route as AuthenticatedQyAdminCommissionIndexRouteImport } from './route
 import { Route as AuthenticatedQyAdminFundOrdersIndexRouteImport } from './routes/_authenticated/qy/admin/fund-orders/index'
 import { Route as AuthenticatedQyAdminGroupPricingIndexRouteImport } from './routes/_authenticated/qy/admin/group-pricing/index'
 import { Route as AuthenticatedQyAdminHealthIndexRouteImport } from './routes/_authenticated/qy/admin/health/index'
-import { Route as AuthenticatedQyAdminSiteThemeIndexRouteImport } from './routes/_authenticated/qy/admin/site-theme/index'
 import { Route as AuthenticatedQyAdminTransferConfigIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-config/index'
 import { Route as AuthenticatedQyAdminTransferGroupRulesIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-group-rules/index'
 import { Route as AuthenticatedQyAdminTransferRecordsIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-records/index'
@@ -525,12 +524,6 @@ const AuthenticatedQyAdminHealthIndexRoute =
     path: '/health/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
-const AuthenticatedQyAdminSiteThemeIndexRoute =
-  AuthenticatedQyAdminSiteThemeIndexRouteImport.update({
-    id: '/site-theme/',
-    path: '/site-theme/',
-    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
-  } as any)
 const AuthenticatedQyAdminTransferConfigIndexRoute =
   AuthenticatedQyAdminTransferConfigIndexRouteImport.update({
     id: '/transfer-config/',
@@ -650,7 +643,6 @@ export interface FileRoutesByFullPath {
   '/qy/admin/fund-orders/': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/qy/admin/group-pricing/': typeof AuthenticatedQyAdminGroupPricingIndexRoute
   '/qy/admin/health/': typeof AuthenticatedQyAdminHealthIndexRoute
-  '/qy/admin/site-theme/': typeof AuthenticatedQyAdminSiteThemeIndexRoute
   '/qy/admin/transfer-config/': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/qy/admin/transfer-records/': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
@@ -732,7 +724,6 @@ export interface FileRoutesByTo {
   '/qy/admin/fund-orders': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/qy/admin/group-pricing': typeof AuthenticatedQyAdminGroupPricingIndexRoute
   '/qy/admin/health': typeof AuthenticatedQyAdminHealthIndexRoute
-  '/qy/admin/site-theme': typeof AuthenticatedQyAdminSiteThemeIndexRoute
   '/qy/admin/transfer-config': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/qy/admin/transfer-group-rules': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/qy/admin/transfer-records': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
@@ -820,7 +811,6 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/fund-orders/': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/_authenticated/qy/admin/group-pricing/': typeof AuthenticatedQyAdminGroupPricingIndexRoute
   '/_authenticated/qy/admin/health/': typeof AuthenticatedQyAdminHealthIndexRoute
-  '/_authenticated/qy/admin/site-theme/': typeof AuthenticatedQyAdminSiteThemeIndexRoute
   '/_authenticated/qy/admin/transfer-config/': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/_authenticated/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/_authenticated/qy/admin/transfer-records/': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
@@ -907,7 +897,6 @@ export interface FileRouteTypes {
     | '/qy/admin/fund-orders/'
     | '/qy/admin/group-pricing/'
     | '/qy/admin/health/'
-    | '/qy/admin/site-theme/'
     | '/qy/admin/transfer-config/'
     | '/qy/admin/transfer-group-rules/'
     | '/qy/admin/transfer-records/'
@@ -989,7 +978,6 @@ export interface FileRouteTypes {
     | '/qy/admin/fund-orders'
     | '/qy/admin/group-pricing'
     | '/qy/admin/health'
-    | '/qy/admin/site-theme'
     | '/qy/admin/transfer-config'
     | '/qy/admin/transfer-group-rules'
     | '/qy/admin/transfer-records'
@@ -1076,7 +1064,6 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/fund-orders/'
     | '/_authenticated/qy/admin/group-pricing/'
     | '/_authenticated/qy/admin/health/'
-    | '/_authenticated/qy/admin/site-theme/'
     | '/_authenticated/qy/admin/transfer-config/'
     | '/_authenticated/qy/admin/transfer-group-rules/'
     | '/_authenticated/qy/admin/transfer-records/'
@@ -1646,13 +1633,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminHealthIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
-    '/_authenticated/qy/admin/site-theme/': {
-      id: '/_authenticated/qy/admin/site-theme/'
-      path: '/site-theme'
-      fullPath: '/qy/admin/site-theme/'
-      preLoaderRoute: typeof AuthenticatedQyAdminSiteThemeIndexRouteImport
-      parentRoute: typeof AuthenticatedQyAdminRouteRoute
-    }
     '/_authenticated/qy/admin/transfer-config/': {
       id: '/_authenticated/qy/admin/transfer-config/'
       path: '/transfer-config'
@@ -1739,7 +1719,6 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminFundOrdersIndexRoute: typeof AuthenticatedQyAdminFundOrdersIndexRoute
   AuthenticatedQyAdminGroupPricingIndexRoute: typeof AuthenticatedQyAdminGroupPricingIndexRoute
   AuthenticatedQyAdminHealthIndexRoute: typeof AuthenticatedQyAdminHealthIndexRoute
-  AuthenticatedQyAdminSiteThemeIndexRoute: typeof AuthenticatedQyAdminSiteThemeIndexRoute
   AuthenticatedQyAdminTransferConfigIndexRoute: typeof AuthenticatedQyAdminTransferConfigIndexRoute
   AuthenticatedQyAdminTransferGroupRulesIndexRoute: typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   AuthenticatedQyAdminTransferRecordsIndexRoute: typeof AuthenticatedQyAdminTransferRecordsIndexRoute
@@ -1763,8 +1742,6 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
     AuthenticatedQyAdminGroupPricingIndexRoute:
       AuthenticatedQyAdminGroupPricingIndexRoute,
     AuthenticatedQyAdminHealthIndexRoute: AuthenticatedQyAdminHealthIndexRoute,
-    AuthenticatedQyAdminSiteThemeIndexRoute:
-      AuthenticatedQyAdminSiteThemeIndexRoute,
     AuthenticatedQyAdminTransferConfigIndexRoute:
       AuthenticatedQyAdminTransferConfigIndexRoute,
     AuthenticatedQyAdminTransferGroupRulesIndexRoute:

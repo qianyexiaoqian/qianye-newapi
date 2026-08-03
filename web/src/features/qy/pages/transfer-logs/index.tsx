@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
 import { ArrowLeftRight } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -27,7 +26,6 @@ import {
   staticDataTableClassNames,
   type StaticDataTableColumn,
 } from '@/components/data-table'
-import { Button } from '@/components/ui/button'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -35,7 +33,6 @@ import { cn } from '@/lib/utils'
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyMaskedUser } from '../../components/qy-masked-user'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
-import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
@@ -46,13 +43,13 @@ import type { QyTransferRecord } from './types'
 const STATUS_OPTIONS = ['pending', 'success', 'failed', 'uncertain'] as const
 
 /**
- * 划转记录页。
+ * 划转记录（钱包页「余额划转」选择夹的第二张标签，需求 2）。
  *
  * 转入与转出是**同一条记录的两个视角**（后端 `toRecordItem` 按当前用户算方向），
  * 所以这里不做两张表，只用一个方向筛选 + 一列带符号的金额 —— 拆成两张表会让
  * "我到底一共转出了多少"变得需要来回切标签。
  */
-export function QyTransferLogs() {
+export function QyTransferLogsBody() {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
   const [direction, setDirection] = useState('')
@@ -157,82 +154,69 @@ export function QyTransferLogs() {
   }
 
   return (
-    <QySectionPageLayout>
-      <QySectionPageLayout.Title>
-        {t('qy_nav_transfer_logs')}
-      </QySectionPageLayout.Title>
-      <QySectionPageLayout.Actions>
-        <Button variant='outline' size='sm' render={<Link to='/qy/transfer' />}>
-          <ArrowLeftRight aria-hidden='true' />
-          {t('qy_nav_transfer')}
-        </Button>
-      </QySectionPageLayout.Actions>
-      <QySectionPageLayout.Content>
-        <div className='space-y-3'>
-          <div className='flex flex-wrap items-center gap-2'>
-            <NativeSelect
-              size='sm'
-              aria-label={t('qy_common_direction')}
-              value={direction}
-              onChange={(event) =>
-                onFilterChange(() => setDirection(event.target.value))
-              }
-            >
-              <NativeSelectOption value=''>
-                {t('qy_tr_filter_all_directions')}
-              </NativeSelectOption>
-              <NativeSelectOption value='out'>
-                {t('qy_common_out')}
-              </NativeSelectOption>
-              <NativeSelectOption value='in'>
-                {t('qy_common_in')}
-              </NativeSelectOption>
-            </NativeSelect>
+    <div className='space-y-3'>
+      <div className='flex flex-wrap items-center gap-2'>
+        <NativeSelect
+          size='sm'
+          aria-label={t('qy_common_direction')}
+          value={direction}
+          onChange={(event) =>
+            onFilterChange(() => setDirection(event.target.value))
+          }
+        >
+          <NativeSelectOption value=''>
+            {t('qy_tr_filter_all_directions')}
+          </NativeSelectOption>
+          <NativeSelectOption value='out'>
+            {t('qy_common_out')}
+          </NativeSelectOption>
+          <NativeSelectOption value='in'>
+            {t('qy_common_in')}
+          </NativeSelectOption>
+        </NativeSelect>
 
-            <NativeSelect
-              size='sm'
-              aria-label={t('qy_common_status')}
-              value={status}
-              onChange={(event) =>
-                onFilterChange(() => setStatus(event.target.value))
-              }
-            >
-              <NativeSelectOption value=''>
-                {t('qy_tr_filter_all_statuses')}
-              </NativeSelectOption>
-              {STATUS_OPTIONS.map((value) => (
-                <NativeSelectOption key={value} value={value}>
-                  {t(`qy_common_st_${value}`)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </div>
+        <NativeSelect
+          size='sm'
+          aria-label={t('qy_common_status')}
+          value={status}
+          onChange={(event) =>
+            onFilterChange(() => setStatus(event.target.value))
+          }
+        >
+          <NativeSelectOption value=''>
+            {t('qy_tr_filter_all_statuses')}
+          </NativeSelectOption>
+          {STATUS_OPTIONS.map((value) => (
+            <NativeSelectOption key={value} value={value}>
+              {t(`qy_common_st_${value}`)}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+      </div>
 
-          <QyPageBoundary
-            query={query}
-            isEmpty={items.length === 0}
-            emptyIcon={ArrowLeftRight}
-            emptyTitle={t('qy_tr_empty_title')}
-            emptyDescription={t('qy_tr_empty_desc')}
-          >
-            <div className='w-full overflow-x-auto'>
-              <StaticDataTable
-                columns={columns}
-                data={items}
-                getRowKey={(row) => row.order_no}
-                tableClassName='min-w-[860px]'
-              />
-            </div>
-            <QyPager
-              page={page}
-              pageSize={QY_PAGE_SIZE}
-              total={query.data?.total ?? 0}
-              disabled={query.isFetching}
-              onPageChange={setPage}
-            />
-          </QyPageBoundary>
+      <QyPageBoundary
+        query={query}
+        isEmpty={items.length === 0}
+        emptyIcon={ArrowLeftRight}
+        emptyTitle={t('qy_tr_empty_title')}
+        emptyDescription={t('qy_tr_empty_desc')}
+      >
+        <div className='w-full overflow-x-auto'>
+          <StaticDataTable
+            columns={columns}
+            data={items}
+            getRowKey={(row) => row.order_no}
+            tableClassName='min-w-[860px]'
+          />
         </div>
-      </QySectionPageLayout.Content>
-    </QySectionPageLayout>
+        <QyPager
+          page={page}
+          pageSize={QY_PAGE_SIZE}
+          total={query.data?.total ?? 0}
+          disabled={query.isFetching}
+          onPageChange={setPage}
+        />
+      </QyPageBoundary>
+    </div>
   )
 }

@@ -42,6 +42,7 @@ import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
 import { useQyAfterMoneyChange } from '../../../hooks/use-qy-after-money-change'
 import { isQyError, qyErrorMessage } from '../../../lib/api'
+import { qyTabTarget } from '../../../lib/pages'
 import { qyRuneLength } from '../../lib/constants'
 import { useQyRequestId } from '../../lib/request-id'
 import { qyCreateWithdrawal, qyWithdrawPayeesQuery } from '../api'
@@ -125,7 +126,8 @@ export function WithdrawForm(props: WithdrawFormProps) {
       setProof(QY_PROOF_NONE)
       setProofKey((value) => value + 1)
       await afterMoneyChange()
-      await navigate({ to: '/qy/withdrawals' })
+      // 同上：提现记录是「推广佣金」选择夹里的隔壁一张标签。
+      await navigate(qyTabTarget('/qy/withdrawals'))
     },
     onError: async (error) => {
       toast.error(qyErrorMessage(error, t))

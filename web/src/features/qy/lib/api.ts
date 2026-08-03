@@ -173,9 +173,6 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_wd_proof_purged: 'qy_err_wd_proof_purged',
   qy_wd_proof_store_failed: 'qy_err_wd_proof_store_failed',
 
-  // ── 站点主题（qianye/modules/sitetheme/api.go）──
-  qy_unknown_preset: 'qy_st_err_unknown_preset',
-
   // ── 返佣管理端（qianye/modules/commission/api_admin.go）──
   qy_reason_required: 'qy_err_cm_reason_required',
   qy_clawback_failed: 'qy_err_cm_clawback_failed',

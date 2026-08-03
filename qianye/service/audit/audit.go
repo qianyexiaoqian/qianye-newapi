@@ -115,7 +115,7 @@ func WriteConfigUpdate(c *gin.Context, ch ConfigChange) {
 
 // snapshotJSON 把快照值转成入库文本。
 //
-// 字符串原样透传:usergroup 的快照是一句人话、sitetheme 的是手工拼的 JSON,
+// 字符串原样透传:usergroup 的快照是一句人话、别处也有手工拼好的 JSON,
 // 再 Marshal 一次只会把它们变成带转义引号的字符串字面量。
 //
 // 序列化失败返回显式标记而不是空串:空串在审计详情里与"本来就没有快照"

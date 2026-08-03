@@ -18,8 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { Radio as RadioPrimitive } from '@base-ui/react/radio'
 import { RadioGroup as Radio } from '@base-ui/react/radio-group'
-import { CircleCheck, Lock, Palette, RotateCcw } from 'lucide-react'
-import { useEffect, type SVGProps } from 'react'
+import { CircleCheck, Palette, RotateCcw } from 'lucide-react'
+import type { SVGProps } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { IconDir } from '@/assets/custom/icon-dir'
@@ -50,17 +50,7 @@ import {
 } from '@/components/ui/sheet'
 import { useDirection } from '@/context/direction-provider'
 import { type Collapsible, useLayout } from '@/context/layout-provider'
-import { useThemeCustomization } from '@/context/theme-customization-provider'
 import { useTheme } from '@/context/theme-provider'
-import {
-  type ContentLayout,
-  isThemeAxisLocked,
-  THEME_PRESETS,
-  type ThemeFont,
-  type ThemePreset,
-  type ThemeRadius,
-  type ThemeScale,
-} from '@/lib/theme-customization'
 import { cn } from '@/lib/utils'
 
 import { useSidebar } from './ui/sidebar'
@@ -68,68 +58,30 @@ import { useSidebar } from './ui/sidebar'
 const Item = RadioPrimitive.Root
 
 /**
- * 轴锁生效时把四个轴的持久化偏好归位。
+ * 外观抽屉。
  *
- * 藏掉控件只解决"看得见"这一半。font/radius/scale/contentLayout 各有独立
- * cookie,不归位的话它们会继续往 <body> 上挂 data-theme-* 属性 ——
- * 用户既看不到控件又改不回来,比不隐藏更糟。
+ * ── 千夜:主题定制的五个轴已经整体移除 ──
+ * 项目方裁决「移除主题设置功能,不要给用户能使用主题设置,只给类似首页的
+ * 明暗调整即可」。上游的 preset / font / radius / scale / contentLayout 五组
+ * 控件连同它们的 cookie 读写一起删掉了(见 `lib/theme-customization.ts`),
+ * 站点主题固定为 Steins Gate。
  *
- * 这里【不】做 `if (locked) return` 之外的判断:setter 自身在值等于默认值时
- * 会 removeCookie,再次调用是幂等的;但仍逐项比对后才调用,否则每次 effect
- * 都会 setState 一轮,把父树拖着重渲染。
- *
- * 放在 ConfigDrawer 里而不是 provider 里,是因为这三个轴(font 轴已在
- * resolveThemeFont 就地掐断)在全站【只有本抽屉一个入口】:能改它们的人
- * 必然登录过、必然加载过 AppHeader,也就必然挂载过本组件。
+ * 这里保留的三组 —— 侧边栏样式、布局、书写方向 —— 不属于主题轴:它们由
+ * `layout-provider` / `direction-provider` 管理,只改结构不改观感,
+ * 与「明暗」一样属于个人使用偏好。
  */
-function useLockedAxisReset(locked: boolean) {
-  const {
-    defaults,
-    customization,
-    setFont,
-    setRadius,
-    setScale,
-    setContentLayout,
-  } = useThemeCustomization()
-
-  useEffect(() => {
-    if (!locked) return
-    if (customization.font !== defaults.font) setFont(defaults.font)
-    if (customization.radius !== defaults.radius) setRadius(defaults.radius)
-    if (customization.scale !== defaults.scale) setScale(defaults.scale)
-    if (customization.contentLayout !== defaults.contentLayout) {
-      setContentLayout(defaults.contentLayout)
-    }
-  }, [
-    locked,
-    defaults,
-    customization,
-    setFont,
-    setRadius,
-    setScale,
-    setContentLayout,
-  ])
-}
-
 export function ConfigDrawer() {
   const { t } = useTranslation()
   const { setOpen } = useSidebar()
   const { resetDir } = useDirection()
   const { resetTheme } = useTheme()
   const { resetLayout } = useLayout()
-  const { resetCustomization, customization } = useThemeCustomization()
-
-  // 裁决 4:仅 Steins Gate 预设下固定 UI,只留亮/暗。预设轴本身必须留着,
-  // 否则用户被锁在这个主题里换不回去。
-  const axisLocked = isThemeAxisLocked(customization.preset)
-  useLockedAxisReset(axisLocked)
 
   const handleReset = () => {
     setOpen(true)
     resetDir()
     resetTheme()
     resetLayout()
-    resetCustomization()
   }
 
   return (
@@ -156,22 +108,8 @@ export function ConfigDrawer() {
         </SheetHeader>
         <div className={sideDrawerFormClassName()}>
           <ThemeConfig />
-          <PresetConfig />
-          {axisLocked ? (
-            <div className='text-muted-foreground border-border flex items-start gap-2 rounded-md border border-dashed px-3 py-2.5 text-xs leading-relaxed'>
-              <Lock className='mt-0.5 size-3.5 shrink-0' aria-hidden='true' />
-              <span>{t('qy_theme_axes_locked')}</span>
-            </div>
-          ) : (
-            <>
-              <FontConfig />
-              <RadiusConfig />
-              <ScaleConfig />
-            </>
-          )}
           <SidebarConfig />
           <LayoutConfig />
-          {!axisLocked && <ContentLayoutConfig />}
           <DirConfig />
         </div>
         <SheetFooter className={sideDrawerFooterClassName('grid-cols-1')}>
@@ -302,302 +240,6 @@ function ThemeConfig() {
   )
 }
 
-function PresetConfig() {
-  const { t } = useTranslation()
-  const { defaults, customization, setPreset } = useThemeCustomization()
-  return (
-    <div>
-      <SectionTitle
-        title={t('Color preset')}
-        showReset={customization.preset !== defaults.preset}
-        onReset={() => setPreset(defaults.preset)}
-      />
-      <Radio
-        value={customization.preset}
-        onValueChange={(v) => setPreset(v as ThemePreset)}
-        className='grid w-full grid-cols-4 gap-3'
-        aria-label={t('Select color preset')}
-      >
-        {THEME_PRESETS.map((preset) => (
-          <Item
-            key={preset.value}
-            value={preset.value}
-            className='group flex flex-col items-stretch outline-none'
-            aria-label={t(`preset.${preset.value}`)}
-          >
-            <div
-              className={cn(
-                'ring-border relative h-12 rounded-md ring-[1px] transition',
-                'group-data-checked:ring-primary group-data-checked:shadow-md',
-                'group-focus-visible:ring-2',
-                'group-hover:ring-primary/60'
-              )}
-            >
-              <div
-                aria-hidden='true'
-                className='absolute inset-0 rounded-md'
-                style={{
-                  background:
-                    preset.value === 'default'
-                      ? 'linear-gradient(135deg, oklch(0.68 0.2 25) 0%, oklch(0.8 0.17 85) 25%, oklch(0.72 0.18 155) 50%, oklch(0.66 0.19 245) 75%, oklch(0.68 0.2 315) 100%)'
-                      : `linear-gradient(135deg, ${preset.swatches[0]} 0%, ${preset.swatches[1] ?? preset.swatches[0]} 100%)`,
-                }}
-              />
-              <CircleCheck
-                className={cn(
-                  'fill-primary absolute top-0 right-0 z-10 size-5 translate-x-1/2 -translate-y-1/2 stroke-white',
-                  'group-data-unchecked:hidden'
-                )}
-                aria-hidden='true'
-              />
-            </div>
-            <div className='mt-1.5 truncate text-center text-xs'>
-              {t(`preset.${preset.value}`)}
-            </div>
-          </Item>
-        ))}
-      </Radio>
-    </div>
-  )
-}
-
-/**
- * Font options shown in the theme drawer.
- *
- * Each option renders a live "Aa" preview in the font it represents.
- * `Auto` deliberately leaves `fontFamily` undefined so the preview inherits
- * the currently active body font — that way the user sees what `Auto` will
- * actually look like for the active preset (Anthropic → serif glyphs,
- * everything else → sans glyphs) without us having to duplicate the
- * preset-default mapping in the UI.
- */
-const FONT_OPTIONS: {
-  value: ThemeFont
-  label: string
-  // CSS font-family applied to the "Aa" preview. `undefined` = inherit
-  // from the current theme (used by the `default` option).
-  preview?: string
-}[] = [
-  { value: 'default', label: 'Auto', preview: undefined },
-  { value: 'sans', label: 'Sans', preview: 'var(--font-sans)' },
-  { value: 'serif', label: 'Serif', preview: 'var(--font-serif)' },
-]
-
-function FontConfig() {
-  const { t } = useTranslation()
-  const { defaults, customization, setFont } = useThemeCustomization()
-  return (
-    <div>
-      <SectionTitle
-        title={t('Font')}
-        showReset={customization.font !== defaults.font}
-        onReset={() => setFont(defaults.font)}
-      />
-      <Radio
-        value={customization.font}
-        onValueChange={(v) => setFont(v as ThemeFont)}
-        className='grid w-full grid-cols-3 gap-4'
-        aria-label={t('Select body font')}
-      >
-        {FONT_OPTIONS.map((option) => (
-          <Item
-            key={option.value}
-            value={option.value}
-            className='group flex flex-col items-stretch outline-none'
-            aria-label={
-              option.value === 'default' ? t('System default') : option.label
-            }
-          >
-            <div
-              className={cn(
-                'ring-border relative h-12 rounded-md ring-[1px] transition',
-                'group-data-checked:ring-primary group-data-checked:shadow-md',
-                'group-focus-visible:ring-2',
-                'group-hover:ring-primary/60'
-              )}
-            >
-              <CircleCheck
-                className={cn(
-                  'fill-primary absolute top-0 right-0 z-10 size-5 translate-x-1/2 -translate-y-1/2 stroke-white',
-                  'group-data-unchecked:hidden'
-                )}
-                aria-hidden='true'
-              />
-              <span
-                aria-hidden='true'
-                className='text-foreground absolute inset-0 flex items-center justify-center text-lg leading-none font-medium'
-                style={
-                  option.preview
-                    ? { fontFamily: option.preview }
-                    : // `font: inherit` defers to the active theme so the
-                      // "Auto" tile previews what the resolved font will be.
-                      { font: 'inherit', fontSize: '1.125rem' }
-                }
-              >
-                Aa
-              </span>
-            </div>
-            <div className='mt-1.5 text-center text-xs'>{option.label}</div>
-          </Item>
-        ))}
-      </Radio>
-    </div>
-  )
-}
-
-const RADIUS_OPTIONS: {
-  value: ThemeRadius
-  label: string
-  // CSS border-radius value used to render the visual preview corner.
-  preview: string
-}[] = [
-  { value: 'default', label: 'Auto', preview: '1rem' },
-  { value: 'none', label: '0', preview: '0' },
-  { value: 'sm', label: '0.3', preview: '0.3rem' },
-  { value: 'md', label: '0.5', preview: '0.5rem' },
-  { value: 'lg', label: '0.75', preview: '0.75rem' },
-  { value: 'xl', label: '1.0', preview: '1rem' },
-]
-
-function RadiusConfig() {
-  const { t } = useTranslation()
-  const { defaults, customization, setRadius } = useThemeCustomization()
-  return (
-    <div>
-      <SectionTitle
-        title={t('Border radius')}
-        showReset={customization.radius !== defaults.radius}
-        onReset={() => setRadius(defaults.radius)}
-      />
-      <Radio
-        value={customization.radius}
-        onValueChange={(v) => setRadius(v as ThemeRadius)}
-        className='grid w-full grid-cols-6 gap-2'
-        aria-label={t('Select border radius')}
-      >
-        {RADIUS_OPTIONS.map((option) => (
-          <Item
-            key={option.value}
-            value={option.value}
-            className='group flex flex-col items-stretch outline-none'
-            aria-label={
-              option.value === 'default' ? t('System default') : option.label
-            }
-          >
-            <div
-              className={cn(
-                'ring-border relative h-12 rounded-md ring-[1px] transition',
-                'group-data-checked:ring-primary group-data-checked:shadow-md',
-                'group-focus-visible:ring-2',
-                'group-hover:ring-primary/60'
-              )}
-            >
-              <CircleCheck
-                className={cn(
-                  'fill-primary absolute top-0 right-0 z-10 size-5 translate-x-1/2 -translate-y-1/2 stroke-white',
-                  'group-data-unchecked:hidden'
-                )}
-                aria-hidden='true'
-              />
-              <span
-                aria-hidden='true'
-                className='border-foreground/70 absolute top-2.5 left-2.5 size-3.5 border-t-[1.5px] border-l-[1.5px]'
-                style={{ borderTopLeftRadius: option.preview }}
-              />
-            </div>
-            <div className='mt-1.5 text-center text-xs'>{option.label}</div>
-          </Item>
-        ))}
-      </Radio>
-    </div>
-  )
-}
-
-/**
- * Visual preview rows for the density preset. Each row's height represents
- * the relative line-height density (compact = tight rows, comfortable = wide).
- */
-function ScalePreview(props: { rows: number; rowGap: string }) {
-  return (
-    <div
-      aria-hidden='true'
-      className='absolute inset-2.5 flex flex-col justify-center'
-      style={{ gap: props.rowGap }}
-    >
-      {Array.from({ length: props.rows }, (_, index) => 85 - index * 10).map(
-        (width) => (
-          <span
-            key={width}
-            className='bg-foreground/60 block h-[2px] rounded-full'
-            style={{ width: `${width}%` }}
-          />
-        )
-      )}
-    </div>
-  )
-}
-
-function ScaleConfig() {
-  const { t } = useTranslation()
-  const { defaults, customization, setScale } = useThemeCustomization()
-  const scaleOptions: {
-    value: ThemeScale
-    label: string
-    rows: number
-    rowGap: string
-  }[] = [
-    { value: 'sm', label: t('Compact'), rows: 4, rowGap: '3px' },
-    { value: 'default', label: t('Default'), rows: 3, rowGap: '6px' },
-    { value: 'lg', label: t('Comfortable'), rows: 2, rowGap: '10px' },
-    { value: 'xl', label: t('Super Large'), rows: 1, rowGap: '14px' },
-  ]
-  return (
-    <div>
-      <SectionTitle
-        title={t('Density')}
-        showReset={customization.scale !== defaults.scale}
-        onReset={() => setScale(defaults.scale)}
-      />
-      <Radio
-        value={customization.scale}
-        onValueChange={(v) => setScale(v as ThemeScale)}
-        className='grid w-full grid-cols-4 gap-3'
-        aria-label={t('Select interface density')}
-      >
-        {scaleOptions.map((option) => (
-          <Item
-            key={option.value}
-            value={option.value}
-            className='group flex flex-col items-stretch outline-none'
-            aria-label={option.label}
-          >
-            <div
-              className={cn(
-                'ring-border relative h-12 rounded-md ring-[1px] transition',
-                'group-data-checked:ring-primary group-data-checked:shadow-md',
-                'group-focus-visible:ring-2',
-                'group-hover:ring-primary/60'
-              )}
-            >
-              <CircleCheck
-                className={cn(
-                  'fill-primary absolute top-0 right-0 z-10 size-5 translate-x-1/2 -translate-y-1/2 stroke-white',
-                  'group-data-unchecked:hidden'
-                )}
-                aria-hidden='true'
-              />
-              <ScalePreview rows={option.rows} rowGap={option.rowGap} />
-            </div>
-            <div className='mt-1.5 truncate text-center text-xs'>
-              {option.label}
-            </div>
-          </Item>
-        ))}
-      </Radio>
-    </div>
-  )
-}
-
 function SidebarConfig() {
   const { t } = useTranslation()
   const { defaultVariant, variant, setVariant } = useLayout()
@@ -681,80 +323,6 @@ function LayoutConfig() {
         {t(
           'Choose between default expanded, compact icon-only, or full layout mode'
         )}
-      </div>
-    </div>
-  )
-}
-
-function ContentLayoutConfig() {
-  const { t } = useTranslation()
-  const { defaults, customization, setContentLayout } = useThemeCustomization()
-  return (
-    <div className='max-md:hidden'>
-      <SectionTitle
-        title={t('Content width')}
-        showReset={customization.contentLayout !== defaults.contentLayout}
-        onReset={() => setContentLayout(defaults.contentLayout)}
-      />
-      <Radio
-        value={customization.contentLayout}
-        onValueChange={(v) => setContentLayout(v as ContentLayout)}
-        className='grid w-full grid-cols-2 gap-4'
-        aria-label={t('Select content width')}
-      >
-        {[
-          { value: 'full', label: t('Full width') },
-          { value: 'centered', label: t('Centered') },
-        ].map((option) => (
-          <Item
-            key={option.value}
-            value={option.value}
-            className='group flex flex-col items-stretch outline-none'
-            aria-label={option.label}
-          >
-            <div
-              className={cn(
-                'ring-border relative h-12 rounded-md ring-[1px] transition',
-                'group-data-checked:ring-primary group-data-checked:shadow-md',
-                'group-focus-visible:ring-2',
-                'group-hover:ring-primary/60'
-              )}
-            >
-              <CircleCheck
-                className={cn(
-                  'fill-primary absolute top-0 right-0 z-10 size-5 translate-x-1/2 -translate-y-1/2 stroke-white',
-                  'group-data-unchecked:hidden'
-                )}
-                aria-hidden='true'
-              />
-              <ContentLayoutPreview centered={option.value === 'centered'} />
-            </div>
-            <div className='mt-1.5 truncate text-center text-xs'>
-              {option.label}
-            </div>
-          </Item>
-        ))}
-      </Radio>
-    </div>
-  )
-}
-
-/**
- * Mini "page" mock used as the visual preview for content-width options.
- * `full` fills horizontally, `centered` clamps the body to a narrow column.
- */
-function ContentLayoutPreview(props: { centered: boolean }) {
-  return (
-    <div aria-hidden='true' className='absolute inset-2 flex flex-col gap-1.5'>
-      <span className='bg-foreground/40 block h-1.5 w-full rounded-sm' />
-      <div
-        className={cn(
-          'flex flex-1 flex-col gap-1',
-          props.centered ? 'mx-auto w-1/2' : 'w-full'
-        )}
-      >
-        <span className='bg-foreground/60 block h-[2px] w-full rounded-full' />
-        <span className='bg-foreground/60 block h-[2px] w-3/4 rounded-full' />
       </div>
     </div>
   )

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/QuantumNous/new-api/common"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -178,6 +179,24 @@ func TryTieredSettle(relayInfo *relaycommon.RelayInfo, params billingexpr.TokenP
 			quota = snap.EstimatedQuotaAfterGroup
 		}
 		return true, quota, nil
+	}
+
+	// 分组级价的乘数必须在这里再作用一次,否则预扣与结算不同口径。
+	//
+	// ComputeTieredQuotaWithRequest 是从 snap.ExprString **重跑表达式**的,
+	// 它只乘 snap.GroupRatio —— 预扣侧 modelPriceHelperTiered 里那次
+	// QyGroupTieredQuota 的乘数到这里已经不存在了。给分组配了折扣时,
+	// 预扣按折扣价、结算按原价,差额以追扣落到用户头上。
+	//
+	// 作用在 before-group 上再重算,而不是乘最终那个已取整的 int:
+	// 后者会引入与预扣侧不同的第二次舍入。公式与 billingexpr/settle.go 逐字一致。
+	if adjusted := QyGroupTieredSettle(relayInfo, tr.ActualQuotaBeforeGroup); adjusted != tr.ActualQuotaBeforeGroup {
+		after, clamp := common.QuotaRoundChecked(adjusted * snap.GroupRatio)
+		tr.ActualQuotaBeforeGroup = adjusted
+		tr.ActualQuotaAfterGroup = after
+		if clamp != nil {
+			tr.Clamp = clamp
+		}
 	}
 
 	// Surface any int32 saturation from settlement onto RelayInfo so the

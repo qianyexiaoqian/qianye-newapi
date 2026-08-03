@@ -26,8 +26,14 @@ import {
   QY_NAV_CLUSTERS,
   QY_NAV_GROUPS,
   QY_PAGES,
+  QY_TAB_GROUPS,
   isQyAdminPage,
+  isQyPageHosted,
+  qyEntryPages,
+  qyTabHash,
+  qyTabTarget,
 } from '@/features/qy/lib/pages'
+import type { QyFeatures } from '@/features/qy/lib/types'
 import en from '@/i18n/qy/en.json'
 import zh from '@/i18n/qy/zh.json'
 
@@ -62,19 +68,37 @@ const zhKeys = zh as Record<string, string>
  * 提醒同时复核 `nav-group.tsx` 要不要补那 ~15 行。
  */
 const CLUSTERED_URLS = [
-  '/qy/transfer',
-  '/qy/transfer-logs',
-  '/qy/withdraw',
-  '/qy/withdrawals',
   '/qy/admin/transfer-config',
   '/qy/admin/transfer-group-rules',
 ]
 
+/**
+ * 收进选择夹、因而**没有独立侧栏入口**的 6 个页面（需求 2 / 3）。
+ *
+ * 写成快照而不是从 `QY_TAB_GROUPS` 反推：反推等于用被测数据证明被测数据，
+ * 把三页搬错宿主也照样全绿。
+ */
+const HOSTED_URLS = [
+  '/qy/transfer',
+  '/qy/transfer-logs',
+  '/qy/pay-password',
+  '/qy/invitees',
+  '/qy/withdraw',
+  '/qy/withdrawals',
+]
+
 describe('qy page table structure', () => {
-  test('每一页恰好有一个落点：group 或 cluster', () => {
+  test('每一页恰好有一个落点：group 或 cluster；被收进选择夹的一个都不写', () => {
     for (const page of QY_PAGES) {
       const hasGroup = page.group != null
       const hasCluster = page.cluster != null
+      if (isQyPageHosted(page.url)) {
+        assert.ok(
+          !hasGroup && !hasCluster,
+          `${page.url} 已被收进选择夹，却还声明了 group=${page.group} / cluster=${page.cluster}；侧栏会多出一行点了就被重定向甩走的入口`
+        )
+        continue
+      }
       assert.ok(
         hasGroup !== hasCluster,
         `${page.url} 必须且只能声明 group 或 cluster 之一（当前 group=${page.group}, cluster=${page.cluster}）`
@@ -95,9 +119,15 @@ describe('qy page table structure', () => {
     }
   })
 
-  test('一级项都有图标，折叠子项都没有', () => {
+  test('一级项都有图标，折叠子项与选择夹成员都没有', () => {
     for (const page of QY_PAGES) {
-      if (page.cluster == null) {
+      if (isQyPageHosted(page.url)) {
+        assert.equal(
+          page.icon,
+          undefined,
+          `${page.url} 已经没有侧栏入口了，图标是死数据`
+        )
+      } else if (page.cluster == null) {
         // 上游每个一级侧栏项都有 lucide 图标；qy 项漏图标会整行左对齐错位。
         assert.ok(page.icon != null, `${page.url} 是一级项，必须有图标`)
       } else {
@@ -154,12 +184,114 @@ describe('qy page table structure', () => {
   })
 })
 
+describe('qy 选择夹（需求 2 / 3）', () => {
+  test('两个选择夹的成员逐项冻结', () => {
+    assert.deepEqual(
+      QY_TAB_GROUPS.map((group) => [group.host, [...group.pages]]),
+      [
+        ['/wallet', ['/qy/transfer', '/qy/transfer-logs', '/qy/pay-password']],
+        [
+          '/qy/affiliate',
+          ['/qy/affiliate', '/qy/invitees', '/qy/withdraw', '/qy/withdrawals'],
+        ],
+      ],
+      '选择夹的成员或顺序变了：项目方点名要的是「发起划转/划转记录/支付密码」与「我的邀请概览/已邀请用户/佣金提现/佣金提现记录」'
+    )
+  })
+
+  test('被收进选择夹的正好是这 6 页', () => {
+    assert.deepEqual(
+      QY_PAGES.filter((page) => isQyPageHosted(page.url))
+        .map((page) => page.url)
+        .sort(),
+      [...HOSTED_URLS].sort()
+    )
+  })
+
+  test('宿主页自己不算"被收进去"，因此仍有侧栏入口', () => {
+    for (const group of QY_TAB_GROUPS) {
+      assert.equal(
+        isQyPageHosted(group.host),
+        false,
+        `${group.host} 被判成了选择夹成员，它自己的侧栏入口会消失`
+      )
+    }
+    const affiliate = QY_PAGES.find((page) => page.url === '/qy/affiliate')
+    assert.ok(affiliate?.group != null, '推广佣金的宿主页丢了侧栏落点')
+  })
+
+  test('每个标签都在页面表里登记过（否则宿主页会渲染一张没有标题的空标签）', () => {
+    const known = new Set(QY_PAGES.map((page) => page.url))
+    for (const group of QY_TAB_GROUPS) {
+      for (const url of group.pages) {
+        assert.ok(
+          known.has(url),
+          `${group.host} 的标签 ${url} 不在 QY_PAGES 里`
+        )
+      }
+    }
+  })
+
+  test('qyEntryPages 把选择夹成员滤掉（侧栏与工作区索引页共用这一处判定）', () => {
+    const all: QyFeatures = {
+      transfer: true,
+      commission: true,
+      withdraw: true,
+      availability: true,
+      violation: true,
+    }
+    const urls = qyEntryPages(all, true).map((page) => page.url)
+    for (const url of HOSTED_URLS) {
+      assert.ok(
+        !urls.includes(url),
+        `${url} 仍被当成独立入口：侧栏与 /qy 索引页都会给它留一行死链`
+      )
+    }
+    // 宿主页与没被收进去的页面必须还在，否则就是一刀切掉太多。
+    assert.ok(urls.includes('/qy/affiliate'))
+    assert.ok(urls.includes('/qy/availability'))
+    assert.equal(urls.length, QY_PAGES.length - HOSTED_URLS.length)
+  })
+
+  test('qyTabTarget 直接落到宿主页 + 对应标签，而不是先跳旧路由再被弹回来', () => {
+    assert.deepEqual(qyTabTarget('/qy/transfer-logs'), {
+      to: '/wallet',
+      hash: 'qy-transfer-logs',
+    })
+    assert.deepEqual(qyTabTarget('/qy/withdrawals'), {
+      to: '/qy/affiliate',
+      hash: 'qy-withdrawals',
+    })
+    // 宿主页自己也是组里的一张标签，所以它也会被指到自己 + hash。
+    assert.deepEqual(qyTabTarget('/qy/affiliate'), {
+      to: '/qy/affiliate',
+      hash: 'qy-affiliate',
+    })
+    // 不在任何选择夹里的页面原样返回，调用方不需要分支。
+    assert.deepEqual(qyTabTarget('/qy/violations'), { to: '/qy/violations' })
+  })
+
+  test('hash 片段互不相同且与 url 一一对应', () => {
+    const hashes = QY_TAB_GROUPS.flatMap((group) =>
+      group.pages.map((url) => qyTabHash(url))
+    )
+    assert.equal(
+      new Set(hashes).size,
+      hashes.length,
+      '两张标签算出了同一个 hash'
+    )
+    assert.equal(qyTabHash('/qy/transfer-logs'), 'qy-transfer-logs')
+    assert.equal(qyTabHash('/wallet'), 'wallet')
+  })
+})
+
 describe('qy page table i18n', () => {
   test('每个登记的 key 在 en 与 zh 里都存在', () => {
     const keys = [
       ...QY_PAGES.flatMap((page) => [page.titleKey, page.jpKey, page.enKey]),
       ...QY_NAV_GROUPS.map((group) => group.titleKey),
       ...QY_NAV_CLUSTERS.map((cluster) => cluster.titleKey),
+      ...QY_TAB_GROUPS.map((group) => group.titleKey),
     ]
     for (const key of keys) {
       assert.ok(enKeys[key] != null, `en.json 缺少 ${key}`)

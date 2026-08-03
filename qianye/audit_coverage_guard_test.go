@@ -78,8 +78,6 @@ var auditRequired = []struct {
 		"门槛变更:成功、回读失败、事务回滚三条路径各一条"},
 	{"modules/usergroup/api_admin.go", "adminPutConfig", 2,
 		"默认分组决定此后所有新用户能不能用模型;写失败同样要留痕"},
-	{"modules/sitetheme/api.go", "handlePutSiteTheme", 2,
-		"站点主题变更成功与失败都要留痕"},
 	{"modules/grouppricing/api_admin.go", "adminCreateRule", 2,
 		"分组定价的成功审计写在 WriteTx 里,事务一回滚就消失,失败必须在事务外补一条"},
 	{"modules/grouppricing/api_admin.go", "adminUpdateRule", 2, "同上"},

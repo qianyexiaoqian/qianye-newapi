@@ -40,8 +40,6 @@ const SNAPSHOT_STORAGE_KEY = 'qy_config'
 export const QY_DISABLED_CONFIG: QyConfig = {
   enabled: false,
   available: false,
-  // 扩展禁用时不表达任何主题意见,前端回落到上游默认预设。
-  theme: { default_preset: '', force_preset: false },
   features: {
     transfer: false,
     commission: false,
@@ -98,17 +96,10 @@ export function normalizeQyConfig(
   const logMetrics = raw.log_metrics ?? {}
   const withdraw = raw.withdraw_options ?? {}
   const transfer = raw.transfer_options ?? {}
-  const theme = raw.theme ?? {}
   const enabled = bool(raw.enabled)
 
   return {
     enabled,
-    // 站点主题:扩展禁用时留空,由前端回落到上游硬编码的默认预设。
-    theme: {
-      default_preset:
-        typeof theme.default_preset === 'string' ? theme.default_preset : '',
-      force_preset: bool(theme.force_preset),
-    },
     // available 只有在 enabled 时才有意义；扩展关掉时不应该让页面显示"稍后重试"。
     available: enabled && bool(raw.available),
     features: {

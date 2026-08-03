@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { CircleCheck, TriangleAlert } from 'lucide-react'
+import { BookUser, CircleCheck, TriangleAlert } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -54,12 +54,13 @@ import { QyMaskedUser } from '../../../components/qy-masked-user'
 import { QyPayPasswordField } from '../../../components/qy-pay-password-field'
 import { useQyAfterMoneyChange } from '../../../hooks/use-qy-after-money-change'
 import { isQyError, qyErrorMessage } from '../../../lib/api'
+import { qyTabTarget } from '../../../lib/pages'
 import { QY_TRANSFER_REMARK_MAX_RUNES, qyRuneLength } from '../../lib/constants'
 import { useQyRequestId } from '../../lib/request-id'
 import { qyCreateTransfer, qyPreviewTransfer } from '../api'
 import { qyTransferBlockedKey } from '../lib/blocked-reason'
 import type { QyTransferLimits, QyTransferPreview } from '../types'
-import { TransferContacts } from './transfer-contacts'
+import { TransferContactsDialog } from './transfer-contacts'
 
 type TransferFormProps = {
   limits: QyTransferLimits
@@ -92,6 +93,7 @@ export function TransferForm(props: TransferFormProps) {
   // 长于"这一次提交"的存放处。弹窗一关就清掉,见下面的 onOpenChange。
   const [payPassword, setPayPassword] = useState('')
   const [payBlocked, setPayBlocked] = useState(false)
+  const [contactsOpen, setContactsOpen] = useState(false)
 
   const limits = props.limits
   const acceptsEmail = limits.recipient_lookup === 'id_or_email'
@@ -161,7 +163,9 @@ export function TransferForm(props: TransferFormProps) {
       setPreview(null)
       form.reset({ identifier: '', quota: 0, remark: '' })
       await afterMoneyChange()
-      await navigate({ to: '/qy/transfer-logs' })
+      // 划转记录现在就是隔壁那张标签：直接切过去，而不是先跳 /qy/transfer-logs
+      // 再被重定向弹回来（那会把整个钱包页卸载重挂一次，看起来是一次白闪）。
+      await navigate(qyTabTarget('/qy/transfer-logs'))
     },
     onError: async (error) => {
       toast.error(qyErrorMessage(error, t))
@@ -218,25 +222,6 @@ export function TransferForm(props: TransferFormProps) {
           </Alert>
         )}
 
-        {/* 联系人簿。选中一个联系人**只**把收款人输入框填好 —— 它不是信任
-            凭据，之后仍要走 preview → 二次确认 → 提交（支付密码、分组限制、
-            日限额）这条完整链路，一步不少（裁决 1）。
-            这里刻意用 setValue 写回同一个受控字段，而不是另存一份"已选联系人"
-            状态：多一份状态就多一条"显示的是 A、提交的是 B"的路径，
-            而下面那个 watch 订阅会在 identifier 变化时作废上一次预校验，
-            填表与手输走的是同一套作废逻辑。 */}
-        <TransferContacts
-          acceptsEmail={acceptsEmail}
-          pickDisabled={!canSubmit}
-          degraded={props.degraded}
-          onPick={(contact) => {
-            form.setValue('identifier', String(contact.user_id), {
-              shouldDirty: true,
-              shouldValidate: true,
-            })
-          }}
-        />
-
         <Form {...form}>
           <form
             className='space-y-4'
@@ -253,19 +238,36 @@ export function TransferForm(props: TransferFormProps) {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>{t('qy_tr_recipient')}</FormLabel>
-                  <FormControl>
-                    <Input
-                      {...field}
-                      autoComplete='off'
-                      inputMode={acceptsEmail ? 'text' : 'numeric'}
-                      placeholder={
-                        acceptsEmail
-                          ? t('qy_tr_recipient_ph_id_email')
-                          : t('qy_tr_recipient_ph_id')
-                      }
-                      disabled={!canSubmit}
-                    />
-                  </FormControl>
+                  {/* 通讯录从"平铺在表单上方的一整块"变成这一个按钮
+                      （项目方：不要都在一个页面上，过度拉伸页面）。
+                      按钮**不受 canSubmit 约束**：冷却中/日限额用尽时仍然可以
+                      打开通讯录整理条目，只有"选中填表"那一步是禁用的，
+                      由弹窗的 pickDisabled 承担。 */}
+                  <div className='flex items-center gap-2'>
+                    <FormControl>
+                      <Input
+                        {...field}
+                        autoComplete='off'
+                        inputMode={acceptsEmail ? 'text' : 'numeric'}
+                        placeholder={
+                          acceptsEmail
+                            ? t('qy_tr_recipient_ph_id_email')
+                            : t('qy_tr_recipient_ph_id')
+                        }
+                        disabled={!canSubmit}
+                      />
+                    </FormControl>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      className='shrink-0'
+                      onClick={() => setContactsOpen(true)}
+                    >
+                      <BookUser aria-hidden='true' />
+                      {t('qy_tr_ct_title')}
+                    </Button>
+                  </div>
                   <FormDescription className='text-xs'>
                     {acceptsEmail
                       ? t('qy_tr_recipient_help_id_email')
@@ -358,6 +360,30 @@ export function TransferForm(props: TransferFormProps) {
           </div>
         )}
       </CardContent>
+
+      {/* 联系人簿。选中一个联系人**只**把收款人输入框填好 —— 它不是信任
+          凭据，之后仍要走 preview → 二次确认 → 提交（支付密码、分组限制、
+          日限额）这条完整链路，一步不少（裁决 1）。
+          这里刻意用 setValue 写回同一个受控字段，而不是另存一份"已选联系人"
+          状态：多一份状态就多一条"显示的是 A、提交的是 B"的路径，
+          而上面那个 watch 订阅会在 identifier 变化时作废上一次预校验，
+          填表与手输走的是同一套作废逻辑。
+
+          两个弹窗都写在 <Card> 内部而不是页面的插槽外 —— 这一层是普通 div，
+          不存在上游 SectionPageLayout「认不出的 children 直接丢掉」那个坑。 */}
+      <TransferContactsDialog
+        open={contactsOpen}
+        onOpenChange={setContactsOpen}
+        acceptsEmail={acceptsEmail}
+        pickDisabled={!canSubmit}
+        degraded={props.degraded}
+        onPick={(contact) => {
+          form.setValue('identifier', String(contact.user_id), {
+            shouldDirty: true,
+            shouldValidate: true,
+          })
+        }}
+      />
 
       <QyConfirmDialog
         open={confirmOpen}

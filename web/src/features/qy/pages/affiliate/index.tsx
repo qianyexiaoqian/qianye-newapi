@@ -17,12 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { TriangleAlert, Users, Wallet } from 'lucide-react'
+import { TriangleAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
@@ -34,8 +32,6 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
-import { QySectionPageLayout } from '../../components/qy-section-page-layout'
-import { useQyConfig } from '../../hooks/use-qy-config'
 import { QyFiatText } from '../components/qy-fiat-text'
 import { QyStatGrid, type QyStatItem } from '../components/qy-stat-grid'
 import { qyAffiliateCodeQuery, qyCommissionSummaryQuery } from './api'
@@ -43,7 +39,7 @@ import { InviteLinkCard } from './components/invite-link-card'
 import type { QyCommissionSummary } from './types'
 
 /**
- * 我的邀请（推广概览）。
+ * 我的邀请概览（「推广佣金」选择夹的第一张标签，需求 3）。
  *
  * 这一屏必须同时回答三个用户最常问的问题：
  *   1. 我的邀请链接是什么 → `InviteLinkCard`
@@ -53,9 +49,8 @@ import type { QyCommissionSummary } from './types'
  * 第 3 项是刻意展示的：佣金按 decimal 全精度累计、满 1 额度才落账，
  * 不把余数摆出来的话，小额用户会一直看到 0 并认为平台吞了钱。
  */
-export function QyAffiliate() {
+export function QyAffiliateOverviewBody() {
   const { t } = useTranslation()
-  const config = useQyConfig()
   const summaryQuery = useQuery(qyCommissionSummaryQuery())
   const codeQuery = useQuery(qyAffiliateCodeQuery())
 
@@ -103,48 +98,29 @@ export function QyAffiliate() {
         ]
 
   return (
-    <QySectionPageLayout>
-      <QySectionPageLayout.Title>
-        {t('qy_nav_affiliate')}
-      </QySectionPageLayout.Title>
-      <QySectionPageLayout.Actions>
-        <Button variant='outline' size='sm' render={<Link to='/qy/invitees' />}>
-          <Users aria-hidden='true' />
-          {t('qy_nav_invitees')}
-        </Button>
-        {config.features.withdraw && (
-          <Button size='sm' render={<Link to='/qy/withdraw' />}>
-            <Wallet aria-hidden='true' />
-            {t('qy_nav_withdraw')}
-          </Button>
-        )}
-      </QySectionPageLayout.Actions>
-      <QySectionPageLayout.Content>
-        <QyPageBoundary query={summaryQuery}>
-          {summary != null && (
-            <div className='space-y-4'>
-              {summary.debt_blocked && (
-                <Alert variant='destructive'>
-                  <TriangleAlert />
-                  <AlertTitle>{t('qy_aff_debt_title')}</AlertTitle>
-                  <AlertDescription>{t('qy_aff_debt_desc')}</AlertDescription>
-                </Alert>
-              )}
-
-              <QyStatGrid items={stats} />
-
-              <div className='grid gap-4 lg:grid-cols-2 lg:items-start'>
-                <InviteLinkCard
-                  code={codeQuery.data ?? ''}
-                  isLoading={codeQuery.isLoading}
-                />
-                <PolicyCard summary={summary} />
-              </div>
-            </div>
+    <QyPageBoundary query={summaryQuery}>
+      {summary != null && (
+        <div className='space-y-3'>
+          {summary.debt_blocked && (
+            <Alert variant='destructive'>
+              <TriangleAlert />
+              <AlertTitle>{t('qy_aff_debt_title')}</AlertTitle>
+              <AlertDescription>{t('qy_aff_debt_desc')}</AlertDescription>
+            </Alert>
           )}
-        </QyPageBoundary>
-      </QySectionPageLayout.Content>
-    </QySectionPageLayout>
+
+          <QyStatGrid items={stats} />
+
+          <div className='grid gap-3 lg:grid-cols-2 lg:items-start'>
+            <InviteLinkCard
+              code={codeQuery.data ?? ''}
+              isLoading={codeQuery.isLoading}
+            />
+            <PolicyCard summary={summary} />
+          </div>
+        </div>
+      )}
+    </QyPageBoundary>
   )
 }
 

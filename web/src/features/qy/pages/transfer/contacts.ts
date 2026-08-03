@@ -113,6 +113,38 @@ export function qyDeleteContact(id: number) {
 /** 备注名长度上限，与后端 `maxAliasRunes` 对齐。 */
 export const QY_CONTACT_ALIAS_MAX_RUNES = 32
 
+/**
+ * 在**自己的**联系人簿里按关键字筛选。
+ *
+ * ## 为什么这一步只能在前端做
+ *
+ * 项目方要「联系人的添加提供用户名搜索」。用户名模糊搜索**全站用户**是一个
+ * 用户枚举面：`qianye/modules/transfer/lookup.go` 顶部刻意写死了只有
+ * `id` / `email` 两档查找方式，理由是"模糊搜索等于把整个用户表开放给任何登录
+ * 用户枚举"。所以本函数搜的是调用者自己已经存下的那几十条记录 ——
+ * 那些数据本来就在他手上，翻多少遍都不产生新信息。
+ *
+ * 真正的"按用户名找到一个陌生人"需要一个新的后端接口，那是一次安全决策而不是
+ * 一次 UI 调整；接口设计（限流、脱敏、最短前缀、审计）写在交付报告里，由集成者
+ * 决定是否加。在它落地之前，**添加**联系人仍然只接受 ID / 邮箱，与
+ * `/transfer/preview` 同一套口径、同一张反枚举日志、同一个限流器。
+ *
+ * 匹配 masked_username 是安全的：那是后端已经脱敏过的串（`zh***ng`），
+ * 前端不持有、也不需要真实用户名。
+ */
+export function qyFilterContacts(
+  items: readonly QyContact[],
+  keyword: string
+): QyContact[] {
+  const needle = keyword.trim().toLowerCase()
+  if (needle === '') return [...items]
+  return items.filter((contact) => {
+    if (contact.alias.toLowerCase().includes(needle)) return true
+    if (contact.masked_username.toLowerCase().includes(needle)) return true
+    return String(contact.user_id).includes(needle)
+  })
+}
+
 /** 状态 → i18n key。未知取值回落到 `unknown`，绝不显示成「正常」。 */
 export function qyContactStatusKey(status: QyContactStatus): string {
   switch (status) {

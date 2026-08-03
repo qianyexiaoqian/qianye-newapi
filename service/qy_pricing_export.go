@@ -1,5 +1,9 @@
 package service
 
+import (
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+)
+
 // qy_pricing_export.go —— 千夜扩展「模型按分组单独定价」在**结算侧**的唯一挂载点。
 //
 // 与 relay/helper/qy_pricing_export.go 的分工:那三个挂载点覆盖计价链路
@@ -41,4 +45,36 @@ package service
 // 否则预扣与结算又会各按各的口径走 —— 那正是这个挂载点要消灭的东西。
 var QyGroupTaskRatio = func(group, modelName string, ratio float64) float64 {
 	return ratio
+}
+
+// QyGroupTieredSettle 覆盖「阶梯表达式计价」在**结算侧**的分组乘数。
+//
+// ─────────────────── 为什么这一处也必须单独挂 ───────────────────
+//
+// 阶梯计价的扣费同样分两步,而两步走的是**两条不同的代码路径**:
+//
+//	预扣  relay/helper.modelPriceHelperTiered → QyGroupTieredQuota(已覆盖)
+//	结算  service.TryTieredSettle → billingexpr.ComputeTieredQuotaWithRequest
+//	      ← 从 snap.ExprString **重跑表达式**,只乘 snap.GroupRatio
+//
+// 结算这一步不读 PriceData、不经过 relay/helper,所以那三个计价挂载点够不到它。
+// 后果与 Task 路径那一处完全同形:给分组配了折扣时,预扣按折扣价、结算按原价,
+// 差额以**追扣**落到用户头上 —— 用户先看到便宜的预扣,再被补一刀。
+// 这正是 AGENTS.md「预扣与结算必须同口径」直指的情形。
+//
+// grouppricing 包注释里那句「结算侧读 PriceData,所以覆盖三个计价点即覆盖全部扣费」
+// 对 tiered 分支**不成立** —— 这条已在该包注释里更正。
+//
+// ─────────────────── 作用在 before-group 而不是最终值 ───────────────────
+//
+// 入参是 ActualQuotaBeforeGroup(尚未乘分组倍率的浮点值),与预扣侧
+// QyGroupTieredQuota 拿到的是同一个量纲。调用方拿返回值重跑
+// `QuotaRoundChecked(before × GroupRatio)` —— 与 billingexpr 内部逐字一致。
+//
+// 不直接乘最终的 ActualQuotaAfterGroup:那是已经取整过的 int,再乘一次会引入
+// 与预扣侧不同的第二次舍入,两边差一个 quota 的账最难查。
+//
+// 默认实现是恒等函数,扩展未安装/未启用时与上游逐位一致。
+var QyGroupTieredSettle = func(info *relaycommon.RelayInfo, quotaBeforeGroup float64) float64 {
+	return quotaBeforeGroup
 }

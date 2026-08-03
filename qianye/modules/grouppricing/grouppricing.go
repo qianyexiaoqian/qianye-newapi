@@ -34,7 +34,20 @@
 //
 // 结算侧(service/text_quota.go、service/quota.go 的 PostWss/PostAudio)读的是
 // relayInfo.PriceData.ModelRatio / ModelPrice,而 PriceData 就是上面三个函数的
-// 产物,所以那几条路径不需要再挂钩子。唯一的例外是 Task 的异步差额重算:
+// 产物,所以那几条路径不需要再挂钩子。**有两个例外**,它们都不读 PriceData:
+//
+//	service/tiered_settle.go TryTieredSettle
+//	                                          阶梯计价的结算。它从 snap.ExprString
+//	                                          **重跑表达式**,只乘 snap.GroupRatio ——
+//	                                          预扣侧那次 QyGroupTieredQuota 的乘数到这里
+//	                                          已经不存在了。因此单独挂了第五处
+//	                                          service.QyGroupTieredSettle(同一个实现体
+//	                                          applyTieredQuota,两侧必须得出同一个数)。
+//	                                          乘数作用在 ActualQuotaBeforeGroup 上再按
+//	                                          billingexpr 的同一公式重算,而不是乘已取整的
+//	                                          最终值 —— 后者会引入与预扣侧不同的第二次舍入。
+//
+//	service/task_billing.go RecalculateTaskQuotaByTokens
 //
 //	service/task_billing.go RecalculateTaskQuotaByTokens
 //	                                          Task(视频/MJ 等)拿到实际 token 数后的
@@ -122,6 +135,9 @@ func (Mod) InstallHooks() {
 	relayhelper.QyGroupModelPrice = applyModelPrice
 	relayhelper.QyGroupModelRatio = applyModelRatio
 	relayhelper.QyGroupTieredQuota = applyTieredQuota
+	// 阶梯计价的结算侧走另一条路径(从表达式重跑,不读 PriceData),
+	// 少这一行会让分组折扣在结算时丢失,差额以追扣落到用户头上。
+	service.QyGroupTieredSettle = applyTieredQuota
 	// 第四处在结算侧,不在计价链路上:Task 的 token 差额重算不经过 PriceData。
 	// 少这一行,给任务类模型配的分组折扣会在差额结算时被追扣回全局价。
 	service.QyGroupTaskRatio = applyTaskRatio

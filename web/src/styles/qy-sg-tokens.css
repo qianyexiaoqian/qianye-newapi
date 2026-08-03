@@ -47,13 +47,12 @@
  * (--qy-sg-faint)结果比离线换算偏品红 4~8/255。灰阶装饰档,接受,
  * 但不要照着离线计算器改注释值。
  *
- * ══ 与调色板五轴的关系 ══
- * preset —— 本文件的两个选择器就是 preset 轴的落点。
- * font   —— 刻意【不】设置 --font-body。steins-gate 未登记在
- *           PRESET_DEFAULT_FONT 里,解析为 sans;在这里写死会把整条 font 轴顶掉。
- * radius —— --radius 照常生效;按钮/徽章的 999px 胶囊(--qy-sg-pill)
- *           是本主题的身份标识,刻意不跟随 radius 轴。
- * scale  —— 尺寸量一律 rem / clamp(),跟随根字号缩放。
+ * ══ 与主题轴的关系 ══
+ * 调色板的五个轴(preset / font / radius / scale / contentLayout)已随
+ * 「移除主题设置」整体删除,站点固定为本预设。遗留下来的两条约束仍然成立:
+ * font —— 刻意【不】设置 --font-body。`:root` 已把它定义为 --font-sans,
+ *         在这里写死只会多一份会漂移的拷贝。
+ * scale —— 尺寸量一律 rem / clamp(),跟随根字号缩放(浏览器缩放仍要能用)。
  */
 
 /* ══════════════════════════ 昼 · 纸面 ══════════════════════════
@@ -226,17 +225,15 @@
   --qy-sg-selection-fg: var(--foreground);
 }
 
-/* ── radius 轴 ───────────────────────────────────────────────────────────
- * 本预设的默认圆角偏方正。
+/* ── 圆角 ────────────────────────────────────────────────────────────────
+ * 本预设的圆角偏方正。
  *
- * 【必须带 :not([data-theme-radius])】。上游 theme-presets.css 把 radius 轴块
- * 刻意放在所有预设块之后,靠源序让用户的显式选择赢过预设默认值。而 index.css
- * 里 qy-steins-gate.css 排在 theme-presets.css 之后 —— 无条件写
- * `[data-theme-preset='steins-gate'] { --radius: … }` 与 `[data-theme-radius='xl']`
- * 特异度同为 (0,1,0),源序上反而是本文件赢,radius 轴在本预设下会完全失效
- * (实测把 data-theme-radius 从 none 拨到 xl,--radius 恒为 .375rem)。
- * 用户一旦显式选了档位,body 上就有该属性,本规则直接不匹配。 */
-[data-theme-preset='steins-gate']:not([data-theme-radius]) {
+ * 这里原本带一个 `:not([data-theme-radius])`,用来给上游的 radius 轴让路。
+ * radius 轴随「移除主题设置」一并删除后(`lib/theme-customization.ts`),
+ * `data-theme-radius` 再没有任何写入方,那个 `:not()` 恒真 —— 留着只会让
+ * 下一个读代码的人以为还有一条能拨的轴。上游 `[data-theme-radius='…']` 覆盖块
+ * 保持原样不动(那是上游文件),它们从此永不匹配。 */
+[data-theme-preset='steins-gate'] {
   --radius: 0.375rem;
 }
 

@@ -29,9 +29,9 @@ import { QY_PAGE_URL_ORDER } from './lib/page-order'
 import {
   QY_NAV_CLUSTERS,
   QY_NAV_GROUPS,
-  QY_PAGES,
+  QY_TAB_GROUPS,
   isQyAdminPage,
-  isQyPageVisible,
+  qyEntryPages,
   type QyClusterId,
   type QyNavGroupId,
   type QyPageDef,
@@ -45,12 +45,15 @@ import type { QyFeatures } from './lib/types'
  * 此前 23 个页面全塞进一个 drill-in 工作区，侧栏上是一长条平铺列表；项目方的
  * 反馈正是"新增的功能菜单都聚在一起"。现在按语义拆开：
  *
- *   · 能挂进上游分组的就挂进去（可用率 → General、支付密码/划转/提现 →
- *     Personal、分组定价/新用户分组/扩展健康/站点主题 → Admin，各自紧跟语义
- *     最近的上游项）；
- *   · 确实无处可挂的才建新组，且新组行数受控（推广 3 行、结算 6 行、
- *     风控与审计 3 行，均不超过上游 admin 组的 7 行）；
+ *   · 能挂进上游分组的就挂进去（可用率 → General、分组定价/新用户分组/
+ *     扩展健康 → Admin，各自紧跟语义最近的上游项）；
+ *   · 确实无处可挂的才建新组，且新组行数受控（均不超过上游 admin 组的 7 行）；
  *   · drill-in 工作区视图**已删除** —— 见下方 §为什么删掉 drill-in。
+ *
+ * ── 需求 2 / 3 之后：一部分页面根本不在这里出现 ──
+ * 划转三页与推广三页已经收进「选择夹」（`lib/pages.ts` 的 `QY_TAB_GROUPS`），
+ * 它们是宿主页上的标签而不是独立页面，因此 `qyEntryPages` 会把它们滤掉。
+ * 侧栏因此比上一轮少了两个折叠项与两行 —— 这正是项目方要的。
  *
  * 落点、图标、日文/英文副标全部来自 `lib/pages.ts` 的单张表，本文件只负责
  * "把表变成上游要的 NavGroup 结构"。
@@ -69,8 +72,20 @@ import type { QyFeatures } from './lib/types'
 
 type QyInsertion = { item: NavItem; after?: string }
 
+/**
+ * 页面 → 侧栏项。
+ *
+ * 页面若是某个选项卡组的宿主（`/qy/affiliate`），侧栏那一行显示的是**组名**
+ * 「推广佣金」而不是第一张标签的名字「推广概览」：那一行点进去得到的是四张
+ * 标签，用第一张的名字给整组命名会让另外三张看起来像是藏起来的。
+ */
 function toNavLink(page: QyPageDef, t: TFunction): NavLink {
-  return { title: t(page.titleKey), url: page.url, icon: page.icon }
+  const hosted = QY_TAB_GROUPS.find((group) => group.host === page.url)
+  return {
+    title: t(hosted?.titleKey ?? page.titleKey),
+    url: page.url,
+    icon: page.icon,
+  }
 }
 
 /**
@@ -93,9 +108,10 @@ function collectInsertions(
 
   const clusterSubItems = new Map<QyClusterId, NavLink[]>()
 
-  for (const page of QY_PAGES) {
-    if (!isQyPageVisible(page, features, isAdmin)) continue
-
+  // `qyEntryPages` 已经把"角色 × 功能开关 × 是否已被收进别人的选择夹"三件事
+  // 一起判完。这里不再自己 filter 一遍：判定多一处就多一处会漂移的地方，而
+  // 被收进选择夹的页面留在侧栏里会得到一行点了就被重定向甩走的死链。
+  for (const page of qyEntryPages(features, isAdmin)) {
     if (page.cluster == null) {
       if (page.group != null) {
         push(page.group, { item: toNavLink(page, t), after: page.after })
@@ -248,9 +264,7 @@ export function getQyWorkspaceNavGroups(t: TFunction): NavGroup[] {
   const isAdmin = role >= ROLE.ADMIN
   const { features } = getQyConfigSnapshot()
 
-  const visible = QY_PAGES.filter((page) =>
-    isQyPageVisible(page, features, isAdmin)
-  ).sort(
+  const visible = qyEntryPages(features, isAdmin).sort(
     (a, b) =>
       QY_PAGE_URL_ORDER.indexOf(a.url) - QY_PAGE_URL_ORDER.indexOf(b.url)
   )

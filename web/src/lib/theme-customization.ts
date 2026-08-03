@@ -21,6 +21,23 @@ For commercial licensing, please contact support@quantumnous.com
  *
  * Lives in `lib/` (not `context/`) so it can be imported alongside the
  * provider without breaking React Fast Refresh boundaries.
+ *
+ * ── 千夜:主题定制已被收成一个常量 ──
+ * 项目方裁决「移除主题设置功能,只给类似首页的明暗调整即可」。
+ * 上游原本有五个可调轴(preset / font / radius / scale / contentLayout),
+ * 每个轴一份 cookie、一个 data-* 属性、一组调色板控件。现在只剩一个固定预设。
+ *
+ * 【为什么是删掉读取逻辑而不是只藏控件】
+ * 五个轴各有一份独立 cookie。仅仅把控件从抽屉里拿掉,浏览器里那份陈旧的
+ * `theme_font=serif` / `theme_scale=xl` 仍会被读出来写进 <body>,用户既看不到
+ * 控件也改不回去 —— "看不见但还在起作用"比不删更糟。因此 THEME_COOKIE_KEYS、
+ * 五个取值集合、resolveThemeFont 等【读取路径整体删除】,而不是把控件藏起来。
+ * 陈旧 cookie 从此没有任何读取方,自然失效。
+ *
+ * 【为什么 THEME_PRESETS 原样保留】
+ * 它是上游文件里的上游数据,别处(以及日后合并上游)可能依赖;删掉只会换来
+ * 合并冲突。它现在的作用是给 {@link FIXED_THEME_PRESET } 提供编译期类型 ——
+ * 预设名一旦拼错,类型检查立刻报错。
  */
 
 export const THEME_PRESETS = [
@@ -87,151 +104,46 @@ export const THEME_PRESETS = [
 ] as const
 
 export type ThemePreset = (typeof THEME_PRESETS)[number]['value']
-export type ThemeRadius = 'default' | 'none' | 'sm' | 'md' | 'lg' | 'xl'
-export type ThemeScale = 'default' | 'sm' | 'lg' | 'xl'
-export type ContentLayout = 'full' | 'centered'
 
 /**
- * Font axis for the theme.
+ * 全站唯一生效的预设。
  *
- * - `default` — resolve at runtime from the active preset
- *   (see `PRESET_DEFAULT_FONT`). The shipped `default` and `anthropic`
- *   presets resolve to serif; other named color presets fall back to
- *   sans unless they list a different choice. Mirrors how
- *   `radius: 'default'` defers to a per-preset hint.
- * - `sans` — humanist sans (Public Sans), the project's UI fallback.
- * - `serif` — editorial serif (Lora + CJK fallbacks), the project's
- *   "soul" typography. Inherits across the whole UI; monospace contexts
- *   keep their own family via Tailwind preflight and `.font-mono`.
+ * 它不是「默认值」而是「常量」：调色板里已经没有换预设的入口，cookie 也不再
+ * 被读取，所以这个值就是每一位访客看到的东西。
  */
-export type ThemeFont = 'default' | 'sans' | 'serif'
+export const FIXED_THEME_PRESET: ThemePreset = 'steins-gate'
 
 /**
- * The resolved (non-`default`) font value applied to the DOM. The provider
- * always sets `data-theme-font` to one of these concrete values so CSS only
- * needs simple attribute selectors (no `:not()` gymnastics, no per-preset
- * font branches).
+ * `<body>` 上承载预设的属性名。
+ *
+ * **绝不能不写。** 整套 Steins Gate 主题 CSS（`styles/qy-sg-*.css`，一千三百
+ * 多行）全部挂在 `[data-theme-preset='steins-gate']` 作用域下，属性一丢主题
+ * 整个失效，页面会退回上游裸样式。
+ *
+ * 常量收在这里而不是各写各的字面量：写入方是 `ThemeCustomizationProvider`，
+ * 读取方是 `features/qy/hooks/use-qy-theme-preset.ts`，两处各写一遍字符串就是
+ * 同一个概念的第二份拷贝，改错一边只会表现为「样式在但区段头没了」。
  */
-export type ResolvedThemeFont = Exclude<ThemeFont, 'default'>
+export const THEME_PRESET_ATTRIBUTE = 'data-theme-preset'
 
+/**
+ * 主题定制的取值。
+ *
+ * 只剩两个字段，都是常量：`preset` 恒为 {@link FIXED_THEME_PRESET}，
+ * `radius` 恒为 `'default'`（上游 `[data-theme-radius=…]` 那一组覆盖块从此
+ * 永不匹配，圆角由 `styles/qy-sg-tokens.css` 里的预设块决定）。
+ *
+ * 字段没有被一并删掉，是因为上游三张图表（dashboard 的 model-charts /
+ * consumption-distribution-chart、pricing 的 model-details-charts）拿
+ * `` `${preset}:${radius}` `` 当重新测量圆角的刷新键。保留常量让那三处继续
+ * 编译且行为正确（键恒定 = 不必重测），比改上游文件更不容易在合并时冲突。
+ */
 export type ThemeCustomization = {
   preset: ThemePreset
-  font: ThemeFont
-  radius: ThemeRadius
-  scale: ThemeScale
-  contentLayout: ContentLayout
+  radius: 'default'
 }
 
 export const DEFAULT_THEME_CUSTOMIZATION: ThemeCustomization = {
-  preset: 'default',
-  font: 'default',
+  preset: FIXED_THEME_PRESET,
   radius: 'default',
-  scale: 'default',
-  contentLayout: 'full',
-}
-
-export const THEME_PRESET_VALUES = new Set(
-  THEME_PRESETS.map((p) => p.value)
-) as ReadonlySet<ThemePreset>
-
-export const THEME_FONT_VALUES: ReadonlySet<ThemeFont> = new Set([
-  'default',
-  'sans',
-  'serif',
-])
-
-export const THEME_RADIUS_VALUES: ReadonlySet<ThemeRadius> = new Set([
-  'default',
-  'none',
-  'sm',
-  'md',
-  'lg',
-  'xl',
-])
-
-export const THEME_SCALE_VALUES: ReadonlySet<ThemeScale> = new Set([
-  'default',
-  'sm',
-  'lg',
-  'xl',
-])
-
-export const CONTENT_LAYOUT_VALUES: ReadonlySet<ContentLayout> = new Set([
-  'full',
-  'centered',
-])
-
-/**
- * 「轴锁」——在这些预设下,调色板只剩亮/暗一个可调项。
- *
- * 由来:design-12-batch6-decisions.md 裁决 4,项目方原话
- * 「这个主题移除掉调色板,固定UI显示即可……白昼/暗色,2个样式吧」。
- * Steins Gate 的构图是照游戏截图逐像素配的,四个轴任意一个被拨动都会破坏它
- * (等宽读数在 scale=xl 下换行、胶囊按钮在 radius=none 下与切角框打架、
- * serif 轴会把游戏那套等宽标签排成衬线)。
- *
- * 【为什么是一个 Set 而不是写死 `preset === 'steins-gate'`】
- * 消费方有两处(config-drawer 的条件渲染、resolveThemeFont 的解析),
- * 两处各写一遍 `=== 'steins-gate'` 就是同一个概念的第二份拷贝,
- * 将来加第二个锁定预设时必然漏掉一处。
- *
- * 【锁定 ≠ 藏起来】
- * 只把控件藏掉是不够的:font/radius/scale/contentLayout 四个轴各自有
- * 独立 cookie,藏掉控件而 cookie 仍在,轴会继续生效 —— "看不见但还在起作用"
- * 比不隐藏更糟。因此:
- *   - font 轴在这里就地掐断(见 resolveThemeFont),对匿名落地页同样有效;
- *   - 其余三个轴由 config-drawer 挂载时把 cookie 归位(它是这三个轴的唯一入口)。
- */
-export const AXIS_LOCKED_PRESETS: ReadonlySet<ThemePreset> = new Set([
-  'steins-gate',
-])
-
-/** 该预设是否锁定了 font / radius / scale / contentLayout 四个轴。 */
-export function isThemeAxisLocked(preset: ThemePreset): boolean {
-  return AXIS_LOCKED_PRESETS.has(preset)
-}
-
-export const THEME_COOKIE_KEYS = {
-  preset: 'theme_preset',
-  font: 'theme_font',
-  radius: 'theme_radius',
-  scale: 'theme_scale',
-  contentLayout: 'theme_content_layout',
-} as const
-
-/**
- * Preset → default font mapping. Used by the provider to resolve the user's
- * `font: 'default'` preference against the active preset.
- *
- * Co-located with the preset registry so a preset's signature typography
- * is declared in one place. Presets not listed here fall back to the
- * `resolveThemeFont` default of `sans`. The shipped `default` preset
- * opts into serif so the editorial Lora voice is the out-of-the-box
- * experience; vivid color presets stay on the humanist sans so their
- * accents read clearly without competing with the body type.
- */
-export const PRESET_DEFAULT_FONT: Partial<
-  Record<ThemePreset, ResolvedThemeFont>
-> = {
-  default: 'sans',
-  anthropic: 'serif',
-}
-
-/**
- * Resolve a user font preference + active preset into the concrete font that
- * should drive the DOM. Pure function so it's safe to call inside both the
- * effect that applies the attribute and the UI preview that hints at what
- * `default` will render as.
- */
-export function resolveThemeFont(
-  font: ThemeFont,
-  preset: ThemePreset
-): ResolvedThemeFont {
-  // 轴锁预设无视用户偏好,直接解析成该预设的签名字体。这一句让 font 轴在
-  // 【任何】渲染路径上都失效 —— 包括没有调色板可点的匿名落地页,那里
-  // 一个陈旧的 theme_font=serif cookie 本来会把游戏那套等宽标签排成衬线。
-  if (font === 'default' || isThemeAxisLocked(preset)) {
-    return PRESET_DEFAULT_FONT[preset] ?? 'sans'
-  }
-  return font
 }

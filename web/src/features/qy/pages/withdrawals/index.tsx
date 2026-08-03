@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
 import { Banknote } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -33,7 +32,6 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
-import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
 import { QyFiatText } from '../components/qy-fiat-text'
 import { QyPager } from '../components/qy-pager'
@@ -54,14 +52,14 @@ const STATUS_OPTIONS = [
 ] as const
 
 /**
- * 提现记录。
+ * 佣金提现记录（「推广佣金」选择夹的第四张标签，需求 3）。
  *
  * 列表只回答"这笔现在到哪一步了"，**"什么时候打的款 / 什么时候拒绝的 /
  * 为什么被拒"由详情弹窗里的时间线回答** —— 那三个字段（`paid_at`、
  * `reviewed_at`、`reject_reason`）在列表里塞不下，塞下了也没人看得懂顺序。
  * 所以每一行都必须能点开。
  */
-export function QyWithdrawals() {
+export function QyWithdrawalsBody() {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState('')
@@ -136,68 +134,57 @@ export function QyWithdrawals() {
   ]
 
   return (
-    <QySectionPageLayout>
-      <QySectionPageLayout.Title>
-        {t('qy_nav_withdrawals')}
-      </QySectionPageLayout.Title>
-      <QySectionPageLayout.Actions>
-        <Button variant='outline' size='sm' render={<Link to='/qy/withdraw' />}>
-          <Banknote aria-hidden='true' />
-          {t('qy_nav_withdraw')}
-        </Button>
-      </QySectionPageLayout.Actions>
-      <QySectionPageLayout.Content>
-        <div className='space-y-3'>
-          <NativeSelect
-            size='sm'
-            aria-label={t('qy_common_status')}
-            value={status}
-            onChange={(event) => {
-              setPage(1)
-              setStatus(event.target.value)
-            }}
-          >
-            <NativeSelectOption value=''>
-              {t('qy_wd_filter_all_statuses')}
-            </NativeSelectOption>
-            {STATUS_OPTIONS.map((value) => (
-              <NativeSelectOption key={value} value={value}>
-                {t(`qy_common_st_${value}`)}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+    <div className='space-y-3'>
+      <NativeSelect
+        size='sm'
+        aria-label={t('qy_common_status')}
+        value={status}
+        onChange={(event) => {
+          setPage(1)
+          setStatus(event.target.value)
+        }}
+      >
+        <NativeSelectOption value=''>
+          {t('qy_wd_filter_all_statuses')}
+        </NativeSelectOption>
+        {STATUS_OPTIONS.map((value) => (
+          <NativeSelectOption key={value} value={value}>
+            {t(`qy_common_st_${value}`)}
+          </NativeSelectOption>
+        ))}
+      </NativeSelect>
 
-          <QyPageBoundary
-            query={query}
-            isEmpty={items.length === 0}
-            emptyIcon={Banknote}
-            emptyTitle={t('qy_wd_empty_title')}
-            emptyDescription={t('qy_wd_empty_desc')}
-          >
-            <div className='w-full overflow-x-auto'>
-              <StaticDataTable
-                columns={columns}
-                data={items}
-                getRowKey={(row) => row.withdraw_no}
-                tableClassName='min-w-[900px]'
-              />
-            </div>
-            <QyPager
-              page={page}
-              pageSize={QY_PAGE_SIZE}
-              total={query.data?.total ?? 0}
-              disabled={query.isFetching}
-              onPageChange={setPage}
-            />
-          </QyPageBoundary>
+      <QyPageBoundary
+        query={query}
+        isEmpty={items.length === 0}
+        emptyIcon={Banknote}
+        emptyTitle={t('qy_wd_empty_title')}
+        emptyDescription={t('qy_wd_empty_desc')}
+      >
+        <div className='w-full overflow-x-auto'>
+          <StaticDataTable
+            columns={columns}
+            data={items}
+            getRowKey={(row) => row.withdraw_no}
+            tableClassName='min-w-[900px]'
+          />
         </div>
-      </QySectionPageLayout.Content>
+        <QyPager
+          page={page}
+          pageSize={QY_PAGE_SIZE}
+          total={query.data?.total ?? 0}
+          disabled={query.isFetching}
+          onPageChange={setPage}
+        />
+      </QyPageBoundary>
 
+      {/* 弹窗与列表并列写在同一个正文里，不再依赖 `QySectionPageLayout`
+          把插槽外的 children 捞回来 —— 收进选择夹之后这里根本没有插槽。 */}
       <WithdrawalDetailDialog
         withdrawalId={detailId}
         onClose={() => setDetailId(null)}
       />
-    </QySectionPageLayout>
+    </div>
   )
 }
 
