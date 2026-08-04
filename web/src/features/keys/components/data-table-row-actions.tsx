@@ -50,26 +50,13 @@ import {
 import { useChatPresets } from '@/features/chat/hooks/use-chat-presets'
 import { resolveChatUrl, type ChatPreset } from '@/features/chat/lib/chat-links'
 import { sendToFluent } from '@/features/chat/lib/send-to-fluent'
-import { encodeChannelConnectionInfo } from '@/lib/channel-connection-info'
+import { useQyConnectionInfoCopy } from '@/features/qy/pages/api-address-picker'
 import { copyToClipboard } from '@/lib/copy-to-clipboard'
 
 import { updateApiKeyStatus } from '../api'
 import { API_KEY_STATUS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import { apiKeySchema } from '../types'
 import { useApiKeys } from './api-keys-provider'
-
-function getServerAddress(): string {
-  try {
-    const raw = localStorage.getItem('status')
-    if (raw) {
-      const status = JSON.parse(raw)
-      if (status.server_address) return status.server_address as string
-    }
-  } catch {
-    /* empty */
-  }
-  return window.location.origin
-}
 
 type DataTableRowActionsProps<TData> = {
   row: Row<TData>
@@ -98,13 +85,35 @@ export function DataTableRowActions<TData>({
   const hasChatPresets = chatPresets.length > 0
   const toggleLabel = isEnabled ? t('Disable') : t('Enable')
 
+  // 「复制链接信息」在复制之前先让用户选一个 API 地址（站点可能有主域 / 备用域 /
+  // 加速线路多个入口）。只有一个可选地址时不弹窗、直接复制；一个都没配时回落到
+  // 站点地址 —— 也就是这个功能上线之前的行为。详见 useQyConnectionInfoCopy 的说明。
+  //
+  // 解构而不是整个对象往下传：hook 每次渲染都返回一个新的对象字面量，
+  // 把它整个塞进 useCallback 的依赖表等于让那个 useCallback 永不命中。
+  const {
+    prefetch: prefetchApiAddresses,
+    copy: copyConnectionInfo,
+    dialog: apiAddressPickerDialog,
+  } = useQyConnectionInfoCopy()
+
   const handleMenuOpenChange = useCallback(
     (open: boolean) => {
-      if (open && !resolvedRealKey && !isRealKeyLoading) {
+      if (!open) return
+      if (!resolvedRealKey && !isRealKeyLoading) {
         void resolveRealKey(apiKey.id)
       }
+      // 与解析密钥同一时机预热地址清单：点击时才发请求的话，等它回来手势已经
+      // 过期，剪贴板写入会静默失败。
+      prefetchApiAddresses()
     },
-    [apiKey.id, isRealKeyLoading, resolvedRealKey, resolveRealKey]
+    [
+      apiKey.id,
+      isRealKeyLoading,
+      prefetchApiAddresses,
+      resolvedRealKey,
+      resolveRealKey,
+    ]
   )
 
   const getCachedRealKey = useCallback(() => {
@@ -252,15 +261,10 @@ export function DataTableRowActions<TData>({
           </DropdownMenuShortcut>
         </DropdownMenuItem>
         <DropdownMenuItem
-          onClick={async () => {
+          onClick={() => {
             const realKey = getCachedRealKey()
             if (!realKey) return
-            const connStr = encodeChannelConnectionInfo(
-              realKey,
-              getServerAddress()
-            )
-            const ok = await copyToClipboard(connStr)
-            if (ok) toast.success(t('Copied'))
+            copyConnectionInfo(realKey)
           }}
         >
           {t('Copy Connection Info')}
@@ -317,6 +321,11 @@ export function DataTableRowActions<TData>({
           </DropdownMenuShortcut>
         </DropdownMenuItem>
       </DataTableRowActionMenu>
+
+      {/* 地址选择窗口。未打开时不产生任何 DOM，因此每行各挂一个的开销可以忽略；
+          放在这里而不是 ApiKeysDialogs 是因为它要拿的是**本行**已解析出的密钥，
+          走 provider 传递等于给一个纯展示的选择步骤加一条全局状态。 */}
+      {apiAddressPickerDialog}
     </div>
   )
 }

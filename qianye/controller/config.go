@@ -16,6 +16,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// QyLotteryEntryShown 回答"前端要不要渲染娱乐入口"。
+//
+// 默认只读 YAML;lottery 模块注册时把它换成"YAML + qy_settings 运营覆盖"的
+// 合并结果。做成 hook 变量而不是让本包 import 模块,是为了保持 controller 对
+// 各模块零依赖 —— 而必须做这一层的理由是:管理端的「在前端显示」开关写的是
+// qy_settings,本端点若只读 YAML,运营在界面上关掉入口之后前台照旧显示,
+// 那正是本仓反复出现的"以为改了其实没改"。
+var QyLotteryEntryShown = func() bool { return config.Get().Lottery.EntryShown() }
+
 // GetConfig 是前端的引导端点。
 //
 // 刻意不走 guard.RequireAPI,并且永远返回 200:扩展被禁用时前端需要拿到
@@ -42,6 +51,14 @@ func GetConfig(c *gin.Context) {
 			"withdraw":     cfg.Withdraw.Enabled,
 			"availability": cfg.Availability.Enabled,
 			"violation":    cfg.Violation.Enabled,
+			"lottery":      cfg.Lottery.Enabled,
+			"ticket":       cfg.Ticket.Enabled,
+		},
+		// 娱乐功能的展示开关。show_entry 关掉之后接口仍然可用:已参与的用户
+		// 必须还能查自己的记录与已结束活动的证据链,那正是"历史公正查询"。
+		"lottery": gin.H{
+			"show_entry":   QyLotteryEntryShown(),
+			"proof_public": cfg.Lottery.ProofOpen(),
 		},
 		"wallet": gin.H{
 			"show_transfer_entry":   cfg.Wallet.TransferEntry(),

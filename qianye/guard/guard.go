@@ -38,6 +38,8 @@ const (
 	FlagAvailability Flag = "availability"
 	FlagViolation    Flag = "violation"
 	FlagGroupPricing Flag = "group_pricing"
+	FlagLottery      Flag = "lottery"
+	FlagTicket       Flag = "ticket"
 )
 
 // 响应 code。前端按 code 映射到 i18n 文案,message 只作兜底,
@@ -81,6 +83,10 @@ func featureOn(f Flag) bool {
 		return c.Violation.Enabled
 	case FlagGroupPricing:
 		return c.GroupPricing.Enabled
+	case FlagLottery:
+		return c.Lottery.Enabled
+	case FlagTicket:
+		return c.Ticket.Enabled
 	default:
 		return false
 	}

@@ -312,6 +312,63 @@ func compile(r Rule) (*compiledRule, error) {
 	return cr, nil
 }
 
+// ruleVarcharLimit 是 Rule 上一个 varchar 列的字符数上限。
+type ruleVarcharLimit struct {
+	// Field 是结构体字段名。它不参与校验,只用来跟 model.go 的 gorm tag 对账
+	// (见 TestRuleVarcharLimitsMatchColumnTags)。
+	Field string
+	// Label 是报错里用的中文名,与管理端表单上的标签一致 —— 管理员看到
+	// "备注过长" 才知道该去删哪一格,看到 "remark" 不知道。
+	Label string
+	Max   int
+	Get   func(*Rule) string
+}
+
+// ruleVarcharLimits 是写入前的长度校验表,一行对应 model.go 里的一个 varchar 列。
+//
+// # 为什么生产代码里要有这张表
+//
+// 没有它的时候,超长字段是靠 MySQL 的 `Error 1406 Data too long` 挡下来的,
+// 而那条错误会被 internalError 折成一句"处理失败,请稍后重试":既没有字段名也没有
+// 长度提示,管理员无从判断是哪一格填多了。SQLite 更糟 —— 它根本不校验 varchar 长度,
+// 于是同一份数据在 SQLite 上存得进去、迁到 MySQL 就整条 INSERT 失败。
+//
+// # 为什么不是"截断"
+//
+// 这里原本是一串 `truncate(r.Remark, 512)` 式的静默截断。静默截断有两个问题:
+// 一是管理员保存成功、回到列表才发现备注被拦腰截断,没有任何提示;二是那个
+// truncate 是**字节**口径的,一段 300 字的中文(约 900 字节)会在第 170 字处被切掉,
+// 而 300 字在 varchar(512) 的字符口径下完全合法 —— 可用容量被砍到标称值的三分之一。
+//
+// # 计长口径:rune
+//
+// MySQL(utf8mb4,见 qianye/db/db.go 的 DSN)与 PostgreSQL 的 varchar(N) 都是
+// N 个**字符**,Go 的 rune 数正是它们说的字符数。byte 口径不是"更保守",
+// 它是另一条不成立的约束,会在正确的中文数据上误报。
+//
+// # 两份事实的对账
+//
+// 这张表是 gorm tag 的生产侧副本。两侧一旦漂移,校验就会放过数据库拒绝的行
+// (列被改窄)或拦下数据库接受的行(列被改宽)—— 两种都是本轮事故的同一个形状。
+// TestRuleVarcharLimitsMatchColumnTags 逐字段比对,不允许任何一侧单独变。
+var ruleVarcharLimits = []ruleVarcharLimit{
+	{Field: "Name", Label: "规则名称", Max: 128, Get: func(r *Rule) string { return r.Name }},
+	{Field: "Remark", Label: "备注", Max: 512, Get: func(r *Rule) string { return r.Remark }},
+	{Field: "PublicReason", Label: "对外原因", Max: 128, Get: func(r *Rule) string { return r.PublicReason }},
+	{Field: "Mode", Label: "模式", Max: 16, Get: func(r *Rule) string { return r.Mode }},
+	{Field: "Source", Label: "来源", Max: 16, Get: func(r *Rule) string { return r.Source }},
+	{Field: "BuiltinKey", Label: "内置规则 key", Max: 64, Get: func(r *Rule) string { return r.BuiltinKey }},
+	{Field: "BuiltinFingerprint", Label: "内置规则指纹", Max: 64, Get: func(r *Rule) string { return r.BuiltinFingerprint }},
+	{Field: "Phase", Label: "生效阶段", Max: 24, Get: func(r *Rule) string { return r.Phase }},
+	{Field: "MatchType", Label: "匹配方式", Max: 24, Get: func(r *Rule) string { return r.MatchType }},
+	{Field: "ModelScope", Label: "模型作用域", Max: 2048, Get: func(r *Rule) string { return r.ModelScope }},
+	{Field: "GroupScope", Label: "分组作用域", Max: 1024, Get: func(r *Rule) string { return r.GroupScope }},
+	{Field: "GroupScopeMode", Label: "分组作用域方向", Max: 8, Get: func(r *Rule) string { return r.GroupScopeMode }},
+	{Field: "Action", Label: "处置动作", Max: 24, Get: func(r *Rule) string { return r.Action }},
+	{Field: "FeeMode", Label: "计费方式", Max: 24, Get: func(r *Rule) string { return r.FeeMode }},
+	{Field: "BlockMessage", Label: "阻断文案", Max: 512, Get: func(r *Rule) string { return r.BlockMessage }},
+}
+
 // ValidateRule 是管理端写入前的校验。与 compile 共用编译路径,
 // 保证"管理端保存成功"等价于"运行期一定能编译"。
 func ValidateRule(r *Rule) error {
@@ -364,6 +421,14 @@ func ValidateRule(r *Rule) error {
 	default:
 		return fmt.Errorf("group_scope_mode 取值非法: %q", r.GroupScopeMode)
 	}
+	// 长度校验排在枚举校验之后:一个填错的 mode 该报"取值非法"而不是"模式过长",
+	// 前者直接指向问题,后者会把人引去数长度。
+	for _, lim := range ruleVarcharLimits {
+		if n := utf8.RuneCountInString(lim.Get(r)); n > lim.Max {
+			return fmt.Errorf("%s过长(%d 字,上限 %d 字)", lim.Label, n, lim.Max)
+		}
+	}
+	// Pattern 是 text 列,没有字符数上限,这里挡的是"别把一整本书编译成正则"。
 	if len(r.Pattern) > 8192 {
 		return fmt.Errorf("pattern 过长(%d 字节,上限 8192)", len(r.Pattern))
 	}

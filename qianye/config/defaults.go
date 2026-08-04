@@ -147,6 +147,20 @@ func applyDefaults(c *Config) {
 	intDefault(&w.PIIRetentionDays, 180)
 	int64Default(&w.ProofMaxBytes, 2<<20)
 
+	tk := &c.Ticket
+	intDefault(&tk.TitleMaxRunes, 100)
+	intDefault(&tk.BodyMaxRunes, 5000)
+	intDefault(&tk.MaxOpenPerUser, 5)
+	intDefault(&tk.DailyMaxCount, 10)
+	intDefault(&tk.CooldownSecs, 60)
+	intDefault(&tk.ReplyCooldownSecs, 10)
+	intDefault(&tk.MaxMessagesPerTicket, 100)
+	intDefault(&tk.AutoCloseDays, 7)
+	int64Default(&tk.ImageMaxBytes, 2<<20)
+	intDefault(&tk.ImageMaxPerMessage, 3)
+	int64Default(&tk.ImageUserQuotaBytes, 200<<20)
+	intDefault(&tk.ImageRetentionDays, 180)
+
 	av := &c.Availability
 	intDefault(&av.BucketSeconds, 300)
 	intDefault(&av.FlushIntervalSeconds, 60)
@@ -172,6 +186,30 @@ func applyDefaults(c *Config) {
 	intDefault(&gp.ShadowFlushIntervalSeconds, 60)
 	intDefault(&gp.ShadowRetentionDays, 90)
 	intDefault(&gp.MaxRules, 2000)
+
+	lt := &c.Lottery
+	intDefault(&lt.MaxActiveActivities, 20)
+	int64Default(&lt.MaxStakeQuota, 5_000_000)
+	int64Default(&lt.MaxTotalPrizeQuota, 50_000_000)
+	int64Default(&lt.LargePrizeAlertQuota, 5_000_000)
+	int64Default(&lt.PayPasswordThresholdQuota, 100_000)
+	intDefault(&lt.EntryCloseGraceSeconds, 60)
+	intDefault(&lt.RevealDelaySeconds, 60)
+	intDefault(&lt.LockScanIntervalSeconds, 15)
+	intDefault(&lt.RevealScanIntervalSeconds, 15)
+	intDefault(&lt.PayoutIntervalSeconds, 10)
+	intDefault(&lt.PayoutMaxAttempts, 8)
+	intDefault(&lt.ExcludedManualAfterSeconds, 900)
+	intDefault(&lt.MaxTotalEntriesHard, 50000)
+	intDefault(&lt.MaxPrizeTiers, 10)
+	intDefault(&lt.MaxOptions, 12)
+	intDefault(&lt.DefaultGuessFeeBps, 500)
+	intDefault(&lt.MaxGuessFeeBps, 2000)
+	intDefault(&lt.SpendScanIntervalSeconds, 60)
+	intDefault(&lt.SpendScanBatch, 2000)
+	intDefault(&lt.SpendGapGuardSeconds, 60)
+	intDefault(&lt.SpendMaxLookbackDays, 90)
+	intDefault(&lt.SpendRetentionDays, 120)
 
 	// 走到这里仍是哨兵的字段,是"文件里没写、也没有默认值"的那一批
 	// (transfer.fee_bps、audit.retention_days、violation.auto_ban_threshold……)。

@@ -37,6 +37,19 @@ type Module interface {
 	StartTasks()
 }
 
+// PublicRouter 是可选接口:实现它的模块可以往 **匿名可访问**的根组挂只读路由。
+//
+// 传入的组只挂了 GlobalAPIRateLimit 与请求台账,没有任何认证 —— 因此实现方
+// 只允许注册"公开事实"类的只读端点(抽奖的公正性证据链就是为它存在的:
+// 需要注册账号才能取证的公正性不叫公正性)。
+//
+// 刻意做成可选接口而不是往 Module 里加方法:绝大多数模块没有任何匿名面,
+// 给它们每人加一个空实现只会让"这里本来就该是空的"和"这里忘了写"长得一样。
+type PublicRouter interface {
+	// RegisterPublicRoutes 注册匿名可访问的只读路由。
+	RegisterPublicRoutes(g *gin.RouterGroup)
+}
+
 var registry []Module
 
 // Register 由各模块在 init() 中调用。

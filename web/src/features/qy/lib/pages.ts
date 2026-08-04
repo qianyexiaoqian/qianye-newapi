@@ -21,11 +21,14 @@ import {
   Gauge,
   HandCoins,
   HeartPulse,
+  LifeBuoy,
   Megaphone,
   ReceiptText,
   Repeat,
   ScrollText,
   ShieldAlert,
+  Ticket,
+  TicketCheck,
   TriangleAlert,
 } from 'lucide-react'
 import type { ElementType } from 'react'
@@ -209,12 +212,32 @@ export function qyTabTarget(url: string): { to: string; hash?: string } {
 
 // ───────────────────────────── 页面 ─────────────────────────────
 
+/**
+ * 站点级「前端是否显示」开关（需求原文：「系统设置前端是否显示」）。
+ *
+ * 与 {@link QyFeatures} 是**并列**而不是重复：`features.*` 是 YAML 里"这个功能
+ * 装没装"（改它要动配置文件），这里是运营在系统设置里随时可关的"这一期要不要
+ * 在前台露出入口"。
+ *
+ * 只对**用户侧**页面生效 —— 管理端入口永远不受它影响，否则关掉之后就再也没有
+ * 地方能把它打开了。这条约束在 {@link isQyPageVisible} 里只有一处实现。
+ */
+export type QyEntrySwitches = {
+  lottery: boolean
+}
+
 export type QyPageDef = {
   url: string
   /** 侧栏与工作区索引页共用的标题 i18n key。 */
   titleKey: string
   /** 该页依赖的功能开关；`undefined` 表示只要扩展开着就显示。 */
   feature?: keyof QyFeatures
+  /**
+   * 额外的站点展示开关（见 {@link QyEntrySwitches}）。
+   *
+   * 与 `feature` 是"且"的关系。管理页写不写都一样 —— 它对管理页恒不生效。
+   */
+  entry?: keyof QyEntrySwitches
   /**
    * 落点：根侧栏的某个分组，或 {@link QY_SETTINGS_GROUP}（并进系统设置抽屉）。
    *
@@ -314,12 +337,45 @@ export const QY_PAGES: readonly QyPageDef[] = [
     jpKey: 'qy_sg_jp_withdrawals',
   },
   {
+    // 工单落在「推广」组是权宜：它不是推广，但它是**用户主动发起的自助事务**，
+    // 与「我的违规」同类（都是"我这边出了状况，去看看/去处理"）。真正的理由是
+    // 分组数受控——为一页新建一个组会让侧栏多一行组标题，而这一组当前只有 5 行，
+    // 离 6 行的上限还有余量。
+    url: '/qy/tickets',
+    titleKey: 'qy_nav_tickets',
+    feature: 'ticket',
+    group: 'qy-growth',
+    icon: LifeBuoy,
+    jpKey: 'qy_sg_jp_tickets',
+  },
+  {
     url: '/qy/violations',
     titleKey: 'qy_nav_my_violations',
     feature: 'violation',
     group: 'qy-growth',
     icon: ShieldAlert,
     jpKey: 'qy_sg_jp_violations',
+  },
+  // 抽奖/竞猜落在「推广」组：它和邀请返佣一样是拉新与促活的手段，用户的心智
+  // 也在同一处（"平台给我的东西在哪"）。两行都挂 `entry: 'lottery'`——
+  // 站点在系统设置里关掉展示时，这两行整体消失，而不是留下点进去空空如也的页面。
+  {
+    url: '/qy/lottery',
+    titleKey: 'qy_nav_lottery',
+    feature: 'lottery',
+    entry: 'lottery',
+    group: 'qy-growth',
+    icon: Ticket,
+    jpKey: 'qy_sg_jp_lottery',
+  },
+  {
+    url: '/qy/lottery-records',
+    titleKey: 'qy_nav_lottery_records',
+    feature: 'lottery',
+    entry: 'lottery',
+    group: 'qy-growth',
+    icon: TicketCheck,
+    jpKey: 'qy_sg_jp_lottery_records',
   },
 
   // ── 上游 admin：各自紧跟语义最近的上游管理项 ──
@@ -364,6 +420,16 @@ export const QY_PAGES: readonly QyPageDef[] = [
     icon: ScrollText,
     jpKey: 'qy_sg_jp_a_fund_orders',
   },
+  // 抽奖活动管理落在「结算」组而不是「风控」：这一页每天要看的是本场收入 /
+  // 奖品支出 / 待派奖笔数，与佣金结算、提现审核是同一类账，不是风控处置。
+  {
+    url: '/qy/admin/lottery',
+    titleKey: 'qy_nav_a_lottery',
+    feature: 'lottery',
+    group: 'qy-settlement',
+    icon: Ticket,
+    jpKey: 'qy_sg_jp_a_lottery',
+  },
 
   // ── 新组「风控与审计」──
   {
@@ -373,6 +439,16 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'qy-risk',
     icon: TriangleAlert,
     jpKey: 'qy_sg_jp_a_violations',
+  },
+  {
+    // 工单审核台留在根侧栏而不是进系统设置抽屉：它是**每天要开**的流水页，
+    // 抽屉里放的是"改一次影响后续每一笔"的配置。界线见本文件顶部的说明。
+    url: '/qy/admin/tickets',
+    titleKey: 'qy_nav_a_tickets',
+    feature: 'ticket',
+    group: 'qy-risk',
+    icon: LifeBuoy,
+    jpKey: 'qy_sg_jp_a_tickets',
   },
   {
     url: '/qy/admin/audit-logs',
@@ -428,6 +504,26 @@ export const QY_PAGES: readonly QyPageDef[] = [
     jpKey: 'qy_sg_jp_a_violation_rules',
     group: QY_SETTINGS_GROUP,
   },
+  // 需求原文：「系统设置前端是否显示」。它与手续费上限、单场奖品上限一样，
+  // 改一次影响之后每一场，属于抽屉里那类配置，而不是每天要看的流水。
+  {
+    url: '/qy/admin/lottery-config',
+    titleKey: 'qy_nav_a_lottery_config',
+    feature: 'lottery',
+    jpKey: 'qy_sg_jp_a_lottery_config',
+    group: QY_SETTINGS_GROUP,
+  },
+  // 可选 API 地址簿。改一次影响之后每一个用户复制出来的连接信息，与费率、
+  // 门槛同类，属于抽屉里那批配置而不是每天要看的流水。
+  // 不挂 `feature`：它没有 YAML 开关（见 `qianye/modules/apiaddr` 的说明），
+  // 扩展开着就有 —— 而且它的"关掉"就是一条地址都不配，那时用户侧自动回落
+  // 到站点地址，与本功能上线之前完全一致。
+  {
+    url: '/qy/admin/api-address',
+    titleKey: 'qy_nav_a_api_address',
+    jpKey: 'qy_sg_jp_a_api_address',
+    group: QY_SETTINGS_GROUP,
+  },
 ]
 
 /**
@@ -463,14 +559,23 @@ export function isQyAdminPage(url: string): boolean {
  * 该页在当前功能开关与角色下是否应该出现在导航里。
  *
  * 只判定"能不能看见入口"；真正的访问控制在路由 guard 与后端，二者独立。
+ *
+ * `entries` 省略时展示开关一律按"显示"处理：配置还在取数、或调用方压根不关心
+ * 展示开关（系统设置抽屉里全是管理页）时，不该把菜单先抹掉再长回来。
  */
 export function isQyPageVisible(
   page: QyPageDef,
   features: QyFeatures,
-  isAdmin: boolean
+  isAdmin: boolean,
+  entries?: QyEntrySwitches
 ): boolean {
   if (isQyAdminPage(page.url) && !isAdmin) return false
-  return page.feature == null || features[page.feature]
+  if (page.feature != null && !features[page.feature]) return false
+  // 展示开关只压用户侧：管理端是把它重新打开的唯一地方。
+  if (page.entry != null && !isQyAdminPage(page.url) && entries != null) {
+    return entries[page.entry]
+  }
+  return true
 }
 
 /**
@@ -485,10 +590,12 @@ export function isQyPageVisible(
  */
 export function qyEntryPages(
   features: QyFeatures,
-  isAdmin: boolean
+  isAdmin: boolean,
+  entries?: QyEntrySwitches
 ): QyPageDef[] {
   return QY_PAGES.filter(
     (page) =>
-      isQyPageVisible(page, features, isAdmin) && !isQyPageHosted(page.url)
+      isQyPageVisible(page, features, isAdmin, entries) &&
+      !isQyPageHosted(page.url)
   )
 }

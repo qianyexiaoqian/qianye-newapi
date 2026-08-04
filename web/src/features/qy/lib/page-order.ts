@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-
 /**
  * `LAB MEMO — NN` 序号的唯一真源。
  *
@@ -60,4 +59,11 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   '/qy/admin/fund-orders',
   '/qy/admin/audit-logs',
   '/qy/admin/health',
+  '/qy/lottery',
+  '/qy/lottery-records',
+  '/qy/admin/lottery',
+  '/qy/admin/lottery-config',
+  '/qy/admin/api-address',
+  '/qy/tickets',
+  '/qy/admin/tickets',
 ]

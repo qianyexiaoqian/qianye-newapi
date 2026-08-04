@@ -21,10 +21,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
-import { getSelf } from '@/lib/api'
 
 import { getAffiliateCode, transferAffiliateQuota } from '../api'
-import { generateAffiliateLink } from '../lib'
+import { generateAffiliateLink, refreshCurrentUser } from '../lib'
 
 // ============================================================================
 // Affiliate Hook
@@ -69,7 +68,9 @@ export function useAffiliate() {
 
       if (response.success) {
         toast.success(response.message || i18next.t('Transfer successful'))
-        await getSelf()
+        // 这一笔同时动了 `users.aff_quota` 与 `users.quota`，后者正是概览页读的
+        // 那个数。原来的裸 `await getSelf()` 把新值丢了，顶栏和概览页都不会变。
+        await refreshCurrentUser()
         return true
       }
 

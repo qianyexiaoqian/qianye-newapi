@@ -33,7 +33,6 @@ import {
 } from '@/features/qy/wallet-entry/tab'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
-import { getSelf } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
@@ -61,6 +60,8 @@ import {
   getDefaultPaymentType,
   getMinTopupAmount,
   dispatchSelectedPayment,
+  refreshCurrentUser,
+  subscribeToTopupReturn,
 } from './lib'
 import type {
   UserWalletData,
@@ -127,17 +128,18 @@ export function Wallet(props: WalletProps) {
   const { processing: pancakeProcessing, processWaffoPancakePayment } =
     useWaffoPancakePayment()
 
-  // Fetch and refresh user data
+  // Fetch and refresh user data.
+  //
+  // 这里原本自己 `getSelf()` 然后只 `setUser(...)` 到上面那个组件 state —— 于是
+  // 钱包页显示新余额、概览页（读 auth-store）显示旧余额，两块界面各说各话。
+  // 现在同一次请求由 refreshCurrentUser 写回 auth-store，返回值再喂给局部 state。
   const fetchUser = useCallback(async () => {
     try {
       setUserLoading(true)
-      const response = await getSelf()
-      if (response.success && response.data) {
-        setUser(response.data as UserWalletData)
+      const refreshed = await refreshCurrentUser()
+      if (refreshed) {
+        setUser(refreshed as UserWalletData)
       }
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to fetch user data:', error)
     } finally {
       setUserLoading(false)
     }
@@ -146,6 +148,19 @@ export function Wallet(props: WalletProps) {
   useEffect(() => {
     fetchUser()
   }, [fetchUser])
+
+  // 在线支付是在**另一个标签页**里完成的，到账走服务端回调，本页收不到任何事件。
+  // 所以发起支付后打上标记，等用户切回本页时补一次刷新。标记不清除：回调可能比
+  // 用户切回来更晚，用户再切走一次又切回来时还得能刷新到。
+  const topupInFlightRef = useRef(false)
+  useEffect(
+    () =>
+      subscribeToTopupReturn(() => {
+        if (!topupInFlightRef.current) return
+        void fetchUser()
+      }),
+    [fetchUser]
+  )
 
   useEffect(() => {
     if (props.initialShowHistory) {
@@ -282,6 +297,10 @@ export function Wallet(props: WalletProps) {
     )
 
     if (success) {
+      // `success` 只代表"支付页已经打开"，不代表已付款：钱在另一个标签页里付，
+      // 所以这里的 `fetchUser()` 必然拿回旧余额。真正到账后的刷新靠上面那个
+      // 「切回本页」订阅，这一句只留着覆盖极少数即时到账的通道。
+      topupInFlightRef.current = true
       setConfirmDialogOpen(false)
       await fetchUser()
     }
@@ -310,6 +329,8 @@ export function Wallet(props: WalletProps) {
 
     const success = await processCreemPayment(selectedCreemProduct.productId)
     if (success) {
+      // 同上：creem 走 `window.open(checkout_url)`，此刻还没付款。
+      topupInFlightRef.current = true
       setCreemDialogOpen(false)
       setSelectedCreemProduct(null)
       await fetchUser()

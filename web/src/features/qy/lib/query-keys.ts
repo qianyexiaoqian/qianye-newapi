@@ -56,9 +56,40 @@ export const qyKeys = {
   /** 支付密码状态（是否已设置 / 是否锁定 / 剩余次数）。 */
   payPassword: () => [...qyKeys.all, 'pay-password'] as const,
 
+  /**
+   * 用户可选的 API 地址（只含已启用的）。
+   *
+   * 消费方是**上游**密钥列表上的「复制链接信息」，不是某个 qy 页面。它仍然挂在
+   * `qy` 前缀下：管理员改完地址簿后一次 `invalidateQueries({ queryKey: qyKeys.all })`
+   * 必须能把它一起冲掉，否则用户会拿到一份已经被删掉的地址。
+   */
+  apiAddresses: () => [...qyKeys.all, 'api-addresses'] as const,
+
   violationMyRecords: (params: unknown) =>
     [...qyKeys.all, 'violation', 'my-records', params] as const,
   violationMySummary: () => [...qyKeys.all, 'violation', 'my-summary'] as const,
+
+  // ── 抽奖 / 竞猜（用户端）──
+  lotteryActivities: (params: unknown) =>
+    [...qyKeys.all, 'lottery', 'activities', params] as const,
+  lotteryActivity: (actNo: string) =>
+    [...qyKeys.all, 'lottery', 'activity', actNo] as const,
+  /** 资格预检。**仅用于展示**，放行与否永远以报名接口的返回为准。 */
+  lotteryEligibility: (actNo: string) =>
+    [...qyKeys.all, 'lottery', 'eligibility', actNo] as const,
+  lotteryMyEntries: (params: unknown) =>
+    [...qyKeys.all, 'lottery', 'my-entries', params] as const,
+  /** 证据链。匿名可访问，但缓存 key 仍挂在 qy 前缀下以便一起失效。 */
+  lotteryProof: (actNo: string, params: unknown) =>
+    [...qyKeys.all, 'lottery', 'proof', actNo, params] as const,
+
+  // ── 工单(用户端)──
+  ticketConfig: () => [...qyKeys.all, 'ticket', 'config'] as const,
+  ticketList: (params: unknown) =>
+    [...qyKeys.all, 'ticket', 'list', params] as const,
+  /** 用户端按业务单号寻址（用户视图不下发自增 id），所以 key 也是单号。 */
+  ticketDetail: (ticketNo: string) =>
+    [...qyKeys.all, 'ticket', 'detail', ticketNo] as const,
 
   availabilityMatrix: (params: unknown) =>
     [...qyKeys.all, 'availability', 'matrix', params] as const,
@@ -119,6 +150,32 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'violation', 'stats'] as const,
   adminViolationCounters: (params: unknown) =>
     [...qyKeys.all, 'admin', 'violation', 'counters', params] as const,
+
+  // ── 抽奖 / 竞猜（管理端）──
+  adminLotteryActivities: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'lottery', 'activities', params] as const,
+  adminLotteryActivity: (actNo: string) =>
+    [...qyKeys.all, 'admin', 'lottery', 'activity', actNo] as const,
+  adminLotteryEntries: (actNo: string, params: unknown) =>
+    [...qyKeys.all, 'admin', 'lottery', 'entries', actNo, params] as const,
+  adminLotteryPayouts: (actNo: string, params: unknown) =>
+    [...qyKeys.all, 'admin', 'lottery', 'payouts', actNo, params] as const,
+  adminLotteryEvents: (actNo: string) =>
+    [...qyKeys.all, 'admin', 'lottery', 'events', actNo] as const,
+  adminLotteryFlags: (actNo: string) =>
+    [...qyKeys.all, 'admin', 'lottery', 'flags', actNo] as const,
+  adminLotteryConfig: () =>
+    [...qyKeys.all, 'admin', 'lottery', 'config'] as const,
+
+  /** API 地址簿（管理端，含已停用的行）。 */
+  adminApiAddresses: () => [...qyKeys.all, 'admin', 'api-addresses'] as const,
+
+  // ── 工单(管理端)──
+  adminTickets: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'ticket', 'list', params] as const,
+  adminTicket: (id: number) =>
+    [...qyKeys.all, 'admin', 'ticket', 'detail', id] as const,
+  adminTicketStats: () => [...qyKeys.all, 'admin', 'ticket', 'stats'] as const,
 
   adminUserGroupConfig: () =>
     [...qyKeys.all, 'admin', 'user-group', 'config'] as const,

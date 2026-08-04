@@ -1,4 +1,22 @@
 /*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+/*
  * qy 的配置类管理页并进上游「系统设置」抽屉（需求 8）。
  *
  * # 守什么
@@ -38,7 +56,9 @@ const ALL_ON: QyFeatures = {
   commission: true,
   withdraw: true,
   availability: true,
+  lottery: true,
   violation: true,
+  ticket: true,
 }
 
 /** 上游抽屉的最小复刻：一个分组、两个折叠项。 */
@@ -115,16 +135,19 @@ describe('并进系统设置抽屉的菜单项', () => {
         commission: false,
         withdraw: false,
         availability: false,
+        lottery: false,
         violation: false,
+        ticket: false,
       },
       ROLE.ADMIN,
       t
     )
-    // 分组定价与新用户默认分组没有 feature 开关，所以这里仍应剩下它们两个；
-    // 断言写成"还剩谁"而不是"空了"，免得把无开关的页面一起判没。
+    // 分组定价、新用户默认分组与 API 地址簿没有 feature 开关，所以这里仍应
+    // 剩下它们三个；断言写成"还剩谁"而不是"空了"，免得把无开关的页面一起判没。
     assert.deepEqual(qyGroupItems(merged), [
       '/qy/admin/group-pricing',
       '/qy/admin/user-group',
+      '/qy/admin/api-address',
     ])
   })
 })

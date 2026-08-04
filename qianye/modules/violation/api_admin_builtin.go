@@ -2,6 +2,7 @@ package violation
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -108,7 +109,7 @@ func loadBuiltinRows(gdb *gorm.DB) (map[string]*Rule, error) {
 // importOutcome 是一次导入的逐条结果。
 type importOutcome struct {
 	Key    string `json:"key"`
-	Action string `json:"action"` // created | upgraded | skipped
+	Action string `json:"action"` // created | upgraded | skipped | failed
 	Reason string `json:"reason,omitempty"`
 	RuleId int64  `json:"rule_id,omitempty"`
 }
@@ -118,6 +119,15 @@ const (
 	importCreated  = "created"
 	importUpgraded = "upgraded"
 	importSkipped  = "skipped"
+	// importFailed 与 importSkipped 分开,是本轮修的第二个缺陷。
+	//
+	// 「跳过」在这个接口里是四种**正常**结局的统称:已存在、运营改过、已是最新、
+	// 没勾选升级。写库报错被塞进同一个词里,就等于把一次事故伪装成一次正常结果 ——
+	// 实测形态是六条规则因 `Error 1406 Data too long` 全部 INSERT 失败,
+	// 接口照常 200,管理员看到"导入成功",库里一条都没有。
+	//
+	// 分开之后,"有没有出事"是一个可以被计数、被判状态码、被审计的独立事实。
+	importFailed = "failed"
 )
 
 // adminImportBuiltinRules 一键导入(或升级)内置规则包。
@@ -159,10 +169,17 @@ func adminImportBuiltinRules(c *gin.Context) {
 	now := common.GetTimestamp()
 	operatorId := c.GetInt("id")
 	results := make([]importOutcome, 0, len(wanted))
-	changed := 0
+	changed, failed := 0, 0
 	for _, b := range wanted {
 		out := importOne(gdb, b, existing[b.Key], req.Upgrade, now, operatorId)
-		if out.Action != importSkipped {
+		switch out.Action {
+		case importFailed:
+			failed++
+			// 每条失败都单独进后端日志。响应体只有点按钮的那个人看得到,
+			// 而这类失败(列宽、约束、连接)通常要靠日志才能定位到根因。
+			common.SysError("qianye/violation: 内置规则 " + out.Key + " 导入失败: " + out.Reason)
+		case importSkipped:
+		default:
 			changed++
 		}
 		results = append(results, out)
@@ -177,17 +194,49 @@ func adminImportBuiltinRules(c *gin.Context) {
 		}
 	}
 
+	auditResult := qymodel.ResultOK
+	if failed > 0 {
+		auditResult = qymodel.ResultFail
+	}
 	audit.Write(c, audit.Entry{
 		Category:    qymodel.AuditCategoryViolation,
 		Action:      "rules.import_builtin",
 		ActorType:   qymodel.ActorAdmin,
 		ActorUserId: operatorId,
 		ActorName:   c.GetString("username"),
-		Result:      qymodel.ResultOK,
-		Reason:      fmt.Sprintf("导入内置防护规则包(upgrade=%t),生效 %d 条", req.Upgrade, changed),
-		AfterSnap:   common.MapToJsonStr(map[string]any{"results": results, "mode": ModeShadow}),
+		Result:      auditResult,
+		Reason: fmt.Sprintf("导入内置防护规则包(upgrade=%t),生效 %d 条,失败 %d 条",
+			req.Upgrade, changed, failed),
+		AfterSnap: common.MapToJsonStr(map[string]any{"results": results, "mode": ModeShadow}),
 	})
-	respond(c, gin.H{"results": results, "changed": changed, "mode": ModeShadow})
+
+	// # 状态码的取舍
+	//
+	// 逐条独立成败(见上文),所以**任何情况下都不回滚**:15 条成功 1 条失败时,
+	// 那 15 条必须留在库里,重试只会对剩下的 1 条再试一次。状态码要表达的不是
+	// "要不要回滚",而是"这次调用到底发生了什么"。
+	//
+	//   - 一条都没失败 → 200,与从前一致。
+	//   - 有失败、但也有写成功的(部分成功)→ 仍然 200,靠 failed 计数与逐条
+	//     action=failed 上报。这里刻意不用非 2xx:前端的错误分支会丢掉整个 data,
+	//     于是那些**已经写进库**的规则既不会刷新列表、也不会被逐条展示,
+	//     管理员看到的状态比什么都不报还要错。
+	//   - 全部失败、一条都没生效(changed == 0 && failed > 0)→ 500。
+	//     这正是本轮实弹测试踩到的形态:六条规则因列宽全部 INSERT 失败,接口却回
+	//     200"导入成功"。对调用方来说这次操作根本没有发生,它就该是一次失败的请求。
+	//
+	// 分界画在 changed 上而不是 failed 上:有东西落库 = 请求确实做成了事,
+	// 需要前端继续走成功路径(刷新列表、展示逐条结果);什么都没落库 = 没做成。
+	if failed > 0 && changed == 0 {
+		// 逐条明细必须跟着失败一起回去:哪几条失败、各自的数据库错误原文是什么,
+		// 是这次排障的全部信息(本轮的形态就是六条 `Error 1406 Data too long`)。
+		// 只回一句"详见服务端日志"等于把排障强行升级给有日志权限的人。
+		respondFailData(c, http.StatusInternalServerError, "qy_vio_builtin_import_failed",
+			fmt.Sprintf("内置规则导入失败:%d 条全部写入失败,没有任何规则生效", failed),
+			gin.H{"results": results, "changed": changed, "failed": failed, "mode": ModeShadow})
+		return
+	}
+	respond(c, gin.H{"results": results, "changed": changed, "failed": failed, "mode": ModeShadow})
 }
 
 // resolveImportKeys 把请求里的 key 列表解析成模板;空列表表示全部。
@@ -230,12 +279,12 @@ func importOne(gdb *gorm.DB, b builtinRule, row *Rule, upgrade bool, now int64, 
 		// 一条编译不过的内置规则会被安静地写进库,再被 reloadCtx 安静地跳过,
 		// 表现是"导入成功、状态显示已导入、线上永不命中"。
 		if err := ValidateRule(fresh); err != nil {
-			return importOutcome{Key: b.Key, Action: importSkipped,
+			return importOutcome{Key: b.Key, Action: importFailed,
 				Reason: "内置规则模板校验失败(这是本仓库的 bug,请上报): " + err.Error()}
 		}
 		if err := gdb.Create(fresh).Error; err != nil {
 			db.MarkFailure(err)
-			return importOutcome{Key: b.Key, Action: importSkipped, Reason: "写入失败: " + err.Error()}
+			return importOutcome{Key: b.Key, Action: importFailed, Reason: "写入失败: " + err.Error()}
 		}
 		return importOutcome{Key: b.Key, Action: importCreated, RuleId: fresh.Id}
 
@@ -252,11 +301,17 @@ func importOne(gdb *gorm.DB, b builtinRule, row *Rule, upgrade bool, now int64, 
 		}
 		applyUpgrade(row, b, now, operatorId)
 		if err := ValidateRule(row); err != nil {
-			return importOutcome{Key: b.Key, Action: importSkipped, RuleId: row.Id,
+			return importOutcome{Key: b.Key, Action: importFailed, RuleId: row.Id,
 				Reason: "新版模板校验失败(这是本仓库的 bug,请上报): " + err.Error()}
 		}
-		// 只写这四列。Save(row) 会把 mode / enabled / action 一起写回去,
-		// 而 row 是我们从库里读的、期间可能已被别人改过 —— 那就成了一次静默回滚。
+		// 只写下面这六列(pattern / case_sensitive 与四列元数据)。Save(row) 会把
+		// mode / enabled / action 一起写回去,而 row 是我们从库里读的、期间可能已被
+		// 别人改过 —— 那就成了一次静默回滚。
+		//
+		// Remark / Name / PublicReason 刻意**不在**升级范围内:指纹只覆盖 Pattern,
+		// 我们无从知道运营有没有改过这三列,改写就是一次没人按下过的覆盖。代价是
+		// v1 时期写进去的超长 Remark 只会留在 SQLite 站点上(MySQL/PG 当初就 INSERT
+		// 失败,根本没有这样的行);要清掉它,删掉那条规则重新导入即可。
 		if err := gdb.Model(&Rule{}).Where("id = ?", row.Id).Updates(map[string]any{
 			"pattern":             row.Pattern,
 			"case_sensitive":      row.CaseSensitive,
@@ -266,7 +321,7 @@ func importOne(gdb *gorm.DB, b builtinRule, row *Rule, upgrade bool, now int64, 
 			"updated_by":          row.UpdatedBy,
 		}).Error; err != nil {
 			db.MarkFailure(err)
-			return importOutcome{Key: b.Key, Action: importSkipped, RuleId: row.Id,
+			return importOutcome{Key: b.Key, Action: importFailed, RuleId: row.Id,
 				Reason: "升级写入失败: " + err.Error()}
 		}
 		return importOutcome{Key: b.Key, Action: importUpgraded, RuleId: row.Id}

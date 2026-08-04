@@ -12,7 +12,7 @@ import (
 
 // builtin_test.go —— 内置防护规则包的回归。
 //
-// 三组断言,分别挡住三种失效形态:
+// 四组断言,分别挡住四种失效形态:
 //
 //  1. **模板本身能编译、能通过写入校验**。编译不过的规则会被 reloadCtx 静默跳过,
 //     表现是"导入成功、状态显示已导入、线上永不命中"——本仓库反复出现的断链形状。
@@ -20,6 +20,12 @@ import (
 //     而永不命中的风控规则不会报任何错。
 //  3. **导入落的是影子模式,升级不覆盖运营改过的规则**。前者是项目方的明确要求,
 //     后者是资损防线:覆盖回通用版等于在运营不知情的情况下把误杀率调回去。
+//  4. **写库失败不会被报成「跳过」**。跳过是四种正常结局的统称,把写失败塞进去
+//     就是把一次事故伪装成一次正常结果 —— 实测形态见那条测试自己的注释。
+//
+// 第五种形态(目录里的字符串超出列宽 → 整条 INSERT 被数据库拒绝)由
+// builtin_column_fit_test.go 单独守着,它是唯一一条不看规则语义、只看数据能不能
+// 落库的断言。
 
 func newBuiltinRuleDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -511,4 +517,28 @@ func TestResolveImportKeysRejectsUnknownKey(t *testing.T) {
 	_, err = resolveImportKeys([]string{"jailbreak.typo"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "jailbreak.typo")
+}
+
+// TestImportReportsWriteFailureAsFailedNotSkipped 固化"写库失败不得被报成跳过"。
+//
+// 「跳过」是四种正常结局的统称(已存在 / 运营改过 / 已是最新 / 没勾升级)。
+// 实测事故:六条规则因 Remark 超列宽被 MySQL 以 Error 1406 拒绝,importOne 把它们
+// 报成 skipped,外层照常 200,管理员看到"导入成功"而库里一条都没有。
+// 只要写失败和正常跳过共用一个词,调用方就没有任何办法把事故和正常结果分开。
+func TestImportReportsWriteFailureAsFailedNotSkipped(t *testing.T) {
+	useTestConfig(t, "  enabled: true\n")
+
+	// 刻意不 AutoMigrate:表不存在 → Create 必然报错。用真实的 GORM 错误路径,
+	// 而不是塞一个假的 error,是为了连"错误确实来自 gdb.Create"这一段也被覆盖到。
+	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := gdb.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	out := importOne(gdb, builtinCatalog[0], nil, false, 1000, 7)
+	assert.Equal(t, importFailed, out.Action,
+		"写库失败必须是 failed;报成 skipped 会让一次事故看起来和「已经导入过」一模一样")
+	assert.Contains(t, out.Reason, "写入失败")
+	assert.NotEqual(t, importSkipped, out.Action)
 }

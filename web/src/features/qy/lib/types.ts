@@ -63,6 +63,8 @@ export type QyFeatures = {
   withdraw: boolean
   availability: boolean
   violation: boolean
+  lottery: boolean
+  ticket: boolean
 }
 
 /** 钱包页三个入口卡的显隐开关。 */
@@ -101,6 +103,22 @@ export type QyTransferOptions = {
 }
 
 /**
+ * 抽奖/竞猜的两个展示开关（需求原文：「系统设置前端是否显示」）。
+ *
+ * 与 `features.lottery` 是**并列**关系而不是二选一：`features.lottery` 是
+ * YAML 里"这个功能装没装"，`show_entry` 是站点"这一期要不要在前台露出入口"。
+ * 关掉 `show_entry` 只隐藏用户侧入口，管理端照常可进 —— 否则关掉之后就再也
+ * 没有地方能把它打开了。
+ *
+ * `proof_public` 决定证据链端点是否允许匿名访问。前端据此决定要不要把
+ * 「把这个链接发给任何人都能自己验」这句话显示出来：关掉时那句话是假的。
+ */
+export type QyLotteryOptions = {
+  show_entry: boolean
+  proof_public: boolean
+}
+
+/**
  * 归一化后的引导端点响应。
  *
  * 后端在 `enabled=false` 时只返回 `{enabled, available}` 两个字段，因此原始
@@ -115,6 +133,7 @@ export type QyConfig = {
   log_metrics: QyLogMetricsOptions
   withdraw_options: QyWithdrawOptions
   transfer_options: QyTransferOptions
+  lottery: QyLotteryOptions
 }
 
 /** 引导端点的原始响应形状（字段可能缺失）。 */
@@ -126,6 +145,7 @@ export type QyConfigPayload = {
   log_metrics?: Partial<QyLogMetricsOptions>
   withdraw_options?: Partial<QyWithdrawOptions>
   transfer_options?: Partial<QyTransferOptions>
+  lottery?: Partial<QyLotteryOptions>
 }
 
 // ───────────────────────────── 状态机 ─────────────────────────────
@@ -176,6 +196,8 @@ export type QyTimelineItem = {
 export type QyFundOrderKind =
   | 'commission_reverse'
   | 'commission_settle'
+  | 'lottery_entry'
+  | 'lottery_payout'
   | 'transfer'
   | 'withdraw_fiat'
   | 'withdraw_quota'

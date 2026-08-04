@@ -40,6 +40,15 @@ func RegisterRoutes(engine *gin.Engine) {
 	// 引导端点:匿名可访问且永远返回 200。前端据此决定是渲染入口还是完全隐藏。
 	root.GET("/config", qyctl.GetConfig)
 
+	// 匿名只读面。目前只有抽奖的公正性证据链在用:验证者必须先能**拿到**
+	// proof 才谈得上自己复算,要求登录等于把"历史公正查询"锁在注册墙后面。
+	// 挂在 UserAuth 之前,与 /config 同一档(限流 + 请求台账都已生效)。
+	for _, m := range module.All() {
+		if pr, ok := m.(module.PublicRouter); ok {
+			pr.RegisterPublicRoutes(root)
+		}
+	}
+
 	user := root.Group("")
 	user.Use(middleware.UserAuth())
 	registerUserRoutes(user)

@@ -42,6 +42,10 @@ var auditWriteFuncs = map[string]bool{
 	"writePayeeAudit":        true,
 	"writeRuleFailure":       true,
 	"writeDeleteAudit":       true,
+	"writeAdminAudit":        true,
+	"writeSystemAudit":       true,
+	"putConfigFailed":        true,
+	"writeTicketAudit":       true,
 }
 
 // auditRequired 列出必须留痕的资金路径,值是该函数体内审计写入的**最少**次数。
@@ -88,6 +92,54 @@ var auditRequired = []struct {
 			"before 快照是事后唯一能回答「删的是什么」的东西;被拒绝的那次同样要留痕"},
 	{"modules/subscription/api_admin.go", "adminPutSeat", 2,
 		"全站总名额决定这个套餐还能不能卖出去,改小之后立刻生效;写失败同样要留痕"},
+	{"modules/lottery/api_admin.go", "handleCreateActivity", 2,
+		"创建活动决定平台最多会发出去多少额度(抽奖派奖是净增发);被上限拦下的那次同样要留痕"},
+	{"modules/lottery/api_admin.go", "handleUpdateActivity", 2,
+		"草稿期改的是还没被承诺的内容,before/after 是事后唯一能回答「改的是什么」的东西"},
+	{"modules/lottery/api_admin.go", "handlePublishActivity", 2,
+		"承诺生成是全模块最关键的一次写:三个哈希一经公布就是对外承诺。" +
+			"成功那条写在 WriteTx 里(与状态转移同生共死),事务一回滚就消失,失败必须在事务外补一条"},
+	{"modules/lottery/api_admin.go", "handleCancelActivity", 2,
+		"取消是管理员唯一能改变活动结局的动作,必然触发全额退款;被拒绝的那次同样是重要信号"},
+	{"modules/lottery/api_admin.go", "handleSetGuessResult", 2,
+		"竞猜结果是链下事实、由人手工指定,是全模块最大的信任缺口 —— " +
+			"谁在什么时候录了什么、依据是什么,必须永久可查"},
+	{"modules/lottery/api_admin.go", "handleRetryPayout", 2,
+		"重试出款直接决定一笔钱会不会再发一次;失败的那次同样要留痕"},
+	{"modules/apiaddr/api_admin.go", "adminCreate", 2,
+		"地址簿里的 URL 会被原样复制进用户的客户端配置;加了一条指向哪里、" +
+			"被上限/判重挡下的那次同样要留痕"},
+	{"modules/apiaddr/api_admin.go", "adminUpdate", 2,
+		"改 URL 等于把已经在用这条地址的用户悄悄指向别处,before/after 是事后" +
+			"唯一能回答「改的是什么」的东西"},
+	{"modules/apiaddr/api_admin.go", "adminDelete", 2,
+		"删除后行本身消失,before 快照是唯一能回答「删的是哪一条」的东西"},
+	{"modules/apiaddr/api_admin.go", "adminReorder", 2,
+		"顺序决定用户默认看到/直接采用的是哪一条;并发重排被拒的那次同样是重要信号"},
+	{"modules/lottery/api_admin_config.go", "handlePutConfig", 2,
+		"手续费与奖品上限决定平台会发出去多少钱;越界被拒的那次同样要留痕"},
+	{"modules/ticket/create.go", "create", 2,
+		"被防滥用闸门挡下的建单尝试必须留痕,否则「这个账号一分钟内被冷却拦了 40 次」" +
+			"这种形状事后完全查不到;成功那条是工单的起点"},
+	{"modules/ticket/api_admin.go", "handleAdminSetStatus", 2,
+		"关单/重开是管理员单方面改变工单结局的动作,而工单里承载着对用户的承诺;" +
+			"被状态机拒绝的那次同样是信号"},
+	{"modules/ticket/api_admin.go", "handleAdminSetPriority", 2,
+		"等级决定这张单在队列里的位置,改低等于让它沉底;写失败同样要留痕"},
+	{"modules/ticket/api_admin.go", "handleAdminAssign", 2,
+		"指派把工单从公共队列移进某个人的待办,指错人=一张被静默丢弃的工单;" +
+			"before 快照是事后唯一能回答「原来指给谁」的东西"},
+	{"modules/ticket/api_admin.go", "handleAdminReply", 1,
+		"客服说过的话是对用户的承诺;消息本身 append-only,但「谁在什么时候回的」" +
+			"要能不翻正文就查到"},
+	{"modules/ticket/api_user.go", "handleUploadImage", 1,
+		"工单图片是用户唯一能往磁盘写内容的入口,谁在什么时候从哪个 IP 传的必须可查"},
+	{"modules/ticket/api_admin.go", "handleAdminUploadImage", 1,
+		"管理端这条上传路径的风险只会更高(AdminAuth 下可以往任意工单塞图);" +
+			"埋点没有任何调用者依赖,是最典型的「看起来像死代码」"},
+	{"modules/ticket/api_user.go", "handleDiscardImage", 1,
+		"丢弃会真的从磁盘删文件。上传留痕而删除不留痕的话," +
+			"「这个账号传过多少、现在还剩什么」在事后只剩一半答案"},
 }
 
 func TestFundPathsKeepTheirAuditWrites(t *testing.T) {

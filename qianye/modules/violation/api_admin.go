@@ -73,9 +73,16 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 		return fmt.Errorf("fee_multiple 不是合法数值: %q", r.FeeMultiple)
 	}
 
-	dst.Name = truncate(strings.TrimSpace(r.Name), 128)
-	dst.Remark = truncate(r.Remark, 512)
-	dst.PublicReason = truncate(strings.TrimSpace(r.PublicReason), 128)
+	// 长度不在这里截断,交给 ValidateRule 报错(见 rules.go 的 ruleVarcharLimits)。
+	//
+	// 原本这几行是 `truncate(..., 128/512/...)` 的静默截断,有两处不对:
+	// 一是管理员保存成功、回到列表才发现备注被拦腰截断,界面上没有任何提示;
+	// 二是 truncate 按**字节**切,一段 300 字的中文(约 900 字节)会在第 170 字处
+	// 被切断,而 300 字在 varchar(512) 的字符口径下完全合法。
+	// 现在超长一律 400 + "备注过长(600 字,上限 512 字)",哪一格填多了一目了然。
+	dst.Name = strings.TrimSpace(r.Name)
+	dst.Remark = r.Remark
+	dst.PublicReason = strings.TrimSpace(r.PublicReason)
 	dst.Enabled = r.Enabled
 	// 空串折回影子。漏传字段(旧前端、脚本、curl 手敲)必须落在不扣钱的那一侧;
 	// 其余非法取值交给 ValidateRule 明确报错,而不是在这里静默纠正成 shadow ——
@@ -89,8 +96,8 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 	dst.MatchType = r.MatchType
 	dst.Pattern = r.Pattern
 	dst.CaseSensitive = r.CaseSensitive
-	dst.ModelScope = truncate(r.ModelScope, 2048)
-	dst.GroupScope = truncate(r.GroupScope, 1024)
+	dst.ModelScope = r.ModelScope
+	dst.GroupScope = r.GroupScope
 	// 名单为空时把方向强制回 include:"空黑名单"与"空白名单"都表示"全部分组生效",
 	// 留两个等价状态只会让界面上出现一个看得见、却什么都不改变的开关。
 	dst.GroupScopeMode = strings.ToLower(strings.TrimSpace(r.GroupScopeMode))
@@ -105,7 +112,7 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 	dst.CountWeight = r.CountWeight
 	dst.Severity = r.Severity
 	dst.ArchiveContext = r.ArchiveContext
-	dst.BlockMessage = truncate(r.BlockMessage, 512)
+	dst.BlockMessage = r.BlockMessage
 	return ValidateRule(dst)
 }
 

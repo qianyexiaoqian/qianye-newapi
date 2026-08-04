@@ -20,10 +20,10 @@ import i18next from 'i18next'
 import { useState, useCallback } from 'react'
 import { toast } from 'sonner'
 
-import { getSelf } from '@/lib/api'
 import { formatQuota } from '@/lib/format'
 
 import { redeemTopupCode } from '../api'
+import { refreshCurrentUser } from '../lib'
 
 // ============================================================================
 // Redemption Hook
@@ -49,7 +49,9 @@ export function useRedemption() {
             quota: formatQuota(quotaAdded),
           })
         )
-        await getSelf()
+        // 这里原本是裸 `await getSelf()`：新余额拉回来了却没人接，auth-store
+        // 还是旧值，概览页于是显示"充值没到账"。必须走 refreshCurrentUser。
+        await refreshCurrentUser()
         return true
       }
 

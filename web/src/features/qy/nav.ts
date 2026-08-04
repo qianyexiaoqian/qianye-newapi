@@ -32,10 +32,11 @@ import {
   QY_TAB_GROUPS,
   isQyAdminPage,
   qyEntryPages,
+  type QyEntrySwitches,
   type QyNavGroupId,
   type QyPageDef,
 } from './lib/pages'
-import type { QyFeatures } from './lib/types'
+import type { QyConfig, QyFeatures } from './lib/types'
 
 /**
  * qy 扩展的侧边栏定义。
@@ -90,6 +91,16 @@ function toNavLink(page: QyPageDef, t: TFunction): NavLink {
 }
 
 /**
+ * 配置 → 展示开关。
+ *
+ * 单独一个函数而不是在两个调用点各写一遍对象字面量：漏掉一处的表现是
+ * "侧栏藏了、`/qy` 索引页还留着一行"，正是本仓反复出现的断链形状。
+ */
+function qyEntrySwitches(config: QyConfig): QyEntrySwitches {
+  return { lottery: config.lottery.show_entry }
+}
+
+/**
  * 按分组收集要插入的导航项。
  *
  * 同一分组内的顺序 = 页面在 `QY_PAGES` 里的声明顺序；组内位置由 `after`
@@ -104,7 +115,8 @@ function toNavLink(page: QyPageDef, t: TFunction): NavLink {
 function collectInsertions(
   features: QyFeatures,
   isAdmin: boolean,
-  t: TFunction
+  t: TFunction,
+  entries?: QyEntrySwitches
 ): Map<string, QyInsertion[]> {
   const byGroup = new Map<string, QyInsertion[]>()
   const push = (group: QyNavGroupId, insertion: QyInsertion) => {
@@ -116,7 +128,7 @@ function collectInsertions(
   // `qyEntryPages` 已经把"角色 × 功能开关 × 是否已被收进别人的选择夹"三件事
   // 一起判完。这里不再自己 filter 一遍：判定多一处就多一处会漂移的地方，而
   // 被收进选择夹的页面留在侧栏里会得到一行点了就被重定向甩走的死链。
-  for (const page of qyEntryPages(features, isAdmin)) {
+  for (const page of qyEntryPages(features, isAdmin, entries)) {
     if (page.group == null) continue
     // 系统设置抽屉里的页面**不进根侧栏**（需求 8）。必须显式跳过：靠
     // "byGroup 里多出一个没人认领的键、后面自然被丢掉"来实现，是这个仓库
@@ -173,10 +185,11 @@ export function mergeQyNavGroups(
   baseGroups: NavGroup[],
   features: QyFeatures,
   role: number,
-  t: TFunction
+  t: TFunction,
+  entries?: QyEntrySwitches
 ): NavGroup[] {
   const isAdmin = role >= ROLE.ADMIN
-  const insertions = collectInsertions(features, isAdmin, t)
+  const insertions = collectInsertions(features, isAdmin, t, entries)
 
   // 成员一个都不可见（角色不够 / 功能关掉）→ 整组不生成。
   // 绝不能改成给项挂 `requiredRole`：上游 `use-sidebar-view.ts` 只裁项、
@@ -228,7 +241,13 @@ export function useQySidebarGroups(baseGroups: NavGroup[]): NavGroup[] {
   const role = useAuthStore((state) => state.auth.user?.role) ?? ROLE.GUEST
 
   if (!config.enabled) return baseGroups
-  return mergeQyNavGroups(baseGroups, config.features, role, t)
+  return mergeQyNavGroups(
+    baseGroups,
+    config.features,
+    role,
+    t,
+    qyEntrySwitches(config)
+  )
 }
 
 // ───────────────────── 工作区索引页的两个清单 ─────────────────────
@@ -248,9 +267,13 @@ export function useQySidebarGroups(baseGroups: NavGroup[]): NavGroup[] {
 export function getQyWorkspaceNavGroups(t: TFunction): NavGroup[] {
   const role = useAuthStore.getState().auth.user?.role ?? ROLE.GUEST
   const isAdmin = role >= ROLE.ADMIN
-  const { features } = getQyConfigSnapshot()
+  const config = getQyConfigSnapshot()
 
-  const visible = qyEntryPages(features, isAdmin).sort(
+  const visible = qyEntryPages(
+    config.features,
+    isAdmin,
+    qyEntrySwitches(config)
+  ).sort(
     (a, b) =>
       QY_PAGE_URL_ORDER.indexOf(a.url) - QY_PAGE_URL_ORDER.indexOf(b.url)
   )

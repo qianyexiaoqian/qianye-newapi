@@ -8,13 +8,16 @@ package qianye
 //
 // import 顺序不影响正确性:init() 只往注册表追加,不读配置也不连数据库。
 import (
+	_ "github.com/QuantumNous/new-api/qianye/modules/apiaddr"
 	_ "github.com/QuantumNous/new-api/qianye/modules/availability"
 	_ "github.com/QuantumNous/new-api/qianye/modules/commission"
 	_ "github.com/QuantumNous/new-api/qianye/modules/grouppricing"
 	_ "github.com/QuantumNous/new-api/qianye/modules/groupvis"
 	_ "github.com/QuantumNous/new-api/qianye/modules/logmetrics"
+	_ "github.com/QuantumNous/new-api/qianye/modules/lottery"
 	_ "github.com/QuantumNous/new-api/qianye/modules/paypass"
 	_ "github.com/QuantumNous/new-api/qianye/modules/subscription"
+	_ "github.com/QuantumNous/new-api/qianye/modules/ticket"
 	_ "github.com/QuantumNous/new-api/qianye/modules/transfer"
 	_ "github.com/QuantumNous/new-api/qianye/modules/usergroup"
 	_ "github.com/QuantumNous/new-api/qianye/modules/violation"

@@ -46,6 +46,8 @@ export const QY_DISABLED_CONFIG: QyConfig = {
     withdraw: false,
     availability: false,
     violation: false,
+    lottery: false,
+    ticket: false,
   },
   wallet: {
     show_transfer_entry: false,
@@ -66,6 +68,10 @@ export const QY_DISABLED_CONFIG: QyConfig = {
     min_quota: 0,
     max_per_tx_quota: 0,
     recipient_lookup: 'id',
+  },
+  lottery: {
+    show_entry: false,
+    proof_public: false,
   },
 }
 
@@ -96,6 +102,7 @@ export function normalizeQyConfig(
   const logMetrics = raw.log_metrics ?? {}
   const withdraw = raw.withdraw_options ?? {}
   const transfer = raw.transfer_options ?? {}
+  const lottery = raw.lottery ?? {}
   const enabled = bool(raw.enabled)
 
   return {
@@ -108,6 +115,8 @@ export function normalizeQyConfig(
       withdraw: bool(features.withdraw),
       availability: bool(features.availability),
       violation: bool(features.violation),
+      lottery: bool(features.lottery),
+      ticket: bool(features.ticket),
     },
     wallet: {
       show_transfer_entry: bool(wallet.show_transfer_entry),
@@ -132,6 +141,12 @@ export function normalizeQyConfig(
       min_quota: num(transfer.min_quota),
       max_per_tx_quota: num(transfer.max_per_tx_quota),
       recipient_lookup: str(transfer.recipient_lookup, 'id'),
+    },
+    lottery: {
+      // 后端不下发时按"不显示"处理：多显示一个点进去就 404 的入口，
+      // 比少显示一个入口更糟 —— 前者是断链，后者只是这一期没开。
+      show_entry: bool(lottery.show_entry),
+      proof_public: bool(lottery.proof_public),
     },
   }
 }

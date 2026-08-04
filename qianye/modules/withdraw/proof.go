@@ -1,22 +1,17 @@
 package withdraw
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/service/imagestore"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -24,13 +19,14 @@ import (
 
 // 提现凭证图片(裁决 3:本地磁盘 + 鉴权下载)。
 //
-// 本仓与上游此前【没有任何文件上传设施】—— 没有 SaveUploadedFile、没有对象存储
-// SDK、静态资源全部走 embed.FS。这是好事:磁盘目录默认不可能被 Web 访问到
-// (router/web-router.go 只 Serve 了 embed 的 web/dist),所以"落盘目录不得在静态
-// 资源路由可达范围内"这一条不需要额外配置来保证,只需要不引入新的静态路由。
+// 落盘/取回/清理的通用机制(魔数判定、服务端生成文件名、分片目录、
+// MaxBytesReader 前置截断、O_EXCL、nosniff)已经收进 qianye/service/imagestore ——
+// 工单系统也要收用户上传的截图,同一套防线在两个模块里各写一遍就是本仓反复
+// 栽的"同一概念的第 N 份拷贝各自漂移",而这条路上漏掉任何一条防线的后果都不是
+// 显示问题(理由逐条写在那个包的包注释里)。
 //
-// 全部防线在下面逐条注明。要点是:文件名服务端生成、类型按魔数判定、大小在读
-// 第一个字节之前就被 MaxBytesReader 截断、下载必须鉴权、单据终结即清理。
+// 本文件因此只保留提现自己的部分:什么时候允许上传(ProofOn + 未绑定上传数
+// 上限)、元数据长什么样、一张凭证归哪张单、什么时候该从磁盘上消失。
 
 const (
 	// proofDirName 是落盘目录名,与配置文件同级(即 Docker/本地下的 data/)。
@@ -50,123 +46,36 @@ const (
 	// 那几道闸门(daily_max_count / max_pending_orders)一个都拦不到这条路径,
 	// 因为它压根没有创建单据。
 	proofPendingMax = 3
-
-	// proofRandomBytes 是文件名的随机位数(16 字节 → 32 位十六进制)。
-	// 必须用 crypto/rand:文件名可预测意味着可以被枚举,而下载接口的鉴权
-	// 一旦哪天被写错,可预测的文件名就是直接的批量拖库入口。
-	proofRandomBytes = 16
 )
 
-// proofKind 是一种被接受的图片类型。
-//
-// 白名单写死在代码里而不是配置里,理由与 payeeSpecs 相同:每一种类型都对应
-// 一段魔数判定与一个扩展名,配置里加一个 "gif" 而代码不认识它,结果是
-// 文件被存成一个谁都认不出的扩展名。
-type proofKind struct {
-	Mime string
-	Ext  string
-}
+// proofStore 是提现凭证的落盘目录。
+var proofStore = imagestore.New(proofDirName)
+
+// proofKind 是被接受的图片类型,直接复用 imagestore 的定义 ——
+// 类型白名单必须与判定魔数的那一份逐字节相同,否则会出现"判定通过但扩展名
+// 认不出"的行。
+type proofKind = imagestore.Kind
 
 var (
-	proofJPEG = proofKind{Mime: "image/jpeg", Ext: "jpg"}
-	proofPNG  = proofKind{Mime: "image/png", Ext: "png"}
-	proofWEBP = proofKind{Mime: "image/webp", Ext: "webp"}
+	proofJPEG = imagestore.JPEG
+	proofPNG  = imagestore.PNG
 )
-
-// proofExts 是允许出现在磁盘文件名里的扩展名集合。
-// 它是 proofKind 的投影,而不是另写一份:两处各写一遍就是"同一概念的第二份拷贝"。
-var proofExts = map[string]bool{
-	proofJPEG.Ext: true, proofPNG.Ext: true, proofWEBP.Ext: true,
-}
 
 // ProofAcceptMimes 供 /withdraw/config 下发给前端做 accept 属性。
 // 前端的 accept 只是体验,真正的判定在 sniffProof。
-func ProofAcceptMimes() []string {
-	return []string{proofJPEG.Mime, proofPNG.Mime, proofWEBP.Mime}
-}
+func ProofAcceptMimes() []string { return imagestore.AcceptMimes() }
 
-// sniffProof 按【魔数】判定图片类型。
-//
-// 三条都不信:
-//   - 不信扩展名 —— 用户提供的文件名根本不落盘,更不参与判定
-//   - 不信 Content-Type 请求头 —— 那是客户端随便写的一个字符串
-//   - 不信 http.DetectContentType —— 它会对认不出的内容回退成
-//     "text/plain" 或 "application/octet-stream",而我们需要的是"不认识就拒绝"
-//
-// 刻意【不解码图片】。解码才是解压炸弹(一张 1 KB 的 PNG 可以声明 60000×60000)
-// 真正的风险面;不解码就没有这个面。代价是我们无法保证文件是一张能渲染的图,
-// 那由浏览器自己承担 —— 而下载响应带着 nosniff + 精确 Content-Type,
-// 一份伪装成图片的 HTML 不会被当作 HTML 执行。
-func sniffProof(head []byte) (proofKind, bool) {
-	switch {
-	case len(head) >= 3 && bytes.HasPrefix(head, []byte{0xFF, 0xD8, 0xFF}):
-		return proofJPEG, true
-	case bytes.HasPrefix(head, []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}):
-		return proofPNG, true
-	case len(head) >= 12 && bytes.HasPrefix(head, []byte("RIFF")) &&
-		bytes.Equal(head[8:12], []byte("WEBP")):
-		return proofWEBP, true
-	default:
-		return proofKind{}, false
-	}
-}
+// sniffProof 按【魔数】判定图片类型,不信扩展名也不信 Content-Type 请求头。
+func sniffProof(head []byte) (proofKind, bool) { return imagestore.Sniff(head) }
 
-// newProofStoredName 生成落盘文件名。
-func newProofStoredName(ext string) (string, error) {
-	buf := make([]byte, proofRandomBytes)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf) + "." + ext, nil
-}
+// newProofStoredName 生成落盘文件名(服务端生成、128 位熵、白名单扩展名)。
+func newProofStoredName(ext string) (string, error) { return imagestore.NewStoredName(ext) }
 
 // proofRelPath 把落盘文件名解析成相对目录内的路径,并顺便校验它的形状。
-//
-// 名字是服务端生成的,那为什么还要校验?因为拼进 filepath.Join 的这一步
-// 不该依赖"上游一定没被改过":数据库行可以被 DBA 手工改、可以被一次 SQL 注入
-// 写坏,而 filepath.Join("dir", "../../etc/passwd") 会老老实实地跳出目录。
-// 一次廉价的形状校验换掉一整类"只要别处出一个洞,这里就变成任意文件读写"。
-//
-// 前两位十六进制做分片子目录:一个目录里堆几十万个文件,ext4 与 NTFS 都会
-// 明显变慢,而分片之后单目录期望只有 1/256。
-func proofRelPath(storedName string) (string, bool) {
-	base, ext, ok := strings.Cut(storedName, ".")
-	if !ok || !proofExts[ext] || len(base) != proofRandomBytes*2 {
-		return "", false
-	}
-	if !isLowerHex(base) {
-		return "", false
-	}
-	return filepath.Join(base[:2], storedName), true
-}
-
-// isLowerHex 只认小写十六进制。
-//
-// 刻意不用 hex.DecodeString:它大小写通吃,而生成侧的 hex.EncodeToString
-// 只产小写 —— 校验一旦比生成器松,就凭空多出一批"服务端永远不会生成、
-// 校验却放行"的名字。在大小写不敏感的文件系统上(NTFS、默认的 APFS/HFS+),
-// ABC.jpg 与 abc.jpg 指向同一个文件,于是同一份磁盘文件对应两个都能过校验的
-// 数据库值 —— 清理任务按其中一个删、下载接口按另一个取,两边就对不上了。
-// 校验必须与生成器逐字符等价,不多不少。
-func isLowerHex(s string) bool {
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
+func proofRelPath(storedName string) (string, bool) { return imagestore.RelPath(storedName) }
 
 // proofDir 是凭证目录:与配置文件同级的 qy-withdraw-proofs/。
-//
-// 跟着 config.Path() 走而不是新增一个 proof_dir 配置项,是刻意的:
-// 目录可配意味着运维可以把它指到 web 根目录下,而"落盘目录不得在静态资源
-// 路由可达范围内"这条约束没有任何机制能替他守住。锚在配置文件旁边则天然满足 ——
-// 本项目的静态资源只有 embed.FS 一个来源,磁盘上的任何目录都不可达。
-func proofDir() string {
-	return filepath.Join(filepath.Dir(config.Path()), proofDirName)
-}
+func proofDir() string { return proofStore.Dir() }
 
 // ─────────────────────────────── 上传 ───────────────────────────────
 
@@ -186,58 +95,9 @@ func acceptProofUpload(c *gin.Context, userId int) (*Proof, error) {
 		maxBytes = config.MaxWithdrawProofBytes
 	}
 
-	// 【必须在读第一个字节之前】。放在 FormFile 之后等于先把整个请求体收下来,
-	// 那时限流的意义已经没有了 —— 一个 2 GiB 的 POST 已经吃完了内存和磁盘临时空间。
-	// 多给 1 MiB 是 multipart 边界与表单头的开销,不是内容的余量。
-	bodyCap := maxBytes + (1 << 20)
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, bodyCap)
-
-	// ContentLength 是客户端声明的,【不是】准入依据 —— 真正的截断由上面那行做。
-	// 这里读它只为把错误码从"表单解析失败"提升成"文件太大":多层解析之后
-	// MaxBytesError 会不会被原样透出取决于 mime/multipart 的实现细节,
-	// 而告诉用户"图片太大"和"请求格式不对"是两种完全不同的指引。
-	if c.Request.ContentLength > bodyCap {
-		return nil, errProofTooLarge
-	}
-
-	fh, err := c.FormFile("file")
+	data, kind, err := imagestore.Accept(c, "file", maxBytes)
 	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			return nil, errProofTooLarge
-		}
-		return nil, errProofRequired
-	}
-	if fh.Size > maxBytes {
-		return nil, errProofTooLarge
-	}
-
-	src, err := fh.Open()
-	if err != nil {
-		return nil, errProofRequired
-	}
-	defer func() { _ = src.Close() }()
-
-	// 读满 maxBytes+1:恰好等于上限是合法的,多出一个字节才是超限。
-	// header 里的 Size 已经查过一次,这里再查一次是因为 Size 来自客户端声明的
-	// Content-Length,而真正落盘的是这条流。
-	data, err := io.ReadAll(io.LimitReader(src, maxBytes+1))
-	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			return nil, errProofTooLarge
-		}
-		return nil, errProofRequired
-	}
-	if int64(len(data)) > maxBytes {
-		return nil, errProofTooLarge
-	}
-	if len(data) == 0 {
-		return nil, errProofRequired
-	}
-	kind, ok := sniffProof(data)
-	if !ok {
-		return nil, errProofType
+		return nil, proofUploadError(err)
 	}
 
 	storedName, err := newProofStoredName(kind.Ext)
@@ -286,46 +146,33 @@ func acceptProofUpload(c *gin.Context, userId int) (*Proof, error) {
 	return row, nil
 }
 
-// writeProofFile 把内容写进凭证目录。
+// proofUploadError 把 imagestore 的哨兵错误翻译成提现自己的业务 code。
 //
-// O_EXCL 是并发写同名的最后一道锁:文件名有 128 位熵,撞名在实践中不会发生,
-// 但"不会发生"和"发生了会静默覆盖别人的凭证"之间差着一个标志位。
-// 权限 0600 / 0700:凭证是 PII,同机器上的其他进程没有理由读到它。
-func writeProofFile(storedName string, data []byte) error {
-	rel, ok := proofRelPath(storedName)
-	if !ok {
-		return fmt.Errorf("qianye/withdraw: 非法的凭证文件名: %q", storedName)
+// 四种情况分得比"上传失败"细,是因为用户能做的事完全不同:换一张图、压缩一下、
+// 先去用掉已传的、还是找管理员 —— 合并成一条只会让人反复重试同一张图。
+func proofUploadError(err error) error {
+	switch {
+	case errors.Is(err, imagestore.ErrTooLarge):
+		return errProofTooLarge
+	case errors.Is(err, imagestore.ErrType):
+		return errProofType
+	default:
+		return errProofRequired
 	}
-	full := filepath.Join(proofDir(), rel)
-	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(full, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		_ = os.Remove(full)
-		return err
-	}
-	return f.Close()
 }
 
-// removeProofFile 从磁盘删除一张凭证。文件本就不存在视为成功 ——
-// 清理任务的目的是"磁盘上没有它",不是"我亲手删掉了它"。
-func removeProofFile(storedName string) error {
-	rel, ok := proofRelPath(storedName)
-	if !ok {
-		// 形状不对的行不去猜它指向哪里,只告警。猜错的方向是删掉别的文件。
-		common.SysError("qianye/withdraw: 凭证元数据里的文件名形状非法,已跳过删除: " + storedName)
-		return nil
-	}
-	if err := os.Remove(filepath.Join(proofDir(), rel)); err != nil && !os.IsNotExist(err) {
-		return err
+// writeProofFile 把内容写进凭证目录。
+func writeProofFile(storedName string, data []byte) error {
+	if err := proofStore.Write(storedName, data); err != nil {
+		return fmt.Errorf("qianye/withdraw: 写入凭证失败: %w", err)
 	}
 	return nil
 }
+
+// removeProofFile 从磁盘删除一张凭证。文件本就不存在、或文件名形状非法都视为
+// 成功:清理任务的目的是"磁盘上没有它",而对着一个坏掉的名字去猜,猜错的方向
+// 是删掉别的文件。
+func removeProofFile(storedName string) error { return proofStore.Remove(storedName) }
 
 // ─────────────────────────────── 绑定 ───────────────────────────────
 
@@ -384,24 +231,19 @@ func loadProofOfWithdrawal(withdrawalId int64) (*Proof, error) {
 //     一份伪装成 JPEG 的 HTML 不能因为浏览器"猜"出 text/html 就被当页面执行
 //   - Cache-Control: private, no-store 防止凭证进共享缓存或磁盘缓存
 func serveProof(c *gin.Context, p *Proof) {
-	rel, ok := proofRelPath(p.StoredName)
-	if !ok {
+	full, err := proofStore.Locate(p.StoredName)
+	if errors.Is(err, imagestore.ErrMalformedName) {
 		common.SysError("qianye/withdraw: 凭证元数据里的文件名形状非法: " + p.StoredName)
 		respondErr(c, errProofNotFound)
 		return
 	}
-	full := filepath.Join(proofDir(), rel)
-	if st, err := os.Stat(full); err != nil || st.IsDir() {
+	if err != nil {
 		// 库里有行、磁盘上没有文件:多节点各存各的时最常见的一种表现,
 		// 也可能是落盘失败留下的残行。不回 500 —— 它不是服务端故障。
 		respondErr(c, errProofPurged)
 		return
 	}
-	c.Header("Content-Type", p.MimeType)
-	c.Header("X-Content-Type-Options", "nosniff")
-	c.Header("Cache-Control", "private, no-store")
-	c.Header("Content-Disposition", `inline; filename="`+proofDownloadName(p)+`"`)
-	c.File(full)
+	imagestore.Serve(c, full, p.MimeType, proofDownloadName(p))
 }
 
 // proofDownloadName 是回给浏览器的文件名。

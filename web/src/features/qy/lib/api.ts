@@ -173,6 +173,60 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_wd_proof_purged: 'qy_err_wd_proof_purged',
   qy_wd_proof_store_failed: 'qy_err_wd_proof_store_failed',
 
+  // ── 工单（qianye/modules/ticket/errors.go）──
+  // 四道防滥用闸门必须映射到四句不同的话：它们要求用户做的下一步完全不同 ——
+  // 等一会儿 / 明天再来 / 先把手上的单关掉 / 这张单聊太长了另开一张。
+  // 合并成一句"操作过于频繁"只会让人反复重试同一个必然失败的请求。
+  qy_tk_title_required: 'qy_err_tk_title_required',
+  qy_tk_title_too_long: 'qy_err_tk_title_too_long',
+  qy_tk_body_required: 'qy_err_tk_body_required',
+  qy_tk_body_too_long: 'qy_err_tk_body_too_long',
+  qy_tk_priority_invalid: 'qy_err_tk_priority_invalid',
+  qy_tk_assignee_invalid: 'qy_err_tk_assignee_invalid',
+  qy_tk_cooldown: 'qy_err_tk_cooldown',
+  qy_tk_reply_cooldown: 'qy_err_tk_reply_cooldown',
+  qy_tk_daily_limit: 'qy_err_tk_daily_limit',
+  qy_tk_open_limit: 'qy_err_tk_open_limit',
+  qy_tk_message_limit: 'qy_err_tk_message_limit',
+  qy_tk_not_found: 'qy_err_tk_not_found',
+  qy_tk_closed: 'qy_err_tk_closed',
+  qy_tk_illegal_transition: 'qy_err_tk_illegal_transition',
+  qy_tk_status_conflict: 'qy_err_tk_status_conflict',
+  // 图片八个 code 同提现凭证：合并成"上传失败"会让人反复重试同一张图。
+  qy_tk_image_disabled: 'qy_err_tk_image_disabled',
+  qy_tk_image_required: 'qy_err_tk_image_required',
+  qy_tk_image_too_large: 'qy_err_tk_image_too_large',
+  qy_tk_image_type: 'qy_err_tk_image_type',
+  qy_tk_image_not_found: 'qy_err_tk_image_not_found',
+  qy_tk_image_too_many: 'qy_err_tk_image_too_many',
+  qy_tk_image_pending_limit: 'qy_err_tk_image_pending_limit',
+  // 配额与 pending 上限必须是两句话：前者的下一步是"关掉旧工单让保留期把图片
+  // 收走"，后者是"把手上这条消息发出去"。说错方向 = 让用户去做一个不生效的动作。
+  qy_tk_image_quota: 'qy_err_tk_image_quota',
+  qy_tk_image_purged: 'qy_err_tk_image_purged',
+  qy_tk_image_store_failed: 'qy_err_tk_image_store_failed',
+
+  // ── API 地址簿（qianye/modules/apiaddr/errors.go）──
+  //
+  // 不登记的话这 13 个 code 会按 HTTP 状态码归类：409 → `qy_err_conflict`
+  //（"该申请已被其他人处理"，与地址簿毫不相干）、400 → "请求参数不合法"。
+  // 管理员既不知道是重复、还是少了 scheme，也不知道该改哪里。
+  qy_apiaddr_name_required: 'qy_err_aa_name_required',
+  qy_apiaddr_name_too_long: 'qy_err_aa_name_too_long',
+  qy_apiaddr_remark_too_long: 'qy_err_aa_remark_too_long',
+  qy_apiaddr_url_required: 'qy_err_aa_url_required',
+  qy_apiaddr_url_too_long: 'qy_err_aa_url_too_long',
+  qy_apiaddr_url_scheme: 'qy_err_aa_url_scheme',
+  qy_apiaddr_url_credentials: 'qy_err_aa_url_credentials',
+  qy_apiaddr_url_extra: 'qy_err_aa_url_extra',
+  qy_apiaddr_url_invalid: 'qy_err_aa_url_invalid',
+  qy_apiaddr_duplicate: 'qy_err_aa_duplicate',
+  qy_apiaddr_limit: 'qy_err_aa_limit',
+  qy_apiaddr_not_found: 'qy_err_aa_not_found',
+  // 并发重排被拒的下一步是"刷新后重新排"，塌成"该申请已被其他人处理"
+  // 会让管理员以为自己什么都不用做。
+  qy_apiaddr_order_stale: 'qy_err_aa_order_stale',
+
   // ── 返佣管理端（qianye/modules/commission/api_admin.go）──
   qy_reason_required: 'qy_err_cm_reason_required',
   qy_clawback_failed: 'qy_err_cm_clawback_failed',
@@ -191,6 +245,51 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_subscription_delete_reason_required: 'qy_err_plan_delete_reason_required',
   qy_subscription_seat_invalid: 'qy_err_plan_seat_invalid',
   qy_subscription_plan_not_found: 'qy_err_plan_not_found',
+
+  // ── 抽奖 / 竞猜（qianye/modules/lottery）──
+  //
+  // code 一律取自 `qianye/modules/lottery/errors.go` 的常量，**一个字都不能猜**：
+  // 没登记的 code 会回落成按 HTTP 状态码归类的泛化文案，而这里恰恰是同一个 409
+  // 底下藏着七种含义完全不同的失败（名额满 / 冷却中 / 同 IP 已有人 / 上一笔还没
+  // 落定 / 余额不足 / 已错过封盘 / 状态变了）。最要命的是 entry_excluded ——
+  // 钱确实扣了、会自动退回，说成一句"操作冲突"用户会以为钱白扣了。
+  qy_lot_not_found: 'qy_lot_err_not_found',
+  qy_lot_not_open: 'qy_lot_err_not_open',
+  qy_lot_closing_soon: 'qy_lot_err_closing_soon',
+  qy_lot_cap_reached: 'qy_lot_err_cap_reached',
+  qy_lot_user_cap: 'qy_lot_err_user_cap',
+  qy_lot_attempt_cap: 'qy_lot_err_attempt_cap',
+  qy_lot_cooldown: 'qy_lot_err_cooldown',
+  qy_lot_inviter_cap: 'qy_lot_err_inviter_cap',
+  qy_lot_ip_cap: 'qy_lot_err_ip_cap',
+  qy_lot_entry_in_flight: 'qy_lot_err_entry_in_flight',
+  qy_lot_ineligible: 'qy_lot_err_ineligible',
+  qy_lot_bad_option: 'qy_lot_err_bad_option',
+  qy_lot_bad_amount: 'qy_lot_err_bad_amount',
+  qy_lot_bad_request_id: 'qy_lot_err_bad_request_id',
+  // 三个幂等 / 落定出口必须说成三句话：in_progress 是"上一次还没落定，别再点"，
+  // idem_conflict 是"换了参数还用同一个请求号，刷新重来"，not_settled 是
+  // "钱可能已经动了，既不能说成功也不能说失败，去记录里复核"。
+  qy_lot_in_progress: 'qy_err_in_progress',
+  qy_lot_idem_conflict: 'qy_lot_err_idem_conflict',
+  qy_lot_not_settled: 'qy_lot_err_not_settled',
+  // 扣费成功但已错过封盘：费用会自动退回。绝不能显示成泛化的"操作冲突"。
+  qy_lot_entry_excluded: 'qy_lot_err_entry_excluded',
+  qy_lot_insufficient_quota: 'qy_lot_err_insufficient_quota',
+  qy_lot_user_unavailable: 'qy_lot_err_user_unavailable',
+  qy_lot_quota_overflow: 'qy_lot_err_quota_overflow',
+  qy_lot_eligibility_unavailable: 'qy_lot_err_eligibility_unavailable',
+  // 管理端。
+  qy_lot_status_conflict: 'qy_lot_err_status_conflict',
+  qy_lot_result_locked: 'qy_lot_err_result_locked',
+  qy_lot_prize_cap: 'qy_lot_err_prize_cap',
+  qy_lot_active_cap: 'qy_lot_err_active_cap',
+  qy_lot_spend_not_ready: 'qy_lot_err_spend_not_ready',
+  qy_lot_payout_not_found: 'qy_lot_err_payout_not_found',
+  qy_lot_payout_needs_manual: 'qy_lot_err_payout_needs_manual',
+  qy_lot_bad_request: 'qy_lot_err_bad_request',
+  qy_lot_proof_not_ready: 'qy_lot_err_proof_not_ready',
+  qy_lot_proof_disabled: 'qy_lot_err_proof_disabled',
 }
 
 /**

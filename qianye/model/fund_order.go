@@ -109,6 +109,14 @@ const (
 	KindWithdrawQuota    = "withdraw_quota"
 	KindWithdrawFiat     = "withdraw_fiat"
 	KindViolationFee     = "violation_fee"
+	// KindLotteryEntry 是抽奖/竞猜的参与扣费(主库减额度)。
+	KindLotteryEntry = "lottery_entry"
+	// KindLotteryPayout 是抽奖派奖、竞猜赔付与退款(主库加额度)。
+	//
+	// 三种出款只用一个 Kind:它们对主库做的是同一件事(加额度),补偿任务按 Kind
+	// 路由 Resolver,再分成三个只会让同一个 Resolver 被注册三遍。
+	// 具体是派奖、赔付还是退款由 qy_lot_payout.kind 承载。
+	KindLotteryPayout = "lottery_payout"
 )
 
 // KindCode 返回单号中使用的两字母类型码。
@@ -124,6 +132,10 @@ func KindCode(kind string) string {
 		return "WD"
 	case KindViolationFee:
 		return "VF"
+	case KindLotteryEntry:
+		return "LE"
+	case KindLotteryPayout:
+		return "LP"
 	default:
 		return "XX"
 	}

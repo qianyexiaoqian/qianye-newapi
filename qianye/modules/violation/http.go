@@ -19,6 +19,18 @@ func respondFail(c *gin.Context, status int, code, msg string) {
 	c.JSON(status, gin.H{"success": false, "code": code, "message": msg})
 }
 
+// respondFailData 是带明细的失败响应。
+//
+// 绝大多数失败只需要一句话,所以默认的 respondFail 不带 data。但"逐条独立成败"的
+// 批量接口不一样:一次失败的批量导入里,**哪几条失败、各自为什么**是排障的全部信息,
+// 而它只存在于那个已经构造好的逐条结果里。丢掉它,管理员手上就只剩一句
+// "N 条全部写入失败,详见服务端日志" —— 而能点那个按钮的管理员未必有服务器日志权限,
+// 排障因此必须升级一级。审计快照也接不住:AfterSnap 会按 SnapshotMaxBytes 截断,
+// 多条带完整 GORM 错误串的明细会被切掉尾部。
+func respondFailData(c *gin.Context, status int, code, msg string, data any) {
+	c.JSON(status, gin.H{"success": false, "code": code, "message": msg, "data": data})
+}
+
 func badRequest(c *gin.Context, msg string) {
 	respondFail(c, http.StatusBadRequest, "qy_vio_bad_request", msg)
 }

@@ -49,7 +49,9 @@ const ALL_ON: QyFeatures = {
   commission: true,
   withdraw: true,
   availability: true,
+  lottery: true,
   violation: true,
+  ticket: true,
 }
 
 const ALL_OFF: QyFeatures = {
@@ -57,7 +59,9 @@ const ALL_OFF: QyFeatures = {
   commission: false,
   withdraw: false,
   availability: false,
+  lottery: false,
   violation: false,
+  ticket: false,
 }
 
 /** 上游根导航的最小复刻，只保留本测试用到的锚点。 */
@@ -204,16 +208,21 @@ describe('qy nav merge — admin, all features on', () => {
   test('三个新分组的内容与规模', () => {
     assert.deepEqual(urlsOf(merged, 'qy-growth'), [
       '/qy/affiliate',
+      '/qy/tickets',
       '/qy/violations',
+      '/qy/lottery',
+      '/qy/lottery-records',
     ])
     assert.deepEqual(urlsOf(merged, 'qy-settlement'), [
       '/qy/admin/commission-records',
       '/qy/admin/withdrawals',
       '/qy/admin/transfer-records',
       '/qy/admin/fund-orders',
+      '/qy/admin/lottery',
     ])
     assert.deepEqual(urlsOf(merged, 'qy-risk'), [
       '/qy/admin/violations',
+      '/qy/admin/tickets',
       '/qy/admin/audit-logs',
     ])
     for (const group of merged) {
@@ -293,8 +302,24 @@ describe('qy nav merge — 普通用户', () => {
     assert.ok(urlsOf(merged, 'general').includes('/qy/availability'))
     // Personal 组不再有 qy 项：划转三页已经是钱包页上的标签了。
     assert.deepEqual(urlsOf(merged, 'personal'), ['/wallet', '/profile'])
+    // 展示开关未知（`mergeQyNavGroups` 不传第五参）时抽奖两页照常出现 ——
+    // 配置还在取数的那一帧不该把菜单先抹掉再长回来。
     assert.deepEqual(urlsOf(merged, 'qy-growth'), [
       '/qy/affiliate',
+      '/qy/tickets',
+      '/qy/violations',
+      '/qy/lottery',
+      '/qy/lottery-records',
+    ])
+  })
+
+  test('展示开关关掉：抽奖两页从侧栏消失，同组其余项不受影响', () => {
+    const off = mergeQyNavGroups(baseGroups(), ALL_ON, ROLE.USER, t, {
+      lottery: false,
+    })
+    assert.deepEqual(urlsOf(off, 'qy-growth'), [
+      '/qy/affiliate',
+      '/qy/tickets',
       '/qy/violations',
     ])
   })

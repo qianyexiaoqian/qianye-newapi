@@ -141,13 +141,71 @@ func validate(c *Config) error {
 	if err := validateWithdraw(&c.Withdraw); err != nil {
 		return err
 	}
+	if err := validateTicket(&c.Ticket); err != nil {
+		return err
+	}
 	if err := validateAvailability(&c.Availability); err != nil {
 		return err
 	}
 	if err := validateViolation(&c.Violation); err != nil {
 		return err
 	}
-	return validateGroupPricing(&c.GroupPricing)
+	if err := validateGroupPricing(&c.GroupPricing); err != nil {
+		return err
+	}
+	return validateLottery(&c.Lottery)
+}
+
+// validateLottery 校验娱乐功能的运行参数。
+//
+// 只管"参数本身合不合法"。单个活动的奖档上限、条件窗口、费率上界由
+// qianye/modules/lottery 在创建与发布两处各校验一次 —— 手改数据库绕过接口
+// 是这套系统最现实的攻击面。
+func validateLottery(l *Lottery) error {
+	if !l.Enabled {
+		return nil
+	}
+	// reveal_delay_seconds 是**唯一**不接受 0 的项:它是承诺-揭示协议的
+	// 核心间隔。为 0 意味着名单哈希与种子在同一瞬间公开,验证者来不及抓到
+	// 一份"揭示之前的名单快照",整个协议退化成"平台自己说它没改"。
+	if l.RevealDelaySeconds <= 0 {
+		return fmt.Errorf("qianye: lottery.reveal_delay_seconds 必须大于 0 —— " +
+			"名单哈希必须先于种子公开,否则公正性无法被第三方举证")
+	}
+	if l.MaxTotalPrizeQuota <= 0 {
+		return fmt.Errorf("qianye: lottery.max_total_prize_quota 必须大于 0 —— " +
+			"抽奖派奖是对主库额度的净增发,这是唯一能拦住「奖品金额多写一个零」的闸门")
+	}
+	if l.MaxStakeQuota <= 0 {
+		return fmt.Errorf("qianye: lottery.max_stake_quota 必须大于 0")
+	}
+	if l.MaxGuessFeeBps < 0 || l.MaxGuessFeeBps > maxBps {
+		return fmt.Errorf("qianye: lottery.max_guess_fee_bps 必须落在 [0, %d]", maxBps)
+	}
+	if l.DefaultGuessFeeBps < 0 || l.DefaultGuessFeeBps > l.MaxGuessFeeBps {
+		return fmt.Errorf("qianye: lottery.default_guess_fee_bps(%d)必须落在 [0, max_guess_fee_bps(%d)]",
+			l.DefaultGuessFeeBps, l.MaxGuessFeeBps)
+	}
+	if l.MaxTotalEntriesHard <= 0 {
+		return fmt.Errorf("qianye: lottery.max_total_entries_hard 必须大于 0 —— " +
+			"名单冻结要在单个事务里流式算完,没有上界就没有可预期的封盘耗时")
+	}
+	if l.MaxPrizeTiers <= 0 || l.MaxOptions < 2 {
+		return fmt.Errorf("qianye: lottery.max_prize_tiers 必须大于 0,max_options 必须不小于 2")
+	}
+	if l.PayoutMaxAttempts <= 0 {
+		return fmt.Errorf("qianye: lottery.payout_max_attempts 必须大于 0")
+	}
+	if l.SpendMaxLookbackDays <= 0 {
+		return fmt.Errorf("qianye: lottery.spend_max_lookback_days 必须大于 0")
+	}
+	if l.SpendRetentionDays > 0 && l.SpendRetentionDays < l.SpendMaxLookbackDays {
+		return fmt.Errorf(
+			"qianye: lottery.spend_retention_days(%d)不得小于 spend_max_lookback_days(%d),"+
+				"否则「近 N 日消费」这道门槛会因为日桶已被清理而静默误拒守规用户",
+			l.SpendRetentionDays, l.SpendMaxLookbackDays)
+	}
+	return nil
 }
 
 // validateGroupPricing 校验分组定价的运行参数。
@@ -449,6 +507,55 @@ func validateWithdraw(w *Withdraw) error {
 		return fmt.Errorf("qianye: withdraw.proof_max_bytes 必须在 1..%d 字节之间,收到 %d"+
 			"(凭证需整张读进内存做魔数校验,不设硬顶等于把堆交给上传者)",
 			MaxWithdrawProofBytes, w.ProofMaxBytes)
+	}
+	return nil
+}
+
+// validateTicket 校验工单系统的防滥用参数。
+//
+// 只校验"0 会把功能变成另一种东西"的那几项。语义是"0 = 不限制"的
+// (max_open_per_user / daily_max_count / cooldown_seconds / auto_close_days)
+// 一律不在此列 —— 对它们报错等于禁止运维关掉一道闸。
+func validateTicket(t *Ticket) error {
+	if !t.Enabled {
+		return nil
+	}
+	// 标题/正文/消息条数上限为 0 不是"不限制",而是"一个字都不许填"/"一条都不许发",
+	// 那会让整个功能在运行期表现为"提交总是失败",而配置看起来完全正常。
+	if t.TitleMaxRunes <= 0 || t.TitleMaxRunes > 500 {
+		return fmt.Errorf("qianye: ticket.title_max_runes 必须在 1..500 之间,收到 %d", t.TitleMaxRunes)
+	}
+	if t.BodyMaxRunes <= 0 || t.BodyMaxRunes > 50000 {
+		return fmt.Errorf("qianye: ticket.body_max_runes 必须在 1..50000 之间,收到 %d"+
+			"(正文是 Markdown 源码,整条消息按 rune 计,不是渲染后的长度)", t.BodyMaxRunes)
+	}
+	if t.MaxMessagesPerTicket <= 0 {
+		return fmt.Errorf("qianye: ticket.max_messages_per_ticket 必须大于 0,收到 %d"+
+			"(0 会让工单建出来之后一条回复都发不了;不想限制请填一个足够大的数)",
+			t.MaxMessagesPerTicket)
+	}
+	if t.ImageMaxPerMessage <= 0 {
+		return fmt.Errorf("qianye: ticket.image_max_per_message 必须大于 0,收到 %d"+
+			"(不想收图请用 image_enabled: false)", t.ImageMaxPerMessage)
+	}
+	// 图片要整张读进内存才能校验魔数,上限必须有硬顶。校验放在 image_enabled 之外:
+	// 填 0 或天文数字都是配置错误,不该等到某天打开图片功能才第一次暴露出来。
+	if t.ImageMaxBytes <= 0 || t.ImageMaxBytes > MaxTicketImageBytes {
+		return fmt.Errorf("qianye: ticket.image_max_bytes 必须在 1..%d 字节之间,收到 %d"+
+			"(图片需整张读进内存做魔数校验,不设硬顶等于把堆交给上传者)",
+			MaxTicketImageBytes, t.ImageMaxBytes)
+	}
+	if t.ImageRetentionDays < 0 {
+		return fmt.Errorf("qianye: ticket.image_retention_days 不得为负数(0 表示永久保留)")
+	}
+	// 负数会让"用了多少"永远大于配额,表现为任何人都传不了图,而配置看起来正常。
+	if t.ImageUserQuotaBytes < 0 {
+		return fmt.Errorf("qianye: ticket.image_user_quota_bytes 不得为负数"+
+			"(0 表示不限制,但那样就没有任何一道总量闸了),收到 %d", t.ImageUserQuotaBytes)
+	}
+	if t.ImageUserQuotaBytes > 0 && t.ImageUserQuotaBytes < t.ImageMaxBytes {
+		return fmt.Errorf("qianye: ticket.image_user_quota_bytes(%d)小于 image_max_bytes(%d),"+
+			"那样第一张合法图片就会被配额拒掉", t.ImageUserQuotaBytes, t.ImageMaxBytes)
 	}
 	return nil
 }

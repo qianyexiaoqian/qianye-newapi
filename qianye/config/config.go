@@ -36,12 +36,14 @@ type Config struct {
 	Transfer        Transfer        `yaml:"transfer"`
 	Commission      Commission      `yaml:"commission"`
 	Withdraw        Withdraw        `yaml:"withdraw"`
+	Ticket          Ticket          `yaml:"ticket"`
 	Wallet          Wallet          `yaml:"wallet"`
 	LogMetrics      LogMetrics      `yaml:"log_metrics"`
 	GroupVisibility GroupVisibility `yaml:"group_visibility"`
 	Availability    Availability    `yaml:"availability"`
 	Violation       Violation       `yaml:"violation"`
 	GroupPricing    GroupPricing    `yaml:"group_pricing"`
+	Lottery         Lottery         `yaml:"lottery"`
 }
 
 // Database 独立 MySQL 连接配置。仅支持 MySQL —— 扩展自建连接,
@@ -283,6 +285,82 @@ type Withdraw struct {
 // 8 MiB 足够,再大只说明配错了。
 const MaxWithdrawProofBytes = 8 << 20
 
+// Ticket 工单系统。用户提问、管理员答复,正文按 Markdown 渲染,可附图片。
+//
+// 全部旋钮都是**防滥用**的:工单是站点里唯一一条"任何登录用户都能往数据库里
+// 写长文本 + 往磁盘里写图片"的路径,没有闸门时一个脚本几分钟就能把客服队列
+// 和磁盘一起打满。每一项的 0 语义都在字段注释里写死,不要凭直觉猜。
+type Ticket struct {
+	Enabled bool `yaml:"enabled"`
+
+	// TitleMaxRunes / BodyMaxRunes 按 rune 计(中文与 emoji 都算 1),必须大于 0 ——
+	// 0 不是"不限制"而是"一个字都不许填",validateTicket 会拒绝启动。
+	// 正文是 Markdown 源码,上限要留得下一段带代码块的报错粘贴。
+	TitleMaxRunes int `yaml:"title_max_runes"`
+	BodyMaxRunes  int `yaml:"body_max_runes"`
+
+	// MaxOpenPerUser 单个用户同时挂着的未关闭工单数上限,0 表示不限制。
+	//
+	// 这是最重要的一道闸:它同时限制了"刷工单"和"同一个人在十张单里问同一件事"。
+	// 与之配套的出口有两个 —— 用户自己可以关单,AutoCloseDays 也会替长期没人
+	// 回应的单收尾;两个出口都没有的话这道闸会把正常用户永久锁死。
+	MaxOpenPerUser int `yaml:"max_open_per_user"`
+	// DailyMaxCount 单个用户每日可新建的工单数,0 表示不限制。
+	DailyMaxCount int `yaml:"daily_max_count"`
+	// CooldownSecs 两次新建工单之间的最小间隔,0 表示不限制。
+	CooldownSecs int `yaml:"cooldown_seconds"`
+	// ReplyCooldownSecs 同一用户两次追加回复之间的最小间隔,0 表示不限制。
+	// 与 CooldownSecs 分开是因为追加回复是正常对话节奏的一部分,
+	// 用新建工单那档间隔去卡它,只会让人在补充一句话时被拒。
+	ReplyCooldownSecs int `yaml:"reply_cooldown_seconds"`
+	// MaxMessagesPerTicket 单张工单的消息条数上限(双方合计),必须大于 0。
+	// 没有它,一张工单可以被追加到几万条,详情接口从此再也打不开。
+	MaxMessagesPerTicket int `yaml:"max_messages_per_ticket"`
+
+	// AutoCloseDays:管理员已回复、用户超过这么多天没有再回应的工单自动关闭。
+	// 0 表示不自动关闭。
+	//
+	// 只对"等用户回话"的状态生效(replied),绝不碰 open / user_replied ——
+	// 那两个状态在等的是客服,自动关掉等于把没人处理的工单悄悄抹掉。
+	AutoCloseDays int `yaml:"auto_close_days"`
+
+	// ImageEnabled 决定是否允许附图片。图片落在【本地磁盘】(与本配置文件同级的
+	// qy-ticket-images/),不入库 —— 理由与提现凭证一致(见 service/imagestore)。
+	//
+	// 它带着同一条部署约束:多节点各存各的,A 节点收到的上传 B 节点下载不到。
+	// 单节点部署无碍;多节点需要共享存储或后续接对象存储。
+	// 不想在磁盘上留用户上传的图就显式置 false —— 上传接口会直接拒绝。
+	ImageEnabled *bool `yaml:"image_enabled"`
+	// ImageMaxBytes 单张图片的字节上限,必须落在 1..MaxTicketImageBytes。
+	// 0 不是"不限制"(那等于把堆交给上传者),validateTicket 会拒绝启动;
+	// 不想收图请用 image_enabled: false。
+	ImageMaxBytes int64 `yaml:"image_max_bytes"`
+	// ImageMaxPerMessage 单条消息可附的图片数上限,必须大于 0。
+	ImageMaxPerMessage int `yaml:"image_max_per_message"`
+	// ImageUserQuotaBytes 单个用户在磁盘上可占用的工单图片总字节数,0 表示不限制。
+	//
+	// 这是唯一一道**总量**闸。单条消息数、未绑定上传数都只管"一次能传几张",
+	// 图片一旦随消息提交,那些计数就归零;而自动关闭只碰 replied,一个每次收到
+	// 回复就再补一句的账号可以让自己的工单永远不进入可清理状态 ——
+	// 于是它的图片永远不会被保留期扫到。没有这一条,单个账号即可长期钉住
+	// max_open_per_user × max_messages_per_ticket × image_max_per_message ×
+	// image_max_bytes 那么多字节(默认口径下是 3 GiB),而磁盘写满会让整个进程
+	// 一起挂,不只是工单。
+	ImageUserQuotaBytes int64 `yaml:"image_user_quota_bytes"`
+	// ImageRetentionDays 工单关闭之后图片的保留天数,0 表示永久保留。
+	//
+	// 只从**关闭时刻**起算,不从上传时刻:一张挂了半年还在争议中的工单,
+	// 它的截图正是争议的物证,按上传时间清掉等于在还需要它的时候销毁证据。
+	ImageRetentionDays int `yaml:"image_retention_days"`
+}
+
+// MaxTicketImageBytes 是 ticket.image_max_bytes 的硬上界。
+//
+// 与 MaxWithdrawProofBytes 同一条理由(校验魔数要整张读进内存),
+// 真正的判定常量在 qianye/service/imagestore.MaxBytes,这里只是把它搬到
+// config 包里供校验器引用 —— config 是被 imagestore 依赖的一方,不能反向 import。
+const MaxTicketImageBytes = 8 << 20
+
 // Wallet 钱包页入口开关。
 type Wallet struct {
 	ShowTransferEntry   *bool `yaml:"show_transfer_entry"`
@@ -387,6 +465,71 @@ type GroupPricing struct {
 	MaxRules int `yaml:"max_rules"`
 }
 
+// Lottery 娱乐功能:抽奖(kind=draw)与竞猜(kind=guess)共用一套配置。
+//
+// 两者的资格引擎、扣费链路、名单冻结、逐笔派奖状态机、证据链与退款路径完全同构,
+// 唯一差别是"谁是赢家"这个纯函数,因此没有拆成两段配置。
+type Lottery struct {
+	Enabled bool `yaml:"enabled"`
+	// ShowEntry 是需求原文里的"系统设置前端是否显示"。它与 Enabled 分开:
+	// 关掉入口之后接口仍然可用(已参与的用户要能查自己的记录与历史证据),
+	// 关掉 Enabled 才是整套功能下线。
+	ShowEntry *bool `yaml:"show_entry"`
+	// ProofPublic 决定证据链端点是否匿名可访问。默认开 —— 需要注册账号才能
+	// 取证的公正性不叫公正性。留这个开关只是为了应对被爬虫打爆时的应急关停。
+	ProofPublic *bool `yaml:"proof_public"`
+
+	MaxActiveActivities int   `yaml:"max_active_activities"`
+	MaxStakeQuota       int64 `yaml:"max_stake_quota"`
+	// MaxTotalPrizeQuota 是抽奖奖品总额度的硬闸门。
+	//
+	// 抽奖是"平台收参与费、平台出奖品",派奖对 users.quota 是**净增发**,
+	// 下游没有任何环节能拦住一个多写了零的奖品金额 —— 这里是唯一的闸门。
+	MaxTotalPrizeQuota int64 `yaml:"max_total_prize_quota"`
+	// LargePrizeAlertQuota 只告警不阻断:运营确实可能办大活动。
+	LargePrizeAlertQuota int64 `yaml:"large_prize_alert_quota"`
+	// PayPasswordThresholdQuota 是参与费触发支付密码的门槛。参与是不可逆消费,
+	// 盗号者能用"参与抽奖"把余额烧光而不留下划转/提现痕迹。
+	PayPasswordThresholdQuota int64 `yaml:"pay_password_threshold_quota"`
+
+	// EntryCloseGraceSeconds 是封盘前停止受理新报名的提前量,给两阶段的
+	// pending 单留出收敛窗口,让"封盘时还有未决参与"降到近零。
+	EntryCloseGraceSeconds int `yaml:"entry_close_grace_seconds"`
+	// RevealDelaySeconds 是 close_at → draw_at 的强制最小间隔。
+	// 它是整个承诺-揭示协议的关键:名单哈希必须先于种子公开,
+	// 中间要留出足够时间让任何人抓到一份平台无法否认的快照。不允许为 0。
+	RevealDelaySeconds int `yaml:"reveal_delay_seconds"`
+
+	LockScanIntervalSeconds   int `yaml:"lock_scan_interval_seconds"`
+	RevealScanIntervalSeconds int `yaml:"reveal_scan_interval_seconds"`
+	PayoutIntervalSeconds     int `yaml:"payout_interval_seconds"`
+	PayoutMaxAttempts         int `yaml:"payout_max_attempts"`
+	// ExcludedManualAfterSeconds 是"参与单卡在不可判定态多久之后转人工"。
+	ExcludedManualAfterSeconds int `yaml:"excluded_manual_after_seconds"`
+
+	// MaxTotalEntriesHard 是名单规模上界:冻结要在单个事务里流式算完。
+	MaxTotalEntriesHard int `yaml:"max_total_entries_hard"`
+	MaxPrizeTiers       int `yaml:"max_prize_tiers"`
+	MaxOptions          int `yaml:"max_options"`
+	DefaultGuessFeeBps  int `yaml:"default_guess_fee_bps"`
+	// MaxGuessFeeBps 防运营把 5% 手滑打成 50%。
+	MaxGuessFeeBps int `yaml:"max_guess_fee_bps"`
+
+	SpendScanIntervalSeconds int `yaml:"spend_scan_interval_seconds"`
+	SpendScanBatch           int `yaml:"spend_scan_batch"`
+	// SpendGapGuardSeconds 是消费扫描的时间护栏:自增 id 在插入时分配、提交
+	// 可能更晚,裸 `id > watermark` 会跳过后提交的小 id 行。
+	SpendGapGuardSeconds int `yaml:"spend_gap_guard_seconds"`
+	SpendMaxLookbackDays int `yaml:"spend_max_lookback_days"`
+	SpendRetentionDays   int `yaml:"spend_retention_days"`
+}
+
+// EntryShown 表示前端是否渲染娱乐入口。
+func (l Lottery) EntryShown() bool { return boolOr(l.ShowEntry, true) }
+
+// ProofOpen 表示证据链端点是否匿名可访问。
+func (l Lottery) ProofOpen() bool { return boolOr(l.ProofPublic, true) }
+
 // ───────────────────────────── 布尔取值辅助 ─────────────────────────────
 //
 // *bool 承载"默认为 true"的开关:普通 bool 的零值是 false,无法区分
@@ -447,6 +590,9 @@ func (w Withdraw) HasWithdrawMethod(m string) bool {
 func (w Withdraw) ProofOn() bool {
 	return w.HasWithdrawMethod(WithdrawMethodFiat) && boolOr(w.ProofEnabled, true)
 }
+
+// ImageOn 表示工单是否允许附图片。默认开。
+func (t Ticket) ImageOn() bool { return boolOr(t.ImageEnabled, true) }
 
 // ───────────────────────────── 加载与访问 ─────────────────────────────
 

@@ -19,8 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
 
-import { getSelf } from '@/lib/api'
-import { useAuthStore, type AuthUser } from '@/stores/auth-store'
+// 深路径而不是 `@/features/wallet/lib` 桶：桶里带 `ui.tsx`，qy 不必把上游那堆
+// JSX 一起拖进来。方向是 qy（扩展）→ wallet（上游核心），符合铁律。
+import { refreshCurrentUser } from '@/features/wallet/lib/balance-refresh'
 
 import { qyKeys } from '../lib/query-keys'
 
@@ -31,23 +32,20 @@ import { qyKeys } from '../lib/query-keys'
  * 前端无法知道哪些视图受影响（余额、限额、流水、佣金账户可能同时变），
  * 全量失效是唯一安全的策略。
  *
- * 为什么还要 `getSelf()`：主库的 `users.quota` 不在 qy 的 query 缓存里，
+ * 为什么还要刷 auth-store：主库的 `users.quota` 不在 qy 的 query 缓存里，
  * 它在 Zustand 的 auth-store。上游没有任何"全局刷新用户余额"的机制，
  * 不补这一步的话，划转成功后顶栏余额会一直是旧值。
+ *
+ * 这一步**不在这里实现**，而是委托给 `refreshCurrentUser`：上游的充值路径
+ * （兑换码 / 在线支付 / 钱包页）也要做同一件事，全仓只能有一份。反过来让上游
+ * 去 import 这个 qy 钩子是不行的 —— qy 是可摘除的扩展，不能变成上游的支柱。
  */
 export function useQyAfterMoneyChange() {
   const queryClient = useQueryClient()
 
   return useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: qyKeys.all })
-    try {
-      const res = await getSelf()
-      if (res?.success && res.data) {
-        useAuthStore.getState().auth.setUser(res.data as AuthUser)
-      }
-    } catch {
-      // 余额刷新失败不能阻断主流程：钱已经动了，用户下次进页面自然会拿到新值。
-    }
+    await refreshCurrentUser()
     await queryClient.invalidateQueries({ queryKey: ['status'] })
   }, [queryClient])
 }

@@ -27,6 +27,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+/**
+ * The site's own API base address.
+ *
+ * This is the fallback used when no explicit address has been picked: the
+ * address configured by the operator in system settings, or the current origin
+ * when that is unavailable. It lives next to `encodeChannelConnectionInfo`
+ * because it is the default value of the very `url` field that function emits —
+ * keeping the two apart is what produced separate copies of this logic in the
+ * first place.
+ */
+export function readSiteServerAddress(): string {
+  try {
+    const raw = localStorage.getItem('status')
+    if (raw) {
+      const status: unknown = JSON.parse(raw)
+      if (
+        isRecord(status) &&
+        typeof status.server_address === 'string' &&
+        status.server_address !== ''
+      ) {
+        return status.server_address
+      }
+    }
+  } catch {
+    /* malformed or unavailable storage — fall through to the origin */
+  }
+  return window.location.origin
+}
+
 export function encodeChannelConnectionInfo(key: string, url: string): string {
   return JSON.stringify({
     _type: CHANNEL_CONNECTION_INFO_TYPE,

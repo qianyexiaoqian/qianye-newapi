@@ -59,6 +59,8 @@ const (
 	AuditCategoryViolation  = "violation"
 	AuditCategoryConfig     = "config"
 	AuditCategoryAdmin      = "admin"
+	AuditCategoryLottery    = "lottery"
+	AuditCategoryTicket     = "ticket"
 )
 
 // 操作者类型。

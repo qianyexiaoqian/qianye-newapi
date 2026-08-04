@@ -74,6 +74,8 @@ const SETTINGS_URLS = [
   '/qy/admin/group-pricing',
   '/qy/admin/user-group',
   '/qy/admin/violation-rules',
+  '/qy/admin/lottery-config',
+  '/qy/admin/api-address',
 ]
 
 /** 明确**留在根侧栏**的管理页。它们进了抽屉就是运营每天多点两下。 */
@@ -85,6 +87,9 @@ const ROOT_ADMIN_URLS = [
   '/qy/admin/violations',
   '/qy/admin/audit-logs',
   '/qy/admin/health',
+  '/qy/admin/lottery',
+  // 工单审核台是每天要开的流水页，不是"改一次影响后续每一笔"的配置。
+  '/qy/admin/tickets',
 ]
 
 /**
@@ -238,7 +243,9 @@ describe('qy 选择夹（需求 2 / 3）', () => {
       commission: true,
       withdraw: true,
       availability: true,
+      lottery: true,
       violation: true,
+      ticket: true,
     }
     const urls = qyEntryPages(all, true).map((page) => page.url)
     for (const url of HOSTED_URLS) {
@@ -251,6 +258,38 @@ describe('qy 选择夹（需求 2 / 3）', () => {
     assert.ok(urls.includes('/qy/affiliate'))
     assert.ok(urls.includes('/qy/availability'))
     assert.equal(urls.length, QY_PAGES.length - HOSTED_URLS.length)
+  })
+
+  /**
+   * 需求原文：「系统设置前端是否显示」。
+   *
+   * 两条断言缺一不可：只钉"用户侧会消失"，把开关误接到管理页上也照样全绿，
+   * 而那样一来关掉之后就再也没有地方能把它重新打开 —— 这个仓库反复出现的
+   * 「写了但没接」的另一种形状。
+   */
+  test('展示开关关掉时用户侧入口消失，管理端入口不受影响', () => {
+    const all: QyFeatures = {
+      transfer: true,
+      commission: true,
+      withdraw: true,
+      availability: true,
+      lottery: true,
+      violation: true,
+      ticket: true,
+    }
+    const off = qyEntryPages(all, true, { lottery: false }).map(
+      (page) => page.url
+    )
+    assert.ok(!off.includes('/qy/lottery'), '用户侧大厅仍留在导航里')
+    assert.ok(!off.includes('/qy/lottery-records'), '我的记录仍留在导航里')
+    assert.ok(
+      off.includes('/qy/admin/lottery'),
+      '管理端入口被一起藏掉了：关掉之后就再也没有地方能把它打开'
+    )
+
+    // 不传展示开关时一律按"显示"处理：配置还在取数的那一帧不该把菜单先抹掉。
+    const unknown = qyEntryPages(all, true).map((page) => page.url)
+    assert.ok(unknown.includes('/qy/lottery'))
   })
 
   test('qyTabTarget 直接落到宿主页 + 对应标签，而不是先跳旧路由再被弹回来', () => {

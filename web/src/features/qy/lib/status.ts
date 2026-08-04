@@ -61,6 +61,21 @@ const STATUS_STYLES: Record<string, QyStatusStyle> = {
     labelKey: 'qy_common_st_uncertain',
     pulse: true,
   },
+
+  // ── 工单（qianye/modules/ticket/status.go）──
+  // 键名与其他单据不重叠，所以直接并进这张表而不是让工单页自己挑颜色 ——
+  // "同一个状态两个页面两种颜色"正是这张表存在的理由。
+  //
+  // 配色的分界是**在等谁**：等客服的两档用告警色 + 呼吸（它们是待办），
+  // 等用户的一档用信息色（球在对方那边），关闭用中性。
+  open: { variant: 'warning', labelKey: 'qy_common_st_open', pulse: true },
+  user_replied: {
+    variant: 'warning',
+    labelKey: 'qy_common_st_user_replied',
+    pulse: true,
+  },
+  replied: { variant: 'info', labelKey: 'qy_common_st_replied' },
+  closed: { variant: 'neutral', labelKey: 'qy_common_st_closed' },
 }
 
 const UNKNOWN_STYLE: QyStatusStyle = {
