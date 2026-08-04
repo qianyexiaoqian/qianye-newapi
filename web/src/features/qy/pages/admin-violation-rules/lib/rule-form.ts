@@ -18,6 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+import {
+  qyAppendGroupName,
+  qySplitGroupNames,
+} from '../../../lib/group-options'
 import type {
   QyViolationAction,
   QyViolationFeeMode,
@@ -57,6 +61,29 @@ export const QY_VIOLATION_GROUP_SCOPE_MODES: QyViolationGroupScopeMode[] = [
   'include',
   'exclude',
 ]
+
+/**
+ * `group_scope` 的分隔符，与后端 `qianye/modules/violation/rules.go` 的
+ * `splitList` 逐字一致：只认逗号与换行。
+ *
+ * **刻意不认分号**，尽管划转分组规则那边认。两处后端的解析口径确实不同，
+ * 前端跟着哪一边就必须跟到底：这里多认一个分号，一个名字里带分号的分组会在
+ * 界面上被拆成两个（两个都标黄的假警报），而后端存的仍然是原来那一个。
+ */
+const QY_VIOLATION_GROUP_SEPARATOR = /[,\r\n]/
+
+/** 把 `group_scope` 拆成分组名数组，供徽章展示与未定义分组的软告警计算。 */
+export function qySplitViolationGroupScope(raw: string): string[] {
+  return qySplitGroupNames(raw, QY_VIOLATION_GROUP_SEPARATOR)
+}
+
+/** 从下拉选中一项时把它追加进 `group_scope`，已经在里面就原样返回。 */
+export function qyAppendViolationGroupScope(
+  raw: string,
+  entry: string
+): string {
+  return qyAppendGroupName(raw, entry, QY_VIOLATION_GROUP_SEPARATOR)
+}
 
 /**
  * 执行模式的取值。顺序即界面上的顺序 —— 影子在前，因为它是安全的那一侧，

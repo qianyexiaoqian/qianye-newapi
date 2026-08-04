@@ -22,6 +22,7 @@ import {
   qyDelete,
   qyErrorFromBlobFailure,
   qyGet,
+  qyPatch,
   qyPost,
   qyPut,
   QY_API_PREFIX,
@@ -63,6 +64,32 @@ export function updateQyViolationRule(
   body: QyViolationRuleInput
 ): Promise<unknown> {
   return qyPut<unknown>(`/admin/violation/rules/${id}`, body)
+}
+
+/**
+ * 列表行内的快速启停 —— **只写 `enabled` 一列**。
+ *
+ * 刻意不复用 `updateQyViolationRule`：那个接口提交的是前端手上那一整份规则，
+ * 而它是列表页在 15 秒 `staleTime` 里拉下来的拷贝。这期间同事改窄了 `pattern`、
+ * 把 `mode` 从真实调回影子、改了作用域，都会被这次「我只是想关一下开关」原样
+ * 覆盖回旧值 —— 一次没有人按下过的静默回滚，而回滚掉的正是决定谁被扣钱、
+ * 谁被封号的那几列。后端同样只 `UPDATE enabled / updated_at / updated_by`。
+ *
+ * `changed=false` 表示这次调用什么都没改（重复点击，或别人抢先改成了同一个值）。
+ * 后端在这条路径上不写审计、不 bump 规则版本号 —— 什么都没发生的一次调用不该在
+ * 审计里留下一条「改过」。
+ *
+ * 启用一条**编译不过**的规则会被后端以 400 拒绝：规则快照对编译失败的规则是
+ * 静默跳过的，放行的话就是「启用成功、界面显示已启用、线上永不命中」。
+ */
+export function setQyViolationRuleEnabled(
+  id: number,
+  enabled: boolean
+): Promise<{ enabled: boolean; changed: boolean }> {
+  return qyPatch<{ enabled: boolean; changed: boolean }>(
+    `/admin/violation/rules/${id}/enabled`,
+    { enabled }
+  )
 }
 
 /** 软删：历史记录的 `rule_id` 指向规则，硬删会让申诉复核失去上下文。 */

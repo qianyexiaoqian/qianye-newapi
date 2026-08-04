@@ -17,13 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useForm, type Control, type UseFormGetValues } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ComboboxInput } from '@/components/ui/combobox-input'
 import {
   Form,
   FormControl,
@@ -45,6 +47,12 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
+import {
+  qyGroupOptionLabel,
+  qyGroupOptionsQuery,
+  qyNormalizeGroupName,
+  qyUnknownGroupNames,
+} from '../../../lib/group-options'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { formatQyMicros } from '../../ops/format'
 import {
@@ -59,7 +67,9 @@ import {
   QY_VIOLATION_MATCH_TYPES,
   QY_VIOLATION_MODES,
   QY_VIOLATION_PHASES,
+  qyAppendViolationGroupScope,
   qyEmptyViolationRule,
+  qySplitViolationGroupScope,
   qyViolationRuleSchema,
   qyViolationRuleToForm,
   qyViolationRuleToPayload,
@@ -102,6 +112,34 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
   // 「选了频率判据却还看着关键词的说明」是这一页最容易误导人的状态。
   const matchType = form.watch('match_type')
   const isRate = matchType === 'request_rate'
+
+  /**
+   * 分组作用域的候选清单。
+   *
+   * 只在抽屉打开时拉：这份数据只有表单用得上，跟着列表页一起拉会让每次翻页都
+   * 多一个请求。它**永远只是输入辅助** —— 拉不到照样能手输、照样能保存，
+   * 三种非正常状态（加载中 / 拉取失败 / 站点没有分组）各自有独立的提示。
+   */
+  const groupQuery = useQuery({ ...qyGroupOptionsQuery(), enabled: props.open })
+  const groupOptions = groupQuery.data?.options ?? []
+  const groupScopeEntries = qySplitViolationGroupScope(form.watch('group_scope'))
+  // 清单为空（拉取失败，或者站点真的一个分组都没定义）时一律不算未定义分组：
+  // 那会把运营填的每一个名字都标成黄的，是一片假警报 —— 而假警报比没有警报
+  // 更糟，报错一次没人信，之后真的打错字也不会有人看。
+  const unknownGroups =
+    groupOptions.length === 0
+      ? []
+      : qyUnknownGroupNames(
+          [...new Set(groupScopeEntries.map(qyNormalizeGroupName))],
+          groupOptions
+        )
+  // 文本框是自由编辑的，名单里完全可能出现重复项（后端保存时才折叠去重），
+  // 所以徽章的 key 必须带序号 —— 在这里一次性算好，JSX 里只剩渲染。
+  const groupScopeBadges = groupScopeEntries.map((name, index) => ({
+    key: `${name}#${index}`,
+    name,
+    unknown: unknownGroups.includes(qyNormalizeGroupName(name)),
+  }))
 
   const saveMutation = useMutation({
     mutationFn: (values: QyViolationRuleFormValues) => {
@@ -301,40 +339,120 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
             </div>
           )}
 
-          <div className='grid gap-3 sm:grid-cols-2'>
-            <FormField
-              control={form.control}
-              name='model_scope'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_vio_field_model_scope')}</FormLabel>
-                  <FormControl>
-                    <Input placeholder='gpt-4*,claude-*' {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    {t('qy_vio_field_model_scope_desc')}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='group_scope'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_vio_field_group_scope')}</FormLabel>
-                  <FormControl>
-                    <Input placeholder='default,vip' {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    {t('qy_vio_field_group_scope_desc')}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
+          <FormField
+            control={form.control}
+            name='model_scope'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_vio_field_model_scope')}</FormLabel>
+                <FormControl>
+                  <Input placeholder='gpt-4*,claude-*' {...field} />
+                </FormControl>
+                <FormDescription>
+                  {t('qy_vio_field_model_scope_desc')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* 分组作用域。
+                原来这里是一个裸文本框：打错一个字母，这条规则就静默挂在一个
+                不存在的分组上 —— 保存成功、界面正常、线上永不命中，而且没有
+                任何信号。换成「带元数据的下拉 + 保留自由输入 + 未定义分组软
+                告警」，口径与划转分组规则页完全一致。 */}
+          <FormField
+            control={form.control}
+            name='group_scope'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_vio_field_group_scope')}</FormLabel>
+                {/* 选一个就追加一项。下拉解决「站点有哪些分组、它们什么样」，
+                      下面的文本框解决「站点已经不认的历史分组仍要能配」——
+                      后者恰恰是最需要被规则覆盖的那批账号。 */}
+                <ComboboxInput
+                  options={groupOptions.map((option) => ({
+                    value: option.name,
+                    label: qyGroupOptionLabel(
+                      option,
+                      groupQuery.data?.probe_ok === true,
+                      t
+                    ),
+                  }))}
+                  value=''
+                  onValueChange={(picked) =>
+                    field.onChange(
+                      qyAppendViolationGroupScope(field.value, picked)
+                    )
+                  }
+                  emptyText='qy_trg_group_picker_empty'
+                  placeholder={t('qy_vio_group_scope_pick')}
+                />
+                <FormControl>
+                  <Input placeholder='default,vip' {...field} />
+                </FormControl>
+
+                {groupScopeBadges.length > 0 && (
+                  <div className='flex flex-wrap gap-1'>
+                    {groupScopeBadges.map((badge) => (
+                      <Badge
+                        key={badge.key}
+                        variant={badge.unknown ? 'warning' : 'secondary'}
+                        className='font-normal'
+                        title={
+                          badge.unknown
+                            ? t('qy_vio_group_scope_unknown_hint')
+                            : undefined
+                        }
+                      >
+                        {badge.name}
+                        {/* 只靠颜色区分「站点定义过 / 没定义过」，色觉障碍用户
+                              拿到的是一串一模一样的名字。 */}
+                        {badge.unknown && (
+                          <span className='sr-only'>
+                            {' '}
+                            {t('qy_vio_group_scope_unknown_hint')}
+                          </span>
+                        )}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+
+                {/* 清单的三种非正常状态各自说清楚。任何一种都**不**禁用上面的
+                      文本框：把人卡在一个拉不到的下拉前面，等于让他配不了规则。 */}
+                {groupQuery.isPending && (
+                  <p className='text-muted-foreground text-xs'>
+                    {t('qy_vio_group_scope_loading')}
+                  </p>
+                )}
+                {groupQuery.isError && (
+                  <p className='text-warning text-xs'>
+                    {t('qy_vio_group_scope_failed')}
+                  </p>
+                )}
+                {groupQuery.isSuccess && groupOptions.length === 0 && (
+                  <p className='text-muted-foreground text-xs'>
+                    {t('qy_vio_group_scope_empty')}
+                  </p>
+                )}
+
+                {/* 软告警，不是错误：不禁用提交，也不进 zod schema。 */}
+                {unknownGroups.length > 0 && (
+                  <p className='text-warning text-xs'>
+                    {t('qy_vio_group_scope_unknown', {
+                      groups: unknownGroups.join('、'),
+                    })}
+                  </p>
+                )}
+
+                <FormDescription>
+                  {t('qy_vio_field_group_scope_desc')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
           {/* 「指定分组开启」与「豁免分组」是同一份名单的两个方向。
                 刻意不开第二列黑名单：两张能互相矛盾的名单必然漂移，

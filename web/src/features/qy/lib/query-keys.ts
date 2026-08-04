@@ -181,6 +181,15 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'user-group', 'config'] as const,
 
   /**
+   * 站点分组候选清单（见 `lib/group-options.ts`）。
+   *
+   * 刻意与 `adminTransferGroupRules` 分开：那个 key 挂着「规则 + 矩阵」，改一条
+   * 划转规则就要把它冲掉；而分组清单只随分组倍率表变化，跟着一起失效只会让每个
+   * 用到分组下拉的表单在无关的保存之后重新拉一次。
+   */
+  adminGroupOptions: () => [...qyKeys.all, 'admin', 'group-options'] as const,
+
+  /**
    * 分组定价的公共前缀。
    *
    * 单独留一个前缀 key 是因为改一次价会同时让规则表与影子对账过期：

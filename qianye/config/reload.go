@@ -44,6 +44,9 @@ func Reload() error {
 	loadedAt.Store(common.GetTimestamp())
 	loadedMod.Store(mod)
 	common.SysLog("qianye: 配置已重新加载(数据库段保持不变)")
+	// 热载同样要过一遍段级自检。一次误编辑把整段删掉,与启动时少一段是同一个
+	// 缺陷,而热载不重启进程 —— 启动日志里那一行永远不会再出现。
+	logModuleSections(fresh)
 	return nil
 }
 

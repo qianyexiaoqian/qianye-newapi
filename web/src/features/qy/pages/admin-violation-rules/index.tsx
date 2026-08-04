@@ -32,7 +32,6 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table'
-import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -44,11 +43,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyKeys } from '../../lib/query-keys'
+import type { QyPage } from '../../lib/types'
 import { QyPager } from '../components/qy-pager'
 import { qyOpsErrorMessage } from '../ops/errors'
 import { formatQyTs, QY_EMPTY_TEXT } from '../ops/format'
@@ -58,6 +59,7 @@ import {
   getQyViolationStats,
   listQyViolationRules,
   resetQyViolationBreaker,
+  setQyViolationRuleEnabled,
 } from './api'
 import { QyBuiltinPackSheet } from './components/builtin-pack-sheet'
 import { QyRuleFormSheet } from './components/rule-form-sheet'
@@ -65,6 +67,7 @@ import { QyShadowHitsSheet } from './components/shadow-hits-sheet'
 import { QyViolationCounterCard } from './components/violation-counter-card'
 import { QyViolationShadowBanner } from './components/violation-shadow-banner'
 import { QY_VIOLATION_PHASES } from './lib/rule-form'
+import { qyToggleNeedsConfirm, type QyPendingToggle } from './lib/rule-toggle'
 import type { QyViolationRule } from './types'
 
 const PAGE_SIZE = 20
@@ -90,6 +93,9 @@ export function QyAdminViolationRules() {
     null
   )
   const [builtinOpen, setBuiltinOpen] = useState(false)
+  const [pendingToggle, setPendingToggle] = useState<QyPendingToggle | null>(
+    null
+  )
   // 影子命中面板挂在规则行上：从「我改了这条规则」到「我看它抓到了什么」
   // 必须是一次点击 —— 那正是项目方给影子模式定的唯一用途。
   const [shadowRule, setShadowRule] = useState<QyViolationRule | null>(null)
@@ -127,6 +133,86 @@ export function QyAdminViolationRules() {
     },
     onError: (error) => toast.error(qyOpsErrorMessage(error, t)),
   })
+
+  /**
+   * 行内启停。
+   *
+   * 乐观更新是必需的而不是锦上添花：这一页最典型的动作是「导入内置规则包之后
+   * 逐条点开」，每点一次都等一个往返 + 一次列表重拉，开关会在原地闪回旧状态再
+   * 跳到新状态 —— 那个闪回看起来就像「没点上」，于是人会再点一次，把刚打开的又关掉。
+   *
+   * 失败必须回滚到**接口调用前那一份缓存**，而不是把开关取反：中途可能已经有别的
+   * 刷新落地，取反会写出一个第三种状态。
+   */
+  const toggleMutation = useMutation({
+    mutationFn: (vars: QyPendingToggle) =>
+      setQyViolationRuleEnabled(vars.rule.id, vars.next),
+    onMutate: async (vars) => {
+      const key = qyKeys.adminViolationRules(params)
+      // 取消在途查询：一次 15 秒前发出的列表请求在乐观更新之后落地，
+      // 会把开关原样按回旧值，而用户看到的是「点了又弹回去」。
+      await queryClient.cancelQueries({ queryKey: key })
+      const previous =
+        queryClient.getQueryData<QyPage<QyViolationRule>>(key) ?? null
+      queryClient.setQueryData<QyPage<QyViolationRule>>(key, (old) =>
+        old == null
+          ? old
+          : {
+              ...old,
+              items: old.items.map((item) =>
+                item.id === vars.rule.id
+                  ? { ...item, enabled: vars.next }
+                  : item
+              ),
+            }
+      )
+      return { key, previous }
+    },
+    onError: (error, _vars, context) => {
+      if (context != null) {
+        queryClient.setQueryData(context.key, context.previous)
+      }
+      toast.error(qyOpsErrorMessage(error, t))
+    },
+    onSuccess: (result) => {
+      // changed=false = 后端认定什么都没发生（重复点击，或别人抢先改成了同一个值）。
+      // 报成「已启用」会让人以为自己改动了状态，而审计里根本没有这一条。
+      if (!result.changed) {
+        toast.info(t('qy_vio_rule_toggle_unchanged'))
+        return
+      }
+      toast.success(
+        result.enabled
+          ? t('qy_vio_rule_toggle_enabled')
+          : t('qy_vio_rule_toggle_disabled')
+      )
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: qyKeys.adminViolationRules(params),
+      })
+      // 统计里的「影子 N 条 / 真实 N 条」只数**启用中**的规则，
+      // 不一起失效的话顶部横幅会继续显示一个已经不成立的口径。
+      void queryClient.invalidateQueries({
+        queryKey: qyKeys.adminViolationStats(),
+      })
+      // 内置规则包面板的「已停用」徽标读的正是 rule_enabled，而那份查询有
+      // 15 秒 staleTime：不一起失效的话，刚停用的规则在面板上仍显示成
+      // 「已是最新 + 影子」，管理员据此点「导入 / 同时升级」，以为规则会跑起来 ——
+      // 而导入一个字节都不动 enabled。那个徽标存在的全部理由就是堵这个洞。
+      void queryClient.invalidateQueries({
+        queryKey: qyKeys.adminViolationBuiltin(),
+      })
+    },
+  })
+
+  const requestToggle = (rule: QyViolationRule, next: boolean) => {
+    if (qyToggleNeedsConfirm(rule, next)) {
+      setPendingToggle({ rule, next })
+      return
+    }
+    toggleMutation.mutate({ rule, next })
+  }
 
   const deleteMutation = useMutation({
     mutationFn: (rule: QyViolationRule) => deleteQyViolationRule(rule.id),
@@ -309,15 +395,28 @@ export function QyAdminViolationRules() {
                     header: t('qy_common_status'),
                     cell: (row: QyViolationRule) => (
                       <span className='flex flex-wrap items-center gap-1'>
-                        <StatusBadge
-                          label={
-                            row.enabled
-                              ? t('qy_vio_rule_enabled')
-                              : t('qy_vio_rule_disabled')
+                        {/* 开关本身就是状态显示。项目方原话:「规则集这里加一个
+                            快速启用关闭的按钮」。另挂一个只读徽标 + 一个开关的话,
+                            乐观更新期间两者会短暂地互相矛盾,而那一刻恰恰是
+                            用户最需要相信界面的时候。 */}
+                        <Switch
+                          checked={row.enabled}
+                          disabled={
+                            toggleMutation.isPending &&
+                            toggleMutation.variables?.rule.id === row.id
                           }
-                          variant={row.enabled ? 'success' : 'neutral'}
-                          copyable={false}
+                          aria-label={t('qy_vio_rule_toggle_aria', {
+                            name: row.name,
+                          })}
+                          onCheckedChange={(checked) => {
+                            requestToggle(row, checked === true)
+                          }}
                         />
+                        <span className='text-muted-foreground text-xs'>
+                          {row.enabled
+                            ? t('qy_vio_rule_enabled')
+                            : t('qy_vio_rule_disabled')}
+                        </span>
                         {/* 模式必须在列表就看得见,而且两种取值都要显示。
                             只在影子时才挂一个 Badge 的话,「真实执行」就成了
                             一个靠"没有标记"表达的状态 —— 而那与"这一列还没
@@ -425,6 +524,40 @@ export function QyAdminViolationRules() {
           {/* 计数器维护紧挨着模式开关:两者说的是同一件事的两面 ——
               影子期间不再累计违规次数,而切换之前累计下来的那些是脏的。 */}
           <QyViolationCounterCard />
+
+          {/* 启停的二次确认。取舍写在 qyToggleNeedsConfirm 上：只拦「任何停用」
+              与「启用真实模式规则」两种方向，启用影子规则一点即生效。 */}
+          <QyConfirmDialog
+            open={pendingToggle != null}
+            onOpenChange={(open) => {
+              if (!open) setPendingToggle(null)
+            }}
+            title={
+              pendingToggle?.next === true
+                ? t('qy_vio_rule_enable_enforce_title')
+                : t('qy_vio_rule_disable_title')
+            }
+            description={
+              pendingToggle?.next === true
+                ? t('qy_vio_rule_enable_enforce_desc', {
+                    name: pendingToggle.rule.name,
+                  })
+                : t('qy_vio_rule_disable_desc', {
+                    name: pendingToggle?.rule.name ?? '',
+                  })
+            }
+            confirmText={
+              pendingToggle?.next === true
+                ? t('qy_vio_rule_enable_confirm')
+                : t('qy_vio_rule_disable_confirm')
+            }
+            isLoading={toggleMutation.isPending}
+            onConfirm={() => {
+              if (pendingToggle == null) return
+              toggleMutation.mutate(pendingToggle)
+              setPendingToggle(null)
+            }}
+          />
 
           <QyConfirmDialog
             open={pendingDelete != null}

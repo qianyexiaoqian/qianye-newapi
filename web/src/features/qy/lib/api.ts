@@ -495,9 +495,9 @@ export async function qyGet<T>(
   }
 }
 
-/** 变更类请求（POST / PUT / DELETE）。 */
+/** 变更类请求（POST / PUT / PATCH / DELETE）。 */
 export async function qyMutate<T>(
-  method: 'delete' | 'post' | 'put',
+  method: 'delete' | 'patch' | 'post' | 'put',
   path: string,
   body?: unknown,
   config?: ApiRequestConfig
@@ -530,6 +530,22 @@ export function qyPut<T>(
   config?: ApiRequestConfig
 ): Promise<T> {
   return qyMutate<T>('put', path, body, config)
+}
+
+/**
+ * PATCH —— **只改一部分字段**。
+ *
+ * 与 `qyPut` 的分工不是风格偏好：`qyPut` 提交的是前端手上那一整份对象，而那份
+ * 对象往往是列表页十几秒前拉下来的拷贝。用它去翻一个开关，等于把这期间别人对
+ * 其余字段的改动一起写回旧值 —— 一次没有人按下过的静默回滚。行内开关、单列状态
+ * 变更这类「我只想改这一个」的动作走这里，后端也只 UPDATE 对应的那一列。
+ */
+export function qyPatch<T>(
+  path: string,
+  body?: unknown,
+  config?: ApiRequestConfig
+): Promise<T> {
+  return qyMutate<T>('patch', path, body, config)
 }
 
 export function qyDelete<T>(

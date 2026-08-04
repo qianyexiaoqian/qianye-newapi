@@ -223,6 +223,14 @@ function QyBuiltinRow(props: {
               )}
             </Badge>
           )}
+          {/* 已导入但被停用。不摆出来的话，这一行会显示「已是最新 + 影子」，
+              看上去一切正常，而它其实一条都抓不到 —— 与「内置规则包从没导入过」
+              是同一个形状，也是本轮要堵的那类无声失效。 */}
+          {item.state !== 'not_imported' && !item.rule_enabled && (
+            <Badge variant='destructive'>
+              {t('qy_vio_builtin_rule_disabled')}
+            </Badge>
+          )}
         </div>
         <p className='text-muted-foreground text-xs'>{item.guards}</p>
         {/* 误杀说明用警示色：它不是补充信息，它是这条规则能不能转真实模式的
@@ -239,6 +247,15 @@ function QyBuiltinRow(props: {
         {item.state === 'modified' && (
           <p className='text-xs font-medium'>
             {t('qy_vio_builtin_modified_hint')}
+          </p>
+        )}
+        {/* 停用状态的说明必须与「升级不覆盖改过的规则」同等对待：两者都是
+            「你点了导入，但这一条不会变成你以为的样子」。后端在已存在的行上只
+            UPDATE pattern / case_sensitive 与四列元数据，enabled 一个字节都不动，
+            所以停用过的规则不会被这次导入重新打开 —— 需要回规则列表手动启用。 */}
+        {item.state !== 'not_imported' && !item.rule_enabled && (
+          <p className='text-xs font-medium'>
+            {t('qy_vio_builtin_disabled_hint')}
           </p>
         )}
       </div>

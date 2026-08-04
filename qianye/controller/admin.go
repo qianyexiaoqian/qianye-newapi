@@ -44,6 +44,11 @@ func AdminHealth(c *gin.Context) {
 		"migrate": gin.H{
 			"table_count": db.TableCount(),
 		},
+		// 每个模块的配置段现状。state=missing_section / missing_key 表示
+		// "这个模块编译进来了,但配置文件里没人对它做过决定,它正静默关着" ——
+		// 启动时同一件事会打 SysError,但启动日志会被滚走,而排障的人往往
+		// 是在事后才来看这一页。判据与告警文案见 qianye/config/sections.go。
+		"modules": config.ModuleSectionStatus(),
 		"config": gin.H{
 			"path":      config.Path(),
 			"loaded_at": config.LoadedAt(),

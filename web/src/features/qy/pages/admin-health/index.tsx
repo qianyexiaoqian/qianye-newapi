@@ -48,7 +48,36 @@ import {
   listQyLeases,
   reloadQyConfig,
 } from './api'
-import type { QyLeaseListItem } from './types'
+import type {
+  QyLeaseListItem,
+  QyModuleSection,
+  QyModuleSectionState,
+} from './types'
+
+/** 需要处理的两种状态：模块编译进来了，但配置里没人对它做过决定。 */
+const QY_MODULE_STATES_NEEDING_ATTENTION: ReadonlySet<QyModuleSectionState> =
+  new Set(['missing_section', 'missing_key'])
+
+const QY_MODULE_STATE_LABELS: Record<QyModuleSectionState, string> = {
+  declared: 'qy_cfg_health_module_st_declared',
+  missing_section: 'qy_cfg_health_module_st_missing_section',
+  missing_key: 'qy_cfg_health_module_st_missing_key',
+  default_on: 'qy_cfg_health_module_st_default_on',
+  ungated: 'qy_cfg_health_module_st_ungated',
+}
+
+/**
+ * 只有两种 missing 是 warning，其余一律中性。
+ *
+ * 刻意不把 `enabled: false` 标成任何颜色：关掉一个功能是运维的正当选择，
+ * 给它上色会让这张表在正常站点上也满屏发黄，两周之后就没人再看它 ——
+ * 而它唯一的作用就是被人看见。
+ */
+function qyModuleStateVariant(state: QyModuleSectionState) {
+  return QY_MODULE_STATES_NEEDING_ATTENTION.has(state)
+    ? ('warning' as const)
+    : ('neutral' as const)
+}
 
 /**
  * 扩展健康面板。
@@ -101,6 +130,11 @@ export function QyAdminHealth() {
   const dropped = health?.hot_queue.dropped ?? 0
   const breakerOpen = (health?.db.breaker_open_until ?? 0) > now
   const uncertain = health?.two_phase.uncertain ?? 0
+  // 旧版本后端不下发 modules，`?? []` 让这一页在混版部署时照常打开。
+  const modules = health?.modules ?? []
+  const silentModules = modules.filter((m) =>
+    QY_MODULE_STATES_NEEDING_ATTENTION.has(m.state)
+  )
 
   return (
     <QySectionPageLayout>
@@ -175,6 +209,27 @@ export function QyAdminHealth() {
                     <AlertTitle>{t('qy_cfg_health_drop_title')}</AlertTitle>
                     <AlertDescription>
                       {t('qy_cfg_health_drop_desc', { n: dropped })}
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {/* 「代码全都编译进去了，刷新却看不到功能」在这一页的落点。
+                    启动时同一件事会打一条 [SYS] 告警，但启动日志会被滚走，
+                    而排障的人往往是在事后才来看这里。 */}
+                {silentModules.length > 0 && (
+                  <Alert variant='destructive'>
+                    <TriangleAlert />
+                    <AlertTitle>
+                      {t('qy_cfg_health_modules_alert_title')}
+                    </AlertTitle>
+                    <AlertDescription>
+                      {/* 列的是开关路径而不是模块名：一个模块可能有好几个开关，
+                          只报模块名会让人补上总开关就以为完事了，而 violation
+                          真正决定「抓不抓」的是段内那两个二级开关。 */}
+                      {t('qy_cfg_health_modules_alert_desc', {
+                        list: silentModules
+                          .map((m) => `${m.section}.${m.key}`)
+                          .join(', '),
+                      })}
                     </AlertDescription>
                   </Alert>
                 )}
@@ -316,6 +371,84 @@ export function QyAdminHealth() {
                     </QyKeyValue>
                   </TitledCard>
                 </div>
+
+                <TitledCard
+                  title={t('qy_cfg_health_modules')}
+                  description={t('qy_cfg_health_modules_desc')}
+                >
+                  <StaticDataTable
+                    data={modules}
+                    // 一个模块可能占多行（总开关 + 二级开关），行 key 必须带上
+                    // key 那一列，否则 violation 的三行会共用同一个 React key。
+                    getRowKey={(row) => `${row.module}.${row.key}`}
+                    emptyContent={t('qy_cfg_health_modules_empty')}
+                    columns={[
+                      {
+                        id: 'module',
+                        header: t('qy_cfg_health_module_name'),
+                        cell: (row: QyModuleSection) => row.module,
+                      },
+                      {
+                        id: 'section',
+                        header: t('qy_cfg_health_module_section'),
+                        cell: (row: QyModuleSection) =>
+                          row.section === ''
+                            ? QY_EMPTY_TEXT
+                            : `${row.section}.${row.key === '' ? '*' : row.key}`,
+                      },
+                      {
+                        id: 'state',
+                        header: t('qy_common_status'),
+                        cell: (row: QyModuleSection) => (
+                          <StatusBadge
+                            label={t(QY_MODULE_STATE_LABELS[row.state])}
+                            variant={qyModuleStateVariant(row.state)}
+                            copyable={false}
+                          />
+                        ),
+                      },
+                      {
+                        id: 'enabled',
+                        header: t('qy_cfg_health_module_enabled'),
+                        cell: (row: QyModuleSection) =>
+                          row.enabled
+                            ? t('qy_cfg_health_yes')
+                            : t('qy_cfg_health_no'),
+                      },
+                      {
+                        id: 'effect',
+                        header: t('qy_cfg_health_module_effect'),
+                        cell: (row: QyModuleSection) => (
+                          <div className='space-y-1'>
+                            <p className='text-muted-foreground text-xs'>
+                              {row.effect}
+                            </p>
+                            {/* fix 只在两种 missing 状态下由后端给出。
+                                必须连「往哪儿粘」一起说：missing_key 的前提是
+                                那一段已经在文件里了，把片段当成新的顶层段追加
+                                会产生重复的顶层 YAML 键 —— 配置从此解析失败，
+                                整台网关起不来。一条不阻断启动的告警，其修复
+                                指引反而把网关关停了。 */}
+                            {row.fix != null && row.fix !== '' && (
+                              <>
+                                <p className='text-muted-foreground text-xs'>
+                                  {row.state === 'missing_key'
+                                    ? t('qy_cfg_health_module_fix_key', {
+                                        section: row.section,
+                                      })
+                                    : t('qy_cfg_health_module_fix_section')}
+                                </p>
+                                <pre className='bg-muted overflow-x-auto rounded px-2 py-1 text-xs'>
+                                  {row.fix}
+                                </pre>
+                              </>
+                            )}
+                          </div>
+                        ),
+                      },
+                    ]}
+                  />
+                </TitledCard>
 
                 <TitledCard
                   title={t('qy_cfg_health_leases')}

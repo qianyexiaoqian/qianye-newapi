@@ -41,6 +41,7 @@ var auditWriteFuncs = map[string]bool{
 	"writeConfigUpdateAudit": true,
 	"writePayeeAudit":        true,
 	"writeRuleFailure":       true,
+	"afterRuleChange":        true, // violation:版本号 +1 + 重载 + 审计,三件一起做
 	"writeDeleteAudit":       true,
 	"writeAdminAudit":        true,
 	"writeSystemAudit":       true,
@@ -71,6 +72,16 @@ var auditRequired = []struct {
 		"被风控拒绝的划转必须留痕,否则「连续撞日限额+换收款人」这种洗号形状零痕迹"},
 	{"modules/violation/api_admin.go", "adminReviewAppeal", 1,
 		"申诉裁决能一次性撤销封禁并翻转扣费,在此之前整个函数零审计"},
+	{"modules/violation/api_admin.go", "adminSetRuleEnabled", 1,
+		"列表行内的快速启停是安全配置变更:停用一条防护规则不会有任何症状 —— " +
+			"接口照常 200、业务照常跑、只是从此零命中,与「内置规则包从没导入过」完全同形。" +
+			"「谁在什么时候把哪条规则关了」事后只能靠这条埋点回答"},
+	{"modules/violation/api_admin.go", "adminCreateRule", 1,
+		"规则直接决定谁被扣钱、谁被封号;新增一条 enforce 规则是这一页最重的动作之一"},
+	{"modules/violation/api_admin.go", "adminUpdateRule", 1,
+		"改 pattern / mode 等于改扣费与封号的判据,before/after 是事后唯一能回答「改的是什么」的东西"},
+	{"modules/violation/api_admin.go", "adminDeleteRule", 1,
+		"软删之后规则行从列表消失,删的是哪一条只剩审计能回答"},
 	{"modules/violation/api_user.go", "userCreateAppeal", 1,
 		"申诉提交要与裁决成对留痕,否则时间线缺掉用户那一半"},
 	{"modules/commission/api_admin.go", "adminSettle", 1,

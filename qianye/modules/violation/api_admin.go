@@ -214,6 +214,122 @@ func adminUpdateRule(c *gin.Context) {
 	respond(c, gin.H{})
 }
 
+// errRuleWontCompile 包住"这条规则编译不过"。
+//
+// 单独一个哨兵是为了让启停接口把它翻成 400 而不是 500:编译不过是入参问题
+// (库里那一行本身有问题),不是服务端故障,而 500 会让管理员去查后端日志。
+var errRuleWontCompile = errors.New("这条规则无法编译,启用后不会命中任何请求")
+
+// setRuleEnabled 只翻转一条规则的 enabled 列,并回答"这次是否真的改变了状态"。
+//
+// # 为什么不复用整体更新(PUT /rules/:id)
+//
+// 整体更新会把**前端持有的那一整份规则**写回库。而那份拷贝是列表页在 15 秒的
+// staleTime 里拉下来的:这期间同事改窄了 pattern、把 mode 从 enforce 调回 shadow、
+// 调了作用域,都会被这次"我只是想关一下开关"原样覆盖回去 —— 一次没有人按下过的
+// 静默回滚,而且回滚的是决定谁被扣钱、谁被封号的那几列。applyUpgrade 的注释里
+// 写的是同一个坑,那里的结论也是"只写需要的列"。
+//
+// # 三件必须做的事
+//
+//  1. **启用前先编译一次。** reloadCtx 对编译失败的规则是静默跳过的(只写一条
+//     后端日志),于是"启用成功、界面显示已启用、线上永不命中"是一个完全无声的
+//     结局 —— 与内置规则包从没导入过是同一个形状。停用不需要这道闸:把一条坏规则
+//     关掉永远是允许的。
+//  2. **CAS 带上读到的旧值。** 两个管理员同时点同一行时,后到的那次 RowsAffected=0,
+//     据此回读并如实上报"没有变化",而不是对着一个已经被别人改过的状态写审计。
+//  3. **只写三列。** enabled 是本次意图;updated_at / updated_by 是"谁在什么时候
+//     关的"在列表上的可见投影 —— 不写它们的话,列表里那条规则的更新时间会停在
+//     上一次编辑,而审计日志与界面就此对不上。
+func setRuleEnabled(gdb *gorm.DB, id int64, enabled bool, operatorId int, now int64) (*Rule, bool, error) {
+	if gdb == nil {
+		return nil, false, db.ErrNotReady
+	}
+	var row Rule
+	if err := gdb.Where("id = ?", id).Take(&row).Error; err != nil {
+		return nil, false, err
+	}
+	if row.Enabled == enabled {
+		return &row, false, nil
+	}
+	if enabled {
+		if _, err := compile(row); err != nil {
+			return nil, false, fmt.Errorf("%w: %v", errRuleWontCompile, err)
+		}
+	}
+	res := gdb.Model(&Rule{}).Where("id = ? AND enabled = ?", id, row.Enabled).
+		Updates(map[string]any{"enabled": enabled, "updated_at": now, "updated_by": operatorId})
+	if res.Error != nil {
+		db.MarkFailure(res.Error)
+		return nil, false, res.Error
+	}
+	// 无论 CAS 中没中,都回读一次再返回,**不能**拿手上那份快照改三个字段交差。
+	//
+	// CAS 的 WHERE 只锁 enabled 一列:入口处 Take 到这次 UPDATE 之间,别人完全
+	// 可以把 pattern 改窄、把 mode 从 enforce 调回 shadow,而这次更新照样成功
+	// (那正是"只写一列"想要的效果)。但调用方拿这份返回值去写审计的 AfterSnap,
+	// 于是审计里会记下一份库里已经不存在的规则 —— 事后追"关掉它的那一刻它是
+	// 什么模式"得到的是错的答案,而这条无症状路径的审计是唯一的证据。
+	// 代价是一次额外查询,只发生在真正写过一次的调用上。
+	var latest Rule
+	if err := gdb.Where("id = ?", id).Take(&latest).Error; err != nil {
+		return nil, false, err
+	}
+	// RowsAffected == 0:别人抢先把 enabled 改成了同一个值。如实上报"没有变化",
+	// 而不是对着一个不是自己造成的状态写一条审计。
+	return &latest, res.RowsAffected > 0, nil
+}
+
+// adminSetRuleEnabled 是规则列表行内的快速启停。
+//
+// 停用一条防护规则不会有任何症状:接口照常 200,业务照常跑,只是从此零命中 ——
+// 与"内置规则包从没导入过"完全同形。所以这条路径的审计不是可选项,
+// 它是事后唯一能回答"谁在什么时候把哪条规则关了"的东西。
+func adminSetRuleEnabled(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagViolation) {
+		return
+	}
+	id, ok := pathInt64(c, "id")
+	if !ok {
+		badRequest(c, "非法的规则 id")
+		return
+	}
+	// 收 *bool 而不是 bool:漏传字段的 bool 零值是 false,于是一次拼错字段名的
+	// 调用会变成"静默停用"—— 而停用正是这个接口里唯一没有症状的那个方向。
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
+		badRequest(c, "enabled 字段必填,且只能是 true 或 false")
+		return
+	}
+
+	row, changed, err := setRuleEnabled(ctxDB(c), id, *req.Enabled, c.GetInt("id"), common.GetTimestamp())
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		notFound(c)
+		return
+	case errors.Is(err, errRuleWontCompile):
+		badRequest(c, err.Error())
+		return
+	case err != nil:
+		internalError(c, err)
+		return
+	}
+	if !changed {
+		// 已经是目标状态(重复点击、或别人抢先改过)。不 bump 版本、不重载、
+		// 不写审计 —— 什么都没发生的一次调用不该在审计里留下一条"改过"。
+		respond(c, gin.H{"enabled": row.Enabled, "changed": false})
+		return
+	}
+	// changed 为真时旧值必然是 !*req.Enabled —— CAS 的 WHERE 条件就是它。
+	// 不写成 !row.Enabled:row 是 UPDATE 之后回读的最新行,并发下它未必还是
+	// 本次写进去的那个值,拿它取反就不再是"我改之前是什么"。
+	before := common.MapToJsonStr(map[string]any{"enabled": !*req.Enabled})
+	afterRuleChange(c, "rules.set_enabled", row, before)
+	respond(c, gin.H{"enabled": row.Enabled, "changed": true})
+}
+
 func adminDeleteRule(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return

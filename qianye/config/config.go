@@ -44,6 +44,18 @@ type Config struct {
 	Violation       Violation       `yaml:"violation"`
 	GroupPricing    GroupPricing    `yaml:"group_pricing"`
 	Lottery         Lottery         `yaml:"lottery"`
+
+	// declared 是 YAML 文件里【实际写出来】的键路径集合,由 parseFile 填。
+	//
+	// 存在的理由:模块级的 Enabled 是普通 bool,零值 false —— 于是"配置里根本
+	// 没有 lottery: 这一段"与"运维想清楚了、显式写了 enabled: false"在进程内
+	// 是同一个字节。数值字段靠 defaults.go 的哨兵区分这两者,布尔开关没有
+	// 第三个值可打哨兵,只能回头问 YAML 文本本身。判定与告警见 sections.go。
+	//
+	// 不导出、且 yaml:"-":它不是配置项,是关于配置文件的元信息。tag 让本包
+	// 全部按 yaml tag 遍历 Config 的反射逻辑(leafFields / markNumbersUnset /
+	// numericLeaves)原样跳过它。
+	declared map[string]bool `yaml:"-"`
 }
 
 // Database 独立 MySQL 连接配置。仅支持 MySQL —— 扩展自建连接,
@@ -667,6 +679,11 @@ func parseFile(path string) (*Config, int64, error) {
 		}
 		return nil, 0, fmt.Errorf("qianye: 解析配置文件失败: %w", err)
 	}
+
+	// 严格解析已经过关,文件语法必定合法。再走一遍 yaml.Node 只为记下
+	// "哪些键被写出来了" —— 这个事实在 Config 结构体上表达不出来,而它是
+	// sections.go 区分"没写这一段"与"显式关掉"的唯一依据。
+	c.declared = declaredPaths(raw)
 
 	applyDefaults(c)
 	if err := validate(c); err != nil {

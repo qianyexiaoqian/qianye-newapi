@@ -45,9 +45,69 @@ export type QyAdminHealth = {
   }
   leases: QyTaskLease[]
   migrate: { table_count: number }
+  /** 每个模块的配置段现状。见 `QyModuleSection`。 */
+  modules: QyModuleSection[]
   config: { path: string; loaded_at: number; mtime: number }
   node: { name: string; is_master: boolean; holder: string }
 }
+
+/**
+ * 单个模块的配置段现状，与 `qianye/config/sections.go` 的 `ModuleSection` 对齐。
+ *
+ * 存在的理由：模块级的 `enabled` 在后端是普通布尔，零值 `false` ——
+ * 「配置文件里根本没有这一段」与「运维想清楚了、显式写了 `enabled: false`」
+ * 在进程内是同一个字节。这个歧义造成过三次生产事故，表现都是
+ * 「代码全都编译进去了，刷新却看不到功能」。
+ *
+ * 因此 `state` 与 `enabled` 要一起看：`enabled=false` 且 `state='declared'`
+ * 是正常的；`enabled=false` 且 `state='missing_section'` 八成不是任何人想要的。
+ */
+export type QyModuleSection = {
+  /**
+   * 模块名，与后端注册表的 `Name()` 一致。
+   *
+   * **不唯一**：一个模块的总开关与它段内的二级开关各占一行（`violation`
+   * 有 `enabled` / `precheck_enabled` / `post_charge_enabled` 三行）。
+   * 行 key 必须是 `module + key`。
+   */
+  module: string
+  /** 顶层 yaml 段名。空串表示该模块没有配置段。 */
+  section: string
+  /** 段内的开关键名。空串表示该段没有总开关。 */
+  key: string
+  state: QyModuleSectionState
+  /**
+   * 这个开关此刻的实际取值。
+   *
+   * `state='ungated'`（该模块没有开关）时它是**扩展总开关**的取值 ——
+   * 那几个模块随扩展一起生效。这里曾经恒为 `false`，于是面板把 5 个正在
+   * 工作的模块显示成「当前生效：否」，排障的人据此去找一个不存在的开关。
+   */
+  enabled: boolean
+  /** 这一段缺失时会出现的现象，后端直接给出可读文案。 */
+  effect: string
+  /**
+   * 可粘进配置文件的最小片段，仅在两种 missing 状态下存在。
+   *
+   * **两种状态给的东西不一样**：`missing_section` 是一整段（追加到文件末尾），
+   * `missing_key` 只有段内那一行（补进已经存在的那一段里）。把后者当成新的
+   * 顶层段追加会产生重复的顶层 YAML 键，配置从此解析失败、网关起不来 ——
+   * 所以展示时必须连「往哪儿粘」一起说。
+   */
+  fix?: string
+}
+
+export type QyModuleSectionState =
+  /** 开关键被显式写出来了（true / false 都算）。运维做过决定，正常。 */
+  | 'declared'
+  /** 顶层压根没有这一段 —— 模块静默关闭，需要处理。 */
+  | 'missing_section'
+  /** 段写了但没有总开关那一行 —— 同样静默关闭，而且更隐蔽。 */
+  | 'missing_key'
+  /** 开关是「默认打开」型，不写也不会静默失效。 */
+  | 'default_on'
+  /** 该模块没有配置开关，随扩展总开关一起生效。 */
+  | 'ungated'
 
 /**
  * 与 `qianye/controller/version.go` 的 `AdminVersion` 响应对齐。

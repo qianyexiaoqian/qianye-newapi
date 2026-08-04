@@ -50,6 +50,14 @@ func Init() error {
 	// 空闸门本身不造成资损,让主程序起不来才会。
 	config.LogFieldConsumerCheck()
 
+	// 段级自检:把"模块编译进来了,配置文件里却没有它那一段"打成启动告警。
+	// 与上面那条自检互补 —— 那条守的是"配置项没有消费方",这条守的是
+	// "消费方齐全,但配置里根本没提过这个模块"。后者已经出现三次
+	// (group_pricing / 内置规则包 / lottery),每次都表现为"代码全都编译进去了,
+	// 刷新却看不到功能"。显式写了 enabled: false 的模块一个字都不报,
+	// 判据与理由见 qianye/config/sections.go。
+	config.LogModuleSectionCheck()
+
 	if err := db.Init(config.Get().Database); err != nil {
 		return err
 	}

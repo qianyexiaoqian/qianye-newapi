@@ -86,6 +86,11 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	crit := middleware.CriticalRateLimit()
 	g.POST("/violation/rules", crit, adminCreateRule)
 	g.PUT("/violation/rules/:id", crit, adminUpdateRule)
+	// 列表行内的快速启停。刻意是一条**只写 enabled 一列**的独立路由,而不是
+	// 让前端拿整体更新接口传一份改了 enabled 的完整规则:那份规则是列表页
+	// 十几秒前拉下来的拷贝,整体写回去会把这期间别人对 pattern / mode / 作用域
+	// 的改动一起静默回滚 —— 而回滚的正是决定谁被扣钱、谁被封号的那几列。
+	g.PATCH("/violation/rules/:id/enabled", crit, adminSetRuleEnabled)
 	g.DELETE("/violation/rules/:id", crit, adminDeleteRule)
 	g.POST("/violation/rules/test", adminTestRule)
 	// 一键导入内置防护规则包。导入出来一律是影子模式的普通规则行,
