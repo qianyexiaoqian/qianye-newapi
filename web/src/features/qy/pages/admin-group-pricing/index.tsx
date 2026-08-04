@@ -207,6 +207,9 @@ export function QyAdminGroupPricing() {
         rule={editing}
         groups={options.data?.groups ?? []}
         models={options.data?.models ?? []}
+        // 用户分组候选跟着规则列表一起下发（后端 userGroupCandidates），
+        // 与模型分组候选来自两个不同的源，界面上也必须是两个不同的下拉。
+        userGroups={data?.user_groups ?? []}
         shadowMode={shadowMode}
         onSaved={() => {
           void invalidate()

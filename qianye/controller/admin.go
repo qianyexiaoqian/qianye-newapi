@@ -10,9 +10,11 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/groupratio"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/modules/groupmatrix"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
 	"github.com/QuantumNous/new-api/qianye/service/twophase"
@@ -49,6 +51,15 @@ func AdminHealth(c *gin.Context) {
 		// 启动时同一件事会打 SysError,但启动日志会被滚走,而排障的人往往
 		// 是在事后才来看这一页。判据与告警文案见 qianye/config/sections.go。
 		"modules": config.ModuleSectionStatus(),
+		// 分组倍率失配。上游 GetGroupRatio 查不到分组时返回 1 并只写一行 SysLog,
+		// 而 SysLog 会被滚走 —— 这一段是那条 fail-open 唯一常驻的信号。
+		// last_scan 缺省表示本进程还没扫过(不等于"没有问题"),
+		// 完整报表在 /api/qy/admin/group-ratio/orphans。
+		"group_ratio": groupratio.Health(),
+		// 权威可选清单的快照状态。snapshot_loaded=false 表示清单**完全没生效**,
+		// 当前按上游全局白名单放行 —— 那是比"配置写错了"更隐蔽的一种失效:
+		// 矩阵页照常显示、保存照常成功,只是没有任何一条收紧在起作用。
+		"group_matrix": groupmatrix.Health(),
 		"config": gin.H{
 			"path":      config.Path(),
 			"loaded_at": config.LoadedAt(),

@@ -205,6 +205,59 @@ func TestTaskSettlementHookPointExists(t *testing.T) {
 		"QyGroupTaskRatio 必须排在分组解析之后:提前调用会拿空分组去查规则,永远查不到")
 }
 
+// TestTaskSettlementUsesCrossCellGroupRatio 钉死 Task 差额结算的**交叉格**形状。
+//
+// 修复前是 GetGroupGroupRatio(group, group):两个实参同一个标识符,只命中分组倍率
+// 矩阵的对角线。而预扣走 relay/helper/price.go 的 HandleGroupRatio,用的是
+// (UserGroup, UsingGroup) 交叉格。令牌做了分组覆盖且配了交叉倍率时,Task 类模型
+// (视频 / MJ)的预扣与结算不同口径,差额以**追扣**形式落到用户头上 ——
+// 正是 AGENTS.md「预扣与结算必须同口径」直指的情形。
+//
+// 本轮已修:第一个实参改成所有者的 users.group。effective.go 里那条
+// taskCrossCellWarning 随之删除 —— 留着一条不再成立的告警,和显示一个错误的
+// 数字一样糟。这条断言防的是它被改回去。
+func TestTaskSettlementUsesCrossCellGroupRatio(t *testing.T) {
+	file := parseFileOrFail(t, taskBillingGoPath)
+
+	args := make([]string, 0, 2)
+	found := false
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil || fn.Name.Name != "RecalculateTaskQuotaByTokens" {
+			continue
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "GetGroupGroupRatio" {
+				return true
+			}
+			found = true
+			for _, arg := range call.Args {
+				if id, ok := arg.(*ast.Ident); ok {
+					args = append(args, id.Name)
+					continue
+				}
+				args = append(args, "<非标识符>")
+			}
+			return true
+		})
+	}
+
+	require.True(t, found,
+		"service/task_billing.go 的 RecalculateTaskQuotaByTokens 里找不到 GetGroupGroupRatio —— "+
+			"Task 差额结算的倍率来源变了,请重新确认预扣与结算是否仍然同口径")
+	require.Len(t, args, 2)
+	assert.NotEqual(t, args[0], args[1],
+		"GetGroupGroupRatio 的两个实参又是同一个标识符(%q)—— 对角线缺陷回归:"+
+			"预扣按交叉格、结算按对角格,差额会以追扣落到用户头上", args[0])
+	assert.Equal(t, "userGroup", args[0],
+		"第一个实参必须是所有者的 users.group,与 HandleGroupRatio(relayInfo.UserGroup, ...) 同口径")
+}
+
 // ─────────────────────────────── 测试辅助 ───────────────────────────────
 
 // callsByFunc 返回每个顶层函数体内按源码顺序出现的被调用函数名。

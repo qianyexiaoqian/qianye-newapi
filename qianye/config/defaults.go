@@ -187,6 +187,14 @@ func applyDefaults(c *Config) {
 	intDefault(&gp.ShadowRetentionDays, 90)
 	intDefault(&gp.MaxRules, 2000)
 
+	gm := &c.GroupMatrix
+	intDefault(&gm.CacheSeconds, 30)
+	intDefault(&gm.MaxStaleSeconds, 300)
+	intDefault(&gm.PreviewLogDays, 7)
+	intDefault(&gm.MaxPreviewPairs, 500)
+	intDefault(&gm.PreviewSampleLimit, 20)
+	intDefault(&gm.MaxGrants, 2000)
+
 	lt := &c.Lottery
 	intDefault(&lt.MaxActiveActivities, 20)
 	int64Default(&lt.MaxStakeQuota, 5_000_000)

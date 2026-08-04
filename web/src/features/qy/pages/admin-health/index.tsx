@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import type { TFunction } from 'i18next'
 import { RefreshCw, RotateCw, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -49,6 +50,7 @@ import {
   reloadQyConfig,
 } from './api'
 import type {
+  QyGroupRatioHealth,
   QyLeaseListItem,
   QyModuleSection,
   QyModuleSectionState,
@@ -77,6 +79,44 @@ function qyModuleStateVariant(state: QyModuleSectionState) {
   return QY_MODULE_STATES_NEEDING_ATTENTION.has(state)
     ? ('warning' as const)
     : ('neutral' as const)
+}
+
+/**
+ * 分组倍率失配的一句话结论。没有任何需要处理的事情时返回空串。
+ *
+ * 两个信号合成一句：
+ *
+ *   - `orphan_users > 0`  **正在发生的资损**。这些用户的分组不在倍率表里，
+ *     上游 `GetGroupRatio` 会 fail-open 按 1.0 倍扣他们的钱，没有任何拒绝。
+ *   - `observed`          扩展自己解析倍率时撞到过的失配名。它覆盖面更窄，
+ *     但能证明「已经真的发生过」，而不只是「理论上会」。
+ *
+ * 刻意**只在非零时才出现**：一个在正常站点上也常驻的告警，两周之后就没人再看它 ——
+ * 而它唯一的作用就是被人看见。这与本页模块段刻意不给 `enabled: false` 上色同理。
+ *
+ * 扫描从来没跑过（`last_scan` 缺失）时不喊:那是「还不知道」，不是「有问题」。
+ * 想知道就去 `GET /admin/group-ratio/orphans`。
+ */
+function qyGroupRatioAlert(
+  health: QyGroupRatioHealth | undefined,
+  t: TFunction
+): string {
+  if (health == null) return ''
+
+  const orphanUsers = health.last_scan?.orphan_users ?? 0
+  const names = health.last_scan?.orphans ?? []
+  if (orphanUsers > 0) {
+    return t('qy_cfg_health_group_ratio_users', {
+      users: orphanUsers,
+      groups: names.map((o) => o.group).join(', '),
+    })
+  }
+  if (health.observed.length > 0) {
+    return t('qy_cfg_health_group_ratio_observed', {
+      groups: health.observed.map((m) => m.group).join(', '),
+    })
+  }
+  return ''
 }
 
 /**
@@ -135,6 +175,7 @@ export function QyAdminHealth() {
   const silentModules = modules.filter((m) =>
     QY_MODULE_STATES_NEEDING_ATTENTION.has(m.state)
   )
+  const groupRatioAlert = qyGroupRatioAlert(health?.group_ratio, t)
 
   return (
     <QySectionPageLayout>
@@ -231,6 +272,19 @@ export function QyAdminHealth() {
                           .join(', '),
                       })}
                     </AlertDescription>
+                  </Alert>
+                )}
+                {/* 上游 GetGroupRatio 的 fail-open 在这一页的落点。
+                    它查不到分组时返回 1、只写一行会被滚走的 SysLog，于是
+                    「某个免费分组被改名或删掉」的表现是静默按 1.0 倍扣费。
+                    这条告警是它唯一常驻的信号。 */}
+                {groupRatioAlert !== '' && (
+                  <Alert variant='destructive'>
+                    <TriangleAlert />
+                    <AlertTitle>
+                      {t('qy_cfg_health_group_ratio_title')}
+                    </AlertTitle>
+                    <AlertDescription>{groupRatioAlert}</AlertDescription>
                   </Alert>
                 )}
                 {breakerOpen && (

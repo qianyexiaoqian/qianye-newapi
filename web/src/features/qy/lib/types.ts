@@ -65,6 +65,8 @@ export type QyFeatures = {
   violation: boolean
   lottery: boolean
   ticket: boolean
+  /** 用户分组 × 模型分组 矩阵。关掉时隐藏管理端入口与上游分组倍率页的指路提示。 */
+  group_matrix: boolean
 }
 
 /** 钱包页三个入口卡的显隐开关。 */

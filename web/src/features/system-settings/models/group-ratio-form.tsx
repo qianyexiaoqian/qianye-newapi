@@ -52,6 +52,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
+import { QyGroupMatrixHint } from '@/features/qy/components/qy-group-matrix-hint'
 
 import {
   SettingsForm,
@@ -339,6 +340,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                       'to override billing when a user in one group uses a token of another group.'
                     )}
                   </FormDescription>
+                  <QyGroupMatrixHint field='inter_group_ratio' />
                   <FormMessage />
                 </FormItem>
               )}
@@ -415,6 +417,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                       'Nested JSON defining per-group rules for adding (+:), removing (-:), or appending usable groups.'
                     )}
                   </FormDescription>
+                  <QyGroupMatrixHint field='special_usable_rules' />
                   <FormMessage />
                 </FormItem>
               )}

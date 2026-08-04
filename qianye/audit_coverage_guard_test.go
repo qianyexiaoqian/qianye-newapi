@@ -47,6 +47,8 @@ var auditWriteFuncs = map[string]bool{
 	"writeSystemAudit":       true,
 	"putConfigFailed":        true,
 	"writeTicketAudit":       true,
+	"writeMatrixFailure":     true, // groupmatrix:矩阵写入失败(含 409)的补写
+	"writeScopeFailure":      true, // groupmatrix:接管变更失败的补写
 }
 
 // auditRequired 列出必须留痕的资金路径,值是该函数体内审计写入的**最少**次数。
@@ -148,6 +150,15 @@ var auditRequired = []struct {
 	{"modules/ticket/api_admin.go", "handleAdminUploadImage", 1,
 		"管理端这条上传路径的风险只会更高(AdminAuth 下可以往任意工单塞图);" +
 			"埋点没有任何调用者依赖,是最典型的「看起来像死代码」"},
+	{"modules/groupmatrix/api_admin.go", "adminPutMatrix", 3,
+		"矩阵改动直接决定谁能发出请求(撤销一格 = 一批用户立刻 403)与按什么倍率扣钱。" +
+			"倍率发布、清单变更各一条,被 base_ratio_hash 挡回去的那次同样要留痕 —— " +
+			"「有人拿着一份过期的预览在按保存」正是最需要事后能查到的形状"},
+	{"modules/groupmatrix/api_admin.go", "adminPutScope", 2,
+		"接管一个用户分组会让上游的全局白名单与 +:/-: 规则整体失效,切 enforce 会立刻收紧;" +
+			"被 impact_hash 挡回去(预览已过期)的那次同样是重要信号"},
+	{"modules/groupmatrix/api_admin.go", "adminRepairToken", 2,
+		"把一条令牌的分组置空会改变它此后使用的分组与倍率,是真的动扣费口径;写失败同样要留痕"},
 	{"modules/ticket/api_user.go", "handleDiscardImage", 1,
 		"丢弃会真的从磁盘删文件。上传留痕而删除不留痕的话," +
 			"「这个账号传过多少、现在还剩什么」在事后只剩一半答案"},

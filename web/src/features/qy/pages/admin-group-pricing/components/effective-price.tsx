@@ -35,7 +35,8 @@ import {
   qyFormatDeltaPercent,
   type QyPriceDirection,
 } from '../lib/pricing-math'
-import type { QyGpEffective } from '../types'
+import type { QyGpEffective, QyGpUserGroupEffective } from '../types'
+import { QyGpEffectiveByUserGroup } from './effective-by-user-group'
 
 /**
  * 「分组级价 × 分组倍率 = 实际扣费」的展示。
@@ -78,6 +79,8 @@ function directionOf(effective: QyGpEffective): QyPriceDirection | null {
 
 type QyGpEffectivePanelProps = {
   effective: QyGpEffective
+  /** 逐个用户分组的展开。缺省时只显示头条那一份折算。 */
+  byUserGroup?: QyGpUserGroupEffective[]
   groupName: string
   modelName: string
   /** true 时在结果旁标注「当前不生效，仅记录」。 */
@@ -101,6 +104,11 @@ export function QyGpEffectivePanel(props: QyGpEffectivePanelProps) {
           </Badge>
         )}
       </div>
+
+      {/* 口径必须写在数字上面，不是脚注。
+          「这个数是站在谁的角度算的」决定了下面每一个数字的含义；
+          放在结果下方等于让人先读完再回头修正理解。 */}
+      <QyGpScopeLine effective={effective} />
 
       <div className='space-y-1.5 text-sm'>
         <QyGpFormulaRow
@@ -146,14 +154,15 @@ export function QyGpEffectivePanel(props: QyGpEffectivePanelProps) {
         </p>
       )}
 
-      {/* 折算用的是 `ratio_setting.GetGroupRatio(分组)` 这个常规倍率。而真正
-          计费时 `HandleGroupRatio` 会先查 `GetGroupGroupRatio(用户分组, 使用分组)`
-          的「分组特殊倍率」，命中的用户走的是另一个倍率。后端的 Effective 目前
-          不带这个信息，前端也无从判断，所以只能把这条前提写出来 ——
-          让一个看起来精确的数字掩盖它不覆盖的情况，是这一页最不能犯的错。 */}
-      <p className='text-muted-foreground text-xs'>
-        {t('qy_gp_preview_special_ratio_note')}
-      </p>
+      {/* 各用户分组的展开。这块曾经是一条免责声明（「真正计费时可能走另一个
+          倍率，本面板不覆盖」）—— 那是在用文字掩盖一个错的数字。现在后端按
+          (用户分组, 模型分组) 算，把那一组值原样摊开，声明就不需要了。 */}
+      {props.byUserGroup != null && (
+        <QyGpEffectiveByUserGroup
+          rows={props.byUserGroup}
+          highlight={effective.user_group}
+        />
+      )}
 
       {effective.global_effective == null && (
         <QyGpNote tone='warning' text={t('qy_gp_preview_no_global')} />
@@ -162,6 +171,63 @@ export function QyGpEffectivePanel(props: QyGpEffectivePanelProps) {
           当前的全局计费口径，前端读不到）。原文透出，不做二次转译。 */}
       {effective.warning != null && effective.warning !== '' && (
         <QyGpNote tone='danger' text={effective.warning} />
+      )}
+      {/* ratio_warning 说的是另一件事：这个倍率数字本身可不可信
+          （模型分组不在倍率表里 → 上游按 1.0 静默计费；交叉格 → Task 差额追扣）。
+          与 warning 分开显示，运营才知道该去改规则还是去改分组倍率表。 */}
+      {effective.ratio_warning != null && effective.ratio_warning !== '' && (
+        <QyGpNote tone='danger' text={effective.ratio_warning} />
+      )}
+    </div>
+  )
+}
+
+/**
+ * 折算口径行：这个数是站在谁的角度算的、倍率从哪来、对不对所有人成立。
+ *
+ * 三件事缺一不可：
+ *
+ *  1. **口径**。`user_group` 为空 = 兜底口径，必须原样说出来。一个只对
+ *     「没配专属倍率的用户分组」成立的数字，不许继续叫「最终价」。
+ *  2. **来源**。倍率是继承兜底还是命中了专属倍率 —— 运营看到 0 时要能一眼
+ *     分清「我配的 0」和「兜底就是 0」。
+ *  3. **跨度**。`uniform === false` 意味着头条那个数对一部分用户不成立，
+ *     必须当场标出区间，而不是等人自己去翻明细。
+ */
+function QyGpScopeLine(props: { effective: QyGpEffective }) {
+  const { t } = useTranslation()
+  const effective = props.effective
+  const baseOnly = effective.user_group === ''
+
+  return (
+    <div className='flex flex-wrap items-center gap-1.5 text-xs'>
+      <Badge variant='outline' className='font-normal'>
+        {baseOnly
+          ? t('qy_group_pricing_effective_base_only')
+          : t('qy_gp_effective_for_user_group', {
+              group: effective.user_group,
+            })}
+      </Badge>
+      <Badge
+        variant='outline'
+        className={cn(
+          'font-normal',
+          effective.ratio_source === 'override' &&
+            'border-primary/50 text-primary'
+        )}
+      >
+        {t(`qy_gp_ratio_source_${effective.ratio_source}`)}
+      </Badge>
+      {!effective.uniform && (
+        <Badge
+          variant='outline'
+          className='text-warning border-warning/50 font-normal'
+        >
+          {t('qy_group_pricing_effective_range', {
+            min: effective.group_ratio_min,
+            max: effective.group_ratio_max,
+          })}
+        </Badge>
       )}
     </div>
   )
@@ -253,6 +319,10 @@ type QyGpEffectiveCellProps = {
  *
  * 与录入面板读的是同一个 `Effective`，因此列表和表单永远不会给出两个不同的
  * 最终价。
+ *
+ * **列表里的这个数是兜底口径**（后端按 `user_group === ''` 折算）。
+ * `uniform === false` 时它对配了专属倍率的用户不成立，必须当场标出来 ——
+ * 让一个只对一部分人成立的数字继续冒充「最终价」，正是本轮要修的缺陷。
  */
 export function QyGpEffectiveCell(props: QyGpEffectiveCellProps) {
   const { t } = useTranslation()
@@ -275,6 +345,14 @@ export function QyGpEffectiveCell(props: QyGpEffectiveCellProps) {
           />
         )}
       </span>
+      {!effective.uniform && (
+        <span className='text-warning text-[11px]'>
+          {t('qy_group_pricing_effective_range', {
+            min: effective.group_ratio_min,
+            max: effective.group_ratio_max,
+          })}
+        </span>
+      )}
       {/* 这两行回答的是同一个问题的两半：这个数字现在算不算数。
           未启用 = 这条规则不参与；影子模式 = 全部规则都不参与实际扣费。 */}
       {!props.enabled && (

@@ -49,6 +49,77 @@ export type QyAdminHealth = {
   modules: QyModuleSection[]
   config: { path: string; loaded_at: number; mtime: number }
   node: { name: string; is_master: boolean; holder: string }
+  /** 分组倍率失配。见 `QyGroupRatioHealth`。 */
+  group_ratio?: QyGroupRatioHealth
+}
+
+/**
+ * 分组倍率失配，与 `qianye/groupratio` 的 `Health()` 对齐。
+ *
+ * # 它在守什么
+ *
+ * 上游 `ratio_setting.GetGroupRatio` 在分组名查不到时**返回 1 并只写一条
+ * SysLog**。任何名字对不上（分组被改名、被从倍率表删掉、大小写写岔）都不报错、
+ * 不拒绝、**静默按 1.0 倍扣费** —— 而站点上那几个 `ratio=0` 的免费分组一旦对不上，
+ * 就从免费变成原价，唯一的痕迹是一行会被滚走的日志。
+ *
+ * 这一段是那条 fail-open 唯一常驻的信号。
+ */
+export type QyGroupRatioHealth = {
+  /**
+   * **被动**信号：扩展自己解析倍率时真的撞到过的失配名，带累计次数与首末次时间。
+   * 只覆盖扩展看过的组合。
+   */
+  observed: QyGroupRatioMiss[]
+  /** 登记簿容量上限（256）之外被丢弃的失配名数量。非零本身就是异常。 */
+  observed_dropped: number
+  /**
+   * **主动**信号：全站 `users.group` ∪ `tokens.group` 的扫描结果。
+   *
+   * **字段缺失表示本进程还没扫过一次**，那不等于「没有问题」。刻意不用一个
+   * 空结果去冒充，两者必须能被分开。完整报表在
+   * `GET /admin/group-ratio/orphans`。
+   */
+  last_scan?: QyGroupRatioScan
+}
+
+export type QyGroupRatioMiss = {
+  group: string
+  /** 倍率表里存在一个仅大小写不同的名字。分组倍率按精确匹配，二者是两个分组。 */
+  near_miss?: string
+  count: number
+  first_seen: number
+  last_seen: number
+}
+
+export type QyGroupRatioScan = {
+  at: number
+  orphans: QyGroupRatioOrphan[]
+  /**
+   * 失配用户分组下的用户数合计。
+   *
+   * **大于 0 就意味着有人正在被按 1.0 倍静默计费**，这是这一段里唯一
+   * 需要立刻处理的数字。
+   */
+  orphan_users: number
+  defined_groups: number
+  /** 非空 = 扫描没跑完，`orphans` 不完整。 */
+  error?: string
+}
+
+export type QyGroupRatioOrphan = {
+  group: string
+  /** users.group 命中该名字的在册用户数。**这一栏才是资损。** */
+  users: number
+  /**
+   * tokens.group 命中该名字的令牌数。
+   *
+   * **这一栏不是资损**：上游 `middleware/auth.go` 已经用 `ContainsGroupRatio`
+   * 挡住了，表现是 403「分组已被弃用」，请求根本进不到计价。
+   */
+  tokens: number
+  tokens_enabled: number
+  near_miss?: string
 }
 
 /**

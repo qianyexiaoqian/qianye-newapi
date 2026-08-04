@@ -64,18 +64,22 @@ const { act, Children, isValidElement } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const i18next = (await import('i18next')).default
 const { initReactI18next } = await import('react-i18next')
-await i18next.use(initReactI18next).init({ lng: 'en', resources: { en: { translation: {} } } })
+await i18next
+  .use(initReactI18next)
+  .init({ lng: 'en', resources: { en: { translation: {} } } })
 
-const { SectionPageLayout } = await import(
-  '../../../../components/layout/components/section-page-layout'
-)
+const { SectionPageLayout } =
+  await import('../../../../components/layout/components/section-page-layout')
 
 const reactTestGlobals = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
 }
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
-const roots: Array<{ container: HTMLDivElement; root: ReturnType<typeof createRoot> }> = []
+const roots: Array<{
+  container: HTMLDivElement
+  root: ReturnType<typeof createRoot>
+}> = []
 
 async function mount(node: React.ReactNode) {
   const container = document.createElement('div')

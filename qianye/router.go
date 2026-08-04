@@ -84,6 +84,10 @@ func registerAdminRoutes(g *gin.RouterGroup) {
 	g.POST("/fund-orders/:order_no/reprobe", qyctl.AdminReprobeFundOrder)
 	// 人工裁决会直接改写资金状态,挂关键操作限流。
 	g.POST("/fund-orders/:order_no/resolve", middleware.CriticalRateLimit(), qyctl.AdminResolveFundOrder)
+	// 分组倍率失配的诊断出口。与 /health 同一档:它读的是上游主库的 users/tokens
+	// 与内存里的分组倍率表,不属于任何业务模块,存在的唯一理由是上游
+	// GetGroupRatio 找不到分组时会静默按 1.0 倍扣费(理由见 AdminGroupRatioOrphans)。
+	g.GET("/group-ratio/orphans", qyctl.AdminGroupRatioOrphans)
 	g.GET("/audit-logs", qyctl.AdminListAuditLogs)
 	g.GET("/request-audits", qyctl.AdminListRequestAudits)
 	g.GET("/leases", qyctl.AdminListLeases)

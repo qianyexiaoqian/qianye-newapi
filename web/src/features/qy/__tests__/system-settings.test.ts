@@ -59,6 +59,7 @@ const ALL_ON: QyFeatures = {
   lottery: true,
   violation: true,
   ticket: true,
+  group_matrix: true,
 }
 
 /** 上游抽屉的最小复刻：一个分组、两个折叠项。 */
@@ -138,13 +139,21 @@ describe('并进系统设置抽屉的菜单项', () => {
         lottery: false,
         violation: false,
         ticket: false,
+        group_matrix: false,
       },
       ROLE.ADMIN,
       t
     )
-    // 分组定价、新用户默认分组与 API 地址簿没有 feature 开关，所以这里仍应
-    // 剩下它们三个；断言写成"还剩谁"而不是"空了"，免得把无开关的页面一起判没。
+    // 分组矩阵、分组定价、新用户默认分组与 API 地址簿没有 feature 开关，所以
+    // 这里仍应剩下它们四个；断言写成"还剩谁"而不是"空了"，免得把无开关的页面
+    // 一起判没。
+    //
+    // 分组矩阵在这一栏里是**刻意**的：它的开关是 YAML 的 `group_matrix.enabled`，
+    // 而那个开关不在 `/api/qy/config` 的 features 段里下发，所以前端无从据此
+    // 隐藏入口。关掉时后端 guard 回 404，页面按既有降级契约显示中性空态 ——
+    // 入口还在，但点进去明确告诉你没开，而不是一个静默消失的菜单。
     assert.deepEqual(qyGroupItems(merged), [
+      '/qy/admin/group-matrix',
       '/qy/admin/group-pricing',
       '/qy/admin/user-group',
       '/qy/admin/api-address',

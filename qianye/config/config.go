@@ -43,6 +43,7 @@ type Config struct {
 	Availability    Availability    `yaml:"availability"`
 	Violation       Violation       `yaml:"violation"`
 	GroupPricing    GroupPricing    `yaml:"group_pricing"`
+	GroupMatrix     GroupMatrix     `yaml:"group_matrix"`
 	Lottery         Lottery         `yaml:"lottery"`
 
 	// declared 是 YAML 文件里【实际写出来】的键路径集合,由 parseFile 填。
@@ -476,6 +477,48 @@ type GroupPricing struct {
 	// 一次脚本误操作就会让每个节点定期拉一张大表。
 	MaxRules int `yaml:"max_rules"`
 }
+
+// GroupMatrix 用户分组 × 模型分组的**权威可选清单**。
+//
+// 语义(项目方拍板,不可改):一个用户分组一旦在扩展库里有 scope 行,它能选哪些
+// 模型分组就**完全由扩展侧的清单决定** —— 不再叠加上游全局白名单、不再应用
+// GroupSpecialUsableGroup 的 +:/-: 差分、也不再无条件把用户分组自己补回去。
+// 没有 scope 行的用户分组保持上游原行为,这是回退能力的基础。
+//
+// 倍率**不在这里**:唯一真相源仍是上游 options.GroupGroupRatio。扩展库只存
+// 成员资格。存一份倍率镜像就是给同一份事实两个源,而同步失败的表现正是
+// 「管理端显示 A、热路径乘 B」——本轮 grouppricing 的 effective 修复要消灭的
+// 就是这个形状,不能一边修一边再造一个。
+type GroupMatrix struct {
+	// Enabled 是 L1 kill switch。关掉时 hook 恒等返回,**不依赖扩展库可达性** ——
+	// 即使扩展库挂了、快照是坏的,读 YAML 快照的那次 atomic load 也走到恒等分支。
+	Enabled bool `yaml:"enabled"`
+	// CacheSeconds 是清单内存快照的刷新周期。清单读取在 relay 热路径上,
+	// 每次请求查库不可接受。
+	CacheSeconds int `yaml:"cache_seconds"`
+	// MaxStaleSeconds 超过即限频告警,但**绝不丢弃快照**。
+	//
+	// 这一条与 group_pricing.max_stale_seconds 的处置**刻意相反**,理由见
+	// qianye/modules/groupmatrix 的包注释:陈旧的**钱**丢弃更安全,
+	// 陈旧的**可见性**保留更安全 —— 丢弃只能回落到上游宽松白名单,
+	// 而那意味着被收紧的用户重新可以把令牌指向 ratio=0 的免费分组。
+	MaxStaleSeconds int `yaml:"max_stale_seconds"`
+	// PreviewLogDays 是影响面预览里「过去 N 天真的有人在用吗」的回看天数。
+	PreviewLogDays int `yaml:"preview_log_days"`
+	// MaxPreviewPairs 是一次预览最多展开的 (用户分组, 模型分组) 对数。
+	MaxPreviewPairs int `yaml:"max_preview_pairs"`
+	// PreviewSampleLimit 是每一对最多返回的令牌样本条数。
+	PreviewSampleLimit int `yaml:"preview_sample_limit"`
+	// MaxGrants 是清单总行数上限。清单每个刷新周期被全量拉取,不设上界的话
+	// 一次脚本误操作就会让每个节点定期拉一张大表。
+	MaxGrants int `yaml:"max_grants"`
+	// WriteGuardEnabled 是令牌写入侧校验的独立开关。出事时可以单独摘掉写侧,
+	// 而不影响读侧已经生效的收紧 —— 反过来则不允许(见包注释)。
+	WriteGuardEnabled *bool `yaml:"write_guard_enabled"`
+}
+
+// WriteGuardOn 表示令牌写入侧校验是否打开(默认打开)。
+func (g GroupMatrix) WriteGuardOn() bool { return boolOr(g.WriteGuardEnabled, true) }
 
 // Lottery 娱乐功能:抽奖(kind=draw)与竞猜(kind=guess)共用一套配置。
 //

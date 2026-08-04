@@ -37,7 +37,7 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 			groupsCopy[userGroup] = "用户分组"
 		}
 	}
-	return groupsCopy
+	return QyResolveUsableGroups(userGroup, groupsCopy)
 }
 
 func GroupInUserUsableGroups(userGroup, groupName string) bool {

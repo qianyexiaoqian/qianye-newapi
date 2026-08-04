@@ -86,9 +86,7 @@ export function QyLotPublishDialog(props: {
             {formatQyTs(activity.draw_at)}
           </QyKeyValue>
           <QyKeyValue label={t('qy_lot_allow_multi_win')}>
-            {activity.allow_multi_win
-              ? t('qy_common_on')
-              : t('qy_common_off')}
+            {activity.allow_multi_win ? t('qy_common_on') : t('qy_common_off')}
           </QyKeyValue>
           {activity.kind === 'guess' && (
             <QyKeyValue label={t('qy_lot_fee_bps')}>

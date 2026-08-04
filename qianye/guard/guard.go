@@ -38,6 +38,7 @@ const (
 	FlagAvailability Flag = "availability"
 	FlagViolation    Flag = "violation"
 	FlagGroupPricing Flag = "group_pricing"
+	FlagGroupMatrix  Flag = "group_matrix"
 	FlagLottery      Flag = "lottery"
 	FlagTicket       Flag = "ticket"
 )
@@ -83,6 +84,8 @@ func featureOn(f Flag) bool {
 		return c.Violation.Enabled
 	case FlagGroupPricing:
 		return c.GroupPricing.Enabled
+	case FlagGroupMatrix:
+		return c.GroupMatrix.Enabled
 	case FlagLottery:
 		return c.Lottery.Enabled
 	case FlagTicket:

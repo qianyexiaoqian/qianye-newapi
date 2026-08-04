@@ -27,7 +27,7 @@ import { qyKeys } from '../../../lib/query-keys'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { qyPreviewGpRule } from '../api'
 import { qyParseDecimal } from '../lib/pricing-math'
-import type { QyGpMode, QyGpRuleInput } from '../types'
+import type { QyGpMode, QyGpPreviewInput } from '../types'
 import { QyGpEffectivePanel } from './effective-price'
 
 /** 停止输入多久之后才去试算。太短会把每一次击键都变成一次请求。 */
@@ -39,6 +39,14 @@ type QyGpEffectivePreviewProps = {
   mode: QyGpMode
   /** 用户正在敲的原始字符串，可能是半成品。 */
   value: string
+  /**
+   * 站在哪个**用户分组**的角度试算。空串 = 还没选。
+   *
+   * 后端必填，缺省直接 400。前端刻意不塞一个默认值蒙混过去：
+   * 真实倍率的键是 (用户分组, 模型分组)，随便挑一个默认值得到的是一个
+   * 「看起来精确」的错数字，而这一页存在的全部理由就是消灭那种数字。
+   */
+  userGroup: string
   shadowMode: boolean
 }
 
@@ -58,10 +66,11 @@ export function QyGpEffectivePreview(props: QyGpEffectivePreviewProps) {
 
   // 用 useMemo 固定引用：useDebounce 的 effect 依赖的是值的引用，每次渲染都
   // 新建一个对象会让定时器被无限重置，防抖永远不会落地。
-  const draft = useMemo<QyGpRuleInput>(
+  const draft = useMemo<QyGpPreviewInput>(
     () => ({
       group_name: props.groupName,
       model_name: props.modelName.trim(),
+      user_group: props.userGroup.trim(),
       mode: props.mode,
       value: props.value.trim(),
       // 试算是只读的，这两个字段后端不看，给固定值以免它们进 queryKey 造成
@@ -69,12 +78,14 @@ export function QyGpEffectivePreview(props: QyGpEffectivePreviewProps) {
       enabled: false,
       remark: '',
     }),
-    [props.groupName, props.modelName, props.mode, props.value]
+    [props.groupName, props.modelName, props.mode, props.userGroup, props.value]
   )
   const debounced = useDebounce(draft, PREVIEW_DEBOUNCE_MS)
 
   const ready =
-    debounced.model_name !== '' && qyParseDecimal(debounced.value) != null
+    debounced.model_name !== '' &&
+    debounced.user_group !== '' &&
+    qyParseDecimal(debounced.value) != null
 
   const query = useQuery({
     queryKey: qyKeys.adminGroupPricingPreview(debounced),
@@ -87,9 +98,16 @@ export function QyGpEffectivePreview(props: QyGpEffectivePreviewProps) {
   })
 
   if (!ready) {
+    // 「还没选用户分组」与「还没填模型/值」是两种不同的未就绪，提示必须分开：
+    // 前者是这一轮新增的必填项，用通用的「等待输入」文案会让人一直找不到
+    // 到底缺了什么。
+    const hint =
+      debounced.user_group === ''
+        ? 'qy_group_pricing_trial_user_group_required'
+        : 'qy_gp_preview_idle'
     return (
       <p className='text-muted-foreground rounded-lg border border-dashed p-3 text-xs'>
-        {t('qy_gp_preview_idle')}
+        {t(hint)}
       </p>
     )
   }
@@ -116,7 +134,8 @@ export function QyGpEffectivePreview(props: QyGpEffectivePreviewProps) {
   return (
     <div className='relative'>
       <QyGpEffectivePanel
-        effective={query.data}
+        effective={query.data.effective}
+        byUserGroup={query.data.effective_by_user_group}
         groupName={debounced.group_name}
         modelName={debounced.model_name}
         shadowMode={props.shadowMode}

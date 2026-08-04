@@ -71,6 +71,7 @@ const SETTINGS_URLS = [
   '/qy/admin/commission',
   '/qy/admin/transfer-config',
   '/qy/admin/transfer-group-rules',
+  '/qy/admin/group-matrix',
   '/qy/admin/group-pricing',
   '/qy/admin/user-group',
   '/qy/admin/violation-rules',
@@ -246,6 +247,7 @@ describe('qy 选择夹（需求 2 / 3）', () => {
       lottery: true,
       violation: true,
       ticket: true,
+      group_matrix: true,
     }
     const urls = qyEntryPages(all, true).map((page) => page.url)
     for (const url of HOSTED_URLS) {
@@ -276,6 +278,7 @@ describe('qy 选择夹（需求 2 / 3）', () => {
       lottery: true,
       violation: true,
       ticket: true,
+      group_matrix: true,
     }
     const off = qyEntryPages(all, true, { lottery: false }).map(
       (page) => page.url

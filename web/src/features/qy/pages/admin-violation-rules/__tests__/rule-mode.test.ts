@@ -127,8 +127,14 @@ describe('规则执行模式', () => {
     // 后端判据是 `mode === 'enforce'`。前端把未知值读成真实,界面就会显示一个
     // 与线上行为**相反**的状态 —— 那是最贵的一种误判:管理员以为在扣钱,其实没扣;
     // 或者以为没扣,其实在扣。
-    assert.equal(qyViolationRuleToForm(serverRule({ mode: 'enforce' })).mode, 'enforce')
-    assert.equal(qyViolationRuleToForm(serverRule({ mode: 'shadow' })).mode, 'shadow')
+    assert.equal(
+      qyViolationRuleToForm(serverRule({ mode: 'enforce' })).mode,
+      'enforce'
+    )
+    assert.equal(
+      qyViolationRuleToForm(serverRule({ mode: 'shadow' })).mode,
+      'shadow'
+    )
     for (const unknown of ['', 'ENFORCE', 'dry_run']) {
       assert.equal(
         qyViolationRuleToForm(serverRule({ mode: unknown as never })).mode,
@@ -140,8 +146,14 @@ describe('规则执行模式', () => {
 
   test('提交时原样透传 mode', () => {
     // 断链回归:表单里选了 enforce、payload 里没带上,表现是「保存成功但一直是影子」。
-    assert.equal(qyViolationRuleToPayload(rule({ mode: 'enforce' })).mode, 'enforce')
-    assert.equal(qyViolationRuleToPayload(rule({ mode: 'shadow' })).mode, 'shadow')
+    assert.equal(
+      qyViolationRuleToPayload(rule({ mode: 'enforce' })).mode,
+      'enforce'
+    )
+    assert.equal(
+      qyViolationRuleToPayload(rule({ mode: 'shadow' })).mode,
+      'shadow'
+    )
   })
 })
 
@@ -196,7 +208,10 @@ describe('全局模式层已彻底删除', () => {
     // 证明不了这一点,只有直接钉住引用可以。
     const sheet = read('components/rule-form-sheet.tsx')
     assert.ok(sheet.includes("name='mode'"), '规则表单没有渲染 mode 字段')
-    assert.ok(sheet.includes('QY_VIOLATION_MODES'), '模式下拉没有用统一的取值表')
+    assert.ok(
+      sheet.includes('QY_VIOLATION_MODES'),
+      '模式下拉没有用统一的取值表'
+    )
     assert.ok(
       sheet.includes('qy_vio_field_mode_enforce_desc'),
       '切真实模式的警示文案没有被渲染'
@@ -216,7 +231,11 @@ describe('内置规则包与影子命中面板真的被挂上了', () => {
     // 于是「组件导入了但从没渲染」这个形状可以原封不动地溜过去 ——
     // 实测过的一次假回归(把 <QyBuiltinPackSheet 改成 <QyBuiltinPackSheetX 后
     // 断言照样全绿)。
-    assert.match(page, /<QyBuiltinPackSheet[\s/>]/, '内置规则包组件没有被页面渲染')
+    assert.match(
+      page,
+      /<QyBuiltinPackSheet[\s/>]/,
+      '内置规则包组件没有被页面渲染'
+    )
     assert.match(page, /<QyShadowHitsSheet[\s/>]/, '影子命中面板没有被页面渲染')
     assert.ok(
       page.includes('setBuiltinOpen(true)'),

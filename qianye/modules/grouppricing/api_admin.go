@@ -76,13 +76,27 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 // effective 不是可选字段。用户选的是"分组级价 × 分组倍率"的相乘方案,
 // 运营在输入框里填的那个数不是最终价;不把折算结果直接摆在同一行,
 // 这套 UI 就是在鼓励人算错价。
+//
+// **effective 是兜底口径,不是最终价。** 真实倍率的键是 (用户分组, 模型分组),
+// 而规则的键是 (模型分组, 模型) —— 一条规则的最终生效价因此是一组值。
+// effective_by_user_group 就是那一组;头条那个数只对"没有配专属倍率的用户分组"成立。
 type ruleView struct {
 	Rule
 	Effective Effective `json:"effective"`
+	// EffectiveByUserGroup 第一行恒为 user_group=="*" 的兜底口径,
+	// 其后是真的配了 GroupGroupRatio 的用户分组。
+	EffectiveByUserGroup []UserGroupEffective `json:"effective_by_user_group"`
 }
 
 func viewOf(r Rule) ruleView {
-	return ruleView{Rule: r, Effective: computeEffective(r.GroupName, r.ModelName, r.Mode, r.Value)}
+	return ruleView{
+		Rule: r,
+		// 列表页没有"站在谁的角度"这个上下文,头条一律用兜底口径(userGroup 空串)。
+		// 前端必须把它标注成「兜底口径生效价」而不是「最终价」——
+		// 一个对没人成立的数字必须停止假装自己是最终值。
+		Effective:            computeEffective("", r.GroupName, r.ModelName, r.Mode, r.Value),
+		EffectiveByUserGroup: effectiveByUserGroup(r.GroupName, r.ModelName, r.Mode, r.Value),
+	}
 }
 
 func adminListRules(c *gin.Context) {
@@ -121,6 +135,9 @@ func adminListRules(c *gin.Context) {
 		// shadow_mode 必须跟着列表一起返回:同一张列表在影子模式下是"预演",
 		// 在真实模式下是"正在扣的钱",两者看起来一模一样。
 		"shadow_mode": config.Get().GroupPricing.IsShadow(),
+		// 试算时"站在哪个用户分组的角度"这个下拉的取值域。跟着列表一起下发,
+		// 前端不必再开一个请求,也不会自己去拼一份必然漂移的清单。
+		"user_groups": userGroupCandidates(),
 	})
 }
 
@@ -279,17 +296,39 @@ func adminDeleteRule(c *gin.Context) {
 	respond(c, gin.H{"deleted": id})
 }
 
+// rulePreviewReq 是试算入参:规则本体 + **站在哪个用户分组的角度**。
+//
+// user_group 单独一个字段而不是塞进 ruleUpsertReq:它不是规则的一部分
+// (规则的键是 (模型分组, 模型),里面没有用户分组这个维度),
+// 混进写入 DTO 会让人以为它会被存下来。
+type rulePreviewReq struct {
+	ruleUpsertReq
+	UserGroup string `json:"user_group"`
+}
+
 // adminPreview 是只读试算:运营边打边看最终生效价。
 //
 // 它不落库、不改任何状态,存在的唯一理由是让"× 分组倍率 = 实际扣费"
 // 在按下保存之前就摆在眼前。
+//
+// **user_group 必填。** 缺省时不猜:真实倍率的键是 (用户分组, 模型分组),
+// 少了前一半就只能拿兜底倍率去凑一个数,而那个数对配了专属倍率的用户不成立 ——
+// 这正是本轮要修的那个"看起来精确的错"。沿用 modeMismatchWarning 对通配规则的
+// 同一条原则:给一个不确定的结论比不给更糟。
 func adminPreview(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagGroupPricing) {
 		return
 	}
-	var req ruleUpsertReq
+	var req rulePreviewReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, "请求体格式错误")
+		return
+	}
+	userGroup := strings.TrimSpace(req.UserGroup)
+	if userGroup == "" {
+		badRequest(c, "必须指定 user_group(站在哪个用户分组的角度试算):"+
+			"真实扣费的分组倍率键是 (用户分组, 模型分组),缺了用户分组只能给出兜底口径的价,"+
+			"而那个价对配了专属倍率的用户不成立")
 		return
 	}
 	value, err := decimal.NewFromString(strings.TrimSpace(req.Value))
@@ -301,7 +340,13 @@ func adminPreview(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
-	respond(c, computeEffective(req.GroupName, strings.TrimSpace(req.ModelName), req.Mode, value))
+	modelName := strings.TrimSpace(req.ModelName)
+	respond(c, gin.H{
+		"effective": computeEffective(userGroup, req.GroupName, modelName, req.Mode, value),
+		// 同时给出全部用户分组的展开:运营挑的那一个未必是受影响最大的那一个,
+		// 只给他挑的那一格,他就看不见自己刚刚把另一个分组的价改成了什么。
+		"effective_by_user_group": effectiveByUserGroup(req.GroupName, modelName, req.Mode, value),
+	})
 }
 
 // adminShadowSummary 是影子模式的对账接口:按模型/分组/时间聚合出差额。

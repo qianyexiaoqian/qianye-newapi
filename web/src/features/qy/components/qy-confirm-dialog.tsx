@@ -80,7 +80,9 @@ export function QyConfirmDialog(props: QyConfirmDialogProps) {
       desc={<div className='space-y-3'>{props.description}</div>}
       destructive={props.irreversible}
       isLoading={props.isLoading}
-      disabled={(needsAcknowledge && !acknowledged) || props.confirmDisabled === true}
+      disabled={
+        (needsAcknowledge && !acknowledged) || props.confirmDisabled === true
+      }
       confirmText={props.confirmText}
       cancelBtnText={props.cancelText}
       handleConfirm={props.onConfirm}

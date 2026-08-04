@@ -23,7 +23,8 @@ import { api } from '@/lib/api'
 import { qyGet, qyPost, qyPut, qyDelete } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import type {
-  QyGpEffective,
+  QyGpPreviewInput,
+  QyGpPreviewResult,
   QyGpRule,
   QyGpRuleInput,
   QyGpRulesPage,
@@ -80,9 +81,13 @@ export function qyDeleteGpRule(id: number) {
  * 一处漏乘分组倍率或多舍一位，管理端显示的数字就与实际扣费不一致。
  * 它同时会回传后端的 `warning`（例如「该模型当前按次计价，ratio 覆盖不会生效」），
  * 那是前端凭一份模型名单根本判断不出来的。
+ *
+ * `user_group` 必填。后端缺省时直接 400 并说明原因，因此调用侧必须先确保
+ * 用户选了一个用户分组再发请求，而不是塞一个默认值蒙混过去 ——
+ * 那样得到的是一个「看起来精确」的错数字。
  */
-export function qyPreviewGpRule(body: QyGpRuleInput) {
-  return qyPost<QyGpEffective>(`${QY_GP_BASE}/preview`, body)
+export function qyPreviewGpRule(body: QyGpPreviewInput) {
+  return qyPost<QyGpPreviewResult>(`${QY_GP_BASE}/preview`, body)
 }
 
 /**

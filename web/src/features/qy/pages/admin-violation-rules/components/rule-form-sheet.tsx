@@ -122,7 +122,9 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
    */
   const groupQuery = useQuery({ ...qyGroupOptionsQuery(), enabled: props.open })
   const groupOptions = groupQuery.data?.options ?? []
-  const groupScopeEntries = qySplitViolationGroupScope(form.watch('group_scope'))
+  const groupScopeEntries = qySplitViolationGroupScope(
+    form.watch('group_scope')
+  )
   // 清单为空（拉取失败，或者站点真的一个分组都没定义）时一律不算未定义分组：
   // 那会把运营填的每一个名字都标成黄的，是一片假警报 —— 而假警报比没有警报
   // 更糟，报错一次没人信，之后真的打错字也不会有人看。

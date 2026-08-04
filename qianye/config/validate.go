@@ -34,6 +34,10 @@ const (
 // maxBps 是万分比的上限(100%)。仍被 transfer / withdraw / violation 使用。
 const maxBps = 10000
 
+// maxPreviewLogDays 是影响面预览回看日志的硬上界,理由与 reconcile 的
+// maxReconcileDays 相同:一次超长回看会在日志库上跑出一条没有上界的聚合查询。
+const maxPreviewLogDays = 31
+
 // MinAuditRetentionDays 是 audit.retention_days 允许的最小**非零**取值。
 //
 // # 下限的依据
@@ -153,6 +157,9 @@ func validate(c *Config) error {
 	if err := validateGroupPricing(&c.GroupPricing); err != nil {
 		return err
 	}
+	if err := validateGroupMatrix(&c.GroupMatrix); err != nil {
+		return err
+	}
 	return validateLottery(&c.Lottery)
 }
 
@@ -240,6 +247,47 @@ func validateGroupPricing(g *GroupPricing) error {
 		// 每一笔请求都按分组价真实扣费,而扣走的钱退不回来。
 		common.SysError("qianye: group_pricing.shadow_mode 已关闭,分组级价格将真实参与扣费 —— " +
 			"务必确认已在影子模式下用 /api/qy/admin/group-pricing/shadow/summary 对过账")
+	}
+	return nil
+}
+
+// validateGroupMatrix 校验权威可选清单的运行参数。
+//
+// 这里只管"参数本身合不合法";单条清单项的合法性(模型分组必须存在于分组倍率表、
+// 不得出现 auto)由 qianye/modules/groupmatrix 在写入与快照编译两处各校验一次 ——
+// 手改数据库绕过接口是这套系统最现实的攻击面,而这份清单决定谁能发出请求。
+func validateGroupMatrix(g *GroupMatrix) error {
+	if !g.Enabled {
+		return nil
+	}
+	if g.CacheSeconds <= 0 {
+		return fmt.Errorf("qianye: group_matrix.cache_seconds 必须大于 0")
+	}
+	if g.MaxStaleSeconds < g.CacheSeconds {
+		return fmt.Errorf(
+			"qianye: group_matrix.max_stale_seconds(%d)不得小于 cache_seconds(%d),"+
+				"否则每个刷新周期都会先触发一次陈旧告警,告警很快会变成背景噪声",
+			g.MaxStaleSeconds, g.CacheSeconds)
+	}
+	if g.PreviewLogDays <= 0 || g.PreviewLogDays > maxPreviewLogDays {
+		return fmt.Errorf("qianye: group_matrix.preview_log_days 必须落在 [1, %d]", maxPreviewLogDays)
+	}
+	if g.MaxPreviewPairs <= 0 {
+		return fmt.Errorf("qianye: group_matrix.max_preview_pairs 必须大于 0 —— " +
+			"为 0 时任何一次预览都会立刻标成 incomplete,而 incomplete 的预览禁止切 enforce")
+	}
+	if g.PreviewSampleLimit <= 0 {
+		return fmt.Errorf("qianye: group_matrix.preview_sample_limit 必须大于 0 —— " +
+			"没有样本的影响面报告只剩一个数字,运营无法据此通知到具体的人")
+	}
+	if g.MaxGrants <= 0 {
+		return fmt.Errorf("qianye: group_matrix.max_grants 必须大于 0")
+	}
+	if !g.WriteGuardOn() {
+		// 不阻止,但必须喊出来:关掉写侧之后,收紧期间每一次矩阵调整都会继续
+		// 制造"保存得下、一发请求就 403"的孤儿令牌,而它们只在用户真的发请求时才暴露。
+		common.SysError("qianye: group_matrix.write_guard_enabled 已关闭,新建/编辑令牌时不再校验分组可选性 —— " +
+			"读侧仍会在请求时 403,孤儿令牌会继续增加")
 	}
 	return nil
 }

@@ -52,6 +52,7 @@ const ALL_ON: QyFeatures = {
   lottery: true,
   violation: true,
   ticket: true,
+  group_matrix: true,
 }
 
 const ALL_OFF: QyFeatures = {
@@ -62,6 +63,7 @@ const ALL_OFF: QyFeatures = {
   lottery: false,
   violation: false,
   ticket: false,
+  group_matrix: false,
 }
 
 /** 上游根导航的最小复刻，只保留本测试用到的锚点。 */

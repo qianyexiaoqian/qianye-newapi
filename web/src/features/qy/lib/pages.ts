@@ -485,6 +485,15 @@ export const QY_PAGES: readonly QyPageDef[] = [
     jpKey: 'qy_sg_jp_a_transfer_group_rules',
     group: QY_SETTINGS_GROUP,
   },
+  // 分组矩阵排在分组定价**之前**：矩阵回答的是「这一档人能不能用这批渠道、
+  // 按什么倍率」，定价回答的是「这批渠道下某个模型单独多少钱」。前者是后者的
+  // 前提 —— 一条用不上的边，给它单独定价没有任何意义。
+  {
+    url: '/qy/admin/group-matrix',
+    titleKey: 'qy_nav_a_group_matrix',
+    jpKey: 'qy_sg_jp_a_group_matrix',
+    group: QY_SETTINGS_GROUP,
+  },
   {
     url: '/qy/admin/group-pricing',
     titleKey: 'qy_nav_a_group_pricing',

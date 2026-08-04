@@ -204,4 +204,18 @@ export const qyKeys = {
     [...qyKeys.adminGroupPricing(), 'shadow', params] as const,
   adminGroupPricingOptions: () =>
     [...qyKeys.adminGroupPricing(), 'options'] as const,
+
+  /**
+   * 用户分组 × 模型分组 矩阵的公共前缀。
+   *
+   * 与 `adminGroupPricing` 分开：那一组的键是 (模型分组, 模型)，这一组的键是
+   * (用户分组, 模型分组)，两者是不同的维度，改一条不该把另一边冲掉。
+   *
+   * 矩阵与孤儿基线各自一条：孤儿是历史欠账的盘点，跑好几条全表聚合，
+   * 跟着每次保存一起 refetch 只是白烧数据库。
+   */
+  adminGroupMatrix: () => [...qyKeys.all, 'admin', 'group-matrix'] as const,
+  adminGroupMatrixData: () => [...qyKeys.adminGroupMatrix(), 'data'] as const,
+  adminGroupMatrixOrphans: () =>
+    [...qyKeys.adminGroupMatrix(), 'orphans'] as const,
 } as const

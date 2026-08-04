@@ -67,9 +67,17 @@ type QyGpRuleFormSheetProps = {
   onOpenChange: (open: boolean) => void
   /** `null` 表示新建。 */
   rule: QyGpRule | null
-  /** 分组候选。仅作为输入辅助，任何价格都不由它算出来。 */
+  /** 模型分组候选。仅作为输入辅助，任何价格都不由它算出来。 */
   groups: string[]
   models: string[]
+  /**
+   * **用户分组**候选，后端下发。只用于试算，不写进规则。
+   *
+   * 两个轴始终分列显示，绝不合并成一个下拉：方案 3 的已知代价是
+   * `users.group` 与 `channels.group` 共用同一个字符串命名空间，
+   * 界面必须替运营把这两件事分开。
+   */
+  userGroups: string[]
   shadowMode: boolean
   onSaved: () => void
 }
@@ -90,6 +98,15 @@ export function QyGpRuleFormSheet(props: QyGpRuleFormSheetProps) {
   const { t } = useTranslation()
   const [confirmOpen, setConfirmOpen] = useState(false)
 
+  /**
+   * 试算口径:站在哪个用户分组的角度看这条规则。
+   *
+   * 刻意**不放进 react-hook-form**:它不是规则的字段，规则的键是
+   * (模型分组, 模型)，里面没有用户分组这个维度。放进表单值会让人以为它会被存下来，
+   * 而下一个人多半就真的把它存下来了。
+   */
+  const [trialUserGroup, setTrialUserGroup] = useState('')
+
   const form = useForm<QyGpRuleFormValues>({
     resolver: zodResolver(qyGpRuleSchema),
     defaultValues: qyEmptyGpRule(''),
@@ -98,6 +115,9 @@ export function QyGpRuleFormSheet(props: QyGpRuleFormSheetProps) {
   useEffect(() => {
     if (!props.open) return
     setConfirmOpen(false)
+    // 刻意不预填一个默认用户分组:随便挑一个得到的是一个「看起来精确」的错数字。
+    // 沿用后端 adminPreview 的同一条原则 —— 缺省时不猜，直接说缺什么。
+    setTrialUserGroup('')
     form.reset(
       props.rule == null
         ? qyEmptyGpRule(props.groups[0] ?? '')
@@ -141,13 +161,41 @@ export function QyGpRuleFormSheet(props: QyGpRuleFormSheetProps) {
   }, [groupName, props.groups])
 
   const preview = (
-    <QyGpEffectivePreview
-      groupName={groupName}
-      modelName={modelName}
-      mode={mode}
-      value={value}
-      shadowMode={props.shadowMode}
-    />
+    <div className='space-y-2'>
+      {/* 试算口径的选择器紧贴折算面板，不混进上面那组规则字段:
+          它不是规则的一部分，把它排进字段列表会让人以为它会被保存。 */}
+      <div className='space-y-1'>
+        <p className='text-sm font-medium'>{t('qy_gp_field_user_group')}</p>
+        <Select
+          value={trialUserGroup}
+          // 清空(null)归一成空串:空串是「还没选」的唯一表示，
+          // 多一个 null 只会让下游多一处 == null 判断，而两者含义完全相同。
+          onValueChange={(next) => setTrialUserGroup(next ?? '')}
+        >
+          <SelectTrigger className='w-full'>
+            <SelectValue placeholder={t('qy_gp_field_user_group_ph')} />
+          </SelectTrigger>
+          <SelectContent>
+            {props.userGroups.map((group) => (
+              <SelectItem key={group} value={group}>
+                {group}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_gp_field_user_group_desc')}
+        </p>
+      </div>
+      <QyGpEffectivePreview
+        groupName={groupName}
+        modelName={modelName}
+        mode={mode}
+        value={value}
+        userGroup={trialUserGroup}
+        shadowMode={props.shadowMode}
+      />
+    </div>
   )
 
   return (

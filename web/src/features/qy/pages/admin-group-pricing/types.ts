@@ -41,15 +41,46 @@ For commercial licensing, please contact support@quantumnous.com
  */
 export type QyGpMode = 'price' | 'ratio' | 'tiered'
 
+/** 分组倍率的来源。与后端 `qianye/groupratio` 的两个常量逐字一致。 */
+export type QyGpRatioSource = 'override' | 'inherit'
+
 /**
- * 一条规则在某个分组下折算出来的最终生效价。**由后端算，前端只负责显示。**
+ * 一条规则在某个 (用户分组, 模型分组) 下折算出来的最终生效价。
+ * **由后端算，前端只负责显示。**
  *
  * 前端刻意不自己再乘一遍：两套实现迟早会有一处漏乘分组倍率或多舍一位，
  * 而管理端显示的数字与实际扣费不一致，比不显示更糟。
+ *
+ * # 为什么它带一个 `user_group`
+ *
+ * 规则的键是 (模型分组, 模型)，而真实倍率的键是 (用户分组, 模型分组) ——
+ * 因此**一条规则的「最终生效价」是一组值，不是一个数**。
+ * `user_group` 为空串时这份折算是**兜底口径**：只对没有配专属倍率
+ * (`GroupGroupRatio`) 的那些用户分组成立。配了的用户走的是另一个数，
+ * 在 `QyGpRule.effective_by_user_group` 里。
  */
 export type QyGpEffective = {
-  /** 该分组当前的分组倍率。 */
+  /**
+   * 这份折算是站在哪个用户分组的角度算的。空串 = 兜底口径。
+   *
+   * 页面**必须**把这个口径标出来。一个对没人成立的数字继续假装自己是
+   * 「最终价」，正是本轮要修的那个缺陷。
+   */
+  user_group: string
+  /** 本次折算实际用的分组倍率（= 真正会被乘进账单的那个）。 */
   group_ratio: string
+  /** `group_ratio` 的来历。 */
+  ratio_source: QyGpRatioSource
+  /** 模型分组的兜底倍率。`ratio_source === 'inherit'` 时与 `group_ratio` 相等。 */
+  base_group_ratio: string
+  /** 该模型分组在全部可达用户分组上的倍率跨度（兜底值 ∪ 全部专属倍率）。 */
+  group_ratio_min: string
+  group_ratio_max: string
+  /**
+   * true = 全部用户分组的倍率相同，头条那个数对所有人成立，可以照旧只显示一个数。
+   * false = 那个数对一部分用户不成立，必须显示区间并标注。
+   */
+  uniform: boolean
   /** 该模型当前的全局价 / 倍率；未配置或通配规则时缺省。 */
   global_value?: string
   /** 全局价 × 分组倍率 = **改动前**这个分组实际付的价。 */
@@ -58,7 +89,12 @@ export type QyGpEffective = {
   rule_value: string
   /** 分组级价 × 分组倍率 = **改动后**这个分组实际付的价。 */
   rule_effective: string
-  /** 相对改动前的涨跌幅，形如 `-25.00`（已是百分数，不带 `%`）。无基准时缺省。 */
+  /**
+   * 相对改动前的涨跌幅，形如 `-25.00`（已是百分数，不带 `%`）。无基准时缺省。
+   *
+   * **与分组倍率无关**：涨跌幅 = 新值/旧值 − 1，倍率在比值里约掉了，
+   * 所以每个用户分组的涨跌幅完全相同。
+   */
   delta_percent?: string
   /** `rule_effective` 的单位文案，后端下发（中文）。 */
   unit: string
@@ -70,6 +106,34 @@ export type QyGpEffective = {
    * 必须持续显示在列表里：一条静默不生效的价格规则与一个定义了却没有消费方的
    * 配置项是同一种缺陷，而这个扩展已经在那上面栽过四次。
    */
+  warning?: string
+  /**
+   * **倍率侧**的告警（中文原文）。与 `warning` 刻意分成两个字段：
+   * 一个说「这条规则会不会生效」，另一个说「这个倍率数字可不可信」。
+   *
+   * 目前有两种来源：模型分组不在分组倍率表里（上游 `GetGroupRatio` 会 fail-open
+   * 按 1.0 倍静默计费）、交叉格上的 Task 类模型差额缺陷。
+   */
+  ratio_warning?: string
+}
+
+/**
+ * 一条规则在某个**用户分组**下的最终生效价。
+ *
+ * `user_group` 为 `'*'` 表示「未配置专属倍率的用户分组」，即兜底口径，
+ * 后端保证它恒为第一行。其余行是真的配了 `GroupGroupRatio` 的用户分组，
+ * 按分组名排序 —— 顺序稳定，刷新不会跳。
+ */
+export type QyGpUserGroupEffective = {
+  user_group: string
+  group_ratio: string
+  source: QyGpRatioSource
+  rule_effective: string
+  global_effective?: string
+  quota_per_call?: number
+  /** 每一行都相同（倍率在比值里约掉了）。 */
+  delta_percent?: string
+  /** 这一格独有的告警，目前只有 Task 类模型的交叉格差额缺陷。 */
   warning?: string
 }
 
@@ -92,7 +156,10 @@ export type QyGpRule = {
   updated_at: number
   created_by: number
   updated_by: number
+  /** **兜底口径**的折算结果，不是最终价。口径见 `QyGpEffective.user_group`。 */
   effective: QyGpEffective
+  /** 逐个用户分组的展开。第一行恒为 `user_group === '*'` 的兜底口径。 */
+  effective_by_user_group: QyGpUserGroupEffective[]
 }
 
 export type QyGpRulesPage = {
@@ -105,9 +172,16 @@ export type QyGpRulesPage = {
    * 是正在扣的钱，两者长得一模一样。
    */
   shadow_mode: boolean
+  /**
+   * 试算时「站在哪个用户分组的角度」这个下拉的取值域，后端下发。
+   *
+   * 前端不自己拼：方案 3 下 `users.group` 与 `channels.group` 共用一个字符串
+   * 命名空间，前端手拼必然与后端的判据漂移成「下拉能选、试算报错」。
+   */
+  user_groups: string[]
 }
 
-/** 新建 / 编辑 / 试算 共用的入参。 */
+/** 新建 / 编辑 共用的入参。 */
 export type QyGpRuleInput = {
   group_name: string
   model_name: string
@@ -116,6 +190,22 @@ export type QyGpRuleInput = {
   value: string
   enabled: boolean
   remark: string
+}
+
+/**
+ * 试算入参 = 规则本体 + **站在哪个用户分组的角度**。
+ *
+ * `user_group` 后端必填，缺省直接 400。真实倍率的键是 (用户分组, 模型分组)，
+ * 少了前一半就只能拿兜底倍率去凑一个数 —— 给一个不确定的结论比不给更糟。
+ */
+export type QyGpPreviewInput = QyGpRuleInput & {
+  user_group: string
+}
+
+/** 试算响应。 */
+export type QyGpPreviewResult = {
+  effective: QyGpEffective
+  effective_by_user_group: QyGpUserGroupEffective[]
 }
 
 // ───────────────────────────── 影子差额对账 ─────────────────────────────

@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/button'
 
 import { formatQyTs, QY_EMPTY_TEXT } from '../../ops/format'
 import type { QyGpRule } from '../types'
+import { QyGpEffectiveByUserGroup } from './effective-by-user-group'
 import { QyGpEffectiveCell } from './effective-price'
 
 type QyGpRulesTableProps = {
@@ -102,6 +103,16 @@ export function QyGpRulesTable(props: QyGpRulesTableProps) {
                 shadowMode={props.shadowMode}
                 enabled={row.enabled}
               />
+            ),
+          },
+          {
+            // 「最终生效价是一组值」在列表上的落点。只在真的存在专属倍率时
+            // 渲染出内容（组件自己判断），所以正常站点上这一列是空的，
+            // 而配了 GroupGroupRatio 的站点会立刻看到那个头条数字对谁不成立。
+            id: 'by_user_group',
+            header: t('qy_group_pricing_effective_by_user_group'),
+            cell: (row: QyGpRule) => (
+              <QyGpEffectiveByUserGroup rows={row.effective_by_user_group} />
             ),
           },
           {

@@ -162,6 +162,17 @@ var moduleGates = []ModuleGate{
 		Effect: "5 个计价/结算挂载点恒等返回,分组级价格规则形同虚设,全部请求按全局价扣费",
 	},
 	{
+		Module: "groupmatrix", Section: "group_matrix", Key: "enabled",
+		Effect: "权威可选清单完全不生效,所有用户分组仍按上游「全局白名单 + 特殊规则 + 无条件补自己」" +
+			"一视同仁,令牌写入校验也不生效 —— 而管理端矩阵看起来配得好好的、列表页完全正常",
+		Extra: []GateSwitch{
+			{
+				Key: "write_guard_enabled", DefaultOn: true,
+				Effect: "令牌写入侧不再校验分组可选性。*bool 且默认打开,不写不会静默失效",
+			},
+		},
+	},
+	{
 		Module: "lottery", Section: "lottery", Key: "enabled",
 		Effect: "引导端点下发 features.lottery=false,前端整个娱乐入口不渲染,用户端与创建接口 404",
 	},

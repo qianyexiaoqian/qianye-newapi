@@ -66,4 +66,5 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   '/qy/admin/api-address',
   '/qy/tickets',
   '/qy/admin/tickets',
+  '/qy/admin/group-matrix',
 ]

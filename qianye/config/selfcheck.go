@@ -250,6 +250,21 @@ var fieldConsumers = map[string]consumer{
 	"group_pricing.shadow_retention_days":         {"qianye/modules/grouppricing/shadow.go", "影子差额聚合行的保留天数"},
 	"group_pricing.max_rules":                     {"qianye/modules/grouppricing/api_admin.go", "规则总数上限,写入时判定"},
 
+	// ─────────────────────────── group_matrix ───────────────────────────
+	"group_matrix.enabled": {"qianye/modules/groupmatrix/snapshot.go",
+		"L1 kill switch:关掉后 QyResolveUsableGroups 恒等返回上游那张 map," +
+			"写入侧校验一并失效,管理端接口 404。判定不依赖扩展库可达性"},
+	"group_matrix.cache_seconds": {"qianye/modules/groupmatrix/snapshot.go",
+		"清单内存快照的刷新周期(清单读取在 relay 热路径上,每次请求查库不可接受)"},
+	"group_matrix.max_stale_seconds": {"qianye/modules/groupmatrix/snapshot.go",
+		"陈旧上限,超过即限频告警。**不丢弃快照** —— 丢弃只能回落到上游宽松白名单," +
+			"那意味着被收紧的用户重新可以把令牌指向 ratio=0 的免费分组"},
+	"group_matrix.preview_log_days":     {"qianye/modules/groupmatrix/preview.go", "影响面预览回看日志库的天数"},
+	"group_matrix.max_preview_pairs":    {"qianye/modules/groupmatrix/preview.go", "一次预览最多展开的分组对数,超出即 preview_incomplete"},
+	"group_matrix.preview_sample_limit": {"qianye/modules/groupmatrix/preview.go", "每一对最多返回的令牌样本条数"},
+	"group_matrix.max_grants":           {"qianye/modules/groupmatrix/api_admin.go", "清单总行数上限,写入时判定"},
+	"group_matrix.write_guard_enabled":  {"qianye/modules/groupmatrix/hook.go", "令牌写入侧校验的独立开关(经 WriteGuardOn 读取)"},
+
 	// ─────────────────────────── lottery ───────────────────────────
 	"lottery.enabled": {"qianye/guard/guard.go",
 		"featureOn(FlagLottery):关掉后用户端与创建接口 404,但管理端只读与证据链仍可用"},

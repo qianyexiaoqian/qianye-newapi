@@ -48,6 +48,7 @@ export const QY_DISABLED_CONFIG: QyConfig = {
     violation: false,
     lottery: false,
     ticket: false,
+    group_matrix: false,
   },
   wallet: {
     show_transfer_entry: false,
@@ -117,6 +118,7 @@ export function normalizeQyConfig(
       violation: bool(features.violation),
       lottery: bool(features.lottery),
       ticket: bool(features.ticket),
+      group_matrix: bool(features.group_matrix),
     },
     wallet: {
       show_transfer_entry: bool(wallet.show_transfer_entry),

@@ -299,6 +299,10 @@ func AddToken(c *gin.Context) {
 		})
 		return
 	}
+	if err := service.QyCheckTokenGroupChange(c, "", token.Group); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	if token.Group == "auto" {
 		if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
 			return
@@ -405,6 +409,10 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.ModelLimitsEnabled = token.ModelLimitsEnabled
 		cleanToken.ModelLimits = token.ModelLimits
 		cleanToken.AllowIps = token.AllowIps
+		if err := service.QyCheckTokenGroupChange(c, cleanToken.Group, token.Group); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
 		if token.Group != "auto" {

@@ -1,0 +1,323 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+import { MoreHorizontal, Settings2, TriangleAlert } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { cn } from '@/lib/utils'
+
+import { formatQyCount } from '../../ops/format'
+import {
+  qyGmCellKey,
+  qyGmGrantedOf,
+  qyGmRatioDraftOf,
+  type QyGmDraft,
+  type QyGmRatioDraft,
+} from '../lib/draft'
+import type { QyGmCell, QyGmMatrixResponse } from '../types'
+import { QyGmMatrixCell } from './matrix-cell'
+
+export type QyGmColumnBulk = 'clear' | 'inherit_all' | 'select_all'
+
+type QyGmMatrixGridProps = {
+  data: QyGmMatrixResponse
+  serverCells: ReadonlyMap<string, QyGmCell>
+  draft: QyGmDraft
+  onToggleGranted: (
+    userGroup: string,
+    modelGroup: string,
+    granted: boolean
+  ) => void
+  onRatioChange: (
+    userGroup: string,
+    modelGroup: string,
+    ratio: QyGmRatioDraft
+  ) => void
+  onColumnBulk: (modelGroup: string, action: QyGmColumnBulk) => void
+  onCopyRow: (fromUserGroup: string, toUserGroup: string) => void
+  onEditScope: (userGroup: string) => void
+}
+
+/**
+ * 用户分组 × 模型分组 矩阵。
+ *
+ * ── 两个轴始终分列显示，绝不合并成一个下拉 ──
+ * 方案 3 的已知代价是 `users.group` 与 `channels.group` 共用同一个字符串
+ * 命名空间，两个轴上可能出现同名项。界面必须替运营把它们分开：行永远是
+ * 「谁」，列永远是「用哪批渠道」。合并成一个选择器，同名项会看起来像一件事。
+ *
+ * 用 CSS Grid 而不是 `<table>`：粘性行头 + 粘性列头 + 每格一个输入框这组合在
+ * table 上要靠一堆 `position: sticky` 的补丁，而 grid 上是两行样式。
+ * 与可用率热力图（`pages/availability/components/availability-matrix.tsx`）
+ * 同一套骨架，两页的滚动与对齐行为因此一致。
+ *
+ * 本站规模 7 × 15，**本轮不做虚拟滚动**：虚拟化会让「整列全选」这类跨行操作
+ * 需要额外处理未挂载的行，代价换不来收益。
+ */
+export function QyGmMatrixGrid(props: QyGmMatrixGridProps) {
+  const { t } = useTranslation()
+
+  const columns = `minmax(13rem, 1.2fr) repeat(${props.data.model_groups.length}, minmax(7rem, 1fr))`
+
+  return (
+    /*
+      `max-h` + `overflow-auto` 是列头 `sticky top-0` 生效的前提。
+      只写 `overflow-x-auto` 时容器高度随内容增长、scrollHeight == clientHeight，
+      纵向根本不产生 scrollport，列头（连同它上面的初始倍率）会随页面一起滚出
+      视野 —— 行数一多，运营就在只看得到数字格的情况下继续编辑，很容易把倍率
+      填到错误的列上。本站 7 行看不出来，按等级细分之后就会暴露。
+    */
+    <div className='max-h-[70vh] overflow-auto rounded-lg border'>
+      <div className='min-w-max'>
+        {/* 列头：模型分组 + 它的初始倍率。倍率放在列头而不是每格重复一遍 ——
+            继承格的占位符已经在说同一件事，列头是它的唯一定义处。 */}
+        <div
+          className='bg-muted/50 sticky top-0 z-10 grid border-b'
+          style={{ gridTemplateColumns: columns }}
+        >
+          <div className='bg-muted/50 sticky left-0 z-20 px-3 py-2 text-xs font-medium'>
+            {t('qy_group_matrix_row_header')}
+            <span className='text-muted-foreground ms-1 font-normal'>
+              {t('qy_group_matrix_col_header')}
+            </span>
+          </div>
+          {props.data.model_groups.map((modelGroup) => (
+            <div
+              key={modelGroup.name}
+              className='flex flex-col items-center gap-0.5 px-1 py-1.5'
+            >
+              <div className='flex w-full items-center justify-center gap-0.5'>
+                <span
+                  className='truncate text-xs font-medium'
+                  title={modelGroup.name}
+                >
+                  {modelGroup.name}
+                </span>
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={
+                      <Button
+                        type='button'
+                        variant='ghost'
+                        size='icon'
+                        className='size-5 shrink-0'
+                        aria-label={t('qy_group_matrix_col_menu', {
+                          modelGroup: modelGroup.name,
+                        })}
+                      />
+                    }
+                  >
+                    <MoreHorizontal aria-hidden='true' className='size-3' />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align='end'>
+                    <DropdownMenuItem
+                      onClick={() =>
+                        props.onColumnBulk(modelGroup.name, 'select_all')
+                      }
+                    >
+                      {t('qy_group_matrix_col_select_all')}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() =>
+                        props.onColumnBulk(modelGroup.name, 'clear')
+                      }
+                    >
+                      {t('qy_group_matrix_col_clear')}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() =>
+                        props.onColumnBulk(modelGroup.name, 'inherit_all')
+                      }
+                    >
+                      {t('qy_group_matrix_col_inherit_all')}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+              <span className='text-muted-foreground text-[10px] tabular-nums'>
+                {t('qy_group_matrix_base_ratio', {
+                  ratio: modelGroup.base_ratio,
+                })}
+              </span>
+              {!modelGroup.has_channels && (
+                <span
+                  className='text-warning inline-flex items-center gap-0.5 text-[10px]'
+                  title={t('qy_group_matrix_col_no_channels')}
+                >
+                  <TriangleAlert aria-hidden='true' className='size-2.5' />
+                  {t('qy_group_matrix_col_no_channels_short')}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {props.data.user_groups.map((userGroup) => (
+          <div
+            key={userGroup.name}
+            className='hover:bg-muted/20 grid border-b last:border-b-0'
+            style={{ gridTemplateColumns: columns }}
+          >
+            <QyGmRowHeader
+              userGroup={userGroup}
+              otherUserGroups={props.data.user_groups
+                .map((row) => row.name)
+                .filter((name) => name !== userGroup.name)}
+              onCopyRow={(from) => props.onCopyRow(from, userGroup.name)}
+              onEditScope={() => props.onEditScope(userGroup.name)}
+            />
+            {props.data.model_groups.map((modelGroup) => {
+              const key = qyGmCellKey(userGroup.name, modelGroup.name)
+              const cell = props.serverCells.get(key)
+              const entry = props.draft.get(key)
+              return (
+                <QyGmMatrixCell
+                  key={modelGroup.name}
+                  userGroup={userGroup.name}
+                  modelGroup={modelGroup.name}
+                  cell={cell}
+                  entry={entry}
+                  granted={qyGmGrantedOf(cell, entry)}
+                  ratio={qyGmRatioDraftOf(cell, entry)}
+                  baseRatio={modelGroup.base_ratio}
+                  managed={userGroup.managed}
+                  selfEdge={userGroup.name === modelGroup.name}
+                  onToggleGranted={(granted) =>
+                    props.onToggleGranted(
+                      userGroup.name,
+                      modelGroup.name,
+                      granted
+                    )
+                  }
+                  onRatioChange={(ratio) =>
+                    props.onRatioChange(userGroup.name, modelGroup.name, ratio)
+                  }
+                />
+              )
+            })}
+          </div>
+        ))}
+      </div>
+
+      <p className='text-muted-foreground border-t px-3 py-2 text-xs'>
+        {t('qy_group_matrix_namespace_note')}
+      </p>
+    </div>
+  )
+}
+
+type QyGmRowHeaderProps = {
+  userGroup: QyGmMatrixResponse['user_groups'][number]
+  otherUserGroups: string[]
+  onCopyRow: (fromUserGroup: string) => void
+  onEditScope: () => void
+}
+
+/**
+ * 行头：用户分组 + 在册人数 + 活跃令牌数 + 接管状态。
+ *
+ * 人数与活跃令牌数必须长在行头上而不是藏进弹窗：它们是「撤销这一行会打断谁」
+ * 的分母，运营在动格子的那一刻就需要看见，点开才看得到就已经晚了。
+ */
+function QyGmRowHeader(props: QyGmRowHeaderProps) {
+  const { t } = useTranslation()
+  const managed = props.userGroup.managed
+
+  return (
+    <div className='bg-background sticky left-0 z-10 flex items-center gap-2 px-3 py-1.5'>
+      <div className='min-w-0 flex-1'>
+        <div className='flex items-center gap-1.5'>
+          <span
+            className='truncate text-xs font-medium'
+            title={props.userGroup.name}
+          >
+            {props.userGroup.name}
+          </span>
+          {managed ? (
+            <Badge
+              variant='outline'
+              className={cn(
+                'px-1 py-0 text-[10px]',
+                props.userGroup.mode === 'enforce'
+                  ? 'border-destructive/50 text-destructive'
+                  : 'border-warning/50 text-warning'
+              )}
+            >
+              {props.userGroup.mode === 'enforce'
+                ? t('qy_group_matrix_mode_enforce')
+                : t('qy_group_matrix_mode_shadow')}
+            </Badge>
+          ) : (
+            <Badge
+              variant='outline'
+              className='text-muted-foreground px-1 py-0 text-[10px]'
+            >
+              {t('qy_group_matrix_managed_off')}
+            </Badge>
+          )}
+        </div>
+        <div className='text-muted-foreground text-[10px] tabular-nums'>
+          {t('qy_group_matrix_row_stats', {
+            users: formatQyCount(props.userGroup.user_count),
+            tokens: formatQyCount(props.userGroup.active_token_count),
+          })}
+        </div>
+      </div>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon'
+              className='size-6 shrink-0'
+              aria-label={t('qy_group_matrix_row_menu', {
+                userGroup: props.userGroup.name,
+              })}
+            />
+          }
+        >
+          <Settings2 aria-hidden='true' className='size-3.5' />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align='end'>
+          <DropdownMenuItem onClick={props.onEditScope}>
+            {t('qy_group_matrix_managed_edit')}
+          </DropdownMenuItem>
+          {props.otherUserGroups.map((name) => (
+            <DropdownMenuItem
+              key={name}
+              disabled={!managed}
+              onClick={() => props.onCopyRow(name)}
+            >
+              {t('qy_group_matrix_copy_row', { userGroup: name })}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  )
+}

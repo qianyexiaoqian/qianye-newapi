@@ -53,6 +53,11 @@ func GetConfig(c *gin.Context) {
 			"violation":    cfg.Violation.Enabled,
 			"lottery":      cfg.Lottery.Enabled,
 			"ticket":       cfg.Ticket.Enabled,
+			// group_matrix 只用于**隐藏入口**:管理端页面与上游分组倍率页里那条
+			// 指路提示都要看它。不下发的话,功能没开的站点会在上游那一页上
+			// 出现一条指向 404 的链接和一句不成立的断言(「下面这些规则整体
+			// 不再生效」),而实际上一条都没被接管、规则全部照常生效。
+			"group_matrix": cfg.GroupMatrix.Enabled,
 		},
 		// 娱乐功能的展示开关。show_entry 关掉之后接口仍然可用:已参与的用户
 		// 必须还能查自己的记录与已结束活动的证据链,那正是"历史公正查询"。

@@ -11,6 +11,7 @@ import (
 	_ "github.com/QuantumNous/new-api/qianye/modules/apiaddr"
 	_ "github.com/QuantumNous/new-api/qianye/modules/availability"
 	_ "github.com/QuantumNous/new-api/qianye/modules/commission"
+	_ "github.com/QuantumNous/new-api/qianye/modules/groupmatrix"
 	_ "github.com/QuantumNous/new-api/qianye/modules/grouppricing"
 	_ "github.com/QuantumNous/new-api/qianye/modules/groupvis"
 	_ "github.com/QuantumNous/new-api/qianye/modules/logmetrics"

@@ -136,12 +136,9 @@ export function qyLotRulesHash(rulesText: string): Promise<string> {
 export function qyLotSpecLines(proof: QyLotProof): string[] {
   if (proof.kind === 'draw') {
     return qyLotTiers(proof.spec).map((tier) =>
-      [
-        dec(tier.tier),
-        tier.name,
-        dec(tier.amount_quota),
-        dec(tier.count),
-      ].join(SEP)
+      [dec(tier.tier), tier.name, dec(tier.amount_quota), dec(tier.count)].join(
+        SEP
+      )
     )
   }
   return qyLotOptions(proof.spec).map((option) =>
