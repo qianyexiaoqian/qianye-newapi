@@ -136,6 +136,9 @@
   "qy_plan_seat_unlimited": "unlimited",
   "qy_plan_seat_over_cap": "(current holders already exceed this cap — existing subscriptions keep working, but nobody new can buy)",
   "qy_plan_seat_cap_save_failed": "Plan saved, but the seat cap was not stored. Reopen the plan and set it again",
+  "qy_plan_active_users": "Active users",
+  "qy_plan_active_users_hint": "Distinct users holding an active, not-yet-expired subscription; the number after the slash is the site-wide seat cap. A seat is released as soon as a subscription expires or is cancelled.",
+  "qy_plan_active_users_failed": "Count unavailable",
   "qy_plan_delete_title": "Delete plan",
   "qy_plan_delete_desc": "Delete the plan \"{{plan}}\"? This cannot be undone.",
   "qy_plan_delete_confirm": "Delete",
@@ -1386,5 +1389,13 @@
   "qy_vio_shadow_reason_breaker": "Breaker clamp",
   "qy_vio_shadow_reason_dup_builtin_fee": "Already charged upstream",
   "qy_common_close": "Close",
-  "qy_common_yes": "Yes"
+  "qy_common_yes": "Yes",
+  "qy_maint_core_version_hint": "Upstream new-api core version",
+  "qy_maint_fork_version": "Fork build",
+  "qy_maint_fork_based_on": "Based on upstream {{version}}",
+  "qy_maint_version_uninjected": "Not injected",
+  "qy_maint_version_uninjected_hint": "No version was injected at build time (plain `go build`); build via qianye/scripts/build instead",
+  "qy_login_sessions_summary": "{{active}} active",
+  "qy_login_sessions_summary_expired": "{{active}} active · {{expired}} expired",
+  "qy_login_session_expired": "Expired"
 }

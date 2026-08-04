@@ -68,10 +68,14 @@ func (Mod) InstallHooks() {
 // 属于"允许但没人保证"的灰色地带,丢 body 的表现是 reason 变空 → 400,
 // 排查起来完全指错方向。这里宁可牺牲一点 REST 洁癖。
 func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
-	// 三条路由全部挂在 /subscription/plans/:plan_id 之下。前缀统一不是洁癖:
+	// 单套餐的三条路由全部挂在 /subscription/plans/:plan_id 之下。前缀统一不是洁癖:
 	// 前端只需要记住一个基址,路径拼错在前端是 404、在 qy 客户端里又会被归类成
 	// "扩展未启用"从而**静默隐藏入口**,排查方向直接指反。
 	g.GET("/subscription/plans/:plan_id/usage", adminPlanUsage)
+	// 列表页要的批量占用。路径刻意不写成 /subscription/plans/usage:那样它会与
+	// 上面那条的 :plan_id 抢同一个路径段,是 gin 路由树里"静态段与通配段互斥"的
+	// 经典冲突 —— 表现是**进程启动时 panic**,而不是 404。
+	g.GET("/subscription/plans-usage", adminPlansUsage)
 	// 改总名额会立刻决定还能不能有人买这个套餐,按关键操作限流。
 	g.PUT("/subscription/plans/:plan_id/seat-limit", middleware.CriticalRateLimit(), adminPutSeat)
 	// 删除会级联失效用户订阅与待处理订单,是本模块破坏力最大的一个接口。

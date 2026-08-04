@@ -44,6 +44,40 @@ func callPutSeat(t *testing.T, planId, body string) *httptest.ResponseRecorder {
 	return rec
 }
 
+// callPlansUsage 打列表页那条批量接口。
+func callPlansUsage(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet,
+		"/api/qy/admin/subscription/plans-usage", nil)
+	c.Set("id", 7)
+	c.Set("username", "admin7")
+
+	adminPlansUsage(c)
+	return rec
+}
+
+// plansUsageBody 是批量接口的响应形状,前端按同一份字段名解包。
+type plansUsageBody struct {
+	Success bool `json:"success"`
+	Data    struct {
+		Plans []struct {
+			PlanId    int   `json:"plan_id"`
+			UsedSeats int64 `json:"used_seats"`
+			Capacity  int   `json:"capacity"`
+		} `json:"plans"`
+	} `json:"data"`
+}
+
+func decodePlansUsage(t *testing.T, rec *httptest.ResponseRecorder) plansUsageBody {
+	t.Helper()
+	var body plansUsageBody
+	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &body), rec.Body.String())
+	return body
+}
+
 // usage 里的 used_seats 必须与闸门用的是同一个口径:去重人数、只数 active;
 // 而 active_subscriptions 必须是行数 —— 两个数不许互相顶替。
 //
@@ -106,6 +140,76 @@ func TestPlanUsage_RejectsUnknownPlan(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "qy_subscription_plan_not_found")
+}
+
+// 列表页的批量接口:每个套餐都必须出现一行,**包括一个人都没有的那些**。
+//
+// 少一行在前端不是"显示 0",而是 undefined → 渲染成空白,与"这个套餐 0 人"
+// 长得完全不同却看不出区别。这条同时锁住去重口径与 capacity 的回填。
+func TestPlansUsage_ReturnsOneRowPerPlanIncludingTheEmptyOnes(t *testing.T) {
+	ext := newExtDB(t)
+	main := newMainDB(t)
+	seedPlan(t, main, 1, "限量套餐")
+	seedPlan(t, main, 2, "没人买的套餐")
+	seedPlan(t, main, 3, "不限量套餐")
+	seedSubscription(t, main, 100, 1, "active")
+	seedSubscription(t, main, 100, 1, "active") // 同一人两条 → 仍然只占 1 个名额
+	seedSubscription(t, main, 200, 1, "active")
+	seedSubscription(t, main, 300, 1, "expired")   // 不算
+	seedSubscription(t, main, 400, 1, "cancelled") // 不算
+	seedSubscription(t, main, 100, 3, "active")
+	putSeat(t, ext, 1, 3)
+
+	rec := callPlansUsage(t)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	body := decodePlansUsage(t, rec)
+	require.Len(t, body.Data.Plans, 3, "三个套餐就该有三行,没人用的那个不许缺席")
+
+	got := make(map[int][2]int64, len(body.Data.Plans))
+	for _, p := range body.Data.Plans {
+		got[p.PlanId] = [2]int64{p.UsedSeats, int64(p.Capacity)}
+	}
+	assert.Equal(t, [2]int64{2, 3}, got[1], "名额按去重人数算:同一人的两条 active 只占一个")
+	assert.Equal(t, [2]int64{0, 0}, got[2], "0 人必须是一行明确的 0,不是缺一行")
+	assert.Equal(t, [2]int64{1, 0}, got[3], "没配名额时 capacity=0(不限)")
+
+	// 与单套餐接口互相印证:两条路径必须回同一个数,否则列表与弹窗会互相打架。
+	single := callPlanUsage(t, "1")
+	require.Equal(t, http.StatusOK, single.Code, single.Body.String())
+	assert.Contains(t, single.Body.String(), `"used_seats":2`)
+}
+
+// 已到期但后台任务还没标记成 expired 的订阅**不占名额** —— 闸门与页面同时不算它。
+//
+// 这不是边角料:上游的 ExpireDueSubscriptions 只在 master 节点上跑
+// (service/subscription_reset_task.go 直接 return),没有 master 的部署里
+// 这种行会永远停在 'active'。只看 status 的话,一个限量套餐会被这些早已作废的行
+// 永久占满、再也卖不出去,而管理端显示的占用数同样永远是错的。
+func TestExpiredButUnsweptSubscriptionsFreeTheirSeat(t *testing.T) {
+	ext := newExtDB(t)
+	main := newMainDB(t)
+	plan := seedPlan(t, main, 1, "限量套餐")
+	seedLapsedSubscription(t, main, 100, 1)
+	putSeat(t, ext, 1, 1)
+
+	rec := callPlanUsage(t, "1")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), `"used_seats":0`, "到期的人不该还占着名额")
+	assert.Contains(t, rec.Body.String(), `"active_subscriptions":1`,
+		"删除影响面是另一个口径:那一行确实会被级联作废,必须照数")
+
+	batch := decodePlansUsage(t, callPlansUsage(t))
+	require.Len(t, batch.Data.Plans, 1)
+	assert.EqualValues(t, 0, batch.Data.Plans[0].UsedSeats, "列表与详情必须是同一个数")
+
+	assert.NoError(t, gateSeat(main, plan, 200, "balance", nil),
+		"名额已经空出来了,闸门必须放行 —— 否则限量套餐会被僵尸行永久占满")
+
+	// 反面:没到期的那个人确实占着名额,闸门照拦。
+	seedSubscription(t, main, 300, 1, "active")
+	resetCache()
+	assert.Error(t, gateSeat(main, plan, 400, "balance", nil))
 }
 
 // 设置名额:合法值落库、审计留痕,并且**立刻**对闸门生效(不等 30 秒缓存)。
@@ -238,6 +342,7 @@ func TestAdminEndpointsStopWhenExtensionDBIsUnavailable(t *testing.T) {
 	t.Cleanup(func() { qyDBHealthy.Store(true) })
 
 	assert.Equal(t, http.StatusServiceUnavailable, callPlanUsage(t, "1").Code)
+	assert.Equal(t, http.StatusServiceUnavailable, callPlansUsage(t).Code)
 	assert.Equal(t, http.StatusServiceUnavailable, callPutSeat(t, "1", `{"capacity":9}`).Code)
 	assert.Equal(t, http.StatusServiceUnavailable,
 		callDelete(t, "1", `{"force":true,"reason":"应当在闸门处停住"}`).Code)

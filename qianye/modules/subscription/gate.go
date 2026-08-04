@@ -95,12 +95,20 @@ const (
 //	反过来 fail-closed 的代价是灾难性的 —— 闸门也跑在支付回调里,扩展库打个嗝
 //	就会让一批已付款的订单永远发不出订阅。
 //
-// R4 —— "active" 的口径包含已过期但尚未被后台任务标记的订阅。
+// R4 —— 占用口径是"已激活且尚未到期",不是单看 status。
 //
-//	占用口径由项目方钉死为 status='active'(不叠加 end_time > now)。上游的
-//	ExpireDueSubscriptions 是后台批量把到期订阅改成 expired 的,存在分钟级延迟,
-//	这段时间里那些人仍然占着名额。这是刻意的:闸门与管理端页面用同一个口径,
-//	两边永远对得上;而"少放一个人进来"远好过"名额已经被算回收了、其实人还在用"。
+//	COUNT(DISTINCT user_id) + status='active' + end_time > now,定义在
+//	holders.go 的 activeHolders,闸门与管理端页面(套餐列表、编辑弹窗、删除弹窗)
+//	全部从那一个函数取数,两边永远对得上。
+//
+//	早先只看 status='active'。那一版会把"已到期但后台任务还没标记成 expired"
+//	的行算成占用 —— 而 ExpireDueSubscriptions 只在 master 节点上跑,没有 master
+//	的部署里它压根不跑,那些行会**永远**停在 active,把一个限量套餐永久占满。
+//	完整理由见 activeHolders 的注释。
+//
+//	闸门内部的两问("这个人本来就在里面吗"、"全站还剩位置吗")共用同一个 now、
+//	同一组条件。两问分家会让某一类行"数不进去却能跳过判定",等于绕开闸门本身,
+//	详见第一问那一段。
 //
 // ═════════ 四、支付回调永不拒绝(这条比上面所有取舍都重要)═════════
 //
@@ -172,14 +180,36 @@ func gateSeat(tx *gorm.DB, plan *model.SubscriptionPlan, userId int, source stri
 		q = model.DB.WithContext(ctx)
 	}
 
+	// 两问共用同一个时刻。分别取两次的话,两问会落在时钟的两侧,而那正是下面
+	// 这条不变量唯一可能被破坏的方式。
+	now := common.GetTimestamp()
+
 	// 第一问:这个人是不是已经占着这个套餐的名额了?
 	//
 	// 占用口径是**去重人数**,所以老用户续订/再买一份不额外消耗名额。
 	// 这一问必须在总数判定之前:名额卖满之后,已经在里面的人续订应当照常成功,
 	// 否则"限量套餐"会变成"限量且到期即出局",而那不是运营要的东西。
+	//
+	// 判定条件必须与下面 activeHolders 的**逐字一致**(status='active' AND
+	// end_time > now)。这是整个闸门的核心不变量:第一问放行的人,必须是第二问
+	// 数得到的人。两问一旦分家,就有一类用户"既不被数进去、又能无条件跳过总数
+	// 判定" —— 那不是宽松,那是把闸门整个绕开。
+	//
+	// 具体到早先那一版:第一问只看 status。一个 end_time 已过、status 仍是
+	// active 的僵尸行(没有 master 节点的部署里清扫任务压根不跑,这种行永久存在)
+	// 会让它的持有人**每一次**购买都在第一问就 return,而 activeHolders 从来
+	// 数不到这些行 —— 于是 capacity=10 的套餐可以有 10 个新用户占满名额,再让
+	// 10 个僵尸行的持有人各自续订成功,实际在用 20 人。溢出量等于历史到期人数,
+	// 没有上界,也不会自愈。
+	//
+	// 统一到严格口径之后,到期未清扫的老用户回来续订,与新用户一样要和名额竞争。
+	// 这正是 activeHolders 已经论证过的事实的直接推论:那条订阅**确实已经用不了了**
+	// (上游 GetAllActiveUserSubscriptions / PreConsumeUserSubscription 用的就是
+	// end_time > now),他此刻不在里面,不该享受"在里面的人续订必过"的待遇。
 	var mine int64
 	if err := q.Model(&model.UserSubscription{}).
-		Where("plan_id = ? AND user_id = ? AND status = ?", planId, userId, statusActive).
+		Where("plan_id = ? AND user_id = ? AND status = ? AND end_time > ?",
+			planId, userId, statusActive, now).
 		Count(&mine).Error; err != nil {
 		return failOpen(planId, err)
 	}
@@ -187,15 +217,13 @@ func gateSeat(tx *gorm.DB, plan *model.SubscriptionPlan, userId int, source stri
 		return nil
 	}
 
-	// 第二问:全站还剩位置吗?COUNT(DISTINCT user_id) 是项目方钉死的口径 ——
-	// 同一个人的多条 active 订阅只占 1 个名额。
-	var used int64
-	if err := q.Model(&model.UserSubscription{}).
-		Where("plan_id = ? AND status = ?", planId, statusActive).
-		Distinct("user_id").
-		Count(&used).Error; err != nil {
+	// 第二问:全站还剩位置吗?口径的唯一定义在 holders.go 的 activeHolders,
+	// 管理端页面显示的占用数走的是同一个函数 —— 两侧永远对得上。
+	holders, err := activeHolders(q, []int{planId}, now)
+	if err != nil {
 		return failOpen(planId, err)
 	}
+	used := holders[planId]
 	if used < int64(capacity) {
 		return nil
 	}

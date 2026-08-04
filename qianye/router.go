@@ -55,6 +55,11 @@ func registerUserRoutes(g *gin.RouterGroup) {
 	for _, m := range module.All() {
 		m.RegisterUserRoutes(g)
 	}
+	// 登录会话分档计数。不属于任何业务模块 —— 它读的是上游主库的 user_sessions,
+	// 存在的唯一理由是上游列表接口结构性地不下发已到期会话(理由见 UserSessionStats)。
+	// 为一个只读计数新建一个模块,只会让 modules_test.go 的目录/注册表一致性
+	// 多守一个空壳。与 /health、/version 同一档:直接挂在这里。
+	g.GET("/session-stats", qyctl.UserSessionStats)
 }
 
 // registerAdminRoutes 挂载管理端接口。

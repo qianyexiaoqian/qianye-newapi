@@ -33,12 +33,16 @@ type planUsage struct {
 	PlanId int `json:"plan_id"`
 	// Capacity 是全站总名额上限,0 = 不限。存在扩展库。
 	Capacity int `json:"capacity"`
-	// UsedSeats 是当前占用:持有该套餐 status='active' 订阅的**去重人数**,
-	// 与 gateSeat 判定时用的是同一个口径,两边永远对得上。
+	// UsedSeats 是当前占用:**已激活且尚未到期**的去重人数。口径定义在
+	// holders.go 的 activeHolders,与 gateSeat 判定时是同一个函数,两边永远对得上。
 	UsedSeats int64 `json:"used_seats"`
 	// ActiveSubscriptions 是订阅**行数**,与 UsedSeats 不是同一个数:
 	// 同一个人持有该套餐的两条 active 订阅时占 1 个名额、但会被作废 2 条。
 	// 删除弹窗要报的是"多少条会被取消",所以两个都得回。
+	//
+	// 它刻意只看 status='active' 而不叠加 end_time > now:删除时被级联作废的
+	// 正是全部 active 行(见 delete.go),包括已到期但清扫任务还没跑到的那些。
+	// 这里报的是删除影响面,必须与删除真正会动的行数一致,不是名额占用。
 	ActiveSubscriptions int64 `json:"active_subscriptions"`
 	PendingOrders       int64 `json:"pending_orders"`
 	// MaxPurchasePerUser 一并回给前端,不是冗余:运营最容易把"每人限购次数"
@@ -80,12 +84,12 @@ func adminPlanUsage(c *gin.Context) {
 
 	out := planUsage{PlanId: planId, MaxPurchasePerUser: plan.MaxPurchasePerUser}
 	q := model.DB.WithContext(ctx)
-	if err := q.Model(&model.UserSubscription{}).
-		Where("plan_id = ? AND status = ?", planId, statusActive).
-		Distinct("user_id").Count(&out.UsedSeats).Error; err != nil {
+	holders, err := activeHolders(q, []int{planId}, common.GetTimestamp())
+	if err != nil {
 		internalError(c, err)
 		return
 	}
+	out.UsedSeats = holders[planId]
 	if err := q.Model(&model.UserSubscription{}).
 		Where("plan_id = ? AND status = ?", planId, statusActive).
 		Count(&out.ActiveSubscriptions).Error; err != nil {
@@ -106,6 +110,92 @@ func adminPlanUsage(c *gin.Context) {
 	}
 	out.Capacity = row.Capacity
 	respond(c, out)
+}
+
+// planSeatUsage 是列表页每行要的两个数。
+//
+// 字段名与 planUsage 里的同义字段刻意保持一致(capacity / used_seats),
+// 让"这两个接口回的是同一个数"这件事在前端也一眼看得出来。
+type planSeatUsage struct {
+	PlanId int `json:"plan_id"`
+	// UsedSeats 是当前已激活且尚未到期的**去重人数**,口径见 activeHolders。
+	UsedSeats int64 `json:"used_seats"`
+	// Capacity 是全站总名额上限,0 = 不限。
+	//
+	// 一并回是有用的而不是顺手:占用数单独看没有意义(3 是多还是少?),
+	// 而且闸门的并发残余风险(gate.go 的 R1)本来就承诺"超卖在管理端列表上
+	// 直接显示成 used > capacity",不把上限一起回来,那句承诺就落不了地。
+	Capacity int `json:"capacity"`
+}
+
+// adminPlansUsage 一次返回**所有**套餐的名额占用。
+//
+// # 为什么是"所有"而不是按 id 批量
+//
+// 上游的套餐列表接口(AdminListSubscriptionPlans)本身就是不分页的整表返回,
+// 所以列表页需要的永远是全部套餐。收 plan_ids 参数只会多出一段拼接与长度上限,
+// 换不来任何东西。套餐是运营手工维护的对象,数量级是几个到几十个。
+//
+// # 为什么必须批量
+//
+// 列表页有 N 个套餐,逐个打 /usage 就是 N+1 次请求 —— 每一次都要重新查一遍套餐、
+// 数一遍订阅、再读一次扩展库。这里是固定 3 次查询:套餐 id、一次 GROUP BY、
+// 一次名额配置整表。
+//
+// 与 /usage 一样是纯读接口,没有任何副作用。占用现算不读 seats.go 的进程内缓存,
+// 理由同 adminPlanUsage(管理端必须显示库里真正存着什么)。
+func adminPlansUsage(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagCore) {
+		return
+	}
+	if model.DB == nil {
+		internalError(c, db.ErrNotReady)
+		return
+	}
+	ctx, cancel := guard.ColdContext(c.Request.Context())
+	defer cancel()
+
+	planIds := make([]int, 0, 16)
+	if err := model.DB.WithContext(ctx).Model(&model.SubscriptionPlan{}).
+		Pluck("id", &planIds).Error; err != nil {
+		internalError(c, err)
+		return
+	}
+
+	holders, err := activeHolders(model.DB.WithContext(ctx), planIds, common.GetTimestamp())
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+
+	gdb := db.Get()
+	if gdb == nil {
+		internalError(c, db.ErrNotReady)
+		return
+	}
+	seatRows := make([]PlanSeat, 0, len(planIds))
+	if err := gdb.WithContext(ctx).Find(&seatRows).Error; err != nil {
+		db.MarkFailure(err)
+		internalError(c, err)
+		return
+	}
+	capacities := make(map[int]int, len(seatRows))
+	for _, r := range seatRows {
+		capacities[r.PlanId] = r.Capacity
+	}
+
+	// 逐个套餐都出一行(占用 0 的也出),而不是只回有人用的那些:少一行在前端
+	// 是 undefined,而 undefined 会被渲染成空白 —— 与"这个套餐 0 人"长得完全不同
+	// 却看不出区别。这里的一行 0 是明确的"数过了,没人"。
+	out := make([]planSeatUsage, 0, len(planIds))
+	for _, id := range planIds {
+		out = append(out, planSeatUsage{
+			PlanId:    id,
+			UsedSeats: holders[id],
+			Capacity:  capacities[id],
+		})
+	}
+	respond(c, gin.H{"plans": out})
 }
 
 // readSeatRow 读一个套餐的名额配置行。没有配过时返回零值行,不是错误。

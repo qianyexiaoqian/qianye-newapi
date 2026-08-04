@@ -18,6 +18,70 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { TFunction } from 'i18next'
 
+import type { LoginSession } from '@/stores/auth-store'
+
+/** 一页 6 条（项目方指定）。 */
+export const LOGIN_SESSIONS_PAGE_SIZE = 6
+
+export interface LoginSessionSummary {
+  /** 恒等于 active + expired，也恒等于所有分页加起来实际渲染的条数。 */
+  total: number
+  active: number
+  expired: number
+}
+
+export interface LoginSessionEntry {
+  session: LoginSession
+  expired: boolean
+}
+
+export interface LoginSessionsView {
+  summary: LoginSessionSummary
+  /** 夹紧后的当前页，1 起。 */
+  page: number
+  pageCount: number
+  /** 当前页要渲染的会话。 */
+  visible: LoginSessionEntry[]
+}
+
+/**
+ * 把一整份会话列表折算成"这一页渲染什么 + 头部统计显示什么"。
+ *
+ * 做成一个函数而不是几个散装 helper，是为了让"统计与列表同源"成为结构性保证：
+ * 逐条的 `expired` 标记和 `summary` 的三个数字出自同一趟遍历、同一个
+ * `nowSeconds`、同一份数组，不存在两处各自取一次时钟然后在边界上打架的可能。
+ * 同理，这里**不按到期与否过滤列表** —— 一旦过滤，头部数字就会和实际能翻到的
+ * 条数对不上，那是最显眼的一种缺陷。
+ */
+export function buildLoginSessionsView(
+  sessions: readonly LoginSession[],
+  requestedPage: number,
+  nowSeconds: number
+): LoginSessionsView {
+  const entries = sessions.map((session) => ({
+    session,
+    // 判据只认后端真实下发的 expires_at（Unix 秒），不拿 last_active_at 推算。
+    expired: session.expires_at <= nowSeconds,
+  }))
+  const expired = entries.filter((entry) => entry.expired).length
+
+  const total = entries.length
+  const pageCount = total <= 0 ? 1 : Math.ceil(total / LOGIN_SESSIONS_PAGE_SIZE)
+  // 撤销掉当前页最后一条后总数会缩水，旧页码就指向一页空白。渲染时夹一次即等于
+  // 自动回退，不必用 useEffect 追着 setState 补救（那会先渲染出一帧空列表）。
+  const page = Number.isFinite(requestedPage)
+    ? Math.min(Math.max(1, Math.trunc(requestedPage)), pageCount)
+    : 1
+  const start = (page - 1) * LOGIN_SESSIONS_PAGE_SIZE
+
+  return {
+    summary: { total, active: total - expired, expired },
+    page,
+    pageCount,
+    visible: entries.slice(start, start + LOGIN_SESSIONS_PAGE_SIZE),
+  }
+}
+
 export function sessionDevice(
   userAgent: string,
   unknownDevice: string,

@@ -136,6 +136,9 @@
   "qy_plan_seat_unlimited": "不限",
   "qy_plan_seat_over_cap": "（当前占用已经超过这个名额，已有订阅不受影响，但不会再有新用户买得进来）",
   "qy_plan_seat_cap_save_failed": "套餐已保存，但总名额没写进去，请重新打开该套餐再设一次",
+  "qy_plan_active_users": "当前人数",
+  "qy_plan_active_users_hint": "当前已激活且尚未到期的人数，按用户去重；斜杠后面是全站总名额。订阅到期或被取消后名额立即释放。",
+  "qy_plan_active_users_failed": "人数没读到",
   "qy_plan_delete_title": "删除套餐",
   "qy_plan_delete_desc": "确定删除套餐「{{plan}}」？删除后无法恢复。",
   "qy_plan_delete_confirm": "删除",
@@ -1386,5 +1389,13 @@
   "qy_vio_shadow_reason_breaker": "熔断钳位",
   "qy_vio_shadow_reason_dup_builtin_fee": "上游已扣过",
   "qy_common_close": "关闭",
-  "qy_common_yes": "有"
+  "qy_common_yes": "有",
+  "qy_maint_core_version_hint": "上游 new-api 内核版本",
+  "qy_maint_fork_version": "二开版本",
+  "qy_maint_fork_based_on": "基于上游 {{version}}",
+  "qy_maint_version_uninjected": "未注入",
+  "qy_maint_version_uninjected_hint": "构建时未注入版本号（裸 go build），请改用 qianye/scripts/build 构建",
+  "qy_login_sessions_summary": "有效 {{active}} 个",
+  "qy_login_sessions_summary_expired": "有效 {{active}} 个 · 已到期 {{expired}} 个",
+  "qy_login_session_expired": "已到期"
 }

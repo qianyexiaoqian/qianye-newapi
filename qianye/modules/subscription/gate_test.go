@@ -135,6 +135,42 @@ type subSeed struct {
 	status string
 }
 
+// 闸门的两问必须同口径:第一问("这个人本来就在里面吗")放行的人,必须是
+// 第二问(activeHolders)数得到的人。
+//
+// 这条测试盯的是两问分家时出现的**绕过路径**,而不是名额统计本身。曾经第一问
+// 只看 status='active':一条 end_time 已过、status 仍是 active 的僵尸行
+// (没有 master 节点的部署里清扫任务压根不跑,这种行永久存在)从来不被
+// activeHolders 数到,却能让它的持有人每一次购买都在第一问就 return —— 名额
+// 判定被完整跳过。溢出量等于历史到期人数,没有上界,也不会自愈。
+//
+// 判据:把第一问的 `end_time > ?` 去掉,这里必须变红。
+func TestLapsedHolderCannotBypassTheSeatLimit(t *testing.T) {
+	const planId = 7
+	ext := newExtDB(t)
+	main := newMainDB(t)
+	plan := seedPlan(t, main, planId, "限量套餐")
+	putSeat(t, ext, planId, 1)
+
+	// 老用户 100 的订阅已经到期,但清扫任务没跑到,行还停在 active。
+	seedLapsedSubscription(t, main, 100, planId)
+	// 名额因此是空的,新用户 200 买走了唯一的那一个。
+	require.NoError(t, gateSeat(main, plan, 200, "balance", nil),
+		"前置条件:僵尸行不占名额,新用户买得进来")
+	seedSubscription(t, main, 200, planId, "active")
+
+	// 老用户回来续订。他此刻并不在里面(那条订阅上游已经判定不可用),
+	// 必须和其他人一样受名额约束。
+	err := gateSeat(main, plan, 100, "balance", nil)
+
+	require.Error(t, err, "僵尸行的持有人不能凭它跳过名额判定,否则 capacity=1 的套餐会有 2 个真实在用人")
+	assert.Contains(t, err.Error(), "名额已满")
+
+	// 反面:真正未到期的持有人续订照常放行,名额没有变成"到期即出局"。
+	assert.NoError(t, gateSeat(main, plan, 200, "balance", nil),
+		"还在有效期内的人续订不消耗新名额")
+}
+
 // 入参 err 非 nil 时闸门必须原样透传,并且一条语句都不发。
 //
 // 这条契约不是洁癖:调用点是 `err = QyGateSubscriptionSeat(tx, ..., err)`,
@@ -306,7 +342,7 @@ func TestUpstreamCreatePathIsGatedBySeatLimit(t *testing.T) {
 	assert.EqualValues(t, 2, rows)
 }
 
-// 三条管理端路由的**路径与方法**必须与前端调用的字符串逐字一致。
+// 四条管理端路由的**路径与方法**必须与前端调用的字符串逐字一致。
 //
 // 这两侧此前没有任何测试:后端把路由改成别的字符串、或前端拼错一个词,
 // 表现都是 404,而 qy 前端客户端会把「没有 code 的 404」一律归类成"扩展未启用"
@@ -325,6 +361,7 @@ func TestAdminRoutesMatchTheContractTheFrontendCalls(t *testing.T) {
 	}
 	for _, want := range []string{
 		"GET /api/qy/admin/subscription/plans/:plan_id/usage",
+		"GET /api/qy/admin/subscription/plans-usage",
 		"PUT /api/qy/admin/subscription/plans/:plan_id/seat-limit",
 		"POST /api/qy/admin/subscription/plans/:plan_id/delete",
 	} {

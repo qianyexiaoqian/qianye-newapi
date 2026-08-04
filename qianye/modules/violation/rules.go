@@ -496,6 +496,10 @@ func scan(rules []*compiledRule, dict []string, in scanInput, text string) *verd
 	}
 	deadline := start.Add(budget)
 
+	// 字符层归一**必须在这一步**,而不是靠某条规则的模式串去兼容:
+	// `Ign<U+200B>ore all previous instructions` 对 RE2 与 AC 都是一个全新的字符串,
+	// 任何写得再好的规则都接不住它(实测:去噪之前,内置目录对这个输入零命中)。
+	text = normalizeForScan(text)
 	lower := strings.ToLower(text)
 
 	// 关键词只扫一次:全部 keyword 规则共用一份词典,命中集合再按规则求交。
@@ -624,6 +628,112 @@ func clipHeadTail(s string, max int) string {
 		tailFrom++
 	}
 	return head + "\n...[truncated]...\n" + s[tailFrom:]
+}
+
+// invisibleRune 判断一个 rune 是否"排版上不占位、语义上不表意"。
+//
+// 这张表是刻意最小化的,只收**删掉之后人眼看到的文字不变**的字符。判据就是这一句:
+// 删掉它,用户屏幕上的文字一个都不变,所以删掉它不可能凭空造出一次误伤 ——
+// 而不删掉它,`Ign<U+FE0F>ore` 对 RE2 就是一个全新的字符串,再好的规则也接不住。
+//
+// 收录范围分四组:
+//   - 零宽/连接控制:ZWSP、ZWNJ、ZWJ、WORD JOINER、BOM、软连字符、组合字位连接符;
+//   - 双向控制符(Trojan Source)与 Unicode tag 区(ASCII smuggling);
+//   - **变体选择符** U+FE00–FE0F 与其补充区 U+E0100–E01EF。这一组是 2026 年
+//     ASCII smuggling 的主流载体,上一版只收了 tag 区、漏了它,实测
+//     `Ign<U+FE0F>ore all prev<U+FE0F>ious instructions` 可以让全部短语级规则失效。
+//     注意 U+FE0F 同时是 emoji 表现选择符,删掉它只会把 ❤️ 变成 ❤,不改变任何字母;
+//   - 废弃格式符 U+206A–206F、行间注释锚 U+FFF9–FFFB、高棉隐形元音 U+17B4–17B5。
+//
+// # 为什么不做同形字映射
+//
+// 西里尔 а → 拉丁 a 这类映射需要一张几千条的表,表里任何一条写错都会凭空制造误伤,
+// 而它的收益是"攻击者少改一个字母"。留作已知敞口,见 zz 红队回归里的 E3 组用例。
+func invisibleRune(r rune) bool {
+	switch r {
+	case 0x00AD, // SOFT HYPHEN
+		0x034F,                         // COMBINING GRAPHEME JOINER
+		0x061C,                         // ARABIC LETTER MARK
+		0x180E,                         // MONGOLIAN VOWEL SEPARATOR
+		0x200B,                         // ZERO WIDTH SPACE
+		0x200C,                         // ZERO WIDTH NON-JOINER
+		0x200D,                         // ZERO WIDTH JOINER
+		0x200E,                         // LEFT-TO-RIGHT MARK
+		0x200F,                         // RIGHT-TO-LEFT MARK
+		0x2060,                         // WORD JOINER
+		0x2061, 0x2062, 0x2063, 0x2064, // 不可见数学运算符
+		0xFEFF: // ZERO WIDTH NO-BREAK SPACE / BOM
+		return true
+	}
+	return (r >= 0x17B4 && r <= 0x17B5) || // 高棉隐形元音
+		(r >= 0x202A && r <= 0x202E) || // 双向嵌入/覆盖
+		(r >= 0x2066 && r <= 0x206F) || // 双向隔离 + 废弃的格式控制符
+		(r >= 0xFE00 && r <= 0xFE0F) || // 变体选择符 VS1–VS16
+		(r >= 0xFFF9 && r <= 0xFFFB) || // 行间注释锚
+		(r >= 0xE0000 && r <= 0xE007F) || // Unicode tag 区
+		(r >= 0xE0100 && r <= 0xE01EF) // 变体选择符补充区 VS17–VS256
+}
+
+// exoticSpace 判断一个 rune 是否"渲染成一个空格,但不是 ASCII 空格"。
+//
+// 这一组必须**折叠成空格**而不是删掉:全部内置模式串的词间连接符都是 `\s+`,
+// 而 Go 的 RE2 里 `\s` 只认 ASCII `[\t\n\f\r ]`。把 NBSP 删掉会让
+// `without refusal` 黏成 `withoutrefusal`,比原样留着还难匹配;折成空格才等价还原。
+//
+// 这是本轮最重要的一处引擎修复:对整段载荷做一次"空格 → U+00A0"全局替换,
+// 不需要了解任何一条规则,就能让**全部**短语级规则同时失效(实测全载荷零命中)。
+// 它与同义改写的区别在于成本 —— 同义改写要逐个短语重写,这个只要一次 sed。
+func exoticSpace(r rune) bool {
+	switch r {
+	case 0x00A0, // NO-BREAK SPACE
+		0x1680, // OGHAM SPACE MARK
+		0x202F, // NARROW NO-BREAK SPACE
+		0x205F, // MEDIUM MATHEMATICAL SPACE
+		0x3000: // IDEOGRAPHIC SPACE(全角空格)
+		return true
+	}
+	// U+2000–200A 是各种定宽空格。上界必须停在 200A:200B 起是零宽系列,
+	// 那一组归 invisibleRune 删除,折成空格反而会切断本来连着的词。
+	return r >= 0x2000 && r <= 0x200A
+}
+
+// foldFullwidthASCII 把全角拉丁字母与数字折回半角。
+//
+// **只折字母与数字,一个标点都不碰**,这是与 NFKC 的关键差别:NFKC 会把
+// pressure.control_token 第二个分支依赖的全角竖线 U+FF5C 折成半角 `|`,
+// 让那条已经导入到运营库里的规则静默失效(规则要等人手工点"升级"才换模式串,
+// 中间这段时间它看着正常、实际永不命中)。字母与数字没有任何规则依赖其全角形态。
+func foldFullwidthASCII(r rune) rune {
+	switch {
+	case r >= 0xFF10 && r <= 0xFF19: // ０-９
+		return r - 0xFF10 + '0'
+	case r >= 0xFF21 && r <= 0xFF3A: // Ａ-Ｚ
+		return r - 0xFF21 + 'A'
+	case r >= 0xFF41 && r <= 0xFF5A: // ａ-ｚ
+		return r - 0xFF41 + 'a'
+	}
+	return r
+}
+
+// normalizeRune 是三条归一规则的合并形态:隐形字符删除、异体空格折成空格、
+// 全角字母数字折成半角。返回值等于入参表示这个 rune 不需要动。
+func normalizeRune(r rune) rune {
+	if invisibleRune(r) {
+		return -1
+	}
+	if exoticSpace(r) {
+		return ' '
+	}
+	return foldFullwidthASCII(r)
+}
+
+// normalizeForScan 对待检文本做一次字符层归一。
+// 绝大多数请求一个需要处理的字符都没有,所以先扫一遍再决定要不要复制。
+func normalizeForScan(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool { return normalizeRune(r) != r }) {
+		return s
+	}
+	return strings.Map(normalizeRune, s)
 }
 
 // safeCut 返回不超过 n 且落在 rune 边界上的切点。

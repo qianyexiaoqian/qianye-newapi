@@ -107,12 +107,39 @@ func TestDeletePlan_RefusesWhenActiveSubscriptionsExist(t *testing.T) {
 	body := rec.Body.String()
 	assert.Contains(t, body, "qy_subscription_plan_in_use")
 	assert.Contains(t, body, `"active_subscriptions":3`)
-	assert.Contains(t, body, `"active_users":2`, "受影响人数必须去重,与名额口径同源")
+	assert.Contains(t, body, `"active_users":2`, "受影响人数必须去重:同一个人的两条订阅只算一个人")
 	assert.True(t, planExists(t, main, 1))
 	assert.Equal(t, []string{"active", "active", "active", "expired"}, subStatuses(t, main, 1),
 		"被拒绝的删除不许留下任何副作用")
 	assert.Equal(t, []string{"subscription.plan.delete:fail"}, auditActions(t, ext),
 		"被拒绝的删除同样要留痕:反复尝试删一个在用套餐正是最该查的东西")
+}
+
+// 删除影响面与名额占用是两个口径,**刻意**不同源,这条测试把差异钉死。
+//
+// 一条 end_time 已过、status 仍是 active 的僵尸行(没有 master 节点的部署里
+// 清扫任务不跑,这种行永久存在):它不占名额(activeHolders 数不到它,管理端
+// 列表因此显示 0 人),但删除时它照样会被级联作废、持有人照样要被降级。
+//
+// 判据:把 measurePlanImpact 改成走 activeHolders,这里必须变红 —— 那个改动会让
+// 一个不可逆的破坏性操作**少报**受影响的人数。
+func TestPlanImpactCountsLapsedRowsThatDeletionWillStillCascade(t *testing.T) {
+	newExtDB(t)
+	main := newMainDB(t)
+	seedPlan(t, main, 1, "月度套餐")
+	seedLapsedSubscription(t, main, 100, 1)
+	seedLapsedSubscription(t, main, 200, 1)
+
+	rec := callDelete(t, "1", `{"reason":"下架旧套餐"}`)
+
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	body := rec.Body.String()
+	assert.Contains(t, body, `"active_subscriptions":2`,
+		"这两行确实会被删除级联作废,影响面必须照数")
+	assert.Contains(t, body, `"active_users":2`,
+		"两个人的订阅都会被作废、都会被降级刷缓存,少报一个都不行")
+	assert.Equal(t, []string{"active", "active"}, subStatuses(t, main, 1),
+		"被拒绝的删除不许留下任何副作用")
 }
 
 // 默认路径:待处理订单同样构成拒绝理由。

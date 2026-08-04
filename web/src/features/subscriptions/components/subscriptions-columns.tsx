@@ -24,13 +24,31 @@ import { BadgeCell } from '@/components/data-table'
 import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge } from '@/components/status-badge'
 import { TableId } from '@/components/table-id'
+import { Skeleton } from '@/components/ui/skeleton'
 import { formatQuota } from '@/lib/format'
 
 import { formatDuration, formatResetPeriod } from '../lib'
-import type { PlanRecord } from '../types'
+import type { PlanRecord, PlanSeatUsage } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
 
-export function useSubscriptionsColumns(): ColumnDef<PlanRecord>[] {
+/**
+ * 占用人数这一列的四种状态。
+ *
+ * 四种都必须有明确的显示：三种失败/未就绪状态如果都渲染成空白，管理员看到的
+ * 是"这个套餐 0 个人"，而真相可能是"没读到"—— 这两件事会导出完全相反的运营动作。
+ *
+ * `hidden` 是 qy 扩展整体未启用（后端回 404，qy 客户端归类成 `disabled`）。
+ * 这一档不显示错误而是**整列消失**：功能本来就不存在，摆一列错误只会让管理员
+ * 去追一个不存在的问题。
+ */
+export type SeatUsageState = {
+  status: 'loading' | 'ready' | 'error' | 'hidden'
+  byPlanId: Map<number, PlanSeatUsage>
+}
+
+export function useSubscriptionsColumns(
+  seatUsage: SeatUsageState
+): ColumnDef<PlanRecord>[] {
   const { t } = useTranslation()
 
   return useMemo(
@@ -135,6 +153,71 @@ export function useSubscriptionsColumns(): ColumnDef<PlanRecord>[] {
           ),
         size: 80,
       },
+      // 占用人数：数据来自 qy 扩展（上游表上没有这个数）。扩展未启用时整列消失，
+      // 而不是留一列错误 —— 功能本来就不存在。
+      ...(seatUsage.status === 'hidden'
+        ? []
+        : [
+            {
+              id: 'active_users',
+              header: t('qy_plan_active_users'),
+              size: 110,
+              cell: ({ row }) => {
+                if (seatUsage.status === 'loading') {
+                  return <Skeleton className='h-4 w-12' />
+                }
+                if (seatUsage.status === 'error') {
+                  return (
+                    <span className='text-destructive text-xs'>
+                      {t('qy_plan_active_users_failed')}
+                    </span>
+                  )
+                }
+                const usage = seatUsage.byPlanId.get(row.original.plan.id)
+                if (!usage) {
+                  // 后端对每个套餐都回一行，所以缺行只可能是"套餐列表与占用是两次
+                  // 请求，中间刚建了一个新套餐"。显示成 0 会是假数字，显示破折号
+                  // 才是真话：这一行还没数过。
+                  return <span className='text-muted-foreground'>—</span>
+                }
+                // 超卖是闸门的已知残余风险（并发购买，见后端 gate.go 的 R1），
+                // 它的唯一可见处就是这里，所以必须一眼看得出来而不是静静显示成 4/3。
+                //
+                // 配色与提示都对齐编辑抽屉里的同一事实（subscriptions-mutate-drawer
+                // 的 qy_plan_seat_usage 那一段）：同一个超卖套餐在列表页和抽屉里
+                // 必须是同一种严重度，两种颜色会被读成两件不同的事。
+                // qy_plan_seat_over_cap 是设计成追加在句子后面的括号补语，
+                // 所以这里也追加而不是单独拿来当整条提示——单独用会弹出一个以
+                // 全角括号开头、语法上悬空的片段。
+                const over =
+                  usage.capacity > 0 && usage.used_seats > usage.capacity
+                return (
+                  <span
+                    className='inline-flex items-baseline gap-1'
+                    title={
+                      over
+                        ? `${t('qy_plan_active_users_hint')} ${t('qy_plan_seat_over_cap')}`
+                        : t('qy_plan_active_users_hint')
+                    }
+                  >
+                    <span
+                      className={
+                        over ? 'text-destructive font-semibold' : 'font-medium'
+                      }
+                    >
+                      {usage.used_seats}
+                    </span>
+                    <span className='text-muted-foreground text-xs'>
+                      /{' '}
+                      {usage.capacity > 0
+                        ? usage.capacity
+                        : t('qy_plan_seat_unlimited')}
+                    </span>
+                  </span>
+                )
+              },
+            } satisfies ColumnDef<PlanRecord>,
+          ]),
       {
         id: 'payment',
         header: t('Payment Channel'),
@@ -205,6 +288,6 @@ export function useSubscriptionsColumns(): ColumnDef<PlanRecord>[] {
         meta: { pinned: 'right' as const },
       },
     ],
-    [t]
+    [t, seatUsage]
   )
 }

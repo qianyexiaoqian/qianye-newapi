@@ -27,6 +27,7 @@ import type {
   PlanRecord,
   PlanPayload,
   PlanUsage,
+  PlansUsageResult,
   SubscriptionPlan,
   UserSubscriptionRecord,
   CreateUserSubscriptionRequest,
@@ -96,6 +97,20 @@ const QY_ADMIN_PLAN_PATH = '/admin/subscription/plans'
 
 export function getPlanUsage(planId: number): Promise<PlanUsage> {
   return qyGet<PlanUsage>(`${QY_ADMIN_PLAN_PATH}/${planId}/usage`)
+}
+
+/**
+ * 列表页一次拿全部套餐的占用人数。
+ *
+ * 路径是 `/admin/subscription/plans-usage` 而不是 `${QY_ADMIN_PLAN_PATH}/usage`：
+ * 后者会与 `${QY_ADMIN_PLAN_PATH}/:plan_id/usage` 抢同一个路径段，是 gin 路由树里
+ * "静态段与通配段互斥"的经典冲突，表现是**后端启动即 panic**。
+ *
+ * 逐个套餐调 `getPlanUsage` 就是 N+1 次请求，而且每一次都要重查套餐、重数订阅、
+ * 重读一次扩展库；这里是固定 3 次查询。
+ */
+export function getPlansUsage(): Promise<PlansUsageResult> {
+  return qyGet<PlansUsageResult>('/admin/subscription/plans-usage')
 }
 
 export function setPlanSeatLimit(

@@ -29,10 +29,19 @@ import { loginMethodLabel, sessionDevice } from './login-session-utils'
 
 interface LoginSessionItemProps {
   session: LoginSession
+  /**
+   * 由 `buildLoginSessionsView` 算好后传入，**不要**在这里自行读时钟：
+   * 徽标与卡片头部的统计必须出自同一个 now，否则边界上两者会互相打脸。
+   */
+  expired: boolean
   onRevoke: (session: LoginSession) => void
 }
 
-export function LoginSessionItem({ session, onRevoke }: LoginSessionItemProps) {
+export function LoginSessionItem({
+  session,
+  expired,
+  onRevoke,
+}: LoginSessionItemProps) {
   const { t } = useTranslation()
   const maxTouchPoints =
     session.current && typeof navigator !== 'undefined'
@@ -55,6 +64,9 @@ export function LoginSessionItem({ session, onRevoke }: LoginSessionItemProps) {
             )}
           </p>
           {session.current && <Badge variant='secondary'>{t('Current')}</Badge>}
+          {expired && (
+            <Badge variant='destructive'>{t('qy_login_session_expired')}</Badge>
+          )}
         </div>
         <p className='text-muted-foreground mt-1 text-xs'>
           {t('IP: {{ip}} · Method: {{method}}', {

@@ -375,9 +375,26 @@ func sweepPlanRace(planId int) (cascadeResult, bool) {
 //
 // 三个数字各有用途,缺一不可:
 //   - ActiveSubscriptions 决定要不要级联,也是拒绝时最直观的那个数;
-//   - ActiveUsers 是去重人数,与名额口径同源,让管理员看到"影响多少人"而不只是
-//     "多少条记录"(一个人可能持有同一套餐的多条订阅);
+//   - ActiveUsers 是去重人数,让管理员看到"影响多少人"而不只是"多少条记录"
+//     (一个人可能持有同一套餐的多条订阅);
 //   - PendingOrders 是"钱可能已经在路上"的那一批,它才是默认拒绝的真正理由。
+//
+// # 为什么这里不用 holders.go 的 activeHolders
+//
+// 两个数字问的不是同一件事,**刻意**不同源:
+//
+//	activeHolders   "还剩几个名额" → status='active' AND end_time > now
+//	measurePlanImpact "删下去会波及谁" → status='active'(不看 end_time)
+//
+// 删除路径级联作废的是**所有** status='active' 的行,不看 end_time(见上面
+// 那条 UPDATE)。所以影响面必须按同一个范围数:一条到期但尚未被清扫的订阅
+// 不占名额(它已经用不了了),但删除时它照样会被改写、它的持有人照样会被
+// 降级刷缓存。用名额口径来数影响面会**少报**受影响的人,而这是一个不可逆的
+// 破坏性操作 —— 宁可多报,不能少报。
+//
+// 代价是管理端可能看到两个不一样的数(列表列显示"当前 0 人",删除拒绝提示说
+// "3 人")。这不是漂移,是"名额空着"与"仍有 3 条行要被作废"这两件事同时为真。
+// 由 TestPlanImpactCountsLapsedRowsThatDeletionWillStillCascade 锁住。
 func measurePlanImpact(tx *gorm.DB, planId int) (planImpact, error) {
 	var out planImpact
 	if err := tx.Model(&model.UserSubscription{}).

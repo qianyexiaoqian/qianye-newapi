@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { qyGet } from '@/features/qy/lib/api'
 import { api } from '@/lib/api'
 import type { LoginSession } from '@/stores/auth-store'
 
@@ -223,4 +224,25 @@ export async function performCheckin(
     : '/api/user/checkin'
   const res = await api.post(url)
   return res.data
+}
+
+/**
+ * 登录会话的分档计数(千夜扩展端点)。
+ *
+ * 为什么不从上面的 getLoginSessions() 算:上游 `model.ListActiveUserSessions`
+ * 的 WHERE 带 `status='active' AND expires_at > now`,**已到期的会话结构性地
+ * 不会下发**。拿那份列表算"已到期",结果恒为 0 —— 那不是"确认没有会话到期",
+ * 而是在报告一个不可能非零的数字。
+ *
+ * 千夜端点查的是同一张 user_sessions 表、不同的 WHERE,上游改动为零。
+ * 口径见 qianye/controller/session_stats.go。
+ *
+ * 扩展未启用时它返回 404,由 qyGet 归类成 isHidden —— 调用方据此静默回落到
+ * 「只显示有效数」,而不是弹一个用户无从处理的错误。
+ */
+export function getQyLoginSessionStats(): Promise<{
+  active: number
+  expired: number
+}> {
+  return qyGet<{ active: number; expired: number }>('/session-stats')
 }

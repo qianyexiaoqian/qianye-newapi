@@ -122,6 +122,29 @@ export interface PlanUsage {
   max_purchase_per_user: number
 }
 
+/**
+ * 列表页的批量占用（`GET /api/qy/admin/subscription/plans-usage`）。
+ *
+ * `used_seats` 与 {@link PlanUsage.used_seats} 是**同一个数、同一条 SQL**（后端
+ * `qianye/modules/subscription/holders.go` 的 `activeHolders`，闸门也从那里取数）：
+ * 已激活且尚未到期的去重用户数。列表页与编辑弹窗显示的数字不许出现分歧 ——
+ * "页面说还剩 1 个、点下去却被拒"这类问题全部来自两侧各算各的。
+ *
+ * 后端对**每一个**套餐都回一行，包括 0 人的那些。少一行在这里是 `undefined`，
+ * 而 `undefined` 会被渲染成空白，与"这个套餐 0 人"长得完全不同却看不出区别。
+ */
+export interface PlanSeatUsage {
+  plan_id: number
+  /** 当前已激活且尚未到期的去重用户数。 */
+  used_seats: number
+  /** 全站总名额上限；0 = 不限。超卖时 used_seats 会大于它，这是可见且自愈的。 */
+  capacity: number
+}
+
+export interface PlansUsageResult {
+  plans: PlanSeatUsage[]
+}
+
 export interface SetPlanSeatLimitResult {
   plan_id: number
   capacity: number

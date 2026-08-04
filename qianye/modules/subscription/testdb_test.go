@@ -157,6 +157,18 @@ func seedSubscription(t *testing.T, gdb *gorm.DB, userId, planId int, status str
 	}).Error)
 }
 
+// seedLapsedSubscription 插一条 end_time 已经过去、status 却还是 'active' 的订阅。
+//
+// 这正是生产里最容易被忽略的一种行:上游的 ExpireDueSubscriptions 是每分钟一批的
+// 后台任务,而且只在 master 节点上跑 —— 没有 master 的部署里这种行会永远存在。
+func seedLapsedSubscription(t *testing.T, gdb *gorm.DB, userId, planId int) {
+	t.Helper()
+	require.NoError(t, gdb.Create(&model.UserSubscription{
+		UserId: userId, PlanId: planId, Status: "active",
+		StartTime: 1, EndTime: common.GetTimestamp() - 60,
+	}).Error)
+}
+
 // seedOrder 往主库插一条订阅订单。
 func seedOrder(t *testing.T, gdb *gorm.DB, userId, planId int, tradeNo, status string) {
 	t.Helper()
