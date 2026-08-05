@@ -198,6 +198,119 @@ func adminPlansUsage(c *gin.Context) {
 	respond(c, gin.H{"plans": out})
 }
 
+// holderPaging 是下钻列表的分页口径。
+//
+// 一个热门套餐可能有几百上千人,一次全量返回既拖慢管理端也会把一整份用户名
+// 清单塞进一个响应里。默认 20 条与扩展其余列表一致,上限 100 由 httpq 兜住。
+var holderPaging = httpq.Spec{}
+
+// planHolder 是下钻列表里的一个人。
+type planHolder struct {
+	UserId int `json:"user_id"`
+	// Username 是主库 users.username 的原值。管理端有权看到真实用户名 ——
+	// 脱敏(commission/mask.go)针对的是"用户看别的用户"那个方向,不是这里。
+	// 用户已被删除时为空串,由 UserDeleted 区分"没这个人"与"名字是空的"。
+	Username string `json:"username"`
+	// UserDeleted 为真表示这个人在主库里已被删除(软删除,或整行不存在),
+	// 而他的订阅还在占着名额。这不是边角料:这种行在用户管理里查不到,
+	// 名额却一直被占,不显式标出来的话,运营只会觉得"人数对不上"。
+	UserDeleted bool `json:"user_deleted"`
+	// Status 恒为 active:这个列表按定义只列**当前占着名额**的人。
+	// 仍然下发,是因为这个列表是从"当前人数"那个数字点进来的,一列明确写着
+	// "生效中"的状态能直接回答"这里列的是现在的人,不是历史买过的人"。
+	Status string `json:"status"`
+	// Subscriptions 是这个人在该套餐下正占着名额的订阅条数(同一人可能多条)。
+	Subscriptions int64 `json:"subscriptions"`
+	// StartTime / EndTime 是这个人的最早开始与最晚到期时间(unix 秒)。
+	StartTime int64 `json:"start_time"`
+	EndTime   int64 `json:"end_time"`
+}
+
+// adminPlanHolders 列出一个套餐当前的名额占用者:具体是哪些人。
+//
+// # 与「当前人数」那个数字的关系
+//
+// total 直接调 activeHolders —— 与列表页那一列**同一个函数**,不是另写一份
+// COUNT。分页行则走 activeHolderPage,它与 activeHolders 共用
+// holdingSubscriptions 这一个 WHERE。于是"数字说 7、点开只有 5 行"在结构上
+// 不可能发生:两者是同一个集合的两种投影。
+//
+// now 在本函数里只取一次并同时传给两侧。少了这一条,计数与列表会各自取一次
+// 时钟,中间恰好有人到期就会差一行 —— 一个每天只发生几次、永远复现不了的
+// "偶尔对不上",正是最贵的那种缺陷。
+//
+// **纯读接口,无任何副作用**,与同文件的两个 usage 接口同口径:管理端的 GET
+// 不写库、不写审计(审计只记录改变了什么,而这里什么都没改)。
+func adminPlanHolders(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagCore) {
+		return
+	}
+	planId, ok := planIdParam(c)
+	if !ok {
+		return
+	}
+	if model.DB == nil {
+		internalError(c, db.ErrNotReady)
+		return
+	}
+	page, size := httpq.Paginate(c, holderPaging)
+
+	ctx, cancel := guard.ColdContext(c.Request.Context())
+	defer cancel()
+
+	var plan model.SubscriptionPlan
+	if err := model.DB.WithContext(ctx).Where("id = ?", planId).First(&plan).Error; err != nil {
+		badRequest(c, "qy_subscription_plan_not_found", "套餐不存在")
+		return
+	}
+
+	q := model.DB.WithContext(ctx)
+	now := common.GetTimestamp()
+	holders, err := activeHolders(q, []int{planId}, now)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	rows, err := activeHolderPage(q, planId, now, page, size)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+
+	userIds := make([]int, 0, len(rows))
+	for _, r := range rows {
+		userIds = append(userIds, r.UserId)
+	}
+	// 用户名查不到不算失败:这一页的行数由订阅决定,名字只是注解。查询本身
+	// 出错才是错误 —— 那时宁可整页失败,也不要摆一屏"用户已删除"的假象。
+	identities, err := lookupHolders(q, userIds)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+
+	items := make([]planHolder, 0, len(rows))
+	for _, r := range rows {
+		id, found := identities[r.UserId]
+		items = append(items, planHolder{
+			UserId:        r.UserId,
+			Username:      id.Username,
+			UserDeleted:   !found || id.Deleted.Valid,
+			Status:        r.Status,
+			Subscriptions: r.Subscriptions,
+			StartTime:     r.FirstStart,
+			EndTime:       r.LastEnd,
+		})
+	}
+	respond(c, gin.H{
+		"plan_id":   planId,
+		"items":     items,
+		"total":     holders[planId],
+		"p":         page,
+		"page_size": size,
+	})
+}
+
 // readSeatRow 读一个套餐的名额配置行。没有配过时返回零值行,不是错误。
 //
 // 刻意不复用 seats.go 的进程内缓存,理由同 adminPlanUsage:管理端要看库里的真值。

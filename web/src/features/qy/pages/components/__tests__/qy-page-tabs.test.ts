@@ -44,6 +44,7 @@ const qyDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const HOST_SOURCES: Readonly<Record<string, string>> = {
   '/wallet': join(qyDir, 'pages', 'wallet-transfer', 'index.tsx'),
   '/qy/affiliate': join(qyDir, 'pages', 'affiliate', 'hub.tsx'),
+  '/qy/lottery': join(qyDir, 'pages', 'lottery', 'hub.tsx'),
 }
 
 describe('选择夹的正文覆盖度', () => {

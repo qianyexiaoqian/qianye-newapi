@@ -322,6 +322,11 @@ describe('qyGmCaseNearMisses', () => {
           managed: false,
           mode: 'shadow',
           allow_auto: true,
+          auto_masked: false,
+          auto_masked_at: 0,
+          pending_setup: false,
+          policy_skipped: false,
+          policy_skipped_reason: '',
         },
       ],
       [{ name: 'vip', base_ratio: '1', has_channels: true }]
@@ -339,6 +344,11 @@ describe('qyGmCaseNearMisses', () => {
           managed: false,
           mode: 'shadow',
           allow_auto: true,
+          auto_masked: false,
+          auto_masked_at: 0,
+          pending_setup: false,
+          policy_skipped: false,
+          policy_skipped_reason: '',
         },
       ],
       [{ name: 'vip', base_ratio: '1', has_channels: true }]

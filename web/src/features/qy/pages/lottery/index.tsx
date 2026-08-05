@@ -16,154 +16,29 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { Ticket } from 'lucide-react'
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Button } from '@/components/ui/button'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-
-import { QyPageBoundary } from '../../components/qy-page-boundary'
-import { QySectionPageLayout } from '../../components/qy-section-page-layout'
-import { useQyConfig } from '../../hooks/use-qy-config'
-import { qyArray } from '../../lib/array'
-import { QyPager } from '../components/qy-pager'
-import { QyFilterBar, QyFilterField } from '../ops/qy-ops-ui'
-import { QY_LOT_PAGE_SIZE, qyLotActivitiesQuery } from './api'
-import { QyLotActivityCard } from './components/lottery-activity-card'
-import { useQyNowSeconds } from './lib/use-now'
-
-const ALL = 'all'
+import { QyLotHallList } from './components/lottery-hall-list'
+import type { QyLotHallState } from './components/lottery-hall-list'
 
 /**
- * 抽奖 / 竞猜大厅。
+ * 抽奖大厅（选择夹的第一张标签）。
  *
- * 分「进行中」与「已结束」两张标签，而不是把已结束的混在后面翻页 ——
- * 项目方要的「结束的抽奖活动要保留，作为历史公正查询」落点就在第二张标签上：
- * 它不是归档，是每个人随时可以回去复核的地方。
+ * 只是正文：区段头与标签栏由宿主 `hub.tsx` 提供。它曾经是一个独立页面
+ * （`QyLottery`），需求 2 之后降级 —— 标签页里再套一层区段头会得到两级标题。
+ *
+ * 顶部那句风险提示不是装饰：与竞猜合并进同一个菜单之后，两类活动在用户心里
+ * 会糊成一件事，而「参与费不退」与「可能亏本金」是两种完全不同的代价。
+ * 靠卡片配色暗示是不够的。
  */
-export function QyLottery() {
+export function QyLotteryDrawBody(props: QyLotHallState) {
   const { t } = useTranslation()
-  const config = useQyConfig()
-  const now = useQyNowSeconds()
-
-  const [kind, setKind] = useState(ALL)
-  const [scope, setScope] = useState<'done' | 'open'>('open')
-  const [page, setPage] = useState(1)
-
-  const params = {
-    p: page,
-    page_size: QY_LOT_PAGE_SIZE,
-    kind: kind === ALL ? undefined : kind,
-    status: scope,
-  }
-  const query = useQuery(qyLotActivitiesQuery(params))
-  const items = qyArray(query.data?.items)
-
   return (
-    <QySectionPageLayout>
-      <QySectionPageLayout.Title>
-        {t('qy_nav_lottery')}
-      </QySectionPageLayout.Title>
-      <QySectionPageLayout.Actions>
-        <Button
-          size='sm'
-          variant='outline'
-          render={<Link to='/qy/lottery-records' />}
-        >
-          {t('qy_nav_lottery_records')}
-        </Button>
-      </QySectionPageLayout.Actions>
-      <QySectionPageLayout.Content>
-        <div className='space-y-3'>
-          {/* 站点把展示开关关掉时，导航里已经没有这一行了；能到这里的只有
-              直达链接。给一句中性说明而不是红色报错 —— 功能没坏，只是这一期
-              不对外开放。 */}
-          {config.status === 'enabled' && !config.lottery.show_entry && (
-            <p className='text-muted-foreground rounded-lg border p-3 text-sm'>
-              {t('qy_lot_entry_hidden_note')}
-            </p>
-          )}
-
-          <Tabs
-            value={scope}
-            onValueChange={(value) => {
-              setScope(value === 'done' ? 'done' : 'open')
-              setPage(1)
-            }}
-          >
-            <div className='flex flex-wrap items-end justify-between gap-2'>
-              <TabsList>
-                <TabsTrigger value='open'>{t('qy_lot_tab_open')}</TabsTrigger>
-                <TabsTrigger value='done'>{t('qy_lot_tab_done')}</TabsTrigger>
-              </TabsList>
-              <QyFilterBar>
-                <QyFilterField label={t('qy_lot_filter_kind')}>
-                  <Select
-                    value={kind}
-                    onValueChange={(value) => {
-                      setKind(value ?? ALL)
-                      setPage(1)
-                    }}
-                  >
-                    <SelectTrigger className='w-32'>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={ALL}>{t('qy_common_all')}</SelectItem>
-                      <SelectItem value='draw'>
-                        {t('qy_lot_kind_draw')}
-                      </SelectItem>
-                      <SelectItem value='guess'>
-                        {t('qy_lot_kind_guess')}
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                </QyFilterField>
-              </QyFilterBar>
-            </div>
-          </Tabs>
-
-          {/* 列表刻意留在 `Tabs` 外面：两张标签的内容形状完全一样，差别只在
-              请求参数。写成两个 `TabsContent` 就是同一段渲染的第二份拷贝，
-              迟早漂移成"已结束那张忘了显示结局"。 */}
-          <QyPageBoundary
-            query={query}
-            isEmpty={query.data != null && items.length === 0}
-            emptyIcon={Ticket}
-            emptyTitle={t('qy_lot_empty_title')}
-            emptyDescription={t('qy_lot_empty_desc')}
-          >
-            <div className='space-y-3'>
-              <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-3'>
-                {items.map((activity) => (
-                  <QyLotActivityCard
-                    key={activity.act_no}
-                    activity={activity}
-                    nowSeconds={now}
-                  />
-                ))}
-              </div>
-              <QyPager
-                page={page}
-                pageSize={QY_LOT_PAGE_SIZE}
-                total={query.data?.total ?? 0}
-                onPageChange={setPage}
-                disabled={query.isFetching}
-              />
-            </div>
-          </QyPageBoundary>
-        </div>
-      </QySectionPageLayout.Content>
-    </QySectionPageLayout>
+    <div className='space-y-3'>
+      <p className='text-muted-foreground rounded-lg border p-3 text-sm'>
+        {t('qy_lot_risk_badge_stake_lost')}
+      </p>
+      <QyLotHallList kind='draw' {...props} />
+    </div>
   )
 }

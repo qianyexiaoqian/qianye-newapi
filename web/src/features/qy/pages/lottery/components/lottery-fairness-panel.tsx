@@ -43,8 +43,17 @@ import type { QyTimelineItem } from '../../../lib/types'
 import { QY_EMPTY_TEXT, formatQyTs } from '../../ops/format'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
 import { qyLotFullProofQuery, qyLotProofDownloadUrl } from '../api'
-import { verifyQyLotProof, type QyLotVerifyStep } from '../lib/verify'
-import type { QyLotActivityDetail, QyLotProof } from '../types'
+import {
+  qyLotBands,
+  verifyQyLotProof,
+  type QyLotVerifyStep,
+} from '../lib/verify'
+import {
+  QY_LOT_PPM_DEN,
+  qyLotTiers,
+  type QyLotActivityDetail,
+  type QyLotProof,
+} from '../types'
 
 const STEP_ICON = {
   ok: CircleCheck,
@@ -165,6 +174,47 @@ export function QyLotFairnessPanel(props: { activity: QyLotActivityDetail }) {
               </QyKeyValue>
             </div>
 
+            {/* 概率制的档位区间表。**这是概率制相对名次制必须额外公开的东西**：
+                名次制里"谁中"由票面排序决定、区间无从谈起；概率制里如果不把
+                每一档占据的摇号区间摆出来，用户就只能相信平台说的那个百分比。
+                各档区间由 `win_ppm` 按 tier 升序累加得到，前端自己算一遍，
+                不用后端下发的数字。 */}
+            {proof != null && proof.draw_mode === 'prob' && (
+              <div className='space-y-1.5'>
+                <h4 className='text-sm font-medium'>
+                  {t('qy_lot_band_table')}
+                </h4>
+                <ul className='space-y-1 text-sm'>
+                  {bandRows(proof).map((row) => (
+                    <li key={row.tier} className='flex flex-wrap gap-2'>
+                      <span className='text-muted-foreground'>
+                        {t('qy_lot_tier_no', { no: row.tier })} {row.name}
+                      </span>
+                      <span className='tabular-nums'>
+                        {t('qy_lot_band_range', {
+                          lo: row.loPpm,
+                          hi: row.hiPpm,
+                          percent: row.percent,
+                        })}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <p className='text-muted-foreground text-xs'>
+                  {t('qy_lot_no_winner_possible')}
+                </p>
+              </div>
+            )}
+
+            {/* 平台对"这份证据证不了什么"的自陈。它由后端随证据链下发，
+                原样列出而不是折叠起来：把边界写在证据里，比让用户自己去撞
+                要诚实，也比一段前端写死的免责声明更难被悄悄改掉。 */}
+            {proof != null && (proof.notice ?? '') !== '' && (
+              <p className='text-muted-foreground text-xs break-words whitespace-pre-wrap'>
+                {proof.notice}
+              </p>
+            )}
+
             {/* 拿到的条目不完整时**必须说出来**，并且不给"验证通过"的假象。 */}
             {proof != null && proof.entries.length !== proof.total && (
               <Alert>
@@ -241,6 +291,34 @@ export function QyLotFairnessPanel(props: { activity: QyLotActivityDetail }) {
       </CardContent>
     </Card>
   )
+}
+
+/**
+ * 各档的摇号区间。
+ *
+ * `win_ppm` 的和超过 100% 时 `qyLotBands` 会抛错 —— 那说明公示的概率表本身
+ * 是错的，这时候渲染一张"看起来没问题"的表就是替平台圆场。所以捕获成空表，
+ * 让上面的 `qy_lot_band_table` 一行都不显示，而验证按钮会在 spec 那一步红。
+ */
+function bandRows(proof: QyLotProof): {
+  hiPpm: number
+  loPpm: number
+  name: string
+  percent: string
+  tier: number
+}[] {
+  const tiers = qyLotTiers(proof.spec)
+  try {
+    return qyLotBands(tiers).map((band) => ({
+      tier: band.tier,
+      name: tiers.find((tier) => tier.tier === band.tier)?.name ?? '',
+      loPpm: band.loPpm,
+      hiPpm: band.hiPpm,
+      percent: (((band.hiPpm - band.loPpm) / QY_LOT_PPM_DEN) * 100).toFixed(4),
+    }))
+  } catch {
+    return []
+  }
 }
 
 /**

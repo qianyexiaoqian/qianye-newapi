@@ -30,6 +30,7 @@ import { formatQuota } from '@/lib/format'
 import { formatDuration, formatResetPeriod } from '../lib'
 import type { PlanRecord, PlanSeatUsage } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
+import { useSubscriptions } from './subscriptions-provider'
 
 /**
  * 占用人数这一列的四种状态。
@@ -50,6 +51,11 @@ export function useSubscriptionsColumns(
   seatUsage: SeatUsageState
 ): ColumnDef<PlanRecord>[] {
   const { t } = useTranslation()
+  // 「当前人数」那一列的数字是下钻入口，点开的弹窗与其余四个弹窗共用同一套
+  // open/currentRow 状态，所以这里直接取 provider，而不是再往 props 里穿一层
+  // 回调 —— 表格 → 列定义 → 单元格三层透传一个只有一个消费者的回调，
+  // 是本仓反复出现的那种"为了不用 context 而多出来的管道"。
+  const { setOpen, setCurrentRow } = useSubscriptions()
 
   return useMemo(
     (): ColumnDef<PlanRecord>[] => [
@@ -191,14 +197,36 @@ export function useSubscriptionsColumns(
                 // 全角括号开头、语法上悬空的片段。
                 const over =
                   usage.capacity > 0 && usage.used_seats > usage.capacity
+                // 数字本身就是下钻入口。项目方原话：「只能看见人数，无法查看
+                // 具体是哪些用户」—— 一个只有人数的界面在需要做事时等于没有：
+                // 下架套餐要先知道会影响到谁，核对"他说买了却没生效"要能找到他。
+                //
+                // 入口做成 <button> 而不是给 <span> 挂 onClick：键盘能 Tab 到、
+                // 回车能触发、读屏会念出"按钮"。挂在 span 上的点击对不用鼠标的人
+                // 等于这个功能不存在。
+                //
+                // 人数为 0 时禁用：点开必然是空列表，而一个点了没反应的数字会让人
+                // 以为界面卡了。cursor-default 让它在视觉上也不像可点。
                 return (
-                  <span
-                    className='inline-flex items-baseline gap-1'
+                  <button
+                    type='button'
+                    disabled={usage.used_seats <= 0}
+                    onClick={() => {
+                      setCurrentRow(row.original)
+                      setOpen('plan-holders')
+                    }}
+                    className='hover:text-primary focus-visible:ring-ring inline-flex items-baseline gap-1 rounded-sm focus-visible:ring-2 focus-visible:outline-none disabled:cursor-default disabled:hover:text-inherit'
                     title={
                       over
                         ? `${t('qy_plan_active_users_hint')} ${t('qy_plan_seat_over_cap')}`
                         : t('qy_plan_active_users_hint')
                     }
+                    // 插值变量刻意不叫 count：i18next 见到 count 会切到复数键
+                    // 解析（qy_..._one / _other），而本仓的语言包是扁平单键，
+                    // 结果是英文下解析不到键、直接把键名渲染到 aria-label 里。
+                    aria-label={t('qy_plan_holders_open', {
+                      n: usage.used_seats,
+                    })}
                   >
                     <span
                       className={
@@ -213,7 +241,7 @@ export function useSubscriptionsColumns(
                         ? usage.capacity
                         : t('qy_plan_seat_unlimited')}
                     </span>
-                  </span>
+                  </button>
                 )
               },
             } satisfies ColumnDef<PlanRecord>,
@@ -288,6 +316,6 @@ export function useSubscriptionsColumns(
         meta: { pinned: 'right' as const },
       },
     ],
-    [t, seatUsage]
+    [t, seatUsage, setOpen, setCurrentRow]
   )
 }

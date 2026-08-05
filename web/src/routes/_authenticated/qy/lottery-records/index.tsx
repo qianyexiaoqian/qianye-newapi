@@ -16,10 +16,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
-import { QyLotteryRecords } from '@/features/qy/pages/lottery-records'
+import { qyTabHash } from '@/features/qy/lib/pages'
 
+/**
+ * 旧路由 —— 本页已被收进 `/qy/lottery` 的选择夹（`QY_TAB_GROUPS`）。
+ *
+ * 保留成重定向而不是删掉：用户的书签、历史记录、以及扩展里其它页面可能还留着
+ * 的 `Link to='/qy/lottery-records'` 都要落到实处。目标 hash 由 `qyTabHash`
+ * 现算，与宿主页认标签用的是同一个函数 —— 不可能出现"跳过去了但选中的是
+ * 另一张"。
+ *
+ * `replace`：旧地址不该留在历史栈里，否则用户按返回键会被立刻再弹回来。
+ */
 export const Route = createFileRoute('/_authenticated/qy/lottery-records/')({
-  component: QyLotteryRecords,
+  beforeLoad: () => {
+    throw redirect({
+      to: '/qy/lottery',
+      hash: qyTabHash('/qy/lottery-records'),
+      replace: true,
+    })
+  },
 })

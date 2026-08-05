@@ -36,6 +36,7 @@ import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
 import { formatQyQuotaLedger } from '../../lib/format'
+import { qyTabTarget } from '../../lib/pages'
 import { QyStatGrid } from '../components/qy-stat-grid'
 import { QY_EMPTY_TEXT, formatQyDuration, formatQyTs } from '../ops/format'
 import { QyKeyValue } from '../ops/qy-ops-ui'
@@ -84,7 +85,22 @@ export function QyLotteryDetail() {
         {activity?.title ?? t('qy_nav_lottery')}
       </QySectionPageLayout.Title>
       <QySectionPageLayout.Actions>
-        <Button size='sm' variant='outline' render={<Link to='/qy/lottery' />}>
+        {/*
+          回程要带上标签的 hash，否则竞猜用户永远落回第一张标签（抽奖）——
+          他刚才看的那一场不在那张列表里（kind='draw' 是写死的），
+          得再点一次「竞猜」并重新翻页。
+        */}
+        <Button
+          size='sm'
+          variant='outline'
+          render={
+            <Link
+              {...qyTabTarget(
+                activity?.kind === 'guess' ? '/qy/lottery-guess' : '/qy/lottery'
+              )}
+            />
+          }
+        >
           <ArrowLeft aria-hidden='true' />
           {t('qy_lot_back_to_hall')}
         </Button>

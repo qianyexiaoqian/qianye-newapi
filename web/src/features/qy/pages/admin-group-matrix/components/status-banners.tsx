@@ -16,7 +16,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { CloudOff, Clock, RefreshCw, TriangleAlert } from 'lucide-react'
+import {
+  CloudOff,
+  Clock,
+  Lock,
+  RefreshCw,
+  ShieldQuestionMark,
+  TriangleAlert,
+} from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -39,6 +46,23 @@ type QyGmStatusBannersProps = {
   warnings: string[]
   /** 影子期的写入拒绝计数 —— 影子模式唯一可归因的证据。 */
   shadowWriteDenies: QyGmWriteDeny[]
+  /**
+   * 被「新分组默认全遮断」自动接管、且到现在一个模型分组都没配的用户分组名。
+   *
+   * 这里刻意只接名字列表而不接整个 policy 对象：开关是开是关是一条**长期条件**，
+   * 归图例（{@link QyGmAxisLegend}）；这里只管**待办**。两者混在一个组件里的话，
+   * 那条长期条件会跟着待办一起长在告警栏上，两周之内变成没人看的背景。
+   */
+  pendingSetupGroups: string[]
+  /**
+   * 「新分组默认全遮断」开着、发现过、却刻意没遮断的用户分组（名字 + 当初的理由）。
+   *
+   * 与 `pendingSetupGroups` 分成两条横幅而不是合并：两者要求的下一步动作相反 ——
+   * 那一条是"这一档的人被挡住了，去给它配清单"，这一条是"这一档的人**没有**被挡住，
+   * 而你以为挡住了；如果本来就该挡，去手动接管它"。合成一条会让其中一半的
+   * 处置建议对另一半是错的。
+   */
+  policySkippedGroups: Array<{ name: string; reason: string }>
   onReload: () => void
 }
 
@@ -81,6 +105,72 @@ export function QyGmStatusBanners(props: QyGmStatusBannersProps) {
               : t('qy_group_matrix_save_partial_list_only')}
           </AlertTitle>
           <AlertDescription>{props.partial.message}</AlertDescription>
+        </Alert>
+      )}
+
+      {/*
+        有用户分组被「新分组默认全遮断」自动接管了，而且到现在一个模型分组都没配。
+
+        它排在快照与半成状态之后、其余提示之前，因为它是这一页上唯一一条
+        **有人正在被挡着**的待办：那一档的用户此刻无法把令牌指向任何模型分组。
+        判据是 `pending_setup`（自动遮断 + 零 grant），配好之后自动消失 ——
+        长期挂着的提示等于没有提示。
+
+        不做成 destructive：这不是故障，是一个**按设计生效的默认**。
+        画成红色错误会让运营去查哪里坏了，而正确的动作是给这个分组配上清单。
+      */}
+      {props.pendingSetupGroups.length > 0 && (
+        <Alert>
+          <Lock />
+          <AlertTitle>
+            {t('qy_group_matrix_new_group_pending_title')}
+          </AlertTitle>
+          <AlertDescription>
+            <span className='block'>{props.pendingSetupGroups.join('、')}</span>
+            <span className='block'>
+              {t('qy_group_matrix_new_group_pending_desc')}
+            </span>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/*
+        「新分组默认全遮断」开着、这些分组也确实是新出现的，而扩展**刻意没有遮断**
+        它们（发现时已经有人在用；或那一轮同时冒出太多，按数据异常处理）。
+
+        必须有这一条，因为它是这一页上唯一一个"运营以为发生了、实际没发生"的
+        组合：图例区常驻写着「新分组默认全遮断：已开启」，而这些行看起来与任何
+        一个未接管的分组一模一样。登记簿一旦写下永不重判 —— 它们**永远**不会被
+        补遮断，那一档的用户此刻就能按上游全局白名单选任意模型分组。
+
+        同样不是 destructive：每一条都是安全闸门按设计做出的决定（遮断一个已经
+        有人在用的分组会当场打断那批在线用户），画成红色会让运营去查哪里坏了。
+        运营自己接管这一行之后这条提示就消失。
+      */}
+      {props.policySkippedGroups.length > 0 && (
+        <Alert>
+          <ShieldQuestionMark />
+          <AlertTitle>
+            {t('qy_group_matrix_new_group_skipped_title')}
+          </AlertTitle>
+          <AlertDescription>
+            <span className='block'>
+              {t('qy_group_matrix_new_group_skipped_desc')}
+            </span>
+            <ul className='mt-1 block list-disc ps-4'>
+              {props.policySkippedGroups.map((group) => (
+                <li key={group.name}>
+                  <span className='font-medium'>{group.name}</span>
+                  {group.reason !== '' && (
+                    <span className='text-muted-foreground'>
+                      {' — '}
+                      {group.reason}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </AlertDescription>
         </Alert>
       )}
 

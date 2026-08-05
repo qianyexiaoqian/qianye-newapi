@@ -44,6 +44,7 @@ import { qyAdminLotActivityQuery } from './api'
 import { QyLotCancelDialog } from './components/lottery-cancel-dialog'
 import { QyLotEntriesTab } from './components/lottery-entries-tab'
 import { QyLotEventsTab } from './components/lottery-events-tab'
+import { QyLotFulfillQueueTab } from './components/lottery-fulfill-queue-tab'
 import { QyLotGuessResultDialog } from './components/lottery-guess-result-dialog'
 import { QyLotPayoutsTab } from './components/lottery-payouts-tab'
 import { QyLotPublishDialog } from './components/lottery-publish-dialog'
@@ -79,6 +80,11 @@ export function QyAdminLotteryDetail() {
   const winOptNo = view?.options.find((option) => option.is_winner)?.opt_no ?? 0
   const spec =
     activity?.kind === 'draw' ? (view?.prizes ?? []) : (view?.options ?? [])
+  // 配了文本奖才有履行队列。`prize_type` 是 `lot-v2` 才有的列，老活动读到
+  // `undefined` —— 这里的 `=== 'text'` 因此天然对历史活动为假，不需要额外分支。
+  const hasTextPrize = (view?.prizes ?? []).some(
+    (prize) => prize.prize_type === 'text'
+  )
 
   const canPublish = activity?.status === 'draft'
   // 取消在**终态之前**都允许：进行中要止损、封盘后发现条件写错了同样要止损。
@@ -210,6 +216,15 @@ export function QyAdminLotteryDetail() {
                   <TabsTrigger value='payouts'>
                     {t('qy_lot_a_tab_payouts')}
                   </TabsTrigger>
+                  {/* 文本奖履行队列只在这一场真的配了文本奖时才出现。
+                      恒显示一张空队列，会让运营每天多点一次去确认"还是空的"；
+                      而只要配了，它就必须显式存在 —— 没有这张队列，文本奖会
+                      静默烂掉，而用户会以为是抽奖作弊了。 */}
+                  {hasTextPrize && (
+                    <TabsTrigger value='fulfill'>
+                      {t('qy_lot_a_tab_fulfill_queue')}
+                    </TabsTrigger>
+                  )}
                   <TabsTrigger value='events'>
                     {t('qy_lot_a_tab_events')}
                   </TabsTrigger>
@@ -337,6 +352,11 @@ export function QyAdminLotteryDetail() {
                 <TabsContent value='payouts'>
                   <QyLotPayoutsTab actNo={actNo} />
                 </TabsContent>
+                {hasTextPrize && (
+                  <TabsContent value='fulfill'>
+                    <QyLotFulfillQueueTab actNo={actNo} />
+                  </TabsContent>
+                )}
                 <TabsContent value='events'>
                   <QyLotEventsTab actNo={actNo} />
                 </TabsContent>

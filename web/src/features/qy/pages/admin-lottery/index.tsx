@@ -35,6 +35,7 @@ import {
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QyResponsiveDialog } from '../../components/qy-responsive-dialog'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
 import { qyArray } from '../../lib/array'
@@ -47,8 +48,13 @@ import {
 } from '../lottery/lib/display'
 import { formatQyTs } from '../ops/format'
 import { QyFilterBar, QyFilterField } from '../ops/qy-ops-ui'
-import { qyAdminLotActivitiesQuery, qyAdminLotConfigQuery } from './api'
+import {
+  qyAdminLotActivitiesQuery,
+  qyAdminLotConfigQuery,
+  qyAdminLotTextPrizesQuery,
+} from './api'
 import { QyLotCreateWizard } from './components/lottery-create-wizard'
+import { QyLotFulfillQueueTab } from './components/lottery-fulfill-queue-tab'
 import type { QyLotAdminActivityBrief } from './types'
 
 const PAGE_SIZE = 20
@@ -67,6 +73,7 @@ export function QyAdminLottery() {
   const [status, setStatus] = useState(ALL)
   const [page, setPage] = useState(1)
   const [createOpen, setCreateOpen] = useState(false)
+  const [queueOpen, setQueueOpen] = useState(false)
 
   const params = {
     p: page,
@@ -76,6 +83,19 @@ export function QyAdminLottery() {
   }
   const query = useQuery(qyAdminLotActivitiesQuery(params))
   const configQuery = useQuery(qyAdminLotConfigQuery())
+  /*
+    跨活动的「还欠着多少份码」。
+    只取 total，所以 page_size 拉到最小 —— 这一格要的是那个数，不是那一页。
+
+    它必须在**列表页**上，不能只藏在活动详情里：文本奖的 granted 不阻塞收尾，
+    一场配了文本奖的活动几秒内就走到 finished，从"进行中"的注意力范围里消失。
+    此后运营再也不会主动打开它，而中奖者正在「我的参与」里等着 —— 第一次告警
+    要等对账任务 14 天的阈值，那时用户早就认定是抽奖作弊了。
+  */
+  const pendingTextQuery = useQuery(
+    qyAdminLotTextPrizesQuery('', { fulfilled: 0, p: 1, page_size: 1 })
+  )
+  const pendingText = pendingTextQuery.data?.total ?? 0
   const items = qyArray(query.data?.items)
 
   // 本页汇总。跨页的总账在对账任务与资金单裁决台上，这里只是"当前这一屏"，
@@ -135,8 +155,30 @@ export function QyAdminLottery() {
                 value: totals.flags,
                 emphasis: totals.flags > 0,
               },
+              {
+                key: 'text_prizes',
+                label: t('qy_lot_a_fulfill_pending'),
+                value: pendingText,
+                hint: t('qy_lot_finished_means_funds_only'),
+                emphasis: pendingText > 0,
+              },
             ]}
           />
+
+          {pendingText > 0 && (
+            <div className='flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3'>
+              <span className='text-sm'>
+                {t('qy_lot_a_fulfill_pending_badge', { count: pendingText })}
+              </span>
+              <Button
+                size='sm'
+                variant='outline'
+                onClick={() => setQueueOpen(true)}
+              >
+                {t('qy_lot_a_fulfill_open_queue')}
+              </Button>
+            </div>
+          )}
 
           <QyFilterBar>
             <QyFilterField label={t('qy_lot_filter_kind')}>
@@ -307,6 +349,15 @@ export function QyAdminLottery() {
           </QyPageBoundary>
         </div>
       </QySectionPageLayout.Content>
+
+      <QyResponsiveDialog
+        open={queueOpen}
+        onOpenChange={setQueueOpen}
+        title={t('qy_lot_a_tab_fulfill_queue')}
+      >
+        {/* actNo 传空串 = 跨活动。这正是后端 /admin/lottery/text-prizes 的默认口径。 */}
+        <QyLotFulfillQueueTab actNo='' />
+      </QyResponsiveDialog>
 
       <QyLotCreateWizard
         open={createOpen}

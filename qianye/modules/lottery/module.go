@@ -35,6 +35,12 @@ func tables() []any {
 	return []any{
 		&Activity{}, &Seed{}, &Prize{}, &Option{},
 		&Entry{}, &Payout{}, &Event{}, &SpendDaily{}, &Flag{},
+		// PrizeSecretHist 同样是证据表:它存的是被顶替掉的兑换码明文,
+		// 争议时唯一能回答"用户当初拿到的是哪一串"。不注册任何清理任务。
+		&PrizeSecretHist{},
+		// Series 不是证据表,但它是**资金闸门表**:删一行等于把一个双色球系列
+		// 的累计发行上限抹掉。同样不注册任何清理任务。
+		&Series{},
 	}
 }
 
@@ -73,6 +79,12 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 	// client_request_id 连续发单,所以还要挂关键操作限流。
 	g.POST("/lottery/activities/:act_no/entries", middleware.CriticalRateLimit(), handleCreateEntry)
 	g.GET("/lottery/my-entries", handleListMyEntries)
+	// 文本奖**逐条**拉取,刻意不做批量列表:一个列表接口返回全部正文,
+	// 意味着一次越权 bug 就是全量泄漏。payout_no 由 crypto/rand 生成,不可枚举。
+	g.GET("/lottery/my/prizes/:payout_no", handleGetMyPrize)
+	// 双色球期次详情:当前池子、号池、上期开奖号。各档中奖概率**不下发**,
+	// 由前端按组合数自己算 —— 后端下发等于把"概率不需要相信平台"这条丢掉。
+	g.GET("/lottery/series/:series_no", handleGetSeries)
 }
 
 // RegisterAdminRoutes 挂载管理端接口。传入的组已挂 AdminAuth(自带上游操作审计)。
@@ -86,6 +98,9 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/lottery/activities/:act_no/events", handleAdminListEvents)
 	g.GET("/lottery/flags", handleAdminListFlags)
 	g.GET("/lottery/config", handleGetConfig)
+	g.GET("/lottery/series", handleAdminListSeries)
+	// 文本奖履行队列。列表只给掩码,**明文只走 reveal 那一个写审计的接口**。
+	g.GET("/lottery/text-prizes", handleAdminListTextPrizes)
 
 	// 全部写接口都挂关键操作限流:它们要么决定平台会发出去多少钱,
 	// 要么决定一场活动的结局。
@@ -97,7 +112,21 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.POST("/lottery/activities/:act_no/cancel", crit, handleCancelActivity)
 	g.POST("/lottery/activities/:act_no/guess-result", crit, handleSetGuessResult)
 	g.POST("/lottery/activities/:act_no/payouts/:payout_no/retry", crit, handleRetryPayout)
+	// 文本奖的履行 / 撤销 / 揭示。三个都写审计(成功与失败各一条)。
+	//
+	// 撤销只对 kind='text' 开放:额度奖的 paid 是资金终态,永远不可撤。
+	// 撤销**不清空密文** —— 用户可能已经用掉了那串码,抹掉记录等于抹掉
+	// 争议时唯一的证据。
+	g.POST("/lottery/payouts/:payout_no/fulfill", crit, handleFulfillPrize)
+	g.POST("/lottery/payouts/:payout_no/unfulfill", crit, handleUnfulfillPrize)
+	g.POST("/lottery/payouts/:payout_no/reveal", crit, handleRevealPrizeSecret)
 	g.PUT("/lottery/config", crit, handlePutConfig)
+
+	// 双色球期次系列。注资是平台唯一一处主动扩大发行上限的动作,
+	// 因此三个写接口全部挂关键操作限流并强制写审计。
+	g.POST("/lottery/series", crit, handleCreateSeries)
+	g.POST("/lottery/series/:series_no/fund", crit, handleFundSeries)
+	g.POST("/lottery/series/:series_no/close", crit, handleCloseSeries)
 }
 
 // StartTasks 启动后台任务。

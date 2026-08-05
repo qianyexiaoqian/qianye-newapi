@@ -129,20 +129,29 @@ func SnapshotView() (*Snapshot, bool) {
 func Health() map[string]any {
 	s := current.Load()
 	out := map[string]any{
-		"enabled":            enabled(),
-		"snapshot_loaded":    s != nil,
-		"refresh_fails":      refreshFails.Load(),
-		"fallback_requests":  fallbackRequests.Load(),
-		"stale_warns":        staleWarns.Load(),
-		"max_stale_seconds":  maxStaleSeconds(),
-		"write_guard_on":     cfg().WriteGuardOn(),
-		"dropped_grants":     []string{},
-		"managed_groups":     0,
-		"enforced_groups":    0,
-		"snapshot_age_secs":  int64(0),
-		"snapshot_version":   int64(0),
-		"needs_attention":    s == nil && enabled(),
-		"unloaded_behaviour": "分组可选清单未加载,当前按上游全局白名单放行(读侧恒等返回,写侧校验一并放行)",
+		"enabled":           enabled(),
+		"snapshot_loaded":   s != nil,
+		"refresh_fails":     refreshFails.Load(),
+		"fallback_requests": fallbackRequests.Load(),
+		"stale_warns":       staleWarns.Load(),
+		"max_stale_seconds": maxStaleSeconds(),
+		"write_guard_on":    cfg().WriteGuardOn(),
+		"dropped_grants":    []string{},
+		"managed_groups":    0,
+		"enforced_groups":   0,
+		"snapshot_age_secs": int64(0),
+		"snapshot_version":  int64(0),
+		// 「新分组默认全遮断」当前是开是关,以及它到底有没有在工作。
+		//
+		// 三个字段缺一不可:开关状态回答"该不该发生",last_scan_at 回答
+		// "对账任务活着吗"(租约被别的节点持有时本节点恒为 0,这本身就是信息),
+		// auto_masked_total 回答"真的遮断过谁吗"。只报开关状态的话,
+		// 一个租约卡死、从此再没跑过的对账任务看起来与正常工作完全一样。
+		"new_group_default_deny": cfg().NewGroupDefaultDenyOn(),
+		"new_group_last_scan_at": lastScanAt.Load(),
+		"new_group_auto_masked":  autoMaskedTotal.Load(),
+		"needs_attention":        s == nil && enabled(),
+		"unloaded_behaviour":     "分组可选清单未加载,当前按上游全局白名单放行(读侧恒等返回,写侧校验一并放行)",
 	}
 	if s == nil {
 		return out

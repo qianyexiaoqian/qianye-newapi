@@ -18,8 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { createFileRoute } from '@tanstack/react-router'
 
-import { QyLottery } from '@/features/qy/pages/lottery'
+import { QyLotteryHub } from '@/features/qy/pages/lottery/hub'
 
+/**
+ * 需求 2：这一页从「抽奖大厅」升成了选择夹宿主（抽奖 / 竞猜 / 我的参与）。
+ * 大厅本身降级成第一张标签的正文（`pages/lottery/index.tsx`）。
+ */
 export const Route = createFileRoute('/_authenticated/qy/lottery/')({
-  component: QyLottery,
+  component: QyLotteryHub,
 })

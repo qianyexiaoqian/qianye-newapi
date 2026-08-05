@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Info, ScrollText, ShieldAlert } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -34,18 +34,23 @@ import {
 } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
+import { QyUsdScaleNotice } from '../../components/qy-usd-scale-notice'
 import { qyErrorMessage } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
-import { qyAdminTransferConfigQuery, qyUpdateTransferConfig } from './api'
 import {
-  qyBpsToPercentText,
-  qyIsValidSettingValue,
-  qyTransferFieldMeta,
-} from './lib/fields'
+  qyFormatQuotaAsUsd,
+  qyQuotaDraftText,
+  qyQuotaDraftValue,
+  qyUsdScale,
+  type QyUsdScale,
+} from '../../lib/quota-usd'
+import { qyAdminTransferConfigQuery, qyUpdateTransferConfig } from './api'
+import { qyBpsToPercentText, qyTransferFieldMeta } from './lib/fields'
 import type {
   QyTransferAdminConfig,
   QyTransferBound,
@@ -104,13 +109,25 @@ export function QyAdminTransferConfig() {
   )
 }
 
-/** 一处改动的复述：键、旧值、新值。确认弹窗与 PUT 请求共用它。 */
-type QyConfigChange = { key: string; from: string; to: string }
+/**
+ * 一处改动的复述：键、旧值、新值。确认弹窗与 PUT 请求共用它。
+ *
+ * `from` / `to` 是**存储用的额度整数**，不是界面上那串 USD。请求体与审计
+ * 认的都是这个数，复述给运营看的 USD 只是它的一个渲染。
+ */
+type QyConfigChange = { key: string; from: number; to: number }
 
 function EditableSettingsCard(props: { config: QyTransferAdminConfig }) {
   const { config } = props
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+
+  // 换算率来自站点展示配置，运营改得动。它变了，这一页已存门槛的**语义**就变了
+  // （同样的 500000 额度从 $1 变成别的），所以下面必须把当前换算率显示出来。
+  const quotaPerUnit = useSystemConfigStore(
+    (state) => state.config.currency.quotaPerUnit
+  )
+  const scale = useMemo(() => qyUsdScale(quotaPerUnit), [quotaPerUnit])
 
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -120,10 +137,14 @@ function EditableSettingsCard(props: { config: QyTransferAdminConfig }) {
   useEffect(() => {
     const next: Record<string, string> = {}
     for (const key of config.editable_keys) {
-      next[key] = String(effectiveValue(config.effective, key))
+      next[key] = qyQuotaDraftText(
+        effectiveValue(config.effective, key),
+        scale,
+        isUsdField(key, scale)
+      )
     }
     setDraft(next)
-  }, [config])
+  }, [config, scale])
 
   const saveMutation = useMutation({
     mutationFn: qyUpdateTransferConfig,
@@ -140,8 +161,8 @@ function EditableSettingsCard(props: { config: QyTransferAdminConfig }) {
     onError: (error) => toast.error(qyErrorMessage(error, t)),
   })
 
-  const changes = collectChanges(config, draft)
-  const invalidKey = findInvalid(config, draft)
+  const changes = collectChanges(config, draft, scale)
+  const invalidKey = findInvalid(config, draft, scale)
 
   return (
     <>
@@ -161,6 +182,8 @@ function EditableSettingsCard(props: { config: QyTransferAdminConfig }) {
             </Alert>
           )}
 
+          <QyUsdScaleNotice scale={scale} />
+
           {/* 需求 3-C 的口径必须写在运营看得见的地方：0 是「不限」，
               而「不限」的直接后果是用户端整块不显示今日剩余量。 */}
           <Alert>
@@ -175,10 +198,11 @@ function EditableSettingsCard(props: { config: QyTransferAdminConfig }) {
               fieldKey={key}
               value={draft[key] ?? ''}
               bound={config.bounds[key] ?? null}
+              scale={scale}
               overriddenFrom={
                 config.overrides[key] == null
                   ? null
-                  : String(effectiveValue(config.yaml_defaults, key))
+                  : effectiveValue(config.yaml_defaults, key)
               }
               onChange={(value) =>
                 setDraft((prev) => ({ ...prev, [key]: value }))
@@ -223,15 +247,19 @@ function EditableSettingsCard(props: { config: QyTransferAdminConfig }) {
                   {t(qyTransferFieldMeta(change.key)?.labelKey ?? change.key)}
                 </span>
                 <span className='tabular-nums'>
-                  {change.from} → <strong>{change.to}</strong>
+                  {displayValue(change.key, change.from, scale)} →{' '}
+                  <strong>{displayValue(change.key, change.to, scale)}</strong>
                 </span>
               </li>
             ))}
           </ul>
         }
         onConfirm={() => {
+          // 请求体仍然是**额度整数**：存储层一个字都没动，界面只是换了个单位
+          // 让人填。改存储会牵动后端已有的区间校验、跨字段校验、审计快照，
+          // 以及划转自己那条资金路径 —— 那不是一次展示层改动该付的代价。
           const patch: Record<string, string> = {}
-          for (const change of changes) patch[change.key] = change.to
+          for (const change of changes) patch[change.key] = String(change.to)
           saveMutation.mutate(patch)
         }}
       />
@@ -243,14 +271,20 @@ function ConfigField(props: {
   fieldKey: string
   value: string
   bound: QyTransferBound | null
-  /** 该项已被运营覆盖时，YAML 里的原值；未覆盖为 `null`。 */
-  overriddenFrom: string | null
+  scale: QyUsdScale
+  /** 该项已被运营覆盖时，YAML 里的原值（额度整数）；未覆盖为 `null`。 */
+  overriddenFrom: number | null
   onChange: (value: string) => void
 }) {
   const { t } = useTranslation()
   const meta = qyTransferFieldMeta(props.fieldKey)
   const label = meta == null ? props.fieldKey : t(meta.labelKey)
-  const invalid = !qyIsValidSettingValue(props.value, props.bound)
+  const asUsd = isUsdField(props.fieldKey, props.scale)
+  const parsed = qyQuotaDraftValue(props.value, props.scale, asUsd)
+  const invalid =
+    parsed == null ||
+    (props.bound != null &&
+      (parsed < props.bound.min || parsed > props.bound.max))
 
   return (
     <div className='space-y-1.5'>
@@ -258,41 +292,61 @@ function ConfigField(props: {
         {label}
         {props.overriddenFrom != null && (
           <span className='text-muted-foreground ms-1 text-xs'>
-            {t('qy_tc_overridden', { yaml: props.overriddenFrom })}
+            {t('qy_tc_overridden', {
+              yaml: displayValue(
+                props.fieldKey,
+                props.overriddenFrom,
+                props.scale
+              ),
+            })}
           </span>
         )}
       </Label>
       <div className='flex items-center gap-2'>
         <Input
           id={`qy-tc-${props.fieldKey}`}
-          inputMode='numeric'
+          inputMode={asUsd ? 'decimal' : 'numeric'}
           value={props.value}
           aria-invalid={invalid}
           onChange={(event) => props.onChange(event.target.value)}
         />
-        {meta != null && (
-          <span
-            className='text-muted-foreground shrink-0 text-sm'
-            aria-hidden='true'
-          >
-            {t(`qy_tc_unit_${meta.unit}`)}
-          </span>
-        )}
+        <span
+          className='text-muted-foreground shrink-0 text-sm'
+          aria-hidden='true'
+        >
+          {asUsd ? 'USD' : meta != null && t(`qy_tc_unit_${meta.unit}`)}
+        </span>
       </div>
       <p className='text-muted-foreground text-xs'>
         {meta == null ? props.fieldKey : t(meta.hintKey)}
-        {meta?.unit === 'bps' && qyIsValidSettingValue(props.value, null) && (
+        {meta?.unit === 'bps' && parsed != null && (
           <>
             {' '}
             {t('qy_tc_f_fee_bps_percent', {
-              percent: qyBpsToPercentText(Number(props.value)),
+              percent: qyBpsToPercentText(parsed),
             })}
           </>
+        )}
+        {/* 存进库的仍然是额度整数，把它显示出来，运营复核审计与后端日志时
+            才对得上号 —— 那边从头到尾都是这个数。 */}
+        {asUsd && parsed != null && (
+          <> {t('qy_cfg_usd_equals_quota', { quota: parsed })}</>
         )}
         {props.bound != null && (
           <>
             {' '}
-            {t('qy_tc_range', { min: props.bound.min, max: props.bound.max })}
+            {t('qy_tc_range', {
+              min: displayValue(props.fieldKey, props.bound.min, props.scale),
+              max: displayValue(props.fieldKey, props.bound.max, props.scale),
+            })}
+          </>
+        )}
+        {asUsd && (
+          <>
+            {' '}
+            {t('qy_cfg_usd_step_hint', {
+              step: qyFormatQuotaAsUsd(1, props.scale),
+            })}
           </>
         )}
       </p>
@@ -341,20 +395,44 @@ function effectiveValue(source: QyTransferEffective, key: string): number {
 }
 
 /**
+ * 该字段是否按 USD 录入。
+ *
+ * 只有金额字段（`unit === 'quota'`）才换算；笔数、秒数、小时、万分比本来就
+ * 不是钱，换算过去只会得到一个没有意义的小数。换算率不可用时全部退回额度
+ * 单位 —— 理由见 `lib/quota-usd.ts` 的文件头。
+ */
+function isUsdField(key: string, scale: QyUsdScale): boolean {
+  return scale.usable && qyTransferFieldMeta(key)?.unit === 'quota'
+}
+
+/** 把一个存储额度渲染成界面上该有的样子：金额字段带 `$`，其余按原数。 */
+function displayValue(key: string, quota: number, scale: QyUsdScale): string {
+  return isUsdField(key, scale)
+    ? qyFormatQuotaAsUsd(quota, scale)
+    : String(quota)
+}
+
+/**
  * 只挑出真正改动过的键。未改动的键不该出现在 PUT 里，也不该污染审计。
+ *
+ * 比较发生在**额度整数**上，不是在界面那串 USD 上：草稿文本由
+ * `qyQuotaDraftText` 生成、由 `qyQuotaDraftValue` 读回，这一对函数往返无损
+ * （见 `lib/__tests__/quota-usd.test.ts`），所以运营什么都不改直接保存时
+ * 这里一条改动都挑不出来，审计里也就不会多出一条什么都没改的门槛变更。
  *
  * 非法值直接跳过而不是带着一起发：后端整批校验，一个非法值会让**整个**
  * 请求 400，那意味着运营改对的另外五项也一起没保存。
  */
 function collectChanges(
   config: QyTransferAdminConfig,
-  draft: Record<string, string>
+  draft: Record<string, string>,
+  scale: QyUsdScale
 ): QyConfigChange[] {
   const out: QyConfigChange[] = []
   for (const [key, raw] of Object.entries(draft)) {
-    if (!qyIsValidSettingValue(raw, config.bounds[key] ?? null)) continue
-    const current = String(effectiveValue(config.effective, key))
-    const next = String(Number(raw.trim()))
+    const next = parseDraft(config, key, raw, scale)
+    if (next == null) continue
+    const current = effectiveValue(config.effective, key)
     if (next !== current) out.push({ key, from: current, to: next })
   }
   return out
@@ -362,10 +440,25 @@ function collectChanges(
 
 function findInvalid(
   config: QyTransferAdminConfig,
-  draft: Record<string, string>
+  draft: Record<string, string>,
+  scale: QyUsdScale
 ): string | null {
   for (const [key, raw] of Object.entries(draft)) {
-    if (!qyIsValidSettingValue(raw, config.bounds[key] ?? null)) return key
+    if (parseDraft(config, key, raw, scale) == null) return key
   }
   return null
+}
+
+/** 草稿文本 → 存储额度，并按后端下发的区间卡一次。非法返回 `null`。 */
+function parseDraft(
+  config: QyTransferAdminConfig,
+  key: string,
+  raw: string,
+  scale: QyUsdScale
+): number | null {
+  const value = qyQuotaDraftValue(raw, scale, isUsdField(key, scale))
+  if (value == null) return null
+  const bound = config.bounds[key]
+  if (bound != null && (value < bound.min || value > bound.max)) return null
+  return value
 }

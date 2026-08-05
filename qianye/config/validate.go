@@ -289,6 +289,21 @@ func validateGroupMatrix(g *GroupMatrix) error {
 		common.SysError("qianye: group_matrix.write_guard_enabled 已关闭,新建/编辑令牌时不再校验分组可选性 —— " +
 			"读侧仍会在请求时 403,孤儿令牌会继续增加")
 	}
+	if g.NewGroupScanIntervalSeconds <= 0 {
+		return fmt.Errorf("qianye: group_matrix.new_group_scan_interval_seconds 必须大于 0")
+	}
+	if g.NewGroupDefaultDenyOn() {
+		// 这条**默认打开**,而它会让一个刚建出来的用户分组一个模型分组都选不了。
+		// 运营在上游「系统设置-分组倍率」页加一个 key,那一页不会提到遮断这回事,
+		// 于是"新分组建出来就不能用"必须在启动日志里先说一遍 ——
+		// 一个只写在 YAML 注释里的反直觉默认,等于没有告知。
+		common.SysLog(fmt.Sprintf(
+			"qianye: group_matrix.new_group_default_deny 已打开 —— 今后**新出现**的用户分组"+
+				"(options.GroupRatio 里新增的 key)会在最多 %d 秒内被自动接管为 mode=enforce、"+
+				"零条可选模型分组,即建出来就全遮断,须在管理端矩阵页手动添加可用的模型分组后才能用。"+
+				"既存分组一律不动。不需要这个默认就把它设成 false",
+			g.NewGroupScanIntervalSeconds))
+	}
 	return nil
 }
 

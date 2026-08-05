@@ -72,6 +72,9 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 前端只需要记住一个基址,路径拼错在前端是 404、在 qy 客户端里又会被归类成
 	// "扩展未启用"从而**静默隐藏入口**,排查方向直接指反。
 	g.GET("/subscription/plans/:plan_id/usage", adminPlanUsage)
+	// 「当前人数」那个数字的下钻:具体是哪些人。与 usage 同前缀、同一层,
+	// 因为它回答的是同一个问题的另一半 —— usage 说"几个",这条说"是谁"。
+	g.GET("/subscription/plans/:plan_id/holders", adminPlanHolders)
 	// 列表页要的批量占用。路径刻意不写成 /subscription/plans/usage:那样它会与
 	// 上面那条的 :plan_id 抢同一个路径段,是 gin 路由树里"静态段与通配段互斥"的
 	// 经典冲突 —— 表现是**进程启动时 panic**,而不是 404。

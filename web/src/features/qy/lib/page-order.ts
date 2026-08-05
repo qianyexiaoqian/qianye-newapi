@@ -67,4 +67,8 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   '/qy/tickets',
   '/qy/admin/tickets',
   '/qy/admin/group-matrix',
+  // 竞猜从大厅的一个筛选值升成独立页面（需求 2 的选择夹第二张标签）。
+  // 按本表的维护规则**追加到末尾取下一个空号**，不与 `/qy/lottery`、
+  // `/qy/lottery-records` 排在一起 —— 那两页的编号是用户已经记下的。
+  '/qy/lottery-guess',
 ]

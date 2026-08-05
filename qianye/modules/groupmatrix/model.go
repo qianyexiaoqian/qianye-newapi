@@ -113,6 +113,61 @@ type WriteDeny struct {
 
 func (WriteDeny) TableName() string { return "qy_group_write_denies" }
 
+// Seen 是「这个用户分组名扩展侧已经见过」的登记簿。
+//
+// ══════════════ 为什么必须有它,而不能拿 scope 行当判据 ══════════════
+//
+// 「新分组默认全遮断」需要回答一个问题:哪些用户分组是**新的**。
+// 用户分组的事实清单是 options.GroupRatio 的键集合(controller/group.go 直接
+// 把它的 key 当分组列表下发),而上游没有任何"分组被创建"的事件可挂。
+// 唯一不改上游的做法是周期性地把那个键集合与一份登记簿对账。
+//
+// 登记簿必须是**独立的一张表**,不能拿 qy_group_scopes 顶替:
+//
+//	拿 scope 行当判据 → 站里现有的 7 个分组一条 scope 行都没有,
+//	                    第一轮对账就会把它们全部判成"新分组"并一次遮断,
+//	                    全站用户当场选不到任何模型分组。这正是项目方明确
+//	                    排除的那件事(「既存分组保持原样、由他手动接管」)。
+//	拿 scope 行当判据 → 运营手动**撤销接管**一个新分组之后,scope 行没了,
+//	                    下一轮对账又把它判成新的、再遮断一次。回退一次就
+//	                    被自动改回去,那不叫回退。
+//
+// 登记簿一旦写下就**永不删除**,因此上面两件事都不会发生:
+// 首轮把当时的全部分组登记成基线(Baseline=true)且一个都不遮断;
+// 此后每个名字最多被自动处置一次。
+type Seen struct {
+	// UserGroup 是 options.GroupRatio 的键,精确匹配、不折叠大小写(理由同 Scope)。
+	UserGroup string `json:"user_group" gorm:"column:user_group;type:varchar(64);primaryKey"`
+
+	FirstSeenAt int64 `json:"first_seen_at" gorm:"not null;default:0"`
+
+	// Baseline 表示这一行是**首轮基线**登记的(或因为安全闸门而只登记不遮断)。
+	// 它与 AutoMasked 一起构成"这个名字当初被怎么处置了"的完整答案 ——
+	// 只看 AutoMasked=false 分不清"它是老分组"还是"它是新的但开关当时关着"。
+	Baseline bool `json:"baseline" gorm:"not null"`
+
+	// AutoMasked 表示扩展真的为它建了一条全遮断的 scope 行。
+	// 管理端据此在矩阵行头上打「新分组·待配置」,否则运营只会看到一个
+	// 莫名其妙已经 enforce 的分组,而没有任何人做过这个决定。
+	AutoMasked bool `json:"auto_masked" gorm:"not null"`
+
+	// Declined 表示「新分组默认全遮断」当时是**开着**的、这个名字确实是新出现的,
+	// 而扩展**刻意没有遮断它**(已经有人在用 / 一轮冒出太多 / 与已登记名只差大小写)。
+	//
+	// 它必须与 Baseline 分开,而且必须下发到界面。这一档是这套默认里唯一
+	// "运营以为发生了、实际没发生"的组合:矩阵页顶部常驻写着「新分组默认全遮断:
+	// 已开启」,运营据此认为这个分组是空清单、可以慢慢配,而它的用户此刻就能按
+	// 上游全局白名单选任意模型分组。登记簿一旦写下永不重判,所以这不是"晚一点
+	// 会补上",是**永远**不会补。唯一的痕迹本来只有这一列的 Reason,
+	// 而那一列在界面上查不到。
+	Declined bool `json:"declined" gorm:"not null"`
+
+	// Reason 是"当初为什么这样处置"的人话,直接展示给运营,不二次转译。
+	Reason string `json:"reason" gorm:"type:varchar(255);not null;default:''"`
+}
+
+func (Seen) TableName() string { return "qy_group_seen" }
+
 // newScope 构造一条接管登记行。布尔默认值在这里给,不走 GORM 的 default tag。
 func newScope(userGroup, mode string, allowAuto bool, note string, operatorId int, now int64) *Scope {
 	return &Scope{

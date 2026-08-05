@@ -515,10 +515,43 @@ type GroupMatrix struct {
 	// WriteGuardEnabled 是令牌写入侧校验的独立开关。出事时可以单独摘掉写侧,
 	// 而不影响读侧已经生效的收紧 —— 反过来则不允许(见包注释)。
 	WriteGuardEnabled *bool `yaml:"write_guard_enabled"`
+
+	// NewGroupDefaultDeny 决定**新出现的用户分组**是否一建出来就被全遮断
+	// (自动建一条 mode=enforce、零条 grant 的 scope 行)。
+	//
+	// ══════════════ 为什么它必须能关掉,而且必须默认打开 ══════════════
+	//
+	// 项目方的要求是「新加的用户分组默认把所有模型分组屏蔽,直到手动添加」。
+	// 这是一条**违反最小惊讶**的默认:运营在上游「系统设置-分组倍率」页加一个
+	// key,回到令牌页却发现这一档的人一个模型分组都选不了,而他刚才那次操作
+	// 没有任何地方提到过遮断。所以两件事都是硬要求:
+	//
+	//	1. 它必须是一个开关(本字段),关掉之后新分组与上游行为逐位一致;
+	//	2. 打开时管理端矩阵页必须常驻一条提示,把「新分组默认全遮断」这句话
+	//	   摆在运营眼前 —— 一个只写在 YAML 注释里的默认等于没有告知。
+	//
+	// *bool 且默认打开:普通 bool 的零值是 false,那样"没写这一行"与"读过文档、
+	// 想清楚了、显式关掉"在进程内是同一个字节,而本仓已经因为这个形状栽过三次。
+	NewGroupDefaultDeny *bool `yaml:"new_group_default_deny"`
+
+	// NewGroupScanIntervalSeconds 是「新分组对账」后台任务的周期。
+	//
+	// 上游没有任何"分组被创建"的事件可挂 —— 用户分组的事实清单就是
+	// options.GroupRatio 的键集合(controller/group.go 直接把它的 key 当分组列表
+	// 下发),而它由通用的 model.UpdateOption 写入,没有分组语义的钩子。
+	// 为它在上游加 hook 要动 setting/ratio_setting 或 model/option.go,
+	// 而对账任务一行上游代码都不用改,代价只是最长一个周期的发现延迟。
+	//
+	// 延迟是安全方向的:窗口期内新分组按上游宽松白名单放行(与今天一致),
+	// 而不是先拒后放。
+	NewGroupScanIntervalSeconds int `yaml:"new_group_scan_interval_seconds"`
 }
 
 // WriteGuardOn 表示令牌写入侧校验是否打开(默认打开)。
 func (g GroupMatrix) WriteGuardOn() bool { return boolOr(g.WriteGuardEnabled, true) }
+
+// NewGroupDefaultDenyOn 表示新出现的用户分组是否默认全遮断(默认打开)。
+func (g GroupMatrix) NewGroupDefaultDenyOn() bool { return boolOr(g.NewGroupDefaultDeny, true) }
 
 // Lottery 娱乐功能:抽奖(kind=draw)与竞猜(kind=guess)共用一套配置。
 //

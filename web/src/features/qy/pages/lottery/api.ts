@@ -27,6 +27,7 @@ import type {
   QyLotEligibility,
   QyLotEntryReceipt,
   QyLotMyEntry,
+  QyLotMyPrize,
   QyLotProof,
 } from './types'
 
@@ -112,6 +113,31 @@ export function qyLotMyEntriesQuery(params: { p: number; page_size: number }) {
     queryKey: qyKeys.lotteryMyEntries(params),
     queryFn: () => qyGet<QyPage<QyLotMyEntry>>('/lottery/my-entries', params),
     staleTime: 15_000,
+  })
+}
+
+/**
+ * 我中的那一份文本奖（兑换码 / CDK / 实物说明）。
+ *
+ * ## 为什么是逐条拉取
+ *
+ * 一个返回全部正文的列表接口，意味着**一次越权 bug 就是全量泄漏**。这里只按
+ * `payout_no` 逐条取，而 `payout_no` 由服务端 crypto/rand 生成、不可枚举，
+ * 所以这个限制没有可用性代价。后端还会再校验一次 `user_id` 与 `kind='text'`。
+ *
+ * ## 为什么不缓存
+ *
+ * `staleTime: 0` + 不写长缓存：兑换码不该在用户切走之后还留在内存里被别的
+ * 页面读到。这与提现的收款信息明文是同一条纪律。
+ */
+export function qyLotMyPrizeQuery(payoutNo: string, enabled: boolean) {
+  return queryOptions({
+    queryKey: qyKeys.lotteryMyPrize(payoutNo),
+    queryFn: () =>
+      qyGet<QyLotMyPrize>(`/lottery/my/prizes/${encodeURIComponent(payoutNo)}`),
+    staleTime: 0,
+    gcTime: 0,
+    enabled: enabled && payoutNo !== '',
   })
 }
 

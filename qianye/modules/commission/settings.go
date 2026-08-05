@@ -212,14 +212,24 @@ func configRateUnits(field, raw string) int {
 	return units
 }
 
+// isQuotaKey 说出哪些可编辑项是"额度"。写入校验与读取回落共用它,
+// 因此"界面能填的"与"库里能生效的"永远是同一个区间。
+func isQuotaKey(key string) bool {
+	switch key {
+	case keyMinSettleQuota, keyMaxPerOrderQuota, keyDailyCapQuota, keyLargeAlertQuota:
+		return true
+	}
+	return false
+}
+
 func applyOverrides(s *opSettings, m map[string]string) {
 	rateOverride(&s.TopupRateUnits, m[keyTopupRatePercent], m[legacyKeyTopupRateBps])
 	rateOverride(&s.ConsumeRateUnits, m[keyConsumeRatePercent], m[legacyKeyConsumeRateBps])
-	int64Override(&s.MinSettleQuota, m[keyMinSettleQuota])
-	int64Override(&s.MaxPerOrderQuota, m[keyMaxPerOrderQuota])
+	quotaOverride(&s.MinSettleQuota, keyMinSettleQuota, m[keyMinSettleQuota])
+	quotaOverride(&s.MaxPerOrderQuota, keyMaxPerOrderQuota, m[keyMaxPerOrderQuota])
 	intOverride(&s.HoldingDays, m[keyHoldingDays])
-	int64Override(&s.DailyCapQuota, m[keyDailyCapQuota])
-	int64Override(&s.LargeAlertQuota, m[keyLargeAlertQuota])
+	quotaOverride(&s.DailyCapQuota, keyDailyCapQuota, m[keyDailyCapQuota])
+	quotaOverride(&s.LargeAlertQuota, keyLargeAlertQuota, m[keyLargeAlertQuota])
 	intOverride(&s.MinInviteeAgeHours, m[keyMinInviteeAgeHour])
 }
 
@@ -261,13 +271,31 @@ func intOverride(dst *int, raw string) {
 	}
 }
 
-func int64Override(dst *int64, raw string) {
+// quotaOverride 应用一条运营覆盖的**额度**门槛。
+//
+// 上界是 common.MaxQuota(主库 users.quota / 日志额度列都是 int32)。
+// 越界一律丢弃并告警,不钳到边界 —— 与 rateOverride 同一条理由:
+// qy_settings 是可以被人手工 UPDATE 的,钳到边界会静默生效一个谁都没批准的值,
+// 而丢弃只是回落到 YAML 默认,损失有界且日志里说得清。
+//
+// 为什么读取侧也要卡:写入侧的 400 只挡住管理端这一条路。库里已经存着的
+// 越界值(历史数据、手工 UPDATE、以后可能出现的其它写入方)不会因为
+// 今天加了个校验就消失,而它造成的是「全站佣金永远不再落账」这种无声故障。
+func quotaOverride(dst *int64, key, raw string) {
 	if raw == "" {
 		return
 	}
-	if v, err := strconv.ParseInt(raw, 10, 64); err == nil && v >= 0 {
-		*dst = v
+	v, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || v < 0 {
+		return
 	}
+	if v > int64(common.MaxQuota) {
+		warnf("qy_settings 里的 commission.%s = %d 超出主库额度上限 %d,已忽略并回落默认值 —— "+
+			"这类门槛一旦超过 int32 上限就永远无法被满足(结算金额本身被夹在 int32 内)",
+			key, v, common.MaxQuota)
+		return
+	}
+	*dst = v
 }
 
 // writeSetting 在给定事务内落一条运营覆盖。

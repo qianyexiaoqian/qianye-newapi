@@ -90,6 +90,56 @@ type Activity struct {
 	CommitHash string `json:"commit_hash" gorm:"type:varchar(64);not null;default:''"`
 	Algo       string `json:"algo" gorm:"type:varchar(24);not null;default:''"`
 
+	// DrawMode 是抽奖的定档方式:rank(按名次抽 N 个)/ prob(按公示概率摇号)
+	// / ball(双色球)。竞猜恒为空串。
+	//
+	// **刻意不新增 kind**:runReveal 按 kind='draw' 扫、runVoidExpired 按
+	// kind='guess' 扫、entry.go 在两个 kind 上分支、资格与扣费完全不看 kind ——
+	// 新增一个 kind 要在这四处各补一个分支,每漏一处就是一条静默死路。
+	// 加一列 draw_mode 则整条生命周期一行都不用改。
+	DrawMode string `json:"draw_mode" gorm:"type:varchar(8);not null;default:''"`
+	// TextGrantCount 是开奖那一刻算出的文本奖中奖位数,与 payout 计划在**同一个
+	// 事务**里写入。对账用它做 O(1) 的"文本奖有没有被删掉一行"判定 ——
+	// 没有它就只能在对账里重跑一遍抽签,而那是每分钟一次的任务。
+	TextGrantCount int `json:"text_grant_count" gorm:"not null;default:0"`
+
+	// ── 双色球期次(draw_mode=ball 专用,其余模式恒为零值)──
+	//
+	// 这一整段与 SeriesSnapshot 一一对应,**逐个进 commit 原像**:非 ball 活动
+	// 也占着这些位,少一个占位就等于允许管理员把一场普通抽奖悄悄改成双色球。
+	//
+	// SeriesNo 在活动行上冗余一份而不是每次 JOIN 系列表:承诺原像必须能在
+	// 只有活动行 + 种子的情况下算出来,而系列表是可以被改名的。
+	SeriesId int64  `json:"series_id" gorm:"not null;default:0;index:idx_qy_lot_act_series,priority:1"`
+	SeriesNo string `json:"series_no" gorm:"type:varchar(32);not null;default:''"`
+	IssueNo  int    `json:"issue_no" gorm:"not null;default:0;index:idx_qy_lot_act_series,priority:2"`
+
+	// PoolCarryQuota 是本期开局从系列池取走的**滚存**(上期未派出的部分),
+	// PoolSeedQuota 是其中属于本期新注资的部分,两者之和 = PoolOpenQuota。
+	// 三个数都在 publish 那一刻从系列行上原子取走并冻结进承诺。
+	//
+	// 注意 PoolOpenQuota 是**开局基数**,不含本期投注的入池部分:后者要到封盘
+	// 才定得下来,而承诺必须在发布时就写死。开奖时真正可派发的池子是
+	// PoolOpenQuota + floor(PoolQuota × PoolShareBps / 10000),验证脚本按同一个
+	// 式子从公开数据复算。
+	PoolSeedQuota  int64 `json:"pool_seed_quota" gorm:"not null;default:0"`
+	PoolCarryQuota int64 `json:"pool_carry_quota" gorm:"not null;default:0"`
+	PoolOpenQuota  int64 `json:"pool_open_quota" gorm:"not null;default:0"`
+	// PoolShareBps 是本期投注额进入奖池的万分比,其余部分是平台手续费。
+	// 滚存与注资**零费率** —— 否则平台会反复抽自己的种子钱,池子在一次都没派
+	// 出去之前就被费率蚕食干净。
+	PoolShareBps int `json:"pool_share_bps" gorm:"not null;default:0"`
+
+	// 号池四元组在 series 上定死、期与期之间不可变(这样中奖率可比,运营也不能
+	// 靠调号码空间悄悄改概率),同时进每期的 commit 原像。
+	BallRedPool  int `json:"ball_red_pool" gorm:"not null;default:0"`
+	BallRedPick  int `json:"ball_red_pick" gorm:"not null;default:0"`
+	BallBluePool int `json:"ball_blue_pool" gorm:"not null;default:0"`
+	BallBluePick int `json:"ball_blue_pick" gorm:"not null;default:0"`
+	// BallResult 是开奖号的规范化串(与选号同格式),开奖那一刻写入,此后只读。
+	// 它是**结果**而不是承诺的一部分:任何人都能用公开的种子自己摇一遍。
+	BallResult string `json:"ball_result" gorm:"type:varchar(64);not null;default:''"`
+
 	// AllowMultiWin 刻意不用 gorm default 标签:布尔默认值在 MySQL 与
 	// PostgreSQL 上会被 AutoMigrate 反复 ALTER。业务默认值在请求归一化时给。
 	AllowMultiWin bool `json:"allow_multi_win" gorm:"not null;default:false"`
@@ -175,8 +225,34 @@ const (
 	OutcomeVoidDeadline   = "void_deadline"
 )
 
-// AlgoV1 是公正性协议的版本号。原像改一个字节就是不兼容变更,必须升版本。
-const AlgoV1 = "lot-v1"
+// AlgoV1 / AlgoV2 是公正性协议的版本号。原像改一个字节就是不兼容变更,必须升版本。
+//
+// 新活动一律写 lot-v2;存量活动的 algo 列保持 lot-v1 且**永不回填** ——
+// 回填会让所有已开完活动的历史公正查询集体变成 FAIL,而那正是这套系统
+// 唯一不能出的事。
+const (
+	AlgoV1 = "lot-v1"
+	AlgoV2 = "lot-v2"
+)
+
+// 抽奖的定档方式。
+//
+// rank 与 prob 是两套语义:rank 是"从名单里抽前 N 个"(随机量的作用域是全场,
+// 一张票的名次取决于其他所有票),prob 是"每张票各摇一次、按公示概率定档"
+// (作用域是单张票,结果完全不依赖别人)。共用同一个随机源与同一份票面推导,
+// 区别只在读票面的那把尺子。
+const (
+	DrawModeRank = "rank"
+	DrawModeProb = "prob"
+	DrawModeBall = "ball"
+)
+
+// 奖品类型。单选,不允许一档既给额度又给文本 —— 混合会让派奖在同一行里分叉,
+// 要两者就配两档。
+const (
+	PrizeTypeQuota = "quota"
+	PrizeTypeText  = "text"
+)
 
 // NoWinnerPolicy 是"全部猜错"的口径,写死为全额退回、手续费一分不收。
 //
@@ -227,7 +303,36 @@ type Prize struct {
 	Tier        int    `json:"tier" gorm:"not null;uniqueIndex:uk_qy_lot_prize,priority:2"`
 	Name        string `json:"name" gorm:"type:varchar(80);not null;default:''"`
 	AmountQuota int64  `json:"amount_quota" gorm:"not null;default:0"`
-	Count       int    `json:"count" gorm:"not null;default:0"`
+	// Count 在 rank 模式下是硬名额;在 prob 模式下是**本档预算的份数**
+	// (预算 = Count × AmountQuota),超募时该预算由全部中签者均分。
+	// 语义随模式变化是刻意的:唯有如此,公示的中奖概率才在任何人数下都为真。
+	Count int `json:"count" gorm:"not null;default:0"`
+
+	// PrizeType 是 quota 或 text。空串按 quota 处理(存量行)。
+	PrizeType string `json:"prize_type" gorm:"type:varchar(8);not null;default:''"`
+	// WinPpm 是本档的中奖概率(百万分比)。rank 模式下恒为 0。
+	// 它进 spec 原像 → spec_hash → commit_hash,发布之后改一个数字就开不了奖。
+	WinPpm int `json:"win_ppm" gorm:"not null;default:0"`
+	// TextDesc 是文本奖的**公开**履行说明(如"请在 8 月 31 日前联系客服领取")。
+	//
+	// 它与 Name 同级,明文进 spec 原像 —— 它本来就要展示给所有人看,
+	// 不需要哈希、也不需要盐。**绝不能把兑换码写在这里**:管理端表单上
+	// 常驻一条警告,而真正的兑换码走 Payout 上那三列私密字段。
+	TextDesc string `json:"text_desc" gorm:"type:varchar(500);not null;default:''"`
+
+	// RedMatch / BlueMatch / PoolShareBps 是双色球奖级的定档条件与池子份额,
+	// 由双色球那一路填。非 ball 模式恒为 0,但它们**必须出现在 spec 原像里**。
+	RedMatch     int `json:"red_match" gorm:"not null;default:0"`
+	BlueMatch    int `json:"blue_match" gorm:"not null;default:0"`
+	PoolShareBps int `json:"pool_share_bps" gorm:"not null;default:0"`
+}
+
+// Type 返回归一化后的奖品类型:空串(存量行)按额度处理。
+func (p Prize) Type() string {
+	if p.PrizeType == PrizeTypeText {
+		return PrizeTypeText
+	}
+	return PrizeTypeQuota
 }
 
 func (Prize) TableName() string { return "qy_lot_prize" }
@@ -279,6 +384,12 @@ type Entry struct {
 	OptionId int64 `json:"option_id" gorm:"not null;default:0"`
 	OptNo    int   `json:"opt_no" gorm:"not null;default:0"`
 	Amount   int64 `json:"amount" gorm:"not null;default:0"`
+
+	// Pick 是双色球的选号(规范化格式,如 "03,05,12|08")。非 ball 活动恒为空串。
+	//
+	// 它进 lot-v2 的链原像与名单原像两处 —— 否则平台可以在开奖之后把某个人的号
+	// 改成中奖号,而链尾、条目计数、名单重算三道校验会照常全部通过。
+	Pick string `json:"pick" gorm:"type:varchar(64);not null;default:''"`
 
 	Status string `json:"status" gorm:"type:varchar(12);not null;index:idx_qy_lot_entry_scan,priority:2;index:idx_qy_lot_entry_user,priority:3"`
 	// OrderNo 是 twophase 资金单号,跨库对账锚点。
@@ -362,6 +473,34 @@ type Payout struct {
 	NextAttemptAt int64  `json:"next_attempt_at" gorm:"not null;default:0;index:idx_qy_lot_payout_drive,priority:2"`
 	LastError     string `json:"last_error" gorm:"type:varchar(512);not null;default:''"`
 
+	// ── 文本奖的履行标记(kind='text' 专用)──
+	//
+	// **履行刻意不改 Status**:Status 的语义严格保持"资金终态",绝不让它兼职
+	// 表达"人做完了没有"。把 paid 复用成"已履行"会让 finishIfDone 按
+	// status=paid 分组求和的那段聚合把 0 元文本行也算进去,语义当场被污染。
+	FulfilledAt int64  `json:"fulfilled_at" gorm:"not null;default:0"`
+	FulfilledBy int    `json:"fulfilled_by" gorm:"not null;default:0"`
+	FulfillNote string `json:"fulfill_note" gorm:"type:varchar(255);not null;default:''"`
+
+	// SecretNonce / SecretCipher / SecretKeyVersion 存放管理员履行时填入的
+	// **实际兑换码**。全部 json:"-" —— 与 Seed 同一档纪律。
+	//
+	// 硬规则(secret_guard_test.go 的 AST 断言守住):
+	//   - 包内只有 sealPrizeSecret / openPrizeSecret 两个函数触碰这三列;
+	//   - 不进任何列表接口、不进日志、不进 %+v、不进审计快照;
+	//   - **不进证据链的任何一层,连哈希都不进**。
+	//
+	// 为什么连哈希都不进:proof 是匿名可访问的,act_no / tier / 域前缀全部公开,
+	// 一个 8 位兑换码约 40 位熵 —— 公开一个可复现原像的哈希等于给了离线爆破面,
+	// 与直接公开只差几分钟算力。
+	//
+	// SecretKeyVersion == 0 表示**明文直存**:启用加密需要一个新的 YAML 配置键,
+	// 而配置那几个文件当前被并行工作流占用。列结构一次到位,加密是后续一次
+	// backfill 而不是一次迁移。这是一处明确记账的欠债,不是遗漏。
+	SecretNonce      []byte `json:"-" gorm:"type:blob"`
+	SecretCipher     []byte `json:"-" gorm:"type:blob"`
+	SecretKeyVersion int    `json:"-" gorm:"not null;default:0"`
+
 	CreatedAt int64 `json:"created_at" gorm:"not null;default:0;index:idx_qy_lot_payout_user,priority:2"`
 	SettledAt int64 `json:"settled_at" gorm:"not null;default:0"`
 }
@@ -373,6 +512,9 @@ const (
 	PayoutPrize  = "prize"  // 抽奖派奖
 	PayoutWin    = "win"    // 竞猜赔付
 	PayoutRefund = "refund" // 取消 / 流局 / 全错 / 未决排除的退款
+	// PayoutText 是文本奖的中奖位。它**不动钱、不进跨库资金链路**,
+	// 一落库就是终态(granted),等管理员手工履行。
+	PayoutText = "text"
 )
 
 // 出款状态。
@@ -385,6 +527,12 @@ const (
 	PayoutPaid    = "paid"
 	PayoutFailed  = "failed"
 	PayoutHeld    = "held"
+	// PayoutGranted 是文本奖落库那一刻就到达的终态。
+	//
+	// 它**刻意不在** DrivePayouts 与 finishIfDone 的扫描集合里:文本奖不动钱、
+	// 不跨库,没有任何东西需要驱动。履行与否由 FulfilledAt 三列单独表达 ——
+	// Status 的语义严格保持"资金终态",绝不让它兼职表达"人做完了没有"。
+	PayoutGranted = "granted"
 )
 
 // ─────────────────────────── 事件流与异常 ───────────────────────────
@@ -412,6 +560,36 @@ type Event struct {
 
 func (Event) TableName() string { return "qy_lot_event" }
 
+// PrizeSecretHist 是文本奖明文的**只增不改**履历。
+//
+// 存在的唯一理由是一条 unfulfill → fulfill 的路径:撤销履行刻意不清密文
+// (用户可能已经用掉了那串码),但再次履行的那条 CAS 只判 fulfilled_at = 0,
+// 于是第二串码会把第一串**整列覆盖**。而 Event 与审计快照按设计都不含明文,
+// 覆盖之后"用户当初拿到的是哪一串"在系统里彻底消失 —— 那恰恰是撤销这个
+// 功能自己承诺要保住的东西。
+//
+// 纪律与 Payout.Secret* 完全一致:全部 json:"-",不进任何列表接口、不进日志、
+// 不进审计快照、**不进证据链的任何一层**。唯一的读出口是写审计的 reveal 接口。
+type PrizeSecretHist struct {
+	Id int64 `json:"-" gorm:"primaryKey;autoIncrement"`
+	// PayoutNo + Seq 唯一:同一笔出款的第 n 次履行只可能归档一行。
+	PayoutNo string `json:"-" gorm:"type:varchar(32);not null;uniqueIndex:uk_qy_lot_secret_hist,priority:1"`
+	Seq      int    `json:"-" gorm:"not null;uniqueIndex:uk_qy_lot_secret_hist,priority:2"`
+
+	SecretNonce      []byte `json:"-" gorm:"type:blob"`
+	SecretCipher     []byte `json:"-" gorm:"type:blob"`
+	SecretKeyVersion int    `json:"-" gorm:"not null;default:0"`
+
+	// FulfilledAt / FulfilledBy / FulfillNote 是被顶替掉的那一次履行的账面。
+	FulfilledAt  int64  `json:"-" gorm:"not null;default:0"`
+	FulfilledBy  int    `json:"-" gorm:"not null;default:0"`
+	FulfillNote  string `json:"-" gorm:"type:varchar(255);not null;default:''"`
+	SupersededAt int64  `json:"-" gorm:"not null;default:0"`
+	SupersededBy int    `json:"-" gorm:"not null;default:0"`
+}
+
+func (PrizeSecretHist) TableName() string { return "qy_lot_prize_secret_hist" }
+
 // 事件动作。
 const (
 	ActionCreate      = "create"
@@ -423,6 +601,14 @@ const (
 	ActionCancel      = "cancel"
 	ActionVoid        = "void"
 	ActionFinish      = "finish"
+	// 文本奖的履行履历。Event 是 append-only:误标的痕迹永远在,
+	// 消失的只是那个错误的当前态。
+	//
+	// detail 里**只放 payout_no 与 tier,绝不放任何文本内容** ——
+	// 事件流对用户可见,而兑换码只对中奖者本人可见。
+	ActionPrizeFulfill   = "prize_fulfill"
+	ActionPrizeUnfulfill = "prize_unfulfill"
+	ActionPrizeReveal    = "prize_reveal"
 )
 
 // SpendDaily 是"近 N 日消费"的唯一数据源。
@@ -473,4 +659,16 @@ const (
 	FlagOrphanOrder  = "orphan_order"
 	FlagEntryStuck   = "entry_stuck"
 	FlagRevealRefuse = "reveal_refused"
+	// FlagTextGrantMissing 是真事故:有人中了文本奖,但库里没有那一行。
+	FlagTextGrantMissing = "text_grant_missing"
+	// FlagTextPrizeStale 是运营欠账:文本奖挂了两周还没人履行。
+	// 没有它,文本奖会静默烂掉,而用户会以为是抽奖作弊。
+	FlagTextPrizeStale = "text_prize_stale"
+	// FlagSpecDrift 是"公示的奖档/概率表被事后改过"。
+	//
+	// 承诺哈希覆盖的是 spec_hash 这个**字符串**,不是奖档表本身:只核
+	// commit=H(...spec_hash...) 证明不了 qy_lot_prize 的行没被改。发布之后改一个
+	// win_ppm 就等于点名挑中奖者,改一个 amount_quota 就绕过了净增发闸门,
+	// 而这两件事原本只有用户自己下载证据链跑脚本才会发现。
+	FlagSpecDrift = "spec_drift"
 )

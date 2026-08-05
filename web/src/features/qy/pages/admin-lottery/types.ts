@@ -239,6 +239,70 @@ export type QyLotAdminPayout = {
   settled_at: number
 }
 
+/**
+ * 文本奖履行队列的一行（`GET /admin/lottery/text-prizes`）。
+ *
+ * ## 为什么它不是 {@link QyLotAdminPayout} 的几个可选字段
+ *
+ * 两张列表的每一行说的是不同的事：出款列表的一行是**资金单**（重试、卡单、
+ * 代次、幂等键），这张的一行是**一件人要去做的事**。共用一个类型会让
+ * "还有 3 笔没发出去"与"还有 3 份码没填"在代码里长得一模一样，而它们的
+ * 处置方式、升级路径、以及"卡住了谁该被叫醒"完全不同。
+ *
+ * 后端也是分开的两个 handler，跨活动查询（列表页顶部那个待履行红点直读它的
+ * `total`），所以这里带 `act_no` / `title`。
+ */
+export type QyLotAdminTextPrize = {
+  payout_no: string
+  act_no: string
+  title: string
+  tier: number
+  user_id: number
+  username: string
+  /**
+   * 兑换码的**掩码**。明文只走 `reveal` 那一个写审计的接口 ——
+   * 让列表直接带明文，会使"滑过列表时的随手点击"和"真正的核对"在事后的
+   * 审计流水里混成一片，那时审计就不再能区分任何事情。
+   */
+  secret_mask: string
+  fulfilled: boolean
+  fulfilled_at: number
+  fulfilled_by: number
+  fulfill_note: string
+  created_at: number
+}
+
+/**
+ * 揭示明文的返回。**不写进 react-query 缓存**，用完即丢。
+ *
+ * 明文进了缓存就会在别的页面被无意间读到，刷新时还会被自动重放 ——
+ * 而这是一个每次调用都要留一条审计的动作。
+ */
+export type QyLotPrizeSecret = {
+  payout_no: string
+  secret: string
+  note: string
+  /**
+   * 被顶替过的历史内容。
+   *
+   * 撤销履行**不清密文**，但再次履行会把上一串整列覆盖，而 Event 与审计快照
+   * 按设计都不含明文。后端因此把被顶替的那几串搬进一张只增不改的履历表，
+   * 并只在这个写审计的接口里下发 —— 争议的原话永远是「我用的那串码失效了」，
+   * 回答它需要看到当初发出去的那一串。
+   */
+  superseded: QyLotSupersededSecret[]
+}
+
+export type QyLotSupersededSecret = {
+  seq: number
+  secret: string
+  note: string
+  fulfilled_at: number
+  fulfilled_by: number
+  superseded_at: number
+  superseded_by: number
+}
+
 /** 活动状态机的事件流。**对用户可见、属于证据链**，与管理审计是两回事。 */
 export type QyLotAdminEvent = {
   id: number

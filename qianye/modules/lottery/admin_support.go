@@ -35,6 +35,20 @@ var (
 	errProofNotReady = newBizError(http.StatusConflict, "qy_lot_proof_not_ready",
 		"该活动尚未封盘,证据链要等名单冻结之后才能生成")
 	errProofDisabled = newBizError(http.StatusNotFound, "qy_lot_proof_disabled", "证据链端点已关闭")
+
+	// errNotTextPrize 刻意不是 404:履行/撤销/揭示三个接口对**额度奖**必须明确
+	// 拒绝,因为额度奖的 paid 是资金终态、永远不可撤。回 404 会让人以为只是
+	// 单号打错了,然后去找一个"正确"的单号再试一次。
+	errNotTextPrize = newBizError(http.StatusForbidden, "qy_lot_not_text_prize",
+		"该笔不是文本奖:额度奖由出款链路自动到账,不能人工履行或撤销")
+	errPrizeAlreadyFulfilled = newBizError(http.StatusConflict, "qy_lot_prize_fulfilled",
+		"该文本奖已经履行过了;要更正内容请先撤销,撤销会留下不可删除的履历")
+	errPrizeNotFulfilled = newBizError(http.StatusConflict, "qy_lot_prize_not_fulfilled",
+		"该文本奖尚未履行")
+	// errPrizeSecretUnreadable 是"我读不出来"的诚实回答,绝不把密文的字节
+	// 当明文展示 —— 那会让管理员把一串乱码发给中奖者。
+	errPrizeSecretUnreadable = newBizError(http.StatusInternalServerError, "qy_lot_prize_unreadable",
+		"该文本奖的内容无法读取,请联系运维核对密钥版本")
 )
 
 // loadActivityAny 按活动号读取活动,**不限状态**。
@@ -103,6 +117,7 @@ func rosterLines(rows []Entry) []RosterLine {
 	for _, e := range rows {
 		out = append(out, RosterLine{
 			EntryNo: e.EntryNo, UserRef: e.UserRef, OptNo: e.OptNo, Amount: e.Amount,
+			Pick: e.Pick,
 		})
 	}
 	return out

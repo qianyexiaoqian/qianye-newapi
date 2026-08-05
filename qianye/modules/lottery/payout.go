@@ -55,12 +55,30 @@ type PayoutPlan struct {
 //
 // 金额为 0 的计划直接跳过:twophase 的入口要求 amount > 0,而 0 元出款在账面上
 // 也不表达任何事实。这只可能出现在奖池分配的截断残差为 0 时,守恒式仍然成立。
+//
+// # 文本奖是这条规则唯一的例外
+//
+// kind='text' 的金额恒为 0(它发的是一段兑换文本,不是额度),按上面那条规则
+// 会被**整批丢掉且不报错** —— 中奖者永远看不到自己的奖品,而系统零告警。
+// 所以跳过条件必须显式排除它。
+//
+// 文本奖落库即 granted(终态),而不是 planned:
+//
+//	DrivePayouts 扫的是 status IN (planned, paying, failed),finishIfDone 的
+//	未终态集合也是同样三个。落成 planned 意味着文本奖**默认会被出款 worker
+//	捡走**,只能靠在那两处各补一个 kind 过滤来挡,漏一处就是一笔文本奖被当成
+//	资金单驱动。granted 则是默认安全:它天然不在任何一个已有的扫描集合里,
+//	那两处一行都不用改。安全性来自结构,而不是来自某个人记得写了 if。
 func PlanPayouts(tx *gorm.DB, actId int64, plans []PayoutPlan) error {
 	rows := make([]Payout, 0, len(plans))
 	now := common.GetTimestamp()
 	for _, p := range plans {
-		if p.Amount <= 0 {
+		if p.Kind != PayoutText && p.Amount <= 0 {
 			continue
+		}
+		status := PayoutPlanned
+		if p.Kind == PayoutText {
+			status = PayoutGranted
 		}
 		rows = append(rows, Payout{
 			PayoutNo:    newPayoutNo(),
@@ -71,7 +89,7 @@ func PlanPayouts(tx *gorm.DB, actId int64, plans []PayoutPlan) error {
 			Tier:        p.Tier,
 			DrawPos:     p.DrawPos,
 			AmountQuota: p.Amount,
-			Status:      PayoutPlanned,
+			Status:      status,
 			CreatedAt:   now,
 		})
 	}

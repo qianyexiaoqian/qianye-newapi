@@ -76,6 +76,18 @@ export function QyConfirmDialog(props: QyConfirmDialogProps) {
     <ConfirmDialog
       open={props.open}
       onOpenChange={props.onOpenChange}
+      // 上游 AlertDialogContent 是 `fixed top-1/2 -translate-y-1/2 grid`，
+      // **既没有 max-height 也没有 overflow**。内容一旦高过视口，上下两端就被
+      // 等量裁掉且滚不到 —— 而这个组件专门用于不可逆操作：被裁掉的恰恰是底部的
+      // 强制勾选框与确认键，用户既提交不了也点不到取消（只剩 Esc）。
+      //
+      // 触发它不需要什么极端条件：矮屏（≤600px 高）上一次「批量删除 20 个渠道」
+      // 就是标题 + 说明 + 渠道名清单 + 不可逆警示块 + 竖排按钮 ≈ 600px。
+      //
+      // QyResponsiveDialog 早就是这个形状（`max-h-[calc(100dvh-2rem)]` + 内部滚动），
+      // 只是 QyConfirmDialog 这条路没接上。className 是上游 ConfirmDialog 自己
+      // 暴露的入参，所以这里补齐**不需要改任何上游文件**。
+      className='max-h-[calc(100dvh-2rem)] overflow-y-auto'
       title={props.title}
       desc={<div className='space-y-3'>{props.description}</div>}
       destructive={props.irreversible}

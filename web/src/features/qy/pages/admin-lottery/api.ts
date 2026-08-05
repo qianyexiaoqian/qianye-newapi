@@ -29,7 +29,9 @@ import type {
   QyLotAdminEvent,
   QyLotAdminFlag,
   QyLotAdminPayout,
+  QyLotAdminTextPrize,
   QyLotCreateInput,
+  QyLotPrizeSecret,
 } from './types'
 
 const BASE = '/admin/lottery/activities'
@@ -151,6 +153,82 @@ export function qyAdminLotPayoutsQuery(
     staleTime: 10_000,
     enabled: actNo !== '',
   })
+}
+
+// ───────────────────────── 文本奖履行 ─────────────────────────
+
+/**
+ * 文本奖履行队列。
+ *
+ * 端点挂在**模块下**（`/admin/lottery/text-prizes`）而不是活动下，`act_no` 只是
+ * 它的一个过滤参数 —— 与对账异常（`/admin/lottery/flags`）同一条理由：待办红点
+ * 要能一次看到全站还有多少份码没发，按活动过滤只是钻进去之后的事。
+ */
+export function qyAdminLotTextPrizesQuery(
+  actNo: string,
+  params: { fulfilled?: number; p: number; page_size: number }
+) {
+  return queryOptions({
+    queryKey: qyKeys.adminLotteryTextPrizes(actNo, params),
+    queryFn: () =>
+      qyGet<QyPage<QyLotAdminTextPrize>>('/admin/lottery/text-prizes', {
+        ...params,
+        act_no: actNo === '' ? undefined : actNo,
+      }),
+    staleTime: 10_000,
+  })
+}
+
+/**
+ * 查看兑换码明文。**被审计的高敏操作**，与提现的收款信息同一条纪律：
+ * 先填事由再请求，明文只活在组件内存里，不进任何缓存。
+ *
+ * 一键直出的话，管理员滑过列表时的随手点击会和真正的核对混在一起，
+ * 事后的审计流水就失去了区分能力。
+ */
+export function revealQyLotPrizeSecret(body: {
+  payout_no: string
+  reason: string
+}): Promise<QyLotPrizeSecret> {
+  return qyPost<QyLotPrizeSecret>(
+    `/admin/lottery/payouts/${encodeURIComponent(body.payout_no)}/reveal`,
+    { reason: body.reason }
+  )
+}
+
+/**
+ * 履行：把实际的兑换码填进去，此后中奖者本人可以看到它。
+ *
+ * 后端用 CAS（`WHERE payout_no=? AND kind='text' AND fulfilled_at=0`），
+ * 所以按钮连点第二次拿到的是"已履行过"而不是第二份记录 —— 天然幂等。
+ */
+export function fulfillQyLotPrize(body: {
+  note: string
+  payout_no: string
+  secret: string
+}): Promise<unknown> {
+  return qyPost<unknown>(
+    `/admin/lottery/payouts/${encodeURIComponent(body.payout_no)}/fulfill`,
+    { secret: body.secret, note: body.note }
+  )
+}
+
+/**
+ * 撤销履行标记（账面纠错）。
+ *
+ * **不清空已存的兑换码**：用户可能已经看到并用掉了那个码，抹掉记录等于抹掉
+ * 争议时唯一的证据。撤销只是把"已履行"这个账面结论收回来。
+ *
+ * 只对 `kind='text'` 开放 —— 额度奖的 `paid` 是资金终态，永远不可撤。
+ */
+export function unfulfillQyLotPrize(body: {
+  payout_no: string
+  reason: string
+}): Promise<unknown> {
+  return qyPost<unknown>(
+    `/admin/lottery/payouts/${encodeURIComponent(body.payout_no)}/unfulfill`,
+    { reason: body.reason }
+  )
 }
 
 export function qyAdminLotEventsQuery(actNo: string) {

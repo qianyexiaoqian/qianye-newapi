@@ -24,6 +24,23 @@ For commercial licensing, please contact support@quantumnous.com
  * 传了白名单外的键会整个请求 400，所以这里只登记元数据，**渲染哪些字段由
  * 接口返回的 `editable_keys` 决定** —— 后端收窄白名单时前端自动跟随。
  */
+/**
+ * 额度门槛的上界 = 主库额度列的上界（`users.quota` 是 int32，
+ * 后端 `common.MaxQuota` 就是这个数）。
+ *
+ * # 为什么不能是 Number.MAX_SAFE_INTEGER
+ *
+ * 结算金额本身在后端已经被 `common.QuotaFromDecimalChecked` 夹在 int32 内，
+ * 所以一个超过它的门槛不是"更宽松"，是**永远无法被满足**。最坏的一个具体形状：
+ * 把「最小结算额度」填成 5000000000（按 USD 录入之后只要敲 5 位数），
+ * `net < minSettle` 从此恒成立，net 恒为 0 —— 全站所有邀请人的佣金永远不再落账，
+ * 不报错、不告警、没有日志，未结算额一路累加。
+ *
+ * 划转与抽奖两页的这条路早就被后端下发的 bounds 堵住了，只有佣金页没有；
+ * 本轮把上界补在两边：这里（界面立刻标红）与后端校验/读取回落（真正说了算的）。
+ */
+export const QY_MAX_QUOTA = 2147483647
+
 export type QyCommissionFieldMeta = {
   labelKey: string
   hintKey: string
@@ -56,14 +73,14 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     // 后端校验 `v <= 0` 直接 400，下限必须是 1。
     unit: 'quota',
     min: 1,
-    max: Number.MAX_SAFE_INTEGER,
+    max: QY_MAX_QUOTA,
   },
   max_per_order_quota: {
     labelKey: 'qy_cm_f_max_per_order',
     hintKey: 'qy_cm_f_unlimited_hint',
     unit: 'quota',
     min: 0,
-    max: Number.MAX_SAFE_INTEGER,
+    max: QY_MAX_QUOTA,
     zeroMeansUnlimited: true,
   },
   holding_days: {
@@ -78,7 +95,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     hintKey: 'qy_cm_f_unlimited_hint',
     unit: 'quota',
     min: 0,
-    max: Number.MAX_SAFE_INTEGER,
+    max: QY_MAX_QUOTA,
     zeroMeansUnlimited: true,
   },
   large_accrual_alert_quota: {
@@ -86,7 +103,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     hintKey: 'qy_cm_f_large_alert_hint',
     unit: 'quota',
     min: 0,
-    max: Number.MAX_SAFE_INTEGER,
+    max: QY_MAX_QUOTA,
     zeroMeansUnlimited: true,
   },
   min_invitee_age_hours: {

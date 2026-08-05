@@ -63,6 +63,36 @@ type userGroupRow struct {
 	// 它推翻了上游存在多年的不变量,所以必须显式下发让界面能醒目提示 ——
 	// 但它是**警告不是拦截**:项目方明确要求这条不变量能被推翻。
 	SelfExcluded bool `json:"self_excluded"`
+
+	// AutoMasked 表示这一行的接管**不是任何人按出来的**,而是「新分组默认全遮断」
+	// 自动建的。
+	//
+	// 不下发它,运营看到的就是一个莫名其妙已经 enforce、清单还空着的分组,
+	// 而他确信自己没做过这件事 —— 那正是这个默认最容易被当成故障的时刻。
+	AutoMasked bool `json:"auto_masked"`
+	// AutoMaskedAt 是自动遮断发生的时间(unix 秒)。0 = 未发生。
+	AutoMaskedAt int64 `json:"auto_masked_at"`
+	// PendingSetup = 自动遮断了、而且到现在一个模型分组都没配。
+	//
+	// 它与 AutoMasked 分开是因为两者的处置完全不同:配好之后 AutoMasked 仍是
+	// true(它记录的是来历,不该被抹掉),但那一行已经不需要任何人再去动它。
+	// 合成一个字段会让提示在配置完成之后继续挂着,而长期挂着的提示等于没有提示。
+	PendingSetup bool `json:"pending_setup"`
+
+	// PolicySkipped 表示「新分组默认全遮断」开着的时候发现了这个分组,
+	// 却**刻意没有遮断它**(已经有人在用 / 一轮冒出太多)。见 Seen.Declined。
+	//
+	// 这一档与 AutoMasked 一样必须下发,而且理由更硬:AutoMasked 的落差是
+	// "发生了我没做过的事",运营至少看得见那一行变成了 enforce;PolicySkipped 的
+	// 落差是"**没有**发生我以为会发生的事",在界面上完全没有形状 —— 页面顶部
+	// 写着「已开启」,这一行看起来和任何一个未接管的分组一模一样,而登记簿永不
+	// 重判意味着它此后也不会被补遮断。不下发它,唯一的痕迹就只有扩展库里的
+	// 一列 reason,而那一列运营查不到。
+	PolicySkipped bool `json:"policy_skipped"`
+	// PolicySkippedReason 是当初的判断依据原话(登记簿的 reason 列)。
+	// 只给一个布尔的话,运营下一步该做什么完全没有线索 ——
+	// "已经有 3 个用户在用"与"那一轮冒出 5 个分组"要求的动作并不相同。
+	PolicySkippedReason string `json:"policy_skipped_reason"`
 }
 
 type modelGroupRow struct {
@@ -123,6 +153,33 @@ type matrixView struct {
 	Warnings          []string        `json:"warnings"`
 	ShadowWriteDenies []WriteDeny     `json:"shadow_write_denies"`
 	Partial           *savePartial    `json:"partial,omitempty"`
+
+	// NewGroupPolicy 是「新分组默认全遮断」的当前状态。
+	//
+	// 它必须随每一次矩阵回读一起下发,而不是让前端去猜或者去读另一个接口:
+	// 这个默认改变的是运营**下一次在别的页面上**建分组时会发生什么,
+	// 而唯一能让他在建之前看到这句话的地方就是这一页。
+	NewGroupPolicy newGroupPolicy `json:"new_group_policy"`
+}
+
+// newGroupPolicy 回答「我在分组倍率页加一个新分组,会发生什么」。
+type newGroupPolicy struct {
+	// Enabled = group_matrix.new_group_default_deny。
+	Enabled bool `json:"enabled"`
+	// ScanIntervalSeconds 是发现延迟的上界。运营加完分组之后盯着这一页看的
+	// 时候,需要知道"还没变成遮断"是正常的还是坏了。
+	ScanIntervalSeconds int `json:"scan_interval_seconds"`
+	// PendingSetup 是当前"自动遮断了、还一个模型分组都没配"的分组数。
+	PendingSetup int `json:"pending_setup"`
+	// PolicySkipped 是当前"开关开着、发现过、却刻意没遮断"的分组数(见
+	// userGroupRow.PolicySkipped)。它与 PendingSetup 指向相反的两种落差,
+	// 必须分开计数:前者是"被遮断了、等你配",后者是"没被遮断、而你以为被遮断了"。
+	PolicySkipped int `json:"policy_skipped"`
+	// LastScanAt 是本节点最近一次对账完成的时间(unix 秒),0 = 本节点没跑过。
+	//
+	// **0 不等于坏了**:对账走 lease,租约在别的节点手里时本节点恒为 0。
+	// 界面必须把这句话一起说出来,否则多节点部署下这一栏永远像是故障。
+	LastScanAt int64 `json:"last_scan_at"`
 }
 
 // ratioText 把倍率渲染成十进制字符串。
@@ -161,6 +218,7 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 	userGroups, userCounts := listUserGroups(scopes)
 	activeTokens := activeTokenCounts()
 	modelGroups := listModelGroups()
+	seenRows := loadSeen(gdb)
 
 	// 未接管的行必须显示**上游此刻的实际可选集合**(见 cellView.Granted)。
 	// 走 service.GetUserUsableGroups 是安全的:该分组没有 scope 行时
@@ -172,6 +230,8 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 		}
 	}
 
+	pendingSetup := 0
+	policySkipped := 0
 	rows := make([]userGroupRow, 0, len(userGroups))
 	for _, ug := range userGroups {
 		sc, managed := scopes[ug]
@@ -181,6 +241,27 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 			// 未接管时下发 shadow 而不是空串:前端的 mode 是一个二值枚举,
 			// 空串会让它在 managed 被打开的那一刻落进"两个选项都没选中"的状态。
 			Mode: ModeShadow,
+		}
+		// 自动遮断的来历只从登记簿读,不从 scope 行推断:运营完全可以把一个
+		// 自动遮断的分组改成 shadow、再配上清单,那一行看起来就与手工接管的
+		// 一模一样,而"当初是谁把它变成 enforce 的"仍然必须答得上来。
+		if seen, ok := seenRows[ug]; ok {
+			if seen.AutoMasked {
+				row.AutoMasked, row.AutoMaskedAt = true, seen.FirstSeenAt
+				// PendingSetup 只看**已落库**的 grants,不看 managed:
+				// 撤销接管之后清单还在,那一行已经不需要任何人再去动它。
+				row.PendingSetup = managed && len(grants[ug]) == 0
+				if row.PendingSetup {
+					pendingSetup++
+				}
+			}
+			// 「开关开着却没遮断」的提示在运营自己接管这一行之后就该消失:
+			// 那时这一行的状态是他配的,不再有任何预期落差。来历不抹
+			// (登记簿的 Declined 列永远留着),只是不再当成待办摆在他面前。
+			if seen.Declined && !managed {
+				row.PolicySkipped, row.PolicySkippedReason = true, seen.Reason
+				policySkipped++
+			}
 		}
 		if managed {
 			row.Mode, row.AllowAuto, row.Note = sc.Mode, sc.AllowAuto, sc.Note
@@ -243,6 +324,13 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 		// 不下发它的话,这张表就是一张只写不读的表 —— 而只写不读的观测数据
 		// 与没有观测是同一回事,只是更容易让人以为自己有证据。
 		ShadowWriteDenies: listWriteDenies(gdb),
+		NewGroupPolicy: newGroupPolicy{
+			Enabled:             enabled() && cfg().NewGroupDefaultDenyOn(),
+			ScanIntervalSeconds: newGroupScanInterval(),
+			PendingSetup:        pendingSetup,
+			PolicySkipped:       policySkipped,
+			LastScanAt:          lastScanAt.Load(),
+		},
 	}, nil
 }
 

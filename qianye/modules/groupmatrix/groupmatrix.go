@@ -68,9 +68,12 @@
 package groupmatrix
 
 import (
+	"time"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/qianye/module"
+	"github.com/QuantumNous/new-api/qianye/service/lease"
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
@@ -86,7 +89,32 @@ func (Mod) Tables() []any {
 		&Scope{},
 		&Grant{},
 		&WriteDeny{},
+		&Seen{},
 	}
+}
+
+// StartTasks 启动「新分组默认全遮断」的对账任务。
+//
+// ══════════════ 为什么这一条必须走 lease.Run,而快照刷新不能 ══════════════
+//
+// 两者的判断刚好相反,别照抄隔壁:
+//
+//	快照刷新  是**每个节点各自持有**的进程内缓存。lease.Run 只会让一个节点跑,
+//	          其余节点的清单永远陈旧,所以它走请求驱动的 CAS(见 snapshot.go)。
+//	新分组对账 是**写库**。多节点同时跑会对同一个新分组各建一次 scope 行、
+//	          各写一条审计 —— 唯一索引挡得住重复行,挡不住重复审计与重复日志,
+//	          而"这个分组被自动遮断了 N 次"会让复盘的人以为发生了 N 次事件。
+//
+// 未启用时不注册任务:与 InstallHooks 的无条件注入不同,后台任务不是 kill
+// switch 的一部分,而 lease 表里多一行永远不会被续约的租约只是噪声。
+// new_group_default_deny 关掉时**仍然注册** —— 那一档只登记不遮断,
+// 而登记恰恰是它必须继续做的事(见 reconcileNewGroups 的说明)。
+func (Mod) StartTasks() {
+	if !enabled() {
+		return
+	}
+	lease.Run("groupmatrix.new_group_scan",
+		time.Duration(newGroupScanInterval())*time.Second, runNewGroupScan)
 }
 
 // InstallHooks 注入两个挂载点并预热一次清单快照。

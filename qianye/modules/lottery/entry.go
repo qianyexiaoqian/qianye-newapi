@@ -69,7 +69,11 @@ type EntryInput struct {
 	OptNo int
 	// Amount 只有竞猜可以自选(受单注上下限约束);抽奖恒等于 StakeQuota,
 	// 用户不能自己指定金额。
-	Amount    int64
+	Amount int64
+	// Pick 只有双色球(draw_mode=ball)必填,其余活动必须为空。
+	// 机选是**纯前端行为**:服务端不区分自选与机选,因为号码一旦进链,
+	// 两者的可验证性完全一样,而服务端多一条随机路径就多一处要证明其公正的地方。
+	Pick      string
 	ClientIp  string
 	UserAgent string
 }
@@ -125,6 +129,11 @@ func ChargeEntry(ctx context.Context, in EntryInput) (*Entry, error) {
 		return nil, ineligibleWith(missing)
 	}
 
+	pick, err := acceptPick(act, in)
+	if err != nil {
+		return nil, err
+	}
+
 	salts, err := loadSalts(ctx, gdb, act.Id)
 	if err != nil {
 		return nil, err
@@ -139,6 +148,7 @@ func ChargeEntry(ctx context.Context, in EntryInput) (*Entry, error) {
 		InviterId:           subject.InviterId,
 		UserRef:             UserRef(salts.RefSalt, in.UserId),
 		OptNo:               in.OptNo,
+		Pick:                pick,
 		Amount:              amount,
 		Status:              EntryPending,
 		EligibilitySnapshot: SnapshotJSON(subject),
@@ -221,8 +231,31 @@ func fundingFacts(act *Activity, e *Entry) twophase.Request {
 		// 找回**这一条**参与明细,活动号只能定位到一场。
 		RefId: e.EntryNo,
 	}
-	req.Fingerprint = req.Digest(act.ActNo, deci(e.OptNo))
+	// Pick 同样必须收进指纹:双色球下"换个号码用同一个 request_id 重发"与竞猜
+	// 的换选项重放是同一种攻击 —— 不纳入指纹就会幂等命中返回成功,
+	// 而实际投的仍是旧号码。
+	req.Fingerprint = req.Digest(act.ActNo, deci(e.OptNo), e.Pick)
 	return req
+}
+
+// acceptPick 校验并归一化本次的选号。
+//
+// 归一化之后的字节就是落库、进链、进名单的那一份 —— 绝不读出来重序列化。
+// 非双色球活动一律拒绝携带选号,而不是静默忽略:静默忽略会让一个填了号码的
+// 请求照常成功,用户以为自己买的是那组号。
+func acceptPick(act *Activity, in EntryInput) (string, error) {
+	if act.Kind != KindDraw || act.DrawMode != DrawModeBall {
+		if strings.TrimSpace(in.Pick) != "" {
+			return "", errPickNotAllowed
+		}
+		return "", nil
+	}
+	_, _, normalized, err := ParsePick(in.Pick,
+		act.BallRedPool, act.BallRedPick, act.BallBluePool, act.BallBluePick)
+	if err != nil {
+		return "", errBadPickInput
+	}
+	return normalized, nil
 }
 
 // buildIdemKey 拼出资金单的幂等键。
@@ -315,7 +348,10 @@ func reserveEntry(tx *gorm.DB, act *Activity, rules Rules, e *Entry) error {
 		prev = cur.CommitHash
 	}
 	e.PrevHash = prev
-	e.ChainHash = ChainNext(prev, cur.ActNo, e.Seq, e.EntryNo, e.UserRef, e.OptNo, e.Amount)
+	// lot-v2 的链末尾多一个选号分量(非双色球恒为空串)。按活动自己的 algo
+	// 分派,存量活动的链因此一个字节都不变。
+	e.ChainHash = ChainNextFor(cur.Algo, prev, cur.ActNo, e.Seq,
+		e.EntryNo, e.UserRef, e.OptNo, e.Amount, e.Pick)
 
 	if err := tx.Create(e).Error; err != nil {
 		return err
@@ -361,6 +397,18 @@ func checkCaps(tx *gorm.DB, cur *Activity, e *Entry) error {
 	// 才发现钱发不出去。抽奖不受这条限制:它的池子只是参与费收入,不参与分配。
 	if cur.Kind == KindGuess && cur.PoolQuota > int64(common.MaxQuota)-e.Amount {
 		return errCapReached
+	}
+	// 双色球受同一条限制,而且理由更硬:它的参与费**有一部分要进期次奖池**
+	// (pool_share_bps),没派出去的部分在收尾时滚存回系列。系列池一旦越过 int32,
+	// checkBallPoolCovers 的 `open > MaxQuota` 分支会让这个系列**永久开不出新一期**,
+	// 而且没有任何接口能把池子降下来(handleCloseSeries 只会把整池作废)。
+	// 判据用"本期真正可派发的池子",与 ballPoolOpen / settleSeriesPool 同一个式子:
+	// 它 ≤ MaxQuota 时,滚存回去的 carry 也一定 ≤ MaxQuota。
+	if cur.DrawMode == DrawModeBall && cur.PoolShareBps > 0 {
+		in := (cur.PoolQuota + e.Amount) * int64(cur.PoolShareBps) / 10000
+		if cur.PoolOpenQuota > int64(common.MaxQuota)-in {
+			return errCapReached
+		}
 	}
 	// 全场**人数**上限与条目上限分开:允许多次参与时,人数上限拦不住一个人
 	// 刷 1000 笔,反过来条目上限也拦不住 1000 个小号各来一笔。

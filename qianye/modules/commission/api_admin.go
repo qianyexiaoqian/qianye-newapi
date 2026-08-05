@@ -121,6 +121,19 @@ func adminPutConfig(c *gin.Context) {
 			badRequest(c, "qy_invalid_param", "配置项 "+k+" 必须是非负整数")
 			return
 		}
+		// 金额类一律夹在主库额度上限内,与 transfer 的 settingBounds 同口径。
+		//
+		// 没有上界时最坏的一个具体形状:把「最小结算额度」设成 5000000000
+		// (按 USD 录入之后只要敲 5 位数),而 computeSettlement 里的 net 经
+		// common.QuotaFromDecimalChecked 已经被夹在 int32 内 —— 于是
+		// net < minSettle 恒成立,net 恒为 0,**全站所有邀请人的佣金永远不再
+		// 落账**:不报错、不告警、没有日志,未结算额一路累加。
+		// 超过 MaxQuota 的门槛不是"更宽松",是"永远无法满足"。
+		if isQuotaKey(k) && v > int64(common.MaxQuota) {
+			badRequest(c, "qy_invalid_param", "配置项 "+k+
+				" 超出主库额度上限("+strconv.Itoa(common.MaxQuota)+"),这个门槛永远无法被满足")
+			return
+		}
 		if k == keyMinSettleQuota && v <= 0 {
 			badRequest(c, "qy_invalid_param", "最小结算额度必须大于 0")
 			return

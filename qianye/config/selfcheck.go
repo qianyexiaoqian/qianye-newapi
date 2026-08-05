@@ -264,6 +264,11 @@ var fieldConsumers = map[string]consumer{
 	"group_matrix.preview_sample_limit": {"qianye/modules/groupmatrix/preview.go", "每一对最多返回的令牌样本条数"},
 	"group_matrix.max_grants":           {"qianye/modules/groupmatrix/api_admin.go", "清单总行数上限,写入时判定"},
 	"group_matrix.write_guard_enabled":  {"qianye/modules/groupmatrix/hook.go", "令牌写入侧校验的独立开关(经 WriteGuardOn 读取)"},
+	"group_matrix.new_group_default_deny": {"qianye/modules/groupmatrix/newgroup.go",
+		"新出现的用户分组是否自动接管成 enforce + 零 grant(全遮断);关掉后对账任务只登记不遮断"},
+	"group_matrix.new_group_scan_interval_seconds": {"qianye/modules/groupmatrix/newgroup.go",
+		"新分组对账任务的周期(经 newGroupScanInterval 读取,喂给 lease.Run)," +
+			"也是「新分组建出来到被遮断」的最长延迟"},
 
 	// ─────────────────────────── lottery ───────────────────────────
 	"lottery.enabled": {"qianye/guard/guard.go",

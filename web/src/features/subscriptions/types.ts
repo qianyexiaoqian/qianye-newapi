@@ -145,6 +145,45 @@ export interface PlansUsageResult {
   plans: PlanSeatUsage[]
 }
 
+/**
+ * 「当前人数」那个数字的下钻里的一个人
+ * （`GET /api/qy/admin/subscription/plans/{id}/holders`）。
+ *
+ * 后端 `qianye/modules/subscription/holders.go` 的 `activeHolderPage` 与那个
+ * 数字用的 `activeHolders` **共用同一个 WHERE**（`holdingSubscriptions`），
+ * 所以这里的行数与 {@link PlanSeatUsage.used_seats} 恒等。这不是巧合而是设计：
+ * "列表说 3 个人、点开只有 2 行"这类缺陷两侧都言之凿凿，运营无从判断该信哪个。
+ */
+export interface PlanHolder {
+  user_id: number
+  /** 主库 `users.username` 原值。用户已被删除时为空串，看 `user_deleted`。 */
+  username: string
+  /**
+   * 这个人在主库里已被删除（软删除或整行不存在），订阅却还占着名额。
+   *
+   * 上游删除用户不会动 `user_subscriptions`，所以这种行会一直占着名额，
+   * 而在用户管理里查不到。必须显式标出来，否则运营只会觉得"人数对不上"。
+   */
+  user_deleted: boolean
+  /** 恒为 `'active'`：这个列表按定义只列当前占着名额的人。 */
+  status: string
+  /** 这个人在该套餐下正占着名额的订阅条数（同一人可能续费出多条）。 */
+  subscriptions: number
+  /** 最早开始时间（unix 秒）。多条订阅时取最小值。 */
+  start_time: number
+  /** 最晚到期时间（unix 秒）。多条订阅时取最大值。 */
+  end_time: number
+}
+
+export interface PlanHoldersResult {
+  plan_id: number
+  items: PlanHolder[]
+  /** 全量人数，不随页长变化；与列表页那一列是同一个数。 */
+  total: number
+  p: number
+  page_size: number
+}
+
 export interface SetPlanSeatLimitResult {
   plan_id: number
   capacity: number
@@ -241,3 +280,4 @@ export type SubscriptionsDialogType =
   | 'update'
   | 'toggle-status'
   | 'reset-subscriptions'
+  | 'plan-holders'

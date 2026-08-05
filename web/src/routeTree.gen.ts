@@ -60,6 +60,7 @@ import { Route as AuthenticatedQyAdminIndexRouteImport } from './routes/_authent
 import { Route as AuthenticatedQyAffiliateIndexRouteImport } from './routes/_authenticated/qy/affiliate/index'
 import { Route as AuthenticatedQyAvailabilityIndexRouteImport } from './routes/_authenticated/qy/availability/index'
 import { Route as AuthenticatedQyInviteesIndexRouteImport } from './routes/_authenticated/qy/invitees/index'
+import { Route as AuthenticatedQyLotteryGuessIndexRouteImport } from './routes/_authenticated/qy/lottery-guess/index'
 import { Route as AuthenticatedQyLotteryRecordsIndexRouteImport } from './routes/_authenticated/qy/lottery-records/index'
 import { Route as AuthenticatedQyLotteryIndexRouteImport } from './routes/_authenticated/qy/lottery/index'
 import { Route as AuthenticatedQyPayPasswordIndexRouteImport } from './routes/_authenticated/qy/pay-password/index'
@@ -377,6 +378,12 @@ const AuthenticatedQyInviteesIndexRoute =
   AuthenticatedQyInviteesIndexRouteImport.update({
     id: '/invitees/',
     path: '/invitees/',
+    getParentRoute: () => AuthenticatedQyRouteRoute,
+  } as any)
+const AuthenticatedQyLotteryGuessIndexRoute =
+  AuthenticatedQyLotteryGuessIndexRouteImport.update({
+    id: '/lottery-guess/',
+    path: '/lottery-guess/',
     getParentRoute: () => AuthenticatedQyRouteRoute,
   } as any)
 const AuthenticatedQyLotteryRecordsIndexRoute =
@@ -701,6 +708,7 @@ export interface FileRoutesByFullPath {
   '/qy/affiliate/': typeof AuthenticatedQyAffiliateIndexRoute
   '/qy/availability/': typeof AuthenticatedQyAvailabilityIndexRoute
   '/qy/invitees/': typeof AuthenticatedQyInviteesIndexRoute
+  '/qy/lottery-guess/': typeof AuthenticatedQyLotteryGuessIndexRoute
   '/qy/lottery-records/': typeof AuthenticatedQyLotteryRecordsIndexRoute
   '/qy/lottery/': typeof AuthenticatedQyLotteryIndexRoute
   '/qy/pay-password/': typeof AuthenticatedQyPayPasswordIndexRoute
@@ -793,6 +801,7 @@ export interface FileRoutesByTo {
   '/qy/affiliate': typeof AuthenticatedQyAffiliateIndexRoute
   '/qy/availability': typeof AuthenticatedQyAvailabilityIndexRoute
   '/qy/invitees': typeof AuthenticatedQyInviteesIndexRoute
+  '/qy/lottery-guess': typeof AuthenticatedQyLotteryGuessIndexRoute
   '/qy/lottery-records': typeof AuthenticatedQyLotteryRecordsIndexRoute
   '/qy/lottery': typeof AuthenticatedQyLotteryIndexRoute
   '/qy/pay-password': typeof AuthenticatedQyPayPasswordIndexRoute
@@ -891,6 +900,7 @@ export interface FileRoutesById {
   '/_authenticated/qy/affiliate/': typeof AuthenticatedQyAffiliateIndexRoute
   '/_authenticated/qy/availability/': typeof AuthenticatedQyAvailabilityIndexRoute
   '/_authenticated/qy/invitees/': typeof AuthenticatedQyInviteesIndexRoute
+  '/_authenticated/qy/lottery-guess/': typeof AuthenticatedQyLotteryGuessIndexRoute
   '/_authenticated/qy/lottery-records/': typeof AuthenticatedQyLotteryRecordsIndexRoute
   '/_authenticated/qy/lottery/': typeof AuthenticatedQyLotteryIndexRoute
   '/_authenticated/qy/pay-password/': typeof AuthenticatedQyPayPasswordIndexRoute
@@ -988,6 +998,7 @@ export interface FileRouteTypes {
     | '/qy/affiliate/'
     | '/qy/availability/'
     | '/qy/invitees/'
+    | '/qy/lottery-guess/'
     | '/qy/lottery-records/'
     | '/qy/lottery/'
     | '/qy/pay-password/'
@@ -1080,6 +1091,7 @@ export interface FileRouteTypes {
     | '/qy/affiliate'
     | '/qy/availability'
     | '/qy/invitees'
+    | '/qy/lottery-guess'
     | '/qy/lottery-records'
     | '/qy/lottery'
     | '/qy/pay-password'
@@ -1177,6 +1189,7 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/affiliate/'
     | '/_authenticated/qy/availability/'
     | '/_authenticated/qy/invitees/'
+    | '/_authenticated/qy/lottery-guess/'
     | '/_authenticated/qy/lottery-records/'
     | '/_authenticated/qy/lottery/'
     | '/_authenticated/qy/pay-password/'
@@ -1592,6 +1605,13 @@ declare module '@tanstack/react-router' {
       path: '/invitees'
       fullPath: '/qy/invitees/'
       preLoaderRoute: typeof AuthenticatedQyInviteesIndexRouteImport
+      parentRoute: typeof AuthenticatedQyRouteRoute
+    }
+    '/_authenticated/qy/lottery-guess/': {
+      id: '/_authenticated/qy/lottery-guess/'
+      path: '/lottery-guess'
+      fullPath: '/qy/lottery-guess/'
+      preLoaderRoute: typeof AuthenticatedQyLotteryGuessIndexRouteImport
       parentRoute: typeof AuthenticatedQyRouteRoute
     }
     '/_authenticated/qy/lottery-records/': {
@@ -2010,6 +2030,7 @@ interface AuthenticatedQyRouteRouteChildren {
   AuthenticatedQyAffiliateIndexRoute: typeof AuthenticatedQyAffiliateIndexRoute
   AuthenticatedQyAvailabilityIndexRoute: typeof AuthenticatedQyAvailabilityIndexRoute
   AuthenticatedQyInviteesIndexRoute: typeof AuthenticatedQyInviteesIndexRoute
+  AuthenticatedQyLotteryGuessIndexRoute: typeof AuthenticatedQyLotteryGuessIndexRoute
   AuthenticatedQyLotteryRecordsIndexRoute: typeof AuthenticatedQyLotteryRecordsIndexRoute
   AuthenticatedQyLotteryIndexRoute: typeof AuthenticatedQyLotteryIndexRoute
   AuthenticatedQyPayPasswordIndexRoute: typeof AuthenticatedQyPayPasswordIndexRoute
@@ -2028,6 +2049,7 @@ const AuthenticatedQyRouteRouteChildren: AuthenticatedQyRouteRouteChildren = {
   AuthenticatedQyAffiliateIndexRoute: AuthenticatedQyAffiliateIndexRoute,
   AuthenticatedQyAvailabilityIndexRoute: AuthenticatedQyAvailabilityIndexRoute,
   AuthenticatedQyInviteesIndexRoute: AuthenticatedQyInviteesIndexRoute,
+  AuthenticatedQyLotteryGuessIndexRoute: AuthenticatedQyLotteryGuessIndexRoute,
   AuthenticatedQyLotteryRecordsIndexRoute:
     AuthenticatedQyLotteryRecordsIndexRoute,
   AuthenticatedQyLotteryIndexRoute: AuthenticatedQyLotteryIndexRoute,

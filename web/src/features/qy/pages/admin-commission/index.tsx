@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Info, Pencil, Plus, ScrollText, Trash2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -34,12 +34,21 @@ import {
 } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
+import { QyUsdScaleNotice } from '../../components/qy-usd-scale-notice'
 import { qyErrorMessage } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
+import {
+  qyFormatQuotaAsUsd,
+  qyQuotaDraftText,
+  qyQuotaDraftValue,
+  qyUsdScale,
+  type QyUsdScale,
+} from '../../lib/quota-usd'
 import {
   qyAdminCommissionConfigQuery,
   qyDeleteCommissionGroupRate,
@@ -115,6 +124,13 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
 
+  // 金额字段按 USD 录入，理由与划转门槛那一页同源：运营要填「满 1 美元才结算」
+  // 不该去数 500000 有几个零。存储一个字没动，仍是额度整数。
+  const quotaPerUnit = useSystemConfigStore(
+    (state) => state.config.currency.quotaPerUnit
+  )
+  const scale = useMemo(() => qyUsdScale(quotaPerUnit), [quotaPerUnit])
+
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [confirmOpen, setConfirmOpen] = useState(false)
 
@@ -123,12 +139,14 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
   useEffect(() => {
     const next: Record<string, string> = {}
     for (const key of config.editable_keys) {
-      next[key] = String(
-        config.effective[key as keyof QyCommissionEffective] ?? ''
-      )
+      const raw = config.effective[key as keyof QyCommissionEffective] ?? ''
+      next[key] =
+        typeof raw === 'number'
+          ? qyQuotaDraftText(raw, scale, isUsdField(key, scale))
+          : String(raw)
     }
     setDraft(next)
-  }, [config])
+  }, [config, scale])
 
   const saveMutation = useMutation({
     mutationFn: qyUpdateCommissionConfig,
@@ -143,8 +161,8 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
   })
 
   const percentKeys = new Set(config.percent_keys)
-  const changes = collectChanges(config, draft, percentKeys)
-  const invalidKey = findInvalid(draft, percentKeys)
+  const changes = collectChanges(config, draft, percentKeys, scale)
+  const invalidKey = findInvalid(draft, percentKeys, scale)
 
   return (
     <>
@@ -154,12 +172,14 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
           <CardDescription>{t('qy_cm_editable_desc')}</CardDescription>
         </CardHeader>
         <CardContent className='space-y-4'>
+          <QyUsdScaleNotice scale={scale} />
           {config.editable_keys.map((key) => (
             <ConfigField
               key={key}
               fieldKey={key}
               value={draft[key] ?? ''}
               isPercent={percentKeys.has(key)}
+              scale={scale}
               overridden={config.overrides[key] != null}
               onChange={(value) =>
                 setDraft((prev) => ({ ...prev, [key]: value }))
@@ -203,10 +223,20 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
                   {t(qyCommissionFieldMeta(change.key)?.labelKey ?? change.key)}
                 </span>
                 <span className='tabular-nums'>
-                  {formatChangeValue(change.from, percentKeys.has(change.key))}{' '}
+                  {formatChangeValue(
+                    change.key,
+                    change.from,
+                    percentKeys,
+                    scale
+                  )}{' '}
                   →{' '}
                   <strong>
-                    {formatChangeValue(change.to, percentKeys.has(change.key))}
+                    {formatChangeValue(
+                      change.key,
+                      change.to,
+                      percentKeys,
+                      scale
+                    )}
                   </strong>
                 </span>
               </li>
@@ -227,15 +257,20 @@ function ConfigField(props: {
   fieldKey: string
   value: string
   isPercent: boolean
+  scale: QyUsdScale
   overridden: boolean
   onChange: (value: string) => void
 }) {
   const { t } = useTranslation()
   const meta = qyCommissionFieldMeta(props.fieldKey)
   const label = meta == null ? props.fieldKey : t(meta.labelKey)
+  const asUsd = isUsdField(props.fieldKey, props.scale)
+  const parsed = props.isPercent
+    ? null
+    : parseIntegerDraft(props.fieldKey, props.value, props.scale)
   const invalid = props.isPercent
     ? !qyIsValidPercent(props.value)
-    : !isValidInteger(props.value, meta?.min ?? 0, meta?.max)
+    : parsed == null
 
   return (
     <div className='space-y-1.5'>
@@ -260,9 +295,26 @@ function ConfigField(props: {
             %
           </span>
         )}
+        {asUsd && (
+          <span className='text-muted-foreground text-sm' aria-hidden='true'>
+            USD
+          </span>
+        )}
       </div>
       <p className='text-muted-foreground text-xs'>
         {meta == null ? props.fieldKey : t(meta.hintKey)}
+        {/* 存进库的仍然是额度整数。显示出来，运营翻审计与后端日志时才对得上号。 */}
+        {asUsd && parsed != null && (
+          <> {t('qy_cfg_usd_equals_quota', { quota: parsed })}</>
+        )}
+        {asUsd && (
+          <>
+            {' '}
+            {t('qy_cfg_usd_step_hint', {
+              step: qyFormatQuotaAsUsd(1, props.scale),
+            })}
+          </>
+        )}
       </p>
     </div>
   )
@@ -611,15 +663,51 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
 }
 
 /**
+ * 该字段是否按 USD 录入。
+ *
+ * 只有金额字段（`unit === 'quota'`）才换算；成熟期天数、注册时长这些不是钱。
+ * 换算率无法无损表示时全部退回额度单位，理由见 `lib/quota-usd.ts` 的文件头。
+ */
+function isUsdField(key: string, scale: QyUsdScale): boolean {
+  return scale.usable && qyCommissionFieldMeta(key)?.unit === 'quota'
+}
+
+/**
+ * 草稿文本 → 存储用的整数，并按字段元数据的区间卡一次。非法返回 `null`。
+ *
+ * 金额字段走 USD 通道：`qyQuotaDraftValue` 全程整数运算，除不尽整数额度或
+ * 小数位超限一律判非法而不是四舍五入 —— 替运营把一个金额悄悄改掉，比让他
+ * 看见一行红字糟糕得多。
+ */
+function parseIntegerDraft(
+  key: string,
+  raw: string,
+  scale: QyUsdScale
+): number | null {
+  const value = qyQuotaDraftValue(raw, scale, isUsdField(key, scale))
+  if (value == null) return null
+  const meta = qyCommissionFieldMeta(key)
+  if (value < (meta?.min ?? 0)) return null
+  if (meta != null && value > meta.max) return null
+  return value
+}
+
+/**
  * 只挑出真正改动过的键。未改动的键不该出现在 PUT 里，也不该污染审计。
  *
  * 百分比按规范化后的字面量比较（"10.250" 与 "10.25" 是同一个费率），
  * 不转成 Number 再比 —— 那会让 10.25 与 10.249999999999998 判成不同。
+ *
+ * 金额字段比较的是**额度整数**，不是界面那串 USD：草稿文本由
+ * `qyQuotaDraftText` 生成、由 `qyQuotaDraftValue` 读回，往返无损（见
+ * `lib/__tests__/quota-usd.test.ts`），所以运营什么都不改直接保存时这里
+ * 一条改动都挑不出来。
  */
 function collectChanges(
   config: QyCommissionAdminConfig,
   draft: Record<string, string>,
-  percentKeys: Set<string>
+  percentKeys: Set<string>,
+  scale: QyUsdScale
 ): QyConfigChange[] {
   const out: QyConfigChange[] = []
   for (const [key, raw] of Object.entries(draft)) {
@@ -634,9 +722,9 @@ function collectChanges(
       }
       continue
     }
-    const meta = qyCommissionFieldMeta(key)
-    if (!isValidInteger(raw, meta?.min ?? 0, meta?.max)) continue
-    const next = String(Number(raw.trim()))
+    const parsed = parseIntegerDraft(key, raw, scale)
+    if (parsed == null) continue
+    const next = String(parsed)
     if (next !== current) out.push({ key, from: current, to: next })
   }
   return out
@@ -644,26 +732,27 @@ function collectChanges(
 
 function findInvalid(
   draft: Record<string, string>,
-  percentKeys: Set<string>
+  percentKeys: Set<string>,
+  scale: QyUsdScale
 ): string | null {
   for (const [key, raw] of Object.entries(draft)) {
     if (percentKeys.has(key)) {
       if (!qyIsValidPercent(raw)) return key
       continue
     }
-    const meta = qyCommissionFieldMeta(key)
-    if (!isValidInteger(raw, meta?.min ?? 0, meta?.max)) return key
+    if (parseIntegerDraft(key, raw, scale) == null) return key
   }
   return null
 }
 
-function isValidInteger(raw: string, min: number, max?: number): boolean {
-  const value = Number(raw.trim())
-  if (raw.trim() === '' || !Number.isInteger(value)) return false
-  if (value < min) return false
-  return max == null || value <= max
-}
-
-function formatChangeValue(value: string, isPercent: boolean): string {
-  return isPercent ? `${value}%` : value
+/** 复述一处改动的值。`value` 是存储用的字面量（百分比字符串或额度整数）。 */
+function formatChangeValue(
+  key: string,
+  value: string,
+  percentKeys: Set<string>,
+  scale: QyUsdScale
+): string {
+  if (percentKeys.has(key)) return `${value}%`
+  if (!isUsdField(key, scale)) return value
+  return qyFormatQuotaAsUsd(Number(value), scale)
 }

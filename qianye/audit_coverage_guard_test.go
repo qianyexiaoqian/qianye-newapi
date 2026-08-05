@@ -48,6 +48,7 @@ var auditWriteFuncs = map[string]bool{
 	"putConfigFailed":        true,
 	"writeTicketAudit":       true,
 	"writeMatrixFailure":     true, // groupmatrix:矩阵写入失败(含 409)的补写
+	"writeBatchAudit":        true, // channelops:批次结局 + 失败明细,成功与失败同一出口
 	"writeScopeFailure":      true, // groupmatrix:接管变更失败的补写
 }
 
@@ -119,6 +120,27 @@ var auditRequired = []struct {
 			"谁在什么时候录了什么、依据是什么,必须永久可查"},
 	{"modules/lottery/api_admin.go", "handleRetryPayout", 2,
 		"重试出款直接决定一笔钱会不会再发一次;失败的那次同样要留痕"},
+	{"modules/lottery/text_prize.go", "handleFulfillPrize", 2,
+		"文本奖是全模块唯一一处「钱之外还欠着东西」:兑换码一旦填进去,中奖者立刻能看到" +
+			"并可能当场用掉。谁在什么时候给谁发了什么档的奖,必须永久可查;" +
+			"撞上「已履行过」被拒的那次同样要留痕 —— 那正是重复发码的现场"},
+	{"modules/lottery/text_prize.go", "handleUnfulfillPrize", 2,
+		"撤销只是账面纠错:明文可能已经被用户看到并用掉了,撤不回来。" +
+			"所以这条埋点连同不可删除的 Event 履历,是事后判断「到底发没发出去」的唯一材料;" +
+			"对额度奖的撤销尝试被 403 挡下同样要留痕"},
+	{"modules/lottery/text_prize.go", "handleRevealPrizeSecret", 2,
+		"管理员看兑换码明文与提现页揭示收款账号同一档:「谁在什么时候看了哪一条」" +
+			"是事后唯一能回答的东西;尚未履行/解不开而失败的那次同样要留痕"},
+	{"modules/lottery/series.go", "handleCreateSeries", 2,
+		"期次系列的 issue_cap 是双色球全部损失的上界,创建时冻结、此后任何接口都改不了 —— " +
+			"「这个系列最多能发出去多少」事后只能靠这条创建记录回答;被上限拦下的那次同样要留痕"},
+	{"modules/lottery/series.go", "handleFundSeries", 2,
+		"注资是全模块**唯一**一处平台主动抬高净增发上限的动作:" +
+			"谁在什么时候给哪个系列注了多少,是事后复盘资金规模的唯一材料;" +
+			"撞上 issue_cap 被拒的那次同样是重要信号(有人正在试图把上限撑破)"},
+	{"modules/lottery/series.go", "handleCloseSeries", 2,
+		"关闭系列会让滚存池整块作废,而那笔额度在用户眼里就是「下一期的奖池」—— " +
+			"关的是哪个系列、当时池子里还有多少、理由是什么,必须永久可查"},
 	{"modules/apiaddr/api_admin.go", "adminCreate", 2,
 		"地址簿里的 URL 会被原样复制进用户的客户端配置;加了一条指向哪里、" +
 			"被上限/判重挡下的那次同样要留痕"},
@@ -159,6 +181,24 @@ var auditRequired = []struct {
 			"被 impact_hash 挡回去(预览已过期)的那次同样是重要信号"},
 	{"modules/groupmatrix/api_admin.go", "adminRepairToken", 2,
 		"把一条令牌的分组置空会改变它此后使用的分组与倍率,是真的动扣费口径;写失败同样要留痕"},
+	{"modules/groupmatrix/newgroup.go", "handleFreshGroup", 1,
+		"「新分组默认全遮断」是本仓唯一一处**没有操作者**的收紧:一个用户分组被自动切成 " +
+			"enforce + 零可选清单,那一档的人从此选不了任何模型分组。运营打开矩阵页只会看到" +
+			"一个他确信自己没配过的 enforce 行,「这是谁干的、什么时候」只有这条 ActorSystem " +
+			"审计能回答。它没有任何调用者依赖,是最典型的会在重构里被顺手清掉的埋点"},
+	// channelops 的三条都只登记 1:它们各自只有一处 audit.WriteConfigUpdate,
+	// Result 由本批的结局算出来(一条都没成功 = fail),成功与失败共用同一条路径。
+	// 拆成两个分支只会得到两段除 Result 以外逐字节相同的代码,而漏掉其中一段
+	// 正是这张表要防的形状 —— 这里用"只有一个出口"从根上消掉了它。
+	{"modules/channelops/api_admin.go", "adminBatchDelete", 1,
+		"删渠道不可逆,而且会连带清掉 abilities 里的路由行;删的是哪几个、" +
+			"哪几个没删掉,事后只剩这条审计的 before/after 能回答"},
+	{"modules/channelops/api_admin.go", "adminBatchStatus", 1,
+		"批量停用会让一批渠道立刻退出路由,线上表现是「某些模型突然没有可用渠道」;" +
+			"「谁在什么时候停了哪一批」必须可查"},
+	{"modules/channelops/api_admin.go", "adminBatchResetUsage", 1,
+		"清 used_quota 抹掉的是渠道成本核算的累计值,没有任何补算路径;" +
+			"清了多少条、原本是谁,只有这条审计说得出来"},
 	{"modules/ticket/api_user.go", "handleDiscardImage", 1,
 		"丢弃会真的从磁盘删文件。上传留痕而删除不留痕的话," +
 			"「这个账号传过多少、现在还剩什么」在事后只剩一半答案"},

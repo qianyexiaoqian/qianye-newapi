@@ -31,6 +31,32 @@ For commercial licensing, please contact support@quantumnous.com
 export type QyLotKind = 'draw' | 'guess'
 
 /**
+ * 开奖模式（协议 `lot-v2`）。**它是活动行上的一列，不是新的 `kind`**。
+ *
+ * - `rank`：按名次抽 N 个中奖者（`lot-v1` 的唯一行为，空串等价于它）。
+ * - `prob`：每张票各摇一次号，落进哪个概率区间就中哪一档；**可以没有人中**。
+ * - `ball`：双色球，全场共摇一次号，用户自选号码，按命中数定档。
+ *
+ * 为什么不是新的 `kind`：生命周期任务按 `kind='draw'` / `kind='guess'` 扫表，
+ * 报名与资格判定也在 kind 上分支。新增一个 kind 要在四处各补一个分支，漏一处
+ * 就是一条静默死路；新增 draw_mode 则整条生命周期一行不用改。
+ *
+ * 老活动不下发这个字段，因此**必须容忍 `undefined`**：一律按 `rank` 处理。
+ */
+export type QyLotDrawMode = '' | 'ball' | 'prob' | 'rank' | (string & {})
+
+/**
+ * 奖品形态。`quota` = 额度（走资金链路），`text` = 一段文本（兑换码 / CDK /
+ * 实物说明，**只对中奖者展示、由管理员手动履行**）。
+ *
+ * 单选，不允许一档既给额度又给文本 —— 那会让派奖在同一行里分叉。要两者请配两档。
+ */
+export type QyLotPrizeType = '' | 'quota' | 'text' | (string & {})
+
+/** 概率的分母。`win_ppm` 是百万分比，1_000_000 = 必中。 */
+export const QY_LOT_PPM_DEN = 1_000_000
+
+/**
  * 活动状态机。**单向线性，没有回退边**。
  *
  * `draft → published → locked → settling → finished`
@@ -68,17 +94,34 @@ export type QyLotEntryStatus =
   | 'success'
   | (string & {})
 
-/** 派奖行状态。`held` = 自动重试已放弃，等人工。 */
+/**
+ * 派奖行状态。`held` = 自动重试已放弃，等人工。
+ *
+ * `granted` 是**文本奖专用的终态**：文本奖不动钱，开奖事务提交那一刻就已到位，
+ * 因此它天然不在出款 worker 的扫描集合（`planned/paying/failed`）里。
+ * 安全性来自这个结构，而不是靠某处记得写一个 `prize_type != 'text'` 的过滤。
+ */
 export type QyLotPayoutStatus =
   | 'failed'
+  | 'granted'
   | 'held'
   | 'paid'
   | 'paying'
   | 'planned'
   | (string & {})
 
-/** 出款类型：中奖 / 竞猜赔付 / 退款。三者都是"主库加额度"。 */
-export type QyLotPayoutKind = 'prize' | 'refund' | 'win' | (string & {})
+/**
+ * 出款类型：中奖 / 竞猜赔付 / 退款 / 文本奖。
+ *
+ * 前三者都是"主库加额度"；`text` 一分钱都不动，它只是"这张票中了一份文本奖"
+ * 的账面记录 —— 兑现由管理员手工完成。
+ */
+export type QyLotPayoutKind =
+  | 'prize'
+  | 'refund'
+  | 'text'
+  | 'win'
+  | (string & {})
 
 // ───────────────────────────── 奖档 / 选项 ─────────────────────────────
 
@@ -90,6 +133,32 @@ export type QyLotTier = {
   name: string
   amount_quota: number
   count: number
+
+  // ── 协议 lot-v2 追加的六列。全部**可选**：`lot-v1` 的活动不下发它们，
+  //    而历史活动的证据链必须原样验得通，所以这里绝不能改成必填。
+  //    进 `spec_hash` 原像的顺序见 `lib/verify.ts` 的 `qyLotSpecLineV2`。
+
+  /** 奖品形态。缺省（`lot-v1`）等价于 `quota`。 */
+  prize_type?: QyLotPrizeType
+  /**
+   * 中奖概率（百万分比）。仅 `draw_mode='prob'` 有意义，其余模式恒为 0。
+   *
+   * 各档按 tier 升序累加，占据互不相交的左闭右开区间；摇号量落在全部区间之外
+   * 即未中奖 —— 这是一等公民结果，不是异常分支。
+   */
+  win_ppm?: number
+  /**
+   * 文本奖的**公开**履行说明（如"请在 8 月 31 日前联系客服领取"）。
+   *
+   * 它明文进 `spec_hash` 原像，因为它本来就公开。**绝不能往这里写兑换码**：
+   * 证据链是匿名可访问的。真正的码由管理员在履行时单独填入，不进任何哈希。
+   */
+  text_desc?: string
+  /** 双色球：本档要求命中的红球 / 蓝球个数。 */
+  red_match?: number
+  blue_match?: number
+  /** 双色球：本档从奖池里分走的万分比（浮动奖）。 */
+  pool_share_bps?: number
 }
 
 /**
@@ -122,6 +191,12 @@ export type QyLotSpecItem = {
   name?: string
   amount_quota?: number
   count?: number
+  prize_type?: QyLotPrizeType
+  win_ppm?: number
+  text_desc?: string
+  red_match?: number
+  blue_match?: number
+  pool_share_bps?: number
   opt_no?: number
   label?: string
   is_catch_all?: boolean
@@ -139,8 +214,22 @@ export function qyLotTiers(spec: QyLotSpecItem[] | undefined): QyLotTier[] {
       name: item.name ?? '',
       amount_quota: item.amount_quota ?? 0,
       count: item.count ?? 0,
+      // v2 六列一律补齐成"恒等式取值"（quota 档 text_desc=''、非 prob
+      // win_ppm=0、非 ball 三列 =0），这样 `qyLotSpecLineV2` 可以无分支地
+      // 拼原像 —— 后端创建活动时强制的正是同一组恒等式。
+      prize_type: item.prize_type ?? '',
+      win_ppm: item.win_ppm ?? 0,
+      text_desc: item.text_desc ?? '',
+      red_match: item.red_match ?? 0,
+      blue_match: item.blue_match ?? 0,
+      pool_share_bps: item.pool_share_bps ?? 0,
     }))
     .sort((a, b) => a.tier - b.tier)
+}
+
+/** 该档是不是文本奖。缺省（`lot-v1`）一律是额度奖。 */
+export function isQyLotTextPrize(tier: Pick<QyLotTier, 'prize_type'>): boolean {
+  return tier.prize_type === 'text'
 }
 
 /** 从扁平 spec 里取出竞猜选项，按 opt_no 升序。 */
@@ -286,6 +375,8 @@ export type QyLotActivityBrief = {
 export type QyLotActivityDetail = {
   act_no: string
   kind: QyLotKind
+  /** 协议 lot-v2；`lot-v1` 的活动不下发，按 `rank` 处理。 */
+  draw_mode?: QyLotDrawMode
   status: QyLotStatus
   outcome: QyLotOutcome
   title: string
@@ -345,9 +436,69 @@ export type QyLotMyEntry = {
   amount: number
   status: QyLotEntryStatus
   opt_no: number
-  /** 中奖 / 赔付 / 退款的结果；未中奖或尚未结算为 `null`。 */
-  won: { kind: QyLotPayoutKind; tier: number; amount: number } | null
+  /**
+   * 中奖 / 赔付 / 退款 / 文本奖的结果；未中奖或尚未结算为 `null`。
+   *
+   * 玩法（`draw_mode`）**刻意不在这里**：「为什么是这个结果」的每一个数字都
+   * 从证据链里现算，玩法自然也从那份文档里读。列表行上再放一份，就多了一个
+   * 会与证据链漂移的取值。
+   */
+  won: {
+    /** `text` = 文本奖：它没有金额，要点开才看得到内容。 */
+    kind: QyLotPayoutKind
+    tier: number
+    amount: number
+    status?: QyLotPayoutStatus
+    /**
+     * **取文本奖内容的唯一钥匙**（`GET /lottery/my/prizes/:payout_no`）。
+     * 由服务端 crypto/rand 生成、不可枚举，所以拿它当路径参数是安全的。
+     */
+    payout_no?: string
+    /** 文本奖是否已由管理员履行。未履行时点开看到的是"等履行"而不是空白。 */
+    fulfilled?: boolean
+  } | null
   created_at: number
+}
+
+// ───────────────────────────── 文本奖 ─────────────────────────────
+
+/**
+ * 「我中的那一份文本奖」。
+ *
+ * ## 为什么是逐条拉取而不是一张列表
+ *
+ * 一个返回全部正文的列表接口，意味着**一次越权 bug 就是全量泄漏**。逐条拉取
+ * 把泄漏面压到单条，而 `payout_no` 不可枚举，因此这个限制没有可用性代价。
+ *
+ * ## 为什么 `secret` 可以缺席
+ *
+ * 项目方已拍板"管理员手动履行"，所以码在开奖时**根本不存在**——它由管理员在
+ * 履行那一刻填入。未履行时这里返回 `status='pending'` 与公开的 `text_desc`，
+ * 而不是一个空字符串：空串会让界面显示成"奖品是空的"。
+ */
+export type QyLotMyPrize = {
+  payout_no: string
+  act_no: string
+  title: string
+  tier: number
+  /** 奖档名（公开，进 `spec_hash`）。 */
+  name: string
+  /** 公开的履行说明（进 `spec_hash`）。 */
+  text_desc: string
+  /** `pending` = 管理员还没履行；`fulfilled` = 已填入内容。 */
+  status: 'fulfilled' | 'pending' | (string & {})
+  /** 实际的兑换码 / CDK。**只有 `fulfilled` 时才有值**。 */
+  secret?: string
+  /** 管理员填的备注（领取方式、有效期之类）。 */
+  note?: string
+  fulfilled_at: number
+  /**
+   * 那条诚实边界，**由后端随奖品一起下发**：这串码没有进入承诺。
+   *
+   * 写死在前端也能显示，但那样它就是一句可以被悄悄改掉的营销话术；从后端来
+   * 意味着它与发放这件事同源，改它要动的是同一份代码。
+   */
+  notice: string
 }
 
 // ───────────────────────────── 证据链 ─────────────────────────────
@@ -368,6 +519,13 @@ export type QyLotProofEntry = {
   prev_hash: string
   chain_hash: string
   order_no: string
+  /**
+   * 双色球选号，规范化格式 `03,05,12|08`（`lot-v2`，其余模式为空串）。
+   *
+   * 它**必须**进哈希链与名单行的原像：否则平台可以在开奖后把某个人的号改成
+   * 中奖号，而链尾、计数、名单重算三道校验会照常全部通过。
+   */
+  pick?: string
 }
 
 export type QyLotProofWinner = {
@@ -376,6 +534,14 @@ export type QyLotProofWinner = {
   entry_no: string
   user_ref: string
   amount: number
+  /** `lot-v2`：`text` 档的中奖位。金额恒为 0，兑现由管理员手工完成。 */
+  prize_type?: QyLotPrizeType
+  /**
+   * 文本奖是否已履行。**只有布尔，绝不带内容、也不带内容的哈希** ——
+   * 证据链是匿名可访问的，往里放一个可离线爆破的兑换码哈希，与直接公开
+   * 发放只差几分钟算力。
+   */
+  fulfilled?: boolean
 }
 
 /**
@@ -397,6 +563,7 @@ export type QyLotProofPayout = {
  * 验证链与名单 —— `lib/verify.ts` 会先检查 `entries.length === total`。
  */
 export type QyLotProof = {
+  /** `lot-v1` 或 `lot-v2`。**未知版本一律拒绝验证**，不给一个可能是假的绿勾。 */
   algo: string
   act_no: string
   kind: QyLotKind
@@ -451,6 +618,42 @@ export type QyLotProof = {
   locked_at: number
   revealed_at: number
   settled_at: number
+
+  // ─────────────────── 协议 lot-v2 追加的字段 ───────────────────
+  //
+  // 全部**可选**：`lot-v1` 的证据链一个字节都没变，历史活动必须原样验得通。
+  // 但只要 `algo === 'lot-v2'`，它们就全部参与 `commit_hash` 的原像 ——
+  // **少一个占位就等于允许管理员把一场普通抽奖悄悄改成双色球**，所以
+  // `lib/verify.ts` 在 v2 分支里用 `?? 0` / `?? ''` 补齐，而不是跳过。
+
+  /** 开奖模式。缺省按 `rank` 处理。 */
+  draw_mode?: QyLotDrawMode
+
+  /** 双色球期次归属。非双色球恒为空串 / 0。 */
+  series_no?: string
+  issue_no?: number
+  /** 本期池子：平台注资 + 上期滚存 = 开局池；三者都进承诺，可跨期复核守恒式。 */
+  pool_seed_quota?: number
+  pool_carry_quota?: number
+  pool_open_quota?: number
+  /** 本期投注额进池子的万分比。 */
+  pool_share_bps?: number
+  /** 号池。它们进承诺，因此运营不能靠调号码空间悄悄改中奖概率。 */
+  ball_red_pool?: number
+  ball_red_pick?: number
+  ball_blue_pool?: number
+  ball_blue_pick?: number
+  /** 本期开奖号，规范化格式 `03,09,12|05`。开奖前为空串。 */
+  ball_result?: string
+
+  /**
+   * 平台对本份证据"证不了什么"的自陈。
+   *
+   * 这不是免责声明而是协议的一部分：文本奖的兑换码在承诺时**根本不存在**
+   * （管理员开奖后才填），种子的真随机性密码学证不了，`user_ref` 与真人的
+   * 对应关系永不公开。把这几条写进文档本身，比让用户自己去发现要诚实。
+   */
+  notice?: string
 }
 
 // ───────────────────────────── 工具 ─────────────────────────────

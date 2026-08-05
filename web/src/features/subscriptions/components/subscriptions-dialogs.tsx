@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { DeletePlanDialog } from './dialogs/delete-plan-dialog'
+import { PlanHoldersDialog } from './dialogs/plan-holders-dialog'
 import { ResetSubscriptionsDialog } from './dialogs/reset-subscriptions-dialog'
 import { ToggleStatusDialog } from './dialogs/toggle-status-dialog'
 import { SubscriptionsMutateDrawer } from './subscriptions-mutate-drawer'
@@ -36,6 +37,7 @@ export function SubscriptionsDialogs() {
       <ToggleStatusDialog />
       <ResetSubscriptionsDialog />
       <DeletePlanDialog />
+      <PlanHoldersDialog />
     </>
   )
 }

@@ -23,6 +23,8 @@ import { Badge } from '@/components/ui/badge'
 
 import { QyAmountText } from '../../../components/qy-amount-text'
 import {
+  QY_LOT_PPM_DEN,
+  isQyLotTextPrize,
   qyLotOptions,
   qyLotTiers,
   type QyLotOption,
@@ -48,6 +50,9 @@ export function QyLotSpecTable(props: {
 
   if (props.kind === 'draw') {
     const tiers = qyLotTiers(props.spec)
+    // 概率列只在真的有概率时才出现（`lot-v1` 与 rank 模式恒为 0）。
+    // 恒显示一列全是 0 的「中奖概率」，比不显示更容易被误读成"一定不中"。
+    const hasPpm = tiers.some((tier) => (tier.win_ppm ?? 0) > 0)
     return (
       <StaticDataTable
         data={tiers}
@@ -62,16 +67,48 @@ export function QyLotSpecTable(props: {
           {
             id: 'name',
             header: t('qy_lot_prize_name'),
-            cell: (row: QyLotTier) => row.name,
+            cell: (row: QyLotTier) => (
+              <span className='inline-flex flex-wrap items-center gap-1.5'>
+                <span className='break-words'>{row.name}</span>
+                {isQyLotTextPrize(row) && (
+                  <Badge variant='outline'>{t('qy_lot_prize_type_text')}</Badge>
+                )}
+              </span>
+            ),
           },
           {
             id: 'amount',
             header: t('qy_lot_prize_amount'),
-            cell: (row: QyLotTier) => <QyAmountText quota={row.amount_quota} />,
+            // 文本奖的 `amount_quota` 恒为 0。摆一个 0 出来会让人以为这一档
+            // 是空的 —— 它的价值全在那段公开说明里，所以直接把说明显示在这。
+            cell: (row: QyLotTier) =>
+              isQyLotTextPrize(row) ? (
+                <span className='text-sm break-words whitespace-pre-wrap'>
+                  {row.text_desc}
+                </span>
+              ) : (
+                <QyAmountText quota={row.amount_quota} />
+              ),
           },
+          ...(hasPpm
+            ? [
+                {
+                  id: 'win_ppm',
+                  header: t('qy_lot_win_ppm'),
+                  cellClassName: 'tabular-nums',
+                  cell: (row: QyLotTier) =>
+                    `${(((row.win_ppm ?? 0) / QY_LOT_PPM_DEN) * 100).toFixed(4)}%`,
+                },
+              ]
+            : []),
           {
             id: 'count',
-            header: t('qy_lot_prize_count'),
+            // 概率制下 `count` 的语义是**本档预算份数**而不是名额：命中人数
+            // 超过它时，预算由全部命中者均分（概率恒等于公示值，浮动的是金额）。
+            // 表头随之换掉，否则用户会以为"只有前 N 名拿得到"。
+            header: hasPpm
+              ? t('qy_lot_count_is_budget')
+              : t('qy_lot_prize_count'),
             cellClassName: 'tabular-nums',
             cell: (row: QyLotTier) => row.count,
           },

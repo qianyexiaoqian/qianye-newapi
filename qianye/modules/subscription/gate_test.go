@@ -342,7 +342,7 @@ func TestUpstreamCreatePathIsGatedBySeatLimit(t *testing.T) {
 	assert.EqualValues(t, 2, rows)
 }
 
-// 四条管理端路由的**路径与方法**必须与前端调用的字符串逐字一致。
+// 五条管理端路由的**路径与方法**必须与前端调用的字符串逐字一致。
 //
 // 这两侧此前没有任何测试:后端把路由改成别的字符串、或前端拼错一个词,
 // 表现都是 404,而 qy 前端客户端会把「没有 code 的 404」一律归类成"扩展未启用"
@@ -361,6 +361,7 @@ func TestAdminRoutesMatchTheContractTheFrontendCalls(t *testing.T) {
 	}
 	for _, want := range []string{
 		"GET /api/qy/admin/subscription/plans/:plan_id/usage",
+		"GET /api/qy/admin/subscription/plans/:plan_id/holders",
 		"GET /api/qy/admin/subscription/plans-usage",
 		"PUT /api/qy/admin/subscription/plans/:plan_id/seat-limit",
 		"POST /api/qy/admin/subscription/plans/:plan_id/delete",

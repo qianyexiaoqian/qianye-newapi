@@ -25,6 +25,8 @@ import { fileURLToPath } from 'node:url'
 import en from '@/i18n/qy/en.json'
 import zh from '@/i18n/qy/zh.json'
 
+import { KIND_I18N_KEY, QY_ERROR_CODE_I18N } from '../api'
+
 /**
  * 「组件里 `t('qy_…')` 用到的键，必须真的在两份语言包里」的机器校验。
  *
@@ -48,7 +50,6 @@ const srcDir = join(
   '..',
   '..'
 )
-const qyDir = join(srcDir, 'features', 'qy')
 
 const enKeys = en as Record<string, string>
 const zhKeys = zh as Record<string, string>
@@ -67,16 +68,57 @@ const QY_DYNAMIC_KEYS = [
   'qy_cfg_health_module_st_missing_key',
   'qy_cfg_health_module_st_default_on',
   'qy_cfg_health_module_st_ungated',
+  // 渠道批量操作的单条结局码 → 文案。走 QY_CHANNEL_BATCH_ITEM_I18N 查表，
+  // 再由 `t(known)` 取出，字面量扫描器同样看不见。清单对齐后端
+  // `qianye/modules/channelops/errors.go` 的五个 itemCode 常量。
+  'qy_chops_item_not_found',
+  'qy_chops_item_db_error',
+  'qy_chops_item_aborted',
+  'qy_chops_item_no_change',
+  'qy_chops_item_not_applied',
+  // 抽奖出款的类型码 → 文案。走 `t(\`qy_lot_payout_kind_${kind}\`)`，键写在模板
+  // 字符串里，上面那个字面量扫描器同样看不见。清单对齐后端
+  // `qianye/modules/lottery/model.go` 的四个 Payout Kind 常量。
+  //
+  // `_text` 曾经落在这条清单与扫描器的**交集盲区**里：它既不是字面量、也没登记
+  // 在这里，于是其余 50 个键补进语言包之后测试会全绿，而文本奖那一行仍然渲染成
+  // 英文单词 `text`（t() 带了 defaultValue: kind，所以连裸键都看不到）。
+  'qy_lot_payout_kind_prize',
+  'qy_lot_payout_kind_win',
+  'qy_lot_payout_kind_refund',
+  'qy_lot_payout_kind_text',
+  // 「为什么是这个结果」复算不出结论时的四种如实交代。同样是模板字符串键
+  // （`t(\`qy_lot_why_blocked_${explain.blocked}\`)`）。清单对齐
+  // `pages/lottery/lib/explain.ts` 的 QyLotExplainBlocked 四个取值。
+  //
+  // 这四条尤其不能漏：它们出现的时刻正是"复算给不出结论"的时刻，而那时用户
+  // 最需要读懂的就是这句话；渲染成裸键会让人以为是页面坏了，而不是证据链缺页。
+  'qy_lot_why_blocked_incomplete',
+  'qy_lot_why_blocked_not_revealed',
+  'qy_lot_why_blocked_not_in_roster',
+  'qy_lot_why_blocked_voided',
 ]
 
-/** 收集 `features/qy/` 下（不含测试）所有 `t('qy_xxx')` 的键 → 首个出现的文件。 */
+/**
+ * 收集 `src/` 下（不含测试）所有 `t('qy_xxx')` 的键 → 首个出现的文件。
+ *
+ * # 为什么扫整个 src 而不只是 features/qy
+ *
+ * 扩展功能并不全都住在 `features/qy/` 里：套餐下钻弹窗挂在上游的
+ * `features/subscriptions/` 下（它要出现在上游那张表的单元格里），渠道批量操作
+ * 的接线在 `features/channels/`。只扫 qy 目录的话，这些文件里的 `qy_` 键处于
+ * **守卫盲区** —— 别处的键补齐之后这条测试会转绿，而它们仍然缺失且没有任何信号，
+ * 表现是弹窗标题渲染成裸键 `qy_plan_holders_title`。
+ *
+ * 判据本来就该是"键的前缀"而不是"文件的位置"：`t('qy_…')` 就是一个 qy 语言包的键。
+ */
 function collectTranslationKeys(): Map<string, string> {
   const found = new Map<string, string>()
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name)
       if (entry.isDirectory()) {
-        if (entry.name !== '__tests__') walk(full)
+        if (entry.name !== '__tests__' && entry.name !== 'i18n') walk(full)
         continue
       }
       if (!/\.tsx?$/.test(entry.name)) continue
@@ -88,7 +130,7 @@ function collectTranslationKeys(): Map<string, string> {
       }
     }
   }
-  walk(qyDir)
+  walk(srcDir)
   return found
 }
 
@@ -118,6 +160,22 @@ describe('qy i18n key coverage', () => {
       assert.ok(key in enKeys, `en.json 缺少动态键 ${key}`)
       assert.ok(key in zhKeys, `zh.json 缺少动态键 ${key}`)
     }
+  })
+
+  test('错误码映射表指向的每个键都在两份语言包里', () => {
+    // QY_ERROR_CODE_I18N / KIND_I18N_KEY 的**值**同样是 `t()` 的入参，只是
+    // 经过一次查表，字面量扫描器看不见。原来全仓没有任何一处断言这些目标键
+    // 真的落库了：漏掉一个的表现是 toast 上直接弹出字符串
+    // `qy_err_chops_too_many`，而管理员正需要那句话告诉他下一步做什么。
+    const missing: string[] = []
+    for (const [source, key] of [
+      ...Object.entries(QY_ERROR_CODE_I18N),
+      ...Object.entries(KIND_I18N_KEY),
+    ]) {
+      if (!(key in enKeys)) missing.push(`${key} (en) <- code ${source}`)
+      if (!(key in zhKeys)) missing.push(`${key} (zh) <- code ${source}`)
+    }
+    assert.deepEqual(missing, [], missing.join('\n'))
   })
 
   test('en 与 zh 的键集合完全一致', () => {

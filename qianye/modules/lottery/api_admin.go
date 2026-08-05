@@ -40,6 +40,19 @@ type prizeInput struct {
 	Name        string `json:"name"`
 	AmountQuota int64  `json:"amount_quota"`
 	Count       int    `json:"count"`
+	// PrizeType 为空按 quota 处理,让存量前端与脚本不必改。
+	PrizeType string `json:"prize_type"`
+	// WinPpm 只在 draw_mode=prob 下有意义。
+	WinPpm int `json:"win_ppm"`
+	// TextDesc 是**会公开展示**的履行说明,绝不能写兑换码。
+	TextDesc string `json:"text_desc"`
+
+	// RedMatch / BlueMatch / PoolShareBps 只在 draw_mode=ball 下有意义:
+	// 前两个是这一奖级要求的最少命中数,后者 > 0 时本级是浮动奖(占池比例),
+	// 与固定额度互斥。
+	RedMatch     int `json:"red_match"`
+	BlueMatch    int `json:"blue_match"`
+	PoolShareBps int `json:"pool_share_bps"`
 }
 
 type optionInput struct {
@@ -49,9 +62,11 @@ type optionInput struct {
 }
 
 type activityInput struct {
-	Kind  string `json:"kind"`
-	Title string `json:"title"`
-	Intro string `json:"intro"`
+	Kind string `json:"kind"`
+	// DrawMode 只对抽奖有意义,为空按 rank 处理。
+	DrawMode string `json:"draw_mode"`
+	Title    string `json:"title"`
+	Intro    string `json:"intro"`
 
 	StakeQuota  int64 `json:"stake_quota"`
 	BetMinQuota int64 `json:"bet_min_quota"`
@@ -68,6 +83,10 @@ type activityInput struct {
 	FeeBps           *int `json:"fee_bps"`
 	MinEntriesToHold int  `json:"min_entries_to_hold"`
 
+	// SeriesNo 只在 draw_mode=ball 下必填:一期双色球必须属于某个期次系列,
+	// 号池、投注入池比例与累计发行上限全部由那个系列决定。
+	SeriesNo string `json:"series_no"`
+
 	Rules   Rules         `json:"rules"`
 	Prizes  []prizeInput  `json:"prizes"`
 	Options []optionInput `json:"options"`
@@ -82,7 +101,22 @@ type activityWriteResult struct {
 	PrizeTotalQuota  int64 `json:"prize_total_quota"`
 	BreakEvenEntries int64 `json:"break_even_entries"`
 	// WorstCaseNetIssue 是最坏情况下净增发多少额度(一个人都没来但仍开奖)。
+	//
+	// 概率制下它**与名次制一模一样**:超募时某档的预算由全部中签者均分,
+	// 支出上界恒为 Σ(count × amount)。这是"概率模式不引入任何新发行风险"
+	// 的全部理由,任何后续改动不得动摇它。
 	WorstCaseNetIssue int64 `json:"worst_case_net_issue"`
+	// ExpectPayoutQuota 是概率制下按**全场坐满**估算的期望支出。
+	// rank 模式恒等于 WorstCaseNetIssue(一定发满)。
+	ExpectPayoutQuota int64 `json:"expect_payout_quota"`
+	// ExpectWinners 是概率制下按全场坐满估算的期望中奖人次。
+	ExpectWinners int64 `json:"expect_winners"`
+	// WorstCaseTextGrants 是最坏情况下要人工履行多少份文本奖。
+	//
+	// 概率制下文本奖不摊薄(兑换码劈不开),所以理论上全场每个人都可能中 ——
+	// 这个数必须摆在发布按钮上面,否则运营会在"1% 概率发 10 份"的心理预期下
+	// 配出一个要发几百份的活动。
+	WorstCaseTextGrants int `json:"worst_case_text_grants"`
 }
 
 // ─────────────────────────── 创建 ───────────────────────────
@@ -162,15 +196,9 @@ func handleCreateActivity(c *gin.Context) {
 		return
 	}
 
-	total := prizeTotal(prizes)
 	writeAdminAudit(c, "lottery.activity.create", act.ActNo, qymodel.ResultOK, "",
 		"", snapText(activitySnapshot(act, &in)))
-	respondOK(c, activityWriteResult{
-		ActNo:             act.ActNo,
-		PrizeTotalQuota:   total,
-		BreakEvenEntries:  breakEven(total, act.StakeQuota),
-		WorstCaseNetIssue: total,
-	})
+	respondOK(c, writeResultOf(act, prizes))
 }
 
 // handleUpdateActivity 修改草稿活动。
@@ -272,15 +300,11 @@ func handleUpdateActivity(c *gin.Context) {
 		return
 	}
 
-	total := prizeTotal(prizes)
 	writeAdminAudit(c, "lottery.activity.update", actNo, qymodel.ResultOK, "",
 		snapText(activitySnapshot(old, nil)), snapText(activitySnapshot(next, &in)))
-	respondOK(c, activityWriteResult{
-		ActNo:             actNo,
-		PrizeTotalQuota:   total,
-		BreakEvenEntries:  breakEven(total, next.StakeQuota),
-		WorstCaseNetIssue: total,
-	})
+	res := writeResultOf(next, prizes)
+	res.ActNo = actNo
+	respondOK(c, res)
 }
 
 // ─────────────────────────── 发布(承诺生成)───────────────────────────
@@ -332,8 +356,16 @@ func handlePublishActivity(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	if err := checkAlgoPublishable(act); err != nil {
+		writeAdminAudit(c, "lottery.activity.publish", actNo, qymodel.ResultFail, auditReason(err),
+			snapText(activitySnapshot(act, nil)), "")
+		respondErr(c, err)
+		return
+	}
 
-	commitHash, err := computeCommit(ctx, gdb, act)
+	// 种子在事务外读一次:双色球要在事务内(取走系列池、定下期号之后)才算得出
+	// 承诺哈希,而承诺的每一个分量都必须与最终落库的那一份逐字节一致。
+	seedHex, err := loadSeedForReveal(ctx, gdb, act.Id)
 	if err != nil {
 		writeAdminAudit(c, "lottery.activity.publish", actNo, qymodel.ResultFail, auditReason(err),
 			snapText(activitySnapshot(act, nil)), "")
@@ -342,28 +374,63 @@ func handlePublishActivity(c *gin.Context) {
 	}
 
 	now := common.GetTimestamp()
-	after := map[string]any{
-		"act_no":      act.ActNo,
-		"kind":        act.Kind,
-		"algo":        AlgoV1,
-		"rules_hash":  act.RulesHash,
-		"spec_hash":   act.SpecHash,
-		"commit_hash": commitHash,
-		"open_at":     act.OpenAt,
-		"close_at":    act.CloseAt,
-		"draw_at":     act.DrawAt,
-	}
+	algo := publishAlgo(act)
+	var commitHash string
+	after := map[string]any{}
 	err = gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		snapshot := *act
+		snapshot.Algo = algo
+
+		// 双色球:把系列池整块取走冻结成本期开局池,并分配期号。
+		// **必须在算承诺之前**:pool_open / pool_seed / pool_carry / issue_no
+		// 全部进 commit 原像,而承诺一旦落库就不可再改。
+		var series *SeriesSnapshot
+		if snapshot.Kind == KindDraw && snapshot.DrawMode == DrawModeBall {
+			if err := claimSeriesPool(tx, &snapshot); err != nil {
+				return err
+			}
+			if err := checkBallPoolCovers(tx, &snapshot); err != nil {
+				return err
+			}
+			series = seriesSnapshotOf(&snapshot)
+		}
+		commitHash = CommitHashFor(&snapshot, series, seedHex)
+
+		for k, v := range map[string]any{
+			"act_no": act.ActNo, "kind": act.Kind, "algo": algo, "draw_mode": act.DrawMode,
+			"rules_hash": act.RulesHash, "spec_hash": act.SpecHash, "commit_hash": commitHash,
+			"open_at": act.OpenAt, "close_at": act.CloseAt, "draw_at": act.DrawAt,
+		} {
+			after[k] = v
+		}
+
+		updates := map[string]any{
+			"status":       StatusPublished,
+			"algo":         algo,
+			"commit_hash":  commitHash,
+			"chain_head":   commitHash, // chain_0 = commit_hash
+			"published_at": now,
+			"updated_at":   now,
+		}
+		if series != nil {
+			after["series_no"] = series.SeriesNo
+			after["issue_no"] = series.IssueNo
+			after["pool_open_quota"] = series.PoolOpenQuota
+			updates["series_no"] = snapshot.SeriesNo
+			updates["issue_no"] = snapshot.IssueNo
+			updates["pool_seed_quota"] = snapshot.PoolSeedQuota
+			updates["pool_carry_quota"] = snapshot.PoolCarryQuota
+			updates["pool_open_quota"] = snapshot.PoolOpenQuota
+			updates["pool_share_bps"] = snapshot.PoolShareBps
+			updates["ball_red_pool"] = snapshot.BallRedPool
+			updates["ball_red_pick"] = snapshot.BallRedPick
+			updates["ball_blue_pool"] = snapshot.BallBluePool
+			updates["ball_blue_pick"] = snapshot.BallBluePick
+		}
+
 		res := tx.Model(&Activity{}).
 			Where("id = ? AND status = ?", act.Id, StatusDraft).
-			Updates(map[string]any{
-				"status":       StatusPublished,
-				"algo":         AlgoV1,
-				"commit_hash":  commitHash,
-				"chain_head":   commitHash, // chain_0 = commit_hash
-				"published_at": now,
-				"updated_at":   now,
-			})
+			Updates(updates)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -387,7 +454,7 @@ func handlePublishActivity(c *gin.Context) {
 		})
 	})
 	if err != nil {
-		if !errors.Is(err, errStatusConflict) {
+		if _, biz := AsBizError(err); !biz && !errors.Is(err, errStatusConflict) {
 			db.MarkFailure(err)
 			err = wrapInternal("发布活动", err)
 		}
@@ -405,7 +472,8 @@ func handlePublishActivity(c *gin.Context) {
 		"commit_hash": commitHash,
 		"rules_hash":  act.RulesHash,
 		"spec_hash":   act.SpecHash,
-		"algo":        AlgoV1,
+		"algo":        algo,
+		"draw_mode":   act.DrawMode,
 	})
 }
 
@@ -420,8 +488,56 @@ func computeCommit(ctx context.Context, gdb *gorm.DB, act *Activity) (string, er
 		return "", err
 	}
 	snapshot := *act
-	snapshot.Algo = AlgoV1
-	return CommitHash(&snapshot, seed), nil
+	snapshot.Algo = publishAlgo(act)
+	return CommitHashFor(&snapshot, nil, seed), nil
+}
+
+// publishAlgo 决定这一场用哪个协议版本发布。
+//
+// 草稿行上写的是什么就是什么:本轮之前建的草稿仍是 lot-v1,发布后它的历史公正
+// 查询与当年完全一致;本轮之后建的草稿是 lot-v2。**绝不按"当前最新版本"发布**
+// —— 那会让一份躺了两天的草稿在发布瞬间换掉原像形状。
+// 空串是本轮之前更早的存量草稿,按 lot-v1 处理;其余值原样返回,由
+// checkAlgoPublishable 判定认不认。**绝不把一个不认识的版本号静默降级成 v1**
+// —— 那会用 v1 的原像去覆盖一份按别的版本算好的 spec_hash,而错位只有
+// 用户手里的验证脚本会发现。
+func publishAlgo(act *Activity) string {
+	if act.Algo == "" {
+		return AlgoV1
+	}
+	return act.Algo
+}
+
+// checkAlgoPublishable 是发布闸门:验证脚本没跟上就不许发布。
+//
+// 公正性承诺一旦在用户侧不可执行,它就等于不存在。一个还没有对应验证器分支的
+// 协议版本被发布出去,用户拿到的是一份**没人能验**的证据链 ——
+// 那比不做这个功能更糟,因为它看起来像是可验证的。
+func checkAlgoPublishable(act *Activity) error {
+	switch publishAlgo(act) {
+	case AlgoV1:
+		return nil
+	case AlgoV2:
+		if act.Kind == KindDraw {
+			// 白名单而不是黑名单:rank / prob / ball 三个分支在
+			// qianye/docs/lottery-verify.py 里都有对应的复算实现,并各有一组
+			// 黄金向量。再加一种玩法时,**先补验证脚本再放开这里** ——
+			// 默认放行的写法会让某一天新加的玩法在没人注意的情况下发出去,
+			// 而它的证据链没有任何人能验。
+			switch act.DrawMode {
+			case "", DrawModeRank, DrawModeProb, DrawModeBall:
+			default:
+				return errBadRequest("该定档方式尚未开放发布:离线验证脚本的对应分支还没有合入")
+			}
+			if act.DrawMode == DrawModeBall && act.SeriesId == 0 {
+				// 双色球必须挂在一个期次系列上:号池、投注入池比例与**累计发行上限**
+				// 全都在系列行上,没有它就没有任何东西封顶平台的净增发。
+				return errBadRequest("双色球活动必须绑定一个期次系列")
+			}
+		}
+		return nil
+	}
+	return errBadRequest("未知的公正性协议版本,拒绝发布")
 }
 
 // ─────────────────────────── 取消 ───────────────────────────
@@ -1061,7 +1177,7 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 		SettleDeadline:     in.SettleDeadline,
 		RulesText:          rulesText,
 		RulesHash:          RulesHash(rulesText),
-		Algo:               AlgoV1,
+		Algo:               AlgoV2,
 		AllowMultiWin:      in.AllowMultiWin,
 		MinEntriesToHold:   in.MinEntriesToHold,
 		MaxEntriesPerUser:  rules.MaxEntriesPerUser,
@@ -1089,7 +1205,25 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 	)
 	switch in.Kind {
 	case KindDraw:
-		prizes, lines, err = buildPrizes(in.Prizes, cfg, set, act.StakeQuota)
+		if act.DrawMode, err = normalizeDrawMode(in.DrawMode); err != nil {
+			return nil, nil, nil, err
+		}
+		// 概率制与双色球下 allow_multi_win 强制为真(即不去重)。
+		//
+		// 按 user_ref 去重会保留票面最小的那张 —— 也就是最可能落进低位中奖区间
+		// 的那一张 —— 使多票用户的单票概率变成 1-(1-p)^k。数学上自洽,但无法用
+		// 一句话对用户讲清,也让期望支出依赖每人的票数分布,而"每张票独立、
+		// 概率严格等于公示值"正是概率制的全部主张。限流改用 max_entries_per_user,
+		// 零协议成本。这个字段仍然原样进 commit 原像。
+		if act.DrawMode != DrawModeRank {
+			act.AllowMultiWin = true
+		}
+		prizes, lines, err = buildPrizes(in.Prizes, cfg, set, act)
+		if err == nil && act.DrawMode == DrawModeBall {
+			// 双色球的奖级条件(红蓝命中数、占池比例)也在 spec 原像里,
+			// 因此这一步会**整体重算**逐行,而不是往已经算好的行上补字段。
+			prizes, lines, err = applyBallSpec(ctx, act, in, prizes)
+		}
 	case KindGuess:
 		options, lines, err = buildOptions(in.Options, cfg)
 		if err == nil {
@@ -1105,8 +1239,21 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 
 	// spec_text 落库的就是参与哈希的那份字节。
 	act.SpecText = strings.Join(lines, SEP)
-	act.SpecHash = SpecHash(lines)
+	act.SpecHash = SpecHashFor(act.Algo, lines)
 	return act, prizes, options, nil
+}
+
+// normalizeDrawMode 归一化定档方式。空串按 rank 处理,让存量前端与脚本不必改。
+func normalizeDrawMode(in string) (string, error) {
+	switch strings.TrimSpace(in) {
+	case "", DrawModeRank:
+		return DrawModeRank, nil
+	case DrawModeProb:
+		return DrawModeProb, nil
+	case DrawModeBall:
+		return DrawModeBall, nil
+	}
+	return "", errBadRequest("定档方式只能是 rank、prob 或 ball")
 }
 
 // buildPrizes 校验奖档并生成 spec 原像的逐行。
@@ -1114,13 +1261,24 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 // Σ(amount × count) ≤ max_total_prize_quota 是**唯一**能拦住"奖品金额多写一个
 // 零"的闸门:抽奖是平台收参与费、平台出奖品,派奖对用户额度是净增发,
 // 下游没有任何环节会因为金额过大而失败。
-func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, stake int64) ([]Prize, []string, error) {
+// 文本奖(prize_type=text)不占用任何额度,因此它**完全不参与**
+// Σ(count × amount) ≤ max_total_prize_quota 这道闸门 —— amount 恒为 0。
+// 它的成本闸门是另一件事:最坏履行份数,由 worstCaseTextGrants 摆到发布按钮上面。
+func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activity) ([]Prize, []string, error) {
 	if len(in) == 0 || len(in) > cfg.MaxPrizeTiers {
 		return nil, nil, errBadRequest(fmt.Sprintf("奖档数量必须落在 [1, %d]", cfg.MaxPrizeTiers))
 	}
+	// entriesCap 是本场理论上可能出现的最大有效票数。buildActivity 已经把
+	// max_total_entries 归一化成"没填就用硬上限",所以它一定是正数。
+	entriesCap := act.MaxTotalEntries
+	if entriesCap <= 0 {
+		entriesCap = cfg.MaxTotalEntriesHard
+	}
+
 	rows := make([]Prize, 0, len(in))
 	seen := make(map[int]bool, len(in))
 	var total int64
+	var ppmSum int64
 	for _, p := range in {
 		name := strings.TrimSpace(p.Name)
 		if p.Tier <= 0 || seen[p.Tier] {
@@ -1130,21 +1288,60 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, stake int6
 		if name == "" || utf8.RuneCountInString(name) > 40 {
 			return nil, nil, errBadRequest("奖档名称必填且不超过 40 个字")
 		}
-		if p.AmountQuota <= 0 || p.AmountQuota > int64(common.MaxQuota) {
-			return nil, nil, errBadRequest("奖品额度必须大于 0 且不超过系统上限")
-		}
 		if p.Count <= 0 || p.Count > cfg.MaxTotalEntriesHard {
 			return nil, nil, errBadRequest("奖品数量必须大于 0")
 		}
-		// 先判单档再累加:两个各自合法的档相乘也可能溢出。
-		if p.AmountQuota > set.MaxTotalPrizeQuota/int64(p.Count) {
-			return nil, nil, errPrizeCapExceeded
+
+		prizeType, textDesc, err := normalizePrizeType(p)
+		if err != nil {
+			return nil, nil, err
 		}
-		total += p.AmountQuota * int64(p.Count)
-		if total > set.MaxTotalPrizeQuota {
-			return nil, nil, errPrizeCapExceeded
+		// 双色球的浮动奖(占池比例 > 0)是额度奖的一种,但它的额度**必须为 0**:
+		// 那一档发多少由期次池现算,写死一个数与占池比例互斥(checkBallTierInput)。
+		// 因此这里必须先认出它,否则下面那条 `amount > 0` 会把
+		// 「一等奖 = 池子的 X%」这个双色球的核心玩法在结构上创建不出来。
+		//
+		// 它的支出上界不由 max_total_prize_quota 管,而由期次池封顶:
+		// checkBallPoolCovers 在发布期证明 fixed + open×Σshare/10000 ≤ open。
+		// 把一个恒为 0 的额度累加进 Σ(amount×count) 只会让那道闸门形同虚设地通过,
+		// 所以浮动奖**完全不参与**这条累加,与文本奖同一个理由。
+		floatingBallTier := act.DrawMode == DrawModeBall && p.PoolShareBps > 0
+		if prizeType == PrizeTypeQuota && !floatingBallTier {
+			if p.AmountQuota <= 0 || p.AmountQuota > int64(common.MaxQuota) {
+				return nil, nil, errBadRequest("奖品额度必须大于 0 且不超过系统上限")
+			}
+			// 先判单档再累加:两个各自合法的档相乘也可能溢出。
+			if p.AmountQuota > set.MaxTotalPrizeQuota/int64(p.Count) {
+				return nil, nil, errPrizeCapExceeded
+			}
+			total += p.AmountQuota * int64(p.Count)
+			if total > set.MaxTotalPrizeQuota {
+				return nil, nil, errPrizeCapExceeded
+			}
 		}
-		rows = append(rows, Prize{Tier: p.Tier, Name: name, AmountQuota: p.AmountQuota, Count: p.Count})
+		if floatingBallTier && p.AmountQuota != 0 {
+			// 与 checkBallTierInput 同一条规则,在这里也说一遍:走到 applyBallSpec
+			// 之前就拒绝,报错信息才指得准是哪一档。
+			return nil, nil, errBadRequest(fmt.Sprintf("奖级 %d 是浮动奖(占池比例 > 0),额度必须为 0", p.Tier))
+		}
+
+		winPpm, err := normalizeWinPpm(act.DrawMode, p, prizeType, entriesCap)
+		if err != nil {
+			return nil, nil, err
+		}
+		ppmSum += int64(winPpm)
+		if ppmSum > PpmDen {
+			// 超过 100% 意味着有两档的摇号区间重叠,而"一张票同时中两档"在派奖层
+			// 会撞唯一键、静默丢掉第二个奖。三处校验(这里、揭示、验证脚本)
+			// 全都直接拒绝,不猜。
+			return nil, nil, errBadRequest(fmt.Sprintf(
+				"各档中奖概率之和不得超过 100%%(当前已累计 %d ppm)", ppmSum))
+		}
+
+		rows = append(rows, Prize{
+			Tier: p.Tier, Name: name, AmountQuota: p.AmountQuota, Count: p.Count,
+			PrizeType: prizeType, WinPpm: winPpm, TextDesc: textDesc,
+		})
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Tier < rows[j].Tier })
 
@@ -1153,14 +1350,79 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, stake int6
 		common.SysError(fmt.Sprintf(
 			"qianye/lottery: 正在创建奖品总额度 %d 的抽奖(告警阈值 %d,保本参与人数 %d)—— "+
 				"抽奖派奖是对用户额度的净增发,请确认这不是多写了一个零",
-			total, set.LargePrizeAlertQuota, breakEven(total, stake)))
+			total, set.LargePrizeAlertQuota, breakEven(total, act.StakeQuota)))
 	}
 
 	lines := make([]string, 0, len(rows))
 	for _, r := range rows {
-		lines = append(lines, PrizeSpecLine(r.Tier, r.Name, r.AmountQuota, r.Count))
+		lines = append(lines, prizeSpecLineOf(act.Algo, r))
 	}
 	return rows, lines, nil
+}
+
+// prizeSpecLineOf 按算法版本生成奖档在 spec 原像里的一行。
+func prizeSpecLineOf(algo string, r Prize) string {
+	if algo != AlgoV2 {
+		return prizeSpecLineV1(r.Tier, r.Name, r.AmountQuota, r.Count)
+	}
+	return PrizeSpecLineV2(PrizeSpec{
+		Tier: r.Tier, Name: r.Name, PrizeType: r.Type(),
+		AmountQuota: r.AmountQuota, Count: r.Count, WinPpm: r.WinPpm, TextDesc: r.TextDesc,
+		RedMatch: r.RedMatch, BlueMatch: r.BlueMatch, PoolShareBps: r.PoolShareBps,
+	})
+}
+
+// normalizePrizeType 校验"额度奖 / 文本奖"这条单选,并返回归一化后的两个字段。
+//
+// 不允许一档既给额度又给文本:混合会让派奖在同一行里分叉(一条腿走跨库资金单、
+// 一条腿只落一行记录),要两者就配两档。
+func normalizePrizeType(p prizeInput) (string, string, error) {
+	desc := strings.TrimSpace(p.TextDesc)
+	switch strings.TrimSpace(p.PrizeType) {
+	case "", PrizeTypeQuota:
+		if desc != "" {
+			return "", "", errBadRequest("额度奖不能填写文本说明;要发文本奖请把奖品类型改成 text")
+		}
+		return PrizeTypeQuota, "", nil
+	case PrizeTypeText:
+		if p.AmountQuota != 0 {
+			return "", "", errBadRequest("文本奖的额度必须为 0;要同时发额度请另配一个奖档")
+		}
+		if desc == "" || utf8.RuneCountInString(desc) > 500 {
+			return "", "", errBadRequest("文本奖必须填写履行说明,且不超过 500 个字")
+		}
+		return PrizeTypeText, desc, nil
+	}
+	return "", "", errBadRequest("奖品类型只能是 quota 或 text")
+}
+
+// normalizeWinPpm 校验中奖概率,并把"哪种模式允许填它"这条规则钉死在一处。
+//
+// prob 模式下额度档还要多守一条:`count × amount ≥ entriesCap`。
+//
+// 这一条堵的是均分制唯一的新失败态 —— 预算摊到人均不足 1 额度时会有人分到 0,
+// 而 PlanPayouts 会跳过 amount<=0 的计划,结果是**一个真中了奖的人被静默漏发**。
+// 保证每人至少分到 1 额度,守恒式就恒精确成立。
+func normalizeWinPpm(drawMode string, p prizeInput, prizeType string, entriesCap int) (int, error) {
+	if drawMode == DrawModeRank || drawMode == DrawModeBall {
+		// rank 按名次切片、ball 按号码匹配定档,两者都不读 win_ppm。
+		// 填了却不生效是最坏的一种界面谎言,所以直接拒绝而不是静默忽略。
+		if p.WinPpm != 0 {
+			return 0, errBadRequest("只有概率制(draw_mode=prob)的奖档才能设置中奖概率")
+		}
+		return 0, nil
+	}
+	if p.WinPpm <= 0 || p.WinPpm > PpmDen {
+		return 0, errBadRequest("概率制下每一档的中奖概率必须落在 (0, 1000000] ppm")
+	}
+	// count 已被 MaxTotalEntriesHard 夹住、amount 已被 MaxQuota(int32)夹住,
+	// 乘积最多在 1e14 量级,int64 上不会溢出。
+	if prizeType == PrizeTypeQuota && p.AmountQuota*int64(p.Count) < int64(entriesCap) {
+		return 0, errBadRequest(fmt.Sprintf(
+			"概率制下本档预算(数量 %d × 额度 %d)必须不小于全场参与上限 %d,"+
+				"否则超募时会有中奖者被摊薄到 0 额度而拿不到钱", p.Count, p.AmountQuota, entriesCap))
+	}
+	return p.WinPpm, nil
 }
 
 // buildOptions 校验竞猜选项并生成 spec 原像的逐行。
@@ -1318,20 +1580,28 @@ func checkActiveCap(ctx context.Context, gdb *gorm.DB) error {
 // 但这段代码离"有人复制它去改已发布活动"只有一步。
 func draftUpdates(a *Activity) map[string]any {
 	return map[string]any{
-		"kind":                  a.Kind,
-		"title":                 a.Title,
-		"intro":                 a.Intro,
-		"stake_quota":           a.StakeQuota,
-		"bet_min_quota":         a.BetMinQuota,
-		"bet_max_quota":         a.BetMaxQuota,
-		"open_at":               a.OpenAt,
-		"close_at":              a.CloseAt,
-		"draw_at":               a.DrawAt,
-		"settle_deadline":       a.SettleDeadline,
-		"rules_text":            a.RulesText,
-		"rules_hash":            a.RulesHash,
-		"spec_text":             a.SpecText,
-		"spec_hash":             a.SpecHash,
+		"kind":            a.Kind,
+		"title":           a.Title,
+		"intro":           a.Intro,
+		"stake_quota":     a.StakeQuota,
+		"bet_min_quota":   a.BetMinQuota,
+		"bet_max_quota":   a.BetMaxQuota,
+		"open_at":         a.OpenAt,
+		"close_at":        a.CloseAt,
+		"draw_at":         a.DrawAt,
+		"settle_deadline": a.SettleDeadline,
+		"rules_text":      a.RulesText,
+		"rules_hash":      a.RulesHash,
+		"spec_text":       a.SpecText,
+		"spec_hash":       a.SpecHash,
+		// algo 必须与 spec_hash **同一次**写进去。
+		//
+		// buildActivity 是按 a.Algo 决定用哪一版 spec 原像算 spec_hash 的
+		// (v2 的奖档行有十个字段,v1 只有四个)。漏掉这一列的后果是:一份
+		// 本轮之前建的草稿被改一次之后,库里存着 v2 形状的 spec_hash 却标着
+		// algo=lot-v1 —— 发布时承诺照样能算出来、开奖也照常,只有拿着
+		// verify.py 的用户会算出一个对不上的 spec_hash,而那时活动已经开完了。
+		"algo":                  a.Algo,
 		"allow_multi_win":       a.AllowMultiWin,
 		"fee_bps":               a.FeeBps,
 		"min_entries_to_hold":   a.MinEntriesToHold,
@@ -1343,6 +1613,18 @@ func draftUpdates(a *Activity) map[string]any {
 		"cooldown_seconds":      a.CooldownSeconds,
 		"dedup_ip":              a.DedupIp,
 		"updated_at":            common.GetTimestamp(),
+
+		// 定档方式与双色球的号池绑定也要能在草稿期改。池子那三个数**不在这里**:
+		// 它们要到 publish 那一刻才从系列行上原子取走,草稿期写进去的任何值都
+		// 只是一个会过期的快照。
+		"draw_mode":      a.DrawMode,
+		"series_id":      a.SeriesId,
+		"series_no":      a.SeriesNo,
+		"pool_share_bps": a.PoolShareBps,
+		"ball_red_pool":  a.BallRedPool,
+		"ball_red_pick":  a.BallRedPick,
+		"ball_blue_pool": a.BallBluePool,
+		"ball_blue_pick": a.BallBluePick,
 	}
 }
 
@@ -1354,6 +1636,58 @@ func prizeTotalRows(rows []Prize) int64 {
 		total += r.AmountQuota * int64(r.Count)
 	}
 	return total
+}
+
+// writeResultOf 算出创建/修改活动之后要摆在管理员面前的那几个数。
+//
+// 最坏支出必须与发布按钮在同一屏,而不是藏在某个折叠面板里 —— 这是拦住
+// "奖品金额多写一个零"最便宜的一道,而概率制新增的"最坏履行份数"同理:
+// 运营会在"1% 概率发 10 份"的心理预期下配出一个要人工发几百份兑换码的活动。
+func writeResultOf(act *Activity, prizes []Prize) activityWriteResult {
+	total := prizeTotal(prizes)
+	out := activityWriteResult{
+		ActNo:             act.ActNo,
+		PrizeTotalQuota:   total,
+		BreakEvenEntries:  breakEven(total, act.StakeQuota),
+		WorstCaseNetIssue: total,
+		ExpectPayoutQuota: total,
+	}
+	if act.DrawMode != DrawModeProb {
+		for _, p := range prizes {
+			out.ExpectWinners += int64(p.Count)
+			if p.Type() == PrizeTypeText {
+				out.WorstCaseTextGrants += p.Count
+			}
+		}
+		return out
+	}
+
+	// 概率制:按全场坐满估算期望。支出的**上界**仍然是 Σ(count × amount) ——
+	// 超募时该档预算由全部中签者均分,一分钱都不会多发。
+	cap64 := int64(act.MaxTotalEntries)
+	var expectPayout, expectWinners int64
+	hasText := false
+	for _, p := range prizes {
+		hit := cap64 * int64(p.WinPpm) / PpmDen
+		expectWinners += hit
+		if p.Type() == PrizeTypeText {
+			hasText = true
+			continue
+		}
+		budget := p.AmountQuota * int64(p.Count)
+		spend := hit * p.AmountQuota
+		if spend > budget {
+			spend = budget
+		}
+		expectPayout += spend
+	}
+	out.ExpectWinners = expectWinners
+	out.ExpectPayoutQuota = expectPayout
+	if hasText {
+		// 文本奖不摊薄(兑换码劈不开),所以最坏情况下全场每个人都可能中。
+		out.WorstCaseTextGrants = act.MaxTotalEntries
+	}
+	return out
 }
 
 // breakEven 是保本参与人数 = ceil(奖品总额度 / 参与费)。

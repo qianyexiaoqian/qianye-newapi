@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import {
+  QY_LOT_PPM_DEN,
   isQyLotVoided,
   qyLotOptions,
   qyLotTiers,
@@ -61,6 +62,31 @@ import {
 const SEP = '\u001F'
 
 const ALGO = 'lot-v1'
+
+/**
+ * `lot-v2`：概率制 + 文本奖 + 双色球。
+ *
+ * ## 改了什么、没改什么
+ *
+ * 改的只有**四处原像**：`spec` / `commit` / `chain` / `roster` 的域前缀各自
+ * 从 `-v1` 变成 `-v2`，并各自追加了新字段。
+ *
+ * `rules` / `final` / `ticket` / `user_ref` 四处**一个字节都没动**。这不是省事：
+ * 「票面的推导过程完全没变」本身就是"概率制没有引入任何新随机源"的最好证据 ——
+ * 摇号量 r 是从同一张票面里截出来的，而不是另外摇了一次。
+ *
+ * ## v1 为什么必须原样冻结
+ *
+ * 已经开完的活动全都是 v1。顺手"统一"一下原像，就等于让**所有历史活动的
+ * 公正性查询集体变成 FAIL** —— 而那时没有任何人能分辨是协议改了还是数据被
+ * 篡改了。所以两套分派按 `proof.algo` 走，v1 分支逐字保留。
+ */
+const ALGO_V2 = 'lot-v2'
+
+/** 未知版本一律拒绝：给一个可能是假的绿勾，比不提供验证更糟。 */
+function isKnownAlgo(algo: string): boolean {
+  return algo === ALGO || algo === ALGO_V2
+}
 
 /** 恒定值，进 `commit_hash` 原像。见设计文档 §5：全部猜错一律全额退回。 */
 const NO_WINNER_POLICY = 'refund_all'
@@ -135,19 +161,44 @@ export function qyLotRulesHash(rulesText: string): Promise<string> {
  */
 export function qyLotSpecLines(proof: QyLotProof): string[] {
   if (proof.kind === 'draw') {
+    if (proof.algo === ALGO_V2) {
+      // v2 的奖档行有十个字段，**恒等式位也必须写出来**：quota 档的
+      // `text_desc` 是空串、rank 模式的 `win_ppm` 是 0、非双色球的三列是 0。
+      // 少一个占位就等于允许管理员在不动哈希的前提下把一档额度奖改成文本奖。
+      return qyLotTiers(proof.spec).map((tier) =>
+        [
+          dec(tier.tier),
+          tier.name,
+          tier.prize_type ?? '',
+          dec(tier.amount_quota),
+          dec(tier.count),
+          dec(tier.win_ppm ?? 0),
+          tier.text_desc ?? '',
+          dec(tier.red_match ?? 0),
+          dec(tier.blue_match ?? 0),
+          dec(tier.pool_share_bps ?? 0),
+        ].join(SEP)
+      )
+    }
     return qyLotTiers(proof.spec).map((tier) =>
       [dec(tier.tier), tier.name, dec(tier.amount_quota), dec(tier.count)].join(
         SEP
       )
     )
   }
+  // 竞猜的选项行 v1/v2 完全相同 —— 概率与文本奖在竞猜里无处安放（它是奖池制，
+  // 赔付是连续的池子份额，不存在离散奖档），所以那一侧没有任何新字段。
+  // 变的只有域前缀，因为版本是整份文档级的。
   return qyLotOptions(proof.spec).map((option) =>
     [dec(option.opt_no), option.label, bool(option.is_catch_all)].join(SEP)
   )
 }
 
-export function qyLotSpecHash(lines: string[]): Promise<string> {
-  return sha256Hex(['qylot-spec-v1', ...lines])
+export function qyLotSpecHash(lines: string[], algo = ALGO): Promise<string> {
+  return sha256Hex([
+    algo === ALGO_V2 ? 'qylot-spec-v2' : 'qylot-spec-v1',
+    ...lines,
+  ])
 }
 
 /**
@@ -162,8 +213,8 @@ export function qyLotCommitHash(
   rulesHash: string,
   specHash: string
 ): Promise<string> {
-  return sha256Hex([
-    'qylot-commit-v1',
+  const head = [
+    proof.algo === ALGO_V2 ? 'qylot-commit-v2' : 'qylot-commit-v1',
     proof.act_no,
     proof.kind,
     proof.algo,
@@ -178,6 +229,24 @@ export function qyLotCommitHash(
     dec(proof.fee_bps),
     NO_WINNER_POLICY,
     dec(proof.min_entries_to_hold),
+  ]
+  if (proof.algo !== ALGO_V2) return sha256Hex([...head, proof.seed])
+  // 玩法与池子的每一个入参都在种子之前进原像。**非双色球活动这些位恒为
+  // 空串 / 0，但必须出现**：少一个占位，管理员就能在不改承诺的前提下把一场
+  // 普通抽奖悄悄办成双色球，或者把初始池子从 0 改成一个数。
+  return sha256Hex([
+    ...head,
+    proof.draw_mode ?? '',
+    proof.series_no ?? '',
+    dec(proof.issue_no ?? 0),
+    dec(proof.pool_seed_quota ?? 0),
+    dec(proof.pool_carry_quota ?? 0),
+    dec(proof.pool_open_quota ?? 0),
+    dec(proof.pool_share_bps ?? 0),
+    dec(proof.ball_red_pool ?? 0),
+    dec(proof.ball_red_pick ?? 0),
+    dec(proof.ball_blue_pool ?? 0),
+    dec(proof.ball_blue_pick ?? 0),
     proof.seed,
   ])
 }
@@ -187,11 +256,12 @@ export function qyLotChainNext(
   actNo: string,
   entry: Pick<
     QyLotProofEntry,
-    'amount' | 'entry_no' | 'opt_no' | 'seq' | 'user_ref'
-  >
+    'amount' | 'entry_no' | 'opt_no' | 'pick' | 'seq' | 'user_ref'
+  >,
+  algo = ALGO
 ): Promise<string> {
-  return sha256Hex([
-    'qylot-chain-v1',
+  const head = [
+    algo === ALGO_V2 ? 'qylot-chain-v2' : 'qylot-chain-v1',
     prev,
     actNo,
     dec(entry.seq),
@@ -199,7 +269,11 @@ export function qyLotChainNext(
     entry.user_ref,
     dec(entry.opt_no),
     dec(entry.amount),
-  ])
+  ]
+  // 选号进链是双色球唯一必须改协议的地方：不进链的话，平台可以在开奖之后把
+  // 某个人的号改成中奖号，而链尾、seq 连续、名单重算三道校验会**照常全部通过**。
+  if (algo !== ALGO_V2) return sha256Hex(head)
+  return sha256Hex([...head, entry.pick ?? ''])
 }
 
 /**
@@ -211,15 +285,22 @@ export function qyLotChainNext(
 export async function qyLotRosterHash(
   actNo: string,
   commitHash: string,
-  roster: QyLotProofEntry[]
+  roster: QyLotProofEntry[],
+  algo = ALGO
 ): Promise<string> {
-  const lines = roster.map((entry) =>
-    [entry.entry_no, entry.user_ref, dec(entry.opt_no), dec(entry.amount)].join(
-      SEP
-    )
-  )
+  const v2 = algo === ALGO_V2
+  const lines = roster.map((entry) => {
+    const cells = [
+      entry.entry_no,
+      entry.user_ref,
+      dec(entry.opt_no),
+      dec(entry.amount),
+    ]
+    if (v2) cells.push(entry.pick ?? '')
+    return cells.join(SEP)
+  })
   return sha256Hex([
-    'qylot-roster-v1',
+    v2 ? 'qylot-roster-v2' : 'qylot-roster-v1',
     actNo,
     commitHash,
     dec(roster.length),
@@ -252,6 +333,140 @@ export function qyLotTicket(
   entryNo: string
 ): Promise<string> {
   return hmacSha256Hex(finalSeed, ['qylot-ticket-v1', actNo, entryNo].join(SEP))
+}
+
+// ─────────────────────────── 摇号量与概率区间（lot-v2） ───────────────────────────
+
+/**
+ * 票面 → 摇号量 `r ∈ [0, 999999]`。
+ *
+ * `r = floor(u64 × 1_000_000 / 2^64)`，其中 `u64` 是票面前 16 个十六进制字符。
+ *
+ * ## 为什么是"截前 64 位再缩放"而不是拿整个 256 位比阈值
+ *
+ * 因为**落选的人必须当场看懂自己为什么没中**，而这正是概率制相对名次制需要
+ * 额外证明的那一点。「你的摇号结果是 384217，二等奖区间是 [1000, 11000)」是
+ * 一句人话；把一个 64 位十六进制串念给用户听等于没解释。可读性在这里是可
+ * 验证性的一部分，不是装饰。
+ *
+ * 附带收益：前端不需要在 2^256 上做大整数比较，那条"Number/BigInt 静默算错"
+ * 的高危路径根本不存在。
+ *
+ * ## 偏差有多大（不掩饰）
+ *
+ * 2^64 个均匀值分进 10^6 个桶，桶大小最多相差 1，相对偏差 < 2^-44。
+ *
+ * ## 为什么不用取模
+ *
+ * `u % 1e6` 有模偏置，而且一定会被人拿出来吵。乘法 + 右移是精确的截断映射，
+ * 零争议、零除法，三种语言（Go 的 `bits.Mul64`、Python 的原生大整数、
+ * 这里的 `BigInt`）各自十行以内，逐位一致。
+ */
+export function qyLotRollPpm(ticket: string): number {
+  const head = ticket.trim().toLowerCase().slice(0, 16)
+  // 票面恒由 `qyLotTicket` 产出（64 个十六进制字符）。解不开只可能是调用方传错
+  // 了东西，此时返回 `PpmDen` —— 它落在**全部**中奖区间之外，即"这张票不中"。
+  // 回落成 0 会让一张畸形的票直接中一等奖，那是方向完全错误的失败。
+  // 与后端 `RollPpm` 逐字同一条口径。
+  if (head.length !== 16 || !/^[0-9a-f]{16}$/.test(head)) {
+    return QY_LOT_PPM_DEN
+  }
+  // 结果 ≤ 999999，转 Number 是精确的。
+  return Number((BigInt(`0x${head}`) * BigInt(QY_LOT_PPM_DEN)) >> 64n)
+}
+
+/** 一档的摇号区间，左闭右开。 */
+export type QyLotBand = {
+  tier: number
+  loPpm: number
+  hiPpm: number
+}
+
+/**
+ * 各档按 tier 升序累加 `win_ppm`，得到互不相交的左闭右开区间。
+ *
+ * **绝不对每一档独立摇一次号**：那会产生档与档之间的相关性，还要公布 N 个
+ * 随机量。一次摇号 + 区间归属，是唯一同时满足"概率严格等于公示值"与
+ * "第三方十行以内能复算"的做法。
+ *
+ * `Σwin_ppm > 1_000_000` 直接抛错，**不猜**：那说明公示的概率表本身是错的，
+ * 而验证器在这种时候给出任何结论都是在替平台圆场。
+ */
+export function qyLotBands(tiers: QyLotTier[]): QyLotBand[] {
+  const bands: QyLotBand[] = []
+  let cursor = 0
+  for (const tier of [...tiers].sort((a, b) => a.tier - b.tier)) {
+    const ppm = Math.trunc(tier.win_ppm ?? 0)
+    if (ppm < 0) throw new Error(`negative win_ppm at tier ${tier.tier}`)
+    bands.push({ tier: tier.tier, loPpm: cursor, hiPpm: cursor + ppm })
+    cursor += ppm
+  }
+  if (cursor > QY_LOT_PPM_DEN) {
+    throw new Error(`win_ppm sum ${cursor} > ${QY_LOT_PPM_DEN}`)
+  }
+  return bands
+}
+
+/** 摇号量落在哪一档；`null` = 落在全部区间之外，也就是**没中**。 */
+export function qyLotBandOf(
+  bands: QyLotBand[],
+  roll: number
+): QyLotBand | null {
+  return bands.find((band) => roll >= band.loPpm && roll < band.hiPpm) ?? null
+}
+
+/**
+ * 双色球摇号：对号池里的每一个球号算一次 HMAC，按 `(哈希, 号码)` 升序取前 k。
+ *
+ * ## 为什么不是 `1 + h(i) % pool` 撞重重取
+ *
+ * 与 {@link qyLotPickWinners} 不用 Fisher–Yates 是同一条理由，而且更尖锐：
+ * 拒绝采样要求第三方精确复现计数器怎么推进、蓝球从第几个下标起算、撞到重复
+ * 时消不消耗随机数 —— 三处实现自由度，每一处差一点都会算出**完全不同的
+ * 七个号码**，而验证者无法判断是谁错了。
+ *
+ * 选排序法零实现自由度、零模偏置，平局用号码本身定死。
+ */
+export function qyLotBallDraw(
+  finalSeed: string,
+  actNo: string,
+  color: 'blue' | 'red',
+  poolN: number,
+  pickK: number
+): Promise<number[]> {
+  return (async () => {
+    const scored: { ball: number; hash: string }[] = []
+    for (let ball = 1; ball <= poolN; ball += 1) {
+      scored.push({
+        ball,
+        hash: await hmacSha256Hex(
+          finalSeed,
+          ['qylot-ball-v2', actNo, color, dec(ball)].join(SEP)
+        ),
+      })
+    }
+    scored.sort((a, b) => byteCompare(a.hash, b.hash) || a.ball - b.ball)
+    return scored
+      .slice(0, pickK)
+      .map((item) => item.ball)
+      .sort((a, b) => a - b)
+  })()
+}
+
+/** 规范化选号串 `03,05,12|08` → `{reds, blues}`。格式不对时抛错，不猜。 */
+export function qyLotParsePick(pick: string): {
+  blues: number[]
+  reds: number[]
+} {
+  const [redPart = '', bluePart = ''] = pick.split('|')
+  const parse = (text: string) =>
+    text === ''
+      ? []
+      : text.split(',').map((cell) => {
+          if (!/^\d{2}$/.test(cell)) throw new Error(`invalid pick: ${pick}`)
+          return Number.parseInt(cell, 10)
+        })
+  return { reds: parse(redPart), blues: parse(bluePart) }
 }
 
 // ─────────────────────────── 抽取与分配 ───────────────────────────
@@ -323,6 +538,87 @@ export async function qyLotPickWinners(
       })
       cursor += 1
     }
+  }
+  return winners
+}
+
+/**
+ * 重算概率制中奖名单（`draw_mode='prob'`）。
+ *
+ * ## 与名次制的差别只有一处：随机量的**作用域**
+ *
+ * 名次制是「全场按票面排序，前 N 名中奖」——一张票的结果取决于其他所有票。
+ * 概率制是「每张票各摇一次号，落进哪个区间就中哪一档」——一张票的结果
+ * **完全不依赖其他票**。两者共用同一个 `ticket`，因此没有引入任何新随机源。
+ *
+ * 这带来一个安全性上的副产品：概率制下"多买多摇"没有任何可利用的结构，
+ * 老老实实按公示概率付费，反而比名次制**更**抗操纵。
+ *
+ * ## 超募时摊薄的是金额，不是概率
+ *
+ * `count` 在这里的语义是**本档预算 = count × amount**，不是名额。命中人数 W
+ * 超过 count 时，预算由全部 W 人均分（逐笔向零截断、残差归 `entry_no` 字节序
+ * 最大者，与竞猜奖池 {@link qyLotSplitPool} 逐字节同一套口径）。
+ *
+ * 另一种做法是"按票面顺序取前 count 张、其余落空"，本方案**明确否掉**：那样
+ * 一张票的实际中奖概率会变成 `win_ppm × min(1, count/W)`，也就是说卡片上印的
+ * 「中奖概率 1%」在超募时是**假的**。整套设计的立身之本是公示的数字为真，
+ * 所以让概率恒等于公示值，让金额去浮动。
+ *
+ * ## 文本奖不参与摊薄
+ *
+ * 文本奖的 `amount` 恒为 0，"均分 0" 没有意义 —— `count` 对它而言是**实物
+ * 份数**而不是预算。这里如实把全部命中者都列为中奖者（W > count 时就是超发），
+ * 不自作主张地裁掉谁：验证器的职责是复算，不是替平台决定谁该落空。
+ */
+export async function qyLotPickWinnersProb(
+  finalSeed: string,
+  actNo: string,
+  roster: QyLotProofEntry[],
+  tiers: QyLotTier[]
+): Promise<QyLotProofWinner[]> {
+  const bands = qyLotBands(tiers)
+  const byTier = new Map<number, QyLotProofEntry[]>()
+  for (const entry of roster) {
+    const ticket = await qyLotTicket(finalSeed, actNo, entry.entry_no)
+    const band = qyLotBandOf(bands, qyLotRollPpm(ticket))
+    // 落在全部区间之外 = 没中。这是一等公民结果，不是异常分支 ——
+    // 项目方要的正是「不是说必须要有中奖人」。
+    if (band == null) continue
+    const bucket = byTier.get(band.tier)
+    if (bucket == null) byTier.set(band.tier, [entry])
+    else bucket.push(entry)
+  }
+
+  const winners: QyLotProofWinner[] = []
+  for (const tier of [...tiers].sort((a, b) => a.tier - b.tier)) {
+    const hit = byTier.get(tier.tier) ?? []
+    if (hit.length === 0) continue
+    const diluted =
+      tier.prize_type !== 'text' &&
+      tier.amount_quota > 0 &&
+      hit.length > tier.count
+    const budget = BigInt(tier.count) * BigInt(tier.amount_quota)
+    let acc = 0n
+    hit.forEach((entry, index) => {
+      // 均分：前 W-1 笔向零截断，最后一笔吃掉残差。`hit` 是按 `entry_no`
+      // 字节序升序的（roster 就是这个序），所以"最后一笔"就是 entry_no 最大的
+      // 那一位 —— 与竞猜奖池的残差归属规则完全一致，零新增舍入约定。
+      let amount = BigInt(tier.amount_quota)
+      if (diluted) {
+        // 最后一笔吃掉残差，其余向零截断。
+        amount =
+          index === hit.length - 1 ? budget - acc : budget / BigInt(hit.length)
+      }
+      acc += amount
+      winners.push({
+        pos: winners.length,
+        tier: tier.tier,
+        entry_no: entry.entry_no,
+        user_ref: entry.user_ref,
+        amount: Number(amount),
+      })
+    })
   }
   return winners
 }
@@ -440,7 +736,7 @@ export async function verifyQyLotProof(
 ): Promise<QyLotVerifyStep[]> {
   const steps: QyLotVerifyStep[] = []
 
-  if (proof.algo !== ALGO) {
+  if (!isKnownAlgo(proof.algo)) {
     return STEP_KEYS.map((key) => step(key, 'fail', `algo=${proof.algo}`))
   }
 
@@ -459,7 +755,7 @@ export async function verifyQyLotProof(
   }
 
   try {
-    specHash = await qyLotSpecHash(qyLotSpecLines(proof))
+    specHash = await qyLotSpecHash(qyLotSpecLines(proof), proof.algo)
     steps.push(
       specHash === proof.spec_hash
         ? step('spec', 'ok')
@@ -507,7 +803,7 @@ export async function verifyQyLotProof(
       if (entry.prev_hash !== chain) {
         throw new Error(`prev_hash mismatch at seq ${entry.seq}`)
       }
-      chain = await qyLotChainNext(chain, proof.act_no, entry)
+      chain = await qyLotChainNext(chain, proof.act_no, entry, proof.algo)
       if (chain !== entry.chain_hash) {
         throw new Error(`chain_hash mismatch at seq ${entry.seq}`)
       }
@@ -528,7 +824,12 @@ export async function verifyQyLotProof(
 
   let rosterOk = false
   try {
-    const hash = await qyLotRosterHash(proof.act_no, proof.commit_hash, roster)
+    const hash = await qyLotRosterHash(
+      proof.act_no,
+      proof.commit_hash,
+      roster,
+      proof.algo
+    )
     rosterOk =
       hash === proof.roster_hash && roster.length === proof.roster_count
     steps.push(
@@ -560,15 +861,26 @@ export async function verifyQyLotProof(
       steps.push(step('result', 'skipped', `outcome=${proof.outcome}`))
       return steps
     }
+    // 双色球的派奖还牵涉跨期奖池的分配与浮动奖，本实现**没有**复算它。
+    // 与其给一个只算对了一半的绿勾，不如如实说"这一步这里验不了"——
+    // 摇号号码本身仍可用 `qyLotBallDraw` 在「为什么是这个结果」里独立复算。
+    if (proof.draw_mode === 'ball') {
+      steps.push(step('result', 'skipped', 'draw_mode=ball'))
+      return steps
+    }
     try {
       const finalSeed = await qyLotFinalSeed(proof)
-      const winners = await qyLotPickWinners(
-        finalSeed,
-        proof.act_no,
-        roster,
-        qyLotTiers(proof.spec),
-        proof.allow_multi_win
-      )
+      const tiers = qyLotTiers(proof.spec)
+      const winners =
+        proof.draw_mode === 'prob'
+          ? await qyLotPickWinnersProb(finalSeed, proof.act_no, roster, tiers)
+          : await qyLotPickWinners(
+              finalSeed,
+              proof.act_no,
+              roster,
+              tiers,
+              proof.allow_multi_win
+            )
       const actual = [...proof.winners].sort((a, b) => a.pos - b.pos)
       const same =
         winners.length === actual.length &&

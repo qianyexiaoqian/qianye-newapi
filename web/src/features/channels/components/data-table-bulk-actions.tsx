@@ -32,6 +32,15 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+// qy 扩展：启停/删除/重置统计的替代实现，逐条回报结果并按危险度分级二次确认。
+// 扩展关闭时 useQyChannelBulkVisible() 为 false，下面上游那三个按钮原样回落。
+// Outlet 必须挂在 </BulkActionsToolbar> 之外：工具条在选中数归零时 return null，
+// 而批次收尾第一件事就是清空选中态（上游自己的两个弹窗放在外面也是这个原因）。
+import {
+  QyChannelBulkActions,
+  QyChannelBulkResultOutlet,
+} from '@/features/qy/channel-bulk'
+import { useQyChannelBulkVisible } from '@/features/qy/channel-bulk/visible'
 import {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_RESOURCES,
@@ -57,6 +66,7 @@ export function DataTableBulkActions<TData>({
 }: DataTableBulkActionsProps<TData>) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  const qyBulkVisible = useQyChannelBulkVisible()
   const [showTagDialog, setShowTagDialog] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [tagValue, setTagValue] = useState('')
@@ -77,6 +87,12 @@ export function DataTableBulkActions<TData>({
 
     return ids
   }, [])
+  // qy 的确认弹窗要复述渠道名（只给条数的话，用户发现不了自己多勾了一行，
+  // 而删除之后没有撤销键），失败列表同样按名字定位，所以这里带上 id + name。
+  const selectedChannels = selectedRows.map((row) => ({
+    id: (row.original as Channel).id,
+    name: (row.original as Channel).name,
+  }))
 
   const handleClearSelection = () => {
     table.resetRowSelection()
@@ -109,47 +125,59 @@ export function DataTableBulkActions<TData>({
   return (
     <>
       <BulkActionsToolbar table={table} entityName='channel'>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant='outline'
-                size='icon'
-                onClick={handleEnableAll}
-                className='size-8'
-                aria-label={t('Enable selected channels')}
-                title={t('Enable selected channels')}
-              />
-            }
-          >
-            <Power />
-            <span className='sr-only'>{t('Enable selected channels')}</span>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>{t('Enable selected channels')}</p>
-          </TooltipContent>
-        </Tooltip>
+        {qyBulkVisible && (
+          <QyChannelBulkActions
+            channels={selectedChannels}
+            canDelete={canEditSensitive}
+            onDone={handleClearSelection}
+          />
+        )}
 
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant='outline'
-                size='icon'
-                onClick={handleDisableAll}
-                className='size-8'
-                aria-label={t('Disable selected channels')}
-                title={t('Disable selected channels')}
-              />
-            }
-          >
-            <PowerOff />
-            <span className='sr-only'>{t('Disable selected channels')}</span>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>{t('Disable selected channels')}</p>
-          </TooltipContent>
-        </Tooltip>
+        {!qyBulkVisible && (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant='outline'
+                  size='icon'
+                  onClick={handleEnableAll}
+                  className='size-8'
+                  aria-label={t('Enable selected channels')}
+                  title={t('Enable selected channels')}
+                />
+              }
+            >
+              <Power />
+              <span className='sr-only'>{t('Enable selected channels')}</span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>{t('Enable selected channels')}</p>
+            </TooltipContent>
+          </Tooltip>
+        )}
+
+        {!qyBulkVisible && (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant='outline'
+                  size='icon'
+                  onClick={handleDisableAll}
+                  className='size-8'
+                  aria-label={t('Disable selected channels')}
+                  title={t('Disable selected channels')}
+                />
+              }
+            >
+              <PowerOff />
+              <span className='sr-only'>{t('Disable selected channels')}</span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>{t('Disable selected channels')}</p>
+            </TooltipContent>
+          </Tooltip>
+        )}
 
         <Tooltip>
           <TooltipTrigger
@@ -174,42 +202,46 @@ export function DataTableBulkActions<TData>({
           </TooltipContent>
         </Tooltip>
 
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant='destructive'
-                size='icon'
-                onClick={() => {
-                  if (!canEditSensitive) return
-                  setShowDeleteConfirm(true)
-                }}
-                aria-disabled={!canEditSensitive}
-                className={cn(
-                  'size-8',
-                  !canEditSensitive && 'cursor-not-allowed opacity-50'
-                )}
-                aria-label={t('Delete selected channels')}
-                title={
-                  canEditSensitive
-                    ? t('Delete selected channels')
-                    : t('No permission to perform this action')
-                }
-              />
-            }
-          >
-            <Trash2 />
-            <span className='sr-only'>{t('Delete selected channels')}</span>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>
-              {canEditSensitive
-                ? t('Delete selected channels')
-                : t('No permission to perform this action')}
-            </p>
-          </TooltipContent>
-        </Tooltip>
+        {!qyBulkVisible && (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant='destructive'
+                  size='icon'
+                  onClick={() => {
+                    if (!canEditSensitive) return
+                    setShowDeleteConfirm(true)
+                  }}
+                  aria-disabled={!canEditSensitive}
+                  className={cn(
+                    'size-8',
+                    !canEditSensitive && 'cursor-not-allowed opacity-50'
+                  )}
+                  aria-label={t('Delete selected channels')}
+                  title={
+                    canEditSensitive
+                      ? t('Delete selected channels')
+                      : t('No permission to perform this action')
+                  }
+                />
+              }
+            >
+              <Trash2 />
+              <span className='sr-only'>{t('Delete selected channels')}</span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>
+                {canEditSensitive
+                  ? t('Delete selected channels')
+                  : t('No permission to perform this action')}
+              </p>
+            </TooltipContent>
+          </Tooltip>
+        )}
       </BulkActionsToolbar>
+
+      {qyBulkVisible && <QyChannelBulkResultOutlet />}
 
       {/* Set Tag Dialog */}
       <Dialog

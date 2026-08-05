@@ -134,6 +134,20 @@ export function QyGmScopeSheet(props: QyGmScopeSheetProps) {
       }
     >
       <div className='space-y-4'>
+        {/*
+          这一行的 enforce **不是任何人按出来的**。
+
+          没有这句话，运营打开这个抽屉看到的就是「已接管 + enforce + 清单为空」，
+          而他确信自己没做过 —— 于是第一反应是"这功能坏了"，第二反应往往是
+          直接关掉接管。说清来历，正确的动作（给它配上可用的模型分组）才成立。
+          来历是历史事实，配好清单之后也不消失。
+        */}
+        {userGroup.auto_masked && (
+          <p className='bg-muted/40 text-muted-foreground rounded-md border p-2 text-xs'>
+            {t('qy_group_matrix_auto_masked_scope_note')}
+          </p>
+        )}
+
         <div className='flex items-start justify-between gap-4'>
           <div className='space-y-0.5'>
             <Label>{t('qy_group_matrix_managed_on')}</Label>

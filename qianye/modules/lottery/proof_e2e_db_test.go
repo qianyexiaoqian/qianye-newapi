@@ -138,10 +138,17 @@ func TestProofEndpoint_WinnersAreIndependentlyReproducible(t *testing.T) {
 		a.DrawAt = now - 1
 		a.RulesText = `{"min_quota":0}`
 		a.RulesHash = RulesHash(`{"min_quota":0}`)
-		a.SpecHash = SpecHash([]string{
-			PrizeSpecLine(1, "头奖", 5000, 1),
-			PrizeSpecLine(2, "二奖", 1000, 2),
-		})
+		// 这一场刻意留在 lot-v1:它同时是 v1 证据链的回归护栏 ——
+		// 只要有人不小心动了 v1 的原像,这条端到端就会当场变红。
+		a.Algo = AlgoV1
+		specLines := []string{
+			prizeSpecLineV1(1, "头奖", 5000, 1),
+			prizeSpecLineV1(2, "二奖", 1000, 2),
+		}
+		a.SpecHash = SpecHash(specLines)
+		// spec_text 就是进哈希的那份字节。开奖前 checkSpecIntegrity 会从奖档表
+		// 重算并同时比对两者 —— 少写这一列等于在测试里绕开那道校验。
+		a.SpecText = strings.Join(specLines, SEP)
 		a.CommitHash = ""
 	})
 	require.NoError(t, gdb.Create(&Seed{

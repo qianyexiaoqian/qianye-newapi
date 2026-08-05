@@ -16,7 +16,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { MoreHorizontal, Settings2, TriangleAlert } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowRight,
+  Boxes,
+  MoreHorizontal,
+  Settings2,
+  TriangleAlert,
+  Users,
+} from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
@@ -98,10 +106,27 @@ export function QyGmMatrixGrid(props: QyGmMatrixGridProps) {
           className='bg-muted/50 sticky top-0 z-10 grid border-b'
           style={{ gridTemplateColumns: columns }}
         >
-          <div className='bg-muted/50 sticky left-0 z-20 px-3 py-2 text-xs font-medium'>
-            {t('qy_group_matrix_row_header')}
-            <span className='text-muted-foreground ms-1 font-normal'>
-              {t('qy_group_matrix_col_header')}
+          {/*
+            左上角是两个轴的定义处，**不是一句 `行 × 列` 的标题**。
+
+            底层两个轴共用同一个字符串命名空间，两边可能出现同名项；把定义压缩成
+            「用户分组 × 模型分组」一行字，运营扫一眼只会记住一个"分组"。这里改成
+            上下两行、各带自己的图标与方向箭头 —— 图标与箭头在滚动时始终贴在
+            左上角，是这一页上唯一一处**永远可见**的图例。
+          */}
+          <div className='bg-muted/50 border-info/40 sticky left-0 z-20 flex flex-col gap-0.5 border-s-2 px-3 py-1.5 text-[11px]'>
+            <span className='flex items-center gap-1 font-medium'>
+              <Users aria-hidden='true' className='size-3 shrink-0' />
+              {t('qy_group_matrix_axis_row_title')}
+              <ArrowDown
+                aria-hidden='true'
+                className='text-muted-foreground size-2.5 shrink-0'
+              />
+            </span>
+            <span className='text-muted-foreground flex items-center gap-1'>
+              <Boxes aria-hidden='true' className='size-3 shrink-0' />
+              {t('qy_group_matrix_axis_col_title')}
+              <ArrowRight aria-hidden='true' className='size-2.5 shrink-0' />
             </span>
           </div>
           {props.data.model_groups.map((modelGroup) => (
@@ -110,9 +135,20 @@ export function QyGmMatrixGrid(props: QyGmMatrixGridProps) {
               className='flex flex-col items-center gap-0.5 px-1 py-1.5'
             >
               <div className='flex w-full items-center justify-center gap-0.5'>
+                {/*
+                  每一列都带模型分组图标，而不是只在表头出现一次。
+                  行头也有它自己的图标（Users）—— 两个轴上出现同名项时，
+                  图标是唯一一个跟着名字一起走的区分信号。
+                */}
+                <Boxes
+                  aria-hidden='true'
+                  className='text-muted-foreground size-3 shrink-0'
+                />
                 <span
                   className='truncate text-xs font-medium'
-                  title={modelGroup.name}
+                  title={t('qy_group_matrix_col_label', {
+                    modelGroup: modelGroup.name,
+                  })}
                 >
                   {modelGroup.name}
                 </span>
@@ -247,15 +283,42 @@ function QyGmRowHeader(props: QyGmRowHeaderProps) {
   const managed = props.userGroup.managed
 
   return (
-    <div className='bg-background sticky left-0 z-10 flex items-center gap-2 px-3 py-1.5'>
+    /*
+      行头带一条 `border-info` 左边条 + Users 图标：这一整列都是「谁」，
+      而右边所有列都是「用哪批渠道」。sticky 列必须是不透明背景（否则滚动内容
+      会透过来），所以轴身份押在边条与图标上，不押在底色上。
+    */
+    <div className='bg-background border-info/40 sticky left-0 z-10 flex items-center gap-2 border-s-2 px-3 py-1.5'>
       <div className='min-w-0 flex-1'>
         <div className='flex items-center gap-1.5'>
+          <Users
+            aria-hidden='true'
+            className='text-muted-foreground size-3 shrink-0'
+          />
           <span
             className='truncate text-xs font-medium'
-            title={props.userGroup.name}
+            title={t('qy_group_matrix_row_label', {
+              userGroup: props.userGroup.name,
+            })}
           >
             {props.userGroup.name}
           </span>
+          {/*
+            自动遮断的来历。**不下发/不渲染它，这一行就是一个莫名其妙已经
+            enforce、清单还空着的分组**，而运营确信自己没做过这件事 ——
+            那正是「新分组默认全遮断」最容易被当成故障的时刻。
+            配好清单之后 `pending_setup` 转 false，徽标降级成一句 title，
+            长期挂着的提示等于没有提示。
+          */}
+          {props.userGroup.pending_setup && (
+            <Badge
+              variant='outline'
+              className='border-info/50 text-info px-1 py-0 text-[10px]'
+              title={t('qy_group_matrix_auto_masked_hint')}
+            >
+              {t('qy_group_matrix_auto_masked_badge')}
+            </Badge>
+          )}
           {managed ? (
             <Badge
               variant='outline'

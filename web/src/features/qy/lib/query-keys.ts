@@ -82,6 +82,14 @@ export const qyKeys = {
   /** 证据链。匿名可访问，但缓存 key 仍挂在 qy 前缀下以便一起失效。 */
   lotteryProof: (actNo: string, params: unknown) =>
     [...qyKeys.all, 'lottery', 'proof', actNo, params] as const,
+  /**
+   * 我中的那一份文本奖（兑换码 / CDK）。
+   *
+   * **逐条一个 key**，没有列表 key：一个返回全部正文的列表接口意味着一次
+   * 越权 bug 就是全量泄漏，所以这条路径上根本不存在批量入口。
+   */
+  lotteryMyPrize: (payoutNo: string) =>
+    [...qyKeys.all, 'lottery', 'my-prize', payoutNo] as const,
 
   // ── 工单(用户端)──
   ticketConfig: () => [...qyKeys.all, 'ticket', 'config'] as const,
@@ -162,6 +170,15 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'lottery', 'payouts', actNo, params] as const,
   adminLotteryEvents: (actNo: string) =>
     [...qyKeys.all, 'admin', 'lottery', 'events', actNo] as const,
+  /**
+   * 文本奖履行队列（一场活动内的 `kind='text'` 出款行）。
+   *
+   * 与 {@link qyKeys.adminLotteryPayouts} 分开是刻意的：那一张列表的每一行都是
+   * 资金单（重试、卡单、代次），这一张的每一行是**一件人要去做的事**。
+   * 混在一起会让"还有 3 笔没发出去"和"还有 3 份码没填"看起来是同一个红点。
+   */
+  adminLotteryTextPrizes: (actNo: string, params: unknown) =>
+    [...qyKeys.all, 'admin', 'lottery', 'text-prizes', actNo, params] as const,
   adminLotteryFlags: (actNo: string) =>
     [...qyKeys.all, 'admin', 'lottery', 'flags', actNo] as const,
   adminLotteryConfig: () =>

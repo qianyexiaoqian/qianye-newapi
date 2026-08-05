@@ -62,7 +62,7 @@ const CODE_DISABLED = 'qy_disabled'
 const CODE_FEATURE_OFF = 'qy_feature_off'
 const CODE_UNAVAILABLE = 'qy_unavailable'
 
-const KIND_I18N_KEY: Record<QyFailureKind, string> = {
+export const KIND_I18N_KEY: Record<QyFailureKind, string> = {
   business: 'qy_err_unknown',
   conflict: 'qy_err_conflict',
   disabled: 'qy_err_disabled',
@@ -290,6 +290,15 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_bad_request: 'qy_lot_err_bad_request',
   qy_lot_proof_not_ready: 'qy_lot_err_proof_not_ready',
   qy_lot_proof_disabled: 'qy_lot_err_proof_disabled',
+
+  // ── 渠道批量操作（qianye/modules/channelops/errors.go）──
+  // 五个整批级别的 code。不登记的话它们会按 HTTP 400 塌成一句"请求参数不合法"，
+  // 而其中三个要求管理员做的下一步完全不同：先选渠道 / 分批再来 / 勾一个要清的项。
+  qy_chops_no_ids: 'qy_err_chops_no_ids',
+  qy_chops_too_many: 'qy_err_chops_too_many',
+  qy_chops_bad_status: 'qy_err_chops_bad_status',
+  qy_chops_nothing_to_reset: 'qy_err_chops_nothing_to_reset',
+  qy_chops_invalid_param: 'qy_err_invalid',
 }
 
 /**

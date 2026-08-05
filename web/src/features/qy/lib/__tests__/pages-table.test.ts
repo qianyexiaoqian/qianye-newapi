@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -106,6 +106,9 @@ const HOSTED_URLS = [
   '/qy/invitees',
   '/qy/withdraw',
   '/qy/withdrawals',
+  // 需求 2（抽奖轮）：竞猜与我的参与收进 `/qy/lottery` 的选择夹，侧栏只剩一行。
+  '/qy/lottery-guess',
+  '/qy/lottery-records',
 ]
 
 describe('qy page table structure', () => {
@@ -191,7 +194,7 @@ describe('qy page table structure', () => {
 })
 
 describe('qy 选择夹（需求 2 / 3）', () => {
-  test('两个选择夹的成员逐项冻结', () => {
+  test('三个选择夹的成员逐项冻结', () => {
     assert.deepEqual(
       QY_TAB_GROUPS.map((group) => [group.host, [...group.pages]]),
       [
@@ -200,12 +203,28 @@ describe('qy 选择夹（需求 2 / 3）', () => {
           '/qy/affiliate',
           ['/qy/affiliate', '/qy/invitees', '/qy/withdraw', '/qy/withdrawals'],
         ],
+        [
+          '/qy/lottery',
+          ['/qy/lottery', '/qy/lottery-guess', '/qy/lottery-records'],
+        ],
       ],
-      '选择夹的成员或顺序变了：项目方点名要的是「发起划转/划转记录/支付密码」与「我的邀请概览/已邀请用户/佣金提现/佣金提现记录」'
+      '选择夹的成员或顺序变了：项目方点名要的是「发起划转/划转记录/支付密码」、「我的邀请概览/已邀请用户/佣金提现/佣金提现记录」与「抽奖/竞猜/我的参与」'
     )
   })
 
-  test('被收进选择夹的正好是这 6 页', () => {
+  /**
+   * 标签数**固定为三**。
+   *
+   * 反向盯的是"新玩法来了就加一张标签"：双色球是活动行上的 `draw_mode`，
+   * 属于抽奖那张标签里的一类活动，不占导航位。标签数随后台配置浮动的话，
+   * 用户每次进来看到的标签栏都不一样，而侧栏那一行的语义也就没法固定。
+   */
+  test('抽奖选择夹恰好三张标签', () => {
+    const group = QY_TAB_GROUPS.find((item) => item.host === '/qy/lottery')
+    assert.equal(group?.pages.length, 3)
+  })
+
+  test('被收进选择夹的正好是这 8 页', () => {
     assert.deepEqual(
       QY_PAGES.filter((page) => isQyPageHosted(page.url))
         .map((page) => page.url)
@@ -324,6 +343,36 @@ describe('qy 选择夹（需求 2 / 3）', () => {
     )
     assert.equal(qyTabHash('/qy/transfer-logs'), 'qy-transfer-logs')
     assert.equal(qyTabHash('/wallet'), 'wallet')
+  })
+})
+
+describe('qy page table routes', () => {
+  /**
+   * 每个登记的 url 都必须有一个真实的路由文件。
+   *
+   * 这条守卫此前不存在，代价是 `/qy/lottery-guess` 登记进了 `QY_PAGES` 与
+   * LAB MEMO 编号表、却没有对应的路由 —— 站内不会产生死链（选择夹成员会被
+   * `qyEntryPages` 从侧栏滤掉，站内跳转一律走 `qyTabTarget`），所以任何测试
+   * 都不会红；只有从工单/聊天里拿到手敲地址的用户会撞上 404，而 LAB MEMO
+   * 给它分配的编号永远渲染不出来。
+   *
+   * 判据是"文件存在"而不是"routeTree 里有"：routeTree.gen.ts 是构建产物，
+   * 拿它当判据会让这条守卫依赖某次构建有没有跑过。
+   */
+  test('每个登记的 url 都有对应的路由文件', () => {
+    const routesDir = join(srcDir, 'routes', '_authenticated')
+    const missing = QY_PAGES.map((page) => page.url).filter((url) => {
+      const rel = url.replace(/^\//, '')
+      return (
+        !existsSync(join(routesDir, `${rel}.tsx`)) &&
+        !existsSync(join(routesDir, rel, 'index.tsx'))
+      )
+    })
+    assert.deepEqual(
+      missing,
+      [],
+      `以下 url 登记在 QY_PAGES 里但没有路由文件，手敲地址会 404：\n${missing.join('\n')}`
+    )
   })
 })
 

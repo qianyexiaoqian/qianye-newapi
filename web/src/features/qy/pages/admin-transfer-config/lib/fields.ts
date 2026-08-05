@@ -34,8 +34,13 @@ export type QyTransferFieldMeta = {
   labelKey: string
   hintKey: string
   /**
-   * 单位，只影响输入框右侧的后缀与数值的呈现方式。
-   * `quota` 站内额度；`bps` 万分比；其余是纯计数/时长。
+   * 单位，决定输入框右侧的后缀与录入口径。
+   *
+   * `quota` 是金额字段：**界面按 USD 录入与显示**，存储不变（仍是额度整数），
+   * 换算在 `lib/quota-usd.ts` 里做，整数运算、往返无损。运营要填「最小划转
+   * 1 美元」就写 1，不必去数 500000 有几个零。
+   *
+   * `bps` 万分比；其余是纯计数/时长，不是钱，不换算。
    */
   unit: 'bps' | 'count' | 'hours' | 'minutes' | 'quota' | 'seconds'
   /**
@@ -114,25 +119,6 @@ export const QY_TRANSFER_FIELDS: Record<string, QyTransferFieldMeta> = {
 
 export function qyTransferFieldMeta(key: string): QyTransferFieldMeta | null {
   return QY_TRANSFER_FIELDS[key] ?? null
-}
-
-/**
- * 校验一个整数输入是否落在给定闭区间内。
- *
- * `bound` 为 `null`（接口没下发这个键的区间）时只要求「是个非负整数」：
- * 编不出区间就放行到后端，让后端那份权威校验去拒绝，而不是在前端凭空
- * 造一个上界 —— 那正是「第 N 份拷贝各自漂移」的起点。
- */
-export function qyIsValidSettingValue(
-  raw: string,
-  bound: { min: number; max: number } | null
-): boolean {
-  const s = raw.trim()
-  if (!/^\d+$/.test(s)) return false
-  const value = Number(s)
-  if (!Number.isSafeInteger(value)) return false
-  if (bound == null) return true
-  return value >= bound.min && value <= bound.max
 }
 
 /** 万分比转百分比字符串，用于 `fee_bps` 的旁注（500 → "5"）。 */

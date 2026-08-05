@@ -25,6 +25,7 @@ import type {
   DeletePlanResult,
   SetPlanSeatLimitResult,
   PlanRecord,
+  PlanHoldersResult,
   PlanPayload,
   PlanUsage,
   PlansUsageResult,
@@ -111,6 +112,28 @@ export function getPlanUsage(planId: number): Promise<PlanUsage> {
  */
 export function getPlansUsage(): Promise<PlansUsageResult> {
   return qyGet<PlansUsageResult>('/admin/subscription/plans-usage')
+}
+
+/**
+ * 「当前人数」那个数字的下钻：具体是哪些人。
+ *
+ * 服务端分页（`p` / `page_size`，与扩展其余列表同一套参数名）。一个热门套餐
+ * 可能有几百上千人，一次全量返回既拖慢管理端，也等于把一整份用户名清单塞进
+ * 一个响应里。
+ *
+ * 返回的 `total` 与 {@link getPlansUsage} 那一列的 `used_seats` 是**同一个数**：
+ * 后端两侧共用一个 WHERE，并且在同一次请求里只取一次时钟。前端因此可以放心地
+ * 把这个 total 当作"点开之前看到的那个数字"来显示。
+ */
+export function getPlanHolders(
+  planId: number,
+  page: number,
+  pageSize: number
+): Promise<PlanHoldersResult> {
+  return qyGet<PlanHoldersResult>(`${QY_ADMIN_PLAN_PATH}/${planId}/holders`, {
+    p: page,
+    page_size: pageSize,
+  })
 }
 
 export function setPlanSeatLimit(

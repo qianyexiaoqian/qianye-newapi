@@ -58,6 +58,9 @@ type proofEntry struct {
 	// OrderNo 让非 success 的条目可以被交叉复核:链刻意不含 status,
 	// "这一条到底成没成"由资金单与用户自己的额度流水佐证。
 	OrderNo string `json:"order_no"`
+	// Pick 是双色球的选号。它进 lot-v2 的链与名单原像,因此**必须**下发 ——
+	// 少了它验证者连 chain_hash 都推不出来。
+	Pick string `json:"pick,omitempty"`
 }
 
 type proofWinner struct {
@@ -66,6 +69,16 @@ type proofWinner struct {
 	EntryNo string `json:"entry_no"`
 	UserRef string `json:"user_ref"`
 	Amount  int64  `json:"amount"`
+
+	// PrizeType 让验证者能把两条派奖腿分开复算:quota 档比金额,
+	// text 档只比"这一位中了哪一档"。少了它,一场混合奖档的活动会被算成
+	// "有一堆 0 元中奖者",而那与真正的漏发在验证结果上无法区分。
+	PrizeType string `json:"prize_type,omitempty"`
+	// Fulfilled 只说"管理员标记履行了没有",**绝不下发任何内容,连哈希都不下发**。
+	//
+	// proof 是匿名可访问的;兑换码的熵不高,公开一个可复现原像的哈希等于给了
+	// 离线爆破面。这一层能公开的只有"有没有这件事",不是"这件事是什么"。
+	Fulfilled bool `json:"fulfilled,omitempty"`
 }
 
 type proofPayout struct {
@@ -83,6 +96,18 @@ type proofSpecItem struct {
 	OptNo       int    `json:"opt_no,omitempty"`
 	Label       string `json:"label,omitempty"`
 	IsCatchAll  bool   `json:"is_catch_all,omitempty"`
+
+	// ── lot-v2 追加的奖档分量,全部进 spec 原像 ──
+	//
+	// 少下发任何一个,验证者就算不出 spec_hash,而 spec_hash 又进 commit_hash ——
+	// 于是整份证据链从第一步就验不了。omitempty 只影响 JSON 体积:
+	// 验证脚本对缺失键取零值,与原像里的零值编码完全一致。
+	PrizeType    string `json:"prize_type,omitempty"`
+	WinPpm       int    `json:"win_ppm,omitempty"`
+	TextDesc     string `json:"text_desc,omitempty"`
+	RedMatch     int    `json:"red_match,omitempty"`
+	BlueMatch    int    `json:"blue_match,omitempty"`
+	PoolShareBps int    `json:"pool_share_bps,omitempty"`
 }
 
 type proofDocument struct {
@@ -107,7 +132,30 @@ type proofDocument struct {
 	FeeBps           int             `json:"fee_bps"`
 	NoWinnerPolicy   string          `json:"no_winner_policy"`
 	MinEntriesToHold int             `json:"min_entries_to_hold"`
-	CommitHash       string          `json:"commit_hash"`
+
+	// ── lot-v2 追加的承诺分量 ──
+	//
+	// 非 ball 活动这些位恒为空串/0,但它们**逐个进原像**,因此必须原样下发:
+	// 少一个占位,验证者就无法区分"一场普通抽奖"与"一场被改成双色球的抽奖"。
+	DrawMode       string `json:"draw_mode"`
+	SeriesNo       string `json:"series_no"`
+	IssueNo        int    `json:"issue_no"`
+	PoolSeedQuota  int64  `json:"pool_seed_quota"`
+	PoolCarryQuota int64  `json:"pool_carry_quota"`
+	// PoolOpenQuota 是**开局基数**(注资 + 滚存),进承诺。
+	// 本期真正可派发的池子 = pool_open_quota + floor(pool_quota × pool_share_bps / 10000),
+	// 验证脚本按这个式子自己算,平台无法在这里报一个更大的数。
+	PoolOpenQuota int64 `json:"pool_open_quota"`
+	PoolShareBps  int   `json:"pool_share_bps"`
+	BallRedPool   int   `json:"ball_red_pool"`
+	BallRedPick   int   `json:"ball_red_pick"`
+	BallBluePool  int   `json:"ball_blue_pool"`
+	BallBluePick  int   `json:"ball_blue_pick"`
+	// BallResult 是平台公布的开奖号。它**不进承诺**,而是被验证脚本从种子重新
+	// 摇一遍再比对 —— 这正是"界面上那七颗球是产生结果的原因"这条主张的检验点。
+	BallResult string `json:"ball_result"`
+
+	CommitHash string `json:"commit_hash"`
 	// Seed 在揭示之前是空串。空串不是"没有种子",是"还不该给你" ——
 	// 验证脚本据此知道现在只能验到第 3 步(名单已冻结),验不了第 5 步(名单)。
 	Seed string `json:"seed"`
@@ -147,7 +195,21 @@ type proofDocument struct {
 
 const proofNotice = "commit-reveal 保证的是「篡改会被不可抵赖地检出」,不是「物理不可篡改」。" +
 	"请把你在开奖前抓到的 roster_hash、以及你自己报名时收到的 chain_hash," +
-	"与本文件中的对应值逐一核对。"
+	"与本文件中的对应值逐一核对。" +
+	"概率制(draw_mode=prob):每张票的摇号结果只依赖 final_seed、act_no 与自己的 entry_no," +
+	"落选者与中奖者用的是同一组公开输入、走的是同一段复算 —— " +
+	"「我为什么没中」因此是可以自己算出来的,而不是平台的一面之词。" +
+	"摇号量取票面前 64 位缩放到 [0,1000000),相对偏差小于 2^-44,这一点不掩饰。" +
+	"文本奖:奖品的名称、公开说明与份数在发布时就已进入承诺哈希、事后不可更改;" +
+	"但中奖者收到的那串**具体内容**是开奖之后由管理员填入的,**它没有任何承诺**," +
+	"因为在承诺那一刻它还不存在。本文件因此只公布 fulfilled 这个布尔," +
+	"不公布内容、也不公布内容的哈希。" +
+	"双色球(draw_mode=ball):开奖号**不进承诺**,它由公开的种子摇出来 —— " +
+	"请自己按 ball_red_pool / ball_red_pick 重摇一遍再与 ball_result 比对," +
+	"这一步才是「界面上那几颗球是产生结果的原因、而不是事后编的动画」的检验点。" +
+	"本期可派发的池子 = pool_open_quota + floor(pool_quota × pool_share_bps / 10000)," +
+	"其中 pool_open_quota(本期注资 + 上期滚存)在发布时就已进承诺、事后不可改;" +
+	"没有派出去的部分滚进下一期,而系列一旦被关闭,滚存余额作废。"
 
 // handleGetProof 返回一场活动的完整证据链。**匿名可访问。**
 func handleGetProof(c *gin.Context) {
@@ -209,6 +271,13 @@ func buildProof(ctx context.Context, gdb *gorm.DB, act *Activity, c *gin.Context
 		SettleDeadline: act.SettleDeadline,
 		AllowMultiWin:  act.AllowMultiWin, FeeBps: act.FeeBps,
 		NoWinnerPolicy: NoWinnerPolicy, MinEntriesToHold: act.MinEntriesToHold,
+		DrawMode: act.DrawMode,
+		SeriesNo: act.SeriesNo, IssueNo: act.IssueNo,
+		PoolSeedQuota: act.PoolSeedQuota, PoolCarryQuota: act.PoolCarryQuota,
+		PoolOpenQuota: act.PoolOpenQuota, PoolShareBps: act.PoolShareBps,
+		BallRedPool: act.BallRedPool, BallRedPick: act.BallRedPick,
+		BallBluePool: act.BallBluePool, BallBluePick: act.BallBluePick,
+		BallResult: act.BallResult,
 		CommitHash: act.CommitHash,
 		ChainHead:  act.ChainHead, RosterHash: act.RosterHash, RosterCount: act.RosterCount,
 		PoolQuota: act.PoolQuota, ResultEvidence: act.ResultEvidence,
@@ -278,6 +347,7 @@ func toProofEntry(e Entry) proofEntry {
 		Seq: e.Seq, EntryNo: e.EntryNo, UserRef: e.UserRef, OptNo: e.OptNo,
 		Amount: e.Amount, Status: e.Status,
 		PrevHash: e.PrevHash, ChainHash: e.ChainHash, OrderNo: e.OrderNo,
+		Pick: e.Pick,
 	}
 }
 
@@ -292,6 +362,8 @@ func fillProofSpec(ctx context.Context, gdb *gorm.DB, act *Activity, doc *proofD
 		for _, p := range prizes {
 			doc.Spec = append(doc.Spec, proofSpecItem{
 				Tier: p.Tier, Name: p.Name, AmountQuota: p.AmountQuota, Count: p.Count,
+				PrizeType: p.Type(), WinPpm: p.WinPpm, TextDesc: p.TextDesc,
+				RedMatch: p.RedMatch, BlueMatch: p.BlueMatch, PoolShareBps: p.PoolShareBps,
 			})
 		}
 		return nil
@@ -350,10 +422,18 @@ func fillProofOutcome(ctx context.Context, gdb *gorm.DB, act *Activity, doc *pro
 		doc.Payouts = append(doc.Payouts, proofPayout{
 			EntryNo: e.EntryNo, Kind: p.Kind, Amount: p.AmountQuota, Status: p.Status,
 		})
-		if p.Kind == PayoutPrize {
+		// 文本奖同样是中奖位,必须进 winners —— 否则一场混合奖档活动的
+		// 复算名单会比公布的名单多出几位,验证脚本报 FAIL,而真实情况是
+		// 平台完全诚实。它的 amount 恒为 0,prize_type 告诉验证者别去比金额。
+		if p.Kind == PayoutPrize || p.Kind == PayoutText {
+			prizeType := PrizeTypeQuota
+			if p.Kind == PayoutText {
+				prizeType = PrizeTypeText
+			}
 			doc.Winners = append(doc.Winners, proofWinner{
 				Pos: p.DrawPos, Tier: p.Tier, EntryNo: e.EntryNo,
 				UserRef: e.UserRef, Amount: p.AmountQuota,
+				PrizeType: prizeType, Fulfilled: p.FulfilledAt > 0,
 			})
 		}
 	}

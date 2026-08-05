@@ -33,6 +33,7 @@ import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyPayPasswordField } from '../../../components/qy-pay-password-field'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { isQyError, qyErrorMessage } from '../../../lib/api'
+import { qyTabTarget } from '../../../lib/pages'
 import { qyKeys } from '../../../lib/query-keys'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
 import { submitQyLotEntry } from '../api'
@@ -149,10 +150,15 @@ export function QyLotEntryDialog(props: {
           </>
         ) : (
           <>
+            {/*
+              走 qyTabTarget 而不是裸 `to='/qy/lottery-records'`：后者会先卸载整个
+              /qy/lottery 宿主页去加载旧路由，再被 beforeLoad 弹回来 —— 表现是一次
+              白闪加三张标签的查询全部重发，而目标只是切到隔壁那张标签。
+            */}
             <Button
               type='button'
               variant='outline'
-              render={<Link to='/qy/lottery-records' />}
+              render={<Link {...qyTabTarget('/qy/lottery-records')} />}
             >
               {t('qy_nav_lottery_records')}
             </Button>

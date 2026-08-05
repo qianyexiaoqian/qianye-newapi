@@ -194,6 +194,7 @@ func applyDefaults(c *Config) {
 	intDefault(&gm.MaxPreviewPairs, 500)
 	intDefault(&gm.PreviewSampleLimit, 20)
 	intDefault(&gm.MaxGrants, 2000)
+	intDefault(&gm.NewGroupScanIntervalSeconds, 60)
 
 	lt := &c.Lottery
 	intDefault(&lt.MaxActiveActivities, 20)

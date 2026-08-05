@@ -52,12 +52,27 @@ type specItem struct {
 	AmountQuota int64  `json:"amount_quota,omitempty"`
 	Count       int    `json:"count,omitempty"`
 
+	// PrizeType / WinPpm / TextDesc 是概率制与文本奖要展示给用户的三件事:
+	// 这一档发什么、中的概率是多少、拿到之后怎么兑现。
+	//
+	// **参与之前就必须看得到**,而不是开奖之后才被告知规则 —— 概率是这套设计
+	// 唯一向用户承诺的数字,把它藏起来等于没有承诺。
+	PrizeType string `json:"prize_type,omitempty"`
+	WinPpm    int    `json:"win_ppm,omitempty"`
+	TextDesc  string `json:"text_desc,omitempty"`
+
 	OptNo      int    `json:"opt_no,omitempty"`
 	Label      string `json:"label,omitempty"`
 	IsCatchAll bool   `json:"is_catch_all,omitempty"`
 	BetQuota   int64  `json:"bet_quota,omitempty"`
 	BetCount   int    `json:"bet_count,omitempty"`
 	IsWinner   bool   `json:"is_winner,omitempty"`
+
+	// 双色球奖级:命中门槛与占池比例。前端按红蓝池大小与这两个门槛用组合数
+	// 自己算中奖概率 —— 后端**不下发**任何概率数字。
+	RedMatch     int `json:"red_match,omitempty"`
+	BlueMatch    int `json:"blue_match,omitempty"`
+	PoolShareBps int `json:"pool_share_bps,omitempty"`
 }
 
 type activityDetail struct {
@@ -90,6 +105,25 @@ type activityDetail struct {
 	MinEntriesToHold int   `json:"min_entries_to_hold"`
 	ActiveCount      int   `json:"active_count"`
 	PoolQuota        int64 `json:"pool_quota"`
+
+	// ── 定档方式与双色球期次 ──
+	//
+	// 号池下发的是**四个数**,不是各档中奖概率:概率是组合数的结果,前端自己算
+	// 就行。后端下发一个数字等于把双色球唯一的优势(概率不需要相信平台)丢掉。
+	DrawMode string `json:"draw_mode"`
+	SeriesNo string `json:"series_no"`
+	IssueNo  int    `json:"issue_no"`
+	// PoolOpenQuota 是本期此刻可派发的池子(开局基数 + 已投注的入池部分),
+	// 会随投注实时变大。
+	PoolOpenQuota  int64  `json:"pool_open_quota"`
+	PoolSeedQuota  int64  `json:"pool_seed_quota"`
+	PoolCarryQuota int64  `json:"pool_carry_quota"`
+	PoolShareBps   int    `json:"pool_share_bps"`
+	BallRedPool    int    `json:"ball_red_pool"`
+	BallRedPick    int    `json:"ball_red_pick"`
+	BallBluePool   int    `json:"ball_blue_pool"`
+	BallBluePick   int    `json:"ball_blue_pick"`
+	BallResult     string `json:"ball_result"`
 
 	// 频次与去重闸门。它们同样进了 rules_hash,这里单独下发只是为了让详情页
 	// 不必解析 rules_text 就能把"每人几次、要不要等、同 IP 算不算一个人"
@@ -216,6 +250,18 @@ func handleGetActivity(c *gin.Context) {
 		CooldownSeconds:     act.CooldownSeconds,
 		DedupIp:             act.DedupIp,
 		ResultEvidence:      act.ResultEvidence,
+		DrawMode:            act.DrawMode,
+		SeriesNo:            act.SeriesNo,
+		IssueNo:             act.IssueNo,
+		PoolOpenQuota:       ballPoolOpen(act),
+		PoolSeedQuota:       act.PoolSeedQuota,
+		PoolCarryQuota:      act.PoolCarryQuota,
+		PoolShareBps:        act.PoolShareBps,
+		BallRedPool:         act.BallRedPool,
+		BallRedPick:         act.BallRedPick,
+		BallBluePool:        act.BallBluePool,
+		BallBluePick:        act.BallBluePick,
+		BallResult:          act.BallResult,
 		Spec:                make([]specItem, 0, 8),
 		PayPasswordRequired: PayPasswordRequired(act.StakeQuota),
 
@@ -233,6 +279,8 @@ func handleGetActivity(c *gin.Context) {
 		for _, p := range prizes {
 			detail.Spec = append(detail.Spec, specItem{
 				Tier: p.Tier, Name: p.Name, AmountQuota: p.AmountQuota, Count: p.Count,
+				PrizeType: p.Type(), WinPpm: p.WinPpm, TextDesc: p.TextDesc,
+				RedMatch: p.RedMatch, BlueMatch: p.BlueMatch, PoolShareBps: p.PoolShareBps,
 			})
 		}
 	} else {
@@ -406,6 +454,13 @@ type wonView struct {
 	Tier   int    `json:"tier"`
 	Amount int64  `json:"amount"`
 	Status string `json:"status"`
+	// PayoutNo 只在文本奖上下发。它是"我的参与"跳去看奖品内容的唯一入口 ——
+	// 内容本身走 /lottery/my/prizes/:payout_no 逐条拉,**不在列表里返回**:
+	// 一个列表接口返回全部正文,意味着一次越权 bug 就是全量泄漏。
+	PayoutNo string `json:"payout_no,omitempty"`
+	// Fulfilled 让列表能直接显示"待管理员履行 / 可查看",
+	// 而不必为每一行各打一次详情接口。
+	Fulfilled bool `json:"fulfilled,omitempty"`
 }
 
 type myEntryView struct {
@@ -494,6 +549,9 @@ func handleListMyEntries(c *gin.Context) {
 		}
 		if p, ok := payouts[e.Id]; ok {
 			v.Won = &wonView{Kind: p.Kind, Tier: p.Tier, Amount: p.AmountQuota, Status: p.Status}
+			if p.Kind == PayoutText {
+				v.Won.PayoutNo, v.Won.Fulfilled = p.PayoutNo, p.FulfilledAt > 0
+			}
 		}
 		items = append(items, v)
 	}

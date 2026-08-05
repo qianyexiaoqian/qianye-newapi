@@ -37,6 +37,7 @@ import {
   qyGmSaveMatrix,
   qyGmSaveScope,
 } from './api'
+import { QyGmAxisLegend } from './components/axis-legend'
 import { QyGmDiffBar } from './components/diff-bar'
 import { QyGmMatrixGrid, type QyGmColumnBulk } from './components/matrix-grid'
 import { QyGmOrphansPanel } from './components/orphans-panel'
@@ -161,6 +162,30 @@ export function QyAdminGroupMatrix() {
       })
       .map((row) => row.name)
   }, [data, draft, serverCells])
+
+  /**
+   * 被「新分组默认全遮断」自动接管、且到现在一个模型分组都没配的用户分组。
+   *
+   * 判据用**服务端下发的** `pending_setup` 而不是本地草稿：草稿里勾了几个格子
+   * 但还没保存时，线上那一档的人仍然一个模型分组都选不了。跟着草稿走会让提示在
+   * 保存之前就消失，而那正是最需要它提醒"你还没按保存"的时刻。
+   */
+  const pendingSetupGroups = useMemo(
+    () =>
+      (data?.user_groups ?? [])
+        .filter((row) => row.pending_setup)
+        .map((row) => row.name),
+    [data?.user_groups]
+  )
+  // 「开关开着、发现过、却刻意没遮断」的行。理由一起带上：只给名字的话，
+  // 「已经有 3 个用户在用」与「那一轮冒出 5 个分组」要求的动作并不相同。
+  const policySkippedGroups = useMemo(
+    () =>
+      (data?.user_groups ?? [])
+        .filter((row) => row.policy_skipped)
+        .map((row) => ({ name: row.name, reason: row.policy_skipped_reason })),
+    [data?.user_groups]
+  )
 
   const previewMatchesDraft =
     previewedFingerprint != null && previewedFingerprint === fingerprint
@@ -373,6 +398,14 @@ export function QyAdminGroupMatrix() {
                 {t('qy_group_matrix_desc')}
               </p>
 
+              {/*
+                两个轴的图例 + 「新分组默认全遮断」的常驻状态。
+
+                放在横幅**之前**：横幅回答「下面这张表现在算不算数」，而图例回答
+                「这张表的行和列分别是什么」。看不懂轴的人，读横幅也没用。
+              */}
+              <QyGmAxisLegend newGroupPolicy={data.new_group_policy} />
+
               <QyGmStatusBanners
                 snapshot={data.snapshot}
                 partial={partial}
@@ -381,6 +414,8 @@ export function QyAdminGroupMatrix() {
                 caseNearMiss={caseNearMiss}
                 warnings={data.warnings}
                 shadowWriteDenies={data.shadow_write_denies}
+                pendingSetupGroups={pendingSetupGroups}
+                policySkippedGroups={policySkippedGroups}
                 onReload={() => {
                   setDraft(new Map())
                   setPreview(null)

@@ -28,7 +28,6 @@ import {
   ScrollText,
   ShieldAlert,
   Ticket,
-  TicketCheck,
   TriangleAlert,
 } from 'lucide-react'
 import type { ElementType } from 'react'
@@ -169,6 +168,15 @@ export const QY_TAB_GROUPS: readonly QyTabGroupDef[] = [
     host: '/qy/affiliate',
     titleKey: 'qy_nav_commission_hub',
     pages: ['/qy/affiliate', '/qy/invitees', '/qy/withdraw', '/qy/withdrawals'],
+  },
+  {
+    // 需求 2（抽奖轮）原话：「抽奖竞猜和我的参与放到一个页面，不要单独写一个
+    // 菜单」。三张标签逐字对应那句话，**标签数固定为三**：后续新增玩法
+    // （双色球）走活动行上的 `draw_mode` 而不是新标签，导航维度不随数据维度
+    // 增长 —— 一个会随配置变多变少的标签栏，用户每次进来看到的东西都不一样。
+    host: '/qy/lottery',
+    titleKey: 'qy_nav_lottery_hub',
+    pages: ['/qy/lottery', '/qy/lottery-guess', '/qy/lottery-records'],
   },
 ]
 
@@ -356,9 +364,13 @@ export const QY_PAGES: readonly QyPageDef[] = [
     icon: ShieldAlert,
     jpKey: 'qy_sg_jp_violations',
   },
-  // 抽奖/竞猜落在「推广」组：它和邀请返佣一样是拉新与促活的手段，用户的心智
-  // 也在同一处（"平台给我的东西在哪"）。两行都挂 `entry: 'lottery'`——
-  // 站点在系统设置里关掉展示时，这两行整体消失，而不是留下点进去空空如也的页面。
+  // 抽奖落在「推广」组：它和邀请返佣一样是拉新与促活的手段，用户的心智
+  // 也在同一处（"平台给我的东西在哪"）。三行都挂 `entry: 'lottery'`——
+  // 站点在系统设置里关掉展示时，整组消失，而不是留下点进去空空如也的页面。
+  //
+  // 侧栏上只剩**一行**（组名「抽奖竞猜」= QY_TAB_GROUPS.titleKey），后两行
+  // 是选择夹成员：它们不写 group / icon，否则侧栏会多出两行点了就被重定向
+  // 甩走的入口（`pages-table.test.ts` 双向断言）。
   {
     url: '/qy/lottery',
     titleKey: 'qy_nav_lottery',
@@ -369,12 +381,20 @@ export const QY_PAGES: readonly QyPageDef[] = [
     jpKey: 'qy_sg_jp_lottery',
   },
   {
+    // 竞猜从大厅的一个筛选值升成一张独立标签：它与抽奖的**资金语义不同**
+    // （竞猜可能亏本金、抽奖只是参与费不退），混在同一个列表里靠一个下拉框
+    // 区分，用户按上一次的预期下注就会亏。
+    url: '/qy/lottery-guess',
+    titleKey: 'qy_nav_lottery_guess',
+    feature: 'lottery',
+    entry: 'lottery',
+    jpKey: 'qy_sg_jp_lottery_guess',
+  },
+  {
     url: '/qy/lottery-records',
     titleKey: 'qy_nav_lottery_records',
     feature: 'lottery',
     entry: 'lottery',
-    group: 'qy-growth',
-    icon: TicketCheck,
     jpKey: 'qy_sg_jp_lottery_records',
   },
 

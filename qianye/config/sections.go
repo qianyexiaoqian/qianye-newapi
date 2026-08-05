@@ -170,6 +170,11 @@ var moduleGates = []ModuleGate{
 				Key: "write_guard_enabled", DefaultOn: true,
 				Effect: "令牌写入侧不再校验分组可选性。*bool 且默认打开,不写不会静默失效",
 			},
+			{
+				Key: "new_group_default_deny", DefaultOn: true,
+				Effect: "新出现的用户分组不再被自动全遮断,与上游行为一致。*bool 且默认打开," +
+					"不写不会静默失效 —— 但它默认打开的方向是**收紧**,所以矩阵页常驻提示它当前的状态",
+			},
 		},
 	},
 	{
@@ -200,6 +205,8 @@ var moduleGates = []ModuleGate{
 	// 这四个模块只有自己的表与路由(或一个未配置时原样返回入参的 hook),
 	// 不存在"配置里少一段就静默失效"的形态,因此不需要开关,也就不需要告警。
 	{Module: "apiaddr", Effect: "API 地址簿:只有自己的表与只读路由,无 hook、无后台任务"},
+	{Module: "channelops", Effect: "渠道批量操作:没有自己的表、没有 hook,只有三个管理端路由;" +
+		"关掉扩展总开关时渠道列表页回落到上游自带的批量按钮,不会缺功能"},
 	{Module: "paypass", Effect: "支付密码:只有自己的表与路由,启用与否由用户是否设置密码决定"},
 	{Module: "subscription", Effect: "订阅名额闸门:未配置名额时 hook 原样返回入参,不需要开关"},
 	{Module: "usergroup", Effect: "新用户默认分组:未配置时 hook 原样返回入参,与上游行为逐字一致"},
