@@ -23,6 +23,69 @@ var channelsIDM map[int]*Channel                     // all channels include dis
 var channel2advancedCustomConfig map[int]*dto.AdvancedCustomConfig
 var channelSyncLock sync.RWMutex
 
+// buildGroup2Model2Channels compiles the in-memory routing index
+// group -> model -> []channelId from the channel rows, seeding the outer map
+// with the group names observed in abilities.
+//
+// 抽成函数只为一件事:让「enabled 渠道的分组在 abilities 里没有对应行」这个
+// 状态可以被单元测试直接构造出来。在此之前它是 InitChannelCache 中间的一段,
+// 只能靠一个装了数据库的进程去撞 —— 而撞上的表现是 panic,不是断言失败。
+//
+// ── 外层键必须在写内层 map 之前补建(这条修复的是一个会杀掉整个进程的缺陷)──
+//
+// 原实现的外层 map 键**只从 abilities 建**,却对每一个 enabled 渠道的
+// channels.group 去写内层 map。两者背离时内层 map 是 nil,
+// `newGroup2model2channels[group][model] = ...` 就是 assignment to entry in
+// nil map → panic。而 InitChannelCache 跑在 main.go 的
+// `go model.SyncChannelCache(SyncFrequency)` 里、函数内没有 recover,
+// **后台 goroutine 的未捕获 panic 会带走整个进程**,不是一次 503。
+//
+// 两个真实可达窗口:
+//   - FixAbility(model/ability.go)先 TRUNCATE 整张 abilities 再分批重建,
+//     且不在事务里;这期间任何一次周期同步(默认 60s)都会撞上"abilities 为空、
+//     channels 里全是 enabled 渠道"。
+//   - UpdateChannel 先提交 channels.group 的新值,之后才单独调 UpdateAbilities;
+//     两步之间同步触发即命中。
+//
+// 补建外层键是**零行为变化**的修复:补的是一个本来就应该存在的分组键
+// (那个分组确实有 enabled 渠道,只是 abilities 一时没跟上),
+// 补上之后该分组照常可路由,补不上就是进程死亡。
+func buildGroup2Model2Channels(channels []*Channel, abilities []*Ability, id2channel map[int]*Channel) map[string]map[string][]int {
+	index := make(map[string]map[string][]int)
+	for _, ability := range abilities {
+		if _, ok := index[ability.Group]; !ok {
+			index[ability.Group] = make(map[string][]int)
+		}
+	}
+	for _, channel := range channels {
+		if channel.Status != common.ChannelStatusEnabled {
+			continue // skip disabled channels
+		}
+		for _, group := range strings.Split(channel.Group, ",") {
+			if index[group] == nil {
+				index[group] = make(map[string][]int)
+			}
+			for _, modelName := range strings.Split(channel.Models, ",") {
+				if _, ok := index[group][modelName]; !ok {
+					index[group][modelName] = make([]int, 0)
+				}
+				index[group][modelName] = append(index[group][modelName], channel.Id)
+			}
+		}
+	}
+
+	// sort by priority
+	for group, model2channels := range index {
+		for modelName, ids := range model2channels {
+			sort.Slice(ids, func(i, j int) bool {
+				return id2channel[ids[i]].GetPriority() > id2channel[ids[j]].GetPriority()
+			})
+			index[group][modelName] = ids
+		}
+	}
+	return index
+}
+
 func InitChannelCache() {
 	if !common.MemoryCacheEnabled {
 		InvalidatePricingCache()
@@ -42,39 +105,7 @@ func InitChannelCache() {
 	}
 	var abilities []*Ability
 	DB.Find(&abilities)
-	groups := make(map[string]bool)
-	for _, ability := range abilities {
-		groups[ability.Group] = true
-	}
-	newGroup2model2channels := make(map[string]map[string][]int)
-	for group := range groups {
-		newGroup2model2channels[group] = make(map[string][]int)
-	}
-	for _, channel := range channels {
-		if channel.Status != common.ChannelStatusEnabled {
-			continue // skip disabled channels
-		}
-		groups := strings.Split(channel.Group, ",")
-		for _, group := range groups {
-			models := strings.Split(channel.Models, ",")
-			for _, model := range models {
-				if _, ok := newGroup2model2channels[group][model]; !ok {
-					newGroup2model2channels[group][model] = make([]int, 0)
-				}
-				newGroup2model2channels[group][model] = append(newGroup2model2channels[group][model], channel.Id)
-			}
-		}
-	}
-
-	// sort by priority
-	for group, model2channels := range newGroup2model2channels {
-		for model, channels := range model2channels {
-			sort.Slice(channels, func(i, j int) bool {
-				return newChannelId2channel[channels[i]].GetPriority() > newChannelId2channel[channels[j]].GetPriority()
-			})
-			newGroup2model2channels[group][model] = channels
-		}
-	}
+	newGroup2model2channels := buildGroup2Model2Channels(channels, abilities, newChannelId2channel)
 
 	channelSyncLock.Lock()
 	group2model2channels = newGroup2model2channels

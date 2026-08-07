@@ -17,12 +17,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import {
+  isQyLotBallPoolValid,
+  qyLotBallUnreachableTiers,
+  type QyLotBallPool,
+} from '../../lottery/lib/ball'
+import {
   QY_LOT_EMPTY_RULES,
+  type QyLotDrawMode,
   type QyLotKind,
   type QyLotRules,
   type QyLotTier,
 } from '../../lottery/types'
-import type { QyLotCreateInput, QyLotYamlReadonly } from '../types'
+import type { QyLotCreateInput, QyLotSeries, QyLotYamlReadonly } from '../types'
 
 /**
  * 创建向导的草稿与校验。
@@ -62,6 +68,10 @@ export function qyLotNewOption(isCatchAll = false): QyLotOptionDraft {
 
 export type QyLotDraft = {
   kind: QyLotKind
+  /** 定档方式。只对 `kind='draw'` 有意义，竞猜恒走 `rank` 那一支。 */
+  draw_mode: QyLotDrawMode
+  /** 双色球所属的期次系列编号；其余玩法恒为空串。 */
+  series_no: string
   title: string
   intro: string
   stake_quota: number
@@ -94,6 +104,8 @@ export function qyLotEmptyDraft(defaultFeeBps: number): QyLotDraft {
   const hour = 3600
   return {
     kind: 'draw',
+    draw_mode: 'rank',
+    series_no: '',
     title: '',
     intro: '',
     stake_quota: 0,
@@ -110,7 +122,17 @@ export function qyLotEmptyDraft(defaultFeeBps: number): QyLotDraft {
     max_total_users: 0,
     cooldown_seconds: 0,
     dedup_ip: false,
-    tiers: [{ tier: 1, name: '', amount_quota: 0, count: 1 }],
+    tiers: [
+      {
+        tier: 1,
+        name: '',
+        amount_quota: 0,
+        count: 1,
+        red_match: 0,
+        blue_match: 0,
+        pool_share_bps: 0,
+      },
+    ],
     options: [qyLotNewOption(), qyLotNewOption(), qyLotNewOption(true)],
     rules: { ...QY_LOT_EMPTY_RULES },
   }
@@ -147,7 +169,9 @@ export function qyLotValidateDraft(
   draft: QyLotDraft,
   yaml: QyLotYamlReadonly | undefined,
   maxPrizeQuota: number,
-  maxFeeBps: number
+  maxFeeBps: number,
+  /** 双色球选中的那个系列（号池与入池比例都在它上面）。其余玩法传 undefined。 */
+  series?: QyLotSeries
 ): string[] {
   const errors: string[] = []
 
@@ -177,11 +201,16 @@ export function qyLotValidateDraft(
 
   if (draft.kind === 'draw') {
     const tiers = draft.tiers
+    const isBall = draft.draw_mode === 'ball'
     if (tiers.length === 0) errors.push('qy_lot_v_tier_required')
     if (tiers.some((tier) => tier.name.trim() === '')) {
       errors.push('qy_lot_v_tier_name')
     }
-    if (tiers.some((tier) => tier.amount_quota <= 0 || tier.count <= 0)) {
+    if (isBall) {
+      errors.push(...validateBallDraft(draft, yaml, series))
+    } else if (
+      tiers.some((tier) => tier.amount_quota <= 0 || tier.count <= 0)
+    ) {
       errors.push('qy_lot_v_tier_amount')
     }
     if (new Set(tiers.map((tier) => tier.tier)).size !== tiers.length) {
@@ -259,6 +288,111 @@ export function qyLotValidateDraft(
 }
 
 /**
+ * 双色球独有的那几条。
+ *
+ * 每一条在后端都有对应判定（`applyBallSpec` / `checkBallTierInput` /
+ * `checkBallTierReachability`），这里复现它们只是为了在创建按钮**之前**说清是
+ * 哪一档配错了 —— 后端只会回一句 400，而运营那时已经填完四步。
+ */
+function validateBallDraft(
+  draft: QyLotDraft,
+  yaml: QyLotYamlReadonly | undefined,
+  series: QyLotSeries | undefined
+): string[] {
+  const errors: string[] = []
+  if (draft.series_no === '' || series == null) {
+    errors.push('qy_lot_v_ball_series_required')
+    return errors
+  }
+  const pool: QyLotBallPool = {
+    redPool: series.red_pool,
+    redPick: series.red_pick,
+    bluePool: series.blue_pool,
+    bluePick: series.blue_pick,
+  }
+  if (!isQyLotBallPoolValid(pool)) {
+    errors.push('qy_lot_v_ball_pool_invalid')
+    return errors
+  }
+
+  // 本场理论上可能出现的最大有效票数。固定奖档的预算必须不小于它，否则超募时
+  // 会有中奖者被摊薄到 0 额度 —— 而派奖计划会跳过 amount<=0 的行，那是一次
+  // 静默漏发：用户真的中了，却什么都收不到，也没有任何报错。
+  const entriesCap =
+    draft.max_total_entries > 0
+      ? draft.max_total_entries
+      : (yaml?.max_total_entries_hard ?? 0)
+
+  let shareSum = 0
+  for (const tier of draft.tiers) {
+    const red = tier.red_match ?? 0
+    const blue = tier.blue_match ?? 0
+    if (red < 0 || red > pool.redPick || blue < 0 || blue > pool.bluePick) {
+      errors.push('qy_lot_v_ball_match_range')
+    }
+    // 一档"红 0 蓝 0"意味着全场每个人都中它，而且它会把后面所有奖级吃光。
+    if (red + blue <= 0) errors.push('qy_lot_v_ball_match_zero')
+
+    const share = tier.pool_share_bps ?? 0
+    if (share < 0 || share > 10_000) errors.push('qy_lot_v_ball_share_range')
+    shareSum += Math.max(0, share)
+    if (share > 0) {
+      // 浮动奖与固定奖互斥：一档同时写"每人 1000"和"占池 30%"时，到底按哪个发
+      // 只能靠代码里的先后顺序回答，而那是最坏的一种规则来源。
+      if (tier.amount_quota !== 0) errors.push('qy_lot_v_ball_share_amount')
+      continue
+    }
+    if (tier.amount_quota <= 0 || tier.count <= 0) {
+      errors.push('qy_lot_v_ball_fixed_amount')
+      continue
+    }
+    if (entriesCap > 0 && tier.amount_quota * tier.count < entriesCap) {
+      errors.push('qy_lot_v_ball_budget_short')
+    }
+  }
+  if (shareSum > 10_000) errors.push('qy_lot_v_ball_share_sum')
+  // 门槛不严于更低奖级的那一档永远开不出来：界面上明明写着五等奖，实际一个人
+  // 都不可能中，而这种错配在后端之外不会有任何报错。
+  if (qyLotBallUnreachableTiers(draft.tiers).length > 0) {
+    errors.push('qy_lot_v_ball_unreachable')
+  }
+
+  // ── 后端 `checkBallPoolCovers` 的第二次实现 ──────────────────────────
+  //
+  // 它此前**没有**被复现，于是四步全绿的草稿可以是一个永远发布不出去的活动：
+  // 创建成功 → 点发布 → claimSeriesPool 取走池子 → checkBallPoolCovers 判不够
+  // → errSeriesPoolShort → 整个事务回滚 → 活动永远停在草稿。复核屏把「系列当前
+  // 池子」「固定奖预算合计」「浮动奖占池合计」三个数并排摆着，却从不做那一次减法。
+  //
+  // `open` 用 `series.pool_quota`：发布期 `act.PoolOpenQuota = s.PoolQuota`
+  // 逐字如此（series.go:198），所以这不是估算，是同一个数。池子在创建与发布
+  // 之间可能被注资变大，所以这条判定是**保守**的一侧 —— 拦下来的补救办法就在
+  // 同一个页面上（系列面板的「注资」），比造出一个自己修不好的草稿好。
+  const open = series.pool_quota
+  let fixedSum = 0
+  for (const tier of draft.tiers) {
+    const share = tier.pool_share_bps ?? 0
+    if (share > 0) {
+      // 浮动奖的"人均至少 1 额度"下限。固定奖那一条在上面按 amount×count 判过，
+      // 浮动奖的预算要等取走池子才知道，所以后端把它放在发布期。
+      if (entriesCap > 0 && Math.floor((open * share) / 10_000) < entriesCap) {
+        errors.push('qy_lot_v_ball_pool_share_short')
+      }
+      continue
+    }
+    fixedSum += Math.max(0, tier.amount_quota) * Math.max(0, tier.count)
+  }
+  if (
+    fixedSum + Math.floor((open * Math.min(shareSum, 10_000)) / 10_000) >
+    open
+  ) {
+    errors.push('qy_lot_v_ball_pool_short')
+  }
+
+  return errors
+}
+
+/**
  * 草稿 → 创建请求体。`opt_no` 在这一刻按顺序编号（1 起，0 是抽奖的保留值）。
  *
  * ## 频次闸门在这里被合进 `rules`
@@ -271,8 +405,13 @@ export function qyLotValidateDraft(
  * 那时连"我确实配过"都举证不出来。
  */
 export function qyLotDraftToInput(draft: QyLotDraft): QyLotCreateInput {
+  const isBall = draft.kind === 'draw' && draft.draw_mode === 'ball'
   return {
     kind: draft.kind,
+    // 竞猜没有定档方式这回事，恒发 rank：后端 `normalizeDrawMode` 只在
+    // kind='draw' 那一支读它，但发一个 'ball' 过去会让请求体自相矛盾。
+    draw_mode: draft.kind === 'draw' ? draft.draw_mode : 'rank',
+    series_no: isBall ? draft.series_no : '',
     title: draft.title.trim(),
     intro: draft.intro,
     stake_quota: draft.stake_quota,

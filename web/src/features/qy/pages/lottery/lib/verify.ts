@@ -723,6 +723,122 @@ function step(
 }
 
 /**
+ * 复算双色球的开奖号与中奖档位，并与平台公布的那一份比对。
+ *
+ * ## 验得了什么
+ *
+ * 1. **开奖号**：`qyLotBallDraw(final_seed, act_no, 号池)` 是纯函数，号池四元组
+ *    进了 `commit_hash`，`final_seed` 由已揭示的种子推出 —— 所以平台公布的
+ *    `ball_result` 只要被改过一个数字，这里就会红。
+ * 2. **中奖名单的档位**：`MatchTier` 是 `(开奖号, 我的选号, 各档门槛)` 的纯函数，
+ *    而选号 `pick` 进了哈希链、门槛进了 `spec_hash`。于是"谁中了、中的第几档"
+ *    整份可复算，多一个人、少一个人、改一个人的档位都会红。
+ *
+ * ## 验不了什么（必须说出来，不能用绿勾盖过去）
+ *
+ * **金额**。浮动奖档是 `本期池子 × 占比 ÷ 同档人数`，而池子随投注变化、
+ * 同档人数只有开奖后才知道，两者都不在承诺原像里。所以这一步只比"谁中了哪一档"，
+ * detail 里明写 `amounts-not-checked`。
+ */
+async function verifyBallResult(
+  proof: QyLotProof,
+  roster: QyLotProofEntry[]
+): Promise<QyLotVerifyStep> {
+  const redPool = proof.ball_red_pool ?? 0
+  const bluePool = proof.ball_blue_pool ?? 0
+  if (redPool <= 0) {
+    // 号池是发布期硬校验过的，这里为 0 只可能是证据链本身残缺。
+    return step('result', 'fail', 'ball_red_pool=0')
+  }
+
+  const finalSeed = await qyLotFinalSeed(proof)
+  const drawnReds = await qyLotBallDraw(
+    finalSeed,
+    proof.act_no,
+    'red',
+    redPool,
+    proof.ball_red_pick ?? 0
+  )
+  const drawnBlues = await qyLotBallDraw(
+    finalSeed,
+    proof.act_no,
+    'blue',
+    bluePool,
+    proof.ball_blue_pick ?? 0
+  )
+
+  // 与后端 BallResultText / FormatPick 同一个规范化格式：两位补零、逗号分隔、
+  // 红蓝之间一个竖线。格式差一位就会被判成不一致，那正是我们要的严格度。
+  const recomputed = qyLotFormatPick(drawnReds, drawnBlues)
+  if (proof.ball_result !== recomputed) {
+    return step(
+      'result',
+      'fail',
+      `ball_result ${proof.ball_result ?? ''} != ${recomputed}`
+    )
+  }
+
+  // 档位复算：与后端 MatchTier 逐条对应 —— tier 升序、命中即停、一票只中一档。
+  const tiers = qyLotTiers(proof.spec)
+    .map((tier) => ({
+      tier: tier.tier,
+      red: tier.red_match ?? 0,
+      blue: tier.blue_match ?? 0,
+    }))
+    .sort((a, b) => a.tier - b.tier)
+
+  const expected: { entry_no: string; tier: number }[] = []
+  for (const entry of roster) {
+    let reds: number[] = []
+    let blues: number[] = []
+    try {
+      const parsed = qyLotParsePick(entry.pick ?? '')
+      reds = parsed.reds
+      blues = parsed.blues
+    } catch {
+      // 后端 splitPickLoose 解不开时按"未中奖"处理，这里必须同口径：
+      // 抛出去会让一张脏票把整场活动判成作弊。
+      continue
+    }
+    const matchRed = reds.filter((ball) => drawnReds.includes(ball)).length
+    const matchBlue = blues.filter((ball) => drawnBlues.includes(ball)).length
+    const hit = tiers.find(
+      (tier) => matchRed >= tier.red && matchBlue >= tier.blue
+    )
+    if (hit != null) expected.push({ entry_no: entry.entry_no, tier: hit.tier })
+  }
+
+  const key = (item: { entry_no: string; tier: number }) =>
+    `${item.entry_no}#${item.tier}`
+  const actual = proof.winners.map((winner) => ({
+    entry_no: winner.entry_no,
+    tier: winner.tier,
+  }))
+  const mine = [...expected].map(key).sort()
+  const theirs = [...actual].map(key).sort()
+  const same =
+    mine.length === theirs.length && mine.every((row, i) => row === theirs[i])
+
+  return same
+    ? step(
+        'result',
+        'ok',
+        `${recomputed} · ${expected.length} · amounts-not-checked`
+      )
+    : step('result', 'fail', `winners ${theirs.length} != ${mine.length}`)
+}
+
+/** 规范化开奖号 / 选号串：`[3,9,12] + [5]` → `03,09,12|05`。 */
+function qyLotFormatPick(reds: number[], blues: number[]): string {
+  const pad = (list: number[]) =>
+    [...list]
+      .sort((a, b) => a - b)
+      .map((ball) => String(ball).padStart(2, '0'))
+      .join(',')
+  return `${pad(reds)}|${pad(blues)}`
+}
+
+/**
  * 在用户自己的浏览器里跑完整的 `lot-v1` 验证。
  *
  * 返回的是**逐步结果**而不是一个布尔：用户需要看到"哪一步过了、哪一步没过"，
@@ -861,11 +977,22 @@ export async function verifyQyLotProof(
       steps.push(step('result', 'skipped', `outcome=${proof.outcome}`))
       return steps
     }
-    // 双色球的派奖还牵涉跨期奖池的分配与浮动奖，本实现**没有**复算它。
-    // 与其给一个只算对了一半的绿勾，不如如实说"这一步这里验不了"——
-    // 摇号号码本身仍可用 `qyLotBallDraw` 在「为什么是这个结果」里独立复算。
+    // 双色球：复算**开奖号**与**中奖名单的档位**，但不复算金额。
+    //
+    // 曾经这里是一整条 `skipped`，那是这份面板上最贵的一个洞：平台改一次
+    // `ball_result`（payout 表不动）能让六步全绿而没有一个红叉，用户只能靠
+    // 在两屏之间肉眼比对数字才可能发现。开奖号是 `(final_seed, act_no, 号池)`
+    // 的纯函数，档位是 `(开奖号, 我的选号, 各档门槛)` 的纯函数 —— 两者都在
+    // 证据链里，没有任何理由不自动比。
+    //
+    // 金额仍然验不了：浮动奖取决于本期池子与同档中签人数，而池子会随投注变化，
+    // 不在承诺原像里。这一条如实写进 detail，不用一个绿勾把它盖过去。
     if (proof.draw_mode === 'ball') {
-      steps.push(step('result', 'skipped', 'draw_mode=ball'))
+      try {
+        steps.push(await verifyBallResult(proof, roster))
+      } catch (error) {
+        steps.push(step('result', 'fail', String(error)))
+      }
       return steps
     }
     try {

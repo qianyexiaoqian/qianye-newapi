@@ -98,6 +98,60 @@ func TestPutEntitlementRejectsUnusableConfigurations(t *testing.T) {
 	})
 }
 
+// TestRestrictedWithOnlyGrandfatheredBindingIsStillDeadMoney 守「仅限 + 只剩存量绑定」
+// 这条绕过路径。
+//
+// ═══════════ 它绕的是哪一道 ═══════════
+//
+// validateGroups 对**存量**绑定有豁免:分组从倍率表里删掉之后,已经存在的那个
+// 名字仍然放行,否则这个套餐从此永远存不下去(连"改回通用"这个补救按钮都会 400)。
+// 豁免本身是对的,但它让「仅限 + 零绑定」那道闸门只判 len(groups)==0 时形同虚设:
+//
+//	套餐已配「仅限 vip」→ 运营在倍率表里删掉 vip → 直接 PUT 同一份清单
+//	→ validateGroups 因存量豁免放行 → len(groups)==1 通过闸门 → 写库成功
+//	→ 快照编译期把这条绑定剔除(不变量 I4)→ CandidateUsable(P, *) 恒 false
+//	→ 持有 P 的用户看得见余额、任何请求都花不掉,直到到期作废。
+//
+// 前端的 restrictedWithoutBinding 拦得住这一条,但那是**唯一**拦得住的东西:
+// 任何脚本、任何没实现那道校验的客户端都能绕过去。所以判据必须是"仍然有效的
+// 绑定数",而不是清单长度。
+func TestRestrictedWithOnlyGrandfatheredBindingIsStillDeadMoney(t *testing.T) {
+	newExtDB(t)
+	mainDB := newMainDB(t)
+	setGroupRatios(t, `{"default":1,"vip":0.5,"pro":0.8}`)
+	seedPlan(t, mainDB, 1, "套餐A")
+
+	// 先在 vip 还存在时把套餐配成「仅限 vip」——这一步必须成功,它是合法配置。
+	code, _ := putEntitlement(t, 1, `{"unlock_groups":["vip"],"balance_scope":"restricted"}`)
+	require.Equal(t, http.StatusOK, code)
+	require.True(t, Current().Binds(1, "vip"))
+
+	// 运营在分组倍率表里删掉 vip。套餐配置一个字节都没动。
+	setGroupRatios(t, `{"default":1,"pro":0.8}`)
+
+	t.Run("只剩已删分组的仅限配置必须被拒", func(t *testing.T) {
+		code, body := putEntitlement(t, 1, `{"unlock_groups":["vip"],"balance_scope":"restricted"}`)
+		assert.Equal(t, http.StatusBadRequest, code)
+		assert.Equal(t, "qy_plan_balance_scope_need_binding", body["code"],
+			"这份配置写进去就是死钱:绑定会被快照剔除,套餐对任何模型分组都不是出资候选")
+	})
+
+	t.Run("存量豁免本身不能被这道闸门连坐", func(t *testing.T) {
+		// 改回「通用」时,那个已删的名字仍然要能存下去 —— 否则运营被困在一个
+		// 自己修不好的错误里,这正是存量豁免存在的理由。
+		code, _ := putEntitlement(t, 1, `{"unlock_groups":["vip"],"balance_scope":"universal"}`)
+		assert.Equal(t, http.StatusOK, code)
+	})
+
+	t.Run("仅限 + 至少一个仍然有效的绑定照常放行", func(t *testing.T) {
+		code, _ := putEntitlement(t, 1, `{"unlock_groups":["vip","pro"],"balance_scope":"restricted"}`)
+		require.Equal(t, http.StatusOK, code)
+		assert.True(t, Current().Binds(1, "pro"))
+		assert.False(t, Current().Binds(1, "vip"),
+			"已删分组仍然会被快照编译期剔除,闸门放行的理由是 pro 而不是 vip")
+	})
+}
+
 // TestPutEntitlementIsFullReplaceAndAudited 守三件事:整体替换、审计、快照即时生效。
 //
 // 审计是硬要求:这份配置直接决定「谁能用哪些模型分组」与「钱从哪个池子扣」。

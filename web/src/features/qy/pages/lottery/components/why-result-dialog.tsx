@@ -229,9 +229,22 @@ export function QyLotWhyResultDialog(props: WhyResultDialogProps) {
                           blue: need.blue,
                         })}
                       </span>
+                      {/* 命中即停：能同时满足多档门槛时只有最靠前的那一档亮。
+                          这里的判定与后端 MatchTier 是同一条规则的两次实现。 */}
+                      {explain.hitTier === need.tier && (
+                        <Badge>{t('qy_lot_why_won')}</Badge>
+                      )}
                     </li>
                   ))}
                 </ul>
+                {explain.hitTier == null && (
+                  <p className='text-sm'>{t('qy_lot_ball_no_tier')}</p>
+                )}
+                {/* 档位是本地算得出来的，金额不是：浮动奖发多少取决于本期奖池与
+                    同档中签人数，那两个量不在这份证据链里。不假装能算。 */}
+                <p className='text-muted-foreground text-xs'>
+                  {t('qy_lot_ball_amount_not_local')}
+                </p>
               </div>
             )}
 

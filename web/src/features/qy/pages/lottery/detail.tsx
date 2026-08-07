@@ -47,6 +47,7 @@ import { QyLotFairnessPanel } from './components/lottery-fairness-panel'
 import { QyLotRosterCard } from './components/lottery-roster-card'
 import { QyLotRulesList } from './components/lottery-rules-list'
 import { QyLotSpecTable } from './components/lottery-spec-table'
+import { qyLotBallPoolOf } from './lib/ball'
 import {
   qyLotActivityBadgeStatus,
   qyLotCountdown,
@@ -78,6 +79,7 @@ export function QyLotteryDetail() {
   const countdown =
     activity == null ? null : qyLotCountdown(activity, activity.status, now)
   const outcomeKey = activity == null ? null : qyLotOutcomeKey(activity.outcome)
+  const isBall = activity?.draw_mode === 'ball'
 
   return (
     <QySectionPageLayout>
@@ -111,8 +113,15 @@ export function QyLotteryDetail() {
             <div className='space-y-4'>
               <div className='flex flex-wrap items-center gap-2'>
                 <Badge variant='outline'>
-                  {t(`qy_lot_kind_${activity.kind}`)}
+                  {isBall
+                    ? t('qy_lot_mode_ball')
+                    : t(`qy_lot_kind_${activity.kind}`)}
                 </Badge>
+                {isBall && (
+                  <Badge variant='outline'>
+                    {t('qy_lot_ball_issue_no', { no: activity.issue_no ?? 0 })}
+                  </Badge>
+                )}
                 <QyStatusBadge
                   status={qyLotActivityBadgeStatus(activity.status)}
                 />
@@ -132,9 +141,19 @@ export function QyLotteryDetail() {
                     value: formatQyQuotaLedger(activity.stake_quota),
                   },
                   {
+                    // 双色球的「奖池」是本期真正可派发的那一份（开局基数 +
+                    // 本期投注入池部分），不是本期收到的投注额。两者在滚存了
+                    // 几期之后可以差出一个数量级，而这正是用户用来决定要不要
+                    // 参与的那个数。
                     key: 'pool',
-                    label: t('qy_lot_pool'),
-                    value: formatQyQuotaLedger(activity.pool_quota),
+                    label: isBall
+                      ? t('qy_lot_ball_pool_open')
+                      : t('qy_lot_pool'),
+                    value: formatQyQuotaLedger(
+                      isBall
+                        ? (activity.pool_open_quota ?? 0)
+                        : activity.pool_quota
+                    ),
                     emphasis: true,
                   },
                   {
@@ -193,13 +212,59 @@ export function QyLotteryDetail() {
                           })}
                         </CardDescription>
                       )}
+                      {isBall && (
+                        <CardDescription>
+                          {t('qy_lot_ball_pool_desc', {
+                            redPick: activity.ball_red_pick ?? 0,
+                            redPool: activity.ball_red_pool ?? 0,
+                            bluePick: activity.ball_blue_pick ?? 0,
+                            bluePool: activity.ball_blue_pool ?? 0,
+                          })}
+                        </CardDescription>
+                      )}
                     </CardHeader>
                     <CardContent className='space-y-3'>
+                      {/* 开奖号必须与奖级表同屏：用户点进来的第一件事是"开的是
+                          哪几个号"，让他去「我的参与」里点弹窗才看得到，等于把
+                          结果藏起来。这一串来自后端的 ball_result，而它可由
+                          why-result 弹窗用公开种子当场复算出同一组号。 */}
+                      {isBall && (activity.ball_result ?? '') !== '' && (
+                        <div className='rounded-lg border p-3'>
+                          <p className='text-muted-foreground text-xs'>
+                            {t('qy_lot_ball_result')}
+                          </p>
+                          <p className='mt-1 font-mono text-lg break-all tabular-nums'>
+                            {activity.ball_result}
+                          </p>
+                          <p className='text-muted-foreground mt-1 text-xs'>
+                            {t('qy_lot_ball_result_verify_note')}
+                          </p>
+                        </div>
+                      )}
                       <QyLotSpecTable
                         kind={activity.kind}
                         spec={activity.spec}
                         winOptNo={activity.win_opt_no}
+                        ballPool={
+                          isBall ? qyLotBallPoolOf(activity) : undefined
+                        }
+                        poolOpenQuota={activity.pool_open_quota ?? 0}
                       />
+                      {isBall && (
+                        // 概率是本地算的这件事必须写出来。否则用户会默认它和别的
+                        // 数字一样是平台报的，而"这个数不需要相信平台"正是双色球
+                        // 唯一但决定性的优势。
+                        <p className='text-muted-foreground text-xs'>
+                          {t('qy_lot_ball_odds_local_note')}
+                        </p>
+                      )}
+                      {isBall && (activity.series_no ?? '') !== '' && (
+                        <QyKeyValue label={t('qy_lot_ball_series_no')}>
+                          <span className='font-mono text-xs break-all'>
+                            {activity.series_no}
+                          </span>
+                        </QyKeyValue>
+                      )}
                       {activity.kind === 'guess' && (
                         // 「全部猜错怎么办」必须在下注之前就写清楚，否则事后
                         // 无论怎么处理都会被指控临时改规则。

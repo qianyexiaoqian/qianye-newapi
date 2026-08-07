@@ -55,17 +55,16 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 		relayInfo.UsingGroup = autoGroup.(string)
 	}
 
-	// check user group special ratio
-	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
-	if ok {
-		// user group special ratio
-		groupRatioInfo.GroupSpecialRatio = userGroupRatio
-		groupRatioInfo.GroupRatio = userGroupRatio
+	// 分组倍率解析走全仓唯一的 ratio_setting.ResolveGroupRatio,不再在这里
+	// 重复一遍 if:同一段判据原本有三份拷贝(本处 / service/quota.go /
+	// service/task_billing.go),任何新增判据写三遍必然漂移。
+	res := ratio_setting.ResolveGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
+	groupRatioInfo.GroupRatio = res.Ratio
+	if res.Source == ratio_setting.GroupRatioSourceOverride {
+		groupRatioInfo.GroupSpecialRatio = res.Ratio
 		groupRatioInfo.HasSpecialRatio = true
-	} else {
-		// normal group ratio
-		groupRatioInfo.GroupRatio = ratio_setting.GetGroupRatio(relayInfo.UsingGroup)
 	}
+	relayInfo.NoteGroupRatioFallback(res)
 
 	return groupRatioInfo
 }

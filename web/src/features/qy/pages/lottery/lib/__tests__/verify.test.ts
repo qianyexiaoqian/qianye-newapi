@@ -21,8 +21,15 @@ import { describe, test } from 'node:test'
 
 import type { QyLotProof, QyLotProofEntry } from '../../types'
 import {
+  qyLotBallDraw,
   qyLotChainNext,
+  qyLotCommitHash,
+  qyLotFinalSeed,
+  qyLotParsePick,
   qyLotRosterHash,
+  qyLotRulesHash,
+  qyLotSpecHash,
+  qyLotSpecLines,
   qyLotSplitPool,
   verifyQyLotProof,
 } from '../verify'
@@ -367,8 +374,9 @@ describe('竞猜结算：被排除条目的退款不能污染逐笔赔付的比�
       prev = entry.chain_hash
       entries.push(entry)
     }
+    // 名单按 entry_no 的字节序排 —— 与后端 roster 行的顺序同一条规则。
     const roster = [...entries].sort((a, b) =>
-      a.entry_no < b.entry_no ? -1 : a.entry_no > b.entry_no ? 1 : 0
+      a.entry_no.localeCompare(b.entry_no)
     )
     return {
       algo: 'lot-v1',
@@ -424,6 +432,248 @@ describe('竞猜结算：被排除条目的退款不能污染逐笔赔付的比�
   test('真的少发了一笔赔付时仍然报错', async () => {
     const proof = await guessProof()
     proof.payouts[0].amount = 900
+    const steps = await verifyQyLotProof(proof)
+    assert.equal(statusOf(steps, 'result'), 'fail')
+  })
+})
+
+/**
+ * 双色球的 `result` 一步曾经是一整条 `skipped`。
+ *
+ * 那是这份面板上最贵的一个洞：平台把某一期的 `ball_result` 直接改库写成另一组
+ * 号（payout 表不动），用户点「公正性验证」会看到 commit / rules / spec / roster
+ * 四步全绿、result 一栏写着 `skipped(draw_mode=ball)` —— **没有一个红叉**。
+ * 想发现这件事，用户得先在详情页记下开奖号，再打开「为什么是这个结果」弹窗
+ * 看本地复算值，逐个数字比对，而两处的号码格式还不一样。
+ *
+ * 开奖号是 `(final_seed, act_no, 号池)` 的纯函数、档位是 `(开奖号, 选号, 门槛)`
+ * 的纯函数，两者的输入全部在证据链里。所以这一节钉的是：**这两件事必须被自动
+ * 比对，而且改任何一边都要变红。**
+ */
+describe('双色球：开奖号与中奖档位必须被自动比对', () => {
+  const SEED =
+    '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff'
+  const ACT_NO = 'LOTBALLACT01'
+
+  /** 一期已开奖的双色球。链、名单、承诺全部由库函数现算，断言只针对 result。 */
+  async function ballProof(): Promise<QyLotProof> {
+    const picks: Record<string, string> = {
+      B0001: '01,02,03|01',
+      B0002: '04,05,06|02',
+      B0003: '02,04,07|03',
+    }
+    const base = {
+      algo: 'lot-v2',
+      act_no: ACT_NO,
+      kind: 'draw' as const,
+      status: 'finished' as const,
+      outcome: 'drawn' as const,
+      title: 'ball',
+      rules_text: '{"min_quota":0}',
+      spec: [
+        {
+          tier: 1,
+          name: 'T1',
+          amount_quota: 0,
+          count: 0,
+          red_match: 3,
+          blue_match: 1,
+          pool_share_bps: 6000,
+        },
+        {
+          tier: 2,
+          name: 'T2',
+          amount_quota: 0,
+          count: 0,
+          red_match: 3,
+          blue_match: 0,
+          pool_share_bps: 2000,
+        },
+        {
+          tier: 3,
+          name: 'T3',
+          amount_quota: 100,
+          count: 10,
+          red_match: 1,
+          blue_match: 0,
+        },
+      ],
+      stake_quota: 50,
+      open_at: 1000,
+      close_at: 2000,
+      draw_at: 3000,
+      settle_deadline: 4000,
+      allow_multi_win: true,
+      fee_bps: 0,
+      no_winner_policy: 'refund_all',
+      min_entries_to_hold: 0,
+      seed: SEED,
+      draw_mode: 'ball' as const,
+      series_no: 'LS-t',
+      issue_no: 1,
+      pool_seed_quota: 100_000,
+      pool_carry_quota: 0,
+      pool_open_quota: 100_000,
+      pool_share_bps: 7000,
+      ball_red_pool: 12,
+      ball_red_pick: 3,
+      ball_blue_pool: 4,
+      ball_blue_pick: 1,
+      pool_quota: 0,
+      win_opt_no: 0,
+      fee_quota: 0,
+      payouts: [],
+      locked_at: 2001,
+      revealed_at: 3001,
+      settled_at: 3002,
+    }
+
+    const rules_hash = await qyLotRulesHash(base.rules_text)
+    const spec_hash = await qyLotSpecHash(
+      qyLotSpecLines({ ...base, spec: base.spec } as unknown as QyLotProof),
+      base.algo
+    )
+    const commit_hash = await qyLotCommitHash(
+      { ...base, rules_hash, spec_hash } as unknown as QyLotProof,
+      rules_hash,
+      spec_hash
+    )
+
+    const entries: QyLotProofEntry[] = []
+    let chain = commit_hash
+    let seq = 1
+    for (const [entryNo, pick] of Object.entries(picks)) {
+      const row: QyLotProofEntry = {
+        seq,
+        entry_no: entryNo,
+        user_ref: `u${seq}`,
+        opt_no: 0,
+        amount: 50,
+        status: 'success',
+        prev_hash: chain,
+        chain_hash: '',
+        order_no: `BO-${entryNo}`,
+        pick,
+      }
+      chain = await qyLotChainNext(chain, ACT_NO, row, base.algo)
+      row.chain_hash = chain
+      entries.push(row)
+      seq += 1
+    }
+
+    // 名单按 entry_no 的字节序排 —— 与后端 roster 行的顺序同一条规则。
+    const roster = [...entries].sort((a, b) =>
+      a.entry_no.localeCompare(b.entry_no)
+    )
+    const roster_hash = await qyLotRosterHash(
+      ACT_NO,
+      commit_hash,
+      roster,
+      base.algo
+    )
+
+    // 用与生产同一条规则算出**本应**的中奖名单，作为"诚实数据"的那一份。
+    const proof = {
+      ...base,
+      rules_hash,
+      spec_hash,
+      commit_hash,
+      chain_head: chain,
+      entries,
+      total: entries.length,
+      roster_hash,
+      roster_count: roster.length,
+      winners: [],
+      ball_result: '',
+    } as unknown as QyLotProof
+
+    const finalSeed = await qyLotFinalSeed(proof)
+    const reds = await qyLotBallDraw(finalSeed, ACT_NO, 'red', 12, 3)
+    const blues = await qyLotBallDraw(finalSeed, ACT_NO, 'blue', 4, 1)
+    const pad = (list: number[]) =>
+      list.map((ball) => String(ball).padStart(2, '0')).join(',')
+    proof.ball_result = `${pad(reds)}|${pad(blues)}`
+
+    const needs = [
+      { tier: 1, red: 3, blue: 1 },
+      { tier: 2, red: 3, blue: 0 },
+      { tier: 3, red: 1, blue: 0 },
+    ]
+    proof.winners = []
+    for (const row of roster) {
+      const { reds: my, blues: myBlue } = qyLotParsePick(row.pick ?? '')
+      const mr = my.filter((ball) => reds.includes(ball)).length
+      const mb = myBlue.filter((ball) => blues.includes(ball)).length
+      const hit = needs.find((need) => mr >= need.red && mb >= need.blue)
+      if (hit != null) {
+        proof.winners.push({
+          pos: proof.winners.length,
+          tier: hit.tier,
+          entry_no: row.entry_no,
+          user_ref: row.user_ref,
+          amount: 100,
+        })
+      }
+    }
+    return proof
+  }
+
+  test('诚实数据：result 通过，并注明金额没有复算', async () => {
+    const proof = await ballProof()
+    // 名单为空时"复算 == 公布"会平凡成立，这一节的三条篡改用例也就失去意义。
+    assert.ok(
+      proof.winners.length > 0,
+      '固定的 seed 下这一期必须真的开出中奖位，否则整节都是空转'
+    )
+    const steps = await verifyQyLotProof(proof)
+    assert.equal(statusOf(steps, 'chain'), 'ok')
+    assert.equal(statusOf(steps, 'roster'), 'ok')
+    assert.equal(statusOf(steps, 'result'), 'ok')
+    // 「验了什么、没验什么」必须写在结果里。一个不带说明的绿勾会让用户以为
+    // 金额也被验过了，而浮动奖的金额本来就不在证据链里。
+    const detail = steps.find((step) => step.key === 'result')?.detail ?? ''
+    assert.ok(
+      detail.includes('amounts-not-checked'),
+      `result 的说明必须写明金额未复算，实际是 ${detail}`
+    )
+  })
+
+  test('改一个开奖号 → result 立刻红（此前是一条 skipped，永远不会红）', async () => {
+    const proof = await ballProof()
+    const [redPart = '', bluePart = ''] = (proof.ball_result ?? '').split('|')
+    const reds = redPart.split(',').map((cell) => Number.parseInt(cell, 10))
+    // 换掉一个红球，换成一个当前没被摇中的号 —— 平台改库最省事的那一种改法。
+    const swap = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].find(
+      (ball) => !reds.includes(ball)
+    )
+    assert.ok(swap != null, '12 选 3 的号池里必然还有没被摇中的号')
+    reds[0] = swap
+    proof.ball_result = `${[...reds]
+      .sort((a, b) => a - b)
+      .map((ball) => String(ball).padStart(2, '0'))
+      .join(',')}|${bluePart}`
+
+    const steps = await verifyQyLotProof(proof)
+    assert.equal(statusOf(steps, 'result'), 'fail')
+  })
+
+  test('开奖号不动、悄悄往中奖名单里塞一个人 → result 也要红', async () => {
+    const proof = await ballProof()
+    proof.winners.push({
+      pos: proof.winners.length,
+      tier: 1,
+      entry_no: 'B0001',
+      user_ref: 'u1',
+      amount: 60_000,
+    })
+    const steps = await verifyQyLotProof(proof)
+    assert.equal(statusOf(steps, 'result'), 'fail')
+  })
+
+  test('把某个人的中奖档位改高一档 → result 也要红', async () => {
+    const proof = await ballProof()
+    assert.ok(proof.winners.length > 0, 'fixture 应当至少开出一个中奖位')
+    proof.winners[0].tier = 1
     const steps = await verifyQyLotProof(proof)
     assert.equal(statusOf(steps, 'result'), 'fail')
   })

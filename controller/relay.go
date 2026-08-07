@@ -599,6 +599,9 @@ func RelayTask(c *gin.Context) {
 			OtherRatios:     relayInfo.PriceData.OtherRatios(),
 			OriginModelName: relayInfo.OriginModelName,
 			PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
+			// 交叉倍率的另一个轴。task.Group 记的是模型分组,这里记用户分组,
+			// 两者合起来才是 GroupGroupRatio 的完整坐标(见 TaskBillingContext.UserGroup)。
+			UserGroup: relayInfo.UserGroup,
 		}
 		task.Quota = result.Quota
 		task.Data = result.TaskData

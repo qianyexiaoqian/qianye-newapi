@@ -308,12 +308,34 @@ func adminPutEntitlement(c *gin.Context) {
 		badRequest(c, "qy_plan_unlock_group_invalid", msg)
 		return
 	}
-	if scope == ScopeRestricted && len(groups) == 0 {
+	if scope == ScopeRestricted {
 		// 一份任何请求都用不上的额度池 = 纯粹的死钱。在写入侧堵死,
 		// 而不是等用户来投诉"我有 10 美元却花不出去"。
-		badRequest(c, "qy_plan_balance_scope_need_binding",
-			"余额使用范围设为「仅限」时必须至少绑定一个模型分组,否则这个套餐的额度任何请求都用不上")
-		return
+		//
+		// ═══════ 判据是**仍然有效**的绑定数,不是 len(groups) ═══════
+		//
+		// validateGroups 对存量绑定有豁免(见它的注释:分组被删之后不能让这个
+		// 套餐从此存不下去),所以 groups 里完全可能只剩一个已经从倍率表里删掉的
+		// 名字。那种绑定会被快照编译期原样剔除(不变量 I4),于是 Snapshot.Binds
+		// 恒 false → CandidateUsable 恒 false → 这个套餐对**任何**模型分组都不是
+		// 出资候选:用户看得见余额、一分也花不掉,直到到期作废。
+		//
+		// 只判 len(groups)==0 的话,这条路径能直接 PUT 进库,而"服务端在写入侧
+		// 堵死了死钱"这句话就只剩前端那道 restrictedWithoutBinding 还成立 ——
+		// 任何脚本、任何没实现那道校验的客户端都能绕过去。
+		live := 0
+		for _, g := range groups {
+			if ratio_setting.ContainsGroupRatio(g) {
+				live++
+			}
+		}
+		if live == 0 {
+			badRequest(c, "qy_plan_balance_scope_need_binding",
+				"余额使用范围设为「仅限」时必须至少绑定一个仍然存在于分组倍率表的模型分组,"+
+					"否则这个套餐的额度任何请求都用不上。当前提交的绑定要么为空,要么全部指向已被删除的分组"+
+					"(那些名字只是为了不让这个套餐存不下去才被放行的,它们在扣费路径上一律不生效)")
+			return
+		}
 	}
 
 	next := planEntitlement{PlanId: planId, Groups: groups, Scope: scope, Note: req.Note}

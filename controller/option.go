@@ -3,12 +3,14 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/console_setting"
 	"github.com/QuantumNous/new-api/setting/model_setting"
@@ -236,6 +238,13 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+		if err = checkGroupRatioKeepsPinnedGroups(option.Value.(string)); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	case "gemini.safety_settings":
 		err = model_setting.ValidateGeminiSafetySettings(option.Value.(string))
 		if err != nil {
@@ -376,4 +385,47 @@ func UpdateOption(c *gin.Context) {
 		"success": true,
 		"message": "",
 	})
+}
+
+// checkGroupRatioKeepsPinnedGroups 拒绝「删掉一个仍被某个用户分组 pin 为默认模型分组
+// 的兜底倍率」。
+//
+// ══════════════════ 为什么这道校验必须长在 options 的写路径上 ══════════════════
+//
+// 保存 pin 时有三道闸门(在可选清单里 / 在倍率表里 / 有渠道),但它们只在保存那一刻
+// 执行一次。之后运营在「模型分组」页删掉那一行 —— 页面文案明写「删除一行只会删掉
+// 它的兜底倍率,不会动渠道、令牌或任何一档人的可用范围」,一个字都没提默认模型分组
+// —— 保存成功,而被 pin 的那个用户分组下的**全部空分组令牌**从下一次请求起变成
+// HTTP 500(middleware/auth.go 的 pin 运行时校验),比它们原来的 503 更难懂,
+// 而且绝大多数客户端 SDK 会把 500 当成可重试的网关故障从而放大流量。
+//
+// hook 返回 nil(扩展未启用 / 解析未开 / 快照未加载)时整段跳过:一个查不到 pin 的
+// 时刻不该把管理员的正常保存动作卡死。
+func checkGroupRatioKeepsPinnedGroups(jsonStr string) error {
+	pinned := service.QyPinnedModelGroups()
+	if len(pinned) == 0 {
+		return nil
+	}
+	next := make(map[string]float64)
+	if err := common.Unmarshal([]byte(jsonStr), &next); err != nil {
+		// 语法本身已经由 CheckGroupRatio 判过,走到这里说明是并发改动,放行。
+		return nil
+	}
+	broken := make([]string, 0, len(pinned))
+	for modelGroup, userGroups := range pinned {
+		if _, ok := next[modelGroup]; ok {
+			continue
+		}
+		broken = append(broken, fmt.Sprintf("%s(被用户分组 %s 用作默认模型分组)",
+			modelGroup, strings.Join(userGroups, "、")))
+	}
+	if len(broken) == 0 {
+		return nil
+	}
+	sort.Strings(broken)
+	return fmt.Errorf(
+		"不能删除这些模型分组的兜底倍率:%s。"+
+			"删掉之后,那些用户分组下的全部空分组令牌会在下一次请求变成 500(分组配置异常)。"+
+			"请先把对应的用户分组改回「继承」或换一个默认模型分组,再回来删除",
+		strings.Join(broken, ";"))
 }

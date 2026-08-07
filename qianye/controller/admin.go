@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/modules/groupmatrix"
+	"github.com/QuantumNous/new-api/qianye/modules/groupns"
 	"github.com/QuantumNous/new-api/qianye/modules/planentitlement"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
@@ -88,6 +89,10 @@ func AdminHealth(c *gin.Context) {
 		// 当前按上游全局白名单放行 —— 那是比"配置写错了"更隐蔽的一种失效:
 		// 矩阵页照常显示、保存照常成功,只是没有任何一条收紧在起作用。
 		"group_matrix": groupmatrix.Health(),
+		// 分组登记与默认模型分组解析。它与 group_matrix 分开报是刻意的:
+		// 两者的 needs_attention 指向完全不同的动作 —— 那边是"可选清单陈旧了",
+		// 这边是"已配的默认模型分组可能没生效",而后者的表现是整组用户 503。
+		"group_namespace": groupns.Health(),
 		// 套餐解锁的快照状态与 fail-closed 计数。后者非 0 意味着有付费用户
 		// 因为"套餐权限暂时读不到"而被当成无解锁处理 —— 它的表现是偶发 403,
 		// 与"这个分组真的没配"长得一模一样,不在这里出数就永远查不出来。

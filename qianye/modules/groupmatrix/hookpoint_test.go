@@ -241,17 +241,18 @@ func TestHookImplOnlyCallsMemoryOnlyGroupRatioHelpers(t *testing.T) {
 
 // TestTaskBillingUsesCrossCellGroupRatio 钉死 Task 差额结算的**交叉格**形状。
 //
-// 本轮修掉的原缺陷:那里写的是 GetGroupGroupRatio(group, group) —— 两个实参是
-// 同一个标识符,只命中分组倍率矩阵的对角线;而预扣走 relay/helper/price.go 的
-// HandleGroupRatio,用的是 (UserGroup, UsingGroup) 交叉格。于是令牌做了分组覆盖
-// 且配了交叉倍率时,Task 类模型(视频 / MJ)的预扣与结算不同口径,
-// 差额以**追扣**落到用户头上 —— 正是 AGENTS.md「预扣与结算必须同口径」直指的情形。
+// 原缺陷:那里写的是 GetGroupGroupRatio(group, group) —— 两个实参是同一个标识符,
+// 只命中分组倍率矩阵的对角线;而预扣走 relay/helper/price.go 的 HandleGroupRatio,
+// 用的是 (UserGroup, UsingGroup) 交叉格。于是令牌做了分组覆盖且配了交叉倍率时,
+// Task 类模型(视频 / MJ)的预扣与结算不同口径,差额以**追扣**落到用户头上 ——
+// 正是 AGENTS.md「预扣与结算必须同口径」直指的情形。
 //
-// 本方案把交叉格从"偶尔配的例外"提升为主要机制,而矩阵页用「免费」这个一等公民
-// 操作直接引导运营配出触发条件,所以这条不能只留告警。
+// 本轮三条计费路径合并成 ratio_setting.ResolveGroupRatio,断言随之改成它,
+// 但守的东西一个字都没变:**第一个实参必须是所有者的用户分组,两者不能同名**。
 //
-// 断言的是**形状**而不是数值:第一个实参必须是所有者的用户分组,第二个是任务分组,
-// 两者不能再是同一个标识符。有人把它改回去,这条立刻变红。
+// 第二个实参必须是 task.Group 那一列(变量名 group),而不是重新解析出来的默认
+// 模型分组:task.Group 在提交时就落库了,它就是这条异步链路的 pin。
+// 结算时重新解析等于让运营在提交与结算之间改一次配置就能改变这一笔的价。
 func TestTaskBillingUsesCrossCellGroupRatio(t *testing.T) {
 	file := parseFileOrFail(t, taskBillingPath)
 
@@ -262,7 +263,7 @@ func TestTaskBillingUsesCrossCellGroupRatio(t *testing.T) {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "GetGroupGroupRatio" || len(call.Args) != 2 {
+		if !ok || sel.Sel.Name != "ResolveGroupRatio" || len(call.Args) != 2 {
 			return true
 		}
 		a, aok := call.Args[0].(*ast.Ident)
@@ -273,14 +274,17 @@ func TestTaskBillingUsesCrossCellGroupRatio(t *testing.T) {
 		return true
 	})
 	require.Len(t, args, 2,
-		"service/task_billing.go 里找不到 GetGroupGroupRatio(标识符, 标识符) —— "+
+		"service/task_billing.go 里找不到 ResolveGroupRatio(标识符, 标识符) —— "+
 			"Task 差额结算的倍率来源变了,请重新确认预扣与结算是否仍然同口径")
 	assert.NotEqual(t, args[0], args[1],
-		"GetGroupGroupRatio 的两个实参又变成同一个标识符(%q)—— 对角线缺陷回归了:"+
+		"ResolveGroupRatio 的两个实参又变成同一个标识符(%q)—— 对角线缺陷回归了:"+
 			"预扣按 (用户分组, 模型分组) 交叉格,结算按对角格,差额会以追扣落到用户头上", args[0])
 	assert.Equal(t, "userGroup", args[0],
 		"第一个实参必须是**所有者的用户分组**(users.group),与 relay/helper/price.go "+
 			"的 HandleGroupRatio(relayInfo.UserGroup, ...) 同口径")
+	assert.Equal(t, "group", args[1],
+		"第二个实参必须是 task.Group 那一列(变量 group)—— 结算永不重新解析默认模型分组,"+
+			"否则提交与结算之间改一次配置就会改变这一笔的价")
 }
 
 // ─────────────────────────────── 测试辅助 ───────────────────────────────

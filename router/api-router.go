@@ -305,10 +305,25 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			logRoute.GET("/token", middleware.TokenAuthReadOnly(), controller.GetLogByKey)
 		}
+		// /api/group 语义收敛为**模型分组**并加 Deprecation 头;两个新端点各自
+		// 只回答一个问题。不拆接口而只在前端拆页面,就只是换皮:
+		// 「用户分组下拉里出现模型分组」的根因就在这一个共用端点上。
 		groupRoute := apiRouter.Group("/group")
 		groupRoute.Use(middleware.AdminAuth())
 		{
 			groupRoute.GET("/", controller.GetGroups)
+		}
+
+		userGroupOptionRoute := apiRouter.Group("/user-group")
+		userGroupOptionRoute.Use(middleware.AdminAuth())
+		{
+			userGroupOptionRoute.GET("/options", controller.GetUserGroupOptions)
+		}
+
+		modelGroupOptionRoute := apiRouter.Group("/model-group")
+		modelGroupOptionRoute.Use(middleware.AdminAuth())
+		{
+			modelGroupOptionRoute.GET("/options", controller.GetModelGroupOptions)
 		}
 
 		prefillGroupRoute := apiRouter.Group("/prefill_group")

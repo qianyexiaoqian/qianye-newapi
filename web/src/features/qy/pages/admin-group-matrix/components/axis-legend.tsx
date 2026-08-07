@@ -91,7 +91,7 @@ export function QyGmAxisLegend(props: { unscopedGroups: string[] }) {
           {canOpenGroupPricing ? (
             <Link
               to='/system-settings/billing/$section'
-              params={{ section: 'group-pricing' }}
+              params={{ section: 'model-groups' }}
               className='text-primary underline underline-offset-2'
             >
               {t('qy_group_matrix_axis_create_link')}

@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type {
+  QyLotDrawMode,
   QyLotEntryStatus,
   QyLotKind,
   QyLotOption,
@@ -42,6 +43,32 @@ import type {
 export type QyLotAdminActivity = {
   act_no: string
   kind: QyLotKind
+  /**
+   * 定档方式（`rank` / `prob` / `ball`）。老活动不下发，按 `rank` 处理。
+   *
+   * 它是活动行上的一列而不是新的 `kind`：生命周期任务按 kind 扫表，新增一个
+   * kind 要在四处各补一个分支，漏一处就是一条静默死路。
+   */
+  draw_mode?: QyLotDrawMode
+
+  // ── 双色球期次（`draw_mode='ball'` 专用；其余模式恒为零值）──
+  //
+  // 池子那三个数要到 publish 那一刻才从系列行上**原子取走**，草稿期恒为 0。
+  // 号池四元组在创建时就从系列抄一份，因为参与时要用它校验选号。
+  series_no?: string
+  issue_no?: number
+  pool_seed_quota?: number
+  pool_carry_quota?: number
+  pool_open_quota?: number
+  /** 本期投注额进奖池的万分比，其余是平台手续费。 */
+  pool_share_bps?: number
+  ball_red_pool?: number
+  ball_red_pick?: number
+  ball_blue_pool?: number
+  ball_blue_pick?: number
+  /** 本期开奖号 `03,09,12|05`。开奖前为空串。 */
+  ball_result?: string
+
   status: QyLotStatus
   outcome: QyLotOutcome
   title: string
@@ -151,6 +178,8 @@ export type QyLotAdminActivityBrief = Pick<
   | 'close_at'
   | 'created_at'
   | 'draw_at'
+  | 'draw_mode'
+  | 'issue_no'
   | 'kind'
   | 'open_at'
   | 'outcome'
@@ -186,6 +215,16 @@ export type QyLotAdminActivityBrief = Pick<
  */
 export type QyLotCreateInput = {
   kind: QyLotKind
+  /** 定档方式。为空按 `rank` 处理，只对 `kind='draw'` 有意义。 */
+  draw_mode?: QyLotDrawMode
+  /**
+   * 双色球必填：一期双色球必须属于某个期次系列。
+   *
+   * 号池、投注入池比例、累计发行上限**全部由那个系列决定**，请求体里没有任何
+   * 一个能单独覆盖它们的字段 —— 号池若能逐期指定，"各档概率是组合数算出来的"
+   * 这条主张就没了，因为管理员可以每期换一个号码空间。
+   */
+  series_no?: string
   title: string
   intro: string
   stake_quota: number
@@ -324,6 +363,62 @@ export type QyLotAdminFlag = {
   resolved_by: number
   created_at: number
   resolved_at: number
+}
+
+// ─────────────────────────── 双色球期次系列 ───────────────────────────
+
+/**
+ * 一个双色球系列：号池 + 跨期滚存的奖池 + **累计发行闸门**。
+ *
+ * ## 为什么号池住在系列上而不是每一期上
+ *
+ * 号池四元组进每期的 `commit_hash` 原像，而它在系列上定死、期与期之间不可变。
+ * 可变的号码空间等于可变的中奖概率 —— 而"各档概率是组合数算出来的、不用相信
+ * 平台"正是双色球唯一但决定性的优势。
+ *
+ * ## 为什么 `issue_cap_quota` 创建时就冻结、此后任何接口都改不了
+ *
+ * 单期的奖品总额上限拦不住滚存：每期注资到上限、连开 N 期无人中奖，池子滚到
+ * N 倍，某一期一次性发出去——而每一期看起来都守住了。把上限冻结在系列行上并
+ * 让每次注资走条件 UPDATE，才能证明「一整个系列、无论开多少期、无论运气多差，
+ * 平台的累计净增发不超过 `issue_cap_quota`」。
+ */
+export type QyLotSeries = {
+  series_no: string
+  title: string
+  status: 'closed' | 'open' | (string & {})
+  red_pool: number
+  red_pick: number
+  blue_pool: number
+  blue_pick: number
+  /** 投注入池比例（万分比）。0 = 投注全部归平台，池子只靠注资。 */
+  pool_share_bps: number
+  /** 当前**尚未被任何一期取走**的池子。发布一期时整块取走并清零。 */
+  pool_quota: number
+  /** 累计注资，只增不减，是封顶判定的左值。 */
+  seed_total_quota: number
+  paid_total_quota: number
+  /** 创建时冻结的累计注资上限。 */
+  issue_cap_quota: number
+  /** `issue_cap_quota − seed_total_quota`，即本系列还能再注多少。 */
+  headroom_quota: number
+  /** 已开出的期数。下一期的 `issue_no` 是它 + 1。 */
+  issue_seq: number
+  created_at: number
+  updated_at: number
+}
+
+/** 创建系列的请求体。字段名与后端 `seriesInput` 逐字对齐。 */
+export type QyLotSeriesInput = {
+  title: string
+  red_pool: number
+  red_pick: number
+  blue_pool: number
+  blue_pick: number
+  pool_share_bps: number
+  issue_cap_quota: number
+  /** 创建时的首笔注资，可为 0（之后再注）。 */
+  seed_quota: number
 }
 
 // ───────────────────────────── 配置 ─────────────────────────────

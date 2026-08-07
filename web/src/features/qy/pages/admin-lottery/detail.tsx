@@ -100,6 +100,9 @@ export function QyAdminLotteryDetail() {
     winOptNo === 0
 
   const outcomeKey = activity == null ? null : qyLotOutcomeKey(activity.outcome)
+  // 双色球不是一个新的 kind，而是活动行上的一列。判据只有这一处，
+  // 与列表页那一列（index.tsx）用同一个字段。
+  const isBall = activity?.draw_mode === 'ball'
 
   return (
     <QySectionPageLayout>
@@ -154,9 +157,15 @@ export function QyAdminLotteryDetail() {
         <QyPageBoundary query={query}>
           {activity != null && (
             <div className='space-y-4'>
+              {/* 双色球的 kind 也是 'draw'，只渲染 qy_lot_kind_${kind} 的话
+                  这一屏恒写「抽奖」—— 而列表页那一列（index.tsx）已经写着
+                  「双色球 · 第 N 期」。同一个人在两屏上会对同一场活动得出两个
+                  不同的玩法结论，这是最没道理的一种不一致。 */}
               <div className='flex flex-wrap items-center gap-2'>
                 <Badge variant='outline'>
-                  {t(`qy_lot_kind_${activity.kind}`)}
+                  {isBall
+                    ? `${t('qy_lot_mode_ball')} · ${t('qy_lot_ball_issue_no', { no: activity.issue_no ?? 0 })}`
+                    : t(`qy_lot_kind_${activity.kind}`)}
                 </Badge>
                 <QyStatusBadge
                   status={qyLotActivityBadgeStatus(activity.status)}
@@ -168,6 +177,52 @@ export function QyAdminLotteryDetail() {
                   {activity.act_no}
                 </span>
               </div>
+
+              {/* 号池 / 期次 / 本期可派发池子 / 开奖号。
+                  真正处于风险敞口的是 pool_open_quota（本期最坏要发多少），
+                  而下面那张统计格里一个都没有它 —— 运营在开奖前无法从这一页
+                  判断本期的支出上界。接口整行下发了这些字段，只是没渲染。 */}
+              {isBall && (
+                <div className='border-border/60 grid gap-3 rounded-md border p-3 sm:grid-cols-2 lg:grid-cols-4'>
+                  <div className='flex flex-col gap-0.5'>
+                    <span className='text-muted-foreground text-xs'>
+                      {t('qy_lot_ball_series_no')}
+                    </span>
+                    <span className='font-mono text-sm'>
+                      {activity.series_no || '-'}
+                    </span>
+                  </div>
+                  <div className='flex flex-col gap-0.5'>
+                    <span className='text-muted-foreground text-xs'>
+                      {t('qy_lot_ball_pool_label')}
+                    </span>
+                    <span className='text-sm tabular-nums'>
+                      {t('qy_lot_ball_pool_desc', {
+                        redPool: activity.ball_red_pool ?? 0,
+                        redPick: activity.ball_red_pick ?? 0,
+                        bluePool: activity.ball_blue_pool ?? 0,
+                        bluePick: activity.ball_blue_pick ?? 0,
+                      })}
+                    </span>
+                  </div>
+                  <div className='flex flex-col gap-0.5'>
+                    <span className='text-muted-foreground text-xs'>
+                      {t('qy_lot_ball_pool_open')}
+                    </span>
+                    <span className='text-sm tabular-nums'>
+                      {formatQyQuotaLedger(activity.pool_open_quota ?? 0)}
+                    </span>
+                  </div>
+                  <div className='flex flex-col gap-0.5'>
+                    <span className='text-muted-foreground text-xs'>
+                      {t('qy_lot_ball_result')}
+                    </span>
+                    <span className='font-mono text-sm'>
+                      {activity.ball_result || '-'}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               <QyStatGrid
                 items={[

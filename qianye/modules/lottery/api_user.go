@@ -42,6 +42,27 @@ type activityBrief struct {
 	// MyEntryCount 让大厅卡片直接回答"我参加过没有"。不给的话用户只能逐个点进
 	// 详情页看,而"我到底报没报上"正是参与之后最想立刻确认的一件事。
 	MyEntryCount int `json:"my_entry_count"`
+
+	// ── 双色球(draw_mode=ball)的卡面 ──
+	//
+	// 大厅必须能把双色球与普通抽奖分开,而"分开"不是换个徽章就够了:同一张卡上
+	// 三个数的**含义整个变了**。prize_total_quota 对双色球是错的 —— 浮动奖档的
+	// amount_quota 恒为 0,Σ(amount×count) 会把一个滚了几期的大奖池显示成一个
+	// 很小的数,而那正是用户用来决定要不要参与的那个数。所以这里另给
+	// pool_open_quota(本期真正可派发的池子),并把号池四元组一起下发:
+	// 有了它前端就能自己按组合数把头奖概率算出来,不必点进详情页。
+	//
+	// **不下发任何概率数字**:那是组合数的结果,后端给一个数就等于管理员在这件
+	// 事上有了撒谎的接口,而"概率不需要相信平台"是双色球唯一但决定性的优势。
+	DrawMode      string `json:"draw_mode"`
+	SeriesNo      string `json:"series_no"`
+	IssueNo       int    `json:"issue_no"`
+	PoolOpenQuota int64  `json:"pool_open_quota"`
+	BallRedPool   int    `json:"ball_red_pool"`
+	BallRedPick   int    `json:"ball_red_pick"`
+	BallBluePool  int    `json:"ball_blue_pool"`
+	BallBluePick  int    `json:"ball_blue_pick"`
+	BallResult    string `json:"ball_result"`
 }
 
 type specItem struct {
@@ -199,7 +220,8 @@ func handleListActivities(c *gin.Context) {
 		return
 	}
 	items := make([]activityBrief, 0, len(rows))
-	for _, a := range rows {
+	for i := range rows {
+		a := rows[i]
 		items = append(items, activityBrief{
 			ActNo: a.ActNo, Kind: a.Kind, Status: a.Status, Outcome: a.Outcome,
 			Title: a.Title, StakeQuota: a.StakeQuota,
@@ -207,6 +229,15 @@ func handleListActivities(c *gin.Context) {
 			ActiveCount: a.ActiveCount, PoolQuota: a.PoolQuota,
 			PrizeTotalQuota: prizeTotals[a.Id],
 			MyEntryCount:    mine[a.Id],
+			DrawMode:        a.DrawMode,
+			SeriesNo:        a.SeriesNo,
+			IssueNo:         a.IssueNo,
+			PoolOpenQuota:   ballPoolOpen(&rows[i]),
+			BallRedPool:     a.BallRedPool,
+			BallRedPick:     a.BallRedPick,
+			BallBluePool:    a.BallBluePool,
+			BallBluePick:    a.BallBluePick,
+			BallResult:      a.BallResult,
 		})
 	}
 	respondOK(c, gin.H{"items": items, "total": total, "p": page, "page_size": size})
@@ -361,8 +392,35 @@ type entryRequest struct {
 	ClientRequestId string `json:"client_request_id"`
 	OptNo           int    `json:"opt_no"`
 	// Amount 只有竞猜可以自选;抽奖恒等于活动的参与费,用户不能自己指定金额。
-	Amount      int64  `json:"amount"`
+	Amount int64 `json:"amount"`
+	// Pick 是双色球的选号,格式 "03,05,12|08"(红球升序 ⋆ 竖线 ⋆ 蓝球升序)。
+	// 非双色球活动必须留空 —— 后端对带号的非双色球请求是**拒绝**而不是忽略。
+	//
+	// 机选是纯前端按钮(crypto.getRandomValues),服务端不区分自选与机选:
+	// 号码一旦进链两者的可验证性完全一样,而服务端多一条随机路径就多一处
+	// 要证明其公正的地方。
+	Pick        string `json:"pick"`
 	PayPassword string `json:"pay_password"`
+}
+
+// entryInputOf 把请求体翻译成一次参与的输入。
+//
+// 它是**唯一**一处"用户在界面上填的东西变成会被扣钱、会进哈希链的那份输入"。
+// 单拎出来是因为漏抄一个字段不会有任何编译错误或运行报错:双色球上线时
+// entryRequest 就少了 pick,表现是每一张票都被判成"选号不合法",整个玩法
+// 开得出来却玩不了,而没有任何一条日志说得清原因。有了这个函数,那条契约
+// 才有一个能被测试直接盯住的落点(见 ball_entry_test.go)。
+func entryInputOf(c *gin.Context, actNo string, req entryRequest) EntryInput {
+	return EntryInput{
+		ActNo:           actNo,
+		UserId:          c.GetInt("id"),
+		ClientRequestId: req.ClientRequestId,
+		OptNo:           req.OptNo,
+		Amount:          req.Amount,
+		Pick:            req.Pick,
+		ClientIp:        c.ClientIP(),
+		UserAgent:       c.Request.UserAgent(),
+	}
 }
 
 // entryReceipt 是报名回执 —— 用户事后举证的全部凭据。
@@ -379,8 +437,12 @@ type entryReceipt struct {
 	UserRef    string `json:"user_ref"`
 	Amount     int64  `json:"amount"`
 	OptNo      int    `json:"opt_no"`
-	Status     string `json:"status"`
-	CreatedAt  int64  `json:"created_at"`
+	// Pick 回执必须带**归一化之后**的选号,而不是让前端把自己提交的那串原样显示:
+	// 进链的是归一化后的字节,用户手里那份凭据若与链上的不是同一串,他事后拿它
+	// 去比对会得出"平台改了我的号"的错误结论。
+	Pick      string `json:"pick,omitempty"`
+	Status    string `json:"status"`
+	CreatedAt int64  `json:"created_at"`
 }
 
 // handleCreateEntry 是唯一会动钱的用户入口,已挂 CriticalRateLimit。
@@ -405,15 +467,7 @@ func handleCreateEntry(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	in := EntryInput{
-		ActNo:           act.ActNo,
-		UserId:          c.GetInt("id"),
-		ClientRequestId: req.ClientRequestId,
-		OptNo:           req.OptNo,
-		Amount:          req.Amount,
-		ClientIp:        c.ClientIP(),
-		UserAgent:       c.Request.UserAgent(),
-	}
+	in := entryInputOf(c, act.ActNo, req)
 	// 阈值判定必须用**本次真正要扣的金额**,不是活动的基准参与费:竞猜的投注额
 	// 由用户自选,按 stake_quota 判定等于让一个基准费 1000、上限 500 万的盘口
 	// 完全绕过二次验证 —— 而这道闸门存在的理由正是"盗号者能用参与把余额烧光"。
@@ -444,6 +498,7 @@ func handleCreateEntry(c *gin.Context) {
 		UserRef:    entry.UserRef,
 		Amount:     entry.Amount,
 		OptNo:      entry.OptNo,
+		Pick:       entry.Pick,
 		Status:     entry.Status,
 		CreatedAt:  entry.CreatedAt,
 	})
@@ -464,16 +519,22 @@ type wonView struct {
 }
 
 type myEntryView struct {
-	EntryNo   string   `json:"entry_no"`
-	ActNo     string   `json:"act_no"`
-	Title     string   `json:"title"`
-	Kind      string   `json:"kind"`
-	Seq       int      `json:"seq"`
-	ChainHash string   `json:"chain_hash"`
-	UserRef   string   `json:"user_ref"`
-	Amount    int64    `json:"amount"`
-	Status    string   `json:"status"`
-	OptNo     int      `json:"opt_no"`
+	EntryNo   string `json:"entry_no"`
+	ActNo     string `json:"act_no"`
+	Title     string `json:"title"`
+	Kind      string `json:"kind"`
+	Seq       int    `json:"seq"`
+	ChainHash string `json:"chain_hash"`
+	UserRef   string `json:"user_ref"`
+	Amount    int64  `json:"amount"`
+	Status    string `json:"status"`
+	OptNo     int    `json:"opt_no"`
+	// Pick 是双色球那张票买的号(归一化格式)。非双色球恒为空串。
+	//
+	// 它必须在"我的参与"里长期看得见:选号是这张票唯一由用户决定的内容,
+	// 而事后争议的第一句话永远是"我买的明明是那一组"。回执弹窗关掉就没了,
+	// 这份列表才是留得住的那一份。
+	Pick      string   `json:"pick,omitempty"`
 	Won       *wonView `json:"won"`
 	CreatedAt int64    `json:"created_at"`
 }
@@ -542,7 +603,8 @@ func handleListMyEntries(c *gin.Context) {
 	for _, e := range rows {
 		v := myEntryView{
 			EntryNo: e.EntryNo, Seq: e.Seq, ChainHash: e.ChainHash, UserRef: e.UserRef,
-			Amount: e.Amount, Status: e.Status, OptNo: e.OptNo, CreatedAt: e.CreatedAt,
+			Amount: e.Amount, Status: e.Status, OptNo: e.OptNo, Pick: e.Pick,
+			CreatedAt: e.CreatedAt,
 		}
 		if a, ok := acts[e.ActId]; ok {
 			v.ActNo, v.Title, v.Kind = a.ActNo, a.Title, a.Kind

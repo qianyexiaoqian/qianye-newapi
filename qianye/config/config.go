@@ -43,6 +43,7 @@ type Config struct {
 	Availability    Availability    `yaml:"availability"`
 	Violation       Violation       `yaml:"violation"`
 	GroupMatrix     GroupMatrix     `yaml:"group_matrix"`
+	GroupNamespace  GroupNamespace  `yaml:"group_namespace"`
 	PlanEntitlement PlanEntitlement `yaml:"plan_entitlement"`
 	Lottery         Lottery         `yaml:"lottery"`
 
@@ -570,6 +571,71 @@ type PlanEntitlement struct {
 
 // On 表示套餐解锁是否启用(默认启用)。
 func (p PlanEntitlement) On() bool { return boolOr(p.Enabled, true) }
+
+// GroupNamespace 「用户分组 / 模型分组彻底分家」的登记表与三个闸门。
+//
+// 它与 group_matrix 是**正交**的两件事,刻意不并段:
+//
+//	group_matrix     哪个用户分组**可以选**哪些模型分组(成员资格)
+//	group_namespace  哪些名字是用户分组、哪些是模型分组(登记),
+//	                 以及**没有令牌分组时该用哪个模型分组**(默认解析)
+//
+// 两者的失败方向也相反:group_matrix 关掉是让收紧失效,本段关掉是让已配好的
+// 默认模型分组失效 —— 后者的表现是那些用户分组的空分组令牌当场回到 503。
+type GroupNamespace struct {
+	// Enabled 是 L1 kill switch。关掉时三个 hook 全部恒等返回上游语义,
+	// **不依赖扩展库可达性**(读的是 YAML 快照的一次 atomic load)。
+	Enabled bool `yaml:"enabled"`
+
+	// CacheSeconds 是登记快照的刷新周期。默认模型分组的解析在 relay 热路径上。
+	CacheSeconds int `yaml:"cache_seconds"`
+	// MaxStaleSeconds 超过即限频告警,但**绝不丢弃快照**(理由同 group_matrix)。
+	MaxStaleSeconds int `yaml:"max_stale_seconds"`
+
+	// DefaultModelGroupEnabled 是「用户分组的默认模型分组」的独立子开关,默认打开。
+	//
+	// 独立于 Enabled 是刻意的:出事时要能单独摘掉解析,而保留登记表与管理端
+	// (那一侧是只读的、没有任何风险)。反过来则不允许 —— 登记表关掉时解析必须
+	// 一起关掉,因为解析的判据就在登记表里。
+	//
+	// *bool:普通 bool 的零值会让"没写"与"想清楚了、显式关掉"变成同一个字节,
+	// 而这一项少写一行的表现是「配好的默认模型分组一个都不生效、界面却显示配好了」。
+	DefaultModelGroupEnabled *bool `yaml:"default_model_group_enabled"`
+
+	// MissingRatioPolicy ∈ {legacy_one, deny},默认 legacy_one。
+	//
+	// legacy_one:模型分组不在 GroupRatio 里时,上游 fail-open 静默按 1.0 计费
+	//            (但每一笔都带 admin_info.group_ratio_missing 标记)。= 上游行为。
+	// deny:      在 **middleware/auth.go 的鉴权处** 403。刻意不在计费处拒绝 ——
+	//            计费处报错时上游 token 已经烧掉了,鉴权处拒绝时请求还没花钱。
+	//
+	// 翻 deny 的前提:失配登记簿计数连续为零,且
+	// `(abilities enabled 行的模型分组) ∖ (GroupRatio 键)` 差集为空。
+	// 翻错了回 legacy_one,纯开关、不需要数据库活着。
+	MissingRatioPolicy string `yaml:"missing_ratio_policy"`
+
+	// FundingGateMode ∈ {off, shadow, enforce},默认 off。
+	//
+	// 「套餐解锁的模型分组,在套餐额度用尽之后还能不能改由钱包出资」这一档闸门。
+	// off = 逐位等于上游;shadow = 只记录"本可拒绝"的笔数;enforce = 真的拒绝。
+	//
+	// 默认 off 而不是 shadow:shadow 也会读一次 per-user 缓存,而"上线当天零新增
+	// I/O"必须是结构性事实,不是某个参数的副产品。
+	FundingGateMode string `yaml:"funding_gate_mode"`
+
+	// AutoBackfill 控制启动后是否自动把观测到的分组名回填进两张登记表,默认打开。
+	//
+	// 回填是纯描述性的:它只把 users.group / abilities.group / GroupRatio 键里
+	// **已经存在**的名字登记一遍,initial default_mode 恒为 inherit,
+	// 因此回填本身零行为变化。关掉它只会让管理端两张表是空的。
+	AutoBackfill *bool `yaml:"auto_backfill"`
+}
+
+// DefaultModelGroupOn 表示默认模型分组解析是否打开(默认打开)。
+func (g GroupNamespace) DefaultModelGroupOn() bool { return boolOr(g.DefaultModelGroupEnabled, true) }
+
+// AutoBackfillOn 表示是否自动回填登记表(默认打开)。
+func (g GroupNamespace) AutoBackfillOn() bool { return boolOr(g.AutoBackfill, true) }
 
 // Lottery 娱乐功能:抽奖(kind=draw)与竞猜(kind=guess)共用一套配置。
 //

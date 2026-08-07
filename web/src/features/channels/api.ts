@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { getGroups as getUserGroups } from '@/features/users/api'
+import { getModelGroupOptions } from '@/features/users/api'
 import { api, type ApiRequestConfig } from '@/lib/api'
 
 import type {
@@ -625,9 +625,13 @@ export async function getOllamaVersion(
 // ============================================================================
 
 /**
- * Get all available groups (re-exported from users API for convenience)
+ * 渠道分组下拉的候选清单。
+ *
+ * 渠道的 group 字段是**模型分组**（它决定这批渠道属于哪个池子），所以这里走
+ * `/api/model-group/options` 而不是用户分组那一份。此前两者共用同一个
+ * `/api/group/`，是「两种分组混在一个命名空间里」在前端的具体表现。
  */
-export const getGroups = getUserGroups
+export const getGroups = getModelGroupOptions
 
 // ============================================================================
 // Prefill Groups (Model Groups)

@@ -493,6 +493,36 @@ violation:
 #    上线顺序:先 enabled: true 但不建任何 scope 行(全站仍走上游)→ 跑一次
 #    /api/qy/admin/group-matrix/orphans 拿基线 → 挑最小的分组建 scope 行、
 #    mode=shadow 观察 → 用 /preview 看影响面 → 再切 enforce。永远不批量切。
+# 「用户分组 / 模型分组彻底分家」的登记表与三个闸门。
+#
+# 与 group_matrix 正交,刻意分成两段:
+#   group_matrix     哪个用户分组**可以选**哪些模型分组(成员资格)
+#   group_namespace  哪些名字是用户分组、哪些是模型分组(登记),
+#                    以及**没有令牌分组时该用哪个模型分组**(默认解析)
+#
+# 少写这一整段的表现是:已经配好的默认模型分组一条都不生效 —— 那些用户分组下的
+# 空分组令牌立刻回到「503 无可用渠道」,而管理端页面上默认值显示得好好的。
+group_namespace:
+  enabled: false
+  cache_seconds: 30                  # 登记快照的刷新周期(默认模型分组解析在 relay 热路径上)
+  max_stale_seconds: 300             # 陈旧上限。超过只告警,**绝不丢弃快照**
+  # 「用户分组的默认模型分组」的独立子开关,默认打开。
+  # 出事时可以单独摘掉解析而保留登记表与管理端(那一侧只读、零风险)。
+  default_model_group_enabled: true
+  # 模型分组不在分组倍率表(GroupRatio)里时怎么办:
+  #   legacy_one 上游行为:fail-open 静默按 1.0 倍计费
+  #              (但现在每一笔都带 other.admin_info.group_ratio_missing 标记,可定位可补差)
+  #   deny       在 **middleware/auth.go 的鉴权处** 403。刻意不在计费处拒绝 ——
+  #              计费处报错时上游 token 已经烧掉了,鉴权处拒绝时请求还没花钱。
+  # 翻 deny 之前必须先让失配计数清零,否则等于一次全站 403。
+  missing_ratio_policy: legacy_one
+  # 「套餐解锁的模型分组,在套餐额度用尽之后还能不能改由钱包出资」。
+  #   off      逐位等于上游(默认)。上线当天零新增 I/O 是结构性事实,不是参数副产品
+  #   shadow   只记录"本可拒绝"的笔数,请求照常放行
+  #   enforce  真的拒绝(错误码刻意不是额度不足,避免误触发订阅回落)
+  funding_gate_mode: "off"          # YAML 1.1 里裸 off 是布尔假,这里必须加引号
+  auto_backfill: true                # 是否自动把观测到的分组名回填进两张登记表
+
 group_matrix:
   enabled: false
   cache_seconds: 30                  # 清单内存快照的刷新周期(清单读取在 relay 热路径上)

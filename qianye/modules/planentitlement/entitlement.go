@@ -52,6 +52,14 @@ const (
 type userEntry struct {
 	PlanIds  []int
 	LoadedAt int64
+	// FundedPlanIds 是 PlanIds 中**此刻仍有余额**的那些(amount_total <= 0 视为
+	// 不限量)。它与 PlanIds 在**同一次**查询里取出,零额外查询、零额外往返 ——
+	// 这是「套餐耗尽闸门」能挂在钱包出资决策上而不引入新 I/O 的全部原因。
+	//
+	// 精度说明:它与 model.PreConsumeUserSubscription 事务内的真实余额之间有一个
+	// 缓存周期的滞后,与 ExpiresAt 承担的滞后同量级。因此它只用于**放行/影子**
+	// 判定的宽松侧(不确定即视为有余额),绝不用来代替事务内的扣减校验。
+	FundedPlanIds []int
 	// ExpiresAt 是这批订阅里**最早**的 end_time(没有订阅时为 0)。
 	//
 	// 缓存条目里只放 planIds 的话,一条订阅自然到期之后,本节点在整个新鲜期
@@ -228,11 +236,14 @@ func loadActivePlanIds(ctx context.Context, userId int) ([]int, error) {
 		// 顺手把 end_time 也取出来:候选按 end_time asc 排,第一条就是最早到期的
 		// 那一条,它决定这份结论什么时候必然失效(见 userEntry.ExpiresAt)。
 		rows := make([]struct {
-			PlanId  int   `gorm:"column:plan_id"`
-			EndTime int64 `gorm:"column:end_time"`
+			PlanId        int   `gorm:"column:plan_id"`
+			EndTime       int64 `gorm:"column:end_time"`
+			AmountTotal   int64 `gorm:"column:amount_total"`
+			AmountUsed    int64 `gorm:"column:amount_used"`
+			NextResetTime int64 `gorm:"column:next_reset_time"`
 		}, 0, 4)
 		err := model.DB.WithContext(ctx).Model(&model.UserSubscription{}).
-			Select("plan_id", "end_time").
+			Select("plan_id", "end_time", "amount_total", "amount_used", "next_reset_time").
 			Where("user_id = ? AND status = ? AND end_time > ?", userId, statusActive, common.GetTimestamp()).
 			Order("end_time asc, id asc").
 			Find(&rows).Error
@@ -240,15 +251,33 @@ func loadActivePlanIds(ctx context.Context, userId int) ([]int, error) {
 			return nil, err
 		}
 		ids := make([]int, 0, len(rows))
+		funded := make([]int, 0, len(rows))
 		expiresAt := int64(0)
+		nowTs := common.GetTimestamp()
 		for _, row := range rows {
 			ids = append(ids, row.PlanId)
+			// amount_total <= 0 是上游的"不限量"口径(见 model.PreConsumeUserSubscription
+			// 的 `if sub.AmountTotal > 0` 分支),不是"额度为零"。
+			//
+			// next_reset_time 已过 ⇒ **视为有余额**。上游的周期重置是懒执行的:
+			// 只在 PreConsumeUserSubscription 的事务内(maybeResetUserSubscriptionWithPlanTx)
+			// 或 1 分钟一跳的 master-node 后台任务里才把 amount_used 归零。因此在重置
+			// 到期点之后、重置真正落库之前,一张刚续期的套餐会被这里判成"已耗尽" ——
+			// 而套餐耗尽闸门返回的是 AccessDenied 而不是 InsufficientUserQuota,
+			// wallet_first 连 trySubscription 回落都不会发生,**而 trySubscription 恰恰是
+			// 唯一能触发那次重置的路径**,所以这一档不会自愈。窗口 = 后台任务的 ≤1min
+			// 抖动 + per-user 缓存;IsMasterNode 误配时窗口无上界。
+			resetDue := row.NextResetTime > 0 && row.NextResetTime <= nowTs
+			if row.AmountTotal <= 0 || row.AmountUsed < row.AmountTotal || resetDue {
+				funded = append(funded, row.PlanId)
+			}
 			if expiresAt == 0 || row.EndTime < expiresAt {
 				expiresAt = row.EndTime
 			}
 		}
 		getUserCache().Set(userId, userEntry{
-			PlanIds: ids, LoadedAt: common.GetTimestamp(), ExpiresAt: expiresAt,
+			PlanIds: ids, FundedPlanIds: funded,
+			LoadedAt: common.GetTimestamp(), ExpiresAt: expiresAt,
 		})
 		return ids, nil
 	})
@@ -314,4 +343,25 @@ func userCacheStats() map[string]any {
 		"stale_seconds":   maxStaleSeconds(),
 		"negative_second": negativeCacheSeconds(),
 	}
+}
+
+// activeFundedPlanIds 返回该用户**此刻仍有余额**的活跃套餐 id。
+//
+// 它不发任何新查询:余额与 planIds 在同一次回源里取出(见 userEntry.FundedPlanIds),
+// 这里只是把已经在缓存里的那一半读出来。先调 activePlanIds 是为了复用它那三档
+// 新鲜度判定(新鲜 / serve-stale / 冷回源),不重写第二份。
+//
+// 第二个返回值为 false 表示"这个答案不可信"。调用方(套餐耗尽闸门)的 fail 方向
+// 与本文件其余部分**相反**:那里不确定即视为**有余额**(放行)。理由是那条路径
+// 拒绝的是已付款用户的一次请求,而 fail-closed 会让他在缓存抖动时突然被挡;
+// 而本文件其余部分的 fail-closed 保护的是"读失败不要变成免费解锁"。
+func activeFundedPlanIds(userId int) ([]int, bool) {
+	if _, ok := activePlanIds(userId); !ok {
+		return nil, false
+	}
+	e, found, err := getUserCache().Get(userId)
+	if err != nil || !found {
+		return nil, false
+	}
+	return e.FundedPlanIds, true
 }

@@ -241,6 +241,16 @@ func applyDefaults(c *Config) {
 	intDefault(&gm.MaxGrants, 2000)
 	adoptRetiredNewGroupDeny(gm)
 
+	gn := &c.GroupNamespace
+	intDefault(&gn.CacheSeconds, 30)
+	intDefault(&gn.MaxStaleSeconds, 300)
+	if gn.MissingRatioPolicy == "" {
+		gn.MissingRatioPolicy = MissingRatioPolicyLegacyOne
+	}
+	if gn.FundingGateMode == "" {
+		gn.FundingGateMode = FundingGateOff
+	}
+
 	pe := &c.PlanEntitlement
 	intDefault(&pe.CacheSeconds, 30)
 	intDefault(&pe.UserCacheSeconds, 60)

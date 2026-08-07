@@ -54,8 +54,11 @@ export type UseQyPlanUnlockGroupsResult = {
   /** 已绑定、但已经不在候选里的名字（运营把它从分组倍率表里删了）。 */
   orphans: string[]
   /**
-   * 该套餐余额的使用范围。选择这一项要去行操作里的完整弹窗（那里有影响面与
-   * 现算倍率）；抽屉里唯一能动它的是下面那个 `resetScopeToUniversal`。
+   * 该套餐余额的使用范围。
+   *
+   * 它与解锁清单是**同一个决定的两半**，所以两者在同一张表单里编辑（见
+   * `setBalanceScope`）。行操作里的完整弹窗仍然保留，它多出来的是影响面人数与
+   * 现算倍率表 —— 那两块是"改之前先看一眼"，不是"配置"。
    */
   balanceScope: QyPlanBalanceScope
   /**
@@ -69,11 +72,24 @@ export type UseQyPlanUnlockGroupsResult = {
   restrictedWithoutBinding: boolean
   toggle: (group: string) => void
   /**
+   * 选择余额使用范围。
+   *
+   * ── 为什么这一项必须和解锁清单在同一张表单里 ──
+   *
+   * 「解锁哪些模型分组」与「这笔额度能花在什么上」是同一个决定的两半，而第二半
+   * 只有在第一半非空时才有意义。分在两个入口里时，运营会在一个零绑定的套餐上
+   * 把范围设成「仅限」，而那是一份**任何请求都用不上的死钱**（用户看得见余额、
+   * 花不掉、到期作废）—— 那正是 `restrictedWithoutBinding` 拦的东西，而拦得住的
+   * 前提是两半在同一次编辑里都看得见。
+   */
+  setBalanceScope: (scope: QyPlanBalanceScope) => void
+  /**
    * 把余额范围改回「通用」。
    *
-   * 这是 `restrictedWithoutBinding` 在**抽屉内部**的出口。少了它，候选清单为空
-   * 时（运营刚把那个模型分组从倍率表里删了）勾选框里没有任何可勾的东西，
-   * 而抽屉又不提供范围选择 —— 这个状态就再也走不出去了。
+   * 这是 `restrictedWithoutBinding` 的一键出口。有了 `setBalanceScope` 之后它
+   * 不再是唯一出路，但仍然值得留着：候选清单为空时（运营刚把那个模型分组从
+   * 倍率表里删了）勾选框里没有任何可勾的东西，此刻唯一能解开的动作就是改回通用，
+   * 而把它摆在红字旁边比让运营自己去上面那两个选项里找要快一步。
    */
   resetScopeToUniversal: () => void
   /**
@@ -255,6 +271,7 @@ export function useQyPlanUnlockGroups(args: {
     balanceScope,
     restrictedWithoutBinding,
     toggle,
+    setBalanceScope,
     resetScopeToUniversal,
     saveIfChanged,
   }

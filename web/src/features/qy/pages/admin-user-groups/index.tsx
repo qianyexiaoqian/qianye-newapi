@@ -116,7 +116,7 @@ const QY_UG_NO_GROUPS: readonly QyGmUserGroup[] = []
 export function QyAdminUserGroups() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  // 这个组件有两个入口：`/system-settings/billing/user-groups`（超管专属），以及
+  // 这个组件有两个入口：`/system-settings/billing/group-matrix`（超管专属），以及
   // 旧路由 `/qy/admin/group-matrix` —— 后者**专门**留给普通管理员（role=10），
   // 因为本页的后端一直是 `AdminAuth`。空态里的指路必须跟着分叉：把够不着
   // `/system-settings` 的人指过去，他拿到的是一个没有解释的 403，而空态是这一页

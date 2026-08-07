@@ -352,6 +352,43 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 
 	// 钱包路径需要先检查用户额度
 	tryWallet := func() (*BillingSession, *types.NewAPIError) {
+		// 套餐耗尽闸门:这个模型分组还有没有资格由**钱包**出资。
+		//
+		// 落点必须是这里而不是别处:四种计费偏好(wallet_only / wallet_first /
+		// subscription_first 的回落 / subscription_only 的非订阅分支)全部经由这个
+		// 闭包,而闭包内第一行是唯一没有函数边界可挂的位置。
+		//
+		// 判据不是"用户分组含不含它",而是 QyModelGroupFundingAllowed 那个
+		// 带布尔参数的成员资格函数(见 service/qy_groupns_export.go):
+		// wallet_first 会在套餐**尚有余额**时就先走钱包,纯用户分组判据会在那一刻
+		// 把付费用户挡死,而且拿不到 InsufficientUserQuota 就连订阅回落都触发不了。
+		//
+		// 默认实现恒返回 (true, "") ⇒ 逐位等于上游。
+		if allowed, reason := QyModelGroupFundingAllowed(
+			relayInfo.UserId, relayInfo.UserGroup, relayInfo.UsingGroup, true); !allowed {
+			// ── 上游的 allow_wallet_overflow 是同一个问题上的**显式**答案,它赢 ──
+			//
+			// 「套餐额度用完之后允许用钱包继续付」是运营在套餐上勾出来的开关,语义与
+			// 本闸门要判的事逐字相同。两个判据同时存在而新的那个无条件胜出,就是把一个
+			// 明确配置过的行为静默推翻 —— 而且错误码刻意避开了 InsufficientUserQuota,
+			// 连排查时的"额度不足"线索都没有。所以拒绝之前先问一次上游那个开关。
+			//
+			// 只在拒绝分支查库:这一档是"套餐已耗尽 + 用户分组不含该模型分组",量极小,
+			// 而闸门默认是 off。查库失败按**放行**处理,与本闸门整体的 fail 方向一致。
+			allowOverflow, overflowErr := model.UserActiveSubscriptionsAllowWalletOverflow(
+				relayInfo.UserId, relayInfo.UsingGroup)
+			if overflowErr != nil {
+				logger.LogError(c, "套餐耗尽闸门读取 allow_wallet_overflow 失败(已放行): "+overflowErr.Error())
+				allowOverflow = true
+			}
+			if !allowOverflow {
+				// **不得**用 ErrorCodeInsufficientUserQuota:那个 code 会触发 wallet_first
+				// 的 trySubscription 回落,而本闸门拒绝的前提正是"订阅已经没钱了"。
+				return nil, types.NewErrorWithStatusCode(
+					fmt.Errorf("%s", reason), types.ErrorCodeAccessDenied, http.StatusForbidden,
+					types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+			}
+		}
 		userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())

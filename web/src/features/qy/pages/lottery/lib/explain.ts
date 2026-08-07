@@ -102,8 +102,19 @@ export type QyLotExplainBall = {
   myBlues: number[]
   matchRed: number
   matchBlue: number
-  /** 各档的命中要求，供用户自己对照。**本实现不替他判定档位**，见下。 */
+  /** 各档的命中要求，供用户逐条对照。 */
   tierNeeds: { tier: number; name: string; red: number; blue: number }[]
+  /**
+   * 命中的奖级；`null` = 一档都没中（这是一等公民结果，不是异常分支）。
+   *
+   * 它按后端 `MatchTier` 的同一条规则本地判定：tier 升序、`红命中 ≥ red_match
+   * && 蓝命中 ≥ blue_match` 命中即停、一张票只中一档。这一步是
+   * (matchRed, matchBlue, 门槛表) 的纯函数，不可能算出与后端不同的结果。
+   *
+   * **刻意只给档位，不给金额**：浮动奖档发多少取决于本期奖池与同档中签人数，
+   * 那两个量不在这份证据链里，本地复算不了。给一个半真的金额比不给更糟。
+   */
+  hitTier: number | null
 }
 
 export type QyLotExplain =
@@ -166,6 +177,16 @@ export async function explainQyLotResult(
       proof.ball_blue_pick ?? 0
     )
     const { reds, blues } = qyLotParsePick(mine.pick ?? '')
+    const matchRed = reds.filter((ball) => drawnReds.includes(ball)).length
+    const matchBlue = blues.filter((ball) => drawnBlues.includes(ball)).length
+    const tierNeeds = tiers
+      .map((tier) => ({
+        tier: tier.tier,
+        name: tier.name,
+        red: tier.red_match ?? 0,
+        blue: tier.blue_match ?? 0,
+      }))
+      .sort((a, b) => a.tier - b.tier)
     return {
       blocked: null,
       mode: 'ball',
@@ -173,16 +194,14 @@ export async function explainQyLotResult(
       drawnBlues,
       myReds: reds,
       myBlues: blues,
-      matchRed: reds.filter((ball) => drawnReds.includes(ball)).length,
-      matchBlue: blues.filter((ball) => drawnBlues.includes(ball)).length,
-      // 只摆出各档要求，**不替用户下"你中了几等奖"的结论**：那一步还牵涉
-      // 跨期奖池的浮动奖分配，本地没有复算它，给一个半真的结论比不给更糟。
-      tierNeeds: tiers.map((tier) => ({
-        tier: tier.tier,
-        name: tier.name,
-        red: tier.red_match ?? 0,
-        blue: tier.blue_match ?? 0,
-      })),
+      matchRed,
+      matchBlue,
+      tierNeeds,
+      // 与后端 MatchTier 逐字对应：tier 升序、命中即停、一张票只中一档。
+      // 金额仍然不算（见 QyLotExplainBall.hitTier 的说明）。
+      hitTier:
+        tierNeeds.find((need) => matchRed >= need.red && matchBlue >= need.blue)
+          ?.tier ?? null,
     }
   }
 

@@ -199,6 +199,18 @@ func getModelListGroups(c *gin.Context) (modelListGroups, error) {
 	if tokenGroup != "" {
 		group = tokenGroup
 	}
+	// 空分组令牌:模型清单必须按**鉴权处解析出来的 UsingGroup** 算,不是 users.group。
+	//
+	// middleware/auth.go 会为空分组令牌解析「用户分组的默认模型分组」并写进
+	// ContextKeyUsingGroup;真正的路由(distributor / channel_select)也按它走。
+	// 这里继续用 users.group 的话,GET /v1/models 与 POST /v1/chat/completions
+	// 会对同一个 Key 给出两套模型集合:pin 到一个 users.group 不兼作模型分组的
+	// 池子时,清单是空的(几乎所有 SDK 的首次握手都会先打这个接口,用户看到
+	// 「该 Key 没有任何可用模型」),而请求本身却是通的;反向则会列出一发就 503
+	// 的模型。inherit(默认)与显式令牌分组两档下 UsingGroup 逐位等于原值。
+	if usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup); usingGroup != "" {
+		group = usingGroup
+	}
 	return modelListGroups{
 		userGroup:   userGroup,
 		tokenGroup:  tokenGroup,

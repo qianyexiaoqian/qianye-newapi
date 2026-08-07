@@ -118,10 +118,22 @@ export function withQySystemSettingsNavGroups(
  * 与 `features/system-settings/billing/section-registry.tsx` 里那一项的 `id`
  * 对应。写在 qy 这一侧而不是上游那一侧：上游文件只登记「有这么一个 section」，
  * 「什么时候该看得见」是扩展自己的事。
+ *
+ * 拆页之后这个集合是**空的**，而且必须是空的。
+ *
+ * ── 为什么连矩阵那一页也不能摘 ──
+ *
+ * 「用户分组」与「模型分组」两页读写的全是上游 `options`（充值折扣 / 兜底倍率 /
+ * auto 顺序），扩展关掉时它们当然要照常可见。矩阵那一页此前被列在这里，但拆页
+ * 之后它同时是全局「用户可选分组」清单（上游 option `UserUsableGroups`）的
+ * **唯一编辑器** —— 摘掉入口就等于扩展一关，一个纯上游配置项从界面上彻底消失，
+ * 而 C 页那一列是只读、JSON 抽屉里那个字段也是只读。运营想让用户在令牌里选到
+ * 一个新建的模型分组，就只能靠猜出深链接。
+ *
+ * 页面本体在扩展关掉时已经有降级契约（后端 guard 回 404 → 中性空态），入口留着
+ * 才能明确告诉运营「矩阵没开，但可选清单在这儿改」，而不是变成一个静默消失的菜单。
  */
-const QY_BILLING_SECTION_URLS = new Set([
-  '/system-settings/billing/user-groups',
-])
+const QY_BILLING_SECTION_URLS = new Set<string>([])
 
 /**
  * 扩展关掉时，把扩展贡献的计费 section 从抽屉里摘掉。

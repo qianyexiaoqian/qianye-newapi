@@ -173,6 +173,26 @@ var moduleGates = []ModuleGate{
 		},
 	},
 	{
+		Module: "groupns", Section: "group_namespace", Key: "enabled",
+		// 缺这一段的后果分成两半,而危险的是后一半:
+		// 前一半(登记表与管理端三页)只是空着,一眼就能看出来;
+		// 后一半是**已经配好的默认模型分组一条都不生效** —— 那些用户分组的
+		// 空分组令牌当场回到「503 无可用渠道」,而管理端页面上默认值显示得好好的。
+		Effect: "两张分组登记表不再维护,管理端「用户分组 / 模型分组」两页为空;" +
+			"更要命的是已配置的「用户分组默认模型分组」全部失效 —— 那些用户分组下的" +
+			"空分组令牌立刻回到 503 无可用渠道,而管理端仍然把默认值显示得好好的",
+		Extra: []GateSwitch{
+			{
+				Key: "default_model_group_enabled", DefaultOn: true,
+				Effect: "默认模型分组解析不生效(空分组令牌回落 users.group)。*bool 且默认打开,不写不会静默失效",
+			},
+			{
+				Key: "auto_backfill", DefaultOn: true,
+				Effect: "不再自动登记新出现的分组名,两张表逐渐落后于现状。*bool 且默认打开",
+			},
+		},
+	},
+	{
 		Module: "lottery", Section: "lottery", Key: "enabled",
 		Effect: "引导端点下发 features.lottery=false,前端整个娱乐入口不渲染,用户端与创建接口 404",
 	},

@@ -243,7 +243,7 @@ describe('死钱状态在抽屉内部走得出去', () => {
     assert.equal(
       hook.read().restrictedWithoutBinding,
       false,
-      '判据恒真了：抽屉里余额范围只读、候选清单又是空的，' +
+      '判据恒真了：候选清单是空的，勾选框里没有任何可勾的东西，' +
         '运营在这个抽屉内部再也无法让它变回 false'
     )
   })
@@ -270,6 +270,61 @@ describe('死钱状态在抽屉内部走得出去', () => {
       false,
       '勾上一个仍然存在的模型分组之后，这笔余额已经花得掉了'
     )
+  })
+})
+
+/* ── 2b. 余额范围现在是抽屉里的一个真杠杆 ───────────────────────────── */
+
+describe('余额使用范围在套餐表单里可选', () => {
+  test('选「仅限」而没有任何有效绑定：当场变成死钱，且拒写', async () => {
+    // 这条判据此前只可能被行操作那个弹窗触发（抽屉里范围是只读的）。
+    // 范围搬进抽屉之后它多了一个入口，而入口多一个、拦不住就多一份死钱。
+    seed(211, {
+      unlock_groups: [],
+      model_group_candidates: ['A'],
+      balance_scope: 'universal',
+    })
+    const hook = await mountHook(211)
+    const before = puts.length
+
+    await hook.run((h) => h.setBalanceScope('restricted'))
+    assert.equal(hook.read().restrictedWithoutBinding, true)
+    assert.equal(await hook.save(), 'blocked')
+    assert.equal(puts.length, before, '被挡住时不该有任何写入发出去')
+  })
+
+  test('选「仅限」并勾上一个仍然存在的分组：范围要真的落库', async () => {
+    // 后端在缺 balance_scope 时按 universal 处理 —— 也就是静默把「仅限」改回
+    // 「通用」。所以这次写入必须**带着新范围**，只发清单等于白改。
+    seed(212, {
+      unlock_groups: [],
+      model_group_candidates: ['A'],
+      balance_scope: 'universal',
+    })
+    const hook = await mountHook(212)
+
+    await hook.run((h) => h.setBalanceScope('restricted'))
+    await hook.run((h) => h.toggle('A'))
+    assert.equal(hook.read().restrictedWithoutBinding, false)
+    assert.equal(await hook.save(), 'saved')
+
+    const last = puts.at(-1)
+    assert.equal(last?.planId, 212)
+    assert.equal(last?.body.balance_scope, 'restricted')
+    assert.deepEqual(last?.body.unlock_groups, ['A'])
+  })
+
+  test('只改范围、不动清单：同样要落库', async () => {
+    seed(213, {
+      unlock_groups: ['A'],
+      model_group_candidates: ['A'],
+      balance_scope: 'universal',
+    })
+    const hook = await mountHook(213)
+
+    await hook.run((h) => h.setBalanceScope('restricted'))
+    assert.equal(await hook.save(), 'saved')
+    assert.equal(puts.at(-1)?.body.balance_scope, 'restricted')
   })
 })
 
@@ -388,5 +443,41 @@ describe('套餐表单的提交按钮', () => {
         '让整张表单为解锁那一格陪葬，运营在别处删掉一个被引用的模型分组之后，' +
         '这个套餐连标题都改不了'
     )
+  })
+})
+
+/* ── 5. 抽屉确实把这两件事摆出来了 ──────────────────────────────────── */
+
+describe('套餐表单说清了这笔额度怎么用', () => {
+  const drawerSource = () => readFileSync(drawerPath, 'utf8')
+
+  test('余额使用范围在抽屉里可选，不是只读', () => {
+    const source = drawerSource()
+    assert.ok(
+      source.includes('QyPlanBalanceScopeField'),
+      '「这笔余额能花在哪」与「解锁哪些分组」是同一个决定的两半：' +
+        '范围退回另一个弹窗之后，运营会在零绑定的套餐上把它设成「仅限」，' +
+        '而那是一份用户看得见、花不掉、到期作废的死钱'
+    )
+    assert.ok(
+      source.includes('unlockGroups.setBalanceScope'),
+      '选择器必须接在 hook 的 setBalanceScope 上 —— 接在别处的本地 state 上，' +
+        '选出来的值不会进入 saveIfChanged 的比对，界面改了而库里没改'
+    )
+  })
+
+  test('额度用尽后的两种后果都写出来了', () => {
+    const source = drawerSource()
+    for (const key of [
+      'qy_plan_wallet_overflow_on_hint',
+      'qy_plan_wallet_overflow_off_hint',
+    ]) {
+      assert.ok(
+        source.includes(key),
+        `缺 ${key}：这个开关此前只有一个标签、不勾的后果一个字都没写，` +
+          '而不勾的后果是持有该套餐的用户被「订阅额度不足」挡下、' +
+          '连自己的钱包余额也不许用'
+      )
+    }
   })
 })

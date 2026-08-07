@@ -88,6 +88,15 @@ export type QyLotEntryInput = {
   client_request_id: string
   /** 抽奖恒为 0；竞猜是所选选项的稳定编号。 */
   opt_no: number
+  /**
+   * 双色球选号 `03,05,12|02`。**非双色球必须不带**：后端对带号的普通抽奖是
+   * 拒绝而不是忽略（静默忽略会让一个填了号码的请求照常成功，用户以为自己买的
+   * 是那组号）。
+   *
+   * 机选与自选在协议上完全等价：机选只是本地的 `crypto.getRandomValues`，
+   * 服务端不区分——号码一旦进链两者的可验证性一模一样。
+   */
+  pick?: string
   pay_password?: string
 }
 

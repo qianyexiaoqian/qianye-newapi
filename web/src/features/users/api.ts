@@ -155,10 +155,34 @@ export async function resetUserTwoFA(id: number): Promise<ApiResponse> {
 }
 
 /**
- * Get all available groups
+ * 用户分组候选清单（`users.group` 的 distinct）。
+ *
+ * ── 为什么不是 `/api/group/` ──
+ *
+ * 那个端点返回的是 `options.GroupRatio` 的键，也就是**模型分组**清单，而它同时被
+ * 用户编辑下拉与渠道/令牌分组下拉消费 —— 这正是「用户分组下拉里出现模型分组」的
+ * 唯一根因。管理员在用户编辑页看到的是一堆渠道池子的名字（「三方对接渠道」
+ * 「模型特化角色扮演」这种一个用户都没有的纯模型分组），而真正在用的用户分组只要
+ * 没被配过倍率就不在列表里。把一个用户设成一个纯模型分组，users.group 里就凭空多出
+ * 一档人，而这个名字同时是一个渠道池子 —— 重名集合只增不减，与本轮的目标正好相反。
+ *
+ * 后端口径见 `controller/group.go` 的 `GetUserGroupOptions`。
  */
-export async function getGroups(): Promise<ApiResponse<string[]>> {
-  const res = await api.get('/api/group/')
+export async function getUserGroupOptions(): Promise<ApiResponse<string[]>> {
+  const res = await api.get('/api/user-group/options')
+  return res.data
+}
+
+/**
+ * 模型分组候选清单（`options.GroupRatio` 的键）。
+ *
+ * 消费方：渠道分组、令牌分组、auto 顺序、套餐解锁绑定 —— 全都是在问
+ * 「这次请求去哪个渠道池子」。后端口径见 `controller/group.go` 的
+ * `GetModelGroupOptions`；它与已弃用的 `/api/group/` 返回同一份数据，
+ * 但语义在接口名上就是明确的。
+ */
+export async function getModelGroupOptions(): Promise<ApiResponse<string[]>> {
+  const res = await api.get('/api/model-group/options')
   return res.data
 }
 

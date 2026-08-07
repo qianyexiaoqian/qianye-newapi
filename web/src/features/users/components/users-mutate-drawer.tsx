@@ -78,7 +78,7 @@ import {
   createUser,
   updateUser,
   getUser,
-  getGroups,
+  getUserGroupOptions,
   getPermissionCatalog,
 } from '../api'
 import { BINDING_FIELDS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
@@ -113,8 +113,10 @@ export function UsersMutateDrawer({
 
   // Fetch groups
   const { data: groupsData } = useQuery({
-    queryKey: ['groups'],
-    queryFn: getGroups,
+    // 键里带 user-：渠道/令牌下拉用的是模型分组那一份，两者共用一个
+    // ['groups'] 缓存键会让先加载的那一页把另一页的候选清单也换掉。
+    queryKey: ['user-group-options'],
+    queryFn: getUserGroupOptions,
     staleTime: 5 * 60 * 1000,
   })
 

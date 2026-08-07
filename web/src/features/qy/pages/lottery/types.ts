@@ -370,6 +370,25 @@ export type QyLotActivityBrief = {
   /** 抽奖没有奖池概念（平台出奖品），这里给的是奖品总额度 —— 对用户而言那才是"能赢多少"。 */
   prize_total_quota: number
   my_entry_count: number
+
+  // ── 双色球的卡面（`lot-v2`；老后端不下发，一律容忍 `undefined`）──
+  //
+  // 同一张卡上三个数的**含义整个变了**：`prize_total_quota` 对双色球恒是错的
+  // （浮动奖档的 `amount_quota` 恒为 0，Σ 会把一个滚了几期的大奖池算成 0），
+  // 「能赢多少」必须读 `pool_open_quota`。所以卡片按 `draw_mode` 换一套字段，
+  // 而不是换个徽章了事。
+  draw_mode?: QyLotDrawMode
+  series_no?: string
+  issue_no?: number
+  /** 本期真正可派发的池子（开局基数 + 本期投注入池部分），随投注实时变大。 */
+  pool_open_quota?: number
+  /** 号池四元组。有了它卡片就能自己按组合数算头奖概率，不必点进详情页。 */
+  ball_red_pool?: number
+  ball_red_pick?: number
+  ball_blue_pool?: number
+  ball_blue_pick?: number
+  /** 本期开奖号，规范化格式 `03,09,12|05`。开奖前为空串。 */
+  ball_result?: string
 }
 
 export type QyLotActivityDetail = {
@@ -411,6 +430,27 @@ export type QyLotActivityDetail = {
   pay_password_required: boolean
   /** 阈值本身，0 = 关闭。让投注额输入框旁边能直接写清"超过多少要验密码"。 */
   pay_password_threshold_quota: number
+
+  // ── 双色球期次（`lot-v2`；老后端不下发，一律容忍 `undefined`）──
+  //
+  // 号池下发的是**四个数**，不是各档中奖概率：概率是组合数的结果，前端自己算
+  // 就行（`lib/ball.ts`）。后端下发一个概率数字等于把双色球唯一的优势
+  // （概率不需要相信平台）丢掉。
+  series_no?: string
+  issue_no?: number
+  /** 本期此刻可派发的池子（开局基数 + 已投注的入池部分），随投注实时变大。 */
+  pool_open_quota?: number
+  /** 本期开局池的两个来源：平台新注资 / 上期滚存。两者都进承诺，可跨期复核守恒式。 */
+  pool_seed_quota?: number
+  pool_carry_quota?: number
+  /** 本期投注额进池子的万分比，其余是平台手续费。 */
+  pool_share_bps?: number
+  ball_red_pool?: number
+  ball_red_pick?: number
+  ball_blue_pool?: number
+  ball_blue_pick?: number
+  /** 本期开奖号 `03,09,12|05`。开奖前为空串。 */
+  ball_result?: string
 }
 
 // ───────────────────────────── 我的参与 ─────────────────────────────
@@ -423,6 +463,13 @@ export type QyLotEntryReceipt = {
   commit_hash: string
   user_ref: string
   amount: number
+  /**
+   * 双色球：**归一化之后**的选号（`03,05,12|02`）。
+   *
+   * 显示的必须是这一份而不是提交时那一串：进链的是归一化后的字节，两者不一致
+   * 时用户拿手里的串去比对证据链，会得出"平台改了我的号"的错误结论。
+   */
+  pick?: string
 }
 
 export type QyLotMyEntry = {
@@ -436,6 +483,13 @@ export type QyLotMyEntry = {
   amount: number
   status: QyLotEntryStatus
   opt_no: number
+  /**
+   * 双色球那张票买的号（归一化格式）。非双色球为空 / 缺席。
+   *
+   * 选号是这张票唯一由用户决定的内容，而事后争议的第一句话永远是「我买的明明
+   * 是那一组」。回执弹窗关掉就没了，这份列表才是留得住的那一份。
+   */
+  pick?: string
   /**
    * 中奖 / 赔付 / 退款 / 文本奖的结果；未中奖或尚未结算为 `null`。
    *

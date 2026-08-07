@@ -12,6 +12,7 @@ package model
 
 import (
 	"errors"
+	"sort"
 
 	"github.com/QuantumNous/new-api/common"
 
@@ -185,3 +186,60 @@ var (
 	// QyOnRedeemSuccess 在兑换码成功兑换后触发,用于充值返佣。
 	QyOnRedeemSuccess = func(userId int, redemptionId int, quota int) {}
 )
+
+// QyDistinctUserGroups 返回**在册用户**用到的全部用户分组名,已排序。
+//
+// 它是「用户分组下拉」的唯一口径。上游 controller/group.go 的 GetGroups 从
+// options.GroupRatio 的键返回,那是**模型分组**的清单 —— 用它喂用户编辑下拉,
+// 管理员看到的是一堆渠道池子的名字,而真正在用的用户分组只要没被配过倍率就消失了。
+//
+// deleted_at IS NULL:users 是软删除,漏掉它会让早已注销账号的历史分组一直挂在下拉里。
+func QyDistinctUserGroups() ([]string, error) {
+	var rows []struct {
+		Grp string `gorm:"column:grp"`
+	}
+	err := DB.Raw("SELECT DISTINCT " + commonGroupCol + " AS grp FROM users WHERE deleted_at IS NULL").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.Grp != "" {
+			out = append(out, row.Grp)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// QyPlanUserGroupsInUse 返回**现存套餐已经在用**的升降级分组名,已排序去重。
+//
+// 它存在的唯一理由是让存量行可编辑:一个历史套餐的 upgrade_group 指向的分组可能
+// 已经一个用户都没有了(那三个人到期降级或注销),而管理员接下来只是想改这个套餐的
+// **价格** —— PUT 会带上原有的 upgrade_group,于是一条与他正在做的事毫无关系的
+// 分组校验把他挡住,错误文案还指向分组。校验只该防新的手误,不该把存量数据锁死。
+func QyPlanUserGroupsInUse() ([]string, error) {
+	var rows []struct {
+		Up   string `gorm:"column:upgrade_group"`
+		Down string `gorm:"column:downgrade_group"`
+	}
+	if err := DB.Model(&SubscriptionPlan{}).
+		Select("upgrade_group", "downgrade_group").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		for _, name := range []string{row.Up, row.Down} {
+			if name != "" {
+				seen[name] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out, nil
+}

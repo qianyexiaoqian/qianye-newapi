@@ -509,7 +509,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
   // (用户分组, 模型分组) 一个标量，由「用户分组」页一处表达。
   //
   // 「分组矩阵」（`/qy/admin/group-matrix`）也已从本表移出：它整体搬进了上游
-  // 抽屉的「计费与支付 → 用户分组」那一组（见
+  // 抽屉的「计费与支付 → 用户分组可用的模型分组配置」那一项（见
   // `features/system-settings/billing/section-registry.tsx`），旧 url 只保留
   // 重定向。两个页面读写同一组数据、同一组端点，并存两个入口就意味着两份互不
   // 知情的草稿与两道各自为政的保存闸门，而写入是两库不原子的。

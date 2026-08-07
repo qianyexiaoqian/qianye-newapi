@@ -128,11 +128,15 @@ func TestQyPricingEntriesUseOnlyKnownRatioSources(t *testing.T) {
 		"GetCompletionRatio",
 		"GetCreateCacheRatio",
 		"GetDefaultModelPriceMap",
-		"GetGroupGroupRatio",
-		"GetGroupRatio",
 		"GetImageRatio",
 		"GetModelPrice",
 		"GetModelRatio",
+		// 分组倍率原本是 GetGroupGroupRatio + GetGroupRatio 两个取值口(本文件里就是
+		// 那段被复制了三份的 if)。本轮合并成 ratio_setting.ResolveGroupRatio 这一个
+		// 解析器,于是这里从两项变成一项 —— **少一项是结论,不是遗漏**:
+		// 计费路径不允许再直接碰那两个底层查表函数,由
+		// qianye/group_ratio_single_resolver_guard_test.go 钉死。
+		"ResolveGroupRatio",
 	}
 
 	file := qyParseFileOrFail(t, qyPriceGoPath)

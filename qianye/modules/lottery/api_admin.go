@@ -852,6 +852,8 @@ func handleAdminListActivities(c *gin.Context) {
 			ActiveCount: a.ActiveCount, PoolQuota: a.PoolQuota,
 			PayoutQuota: a.PayoutQuota, RefundQuota: a.RefundQuota,
 			PlatformFeeQuota: a.PlatformFeeQuota,
+			DrawMode:         a.DrawMode,
+			IssueNo:          a.IssueNo,
 			OpenFlagCount:    flagCounts[a.Id],
 			CreatedAt:        a.CreatedAt,
 		})
@@ -881,6 +883,12 @@ type adminActivityBrief struct {
 	PayoutQuota      int64 `json:"payout_quota"`
 	RefundQuota      int64 `json:"refund_quota"`
 	PlatformFeeQuota int64 `json:"platform_fee_quota"`
+
+	// DrawMode / IssueNo 让列表能把双色球与普通抽奖分开。两者的 kind 都是 draw,
+	// 不给这两位的话运营在列表上只能靠标题猜,而双色球那一行的 pool_quota
+	// (本期投注额)与它真正的奖池根本不是一回事。
+	DrawMode string `json:"draw_mode"`
+	IssueNo  int    `json:"issue_no"`
 
 	OpenFlagCount int   `json:"open_flag_count"`
 	CreatedAt     int64 `json:"created_at"`

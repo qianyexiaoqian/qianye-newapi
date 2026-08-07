@@ -193,6 +193,15 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'lottery', 'flags', actNo] as const,
   adminLotteryConfig: () =>
     [...qyKeys.all, 'admin', 'lottery', 'config'] as const,
+  /**
+   * 双色球期次系列（管理端）。
+   *
+   * 与活动列表分开：一个系列跨很多期，它持有号池（期与期之间不可变）与累计
+   * 注资上限，而活动行只是它的一期。混进活动的 key 会让"注资一笔"把整张活动
+   * 列表也一起失效掉。
+   */
+  adminLotterySeries: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'lottery', 'series', params] as const,
 
   /** API 地址簿（管理端，含已停用的行）。 */
   adminApiAddresses: () => [...qyKeys.all, 'admin', 'api-addresses'] as const,

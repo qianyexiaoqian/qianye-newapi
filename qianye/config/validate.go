@@ -154,6 +154,9 @@ func validate(c *Config) error {
 	if err := validateViolation(&c.Violation); err != nil {
 		return err
 	}
+	if err := validateGroupNamespace(&c.GroupNamespace); err != nil {
+		return err
+	}
 	if err := validateGroupMatrix(&c.GroupMatrix); err != nil {
 		return err
 	}
@@ -236,6 +239,55 @@ func validatePlanEntitlement(p *PlanEntitlement) error {
 			"qianye: plan_entitlement.user_max_stale_seconds(%d)不得小于 user_cache_seconds(%d),"+
 				"否则解锁快照一过新鲜期就直接作废,刷新失败时已付款用户会立刻失去他买到的分组",
 			p.UserMaxStaleSeconds, p.UserCacheSeconds)
+	}
+	return nil
+}
+
+// 分组登记的两个策略枚举。放在 config 包是因为 YAML 校验与模块判定必须读同一组
+// 字面量 —— 两处各写一份字符串,拼错的那一份会静默退化成"默认档",
+// 而默认档恰好是"什么都不做",于是配置写了、没生效、没有任何报错。
+const (
+	MissingRatioPolicyLegacyOne = "legacy_one"
+	MissingRatioPolicyDeny      = "deny"
+
+	FundingGateOff     = "off"
+	FundingGateShadow  = "shadow"
+	FundingGateEnforce = "enforce"
+)
+
+// validateGroupNamespace 校验分组登记的运行参数。
+//
+// 两个枚举**必须**在启动时校验:它们决定"要不要在鉴权处 403"与"要不要在出资处
+// 拒绝",而拼错一个字母的表现是静默退回默认档 —— 运营以为自己打开了严格模式,
+// 实际什么都没发生,而且没有任何提示。
+func validateGroupNamespace(g *GroupNamespace) error {
+	if !g.Enabled {
+		return nil
+	}
+	if g.CacheSeconds <= 0 {
+		return fmt.Errorf("qianye: group_namespace.cache_seconds 必须大于 0")
+	}
+	if g.MaxStaleSeconds < g.CacheSeconds {
+		return fmt.Errorf(
+			"qianye: group_namespace.max_stale_seconds(%d)不得小于 cache_seconds(%d),"+
+				"否则每个刷新周期都会先触发一次陈旧告警",
+			g.MaxStaleSeconds, g.CacheSeconds)
+	}
+	switch g.MissingRatioPolicy {
+	case MissingRatioPolicyLegacyOne, MissingRatioPolicyDeny:
+	default:
+		return fmt.Errorf(
+			"qianye: group_namespace.missing_ratio_policy=%q 非法(可选 %s|%s)——"+
+				"拼错时会静默退回 %s,运营会以为严格模式已经打开",
+			g.MissingRatioPolicy, MissingRatioPolicyLegacyOne, MissingRatioPolicyDeny,
+			MissingRatioPolicyLegacyOne)
+	}
+	switch g.FundingGateMode {
+	case FundingGateOff, FundingGateShadow, FundingGateEnforce:
+	default:
+		return fmt.Errorf(
+			"qianye: group_namespace.funding_gate_mode=%q 非法(可选 %s|%s|%s)",
+			g.FundingGateMode, FundingGateOff, FundingGateShadow, FundingGateEnforce)
 	}
 	return nil
 }

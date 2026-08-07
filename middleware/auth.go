@@ -471,6 +471,70 @@ func TokenAuth() func(c *gin.Context) {
 				}
 			}
 			userGroup = tokenGroup
+		} else {
+			// ── 空分组令牌:解析该用户分组的「默认模型分组」 ──────────────
+			//
+			// 上游在这一档直接把 users.group 当成模型分组用(userGroup 保持
+			// userCache.Group 不变),于是用户分组一旦不再兼作模型分组就一个渠道
+			// 都没有,表现是 503「No available channel for model X under group Y」。
+			// 这个 else 分支既没有 hook 也没有任何校验,所以必须直接改上游。
+			//
+			// 默认实现恒返回 (userGroup, inherit) ⇒ 下面整段是 no-op ⇒ 逐位等于上游。
+			defaultGroup, mode := service.QyResolveDefaultModelGroup(userCache.Id, userGroup)
+			switch mode {
+			case service.QyDefaultModeDeny:
+				// 隔离组 / 封禁组显式声明"我就是不给兜底"。文案必须给出自救方法,
+				// 否则用户只知道被拒绝、不知道下一步做什么。
+				abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf(
+					"用户分组 %s 未配置默认模型分组,请在令牌上显式选择一个分组", userGroup))
+				return
+			case service.QyDefaultModePin:
+				// pin 必须跑与显式令牌分组**完全相同**的两道校验,顺序也一致。
+				// 两条路径判据分家的表现是"令牌指定 X 能用、默认解析出 X 却被挡"。
+				//
+				// 失败是 500 而不是 403:这是**配置自相矛盾**(保存时已经硬拦过
+				// has_route、可选清单与倍率表),403 的文案指向"权限",会让运营从
+				// 第一分钟就查错方向。资金安全上 500 也更优 —— 请求没被服务,零花费;
+				// 而"解析失败就静默回落身份"会把一次配置错误变成一次按错价路由。
+				//
+				// 两道失败分支都回调 service.QyNotePinRejected:保存时的三道闸门是
+				// **一次性**的,而模型分组页删一行倍率、矩阵页撤一次授权都能让一个
+				// 已生效的 pin 在运行时变成 500,那两个页面对 pin 一无所知。
+				// 没有这个回调,健康面板的 pin_rejects 恒为 0,一次整组下线在面板上
+				// 完全看不见。
+				if _, ok := service.QyUsableGroupsForUser(userCache.Id, userGroup)[defaultGroup]; !ok {
+					common.SysError(fmt.Sprintf(
+						"用户分组 %s 的默认模型分组 %s 不在其可选清单里(配置自相矛盾,请改回 inherit)",
+						userGroup, defaultGroup))
+					service.QyNotePinRejected(userGroup, defaultGroup, "not in usable groups")
+					abortWithOpenAiMessage(c, http.StatusInternalServerError,
+						fmt.Sprintf("分组配置异常:用户分组 %s 的默认模型分组不可用,请联系管理员", userGroup))
+					return
+				}
+				if !ratio_setting.ContainsGroupRatio(defaultGroup) {
+					common.SysError(fmt.Sprintf(
+						"用户分组 %s 的默认模型分组 %s 不在分组倍率表里(配置自相矛盾,请改回 inherit)",
+						userGroup, defaultGroup))
+					service.QyNotePinRejected(userGroup, defaultGroup, "not in GroupRatio")
+					abortWithOpenAiMessage(c, http.StatusInternalServerError,
+						fmt.Sprintf("分组配置异常:用户分组 %s 的默认模型分组未配置倍率,请联系管理员", userGroup))
+					return
+				}
+				userGroup = defaultGroup
+			}
+
+			// 无论走哪一档,最终的 UsingGroup 都过一次分组倍率表的检查。
+			//
+			// 今天这一整段绕过 ContainsGroupRatio(它只在 tokenGroup != "" 分支里),
+			// 于是"空分组令牌 + 孤儿 users.group"会静默按 fail-open 的 1.0 计费。
+			// 默认策略 legacy_one ⇒ QyGroupRatioMissingDenied 恒 false ⇒ 行为不变;
+			// 翻到 deny 才在这里拒绝 —— 鉴权处拒绝时请求还没花钱,
+			// 而计费处报错时上游 token 已经烧掉了。
+			if !ratio_setting.ContainsGroupRatio(userGroup) && service.QyGroupRatioMissingDenied(userGroup) {
+				abortWithOpenAiMessage(c, http.StatusForbidden,
+					fmt.Sprintf("模型分组 %s 未配置倍率", userGroup))
+				return
+			}
 		}
 		common.SetContextKey(c, constant.ContextKeyUsingGroup, userGroup)
 

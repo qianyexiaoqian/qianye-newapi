@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/types"
 )
@@ -77,10 +76,14 @@ func UpdateGroupRatioByJSONString(jsonStr string) error {
 }
 
 func GetGroupRatio(name string) float64 {
-	ratio, ok := groupRatioMap.Get(name)
+	ratio, ok := lookupGroupRatio(name)
 	if !ok {
-		common.SysLog("group ratio not found: " + name)
-		return 1
+		// 汇处的上报:本函数的调用点远不止三条计费路径(可选分组列表、价格页、
+		// 管理端下拉都经 GetUserGroupRatio 落到它),今后新增的第四处不接任何 hook
+		// 也会被这里捞到 —— 这就是「只堵源会漏掉下一个调用点」的补丁。
+		// billing 恒为 false:这里拿不到用户分组,也判断不出这一次是不是真的在扣钱,
+		// 逐笔归因由 ResolveGroupRatio 负责。详见 qy_ratio_export.go。
+		QyNoteGroupRatioMiss(name, false)
 	}
 	return ratio
 }

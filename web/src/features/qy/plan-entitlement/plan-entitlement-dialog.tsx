@@ -31,6 +31,7 @@ import { QyResponsiveDialog } from '../components/qy-responsive-dialog'
 import { qyErrorMessage } from '../lib/api'
 import { qyKeys } from '../lib/query-keys'
 import { qyPlanEntitlementQuery, qySavePlanEntitlement } from './api'
+import { QyPlanBalanceScopeField } from './balance-scope-field'
 import type { QyPlanBalanceScope } from './types'
 
 type QyPlanEntitlementDialogProps = {
@@ -299,28 +300,15 @@ export function QyPlanEntitlementDialog(props: QyPlanEntitlementDialogProps) {
             </p>
           </div>
 
-          <div className='space-y-2'>
-            <Label>{t('qy_plan_balance_scope_label')}</Label>
-            <div className='grid gap-2'>
-              <QyPlanScopeOption
-                active={scope === 'universal'}
-                title={t('qy_plan_balance_scope_universal')}
-                desc={t('qy_plan_balance_scope_universal_desc')}
-                onSelect={() => setScope('universal')}
-              />
-              <QyPlanScopeOption
-                active={scope === 'restricted'}
-                title={t('qy_plan_balance_scope_restricted')}
-                desc={t('qy_plan_balance_scope_restricted_hint')}
-                onSelect={() => setScope('restricted')}
-              />
-            </div>
-            {restrictedWithoutBinding && (
-              <p className='text-destructive text-xs'>
-                {t('qy_plan_balance_scope_need_binding')}
-              </p>
-            )}
-          </div>
+          {/* 与套餐编辑抽屉共用同一个选择器：同一个二选一在两个页面上必须是
+              同一句解释，各写一份时改一处必漏另一处。这里不传
+              onResetToUniversal —— 「改回通用」那个按钮在上面那条
+              missing_groups 横幅里，它出现的条件更窄（绑定指向了已删的分组）。 */}
+          <QyPlanBalanceScopeField
+            value={scope}
+            onChange={setScope}
+            needsBinding={restrictedWithoutBinding}
+          />
 
           {/*
             该套餐解锁的每个模型分组，在**每个用户分组**下实际会按多少扣。
@@ -363,28 +351,5 @@ export function QyPlanEntitlementDialog(props: QyPlanEntitlementDialogProps) {
         </div>
       )}
     </QyResponsiveDialog>
-  )
-}
-
-function QyPlanScopeOption(props: {
-  active: boolean
-  title: string
-  desc: string
-  onSelect: () => void
-}) {
-  return (
-    <button
-      type='button'
-      onClick={props.onSelect}
-      aria-pressed={props.active}
-      className={
-        props.active
-          ? 'border-primary bg-primary/5 rounded-lg border p-3 text-start'
-          : 'hover:bg-muted/50 rounded-lg border p-3 text-start'
-      }
-    >
-      <span className='block text-sm font-medium'>{props.title}</span>
-      <span className='text-muted-foreground block text-xs'>{props.desc}</span>
-    </button>
   )
 }

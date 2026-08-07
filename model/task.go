@@ -120,6 +120,19 @@ type TaskBillingContext struct {
 	OtherRatios     map[string]float64 `json:"other_ratios,omitempty"`      // 附加倍率（时长、分辨率等）
 	OriginModelName string             `json:"origin_model_name,omitempty"` // 模型名称，必须为OriginModelName
 	PerCallBilling  bool               `json:"per_call_billing,omitempty"`  // 按次计费：跳过轮询阶段的差额结算
+
+	// UserGroup 是**提交那一刻**的 users.group,与 Task.Group(模型分组)配成
+	// 交叉倍率 GroupGroupRatio[用户分组][模型分组] 的完整坐标。
+	//
+	// ── 为什么必须落库,而不是结算时现读 ──
+	//
+	// 差额结算走 ResolveGroupRatio(userGroup, task.Group)。task.Group 早已 pin,
+	// 但 userGroup 此前是结算这一刻从 users 表现读的 —— 于是任务运行期间的一次
+	// 用户分组变更(套餐到期降级、违规降级、管理员手改)会让预扣与结算落在矩阵的
+	// **两个不同格子**上:预扣按 0.5、结算按兜底 2,差额以追扣落到用户头上;
+	// 方向相反时是平台白退。而日志里 other["group_ratio"] 写的又是提交时刻的值,
+	// 事后对账查不出来。空串(历史行)时回落现读,逐位等于改动前。
+	UserGroup string `json:"user_group,omitempty"`
 }
 
 // GetUpstreamTaskID 获取上游真实 task ID（用于与 provider 通信）

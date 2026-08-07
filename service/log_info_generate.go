@@ -12,6 +12,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -34,6 +35,27 @@ func attachQuotaSaturationToOther(other map[string]interface{}, clamp *common.Qu
 	adminInfo["quota_saturation"] = clamp.AuditMap()
 }
 
+// attachGroupRatioFallbackToOther nests a "billed at the fail-open ratio 1.0"
+// marker under other.admin_info.group_ratio_missing. It is the *sole* writer of
+// that key, exactly as attachQuotaSaturationToOther is for quota_saturation.
+//
+// 它必须与 attachQuotaSaturationToOther 一样有一个不需要 *RelayInfo 的形态:
+// 异步 Task 差额结算(service/task_billing.go)手上根本没有 RelayInfo,而它恰恰是
+// 单笔金额最大的那条计费链路。少这一个形态的后果是运维按
+// admin_info.group_ratio_missing 全量扫描补差时,会得出「只有文本/WSS 受影响、
+// Task 没事」这个完全错误的结论。
+func attachGroupRatioFallbackToOther(other map[string]interface{}, miss *ratio_setting.GroupRatioMiss) {
+	if miss == nil || other == nil {
+		return
+	}
+	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	if !ok || adminInfo == nil {
+		adminInfo = map[string]interface{}{}
+		other["admin_info"] = adminInfo
+	}
+	adminInfo["group_ratio_missing"] = miss.AuditMap()
+}
+
 // attachQuotaSaturation records the request's quota clamp (if any) onto the
 // consume log's other.admin_info and emits a request-correlated backend audit
 // line. Called right before RecordConsumeLog on the text/audio/wss paths.
@@ -48,6 +70,29 @@ func attachQuotaSaturation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, o
 	attachQuotaSaturationToOther(other, clamp)
 	logger.LogWarn(ctx, fmt.Sprintf("quota saturation on consume log: op=%s kind=%s original=%g clamped=%d user=%d model=%s",
 		clamp.Op, clamp.Kind, clamp.Original, clamp.Clamped, relayInfo.UserId, relayInfo.OriginModelName))
+}
+
+// attachGroupRatioFallback nests a "billed at the fail-open ratio 1.0" marker
+// under other.admin_info.group_ratio_missing and emits a request-correlated
+// backend audit line. Shape and权限模型 copied verbatim from
+// attachQuotaSaturation: nesting under admin_info makes it admin-only for free
+// (model.formatUserLogs strips the whole admin_info object for non-admins).
+//
+// 为什么必须逐笔落地而不是只报一个计数器:今天日志里 group 字段是对的、quota 是
+// 按 1.0 算出来的,"这一笔本该按 0.125 收"这个事实在事后**不存在于任何地方**,
+// 补差就无从谈起。打上标记之后,这条不可逆的损失变成可逆的。
+func attachGroupRatioFallback(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+	if relayInfo == nil || other == nil {
+		return
+	}
+	miss := relayInfo.GroupRatioFallback
+	if miss == nil {
+		return
+	}
+	attachGroupRatioFallbackToOther(other, miss)
+	logger.LogWarn(ctx, fmt.Sprintf(
+		"group ratio fail-open on consume log: user_group=%s model_group=%s applied_ratio=%g user=%d model=%s",
+		miss.UserGroup, miss.ModelGroup, miss.AppliedRatio, relayInfo.UserId, relayInfo.OriginModelName))
 }
 
 func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {

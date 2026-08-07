@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -162,6 +163,16 @@ type RelayInfo struct {
 	// int32 bound (or NaN fallback) while computing this request's charge.
 	// It is surfaced onto the consume/task log's admin_info for auditing.
 	QuotaClamp *common.QuotaClamp
+
+	// GroupRatioFallback 非 nil 表示这一笔的分组倍率是**上游 fail-open 兜出来的
+	// 1.0**,不是任何人配出来的:模型分组不在 options.GroupRatio 里,而这一笔的价
+	// 又恰好由它决定(没有命中交叉格)。它会被写进消费日志的
+	// other.admin_info.group_ratio_missing。
+	//
+	// 字段加在 RelayInfo 而不是 relaykit 的 hosttypes.GroupRatioInfo 上:
+	// relaykit 必须保持独立可构建(AGENTS.md 硬约束),给它加字段会把
+	// qianye 侧的观测需求泄进那个独立模块。与既有的 QuotaClamp 同形。
+	GroupRatioFallback *ratio_setting.GroupRatioMiss
 
 	// TieredBillingSnapshot captures tiered billing rules at pre-consume time.
 	// Auto-group retries refresh its group-dependent fields before each attempt
@@ -449,7 +460,25 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 	//paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
 
 	tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
-	// 当令牌分组为空时，表示使用用户分组
+	// 令牌分组为空时,回落到**鉴权处已经解析好的 UsingGroup**,而不是 users.group。
+	//
+	// ── 为什么不能直接用 users.group ──
+	//
+	// RelayInfo.TokenGroup 不只是一个记录字段:controller/relay.go 用它构造
+	// RetryParam,重试轮的渠道选择(service.CacheGetRandomSatisfiedChannel)完全
+	// 按它走。而 middleware/auth.go 现在会为空分组令牌解析「用户分组的默认模型
+	// 分组」,把结果写进 ContextKeyUsingGroup —— 首轮 distributor 用的是 UsingGroup,
+	// 重试轮用的却是 users.group,两者一旦分家(pin 到别的模型分组),首轮成功、
+	// 任何一次重试都会落到一个没有 abilities 行的分组上,报
+	// 「分组 X 下模型 Y 的可用渠道不存在(retry)」并带 SkipRetry 直接 break ——
+	// 一次本可自愈的瞬时上游错误变成硬失败。更隐蔽的一档是用户分组恰好也兼作
+	// 模型分组:重试会路由到**同名的那个池子**,却仍按 UsingGroup 的倍率计费。
+	//
+	// UsingGroup 在 inherit(默认)与显式令牌分组两档下都逐位等于原来的取值,
+	// 所以这一行对现状零行为变化。
+	if tokenGroup == "" {
+		tokenGroup = common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+	}
 	if tokenGroup == "" {
 		tokenGroup = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 	}

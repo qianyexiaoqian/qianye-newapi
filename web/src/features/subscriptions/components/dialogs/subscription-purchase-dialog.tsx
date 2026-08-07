@@ -129,6 +129,20 @@ export function SubscriptionPurchaseDialog(props: Props) {
     entitlement: props.entitlement,
   })
 
+  // 披露还没读到时，付款按钮必须一起等。
+  //
+  // 「解锁哪些模型分组」与「这笔余额只能花在什么上」是这张弹窗上仅有的两条
+  // **实质条款**：前者常常是套餐唯一的卖点，后者决定买回来的额度能不能花在
+  // 用户想用的地方。冷启动或慢库时这两行会短暂缺席，而缺席与"这个套餐不解锁
+  // 任何分组、余额通用"在屏幕上长得一模一样 —— 用户在那个窗口里点下付款，
+  // 买完之后才在「我的订阅」里第一次看到「仅限」。
+  //
+  // 只挡 loading，不挡 error：读失败时 formatPlanUnlockGroups 会渲染 qy_ent_failed，
+  // 用户看得见"没读到"这句话，此时是否继续由他自己决定 —— 挡死会让一次扩展库
+  // 抖动变成"全站买不了套餐"。
+  const entitlementPending = props.entitlement?.state === 'loading'
+  const payBlocked = paying || limitReached || entitlementPending
+
   const handlePayStripe = async () => {
     setPaying(true)
     try {
@@ -344,6 +358,15 @@ export function SubscriptionPurchaseDialog(props: Props) {
             <span className='text-muted-foreground'>{t('Available')}</span>
             <span>{formatQuota(userQuota)}</span>
           </div>
+          {/* 按钮被禁用时必须说清是为什么。一个没有解释的灰按钮会被读成
+              "这个套餐买不了"，用户会去开工单，而真实情况是再等半秒就好。 */}
+          {entitlementPending && (
+            <Alert>
+              <AlertDescription>
+                {t('qy_plan_entitlement_pending_pay_blocked')}
+              </AlertDescription>
+            </Alert>
+          )}
           {!allowBalancePay ? (
             <Alert variant='destructive'>
               <AlertDescription>
@@ -360,9 +383,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
           <Button
             variant='outline'
             onClick={handlePayBalance}
-            disabled={
-              paying || limitReached || !allowBalancePay || insufficientBalance
-            }
+            disabled={payBlocked || !allowBalancePay || insufficientBalance}
           >
             {t('Pay with Balance')}
           </Button>
@@ -380,7 +401,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
                     variant='outline'
                     className='flex-1'
                     onClick={handlePayStripe}
-                    disabled={paying || limitReached}
+                    disabled={payBlocked}
                   >
                     Stripe
                   </Button>
@@ -390,7 +411,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
                     variant='outline'
                     className='flex-1'
                     onClick={handlePayCreem}
-                    disabled={paying || limitReached}
+                    disabled={payBlocked}
                   >
                     Creem
                   </Button>
@@ -400,7 +421,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
                     variant='outline'
                     className='flex-1'
                     onClick={handlePayWaffoPancake}
-                    disabled={paying || limitReached}
+                    disabled={payBlocked}
                   >
                     Waffo Pancake
                   </Button>
@@ -418,7 +439,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
                   ]}
                   value={selectedEpayMethod}
                   onValueChange={(v) => v !== null && setSelectedEpayMethod(v)}
-                  disabled={limitReached}
+                  disabled={payBlocked}
                 >
                   <SelectTrigger className='flex-1'>
                     <SelectValue>{selectedEpayMethodLabel}</SelectValue>
@@ -435,7 +456,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
                 </Select>
                 <Button
                   onClick={handlePayEpay}
-                  disabled={paying || !selectedEpayMethod || limitReached}
+                  disabled={payBlocked || !selectedEpayMethod}
                 >
                   {t('Pay')}
                 </Button>

@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/groupratio"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/module"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
@@ -85,6 +86,13 @@ func Init() error {
 	}
 
 	db.StartHealthLoop()
+
+	// 分组倍率失配登记簿必须先接上:ratio_setting.QyNoteGroupRatioMiss 的默认值是
+	// 空函数,不赋值的话三条计费路径每一次"静默按 1.0 扣费"都打进空气,而
+	// missing_ratio_policy 翻 deny 的前提恰恰是那个计数连续为零 —— 一个永真的
+	// 前提。groupratio 的包 init() 已经接过一次,这里再显式调一次是为了让这条
+	// 依赖在启动流程里可见(幂等)。
+	groupratio.Install()
 
 	// 给上游包里的 hook 变量赋值。此刻早于任何 HTTP 请求与后台协程,
 	// 因此不存在并发读写窗口。

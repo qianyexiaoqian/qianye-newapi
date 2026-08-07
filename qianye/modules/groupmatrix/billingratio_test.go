@@ -247,17 +247,21 @@ func TestScopePolicyReportsUnsetGroups(t *testing.T) {
 	assert.Equal(t, ScopeStateUnset, states["default"])
 }
 
-// TestBillingRatioSitesKeepTheCrossCellShape 是**形状**断言。
+// TestBillingRatioSitesUseTheSingleResolver 是**形状**断言,本轮换了形状。
 //
-// 三条计费路径必须一直是 GetGroupGroupRatio(用户分组, 模型分组) 的**交叉格**,
-// 两个实参不能是同一个标识符。上一轮 task_billing 就是写成了对角格
-// (GetGroupGroupRatio(group, group)),于是令牌做了分组覆盖时预扣打折、结算原价,
-// 差额以**追扣**落到用户头上 —— 单元测试全绿,因为每一份复制品都与自己一致。
+// 三条计费路径此前各抄了一遍「交叉格 + ok 回落」,这条测试当时守的是"那三份抄写
+// 不许退化成对角格"(上一轮 task_billing 就退化过:预扣按交叉格打折、结算按对角格
+// 原价,差额以追扣落到用户头上,而每份复制品都与自己一致所以全绿)。
 //
-// task_billing 那一条已经由 hookpoint_test.go 单独钉住(它还额外断言了第一个实参
-// 必须叫 userGroup),这里补上另外三处。
-func TestBillingRatioSitesKeepTheCrossCellShape(t *testing.T) {
-	for _, path := range []string{pricePath, quotaPath, ctlPricingPath} {
+// 现在三份合并成了 ratio_setting.ResolveGroupRatio 这一个解析器,守的东西也随之变成:
+//
+//	① 三条路径**确实**在调它(整段被删掉时倍率会静默恒为 1)
+//	② 两个实参不是同一个表达式(对角格缺陷的等价形式在新写法下依然可能出现)
+//
+// controller/pricing.go 是**展示**路径,形状与计费不同(先播种兜底再用交叉格覆盖),
+// 刻意不合并 —— 它由上面的 TestBillingRatioPathsAgree 按结论钉住。
+func TestBillingRatioSitesUseTheSingleResolver(t *testing.T) {
+	for _, path := range []string{pricePath, quotaPath, taskBillingPath} {
 		t.Run(path, func(t *testing.T) {
 			file := parseFileOrFail(t, path)
 
@@ -268,51 +272,78 @@ func TestBillingRatioSitesKeepTheCrossCellShape(t *testing.T) {
 					return true
 				}
 				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || sel.Sel.Name != "GetGroupGroupRatio" || len(call.Args) != 2 {
+				if !ok || sel.Sel.Name != "ResolveGroupRatio" || len(call.Args) != 2 {
 					return true
 				}
 				found++
 				a := exprText(t, path, call.Args[0])
 				b := exprText(t, path, call.Args[1])
 				assert.NotEqual(t, a, b,
-					"%s 的 GetGroupGroupRatio 两个实参变成了同一个表达式(%q)—— 对角格缺陷:"+
+					"%s 的 ResolveGroupRatio 两个实参变成了同一个表达式(%q)—— 对角格缺陷:"+
 						"预扣按 (用户分组, 模型分组) 交叉格、这里按对角格,差额会以追扣落到用户头上", path, a)
 				return true
 			})
 			assert.Equal(t, 1, found,
-				"%s 里 GetGroupGroupRatio 的调用数变了 —— 倍率解析被增删过一处,"+
-					"请重新确认它与 service.GetUserGroupRatio 是否仍然同结论", path)
+				"%s 里 ratio_setting.ResolveGroupRatio 的调用数不是 1 —— "+
+					"分组倍率解析要么被删掉了(倍率会静默恒为 1),要么又出现了第二个来源", path)
 		})
 	}
 }
 
-// TestGetUserGroupRatioIsTheSoleUncopiedResolution 守住"基准函数"本身。
+// TestGetUserGroupRatioDelegatesToTheSingleResolver 守住"基准函数"本身。
 //
-// 扩展侧的展示、矩阵页、对账全部以 service.GetUserGroupRatio 为准。它必须一直是
-// 「交叉格命中就用它,否则 GetGroupRatio 兜底」这两句 —— 判据是 **ok**,不是值。
-// 有人把它改成 `if ratio > 0`,本站三个 ratio=0 的免费分组会当场按兜底价扣钱,
-// 而上面所有的"两边一致"断言仍然全绿(两边一起错)。
-func TestGetUserGroupRatioIsTheSoleUncopiedResolution(t *testing.T) {
+// 扩展侧的展示、矩阵页、对账全部以 service.GetUserGroupRatio 为准。本轮它已经不再
+// 自己写那两句 if,而是委托给 ratio_setting.InspectGroupRatio —— 与三条计费路径
+// **同一段函数体**,只差一个 billing 布尔。
+//
+// 断言"函数体里没有任何 if"是这条契约最直接的形式:一旦有人为了加一个特例而在这里
+// 写回一个分支,展示与账单就此分家,而分家的表现是界面上的报价不等于账单上的数字。
+func TestGetUserGroupRatioDelegatesToTheSingleResolver(t *testing.T) {
 	file := parseFileOrFail(t, serviceGroupPath)
 	fn := findFunc(t, file, "GetUserGroupRatio")
 
-	var usesOK bool
-	var comparesValue bool
+	var delegates bool
+	var hasBranch bool
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch s := n.(type) {
-		case *ast.IfStmt:
-			if id, ok := s.Cond.(*ast.Ident); ok && id.Name == "ok" {
-				usesOK = true
-			}
-			if _, ok := s.Cond.(*ast.BinaryExpr); ok {
-				comparesValue = true
+		switch node := n.(type) {
+		case *ast.IfStmt, *ast.SwitchStmt:
+			hasBranch = true
+		case *ast.CallExpr:
+			if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "InspectGroupRatio" {
+				delegates = true
 			}
 		}
 		return true
 	})
-	assert.True(t, usesOK,
-		"GetUserGroupRatio 必须用 GetGroupGroupRatio 的第二个返回值(key 存在性)当判据")
-	assert.False(t, comparesValue,
-		"GetUserGroupRatio 里出现了对倍率**值**的比较 —— 用 `ratio > 0` 之类当判据会让"+
-			"显式配置的 0(免费)静默回落到兜底价,而本站有三个 ratio=0 的分组")
+	assert.True(t, delegates,
+		"GetUserGroupRatio 必须委托给 ratio_setting.InspectGroupRatio —— "+
+			"它与三条计费路径必须是同一段函数体,否则展示与账单会分家")
+	assert.False(t, hasBranch,
+		"GetUserGroupRatio 里出现了分支 —— 任何本地特例都是在造第二份解析。"+
+			"要加判据请加在 setting/ratio_setting/qy_ratio_export.go 的唯一函数体里")
+}
+
+// TestExplicitZeroRatioBeatsFallback 是上一版 AST 断言真正想保护的那条**行为**契约,
+// 现在可以直接断言而不必去猜实现里用了哪个变量名。
+//
+// 判据必须是 **key 是否存在**,不是值。有人把它改成 `if ratio > 0`,
+// 本站三个显式配了 0(免费)的交叉格会当场按兜底价扣钱 —— 而所有"两边一致"的
+// 断言仍然全绿,因为两边一起错。
+func TestExplicitZeroRatioBeatsFallback(t *testing.T) {
+	useUpstreamGroups(t,
+		map[string]string{"default": "默认分组"},
+		map[string]map[string]string{},
+		map[string]float64{"paid": 2})
+
+	prev := ratio_setting.GroupGroupRatio2JSONString()
+	t.Cleanup(func() { _ = ratio_setting.UpdateGroupGroupRatioByJSONString(prev) })
+	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"vip":{"paid":0}}`))
+
+	res := ratio_setting.ResolveGroupRatio("vip", "paid")
+	assert.Equal(t, float64(0), res.Ratio,
+		"显式配的 0(免费)必须原样生效,不得因为它是零值而回落到兜底的 2")
+	assert.Equal(t, ratio_setting.GroupRatioSourceOverride, res.Source,
+		"「我配的 0」与「兜底本来就是 0」必须是两种 source")
+	assert.Equal(t, float64(0), service.GetUserGroupRatio("vip", "paid"),
+		"展示口径必须与计费口径同结论")
 }

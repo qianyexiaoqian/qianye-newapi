@@ -124,10 +124,11 @@ func GetGroupsEnabledModels(groups []string) []string {
 // GetUserGroupRatio 获取用户使用某个分组的倍率
 // userGroup 用户分组
 // group 需要获取倍率的分组
+//
+// 它是**展示口径**:调用点是可选分组列表、价格页、管理端预览。因此走
+// ratio_setting.InspectGroupRatio —— 与三条计费路径同一段函数体、同一个优先级,
+// 只差一个 billing 布尔:miss 时不告警、不进 admin_info。
+// 见 setting/ratio_setting/qy_ratio_export.go。
 func GetUserGroupRatio(userGroup, group string) float64 {
-	ratio, ok := ratio_setting.GetGroupGroupRatio(userGroup, group)
-	if ok {
-		return ratio
-	}
-	return ratio_setting.GetGroupRatio(group)
+	return ratio_setting.InspectGroupRatio(userGroup, group).Ratio
 }

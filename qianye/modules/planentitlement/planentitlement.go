@@ -61,6 +61,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/module"
 	"github.com/QuantumNous/new-api/qianye/modules/groupmatrix"
+	"github.com/QuantumNous/new-api/qianye/modules/groupns"
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
@@ -105,6 +106,10 @@ func (Mod) InstallHooks() {
 	// 但必须同时注入:少注入一个,矩阵页就会把"经套餐可达"的格子显示成不可达,
 	// 而运营正是在那张页面上改倍率的(见 seams.go 的说明)。
 	groupmatrix.PlanUnlockEnabled = Enabled
+	// 「套餐耗尽之后还能不能改由钱包出资」这一档闸门的判据在本模块(余额只有这里
+	// 知道),而闸门本体在 groupns(它才知道用户分组含不含这个模型分组)。
+	// 两个模块互不 import,靠这一次注入连起来 —— 与上面 PlanUnlockEnabled 同一个手法。
+	groupns.PlanFundedUnlock = FundedUnlockState
 	groupmatrix.PlanUnlockedModelGroups = UnlockedModelGroupPlans
 
 	if !enabled() {

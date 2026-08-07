@@ -54,7 +54,6 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
@@ -92,24 +91,60 @@ type Resolution struct {
 // 复制的倍率解析分支(price.go:59 / quota.go:119 / task_billing.go:308),第四份
 // 复制品迟早会自己漂移,而漂移的表现正是"管理端显示 A、热路径乘 B"。
 func Resolve(userGroup, modelGroup string) Resolution {
+	// 本轮起,金额与优先级完全委托给 ratio_setting.InspectGroupRatio ——
+	// 三条计费路径走的是同一段代码的 billing 版本。在此之前这里是第四份复制的
+	// if,而"扩展显示的数字"与"热路径乘的数字"靠两处 if 各自保持同步,
+	// 漂移的表现正是本包在防的那种骗人数字。
+	res := ratio_setting.InspectGroupRatio(userGroup, modelGroup)
 	r := Resolution{
-		Ratio:  service.GetUserGroupRatio(userGroup, modelGroup),
-		Source: SourceInherit,
-		Base:   1,
+		Ratio:       res.Ratio,
+		Source:      res.Source,
+		Base:        res.Base,
+		BaseMissing: res.BaseMissing,
 	}
-	if _, ok := ratio_setting.GetGroupGroupRatio(userGroup, modelGroup); ok {
-		r.Source = SourceOverride
+	if r.BaseMissing {
+		// **登记由 InspectGroupRatio 内部经 QyNoteGroupRatioMiss 完成**(见 Install),
+		// 这里不再自己调 noteMissing —— 两处一起调就是同一次失配被计两遍,
+		// 而 missing_ratio_policy 翻 deny 的前提正是"这个计数连续为零"。
+		r.BaseNearMiss = NearMiss(modelGroup)
 	}
-	if ratio_setting.ContainsGroupRatio(modelGroup) {
-		// Contains 命中时 GetGroupRatio 一定走正常分支,不会再打一条 SysLog。
-		r.Base = ratio_setting.GetGroupRatio(modelGroup)
-		return r
-	}
-	r.BaseMissing = true
-	r.BaseNearMiss = NearMiss(modelGroup)
-	noteMissing(modelGroup, func() string { return r.BaseNearMiss })
 	return r
 }
+
+// Install 把本包的失配登记簿接到上游唯一的上报口上。
+//
+// ══════════════ 为什么这一行不能省 ══════════════
+//
+// ratio_setting.QyNoteGroupRatioMiss 是 GetGroupRatio 的 fail-open 分支与
+// ResolveGroupRatio 共用的唯一上报口,但它的默认值是一个**空函数**。不赋值的话:
+//
+//   - 三条计费路径每一次静默按 1.0 扣费都打进空气;
+//   - /admin/health 的 observed 恒为空,而 group_namespace.missing_ratio_policy
+//     从 legacy_one 翻到 deny 的前提正是「失配登记簿计数连续为零」——
+//     一个永真的前提让运维在毫无证据的情况下翻开关,翻完之后
+//     middleware/auth.go 会把那一整批空分组令牌当场 403。
+//
+// ── 为什么接线发生在包 init() 而不是 qianye.Init() ──
+//
+// 登记簿是一个**纯进程内的有界计数器**(见 maxTrackedGroups),它不读库、不写库、
+// 不依赖任何配置。把接线放进 qianye.Init() 的话,扩展未加载的构建里这个计数恒为零,
+// 而 groupratio 自己的单元测试也读不到自己刚记下的失配 —— 一个"守卫在测自己的
+// 空实现"的形状。init() 让"本包被链接进来"与"本包的登记簿在工作"成为同一件事。
+//
+// 幂等:重复调用只是把同一个闭包再赋一次值。
+func Install() {
+	ratio_setting.QyNoteGroupRatioMiss = func(modelGroup string, billing bool) {
+		if modelGroup == "" {
+			return
+		}
+		// billing 只影响告警口径,不影响是否计数:展示侧的失配同样是一处需要清理的
+		// 登记不一致,只是它不代表这一笔钱收错了。noteMissing 自己按次数节流,
+		// 所以一个管理页把 12 个缺失项全撞一遍也只会各报一次。
+		noteMissing(modelGroup, func() string { return NearMiss(modelGroup) })
+	}
+}
+
+func init() { Install() }
 
 // NoteMissingGroup 手动登记一次「这个分组名不在分组倍率表里」。
 //

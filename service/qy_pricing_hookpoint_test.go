@@ -69,6 +69,9 @@ func TestQyTaskSettlementHookPointExists(t *testing.T) {
 // 矩阵的对角线。而预扣走 relay/helper/price.go 的 HandleGroupRatio,用的是
 // (UserGroup, UsingGroup) 交叉格。令牌做了分组覆盖且配了交叉倍率时,Task 类模型
 // 的预扣与结算不同口径,差额以**追扣**形式落到用户头上。这条断言防的是它被改回去。
+//
+// 本轮三条计费路径合并成 ratio_setting.ResolveGroupRatio,断言的函数名随之更换,
+// 守的东西一个字都没变:第一个实参必须是所有者的 users.group,两者不能同名。
 func TestQyTaskSettlementUsesCrossCellGroupRatio(t *testing.T) {
 	file := qySvcParseFileOrFail(t, qyTaskBillingGoPath)
 
@@ -85,7 +88,7 @@ func TestQyTaskSettlementUsesCrossCellGroupRatio(t *testing.T) {
 				return true
 			}
 			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "GetGroupGroupRatio" {
+			if !ok || sel.Sel.Name != "ResolveGroupRatio" {
 				return true
 			}
 			found = true
@@ -101,11 +104,11 @@ func TestQyTaskSettlementUsesCrossCellGroupRatio(t *testing.T) {
 	}
 
 	require.True(t, found,
-		"service/task_billing.go 的 RecalculateTaskQuotaByTokens 里找不到 GetGroupGroupRatio —— "+
+		"service/task_billing.go 的 RecalculateTaskQuotaByTokens 里找不到 ResolveGroupRatio —— "+
 			"Task 差额结算的倍率来源变了,请重新确认预扣与结算是否仍然同口径")
 	require.Len(t, args, 2)
 	assert.NotEqual(t, args[0], args[1],
-		"GetGroupGroupRatio 的两个实参又是同一个标识符(%q)—— 对角线缺陷回归:"+
+		"ResolveGroupRatio 的两个实参又是同一个标识符(%q)—— 对角线缺陷回归:"+
 			"预扣按交叉格、结算按对角格,差额会以追扣落到用户头上", args[0])
 	assert.Equal(t, "userGroup", args[0],
 		"第一个实参必须是所有者的 users.group,与 HandleGroupRatio(relayInfo.UserGroup, ...) 同口径")

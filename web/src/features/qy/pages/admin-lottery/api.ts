@@ -32,6 +32,8 @@ import type {
   QyLotAdminTextPrize,
   QyLotCreateInput,
   QyLotPrizeSecret,
+  QyLotSeries,
+  QyLotSeriesInput,
 } from './types'
 
 const BASE = '/admin/lottery/activities'
@@ -258,6 +260,73 @@ export function qyAdminLotFlagsQuery(actNo: string) {
     staleTime: 15_000,
     enabled: actNo !== '',
   })
+}
+
+// ───────────────────────── 双色球期次系列 ─────────────────────────
+
+/**
+ * 系列列表。
+ *
+ * 端点挂在模块下（`/admin/lottery/series`）而不是活动下：一个系列跨很多期，
+ * 而"这个系列还能再注多少钱"（`headroom_quota`）是运营在开新一期之前必须先
+ * 看到的数，与任何一期都无关。
+ */
+export function qyAdminLotSeriesQuery(params: {
+  p: number
+  page_size: number
+}) {
+  return queryOptions({
+    queryKey: qyKeys.adminLotterySeries(params),
+    queryFn: () => qyGet<QyPage<QyLotSeries>>('/admin/lottery/series', params),
+    staleTime: 15_000,
+  })
+}
+
+/**
+ * 创建一个系列。
+ *
+ * `issue_cap_quota` 在这一刻**冻结**，此后没有任何接口能改它 —— 它是整个系列
+ * （无论开多少期）累计净增发的上界。号池四元组同理：期与期之间不可变，
+ * 因为可变的号码空间等于可变的中奖概率。
+ */
+export function createQyLotSeries(
+  body: QyLotSeriesInput
+): Promise<QyLotSeries> {
+  return qyPost<QyLotSeries>('/admin/lottery/series', body)
+}
+
+/**
+ * 给系列注资。**平台唯一一处主动扩大发行上限的动作**，写审计。
+ *
+ * 后端把封顶判定与写入放在同一条条件 UPDATE 里
+ * （`WHERE seed_total_quota + ? <= issue_cap_quota`），所以两个管理员同时注资
+ * 不会各自读到旧值再各自通过校验。
+ */
+export function fundQyLotSeries(
+  seriesNo: string,
+  body: { amount: number; note: string }
+): Promise<QyLotSeries> {
+  return qyPost<QyLotSeries>(
+    `/admin/lottery/series/${encodeURIComponent(seriesNo)}/fund`,
+    body
+  )
+}
+
+/**
+ * 关闭系列。**滚存余额作废**，所以必须填原因并对参与者公示。
+ *
+ * 它从来不是任何用户的钱：每一期的投注在当期就已完成再分配（入池部分归池子、
+ * 其余是平台手续费），滚存只是平台尚未发出去的发行额度。但用户不会自己想到
+ * 这一点，所以规则页要事前写清。
+ */
+export function closeQyLotSeries(
+  seriesNo: string,
+  body: { reason: string }
+): Promise<unknown> {
+  return qyPost<unknown>(
+    `/admin/lottery/series/${encodeURIComponent(seriesNo)}/close`,
+    body
+  )
 }
 
 export function qyAdminLotConfigQuery() {

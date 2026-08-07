@@ -80,6 +80,9 @@ export function QyLotteryRecordsBody() {
   const params = { p: page, page_size: PAGE_SIZE }
   const query = useQuery(qyLotMyEntriesQuery(params))
   const items = qyArray(query.data?.items)
+  // 「我选的号」只在这一页真的有双色球票时才出一列。整张表恒挂一列空白，
+  // 对只玩过普通抽奖的人就是一列永远没内容的噪音。
+  const hasPick = items.some((row) => (row.pick ?? '') !== '')
 
   return (
     <>
@@ -138,6 +141,19 @@ export function QyLotteryRecordsBody() {
                   <QyAmountText quota={row.amount} />
                 ),
               },
+              // 选号是这张票唯一由用户决定的内容，而事后争议的第一句话永远是
+              // 「我买的明明是那一组」。回执弹窗关掉就没了，这份列表才是留得住
+              // 的那一份，所以它必须长期可见而不是只在弹窗里出现一次。
+              ...(hasPick
+                ? [
+                    {
+                      id: 'pick',
+                      header: t('qy_lot_ball_my_pick'),
+                      cellClassName: 'font-mono text-xs tabular-nums',
+                      cell: (row: QyLotMyEntry) => row.pick ?? '',
+                    },
+                  ]
+                : []),
               {
                 id: 'status',
                 header: t('qy_common_status'),

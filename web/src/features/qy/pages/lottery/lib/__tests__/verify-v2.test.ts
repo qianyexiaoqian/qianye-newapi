@@ -55,11 +55,13 @@ import {
  *   · 超募均分必须**精确守恒**（差一个单位就是有人的钱不见了或平台倒贴）；
  *   · v2 的原像与 v1 **必须不同**（共用一个原像就等于版本号是假的）。
  *
- * ## 一处诚实的缺口
+ * ## 双色球摇号也是三方
  *
- * `qyLotBallDraw` 只与 Go 对齐过，**Python 脚本尚未实现双色球摇号**
- * （它目前只覆盖到 commit 原像里的号池字段）。所以那一组断言现在是两方一致
- * 而不是三方，下面的用例里显式标了出来。
+ * 这里曾经记着一处缺口：「Python 脚本尚未实现双色球摇号，所以那一组断言只是
+ * 两方一致」。那句话现在过时了 —— `qianye/docs/lottery-verify.py` 的
+ * `ball_draw` 已经实现，`qianye/modules/lottery/ball_golden_test.go` 也钉了
+ * 80 个由它产出的向量。下面 `BALL_GOLDEN` 的每一行同样来自那份脚本，
+ * 于是浏览器端的摇号与 Go、与离线脚本一起被锁在同一组数字上。
  */
 
 const FINAL_SEED =
@@ -113,7 +115,7 @@ const GOLDEN = {
   rosterV1: 'b29263411c1db24c8c60232381edee8813102e056cf905764a6c60407c4708b5',
   rosterV2: 'ab61d2c6d74a6fb26c301070dd90e4cab91f498a448e8b369b7b05a3ec90e854',
   specV2: '1525b902818f8ba684354676b458624e8a6ff0427669b6620b5f21fe354bbc74',
-  /** 与 Go 一致；Python 脚本尚未实现摇号，这两行目前是**两方**一致。 */
+  /** 与 Go、与 lottery-verify.py 的 ball_draw 三方逐位一致（本轮补验）。 */
   ballRed: [2, 4, 7, 9],
   ballBlue: [2, 5, 11],
 } as const
@@ -170,7 +172,7 @@ describe('lot-v2 跨实现黄金向量', () => {
     assert.equal(await qyLotSpecHash([line], 'lot-v2'), GOLDEN.specV2)
   })
 
-  test('双色球摇号与生产实现（Go）逐位一致', async () => {
+  test('双色球摇号与 Go / Python 逐位一致', async () => {
     assert.deepEqual(
       await qyLotBallDraw(FINAL_SEED, 'LOTTESTACT01', 'red', 12, 4),
       [...GOLDEN.ballRed]
@@ -355,7 +357,67 @@ describe('lot-v2 概率制派奖', () => {
   })
 })
 
+/**
+ * 双色球摇号的跨实现黄金向量。
+ *
+ * 每一行由 `qianye/docs/lottery-verify.py` 的 `ball_draw` 独立算出（纯标准库
+ * hmac/hashlib，与本文件没有共享一行代码），Go 侧同一组编码由
+ * `qianye/modules/lottery/ball_golden_test.go` 的 80 个向量钉住。
+ *
+ * 没有它的时候，这一节只断言"确定、升序、无重复、在池内"——把排序的平局分支
+ * 改成按别的规则比较、或者把 `dec(b)` 换成两位补零，那些断言全部照常通过，
+ * 而三方会各自摇出**完全不同的七个号码**。而那时活动已经开完、钱已经发完。
+ */
+const BALL_GOLDEN: {
+  actNo: string
+  color: 'blue' | 'red'
+  pickK: number
+  poolN: number
+  want: number[]
+}[] = [
+  {
+    actNo: 'LOTTESTACT01',
+    color: 'red',
+    poolN: 12,
+    pickK: 4,
+    want: [2, 4, 7, 9],
+  },
+  { actNo: 'LOTTESTACT01', color: 'blue', poolN: 4, pickK: 1, want: [2] },
+  {
+    actNo: 'LOTTESTACT01',
+    color: 'red',
+    poolN: 33,
+    pickK: 6,
+    want: [9, 23, 24, 25, 26, 28],
+  },
+  {
+    actNo: 'LOTTESTACT02',
+    color: 'red',
+    poolN: 12,
+    pickK: 4,
+    want: [1, 3, 10, 11],
+  },
+  { actNo: 'LOTTESTACT01', color: 'blue', poolN: 16, pickK: 2, want: [5, 13] },
+]
+
 describe('lot-v2 双色球摇号', () => {
+  for (const tc of BALL_GOLDEN) {
+    test(`黄金向量：${tc.actNo} ${tc.color} ${tc.poolN} 选 ${tc.pickK}`, async () => {
+      const got = await qyLotBallDraw(
+        FINAL_SEED,
+        tc.actNo,
+        tc.color,
+        tc.poolN,
+        tc.pickK
+      )
+      assert.deepEqual(
+        got,
+        tc.want,
+        '与 lottery-verify.py 的 ball_draw 不一致 —— 三方复算会各自算出不同的开奖号'
+      )
+    })
+  }
+
   test('结果确定、升序、无重复、恰好 k 个且都在号池内', async () => {
     const first = await qyLotBallDraw(FINAL_SEED, 'LOTTESTACT01', 'red', 12, 4)
     const again = await qyLotBallDraw(FINAL_SEED, 'LOTTESTACT01', 'red', 12, 4)

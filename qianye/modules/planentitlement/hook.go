@@ -129,3 +129,59 @@ func unlockedSet(s *Snapshot, userId int) map[string]struct{} {
 	}
 	return out
 }
+
+// FundedUnlockState 回答两个问题:这个模型分组是不是该用户的套餐解锁的、
+// 以及那些解锁它的套餐里**还有没有一个是有余额的**。
+//
+// 它服务的是 qianye/modules/groupns 的「套餐耗尽闸门」(挂在钱包出资决策上)。
+// 两个返回值必须一起给:只给 unlocked 的话,调用方无法把"套餐还在供着"与
+// "套餐已经耗尽、这一笔要改由钱包出"分开,而那正是闸门唯一要判的事。
+//
+// **零额外查询**:解锁集合与余额都来自同一份 per-user 缓存条目。
+//
+// fail 方向:任何不确定(未启用 / 零绑定 / 快照未加载 / 缓存读不到)一律返回
+// (false, false) —— unlocked=false 会让闸门整体放行(见 groupns.ModelGroupFundingAllowed),
+// 因此这个方向对付费用户是安全的。
+func FundedUnlockState(userId int, modelGroup string) (unlocked bool, funded bool) {
+	if !enabled() || userId <= 0 || modelGroup == "" || modelGroup == autoGroup {
+		return false, false
+	}
+	s := activeSnapshot()
+	if !s.AnyBindings() {
+		return false, false
+	}
+	planIds, ok := activePlanIds(userId)
+	if !ok || len(planIds) == 0 {
+		return false, false
+	}
+	for _, planId := range planIds {
+		if _, bound := s.Bind[planId][modelGroup]; bound {
+			unlocked = true
+			break
+		}
+	}
+	if !unlocked {
+		return false, false
+	}
+	fundedIds, fundedOK := activeFundedPlanIds(userId)
+	if !fundedOK {
+		// 读不到余额:按"还有余额"处理。挡住一次合法请求比放过一次超额出资更贵 ——
+		// 后者还有 model.PreConsumeUserSubscription 的事务内校验兜底。
+		return true, true
+	}
+	// ── funded 的判据是 CandidateUsable,**不是** Bind ──
+	//
+	// 订阅出资的真实判据是 model.PreConsumeUserSubscription 候选循环里的
+	// QySubscriptionCandidateUsable(= Snapshot.CandidateUsable):余额使用范围为
+	// 「通用」(非 ScopeRestricted)的套餐可以为**任何**模型分组出资,它根本不需要
+	// 绑定 M。只在 Bind[planId][M] 命中的套餐里找余额,会把
+	// 「P1 解锁 M 但已用尽 + P2 通用余额充足」这种再正常不过的组合判成"耗尽",
+	// 而闸门返回的 AccessDenied 又不会触发 wallet_first 的 trySubscription 回落 ——
+	// 一条本来能付款的路径被直接砍掉,而 P2 完全付得起这一笔。
+	for _, planId := range fundedIds {
+		if s.CandidateUsable(planId, modelGroup) {
+			return true, true
+		}
+	}
+	return true, false
+}

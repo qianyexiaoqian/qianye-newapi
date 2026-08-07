@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +12,20 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+// affinityTestSeq 给每个用例发一个**进程内唯一**的后缀。
+//
+// 原来的 fmt.Sprintf("rule_%d", time.Now().UnixNano()) 在 Windows 上不唯一:
+// 那里的时钟粒度是毫秒级,连续 20 次 UnixNano() 会拿到同一个值。于是本文件三个
+// 用例的 ruleName / keyFP 只要落在同一个 tick 里就完全重名,统计桶被合并,
+// stats.Total 变成 1+2=3 —— 表现为随机失败,而失败与否只取决于前面的测试跑了多久。
+//
+// 时间戳不是唯一性的来源,自增计数才是。保留时间戳只为让失败信息里还能看出先后。
+var affinityTestSeq atomic.Int64
+
+func affinityTestName(prefix string) string {
+	return fmt.Sprintf("%s_%d_%d", prefix, time.Now().UnixNano(), affinityTestSeq.Add(1))
+}
 
 func buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP string) *gin.Context {
 	rec := httptest.NewRecorder()
@@ -26,9 +41,9 @@ func buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP string)
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	ruleName := affinityTestName("rule")
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	keyFP := affinityTestName("fp")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{
@@ -53,9 +68,9 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) 
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	ruleName := affinityTestName("rule")
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	keyFP := affinityTestName("fp")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	openAIUsage := &dto.Usage{
@@ -83,9 +98,9 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	ruleName := affinityTestName("rule")
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	keyFP := affinityTestName("fp")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{

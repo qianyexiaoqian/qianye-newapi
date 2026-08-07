@@ -25,16 +25,16 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { useQyConfig } from '../hooks/use-qy-config'
 
 /**
- * 上游「计费与支付 → 模型分组定价」页上的一块指路牌。
+ * 上游「计费与支付 → 模型分组」页上的一块指路牌。
  *
  * ── 它替代了什么 ──
  *
- * 那一页原本有两段编辑 UI，现在都拆掉了：
+ * 拆页之前那一页（旧 id `group-pricing`）有两段编辑 UI，现在都拆掉了：
  *
  *  - `GroupGroupRatio`（分组间倍率覆盖：可视化的「特殊倍率规则」卡片 + 生 JSON 框）
  *  - `GroupSpecialUsableGroup`（特殊可用分组规则：可视化编辑器 + 生 JSON 框）
  *
- * 两者现在都由同一抽屉里的「计费与支付 → 用户分组」一处读写：倍率就是那张
+ * 两者现在都由同一抽屉里的「计费与支付 → 用户分组可用的模型分组配置」一处读写：倍率就是那张
  * 「用户分组 × 模型分组」表格子里的值；可用范围由用户分组的**范围**说了算，
  * 一旦设定范围，全局「用户可选分组」清单与那套 `+:` / `-:` 差分对这一档整体
  * 不再生效。**后端两段读取逻辑一行没动** —— 拆掉的只是编辑入口，数据仍在原处
@@ -46,7 +46,7 @@ import { useQyConfig } from '../hooks/use-qy-config'
  * 运营找不到入口就会认定"功能没了"，然后要么绕路、要么把整套方案判死。所以
  * 删掉编辑框的同一次改动里，必须在原地留下**去哪儿改**。
  *
- * ── 判据与「用户分组」那一项保持同源 ──
+ * ── 判据与「用户分组可用的模型分组配置」那一项保持同源 ──
  *
  * 链接指向的 section 由 `withQyBillingSectionNavItems` 按「扩展是否启用」这一个
  * 条件决定去留，所以这里用同一个判据（而不是再叠一层 `group_matrix` 模块开关）：
@@ -68,9 +68,10 @@ export function QyGroupMatrixHint() {
   // 只扫这一种形式，查表得到的键它看不见，会被当成「零引用」删掉，
   // 而删掉的直接后果是上游那一页上出现一行裸键名。
   //
-  // 链接文案刻意复用 `qy_group_matrix_row_header`（「用户分组」）—— 与
-  // `billing/section-registry.tsx` 里那一项的 titleKey 是同一个键，指路牌上的
-  // 名字与侧栏上要点的那一项因此不可能对不上。
+  // 链接文案刻意复用 `qy_gs_group_matrix_title`（「用户分组可用的模型分组配置」）
+  // —— 与 `billing/section-registry.tsx` 里那一项的 titleKey 是同一个键，指路牌上
+  // 的名字与侧栏上要点的那一项因此不可能对不上。拆页之后这里**不能**再用
+  // `qy_group_matrix_row_header`（「用户分组」）：那已经是另一页的名字了。
   //
   // 正文用 `qy_group_pricing_moved_desc` 而不是矩阵页那句 `qy_group_scope_matrix_desc`：
   // 后者里的「本页不做限制」说的是矩阵所在的那一页，渲染在这一页上恰好指着这一页
@@ -83,10 +84,10 @@ export function QyGroupMatrixHint() {
       <AlertTitle>
         <Link
           to='/system-settings/billing/$section'
-          params={{ section: 'user-groups' }}
+          params={{ section: 'group-matrix' }}
           className='text-primary underline underline-offset-2'
         >
-          {t('qy_group_matrix_row_header')}
+          {t('qy_gs_group_matrix_title')}
         </Link>
       </AlertTitle>
       <AlertDescription>{t('qy_group_pricing_moved_desc')}</AlertDescription>

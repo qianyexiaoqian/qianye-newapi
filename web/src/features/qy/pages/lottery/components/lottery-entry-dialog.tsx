@@ -38,10 +38,17 @@ import { qyKeys } from '../../../lib/query-keys'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
 import { submitQyLotEntry } from '../api'
 import {
+  isQyLotBallPickComplete,
+  qyLotBallFormatPick,
+  qyLotBallPoolOf,
+  type QyLotBallPick,
+} from '../lib/ball'
+import {
   qyLotOptions,
   type QyLotActivityDetail,
   type QyLotEntryReceipt,
 } from '../types'
+import { QyLotBallPicker } from './lottery-ball-picker'
 
 /** 需要用户补输支付密码的两个 code。 */
 const PAY_PASSWORD_CODES = new Set(['qy_pay_pwd_required', 'qy_pay_pwd_wrong'])
@@ -75,16 +82,21 @@ export function QyLotEntryDialog(props: {
 
   const [requestId, setRequestId] = useState('')
   const [optNo, setOptNo] = useState(0)
+  const [pick, setPick] = useState<QyLotBallPick>({ reds: [], blues: [] })
   const [payPassword, setPayPassword] = useState('')
   const [needsPayPassword, setNeedsPayPassword] = useState(false)
   const [payPasswordBlocked, setPayPasswordBlocked] = useState(false)
   const [receipt, setReceipt] = useState<QyLotEntryReceipt | null>(null)
+
+  const isBall = activity.draw_mode === 'ball'
+  const ballPool = qyLotBallPoolOf(activity)
 
   // 每次**打开**重置一次：请求号在这一刻定死，后续重试沿用同一个。
   useEffect(() => {
     if (!props.open) return
     setRequestId(crypto.randomUUID())
     setOptNo(0)
+    setPick({ reds: [], blues: [] })
     setPayPassword('')
     setNeedsPayPassword(false)
     setReceipt(null)
@@ -95,6 +107,8 @@ export function QyLotEntryDialog(props: {
       submitQyLotEntry(activity.act_no, {
         client_request_id: requestId,
         opt_no: activity.kind === 'guess' ? optNo : 0,
+        // 非双色球一律不带 pick：后端对带号的普通抽奖是**拒绝**而不是忽略。
+        pick: isBall ? qyLotBallFormatPick(pick) : undefined,
         pay_password: needsPayPassword ? payPassword : undefined,
       }),
     onSuccess: (data) => {
@@ -120,6 +134,7 @@ export function QyLotEntryDialog(props: {
     !mutation.isPending &&
     requestId !== '' &&
     (activity.kind !== 'guess' || optNo > 0) &&
+    (!isBall || isQyLotBallPickComplete(pick, ballPool)) &&
     (!needsPayPassword || (!payPasswordBlocked && payPassword.length > 0))
 
   return (
@@ -176,9 +191,33 @@ export function QyLotEntryDialog(props: {
               <QyAmountText quota={activity.stake_quota} />
             </QyKeyValue>
             <QyKeyValue label={t('qy_lot_kind')}>
-              {t(`qy_lot_kind_${activity.kind}`)}
+              {isBall
+                ? t('qy_lot_mode_ball')
+                : t(`qy_lot_kind_${activity.kind}`)}
             </QyKeyValue>
+            {isBall && (
+              // 奖池必须与参与费并排：双色球的「能赢多少」全在这个数上，
+              // 而它随本期投注实时变大，参与之前看到的就是当下那一份。
+              <QyKeyValue label={t('qy_lot_ball_pool_open')}>
+                <QyAmountText
+                  quota={activity.pool_open_quota ?? 0}
+                  variant='hero'
+                />
+              </QyKeyValue>
+            )}
           </div>
+
+          {isBall && (
+            <div className='space-y-2'>
+              <Label>{t('qy_lot_ball_pick_title')}</Label>
+              <QyLotBallPicker
+                pool={ballPool}
+                value={pick}
+                onChange={setPick}
+                disabled={mutation.isPending}
+              />
+            </div>
+          )}
 
           {activity.kind === 'guess' && (
             <div className='space-y-2'>
@@ -251,6 +290,16 @@ export function QyLotEntryDialog(props: {
               <span className='font-mono text-xs'>{receipt.entry_no}</span>
             </QyKeyValue>
             <QyKeyValue label={t('qy_lot_seq')}>{receipt.seq}</QyKeyValue>
+            {/* 回执上显示的是后端**归一化之后**的那一串，不是提交时的输入：
+                进链的是归一化后的字节，两者不一致时用户拿手里的串去比对证据链
+                会得出"平台改了我的号"的错误结论。 */}
+            {(receipt.pick ?? '') !== '' && (
+              <QyKeyValue label={t('qy_lot_ball_my_pick')}>
+                <span className='font-mono text-xs tabular-nums'>
+                  {receipt.pick}
+                </span>
+              </QyKeyValue>
+            )}
             <QyKeyValue label={t('qy_lot_user_ref')}>
               <span className='font-mono text-xs'>{receipt.user_ref}</span>
             </QyKeyValue>
@@ -274,6 +323,9 @@ export function QyLotEntryDialog(props: {
                   `entry_no=${receipt.entry_no}`,
                   `seq=${receipt.seq}`,
                   `user_ref=${receipt.user_ref}`,
+                  ...((receipt.pick ?? '') === ''
+                    ? []
+                    : [`pick=${receipt.pick}`]),
                   `chain_hash=${receipt.chain_hash}`,
                   `commit_hash=${receipt.commit_hash}`,
                 ].join('\n')

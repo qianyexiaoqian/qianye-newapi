@@ -56,7 +56,7 @@ export const Route = createFileRoute('/_authenticated/qy/admin/group-matrix/')({
     if (auth.user?.role === ROLE.SUPER_ADMIN) {
       throw redirect({
         to: '/system-settings/billing/$section',
-        params: { section: 'user-groups' },
+        params: { section: 'group-matrix' },
         replace: true,
       })
     }

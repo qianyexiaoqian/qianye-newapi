@@ -1,14 +1,15 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
-	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -186,18 +187,10 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		return
 	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
-	if req.Plan.UpgradeGroup != "" {
-		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok {
-			common.ApiErrorMsg(c, "升级分组不存在")
-			return
-		}
-	}
 	req.Plan.DowngradeGroup = strings.TrimSpace(req.Plan.DowngradeGroup)
-	if req.Plan.DowngradeGroup != "" {
-		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.DowngradeGroup]; !ok {
-			common.ApiErrorMsg(c, "降级分组不存在")
-			return
-		}
+	if err := validatePlanUserGroups(req.Plan.UpgradeGroup, req.Plan.DowngradeGroup); err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
 	}
 	req.Plan.QuotaResetPeriod = model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod)
 	if req.Plan.QuotaResetPeriod == model.SubscriptionResetCustom && req.Plan.QuotaResetCustomSeconds <= 0 {
@@ -260,18 +253,10 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		return
 	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
-	if req.Plan.UpgradeGroup != "" {
-		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok {
-			common.ApiErrorMsg(c, "升级分组不存在")
-			return
-		}
-	}
 	req.Plan.DowngradeGroup = strings.TrimSpace(req.Plan.DowngradeGroup)
-	if req.Plan.DowngradeGroup != "" {
-		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.DowngradeGroup]; !ok {
-			common.ApiErrorMsg(c, "降级分组不存在")
-			return
-		}
+	if err := validatePlanUserGroups(req.Plan.UpgradeGroup, req.Plan.DowngradeGroup); err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
 	}
 	req.Plan.QuotaResetPeriod = model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod)
 	if req.Plan.QuotaResetPeriod == model.SubscriptionResetCustom && req.Plan.QuotaResetCustomSeconds <= 0 {
@@ -544,4 +529,66 @@ func AdminDeleteUserSubscription(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, nil)
+}
+
+// validatePlanUserGroups 校验套餐的升级 / 降级分组。
+//
+// ── 这里原本是一个纯 bug ──
+//
+// upgrade_group / downgrade_group 写进的是 **users.group**(购买套餐时把用户搬到
+// 那个用户分组,到期再搬回来),但校验用的是 ratio_setting.GetGroupRatioCopy(),
+// 也就是**模型分组**的清单。两者是两个不同的命名空间,只是碰巧共用一套字符串:
+//
+//	一个真实存在、但没配过倍率的用户分组  → 被拒绝(「升级分组不存在」)
+//	一个纯粹的模型分组(没有任何用户)     → 被接受,然后把用户搬进一个没人的分组
+//
+// 改用 users.group 的 distinct 清单。查库失败时**放行**:这条校验只是防手误,
+// 而挡住一次合法的套餐编辑比放过一个错字更贵 —— 真正的搬迁在购买时才发生。
+//
+// ── 为什么清单不能只有 users.group ──
+//
+// 「有人在用」与「合法」不是同一件事。upgrade_group 的语义是"买了这个套餐就把
+// 用户搬到哪一档",而**一个还没有任何人的新档次天然不在 users.group 里** ——
+// 只认 users.group 会让"为一个新档次创建套餐"这件事在结构上不可能完成:
+// 运营新建「年费 SVIP」并填 upgrade_group=svip,接口报「svip 不是一个用户分组」,
+// 唯一的绕法是先手工把某个真人改成 svip 再回来建套餐,一个纯粹的先有鸡还是先有蛋。
+// 同一段逻辑还会误伤无关编辑:一个只剩 0 个用户的历史分组会让"改这个套餐的价格"
+// 也被拒,而错误文案指向分组,与运营正在做的事无关。
+//
+// 所以清单是三者的并集:
+//
+//	users.group 的 distinct   已经有人在用的档
+//	qy_user_groups 登记表      已声明、暂时无人的档(扩展未启用时为空)
+//	现存套餐已经在用的值        存量行必须能被继续编辑,否则改标题都会被拒
+func validatePlanUserGroups(upgradeGroup, downgradeGroup string) error {
+	if upgradeGroup == "" && downgradeGroup == "" {
+		return nil
+	}
+	names, err := model.QyDistinctUserGroups()
+	if err != nil {
+		common.SysError("校验套餐升降级分组时读取用户分组清单失败(已放行): " + err.Error())
+		return nil
+	}
+	known := make(map[string]bool, len(names))
+	for _, name := range names {
+		known[name] = true
+	}
+	for _, name := range service.QyDeclaredUserGroups() {
+		known[name] = true
+	}
+	inUse, err := model.QyPlanUserGroupsInUse()
+	if err != nil {
+		common.SysError("校验套餐升降级分组时读取存量套餐分组失败(已放行): " + err.Error())
+		return nil
+	}
+	for _, name := range inUse {
+		known[name] = true
+	}
+	if upgradeGroup != "" && !known[upgradeGroup] {
+		return errors.New("升级分组 " + upgradeGroup + " 不是一个用户分组(它必须是 users.group 里真实存在的值,或已在分组登记表里声明过)")
+	}
+	if downgradeGroup != "" && !known[downgradeGroup] {
+		return errors.New("降级分组 " + downgradeGroup + " 不是一个用户分组(它必须是 users.group 里真实存在的值,或已在分组登记表里声明过)")
+	}
+	return nil
 }

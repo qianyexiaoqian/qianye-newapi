@@ -20,10 +20,12 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import {
   Boxes,
   CalendarClock,
+  Coins,
   CreditCard,
-  RefreshCw,
+  KeyRound,
   Settings2,
   TriangleAlert,
+  Users,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useForm, type Resolver } from 'react-hook-form'
@@ -60,6 +62,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { QyResponsiveDialog } from '@/features/qy/components/qy-responsive-dialog'
 import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
 import { isQyError, qyErrorMessage } from '@/features/qy/lib/api'
+import { QyPlanBalanceScopeField } from '@/features/qy/plan-entitlement/balance-scope-field'
 import { useQyPlanUnlockGroups } from '@/features/qy/plan-entitlement/use-plan-unlock-groups'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { cn } from '@/lib/utils'
@@ -203,6 +206,9 @@ export function SubscriptionsMutateDrawer({
 
   const durationUnit = form.watch('duration_unit')
   const resetPeriod = form.watch('quota_reset_period')
+  // 「额度用尽后能不能用钱包余额」的两句后果说明按它加粗其中一句。watch 而不是
+  // getValues：getValues 不订阅变更，运营拨动开关时两句话不会跟着换重点。
+  const walletOverflow = form.watch('allow_wallet_overflow')
   // Gate "+ Create on Pancake" on the same checks the mint handler runs.
   const watchedTitle = form.watch('title')
   const watchedPrice = form.watch('price_amount')
@@ -415,7 +421,9 @@ export function SubscriptionsMutateDrawer({
           onSubmit={form.handleSubmit(onSubmit)}
           className='flex flex-col gap-6 py-2'
         >
-          {/* Basic Info */}
+          {/* ── 1. 基本信息 ──────────────────────────────────────────────
+              卖什么、卖多少钱、上不上架。这一段与「订阅=换分组」无关，
+              是所有套餐都要填的东西。 */}
           <SideDrawerSection>
             <h3 className='flex items-center gap-2 text-sm font-medium'>
               <IconBadge tone='info' size='xs'>
@@ -489,324 +497,26 @@ export function SubscriptionsMutateDrawer({
 
               <FormField
                 control={form.control}
-                name='total_amount'
+                name='sort_order'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>
-                      {t('Quota ({{currency}})', { currency: currencyLabel })}
-                    </FormLabel>
+                    <FormLabel>{t('Sort Order')}</FormLabel>
                     <FormControl>
                       <Input
                         {...field}
                         type='number'
-                        min={0}
-                        step={tokensOnly ? 1 : 0.01}
-                        placeholder={
-                          tokensOnly
-                            ? t('Enter quota in tokens')
-                            : t('Enter quota in {{currency}}', {
-                                currency: currencyLabel,
-                              })
-                        }
                         onChange={(e) =>
-                          field.onChange(Number.parseFloat(e.target.value) || 0)
+                          field.onChange(
+                            Number.parseInt(e.target.value, 10) || 0
+                          )
                         }
                       />
                     </FormControl>
-                    <FormDescription>
-                      {t(
-                        'Total quota included in the plan, usable per billing period. 0 means unlimited.'
-                      )}
-                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
             </div>
-
-            {/*
-              「解锁模型分组」。它取代的是上游的「升级分组 / 降级分组」两个下拉。
-
-              替换而不是并列：那两个下拉写的是购买时**改写 users.group** 的目标，
-              而用户分组与模型分组分离之后，买套餐只该多几个模型分组，不该把人
-              从一个用户分组搬到另一个（会连带换掉可用范围、倍率与自动分组）。
-              两列的存量处置见 lib/plan-form.ts 里 upgrade_group: '' 那段。
-
-              这一格与总名额那一格同构：落扩展库、与套餐本体不是同一次写入、
-              读不到时禁用而不是当成空。余额使用范围（通用 / 仅限）与实际倍率表
-              留在行操作的完整弹窗里 —— 那两块要摆影响面与现算倍率，塞进这里会
-              把一个已经很长的表单再撑长一屏，而它们的改动频率远低于这一格。
-            */}
-            {unlockGroups.state !== 'hidden' && (
-              <div className='border-border/60 flex flex-col gap-2 rounded-md border p-3'>
-                <div>
-                  <h4 className='text-sm font-medium'>
-                    {t('qy_plan_unlock_groups_label')}
-                  </h4>
-                  <p className='text-muted-foreground mt-1 text-xs leading-5'>
-                    {t('qy_plan_unlock_groups_hint')}
-                  </p>
-                </div>
-
-                {unlockGroups.state === 'loading' && (
-                  <p className='text-muted-foreground text-xs'>
-                    {t('Loading...')}
-                  </p>
-                )}
-
-                {/* 读失败：格子留着但空着，且保存时**不写**。不说这一句的话，
-                    界面上那个空清单看起来就是"这个套餐没解锁任何分组"。 */}
-                {unlockGroups.state === 'error' && (
-                  <p className='text-destructive text-xs'>
-                    {t(
-                      'Unlocked model groups could not be loaded; saving now leaves them untouched.'
-                    )}
-                  </p>
-                )}
-
-                {/* 新建：套餐还没有 id，解锁绑定挂在 plan_id 上，没有对象可挂。
-                    不能沉默地画一个空清单 —— 那看起来就是"可以在这里选，只是一个
-                    分组都没有"，而管理员勾不动任何东西也得不到任何解释。 */}
-                {unlockGroups.state === 'ready' && !isEdit && (
-                  <p className='text-muted-foreground text-xs'>
-                    {t(
-                      'Model group unlocks can be configured once the plan exists — save it first, then reopen it.'
-                    )}
-                  </p>
-                )}
-
-                {unlockGroups.state === 'ready' &&
-                  isEdit &&
-                  (unlockGroups.candidates.length === 0 &&
-                  unlockGroups.orphans.length === 0 ? (
-                    <p className='text-muted-foreground text-xs'>
-                      {t('qy_plan_unlock_groups_empty')}
-                    </p>
-                  ) : (
-                    <div className='grid max-h-56 gap-1 overflow-auto rounded-md border p-2 sm:grid-cols-2'>
-                      {unlockGroups.candidates.map((group) => (
-                        <label
-                          key={group}
-                          className='hover:bg-muted/50 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs'
-                        >
-                          <Checkbox
-                            checked={unlockGroups.selected.includes(group)}
-                            onCheckedChange={() => unlockGroups.toggle(group)}
-                          />
-                          <Boxes
-                            aria-hidden='true'
-                            className='text-muted-foreground size-3 shrink-0'
-                          />
-                          <span className='truncate'>{group}</span>
-                        </label>
-                      ))}
-                      {/* 已绑定、但已经从分组倍率表里消失的名字。必须渲染出来
-                          并且可以取消勾选：只画一条提示的话，这个名字在界面上
-                          不可见也摘不掉，而每次保存都会把它原样提交回去。 */}
-                      {unlockGroups.orphans.map((group) => (
-                        <label
-                          key={group}
-                          className='hover:bg-muted/50 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs'
-                        >
-                          <Checkbox
-                            checked
-                            onCheckedChange={() => unlockGroups.toggle(group)}
-                          />
-                          <TriangleAlert
-                            aria-hidden='true'
-                            className='text-destructive size-3 shrink-0'
-                          />
-                          <span className='truncate line-through'>{group}</span>
-                        </label>
-                      ))}
-                    </div>
-                  ))}
-
-                {/* 「仅限」的套餐被摘光**有效**绑定 = 一份任何请求都用不上的
-                    死钱。说明必须带着出口一起给：抽屉里余额范围是只读的，而
-                    候选清单为空时（运营刚把那个模型分组从倍率表里删了）勾选框
-                    里连一个可勾的东西都没有 —— 只留一句红字，这个状态在抽屉
-                    内部就走不出去了，无论怎么勾都解不开。 */}
-                {unlockGroups.restrictedWithoutBinding && (
-                  <div className='flex flex-col items-start gap-1.5'>
-                    <p className='text-destructive text-xs'>
-                      {t('qy_plan_balance_scope_need_binding')}
-                    </p>
-                    <Button
-                      type='button'
-                      variant='outline'
-                      size='sm'
-                      onClick={unlockGroups.resetScopeToUniversal}
-                    >
-                      {t('qy_plan_bound_group_reset_to_universal')}
-                    </Button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/*
-              两个限购维度必须放在同一个框里并排显示，且各自说清楚"数的是什么"。
-              拆开摆、或者两格都只写一句"0 表示不限"，运营就会把"全站只招 100 人"
-              填进左边那格，实际生效的是"每人可买 100 次" —— 一个卖爆一个卖不动，
-              而且两种填错都不会报错，只能等出事了才发现。
-            */}
-            {/* 名额格子不显示时（扩展关闭 / 接口不可用），这圈边框、标题与
-                "左边管…右边管…"的说明必须一起消失：只剩左边一格却还留着一句
-                描述两格的说明，运营的合理推断是"右边那格被合并进左边了"，
-                于是把"全站只招 100 人"填进"限购"，实际生效的是"每人可买 100 次"，
-                全站不限量 —— 而两种填法都不会报错。 */}
-            <div
-              className={cn(
-                'flex flex-col gap-3',
-                seatCapState !== 'hidden' &&
-                  'border-border/60 rounded-md border p-3'
-              )}
-            >
-              {seatCapState !== 'hidden' && (
-                <div>
-                  <h4 className='text-sm font-medium'>
-                    {t('qy_plan_limits_title')}
-                  </h4>
-                  <p className='text-muted-foreground mt-1 text-xs leading-5'>
-                    {t('qy_plan_limits_desc')}
-                  </p>
-                </div>
-              )}
-
-              <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
-                <FormField
-                  control={form.control}
-                  name='max_purchase_per_user'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>
-                        {t('Purchase Limit')}
-                        {seatCapState !== 'hidden' && (
-                          <span className='text-muted-foreground ml-1 text-xs font-normal'>
-                            {t('qy_plan_scope_per_user')}
-                          </span>
-                        )}
-                      </FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          type='number'
-                          min={0}
-                          onChange={(e) =>
-                            field.onChange(
-                              Number.parseInt(e.target.value, 10) || 0
-                            )
-                          }
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        {/* 上游原文，7 个语种都有译文。换成 qy_ 前缀的自造 key
-                            会让法/日/越/俄/繁中这 5 个语种退回英文 —— 而这是
-                            上游既有字段的既有文案，不是本轮新增的东西。
-                            两个上限的区分由上面的标题与 · 按人次 / · 按全站人数
-                            这两个 scope 标签负责，不靠这一句。 */}
-                        {t('0 means unlimited')}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                {seatCapState !== 'hidden' && (
-                  <FormField
-                    control={form.control}
-                    name='max_total_users'
-                    render={({ field }) => {
-                      // 占用数拿现存数据、名额拿输入框的当前值，这样把名额往下调到
-                      // 低于已占用时当场就能看见（后端不会因此清退已有订阅，只是从此
-                      // 卖不出去，界面不说的话没人会发现这一格填小了）。
-                      const capValue = Number(field.value || 0)
-                      const overCap =
-                        seatUsage != null &&
-                        capValue > 0 &&
-                        seatUsage.used_seats > capValue
-                      return (
-                        <FormItem>
-                          <FormLabel>
-                            {t('qy_plan_seat_cap_label')}
-                            <span className='text-muted-foreground ml-1 text-xs font-normal'>
-                              {t('qy_plan_scope_site_wide')}
-                            </span>
-                          </FormLabel>
-                          <FormControl>
-                            <Input
-                              {...field}
-                              type='number'
-                              min={0}
-                              disabled={seatCapState !== 'ready'}
-                              onChange={(e) =>
-                                field.onChange(
-                                  Number.parseInt(e.target.value, 10) || 0
-                                )
-                              }
-                            />
-                          </FormControl>
-                          <FormDescription>
-                            {t('qy_plan_seat_cap_hint')}
-                          </FormDescription>
-                          {seatCapState === 'loading' && (
-                            <p className='text-muted-foreground text-xs'>
-                              {t('qy_plan_seat_cap_loading')}
-                            </p>
-                          )}
-                          {seatCapState === 'error' && (
-                            <p className='text-destructive text-xs'>
-                              {t('qy_plan_seat_cap_unavailable')}
-                            </p>
-                          )}
-                          {seatUsage != null && (
-                            <p
-                              className={cn(
-                                'text-xs tabular-nums',
-                                overCap
-                                  ? 'text-destructive'
-                                  : 'text-muted-foreground'
-                              )}
-                            >
-                              {t('qy_plan_seat_usage', {
-                                used: seatUsage.used_seats,
-                                cap:
-                                  capValue > 0
-                                    ? capValue
-                                    : t('qy_plan_seat_unlimited'),
-                              })}
-                              {overCap ? ` ${t('qy_plan_seat_over_cap')}` : ''}
-                            </p>
-                          )}
-                          <FormMessage />
-                        </FormItem>
-                      )
-                    }}
-                  />
-                )}
-              </div>
-            </div>
-
-            <FormField
-              control={form.control}
-              name='sort_order'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('Sort Order')}</FormLabel>
-                  <FormControl>
-                    <Input
-                      {...field}
-                      type='number'
-                      onChange={(e) =>
-                        field.onChange(Number.parseInt(e.target.value, 10) || 0)
-                      }
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
 
             <div className='flex flex-col gap-3'>
               <FormField
@@ -827,6 +537,10 @@ export function SubscriptionsMutateDrawer({
                 )}
               />
 
+              {/* 这一项管的是**买这个套餐时**能不能用钱包余额抵扣，与下面那个
+                  「额度用尽后能不能用钱包余额」是两件完全不同的事。两者曾经
+                  并排摆着、文案都以「余额」开头，运营把它们当成同一个开关的
+                  两种说法。现在一个留在价格旁边、一个跟着额度走。 */}
               <FormField
                 control={form.control}
                 name='allow_balance_pay'
@@ -844,7 +558,248 @@ export function SubscriptionsMutateDrawer({
                   </FormItem>
                 )}
               />
+            </div>
+          </SideDrawerSection>
 
+          {/* ── 2. 解锁的模型分组 ────────────────────────────────────────
+
+              **这一段是增值订阅的核心，所以它是一个独立的段落，而不是基本信息
+              里的一个格子。** 上游那张表单表达的是「订阅 = 换一个用户分组」
+              （升级分组 / 降级分组两个下拉），这一版表达的是「订阅 = 在原有
+              用户分组之上多解锁几个模型分组 + 自带一笔额度」。信息架构必须跟着
+              语义走：卖点排在额度前面，额度排在有效期前面。
+
+              这一格与总名额那一格同构：落扩展库、与套餐本体不是同一次写入、
+              读不到时禁用而不是当成空。 */}
+          {unlockGroups.state !== 'hidden' && (
+            <SideDrawerSection>
+              <h3 className='flex items-center gap-2 text-sm font-medium'>
+                <IconBadge tone='chart-2' size='xs'>
+                  <KeyRound />
+                </IconBadge>
+                {t('qy_plan_section_unlock_title')}
+              </h3>
+              <p className='text-muted-foreground text-xs leading-5'>
+                {t('qy_plan_section_unlock_desc')}
+              </p>
+
+              {unlockGroups.state === 'loading' && (
+                <p className='text-muted-foreground text-xs'>
+                  {t('Loading...')}
+                </p>
+              )}
+
+              {/* 读失败：格子留着但空着，且保存时**不写**。不说这一句的话，
+                  界面上那个空清单看起来就是"这个套餐没解锁任何分组"。 */}
+              {unlockGroups.state === 'error' && (
+                <p className='text-destructive text-xs'>
+                  {t(
+                    'Unlocked model groups could not be loaded; saving now leaves them untouched.'
+                  )}
+                </p>
+              )}
+
+              {/* 新建：套餐还没有 id，解锁绑定挂在 plan_id 上，没有对象可挂。
+                  不能沉默地画一个空清单 —— 那看起来就是"可以在这里选，只是一个
+                  分组都没有"，而管理员勾不动任何东西也得不到任何解释。 */}
+              {unlockGroups.state === 'ready' && !isEdit && (
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'Model group unlocks can be configured once the plan exists — save it first, then reopen it.'
+                  )}
+                </p>
+              )}
+
+              {unlockGroups.state === 'ready' &&
+                isEdit &&
+                (unlockGroups.candidates.length === 0 &&
+                unlockGroups.orphans.length === 0 ? (
+                  <p className='text-muted-foreground text-xs'>
+                    {t('qy_plan_unlock_groups_empty')}
+                  </p>
+                ) : (
+                  <div className='grid max-h-56 gap-1 overflow-auto rounded-md border p-2 sm:grid-cols-2'>
+                    {unlockGroups.candidates.map((group) => (
+                      <label
+                        key={group}
+                        className='hover:bg-muted/50 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs'
+                      >
+                        <Checkbox
+                          checked={unlockGroups.selected.includes(group)}
+                          onCheckedChange={() => unlockGroups.toggle(group)}
+                        />
+                        <Boxes
+                          aria-hidden='true'
+                          className='text-muted-foreground size-3 shrink-0'
+                        />
+                        <span className='truncate'>{group}</span>
+                      </label>
+                    ))}
+                    {/* 已绑定、但已经从分组倍率表里消失的名字。必须渲染出来
+                        并且可以取消勾选：只画一条提示的话，这个名字在界面上
+                        不可见也摘不掉，而每次保存都会把它原样提交回去。 */}
+                    {unlockGroups.orphans.map((group) => (
+                      <label
+                        key={group}
+                        className='hover:bg-muted/50 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs'
+                      >
+                        <Checkbox
+                          checked
+                          onCheckedChange={() => unlockGroups.toggle(group)}
+                        />
+                        <TriangleAlert
+                          aria-hidden='true'
+                          className='text-destructive size-3 shrink-0'
+                        />
+                        <span className='truncate line-through'>{group}</span>
+                      </label>
+                    ))}
+                  </div>
+                ))}
+
+              <p className='text-muted-foreground text-xs leading-5'>
+                {t('qy_plan_unlock_groups_hint')}
+              </p>
+            </SideDrawerSection>
+          )}
+
+          {/* ── 3. 套餐自带的额度 ────────────────────────────────────────
+
+              「有多少钱、多久回一次血、这笔钱能花在哪、花完了怎么办」四件事
+              摆在同一段里。它们此前散在三个地方（额度在基本信息、重置在自己
+              一段、使用范围在行操作的另一个弹窗、用尽后的开关夹在两个不相干的
+              switch 中间），于是没有任何一屏能回答"这笔钱到底怎么用"。 */}
+          <SideDrawerSection>
+            <h3 className='flex items-center gap-2 text-sm font-medium'>
+              <IconBadge tone='success' size='xs'>
+                <Coins />
+              </IconBadge>
+              {t('qy_plan_section_quota_title')}
+            </h3>
+            <p className='text-muted-foreground text-xs leading-5'>
+              {t('qy_plan_section_quota_desc')}
+            </p>
+
+            <FormField
+              control={form.control}
+              name='total_amount'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    {t('Quota ({{currency}})', { currency: currencyLabel })}
+                  </FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      type='number'
+                      min={0}
+                      step={tokensOnly ? 1 : 0.01}
+                      placeholder={
+                        tokensOnly
+                          ? t('Enter quota in tokens')
+                          : t('Enter quota in {{currency}}', {
+                              currency: currencyLabel,
+                            })
+                      }
+                      onChange={(e) =>
+                        field.onChange(Number.parseFloat(e.target.value) || 0)
+                      }
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Total quota included in the plan, usable per billing period. 0 means unlimited.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+              <FormField
+                control={form.control}
+                name='quota_reset_period'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Reset Cycle')}</FormLabel>
+                    <Select
+                      items={resetPeriodOpts.map((o) => ({
+                        value: o.value,
+                        label: o.label,
+                      }))}
+                      onValueChange={field.onChange}
+                      value={field.value}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false}>
+                        <SelectGroup>
+                          {resetPeriodOpts.map((o) => (
+                            <SelectItem key={o.value} value={o.value}>
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='quota_reset_custom_seconds'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Custom Seconds')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        {...field}
+                        type='number'
+                        min={0}
+                        disabled={resetPeriod !== 'custom'}
+                        onChange={(e) =>
+                          field.onChange(
+                            Number.parseInt(e.target.value, 10) || 0
+                          )
+                        }
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            {/* 余额使用范围。它此前只在行操作的另一个弹窗里可编辑，抽屉里是
+                只读的 —— 于是"这笔钱能花在哪"这个决定与"解锁哪些分组"分在了
+                两个入口，而后者正是前者的判据。搬进来之后两半在同一次编辑里
+                都看得见，死钱那一档也就能在按下保存之前被拦住。
+
+                新建套餐时禁用：绑定挂在 plan_id 上，此刻还没有 id，勾不了任何
+                分组；此时允许选「仅限」只会造出一个必然被拦下的组合。 */}
+            {unlockGroups.state !== 'hidden' && (
+              <QyPlanBalanceScopeField
+                value={unlockGroups.balanceScope}
+                onChange={unlockGroups.setBalanceScope}
+                disabled={unlockGroups.state !== 'ready' || !isEdit}
+                needsBinding={unlockGroups.restrictedWithoutBinding}
+                onResetToUniversal={unlockGroups.resetScopeToUniversal}
+              />
+            )}
+
+            {/* 额度用尽之后会发生什么。
+
+                这个开关此前是三个 switch 里的一个，标签是「额度用尽后允许使用
+                钱包余额」，**不勾的后果一个字都没写**。而不勾的后果是全站最硬的
+                一条：这个套餐会把持有它的用户挡在"扣不到套餐余额、也不许用钱包"
+                上，返回订阅额度不足。所以两个分支各写一句，当前选中的那句加粗。 */}
+            <div className='border-border/60 flex flex-col gap-2 rounded-md border p-3'>
               <FormField
                 control={form.control}
                 name='allow_wallet_overflow'
@@ -862,10 +817,51 @@ export function SubscriptionsMutateDrawer({
                   </FormItem>
                 )}
               />
+              <p
+                className={cn(
+                  'text-xs leading-5',
+                  walletOverflow ? 'text-foreground' : 'text-muted-foreground'
+                )}
+              >
+                {t('qy_plan_wallet_overflow_on_hint')}
+              </p>
+              <p
+                className={cn(
+                  'text-xs leading-5',
+                  walletOverflow ? 'text-muted-foreground' : 'text-destructive'
+                )}
+              >
+                {t('qy_plan_wallet_overflow_off_hint')}
+              </p>
+              {/* 「仅限」那条例外**只在扩展启用时存在**（后端 seams.go 的
+                  enabled() 与 balanceScopeEnforced 两道前置），所以它不能跟着
+                  基础后果无条件渲染。而且它此前被写成了"唯一的例外"这种充分
+                  条件 —— 多套餐时不成立，见下面那句的措辞。 */}
+              {!walletOverflow && unlockGroups.state !== 'hidden' && (
+                <p className='text-muted-foreground text-xs leading-5'>
+                  {t('qy_plan_wallet_overflow_off_exception')}
+                </p>
+              )}
+              {/* 这条限制**可以被用户自己单击绕过**：计费偏好是买家侧的一个
+                  下拉（钱包页 → 计费偏好），选「钱包优先 / 仅用钱包」之后
+                  NewBillingSession 根本不会走到查 allow_wallet_overflow 的那一支。
+                  不写出来的话，运营会以为自己配的是硬约束，然后看到"我明明关了
+                  钱包回退，用户的钱包还是在掉"。 */}
+              {!walletOverflow && (
+                <p className='text-destructive text-xs leading-5'>
+                  {t('qy_plan_wallet_overflow_pref_bypass')}
+                </p>
+              )}
+              {/* 与项目方口径的差额，只在真的选了"不勾"时说。 */}
+              {!walletOverflow && (
+                <p className='text-muted-foreground text-xs leading-5'>
+                  {t('qy_plan_wallet_overflow_fallback_gap')}
+                </p>
+              )}
             </div>
           </SideDrawerSection>
 
-          {/* Duration Settings */}
+          {/* ── 4. 有效期 ────────────────────────────────────────────── */}
           <SideDrawerSection>
             <h3 className='flex items-center gap-2 text-sm font-medium'>
               <IconBadge tone='chart-4' size='xs'>
@@ -959,62 +955,50 @@ export function SubscriptionsMutateDrawer({
             </div>
           </SideDrawerSection>
 
-          {/* Quota Reset */}
+          {/* ── 5. 卖给多少人 ───────────────────────────────────────────
+
+              两个限购维度必须放在同一段里并排显示，且各自说清楚"数的是什么"。
+              拆开摆、或者两格都只写一句"0 表示不限"，运营就会把"全站只招 100 人"
+              填进左边那格，实际生效的是"每人可买 100 次" —— 一个卖爆一个卖不动，
+              而且两种填错都不会报错，只能等出事了才发现。
+
+              名额格子不显示时（扩展关闭 / 接口不可用），标题与"左边管…右边管…"
+              的说明必须一起换掉：只剩左边一格却还留着一句描述两格的说明，
+              运营的合理推断是"右边那格被合并进左边了"。 */}
           <SideDrawerSection>
             <h3 className='flex items-center gap-2 text-sm font-medium'>
-              <IconBadge tone='success' size='xs'>
-                <RefreshCw />
+              <IconBadge tone='warning' size='xs'>
+                <Users />
               </IconBadge>
-              {t('Quota Reset')}
+              {seatCapState === 'hidden'
+                ? t('Purchase Limit')
+                : t('qy_plan_limits_title')}
             </h3>
+            {seatCapState !== 'hidden' && (
+              <p className='text-muted-foreground text-xs leading-5'>
+                {t('qy_plan_limits_desc')}
+              </p>
+            )}
 
             <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
               <FormField
                 control={form.control}
-                name='quota_reset_period'
+                name='max_purchase_per_user'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>{t('Reset Cycle')}</FormLabel>
-                    <Select
-                      items={resetPeriodOpts.map((o) => ({
-                        value: o.value,
-                        label: o.label,
-                      }))}
-                      onValueChange={field.onChange}
-                      value={field.value}
-                    >
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent alignItemWithTrigger={false}>
-                        <SelectGroup>
-                          {resetPeriodOpts.map((o) => (
-                            <SelectItem key={o.value} value={o.value}>
-                              {o.label}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='quota_reset_custom_seconds'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Custom Seconds')}</FormLabel>
+                    <FormLabel>
+                      {t('Purchase Limit')}
+                      {seatCapState !== 'hidden' && (
+                        <span className='text-muted-foreground ml-1 text-xs font-normal'>
+                          {t('qy_plan_scope_per_user')}
+                        </span>
+                      )}
+                    </FormLabel>
                     <FormControl>
                       <Input
                         {...field}
                         type='number'
                         min={0}
-                        disabled={resetPeriod !== 'custom'}
                         onChange={(e) =>
                           field.onChange(
                             Number.parseInt(e.target.value, 10) || 0
@@ -1022,17 +1006,98 @@ export function SubscriptionsMutateDrawer({
                         }
                       />
                     </FormControl>
+                    <FormDescription>
+                      {/* 上游原文，7 个语种都有译文。换成 qy_ 前缀的自造 key
+                          会让法/日/越/俄/繁中这 5 个语种退回英文 —— 而这是
+                          上游既有字段的既有文案，不是本轮新增的东西。
+                          两个上限的区分由上面的标题与 · 按人次 / · 按全站人数
+                          这两个 scope 标签负责，不靠这一句。 */}
+                      {t('0 means unlimited')}
+                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
+
+              {seatCapState !== 'hidden' && (
+                <FormField
+                  control={form.control}
+                  name='max_total_users'
+                  render={({ field }) => {
+                    // 占用数拿现存数据、名额拿输入框的当前值，这样把名额往下调到
+                    // 低于已占用时当场就能看见（后端不会因此清退已有订阅，只是从此
+                    // 卖不出去，界面不说的话没人会发现这一格填小了）。
+                    const capValue = Number(field.value || 0)
+                    const overCap =
+                      seatUsage != null &&
+                      capValue > 0 &&
+                      seatUsage.used_seats > capValue
+                    return (
+                      <FormItem>
+                        <FormLabel>
+                          {t('qy_plan_seat_cap_label')}
+                          <span className='text-muted-foreground ml-1 text-xs font-normal'>
+                            {t('qy_plan_scope_site_wide')}
+                          </span>
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            type='number'
+                            min={0}
+                            disabled={seatCapState !== 'ready'}
+                            onChange={(e) =>
+                              field.onChange(
+                                Number.parseInt(e.target.value, 10) || 0
+                              )
+                            }
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t('qy_plan_seat_cap_hint')}
+                        </FormDescription>
+                        {seatCapState === 'loading' && (
+                          <p className='text-muted-foreground text-xs'>
+                            {t('qy_plan_seat_cap_loading')}
+                          </p>
+                        )}
+                        {seatCapState === 'error' && (
+                          <p className='text-destructive text-xs'>
+                            {t('qy_plan_seat_cap_unavailable')}
+                          </p>
+                        )}
+                        {seatUsage != null && (
+                          <p
+                            className={cn(
+                              'text-xs tabular-nums',
+                              overCap
+                                ? 'text-destructive'
+                                : 'text-muted-foreground'
+                            )}
+                          >
+                            {t('qy_plan_seat_usage', {
+                              used: seatUsage.used_seats,
+                              cap:
+                                capValue > 0
+                                  ? capValue
+                                  : t('qy_plan_seat_unlimited'),
+                            })}
+                            {overCap ? ` ${t('qy_plan_seat_over_cap')}` : ''}
+                          </p>
+                        )}
+                        <FormMessage />
+                      </FormItem>
+                    )
+                  }}
+                />
+              )}
             </div>
           </SideDrawerSection>
 
-          {/* Payment Config */}
+          {/* ── 6. 第三方支付 ─────────────────────────────────────────── */}
           <SideDrawerSection>
             <h3 className='flex items-center gap-2 text-sm font-medium'>
-              <IconBadge tone='warning' size='xs'>
+              <IconBadge tone='chart-1' size='xs'>
                 <CreditCard />
               </IconBadge>
               {t('Third-party Payment Config')}

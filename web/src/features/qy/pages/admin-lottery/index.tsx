@@ -55,6 +55,7 @@ import {
 } from './api'
 import { QyLotCreateWizard } from './components/lottery-create-wizard'
 import { QyLotFulfillQueueTab } from './components/lottery-fulfill-queue-tab'
+import { QyLotSeriesPanel } from './components/lottery-series-panel'
 import type { QyLotAdminActivityBrief } from './types'
 
 const PAGE_SIZE = 20
@@ -74,6 +75,7 @@ export function QyAdminLottery() {
   const [page, setPage] = useState(1)
   const [createOpen, setCreateOpen] = useState(false)
   const [queueOpen, setQueueOpen] = useState(false)
+  const [seriesOpen, setSeriesOpen] = useState(false)
 
   const params = {
     p: page,
@@ -122,6 +124,11 @@ export function QyAdminLottery() {
           render={<Link to='/qy/admin/lottery-config' />}
         >
           {t('qy_nav_a_lottery_config')}
+        </Button>
+        {/* 双色球的期次系列必须先建，一期双色球才开得出来：号池、投注入池比例
+            与累计发行上限全部由系列决定，创建活动时没有任何字段能覆盖它们。 */}
+        <Button size='sm' variant='outline' onClick={() => setSeriesOpen(true)}>
+          {t('qy_lot_ball_series_manage')}
         </Button>
         <Button size='sm' onClick={() => setCreateOpen(true)}>
           <Plus aria-hidden='true' />
@@ -257,10 +264,15 @@ export function QyAdminLottery() {
                     ),
                   },
                   {
+                    // 双色球的 kind 也是 draw，只靠这一列运营在列表上分不出来，
+                    // 而那一行的 pool_quota（本期投注额）与它真正的奖池不是一
+                    // 回事 —— 分不出来就会照着错的数判断收支。
                     id: 'kind',
                     header: t('qy_lot_kind'),
                     cell: (row: QyLotAdminActivityBrief) =>
-                      t(`qy_lot_kind_${row.kind}`),
+                      row.draw_mode === 'ball'
+                        ? `${t('qy_lot_mode_ball')} · ${t('qy_lot_ball_issue_no', { no: row.issue_no ?? 0 })}`
+                        : t(`qy_lot_kind_${row.kind}`),
                   },
                   {
                     id: 'status',
@@ -357,6 +369,16 @@ export function QyAdminLottery() {
       >
         {/* actNo 传空串 = 跨活动。这正是后端 /admin/lottery/text-prizes 的默认口径。 */}
         <QyLotFulfillQueueTab actNo='' />
+      </QyResponsiveDialog>
+
+      <QyResponsiveDialog
+        open={seriesOpen}
+        onOpenChange={setSeriesOpen}
+        title={t('qy_lot_ball_series_manage')}
+        description={t('qy_lot_ball_series_manage_desc')}
+        contentClassName='sm:max-w-4xl'
+      >
+        <QyLotSeriesPanel />
       </QyResponsiveDialog>
 
       <QyLotCreateWizard

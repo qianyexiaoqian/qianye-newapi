@@ -152,20 +152,37 @@ export function buildQyEntitlementIndex(
  * "没读到"是在为一个不存在的问题制造红字。反过来，一旦有 planId，`error` 就
  * 必须照常返回 —— 后端的 `plans` 覆盖全站配置过权益的套餐，所以任何一张卡都
  * 可能本该有话说，而这次没读到。
+ *
+ * ═══════════ `beforePayment` 决定 loading 这一档说不说话 ═══════════
+ *
+ * 两个调用位置对"还在读"的正确反应是**相反**的：
+ *
+ *	套餐卡列表（beforePayment 省略）  沉默。此刻渲染"正在读取"，等 ready 之后
+ *	                                  又要整行消失（因为这个套餐没配过权益），
+ *	                                  列表会先长后缩，而那两行本来就可能不存在。
+ *	购买确认弹窗（beforePayment=true）说话，而且付款按钮要一起等。掏钱那一屏上
+ *	                                  整行省略与"这个套餐不解锁任何分组"在视觉上
+ *	                                  完全一样 —— 用户会用余额付完款，买完之后
+ *	                                  才在「我的订阅」里第一次看到「仅限：只能用于
+ *	                                  上面解锁的模型分组」。那正是 plan-facts 注释
+ *	                                  自己写的「付款前必须知道、付款后才发现等于
+ *	                                  误导」。冷启动/慢库下这个窗口是真实存在的。
  */
 export function qyPlanDisclosure(
   result: QyEntitlementResult,
-  planId: number | undefined
+  planId: number | undefined,
+  opts: { beforePayment?: boolean } = {}
 ): PlanEntitlementDisclosure | undefined {
   if (result.state === 'hidden') return undefined
   if (planId == null || planId <= 0) return undefined
   if (result.state === 'error') return { state: 'error' }
+  if (result.state === 'loading') {
+    return opts.beforePayment ? { state: 'loading' } : undefined
+  }
   const grant = result.byPlan.get(planId)
   if (grant == null) {
     // 已读到但这个套餐不在其中 = 后台没给它配过权益，它的行为与上游逐位一致，
     // 这条接口对它无话可说。
-    // loading 期间同样只能沉默：此刻渲染"正在读取"，等 ready 之后又要整行
-    // 消失（因为没配过），列表会先长后缩。
     return undefined
   }
   return {

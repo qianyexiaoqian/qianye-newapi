@@ -671,7 +671,13 @@ export function SubscriptionPlansCard({
           }
         }}
         plan={selectedPlan}
-        entitlement={qyPlanDisclosure(entitlements, selectedPlan?.plan?.id)}
+        /* beforePayment：掏钱那一屏上，「还在读」必须说出来并且把付款按钮一起
+           挡住。整行省略与"这个套餐不解锁任何分组"在视觉上完全一样，而后者是
+           一句后端从没说过的话。列表那边（line 557）刻意保持沉默，理由见
+           qyPlanDisclosure 的注释。 */
+        entitlement={qyPlanDisclosure(entitlements, selectedPlan?.plan?.id, {
+          beforePayment: true,
+        })}
         enableStripe={enableStripe}
         enableCreem={enableCreem}
         enableWaffoPancake={enableWaffoPancake}
