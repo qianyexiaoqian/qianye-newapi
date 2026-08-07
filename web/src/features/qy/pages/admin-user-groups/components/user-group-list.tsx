@@ -21,7 +21,9 @@ import { Search, Users } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Input } from '@/components/ui/input'
+import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { QyGmScopeStateBadges } from '../../admin-group-matrix/components/scope-state-badges'
 import type { QyGmUserGroup } from '../../admin-group-matrix/types'
@@ -66,6 +68,11 @@ type QyUgUserGroupListProps = {
  */
 export function QyUgUserGroupList(props: QyUgUserGroupListProps) {
   const { t } = useTranslation()
+  // 这一页的后端一直是 `AdminAuth`（role>=10），而指路目标 `/system-settings`
+  // 的前端守卫要求 role=100。对普通管理员渲染那条链接，等于把他唯一的指引指向
+  // 一个必然 403 的地址 —— 他在前端就完全没有出路了。够不着的人给一句说明。
+  const canOpenGroupPricing =
+    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
 
   return (
     <div className='flex min-h-0 flex-col gap-2 rounded-lg border p-2'>
@@ -154,13 +161,17 @@ export function QyUgUserGroupList(props: QyUgUserGroupListProps) {
 
       <p className='text-muted-foreground border-t px-1 pt-2 text-xs'>
         {t('qy_group_matrix_axis_create_hint')}{' '}
-        <Link
-          to='/system-settings/billing/$section'
-          params={{ section: 'group-pricing' }}
-          className='text-primary underline underline-offset-2'
-        >
-          {t('qy_group_matrix_axis_create_link')}
-        </Link>
+        {canOpenGroupPricing ? (
+          <Link
+            to='/system-settings/billing/$section'
+            params={{ section: 'group-pricing' }}
+            className='text-primary underline underline-offset-2'
+          >
+            {t('qy_group_matrix_axis_create_link')}
+          </Link>
+        ) : (
+          t('qy_group_matrix_axis_create_need_super')
+        )}
       </p>
     </div>
   )

@@ -20,6 +20,9 @@ import { Link } from '@tanstack/react-router'
 import { ArrowDown, ArrowRight, Boxes, Globe, Info, Users } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
+
 /**
  * 两个轴的图例 —— 「用户分组 ≠ 模型分组」在界面上的**主要**承载处。
  *
@@ -49,10 +52,14 @@ import { useTranslation } from 'react-i18next'
  * **同时**是模型分组清单。在这一页上放一个「新建用户分组」按钮，等于在一个专门
  * 用来区分两个概念的界面上，提供一个会同时创造出一行和一列的操作 —— 那会让
  * 本组件说的每一句话当场失效。所以这里只给一条指路链接，把创建留在它真正的
- * 归属地（上游「系统设置 → 分组倍率」），并在那里承担它的全部语义。
+ * 归属地（上游「系统设置 → 计费与支付 → 模型分组定价」），并在那里承担它的全部语义。
  */
 export function QyGmAxisLegend(props: { unscopedGroups: string[] }) {
   const { t } = useTranslation()
+  // 见 `user-group-list.tsx` 同一处：`/system-settings` 的前端守卫要求超管，
+  // 而本组件也渲染给普通管理员（role=10）。够不着的人不能拿到一条 403 链接。
+  const canOpenGroupPricing =
+    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
 
   return (
     <div className='bg-muted/30 space-y-2 rounded-lg border p-3'>
@@ -81,13 +88,17 @@ export function QyGmAxisLegend(props: { unscopedGroups: string[] }) {
         <span>
           {t('qy_group_matrix_axis_same_name_note')}{' '}
           {t('qy_group_matrix_axis_create_hint')}{' '}
-          <Link
-            to='/system-settings/billing/$section'
-            params={{ section: 'group-pricing' }}
-            className='text-primary underline underline-offset-2'
-          >
-            {t('qy_group_matrix_axis_create_link')}
-          </Link>
+          {canOpenGroupPricing ? (
+            <Link
+              to='/system-settings/billing/$section'
+              params={{ section: 'group-pricing' }}
+              className='text-primary underline underline-offset-2'
+            >
+              {t('qy_group_matrix_axis_create_link')}
+            </Link>
+          ) : (
+            t('qy_group_matrix_axis_create_need_super')
+          )}
         </span>
       </p>
 
@@ -97,7 +108,7 @@ export function QyGmAxisLegend(props: { unscopedGroups: string[] }) {
         ── 为什么它必须常驻，而不是一次性通知 ──
 
         这一页的默认口径是「未设定范围 = 全部模型分组可用，各按兜底倍率」。它是
-        正确的默认，但它同时意味着：运营在别的页面（上游「系统设置 → 分组倍率」）
+        正确的默认，但它同时意味着：运营在别的页面（上游「系统设置 → 计费与支付 → 模型分组定价」）
         新加一个用户分组时，那一档的人**立刻就能用全部模型分组**，而那一页不会
         提到这回事。
 

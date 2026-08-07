@@ -60,7 +60,7 @@ func adoptRetiredGroupPricing(c *Config) {
 	}
 	common.SysError("qianye: 配置里仍有 group_pricing 段,但「模型按分组单独定价」已下线 —— " +
 		"该段被整段忽略,其中的规则不再参与任何一次扣费。" +
-		"分组级价格改由「用户分组 × 模型分组」倍率矩阵表达(管理端分组矩阵页)," +
+		"分组级价格改由「用户分组 × 模型分组」倍率矩阵表达(管理端「用户分组」页)," +
 		"确认无误后可以把这一段从 YAML 里删掉")
 	c.GroupPricingDeprecated = nil
 }
@@ -80,7 +80,7 @@ func adoptRetiredNewGroupDeny(gm *GroupMatrix) {
 	if gm.NewGroupDefaultDenyDeprecated != nil {
 		common.SysError("qianye: group_matrix.new_group_default_deny 已废弃并被忽略 —— " +
 			"「新分组默认全遮断」已下线。新口径是:用户分组**未设定范围**时,全部模型分组可用、" +
-			"按各自的兜底倍率计费;需要限制某个用户分组请在管理端分组矩阵页为它显式设定范围。" +
+			"按各自的兜底倍率计费;需要限制某个用户分组请在管理端「用户分组」页为它显式设定范围。" +
 			"确认无误后可以把这一行从 YAML 里删掉")
 		gm.NewGroupDefaultDenyDeprecated = nil
 	}

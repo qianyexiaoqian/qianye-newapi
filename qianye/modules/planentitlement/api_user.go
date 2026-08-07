@@ -79,8 +79,25 @@ type subscriptionView struct {
 	WillChargeFirst bool `json:"will_charge_first"`
 }
 
+// planGrantView 是**一个套餐**的权益披露,与当前用户是否持有它无关。
+//
+// 为什么必须与 subscriptionView 分开:subscriptionView 只覆盖用户**已持有**的
+// 活跃订阅,拿它当买前披露的数据源,等于「买了才告诉你这笔余额只能花在哪」——
+// 而「余额仅限某些模型分组」恰恰是付款**前**必须知道、付款后才发现等于误导的
+// 那一条。买家在钱包页套餐卡与购买确认弹窗上读的就是这一段。
+//
+// 只列快照里配置过权益的套餐:没配过的套餐行为与上游逐位一致,没有额外的话要说,
+// 硬给它编一行「不解锁任何分组」反而是替后端编造事实。
+type planGrantView struct {
+	PlanId       int      `json:"plan_id"`
+	BalanceScope string   `json:"balance_scope"`
+	BoundGroups  []string `json:"bound_groups"`
+}
+
 // entitlementsResponse 是接口的完整下发形状。
 type entitlementsResponse struct {
+	// Plans 是买**前**的披露:全站配置过权益的每个套餐各一条。
+	Plans []planGrantView `json:"plans"`
 	// ModelGroup 是本次判定用的模型分组(回显)。为空表示没指定,
 	// 此时 UsableHere 一律为 true、WillChargeFirst 按纯余额判定。
 	ModelGroup string `json:"model_group"`
@@ -202,7 +219,37 @@ func userEntitlements(c *gin.Context) {
 		out.UnlockedGroups = append(out.UnlockedGroups, g)
 	}
 	sort.Strings(out.UnlockedGroups)
+	out.Plans = configuredPlanGrants(snap)
 	respond(c, out)
+}
+
+// configuredPlanGrants 把快照里配置过权益的套餐摊成买前披露。
+//
+// 纯内存:快照本身就是 planId → 绑定 / 范围 的两张 map,不需要读库,也不需要
+// 知道用户是谁 —— 一个套餐解锁哪些模型分组是它的售卖条款,不是谁的隐私。
+// 键取两张 map 的并集:「仅限 + 零绑定」的死钱套餐只有 Scope 一张有键,而那
+// 恰恰是最需要在付款前说出口的一种。
+func configuredPlanGrants(s *Snapshot) []planGrantView {
+	if s == nil {
+		return make([]planGrantView, 0)
+	}
+	ids := make(map[int]struct{}, len(s.Bind)+len(s.Scope))
+	for id := range s.Bind {
+		ids[id] = struct{}{}
+	}
+	for id := range s.Scope {
+		ids[id] = struct{}{}
+	}
+	out := make([]planGrantView, 0, len(ids))
+	for id := range ids {
+		out = append(out, planGrantView{
+			PlanId:       id,
+			BalanceScope: s.BalanceScope(id),
+			BoundGroups:  s.BoundGroups(id),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PlanId < out[j].PlanId })
+	return out
 }
 
 // remainingOf 算一条订阅还剩多少额度。

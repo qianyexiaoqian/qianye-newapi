@@ -625,8 +625,8 @@ func matrixWarnings(userGroups []string, modelGroups []modelGroupRow, grants map
 				}
 				warns = append(warns, fmt.Sprintf(
 					"【需要处理】用户分组 %q 的清单里有一个已从分组倍率表消失的模型分组 %q%s —— "+
-						"该项已被快照剔除,矩阵页上那一格看起来是通的,用户实际会被上游的"+
-						"「分组已被弃用」挡掉。请把它从清单里撤掉,或把这个模型分组加回分组倍率表",
+						"该项已被快照剔除,「用户分组」页上那一格看起来是通的,用户实际会被上游的"+
+						"「分组已被弃用」挡掉。请把它从清单里撤掉,或把这个模型分组加回「模型分组定价」的分组表",
 					ug, mg, hint))
 				continue
 			}
@@ -709,7 +709,7 @@ func adminPutMatrix(c *gin.Context) {
 	if req.BaseRatioHash != baseHash {
 		writeMatrixFailure(c, auditActionRatioPublish, cells, ratios,
 			errors.New("base_ratio_hash 不匹配:分组倍率在上游页面被改动过"))
-		conflict(c, "分组倍率在上游「系统设置-分组倍率」页被改动过,请重新载入矩阵页再保存")
+		conflict(c, "分组倍率在上游「系统设置 → 计费与支付 → 模型分组定价」页被改动过,请重新载入「用户分组」页再保存")
 		return
 	}
 

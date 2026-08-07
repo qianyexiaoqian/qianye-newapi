@@ -46,6 +46,14 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import {
+  QyMyEntitlementSummary,
+  QySubscriptionEntitlement,
+} from '@/features/qy/plan-entitlement/buyer-entitlement'
+import {
+  qyPlanDisclosure,
+  useQyMyEntitlements,
+} from '@/features/qy/plan-entitlement/use-my-entitlements'
+import {
   getPublicPlans,
   getSelfSubscriptionFull,
   updateBillingPreference,
@@ -115,6 +123,10 @@ export function SubscriptionPlansCard({
   const [purchaseOpen, setPurchaseOpen] = useState(false)
   const [selectedPlan, setSelectedPlan] = useState<PlanRecord | null>(null)
 
+  // 「买了能多用哪个模型分组」「这笔余额只能花在什么上」。上游的套餐接口不带
+  // 这两条事实，而它们正是本站某些套餐**唯一的卖点**与唯一的使用限制。
+  const entitlements = useQyMyEntitlements()
+
   const enableStripe = !!topupInfo?.enable_stripe_topup
   const enableCreem = !!topupInfo?.enable_creem_topup
   const enableWaffoPancake = !!topupInfo?.enable_waffo_pancake_topup
@@ -162,6 +174,7 @@ export function SubscriptionPlansCard({
   const handleRefresh = async () => {
     setRefreshing(true)
     try {
+      entitlements.reload()
       await fetchSelfSubscription()
     } finally {
       setRefreshing(false)
@@ -394,6 +407,8 @@ export function SubscriptionPlansCard({
             </p>
           )}
 
+          <QyMyEntitlementSummary result={entitlements} />
+
           {hasAny && (
             <>
               <Separator className='my-3' />
@@ -505,6 +520,10 @@ export function SubscriptionPlansCard({
                           </span>
                         )}
                       </div>
+                      <QySubscriptionEntitlement
+                        result={entitlements}
+                        subscriptionId={subscription?.id}
+                      />
                       {totalAmount > 0 && isActive && (
                         <Progress value={usagePercent} className='mt-2 h-1.5' />
                       )}
@@ -535,6 +554,7 @@ export function SubscriptionPlansCard({
               const facts = buildPlanFacts(plan, t, {
                 includeLegacyGroupRewrite: true,
                 purchaseCount: count,
+                entitlement: qyPlanDisclosure(entitlements, plan.id),
               })
 
               return (
@@ -644,10 +664,14 @@ export function SubscriptionPlansCard({
         onOpenChange={(open) => {
           setPurchaseOpen(open)
           if (!open) {
+            // 买完之后解锁清单会变，必须与订阅列表一起重取：只刷新其中一个，
+            // 用户会看到"多了一条订阅、但解锁的分组还是买之前那些"。
+            entitlements.reload()
             fetchSelfSubscription()
           }
         }}
         plan={selectedPlan}
+        entitlement={qyPlanDisclosure(entitlements, selectedPlan?.plan?.id)}
         enableStripe={enableStripe}
         enableCreem={enableCreem}
         enableWaffoPancake={enableWaffoPancake}

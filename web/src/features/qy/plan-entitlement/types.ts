@@ -112,6 +112,77 @@ export type QyPlanEntitlement = {
   model_group_candidates: string[]
 }
 
+// ─────────────────────────── 用户端（买家看到的那一半）───────────────────────────
+
+/**
+ * 一条活跃订阅在买家眼里的样子。
+ *
+ * 与后端 `qianye/modules/planentitlement/api_user.go` 的 `subscriptionView`
+ * 逐字对齐。`qyGet` 是纯类型断言、没有运行时校验：字段名对不上不会有任何编译或
+ * 运行时报错，只会渲染成 `undefined` —— 而 `undefined` 落在「这笔余额能用在什么
+ * 上」这个位置上会被读成「没有限制」，正好是与事实相反的那一半。
+ */
+export type QyUserSubscriptionEntitlement = {
+  user_subscription_id: number
+  plan_id: number
+  plan_title: string
+  /** 0 表示**不限额**（上游语义），此时 `remaining` 无意义，看 `unlimited`。 */
+  amount_total: number
+  amount_used: number
+  unlimited: boolean
+  /** 已把「下一次扣费事务里会先跑的那次周期重置」算进去了。 */
+  remaining: number
+  pending_reset: boolean
+  next_reset_time: number
+  start_time: number
+  end_time: number
+  allow_wallet_overflow: boolean
+  balance_scope: QyPlanBalanceScope
+  /**
+   * 该套餐解锁 / 绑定的模型分组。
+   *
+   * `balance_scope === 'restricted'` 时它同时是「这笔余额能花在什么上」的权威
+   * 清单；`universal` 时它只是解锁清单，余额仍可用于任意分组。
+   */
+  bound_groups: string[]
+  usable_here: boolean
+  /** 「按此刻的余额，下一笔会先动这一张」。是判据不是承诺，文案必须写「优先」。 */
+  will_charge_first: boolean
+}
+
+/** `GET /api/qy/subscription/entitlements` 的响应。 */
+/**
+ * 一个套餐的权益披露，**与当前用户是否持有它无关**。
+ *
+ * 这是「买之前」那一半的数据源：`subscriptions` 按定义只覆盖已持有的活跃订阅，
+ * 拿它去渲染套餐卡等于「买了才告诉你这笔余额只能花在哪」。
+ * 只包含后台配置过权益的套餐，没配过的套餐不会出现在这个数组里。
+ */
+export type QyPlanGrantView = {
+  plan_id: number
+  balance_scope: QyPlanBalanceScope
+  bound_groups: string[]
+}
+
+export type QyMyEntitlements = {
+  model_group: string
+  /** 全站配置过权益的套餐各一条，用于**付款前**披露。 */
+  plans: QyPlanGrantView[]
+  /** 已按**扣费顺序**（end_time asc, id asc）排好，不是上游那个展示顺序。 */
+  subscriptions: QyUserSubscriptionEntitlement[]
+  /** 这些套餐一共给用户解锁了哪些模型分组（并集）。 */
+  unlocked_groups: string[]
+  any_restricted: boolean
+  /**
+   * 「仅限」此刻真的在扣费路径上生效吗。
+   *
+   * 为 `false` 时 `balance_scope: 'restricted'` 只是一份存下来的配置，余额照样
+   * 会被任意模型分组花掉。界面在这时说「仅限」就是在骗人。
+   */
+  balance_scope_enforced: boolean
+  wallet_fallback_blocked: boolean
+}
+
 /** `PUT /api/qy/admin/subscription/plans/:plan_id/entitlement` 的请求体。 */
 export type QyPlanEntitlementRequest = {
   /**

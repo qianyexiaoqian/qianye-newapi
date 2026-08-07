@@ -20,7 +20,11 @@ import { queryOptions } from '@tanstack/react-query'
 
 import { qyGet, qyPut } from '../lib/api'
 import { qyKeys } from '../lib/query-keys'
-import type { QyPlanEntitlement, QyPlanEntitlementRequest } from './types'
+import type {
+  QyMyEntitlements,
+  QyPlanEntitlement,
+  QyPlanEntitlementRequest,
+} from './types'
 
 /**
  * 套餐解锁与余额范围的取数（契约 D）。
@@ -48,6 +52,23 @@ export function qyPlanEntitlementQuery(planId: number, enabled: boolean) {
 export function qyGetPlanEntitlement(planId: number) {
   return qyGet<QyPlanEntitlement>(
     `/admin/subscription/plans/${planId}/entitlement`
+  )
+}
+
+/**
+ * 我的套餐权益 —— 买家侧唯一能拿到「解锁了什么 / 余额能花在什么上」的接口。
+ *
+ * 与管理端那两条不同，它**只覆盖当前用户已持有的活跃订阅**：一个还没买的套餐，
+ * 这里查不到它解锁什么。调用方据此区分「读到了、是空的」与「压根不知道」——
+ * 把后者渲染成「不解锁任何分组」就是在替后端编造事实。
+ *
+ * `model_group` 传的是「这次想用哪个模型分组」，用于把 `usable_here` /
+ * `will_charge_first` 按该分组重算；买家侧的披露场景不需要它，留空即可。
+ */
+export function qyGetMyEntitlements(modelGroup?: string) {
+  return qyGet<QyMyEntitlements>(
+    '/subscription/entitlements',
+    modelGroup ? { model_group: modelGroup } : undefined
   )
 }
 

@@ -1519,7 +1519,7 @@
     "Each tier supports 0~2 conditions (over len, p, c); the last tier is the catch-all without conditions. Use len (full input length, including cache hits) for tier conditions to avoid mis-routing when cache hits reduce p.": "每個檔位支援 0~2 個條件（針對 len、p、c），最後一檔為兜底檔無需條件。建議條件使用 len（完整輸入長度，含緩存命中），避免緩存命中降低 p 導致檔位誤判。",
     "Each tier supports up to 2 conditions; the last tier is the catch-all without conditions. Use full input length for tier conditions to avoid mis-routing when cache hits reduce billable input tokens.": "每個檔位最多支援 2 個條件；最後一個檔位是不帶條件的兜底檔。建議使用完整輸入長度作為檔位條件，避免緩存命中減少收費輸入 token 後誤判檔位。",
     "Each tier supports up to 2 conditions. The last tier without conditions is the fallback.": "每個階梯最多支援 2 個條件。最後一個無條件階梯作為兜底。",
-    "Earn rewards when users join through your referral link. Transfer accumulated rewards to your balance anytime.": "Earn rewards when users join through your referral link. Transfer accumulated rewards to your balance anytime.",
+    "Earn rewards when users join through your referral link. Transfer accumulated rewards to your balance anytime.": "用戶透過您的推薦連結註冊後，您即可獲得獎勵。可隨時將累計獎勵轉入餘額。",
     "Edit": "編輯",
     "Edit {{title}}": "編輯{{title}}",
     "Edit all channels with tag:": "編輯所有帶有標籤的渠道：",
@@ -5253,6 +5253,9 @@
     "Legacy user group rewrite": "存量：購買改寫使用者分組",
     "Unlocked model groups could not be loaded; saving now leaves them untouched.": "解鎖的模型分組未讀取到；現在儲存不會變更它們。",
     "Model group unlocks can be configured once the plan exists — save it first, then reopen it.": "解鎖模型分組需在方案建立後設定 —— 請先儲存，再重新開啟此方案。",
-    "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "方案已儲存，但解鎖的模型分組未儲存。請重新開啟此方案再設定一次"
+    "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "方案已儲存，但解鎖的模型分組未儲存。請重新開啟此方案再設定一次",
+    "This page no longer edits these rules: the \"Inter-group overrides\" and \"Special usable group rules\" JSON editors were removed from Model Group Pricing.": "這一頁已經不再編輯這些規則：「分組間覆蓋」與「特殊可用分組規則」兩個 JSON 編輯器已從「模型分組定價」移除。",
+    "Edit them under System Settings → Billing & Payment → User group: a cell of the user group × model group table is the special ratio, and setting a scope on a user group takes over the special usable group rules for that tier. Tiers with no scope keep their existing +: / -: rules fully in effect, and those legacy rules can no longer be edited anywhere — set a scope on the tier to take them over. The stored data and the billing behavior are unchanged.": "請到「系統設定 → 收費與支付 → 用戶分組」編輯：那張「用戶分組 × 模型分組」表裡的一個格子就是特殊倍率；為某一檔用戶分組設定「範圍」，即接管它的特殊可用分組規則。尚未設定範圍的用戶分組，原有的 +: / -: 規則仍照常生效，而全站已經沒有任何地方能編輯它們——為那一檔設定範圍即可接管。儲存的資料與收費行為都沒有變。",
+    "Configure these under System Settings → Billing & Payment → User group.": "在「系統設定 → 收費與支付 → 用戶分組」裡設定。"
   }
 }

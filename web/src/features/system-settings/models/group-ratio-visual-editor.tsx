@@ -899,6 +899,17 @@ function GroupDetailSheet(props: GroupDetailSheetProps) {
                 </ul>
               )}
             </section>
+
+            {/*
+              上面三段是**只读**的：倍率覆盖与可用分组规则的编辑器已经从这一页
+              拆走了。看得见却改不动、又不说去哪儿改，正是运营判定「功能没了」
+              的那个形状，所以这里必须留一句去处。
+            */}
+            <p className='text-muted-foreground text-xs leading-5'>
+              {t(
+                'Configure these under System Settings → Billing & Payment → User group.'
+              )}
+            </p>
           </div>
         )}
       </SheetContent>

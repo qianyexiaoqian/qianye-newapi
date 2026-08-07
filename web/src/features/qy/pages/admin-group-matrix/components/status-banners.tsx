@@ -137,7 +137,7 @@ export function QyGmStatusBanners(props: QyGmStatusBannersProps) {
       )}
 
       {/*
-        上游「系统设置 → 分组倍率」页改的是同一份 `GroupGroupRatio`，而那个入口
+        上游「系统设置 → 计费与支付 → 模型分组定价」页改的是同一份 `GroupGroupRatio`，而那个入口
         **刻意不锁死**（扩展关掉之后运营必须还能在原地改倍率，这是回退能力的
         一部分）。所以只能检测并要求重新载入，不能默默用手上这份覆盖回去。
       */}

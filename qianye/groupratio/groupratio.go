@@ -212,7 +212,7 @@ func noteMissing(group string, nearMiss func() string) {
 	common.SysError(fmt.Sprintf(
 		"qianye/groupratio: 分组 %q 不在分组倍率表(GroupRatio)里%s —— "+
 			"上游 GetGroupRatio 会 fail-open 静默按 1.0 倍计费,累计已观测 %d 次。"+
-			"请在「分组倍率」里确认这个名字是被删掉了还是拼错了",
+			"请在「模型分组定价」的分组表里确认这个名字是被删掉了还是拼错了",
 		group, hint, count))
 }
 

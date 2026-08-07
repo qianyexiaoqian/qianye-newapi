@@ -212,12 +212,6 @@ export function SubscriptionsMutateDrawer({
     Number(watchedPrice ?? 0) > 0
 
   const onSubmit = async (values: PlanFormValues) => {
-    // 先挡住必然会被后端拒绝的组合，再动套餐本体。反过来的话套餐已经改完了，
-    // 而运营看到的是一条解锁分组的报错 —— 他不会知道前半截已经落库了。
-    if (unlockGroups.restrictedWithoutBinding) {
-      toast.error(t('qy_plan_balance_scope_need_binding'))
-      return
-    }
     setIsSubmitting(true)
     try {
       const payload = formValuesToPlanPayload(values)
@@ -251,15 +245,27 @@ export function SubscriptionsMutateDrawer({
       // 解锁模型分组是**第三次**写入（主库套餐 → 扩展库名额 → 扩展库解锁），
       // 同样没有事务。失败必须单独报出来：它决定"买了这个套餐的人能用哪些模型
       // 分组"，报成"保存成功"会让运营以为已经开通了，而买过的人一个都拿不到。
+      //
+      // `blocked` 是第三种结局，既不是成功也不是请求失败：这次改动会写出一笔
+      // 「仅限」却零有效绑定的死钱，所以它没被发出去。套餐本体照常落库 ——
+      // 用整张表单去为这一格陪葬，换来的是一个连标题都改不了的套餐。
       let unlockError: unknown = null
+      let unlockBlocked = false
       try {
-        await unlockGroups.saveIfChanged(planId)
+        unlockBlocked = (await unlockGroups.saveIfChanged(planId)) === 'blocked'
       } catch (error) {
         unlockError = error
       }
 
-      if (seatCapError == null && unlockError == null) {
+      if (seatCapError == null && unlockError == null && !unlockBlocked) {
         toast.success(isEdit ? t('Update succeeded') : t('Create succeeded'))
+      }
+      if (unlockBlocked) {
+        // 套餐本体已经落库，被挡下的只有解锁清单那一次写入。只出红字的话，运营
+        // 会认为整次保存都失败了，于是把刚改过的标题再改一遍，或者去别处找补 ——
+        // 而标题其实已经生效了。两条 toast 各说各的那一半，才是这一刻的真话。
+        toast.success(isEdit ? t('Update succeeded') : t('Create succeeded'))
+        toast.error(t('qy_plan_balance_scope_need_binding'))
       }
       if (seatCapError != null) {
         toast.error(
@@ -271,8 +277,13 @@ export function SubscriptionsMutateDrawer({
           `${t('Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again')}: ${qyErrorMessage(unlockError, t)}`
         )
       }
-      onOpenChange(false)
       triggerRefresh()
+      // 被挡住时抽屉不关：出口（「改回通用」，或勾一个仍然存在的模型分组）就在
+      // 这一格里。关掉等于让运营重新打开、把刚才那次改动再做一遍，而他并不会
+      // 知道这一次为什么没写进去。
+      if (!unlockBlocked) {
+        onOpenChange(false)
+      }
     } catch {
       toast.error(t('Request failed'))
     } finally {
@@ -384,10 +395,14 @@ export function SubscriptionsMutateDrawer({
           >
             {t('Close')}
           </Button>
+          {/* 这里**只看**提交中。曾经把 restrictedWithoutBinding 也串进来，
+              结果是：运营在别处删掉一个被套餐引用的模型分组之后，这个套餐的
+              标题、价格、上下架统统改不了 —— 而那三样与解锁分组毫无关系。
+              死钱那一条挡的是解锁清单那一次写入，见 onSubmit 里的 blocked。 */}
           <Button
             form='subscription-form'
             type='submit'
-            disabled={isSubmitting || unlockGroups.restrictedWithoutBinding}
+            disabled={isSubmitting}
           >
             {isSubmitting ? t('Saving...') : t('Save changes')}
           </Button>
@@ -607,12 +622,25 @@ export function SubscriptionsMutateDrawer({
                     </div>
                   ))}
 
-                {/* 「仅限」的套餐被摘光绑定 = 一份任何请求都用不上的死钱。
-                    后端会 400，但按钮就该在这里禁用并说明原因。 */}
+                {/* 「仅限」的套餐被摘光**有效**绑定 = 一份任何请求都用不上的
+                    死钱。说明必须带着出口一起给：抽屉里余额范围是只读的，而
+                    候选清单为空时（运营刚把那个模型分组从倍率表里删了）勾选框
+                    里连一个可勾的东西都没有 —— 只留一句红字，这个状态在抽屉
+                    内部就走不出去了，无论怎么勾都解不开。 */}
                 {unlockGroups.restrictedWithoutBinding && (
-                  <p className='text-destructive text-xs'>
-                    {t('qy_plan_balance_scope_need_binding')}
-                  </p>
+                  <div className='flex flex-col items-start gap-1.5'>
+                    <p className='text-destructive text-xs'>
+                      {t('qy_plan_balance_scope_need_binding')}
+                    </p>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={unlockGroups.resetScopeToUniversal}
+                    >
+                      {t('qy_plan_bound_group_reset_to_universal')}
+                    </Button>
+                  </div>
                 )}
               </div>
             )}

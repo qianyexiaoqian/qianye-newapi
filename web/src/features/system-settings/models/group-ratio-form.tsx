@@ -536,6 +536,15 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
                 <span className='text-muted-foreground text-xs'>
                   {t('(instead of {{ratio}})', { ratio: 0.5 })}
                 </span>
+                {/*
+                  例子里这条规则仍然真实生效，但它已经不在这一页上编辑了。
+                  少了这一句，读完例子的人会在本页翻找一个不存在的输入框。
+                */}
+                <p className='text-muted-foreground mt-2 text-xs leading-5'>
+                  {t(
+                    'Configure these under System Settings → Billing & Payment → User group.'
+                  )}
+                </p>
               </div>
             </div>
 
@@ -657,20 +666,28 @@ vip          0.5     ${t('No')}                ${t('Assigned by administrator on
               </AccordionContent>
             </AccordionItem>
 
+            {/*
+              这一条原本逐字教「特殊倍率规则」的 JSON 写法，还给了一段
+              `{"vip":{"standard":0.8}}` 示例 —— 而这一页上已经没有任何地方能写
+              那段 JSON（`Inter-group overrides` 与 `Special usable group rules`
+              两个编辑器都拆掉了，数据改由「用户分组」页以矩阵形式读写）。
+              照着教程找不到输入框，比没有教程更糟：运营会以为功能被删了。
+              所以内容换成「规则还在生效 + 现在去哪里改」，规则本身的语义仍由
+              上面那段 Worked example 承担。
+            */}
             <AccordionItem value='special-ratio'>
               <AccordionTrigger>{t('Special ratio rules')}</AccordionTrigger>
               <AccordionContent className='space-y-3'>
                 <p className='text-muted-foreground text-sm leading-6'>
                   {t(
-                    'In JSON, the user group is the outer key and the billing group is the inner key. The example below means: vip users pay 0.8 when billed as standard, and 0.3 when billed as premium.'
+                    'This page no longer edits these rules: the "Inter-group overrides" and "Special usable group rules" JSON editors were removed from Model Group Pricing.'
                   )}
                 </p>
-                <GuideCodeBlock>{`{
-  "vip": {
-    "standard": 0.8,
-    "premium": 0.3
-  }
-}`}</GuideCodeBlock>
+                <p className='text-muted-foreground text-sm leading-6'>
+                  {t(
+                    'Edit them under System Settings → Billing & Payment → User group: a cell of the user group × model group table is the special ratio, and setting a scope on a user group takes over the special usable group rules for that tier. Tiers with no scope keep their existing +: / -: rules fully in effect, and those legacy rules can no longer be edited anywhere — set a scope on the tier to take them over. The stored data and the billing behavior are unchanged.'
+                  )}
+                </p>
                 <p className='text-muted-foreground text-sm leading-6'>
                   {t(
                     'Only configured combinations are overridden. All other calls keep the billing group base ratio.'

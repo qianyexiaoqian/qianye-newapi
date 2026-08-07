@@ -326,7 +326,7 @@ func buildSnapshot(scopes []Scope, grants []Grant) *Snapshot {
 		if n := droppedWarns.Add(1); n == 1 || n%200 == 0 {
 			common.SysError(fmt.Sprintf(
 				"qianye/groupmatrix: %d 条清单项的模型分组已不在分组倍率表里,已从快照剔除(累计告警 %d 次):%v —— "+
-					"矩阵页上这些格子看起来是通的,实际会被上游的「分组已被弃用」挡掉",
+					"「用户分组」页上这些格子看起来是通的,实际会被上游的「分组已被弃用」挡掉",
 				len(s.DroppedGrants), n, s.DroppedGrants))
 		}
 	}

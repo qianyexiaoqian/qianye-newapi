@@ -57,6 +57,16 @@ export const qyKeys = {
   payPassword: () => [...qyKeys.all, 'pay-password'] as const,
 
   /**
+   * 我的套餐权益：解锁了哪些模型分组、那笔余额能花在什么上。
+   *
+   * 消费方是**上游**的钱包页套餐卡与购买确认弹窗，不是某个 qy 页面。它挂在
+   * `qy` 前缀下是为了买完之后能被 `invalidateQueries({ queryKey: qyKeys.all })`
+   * 一起冲掉 —— 否则用户刚买完，卡片上写的仍然是他买之前的解锁清单。
+   */
+  myEntitlements: () =>
+    [...qyKeys.all, 'subscription', 'entitlements'] as const,
+
+  /**
    * 用户可选的 API 地址（只含已启用的）。
    *
    * 消费方是**上游**密钥列表上的「复制链接信息」，不是某个 qy 页面。它仍然挂在

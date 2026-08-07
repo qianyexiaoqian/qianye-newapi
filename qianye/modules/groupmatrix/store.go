@@ -212,7 +212,7 @@ func listWriteDenies(gdb *gorm.DB) []WriteDeny {
 		return out
 	}
 	if err := gdb.Order("count desc, id asc").Limit(200).Find(&out).Error; err != nil {
-		common.SysError("qianye/groupmatrix: 读取影子写入拒绝失败(矩阵页其余部分不受影响): " + err.Error())
+		common.SysError("qianye/groupmatrix: 读取影子写入拒绝失败(「用户分组」页其余部分不受影响): " + err.Error())
 		return make([]WriteDeny, 0)
 	}
 	return out

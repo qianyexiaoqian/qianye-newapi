@@ -96,6 +96,70 @@ export function formatPlanExpiryPreview(
   return end.isValid() ? end.format('YYYY-MM-DD HH:mm') : '-'
 }
 
+/**
+ * 「这个套餐解锁哪些模型分组、它那笔余额能花在什么上」的披露数据。
+ *
+ * 由 `features/qy/plan-entitlement` 从 `GET /api/qy/subscription/entitlements`
+ * 取得。这里刻意是一个**三态**联合而不是一对可选数组：
+ *
+ * - `undefined`（整个字段不传）= 不知道。可能是扩展没装、也可能是这个套餐用户
+ *   还没买（那个接口只覆盖已持有的订阅）。不知道就一行都不渲染。
+ * - `loading` / `error` = 知道有这回事，但这次没读到。**必须显示出来** ——
+ *   把读取失败渲染成"不解锁任何分组"是在替后端编造事实，而这条事实正是买家
+ *   掏钱的理由。
+ * - `ready` = 真值。空数组在这里才真的表示"不解锁额外分组"。
+ */
+export type PlanEntitlementDisclosure =
+  | { state: 'error' }
+  | { state: 'loading' }
+  | {
+      state: 'ready'
+      /** 买了之后多拿到的模型分组。空数组 = 确实不解锁额外分组。 */
+      unlockGroups: string[]
+      balanceScope: 'restricted' | 'universal'
+      /**
+       * 「仅限」此刻是否真的在扣费路径上生效。为 false 时余额照样能被任意分组
+       * 花掉 —— 说成"仅限"会让买家按一个不存在的限制去规划用量。
+       */
+      scopeEnforced: boolean
+    }
+
+/**
+ * 「解锁哪些模型分组」这一行的值。
+ *
+ * 独立成函数不是为了少写几个字：**买之前（套餐卡 / 购买弹窗）与买之后
+ * （我的订阅）必须是同一句话**，否则用户会以为自己买到的是另一样东西。
+ * 两处各写一遍时，改一处必漏另一处 —— 这个文件顶上的注释记的就是那次教训。
+ *
+ * 每个分支都写成字面量 `t('qy_…')`，不走 `t(变量)`：
+ * `features/qy/lib/__tests__/i18n-key-coverage.test.ts` 按字面量扫描键，
+ * 写成变量的会绕过守卫，缺键时界面上直接渲染裸键而全仓没有任何信号。
+ */
+export function formatPlanUnlockGroups(
+  grant: PlanEntitlementDisclosure,
+  t: TFunction
+): string {
+  if (grant.state === 'loading') return t('qy_ent_loading')
+  if (grant.state === 'error') return t('qy_ent_failed')
+  if (grant.unlockGroups.length === 0) return t('qy_ent_unlock_none')
+  // 原样列出而不折成计数：买家要判断的是"我想用的那个分组在不在里面"。
+  return grant.unlockGroups.join(', ')
+}
+
+/** 「这笔余额能花在什么上」这一行的值。与上面同源同理。 */
+export function formatPlanBalanceScope(
+  grant: PlanEntitlementDisclosure,
+  t: TFunction
+): string {
+  if (grant.state === 'loading') return t('qy_ent_loading')
+  if (grant.state === 'error') return t('qy_ent_failed')
+  if (grant.balanceScope !== 'restricted') return t('qy_ent_scope_universal')
+  // 「仅限」还没接进扣费路径时说成"仅限"，等于让买家按一个不存在的限制去
+  // 规划用量：他以为这笔钱花不到别处，实际上会被任意分组花光。
+  if (!grant.scopeEnforced) return t('qy_ent_scope_restricted_off')
+  return t('qy_ent_scope_restricted')
+}
+
 export interface BuildPlanFactsOptions {
   /**
    * 是否把「购买后用户分组会被改写成什么」并入事实列表。
@@ -115,6 +179,16 @@ export interface BuildPlanFactsOptions {
   includeLegacyGroupRewrite?: boolean
   /** 当前用户已购次数，用于渲染 `已购 1/3`。 */
   purchaseCount?: number
+  /**
+   * 套餐解锁披露。省略 = 不知道，整两行都不渲染（见
+   * {@link PlanEntitlementDisclosure}）。
+   *
+   * 这两行是本轮唯一新增的事实：管理端撤掉「升级分组 / 降级分组」之后，
+   * 「买了能多用哪个模型分组」成了某些套餐**唯一的卖点**，而买家侧一个字
+   * 都看不到；「余额只能花在 X 分组」更是付款前必须知道、付款后才发现等于
+   * 误导的一条。
+   */
+  entitlement?: PlanEntitlementDisclosure
 }
 
 /**
@@ -132,6 +206,7 @@ export function buildPlanFacts(
   const limit = Number(plan?.max_purchase_per_user || 0)
   const reset = formatResetPeriod(plan, t)
   const count = Number(opts.purchaseCount || 0)
+  const grant = opts.entitlement
 
   const facts: (PlanFact | null)[] = [
     {
@@ -152,6 +227,22 @@ export function buildPlanFacts(
       label: t('qy_plan_expiry_preview'),
       value: formatPlanExpiryPreview(plan),
     },
+    // 解锁与余额范围排在到期时间之后、限购之前：它们是"买了能得到什么"，
+    // 比"买了之后还能不能再买"更靠近掏钱这个决定。
+    grant == null
+      ? null
+      : {
+          id: 'unlock_groups',
+          label: t('qy_plan_unlock_groups_label'),
+          value: formatPlanUnlockGroups(grant, t),
+        },
+    grant == null
+      ? null
+      : {
+          id: 'balance_scope',
+          label: t('qy_plan_balance_scope_label'),
+          value: formatPlanBalanceScope(grant, t),
+        },
     {
       id: 'overflow',
       label: t('qy_plan_wallet_overflow'),

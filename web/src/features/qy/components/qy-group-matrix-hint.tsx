@@ -71,6 +71,12 @@ export function QyGroupMatrixHint() {
   // 链接文案刻意复用 `qy_group_matrix_row_header`（「用户分组」）—— 与
   // `billing/section-registry.tsx` 里那一项的 titleKey 是同一个键，指路牌上的
   // 名字与侧栏上要点的那一项因此不可能对不上。
+  //
+  // 正文用 `qy_group_pricing_moved_desc` 而不是矩阵页那句 `qy_group_scope_matrix_desc`：
+  // 后者里的「本页不做限制」说的是矩阵所在的那一页，渲染在这一页上恰好指着这一页
+  // 自己摆着的那份全局「用户可选分组」清单，把「谁限制谁」说反了；而且它通篇没有
+  // 出现被拆掉的那两个控件的名字，运营按名字找东西时一个都对不上。这一句必须
+  // **指名道姓**点出「分组间覆盖」与「特殊可用分组规则」各自去了哪里。
   return (
     <Alert>
       <ArrowRight className='h-4 w-4' />
@@ -83,7 +89,7 @@ export function QyGroupMatrixHint() {
           {t('qy_group_matrix_row_header')}
         </Link>
       </AlertTitle>
-      <AlertDescription>{t('qy_group_scope_matrix_desc')}</AlertDescription>
+      <AlertDescription>{t('qy_group_pricing_moved_desc')}</AlertDescription>
     </Alert>
   )
 }

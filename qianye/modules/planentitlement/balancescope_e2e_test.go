@@ -178,3 +178,61 @@ func TestKillSwitchStopsBalanceScopeImmediately(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, sub.Id, got.UserSubscriptionId)
 }
+
+// TestEntitlementsDiscloseUnheldPlans 钉住「买之前也说得出口」。
+//
+// ═══════════ 为什么这一条必须存在 ═══════════
+//
+// 「这笔余额只能花在 vip 上」是付款**前**必须知道、付款后才发现等于误导的一条。
+// 只下发已持有订阅的话,第一次买的人在钱包页套餐卡与购买确认弹窗里一个字都看
+// 不到,只有续费/复购才有真值 —— 那正好是这条信息最没有价值的时刻。
+//
+// 断言刻意同时量两侧:未持有的套餐要出现在 Plans 里,而 Subscriptions 不能被这
+// 一段污染(它是扣费顺序的载体,多一条不属于用户的行会让「本次将优先扣除」指错)。
+func TestEntitlementsDiscloseUnheldPlans(t *testing.T) {
+	gdb := newExtDB(t)
+	mainDB := newMainDB(t)
+	setGroupRatios(t, `{"pro":0.8,"vip":0.5}`)
+
+	seedPlan(t, mainDB, 1, "用户已持有")
+	seedPlan(t, mainDB, 2, "在售但没人买过")
+	seedSubscription(t, mainDB, 11, 7, 1, 86400, 1000, 0)
+	putGrant(t, gdb, 1, "pro")
+	putGrant(t, gdb, 2, "vip")
+	putPolicy(t, gdb, 2, ScopeRestricted)
+	require.NoError(t, reload())
+
+	view := getEntitlements(t, 7, "")
+	require.Len(t, view.Subscriptions, 1, "只列用户真的持有的活跃订阅")
+	assert.Equal(t, 1, view.Subscriptions[0].PlanId)
+
+	require.Len(t, view.Plans, 2, "配置过权益的套餐都要出现,与是否持有无关")
+	assert.Equal(t, 1, view.Plans[0].PlanId)
+	assert.Equal(t, []string{"pro"}, view.Plans[0].BoundGroups)
+	assert.Equal(t, ScopeUniversal, view.Plans[0].BalanceScope)
+
+	assert.Equal(t, 2, view.Plans[1].PlanId)
+	assert.Equal(t, []string{"vip"}, view.Plans[1].BoundGroups,
+		"没买过的套餐,它解锁什么必须在付款前说得出口")
+	assert.Equal(t, ScopeRestricted, view.Plans[1].BalanceScope,
+		"「余额只能花在 vip 上」是付款前的判断依据,不是付款后的通知")
+}
+
+// TestEntitlementsSkipPlansWithoutEntitlement 是上面那条的反面。
+//
+// 没配过权益的套餐行为与上游逐位一致,没有额外的话要说。硬给它编一行
+// 「不解锁任何分组」等于替后端编造事实,而买家分不出"编的"和"真的"。
+func TestEntitlementsSkipPlansWithoutEntitlement(t *testing.T) {
+	gdb := newExtDB(t)
+	mainDB := newMainDB(t)
+	setGroupRatios(t, `{"pro":0.8}`)
+
+	seedPlan(t, mainDB, 1, "配过权益")
+	seedPlan(t, mainDB, 2, "从没配过")
+	putGrant(t, gdb, 1, "pro")
+	require.NoError(t, reload())
+
+	view := getEntitlements(t, 7, "")
+	require.Len(t, view.Plans, 1)
+	assert.Equal(t, 1, view.Plans[0].PlanId)
+}

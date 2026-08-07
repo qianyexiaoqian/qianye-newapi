@@ -44,7 +44,11 @@ import {
   paySubscriptionWaffoPancake,
   paySubscriptionBalance,
 } from '../../api'
-import { buildPlanFacts, formatPlanPrice } from '../../lib'
+import {
+  buildPlanFacts,
+  formatPlanPrice,
+  type PlanEntitlementDisclosure,
+} from '../../lib'
 import type { PlanRecord } from '../../types'
 
 interface PaymentMethod {
@@ -65,6 +69,11 @@ interface Props {
   purchaseCount?: number
   userQuota?: number
   onPurchaseSuccess?: () => void | Promise<void>
+  /**
+   * 「买了解锁哪些模型分组 / 这笔余额能花在什么上」。省略 = 调用方也不知道，
+   * 整两行都不渲染。见 `lib/plan-facts` 的 PlanEntitlementDisclosure。
+   */
+  entitlement?: PlanEntitlementDisclosure
 }
 
 export function SubscriptionPurchaseDialog(props: Props) {
@@ -117,6 +126,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const facts = buildPlanFacts(plan, t, {
     includeLegacyGroupRewrite: true,
     purchaseCount: props.purchaseCount,
+    entitlement: props.entitlement,
   })
 
   const handlePayStripe = async () => {

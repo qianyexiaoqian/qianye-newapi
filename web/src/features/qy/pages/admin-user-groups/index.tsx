@@ -23,6 +23,8 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
@@ -114,6 +116,13 @@ const QY_UG_NO_GROUPS: readonly QyGmUserGroup[] = []
 export function QyAdminUserGroups() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
+  // 这个组件有两个入口：`/system-settings/billing/user-groups`（超管专属），以及
+  // 旧路由 `/qy/admin/group-matrix` —— 后者**专门**留给普通管理员（role=10），
+  // 因为本页的后端一直是 `AdminAuth`。空态里的指路必须跟着分叉：把够不着
+  // `/system-settings` 的人指过去，他拿到的是一个没有解释的 403，而空态是这一页
+  // 在这个状态下唯一的指引。
+  const canOpenGroupPricing =
+    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
 
   const query = useQuery(qyGmMatrixQuery())
   const orphansQuery = useQuery(qyGmOrphansQuery())
@@ -465,7 +474,14 @@ export function QyAdminUserGroups() {
         isEmpty={data != null && data.user_groups.length === 0}
         emptyIcon={Users}
         emptyTitle={t('qy_group_matrix_row_header')}
-        emptyDescription={t('qy_group_matrix_axis_create_hint')}
+        // `..._hint` 以冒号结尾，它是给后面那个 <Link> 用的（见 `user-group-list`
+        // 与 `axis-legend`）。空态这里收不下链接（`emptyDescription` 只吃字符串），
+        // 直接复用会渲染出一个悬空的冒号、且不说去哪儿建分组，所以另起一句自带路径。
+        emptyDescription={
+          canOpenGroupPricing
+            ? t('qy_group_matrix_axis_create_empty')
+            : t('qy_group_matrix_axis_create_empty_no_access')
+        }
       >
         {data != null && (
           <div className='space-y-4'>
