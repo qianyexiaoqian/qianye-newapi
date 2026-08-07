@@ -144,18 +144,19 @@ describe('并进系统设置抽屉的菜单项', () => {
       ROLE.ADMIN,
       t
     )
-    // 新用户默认分组与 API 地址簿没有 feature 开关，所以这里仍应剩下它们两个；
-    // 断言写成"还剩谁"而不是"空了"，免得把无开关的页面一起判没。
+    // API 地址簿没有 feature 开关，所以这里仍应剩下它；断言写成"还剩谁"而不是
+    // "空了"，免得把无开关的页面一起判没。
+    //
+    // 「新用户默认分组」曾经也在这一栏里（同样没有开关）。那一页已整体下线：
+    // 它整页只有一个下拉，现在是「计费与支付 → 用户分组」section 上的一张卡片
+    // （`features/qy/pages/admin-user-groups/default-group`）。
     //
     // 分组矩阵不在这一栏里，是因为它已经不是 qy 那一组折叠菜单的成员了：它整体
     // 搬进了上游抽屉的「计费与支付 → 用户分组」section。那一项的显隐由
     // `withQyBillingSectionNavItems` 判定，判据只有「扩展是否启用」——
     // `group_matrix.enabled` 关掉时入口照样留着，点进去看到后端 guard 返回 404
     // 之后的中性空态，明确告诉你没开，而不是变成一个静默消失的菜单。
-    assert.deepEqual(qyGroupItems(merged), [
-      '/qy/admin/user-group',
-      '/qy/admin/api-address',
-    ])
+    assert.deepEqual(qyGroupItems(merged), ['/qy/admin/api-address'])
   })
 })
 

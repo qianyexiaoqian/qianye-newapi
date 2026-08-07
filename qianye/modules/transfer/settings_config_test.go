@@ -47,7 +47,7 @@ import (
 // qy_settings 必须建:effectiveCtx 每次都会查它,表不存在时读失败 ——
 // 而"读失败会怎样"本身就是这里要测的性质之一。
 func settingsTables() []any {
-	return []any{&Order{}, &UserState{}, &LookupLog{}, &GroupRule{},
+	return []any{&Order{}, &UserState{}, &LookupLog{}, &GroupRule{}, &GroupLimit{},
 		&qymodel.Setting{}, &qymodel.AuditLog{}}
 }
 
@@ -298,14 +298,14 @@ func TestReserveRiskJudgesByTheSnapshotItWasGiven(t *testing.T) {
 	acc := acceptedRequest{FromUserId: 1, ToUserId: 2, Amount: 1000000, Total: 1000000}
 	now := common.GetTimestamp()
 
-	require.NoError(t, reserveRisk(gdb, acc, snapshot, now), "第一笔应放行")
+	require.NoError(t, reserveRisk(gdb, acc, snapshot, snapshot, now), "第一笔应放行")
 
 	// 清掉未结算标记:否则第二笔会因 pending_count > 0 被拒,
 	// 而那与日次数闸门毫无关系 —— 又一次假回归的入口。
 	require.NoError(t, gdb.Model(&UserState{}).Where("user_id = ?", 1).
 		Update("pending_count", 0).Error)
 
-	err := reserveRisk(gdb, acc, snapshot, now)
+	err := reserveRisk(gdb, acc, snapshot, snapshot, now)
 	assert.ErrorIs(t, err, errDailyCountExceeded,
 		"第二笔必须被拒:锁内闸门只能按受理时那份快照判,不得自己回头读配置")
 }
@@ -486,8 +486,11 @@ func TestEffectiveSettingsServeStaleSnapshotWhenUnreadable(t *testing.T) {
 
 	// 让缓存过期但不清空 —— 这正是"60 秒到了,回库刷新时撞上故障"的形状。
 	// invalidateSettings 会把快照清掉,那模拟的是另一件事(管理端刚改过)。
+	//
+	// 时间刻意只推到 TTL 之后、宽限期之内:沿用旧快照是**有时间上界**的
+	// (settingsStaleGraceSeconds),推过头就落到下面那条 fail-closed 用例里去了。
 	settingsMu.Lock()
-	settingsLoaded = 0
+	settingsLoaded = common.GetTimestamp() - settingsCacheSeconds - 1
 	settingsMu.Unlock()
 	require.NoError(t, gdb.Migrator().DropTable(&qymodel.Setting{}))
 
@@ -495,6 +498,33 @@ func TestEffectiveSettingsServeStaleSnapshotWhenUnreadable(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 777777, s.Transfer.DailyMaxQuota,
 		"读失败时沿用上一份运营快照,绝不回落到 YAML 的 2 亿")
+}
+
+// TestStaleSnapshotStopsBeingServedAfterTheGraceWindow —— 沿用旧快照必须有时间上界。
+//
+// 没有上界时,这条降级路径的时长等于**故障时长**而不是缓存 TTL:失败分支既不清
+// settingsCache 也不推进 settingsLoaded,于是每一次请求都重试→失败→沿用旧快照。
+// 运营刚把某一档的门槛收紧、随后扩展库不可用,那一档就会按旧值一直放行,而
+// warnThrottled 还把日志节流掉了,看不出它已经持续了多久。
+//
+// 更糟的是方向不确定:同一个故障下,若期间有人调过 invalidateSettings()(缓存已清),
+// 立刻变成 fail-closed。加上上界之后,超过宽限期一律 fail-closed。
+func TestStaleSnapshotStopsBeingServedAfterTheGraceWindow(t *testing.T) {
+	gdb := newSettingsTestDB(t)
+	useSettingsConfig(t, baseConfig())
+	putSetting(t, gdb, keyDailyMaxQuota, "777777")
+
+	_, err := effectiveCtx(context.Background())
+	require.NoError(t, err)
+
+	settingsMu.Lock()
+	settingsLoaded = common.GetTimestamp() - settingsStaleGraceSeconds - 1
+	settingsMu.Unlock()
+	require.NoError(t, gdb.Migrator().DropTable(&qymodel.Setting{}))
+
+	_, err = effectiveCtx(context.Background())
+	require.Error(t, err,
+		"陈旧超过宽限期之后必须失败关闭 —— 继续沿用等于让运营刚收紧的门槛在整个故障期间失效")
 }
 
 // TestOutOfRangeOverrideIsDroppedNotClamped 守"手工改坏的值只丢弃,不钳到边界"。

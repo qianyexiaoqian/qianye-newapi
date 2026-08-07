@@ -18,12 +18,23 @@ For commercial licensing, please contact support@quantumnous.com
 */
 /**
  * 新用户默认分组管理端 DTO。对应 `qianye/modules/usergroup/api_admin.go`。
+ *
+ * 这一份曾经是整整一页(`pages/admin-user-group`)的类型;那一页只有这一个设置项,
+ * 与「用户分组」页读写的是同一批分组名,却各占一个侧栏入口。合并之后它降级成
+ * 「用户分组」页上的一张卡片,后端模块与端点原样不动。
  */
 
-/** 下拉的一项。清单由后端从分组倍率表生成，前端不自己拼。 */
+/** 下拉的一项。清单由后端从「登记表 ∪ 分组倍率表」生成,前端不自己拼。 */
 export type QyUserGroupOption = {
   name: string
-  ratio: number
+  /**
+   * 该名字在 `GroupRatio` 里的兜底倍率,**可能是 null**。
+   *
+   * 分组拆开之后 `GroupRatio` 的键是**模型分组**,一个只登记在 `qy_user_groups`
+   * 里的用户分组在那张表里根本没有条目。后端因此回 null 而不是 0 —— 0 在这套
+   * 系统里是「显式免费」的意思。
+   */
+  ratio: number | null
   /**
    * 该分组下是否有启用的渠道（abilities）。
    *
@@ -33,6 +44,14 @@ export type QyUserGroupOption = {
   has_channels: boolean
   /** 是否在「用户可选分组」白名单里。仅供参考，不影响能否作为默认分组。 */
   public_usable: boolean
+  /**
+   * 是否在用户分组登记表 `qy_user_groups` 里。
+   *
+   * false = 这个名字只是历史上留在 `GroupRatio` 里的,仍然可选(向后兼容),
+   * 但同页下面那张「用户分组登记」卡片管不到它,改名与删除那套带迁移的流程
+   * 对它无效。
+   */
+  registered: boolean
 }
 
 export type QyUserGroupConfig = {

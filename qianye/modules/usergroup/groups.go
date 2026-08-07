@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
@@ -38,19 +39,41 @@ var (
 
 // groupExists 判断分组是否真实存在。
 //
-// 判据是分组倍率表(setting/ratio_setting 的 GroupRatio):它是运营方声明
-// 「本站有哪些分组」的唯一事实清单,上游的分组接口(controller.GetUserGroups)、
-// 模型广场、令牌分组选择器全都以它为基准。刻意不用 abilities:abilities 只反映
-// 「当前有渠道在跑的分组」,新部署渠道还没配全时它是空的,拿它当硬校验会让
-// 运营在最需要配置默认分组的时刻配不进去。abilities 的信息在管理端以
-// has_channels 提示的形式给出,是警告而不是闸门。
+// ── 判据是两份清单的并集,不是单独的分组倍率表 ──
 //
-// 纯内存 RWMap 查找,没有 I/O —— 这是它能在用户创建事务里被再校验一次的前提。
+// 本模块最初写成「只认 ratio_setting.GroupRatio」,那在用户分组与模型分组还是
+// 同一份清单的时候是对的。分组彻底拆开之后 `GroupRatio` 的键是**模型分组**
+// (它是 GroupGroupRatio[用户分组][模型分组] 未命中时的兜底价,由「模型分组」页
+// 编辑),而用户分组的事实清单是登记表 `qy_user_groups`。继续只认前者的后果不是
+// 「少了几个选项」,是**运营在登记表里新建出来的用户分组一个都选不了**:保存时
+// 400「目标分组不存在」,即便绕过保存,resolveNewUserGroup 也会在注册事务里再判
+// 一次假、静默把新用户丢回 default —— 注册成功、一个模型都调不通,而这正是这条
+// 配置存在的全部理由。
+//
+// 并集而不是替换:`GroupRatio` 里那些历史上兼作用户分组的名字(default/vip/svip,
+// 以及回填之前就在 users.group 上跑着的)必须继续可选,否则这次判据切换本身就是
+// 一次能力回退。扩展关闭 / 快照没加载时 QyDeclaredUserGroups 返回 nil,行为逐字
+// 回到切换之前。
+//
+// 刻意不用 abilities:abilities 只反映「当前有渠道在跑的分组」,新部署渠道还没配全
+// 时它是空的,拿它当硬校验会让运营在最需要配置默认分组的时刻配不进去。abilities
+// 的信息在管理端以 has_channels 提示的形式给出,是警告而不是闸门。
+//
+// 两份清单都是内存查找(RWMap / groupns 的活跃快照),没有 I/O —— 这是它能在用户
+// 创建事务里被再校验一次的前提。
 func groupExists(name string) bool {
 	if name == "" || name == autoGroup {
 		return false
 	}
-	return ratio_setting.ContainsGroupRatio(name)
+	if ratio_setting.ContainsGroupRatio(name) {
+		return true
+	}
+	for _, declared := range service.QyDeclaredUserGroups() {
+		if declared == name {
+			return true
+		}
+	}
+	return false
 }
 
 // validateDefaultGroup 校验管理端提交的默认分组。
@@ -68,7 +91,7 @@ func validateDefaultGroup(name string) error {
 	if name == autoGroup {
 		return errGroupIsAuto
 	}
-	if !ratio_setting.ContainsGroupRatio(name) {
+	if !groupExists(name) {
 		return errGroupNotExist
 	}
 	return nil
@@ -76,36 +99,72 @@ func validateDefaultGroup(name string) error {
 
 // groupOption 是管理端下拉的一项。
 type groupOption struct {
-	Name  string  `json:"name"`
-	Ratio float64 `json:"ratio"`
+	Name string `json:"name"`
+	// Ratio 是该名字在 GroupRatio 里的值,**可以是 null**。
+	//
+	// 指针而不是裸 float64:拆分之后 GroupRatio 的键是模型分组,一个只登记在
+	// `qy_user_groups` 里的用户分组在那张表里根本没有条目。裸 float64 会把这种
+	// 情况渲染成一个货真价实的 `×0`,而 0 在这套系统里是「显式免费」的意思 ——
+	// 一个没有配过任何倍率的分组不该看起来像是免费的。
+	//
+	// 刻意不加 omitempty:字段名本身是与 transfer 的 groupCandidate 共用的跨模块
+	// JSON 契约(见 transfer/grouprule_test.go 的 TestGroupCandidateShapeMatches…),
+	// 缺席与 null 对前端也不是一回事 —— null 是「后端确实回答了:没有」。
+	Ratio *float64 `json:"ratio"`
 	// HasChannels 表示 abilities 里至少有一条启用的行落在该分组。
 	// 为 false 时该分组下没有任何可用模型,选它等于让新用户寸步难行。
 	HasChannels bool `json:"has_channels"`
 	// PublicUsable 表示该分组在「用户可选分组」白名单里。不是必要条件:
 	// service.GetUserUsableGroups 会把用户自己的分组补进可选列表。
 	PublicUsable bool `json:"public_usable"`
+	// Registered 表示它在用户分组登记表 `qy_user_groups` 里。
+	//
+	// false 意味着这个名字只是历史上留在 GroupRatio 里的:它仍然可选(向后兼容),
+	// 但它不在「用户分组登记」那张卡片上,改名与删除那套带迁移的流程管不到它。
+	Registered bool `json:"registered"`
 }
 
 // listGroupOptions 汇总下拉选项。第二个返回值表示 abilities 探测是否成功 ——
 // 探测失败时全部 has_channels 都是 false,必须让前端知道那是「不确定」
 // 而不是「确实没有渠道」,否则运营会被一片红叹号吓住。
+//
+// 清单与 groupExists 的判据**必须同源**(登记表 ∪ GroupRatio)。两边各列一遍的
+// 表现永远是同一种:下拉里选得到、保存时报「目标分组不存在」。
 func listGroupOptions() ([]groupOption, bool) {
 	ratios := ratio_setting.GetGroupRatioCopy()
+	declared := service.QyDeclaredUserGroups()
 	usable := setting.GetUserUsableGroupsCopy()
 	withChannels, probeOK := groupsWithEnabledAbilities()
 
-	options := make([]groupOption, 0, len(ratios))
-	for name, ratio := range ratios {
+	registered := make(map[string]bool, len(declared))
+	for _, name := range declared {
+		registered[name] = true
+	}
+
+	names := make(map[string]struct{}, len(ratios)+len(declared))
+	for name := range ratios {
+		names[name] = struct{}{}
+	}
+	for _, name := range declared {
+		names[name] = struct{}{}
+	}
+
+	options := make([]groupOption, 0, len(names))
+	for name := range names {
 		if name == autoGroup {
 			continue
 		}
 		_, publicUsable := usable[name]
-		options = append(options, groupOption{
+		option := groupOption{
 			Name:         name,
-			Ratio:        ratio,
 			HasChannels:  withChannels[name],
 			PublicUsable: publicUsable,
-		})
+			Registered:   registered[name],
+		}
+		if ratio, ok := ratios[name]; ok {
+			option.Ratio = &ratio
+		}
+		options = append(options, option)
 	}
 	sort.Slice(options, func(i, j int) bool { return options[i].Name < options[j].Name })
 	return options, probeOK

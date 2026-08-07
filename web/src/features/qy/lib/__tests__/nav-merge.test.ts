@@ -196,7 +196,9 @@ describe('qy nav merge — admin, all features on', () => {
       '/qy/admin/commission',
       '/qy/admin/transfer-config',
       '/qy/admin/transfer-group-rules',
-      '/qy/admin/user-group',
+      // `/qy/admin/user-group` 曾在这条清单里。那一页已整体下线（降级成
+      // 「计费与支付 → 用户分组」上的一张卡片），它现在既不在抽屉里也不在根
+      // 侧栏，留在这里断言"根侧栏没有它"是一条恒真的空转。
       '/qy/admin/violation-rules',
     ]) {
       assert.ok(

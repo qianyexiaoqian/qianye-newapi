@@ -209,7 +209,22 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 // reason 用于日志记录（例如 "token重算" 或 "adaptor调整"）。
 // clamps 可选：若计算 actualQuota 时发生额度饱和，将其记入日志 admin_info（仅管理员可见）。
 func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string, clamps ...*common.QuotaClamp) {
-	settleTaskQuotaDelta(ctx, task, actualQuota, reason, nil, clamps...)
+	// applied 传 nil:adaptor 调整路径的 actualQuota 由适配器自己算出来,
+	// 本函数不知道它用了哪些倍率,日志沿用提交时刻的 pin(那是这条路径唯一
+	// 已知为真的倍率)。
+	settleTaskQuotaDelta(ctx, task, actualQuota, reason, nil, nil, clamps...)
+}
+
+// taskAppliedRatios 是这一次差额结算**真正乘进金额**的那两个倍率。
+//
+// 它存在的唯一理由是让日志里的结构化字段与实收金额对得上:taskBillingOther
+// 写的是提交时刻的 pin,而 token 重算路径的模型倍率会再过一次 QyGroupTaskRatio。
+// 两者只在倍率被改过时不同 —— 而那正是唯一需要事后对账的时刻。少了它,
+// 审计员用 tokens × model_ratio × group_ratio 复算出来的数与实收差好几倍,
+// 却没有任何字段指向这一笔。
+type taskAppliedRatios struct {
+	ModelRatio float64
+	GroupRatio float64
 }
 
 // settleTaskQuotaDelta 是差额结算的唯一函数体。
@@ -222,7 +237,8 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 // 补差会得出「Task 没事」这个正好相反的结论。
 func settleTaskQuotaDelta(
 	ctx context.Context, task *model.Task, actualQuota int, reason string,
-	groupRatioMiss *ratio_setting.GroupRatioMiss, clamps ...*common.QuotaClamp,
+	applied *taskAppliedRatios, groupRatioMiss *ratio_setting.GroupRatioMiss,
+	clamps ...*common.QuotaClamp,
 ) {
 	if actualQuota <= 0 {
 		return
@@ -270,6 +286,14 @@ func settleTaskQuotaDelta(
 		logQuota = -quotaDelta
 	}
 	other := taskBillingOther(task)
+	// 日志里的倍率必须是**这一笔真正乘进金额**的那两个,不是提交时刻的 pin。
+	// 两者只在倍率被改过时不同,而那正是唯一需要事后对账的时刻。
+	if applied != nil {
+		if applied.ModelRatio > 0 {
+			other["model_ratio"] = applied.ModelRatio
+		}
+		other["group_ratio"] = applied.GroupRatio
+	}
 	other["task_id"] = task.TaskID
 	other["pre_consumed_quota"] = preConsumedQuota
 	other["actual_quota"] = actualQuota
@@ -332,26 +356,53 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	}
 	modelRatio = QyGroupTaskRatio(group, modelName, modelRatio)
 
-	// 分组倍率解析走全仓唯一的 ratio_setting.ResolveGroupRatio(见
-	// setting/ratio_setting/qy_ratio_export.go)。
+	// ── 分组倍率:结算沿用**提交那一刻钉下的那个值**,不重算 ──
+	//
+	// 预扣按提交时刻的倍率算。结算若重新解析,倍率表在任务运行期间被改过一次
+	// (运营改矩阵、或用户分组改名/删除时 groupns 的 dropUserGroupOptions 删掉
+	// GroupGroupRatio 的外层键)就会拿另一个价去算差额,而差额是以**追扣**落到
+	// 用户头上的:vip 谈好的 0.2 变回兜底的 2,同一笔任务从预扣 20000 变成实扣
+	// 200000。更糟的是这条路径**零告警**:兜底价本身存在 ⇒ BaseMissing=false ⇒
+	// SilentFallback() 为假 ⇒ 不写 admin_info、不 LogWarn,事后对账查不出来。
+	//
+	// 同步的文本/音频结算读的是 PriceData 的 pin,异步 Task 必须同口径:
+	// 用户提交时看到什么价,这一笔就按什么价结算。
 	//
 	// **group 恒取 task.Group,绝不在结算这一刻重新解析「用户分组的默认模型分组」。**
-	// task.Group 在提交时就由 relayInfo.UsingGroup 落库(model/task.go),它就是
-	// 这条异步链路的 pin;上面那句 `if group == "" { group = userGroup }` 只保留给
-	// 历史空值行,不得扩大成一条新的解析路径 —— 否则运营在任务提交与结算之间改一次
-	// 默认模型分组,这一笔就会按另一个价结算,而两个价都"看起来是对的"。
-	groupRatioRes := ratio_setting.ResolveGroupRatio(userGroup, group)
-	finalGroupRatio := groupRatioRes.Ratio
-	// 静默 fail-open 必须逐笔落地,判据完全委托给 SilentFallback()(与
-	// relay/common 的 NoteGroupRatioFallback 是同一个判据,不在这里重写)。
+	// task.Group 在提交时就由 relayInfo.UsingGroup 落库(model/task.go),它是
+	// 这条异步链路的另一半 pin;上面那句 `if group == "" { group = userGroup }`
+	// 只保留给历史空值行,不得扩大成一条新的解析路径。
+	//
+	// 历史行没有 GroupRatioPinned 这一位,回落现算(走全仓唯一的
+	// ratio_setting.ResolveGroupRatio),逐位等于改动前。
+	var finalGroupRatio float64
 	var groupRatioMiss *ratio_setting.GroupRatioMiss
-	if groupRatioRes.SilentFallback() {
-		groupRatioMiss = &ratio_setting.GroupRatioMiss{
-			UserGroup: userGroup, ModelGroup: group, AppliedRatio: finalGroupRatio,
+	if bc := task.PrivateData.BillingContext; bc != nil && bc.GroupRatioPinned {
+		finalGroupRatio = bc.GroupRatio
+		// pin 下来的那个 1.0 若本来就是 fail-open 编出来的,标记必须跟着 pin 一起
+		// 传到结算这一笔上,否则运维按 group_ratio_missing 全量扫描补差时,
+		// 会漏掉差额那半边(预扣那半边由提交时刻的消费日志覆盖)。
+		if bc.GroupRatioFailOpen {
+			groupRatioMiss = &ratio_setting.GroupRatioMiss{
+				UserGroup: userGroup, ModelGroup: group, AppliedRatio: finalGroupRatio,
+			}
+			logger.LogWarn(ctx, fmt.Sprintf(
+				"group ratio fail-open carried into task settlement: user_group=%s model_group=%s applied_ratio=%g task=%s",
+				userGroup, group, finalGroupRatio, task.TaskID))
 		}
-		logger.LogWarn(ctx, fmt.Sprintf(
-			"group ratio fail-open on task settlement: user_group=%s model_group=%s applied_ratio=%g task=%s",
-			userGroup, group, finalGroupRatio, task.TaskID))
+	} else {
+		groupRatioRes := ratio_setting.ResolveGroupRatio(userGroup, group)
+		finalGroupRatio = groupRatioRes.Ratio
+		// 静默 fail-open 必须逐笔落地,判据完全委托给 SilentFallback()(与
+		// relay/common 的 NoteGroupRatioFallback 是同一个判据,不在这里重写)。
+		if groupRatioRes.SilentFallback() {
+			groupRatioMiss = &ratio_setting.GroupRatioMiss{
+				UserGroup: userGroup, ModelGroup: group, AppliedRatio: finalGroupRatio,
+			}
+			logger.LogWarn(ctx, fmt.Sprintf(
+				"group ratio fail-open on task settlement: user_group=%s model_group=%s applied_ratio=%g task=%s",
+				userGroup, group, finalGroupRatio, task.TaskID))
+		}
 	}
 
 	// 计算 OtherRatios 乘积（视频折扣、时长等）
@@ -364,5 +415,7 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	actualQuota, clamp := common.QuotaFromFloatChecked(float64(totalTokens) * modelRatio * finalGroupRatio * otherMultiplier)
 
 	reason := fmt.Sprintf("token重算：tokens=%d, modelRatio=%.2f, groupRatio=%.2f, otherMultiplier=%.4f", totalTokens, modelRatio, finalGroupRatio, otherMultiplier)
-	settleTaskQuotaDelta(ctx, task, actualQuota, reason, groupRatioMiss, clamp)
+	settleTaskQuotaDelta(ctx, task, actualQuota, reason,
+		&taskAppliedRatios{ModelRatio: modelRatio, GroupRatio: finalGroupRatio},
+		groupRatioMiss, clamp)
 }

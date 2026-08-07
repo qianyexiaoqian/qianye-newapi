@@ -478,6 +478,15 @@ func ValidateTransfer(t *Transfer) error {
 		return fmt.Errorf("qianye: transfer.min_quota(%d) 不得大于 max_per_tx_quota(%d)",
 			t.MinQuota, t.MaxPerTxQuota)
 	}
+	// daily_max_quota 低于 min_quota 是同一类「任何金额都不合法」的组合,只是它
+	// 拦在风控那一层而不是受理校验:用户每一笔都能过受理、每一笔都被
+	// errDailyLimitExceeded 拒掉,白吃一次冷却与风控预占,而管理端一点提示都没有。
+	// 0 同样表示不设这道闸门,因此与上面一条同口径地跳过。
+	if t.DailyMaxQuota > 0 && t.DailyMaxQuota < t.MinQuota {
+		return fmt.Errorf("qianye: transfer.daily_max_quota(%d) 不得小于 min_quota(%d) —— "+
+			"这个组合会让这一档的每一笔划转都在风控处被拒",
+			t.DailyMaxQuota, t.MinQuota)
+	}
 	switch t.RecipientLookup {
 	case RecipientLookupID, RecipientLookupIDEmail:
 	default:

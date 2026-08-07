@@ -36,3 +36,49 @@ func (info *RelayInfo) NoteGroupRatioFallback(res ratio_setting.GroupRatioResolu
 		AppliedRatio: res.Ratio,
 	}
 }
+
+// QyWssGroupRatioPin 是一次 WSS 实时会话内钉住的分组倍率解析结果。
+//
+// 连同两个分组名一起存:auto 分组改写会在会话开始后改动 UsingGroup,
+// 只存倍率的话,坐标变了倍率还挂在旧坐标上,而那是查不出来的。
+type QyWssGroupRatioPin struct {
+	UserGroup  string
+	ModelGroup string
+	Res        ratio_setting.GroupRatioResolution
+}
+
+// ResolveWssGroupRatio 解析分组倍率,并在**同一次实时会话内**钉住它。
+//
+// ── 为什么实时会话必须钉 ──
+//
+// 一次 WSS 会话会调很多次 PreWssConsumeQuota,每一次都真的扣一笔钱。
+// 现场重算的话,运营在会话中途改一次 (用户分组, 模型分组) 的交叉倍率,
+// 同一次会话的前半段与后半段就按两个价收费,而用户从头到尾看到的是同一个价;
+// 方向反过来时是平台白亏。同步的文本/音频路径读的是请求开始时 HandleGroupRatio
+// 钉下的 PriceData,异步 Task 读的是 TaskBillingContext 的 pin —— 这条是最后一处
+// 现场重算的计费路径。
+//
+// 坐标(用户分组 / 模型分组)变了就重新解析并重新钉:那不是"倍率被改了",
+// 那是这一段用量本来就属于另一个格子。
+// 解析器**只在这里调一次**:多写一处(例如给 info == nil 单开一条早退)会让
+// 「计费路径只有一个解析器」的守卫抓不到形状,而那条守卫正是靠调用数与实参
+// 表达式来发现对角格缺陷的。
+func (info *RelayInfo) ResolveWssGroupRatio() ratio_setting.GroupRatioResolution {
+	userGroup, modelGroup := "", ""
+	if info != nil {
+		userGroup, modelGroup = info.UserGroup, info.UsingGroup
+		if pin := info.QyWssGroupRatioPin; pin != nil &&
+			pin.UserGroup == userGroup && pin.ModelGroup == modelGroup {
+			return pin.Res
+		}
+	}
+	res := ratio_setting.ResolveGroupRatio(userGroup, modelGroup)
+	if info != nil {
+		info.QyWssGroupRatioPin = &QyWssGroupRatioPin{
+			UserGroup:  userGroup,
+			ModelGroup: modelGroup,
+			Res:        res,
+		}
+	}
+	return res
+}

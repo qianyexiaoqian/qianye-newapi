@@ -141,6 +141,15 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'transfer', 'group-rules'] as const,
   adminTransferConfig: () =>
     [...qyKeys.all, 'admin', 'transfer', 'config'] as const,
+  /**
+   * 按用户分组的门槛分档。
+   *
+   * 与 `adminTransferConfig` 分开：两者写的是不同的表（`qy_settings` 的一组
+   * KV vs `qy_transfer_group_limits` 的整行），而且分档页要显示的「生效值」
+   * 依赖全站门槛 —— 改全站门槛之后必须把这一条也冲掉，改分档则不必反过来。
+   */
+  adminTransferGroupLimits: () =>
+    [...qyKeys.all, 'admin', 'transfer', 'group-limits'] as const,
 
   adminWithdrawals: (params: unknown) =>
     [...qyKeys.all, 'admin', 'withdraw', 'list', params] as const,

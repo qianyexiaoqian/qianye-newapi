@@ -33,6 +33,7 @@ import {
   type QyGmDraft,
 } from '@/features/qy/pages/admin-group-matrix/lib/draft'
 import { QyUgScopeDialog } from '@/features/qy/pages/admin-user-groups/components/user-group-scope-dialog'
+import { QyNewUserDefaultGroupCard } from '@/features/qy/pages/admin-user-groups/default-group'
 import { qyUgGrantedModelGroups } from '@/features/qy/pages/admin-user-groups/lib/rows'
 import { QyUserGroupRoster } from '@/features/qy/pages/admin-user-groups/roster'
 
@@ -344,6 +345,17 @@ export function UserGroupsSection(props: {
           'When enabled, newly created tokens start in the first auto group.'
         )}
       />
+
+      {/*
+        「新注册用户落进哪一档」—— 原来是侧栏上一个整页(`/qy/admin/user-group`)，
+        整页只有这一个下拉。项目方原话：「当前为何要有 2 个用户分组？只保留一个
+        新的即可，旧的这个移除掉。」
+
+        它紧挨着上面那个开关：两者都是**站级的初始分组**默认值，一个管新注册的
+        人落哪一档、一个管新建的令牌起手用哪个模型分组。它自带保存按钮，理由与
+        它为什么不是行内标记一起写在组件注释里。
+      */}
+      <QyNewUserDefaultGroupCard />
 
       <StaticDataTable
         data={displayRows}

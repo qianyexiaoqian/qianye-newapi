@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-
 /**
  * 工单的前后端契约，与 `qianye/modules/ticket/view.go` 一一对应。
  *

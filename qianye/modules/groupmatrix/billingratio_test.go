@@ -32,9 +32,13 @@ import (
 // 就是「界面上那个数字 == 账单上那个数字」的全部证明。
 
 const (
-	pricePath        = "../../../relay/helper/price.go"
-	quotaPath        = "../../../service/quota.go"
-	ctlPricingPath   = "../../../controller/pricing.go"
+	pricePath      = "../../../relay/helper/price.go"
+	quotaPath      = "../../../service/quota.go"
+	ctlPricingPath = "../../../controller/pricing.go"
+	// wssPinPath 是 WSS 实时会话的分组倍率 pin。service/quota.go 的增量扣费
+	// 不再自己调解析器,而是走 RelayInfo.ResolveWssGroupRatio —— 一次会话只解析
+	// 一次,否则运营中途改一次倍率,同一次会话的前后半段按两个价收费。
+	wssPinPath       = "../../../relay/common/qy_group_ratio_note.go"
 	serviceGroupPath = "../../../service/group.go"
 )
 
@@ -256,8 +260,16 @@ func TestScopePolicyReportsUnsetGroups(t *testing.T) {
 //
 // controller/pricing.go 是**展示**路径,形状与计费不同(先播种兜底再用交叉格覆盖),
 // 刻意不合并 —— 它由上面的 TestBillingRatioPathsAgree 按结论钉住。
+//
+// # WSS 那条路径多了一层会话 pin
+//
+// service/quota.go 的 PreWssConsumeQuota 在一次实时会话里会被调很多次,每一次都
+// 真的扣一笔钱。现场重算意味着运营中途改一次倍率,同一次会话的前后半段按两个价
+// 收费,所以它改走 relayInfo.ResolveWssGroupRatio()(relay/common/qy_group_ratio_note.go)——
+// 那个方法**自己**调唯一解析器并把结果钉在 RelayInfo 上。因此这条路径的检查点
+// 跟着挪到 wssPinPath,断言的两件事一个字没变。
 func TestBillingRatioSitesUseTheSingleResolver(t *testing.T) {
-	for _, path := range []string{pricePath, quotaPath, taskBillingPath} {
+	for _, path := range []string{pricePath, wssPinPath, taskBillingPath} {
 		t.Run(path, func(t *testing.T) {
 			file := parseFileOrFail(t, path)
 
@@ -284,6 +296,27 @@ func TestBillingRatioSitesUseTheSingleResolver(t *testing.T) {
 					"分组倍率解析要么被删掉了(倍率会静默恒为 1),要么又出现了第二个来源", path)
 		})
 	}
+
+	// 断链的反向断言:WSS 增量扣费必须真的去用那个 pin。
+	// 少了这一条,把 PreWssConsumeQuota 里的解析整段删掉(倍率静默恒为 0)
+	// 上面的循环照样全绿 —— 它只检查 pin 自己写得对不对。
+	t.Run(quotaPath+" 消费了会话 pin", func(t *testing.T) {
+		file := parseFileOrFail(t, quotaPath)
+		used := false
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "ResolveWssGroupRatio" {
+				used = true
+			}
+			return true
+		})
+		assert.True(t, used,
+			"service/quota.go 不再调用 ResolveWssGroupRatio —— WSS 增量扣费的分组倍率"+
+				"要么被整段删掉了,要么又变回了现场重算(同一次会话前后两个价)")
+	})
 }
 
 // TestGetUserGroupRatioDelegatesToTheSingleResolver 守住"基准函数"本身。

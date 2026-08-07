@@ -54,7 +54,12 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   '/qy/admin/withdrawals',
   '/qy/admin/violation-rules',
   '/qy/admin/violations',
-  '/qy/admin/user-group',
+  // `/qy/admin/user-group` 曾占本表的第 18 号。它整页只有一个下拉，已经降级成
+  // 「系统设置 → 计费与支付 → 用户分组」上的一张卡片，不再是本表登记的页面，
+  // 因此按维护规则 2 删行 —— 它是**末尾之前**的一行，后面三页（资金订单、
+  // 审计日志、健康检查）各前移一号。这是删行不可避免的代价，规则 2 已经把它
+  // 说成可接受（历史编号本就随页面消失）；被动的三页都是管理端页面，
+  // `LAB MEMO` 编号在那几页上是装饰，不像用户侧页面那样会被记下来引用。
   '/qy/admin/fund-orders',
   '/qy/admin/audit-logs',
   '/qy/admin/health',

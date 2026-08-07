@@ -97,7 +97,6 @@ import { Route as AuthenticatedQyAdminTicketsIndexRouteImport } from './routes/_
 import { Route as AuthenticatedQyAdminTransferConfigIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-config/index'
 import { Route as AuthenticatedQyAdminTransferGroupRulesIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-group-rules/index'
 import { Route as AuthenticatedQyAdminTransferRecordsIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-records/index'
-import { Route as AuthenticatedQyAdminUserGroupIndexRouteImport } from './routes/_authenticated/qy/admin/user-group/index'
 import { Route as AuthenticatedQyAdminViolationRulesIndexRouteImport } from './routes/_authenticated/qy/admin/violation-rules/index'
 import { Route as AuthenticatedQyAdminViolationsIndexRouteImport } from './routes/_authenticated/qy/admin/violations/index'
 import { Route as AuthenticatedQyAdminWithdrawalsIndexRouteImport } from './routes/_authenticated/qy/admin/withdrawals/index'
@@ -601,12 +600,6 @@ const AuthenticatedQyAdminTransferRecordsIndexRoute =
     path: '/transfer-records/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
-const AuthenticatedQyAdminUserGroupIndexRoute =
-  AuthenticatedQyAdminUserGroupIndexRouteImport.update({
-    id: '/user-group/',
-    path: '/user-group/',
-    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
-  } as any)
 const AuthenticatedQyAdminViolationRulesIndexRoute =
   AuthenticatedQyAdminViolationRulesIndexRouteImport.update({
     id: '/violation-rules/',
@@ -731,7 +724,6 @@ export interface FileRoutesByFullPath {
   '/qy/admin/transfer-config/': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/qy/admin/transfer-records/': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
-  '/qy/admin/user-group/': typeof AuthenticatedQyAdminUserGroupIndexRoute
   '/qy/admin/violation-rules/': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/qy/admin/violations/': typeof AuthenticatedQyAdminViolationsIndexRoute
   '/qy/admin/withdrawals/': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
@@ -823,7 +815,6 @@ export interface FileRoutesByTo {
   '/qy/admin/transfer-config': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/qy/admin/transfer-group-rules': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/qy/admin/transfer-records': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
-  '/qy/admin/user-group': typeof AuthenticatedQyAdminUserGroupIndexRoute
   '/qy/admin/violation-rules': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/qy/admin/violations': typeof AuthenticatedQyAdminViolationsIndexRoute
   '/qy/admin/withdrawals': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
@@ -921,7 +912,6 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/transfer-config/': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/_authenticated/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/_authenticated/qy/admin/transfer-records/': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
-  '/_authenticated/qy/admin/user-group/': typeof AuthenticatedQyAdminUserGroupIndexRoute
   '/_authenticated/qy/admin/violation-rules/': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/_authenticated/qy/admin/violations/': typeof AuthenticatedQyAdminViolationsIndexRoute
   '/_authenticated/qy/admin/withdrawals/': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
@@ -1018,7 +1008,6 @@ export interface FileRouteTypes {
     | '/qy/admin/transfer-config/'
     | '/qy/admin/transfer-group-rules/'
     | '/qy/admin/transfer-records/'
-    | '/qy/admin/user-group/'
     | '/qy/admin/violation-rules/'
     | '/qy/admin/violations/'
     | '/qy/admin/withdrawals/'
@@ -1110,7 +1099,6 @@ export interface FileRouteTypes {
     | '/qy/admin/transfer-config'
     | '/qy/admin/transfer-group-rules'
     | '/qy/admin/transfer-records'
-    | '/qy/admin/user-group'
     | '/qy/admin/violation-rules'
     | '/qy/admin/violations'
     | '/qy/admin/withdrawals'
@@ -1207,7 +1195,6 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/transfer-config/'
     | '/_authenticated/qy/admin/transfer-group-rules/'
     | '/_authenticated/qy/admin/transfer-records/'
-    | '/_authenticated/qy/admin/user-group/'
     | '/_authenticated/qy/admin/violation-rules/'
     | '/_authenticated/qy/admin/violations/'
     | '/_authenticated/qy/admin/withdrawals/'
@@ -1853,13 +1840,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminTransferRecordsIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
-    '/_authenticated/qy/admin/user-group/': {
-      id: '/_authenticated/qy/admin/user-group/'
-      path: '/user-group'
-      fullPath: '/qy/admin/user-group/'
-      preLoaderRoute: typeof AuthenticatedQyAdminUserGroupIndexRouteImport
-      parentRoute: typeof AuthenticatedQyAdminRouteRoute
-    }
     '/_authenticated/qy/admin/violation-rules/': {
       id: '/_authenticated/qy/admin/violation-rules/'
       path: '/violation-rules'
@@ -1946,7 +1926,6 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminTransferConfigIndexRoute: typeof AuthenticatedQyAdminTransferConfigIndexRoute
   AuthenticatedQyAdminTransferGroupRulesIndexRoute: typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   AuthenticatedQyAdminTransferRecordsIndexRoute: typeof AuthenticatedQyAdminTransferRecordsIndexRoute
-  AuthenticatedQyAdminUserGroupIndexRoute: typeof AuthenticatedQyAdminUserGroupIndexRoute
   AuthenticatedQyAdminViolationRulesIndexRoute: typeof AuthenticatedQyAdminViolationRulesIndexRoute
   AuthenticatedQyAdminViolationsIndexRoute: typeof AuthenticatedQyAdminViolationsIndexRoute
   AuthenticatedQyAdminWithdrawalsIndexRoute: typeof AuthenticatedQyAdminWithdrawalsIndexRoute
@@ -1982,8 +1961,6 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
       AuthenticatedQyAdminTransferGroupRulesIndexRoute,
     AuthenticatedQyAdminTransferRecordsIndexRoute:
       AuthenticatedQyAdminTransferRecordsIndexRoute,
-    AuthenticatedQyAdminUserGroupIndexRoute:
-      AuthenticatedQyAdminUserGroupIndexRoute,
     AuthenticatedQyAdminViolationRulesIndexRoute:
       AuthenticatedQyAdminViolationRulesIndexRoute,
     AuthenticatedQyAdminViolationsIndexRoute:

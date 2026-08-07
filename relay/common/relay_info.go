@@ -174,6 +174,11 @@ type RelayInfo struct {
 	// qianye 侧的观测需求泄进那个独立模块。与既有的 QuotaClamp 同形。
 	GroupRatioFallback *ratio_setting.GroupRatioMiss
 
+	// QyWssGroupRatioPin 是 WSS 实时会话内钉住的分组倍率。
+	// 只有 service.PreWssConsumeQuota 写它,详见 qy_group_ratio_note.go 的
+	// ResolveWssGroupRatio —— 一次实时会话会分多次增量扣费,倍率必须只解析一次。
+	QyWssGroupRatioPin *QyWssGroupRatioPin
+
 	// TieredBillingSnapshot captures tiered billing rules at pre-consume time.
 	// Auto-group retries refresh its group-dependent fields before each attempt
 	// and again before settlement. Non-nil only when billing mode is "tiered_expr".

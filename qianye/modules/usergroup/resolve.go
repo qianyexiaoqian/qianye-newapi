@@ -60,6 +60,6 @@ func warnStaleGroup(group string) {
 	staleWarnMu.Unlock()
 
 	common.SysError("qianye/usergroup: 配置的新用户默认分组 " + group +
-		" 在分组倍率表中已不存在,新用户已回落到上游默认分组 " + upstreamDefaultGroup +
-		" —— 请到管理端重新选择,或把该分组加回「模型分组定价」的分组表")
+		" 在用户分组登记表与分组倍率表里都已不存在,新用户已回落到上游默认分组 " +
+		upstreamDefaultGroup + " —— 请到「系统设置 → 计费与支付 → 用户分组」重新选择")
 }

@@ -77,12 +77,26 @@ func probeResidue(gdb *gorm.DB, userGroup string) ([]groupns.Residue, error) {
 	sort.Strings(hits)
 	sort.Strings(denyHits)
 
+	var limitRows int64
+	if err := gdb.Model(&GroupLimit{}).Where("user_group = ?", key).
+		Count(&limitRows).Error; err != nil {
+		return nil, err
+	}
+
 	out := []groupns.Residue{{
 		Module: "transfer", Table: GroupRule{}.TableName(),
 		Label: "以它为**转出方**的划转规则", Rows: fromRows,
 		Disposition: groupns.ResidueClean,
 		Detail: "删掉之后这一档回落兜底规则(没有兜底即不限制)。" +
 			"源分组的限制不会被带到迁移目标上 —— 那会静默收紧另一档人的划转权限",
+	}, {
+		Module: "transfer", Table: GroupLimit{}.TableName(),
+		Label: "这个分组的**划转门槛分档**", Rows: limitRows,
+		Disposition: groupns.ResidueClean,
+		Detail: "删掉之后这一档回落全站门槛。**分档不会被带到迁移目标上** —— " +
+			"目标分组自己可能已经有一档,带过去要么覆盖别人的配置、要么在两档之间" +
+			"二选一,而这两种结果都是在没人批准的情况下改掉了另一组人的日额度。" +
+			"改名则原样跟着走:那是同一档人换了个名字",
 	}}
 	if len(hits) > 0 {
 		out = append(out, groupns.Residue{
@@ -121,6 +135,22 @@ func sweepResidue(tx *gorm.DB, from, to string, rename bool) error {
 			return err
 		}
 	} else if err := tx.Where("from_group = ?", fromKey).Delete(&GroupRule{}).Error; err != nil {
+		return err
+	}
+
+	// ── 门槛分档 ──
+	//
+	// 改名:整行跟着改名,那是同一档人换了个名字,不改会让这一档静默回落到
+	// 全站门槛(通常更宽松)。
+	// 删除:整行删掉,这一档的人迁过去之后按目标分组的口径走。**绝不改写成
+	// 迁移目标**:目标分组自己可能已经有一档,主键冲突不说,任何一种合并结果
+	// 都等于替运营改了另一组人的日额度。
+	if rename {
+		if err := tx.Model(&GroupLimit{}).Where("user_group = ?", fromKey).
+			Update("user_group", toKey).Error; err != nil {
+			return err
+		}
+	} else if err := tx.Where("user_group = ?", fromKey).Delete(&GroupLimit{}).Error; err != nil {
 		return err
 	}
 

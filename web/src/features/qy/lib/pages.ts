@@ -513,12 +513,20 @@ export const QY_PAGES: readonly QyPageDef[] = [
   // `features/system-settings/billing/section-registry.tsx`），旧 url 只保留
   // 重定向。两个页面读写同一组数据、同一组端点，并存两个入口就意味着两份互不
   // 知情的草稿与两道各自为政的保存闸门，而写入是两库不原子的。
-  {
-    url: '/qy/admin/user-group',
-    titleKey: 'qy_nav_a_user_group',
-    jpKey: 'qy_sg_jp_a_user_group',
-    group: QY_SETTINGS_GROUP,
-  },
+  // 「新用户分组」（`/qy/admin/user-group`）也已从本表移出。它整页只有一个下拉
+  // ——「新注册用户落进哪个分组」——而那个下拉选的东西与「用户分组」页两张表列的
+  // 是同一批名字。项目方原话：「当前为何要有 2 个用户分组？只保留一个新的即可，
+  // 旧的这个移除掉。」现在它是那一页上的一张卡片
+  // （`features/qy/pages/admin-user-groups/default-group`），后端模块与端点
+  // （`PUT /api/qy/admin/user-group/config`）原样不动。
+  //
+  // 与分组矩阵那次搬家不同，这一次**路由文件也一并删掉**，没有留重定向。代价有
+  // 两条，都是有意付的：① 旧书签直接 404；② 新家在 `/system-settings` 下要求
+  // role=100，而这一项的后端一直是 `AdminAuth`（role>=10），所以**普通管理员从此
+  // 在前端没有入口配置新用户默认分组**。分组矩阵那条路由用「够得着新家的送过去、
+  // 够不着的原地渲染」躲开了同一个坑，这里没有照做是因为项目方点名要删的就是
+  // 这个页面本身。要恢复那条能力，正确的做法是把新家的准入下调到 role>=10，
+  // 而不是把这一页再建回来。
   {
     url: '/qy/admin/violation-rules',
     titleKey: 'qy_nav_a_violation_rules',

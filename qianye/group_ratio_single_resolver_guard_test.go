@@ -45,6 +45,11 @@ var billingRatioCallSites = []string{
 	"service/quota.go",
 	"service/task_billing.go",
 	"service/text_quota.go",
+	// WSS 实时会话的分组倍率 pin。service/quota.go 的增量扣费不再自己解析,
+	// 而是走 RelayInfo.ResolveWssGroupRatio —— 一次会话只解析一次,否则运营
+	// 中途改一次倍率,同一次会话的前后半段按两个价收费。它现在是那条路径上
+	// 唯一碰倍率表的文件,必须进白名单。
+	"relay/common/qy_group_ratio_note.go",
 }
 
 // forbiddenRatioLookups 是计费路径上禁止直接调用的底层查表函数。
@@ -100,7 +105,15 @@ func TestBillingPathsResolveGroupRatioThroughSingleResolver(t *testing.T) {
 
 	// 反向断言:合一之后这三条路径**确实**在用那个解析器。
 	// 没有这一半,把三处的解析整段删掉(倍率恒为 1)同样能让上面的断言通过。
-	for _, rel := range []string{"relay/helper/price.go", "service/quota.go", "service/task_billing.go"} {
+	//
+	// service/quota.go 不在这张表里:它的解析已经下沉到会话 pin
+	// (relay/common/qy_group_ratio_note.go),而「quota.go 确实消费了那个 pin」
+	// 由 groupmatrix 的 TestBillingRatioSitesUseTheSingleResolver 钉住。
+	for _, rel := range []string{
+		"relay/helper/price.go",
+		"service/task_billing.go",
+		"relay/common/qy_group_ratio_note.go",
+	} {
 		assert.True(t, resolverUsers[rel],
 			"%s 不再调用 ratio_setting.ResolveGroupRatio —— 分组倍率要么被整段删掉了,"+
 				"要么又被换成了本地实现", rel)

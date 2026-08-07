@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-
 /**
  * 把"后端声称是数组的字段"收敛成一个真的能调 `.find` / `.map` 的数组。
  *

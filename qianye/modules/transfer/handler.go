@@ -155,10 +155,19 @@ func handlePreview(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	// 预览只回显手续费,而 fee_bps / fee_min_quota **刻意不可分档**
+	// (见 tierableKeys 的说明,由 TestTierableKeysAreAllAddressable 钉住)。
+	// 因此这里不去解析发起方那一档:那一次 users 主键查询对结果没有任何影响,
+	// 净效果只有「给一个只读接口新增一条 503 分支 + 一次主库查询」,
+	// 而预览是划转流程里调用最频繁的接口,那条 503 还会让配错档的那组人
+	// 连「确认收款人是谁」都做不到。
+	//
+	// 手续费改成可分档的那一天,这里必须跟着改回按发起方那一档解析,
+	// 否则用户先看到一个手续费、提交时被另一个数字收费。
+	cfg := settings.Transfer
 
 	resp := resolveRecipient(c, c.GetInt("id"), req.Identifier, rules)
 	if req.Amount > 0 {
-		cfg := settings.Transfer
 		// 金额非法时不报错,只是不回填:预览的主要用途是确认收款人,
 		// 真正的金额判定在提交时统一做,两处各判一次会出现口径漂移。
 		if fee, err := computeFee(req.Amount, cfg.FeeBps, cfg.FeeMinQuota); err == nil &&
@@ -260,7 +269,24 @@ func handleGetLimits(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+
+	// 主库用户行必须在算门槛**之前**读:门槛已经可以按用户分组分档(见
+	// grouplimit.go),而这一页回显的必须是提交时真正会生效的那一档 ——
+	// 回显全站兜底会让 vip 看到一个「还能转 100 万」、提交时按自己那一档被拒。
+	//
+	// 读不到时(主库抖动)退回全站兜底并继续渲染:这一页的其余部分(剩余额度、
+	// 冷却)仍然有用,整页报错反而让用户什么都看不到。分档配置本身读不到时
+	// 不在这一支里 —— 那由 effectiveCtx 直接拒掉。
+	user, userErr := model.GetUserById(me, false)
 	cfg := settings.Transfer
+	if userErr == nil {
+		tiered, tierErr := settings.transferFor(user.Group)
+		if tierErr != nil {
+			respondErr(c, tierErr)
+			return
+		}
+		cfg = tiered
+	}
 
 	var state UserState
 	// 从未参与过划转的用户没有状态行,那不是错误,零值就是正确答案。
@@ -305,7 +331,7 @@ func handleGetLimits(c *gin.Context) {
 		resp.BlockedReason = "pending_exists"
 	}
 
-	if user, err := model.GetUserById(me, false); err == nil {
+	if userErr == nil {
 		// 历史数据里可能存在负余额(上游的扣费路径没有下限校验),
 		// 对外展示成 0 而不是负数,否则前端会算出一个负的可转额度。
 		resp.TransferableQuota = clampNonNegative64(int64(user.Quota))

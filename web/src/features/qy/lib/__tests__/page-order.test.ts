@@ -52,7 +52,10 @@ const FROZEN_ORDER = [
   '/qy/admin/withdrawals',
   '/qy/admin/violation-rules',
   '/qy/admin/violations',
-  '/qy/admin/user-group',
+  // `/qy/admin/user-group` 曾是这里的第 18 项。那一页整页只有一个下拉，已经降级
+  // 成「系统设置 → 计费与支付 → 用户分组」上的一张卡片并从页面表里删除，编号表
+  // 按维护规则 2 删了同一行，于是下面三项各前移一号。快照跟着改是**正确的**：
+  // 这条测试防的是"为了好看重新排序"，不是"页面下线"。
   '/qy/admin/fund-orders',
   '/qy/admin/audit-logs',
   '/qy/admin/health',
@@ -96,7 +99,8 @@ describe('qy page order', () => {
   test('numbers every registered page and gives 00 to the two index pages', () => {
     assert.equal(qyPageMeta('/qy/affiliate').no, '01')
     assert.equal(qyPageMeta('/qy/availability').no, '09')
-    assert.equal(qyPageMeta('/qy/admin/health').no, '21')
+    // 20 而不是 21：`/qy/admin/user-group` 下线后本页前移一号。
+    assert.equal(qyPageMeta('/qy/admin/health').no, '20')
     // 索引页是分组入口而不是功能页，不占编号。
     assert.equal(qyPageMeta('/qy').no, '00')
     assert.equal(qyPageMeta('/qy/admin').no, '00')

@@ -47,13 +47,13 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
+import { qyUserGroupOptionLabel } from '../../../lib/group-options'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { qyCreateTransferGroupRule, qyUpdateTransferGroupRule } from '../api'
 import {
   QY_GROUP_POLICIES,
   qyAppendGroup,
   qyEmptyGroupRule,
-  qyGroupOptionLabel,
   qyGroupPolicyNeedsList,
   qyGroupRuleSchema,
   qyGroupRuleToForm,
@@ -68,8 +68,8 @@ import {
 import {
   QY_GROUP_SELF_TOKEN,
   QY_GROUP_WILDCARD,
-  type QyTransferGroupOption,
   type QyTransferGroupRule,
+  type QyUserGroupOption,
 } from '../types'
 
 type QyGroupRuleFormSheetProps = {
@@ -78,14 +78,19 @@ type QyGroupRuleFormSheetProps = {
   /** `null` 表示新建。 */
   rule: QyTransferGroupRule | null
   /**
-   * 站点定义过的分组，带倍率 / 渠道 / 公开可选三项元数据。
+   * 站点登记过的**用户分组**（`users.group`）—— 与 `from_group` / `to_groups`
+   * 的判定端同一个命名空间。这里一度填的是模型分组，后果是运营从下拉里挑一个
+   * 名字配出来的规则永不命中（见 `lib/group-options.ts` 的 `QyUserGroupOption`）。
    *
-   * 它是下拉的取值域，也是「这个名字站点定义过没有」的判据 —— 但**不是闸门**：
+   * 它是下拉的取值域，也是「这个名字站点登记过没有」的判据 —— 但**不是闸门**：
    * 两个输入都允许自由填写，历史分组必须仍然能配规则。
    */
-  groupOptions: QyTransferGroupOption[]
-  /** abilities 探测是否成功。false 时不能拿 `has_channels` 说事。 */
-  channelsProbeOk: boolean
+  groupOptions: QyUserGroupOption[]
+  /**
+   * 用户分组登记表是否读到了。false 时清单只有 `default`，
+   * 必须整块收起「未登记分组」的软告警，否则每个名字都会被标黄。
+   */
+  groupsProbeOk: boolean
   onSaved: () => void
 }
 
@@ -146,10 +151,13 @@ export function QyGroupRuleFormSheet(props: QyGroupRuleFormSheetProps) {
   const toGroups = form.watch('to_groups')
   const needsList = qyGroupPolicyNeedsList(policy)
   // 未定义分组是**当场**算的：等保存回执才提示，运营已经点完确认了。
-  const unknown = qyUnknownGroupNames(
-    qyRuleGroupNames(fromGroup, toGroups, policy),
-    props.groupOptions
-  )
+  // 登记表读不到时整块收起：那时每个名字都会被算成未登记，是一片假警报。
+  const unknown = props.groupsProbeOk
+    ? qyUnknownGroupNames(
+        qyRuleGroupNames(fromGroup, toGroups, policy),
+        props.groupOptions
+      )
+    : []
 
   return (
     <Form {...form}>
@@ -206,11 +214,7 @@ export function QyGroupRuleFormSheet(props: QyGroupRuleFormSheetProps) {
                       },
                       ...props.groupOptions.map((option) => ({
                         value: option.name,
-                        label: qyGroupOptionLabel(
-                          option,
-                          props.channelsProbeOk,
-                          t
-                        ),
+                        label: qyUserGroupOptionLabel(option, t),
                       })),
                     ]}
                     value={field.value}
@@ -280,11 +284,7 @@ export function QyGroupRuleFormSheet(props: QyGroupRuleFormSheetProps) {
                       },
                       ...props.groupOptions.map((option) => ({
                         value: option.name,
-                        label: qyGroupOptionLabel(
-                          option,
-                          props.channelsProbeOk,
-                          t
-                        ),
+                        label: qyUserGroupOptionLabel(option, t),
                       })),
                     ]}
                     value=''

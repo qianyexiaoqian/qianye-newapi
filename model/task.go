@@ -133,6 +133,32 @@ type TaskBillingContext struct {
 	// 方向相反时是平台白退。而日志里 other["group_ratio"] 写的又是提交时刻的值,
 	// 事后对账查不出来。空串(历史行)时回落现读,逐位等于改动前。
 	UserGroup string `json:"user_group,omitempty"`
+
+	// GroupRatioPinned 表示 GroupRatio 那个字段是**提交那一刻真实解析出来的值**,
+	// 包括显式配成 0 的免费档。
+	//
+	// ── 为什么需要单独的一位 ──
+	//
+	// GroupRatio 带 omitempty,配成 0 时根本不进 JSON,读回来也是 0 ——
+	// 「运营配的免费」与「历史行没有这个字段」在结构上完全一样。差额结算据此
+	// 决定「用 pin 还是现算」,判错的方向是资损:0 被当成缺席就会去现算,
+	// 免费档的用户在结算时被按兜底价追扣。
+	//
+	// ── 为什么结算必须用 pin ──
+	//
+	// 预扣按提交时刻的倍率算,结算若现算,倍率表在任务运行期间被改过
+	// (运营改矩阵、用户分组改名/删除时 groupns 清掉 GroupGroupRatio 的外层键)
+	// 就会拿另一个价去算差额,追扣直接落到用户头上,而 SilentFallback() 为假
+	// ⇒ 一条告警、一个 admin_info 标记都没有。同步的文本/音频结算读的是
+	// PriceData 的 pin,异步 Task 必须同口径。历史行(这一位为 false)回落现算,
+	// 逐位等于改动前。
+	GroupRatioPinned bool `json:"group_ratio_pinned,omitempty"`
+
+	// GroupRatioFailOpen 表示 pin 下来的那个倍率是上游 fail-open 编出来的 1.0
+	// (模型分组不在 GroupRatio 里),而不是运营配出来的。
+	// 结算沿用 pin 之后,这一位是把那笔差额继续标进
+	// other.admin_info.group_ratio_missing 的唯一依据。
+	GroupRatioFailOpen bool `json:"group_ratio_fail_open,omitempty"`
 }
 
 // GetUpstreamTaskID 获取上游真实 task ID（用于与 provider 通信）

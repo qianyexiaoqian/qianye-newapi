@@ -63,6 +63,11 @@ export const QY_TRANSFER_FIELDS: Record<string, QyTransferFieldMeta> = {
     labelKey: 'qy_tc_f_max_per_tx',
     hintKey: 'qy_tc_f_max_per_tx_hint',
     unit: 'quota',
+    // 后端守卫是 `cfg.MaxPerTxQuota > 0`（qianye/modules/transfer/validate.go），
+    // 也就是 0 **取消**单笔上限，而不是「任何金额都不合法」。缺了这一位，
+    // 分档列表里的 0 不带「(不限)」角标，运营会把「我把这一档冻住了」读成事实，
+    // 实际后果正好相反：这一档从此可以一次转走接近 int32 上限的额度。
+    zeroMeansUnlimited: true,
   },
   daily_max_quota: {
     labelKey: 'qy_tc_f_daily_quota',

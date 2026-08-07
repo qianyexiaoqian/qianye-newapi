@@ -24,7 +24,7 @@ func newResidueDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: gormlogger.Discard})
 	require.NoError(t, err)
-	require.NoError(t, gdb.AutoMigrate(&GroupRule{}))
+	require.NoError(t, gdb.AutoMigrate(&GroupRule{}, &GroupLimit{}))
 	return gdb
 }
 

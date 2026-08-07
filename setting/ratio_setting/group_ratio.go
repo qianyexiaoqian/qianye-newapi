@@ -3,6 +3,7 @@ package ratio_setting
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/types"
@@ -115,6 +116,31 @@ func UpdateGroupGroupRatioByJSONString(jsonStr string) error {
 	return types.LoadFromJsonString(groupGroupRatioMap, jsonStr)
 }
 
+// MaxGroupRatio 是分组倍率的上界。上游对倍率本身没有上界,但它会被直接乘进
+// 每一笔账单:一次手滑把倍率填成 1e18,配合大 token 数就会把中间结果推过 int32,
+// 而饱和之后的账单没有任何意义(见 AGENTS.md 的计费安全不变量)。
+// 取值与 qianye/modules/groupmatrix 的 maxGroupRatio 一致 —— 两个写入口对同一张表
+// 用两套界限,等于其中一套形同虚设。
+const MaxGroupRatio = 1000000
+
+// checkRatioValue 是两张倍率表共用的单值判据。
+//
+// 负倍率是这里唯一会把「扣费」变成「给用户充值」的取值:
+// common/quota_math.go 的饱和转换只在 <= MinQuota 时才夹,区间内的负值原样返回,
+// 于是预扣与结算双双为负,一路走到 IncreaseUserQuota。
+func checkRatioValue(name string, ratio float64) error {
+	if ratio != ratio { // NaN
+		return errors.New("group ratio is not a valid number: " + name)
+	}
+	if ratio < 0 {
+		return errors.New("group ratio must be not less than 0: " + name)
+	}
+	if ratio > MaxGroupRatio {
+		return fmt.Errorf("group ratio must be not greater than %d: %s", MaxGroupRatio, name)
+	}
+	return nil
+}
+
 func CheckGroupRatio(jsonStr string) error {
 	checkGroupRatio := make(map[string]float64)
 	err := json.Unmarshal([]byte(jsonStr), &checkGroupRatio)
@@ -122,8 +148,34 @@ func CheckGroupRatio(jsonStr string) error {
 		return err
 	}
 	for name, ratio := range checkGroupRatio {
-		if ratio < 0 {
-			return errors.New("group ratio must be not less than 0: " + name)
+		if err := checkRatioValue(name, ratio); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CheckGroupGroupRatio 校验交叉倍率表 GroupGroupRatio[用户分组][模型分组]。
+//
+// ── 为什么它必须和 CheckGroupRatio 一样存在 ──
+//
+// 交叉倍率是全站唯一「按用户分组定价」的载体,却一度是两张表里**没有任何数值
+// 校验**的那一张:GroupRatio 在 controller 层有 CheckGroupRatio 挡着,
+// GroupGroupRatio 一条 case 都没有。于是从原始 option 接口写进一个负倍率,
+// ResolveGroupRatio 会原样返回它,预扣和结算都是负数 —— 等于给用户充值。
+//
+// 解析失败也必须在**落库之前**报出来:上游 UpdateOption 是「先 DB.Save,
+// 后 updateOptionMap」,坏值先持久化,重启也不自愈。
+func CheckGroupGroupRatio(jsonStr string) error {
+	checkGroupGroupRatio := make(map[string]map[string]float64)
+	if err := json.Unmarshal([]byte(jsonStr), &checkGroupGroupRatio); err != nil {
+		return err
+	}
+	for userGroup, inner := range checkGroupGroupRatio {
+		for modelGroup, ratio := range inner {
+			if err := checkRatioValue(userGroup+"/"+modelGroup, ratio); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

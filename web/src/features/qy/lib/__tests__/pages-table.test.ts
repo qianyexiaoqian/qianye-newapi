@@ -75,7 +75,10 @@ const SETTINGS_URLS = [
   // 「计费与支付 → 用户分组」section（见
   // `features/system-settings/billing/section-registry.tsx`），旧 url 只保留
   // 重定向，因此它不再是 qy 自己那一组折叠菜单的成员。
-  '/qy/admin/user-group',
+  //
+  // `/qy/admin/user-group` 同理已不在本表，但它连重定向都没留：那一页整页只有
+  // 「新注册用户落哪个分组」一个下拉，已经降级成同一个 section 上的一张卡片
+  // （`features/qy/pages/admin-user-groups/default-group`）。
   '/qy/admin/violation-rules',
   '/qy/admin/lottery-config',
   '/qy/admin/api-address',

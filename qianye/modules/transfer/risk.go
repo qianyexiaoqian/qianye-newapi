@@ -17,11 +17,14 @@ import (
 // 两行状态记录必须按 user_id 升序加锁 —— A→B 与 B→A 同时发起时,
 // 反序加锁会在扩展库里形成死锁环。
 //
-// cfg 由 create() 在受理时取一次快照后传进来,这里**绝不自己再读一次配置**。
-// 门槛已经可以被管理端在线改(见 settings.go):受理与锁内各读各的时,
+// cfg / receiverCfg 由 create() 在受理时取一次快照后传进来,这里**绝不自己再读
+// 一次配置**。门槛已经可以被管理端在线改(见 settings.go):受理与锁内各读各的时,
 // 运营在这中间保存一次就会出现"受理放行、锁内拒绝",用户白吃一次冷却与
 // 风控预占;方向相反时更糟 —— 用户看到的是旧门槛,实际按新门槛放行了。
-func reserveRisk(tx *gorm.DB, req acceptedRequest, cfg config.Transfer, now int64) error {
+//
+// 两份门槛的分工见 evaluateRisk:发起方口径的四项走 cfg,收款方口径的那一项
+// 走 receiverCfg。
+func reserveRisk(tx *gorm.DB, req acceptedRequest, cfg, receiverCfg config.Transfer, now int64) error {
 	first, second := req.FromUserId, req.ToUserId
 	if first > second {
 		first, second = second, first
@@ -50,7 +53,7 @@ func reserveRisk(tx *gorm.DB, req acceptedRequest, cfg config.Transfer, now int6
 
 	// 收款方的入账笔数闸门也在这里判:两行都已在本事务内按升序加锁,
 	// 判定放在 applyReservation 之前就自动串行化了,不需要额外加锁。
-	if err := evaluateRisk(*sender, *receiver, cfg, req.Total, now); err != nil {
+	if err := evaluateRisk(*sender, *receiver, cfg, receiverCfg, req.Total, now); err != nil {
 		return err
 	}
 
@@ -69,7 +72,25 @@ func reserveRisk(tx *gorm.DB, req acceptedRequest, cfg config.Transfer, now int6
 // 两侧都要判是硬性要求:发起方限额只能约束"一个账号能转出多少",
 // 对"200 个小号各转一笔到同一个汇集账号"完全无效 —— 每一笔都在各自的
 // 发起方额度内,而这正是洗号/套现要走的形状。收款方的闸门是唯一能拦住它的。
-func evaluateRisk(sender, receiver UserState, cfg config.Transfer, total, now int64) error {
+//
+// ══════════ 两份门槛:cfg 是发起方那一档,receiverCfg 是收款方那一档 ══════════
+//
+// 门槛可以按用户分组分档(grouplimit.go)之后,「按谁那一档解析」就成了判定的
+// 一部分。**收款方口径的闸门必须按收款方所属分组那一档解析**,否则闸门的上限
+// 由被它约束的那一方自己挑:
+//
+//	运营给 vip 配 receiver_daily_max_in_count=1(意图:vip 账号每天最多入账 1 笔),
+//	攻击者用 200 个 default 小号各转 1 笔到那个 vip 汇集账号 —— 若按发起方
+//	(default)那一档解析,拿到的是全站的 20,200 笔全部通过。
+//	而 users.group 是可以靠买套餐改写的(model/subscription.go),
+//	也就是攻击者可以直接买进 receiver 上限最松的那一档。
+//
+// 反方向同样错:一个 vip 发起方会把「每天只能入账 1 笔」强加到它的每一个
+// 收款人身上。
+//
+// 新增任何一项收款方口径的门槛,读的必须是 receiverCfg;
+// 由 TestReceiverScopedGateReadsTheReceiverTier 顶住。
+func evaluateRisk(sender, receiver UserState, cfg, receiverCfg config.Transfer, total, now int64) error {
 	// 未结算的划转会让"余额"与"流水"的差额无法归因,人工对账时判断不出该退哪一笔,
 	// 因此中间态期间硬闸门,不允许叠加第二笔。
 	if sender.PendingCount > 0 {
@@ -89,7 +110,7 @@ func evaluateRisk(sender, receiver UserState, cfg config.Transfer, total, now in
 	//
 	// DayInCount 由调用方在 rollDay 之后传入,跨日已被清零;它在预占时 +1、
 	// 失败时由 undoReservation 原路退还,所以失败的划转不会永久吃掉收款方的名额。
-	if cfg.ReceiverDailyMaxInCount > 0 && receiver.DayInCount+1 > cfg.ReceiverDailyMaxInCount {
+	if receiverCfg.ReceiverDailyMaxInCount > 0 && receiver.DayInCount+1 > receiverCfg.ReceiverDailyMaxInCount {
 		return errReceiverDailyInExceeded
 	}
 	return nil

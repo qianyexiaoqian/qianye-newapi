@@ -348,7 +348,7 @@ func TestEvaluateRisk(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := evaluateRisk(tc.state, UserState{UserId: 2}, cfg, tc.total, now)
+			err := evaluateRisk(tc.state, UserState{UserId: 2}, cfg, cfg, tc.total, now)
 			if tc.wantErr == nil {
 				assert.NoError(t, err)
 				return
@@ -389,7 +389,7 @@ func TestEvaluateRiskGuardsReceiverDailyInCount(t *testing.T) {
 			cfg := baseConfig()
 			cfg.ReceiverDailyMaxInCount = tc.limit
 			// 发起方一侧全部留空,确保命中的确实是收款方闸门而不是别的判定。
-			err := evaluateRisk(UserState{UserId: 1}, tc.receiver, cfg, 1, now)
+			err := evaluateRisk(UserState{UserId: 1}, tc.receiver, cfg, cfg, 1, now)
 			if tc.wantErr == nil {
 				assert.NoError(t, err)
 				return
@@ -413,12 +413,12 @@ func TestEvaluateRiskAccumulatesReceiverCountAcrossSenders(t *testing.T) {
 	bucket := dayBucket(now)
 	for i := 1; i <= limit; i++ {
 		sender := UserState{UserId: i} // 每笔都是一个全新的小号
-		require.NoError(t, evaluateRisk(sender, receiver, cfg, 1, now), "第 %d 笔应放行", i)
+		require.NoError(t, evaluateRisk(sender, receiver, cfg, cfg, 1, now), "第 %d 笔应放行", i)
 		applyReservation(&sender, &receiver, 1, 1, now, bucket)
 	}
 	assert.Equal(t, limit, receiver.DayInCount)
 
-	err := evaluateRisk(UserState{UserId: limit + 1}, receiver, cfg, 1, now)
+	err := evaluateRisk(UserState{UserId: limit + 1}, receiver, cfg, cfg, 1, now)
 	require.Error(t, err)
 	assert.Same(t, errReceiverDailyInExceeded, err)
 }
@@ -429,7 +429,7 @@ func TestEvaluateRiskTreatsZeroAsUnlimited(t *testing.T) {
 	cfg := config.Transfer{}
 	sender := UserState{DayOutQuota: math.MaxInt32, DayOutCount: 9999, LastOutAt: 1_700_000_000}
 	receiver := UserState{DayInCount: 9999}
-	assert.NoError(t, evaluateRisk(sender, receiver, cfg, math.MaxInt32, 1_700_000_000))
+	assert.NoError(t, evaluateRisk(sender, receiver, cfg, cfg, math.MaxInt32, 1_700_000_000))
 }
 
 // TestReservationRoundTrip 预占与退还必须完全对称,否则失败的划转会永久吃掉用户额度。
@@ -601,4 +601,32 @@ func TestTruncateKeepsUTF8Boundary(t *testing.T) {
 	for _, r := range out {
 		assert.NotEqual(t, '�', r)
 	}
+}
+
+// TestReceiverScopedGateReadsTheReceiverTier —— 收款方口径的闸门必须读
+// **收款方那一份**门槛,发起方那一份对它没有任何发言权。
+//
+// 这是纯函数层的定位断言,与 grouplimit_create_test.go 里那两条 create() 级用例
+// 配套:那两条证明「create 把两份门槛都传对了」,这一条证明「evaluateRisk 读对了
+// 其中哪一份」。把 receiverCfg.ReceiverDailyMaxInCount 写回 cfg.
+// ReceiverDailyMaxInCount,这条立刻变红。
+func TestReceiverScopedGateReadsTheReceiverTier(t *testing.T) {
+	const now int64 = 1_700_000_000
+	// 发起方那一档很宽(20 笔),收款方那一档很紧(1 笔)。
+	senderCfg := baseConfig()
+	senderCfg.ReceiverDailyMaxInCount = 20
+	receiverCfg := baseConfig()
+	receiverCfg.ReceiverDailyMaxInCount = 1
+
+	sender := UserState{UserId: 1}
+	receiver := UserState{UserId: 2, DayInCount: 1}
+
+	err := evaluateRisk(sender, receiver, senderCfg, receiverCfg, 1, now)
+	require.Error(t, err)
+	assert.Same(t, errReceiverDailyInExceeded, err,
+		"按发起方那一档(20)判会放行 —— 闸门的上限就成了被它约束的那一方自己挑的")
+
+	// 反方向:发起方那一档紧、收款方那一档宽时,绝不能把发起方的限制强加给收款人。
+	assert.NoError(t, evaluateRisk(sender, receiver, receiverCfg, senderCfg, 1, now),
+		"发起方那一档的收款方闸门被错误地强加到了收款人身上")
 }

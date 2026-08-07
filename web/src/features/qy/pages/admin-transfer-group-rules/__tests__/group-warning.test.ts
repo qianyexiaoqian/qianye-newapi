@@ -114,6 +114,19 @@ describe('后端下发的字段必须真的有消费方', () => {
       encoding: 'utf8',
     })
 
+  test('页面下拉取的是用户分组，不是模型分组', () => {
+    const page = read('index.tsx')
+    assert.ok(
+      page.includes('user_group_options'),
+      'from_group / to_groups 比的是 users.group —— 下拉必须取 user_group_options。' +
+        '取 group_options(模型分组)会让运营配出一条永不命中的规则'
+    )
+    assert.ok(
+      !page.includes('data?.group_options'),
+      '模型分组清单不该再出现在这一页;它只留给违规规则的分组作用域'
+    )
+  })
+
   test('页面读了 unknown_groups 并把它交给矩阵与列表', () => {
     const page = read('index.tsx')
     assert.ok(
@@ -138,8 +151,15 @@ describe('后端下发的字段必须真的有消费方', () => {
     )
     assert.ok(sheet.includes('ComboboxInput'), '分组输入必须是可搜索的下拉')
     assert.ok(
-      sheet.includes('groupOptions') && sheet.includes('channelsProbeOk'),
+      sheet.includes('groupOptions') && sheet.includes('groupsProbeOk'),
       '下拉必须吃到后端下发的元数据，否则元数据下发了也没人看'
+    )
+    // 命名空间:这一页填的是**用户分组**(users.group)，与 from_group /
+    // to_groups 的判定端同一套。填成模型分组的话，运营从下拉里挑出来的规则
+    // 永不命中 —— 保存成功、界面正常、线上零命中，而且没有任何信号。
+    assert.ok(
+      sheet.includes('qyUserGroupOptionLabel'),
+      '下拉必须按用户分组渲染;模型分组的倍率/渠道元数据不属于这一页'
     )
     assert.ok(
       sheet.includes('allowCustomValue'),

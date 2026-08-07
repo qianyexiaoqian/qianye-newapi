@@ -3,7 +3,6 @@ package service
 import (
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
@@ -115,7 +114,11 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	// 分组倍率解析走全仓唯一的 ratio_setting.ResolveGroupRatio(见
 	// setting/ratio_setting/qy_ratio_export.go),不再在这里重复第二份 if。
 	// 顺序与改动前一致:先应用 auto 改写,再按 (用户分组, 最终模型分组) 解析。
-	res := ratio_setting.ResolveGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
+	//
+	// **会话内只解析一次**:本函数在一次实时会话里会被调用很多次,每一次都真的
+	// 扣一笔钱。现场重算意味着运营中途改一次倍率,同一次会话的前后半段按两个价
+	// 收费(见 relay/common 的 ResolveWssGroupRatio)。
+	res := relayInfo.ResolveWssGroupRatio()
 	actualGroupRatio := res.Ratio
 	logger.LogDebug(ctx, "final group ratio: %f", actualGroupRatio)
 	relayInfo.NoteGroupRatioFallback(res)
@@ -267,16 +270,27 @@ func CalcOpenRouterCacheCreateTokens(usage dto.Usage, priceData types.PriceData)
 	promptCacheReadPrice := quotaPrice * priceData.CacheRatio
 	completionPrice := quotaPrice * priceData.CompletionRatio
 
+	// 除数为 0 时表达式产出 ±Inf / NaN,裸 int() 在 amd64 上会得到 INT64_MIN。
+	// ModelRatio 配成 0(免费模型)且 CacheCreationRatio != 1 就是这个组合。
+	denominator := promptCacheCreatePrice - quotaPrice
+	if denominator == 0 {
+		return 0
+	}
+
 	cost, _ := usage.Cost.(float64)
 	totalPromptTokens := float64(usage.PromptTokens)
 	completionTokens := float64(usage.CompletionTokens)
 	promptCacheReadTokens := float64(usage.PromptTokensDetails.CachedTokens)
 
-	return int(math.Round((cost -
+	// usage.Cost 是**上游可控**的:一个畸形 cost 足以把这个商推到 ±Inf。
+	// 按 AGENTS.md 的计费安全不变量,无界输入一律走 common/quota_math.go 的
+	// 饱和转换,不得用裸 int(math.Round(...)) —— 调用方现在恰好夹住了负的巨值,
+	// 但那道夹子在调用方而不在转换处,新增第二个调用点就会漏。
+	return common.QuotaRound((cost -
 		totalPromptTokens*quotaPrice +
 		promptCacheReadTokens*(quotaPrice-promptCacheReadPrice) -
 		completionTokens*completionPrice) /
-		(promptCacheCreatePrice - quotaPrice)))
+		denominator)
 }
 
 func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent string) {

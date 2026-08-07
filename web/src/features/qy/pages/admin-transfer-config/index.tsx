@@ -50,6 +50,7 @@ import {
   type QyUsdScale,
 } from '../../lib/quota-usd'
 import { qyAdminTransferConfigQuery, qyUpdateTransferConfig } from './api'
+import { QyGroupLimitsCard } from './components/group-limits-card'
 import { qyBpsToPercentText, qyTransferFieldMeta } from './lib/fields'
 import type {
   QyTransferAdminConfig,
@@ -98,9 +99,14 @@ export function QyAdminTransferConfig() {
       <QySectionPageLayout.Content>
         <QyPageBoundary query={query}>
           {config != null && (
-            <div className='grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] lg:items-start'>
-              <EditableSettingsCard config={config} />
-              <YamlReadonlyCard config={config} />
+            <div className='space-y-4'>
+              <div className='grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] lg:items-start'>
+                <EditableSettingsCard config={config} />
+                <YamlReadonlyCard config={config} />
+              </div>
+              {/* 分档压在全站门槛之上,所以排在它下面:运营必须先看到兜底是
+                  什么,再决定哪一档要单独配。 */}
+              <QyGroupLimitsCard />
             </div>
           )}
         </QyPageBoundary>

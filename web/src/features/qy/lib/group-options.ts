@@ -57,7 +57,16 @@ import { qyKeys } from './query-keys'
 /** 下拉的一项。四个字段与后端 `groupCandidate` 逐字一致。 */
 export type QyGroupOption = {
   name: string
-  ratio: number
+  /**
+   * 该名字在 `GroupRatio` 里的兜底倍率，**可以是 `null`**。
+   *
+   * `null` = 后端确实回答了「这个名字没有配过兜底倍率」：它要么只在「用户可选
+   * 分组」白名单里、要么在倍率表里的写法与这里的归一化名字大小写不同。倍率侧
+   * `GetGroupRatio` 是**精确 map 查找**，那两种情况下请求都会 fail-open 按 1.0
+   * 计费 —— 所以这里绝不能填一个 1：它与 fail-open 的 1.0 数值巧合，看起来
+   * 就像「运营配过原价」。
+   */
+  ratio: number | null
   /**
    * 该分组下是否还有启用的渠道（abilities）。
    *
@@ -163,10 +172,14 @@ export function qyAppendGroupName(
  * 调用方还必须自己判断「清单到底拉到了没有」：`options` 为空时（拉取失败、
  * 或者站点真的一个分组都没定义）这个函数会把每一个名字都算成未定义，
  * 那是一片假警报，必须在调用侧收起来而不是在这里猜。
+ *
+ * 入参只要求 `{ name }`：模型分组（{@link QyGroupOption}）与用户分组
+ * （{@link QyUserGroupOption}）两份清单在这里的用法完全一致，
+ * 而它们的元数据不同，绑死其中一种只会逼出第二份必然漂移的拷贝。
  */
 export function qyUnknownGroupNames(
   names: string[],
-  options: QyGroupOption[]
+  options: { name: string }[]
 ): string[] {
   const defined = new Set(
     options.map((option) => qyNormalizeGroupName(option.name))
@@ -191,10 +204,64 @@ export function qyGroupOptionLabel(
   probeOk: boolean,
   t: TFunction
 ): string {
-  const parts = [option.name, t('qy_trg_option_ratio', { ratio: option.ratio })]
+  const parts = [
+    option.name,
+    option.ratio == null
+      ? t('qy_trg_option_ratio_unset')
+      : t('qy_trg_option_ratio', { ratio: option.ratio }),
+  ]
   if (option.public_usable) parts.push(t('qy_trg_option_public'))
   if (probeOk && !option.has_channels) {
     parts.push(t('qy_trg_option_no_channels'))
   }
+  return parts.join(' · ')
+}
+
+/**
+ * 用户分组下拉的一项。四个字段与后端 `userGroupCandidate` 逐字一致。
+ *
+ * # 它与上面那个 {@link QyGroupOption} 不是同一件事
+ *
+ * `QyGroupOption` 是**模型分组**（`channels.group` / `abilities.group` /
+ * `relayInfo.UsingGroup`）：这次请求去哪个渠道池子、按哪个倍率计费。它现在
+ * 唯一的消费方是违规规则的「分组作用域」，那一处比的正是 `UsingGroup`。
+ *
+ * 这一个是**用户分组**（`users.group`）：这个人是谁。划转的分组限制与门槛分档
+ * 比的都是它。
+ *
+ * 两者一度共用一份清单，后果全在看得见的那一层：运营从下拉里挑一个「分组」
+ * 配划转限制，配出来的是一条永不命中的规则 —— 没有任何用户的 `users.group`
+ * 等于一个模型分组的名字。判定一个字节都没受影响，这正是它能一直藏着的原因。
+ * 详见 `qianye/modules/transfer/grouprule.go` 的 `definedUserGroups`。
+ *
+ * 元数据刻意只有登记表上那三样。倍率与渠道数是模型分组的属性，把它们摆在
+ * 用户分组的下拉里，正是这一轮在消灭的那种混淆。
+ */
+export type QyUserGroupOption = {
+  name: string
+  display_name: string
+  /**
+   * 登记表上的启停位。**只影响可见性，不遮断任何判定** —— 一个被停用的用户
+   * 分组底下仍然可能挂着用户，给它配规则/门槛是合法的，因此这里只做标注。
+   */
+  enabled: boolean
+  note: string
+}
+
+/**
+ * 用户分组下拉项的文案：名字 +（可选）显示名 +（可选）已停用标注。
+ *
+ * 显示名与名字都摆出来而不是二选一：运营在表单里填的、以及最终落库的都是
+ * `name`，只显示 display_name 会让他保存之后在列表里认不出自己刚配的那一档。
+ */
+export function qyUserGroupOptionLabel(
+  option: QyUserGroupOption,
+  t: TFunction
+): string {
+  const parts = [option.name]
+  if (option.display_name !== '' && option.display_name !== option.name) {
+    parts.push(option.display_name)
+  }
+  if (!option.enabled) parts.push(t('qy_ugopt_disabled'))
   return parts.join(' · ')
 }

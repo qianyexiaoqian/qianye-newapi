@@ -125,16 +125,36 @@ type opSettings struct {
 	// Transfer 与 YAML 同构:可编辑字段已被覆盖,其余(enabled /
 	// recipient_lookup / require_receiver_enabled / lookup_log_retain_days)
 	// 原样来自 YAML。
+	//
+	// **它是全站兜底,不是某个用户的生效门槛。** 按用户分组分档之后,资金路径
+	// 必须走 transferFor(用户分组) 拿最终那一份 —— 直接读这个字段等于绕过分档,
+	// 而绕过的表现是「管理端配了一档、用户还按全局门槛放行」,零告警。
 	Transfer config.Transfer
 
 	PayPwdMaxAttempts int
 	PayPwdLockMinutes int
+
+	// Tiers 是按用户分组的门槛覆盖(qy_transfer_group_limits),见 grouplimit.go。
+	// **map 与快照同生命周期,任何持有者都禁止修改它**:resolveSettings 把
+	// opSettings 按值复制交出去,而 map 是引用,改一处即改所有在途请求。
+	Tiers tierSet
 }
 
 // settingsCacheSeconds 是运营配置的刷新周期。
 //
 // 刻意不起后台协程去刷:配置只在非热路径(HTTP 处理器)被读到,惰性刷新足够。
 const settingsCacheSeconds = 60
+
+// settingsStaleGraceSeconds 是扩展库读不到时**最多沿用多久的旧快照**。
+//
+// 沿用旧快照本身是对的:上一份快照是运营批准过的值,比回落 YAML(更宽松)安全。
+// 但它必须有上界 —— 没有上界时,这条降级路径的时长等于故障时长,运营刚收紧的
+// 门槛会在整个故障期间失效,而且日志被节流后看不出它已经持续了多久。
+//
+// 取 10 分钟而不是等于 TTL:短暂抖动(慢查询、一次连接打满)不该让划转停摆,
+// 而一次持续十分钟的扩展库故障已经是必须有人介入的事故,此时停掉划转
+// (503,可重试)远比按一份没人再确认过的门槛继续放行资金操作安全。
+const settingsStaleGraceSeconds = 600
 
 var (
 	settingsMu     sync.Mutex
@@ -194,8 +214,20 @@ func effectiveCtx(ctx context.Context) (opSettings, error) {
 //
 // 与本模块 loadGroupRules 的口径一致:回落到 YAML 默认值往往比运营配置**更宽松**
 // (YAML 的默认日额度是 2 亿),那等于扩展库抖一下就把风控门槛整体放开。
-// 有上一份快照时沿用快照(最多陈旧 60 秒,那仍然是运营批准过的值);
-// 一份都没有时宁可拒绝这次划转。
+// 有上一份快照时**在 settingsStaleGraceSeconds 之内**沿用它(那仍然是运营批准过
+// 的值);一份都没有、或者陈旧超过这个上界时,宁可拒绝这次划转。
+//
+// # 陈旧沿用为什么必须有时间上界
+//
+// 没有上界时,这条降级路径的时长等于故障时长而不是缓存 TTL:失败分支既不清
+// settingsCache 也不推进 settingsLoaded,于是每一次请求都重试→失败→沿用旧快照,
+// 库读不回来就一直沿用下去。运营刚把某一档的单笔上限从 5000 万收紧到 100 万、
+// 随后扩展库不可用,那一档就会按 5000 万一直放行,而且 warnThrottled 还被节流,
+// 日志上看不出它持续了多久。
+//
+// 更糟的是方向不确定:故障期间若有人调过 invalidateSettings()(缓存已清),
+// 同一个故障立刻变成 fail-closed。加上上界之后,超过宽限期一律 fail-closed,
+// 方向不再取决于「保存动作和故障谁先发生」。
 func resolveSettings(ctx context.Context) (opSettings, bool, error) {
 	settingsMu.Lock()
 	if settingsCache != nil && common.GetTimestamp()-settingsLoaded < settingsCacheSeconds {
@@ -206,16 +238,26 @@ func resolveSettings(ctx context.Context) (opSettings, bool, error) {
 	epoch := settingsEpoch
 	settingsMu.Unlock()
 
-	overrides, err := loadOverrides(ctx)
+	overrides, tiers, err := loadSettingRows(ctx)
 	if err != nil {
 		settingsMu.Lock()
 		stale := settingsCache
 		var snap opSettings
+		staleAge := int64(0)
 		if stale != nil {
 			snap = *stale
+			staleAge = common.GetTimestamp() - settingsLoaded
 		}
 		settingsMu.Unlock()
 		if stale == nil {
+			return opSettings{}, false, err
+		}
+		if staleAge > settingsStaleGraceSeconds {
+			// 超过宽限期就失败关闭:再沿用下去,这条降级路径的时长等于故障时长,
+			// 而运营刚刚收紧的门槛会在整个故障期间失效。
+			warnThrottled(fmt.Sprintf(
+				"读取划转门槛覆盖持续失败已 %d 秒(上限 %d 秒),不再沿用旧快照,划转暂停: %s",
+				staleAge, settingsStaleGraceSeconds, err.Error()))
 			return opSettings{}, false, err
 		}
 		warnThrottled("读取划转门槛覆盖失败,本次沿用上一份快照(可能已陈旧): " + err.Error())
@@ -227,6 +269,7 @@ func resolveSettings(ctx context.Context) (opSettings, bool, error) {
 		Transfer:          config.Get().Transfer,
 		PayPwdMaxAttempts: defaultPayPwdMaxAttempts,
 		PayPwdLockMinutes: defaultPayPwdLockMinutes,
+		Tiers:             buildTierSet(tiers),
 	}
 	applyOverrides(&merged, overrides)
 	// 逐键的区间校验挡不住跨字段矛盾(min_quota > max_per_tx_quota 时
@@ -258,6 +301,26 @@ func invalidateSettings() {
 	settingsLoaded = 0
 	settingsEpoch++
 	settingsMu.Unlock()
+}
+
+// loadSettingRows 读出这份快照需要的两张表:全站覆盖与按用户分组的分档。
+//
+// 两者必须在**同一次刷新**里取,并一起写进同一份快照:分开缓存会出现
+// 「全局门槛已经是新的、分档还是旧的」的中间态,而分档的校验(transferFor 里的
+// ValidateTransfer)恰恰是拿这两者合并起来判的 —— 半新半旧的组合可能凭空
+// 自相矛盾,把一档人的划转停掉,而库里那两行其实是自洽的。
+//
+// 任一张读失败都整体失败,由调用方按「沿用上一份快照 / 一份都没有就拒绝」处理。
+func loadSettingRows(ctx context.Context) (map[string]string, []GroupLimit, error) {
+	overrides, err := loadOverrides(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	tiers, err := loadTiers(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return overrides, tiers, nil
 }
 
 // loadOverrides 读出本模块在 qy_settings 里的全部运营覆盖。
@@ -328,25 +391,10 @@ func parseSetting(key, raw string) (int64, error) {
 // 即便有人往 editableKeys 里加了一个 config.Transfer 不该被在线改的字段名,
 // 也必须再改这里才会真的生效。
 func assignSetting(s *opSettings, key string, v int64) {
+	if assignTransferSetting(&s.Transfer, key, v) {
+		return
+	}
 	switch key {
-	case keyMinQuota:
-		s.Transfer.MinQuota = v
-	case keyMaxPerTxQuota:
-		s.Transfer.MaxPerTxQuota = v
-	case keyDailyMaxQuota:
-		s.Transfer.DailyMaxQuota = v
-	case keyFeeMinQuota:
-		s.Transfer.FeeMinQuota = v
-	case keyDailyMaxCount:
-		s.Transfer.DailyMaxCount = int(v)
-	case keyCooldownSecs:
-		s.Transfer.CooldownSecs = int(v)
-	case keyReceiverDailyMaxInCount:
-		s.Transfer.ReceiverDailyMaxInCount = int(v)
-	case keyNewAccountFreezeHours:
-		s.Transfer.NewAccountFreezeHours = int(v)
-	case keyFeeBps:
-		s.Transfer.FeeBps = int(v)
 	case keyPayPwdMaxAttempts:
 		s.PayPwdMaxAttempts = int(v)
 	case keyPayPwdLockMinutes:
@@ -354,34 +402,83 @@ func assignSetting(s *opSettings, key string, v int64) {
 	}
 }
 
+// assignTransferSetting 把一个已校验的值写进一份 config.Transfer,
+// 返回 false 表示这个键不属于 config.Transfer(支付密码那两项)。
+//
+// 单独抽出来是因为它有**两个覆盖层**共用:qy_settings 的全站覆盖
+// (assignSetting)与 qy_transfer_group_limits 的按分组分档(transferFor)。
+// 两层各写一份 switch 就会漂移,而漂移的形状是「全站能改的项、分档改不动」
+// 或者反过来 —— 后者更糟:分档写进去了、判定端那个 case 不存在,
+// 于是那一档静默地按全局门槛放行。
+//
+// int64 → int 的收敛只在这一处发生;取值早已被 settingBounds 夹在
+// int32 容量之内(见 settingBounds 的说明),因此这次转换不可能溢出。
+func assignTransferSetting(t *config.Transfer, key string, v int64) bool {
+	switch key {
+	case keyMinQuota:
+		t.MinQuota = v
+	case keyMaxPerTxQuota:
+		t.MaxPerTxQuota = v
+	case keyDailyMaxQuota:
+		t.DailyMaxQuota = v
+	case keyFeeMinQuota:
+		t.FeeMinQuota = v
+	case keyDailyMaxCount:
+		t.DailyMaxCount = int(v)
+	case keyCooldownSecs:
+		t.CooldownSecs = int(v)
+	case keyReceiverDailyMaxInCount:
+		t.ReceiverDailyMaxInCount = int(v)
+	case keyNewAccountFreezeHours:
+		t.NewAccountFreezeHours = int(v)
+	case keyFeeBps:
+		t.FeeBps = int(v)
+	default:
+		return false
+	}
+	return true
+}
+
 // settingValue 取出生效配置里某个键的当前值,供接口回显与审计快照使用。
 // 与 assignSetting 严格成对:一个键在这里取不到值,就说明它压根没有被应用。
 func settingValue(s opSettings, key string) int64 {
+	if v, ok := transferSettingValue(s.Transfer, key); ok {
+		return v
+	}
 	switch key {
-	case keyMinQuota:
-		return s.Transfer.MinQuota
-	case keyMaxPerTxQuota:
-		return s.Transfer.MaxPerTxQuota
-	case keyDailyMaxQuota:
-		return s.Transfer.DailyMaxQuota
-	case keyFeeMinQuota:
-		return s.Transfer.FeeMinQuota
-	case keyDailyMaxCount:
-		return int64(s.Transfer.DailyMaxCount)
-	case keyCooldownSecs:
-		return int64(s.Transfer.CooldownSecs)
-	case keyReceiverDailyMaxInCount:
-		return int64(s.Transfer.ReceiverDailyMaxInCount)
-	case keyNewAccountFreezeHours:
-		return int64(s.Transfer.NewAccountFreezeHours)
-	case keyFeeBps:
-		return int64(s.Transfer.FeeBps)
 	case keyPayPwdMaxAttempts:
 		return int64(s.PayPwdMaxAttempts)
 	case keyPayPwdLockMinutes:
 		return int64(s.PayPwdLockMinutes)
 	}
 	return 0
+}
+
+// transferSettingValue 是 assignTransferSetting 的读取侧,严格成对。
+// 分档的管理端要按 key 回显「这一档最终生效的是多少」,那份合并结果同样是一个
+// config.Transfer,不能再走 opSettings。
+func transferSettingValue(t config.Transfer, key string) (int64, bool) {
+	switch key {
+	case keyMinQuota:
+		return t.MinQuota, true
+	case keyMaxPerTxQuota:
+		return t.MaxPerTxQuota, true
+	case keyDailyMaxQuota:
+		return t.DailyMaxQuota, true
+	case keyFeeMinQuota:
+		return t.FeeMinQuota, true
+	case keyDailyMaxCount:
+		return int64(t.DailyMaxCount), true
+	case keyCooldownSecs:
+		return int64(t.CooldownSecs), true
+	case keyReceiverDailyMaxInCount:
+		return int64(t.ReceiverDailyMaxInCount), true
+	case keyNewAccountFreezeHours:
+		return int64(t.NewAccountFreezeHours), true
+	case keyFeeBps:
+		return int64(t.FeeBps), true
+	}
+	return 0, false
 }
 
 // settingsSnapshot 把生效配置摊成对外形状。接口回显与审计快照共用它,

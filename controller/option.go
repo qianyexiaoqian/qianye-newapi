@@ -245,6 +245,19 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "GroupGroupRatio":
+		// 交叉倍率 GroupGroupRatio[用户分组][模型分组] 是唯一「按用户分组定价」
+		// 的载体,此前它是两张倍率表里**没有任何数值校验**的那一张:
+		// 一个负倍率从这条原始 option 路写进去,ResolveGroupRatio 原样返回它,
+		// 预扣与结算双双为负 —— 等于给用户充值。model.UpdateOption 里还有一道
+		// 同源校验(落库之前),这里保留是为了给管理员一句能看懂的中文。
+		if err = ratio_setting.CheckGroupGroupRatio(option.Value.(string)); err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "分组间倍率设置非法: " + err.Error(),
+			})
+			return
+		}
 	case "gemini.safety_settings":
 		err = model_setting.ValidateGeminiSafetySettings(option.Value.(string))
 		if err != nil {

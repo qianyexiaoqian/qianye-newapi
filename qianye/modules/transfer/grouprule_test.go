@@ -12,6 +12,7 @@ import (
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/groupname"
+	"github.com/QuantumNous/new-api/qianye/modules/groupns"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/stretchr/testify/assert"
@@ -21,6 +22,23 @@ import (
 // rule 是构造一条启用规则的简写,单个用例只写自己关心的字段。
 func rule(from, policy, to string) GroupRule {
 	return GroupRule{FromGroup: from, Policy: policy, ToGroups: to, Enabled: true}
+}
+
+// useUserGroupRegistry 把**用户分组登记表**换成用例自己的清单。
+//
+// 划转规则与门槛分档的键都是 users.group,取值域因此来自 qy_user_groups
+// (见 definedUserGroups 的缺陷回归),而不是分组倍率表 —— 后者是模型分组。
+// 直接发布一份 groupns 快照,免得为了几个名字去装一个扩展库。
+func useUserGroupRegistry(t *testing.T, names ...string) {
+	t.Helper()
+	rows := make([]groupns.UserGroup, 0, len(names))
+	for _, name := range names {
+		rows = append(rows, groupns.UserGroup{
+			Name: name, Enabled: true, DefaultMode: groupns.DefaultModeInherit,
+		})
+	}
+	groupns.SetSnapshotForTest(rows, nil)
+	t.Cleanup(groupns.ResetForTest)
 }
 
 // TestGroupRuleSetPicksExactRuleThenFallback 锁定规则选取顺序。
@@ -635,11 +653,11 @@ func useGroupRatio(t *testing.T, jsonStr string) {
 // 矩阵是这一页存在的理由("矩阵在上"是页面注释里写死的),取值域漏掉规则自己
 // 引用的分组,等于让管理员照着一张看不见那条规则的图做决定。
 //
-// 把 knownGroups 改回只读 definedGroups(三来源),下面每一组断言都会翻面。
+// 把 knownGroups 改回只读 definedUserGroups(不并规则表),下面每一组断言都会翻面。
 func TestGroupMatrixCoversGroupsReferencedByRules(t *testing.T) {
-	// 站点定义过的分组里刻意**不含** qingxin 与 agent:它们只存在于规则表里,
+	// 站点登记过的用户分组里刻意**不含** qingxin 与 agent:它们只存在于规则表里,
 	// 正是勘察实测的那条 `清芯 → allow_list[agent]`。
-	useGroupRatio(t, `{"default":1,"vip":1}`)
+	useUserGroupRegistry(t, "default", "vip")
 
 	rows := []GroupRule{
 		rule("qingxin", GroupPolicyAllowList, "agent"),
@@ -695,7 +713,7 @@ func TestGroupMatrixCoversGroupsReferencedByRules(t *testing.T) {
 //     限制转出的那批账号。把 unknownRuleGroups 的结论接进 validateGroupRule
 //     当拒绝条件,运营就会在最需要配置的时刻配不进去。
 func TestUnknownRuleGroupsIsWarningNotGate(t *testing.T) {
-	useGroupRatio(t, `{"default":1,"vip":1}`)
+	useUserGroupRegistry(t, "default", "vip")
 
 	rows := []GroupRule{
 		rule("vip", GroupPolicyAllowList, "default,agent"),
@@ -743,7 +761,8 @@ func TestListGroupCandidatesCarriesMetadata(t *testing.T) {
 		byName[o.Name] = o
 	}
 	require.Contains(t, byName, "vip")
-	assert.InDelta(t, 0.8, byName["vip"].Ratio, 1e-9)
+	require.NotNil(t, byName["vip"].Ratio, "名字逐字相同的分组必须带出它真实的兜底倍率")
+	assert.InDelta(t, 0.8, *byName["vip"].Ratio, 1e-9)
 	assert.True(t, byName["vip"].HasChannels)
 	assert.False(t, byName["default"].HasChannels, "禁用的 ability 不算可用渠道")
 	assert.False(t, byName["ghost"].HasChannels)
@@ -759,6 +778,15 @@ func TestListGroupCandidatesCarriesMetadata(t *testing.T) {
 	}
 	assert.Contains(t, names, "vip")
 	assert.NotContains(t, names, "VIP")
+	// 折叠过大小写的名字**不得**带出倍率:倍率侧 GetGroupRatio 是精确 map 查找,
+	// 请求走 "vip" 时它查不到 GroupRatio["VIP"],会 fail-open 按 1.0 扣费。
+	// 界面显示 0.8、实扣 1.0 正是这份清单要消灭的骗人数字。
+	for _, o := range folded {
+		if o.Name == "vip" {
+			assert.Nil(t, o.Ratio,
+				"大小写被折叠过的名字上挂了一个查不到的倍率 —— 界面 0.8、实扣 1.0")
+		}
+	}
 }
 
 // TestGroupCandidateShapeMatchesUserGroupModule 挡住"同一概念的第 N 份拷贝各自漂移"。
@@ -791,4 +819,69 @@ func TestGroupBlockedReasonsAreDistinct(t *testing.T) {
 	// code 一旦发布就不能改:前端按 code 映射 i18n。
 	assert.Equal(t, "qy_transfer_group_denied", errGroupTargetDenied.Code)
 	assert.Equal(t, "qy_transfer_group_blocked", errGroupSendBlocked.Code)
+}
+
+// TestTransferGroupNamespaceIsUserGroupsNotModelGroups 是本轮那条命名空间缺陷的回归。
+//
+// # 缺陷原样
+//
+// 判定端从第一天起就是用户分组:enforceGroupPolicy 收的是 model.User.Group
+// (users.group),残留处置也注册在 groupns.RegisterResidue(用户分组那一侧)。
+// 但**取值域**当时来自 ratio_setting.GetGroupRatioCopy() 与
+// setting.GetUserUsableGroupsCopy() —— 用户分组与模型分组分家之后,那两份
+// 都是模型分组(渠道池子的兜底倍率键 / 令牌能挑哪个池子的白名单)。
+//
+// 于是:运营从下拉里挑一个"分组"配限制,配出来的是一条永不命中的规则
+// (没有任何用户的 users.group 等于那个名字);矩阵的行与列也全是模型分组,
+// 与真正的判定对不上号;而真正的用户分组反而会被软告警标成"站点没定义过"。
+//
+// 判定一个字节都没受影响 —— 这正是它能一直藏着的原因。
+//
+// 把 definedUserGroups 换回读倍率表,下面每一组断言都会翻面。
+func TestTransferGroupNamespaceIsUserGroupsNotModelGroups(t *testing.T) {
+	// 模型分组那一侧有 pool_a,用户分组那一侧有 vip,两边刻意不重名。
+	useGroupRatio(t, `{"default":1,"pool_a":0.5}`)
+	useUserGroupRegistry(t, "default", "vip")
+
+	defined, ok := definedUserGroups()
+	require.True(t, ok, "登记表已发布快照,探测必须成功")
+	assert.True(t, defined["vip"], "用户分组必须进入取值域")
+	assert.True(t, defined[defaultGroupName], "default 恒在:它是 users.group 的列默认值")
+	assert.False(t, defined["pool_a"],
+		"模型分组绝不能被当成用户分组 —— 那正是让运营配出一条永不命中的规则的那一步")
+
+	// 下拉候选同上:两页(分组限制、门槛分档)填的都是 users.group。
+	names := map[string]bool{}
+	options, probeOK := listUserGroupCandidates()
+	require.True(t, probeOK)
+	for _, o := range options {
+		names[o.Name] = true
+	}
+	assert.True(t, names["vip"])
+	assert.True(t, names[defaultGroupName])
+	assert.False(t, names["pool_a"])
+
+	// 软告警的方向:引用了用户分组不告警,引用了模型分组的名字要告警。
+	assert.Empty(t, unknownRuleGroups([]GroupRule{rule("vip", GroupPolicyAllowList, "default")}))
+	assert.Equal(t, []string{"pool_a"},
+		unknownRuleGroups([]GroupRule{rule("vip", GroupPolicyAllowList, "pool_a")}),
+		"模型分组的名字出现在划转规则里,恰恰是最该被标黄的情况")
+}
+
+// TestUnknownGroupWarningIsSuppressedWhenRegistryIsUnreadable 锁住假警报那一侧。
+//
+// 登记表读不到时每一个名字都会被算成"未登记"。整页标黄比不标黄更糟:
+// 运营会以为自己配的所有规则都失效了,而实际它们全都在生效。
+func TestUnknownGroupWarningIsSuppressedWhenRegistryIsUnreadable(t *testing.T) {
+	// 不发布快照、也不接扩展库 ⇒ 探测失败。
+	groupns.ResetForTest()
+
+	defined, ok := definedUserGroups()
+	assert.False(t, ok, "读不到登记表时必须如实说'不确定'")
+	assert.True(t, defined[defaultGroupName], "即便如此 default 也必须在")
+
+	rows := []GroupRule{rule("vip", GroupPolicyAllowList, "agent")}
+	assert.Empty(t, unknownRuleGroups(rows),
+		"探测失败时必须整块收起软告警,而不是把每个名字都标成未登记")
+	assert.Empty(t, unknownTierGroups([]GroupLimit{{UserGroup: "vip"}}))
 }

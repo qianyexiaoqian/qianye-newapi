@@ -44,11 +44,35 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 	if err != nil {
 		return nil, err
 	}
-	cfg := settings.Transfer
 
 	// 刻意不用 c.Request.Context():客户端断开连接不该中断一笔已经在动钱的操作。
 	ctx, cancel := guard.ColdContext(context.Background())
 	defer cancel()
+
+	// ── 门槛分档:这一笔按发起方**此刻的用户分组**那一档算 ──
+	//
+	// 这次读必须排在 validateCreate 之前:单笔上下限本身就是可分档项,
+	// 拿全站兜底去做受理校验,等于让分档在最主要的那道闸门上完全不生效。
+	//
+	// loadParties 随后会再读一次同一行用户。刻意不把这次的结果传下去:
+	// "受理阶段以哪一行为准"是 loadParties 自己的不变量(见 enforceGroupPolicy
+	// 的参数说明 —— 取值这一步留在函数外面,迟早有一处传进旧分组),而这里
+	// 只需要一个分组名。两次读之间管理员改了分组的话,门槛按前一次、分组闸门
+	// 按后一次;真正作数的分组判定在主库行锁内还会再做一次(applyQuotaTransfer)。
+	//
+	// 门槛快照本身仍然**只取这一次**,受理校验、锁内复检、扩展库锁内风控三处
+	// 共用它 —— 分三次读是资损,理由见上面那段。
+	senderNow, err := model.GetUserById(fromUserId, false)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errSenderDisabled
+		}
+		return nil, err
+	}
+	cfg, err := settings.transferFor(senderNow.Group)
+	if err != nil {
+		return nil, err
+	}
 
 	acc, err := validateCreate(fromUserId, req, cfg)
 	if err != nil {
@@ -68,6 +92,20 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 	}
 
 	sender, receiver, err := loadParties(acc, cfg, groupRules)
+	if err != nil {
+		return nil, err
+	}
+
+	// ── 收款方口径的闸门按**收款方**那一档解析 ──
+	//
+	// receiver_daily_max_in_count 约束的是「这个账号每天能收几笔」。按发起方那一档
+	// 解析等于把闸门的上限交给被它约束的那一方去挑:200 个 default 小号往一个
+	// 配了「每天 1 笔」的 vip 汇集账号转钱,每一笔都按 default 那一档(全站 20)
+	// 放行,而这正是这道闸门存在的唯一理由(见 evaluateRisk)。
+	//
+	// 这一档配坏时 fail-closed(503):拿一份不自洽的门槛去判一笔资金操作,
+	// 比让这一笔失败更糟。
+	receiverCfg, err := settings.transferFor(receiver.Group)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +135,7 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 	fundReq.LocalDetail = func(tx *gorm.DB, o *qymodel.FundOrder) error {
 		// 风控与落单同事务:两者之间只要有提交间隙,
 		// 并发请求就会同时读到旧计数、同时通过日限额校验。
-		if err := reserveRisk(tx, acc, cfg, now); err != nil {
+		if err := reserveRisk(tx, acc, cfg, receiverCfg, now); err != nil {
 			return err
 		}
 		detail.OrderNo = o.OrderNo

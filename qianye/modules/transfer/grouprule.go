@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/groupname"
+	"github.com/QuantumNous/new-api/qianye/modules/groupns"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
@@ -313,26 +314,65 @@ func buildGroupMatrix(rules groupRuleSet, known []string) []groupMatrixRow {
 	return rows
 }
 
-// definedGroups 返回"站点正式定义过"的分组集合(已归一)。
+// definedUserGroups 返回"站点正式登记过"的**用户分组**集合(已归一)。
 //
-// 三个来源都是分组的**定义方**:users.group 的列默认值、分组倍率表(运营声明
-// "本站有哪些分组"的唯一事实清单,与 usergroup.groupExists 同一判据)、
-// 以及"用户可选分组"白名单。
+// ══════════════ 缺陷回归:这里一度是模型分组的命名空间 ══════════════
+//
+// 本函数原名 definedGroups,来源是 ratio_setting.GetGroupRatioCopy()(分组倍率
+// 表的键)与 setting.GetUserUsableGroupsCopy()(「用户可选分组」白名单)。
+// 用户分组与模型分组分家之后(见 qianye/modules/groupns 的包注释),**那两份
+// 都是模型分组**:前者是 channels/abilities 那一侧的兜底倍率键,后者是令牌能
+// 挑哪个渠道池子的白名单。
+//
+// 而本模块的判定端从第一天起就是用户分组:enforceGroupPolicy 收的是
+// model.User.Group(users.group),qy_transfer_group_rules 的残留处置也注册在
+// groupns.RegisterResidue(用户分组那一侧)上。
+//
+// 错位的后果全在**看得见的那一层**,判定一个字节都没受影响:
+//
+//	下拉候选   列出来的是模型分组。运营从下拉里挑一个"分组"配上限制,
+//	           配出来的是一条永不命中的规则 —— 没有任何用户的 users.group
+//	           等于那个名字。
+//	矩阵取值域 行与列都是模型分组,于是"谁能转给谁"这张图与真正的判定
+//	           对不上号,而矩阵是那一页存在的全部理由。
+//	软告警     真正的用户分组反而会被标成"站点没定义过"。
+//
+// 因此取值域必须换成用户分组登记表(qy_user_groups)。default 恒在:
+// 它是主库 users.group 的列默认值。
 //
 // 规则表刻意**不在**这里:规则是分组的**引用方**。把引用方也算成定义方,
 // unknownRuleGroups 就永远返回空,那条软告警会变成一句永真的废话。
 //
 // 刻意不做 SELECT DISTINCT `group` FROM users:那是主库最大的表,而且该列没有
 // 索引。少列一个分组不影响任何判定,判定读的始终是 users 行上的真实值。
-func definedGroups() map[string]bool {
+//
+// 第二个返回值 false 表示登记表**读不到**(登记模块关着且扩展库也没读成)。
+// 此时清单只有 default 一项,调用方必须把"未登记分组"的软告警整块收起来 ——
+// 否则每一个名字都会被标成未登记,那是一片假警报,比没有警报更糟。
+func definedUserGroups() (map[string]bool, bool) {
 	seen := map[string]bool{defaultGroupName: true}
-	for name := range ratio_setting.GetGroupRatioCopy() {
+	if snap, ok := groupns.SnapshotView(); ok {
+		for name := range snap.UserGroups {
+			seen[normalizeGroupName(name)] = true
+		}
+		return seen, true
+	}
+	// 快照没加载(group_namespace 段没开、或本节点刚起来还没刷到)时直接读一次
+	// 登记表。这是管理端冷路径上的一张几十行的表,而"下拉里一个分组都没有"
+	// 对运营来说与页面坏掉没有区别。
+	gdb := db.Get()
+	if gdb == nil {
+		return seen, false
+	}
+	names := make([]string, 0, 16)
+	if err := gdb.Model(&groupns.UserGroup{}).Pluck("name", &names).Error; err != nil {
+		db.MarkFailure(err)
+		return seen, false
+	}
+	for _, name := range names {
 		seen[normalizeGroupName(name)] = true
 	}
-	for name := range setting.GetUserUsableGroupsCopy() {
-		seen[normalizeGroupName(name)] = true
-	}
-	return seen
+	return seen, true
 }
 
 // ruleReferencedGroups 收集规则表自己引用到的分组名(已归一)。
@@ -371,7 +411,7 @@ func ruleReferencedGroups(rows []GroupRule, into map[string]bool) {
 // 取值域变完整**不改变任何判定**:矩阵的每一格仍旧是 allowsGroup 逐格算出来的,
 // 这里只决定"算哪些格"。
 func knownGroups(rows []GroupRule) []string {
-	seen := definedGroups()
+	seen, _ := definedUserGroups()
 	ruleReferencedGroups(rows, seen)
 	out := make([]string, 0, len(seen))
 	for name := range seen {
@@ -389,13 +429,19 @@ func knownGroups(rows []GroupRule) []string {
 // 配错等于新用户一个模型都调不通;而这里配错的后果只是一条永不命中的规则。
 // 两处口径不同是刻意的,不是遗漏。
 //
+// 登记表读不到时一律返回空:那时每一个名字都会被算成"未登记",那是一片假警报,
+// 而假警报比没有警报更糟(见 definedUserGroups 的第二个返回值)。
+//
 // 返回值一律非 nil:前端拿到 null 还要各自兜一次底。
 func unknownRuleGroups(rows []GroupRule) []string {
-	defined := definedGroups()
+	out := []string{}
+	defined, ok := definedUserGroups()
+	if !ok {
+		return out
+	}
 	referenced := map[string]bool{}
 	ruleReferencedGroups(rows, referenced)
 
-	out := []string{}
 	for name := range referenced {
 		if !defined[name] {
 			out = append(out, name)
@@ -405,7 +451,75 @@ func unknownRuleGroups(rows []GroupRule) []string {
 	return out
 }
 
-// groupCandidate 是管理端分组下拉的一项。
+// userGroupCandidate 是管理端**用户分组**下拉的一项。
+//
+// 划转的两页(分组限制、门槛分档)都只该消费它 —— 两者的键都是 users.group。
+// 元数据刻意只有登记表上那三样:显示名、启停、备注。倍率与渠道数是模型分组的
+// 属性,把它们摆在用户分组的下拉里正是这一轮在消灭的那种混淆。
+type userGroupCandidate struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	// Enabled 来自登记表,只影响可见性,**不遮断任何判定** ——
+	// 一个被停用的用户分组底下仍然可能挂着用户,给它配规则/门槛是合法的。
+	Enabled bool   `json:"enabled"`
+	Note    string `json:"note"`
+}
+
+// listUserGroupCandidates 汇总用户分组下拉。
+//
+// 第二个返回值为 false 表示登记表读不到 —— 前端据此必须收起"未登记分组"的
+// 软告警并保留自由输入,理由见 definedUserGroups。
+//
+// default 恒在:它是主库 users.group 的列默认值,即使没人给它建过登记行,
+// 也一定有用户挂在上面。
+func listUserGroupCandidates() ([]userGroupCandidate, bool) {
+	byName := map[string]userGroupCandidate{}
+	ok := false
+
+	if snap, view := groupns.SnapshotView(); view {
+		for name, ug := range snap.UserGroups {
+			key := normalizeGroupName(name)
+			byName[key] = userGroupCandidate{
+				Name: key, DisplayName: ug.DisplayName, Enabled: ug.Enabled, Note: ug.Note,
+			}
+		}
+		ok = true
+	} else if gdb := db.Get(); gdb != nil {
+		rows := make([]groupns.UserGroup, 0, 16)
+		if err := gdb.Order("sort_order asc, name asc").Find(&rows).Error; err != nil {
+			db.MarkFailure(err)
+		} else {
+			for _, ug := range rows {
+				key := normalizeGroupName(ug.Name)
+				byName[key] = userGroupCandidate{
+					Name: key, DisplayName: ug.DisplayName, Enabled: ug.Enabled, Note: ug.Note,
+				}
+			}
+			ok = true
+		}
+	}
+
+	if _, has := byName[defaultGroupName]; !has {
+		byName[defaultGroupName] = userGroupCandidate{Name: defaultGroupName, Enabled: true}
+	}
+	out := make([]userGroupCandidate, 0, len(byName))
+	for _, item := range byName {
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, ok
+}
+
+// groupCandidate 是管理端**模型分组**下拉的一项。
+//
+// ⚠️ 它与本模块的判定毫无关系:划转的键是用户分组(见 definedUserGroups 的
+// 缺陷回归)。留着它、并继续从 /admin/transfer/group-rules 下发,只有一个理由 ——
+// 前端 `web/src/features/qy/lib/group-options.ts` 把这份清单抬成了共享层,
+// 而它现在唯一的消费方是**违规规则的分组作用域**,那一处比的是
+// relayInfo.UsingGroup,也就是模型分组,口径本来就是对的。
+//
+// 把它挪去一个模型分组自己的端点是正确的归宿,但那要连带改动 violation 那一页,
+// 不在这一轮的射程内。在挪走之前,任何人都不要拿它去填划转的两个下拉。
 //
 // 四个 JSON 字段与 usergroup 的 groupOption 逐字一致(name / ratio /
 // has_channels / public_usable):同一个"分组下拉"概念在两个管理页出现,字段名
@@ -413,8 +527,15 @@ func unknownRuleGroups(rows []GroupRule) []string {
 // 是因为它们的候选范围口径不同(那边排除 auto 伪分组、这边不排除),
 // TestGroupCandidateShapeMatchesUserGroupModule 负责在字段名分叉时报警。
 type groupCandidate struct {
-	Name  string  `json:"name"`
-	Ratio float64 `json:"ratio"`
+	Name string `json:"name"`
+	// Ratio 是该名字在 GroupRatio 里的值,**可以是 null**,与 usergroup 的
+	// groupOption.Ratio 同口径。
+	//
+	// 指针而不是裸 float64:此前只在"用户可选分组"白名单里、不在 GroupRatio 里的
+	// 名字会被硬塞一个 ratio=1,而 1 恰好与上游 GetGroupRatio 的 fail-open 数值
+	// 巧合 —— 界面上「配过原价」与「压根没配、扣费时按 1.0 兜底」长得一模一样。
+	// null 是「后端确实回答了:这个名字没有兜底倍率」。
+	Ratio *float64 `json:"ratio"`
 	// HasChannels 表示 abilities 里至少有一条启用的行落在该分组。
 	HasChannels bool `json:"has_channels"`
 	// PublicUsable 表示该分组在"用户可选分组"白名单里。
@@ -425,9 +546,7 @@ type groupCandidate struct {
 // 探测失败时全部 has_channels 都是 false,前端必须知道那是"不确定"而不是
 // "确实没有渠道",否则运营会被一片警告吓住。
 //
-// 只列 definedGroups 里的分组,并且带上元数据。规则引用到的未定义分组不进下拉:
-// 它们没有倍率、没有渠道信息,混进来会让"下拉里有的就是站点定义过的"这个前提
-// 失效 —— 而软告警要靠这个前提才能判断该不该标黄。
+// 只列模型分组命名空间里的名字,并且带上元数据。
 func listGroupCandidates() ([]groupCandidate, bool) {
 	withChannels, probeOK := groupsWithEnabledAbilities()
 
@@ -438,13 +557,28 @@ func listGroupCandidates() ([]groupCandidate, bool) {
 	for name := range setting.GetUserUsableGroupsCopy() {
 		usable[normalizeGroupName(name)] = true
 	}
-	ratios := map[string]float64{defaultGroupName: 1}
+	// ratios 的键是归一化后的名字,而**倍率侧 GetGroupRatio 是精确 map 查找**。
+	// 归一化把 "VIPpool" 折成 "vippool" 之后,这一项上挂的倍率是 GroupRatio["VIPpool"]
+	// 的值,而真正请求走 UsingGroup="vippool" 时那次精确查找会落空、fail-open 按 1.0
+	// 扣费 —— 界面 0.1、实扣 1.0。因此只有「归一化之后与原名逐字相同」的键才带倍率,
+	// 其余一律 null:说不出准确的价,就不要编一个。
+	ratios := map[string]*float64{defaultGroupName: nil}
 	for name, ratio := range ratio_setting.GetGroupRatioCopy() {
-		ratios[normalizeGroupName(name)] = ratio
+		normalized := normalizeGroupName(name)
+		if normalized != name {
+			if _, seen := ratios[normalized]; !seen {
+				ratios[normalized] = nil
+			}
+			continue
+		}
+		value := ratio
+		ratios[normalized] = &value
 	}
+	// 只在可选清单里、不在 GroupRatio 里的名字同样是 null:给它填 1 会与
+	// fail-open 的那个 1.0 长得一模一样,而那正是这份清单要消灭的骗人数字。
 	for name := range usable {
 		if _, ok := ratios[name]; !ok {
-			ratios[name] = 1
+			ratios[name] = nil
 		}
 	}
 

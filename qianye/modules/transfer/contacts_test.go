@@ -42,7 +42,7 @@ import (
 // contactTables 是本文件用到的扩展库表。
 // GroupRule 必须建:handleAddContact 会先 loadGroupRules(),表不存在就读失败。
 func contactTables() []any {
-	return []any{&Contact{}, &LookupLog{}, &GroupRule{}, &Order{}, &UserState{}}
+	return []any{&Contact{}, &LookupLog{}, &GroupRule{}, &GroupLimit{}, &Order{}, &UserState{}}
 }
 
 // newContactsExtDB 建扩展库替身并接到 db.Get()。

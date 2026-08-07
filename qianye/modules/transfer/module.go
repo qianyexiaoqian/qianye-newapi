@@ -19,7 +19,7 @@ type Mod struct{ module.Base }
 func (Mod) Name() string { return "transfer" }
 
 func (Mod) Tables() []any {
-	return []any{&Order{}, &UserState{}, &LookupLog{}, &GroupRule{}, &Contact{}}
+	return []any{&Order{}, &UserState{}, &LookupLog{}, &GroupRule{}, &GroupLimit{}, &Contact{}}
 }
 
 // InstallHooks 注册补偿回调。
@@ -60,6 +60,13 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 一次保存就能把全站的日额度放大一个数量级,不该允许被脚本高频改写。
 	g.GET("/transfer/config", adminGetTransferConfig)
 	g.PUT("/transfer/config", middleware.CriticalRateLimit(), adminPutTransferConfig)
+
+	// 门槛的**按用户分组分档**(qy_transfer_group_limits)。限流档次与全站门槛
+	// 一致:一次保存就能把某一档人的日额度放大一个数量级。
+	// 删除走 query 参数而不是路径参数,理由见 adminDeleteGroupLimit。
+	g.GET("/transfer/group-limits", adminListGroupLimits)
+	g.PUT("/transfer/group-limits", middleware.CriticalRateLimit(), adminPutGroupLimit)
+	g.DELETE("/transfer/group-limits", middleware.CriticalRateLimit(), adminDeleteGroupLimit)
 
 	// 分组划转限制。写接口都挂关键操作限流:一条规则能瞬间放开或掐断
 	// 整个分组的资金流向,不该允许被脚本高频改写。

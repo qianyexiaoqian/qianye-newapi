@@ -151,7 +151,71 @@ func TestAdminGetConfig_ListsRealGroupsWithChannelSignal(t *testing.T) {
 	assert.True(t, byName["vip"].HasChannels)
 	assert.False(t, byName["default"].HasChannels, "禁用的 ability 不算可用渠道")
 	assert.False(t, byName["ghost"].HasChannels)
-	assert.InDelta(t, 0.8, byName["vip"].Ratio, 1e-9)
+	require.NotNil(t, byName["vip"].Ratio)
+	assert.InDelta(t, 0.8, *byName["vip"].Ratio, 1e-9)
+}
+
+// 登记表里的用户分组必须能被选为新用户默认分组。
+//
+// 分组拆开之后 GroupRatio 的键是**模型分组**,只认那张表的话运营在「用户分组
+// 登记」里新建出来的分组一个都选不了:下拉里没有、硬填也被 400 挡掉。这条配置
+// 的全部作用就是把新用户放进运营指定的那一档,而那一档几乎必然是新建出来的。
+func TestAdminGetConfig_IncludesRegistryOnlyUserGroups(t *testing.T) {
+	newExtDB(t)
+	newMainDB(t)
+	useGroupRatio(t, `{"default":1}`)
+	useDeclaredUserGroups(t, "default", "浅夜の自己人")
+
+	options, _ := listGroupOptions()
+
+	byName := map[string]groupOption{}
+	for _, o := range options {
+		byName[o.Name] = o
+	}
+	require.Contains(t, byName, "浅夜の自己人")
+	assert.True(t, byName["浅夜の自己人"].Registered)
+	assert.Nil(t, byName["浅夜の自己人"].Ratio,
+		"倍率表里没有它,渲染成 ×0 会让人以为这一档免费")
+	assert.True(t, byName["default"].Registered)
+	require.NotNil(t, byName["default"].Ratio)
+}
+
+// 只登记、没有兜底倍率的用户分组保存后必须真的落到新注册用户身上。
+//
+// 从 HTTP 入口进而不是直接调 validateDefaultGroup:保存这一侧与注册事务里的
+// resolveNewUserGroup 各判一次「分组存在吗」,两处判据不同源的表现是保存成功、
+// 注册时静默回落 default —— 界面上没有任何东西会红。
+func TestAdminPutConfig_AcceptsRegistryOnlyGroupAndTakesEffect(t *testing.T) {
+	extDB := newExtDB(t)
+	mainDB := newMainDB(t)
+	useGroupRatio(t, `{"default":1}`)
+	useDeclaredUserGroups(t, "default", "浅夜の自己人")
+	installHook(t)
+
+	require.Equal(t, http.StatusOK, callPut(t, `{"default_group":"浅夜の自己人"}`).Code)
+
+	stored, exists := storedDefaultGroup(t, extDB)
+	require.True(t, exists)
+	assert.Equal(t, "浅夜の自己人", stored)
+
+	assert.Equal(t, "浅夜の自己人", insertUser(t, mainDB, "kate", ""))
+}
+
+// 登记表里也没有的名字仍然必须被拒绝。
+//
+// 判据从「只认倍率表」放宽成「登记表 ∪ 倍率表」之后,最容易顺手放掉的就是这道
+// 闸门本身。拼错一个名字不会有任何报错,后果是此后所有新用户匹配不到 abilities。
+func TestAdminPutConfig_StillRejectsNameInNeitherList(t *testing.T) {
+	extDB := newExtDB(t)
+	newMainDB(t)
+	useGroupRatio(t, `{"default":1}`)
+	useDeclaredUserGroups(t, "default", "浅夜の自己人")
+
+	rec := callPut(t, `{"default_group":"浅夜の自己人x"}`)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	_, exists := storedDefaultGroup(t, extDB)
+	assert.False(t, exists)
 }
 
 // 审计必写:这一项决定此后所有新用户能不能用模型。

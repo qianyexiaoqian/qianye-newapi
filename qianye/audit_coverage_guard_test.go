@@ -39,6 +39,7 @@ var auditWriteFuncs = map[string]bool{
 	"WriteTx":                true, // audit.WriteTx
 	"WriteConfigUpdate":      true, // audit.WriteConfigUpdate
 	"writeConfigUpdateAudit": true,
+	"writeGroupLimitAudit":   true, // transfer:按用户分组的门槛分档,成功与失败同一出口
 	"writePayeeAudit":        true,
 	"writeRuleFailure":       true,
 	"afterRuleChange":        true, // violation:版本号 +1 + 重载 + 审计,三件一起做
@@ -133,6 +134,13 @@ var auditRequired = []struct {
 		"费率变更成功与失败都要留痕"},
 	{"modules/transfer/api_admin_config.go", "adminPutTransferConfig", 3,
 		"门槛变更:成功、回读失败、事务回滚三条路径各一条"},
+	{"modules/transfer/api_admin_limits.go", "adminPutGroupLimit", 2,
+		"按用户分组的门槛分档与全站门槛同一档:它直接决定「这一组人一天能转走多少」," +
+			"而且改一档只影响一批人 —— 事后要回答「是谁在什么时候把 vip 的日额度放大了十倍」," +
+			"只能靠这条埋点。写失败同样留痕:库里到底变没变是不确定的"},
+	{"modules/transfer/api_admin_limits.go", "adminDeleteGroupLimit", 2,
+		"删掉一档等于把这一组人的门槛整体换回全站兜底(通常更宽松),而界面上只是少了一行。" +
+			"被删掉的那一档配了什么,只存在于这条埋点的 before 快照里;删除失败同样要留痕"},
 	{"modules/usergroup/api_admin.go", "adminPutConfig", 2,
 		"默认分组决定此后所有新用户能不能用模型;写失败同样要留痕"},
 	{"modules/subscription/delete.go", "adminDeletePlan", 2,

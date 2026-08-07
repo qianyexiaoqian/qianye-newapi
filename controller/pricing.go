@@ -46,11 +46,12 @@ func GetPricing(c *gin.Context) {
 		user, err := model.GetUserCache(userId.(int))
 		if err == nil {
 			group = user.Group
+			// 走全仓唯一的解析器(展示口径,只计数不告警),不在这里手抄
+			// 「先铺兜底、再用交叉格覆盖」那两句 —— 那是第四份复制品,
+			// 而复制品迟早会漂移成「页面上的价与实扣价分家」。
+			// 见 setting/ratio_setting/qy_ratio_export.go。
 			for g := range groupRatio {
-				ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
-				if ok {
-					groupRatio[g] = ratio
-				}
+				groupRatio[g] = ratio_setting.InspectGroupRatio(group, g).Ratio
 			}
 		}
 	}

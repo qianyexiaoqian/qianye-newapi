@@ -272,8 +272,8 @@ export function QyAdminTransferGroupRules() {
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         rule={editing}
-        groupOptions={data?.group_options ?? []}
-        channelsProbeOk={data?.channels_probe_ok ?? false}
+        groupOptions={data?.user_group_options ?? []}
+        groupsProbeOk={data?.user_groups_probe_ok ?? false}
         onSaved={() => {
           void queryClient.invalidateQueries({
             queryKey: qyKeys.adminTransferGroupRules(),

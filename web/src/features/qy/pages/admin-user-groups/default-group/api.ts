@@ -18,8 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { queryOptions } from '@tanstack/react-query'
 
-import { qyGet, qyPut } from '../../lib/api'
-import { qyKeys } from '../../lib/query-keys'
+import { qyGet, qyPut } from '../../../lib/api'
+import { qyKeys } from '../../../lib/query-keys'
 import type { QyUserGroupConfig } from './types'
 
 export function qyUserGroupConfigQuery() {

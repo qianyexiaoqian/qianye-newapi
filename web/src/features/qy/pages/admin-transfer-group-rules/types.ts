@@ -20,6 +20,9 @@ For commercial licensing, please contact support@quantumnous.com
  * 划转分组限制的 DTO。字段与 `qianye/modules/transfer/grouprule.go`、
  * `api_group_rules.go` 一一对应。
  */
+import type { QyUserGroupOption } from '../../lib/group-options'
+
+export type { QyUserGroupOption }
 
 /**
  * 规则策略。
@@ -83,7 +86,7 @@ export type QyTransferGroupMatrixRow = {
 }
 
 /**
- * 分组下拉的一项。
+ * ⚠️ **模型分组**下拉的一项，本页不再消费它，见 `QyTransferGroupRulesPage`。
  *
  * 字段与 `qianye/modules/usergroup` 的 `groupOption` 逐字一致 —— 同一个「分组
  * 下拉」概念在两个管理页出现，字段名分叉就要写两套渲染。后端
@@ -91,7 +94,8 @@ export type QyTransferGroupMatrixRow = {
  */
 export type QyTransferGroupOption = {
   name: string
-  ratio: number
+  /** 兜底倍率，可为 `null`（没配过）。理由见 `QyGroupOption.ratio`。 */
+  ratio: number | null
   /** 该分组下是否还有启用的渠道。false 意味着该分组的用户一个模型都调不通。 */
   has_channels: boolean
   /** 是否在「用户可选分组」白名单里。仅供参考。 */
@@ -108,7 +112,26 @@ export type QyTransferGroupRulesPage = {
    * 就是「谁都转不了」。
    */
   known_groups: string[]
-  /** 带元数据的下拉候选，只含站点定义过的分组。 */
+  /**
+   * **本页要用的下拉候选**：用户分组（`users.group`），与 `from_group` /
+   * `to_groups` 的判定端同一个命名空间。
+   */
+  user_group_options: QyUserGroupOption[]
+  /**
+   * 用户分组登记表是否读到了。
+   *
+   * `false` 时清单只有 `default` 一项，前端必须**收起「未登记分组」的软告警**
+   * 并保留自由输入 —— 那时每个名字都会被算成未登记，是一片假警报，
+   * 而假警报比没有警报更糟。
+   */
+  user_groups_probe_ok: boolean
+  /**
+   * ⚠️ **模型分组**命名空间，与本页的判定无关。
+   *
+   * 留着只为共享层 `features/qy/lib/group-options.ts` 的另一个消费方
+   * （违规规则的分组作用域，那里比的是 `UsingGroup`）。任何人都不要拿它去填
+   * 本页的两个下拉 —— 那正是上一版的缺陷。
+   */
   group_options: QyTransferGroupOption[]
   /**
    * abilities 探测是否成功。false 时全部 `has_channels` 都是「不确定」而非

@@ -205,12 +205,24 @@ func SyncOptions(frequency int) {
 	}
 }
 
+// validateOptionValue 是**落库之前**的最后一道校验。
+//
+// 倍率两张表必须在这里挡住,而不是只在 controller 里挡:UpdateOption 的顺序是
+// 「先 DB.Save,后 updateOptionMap」,任何绕过 controller 的写入(扩展模块的
+// 矩阵页、分组改名、批量写)一旦带着非法值进来,坏值会先被持久化,
+// 而内存里的表在装载失败时就此停在旧值 —— 库与内存分家,重启也不自愈。
 func validateOptionValue(key string, value string) error {
-	if key == operation_setting.ToolPriceOptionKey {
+	switch key {
+	case operation_setting.ToolPriceOptionKey:
 		return operation_setting.ValidateToolPricesJSON(value)
-	}
-	if key == "MaxTokenAutoGroups" {
+	case "MaxTokenAutoGroups":
 		return setting.ValidateMaxTokenAutoGroups(value)
+	case "GroupRatio":
+		return ratio_setting.CheckGroupRatio(value)
+	case "GroupGroupRatio":
+		// 交叉倍率是全站唯一「按用户分组定价」的载体。负倍率在这里放行的话,
+		// 预扣与结算都会算出负额度,等于给用户充值(见 CheckGroupGroupRatio)。
+		return ratio_setting.CheckGroupGroupRatio(value)
 	}
 	return nil
 }

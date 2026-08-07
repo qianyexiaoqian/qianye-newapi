@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/glebarez/sqlite"
@@ -115,6 +116,19 @@ func useGroupRatio(t *testing.T, jsonStr string) {
 	t.Cleanup(func() {
 		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(prev))
 	})
+}
+
+// useDeclaredUserGroups 临时替换用户分组登记表的读取口 —— 也就是「本站有哪几档
+// 人」的事实清单。
+//
+// 替 service 上那个 hook 变量而不是去建 qy_user_groups 表:本包看得见的只有
+// service.QyDeclaredUserGroups 这一个入口(groupns 在启动时把实现塞进去),
+// 而本包要验的正是「有没有把它读进判据里」。
+func useDeclaredUserGroups(t *testing.T, names ...string) {
+	t.Helper()
+	prev := service.QyDeclaredUserGroups
+	service.QyDeclaredUserGroups = func() []string { return names }
+	t.Cleanup(func() { service.QyDeclaredUserGroups = prev })
 }
 
 // installHook 装上 hook 并在测试结束后卸掉。

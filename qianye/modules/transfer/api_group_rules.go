@@ -61,6 +61,7 @@ func handleAdminListGroupRules(c *gin.Context) {
 	// 既不成行也不成列(见 knownGroups 的缺陷回归说明)。
 	groups := knownGroups(rows)
 	candidates, probeOK := listGroupCandidates()
+	userGroups, userProbeOK := listUserGroupCandidates()
 	// 刻意不下发策略枚举、@self、通配符这三样:前端必须为每个策略准备一条
 	// i18n 文案,拿到一个它不认识的策略也只能渲染出裸 key。下发一份没有消费方的
 	// 数据,正是本扩展反复栽跟头的那个形状。前端用自己的常量,靠
@@ -68,8 +69,17 @@ func handleAdminListGroupRules(c *gin.Context) {
 	respondOK(c, gin.H{
 		"items":        rows,
 		"known_groups": groups,
-		// 带元数据的下拉候选。裸 datalist 只提示、不校验、不告警,运营把分组名
-		// 打错一个字母时得不到任何信号。
+		// **划转页要用的下拉是这一个**:键是 users.group,与 from_group /
+		// to_groups 判定端同一个命名空间(见 grouprule.go 的缺陷回归)。
+		// 裸 datalist 只提示、不校验、不告警,运营把分组名打错一个字母时
+		// 得不到任何信号。
+		"user_group_options": userGroups,
+		// 用户分组登记表是否读到了。false 时前端必须收起"未登记分组"的软告警
+		// 并保留自由输入 —— 那时每个名字都会被标成未登记,是一片假警报。
+		"user_groups_probe_ok": userProbeOK,
+		// ⚠️ 模型分组命名空间,**与划转的判定无关**。留着只为共享层
+		// web/src/features/qy/lib/group-options.ts 的另一个消费方(违规规则的
+		// 分组作用域,那里比的是 UsingGroup)。详见 listGroupCandidates。
 		"group_options": candidates,
 		// abilities 探测是否成功。false 时 has_channels 一律是"不确定"而非"没有"。
 		"channels_probe_ok": probeOK,

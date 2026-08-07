@@ -602,6 +602,9 @@ func RelayTask(c *gin.Context) {
 			// 交叉倍率的另一个轴。task.Group 记的是模型分组,这里记用户分组,
 			// 两者合起来才是 GroupGroupRatio 的完整坐标(见 TaskBillingContext.UserGroup)。
 			UserGroup: relayInfo.UserGroup,
+			// 差额结算沿用这一刻的倍率,不重算(见 TaskBillingContext.GroupRatioPinned)。
+			GroupRatioPinned:   true,
+			GroupRatioFailOpen: relayInfo.GroupRatioFallback != nil,
 		}
 		task.Quota = result.Quota
 		task.Data = result.TaskData
