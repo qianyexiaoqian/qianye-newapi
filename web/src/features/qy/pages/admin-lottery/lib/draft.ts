@@ -138,6 +138,61 @@ export function qyLotEmptyDraft(defaultFeeBps: number): QyLotDraft {
   }
 }
 
+/**
+ * 玩法 —— **界面上的一级选择**，三选一（需求 6）。
+ *
+ * ── 为什么前端要多一个概念，而不是照搬后端的 kind × draw_mode ──
+ *
+ * 项目方原话：「抽奖竞猜页面，没有发现"双色球"活动 UI 界面和配置活动界面。」
+ * 双色球的前端其实早就写完了，问题是它埋在 `kind='draw'` 之下的二级「摇号方式」
+ * 里 —— 要先选「抽奖」，再在另一个下拉里选「双色球」。而对运营来说它根本不是
+ * 抽奖的一个参数：用户自己选号、按红蓝球命中数定档、奖池由期次系列滚存，
+ * 三件事没有一件与「排名抽奖」共享。埋两层的直接后果就是这条反馈：找不到。
+ *
+ * 后端的 `kind` / `draw_mode` **一个字节都不改**：`kind` 是生命周期任务的扫表
+ * 维度，新增一个 kind 要在四处各补一个分支，漏一处就是一条静默死路（见
+ * `types.ts` 上的说明）。所以这里只是一个**纯展示投影** —— 三个一级选项在提交
+ * 时仍然落回 (kind, draw_mode) 那两个字段。
+ */
+export type QyLotPlay = 'ball' | 'draw' | 'guess'
+
+/** 草稿 → 它此刻属于哪个玩法。竞猜没有 `draw_mode` 这回事，先判 kind。 */
+export function qyLotPlayOf(draft: QyLotDraft): QyLotPlay {
+  if (draft.kind === 'guess') return 'guess'
+  return draft.draw_mode === 'ball' ? 'ball' : 'draw'
+}
+
+/**
+ * 一级选择 → 要打进草稿的补丁。
+ *
+ * 三条归位规则少一条都会留下一个自相矛盾的草稿，而表单上看不出来：
+ *   · 切到竞猜：`draw_mode` 必须回 `rank` —— 提交时 `kind='guess'` 那一支不读
+ *     它，但切回抽奖时会留着一个上次选的 `ball`，而对应的号池表单不显示。
+ *   · 切离双色球：`series_no` 必须清掉 —— 后端对带期次的非双色球活动是拒绝，
+ *     而那个字段此刻在界面上已经不可见，运营看不出请求为什么失败。
+ *   · 切到双色球：`draw_mode` 置 `ball`，`series_no` 留着（同一个系列反复开期
+ *     是常态，清掉只会让人每次重选）。
+ */
+export function qyLotDraftForPlay(
+  draft: QyLotDraft,
+  play: QyLotPlay
+): QyLotDraft {
+  if (play === 'guess') {
+    return { ...draft, kind: 'guess', draw_mode: 'rank', series_no: '' }
+  }
+  if (play === 'ball') {
+    return { ...draft, kind: 'draw', draw_mode: 'ball' }
+  }
+  return {
+    ...draft,
+    kind: 'draw',
+    // 从双色球切回普通抽奖时 `draw_mode` 必须换掉，否则表单显示的是「抽奖」
+    // 而提交的是一场双色球。已经是 rank/prob 的就别动 —— 那是运营自己选的。
+    draw_mode: draft.draw_mode === 'ball' ? 'rank' : draft.draw_mode,
+    series_no: '',
+  }
+}
+
 /** 奖品总额 = Σ(单档金额 × 档位数量)。抽奖派奖是**净增发**，没有奖池兜着。 */
 export function qyLotTotalPrizeQuota(draft: QyLotDraft): number {
   if (draft.kind !== 'draw') return 0

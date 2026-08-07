@@ -37,7 +37,6 @@ func TestCheckTokenGroupAlwaysAllowsTheEscapeHatches(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "banned": 1})
 	// vip 被接管且清单为空:任何分组都不该通过 —— 除了这三条豁免。
 	seedScope(t, gdb, "vip", ModeEnforce, false)
@@ -78,7 +77,6 @@ func TestCheckTokenGroupRejectsUnlistedGroupUnderEnforce(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "paid": 1, "free": 1})
 	// vip 已 enforce,清单里只有 paid。
 	seedScope(t, gdb, "vip", ModeEnforce, false, "paid")
@@ -114,7 +112,6 @@ func TestCheckTokenGroupAllowsAutoWhenScopeAllowsIt(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1})
 	seedScope(t, gdb, "vip", ModeEnforce, true)
 	useOwnerGroup(t, "vip")
@@ -133,7 +130,6 @@ func TestCheckTokenGroupFailsOpenWithoutOwner(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1})
 	seedScope(t, gdb, "vip", ModeEnforce, false)
 
@@ -151,7 +147,6 @@ func TestCheckTokenGroupIsGatedByTheSameSwitchAsTheReadSide(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1})
 
 	useConfig(t, false) // 功能开关关闭
@@ -177,7 +172,6 @@ func TestShadowModeRecordsWriteDenyWithoutBlocking(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "paid": 1})
 	seedScope(t, gdb, "vip", ModeShadow, false, "default")
 

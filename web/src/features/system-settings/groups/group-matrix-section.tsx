@@ -17,11 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Plus, Save, Trash2 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
-import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -37,7 +36,6 @@ import { GroupOptionsJsonDrawer } from './components/group-options-json-drawer'
 import {
   buildUsableGroupRows,
   nextRowId,
-  parseSpecialUsableRules,
   serializeUsableGroupRows,
   type UsableGroupRow,
   type GROUP_MATRIX_PAGE_OPTION_KEYS,
@@ -46,7 +44,6 @@ import { useGroupOptionSave } from './lib/use-group-option-save'
 
 export type GroupMatrixSectionValues = {
   UserUsableGroups: string
-  GroupSpecialUsableGroup: string
 }
 
 /**
@@ -64,10 +61,10 @@ export type GroupMatrixSectionValues = {
  *     用户分组回落到的那份清单 —— 「未设定范围」这个状态只有在矩阵旁边才
  *     解释得通。放到模型分组页去，运营会把它读成「这个模型分组开不开放」，
  *     而它真正的作用域是「所有还没设定范围的那些档人」。
- *  2. `GroupSpecialUsableGroup`（`+:` / `-:` 差分规则）**只读**。它是权威清单
- *     关掉之后的回退路径，删了就没有退路；但它与范围是两套叠加的语义，
- *     留着编辑入口会让人以为可以同时配两套。只读 + 明确标注「对已设定范围的
- *     分组不生效」，既保住退路又消掉了那份推理负担。
+ *  2. 曾经还有一块 `GroupSpecialUsableGroup`（`+:` / `-:` 差分规则）的只读视图。
+ *     那套规则已随后端一并下线：它从来没有真正生效过 —— 上游在差分算完之后
+ *     无条件把用户分组自己补回去，把唯一有意义的 `-:自己` 恒抵消掉。
+ *     「哪一档人能选哪些模型分组」现在只有一个答案，就是这一页上面那张矩阵。
  */
 export function GroupMatrixSection(props: {
   defaultValues: GroupMatrixSectionValues
@@ -76,9 +73,6 @@ export function GroupMatrixSection(props: {
     <div className='space-y-6'>
       <QyAdminUserGroups />
       <FallbackUsableGroupsCard defaultValues={props.defaultValues} />
-      <SpecialUsableRulesCard
-        groupSpecialUsableGroup={props.defaultValues.GroupSpecialUsableGroup}
-      />
     </div>
   )
 }
@@ -244,49 +238,6 @@ function FallbackUsableGroupsCard(props: {
             },
           ]}
         />
-      </CardContent>
-    </Card>
-  )
-}
-
-/** `GroupSpecialUsableGroup` 的只读视图。理由见 {@link GroupMatrixSection}。 */
-function SpecialUsableRulesCard(props: { groupSpecialUsableGroup: string }) {
-  const { t } = useTranslation()
-  const rules = useMemo(
-    () => parseSpecialUsableRules(props.groupSpecialUsableGroup),
-    [props.groupSpecialUsableGroup]
-  )
-
-  if (rules.length === 0) return null
-
-  return (
-    <Card>
-      <CardHeader className='border-b'>
-        <CardTitle>{t('Special usable group rules')}</CardTitle>
-        <CardDescription>{t('qy_gs_special_rules_desc')}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <ul className='space-y-1.5 text-sm'>
-          {rules.map((rule) => (
-            <li
-              key={`${rule.userGroup}/${rule.visible ? '+' : '-'}${rule.modelGroup}`}
-              className='flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-1.5'
-            >
-              <span className='min-w-0'>
-                {t('qy_gs_special_rule_row', {
-                  userGroup: rule.userGroup,
-                  modelGroup: rule.modelGroup,
-                })}
-              </span>
-              <StatusBadge
-                variant={rule.visible ? 'info' : 'danger'}
-                copyable={false}
-              >
-                {rule.visible ? t('Visible') : t('Hidden')}
-              </StatusBadge>
-            </li>
-          ))}
-        </ul>
       </CardContent>
     </Card>
   )

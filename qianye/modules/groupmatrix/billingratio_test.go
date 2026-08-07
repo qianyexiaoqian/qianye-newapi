@@ -54,7 +54,6 @@ const (
 func TestBillingRatioPathsAgree(t *testing.T) {
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "free": 0, "paid": 2})
 
 	prev := ratio_setting.GroupGroupRatio2JSONString()
@@ -129,7 +128,6 @@ func TestResolveMatchesHotPathRatio(t *testing.T) {
 	groupratio.ResetObservedForTest()
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "free": 0, "paid": 2})
 
 	prev := ratio_setting.GroupGroupRatio2JSONString()
@@ -172,7 +170,6 @@ func TestMatrixCellsCarryTheHotPathRatio(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "free": 0, "paid": 2})
 
 	prev := ratio_setting.GroupGroupRatio2JSONString()
@@ -215,7 +212,6 @@ func TestScopePolicyReportsUnsetGroups(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "paid": 1, "iso": 1})
 
 	require.NoError(t, reload())
@@ -332,7 +328,6 @@ func TestGetUserGroupRatioDelegatesToTheSingleResolver(t *testing.T) {
 func TestExplicitZeroRatioBeatsFallback(t *testing.T) {
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"paid": 2})
 
 	prev := ratio_setting.GroupGroupRatio2JSONString()

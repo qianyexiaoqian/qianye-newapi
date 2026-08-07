@@ -12,10 +12,11 @@
 // ═══════════════════════════ 「大杂烩」的根源 ═══════════════════════════
 //
 // 上游 setting.userUsableGroups 是一份**全站共用**的白名单,对所有用户分组一视同仁。
-// service.GetUserUsableGroups 在它之上用 GroupSpecialUsableGroup 做 +:X / -:X 增删,
+// service.GetUserUsableGroups 曾经在它之上用 GroupSpecialUsableGroup 做 +:X / -:X 增删,
 // 最后**无条件把 userGroup 自己塞回去** —— 于是「把一个分组从它自己的清单里删掉」
-// 这条规则永远无效(本站实测就有这么一条一直没生效的 `-:自己`)。
-// 结果就是:只要在全局白名单里,谁都能选。
+// 这条规则永远无效(本站实测就有这么一条一直没生效的 `-:自己`)。那套差分已整体下线,
+// 自我补入也收窄成「只有当这个名字确实是一个配了倍率的模型分组时才补」;
+// 但结论没变:只要在全局白名单里,谁都能选。要按档收紧,只有本模块这一条路。
 //
 // ═══════════════════════════ 本模块做到的 ═══════════════════════════
 //
@@ -121,7 +122,6 @@ func (Mod) InstallHooks() {
 	service.QyResolveUsableGroups = Resolve
 	service.QyCheckTokenGroupChange = CheckTokenGroup
 	service.QyPlaygroundGroupAllowed = PlaygroundGroupAllowed
-
 	if !enabled() {
 		return
 	}

@@ -24,37 +24,44 @@ var defaultGroupGroupRatio = map[string]map[string]float64{
 
 var groupGroupRatioMap = types.NewRWMap[string, map[string]float64]()
 
-var defaultGroupSpecialUsableGroup = map[string]map[string]string{}
-
+// GroupRatioSetting 是分组倍率的两张表。
+//
+// ══════════ 曾经的第三个字段 GroupSpecialUsableGroup 已整体下线 ══════════
+//
+// 它是「用户分组 → (+:X / -:X / 裸 X) → 说明文案」的差分规则,叠在全局
+// options.UserUsableGroups 之上。下线的理由不是"用得少",是**它从来没有真正生效过**:
+// service.GetUserUsableGroups 在差分算完之后**无条件**把 userGroup 自己补回去,
+// 于是唯一有意义的那一半(`-:自己`,把一个分组从它自己的清单里遮掉)恒被抵消 ——
+// 本站线上那条 `{"浅夜の自己人":{"-:浅夜の自己人":"remove"}}` 就是这样静默无效了很久。
+//
+// 「哪一档人能选哪些模型分组」现在由 qianye/modules/groupmatrix 的权威清单
+// (qy_group_scopes + qy_group_grants)回答:它是 per-(用户分组, 模型分组) 的显式
+// 授权,能表达差分表达不了的一切,而且带预览、审计与影子期。
+//
+// **库里残留的 options 行 `group_ratio_setting.group_special_usable_group` 无害**:
+// setting/config 的 LoadFromDB 按结构体字段反查 map,字段不存在时那一行被直接忽略。
+// 刻意不写迁移去 DELETE 它 —— 它是"这里曾经有过一套规则"的唯一证据,
+// 而一条谁都不读的 options 行不值得一次跨三种数据库的迁移。
 type GroupRatioSetting struct {
-	GroupRatio              *types.RWMap[string, float64]            `json:"group_ratio"`
-	GroupGroupRatio         *types.RWMap[string, map[string]float64] `json:"group_group_ratio"`
-	GroupSpecialUsableGroup *types.RWMap[string, map[string]string]  `json:"group_special_usable_group"`
+	GroupRatio      *types.RWMap[string, float64]            `json:"group_ratio"`
+	GroupGroupRatio *types.RWMap[string, map[string]float64] `json:"group_group_ratio"`
 }
 
 var groupRatioSetting GroupRatioSetting
 
 func init() {
-	groupSpecialUsableGroup := types.NewRWMap[string, map[string]string]()
-	groupSpecialUsableGroup.AddAll(defaultGroupSpecialUsableGroup)
-
 	groupRatioMap.AddAll(defaultGroupRatio)
 	groupGroupRatioMap.AddAll(defaultGroupGroupRatio)
 
 	groupRatioSetting = GroupRatioSetting{
-		GroupSpecialUsableGroup: groupSpecialUsableGroup,
-		GroupRatio:              groupRatioMap,
-		GroupGroupRatio:         groupGroupRatioMap,
+		GroupRatio:      groupRatioMap,
+		GroupGroupRatio: groupGroupRatioMap,
 	}
 
 	config.GlobalConfig.Register("group_ratio_setting", &groupRatioSetting)
 }
 
 func GetGroupRatioSetting() *GroupRatioSetting {
-	if groupRatioSetting.GroupSpecialUsableGroup == nil {
-		groupRatioSetting.GroupSpecialUsableGroup = types.NewRWMap[string, map[string]string]()
-		groupRatioSetting.GroupSpecialUsableGroup.AddAll(defaultGroupSpecialUsableGroup)
-	}
 	return &groupRatioSetting
 }
 

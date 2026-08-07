@@ -99,27 +99,22 @@ func syncHotAsync(t *testing.T) {
 
 // useUpstreamGroups 显式构造上游的两处分组状态并在测试结束时还原。
 //
-// 必须显式构造:GetUserUsableGroups 的输出同时取决于全局白名单与
-// GroupSpecialUsableGroup,借用进程里恰好残留的那一份会让断言在别的机器上翻车。
+// 必须显式构造:GetUserUsableGroups 的输出同时取决于全局白名单与分组倍率表
+// (后者现在也是"用户分组要不要把自己补进清单"的判据),借用进程里恰好残留的
+// 那一份会让断言在别的机器上翻车。
 func useUpstreamGroups(t *testing.T, whitelist map[string]string,
-	specials map[string]map[string]string, groupRatio map[string]float64) {
+	groupRatio map[string]float64) {
 	t.Helper()
 
 	prevWhitelist := setting.UserUsableGroups2JSONString()
 	prevRatio := ratio_setting.GroupRatio2JSONString()
-	specialMap := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
-	prevSpecials := specialMap.ReadAll()
 
 	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(mustJSON(t, whitelist)))
 	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(mustJSON(t, groupRatio)))
-	specialMap.Clear()
-	specialMap.AddAll(specials)
 
 	t.Cleanup(func() {
 		_ = setting.UpdateUserUsableGroupsByJSONString(prevWhitelist)
 		_ = ratio_setting.UpdateGroupRatioByJSONString(prevRatio)
-		specialMap.Clear()
-		specialMap.AddAll(prevSpecials)
 	})
 }
 

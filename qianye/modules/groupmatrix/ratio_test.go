@@ -29,7 +29,6 @@ func ptr(v float64) *float64 { return &v }
 func TestRatioCellRoundTripDistinguishesUnsetFromExplicitZero(t *testing.T) {
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "free": 0.5, "paid": 2, "keep": 3})
 
 	prev := ratio_setting.GroupGroupRatio2JSONString()

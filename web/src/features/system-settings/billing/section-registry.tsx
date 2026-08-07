@@ -67,8 +67,6 @@ const getUserGroupDefaults = (settings: BillingSettings) => ({
 
 const getGroupMatrixDefaults = (settings: BillingSettings) => ({
   UserUsableGroups: settings.UserUsableGroups,
-  GroupSpecialUsableGroup:
-    settings['group_ratio_setting.group_special_usable_group'],
 })
 
 const getModelGroupDefaults = (settings: BillingSettings) => ({
@@ -156,12 +154,21 @@ const BILLING_SECTIONS = [
     而这三页的命名是本 fork 自己的口径。两份资源合并进同一个命名空间，
     `t()` 解析方式与上游键完全一致。
 
-    ── 为什么 group-matrix 单独一项，而不是并进 user-groups ──
+    ── 需求 4 之后：group-matrix 仍然留着，但它不再是主入口 ──
 
-    危险的是两个**编辑器**编同一份数据，不是两个路由。可用范围与交叉倍率的
-    编辑器只有矩阵那一个（它带着预览闸门与双库部分失败横幅），user-groups 上
-    对应的两列是只读摘要 + 一条深链接。反过来，充值折扣只在 user-groups 上编辑，
-    矩阵页一个字都不提它。
+    项目方原话：「用户分组页面，配置可用模型分组，这里直接弹窗选择配置，不要
+    再跳转到用户分组可用的模型分组配置。」于是 user-groups 那张表的行内直接开
+    配置弹窗（`QyUgScopeDialog`），行内那条深链接删掉。
+
+    危险的从来是两个**编辑器**编同一份数据，不是两个入口 —— 而弹窗与这一页
+    共用**同一份状态机**（`useQyGmEditor`：同一道预览闸门、同一条双库部分失败
+    横幅、同一次强制回读），所以两个入口在数据安全上等价。
+
+    这一项因此不下线，它还独占三件在"一次只看一档"的弹窗里结构性表达不出来
+    的事：整列批量、跨档对比「哪几档人能到达某个模型分组」、孤儿令牌基线；
+    外加 `UserUsableGroups`（全局可选清单）这个纯上游 option 的唯一编辑器 ——
+    摘掉它，扩展一关就再没有任何界面能改那份清单。抽屉菜单里的那一行是它现在
+    唯一的入口，不能再删。
   */
   {
     id: 'user-groups',

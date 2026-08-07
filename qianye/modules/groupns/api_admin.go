@@ -26,6 +26,7 @@ import (
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -103,6 +104,25 @@ type ModelGroupRow struct {
 	ChannelCount int64 `json:"channel_count"`
 	// LegacyDual 表示这个名字同时是一个用户分组。
 	LegacyDual bool `json:"legacy_dual"`
+
+	// ─────────── 下面四项回答项目方那句「模型分组当前预设有点混乱」 ───────────
+	//
+	// 混乱的具体形状是:回填出来的名单里混着 default / group_1 这类历史残留,
+	// 而界面上没有任何一处说得清「这一行是从哪来的、它现在还能不能路由」。
+	// 光有 base_ratio 与 has_route 两个布尔是不够的 —— 运营看到的是两个绿点,
+	// 看不到"这个名字只是被回填进来的一个空壳"。
+
+	// Sources 是这个名字的来源集合(group_ratio / abilities / registry_only)。
+	// 与 ProbeModelGroupImpact 同源同口径,见 modelgroup_store.go。
+	Sources []string `json:"sources"`
+	// InUsableGroups 是项目方点名的「全局(用户可选分组)」——
+	// options.UserUsableGroups 里有没有这个键。
+	InUsableGroups bool `json:"in_usable_groups"`
+	// UsableDescription 是白名单里那段**原文**。它与 Note 同屏显示,
+	// 运营才看得出哪一段被覆盖了(优先级见 setting/qy_groupnote_export.go)。
+	UsableDescription string `json:"usable_description"`
+	// AutoPosition 是它在 options.AutoGroups 里的位次(从 1 起),0 表示不在。
+	AutoPosition int `json:"auto_position"`
 }
 
 func adminListUserGroups(c *gin.Context) {
@@ -120,7 +140,7 @@ func adminListUserGroups(c *gin.Context) {
 		return
 	}
 	userCounts := countByGroup(c, "users")
-	emptyTokens, _ := EmptyGroupTokenCounts(c, model.DB)
+	emptyTokens, _ := EmptyGroupTokenCounts(c, model.DB, true)
 	routed := routedModelGroupNames(c)
 
 	out := make([]UserGroupRow, 0, len(rows))
@@ -156,18 +176,43 @@ func adminListModelGroups(c *gin.Context) {
 	ratios := ratio_setting.GetGroupRatioCopy()
 	userNames := registeredUserGroupNames(c)
 	channelCounts := enabledChannelCountsByGroup(c)
+	// **原文**而不是经备注覆盖之后的值:这一列存在的全部理由就是让运营看见
+	// "白名单里本来写着什么、现在被备注盖成了什么"。拿覆盖后的值填它,
+	// 两列会显示成一模一样,而那正是"哪一份生效"这个问题的原样重现。
+	usable := setting.RawUserUsableGroupsCopy()
+	autoPos := map[string]int{}
+	for i, g := range setting.GetAutoGroups() {
+		if _, dup := autoPos[g]; !dup {
+			autoPos[g] = i + 1
+		}
+	}
 
 	out := make([]ModelGroupRow, 0, len(rows))
 	for _, row := range rows {
 		ratio, ok := ratios[row.Name]
 		hasRoute, _ := HasRoute(c, model.DB, row.Name)
+		desc, inUsable := usable[row.Name]
+		sources := make([]string, 0, 2)
+		if ok {
+			sources = append(sources, SourceRatio)
+		}
+		if hasRoute {
+			sources = append(sources, SourceRoute)
+		}
+		if len(sources) == 0 {
+			sources = append(sources, SourceRegistryOnly)
+		}
 		out = append(out, ModelGroupRow{
-			ModelGroup:   row,
-			BaseRatio:    ratio,
-			RatioMissing: !ok,
-			HasRoute:     hasRoute,
-			ChannelCount: channelCounts[row.Name],
-			LegacyDual:   userNames[row.Name],
+			ModelGroup:        row,
+			BaseRatio:         ratio,
+			RatioMissing:      !ok,
+			HasRoute:          hasRoute,
+			ChannelCount:      channelCounts[row.Name],
+			LegacyDual:        userNames[row.Name],
+			Sources:           sources,
+			InUsableGroups:    inUsable,
+			UsableDescription: desc,
+			AutoPosition:      autoPos[row.Name],
 		})
 	}
 	respond(c, gin.H{"items": out})
@@ -185,7 +230,7 @@ func adminReport(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	emptyTokens, _ := EmptyGroupTokenCounts(c, model.DB)
+	emptyTokens, _ := EmptyGroupTokenCounts(c, model.DB, true)
 	respond(c, gin.H{
 		"observed":               res,
 		"empty_group_tokens":     emptyTokens,
@@ -378,7 +423,7 @@ func adminSetDefaultModelGroup(c *gin.Context) {
 		res := ratio_setting.InspectGroupRatio(name, target)
 		out.EffectiveRatio, out.RatioSource = res.Ratio, res.Source
 	}
-	if counts, err := EmptyGroupTokenCounts(c, model.DB); err == nil {
+	if counts, err := EmptyGroupTokenCounts(c, model.DB, true); err == nil {
 		out.AffectedTokens = counts[name]
 	}
 	out.AffectedUsers = countByGroup(c, "users")[name]

@@ -2,7 +2,6 @@ package planentitlement
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/qianye/modules/groupmatrix"
@@ -34,29 +33,21 @@ import (
 //	指针恒等     hook 拿到什么就返回什么 —— 有人在恒等分支里顺手加一次 maps.Clone,
 //	             值断言照常通过,而 controller/pricing.go 依赖的指针语义已经变了
 
-// upstreamGetUserUsableGroups 是 service.GetUserUsableGroups 在**接入本扩展之前**
-// 的函数体,逐行照抄(唯一的差别是最后那句 return 不经过 hook)。
+// upstreamGetUserUsableGroups 是 service.GetUserUsableGroups 去掉 hook 之后的函数体,
+// 逐行照抄(唯一的差别是最后那句 return 不经过 hook)。
 //
 // 照抄而不是调用真函数:真函数已经串上了 hook,拿它当参照系等于用被测对象证明
-// 自己。这份副本一旦与上游漂移,TestUnsetScopeMatchesUpstreamBitForBit 里那些
-// 带 +: / -: 差分的用例会先红 —— 那正是提醒"上游改了这段逻辑"的信号。
+// 自己。这份副本一旦与本仓的那一份漂移,下面的用例会先红 —— 那正是提醒
+// "有人改了这段逻辑"的信号。
+//
+// 本轮它跟着上游一起瘦了两处:GroupSpecialUsableGroup 的 +:/-: 差分整套下线,
+// 自我补入收窄成"只有当这个名字确实是一个配了倍率的模型分组时才补"。
+// 两处的完整理由分别在 setting/ratio_setting/group_ratio.go 与 service/group.go。
 func upstreamGetUserUsableGroups(userGroup string) map[string]string {
 	groupsCopy := setting.GetUserUsableGroupsCopy()
-	if userGroup != "" {
-		specialSettings, b := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.Get(userGroup)
-		if b {
-			for specialGroup, desc := range specialSettings {
-				if strings.HasPrefix(specialGroup, "-:") {
-					delete(groupsCopy, strings.TrimPrefix(specialGroup, "-:"))
-				} else if strings.HasPrefix(specialGroup, "+:") {
-					groupsCopy[strings.TrimPrefix(specialGroup, "+:")] = desc
-				} else {
-					groupsCopy[specialGroup] = desc
-				}
-			}
-		}
+	if userGroup != "" && ratio_setting.ContainsGroupRatio(userGroup) {
 		if _, ok := groupsCopy[userGroup]; !ok {
-			groupsCopy[userGroup] = "用户分组"
+			groupsCopy[userGroup] = service.SelfUsableGroupDescription
 		}
 	}
 	return groupsCopy
@@ -95,21 +86,14 @@ func TestUnsetScopeMatchesUpstreamBitForBit(t *testing.T) {
 		`{"default":"默认分组","vip":"VIP 分组"}`))
 	t.Cleanup(func() { _ = setting.UpdateUserUsableGroupsByJSONString(prevUsable) })
 
-	// +: / -: 差分也要在场:它们是上游那段逻辑里最容易被 hook 改写掉的部分。
-	special := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
-	prevSpecial := special.ReadAll()
-	special.Set("agency", map[string]string{"+:pro": "代理专属", "-:vip": ""})
-	t.Cleanup(func() {
-		special.Clear()
-		special.AddAll(prevSpecial)
-	})
-
 	// 扩展库是空的,但要真的**加载过一次**空快照:snapshot=nil 走的是另一条
 	// fail-open 分支,只测它等于没测「配置为空」这一档。
 	require.NoError(t, groupmatrix.InvalidateAndReload())
 	require.NoError(t, reload())
 
-	for _, userGroup := range []string{"", "default", "vip", "agency", "从来没配过的分组"} {
+	// 取值域刻意覆盖四种形状:匿名、在白名单里的、**不在**白名单但在倍率表里的
+	// (`pro` —— 自我补入唯一还会生效的那一档)、以及两边都不在的。
+	for _, userGroup := range []string{"", "default", "vip", "pro", "从来没配过的分组"} {
 		t.Run("userGroup="+userGroup, func(t *testing.T) {
 			want := upstreamGetUserUsableGroups(userGroup)
 

@@ -287,7 +287,20 @@ func HasRoute(ctx context.Context, mainDB *gorm.DB, modelGroup string) (bool, er
 // 这是「配一个默认模型分组会影响多少人」的直接答案,也是 96/47/47/1 那份分布的
 // 来源。它必须出现在保存前的 preview 里:粒度是 7 个用户分组,而每一行背后是
 // 几十个令牌,不摆出来运营就是在盲配。
-func EmptyGroupTokenCounts(ctx context.Context, mainDB *gorm.DB) (map[string]int64, error) {
+//
+// ── enabledOnly 为什么必须由调用方给,而不是写死 ──
+//
+// 两个问题的正确答案不同:
+//
+//	「配一个默认模型分组之后,多少个令牌的路由会当场变化」 —— 只数启用的。
+//	                                                       停用的令牌发不出请求。
+//	「删掉这个用户分组会波及多少个令牌」                   —— 启用与停用都要数,
+//	                                                       与 QyUserGroupTokenCount 同口径。
+//
+// 写死成"只数启用"曾经让删除弹窗里的「N 个(其中空分组令牌 M 个)」两个数字
+// 出自两个口径:M 不是 N 的子集,运营据此以为只有 M 个令牌的行为会变,
+// 而实际上那些停用的空分组令牌一旦被重新启用,同样按新分组解析清单与倍率。
+func EmptyGroupTokenCounts(ctx context.Context, mainDB *gorm.DB, enabledOnly bool) (map[string]int64, error) {
 	out := map[string]int64{}
 	if mainDB == nil {
 		return out, fmt.Errorf("qianye/groupns: 主库未初始化")
@@ -300,9 +313,14 @@ func EmptyGroupTokenCounts(ctx context.Context, mainDB *gorm.DB) (map[string]int
 	// 令牌的 group 为空 ⇒ UsingGroup 回落 users.group ⇒ 这些正是会被默认解析改写的。
 	sql := "SELECT u." + col + " AS grp, COUNT(*) AS cnt FROM tokens t " +
 		"JOIN users u ON u.id = t.user_id " +
-		"WHERE t.deleted_at IS NULL AND u.deleted_at IS NULL AND t." + col + " = '' " +
-		"AND t.status = ? GROUP BY u." + col
-	if err := mainDB.WithContext(ctx).Raw(sql, common.TokenStatusEnabled).Scan(&rows).Error; err != nil {
+		"WHERE t.deleted_at IS NULL AND u.deleted_at IS NULL AND t." + col + " = '' "
+	args := make([]any, 0, 1)
+	if enabledOnly {
+		sql += "AND t.status = ? "
+		args = append(args, common.TokenStatusEnabled)
+	}
+	sql += "GROUP BY u." + col
+	if err := mainDB.WithContext(ctx).Raw(sql, args...).Scan(&rows).Error; err != nil {
 		return out, err
 	}
 	for _, row := range rows {

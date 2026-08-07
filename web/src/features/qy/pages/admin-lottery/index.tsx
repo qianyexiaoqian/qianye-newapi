@@ -244,6 +244,16 @@ export function QyAdminLottery() {
             isEmpty={query.data != null && items.length === 0}
             emptyIcon={Ticket}
             emptyTitle={t('qy_lot_a_empty')}
+            /* 站里一条活动都没有时，这一屏是运营看到的**唯一**一句话。
+               「三个玩法各是什么、从哪儿开」必须写在这里 —— 双色球此前埋在
+               二级下拉里找不到，正是从这一屏开始找不到的。 */
+            emptyDescription={t('qy_lot_a_empty_desc')}
+            emptyAction={
+              <Button size='sm' onClick={() => setCreateOpen(true)}>
+                <Plus aria-hidden='true' />
+                {t('qy_lot_create_title')}
+              </Button>
+            }
           >
             <div className='space-y-3'>
               <StaticDataTable

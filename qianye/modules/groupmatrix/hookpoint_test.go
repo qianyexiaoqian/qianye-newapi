@@ -61,35 +61,30 @@ func TestResolveHookIsTheLastStatementOfGetUserUsableGroups(t *testing.T) {
 	// 位置锁:必须排在**自我补入**之后。
 	//
 	// 上游最后一步是 `if _, ok := groupsCopy[userGroup]; !ok { groupsCopy[userGroup] = ... }`。
-	// 挂在它之前,上游会在 hook 之后把 userGroup 补回去 —— 本站那条 `-:自己`
-	// 的规则至今无效正是这个原因,而我们会原样复刻它。
+	// 挂在它之前,上游会在 hook 之后把 userGroup 补回去 —— 「一个用户分组可以不
+	// 包含它自己」就永远做不到,而所有单元测试照常全绿。本站那条 `-:自己` 的规则
+	// 至今无效正是同一个原因(那套 +:/-: 差分本身已整体下线,见
+	// setting/ratio_setting/group_ratio.go;自我补入仍在,只是收窄成
+	// 「名字必须是一个配了倍率的模型分组」,所以这条位置锁一个字都不能松)。
 	selfInsertEnd := token.NoPos
-	specialLoopEnd := token.NoPos
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch s := n.(type) {
-		case *ast.IfStmt:
-			// 上游写的是 `if _, ok := groupsCopy[userGroup]; !ok { ... }`,
-			// 判据在 Init 里而不是 Cond 里(Cond 只是 `!ok`)。
-			if init, ok := s.Init.(*ast.AssignStmt); ok && len(init.Rhs) == 1 &&
-				strings.Contains(exprText(t, groupGoPath, init.Rhs[0]), "groupsCopy[userGroup]") {
-				selfInsertEnd = s.End()
-			}
-		case *ast.RangeStmt:
-			if s.End() > specialLoopEnd {
-				specialLoopEnd = s.End()
-			}
+		s, ok := n.(*ast.IfStmt)
+		if !ok {
+			return true
+		}
+		// 上游写的是 `if _, ok := groupsCopy[userGroup]; !ok { ... }`,
+		// 判据在 Init 里而不是 Cond 里(Cond 只是 `!ok`)。
+		if init, ok := s.Init.(*ast.AssignStmt); ok && len(init.Rhs) == 1 &&
+			strings.Contains(exprText(t, groupGoPath, init.Rhs[0]), "groupsCopy[userGroup]") {
+			selfInsertEnd = s.End()
 		}
 		return true
 	})
 	require.NotEqual(t, token.NoPos, selfInsertEnd,
 		"找不到上游的自我补入分支 —— 上游改写了 GetUserUsableGroups,请重新确认 hook 的位置")
 	assert.Greater(t, returns[0].Pos(), selfInsertEnd,
-		"hook 必须排在「无条件补自己」之后:挂在前面时上游会把 userGroup 补回去,"+
+		"hook 必须排在自我补入之后:挂在前面时上游会把 userGroup 补回去,"+
 			"「用户分组可以不包含它自己」永远做不到,而所有单元测试照常全绿")
-	if specialLoopEnd != token.NoPos {
-		assert.Greater(t, returns[0].Pos(), specialLoopEnd,
-			"hook 必须排在 GroupSpecialUsableGroup 的 +:/-: 循环之后,否则清单只是差分的输入而不是权威")
-	}
 }
 
 // TestDerivedHelpersStillFunnelThroughTheHook 守派生链。

@@ -103,7 +103,12 @@ describe('语言包里的指路文案', () => {
   test('模型分组定价页上那块指路牌点名说清两个被拆掉的编辑器去了哪里', () => {
     // 只说「去用户分组页」是不够的：运营是按控件的名字找东西的，而这一页上
     // 那两个名字一个都不剩。名字缺席时，唯一能做的就是猜。
-    for (const name of ['分组间覆盖', '特殊可用分组规则', '用户分组']) {
+    for (const name of [
+      '分组间覆盖',
+      '特殊可用分组规则',
+      '用户分组',
+      '登记表',
+    ]) {
       assert.ok(
         zhKeys.qy_group_pricing_moved_desc.includes(name),
         `zh 的 qy_group_pricing_moved_desc 没提到「${name}」`
@@ -121,15 +126,20 @@ describe('语言包里的指路文案', () => {
     }
   })
 
-  test('「范围取代旧规则」不能说成全都取代了', () => {
-    // `GroupSpecialUsableGroup` 至今仍被 `service/group.go` 在热路径上读取，对
-    // **未设定范围**的用户分组照常生效，而它的 JSON 编辑器已被整段拆掉 ——
-    // 这批存量规则现在是「仍在计费、看不见、改不动」。文案把这半件事说成已经
-    // 被取代，等于给运营一个错误的完结感，而这句话存在的全部理由就是消除
-    // 这类信息缺口。
-    assert.match(zhKeys.qy_group_pricing_moved_desc, /尚未设定范围/)
-    assert.match(zhKeys.qy_group_pricing_moved_desc, /仍在照常生效/)
-    assert.match(enKeys.qy_group_pricing_moved_desc, /no scope keep their/)
+  test('「特殊可用分组规则」必须说成已经下线，而不是被范围接管', () => {
+    // 上一轮这句话说的是「未设定范围的用户分组，它原有的 +: / -: 规则仍在照常
+    // 生效」——那在当时是对的。本轮 `GroupSpecialUsableGroup` 已整体下线（后端
+    // 结构、读取逻辑一并删除），文案若还停在旧说法，运营会继续去找一批**已经
+    // 不存在**的存量规则，并且以为自己站上还躺着一堆看不见的差分。
+    //
+    // 断言两件事：不再承诺"仍在生效"，且明说它是「下线」而不是「被接管」。
+    assert.doesNotMatch(zhKeys.qy_group_pricing_moved_desc, /仍在照常生效/)
+    assert.match(zhKeys.qy_group_pricing_moved_desc, /整套下线/)
+    assert.doesNotMatch(
+      enKeys.qy_group_pricing_moved_desc,
+      /no scope keep their/
+    )
+    assert.match(enKeys.qy_group_pricing_moved_desc, /retired entirely/)
   })
 
   test('空态与指路牌对够不着「模型分组定价」的管理员另有一句', () => {

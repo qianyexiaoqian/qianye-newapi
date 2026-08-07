@@ -218,23 +218,21 @@ func TestGetUserModelsFiltersByRequestedGroup(t *testing.T) {
 func TestGetUserModelsExpandsAutoGroupsInConfiguredOrder(t *testing.T) {
 	originalAutoGroups := setting.AutoGroups2JsonString()
 	originalUsableGroups := setting.UserUsableGroups2JSONString()
-	originalSpecialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.ReadAll()
 	t.Cleanup(func() {
 		require.NoError(t, setting.UpdateAutoGroupsByJsonString(originalAutoGroups))
 		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
-		specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
-		specialGroups.Clear()
-		specialGroups.AddAll(originalSpecialGroups)
 	})
 
+	// auto 顺序里刻意留着一个 `unavailable`:它既不在全局可选清单里、也不在分组
+	// 倍率表里,是 IsUserSelectableGroup 必须滤掉的那一档。
+	//
+	// 这个用例原本用 GroupSpecialUsableGroup 的 `+:vip` / `-:unavailable` 构造同一个
+	// 形状。那套差分规则已整体下线(理由见 setting/ratio_setting/group_ratio.go),
+	// 现在直接用全局可选清单表达 —— 断言的对象没变:auto 展开必须按配置顺序,
+	// 且不可选的分组不参与。
 	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["vip","default","unavailable"]`))
-	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"auto":"自动分组","default":"默认分组","unavailable":"不可用分组"}`))
-	specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
-	specialGroups.Clear()
-	specialGroups.Set("default", map[string]string{
-		"+:vip":         "VIP 分组",
-		"-:unavailable": "",
-	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(
+		`{"auto":"自动分组","default":"默认分组","vip":"VIP 分组"}`))
 
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.Create(&model.User{

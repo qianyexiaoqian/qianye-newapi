@@ -98,10 +98,38 @@ export function qyUgGrantedCount(
   draft: QyGmDraft,
   userGroup: string
 ): number {
-  let count = 0
+  return qyUgGrantedModelGroups(data, serverCells, draft, userGroup).length
+}
+
+/**
+ * 某个用户分组此刻（含未保存草稿）在范围内的**模型分组名**，按列轴顺序。
+ *
+ * ── 为什么「用户分组」表那一列必须是名字而不是个数 ──
+ *
+ * 项目方原话：「前端这个列：【可用模型分组】直接把模型分组名称显示上去，
+ * 如：免费の渠道、浅夜の梦专属号池」。一个数字回答不了运营在那张表上唯一
+ * 想问的问题 —— 「这一档人到底能用到哪几个池子」。要知道答案就得点进配置页，
+ * 而那正是需求 4 要消掉的那次跳转。
+ *
+ * 取值与 {@link qyUgGrantedCount} **必须同源**（后者现在就是它的长度），
+ * 否则会出现「列表写 3 个、展开只列出 2 个」这种自相矛盾，而运营对着矛盾的
+ * 数字最可能的动作是重配一遍 —— 重配的动作恰好是撤销与改价。
+ *
+ * 只取**列轴上存在**的模型分组：清单里引用了一个已从分组倍率表删掉的分组时，
+ * 它已经不可达，列出来只会让人以为那一档还能用它。
+ */
+export function qyUgGrantedModelGroups(
+  data: QyGmMatrixResponse,
+  serverCells: ReadonlyMap<string, QyGmCell>,
+  draft: QyGmDraft,
+  userGroup: string
+): string[] {
+  const names: string[] = []
   for (const column of data.model_groups) {
     const key = qyGmCellKey(userGroup, column.name)
-    if (qyGmGrantedOf(serverCells.get(key), draft.get(key))) count += 1
+    if (qyGmGrantedOf(serverCells.get(key), draft.get(key))) {
+      names.push(column.name)
+    }
   }
-  return count
+  return names
 }

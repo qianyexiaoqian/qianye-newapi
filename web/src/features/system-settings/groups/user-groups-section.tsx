@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
 import { Info, SlidersHorizontal } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -25,8 +24,17 @@ import { useTranslation } from 'react-i18next'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { qyGmMatrixQuery } from '@/features/qy/pages/admin-group-matrix/api'
+import {
+  qyGmIndexCells,
+  type QyGmDraft,
+} from '@/features/qy/pages/admin-group-matrix/lib/draft'
+import { QyUgScopeDialog } from '@/features/qy/pages/admin-user-groups/components/user-group-scope-dialog'
+import { qyUgGrantedModelGroups } from '@/features/qy/pages/admin-user-groups/lib/rows'
+import { QyUserGroupRoster } from '@/features/qy/pages/admin-user-groups/roster'
 
 import { SettingsSwitchField } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
@@ -42,6 +50,17 @@ import {
   type USER_GROUP_PAGE_KEYS,
 } from './lib/group-options'
 import { useGroupOptionSave } from './lib/use-group-option-save'
+
+/**
+ * 这张表上没有草稿：可选性与倍率的编辑全在配置弹窗里。
+ *
+ * **必须是模块级常量**，不能在渲染里写 `new Map()`：那样每次渲染都是一个新引用，
+ * 下面那个 `useMemo` 的依赖恒变，整张名单在每一次按键（充值折扣输入框）上重算。
+ */
+const QY_UG_NO_DRAFT: QyGmDraft = new Map()
+
+/** 单元格里直接列出几个名字，超出的折进 `+N`。理由见 `usable` 那一列。 */
+const QY_UG_USABLE_INLINE_LIMIT = 3
 
 export type UserGroupsSectionValues = {
   TopupGroupRatio: string
@@ -66,14 +85,17 @@ export type UserGroupsSectionValues = {
  *   · 这一档充值按几折（`TopupGroupRatio`）；
  *   · 这一档能用哪些模型分组（只读摘要，编辑在另一页）。
  *
- * ── 为什么这里不能新建 / 改名 / 删除用户分组 ──
+ * ── 新建 / 改名 / 删除在下面那张「用户分组登记」卡片上 ──
  *
- * 用户分组不是一张实体表，它是 `users.group` 上的字符串。「新建」在数据层
- * 无处可写（真正的写入发生在给某个用户改分组的时候），「改名」要同时重写
- * `users.group` / `GroupGroupRatio` 外层键 / `TopupGroupRatio` 键 / 范围表 /
- * 套餐升降级分组五处，任何一处漏掉的表现都是「一批账号挂在一个不存在的分组上，
- * 按 1.0 兜底扣费」且静默。在这一页上放一个「新建」按钮，只会造出第三种
- * 「看起来能做、其实没落地」的操作。清单因此是**观测出来的**，不是维护出来的。
+ * 这一张表的清单是**观测出来的**（`users.group` 的现值），所以它天然表达不了
+ * 一个**还没有任何人**的分组 —— 而「新建」造出来的正是那个。写入的落点是登记表
+ * `qy_user_groups`，那是 {@link QyUserGroupRoster} 的主语。
+ *
+ * 改名与删除更不能放在这里：它们要横跨两个数据库改六处（`users.group`、已售订阅
+ * 的三列快照、套餐升降级分组、`GroupGroupRatio` 外层键、`TopupGroupRatio` 键，
+ * 以及各模块声明的范围/授权/费率/划转规则），任何一处漏掉的表现都是「一批账号
+ * 挂在一个不存在的分组上、按 1.0 兜底扣费」且静默。这套顺序与补偿全在后端的
+ * 一个端点里，界面只负责在按下按钮之前把影响面摆出来。
  */
 export function UserGroupsSection(props: {
   defaultValues: UserGroupsSectionValues
@@ -116,6 +138,8 @@ export function UserGroupsSection(props: {
   const [defaultUseAutoGroup, setDefaultUseAutoGroup] = useState(
     defaultValues.DefaultUseAutoGroup
   )
+  /** 正在配置可用模型分组的那一档人。非空 = 弹窗开着。 */
+  const [scopeTarget, setScopeTarget] = useState<string | null>(null)
 
   /*
     保存的键域**由归属清单直接给出**，不是在这里重新抄一遍。
@@ -196,19 +220,30 @@ export function UserGroupsSection(props: {
 
   const displayRows = rows
 
+  /**
+   * 每一档人的在册人数、**可用模型分组名单**、以及范围三态。
+   *
+   * 名单走 {@link qyUgGrantedModelGroups}（与矩阵页 / 配置弹窗上的徽章同一个
+   * 取值），而不是在这里自己 filter 一遍 `cells`：两处各算一份必然漂移成
+   * 「这张表列了 3 个、点开弹窗只有 2 个」，而运营对着矛盾的数字最可能的动作
+   * 是重配一遍 —— 重配的动作恰好是撤销与改价。这里没有草稿，传空 Map。
+   */
   const statsByGroup = useMemo(() => {
     const map = new Map<
       string,
-      { userCount: number; granted: number; scopeState: string }
+      { userCount: number; usable: string[]; scopeState: string }
     >()
     if (matrix == null) return map
+    const serverCells = qyGmIndexCells(matrix.cells)
     for (const group of matrix.user_groups) {
-      const granted = matrix.cells.filter(
-        (cell) => cell.user_group === group.name && cell.granted
-      ).length
       map.set(group.name, {
         userCount: group.user_count,
-        granted,
+        usable: qyUgGrantedModelGroups(
+          matrix,
+          serverCells,
+          QY_UG_NO_DRAFT,
+          group.name
+        ),
         scopeState: group.scope_state,
       })
     }
@@ -351,15 +386,59 @@ export function UserGroupsSection(props: {
             ),
           },
           {
+            /*
+              ── 这一列列**名字**，不列个数（需求 4）──
+
+              项目方原话：「前端这个列：【可用模型分组】直接把模型分组名称显示
+              上去，如：免费の渠道、浅夜の梦专属号池」。一个数字回答不了运营在
+              这张表上唯一想问的问题 ——「这一档人到底能用到哪几个池子」，而要
+              知道答案就得点进另一页，那正是需求 4 要消掉的那次跳转。
+
+              超过 3 个折进 `+N`，整格 `title` 里给全名单：站里模型分组有 13 个，
+              全列出来会把这一行撑成一堵墙，而这张表还要同时显示充值折扣输入框。
+              折叠**只折显示**，`title` 与弹窗里都是完整的。
+
+              「未设定范围」那一档必须仍然带徽章：它的名单是**上游此刻的实际
+              可选集合**（后端按 `GetUserUsableGroups` 现算），看起来与"配好了"
+              一模一样，但它不受这里的范围约束，改动方式完全不同。
+            */
             id: 'usable',
             header: t('qy_gs_col_usable_model_groups'),
-            className: 'min-w-44',
+            className: 'min-w-56',
             cell: (row) => {
               const stats = statsByGroup.get(row.name)
               if (stats == null) return <span>—</span>
+              const overflow = stats.usable.length - QY_UG_USABLE_INLINE_LIMIT
               return (
-                <div className='flex flex-wrap items-center gap-1.5'>
-                  <span className='text-sm tabular-nums'>{stats.granted}</span>
+                <div
+                  className='flex flex-wrap items-center gap-1.5'
+                  title={
+                    stats.usable.length === 0
+                      ? undefined
+                      : stats.usable.join('、')
+                  }
+                >
+                  {stats.usable.length === 0 && (
+                    <span className='text-muted-foreground text-sm'>
+                      {t('qy_gs_usable_none')}
+                    </span>
+                  )}
+                  {stats.usable
+                    .slice(0, QY_UG_USABLE_INLINE_LIMIT)
+                    .map((name) => (
+                      <Badge
+                        key={name}
+                        variant='outline'
+                        className='max-w-40 truncate'
+                      >
+                        {name}
+                      </Badge>
+                    ))}
+                  {overflow > 0 && (
+                    <Badge variant='secondary' className='tabular-nums'>
+                      {t('qy_gs_usable_more', { count: overflow })}
+                    </Badge>
+                  )}
                   {stats.scopeState === 'unset' && (
                     <StatusBadge variant='neutral' copyable={false}>
                       {t('qy_gs_scope_unset')}
@@ -375,19 +454,29 @@ export function UserGroupsSection(props: {
             },
           },
           {
+            /*
+              ── 弹窗，不跳转（需求 4）──
+
+              原来这里是一条通往「用户分组可用的模型分组配置」那一页的链接。
+              项目方点名「不要再跳转」：跳走之后运营正在编辑的充值折扣草稿全部
+              丢失（那一页是另一个 section，本 section 会被卸载），回来还要重新
+              找到那一行。弹窗与那一页共用同一份状态机与同一道闸门
+              （见 `useQyGmEditor`），能力上没有任何删减。
+            */
             id: 'actions',
             header: t('Actions'),
             className: 'text-right',
             cellClassName: 'text-right',
-            cell: () => (
-              <Link
-                to='/system-settings/billing/$section'
-                params={{ section: 'group-matrix' }}
-                className='text-primary inline-flex items-center gap-1.5 text-sm underline underline-offset-2'
+            cell: (row) => (
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                onClick={() => setScopeTarget(row.name)}
               >
                 <SlidersHorizontal className='h-4 w-4' />
                 {t('qy_gs_open_matrix')}
-              </Link>
+              </Button>
             ),
           },
         ]}
@@ -396,6 +485,23 @@ export function UserGroupsSection(props: {
       <p className='text-muted-foreground text-xs leading-5'>
         {t('qy_gs_topup_hint')}
       </p>
+
+      {/*
+        用户分组**登记表**：新建 / 改名 / 带迁移的删除。
+
+        它与上面那张表的分工写在 `QyUserGroupRoster` 的组件注释里 —— 一句话：
+        上面那张的清单是从 `users.group` 观测出来的，这一张是运营维护出来的，
+        而一个刚建出来、还没有任何人的分组只存在于后者。
+      */}
+      <QyUserGroupRoster />
+
+      <QyUgScopeDialog
+        open={scopeTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setScopeTarget(null)
+        }}
+        userGroup={scopeTarget}
+      />
     </SettingsSection>
   )
 }

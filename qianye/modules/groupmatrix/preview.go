@@ -104,16 +104,6 @@ type newlyAllowedPair struct {
 	HasChannels    bool   `json:"has_channels"`
 }
 
-// overriddenRule 是被权威清单接管、因而不再生效的一条上游 GroupSpecialUsableGroup 规则。
-type overriddenRule struct {
-	UserGroup string `json:"user_group"`
-	Rule      string `json:"rule"`
-	// WasEffective 为 false 的典型就是 `-:<自己>` —— 上游在差分算完之后**无条件**
-	// 把 userGroup 补回去,所以「删掉自己」这条规则从来没有生效过。必须点名,
-	// 否则运营看到「已被接管」会以为是本次改动让它失效的。
-	WasEffective bool `json:"was_effective"`
-}
-
 // caseNearMissPair 是一对仅大小写不同的分组名。**不折叠、只告警。**
 type caseNearMissPair struct {
 	Left        string `json:"left"`
@@ -136,8 +126,10 @@ type previewResult struct {
 	AlreadyBroken []pairImpact `json:"already_broken"`
 	// C:本次放开的组合。
 	NewlyAllowed []newlyAllowedPair `json:"newly_allowed"`
-	// D:被权威清单接管、因此不再生效的上游 +:/-: 规则。
-	OverriddenRules []overriddenRule `json:"overridden_rules"`
+	// D 曾经是「被权威清单接管、因此不再生效的上游 +:/-: 规则」。
+	// 上游 GroupSpecialUsableGroup 已整体下线(它从来没有真正生效过,理由见
+	// setting/ratio_setting/group_ratio.go),这一块随之删除 —— 一份恒为空的
+	// 报表比没有报表更容易让人以为"确实没有规则被接管"。
 	// E:权威清单不含用户分组自己。推翻了上游存在多年的不变量,是警告不是拦截。
 	SelfExcluded []string `json:"self_excluded"`
 	// F:大小写近似的分组名。
@@ -209,7 +201,7 @@ func runPreview(req previewReq) (*previewResult, error) {
 	cfgv := config.Get().GroupMatrix
 	res := &previewResult{
 		NewlyBroken: make([]pairImpact, 0), AlreadyBroken: make([]pairImpact, 0),
-		NewlyAllowed: make([]newlyAllowedPair, 0), OverriddenRules: make([]overriddenRule, 0),
+		NewlyAllowed: make([]newlyAllowedPair, 0),
 		SelfExcluded: make([]string, 0), CaseNearMiss: make([]caseNearMissPair, 0),
 		OrphanGroupNames: make([]orphanGroupName, 0), Notes: make([]string, 0),
 		LogDays: previewLogDays(cfgv.PreviewLogDays),
@@ -275,7 +267,6 @@ func runPreview(req previewReq) (*previewResult, error) {
 		if _, self := prop[ug]; !self {
 			res.SelfExcluded = append(res.SelfExcluded, ug)
 		}
-		res.OverriddenRules = append(res.OverriddenRules, overriddenSpecialRules(ug)...)
 		// A:现在能用、改完不能用。
 		for mg := range cur {
 			if mg == autoGroup {
@@ -354,12 +345,6 @@ func runPreview(req previewReq) (*previewResult, error) {
 	res.OrphanGroupNames = orphanGroupNames(proposed, stats)
 
 	sort.Strings(res.SelfExcluded)
-	sort.Slice(res.OverriddenRules, func(i, j int) bool {
-		if res.OverriddenRules[i].UserGroup != res.OverriddenRules[j].UserGroup {
-			return res.OverriddenRules[i].UserGroup < res.OverriddenRules[j].UserGroup
-		}
-		return res.OverriddenRules[i].Rule < res.OverriddenRules[j].Rule
-	})
 
 	if res.ImpactHash, err = hashImpact(res); err != nil {
 		return nil, err
@@ -433,26 +418,6 @@ func proposedGrants(targets []string, scopes map[string]Scope,
 		case ActionRevoke:
 			delete(set, cell.ModelGroup)
 		}
-	}
-	return out
-}
-
-// overriddenSpecialRules 列出该用户分组上被权威清单接管、因此不再生效的上游规则。
-//
-// 本站那条永远无效的 `-:自己` 会因此第一次被人看见 —— 而且现在它真的生效了。
-func overriddenSpecialRules(userGroup string) []overriddenRule {
-	specials, ok := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.Get(userGroup)
-	if !ok || len(specials) == 0 {
-		return nil
-	}
-	out := make([]overriddenRule, 0, len(specials))
-	for rule := range specials {
-		out = append(out, overriddenRule{
-			UserGroup: userGroup, Rule: rule,
-			// `-:<自己>` 在上游**从未生效过**:最后一步无条件把 userGroup 补回去。
-			// 接管之后它第一次真的生效 —— 不点名的话,运营会以为是本次改动让它失效的。
-			WasEffective: strings.TrimPrefix(rule, "-:") != userGroup,
-		})
 	}
 	return out
 }

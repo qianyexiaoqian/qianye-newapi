@@ -44,7 +44,6 @@ func TestWriteGuardAcceptsPlanUnlockedGroup(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "pro": 0.8})
 
 	// vip 分组被接管,清单里只有 default —— 按 grants 判定,pro 是要被拒的。
@@ -73,7 +72,6 @@ func TestPlaygroundAllowsPlanUnlockedGroup(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "pro": 0.8})
 	seedScope(t, gdb, "vip", ModeEnforce, false, "default")
 	require.NoError(t, reload())

@@ -33,6 +33,7 @@ import type {
 import {
   qyUgFilterGroups,
   qyUgGrantedCount,
+  qyUgGrantedModelGroups,
   qyUgResolveSelected,
 } from '../lib/rows'
 
@@ -170,6 +171,56 @@ describe('qyUgGrantedCount', () => {
     // 而真正该被看见的是后端另发的那条「引用了已消失的模型分组」告警。
     const serverCells = qyGmIndexCells([cell('vip', 'retired', true)])
     assert.equal(qyUgGrantedCount(data, serverCells, new Map(), 'vip'), 0)
+  })
+})
+
+describe('qyUgGrantedModelGroups', () => {
+  // 「用户分组」那张表的【可用模型分组】列直接列名字（需求 4）。列错名字比列错
+  // 个数更糟：运营会据此认定某一档人能用某个池子，而实际不能。
+  const data = matrix(
+    [userGroup('vip', { managed: true })],
+    ['免费の渠道', '浅夜の梦专属号池', 'slow']
+  )
+
+  test('按列轴顺序给出名字，草稿合并后生效', () => {
+    const serverCells = qyGmIndexCells([
+      cell('vip', '免费の渠道', true),
+      cell('vip', '浅夜の梦专属号池', false),
+      cell('vip', 'slow', false),
+    ])
+    const draft = new Map<string, QyGmDraftEntry>([
+      [qyGmCellKey('vip', '浅夜の梦专属号池'), { granted: true }],
+    ])
+    assert.deepEqual(qyUgGrantedModelGroups(data, serverCells, draft, 'vip'), [
+      '免费の渠道',
+      '浅夜の梦专属号池',
+    ])
+  })
+
+  test('已从倍率表删掉的模型分组不出现在名单里', () => {
+    // 它已经不可达。列出来会让运营以为这一档还能用它，而唯一说了实话的是
+    // 后端另发的那条「引用了已消失的模型分组」告警。
+    const serverCells = qyGmIndexCells([cell('vip', 'retired', true)])
+    assert.deepEqual(
+      qyUgGrantedModelGroups(data, serverCells, new Map(), 'vip'),
+      []
+    )
+  })
+
+  test('与徽章上的计数同源：长度恒等于 qyUgGrantedCount', () => {
+    // 表里写 3 个、点开弹窗只列出 2 个，运营会认为页面坏了并重配一遍 ——
+    // 而重配的动作恰好是撤销与改价。
+    const serverCells = qyGmIndexCells([
+      cell('vip', '免费の渠道', true),
+      cell('vip', 'slow', true),
+    ])
+    const draft = new Map<string, QyGmDraftEntry>([
+      [qyGmCellKey('vip', 'slow'), { granted: false }],
+    ])
+    assert.equal(
+      qyUgGrantedModelGroups(data, serverCells, draft, 'vip').length,
+      qyUgGrantedCount(data, serverCells, draft, 'vip')
+    )
   })
 })
 

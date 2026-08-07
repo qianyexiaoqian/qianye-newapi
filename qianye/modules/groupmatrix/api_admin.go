@@ -234,8 +234,8 @@ type scopePolicy struct {
 	// ⚠ 它的准确含义是「**本页不限制**未设定范围的用户分组」,不是「它们能用到
 	// options.GroupRatio 里的每一个模型分组」。未设定范围时 Resolve 逐位返回上游
 	// service.GetUserUsableGroups 的结果 —— 也就是全局「用户可选分组」清单
-	// (setting.userUsableGroups)+ GroupSpecialUsableGroup 的 +: / -: 差分 + 无条件
-	// 补入用户分组自己。这两件事在「全局清单没有列出全部模型分组」的站点上结论不同,
+	// (setting.userUsableGroups),外加「用户分组自己恰好也是一个配了倍率的模型分组」
+	// 时的那一条补入。这两件事在「全局清单没有列出全部模型分组」的站点上结论不同,
 	// 而本站正是这种站点。界面文案必须按前一种说法写;要让它真的等于"全部模型分组",
 	// 需要项目方拍板改变 Resolve 的恒等契约(那会同时推翻"未配置 = 上游指针恒等")。
 	//

@@ -244,4 +244,27 @@ export const qyKeys = {
   adminGroupMatrixData: () => [...qyKeys.adminGroupMatrix(), 'data'] as const,
   adminGroupMatrixOrphans: () =>
     [...qyKeys.adminGroupMatrix(), 'orphans'] as const,
+
+  adminModelGroups: () => [...qyKeys.all, 'admin', 'model-groups'] as const,
+  /**
+   * 单个模型分组的删除影响面。
+   *
+   * 按名字分键而不是挂在共享前缀上：影响面是一次实时探测（要扫 abilities /
+   * channels / tokens），删完 A 之后 refetch 屏幕上其余每一行的影响面，
+   * 会在一次点击里发出十几个全表扫描。
+   */
+  adminModelGroupImpact: (name: string) =>
+    [...qyKeys.adminModelGroups(), 'impact', name] as const,
+
+  /** 用户分组**登记表**(`qy_user_groups`)。与矩阵页的行轴不是同一份数据。 */
+  adminUserGroupRoster: () => [...qyKeys.all, 'admin', 'user-groups'] as const,
+  /**
+   * 单个用户分组的删除影响面。
+   *
+   * 按名字分键、且带上迁移目标:目标一换,可用清单与倍率差整份重算,
+   * 而那正是运营在弹窗里唯一要读的东西。共用一个键会让换目标时先渲染一份
+   * 属于上一个目标的差异 —— 一份看起来完全正常的、错的报价。
+   */
+  adminUserGroupImpact: (name: string, target: string) =>
+    [...qyKeys.adminUserGroupRoster(), 'impact', name, target] as const,
 } as const

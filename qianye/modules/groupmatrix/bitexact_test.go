@@ -50,10 +50,14 @@ func withRealHook(t *testing.T, userGroup string) map[string]string {
 // TestUnmanagedGroupsAreBitExactWithUpstream 是笛卡尔积对账。
 //
 // 覆盖必须包含两格「一眼看不出为什么重要」的:
-//   - `-:<userGroup 自己>`:本站实测存在的那条**从未生效过**的规则。
-//     上游最后一步无条件补自己,所以它一直是空转的;接管之后它第一次真的生效。
-//     未接管时必须仍然空转 —— 否则这次改动就悄悄改变了一批用户的可选范围。
-//   - userGroup 不在白名单里:这是触发上游那段自我补入的唯一路径。
+//   - userGroup **不在白名单、但在分组倍率表里**:这是自我补入唯一还会生效的路径
+//     (收窄之后的判据,见 service/group.go)。
+//   - userGroup **两边都不在**:自我补入必须什么都不做。收窄之前这一档会被塞进
+//     一个够不到任何东西的名字,收窄之后不塞 —— 两种写法在这里的结论必须都能被看到。
+//
+// 原先还有一维 `GroupSpecialUsableGroup` 的 +:/-:/裸键差分。那套规则整套下线
+// (它从来没有真正生效过,理由见 setting/ratio_setting/group_ratio.go),
+// 这一维随之删除。
 func TestUnmanagedGroupsAreBitExactWithUpstream(t *testing.T) {
 	newTestDB(t)
 	useConfig(t, true)
@@ -64,37 +68,26 @@ func TestUnmanagedGroupsAreBitExactWithUpstream(t *testing.T) {
 		"仅 default":   {"default": "默认分组"},
 		"default+vip": {"default": "默认分组", "vip": "vip分组"},
 	}
-	specialSets := map[string]map[string]string{
-		"无":         nil,
-		"加一个":       {"+:extra": "额外分组"},
-		"删 default": {"-:default": ""},
-		"删自己":       {"-:vip": ""},
-		"裸键":        {"bare": "裸键分组"},
-	}
-	userGroups := []string{"", "default", "vip", "不在白名单的分组"}
+	userGroups := []string{"", "default", "vip", "不在白名单的分组", "两边都不在的分组"}
 
+	// `不在白名单的分组` 在倍率表里、`两边都不在的分组` 不在 —— 两档分别覆盖
+	// 自我补入的成立与不成立。
 	groupRatio := map[string]float64{
 		"default": 1, "vip": 0.5, "extra": 0.2, "bare": 1, "不在白名单的分组": 1,
 	}
 
 	for wlName, wl := range whitelists {
-		for spName, sp := range specialSets {
-			for _, ug := range userGroups {
-				t.Run(wlName+"/"+spName+"/"+ug, func(t *testing.T) {
-					specials := map[string]map[string]string{}
-					if sp != nil && ug != "" {
-						specials[ug] = sp
-					}
-					useUpstreamGroups(t, wl, specials, groupRatio)
-					// 库里一条 scope 行都没有 → 全部 unmanaged。
-					require.NoError(t, reload())
+		for _, ug := range userGroups {
+			t.Run(wlName+"/"+ug, func(t *testing.T) {
+				useUpstreamGroups(t, wl, groupRatio)
+				// 库里一条 scope 行都没有 → 全部 unmanaged。
+				require.NoError(t, reload())
 
-					want := upstreamBaseline(t, ug)
-					got := withRealHook(t, ug)
-					assert.Equal(t, want, got,
-						"未接管的用户分组必须与上游逐位一致 —— 差一个 key 就是一批用户断服或一次资金泄漏")
-				})
-			}
+				want := upstreamBaseline(t, ug)
+				got := withRealHook(t, ug)
+				assert.Equal(t, want, got,
+					"未接管的用户分组必须与上游逐位一致 —— 差一个 key 就是一批用户断服或一次资金泄漏")
+			})
 		}
 	}
 }
@@ -109,7 +102,6 @@ func TestResolveReturnsUpstreamPointerWhenNotManaged(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1})
 
 	cases := []struct {
@@ -161,7 +153,6 @@ func TestEnforceReturnsFreshMapNotSnapshotInternals(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组", "vip": "vip分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1})
 	seedScope(t, gdb, "vip", ModeEnforce, false, "default")
 
@@ -189,7 +180,6 @@ func TestEnforceAuthoritativeListOverridesUpstreamEntirely(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组", "vip": "vip分组", "svip": "svip分组"},
-		map[string]map[string]string{"vip": {"+:extra": "额外分组"}},
 		map[string]float64{"default": 1, "vip": 1, "svip": 1, "extra": 1, "only": 1})
 	seedScope(t, gdb, "vip", ModeEnforce, false, "only")
 
@@ -220,7 +210,6 @@ func TestSwitchingToManagedWithPrefillIsBehaviourNeutral(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组", "vip": "vip分组"},
-		map[string]map[string]string{"vip": {"+:extra": "额外分组"}},
 		map[string]float64{"default": 1, "vip": 1, "extra": 1})
 
 	prev := service.QyResolveUsableGroups
@@ -256,7 +245,6 @@ func TestEmptyGrantListIsExpressible(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组", "vip": "vip分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1})
 	seedScope(t, gdb, "vip", ModeEnforce, false)
 
@@ -278,7 +266,6 @@ func TestGrantsAreDroppedWhenModelGroupLeavesRatioTable(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "gone": 1})
 	seedScope(t, gdb, "vip", ModeEnforce, false, "default", "gone")
 
@@ -288,7 +275,6 @@ func TestGrantsAreDroppedWhenModelGroupLeavesRatioTable(t *testing.T) {
 	// 运营在上游把 gone 从分组倍率表里删了。
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1})
 	require.NoError(t, reload())
 
@@ -311,7 +297,6 @@ func TestSnapshotIsKeptWhenStale(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组", "free": "免费分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "free": 0})
 	seedScope(t, gdb, "vip", ModeEnforce, false, "default")
 
@@ -369,7 +354,6 @@ func TestPreviewPrefillsUnmanagedTargets(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组", "vip": "会员分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 0.5, "paid": 1})
 
 	res, err := runPreview(previewReq{UserGroups: []string{"paid"}})

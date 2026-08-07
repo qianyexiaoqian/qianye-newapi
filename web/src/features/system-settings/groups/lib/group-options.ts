@@ -19,13 +19,17 @@ For commercial licensing, please contact support@quantumnous.com
 import { safeJsonParse } from '../../utils/json-parser'
 
 /**
- * 「分组定价」那一页被拆成三块之后，8 个上游 option 的归属与序列化。
+ * 「分组定价」那一页被拆成三块之后，7 个上游 option 的归属与序列化。
  *
- * ── 为什么是 8 项而不是题面上的 6 段 ──
+ * ── 为什么是 7 项而不是题面上的 6 段 ──
  *
- * 原 `group-ratio-form.tsx` 的表单值有 8 个字段，其中 `GroupGroupRatio` 与
- * `GroupSpecialUsableGroup` 不是独立表单行（它们在可视化编辑器内部被读写），
- * 所以肉眼数只能数出 6 段。按 6 段做完备性检查会让「矩阵格子的倍率」落单。
+ * 原 `group-ratio-form.tsx` 的表单值里 `GroupGroupRatio` 不是独立表单行
+ * （它在矩阵编辑器内部被读写），所以肉眼数只能数出 6 段。按 6 段做完备性
+ * 检查会让「矩阵格子的倍率」落单。
+ *
+ * （曾经的第 8 项 `GroupSpecialUsableGroup` 已随后端一并下线：它从来没有真正
+ * 生效过 —— 上游在差分算完之后无条件把用户分组自己补回去，把唯一有意义的
+ * `-:自己` 恒抵消掉。理由见 `setting/ratio_setting/group_ratio.go`。）
  *
  * ── 归属判据（一句话）──
  *
@@ -48,7 +52,6 @@ export const GROUP_OPTION_KEYS = [
   'AutoGroups',
   'MaxTokenAutoGroups',
   'DefaultUseAutoGroup',
-  'GroupSpecialUsableGroup',
 ] as const
 
 export type GroupOptionKey = (typeof GROUP_OPTION_KEYS)[number]
@@ -102,12 +105,13 @@ export const MODEL_GROUP_PAGE_KEYS = [
 ] as const
 
 /**
- * 哪儿都不可写、只在 B 页只读展示的键。
+ * 哪儿都不可写、只读展示的键。
  *
- * `GroupSpecialUsableGroup` 是权威清单关掉之后的回退路径，删了就没有退路；
- * 但它与范围是两套叠加的语义，留着编辑入口会让人以为两者可以同时配。
+ * 目前是空的：唯一的成员 `GroupSpecialUsableGroup` 已随后端下线。清单本身保留 ——
+ * 归属守卫按「三份可写清单 + 这一份」求并集,删掉它会让下一个"只读但仍在生效"
+ * 的配置项没有地方登记,而那正是这套守卫要防的形状。
  */
-export const READ_ONLY_GROUP_OPTION_KEYS = ['GroupSpecialUsableGroup'] as const
+export const READ_ONLY_GROUP_OPTION_KEYS = [] as const
 
 // ─────────────────────────── 解析 ───────────────────────────
 
@@ -425,45 +429,4 @@ export function serializeUsableGroupRows(
     out[name] = row.description
   }
   return JSON.stringify(out, null, 2)
-}
-
-/**
- * 上游 `GroupSpecialUsableGroup` 的一条规则。
- *
- * key 的三种写法（`+:x` / `-:x` / 裸 `x`）语义完全不同，展示时必须分开 ——
- * 把 `-:default` 显示成 `default` 会让运营读成「额外开放」，而它是「遮断」。
- */
-export type SpecialUsableRule = {
-  userGroup: string
-  modelGroup: string
-  visible: boolean
-  description: string
-}
-
-export function parseSpecialUsableRules(value: string): SpecialUsableRule[] {
-  const map = safeJsonParse<Record<string, Record<string, string>>>(value, {
-    fallback: {},
-    silent: true,
-  })
-  const rules: SpecialUsableRule[] = []
-  for (const [userGroup, inner] of Object.entries(map)) {
-    if (typeof inner !== 'object' || inner === null) continue
-    for (const [rawKey, description] of Object.entries(inner)) {
-      let visible = true
-      let modelGroup = rawKey
-      if (rawKey.startsWith('-:')) {
-        visible = false
-        modelGroup = rawKey.slice(2)
-      } else if (rawKey.startsWith('+:')) {
-        modelGroup = rawKey.slice(2)
-      }
-      rules.push({
-        userGroup,
-        modelGroup,
-        visible,
-        description: typeof description === 'string' ? description : '',
-      })
-    }
-  }
-  return rules
 }

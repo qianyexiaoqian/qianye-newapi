@@ -65,6 +65,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/module"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
@@ -91,6 +92,9 @@ func (Mod) InstallHooks() {
 	service.QyNotePinRejected = NotePinRejected
 	service.QyPinnedModelGroups = PinnedModelGroups
 	service.QyDeclaredUserGroups = DeclaredUserGroups
+	// 模型分组备注:它**覆盖** options.UserUsableGroups 里那段说明文案。
+	// 优先级与理由见 setting/qy_groupnote_export.go;实现体见 modelgroup_api.go。
+	setting.QyGroupNote = ModelGroupNote
 
 	if !enabled() {
 		return
@@ -106,10 +110,34 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 		r.GET("/user-groups", adminListUserGroups)
 		r.GET("/model-groups", adminListModelGroups)
 		r.GET("/report", adminReport)
+		// 删除/改名之前必须能看到影响面。只读,不限流 ——
+		// 它是那两个写接口的**前置条件**,限流它等于让运营更倾向于跳过预览。
+		r.GET("/user-groups/:name/impact", adminUserGroupImpact)
 		// 写接口一律挂 CriticalRateLimit:它们决定"空分组令牌去哪个池子",
 		// 一次误配影响一整组用户。
 		r.POST("/backfill", middleware.CriticalRateLimit(), adminBackfill)
 		r.PUT("/user-groups/:name/default", middleware.CriticalRateLimit(), adminSetDefaultModelGroup)
+		// 生命周期三件套。删除与改名会横跨两个数据库改六张表,
+		// 一次误点影响一整档人的可用分组与账单,限流档次与上面一致。
+		r.POST("/user-groups", middleware.CriticalRateLimit(), adminCreateUserGroup)
+		r.PUT("/user-groups/:name", middleware.CriticalRateLimit(), adminUpdateUserGroup)
+		r.POST("/user-groups/:name/rename", middleware.CriticalRateLimit(), adminRenameUserGroup)
+		r.DELETE("/user-groups/:name", middleware.CriticalRateLimit(), adminDeleteUserGroup)
+
+		// ── 模型分组这一侧 ────────────────────────────────────────────
+		//
+		// 只有备注/显示名/启停/排序与**删除联动**,刻意**没有新建与改名**:
+		//   新建 一个模型分组是不是存在,由 options.GroupRatio 与 abilities 回答,
+		//        在这里凭空登记一行只会造出一个既没有倍率也没有渠道的名字 ——
+		//        那正是「预设混乱」的来源。新建仍然在上游「模型分组」页(加一行倍率)。
+		//   改名 要连带重写 abilities(物化路由表)、channels.group(逗号串)、
+		//        tokens.group、GroupRatio 键、GroupGroupRatio 内层键、两张授权表,
+		//        而 model/channel.go 里「先提交 channels.group、再单独重建 abilities」
+		//        那个非原子窗口在改名期间会让 InitChannelCache 读到半成状态。
+		//        射程之外,见 groupns.go 的包注释。
+		r.GET("/model-groups/:name/impact", adminModelGroupImpact)
+		r.PUT("/model-groups/:name", middleware.CriticalRateLimit(), adminUpdateModelGroup)
+		r.DELETE("/model-groups/:name", middleware.CriticalRateLimit(), adminDeleteModelGroup)
 	}
 }
 

@@ -394,22 +394,6 @@ export type QyGmAllowPair = {
   has_channels: boolean
 }
 
-/** 被权威清单整体接管、因而不再生效的上游 `GroupSpecialUsableGroup` 规则。 */
-export type QyGmOverriddenRule = {
-  user_group: string
-  /** 规则原文，例如 `-:default` / `+:vip` / 裸 key。 */
-  rule: string
-  /**
-   * 这条规则在接管**之前**是否真的生效过。
-   *
-   * `false` 的典型就是 `-:<自己>` —— 上游 `service/group.go` 在差分算完之后
-   * 无条件把 userGroup 自己补回去，所以「删掉自己」这条规则从来没有生效过。
-   * 本站实测就有这么一条。必须点名，否则运营看到「已被接管」会以为是本次
-   * 改动让它失效的。
-   */
-  was_effective: boolean
-}
-
 /** 大小写近似项。**不折叠、只告警**，理由见 `lib/draft.ts` 的说明。 */
 export type QyGmCaseNearMiss = {
   left: string
@@ -451,8 +435,6 @@ export type QyGmPreviewResponse = {
   already_broken: QyGmImpactPair[]
   /** C：新放开的边。 */
   newly_allowed: QyGmAllowPair[]
-  /** D：被接管而失效的上游特殊规则。 */
-  overridden_rules: QyGmOverriddenRule[]
   /** E：权威清单里不含用户分组自己。**警告而不是拦截** —— 项目方要它能被推翻。 */
   self_excluded: string[]
   /** F：大小写近似项。 */

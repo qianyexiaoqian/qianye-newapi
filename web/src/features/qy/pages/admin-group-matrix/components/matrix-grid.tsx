@@ -40,14 +40,13 @@ import {
   qyGmCellKey,
   qyGmGrantedOf,
   qyGmRatioDraftOf,
+  type QyGmColumnBulk,
   type QyGmDraft,
   type QyGmRatioDraft,
 } from '../lib/draft'
 import type { QyGmCell, QyGmMatrixResponse } from '../types'
 import { QyGmMatrixCell } from './matrix-cell'
 import { QyGmScopeStateBadges } from './scope-state-badges'
-
-export type QyGmColumnBulk = 'clear' | 'inherit_all' | 'select_all'
 
 type QyGmMatrixGridProps = {
   data: QyGmMatrixResponse

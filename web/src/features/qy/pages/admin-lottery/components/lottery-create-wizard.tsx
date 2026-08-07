@@ -55,12 +55,15 @@ import { createQyLotActivity, qyAdminLotSeriesQuery } from '../api'
 import { qyLotFromLocalInput, qyLotToLocalInput } from '../lib/datetime'
 import {
   qyLotBreakEvenEntries,
+  qyLotDraftForPlay,
   qyLotDraftToInput,
   qyLotEmptyDraft,
   qyLotNewOption,
+  qyLotPlayOf,
   qyLotTotalPrizeQuota,
   qyLotValidateDraft,
   type QyLotDraft,
+  type QyLotPlay,
 } from '../lib/draft'
 import type { QyLotAdminConfig, QyLotSeries } from '../types'
 import { QyLotRulesEditor } from './lottery-rules-editor'
@@ -113,7 +116,7 @@ export function QyLotCreateWizard(props: {
 
   // 期次系列只在真的要开双色球时才拉：它是一张管理端冷路径的表，普通抽奖的
   // 创建流程不该为它多打一次请求。
-  const isBall = draft.kind === 'draw' && draft.draw_mode === 'ball'
+  const isBall = qyLotPlayOf(draft) === 'ball'
   const seriesQuery = useQuery({
     ...qyAdminLotSeriesQuery({ p: 1, page_size: 100 }),
     enabled: props.open && isBall,
@@ -207,6 +210,12 @@ export function QyLotCreateWizard(props: {
             <BasicStep
               draft={draft}
               onChange={patch}
+              // 玩法切换不能走 `patch`：它要同时归位 `kind`、`draw_mode` 与
+              // `series_no` 三个字段，而归位规则（哪个该清、哪个该留）在
+              // `qyLotDraftForPlay` 里有一份带理由的实现，且有测试盯着。
+              onSelectPlay={(next) =>
+                setDraft((prev) => qyLotDraftForPlay(prev, next))
+              }
               seriesList={seriesList}
               seriesLoading={seriesQuery.isLoading}
             />
@@ -238,8 +247,8 @@ export function QyLotCreateWizard(props: {
         isLoading={mutation.isPending}
         details={
           <div>
-            <QyKeyValue label={t('qy_lot_kind')}>
-              {t(`qy_lot_kind_${draft.kind}`)}
+            <QyKeyValue label={t('qy_lot_play')}>
+              {isBall ? t('qy_lot_mode_ball') : t(`qy_lot_kind_${draft.kind}`)}
             </QyKeyValue>
             <QyKeyValue label={t('qy_lot_stake')}>
               <QyAmountText quota={draft.stake_quota} />
@@ -274,54 +283,72 @@ export function QyLotCreateWizard(props: {
 function BasicStep(props: {
   draft: QyLotDraft
   onChange: (patch: Partial<QyLotDraft>) => void
+  onSelectPlay: (play: QyLotPlay) => void
   seriesList: QyLotSeries[]
   seriesLoading: boolean
 }) {
   const { draft } = props
   const { t } = useTranslation()
   const id = useId()
-  const isBall = draft.kind === 'draw' && draft.draw_mode === 'ball'
+  const play = qyLotPlayOf(draft)
+  const isBall = play === 'ball'
   const openSeries = props.seriesList.filter((item) => item.status === 'open')
 
   return (
     <div className='space-y-3'>
+      {/*
+        ── 三个玩法并列，双色球不再埋在二级下拉里（需求 6）──
+
+        项目方原话：「抽奖竞猜页面，没有发现"双色球"活动 UI 界面和配置活动
+        界面。」它其实一直都在，只是要先选「抽奖」、再在「摇号方式」里选
+        「双色球」—— 两层之下的东西等于不存在。
+
+        做法是**只改呈现**：三张卡对应 `qyLotDraftForPlay` 的三个投影，落库仍是
+        (kind, draw_mode) 两个字段，后端一个字节不改（`kind` 是生命周期任务的
+        扫表维度，新增一个 kind 要在四处补分支，漏一处就是一条静默死路）。
+
+        用卡片而不是下拉：三个选项各自的资金语义完全不同（抽奖是平台净增发、
+        竞猜是奖池再分配、双色球是期次滚存），一行副标就能把差别说清楚，
+        而下拉在收起状态下只剩一个词。
+      */}
       <div className='space-y-1'>
-        <Label htmlFor={`${id}-kind`}>{t('qy_lot_kind')}</Label>
-        <Select
-          value={draft.kind}
-          onValueChange={(value) =>
-            props.onChange({
-              kind: value === 'guess' ? 'guess' : 'draw',
-              // 竞猜没有定档方式这回事。切过去时把它归位，免得切回来时留着一个
-              // 只在抽奖下有意义的 ball 却看不到对应的表单。
-              ...(value === 'guess'
-                ? { draw_mode: 'rank' as const, series_no: '' }
-                : {}),
-            })
-          }
-        >
-          <SelectTrigger id={`${id}-kind`}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value='draw'>{t('qy_lot_kind_draw')}</SelectItem>
-            <SelectItem value='guess'>{t('qy_lot_kind_guess')}</SelectItem>
-          </SelectContent>
-        </Select>
-        <p className='text-muted-foreground text-xs'>
-          {t(`qy_lot_kind_${draft.kind}_hint`)}
-        </p>
+        <Label>{t('qy_lot_play')}</Label>
+        <div className='grid gap-2 sm:grid-cols-3'>
+          <PlayOption
+            active={play === 'draw'}
+            title={t('qy_lot_kind_draw')}
+            desc={t('qy_lot_kind_draw_hint')}
+            onSelect={() => props.onSelectPlay('draw')}
+          />
+          <PlayOption
+            active={play === 'guess'}
+            title={t('qy_lot_kind_guess')}
+            desc={t('qy_lot_kind_guess_hint')}
+            onSelect={() => props.onSelectPlay('guess')}
+          />
+          <PlayOption
+            active={isBall}
+            title={t('qy_lot_mode_ball')}
+            desc={t('qy_lot_mode_ball_hint')}
+            onSelect={() => props.onSelectPlay('ball')}
+          />
+        </div>
       </div>
 
-      {draft.kind === 'draw' && (
+      {/*
+        定档方式只剩两个选项，且只在「抽奖」下出现。
+
+        `ball` 从这里拿走了 —— 它现在是一级玩法。留在这儿会出现两个入口指向
+        同一个状态，而其中一个（这里）不会把 `series_no` 一起归位。
+      */}
+      {play === 'draw' && (
         <div className='space-y-1'>
           <Label htmlFor={`${id}-mode`}>{t('qy_lot_draw_mode')}</Label>
           <Select
-            value={draft.draw_mode === '' ? 'rank' : String(draft.draw_mode)}
+            value={draft.draw_mode === 'prob' ? 'prob' : 'rank'}
             onValueChange={(value) =>
               props.onChange({
-                draw_mode: value as QyLotDraft['draw_mode'],
-                ...(value === 'ball' ? {} : { series_no: '' }),
+                draw_mode: value === 'prob' ? 'prob' : 'rank',
               })
             }
           >
@@ -331,13 +358,12 @@ function BasicStep(props: {
             <SelectContent>
               <SelectItem value='rank'>{t('qy_lot_mode_rank')}</SelectItem>
               <SelectItem value='prob'>{t('qy_lot_mode_prob')}</SelectItem>
-              <SelectItem value='ball'>{t('qy_lot_mode_ball')}</SelectItem>
             </SelectContent>
           </Select>
           <p className='text-muted-foreground text-xs'>
-            {t(
-              `qy_lot_mode_${draft.draw_mode === '' ? 'rank' : draft.draw_mode}_hint`
-            )}
+            {draft.draw_mode === 'prob'
+              ? t('qy_lot_mode_prob_hint')
+              : t('qy_lot_mode_rank_hint')}
           </p>
         </div>
       )}
@@ -452,6 +478,37 @@ function BasicStep(props: {
   )
 }
 
+/**
+ * 一级玩法的一张卡。
+ *
+ * 与 `admin-group-matrix` 的模式选项同一个形状（`aria-pressed` + 选中描边），
+ * 这个仓库里"从几个互斥选项里挑一个、且每个都要带一行解释"就长这样。
+ */
+function PlayOption(props: {
+  active: boolean
+  title: string
+  desc: string
+  onSelect: () => void
+}) {
+  return (
+    <button
+      type='button'
+      onClick={props.onSelect}
+      aria-pressed={props.active}
+      className={
+        props.active
+          ? 'border-primary bg-primary/5 rounded-lg border p-3 text-start'
+          : 'hover:bg-muted/50 rounded-lg border p-3 text-start'
+      }
+    >
+      <span className='block text-sm font-medium'>{props.title}</span>
+      <span className='text-muted-foreground mt-1 block text-xs'>
+        {props.desc}
+      </span>
+    </button>
+  )
+}
+
 function TimeField(props: {
   label: string
   hint?: string
@@ -488,7 +545,7 @@ function SpecStep(props: {
   const { t } = useTranslation()
   const id = useId()
 
-  if (draft.kind === 'draw' && draft.draw_mode === 'ball') {
+  if (qyLotPlayOf(draft) === 'ball') {
     return (
       <BallSpecStep
         draft={draft}
@@ -1073,7 +1130,7 @@ function ReviewStep(props: {
 }) {
   const { draft } = props
   const { t } = useTranslation()
-  const isBall = draft.kind === 'draw' && draft.draw_mode === 'ball'
+  const isBall = qyLotPlayOf(draft) === 'ball'
 
   return (
     <div className='space-y-3'>
@@ -1097,14 +1154,16 @@ function ReviewStep(props: {
         <p className='mb-2 text-sm font-medium'>
           {t('qy_lot_review_frozen_title')}
         </p>
-        <QyKeyValue label={t('qy_lot_kind')}>
-          {t(`qy_lot_kind_${draft.kind}`)}
+        {/* 双色球的 `kind` 也是 `draw`，照 kind 印会在最后一屏上写着「抽奖」，
+            而这一屏的全部意义是"看清楚即将被永久冻结的东西"。 */}
+        <QyKeyValue label={t('qy_lot_play')}>
+          {isBall ? t('qy_lot_mode_ball') : t(`qy_lot_kind_${draft.kind}`)}
         </QyKeyValue>
-        {draft.kind === 'draw' && (
+        {draft.kind === 'draw' && !isBall && (
           <QyKeyValue label={t('qy_lot_draw_mode')}>
-            {t(
-              `qy_lot_mode_${draft.draw_mode === '' ? 'rank' : draft.draw_mode}`
-            )}
+            {draft.draw_mode === 'prob'
+              ? t('qy_lot_mode_prob')
+              : t('qy_lot_mode_rank')}
           </QyKeyValue>
         )}
         {isBall && props.series != null && (

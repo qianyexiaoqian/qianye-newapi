@@ -27,6 +27,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { cn } from '@/lib/utils'
 
 import { QyGmMatrixCell } from '../../admin-group-matrix/components/matrix-cell'
 import { QyGmScopeStateBadges } from '../../admin-group-matrix/components/scope-state-badges'
@@ -52,8 +53,22 @@ type QyUgGroupDetailProps = {
   grantedCount: number
   onToggleGranted: (modelGroup: string, granted: boolean) => void
   onRatioChange: (modelGroup: string, ratio: QyGmRatioDraft) => void
-  onEditScope: () => void
+  /**
+   * 打开「范围设置」抽屉。
+   *
+   * 缺省 = **不渲染那个按钮**。配置弹窗（需求 4）把范围表单直接内嵌在同一屏里，
+   * 那里再放一个"编辑范围"就会开出第二层浮层，而下面那一层正握着未保存的草稿。
+   */
+  onEditScope?: () => void
   onCopyFrom: (fromUserGroup: string) => void
+  /**
+   * 模型分组清单自己滚（缺省 true）。
+   *
+   * 主从式那一页里它与左列表并排，无限长的清单会把详情面板顶到屏幕外，所以要
+   * 内滚。内嵌进弹窗时相反：弹窗正文本身就是滚动区，再套一层内滚动会出现两个
+   * 滚动条，鼠标停在清单上时外层完全不动 —— 用户滚不到下面的东西。
+   */
+  scrollList?: boolean
 }
 
 /**
@@ -114,14 +129,16 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
         </div>
 
         <div className='flex shrink-0 items-center gap-2'>
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            onClick={props.onEditScope}
-          >
-            {t('qy_group_scope_edit')}
-          </Button>
+          {props.onEditScope != null && (
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={props.onEditScope}
+            >
+              {t('qy_group_scope_edit')}
+            </Button>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
@@ -183,7 +200,12 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
         {t('qy_group_matrix_axis_col_title')}
       </div>
 
-      <ul className='max-h-[52vh] min-h-0 space-y-1 overflow-y-auto'>
+      <ul
+        className={cn(
+          'min-h-0 space-y-1',
+          (props.scrollList ?? true) && 'max-h-[52vh] overflow-y-auto'
+        )}
+      >
         {props.data.model_groups.map((column) => {
           const key = qyGmCellKey(props.userGroup.name, column.name)
           const cell = props.serverCells.get(key)

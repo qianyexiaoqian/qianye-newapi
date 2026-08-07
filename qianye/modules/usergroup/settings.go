@@ -194,6 +194,25 @@ func writeDefaultGroup(value string, operatorId int) error {
 	if gdb == nil {
 		return db.ErrNotReady
 	}
+	if err := writeDefaultGroupTx(gdb, value, operatorId); err != nil {
+		db.MarkFailure(err)
+		return err
+	}
+	storeDefaultGroup(value)
+	return nil
+}
+
+// writeDefaultGroupTx 只落库,**不碰进程内缓存**。
+//
+// 它存在的唯一理由是让这一行能加入调用方已经打开的事务(用户分组删除/改名时,
+// 扩展库的全部残留清理是一个事务)。缓存必须留给调用方在**提交之后**再刷:
+// 在事务里刷缓存,一旦事务回滚,进程里就留着一个数据库中并不存在的默认分组 ——
+// 而回滚恰好是这条路径最需要防的情况(删除的最后一步失败会把整个分组还原,
+// 唯独默认分组指向了迁移目标且再也回不来)。
+func writeDefaultGroupTx(tx *gorm.DB, value string, operatorId int) error {
+	if tx == nil {
+		return db.ErrNotReady
+	}
 	row := qymodel.Setting{
 		Scope:      settingScope,
 		K:          keyDefaultGroup,
@@ -201,14 +220,8 @@ func writeDefaultGroup(value string, operatorId int) error {
 		OperatorId: operatorId,
 		UpdatedAt:  common.GetTimestamp(),
 	}
-	err := gdb.Clauses(clause.OnConflict{
+	return tx.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "scope"}, {Name: "k"}},
 		DoUpdates: clause.AssignmentColumns([]string{"v", "operator_id", "updated_at"}),
 	}).Create(&row).Error
-	if err != nil {
-		db.MarkFailure(err)
-		return err
-	}
-	storeDefaultGroup(value)
-	return nil
 }

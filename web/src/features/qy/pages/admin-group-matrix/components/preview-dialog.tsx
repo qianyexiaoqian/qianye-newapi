@@ -54,7 +54,6 @@ type QyGmPreviewDialogProps = {
  */
 export function QyGmPreviewDialog(props: QyGmPreviewDialogProps) {
   const { t } = useTranslation()
-  const preview = props.preview
 
   return (
     <QyResponsiveDialog
@@ -73,152 +72,150 @@ export function QyGmPreviewDialog(props: QyGmPreviewDialogProps) {
         </Button>
       }
     >
-      {props.isLoading || preview == null ? (
-        <p className='text-muted-foreground py-6 text-center text-sm'>
-          {t('qy_group_matrix_preview_loading')}
-        </p>
-      ) : (
-        <div className='space-y-4'>
-          {/* 超时/超限时禁止切 enforce —— 宁可切不了，也不能在看不见影响面的
+      <QyGmPreviewBody preview={props.preview} isLoading={props.isLoading} />
+    </QyResponsiveDialog>
+  )
+}
+
+/**
+ * 影响面报告的正文，**与外壳分开**。
+ *
+ * 需求 4 的配置弹窗要在自己里面就地显示这份报告：把 {@link QyGmPreviewDialog}
+ * 叠在配置弹窗上面会得到两层浮层，而下面那一层正握着尚未保存的草稿 ——
+ * 焦点陷阱与 Esc 键在两层之间的归属是不确定的，运营按一次 Esc 可能连草稿一起
+ * 关掉。所以报告本体抽成组件，两处共用同一份渲染（"预览过了才准保存"这道闸门
+ * 只有在两处看到的是同一份内容时才成立）。
+ */
+export function QyGmPreviewBody(props: {
+  preview: QyGmPreviewResponse | null
+  isLoading: boolean
+}) {
+  const { t } = useTranslation()
+  const preview = props.preview
+
+  if (props.isLoading || preview == null) {
+    return (
+      <p className='text-muted-foreground py-6 text-center text-sm'>
+        {t('qy_group_matrix_preview_loading')}
+      </p>
+    )
+  }
+
+  return (
+    <div className='space-y-4'>
+      {/* 超时/超限时禁止切 enforce —— 宁可切不了，也不能在看不见影响面的
               情况下切。这里只是把原因说清楚，闸门在页面上。 */}
-          {preview.preview_incomplete && (
-            <p className='text-destructive rounded-md border border-dashed p-2 text-xs'>
-              {t('qy_group_matrix_preview_truncated')}
-            </p>
-          )}
-          {preview.approximate_user_group && (
-            <p className='text-muted-foreground rounded-md border border-dashed p-2 text-xs'>
-              {t('qy_group_matrix_preview_approximate_user_group')}
-            </p>
-          )}
+      {preview.preview_incomplete && (
+        <p className='text-destructive rounded-md border border-dashed p-2 text-xs'>
+          {t('qy_group_matrix_preview_truncated')}
+        </p>
+      )}
+      {preview.approximate_user_group && (
+        <p className='text-muted-foreground rounded-md border border-dashed p-2 text-xs'>
+          {t('qy_group_matrix_preview_approximate_user_group')}
+        </p>
+      )}
 
-          <QyGmPreviewBlock
-            tone='danger'
-            title={t('qy_group_matrix_preview_newly_broken')}
-            count={preview.newly_broken.length}
-          >
-            <QyGmPairTable
-              pairs={preview.newly_broken}
-              logDays={preview.log_days}
-            />
-          </QyGmPreviewBlock>
+      <QyGmPreviewBlock
+        tone='danger'
+        title={t('qy_group_matrix_preview_newly_broken')}
+        count={preview.newly_broken.length}
+      >
+        <QyGmPairTable
+          pairs={preview.newly_broken}
+          logDays={preview.log_days}
+        />
+      </QyGmPreviewBlock>
 
-          <QyGmPreviewBlock
-            tone='muted'
-            title={t('qy_group_matrix_preview_already_broken')}
-            count={preview.already_broken.length}
-          >
-            <QyGmPairTable
-              pairs={preview.already_broken}
-              logDays={preview.log_days}
-            />
-          </QyGmPreviewBlock>
+      <QyGmPreviewBlock
+        tone='muted'
+        title={t('qy_group_matrix_preview_already_broken')}
+        count={preview.already_broken.length}
+      >
+        <QyGmPairTable
+          pairs={preview.already_broken}
+          logDays={preview.log_days}
+        />
+      </QyGmPreviewBlock>
 
-          <QyGmPreviewBlock
-            tone='muted'
-            title={t('qy_group_matrix_preview_newly_allowed')}
-            count={preview.newly_allowed.length}
-          >
-            <ul className='space-y-1 text-xs'>
-              {preview.newly_allowed.map((pair) => (
-                <li
-                  key={`${pair.user_group} ${pair.model_group}`}
-                  className='flex flex-wrap items-center gap-2'
-                >
-                  <span className='font-medium'>
-                    {pair.user_group} → {pair.model_group}
-                  </span>
-                  <span className='text-muted-foreground tabular-nums'>
-                    {t('qy_group_matrix_preview_users', {
-                      count: pair.user_count,
-                    })}
-                  </span>
-                  <Badge variant='outline' className='px-1 py-0 text-[10px]'>
-                    {pair.source === 'override'
-                      ? t('qy_group_matrix_cell_override')
-                      : t('qy_group_matrix_cell_inherit')}
-                  </Badge>
-                  <span className='tabular-nums'>×{pair.effective_ratio}</span>
-                </li>
-              ))}
-            </ul>
-          </QyGmPreviewBlock>
+      <QyGmPreviewBlock
+        tone='muted'
+        title={t('qy_group_matrix_preview_newly_allowed')}
+        count={preview.newly_allowed.length}
+      >
+        <ul className='space-y-1 text-xs'>
+          {preview.newly_allowed.map((pair) => (
+            <li
+              key={`${pair.user_group} ${pair.model_group}`}
+              className='flex flex-wrap items-center gap-2'
+            >
+              <span className='font-medium'>
+                {pair.user_group} → {pair.model_group}
+              </span>
+              <span className='text-muted-foreground tabular-nums'>
+                {t('qy_group_matrix_preview_users', {
+                  count: pair.user_count,
+                })}
+              </span>
+              <Badge variant='outline' className='px-1 py-0 text-[10px]'>
+                {pair.source === 'override'
+                  ? t('qy_group_matrix_cell_override')
+                  : t('qy_group_matrix_cell_inherit')}
+              </Badge>
+              <span className='tabular-nums'>×{pair.effective_ratio}</span>
+            </li>
+          ))}
+        </ul>
+      </QyGmPreviewBlock>
 
-          {/* 这两栏哪怕是 0 也必须留着：空分组令牌的「结构性免疫」不说清楚，
+      {/* 这两栏哪怕是 0 也必须留着：空分组令牌的「结构性免疫」不说清楚，
               运营看到站里 200 个空分组令牌会以为要炸；而 auto_groups 被静默
               缩短这件事**没有任何其它信号**。 */}
-          <div className='grid gap-2 sm:grid-cols-2'>
-            <p className='text-muted-foreground rounded-md border p-2 text-xs'>
-              {t('qy_group_matrix_preview_empty_group_tokens_safe', {
-                count: preview.empty_group_tokens,
-              })}
-            </p>
-            <p className='text-muted-foreground rounded-md border p-2 text-xs'>
-              {t('qy_group_matrix_preview_auto_groups_shrink', {
-                count: preview.auto_groups_shrink,
-              })}
-            </p>
-          </div>
+      <div className='grid gap-2 sm:grid-cols-2'>
+        <p className='text-muted-foreground rounded-md border p-2 text-xs'>
+          {t('qy_group_matrix_preview_empty_group_tokens_safe', {
+            count: preview.empty_group_tokens,
+          })}
+        </p>
+        <p className='text-muted-foreground rounded-md border p-2 text-xs'>
+          {t('qy_group_matrix_preview_auto_groups_shrink', {
+            count: preview.auto_groups_shrink,
+          })}
+        </p>
+      </div>
 
-          <QyGmPreviewBlock
-            tone='muted'
-            title={t('qy_group_matrix_conflict_special_rules')}
-            count={preview.overridden_rules.length}
-          >
-            <ul className='space-y-1 text-xs'>
-              {preview.overridden_rules.map((rule) => (
-                <li key={`${rule.user_group} ${rule.rule}`}>
-                  <span className='font-medium'>{rule.user_group}</span>
-                  <code className='bg-muted mx-1 rounded px-1'>
-                    {rule.rule}
-                  </code>
-                  {/* 「这条规则从来没生效过」必须点名：站里那条 `-:自己` 就是
-                      因为上游在差分算完之后无条件把 userGroup 补回去而永远无效。
-                      不说的话运营会以为是本次改动让它失效的。 */}
-                  {!rule.was_effective && (
-                    <span className='text-warning'>
-                      {t('qy_group_matrix_rule_never_effective')}
-                    </span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </QyGmPreviewBlock>
+      <QyGmPreviewBlock
+        tone='warning'
+        title={t('qy_group_matrix_warn_group_missing')}
+        count={preview.orphan_group_names.length}
+      >
+        <ul className='space-y-1 text-xs'>
+          {preview.orphan_group_names.map((item) => (
+            <li key={`${item.source} ${item.group}`}>
+              <span className='font-medium'>{item.group}</span>
+              <span className='text-muted-foreground ms-1'>
+                {item.source} · {formatQyCount(item.count)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </QyGmPreviewBlock>
 
-          <QyGmPreviewBlock
-            tone='warning'
-            title={t('qy_group_matrix_warn_group_missing')}
-            count={preview.orphan_group_names.length}
-          >
-            <ul className='space-y-1 text-xs'>
-              {preview.orphan_group_names.map((item) => (
-                <li key={`${item.source} ${item.group}`}>
-                  <span className='font-medium'>{item.group}</span>
-                  <span className='text-muted-foreground ms-1'>
-                    {item.source} · {formatQyCount(item.count)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </QyGmPreviewBlock>
-
-          <QyGmPreviewBlock
-            tone='muted'
-            title={t('qy_group_matrix_conflict_case_near_miss')}
-            count={preview.case_near_miss.length}
-          >
-            <ul className='space-y-1 text-xs'>
-              {preview.case_near_miss.map((pair) => (
-                <li key={`${pair.left} ${pair.right}`}>
-                  {pair.left}（{pair.left_source}） / {pair.right}（
-                  {pair.right_source}）
-                </li>
-              ))}
-            </ul>
-          </QyGmPreviewBlock>
-        </div>
-      )}
-    </QyResponsiveDialog>
+      <QyGmPreviewBlock
+        tone='muted'
+        title={t('qy_group_matrix_conflict_case_near_miss')}
+        count={preview.case_near_miss.length}
+      >
+        <ul className='space-y-1 text-xs'>
+          {preview.case_near_miss.map((pair) => (
+            <li key={`${pair.left} ${pair.right}`}>
+              {pair.left}（{pair.left_source}） / {pair.right}（
+              {pair.right_source}）
+            </li>
+          ))}
+        </ul>
+      </QyGmPreviewBlock>
+    </div>
   )
 }
 

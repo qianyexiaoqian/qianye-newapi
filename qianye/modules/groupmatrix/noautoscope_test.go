@@ -129,7 +129,6 @@ func TestUnsetScopeAllowsAnyTokenGroup(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组"},
-		map[string]map[string]string{},
 		map[string]float64{"default": 1, "vip": 1, "paid": 1})
 	// 库里一条 scope 行都没有 —— 全站都处于「未设定范围」。
 	require.NoError(t, reload())

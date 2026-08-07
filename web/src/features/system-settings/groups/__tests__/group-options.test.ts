@@ -34,7 +34,6 @@ import {
   modelGroupsMissingRatio,
   moveAutoGroup,
   parseAutoGroups,
-  parseSpecialUsableRules,
   serializeModelGroupRows,
   serializeTopupRatios,
   serializeUsableGroupRows,
@@ -59,7 +58,7 @@ describe('分组配置项的归属（完备且互斥）', () => {
     READ_ONLY_GROUP_OPTION_KEYS,
   ]
 
-  test('并集恰好是全部 8 项：没有配置项在拆页中落单', () => {
+  test('并集恰好是全部 7 项：没有配置项在拆页中落单', () => {
     const seen = new Set<string>()
     for (const bucket of buckets) for (const key of bucket) seen.add(key)
     assert.deepEqual(
@@ -233,7 +232,7 @@ describe('用户分组：TopupGroupRatio 的读写', () => {
   })
 })
 
-describe('可选清单与特殊规则', () => {
+describe('可选清单', () => {
   test('UserUsableGroups 往返保持描述（含空描述）', () => {
     const rows = buildUsableGroupRows('{"a":"标准","b":""}')
     assert.deepEqual(JSON.parse(serializeUsableGroupRows(rows)), {
@@ -242,19 +241,7 @@ describe('可选清单与特殊规则', () => {
     })
   })
 
-  test('GroupSpecialUsableGroup 的 +: / -: / 裸键三种写法语义不混', () => {
-    const rules = parseSpecialUsableRules(
-      '{"vip":{"-:default":"遮断","+:pool":"额外","plain":"裸键"}}'
-    )
-    const byModel = new Map(rules.map((rule) => [rule.modelGroup, rule]))
-    assert.equal(byModel.get('default')?.visible, false)
-    assert.equal(byModel.get('pool')?.visible, true)
-    assert.equal(byModel.get('plain')?.visible, true)
-    assert.equal(byModel.get('default')?.userGroup, 'vip')
-  })
-
   test('坏 JSON 不抛异常，退化成空清单', () => {
-    assert.deepEqual(parseSpecialUsableRules('{not json'), [])
     assert.deepEqual(buildUsableGroupRows('nope'), [])
   })
 })

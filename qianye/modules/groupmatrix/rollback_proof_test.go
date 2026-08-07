@@ -55,7 +55,6 @@ func TestRollbackToUpstreamDefaultsRestoresUpstreamBehaviour(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组", "vip": "会员分组"},
-		map[string]map[string]string{"paid": {"-:paid": "把自己删掉", "+:vip": "加会员"}},
 		map[string]float64{"default": 1, "vip": 0.5, "paid": 1})
 
 	// 最激进的配置:paid 被接管、enforce、清单为空(一个模型分组都不许用)。
@@ -72,14 +71,15 @@ func TestRollbackToUpstreamDefaultsRestoresUpstreamBehaviour(t *testing.T) {
 	// ── 回退 ────────────────────────────────────────────────────────────
 	resetHooksToUpstreamDefaults(t)
 
-	// 上游语义:全局白名单 + +:/-: 差分 + **无条件补自己**
-	// (`-:paid` 因此一直是空转的,这正是项目方点名的那条永远无效的规则)。
+	// 上游语义(瘦身之后):全局白名单 + 「自己在倍率表里就补自己」。
+	// `paid` 不在白名单、但在 GroupRatio 里,所以自我补入这一支必须命中 ——
+	// 它正是那 5 个 legacy_dual 名字赖以拿到可选性的那条路径。
 	assert.Equal(t, map[string]string{
 		"default": "默认分组",
-		"vip":     "加会员",
-		"paid":    "用户分组",
+		"vip":     "会员分组",
+		"paid":    service.SelfUsableGroupDescription,
 	}, service.GetUserUsableGroups("paid"),
-		"回退之后必须逐位回到上游行为:全局白名单 + +:/-: 差分 + 无条件补自己")
+		"回退之后必须逐位回到上游行为:全局白名单 + 自我补入")
 
 	assert.NoError(t, service.QyCheckTokenGroupChange(ctxWithUser(1), "", "vip"),
 		"回退之后写入侧必须完全放行 —— 上游本来就不校验 token.Group")
@@ -101,10 +101,6 @@ func TestUnconfiguredIsBitExactWithUpstream(t *testing.T) {
 	syncHotAsync(t)
 	useUpstreamGroups(t,
 		map[string]string{"default": "默认分组", "vip": "会员分组"},
-		map[string]map[string]string{
-			"paid":    {"+:vip": "加会员"},
-			"default": {"-:default": "删自己(上游永远无效)"},
-		},
 		map[string]float64{"default": 1, "vip": 0.5, "paid": 1})
 	require.NoError(t, reload()) // 快照加载成功,但一条 scope 行都没有
 

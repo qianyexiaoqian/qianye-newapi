@@ -41,3 +41,12 @@ electron/** linguist-vendored
 
 # TanStack Router regenerates this manifest from the route source files.
 web/src/routeTree.gen.ts linguist-generated
+
+# TypeScript/TSX are always textual for diff purposes. Without this, a single
+# stray NUL byte anywhere in a file (even one already committed) makes git
+# classify the whole file as binary and every future change to it becomes
+# invisible in review. A guard test forbids new NUL bytes; this makes the
+# already-committed ones stop hiding diffs.
+*.ts diff
+*.tsx diff
+*.go diff

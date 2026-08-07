@@ -55,12 +55,33 @@ func GetModelGroupOptions(c *gin.Context) {
 //
 // 查库而不是走缓存是刻意的:这是管理端的冷路径,一次 DISTINCT 换一份不会骗人的
 // 清单;而任何缓存都要回答"新建的分组多久出现在下拉里",那个问题没有好答案。
+//
+// ── 为什么还要并上「已声明」的分组 ──
+//
+// `SELECT DISTINCT users.group` 有一个结构性盲区:**一个刚建出来的分组还没有人**。
+// 而"建一档新的、再把人挪进去"正是新建这个功能唯一的用法 —— 只认 users.group
+// 会让它在结构上不可能完成:新建成功、列表里没有、于是没有任何一个入口能把人放进去。
+//
+// service.QyDeclaredUserGroups 读的是扩展的登记表(qy_user_groups),默认实现
+// 返回 nil ⇒ 扩展未启用时这一行是空操作,清单逐位等于 users.group。
 func GetUserGroupOptions(c *gin.Context) {
 	names, err := model.QyDistinctUserGroups()
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		seen[name] = true
+	}
+	for _, name := range service.QyDeclaredUserGroups() {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

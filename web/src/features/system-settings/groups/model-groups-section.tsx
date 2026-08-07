@@ -46,6 +46,7 @@ import {
 import { QyGroupMatrixHint } from '@/features/qy/components/qy-group-matrix-hint'
 import { qyGroupOptionsQuery } from '@/features/qy/lib/group-options'
 import { qyGmMatrixQuery } from '@/features/qy/pages/admin-group-matrix/api'
+import { QyModelGroupRegistry } from '@/features/qy/pages/admin-model-groups'
 
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
@@ -506,6 +507,13 @@ export function ModelGroupsSection(props: {
           </p>
         </CardContent>
       </Card>
+
+      {/*
+        模型分组**登记表**:来源标注、备注、以及带影响面的删除。
+        它与上面那张倍率表的分工写在 `QyModelGroupRegistry` 的组件注释里 ——
+        一句话:上面那张的主语是兜底倍率,这一张的主语是这个名字本身。
+      */}
+      <QyModelGroupRegistry />
 
       <Card>
         <CardHeader className='border-b'>
