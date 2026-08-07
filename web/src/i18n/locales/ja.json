@@ -2039,7 +2039,7 @@
     "footer.columns.related.links.oneApi": "1つのAPI",
     "footer.columns.related.title": "関連プロジェクト",
     "footer.defaultCopyright": "すべての権利を留保します。",
-    "footer.new\u0061pi.projectAttributionSuffix": "すべての権利を留保します。プロジェクトコントリビューターにより設計・開発されています。",
+    "footer.newapi.projectAttributionSuffix": "すべての権利を留保します。プロジェクトコントリビューターにより設計・開発されています。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "2025 年 5 月 10 日以降に追加されたチャネルの場合、デプロイ時にモデル名から「.」を削除する必要はありません",
     "For private deployments, format: https://fastgpt.run/api/openapi": "プライベートデプロイメントの場合、形式: https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "構文的に有効な JSON 応答を強制",
@@ -5248,6 +5248,11 @@
     "Zero retention": "データ保持なし",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Model Group Pricing": "モデルグループ料金",
+    "Legacy user group rewrite": "レガシー：購入時にユーザーグループを書き換え",
+    "Unlocked model groups could not be loaded; saving now leaves them untouched.": "解除済みモデルグループを読み込めませんでした。今保存しても変更されません。",
+    "Model group unlocks can be configured once the plan exists — save it first, then reopen it.": "モデルグループの解除はプラン作成後に設定できます。まず保存してから開き直してください。",
+    "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "プランは保存されましたが、解除済みモデルグループが保存されませんでした。開き直して再設定してください"
   }
 }

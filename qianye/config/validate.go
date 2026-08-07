@@ -154,10 +154,10 @@ func validate(c *Config) error {
 	if err := validateViolation(&c.Violation); err != nil {
 		return err
 	}
-	if err := validateGroupPricing(&c.GroupPricing); err != nil {
+	if err := validateGroupMatrix(&c.GroupMatrix); err != nil {
 		return err
 	}
-	if err := validateGroupMatrix(&c.GroupMatrix); err != nil {
+	if err := validatePlanEntitlement(&c.PlanEntitlement); err != nil {
 		return err
 	}
 	return validateLottery(&c.Lottery)
@@ -215,38 +215,27 @@ func validateLottery(l *Lottery) error {
 	return nil
 }
 
-// validateGroupPricing 校验分组定价的运行参数。
+// validatePlanEntitlement 校验套餐解锁的运行参数。
 //
-// 这里只管"参数本身合不合法";单条规则的价格上下界由
-// qianye/modules/grouppricing 在写入与快照编译两处各校验一次 ——
-// 手改数据库绕过接口是这套系统最现实的攻击面。
-func validateGroupPricing(g *GroupPricing) error {
-	if !g.Enabled {
+// 单条绑定的合法性(模型分组必须存在于分组倍率表、不得是 auto、restricted 不得
+// 零绑定)由 qianye/modules/planentitlement 在写入与快照编译两处各校验一次 ——
+// 手改数据库绕过接口是这套系统最现实的攻击面,而这份配置决定"钱从哪个池子扣"。
+func validatePlanEntitlement(p *PlanEntitlement) error {
+	if !p.On() {
 		return nil
 	}
-	if g.RuleCacheSeconds <= 0 {
-		return fmt.Errorf("qianye: group_pricing.rule_cache_seconds 必须大于 0")
+	if p.CacheSeconds <= 0 {
+		return fmt.Errorf("qianye: plan_entitlement.cache_seconds 必须大于 0")
 	}
-	if g.MaxStaleSeconds < g.RuleCacheSeconds {
+	if p.UserCacheSeconds <= 0 {
+		return fmt.Errorf("qianye: plan_entitlement.user_cache_seconds 必须大于 0 —— " +
+			"为 0 会让每一个带令牌分组的请求都回一次主库查订阅")
+	}
+	if p.UserMaxStaleSeconds < p.UserCacheSeconds {
 		return fmt.Errorf(
-			"qianye: group_pricing.max_stale_seconds(%d)不得小于 rule_cache_seconds(%d),"+
-				"否则规则快照每次刷新前都会先过期一次,分组价会在生效与不生效之间来回抖动",
-			g.MaxStaleSeconds, g.RuleCacheSeconds)
-	}
-	if g.ShadowFlushIntervalSeconds <= 0 {
-		return fmt.Errorf("qianye: group_pricing.shadow_flush_interval_seconds 必须大于 0")
-	}
-	if g.ShadowRetentionDays <= 0 {
-		return fmt.Errorf("qianye: group_pricing.shadow_retention_days 必须大于 0")
-	}
-	if g.MaxRules <= 0 {
-		return fmt.Errorf("qianye: group_pricing.max_rules 必须大于 0")
-	}
-	if !g.IsShadow() {
-		// 与 violation 同理:不阻止,但必须喊出来。这条开关一旦关掉,
-		// 每一笔请求都按分组价真实扣费,而扣走的钱退不回来。
-		common.SysError("qianye: group_pricing.shadow_mode 已关闭,分组级价格将真实参与扣费 —— " +
-			"务必确认已在影子模式下用 /api/qy/admin/group-pricing/shadow/summary 对过账")
+			"qianye: plan_entitlement.user_max_stale_seconds(%d)不得小于 user_cache_seconds(%d),"+
+				"否则解锁快照一过新鲜期就直接作废,刷新失败时已付款用户会立刻失去他买到的分组",
+			p.UserMaxStaleSeconds, p.UserCacheSeconds)
 	}
 	return nil
 }
@@ -288,21 +277,6 @@ func validateGroupMatrix(g *GroupMatrix) error {
 		// 制造"保存得下、一发请求就 403"的孤儿令牌,而它们只在用户真的发请求时才暴露。
 		common.SysError("qianye: group_matrix.write_guard_enabled 已关闭,新建/编辑令牌时不再校验分组可选性 —— " +
 			"读侧仍会在请求时 403,孤儿令牌会继续增加")
-	}
-	if g.NewGroupScanIntervalSeconds <= 0 {
-		return fmt.Errorf("qianye: group_matrix.new_group_scan_interval_seconds 必须大于 0")
-	}
-	if g.NewGroupDefaultDenyOn() {
-		// 这条**默认打开**,而它会让一个刚建出来的用户分组一个模型分组都选不了。
-		// 运营在上游「系统设置-分组倍率」页加一个 key,那一页不会提到遮断这回事,
-		// 于是"新分组建出来就不能用"必须在启动日志里先说一遍 ——
-		// 一个只写在 YAML 注释里的反直觉默认,等于没有告知。
-		common.SysLog(fmt.Sprintf(
-			"qianye: group_matrix.new_group_default_deny 已打开 —— 今后**新出现**的用户分组"+
-				"(options.GroupRatio 里新增的 key)会在最多 %d 秒内被自动接管为 mode=enforce、"+
-				"零条可选模型分组,即建出来就全遮断,须在管理端矩阵页手动添加可用的模型分组后才能用。"+
-				"既存分组一律不动。不需要这个默认就把它设成 false",
-			g.NewGroupScanIntervalSeconds))
 	}
 	return nil
 }

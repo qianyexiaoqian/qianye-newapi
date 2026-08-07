@@ -249,12 +249,17 @@ func getSeries(c *gin.Context) {
 
 // visibleGroups 取调用者的可用分组白名单。
 //
-// 与需求 5 的分组泄漏修复共用 service.GetUserUsableGroups —— 模型广场、
-// 模型详情性能、本页三处共用同一份可见性口径,日后要做真·隐藏分组体系时
-// 只需要改那一个函数。这里刻意自己调用而不复用 groupvis 模块的内部函数:
-// 两个模块的开关互相独立,可用率页不能因为分组可见性开关被关掉就泄漏数据。
+// 与需求 5 的分组泄漏修复共用同一份口径 —— 模型广场、模型详情性能、本页三处
+// 共用 service.QyUsableGroupsForUser,日后要做真·隐藏分组体系时只需要改那一个
+// 函数。这里刻意自己调用而不复用 groupvis 模块的内部函数:两个模块的开关互相
+// 独立,可用率页不能因为分组可见性开关被关掉就泄漏数据。
+//
+// **必须带 userId**:套餐解锁是 per-user 的,不带身份的 GetUserUsableGroups
+// 拿不到用户买来的模型分组。少这一个参数的表现是"令牌页选得到、可用率页一条
+// 数据都看不到" —— 同一个人在同一个站点的两个页面得到互相矛盾的答案,
+// 而那正是 QyUsableGroupsForUser 这个封装存在的全部理由。
 func visibleGroups(c *gin.Context) map[string]string {
-	return service.GetUserUsableGroups(c.GetString("group"))
+	return service.QyUsableGroupsForUser(c.GetInt("id"), c.GetString("group"))
 }
 
 // intersectGroups 把请求的分组收窄到可见集合。requested 为空表示"全部可见分组"。

@@ -107,8 +107,30 @@ func Resolve(userGroup, modelGroup string) Resolution {
 	}
 	r.BaseMissing = true
 	r.BaseNearMiss = NearMiss(modelGroup)
-	noteMissing(modelGroup, r.BaseNearMiss)
+	noteMissing(modelGroup, func() string { return r.BaseNearMiss })
 	return r
+}
+
+// NoteMissingGroup 手动登记一次「这个分组名不在分组倍率表里」。
+//
+// Resolve 只覆盖"扩展自己去解析一个倍率"的那些组合。有两类真实失配它看不到:
+//
+//   - **users.group 本身是孤儿。** 上游 middleware/auth.go 的 `if tokenGroup != ""`
+//     让空分组令牌整段绕过令牌分组校验,UsingGroup 直接等于 users.group;
+//     那个名字若不在 GroupRatio 里,GetGroupRatio 静默返回 1,按原价扣费、零告警。
+//     这条路径上没有任何一处会去解析交叉倍率,所以 Resolve 永远撞不到它。
+//   - 扩展的清单/解锁快照编译期丢弃的条目。
+//
+// 调用方在**已经拿到那个名字**的地方顺手调一次即可,不必额外查任何东西。
+// 首次必报 + 每 alarmEvery 次限频,与 Resolve 内部同一个登记簿、同一套节流。
+//
+// nearMiss 由本函数自己算,调用方不必传:算它只是一次 GetGroupRatioCopy 遍历,
+// 而让调用方各算各的迟早会有一处算错,那一处的提示就会指向一个不存在的名字。
+func NoteMissingGroup(group string) {
+	if group == "" {
+		return
+	}
+	noteMissing(group, func() string { return NearMiss(group) })
 }
 
 // NearMiss 返回倍率表里与 name 仅大小写不同的那个名字,没有则返回空串。
@@ -156,7 +178,12 @@ var (
 	overflow int64
 )
 
-func noteMissing(group, nearMiss string) {
+// noteMissing 登记一次失配。
+//
+// nearMiss 是**惰性**的:它内部要遍历一遍分组倍率表,而本函数可能挂在热路径上
+// (一个孤儿 users.group 会让它的每一次请求都走到这里)。只在真正需要那个字符串的
+// 两个时刻求值 —— 新建记录、以及决定要打日志的那一次。
+func noteMissing(group string, nearMiss func() string) {
 	now := common.GetTimestamp()
 
 	missMu.Lock()
@@ -167,20 +194,19 @@ func noteMissing(group, nearMiss string) {
 			missMu.Unlock()
 			return
 		}
-		rec = &Miss{Group: group, NearMiss: nearMiss, FirstSeen: now}
+		rec = &Miss{Group: group, NearMiss: nearMiss(), FirstSeen: now}
 		misses[group] = rec
 	}
-	rec.NearMiss = nearMiss
 	rec.Count++
 	rec.LastSeen = now
-	count := rec.Count
+	count, hintName := rec.Count, rec.NearMiss
 	missMu.Unlock()
 
 	if count != 1 && count%alarmEvery != 0 {
 		return
 	}
 	hint := ""
-	if nearMiss != "" {
+	if nearMiss := hintName; nearMiss != "" {
 		hint = fmt.Sprintf(",倍率表里有一个仅大小写不同的 %q(分组倍率按精确匹配,二者是两个分组)", nearMiss)
 	}
 	common.SysError(fmt.Sprintf(
@@ -400,9 +426,26 @@ func Health() map[string]any {
 	h := map[string]any{
 		"observed":         Observed(),
 		"observed_dropped": dropped,
+		// orphan_users 单列一项而不是让人自己去 last_scan 里翻。
+		//
+		// 它是**唯一**能发现"有人正在被静默按 1.0 倍计费"的数字:那条路径
+		// (空分组令牌 + 孤儿 users.group)上,上游 GetGroupRatio 的 fail-open
+		// 不拒绝、不报错、只写一行会被滚走的 SysLog。埋在一个嵌套结构里的数字
+		// 与没有这个数字是同一回事。
+		//
+		// -1 表示"本进程还没扫过一次"。刻意不用 0 冒充:0 是"扫过了、很干净",
+		// 而"还不知道"必须能与它分开 —— 这正是本包在防的那种混淆。
+		"orphan_users":    int64(-1),
+		"needs_attention": false,
+		"scan_never_ran":  true,
 	}
 	if scan := lastScan.Load(); scan != nil {
 		h["last_scan"] = *scan
+		h["orphan_users"] = scan.OrphanUsers
+		h["scan_never_ran"] = false
+		// 扫描本身失败(Error 非空)时 Orphans 不完整,一份看起来干净的报表比
+		// 没有报表更危险 —— 所以它同样进 needs_attention。
+		h["needs_attention"] = scan.OrphanUsers > 0 || scan.Error != ""
 	}
 	return h
 }

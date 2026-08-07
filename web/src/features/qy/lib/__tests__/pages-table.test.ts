@@ -71,8 +71,10 @@ const SETTINGS_URLS = [
   '/qy/admin/commission',
   '/qy/admin/transfer-config',
   '/qy/admin/transfer-group-rules',
-  '/qy/admin/group-matrix',
-  '/qy/admin/group-pricing',
+  // `/qy/admin/group-matrix` 已不在本表：分组矩阵整体搬进了上游抽屉的
+  // 「计费与支付 → 用户分组」section（见
+  // `features/system-settings/billing/section-registry.tsx`），旧 url 只保留
+  // 重定向，因此它不再是 qy 自己那一组折叠菜单的成员。
   '/qy/admin/user-group',
   '/qy/admin/violation-rules',
   '/qy/admin/lottery-config',

@@ -37,7 +37,6 @@ const (
 	FlagLogMetrics   Flag = "log_metrics"
 	FlagAvailability Flag = "availability"
 	FlagViolation    Flag = "violation"
-	FlagGroupPricing Flag = "group_pricing"
 	FlagGroupMatrix  Flag = "group_matrix"
 	FlagLottery      Flag = "lottery"
 	FlagTicket       Flag = "ticket"
@@ -82,8 +81,6 @@ func featureOn(f Flag) bool {
 		return c.Availability.Enabled
 	case FlagViolation:
 		return c.Violation.Enabled
-	case FlagGroupPricing:
-		return c.GroupPricing.Enabled
 	case FlagGroupMatrix:
 		return c.GroupMatrix.Enabled
 	case FlagLottery:
@@ -192,11 +189,6 @@ var (
 // 宁可在队列真正满时丢弃并告警,也不接受 relay 被拖住。
 var syncSafeJobs = map[string]bool{
 	"availability.sample": true, // 纯内存 sync.Map + atomic 累加,见 availability/aggregate.go
-	// 影子差额只做一次 map 查找 + atomic 累加(grouppricing/shadow.go 的 observe),
-	// 没有任何 I/O。它必须进这张表:影子模式的全部意义就是让运营算清"切换后
-	// 会多收/少收多少",高水位时静默丢样本会让那个数字系统性偏小,
-	// 而偏小的对账结论恰恰会让人放心地关掉影子模式。
-	"grouppricing.shadow": true,
 }
 
 // inlineAtHighWater 判断队列高水位时,该作业能否直接跑在调用方(relay)线程上。

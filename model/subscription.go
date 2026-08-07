@@ -870,7 +870,7 @@ func HasActiveUserSubscription(userId int) (bool, error) {
 // UserActiveSubscriptionsAllowWalletOverflow returns whether wallet balance may be used
 // after the user's subscription quota is exhausted. A single active subscription that
 // disallows wallet overflow (allow_wallet_overflow = false) blocks the fallback.
-func UserActiveSubscriptionsAllowWalletOverflow(userId int) (bool, error) {
+func UserActiveSubscriptionsAllowWalletOverflow(userId int, usingGroup string) (bool, error) {
 	if userId <= 0 {
 		return false, errors.New("invalid userId")
 	}
@@ -882,7 +882,12 @@ func UserActiveSubscriptionsAllowWalletOverflow(userId int) (bool, error) {
 		Count(&strictCount).Error; err != nil {
 		return false, err
 	}
-	return strictCount == 0, nil
+	if strictCount == 0 {
+		return true, nil
+	}
+	// 只有本次真的能出资的套餐才有资格禁止钱包回退:一张「仅限 G」且禁止回退的
+	// 套餐在请求 H 时根本不是候选,不该把用户锁死在"扣不到也不许用钱包"上。
+	return QyWalletOverflowAllowedDespiteStrict(userId, usingGroup), nil
 }
 
 // GetAllUserSubscriptions returns all subscriptions (active and expired) for a user.
@@ -1286,7 +1291,7 @@ func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, pl
 }
 
 // PreConsumeUserSubscription pre-consumes from any active subscription total quota.
-func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64) (*SubscriptionPreConsumeResult, error) {
+func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64, usingGroup string) (*SubscriptionPreConsumeResult, error) {
 	if userId <= 0 {
 		return nil, errors.New("invalid userId")
 	}
@@ -1334,6 +1339,11 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		}
 		for _, candidate := range subs {
 			sub := candidate
+			// 「余额仅限绑定的模型分组」的套餐,在本次请求的模型分组对不上时跳过。
+			// 跳过 ≠ 余额不足:余额还在,只是用不了(见 QySubscriptionCandidateUsable)。
+			if !QySubscriptionCandidateUsable(sub.PlanId, usingGroup) {
+				continue
+			}
 			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
 			if err != nil {
 				return err

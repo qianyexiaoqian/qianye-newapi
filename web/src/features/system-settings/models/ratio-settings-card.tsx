@@ -124,7 +124,16 @@ const createGroupSchema = (t: Translate) =>
     GroupRatio: createJsonStringField(t),
     TopupGroupRatio: createJsonStringField(t),
     UserUsableGroups: createJsonStringField(t),
-    GroupGroupRatio: createJsonStringField(t),
+    // GroupGroupRatio 与 GroupSpecialUsableGroup 在这一页上已经没有编辑入口
+    // （见 group-ratio-form.tsx），值只是原样带进带出：它们与已落库的值一直相等，
+    // 因此 saveGroupRatios 的差分里永远不会出现，一次也不会被写回去。
+    //
+    // 校验必须跟着降级成 `z.string()`。留着 JSON 校验的话，服务端上一份**格式坏掉**
+    // 的值会让整张表单 invalid，而承载错误信息的那两个 FormMessage 已经删了 ——
+    // 表现是「保存」点下去毫无反应、界面上没有任何解释，连带把还能编辑的分组倍率
+    // 一起锁死，且没有任何入口能把那份坏值修好。normalizeJsonString 对解析失败的
+    // 输入原样返回，所以放宽校验不会改变写回内容。
+    GroupGroupRatio: z.string(),
     AutoGroups: createJsonStringField(t, {
       predicate: (parsed) =>
         Array.isArray(parsed) &&
@@ -133,7 +142,7 @@ const createGroupSchema = (t: Translate) =>
     }),
     MaxTokenAutoGroups: positiveIntegerSchema(t('Enter a positive integer')),
     DefaultUseAutoGroup: z.boolean(),
-    GroupSpecialUsableGroup: createJsonStringField(t),
+    GroupSpecialUsableGroup: z.string(),
   })
 
 type ModelFormValues = z.infer<ReturnType<typeof createModelSchema>>

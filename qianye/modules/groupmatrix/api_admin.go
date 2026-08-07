@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/groupratio"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
@@ -64,36 +65,25 @@ type userGroupRow struct {
 	// 但它是**警告不是拦截**:项目方明确要求这条不变量能被推翻。
 	SelfExcluded bool `json:"self_excluded"`
 
-	// AutoMasked 表示这一行的接管**不是任何人按出来的**,而是「新分组默认全遮断」
-	// 自动建的。
+	// ScopeState 是行头的**三态**,前端必须按它渲染,不得自己用 managed+len(grants) 推。
 	//
-	// 不下发它,运营看到的就是一个莫名其妙已经 enforce、清单还空着的分组,
-	// 而他确信自己没做过这件事 —— 那正是这个默认最容易被当成故障的时刻。
-	AutoMasked bool `json:"auto_masked"`
-	// AutoMaskedAt 是自动遮断发生的时间(unix 秒)。0 = 未发生。
-	AutoMaskedAt int64 `json:"auto_masked_at"`
-	// PendingSetup = 自动遮断了、而且到现在一个模型分组都没配。
+	// 三态与 Scope 的注释一一对应:
 	//
-	// 它与 AutoMasked 分开是因为两者的处置完全不同:配好之后 AutoMasked 仍是
-	// true(它记录的是来历,不该被抹掉),但那一行已经不需要任何人再去动它。
-	// 合成一个字段会让提示在配置完成之后继续挂着,而长期挂着的提示等于没有提示。
-	PendingSetup bool `json:"pending_setup"`
-
-	// PolicySkipped 表示「新分组默认全遮断」开着的时候发现了这个分组,
-	// 却**刻意没有遮断它**(已经有人在用 / 一轮冒出太多)。见 Seen.Declined。
+	//	ScopeStateUnset → 未设定范围:全部模型分组可用,各按自己的兜底倍率。
+	//	ScopeStateSet   → 已设定范围:只可用清单里的那些。
+	//	ScopeStateEmpty → 已设定范围但清单为空:一个模型分组都不可用(红色)。
 	//
-	// 这一档与 AutoMasked 一样必须下发,而且理由更硬:AutoMasked 的落差是
-	// "发生了我没做过的事",运营至少看得见那一行变成了 enforce;PolicySkipped 的
-	// 落差是"**没有**发生我以为会发生的事",在界面上完全没有形状 —— 页面顶部
-	// 写着「已开启」,这一行看起来和任何一个未接管的分组一模一样,而登记簿永不
-	// 重判意味着它此后也不会被补遮断。不下发它,唯一的痕迹就只有扩展库里的
-	// 一列 reason,而那一列运营查不到。
-	PolicySkipped bool `json:"policy_skipped"`
-	// PolicySkippedReason 是当初的判断依据原话(登记簿的 reason 列)。
-	// 只给一个布尔的话,运营下一步该做什么完全没有线索 ——
-	// "已经有 3 个用户在用"与"那一轮冒出 5 个分组"要求的动作并不相同。
-	PolicySkippedReason string `json:"policy_skipped_reason"`
+	// **不要在界面上用「已接管 / 未接管」那套词。** 新口径下"未接管"意味着
+	// 全部可用,而"接管"这个词会让人读成"不接管就用不了",方向正好相反。
+	ScopeState string `json:"scope_state"`
 }
+
+// 行头三态。前端按它渲染,不自己推。
+const (
+	ScopeStateUnset = "unset"
+	ScopeStateSet   = "set"
+	ScopeStateEmpty = "empty"
+)
 
 type modelGroupRow struct {
 	Name string `json:"name"`
@@ -126,7 +116,82 @@ type cellView struct {
 	// 让界面能把继承值以灰字显示而**不预填进输入框**
 	// (预填会诱导运营把继承变成一次显式覆盖)。
 	InheritedFrom string `json:"inherited_from"`
+
+	// EffectiveRatio 是**这一格此刻真的会被乘进账单**的那个数(十进制字符串)。
+	//
+	// 它由 service.GetUserGroupRatio 现算,与三条计费路径同源;Source 只说明它
+	// 来自交叉格还是兜底。下发它是为了让格子**永远不出现空白态** ——
+	// 空白是 0 还是继承,人永远猜不对,而这一页上每个数字都是报价。
+	EffectiveRatio string `json:"effective_ratio"`
+	// BaseMissing 为 true 表示该模型分组**不在** options.GroupRatio 里。
+	//
+	// 此时上游 GetGroupRatio 已经 fail-open 静默返回 1 —— 那个 1 不是任何人配出来的。
+	// 界面必须把这一格标红并写「兜底缺失·按 1.0 计费」,不能显示成一个正常的 1。
+	BaseMissing bool `json:"base_missing"`
+
+	// ReachableVia 回答「这一格此刻可达吗、是谁给的」:
+	// scope(范围清单/上游默认) / plan(套餐解锁) / both / none。
+	//
+	// **必须按 scope ∪ plan 计算,不能只按 scope。** 否则会出现这样一种漂移:
+	// 用户分组 A 设了范围且不含 G,但 A 组的某个用户买了解锁 G 的套餐 —— 他能用 G、
+	// 按 GroupRatio[G] 计费,而矩阵页的 A 行根本不渲染这一格。运营几周后为了别的
+	// 目的把 GroupRatio[G] 从 1.0 调到 3.0,那批人当场按 3 倍扣费,
+	// **而站内没有任何一个页面显示过 A 组的人可以到达 G**。
+	// 这不是倍率数值的漂移,是可达性认知的漂移,而它的后果直接是钱。
+	ReachableVia string `json:"reachable_via"`
+	// ReachableByPlans 是让这一格可达的套餐名(去重后排序)。空表示没有套餐参与。
+	ReachableByPlans []string `json:"plan_titles"`
+
+	// RatioSource 说明 EffectiveRatio **来自哪一层**:cross_cell(交叉格)
+	// 或 group_ratio(该模型分组的兜底倍率)。
+	//
+	// 与 Source 的区别是刻意的:Source 描述"这一格配没配"(界面上要不要把输入框
+	// 显示成已填),RatioSource 描述"扣钱时乘的是哪个数"。今天两者结论相同,
+	// 但它们回答的不是同一个问题,合并成一个字段会让将来任何一层回落变得无法表达。
+	RatioSource string `json:"ratio_source"`
 }
+
+// 生效倍率的来源层。与 service.GetUserGroupRatio 的两个分支一一对应。
+const (
+	RatioSourceCrossCell  = "cross_cell"
+	RatioSourceGroupRatio = "group_ratio"
+)
+
+// 格子的可达来源。
+const (
+	ReachableNone  = "none"
+	ReachableScope = "scope"
+	ReachablePlan  = "plan"
+	ReachableBoth  = "both"
+)
+
+// PlanUnlockedModelGroups 由订阅侧注入:返回「被某个套餐解锁的模型分组 → 套餐名」。
+//
+// ══════════════ 为什么这个接缝必须存在于矩阵页而不是套餐页 ══════════════
+//
+// 运营改倍率时看的是矩阵页,不是套餐详情页。可达性只按 scope 算的话,
+// 通过套餐可达的那些格子在矩阵页上根本不存在,而它们照样在花钱(见 cellView.ReachableVia)。
+//
+// 默认返回 nil = 没有任何套餐解锁 = 与本轮之前完全一致,所以在订阅侧接上之前
+// 这个接缝是**行为中性**的。
+//
+// 契约(实现方必须满足):
+//
+//	冷路径专用      —— 只被管理端 GET /group-matrix 调用,允许查库,但要有超时;
+//	                   任何内部失败一律 return nil(可达性少标一点,不影响任何扣费)。
+//	返回值只读      —— 调用方不修改它;实现方也不得返回内部快照持有的那张 map。
+//	键必须是模型分组 —— 且必须已在 options.GroupRatio 里(编译期已丢弃的不要给回来)。
+var PlanUnlockedModelGroups = func() map[string][]string { return nil }
+
+// PlanUnlockEnabled 回答「套餐解锁此刻整体是开着的吗」。
+//
+// 它与 PlanUnlockedModelGroups 分开,因为两者回答的不是同一个问题:
+// 后者为空可能是"关掉了",也可能是"开着但一个绑定都没配"。这两种状态在矩阵页上
+// 必须显示成不同的话 —— 前者要提示"已购用户当前拿不到他买的分组",后者什么都不用说。
+//
+// 开关本身在 plan_entitlement 段,不在 group_matrix 段:同一份事实不设两个配置源。
+// 默认 false = 订阅侧尚未接入 = 与本轮之前完全一致。
+var PlanUnlockEnabled = func() bool { return false }
 
 // savePartial 是两库写入的半成状态。**只在部分失败时出现。**
 //
@@ -154,32 +219,46 @@ type matrixView struct {
 	ShadowWriteDenies []WriteDeny     `json:"shadow_write_denies"`
 	Partial           *savePartial    `json:"partial,omitempty"`
 
-	// NewGroupPolicy 是「新分组默认全遮断」的当前状态。
+	// ScopePolicy 回答「一个用户分组没有出现在这份范围配置里,会发生什么」。
 	//
-	// 它必须随每一次矩阵回读一起下发,而不是让前端去猜或者去读另一个接口:
-	// 这个默认改变的是运营**下一次在别的页面上**建分组时会发生什么,
-	// 而唯一能让他在建之前看到这句话的地方就是这一页。
-	NewGroupPolicy newGroupPolicy `json:"new_group_policy"`
+	// 它必须随每一次矩阵回读一起下发,而不是让前端写死一句话:这条口径本轮刚刚
+	// **反转过**(上一轮是"新分组自动全遮断"),而前端写死的文案不会跟着后端一起回退。
+	ScopePolicy scopePolicy `json:"scope_policy"`
 }
 
-// newGroupPolicy 回答「我在分组倍率页加一个新分组,会发生什么」。
-type newGroupPolicy struct {
-	// Enabled = group_matrix.new_group_default_deny。
-	Enabled bool `json:"enabled"`
-	// ScanIntervalSeconds 是发现延迟的上界。运营加完分组之后盯着这一页看的
-	// 时候,需要知道"还没变成遮断"是正常的还是坏了。
-	ScanIntervalSeconds int `json:"scan_interval_seconds"`
-	// PendingSetup 是当前"自动遮断了、还一个模型分组都没配"的分组数。
-	PendingSetup int `json:"pending_setup"`
-	// PolicySkipped 是当前"开关开着、发现过、却刻意没遮断"的分组数(见
-	// userGroupRow.PolicySkipped)。它与 PendingSetup 指向相反的两种落差,
-	// 必须分开计数:前者是"被遮断了、等你配",后者是"没被遮断、而你以为被遮断了"。
-	PolicySkipped int `json:"policy_skipped"`
-	// LastScanAt 是本节点最近一次对账完成的时间(unix 秒),0 = 本节点没跑过。
+// scopePolicy 是「未设定范围」这一档的常驻说明与计数。
+type scopePolicy struct {
+	// UnsetMeansAll 恒为 true。它不是开关,是把口径本身下发给界面 ——
+	// 界面据此渲染那句常驻说明,而不是把它硬编码在前端。
 	//
-	// **0 不等于坏了**:对账走 lease,租约在别的节点手里时本节点恒为 0。
-	// 界面必须把这句话一起说出来,否则多节点部署下这一栏永远像是故障。
-	LastScanAt int64 `json:"last_scan_at"`
+	// ⚠ 它的准确含义是「**本页不限制**未设定范围的用户分组」,不是「它们能用到
+	// options.GroupRatio 里的每一个模型分组」。未设定范围时 Resolve 逐位返回上游
+	// service.GetUserUsableGroups 的结果 —— 也就是全局「用户可选分组」清单
+	// (setting.userUsableGroups)+ GroupSpecialUsableGroup 的 +: / -: 差分 + 无条件
+	// 补入用户分组自己。这两件事在「全局清单没有列出全部模型分组」的站点上结论不同,
+	// 而本站正是这种站点。界面文案必须按前一种说法写;要让它真的等于"全部模型分组",
+	// 需要项目方拍板改变 Resolve 的恒等契约(那会同时推翻"未配置 = 上游指针恒等")。
+	//
+	// 刻意**不**提供一个 unscoped_sees_all 配置项:那种开关只会被一次性打开然后
+	// 没人再看,并且它会让「未设范围」重新有两种含义,正是本轮在消灭的形状。
+	UnsetMeansAll bool `json:"unset_means_all"`
+	// UnsetGroups 是当前未设定范围的用户分组数。它必须常驻显示、不能只在
+	// 有变化时通知 —— 一次性通知会被忽略,常驻的一栏不会。
+	UnsetGroups int `json:"unset_groups"`
+	// ScopedGroups / EmptyScopedGroups 分别是"设了非空范围"与"设了空范围"的分组数。
+	// 后者单独计数是因为它是唯一会让整组用户一个模型分组都选不到的配置。
+	ScopedGroups      int `json:"scoped_groups"`
+	EmptyScopedGroups int `json:"empty_scoped_groups"`
+	// SubscriptionUnlockOn 的真相源是 **plan_entitlement.enabled**,经
+	// groupmatrix.PlanUnlockEnabled 这个接缝注入。
+	//
+	// **本段(group_matrix)里没有、也不会有第二个开关。** 两个开关方向相反:
+	// group_matrix.enabled 拉下是让「收紧」失效,套餐解锁拉下是让已付款用户当场
+	// 少掉一批分组 —— 共用一个开关的人一定会误伤一侧;而同一件事两个配置源,
+	// 同步失败的表现正是「一个页面说开着、另一个说关着」。
+	//
+	// 关掉时通过套餐可达的格子全部失效,而套餐照常收钱 —— 这一栏是它唯一的形状。
+	SubscriptionUnlockOn bool `json:"subscription_unlock_on"`
 }
 
 // ratioText 把倍率渲染成十进制字符串。
@@ -218,9 +297,18 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 	userGroups, userCounts := listUserGroups(scopes)
 	activeTokens := activeTokenCounts()
 	modelGroups := listModelGroups()
-	seenRows := loadSeen(gdb)
+	// 套餐解锁的可达性。关掉开关时不查:那一档里通过套餐可达的格子确实不可达,
+	// 界面必须跟着变,否则它会显示一批"看起来通、实际不通"的格子。
+	planUnlocked := map[string][]string{}
+	if PlanUnlockEnabled() {
+		for mg, plans := range PlanUnlockedModelGroups() {
+			names := append(make([]string, 0, len(plans)), plans...)
+			sort.Strings(names)
+			planUnlocked[mg] = names
+		}
+	}
 
-	// 未接管的行必须显示**上游此刻的实际可选集合**(见 cellView.Granted)。
+	// 未设定范围的行必须显示**上游此刻的实际可选集合**(见 cellView.Granted)。
 	// 走 service.GetUserUsableGroups 是安全的:该分组没有 scope 行时
 	// Resolve 恒等返回上游,读不到我们自己写的东西。每个分组只算一次。
 	upstreamUsable := make(map[string]map[string]string, len(userGroups))
@@ -230,47 +318,37 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 		}
 	}
 
-	pendingSetup := 0
-	policySkipped := 0
+	policy := scopePolicy{
+		UnsetMeansAll:        true,
+		SubscriptionUnlockOn: PlanUnlockEnabled(),
+	}
 	rows := make([]userGroupRow, 0, len(userGroups))
 	for _, ug := range userGroups {
 		sc, managed := scopes[ug]
 		row := userGroupRow{
 			Name: ug, UserCount: userCounts[ug],
 			ActiveTokenCount: activeTokens[ug], Managed: managed,
-			// 未接管时下发 shadow 而不是空串:前端的 mode 是一个二值枚举,
+			// 未设定范围时下发 shadow 而不是空串:前端的 mode 是一个二值枚举,
 			// 空串会让它在 managed 被打开的那一刻落进"两个选项都没选中"的状态。
-			Mode: ModeShadow,
+			Mode: ModeShadow, ScopeState: ScopeStateUnset,
 		}
-		// 自动遮断的来历只从登记簿读,不从 scope 行推断:运营完全可以把一个
-		// 自动遮断的分组改成 shadow、再配上清单,那一行看起来就与手工接管的
-		// 一模一样,而"当初是谁把它变成 enforce 的"仍然必须答得上来。
-		if seen, ok := seenRows[ug]; ok {
-			if seen.AutoMasked {
-				row.AutoMasked, row.AutoMaskedAt = true, seen.FirstSeenAt
-				// PendingSetup 只看**已落库**的 grants,不看 managed:
-				// 撤销接管之后清单还在,那一行已经不需要任何人再去动它。
-				row.PendingSetup = managed && len(grants[ug]) == 0
-				if row.PendingSetup {
-					pendingSetup++
-				}
-			}
-			// 「开关开着却没遮断」的提示在运营自己接管这一行之后就该消失:
-			// 那时这一行的状态是他配的,不再有任何预期落差。来历不抹
-			// (登记簿的 Declined 列永远留着),只是不再当成待办摆在他面前。
-			if seen.Declined && !managed {
-				row.PolicySkipped, row.PolicySkippedReason = true, seen.Reason
-				policySkipped++
-			}
-		}
-		if managed {
+		switch {
+		case !managed:
+			// 未设定范围:allow_auto 的预填值 = 上游此刻是否已经把 auto 放行。
+			// 设定范围的开关打开时这就是零行为变更的那一份初值。
+			_, row.AllowAuto = upstreamUsable[ug][autoGroup]
+			policy.UnsetGroups++
+		default:
 			row.Mode, row.AllowAuto, row.Note = sc.Mode, sc.AllowAuto, sc.Note
 			_, self := grants[ug][ug]
 			row.SelfExcluded = !self
-		} else {
-			// 未接管:allow_auto 的预填值 = 上游此刻是否已经把 auto 放行。
-			// 接管开关打开时这就是零行为变更的那一份初值。
-			_, row.AllowAuto = upstreamUsable[ug][autoGroup]
+			if len(grants[ug]) == 0 {
+				row.ScopeState = ScopeStateEmpty
+				policy.EmptyScopedGroups++
+			} else {
+				row.ScopeState = ScopeStateSet
+			}
+			policy.ScopedGroups++
 		}
 		rows = append(rows, row)
 	}
@@ -288,10 +366,31 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 			cv := cellView{
 				UserGroup: ug, ModelGroup: mg.Name, Granted: granted,
 				Source: SourceInherit, InheritedFrom: mg.BaseRatio,
+				ReachableByPlans: make([]string, 0),
 			}
+			cv.RatioSource = RatioSourceGroupRatio
 			if v, ok := ratios[ug][mg.Name]; ok {
 				val := v
 				cv.Ratio, cv.Source = &val, SourceOverride
+				cv.RatioSource = RatioSourceCrossCell
+			}
+			// 生效倍率由 qianye/groupratio 现算,它内部走 service.GetUserGroupRatio ——
+			// 全仓唯一没有被复制的那一份解析,与三条计费路径同结论。
+			// 绝不在这里再写一遍 if:第四份复制品迟早自己漂移,而漂移的表现正是
+			// "管理端显示 A、热路径乘 B"。
+			res := groupratio.Resolve(ug, mg.Name)
+			cv.EffectiveRatio, cv.BaseMissing = ratioText(res.Ratio), res.BaseMissing
+			cv.ReachableVia = ReachableNone
+			if granted {
+				cv.ReachableVia = ReachableScope
+			}
+			if plans, ok := planUnlocked[mg.Name]; ok && len(plans) > 0 {
+				cv.ReachableByPlans = plans
+				if granted {
+					cv.ReachableVia = ReachableBoth
+				} else {
+					cv.ReachableVia = ReachablePlan
+				}
 			}
 			cells = append(cells, cv)
 		}
@@ -324,13 +423,7 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 		// 不下发它的话,这张表就是一张只写不读的表 —— 而只写不读的观测数据
 		// 与没有观测是同一回事,只是更容易让人以为自己有证据。
 		ShadowWriteDenies: listWriteDenies(gdb),
-		NewGroupPolicy: newGroupPolicy{
-			Enabled:             enabled() && cfg().NewGroupDefaultDenyOn(),
-			ScanIntervalSeconds: newGroupScanInterval(),
-			PendingSetup:        pendingSetup,
-			PolicySkipped:       policySkipped,
-			LastScanAt:          lastScanAt.Load(),
-		},
+		ScopePolicy:       policy,
 	}, nil
 }
 
@@ -519,6 +612,24 @@ func matrixWarnings(userGroups []string, modelGroups []modelGroupRow, grants map
 	}
 	for ug, set := range grants {
 		for mg := range set {
+			// 引用了一个**已经不在分组倍率表里**的模型分组。
+			//
+			// 这一条比"没有渠道"严重一档,而且是本页唯一能发现「运营删了一个仍被
+			// 引用的模型分组」的机制 —— 上游删除时不做任何引用检查。
+			// 后果不是少给权限:快照编译期会把它剔除,而矩阵页上那一格看起来是通的,
+			// 用户实际会被上游用「分组已被弃用」挡掉。写在前面单独成句,不与渠道警告合并。
+			if !ratio_setting.ContainsGroupRatio(mg) {
+				hint := ""
+				if near := groupratio.NearMiss(mg); near != "" {
+					hint = fmt.Sprintf(",倍率表里有一个仅大小写不同的 %q(分组倍率按精确匹配,二者是两个分组)", near)
+				}
+				warns = append(warns, fmt.Sprintf(
+					"【需要处理】用户分组 %q 的清单里有一个已从分组倍率表消失的模型分组 %q%s —— "+
+						"该项已被快照剔除,矩阵页上那一格看起来是通的,用户实际会被上游的"+
+						"「分组已被弃用」挡掉。请把它从清单里撤掉,或把这个模型分组加回分组倍率表",
+					ug, mg, hint))
+				continue
+			}
 			if !hasChannels[mg] {
 				warns = append(warns, fmt.Sprintf(
 					"用户分组 %q 被授权的模型分组 %q 当前没有任何启用中的渠道,选它等于寸步难行", ug, mg))

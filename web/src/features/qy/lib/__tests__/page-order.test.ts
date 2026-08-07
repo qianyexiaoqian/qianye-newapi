@@ -53,7 +53,6 @@ const FROZEN_ORDER = [
   '/qy/admin/violation-rules',
   '/qy/admin/violations',
   '/qy/admin/user-group',
-  '/qy/admin/group-pricing',
   '/qy/admin/fund-orders',
   '/qy/admin/audit-logs',
   '/qy/admin/health',
@@ -97,7 +96,7 @@ describe('qy page order', () => {
   test('numbers every registered page and gives 00 to the two index pages', () => {
     assert.equal(qyPageMeta('/qy/affiliate').no, '01')
     assert.equal(qyPageMeta('/qy/availability').no, '09')
-    assert.equal(qyPageMeta('/qy/admin/health').no, '22')
+    assert.equal(qyPageMeta('/qy/admin/health').no, '21')
     // 索引页是分组入口而不是功能页，不占编号。
     assert.equal(qyPageMeta('/qy').no, '00')
     assert.equal(qyPageMeta('/qy/admin').no, '00')

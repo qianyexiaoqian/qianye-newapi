@@ -201,6 +201,44 @@ func TestHookImplHasNoDatabaseImports(t *testing.T) {
 	}
 }
 
+// qyGroupRatioHotPathAllowed 是 hook.go 允许调用的 qianye/groupratio 函数白名单。
+//
+// 只有一个:NoteMissingGroup(纯内存登记 + 一次进程内互斥锁,且只在 miss 分支发生)。
+var qyGroupRatioHotPathAllowed = map[string]bool{"NoteMissingGroup": true}
+
+// TestHookImplOnlyCallsMemoryOnlyGroupRatioHelpers 补上 import 白名单抓不到的那一半。
+//
+// 上面那条只看**直接** import 的包名,而 qianye/groupratio 不在 banned 列表里 ——
+// 它是一个内存登记簿,所以 hook.go 引它是对的。问题在于同一个包里还住着 Scan(),
+// 那是一条对 users 与 tokens 做全表 GROUP BY 的查询。下一个人为了"顺手在热路径上
+// 报一下孤儿数"在 Resolve 里加一行 groupratio.Scan(ctx, false),import 守卫全绿,
+// 而那条全表聚合会跑在每一个带令牌分组的 relay 请求上。
+//
+// 守卫存在的全部意义就是拦住这一类改动,所以这里按**函数名白名单**再守一次。
+func TestHookImplOnlyCallsMemoryOnlyGroupRatioHelpers(t *testing.T) {
+	file := parseFileOrFail(t, hookImplFilePath)
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if !ok || pkg.Name != "groupratio" {
+			return true
+		}
+		assert.Truef(t, qyGroupRatioHotPathAllowed[sel.Sel.Name],
+			"hook.go 调用了 groupratio.%s,而热路径只允许纯内存的 %v。\n"+
+				"该包里同时住着 Scan() —— 一条对 users 与 tokens 的全表 GROUP BY;"+
+				"把它放进 Resolve 等于让每一个带令牌分组的 relay 请求跑一次全表聚合",
+			sel.Sel.Name, qyGroupRatioHotPathAllowed)
+		return true
+	})
+}
+
 // TestTaskBillingUsesCrossCellGroupRatio 钉死 Task 差额结算的**交叉格**形状。
 //
 // 本轮修掉的原缺陷:那里写的是 GetGroupGroupRatio(group, group) —— 两个实参是

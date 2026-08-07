@@ -207,30 +207,20 @@ export const qyKeys = {
   adminGroupOptions: () => [...qyKeys.all, 'admin', 'group-options'] as const,
 
   /**
-   * 分组定价的公共前缀。
-   *
-   * 单独留一个前缀 key 是因为改一次价会同时让规则表与影子对账过期：
-   * 逐个失效必然漏掉一个，而漏掉的那个恰好是用来核对这次改价的视图。
-   */
-  adminGroupPricing: () => [...qyKeys.all, 'admin', 'group-pricing'] as const,
-  adminGroupPricingRules: (params: unknown) =>
-    [...qyKeys.adminGroupPricing(), 'rules', params] as const,
-  adminGroupPricingPreview: (params: unknown) =>
-    [...qyKeys.adminGroupPricing(), 'preview', params] as const,
-  adminGroupPricingShadow: (params: unknown) =>
-    [...qyKeys.adminGroupPricing(), 'shadow', params] as const,
-  adminGroupPricingOptions: () =>
-    [...qyKeys.adminGroupPricing(), 'options'] as const,
-
-  /**
    * 用户分组 × 模型分组 矩阵的公共前缀。
-   *
-   * 与 `adminGroupPricing` 分开：那一组的键是 (模型分组, 模型)，这一组的键是
-   * (用户分组, 模型分组)，两者是不同的维度，改一条不该把另一边冲掉。
    *
    * 矩阵与孤儿基线各自一条：孤儿是历史欠账的盘点，跑好几条全表聚合，
    * 跟着每次保存一起 refetch 只是白烧数据库。
    */
+  /**
+   * 单个套餐的「解锁模型分组 + 余额使用范围」。
+   *
+   * 按 planId 分键而不是一个大前缀：这一段配置只随该套餐的编辑变化，
+   * 挂在共享前缀上会让保存 A 套餐把屏幕上其余套餐的面板一起 refetch。
+   */
+  adminPlanEntitlement: (planId: number) =>
+    [...qyKeys.all, 'admin', 'plan-entitlement', planId] as const,
+
   adminGroupMatrix: () => [...qyKeys.all, 'admin', 'group-matrix'] as const,
   adminGroupMatrixData: () => [...qyKeys.adminGroupMatrix(), 'data'] as const,
   adminGroupMatrixOrphans: () =>

@@ -30,7 +30,8 @@ var qyDBHandle atomic.Pointer[gorm.DB]
 //go:linkname qyConfig github.com/QuantumNous/new-api/qianye/config.current
 var qyConfig atomic.Pointer[config.Config]
 
-func extTables() []any { return []any{&Scope{}, &Grant{}, &WriteDeny{}, &Seen{}} }
+// extTables 刻意与 Mod.Tables() 保持一致 —— 不含已退役的 qy_group_seen。
+func extTables() []any { return []any{&Scope{}, &Grant{}, &WriteDeny{}} }
 
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -62,36 +63,22 @@ func resetCaches() {
 	staleWarns.Store(0)
 	fallbackRequests.Store(0)
 	droppedWarns.Store(0)
-	autoMaskedTotal.Store(0)
-	lastScanAt.Store(0)
 }
 
 // useConfig 临时替换扩展的全局配置快照。
 func useConfig(t *testing.T, matrixEnabled bool) {
 	t.Helper()
-	useConfigWithNewGroupDeny(t, matrixEnabled, true)
-}
-
-// useConfigWithNewGroupDeny 同上,并显式指定「新分组默认全遮断」的开关。
-//
-// 显式而不是取默认:这个开关默认打开,借用默认值的用例在有人把默认改掉的那天
-// 会静悄悄地开始测另一件事,而它守的恰恰是"默认打开"这条决定本身。
-func useConfigWithNewGroupDeny(t *testing.T, matrixEnabled, newGroupDeny bool) {
-	t.Helper()
 	writeGuard := true
-	deny := newGroupDeny
 	cfg := &config.Config{Enabled: true}
 	cfg.GroupMatrix = config.GroupMatrix{
-		Enabled:                     matrixEnabled,
-		CacheSeconds:                30,
-		MaxStaleSeconds:             300,
-		PreviewLogDays:              7,
-		MaxPreviewPairs:             500,
-		PreviewSampleLimit:          20,
-		MaxGrants:                   2000,
-		WriteGuardEnabled:           &writeGuard,
-		NewGroupDefaultDeny:         &deny,
-		NewGroupScanIntervalSeconds: 60,
+		Enabled:            matrixEnabled,
+		CacheSeconds:       30,
+		MaxStaleSeconds:    300,
+		PreviewLogDays:     7,
+		MaxPreviewPairs:    500,
+		PreviewSampleLimit: 20,
+		MaxGrants:          2000,
+		WriteGuardEnabled:  &writeGuard,
 	}
 	prev := qyConfig.Swap(cfg)
 	t.Cleanup(func() { qyConfig.Store(prev) })

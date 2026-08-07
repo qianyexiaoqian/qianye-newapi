@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/qianye/modules/planentitlement"
 
 	"gorm.io/gorm"
 )
@@ -138,6 +139,24 @@ func gateSeat(tx *gorm.DB, plan *model.SubscriptionPlan, userId int, source stri
 			common.SysError(fmt.Sprintf(
 				"qianye/subscription: 名额闸门发生 panic(已拦截,购买流程按放行处理): %v", r))
 			out = inErr
+		}
+	}()
+	// 订阅创建路径上顺手让这个人的「套餐解锁模型分组」缓存失效(0 额外上游行)。
+	//
+	// 这里是全仓唯一一个**同时**拿得到 tx、plan 与 userId 的收口点,而套餐解锁
+	// 的第二层缓存(userId → 活跃套餐)最容易变成工单的就是"刚买完还不能用"。
+	//
+	// 三点说清楚:
+	//   - 只在强一致模式(tx != nil,真的在创建订阅)失效;预检模式什么都没变。
+	//   - 是**失效**不是预热:在一个已打开的主库事务里同步预热,会把两个库的
+	//     延迟一起压进这个事务。
+	//   - 它跑在 commit 之前,所以存在一个窄窗口:同一个用户的并发请求可能在
+	//     commit 前重新填上旧结果。那**不会比不失效更糟**(不失效时那份旧结果
+	//     本来就在),而"没有活跃订阅"这一档的缓存时长只有正常值的 1/4,
+	//     窗口内落回旧值最多再等那么久。
+	defer func() {
+		if tx != nil && out == nil && userId > 0 {
+			planentitlement.InvalidateUser(userId)
 		}
 	}()
 	if inErr != nil {

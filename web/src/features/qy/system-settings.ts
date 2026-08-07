@@ -113,6 +113,38 @@ export function withQySystemSettingsNavGroups(
 }
 
 /**
+ * 上游「计费与支付」那一组里，由扩展提供的 section 的 url。
+ *
+ * 与 `features/system-settings/billing/section-registry.tsx` 里那一项的 `id`
+ * 对应。写在 qy 这一侧而不是上游那一侧：上游文件只登记「有这么一个 section」，
+ * 「什么时候该看得见」是扩展自己的事。
+ */
+const QY_BILLING_SECTION_URLS = new Set([
+  '/system-settings/billing/user-groups',
+])
+
+/**
+ * 扩展关掉时，把扩展贡献的计费 section 从抽屉里摘掉。
+ *
+ * ── 为什么不在上游的 section 表里做条件登记 ──
+ * 那张表同时供给三件事：抽屉菜单、`$section` 路由白名单、以及 section 内容。
+ * 条件登记会让白名单跟着消失，于是一条已经发出去的深链接（或浏览器历史里的
+ * 那一条）在扩展关掉之后不是显示「功能未启用」，而是被静默重定向回「额度设置」
+ * —— 管理员会以为自己记错了地址。所以 section 恒在，只有**入口**跟着开关走。
+ *
+ * 判据只用「扩展是否启用」，**不看 `features.group_matrix`**：那个 YAML 开关
+ * 关掉时后端 guard 回 404、页面按既有降级契约显示中性空态，入口留着才能明确
+ * 告诉运营「没开」，而不是变成一个静默消失的菜单。这与 `lib/pages.ts` 里那几页
+ * 不挂该开关是同一条决定。
+ */
+export function withQyBillingSectionNavItems<T extends { url: string }>(
+  items: T[]
+): T[] {
+  if (getQyConfigSnapshot().enabled) return items
+  return items.filter((item) => !QY_BILLING_SECTION_URLS.has(item.url))
+}
+
+/**
  * 系统设置 drill-in 视图的路径匹配。
  *
  * 上游原本是 `/^\/system-settings(\/|$)/`。这里把 qy 那几个配置页并进同一个

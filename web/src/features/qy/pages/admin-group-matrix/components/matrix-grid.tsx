@@ -27,7 +27,6 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -35,7 +34,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { cn } from '@/lib/utils'
 
 import { formatQyCount } from '../../ops/format'
 import {
@@ -47,6 +45,7 @@ import {
 } from '../lib/draft'
 import type { QyGmCell, QyGmMatrixResponse } from '../types'
 import { QyGmMatrixCell } from './matrix-cell'
+import { QyGmScopeStateBadges } from './scope-state-badges'
 
 export type QyGmColumnBulk = 'clear' | 'inherit_all' | 'select_all'
 
@@ -219,6 +218,16 @@ export function QyGmMatrixGrid(props: QyGmMatrixGridProps) {
           >
             <QyGmRowHeader
               userGroup={userGroup}
+              grantedCount={
+                props.data.model_groups.filter((column) =>
+                  qyGmGrantedOf(
+                    props.serverCells.get(
+                      qyGmCellKey(userGroup.name, column.name)
+                    ),
+                    props.draft.get(qyGmCellKey(userGroup.name, column.name))
+                  )
+                ).length
+              }
               otherUserGroups={props.data.user_groups
                 .map((row) => row.name)
                 .filter((name) => name !== userGroup.name)}
@@ -239,7 +248,9 @@ export function QyGmMatrixGrid(props: QyGmMatrixGridProps) {
                   granted={qyGmGrantedOf(cell, entry)}
                   ratio={qyGmRatioDraftOf(cell, entry)}
                   baseRatio={modelGroup.base_ratio}
-                  managed={userGroup.managed}
+                  scoped={userGroup.managed}
+                  reachableVia={cell?.reachable_via}
+                  planTitles={cell?.plan_titles}
                   selfEdge={userGroup.name === modelGroup.name}
                   onToggleGranted={(granted) =>
                     props.onToggleGranted(
@@ -267,20 +278,38 @@ export function QyGmMatrixGrid(props: QyGmMatrixGridProps) {
 
 type QyGmRowHeaderProps = {
   userGroup: QyGmMatrixResponse['user_groups'][number]
+  /** 草稿合并后这一行当前有几个模型分组在范围里。三态行头的第三态靠它。 */
+  grantedCount: number
   otherUserGroups: string[]
   onCopyRow: (fromUserGroup: string) => void
   onEditScope: () => void
 }
 
 /**
- * 行头：用户分组 + 在册人数 + 活跃令牌数 + 接管状态。
+ * 行头：用户分组 + 在册人数 + 活跃令牌数 + **范围三态**。
  *
- * 人数与活跃令牌数必须长在行头上而不是藏进弹窗：它们是「撤销这一行会打断谁」
+ * ── 三态，而不是「已接管 / 未接管」两态 ──
+ *
+ *   · 未设定范围         全部模型分组可用，各按兜底倍率（= 与上游逐位一致的默认）
+ *   · 已设定范围 · N 个   只有这 N 个可用
+ *   · 已设定范围 · 空     一个模型分组都不可用（隔离组）—— **红色**
+ *
+ * 「已接管 / 未接管」这套词在新口径下会直接把人带偏：运营会把「未接管」读成
+ * 「不能用」，而它的真实含义恰好是「全都能用」。所以这一页**绝不出现那两个词**。
+ *
+ * 第三态必须与第二态分开，理由与后端不肯用 grants 行数推断三态一样：
+ * 「一条都不许用」与「没配过」的两个错误方向分别是整组用户 403 和整组用户全放行，
+ * 而且都静默。
+ *
+ * 人数与活跃令牌数必须长在行头上而不是藏进弹窗：它们是「收紧这一行会打断谁」
  * 的分母，运营在动格子的那一刻就需要看见，点开才看得到就已经晚了。
  */
 function QyGmRowHeader(props: QyGmRowHeaderProps) {
   const { t } = useTranslation()
-  const managed = props.userGroup.managed
+  // 三态一律读后端下发的 scope_state，**不自己用 managed + 可见列里勾了几个推**。
+  // 判定与渲染都收在 {@link QyGmScopeStateBadges} 里，因为同一份状态也出现在
+  // 主从式那一页的左列表上 —— 两处各写一遍必然漂移成两个互相矛盾的数字。
+  const scoped = props.userGroup.scope_state !== 'unset'
 
   return (
     /*
@@ -303,44 +332,10 @@ function QyGmRowHeader(props: QyGmRowHeaderProps) {
           >
             {props.userGroup.name}
           </span>
-          {/*
-            自动遮断的来历。**不下发/不渲染它，这一行就是一个莫名其妙已经
-            enforce、清单还空着的分组**，而运营确信自己没做过这件事 ——
-            那正是「新分组默认全遮断」最容易被当成故障的时刻。
-            配好清单之后 `pending_setup` 转 false，徽标降级成一句 title，
-            长期挂着的提示等于没有提示。
-          */}
-          {props.userGroup.pending_setup && (
-            <Badge
-              variant='outline'
-              className='border-info/50 text-info px-1 py-0 text-[10px]'
-              title={t('qy_group_matrix_auto_masked_hint')}
-            >
-              {t('qy_group_matrix_auto_masked_badge')}
-            </Badge>
-          )}
-          {managed ? (
-            <Badge
-              variant='outline'
-              className={cn(
-                'px-1 py-0 text-[10px]',
-                props.userGroup.mode === 'enforce'
-                  ? 'border-destructive/50 text-destructive'
-                  : 'border-warning/50 text-warning'
-              )}
-            >
-              {props.userGroup.mode === 'enforce'
-                ? t('qy_group_matrix_mode_enforce')
-                : t('qy_group_matrix_mode_shadow')}
-            </Badge>
-          ) : (
-            <Badge
-              variant='outline'
-              className='text-muted-foreground px-1 py-0 text-[10px]'
-            >
-              {t('qy_group_matrix_managed_off')}
-            </Badge>
-          )}
+          <QyGmScopeStateBadges
+            userGroup={props.userGroup}
+            grantedCount={props.grantedCount}
+          />
         </div>
         <div className='text-muted-foreground text-[10px] tabular-nums'>
           {t('qy_group_matrix_row_stats', {
@@ -368,12 +363,12 @@ function QyGmRowHeader(props: QyGmRowHeaderProps) {
         </DropdownMenuTrigger>
         <DropdownMenuContent align='end'>
           <DropdownMenuItem onClick={props.onEditScope}>
-            {t('qy_group_matrix_managed_edit')}
+            {t('qy_group_scope_edit')}
           </DropdownMenuItem>
           {props.otherUserGroups.map((name) => (
             <DropdownMenuItem
               key={name}
-              disabled={!managed}
+              disabled={!scoped}
               onClick={() => props.onCopyRow(name)}
             >
               {t('qy_group_matrix_copy_row', { userGroup: name })}

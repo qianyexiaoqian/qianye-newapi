@@ -36,7 +36,7 @@ type QyGmScopeSheetProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   userGroup: QyGmUserGroup | null
-  /** 该用户分组当前草稿里可选的模型分组数，用于把「空清单」说清楚。 */
+  /** 该用户分组当前草稿里在范围内的模型分组数，用于把「空范围」说清楚。 */
   grantedCount: number
   /** 矩阵上还有没保存的格子。切 enforce 之前必须先保存（见下）。 */
   hasUnsavedDraft: boolean
@@ -59,17 +59,20 @@ type QyGmScopeSheetProps = {
 }
 
 /**
- * 单个用户分组的接管设置。
+ * 单个用户分组的**模型分组范围**设置。
  *
  * ── 三个状态，不是两个 ──
- *   · 未接管（`managed:false`）  = 扩展库里没有这一行 = 完全走上游原行为。
- *     这是零行为变更的默认态，也是 L3 回退（删掉行即可）。
- *   · 接管 + shadow              = 清单已经是权威的，但只记录不阻断。
- *   · 接管 + enforce             = 不在清单里的模型分组，令牌选不了、请求 403。
+ *   · 未设定范围（`managed:false`）= 扩展库里没有这一行 = **全部模型分组可用，
+ *     各按自己的兜底倍率**。这是零行为变更的默认态，也是回退（删掉行即可）。
+ *   · 设定范围 + shadow            = 范围已经是权威的，但只记录不阻断。
+ *   · 设定范围 + enforce           = 不在范围里的模型分组，令牌选不了、请求 403。
  *
- * 「接管了但清单是空的」是**合法且危险**的配置（隔离组 / 封禁组），必须能表达，
- * 所以它不能靠「有没有 grant 行」来推断 —— 那会让「一条都不许用」与「没配过」
- * 再次不可区分，而这一次的后果是整组用户 403。
+ * 「设了范围、但范围是空的」是**合法且危险**的配置（隔离组 / 封禁组），必须能
+ * 表达，所以它不能靠「有没有 grant 行」来推断 —— 那会让「一个都不许用」与
+ * 「没设过范围」不可区分，而这两个错误方向分别是整组用户 403 与整组用户全放行。
+ *
+ * 文案上**绝不出现「接管」二字**：新口径下「未接管」会被读成「不能用」，
+ * 而它的真实含义恰好是「全都能用」。
  */
 export function QyGmScopeSheet(props: QyGmScopeSheetProps) {
   const { t } = useTranslation()
@@ -103,10 +106,22 @@ export function QyGmScopeSheet(props: QyGmScopeSheetProps) {
     <QyResponsiveDialog
       open={props.open}
       onOpenChange={props.onOpenChange}
-      title={t('qy_group_matrix_managed_edit_title', {
+      title={t('qy_group_scope_edit_title', {
         userGroup: userGroup.name,
       })}
-      description={t('qy_group_matrix_managed_hint')}
+      /*
+        副标题必须跟着**这个分组此刻的状态**走。
+
+        写死成「未设定范围：…要限制他们，先给这个用户分组设定范围」之后，
+        对一个已经设了范围的分组就是一句假陈述 —— 而这个抽屉是逐个分组编辑范围
+        的唯一入口，它在最显眼的位置说反话，运营最可能的动作是以为范围没生效而
+        去别处再配一遍，或者反过来把范围关掉（关掉 = 放开全部）。
+      */
+      description={
+        managed
+          ? t('qy_group_scope_switch_on_desc')
+          : t('qy_group_scope_unset_hint')
+      }
       footer={
         <>
           <Button
@@ -135,24 +150,19 @@ export function QyGmScopeSheet(props: QyGmScopeSheetProps) {
     >
       <div className='space-y-4'>
         {/*
-          这一行的 enforce **不是任何人按出来的**。
+          关掉这个开关**不是"禁用"，是"放开"**。
 
-          没有这句话，运营打开这个抽屉看到的就是「已接管 + enforce + 清单为空」，
-          而他确信自己没做过 —— 于是第一反应是"这功能坏了"，第二反应往往是
-          直接关掉接管。说清来历，正确的动作（给它配上可用的模型分组）才成立。
-          来历是历史事实，配好清单之后也不消失。
+          这是整个抽屉里最容易被读反的一句话：运营的直觉是"关掉限制开关 = 这一档
+          的人被限制住了"。实际相反 —— 没有范围行时，那一档的人能用**全部**模型
+          分组，各按兜底倍率。开关旁边这段说明因此不能省。
         */}
-        {userGroup.auto_masked && (
-          <p className='bg-muted/40 text-muted-foreground rounded-md border p-2 text-xs'>
-            {t('qy_group_matrix_auto_masked_scope_note')}
-          </p>
-        )}
-
         <div className='flex items-start justify-between gap-4'>
           <div className='space-y-0.5'>
-            <Label>{t('qy_group_matrix_managed_on')}</Label>
+            <Label>{t('qy_group_scope_switch_label')}</Label>
             <p className='text-muted-foreground text-xs'>
-              {t('qy_group_matrix_managed_desc')}
+              {managed
+                ? t('qy_group_scope_switch_on_desc')
+                : t('qy_group_scope_switch_off_desc')}
             </p>
           </div>
           <Switch checked={managed} onCheckedChange={setManaged} />
@@ -176,6 +186,18 @@ export function QyGmScopeSheet(props: QyGmScopeSheetProps) {
                   onSelect={() => setMode('enforce')}
                 />
               </div>
+              {/*
+                强制模式**不是绝对的**，而这一点在别处一个字都看不到：
+                套餐解锁是并集，且叠在范围替换之后（读侧 QyUsableGroupsForUser、
+                写侧 CheckTokenGroup 与 playground 都各有一条短路）。于是买了
+                解锁贵分组套餐的用户，照样能把令牌指向范围之外的那个分组。
+                运营用 enforce 去硬性挡住一档人时，必须先知道这条穿透存在。
+              */}
+              {mode === 'enforce' && (
+                <p className='text-muted-foreground text-xs'>
+                  {t('qy_group_scope_enforce_plan_bypass_note')}
+                </p>
+              )}
               {mode === 'enforce' && (
                 <div className='space-y-2'>
                   {enforceBlocked && (
@@ -222,12 +244,12 @@ export function QyGmScopeSheet(props: QyGmScopeSheetProps) {
               <Switch checked={allowAuto} onCheckedChange={setAllowAuto} />
             </div>
 
-            {/* 空清单是合法配置（隔离组），所以这里是警告不是拦截。
-                但它必须被说出来：接管一个分组却一格都没勾，enforce 之后
-                这一组人一个模型分组都选不了。 */}
+            {/* 空范围是合法配置（隔离组 / 封禁组），所以这里是警告不是拦截。
+                但它必须被说出来：设了范围却一格都没勾，enforce 之后这一组人
+                一个模型分组都选不了。 */}
             {emptyList && (
               <p className='text-warning rounded-md border border-dashed p-2 text-xs'>
-                {t('qy_group_matrix_empty_list_warning', {
+                {t('qy_group_scope_empty_warning', {
                   userGroup: userGroup.name,
                 })}
               </p>

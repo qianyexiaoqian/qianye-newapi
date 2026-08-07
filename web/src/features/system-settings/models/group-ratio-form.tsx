@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Code2, Eye, HelpCircle } from 'lucide-react'
-import { memo, useCallback, useMemo, useState, type ReactNode } from 'react'
+import { memo, useCallback, useState, type ReactNode } from 'react'
 import type { UseFormReturn } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
@@ -60,10 +60,8 @@ import {
   SettingsSwitchItem,
 } from '../components/settings-form-layout'
 import { SettingsPageActionsPortal } from '../components/settings-page-context'
-import { safeJsonParse } from '../utils/json-parser'
 import { safeNumberFieldProps } from '../utils/numeric-field'
 import { GroupRatioVisualEditor } from './group-ratio-visual-editor'
-import { GroupSpecialUsableRulesEditor } from './group-special-usable-editor'
 
 type GroupFormValues = {
   GroupRatio: string
@@ -104,31 +102,6 @@ export const GroupRatioForm = memo(function GroupRatioForm({
   const toggleEditMode = useCallback(() => {
     setEditMode((prev) => (prev === 'visual' ? 'json' : 'visual'))
   }, [])
-
-  const watchedGroupRatio = form.watch('GroupRatio')
-  const watchedUserUsableGroups = form.watch('UserUsableGroups')
-  const watchedTopupGroupRatio = form.watch('TopupGroupRatio')
-  const groupNames = useMemo(() => {
-    const ratioMap = safeJsonParse<Record<string, number>>(watchedGroupRatio, {
-      fallback: {},
-      silent: true,
-    })
-    const usableMap = safeJsonParse<Record<string, string>>(
-      watchedUserUsableGroups,
-      { fallback: {}, silent: true }
-    )
-    const topupMap = safeJsonParse<Record<string, number>>(
-      watchedTopupGroupRatio,
-      { fallback: {}, silent: true }
-    )
-    return [
-      ...new Set([
-        ...Object.keys(ratioMap),
-        ...Object.keys(usableMap),
-        ...Object.keys(topupMap),
-      ]),
-    ]
-  }, [watchedGroupRatio, watchedUserUsableGroups, watchedTopupGroupRatio])
 
   return (
     <div className='space-y-6'>
@@ -207,13 +180,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               }
             />
 
-            <GroupSpecialUsableRulesEditor
-              value={form.watch('GroupSpecialUsableGroup')}
-              groupOptions={groupNames}
-              onChange={(value) =>
-                handleFieldChange('GroupSpecialUsableGroup', value)
-              }
-            />
+            <QyGroupMatrixHint />
 
             <FormField
               control={form.control}
@@ -320,34 +287,6 @@ export const GroupRatioForm = memo(function GroupRatioForm({
 
             <FormField
               control={form.control}
-              name='GroupGroupRatio'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('Inter-group overrides')}</FormLabel>
-                  <FormControl>
-                    <JsonCodeEditor
-                      value={field.value}
-                      onChange={field.onChange}
-                      name={field.name}
-                      onBlur={field.onBlur}
-                      textareaRef={field.ref}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    {t('Nested JSON: source group →')}{' '}
-                    {`{ targetGroup: ratio }`}{' '}
-                    {t(
-                      'to override billing when a user in one group uses a token of another group.'
-                    )}
-                  </FormDescription>
-                  <QyGroupMatrixHint field='inter_group_ratio' />
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
               name='AutoGroups'
               render={({ field }) => (
                 <FormItem>
@@ -397,31 +336,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               )}
             />
 
-            <FormField
-              control={form.control}
-              name='GroupSpecialUsableGroup'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('Special usable group rules')}</FormLabel>
-                  <FormControl>
-                    <JsonCodeEditor
-                      value={field.value}
-                      onChange={field.onChange}
-                      name={field.name}
-                      onBlur={field.onBlur}
-                      textareaRef={field.ref}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    {t(
-                      'Nested JSON defining per-group rules for adding (+:), removing (-:), or appending usable groups.'
-                    )}
-                  </FormDescription>
-                  <QyGroupMatrixHint field='special_usable_rules' />
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+            <QyGroupMatrixHint />
 
             <FormField
               control={form.control}
@@ -759,31 +674,6 @@ vip          0.5     ${t('No')}                ${t('Assigned by administrator on
                 <p className='text-muted-foreground text-sm leading-6'>
                   {t(
                     'Only configured combinations are overridden. All other calls keep the billing group base ratio.'
-                  )}
-                </p>
-              </AccordionContent>
-            </AccordionItem>
-
-            <AccordionItem value='usable'>
-              <AccordionTrigger>
-                {t('Special usable group rules')}
-              </AccordionTrigger>
-              <AccordionContent className='space-y-3'>
-                <p className='text-muted-foreground text-sm leading-6'>
-                  {t(
-                    'Special usable group rules make extra token groups visible to, or hide default ones from, users of a specific user group.'
-                  )}
-                </p>
-                <GuideCodeBlock>{`{
-  "vip": {
-    "+:premium": "${t('Premium plan, half price')}",
-    "-:default": "remove",
-    "special": "${t('Special group')}"
-  }
-}`}</GuideCodeBlock>
-                <p className='text-muted-foreground text-sm leading-6'>
-                  {t(
-                    'In the visual editor these appear as Extra visible and Hidden. In JSON, +: (or no prefix) adds a group and -: removes one.'
                   )}
                 </p>
               </AccordionContent>

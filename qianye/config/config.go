@@ -42,9 +42,28 @@ type Config struct {
 	GroupVisibility GroupVisibility `yaml:"group_visibility"`
 	Availability    Availability    `yaml:"availability"`
 	Violation       Violation       `yaml:"violation"`
-	GroupPricing    GroupPricing    `yaml:"group_pricing"`
 	GroupMatrix     GroupMatrix     `yaml:"group_matrix"`
+	PlanEntitlement PlanEntitlement `yaml:"plan_entitlement"`
 	Lottery         Lottery         `yaml:"lottery"`
+
+	// GroupPricingDeprecated 是「模型按分组单独定价」留下的配置占位。
+	//
+	// Deprecated: grouppricing 已下线,取而代之的是 (用户分组, 模型分组) 的分组倍率矩阵。
+	// 保留本字段**只为让仍写着 group_pricing: 的部署能启动** —— 本包是严格解析
+	// (KnownFields(true),见 parseFile),直接删掉字段会让每一个还写着这一段的部署
+	// 在升级二进制的那一刻启动失败。加载时告警并整段忽略(见 defaults.go)。
+	//
+	// 为什么是 map[string]any 而不是保留原来的 GroupPricing 结构体:
+	//
+	//  1. map 吸收该段下的**任意**键,包括我们已经忘了的、以及某个部署自己加的;
+	//     保留原结构体只能吸收我们记得的那几个。
+	//  2. 更硬的一条:原结构体里的 Enabled 是 plain bool,会被
+	//     TestEveryPlainBoolSwitchIsGated 反向要求一条 moduleGates 登记,而模块已经
+	//     删了 → TestNoConfigGateWithoutModule 又会因为"有 gate 没模块"判红,
+	//     两条守卫互相打架。map 没有这个问题。
+	//
+	// 它**不是开关**:填 true 也不会让任何东西复活。
+	GroupPricingDeprecated map[string]any `yaml:"group_pricing"`
 
 	// declared 是 YAML 文件里【实际写出来】的键路径集合,由 parseFile 填。
 	//
@@ -450,34 +469,6 @@ type Violation struct {
 	ScanTimeoutMs             int `yaml:"scan_timeout_ms"`
 }
 
-// GroupPricing 模型按分组单独定价。
-//
-// 语义(用户已拍板,不可改):分组级价格与分组倍率是**相乘**关系,
-// 最终扣费 = 分组级模型价 × 分组倍率。没有配置分组级价格的模型完全走原路径
-// (全局价 × 分组倍率),升级不改变任何既有计费结果。
-//
-// ShadowMode 与 violation 的同名开关是同一种东西,而且更严格:这里改错的不是
-// "要不要封号",而是每一笔请求实际扣走多少钱,且扣完不可逆。默认 true 表示
-// 完整算出"若启用会扣多少"并记录差额,但实际仍按旧价扣费;运营对账确认后
-// 再显式改 false。
-type GroupPricing struct {
-	Enabled    bool  `yaml:"enabled"`
-	ShadowMode *bool `yaml:"shadow_mode"`
-	// RuleCacheSeconds 是规则内存快照的刷新周期。规则读取在 relay 热路径上,
-	// 每次请求查库不可接受。
-	RuleCacheSeconds int `yaml:"rule_cache_seconds"`
-	// MaxStaleSeconds 是快照允许的最大陈旧时间。超过它仍未刷新成功,
-	// 查找一律回落成"无覆盖"(走全局价),绝不继续按一份来历不明的旧规则扣钱。
-	MaxStaleSeconds int `yaml:"max_stale_seconds"`
-	// ShadowFlushIntervalSeconds 是影子差额从内存落库的周期。
-	ShadowFlushIntervalSeconds int `yaml:"shadow_flush_interval_seconds"`
-	// ShadowRetentionDays 是影子差额聚合行的保留天数。
-	ShadowRetentionDays int `yaml:"shadow_retention_days"`
-	// MaxRules 是规则总数上限。规则表每个刷新周期被全量拉取,不设上界的话
-	// 一次脚本误操作就会让每个节点定期拉一张大表。
-	MaxRules int `yaml:"max_rules"`
-}
-
 // GroupMatrix 用户分组 × 模型分组的**权威可选清单**。
 //
 // 语义(项目方拍板,不可改):一个用户分组一旦在扩展库里有 scope 行,它能选哪些
@@ -516,42 +507,69 @@ type GroupMatrix struct {
 	// 而不影响读侧已经生效的收紧 —— 反过来则不允许(见包注释)。
 	WriteGuardEnabled *bool `yaml:"write_guard_enabled"`
 
-	// NewGroupDefaultDeny 决定**新出现的用户分组**是否一建出来就被全遮断
-	// (自动建一条 mode=enforce、零条 grant 的 scope 行)。
-	//
-	// ══════════════ 为什么它必须能关掉,而且必须默认打开 ══════════════
-	//
-	// 项目方的要求是「新加的用户分组默认把所有模型分组屏蔽,直到手动添加」。
-	// 这是一条**违反最小惊讶**的默认:运营在上游「系统设置-分组倍率」页加一个
-	// key,回到令牌页却发现这一档的人一个模型分组都选不了,而他刚才那次操作
-	// 没有任何地方提到过遮断。所以两件事都是硬要求:
-	//
-	//	1. 它必须是一个开关(本字段),关掉之后新分组与上游行为逐位一致;
-	//	2. 打开时管理端矩阵页必须常驻一条提示,把「新分组默认全遮断」这句话
-	//	   摆在运营眼前 —— 一个只写在 YAML 注释里的默认等于没有告知。
-	//
-	// *bool 且默认打开:普通 bool 的零值是 false,那样"没写这一行"与"读过文档、
-	// 想清楚了、显式关掉"在进程内是同一个字节,而本仓已经因为这个形状栽过三次。
-	NewGroupDefaultDeny *bool `yaml:"new_group_default_deny"`
+	// 「套餐解锁模型分组」的开关与缓存参数**不在本段**:它们属于 plan_entitlement
+	// 段(qianye/modules/planentitlement)。刻意不在这里再放一份 ——
+	// 同一份事实两个配置源,同步失败的表现是"一个页面说开着、另一个说关着"。
+	// 矩阵页需要知道解锁是否生效时,走 groupmatrix.PlanUnlockEnabled 这个注入接缝。
 
-	// NewGroupScanIntervalSeconds 是「新分组对账」后台任务的周期。
+	// NewGroupDefaultDenyDeprecated / NewGroupScanIntervalSecondsDeprecated 是
+	// 「新分组默认全遮断」的两个键。
 	//
-	// 上游没有任何"分组被创建"的事件可挂 —— 用户分组的事实清单就是
-	// options.GroupRatio 的键集合(controller/group.go 直接把它的 key 当分组列表
-	// 下发),而它由通用的 model.UpdateOption 写入,没有分组语义的钩子。
-	// 为它在上游加 hook 要动 setting/ratio_setting 或 model/option.go,
-	// 而对账任务一行上游代码都不用改,代价只是最长一个周期的发现延迟。
+	// Deprecated: 该默认已下线 —— 新口径是「未设定范围 = 全部模型分组可用,
+	// 按兜底倍率」,自动接管与它完全相反。保留这两个字段**仅为**让仍写着这些键的
+	// 部署能够启动:本包是严格解析(KnownFields(true),见 Load),直接删字段会让
+	// 那些部署在升级二进制的那一刻启动失败。加载时告警并忽略。
 	//
-	// 延迟是安全方向的:窗口期内新分组按上游宽松白名单放行(与今天一致),
-	// 而不是先拒后放。
-	NewGroupScanIntervalSeconds int `yaml:"new_group_scan_interval_seconds"`
+	// 必须是指针:*bool 不会被 TestEveryPlainBoolSwitchIsGated 反向要求一条 gate
+	// 登记(功能已下线,登记不出来);*int 不参与 markNumbersUnset 的哨兵逻辑。
+	NewGroupDefaultDenyDeprecated         *bool `yaml:"new_group_default_deny"`
+	NewGroupScanIntervalSecondsDeprecated *int  `yaml:"new_group_scan_interval_seconds"`
 }
 
 // WriteGuardOn 表示令牌写入侧校验是否打开(默认打开)。
 func (g GroupMatrix) WriteGuardOn() bool { return boolOr(g.WriteGuardEnabled, true) }
 
-// NewGroupDefaultDenyOn 表示新出现的用户分组是否默认全遮断(默认打开)。
-func (g GroupMatrix) NewGroupDefaultDenyOn() bool { return boolOr(g.NewGroupDefaultDeny, true) }
+// PlanEntitlement 「订阅套餐解锁模型分组 + 套餐余额的使用范围」。
+//
+// 语义(项目方拍板):套餐可以解锁若干模型分组,**不绑定用户分组** —— 谁买了谁
+// 就拿得到,与他在哪个用户分组里无关。解锁只授予**成员资格**,倍率仍然只由
+// (用户分组, 模型分组) 决定(唯一真相源是上游 options),扩展库一个倍率字节都不存。
+//
+// 为什么不并进 group_matrix 段:两者的开关方向**相反**。group_matrix.enabled
+// 被拉下是为了让"收紧"立刻失效;plan_entitlement.enabled 被拉下的后果是
+// 已付款用户当场少掉一批分组。共用一个开关,拉闸的人一定会误伤其中一侧。
+type PlanEntitlement struct {
+	// Enabled 是本模块的 kill switch,**默认打开**。
+	//
+	// *bool 而不是普通 bool:普通 bool 的零值 false 会让"没写这一段"与"读过文档、
+	// 想清楚了、显式关掉"变成同一个字节。而且这里默认关掉是错的方向 ——
+	// 运营在管理端配好了解锁、用户也付了钱,却因为 YAML 少一行而全部不生效。
+	//
+	// 默认打开不会带来任何行为变化:两张表空表起步时,解析在触碰用户缓存之前
+	// 就返回上游那张 map 的指针(零行为变化 + 零新增 I/O 是结构性的)。
+	Enabled *bool `yaml:"enabled"`
+
+	// CacheSeconds 是**第一层**(全站:套餐 → 解锁分组 + 余额范围)内存快照的
+	// 刷新周期。这一层是纯内存、零 I/O,热路径与订阅扣费事务内都要读它。
+	CacheSeconds int `yaml:"cache_seconds"`
+
+	// UserCacheSeconds 是**第二层**(userId → 活跃套餐)的新鲜期。
+	//
+	// 第二层只能查主库,所以它是本模块唯一的 I/O 面。刚买完套餐的用户此前几乎
+	// 必然是"零活跃订阅"那一档,而那一档的缓存时长是本值的 1/4 ——
+	// 「买完多久能用」这个最容易变成工单的数字由它兜底。
+	UserCacheSeconds int `yaml:"user_cache_seconds"`
+
+	// UserMaxStaleSeconds 是第二层的 serve-stale 上限,也是第一层快照的陈旧告警线。
+	//
+	// 在这个窗口内,刷新失败时继续沿用上一次成功的结果:用户已经付过款,
+	// 而且陈旧期内他仍按该模型分组的正确倍率付费,平台不损失一分钱。
+	// 超过之后才降级为"无解锁"。
+	UserMaxStaleSeconds int `yaml:"user_max_stale_seconds"`
+}
+
+// On 表示套餐解锁是否启用(默认启用)。
+func (p PlanEntitlement) On() bool { return boolOr(p.Enabled, true) }
 
 // Lottery 娱乐功能:抽奖(kind=draw)与竞猜(kind=guess)共用一套配置。
 //
@@ -655,9 +673,6 @@ func (g GroupVisibility) On() bool             { return boolOr(g.Enabled, true) 
 func (g GroupVisibility) PricingOn() bool      { return boolOr(g.FilterPricing, true) }
 func (g GroupVisibility) PerfMetricsOn() bool  { return boolOr(g.FilterPerfMetrics, true) }
 func (g GroupVisibility) KeepAutoGroup() bool  { return boolOr(g.IncludeAutoGroup, true) }
-
-// IsShadow 为 true 时分组定价只记录差额、不改变实际扣费。默认 true。
-func (g GroupPricing) IsShadow() bool { return boolOr(g.ShadowMode, true) }
 
 // HasWithdrawMethod 判断某种提现方式是否启用。
 func (w Withdraw) HasWithdrawMethod(m string) bool {

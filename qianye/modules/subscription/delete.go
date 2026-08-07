@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/modules/planentitlement"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
@@ -240,6 +241,27 @@ func adminDeletePlan(c *gin.Context) {
 	} else {
 		purged = n
 	}
+	// 同一批收尾:套餐的「解锁模型分组 + 余额使用范围」也要清掉。
+	//
+	// 残留行不会造成错误的放行(没有任何订阅还指着一个已删的套餐),但它会让
+	// planentitlement 的「全站零绑定」零 I/O 短路永远短路不掉 —— 一个已经删干净
+	// 的功能仍在每个带令牌分组的请求上产生一次 per-user 查询。
+	if _, perr := planentitlement.DeleteForPlans(ctx, []int{planId}); perr != nil {
+		common.SysError(fmt.Sprintf(
+			"qianye/subscription: 套餐 %d 已从主库删除,但清理扩展库解锁配置失败(孤儿行不影响判定,"+
+				"重试一次删除即可自愈): %v", planId, perr))
+	}
+	// 两层缓存都要现在就失效,顺序是「第一层快照 → 第二层 per-user」。
+	//
+	// 删套餐的级联把持有者的订阅置成 cancelled 并把 end_time 推到当下,而
+	// per-user 缓存里那份 planIds 既不重查 status 也不重查 end_time —— 不失效的话,
+	// 这些用户在本节点最长一个新鲜期(默认 60 秒)内仍然能把令牌指向那个
+	// 「已经不属于他们」的模型分组,并按该分组的倍率扣费。本站有 GroupRatio=0
+	// 的免费分组,那 60 秒就是零成本调用。
+	if perr := planentitlement.InvalidateAndReload(); perr != nil {
+		common.SysError("qianye/subscription: 删除套餐后刷新解锁快照失败(最多滞后一个刷新周期): " + perr.Error())
+	}
+	planentitlement.InvalidateUser(0)
 
 	action := "删除订阅套餐"
 	if !deleted {

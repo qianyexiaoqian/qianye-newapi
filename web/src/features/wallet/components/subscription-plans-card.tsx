@@ -533,7 +533,7 @@ export function SubscriptionPlansCard({
               const count = planPurchaseCountMap.get(plan.id) || 0
               const reached = limit > 0 && count >= limit
               const facts = buildPlanFacts(plan, t, {
-                includeGroups: true,
+                includeLegacyGroupRewrite: true,
                 purchaseCount: count,
               })
 

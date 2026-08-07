@@ -97,8 +97,22 @@ export function formatPlanExpiryPreview(
 }
 
 export interface BuildPlanFactsOptions {
-  /** 是否把升/降级分组并入事实列表。弹窗用 GroupBadge 单独渲染，故传 false。 */
-  includeGroups?: boolean
+  /**
+   * 是否把「购买后用户分组会被改写成什么」并入事实列表。
+   *
+   * ── 这一项为什么还在，而且默认关 ──
+   *
+   * 管理端已经不再提供这两个字段的编辑入口：用户分组与模型分组分离之后，买套餐
+   * 只该多解锁几个**模型分组**，不该把人从一个用户分组搬到另一个。但上游
+   * `CreateUserSubscriptionFromPlanTx` 那段改写 `users.group` 的逻辑一行没动，
+   * 于是**存量套餐仍然会改写**（直到管理员在新表单里把它保存一次，见
+   * lib/plan-form.ts）。
+   *
+   * 只要它还会发生，就必须在**掏钱之前**告诉买家：换一个用户分组会连带换掉他的
+   * 可用范围、倍率与自动分组。所以这两行不是历史包袱，是仍然有效的风险披露 ——
+   * 而且它们本来就只在字段非空时渲染，那批套餐清干净之后会自动消失。
+   */
+  includeLegacyGroupRewrite?: boolean
   /** 当前用户已购次数，用于渲染 `已购 1/3`。 */
   purchaseCount?: number
 }
@@ -153,10 +167,10 @@ export function buildPlanFacts(
           value: `${count} / ${limit}`,
         }
       : null,
-    opts.includeGroups && plan?.upgrade_group
+    opts.includeLegacyGroupRewrite && plan?.upgrade_group
       ? { id: 'upgrade', label: t('Upgrade Group'), value: plan.upgrade_group }
       : null,
-    opts.includeGroups && plan?.downgrade_group
+    opts.includeLegacyGroupRewrite && plan?.downgrade_group
       ? {
           id: 'downgrade',
           label: t('Downgrade Group'),

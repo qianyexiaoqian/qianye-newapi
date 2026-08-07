@@ -22,7 +22,6 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Dialog } from '@/components/dialog'
-import { GroupBadge } from '@/components/group-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -111,10 +110,12 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const limitReached =
     (props.purchaseLimit || 0) > 0 &&
     (props.purchaseCount || 0) >= (props.purchaseLimit || 0)
-  // Groups are excluded here because the dialog renders them as GroupBadge
-  // below rather than as plain text rows.
+  // 与钱包页那张套餐卡走**同一条**事实清单，包括"购买后用户分组会被改写成什么"
+  // 这两行。原来这里传 false 再在下面手搓两块 GroupBadge，等于同一件事有两处
+  // 实现：这一版把「升级分组 / 降级分组」从管理端撤掉时，只改一处必然会漏另一处，
+  // 而漏掉的那一处正是用户掏钱前看的那一屏。
   const facts = buildPlanFacts(plan, t, {
-    includeGroups: false,
+    includeLegacyGroupRewrite: true,
     purchaseCount: props.purchaseCount,
   })
 
@@ -306,24 +307,6 @@ export function SubscriptionPurchaseDialog(props: Props) {
               </span>
             </div>
           ))}
-          {plan.upgrade_group && (
-            <div className='flex items-center justify-between gap-3'>
-              <span className='text-muted-foreground text-sm'>
-                {t('Upgrade Group')}
-              </span>
-              <GroupBadge group={plan.upgrade_group} />
-            </div>
-          )}
-          {/* Which group the account drops to after expiry decides whether the
-              user keeps any access at all, so it belongs in the buy decision. */}
-          {plan.downgrade_group && (
-            <div className='flex items-center justify-between gap-3'>
-              <span className='text-muted-foreground text-sm'>
-                {t('Downgrade Group')}
-              </span>
-              <GroupBadge group={plan.downgrade_group} />
-            </div>
-          )}
           <Separator />
           <div className='flex items-center justify-between gap-3'>
             <span className='text-sm font-medium'>{t('Amount Due')}</span>

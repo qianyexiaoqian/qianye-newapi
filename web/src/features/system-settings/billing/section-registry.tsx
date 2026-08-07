@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { QyAdminUserGroups } from '@/features/qy/pages/admin-user-groups'
 import { parseCurrencyDisplayType } from '@/lib/currency'
 
 import { CheckinSettingsSection } from '../general/checkin-settings-section'
@@ -117,16 +118,37 @@ const BILLING_SECTIONS = [
   },
   {
     id: 'group-pricing',
-    titleKey: 'Group Pricing',
+    // 「模型分组定价」而不是「分组定价」：用户分组与模型分组分离之后，这一页管的
+    // 只剩模型分组那一侧（模型分组的兜底倍率、充值折扣、可选清单、auto 顺序）。
+    // 「用户分组 × 模型分组」那一半在扩展的分组矩阵页上，名字必须把两者分开，
+    // 否则运营会在这里找一个已经不在这里的东西。
+    titleKey: 'Model Group Pricing',
     build: (settings: BillingSettings) => (
       <RatioSettingsCard
-        titleKey='Group Pricing'
+        titleKey='Model Group Pricing'
         modelDefaults={getModelDefaults(settings)}
         groupDefaults={getGroupDefaults(settings)}
         toolPricesDefault={settings['tool_price_setting.prices']}
         visibleTabs={['groups']}
       />
     ),
+  },
+  {
+    // 千夜扩展的「用户分组」页（项目方原话：「管理员设置/计费与支付/这个菜单
+    // 你可以新增:用户分组」）。紧跟「模型分组定价」是刻意的 —— 那一页管模型
+    // 分组那一侧，这一页管「哪一档人能用哪些模型分组、按什么倍率」，两页是
+    // 同一件事的两半，隔开就要靠运营自己记住它们是配对的。
+    //
+    // `titleKey` 用 qy 语言包的键：上游 7 个 locale 文件是高频合并冲突区，
+    // 扩展的文案一律走 `src/i18n/qy/`（见那里的说明）。两份资源合并进同一个
+    // 命名空间，`t()` 解析方式完全一致。
+    //
+    // 扩展关掉时这一项由 `withQyBillingSectionNavItems` 从抽屉里摘掉；section
+    // 本身仍然登记在这里，深链接才不会被 `$section` 的白名单弹回默认页 ——
+    // 点进来会看到「功能未启用」的中性空态，而不是一次莫名其妙的跳转。
+    id: 'user-groups',
+    titleKey: 'qy_group_matrix_row_header',
+    build: () => <QyAdminUserGroups />,
   },
   {
     id: 'payment',

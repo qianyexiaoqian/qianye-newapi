@@ -41,6 +41,56 @@ func adoptDeprecatedRates(cm *Commission) {
 		cm.ConsumeRateBpsDeprecated, &cm.ConsumeRatePercent)
 }
 
+// adoptRetiredGroupPricing 处置已下线的 group_pricing 配置段。
+//
+// 「模型按分组单独定价」整个模块已下线,取而代之的是 (用户分组, 模型分组) 的分组倍率
+// 矩阵。但配置段不能跟着一起删:本包是严格解析(KnownFields(true)),删掉字段会让
+// 每一个还写着 group_pricing: 的部署在升级二进制的那一刻**启动失败** ——
+// 一次功能下线不该造成停机。
+//
+// 于是保留一个 map 占位吸收整段,在这里喊一声并置 nil。告警走 SysError 而不是
+// SysLog:淹在 info 里的迁移提示等于没写,而这一段的语义变化是"曾经参与扣费的规则
+// 现在一条都不生效了",运维必须看见。
+//
+// 置 nil 是刻意的:让"配置里写没写过这一段"在加载之后不再可观测,断掉任何
+// 后来者把它重新当成开关读的可能。
+func adoptRetiredGroupPricing(c *Config) {
+	if c.GroupPricingDeprecated == nil {
+		return
+	}
+	common.SysError("qianye: 配置里仍有 group_pricing 段,但「模型按分组单独定价」已下线 —— " +
+		"该段被整段忽略,其中的规则不再参与任何一次扣费。" +
+		"分组级价格改由「用户分组 × 模型分组」倍率矩阵表达(管理端分组矩阵页)," +
+		"确认无误后可以把这一段从 YAML 里删掉")
+	c.GroupPricingDeprecated = nil
+}
+
+// adoptRetiredNewGroupDeny 处置已下线的「新分组默认全遮断」两个键。
+//
+// 那条默认与本轮拍定的口径**完全相反**:新口径是「未设定范围 = 全部模型分组可用,
+// 按兜底倍率」,而它做的是"新分组一建出来就一个都不许用"。撤销时连同配置项一起撤,
+// 不留一个没人用的开关 —— 留着它最坏的形状是有人把它设成 true 然后以为收紧生效了。
+//
+// 同样不能直接删字段:KnownFields(true) 下,任何仍写着这两个键的部署会在升级
+// 二进制的那一刻启动失败。保留 Deprecated 占位吸收它们,在这里喊一声并置 nil。
+//
+// 告警走 SysError 而不是 SysLog:这两个键曾经的语义是"自动收紧",而现在它们
+// 一个字节都不生效 —— 淹在 info 里的迁移提示等于没写。
+func adoptRetiredNewGroupDeny(gm *GroupMatrix) {
+	if gm.NewGroupDefaultDenyDeprecated != nil {
+		common.SysError("qianye: group_matrix.new_group_default_deny 已废弃并被忽略 —— " +
+			"「新分组默认全遮断」已下线。新口径是:用户分组**未设定范围**时,全部模型分组可用、" +
+			"按各自的兜底倍率计费;需要限制某个用户分组请在管理端分组矩阵页为它显式设定范围。" +
+			"确认无误后可以把这一行从 YAML 里删掉")
+		gm.NewGroupDefaultDenyDeprecated = nil
+	}
+	if gm.NewGroupScanIntervalSecondsDeprecated != nil {
+		common.SysError("qianye: group_matrix.new_group_scan_interval_seconds 已废弃并被忽略 —— " +
+			"「新分组对账」后台任务已随「新分组默认全遮断」一并下线,该键不再有任何效果")
+		gm.NewGroupScanIntervalSecondsDeprecated = nil
+	}
+}
+
 // bpsToPercent 把万分比整数换算成百分比字符串,只做整数除法与取余,
 // 不经过 float64 —— 这条路径最终会喂给费率解析,精度不能在这里丢。
 //
@@ -180,12 +230,7 @@ func applyDefaults(c *Config) {
 	intDefault(&v.RuleCacheSeconds, 60)
 	intDefault(&v.ScanTimeoutMs, 20)
 
-	gp := &c.GroupPricing
-	intDefault(&gp.RuleCacheSeconds, 60)
-	intDefault(&gp.MaxStaleSeconds, 300)
-	intDefault(&gp.ShadowFlushIntervalSeconds, 60)
-	intDefault(&gp.ShadowRetentionDays, 90)
-	intDefault(&gp.MaxRules, 2000)
+	adoptRetiredGroupPricing(c)
 
 	gm := &c.GroupMatrix
 	intDefault(&gm.CacheSeconds, 30)
@@ -194,7 +239,12 @@ func applyDefaults(c *Config) {
 	intDefault(&gm.MaxPreviewPairs, 500)
 	intDefault(&gm.PreviewSampleLimit, 20)
 	intDefault(&gm.MaxGrants, 2000)
-	intDefault(&gm.NewGroupScanIntervalSeconds, 60)
+	adoptRetiredNewGroupDeny(gm)
+
+	pe := &c.PlanEntitlement
+	intDefault(&pe.CacheSeconds, 30)
+	intDefault(&pe.UserCacheSeconds, 60)
+	intDefault(&pe.UserMaxStaleSeconds, 300)
 
 	lt := &c.Lottery
 	intDefault(&lt.MaxActiveActivities, 20)

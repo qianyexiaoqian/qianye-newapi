@@ -17,7 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { Row } from '@tanstack/react-table'
-import { Pencil, Power, PowerOff, RotateCcw, Trash2 } from 'lucide-react'
+import { Boxes, Pencil, Power, PowerOff, RotateCcw, Trash2 } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -27,6 +28,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
+import { QyPlanEntitlementDialog } from '@/features/qy/plan-entitlement/plan-entitlement-dialog'
 
 import type { PlanRecord } from '../types'
 import { useSubscriptions } from './subscriptions-provider'
@@ -39,6 +41,10 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const { t } = useTranslation()
   const { setOpen, setCurrentRow, complianceConfirmed } = useSubscriptions()
   const qyConfig = useQyConfig()
+  // 「解锁模型分组 + 余额使用范围」是扩展提供的能力，落扩展库的两张表。
+  // 弹窗状态留在本组件里，不进上游那个 dialog 类型联合 —— 那会把一次纯新增
+  // 变成对上游状态机的改动，而它带来的唯一好处只是少一个 useState。
+  const [entitlementOpen, setEntitlementOpen] = useState(false)
   const isEnabled = row.original.plan.enabled
   const toggleLabel = isEnabled ? t('Disable') : t('Enable')
   // 删除是扩展提供的能力（上游没有这个接口）。扩展明确关闭时按 qy 的口径零痕迹
@@ -123,6 +129,36 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         </TooltipTrigger>
         <TooltipContent>{toggleLabel}</TooltipContent>
       </Tooltip>
+
+      {canDelete && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant='ghost'
+                size='icon-sm'
+                disabled={!complianceConfirmed}
+                onClick={() => setEntitlementOpen(true)}
+                aria-label={t('qy_plan_entitlement_title', {
+                  plan: row.original.plan.title,
+                })}
+              />
+            }
+          >
+            <Boxes />
+          </TooltipTrigger>
+          <TooltipContent>{t('qy_plan_entitlement_action')}</TooltipContent>
+        </Tooltip>
+      )}
+
+      {canDelete && (
+        <QyPlanEntitlementDialog
+          open={entitlementOpen}
+          onOpenChange={setEntitlementOpen}
+          planId={row.original.plan.id}
+          planTitle={row.original.plan.title}
+        />
+      )}
 
       {canDelete && (
         <Tooltip>

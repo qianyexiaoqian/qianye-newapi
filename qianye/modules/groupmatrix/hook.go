@@ -22,8 +22,10 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/qianye/groupratio"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -53,6 +55,21 @@ func Resolve(userGroup string, upstream map[string]string) map[string]string {
 		// 匿名口径。groupvis 的模型广场、availability、pricing 的匿名基准
 		// 全部依赖这一条,改它等于同时动三个已经修好的泄漏面。
 		return upstream
+	}
+
+	// ── 顺带补上一条上游够不到的信号(0 额外上游行)────────────────────────
+	//
+	// users.group 本身不在分组倍率表里时,上游 middleware/auth.go 的
+	// `if tokenGroup != ""` 让**空分组令牌**整段绕过令牌分组校验,UsingGroup 直接
+	// 等于这个孤儿名字;GetGroupRatio 查不到就静默返回 1,按原价扣费、零告警。
+	// 那条路径上没有任何一处会去解析交叉倍率,所以 groupratio.Resolve 永远撞不到它。
+	//
+	// 我们已经在这个 hook 里、而且手上正好有那个名字,所以这是全仓成本最低的观测点。
+	// 代价被钳到最小:命中(绝大多数请求)时只多一次与上游同源的 map 查找;
+	// 未命中才进登记簿,而未命中意味着这一笔本来就在被错误计费。
+	// 登记簿自带上限 + 首次必报 + 每 1000 次限频,近似名的计算是惰性的。
+	if !ratio_setting.ContainsGroupRatio(userGroup) {
+		groupratio.NoteMissingGroup(userGroup)
 	}
 
 	s := activeSnapshot()
@@ -144,6 +161,15 @@ func CheckTokenGroup(c *gin.Context, oldGroup, newGroup string) (err error) {
 		}
 	} else if _, granted := s.Grants[userGroup][newGroup]; granted {
 		return nil
+	} else if service.QyPlanUnlockedGroup(c.GetInt("id"), newGroup) {
+		// 套餐解锁是 **per-user** 的,不在 s.Grants 这份 per-group 清单里。
+		// 少了这一条,读侧(QyUsableGroupsForUser 并入解锁)放行、写侧却拒绝 ——
+		// 用户买了套餐、页面上看得到那个分组、保存令牌时被挡下来。
+		// 两侧口径分叉是本仓已经修过一次的形状,不要再造一次。
+		//
+		// 判据与读侧同源(同一份 planentitlement 快照与 per-user 缓存),
+		// 默认实现恒返回 false —— 订阅侧没接入时这一行行为中性。
+		return nil
 	}
 	if scope.Mode != ModeEnforce {
 		// 影子期:只记录,不阻断。这一档是唯一**可归因**的影子拒绝来源 ——
@@ -172,12 +198,22 @@ func CheckTokenGroup(c *gin.Context, oldGroup, newGroup string) (err error) {
 // 拿不到所有者时回落上游语义 —— fail-open,与写侧规则 6 同一个方向。
 func PlaygroundGroupAllowed(c *gin.Context, usingGroup, requestedGroup string) bool {
 	effective := usingGroup
+	userId := 0
+	if c != nil {
+		userId = c.GetInt("id")
+	}
 	if effective == "" && enabled() {
 		if owner, ok := ownerUserGroup(c); ok {
 			effective = owner
 		}
 	}
-	return service.GroupInUserUsableGroups(effective, requestedGroup) || requestedGroup == usingGroup
+	// 第三个短路是套餐解锁:GroupInUserUsableGroups 是 group-keyed 的,
+	// 而套餐挂在人身上。不补这一条,买了套餐的用户在 playground 里选不到他
+	// 已经付过钱的分组,而令牌链路上选得到 —— 同一个人在两个入口得到两种答案。
+	// 默认实现恒返回 false,所以订阅侧没接入时这一行行为中性。
+	return service.GroupInUserUsableGroups(effective, requestedGroup) ||
+		requestedGroup == usingGroup ||
+		service.QyPlanUnlockedGroup(userId, requestedGroup)
 }
 
 // describeGrants 把清单渲染成一句人话。空清单必须明说,不能显示成空字符串 ——

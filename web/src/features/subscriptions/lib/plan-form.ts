@@ -51,8 +51,6 @@ export function getPlanFormSchema(t: TFunction) {
     // 因此不会出现在 formValuesToPlanPayload 的结果里。
     max_total_users: z.coerce.number().min(0),
     total_amount: z.coerce.number().min(0),
-    upgrade_group: z.string().optional(),
-    downgrade_group: z.string().optional(),
     stripe_price_id: z.string().optional(),
     creem_product_id: z.string().optional(),
     waffo_pancake_product_id: z.string().optional(),
@@ -77,8 +75,6 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   max_purchase_per_user: 0,
   max_total_users: 0,
   total_amount: 0,
-  upgrade_group: '',
-  downgrade_group: '',
   stripe_price_id: '',
   creem_product_id: '',
   waffo_pancake_product_id: '',
@@ -104,8 +100,6 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     // 调用方必须自己挡住"没读到就照着 0 保存"，否则会悄悄抹掉已设的名额上限。
     max_total_users: 0,
     total_amount: quotaUnitsToDollars(Number(plan.total_amount || 0)),
-    upgrade_group: plan.upgrade_group || '',
-    downgrade_group: plan.downgrade_group || '',
     stripe_price_id: plan.stripe_price_id || '',
     creem_product_id: plan.creem_product_id || '',
     waffo_pancake_product_id: plan.waffo_pancake_product_id || '',
@@ -132,8 +126,26 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
       sort_order: Number(values.sort_order || 0),
       max_purchase_per_user: Number(values.max_purchase_per_user || 0),
       total_amount: parseQuotaFromDollars(Number(values.total_amount || 0)),
-      upgrade_group: values.upgrade_group || '',
-      downgrade_group: values.downgrade_group || '',
+      // ── 升级分组 / 降级分组：显式清空，不是"忘了传" ──────────────────────
+      //
+      // 这两列在上游 `subscription_plans` 上仍然存在，而且**仍然在跑**：
+      // `model.CreateUserSubscriptionFromPlanTx` 在 `upgrade_group != ''` 时会
+      // 直接 `UPDATE users SET group = <upgrade_group>`，到期由
+      // `ExpireDueSubscriptions` 再改回去。用户分组与模型分组分离之后，这正是
+      // 要消灭的东西：买套餐只该多解锁几个**模型分组**，不该把人从一个用户分组
+      // 搬到另一个用户分组（那会连带换掉他的可用范围、倍率与自动分组）。
+      //
+      // 上游 `AdminUpdateSubscriptionPlan` 用的是**显式 map 全量覆盖**，
+      // `upgrade_group` / `downgrade_group` 恒在 map 里。所以这里"不传"与
+      // "传空串"落库结果完全一样（Go 零值），区别只在读代码的人能不能看出来这是
+      // 有意为之。写成显式空串：任何一次在新表单里保存套餐，都会把这两列清掉，
+      // 从此该套餐不再改写 `users.group`。
+      //
+      // **没被重新保存过的存量套餐仍然会改写 users.group** —— 那不是这一行能
+      // 解决的，所以列表页保留了一列专门把这批套餐标出来（见
+      // subscriptions-columns.tsx 的 legacy_group_rewrite 列）。
+      upgrade_group: '',
+      downgrade_group: '',
     },
   }
 }

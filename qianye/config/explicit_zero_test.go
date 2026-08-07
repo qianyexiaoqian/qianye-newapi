@@ -39,11 +39,14 @@ var zeroExemptions = map[string]string{
 	"availability.bucket_seconds":         "必须是 3600 的因数,0 会让小时级汇总跨桶错位",
 	"availability.flush_interval_seconds": "validateAvailability 要求 > 0",
 
-	"group_pricing.rule_cache_seconds":            "validateGroupPricing 要求 > 0",
-	"group_pricing.max_stale_seconds":             "不得小于 rule_cache_seconds,而后者被豁免后取默认值 60",
-	"group_pricing.shadow_flush_interval_seconds": "validateGroupPricing 要求 > 0",
-	"group_pricing.shadow_retention_days":         "validateGroupPricing 要求 > 0",
-	"group_pricing.max_rules":                     "validateGroupPricing 要求 > 0",
+	// plan_entitlement 的开关是 *bool 且默认打开(见 PlanEntitlement.On),
+	// 所以这一段的校验在"全 0 配置"里照常执行 —— 与 group_matrix 那一段不同
+	// (后者的 enabled 是普通 bool,全 0 配置里它是 false,整段校验被跳过)。
+	"plan_entitlement.cache_seconds": "validatePlanEntitlement 要求 > 0;为 0 会让第一层快照每次读都判过期",
+	"plan_entitlement.user_cache_seconds": "validatePlanEntitlement 要求 > 0;" +
+		"为 0 会让每一个带令牌分组的请求都回一次主库查订阅",
+	"plan_entitlement.user_max_stale_seconds": "不得小于 user_cache_seconds(默认 60)," +
+		"为 0 时解锁快照一过新鲜期就作废,刷新失败会立刻夺走已付款用户买到的分组",
 }
 
 // TestExplicitZeroIsNeverReplacedByDefault 守的是"显式配置必须生效"这个契约本身,
@@ -181,8 +184,8 @@ func baseType(rt reflect.Type) reflect.Type {
 // 豁免字段整键省略(从而取默认值);alsoZero 里的路径反过来强行写回 0。
 //
 // 每一段的 enabled 都打开:validateWithdraw / validateAvailability /
-// validateViolation / validateGroupPricing 都以 `if !Enabled { return nil }`
-// 开头,只写顶层 enabled 的话九个校验器里有四个一进门就返回,那四段配置
+// validateViolation 都以 `if !Enabled { return nil }`
+// 开头,只写顶层 enabled 的话九个校验器里有几个一进门就返回,那几段配置
 // 根本没被校验过,而豁免清单会因此显得比实际短。
 func allZeroYAML(t *testing.T, fields map[string]int64, alsoZero ...string) string {
 	t.Helper()
@@ -198,7 +201,7 @@ func allZeroYAML(t *testing.T, fields map[string]int64, alsoZero ...string) stri
 	setYAMLPath(tree, "enabled", true)
 	setYAMLPath(tree, "database.dsn", "u:p@tcp(127.0.0.1:3306)/qy")
 	for _, section := range []string{
-		"transfer", "commission", "withdraw", "availability", "violation", "group_pricing",
+		"transfer", "commission", "withdraw", "availability", "violation",
 	} {
 		setYAMLPath(tree, section+".enabled", true)
 	}

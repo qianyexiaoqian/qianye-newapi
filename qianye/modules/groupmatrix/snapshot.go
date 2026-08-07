@@ -141,17 +141,24 @@ func Health() map[string]any {
 		"enforced_groups":   0,
 		"snapshot_age_secs": int64(0),
 		"snapshot_version":  int64(0),
-		// 「新分组默认全遮断」当前是开是关,以及它到底有没有在工作。
+		// 套餐解锁此刻是否生效(开关在 plan_entitlement 段,这里只是把它与可选清单
+		// 的状态摆在同一屏)。它关掉时套餐照常扣费、照常显示余额,唯一的表现是
+		// 用户拿不到他买的模型分组 —— 那种失败在日志里没有任何形状,只能在这里报。
+		"subscription_unlock_on": PlanUnlockEnabled(),
+		// scoped_groups 是**已经显式设定过范围**的用户分组数。
 		//
-		// 三个字段缺一不可:开关状态回答"该不该发生",last_scan_at 回答
-		// "对账任务活着吗"(租约被别的节点持有时本节点恒为 0,这本身就是信息),
-		// auto_masked_total 回答"真的遮断过谁吗"。只报开关状态的话,
-		// 一个租约卡死、从此再没跑过的对账任务看起来与正常工作完全一样。
-		"new_group_default_deny": cfg().NewGroupDefaultDenyOn(),
-		"new_group_last_scan_at": lastScanAt.Load(),
-		"new_group_auto_masked":  autoMaskedTotal.Load(),
-		"needs_attention":        s == nil && enabled(),
-		"unloaded_behaviour":     "分组可选清单未加载,当前按上游全局白名单放行(读侧恒等返回,写侧校验一并放行)",
+		// 新口径下 0 是完全正常的状态(全站都未设定范围 = 全部模型分组可用),
+		// 所以它不进 needs_attention;它回答的是另一个问题:"这个模块此刻到底
+		// 在管着谁"。没有这个数字,一次误删 scope 行与"本来就没配过"看起来一样。
+		"scoped_groups": 0,
+		// 已摘出 AutoMigrate 但数据仍留在扩展库里的表。
+		//
+		// 报它是为了回答一个必然会被问到的问题:"扩展库里怎么有一张不在任何
+		// Tables() 里的表,是不是漏迁移了"。第二反应通常是"删掉试试",而那一步
+		// 不可逆。清单与手工 DROP 语句见 qianye/docs/retired_tables.md。
+		"retired_tables":     []string{"qy_group_seen"},
+		"needs_attention":    s == nil && enabled(),
+		"unloaded_behaviour": "分组可选清单未加载,当前按上游全局白名单放行(读侧恒等返回,写侧校验一并放行)",
 	}
 	if s == nil {
 		return out
@@ -170,6 +177,7 @@ func Health() map[string]any {
 	out["dropped_grants"] = dropped
 	out["managed_groups"] = managed
 	out["enforced_groups"] = enforced
+	out["scoped_groups"] = managed
 	out["snapshot_age_secs"] = age
 	out["snapshot_version"] = s.Version
 	out["snapshot_stale"] = stale

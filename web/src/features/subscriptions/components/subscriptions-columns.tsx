@@ -290,24 +290,43 @@ export function useSubscriptionsColumns(
         },
         size: 150,
       },
+      /*
+        存量的「购买改写用户分组」。
+
+        ── 为什么这一列还在，而且用的是告警色 ──
+
+        表单里的「升级分组 / 降级分组」已经撤掉了（用户分组与模型分组分离之后，
+        买套餐只该多解锁几个模型分组，不该把人搬到另一个用户分组）。但上游那两列
+        与读它们的那段逻辑**一行没动**：`CreateUserSubscriptionFromPlanTx` 在
+        `upgrade_group != ''` 时照样 `UPDATE users SET group = …`，到期由
+        `ExpireDueSubscriptions` 再改回去。
+
+        也就是说，**从未在新表单里保存过的存量套餐仍然会改写用户分组**。把这一列
+        一并删掉，就是把一个还在跑的行为从界面上抹掉：运营会发现有人的用户分组
+        自己变了，而站内没有任何一个页面显示过哪个套餐会干这件事。
+
+        清除方式不需要迁移脚本：打开该套餐的编辑抽屉、保存一次即可 —— 新表单恒
+        提交空的 upgrade_group / downgrade_group（见 lib/plan-form.ts）。这一列
+        就是那批套餐的待办清单，清空之后它整列都是「—」。
+      */
       {
-        id: 'upgrade_group',
-        header: t('Upgrade Group'),
+        id: 'legacy_group_rewrite',
+        header: t('Legacy user group rewrite'),
         meta: { mobileHidden: true },
         cell: ({ row }) => {
-          const group = row.original.plan.upgrade_group
-          if (!group) {
-            return (
-              <span className='text-muted-foreground'>{t('No Upgrade')}</span>
-            )
+          const upgrade = row.original.plan.upgrade_group
+          const downgrade = row.original.plan.downgrade_group
+          if (!upgrade && !downgrade) {
+            return <span className='text-muted-foreground'>—</span>
           }
           return (
             <BadgeCell>
-              <GroupBadge group={group} />
+              {upgrade && <GroupBadge group={upgrade} />}
+              {downgrade && <GroupBadge group={downgrade} />}
             </BadgeCell>
           )
         },
-        size: 120,
+        size: 160,
       },
       {
         id: 'actions',

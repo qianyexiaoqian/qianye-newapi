@@ -2039,7 +2039,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相关项目",
     "footer.defaultCopyright": "版权所有。",
-    "footer.new\u0061pi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
+    "footer.newapi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "对于 2025 年 5 月 10 日之后添加的渠道，在部署时无需从模型名称中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "对于私有部署，格式为：https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "强制返回语法合法的 JSON",
@@ -5248,6 +5248,11 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Model Group Pricing": "模型分组定价",
+    "Legacy user group rewrite": "存量：购买改写用户分组",
+    "Unlocked model groups could not be loaded; saving now leaves them untouched.": "解锁的模型分组没读到；现在保存不会改动它们。",
+    "Model group unlocks can be configured once the plan exists — save it first, then reopen it.": "解锁模型分组要在套餐建好之后配置 —— 先保存，再重新打开这个套餐。",
+    "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "套餐已保存，但解锁的模型分组没有存下来。请重新打开这个套餐再设置一次"
   }
 }

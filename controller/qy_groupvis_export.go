@@ -31,7 +31,11 @@ var QyGroupVisFilterPricing = func(pricing []model.Pricing, usableGroup map[stri
 //
 // 实现方必须保证返回值不为 nil:model.GetPerfMetricsSummaryBucketsAll 把 nil 解读为
 // 「不过滤」,一旦退化成 nil,全站分组的样本会重新被汇总进来,泄漏原样回归。
-var QyGroupVisFilterGroupKeys = func(userGroup string, groups []string) []string {
+//
+// userId 与 userGroup 一起传:可用分组现在还包含**该用户买的套餐解锁的分组**,
+// 只按用户分组算会把它们滤掉 —— 用户在令牌页选得到、在这一页却一条数据都看不到。
+// 取不到时传 0,正好是匿名口径。
+var QyGroupVisFilterGroupKeys = func(userId int, userGroup string, groups []string) []string {
 	return groups
 }
 
@@ -39,6 +43,6 @@ var QyGroupVisFilterGroupKeys = func(userGroup string, groups []string) []string
 //
 // 上游 filterActiveGroups 的过滤基准是 GroupRatio(全站分组事实清单)而非用户白名单,
 // 因此 ?group=<无权分组> 能直接探测到该分组的延迟与成功率。
-var QyGroupVisFilterPerfGroups = func(userGroup string, groups []perfmetrics.GroupResult) []perfmetrics.GroupResult {
+var QyGroupVisFilterPerfGroups = func(userId int, userGroup string, groups []perfmetrics.GroupResult) []perfmetrics.GroupResult {
 	return groups
 }

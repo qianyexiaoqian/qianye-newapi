@@ -71,20 +71,20 @@ func pricingHook(pricing []model.Pricing, usableGroup map[string]string) []model
 	return filterPricing(pricing, usableGroup, g.KeepAutoGroup())
 }
 
-func groupKeysHook(userGroup string, groups []string) []string {
+func groupKeysHook(userId int, userGroup string, groups []string) []string {
 	g := config.Get().GroupVisibility
 	if !g.On() || !g.PerfMetricsOn() {
 		return groups
 	}
-	return filterGroupKeys(groups, usableGroupsOf(userGroup), g.KeepAutoGroup())
+	return filterGroupKeys(groups, usableGroupsOf(userId, userGroup), g.KeepAutoGroup())
 }
 
-func perfGroupsHook(userGroup string, groups []perfmetrics.GroupResult) []perfmetrics.GroupResult {
+func perfGroupsHook(userId int, userGroup string, groups []perfmetrics.GroupResult) []perfmetrics.GroupResult {
 	g := config.Get().GroupVisibility
 	if !g.On() || !g.PerfMetricsOn() {
 		return groups
 	}
-	return filterPerfGroups(groups, usableGroupsOf(userGroup), g.KeepAutoGroup())
+	return filterPerfGroups(groups, usableGroupsOf(userId, userGroup), g.KeepAutoGroup())
 }
 
 // usableGroupsOf 取调用者的可用分组白名单。
@@ -94,8 +94,13 @@ func perfGroupsHook(userGroup string, groups []perfmetrics.GroupResult) []perfme
 // 空串时 GetUserUsableGroups 退化为「运营方主动配置的公开可用分组」
 // (setting.userUsableGroups),这正是匿名访客应该看到的范围:
 // 隐藏分组按定义就不该进那张表,而未登录用户仍能在模型广场看到公开分组的价格。
-func usableGroupsOf(userGroup string) map[string]string {
-	return service.GetUserUsableGroups(userGroup)
+//
+// **必须带 userId**:可用分组还包含该用户买的套餐解锁的分组,不带身份会把它们
+// 滤掉 —— 用户在令牌页选得到那个分组,在模型广场与性能页却看不到它,
+// 同一个人在同一个站点的不同页面得到互相矛盾的答案。userId <= 0 时逐位退化为
+// GetUserUsableGroups(userGroup),匿名口径一个字节不变。
+func usableGroupsOf(userId int, userGroup string) map[string]string {
+	return service.QyUsableGroupsForUser(userId, userGroup)
 }
 
 func init() { module.Register(Mod{}) }

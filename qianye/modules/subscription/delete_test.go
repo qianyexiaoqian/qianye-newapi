@@ -250,7 +250,7 @@ func TestDeletePlan_ForceKeepsPreConsumeWorkingForOtherPlans(t *testing.T) {
 	rec := callDelete(t, "1", `{"force":true,"reason":"活动结束"}`)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
-	got, err := model.PreConsumeUserSubscription("req-after-delete", 100, "gpt-4", 0, 10)
+	got, err := model.PreConsumeUserSubscription("req-after-delete", 100, "gpt-4", 0, 10, "")
 	require.NoError(t, err,
 		"套餐被删之后,该用户其余套餐的预扣费必须照常工作 —— 这正是级联要堵住的后果")
 	assert.EqualValues(t, 10, got.PreConsumed)

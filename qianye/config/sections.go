@@ -158,22 +158,17 @@ var moduleGates = []ModuleGate{
 		},
 	},
 	{
-		Module: "grouppricing", Section: "group_pricing", Key: "enabled",
-		Effect: "5 个计价/结算挂载点恒等返回,分组级价格规则形同虚设,全部请求按全局价扣费",
-	},
-	{
 		Module: "groupmatrix", Section: "group_matrix", Key: "enabled",
-		Effect: "权威可选清单完全不生效,所有用户分组仍按上游「全局白名单 + 特殊规则 + 无条件补自己」" +
-			"一视同仁,令牌写入校验也不生效 —— 而管理端矩阵看起来配得好好的、列表页完全正常",
+		// 关掉之后的结果在新口径下**恰好等于「所有用户分组都未设定范围」**,
+		// 也就是全部模型分组按兜底倍率可用 —— 那是一个合法的运营状态,不是故障。
+		// 真正会静默失效的是另一半:已经显式设定过范围的用户分组,它们的收紧
+		// 一律作废,而管理端矩阵页仍然把范围显示得好好的。告警文案必须指向这一半。
+		Effect: "已显式设定范围的用户分组全部失去限制,回到「全部模型分组可用」;" +
+			"套餐解锁与令牌写入校验一并不生效 —— 而管理端矩阵页看起来配得好好的、列表页完全正常",
 		Extra: []GateSwitch{
 			{
 				Key: "write_guard_enabled", DefaultOn: true,
 				Effect: "令牌写入侧不再校验分组可选性。*bool 且默认打开,不写不会静默失效",
-			},
-			{
-				Key: "new_group_default_deny", DefaultOn: true,
-				Effect: "新出现的用户分组不再被自动全遮断,与上游行为一致。*bool 且默认打开," +
-					"不写不会静默失效 —— 但它默认打开的方向是**收紧**,所以矩阵页常驻提示它当前的状态",
 			},
 		},
 	},
@@ -186,6 +181,14 @@ var moduleGates = []ModuleGate{
 	{
 		Module: "groupvis", Section: "group_visibility", Key: "enabled", DefaultOn: true,
 		Effect: "无权分组裁剪。开关是 *bool 且默认打开:不写这一段时裁剪照常生效,不需要告警",
+	},
+	{
+		Module: "planentitlement", Section: "plan_entitlement", Key: "enabled", DefaultOn: true,
+		// 默认打开,因此缺段不告警 —— 缺段的实际后果是"按默认打开跑",而两张表
+		// 空表起步时那与上游逐位一致。真正要提防的是**显式关掉**:那一档里
+		// 已付款用户当场少掉他买到的模型分组,而管理端套餐页仍然把解锁显示得好好的。
+		Effect: "套餐解锁完全不生效:已购用户拿不到套餐给的模型分组(令牌页选不到、请求 403)," +
+			"套餐余额的「仅限」范围也一并失效 —— 而管理端套餐页与矩阵页看起来配得好好的",
 	},
 	{
 		Module: "logmetrics", Section: "log_metrics",

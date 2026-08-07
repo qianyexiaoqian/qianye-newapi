@@ -2039,7 +2039,7 @@
     "footer.columns.related.links.oneApi": "Один API",
     "footer.columns.related.title": "Связанные проекты",
     "footer.defaultCopyright": "Все права защищены.",
-    "footer.new\u0061pi.projectAttributionSuffix": "Все права защищены. Разработано участниками проекта.",
+    "footer.newapi.projectAttributionSuffix": "Все права защищены. Разработано участниками проекта.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "Для каналов, добавленных после 10 мая 2025 г., не нужно удалять \".\" из имён моделей при развёртывании",
     "For private deployments, format: https://fastgpt.run/api/openapi": "Для частных развертываний, формат: https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "Принудительно возвращать синтаксически корректный JSON",
@@ -5248,6 +5248,11 @@
     "Zero retention": "Без хранения данных",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Model Group Pricing": "Тарификация групп моделей",
+    "Legacy user group rewrite": "Устаревшая перезапись группы пользователя",
+    "Unlocked model groups could not be loaded; saving now leaves them untouched.": "Не удалось загрузить разблокированные группы моделей; сохранение их не изменит.",
+    "Model group unlocks can be configured once the plan exists — save it first, then reopen it.": "Разблокировку групп моделей можно настроить после создания плана — сначала сохраните, затем откройте снова.",
+    "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "План сохранён, но разблокированные группы моделей не сохранились. Откройте план и задайте их снова"
   }
 }

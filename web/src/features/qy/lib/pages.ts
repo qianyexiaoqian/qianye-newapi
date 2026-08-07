@@ -505,21 +505,14 @@ export const QY_PAGES: readonly QyPageDef[] = [
     jpKey: 'qy_sg_jp_a_transfer_group_rules',
     group: QY_SETTINGS_GROUP,
   },
-  // 分组矩阵排在分组定价**之前**：矩阵回答的是「这一档人能不能用这批渠道、
-  // 按什么倍率」，定价回答的是「这批渠道下某个模型单独多少钱」。前者是后者的
-  // 前提 —— 一条用不上的边，给它单独定价没有任何意义。
-  {
-    url: '/qy/admin/group-matrix',
-    titleKey: 'qy_nav_a_group_matrix',
-    jpKey: 'qy_sg_jp_a_group_matrix',
-    group: QY_SETTINGS_GROUP,
-  },
-  {
-    url: '/qy/admin/group-pricing',
-    titleKey: 'qy_nav_a_group_pricing',
-    jpKey: 'qy_sg_jp_a_group_pricing',
-    group: QY_SETTINGS_GROUP,
-  },
+  // 「分组定价」已下线：同一模型分组内的逐模型定价能力被收敛成
+  // (用户分组, 模型分组) 一个标量，由「用户分组」页一处表达。
+  //
+  // 「分组矩阵」（`/qy/admin/group-matrix`）也已从本表移出：它整体搬进了上游
+  // 抽屉的「计费与支付 → 用户分组」那一组（见
+  // `features/system-settings/billing/section-registry.tsx`），旧 url 只保留
+  // 重定向。两个页面读写同一组数据、同一组端点，并存两个入口就意味着两份互不
+  // 知情的草稿与两道各自为政的保存闸门，而写入是两库不原子的。
   {
     url: '/qy/admin/user-group',
     titleKey: 'qy_nav_a_user_group',

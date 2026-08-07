@@ -55,7 +55,6 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   '/qy/admin/violation-rules',
   '/qy/admin/violations',
   '/qy/admin/user-group',
-  '/qy/admin/group-pricing',
   '/qy/admin/fund-orders',
   '/qy/admin/audit-logs',
   '/qy/admin/health',
@@ -66,7 +65,11 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   '/qy/admin/api-address',
   '/qy/tickets',
   '/qy/admin/tickets',
-  '/qy/admin/group-matrix',
+  // `/qy/admin/group-matrix` 曾占本表的第 29 号。它整体搬进了上游抽屉的
+  // 「计费与支付 → 用户分组」，不再是本表登记的页面，因此按维护规则 2 删行 ——
+  // 它是**末尾之前**的一行，删掉会让 `/qy/lottery-guess` 从 30 号变成 29 号。
+  // 这是可接受的：`LAB MEMO` 编号跟随页面消失，而竞猜页是本轮同批新增的，
+  // 还没有用户记下过它的号；重排既有编号仍然禁止。
   // 竞猜从大厅的一个筛选值升成独立页面（需求 2 的选择夹第二张标签）。
   // 按本表的维护规则**追加到末尾取下一个空号**，不与 `/qy/lottery`、
   // `/qy/lottery-records` 排在一起 —— 那两页的编号是用户已经记下的。

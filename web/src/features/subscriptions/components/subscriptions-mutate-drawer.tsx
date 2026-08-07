@@ -17,7 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { CalendarClock, CreditCard, RefreshCw, Settings2 } from 'lucide-react'
+import {
+  Boxes,
+  CalendarClock,
+  CreditCard,
+  RefreshCw,
+  Settings2,
+  TriangleAlert,
+} from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useForm, type Resolver } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -28,6 +35,7 @@ import {
   sideDrawerSwitchItemClassName,
 } from '@/components/drawer-layout'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   Form,
   FormControl,
@@ -52,13 +60,13 @@ import { Textarea } from '@/components/ui/textarea'
 import { QyResponsiveDialog } from '@/features/qy/components/qy-responsive-dialog'
 import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
 import { isQyError, qyErrorMessage } from '@/features/qy/lib/api'
+import { useQyPlanUnlockGroups } from '@/features/qy/plan-entitlement/use-plan-unlock-groups'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { cn } from '@/lib/utils'
 
 import {
   createPlan,
   updatePlan,
-  getGroups,
   getPlanUsage,
   setPlanSeatLimit,
   createWaffoPancakeSubscriptionProduct,
@@ -107,11 +115,18 @@ export function SubscriptionsMutateDrawer({
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [seatUsage, setSeatUsage] = useState<PlanUsage | null>(null)
   const [seatCapState, setSeatCapState] = useState<SeatCapState>('hidden')
-  const [groupOptions, setGroupOptions] = useState<string[]>([])
   const [creatingPancakeProduct, setCreatingPancakeProduct] = useState(false)
   const [pancakeProducts, setPancakeProducts] = useState<
     { id: string; name: string; status: string }[]
   >([])
+
+  // 解锁模型分组：与总名额同一个形状（扩展库、独立的一次写入、读不到就禁用），
+  // 所以判据也用同一个 seatCapSupported。
+  const unlockGroups = useQyPlanUnlockGroups({
+    open,
+    planId: currentRow?.plan?.id ?? 0,
+    supported: seatCapSupported,
+  })
 
   const schema = getPlanFormSchema(t)
   const form = useForm<PlanFormValues>({
@@ -126,11 +141,6 @@ export function SubscriptionsMutateDrawer({
       } else {
         form.reset(PLAN_FORM_DEFAULTS)
       }
-      getGroups()
-        .then((res) => {
-          if (res.success) setGroupOptions(res.data || [])
-        })
-        .catch(() => {})
       // Best-effort — empty list still lets the operator use "+ Create".
       listWaffoPancakeSubscriptionProductOptions()
         .then((res) => {
@@ -202,6 +212,12 @@ export function SubscriptionsMutateDrawer({
     Number(watchedPrice ?? 0) > 0
 
   const onSubmit = async (values: PlanFormValues) => {
+    // 先挡住必然会被后端拒绝的组合，再动套餐本体。反过来的话套餐已经改完了，
+    // 而运营看到的是一条解锁分组的报错 —— 他不会知道前半截已经落库了。
+    if (unlockGroups.restrictedWithoutBinding) {
+      toast.error(t('qy_plan_balance_scope_need_binding'))
+      return
+    }
     setIsSubmitting(true)
     try {
       const payload = formValuesToPlanPayload(values)
@@ -232,11 +248,27 @@ export function SubscriptionsMutateDrawer({
         }
       }
 
-      if (seatCapError == null) {
+      // 解锁模型分组是**第三次**写入（主库套餐 → 扩展库名额 → 扩展库解锁），
+      // 同样没有事务。失败必须单独报出来：它决定"买了这个套餐的人能用哪些模型
+      // 分组"，报成"保存成功"会让运营以为已经开通了，而买过的人一个都拿不到。
+      let unlockError: unknown = null
+      try {
+        await unlockGroups.saveIfChanged(planId)
+      } catch (error) {
+        unlockError = error
+      }
+
+      if (seatCapError == null && unlockError == null) {
         toast.success(isEdit ? t('Update succeeded') : t('Create succeeded'))
-      } else {
+      }
+      if (seatCapError != null) {
         toast.error(
           `${t('qy_plan_seat_cap_save_failed')}: ${qyErrorMessage(seatCapError, t)}`
+        )
+      }
+      if (unlockError != null) {
+        toast.error(
+          `${t('Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again')}: ${qyErrorMessage(unlockError, t)}`
         )
       }
       onOpenChange(false)
@@ -355,7 +387,7 @@ export function SubscriptionsMutateDrawer({
           <Button
             form='subscription-form'
             type='submit'
-            disabled={isSubmitting}
+            disabled={isSubmitting || unlockGroups.restrictedWithoutBinding}
           >
             {isSubmitting ? t('Saving...') : t('Save changes')}
           </Button>
@@ -477,95 +509,113 @@ export function SubscriptionsMutateDrawer({
               />
             </div>
 
-            <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
-              <FormField
-                control={form.control}
-                name='upgrade_group'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Upgrade Group')}</FormLabel>
-                    <Select
-                      items={[
-                        { value: '__none__', label: t('No Upgrade') },
-                        ...groupOptions.map((g) => ({ value: g, label: g })),
-                      ]}
-                      onValueChange={(v) =>
-                        field.onChange(v === '__none__' ? '' : v)
-                      }
-                      value={field.value || ''}
-                    >
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder={t('No Upgrade')} />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent alignItemWithTrigger={false}>
-                        <SelectGroup>
-                          <SelectItem value='__none__'>
-                            {t('No Upgrade')}
-                          </SelectItem>
-                          {groupOptions.map((g) => (
-                            <SelectItem key={g} value={g}>
-                              {g}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+            {/*
+              「解锁模型分组」。它取代的是上游的「升级分组 / 降级分组」两个下拉。
 
-              <FormField
-                control={form.control}
-                name='downgrade_group'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Downgrade Group')}</FormLabel>
-                    <Select
-                      items={[
-                        {
-                          value: '__none__',
-                          label: t('Downgrade to pre-purchase group'),
-                        },
-                        ...groupOptions.map((g) => ({ value: g, label: g })),
-                      ]}
-                      onValueChange={(v) =>
-                        field.onChange(v === '__none__' ? '' : v)
-                      }
-                      value={field.value || ''}
-                    >
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue
-                            placeholder={t('Downgrade to pre-purchase group')}
-                          />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent alignItemWithTrigger={false}>
-                        <SelectGroup>
-                          <SelectItem value='__none__'>
-                            {t('Downgrade to pre-purchase group')}
-                          </SelectItem>
-                          {groupOptions.map((g) => (
-                            <SelectItem key={g} value={g}>
-                              {g}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    <FormDescription>
-                      {t(
-                        'Downgrade to this group after the subscription expires'
-                      )}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
+              替换而不是并列：那两个下拉写的是购买时**改写 users.group** 的目标，
+              而用户分组与模型分组分离之后，买套餐只该多几个模型分组，不该把人
+              从一个用户分组搬到另一个（会连带换掉可用范围、倍率与自动分组）。
+              两列的存量处置见 lib/plan-form.ts 里 upgrade_group: '' 那段。
+
+              这一格与总名额那一格同构：落扩展库、与套餐本体不是同一次写入、
+              读不到时禁用而不是当成空。余额使用范围（通用 / 仅限）与实际倍率表
+              留在行操作的完整弹窗里 —— 那两块要摆影响面与现算倍率，塞进这里会
+              把一个已经很长的表单再撑长一屏，而它们的改动频率远低于这一格。
+            */}
+            {unlockGroups.state !== 'hidden' && (
+              <div className='border-border/60 flex flex-col gap-2 rounded-md border p-3'>
+                <div>
+                  <h4 className='text-sm font-medium'>
+                    {t('qy_plan_unlock_groups_label')}
+                  </h4>
+                  <p className='text-muted-foreground mt-1 text-xs leading-5'>
+                    {t('qy_plan_unlock_groups_hint')}
+                  </p>
+                </div>
+
+                {unlockGroups.state === 'loading' && (
+                  <p className='text-muted-foreground text-xs'>
+                    {t('Loading...')}
+                  </p>
                 )}
-              />
-            </div>
+
+                {/* 读失败：格子留着但空着，且保存时**不写**。不说这一句的话，
+                    界面上那个空清单看起来就是"这个套餐没解锁任何分组"。 */}
+                {unlockGroups.state === 'error' && (
+                  <p className='text-destructive text-xs'>
+                    {t(
+                      'Unlocked model groups could not be loaded; saving now leaves them untouched.'
+                    )}
+                  </p>
+                )}
+
+                {/* 新建：套餐还没有 id，解锁绑定挂在 plan_id 上，没有对象可挂。
+                    不能沉默地画一个空清单 —— 那看起来就是"可以在这里选，只是一个
+                    分组都没有"，而管理员勾不动任何东西也得不到任何解释。 */}
+                {unlockGroups.state === 'ready' && !isEdit && (
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'Model group unlocks can be configured once the plan exists — save it first, then reopen it.'
+                    )}
+                  </p>
+                )}
+
+                {unlockGroups.state === 'ready' &&
+                  isEdit &&
+                  (unlockGroups.candidates.length === 0 &&
+                  unlockGroups.orphans.length === 0 ? (
+                    <p className='text-muted-foreground text-xs'>
+                      {t('qy_plan_unlock_groups_empty')}
+                    </p>
+                  ) : (
+                    <div className='grid max-h-56 gap-1 overflow-auto rounded-md border p-2 sm:grid-cols-2'>
+                      {unlockGroups.candidates.map((group) => (
+                        <label
+                          key={group}
+                          className='hover:bg-muted/50 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs'
+                        >
+                          <Checkbox
+                            checked={unlockGroups.selected.includes(group)}
+                            onCheckedChange={() => unlockGroups.toggle(group)}
+                          />
+                          <Boxes
+                            aria-hidden='true'
+                            className='text-muted-foreground size-3 shrink-0'
+                          />
+                          <span className='truncate'>{group}</span>
+                        </label>
+                      ))}
+                      {/* 已绑定、但已经从分组倍率表里消失的名字。必须渲染出来
+                          并且可以取消勾选：只画一条提示的话，这个名字在界面上
+                          不可见也摘不掉，而每次保存都会把它原样提交回去。 */}
+                      {unlockGroups.orphans.map((group) => (
+                        <label
+                          key={group}
+                          className='hover:bg-muted/50 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs'
+                        >
+                          <Checkbox
+                            checked
+                            onCheckedChange={() => unlockGroups.toggle(group)}
+                          />
+                          <TriangleAlert
+                            aria-hidden='true'
+                            className='text-destructive size-3 shrink-0'
+                          />
+                          <span className='truncate line-through'>{group}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ))}
+
+                {/* 「仅限」的套餐被摘光绑定 = 一份任何请求都用不上的死钱。
+                    后端会 400，但按钮就该在这里禁用并说明原因。 */}
+                {unlockGroups.restrictedWithoutBinding && (
+                  <p className='text-destructive text-xs'>
+                    {t('qy_plan_balance_scope_need_binding')}
+                  </p>
+                )}
+              </div>
+            )}
 
             {/*
               两个限购维度必须放在同一个框里并排显示，且各自说清楚"数的是什么"。

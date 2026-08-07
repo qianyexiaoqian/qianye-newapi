@@ -26,6 +26,18 @@
 // 未配置的用户分组保持上游原行为,而且是**逐位一致**(返回上游那一张 map 的指针)。
 // 这是回退能力的基础,由 bitexact_test.go 与 hookpoint_test.go 两层钉死。
 //
+// ═══════════════ 「未设定范围 = 全部可用」是拍板口径,不是缺省实现 ═══════════════
+//
+// 上一轮实现过一条相反的默认(新出现的用户分组自动建一条零 grant 的 enforce 行),
+// 本轮已整体撤销:项目方拍定的口径是「用户组若未设定范围,模型组可以直接使用,
+// 按照模型组的兜底倍率显示」。撤销在代码层面是净删除,在可观测行为上是空操作 ——
+// 三张表当时都是 0 行,从来没有任何用户分组被自动接管过。
+//
+// **刻意不写一条 allow-all 的 scope 行来表达「未设定范围」。** 那样的行必须在写入
+// 的那一刻把"全部"展开成一份具体清单,于是运营明天在 options.GroupRatio 里加一个
+// 模型分组 N,它就静默地把 N 挡在外面 —— default-deny 从后门走了回来,而且长得
+// 像"已配置"。**行不存在是自描述的:它不可能编码一份会过期的集合。**
+//
 // ═══════════════════════════ 三条与直觉相反的事实 ═══════════════════════════
 //
 //  1. **倍率不在这个模块里。** 唯一真相源是上游 options.GroupGroupRatio。
@@ -68,12 +80,9 @@
 package groupmatrix
 
 import (
-	"time"
-
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/qianye/module"
-	"github.com/QuantumNous/new-api/qianye/service/lease"
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
@@ -84,37 +93,18 @@ type Mod struct{ module.Base }
 
 func (Mod) Name() string { return "groupmatrix" }
 
+// Tables 刻意**不含** qy_group_seen。
+//
+// 那张表是上一轮「新分组默认全遮断」的登记簿,本轮随该默认一并下线。
+// 摘出 AutoMigrate 而**不 DROP**:它是"上一轮到底自动遮断过谁"的唯一证据
+// (本站为 0 行,但这个 0 本身也是结论)。退役登记见 qianye/docs/retired_tables.md,
+// 观察期结束后由人手工执行 DROP —— 不写进代码、不做成迁移、不自动执行。
 func (Mod) Tables() []any {
 	return []any{
 		&Scope{},
 		&Grant{},
 		&WriteDeny{},
-		&Seen{},
 	}
-}
-
-// StartTasks 启动「新分组默认全遮断」的对账任务。
-//
-// ══════════════ 为什么这一条必须走 lease.Run,而快照刷新不能 ══════════════
-//
-// 两者的判断刚好相反,别照抄隔壁:
-//
-//	快照刷新  是**每个节点各自持有**的进程内缓存。lease.Run 只会让一个节点跑,
-//	          其余节点的清单永远陈旧,所以它走请求驱动的 CAS(见 snapshot.go)。
-//	新分组对账 是**写库**。多节点同时跑会对同一个新分组各建一次 scope 行、
-//	          各写一条审计 —— 唯一索引挡得住重复行,挡不住重复审计与重复日志,
-//	          而"这个分组被自动遮断了 N 次"会让复盘的人以为发生了 N 次事件。
-//
-// 未启用时不注册任务:与 InstallHooks 的无条件注入不同,后台任务不是 kill
-// switch 的一部分,而 lease 表里多一行永远不会被续约的租约只是噪声。
-// new_group_default_deny 关掉时**仍然注册** —— 那一档只登记不遮断,
-// 而登记恰恰是它必须继续做的事(见 reconcileNewGroups 的说明)。
-func (Mod) StartTasks() {
-	if !enabled() {
-		return
-	}
-	lease.Run("groupmatrix.new_group_scan",
-		time.Duration(newGroupScanInterval())*time.Second, runNewGroupScan)
 }
 
 // InstallHooks 注入两个挂载点并预热一次清单快照。

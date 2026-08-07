@@ -17,10 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Link } from '@tanstack/react-router'
-import { ArrowDown, ArrowRight, Boxes, Info, Lock, Users } from 'lucide-react'
+import { ArrowDown, ArrowRight, Boxes, Globe, Info, Users } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-
-import type { QyGmNewGroupPolicy } from '../types'
 
 /**
  * 两个轴的图例 —— 「用户分组 ≠ 模型分组」在界面上的**主要**承载处。
@@ -40,6 +38,11 @@ import type { QyGmNewGroupPolicy } from '../types'
  * 只用颜色的话，主题切换（本站有多套主题预设）与色觉差异都会让这个区分消失，
  * 而它消失的后果不是"不好看"，是运营把一个同名的模型分组当成用户分组去配倍率。
  *
+ * ── 「未设定范围」是一条长期条件，所以它归图例，不归告警栏 ──
+ *
+ * 长期挂在告警栏里的东西两周之内会变成没人看的背景。真正的待办（设了范围却
+ * 一个模型分组都没勾）走 status-banners，那一条是会消失的。
+ *
  * ── 为什么这一页不提供「新建用户分组」按钮 ──
  *
  * 因为新建一个用户分组 = 往 `options.GroupRatio` 里加一个 key，而那张表的 key
@@ -48,7 +51,7 @@ import type { QyGmNewGroupPolicy } from '../types'
  * 本组件说的每一句话当场失效。所以这里只给一条指路链接，把创建留在它真正的
  * 归属地（上游「系统设置 → 分组倍率」），并在那里承担它的全部语义。
  */
-export function QyGmAxisLegend(props: { newGroupPolicy: QyGmNewGroupPolicy }) {
+export function QyGmAxisLegend(props: { unscopedGroups: string[] }) {
   const { t } = useTranslation()
 
   return (
@@ -89,29 +92,31 @@ export function QyGmAxisLegend(props: { newGroupPolicy: QyGmNewGroupPolicy }) {
       </p>
 
       {/*
-        「新建的用户分组默认全遮断」的常驻状态。
+        「未设定范围的用户分组」常驻一栏。
 
-        ── 为什么它必须出现在**这一页**，而且必须两种状态都说 ──
+        ── 为什么它必须常驻，而不是一次性通知 ──
 
-        这个默认改变的是运营**下一次在另一个页面上**建分组时会发生什么：在分组
-        倍率表单里加一个 key，那一页不会提到遮断这回事，回到令牌页却发现这一档的
-        人一个模型分组都选不了。唯一能让他在加之前读到这句话的地方就是这里。
+        这一页的默认口径是「未设定范围 = 全部模型分组可用，各按兜底倍率」。它是
+        正确的默认，但它同时意味着：运营在别的页面（上游「系统设置 → 分组倍率」）
+        新加一个用户分组时，那一档的人**立刻就能用全部模型分组**，而那一页不会
+        提到这回事。
 
-        关掉时同样说一句：一个以为自己开着这个默认的运营，会在新分组上线时误以为
-        它已经被遮断而不去检查 —— 沉默在两个方向上都是误导，只是方向相反。
+        一次性通知解决不了这个：新分组是在别处、在别的时刻被创建的。常驻列表则
+        让「现在还有哪些分组没设范围」在他每次打开这一页时都摆在眼前，而且不需要
+        任何后台任务去发现新分组。
 
-        放在图例里而不是顶部告警栏：它是一条**长期为真**的条件，不是一次待办。
-        长期挂在告警栏里的东西两周之内会变成没人看的背景。真正的待办
-        （有分组被遮断了还没配）走 status-banners。
+        为空时同样渲染一句：一个以为"还有几个分组没配"的运营，需要看到"全部都配过了"
+        这句话，而不是一片空白 —— 空白与"这一栏坏了"长得一样。
       */}
       <p className='text-muted-foreground flex items-start gap-1.5 text-xs'>
-        <Lock aria-hidden='true' className='mt-0.5 size-3 shrink-0' />
+        <Globe aria-hidden='true' className='mt-0.5 size-3 shrink-0' />
         <span>
-          {props.newGroupPolicy.enabled
-            ? t('qy_group_matrix_new_group_policy_on', {
-                seconds: props.newGroupPolicy.scan_interval_seconds,
-              })
-            : t('qy_group_matrix_new_group_policy_off')}
+          {props.unscopedGroups.length === 0
+            ? t('qy_group_scope_all_scoped_note')
+            : t('qy_group_scope_unscoped_note', {
+                groups: props.unscopedGroups.join('、'),
+                count: props.unscopedGroups.length,
+              })}
         </span>
       </p>
     </div>

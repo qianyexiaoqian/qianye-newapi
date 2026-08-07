@@ -2039,7 +2039,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相關項目",
     "footer.defaultCopyright": "版權所有。",
-    "footer.new\u0061pi.projectAttributionSuffix": "版權所有，由項目貢獻者設計與開發。",
+    "footer.newapi.projectAttributionSuffix": "版權所有，由項目貢獻者設計與開發。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "對於 2025 年 5 月 10 日之後新增的渠道，在部署時無需從模型名稱中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "對於私有部署，格式為：https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "強制返回語法合法的 JSON",
@@ -5248,6 +5248,11 @@
     "Zero retention": "零數據保留",
     "Zhipu": "智譜",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "Model Group Pricing": "模型分組定價",
+    "Legacy user group rewrite": "存量：購買改寫使用者分組",
+    "Unlocked model groups could not be loaded; saving now leaves them untouched.": "解鎖的模型分組未讀取到；現在儲存不會變更它們。",
+    "Model group unlocks can be configured once the plan exists — save it first, then reopen it.": "解鎖模型分組需在方案建立後設定 —— 請先儲存，再重新開啟此方案。",
+    "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "方案已儲存，但解鎖的模型分組未儲存。請重新開啟此方案再設定一次"
   }
 }

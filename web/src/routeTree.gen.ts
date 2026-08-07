@@ -90,7 +90,6 @@ import { Route as AuthenticatedQyAdminCommissionRecordsIndexRouteImport } from '
 import { Route as AuthenticatedQyAdminCommissionIndexRouteImport } from './routes/_authenticated/qy/admin/commission/index'
 import { Route as AuthenticatedQyAdminFundOrdersIndexRouteImport } from './routes/_authenticated/qy/admin/fund-orders/index'
 import { Route as AuthenticatedQyAdminGroupMatrixIndexRouteImport } from './routes/_authenticated/qy/admin/group-matrix/index'
-import { Route as AuthenticatedQyAdminGroupPricingIndexRouteImport } from './routes/_authenticated/qy/admin/group-pricing/index'
 import { Route as AuthenticatedQyAdminHealthIndexRouteImport } from './routes/_authenticated/qy/admin/health/index'
 import { Route as AuthenticatedQyAdminLotteryConfigIndexRouteImport } from './routes/_authenticated/qy/admin/lottery-config/index'
 import { Route as AuthenticatedQyAdminLotteryIndexRouteImport } from './routes/_authenticated/qy/admin/lottery/index'
@@ -560,12 +559,6 @@ const AuthenticatedQyAdminGroupMatrixIndexRoute =
     path: '/group-matrix/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
-const AuthenticatedQyAdminGroupPricingIndexRoute =
-  AuthenticatedQyAdminGroupPricingIndexRouteImport.update({
-    id: '/group-pricing/',
-    path: '/group-pricing/',
-    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
-  } as any)
 const AuthenticatedQyAdminHealthIndexRoute =
   AuthenticatedQyAdminHealthIndexRouteImport.update({
     id: '/health/',
@@ -731,7 +724,6 @@ export interface FileRoutesByFullPath {
   '/qy/admin/commission/': typeof AuthenticatedQyAdminCommissionIndexRoute
   '/qy/admin/fund-orders/': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/qy/admin/group-matrix/': typeof AuthenticatedQyAdminGroupMatrixIndexRoute
-  '/qy/admin/group-pricing/': typeof AuthenticatedQyAdminGroupPricingIndexRoute
   '/qy/admin/health/': typeof AuthenticatedQyAdminHealthIndexRoute
   '/qy/admin/lottery-config/': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/qy/admin/lottery/': typeof AuthenticatedQyAdminLotteryIndexRoute
@@ -824,7 +816,6 @@ export interface FileRoutesByTo {
   '/qy/admin/commission': typeof AuthenticatedQyAdminCommissionIndexRoute
   '/qy/admin/fund-orders': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/qy/admin/group-matrix': typeof AuthenticatedQyAdminGroupMatrixIndexRoute
-  '/qy/admin/group-pricing': typeof AuthenticatedQyAdminGroupPricingIndexRoute
   '/qy/admin/health': typeof AuthenticatedQyAdminHealthIndexRoute
   '/qy/admin/lottery-config': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/qy/admin/lottery': typeof AuthenticatedQyAdminLotteryIndexRoute
@@ -923,7 +914,6 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/commission/': typeof AuthenticatedQyAdminCommissionIndexRoute
   '/_authenticated/qy/admin/fund-orders/': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/_authenticated/qy/admin/group-matrix/': typeof AuthenticatedQyAdminGroupMatrixIndexRoute
-  '/_authenticated/qy/admin/group-pricing/': typeof AuthenticatedQyAdminGroupPricingIndexRoute
   '/_authenticated/qy/admin/health/': typeof AuthenticatedQyAdminHealthIndexRoute
   '/_authenticated/qy/admin/lottery-config/': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/_authenticated/qy/admin/lottery/': typeof AuthenticatedQyAdminLotteryIndexRoute
@@ -1021,7 +1011,6 @@ export interface FileRouteTypes {
     | '/qy/admin/commission/'
     | '/qy/admin/fund-orders/'
     | '/qy/admin/group-matrix/'
-    | '/qy/admin/group-pricing/'
     | '/qy/admin/health/'
     | '/qy/admin/lottery-config/'
     | '/qy/admin/lottery/'
@@ -1114,7 +1103,6 @@ export interface FileRouteTypes {
     | '/qy/admin/commission'
     | '/qy/admin/fund-orders'
     | '/qy/admin/group-matrix'
-    | '/qy/admin/group-pricing'
     | '/qy/admin/health'
     | '/qy/admin/lottery-config'
     | '/qy/admin/lottery'
@@ -1212,7 +1200,6 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/commission/'
     | '/_authenticated/qy/admin/fund-orders/'
     | '/_authenticated/qy/admin/group-matrix/'
-    | '/_authenticated/qy/admin/group-pricing/'
     | '/_authenticated/qy/admin/health/'
     | '/_authenticated/qy/admin/lottery-config/'
     | '/_authenticated/qy/admin/lottery/'
@@ -1817,13 +1804,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminGroupMatrixIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
-    '/_authenticated/qy/admin/group-pricing/': {
-      id: '/_authenticated/qy/admin/group-pricing/'
-      path: '/group-pricing'
-      fullPath: '/qy/admin/group-pricing/'
-      preLoaderRoute: typeof AuthenticatedQyAdminGroupPricingIndexRouteImport
-      parentRoute: typeof AuthenticatedQyAdminRouteRoute
-    }
     '/_authenticated/qy/admin/health/': {
       id: '/_authenticated/qy/admin/health/'
       path: '/health'
@@ -1959,7 +1939,6 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminCommissionIndexRoute: typeof AuthenticatedQyAdminCommissionIndexRoute
   AuthenticatedQyAdminFundOrdersIndexRoute: typeof AuthenticatedQyAdminFundOrdersIndexRoute
   AuthenticatedQyAdminGroupMatrixIndexRoute: typeof AuthenticatedQyAdminGroupMatrixIndexRoute
-  AuthenticatedQyAdminGroupPricingIndexRoute: typeof AuthenticatedQyAdminGroupPricingIndexRoute
   AuthenticatedQyAdminHealthIndexRoute: typeof AuthenticatedQyAdminHealthIndexRoute
   AuthenticatedQyAdminLotteryConfigIndexRoute: typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   AuthenticatedQyAdminLotteryIndexRoute: typeof AuthenticatedQyAdminLotteryIndexRoute
@@ -1990,8 +1969,6 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
       AuthenticatedQyAdminFundOrdersIndexRoute,
     AuthenticatedQyAdminGroupMatrixIndexRoute:
       AuthenticatedQyAdminGroupMatrixIndexRoute,
-    AuthenticatedQyAdminGroupPricingIndexRoute:
-      AuthenticatedQyAdminGroupPricingIndexRoute,
     AuthenticatedQyAdminHealthIndexRoute: AuthenticatedQyAdminHealthIndexRoute,
     AuthenticatedQyAdminLotteryConfigIndexRoute:
       AuthenticatedQyAdminLotteryConfigIndexRoute,

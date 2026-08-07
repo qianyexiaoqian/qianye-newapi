@@ -329,7 +329,12 @@ export async function updateBillingPreference(
   return res.data
 }
 
-export async function getGroups(): Promise<ApiResponse<string[]>> {
-  const res = await api.get('/api/group')
-  return res.data
-}
+/*
+  这里**不再有** getGroups()。
+
+  它唯一的用处是喂套餐表单里的「升级分组 / 降级分组」两个下拉，而那两个字段已经
+  从表单上撤掉了（见 lib/plan-form.ts）。留着它的害处不是一个未使用的导出，而是
+  它下发的 `/api/group` 是**用户分组与模型分组混在一起**的那一份清单 —— 下一个人
+  拿它去填「解锁模型分组」时，会解锁出一个根本不是模型分组的名字。解锁清单的
+  候选只能来自后端 `entitlement` 接口的 `model_group_candidates`。
+*/

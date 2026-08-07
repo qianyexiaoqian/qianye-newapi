@@ -196,7 +196,6 @@ describe('qy nav merge — admin, all features on', () => {
       '/qy/admin/commission',
       '/qy/admin/transfer-config',
       '/qy/admin/transfer-group-rules',
-      '/qy/admin/group-pricing',
       '/qy/admin/user-group',
       '/qy/admin/violation-rules',
     ]) {

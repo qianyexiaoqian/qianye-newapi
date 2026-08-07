@@ -15,12 +15,40 @@ import (
 	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/modules/groupmatrix"
+	"github.com/QuantumNous/new-api/qianye/modules/planentitlement"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
 	"github.com/QuantumNous/new-api/qianye/service/twophase"
 
 	"github.com/gin-gonic/gin"
 )
+
+// retiredTables 是「已经没有任何代码引用、但还留在扩展库里」的表清单。
+//
+// 登记在这里而不是各模块自己的 Health():退役表的定义就是**模块已经不在了**,
+// 让一个已删模块去汇报自己的遗留表是做不到的。qy_group_seen 是例外(它的模块还在,
+// 只是那张表退役了),由 groupmatrix.Health() 自报,两处不重复。
+//
+// 加一张退役表时**必须同时**改 qianye/docs/retired_tables.md,由
+// TestRetiredTablesMatchTheDoc 对账 —— 两边一旦分叉,这一段就变成一份不可信的清单,
+// 而它存在的全部理由就是可信。
+var retiredTables = []gin.H{
+	{
+		"table":      "qy_group_price_rule",
+		"retired_by": "分组定价(grouppricing)整模块下线,改由用户分组 × 模型分组矩阵表达",
+		"note":       "未 DROP:观察期内保留以便回读。数据未迁移。",
+	},
+	{
+		"table":      "qy_group_price_shadow",
+		"retired_by": "同上(影子模式的比对记录)",
+		"note":       "未 DROP:观察期内保留以便回读。数据未迁移。",
+	},
+	{
+		"table":      "qy_group_price_rule_version",
+		"retired_by": "同上(规则版本快照)",
+		"note":       "未 DROP:观察期内保留以便回读。数据未迁移。",
+	},
+}
 
 // AdminHealth 返回扩展的运行状态,是排障的第一入口。
 func AdminHealth(c *gin.Context) {
@@ -60,6 +88,18 @@ func AdminHealth(c *gin.Context) {
 		// 当前按上游全局白名单放行 —— 那是比"配置写错了"更隐蔽的一种失效:
 		// 矩阵页照常显示、保存照常成功,只是没有任何一条收紧在起作用。
 		"group_matrix": groupmatrix.Health(),
+		// 套餐解锁的快照状态与 fail-closed 计数。后者非 0 意味着有付费用户
+		// 因为"套餐权限暂时读不到"而被当成无解锁处理 —— 它的表现是偶发 403,
+		// 与"这个分组真的没配"长得一模一样,不在这里出数就永远查不出来。
+		"plan_entitlement": planentitlement.Health(),
+		// 已退役但**仍留在扩展库里**的表。
+		//
+		// 它们已经从 AutoMigrate 里摘掉、没有任何代码再引用,但刻意不 DROP:
+		// 观察期内还要能回读(下线的可逆性就押在这上面)。这一段是那些表唯一的
+		// 运行时说明 —— 少了它,半年后在库里看到这些表的人只能得出两个结论:
+		// 「漏了一次迁移」或者「不敢动」,而正确答案是第三个:受控退役。
+		// 每一张的来历、手工 DROP 语句与可逆性见 qianye/docs/retired_tables.md。
+		"retired_tables": retiredTables,
 		"config": gin.H{
 			"path":      config.Path(),
 			"loaded_at": config.LoadedAt(),

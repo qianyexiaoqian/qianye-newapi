@@ -76,8 +76,7 @@ var ctxDebtWhitelist = map[string]string{
 	"modules/commission/settle.go:repairStrandedAccruals": "自愈 UPDATE 未接 ctx;归属 commission",
 	"modules/commission/topup_scan.go:runTopupScan": "model.DB 扫 top_ups 未接 ctx,而它的 ctx 来自 " +
 		"lease.go 的 context.WithCancel(Background),本来就没有 deadline;归属 commission",
-	"modules/grouppricing/shadow.go:runShadowGC": "影子桶分批 DELETE 未接 ctx;归属 grouppricing(本轮只改 rules.go 的 reload)",
-	"modules/transfer/reconcile.go:reconcile":    "gdb 传进 syncStuckOrders/pruneLookupLogs 后裸发语句;归属 transfer",
+	"modules/transfer/reconcile.go:reconcile": "gdb 传进 syncStuckOrders/pruneLookupLogs 后裸发语句;归属 transfer",
 	"modules/violation/guard.go:persist": "gdb 传进 maybeAutoBan → markBan 后裸发收尾 UPDATE。" +
 		"这一处正是应当改成 context.WithoutCancel + 独立预算的形状;归属 violation(本轮只改 rules.go)",
 	"modules/violation/tasks.go:runBanCompensate":         "封禁补偿的三条语句未接 ctx;归属 violation",
@@ -93,8 +92,6 @@ var ctxDebtWhitelist = map[string]string{
 var ctxParamWhitelist = map[string]string{
 	"modules/availability/sample.go:onRelaySample": "HotAsync(\"availability.sample\") 是纯内存作业" +
 		"(guard.syncSafeJobs 里登记的两条之一),确实用不到 ctx;正确写法是把参数改成 `_`,归属 availability",
-	"modules/grouppricing/shadow.go:note": "HotAsync(\"grouppricing.shadow\") 同为纯内存作业;" +
-		"正确写法是把参数改成 `_`,归属 grouppricing(本轮只改 rules.go 的 reload)",
 }
 
 // 参数锁:签名里写了名字的 ctx 必须真的被用到。

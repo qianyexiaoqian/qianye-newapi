@@ -97,15 +97,16 @@ var auditRequired = []struct {
 		"门槛变更:成功、回读失败、事务回滚三条路径各一条"},
 	{"modules/usergroup/api_admin.go", "adminPutConfig", 2,
 		"默认分组决定此后所有新用户能不能用模型;写失败同样要留痕"},
-	{"modules/grouppricing/api_admin.go", "adminCreateRule", 2,
-		"分组定价的成功审计写在 WriteTx 里,事务一回滚就消失,失败必须在事务外补一条"},
-	{"modules/grouppricing/api_admin.go", "adminUpdateRule", 2, "同上"},
-	{"modules/grouppricing/api_admin.go", "adminDeleteRule", 2, "同上"},
 	{"modules/subscription/delete.go", "adminDeletePlan", 2,
 		"删套餐会级联作废用户订阅与待处理订单,且套餐行本身会消失 —— " +
 			"before 快照是事后唯一能回答「删的是什么」的东西;被拒绝的那次同样要留痕"},
 	{"modules/subscription/api_admin.go", "adminPutSeat", 2,
 		"全站总名额决定这个套餐还能不能卖出去,改小之后立刻生效;写失败同样要留痕"},
+	{"modules/planentitlement/api_admin.go", "adminPutEntitlement", 3,
+		"套餐解锁哪些模型分组、以及它的余额能不能用在别的分组上 —— 前者决定「谁能用什么」," +
+			"后者直接决定「这笔钱从哪个池子扣」,与改分组倍率同一档。" +
+			"三条路径各一条:成功、写失败、连旧值都没读到就失败(库里没变,但「有人在这一刻" +
+			"试图改它」照样要留痕,那正是扩展库抖动期间最需要知道的事)"},
 	{"modules/lottery/api_admin.go", "handleCreateActivity", 2,
 		"创建活动决定平台最多会发出去多少额度(抽奖派奖是净增发);被上限拦下的那次同样要留痕"},
 	{"modules/lottery/api_admin.go", "handleUpdateActivity", 2,
@@ -181,11 +182,6 @@ var auditRequired = []struct {
 			"被 impact_hash 挡回去(预览已过期)的那次同样是重要信号"},
 	{"modules/groupmatrix/api_admin.go", "adminRepairToken", 2,
 		"把一条令牌的分组置空会改变它此后使用的分组与倍率,是真的动扣费口径;写失败同样要留痕"},
-	{"modules/groupmatrix/newgroup.go", "handleFreshGroup", 1,
-		"「新分组默认全遮断」是本仓唯一一处**没有操作者**的收紧:一个用户分组被自动切成 " +
-			"enforce + 零可选清单,那一档的人从此选不了任何模型分组。运营打开矩阵页只会看到" +
-			"一个他确信自己没配过的 enforce 行,「这是谁干的、什么时候」只有这条 ActorSystem " +
-			"审计能回答。它没有任何调用者依赖,是最典型的会在重构里被顺手清掉的埋点"},
 	// channelops 的三条都只登记 1:它们各自只有一处 audit.WriteConfigUpdate,
 	// Result 由本批的结局算出来(一条都没成功 = fail),成功与失败共用同一条路径。
 	// 拆成两个分支只会得到两段除 Result 以外逐字节相同的代码,而漏掉其中一段

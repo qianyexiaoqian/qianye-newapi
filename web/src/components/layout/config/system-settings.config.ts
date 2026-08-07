@@ -29,6 +29,7 @@ import {
 
 import {
   QY_SYSTEM_SETTINGS_PATH_PATTERN,
+  withQyBillingSectionNavItems,
   withQySystemSettingsNavGroups,
 } from '@/features/qy/system-settings'
 import { getAuthSectionNavItems } from '@/features/system-settings/auth/section-registry.tsx'
@@ -70,7 +71,9 @@ function getSystemSettingsNavGroups(t: TFunction): NavGroup[] {
           {
             title: t('Billing & Payment'),
             icon: CreditCard,
-            items: getBillingSectionNavItems(t),
+            // 扩展贡献的「用户分组」section 只在扩展启用时露出入口；
+            // section 本身恒在登记表里，深链接不会被静默重定向。
+            items: withQyBillingSectionNavItems(getBillingSectionNavItems(t)),
           },
           {
             title: t('Models & Routing'),

@@ -1,13 +1,28 @@
 package helper
 
-// qy_pricing_export.go —— 千夜扩展「模型按分组单独定价」与上游计价链路之间的唯一耦合面。
+// qy_pricing_export.go —— **本接缝当前刻意空置。**
+//
+// 「模型按分组单独定价」(grouppricing)已下线,分组级价格改由
+// (用户分组, 模型分组) 的倍率矩阵表达。下面三个变量因此没有任何实现体给它们赋值,
+// 全部保持恒等,计价结果与上游逐位一致。
+//
+// 它不是坏了,也不是死代码 —— **删它需要改 8 行上游计价代码**(本文件的 5 个调用点
+// 加 service 侧的 3 个),跨 3 个文件、其中两个在计费主路径上,还会把 3 个已经合并
+// 稳定的文件重新变成上游合并的冲突点。保留 = 上游 diff 变化 0 行。
+// 「接缝存在」由 qy_pricing_hookpoint_test.go 用 AST 钉死,「接缝空着」由
+// qianye/pricing_seam_vacancy_guard_test.go 钉死;两个状态都被测试保护。
+//
+// 下面这段是当初为了把 5 个挂载点放对位置付出的代价换来的知识。它属于计价链路
+// 本身而不属于任何一个扩展模块,重新启用分组级定价时原样适用,因此保留。
+//
+// ────────────────────────────────────────────────────────────────────────────
 //
 // 这是一个纯新增文件。因为与调用点同包,relay/helper/price.go 里只需插入普通赋值语句,
 // 连 import 都不必改 —— 上游 diff 一共 5 行,全是单行赋值,合并上游时冲突面接近 0。
 //
 // 铁律:本文件禁止 import 任何 qianye/* 包。relay/helper 是被扩展依赖的下层包,
-// 反向依赖会形成 import 环。实现体由 qianye/modules/grouppricing 在 qianye.Init()
-// 阶段注入,那一刻早于任何 HTTP 请求与后台协程,不存在并发读写窗口。
+// 反向依赖会形成 import 环。将来若重新启用分组级定价,实现体必须在 qianye.Init()
+// 阶段注入 —— 那一刻早于任何 HTTP 请求与后台协程,不存在并发读写窗口。
 //
 // 默认实现是**恒等函数**:原样返回入参。因此扩展未安装/未启用时,计价结果与上游
 // 逐位一致(不是"近似一致"——恒等函数不做任何浮点运算,连一次舍入都不会引入)。
@@ -24,7 +39,7 @@ package helper
 //
 // 结算侧(service/text_quota.go、service/quota.go)读的是 relayInfo.PriceData,
 // 而 PriceData 正是这三个函数的产物,所以覆盖这三处即覆盖全部扣费。
-// 唯二的例外见 qianye/modules/grouppricing/grouppricing.go 的"已知不覆盖范围"。
+// 唯二的例外(Task 差额结算与阶梯结算)见 service/qy_pricing_export.go。
 //
 // ─────────────────────────── 分组取值口径 ───────────────────────────
 //
@@ -36,7 +51,7 @@ package helper
 //
 // 因此 QyGroupModelPrice 在 ModelPriceHelper 里的插入位置必须在
 // HandleGroupRatio 之后 —— 上游原本先取价、后解析 auto 分组,顺序是反的。
-// 这一点由 qianye/modules/grouppricing/hookpoint_test.go 用 AST 锁死。
+// 这一点由本包的 qy_pricing_hookpoint_test.go 用 AST 锁死。
 
 import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -61,9 +76,8 @@ var (
 	// ok 为 false 表示该模型没有配置倍率(上游据此报"价格未配置"错误),
 	// 实现方返回 true 即可让分组级倍率成为该模型在该分组下的唯一价格来源。
 	//
-	// 刻意不覆盖 completion_ratio(补全倍率):见 grouppricing 包注释,
-	// 覆盖它会破坏"实际扣费对覆盖值线性"这一性质,而影子模式的差额精确性
-	// 完全建立在那个性质上。
+	// 刻意不覆盖 completion_ratio(补全倍率):覆盖它会破坏"实际扣费对覆盖值
+	// 线性"这一性质,而任何影子/预览型的差额精确性都建立在那个性质上。
 	QyGroupModelRatio = func(info *relaycommon.RelayInfo, ratio float64, ok bool) (float64, bool) {
 		return ratio, ok
 	}

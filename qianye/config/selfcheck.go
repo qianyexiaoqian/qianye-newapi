@@ -239,16 +239,14 @@ var fieldConsumers = map[string]consumer{
 	"violation.rule_cache_seconds":             {"qianye/modules/violation/rules.go", "规则缓存时长"},
 	"violation.scan_timeout_ms":                {"qianye/modules/violation/rules.go", "单次正则扫描的预算"},
 
-	// ─────────────────────────── group_pricing ───────────────────────────
-	"group_pricing.enabled":     {"qianye/guard/guard.go", "featureOn(FlagGroupPricing):关掉后计价 hook 恒等返回,管理端接口 404"},
-	"group_pricing.shadow_mode": {"qianye/modules/grouppricing/hook.go", "影子模式:算出分组价并记差额,但返回原值,实际扣费不变"},
-	"group_pricing.rule_cache_seconds": {"qianye/modules/grouppricing/rules.go",
-		"规则内存快照的刷新周期(规则读取在 relay 热路径上)"},
-	"group_pricing.max_stale_seconds": {"qianye/modules/grouppricing/rules.go",
-		"快照陈旧上限,超过即回落成「无覆盖」走全局价"},
-	"group_pricing.shadow_flush_interval_seconds": {"qianye/modules/grouppricing/shadow.go", "影子差额从内存落库的周期"},
-	"group_pricing.shadow_retention_days":         {"qianye/modules/grouppricing/shadow.go", "影子差额聚合行的保留天数"},
-	"group_pricing.max_rules":                     {"qianye/modules/grouppricing/api_admin.go", "规则总数上限,写入时判定"},
+	// ─────────────────────── group_pricing(已下线)───────────────────────
+	//
+	// 整段只剩一个 map 占位。登记它不是为了描述一个功能,而是为了让这条对账
+	// 说得出真话:这个键**仍然会被解析**(否则严格解析会让存量部署起不来),
+	// 但它的唯一消费方是那句告警。
+	"group_pricing": {"qianye/config/defaults.go",
+		"⚠ 已下线:「模型按分组单独定价」整个模块已删除。本段被 adoptRetiredGroupPricing " +
+			"整段忽略并告警,里面写什么都不生效。分组级价格改由「用户分组 × 模型分组」倍率矩阵表达"},
 
 	// ─────────────────────────── group_matrix ───────────────────────────
 	"group_matrix.enabled": {"qianye/modules/groupmatrix/snapshot.go",
@@ -264,11 +262,28 @@ var fieldConsumers = map[string]consumer{
 	"group_matrix.preview_sample_limit": {"qianye/modules/groupmatrix/preview.go", "每一对最多返回的令牌样本条数"},
 	"group_matrix.max_grants":           {"qianye/modules/groupmatrix/api_admin.go", "清单总行数上限,写入时判定"},
 	"group_matrix.write_guard_enabled":  {"qianye/modules/groupmatrix/hook.go", "令牌写入侧校验的独立开关(经 WriteGuardOn 读取)"},
-	"group_matrix.new_group_default_deny": {"qianye/modules/groupmatrix/newgroup.go",
-		"新出现的用户分组是否自动接管成 enforce + 零 grant(全遮断);关掉后对账任务只登记不遮断"},
-	"group_matrix.new_group_scan_interval_seconds": {"qianye/modules/groupmatrix/newgroup.go",
-		"新分组对账任务的周期(经 newGroupScanInterval 读取,喂给 lease.Run)," +
-			"也是「新分组建出来到被遮断」的最长延迟"},
+	// 这两个键随「新分组默认全遮断」一并下线。消费点指向 defaults.go 而不是删掉登记:
+	// 自检面板必须能回答"我 YAML 里还写着这一行,它现在起什么作用",
+	// 而答案恰恰是"什么作用都没有,只会在启动时喊一声"。(同 commission.*_rate_bps)
+	"group_matrix.new_group_default_deny": {"qianye/config/defaults.go",
+		"⚠ 已下线:「新分组默认全遮断」与新口径(未设定范围 = 全部模型分组可用)完全相反,已整体撤销。" +
+			"加载时由 adoptRetiredNewGroupDeny 告警并忽略,填 true 也不会让任何东西收紧"},
+	"group_matrix.new_group_scan_interval_seconds": {"qianye/config/defaults.go",
+		"⚠ 已下线:新分组对账任务已随上一项一并移除,该键不再有任何效果"},
+
+	// ─────────────────────────── plan_entitlement ───────────────────────────
+	"plan_entitlement.enabled": {"qianye/modules/planentitlement/snapshot.go",
+		"kill switch:关掉后 QyPlanUnlockGroups / QyPlanUnlockedGroup 恒等返回," +
+			"已购套餐解锁的模型分组当场失效,余额的「仅限」范围也不再生效。判定不依赖扩展库可达性"},
+	"plan_entitlement.cache_seconds": {"qianye/modules/planentitlement/snapshot.go",
+		"第一层(套餐 → 解锁分组 + 余额范围)内存快照的刷新周期。这一层纯内存零 I/O," +
+			"热路径与订阅扣费事务内都要读它"},
+	"plan_entitlement.user_cache_seconds": {"qianye/modules/planentitlement/entitlement.go",
+		"第二层(userId → 活跃套餐)的新鲜期,本模块唯一的主库 I/O 面。" +
+			"「没有任何活跃套餐」那一档只缓存它的 1/4 —— 刚买完套餐的人几乎必然在那一档"},
+	"plan_entitlement.user_max_stale_seconds": {"qianye/modules/planentitlement/snapshot.go",
+		"serve-stale 上限:刷新失败时继续沿用上一次成功结果多久,超过才降级为「无解锁」。" +
+			"同时是第一层快照的陈旧告警线"},
 
 	// ─────────────────────────── lottery ───────────────────────────
 	"lottery.enabled": {"qianye/guard/guard.go",

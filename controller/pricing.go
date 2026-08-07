@@ -55,7 +55,7 @@ func GetPricing(c *gin.Context) {
 		}
 	}
 
-	usableGroup = service.GetUserUsableGroups(group)
+	usableGroup = service.QyUsableGroupsForUser(c.GetInt("id"), group)
 	pricing = filterPricingByUsableGroups(pricing, usableGroup)
 	pricing = QyGroupVisFilterPricing(pricing, usableGroup)
 	// check groupRatio contains usableGroup
