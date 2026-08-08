@@ -31,12 +31,7 @@ For commercial licensing, please contact support@quantumnous.com
  *      两次算出的 `draft_hash` 不同，闸门会把一次合法保存拦下来。
  */
 
-import type {
-  QyGmCell,
-  QyGmCellChange,
-  QyGmModelGroup,
-  QyGmUserGroup,
-} from '../types'
+import type { QyGmCell, QyGmCellChange } from '../types'
 
 /**
  * 格子的复合键。
@@ -94,6 +89,14 @@ export type QyGmRatioDraft =
 export type QyGmDraftEntry = {
   granted?: boolean
   ratio?: QyGmRatioDraft
+  /**
+   * 按格备注的草稿原文。
+   *
+   * **刻意是一个裸 string 而不是 `{kind}` 联合**（倍率那样的三态）：备注只有
+   * 「有一句」与「没有」两种，空串就是后者，而后者的行为恰好等于回落模型分组的
+   * 默认备注。给它造第三态只会多出一个界面上表达不出来、行为上也没有差别的状态。
+   */
+  note?: string
 }
 
 /** 草稿：只装被动过的格子。没被动过的格子在这里查不到，这是刻意的。 */
@@ -144,6 +147,19 @@ export function qyGmRatioDraftOf(
   return { kind: 'set', raw: String(cell.ratio) }
 }
 
+/**
+ * 格子当前显示的备注草稿值（未编辑时回落服务端状态）。
+ *
+ * 后端尚未下发 `note` 时恒为空串 —— 与「这一格没写备注」同一个显示，
+ * 而那正是那种后端下的真实行为。
+ */
+export function qyGmNoteDraftOf(
+  cell: QyGmCell | undefined,
+  entry: QyGmDraftEntry | undefined
+): string {
+  return entry?.note ?? cell?.note ?? ''
+}
+
 /** 格子当前的可选性草稿值（未编辑时回落服务端状态）。 */
 export function qyGmGrantedOf(
   cell: QyGmCell | undefined,
@@ -171,6 +187,7 @@ const ACTION_ORDER: Record<QyGmCellChange['action'], number> = {
   set_ratio: 1,
   revoke: 2,
   grant: 3,
+  set_note: 4,
 }
 
 /**
@@ -200,6 +217,31 @@ export function qyGmBuildChanges(
         action: entry.granted ? 'grant' : 'revoke',
         ratio: null,
       })
+    }
+
+    /*
+      备注：与服务端一致就不产出动作，和上面两维同一条规则（文件头第 2 条）。
+
+      比较**去两侧空白之后**的原文：运营在句末不小心敲了一个空格，实际显示给
+      用户的那一句一个字都没变，却会产出一条 `set_note`。而备注动作与倍率动作
+      走同一次两库写入，多一条无意义的动作就多一次"倍率成功、清单失败"的机会 ——
+      本轮之前的经验是这条链上任何一次多余的写入最后都会被人在事故里数出来。
+    */
+    if (entry.note != null) {
+      const nextNote = entry.note.trim()
+      const serverNote = (cell?.note ?? '').trim()
+      if (nextNote !== serverNote) {
+        // 空串就是「清掉这一格的备注」（回落模型分组的默认备注）——
+        // 后端刻意没有 `clear_note`：备注只有"有一句"与"没有"两种，
+        // 造第三态只会多一条与它完全等价、却要在两侧各实现一遍的路径。
+        changes.push({
+          user_group: userGroup,
+          model_group: modelGroup,
+          action: 'set_note',
+          ratio: null,
+          note: nextNote,
+        })
+      }
     }
 
     if (entry.ratio == null) continue
@@ -251,6 +293,14 @@ export type QyGmDiffCounts = {
   grant: number
   revoke: number
   reprice: number
+  /**
+   * 备注改动。**不并进 `reprice`**：改价要过影响面闸门（保存成功那一秒起按新价
+   * 扣钱），改一句给用户看的说明不会动任何一分钱、也不会让任何请求变 403。
+   * 并进去的后果是运营改一句错别字都要先跑一次全站影响面预览，而那份报告里
+   * 关于这次改动的部分是空的 —— 闸门一旦开始出现"看了也没用"的场景，它就会被
+   * 当成走过场。
+   */
+  note: number
   total: number
 }
 
@@ -259,11 +309,13 @@ export function qyGmCountChanges(changes: QyGmCellChange[]): QyGmDiffCounts {
     grant: 0,
     revoke: 0,
     reprice: 0,
+    note: 0,
     total: changes.length,
   }
   for (const change of changes) {
     if (change.action === 'grant') counts.grant += 1
     else if (change.action === 'revoke') counts.revoke += 1
+    else if (change.action === 'set_note') counts.note += 1
     else counts.reprice += 1
   }
   return counts
@@ -290,7 +342,9 @@ export function qyGmDraftFingerprint(changes: QyGmCellChange[]): string {
   return changes
     .map(
       (change) =>
-        `${change.user_group}\u0000${change.model_group}\u0000${change.action}\u0000${change.ratio ?? ''}`
+        // 备注原文进指纹：不进的话「把备注从 A 改成 B」与「从 A 改成 C」算出
+        // 同一个指纹，运营预览之后又改一次备注，闸门不会重新锁上。
+        `${change.user_group}\u0000${change.model_group}\u0000${change.action}\u0000${change.ratio ?? ''}\u0000${change.note ?? ''}`
     )
     .join('\u0001')
 }
@@ -316,8 +370,10 @@ export function qyGmIndexCells(cells: QyGmCell[]): Map<string, QyGmCell> {
  * 不能一边修一个骗人的数字一边造一个新的。
  */
 export function qyGmCaseNearMisses(
-  userGroups: QyGmUserGroup[],
-  modelGroups: QyGmModelGroup[]
+  // 只收名字：这一层要的就是两个轴上的字符串，收整行会让调用方（和测试）为了
+  // 满足类型去凑十几个与判据无关的字段，而凑出来的那些值会被下一个人当真。
+  userGroups: readonly { name: string }[],
+  modelGroups: readonly { name: string }[]
 ): { left: string; right: string }[] {
   const seen = new Map<string, string>()
   const pairs: { left: string; right: string }[] = []

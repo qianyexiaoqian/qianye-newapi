@@ -43,6 +43,15 @@ import (
 //
 // 被接管且 enforce 时返回一张**新分配**的 map:绝不返回快照内部那一张,
 // 调用方 delete 一个 key 就会污染全站鉴权,而且无法复现。
+//
+// ══════════ 按格备注为什么只在 enforce 这一档生效 ══════════
+//
+// 备注是"这一格"的属性,而"这一格存不存在"在 shadow / 未设范围两档里都还没成立:
+// 那两档 return 的是 upstream 那一张 map 的**指针**,契约 (c) 与 bitexact_test 都
+// 钉在这上面。为了一段文案去破坏"未生效 = 逐位等于上游"这条唯一可证的回退依据,
+// 是拿回退能力换一个装饰品。shadow 的语义本来就是「配好了但一个字节都不生效」,
+// 让它半生效(挡不住人、却改了文案)比不生效更难解释。
+// 运营要预览按格备注,看管理端那一份解析结果即可(effective_note)。
 func Resolve(userGroup string, upstream map[string]string) map[string]string {
 	if !enabled() {
 		return upstream
@@ -89,10 +98,26 @@ func Resolve(userGroup string, upstream map[string]string) map[string]string {
 	}
 
 	grants := s.Grants[userGroup]
+	notes := s.GrantNotes[userGroup]
 	out := make(map[string]string, len(grants)+1)
 	for mg := range grants {
-		// 描述文案与上游同源。命中 upstream 时直接沿用它那一份 ——
-		// 这样"清单 = 上游结果"时连 value 都逐位一致,L4 的零变更断言才成立。
+		// ── 说明文案的阶梯,自上而下,第一条命中即止 ──────────────────
+		//
+		//	1. 按格备注 qy_group_grants.note   ← 只有本分支拿得到用户分组
+		//	2. 模型分组备注 qy_model_groups.note
+		//	3. options.UserUsableGroups[mg]    ← 上游原生 value
+		//	4. 模型分组名
+		//
+		// 2~4 已经由 setting.QyDescribeGroup 统一持有(见 setting/qy_groupnote_export.go),
+		// 所以这里只需要判第 1 级。全站唯一一处叠加按格备注的地方就是这里 ——
+		// 三处调用点各写一遍 `if note != ""` 的表现是同一个分组在令牌页和
+		// 模型广场上显示两段不同的说明,而那正是本轮在收敛的东西。
+		if note := notes[mg]; note != "" {
+			out[mg] = note
+			continue
+		}
+		// 命中 upstream 时直接沿用它那一份 —— 这样"清单 = 上游结果 + 无按格备注"时
+		// 连 value 都逐位一致,L4 的零变更断言才成立。
 		if desc, ok := upstream[mg]; ok {
 			out[mg] = desc
 			continue

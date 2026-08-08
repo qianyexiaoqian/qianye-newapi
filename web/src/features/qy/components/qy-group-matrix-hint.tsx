@@ -89,10 +89,10 @@ export function QyGroupMatrixHint() {
       <AlertTitle>
         <Link
           to='/system-settings/billing/$section'
-          params={{ section: 'group-matrix' }}
+          params={{ section: 'user-groups' }}
           className='text-primary underline underline-offset-2'
         >
-          {t('qy_gs_group_matrix_title')}
+          {t('qy_gs_user_groups_title')}
         </Link>
       </AlertTitle>
       <AlertDescription>{t('qy_group_pricing_moved_desc')}</AlertDescription>

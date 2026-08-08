@@ -21,7 +21,6 @@ import { parseCurrencyDisplayType } from '@/lib/currency'
 import { CheckinSettingsSection } from '../general/checkin-settings-section'
 import { PricingSection } from '../general/pricing-section'
 import { QuotaSettingsSection } from '../general/quota-settings-section'
-import { GroupMatrixSection } from '../groups/group-matrix-section'
 import { ModelGroupsSection } from '../groups/model-groups-section'
 import { UserGroupsSection } from '../groups/user-groups-section'
 import { PaymentSettingsSection } from '../integrations/payment-settings-section'
@@ -63,10 +62,6 @@ const getUserGroupDefaults = (settings: BillingSettings) => ({
   // 每个新注册用户的初始令牌都拿不到任何候选模型分组，第一次调用就失败，而 A 页
   // 上没有任何信号。编辑器仍然唯一（这里只读不写）。
   AutoGroups: settings.AutoGroups,
-})
-
-const getGroupMatrixDefaults = (settings: BillingSettings) => ({
-  UserUsableGroups: settings.UserUsableGroups,
 })
 
 const getModelGroupDefaults = (settings: BillingSettings) => ({
@@ -139,52 +134,42 @@ const BILLING_SECTIONS = [
     ),
   },
   /*
-    ── 原「分组定价」一页拆成下面三项 ──
+    ── 原「分组定价」一页现在是**两项** ──
 
-    项目方原话：「用户分组、模型分组，既然已经分出来了就请你彻底分出来……
-    在：系统设置-计费与支付-分组定价，你不应该拆开吗？用户分组、用户分组可用的
-    模型分组配置、模型分组，这些很多都是原项目，就改了一点文案。」
+    项目方原话（第一轮）：「用户分组、模型分组，既然已经分出来了就请你彻底分
+    出来……」；（本轮）「你现在前端怎么感觉搞得一团糟……比如，用户分组这一页，
+    这两个可以合并成一个。明明一个很简单的问题为什么这么搞这么复杂？」
+    「简单一点：用户分组：注册用户数，充值倍率，可用模型分组，用户分组备注。
+    编辑、删除。一个列表框即可。」
 
-    三项的顺序照项目方点名的顺序排。判据是配置的**主语**：
-      · 主语是一档人             → user-groups
-      · 主语是 (用户分组, 模型分组) → group-matrix
-      · 主语是一批渠道           → model-groups
+    判据仍然是配置的**主语**，只是从三档收成两档：
+      · 主语是一档人   → user-groups
+      · 主语是一批渠道 → model-groups
+    而 (用户分组, 模型分组) 这一对不再独占一页 —— 它是「一档人」的一个属性，
+    编辑面是 user-groups 那张表行内的配置弹窗。
+
+    ── 原来第三项 `group-matrix` 为什么下线 ──
+
+    它当时留着的理由有两条，本轮两条都不成立了：
+
+     1. 「它是 `UserUsableGroups` 的唯一编辑器」—— 那份 map 的键现在是模型分组
+        表上的「用户可选」开关列（项目方点名的四列之一），它的主语本来就是一批
+        渠道，不是一对分组。
+     2. 「整列批量 / 跨档对比 / 孤儿令牌基线在弹窗里表达不出来」—— 这三件确实
+        表达不出来，但它们是**排查**动作不是**配置**动作，把它们摆在「计费与
+        支付」的第三个菜单项上，正是项目方说的那种"一团糟"。它们整体留在
+        `/qy/admin/group-matrix` 这条既有路由上（原本就是给普通管理员的入口，
+        现在成为唯一入口），定位为高级/诊断视图。
 
     `titleKey` 全部走 qy 语言包：上游 7 个 locale 文件是高频合并冲突区，
-    而这三页的命名是本 fork 自己的口径。两份资源合并进同一个命名空间，
+    而这两页的命名是本 fork 自己的口径。两份资源合并进同一个命名空间，
     `t()` 解析方式与上游键完全一致。
-
-    ── 需求 4 之后：group-matrix 仍然留着，但它不再是主入口 ──
-
-    项目方原话：「用户分组页面，配置可用模型分组，这里直接弹窗选择配置，不要
-    再跳转到用户分组可用的模型分组配置。」于是 user-groups 那张表的行内直接开
-    配置弹窗（`QyUgScopeDialog`），行内那条深链接删掉。
-
-    危险的从来是两个**编辑器**编同一份数据，不是两个入口 —— 而弹窗与这一页
-    共用**同一份状态机**（`useQyGmEditor`：同一道预览闸门、同一条双库部分失败
-    横幅、同一次强制回读），所以两个入口在数据安全上等价。
-
-    这一项因此不下线，它还独占三件在"一次只看一档"的弹窗里结构性表达不出来
-    的事：整列批量、跨档对比「哪几档人能到达某个模型分组」、孤儿令牌基线；
-    外加 `UserUsableGroups`（全局可选清单）这个纯上游 option 的唯一编辑器 ——
-    摘掉它，扩展一关就再没有任何界面能改那份清单。抽屉菜单里的那一行是它现在
-    唯一的入口，不能再删。
   */
   {
     id: 'user-groups',
     titleKey: 'qy_gs_user_groups_title',
     build: (settings: BillingSettings) => (
       <UserGroupsSection defaultValues={getUserGroupDefaults(settings)} />
-    ),
-  },
-  {
-    // 扩展关掉时这一项由 `withQyBillingSectionNavItems` 从抽屉里摘掉；section
-    // 本身仍然登记在这里，深链接才不会被 `$section` 的白名单弹回默认页 ——
-    // 点进来会看到「功能未启用」的中性空态，而不是一次莫名其妙的跳转。
-    id: 'group-matrix',
-    titleKey: 'qy_gs_group_matrix_title',
-    build: (settings: BillingSettings) => (
-      <GroupMatrixSection defaultValues={getGroupMatrixDefaults(settings)} />
     ),
   },
   {

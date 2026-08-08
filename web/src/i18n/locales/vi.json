@@ -5249,12 +5249,10 @@
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
     "Zoom": "Zoom",
-    "Model Group Pricing": "Định giá nhóm mô hình",
     "Legacy user group rewrite": "Ghi đè nhóm người dùng (cũ)",
     "Unlocked model groups could not be loaded; saving now leaves them untouched.": "Không tải được các nhóm mô hình đã mở khóa; lưu bây giờ sẽ không thay đổi chúng.",
     "Model group unlocks can be configured once the plan exists — save it first, then reopen it.": "Mở khóa nhóm mô hình được cấu hình sau khi gói tồn tại — hãy lưu trước rồi mở lại.",
     "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "Đã lưu gói, nhưng các nhóm mô hình đã mở khóa chưa được lưu. Mở lại gói và thiết lập lại",
-    "This page no longer edits these rules: the \"Inter-group overrides\" and \"Special usable group rules\" JSON editors were removed from Model Group Pricing.": "Trang này không còn chỉnh sửa các quy tắc này: hai trình soạn thảo JSON “Ghi đè liên nhóm” và “Quy tắc nhóm sử dụng đặc biệt” đã bị gỡ khỏi Định giá nhóm mô hình.",
     "Edit them under System Settings → Billing & Payment → User group: a cell of the user group × model group table is the special ratio, and setting a scope on a user group takes over the special usable group rules for that tier. Tiers with no scope keep their existing +: / -: rules fully in effect, and those legacy rules can no longer be edited anywhere — set a scope on the tier to take them over. The stored data and the billing behavior are unchanged.": "Hãy chỉnh sửa tại Cài đặt hệ thống → Thanh toán & chi phí → Nhóm người dùng: mỗi ô trong bảng nhóm người dùng × nhóm mô hình chính là tỷ lệ đặc biệt, và việc đặt phạm vi cho một nhóm người dùng sẽ tiếp quản các quy tắc nhóm sử dụng đặc biệt của bậc đó. Các bậc chưa đặt phạm vi vẫn giữ nguyên hiệu lực của các quy tắc +: / -: hiện có, và những quy tắc cũ đó không còn chỗ nào để chỉnh sửa nữa — hãy đặt phạm vi cho bậc đó để tiếp quản. Dữ liệu đã lưu và cách tính phí không thay đổi.",
     "Configure these under System Settings → Billing & Payment → User group.": "Cấu hình tại Cài đặt hệ thống → Thanh toán & chi phí → Nhóm người dùng."
   }

@@ -5249,12 +5249,10 @@
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
     "Zoom": "缩放",
-    "Model Group Pricing": "模型分组定价",
     "Legacy user group rewrite": "存量：购买改写用户分组",
     "Unlocked model groups could not be loaded; saving now leaves them untouched.": "解锁的模型分组没读到；现在保存不会改动它们。",
     "Model group unlocks can be configured once the plan exists — save it first, then reopen it.": "解锁模型分组要在套餐建好之后配置 —— 先保存，再重新打开这个套餐。",
     "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "套餐已保存，但解锁的模型分组没有存下来。请重新打开这个套餐再设置一次",
-    "This page no longer edits these rules: the \"Inter-group overrides\" and \"Special usable group rules\" JSON editors were removed from Model Group Pricing.": "这一页已经不再编辑这些规则：「分组间覆盖」与「特殊可用分组规则」两个 JSON 编辑器已从「模型分组定价」移除。",
     "Edit them under System Settings → Billing & Payment → User group: a cell of the user group × model group table is the special ratio, and setting a scope on a user group takes over the special usable group rules for that tier. Tiers with no scope keep their existing +: / -: rules fully in effect, and those legacy rules can no longer be edited anywhere — set a scope on the tier to take them over. The stored data and the billing behavior are unchanged.": "请到「系统设置 → 计费与支付 → 用户分组」编辑：那张「用户分组 × 模型分组」表里的一个格子就是特殊倍率；给某一档用户分组设定「范围」，即接管它的特殊可用分组规则。尚未设定范围的用户分组，原有的 +: / -: 规则仍在照常生效，而全站已经没有任何地方能编辑它们——给那一档设定范围即可接管。存的数据与计费行为都没有变。",
     "Configure these under System Settings → Billing & Payment → User group.": "在「系统设置 → 计费与支付 → 用户分组」里配置。"
   }

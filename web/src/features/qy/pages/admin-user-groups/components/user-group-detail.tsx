@@ -27,6 +27,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 
 import { QyGmMatrixCell } from '../../admin-group-matrix/components/matrix-cell'
@@ -34,6 +35,7 @@ import { QyGmScopeStateBadges } from '../../admin-group-matrix/components/scope-
 import {
   qyGmCellKey,
   qyGmGrantedOf,
+  qyGmNoteDraftOf,
   qyGmRatioDraftOf,
   type QyGmDraft,
   type QyGmRatioDraft,
@@ -53,6 +55,13 @@ type QyUgGroupDetailProps = {
   grantedCount: number
   onToggleGranted: (modelGroup: string, granted: boolean) => void
   onRatioChange: (modelGroup: string, ratio: QyGmRatioDraft) => void
+  /**
+   * 按格备注的改动。
+   *
+   * 缺省 = **不渲染备注输入框**。整页矩阵视图那个外壳一次要看多档，行里再塞
+   * 一个自由文本框会把它压成一堵墙；配置弹窗一次只看一档，才画得下。
+   */
+  onNoteChange?: (modelGroup: string, note: string) => void
   /**
    * 打开「范围设置」抽屉。
    *
@@ -266,10 +275,116 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
                   props.onRatioChange(column.name, ratio)
                 }
               />
+
+              {/*
+                按格备注独占一行、横跨两列。
+
+                ── 为什么它是 placeholder 而不是预填值 ──
+
+                项目方原话：「用户分组分配模型分组的时候若不填写则显示分组备注
+                （默认），若填写以用户分组的模型分组备注优先显示」。placeholder
+                里放的就是「不填时用户会看到的那一句」—— 它同时是提示与预览。
+                预填成真实值的话，运营随手保存一遍就把默认备注固化成一份复制品，
+                此后运营在模型分组页改默认备注，这一格再也不跟着变，而没有任何
+                人做过这个决定。倍率格上是同一条规则、同一个理由。
+              */}
+              {props.onNoteChange != null && (
+                <QyUgCellNote
+                  modelGroup={column.name}
+                  cell={cell}
+                  value={qyGmNoteDraftOf(cell, entry)}
+                  scoped={scoped}
+                  enforced={props.userGroup.scope_enforced}
+                  granted={qyGmGrantedOf(cell, entry)}
+                  onChange={(note) => props.onNoteChange?.(column.name, note)}
+                />
+              )}
             </li>
           )
         })}
       </ul>
+    </div>
+  )
+}
+
+/**
+ * 一格的「按格备注」输入框。
+ *
+ * ── 它为什么会被禁用，以及为什么必须**说出来** ──
+ *
+ * 后端对这条动作有两道硬闸门，两道都会返回 400：
+ *
+ *  1. 用户分组还没有自己的可用清单（`scope_state === 'unset'`）—— 按格备注只在
+ *     权威清单生效的那一档被读到，给一个没设范围的分组写备注是一条死配置。
+ *  2. 这一格没被勾中 —— 落库只 UPDATE 不 INSERT，没有 grant 行的格子写不进去。
+ *
+ * 早先这个输入框对两种情形都照常可编辑，运营敲完点保存才拿到一句让他去发 HTTP
+ * 请求的报错（而站上绝大多数分组正处在第 1 种情形）。禁用 + `title` 把那句话
+ * 提前到他动手之前，并且说的是界面上真实存在的控件。
+ *
+ * ── 「写进去了但用户看不到」这一档 ──
+ *
+ * `mode=shadow` 时清单一个字节都不生效，按格备注同样不生效（读侧逐位返回上游）。
+ * 这时备注**写得进库**，所以不禁用 —— 运营正当地"先配好再切强制"。但后端回读的
+ * `note_pending` 会为真，这里必须挂一句灰字说明用户此刻实际看到的是哪一段，
+ * 否则界面上它与"已生效"长得一模一样。
+ */
+function QyUgCellNote(props: {
+  modelGroup: string
+  cell: QyGmCell | undefined
+  value: string
+  scoped: boolean
+  enforced: boolean
+  granted: boolean
+  onChange: (note: string) => void
+}) {
+  const { t } = useTranslation()
+  const { cell } = props
+
+  let disabledReason: string | undefined
+  if (!props.scoped) disabledReason = t('qy_ug_cell_note_needs_scope')
+  else if (!props.granted) disabledReason = t('qy_ug_cell_note_needs_grant')
+
+  return (
+    <div className='space-y-1 sm:col-span-2'>
+      <Input
+        value={props.value}
+        className='h-7 text-xs'
+        disabled={disabledReason != null}
+        title={disabledReason}
+        aria-label={t('qy_ug_cell_note_label', {
+          modelGroup: props.modelGroup,
+        })}
+        // placeholder 里放的是**用户此刻真的会看到的那一句**（后端解析完四级
+        // 阶梯之后的结果），所以它同时是提示与预览。这一格自己写的备注真的生效
+        // 时 `note_source === 'grant'`，输入框里已经是那一句，不再重复。
+        placeholder={
+          cell == null || cell.note_source === 'grant'
+            ? t('qy_ug_cell_note_placeholder')
+            : t('qy_ug_cell_note_inherits', { note: cell.effective_note })
+        }
+        onChange={(event) => props.onChange(event.target.value)}
+      />
+      {disabledReason != null && (
+        <p className='text-muted-foreground text-[11px] leading-4'>
+          {disabledReason}
+        </p>
+      )}
+      {/*
+        写进去了、但用户一个字都看不到。判据用后端下发的 `note_pending`，
+        不在前端拿 `note` 与 `note_source` 自己比：那条比法是一条隐式规则，
+        漏在任何一个外壳上，那个外壳就会把影子期的备注画成已生效。
+      */}
+      {disabledReason == null && cell?.note_pending === true && (
+        <p className='text-warning text-[11px] leading-4'>
+          {t('qy_ug_cell_note_pending', {
+            note: cell.effective_note,
+            state: props.enforced
+              ? t('qy_ug_cell_note_pending_generic')
+              : t('qy_ug_scope_shadow'),
+          })}
+        </p>
+      )}
     </div>
   )
 }

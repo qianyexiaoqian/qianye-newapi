@@ -92,6 +92,11 @@ export function QyGmDiffBar(props: QyGmDiffBarProps) {
         <span className='text-muted-foreground'>
           {t('qy_group_matrix_diff_reprice', { count: props.counts.reprice })}
         </span>
+        {/* 备注单独一栏：它不过影响面闸门（不动钱、不断流量），混进「改价」
+            那个数字会让运营以为自己刚刚改了价。 */}
+        <span className='text-muted-foreground'>
+          {t('qy_gm_diff_note', { count: props.counts.note })}
+        </span>
       </div>
 
       {props.invalidCount > 0 && (

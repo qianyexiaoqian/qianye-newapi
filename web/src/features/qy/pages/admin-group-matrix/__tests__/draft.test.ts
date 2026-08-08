@@ -29,6 +29,7 @@ import {
   qyGmHasRevoke,
   qyGmIndexCells,
   qyGmInvalidCells,
+  qyGmNoteDraftOf,
   qyGmParseRatio,
   qyGmRatioDraftOf,
   type QyGmDraftEntry,
@@ -51,6 +52,10 @@ function cell(
     ratio: null,
     source: 'inherit',
     inherited_from: '1',
+    note: '',
+    effective_note: '',
+    note_pending: false,
+    note_source: 'group_name',
     ...overrides,
   }
 }
@@ -276,7 +281,13 @@ describe('qyGmCountChanges', () => {
       { user_group: 'c', model_group: 'x', action: 'set_ratio', ratio: 1 },
       { user_group: 'd', model_group: 'x', action: 'clear_ratio', ratio: null },
     ])
-    assert.deepEqual(counts, { grant: 1, revoke: 1, reprice: 2, total: 4 })
+    assert.deepEqual(counts, {
+      grant: 1,
+      revoke: 1,
+      reprice: 2,
+      note: 0,
+      total: 4,
+    })
   })
 
   test('只有撤销才触发预览闸门', () => {
@@ -313,38 +324,130 @@ describe('qyGmGrantedOf', () => {
 
 describe('qyGmCaseNearMisses', () => {
   test('仅大小写不同的名字被列出来，但不折叠成一个', () => {
-    const pairs = qyGmCaseNearMisses(
-      [
-        {
-          name: 'VIP',
-          user_count: 1,
-          active_token_count: 0,
-          managed: false,
-          scope_state: 'unset',
-          mode: 'shadow',
-          allow_auto: true,
-        },
-      ],
-      [{ name: 'vip', base_ratio: '1', has_channels: true }]
-    )
+    const pairs = qyGmCaseNearMisses([{ name: 'VIP' }], [{ name: 'vip' }])
     assert.deepEqual(pairs, [{ left: 'VIP', right: 'vip' }])
   })
 
   test('两个轴上同名（大小写也相同）不算近似项', () => {
-    const pairs = qyGmCaseNearMisses(
-      [
-        {
-          name: 'vip',
-          user_count: 1,
-          active_token_count: 0,
-          managed: false,
-          scope_state: 'unset',
-          mode: 'shadow',
-          allow_auto: true,
-        },
-      ],
-      [{ name: 'vip', base_ratio: '1', has_channels: true }]
-    )
+    const pairs = qyGmCaseNearMisses([{ name: 'vip' }], [{ name: 'vip' }])
     assert.deepEqual(pairs, [])
+  })
+})
+
+/**
+ * 按格备注（`qy_group_grants.note`）。
+ *
+ * 它与倍率共用同一份草稿与同一次两库写入，但**不共用闸门**：改一句给用户看的
+ * 说明不动任何一分钱、也不会让任何请求变 403。三条规则各自有一个具体的错误方向：
+ *
+ *  1. 空 = 回落模型分组的默认备注，不是「一句空备注」。造第三态只会多出一个
+ *     界面上表达不出来、行为上也没有差别的状态。
+ *  2. 只去了两侧空白的改动不产出动作 —— 用户看到的那一句一个字都没变，而多一条
+ *     动作就多一次「倍率成功、清单失败」的机会。
+ *  3. 备注原文必须进指纹，否则运营预览之后再改一次备注，闸门不会重新锁上。
+ */
+describe('按格备注', () => {
+  const server = qyGmIndexCells([
+    cell({
+      user_group: 'vip',
+      model_group: 'pool',
+      granted: true,
+      note: '原备注',
+    }),
+    cell({ user_group: 'vip', model_group: 'paid', granted: true }),
+  ])
+
+  test('未编辑时回显服务端值；后端未下发 note 时是空串', () => {
+    assert.equal(
+      qyGmNoteDraftOf(server.get(qyGmCellKey('vip', 'pool')), undefined),
+      '原备注'
+    )
+    assert.equal(
+      qyGmNoteDraftOf(server.get(qyGmCellKey('vip', 'paid')), undefined),
+      ''
+    )
+    assert.equal(qyGmNoteDraftOf(undefined, undefined), '')
+  })
+
+  test('写一句新的产出 set_ratio 之外的 set_note，且不计进「改价」', () => {
+    const changes = qyGmBuildChanges(
+      draftOf([[qyGmCellKey('vip', 'paid'), { note: '专属号池' }]]),
+      server
+    )
+    assert.deepEqual(changes, [
+      {
+        user_group: 'vip',
+        model_group: 'paid',
+        action: 'set_note',
+        ratio: null,
+        note: '专属号池',
+      },
+    ])
+    const counts = qyGmCountChanges(changes)
+    assert.equal(counts.note, 1)
+    assert.equal(counts.reprice, 0, '改备注不该走影响面闸门')
+  })
+
+  test('清空产出带空串的 set_note —— 回落模型分组的默认备注', () => {
+    const changes = qyGmBuildChanges(
+      draftOf([[qyGmCellKey('vip', 'pool'), { note: '   ' }]]),
+      server
+    )
+    assert.deepEqual(changes, [
+      {
+        user_group: 'vip',
+        model_group: 'pool',
+        action: 'set_note',
+        ratio: null,
+        note: '',
+      },
+    ])
+  })
+
+  test('只多了两侧空白不算改动', () => {
+    assert.deepEqual(
+      qyGmBuildChanges(
+        draftOf([[qyGmCellKey('vip', 'pool'), { note: '  原备注 ' }]]),
+        server
+      ),
+      []
+    )
+  })
+
+  test('既有动作的 JSON 不因本轮新增而改变（旧后端的 draft_hash 不会失配）', () => {
+    // `note` 在 grant / set_ratio 上**整个字段缺席**。无条件多带一个字段会让
+    // 新前端算出的草稿与旧后端算出的不同，每一次保存都吃 409，而错误正文说的是
+    // 「影响面已经变化」—— 运营照着那句话重新预览，重新预览之后仍然 409。
+    const changes = qyGmBuildChanges(
+      draftOf([[qyGmCellKey('vip', 'paid'), { granted: false }]]),
+      server
+    )
+    assert.equal(
+      JSON.stringify(changes),
+      JSON.stringify([
+        {
+          user_group: 'vip',
+          model_group: 'paid',
+          action: 'revoke',
+          ratio: null,
+        },
+      ])
+    )
+  })
+
+  test('备注原文进指纹：改成不同的话得到不同的指纹', () => {
+    const a = qyGmDraftFingerprint(
+      qyGmBuildChanges(
+        draftOf([[qyGmCellKey('vip', 'paid'), { note: 'A' }]]),
+        server
+      )
+    )
+    const b = qyGmDraftFingerprint(
+      qyGmBuildChanges(
+        draftOf([[qyGmCellKey('vip', 'paid'), { note: 'B' }]]),
+        server
+      )
+    )
+    assert.notEqual(a, b)
   })
 })

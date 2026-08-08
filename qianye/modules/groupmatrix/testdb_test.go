@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
+	"github.com/QuantumNous/new-api/qianye/modules/groupns"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -42,6 +43,11 @@ func newTestDB(t *testing.T) *gorm.DB {
 	sqlDB, err := gdb.DB()
 	require.NoError(t, err)
 	require.NoError(t, gdb.AutoMigrate(extTables()...))
+	// 两张**登记表**由 groupns 拥有,但「用户分组」那一页的读接口现在要从它们
+	// 取备注/显示名/排序(见 buildMatrixView)。生产上两个模块共用同一个扩展库,
+	// 所以这里必须一起建 —— 不建的话每一条断言都会在一个"登记表读失败已降级"的
+	// 分支上通过,而那正是最容易把缺陷放行的形状。
+	require.NoError(t, gdb.AutoMigrate(&groupns.UserGroup{}, &groupns.ModelGroup{}))
 
 	prev := qyDBHandle.Swap(gdb)
 	resetCaches()

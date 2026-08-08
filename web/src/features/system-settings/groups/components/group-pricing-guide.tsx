@@ -327,9 +327,9 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
               <li>{t('qy_gs_where_topup')}</li>
               <li>{t('qy_gs_where_cross_ratio')}</li>
               {/*
-                全局「用户可选分组」清单是唯一搬去第三页的上游 option，漏掉它的
-                表现是：运营在「模型分组」页看到那一列以只读形式出现，最可能的
-                结论是「在这一页改，只是变灰了」，然后来问为什么不能编辑。
+                「用户可选」本轮从一份 JSON 变成了「模型分组」表上的一列开关。
+                漏掉这一句的表现是：运营在 JSON 抽屉里看到那份清单以只读形式出现，
+                最可能的结论是「在这一页改，只是变灰了」，然后来问为什么不能编辑。
               */}
               <li>{t('qy_gs_where_usable_list')}</li>
             </ul>

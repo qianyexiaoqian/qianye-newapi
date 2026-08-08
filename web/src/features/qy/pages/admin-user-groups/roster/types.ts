@@ -95,9 +95,16 @@ export type QyUgrImpact = {
   block_reason?: string
 }
 
-/** 跨库改写的半成状态。只在部分失败时出现。 */
+/**
+ * 跨库改写的半成状态。只在部分失败时出现。
+ *
+ * `topup` 是编辑弹窗那条链路上唯一的半成状态：展示属性已经落进扩展库、充值倍率
+ * 没写进上游 `options`。后端此前对它回 500 + 一句通用的「处理失败，请稍后重试」，
+ * 于是运营合理推断「什么都没保存」，而下一次回读会显示新备注 + 旧倍率，
+ * 解释只写在审计正文里 —— 而看审计的不是此刻站在弹窗前的那个人。
+ */
 export type QyUgrPartial = {
-  stage: 'cleanup' | 'migrate' | 'prepare'
+  stage: 'cleanup' | 'migrate' | 'prepare' | 'topup'
   message: string
 }
 
@@ -149,6 +156,33 @@ export type QyUgrUpdateRequest = {
   note?: string
   enabled?: boolean
   sort_order?: number
+  /**
+   * 充值倍率 `options.TopupGroupRatio[分组名]`。
+   *
+   * 给了就设（**含 0**，那是「这一档充值免费」），不给 = 不改。
+   * 要**删掉这个键**（回落上游兜底 1）必须用 {@link clear_topup_ratio}，
+   * 不能传 `null` —— Go 侧 `"topup_ratio": null` 与字段缺席都得到 nil 指针，
+   * 两者不可区分，而「这次没打算改」与「回落兜底」的后果差一个收款金额。
+   */
+  topup_ratio?: number
+  /** 把充值倍率这个键整个删掉。与 {@link topup_ratio} 互斥，同时给出会 400。 */
+  clear_topup_ratio?: boolean
+}
+
+/**
+ * `PUT /user-groups/:name` 的响应。
+ *
+ * 展示属性落扩展库、充值倍率落上游 `options`，两库不原子且顺序是**先展示属性
+ * 后倍率**：前者失败时后者一个字节都没动（零资金影响）。反过来做的话收款金额
+ * 已经变了而界面上那一行看起来什么都没保存。
+ */
+export type QyUgrUpdateResult = {
+  /** 后端**自动补了一行登记**（这个名字此前只在 `users.group` 里）。 */
+  backfilled: boolean
+  /** 充值倍率这次到底改了什么（后端下发的原文，前端不二次转译）。空 = 没改。 */
+  topup_change: string
+  /** 非空 = 两库只写成了一半。**必须原样弹出来并留在屏幕上。** */
+  partial?: QyUgrPartial
 }
 
 export type QyUgrRenameRequest = {

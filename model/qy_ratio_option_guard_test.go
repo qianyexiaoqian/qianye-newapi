@@ -75,3 +75,50 @@ func TestValidCrossRatioStillPersists(t *testing.T) {
 	assert.Equal(t, ratio_setting.GroupRatioSourceOverride,
 		ratio_setting.ResolveGroupRatio("vip", "pool").Source)
 }
+
+// TestUnsafeTopupGroupRatioIsRejectedBeforeItReachesTheDatabase 把同一道闸门
+// 补到**充值倍率**上。
+//
+// 扩展侧的 PUT /group-namespace/user-groups/:name 已经有一道 validateTopupRatio,
+// 但那不是这个值唯一的入口:通用的 /api/option 与系统设置里的 JSON 抽屉可以直接
+// 提交整份 TopupGroupRatio,而 validateOptionValue 此前对这个键一条 case 都没有。
+// 前端把抽屉改成只读并不构成闸门 —— 端点仍然收。
+//
+// 三个取值各自的后果:
+//
+//	负数  controller/topup.go 的 payMoney 变成负的,一张负价订单
+//	0     四条支付路径 `if ratio == 0 { ratio = 1 }` 把它抬回 1 ——
+//	      配置值与收款值分家,而这个偏差不出现在任何告警里
+//	超大  金额被推过 decimal → float 的可用范围,网关收到的数没有意义
+func TestUnsafeTopupGroupRatioIsRejectedBeforeItReachesTheDatabase(t *testing.T) {
+	db := useFrontendOptionMigrationDB(t)
+	// 成功路径会走到 updateOptionMap,它直写 common.OptionMap(进程启动时才建)。
+	prevMap := common.OptionMap
+	common.OptionMap = map[string]string{}
+	t.Cleanup(func() { common.OptionMap = prevMap })
+
+	before := common.TopupGroupRatio2JSONString()
+	require.NoError(t, common.UpdateTopupGroupRatioByJSONString(`{"vip":0.9}`))
+	t.Cleanup(func() { _ = common.UpdateTopupGroupRatioByJSONString(before) })
+
+	for name, value := range map[string]string{
+		"负倍率":    `{"vip":-5}`,
+		"零倍率":    `{"vip":0}`,
+		"超过上限":   `{"vip":100000}`,
+		"坏 JSON": `{"vip":`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Error(t, UpdateOption("TopupGroupRatio", value))
+
+			var option Option
+			assert.ErrorIs(t, db.Where(&Option{Key: "TopupGroupRatio"}).First(&option).Error,
+				gorm.ErrRecordNotFound, "被拒的值绝不能已经落库")
+			assert.EqualValues(t, 0.9, common.GetTopupGroupRatio("vip"),
+				"内存里的表同样不得被这次写入污染")
+		})
+	}
+
+	require.NoError(t, UpdateOption("TopupGroupRatio", `{"vip":0.8}`),
+		"闸门不能把正常保存一起挡掉")
+	assert.EqualValues(t, 0.8, common.GetTopupGroupRatio("vip"))
+}

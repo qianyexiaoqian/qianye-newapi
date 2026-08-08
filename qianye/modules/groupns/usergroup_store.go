@@ -46,6 +46,10 @@ const (
 	StagePrepare = "prepare"
 	StageMigrate = "migrate"
 	StageCleanup = "cleanup"
+	// StageTopup 是「展示属性已落扩展库、充值倍率没写进上游 options」这一档。
+	// 它不属于改名/删除那条链路,但半成状态的形状与处置完全相同,
+	// 所以复用同一个类型而不是另造一个 —— 前端只有一条"原样弹出并常驻"的分支。
+	StageTopup = "topup"
 )
 
 // RewritePartial 是一次跨库改写的半成状态。

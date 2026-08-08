@@ -25,7 +25,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 
 import { QyResponsiveDialog } from '../../../../components/qy-responsive-dialog'
-import type { QyUgrRow } from '../types'
 
 /**
  * 改名。
@@ -46,7 +45,15 @@ import type { QyUgrRow } from '../types'
 export function QyUgrRenameDialog(props: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  row: QyUgrRow | null
+  /**
+   * 被改名的那一档：只要名字与在册人数。
+   *
+   * **刻意不收整个 `QyUgrRow`**：唯一的调用方是合并后那张表的编辑弹窗，它手上
+   * 是合并行（观测 ∪ 登记 ∪ 倍率键），拿不出登记表那十几列。收窄到真正用到的
+   * 两个字段之后，调用方不必为了满足类型去伪造 `default_mode` 之类的值 ——
+   * 伪造出来的那些值会一路传到别的地方，而没有任何人知道它们是编的。
+   */
+  row: { name: string; users: number } | null
   newName: string
   onNewNameChange: (name: string) => void
   isSaving: boolean

@@ -223,6 +223,11 @@ func validateOptionValue(key string, value string) error {
 		// 交叉倍率是全站唯一「按用户分组定价」的载体。负倍率在这里放行的话,
 		// 预扣与结算都会算出负额度,等于给用户充值(见 CheckGroupGroupRatio)。
 		return ratio_setting.CheckGroupGroupRatio(value)
+	case "TopupGroupRatio":
+		// 充值倍率被直接乘进 controller/topup.go 的 payMoney。这个键此前在这里
+		// 一条 case 都没有,于是一份 `{"vip":-5}` 可以经通用 option 端点直接落库,
+		// 随后那一档人每充 100 元得到一张 -500 的负价订单(见 CheckTopupGroupRatio)。
+		return common.CheckTopupGroupRatio(value)
 	}
 	return nil
 }

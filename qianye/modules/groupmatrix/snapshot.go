@@ -26,6 +26,14 @@ type Snapshot struct {
 	// 被接管但没有任何 grant 时,这里是一张**空 map 而不是缺键** ——
 	// 空清单是合法配置(隔离组),必须与"没配过"区分开。
 	Grants map[string]map[string]struct{}
+	// GrantNotes 是按格备注:用户分组 → 模型分组 → 说明文案。
+	//
+	// **只收非空备注**,而且刻意与 Grants 分开而不是把后者改成 map[string]string:
+	// 成员资格是鉴权判据,备注是文案。合并成一张 map 之后,每一处
+	// `_, ok := s.Grants[ug][mg]` 都要重新证明它读的是"在不在"而不是"写了没写",
+	// 而那种改写正是把 `granted && note==""` 静默读成"不可用"的形状。
+	// 分开之后 Grants 的类型不变,全部既有判定一个字都不用动。
+	GrantNotes map[string]map[string]string
 	// DroppedGrants 记录编译期被剔除的清单项(模型分组已从分组倍率表删除)。
 	// 它进 /admin/health 与矩阵页告警,不参与判定。
 	DroppedGrants []string
@@ -277,6 +285,7 @@ func buildSnapshot(scopes []Scope, grants []Grant) *Snapshot {
 	s := &Snapshot{
 		Scopes:        make(map[string]Scope, len(scopes)),
 		Grants:        make(map[string]map[string]struct{}, len(scopes)),
+		GrantNotes:    make(map[string]map[string]string),
 		DroppedGrants: make([]string, 0),
 	}
 	for _, sc := range scopes {
@@ -315,6 +324,16 @@ func buildSnapshot(scopes []Scope, grants []Grant) *Snapshot {
 			continue
 		}
 		set[g.ModelGroup] = struct{}{}
+		if g.Note != "" {
+			// 只给写过备注的格子建二层 map:绝大多数格子没有备注,
+			// 而热路径每次 enforce 解析都要走一次 GrantNotes[ug] —— 缺键即回落,零分配。
+			notes, ok := s.GrantNotes[g.UserGroup]
+			if !ok {
+				notes = map[string]string{}
+				s.GrantNotes[g.UserGroup] = notes
+			}
+			notes[g.ModelGroup] = g.Note
+		}
 		if g.UpdatedAt > s.Version {
 			s.Version = g.UpdatedAt
 		}

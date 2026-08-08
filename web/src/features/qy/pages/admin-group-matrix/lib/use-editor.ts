@@ -49,6 +49,7 @@ import {
   qyGmHasRevoke,
   qyGmIndexCells,
   qyGmInvalidCells,
+  qyGmNoteDraftOf,
   type QyGmColumnBulk,
   type QyGmDraftEntry,
   type QyGmRatioDraft,
@@ -267,9 +268,23 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
     setPreviewedFingerprint(null)
   }, [])
 
+  /**
+   * 勾 / 取消勾一个模型分组。
+   *
+   * ── 取消勾选时**连同这一格的备注草稿一起清掉** ──
+   *
+   * 按格备注落的是 `qy_group_grants` 那一行的一列，撤销会把整行删掉 —— 备注跟着
+   * 消失是这条数据的事实。不清的话草稿里会留下一条 `set_note`，而它指向一个保存
+   * 之后不存在的格子：后端会以「这个模型分组不在可用清单里」400 掉整次保存
+   * （连同同一次提交里的改价一起失败），而运营看着屏幕上那个已经取消勾选的行，
+   * 完全想不到报错说的是它。
+   */
   const toggleGranted = useCallback(
     (userGroup: string, modelGroup: string, granted: boolean) => {
-      patchDraft(qyGmCellKey(userGroup, modelGroup), { granted })
+      patchDraft(qyGmCellKey(userGroup, modelGroup), {
+        granted,
+        ...(granted ? {} : { note: undefined }),
+      })
     },
     [patchDraft]
   )
@@ -277,6 +292,20 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
   const changeRatio = useCallback(
     (userGroup: string, modelGroup: string, ratio: QyGmRatioDraft) => {
       patchDraft(qyGmCellKey(userGroup, modelGroup), { ratio })
+    },
+    [patchDraft]
+  )
+
+  /**
+   * 按格备注。
+   *
+   * 与倍率走**同一份草稿、同一次保存**：它落的是同一张 `qy_group_grants` 行，
+   * 单独开一条"备注立即保存"的旁路等于让这一格有两个写入者，而其中一个绕开了
+   * 保存后的强制回读 —— 回读之后屏幕上的备注会跳回旧值，运营会再存一次。
+   */
+  const changeNote = useCallback(
+    (userGroup: string, modelGroup: string, note: string) => {
+      patchDraft(qyGmCellKey(userGroup, modelGroup), { note })
     },
     [patchDraft]
   )
@@ -319,6 +348,10 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
           const source = serverCells.get(fromKey)
           const entry: QyGmDraftEntry = {
             granted: qyGmGrantedOf(source, current.get(fromKey)),
+            // 备注一起复制：整档复制的语义是「这一档照着那一档配」，漏掉备注
+            // 会让复制出来的那一档在用户侧显示模型分组的默认说明，而运营以为
+            // 两档一模一样。
+            note: qyGmNoteDraftOf(source, current.get(fromKey)),
           }
           const sourceRatio =
             source == null || source.source === 'inherit' ? null : source.ratio
@@ -474,6 +507,7 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
     isScopeSaving: scopeMutation.isPending,
     toggleGranted,
     changeRatio,
+    changeNote,
     columnBulk,
     copyRow,
     resetDraft,

@@ -78,12 +78,39 @@ func (Scope) TableName() string { return "qy_group_scopes" }
 // 任何镜像列都必须有同步机制,而同步失败的表现是"管理端显示 A、热路径乘 B"——
 // 与本轮 grouppricing 正在修的缺陷完全同形。
 //
-// **不存描述文案**:一律走 setting.GetUsableGroupDescription,与上游同源。
+// **存的是「这一格」的描述文案,不是那个模型分组的通用文案**:见 Note。
 type Grant struct {
 	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
 
 	UserGroup  string `json:"user_group" gorm:"column:user_group;type:varchar(64);not null;uniqueIndex:uk_qy_ggrant_pair,priority:1"`
 	ModelGroup string `json:"model_group" gorm:"column:model_group;type:varchar(64);not null;uniqueIndex:uk_qy_ggrant_pair,priority:2"`
+
+	// Note 是「**这个用户分组**看**这个模型分组**时」的说明文案。
+	//
+	// ══════════════ 它是说明文案阶梯的最上面一级,不是第四份真相 ══════════════
+	//
+	// 站内此前有两处文案来源,而"哪一份生效"从来没人说得清:
+	//
+	//	options.UserUsableGroups[模型分组]  全局白名单的 value(上游原生)
+	//	qy_model_groups.note               模型分组的默认备注(覆盖上一条)
+	//
+	// 本列是第三处,而且是**唯一带用户分组维度**的一处。三者合并成一条阶梯:
+	//
+	//	grant.note(本列,若非空)
+	//	  > qy_model_groups.note
+	//	    > options.UserUsableGroups[模型分组]
+	//	      > 模型分组名
+	//
+	// 下面两级已经由 setting.QyDescribeGroup 统一持有(见 setting/qy_groupnote_export.go),
+	// 本列只在**权威清单生效**的那一档(scope.mode == enforce)由 Resolve 叠在最上面。
+	// 阶梯而不是拼接:拼接出来的文案没有唯一作者,而且长度不可控 ——
+	// 它要显示在用户建 key 的分组下拉里。
+	//
+	// **为什么不做成"必须显式覆盖"的三态**:空串在这里没有歧义。
+	// 「这一格不写备注」与「这一格要显示成空白」在用户界面上是同一件事
+	// (下拉里那一行总要有字,空白就退回下一级),所以空串 = 未填 = 回落,
+	// 不需要 *string。这与倍率的 null/0 区分不同:倍率的 0 是一个**能改变账单**的值。
+	Note string `json:"note" gorm:"type:varchar(255);not null;default:''"`
 
 	SortOrder int `json:"sort_order" gorm:"not null;default:0"`
 

@@ -432,12 +432,19 @@ func describeNewlyAllowed(userGroup, modelGroup string, ratios ratioMatrix, stat
 	if v, ok := ratios[userGroup][modelGroup]; ok {
 		p.HasOverride, p.Source, p.EffectiveRatio = true, SourceOverride, ratioText(v)
 	}
-	for _, mg := range listModelGroups() {
-		if mg.Name == modelGroup {
-			p.HasChannels = mg.HasChannels
-			break
-		}
-	}
+	// 判据与 modelGroupRow.HasChannels 同源,而后者**只对列轴成员存在**,
+	// 列轴又是 options.GroupRatio 的键派生的。所以这里两条都要判:
+	// 一个已从倍率表消失、但 abilities 里仍有启用渠道的模型分组
+	// (站上真实存在这一类)只判 abilities 会得到 has_channels=true,
+	// 读作"放开它用户就能用" —— 而保存会被 validateCells 以「不在分组倍率表里」
+	// 400 掉,请求期也会被上游「分组已被弃用」挡人。
+	// 预览与保存对同一份草稿给出相反结论,是这份报告最不该有的形状。
+	//
+	// 刻意不走 listModelGroups:那个函数现在还要读两张登记表与全局白名单,
+	// 而这里只需要一个布尔 —— 为一个布尔重建整条列轴,而且是在一个逐对调用的
+	// 循环里,代价与信息量完全不成比例。
+	p.HasChannels = ratio_setting.ContainsGroupRatio(modelGroup) &&
+		groupsWithEnabledAbilities()[modelGroup]
 	return p
 }
 

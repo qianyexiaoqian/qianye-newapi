@@ -50,12 +50,25 @@ function userGroup(
 ): QyGmUserGroup {
   return {
     name,
+    display_name: '',
+    note: '',
+    enabled: true,
+    sort_order: 0,
+    registered: true,
+    observed: true,
+    topup_ratio: null,
+    topup_ratio_effective: '1',
+    model_groups: [],
     user_count: 0,
     active_token_count: 0,
     managed: false,
     scope_state: 'unset',
     mode: 'shadow',
+    scope_enforced: false,
     allow_auto: true,
+    scope_note: '',
+    self_excluded: false,
+    self_inserted: false,
     ...overrides,
   }
 }
@@ -72,6 +85,10 @@ function cell(
     ratio: null,
     source: 'inherit',
     inherited_from: '1',
+    note: '',
+    effective_note: '',
+    note_pending: false,
+    note_source: 'group_name',
   }
 }
 
@@ -85,6 +102,10 @@ function matrix(
       name,
       base_ratio: '1',
       has_channels: true,
+      display_name: '',
+      note: '',
+      user_selectable: false,
+      usable_description: '',
     })),
     cells: [],
     base_ratio_hash: 'h',

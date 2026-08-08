@@ -16,50 +16,28 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute, redirect } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 
 import { QyAdminUserGroups } from '@/features/qy/pages/admin-user-groups'
-import { ROLE } from '@/lib/roles'
-import { useAuthStore } from '@/stores/auth-store'
 
 /**
- * 旧路由 —— 分组矩阵已搬进「系统设置 → 计费与支付 → 用户分组」。
+ * 「分组矩阵 / 诊断视图」——`/qy/admin/group-matrix`。
  *
- * 保留成重定向而不是删掉：管理员的书签与浏览器历史里还留着这个地址，审计记录
- * 与工单里也会引用它。两个页面读写的是同一组数据、同一组端点，并存两个入口就
- * 意味着两份互不知情的草稿与两道各自为政的保存闸门 —— 而写入是两库不原子的，
- * 一个屏幕显示绿色「已保存」、另一个显示线上真实的半成状态，是这套设计最坏的
- * 失败方式。
+ * ── 本轮之后它是这一页唯一的入口 ──
  *
- * `replace`：旧地址不该留在历史栈里，否则按返回键会被立刻再弹回来。
+ * 这条路由此前对超管重定向到「系统设置 → 计费与支付 → 用户分组可用的模型分组
+ * 配置」。那个 section 已经下线（见 `features/system-settings/billing/
+ * section-registry.tsx`）：项目方要的是「用户分组」与「模型分组」两块，而配置
+ * 动作已经全部搬进那两张表与行内弹窗。
  *
- * ────────────────── 为什么重定向要看角色 ──────────────────
+ * 留在这里的是三件**排查**能力，它们在"一次只看一档"的弹窗里结构性表达不出来：
+ * 整列批量、跨档对比「哪几档人能到达某个模型分组」、以及孤儿令牌基线。
  *
- * 搬家把这一页的准入从 **ROLE.ADMIN(10)** 悄悄提到了 **ROLE.SUPER_ADMIN(100)**：
- * 新家在 `/system-settings` 下，那条父路由要求超管
- * (`routes/_authenticated/system-settings/route.tsx`)，而分组矩阵的后端这组接口
- * 一直是 `middleware.AdminAuth()`，也就是 role>=10 就能调
- * (`qianye/router.go` 的 admin 组)。
- *
- * 无条件重定向的后果不是「换了个地址」，而是**普通管理员从此在前端完全没有任何
- * 入口配置用户分组的可用范围与倍率**：父守卫放行 → 这里重定向 → 新家判超管 →
- * 403。他看到的是一个没有解释的 403，而不是「需要超管」。这是一次纯由前端搬家
- * 造成的能力回退，后端从头到尾没有要求过超管。
- *
- * 所以按角色分叉：够得着新家的人被送过去（保证只有一个入口）；够不着的人
- * 原地渲染旧页面（保证不丢能力）。两者对同一个人不会同时出现，
- * 「两份互不知情的草稿」那个顾虑不成立。
+ * 重定向必须一起删掉：目标 section 不在白名单里之后，`$section` 路由会把它弹回
+ * 「额度设置」—— 超管点开这条书签会掉进一个与分组无关的页面，而普通管理员
+ * （role=10，本页后端一直是 `AdminAuth`）看到的是正确的页面。同一条地址对两种
+ * 角色给出两种结果，且其中一种是静默跳走。
  */
 export const Route = createFileRoute('/_authenticated/qy/admin/group-matrix/')({
-  beforeLoad: () => {
-    const { auth } = useAuthStore.getState()
-    if (auth.user?.role === ROLE.SUPER_ADMIN) {
-      throw redirect({
-        to: '/system-settings/billing/$section',
-        params: { section: 'group-matrix' },
-        replace: true,
-      })
-    }
-  },
   component: QyAdminUserGroups,
 })

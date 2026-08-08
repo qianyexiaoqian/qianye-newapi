@@ -57,12 +57,23 @@ export const GROUP_OPTION_KEYS = [
 export type GroupOptionKey = (typeof GROUP_OPTION_KEYS)[number]
 
 /**
- * A「用户分组」页可写的键。
+ * A「用户分组」页负责的键。
  *
  * `TopupGroupRatio` 的主语是用户分组（一个人属于哪一档 → 充值按几折），
  * 它出现在原来那张模型分组表上是全页最误导人的一处错位。
  * `DefaultUseAutoGroup` 是站级开关，挂在用户分组页头 —— 它描述「新令牌的
  * 初始分组行为」，与模型分组的倍率无关。
+ *
+ * ── 「负责」不等于「经 `updateOption` 写」 ──
+ *
+ * 本轮起 `TopupGroupRatio` 由 `PUT /user-groups/:name` **按单个键**写回：后端把
+ * `topup_ratio` 与 `clear_topup_ratio` 分成两个字段，正是为了区分"这次没打算改"
+ * 与"删掉这个键、回落上游兜底"，而后者会改变收款金额。在这一页再拼一份整表
+ * JSON 经 `updateOption` 写回去，就会把另一个管理员刚改的另一档静默覆盖成本页
+ * 打开那一刻的旧值 —— 与 `GroupGroupRatio` 走矩阵自己的 PUT 是同一条理由。
+ *
+ * 这份清单管的是**编辑器唯一性**（谁能改），不是走哪个端点。所以它仍然列在
+ * 这里，而归属守卫仍然成立。
  */
 export const USER_GROUP_PAGE_KEYS = [
   'TopupGroupRatio',
@@ -70,26 +81,36 @@ export const USER_GROUP_PAGE_KEYS = [
 ] as const
 
 /**
- * B「用户分组可用的模型分组配置」页可写的键。
+ * B「用户分组 × 模型分组」这一对的可写键。
  *
  * `GroupGroupRatio` 走矩阵自己的 PUT（两库两阶段写入），不经 `updateOption`；
  * 列在这里是因为**编辑器唯一性**这条约束管的是「谁能改」，不是「走哪个端点」。
- * `UserUsableGroups` 是未设定范围的用户分组回落到的那份全局清单，与矩阵必须
- * 同页 —— 把它放到模型分组页去，「未设定范围」这个状态就没有任何地方解释了。
+ * 它现在的唯一编辑面是「用户分组」表行内的配置弹窗。
+ *
+ * ── `UserUsableGroups` 为什么从这一栏搬去了模型分组页 ──
+ *
+ * 它此前挂在这里，理由是「未设定范围的用户分组回落到它，所以要与矩阵同页」。
+ * 那个理由建立在一个已经被换掉的文案上：现在「没设可用清单」的解释是
+ * **「按模型分组自己的『用户可选』开关来」**，而那个开关就是这份 map 的键 ——
+ * 它的主语是**一批渠道**，不是 (用户分组, 模型分组) 这一对。
+ *
+ * 搬过去之后它在模型分组表上是一个可见的开关列，而不是另一页上一张需要解释
+ * 「它和上面那张矩阵是什么关系」的独立表格。项目方点名的四列里就有它。
  */
-export const GROUP_MATRIX_PAGE_KEYS = [
-  'UserUsableGroups',
-  'GroupGroupRatio',
-] as const
+export const GROUP_MATRIX_PAGE_KEYS = ['GroupGroupRatio'] as const
 
 /**
- * B 页里**经 `updateOption` 写回**的那一部分。
+ * B 栏里**经 `updateOption` 写回**的那一部分 —— 现在是空的。
  *
- * 与 {@link GROUP_MATRIX_PAGE_KEYS} 的差是 `GroupGroupRatio`：它走矩阵自己的
- * PUT，与可选清单在同一次两阶段写入里落两个库。两者混进同一个 `updateOption`
- * 调用会绕开那道预览闸门与部分失败横幅。守卫测试断言这是个真子集。
+ * `GroupGroupRatio` 走矩阵自己的两阶段 PUT，绝不能经普通的 `updateOption`：
+ * 那会绕开预览闸门、绕开 `base_ratio_hash` 冲突检测、也绕开部分失败横幅，
+ * 而那正是这套两库写入最坏的失败方式。
+ *
+ * 清单本身保留：守卫测试按它断言「B 栏经 updateOption 写回的键是它归属键的
+ * 真子集，且绝不含 GroupGroupRatio」。删掉它，下一个想给交叉倍率加一条
+ * 「顺手也写一下 options」的近路就没有任何东西拦得住。
  */
-export const GROUP_MATRIX_PAGE_OPTION_KEYS = ['UserUsableGroups'] as const
+export const GROUP_MATRIX_PAGE_OPTION_KEYS = [] as const
 
 /**
  * C「模型分组」页可写的键。
@@ -102,6 +123,7 @@ export const MODEL_GROUP_PAGE_KEYS = [
   'GroupRatio',
   'AutoGroups',
   'MaxTokenAutoGroups',
+  'UserUsableGroups',
 ] as const
 
 /**
@@ -148,26 +170,6 @@ export function parseAutoGroups(value: string): string[] {
 
 // ─────────────────────────── 模型分组（C 页）───────────────────────────
 
-/**
- * 模型分组表的一行。
- *
- * `ratio` 是 `string | null`，**不是 number**：
- *
- *  - `null` = 这个名字出现在别处（全局可选清单）但**不在** `options.GroupRatio`
- *    里。上游 `GetGroupRatio` 此刻已经 fail-open 静默返回 1，而那个 1 不是任何
- *    人配出来的。把它渲染成一个正常的 `1` 会让运营看不出差别 —— 而这正是本轮
- *    要消灭的那种静默。
- *  - `'0'` = 显式免费，必须原样写回；`Number()` 往返 + `omitempty` 会让它消失，
- *    一个本该免费的分组静默变成兜底价。
- *  - 输入框里的中间态（`'0.'`、`''`）也要能原样留着，否则每敲一个小数点都会被
- *    归一成 0。
- */
-export type ModelGroupRow = {
-  id: string
-  name: string
-  ratio: string | null
-}
-
 let modelGroupRowSeq = 0
 
 /**
@@ -190,126 +192,6 @@ export function nextRowId(prefix: string) {
   return `${prefix}_${modelGroupRowSeq}`
 }
 
-/**
- * 由 `GroupRatio` ∪ `UserUsableGroups` 的键建行。
- *
- * 并集而不是只取 `GroupRatio`：只取后者的话，「在全局可选清单里、却没有兜底
- * 倍率」这一档在界面上根本不存在，而它是资金泄漏集合里最容易被造出来的一种。
- */
-export function buildModelGroupRows(
-  groupRatio: string,
-  userUsableGroups: string
-): ModelGroupRow[] {
-  const ratioMap = parseGroupRatioMap(groupRatio)
-  const usableMap = parseGroupDescriptionMap(userUsableGroups)
-  const names = new Set([...Object.keys(ratioMap), ...Object.keys(usableMap)])
-  const rows: ModelGroupRow[] = []
-  for (const name of names) {
-    const hasRatio = Object.hasOwn(ratioMap, name)
-    rows.push({
-      id: nextRowId('mg'),
-      name,
-      ratio: hasRatio ? String(ratioMap[name]) : null,
-    })
-  }
-  return rows
-}
-
-/**
- * 行 → `options.GroupRatio` 的 JSON。
- *
- * 三条规则，每一条都有一个具体的错误方向：
- *
- *  1. `ratio === null` 的行**不写**。它表示「这个名字只在可选清单里」，
- *     替它补一个 1 等于替运营做了一次定价决定。
- *  2. 名字两侧去空白、空名丢弃；重名由调用方在界面上拦（保存前禁用）。
- *  3. 解析不出数值的行落回 `1`，**包括空输入框**。
- *
- * ── 第 3 条对上游的一处刻意偏离，理由是钱 ──
- *
- * 上游 `normalizeRatio` 是 `Number.isFinite(Number(v)) ? Number(v) : 1`，
- * 而 `Number('') === 0` 且 0 是有限数 —— 于是**把倍率输入框清空会静默写进
- * 一个 0 倍率**，那个模型分组从此免费，保存成功、没有任何提示。
- * 这里把空串与 `abc` 同等看待（落回 1，即 `GetGroupRatio` 找不到键时的值），
- * 并由 {@link invalidRatioRowNames} 在界面上把这些行标红、禁用保存 ——
- * 两道加起来，「清空 = 免费」这条路径既不可达也不会被静默走过去。
- * 想要免费必须显式敲一个 `0`，那一条仍然逐位保持上游语义。
- */
-export function serializeModelGroupRows(
-  rows: readonly ModelGroupRow[]
-): string {
-  const out: Record<string, number> = {}
-  for (const row of rows) {
-    const name = row.name.trim()
-    if (name === '') continue
-    if (row.ratio === null) continue
-    const raw = row.ratio.trim()
-    const parsed = raw === '' ? Number.NaN : Number(raw)
-    out[name] = Number.isFinite(parsed) ? parsed : 1
-  }
-  return JSON.stringify(out, null, 2)
-}
-
-/**
- * 倍率填了、但解析不出数值的行（空串、`abc`、`1e999`）。
- *
- * 非空即禁用保存。见 {@link serializeModelGroupRows} 第 3 条：不拦的话，
- * 一个空输入框会变成一次静默的免费定价。
- */
-export function invalidRatioRowNames(rows: readonly ModelGroupRow[]): string[] {
-  return rows
-    .filter((row) => {
-      if (row.ratio === null) return false
-      const raw = row.ratio.trim()
-      return raw === '' || !Number.isFinite(Number(raw))
-    })
-    .map((row) => row.name.trim())
-}
-
-/** 重名（去空白后）。非空即禁用保存：写回时后一个键会静默吃掉前一个。 */
-export function duplicateRowNames(rows: readonly { name: string }[]): string[] {
-  const counts = new Map<string, number>()
-  for (const row of rows) {
-    const name = row.name.trim()
-    if (name === '') continue
-    counts.set(name, (counts.get(name) ?? 0) + 1)
-  }
-  return [...counts.entries()]
-    .filter(([, count]) => count > 1)
-    .map(([name]) => name)
-}
-
-/**
- * 在全局可选清单里、却没有兜底倍率的模型分组。
- *
- * 这一批**正在按 1.0 静默扣费**：用户选得到它（清单里有），而
- * `GetGroupRatio` 找不到键时 fail-open 返回 1。C 页顶部必须常驻这条黄条。
- */
-export function modelGroupsMissingRatio(
-  rows: readonly ModelGroupRow[]
-): string[] {
-  return rows
-    .filter((row) => row.ratio === null && row.name.trim() !== '')
-    .map((row) => row.name.trim())
-}
-
-/** 兜底倍率恰好是 0 的模型分组 —— 白送，必须显式确认过才合理。 */
-export function freeModelGroups(rows: readonly ModelGroupRow[]): string[] {
-  return rows
-    .filter((row) => {
-      if (row.ratio === null) return false
-      const raw = row.ratio.trim()
-      // 空输入框**不算**「白送」。`Number('') === 0`，不排除的话一个正在被清空
-      // 准备重填的格子会同时触发红条「填不出数值」与黄条「倍率为 0，调用完全免费」，
-      // 两条对同一行给出互相矛盾的结论；而 serializeModelGroupRows 对空串实际
-      // 写回的是 1，三处说法各不相同。运营据此判断「已经免费了」是错的。
-      if (raw === '') return false
-      return Number(raw) === 0
-    })
-    .map((row) => row.name.trim())
-    .filter((name) => name !== '')
-}
-
 // ─────────────────────────── auto 顺序（C 页）───────────────────────────
 
 export function moveAutoGroup(
@@ -329,104 +211,23 @@ export function serializeAutoGroups(list: readonly string[]): string {
   return JSON.stringify([...list], null, 2)
 }
 
-// ─────────────────────────── 用户分组（A 页）───────────────────────────
+// ─────────────────────────── 校验 ───────────────────────────
 
 /**
- * 用户分组表的一行。
+ * 重名（去空白后）。非空即禁用保存：写回时后一个键会静默吃掉前一个。
  *
- * `topupRatio` 同样是字符串三态：`''` = 未设置（键不写进 JSON，回落 1），
- * `'0'` = 显式免费充值。混成 `number | undefined` 会让 0 在 `omitempty`
- * 里消失，表现是「配了免费充值、实际按原价收」。
+ * 只有「新加的、还没保存过的行」能改名字，所以现实里撞名的方式只有一种：
+ * 新加一行、把它的名字敲成一个已经存在的分组。不拦的话保存之后那个已存在的
+ * 分组的兜底倍率会被新行的值覆盖 —— 一次改价，而运营以为自己在新建。
  */
-export type UserGroupRow = {
-  id: string
-  name: string
-  topupRatio: string
-}
-
-/**
- * 用户分组名的取值域。
- *
- * **刻意不含 `options.GroupRatio` 的键** —— 那是模型分组清单。两者在底层是
- * 同一个字符串命名空间（本轮要拆开的正是这件事），把模型分组的名字灌进用户
- * 分组页，等于在一个专门用来区分两者的界面上把它们又混回去。
- *
- * 三个来源分别对应三种「站上确实存在这一档人」的证据：
- *   · `authoritative`  服务端按 `users.group` 现算的清单（扩展未启用时为空）
- *   · `TopupGroupRatio` 的键：有人给这一档配过充值折扣
- *   · `GroupGroupRatio` 的**外层**键：有人给这一档配过交叉倍率
- */
-export function buildUserGroupRows(
-  authoritative: readonly string[],
-  topupGroupRatio: string,
-  groupGroupRatio: string
-): UserGroupRow[] {
-  const topupMap = parseGroupRatioMap(topupGroupRatio)
-  const crossMap = parseNestedRatioMap(groupGroupRatio)
-  const names = new Set([
-    ...authoritative,
-    ...Object.keys(topupMap),
-    ...Object.keys(crossMap),
-  ])
-  const rows: UserGroupRow[] = []
-  for (const name of names) {
-    rows.push({
-      id: nextRowId('ug'),
-      name,
-      topupRatio: Object.hasOwn(topupMap, name) ? String(topupMap[name]) : '',
-    })
-  }
-  return rows
-}
-
-/**
- * 行 → `options.TopupGroupRatio` 的 JSON。
- *
- * 空串跳过（= 未设置），非法数值也跳过 —— 与上游
- * `serializeGroupPricingRows` 里那段 `topup !== '' && Number.isFinite(...)`
- * 逐字同口径。写进一个 `NaN` 会让整份 JSON 变成 `null`，充值折扣全站失效。
- */
-export function serializeTopupRatios(rows: readonly UserGroupRow[]): string {
-  const out: Record<string, number> = {}
+export function duplicateRowNames(rows: readonly { name: string }[]): string[] {
+  const counts = new Map<string, number>()
   for (const row of rows) {
     const name = row.name.trim()
     if (name === '') continue
-    const raw = row.topupRatio.trim()
-    if (raw === '') continue
-    const parsed = Number(raw)
-    if (!Number.isFinite(parsed)) continue
-    out[name] = parsed
+    counts.set(name, (counts.get(name) ?? 0) + 1)
   }
-  return JSON.stringify(out, null, 2)
-}
-
-// ─────────────────────────── 可选清单（B 页）───────────────────────────
-
-export type UsableGroupRow = {
-  id: string
-  name: string
-  description: string
-}
-
-export function buildUsableGroupRows(
-  userUsableGroups: string
-): UsableGroupRow[] {
-  const map = parseGroupDescriptionMap(userUsableGroups)
-  return Object.entries(map).map(([name, description]) => ({
-    id: nextRowId('uu'),
-    name,
-    description: typeof description === 'string' ? description : '',
-  }))
-}
-
-export function serializeUsableGroupRows(
-  rows: readonly UsableGroupRow[]
-): string {
-  const out: Record<string, string> = {}
-  for (const row of rows) {
-    const name = row.name.trim()
-    if (name === '') continue
-    out[name] = row.description
-  }
-  return JSON.stringify(out, null, 2)
+  return [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([name]) => name)
 }

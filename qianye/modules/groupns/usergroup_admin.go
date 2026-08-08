@@ -21,6 +21,7 @@ package groupns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -121,9 +122,12 @@ func adminUserGroupImpact(c *gin.Context) {
 		badRequest(c, "qy_invalid_param", "缺少用户分组名")
 		return
 	}
-	var row UserGroup
-	if err := gdb.WithContext(c).Where("name = ?", name).Take(&row).Error; err != nil {
-		badRequest(c, "qy_groupns_unknown", "用户分组 "+name+" 还没有登记")
+	// **不要求有登记行。** 管理端那张表的清单是「观测值 ∪ 登记表」,一个只在
+	// users.group 里的名字同样要能看影响面 —— 而它恰恰是最需要看的那一类
+	// (历史遗留、没人记得它是干什么的)。拿"还没有登记"把它挡在门外,
+	// 表现是这一档人永远删不掉,而运营看到的理由与他要做的事毫无关系。
+	if _, _, err := lookupUserGroup(c, gdb, name); err != nil {
+		badRequest(c, "qy_groupns_unknown", err.Error())
 		return
 	}
 
@@ -323,18 +327,52 @@ func newUserGroupWarnings(name string) []string {
 // ─────────────────────────── PUT /user-groups/:name ───────────────────────────
 
 type updateUserGroupRequest struct {
-	// 三个字段都是指针:不给 = 不改。用零值表达"不改"会让"把备注清空"变得不可能。
+	// 四个字段都是指针:不给 = 不改。用零值表达"不改"会让"把备注清空"变得不可能。
 	DisplayName *string `json:"display_name"`
 	Note        *string `json:"note"`
 	Enabled     *bool   `json:"enabled"`
 	SortOrder   *int    `json:"sort_order"`
+
+	// TopupRatio 是充值倍率 options.TopupGroupRatio[分组名]。
+	//
+	// ***float64:给了就设(**含 0**),不给 = 不改。** 用 float64 会让运营填的 0
+	// 在反序列化时与"没给"完全一样,一个本该 0 元充值的分组静默留在原价上。
+	//
+	// 它落在**上游 options**,不落扩展库:充值倍率的唯一真相源是
+	// common.topupGroupRatio,四条支付路径(易支付 / Stripe / Waffo / Pancake)
+	// 直接乘它。镜像一份到扩展库的同步失败表现是"管理端显示 0.9、收款按 1.0",
+	// 与本仓 groupmatrix/store.go 已经论证过的形状逐字相同。
+	TopupRatio *float64 `json:"topup_ratio"`
+	// ClearTopupRatio 是"把这个键整个删掉"。
+	//
+	// **必须与 TopupRatio 分开,不能用 null 表达。** Go 的 JSON 反序列化里
+	// `"topup_ratio": null` 与字段缺席都得到 nil 指针,两者不可区分;而这两件事的
+	// 后果不同:一个是"这次没打算改",另一个是"回落到上游兜底"。
+	// 而上游 GetTopupGroupRatio 的兜底是 **1 + 一条 SysError**(不是 0),
+	// 所以"删掉键"是一个会改变收款金额的动作,不能靠一个歧义值触发。
+	ClearTopupRatio bool `json:"clear_topup_ratio"`
 }
 
-// adminUpdateUserGroup 只改**展示属性**,不碰名字。
+// adminUpdateUserGroup 改**展示属性 + 充值倍率**,不碰名字。
 //
 // 改名单开一个接口(见下),因为两者的量级差了三个数量级:这一个是一次
 // UPDATE,那一个要横跨两个数据库改六张表。混在同一个 handler 里的表现是
 // 运营改一次备注也要走一遍跨库补偿逻辑。
+//
+// ══════════════ 没有登记行时**自动补登记**,而不是 400 ══════════════
+//
+// 管理端那张表的清单是「观测值(users.group)∪ 登记表」,所以表上一定会出现
+// 只在观测里、还没有登记行的名字(历史遗留分组、以及回填周期还没跑到的新名字)。
+// 对着这样一行按编辑却收到「还没有登记」,运营唯一能做的事是去别处找一个
+// 叫「回填」的按钮 —— 而那个按钮解决的是一个他不需要知道的内部区分。
+//
+// 所以这里补一行再改,并把这件事写进审计正文。补登记本身零行为变化:
+// 新行恒为 default_mode=inherit(见 newUserGroup),而登记表是 fail-open 的,
+// 它不参与路由、鉴权与计费。
+//
+// **只对"确实有人挂着"的名字自动补。** 一个既没登记、也没有任何用户的名字
+// 意味着请求里的分组名是拼错的(或者那一档刚被删掉),此时建行等于把一个错字
+// 变成一个正式分组。那种情况仍然 400。
 func adminUpdateUserGroup(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
@@ -345,15 +383,27 @@ func adminUpdateUserGroup(c *gin.Context) {
 		return
 	}
 	name := strings.TrimSpace(c.Param("name"))
-	var before UserGroup
-	if err := gdb.WithContext(c).Where("name = ?", name).Take(&before).Error; err != nil {
-		badRequest(c, "qy_groupns_unknown", "用户分组 "+name+" 还没有登记")
+	before, backfilled, err := takeOrRegisterUserGroup(c, gdb, name)
+	if err != nil {
+		badRequest(c, "qy_groupns_unknown", err.Error())
 		return
 	}
 	var req updateUserGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, "qy_invalid_param", "请求格式错误")
 		return
+	}
+	if req.TopupRatio != nil && req.ClearTopupRatio {
+		badRequest(c, "qy_invalid_param",
+			"topup_ratio 与 clear_topup_ratio 不能同时给出 —— 一个是设值、一个是删键,"+
+				"同时给出时服务端无法判断哪一个是本意")
+		return
+	}
+	if req.TopupRatio != nil {
+		if err := validateTopupRatio(*req.TopupRatio); err != nil {
+			badRequest(c, "qy_invalid_param", err.Error())
+			return
+		}
 	}
 
 	after := before
@@ -383,14 +433,222 @@ func adminUpdateUserGroup(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
+
+	// ── 充值倍率落在**上游 options**,与登记表不在同一个库,因此不原子 ──
+	//
+	// 顺序是算出来的:展示属性(备注/显示名/启停/排序)先写,充值倍率后写。
+	// 前者失败时后者一个字节都没动,零资金影响;反过来做,倍率写成功而登记行
+	// 写失败时,收款金额已经变了而界面上那一行看起来什么都没保存 ——
+	// 运营的下一步必然是"再改一次",于是他会以为自己第一次没点上。
+	//
+	// 部分失败必须在响应里被看见,不能只回一句绿色的"已保存"。
+	topupChanged := ""
+	var partial *RewritePartial
+	if req.TopupRatio != nil || req.ClearTopupRatio {
+		var topupErr error
+		topupChanged, topupErr = applyTopupRatio(name, req.TopupRatio, req.ClearTopupRatio)
+		if topupErr != nil {
+			// ── 半成状态:200 + partial,而不是 500 ────────────────────────
+			//
+			// 展示属性已经落库了。回 500 的表现是弹窗弹出一句通用的
+			// 「处理失败,请稍后重试」,运营合理推断"什么都没保存",而下一次回读
+			// 会显示新备注 + 旧倍率 —— 那份解释此前只写在审计正文里,
+			// 而看审计的人不是此刻站在弹窗前的那个人。
+			//
+			// 前端对 partial 的处理是"原样弹出并常驻"(见 user-group-dialog.tsx),
+			// 这条链路上唯一的半成状态因此才真的能被看见。
+			audit.WriteConfigUpdate(c, audit.ConfigChange{
+				Action: auditActionUserGroupUpdate, Result: qymodel.ResultFail,
+				Reason: "展示属性已保存,但充值倍率没能写进 options(**收款金额仍按旧倍率**," +
+					"请重试;不重试的话界面显示的是新值而收款按旧值): " + topupErr.Error(),
+				Before: before, After: after,
+			})
+			partial = &RewritePartial{
+				Stage: StageTopup,
+				Message: "备注等展示属性**已经保存**,但充值倍率**没有写进去** —— " +
+					"收款此刻仍然按旧倍率。请重新打开这一档确认充值倍率,并重试一次。" +
+					"(失败原因: " + topupErr.Error() + ")",
+			}
+		}
+	}
+
 	if err := InvalidateAndReload(); err != nil {
 		common.SysError("qianye/groupns: 编辑后重载登记快照失败: " + err.Error())
 	}
-	audit.WriteConfigUpdate(c, audit.ConfigChange{
-		Action: auditActionUserGroupUpdate, Result: qymodel.ResultOK,
-		Reason: "编辑用户分组的展示属性(不影响路由与计费)", Before: before, After: after,
+	// 基句必须说到"钱":这个 handler 会写 options.TopupGroupRatio,而那个数
+	// 直接乘进收款金额。早先写死的「不影响路由与计费」会让事后按这句话做审计
+	// 排除的人整条漏掉一次改价,而 Before/After 快照是 UserGroup 结构体、
+	// 充值倍率根本不在里面 —— 正文是这次改动唯一的证据来源。
+	reason := "编辑用户分组的展示属性(备注/显示名/启停/排序,不影响路由与鉴权)"
+	if backfilled {
+		reason += ";**该名字此前只存在于 users.group,本次编辑顺带补了一行登记**" +
+			"(default_mode=inherit,零行为变化)"
+	}
+	if topupChanged != "" {
+		// 充值倍率直接乘进收款金额,必须单独进审计正文而不是只留在 before/after 的
+		// 字段差里 —— 它根本不在 UserGroup 这个结构体上,字段差里看不到它。
+		reason += ";" + topupChanged
+	}
+	if partial == nil {
+		audit.WriteConfigUpdate(c, audit.ConfigChange{
+			Action: auditActionUserGroupUpdate, Result: qymodel.ResultOK,
+			Reason: reason, Before: before, After: after,
+		})
+	}
+	respond(c, gin.H{
+		"user_group": after, "backfilled": backfilled,
+		"topup_change": topupChanged, "partial": partial,
 	})
-	respond(c, after)
+}
+
+// maxTopupRatio 是充值倍率的上界。
+//
+// 上游对它没有任何校验,而它被直接乘进 controller/topup.go 的 payMoney:
+// 一次手滑填成 1e18,配合任意充值额就会把金额推过 decimal → float 的可用范围,
+// 而支付网关收到的那个数没有任何意义。负数更直接 —— 它是一张负价订单。
+const maxTopupRatio = 1000
+
+// validateTopupRatio 是充值倍率的取值闸门。
+//
+// ══════════════ 为什么 **0 也被拒绝** ══════════════
+//
+// 「0 = 显式免费」是本仓在**计费倍率**上的口径(交叉倍率的 0 会命中
+// relay/helper/price.go 的整体替换分支,真的免费)。充值倍率不是同一件事:
+//
+//	controller/topup.go:158 / topup_stripe.go:389,403 / topup_waffo.go:94 /
+//	topup_waffo_pancake.go:59 —— 五处逐字相同:
+//	    ratio := common.GetTopupGroupRatio(group)
+//	    if ratio == 0 { ratio = 1 }        ← 0 在这里被抬回 1
+//
+// 也就是说库里的 0 与"没配过"收同样的钱。就算把这五处 if 删掉,
+// controller/topup.go:208 还有一道 `payMoney < 0.01 → 拒单`,结果是
+// 这一档人**充不了值**,而不是"充值免费"。
+//
+// 两种结局都不是运营填 0 时想要的,而界面此前恰恰写着「填 0 = 这一档充值免费」。
+// 与其让一个值在三层实现里表达三种意思,不如在入口把它拒掉并说清楚:
+// 要免费发额度走「额度」那一侧,要按 1 收款就清空这个键。
+func validateTopupRatio(v float64) error {
+	if v != v { // NaN
+		return errors.New("充值倍率不是合法数值")
+	}
+	if v < 0 {
+		return fmt.Errorf("充值倍率不得为负数,收到 %v —— 负倍率会把充值变成一张负价订单", v)
+	}
+	if v == 0 {
+		return errors.New("充值倍率不能是 0。0 在充值这一侧**不等于免费**:" +
+			"四条支付路径读到 0 之后一律按 1 收款,而且就算不抬,订单也会因为金额低于 0.01 被拒 —— " +
+			"这一档人会变成充不了值。要按原价收款请清空这个值(留空 = 按 1 收款),要免费发额度请走额度那一侧")
+	}
+	if v > maxTopupRatio {
+		return fmt.Errorf("充值倍率不得超过 %d,收到 %v", maxTopupRatio, v)
+	}
+	return nil
+}
+
+// applyTopupRatio 写一次 options.TopupGroupRatio,返回进审计正文的那句话。
+//
+// 读改写整张 map:上游只提供整表的 JSON 读写口。并发窗口与
+// groupmatrix.publishRatioMatrix 同形,由 updateOptionVerified 的回查兜底
+// (它读的是 options 表本身,不是我们刚写进内存的那份)。
+//
+// **值没变时不写。** 一次无变化的 UpdateOption 会广播给全部节点并刷一次内存快照,
+// 而它换不到任何东西;更要紧的是它会在审计里留下一条"改过充值倍率"的记录,
+// 而事后复盘看到那条记录的人会去找一个并不存在的改动。
+func applyTopupRatio(name string, ratio *float64, clear bool) (string, error) {
+	current, err := loadTopupRatios()
+	if err != nil {
+		return "", err
+	}
+	old, had := current[name]
+	switch {
+	case clear:
+		if !had {
+			return "", nil
+		}
+		delete(current, name)
+		if err := saveTopupRatios(current); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf(
+			"充值倍率由 %s **删除**(此后上游 GetTopupGroupRatio 找不到这个键,"+
+				"回落到 1 并写一条 SysError —— 那个 1 不是任何人配出来的)", ratioText(old)), nil
+	default:
+		if had && old == *ratio {
+			return "", nil
+		}
+		current[name] = *ratio
+		if err := saveTopupRatios(current); err != nil {
+			return "", err
+		}
+		if !had {
+			return fmt.Sprintf("充值倍率**新配**为 %s(此前未配置,按兜底 1 收款)",
+				ratioText(*ratio)), nil
+		}
+		return fmt.Sprintf("充值倍率 %s → %s", ratioText(old), ratioText(*ratio)), nil
+	}
+}
+
+// lookupUserGroup 取登记行,允许它不存在。
+//
+// 第二个返回值报告登记行在不在。名字既没登记、users.group 里也没人挂着时返回
+// 错误 —— 那是一个不存在的分组,不是一个"未登记"的分组,两者在界面上必须分开。
+func lookupUserGroup(c *gin.Context, gdb *gorm.DB, name string) (UserGroup, bool, error) {
+	var row UserGroup
+	if name == "" {
+		return row, false, errors.New("缺少用户分组名")
+	}
+	err := gdb.WithContext(c).Where("name = ?", name).Take(&row).Error
+	if err == nil {
+		return row, true, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return row, false, err
+	}
+	if countByGroupCtx(c, "users")[name] == 0 {
+		return row, false, fmt.Errorf(
+			"用户分组 %q 既没有登记行,users.group 里也没有任何人挂着它 —— "+
+				"名字可能拼错了,或者这一档已经被删掉", name)
+	}
+	row.Name = name
+	return row, false, nil
+}
+
+// takeOrRegisterUserGroup 取登记行;只在观测里的名字**顺带补一行登记**。
+//
+// 第二个返回值报告是否真的补过 —— 它进审计正文与响应,
+// 因为"这一行是这次编辑顺带建出来的"是事后唯一能解释
+// 「这个分组的 created_at 为什么是那一天」的信息。
+//
+// 判据是 users.group 里此刻有没有人挂着(见 adminUpdateUserGroup 的注释):
+// 没有人挂着的未登记名字一律拒绝,那种请求里的名字多半是拼错的。
+func takeOrRegisterUserGroup(c *gin.Context, gdb *gorm.DB, name string) (UserGroup, bool, error) {
+	var row UserGroup
+	if name == "" {
+		return row, false, errors.New("缺少用户分组名")
+	}
+	err := gdb.WithContext(c).Where("name = ?", name).Take(&row).Error
+	if err == nil {
+		return row, false, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return row, false, err
+	}
+	if countByGroupCtx(c, "users")[name] == 0 {
+		return row, false, fmt.Errorf(
+			"用户分组 %q 既没有登记行,users.group 里也没有任何人挂着它 —— "+
+				"名字可能拼错了,或者这一档已经被删掉。要新建一档请走「新建用户分组」", name)
+	}
+	if !registrableGroupName(name) {
+		return row, false, fmt.Errorf(
+			"用户分组 %q 超过 %d 个字符,登记表存不下它(见 registrableGroupName)—— "+
+				"它仍然可以正常计费与路由(登记表是 fail-open 的),但配不了备注与默认模型分组",
+			name, maxGroupNameLen)
+	}
+	fresh := newUserGroup(name, c.GetInt("id"), now())
+	if err := gdb.WithContext(c).Create(fresh).Error; err != nil {
+		return row, false, err
+	}
+	return *fresh, true, nil
 }
 
 // ─────────────────────── POST /user-groups/:name/rename ───────────────────────
@@ -538,9 +796,13 @@ func adminDeleteUserGroup(c *gin.Context) {
 		return
 	}
 	name := strings.TrimSpace(c.Param("name"))
-	var before UserGroup
-	if err := gdb.WithContext(c).Where("name = ?", name).Take(&before).Error; err != nil {
-		badRequest(c, "qy_groupns_unknown", "用户分组 "+name+" 还没有登记")
+	// 与影响面接口同一道判据:**不要求有登记行**。
+	// 只在 users.group 里的历史遗留分组同样要能删(而且要能带迁移地删)——
+	// 它们正是最需要被清掉的那一类。rewriteUserGroup 的第三阶段对一条不存在的
+	// 登记行是无操作,其余残留清理与 options 清理与登记行毫无关系。
+	before, registered, err := lookupUserGroup(c, gdb, name)
+	if err != nil {
+		badRequest(c, "qy_groupns_unknown", err.Error())
 		return
 	}
 	var req deleteUserGroupRequest
@@ -625,6 +887,12 @@ func adminDeleteUserGroup(c *gin.Context) {
 	res.Residues = impact.Residues
 
 	reason := fmt.Sprintf("删除用户分组 %q", name)
+	if !registered {
+		// 这一档从来没有登记行,所以 before 快照里除了名字之外什么都没有。
+		// 不写明的话,事后看到一条 before 几乎全空的删除记录,第一反应会是
+		// 「审计埋点坏了」,而真相是这个分组本来就只存在于 users.group 里。
+		reason += "(**该分组此前只存在于 users.group,没有登记行**,因此 before 快照只有名字)"
+	}
 	if target != "" {
 		reason += fmt.Sprintf(",把 %d 名在册用户 / %d 个令牌迁到 %q(同时改写 %d 条订阅快照)",
 			res.Users, impact.Tokens, target, res.Subscriptions)

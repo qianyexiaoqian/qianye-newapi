@@ -29,6 +29,7 @@ import type {
   QyUgrRenameRequest,
   QyUgrRewriteResult,
   QyUgrUpdateRequest,
+  QyUgrUpdateResult,
 } from './types'
 
 const QY_UGR_BASE = '/admin/group-namespace/user-groups'
@@ -97,8 +98,16 @@ export function qyUgrCreate(body: QyUgrCreateRequest) {
   return qyPost<QyUgrCreateResult>(QY_UGR_BASE, body)
 }
 
+/**
+ * 改展示属性 + 充值倍率。
+ *
+ * 没有登记行时后端**自动补一行**再改（`backfilled`）：管理端那张表的清单是
+ * 「观测值 ∪ 登记表」，表上一定会出现只在观测里的名字，对着它按编辑却收到
+ * 「还没有登记」，运营唯一能做的事是去别处找一个叫「回填」的按钮 ——
+ * 而那个按钮解决的是一个他不需要知道的内部区分。
+ */
 export function qyUgrUpdate(name: string, body: QyUgrUpdateRequest) {
-  return qyPut<unknown>(path(name), body)
+  return qyPut<QyUgrUpdateResult>(path(name), body)
 }
 
 /**

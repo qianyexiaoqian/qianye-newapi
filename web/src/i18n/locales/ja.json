@@ -5249,12 +5249,10 @@
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V 4",
     "Zoom": "ズーム",
-    "Model Group Pricing": "モデルグループ料金",
     "Legacy user group rewrite": "レガシー：購入時にユーザーグループを書き換え",
     "Unlocked model groups could not be loaded; saving now leaves them untouched.": "解除済みモデルグループを読み込めませんでした。今保存しても変更されません。",
     "Model group unlocks can be configured once the plan exists — save it first, then reopen it.": "モデルグループの解除はプラン作成後に設定できます。まず保存してから開き直してください。",
     "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "プランは保存されましたが、解除済みモデルグループが保存されませんでした。開き直して再設定してください",
-    "This page no longer edits these rules: the \"Inter-group overrides\" and \"Special usable group rules\" JSON editors were removed from Model Group Pricing.": "このページではこれらのルールを編集できなくなりました。「グループ間上書き」と「特別な使用可能グループルール」の JSON エディタは「モデルグループ料金」から削除されています。",
     "Edit them under System Settings → Billing & Payment → User group: a cell of the user group × model group table is the special ratio, and setting a scope on a user group takes over the special usable group rules for that tier. Tiers with no scope keep their existing +: / -: rules fully in effect, and those legacy rules can no longer be edited anywhere — set a scope on the tier to take them over. The stored data and the billing behavior are unchanged.": "「システム設定 → 請求と支払い → ユーザーグループ」で編集してください。「ユーザーグループ × モデルグループ」表の 1 セルが特殊倍率であり、ユーザーグループにスコープを設定すると、その階層の特別な使用可能グループルールを引き継ぎます。スコープ未設定の階層では既存の +: / -: ルールがそのまま有効なままで、しかもサイト内のどこからも編集できなくなっています。引き継ぐにはその階層にスコープを設定してください。保存されたデータと課金動作は変わりません。",
     "Configure these under System Settings → Billing & Payment → User group.": "「システム設定 → 請求と支払い → ユーザーグループ」で設定します。"
   }

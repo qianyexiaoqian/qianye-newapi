@@ -81,6 +81,7 @@ import {
   transformFormDataToPayload,
   transformApiKeyToFormDefaults,
 } from '../lib'
+import { buildApiKeyGroupOptions } from '../lib/group-options'
 import type { ApiKey } from '../types'
 import {
   ApiKeyGroupCombobox,
@@ -155,14 +156,16 @@ export function ApiKeysMutateDrawer({
   })
 
   const models = modelsData?.data || []
+  /*
+    下拉项里的第二行就是**分组备注**。
+
+    `desc` 是服务端按「按格备注 > 模型分组备注 > 历史白名单文案」解析之后的
+    最终结果，前端一层都不推断（理由见 `../lib/group-options.ts`）。这里刻意
+    不再就地 `map`：那份映射有两条会静默出错的规则（顺序必须稳定、空备注要
+    回落成分组名），而它们此前散在这个 800 行组件的中段，没有任何测试看得见。
+  */
   const groups = useMemo<ApiKeyGroupOption[]>(
-    () =>
-      Object.entries(groupsData?.data || {}).map(([key, info]) => ({
-        value: key,
-        label: key,
-        desc: info.desc || key,
-        ratio: info.ratio,
-      })),
+    () => buildApiKeyGroupOptions(groupsData?.data),
     [groupsData]
   )
   const backendHasAuto = groups.some((g) => g.value === 'auto')

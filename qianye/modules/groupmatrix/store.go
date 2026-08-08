@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -186,8 +187,8 @@ func loadScopes(gdb *gorm.DB) (map[string]Scope, error) {
 }
 
 func loadGrants(gdb *gorm.DB) (map[string]map[string]struct{}, error) {
-	var rows []Grant
-	if err := gdb.Order("user_group asc, model_group asc").Find(&rows).Error; err != nil {
+	rows, err := loadGrantRows(gdb)
+	if err != nil {
 		return nil, err
 	}
 	out := make(map[string]map[string]struct{}, len(rows))
@@ -200,6 +201,16 @@ func loadGrants(gdb *gorm.DB) (map[string]map[string]struct{}, error) {
 		set[r.ModelGroup] = struct{}{}
 	}
 	return out, nil
+}
+
+// loadGrantRows 读出整张授权表。管理端要的是**行**(它还带按格备注),
+// 而鉴权判定要的只是成员资格 —— 两个形状各有一个入口,不互相将就。
+func loadGrantRows(gdb *gorm.DB) ([]Grant, error) {
+	var rows []Grant
+	if err := gdb.Order("user_group asc, model_group asc").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // listWriteDenies 读出影子期的写入拒绝计数,按次数降序。
@@ -296,6 +307,23 @@ const (
 	ActionRevoke     = "revoke"
 	ActionSetRatio   = "set_ratio"
 	ActionClearRatio = "clear_ratio"
+	// ActionSetNote 只改按格备注,**不动成员资格、不动倍率**。
+	//
+	// 单独一个动作而不是"grant 时顺带带上 note":两者的风险档次差一整级。
+	// grant 会让一批用户多出一个可选分组(要过 max_grants 预算与倍率表校验),
+	// 而改备注只是换一段显示文案 —— 把它塞进 grant 意味着运营改一个错别字
+	// 也要重新走一遍授权路径,而那条路径上任何一次校验失败都会让文案改不动。
+	//
+	// 它刻意**不能凭空建行**:没有 grant 行的格子本来就不可选,给它写备注等于
+	// 造一条永远不会被读到的配置(Resolve 只遍历 grants)。见 applyGrantCells。
+	ActionSetNote = "set_note"
+	// ActionClearNote 把这一格的备注清空,回落到模型分组的默认备注。
+	//
+	// 与 clear_ratio 同一个理由:「传空表示清除」与「不传表示不动」必须是两个
+	// **动作名**,不能靠一个值的形状去猜。前端 DTO 里 note 字段在其余动作上
+	// 整个缺席(为了让 draft_hash 与旧后端逐字一致),于是"传了一个空串"这种
+	// 形状在链路上根本不存在 —— 清除必须有自己的动词。
+	ActionClearNote = "clear_note"
 )
 
 // Cell 是一次矩阵改动里的一个格子。
@@ -308,6 +336,13 @@ type Cell struct {
 	ModelGroup string   `json:"model_group"`
 	Action     string   `json:"action"`
 	Ratio      *float64 `json:"ratio,omitempty"`
+	// Note 只在 Action == set_note 时有意义。
+	//
+	// **指针**是因为「不传」与「传空串」在这里必须分开:空串是运营主动**清掉**
+	// 备注(回落到模型分组的默认备注),不传是这条动作根本没打算改备注。
+	// 用 string + omitempty 会让"清空备注"这个动作在序列化时整个消失,
+	// 于是运营点了保存、界面回读还是旧文案 —— 与倍率那条 *float64 规则同源。
+	Note *string `json:"note,omitempty"`
 }
 
 // normalizeCells 校验并去重动作列表,返回按 (用户分组, 模型分组, 动作) 排序的结果。
@@ -332,8 +367,9 @@ func normalizeCells(cells []Cell) ([]Cell, error) {
 		}
 		switch c.Action {
 		case ActionGrant, ActionRevoke, ActionClearRatio:
-			c.Ratio = nil
+			c.Ratio, c.Note = nil, nil
 		case ActionSetRatio:
+			c.Note = nil
 			if c.Ratio == nil {
 				return nil, errors.New("set_ratio 必须带 ratio;要清除请用 clear_ratio —— " +
 					"「传 null 表示清除」与「不传表示不动」必须分开")
@@ -341,8 +377,29 @@ func normalizeCells(cells []Cell) ([]Cell, error) {
 			if err := validateRatio(*c.Ratio); err != nil {
 				return nil, err
 			}
+		case ActionClearNote:
+			// 归一成"指向空串的指针":落库那一步只认 Note != nil,
+			// 两个动词在这里合流,后面不必再判一次动作名。
+			empty := ""
+			c.Ratio, c.Note = nil, &empty
+		case ActionSetNote:
+			c.Ratio = nil
+			if c.Note == nil {
+				return nil, errors.New("set_note 必须带 note;要清掉请用 clear_note —— " +
+					"「传空表示清除」与「不传表示不动」必须分开")
+			}
+			// **拒绝而不是截断。** 这段文案会原样显示在用户建 key 的分组下拉里,
+			// 截断会把最后一句吃掉,而那一句往往正是要紧的那句
+			// (本站现有的一段写着「用户数据本站均不会留存」)。
+			// 判据是**字符数**:按字节裁一段中文会留下半个 UTF-8 序列,
+			// MySQL 在 STRICT_TRANS_TABLES 下以 Error 1366 拒绝整条 UPDATE。
+			if n := utf8.RuneCountInString(*c.Note); n > maxNoteLen {
+				return nil, fmt.Errorf("按格备注最多 %d 个字符(当前 %d)", maxNoteLen, n)
+			}
 		default:
-			return nil, fmt.Errorf("action %q 非法(可选 grant|revoke|set_ratio|clear_ratio)", c.Action)
+			return nil, fmt.Errorf(
+				"action %q 非法(可选 grant|revoke|set_ratio|clear_ratio|set_note|clear_note)",
+				c.Action)
 		}
 		out = append(out, c)
 	}

@@ -38,6 +38,14 @@ import {
  * 组件，而这条映射的唯一消费者就是下面这个 `beforeLoad`。
  */
 const BILLING_SECTION_ALIASES: Readonly<Record<string, BillingSectionId>> = {
+  /*
+    「用户分组可用的模型分组配置」那一项本轮下线：矩阵整体并进了「用户分组」
+    表行内的编辑弹窗。工单、审计记录与浏览器书签里存着这个地址，不留别名的话
+    它会被弹回「额度设置」——一个与分组毫无关系的页面，而且 `alias == null`
+    时不带 `replace`，按返回键会被再弹一次。上一次同类下线（`group-pricing`）
+    在这里留了别名，这一次同样留。
+  */
+  'group-matrix': 'user-groups',
   'group-pricing': 'model-groups',
 }
 

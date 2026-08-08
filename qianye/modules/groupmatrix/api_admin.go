@@ -15,8 +15,10 @@ import (
 	"github.com/QuantumNous/new-api/qianye/groupratio"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/modules/groupns"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -48,9 +50,78 @@ const (
 
 // ─────────────────────────── GET /group-matrix ───────────────────────────
 
+// userGroupRow 是「用户分组」这一张表的一行 —— **整张表只有这一份数据源**。
+//
+// ══════════════ 为什么它要把登记表的列一起带上来 ══════════════
+//
+// 上一轮管理端有两张并排的表:「用户分组」(从 users.group 观测出来的一档档人)
+// 与「用户分组登记」(运营登记出来的清单)。这个区分是内部数据模型的事
+// (刚建出来还没有人的分组只存在于登记表;历史遗留的 users.group 值可能不在登记表里),
+// 而它被原样搬到了界面上 —— 两张表并排、名字几乎一样、内容互相重叠。
+//
+// 本轮把差异收进两个布尔(Registered / Observed)并**只出一张表**:
+// 清单 = 观测值 ∪ 登记表。差异不再是一张表,而是一行上的一个徽标,
+// 并且"补登记"变成编辑时的自动动作(见 groupns.adminUpdateUserGroup)。
 type userGroupRow struct {
-	Name      string `json:"name"`
-	UserCount int64  `json:"user_count"`
+	Name string `json:"name"`
+	// DisplayName / Note / Enabled / SortOrder 来自登记表 qy_user_groups。
+	// Registered 为 false 时它们全是零值 —— 那不是"没填",是"还没有登记行"。
+	DisplayName string `json:"display_name"`
+	// Note 是项目方点名的「用户分组备注」列。
+	//
+	// ⚠ 它**不是**上一轮那个 note:上一轮这个字段装的是 scope.note(接管说明),
+	// 现在那一份改叫 scope_note。两者的主语完全不同 —— 一个说"这一档人是谁",
+	// 一个说"为什么给这一档设了范围"。合用一个键会让前端拿到一段答非所问的文字。
+	Note      string `json:"note"`
+	Enabled   bool   `json:"enabled"`
+	SortOrder int    `json:"sort_order"`
+	// Registered 表示 qy_user_groups 里有这一行。
+	// Observed 表示 users.group 里此刻真的有人挂着这个名字。
+	//
+	// 两者都为 false 的行也可能出现:它的名字只存在于 options 的
+	// GroupGroupRatio 外层键 / TopupGroupRatio 键里(一份读不到任何人的死配置)。
+	// 这种行**必须显示**,否则那份配置永远没有入口可以清掉。
+	Registered bool `json:"registered"`
+	Observed   bool `json:"observed"`
+
+	// TopupRatio 是充值倍率 options.TopupGroupRatio[分组名] 的**库里原值**。
+	//
+	// ***float64:null = 没配过(上游 GetTopupGroupRatio 回落 1 并写一条 SysError)。**
+	// 用 float64 + omitempty 会让任何显式写下的值在序列化时消失,而"没配过"与
+	// "配过"在这一页上要显示成两种话。
+	//
+	// ⚠ **0 在充值倍率上不是「免费」。** 四条支付路径(易支付 / Stripe / Waffo /
+	// Pancake)在读到 0 之后一律 `if ratio == 0 { ratio = 1 }`,而且
+	// controller/topup.go 还有一道 `payMoney < 0.01 → 拒单`。所以库里的 0 既不免费、
+	// 也不是运营以为的那个意思 —— 本轮起写侧直接拒绝 0(见 groupns.validateTopupRatio),
+	// 存量 0 由 TopupRatioEffective 如实显示成 1 并出一条 warning。
+	TopupRatio *float64 `json:"topup_ratio"`
+	// TopupRatioEffective 是此刻**真正会被乘进充值金额**的那个数(十进制字符串)。
+	//
+	// 它逐字复刻支付路径的判据(缺键 → 1、0 → 1),而不是把 TopupRatio 原样印出来:
+	// 这一列是报价,印一个不会被收款用到的数就是骗人。没配过时它是 "1",
+	// 并且 TopupRatio 为 null —— 两个字段合起来才说得清
+	// 「按 1 收钱,但那个 1 不是任何人配出来的」。
+	TopupRatioEffective string `json:"topup_ratio_effective"`
+
+	// ModelGroups 是项目方点名的「可用模型分组」列,**名称清单而不是个数**。
+	//
+	// 取值口径:设了范围时 = 那份清单(qy_group_grants),没设范围时 = 上游
+	// service.GetUserUsableGroups 的实际结果。前端直接渲染它,不必再从 cells 里
+	// 过滤一遍 —— 过滤条件是后端才知道的事,让前端重推一遍必然漂移。
+	//
+	// ⚠ 它是**配置值**,不一定是"此刻真的在生效的值":mode=shadow 的清单一个
+	// 字节都不生效(读侧逐位返回上游)。所以这一列必须与 ScopeEnforced 同屏,
+	// 前端在 shadow 上出「尚未生效」徽章。
+	//
+	// ⚠ 它**不受列轴约束**。列轴(modelGroups)是从 options.GroupRatio 的键派生的,
+	// 而清单里完全可能引用一个已从倍率表消失的模型分组。早先这一列是在列轴循环
+	// 内侧回填的,于是那种行被画成「一个都没有」—— 运营读到的是"这一档人一个池子
+	// 都用不了",真实原因却是"授权指向了已消失的模型分组",两者的处置完全相反。
+	// 现在直接从来源 map 算,并由 matrixWarnings 给出那条【需要处理】的告警。
+	ModelGroups []string `json:"model_groups"`
+
+	UserCount int64 `json:"user_count"`
 	// ActiveTokenCount 是「启用且近 30 天有访问」的令牌数 ——
 	// 「撤销这一行会打断谁」的分母。它必须长在行头上而不是藏进预览弹窗:
 	// 运营在动格子的那一刻就要看见,点开才看得到就已经晚了。
@@ -58,7 +129,9 @@ type userGroupRow struct {
 	Managed          bool   `json:"managed"`
 	Mode             string `json:"mode"`
 	AllowAuto        bool   `json:"allow_auto"`
-	Note             string `json:"note"`
+	// ScopeNote 是 scope 行上的说明(「为什么给这一档设了范围」),
+	// 与 Note(用户分组备注)是两件事,见 Note 的注释。
+	ScopeNote string `json:"scope_note"`
 	// SelfExcluded 表示权威清单不含这个用户分组自己。
 	//
 	// 它推翻了上游存在多年的不变量,所以必须显式下发让界面能醒目提示 ——
@@ -76,6 +149,29 @@ type userGroupRow struct {
 	// **不要在界面上用「已接管 / 未接管」那套词。** 新口径下"未接管"意味着
 	// 全部可用,而"接管"这个词会让人读成"不接管就用不了",方向正好相反。
 	ScopeState string `json:"scope_state"`
+
+	// ScopeEnforced 回答「这份清单**此刻真的在限制人**吗」。
+	//
+	// ScopeState=set 只说明"配过清单",而 mode=shadow 的清单一个字节都不生效
+	// (读侧 Resolve 逐位返回上游)。两者摆在一起会让界面显示成"已设范围"
+	// 而实际谁都拦不住 —— 项目方的口径是「设了可用模型分组则用户只能选这些」,
+	// 那句话对应的**只有 enforce**。所以这个布尔必须单独下发,
+	// 而不是让前端从 mode 字符串里推(推错的方向是把 shadow 画成已生效)。
+	ScopeEnforced bool `json:"scope_enforced"`
+
+	// SelfInserted 表示这一档人能选到**与自己同名的模型分组**,而这一条
+	// 既不来自可用清单、也不来自「用户可选」开关,来自上游 GetUserUsableGroups
+	// 最后那一步的自我补入(判据:名字在 options.GroupRatio 里)。
+	//
+	// 它是「没设清单 = 按模型分组自己的用户可选开关」这条规则**唯一的例外**,
+	// 而且不能删:存量有 5 个名字同时是用户分组和真的能路由的模型分组
+	// (legacy_dual,最典型的是 539 个用户 + 76 行 abilities 的那一个),
+	// 它们一直靠这一步隐式获得可选性。删掉的表现是这几档人**已经存在的、
+	// 显式指向自己分组的令牌**在下一次请求同时 403。
+	//
+	// 所以不删、但必须**可见**:一条隐式规则不写在界面上,就等于没有规则。
+	// 要让某一档人连自己都不能选,唯一受支持的做法是给它设一份不含自己的可用清单。
+	SelfInserted bool `json:"self_inserted"`
 }
 
 // 行头三态。前端按它渲染,不自己推。
@@ -85,8 +181,15 @@ const (
 	ScopeStateEmpty = "empty"
 )
 
+// modelGroupRow 同时是矩阵的列头**和**「模型分组」那一张表的一行:
+// 分组名称 / 兜底倍率 / 用户可选 / 分组备注。
 type modelGroupRow struct {
 	Name string `json:"name"`
+	// DisplayName / Note 来自登记表 qy_model_groups。
+	DisplayName string `json:"display_name"`
+	// Note 是这个模型分组的**默认备注**,也就是说明文案阶梯的第 2 级
+	// (按格备注没填时它生效)。见 Grant.Note。
+	Note string `json:"note"`
 	// BaseRatio 是模型分组的初始/兜底倍率(options.GroupRatio)。
 	// 用户分组没有为它单独配倍率时,回落到这个值。
 	//
@@ -94,6 +197,16 @@ type modelGroupRow struct {
 	// 也会被前端拿去和格子上的覆盖值比较。走一遍 JSON float64 往返会把
 	// 0.1 印成 0.10000000000000001,而这一页上每一个数字都是报价。
 	BaseRatio string `json:"base_ratio"`
+	// UserSelectable 是项目方点名的「用户可选」开关:
+	// 这个模型分组在不在全局白名单 options.UserUsableGroups 的**键**里。
+	//
+	// 它是「用户分组没设可用清单时」唯一的判据(见 Resolve 的 unmanaged 分支
+	// 与本文件 scopePolicy.UnsetMeansAll 的注释)。下发它是为了让
+	// 「没设清单的那些分组到底能选到什么」在界面上可解释,而不是一句空话。
+	UserSelectable bool `json:"user_selectable"`
+	// UsableDescription 是全局白名单里那一行的**原文**(阶梯第 3 级)。
+	// 与 Note 同屏显示,运营才看得出哪一段被覆盖了。
+	UsableDescription string `json:"usable_description"`
 	// HasChannels 为 false 时该分组下没有任何可用渠道,授权它等于什么都没给。
 	HasChannels bool `json:"has_channels"`
 }
@@ -149,7 +262,42 @@ type cellView struct {
 	// 显示成已填),RatioSource 描述"扣钱时乘的是哪个数"。今天两者结论相同,
 	// 但它们回答的不是同一个问题,合并成一个字段会让将来任何一层回落变得无法表达。
 	RatioSource string `json:"ratio_source"`
+
+	// Note 是**这一格自己写的**备注(qy_group_grants.note),空串 = 没写。
+	// 它是输入框里那个值,不是用户最终看到的那一段 —— 后者是 EffectiveNote。
+	Note string `json:"note"`
+	// EffectiveNote 是用户在**建 key 选分组**时真正会看到的那一段文案,
+	// 由后端按阶梯解析后下发(按格备注 > 模型分组备注 > 白名单原文 > 分组名)。
+	//
+	// 必须由后端算:阶梯有四级、其中两级在上游 setting 包里,让前端再实现一遍
+	// 的表现是"管理端预览的文案与用户看到的不是同一段",而这正是本轮在收敛的东西。
+	//
+	// ⚠ 它必须与 Resolve 的结论**逐字相同**,包括生效条件:按格备注只在
+	// mode=enforce 那一档被读到(shadow 与未设范围逐位返回上游)。所以这一格所属的
+	// 用户分组不是 enforce 时,解析**跳过第 1 级** —— 否则管理端把一段用户永远
+	// 看不到的文字显示成"已生效",而运营验收看的正是这个字段。
+	EffectiveNote string `json:"effective_note"`
+	// NoteSource 说明 EffectiveNote 来自阶梯的哪一级 ——
+	// 界面据此把"这一格自己写的"与"继承下来的"渲染成两种样子
+	// (继承值以灰字显示而**不预填进输入框**:预填会把一次继承变成一次显式覆盖,
+	// 此后模型分组改了默认备注,这一格再也不跟着变)。
+	NoteSource string `json:"note_source"`
+	// NotePending 为 true 表示**这一格写了备注、但它此刻对用户不生效**
+	// (Note != "" 而 NoteSource != grant)。今天唯一的成因是 mode != enforce。
+	//
+	// 单独一个布尔而不是让前端拿 note 与 note_source 自己比:那个比法是一条
+	// 隐式规则,而这条规则一旦漏在某个外壳上,那个外壳就会把 shadow 期写下的备注
+	// 画成已生效 —— 正是本字段要消灭的形状。
+	NotePending bool `json:"note_pending"`
 }
+
+// 说明文案阶梯的四级。与 Grant.Note 的注释一一对应。
+const (
+	NoteSourceGrant      = "grant"
+	NoteSourceModelGroup = "model_group"
+	NoteSourceWhitelist  = "usable_groups"
+	NoteSourceGroupName  = "group_name"
+)
 
 // 生效倍率的来源层。与 service.GetUserGroupRatio 的两个分支一一对应。
 const (
@@ -219,6 +367,22 @@ type matrixView struct {
 	ShadowWriteDenies []WriteDeny     `json:"shadow_write_denies"`
 	Partial           *savePartial    `json:"partial,omitempty"`
 
+	// SupportsGrantNote 恒为 true:本版本认 set_note / clear_note 两个动作。
+	//
+	// ══════════ 为什么要一个显式的能力位,而不是让前端嗅探 ══════════
+	//
+	// 嗅探("看看有没有哪一格带 note")在一个真实输入上给出错误答案:后端支持
+	// 按格备注、但站里此刻一条备注都没写过 —— 每一格都是空串,嗅探判定"不支持",
+	// 那一列永远不出现,功能上线即隐身。
+	//
+	// 反方向更贵:老后端不认这两个动作,新前端却画出输入框,运营敲进去的备注会和
+	// **同一次提交里的倍率与授权动作一起**被整体拒绝(这是一次两库写入,不是逐条
+	// 尽力)—— 表现是「改了备注之后连改价都保存不了」,而错误正文说的是一个他
+	// 没听说过的动作名。
+	//
+	// 一个常量布尔换掉这两种失败,值。
+	SupportsGrantNote bool `json:"supports_grant_note"`
+
 	// ScopePolicy 回答「一个用户分组没有出现在这份范围配置里,会发生什么」。
 	//
 	// 它必须随每一次矩阵回读一起下发,而不是让前端写死一句话:这条口径本轮刚刚
@@ -267,6 +431,25 @@ type scopePolicy struct {
 // 0.10000000000000001。这一页上每一个数字都会被运营当成报价读。
 func ratioText(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
+// effectiveTopupRatio 复刻**支付路径**对充值倍率的处置,一个 if 都不能少。
+//
+// controller/topup.go:158、topup_stripe.go:389 与 :403、topup_waffo.go:94、
+// topup_waffo_pancake.go:59 五处逐字相同:
+//
+//	ratio := common.GetTopupGroupRatio(group)   // 缺键 → 1 + 一条 SysError
+//	if ratio == 0 { ratio = 1 }                 // ← 显式 0 在这里被抬回 1
+//
+// 所以库里的 0 **不是免费**。管理端把它原样印成 0 的表现是:界面写着 0、
+// 收款按 1,而这个偏差不出现在任何告警里。本轮写侧已经拒绝 0
+// (groupns.validateTopupRatio),这个函数负责把**存量** 0 如实显示成 1,
+// 并由 matrixWarnings 单独出一句话。
+func effectiveTopupRatio(v float64) float64 {
+	if v == 0 {
+		return 1
+	}
+	return v
+}
+
 func adminGetMatrix(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagGroupMatrix) {
 		return
@@ -279,24 +462,62 @@ func adminGetMatrix(c *gin.Context) {
 	respond(c, view)
 }
 
-// buildMatrixView 组装矩阵的完整真实状态。
+// buildMatrixView 组装「用户分组」这一张表的完整真实状态。
+//
+// ══════════════ 它是这一页**唯一**的读接口 ══════════════
+//
+// 项目方的原话是「一个列表框即可」。上一轮为了同一张表要打三个请求
+// (矩阵 / 用户分组登记 / 模型分组登记),而三份数据各有各的刷新时机 ——
+// 前端拼出来的那一行,人数来自 A 时刻、可用清单来自 B 时刻、备注来自 C 时刻。
+// 运营照着它做的每一个决定都建立在一份从未同时存在过的状态上。
+//
+// 所以这里一次给全:分组名称 / 注册用户数 / 充值倍率 / 可用模型分组(名称清单)/
+// 分组备注 + 编辑弹窗要的每一格(勾选、倍率、备注)。前端**禁止**再去拼第二个接口。
 func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 	scopes, err := loadScopes(gdb)
 	if err != nil {
 		return nil, err
 	}
-	grants, err := loadGrants(gdb)
+	grantRows, err := loadGrantRows(gdb)
 	if err != nil {
 		return nil, err
+	}
+	grants := make(map[string]map[string]struct{}, len(grantRows))
+	grantNotes := make(map[string]map[string]string)
+	for _, r := range grantRows {
+		set, ok := grants[r.UserGroup]
+		if !ok {
+			set = map[string]struct{}{}
+			grants[r.UserGroup] = set
+		}
+		set[r.ModelGroup] = struct{}{}
+		if r.Note == "" {
+			continue
+		}
+		notes, ok := grantNotes[r.UserGroup]
+		if !ok {
+			notes = map[string]string{}
+			grantNotes[r.UserGroup] = notes
+		}
+		notes[r.ModelGroup] = r.Note
 	}
 	ratios, baseHash, err := loadRatioMatrix()
 	if err != nil {
 		return nil, err
 	}
 
-	userGroups, userCounts := listUserGroups(scopes)
+	userRegistry := loadUserGroupRegistry(gdb)
+	modelRegistry := loadModelGroupRegistry(gdb)
+	topupRatios := loadTopupRatios()
+	// **原文**而不是经备注覆盖之后的值:这一页要同屏显示"白名单里本来写着什么、
+	// 现在被哪一级盖成了什么"。拿覆盖后的值当第 3 级,阶梯会自己吃掉自己
+	// (GetUserUsableGroupsCopy 已经应用过第 2 级),于是 note_source 永远算不出
+	// model_group 这一档。
+	whitelist := setting.RawUserUsableGroupsCopy()
+
+	userGroups, userCounts, observed := listUserGroups(scopes, userRegistry, ratios, topupRatios)
 	activeTokens := activeTokenCounts()
-	modelGroups := listModelGroups()
+	modelGroups := listModelGroups(modelRegistry, whitelist)
 	// 套餐解锁的可达性。关掉开关时不查:那一档里通过套餐可达的格子确实不可达,
 	// 界面必须跟着变,否则它会显示一批"看起来通、实际不通"的格子。
 	planUnlocked := map[string][]string{}
@@ -325,21 +546,43 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 	rows := make([]userGroupRow, 0, len(userGroups))
 	for _, ug := range userGroups {
 		sc, managed := scopes[ug]
+		reg, registered := userRegistry[ug]
 		row := userGroupRow{
 			Name: ug, UserCount: userCounts[ug],
 			ActiveTokenCount: activeTokens[ug], Managed: managed,
+			Registered: registered, Observed: observed[ug],
+			DisplayName: reg.DisplayName, Note: reg.Note,
+			Enabled: reg.Enabled, SortOrder: reg.SortOrder,
 			// 未设定范围时下发 shadow 而不是空串:前端的 mode 是一个二值枚举,
 			// 空串会让它在 managed 被打开的那一刻落进"两个选项都没选中"的状态。
 			Mode: ModeShadow, ScopeState: ScopeStateUnset,
+			// nil 切片会被序列化成 JSON null,前端对着 null 调 .map 会白屏。
+			ModelGroups: make([]string, 0),
+			// 没配过充值倍率时 Ratio 留 null,而**生效值仍然要给**:
+			// 上游 GetTopupGroupRatio 在缺键时返回 1 并写一条 SysError,
+			// 那个 1 不是任何人配出来的。两个字段合起来才说得清这件事。
+			TopupRatioEffective: "1",
+		}
+		if v, ok := topupRatios[ug]; ok {
+			val := v
+			row.TopupRatio = &val
+			row.TopupRatioEffective = ratioText(effectiveTopupRatio(v))
 		}
 		switch {
 		case !managed:
 			// 未设定范围:allow_auto 的预填值 = 上游此刻是否已经把 auto 放行。
 			// 设定范围的开关打开时这就是零行为变更的那一份初值。
 			_, row.AllowAuto = upstreamUsable[ug][autoGroup]
+			// 自我补入只在"没设清单"这一档才可能发生:设了清单之后
+			// Resolve 完全由 grants 决定,上游那一步够不到。
+			// 判据与 service.GetUserUsableGroups 收窄后的那一条逐字同源。
+			if _, self := upstreamUsable[ug][ug]; self && ratio_setting.ContainsGroupRatio(ug) {
+				row.SelfInserted = true
+			}
 			policy.UnsetGroups++
 		default:
-			row.Mode, row.AllowAuto, row.Note = sc.Mode, sc.AllowAuto, sc.Note
+			row.Mode, row.AllowAuto, row.ScopeNote = sc.Mode, sc.AllowAuto, sc.Note
+			row.ScopeEnforced = sc.Mode == ModeEnforce
 			_, self := grants[ug][ug]
 			row.SelfExcluded = !self
 			if len(grants[ug]) == 0 {
@@ -353,9 +596,38 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 		rows = append(rows, row)
 	}
 
+	// ── 「可用模型分组」这一列直接从来源 map 算,**不经列轴** ──────────────
+	//
+	// 列轴是 options.GroupRatio 的键派生的,而一份清单完全可能引用一个已经从
+	// 倍率表里消失的模型分组。早先这一列在列轴循环内侧回填,于是那种行被画成
+	// 「一个都没有」—— 见 userGroupRow.ModelGroups 的注释。
+	for i, row := range rows {
+		names := make([]string, 0, len(grants[row.Name]))
+		if upstream, unmanaged := upstreamUsable[row.Name]; unmanaged {
+			for mg := range upstream {
+				names = append(names, mg)
+			}
+		} else {
+			for mg := range grants[row.Name] {
+				names = append(names, mg)
+			}
+		}
+		// auto 是伪分组,由 AllowAuto 单独表达。混进这一列会让运营把它当成一个池子。
+		filtered := names[:0]
+		for _, mg := range names {
+			if mg != autoGroup {
+				filtered = append(filtered, mg)
+			}
+		}
+		sort.Strings(filtered)
+		rows[i].ModelGroups = filtered
+	}
+
 	cells := make([]cellView, 0, len(userGroups)*len(modelGroups))
 	for _, ug := range userGroups {
 		upstream, unmanaged := upstreamUsable[ug]
+		// 按格备注只在 enforce 那一档被 Resolve 读到,管理端的解析必须用同一个判据。
+		enforced := !unmanaged && scopes[ug].Mode == ModeEnforce
 		for _, mg := range modelGroups {
 			granted := false
 			if unmanaged {
@@ -367,7 +639,10 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 				UserGroup: ug, ModelGroup: mg.Name, Granted: granted,
 				Source: SourceInherit, InheritedFrom: mg.BaseRatio,
 				ReachableByPlans: make([]string, 0),
+				Note:             grantNotes[ug][mg.Name],
 			}
+			cv.EffectiveNote, cv.NoteSource = resolveCellNote(cv.Note, mg.Note, whitelist, mg.Name, enforced)
+			cv.NotePending = cv.Note != "" && cv.NoteSource != NoteSourceGrant
 			cv.RatioSource = RatioSourceGroupRatio
 			if v, ok := ratios[ug][mg.Name]; ok {
 				val := v
@@ -415,7 +690,7 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 	return &matrixView{
 		UserGroups: rows, ModelGroups: modelGroups, Cells: cells,
 		BaseRatioHash: baseHash, Snapshot: snapInfo,
-		Warnings: matrixWarnings(userGroups, modelGroups, grants),
+		Warnings: matrixWarnings(userGroups, modelGroups, grants, topupRatios),
 		// 影子期的写入拒绝。它是**唯一可归因**的影子证据来源:
 		// 读侧那个挂载点拿不到被查询的 key(理由见 WriteDeny 的注释),
 		// 所以那一半的证据来自 preview 的日志聚合。
@@ -424,6 +699,7 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 		// 与没有观测是同一回事,只是更容易让人以为自己有证据。
 		ShadowWriteDenies: listWriteDenies(gdb),
 		ScopePolicy:       policy,
+		SupportsGrantNote: true,
 	}, nil
 }
 
@@ -479,14 +755,33 @@ func activeTokenCounts() map[string]int64 {
 	return out
 }
 
-// listUserGroups 汇总应当出现在矩阵行轴上的用户分组。
+// listUserGroups 汇总应当出现在「用户分组」这一张表上的名字。
 //
-// 三个来源的并集:users 表里在用的、已经被接管的、分组倍率表里登记的。
-// 少任何一个都会让某一类用户在界面上"不存在":在用但没被接管的会看不见,
-// 被接管但已经没人用的会在删掉最后一个用户后从界面消失(而 scope 行还在生效)。
-func listUserGroups(scopes map[string]Scope) ([]string, map[string]int64) {
+// ══════════════ 并集口径:观测 ∪ 登记 ∪ 以用户分组为键的配置 ══════════════
+//
+//	users.group                       观测值:此刻真的有人挂着的名字
+//	qy_user_groups                    登记表:运营登记出来的清单(含 0 人的新分组)
+//	qy_group_scopes                   设过范围的名字(它还在生效,不能从界面消失)
+//	options.GroupGroupRatio 的外层键   为这一档配过交叉倍率
+//	options.TopupGroupRatio 的键       为这一档配过充值倍率
+//
+// 后三者不是"多余的保险",它们各自都是**只能从这张表进入的配置**:一个 0 人、
+// 未登记但设过范围的名字若不显示,那条 scope 行会永远生效且无入口可改。
+//
+// ══════════════ options.GroupRatio 的键**刻意不在**这个并集里 ══════════════
+//
+// 那张表的键是**模型分组**(渠道池子)。上一轮把它并进行轴,于是「用户分组」页上
+// 列满了模型分组的名字 —— 一张本该回答"站上有哪几档人"的表,一半的行不是人。
+// 这正是项目方说的"搞得一团糟"里最直接的一条。
+//
+// 代价说明白:一个**只**在 GroupRatio 里出现、既没有用户也没有登记行、也没配过
+// 交叉/充值倍率的名字,从此不在这张表上。它本来就不是一个用户分组;真要把它变成
+// 一档人,走「新建用户分组」。
+func listUserGroups(scopes map[string]Scope, registry map[string]groupns.UserGroup,
+	crossRatios ratioMatrix, topup map[string]float64) (names []string, counts map[string]int64, observed map[string]bool) {
 	seen := map[string]struct{}{}
-	counts := map[string]int64{}
+	counts = map[string]int64{}
+	observed = map[string]bool{}
 
 	if model.DB != nil {
 		type row struct {
@@ -499,38 +794,120 @@ func listUserGroups(scopes map[string]Scope) ([]string, map[string]int64) {
 		err := groupByRaw(model.DB.Model(&model.User{}).
 			Select(col+" as grp, count(*) as n"), col).Scan(&rows).Error
 		if err != nil {
-			common.SysError("qianye/groupmatrix: 统计用户分组失败(行轴仍会展示已接管与倍率表里的分组): " + err.Error())
+			common.SysError("qianye/groupmatrix: 统计用户分组失败" +
+				"(表上仍会展示登记表、已设范围与配过倍率的分组,但**在册用户数会全部显示为 0**): " + err.Error())
 		}
 		for _, r := range rows {
 			if r.Grp == "" {
 				continue
 			}
 			seen[r.Grp] = struct{}{}
+			observed[r.Grp] = true
 			counts[r.Grp] = r.N
 		}
+	}
+	for name := range registry {
+		seen[name] = struct{}{}
 	}
 	for name := range scopes {
 		seen[name] = struct{}{}
 	}
-	for name := range ratio_setting.GetGroupRatioCopy() {
-		if name == autoGroup {
+	for name, row := range crossRatios {
+		if len(row) == 0 {
 			continue
 		}
 		seen[name] = struct{}{}
 	}
-
-	out := make([]string, 0, len(seen))
-	for name := range seen {
-		out = append(out, name)
+	for name := range topup {
+		seen[name] = struct{}{}
 	}
-	sort.Strings(out)
-	return out, counts
+	delete(seen, "")
+	delete(seen, autoGroup)
+
+	names = make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, counts, observed
+}
+
+// loadUserGroupRegistry 读出登记表 qy_user_groups(备注 / 显示名 / 启停 / 排序)。
+//
+// ══════════════ 读失败为什么只降级不报错 ══════════════
+//
+// 登记表是 fail-open 的(见 groupns/model.go):它不参与路由、不参与鉴权、不参与
+// 计费,只提供给人看的属性。读不到它的时候,这张表仍然应该能打开并显示人数、
+// 可用清单与倍率 —— 那些才是运营在出事时要看的。整体 500 掉的表现是
+// 「扩展库抖一下,用户分组页就打不开」,而打不开的时刻正是最需要它的时刻。
+//
+// 代价是 registered 会全部显示成 false。这不是无声的:失败写 SysError,
+// 而且"整站一条登记都没有"本身就是一个显眼到不可能被忽略的界面状态。
+func loadUserGroupRegistry(gdb *gorm.DB) map[string]groupns.UserGroup {
+	out := map[string]groupns.UserGroup{}
+	if gdb == nil {
+		return out
+	}
+	var rows []groupns.UserGroup
+	if err := gdb.Order("sort_order asc, name asc").Find(&rows).Error; err != nil {
+		common.SysError("qianye/groupmatrix: 读取用户分组登记表失败" +
+			"(备注/显示名/排序会显示为空,registered 一律 false;人数与可用清单不受影响): " + err.Error())
+		return out
+	}
+	for _, row := range rows {
+		if row.Name == "" {
+			continue
+		}
+		out[row.Name] = row
+	}
+	return out
+}
+
+// loadModelGroupRegistry 读出登记表 qy_model_groups(备注 = 说明文案阶梯的第 2 级)。
+// 失败方向与 loadUserGroupRegistry 同源。
+func loadModelGroupRegistry(gdb *gorm.DB) map[string]groupns.ModelGroup {
+	out := map[string]groupns.ModelGroup{}
+	if gdb == nil {
+		return out
+	}
+	var rows []groupns.ModelGroup
+	if err := gdb.Order("sort_order asc, name asc").Find(&rows).Error; err != nil {
+		common.SysError("qianye/groupmatrix: 读取模型分组登记表失败" +
+			"(模型分组备注会显示为空;倍率与可选清单不受影响): " + err.Error())
+		return out
+	}
+	for _, row := range rows {
+		if row.Name == "" {
+			continue
+		}
+		out[row.Name] = row
+	}
+	return out
+}
+
+// loadTopupRatios 解出 options.TopupGroupRatio(用户分组 → 充值倍率)。
+//
+// 解析失败返回空 map 而不是错误:充值倍率与本页其余列毫无关系,
+// 让一段坏 JSON 把整张表打不开是把一处配置错误放大成一次页面故障。
+// 缺键与 0 的区分交给调用方(见 userGroupRow.TopupRatio 的 *float64)。
+func loadTopupRatios() map[string]float64 {
+	out := map[string]float64{}
+	raw := common.TopupGroupRatio2JSONString()
+	if raw == "" {
+		return out
+	}
+	if err := common.UnmarshalJsonStr(raw, &out); err != nil {
+		common.SysError("qianye/groupmatrix: 上游 TopupGroupRatio 不是合法 JSON," +
+			"充值倍率一律显示为「未配置」: " + err.Error())
+		return map[string]float64{}
+	}
+	return out
 }
 
 // listModelGroups 汇总列轴。判据是分组倍率表 —— 与上游
 // middleware/auth.go 的 ContainsGroupRatio 同源,不在这张表里的分组
 // 即使授权了也会被上游用「分组已被弃用」挡掉。
-func listModelGroups() []modelGroupRow {
+func listModelGroups(registry map[string]groupns.ModelGroup, whitelist map[string]string) []modelGroupRow {
 	ratios := ratio_setting.GetGroupRatioCopy()
 	withChannels := groupsWithEnabledAbilities()
 
@@ -539,12 +916,44 @@ func listModelGroups() []modelGroupRow {
 		if name == autoGroup {
 			continue
 		}
+		reg := registry[name]
+		desc, selectable := whitelist[name]
 		out = append(out, modelGroupRow{
-			Name: name, BaseRatio: ratioText(ratio), HasChannels: withChannels[name],
+			Name: name, DisplayName: reg.DisplayName, Note: reg.Note,
+			BaseRatio: ratioText(ratio), HasChannels: withChannels[name],
+			// 「用户可选」的判据是**键存不存在**,不是 value 有没有内容:
+			// 一个 value 为空串的键仍然是"放行",而按 value 判会把它读成"没放行",
+			// 于是运营删掉一段说明文案就顺手把一个分组从全站下拉里撤了。
+			UserSelectable: selectable, UsableDescription: desc,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// resolveCellNote 走一遍说明文案阶梯,返回最终文案与它来自哪一级。
+//
+// **全站只有这一处实现管理端口径**,而它必须与 Resolve(用户口径)结论相同:
+// 第 1 级在 Resolve 里叠加,第 2~4 级由 setting.QyDescribeGroup 持有,
+// 这里只是把同样两步按显示需要拆开命名。写第二份 if 链的表现是
+// 「管理端预览的文案与用户看到的不是同一段」。
+//
+// enforced 为 false 时**跳过第 1 级**:那一档的 Resolve 逐位返回上游,
+// 按格备注一个字节都不生效。把它算进来的表现是管理端把一段用户永远看不到的
+// 文字显示成"已生效",而运营在 shadow 期做的正是"先配好再切 enforce"、
+// 核对文案用的正是这个字段。
+func resolveCellNote(grantNote, modelGroupNote string, whitelist map[string]string, modelGroup string, enforced bool) (string, string) {
+	if enforced && grantNote != "" {
+		return grantNote, NoteSourceGrant
+	}
+	if modelGroupNote != "" {
+		return modelGroupNote, NoteSourceModelGroup
+	}
+	if desc, ok := whitelist[modelGroup]; ok && desc != "" {
+		return desc, NoteSourceWhitelist
+	}
+	// 最后一级与 setting.GetUsableGroupDescription 的兜底逐字一致:分组名本身。
+	return modelGroup, NoteSourceGroupName
 }
 
 // groupsWithEnabledAbilities 取 abilities 里所有仍有启用渠道的模型分组。
@@ -569,8 +978,23 @@ func groupsWithEnabledAbilities() map[string]bool {
 }
 
 // matrixWarnings 列出保存前应当被看见、但**不拦截**的问题。
-func matrixWarnings(userGroups []string, modelGroups []modelGroupRow, grants map[string]map[string]struct{}) []string {
+func matrixWarnings(userGroups []string, modelGroups []modelGroupRow,
+	grants map[string]map[string]struct{}, topupRatios map[string]float64) []string {
 	warns := make([]string, 0)
+
+	// 存量充值倍率 0。写侧本轮起拒绝它,但库里可能已经有 ——
+	// 它既不免费也不按 0 收,支付路径会把它抬回 1(见 effectiveTopupRatio)。
+	// 不说出来的话,那一行显示「配置值 0 / 生效值 1」而没有任何解释。
+	for _, ug := range userGroups {
+		v, ok := topupRatios[ug]
+		if !ok || v > 0 {
+			continue
+		}
+		warns = append(warns, fmt.Sprintf(
+			"【需要处理】用户分组 %q 的充值倍率是 %s,而支付路径会把非正的充值倍率抬回 1 收款 —— "+
+				"它既不是免费也不是打折。请在这一档的编辑弹窗里改成一个大于 0 的数,或清空它(清空 = 按 1 收款)",
+			ug, ratioText(v)))
+	}
 
 	// 大小写近似项。**刻意不折叠**:倍率侧 GetGroupGroupRatio 是精确 map 查找、
 	// 在 3 条计费路径里、我们无权改。折叠成员资格而不折叠倍率会造出
@@ -724,7 +1148,7 @@ func adminPutMatrix(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	if err := validateCells(cells, scopes); err != nil {
+	if err := validateCells(cells, scopes, beforeGrants); err != nil {
 		badRequest(c, err.Error())
 		return
 	}
@@ -831,20 +1255,66 @@ func requirePreviewedRevoke(req putMatrixReq, cells []Cell) error {
 
 // validateCells 是写入侧的第一道校验。快照编译时还会再跑一次同样的判据 ——
 // 分组可能在保存之后被从倍率表删掉,只在保存时把关拦不住那种漂移。
-func validateCells(cells []Cell, scopes map[string]Scope) error {
+//
+// 报错正文是给**运营**看的,不是给写 curl 的人看的:早先这里写的是
+// 「请先用 PUT /group-matrix/scope/:ug 建立 scope 行」,而收到它的人手上只有一个
+// 弹窗。现在一律指向界面上真实存在的那个控件。
+func validateCells(cells []Cell, scopes map[string]Scope, before map[string]map[string]struct{}) error {
+	// 本次保存**之后**每一格的成员资格。按格备注只 UPDATE 不 INSERT
+	// (见 applyGrantCells),所以给一个保存后仍然没有 grant 行的格子写备注,
+	// 落库时会命中 0 行、事务照常提交、接口 200、审计写「改备注 1 项」,
+	// 而库里一个字节都没变 —— 运营多半会以为是自己没点上,于是重复操作。
+	// 静默丢弃在这里被换成一句能照着做的话。
+	after := make(map[string]map[string]struct{}, len(before))
+	for ug, set := range before {
+		row := make(map[string]struct{}, len(set))
+		for mg := range set {
+			row[mg] = struct{}{}
+		}
+		after[ug] = row
+	}
 	for _, cell := range cells {
-		if cell.Action != ActionGrant && cell.Action != ActionRevoke {
+		switch cell.Action {
+		case ActionGrant:
+			if after[cell.UserGroup] == nil {
+				after[cell.UserGroup] = map[string]struct{}{}
+			}
+			after[cell.UserGroup][cell.ModelGroup] = struct{}{}
+		case ActionRevoke:
+			delete(after[cell.UserGroup], cell.ModelGroup)
+		}
+	}
+
+	for _, cell := range cells {
+		if cell.Action != ActionGrant && cell.Action != ActionRevoke &&
+			cell.Action != ActionSetNote && cell.Action != ActionClearNote {
 			continue
 		}
 		if _, managed := scopes[cell.UserGroup]; !managed {
-			return fmt.Errorf("用户分组 %q 尚未接管,不能编辑它的可选清单 —— "+
-				"请先用 PUT /group-matrix/scope/%s 建立 scope 行(建议先用 shadow 模式)",
-				cell.UserGroup, cell.UserGroup)
+			// set_note 也走这一道:按格备注只在权威清单生效的那一档被读到
+			// (见 Resolve),给一个没设范围的用户分组写备注等于写一条死配置,
+			// 而它会在管理端回读时显示出来 —— 运营会以为已经配好了。
+			return fmt.Errorf("用户分组 %q 还没有自己的可用模型分组清单,所以现在还不能勾选模型分组、"+
+				"也不能给某一格单独写备注。请先在这一档的编辑弹窗里、「可用范围的力度」那一段把范围打开"+
+				"(先选「影子」只观察不拦人,确认无误再切「强制」),再回到下面的清单里勾选与写备注。",
+				cell.UserGroup)
 		}
 		if cell.Action == ActionGrant && !ratio_setting.ContainsGroupRatio(cell.ModelGroup) {
 			return fmt.Errorf("模型分组 %q 不在分组倍率表里,授权它没有意义 —— "+
-				"上游会在请求时用「分组 %s 已被弃用」把用户挡掉", cell.ModelGroup, cell.ModelGroup)
+				"上游会在请求时用「分组 %s 已被弃用」把用户挡掉。请先到「模型分组」页把它加回去",
+				cell.ModelGroup, cell.ModelGroup)
 		}
+		if cell.Action != ActionSetNote && cell.Action != ActionClearNote {
+			continue
+		}
+		if _, granted := after[cell.UserGroup][cell.ModelGroup]; !granted {
+			return fmt.Errorf("模型分组 %q 不在用户分组 %q 的可用清单里,给它写的备注保存不下来 —— "+
+				"备注是「这一档人看这个池子」的说明,那一格得先勾上。请在同一次保存里把它勾上,或者先撤掉这条备注。",
+				cell.ModelGroup, cell.UserGroup)
+		}
+		// shadow 期的备注写得进库,但读侧逐位返回上游 —— 用户一个字都看不到。
+		// 拒绝它是错的(运营正当地"先配好再切 enforce"),静默接受也是错的。
+		// 这里不拦,由回读时的 note_pending 在界面上说明,见 cellView.NotePending。
 	}
 	return nil
 }
@@ -943,6 +1413,32 @@ func applyGrantCells(gdb *gorm.DB, cells []Cell, operatorId int) error {
 				OperatorId: operatorId, CreatedAt: now, UpdatedAt: now,
 			}
 			if err := tx.Create(row).Error; err != nil {
+				return err
+			}
+		}
+		// ── 按格备注放在最后 ────────────────────────────────────────────
+		//
+		// 排在 grant 之后是必需的:同一次保存里「勾上这个模型分组 + 给它写一句备注」
+		// 是一次点击的两个动作,备注先跑会撞上"这一格还没有行"而被静默丢掉,
+		// 于是运营看到分组勾上了、备注没了。
+		//
+		// **只 UPDATE,不 INSERT。** 没有 grant 行的格子不可选,给它写备注等于
+		// 造一条 Resolve 永远遍历不到的死配置;而它会在管理端回读时显示出来,
+		// 让运营以为那一格已经配好了。RowsAffected == 0 是正常结局(备注没变),
+		// 不作为错误 —— 但也正因如此,这里不能靠它判断"格子存不存在"。
+		for _, cell := range cells {
+			if cell.Action != ActionSetNote && cell.Action != ActionClearNote {
+				continue
+			}
+			if cell.Note == nil {
+				continue
+			}
+			err := tx.Model(&Grant{}).
+				Where("user_group = ? AND model_group = ?", cell.UserGroup, cell.ModelGroup).
+				Updates(map[string]any{
+					"note": *cell.Note, "operator_id": operatorId, "updated_at": now,
+				}).Error
+			if err != nil {
 				return err
 			}
 		}
@@ -1248,19 +1744,24 @@ func matrixAuditEntry(c *gin.Context, action string, cells []Cell, before any, e
 		BeforeSnap: snapshotJSON(before),
 		AfterSnap:  snapshotJSON(cells),
 	}
-	grant, revoke, reprice := 0, 0, 0
+	grant, revoke, reprice, renote := 0, 0, 0, 0
 	for _, cell := range cells {
 		switch cell.Action {
 		case ActionGrant:
 			grant++
 		case ActionRevoke:
 			revoke++
+		case ActionSetNote, ActionClearNote:
+			renote++
 		default:
 			reprice++
 		}
 	}
 	// **撤销单独计数**:它是唯一会打断线上流量的操作类型,不能和改价混进一个数字。
-	e.Reason = fmt.Sprintf("矩阵改动:放开 %d 项 / 撤销 %d 项 / 改价 %d 项", grant, revoke, reprice)
+	// 备注同样单独计数:它是一段**面向用户**的文案(显示在建 key 的分组下拉里),
+	// 与改价混在一起会让"这次到底改了钱还是改了字"事后分不出来。
+	e.Reason = fmt.Sprintf("矩阵改动:放开 %d 项 / 撤销 %d 项 / 改价 %d 项 / 改备注 %d 项",
+		grant, revoke, reprice, renote)
 	if err != nil {
 		e.Result = qymodel.ResultFail
 		e.Reason = "失败(已回滚): " + err.Error() + " | " + e.Reason

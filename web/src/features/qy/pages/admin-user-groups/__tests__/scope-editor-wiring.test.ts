@@ -85,7 +85,7 @@ describe('分组范围编辑器只有一份实现', () => {
   })
 })
 
-describe('用户分组表：弹窗配置，不再跳转（需求 4）', () => {
+describe('用户分组表：合并成一张，编辑走弹窗', () => {
   const section = readFileSync(
     join(featuresDir, 'system-settings', 'groups', 'user-groups-section.tsx'),
     'utf8'
@@ -93,25 +93,51 @@ describe('用户分组表：弹窗配置，不再跳转（需求 4）', () => {
 
   test('操作列打开的是弹窗', () => {
     assert.ok(
-      section.includes('QyUgScopeDialog'),
-      '「配置可用模型分组」必须就地开弹窗'
+      section.includes('QyUgGroupDialog'),
+      '「编辑」必须就地开弹窗：跳走会卸载本 section'
     )
   })
 
   test('不再存在通往 group-matrix 那一页的行内跳转', () => {
     assert.ok(
       !section.includes("section: 'group-matrix'"),
-      '跳走会卸载本 section，运营正在编辑的充值折扣草稿随之丢失'
+      '那个 section 已经下线，链接会把人弹回「额度设置」'
     )
   })
 
-  test('【可用模型分组】列列的是名字，不是个数', () => {
-    // 项目方原话：「直接把模型分组名称显示上去，如：免费の渠道、浅夜の梦专属
-    // 号池」。退回成个数不会有任何测试变红，只会让那一列重新变得无法回答
-    // 「这一档人到底能用到哪几个池子」。
+  test('只有一张表：不再单独挂一张「用户分组登记」卡片', () => {
+    /*
+      项目方原话：「用户分组这一页，这两个可以合并成一个。明明一个很简单的问题
+      为什么这么搞这么复杂？」
+
+      判据取那张登记卡片的组件名。合并之后它整体没了（新建 / 改名 / 删除并进
+      合并表的操作列与编辑弹窗），而"再挂回来"是这一页最容易复发的形状 ——
+      加一个组件不会让任何测试变红，页面看起来只是"多了一块"。
+    */
     assert.ok(
-      section.includes('qyUgGrantedModelGroups'),
-      '名单必须与矩阵页 / 弹窗同源，不能在这里另算一份'
+      !section.includes('QyUserGroupRoster'),
+      '登记表与观测表并排 = 内部数据模型泄漏到界面上'
+    )
+  })
+
+  test('【可用模型分组】列直接用服务端下发的名字清单', () => {
+    /*
+      项目方原话：「直接把模型分组名称显示上去，如：免费の渠道、浅夜の梦专属
+      号池」。
+
+      判据取 `model_groups` 这个字段名。它是后端算好的那一列 —— 在"设了范围"
+      与"没设范围"下取值方式完全不同（前者读清单，后者读上游
+      `GetUserUsableGroups` 的实际结果），而后者的判据只有后端有。在这一页
+      自己 filter 一遍 `cells` 的漂移方向是「表里列了 3 个、点开弹窗只有 2 个」，
+      而运营对着矛盾的数字最可能的动作是重配一遍 —— 重配的动作恰好是撤销与改价。
+    */
+    assert.ok(
+      section.includes('model_groups'),
+      '名单必须用服务端下发的那一份，不能在这里另算一份'
+    )
+    assert.ok(
+      !section.includes('qyGmIndexCells'),
+      '这一页不该再从 cells 里推可用清单'
     )
   })
 })

@@ -58,9 +58,60 @@ For commercial licensing, please contact support@quantumnous.com
  */
 export type QyGmMode = 'enforce' | 'shadow'
 
-/** 矩阵的一行。 */
+/**
+ * 「用户分组」表的一行 —— **整张表只有这一份数据源**。
+ *
+ * ── 为什么它带着登记表的列 ──
+ *
+ * 管理端此前并排两张表：「用户分组」（从 `users.group` 观测出来的）与
+ * 「用户分组登记」（运营在 `qy_user_groups` 里登记出来的）。那个区分是内部
+ * 数据模型的事，它被原样搬到界面上就成了两张名字几乎一样、内容互相重叠的表。
+ *
+ * 本轮后端把差异收成两个布尔（{@link registered} / {@link observed}）并只下发
+ * 一张表：清单 = 观测值 ∪ 登记表 ∪ 只存在于 options 键里的死配置。
+ *
+ * **前端不得再自己合并一遍。** 「哪些名字算数」的判据（三个来源、以及
+ * `model_groups` 那一列在设范围 / 没设范围下取值方式不同）只有后端知道全部，
+ * 重推一遍必然漂移成「这张表列了 3 个、点开弹窗只有 2 个」。
+ */
 export type QyGmUserGroup = {
   name: string
+  /** 登记表里的展示名。`registered` 为 false 时是空串（不是"没填"，是没有行）。 */
+  display_name: string
+  /**
+   * 项目方点名的「用户分组备注」列。
+   *
+   * ⚠ 与 {@link scope_note} 是两件事：这一条说「这一档人是谁」，那一条说
+   * 「为什么给这一档设了范围」。
+   */
+  note: string
+  enabled: boolean
+  sort_order: number
+  /** `qy_user_groups` 里有这一行。false = 只被观测到，编辑时后端自动补登记。 */
+  registered: boolean
+  /** `users.group` 里此刻真的有人挂着这个名字。 */
+  observed: boolean
+  /**
+   * 充值倍率 `options.TopupGroupRatio[分组名]`。
+   *
+   * **`null` = 没配过**（上游回落 1 并写一条 SysError），**`0` = 显式配成 0**
+   * （充值金额恒为 0 元）。两者在收款上差一个全额，界面上必须分得开。
+   */
+  topup_ratio: number | null
+  /**
+   * 此刻**真的会被乘进充值金额**的那个数（十进制字符串）。
+   *
+   * 没配过时它是 `"1"` 而 `topup_ratio` 是 `null` —— 两个字段合起来才说得清
+   * 「按 1 收钱，但那个 1 不是任何人配出来的」。
+   */
+  topup_ratio_effective: string
+  /**
+   * 项目方点名的「可用模型分组」列 —— **名称清单，不是个数**。
+   *
+   * 设了范围时 = 清单；没设范围时 = 上游 `GetUserUsableGroups` 的实际结果。
+   * 直接渲染它，不要从 `cells` 里再过滤一遍。
+   */
+  model_groups: string[]
   /** 在册人数（`users.group` 命中数）。 */
   user_count: number
   /** 启用且近 30 天有访问的令牌数 —— 「撤销会打断谁」的分母。 */
@@ -68,15 +119,15 @@ export type QyGmUserGroup = {
   /**
    * 是否**已设定范围**（`qy_group_scopes` 有没有这一行）。
    *
-   * `false` = 未设定范围 = 全部模型分组可用、各按兜底倍率，与上游逐位一致。
-   * 界面文案一律说「未设定范围 / 已设定范围」，**绝不使用「已接管 / 未接管」** ——
-   * 新口径下「未接管」会被读成「不能用」，而它的真实含义恰好相反。
+   * `false` = 未设定范围 = 按每个模型分组自己的「用户可选」开关来。
+   * 界面文案**绝不使用「已接管 / 未接管」** —— 新口径下「未接管」会被读成
+   * 「不能用」，而它的真实含义恰好相反。
    */
   managed: boolean
   /**
    * 行头三态的**权威取值**，由后端下发。
    *
-   *   - `unset` 未设定范围：全部模型分组可用，各按兜底倍率。
+   *   - `unset` 未设定范围：按模型分组自己的「用户可选」开关来。
    *   - `set`   已设定范围：只可用清单里的那些。
    *   - `empty` 已设定范围但清单为空：一个模型分组都不可用（红色）。
    *
@@ -89,10 +140,28 @@ export type QyGmUserGroup = {
    */
   scope_state: 'empty' | 'set' | 'unset'
   mode: QyGmMode
+  /**
+   * 这份清单**此刻真的在限制人**吗。
+   *
+   * `scope_state === 'set'` 只说明"配过清单"，而 `mode = shadow` 的清单一个
+   * 字节都不生效。两者摆在一起会让界面显示成"已设范围"而实际谁都拦不住 ——
+   * 项目方的口径「设了可用模型分组则用户只能选这些」对应的**只有 enforce**。
+   */
+  scope_enforced: boolean
   /** 是否把 `auto` 伪分组注回可选清单。 */
   allow_auto: boolean
-  /** 运营备注，接管理由写在这里。 */
-  note?: string
+  /** 范围行上的运营说明（接管理由）。见 {@link note} 的区分。 */
+  scope_note: string
+  /** 权威清单不含这个用户分组自己。**警告而不是拦截**。 */
+  self_excluded: boolean
+  /**
+   * 这一档人能选到**与自己同名的模型分组**，而这一条既不来自可用清单、
+   * 也不来自「用户可选」开关，来自上游最后一步的自我补入。
+   *
+   * 它是「没设清单 = 按模型分组的用户可选开关」这条规则**唯一的例外**，
+   * 而一条隐式规则不写在界面上就等于没有规则。
+   */
+  self_inserted: boolean
 }
 
 /** 矩阵的一列。 */
@@ -107,6 +176,32 @@ export type QyGmModelGroup = {
   base_ratio: string
   /** 该模型分组下是否还有启用的渠道。false 时格子上出「没有渠道」的提示。 */
   has_channels: boolean
+  /** 登记表里的展示名。没登记过时是空串。 */
+  display_name: string
+  /**
+   * 该模型分组的**默认备注**（`qy_model_groups.note`）。
+   *
+   * 项目方原话：「用户分组分配模型分组的时候若不填写则显示分组备注（默认），
+   * 若填写以用户分组的模型分组备注优先显示」。所以它在配置弹窗里是**按格备注
+   * 输入框的 placeholder**（= 不填时用户会看到的那一句），不是预填值 ——
+   * 预填之后运营随手保存一遍就把默认备注固化成一份复制品，此后改默认备注
+   * 再也影响不到它，而没有任何人做过这个决定。
+   *
+   * 它同时是「模型分组」那张表上项目方点名的**分组备注**列。
+   */
+  note: string
+  /**
+   * 该模型分组自己的「用户可选」开关（= 它在 `options.UserUsableGroups` 里有键）。
+   *
+   * 用户分组**没设**可用清单时唯一的判据（项目方原话：「若没有配置模型分组，
+   * 则用户可选选中的…全部都可以选择」）。
+   */
+  user_selectable: boolean
+  /**
+   * 全局白名单 `options.UserUsableGroups` 里那一行的**原文** —— 说明文案阶梯的
+   * 第 3 级。与 {@link note} 同屏显示，运营才看得出哪一段此刻在生效。
+   */
+  usable_description: string
 }
 
 /** 倍率的来源。`inherit` 时 `ratio` 恒为 `null`。 */
@@ -178,6 +273,51 @@ export type QyGmCell = {
    * 这个说"扣钱时乘几"。后端未下发时为 `undefined`。
    */
   effective_ratio?: string
+  /**
+   * **按格备注**（`qy_group_grants.note`）—— 这一档人在创建令牌、挑这个模型
+   * 分组时看到的那一句。
+   *
+   * ── 与倍率不同，这里 `''` 与「未配置」是同一件事 ──
+   *
+   * 倍率必须区分 `null`（继承）与 `0`（显式免费），因为两者的差价是全额。
+   * 备注没有这个性质：一句空备注就是「没有备注」，行为上等同于回落模型分组的
+   * 默认备注。所以它是 `string`，不是 `string | null` —— 造一个"显式的空备注"
+   * 状态只会多出一个无法在界面上表达、也没有任何行为差异的第三态。
+   *
+   * 优先级链（后端 `service.QyUsableGroupsForUser` 负责，界面只显示）：
+   * 按格备注 > 模型分组默认备注 > `options.UserUsableGroups` 里的历史文案。
+   *
+   * 优先级链由后端解析并下发（{@link effective_note} / {@link note_source}）：
+   * 按格备注 > 模型分组默认备注 > 白名单原文 > 分组名。
+   */
+  note: string
+  /**
+   * 用户在**建 key 选分组**时真正会看到的那一段文案。
+   *
+   * 与 {@link note} 的区别：那一个是输入框里的值（这一格自己写了什么），
+   * 这一个是解析完阶梯之后的结果。阶梯有四级、其中两级在上游 setting 包里，
+   * 前端再实现一遍的表现是「管理端预览的文案与用户看到的不是同一段」。
+   *
+   * 它**包含生效条件**：按格备注只在 `mode=enforce` 那一档被读到，所以影子档
+   * 的这个字段给出的是继承来的那一段，而不是这一格自己写的那句。
+   */
+  effective_note: string
+  /**
+   * 这一格写了备注、但它此刻对用户**不生效**（今天唯一的成因是 `mode=shadow`）。
+   *
+   * 由后端下发而不是前端拿 {@link note} 与 {@link note_source} 自己比：那条比法
+   * 是一条隐式规则，漏在任何一个外壳上，那个外壳就会把影子期写下的备注画成
+   * 「已生效」—— 而运营验收看的正是管理端这一屏。
+   */
+  note_pending: boolean
+  /**
+   * {@link effective_note} 来自阶梯的哪一级。
+   *
+   * 界面据此把「这一格自己写的」与「继承下来的」渲染成两种样子：继承值以灰字
+   * 显示在 placeholder 里而**不预填进输入框** —— 预填会把一次继承变成一次显式
+   * 覆盖，此后模型分组改了默认备注，这一格再也不跟着变。
+   */
+  note_source: 'grant' | 'group_name' | 'model_group' | 'usable_groups'
 }
 
 /** 快照健康度。`loaded:false` 时全站按上游白名单放行，必须显式说出来。 */
@@ -276,8 +416,19 @@ export type QyGmScopePolicy = {
  *   - `grant` / `revoke`      改可选性（扩展库）
  *   - `set_ratio`             写 `GroupGroupRatio[用户分组][模型分组]`，`ratio` 必填
  *   - `clear_ratio`           删那个 key，回落兜底；`ratio` 恒为 `null`
+ *   - `set_note`              写 `qy_group_grants.note`（按格备注）；
+ *                             **空串 = 清掉这一格的备注**，回落模型分组默认备注。
+ *                             刻意没有 `clear_note`：备注只有"有一句"与"没有"
+ *                             两种，而空串就是后者 —— 多一个动作只会多一条
+ *                             与它完全等价、却要在两侧各实现一遍的路径。
+ *                             它**不改成员资格、不改倍率**，也不会凭空建 grant 行。
  */
-export type QyGmAction = 'clear_ratio' | 'grant' | 'revoke' | 'set_ratio'
+export type QyGmAction =
+  | 'clear_ratio'
+  | 'grant'
+  | 'revoke'
+  | 'set_note'
+  | 'set_ratio'
 
 export type QyGmCellChange = {
   user_group: string
@@ -285,6 +436,14 @@ export type QyGmCellChange = {
   action: QyGmAction
   /** 仅 `set_ratio` 有值。其余动作恒为 `null`（不是省略，见文件头的说明）。 */
   ratio: number | null
+  /**
+   * 仅 `set_note` 出现，其余动作上**整个字段缺席**。
+   *
+   * 后端侧是 `*string`：「不传」与「传空串」必须分得开 —— 空串是运营主动**清掉**
+   * 备注（回落模型分组默认备注），不传是这条动作根本没打算改备注。所以这里也
+   * 只在 `set_note` 上给值，其余动作一个字段都不多带。
+   */
+  note?: string
 }
 
 /**
