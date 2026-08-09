@@ -95,7 +95,41 @@ type UserGroupImpact struct {
 	Deletable bool `json:"deletable"`
 	// BlockReason 在 Deletable 为 false 时说明原因。
 	BlockReason string `json:"block_reason,omitempty"`
+	// BlockCode 是 BlockReason 的**机器可读版本**,取值见 UserGroupBlock* 常量。
+	//
+	// 为什么不让前端去 match 那段中文:BlockReason 回答的是「为什么不能删」,
+	// 而运营站在弹窗前真正要问的下一个问题是「那我该干什么」。后者是一条与
+	// 界面强相关的指路(去哪一页、改哪个字段),写死在后端正文里就没法随界面
+	// 改版一起改;而按中文子串去猜分支,任何一次文案润色都会静默让指路消失。
+	BlockCode string `json:"block_code,omitempty"`
+
+	// Renamable / RenameBlock* 与上面三个同形,回答的是**改名**能不能进行。
+	//
+	// 改名与删除共用一道 block 残留闸门(见 adminRenameUserGroup 的注释:
+	// 对一份冻结的引用来说"改个名"与"删掉"完全等价),所以两者必须在同一份
+	// 影响面里一起给出 —— 否则运营会发现"删不掉就改个名",而那是同一次事故
+	// 换了个入口,并且他要等到提交之后才知道这条路也走不通。
+	Renamable         bool   `json:"renamable"`
+	RenameBlockReason string `json:"rename_block_reason,omitempty"`
+	RenameBlockCode   string `json:"rename_block_code,omitempty"`
 }
+
+// 拒绝删除 / 改名的分支代码。
+//
+// 它们是**契约的一部分**:前端按这几个值给出「下一步该做什么」的指路文案
+// (见 web/src/features/qy/pages/admin-user-groups/roster/lib/gates.ts)。
+// 新增一条拒绝分支时必须同时新增一个代码并在前端登记,否则那一条分支在界面上
+// 只剩一句"为什么不行"、没有"那我该干什么" —— 而后者才是运营下一步要做的事。
+const (
+	// UserGroupBlockDefault:default 是 users.group 的数据库默认值,永不可删、永不可改名。
+	UserGroupBlockDefault = "upstream_default"
+	// UserGroupBlockPlans:套餐的升级/降级分组指向它。
+	UserGroupBlockPlans = "blocking_plans"
+	// UserGroupBlockResidues:某个模块声明了处置为 block 的残留。
+	UserGroupBlockResidues = "blocking_residues"
+	// UserGroupBlockNoTarget:这一档还有人,但站上没有第二个已登记分组可迁。
+	UserGroupBlockNoTarget = "no_migration_target"
+)
 
 // MigrationTarget 是迁移目标下拉的一项。
 type MigrationTarget struct {
@@ -188,33 +222,68 @@ func buildUserGroupImpact(ctx context.Context, gdb *gorm.DB, name string) (*User
 	}
 	out.Targets = targets
 
-	out.Deletable, out.BlockReason = deletability(out)
+	out.Deletable, out.BlockCode, out.BlockReason = deletability(out)
+	out.Renamable, out.RenameBlockCode, out.RenameBlockReason = renamability(name, out.Residues)
 	return out, nil
 }
 
-// deletability 汇总"现在能不能删"以及为什么不能。
-func deletability(impact *UserGroupImpact) (bool, string) {
+// deletability 汇总"现在能不能删"、属于哪一条拒绝分支、以及为什么不能。
+func deletability(impact *UserGroupImpact) (bool, string, string) {
 	if normalizeGroupKey(impact.Name) == upstreamDefaultUserGroup {
-		return false, "default 是 users.group 这一列的数据库默认值 —— 删掉它之后," +
-			"任何一次没有显式指定分组的建号都会落进一个不存在的分组。这一档不可删除"
+		return false, UserGroupBlockDefault,
+			"default 是 users.group 这一列的数据库默认值 —— 删掉它之后," +
+				"任何一次没有显式指定分组的建号都会落进一个不存在的分组。这一档不可删除"
 	}
 	if len(impact.BlockingPlans) > 0 {
-		return false, "以下套餐的升级/降级分组指向它,删掉之后下一个买家会被放进一个" +
-			"不存在的分组并按 fail-open 的 1.0 倍计费:" + strings.Join(impact.BlockingPlans, "、") +
-			"。请先在套餐里改掉这两处引用"
+		return false, UserGroupBlockPlans,
+			"以下套餐的升级/降级分组指向它,删掉之后下一个买家会被放进一个" +
+				"不存在的分组并按 fail-open 的 1.0 倍计费:" + strings.Join(impact.BlockingPlans, "、") +
+				"。请先在套餐里改掉这两处引用"
 	}
 	if len(impact.Blocking) > 0 {
-		labels := make([]string, 0, len(impact.Blocking))
-		for _, row := range impact.Blocking {
-			labels = append(labels, fmt.Sprintf("%s(%s,%d 行)", row.Label, row.Table, row.Rows))
-		}
-		return false, "以下配置指向它且必须由人来决定新值:" + strings.Join(labels, "、")
+		return false, UserGroupBlockResidues,
+			"以下配置指向它且必须由人来决定新值:" + describeBlockingResidues(impact.Blocking)
 	}
 	if len(impact.Targets) == 0 && impact.Users > 0 {
-		return false, "这一档还有用户,但站上没有第二个已登记的用户分组可以迁 —— " +
-			"请先新建一个目标分组"
+		return false, UserGroupBlockNoTarget,
+			"这一档还有用户,但站上没有第二个已登记的用户分组可以迁 —— " +
+				"请先新建一个目标分组"
 	}
-	return true, ""
+	return true, "", ""
+}
+
+// renamability 汇总"现在能不能改名"、属于哪一条拒绝分支、以及为什么不能。
+//
+// 它同时被影响面接口与改名端点调用,这是刻意的:两处各写一遍必然漂移,而漂移的
+// 方向是"界面说能改、提交下去 400"。前者让运营在**打开弹窗时**就看见这条路走
+// 不通,后者是最终把关。
+//
+// 与 deletability 的差别只有两条:改名不需要迁移目标(没有人会变成孤儿),
+// 也不受套餐引用影响(rewriteUserGroup 会把套餐的升降级分组一起改掉)。
+// 剩下的两条 —— default 与 block 残留 —— 逐字相同。
+func renamability(name string, residues []Residue) (bool, string, string) {
+	if normalizeGroupKey(name) == upstreamDefaultUserGroup {
+		return false, UserGroupBlockDefault,
+			"default 是 users.group 这一列的数据库默认值 —— 改掉它之后,任何一次没有显式指定" +
+				"分组的建号都会落进一个不存在的分组。这一档不可改名"
+	}
+	if blocking := BlockingResidues(residues); len(blocking) > 0 {
+		return false, UserGroupBlockResidues,
+			"以下配置指向它且改不动(它们是冻结值),必须由人来先处理:" +
+				describeBlockingResidues(blocking)
+	}
+	return true, "", ""
+}
+
+// describeBlockingResidues 把 block 残留列成"名称(表名,N 行)"。
+//
+// 表名必须在里面:运营要能拿着它去核对,而"某处配置"这种说法换不来任何行动。
+func describeBlockingResidues(blocking []Residue) string {
+	labels := make([]string, 0, len(blocking))
+	for _, row := range blocking {
+		labels = append(labels, fmt.Sprintf("%s(%s,%d 行)", row.Label, row.Table, row.Rows))
+	}
+	return strings.Join(labels, "、")
 }
 
 // upstreamDefaultUserGroup 是 model.User.Group 上 gorm:"default:'default'" 兜底出来的值。
@@ -696,31 +765,28 @@ func adminRenameUserGroup(c *gin.Context) {
 		badRequest(c, "qy_groupns_invalid_name", err.Error())
 		return
 	}
-	if normalizeGroupKey(from) == upstreamDefaultUserGroup {
-		badRequest(c, "qy_groupns_protected",
-			"default 是 users.group 这一列的数据库默认值 —— 改掉它之后,任何一次没有显式指定"+
-				"分组的建号都会落进一个不存在的分组。这一档不可改名")
-		return
-	}
-
 	// 改名也要过 block 闸门。
 	//
 	// 直觉上 block 是"删除专用"的:删除让名字消失,改名只是换个字。但对一份
 	// **冻结的、动不了的**引用来说两者完全等价 —— 抽奖活动的参与名单在发布时
 	// 进了 commit_hash,改名之后那份名单指着一个再也没有人的名字,与被删掉一样。
 	// 少了这一道,运营会发现"删不掉就改个名",而那是同一次事故换了个入口。
+	//
+	// 判据与影响面接口下发给界面的那一份**是同一个函数**(renamability):
+	// 两处各写一遍的表现是"弹窗说能改、按下去 400"。
 	residues, err := ProbeResidues(gdb.WithContext(c), from)
 	if err != nil {
 		internalError(c, err)
 		return
 	}
-	if blocking := BlockingResidues(residues); len(blocking) > 0 {
-		labels := make([]string, 0, len(blocking))
-		for _, row := range blocking {
-			labels = append(labels, fmt.Sprintf("%s(%s,%d 行)", row.Label, row.Table, row.Rows))
+	if ok, code, reason := renamability(from, residues); !ok {
+		// 两个历史错误码保持不变:default 那条是"这一档天生如此",残留那条是
+		// "先去处理别的东西",调用方(以及既有测试)按码分流。
+		if code == UserGroupBlockDefault {
+			badRequest(c, "qy_groupns_protected", reason)
+			return
 		}
-		badRequest(c, "qy_groupns_rename_blocked",
-			"以下配置指向它且改不动(它们是冻结值),必须由人来先处理:"+strings.Join(labels, "、"))
+		badRequest(c, "qy_groupns_rename_blocked", reason)
 		return
 	}
 

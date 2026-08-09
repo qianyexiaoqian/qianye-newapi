@@ -72,6 +72,24 @@ export type QyUgrTarget = {
   enabled: boolean
 }
 
+/**
+ * 拒绝删除 / 改名的分支代码，与后端 `groupns.UserGroupBlock*` 常量同值。
+ *
+ * 后端下发的 `block_reason` 回答的是「为什么不行」；运营站在弹窗前要问的下一个
+ * 问题是「那我该干什么」，而那是一条与界面强相关的指路（去哪一页、改哪个字段），
+ * 只能由前端给。**按 `block_reason` 的中文子串去猜分支是不行的** —— 任何一次
+ * 文案润色都会静默让指路消失，而消失之后界面看起来完全正常。
+ */
+export type QyUgrBlockCode =
+  /** 套餐的升级/降级分组指向它。 */
+  | 'blocking_plans'
+  /** 某个模块声明了处置为 block 的残留（冻结值，只有人能决定新值）。 */
+  | 'blocking_residues'
+  /** 这一档还有人，但站上没有第二个已登记分组可迁。 */
+  | 'no_migration_target'
+  /** `default` 是 `users.group` 的数据库默认值，永不可删、永不可改名。 */
+  | 'upstream_default'
+
 /** 删除确认弹窗的全部内容。 */
 export type QyUgrImpact = {
   name: string
@@ -93,6 +111,18 @@ export type QyUgrImpact = {
    */
   deletable: boolean
   block_reason?: string
+  /** `block_reason` 的机器可读版本。见 {@link QyUgrBlockCode}。 */
+  block_code?: QyUgrBlockCode
+  /**
+   * 改名能不能进行 —— 与删除**共用同一道 block 残留闸门**。
+   *
+   * 对一份冻结的引用来说「改个名」与「删掉」完全等价，所以后端两处走同一个
+   * `renamability`。它下发到这里是为了让运营在打开弹窗时就看见这条路也走不通，
+   * 而不是删不掉之后去试改名、再吃一个提交后的 400。
+   */
+  renamable: boolean
+  rename_block_reason?: string
+  rename_block_code?: QyUgrBlockCode
 }
 
 /**

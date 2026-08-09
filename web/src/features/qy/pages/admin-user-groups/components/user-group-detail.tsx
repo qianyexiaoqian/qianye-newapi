@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Boxes, Settings2, TriangleAlert } from 'lucide-react'
+import { useId } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
@@ -102,6 +103,16 @@ type QyUgGroupDetailProps = {
  */
 export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
   const { t } = useTranslation()
+
+  /*
+    每一行的勾选框都要有一个**可见**的标签，而 `<label htmlFor>` 需要一个 id。
+
+    在这里取一次前缀、行内拼下标，而不是把整行拆成一个子组件只为了能调
+    `useId()`：下标在同一次渲染的列表里唯一，而这个前缀在组件实例的整个生命周期
+    里稳定。名字本身不能当 id —— 分组名是运营自由输入的字符串（站里已经有
+    `浅夜の梦专属号池` 这类名字），空格与特殊字符会拼出无效的 id。
+  */
+  const toggleIdPrefix = useId()
 
   const scoped = props.userGroup.scope_state !== 'unset'
   const emptyScope = props.userGroup.scope_state === 'empty'
@@ -209,16 +220,48 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
         {t('qy_group_matrix_axis_col_title')}
       </div>
 
+      {/*
+        没设范围时下面每一行的勾选框都是禁用的，而**禁用本身不解释自己**。
+
+        上面的副标已经说了「未设定范围」意味着什么，但那是一句状态陈述；运营在
+        这一屏真正会做的动作是「去点那些勾选框」，所以指路必须紧贴清单、并且
+        指向同屏那个真的能解决问题的控件。缺这一句时，界面的表现是"一排点不动的
+        灰勾选框，屏幕上没有一个字说为什么" —— 与项目方在删除按钮上投诉的是同一
+        个形状。
+
+        ── `where` 必须跟着外壳走 ──
+
+        这个组件有两个外壳，而它们的范围入口**不是同一个东西**：编辑弹窗把范围
+        表单内嵌在同屏上一节（标题就是 `qy_ug_scope_section`），独立页则在详情面
+        板右上角放一枚按钮（文案 `qy_group_scope_edit`）。写死其中一个，另一个外
+        壳上的运营就会照着指路去找一段根本不存在的东西 —— 那与"屏幕上没有一个
+        字"是同一类失败，只是换成了指错路。判据用 `onEditScope`（第 152 行渲染那
+        枚按钮的同一个判据），并且 `where` 直接取那个控件**自己的**文案键：控件
+        改名时这句指路跟着改，不会留下一句谁也没在维护的旧称呼。
+      */}
+      {!scoped && (
+        <p className='text-muted-foreground rounded-md border border-dashed p-2 text-xs leading-5'>
+          {t('qy_ug_grant_needs_scope', {
+            where:
+              props.onEditScope != null
+                ? t('qy_group_scope_edit')
+                : t('qy_ug_scope_section'),
+          })}
+        </p>
+      )}
+
       <ul
         className={cn(
           'min-h-0 space-y-1',
           (props.scrollList ?? true) && 'max-h-[52vh] overflow-y-auto'
         )}
       >
-        {props.data.model_groups.map((column) => {
+        {props.data.model_groups.map((column, index) => {
           const key = qyGmCellKey(props.userGroup.name, column.name)
           const cell = props.serverCells.get(key)
           const entry = props.draft.get(key)
+          const granted = qyGmGrantedOf(cell, entry)
+          const toggleId = `${toggleIdPrefix}-${index}`
           return (
             <li
               key={column.name}
@@ -226,14 +269,47 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
             >
               <div className='min-w-0'>
                 <div className='flex flex-wrap items-center gap-1.5'>
-                  <span
-                    className='min-w-0 truncate text-xs font-medium'
+                  {/*
+                    模型分组名就是那一格勾选框的标签。绑上 `htmlFor` 之后点名字
+                    即可切换（一行里最大的那块可点区域），读屏也念得出这个勾选框
+                    管的是哪一个模型分组 —— 光靠格子里那个 `aria-label` 的话，
+                    可见文字与控件之间在 DOM 上没有任何关联，而这一列恰好是运营
+                    唯一用来定位"我在改哪一行"的东西。
+                  */}
+                  <label
+                    htmlFor={toggleId}
+                    className={cn(
+                      'min-w-0 truncate text-xs font-medium',
+                      scoped && 'cursor-pointer'
+                    )}
                     title={t('qy_group_matrix_col_label', {
                       modelGroup: column.name,
                     })}
                   >
                     {column.name}
-                  </span>
+                  </label>
+                  {/*
+                    「已放开 / 未放开」写成字，不只靠勾选框的形状。
+
+                    这一列一屏能排十几行，而勾选框的选中态是一个 16px 的色块；
+                    运营在这一屏要回答的第一个问题是「这一档现在到底开了哪几个」，
+                    那是一次**扫描**而不是一次逐格辨认。文字状态让扫描成立，
+                    也让"我刚才那一下点中了没有"当场可见 —— 顶部计数条要滚到
+                    上面才看得到。
+                  */}
+                  <Badge
+                    variant='outline'
+                    className={cn(
+                      'px-1 py-0 text-[10px]',
+                      granted
+                        ? 'border-success/50 text-success'
+                        : 'text-muted-foreground'
+                    )}
+                  >
+                    {granted
+                      ? t('qy_ug_grant_state_on')
+                      : t('qy_ug_grant_state_off')}
+                  </Badge>
                   <Badge
                     variant='outline'
                     className='text-muted-foreground px-1 py-0 text-[10px] tabular-nums'
@@ -261,15 +337,16 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
                 modelGroup={column.name}
                 cell={cell}
                 entry={entry}
-                granted={qyGmGrantedOf(cell, entry)}
+                granted={granted}
                 ratio={qyGmRatioDraftOf(cell, entry)}
                 baseRatio={column.base_ratio}
                 scoped={scoped}
                 reachableVia={cell?.reachable_via}
                 planTitles={cell?.plan_titles}
                 selfEdge={column.name === props.userGroup.name}
-                onToggleGranted={(granted) =>
-                  props.onToggleGranted(column.name, granted)
+                toggleId={toggleId}
+                onToggleGranted={(next) =>
+                  props.onToggleGranted(column.name, next)
                 }
                 onRatioChange={(ratio) =>
                   props.onRatioChange(column.name, ratio)
@@ -295,7 +372,7 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
                   value={qyGmNoteDraftOf(cell, entry)}
                   scoped={scoped}
                   enforced={props.userGroup.scope_enforced}
-                  granted={qyGmGrantedOf(cell, entry)}
+                  granted={granted}
                   onChange={(note) => props.onNoteChange?.(column.name, note)}
                 />
               )}

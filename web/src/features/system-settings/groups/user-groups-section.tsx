@@ -40,8 +40,10 @@ import {
   qyUgrDelete,
   qyUgrImpactQuery,
 } from '@/features/qy/pages/admin-user-groups/roster/api'
+import { QyUgrActionBlockNote } from '@/features/qy/pages/admin-user-groups/roster/components/action-block-note'
 import { QyUgrCreateDialog } from '@/features/qy/pages/admin-user-groups/roster/components/create-dialog'
 import { QyUgrDeleteDialog } from '@/features/qy/pages/admin-user-groups/roster/components/delete-dialog'
+import { qyUgrDeleteEntry } from '@/features/qy/pages/admin-user-groups/roster/lib/gates'
 import type { QyUgrCreateRequest } from '@/features/qy/pages/admin-user-groups/roster/types'
 import { qyOpsErrorMessage } from '@/features/qy/pages/ops/errors'
 
@@ -489,40 +491,60 @@ export function UserGroupsSection(props: {
             header: t('Actions'),
             className: 'text-right',
             cellClassName: 'text-right',
-            cell: (row) => (
-              <div className='flex justify-end gap-1'>
-                <Button
-                  type='button'
-                  variant='outline'
-                  size='sm'
-                  onClick={() => setEditing(row.name)}
-                >
-                  <SlidersHorizontal className='h-4 w-4' />
-                  {t('Edit')}
-                </Button>
-                <Button
-                  type='button'
-                  variant='ghost'
-                  size='sm'
-                  aria-label={t('Delete')}
-                  // 未登记的名字在登记表里没有行，删除端点无从下手。禁用而不是
-                  // 隐藏：藏起来会让运营以为这一档删不掉，而它其实只差一次补登记。
-                  disabled={!row.registered}
-                  title={
-                    row.registered
-                      ? undefined
-                      : t('qy_ug_delete_needs_registry')
-                  }
-                  onClick={() => {
-                    setMigrateTo('')
-                    setAck(false)
-                    setDeleting(row)
-                  }}
-                >
-                  <Trash2 className='h-4 w-4' />
-                </Button>
-              </div>
-            ),
+            cell: (row) => {
+              /*
+                ── 删除入口：短标签留在行上，完整理由留给弹窗 ────────────────
+
+                此前理由塞在按钮的 `title` 上。禁用的按钮在多数浏览器上不派发
+                指针事件，那句解释因此永远不出现 —— 项目方原话「我选择了其他
+                分组仍然无法删除」，他点了、没反应、也没有任何解释。
+
+                但把 `default` 这一档的按钮直接关掉又走过了头：删除弹窗是全站
+                唯一渲染后端 `block_reason` 的地方，关掉按钮等于让后端那段写得
+                很清楚的理由（以及按 `block_code` 给出的替代做法）永远到不了
+                屏幕，运营读到的只是前端另写的一份副本。所以这里只印一句短的
+                状态标签，按钮照常打开弹窗，由弹窗给全原因与下一步。
+
+                真正关掉按钮的只有一种：删除端点的 `lookupUserGroup` 根本寻址
+                不到这个名字（没有登记行、users.group 里也没有人挂着）。
+              */
+              const deleteEntry = qyUgrDeleteEntry(row)
+              return (
+                <div className='flex flex-col items-end gap-1'>
+                  <div className='flex justify-end gap-1'>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      onClick={() => setEditing(row.name)}
+                    >
+                      <SlidersHorizontal className='h-4 w-4' />
+                      {t('Edit')}
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='sm'
+                      aria-label={t('Delete')}
+                      // 禁用而不是隐藏：藏起来会让运营以为这一行本来就没有
+                      // 删除这个动作，而实际上它只是此刻寻址不到。
+                      disabled={!deleteEntry.enabled}
+                      onClick={() => {
+                        setMigrateTo('')
+                        setAck(false)
+                        setDeleting(row)
+                      }}
+                    >
+                      <Trash2 className='h-4 w-4' />
+                    </Button>
+                  </div>
+                  <QyUgrActionBlockNote
+                    noteKey={deleteEntry.noteKey}
+                    className='max-w-64 text-right'
+                  />
+                </div>
+              )
+            },
           },
         ]}
       />

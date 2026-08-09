@@ -16,9 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { CornerDownRight, Package, Plus, TriangleAlert, X } from 'lucide-react'
+import { CornerDownRight, Package, TriangleAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 
@@ -52,6 +53,15 @@ export type QyGmMatrixCellProps = {
   planTitles?: string[]
   /** 对角线格（用户分组 == 模型分组），带那条反直觉提示。 */
   selfEdge: boolean
+  /**
+   * 勾选框的 DOM id，供外壳把**可见的**行标题拿 `<label htmlFor>` 绑上去。
+   *
+   * 缺省时勾选框只有 `aria-label`（整页矩阵里没有可当标题用的可见文字，
+   * 每一格的行列身份由粘性行头与列头给出）。配置弹窗那一列有模型分组名，
+   * 绑上之后名字本身成为勾选框的标签：点名字即可切换，读屏也念得出这个
+   * 勾选框管的是哪一个模型分组。
+   */
+  toggleId?: string
   onToggleGranted: (granted: boolean) => void
   onRatioChange: (draft: QyGmRatioDraft) => void
 }
@@ -103,9 +113,17 @@ export function QyGmMatrixCell(props: QyGmMatrixCellProps) {
   const viaPlan = props.reachableVia === 'plan' || props.reachableVia === 'both'
 
   const names = { userGroup: props.userGroup, modelGroup: props.modelGroup }
-  const toggleLabel = props.granted
-    ? t('qy_group_matrix_cell_revoke_label', names)
-    : t('qy_group_matrix_cell_denied', names)
+  /*
+    勾选框的标签说的是**这一格代表什么**，不是"点下去会发生什么"。
+
+    早先这里按 granted 在「撤销 X 对 Y 的可选性」与「X 选不了 Y，点击放开」之间
+    切换，因为当时的控件是一个只画动作图标（＋ / ✕）的裸按钮。换成勾选框之后
+    那套文案会当场反过来：勾中态本身已经念作"已选中"，再叠一句「撤销…」，读屏
+    读出来的是"已选中，撤销 X 对 Y 的可选性"，而运营用眼睛看到的 ✕ 同样出现在
+    **已放开**的行上 —— 项目方那句"一行里没有任何可以勾选的东西"正是这么来的：
+    控件在，但它画的是动作，人找的是状态。状态归勾选框，标签归身份。
+  */
+  const toggleLabel = t('qy_gm_cell_grant_toggle', names)
   // 未设定范围的行两个方向都点不动，提示要先说清楚这一点；对角线格则要先说
   // 那条反直觉的事实（删掉对角线不会让这一档的人发不出请求）。
   let toggleTitle = toggleLabel
@@ -126,10 +144,51 @@ export function QyGmMatrixCell(props: QyGmMatrixCellProps) {
         props.selfEdge && !dirty && 'bg-muted/40'
       )}
     >
+      {/*
+        可选性开关 —— **一个真的勾选框，在这一格的最前面**。
+
+        它此前是一个贴在格子最右端、`size-3` 的裸图标按钮（未放开画 ＋、已放开
+        画 ✕）。三件事叠在一起让它在界面上等于不存在：
+          · 图标画的是**动作**不是**状态**，于是"已放开"的那些行上显示的是一个 ✕，
+            运营扫一眼读到的是"这行被禁掉了"，恰好与事实相反；
+          · 它紧贴倍率输入框的右内边，看起来像输入框自带的"清空"角标；
+          · 12px、`text-muted-foreground/60`，且完全没有文字。
+        项目方的原话是「一行里没有任何可以勾选的东西」—— 回调链路四层全通，
+        控件也在，但没有人认得出它是控件。所以这里换成尺寸、形状、选中态都
+        与全站一致的 `Checkbox`，并挪到行首：一格的第一个像素就回答"这一格
+        现在放开了没有"。
+
+        放在倍率输入框**前面**还有一个附带好处：勾选框与倍率是两份独立的数据
+        （可选性落 `qy_group_grants`，倍率落上游 `options.GroupGroupRatio`），
+        排在输入框里侧时它看起来像输入框的一部分。
+
+        ── 未设定范围的行**两个方向都禁用** ──
+        那一档的人本来就能用全部模型分组，往它头上写 grant / revoke 生成的动作
+        后端一律拒绝，而运营从界面上看不出保存为什么失败。禁用而不是隐藏：
+        隐藏会让这一页退回到项目方投诉的那个形状（找不到可勾的东西），
+        而禁用态的勾选框仍然在原位说明"这里本该有一个开关"，`title` 与外壳上的
+        那句说明再补上"先去设定范围"。
+      */}
+      <Checkbox
+        id={props.toggleId}
+        checked={props.granted}
+        disabled={!props.scoped}
+        onCheckedChange={(checked) => props.onToggleGranted(checked)}
+        aria-label={toggleLabel}
+        title={toggleTitle}
+        /*
+          禁用态挂 `data-disabled:` 而不是 `disabled:`：Base UI 的勾选框渲染成
+          一个 `<span role=checkbox aria-disabled>`（原生 `<input>` 是旁边那个
+          隐藏的镜像），而 Tailwind 的 `disabled:` 变体只对真的带 `disabled`
+          属性的表单元素生效 —— 共用组件里那两条 `disabled:opacity-50` 在这里
+          一条都不会命中，未设定范围的那一整档会画得和可点的一模一样。
+        */
+        className='ms-1.5 shrink-0 data-disabled:cursor-not-allowed data-disabled:opacity-50'
+      />
       {inherit && (
         <CornerDownRight
           aria-hidden='true'
-          className='text-muted-foreground/60 ms-1 size-3 shrink-0'
+          className='text-muted-foreground/60 size-3 shrink-0'
         />
       )}
       {/*
@@ -213,30 +272,6 @@ export function QyGmMatrixCell(props: QyGmMatrixCellProps) {
           <Package aria-hidden='true' className='size-2.5' />
         </span>
       )}
-      {/*
-        可选性开关。未设定范围的行**两个方向都禁用**：那一档的人本来就能用全部
-        模型分组，往它头上写 grant / revoke 生成的动作后端一律拒绝，而运营从界面
-        上看不出保存为什么失败。要限制就先给这个分组设定范围。
-      */}
-      <button
-        type='button'
-        disabled={!props.scoped}
-        onClick={() => props.onToggleGranted(!props.granted)}
-        aria-label={toggleLabel}
-        title={toggleTitle}
-        className={cn(
-          'focus-visible:ring-ring me-0.5 shrink-0 rounded p-0.5 focus-visible:ring-2 focus-visible:outline-none',
-          props.scoped
-            ? 'text-muted-foreground/60 hover:text-destructive cursor-pointer'
-            : 'cursor-not-allowed opacity-40'
-        )}
-      >
-        {props.granted ? (
-          <X aria-hidden='true' className='size-3' />
-        ) : (
-          <Plus aria-hidden='true' className='size-3' />
-        )}
-      </button>
     </div>
   )
 }

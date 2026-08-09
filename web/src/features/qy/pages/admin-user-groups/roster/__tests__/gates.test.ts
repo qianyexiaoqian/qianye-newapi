@@ -19,7 +19,12 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { qyUgrDeleteBlock, qyUgrGroupChanges } from '../lib/gates'
+import {
+  qyUgrDeleteBlock,
+  qyUgrDeleteEntry,
+  qyUgrGroupChanges,
+  qyUgrRenameEntryBlock,
+} from '../lib/gates'
 import type { QyUgrImpact, QyUgrMigrationDiff } from '../types'
 
 /**
@@ -43,6 +48,7 @@ function impact(patch: Partial<QyUgrImpact>): QyUgrImpact {
     deletable: true,
     empty_group_tokens: 0,
     name: '临时档',
+    renamable: true,
     residues: [],
     subscriptions: 0,
     targets: [],
@@ -62,6 +68,110 @@ function diff(patch: Partial<QyUgrMigrationDiff>): QyUgrMigrationDiff {
     ...patch,
   }
 }
+
+/*
+  ── 入口级闸门只许照抄后端真的有的那一条 ──────────────────────────────
+
+  这一组防的是前端**自己发明拒绝**。它比"漏一条闸门"更难发现：界面看起来
+  完全正常，只是某一类行永远做不了某个动作，而给出的理由指向一条走不通的路。
+
+  两条真实判据（逐字对齐 `qianye/modules/groupns/usergroup_admin.go`）：
+
+    删除  `adminDeleteUserGroup` → `lookupUserGroup`：**不要求登记行**，
+          只要求"有登记行 或 users.group 里有人挂着"。注释原文写着
+          「只在 users.group 里的历史遗留分组同样要能删」。
+    改名  `adminRenameUserGroup` 第一句 `Take(&before)`：没有登记行直接 400。
+*/
+describe('qyUgrDeleteEntry', () => {
+  test('未登记但有人挂着 —— 后端明说这一类要能删,入口不许拦', () => {
+    const entry = qyUgrDeleteEntry({
+      name: '历史遗留档',
+      registered: false,
+      user_count: 37,
+    })
+    assert.equal(
+      entry.enabled,
+      true,
+      '这正是后端注释点名"最需要被清掉的那一类"。拦住它等于要求运营先把一个' +
+        '正要删掉的分组建出来 —— 一整步毫无意义的操作'
+    )
+    assert.equal(entry.noteKey, null)
+  })
+
+  test('default 能打开弹窗 —— 后端那段拒绝理由只有弹窗渲染得出来', () => {
+    const entry = qyUgrDeleteEntry({
+      name: 'default',
+      registered: true,
+      user_count: 12,
+    })
+    assert.equal(
+      entry.enabled,
+      true,
+      '删除弹窗是全站唯一渲染 impact.block_reason 的地方。入口就关掉的话,' +
+        '后端 deletability() 对 default 写的那段理由与替代做法永远到不了屏幕,' +
+        '运营读到的只是前端另写的一份没有任何一致性检查的副本'
+    )
+    assert.equal(
+      entry.noteKey,
+      'qy_ug_delete_default_note',
+      '按钮能按不等于删得掉 —— 行上仍要有一句短的先说清楚'
+    )
+  })
+
+  test('大小写与空白按后端 normalizeGroupKey 折叠', () => {
+    assert.equal(
+      qyUgrDeleteEntry({ name: ' Default ', registered: true, user_count: 1 })
+        .noteKey,
+      'qy_ug_delete_default_note'
+    )
+  })
+
+  test('既没登记行、也没人挂着 —— 删除端点寻址不到,这一条才真的关按钮', () => {
+    const entry = qyUgrDeleteEntry({
+      name: '只剩倍率键',
+      registered: false,
+      user_count: 0,
+    })
+    assert.equal(entry.enabled, false)
+    assert.equal(
+      entry.noteKey,
+      'qy_ug_delete_not_addressable',
+      '关掉按钮时**必须**同时给出文案：一个按不动又不解释的按钮正是本次投诉'
+    )
+  })
+
+  test('普通的已登记分组：能按,且不留一句常驻的废话', () => {
+    const entry = qyUgrDeleteEntry({
+      name: 'qy-canary-ug',
+      registered: true,
+      user_count: 3,
+    })
+    assert.deepEqual(entry, { enabled: true, noteKey: null })
+  })
+})
+
+describe('qyUgrRenameEntryBlock', () => {
+  test('改名确实要求登记行 —— 端点第一句就 Take(&before)', () => {
+    assert.equal(
+      qyUgrRenameEntryBlock({ name: '历史遗留档', registered: false }),
+      'unregistered'
+    )
+  })
+
+  test('未登记的 default 先说 default —— 补完登记它照样改不了名', () => {
+    assert.equal(
+      qyUgrRenameEntryBlock({ name: 'default', registered: false }),
+      'upstream_default'
+    )
+  })
+
+  test('已登记的普通分组不拦 —— block 残留那一条由影响面在弹窗里给', () => {
+    assert.equal(
+      qyUgrRenameEntryBlock({ name: 'qy-canary-ug', registered: true }),
+      null
+    )
+  })
+})
 
 describe('qyUgrDeleteBlock', () => {
   test('影响面还没到达时按钮必须是禁用的', () => {

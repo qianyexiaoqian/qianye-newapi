@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Eye, EyeOff } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -36,8 +36,14 @@ import { useQyGmEditor } from '../../admin-group-matrix/lib/use-editor'
 import type { QyGmUserGroup } from '../../admin-group-matrix/types'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { qyUgParseTopupInput, qyUgTopupInputOf } from '../lib/merged-rows'
-import { qyUgrRename, qyUgrUpdate } from '../roster/api'
+import { qyUgrImpactQuery, qyUgrRename, qyUgrUpdate } from '../roster/api'
+import { QyUgrActionBlockNote } from '../roster/components/action-block-note'
 import { QyUgrRenameDialog } from '../roster/components/rename-dialog'
+import {
+  QY_UGR_BLOCK_NEXT_STEP_KEY,
+  QY_UGR_RENAME_ENTRY_BLOCK_KEY,
+  qyUgrRenameEntryBlock,
+} from '../roster/lib/gates'
 import { QyUgGroupDetail } from './user-group-detail'
 
 /**
@@ -370,6 +376,28 @@ function QyUgBasicsSection(props: {
   const topupParsed = qyUgParseTopupInput(topup)
   const dirty = note !== serverNote || topup !== serverTopup
 
+  /*
+    ── 改名的四条拒绝分支，全部要在**点开改名弹窗之前**就说出来 ──────────
+
+    入口级判据只答得出两条：`default` 永远改不了名、未登记的名字在登记表里
+    没有行（改名端点第一句 `Take(&before)` 就 400）。后端 `renamability()`
+    还有第三条 —— 处置为 block 的残留（抽奖名单在发布时进了 commit_hash，
+    对一份冻结的引用来说"改个名"与"删掉"完全等价）。那一条要服务端探测。
+
+    只接前两条的表现是：有残留的那一档改名按钮亮着，运营输完新名字、提交，
+    吃一个 400 —— 与项目方投诉的形状完全一致（动作被静默挡住、屏幕上事先无
+    字），只是从删除挪到了改名。而唯一的预告写在**删除弹窗**里，要求他先去
+    点删除，可他此刻做的是改名。
+
+    所以这里拉一次影响面。它只在弹窗打开时挂载（Base UI 的 Portal 不
+    keepMounted），一次冷请求换掉一次注定失败的提交。目标传空串：改名不需要
+    迁移目标，那一段 diff 也就不必算。
+  */
+  const impactQuery = useQuery({ ...qyUgrImpactQuery(name, ''), retry: false })
+  const impact = impactQuery.data ?? null
+  const renameEntryBlock = qyUgrRenameEntryBlock(props.row)
+  const renameBlocked = renameEntryBlock != null || impact?.renamable === false
+
   return (
     <section className='space-y-3 rounded-lg border p-3'>
       <h3 className='text-sm font-medium'>{t('qy_ug_basics_section')}</h3>
@@ -415,43 +443,77 @@ function QyUgBasicsSection(props: {
         </div>
       </div>
 
-      <div className='flex flex-wrap justify-end gap-2'>
-        {/*
-          改名单独一个按钮、单独一个确认弹窗。
+      <div className='flex flex-col items-end gap-1'>
+        <div className='flex flex-wrap justify-end gap-2'>
+          {/*
+            改名单独一个按钮、单独一个确认弹窗。
 
-          它要横跨两个库改六处（`users.group`、已售订阅的三列快照、套餐升降级
-          分组、`GroupGroupRatio` 的外层键、`TopupGroupRatio` 的键，以及各模块
-          声明的范围/授权/费率/划转规则）。任何一处漏掉的表现都是「一批账号挂在
-          一个不存在的分组上、按 1.0 兜底扣费」且静默。它绝不能和上面那个存备注
-          的按钮共用一次点击。
+            它要横跨两个库改六处（`users.group`、已售订阅的三列快照、套餐升降级
+            分组、`GroupGroupRatio` 的外层键、`TopupGroupRatio` 的键，以及各模块
+            声明的范围/授权/费率/划转规则）。任何一处漏掉的表现都是「一批账号挂在
+            一个不存在的分组上、按 1.0 兜底扣费」且静默。它绝不能和上面那个存备注
+            的按钮共用一次点击。
+
+            禁用时的理由印在按钮下面，**不放 `title`**：禁用的按钮在多数浏览器上
+            不派发指针事件，`title` 永远不出现。改名与删除是同一种病 —— 后端
+            `renamability` 对 `default` 与 block 残留同样拒绝，而此前这里只是把
+            按钮变灰。
+          */}
+          <Button
+            type='button'
+            size='sm'
+            variant='outline'
+            disabled={renameBlocked}
+            onClick={() => {
+              setNewName(name)
+              setRenaming(true)
+            }}
+          >
+            {t('qy_ugr_rename_action')}
+          </Button>
+          <Button
+            type='button'
+            size='sm'
+            disabled={
+              saveMutation.isPending || !dirty || topupParsed.kind === 'invalid'
+            }
+            onClick={() => saveMutation.mutate()}
+          >
+            {saveMutation.isPending ? t('Saving...') : t('Save')}
+          </Button>
+        </div>
+        {/*
+          影响面回来之后，理由用**后端原话** + 按 `rename_block_code` 给的指路。
+
+          前端那两句只是短状态标签（"系统默认档" / "还没有正式建立"），
+          在影响面到达之前顶着；一旦后端说得出话就让位给后端 —— 两份文本各写
+          一遍必然漂移，而漂移的方向是界面上留着一句谁也没在维护的旧口径。
         */}
-        <Button
-          type='button'
-          size='sm'
-          variant='outline'
-          // 未登记的名字在登记表里没有行，改名端点无从下手。先按保存补上登记，
-          // 再改名 —— 禁用而不是隐藏：藏起来会让运营以为这一档改不了名字。
-          disabled={!props.row.registered}
-          title={
-            props.row.registered ? undefined : t('qy_ug_rename_needs_registry')
-          }
-          onClick={() => {
-            setNewName(name)
-            setRenaming(true)
-          }}
-        >
-          {t('qy_ugr_rename_action')}
-        </Button>
-        <Button
-          type='button'
-          size='sm'
-          disabled={
-            saveMutation.isPending || !dirty || topupParsed.kind === 'invalid'
-          }
-          onClick={() => saveMutation.mutate()}
-        >
-          {saveMutation.isPending ? t('Saving...') : t('Save')}
-        </Button>
+        {impact != null && !impact.renamable ? (
+          <div className='w-full max-w-md space-y-1 text-right'>
+            <p className='text-destructive text-xs leading-5 font-medium'>
+              {t('qy_ug_rename_blocked_title')}
+            </p>
+            <p className='text-muted-foreground text-xs leading-5 break-words whitespace-pre-wrap'>
+              {impact.rename_block_reason}
+            </p>
+            {impact.rename_block_code != null && (
+              <p className='text-muted-foreground text-xs leading-5 break-words'>
+                {t('qy_ugr_next_step_prefix')}
+                {t(QY_UGR_BLOCK_NEXT_STEP_KEY[impact.rename_block_code])}
+              </p>
+            )}
+          </div>
+        ) : (
+          <QyUgrActionBlockNote
+            noteKey={
+              renameEntryBlock == null
+                ? null
+                : QY_UGR_RENAME_ENTRY_BLOCK_KEY[renameEntryBlock]
+            }
+            className='max-w-md text-right'
+          />
+        )}
       </div>
 
       <QyUgrRenameDialog
