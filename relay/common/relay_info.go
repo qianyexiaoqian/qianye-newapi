@@ -134,6 +134,13 @@ type RelayInfo struct {
 	SubscriptionPreConsumed int64
 	// SubscriptionPostDelta is the post-consume delta applied to amount_used (quota units; can be negative).
 	SubscriptionPostDelta int64
+	// SubscriptionWalletShortfall is the part of a subscription settlement that
+	// exceeded amount_total and was therefore charged to the wallet instead.
+	SubscriptionWalletShortfall int64
+	// WssReservedQuota accumulates the realtime (WSS) per-turn quota that has
+	// already been reserved on the billing session, so the end-of-session
+	// settlement charges the total exactly once instead of twice.
+	WssReservedQuota int
 	// SubscriptionPlanId / SubscriptionPlanTitle are used for logging/UI display.
 	SubscriptionPlanId    int
 	SubscriptionPlanTitle string

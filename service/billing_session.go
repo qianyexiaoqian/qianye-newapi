@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -71,8 +72,11 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		}
 	}
 	// 3) 更新 relayInfo 上的订阅 PostDelta（用于日志）
-	if s.funding.Source() == BillingSourceSubscription {
-		s.relayInfo.SubscriptionPostDelta += int64(delta)
+	//    只记套餐**真正吃下**的部分：撞到 amount_total 上限时差额已由钱包补收，
+	//    把全额记进 PostDelta 会让日志算出的套餐已用量超过总额。
+	if sub, ok := s.funding.(*SubscriptionFunding); ok {
+		s.relayInfo.SubscriptionPostDelta += sub.SettleApplied()
+		s.relayInfo.SubscriptionWalletShortfall += sub.SettleWalletShortfall()
 	}
 	s.settled = true
 	return tokenErr
@@ -212,6 +216,12 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 					s.relayInfo.UserId, s.relayInfo.TokenId, s.tokenConsumed, err.Error(), rollbackErr.Error()))
 			}
 			s.tokenConsumed = 0
+		}
+		// 钱包侧的条件原子扣减输掉并发竞争:余额在读判据之后被别的请求扣走了。
+		// 必须映射成 403 InsufficientUserQuota,而不是 500 —— 它同时也是
+		// wallet_first 触发订阅回落的判据。
+		if errors.Is(err, model.ErrInsufficientUserQuota) {
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
 		// TODO: model 层应定义哨兵错误（如 ErrNoActiveSubscription），用 errors.Is 替代字符串匹配
 		errMsg := err.Error()

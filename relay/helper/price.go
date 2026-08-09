@@ -69,6 +69,28 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 	return groupRatioInfo
 }
 
+// preConsumeTokenEstimate returns the token-equivalent basis for a per-token
+// pre-consume, in the same units the settlement formula uses.
+//
+// Settlement charges `prompt + completion * CompletionRatio` (see
+// service/text_quota.go). The pre-consume estimate must use the *same* shape,
+// otherwise the reservation systematically under-covers the request and the
+// difference is force-collected at settle time, driving the balance negative
+// on a single request. With CompletionRatio = 5 the output side used to be
+// covered at 20%: a wallet holding 4,000 quota passed a 3,900 reservation and
+// settled at 17,385, ending at -13,385.
+//
+// A non-positive CompletionRatio contributes nothing (settlement charges
+// nothing for output in that case either); it is never allowed to shrink the
+// prompt-side reservation.
+func preConsumeTokenEstimate(promptTokens int, maxTokens int, completionRatio float64) float64 {
+	estimate := float64(common.Max(promptTokens, common.PreConsumedQuota))
+	if maxTokens > 0 && completionRatio > 0 {
+		estimate += float64(maxTokens) * completionRatio
+	}
+	return estimate
+}
+
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
 	modelPrice, usePrice := ratio_setting.GetModelPrice(info.OriginModelName, false)
 
@@ -92,10 +114,6 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	var audioCompletionRatio float64
 	var freeModel bool
 	if !usePrice {
-		preConsumedTokens := common.Max(promptTokens, common.PreConsumedQuota)
-		if meta.MaxTokens != 0 {
-			preConsumedTokens += meta.MaxTokens
-		}
 		var success bool
 		var matchName string
 		modelRatio, success, matchName = ratio_setting.GetModelRatio(info.OriginModelName)
@@ -119,7 +137,7 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		audioRatio = ratio_setting.GetAudioRatio(info.OriginModelName)
 		audioCompletionRatio = ratio_setting.GetAudioCompletionRatio(info.OriginModelName)
 		ratio := modelRatio * groupRatioInfo.GroupRatio
-		quota, err := common.QuotaFromFloatStrict(float64(preConsumedTokens) * ratio)
+		quota, err := common.QuotaFromFloatStrict(preConsumeTokenEstimate(promptTokens, meta.MaxTokens, completionRatio) * ratio)
 		if err != nil {
 			return hosttypes.PriceData{}, err
 		}

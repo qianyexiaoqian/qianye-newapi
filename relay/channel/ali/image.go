@@ -333,8 +333,16 @@ func aliImageHandler(a *Adaptor, c *gin.Context, resp *http.Response, info *rela
 	}
 
 	imageResponses := responseAli2OpenAIImage(c, aliResponse, originRespBody, info, responseFormat)
-	if aliResponse.Usage.ImageCount != 0 {
-		info.PriceData.AddOtherRatio("n", float64(aliResponse.Usage.ImageCount))
+	// 上游返回的 image_count 同样是"用户/上游可控的计费乘数"，与请求侧的
+	// parameters.n 是同一个量，必须共用同一个上界（对照
+	// relay/channel/openai/relay_image.go 的 updateOpenAIImageCount）。
+	// 没有上界时一份 {"usage":{"image_count":900000000}} 会被原样乘进额度。
+	if count := aliResponse.Usage.ImageCount; count != 0 {
+		if count < 0 || count > dto.MaxImageN {
+			logger.LogError(c, fmt.Sprintf("ali image_count %d out of range [1, %d], ignoring upstream count", count, dto.MaxImageN))
+		} else {
+			info.PriceData.AddOtherRatio("n", float64(count))
+		}
 	} else if len(imageResponses.Data) != 0 {
 		info.PriceData.AddOtherRatio("n", float64(len(imageResponses.Data)))
 	}

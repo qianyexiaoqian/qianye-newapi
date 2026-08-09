@@ -1,8 +1,10 @@
 package service
 
 import (
-	"github.com/QuantumNous/new-api/common"
+	"fmt"
 	"net/http"
+
+	"github.com/QuantumNous/new-api/common"
 
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -211,6 +213,18 @@ func TryTieredSettle(relayInfo *relaycommon.RelayInfo, params billingexpr.TokenP
 	// consume log records it under admin_info, regardless of which caller
 	// (text, audio, WSS) consumes the returned quota. First non-nil wins.
 	noteQuotaClamp(relayInfo, tr.Clamp)
+
+	// 非负地板。表达式是运营自由填写的算术式（`p * 3 - 20000` 这种"前 2 万 token
+	// 免费"的促销形状很自然），其中的 param(...) 还直接取自客户端请求体，所以
+	// 结果可以为负。按倍率和按次两条路都有 `<=0 → 1` / `=0` 的地板兜住，
+	// 唯独阶梯表达式的结果是原样返回的：负值经 SettleBilling 变成负 delta，
+	// 资金来源执行 Increase —— 扣费变成给用户充值。
+	if tr.ActualQuotaAfterGroup < 0 {
+		common.SysError(fmt.Sprintf(
+			"tiered billing expression produced a negative quota (%d) for model %s; clamped to 0",
+			tr.ActualQuotaAfterGroup, relayInfo.OriginModelName))
+		tr.ActualQuotaAfterGroup = 0
+	}
 
 	return true, tr.ActualQuotaAfterGroup, &tr
 }

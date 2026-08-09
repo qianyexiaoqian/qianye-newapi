@@ -2,7 +2,9 @@ package billing_setting
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/samber/lo"
@@ -72,6 +74,40 @@ func GetPricingSyncData(base map[string]any) map[string]any {
 
 func SmokeTestExpr(exprStr string) error {
 	return smokeTestExpr(exprStr)
+}
+
+// BillingExprOptionKey is the options-table key that holds the per-model
+// expression map (config.GlobalConfig registers this struct under
+// "billing_setting", so each field lands under "<prefix>.<json tag>").
+const BillingExprOptionKey = "billing_setting." + BillingExprField
+
+// ValidateBillingExprJSON is the pre-persist gate for the billing_expr option.
+//
+// It runs the documented save-time validation (compile + non-negative smoke
+// test) over every expression in the map. Without it a syntactically broken
+// expression 400s every request for that model on each relay, and an
+// arithmetically negative one turns settlement into a credit. It has to run
+// before DB.Save for the same reason the ratio tables do: UpdateOption
+// persists first and loads into memory second, so a rejected-at-load value
+// stays in the database and survives a restart.
+func ValidateBillingExprJSON(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	var exprs map[string]string
+	if err := common.UnmarshalJsonStr(value, &exprs); err != nil {
+		return fmt.Errorf("billing_expr 不是合法的 JSON 对象: %w", err)
+	}
+	for modelName, exprStr := range exprs {
+		if strings.TrimSpace(exprStr) == "" {
+			continue
+		}
+		if err := smokeTestExpr(exprStr); err != nil {
+			return fmt.Errorf("模型 %s 的计费表达式校验未通过: %w", modelName, err)
+		}
+	}
+	return nil
 }
 
 func smokeTestExpr(exprStr string) error {

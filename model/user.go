@@ -1255,6 +1255,55 @@ func increaseUserQuota(id int, quota int) (err error) {
 	return err
 }
 
+// ErrInsufficientUserQuota reports that a conditional wallet pre-consume could
+// not be applied because the balance no longer covers the requested amount.
+// Callers map it onto the 403 "insufficient user quota" response.
+var ErrInsufficientUserQuota = errors.New("user quota is not enough")
+
+// PreConsumeUserQuota deducts a pre-consume amount from the wallet **only if**
+// the balance still covers it, in a single conditional UPDATE.
+//
+// The balance check has to live in the WHERE clause of the statement that
+// performs the deduction. Reading the balance first and then issuing an
+// unconditional `quota = quota - N` is a time-of-check/time-of-use race: N
+// concurrent requests all observe the same sufficient balance and all deduct,
+// so a wallet holding one request's worth of quota can fund arbitrarily many
+// (measured: 12 concurrent per-call requests against a 10,000 balance all
+// succeeded and drove the wallet to -110,000).
+//
+// Settlement deliberately keeps using DecreaseUserQuota: a request that was
+// already served must always be charged, even into debt. Only this
+// *pre*-consume gate is conditional. For the same reason this never routes
+// through the batch-update queue — a queued delta cannot be conditional.
+func PreConsumeUserQuota(id int, quota int) error {
+	if quota < 0 {
+		return errors.New("quota 不能为负数！")
+	}
+	if quota == 0 {
+		return nil
+	}
+	result := DB.Model(&User{}).
+		Where("id = ? AND quota >= ?", id, quota).
+		Update("quota", gorm.Expr("quota - ?", quota))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		remain, err := GetUserQuota(id, true)
+		if err != nil {
+			return fmt.Errorf("%w, need quota: %s", ErrInsufficientUserQuota, logger.FormatQuota(quota))
+		}
+		return fmt.Errorf("%w, user remain quota: %s, need quota: %s",
+			ErrInsufficientUserQuota, logger.FormatQuota(remain), logger.FormatQuota(quota))
+	}
+	gopool.Go(func() {
+		if err := cacheDecrUserQuota(id, int64(quota)); err != nil {
+			common.SysLog("failed to decrease user quota: " + err.Error())
+		}
+	})
+	return nil
+}
+
 func DecreaseUserQuota(id int, quota int, db bool) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")

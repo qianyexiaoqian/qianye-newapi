@@ -35,6 +35,10 @@ func TestMain(m *testing.M) {
 	model.LOG_DB = db
 
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	// InitDB normally does this; tests swap the DB handle directly, so the
+	// dialect-quoted column names would otherwise stay empty and any raw-SQL
+	// fragment (e.g. GetTokenByKey) would emit invalid SQL.
+	model.InitCol()
 	common.RedisEnabled = false
 	common.BatchUpdateEnabled = false
 	common.LogConsumeEnabled = true

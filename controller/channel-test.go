@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -542,15 +541,18 @@ func settleTestQuota(info *relaycommon.RelayInfo, priceData hosttypes.PriceData,
 
 	quota := 0
 	if !priceData.UsePrice {
-		quota = usage.PromptTokens + int(math.Round(float64(usage.CompletionTokens)*priceData.CompletionRatio))
-		quota = int(math.Round(float64(quota) * priceData.ModelRatio))
+		// usage 来自被测上游，完全不可信：裸 int(math.Round(...)) 在超出 int64
+		// 的输入上是未定义行为，会把一个巨额负数写进 logs.quota。所有额度换算
+		// 都必须走 common/quota_math.go 的饱和转换。
+		quota = usage.PromptTokens + common.QuotaRound(float64(usage.CompletionTokens)*priceData.CompletionRatio)
+		quota = common.QuotaRound(float64(quota) * priceData.ModelRatio)
 		if priceData.ModelRatio != 0 && quota <= 0 {
 			quota = 1
 		}
 		return quota, nil
 	}
 
-	return int(priceData.ModelPrice * common.QuotaPerUnit), nil
+	return common.QuotaFromFloat(priceData.ModelPrice * common.QuotaPerUnit), nil
 }
 
 func buildTestLogOther(c *gin.Context, info *relaycommon.RelayInfo, priceData hosttypes.PriceData, usage *dto.Usage, tieredResult *billingexpr.TieredResult) map[string]interface{} {

@@ -1507,6 +1507,54 @@ func GetSubscriptionPlanInfoByUserSubscriptionId(userSubscriptionId int) (*Subsc
 	return info, nil
 }
 
+// SettleUserSubscriptionDelta applies a settlement delta to a subscription and
+// reports how much of it actually landed.
+//
+// PostConsumeUserSubscriptionDelta refuses the whole write when the new used
+// amount would exceed amount_total. That is right for a *reservation* (an
+// over-budget request must be rejected up front), but wrong for settlement:
+// the request has already been served, so refusing the write silently drops
+// the uncollected part. The consume log still recorded the full charge, the
+// wallet was never touched, and the difference was simply lost (measured:
+// billed 14,566, collected 4,200).
+//
+// So settlement clamps to the subscription's hard cap and returns the applied
+// amount; the caller is responsible for collecting the shortfall from the
+// wallet. amount_total stays a real ceiling and no money goes missing.
+func SettleUserSubscriptionDelta(userSubscriptionId int, delta int64) (applied int64, err error) {
+	if userSubscriptionId <= 0 {
+		return 0, errors.New("invalid userSubscriptionId")
+	}
+	if delta == 0 {
+		return 0, nil
+	}
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		var sub UserSubscription
+		if err := lockForUpdate(tx).
+			Where("id = ?", userSubscriptionId).
+			First(&sub).Error; err != nil {
+			return err
+		}
+		newUsed := sub.AmountUsed + delta
+		if newUsed < 0 {
+			newUsed = 0
+		}
+		if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
+			newUsed = sub.AmountTotal
+		}
+		applied = newUsed - sub.AmountUsed
+		if applied == 0 {
+			return nil
+		}
+		sub.AmountUsed = newUsed
+		return tx.Save(&sub).Error
+	})
+	if err != nil {
+		return 0, err
+	}
+	return applied, nil
+}
+
 // Update subscription used amount by delta (positive consume more, negative refund).
 func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error {
 	if userSubscriptionId <= 0 {

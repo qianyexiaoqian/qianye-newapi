@@ -375,10 +375,16 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		noteQuotaClamp(relayInfo, clamp)
 	}
 
-	if !summary.hasBillableUsage() {
-		summary.Quota = 0
-	} else if !ratio.IsZero() && summary.Quota == 0 {
-		summary.Quota = 1
+	// 「上游没返回计费信息就不收钱」这条兜底只对**按量**计费成立：那时没有 token
+	// 数就确实算不出金额。按次计费的金额与 token 数严格无关（同一模型 prompt=2 与
+	// prompt=7702 都收 20000），用 TotalTokens 当开关等于把一次已经完成的调用
+	// 免单。所以按次分支只保留 tool 附加费这条判据之外的原样金额。
+	if !relayInfo.PriceData.UsePrice {
+		if !summary.hasBillableUsage() {
+			summary.Quota = 0
+		} else if !ratio.IsZero() && summary.Quota == 0 {
+			summary.Quota = 1
+		}
 	}
 
 	return summary

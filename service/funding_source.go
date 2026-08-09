@@ -37,7 +37,10 @@ func (w *WalletFunding) PreConsume(amount int) error {
 	if amount <= 0 {
 		return nil
 	}
-	if err := model.DecreaseUserQuota(w.userId, amount, false); err != nil {
+	// 条件原子扣减:余额判据必须与扣减在同一条 UPDATE 里。NewBillingSession
+	// 里那次 GetUserQuota 只是为了给出可读的 403 文案与快速失败,它和这次扣减
+	// 之间存在 TOCTOU 窗口,并发请求会全部通过那个判据。
+	if err := model.PreConsumeUserQuota(w.userId, amount); err != nil {
 		return err
 	}
 	w.consumed = amount
@@ -77,6 +80,11 @@ type SubscriptionFunding struct {
 
 	// usingGroup 是本次请求的模型分组：「余额仅限绑定分组」的套餐据此被跳过。
 	usingGroup string
+
+	// settleApplied / settleWalletShortfall 记录最近一次 Settle 的落点：
+	// 套餐真正吃下的部分，以及因撞到 amount_total 上限而改由钱包补收的部分。
+	settleApplied         int64
+	settleWalletShortfall int64
 	// 以下字段在 PreConsume 成功后填充，供 RelayInfo 同步使用
 	AmountTotal     int64
 	AmountUsedAfter int64
@@ -105,11 +113,35 @@ func (s *SubscriptionFunding) PreConsume(_ int) error {
 }
 
 func (s *SubscriptionFunding) Settle(delta int) error {
+	s.settleApplied = 0
+	s.settleWalletShortfall = 0
 	if delta == 0 {
 		return nil
 	}
-	return model.PostConsumeUserSubscriptionDelta(s.subscriptionId, int64(delta))
+	applied, err := model.SettleUserSubscriptionDelta(s.subscriptionId, int64(delta))
+	if err != nil {
+		return err
+	}
+	s.settleApplied = applied
+	shortfall := int64(delta) - applied
+	if shortfall <= 0 {
+		return nil
+	}
+	// 套餐撞到 amount_total 上限，剩下的差额必须落到钱包上，否则这笔已经服务完成
+	// 的请求就白送了。方向与 WalletFunding.Settle 的正差额一致：无条件扣，
+	// 余额不足的部分记为欠费，保证「日志记多少 == 实际收多少」。
+	if err := model.DecreaseUserQuota(s.userId, int(shortfall), false); err != nil {
+		return err
+	}
+	s.settleWalletShortfall = shortfall
+	return nil
 }
+
+// SettleApplied 返回最近一次 Settle 中套餐实际吃下的额度。
+func (s *SubscriptionFunding) SettleApplied() int64 { return s.settleApplied }
+
+// SettleWalletShortfall 返回最近一次 Settle 中改由钱包补收的额度。
+func (s *SubscriptionFunding) SettleWalletShortfall() int64 { return s.settleWalletShortfall }
 
 func (s *SubscriptionFunding) Refund() error {
 	if s.preConsumed <= 0 {

@@ -149,11 +149,27 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(token.RemainQuota), logger.FormatQuota(quota))
 	}
 
-	err = PostConsumeQuota(relayInfo, quota, 0, false)
-	if err != nil {
-		return err
+	// 实时会话的增量必须走**预留**，不能直接扣费。
+	//
+	// 会话结束时 PostWssConsumeQuota 会用**累计** usage 重算整场金额再
+	// SettleBilling，而 SettleBilling 的差额只认 BillingSession 里的预扣额。
+	// 增量若走 PostConsumeQuota，这两笔钱互不相识：实收 = Σ增量 + 整场金额
+	// ≈ 2 倍。改成把累计额度补进预扣，最终 delta = 整场 − 已预留，一场只收一次。
+	relayInfo.WssReservedQuota += quota
+	if relayInfo.Billing != nil {
+		if err := relayInfo.Billing.Reserve(relayInfo.WssReservedQuota); err != nil {
+			return err
+		}
+		relayInfo.FinalPreConsumedQuota = relayInfo.Billing.GetPreConsumedQuota()
+	} else {
+		// 无计费会话时退回旧路径，并把已扣额度计入 FinalPreConsumedQuota，
+		// 否则 SettleBilling 的回退分支会按整场金额再扣一次。
+		if err := PostConsumeQuota(relayInfo, quota, 0, false); err != nil {
+			return err
+		}
+		relayInfo.FinalPreConsumedQuota += quota
 	}
-	logger.LogInfo(ctx, "realtime streaming consume quota success, quota: "+fmt.Sprintf("%d", quota))
+	logger.LogInfo(ctx, "realtime streaming reserve quota success, quota: "+fmt.Sprintf("%d", quota))
 	return nil
 }
 
@@ -409,15 +425,16 @@ func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 	//if relayInfo.TokenUnlimited {
 	//	return nil
 	//}
-	token, err := model.GetTokenByKey(relayInfo.TokenKey, false)
-	if err != nil {
-		return err
-	}
-	if !relayInfo.TokenUnlimited && token.RemainQuota < quota {
-		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(token.RemainQuota), logger.FormatQuota(quota))
-	}
-	err = model.DecreaseTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, quota)
-	if err != nil {
+	// 检查与扣减必须是同一条语句:先读 remain_quota 再无条件扣减是 TOCTOU,
+	// 并发请求会各自读到同一个"够用"的余额并全部扣成功,击穿令牌上限。
+	if err := model.PreConsumeTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, quota, relayInfo.TokenUnlimited); err != nil {
+		if errors.Is(err, model.ErrInsufficientTokenQuota) {
+			remain := 0
+			if token, readErr := model.GetTokenByKey(relayInfo.TokenKey, true); readErr == nil {
+				remain = token.RemainQuota
+			}
+			return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(remain), logger.FormatQuota(quota))
+		}
 		return err
 	}
 	return nil
@@ -432,10 +449,19 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 		}
 		delta := int64(quota)
 		if delta != 0 {
-			if err := model.PostConsumeUserSubscriptionDelta(relayInfo.SubscriptionId, delta); err != nil {
+			// 与 SubscriptionFunding.Settle 同口径：套餐撞到 amount_total 上限时
+			// 只吃下能吃的部分，剩余差额改由钱包补收，绝不静默丢弃。
+			applied, err := model.SettleUserSubscriptionDelta(relayInfo.SubscriptionId, delta)
+			if err != nil {
 				return err
 			}
-			relayInfo.SubscriptionPostDelta += delta
+			relayInfo.SubscriptionPostDelta += applied
+			if shortfall := delta - applied; shortfall > 0 {
+				if err := model.DecreaseUserQuota(relayInfo.UserId, int(shortfall), false); err != nil {
+					return err
+				}
+				relayInfo.SubscriptionWalletShortfall += shortfall
+			}
 		}
 	} else {
 		// Wallet

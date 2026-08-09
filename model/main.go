@@ -27,7 +27,10 @@ var commonFalseVal string
 var logKeyCol string
 var logGroupCol string
 
-func initCol() {
+// InitCol initialises the dialect-specific quoted column names and value
+// literals. InitDB calls it; anything that swaps the DB handle directly
+// (tests, tooling) must call it too, otherwise raw-SQL fragments come out empty.
+func InitCol() {
 	// init common column names
 	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
 		commonGroupCol = `"group"`
@@ -175,7 +178,7 @@ func InitDB() (err error) {
 		if os.Getenv("LOG_SQL_DSN") == "" {
 			common.SetLogDatabaseType(dbType)
 		}
-		initCol()
+		InitCol()
 		if common.DebugEnabled {
 			db = db.Debug()
 		}
@@ -213,13 +216,13 @@ func InitLogDB() (err error) {
 	if os.Getenv("LOG_SQL_DSN") == "" {
 		LOG_DB = DB
 		common.SetLogDatabaseType(common.MainDatabaseType())
-		initCol()
+		InitCol()
 		return
 	}
 	db, dbType, err := chooseDB("LOG_SQL_DSN", true)
 	if err == nil {
 		common.SetLogDatabaseType(dbType)
-		initCol()
+		InitCol()
 		if common.DebugEnabled {
 			db = db.Debug()
 		}

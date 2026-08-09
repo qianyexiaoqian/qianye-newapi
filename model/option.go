@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/performance_setting"
@@ -228,6 +229,13 @@ func validateOptionValue(key string, value string) error {
 		// 一条 case 都没有,于是一份 `{"vip":-5}` 可以经通用 option 端点直接落库,
 		// 随后那一档人每充 100 元得到一张 -500 的负价订单(见 CheckTopupGroupRatio)。
 		return common.CheckTopupGroupRatio(value)
+	case billing_setting.BillingExprOptionKey:
+		// 阶梯表达式是全站唯一能把「扣费」算成负数的计费载体(`p * 3 - 20000`
+		// 这种"前 2 万 token 免费"的促销形状很自然,而 param(...) 还直接取自
+		// 客户端请求体)。expr.md 承诺保存时会做语法编译 + 非负冒烟,但那个冒烟
+		// 函数此前一个调用者都没有:坏表达式可以直接落库、重启不自愈,而
+		// controller/ratio_sync.go 还会把远端站点推来的表达式原样写进这个键。
+		return billing_setting.ValidateBillingExprJSON(value)
 	}
 	return nil
 }

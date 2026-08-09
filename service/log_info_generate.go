@@ -247,8 +247,10 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other map[string]interf
 		if consumed > 0 {
 			other["subscription_consumed"] = consumed
 		}
-		// Wallet quota is not deducted when billed from subscription.
-		other["wallet_quota_deducted"] = 0
+		// Wallet quota is normally untouched when billed from subscription; the
+		// exception is a settlement that overshot amount_total, where the
+		// uncollected remainder is charged to the wallet instead of being lost.
+		other["wallet_quota_deducted"] = relayInfo.SubscriptionWalletShortfall
 	}
 }
 

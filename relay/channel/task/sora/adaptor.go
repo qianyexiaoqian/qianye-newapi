@@ -106,12 +106,20 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 		return nil
 	}
 
-	seconds, _ := strconv.Atoi(req.Seconds)
-	if seconds == 0 {
-		seconds = req.Duration
+	// 取值优先级必须与 relaycommon.validateTaskDurationBounds 一致（Duration 优先）。
+	// 两边反着取的话，`{"duration":1,"seconds":"40000"}` 会让校验只看到 1 而计费
+	// 只看到 40000，MaxTaskDurationSeconds 这道闸门被一个请求体绕过。
+	seconds := req.Duration
+	if seconds == 0 && req.Seconds != "" {
+		seconds, _ = strconv.Atoi(req.Seconds)
 	}
 	if seconds <= 0 {
 		seconds = 4
+	}
+	// seconds 是计费乘数（OtherRatio "seconds"），必须定界后才能进入额度计算。
+	// 同批的 gemini / vertex / ali / remix 都钳了，这里此前是唯一的漏网。
+	if seconds > relaycommon.MaxTaskDurationSeconds {
+		seconds = relaycommon.MaxTaskDurationSeconds
 	}
 
 	size := req.Size

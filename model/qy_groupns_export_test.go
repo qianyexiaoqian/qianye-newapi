@@ -179,7 +179,7 @@ func TestQyRewriteUserGroupTxRejectsUnknownMode(t *testing.T) {
 
 // newQyTestMainDB 建一个主库测试实例。
 //
-// initCol() 必须跑:它由 InitDB 调用,而测试直接替换 DB 句柄绕过了那一步,
+// InitCol() 必须跑:它由 InitDB 调用,而测试直接替换 DB 句柄绕过了那一步,
 // 于是 commonGroupCol 是空串,`SELECT ` + col 会发出语法错误的 SQL。
 func newQyTestMainDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -193,7 +193,7 @@ func newQyTestMainDB(t *testing.T) *gorm.DB {
 
 	prev := DB
 	DB = gdb
-	initCol()
+	InitCol()
 	t.Cleanup(func() {
 		DB = prev
 		_ = sqlDB.Close()
