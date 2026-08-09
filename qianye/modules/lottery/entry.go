@@ -234,7 +234,21 @@ func fundingFacts(act *Activity, e *Entry) twophase.Request {
 	// Pick 同样必须收进指纹:双色球下"换个号码用同一个 request_id 重发"与竞猜
 	// 的换选项重放是同一种攻击 —— 不纳入指纹就会幂等命中返回成功,
 	// 而实际投的仍是旧号码。
-	req.Fingerprint = req.Digest(act.ActNo, deci(e.OptNo), e.Pick)
+	//
+	// 指纹里**必须**把 RefId 摘出去。它承载的是 entry_no,而 entry_no 由
+	// newEntryNo() 每次请求现生成 —— 是服务端派生量里最极端的一种(随机数)。
+	// 留着它,同一个 client_request_id 的两次提交必然算出两个不同指纹 →
+	// ErrIdemConflict → 409「本次提交与此前同一请求标识的内容不一致」,
+	// 也就是说这条幂等键**在结构上永远命中不了**,而 api_user.go 要求前端
+	// 「打开弹窗时生成、重试沿用同一个」的那条契约完全失效:用户超时重试会
+	// 收到一句不实的冲突提示,合理地以为第一次没成功,换个 crid 再投一注 ——
+	// 幂等键存在的全部意义就是拦住这件事。附带损害是每次诚实重试都写一条
+	// 「用户 N 提交了要素不同的参与」的安全日志,把真正的换参重放淹没。
+	// 活动维度由 extra 里的 act_no 承载,不靠 RefId;RefId 本身照旧留在
+	// Request 上,补偿任务的 Resolver 要靠它精确找回**这一条**参与明细。
+	forDigest := req
+	forDigest.RefId = ""
+	req.Fingerprint = forDigest.Digest(act.ActNo, deci(e.OptNo), e.Pick)
 	return req
 }
 

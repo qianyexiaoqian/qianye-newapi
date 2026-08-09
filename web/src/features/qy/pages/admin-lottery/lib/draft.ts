@@ -128,6 +128,7 @@ export function qyLotEmptyDraft(defaultFeeBps: number): QyLotDraft {
         name: '',
         amount_quota: 0,
         count: 1,
+        win_ppm: 0,
         red_match: 0,
         blue_match: 0,
         pool_share_bps: 0,
@@ -191,6 +192,27 @@ export function qyLotDraftForPlay(
     draw_mode: draft.draw_mode === 'ball' ? 'rank' : draft.draw_mode,
     series_no: '',
   }
+}
+
+/** 概率制：全部奖档的中奖概率之和（ppm）。剩下的那一段就是未中奖区间。 */
+export function qyLotTotalWinPpm(draft: QyLotDraft): number {
+  return draft.tiers.reduce(
+    (sum, tier) => sum + Math.max(0, tier.win_ppm ?? 0),
+    0
+  )
+}
+
+/**
+ * 「允许多次中奖」的**生效值**。
+ *
+ * 后端对 `draw_mode != 'rank'` 无条件置真（`api_admin.go` 的 buildActivity）：
+ * 概率制每张票独立摇号，按 user_ref 去重会让单票概率变成 1-(1-p)^k，公示的
+ * 概率就不再为真；双色球同理。这个字段仍然原样进 commit 原像，所以复核屏
+ * 必须显示生效值 —— 在一屏标着「即将被永久冻结」的地方显示草稿值是撒谎。
+ */
+export function qyLotEffectiveAllowMultiWin(draft: QyLotDraft): boolean {
+  if (draft.kind !== 'draw') return draft.allow_multi_win
+  return draft.draw_mode === 'rank' ? draft.allow_multi_win : true
 }
 
 /** 奖品总额 = Σ(单档金额 × 档位数量)。抽奖派奖是**净增发**，没有奖池兜着。 */
@@ -267,6 +289,32 @@ export function qyLotValidateDraft(
       tiers.some((tier) => tier.amount_quota <= 0 || tier.count <= 0)
     ) {
       errors.push('qy_lot_v_tier_amount')
+    }
+    // 概率制的三条硬约束，后端 `normalizeWinPpm` / `Bands` 各有一条对应判定。
+    // 少了它们，运营会走完四步、在复核屏看到全绿，然后吃一个 400。
+    if (draft.draw_mode === 'prob') {
+      if (
+        tiers.some(
+          (tier) => (tier.win_ppm ?? 0) <= 0 || (tier.win_ppm ?? 0) > 1_000_000
+        )
+      ) {
+        errors.push('qy_lot_v_win_ppm_range')
+      }
+      if (qyLotTotalWinPpm(draft) > 1_000_000) {
+        errors.push('qy_lot_v_win_ppm_sum')
+      }
+      // 均分制唯一的新失败态：预算摊到人均不足 1 额度时会有人分到 0，
+      // 而那个人连 payout 行都不会有 —— 一个真中了奖的人被静默漏发。
+      const entriesCap =
+        draft.max_total_entries > 0
+          ? draft.max_total_entries
+          : (yaml?.max_total_entries_hard ?? 0)
+      if (
+        entriesCap > 0 &&
+        tiers.some((tier) => tier.amount_quota * tier.count < entriesCap)
+      ) {
+        errors.push('qy_lot_v_prob_budget_short')
+      }
     }
     if (new Set(tiers.map((tier) => tier.tier)).size !== tiers.length) {
       errors.push('qy_lot_v_tier_dup')
@@ -488,7 +536,22 @@ export function qyLotDraftToInput(draft: QyLotDraft): QyLotCreateInput {
       cooldown_seconds: draft.cooldown_seconds,
       dedup_ip: draft.dedup_ip,
     },
-    prizes: draft.kind === 'draw' ? draft.tiers : [],
+    // 奖档按玩法归一化，与后端强制的那组恒等式逐条对齐：
+    //   · rank / ball：win_ppm 必须为 0（后端对填了它的请求直接 400）
+    //   · rank / prob：红蓝命中数与占池比例必须为 0（后端静默忽略它们，
+    //     于是一个从双色球切回普通抽奖的运营会以为占池比例还在生效）
+    // 归一化放在提交这一刻而不是切换玩法时：草稿里留着上次填的值，
+    // 运营切回去还能看到自己填过什么。
+    prizes:
+      draft.kind === 'draw'
+        ? draft.tiers.map((tier) => ({
+            ...tier,
+            win_ppm: draft.draw_mode === 'prob' ? (tier.win_ppm ?? 0) : 0,
+            red_match: isBall ? (tier.red_match ?? 0) : 0,
+            blue_match: isBall ? (tier.blue_match ?? 0) : 0,
+            pool_share_bps: isBall ? (tier.pool_share_bps ?? 0) : 0,
+          }))
+        : [],
     options:
       draft.kind === 'guess'
         ? draft.options.map((option, index) => ({

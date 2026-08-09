@@ -324,6 +324,20 @@ func revealActivity(ctx context.Context, gdb *gorm.DB, act *Activity) error {
 		})
 	}
 
+	// 结构性支出上界。双色球在 PickWinnersBall 里逐笔累加比对 poolOpen
+	// (ball.go:352-359),竞猜在 SplitPool 结尾断言 Σpay + fee == pool
+	// (commit.go:802-806)—— 只有 rank/prob 此前一路裸奔:它们从奖档行读
+	// amount×count 就发钱,而那个上界只在创建期对**提交的那份表**校验过一次。
+	// 抽奖派奖是对用户额度的净增发,没有任何下游环节能拦住一笔多写了零的奖金,
+	// 所以这里补一条与 ball 同形的闸门:算出来的总支出一旦越过奖档表自己的
+	// 预算(说明分配逻辑出了错、或有人在开奖前动过行),整场停手挂起等人。
+	if act.DrawMode != DrawModeBall {
+		if err := checkQuotaBudget(tiers, payoutSum); err != nil {
+			suspendReveal(ctx, act, err.Error())
+			return wrapInternal("开奖", err)
+		}
+	}
+
 	now := common.GetTimestamp()
 	revealed := map[string]any{
 		"status":           StatusSettling,
@@ -453,6 +467,27 @@ func ballCarryOf(act *Activity, committed int64) int64 {
 		return 0
 	}
 	return ballPoolOpen(act) - committed
+}
+
+// checkQuotaBudget 断言一场 rank/prob 抽奖的额度支出不超过奖档表自己的预算
+// Σ(count × amount)。
+//
+// 那个量正是创建期 Σ(count×amount) ≤ max_total_prize_quota 校验的对象,也是
+// 创建响应里回给运营的 worst_case_net_issue —— 运营是照着它决定"这场活动
+// 平台最多亏多少"的。文本奖不参与:它的 amount 恒为 0,发的是兑换码不是额度。
+func checkQuotaBudget(tiers []Tier, payoutSum int64) error {
+	var budget int64
+	for _, t := range tiers {
+		if t.isText() {
+			continue
+		}
+		budget += t.Amount * int64(t.Count)
+	}
+	if payoutSum > budget {
+		return fmt.Errorf("%w: 中奖名单总支出 %d 超过奖档表预算 %d",
+			ErrPoolNotConserved, payoutSum, budget)
+	}
+	return nil
 }
 
 // suspendReveal 在承诺校验失败时挂起活动并告警。
@@ -895,6 +930,7 @@ func runReconcile(ctx context.Context) {
 	// 挂在里面的"两周没人履行"告警会一次都不响,而那正是它唯一要抓的场景。
 	auditTextPrizes(ctx, gdb)
 	auditSpecDrift(ctx, gdb)
+	auditFinishedChains(ctx, gdb)
 }
 
 // specAuditCursor 是 auditSpecDrift 的活动 id 游标。与 textAuditCursor 同一条纪律。
@@ -939,7 +975,44 @@ func auditSpecDrift(ctx context.Context, gdb *gorm.DB) {
 	}
 }
 
-func reconcileActivity(ctx context.Context, gdb *gorm.DB, act *Activity) {
+// chainAuditCursor 是 auditFinishedChains 的活动 id 游标。与 specAuditCursor 同一条纪律。
+var chainAuditCursor int64
+
+// auditFinishedChains 跨活动复核**已结束**活动的物化计数与哈希链。
+//
+// runReconcile 的主循环只扫 published/locked/settling,而条目篡改在活动
+// finished 之后同样有后果 —— 而且比奖档漂移更直接:它改的是"谁参加了、押了多少"。
+// 实测同一处篡改(把一条 entry 的金额从 1000 改成 9000)在 published 活动上
+// 30 秒内触发 pool_mismatch,在 finished 活动上观察四分钟以上一条 flag 都没有。
+// auditSpecDrift 早就为奖档表做了跨 finished 的游标扫描,理由(「已开完的活动是
+// 历史公正查询的全部内容」)对条目与链一字不差地成立,这里补上它。
+func auditFinishedChains(ctx context.Context, gdb *gorm.DB) {
+	var rows []Activity
+	err := gdb.WithContext(ctx).
+		Select("id, act_no, entry_seq, chain_head, pool_quota, active_count").
+		Where("status = ? AND id > ?", StatusFinished, chainAuditCursor).
+		Order("id asc").Limit(batchPerRound * 10).Find(&rows).Error
+	if err != nil {
+		db.MarkFailure(err)
+		return
+	}
+	if len(rows) < batchPerRound*10 {
+		chainAuditCursor = 0
+	} else {
+		chainAuditCursor = rows[len(rows)-1].Id
+	}
+	for i := range rows {
+		if ctx.Err() != nil {
+			return
+		}
+		checkMaterializedInvariants(ctx, gdb, &rows[i])
+	}
+}
+
+// checkMaterializedInvariants 复核一场活动的物化奖池/计数与哈希链的两个 O(1)
+// 不变量。**只告警不自愈** —— 一个会自己改数的对账任务,在数据真的被篡改时
+// 会顺手把证据也抹平。
+func checkMaterializedInvariants(ctx context.Context, gdb *gorm.DB, act *Activity) {
 	var agg struct {
 		Cnt   int64
 		Total int64
@@ -993,6 +1066,10 @@ func reconcileActivity(ctx context.Context, gdb *gorm.DB, act *Activity) {
 				"链尾 %s 与最后一条的 chain_hash %s 对不上", act.ChainHead, tail.ChainHash))
 		}
 	}
+}
+
+func reconcileActivity(ctx context.Context, gdb *gorm.DB, act *Activity) {
+	checkMaterializedInvariants(ctx, gdb, act)
 
 	// 奖档表一经发布就不该再变 —— 开奖前那道拒绝(checkSpecIntegrity)只在
 	// locked → settling 那一瞬间跑过一次,而改动可以发生在它之后:改 amount_quota

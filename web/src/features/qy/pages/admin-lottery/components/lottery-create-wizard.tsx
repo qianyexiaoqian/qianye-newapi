@@ -57,10 +57,12 @@ import {
   qyLotBreakEvenEntries,
   qyLotDraftForPlay,
   qyLotDraftToInput,
+  qyLotEffectiveAllowMultiWin,
   qyLotEmptyDraft,
   qyLotNewOption,
   qyLotPlayOf,
   qyLotTotalPrizeQuota,
+  qyLotTotalWinPpm,
   qyLotValidateDraft,
   type QyLotDraft,
   type QyLotPlay,
@@ -630,8 +632,65 @@ function SpecStep(props: {
                 />
               </div>
             </div>
+
+            {/*
+              概率制的每档中奖概率。
+
+              没有这一格，「概率制」在界面上就是一条死路：向导四步全绿、复核屏
+              全绿、点确认必定吃一个 400（后端对 prob 强制 `win_ppm ∈ (0, 1e6]`），
+              而界面上没有任何一格可以用来修正它。这与项目方两次反馈的「找不到
+              双色球」是同一种缺陷 —— 选得到、填得完、走不通。
+            */}
+            {draft.draw_mode === 'prob' && (
+              <div className='space-y-1'>
+                <Label>{t('qy_lot_win_ppm_field')}</Label>
+                <Input
+                  inputMode='numeric'
+                  value={String(tier.win_ppm ?? 0)}
+                  onChange={(event) => {
+                    const digits = event.target.value.replaceAll(/\D/g, '')
+                    props.onChange({
+                      tiers: draft.tiers.map((item, i) =>
+                        i === index
+                          ? {
+                              ...item,
+                              win_ppm: digits === '' ? 0 : Number(digits),
+                            }
+                          : item
+                      ),
+                    })
+                  }}
+                />
+                <p className='text-muted-foreground text-xs'>
+                  {t('qy_lot_win_ppm_hint', {
+                    percent: ((tier.win_ppm ?? 0) / 10000).toFixed(4),
+                  })}
+                </p>
+              </div>
+            )}
           </div>
         ))}
+
+        {/*
+          未中奖区间是一等公民，不是"配漏了"。把它明确摆出来，运营才知道
+          Σ概率 < 100% 是允许的，也才看得见自己是不是把它配成了 0。
+        */}
+        {draft.draw_mode === 'prob' && (
+          <div className='rounded-lg border p-3 text-sm'>
+            <p>
+              {t('qy_lot_win_ppm_sum', {
+                percent: (qyLotTotalWinPpm(draft) / 10000).toFixed(4),
+              })}
+            </p>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t('qy_lot_win_ppm_sum_hint', {
+                percent: (
+                  Math.max(0, 1_000_000 - qyLotTotalWinPpm(draft)) / 10000
+                ).toFixed(4),
+              })}
+            </p>
+          </div>
+        )}
 
         <Button
           type='button'
@@ -650,6 +709,7 @@ function SpecStep(props: {
                   name: '',
                   amount_quota: 0,
                   count: 1,
+                  win_ppm: 0,
                 },
               ],
             })
@@ -659,21 +719,41 @@ function SpecStep(props: {
           {t('qy_lot_add_tier')}
         </Button>
 
-        <div className='flex items-start justify-between gap-4 rounded-lg border p-3'>
-          <div className='min-w-0'>
-            <Label htmlFor={`${id}-multi`}>{t('qy_lot_allow_multi_win')}</Label>
-            <p className='text-muted-foreground text-xs'>
-              {t('qy_lot_allow_multi_win_hint')}
+        {/*
+          「允许多次中奖」只对名次制是一个真开关。
+
+          概率制下后端无条件把它置为 true（每张票独立摇号，按 user_ref 去重会
+          让单票概率变成 1-(1-p)^k，公示的概率就不再为真）。留一个可交互的
+          Switch 在这里，运营会关掉它、在复核屏看到「关」、点发布 —— 而落库与
+          **承诺原像**里都是 true。复核屏那一格的标题是「即将被永久冻结」，
+          在那里显示一个假值比不显示更糟。双色球分支早就是这么处理的。
+        */}
+        {draft.draw_mode === 'prob' ? (
+          <div className='rounded-lg border p-3'>
+            <Label>{t('qy_lot_allow_multi_win')}</Label>
+            <p className='text-muted-foreground mt-1 text-xs'>
+              {t('qy_lot_allow_multi_win_forced')}
             </p>
           </div>
-          <Switch
-            id={`${id}-multi`}
-            checked={draft.allow_multi_win}
-            onCheckedChange={(checked) =>
-              props.onChange({ allow_multi_win: checked })
-            }
-          />
-        </div>
+        ) : (
+          <div className='flex items-start justify-between gap-4 rounded-lg border p-3'>
+            <div className='min-w-0'>
+              <Label htmlFor={`${id}-multi`}>
+                {t('qy_lot_allow_multi_win')}
+              </Label>
+              <p className='text-muted-foreground text-xs'>
+                {t('qy_lot_allow_multi_win_hint')}
+              </p>
+            </div>
+            <Switch
+              id={`${id}-multi`}
+              checked={draft.allow_multi_win}
+              onCheckedChange={(checked) =>
+                props.onChange({ allow_multi_win: checked })
+              }
+            />
+          </div>
+        )}
 
         <div className='space-y-1'>
           <Label htmlFor={`${id}-min-entries`}>
@@ -1201,8 +1281,12 @@ function ReviewStep(props: {
         <QyKeyValue label={t('qy_lot_settle_deadline')}>
           {formatQyTs(draft.settle_deadline)}
         </QyKeyValue>
+        {/* 显示的必须是**生效值**而不是草稿值：这一屏的标题是「即将被永久
+            冻结」，而 rank 之外的两个玩法由后端强制置真并写进承诺原像。 */}
         <QyKeyValue label={t('qy_lot_allow_multi_win')}>
-          {draft.allow_multi_win ? t('qy_common_on') : t('qy_common_off')}
+          {qyLotEffectiveAllowMultiWin(draft)
+            ? t('qy_common_on')
+            : t('qy_common_off')}
         </QyKeyValue>
         {draft.kind === 'guess' && (
           <QyKeyValue label={t('qy_lot_fee_bps')}>{draft.fee_bps}</QyKeyValue>

@@ -474,12 +474,19 @@ func PickWinners(finalSeed, actNo string, roster []RosterLine, tiers []Tier, all
 				// 决定谁中奖。
 				break
 			}
+			// PrizeType 必须原样带出去(与 PickWinnersProb、PickWinnersBall 同口径)。
+			// 留空会让一个文本奖中奖位落成 amount=0 的额度腿,被 PlanPayouts
+			// 「amount<=0 跳过」整批丢掉且零告警:中奖者永远收不到兑换码、
+			// text_grant_count 落成 0 让 finishIfDone 与 auditTextPrizes 的复核
+			// 双双退化成 0>=0 恒真,而外部验证者按种子重算会多出这几位、
+			// 判定整场 FAIL —— 平台明明是诚实的,证据链却自证造假。
 			winners = append(winners, Winner{
-				Pos:     idx,
-				Tier:    t.Tier,
-				EntryNo: pool[idx].line.EntryNo,
-				UserRef: pool[idx].line.UserRef,
-				Amount:  t.Amount,
+				Pos:       idx,
+				Tier:      t.Tier,
+				EntryNo:   pool[idx].line.EntryNo,
+				UserRef:   pool[idx].line.UserRef,
+				Amount:    t.Amount,
+				PrizeType: t.PrizeType,
 			})
 			idx++
 		}

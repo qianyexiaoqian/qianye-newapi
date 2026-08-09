@@ -36,8 +36,12 @@ type settingBound struct {
 func settingBounds() map[string]settingBound {
 	c := config.Get().Lottery
 	return map[string]settingBound{
-		keyShowEntry:            {Lo: 0, Hi: 1},
-		keyMaxActiveActivities:  {Lo: 1, Hi: 1000},
+		keyShowEntry: {Lo: 0, Hi: 1},
+		// 上界同样取自 YAML。并发进行中的活动数是全站累计净增发的唯一乘数
+		// (每一场各吃一个 max_total_prize_quota,没有全站累计闸门),写死一个
+		// 1000 等于允许运营在线把敞口放大 50 倍,而 YAML 拦不住它 ——
+		// 这正是这个函数开头那句"上界必须取自 YAML 而不是写死"要防的事。
+		keyMaxActiveActivities:  {Lo: 1, Hi: int64(c.MaxActiveActivities)},
 		keyMaxGuessFeeBps:       {Lo: 0, Hi: int64(c.MaxGuessFeeBps)},
 		keyDefaultGuessFeeBps:   {Lo: 0, Hi: int64(c.MaxGuessFeeBps)},
 		keyMaxTotalPrizeQuota:   {Lo: 1, Hi: c.MaxTotalPrizeQuota},

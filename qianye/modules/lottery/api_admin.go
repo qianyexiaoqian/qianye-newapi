@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
@@ -770,10 +771,18 @@ func handleRetryPayout(c *gin.Context) {
 		return
 	}
 
+	// 回读真实终态,绝不假定是 planned。RetryPayout 有一条分支(payout.go 里
+	// "该幂等键的资金单已经是 success")只调 markPayoutPaid 就返回 —— 那一笔
+	// 的真实终态是 paid,从未回到 planned。写死 planned 会在审计表里留下一次
+	// 从未发生的状态迁移,排障时让人以为一笔已到账的钱正在排队重发。
+	after := Payout{Status: PayoutPlanned}
+	if err := db.Get().WithContext(ctx).Where("payout_no = ?", payoutNo).Take(&after).Error; err != nil {
+		db.MarkFailure(err)
+	}
 	writeAdminAudit(c, "lottery.payout.retry", payoutNo, qymodel.ResultOK, "",
 		snapText(payoutSnapshot(&p)),
-		snapText(map[string]any{"status": PayoutPlanned, "next_attempt_at": 0}))
-	respondOK(c, gin.H{"payout_no": payoutNo, "status": PayoutPlanned})
+		snapText(map[string]any{"status": after.Status, "next_attempt_at": after.NextAttemptAt}))
+	respondOK(c, gin.H{"payout_no": payoutNo, "status": after.Status})
 }
 
 // ─────────────────────────── 只读列表 ───────────────────────────
@@ -1124,6 +1133,53 @@ func handleAdminListFlags(c *gin.Context) {
 
 // ─────────────────────────── 构造与校验 ───────────────────────────
 
+// maxScheduleHorizonSeconds 是四个时刻距当前时间的最大跨度(366 天)。
+//
+// 不新增 YAML 键:这不是一个需要按部署调的运营参数,而是"活动必须在可预见的
+// 时间内收场"这条不变量的兜底。真要办一年后的活动,到时候再建草稿。
+const maxScheduleHorizonSeconds int64 = 366 * 86400
+
+// rejectControlChars 拒绝任何控制字符。
+//
+// # 为什么是拒绝而不是过滤,以及为什么它是资金安全的一部分
+//
+// 奖档名称、文本奖履行说明、竞猜选项文案会被 SEP(0x1F)拼成 spec 原像
+// (PrizeSpecLineV2 / OptionSpecLine),再哈希成 spec_hash 进 commit_hash。
+// 这套编码的全部安全性建立在 commit.go 顶部那句断言上:「SEP 不会出现在业务
+// 串里」。运营只要在奖档名里塞一个 0x1F,两张**结构不同**的奖档表就能拼出
+// 逐字节相同的 spec_text —— 于是发布之后可以直接换掉 qy_lot_prize 整表,而
+// checkSpecIntegrity 的 spec_hash 与 spec_text 两条比对**双双通过**、承诺哈希
+// 复算通过、一条 flag 都不落、连仓库自带的验证脚本都会输出「全部通过」。
+// 实测:注入档发布时的承诺支出上界是 5000,换表后实发 6000,内外零告警。
+//
+// 过滤(照 transfer 的 sanitizeRemark 静默剔除)在这里是错的:运营看到的字符串
+// 与落库的不是同一个,而落库的那个才进承诺。宁可 400。
+//
+// 顺带把 title 也纳进来:它随匿名证据链下发,而 lottery-verify.py 会把它原样
+// print 到终端 —— 带 ANSI 转义的标题可以改写验证器自己的输出。
+func rejectControlChars(field, s string) error {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return errBadRequest(field + "不能包含控制字符")
+		}
+	}
+	return nil
+}
+
+// rejectControlCharsAllowingBreaks 用于多行文本:换行与制表符是正当排版,
+// 其余控制字符一律拒绝。这类字段不进任何哈希原像,只怕日志与终端注入。
+func rejectControlCharsAllowingBreaks(field, s string) error {
+	for _, r := range s {
+		if r == '\n' || r == '\r' || r == '\t' {
+			continue
+		}
+		if unicode.IsControl(r) {
+			return errBadRequest(field + "不能包含控制字符")
+		}
+	}
+	return nil
+}
+
 // buildActivity 把管理端提交的内容翻译成待落库的活动、奖档与选项。
 //
 // 这里做的是**全部**业务校验:发布时只再核对一次时刻与活动数上限,
@@ -1139,8 +1195,14 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 	if title == "" || utf8.RuneCountInString(title) > 60 {
 		return nil, nil, nil, errBadRequest("活动标题必填且不超过 60 个字")
 	}
+	if err := rejectControlChars("活动标题", title); err != nil {
+		return nil, nil, nil, err
+	}
 	if utf8.RuneCountInString(in.Intro) > 2000 {
 		return nil, nil, nil, errBadRequest("活动说明不超过 2000 个字")
+	}
+	if err := rejectControlCharsAllowingBreaks("活动说明", in.Intro); err != nil {
+		return nil, nil, nil, err
 	}
 	// 免费场在 v1 明确不做:twophase 的入口强制 0 < amount ≤ MaxQuota。
 	if in.StakeQuota <= 0 || in.StakeQuota > cfg.MaxStakeQuota ||
@@ -1215,6 +1277,12 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 	case KindDraw:
 		if act.DrawMode, err = normalizeDrawMode(in.DrawMode); err != nil {
 			return nil, nil, nil, err
+		}
+		// 抽奖没有手续费这回事(platform_fee_quota 只由双色球的入池比例写)。
+		// 与 normalizeWinPpm 对 rank/ball 填 win_ppm 的处理同一个口径:
+		// 填了却不生效是最坏的一种界面谎言,直接拒绝而不是静默丢弃。
+		if in.FeeBps != nil && *in.FeeBps != 0 {
+			return nil, nil, nil, errBadRequest("只有竞猜(kind=guess)才能设置手续费")
 		}
 		// 概率制与双色球下 allow_multi_win 强制为真(即不去重)。
 		//
@@ -1295,6 +1363,10 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activ
 		seen[p.Tier] = true
 		if name == "" || utf8.RuneCountInString(name) > 40 {
 			return nil, nil, errBadRequest("奖档名称必填且不超过 40 个字")
+		}
+		// 奖档名进 spec 原像,控制字符会让两张不同的奖档表撞出同一个 spec_hash。
+		if err := rejectControlChars("奖档名称", name); err != nil {
+			return nil, nil, err
 		}
 		if p.Count <= 0 || p.Count > cfg.MaxTotalEntriesHard {
 			return nil, nil, errBadRequest("奖品数量必须大于 0")
@@ -1399,6 +1471,10 @@ func normalizePrizeType(p prizeInput) (string, string, error) {
 		if desc == "" || utf8.RuneCountInString(desc) > 500 {
 			return "", "", errBadRequest("文本奖必须填写履行说明,且不超过 500 个字")
 		}
+		// 履行说明同样进 spec 原像(PrizeSpecLineV2 的第 7 位)。
+		if err := rejectControlChars("文本奖履行说明", desc); err != nil {
+			return "", "", err
+		}
 		return PrizeTypeText, desc, nil
 	}
 	return "", "", errBadRequest("奖品类型只能是 quota 或 text")
@@ -1449,6 +1525,10 @@ func buildOptions(in []optionInput, cfg config.Lottery) ([]Option, []string, err
 		seen[o.OptNo] = true
 		if label == "" || utf8.RuneCountInString(label) > 40 {
 			return nil, nil, errBadRequest("选项文案必填且不超过 40 个字")
+		}
+		// 选项文案进 spec 原像(OptionSpecLine 的第 2 位),同奖档名的理由。
+		if err := rejectControlChars("选项文案", label); err != nil {
+			return nil, nil, err
 		}
 		if o.IsCatchAll {
 			catchAll++
@@ -1519,6 +1599,25 @@ func validateSchedule(act *Activity, now int64) error {
 	}
 	if act.CloseAt <= now {
 		return errBadRequest("截止时间必须晚于当前时间")
+	}
+	// 四个时刻必须有绝对上界,理由有两条,而且都不是洁癖:
+	//
+	//  1. 资金可用性。竞猜的 settle_deadline 是"管理员不能无限期扣着奖池不结算"
+	//     的唯一兜底(runVoidExpired 到点全额退款),把它填成 2100 年就原样恢复了
+	//     那个风险;抽奖更彻底 —— 它连逾期兜底都没有,close_at 在 2200 年的活动
+	//     会正常收钱然后永远停在 published,不封盘、不开奖、不退款。
+	//  2. 溢出旁路。下面那条 `DrawAt < CloseAt + RevealDelaySeconds` 在 close_at
+	//     接近 int64 上界时会静默溢出成负数,判据恒假 —— 实测提交
+	//     close_at=2^63-1 / draw_at=now+100 可以绕过它。先夹住地平线,
+	//     那条加法就再也溢不出去。
+	horizon := now + maxScheduleHorizonSeconds
+	for _, ts := range []struct {
+		name string
+		at   int64
+	}{{"开始时间", act.OpenAt}, {"截止时间", act.CloseAt}, {"开奖时间", act.DrawAt}, {"结算截止时间", act.SettleDeadline}} {
+		if ts.at > horizon {
+			return errBadRequest(fmt.Sprintf("%s不得晚于当前时间之后 %d 天", ts.name, maxScheduleHorizonSeconds/86400))
+		}
 	}
 	// 受理窗口必须比 grace 更长,否则活动一开放就已经进入停止受理的窗口。
 	if act.CloseAt-act.OpenAt <= int64(cfg.EntryCloseGraceSeconds) {
