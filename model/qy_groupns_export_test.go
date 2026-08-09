@@ -79,15 +79,15 @@ func TestQyRewriteUserGroupTxSkipsDeletedUsersAndRewritesSnapshots(t *testing.T)
 		Id: 1, Title: "季卡", UpgradeGroup: "旧档",
 	}).Error)
 
-	// rewritePlans=false:删除路径不许静默改掉套餐卖的是什么。
-	res, err := QyRewriteUserGroupTx("旧档", "新档", false)
+	// 删除路径不许静默改掉套餐卖的是什么。
+	res, err := QyRewriteUserGroupTx("旧档", "新档", QyRewriteModeDelete)
 	require.NoError(t, err)
 
 	assert.EqualValues(t, 2, res.Users, "只有 2 个在册用户,注销的那个不算")
 	assert.ElementsMatch(t, []int{1, 2}, res.UserIds,
 		"UserIds 必须精确到人 —— 调用方要靠它逐个失效 Redis 里的旧分组缓存")
 	assert.EqualValues(t, 2, res.Subscriptions, "prev_user_group 与 upgrade_group 各一次")
-	assert.EqualValues(t, 0, res.Plans, "rewritePlans=false 时一个套餐都不能动")
+	assert.EqualValues(t, 0, res.Plans, "删除模式下一个套餐都不能动")
 	assert.EqualValues(t, 0, res.Stragglers)
 
 	var plan SubscriptionPlan
@@ -112,7 +112,7 @@ func TestQyRewriteUserGroupTxRewritesPlansOnRename(t *testing.T) {
 		Id: 1, Title: "季卡", UpgradeGroup: "老名字", DowngradeGroup: "老名字",
 	}).Error)
 
-	res, err := QyRewriteUserGroupTx("老名字", "新名字", true)
+	res, err := QyRewriteUserGroupTx("老名字", "新名字", QyRewriteModeRename)
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, res.Plans, "upgrade_group 与 downgrade_group 各一次")
 
@@ -122,11 +122,59 @@ func TestQyRewriteUserGroupTxRewritesPlansOnRename(t *testing.T) {
 	assert.Equal(t, "新名字", plan.DowngradeGroup)
 }
 
+// TestQyRewriteUserGroupTxMigrateOnlyTouchesMovedUsersSnapshots 锁住纯迁移与
+// 删除/改名的**唯一实质差别**。
+//
+// 纯迁移之后源分组仍然存在、仍然配置完整,所以一个不在这次迁移里的账号
+// (早已升到别的档、prev_user_group 还记着源分组)的回落目标指着源分组仍然是对的。
+// 按列值全表匹配会把他的降级目标静默改到迁移目标上 —— 一次没有出现在任何确认
+// 弹窗里、也没有任何人决定过的档位变更,而它要等到订阅到期那天才显形。
+func TestQyRewriteUserGroupTxMigrateOnlyTouchesMovedUsersSnapshots(t *testing.T) {
+	gdb := newQyTestMainDB(t)
+
+	require.NoError(t, gdb.Create(&User{Id: 1, Username: "a", AffCode: "a", Group: "旧档"}).Error)
+	// 2 号早已升到 VIP,不在这次迁移里,但他的快照还记着旧档。
+	require.NoError(t, gdb.Create(&User{Id: 2, Username: "b", AffCode: "b", Group: "VIP"}).Error)
+	require.NoError(t, gdb.Create(&UserSubscription{Id: 1, UserId: 1, PrevUserGroup: "旧档"}).Error)
+	require.NoError(t, gdb.Create(&UserSubscription{Id: 2, UserId: 2, PrevUserGroup: "旧档"}).Error)
+	require.NoError(t, gdb.Create(&SubscriptionPlan{
+		Id: 1, Title: "季卡", UpgradeGroup: "旧档",
+	}).Error)
+
+	res, err := QyRewriteUserGroupTx("旧档", "新档", QyRewriteModeMigrate)
+	require.NoError(t, err)
+
+	assert.EqualValues(t, 1, res.Users)
+	assert.EqualValues(t, 1, res.Subscriptions, "只有被迁移的那个人的快照会动")
+	assert.EqualValues(t, 0, res.Plans, "纯迁移一个套餐引用都不动 —— 分组名还在,套餐照常工作")
+
+	var moved, untouched UserSubscription
+	require.NoError(t, gdb.First(&moved, 1).Error)
+	require.NoError(t, gdb.First(&untouched, 2).Error)
+	assert.Equal(t, "新档", moved.PrevUserGroup)
+	assert.Equal(t, "旧档", untouched.PrevUserGroup,
+		"没有被迁移的人的回落目标必须原样留着 —— 源分组仍然存在,那个值不是孤儿")
+
+	var plan SubscriptionPlan
+	require.NoError(t, gdb.First(&plan, 1).Error)
+	assert.Equal(t, "旧档", plan.UpgradeGroup)
+}
+
 func TestQyRewriteUserGroupTxRejectsEmptyTarget(t *testing.T) {
 	newQyTestMainDB(t)
-	_, err := QyRewriteUserGroupTx("旧档", "", false)
+	_, err := QyRewriteUserGroupTx("旧档", "", QyRewriteModeDelete)
 	require.Error(t, err,
 		"目标为空会把一批用户的 group 清空,而空 group 与 default 在 middleware/auth.go 里并不等价")
+}
+
+// TestQyRewriteUserGroupTxRejectsUnknownMode 守住"模式必须显式给出"。
+//
+// 未知模式回落到某一条默认路径的表现是:调用方以为自己在做纯迁移,而实际发生的是
+// 一次按列值全表匹配的快照改写 —— 那正是这个参数被引进来要区分的两件事。
+func TestQyRewriteUserGroupTxRejectsUnknownMode(t *testing.T) {
+	newQyTestMainDB(t)
+	_, err := QyRewriteUserGroupTx("旧档", "新档", "")
+	require.Error(t, err)
 }
 
 // newQyTestMainDB 建一个主库测试实例。

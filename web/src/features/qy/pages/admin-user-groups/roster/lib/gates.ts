@@ -20,6 +20,7 @@ import type {
   QyUgrBlockCode,
   QyUgrImpact,
   QyUgrMigrationDiff,
+  QyUgrResidue,
   QyUgrUsableChange,
 } from '../types'
 
@@ -98,6 +99,83 @@ export function qyUgrDeleteEntry(row: {
     return { enabled: true, noteKey: 'qy_ug_delete_default_note' }
   }
   return { enabled: true, noteKey: null }
+}
+
+/**
+ * 表行上**迁移**入口的状态。
+ *
+ * ── 它刻意不照抄删除那一套闸门 ──
+ *
+ * 迁移入口存在的全部理由就是：`default` 永远删不掉，而那 700 个人必须能挪走。
+ * 把 `deletability()` 的四条(default / 套餐引用 / block 残留 / 没有目标)搬过来，
+ * 这个入口就会在最需要它的那一行上灰掉，而项目方报上来的正是那一幕。
+ *
+ * 后端 `adminMigrateUserGroup` 真正会拒的只有三条：寻址不到这个名字、这一档
+ * 现在没有人、以及目标那一侧的问题(目标必填/不能是自己/必须已登记)。
+ * 前两条在表行上就能判，第三条属于弹窗。
+ */
+export type QyUgrMigrateEntryBlock =
+  /** 迁移端点的 `lookupUserGroup` 找不到这个名字：没有登记行、也没有人挂着。 */
+  | 'not_addressable'
+  /** 这一档现在一个在册用户都没有 —— 没有东西可迁。 */
+  | 'no_users'
+
+export type QyUgrMigrateEntry = {
+  enabled: boolean
+  /** 常驻在按钮下方的一句短话的文案键。`null` = 不印。 */
+  noteKey: string | null
+}
+
+export function qyUgrMigrateEntry(row: {
+  registered: boolean
+  user_count: number
+}): QyUgrMigrateEntry {
+  if (!row.registered && row.user_count === 0) {
+    return { enabled: false, noteKey: 'qy_ug_delete_not_addressable' }
+  }
+  if (row.user_count === 0) {
+    return { enabled: false, noteKey: 'qy_ugr_migrate_no_users' }
+  }
+  return { enabled: true, noteKey: null }
+}
+
+/**
+ * 迁移按钮此刻能不能按，以及为什么不能。
+ *
+ * 与 {@link qyUgrDeleteBlock} 同一个手法：**一个判据都不自己发明**，只把后端已经
+ * 算好的结论翻译成按钮状态。唯一属于前端的是"影响面还没拉回来"。
+ *
+ * 注意这里**不看 `impact.deletable`** —— 那是删除的结论，而迁移与它无关：
+ * `default` 的 `deletable` 恒为 `false`，照着它灰按钮等于把这个功能关掉。
+ */
+export type QyUgrMigrateBlock =
+  /** 影响面还在路上。此时的一切数字都还不存在。 */
+  | 'loading'
+  /** 这一档现在没有人可迁（打开弹窗之后被别人挪空了）。 */
+  | 'no_users'
+  /** 目标分组一个模型分组都用不了，必须显式勾选覆盖。 */
+  | 'needs_ack'
+  /** 还没选目标。 */
+  | 'needs_target'
+
+/** 「迁移键为什么是灰的」——每一种状态各一句，穷尽 `Record`。 */
+export const QY_UGR_MIGRATE_GATE_KEY: Record<QyUgrMigrateBlock, string> = {
+  loading: 'qy_ugr_gate_loading',
+  needs_ack: 'qy_ugr_migrate_gate_needs_ack',
+  needs_target: 'qy_ugr_migrate_gate_needs_target',
+  no_users: 'qy_ugr_migrate_gate_no_users',
+}
+
+export function qyUgrMigrateBlock(
+  impact: QyUgrImpact | null,
+  target: string,
+  ack: boolean
+): QyUgrMigrateBlock | null {
+  if (impact == null) return 'loading'
+  if (impact.users === 0) return 'no_users'
+  if (target === '') return 'needs_target'
+  if (impact.diff?.loses_everything === true && !ack) return 'needs_ack'
+  return null
 }
 
 /**
@@ -210,6 +288,38 @@ export function qyUgrDeleteBlock(
   // 没有 diff 时不拦:此时要么没人要迁,要么目标还没选 —— 后者已经被上一条拦住。
   if (impact.diff?.loses_everything === true && !ack) return 'needs_ack'
   return null
+}
+
+/**
+ * 「迁完之后仍然会有人被放回这一档」的两类来源。
+ *
+ * ── 为什么它必须在**按下确认之前**出现在屏幕上 ──
+ *
+ * 迁移刻意不拦、也不改这两处引用（拦掉的话 `default` 又变成挪不走的了，而那
+ * 正是这次报上来的缺陷本身）。代价是迁完之后这一档会被重新填回来 —— 而这句话
+ * 恰恰是运营决定「要不要迁、迁之前要不要先去改注册默认分组」的前提。只在迁移
+ * 成功之后用一条 toast 说，等于没给他做决定的机会：707 个人挪走，几天后人数
+ * 自己长回去，而屏幕上没有任何一处解释过为什么。
+ *
+ * 两类来源与后端 `groupns.userGroupRefillSources` 一一对应：
+ *
+ *   plans     升级/降级分组仍然指向它的套餐（`blocking_plans`）
+ *   residues  处置为 `rewrite` 且真的有行的残留 —— 最典型的就是
+ *             「新注册用户默认分组」，而 `default` 几乎必然同时是它
+ *
+ * 只画其中一半是最坏的形状：屏幕上有一段"会被填回来"的告警，运营据此认为
+ * 已经看全了，而真正会把人送回来的那一处恰好不在里面。
+ */
+export function qyUgrRefillSources(impact: QyUgrImpact | null | undefined): {
+  plans: string[]
+  residues: QyUgrResidue[]
+} {
+  return {
+    plans: impact?.blocking_plans ?? [],
+    residues: (impact?.residues ?? []).filter(
+      (residue) => residue.disposition === 'rewrite' && residue.rows > 0
+    ),
+  }
 }
 
 /**

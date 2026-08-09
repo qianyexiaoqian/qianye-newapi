@@ -446,12 +446,25 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
   })
 
   const scopeMutation = useMutation({
-    mutationFn: (input: { userGroup: string; body: QyGmScopeRequest }) =>
-      qyGmSaveScope(input.userGroup, input.body),
-    onSuccess: (fresh) => {
+    mutationFn: (input: {
+      userGroup: string
+      body: QyGmScopeRequest
+      afterApply?: () => void
+    }) => qyGmSaveScope(input.userGroup, input.body),
+    onSuccess: (fresh, input) => {
       toast.success(t('qy_group_matrix_scope_saved'))
       onScopeSaved?.()
       applyServerState(fresh)
+      /*
+        回读**之后**才执行后续动作。
+
+        用户分组编辑器把「有没有自己的清单」做成了列表内容的隐式表达：第一次
+        增删要先建 scope 行（这一次写入），再把那一次增删写进草稿。而
+        `applyServerState` 会把本地草稿整个清掉 —— 反过来做（先落草稿再提交
+        范围）等于那次增删被静默丢掉，屏幕上只剩一句绿色的「已保存」，而运营
+        看到的列表与他刚点的那一下不一致。
+      */
+      input.afterApply?.()
     },
     onError: (error) => toast.error(qyOpsErrorMessage(error, t)),
   })
@@ -464,7 +477,7 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
    * 走，闸门只有一份。
    */
   const submitScope = useCallback(
-    (userGroup: string, body: QyGmScopeRequest) => {
+    (userGroup: string, body: QyGmScopeRequest, afterApply?: () => void) => {
       scopeMutation.mutate({
         userGroup,
         body:
@@ -475,6 +488,7 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
                 impact_hash: enforcePreview.result.impact_hash,
               }
             : body,
+        afterApply,
       })
     },
     [enforcePreview, scopeMutation]

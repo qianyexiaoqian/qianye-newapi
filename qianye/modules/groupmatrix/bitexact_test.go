@@ -2,6 +2,7 @@ package groupmatrix
 
 import (
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -325,13 +326,17 @@ func TestRetakeoverPrefillIsIdempotent(t *testing.T) {
 	prefill := []string{"default", "vip", autoGroup, ""}
 
 	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-		return ensureGrants(tx, "default", prefill, 1, 100)
+		_, err := resetGrantsToPrefill(tx, "default", prefill, 1, 100)
+		return err
 	}))
 	// 撤销接管:只删 scope 行,grants 原样留着(这就是缺陷的前提条件)。
 	require.NoError(t, gdb.Where("user_group = ?", "default").Delete(&Scope{}).Error)
 
+	var dropped []string
 	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-		return ensureGrants(tx, "default", prefill, 1, 200)
+		var err error
+		dropped, err = resetGrantsToPrefill(tx, "default", prefill, 1, 200)
+		return err
 	}), "重新接管必须成功 —— 撞唯一键会让这个用户分组永远接管不了")
 
 	grants, err := loadGrants(gdb)
@@ -339,6 +344,51 @@ func TestRetakeoverPrefillIsIdempotent(t *testing.T) {
 	assert.Len(t, grants["default"], 2, "重复预填不得产生重复行")
 	assert.NotContains(t, grants["default"], autoGroup,
 		"auto 是伪分组,可选性由 scope.allow_auto 控制,不进 grants")
+	assert.Empty(t, dropped, "预填与库里完全一致时不该删掉任何一行")
+}
+
+// TestNewScopeDropsGrantsOutsideThePrefill 守「建清单这一下不改变任何人能用什么」。
+//
+// ══════════════ 静默复活 ══════════════
+//
+// 撤销接管只删 scope 行、grants 刻意留着。于是一档"没有清单"的分组身上完全可能
+// 挂着上一次配的授权,而它此刻真的能用的东西由上游全局清单决定 —— 两者可以毫不
+// 相干。建清单的那一次写入用 currentUsableGroups 预填,只增不删的话新清单就变成
+// 「预填 ∪ 残留」:多出来的那几项没有出现在建清单的确认弹窗里(那里数的是预填)、
+// 没有出现在建立前的列表里(未接管档按上游实际可用清单画)、也没有任何人决定过要
+// 放开它们。等这一档日后切到 enforce,它们连同各自那一格的倍率一起当场生效。
+//
+// 这一条钉住:新清单 == 预填,逐项相等,并且被清掉的那些必须能被审计说出来。
+func TestNewScopeDropsGrantsOutsideThePrefill(t *testing.T) {
+	gdb := newTestDB(t)
+
+	// 上一次配的清单,撤销接管之后原样留在库里(scope 行已经没了)。
+	for _, mg := range []string{"legacy-a", "legacy-b", "vip"} {
+		require.NoError(t, gdb.Create(&Grant{
+			UserGroup: "default", ModelGroup: mg, CreatedAt: 1, UpdatedAt: 1,
+		}).Error)
+	}
+
+	// 这一档此刻真的能用的是另外一批 —— 界面上画的、确认弹窗里数的都是它。
+	prefill := []string{"default", "vip"}
+	var dropped []string
+	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
+		var err error
+		dropped, err = resetGrantsToPrefill(tx, "default", prefill, 7, 300)
+		return err
+	}))
+
+	grants, err := loadGrants(gdb)
+	require.NoError(t, err)
+	got := make([]string, 0, len(grants["default"]))
+	for mg := range grants["default"] {
+		got = append(got, mg)
+	}
+	sort.Strings(got)
+	assert.Equal(t, []string{"default", "vip"}, got,
+		"新清单必须逐项等于预填 —— 残留复活是一次没有人做过的放开决定")
+	assert.Equal(t, []string{"legacy-a", "legacy-b"}, dropped,
+		"被清掉的残留必须能被说出来,否则这次写入里唯一'减少了什么'的地方无人可查")
 }
 
 // TestPreviewPrefillsUnmanagedTargets 守「首次接管 + 直接 enforce」那条路上的影响面。

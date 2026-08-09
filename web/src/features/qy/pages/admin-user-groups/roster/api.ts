@@ -26,6 +26,8 @@ import type {
   QyUgrDeleteRequest,
   QyUgrImpact,
   QyUgrListResponse,
+  QyUgrMigrateRequest,
+  QyUgrMigrateResult,
   QyUgrRenameRequest,
   QyUgrRewriteResult,
   QyUgrUpdateRequest,
@@ -123,4 +125,19 @@ export function qyUgrRename(name: string, body: QyUgrRenameRequest) {
 /** 删除并迁移。`partial` 的处理同 {@link qyUgrRename}。 */
 export function qyUgrDelete(name: string, body: QyUgrDeleteRequest) {
   return qyDelete<QyUgrRewriteResult>(path(name), body)
+}
+
+/**
+ * 一键迁移 —— 把这一档人整体挪到另一档，**源分组留着**。
+ *
+ * ── 为什么它不是删除的一个选项 ──
+ *
+ * 迁移此前只作为删除的副产品存在，而删除对 `default` 是硬拒的（它是
+ * `users.group` 这一列的数据库默认值）。于是运营真正想做的那件事（「把这 707 个
+ * 人挪走」）在界面上无路可走：唯一的入口被一道与他的目的毫无关系的闸门挡着。
+ *
+ * 服务端走的是与删除**同一份**迁移实现，只是不再有"清掉源分组配置"那一步。
+ */
+export function qyUgrMigrate(name: string, body: QyUgrMigrateRequest) {
+  return qyPost<QyUgrMigrateResult>(path(name, '/migrate'), body)
 }

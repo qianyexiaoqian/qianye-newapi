@@ -238,6 +238,31 @@ export function QyAdminUserGroups() {
                       onCopyFrom={(fromUserGroup) =>
                         editor.copyRow(fromUserGroup, selectedGroup.name)
                       }
+                      /*
+                        范围写入的唯一通道，两个外壳共用 —— 切 enforce 的双
+                        哈希闸门因此不可能松紧不一。这一页额外保留右上角那枚
+                        「设定模型分组范围」按钮（`onEditScope`）：它是高级页
+                        上直接改 `managed` / `allow_auto` 的逃生口，日常路径
+                        （建清单、清空、切生效力度）已经收进详情面板自己。
+                      */
+                      scope={{
+                        isSaving: editor.isScopeSaving,
+                        hasUnsavedDraft: editor.counts.total > 0,
+                        enforcePreview:
+                          editor.enforcePreview?.userGroup ===
+                          selectedGroup.name
+                            ? editor.enforcePreview.result
+                            : null,
+                        isPreviewing: editor.isEnforcePreviewing,
+                        onPreviewForEnforce: () =>
+                          editor.runEnforcePreview(selectedGroup.name),
+                        onSubmit: (body, afterApply) =>
+                          editor.submitScope(
+                            selectedGroup.name,
+                            body,
+                            afterApply
+                          ),
+                      }}
                     />
                   )}
                 </div>

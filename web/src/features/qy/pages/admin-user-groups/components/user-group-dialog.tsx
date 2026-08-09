@@ -30,7 +30,6 @@ import { QyPageBoundary } from '../../../components/qy-page-boundary'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { QyGmDiffBar } from '../../admin-group-matrix/components/diff-bar'
 import { QyGmPreviewBody } from '../../admin-group-matrix/components/preview-dialog'
-import { QyGmScopeForm } from '../../admin-group-matrix/components/scope-sheet'
 import { QyGmStatusBanners } from '../../admin-group-matrix/components/status-banners'
 import { useQyGmEditor } from '../../admin-group-matrix/lib/use-editor'
 import type { QyGmUserGroup } from '../../admin-group-matrix/types'
@@ -201,32 +200,18 @@ function QyUgGroupDialogBody(props: {
           )}
 
           {/*
-            范围设置自成一段，且有**自己的**提交键。
+            ── 这里曾经有一整段「可用范围的力度」表单 ──
 
-            它写的是另一个端点、另一份数据（`qy_group_scopes`），与上面差异条
-            保存的可选性 / 倍率 / 备注不是一回事。合成一个按钮的话，一次点击会
-            同时改掉访问控制的力度与一批价格，而两者的失败方式完全不同 ——
-            这套两库设计最坏的失败就是"以为一起成功了"。
+            它是 `qy_group_scopes` 有没有这一行的直接投影：不先在那里把开关
+            打开，下面整张清单的勾选框全是灰的。项目方带截图报的原话是"为何
+            不可以删除/添加模型分组"——初见只能读成「什么都点不动」，而屏幕上
+            唯一的解释要求他先理解一个内部数据模型。
+
+            现在那件事由列表内容隐式表达（第一次增删时建 scope 行、清空时删），
+            灰度维度（先观察 / 现在就生效）挪进列表上方的状态条。范围写入仍然
+            只有 `editor.submitScope` 这一条通道，切 enforce 的双哈希闸门原封
+            不动 —— 少的是那个前置开关，不是那道闸。
           */}
-          <section className='space-y-3 rounded-lg border p-3'>
-            <h3 className='text-sm font-medium'>{t('qy_ug_scope_section')}</h3>
-            <QyGmScopeForm
-              open
-              userGroup={row}
-              grantedCount={editor.grantedCounts.get(row.name) ?? 0}
-              hasUnsavedDraft={editor.counts.total > 0}
-              enforcePreview={
-                editor.enforcePreview?.userGroup === row.name
-                  ? editor.enforcePreview.result
-                  : null
-              }
-              isPreviewing={editor.isEnforcePreviewing}
-              onPreviewForEnforce={() => editor.runEnforcePreview(row.name)}
-              isSaving={editor.isScopeSaving}
-              onSubmit={(body) => editor.submitScope(row.name, body)}
-            />
-          </section>
-
           <QyUgGroupDetail
             data={data}
             userGroup={row}
@@ -252,6 +237,18 @@ function QyUgGroupDialogBody(props: {
             onCopyFrom={(fromUserGroup) =>
               editor.copyRow(fromUserGroup, row.name)
             }
+            scope={{
+              isSaving: editor.isScopeSaving,
+              hasUnsavedDraft: editor.counts.total > 0,
+              enforcePreview:
+                editor.enforcePreview?.userGroup === row.name
+                  ? editor.enforcePreview.result
+                  : null,
+              isPreviewing: editor.isEnforcePreviewing,
+              onPreviewForEnforce: () => editor.runEnforcePreview(row.name),
+              onSubmit: (body, afterApply) =>
+                editor.submitScope(row.name, body, afterApply),
+            }}
             scrollList={false}
           />
         </div>

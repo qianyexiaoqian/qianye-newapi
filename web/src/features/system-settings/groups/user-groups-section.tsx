@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Info, Plus, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { Info, Plus, SlidersHorizontal, Trash2, UsersRound } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -39,11 +39,16 @@ import {
   qyUgrCreate,
   qyUgrDelete,
   qyUgrImpactQuery,
+  qyUgrMigrate,
 } from '@/features/qy/pages/admin-user-groups/roster/api'
 import { QyUgrActionBlockNote } from '@/features/qy/pages/admin-user-groups/roster/components/action-block-note'
 import { QyUgrCreateDialog } from '@/features/qy/pages/admin-user-groups/roster/components/create-dialog'
 import { QyUgrDeleteDialog } from '@/features/qy/pages/admin-user-groups/roster/components/delete-dialog'
-import { qyUgrDeleteEntry } from '@/features/qy/pages/admin-user-groups/roster/lib/gates'
+import { QyUgrMigrateDialog } from '@/features/qy/pages/admin-user-groups/roster/components/migrate-dialog'
+import {
+  qyUgrDeleteEntry,
+  qyUgrMigrateEntry,
+} from '@/features/qy/pages/admin-user-groups/roster/lib/gates'
 import type { QyUgrCreateRequest } from '@/features/qy/pages/admin-user-groups/roster/types'
 import { qyOpsErrorMessage } from '@/features/qy/pages/ops/errors'
 
@@ -134,6 +139,17 @@ export function UserGroupsSection(props: {
   const [deleting, setDeleting] = useState<QyGmUserGroup | null>(null)
   const [migrateTo, setMigrateTo] = useState('')
   const [ack, setAck] = useState(false)
+  /*
+    ── 迁移是一个独立动作，因此它有独立的三份状态 ────────────────────────
+
+    与删除**共用**同一组 `migrateTo` / `ack` 看起来更省，但那会让两个弹窗互相
+    污染：在删除弹窗里选过的目标会带进迁移弹窗，而那个选择是照着"这一档要没了"
+    做的。更要紧的是 `ack`（「我知道这批人的令牌会全部挂掉」）—— 它是一次显式
+    签字，不该被另一个动作代签。
+  */
+  const [movingOut, setMovingOut] = useState<QyGmUserGroup | null>(null)
+  const [moveTarget, setMoveTarget] = useState('')
+  const [moveAck, setMoveAck] = useState(false)
 
   /*
     保存的键域**由归属清单直接给出**，不是在这里重新抄一遍。
@@ -209,7 +225,9 @@ export function UserGroupsSection(props: {
     })
     // 观测清单里的在册人数与范围状态也会跟着变。不一起失效的表现是：删完之后
     // 同一张表上还列着那个已经不存在的分组。
-    await queryClient.invalidateQueries({ queryKey: qyKeys.adminGroupMatrix() })
+    await queryClient.invalidateQueries({
+      queryKey: qyKeys.adminGroupMatrix(),
+    })
   }, [queryClient])
 
   const impactQuery = useQuery({
@@ -263,6 +281,54 @@ export function UserGroupsSection(props: {
         )
       }
       closeDelete()
+      await refreshRoster()
+    },
+    onError: (error) => toast.error(qyOpsErrorMessage(error, t)),
+  })
+
+  const moveImpactQuery = useQuery({
+    ...qyUgrImpactQuery(movingOut?.name ?? null, moveTarget),
+    retry: false,
+  })
+
+  const closeMigrate = useCallback(() => {
+    setMovingOut(null)
+    setMoveTarget('')
+    setMoveAck(false)
+  }, [])
+
+  const migrateMutation = useMutation({
+    mutationFn: () =>
+      qyUgrMigrate(movingOut?.name ?? '', {
+        ack_loses_everything: moveAck,
+        expect_users: moveImpactQuery.data?.users ?? 0,
+        target: moveTarget,
+      }),
+    onSuccess: async (result) => {
+      toast.success(
+        t('qy_ugr_migrated', {
+          from: result.from,
+          target: result.to,
+          users: result.users,
+        })
+      )
+      /*
+        源分组还在、而且还会被填回来 —— 这两件事都必须常驻在屏幕上，不能只写在
+        弹窗里然后随弹窗一起关掉。运营下一步会去表上找那一档：看到它还在（人数
+        变成 0）时，如果没有这句话，最自然的结论是"迁移失败了"，于是他会再点一次。
+      */
+      if (result.stragglers > 0) {
+        toast.warning(
+          t('qy_ugr_migrate_stragglers', { count: result.stragglers }),
+          { duration: Number.POSITIVE_INFINITY }
+        )
+      }
+      for (const refill of result.refills) {
+        toast.warning(t('qy_ugr_migrate_refill_toast', { source: refill }), {
+          duration: Number.POSITIVE_INFINITY,
+        })
+      }
+      closeMigrate()
       await refreshRoster()
     },
     onError: (error) => toast.error(qyOpsErrorMessage(error, t)),
@@ -509,6 +575,19 @@ export function UserGroupsSection(props: {
                 不到这个名字（没有登记行、users.group 里也没有人挂着）。
               */
               const deleteEntry = qyUgrDeleteEntry(row)
+              /*
+                ── 迁移是一个**独立入口**，不依赖删除 ──────────────────────
+
+                项目方原话：「既然 default 的用户分组无法删除，那么你就在用户分组
+                这里增加一个用户分组迁移的功能」。此前"把这一档人挪走"这个动作
+                只作为删除的一步存在，而删除对 `default` 是硬拒的 —— 于是站上人
+                最多的那一档，707 个人，一个都挪不走。
+
+                它的闸门与删除**没有任何交集**（见 `qyUgrMigrateEntry`）：只有
+                "寻址不到这个名字"和"这一档现在没有人"两条。照抄删除那四条会让
+                这个按钮恰好在最需要它的那一行上灰掉。
+              */
+              const migrateEntry = qyUgrMigrateEntry(row)
               return (
                 <div className='flex flex-col items-end gap-1'>
                   <div className='flex justify-end gap-1'>
@@ -520,6 +599,20 @@ export function UserGroupsSection(props: {
                     >
                       <SlidersHorizontal className='h-4 w-4' />
                       {t('Edit')}
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='outline'
+                      size='sm'
+                      disabled={!migrateEntry.enabled}
+                      onClick={() => {
+                        setMoveTarget('')
+                        setMoveAck(false)
+                        setMovingOut(row)
+                      }}
+                    >
+                      <UsersRound className='h-4 w-4' />
+                      {t('qy_ugr_migrate_action')}
                     </Button>
                     <Button
                       type='button'
@@ -538,6 +631,21 @@ export function UserGroupsSection(props: {
                       <Trash2 className='h-4 w-4' />
                     </Button>
                   </div>
+                  {/*
+                    两句短话各说各的：迁移那句解释的是「迁移键为什么是灰的」
+                    （这一档现在没有人），删除那句解释的是「删除键为什么按不动 /
+                    这一档为什么删不掉」。合并成一句会让 `default` 那一行的
+                    "删不掉"被读成"也挪不走"，而那正好是反的。
+
+                    两条恰好是同一句时（"寻址不到这个名字"对两个动作都成立）只印
+                    一次：同一段话在同一格里出现两遍，读的人会以为是两件事。
+                  */}
+                  {migrateEntry.noteKey !== deleteEntry.noteKey && (
+                    <QyUgrActionBlockNote
+                      noteKey={migrateEntry.noteKey}
+                      className='max-w-64 text-right'
+                    />
+                  )}
                   <QyUgrActionBlockNote
                     noteKey={deleteEntry.noteKey}
                     className='max-w-64 text-right'
@@ -587,6 +695,28 @@ export function UserGroupsSection(props: {
         }
         isSaving={createMutation.isPending}
         onConfirm={() => createMutation.mutate()}
+      />
+
+      <QyUgrMigrateDialog
+        open={movingOut != null}
+        onOpenChange={(open) => {
+          if (!open) closeMigrate()
+        }}
+        impact={moveImpactQuery.data ?? null}
+        isLoading={moveImpactQuery.isLoading}
+        isRefreshing={
+          moveImpactQuery.isFetching && moveImpactQuery.data != null
+        }
+        isMigrating={migrateMutation.isPending}
+        target={moveTarget}
+        onTargetChange={(value) => {
+          setMoveTarget(value)
+          // 换目标 = 换一份差异。上一个目标的「我知道他们会全部挂掉」不能顺延。
+          setMoveAck(false)
+        }}
+        ack={moveAck}
+        onAckChange={setMoveAck}
+        onConfirm={() => migrateMutation.mutate()}
       />
 
       <QyUgrDeleteDialog

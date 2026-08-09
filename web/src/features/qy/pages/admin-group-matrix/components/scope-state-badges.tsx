@@ -27,6 +27,17 @@ type QyGmScopeStateBadgesProps = {
   userGroup: QyGmUserGroup
   /** 草稿合并后这一档当前有几个模型分组在范围里。 */
   grantedCount: number
+  /**
+   * 覆盖「未设定范围」徽章的 title。
+   *
+   * 默认那一句以「先给这个用户分组设定范围」收尾 —— 它指的是矩阵页上那个
+   * 「设定模型分组范围」按钮，而**那个控件不是每个外壳上都有**：用户分组的
+   * 编辑弹窗里，范围行由列表内容隐式表达，那个按钮根本不渲染。指路指向一个
+   * 不存在的控件比不给指路更糟，运营会去找、找不到，然后认为页面坏了。
+   */
+  unsetHint?: string
+  /** 覆盖「空范围」徽章的 title。理由同上：外壳不同，下一步动作不同。 */
+  emptyHint?: string
 }
 
 /**
@@ -67,7 +78,7 @@ export function QyGmScopeStateBadges(props: QyGmScopeStateBadgesProps) {
         <Badge
           variant='outline'
           className='text-muted-foreground px-1 py-0 text-[10px]'
-          title={t('qy_group_scope_unset_hint')}
+          title={props.unsetHint ?? t('qy_group_scope_unset_hint')}
         >
           {t('qy_group_scope_state_unset')}
         </Badge>
@@ -84,9 +95,12 @@ export function QyGmScopeStateBadges(props: QyGmScopeStateBadgesProps) {
         <Badge
           variant='outline'
           className='border-destructive/60 text-destructive px-1 py-0 text-[10px]'
-          title={t('qy_group_scope_state_empty_hint', {
-            userGroup: props.userGroup.name,
-          })}
+          title={
+            props.emptyHint ??
+            t('qy_group_scope_state_empty_hint', {
+              userGroup: props.userGroup.name,
+            })
+          }
         >
           {t('qy_group_scope_state_empty')}
         </Badge>

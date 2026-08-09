@@ -62,7 +62,16 @@ export type QyGmMatrixCellProps = {
    * 勾选框管的是哪一个模型分组。
    */
   toggleId?: string
-  onToggleGranted: (granted: boolean) => void
+  /**
+   * 可选性开关的回调。
+   *
+   * **缺省 = 这一格不画勾选框**（只画倍率那一段）。用户分组编辑器已经换成
+   * 「已分配的一个列表 + 添加入口」，那里的增删是行尾的移除键与添加键，
+   * 一格里再放一个语义相同的勾选框，同一件事就有了两个控件、两种视觉状态，
+   * 而它们只在同一次渲染里凑巧一致。倍率的三态显示（继承 / 显式 / 兜底缺失）
+   * 仍然共用这一份实现 —— 那一段是真的在扣钱，两份实现迟早显示成两个数。
+   */
+  onToggleGranted?: (granted: boolean) => void
   onRatioChange: (draft: QyGmRatioDraft) => void
 }
 
@@ -169,22 +178,24 @@ export function QyGmMatrixCell(props: QyGmMatrixCellProps) {
         而禁用态的勾选框仍然在原位说明"这里本该有一个开关"，`title` 与外壳上的
         那句说明再补上"先去设定范围"。
       */}
-      <Checkbox
-        id={props.toggleId}
-        checked={props.granted}
-        disabled={!props.scoped}
-        onCheckedChange={(checked) => props.onToggleGranted(checked)}
-        aria-label={toggleLabel}
-        title={toggleTitle}
-        /*
+      {props.onToggleGranted != null && (
+        <Checkbox
+          id={props.toggleId}
+          checked={props.granted}
+          disabled={!props.scoped}
+          onCheckedChange={(checked) => props.onToggleGranted?.(checked)}
+          aria-label={toggleLabel}
+          title={toggleTitle}
+          /*
           禁用态挂 `data-disabled:` 而不是 `disabled:`：Base UI 的勾选框渲染成
           一个 `<span role=checkbox aria-disabled>`（原生 `<input>` 是旁边那个
           隐藏的镜像），而 Tailwind 的 `disabled:` 变体只对真的带 `disabled`
           属性的表单元素生效 —— 共用组件里那两条 `disabled:opacity-50` 在这里
           一条都不会命中，未设定范围的那一整档会画得和可点的一模一样。
         */
-        className='ms-1.5 shrink-0 data-disabled:cursor-not-allowed data-disabled:opacity-50'
-      />
+          className='ms-1.5 shrink-0 data-disabled:cursor-not-allowed data-disabled:opacity-50'
+        />
+      )}
       {inherit && (
         <CornerDownRight
           aria-hidden='true'

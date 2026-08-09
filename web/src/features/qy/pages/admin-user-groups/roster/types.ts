@@ -215,6 +215,55 @@ export type QyUgrUpdateResult = {
   partial?: QyUgrPartial
 }
 
+/**
+ * 「一键迁移」的请求体（`POST /user-groups/:name/migrate`）。
+ *
+ * 与 {@link QyUgrDeleteRequest} 的字段几乎一样，但它是**另一个动作**：迁完之后源
+ * 分组仍然存在、配置完整。两者共用同一份后端迁移实现
+ * （`model.QyRewriteUserGroupTx`），不是两份。
+ */
+export type QyUgrMigrateRequest = {
+  /** 目标用户分组。**必填**，且必须已登记。 */
+  target: string
+  /** 运营在界面上看到的人数。对不上时后端返回 409。 */
+  expect_users: number
+  /** 「目标分组一个模型分组都用不了」这道闸门的显式覆盖。它进审计。 */
+  ack_loses_everything: boolean
+}
+
+/** 一次纯迁移的结果。 */
+export type QyUgrMigrateResult = {
+  from: string
+  to: string
+  users: number
+  /** 被改写的订阅快照行数 —— 只含**被迁移用户自己的**那些。 */
+  subscriptions: number
+  /**
+   * 提交之后仍然挂在源分组上的在册用户数。
+   *
+   * 与删除路径不同，它在这里**不是错误**：源分组仍然完整，这几个账号指着一个
+   * 配置齐全的名字，不是孤儿。再按一次迁移即可收敛。
+   */
+  stragglers: number
+  /** 缓存失效失败的用户数。非 0 = 这批人在 TTL 内仍按旧分组计价。 */
+  cache_misses: number
+  diff: QyUgrMigrationDiff
+  /**
+   * 恒为 `true`，而且**必须显示出来**。
+   *
+   * 「迁移」在直觉里常常等于「挪完就没了」，而这里源分组连同它的全部配置都留着。
+   * 不说的话，运营下一步会去找一个他以为已经消失的分组。
+   */
+  source_remains: boolean
+  /**
+   * 「迁完之后仍然会有人被放回源分组」的来源清单（后端原文）。
+   *
+   * 这是迁移与删除最重要的行为差别：删除会把这些引用硬拦或改写，迁移一个都不动。
+   * 不列出来的话，运营会看着人数在几天后自己长回去而没有任何解释。
+   */
+  refills: string[]
+}
+
 export type QyUgrRenameRequest = {
   new_name: string
   /** 运营在界面上看到的人数。对不上时后端返回 409。 */

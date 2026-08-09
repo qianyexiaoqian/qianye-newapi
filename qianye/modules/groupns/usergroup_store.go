@@ -115,8 +115,16 @@ func rewriteUserGroup(gdb *gorm.DB, from, to string, rename bool, operatorId int
 	}
 
 	// ── 阶段二:迁用户(主库一个事务) ──
+	//
+	// 两条路径共用 model.QyRewriteUserGroupTx 这一份实现,纯迁移那条(见
+	// usergroup_migrate.go)也是同一个。差别只由 mode 表达:这里源名字都会消失,
+	// 所以订阅快照按列值全表匹配;纯迁移那条源名字留着,只动被迁移的那批人。
 	if to != "" {
-		moved, err := model.QyRewriteUserGroupTx(from, to, rename)
+		mode := model.QyRewriteModeDelete
+		if rename {
+			mode = model.QyRewriteModeRename
+		}
+		moved, err := model.QyRewriteUserGroupTx(from, to, mode)
 		if err != nil {
 			res.Partial = &RewritePartial{
 				Stage: StageMigrate,
@@ -377,6 +385,14 @@ func updateOptionVerified(key, want string) error {
 	return nil
 }
 
+// invalidateUserCache 是缓存失效的**唯一出口**,做成变量只为让用例能观测它。
+//
+// 生产恒为 model.InvalidateUserCache。用例里 Redis 与内存缓存都是关掉的,
+// 而关掉时上游这个函数直接返回 nil —— 于是"一个都没调"与"每个都调了"
+// 产出的 CacheMisses 同样是 0,断言不到任何东西。而漏掉这一步的表现
+// 恰恰是这批人在缓存 TTL 内继续按旧分组解析可用清单与倍率(默认 60s 的错价)。
+var invalidateUserCache = model.InvalidateUserCache
+
 // invalidateUserCaches 逐个失效被迁移用户的缓存,返回失败数。
 //
 // 失败不回滚:迁移已经提交,回滚不了。失败数进返回值与审计 ——
@@ -385,7 +401,7 @@ func updateOptionVerified(key, want string) error {
 func invalidateUserCaches(ids []int) int {
 	misses := 0
 	for _, id := range ids {
-		if err := model.InvalidateUserCache(id); err != nil {
+		if err := invalidateUserCache(id); err != nil {
 			misses++
 		}
 	}

@@ -52,17 +52,38 @@ type QyUserGroupRewrite struct {
 	Stragglers int64 `json:"stragglers"`
 }
 
+// 三条调用路径。它们的差别只有两处 —— 套餐引用跟不跟、订阅快照按什么范围跟 ——
+// 但两处的取值组合各不相同,用两个裸 bool 表达时调用点读起来是
+// `QyRewriteUserGroupTx(from, to, false, true)`,而看那一行的人无从知道
+// 自己正走在哪条路径上。
+const (
+	// QyRewriteModeRename 改名:源名字**消失**,套餐的升降级分组与全部订阅快照
+	// 一起改写。不改的话这个套餐从此把每一个买家送进一个不存在的分组。
+	QyRewriteModeRename = "rename"
+	// QyRewriteModeDelete 删除并迁移:源名字**消失**,订阅快照一起改写,
+	// 但套餐引用一个字节都不动 —— 那些引用由接口层在删除之前硬拦下来。
+	// 理由:一个卖着「升级到 X」的套餐被悄悄改成「升级到 Y」,买家付的钱和
+	// 拿到的东西不再是同一件事,而运营从界面上看不出来发生过这件事。
+	QyRewriteModeDelete = "delete"
+	// QyRewriteModeMigrate 纯迁移:源名字**仍然存在、配置完整**。
+	//
+	// 与上面两条的唯一实质差别在订阅快照的范围:这里只改**被迁移的那批用户
+	// 自己的**订阅行,不按列值全表匹配。全表匹配在这条路径上是错的 ——
+	// 一个早已升到 VIP、prev_user_group 还记着源分组的账号并不在这次迁移里,
+	// 而源分组仍然存在、仍然有完整的倍率与可用清单,把他的回落目标改指到
+	// 迁移目标等于替一个没有出现在确认弹窗里的人做了一次降级档位变更。
+	QyRewriteModeMigrate = "migrate"
+)
+
 // QyRewriteUserGroupTx 在一个主库事务里把用户分组 from 整体改写成 to。
 //
-// rewritePlans 为 true 时连 subscription_plans 的 upgrade_group / downgrade_group
-// 一起改(**改名**路径);删除路径必须传 false —— 删除时那些套餐引用要在更早的地方
-// 硬拦下来,而不是被静默改指到迁移目标上。理由:一个卖着「升级到 X」的套餐被
-// 悄悄改成「升级到 Y」,买家付的钱和拿到的东西不再是同一件事,而运营从界面上
-// 看不出来发生过这件事。
+// mode 见 QyRewriteMode* 三个常量。**这是唯一一份用户分组迁移实现** ——
+// 改名、删除并迁移、纯迁移三条路径共用它。各自再写一份的表现是三份逻辑
+// 独立漂移,而漂移出来的那一份少改的恰恰是最容易被忘记的那张表。
 //
 // to 为空串是非法的:那会把一批用户的 group 清空,而空 group 在
 // middleware/auth.go 里的表现与 default 并不相同。
-func QyRewriteUserGroupTx(from, to string, rewritePlans bool) (QyUserGroupRewrite, error) {
+func QyRewriteUserGroupTx(from, to, mode string) (QyUserGroupRewrite, error) {
 	var out QyUserGroupRewrite
 	if DB == nil {
 		return out, errors.New("qy: 主库未初始化")
@@ -73,6 +94,12 @@ func QyRewriteUserGroupTx(from, to string, rewritePlans bool) (QyUserGroupRewrit
 	if from == to {
 		return out, errors.New("qy: 用户分组改写的源与目标相同")
 	}
+	switch mode {
+	case QyRewriteModeRename, QyRewriteModeDelete, QyRewriteModeMigrate:
+	default:
+		return out, fmt.Errorf("qy: 未知的用户分组改写模式 %q", mode)
+	}
+	rewritePlans := mode == QyRewriteModeRename
 
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		// 先锁定再改写:先拿到 id 清单,调用方才能在提交之后精确失效这批人的缓存。
@@ -110,7 +137,24 @@ func QyRewriteUserGroupTx(from, to string, rewritePlans bool) (QyUserGroupRewrit
 		//   prev_user_group 购买之前是哪一档(未指定降级组时的回落目标)
 		// 不改的话,这批人手上的订阅到期时会被降级进一个已经不存在的分组 ——
 		// 而到期扫描(model/subscription.go 的 expired 分支)一个字都不校验目标是否存在。
+		//
+		// 范围按 mode 分叉,理由见 QyRewriteModeMigrate 的注释:源名字会消失时
+		// 必须按列值全表匹配(任何一处指着它的快照都会变成孤儿),源名字留着时
+		// 只许动被迁移的那批人自己的行。
 		for _, col := range []string{"upgrade_group", "downgrade_group", "prev_user_group"} {
+			if mode == QyRewriteModeMigrate {
+				// 与上面的用户改写同样分批:占位符个数在 SQLite 上有硬上限,
+				// 而一次迁移可以带着上千个 id。
+				for _, batch := range qyChunkInts(ids, 200) {
+					res := tx.Model(&UserSubscription{}).
+						Where(col+" = ? AND user_id IN ?", from, batch).Update(col, to)
+					if res.Error != nil {
+						return res.Error
+					}
+					out.Subscriptions += res.RowsAffected
+				}
+				continue
+			}
 			res := tx.Model(&UserSubscription{}).Where(col+" = ?", from).Update(col, to)
 			if res.Error != nil {
 				return res.Error

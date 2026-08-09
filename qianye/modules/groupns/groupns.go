@@ -123,6 +123,12 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 		r.PUT("/user-groups/:name", middleware.CriticalRateLimit(), adminUpdateUserGroup)
 		r.POST("/user-groups/:name/rename", middleware.CriticalRateLimit(), adminRenameUserGroup)
 		r.DELETE("/user-groups/:name", middleware.CriticalRateLimit(), adminDeleteUserGroup)
+		// 「一键迁移」是一个**独立动作**,不是删除的一个选项。
+		//
+		// 迁移那段逻辑此前只作为删除的副产品存在,而删除对 default 是硬拒的 ——
+		// 于是「把这一档人挪走」这件事在界面上无路可走。同一份实现
+		// (model.QyRewriteUserGroupTx)两个入口,不是两份实现。
+		r.POST("/user-groups/:name/migrate", middleware.CriticalRateLimit(), adminMigrateUserGroup)
 
 		// ── 模型分组这一侧 ────────────────────────────────────────────
 		//

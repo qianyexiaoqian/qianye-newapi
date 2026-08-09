@@ -1571,24 +1571,33 @@ func adminPutScope(c *gin.Context) {
 		prefill = currentUsableGroups(userGroup)
 	}
 
+	// 首次建清单时被清掉的残留授权 —— 进审计。它是这次写入里唯一一处
+	// **减少**了什么的地方,不说出来就只能靠事后比对库里的行才能发现。
+	var dropped []string
 	err = gdb.Transaction(func(tx *gorm.DB) error {
 		if after == nil {
 			// 撤销接管 = 删 scope 行 → 该用户分组回到 inherit(上游行为逐位一致)。
-			// grants 刻意**保留**:重新接管时它就是现成的清单,而且删掉之后
-			// 「上一次配的是什么」就只剩审计能回答了。
+			// grants 刻意**保留**:那一份是"上一次配的是什么"的现场,而下一次
+			// 建清单会把它对齐到预填(见 resetGrantsToPrefill),不会被悄悄复活。
 			return tx.Where("user_group = ?", userGroup).Delete(&Scope{}).Error
 		}
 		if err := tx.Save(after).Error; err != nil {
 			return err
 		}
-		return ensureGrants(tx, userGroup, prefill, c.GetInt("id"), now)
+		if existed {
+			// 已有 scope 行时清单由格子接口维护,这里一个字节都不该动。
+			return nil
+		}
+		removed, err := resetGrantsToPrefill(tx, userGroup, prefill, c.GetInt("id"), now)
+		dropped = removed
+		return err
 	})
 	if err != nil {
 		writeScopeFailure(c, action, scopeOrNil(existed, before), after, err)
 		internalError(c, err)
 		return
 	}
-	audit.Write(c, scopeAuditEntry(c, action, scopeOrNil(existed, before), after, prefill))
+	audit.Write(c, scopeAuditEntry(c, action, scopeOrNil(existed, before), after, prefill, dropped))
 
 	if err := InvalidateAndReload(); err != nil {
 		common.SysError("qianye/groupmatrix: 写入后刷新快照失败(其它节点仍会按周期刷新): " + err.Error())
@@ -1600,39 +1609,77 @@ func adminPutScope(c *gin.Context) {
 	respondMatrix(c, gdb, nil)
 }
 
-// ensureGrants 幂等地把一批授权写进扩展库。
+// resetGrantsToPrefill 把一个**刚建立的**清单对齐成 modelGroups 这一份,
+// 并返回因此被清掉的残留授权名。
 //
 // ══════════════ 为什么必须先查再建 ══════════════
 //
-// 撤销接管刻意只删 scope 行、**保留 grants**(重新接管时它就是现成的清单,
-// 而且删掉之后「上一次配的是什么」就只剩审计能回答)。于是
-// 「接管 → 撤销接管 → 再接管」这条路上,预填会对已经存在的行再 Create 一次,
-// 撞上 uk_qy_ggrant_pair 唯一键 → 整个事务回滚 → 接口 500 →
-// **该用户分组从此再也接管不了**,除非有人手工去库里删行。
+// 撤销接管刻意只删 scope 行、**保留 grants**。于是「接管 → 撤销接管 → 再接管」
+// 这条路上,预填会对已经存在的行再 Create 一次,撞上 uk_qy_ggrant_pair 唯一键 →
+// 整个事务回滚 → 接口 500 → **该用户分组从此再也接管不了**,除非有人手工去库里
+// 删行。撤销接管是本方案宣称的核心回退能力,回退一次就再也走不回来,那不叫回退。
 //
-// 撤销接管是本方案宣称的核心回退能力。回退一次就再也走不回来,那不叫回退。
-func ensureGrants(tx *gorm.DB, userGroup string, modelGroups []string, operatorId int, now int64) error {
+// ══════════════ 为什么必须把预填之外的残留**删掉**,而不是留着 ══════════════
+//
+// 预填 = currentUsableGroups(该分组此刻真的能用的那些),而残留的 grant 行完全
+// 可能包含一个**当前用不到**的模型分组:上一次配过清单、后来撤销接管,那一行就
+// 留在库里。只增不删的话,新清单 = 预填 ∪ 残留 —— 多出来的那些既没有出现在建
+// 清单的确认弹窗里(那里数的是预填),也没有出现在建立前的列表里(未接管档按
+// 上游实际可用清单画),更没有任何人决定过要放开它们。等这一档日后切到 enforce,
+// 它们连同各自那一格的倍率一起当场生效。
+//
+// 「这一次点击不改变任何人能用什么」是建清单这条路径的全部承诺,而残留复活
+// 恰好是对它的违反,且**静默**:界面上的项数、后端的预填计数、审计里的预填清单
+// 三处都不含那几行。
+func resetGrantsToPrefill(tx *gorm.DB, userGroup string, modelGroups []string,
+	operatorId int, now int64) ([]string, error) {
+	keep := make(map[string]bool, len(modelGroups))
 	for _, mg := range modelGroups {
 		if mg == autoGroup || mg == "" {
 			// auto 是伪分组,它的可选性由 scope.AllowAuto 控制,不进 grants。
 			continue
 		}
-		var existing Grant
-		err := tx.Where("user_group = ? AND model_group = ?", userGroup, mg).Take(&existing).Error
-		if err == nil {
+		keep[mg] = true
+	}
+
+	var existing []Grant
+	if err := tx.Where("user_group = ?", userGroup).Find(&existing).Error; err != nil {
+		return nil, err
+	}
+	have := make(map[string]bool, len(existing))
+	dropped := make([]string, 0)
+	for _, row := range existing {
+		if keep[row.ModelGroup] {
+			have[row.ModelGroup] = true
 			continue
 		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
+		dropped = append(dropped, row.ModelGroup)
+	}
+	if len(dropped) > 0 {
+		// 显式列名而不是 NOT IN:预填为空时 `NOT IN ()` 在三种方言上的行为
+		// 各不相同(GORM 对空切片渲染出的 SQL 会把整条 WHERE 变成恒假或语法错)。
+		sort.Strings(dropped)
+		if err := tx.Where("user_group = ? AND model_group IN ?", userGroup, dropped).
+			Delete(&Grant{}).Error; err != nil {
+			return nil, err
 		}
+	}
+
+	// 按预填的原顺序建行(currentUsableGroups 已排过序):按 map 迭代顺序建
+	// 会让每次运行的自增主键顺序都不一样,而那是"同一份配置两次导出不一致"的来源。
+	for _, mg := range modelGroups {
+		if !keep[mg] || have[mg] {
+			continue
+		}
+		have[mg] = true
 		if err := tx.Create(&Grant{
 			UserGroup: userGroup, ModelGroup: mg,
 			OperatorId: operatorId, CreatedAt: now, UpdatedAt: now,
 		}).Error; err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return dropped, nil
 }
 
 func scopeOrNil(existed bool, s Scope) *Scope {
@@ -1773,7 +1820,7 @@ func writeMatrixFailure(c *gin.Context, action string, cells []Cell, before any,
 	audit.Write(c, matrixAuditEntry(c, action, cells, before, err))
 }
 
-func scopeAuditEntry(c *gin.Context, action string, before, after *Scope, prefill []string) audit.Entry {
+func scopeAuditEntry(c *gin.Context, action string, before, after *Scope, prefill, dropped []string) audit.Entry {
 	e := audit.Entry{
 		Category: auditCategoryGroupMatrix, Action: action,
 		ActorType: qymodel.ActorAdmin, ActorUserId: c.GetInt("id"), ActorName: c.GetString("username"),
@@ -1784,6 +1831,12 @@ func scopeAuditEntry(c *gin.Context, action string, before, after *Scope, prefil
 	case before == nil && after != nil:
 		e.Reason = fmt.Sprintf("接管用户分组 %s(mode=%s,allow_auto=%v),预填清单 %d 项:%v",
 			after.UserGroup, after.Mode, after.AllowAuto, len(prefill), prefill)
+		if len(dropped) > 0 {
+			// 上一次撤销接管留下的行。它们不在预填里 = 这一档此刻用不到它们,
+			// 留着会让新清单悄悄多出几项,而没有人决定过要放开它们。
+			e.Reason += fmt.Sprintf(";同时清掉 %d 条上一次撤销接管留下的残留授权:%v",
+				len(dropped), dropped)
+		}
 	case before != nil && after == nil:
 		e.Reason = fmt.Sprintf("撤销接管用户分组 %s —— 它回到上游行为(全局白名单 + 特殊规则 + 补自己)",
 			before.UserGroup)
@@ -1795,7 +1848,7 @@ func scopeAuditEntry(c *gin.Context, action string, before, after *Scope, prefil
 }
 
 func writeScopeFailure(c *gin.Context, action string, before, after *Scope, err error) {
-	e := scopeAuditEntry(c, action, before, after, nil)
+	e := scopeAuditEntry(c, action, before, after, nil, nil)
 	e.Result = qymodel.ResultFail
 	e.Reason = "接管变更失败: " + err.Error() + " | " + e.Reason
 	audit.Write(c, e)
