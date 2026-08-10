@@ -953,7 +953,17 @@ func (user *User) ValidateAndFill() (err error) {
 		return ErrInvalidCredentials
 	}
 	okay := common.ValidatePasswordAndHash(password, user.Password)
-	if !okay || user.Status != common.UserStatusEnabled {
+	if !okay {
+		return ErrInvalidCredentials
+	}
+	// 受限账号(status = Disabled)刻意允许登录:它要能进来提工单申诉。
+	// 资源与资金的拒绝发生在会话鉴权链的白名单里,不在这里。
+	//
+	// 「不存在的用户 / 密码错」与「密码对但账号受限」必须继续**无法区分**:
+	// 前两者都在上面的分支返回同一个 ErrInvalidCredentials,攻击者拿不到
+	// 「这个账号存在」的信号。只有密码正确的人才会走到下面,才可能得知
+	// 自己的账号处于受限状态(登录成功后由 GET /api/user/self 的 status 告知)。
+	if !common.UserStatusAllowsSession(user.Status) {
 		return ErrInvalidCredentials
 	}
 	return nil

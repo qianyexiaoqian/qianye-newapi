@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useNavigate } from '@tanstack/react-router'
-import { User, Wallet, LogOut, Settings } from 'lucide-react'
+import { User, Wallet, LogOut, Settings, LifeBuoy } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -31,6 +31,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
+import { useQyIsRestricted } from '@/features/qy/lib/account-status'
 import useDialogState from '@/hooks/use-dialog'
 import { useIsSidebarModuleVisible } from '@/hooks/use-sidebar-config'
 import { useUserDisplay } from '@/hooks/use-user-display'
@@ -48,6 +50,13 @@ export function ProfileDropdown() {
   const { displayName, roleLabel } = useUserDisplay(user)
   const isSuperAdmin = user?.role === ROLE.SUPER_ADMIN
   const isWalletVisible = useIsSidebarModuleVisible('/wallet')
+  // 受限账号：个人资料 / 钱包 / 系统设置三项后端都会拒，留着就是三个"点了才
+  // 发现不能用"的入口。换成唯一还能用的工单入口 —— 这个下拉在公开站头部也
+  // 渲染（`public-header.tsx`），是用户从首页回到工单的唯一一条路。
+  const restricted = useQyIsRestricted()
+  const qyConfig = useQyConfig()
+  const canOpenTickets =
+    restricted && qyConfig.enabled && qyConfig.features.ticket
   const avatarName = user?.username || displayName
   const avatarFallback = getUserAvatarFallback(avatarName)
   const avatarFallbackStyle = useMemo(
@@ -102,19 +111,28 @@ export function ProfileDropdown() {
 
           <DropdownMenuSeparator />
 
-          <DropdownMenuItem onClick={() => navigate({ to: '/profile' })}>
-            <User className='size-4' />
-            {t('Profile')}
-          </DropdownMenuItem>
+          {canOpenTickets && (
+            <DropdownMenuItem onClick={() => navigate({ to: '/qy/tickets' })}>
+              <LifeBuoy className='size-4' />
+              {t('qy_nav_tickets')}
+            </DropdownMenuItem>
+          )}
 
-          {isWalletVisible && (
+          {!restricted && (
+            <DropdownMenuItem onClick={() => navigate({ to: '/profile' })}>
+              <User className='size-4' />
+              {t('Profile')}
+            </DropdownMenuItem>
+          )}
+
+          {!restricted && isWalletVisible && (
             <DropdownMenuItem onClick={() => navigate({ to: '/wallet' })}>
               <Wallet className='size-4' />
               {t('Wallet')}
             </DropdownMenuItem>
           )}
 
-          {isSuperAdmin && (
+          {!restricted && isSuperAdmin && (
             <DropdownMenuItem
               onClick={() =>
                 navigate({

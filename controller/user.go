@@ -156,7 +156,9 @@ func setupLogin(user *model.User, c *gin.Context) {
 }
 
 func setupLoginAtAuthVersion(user *model.User, expectedAuthVersion int64, c *gin.Context) {
-	if user == nil || user.Id <= 0 || user.Status != common.UserStatusEnabled {
+	// 受限账号也签发会话:它登录进来只剩工单与申诉(白名单见
+	// middleware/restricted_user.go),但必须先有会话才谈得上到达那几条接口。
+	if user == nil || user.Id <= 0 || !common.UserStatusAllowsSession(user.Status) {
 		common.ApiErrorI18n(c, i18n.MsgAuthUserBanned)
 		return
 	}

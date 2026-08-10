@@ -110,7 +110,8 @@ func WeChatAuth(c *gin.Context) {
 		}
 	}
 
-	if user.Status != common.UserStatusEnabled {
+	// 受限账号可以用微信登录,与密码登录同一档;下面的 WeChatBind(绑定)不放开。
+	if !common.UserStatusAllowsSession(user.Status) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "用户已被封禁",
 			"success": false,

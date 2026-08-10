@@ -31,6 +31,7 @@ auth.user_id_not_provided: "Unauthorized, New-Api-User header not provided"
 auth.user_id_format_error: "Unauthorized, New-Api-User header format error"
 auth.user_id_mismatch: "Unauthorized, New-Api-User does not match logged in user"
 auth.user_banned: "User has been banned"
+auth.user_restricted: "Your account is restricted. Only support tickets and appeals remain available."
 auth.insufficient_privilege: "Unauthorized, insufficient privileges"
 
 # Token messages

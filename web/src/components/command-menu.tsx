@@ -33,6 +33,7 @@ import {
 } from '@/components/ui/command'
 import { useSearch } from '@/context/search-provider'
 import { useTheme } from '@/context/theme-provider'
+import { useQyIsRestricted } from '@/features/qy/lib/account-status'
 import { useSidebarData } from '@/hooks/use-sidebar-data'
 
 import { getNavGroupsForPath } from './layout/lib/sidebar-view-registry'
@@ -45,10 +46,17 @@ export function CommandMenu() {
   const { open, setOpen } = useSearch()
   const { pathname } = useLocation()
   const sidebarData = useSidebarData()
+  const restricted = useQyIsRestricted()
 
   // Use the active nested sidebar view's nav groups when one matches
   // the current URL; otherwise fall back to the root navigation.
-  const navGroups = getNavGroupsForPath(pathname, t) ?? sidebarData.navGroups
+  //
+  // 受限账号跳过 drill-in 那一档（与 `use-sidebar-view.ts` 同一个理由）：
+  // 那些分组是视图自己现造的，不经过 `useSidebarData` 里已经收窄成白名单的
+  // 那条路径。命令面板是搜索框，一个搜得到就跳得过去的入口和侧栏上的按钮
+  // 没有区别。
+  const nestedGroups = restricted ? null : getNavGroupsForPath(pathname, t)
+  const navGroups = nestedGroups ?? sidebarData.navGroups
 
   const runCommand = React.useCallback(
     (command: () => unknown) => {

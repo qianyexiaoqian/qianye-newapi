@@ -58,7 +58,9 @@ func createLoginSession(userID int, expectedAuthVersion int64, loginMethod, ip, 
 	if err != nil {
 		return nil, err
 	}
-	if user.Status != common.UserStatusEnabled || user.AuthVersion <= 0 {
+	// 受限账号可以建会话(它要能登录进来提工单),但状态必须是已知的可持有
+	// 会话状态 —— status=0 这类半截数据一律拒。
+	if !common.UserStatusAllowsSession(user.Status) || user.AuthVersion <= 0 {
 		return nil, ErrLoginSessionInvalid
 	}
 	if expectedAuthVersion > 0 && user.AuthVersion != expectedAuthVersion {
@@ -127,7 +129,11 @@ func ValidateLoginSession(identity AuthIdentity) (*model.UserSession, *model.Use
 	if err != nil {
 		return nil, nil, err
 	}
-	if user.Status != common.UserStatusEnabled || user.AuthVersion != identity.UserAuthVersion {
+	// 这里放宽到 UserStatusAllowsSession 是白名单能生效的前提:
+	// 本函数是 authHelper 的上游,若在这里就把受限账号打成「会话已撤销」,
+	// middleware 的白名单永远没有机会被评估,请求也会以 401 返回而被前端
+	// 当成掉线。真正的资源判据在 middleware/restricted_user.go。
+	if !common.UserStatusAllowsSession(user.Status) || user.AuthVersion != identity.UserAuthVersion {
 		return nil, nil, ErrLoginSessionRevoked
 	}
 	return session, user, nil
@@ -175,6 +181,10 @@ func AdvanceCurrentSessionToUserVersion(identity AuthIdentity, reason string) (*
 	if err != nil {
 		return nil, err
 	}
+	// 刻意**不**放宽到 UserStatusAllowsSession:本函数只在改密码/改 2FA/改 passkey
+	// 这类凭据面变更之后调用,而那几条路由都不在受限账号的白名单里。
+	// 保持严格判据是第二道自锁 —— 万一将来有人往白名单里加错一条,
+	// 受限账号也换不掉自己的凭据。
 	if user.Status != common.UserStatusEnabled || user.AuthVersion <= identity.UserAuthVersion {
 		return nil, ErrLoginSessionRevoked
 	}
@@ -224,8 +234,12 @@ func RefreshLoginSession(rawRefreshToken, expectedSID, ip, userAgent string) (*A
 	if err != nil {
 		return nil, nil, err
 	}
-	if userCache.Status != common.UserStatusEnabled || userCache.AuthVersion != session.UserAuthVersion ||
-		currentUser.Status != common.UserStatusEnabled || currentUser.AuthVersion != session.UserAuthVersion {
+	// access_token 只有 900 秒。若这里继续要求 Enabled,受限账号即使能登录也会在
+	// 15 分钟后被强制登出**并且会话被物理撤销**(下面那次 RevokeUserSession),
+	// 于是「被禁用仍可提工单」在体感上是一个 15 分钟的窗口。
+	// auth_version 不匹配仍然撤销:那是密码/角色/分组变更,与本改动无关。
+	if !common.UserStatusAllowsSession(userCache.Status) || userCache.AuthVersion != session.UserAuthVersion ||
+		!common.UserStatusAllowsSession(currentUser.Status) || currentUser.AuthVersion != session.UserAuthVersion {
 		_, _ = model.RevokeUserSession(session.UserID, session.SID, "user_security_changed")
 		return nil, nil, ErrLoginSessionRevoked
 	}

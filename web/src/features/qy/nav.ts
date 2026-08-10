@@ -24,6 +24,7 @@ import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { useQyConfig } from './hooks/use-qy-config'
+import { qyRestrictedNavGroups, useQyIsRestricted } from './lib/account-status'
 import { getQyConfigSnapshot } from './lib/config-query'
 import { QY_PAGE_URL_ORDER } from './lib/page-order'
 import {
@@ -234,12 +235,26 @@ export function mergeQyNavGroups(
  * **必须无条件调用**（不能包在 if 里）：内部的 `useQyConfig()` 是一个
  * `useQuery`，正是这个订阅让 `/api/qy/config` 返回后侧边栏能重新渲染。
  * 扩展未启用时原样返回入参，菜单、⌘K 命令面板、移动端抽屉同时零痕迹。
+ *
+ * ── 受限账号（status ≠ enabled）走另一条分支 ──
+ * 它**丢掉整棵 `baseGroups`**，改用 {@link qyRestrictedNavGroups} 由白名单
+ * 现场构造。这是本函数唯一一处"不把入参往下传"的地方，理由见
+ * `lib/account-status.ts`：过滤式实现会让今后每一个新增的上游侧栏项默认对
+ * 受限账号可见，而没有任何东西会红。构造式则相反。
+ *
+ * 落在这个函数里而不是上游 `use-sidebar-data.ts`，是因为它已经是根导航的
+ * 唯一出口：侧栏、⌘K 命令面板都从这里拿分组，一处改完两处生效，上游被改
+ * 文件数不增加。
  */
 export function useQySidebarGroups(baseGroups: NavGroup[]): NavGroup[] {
   const { t } = useTranslation()
   const config = useQyConfig()
   const role = useAuthStore((state) => state.auth.user?.role) ?? ROLE.GUEST
+  const restricted = useQyIsRestricted()
 
+  // 先判受限、再判角色 —— 与后端 `authHelper` 的"先判 status 再判 role"同序。
+  // 反过来的话，一个被自动封禁模块封掉的管理员会带着完整管理菜单继续操作。
+  if (restricted) return qyRestrictedNavGroups(config.features, t)
   if (!config.enabled) return baseGroups
   return mergeQyNavGroups(
     baseGroups,

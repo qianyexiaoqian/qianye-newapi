@@ -21,6 +21,7 @@ import { SkipToMain } from '@/components/skip-to-main'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { LayoutProvider } from '@/context/layout-provider'
 import { SearchProvider } from '@/context/search-provider'
+import { QyRestrictedGate } from '@/features/qy/components/qy-restricted-gate'
 import { getCookie } from '@/lib/cookies'
 import { cn } from '@/lib/utils'
 
@@ -50,7 +51,12 @@ export function AuthenticatedLayout(props: AuthenticatedLayoutProps) {
                 'peer-data-[variant=inset]:h-[calc(100svh-var(--app-header-height,0px)-(var(--spacing)*4))]'
               )}
             >
-              {props.children ?? <AnimatedOutlet />}
+              {/* 受限账号（status ≠ enabled）在这里被换成常驻说明 + 落地页。
+                  SidebarInset 是 flex-col，横幅按自然高度占一行，页面自身的
+                  `flex-1 min-h-0` 照旧撑满剩余空间。 */}
+              <QyRestrictedGate>
+                {props.children ?? <AnimatedOutlet />}
+              </QyRestrictedGate>
             </SidebarInset>
           </div>
         </SidebarProvider>

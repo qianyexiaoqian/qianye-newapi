@@ -227,6 +227,20 @@ const (
 	UserStatusDisabled = 2 // also don't use 0
 )
 
+// UserStatusAllowsSession 回答「这个状态的账号可不可以持有一个登录会话」。
+//
+// UserStatusDisabled 的语义已经从「封号」改成「受限账号」:它仍然可以登录、
+// 仍然可以持有会话,但在会话鉴权链上只剩下 middleware 白名单里那几条工单/申诉
+// 接口(见 middleware/restricted_user.go)。因此登录与会话签发/校验的判据必须
+// 从「== Enabled」放宽到本函数,而**资源与资金**的判据一律保持「== Enabled」。
+//
+// 写成显式白名单而不是 `status != Deleted`:users.status 是 int 且没有零值保护
+// (0 是 GORM 的默认值,建表失败或半截迁移都可能留下 status=0 的行),
+// 取反写法会把这些行判成「可以登录」。新增状态必须在这里显式表态。
+func UserStatusAllowsSession(status int) bool {
+	return status == UserStatusEnabled || status == UserStatusDisabled
+}
+
 const (
 	TokenStatusEnabled   = 1 // don't use 0, 0 is the default value!
 	TokenStatusDisabled  = 2 // also don't use 0

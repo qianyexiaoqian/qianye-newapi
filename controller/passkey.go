@@ -387,7 +387,8 @@ func PasskeyLoginFinish(c *gin.Context) {
 			return nil, fmt.Errorf("用户信息获取失败: %w", err)
 		}
 
-		if user.Status != common.UserStatusEnabled {
+		// 受限账号可以用 passkey 登录,与密码登录同一档。
+		if !common.UserStatusAllowsSession(user.Status) {
 			return nil, errors.New("该用户已被禁用")
 		}
 
@@ -422,7 +423,7 @@ func PasskeyLoginFinish(c *gin.Context) {
 		return
 	}
 
-	if modelUser.Status != common.UserStatusEnabled {
+	if !common.UserStatusAllowsSession(modelUser.Status) {
 		common.ApiErrorMsg(c, "该用户已被禁用")
 		return
 	}
@@ -660,6 +661,8 @@ func getAuthenticatedUser(c *gin.Context) (*model.User, error) {
 	if err := user.FillUserById(); err != nil {
 		return nil, err
 	}
+	// 刻意保持严格:本函数服务的是 passkey 的**注册/校验**流程(改凭据面),
+	// 那几条路由都不在受限账号的白名单里,这里是第二道自锁。
 	if user.Status != common.UserStatusEnabled {
 		return nil, errors.New("该用户已被禁用")
 	}

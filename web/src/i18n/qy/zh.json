@@ -2591,5 +2591,15 @@
   "qy_ugl_mode_enforce_confirm": "确认切到「现在就生效」",
   "qy_ugl_mode_enforce_intro": "切过去之后清单外的模型分组会被真的拦住：这一档人指向那些分组的令牌当场 403。这是本页唯一会让一批用户立刻断服的动作，先看一遍影响面。",
   "qy_ugl_advanced": "更多范围设置（auto 伪分组 / 这份清单的备注）",
-  "qy_ugl_advanced_needs_preview": "这一档已经在「现在就生效」上，而后端对每一次强制档的范围写入都要求先看过影响面（不区分这次改的是不是力度本身）。请先按上面的影响面按钮，再保存这两项。"
+  "qy_ugl_advanced_needs_preview": "这一档已经在「现在就生效」上，而后端对每一次强制档的范围写入都要求先看过影响面（不区分这次改的是不是力度本身）。请先按上面的影响面按钮，再保存这两项。",
+  "qy_restricted_nav_group": "账号受限",
+  "qy_restricted_banner_title": "你的账号已被限制，目前只能提交工单申诉",
+  "qy_restricted_blocked": "限制期间不可用：API 调用（已创建的密钥同样会被拒绝，返回 403）、创建与修改密钥、余额划转、佣金提现、充值与兑换码、签到、抽奖与竞猜、订阅购买、修改资料与密码，以及全部管理端功能。",
+  "qy_restricted_kept": "额度、用量记录、密钥、工单与违规记录都原样保留，解除限制后立即恢复，不需要重新配置。",
+  "qy_restricted_appeal_hint": "如需申诉，请提交工单说明情况；管理员解除限制后，重新登录即可恢复全部功能。",
+  "qy_restricted_no_channel": "本站当前没有开启工单，请通过站点公告里的联系方式联系管理员。",
+  "qy_restricted_landing_title": "这个页面在账号受限期间不可用",
+  "qy_restricted_landing_desc": "你仍然处于登录状态，但可访问的范围被收窄到了申诉相关的页面。",
+  "qy_restricted_go_tickets": "去提交工单",
+  "qy_restricted_go_violations": "查看我的违规记录"
 }

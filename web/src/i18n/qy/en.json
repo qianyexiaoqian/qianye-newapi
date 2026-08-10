@@ -2591,5 +2591,15 @@
   "qy_ugl_mode_enforce_confirm": "Confirm: enforce now",
   "qy_ugl_mode_enforce_intro": "After the switch, model groups outside the list really are blocked: this tier's tokens pointing at them get a 403 immediately. It is the only action on this page that cuts a batch of users off at once, so look at the impact report first.",
   "qy_ugl_advanced": "More scope settings (auto pseudo-group / note on this list)",
-  "qy_ugl_advanced_needs_preview": "This tier is already on \"enforce now\", and the backend requires a fresh impact report for every scope write while enforcing (not only for the strength itself). Run the impact report above, then save these two."
+  "qy_ugl_advanced_needs_preview": "This tier is already on \"enforce now\", and the backend requires a fresh impact report for every scope write while enforcing (not only for the strength itself). Run the impact report above, then save these two.",
+  "qy_restricted_nav_group": "Account restricted",
+  "qy_restricted_banner_title": "Your account is restricted — support tickets are the only thing still available",
+  "qy_restricted_blocked": "Unavailable while restricted: API calls (existing keys are rejected with a 403 too), creating or editing keys, balance transfers, commission withdrawals, top-ups and redemption codes, check-in, lottery and betting, subscription purchases, profile and password changes, and every admin function.",
+  "qy_restricted_kept": "Your quota, usage logs, keys, tickets and violation records are all kept as they are and come back the moment the restriction is lifted — nothing has to be set up again.",
+  "qy_restricted_appeal_hint": "To appeal, open a ticket and explain the situation. Once an administrator lifts the restriction, sign in again and everything works as before.",
+  "qy_restricted_no_channel": "Tickets are not enabled on this site. Please reach an administrator through the contact details in the site announcement.",
+  "qy_restricted_landing_title": "This page is unavailable while your account is restricted",
+  "qy_restricted_landing_desc": "You are still signed in, but access is narrowed down to the pages you need in order to appeal.",
+  "qy_restricted_go_tickets": "Open a ticket",
+  "qy_restricted_go_violations": "View my violations"
 }

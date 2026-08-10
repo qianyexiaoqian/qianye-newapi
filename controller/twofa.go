@@ -451,7 +451,8 @@ func Verify2FALogin(c *gin.Context) {
 		})
 		return
 	}
-	if user.Status != common.UserStatusEnabled {
+	// 登录的第二步。受限账号可以走完 2FA 登录,与密码登录同一档。
+	if !common.UserStatusAllowsSession(user.Status) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "用户已被禁用",

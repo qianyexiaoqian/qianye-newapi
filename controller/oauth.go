@@ -213,7 +213,9 @@ func HandleOAuth(c *gin.Context) {
 	}
 
 	// 8. Check user status
-	if user.Status != common.UserStatusEnabled {
+	// 受限账号可以用 OAuth 登录(与密码登录同一档),资源判据在会话鉴权链的
+	// 白名单里。注意这里是**登录**分支;handleOAuthBind 那条绑定分支不放开。
+	if !common.UserStatusAllowsSession(user.Status) {
 		common.ApiErrorI18n(c, i18n.MsgOAuthUserBanned)
 		return
 	}

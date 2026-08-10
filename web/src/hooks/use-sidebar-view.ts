@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 
 import { resolveSidebarView } from '@/components/layout/lib/sidebar-view-registry'
 import type { NavGroup, ResolvedSidebarView } from '@/components/layout/types'
+import { useQyIsRestricted } from '@/features/qy/lib/account-status'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -50,6 +51,7 @@ export function useSidebarView(): ResolvedSidebarView {
   const userRole = useAuthStore((s) => s.auth.user?.role)
   const rootSidebarData = useSidebarData()
   const configFilteredRoot = useSidebarConfig(rootSidebarData.navGroups)
+  const restricted = useQyIsRestricted()
 
   const rootNavGroups = useMemo<NavGroup[]>(() => {
     const role = userRole ?? ROLE.GUEST
@@ -64,7 +66,11 @@ export function useSidebarView(): ResolvedSidebarView {
       })
   }, [configFilteredRoot, userRole])
 
-  const view = resolveSidebarView(pathname)
+  // 受限账号一律留在根导航上。drill-in 视图的分组是各自 `getNavGroups(t)`
+  // 现造的，**不经过** `useSidebarData` 那条已经收窄成白名单的路径 —— 不在这里
+  // 拦住的话，受限用户手输 `/system-settings/site` 会在落地页旁边得到一整棵
+  // 系统设置侧栏。
+  const view = restricted ? null : resolveSidebarView(pathname)
 
   if (view) {
     return {

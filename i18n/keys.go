@@ -37,6 +37,7 @@ const (
 	MsgAuthUserIdFormatError     = "auth.user_id_format_error"
 	MsgAuthUserIdMismatch        = "auth.user_id_mismatch"
 	MsgAuthUserBanned            = "auth.user_banned"
+	MsgAuthUserRestricted        = "auth.user_restricted"
 	MsgAuthInsufficientPrivilege = "auth.insufficient_privilege"
 )
 

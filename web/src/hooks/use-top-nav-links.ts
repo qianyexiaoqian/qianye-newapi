@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { useQyIsRestricted } from '@/features/qy/lib/account-status'
 import { useStatus } from '@/hooks/use-status'
 import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
 import { useAuthStore } from '@/stores/auth-store'
@@ -47,6 +48,7 @@ export function useTopNavLinks(): TopNavLink[] {
   const { t } = useTranslation()
   const { status } = useStatus()
   const { auth } = useAuthStore()
+  const restricted = useQyIsRestricted()
 
   // Parse HeaderNavModules
   const modules = useMemo(() => {
@@ -72,15 +74,23 @@ export function useTopNavLinks(): TopNavLink[] {
     links.push({ title: t('Console'), href: '/dashboard' })
   }
 
-  // Pricing
-  const pricing = modules?.pricing
+  // Pricing / Rankings —— 受限账号不渲染。
+  //
+  // 这两条走后端 `TryUserAuth`，而那条链**今天根本不判 status**（设计路产出里
+  // 记的第四条链）：受限账号带着凭据过去会被当成正常用户，看到的是"按你的分组
+  // 算出来的价格 / 你在榜单上的位置"，而他一次调用都发不出去。所以这里不是
+  // 权限问题而是**信息不实**问题，入口必须去掉。
+  //
+  // Home / Console / Docs / About 保留：前三者是公开页，任何匿名访客都看得到，
+  // 藏起来毫无意义；Console 指向 `/dashboard`，受限账号在那里得到的是受限落地页
+  // ——那是它**应该**去的地方，不是一个点了才发现不能用的入口。
+  const pricing = restricted ? undefined : modules?.pricing
   if (pricing && typeof pricing === 'object' && pricing.enabled) {
     const requiresAuth = pricing.requireAuth && !isAuthed
     links.push({ title: t('Model Square'), href: '/pricing', requiresAuth })
   }
 
-  // Rankings
-  const rankings = modules?.rankings
+  const rankings = restricted ? undefined : modules?.rankings
   if (rankings && typeof rankings === 'object' && rankings.enabled) {
     const requiresAuth = rankings.requireAuth && !isAuthed
     links.push({ title: t('Rankings'), href: '/rankings', requiresAuth })

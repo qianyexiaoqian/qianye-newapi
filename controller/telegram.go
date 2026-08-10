@@ -157,6 +157,9 @@ func TelegramBind(c *gin.Context) {
 			}
 			return err
 		}
+		// 绑定第三方 = 改凭据面,受限账号一律不放开(POST
+		// /api/oauth/telegram/bind/start 也不在会话白名单里)。这里刻意保持
+		// 严格判据,与下面那条把 status 写进 WHERE 的 UPDATE 一致。
 		if user.Status != common.UserStatusEnabled {
 			return errTelegramBindUserDisabled
 		}

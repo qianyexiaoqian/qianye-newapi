@@ -48,9 +48,14 @@ func authHelper(c *gin.Context, minRole int) {
 		writeDashboardAuthError(c, err)
 		return
 	}
+	// 受限账号(status = Disabled)不再一刀切 401,而是落到白名单判据上。
+	// 顺序必须保持「先判 status 再判 role」:一个被自动封禁模块封掉的管理员
+	// 绝不能因为 role 高就带着完整管理权继续操作。admitRestrictedUser 内部
+	// 也再挡一次 minRole,两处都在。
 	if user.Status != common.UserStatusEnabled {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"success": false, "code": "AUTH_USER_DISABLED", "message": common.TranslateMessage(c, i18n.MsgAuthUserBanned)})
-		return
+		if !admitRestrictedUser(c, user.Id, minRole) {
+			return
+		}
 	}
 	if user.Role < minRole {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"success": false, "code": "AUTH_INSUFFICIENT_PRIVILEGE", "message": common.TranslateMessage(c, i18n.MsgAuthInsufficientPrivilege)})
@@ -83,6 +88,17 @@ func TryUserAuth() func(c *gin.Context) {
 			return
 		}
 		if credentialKind != dashboardCredentialUnmatched {
+			// TryUserAuth 过去**根本不判 status**,于是 /api/pricing、
+			// /api/perf-metrics、/api/rankings、/api/oauth/state、
+			// /api/oauth/:provider 这几条会让受限账号带着完整身份通过 ——
+			// 其中 /api/oauth/* 在带身份时走的是**绑定**分支,那是改凭据面。
+			// 白名单必须显式覆盖这条链,否则它就是黑名单的第一个漏点。
+			//
+			// 这里刻意不「降级为匿名」:匿名通过 /api/oauth/:provider 会被当成
+			// 登录/注册而不是绑定,把一次拒绝变成一次身份漂移。
+			if user.Status != common.UserStatusEnabled && !admitRestrictedUser(c, user.Id, common.RoleCommonUser) {
+				return
+			}
 			setDashboardAuthContext(c, user, identity, credentialKind == dashboardCredentialPAT)
 		}
 		c.Next()
@@ -263,6 +279,12 @@ func TokenOrUserAuth() func(c *gin.Context) {
 				writeDashboardAuthError(c, err)
 				return
 			}
+			// 混合入口(/v1/videos/:task_id/content)按凭据形状分流:走到这里
+			// 说明用的是会话凭据,因此同样受白名单管辖 —— 它绕开了 authHelper,
+			// 漏在这里等于给受限账号留了一条会话认证的 relay 读取通道。
+			if user.Status != common.UserStatusEnabled && !admitRestrictedUser(c, user.Id, common.RoleCommonUser) {
+				return
+			}
 			setDashboardAuthContext(c, user, identity, false)
 			c.Next()
 			return
@@ -333,6 +355,10 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 			c.Abort()
 			return
 		}
+		// 令牌链的判据刻意保持「必须 Enabled」,不接 middleware/restricted_user.go
+		// 的白名单:受限账号的**已有令牌必须整体失效**,否则封号就只剩
+		// 「不能登管理台」一层皮。会话链与令牌链没有任何共用代码,不要把这里
+		// 「顺手对齐」成会话链的写法。
 		if userCache.Status != common.UserStatusEnabled {
 			c.JSON(http.StatusForbidden, gin.H{
 				"success": false,
@@ -447,6 +473,9 @@ func TokenAuth() func(c *gin.Context) {
 				common.TranslateMessage(c, i18n.MsgDatabaseError))
 			return
 		}
+		// 同 TokenAuthReadOnly:受限账号的令牌在这里整体失效,全部 relay
+		// (/v1/*、/v1beta/*、/mj、/suno、/kling、/jimeng、/dashboard/billing/*)
+		// 一律 403。这是「禁用」在改造后唯一保持一刀切的一条链。
 		userEnabled := userCache.Status == common.UserStatusEnabled
 		if !userEnabled {
 			abortWithOpenAiMessage(c, http.StatusForbidden, common.TranslateMessage(c, i18n.MsgAuthUserBanned))
