@@ -117,33 +117,49 @@ var QyNotePinRejected = func(userGroup, modelGroup, reason string) {}
 // 在同一个位置再判一次只会制造两条文案不同、结论相同的路径。
 var QyGroupRatioMissingDenied = func(modelGroup string) bool { return false }
 
-// QyModelGroupFundingAllowed 判定一个模型分组此刻**还有没有资格被出资**。
+// QyModelGroupFundingAllowed 判定一个模型分组此刻**还有没有资格由钱包出资**。
 //
-// ═══════════ 一个函数、两个调用点、只差一个布尔 ═══════════
+// ═══════════ 只有一个调用点:钱包出资那一处 ═══════════
 //
-//	requireFunding=false  权限层:contains(U,M) OR ∃ 活跃套餐解锁 M
-//	requireFunding=true   出资层:contains(U,M) OR ∃ 活跃套餐解锁 M **且仍有余额**
+// service/billing_session.go 的 tryWallet 闭包第一行。权限层(middleware/auth.go)
+// **不**调用它 —— 那里问的是"有没有资格用这个分组",由
+// QyUsableGroupsForUser 独立回答,余额与运营开关都与它无关。
+// 曾经有一个 requireFunding 布尔留给权限层,自始至终没有过生产调用方,本轮删掉:
+// 一个没有调用方的参数会让规格比行为长,而规格长的那一半没有测试能钉住。
 //
-// 成员资格项与解锁项在同一个函数体里算一次,因此权限与出资在**结构上不可能**
-// 对成员资格产生分歧 —— 能分歧的只有余额,而余额本来就是两者应当不同的地方。
+// 判据(顺序即语义):
 //
-// ─────────────────────── 为什么判据不能只看用户分组 ───────────────────────
+//	contains(U, M)                            → 放行,**不看 allow_wallet_overflow**
+//	不含 + 没有任何套餐解锁 M                 → 放行
+//	不含 + 套餐解锁 M + 那些套餐还有余额      → 放行
+//	不含 + 套餐解锁 M + 已耗尽 + 任一 O=true  → 放行
+//	不含 + 套餐解锁 M + 已耗尽 + 全部 O=false → 拒绝(受 funding_gate_mode 灰度控制)
 //
-// 具体反例:用户 U 的 users.group = default,套餐 P 解锁模型分组 G(default 不含 G),
-// P 余额充足,U 的计费偏好是 wallet_first。NewBillingSession 的 wallet_first 分支
-// **先调 tryWallet**;若闸门在那里用纯用户分组口径判定,default 不含 G → 直接 403。
-// 而 P 还有满额余额,用户却拿不到自己付费解锁的分组;更糟的是那个 403 不是
-// ErrorCodeInsufficientUserQuota,**连 trySubscription 回落都触发不了**,没有补救路径。
+// 第一条是本轮的核心:一个用户分组本身就含 M 的人,本来根本不需要套餐就能用 M,
+// 拿"套餐额度用完"去拦他没有道理。allow_wallet_overflow(运营在套餐上勾的
+// 「额度用尽后不允许使用钱包余额」)只对**纯靠套餐解锁**的模型分组生效,而且只统计
+// 解锁 M 的那些订阅 —— 用户级聚合会让一张与 M 无关的套餐把 M 上的钱包出资一起封掉。
+//
+// ─────────────────────── 余额与运营开关必须是主库权威的 ───────────────────────
+//
+// 后四条的判据此前来自 planentitlement 的 per-user 缓存(默认 60s 新鲜期),而订阅是在
+// relay 的扣费事务里被耗尽的、运营改 allow_wallet_overflow 也不让该缓存失效 ——
+// 没有任何一处会为这两件事做失效。危险的是**放行**那个方向:套餐刚耗尽的那一分钟里
+// 缓存仍说"还有余额",闸门放行,钱包替一个运营明令禁止钱包续付的分组付了钱。
+// 因此实现体只用缓存回答"M 是不是套餐解锁的"(零 I/O 短路),一旦成立就回一次主库
+// 拿真实余额与开关,放行与拒绝两个方向都是。
 //
 // ─────────────────────── 调用方必须遵守 ───────────────────────
 //
-// 拒绝时返回的错误**不得**使用 types.ErrorCodeInsufficientUserQuota:那个 code 会
-// 触发 wallet_first 的订阅回落,而本闸门拒绝的前提正是"订阅已经没钱了"。
+// 拒绝时返回的错误**不得**使用 types.ErrorCodeInsufficientUserQuota:
+// 「你没有这个分组的出资资格」与「你余额不足」是两件事,客户端要能分辨 ——
+// 前者充值钱包解决不了。约定用 types.ErrorCodeAccessDenied。
 //
 // ─────────────────────── fail 方向:一律放行 ───────────────────────
 //
-// 快照未加载、开关未开、余额读不到 —— 全部 (true, "")。fail-closed 会让付费用户
-// 在缓存抖动时突然失去分组,而那种失败在日志里没有形状,只表现为"少数人偶发 403"。
-var QyModelGroupFundingAllowed = func(userId int, userGroup, modelGroup string, requireFunding bool) (allowed bool, reason string) {
+// 快照未加载、开关未开、余额或运营开关读不到 —— 全部 (true, "")。fail-closed 会让
+// 付费用户在缓存抖动时突然失去分组,而那种失败在日志里没有形状,只表现为
+// "少数人偶发 403"。
+var QyModelGroupFundingAllowed = func(userId int, userGroup, modelGroup string) (allowed bool, reason string) {
 	return true, ""
 }

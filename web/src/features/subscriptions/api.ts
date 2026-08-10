@@ -320,14 +320,15 @@ export async function getPublicPlans(): Promise<ApiResponse<PlanRecord[]>> {
   return res.data
 }
 
-export async function updateBillingPreference(
-  preference: string
-): Promise<ApiResponse<{ billing_preference?: string }>> {
-  const res = await api.put('/api/subscription/self/preference', {
-    billing_preference: preference,
-  })
-  return res.data
-}
+/*
+  这里**不再有** updateBillingPreference()。
+
+  扣费顺序不再是每用户可调的设置，写死为「套餐优先」：本次请求有生效套餐、
+  套餐适用于这次请求的模型分组、且余额够这次扣费，就扣套餐；否则扣钱包余额。
+  `PUT /api/subscription/self/preference` 连同后端的 billing_preference 分支
+  一起撤掉了，重新接一个上去只会打到一条不存在的路由，而且是静默的
+  —— 界面上会显示"保存成功"，扣费顺序一分没变。
+*/
 
 /*
   这里**不再有** getGroups()。

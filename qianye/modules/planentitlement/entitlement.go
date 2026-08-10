@@ -60,6 +60,14 @@ type userEntry struct {
 	// 缓存周期的滞后,与 ExpiresAt 承担的滞后同量级。因此它只用于**放行/影子**
 	// 判定的宽松侧(不确定即视为有余额),绝不用来代替事务内的扣减校验。
 	FundedPlanIds []int
+	// OverflowPlanIds 是 PlanIds 中 allow_wallet_overflow=true 的那些。
+	//
+	// 它回答的是「这张套餐的额度用尽之后,运营允不允许继续用钱包余额付」,与
+	// FundedPlanIds 在**同一次**查询里取出,零额外查询。
+	//
+	// 口径必须是**每张订阅各自**的:曾经的用户级聚合(任一活跃订阅 O=0 就封锁
+	// 全部钱包出资)会让一张与本次模型分组毫无关系的套餐把钱包一起封掉。
+	OverflowPlanIds []int
 	// ExpiresAt 是这批订阅里**最早**的 end_time(没有订阅时为 0)。
 	//
 	// 缓存条目里只放 planIds 的话,一条订阅自然到期之后,本节点在整个新鲜期
@@ -236,14 +244,15 @@ func loadActivePlanIds(ctx context.Context, userId int) ([]int, error) {
 		// 顺手把 end_time 也取出来:候选按 end_time asc 排,第一条就是最早到期的
 		// 那一条,它决定这份结论什么时候必然失效(见 userEntry.ExpiresAt)。
 		rows := make([]struct {
-			PlanId        int   `gorm:"column:plan_id"`
-			EndTime       int64 `gorm:"column:end_time"`
-			AmountTotal   int64 `gorm:"column:amount_total"`
-			AmountUsed    int64 `gorm:"column:amount_used"`
-			NextResetTime int64 `gorm:"column:next_reset_time"`
+			PlanId              int   `gorm:"column:plan_id"`
+			EndTime             int64 `gorm:"column:end_time"`
+			AmountTotal         int64 `gorm:"column:amount_total"`
+			AmountUsed          int64 `gorm:"column:amount_used"`
+			NextResetTime       int64 `gorm:"column:next_reset_time"`
+			AllowWalletOverflow bool  `gorm:"column:allow_wallet_overflow"`
 		}, 0, 4)
 		err := model.DB.WithContext(ctx).Model(&model.UserSubscription{}).
-			Select("plan_id", "end_time", "amount_total", "amount_used", "next_reset_time").
+			Select("plan_id", "end_time", "amount_total", "amount_used", "next_reset_time", "allow_wallet_overflow").
 			Where("user_id = ? AND status = ? AND end_time > ?", userId, statusActive, common.GetTimestamp()).
 			Order("end_time asc, id asc").
 			Find(&rows).Error
@@ -252,10 +261,14 @@ func loadActivePlanIds(ctx context.Context, userId int) ([]int, error) {
 		}
 		ids := make([]int, 0, len(rows))
 		funded := make([]int, 0, len(rows))
+		overflow := make([]int, 0, len(rows))
 		expiresAt := int64(0)
 		nowTs := common.GetTimestamp()
 		for _, row := range rows {
 			ids = append(ids, row.PlanId)
+			if row.AllowWalletOverflow {
+				overflow = append(overflow, row.PlanId)
+			}
 			// amount_total <= 0 是上游的"不限量"口径(见 model.PreConsumeUserSubscription
 			// 的 `if sub.AmountTotal > 0` 分支),不是"额度为零"。
 			//
@@ -263,10 +276,9 @@ func loadActivePlanIds(ctx context.Context, userId int) ([]int, error) {
 			// 只在 PreConsumeUserSubscription 的事务内(maybeResetUserSubscriptionWithPlanTx)
 			// 或 1 分钟一跳的 master-node 后台任务里才把 amount_used 归零。因此在重置
 			// 到期点之后、重置真正落库之前,一张刚续期的套餐会被这里判成"已耗尽" ——
-			// 而套餐耗尽闸门返回的是 AccessDenied 而不是 InsufficientUserQuota,
-			// wallet_first 连 trySubscription 回落都不会发生,**而 trySubscription 恰恰是
-			// 唯一能触发那次重置的路径**,所以这一档不会自愈。窗口 = 后台任务的 ≤1min
-			// 抖动 + per-user 缓存;IsMasterNode 误配时窗口无上界。
+			// 而 funded=false 是钱包出资闸门唯一会拒绝的那一档的必要条件(还要叠上
+			// 「用户分组不含它」与「allow_wallet_overflow=0」),判错就是一次误拒。
+			// 窗口 = 后台任务的 ≤1min 抖动 + per-user 缓存;IsMasterNode 误配时窗口无上界。
 			resetDue := row.NextResetTime > 0 && row.NextResetTime <= nowTs
 			if row.AmountTotal <= 0 || row.AmountUsed < row.AmountTotal || resetDue {
 				funded = append(funded, row.PlanId)
@@ -276,7 +288,7 @@ func loadActivePlanIds(ctx context.Context, userId int) ([]int, error) {
 			}
 		}
 		getUserCache().Set(userId, userEntry{
-			PlanIds: ids, FundedPlanIds: funded,
+			PlanIds: ids, FundedPlanIds: funded, OverflowPlanIds: overflow,
 			LoadedAt: common.GetTimestamp(), ExpiresAt: expiresAt,
 		})
 		return ids, nil
@@ -364,4 +376,20 @@ func activeFundedPlanIds(userId int) ([]int, bool) {
 		return nil, false
 	}
 	return e.FundedPlanIds, true
+}
+
+// activeOverflowPlanIds 返回该用户活跃订阅中 allow_wallet_overflow=true 的套餐 id。
+//
+// 与 activeFundedPlanIds 同源、同一次回源、零额外查询。第二个返回值为 false 表示
+// 「这个答案不可信」;调用方(钱包出资闸门)在那一档必须按**允许回退**处理 ——
+// 读不到运营开关就把用户的钱包挡死,是一次缓存抖动变成一次付费用户 403。
+func activeOverflowPlanIds(userId int) ([]int, bool) {
+	if _, ok := activePlanIds(userId); !ok {
+		return nil, false
+	}
+	e, found, err := getUserCache().Get(userId)
+	if err != nil || !found {
+		return nil, false
+	}
+	return e.OverflowPlanIds, true
 }

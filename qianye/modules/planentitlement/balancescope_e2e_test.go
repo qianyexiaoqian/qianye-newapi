@@ -28,13 +28,8 @@ func installBalanceScopeWiring(t *testing.T) {
 	t.Helper()
 	enforceBalanceScope(t)
 	prevCandidate := model.QySubscriptionCandidateUsable
-	prevOverflow := model.QyWalletOverflowAllowedDespiteStrict
 	model.QySubscriptionCandidateUsable = CandidateUsable
-	model.QyWalletOverflowAllowedDespiteStrict = WalletOverflowAllowedDespiteStrict
-	t.Cleanup(func() {
-		model.QySubscriptionCandidateUsable = prevCandidate
-		model.QyWalletOverflowAllowedDespiteStrict = prevOverflow
-	})
+	t.Cleanup(func() { model.QySubscriptionCandidateUsable = prevCandidate })
 }
 
 // disablePlanEntitlement 拉下本模块的 kill switch(plan_entitlement.enabled)。
@@ -126,8 +121,12 @@ func TestRestrictedPlanFallsThroughToTheNextCandidate(t *testing.T) {
 // TestSkippedPlanCannotBlockWalletFallback 守那个「谁都没有配出来的死锁」。
 //
 // 一张「仅限 pro + 不许钱包回退」的套餐,在用户请求 lab 时根本不是出资候选。
-// 它若仍然投票禁止钱包回退,用户在 lab 上就既扣不到套餐余额、也不许用钱包。
-// 判据:**只有本次真的能出资的套餐才有资格禁止钱包回退**。
+// 旧口径(model.UserActiveSubscriptionsAllowWalletOverflow,用户级聚合)会让它照样
+// 投票禁止钱包回退 —— 用户在 lab 上既扣不到套餐余额、也不许用钱包。
+//
+// 新口径下这个死锁在**结构上**不存在:allow_wallet_overflow 只在
+// 「模型分组纯靠套餐解锁」这一档才被问到,而且只统计**解锁该模型分组的**订阅。
+// 这张套餐没有解锁 lab,于是它在 lab 上连被问到的机会都没有。
 func TestSkippedPlanCannotBlockWalletFallback(t *testing.T) {
 	gdb := newExtDB(t)
 	mainDB := newMainDB(t)
@@ -135,23 +134,24 @@ func TestSkippedPlanCannotBlockWalletFallback(t *testing.T) {
 	installBalanceScopeWiring(t)
 
 	seedPlan(t, mainDB, 1, "仅限 pro,不许回退")
-	sub := seedSubscription(t, mainDB, 11, 7, 1, 86400, 1000, 0)
+	// 额度直接给成已用尽:allow_wallet_overflow 只在耗尽之后才有话说。
+	sub := seedSubscription(t, mainDB, 11, 7, 1, 86400, 1000, 1000)
 	require.NoError(t, mainDB.Model(&model.UserSubscription{}).
 		Where("id = ?", sub.Id).Update("allow_wallet_overflow", false).Error)
 	putGrant(t, gdb, 1, "pro")
 	putPolicy(t, gdb, 1, ScopeRestricted)
 	require.NoError(t, reload())
 
-	allow, err := model.UserActiveSubscriptionsAllowWalletOverflow(7, "lab")
-	require.NoError(t, err)
-	assert.True(t, allow,
-		"这张套餐在 lab 上根本不是候选,它无权禁止钱包回退 —— "+
-			"否则用户在 lab 上既扣不到套餐余额、也不许用钱包")
+	unlocked, _, _ := fundedState(t, 7, "lab")
+	assert.False(t, unlocked,
+		"这张套餐没有解锁 lab,lab 上的钱包出资与它无关 —— 闸门在 unlocked=false 时整体放行,"+
+			"allow_wallet_overflow 连被读到的机会都没有")
 
-	allow, err = model.UserActiveSubscriptionsAllowWalletOverflow(7, "pro")
-	require.NoError(t, err)
-	assert.False(t, allow,
-		"在它自己绑定的分组上它**是**候选,上游那条「不许回退」必须照旧生效")
+	unlocked, funded, allowOverflow := fundedState(t, 7, "pro")
+	assert.True(t, unlocked, "pro 正是它解锁的")
+	assert.False(t, funded, "额度已用尽")
+	assert.False(t, allowOverflow,
+		"在它自己解锁的分组上,运营勾的「不许钱包续付」必须照旧生效")
 }
 
 // TestKillSwitchStopsBalanceScopeImmediately 守 plan_entitlement.enabled 是真的开关。

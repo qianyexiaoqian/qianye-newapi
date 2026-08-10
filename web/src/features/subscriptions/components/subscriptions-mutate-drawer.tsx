@@ -796,9 +796,12 @@ export function SubscriptionsMutateDrawer({
             {/* 额度用尽之后会发生什么。
 
                 这个开关此前是三个 switch 里的一个，标签是「额度用尽后允许使用
-                钱包余额」，**不勾的后果一个字都没写**。而不勾的后果是全站最硬的
-                一条：这个套餐会把持有它的用户挡在"扣不到套餐余额、也不许用钱包"
-                上，返回订阅额度不足。所以两个分支各写一句，当前选中的那句加粗。 */}
+                钱包余额」，**不勾的后果一个字都没写**。而不勾的后果是把持有这个
+                套餐的用户挡在"扣不到套餐余额、也不许用钱包"上，返回订阅额度不足。
+                所以两个分支各写一句，当前选中的那句加粗。
+
+                作用面在本轮收窄了：只有"纯靠套餐才解锁得到"的模型分组才受它管，
+                用户分组本身就含有的分组不受影响 —— 见下面那句。 */}
             <div className='border-border/60 flex flex-col gap-2 rounded-md border p-3'>
               <FormField
                 control={form.control}
@@ -833,29 +836,16 @@ export function SubscriptionsMutateDrawer({
               >
                 {t('qy_plan_wallet_overflow_off_hint')}
               </p>
-              {/* 「仅限」那条例外**只在扩展启用时存在**（后端 seams.go 的
-                  enabled() 与 balanceScopeEnforced 两道前置），所以它不能跟着
-                  基础后果无条件渲染。而且它此前被写成了"唯一的例外"这种充分
-                  条件 —— 多套餐时不成立，见下面那句的措辞。 */}
-              {!walletOverflow && unlockGroups.state !== 'hidden' && (
-                <p className='text-muted-foreground text-xs leading-5'>
-                  {t('qy_plan_wallet_overflow_off_exception')}
-                </p>
-              )}
-              {/* 这条限制**可以被用户自己单击绕过**：计费偏好是买家侧的一个
-                  下拉（钱包页 → 计费偏好），选「钱包优先 / 仅用钱包」之后
-                  NewBillingSession 根本不会走到查 allow_wallet_overflow 的那一支。
-                  不写出来的话，运营会以为自己配的是硬约束，然后看到"我明明关了
-                  钱包回退，用户的钱包还是在掉"。 */}
-              {!walletOverflow && (
-                <p className='text-destructive text-xs leading-5'>
-                  {t('qy_plan_wallet_overflow_pref_bypass')}
-                </p>
-              )}
-              {/* 与项目方口径的差额，只在真的选了"不勾"时说。 */}
+              {/* 这个开关**管不到哪些请求**，只在真的选了"不勾"时说。
+
+                  扣费顺序写死为「套餐优先」之后，钱包出资的判据是「用户分组本身
+                  含不含这次请求的模型分组」：含，钱包永远可用，这个开关不参与；
+                  不含（该分组纯靠套餐解锁），才轮到这个开关说话。不写出来的话，
+                  运营会以为关掉它就等于"这个用户不许花钱包"，而那是站内任何一处
+                  配置都表达不了的意思。 */}
               {!walletOverflow && (
                 <p className='text-muted-foreground text-xs leading-5'>
-                  {t('qy_plan_wallet_overflow_fallback_gap')}
+                  {t('qy_plan_wallet_overflow_off_membership')}
                 </p>
               )}
             </div>

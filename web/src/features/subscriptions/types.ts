@@ -265,7 +265,7 @@ export interface SubscriptionResetResult {
 // ============================================================================
 
 export interface SelfSubscriptionData {
-  billing_preference: string
+  // 没有 billing_preference：扣费顺序写死为「套餐优先」，不再是每用户设置。
   subscriptions: UserSubscriptionRecord[]
   all_subscriptions: UserSubscriptionRecord[]
 }

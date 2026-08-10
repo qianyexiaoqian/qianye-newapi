@@ -48,59 +48,17 @@ func MarkBalanceScopeEnforced() { balanceScopeEnforced.Store(true) }
 // BalanceScopeEnforced 供管理端与用户端下发"这个设置此刻算不算数"。
 func BalanceScopeEnforced() bool { return balanceScopeEnforced.Load() }
 
-// WalletOverflowAllowedDespiteStrict 是 model.QyWalletOverflowAllowedDespiteStrict
-// 的实现体:回答「那些禁止钱包回退的活跃套餐,本次是不是全都被余额范围跳过了」。
+// ═══════════ 已删除:WalletOverflowAllowedDespiteStrict ═══════════
 //
-// ═══════════ 它堵的是一个谁都没配出来的死锁 ═══════════
+// 它曾是 model.QyWalletOverflowAllowedDespiteStrict 的实现体,唯一存在的理由是解开
+// 「一张『仅限 G + 不许钱包回退』的套餐,在请求模型分组 H 时既出不了资、又不许用
+// 钱包」这个谁都没配出来的死锁。那个死锁来自上游的**用户级**聚合口径
+// (任一活跃订阅 allow_wallet_overflow=0 就封锁全部钱包回退)。
 //
-// 用户持有一张「仅限 G + 不许钱包回退」的套餐,这次请求走的是模型分组 H。
-// 候选过滤已经把这张套餐跳过(它出不了资),而上游那句「有 strict 套餐就不回退」
-// 仍然生效 —— 用户在 H 上既扣不到套餐余额,也不许用钱包。谁都没有配出这个规则,
-// 它是两条各自正确的规则叠出来的。
-//
-// 判据因此是:**只有本次真的能出资的套餐才有资格禁止钱包回退**。
-// 全部 strict 套餐都被跳过 → 放行钱包;只要还有一张能出资 → 维持上游拒绝。
-//
-// 调用环境:不在事务内,只在「订阅额度不足 + 存在 strict 套餐」这条很窄的分支上
-// 被调用,允许查一次主库(冷路径预算)。任何一步不确定一律 return false ——
-// 逐位退回上游今天的行为(不回退钱包),不因为读不到就多花用户的钱包余额。
-func WalletOverflowAllowedDespiteStrict(userId int, usingGroup string) bool {
-	if !enabled() || !balanceScopeEnforced.Load() || userId <= 0 || usingGroup == "" {
-		return false
-	}
-	s := Current()
-	if s == nil || len(s.Scope) == 0 {
-		// 一个 restricted 套餐都没有 → 没有任何套餐会被跳过 → 上游口径不变。
-		return false
-	}
-	if model.DB == nil {
-		return false
-	}
-	ctx, cancel := guard.ColdContext(context.Background())
-	defer cancel()
-
-	// 一次请求内只 Load 一次快照(上面那次),再对每条 strict 订阅调它的方法形态,
-	// 保证这里的结论与事务内候选过滤读的是同一份配置。跨刷新会给出互相矛盾的答案。
-	planIds := make([]int, 0, 4)
-	if err := model.DB.WithContext(ctx).Model(&model.UserSubscription{}).
-		Where("user_id = ? AND status = ? AND end_time > ? AND allow_wallet_overflow = ?",
-			userId, statusActive, common.GetTimestamp(), false).
-		Pluck("plan_id", &planIds).Error; err != nil {
-		common.SysError("qianye/planentitlement: 读取禁止钱包回退的套餐失败,本次维持上游口径(不回退钱包): " + err.Error())
-		return false
-	}
-	if len(planIds) == 0 {
-		// 上游刚数到有 strict 套餐,我们这一刻却读不到 —— 竞态(刚到期/刚取消)。
-		// 维持上游口径,下一次请求自然会走对。
-		return false
-	}
-	for _, planId := range planIds {
-		if s.CandidateUsable(planId, usingGroup) {
-			return false // 还有一张能出资,它有资格禁止钱包回退
-		}
-	}
-	return true
-}
+// 该口径已经废除:allow_wallet_overflow 现在只对「纯靠套餐解锁的模型分组」生效,
+// 而且只统计**解锁该模型分组的**订阅(见 UnlockFundingState)。范围不匹配的套餐
+// 根本不参与取值,死锁在结构上不再存在,所以这个函数连同它的 hook 一起删掉,
+// 而不是留一个"看起来还在生效"的分支。
 
 // Enabled 回答「套餐解锁此刻整体是开着的吗」。
 //

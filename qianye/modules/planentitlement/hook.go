@@ -20,6 +20,8 @@ package planentitlement
 //     指针相等是"未配置 = 上游"最强的可证形式,由 bitexact_test.go 钉死。
 
 import (
+	"context"
+
 	"github.com/QuantumNous/new-api/setting"
 )
 
@@ -130,29 +132,61 @@ func unlockedSet(s *Snapshot, userId int) map[string]struct{} {
 	return out
 }
 
-// FundedUnlockState 回答两个问题:这个模型分组是不是该用户的套餐解锁的、
-// 以及那些解锁它的套餐里**还有没有一个是有余额的**。
+// UnlockFundingState 回答三个问题:这个模型分组是不是该用户的套餐解锁的、
+// 那些能为它出资的套餐里还有没有一个有余额、以及**解锁它的**订阅里有没有一张
+// 允许「额度用尽后继续用钱包余额」。
 //
-// 它服务的是 qianye/modules/groupns 的「套餐耗尽闸门」(挂在钱包出资决策上)。
-// 两个返回值必须一起给:只给 unlocked 的话,调用方无法把"套餐还在供着"与
-// "套餐已经耗尽、这一笔要改由钱包出"分开,而那正是闸门唯一要判的事。
+// 它服务的是 qianye/modules/groupns 的「钱包出资闸门」。三个返回值必须一起给:
+// 只给 unlocked 的话,调用方无法把"套餐还在供着"与"套餐已经耗尽、这一笔要改由
+// 钱包出"分开;而缺了 allowOverflow,运营在套餐上勾的那个开关就只能由调用方
+// 另查一次库、按**用户级**聚合,那正是本轮要废掉的口径。
 //
-// **零额外查询**:解锁集合与余额都来自同一份 per-user 缓存条目。
+// ── allowOverflow 的口径:只看解锁 M 的订阅,任一为真即为真 ──
 //
-// fail 方向:任何不确定(未启用 / 零绑定 / 快照未加载 / 缓存读不到)一律返回
-// (false, false) —— unlocked=false 会让闸门整体放行(见 groupns.ModelGroupFundingAllowed),
-// 因此这个方向对付费用户是安全的。
-func FundedUnlockState(userId int, modelGroup string) (unlocked bool, funded bool) {
+// 「与 M 无关的套餐 P2 设了不许回退」不该封掉 M 上的钱包出资;而同一个 M 被两张
+// 套餐解锁、一张允许一张不允许时,取允许 —— 用户确实买到了一张写着"可以用钱包
+// 续付"的套餐,更宽松的那张有资格说话。
+//
+// **零额外查询**:解锁集合、余额、开关都来自同一份 per-user 缓存条目。
+//
+// ── authoritative:钱的判据不能拿一分钟前的缓存作数 ──
+//
+// 那份缓存的新鲜期默认 60 秒,而它的两个判据在这段时间里都可能已经不成立:
+// funded 会在 relay 的扣费事务里变假(订阅被这一笔或上一笔扣空),allowOverflow
+// 会被运营在管理端改掉 —— 两件事都没有任何一处调用 InvalidateUser。
+// (InvalidateUser 只覆盖建订阅与删订阅两条路径。)
+//
+// 危险的是**放行**那个方向:套餐刚耗尽的那一分钟里缓存仍说"还有余额",调用方
+// 直接放行,钱包替一个运营明令禁止钱包续付的分组付了钱。所以 authoritative=true
+// 不是"拒绝前再确认一次",而是"凡是要拿 funded/allowOverflow 下判断,就回一次
+// 主库"(loadActivePlanIds,50ms 硬超时 + singleflight)。
+//
+// 调用方(groupns.ModelGroupFundingAllowed)先用 authoritative=false 问一次
+// unlocked 做零 I/O 短路,只有 unlocked 成立才付这次查询的代价。
+//
+// fail 方向:任何不确定(未启用 / 零绑定 / 快照未加载 / 缓存读不到 / 权威回源
+// 失败)一律返回 (false, false, false) —— unlocked=false 会让闸门整体放行(见
+// groupns.ModelGroupFundingAllowed),因此这个方向对付费用户是安全的。
+func UnlockFundingState(userId int, modelGroup string, authoritative bool) (unlocked, funded, allowOverflow bool) {
 	if !enabled() || userId <= 0 || modelGroup == "" || modelGroup == autoGroup {
-		return false, false
+		return false, false, false
 	}
 	s := activeSnapshot()
 	if !s.AnyBindings() {
-		return false, false
+		return false, false, false
+	}
+	if authoritative {
+		// 调用方要拿 funded/allowOverflow 决定钱从哪儿出。缓存答不了这个问题(见上)。
+		ctx, cancel := context.WithTimeout(context.Background(), loadBudget)
+		defer cancel()
+		if _, err := loadActivePlanIds(ctx, userId); err != nil {
+			// 确认不了就不拒绝:与本模块其余"不确定"档同向。
+			return false, false, false
+		}
 	}
 	planIds, ok := activePlanIds(userId)
 	if !ok || len(planIds) == 0 {
-		return false, false
+		return false, false, false
 	}
 	for _, planId := range planIds {
 		if _, bound := s.Bind[planId][modelGroup]; bound {
@@ -161,13 +195,25 @@ func FundedUnlockState(userId int, modelGroup string) (unlocked bool, funded boo
 		}
 	}
 	if !unlocked {
-		return false, false
+		return false, false, false
+	}
+	overflowIds, overflowOK := activeOverflowPlanIds(userId)
+	if !overflowOK {
+		// 读不到运营开关:按"允许钱包续付"处理。这一档拒绝的是已付款用户的一次
+		// 请求,fail-closed 会让他在缓存抖动时突然被挡,而那种失败在日志里没有形状。
+		allowOverflow = true
+	}
+	for _, planId := range overflowIds {
+		if _, bound := s.Bind[planId][modelGroup]; bound {
+			allowOverflow = true
+			break
+		}
 	}
 	fundedIds, fundedOK := activeFundedPlanIds(userId)
 	if !fundedOK {
 		// 读不到余额:按"还有余额"处理。挡住一次合法请求比放过一次超额出资更贵 ——
 		// 后者还有 model.PreConsumeUserSubscription 的事务内校验兜底。
-		return true, true
+		return true, true, allowOverflow
 	}
 	// ── funded 的判据是 CandidateUsable,**不是** Bind ──
 	//
@@ -176,12 +222,12 @@ func FundedUnlockState(userId int, modelGroup string) (unlocked bool, funded boo
 	// 「通用」(非 ScopeRestricted)的套餐可以为**任何**模型分组出资,它根本不需要
 	// 绑定 M。只在 Bind[planId][M] 命中的套餐里找余额,会把
 	// 「P1 解锁 M 但已用尽 + P2 通用余额充足」这种再正常不过的组合判成"耗尽",
-	// 而闸门返回的 AccessDenied 又不会触发 wallet_first 的 trySubscription 回落 ——
-	// 一条本来能付款的路径被直接砍掉,而 P2 完全付得起这一笔。
+	// 于是闸门在 allow_wallet_overflow=0 时把这一笔拒掉 —— 而 P2 完全付得起它,
+	// 订阅路径本来就会在钱包之前先命中 P2。
 	for _, planId := range fundedIds {
 		if s.CandidateUsable(planId, modelGroup) {
-			return true, true
+			return true, true, allowOverflow
 		}
 	}
-	return true, false
+	return true, false, allowOverflow
 }

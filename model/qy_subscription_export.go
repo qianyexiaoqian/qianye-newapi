@@ -122,23 +122,3 @@ func QyRefreshSubscriptionUserGroupCache(userId int, operation string) {
 //
 // 默认实现恒为 true,因此扩展未安装时候选循环与接入本 hook 之前逐字一致。
 var QySubscriptionCandidateUsable = func(planId int, usingGroup string) bool { return true }
-
-// QyWalletOverflowAllowedDespiteStrict 回答「所有禁止钱包回退的套餐,这次都用不上吗」。
-//
-// # 为什么这一条必须存在
-//
-// 上游 UserActiveSubscriptionsAllowWalletOverflow 的口径是「只要有一条活跃订阅
-// allow_wallet_overflow=false,就不许回落钱包」。引入余额使用范围之后,这个口径会
-// 产生一个新的死角:一张「仅限 G」且禁止回退的套餐,在用户请求模型分组 H 时**根本
-// 不是本次的出资候选**(上面那个 hook 已经把它跳过了),它却仍然在投票禁止钱包回退。
-// 结果是用户在 H 上既扣不到套餐余额、也不许用钱包 —— 一个谁都没有配出来的死锁。
-//
-// 判据由此确定:**只有本次真的能出资的套餐才有资格禁止钱包回退**。
-// 实现方要做的就是回答"那些 strict 套餐是不是全都被范围过滤跳过了"。
-//
-// # 调用环境与 fail 方向
-//
-// 它只在「订阅额度不足 + 存在 strict 套餐」这条已经很窄的分支上被调用,**不在事务内**,
-// 允许查一次库,但必须自带硬超时。默认实现返回 false —— 逐位等于上游今天的行为
-// (有 strict 套餐就不回退),因此扩展未安装时这一行不改变任何结果。
-var QyWalletOverflowAllowedDespiteStrict = func(userId int, usingGroup string) bool { return false }

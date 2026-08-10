@@ -232,12 +232,13 @@ func adminReport(c *gin.Context) {
 	}
 	emptyTokens, _ := EmptyGroupTokenCounts(c, model.DB, true)
 	respond(c, gin.H{
-		"observed":               res,
-		"empty_group_tokens":     emptyTokens,
-		"missing_ratio_policy":   cfg().MissingRatioPolicy,
-		"funding_gate_mode":      cfg().FundingGateMode,
-		"shadow_funding_denies":  ShadowFundingDenies(),
-		"default_model_group_on": defaultResolveOn(),
+		"observed":                res,
+		"empty_group_tokens":      emptyTokens,
+		"missing_ratio_policy":    cfg().MissingRatioPolicy,
+		"funding_gate_mode":       cfg().FundingGateMode,
+		"shadow_funding_denies":   ShadowFundingDenies(),
+		"enforced_funding_denies": EnforcedFundingDenies(),
+		"default_model_group_on":  defaultResolveOn(),
 	})
 }
 

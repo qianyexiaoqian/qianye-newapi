@@ -20,10 +20,6 @@ type SubscriptionPlanDTO struct {
 	Plan model.SubscriptionPlan `json:"plan"`
 }
 
-type BillingPreferenceRequest struct {
-	BillingPreference string `json:"billing_preference"`
-}
-
 type SubscriptionBalancePayRequest struct {
 	PlanId int `json:"plan_id"`
 }
@@ -51,10 +47,13 @@ func GetSubscriptionPlans(c *gin.Context) {
 	common.ApiSuccess(c, result)
 }
 
+// GetSubscriptionSelf 下发当前用户的订阅列表。
+//
+// 曾经还下发一个 billing_preference(每用户可改的扣费顺序)。扣费顺序现在写死为
+// 「套餐有余额且本次用得上就扣套餐,否则扣钱包」,不再是一个设置,因此这个字段
+// 连同 PUT /api/subscription/self/preference 一起去掉了。
 func GetSubscriptionSelf(c *gin.Context) {
 	userId := c.GetInt("id")
-	settingMap, _ := model.GetUserSetting(userId, false)
-	pref := common.NormalizeBillingPreference(settingMap.BillingPreference)
 
 	// Get all subscriptions (including expired)
 	allSubscriptions, err := model.GetAllUserSubscriptions(userId)
@@ -69,33 +68,9 @@ func GetSubscriptionSelf(c *gin.Context) {
 	}
 
 	common.ApiSuccess(c, gin.H{
-		"billing_preference": pref,
-		"subscriptions":      activeSubscriptions, // all active subscriptions
-		"all_subscriptions":  allSubscriptions,    // all subscriptions including expired
+		"subscriptions":     activeSubscriptions, // all active subscriptions
+		"all_subscriptions": allSubscriptions,    // all subscriptions including expired
 	})
-}
-
-func UpdateSubscriptionPreference(c *gin.Context) {
-	userId := c.GetInt("id")
-	var req BillingPreferenceRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		common.ApiErrorMsg(c, "参数错误")
-		return
-	}
-	pref := common.NormalizeBillingPreference(req.BillingPreference)
-
-	user, err := model.GetUserById(userId, true)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	current := user.GetSetting()
-	current.BillingPreference = pref
-	if err := model.UpdateUserSetting(user.Id, current); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	common.ApiSuccess(c, gin.H{"billing_preference": pref})
 }
 
 func SubscriptionRequestBalancePay(c *gin.Context) {

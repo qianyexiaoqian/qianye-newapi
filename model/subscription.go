@@ -867,28 +867,15 @@ func HasActiveUserSubscription(userId int) (bool, error) {
 	return count > 0, nil
 }
 
-// UserActiveSubscriptionsAllowWalletOverflow returns whether wallet balance may be used
-// after the user's subscription quota is exhausted. A single active subscription that
-// disallows wallet overflow (allow_wallet_overflow = false) blocks the fallback.
-func UserActiveSubscriptionsAllowWalletOverflow(userId int, usingGroup string) (bool, error) {
-	if userId <= 0 {
-		return false, errors.New("invalid userId")
-	}
-	now := common.GetTimestamp()
-	var strictCount int64
-	if err := DB.Model(&UserSubscription{}).
-		Where("user_id = ? AND status = ? AND end_time > ? AND allow_wallet_overflow = ?",
-			userId, "active", now, false).
-		Count(&strictCount).Error; err != nil {
-		return false, err
-	}
-	if strictCount == 0 {
-		return true, nil
-	}
-	// 只有本次真的能出资的套餐才有资格禁止钱包回退:一张「仅限 G」且禁止回退的
-	// 套餐在请求 H 时根本不是候选,不该把用户锁死在"扣不到也不许用钱包"上。
-	return QyWalletOverflowAllowedDespiteStrict(userId, usingGroup), nil
-}
+// ═══════════ 已删除:UserActiveSubscriptionsAllowWalletOverflow ═══════════
+//
+// 它的口径是**用户级**聚合:「只要有一条活跃订阅 allow_wallet_overflow=false,
+// 就不许回落钱包」。那让一张与本次模型分组毫无关系的套餐把钱包出资一起封掉,
+// 也让「用户分组本来就含这个模型分组」的人在套餐用尽后被 403。
+//
+// 现在 allow_wallet_overflow 只对「纯靠套餐解锁的模型分组」生效,而且只统计
+// **解锁该模型分组的**订阅;判定住在钱包出资闸门内部
+// (service.QyModelGroupFundingAllowed / qianye/modules/groupns)。
 
 // GetAllUserSubscriptions returns all subscriptions (active and expired) for a user.
 func GetAllUserSubscriptions(userId int) ([]SubscriptionSummary, error) {

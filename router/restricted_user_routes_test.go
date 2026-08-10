@@ -231,7 +231,6 @@ var restrictedDeniedSessionRoutes = []string{
 	// 订阅
 	"GET /api/subscription/plans",
 	"GET /api/subscription/self",
-	"PUT /api/subscription/self/preference",
 	"POST /api/subscription/balance/pay",
 	"POST /api/subscription/creem/pay",
 	"POST /api/subscription/epay/pay",

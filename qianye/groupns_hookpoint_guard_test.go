@@ -36,7 +36,7 @@ func TestGroupNamespaceHooksAreVacantByDefault(t *testing.T) {
 	assert.False(t, service.QyGroupRatioMissingDenied("任何模型分组"),
 		"QyGroupRatioMissingDenied 的默认实现必须恒 false —— 默认打开等于一次全站 403")
 
-	allowed, reason := service.QyModelGroupFundingAllowed(42, "default", "反重力的哈基米", true)
+	allowed, reason := service.QyModelGroupFundingAllowed(42, "default", "反重力的哈基米")
 	assert.True(t, allowed, "QyModelGroupFundingAllowed 的默认实现必须恒放行")
 	assert.Empty(t, reason)
 }
@@ -133,11 +133,21 @@ func callsInPinBranch(t *testing.T, file *ast.File) map[string]int {
 	return out
 }
 
-// TestBillingSessionWiresFundingGate 断言套餐耗尽闸门接在**钱包出资决策**上。
+// TestBillingSessionWiresFundingGate 断言钱包出资闸门接在**钱包出资决策**上,
+// 而且 tryWallet 是订阅出不了资之后的唯一去处。
 //
-// 位置是判据的一部分:四种计费偏好(wallet_only / wallet_first /
-// subscription_first 的回落 / subscription_only 的非订阅分支)全部经由 tryWallet
-// 这个闭包,挂在别处必然漏掉其中几种。
+// ═══════════ 这条守卫的理由在本轮换了 ═══════════
+//
+// 旧理由是「四种计费偏好(wallet_only / wallet_first / subscription_first 的回落 /
+// subscription_only 的非订阅分支)全部经由 tryWallet」。计费偏好已经整个去掉,
+// 扣费顺序写死为套餐优先,于是形状变成:**只有一条 tryWallet 路径**。
+//
+// 两半都要钉住,少任何一半闸门都会静默失效:
+//
+//	闸门在 tryWallet 里     挂在别处就漏掉钱包出资这个唯一的判定时机
+//	tryWallet 被调用 ≥ 2 次 一次是"无活跃订阅"的直达,一次是订阅预扣失败后的回落。
+//	                        少了后者,「有权限的人」在套餐用尽时会被直接 403 ——
+//	                        那正是本轮要修的那条缺陷,而它不会让任何别的测试变红
 func TestBillingSessionWiresFundingGate(t *testing.T) {
 	root, err := filepath.Abs("..")
 	require.NoError(t, err)
@@ -145,8 +155,14 @@ func TestBillingSessionWiresFundingGate(t *testing.T) {
 	file, perr := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 	require.NoError(t, perr)
 
-	found := false
+	gateInWallet := false
+	tryWalletCalls := 0
 	ast.Inspect(file, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "tryWallet" {
+				tryWalletCalls++
+			}
+		}
 		assign, ok := n.(*ast.AssignStmt)
 		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
 			return true
@@ -165,14 +181,18 @@ func TestBillingSessionWiresFundingGate(t *testing.T) {
 				return true
 			}
 			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "QyModelGroupFundingAllowed" {
-				found = true
+				gateInWallet = true
 			}
 			return true
 		})
 		return true
 	})
 
-	assert.True(t, found,
+	assert.True(t, gateInWallet,
 		"service/billing_session.go 的 tryWallet 闭包里找不到 QyModelGroupFundingAllowed —— "+
-			"套餐耗尽闸门没有接上,或者被挪到了别的位置。挂在别处必然漏掉四种计费偏好里的几种")
+			"钱包出资闸门没有接上,或者被挪到了别的位置")
+	assert.GreaterOrEqual(t, tryWalletCalls, 2,
+		"tryWallet 必须在**两个**位置被调用:无活跃订阅的直达,以及订阅预扣失败后的回落。"+
+			"只剩一个说明「套餐出不了资就走钱包」这条回落被删掉了 —— "+
+			"用户分组本来就含该模型分组的人会在套餐用尽时被直接 403")
 }

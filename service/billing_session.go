@@ -219,8 +219,8 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			s.tokenConsumed = 0
 		}
 		// 钱包侧的条件原子扣减输掉并发竞争:余额在读判据之后被别的请求扣走了。
-		// 必须映射成 403 InsufficientUserQuota,而不是 500 —— 它同时也是
-		// wallet_first 触发订阅回落的判据。
+		// 必须映射成 403 InsufficientUserQuota,而不是 500 —— 它是"余额不足"的
+		// 一种,客户端据此与"没有出资资格"(AccessDenied)分辨。
 		if errors.Is(err, model.ErrInsufficientUserQuota) {
 			logPreConsumeRejected(c, s.relayInfo, "wallet_race", effectiveQuota, err)
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
@@ -373,55 +373,51 @@ func (s *BillingSession) syncRelayInfo() {
 }
 
 // ---------------------------------------------------------------------------
-// NewBillingSession 工厂 — 根据计费偏好创建会话并处理回退
+// NewBillingSession 工厂 — 套餐优先,套餐出不了资才走钱包
 // ---------------------------------------------------------------------------
 
-// NewBillingSession 根据用户计费偏好创建 BillingSession，处理 subscription_first / wallet_first 的回退。
+// NewBillingSession 创建 BillingSession。
+//
+// ═════════════ 扣费顺序是**写死**的,不再是每用户的一个设置 ═════════════
+//
+// 曾经有一个 UserSetting.BillingPreference(subscription_first / wallet_first /
+// subscription_only / wallet_only),用户自己能在钱包页改。它被整个去掉了:
+// 扣费顺序恒为「套餐有余额且本次用得上 → 扣套餐;否则 → 扣钱包」。
+//
+// relaykit/dto.UserSetting 里那个字段与库里已有的 JSON 键**刻意保留但不再读取**
+// (理由见该字段的注释:侧边栏与语言两条保存路径是 read-modify-write,删字段会让
+// 它们把这个键从存量用户的 setting 里静默抹掉;而 relaykit 删公开字段属于 API 破坏)。
+//
+// 「本次用得上」由 model.PreConsumeUserSubscription 的候选循环回答(范围不匹配、
+// 余额不够本次预扣的候选一律跳过),这里只负责在它出不了资时接到钱包上。
 func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preConsumedQuota int) (*BillingSession, *types.NewAPIError) {
 	if relayInfo == nil {
 		return nil, types.NewError(fmt.Errorf("relayInfo is nil"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
 
-	pref := common.NormalizeBillingPreference(relayInfo.UserSetting.BillingPreference)
-
 	// 钱包路径需要先检查用户额度
 	tryWallet := func() (*BillingSession, *types.NewAPIError) {
-		// 套餐耗尽闸门:这个模型分组还有没有资格由**钱包**出资。
+		// 钱包出资闸门:这个模型分组还有没有资格由**钱包**出资。
 		//
-		// 落点必须是这里而不是别处:四种计费偏好(wallet_only / wallet_first /
-		// subscription_first 的回落 / subscription_only 的非订阅分支)全部经由这个
-		// 闭包,而闭包内第一行是唯一没有函数边界可挂的位置。
+		// 落点必须是这里而不是别处:钱包出资只有这一个入口(订阅出不了资之后的
+		// 唯一去处),而闭包内第一行是唯一没有函数边界可挂的位置。
 		//
-		// 判据不是"用户分组含不含它",而是 QyModelGroupFundingAllowed 那个
-		// 带布尔参数的成员资格函数(见 service/qy_groupns_export.go):
-		// wallet_first 会在套餐**尚有余额**时就先走钱包,纯用户分组判据会在那一刻
-		// 把付费用户挡死,而且拿不到 InsufficientUserQuota 就连订阅回落都触发不了。
+		// 判据的第一项是**用户分组含不含这个模型分组**:含 → 钱包永远可用,
+		// 连 allow_wallet_overflow 都不看。这个人本来就不需要套餐就能用这个分组,
+		// 拿"套餐额度用完"去拦他没有道理。
+		// 只有「纯靠套餐解锁」的模型分组才轮到 allow_wallet_overflow 说话 ——
+		// 那个开关现在住在闸门**内部**(见 qianye/modules/groupns.ModelGroupFundingAllowed),
+		// 不再是一个能在外面把闸门结论整段吞掉的覆盖项。
 		//
 		// 默认实现恒返回 (true, "") ⇒ 逐位等于上游。
 		if allowed, reason := QyModelGroupFundingAllowed(
-			relayInfo.UserId, relayInfo.UserGroup, relayInfo.UsingGroup, true); !allowed {
-			// ── 上游的 allow_wallet_overflow 是同一个问题上的**显式**答案,它赢 ──
-			//
-			// 「套餐额度用完之后允许用钱包继续付」是运营在套餐上勾出来的开关,语义与
-			// 本闸门要判的事逐字相同。两个判据同时存在而新的那个无条件胜出,就是把一个
-			// 明确配置过的行为静默推翻 —— 而且错误码刻意避开了 InsufficientUserQuota,
-			// 连排查时的"额度不足"线索都没有。所以拒绝之前先问一次上游那个开关。
-			//
-			// 只在拒绝分支查库:这一档是"套餐已耗尽 + 用户分组不含该模型分组",量极小,
-			// 而闸门默认是 off。查库失败按**放行**处理,与本闸门整体的 fail 方向一致。
-			allowOverflow, overflowErr := model.UserActiveSubscriptionsAllowWalletOverflow(
-				relayInfo.UserId, relayInfo.UsingGroup)
-			if overflowErr != nil {
-				logger.LogError(c, "套餐耗尽闸门读取 allow_wallet_overflow 失败(已放行): "+overflowErr.Error())
-				allowOverflow = true
-			}
-			if !allowOverflow {
-				// **不得**用 ErrorCodeInsufficientUserQuota:那个 code 会触发 wallet_first
-				// 的 trySubscription 回落,而本闸门拒绝的前提正是"订阅已经没钱了"。
-				return nil, types.NewErrorWithStatusCode(
-					fmt.Errorf("%s", reason), types.ErrorCodeAccessDenied, http.StatusForbidden,
-					types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
-			}
+			relayInfo.UserId, relayInfo.UserGroup, relayInfo.UsingGroup); !allowed {
+			// **不得**用 ErrorCodeInsufficientUserQuota:「你没有这个分组的出资资格」
+			// 与「你余额不足」是两件事,客户端要能分辨 —— 前者续费钱包没有用。
+			logPreConsumeRejected(c, relayInfo, "wallet_gate", preConsumedQuota, fmt.Errorf("%s", reason))
+			return nil, types.NewErrorWithStatusCode(
+				fmt.Errorf("%s", reason), types.ErrorCodeAccessDenied, http.StatusForbidden,
+				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
 		userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
 		if err != nil {
@@ -479,45 +475,30 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		return session, nil
 	}
 
-	switch pref {
-	case "subscription_only":
-		return trySubscription()
-	case "wallet_only":
+	// ── 写死的扣费顺序 ──────────────────────────────────────────────
+	//
+	// HasActiveUserSubscription 这次轻量存在性检查**不是**多余的一步:没有它,
+	// 一个没有任何订阅的用户(站内绝大多数)每次请求都要先做一次令牌预扣 +
+	// 一次带 FOR UPDATE 的订阅事务 + 一次令牌回滚,然后才轮到钱包。
+	hasSub, subCheckErr := model.HasActiveUserSubscription(relayInfo.UserId)
+	if subCheckErr != nil {
+		return nil, types.NewError(subCheckErr, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+	}
+	if !hasSub {
 		return tryWallet()
-	case "wallet_first":
-		session, err := tryWallet()
-		if err != nil {
-			if err.GetErrorCode() == types.ErrorCodeInsufficientUserQuota {
-				return trySubscription()
-			}
-			return nil, err
-		}
-		return session, nil
-	case "subscription_first":
-		fallthrough
-	default:
-		hasSub, subCheckErr := model.HasActiveUserSubscription(relayInfo.UserId)
-		if subCheckErr != nil {
-			return nil, types.NewError(subCheckErr, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
-		}
-		if !hasSub {
-			return tryWallet()
-		}
-		session, apiErr := trySubscription()
-		if apiErr != nil {
-			if apiErr.GetErrorCode() == types.ErrorCodeInsufficientUserQuota {
-				// 仅当用户的活跃订阅允许钱包回退时才回退到钱包，否则返回订阅额度不足错误
-				allowOverflow, overflowErr := model.UserActiveSubscriptionsAllowWalletOverflow(relayInfo.UserId, relayInfo.UsingGroup)
-				if overflowErr != nil {
-					return nil, types.NewError(overflowErr, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
-				}
-				if allowOverflow {
-					return tryWallet()
-				}
-				return nil, apiErr
-			}
-			return nil, apiErr
-		}
+	}
+	session, apiErr := trySubscription()
+	if apiErr == nil {
 		return session, nil
 	}
+	// 只有「订阅这一笔出不了资」才回落到钱包。这一档由 preConsume 统一映射成
+	// InsufficientUserQuota:no active subscription(竞态到期)、subscription quota
+	// insufficient(余额不够本次预扣 / 全部候选被范围跳过)。
+	//
+	// 其余错误码不回落:令牌额度不足(PreConsumeTokenQuotaFailed)换钱包一样过不去,
+	// 数据库错误换一条路只会把同一个故障再犯一次。
+	if apiErr.GetErrorCode() != types.ErrorCodeInsufficientUserQuota {
+		return nil, apiErr
+	}
+	return tryWallet()
 }

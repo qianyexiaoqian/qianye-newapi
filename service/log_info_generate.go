@@ -206,9 +206,9 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other map[string]interf
 	if relayInfo.BillingSource != "" {
 		other["billing_source"] = relayInfo.BillingSource
 	}
-	if relayInfo.UserSetting.BillingPreference != "" {
-		other["billing_preference"] = relayInfo.UserSetting.BillingPreference
-	}
+	// 曾经还写一个 other["billing_preference"]。扣费顺序写死之后它对每一行日志都是
+	// 同一个常量,而"这一笔钱到底从哪出的"由上面的 billing_source 与下面那组
+	// subscription_* 字段完整回答。历史行原样留着(不读即无害)。
 	if relayInfo.BillingSource == "subscription" {
 		if relayInfo.SubscriptionId != 0 {
 			other["subscription_id"] = relayInfo.SubscriptionId

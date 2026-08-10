@@ -186,16 +186,35 @@ func init() { module.Register(Mod{}) }
 
 // ─────────────────────── 套餐余额:与 planentitlement 之间的接缝 ───────────────────────
 
-// planUnlockState 回答「这个模型分组是不是该用户的套餐解锁的、那些套餐还有没有余额」。
+// PlanUnlockFundingState 回答关于「模型分组 M 与该用户的套餐」的三件事:
+//
+//	unlocked      M 是不是该用户某张活跃套餐解锁的
+//	funded        那些能为 M 出资的套餐里,还有没有一张有余额
+//	allowOverflow 解锁 M 的那些活跃订阅里,有没有一张 allow_wallet_overflow=true
+//
+// allowOverflow **只统计解锁 M 的订阅**。用户级聚合(任一活跃订阅 O=0 就封锁)
+// 会让一张与 M 毫无关系的套餐把 M 上的钱包出资一起封掉,那是本轮要废掉的行为。
+//
+// ── authoritative:unlocked 可以读缓存,funded/allowOverflow 必须回主库 ──
+//
+//	false  读 per-user 缓存(零 I/O)。只够回答 unlocked,也就是"这一档归不归
+//	       钱包出资闸门管"。绝大多数请求在这一问上就短路了。
+//	true   先回一次主库再作答。凡是要拿 funded/allowOverflow 下判断都必须用它。
+//
+// 缓存最长可以是 user_cache_seconds(默认 60s)之前的,而 funded 会在 relay 的
+// 扣费事务里悄悄变假(订阅被耗尽),allowOverflow 会被运营在管理端改掉 —— 两者
+// 都没有任何一处让本缓存失效。两个方向都会错,而危险的是**放行**那个方向:
+// 套餐刚耗尽的那一分钟里缓存仍说"还有余额",闸门放行,钱包替一个运营明令禁止
+// 钱包续付的分组付了钱。反方向是运营刚放开、用户还要再吃一分钟 403。
 //
 // 抽成注入接缝而不是直接 import planentitlement:与
 // groupmatrix.PlanUnlockEnabled 同一个手法。两个模块互不 import,注入在
 // qianye/modules/planentitlement 的 InstallHooks 里发生一次。
 //
-// 默认实现返回 (false, false) ⇒ ModelGroupFundingAllowed 的第二项永远不成立
-// ⇒ 闸门恒放行。订阅侧没接入时这条路径行为中性。
-var PlanFundedUnlock = func(userId int, modelGroup string) (unlocked bool, funded bool) {
-	return false, false
+// 默认实现返回 (false, false, false) ⇒ unlocked=false ⇒ 闸门恒放行。
+// 订阅侧没接入时这条路径行为中性。
+var PlanUnlockFundingState = func(userId int, modelGroup string, authoritative bool) (unlocked, funded, allowOverflow bool) {
+	return false, false, false
 }
 
 // shadowDenies 是影子期「本可拒绝」的进程内计数。
@@ -232,6 +251,43 @@ func ShadowFundingDenies() map[string]int64 {
 	defer shadowMu.Unlock()
 	out := make(map[string]int64, len(shadowDenies))
 	for k, v := range shadowDenies {
+		out[k] = v
+	}
+	return out
+}
+
+// enforceDenies 是 enforce 档**真的拒了人**的进程内计数。
+//
+// 影子档有计数而生效档没有,是这个闸门此前最大的盲区:调用方带
+// ErrOptionWithNoRecordErrorLog(不进 error log 表),被拒的请求也不写消费日志 ——
+// 一次真实拒绝在数据库里一行痕迹都没有。翻到 enforce 之后这个盲区从"理论问题"
+// 变成"上线即生效",所以两档都要能数得出来。
+var enforceDenies = map[string]int64{}
+
+func noteEnforcedFundingDeny(userId int, userGroup, modelGroup string) {
+	key := userGroup + "→" + modelGroup
+	guard.HotAsync("groupns.enforce_funding_deny", func(context.Context) error {
+		shadowMu.Lock()
+		enforceDenies[key]++
+		n := enforceDenies[key]
+		shadowMu.Unlock()
+		if n == 1 || n%100 == 0 {
+			common.SysError(fmt.Sprintf(
+				"qianye/groupns: [生效] 用户 %d 的 %s 被钱包出资闸门拒绝(403 AccessDenied),累计 %d 次 —— "+
+					"该模型分组纯靠套餐解锁、套餐额度已用尽,且套餐设置了不允许钱包续付。"+
+					"要放开请把该套餐的 allow_wallet_overflow 打开,或把 funding_gate_mode 调回 shadow",
+				userId, key, n))
+		}
+		return nil
+	})
+}
+
+// EnforcedFundingDenies 返回生效档拒绝计数的快照,供健康面板使用。
+func EnforcedFundingDenies() map[string]int64 {
+	shadowMu.Lock()
+	defer shadowMu.Unlock()
+	out := make(map[string]int64, len(enforceDenies))
+	for k, v := range enforceDenies {
 		out[k] = v
 	}
 	return out

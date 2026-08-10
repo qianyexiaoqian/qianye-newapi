@@ -107,12 +107,16 @@ func mustJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-// usePlanUnlock 替换套餐余额接缝。
-func usePlanUnlock(t *testing.T, fn func(userId int, modelGroup string) (bool, bool)) {
+// usePlanUnlock 替换套餐解锁/余额/钱包回退开关这条接缝。
+//
+// fn 收得到 authoritative:闸门「即将拒绝」时会带 true 再问一次(那一档必须由
+// 主库回答,不能拿一份最长 60 秒前的缓存去拒人)。用例可以靠这个参数分别摆放
+// 「缓存怎么说」与「主库怎么说」,也可以数它被问了几次。
+func usePlanUnlock(t *testing.T, fn func(userId int, modelGroup string, authoritative bool) (unlocked, funded, allowOverflow bool)) {
 	t.Helper()
-	prev := PlanFundedUnlock
-	PlanFundedUnlock = fn
-	t.Cleanup(func() { PlanFundedUnlock = prev })
+	prev := PlanUnlockFundingState
+	PlanUnlockFundingState = fn
+	t.Cleanup(func() { PlanUnlockFundingState = prev })
 }
 
 func seedUserGroup(t *testing.T, gdb *gorm.DB, name, mode, defaultModelGroup string) {

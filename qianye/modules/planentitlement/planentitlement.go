@@ -94,22 +94,22 @@ func (Mod) InstallHooks() {
 
 	// ── 余额使用范围的执行侧 ──────────────────────────────────────────────
 	//
-	// 这两个赋值与紧随其后的 MarkBalanceScopeEnforced() 是一个整体:前者让
+	// 这个赋值与紧随其后的 MarkBalanceScopeEnforced() 是一个整体:前者让
 	// 「仅限」真的在扣费路径上过滤候选,后者让展示侧敢于说「这笔余额在这里用不了」。
 	// **少做任何一步,界面就会开始说假话** —— 管理端显示已经限制住了,而钱照样
-	// 从那张套餐里扣。三行必须一起改,不要拆开。
+	// 从那张套餐里扣。两行必须一起改,不要拆开。
 	model.QySubscriptionCandidateUsable = CandidateUsable
-	model.QyWalletOverflowAllowedDespiteStrict = WalletOverflowAllowedDespiteStrict
 	MarkBalanceScopeEnforced()
 
 	// 矩阵页的两个接缝。它们是**冷路径只读**的,与上面两个热路径 hook 无关,
 	// 但必须同时注入:少注入一个,矩阵页就会把"经套餐可达"的格子显示成不可达,
 	// 而运营正是在那张页面上改倍率的(见 seams.go 的说明)。
 	groupmatrix.PlanUnlockEnabled = Enabled
-	// 「套餐耗尽之后还能不能改由钱包出资」这一档闸门的判据在本模块(余额只有这里
-	// 知道),而闸门本体在 groupns(它才知道用户分组含不含这个模型分组)。
+	// 「纯靠套餐解锁的模型分组耗尽之后还能不能改由钱包出资」这一档闸门的判据在
+	// 本模块(解锁、余额、allow_wallet_overflow 只有这里一次查询就全知道),
+	// 而闸门本体在 groupns(它才知道用户分组含不含这个模型分组)。
 	// 两个模块互不 import,靠这一次注入连起来 —— 与上面 PlanUnlockEnabled 同一个手法。
-	groupns.PlanFundedUnlock = FundedUnlockState
+	groupns.PlanUnlockFundingState = UnlockFundingState
 	groupmatrix.PlanUnlockedModelGroups = UnlockedModelGroupPlans
 
 	if !enabled() {

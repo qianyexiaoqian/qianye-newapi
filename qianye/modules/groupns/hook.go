@@ -161,24 +161,45 @@ func GroupRatioMissingDenied(modelGroup string) bool {
 	return cfg().MissingRatioPolicy == config.MissingRatioPolicyDeny
 }
 
-// ModelGroupFundingAllowed 是 service.QyModelGroupFundingAllowed 的实现体。
+// ModelGroupFundingAllowed 是 service.QyModelGroupFundingAllowed 的实现体:
+// 「这个模型分组此刻还有没有资格由**钱包**出资」。
 //
-// ══════════ 一个函数体、两个调用点、只差一个布尔 ══════════
+// ══════════ 判据:成员资格优先,allow_wallet_overflow 只管纯解锁分组 ══════════
 //
-//	requireFunding=false  权限层:contains(U,M) OR ∃ 活跃套餐解锁 M
-//	requireFunding=true   出资层:contains(U,M) OR ∃ 活跃套餐解锁 M **且仍有余额**
+//	contains(U, M)                        → 放行。**不看 allow_wallet_overflow。**
+//	                                        这个人本来就不需要套餐就能用 M,
+//	                                        拿"套餐额度用完"去拦他没有道理。
+//	不含 且 没有任何套餐解锁 M            → 放行(fail-open,理由见下)
+//	不含 且 套餐解锁 M 且 那些套餐还有余额 → 放行
+//	不含 且 套餐解锁 M 且 已耗尽 且 O=1   → 放行(运营显式允许钱包续付)
+//	不含 且 套餐解锁 M 且 已耗尽 且 O=0   → 按 funding_gate_mode 决定
 //
-// 成员资格项 contains(U,M) 与解锁项在同一个函数体里算一次,因此权限与出资
-// **在结构上不可能对成员资格产生分歧** —— 能分歧的只有余额,而余额本来就是两者
-// 应当不同的地方。这是这个设计相对于"在 tryWallet 里另写一个纯用户分组判据"的
-// 全部价值:那种写法会在 wallet_first + 套餐尚有余额时把用户挡在门外,
-// 而且返回的不是 InsufficientUserQuota,连 trySubscription 回落都触发不了。
+// O 即解锁 M 的那些活跃订阅上的 allow_wallet_overflow,取值口径是**任一为真即放行**,
+// 而且**只看解锁 M 的套餐**。旧口径是用户级聚合(任一活跃订阅 O=0 就封锁全部钱包
+// 出资),那会让一张与 M 毫无关系的套餐把 M 上的钱包出资一起封掉。
+//
+// funding_gate_mode 在这里是**纯粹的灰度开关**,不是第二条独立规则:
+// off = 整条规则不生效(回滚用),shadow = 只记录不阻断,enforce = 生效。
+// 让它携带独立语义会造出「O=0 但 gate=off,到底扣不扣钱包」这种谁都没配出来的格子。
+//
+// ══════════ 「归不归本闸门管」读缓存,判据本身回主库 ══════════
+//
+// 后三条的判据来自 planentitlement 的 per-user 缓存(默认 60s 新鲜期)。那份缓存
+// 没有人为「订阅被扣空」与「运营改 allow_wallet_overflow」做失效 —— 前者发生在
+// relay 的扣费事务里,后者发生在管理端。两个方向都会错,而**危险的是放行那个方向**:
+// 套餐刚耗尽的那一分钟里缓存仍说"还有余额",闸门直接放行,钱包替一个运营明令
+// 禁止钱包续付的分组付了钱;反方向则是运营刚把 O 改成 1、用户还要再吃一分钟 403。
+//
+// 所以只有第一问(unlocked:这一档归不归本闸门管)走缓存 —— 它是全站绝大多数
+// 请求的短路出口,必须零 I/O。一旦 unlocked 成立,余额与运营开关**一律回主库**,
+// 放行与拒绝两个方向都是。只在"即将拒绝"时才确认是不够的:放行那条路径根本
+// 走不到那一步。
 //
 // ══════════ fail 方向:任何不确定一律放行 ══════════
 //
-// 快照未加载、开关未开、余额读不到 —— 全部返回 (true, "")。
+// 快照未加载、开关未开、余额读不到、拒绝前的回源失败 —— 全部返回 (true, "")。
 // fail-closed 会让付费用户在缓存抖动时突然失去分组,而那种失败在日志里没有形状。
-func ModelGroupFundingAllowed(userId int, userGroup, modelGroup string, requireFunding bool) (bool, string) {
+func ModelGroupFundingAllowed(userId int, userGroup, modelGroup string) (bool, string) {
 	if !enabled() || cfg().FundingGateMode == config.FundingGateOff {
 		return true, ""
 	}
@@ -188,30 +209,49 @@ func ModelGroupFundingAllowed(userId int, userGroup, modelGroup string, requireF
 
 	// 第一项:纯用户分组口径的成员资格。零 I/O(进程内快照 + map 查找)。
 	// 刻意**不**走 QyUsableGroupsForUser:那个函数会把套餐解锁并进来,
-	// 于是第一项与第二项塌成同一件事,余额判定永远不会生效。
+	// 于是第一项与第二项塌成同一件事,后面的判定永远不会生效。
 	if _, ok := service.GetUserUsableGroups(userGroup)[modelGroup]; ok {
 		return true, ""
 	}
 
-	// 第二项:套餐解锁。requireFunding 决定要不要再问一次余额。
-	unlocked, funded := PlanFundedUnlock(userId, modelGroup)
-	if !unlocked {
-		// 两项都不成立。但这一档**不由本闸门拒绝** —— 上游 middleware/auth.go
+	// 第一问走缓存,零 I/O。它只用来回答"这一档归不归本闸门管":
+	// unlocked=false ⇒ 不归 ⇒ 放行,全站绝大多数请求在这里就结束了。
+	if unlocked, _, _ := PlanUnlockFundingState(userId, modelGroup, false); !unlocked {
+		// M 不是套餐解锁的。这一档**不由本闸门拒绝** —— 上游 middleware/auth.go
 		// 已经在鉴权处挡过一次了,能走到计费的请求说明它在某种口径下是被允许的。
-		// 本闸门只回答"套餐耗尽之后还能不能继续出资",越权拒绝会把一次口径差异
-		// 变成一次线上故障。
+		// 越权拒绝会把一次口径差异变成一次线上故障。
 		return true, ""
 	}
-	if !requireFunding || funded {
+
+	// ── 剩下的判据一律由主库当场回答,放行与拒绝**两个方向都是** ──
+	//
+	// 缓存里的 funded/allowOverflow 最长可以是 user_cache_seconds(默认 60s)之前的,
+	// 而这两件事都没有人为它们做失效:funded 在 relay 的扣费事务里变假(订阅被这一笔
+	// 或上一笔扣空),allowOverflow 由运营在管理端随手改。两个方向都会错,而且**危险的
+	// 是放行那个方向** —— 套餐刚耗尽的那一分钟里,缓存仍说"还有余额",闸门直接放行,
+	// 钱包替一个运营明令禁止钱包续付的分组付了钱。只在"即将拒绝"时才确认是不够的:
+	// 那条路径根本走不到。
+	//
+	// 代价可控:走到这里要同时满足「M 纯靠套餐解锁」+「用户持有活跃套餐」+
+	// 「订阅刚刚没能为这一笔出资」(否则不会来钱包这条路)。这是一次带索引的单用户
+	// 查询,自带 50ms 硬超时与 singleflight 去重。这道闸门管的是钱,不能拿一份
+	// 一分钟前的余额作数。
+	unlocked, funded, allowOverflow := PlanUnlockFundingState(userId, modelGroup, true)
+	if !unlocked || funded || allowOverflow {
 		return true, ""
 	}
+
 	if cfg().FundingGateMode == config.FundingGateShadow {
 		// 影子期:只记录,不阻断。数字稳定之后再翻 enforce。
 		noteShadowFundingDeny(userId, userGroup, modelGroup)
 		return true, ""
 	}
+	// enforce 档是**真会拒人**的档位,必须留下痕迹:调用方带
+	// ErrOptionWithNoRecordErrorLog,被拒的请求也不写消费日志,数据库里一行都没有。
+	noteEnforcedFundingDeny(userId, userGroup, modelGroup)
 	return false, fmt.Sprintf(
-		"模型分组 %q 由您持有的套餐解锁,该套餐额度已用尽,而您的用户分组 %q 不包含它。"+
+		"模型分组 %q 由您持有的套餐解锁,该套餐额度已用尽,而您的用户分组 %q 不包含它;"+
+			"该套餐同时设置了「额度用尽后不允许使用钱包余额」。"+
 			"请续费套餐,或把令牌分组切换到您的用户分组可用的分组",
 		modelGroup, userGroup)
 }

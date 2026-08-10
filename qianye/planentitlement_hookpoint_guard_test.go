@@ -149,16 +149,20 @@ func TestPlanUnlockDefaultImplementationsAreIdentity(t *testing.T) {
 //
 // # 少任何一根线,界面就开始说假话
 //
-// 判定住在 qianye/modules/planentitlement,执行在上游的扣费路径上。三根线:
+// 判定住在 qianye/modules/planentitlement,执行在上游的扣费路径上。两根线:
 //
 //	model/subscription.go 的候选循环   「仅限」的套餐在模型分组对不上时被跳过
-//	model/subscription.go 的钱包回退   被跳过的套餐无权禁止钱包回退
-//	planentitlement.InstallHooks       两个赋值 + MarkBalanceScopeEnforced 握手
+//	planentitlement.InstallHooks       赋值 + MarkBalanceScopeEnforced 握手
 //
 // 握手那一步不是形式:没有它,展示侧(管理端弹窗、用户端余额卡片)读到的
 // CandidateUsable 恒为 true,于是**配置与展示同时说真话**;有了它,展示侧才敢
 // 说「这笔余额在这里用不了」。所以断掉赋值却留下握手,或反过来,都会造出
 // 「管理端显示已经限制住了,而钱照样从那张套餐里扣」这个最不能接受的状态。
+//
+// 曾经还有第三根线(model.QyWalletOverflowAllowedDespiteStrict),它解的是
+// 「被范围跳过的套餐仍在投票禁止钱包回退」这个死锁。那个死锁来自上游的**用户级**
+// allow_wallet_overflow 聚合,该口径已废除(见 model/subscription.go 里的删除说明),
+// 死锁在结构上不再存在,所以那根线连同它守的函数一起没了。
 var balanceScopeWiring = []struct {
 	file string
 	fn   string
@@ -168,9 +172,6 @@ var balanceScopeWiring = []struct {
 	{"../model/subscription.go", "PreConsumeUserSubscription", "QySubscriptionCandidateUsable",
 		"候选循环里的范围过滤。这一行没了,「仅限 G」的套餐余额会被任意模型分组花掉," +
 			"而管理端与用户端都显示它已经被限制住了"},
-	{"../model/subscription.go", "UserActiveSubscriptionsAllowWalletOverflow", "QyWalletOverflowAllowedDespiteStrict",
-		"被范围跳过的套餐无权禁止钱包回退。这一行没了,持有「仅限 G + 不许回退」套餐的用户" +
-			"在别的模型分组上会既扣不到套餐余额、也不许用钱包 —— 一个谁都没有配出来的死锁"},
 }
 
 func TestBalanceScopeKeepsItsUpstreamWiring(t *testing.T) {
@@ -249,8 +250,10 @@ func TestBalanceScopeInstallsBothHooksAndTheHandshake(t *testing.T) {
 	assert.True(t, assigned["QySubscriptionCandidateUsable"],
 		"InstallHooks 必须把 CandidateUsable 接到 model.QySubscriptionCandidateUsable 上,"+
 			"否则「仅限」在扣费路径上完全空转")
-	assert.True(t, assigned["QyWalletOverflowAllowedDespiteStrict"],
-		"InstallHooks 必须接上钱包回退的复核,否则「仅限 + 不许回退」的组合会把用户锁死")
+	assert.True(t, assigned["PlanUnlockFundingState"],
+		"InstallHooks 必须把 UnlockFundingState 接到 groupns.PlanUnlockFundingState 上,"+
+			"否则钱包出资闸门永远读到 (false,false,false):既看不见「纯解锁分组已耗尽」,"+
+			"也看不见运营在套餐上勾的 allow_wallet_overflow —— 那个开关在站内完全空转")
 	assert.True(t, handshake,
 		"InstallHooks 必须调用 MarkBalanceScopeEnforced():没有这次握手,展示侧会一直"+
 			"显示「未生效」,而过滤其实已经在扣费路径上跑了")
