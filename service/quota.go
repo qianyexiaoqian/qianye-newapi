@@ -425,16 +425,15 @@ func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 	//if relayInfo.TokenUnlimited {
 	//	return nil
 	//}
-	// 检查与扣减必须是同一条语句:先读 remain_quota 再无条件扣减是 TOCTOU,
-	// 并发请求会各自读到同一个"够用"的余额并全部扣成功,击穿令牌上限。
-	if err := model.PreConsumeTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, quota, relayInfo.TokenUnlimited); err != nil {
-		if errors.Is(err, model.ErrInsufficientTokenQuota) {
-			remain := 0
-			if token, readErr := model.GetTokenByKey(relayInfo.TokenKey, true); readErr == nil {
-				remain = token.RemainQuota
-			}
-			return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(remain), logger.FormatQuota(quota))
-		}
+	token, err := model.GetTokenByKey(relayInfo.TokenKey, false)
+	if err != nil {
+		return err
+	}
+	if !relayInfo.TokenUnlimited && token.RemainQuota < quota {
+		return fmt.Errorf("token quota is not enough, token remain quota: %s, need quota: %s", logger.FormatQuota(token.RemainQuota), logger.FormatQuota(quota))
+	}
+	err = model.DecreaseTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, quota)
+	if err != nil {
 		return err
 	}
 	return nil
@@ -457,7 +456,7 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 			}
 			relayInfo.SubscriptionPostDelta += applied
 			if shortfall := delta - applied; shortfall > 0 {
-				if err := model.DecreaseUserQuota(relayInfo.UserId, int(shortfall)); err != nil {
+				if err := model.DecreaseUserQuota(relayInfo.UserId, int(shortfall), false); err != nil {
 					return err
 				}
 				relayInfo.SubscriptionWalletShortfall += shortfall
@@ -466,9 +465,9 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 	} else {
 		// Wallet
 		if quota > 0 {
-			err = model.DecreaseUserQuota(relayInfo.UserId, quota)
+			err = model.DecreaseUserQuota(relayInfo.UserId, quota, false)
 		} else {
-			err = model.IncreaseUserQuota(relayInfo.UserId, -quota)
+			err = model.IncreaseUserQuota(relayInfo.UserId, -quota, false)
 		}
 		if err != nil {
 			return err

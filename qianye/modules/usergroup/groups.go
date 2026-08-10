@@ -16,7 +16,11 @@ import (
 //
 // 本模块从不写它 —— 未配置时 hook 原样返回空串,让数据库默认值继续生效。
 // 这里定义它只为了在管理端把「不配置会得到什么」明确展示给运营看。
-const upstreamDefaultGroup = "default"
+//
+// 引用上游那个常量而不是再抄一遍字面量:model.QyNewUserGroup 的默认实现
+// (扩展未启用时)返回的就是它,而 newUserGroup() 在配置失效时返回的也是它。
+// 两处抄成两份字符串的表现是「管理端说新用户进 A、库里进 B」。
+const upstreamDefaultGroup = model.UpstreamDefaultUserGroup
 
 // autoGroup 是「按倍率自动选分组」的伪分组名。
 //

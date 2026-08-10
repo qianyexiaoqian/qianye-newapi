@@ -80,6 +80,23 @@ export function qyBatchDeleteChannels(
 }
 
 /**
+ * 重置批次的报告，比通用报告多两个合计。
+ *
+ * # 为什么必须由后端回一个合计，而不是前端把估算值复述一遍
+ *
+ * 确认框里那个"合计已用额度"算自列表页缓存的行：那份数据可能已经过期几分钟，
+ * 期间渠道还在计费，而且别的管理员可能刚清过其中几条。把它当成结果显示，
+ * 界面会宣称抹掉了一笔从来没被抹掉的钱。`cleared_used_quota` 是后端在行锁内
+ * 读到的、真正被覆盖掉的那些值之和。
+ */
+export type QyChannelBatchResetResult = QyChannelBatchResult & {
+  /** 本次真正被抹掉的已用额度合计（quota 整数）。 */
+  cleared_used_quota: number
+  /** 本次真正被抹掉的上游余额展示值合计（USD）。 */
+  cleared_balance: number
+}
+
+/**
  * 批量重置本站统计。
  *
  * 两个开关都必须显式传，后端不给默认值：这是一个抹掉历史统计的操作，
@@ -89,12 +106,15 @@ export function qyBatchDeleteChannels(
 export function qyBatchResetChannelUsage(
   ids: number[],
   options: { resetBalance: boolean; resetUsedQuota: boolean }
-): Promise<QyChannelBatchResult> {
-  return qyPost<QyChannelBatchResult>('/admin/channels/batch-reset-usage', {
-    ids,
-    reset_used_quota: options.resetUsedQuota,
-    reset_balance: options.resetBalance,
-  })
+): Promise<QyChannelBatchResetResult> {
+  return qyPost<QyChannelBatchResetResult>(
+    '/admin/channels/batch-reset-usage',
+    {
+      ids,
+      reset_used_quota: options.resetUsedQuota,
+      reset_balance: options.resetBalance,
+    }
+  )
 }
 
 /**

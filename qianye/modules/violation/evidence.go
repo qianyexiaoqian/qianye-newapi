@@ -73,9 +73,22 @@ func buildEvidence(rec *Record, in scanInput, v *verdict, files []*types.FileMet
 		maxRaw = 8192
 	}
 
-	origin := int64(len(in.Text))
+	// origin_bytes 必须把上游正文算进去。只数 in.Text 的话,上游阶段的每一条证据
+	// 都会显示 origin_bytes=0(那一阶段 in.Text 恒为空),而管理端拿这一列判断
+	// "证据够不够用" —— 一个恒为 0 的列不是"没数据",是一条错误的信息。
+	origin := int64(len(in.Text) + len(in.UpstreamText))
 	text, stripped := stripInlineBinary(in.Text)
-	text, stats := redact(text)
+
+	// 脱敏必须覆盖**这份文档里的每一段自由文本**,不能只覆盖 prompt。
+	//
+	// 上游阶段 in.Text 恒为空,用户数据全在 UpstreamText 里 —— 不少上游会把出错的
+	// 那一段输入原样回抄进错误消息(实测:桩上游回抄整个请求体时,归档里出现了
+	// 完整的邮箱、手机号与 API 密钥,而 redacted 列还写着 false)。
+	// 只脱敏 in.Text 的后果因此不是"少脱一点",是**上游阶段的归档等于零脱敏**,
+	// 而且 redacted/redact_stats 两列会如实地报告"没有脱敏过任何东西",
+	// 让管理员以为这份证据里本来就没有个人数据。
+	red := redactor{}
+	text = red.do(text)
 	truncated := len(text) > maxRaw
 	text = clipHeadTail(text, maxRaw)
 
@@ -96,17 +109,23 @@ func buildEvidence(rec *Record, in scanInput, v *verdict, files []*types.FileMet
 		doc.Hit = map[string]any{
 			"rule_id": v.Rule.R.Id,
 			"terms":   v.Terms,
-			"snippet": v.Snippet,
+			// 命中片段是从待检文本里截的窗口,同样可能落在回抄的输入上。
+			// 主表那一列已经在 newRecord 里脱敏过,这里是同一段文本的第二份拷贝,
+			// 漏掉它等于把刚堵上的口子在旁边重开一个。
+			"snippet": red.do(v.Snippet),
 		}
 	}
 	if in.ErrCode != "" || in.StatusCode != 0 || in.RejectReason != "" {
 		doc.Up = map[string]any{
-			"status_code":   in.StatusCode,
-			"error_code":    in.ErrCode,
-			"error_message": clipHeadTail(in.UpstreamText, 2048),
-			"reject_reason": in.RejectReason,
+			"status_code": in.StatusCode,
+			"error_code":  in.ErrCode,
+			// 截断在脱敏**之后**:反过来的话,被截掉的那一半从未参与替换,
+			// 而它恰恰是回抄内容最集中的一段(错误消息通常是"一句话 + 原文")。
+			"error_message": clipHeadTail(red.do(in.UpstreamText), 2048),
+			"reject_reason": red.do(in.RejectReason),
 		}
 	}
+	stats := red.stats
 
 	raw, err := common.Marshal(doc)
 	if err != nil {
@@ -279,6 +298,45 @@ var redactors = []struct {
 	{"id_card_cn", regexp.MustCompile(`\b[1-9]\d{5}(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]\b`), "«idcard»"},
 	{"phone_cn", regexp.MustCompile(`(?:\+?86)?1[3-9]\d{9}`), "«phone»"},
 	{"bank_card", regexp.MustCompile(`\b\d{16,19}\b`), "«bankcard»"},
+}
+
+// redactor 是"对一份文档的多个字段做脱敏,并把命中次数累加成一份统计"。
+//
+// 为什么需要它:一条证据里有四段自由文本(prompt、命中片段、上游错误正文、
+// 软违规原因),它们必须共用**一份** redact_stats —— 每段各算一份的话,
+// Payload 上只有一列装得下,先写的那份会被后写的覆盖,而覆盖之后
+// "这份证据里替换掉了几个手机号"这个数就是错的。
+//
+// 零值可用,不需要构造函数。
+type redactor struct {
+	stats map[string]interface{}
+}
+
+// do 脱敏一段文本并把命中次数并进总账。
+func (r *redactor) do(s string) string {
+	out, stats := redact(s)
+	if len(stats) == 0 {
+		return out
+	}
+	if r.stats == nil {
+		r.stats = make(map[string]interface{}, len(stats))
+	}
+	for name, n := range stats {
+		prev, _ := r.stats[name].(int)
+		count, _ := n.(int)
+		r.stats[name] = prev + count
+	}
+	return out
+}
+
+// redactSnippet 是 redact 的"只要文本"包装,给 Record.MatchSnippet 用。
+//
+// 单独一个名字而不是让调用方写 `s, _ := redact(x)`:命中片段是**管理端列表
+// 直接返回**的一列,它有没有脱敏是一个需要能被 grep 出来的事实。
+// 统计在这里没有去处(Record 上没有对应的列),丢弃是有意的。
+func redactSnippet(s string) string {
+	out, _ := redact(s)
+	return out
 }
 
 // redact 对文本执行脱敏,返回替换后的文本与每类的命中次数。

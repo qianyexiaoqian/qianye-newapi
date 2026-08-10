@@ -149,6 +149,7 @@ export const qyViolationRuleSchema = z
     ]),
     pattern: z.string().max(8192, 'qy_vio_err_pattern_long'),
     case_sensitive: z.boolean(),
+    status_scope: z.string().max(64),
     model_scope: z.string().max(2048),
     group_scope: z.string().max(1024),
     group_scope_mode: z.enum(['include', 'exclude']),
@@ -169,6 +170,15 @@ export const qyViolationRuleSchema = z
         code: z.ZodIssueCode.custom,
         path: ['action'],
         message: 'qy_vio_err_block_phase',
+      })
+    }
+    // 与后端 ValidateRule 同一条判据：prompt 阶段状态码恒为 0，
+    // 配了作用域就是一条永不命中的规则，而它保存成功、界面正常、零报错。
+    if (data.status_scope.trim() !== '' && data.phase === 'prompt') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['status_scope'],
+        message: 'qy_vio_err_status_scope_phase',
       })
     }
     if (data.fee_mode !== 'none' && !isCharging(data.action)) {
@@ -236,6 +246,7 @@ export function qyEmptyViolationRule(): QyViolationRuleFormValues {
     match_type: 'keyword',
     pattern: '',
     case_sensitive: false,
+    status_scope: '',
     model_scope: '',
     group_scope: '',
     group_scope_mode: 'include',
@@ -267,6 +278,10 @@ export function qyViolationRuleToForm(
     match_type: rule.match_type,
     pattern: rule.pattern,
     case_sensitive: rule.case_sensitive,
+    // 历史行没有这一列，后端 AutoMigrate 会回填空串（= 不限状态码），
+    // 但一条从旧接口读来的规则可能整个字段都不存在 —— 读成 undefined 会让
+    // 表单变成非受控组件，React 在下一次输入时把已填内容整段丢掉。
+    status_scope: rule.status_scope ?? '',
     model_scope: rule.model_scope,
     group_scope: rule.group_scope,
     // 历史行（这一列出现之前写入的）可能是空串，按 include 读 ——

@@ -85,6 +85,18 @@ const (
 	CatReverse   = "reverse"   // 逆向:套提示词、system prompt 提取
 	CatDistill   = "distill"   // 蒸馏:批量采集
 	CatPressure  = "pressure"  // 高压:prompt injection / 高压诱导
+	// CatUpstream 是第五类,与前四类的**判据来源**根本不同。
+	//
+	// 前四类判的是"用户发出去的东西长什么样"——我们自己下的结论,误判归我们。
+	// 这一类判的是"上游把它拒了"——结论是模型厂商下的,我们只是把它记下来。
+	// 这个差别有两个实际后果,配规则的人必须知道:
+	//
+	//  1. **准确率天然更高**。Anthropic 判定一段内容有网络安全风险,比我们用正则猜
+	//     可靠得多,所以这一类比前四类更适合早一点切 enforce。
+	//  2. **它只在请求已经发出去之后才成立**。字节已经上行、上游已经算过,
+	//     所以这一类永远不能配 block(ValidateRule 会拒),也不该配高额扣费 ——
+	//     用户为一次被上游拒绝的请求付两次钱是说不通的。
+	CatUpstream = "upstream" // 上游安全拒绝:上游返回的策略性 4xx
 )
 
 var builtinCategories = []builtinCategory{
@@ -96,6 +108,8 @@ var builtinCategories = []builtinCategory{
 		"批量采集模型输出用作训练语料。判据是请求频率,不看文本。"},
 	{CatPressure, "高压(提示词注入)", "Prompt injection",
 		"直接覆盖指令、伪造角色标签、注入控制 token。"},
+	{CatUpstream, "上游安全拒绝", "Upstream refusal",
+		"请求已发往上游、上游以策略原因拒绝(4xx)。判据是上游的结论,不是我们的猜测。"},
 }
 
 // builtinRule 是内置目录里的一条规则模板。
@@ -132,6 +146,10 @@ type builtinRule struct {
 	MatchType     string `json:"match_type"`
 	Pattern       string `json:"pattern"`
 	CaseSensitive bool   `json:"case_sensitive"`
+	// StatusScope 只有上游阶段的条目会填(见 Rule.StatusScope)。
+	// 它是模式的一部分:一条不带状态码约束的正文规则会在任何一次上游报错上求值,
+	// 包括 5xx 与网关超时 —— 那些正文里偶然出现同一串词就是一次误判。
+	StatusScope string `json:"status_scope"`
 
 	Priority    int `json:"priority"`
 	CountWeight int `json:"count_weight"`
@@ -158,6 +176,7 @@ func (b builtinRule) toRule(now int64, operatorId int) *Rule {
 		MatchType:          b.MatchType,
 		Pattern:            b.Pattern,
 		CaseSensitive:      b.CaseSensitive,
+		StatusScope:        b.StatusScope,
 		GroupScopeMode:     GroupScopeInclude,
 		Action:             ActionRecord,
 		FeeMode:            FeeNone,
@@ -226,6 +245,17 @@ func upgradeState(row *Rule, latest builtinRule) string {
 // **只动 pattern / case_sensitive / 版本 / 指纹。** Mode、Enabled、Action、
 // FeeMode、作用域、count_weight 一个都不碰:那些全是运营的决定。
 // 尤其是 Mode —— 升级顺手把规则转成真实执行,就是一次没有人按下过的上线。
+//
+// # StatusScope 归"作用域"那一类,不升级
+//
+// 上游拒绝类条目自带状态码作用域,但它与 ModelScope / GroupScope 同性质:
+// 运营会按自己接的上游把它改宽或改窄(比如某家把同一类拒绝返回 403)。
+// 升级覆盖它 = 在运营不知情的情况下改变这条规则的射程。
+//
+// 更硬的理由是指纹只覆盖 Pattern:把 StatusScope 也纳入指纹会让**现网每一条
+// 已导入的内置规则**在下一次打开管理端时集体变成 "modified"(它们存的是
+// sha256(pattern),新算法算的是 sha256(pattern+scope)),那是一次纯粹由重构
+// 制造的假告警。两条理由指向同一个结论,所以这里不碰它。
 func applyUpgrade(row *Rule, latest builtinRule, now int64, operatorId int) {
 	row.Pattern = latest.Pattern
 	row.CaseSensitive = latest.CaseSensitive
@@ -983,5 +1013,71 @@ var builtinCatalog = []builtinRule{
 		Pattern:     "60",
 		Priority:    240,
 		CountWeight: 1, Severity: 1,
+	},
+
+	// ───────────────── 上游安全拒绝 ─────────────────
+	//
+	// 三条的**证据强度不一样**,不要一视同仁地切 enforce:
+	//
+	//   - cybersecurity_refusal 的文案是项目方从生产环境贴出来的实际响应,逐字可信;
+	//   - safety_system_refusal 与 content_filter 是常见形态,但本仓**没有**在本站
+	//     实际抓到过它们的原文。它们导入进来的第一个用途是"影子跑,去命中记录里
+	//     核对真实文案",核对完再决定留哪条、改哪条。
+	//
+	// 这个差别写在各自的 Origin 里,不要在升级时把它抹平。
+	{
+		Key: "upstream.cybersecurity_refusal", Category: CatUpstream, Version: 1,
+		Name:         "上游拒绝-网络安全风险",
+		PublicReason: "请求被上游安全策略拒绝",
+		Guards: "Anthropic 判定请求涉及网络安全风险时返回的 400。" +
+			"命中它基本等价于「这个账号在拿模型做攻防」,是最值得计次的一类上游拒绝。",
+		FalsePositive: "安全从业者的正常工作(漏洞分析、样本研判)会稳定命中。" +
+			"给安全类分组配一档宽松策略,或用分组作用域把这条排除掉。",
+		Origin: "项目方从生产环境提供的实际响应正文(status 400)",
+		Advice: "状态码作用域钉在 400:同一串词出现在 5xx 或网关超时正文里都不是上游的策略结论。" +
+			"两行子串任一命中即算(第二行是同一条消息里的项目名,用来兜住上游改写前半句的情况)。" +
+			"这是三条里唯一有生产实证的,可以最先转 enforce;转之前先看影子命中里有没有安全从业者。",
+		Phase:       PhaseUpstreamErr,
+		MatchType:   MatchUpstreamText,
+		Pattern:     "flagged for possible cybersecurity risk\nTrusted Access for Cyber",
+		StatusScope: "400",
+		Priority:    300,
+		CountWeight: 1, Severity: 3,
+	},
+	{
+		Key: "upstream.safety_system_refusal", Category: CatUpstream, Version: 1,
+		Name:         "上游拒绝-安全系统",
+		PublicReason: "请求被上游安全策略拒绝",
+		Guards: "OpenAI 系在提示词触发安全系统时返回的 400(invalid_prompt / 安全系统拒绝文案)。" +
+			"它与破限类前置规则是互补的:前者猜意图,这条拿的是上游的实际结论。",
+		FalsePositive: "正文文案由上游随时改写,改写之后这条会静默失效(不报错、命中归零)。" +
+			"必须靠影子期的命中量来确认它还活着。",
+		Origin: "OpenAI 400 拒绝的常见文案,**本站未实测**,导入后按影子核对真实正文",
+		Advice: "两行子串任一命中即算。转 enforce 之前必须先在影子期核对到至少一条真实命中," +
+			"否则你 enforce 的是一条从未命中过的规则 —— 它看起来在工作,其实只是没被执行过。",
+		Phase:       PhaseUpstreamErr,
+		MatchType:   MatchUpstreamText,
+		Pattern:     "rejected as a result of our safety system\ninvalid_prompt",
+		StatusScope: "400",
+		Priority:    301,
+		CountWeight: 1, Severity: 2,
+	},
+	{
+		Key: "upstream.content_filter", Category: CatUpstream, Version: 1,
+		Name:         "上游拒绝-内容过滤",
+		PublicReason: "请求被上游内容策略拒绝",
+		Guards: "Azure OpenAI 与 Gemini 的内容过滤拒绝(content_filter / ResponsibleAIPolicyViolation / " +
+			"PROHIBITED_CONTENT)。这类拒绝的机器可读标识比自然语言文案稳定得多。",
+		FalsePositive: "内容过滤对医疗、法律、安全研究类正常请求的误伤率本来就不低," +
+			"上游误伤会在这里被原样放大成一次违规计次。建议 CountWeight 保持 1 并配长窗口。",
+		Origin: "Azure/Gemini 内容过滤的机器可读标识,**本站未实测**,导入后按影子核对",
+		Advice: "三行子串任一命中即算,取的都是机器可读标识而不是散文文案 —— 后者上游改写频率高得多。" +
+			"状态码同样钉 400。若站点没有接 Azure 或 Gemini,直接停用这一条,不要留着空转。",
+		Phase:       PhaseUpstreamErr,
+		MatchType:   MatchUpstreamText,
+		Pattern:     "ResponsibleAIPolicyViolation\nPROHIBITED_CONTENT\n\"code\": \"content_filter\"",
+		StatusScope: "400",
+		Priority:    302,
+		CountWeight: 1, Severity: 2,
 	},
 }

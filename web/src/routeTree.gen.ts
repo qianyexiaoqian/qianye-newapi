@@ -102,6 +102,7 @@ import { Route as AuthenticatedQyAdminViolationsIndexRouteImport } from './route
 import { Route as AuthenticatedQyAdminWithdrawalsIndexRouteImport } from './routes/_authenticated/qy/admin/withdrawals/index'
 import { Route as AuthenticatedQyLotteryActNoIndexRouteImport } from './routes/_authenticated/qy/lottery/$actNo/index'
 import { Route as AuthenticatedQyAdminCommissionRecordsBalancesIndexRouteImport } from './routes/_authenticated/qy/admin/commission-records/balances/index'
+import { Route as AuthenticatedQyAdminCommissionRecordsRelationsIndexRouteImport } from './routes/_authenticated/qy/admin/commission-records/relations/index'
 import { Route as AuthenticatedQyAdminLotteryActNoIndexRouteImport } from './routes/_authenticated/qy/admin/lottery/$actNo/index'
 
 const IndexRoute = IndexRouteImport.update({
@@ -630,6 +631,12 @@ const AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute =
     path: '/commission-records/balances/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
+const AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute =
+  AuthenticatedQyAdminCommissionRecordsRelationsIndexRouteImport.update({
+    id: '/commission-records/relations/',
+    path: '/commission-records/relations/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
 const AuthenticatedQyAdminLotteryActNoIndexRoute =
   AuthenticatedQyAdminLotteryActNoIndexRouteImport.update({
     id: '/lottery/$actNo/',
@@ -729,6 +736,7 @@ export interface FileRoutesByFullPath {
   '/qy/admin/withdrawals/': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
   '/qy/lottery/$actNo/': typeof AuthenticatedQyLotteryActNoIndexRoute
   '/qy/admin/commission-records/balances/': typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
+  '/qy/admin/commission-records/relations/': typeof AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute
   '/qy/admin/lottery/$actNo/': typeof AuthenticatedQyAdminLotteryActNoIndexRoute
 }
 export interface FileRoutesByTo {
@@ -820,6 +828,7 @@ export interface FileRoutesByTo {
   '/qy/admin/withdrawals': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
   '/qy/lottery/$actNo': typeof AuthenticatedQyLotteryActNoIndexRoute
   '/qy/admin/commission-records/balances': typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
+  '/qy/admin/commission-records/relations': typeof AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute
   '/qy/admin/lottery/$actNo': typeof AuthenticatedQyAdminLotteryActNoIndexRoute
 }
 export interface FileRoutesById {
@@ -917,6 +926,7 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/withdrawals/': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
   '/_authenticated/qy/lottery/$actNo/': typeof AuthenticatedQyLotteryActNoIndexRoute
   '/_authenticated/qy/admin/commission-records/balances/': typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
+  '/_authenticated/qy/admin/commission-records/relations/': typeof AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute
   '/_authenticated/qy/admin/lottery/$actNo/': typeof AuthenticatedQyAdminLotteryActNoIndexRoute
 }
 export interface FileRouteTypes {
@@ -1013,6 +1023,7 @@ export interface FileRouteTypes {
     | '/qy/admin/withdrawals/'
     | '/qy/lottery/$actNo/'
     | '/qy/admin/commission-records/balances/'
+    | '/qy/admin/commission-records/relations/'
     | '/qy/admin/lottery/$actNo/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -1104,6 +1115,7 @@ export interface FileRouteTypes {
     | '/qy/admin/withdrawals'
     | '/qy/lottery/$actNo'
     | '/qy/admin/commission-records/balances'
+    | '/qy/admin/commission-records/relations'
     | '/qy/admin/lottery/$actNo'
   id:
     | '__root__'
@@ -1200,6 +1212,7 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/withdrawals/'
     | '/_authenticated/qy/lottery/$actNo/'
     | '/_authenticated/qy/admin/commission-records/balances/'
+    | '/_authenticated/qy/admin/commission-records/relations/'
     | '/_authenticated/qy/admin/lottery/$actNo/'
   fileRoutesById: FileRoutesById
 }
@@ -1875,6 +1888,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
+    '/_authenticated/qy/admin/commission-records/relations/': {
+      id: '/_authenticated/qy/admin/commission-records/relations/'
+      path: '/commission-records/relations'
+      fullPath: '/qy/admin/commission-records/relations/'
+      preLoaderRoute: typeof AuthenticatedQyAdminCommissionRecordsRelationsIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
     '/_authenticated/qy/admin/lottery/$actNo/': {
       id: '/_authenticated/qy/admin/lottery/$actNo/'
       path: '/lottery/$actNo'
@@ -1930,6 +1950,7 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminViolationsIndexRoute: typeof AuthenticatedQyAdminViolationsIndexRoute
   AuthenticatedQyAdminWithdrawalsIndexRoute: typeof AuthenticatedQyAdminWithdrawalsIndexRoute
   AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute: typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
+  AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute: typeof AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute
   AuthenticatedQyAdminLotteryActNoIndexRoute: typeof AuthenticatedQyAdminLotteryActNoIndexRoute
 }
 
@@ -1969,6 +1990,8 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
       AuthenticatedQyAdminWithdrawalsIndexRoute,
     AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute:
       AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute,
+    AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute:
+      AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute,
     AuthenticatedQyAdminLotteryActNoIndexRoute:
       AuthenticatedQyAdminLotteryActNoIndexRoute,
   }

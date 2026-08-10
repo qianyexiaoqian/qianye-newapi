@@ -26,6 +26,7 @@ import { qyKeys } from '../../lib/query-keys'
 import { getQyViolationStats } from '../admin-violation-rules/api'
 import { QyViolationShadowBanner } from '../admin-violation-rules/components/violation-shadow-banner'
 import { QyViolationAppealsTab } from './components/violation-appeals-tab'
+import { QyViolationBanPoliciesTab } from './components/violation-ban-policies-tab'
 import { QyViolationBansTab } from './components/violation-bans-tab'
 import { QyViolationRecordsTab } from './components/violation-records-tab'
 
@@ -63,6 +64,12 @@ export function QyAdminViolations() {
               <TabsTrigger value='appeals'>
                 {t('qy_vio_tab_appeals')}
               </TabsTrigger>
+              {/* 策略档与封禁列表同页:阈值决定谁被封,调完阈值抬眼就能看到
+                  这条线上现在有谁。放在规则页会淹没在模式串里,而那些模式串
+                  回答的是完全另一个问题(什么算违规)。 */}
+              <TabsTrigger value='policies'>
+                {t('qy_vio_tab_ban_policies')}
+              </TabsTrigger>
             </TabsList>
             <TabsContent value='records'>
               <QyViolationRecordsTab />
@@ -72,6 +79,9 @@ export function QyAdminViolations() {
             </TabsContent>
             <TabsContent value='appeals'>
               <QyViolationAppealsTab />
+            </TabsContent>
+            <TabsContent value='policies'>
+              <QyViolationBanPoliciesTab />
             </TabsContent>
           </Tabs>
         </div>

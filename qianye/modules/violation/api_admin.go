@@ -46,6 +46,7 @@ type ruleUpsertReq struct {
 	MatchType      string `json:"match_type"`
 	Pattern        string `json:"pattern"`
 	CaseSensitive  bool   `json:"case_sensitive"`
+	StatusScope    string `json:"status_scope"`
 	ModelScope     string `json:"model_scope"`
 	GroupScope     string `json:"group_scope"`
 	GroupScopeMode string `json:"group_scope_mode"`
@@ -96,6 +97,7 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 	dst.MatchType = r.MatchType
 	dst.Pattern = r.Pattern
 	dst.CaseSensitive = r.CaseSensitive
+	dst.StatusScope = strings.TrimSpace(r.StatusScope)
 	dst.ModelScope = r.ModelScope
 	dst.GroupScope = r.GroupScope
 	// 名单为空时把方向强制回 include:"空黑名单"与"空白名单"都表示"全部分组生效",
@@ -408,6 +410,13 @@ func adminTestRule(c *gin.Context) {
 		// 永远显示"未命中" —— 一个看起来权威、实则只是没有输入的结论,
 		// 比不给试跑更容易让人放心上线。
 		RateCount int `json:"rate_count"`
+		// StatusCode / ErrorCode 让上游阶段的规则也能试跑,理由与 RateCount 完全相同。
+		//
+		// 状态码作用域出现之后这一项从"锦上添花"变成必需:一条配了
+		// status_scope=400 的规则,在没有状态码输入的试跑里恒为"不在作用域",
+		// 管理员会以为自己写错了正文,反复改一个本来就对的模式串。
+		StatusCode int    `json:"status_code"`
+		ErrorCode  string `json:"error_code"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, "请求体格式错误")
@@ -423,14 +432,25 @@ func adminTestRule(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
+	// 试跑输入必须与线上的 scanInput 逐字段对齐,而且**同一段样本要同时填进
+	// Text 与 UpstreamText**:上游阶段的 scanPost 扫的是 UpstreamText(+ 拒绝原因),
+	// prompt 阶段的 scanPrompt 扫的是 Text。只填其中一个,另一个阶段的规则
+	// 在试跑里永远不命中 —— 而"试跑说不命中、线上却命中"是这个面板最坏的失效方式。
 	in := scanInput{
-		Model:     req.Model,
-		Group:     req.Group,
-		Text:      clipHeadTail(req.Sample, maxScanBytes),
-		RateCount: req.RateCount,
+		Model:        req.Model,
+		Group:        req.Group,
+		Text:         clipHeadTail(req.Sample, maxScanBytes),
+		RateCount:    req.RateCount,
+		StatusCode:   req.StatusCode,
+		ErrCode:      req.ErrorCode,
+		UpstreamText: clipHeadTail(req.Sample, maxScanBytes),
 	}
-	inScope := cr.inScope(req.Model, req.Group)
-	v := scan([]*compiledRule{cr}, cr.words, in, in.Text)
+	text := in.Text
+	if row.Phase != PhasePrompt {
+		text = scanPostText(in)
+	}
+	inScope := cr.applies(in)
+	v := scan([]*compiledRule{cr}, cr.words, in, text)
 	out := gin.H{"scope_ok": inScope, "matched": false, "terms": []string{}, "snippet": ""}
 	if v != nil && v.Rule != nil {
 		out["matched"] = true

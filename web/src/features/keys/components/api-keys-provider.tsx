@@ -35,6 +35,14 @@ type ApiKeysContextType = {
   triggerRefresh: () => void
   resolvedKey: string
   setResolvedKey: React.Dispatch<React.SetStateAction<string>>
+  /**
+   * 打开 CC Switch 配置窗口之前，用户在线路选择窗口里选中的 API 地址。
+   *
+   * 与 `resolvedKey` 同生共死：两者都由行内的「CC Switch」菜单项在真正 `setOpen`
+   * 之前一起写好，再由 `ApiKeysDialogs` 里那个全局唯一的配置窗口读走。
+   */
+  ccSwitchAddress: string
+  setCcSwitchAddress: React.Dispatch<React.SetStateAction<string>>
   resolveRealKey: (id: number) => Promise<string | null>
   resolveRealKeysBatch: (ids: number[]) => Promise<Record<number, string>>
   resolvedKeys: Record<number, string>
@@ -51,6 +59,7 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
   const [currentRow, setCurrentRow] = useState<ApiKey | null>(null)
   const [refreshTrigger, setRefreshTrigger] = useState(0)
   const [resolvedKey, setResolvedKey] = useState('')
+  const [ccSwitchAddress, setCcSwitchAddress] = useState('')
 
   const [resolvedKeys, setResolvedKeys] = useState<Record<number, string>>({})
   const [loadingKeys, setLoadingKeys] = useState<Record<number, boolean>>({})
@@ -165,6 +174,8 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
         triggerRefresh,
         resolvedKey,
         setResolvedKey,
+        ccSwitchAddress,
+        setCcSwitchAddress,
         resolveRealKey,
         resolveRealKeysBatch,
         resolvedKeys,

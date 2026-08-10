@@ -89,9 +89,14 @@ export function DataTableBulkActions<TData>({
   }, [])
   // qy 的确认弹窗要复述渠道名（只给条数的话，用户发现不了自己多勾了一行，
   // 而删除之后没有撤销键），失败列表同样按名字定位，所以这里带上 id + name。
+  //
+  // used_quota 是「批量清空已用额度」那一屏要复述的金额：清零没有补算路径，
+  // 而"选中 20 个渠道"这句话不足以让人判断该不该按下去 —— 同样是 20 个渠道，
+  // 可能对应 3 块钱，也可能对应 3 万块。它就是列表页「已用额度」列的原值。
   const selectedChannels = selectedRows.map((row) => ({
     id: (row.original as Channel).id,
     name: (row.original as Channel).name,
+    used_quota: (row.original as Channel).used_quota ?? 0,
   }))
 
   const handleClearSelection = () => {

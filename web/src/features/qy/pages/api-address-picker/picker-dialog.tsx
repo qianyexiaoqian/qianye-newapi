@@ -32,20 +32,29 @@ import { qyResolveAddressOptions } from './resolve-options'
 
 type Props = {
   /**
-   * 非 null 即打开，同时也是待复制的密钥。
+   * 非 null 即打开，同时也是待处理的密钥。
    *
    * 两者合成一个字段而不是 `open` + `pendingKey`：它们本来就同生共死，
    * 拆成两个状态就存在「开着但没有密钥」这种构造得出来、却毫无意义的组合。
    */
   pendingKey: string | null
+  /**
+   * 「选完之后会发生什么」。
+   *
+   * 标题（「选择 API 地址」）对每个入口都一样，说明与确认按钮不一样：复制链接
+   * 信息的按钮就该写「复制链接信息」，CC Switch 的按钮写「复制」是在骗人 ——
+   * 点下去出现的是另一个配置窗口。所以这两句由调用方给，而不是写死在这里。
+   */
+  description: string
+  confirmLabel: string
   onClose: () => void
   onPick: (url: string) => void
 }
 
 /**
- * 「复制链接信息」之前的地址选择窗口。
+ * 各入口（复制链接信息 / CC Switch）在动手之前共用的地址选择窗口。
  *
- * 只在**有得选**的时候才会被打开（判定见 `index.tsx` 的 `useQyConnectionInfoCopy`）。
+ * 只在**有得选**的时候才会被打开（判定见 `index.tsx` 的 `useQyApiAddressPicker`）。
  */
 export function QyApiAddressPickerDialog(props: Props) {
   const { t } = useTranslation()
@@ -64,7 +73,7 @@ export function QyApiAddressPickerDialog(props: Props) {
         props.onClose()
       }}
       title={t('qy_aa_pick_title')}
-      description={t('qy_aa_pick_desc')}
+      description={props.description}
       contentClassName='sm:max-w-lg'
       footer={
         <>
@@ -78,7 +87,7 @@ export function QyApiAddressPickerDialog(props: Props) {
               props.onPick(value)
             }}
           >
-            {t('qy_aa_pick_confirm')}
+            {props.confirmLabel}
           </Button>
         </>
       }

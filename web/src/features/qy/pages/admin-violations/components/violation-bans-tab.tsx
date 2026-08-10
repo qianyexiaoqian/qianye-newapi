@@ -59,6 +59,10 @@ const BAN_STATUS_VARIANT: Record<
   failed: 'danger',
   skipped: 'neutral',
   unbanned: 'success',
+  // observed:计数达到了阈值,但当时的策略档只要求「仅记录」——
+  // 账号一个字节都没动。用 neutral 而不是 warning:它不是待办、也不是故障,
+  // 它是那一档策略的正常产物。
+  observed: 'neutral',
 }
 
 /** 只有这三种状态还「挂着」，需要人工解除。 */
@@ -113,6 +117,11 @@ export function QyViolationBansTab() {
                 {t('qy_vio_ban_unbanned')}
               </SelectItem>
               <SelectItem value='skipped'>{t('qy_vio_ban_skipped')}</SelectItem>
+              {/* 「仅记录」档攒下来的越线名单。它是这一档唯一的产物,
+                  没有这个筛选项就只能翻整张表去找。 */}
+              <SelectItem value='observed'>
+                {t('qy_vio_ban_observed')}
+              </SelectItem>
             </SelectContent>
           </Select>
         </QyFilterField>
@@ -156,6 +165,19 @@ export function QyViolationBansTab() {
                 cellClassName: 'tabular-nums',
                 cell: (row: QyViolationBan) =>
                   `${row.hit_count_at} / ${row.threshold}`,
+              },
+              {
+                // 阈值改成按分组可配之后,「这个人为什么在第 5 次就被处置」
+                // 不再能从任何全局配置反推:用户的分组会变,策略档会被编辑。
+                // 这一列读的是封禁行**冻结**下来的那一档,不是当前配置。
+                id: 'policy',
+                header: t('qy_vio_ban_policy'),
+                cell: (row: QyViolationBan) =>
+                  `${row.policy_group === '' ? t('qy_vio_policy_default_row') : row.policy_group} / ${
+                    row.policy_action === ''
+                      ? t('qy_vio_policy_action_ban')
+                      : t(`qy_vio_policy_action_${row.policy_action}`)
+                  }`,
               },
               {
                 id: 'cycle',

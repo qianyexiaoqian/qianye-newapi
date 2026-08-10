@@ -21,6 +21,7 @@ import { queryOptions } from '@tanstack/react-query'
 import { qyGet, qyPost } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import type {
+  QyAdjustCommissionResult,
   QyBalanceSort,
   QyCommissionBalancePage,
   QySetWithdrawnResult,
@@ -76,6 +77,35 @@ export function qySetCommissionWithdrawn(input: {
 }) {
   return qyPost<QySetWithdrawnResult>(
     '/admin/commission/balances/withdrawn',
+    input
+  )
+}
+
+/**
+ * 手工增加 / 减少某个用户的佣金。`delta_quota` 带符号，负数是扣减。
+ *
+ * ── 它与「登记已提现」的区别 ──
+ * 后者只是把额度从可提现搬到已提现（恒等式两侧不变）；这里是真的凭空加钱/扣钱。
+ * 所以后端把它落成一条 `source_type = manual` 的**计佣行**，再由既有的结算流程
+ * 吸收进余额 —— 直接 UPDATE 余额列会让 Σ计佣 与 Σ结算 当场对不上，
+ * 而且没有任何一行流水能解释差额。
+ *
+ * ── 为什么必须带 client_request_id ──
+ * 语义是**增量**（"佣金是挣出来的"，不存在"这个人历史上应该正好是 X"这种说法），
+ * 而增量语义下一次网络重试就是第二笔。幂等键在弹窗打开时生成一次；改了金额再
+ * 提交会撞 409（`qy_idem_key_conflict`）而不是发出两笔。
+ *
+ * 扣减上限由后端在持有余额行锁的事务里算：可提现 + 未结算余数 + 已成熟待结算佣金。
+ * 越界返回 400 `qy_adj_over_reclaimable`，而不是悄悄给这个人记一笔冻结提现的欠账。
+ */
+export function qyAdjustCommission(input: {
+  user_id: number
+  delta_quota: number
+  reason: string
+  client_request_id: string
+}) {
+  return qyPost<QyAdjustCommissionResult>(
+    '/admin/commission/balances/adjust',
     input
   )
 }

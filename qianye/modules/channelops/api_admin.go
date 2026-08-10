@@ -3,6 +3,7 @@ package channelops
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -121,7 +122,7 @@ func adminBatchStatus(c *gin.Context) {
 	if res.Succeeded > 0 || res.Failed > 0 {
 		model.InitChannelCache()
 	}
-	writeBatchAudit(c, actionBatchStatus, res, gin.H{"status": req.Status, "ids": ids})
+	writeBatchAudit(c, actionBatchStatus, res, gin.H{"status": req.Status, "ids": ids}, nil)
 	respondOK(c, res)
 }
 
@@ -199,7 +200,7 @@ func adminBatchDelete(c *gin.Context) {
 		model.InitChannelCache()
 		service.ResetProxyClientCache()
 	}
-	writeBatchAudit(c, actionBatchDelete, res, gin.H{"ids": ids})
+	writeBatchAudit(c, actionBatchDelete, res, gin.H{"ids": ids}, nil)
 	respondOK(c, res)
 }
 
@@ -244,30 +245,35 @@ func adminBatchResetUsage(c *gin.Context) {
 		return
 	}
 
+	// 逐条真正抹掉的金额。它同时是三样东西的来源:审计里的「各自清掉多少」、
+	// 响应里回给管理员的合计、以及本函数唯一能证明"确实动了库"的凭据。
+	// 金额一律来自 resetChannelCounters 的**锁内重读**,不是 runBatch 那次预读 ——
+	// 理由见 resetChannelCounters 的注释(两个管理员同时清会让审计金额翻倍)。
+	cleared := make([][2]int64, 0, len(ids))
+	var clearedUsedTotal int64
+	var clearedBalanceTotal float64
+
 	res := runBatch(c.Request.Context(), ids,
 		func(ctx context.Context, ch *model.Channel) (string, string, string) {
-			updates := make(map[string]any, 3)
-			if req.ResetUsedQuota && ch.UsedQuota != 0 {
-				updates["used_quota"] = 0
-			}
-			if req.ResetBalance && (ch.Balance != 0 || ch.BalanceUpdatedTime != 0) {
-				updates["balance"] = 0
-				updates["balance_updated_time"] = 0
+			out, err := resetChannelCounters(ctx, ch.Id, req.ResetUsedQuota, req.ResetBalance)
+			switch {
+			case errors.Is(err, errChannelGone):
+				return outcomeFailed, itemCodeNotFound, "渠道不存在,可能已被其他管理员删除"
+			case err != nil:
+				common.SysError("qianye/channelops: 重置渠道统计失败: " + err.Error())
+				return outcomeFailed, itemCodeDBError, "重置失败,请查看后端日志"
 			}
 			// 库里本来就是 0 —— 报 skipped 而不是 ok。两者的区别对管理员是实的:
 			// "18 条已清零、2 条本来就是 0"说明选择范围没问题,
 			// 而"20 条全部已清零"会让人以为那 2 条也曾经有过消耗。
-			if len(updates) == 0 {
+			if !out.Changed {
 				return outcomeSkipped, itemCodeNoChange, ""
 			}
-			rows, err := resetChannelCounters(ctx, ch.Id, updates)
-			if err != nil {
-				common.SysError("qianye/channelops: 重置渠道统计失败: " + err.Error())
-				return outcomeFailed, itemCodeDBError, "重置失败,请查看后端日志"
+			if out.UsedQuota != 0 {
+				cleared = append(cleared, [2]int64{int64(ch.Id), out.UsedQuota})
+				clearedUsedTotal += out.UsedQuota
 			}
-			if rows == 0 {
-				return outcomeFailed, itemCodeNotFound, "渠道不存在,可能已被其他管理员删除"
-			}
+			clearedBalanceTotal += out.Balance
 			return outcomeOK, "", ""
 		})
 
@@ -280,8 +286,62 @@ func adminBatchResetUsage(c *gin.Context) {
 		"ids":              ids,
 		"reset_used_quota": req.ResetUsedQuota,
 		"reset_balance":    req.ResetBalance,
+	}, clearedAuditDetail(cleared, clearedUsedTotal, clearedBalanceTotal))
+	respondOK(c, resetResult{
+		batchResult:      res,
+		ClearedUsedQuota: clearedUsedTotal,
+		ClearedBalance:   clearedBalanceTotal,
 	})
-	respondOK(c, res)
+}
+
+// resetResult 在通用批次报告之外多回两个合计。
+//
+// 确认框里那个"合计已用额度"是前端拿列表页缓存的行算出来的**估算**:那份数据
+// 可能已经过期几分钟,期间渠道还在计费。回来这两个数才是库里真正被抹掉的量,
+// 前端据此把成功提示写成"共抹掉 X",而不是把估算值当成结果复述一遍。
+type resetResult struct {
+	batchResult
+	ClearedUsedQuota int64   `json:"cleared_used_quota"`
+	ClearedBalance   float64 `json:"cleared_balance"`
+}
+
+// maxAuditClearedDetail 是 after 快照里逐条列出多少笔清零明细的上限。
+//
+// # 为什么必须有上限
+//
+// 快照被 audit.Truncate 按 SnapshotMaxBytes(默认 4096 字节)硬切,而切断的
+// 后果不是"少看几行":切断的文本不再是合法 JSON,管理端的快照渲染整个回落成
+// 一行裸文本,连计数都读不出来(与 writeBatchAudit 注释里那次失败同源)。
+//
+// 一笔明细是 `[90000199,999999999999],` 共 24 字节;失败 / 跳过那两档每个 id
+// 9 字节。三档互斥且合起来等于全集,所以 after 的规模上界是
+// `24*min(N,cap) + 9*(200-N)`,在 N=cap 处取到最大值。cap=100 时约 3300 字节,
+// 加上固定的键名与失败码分组约 400 字节,仍留着 ~390 字节余量。
+//
+// 超出上限时按金额从大到小保留 —— 事后要追的是"那笔大的去哪了",
+// 并且 cleared_detail_omitted 会白纸黑字说清省略了几笔,合计永远是精确值。
+const maxAuditClearedDetail = 100
+
+// clearedAuditDetail 把逐条清零金额整理成 after 快照里的三个字段。
+//
+// 合计(cleared_used_quota_total)永远精确、永远不被上限影响:它才是事后成本
+// 核算真正要减掉的那个数,而逐条明细回答的是"这笔减在谁头上"。
+func clearedAuditDetail(cleared [][2]int64, usedTotal int64, balanceTotal float64) gin.H {
+	detail := gin.H{
+		"cleared_used_quota_total": usedTotal,
+		"cleared_balance_total":    balanceTotal,
+	}
+	if len(cleared) == 0 {
+		return detail
+	}
+	// 从大到小:上限砍掉的必须是最不值得追的那些。
+	sort.Slice(cleared, func(i, j int) bool { return cleared[i][1] > cleared[j][1] })
+	if len(cleared) > maxAuditClearedDetail {
+		detail["cleared_detail_omitted"] = len(cleared) - maxAuditClearedDetail
+		cleared = cleared[:maxAuditClearedDetail]
+	}
+	detail["cleared_used_quota"] = cleared
+	return detail
 }
 
 // writeBatchAudit 落一条批次审计。
@@ -307,9 +367,17 @@ func adminBatchResetUsage(c *gin.Context) {
 // 原样回给操作者(响应体里的 items),审计要回答的是"哪些 id 落在哪一档",
 // 那是一个不会被名字长度左右的事实。判据见 TestBatchAuditSnapshotFitsAtMaxBatch。
 //
-// ok 那一档不记:Before 有 id 全集,减去这里的 failed 与 skipped 就是它,
+// ok 那一档不记 id:Before 有 id 全集,减去这里的 failed 与 skipped 就是它,
 // 而这一次减法是精确的 —— 三档互斥且合起来等于全集(runBatch 的恒等式)。
-func writeBatchAudit(c *gin.Context, action string, res batchResult, before gin.H) {
+//
+// # extra
+//
+// 端点特有的 after 字段。重置统计用它带上「各自清掉多少」与合计 ——
+// 那是这三个动作里唯一一个"抹掉了一笔可计量的东西"的动作,只记 id 的话,
+// 事后要回答"这个渠道被清掉的是 3 块钱还是 3 万块"就只剩猜。
+// 另外两个端点传 nil:启停可以原路改回去,删除的对象已经不存在,
+// 都没有"多少"这个维度。
+func writeBatchAudit(c *gin.Context, action string, res batchResult, before gin.H, extra gin.H) {
 	result := qymodel.ResultOK
 	reason := ""
 	if res.Succeeded == 0 && res.Failed > 0 {
@@ -330,14 +398,18 @@ func writeBatchAudit(c *gin.Context, action string, res batchResult, before gin.
 			skipped = append(skipped, item.Id)
 		}
 	}
+	after := gin.H{
+		"total": res.Total, "succeeded": res.Succeeded,
+		"skipped": res.Skipped, "failed": res.Failed,
+		"failed_ids_by_code": failedByCode,
+		"skipped_ids":        skipped,
+	}
+	for key, value := range extra {
+		after[key] = value
+	}
 	audit.WriteConfigUpdate(c, audit.ConfigChange{
 		Action: action, Result: result, Reason: reason,
 		Before: before,
-		After: gin.H{
-			"total": res.Total, "succeeded": res.Succeeded,
-			"skipped": res.Skipped, "failed": res.Failed,
-			"failed_ids_by_code": failedByCode,
-			"skipped_ids":        skipped,
-		},
+		After:  after,
 	})
 }

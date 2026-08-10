@@ -39,6 +39,16 @@ export const QY_REMARK_MAX_RUNES = 200
 export const QY_TRANSFER_REMARK_MAX_RUNES = 200
 
 /**
+ * 资金类管理动作的**事由**字符下限。
+ *
+ * 后端在三处用同一个数：`adminSetWithdrawn` 的 `len([]rune(reason)) < 4`、
+ * `requireReason`（AFF 关系绑定/解绑、手工增减佣金）、以及提现模块看 PII 明文。
+ * 两侧不一致的表现是"填了 4 个字按钮亮着，提交却 400"——用户完全无从判断
+ * 到底要填多长。`__tests__/wiring.test.ts` 会拿后端源码把这个数钉住。
+ */
+export const QY_FUND_REASON_MIN_RUNES = 4
+
+/**
  * 按字符数（而非 UTF-16 码元）统计长度。
  *
  * `'𝄞'.length === 2`、`'中'.length === 1`，而后端 `utf8.RuneCountInString`

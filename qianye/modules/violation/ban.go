@@ -87,12 +87,19 @@ func disableUserForViolation(ctx context.Context, userId int, ban *Ban) error {
 	if e := model.InvalidateUserTokensCache(userId); e != nil {
 		common.SysError("qianye/violation: InvalidateUserTokensCache 失败: " + e.Error())
 	}
-	if _, e := model.RevokeAllUserSessions(userId, "qy_violation_auto_ban"); e != nil {
-		common.SysError("qianye/violation: RevokeAllUserSessions 失败: " + e.Error())
+	// 第 ⑤ 步只属于 ban 档。restrict 刻意保留控制台会话:那一档的目的是止损
+	// (relay 已经被 status 挡死),不是把人赶出站 —— 用户仍然登录着,
+	// 能立刻看到自己被限制并直接提工单。auth_version 已经在事务里递增过,
+	// 所以两档在凭证层面的强度是一样的,差别只在"要不要主动踢掉会话"。
+	//
+	if revokesSessions(ban.PolicyAction) {
+		if _, e := model.RevokeAllUserSessions(userId, "qy_violation_auto_ban"); e != nil {
+			common.SysError("qianye/violation: RevokeAllUserSessions 失败: " + e.Error())
+		}
 	}
 
 	model.RecordLogWithAdminInfo(userId, model.LogTypeManage,
-		fmt.Sprintf("账号因违规次数达到阈值(%d 次)被系统自动禁用", ban.HitCountAt),
+		fmt.Sprintf("账号因违规次数达到阈值(%d 次)被系统自动置为受限", ban.HitCountAt),
 		map[string]interface{}{
 			"source":            "qy_violation",
 			"qy_ban_id":         ban.Id,
@@ -100,8 +107,37 @@ func disableUserForViolation(ctx context.Context, userId int, ban *Ban) error {
 			"qy_threshold":      ban.Threshold,
 			"qy_hit_count":      ban.HitCountAt,
 			"qy_trigger_record": ban.TriggerRecordId,
+			// 策略档必须进用户日志:同一个"受限"结果可能来自不同分组的不同阈值,
+			// 而客服在工单里首先要回答的就是"我为什么在第 3 次就被限制了"。
+			"qy_policy_group":  ban.PolicyGroup,
+			"qy_policy_action": ban.PolicyAction,
 		})
 	return nil
+}
+
+// revokesSessions 回答"这一档处置要不要把用户踢出控制台"。
+//
+// 提成函数不是为了缩短调用点,而是因为这是 restrict 与 ban **唯一**的行为差别,
+// 而它藏在一个需要主库、用户表、会话表才能跑起来的函数中间 —— 埋在那里的话,
+// 任何一次"顺手把条件反过来"的改动都不会有任何测试变红。
+//
+// 判据写成"哪些档要吊销"而不是"哪些档不吊销":空 PolicyAction 是本列出现之前
+// 写下的历史行,它们当时的行为就是吊销会话,所以未知取值必须落在吊销那一侧。
+// 反着写(`!= PolicyActionRestrict`)在正常数据上完全等价,差别只在
+// 有人新增第四档动作却忘了改这里的那一天。
+func revokesSessions(action string) bool {
+	switch action {
+	case PolicyActionRestrict:
+		// 受限档保留会话:relay 已经被 status 挡死,目的是止损而不是驱逐。
+		// 用户仍然登录着,能立刻看到自己被限制并直接提工单。
+		return false
+	case PolicyActionRecord:
+		// 「仅记录」根本走不到这里(resolveBanClaim 在它之前就返回了)。
+		// 真的走到了说明上游判据被改坏,此时最不该做的就是把人踢出去。
+		return false
+	default:
+		return true
+	}
 }
 
 // enableUserAfterUnban 是解封,与封号严格对称。

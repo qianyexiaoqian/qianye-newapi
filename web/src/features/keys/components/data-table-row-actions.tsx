@@ -50,7 +50,10 @@ import {
 import { useChatPresets } from '@/features/chat/hooks/use-chat-presets'
 import { resolveChatUrl, type ChatPreset } from '@/features/chat/lib/chat-links'
 import { sendToFluent } from '@/features/chat/lib/send-to-fluent'
-import { useQyConnectionInfoCopy } from '@/features/qy/pages/api-address-picker'
+import {
+  useQyApiAddressPicker,
+  useQyConnectionInfoCopy,
+} from '@/features/qy/pages/api-address-picker'
 import { copyToClipboard } from '@/lib/copy-to-clipboard'
 
 import { updateApiKeyStatus } from '../api'
@@ -72,6 +75,7 @@ export function DataTableRowActions<TData>({
     setCurrentRow,
     triggerRefresh,
     setResolvedKey,
+    setCcSwitchAddress,
     resolveRealKey,
     resolvedKeys,
     loadingKeys,
@@ -96,6 +100,24 @@ export function DataTableRowActions<TData>({
     copy: copyConnectionInfo,
     dialog: apiAddressPickerDialog,
   } = useQyConnectionInfoCopy()
+
+  // 「CC Switch」走同一条前置：先选线路，选中的那条再作为配置里的接口地址。
+  // 项目方原话：「用户在 API 密钥页面，填入 CC Switch，这个选项也要先弹出选择
+  // API 线路的窗口选择线路后再弹出 CC Switch 的配置窗口。」
+  //
+  // 不取它的 `prefetch`：两个 picker 读的是同一个 react-query 键，上面那次预热
+  // 已经把清单暖好了，再调一次只是同一个 promise 的去重命中。
+  const { pick: pickCcSwitchAddress, dialog: ccSwitchAddressDialog } =
+    useQyApiAddressPicker({
+      description: t('qy_aa_pick_desc_cc_switch'),
+      confirmLabel: t('qy_aa_pick_confirm_cc_switch'),
+      onPick: (realKey, url) => {
+        setResolvedKey(realKey)
+        setCcSwitchAddress(url)
+        setCurrentRow(apiKey)
+        setOpen('cc-switch')
+      },
+    })
 
   const handleMenuOpenChange = useCallback(
     (open: boolean) => {
@@ -277,9 +299,7 @@ export function DataTableRowActions<TData>({
           onClick={async () => {
             const realKey = await resolveRealKey(apiKey.id)
             if (!realKey) return
-            setResolvedKey(realKey)
-            setCurrentRow(apiKey)
-            setOpen('cc-switch')
+            pickCcSwitchAddress(realKey)
           }}
         >
           {t('CC Switch')}
@@ -322,10 +342,12 @@ export function DataTableRowActions<TData>({
         </DropdownMenuItem>
       </DataTableRowActionMenu>
 
-      {/* 地址选择窗口。未打开时不产生任何 DOM，因此每行各挂一个的开销可以忽略；
-          放在这里而不是 ApiKeysDialogs 是因为它要拿的是**本行**已解析出的密钥，
-          走 provider 传递等于给一个纯展示的选择步骤加一条全局状态。 */}
+      {/* 两个入口各自的地址选择窗口（复制链接信息 / CC Switch）。未打开时不产生
+          任何 DOM，因此每行各挂两个的开销可以忽略；放在这里而不是 ApiKeysDialogs
+          是因为它们要拿的是**本行**已解析出的密钥，走 provider 传递等于给一个
+          纯展示的选择步骤加一条全局状态。 */}
       {apiAddressPickerDialog}
+      {ccSwitchAddressDialog}
     </div>
   )
 }

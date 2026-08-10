@@ -347,6 +347,31 @@ export function ChannelsTable() {
     }
   }, [batchMode, table])
 
+  // 翻页 / 改筛选 / 改搜索之后清空选中态。
+  //
+  // 这张表是 manualPagination + manualFiltering：`data` 里只有当前这一页的行，
+  // 而选中态是按 row id 存的、**不会**随翻页消失。两者相加的后果不是"支持跨页
+  // 选择"，而是一种只在批量操作这一步才暴露的错位：
+  //
+  //   1. 工具条的计数与 `DataTableBulkActions` 拿到的 id 都来自
+  //      `getFilteredSelectedRowModel()`，它只认当前页加载出来的行 ——
+  //      在第 1 页勾了 3 个、翻到第 2 页，那 3 个既不显示也不会被操作；
+  //   2. 但它们仍然在选中态里躺着。翻回第 1 页，勾选框又是勾上的，
+  //      于是同一批"选中"在不同页会给出不同的条数与不同的执行范围。
+  //
+  // 对「批量清空已用额度」「批量删除」这种不可逆动作，这个错位的具体形状是：
+  // 确认框复述的条数与金额算的是当前页那几条，而管理员以为自己勾的是全部。
+  // 与其让选中态跨页残留却不可执行，不如让"屏幕上勾着的"恒等于"会被执行的"。
+  useEffect(() => {
+    table.resetRowSelection()
+  }, [
+    table,
+    pagination.pageIndex,
+    pagination.pageSize,
+    globalFilter,
+    columnFilters,
+  ])
+
   // Prepare filter options from existing channel types only.
   const typeFilterOptions = useMemo(() => {
     const counts = typeCounts || {}

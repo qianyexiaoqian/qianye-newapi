@@ -223,15 +223,19 @@ var fieldConsumers = map[string]consumer{
 	// ─────────────────────────── violation ───────────────────────────
 	// violation.shadow_mode 已删除:影子/真实绑定在规则行上(qy_violation_rule.mode),
 	// 不再有全局开关,也就没有对应的配置项。
-	"violation.enabled":                        {"qianye/guard/guard.go", "featureOn(FlagViolation)"},
-	"violation.precheck_enabled":               {"qianye/modules/violation/guard.go", "relay 前置扫描挂载点是否生效"},
-	"violation.post_charge_enabled":            {"qianye/modules/violation/guard.go", "计费后扫描挂载点是否生效"},
-	"violation.fee_multiplier":                 {"qianye/modules/violation/fee.go", "违规扣费倍数"},
-	"violation.fixed_fee_amount":               {"qianye/modules/violation/fee.go", "违规固定扣费"},
-	"violation.max_fee_quota":                  {"qianye/modules/violation/fee.go", "单次扣费上限"},
-	"violation.insufficient_balance_policy":    {"qianye/modules/violation/fee.go", "余额不足时 clamp / negative / ban"},
-	"violation.auto_ban_threshold":             {"qianye/modules/violation/counter.go", "窗口内命中多少次自动封号,0 表示不自动封"},
-	"violation.auto_ban_window_hours":          {"qianye/modules/violation/counter.go", "自动封号的统计窗口"},
+	"violation.enabled":                     {"qianye/guard/guard.go", "featureOn(FlagViolation)"},
+	"violation.precheck_enabled":            {"qianye/modules/violation/guard.go", "relay 前置扫描挂载点是否生效"},
+	"violation.post_charge_enabled":         {"qianye/modules/violation/guard.go", "计费后扫描挂载点是否生效"},
+	"violation.fee_multiplier":              {"qianye/modules/violation/fee.go", "违规扣费倍数"},
+	"violation.fixed_fee_amount":            {"qianye/modules/violation/fee.go", "违规固定扣费"},
+	"violation.max_fee_quota":               {"qianye/modules/violation/fee.go", "单次扣费上限"},
+	"violation.insufficient_balance_policy": {"qianye/modules/violation/fee.go", "余额不足时 clamp / negative / ban"},
+	// 这两项已经从「全站唯一的阈值」降级成**兜底档的种子**:阈值与窗口现在按
+	// 用户分组配在 qy_violation_ban_policy 上(见 banpolicy.go 的 yamlFallbackPolicy)。
+	// 它们仍然是权威值的一部分 —— 库里没有兜底行、或扩展库不可达时,判据回落到它们,
+	// 而那正是升级上来的站点在建表之前的行为。
+	"violation.auto_ban_threshold":             {"qianye/modules/violation/banpolicy.go", "兜底档的次数阈值种子(0 表示不自动处置);分组级阈值在管理端「处置策略」里配"},
+	"violation.auto_ban_window_hours":          {"qianye/modules/violation/banpolicy.go", "兜底档的统计窗口种子;分组级窗口在管理端「处置策略」里配"},
 	"violation.global_block_rate_limit_bps":    {"qianye/modules/violation/breaker.go", "全站拦截率熔断阈值,超了自动回落影子模式"},
 	"violation.global_ban_rate_limit_per_hour": {"qianye/modules/violation/breaker.go", "全站封号速率熔断阈值"},
 	"violation.evidence_max_bytes":             {"qianye/modules/violation/evidence.go", "证据快照截断上限"},

@@ -35,6 +35,7 @@ import {
 import { EXCLUDED_GROUPS, VIEW_MODES } from './constants'
 import { useFilters } from './hooks/use-filters'
 import { usePricingData } from './hooks/use-pricing-data'
+import { plazaEmptyReason } from './lib/plaza-scope'
 
 export function Pricing() {
   const { t } = useTranslation()
@@ -49,6 +50,7 @@ export function Pricing() {
     usableGroup,
     endpointMap,
     autoGroups,
+    anonymousPreview,
     isLoading,
     priceRate,
     usdExchangeRate,
@@ -110,8 +112,26 @@ export function Pricing() {
     clearSearch()
   }, [clearFilters, clearSearch])
 
+  const emptyReason = plazaEmptyReason({
+    anonymousPreview,
+    totalModels: models?.length ?? 0,
+    filteredModels: filteredModels.length,
+  })
+
   const renderPricingContent = () => {
-    if (filteredModels.length === 0) {
+    if (emptyReason === 'anonymous-scope') {
+      return (
+        <EmptyState
+          searchQuery={searchInput}
+          hasActiveFilters={hasActiveFilters}
+          onClearFilters={handleClearAll}
+          title={t('qy_plaza_anon_empty_title')}
+          description={t('qy_plaza_anon_empty_desc')}
+        />
+      )
+    }
+
+    if (emptyReason === 'filters') {
       return (
         <EmptyState
           searchQuery={searchInput}
@@ -191,6 +211,15 @@ export function Pricing() {
                 'Discover curated AI models, compare pricing and capabilities, and choose the right model for every scenario.'
               )}
             </p>
+            {anonymousPreview && (
+              <p
+                className='border-border/60 bg-muted/40 text-muted-foreground mx-auto mt-4 max-w-2xl rounded-md border px-3 py-2 text-xs leading-relaxed'
+                data-testid='plaza-anonymous-preview-notice'
+              >
+                {t('qy_plaza_anon_preview_notice')}
+              </p>
+            )}
+
             <SearchBar
               value={searchInput}
               onChange={setSearchInput}

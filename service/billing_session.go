@@ -1,7 +1,6 @@
 package service
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -218,13 +217,6 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			}
 			s.tokenConsumed = 0
 		}
-		// 钱包侧的条件原子扣减输掉并发竞争:余额在读判据之后被别的请求扣走了。
-		// 必须映射成 403 InsufficientUserQuota,而不是 500 —— 它是"余额不足"的
-		// 一种,客户端据此与"没有出资资格"(AccessDenied)分辨。
-		if errors.Is(err, model.ErrInsufficientUserQuota) {
-			logPreConsumeRejected(c, s.relayInfo, "wallet_race", effectiveQuota, err)
-			return types.NewErrorWithStatusCode(err, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
-		}
 		// TODO: model 层应定义哨兵错误（如 ErrNoActiveSubscription），用 errors.Is 替代字符串匹配
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "no active subscription") || strings.Contains(errMsg, "subscription quota insufficient") {
@@ -250,7 +242,7 @@ func (s *BillingSession) reserveFunding(delta int) error {
 		// 全额无条件扣减，余额不足的部分记为欠费（余额可为负），不中断请求，
 		// 保证日志记录的预扣额度与用户余额的实际变动始终对账一致。
 		// DecreaseUserQuota 仅在数据库错误时失败。
-		if err := model.DecreaseUserQuota(funding.userId, delta); err != nil {
+		if err := model.DecreaseUserQuota(funding.userId, delta, false); err != nil {
 			return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 		}
 		funding.consumed += delta
@@ -274,7 +266,7 @@ func (s *BillingSession) reserveFunding(delta int) error {
 func (s *BillingSession) rollbackFundingReserve(delta int) {
 	switch funding := s.funding.(type) {
 	case *WalletFunding:
-		if err := model.IncreaseUserQuota(funding.userId, delta); err != nil {
+		if err := model.IncreaseUserQuota(funding.userId, delta, false); err != nil {
 			common.SysLog("error rolling back wallet funding reserve: " + err.Error())
 		} else {
 			funding.consumed -= delta
@@ -300,14 +292,12 @@ func (s *BillingSession) reserveToken(delta int) error {
 //
 // 预扣 403 的三个分支都带 ErrOptionWithNoRecordErrorLog（不进 error log 表），
 // 而被拒的请求也不写消费日志 —— 也就是说它在数据库里**一行痕迹都没有**。
-// 这两件事本身是对的（用户自己的余额不足不该刷屏管理端的错误日志），但它让
-// 两个必须盯的数字变得不可测量：
+// 这件事本身是对的（用户自己的余额不足不该刷屏管理端的错误日志），但它让预扣
+// 门槛的杀伤面变得不可测量：
 //
-//	reason=wallet_race 是条件原子预扣输掉并发竞争。这一档在 TOCTOU 修复之前
-//	  结构上不可能出现，它的频次就是并发竞争的真实强度。
-//	reason=wallet/subscription/token 是余额判据本身不足。预扣公式补乘
-//	  CompletionRatio 之后门槛整体抬高了最多 CompletionRatio 倍，这个计数的
-//	  同比变化就是那次改动对真人的杀伤面。
+//	reason=wallet_empty / wallet_threshold / subscription / token 都是余额判据
+//	  本身不足。预扣公式补乘 CompletionRatio 之后门槛整体抬高了最多
+//	  CompletionRatio 倍，这个计数的同比变化就是那次改动对真人的杀伤面。
 //
 // 落在后端日志（请求 id 已由 logger 关联），不进 logs 表，不改任何对外报文。
 func logPreConsumeRejected(c *gin.Context, info *relaycommon.RelayInfo, reason string, quota int, err error) {

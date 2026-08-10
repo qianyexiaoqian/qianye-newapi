@@ -11,15 +11,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// Batch-update types. Only **accumulators** belong here.
-//
-// A spendable balance (users.quota, tokens.remain_quota) must never be batched:
-// it is read inside the WHERE clause of the statement that spends it, so a
-// deferred write leaves the database showing a balance the user does not
-// actually have for a whole BATCH_UPDATE_INTERVAL. See model.DecreaseUserQuota.
-// used_quota / request_count are write-only counters and are safe to defer.
 const (
-	BatchUpdateTypeUsedQuota = iota
+	BatchUpdateTypeUserQuota = iota
+	BatchUpdateTypeTokenQuota
+	BatchUpdateTypeUsedQuota
 	BatchUpdateTypeChannelUsedQuota
 	BatchUpdateTypeRequestCount
 	BatchUpdateTypeCount // if you add a new type, you need to add a new map and a new lock
@@ -80,14 +75,31 @@ func batchUpdate() {
 		batchUpdateLocks[i].Unlock()
 	}
 
-	for key, value := range stores[BatchUpdateTypeChannelUsedQuota] {
-		updateChannelUsedQuota(key, value)
+	for i, store := range stores {
+		if i == BatchUpdateTypeUserQuota || i == BatchUpdateTypeUsedQuota || i == BatchUpdateTypeRequestCount {
+			continue
+		}
+		for key, value := range store {
+			switch i {
+			case BatchUpdateTypeTokenQuota:
+				err := increaseTokenQuota(key, value)
+				if err != nil {
+					common.SysLog("failed to batch update token quota: " + err.Error())
+				}
+			case BatchUpdateTypeChannelUsedQuota:
+				updateChannelUsedQuota(key, value)
+			}
+		}
 	}
 
+	userQuotaStore := stores[BatchUpdateTypeUserQuota]
 	usedQuotaStore := stores[BatchUpdateTypeUsedQuota]
 	requestCountStore := stores[BatchUpdateTypeRequestCount]
 
-	userIDs := make(map[int]struct{}, len(usedQuotaStore)+len(requestCountStore))
+	userIDs := make(map[int]struct{}, len(userQuotaStore)+len(usedQuotaStore)+len(requestCountStore))
+	for key := range userQuotaStore {
+		userIDs[key] = struct{}{}
+	}
 	for key := range usedQuotaStore {
 		userIDs[key] = struct{}{}
 	}
@@ -95,7 +107,7 @@ func batchUpdate() {
 		userIDs[key] = struct{}{}
 	}
 	for key := range userIDs {
-		updateUserUsedQuotaAndRequestCount(key, usedQuotaStore[key], requestCountStore[key])
+		updateUserQuotaUsedQuotaAndRequestCount(key, userQuotaStore[key], usedQuotaStore[key], requestCountStore[key])
 	}
 	common.SysLog("batch update finished")
 }

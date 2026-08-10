@@ -33,14 +33,18 @@ func getSummary(c *gin.Context) {
 		return
 	}
 
+	// 已解绑的关系不计入"我的下线数":那条关系已经不会再产生任何佣金,
+	// 继续算进来会让用户以为自己还在从这个人身上挣钱。
+	// 历史佣金仍然留在流水与余额里,那是另一回事。
 	var inviteeCount int64
-	if err := gdb.Model(&InviteRelation{}).Where("inviter_id = ?", userId).
+	if err := gdb.Model(&InviteRelation{}).
+		Where("inviter_id = ? AND unbound_at = ?", userId, 0).
 		Count(&inviteeCount).Error; err != nil {
 		internalError(c, err)
 		return
 	}
 
-	pendingMature, err := sumOutstanding(userId, true)
+	pendingMature, err := sumOutstanding(gdb, userId, true)
 	if err != nil {
 		internalError(c, err)
 		return
@@ -81,8 +85,11 @@ func getSummary(c *gin.Context) {
 
 // sumOutstanding 汇总"已计佣但尚未被结算吸收"的金额。
 // unmaturedOnly 为真时只统计尚未过成熟期的部分。
-func sumOutstanding(inviterId int, unmaturedOnly bool) (decimal.Decimal, error) {
-	q := db.Get().Model(&Accrual{}).
+//
+// 句柄由调用方给:手工增减佣金要在**持有余额行锁的那个事务里**算这个数
+// (见 api_admin_adjust.go 的可回收上限),自取 db.Get() 会绕开锁读到另一份快照。
+func sumOutstanding(gdb *gorm.DB, inviterId int, unmaturedOnly bool) (decimal.Decimal, error) {
+	q := gdb.Model(&Accrual{}).
 		Where("inviter_id = ? AND status = ? AND settled_amount <> gross_amount",
 			inviterId, StatusAccrued)
 	if unmaturedOnly {
@@ -113,13 +120,14 @@ func listInvitees(c *gin.Context) {
 	gdb := db.Get()
 
 	var total int64
-	if err := gdb.Model(&InviteRelation{}).Where("inviter_id = ?", userId).
+	if err := gdb.Model(&InviteRelation{}).
+		Where("inviter_id = ? AND unbound_at = ?", userId, 0).
 		Count(&total).Error; err != nil {
 		internalError(c, err)
 		return
 	}
 	var rows []InviteRelation
-	if err := gdb.Where("inviter_id = ?", userId).
+	if err := gdb.Where("inviter_id = ? AND unbound_at = ?", userId, 0).
 		Order("bound_at desc, invitee_id desc").
 		Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)

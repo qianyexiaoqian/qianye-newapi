@@ -97,6 +97,14 @@ export type PricingData = {
   usable_group: Record<string, { desc: string; ratio: number }>
   supported_endpoint: Record<string, string>
   auto_groups: string[]
+  /**
+   * 本次响应是"未登录预览"：模型与倍率按**新用户注册后落进的默认用户分组**
+   * 渲染，而不是按调用者本人的分组。
+   *
+   * 后端刻意不下发那个分组的名字（见 controller/pricing.go）：名字对访客没有
+   * 意义，需要说清楚的是"这一页算的是谁的价"。
+   */
+  anonymous_preview?: boolean
 }
 
 export type TokenUnit = 'M' | 'K'

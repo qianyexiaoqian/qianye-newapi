@@ -61,6 +61,7 @@ function rule(patch: Partial<QyViolationRule>): QyViolationRule {
     match_type: 'keyword',
     pattern: 'x',
     case_sensitive: false,
+    status_scope: '',
     model_scope: '',
     group_scope: '',
     group_scope_mode: 'include',

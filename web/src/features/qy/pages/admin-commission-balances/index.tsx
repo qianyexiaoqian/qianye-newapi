@@ -38,6 +38,7 @@ import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 import { qyAdminBalancesQuery } from './api'
+import { AdjustCommissionDialog } from './components/adjust-commission-dialog'
 import { SetWithdrawnDialog } from './components/set-withdrawn-dialog'
 import {
   QY_BALANCE_SORTS,
@@ -69,6 +70,9 @@ export function QyAdminCommissionBalances() {
   const [userId, setUserId] = useState('')
   const [username, setUsername] = useState('')
   const [target, setTarget] = useState<QyCommissionBalance | null>(null)
+  const [adjustTarget, setAdjustTarget] = useState<QyCommissionBalance | null>(
+    null
+  )
 
   const query = useQuery(
     qyAdminBalancesQuery({
@@ -157,7 +161,17 @@ export function QyAdminCommissionBalances() {
       className: staticDataTableClassNames.actionHeaderCell,
       cellClassName: staticDataTableClassNames.actionCell,
       cell: (row) => (
-        <div className='flex justify-end'>
+        <div className='flex justify-end gap-1'>
+          {/* 两个动作的语义完全不同,不能合成一个按钮:
+              「登记已提现」只是把额度从可提现搬到已提现(恒等式两侧不变);
+              「手工增减」是真的凭空加钱/扣钱,会落一条 manual 计佣行。 */}
+          <Button
+            variant='ghost'
+            size='sm'
+            onClick={() => setAdjustTarget(row)}
+          >
+            {t('qy_adj_action')}
+          </Button>
           <Button variant='ghost' size='sm' onClick={() => setTarget(row)}>
             {t('qy_cb_set')}
           </Button>
@@ -260,6 +274,10 @@ export function QyAdminCommissionBalances() {
       </QySectionPageLayout.Content>
 
       <SetWithdrawnDialog balance={target} onClose={() => setTarget(null)} />
+      <AdjustCommissionDialog
+        balance={adjustTarget}
+        onClose={() => setAdjustTarget(null)}
+      />
     </QySectionPageLayout>
   )
 }

@@ -43,6 +43,7 @@ var auditWriteFuncs = map[string]bool{
 	"writePayeeAudit":        true,
 	"writeRuleFailure":       true,
 	"afterRuleChange":        true, // violation:版本号 +1 + 重载 + 审计,三件一起做
+	"afterRuleBatch":         true, // violation:批量启停 / 批量作用分组的批次结局,成功与失败同一出口
 	"writeDeleteAudit":       true,
 	"writeAdminAudit":        true,
 	"writeSystemAudit":       true,
@@ -51,6 +52,9 @@ var auditWriteFuncs = map[string]bool{
 	"writeMatrixFailure":     true, // groupmatrix:矩阵写入失败(含 409)的补写
 	"writeBatchAudit":        true, // channelops:批次结局 + 失败明细,成功与失败同一出口
 	"writeScopeFailure":      true, // groupmatrix:接管变更失败的补写
+	"writeRelationAudit":     true, // commission:AFF 关系绑定/解绑,成功与失败同一出口
+	"writeAdjustAudit":       true, // commission:手工增减佣金,成功与失败同一出口
+	"writeBanPolicyAudit":    true, // violation:处置策略档写入/删除,成功与失败同一出口
 }
 
 // auditRequired 列出必须留痕的资金路径,值是该函数体内审计写入的**最少**次数。
@@ -129,6 +133,25 @@ var auditRequired = []struct {
 		"改 pattern / mode 等于改扣费与封号的判据,before/after 是事后唯一能回答「改的是什么」的东西"},
 	{"modules/violation/api_admin.go", "adminDeleteRule", 1,
 		"软删之后规则行从列表消失,删的是哪一条只剩审计能回答"},
+	{"modules/violation/api_admin_batch.go", "adminBatchSetRuleEnabled", 1,
+		"多选批量启停一次改掉几十条防护规则的开关。停用方向完全无症状(接口 200、" +
+			"业务照常跑、从此零命中),启用方向可能一次把一批 enforce 规则送进真实扣费与封号 —— " +
+			"两个方向事后都只剩这条埋点能回答「谁在什么时候把哪几条改了」。" +
+			"批量与单条启停不同,**无变化也要留痕**:「20 条全都本来就是启用的」" +
+			"常常意味着选错了范围,而那正是事后要查的东西"},
+	{"modules/violation/api_admin_batch.go", "adminBatchSetRuleGroupScope", 1,
+		"作用分组决定这条规则对哪些**模型分组**生效(比的是 relayInfo.UsingGroup)。" +
+			"批量覆盖会把一批规则原有的作用域整串换掉 —— exclude 名单被覆盖等于" +
+			"一批原本豁免的分组突然开始被拦被扣费,而规则本身看起来一个字都没改。" +
+			"Before 快照里的 op / groups / 方向是事后唯一能重建「这一批原来是什么样」的东西"},
+	{"modules/violation/api_admin_banpolicy.go", "adminUpsertBanPolicy", 2,
+		"处置策略档决定谁在第几次违规被限制/封号,它比规则表更接近直接改账号状态。" +
+			"成功与失败各一条:「我把阈值从 10 改成 3、没生效」只能靠失败审计回答。" +
+			"after 快照里冻结的影响面(当时有多少存量账号已越线)几分钟后就无法复现"},
+	{"modules/violation/api_admin_banpolicy.go", "adminDeleteBanPolicy", 3,
+		"三条路径各一条:删掉普通档(成功)、删库失败、以及**兜底档被拒**。" +
+			"最后那一条最容易漏 —— 它在 400 分支里,而「谁试过删兜底档」正是事后要查的:" +
+			"删掉兜底档等于让所有没有专属策略的分组落进一个不存在的策略"},
 	{"modules/violation/api_user.go", "userCreateAppeal", 1,
 		"申诉提交要与裁决成对留痕,否则时间线缺掉用户那一半"},
 	{"modules/commission/api_admin.go", "adminSettle", 1,
@@ -137,6 +160,22 @@ var auditRequired = []struct {
 		"缓存失效是「改完费率立刻生效」这条动作链的最后一步"},
 	{"modules/commission/api_admin.go", "adminPutConfig", 2,
 		"费率变更成功与失败都要留痕"},
+	{"modules/commission/api_admin_relation.go", "adminBindRelation", 2,
+		"手工绑定 AFF 关系改的是主库 users.inviter_id —— 从这一刻起,这个人此后所有的" +
+			"消费与充值都会给另一个账号分成。它同时会把快照上的拉黑标记清掉。" +
+			"before/after 快照(跨两个库拼出来)是事后唯一能回答「原来绑的是谁、" +
+			"当时拉黑了没有」的东西;被防环/已绑定闸门拒绝的那次同样要留痕 —— " +
+			"「有人正在试图给一个已经有上线的账号改指向」正是最需要查到的形状"},
+	{"modules/commission/api_admin_relation.go", "adminUnbindRelation", 2,
+		"解绑之后主库的 inviter_id 就被清零了,「他曾经是谁的下线」在主库里一个字都不剩。" +
+			"这条埋点的正文里写死了「已产生的佣金全部保留、不再产生新的」这条语义与" +
+			"保留下来的金额,是事后解释「这个人的佣金为什么停在这个数」的唯一材料;" +
+			"重复解绑被拒的那次同样要留痕"},
+	{"modules/commission/api_admin_adjust.go", "adminAdjustCommission", 2,
+		"手工增减佣金是纯粹的凭空加钱/扣钱,没有任何业务单据触发它。" +
+			"它落成一条 manual 计佣行(账目可追溯),但「为什么要加这 5000」只存在于" +
+			"这条埋点的事由里;越过可回收上限被 400 挡下的那次同样要留痕 —— " +
+			"运营看到 400 会换个数再试,没有这条就分不清哪一次真的生效了"},
 	{"modules/transfer/api_admin_config.go", "adminPutTransferConfig", 3,
 		"门槛变更:成功、回读失败、事务回滚三条路径各一条"},
 	{"modules/transfer/api_admin_limits.go", "adminPutGroupLimit", 2,
@@ -245,7 +284,8 @@ var auditRequired = []struct {
 			"「谁在什么时候停了哪一批」必须可查"},
 	{"modules/channelops/api_admin.go", "adminBatchResetUsage", 1,
 		"清 used_quota 抹掉的是渠道成本核算的累计值,没有任何补算路径;" +
-			"清了多少条、原本是谁,只有这条审计说得出来"},
+			"谁在什么时候清了哪几个渠道、各自抹掉多少(after 里的 " +
+			"cleared_used_quota_total 与逐条 cleared_used_quota),只有这条审计说得出来"},
 	{"modules/ticket/api_user.go", "handleDiscardImage", 1,
 		"丢弃会真的从磁盘删文件。上传留痕而删除不留痕的话," +
 			"「这个账号传过多少、现在还剩什么」在事后只剩一半答案"},

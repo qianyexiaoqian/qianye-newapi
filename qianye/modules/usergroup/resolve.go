@@ -38,6 +38,23 @@ func resolveNewUserGroup(current string) string {
 	return configured
 }
 
+// newUserGroup 是 model.QyNewUserGroup 的实现:同一份配置、同一道校验,
+// 只是把答案表达成"分组名"而不是"要不要覆盖入参"。
+//
+// 与 resolveNewUserGroup("") 的对应关系是逐条的,别让它们分家:
+//
+//	resolveNewUserGroup("") == ""   ⟺  newUserGroup() == upstreamDefaultGroup
+//	resolveNewUserGroup("") == G    ⟺  newUserGroup() == G
+//
+// 左边那一列返回空串的意思是"不写 users.group,让数据库列默认值兜底",
+// 而兜底出来的正是 upstreamDefaultGroup —— 两列说的始终是同一个分组。
+// resolve_test.go 的 TestNewUserGroupAgreesWithResolveNewUserGroup 钉死这一点。
+//
+// 它是**只读查询**,不写任何东西,因此可以被模型广场那条展示路径调用。
+func newUserGroup() string {
+	return effectiveGroup(currentDefaultGroup())
+}
+
 // warnStaleGroup 对「配置的默认分组已不存在」限频告警。
 //
 // 限频而不是每次都打:一旦发生,此后每一次注册都会命中,不限频会把日志刷爆,

@@ -25,30 +25,39 @@ export interface EmptyStateProps {
   searchQuery?: string
   hasActiveFilters: boolean
   onClearFilters: () => void
+  /**
+   * 覆盖标题与正文。用于"后端本来就没给任何模型"的空态 —— 那时清空筛选不会有
+   * 任何变化，默认文案（"换个筛选条件试试"）会把人往死路上引。
+   * 传了 description 就一并隐藏"清空筛选"按钮。
+   */
+  title?: string
+  description?: string
 }
 
 export function EmptyState(props: EmptyStateProps) {
   const { t } = useTranslation()
   const hasSearch = Boolean(props.searchQuery?.trim())
+  const isOverridden = Boolean(props.description)
 
   return (
     <div className='flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed px-6 py-12 text-center'>
       <Search className='text-muted-foreground/40 mb-3 size-10' />
 
       <h3 className='text-foreground mb-1 text-base font-semibold'>
-        {t('No models found')}
+        {props.title ?? t('No models found')}
       </h3>
 
       <p className='text-muted-foreground mb-5 max-w-xs text-sm'>
-        {hasSearch
-          ? t(
-              'No results for "{{query}}". Try adjusting your search or filters.',
-              { query: props.searchQuery }
-            )
-          : t('No models match your current filters.')}
+        {props.description ??
+          (hasSearch
+            ? t(
+                'No results for "{{query}}". Try adjusting your search or filters.',
+                { query: props.searchQuery }
+              )
+            : t('No models match your current filters.'))}
       </p>
 
-      {(props.hasActiveFilters || hasSearch) && (
+      {!isOverridden && (props.hasActiveFilters || hasSearch) && (
         <Button variant='outline' size='sm' onClick={props.onClearFilters}>
           {t('Clear all filters')}
         </Button>

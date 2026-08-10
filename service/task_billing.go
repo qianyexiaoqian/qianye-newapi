@@ -87,15 +87,48 @@ func taskIsSubscription(task *model.Task) bool {
 	return task.PrivateData.BillingSource == BillingSourceSubscription && task.PrivateData.SubscriptionId > 0
 }
 
+// taskFundingSplit 记录一次任务资金调整**真正落在哪里**。
+//
+// 只有订阅出资才可能分裂成两笔:套餐吃下 SubscriptionApplied,撞到 amount_total
+// 上限的那部分改由钱包补收(WalletShortfall)。钱包出资恒为零值。
+type taskFundingSplit struct {
+	SubscriptionApplied int64
+	WalletShortfall     int64
+}
+
 // taskAdjustFunding 调整任务的资金来源（钱包或订阅），delta > 0 表示扣费，delta < 0 表示退还。
-func taskAdjustFunding(task *model.Task, delta int) error {
+//
+// 订阅侧走 SettleUserSubscriptionDelta(钳位 + 回报落点)而不是
+// PostConsumeUserSubscriptionDelta(越界整笔拒写)。理由与 relay 侧
+// SubscriptionFunding.Settle 完全相同:差额结算发生在**服务已经交付之后**,
+// 拒写不会把服务收回来,只会让超出套餐上限的那部分静默免费 —— 而调用方
+// 拿到 error 后连令牌扣减、task.Quota 回写、账单日志都一并跳过,账面上
+// 没有任何一行指向这笔钱。
+func taskAdjustFunding(task *model.Task, delta int) (taskFundingSplit, error) {
+	var split taskFundingSplit
 	if taskIsSubscription(task) {
-		return model.PostConsumeUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
+		applied, err := model.SettleUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
+		if err != nil {
+			return split, err
+		}
+		split.SubscriptionApplied = applied
+		shortfall := int64(delta) - applied
+		// 只补收正差额。负差额(退款没能全额退进套餐,例如套餐已被续期清零)
+		// 绝不往钱包里补:那笔钱当初未必是从钱包出的,补进去就是凭空发钱。
+		// 方向与 SubscriptionFunding.Settle 一致。
+		if shortfall <= 0 {
+			return split, nil
+		}
+		if err := model.DecreaseUserQuota(task.UserId, int(shortfall), false); err != nil {
+			return split, err
+		}
+		split.WalletShortfall = shortfall
+		return split, nil
 	}
 	if delta > 0 {
-		return model.DecreaseUserQuota(task.UserId, delta)
+		return split, model.DecreaseUserQuota(task.UserId, delta, false)
 	}
-	return model.IncreaseUserQuota(task.UserId, -delta)
+	return split, model.IncreaseUserQuota(task.UserId, -delta, false)
 }
 
 // taskAdjustTokenQuota 调整任务的令牌额度，delta > 0 表示扣费，delta < 0 表示退还。
@@ -171,7 +204,7 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 	}
 
 	// 1. 退还资金来源（钱包或订阅）
-	if err := taskAdjustFunding(task, -quota); err != nil {
+	if _, err := taskAdjustFunding(task, -quota); err != nil {
 		logger.LogWarn(ctx, fmt.Sprintf("退还资金来源失败 task %s: %s", task.TaskID, err.Error()))
 		return false
 	}
@@ -261,7 +294,8 @@ func settleTaskQuotaDelta(
 	))
 
 	// 调整资金来源
-	if err := taskAdjustFunding(task, quotaDelta); err != nil {
+	split, err := taskAdjustFunding(task, quotaDelta)
+	if err != nil {
 		logger.LogError(ctx, fmt.Sprintf("差额结算资金调整失败 task %s: %s", task.TaskID, err.Error()))
 		return
 	}
@@ -297,6 +331,15 @@ func settleTaskQuotaDelta(
 	other["task_id"] = task.TaskID
 	other["pre_consumed_quota"] = preConsumedQuota
 	other["actual_quota"] = actualQuota
+	// 订阅出资时把这一笔差额的落点写进日志。撞到 amount_total 上限而改由钱包
+	// 补收的那部分,不写就没有任何字段指向它 —— 账单金额与套餐用量对不上,
+	// 而对账的人只会看到套餐少扣了一截。键名与 relay 侧
+	// (service/log_info_generate.go)保持同一套,便于两条链路一起统计。
+	if taskIsSubscription(task) {
+		other["subscription_id"] = task.PrivateData.SubscriptionId
+		other["subscription_post_delta"] = split.SubscriptionApplied
+		other["wallet_quota_deducted"] = split.WalletShortfall
+	}
 	for _, clamp := range clamps {
 		attachQuotaSaturationToOther(other, clamp)
 	}

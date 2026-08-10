@@ -636,7 +636,7 @@ func (user *User) finishInsert(inviterId int) {
 	}
 	if inviterId != 0 && operation_setting.IsPaymentComplianceConfirmed() {
 		if common.QuotaForInvitee > 0 {
-			_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee)
+			_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
 			RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee)))
 		}
 		if common.QuotaForInviter > 0 {
@@ -693,7 +693,7 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 	}
 	if inviterId != 0 && operation_setting.IsPaymentComplianceConfirmed() {
 		if common.QuotaForInvitee > 0 {
-			_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee)
+			_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
 			RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee)))
 		}
 		if common.QuotaForInviter > 0 {
@@ -1240,10 +1240,7 @@ func GetUserSetting(id int, fromDB bool) (settingMap dto.UserSetting, err error)
 	return userBase.GetSetting(), nil
 }
 
-// IncreaseUserQuota credits the wallet. It always writes through to the
-// database — see the note on DecreaseUserQuota for why `users.quota` may never
-// travel through the batch-update queue.
-func IncreaseUserQuota(id int, quota int) (err error) {
+func IncreaseUserQuota(id int, quota int, db bool) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
@@ -1253,6 +1250,10 @@ func IncreaseUserQuota(id int, quota int) (err error) {
 			common.SysLog("failed to increase user quota: " + err.Error())
 		}
 	})
+	if !db && common.BatchUpdateEnabled {
+		addNewRecord(BatchUpdateTypeUserQuota, id, quota)
+		return nil
+	}
 	return increaseUserQuota(id, quota)
 }
 
@@ -1264,73 +1265,7 @@ func increaseUserQuota(id int, quota int) (err error) {
 	return err
 }
 
-// ErrInsufficientUserQuota reports that a conditional wallet pre-consume could
-// not be applied because the balance no longer covers the requested amount.
-// Callers map it onto the 403 "insufficient user quota" response.
-var ErrInsufficientUserQuota = errors.New("user quota is not enough")
-
-// PreConsumeUserQuota deducts a pre-consume amount from the wallet **only if**
-// the balance still covers it, in a single conditional UPDATE.
-//
-// The balance check has to live in the WHERE clause of the statement that
-// performs the deduction. Reading the balance first and then issuing an
-// unconditional `quota = quota - N` is a time-of-check/time-of-use race: N
-// concurrent requests all observe the same sufficient balance and all deduct,
-// so a wallet holding one request's worth of quota can fund arbitrarily many
-// (measured: 12 concurrent per-call requests against a 10,000 balance all
-// succeeded and drove the wallet to -110,000).
-//
-// Settlement deliberately keeps using DecreaseUserQuota: a request that was
-// already served must always be charged, even into debt. Only this
-// *pre*-consume gate is conditional. For the same reason this never routes
-// through the batch-update queue — a queued delta cannot be conditional.
-func PreConsumeUserQuota(id int, quota int) error {
-	if quota < 0 {
-		return errors.New("quota 不能为负数！")
-	}
-	if quota == 0 {
-		return nil
-	}
-	result := DB.Model(&User{}).
-		Where("id = ? AND quota >= ?", id, quota).
-		Update("quota", gorm.Expr("quota - ?", quota))
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		remain, err := GetUserQuota(id, true)
-		if err != nil {
-			return fmt.Errorf("%w, need quota: %s", ErrInsufficientUserQuota, logger.FormatQuota(quota))
-		}
-		return fmt.Errorf("%w, user remain quota: %s, need quota: %s",
-			ErrInsufficientUserQuota, logger.FormatQuota(remain), logger.FormatQuota(quota))
-	}
-	gopool.Go(func() {
-		if err := cacheDecrUserQuota(id, int64(quota)); err != nil {
-			common.SysLog("failed to decrease user quota: " + err.Error())
-		}
-	})
-	return nil
-}
-
-// DecreaseUserQuota debits the wallet unconditionally (the balance may go
-// negative — a request that was already served must always be charged).
-//
-// `users.quota` is a **gate**, not an accumulator: PreConsumeUserQuota reads it
-// inside the WHERE clause of the very statement that spends it. A gate column
-// cannot be written through a deferred queue while another writer on the same
-// column is synchronous. Once pre-consume went direct (it has to — a queued
-// delta cannot carry a condition), every counterpart of a pre-consume had to go
-// direct with it. Leaving the refund/settle side on the batch queue produced a
-// database-visible dip that lasted a whole BATCH_UPDATE_INTERVAL: measured, a
-// wallet holding 30,000 with a 27,000 pre-consume showed 3,000 in the database
-// while the user really had 29,972, and the next request was rejected with
-// insufficient quota. So this never routes through addNewRecord, and neither do
-// IncreaseUserQuota / (In|De)creaseTokenQuota.
-//
-// The pure accumulators (used_quota, request_count, channel used_quota) are not
-// gates and stay batched.
-func DecreaseUserQuota(id int, quota int) (err error) {
+func DecreaseUserQuota(id int, quota int, db bool) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
 	}
@@ -1340,6 +1275,10 @@ func DecreaseUserQuota(id int, quota int) (err error) {
 			common.SysLog("failed to decrease user quota: " + err.Error())
 		}
 	})
+	if !db && common.BatchUpdateEnabled {
+		addNewRecord(BatchUpdateTypeUserQuota, id, -quota)
+		return nil
+	}
 	return decreaseUserQuota(id, quota)
 }
 
@@ -1356,9 +1295,9 @@ func DeltaUpdateUserQuota(id int, delta int) (err error) {
 		return nil
 	}
 	if delta > 0 {
-		return IncreaseUserQuota(id, delta)
+		return IncreaseUserQuota(id, delta, false)
 	} else {
-		return DecreaseUserQuota(id, -delta)
+		return DecreaseUserQuota(id, -delta, false)
 	}
 }
 
@@ -1387,13 +1326,7 @@ func UpdateUserUsedQuotaAndRequestCount(id int, quota int) {
 	updateUserUsedQuotaAndRequestCount(id, quota, 1)
 }
 
-// updateUserUsedQuotaAndRequestCount writes one user's accumulators in a single
-// statement. It deliberately does not touch `quota`: the spendable balance is a
-// gate and is never batched (see DecreaseUserQuota).
 func updateUserUsedQuotaAndRequestCount(id int, quota int, count int) {
-	if quota == 0 && count == 0 {
-		return
-	}
 	err := DB.Model(&User{}).Where("id = ?", id).Updates(
 		map[string]interface{}{
 			"used_quota":    gorm.Expr("used_quota + ?", quota),
@@ -1409,6 +1342,23 @@ func updateUserUsedQuotaAndRequestCount(id int, quota int, count int) {
 	//if err := invalidateUserCache(id); err != nil {
 	//	common.SysError("failed to invalidate user cache: " + err.Error())
 	//}
+}
+
+func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, requestCount int) {
+	if quota == 0 && usedQuota == 0 && requestCount == 0 {
+		return
+	}
+
+	err := DB.Model(&User{}).Where("id = ?", id).Updates(
+		map[string]interface{}{
+			"quota":         gorm.Expr("quota + ?", quota),
+			"used_quota":    gorm.Expr("used_quota + ?", usedQuota),
+			"request_count": gorm.Expr("request_count + ?", requestCount),
+		},
+	).Error
+	if err != nil {
+		common.SysLog("failed to batch update user quota, used quota and request count: " + err.Error())
+	}
 }
 
 func updateUserUsedQuota(id int, quota int) {

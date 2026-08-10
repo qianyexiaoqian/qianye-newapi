@@ -35,3 +35,36 @@ package model
 // 赋值时机为 qianye.Init(),早于任何 HTTP 请求与后台协程,因此不存在并发
 // 读写窗口 —— 也正因如此,运行期禁止改写本变量。
 var QyResolveNewUserGroup = func(group string) string { return group }
+
+// UpstreamDefaultUserGroup 是 model.User.Group 上 gorm:"default:'default'"
+// 兜底出来的那个值。
+//
+// 它不是"某个默认配置",而是**数据库列默认值**的字面量:不给 Group 赋值时
+// GORM 会把该列整个从 INSERT 里省掉,于是新用户落进的就是这个名字。
+// 抄成第二份字符串的表现是"页面上说新用户进 A、库里进 B",所以凡是需要
+// 回答"没配置时新用户在哪一档"的地方都必须引用它。
+const UpstreamDefaultUserGroup = "default"
+
+// QyNewUserGroup 回答一个**只读**的事实问题:此刻注册一个新用户,他会落进
+// 哪一个用户分组。
+//
+// # 为什么不能拿 QyResolveNewUserGroup("") 当查询用
+//
+// 那个 hook 是**写入侧**的决策函数,它跑在用户创建事务里,语义是"把这一次
+// 建号的分组定下来"。今天它恰好是幂等的,但它的契约里没有任何一条禁止将来
+// 把新用户轮流分到几个分组里去 —— 一旦有人那么做,拿它当查询就会在每次
+// 打开模型广场时消耗掉一个名额,而且从调用点完全看不出来。
+// 读写分成两个变量,是让"看一眼"永远不可能变成"动一下"。
+//
+// # 契约
+//
+//   - **绝不返回空串。** 未配置、配置失效、扩展未启用,一律回落
+//     UpstreamDefaultUserGroup —— 因为那三种情况下新用户确实落进 default。
+//     返回空串会让调用方拿到"匿名口径"(见 service/qy_usablegroup_export.go
+//     的契约 (b)),那是另一个完全不同的答案。
+//   - 必须与 QyResolveNewUserGroup 同源:同一份配置、同一份缓存、同一道
+//     "目标分组是否仍然存在"的校验。两者分家的表现是模型广场展示 A 的价格、
+//     新用户注册进 B —— 一次可见的价格欺骗。
+//   - 允许有 I/O(实现方带缓存与硬超时),因此**禁止**在 relay 热路径上调用。
+//     现有调用点只有模型广场那一路(未登录访客的展示口径)。
+var QyNewUserGroup = func() string { return UpstreamDefaultUserGroup }

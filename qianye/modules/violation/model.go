@@ -149,7 +149,93 @@ const (
 	// 或等该用户下一次违规时在条件允许的情况下被提升执行。
 	BanDeferred = "deferred"
 	BanUnbanned = "unbanned"
+	// BanObserved 表示"计数达到了阈值,但生效的策略档只要求记录"
+	// (BanPolicy.Action == PolicyActionRecord)。
+	//
+	// 它必须落一行,不能只打一条日志。「仅记录」这一档的**唯一价值**就是让管理员
+	// 看见"如果我把这个分组切成封号,现在会封掉谁"——那份名单只能来自封禁列表。
+	// 只写 SysLog 的话它散落在文本日志里,既不可筛选也不可分页,等于没有。
+	//
+	// 它是终态:补偿任务不执行它(策略明说了不处置),unbanUser 也不接受它
+	// (从来没有人被这一行禁用过,"解封"无从谈起)。
+	BanObserved = "observed"
 )
+
+// 达到阈值之后的处置动作。BanPolicy.Action 的取值。
+//
+// # 只有两个真实的账号状态,不要假装有三个
+//
+// 主库的非删除停用态只有一个:common.UserStatusDisabled。它的语义在
+// 「被禁用改成受限账号」之后是**受限账号 —— 能登录、只能提工单,其余一律 403**
+// (见 common.UserStatusAllowsSession 的说明)。所以 restrict 与 ban 落到
+// users.status 上是同一个值,差别在会话处置:
+//
+//   - restrict 保留用户当前的控制台会话。用户仍然登录着,能立刻看到自己被限制、
+//     能直接提工单申诉。这是"减速带"档:目的是止损,不是驱逐。
+//   - ban 额外吊销全部会话(model.RevokeAllUserSessions),用户被强制登出。
+//     这是"驱逐"档,对应确认无误的滥用。
+//
+// 两档在 auth_version 上是一样的(都递增,残留 JWT 一律失效),因此 restrict
+// **不是**一个更弱的安全边界 —— 它只是不主动把人踢出控制台。把这一点写在这里,
+// 是因为下一个人很容易以为 restrict 漏做了什么。
+const (
+	PolicyActionRecord   = "record"   // 仅记录:落一行 observed,不动账号
+	PolicyActionRestrict = "restrict" // 置为受限账号,保留控制台会话
+	PolicyActionBan      = "ban"      // 置为受限账号 + 吊销全部会话
+)
+
+// BanPolicy 是**按用户分组**的违规处置策略档。
+//
+// # 它取代了什么
+//
+// 在此之前阈值与窗口只有 YAML 里的 violation.auto_ban_threshold /
+// auto_ban_window_hours 两个全局数字:改一次影响全站,而且改完要重启进程。
+// 项目方原话:「当前违规配置,你没有设定封号阈值是多少,没有地方可以配置这些策略,
+// 我需要可以根据用户组不同调整封号策略,默认兜底。」
+//
+// # 兜底档不可删,这是这张表唯一的硬约束
+//
+// IsDefault 为 true 的那一行(UserGroup 恒为空串)是没有专属档的分组的落点。
+// 删掉它 = 让这些分组落进一个不存在的策略。本仓在 default 用户分组上踩过同一个坑,
+// 所以这里有三道锁,缺一道都不够:
+//
+//  1. 删除接口拒绝 is_default 行(api_admin_banpolicy.go 的 adminDeleteBanPolicy);
+//  2. 启动期 ensureDefaultBanPolicy 无条件补建,种子取自 YAML 的两个旧字段 ——
+//     因此升级上来的站点行为完全不变;
+//  3. 解析时 resolveBanPolicy 找不到任何行就回落到 YAML 值。第 3 道兜的是
+//     "扩展库不可达"与"表刚建还没种子"这两种前两道都盖不住的时刻。
+//
+// # UserGroup 存的是归一化后的比较键
+//
+// 与规则的 GroupScope 同理:扩展库与主库的分组列都是大小写不敏感的排序规则,
+// 而 Go 的 map 查表是精确匹配。写入时统一走 groupname.Effective,
+// 否则管理端配 "VIP"、用户实际分组是 "vip" 时,这一档保存成功、界面正常、
+// 线上永不生效 —— 而"永不生效"在这里的含义是"这个分组的人永远不会被封"。
+type BanPolicy struct {
+	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
+	// UserGroup 是 groupname.Effective 归一后的用户分组名。兜底档恒为空串。
+	// 唯一索引同时保证"一个分组只有一档"与"兜底档只有一行"。
+	UserGroup string `json:"user_group" gorm:"type:varchar(64);not null;default:'';uniqueIndex:uk_qy_vbp_group"`
+	IsDefault bool   `json:"is_default" gorm:"not null;default:false"`
+
+	// Enabled=false 表示这一档暂时停用:该分组回落到兜底档,而不是"不处置"。
+	// 兜底档的 Enabled 被忽略(它没有可回落的下一级),界面上因此不给开关。
+	Enabled bool `json:"enabled" gorm:"not null;default:false"`
+
+	// WindowHours 是滚动统计窗口;Threshold 是窗口内累计达到多少次触发 Action。
+	// Threshold <= 0 表示这一档不做任何自动处置(与旧的 auto_ban_threshold=0 同义)。
+	WindowHours int `json:"window_hours" gorm:"not null;default:24"`
+	Threshold   int `json:"threshold" gorm:"not null;default:0"`
+
+	Action string `json:"action" gorm:"type:varchar(16);not null;default:'ban'"`
+	Remark string `json:"remark" gorm:"type:varchar(512);not null;default:''"`
+
+	CreatedAt int64 `json:"created_at" gorm:"not null"`
+	UpdatedAt int64 `json:"updated_at" gorm:"not null"`
+	UpdatedBy int   `json:"updated_by" gorm:"not null;default:0"`
+}
+
+func (BanPolicy) TableName() string { return "qy_violation_ban_policy" }
 
 // 申诉状态。
 const (
@@ -198,6 +284,32 @@ type Rule struct {
 	Pattern   string `json:"pattern" gorm:"type:text;not null"`
 	// CaseSensitive 只对 keyword / upstream_text / regex 有意义。
 	CaseSensitive bool `json:"case_sensitive" gorm:"not null;default:false"`
+
+	// StatusScope 是**上游 HTTP 状态码前置条件**,与 ModelScope / GroupScope 同性质:
+	// 它不是一种匹配方式,而是一道作用域闸 —— 空 = 不限状态码,否则逗号分隔的
+	// 状态码或区间("400" / "400,403" / "400-499"),语法与 MatchStatusCode 的
+	// pattern 完全一致(共用 parseStatusRange)。
+	//
+	// # 它解决的问题:一条规则同时要求"状态码"与"正文"
+	//
+	// 项目方给的那条 Anthropic 拒绝是 `status_code=400` **且**正文含
+	// "This content was flagged for possible cybersecurity risk"。在此之前
+	// MatchType 是单选:status_code 规则看不到正文,upstream_text 规则看不到状态码,
+	// 两者只能拆成两条规则,而两条规则各自命中、各自计数 —— 一次上游拒绝会被
+	// 计成两次违规,还会各扣一次费。
+	//
+	// # 为什么做成作用域列而不是第七种 MatchType
+	//
+	// 新增一个 "status_and_text" 匹配方式只能覆盖这一种组合;下一次要
+	// "状态码 + 正则"或"状态码 + 错误码"时还得再加两种。作用域列与**全部**
+	// 匹配方式正交,一次解决所有组合,而且它复用已有的 inScope 语义 ——
+	// 管理端表单上它和"模型作用域""分组作用域"排在一起,是同一个心智模型。
+	//
+	// # 只在上游阶段有意义
+	//
+	// prompt 阶段还没有上游响应,状态码恒为 0。ValidateRule 因此拒绝在
+	// PhasePrompt 上配置它:允许保存等于埋一条永不命中的规则。
+	StatusScope string `json:"status_scope" gorm:"type:varchar(64);not null;default:''"`
 
 	// ModelScope / GroupScope 对应需求原文"某个模型(全部分组或特定分组下)"。
 	// 空 = 全部;否则逗号分隔,模型支持 "gpt-4*" / "*-vision" 前后缀通配。
@@ -410,6 +522,14 @@ type Ban struct {
 	TriggerRecordId int64 `json:"trigger_record_id" gorm:"not null;default:0"`
 	HitCountAt      int   `json:"hit_count_at" gorm:"not null;default:0"`
 	Threshold       int   `json:"threshold" gorm:"not null;default:0"`
+	// PolicyGroup / PolicyAction 冻结"当时是哪一档策略、判了什么动作"。
+	//
+	// 必须冻结:阈值改成按分组可配之后,"这个人为什么在第 5 次就被封了"
+	// 不再能从任何全局配置反推 —— 用户的分组会变,策略档会被编辑,
+	// 兜底档也会被调。不存这两列的话,事后复盘只剩一个孤零零的 threshold 数字,
+	// 答不出"它来自哪一档"。PolicyGroup 为空串表示当时落的是兜底档。
+	PolicyGroup  string `json:"policy_group" gorm:"type:varchar(64);not null;default:''"`
+	PolicyAction string `json:"policy_action" gorm:"type:varchar(16);not null;default:''"`
 
 	Status    string `json:"status" gorm:"type:varchar(16);not null;default:'pending';index:idx_qy_vban_status"`
 	Attempts  int    `json:"attempts" gorm:"not null;default:0"`

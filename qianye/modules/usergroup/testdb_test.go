@@ -137,9 +137,13 @@ func useDeclaredUserGroups(t *testing.T, names ...string) {
 // 手工赋值会让「模块忘了注入」这类缺陷测不出来。
 func installHook(t *testing.T) {
 	t.Helper()
-	prev := model.QyResolveNewUserGroup
+	prevResolve := model.QyResolveNewUserGroup
+	prevQuery := model.QyNewUserGroup
 	Mod{}.InstallHooks()
-	t.Cleanup(func() { model.QyResolveNewUserGroup = prev })
+	t.Cleanup(func() {
+		model.QyResolveNewUserGroup = prevResolve
+		model.QyNewUserGroup = prevQuery
+	})
 }
 
 // seedDefaultGroup 直接往扩展库写一条配置行,绕过管理端接口。

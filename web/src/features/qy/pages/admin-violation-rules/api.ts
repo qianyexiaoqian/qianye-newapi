@@ -29,9 +29,12 @@ import {
 } from '../../lib/api'
 import type { QyPage } from '../../lib/types'
 import type {
+  QyViolationBatchResult,
+  QyViolationBatchScopeOp,
   QyViolationBreaker,
   QyViolationBuiltinCatalog,
   QyViolationCounterPage,
+  QyViolationGroupScopeMode,
   QyViolationImportResult,
   QyViolationRecord,
   QyViolationRule,
@@ -89,6 +92,58 @@ export function setQyViolationRuleEnabled(
   return qyPatch<{ enabled: boolean; changed: boolean }>(
     `/admin/violation/rules/${id}/enabled`,
     { enabled }
+  )
+}
+
+/**
+ * 多选之后的批量启用 / 禁用。
+ *
+ * 与单条启停同一条纪律：后端只 `UPDATE enabled / updated_at / updated_by`，
+ * 不碰 `mode` / `pattern` / 作用域。**批量不是 mode 的第二个入口** —— 把一批规则
+ * 从影子切成真实，下一秒就开始真的扣费、阻断、累计封号，而批量入口看不到
+ * pattern 与作用域这些做判断必需的上下文。改 mode 只能在单条编辑抽屉里。
+ *
+ * `ack_enforce` 是「我已经看到选中里有哪些真实模式的规则，并且确认要把它们打开」。
+ * 只有 `enabled=true` 且选中里存在**当前停用的 enforce 规则**时后端才要求它；
+ * 没带就是 400 `qy_vio_batch_enforce_ack_required`，附带那批规则的 id 与名字。
+ * 前端在二次确认框里已经把这个数字摆出来了，所以正常路径上不会撞到这个 400 ——
+ * 撞到就说明列表是旧的（别人刚把某条切成了真实），此时该做的是刷新后重新确认。
+ *
+ * 整批**一律 200**，逐条结局在 `items` 里。判据是响应体里的 `succeeded` /
+ * `failed`，不是 HTTP 状态码。
+ */
+export function batchSetQyViolationRulesEnabled(body: {
+  ids: number[]
+  enabled: boolean
+  ack_enforce: boolean
+}): Promise<QyViolationBatchResult> {
+  return qyPost<QyViolationBatchResult>(
+    '/admin/violation/rules/batch/enabled',
+    body
+  )
+}
+
+/**
+ * 多选之后的批量设置作用分组（**模型分组**维度 —— 判定比的是这次请求实际路由到的
+ * `using_group`，不是「这个人是谁」）。
+ *
+ * `group_scope_mode` 是**必填**，三种写法都要。同一串分组名在 `include` 与
+ * `exclude` 下含义完全相反：给一条 exclude 规则追加 `vip`，是**多豁免了一个分组**，
+ * 而操作者以为自己多防了一个。所以 `append` / `remove` 遇到方向与请求不一致的规则
+ * 一律拒做（逐条 `qy_vio_batch_item_direction_mismatch`），绝不替它翻向；
+ * `replace` 不受此限 —— 「覆盖」这个词本身就包含了方向。
+ *
+ * 后端只 `UPDATE group_scope / group_scope_mode / updated_at / updated_by`。
+ */
+export function batchSetQyViolationRulesGroupScope(body: {
+  ids: number[]
+  op: QyViolationBatchScopeOp
+  groups: string[]
+  group_scope_mode: QyViolationGroupScopeMode
+}): Promise<QyViolationBatchResult> {
+  return qyPost<QyViolationBatchResult>(
+    '/admin/violation/rules/batch/group-scope',
+    body
   )
 }
 

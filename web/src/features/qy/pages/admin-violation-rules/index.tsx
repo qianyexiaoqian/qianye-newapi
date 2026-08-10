@@ -27,7 +27,7 @@ import {
   ShieldAlert,
   Trash2,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -35,6 +35,7 @@ import { StaticDataTable } from '@/components/data-table'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -62,6 +63,7 @@ import {
   setQyViolationRuleEnabled,
 } from './api'
 import { QyBuiltinPackSheet } from './components/builtin-pack-sheet'
+import { QyRuleBatchBar } from './components/rule-batch-bar'
 import { QyRuleFormSheet } from './components/rule-form-sheet'
 import { QyShadowHitsSheet } from './components/shadow-hits-sheet'
 import { QyViolationCounterCard } from './components/violation-counter-card'
@@ -99,6 +101,13 @@ export function QyAdminViolationRules() {
   // 影子命中面板挂在规则行上：从「我改了这条规则」到「我看它抓到了什么」
   // 必须是一次点击 —— 那正是项目方给影子模式定的唯一用途。
   const [shadowRule, setShadowRule] = useState<QyViolationRule | null>(null)
+  // 多选。**只存 id，选中集永远与当前这一页取交集**：批量的影响面提示要读
+  // `mode` 与 `enabled`，而翻页之后上一页的规则行已经不在手上，拿一份过期拷贝
+  // 去算「其中几条是真实模式」会算出一个与库里不符的数字 —— 而那个数字正是
+  // 二次确认框里唯一要人做判断的东西。
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
+    () => new Set()
+  )
 
   const params = useMemo(
     () => ({
@@ -109,6 +118,12 @@ export function QyAdminViolationRules() {
     }),
     [keyword, page, phase]
   )
+
+  // 换页 / 换筛选就清空勾选。不清的话，勾选集里会留着一批**屏幕上已经看不见**的
+  // 规则，而批量按钮上的数字照旧把它们算进去 —— 那是一次没有人看过内容的批量。
+  useEffect(() => {
+    setSelectedIds(new Set())
+  }, [params])
 
   const rulesQuery = useQuery({
     queryKey: qyKeys.adminViolationRules(params),
@@ -225,6 +240,8 @@ export function QyAdminViolationRules() {
   })
 
   const rules = rulesQuery.data?.items ?? []
+  const selectedRules = rules.filter((rule) => selectedIds.has(rule.id))
+  const allSelected = rules.length > 0 && selectedRules.length === rules.length
 
   return (
     <QySectionPageLayout>
@@ -336,10 +353,56 @@ export function QyAdminViolationRules() {
             emptyDescription={t('qy_vio_rules_empty_desc')}
           >
             <div className='space-y-3'>
+              {/* 批量操作条只在有勾选时出现。常驻一条「已选 0 条」的空工具栏，
+                  只会让这一页多一行永远无事可做的像素。 */}
+              {selectedRules.length > 0 && (
+                <QyRuleBatchBar
+                  selected={selectedRules}
+                  onClear={() => setSelectedIds(new Set())}
+                  onDone={() => setSelectedIds(new Set())}
+                />
+              )}
               <StaticDataTable
                 data={rules}
                 getRowKey={(row) => row.id}
                 columns={[
+                  {
+                    id: 'select',
+                    // 表头的全选只作用于**当前这一页**。跨页全选是一个看不见
+                    // 内容的批量：勾选框上写着 200，而屏幕上只有 20 行，
+                    // 剩下 180 条改了什么没有人看过。
+                    header: (
+                      <Checkbox
+                        checked={allSelected}
+                        disabled={rules.length === 0}
+                        aria-label={t('qy_vio_batch_select_all')}
+                        onCheckedChange={(checked) => {
+                          setSelectedIds(
+                            checked === true
+                              ? new Set(rules.map((rule) => rule.id))
+                              : new Set()
+                          )
+                        }}
+                      />
+                    ),
+                    className: 'w-10',
+                    cell: (row: QyViolationRule) => (
+                      <Checkbox
+                        checked={selectedIds.has(row.id)}
+                        aria-label={t('qy_vio_batch_select_one', {
+                          name: row.name,
+                        })}
+                        onCheckedChange={(checked) => {
+                          setSelectedIds((prev) => {
+                            const next = new Set(prev)
+                            if (checked === true) next.add(row.id)
+                            else next.delete(row.id)
+                            return next
+                          })
+                        }}
+                      />
+                    ),
+                  },
                   {
                     id: 'priority',
                     header: t('qy_vio_field_priority'),

@@ -49,7 +49,7 @@ func TestBuiltinCatalogIsWellFormed(t *testing.T) {
 	}
 	// 项目方点名的四类,一类都不能少。少一类不会有任何报错,只是那一类永远
 	// 没有内置规则可导 —— 而这正是"内置防护包"这个需求的全部内容。
-	for _, id := range []string{CatJailbreak, CatReverse, CatDistill, CatPressure} {
+	for _, id := range []string{CatJailbreak, CatReverse, CatDistill, CatPressure, CatUpstream} {
 		assert.True(t, known[id], "分类目录缺少 %q", id)
 	}
 
@@ -376,6 +376,38 @@ func TestBuiltinPatternsMatchRealAttacksAndSpareControls(t *testing.T) {
 			},
 			miss: []string{"请忽略我上一条消息里的错别字"},
 		},
+
+		// ── 上游安全拒绝 ──
+		// 这一类的样本是**上游返回的错误正文**,不是用户 prompt。样本仍然只写文本,
+		// 状态码由下面的循环按规则自己的 StatusScope 取(取下界),因为"状态码对不对"
+		// 由 upstream_rule_test.go 专门覆盖,这里只管模式串认不认得出真实正文。
+		"upstream.cybersecurity_refusal": {
+			hit: []string{
+				"This content was flagged for possible cybersecurity risk. If this seems wrong, " +
+					"try rephrasing your request. To get authorized for security work, " +
+					"join the Trusted Access for Cyber program",
+			},
+			miss: []string{
+				// 提到 cybersecurity 但不是那条拒绝 —— 这是最容易被"改宽一点"毁掉的边界。
+				`{"error":{"message":"cybersecurity is a valid topic"}}`,
+				`{"error":{"message":"model not found"}}`,
+			},
+		},
+		"upstream.safety_system_refusal": {
+			hit: []string{
+				`{"error":{"code":"invalid_prompt","message":"Your request was rejected as a result of our safety system."}}`,
+			},
+			miss: []string{`{"error":{"message":"prompt is too long"}}`},
+		},
+		"upstream.content_filter": {
+			hit: []string{
+				`{"error":{"code":"content_filter","innererror":{"code":"ResponsibleAIPolicyViolation"}}}`,
+				`{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}`,
+			},
+			// 只提到 content filter 这个概念、不带机器可读标识的正文不该命中 ——
+			// 取标识而不是散文正是这条规则的设计取舍。
+			miss: []string{`{"error":{"message":"the content filter is currently disabled"}}`},
+		},
 	}
 
 	for _, b := range builtinCatalog {
@@ -391,12 +423,23 @@ func TestBuiltinPatternsMatchRealAttacksAndSpareControls(t *testing.T) {
 
 		t.Run(b.Key, func(t *testing.T) {
 			cr := mustCompile(t, *b.toRule(1000, 1))
+			// 上游阶段的规则扫的是 UpstreamText 且要过状态码作用域闸,
+			// 拿 prompt 阶段那套输入去喂它,每一条都会"不在作用域"而静默全绿 ——
+			// 那正是这个用例存在的理由的反面。
+			probe := func(sample string) scanInput {
+				if b.Phase == PhasePrompt {
+					return scanInput{Text: sample}
+				}
+				return scanInput{UpstreamText: sample, StatusCode: firstStatusInScope(t, cr)}
+			}
 			for _, s := range tc.hit {
-				assert.NotNil(t, scan([]*compiledRule{cr}, cr.words, scanInput{Text: s}, s),
+				in := probe(s)
+				assert.NotNil(t, scan([]*compiledRule{cr}, cr.words, in, scanText(b.Phase, in)),
 					"必须命中真实攻击串: %q", s)
 			}
 			for _, s := range tc.miss {
-				assert.Nil(t, scan([]*compiledRule{cr}, cr.words, scanInput{Text: s}, s),
+				in := probe(s)
+				assert.Nil(t, scan([]*compiledRule{cr}, cr.words, in, scanText(b.Phase, in)),
 					"不该命中正常请求(这条反向样本是防「把模式串改成 .*」的唯一保护): %q", s)
 			}
 		})
@@ -563,4 +606,24 @@ func TestImportReportsWriteFailureAsFailedNotSkipped(t *testing.T) {
 		"写库失败必须是 failed;报成 skipped 会让一次事故看起来和「已经导入过」一模一样")
 	assert.Contains(t, out.Reason, "写入失败")
 	assert.NotEqual(t, importSkipped, out.Action)
+}
+
+// scanText 按阶段挑出参与文本匹配的那一段,与生产侧完全一致
+// (prompt 走 scanPrompt 的 in.Text,上游走 scanPostText)。
+func scanText(phase string, in scanInput) string {
+	if phase == PhasePrompt {
+		return in.Text
+	}
+	return scanPostText(in)
+}
+
+// firstStatusInScope 给出一个必然落在规则状态码作用域内的状态码。
+//
+// 硬编码 400 是不行的:下一条上游规则可能钉在 403 或 429 上,而那时这个用例
+// 会静默变成"全部样本都不在作用域",正反断言一起空转通过。
+func firstStatusInScope(t *testing.T, cr *compiledRule) int {
+	t.Helper()
+	require.NotEmpty(t, cr.statusScope,
+		"上游阶段的内置规则必须有状态码作用域,否则 5xx 正文也会参与匹配")
+	return cr.statusScope[0].lo
 }

@@ -54,6 +54,10 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 余额总览与「已提现」迁移编辑。两条路由住在 api_admin_balance.go 自己的
 	// 注册函数里,免得这里的清单与那边的处理器分两处维护、加了处理器忘了挂。
 	registerBalanceRoutes(g, crit)
+	// AFF 关系列表与手工绑定/解绑,同上。
+	registerRelationRoutes(g, crit)
+	// 手工增减佣金。
+	registerAdjustRoutes(g, crit)
 }
 
 func (Mod) StartTasks() {

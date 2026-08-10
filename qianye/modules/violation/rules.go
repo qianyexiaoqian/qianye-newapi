@@ -65,6 +65,11 @@ type compiledRule struct {
 	codes    map[string]struct{}
 	statuses []statusRange
 
+	// statusScope 是 StatusScope 列编译出来的前置条件区间表。空 = 不限状态码。
+	// 与 statuses 是两回事:statuses 是 MatchStatusCode 这一种**匹配方式**的模式,
+	// statusScope 是一道与全部匹配方式正交的**作用域**闸(见 model.go 的说明)。
+	statusScope []statusRange
+
 	// rateThreshold 是 request_rate 规则的每分钟阈值,其余匹配方式恒为 0。
 	rateThreshold int
 
@@ -297,6 +302,16 @@ func compile(r Rule) (*compiledRule, error) {
 		return nil, fmt.Errorf("未知的 match_type: %q", r.MatchType)
 	}
 
+	// 状态码作用域与 MatchStatusCode 的 pattern 共用 parseStatusRange:
+	// 管理员在两个格子里写的是同一种语法,给它们两套解析器是在制造第二份事实。
+	for _, v := range splitList(r.StatusScope) {
+		sr, err := parseStatusRange(v)
+		if err != nil {
+			return nil, fmt.Errorf("状态码作用域: %w", err)
+		}
+		cr.statusScope = append(cr.statusScope, sr)
+	}
+
 	cr.modelPats = splitList(strings.ToLower(r.ModelScope))
 	// 分组名必须走 groupname:扩展库与主库的分组列都是大小写不敏感的排序规则,
 	// 而 Go 的 map 查表是精确匹配。管理端配 "VIP"、用户实际分组是 "vip" 时,
@@ -361,6 +376,7 @@ var ruleVarcharLimits = []ruleVarcharLimit{
 	{Field: "BuiltinFingerprint", Label: "内置规则指纹", Max: 64, Get: func(r *Rule) string { return r.BuiltinFingerprint }},
 	{Field: "Phase", Label: "生效阶段", Max: 24, Get: func(r *Rule) string { return r.Phase }},
 	{Field: "MatchType", Label: "匹配方式", Max: 24, Get: func(r *Rule) string { return r.MatchType }},
+	{Field: "StatusScope", Label: "状态码作用域", Max: 64, Get: func(r *Rule) string { return r.StatusScope }},
 	{Field: "ModelScope", Label: "模型作用域", Max: 2048, Get: func(r *Rule) string { return r.ModelScope }},
 	{Field: "GroupScope", Label: "分组作用域", Max: 1024, Get: func(r *Rule) string { return r.GroupScope }},
 	{Field: "GroupScopeMode", Label: "分组作用域方向", Max: 8, Get: func(r *Rule) string { return r.GroupScopeMode }},
@@ -408,6 +424,12 @@ func ValidateRule(r *Rule) error {
 		switch r.MatchType {
 		case MatchErrorCode, MatchStatusCode, MatchUpstreamText:
 			return fmt.Errorf("match_type %q 只能用于上游阶段", r.MatchType)
+		}
+		// 同理:prompt 阶段还没有上游响应,状态码恒为 0,任何非空状态码作用域
+		// 都会把这条规则永久关在门外。允许保存等于埋一条"配置正确却永不命中"的规则,
+		// 而这类失效没有任何报错,只能靠有人去数命中量才会发现。
+		if strings.TrimSpace(r.StatusScope) != "" {
+			return fmt.Errorf("状态码作用域只能用于上游阶段(当前 phase 为 %q)", r.Phase)
 		}
 	}
 	// 反过来:请求频率只有在"即将发往上游"这一刻才有意义。挂在上游阶段的话,
@@ -461,6 +483,34 @@ func charges(action string) bool {
 }
 
 // ───────────────────────────── 作用域 ─────────────────────────────
+
+// applies 是**全部作用域闸的唯一入口**:模型、分组、上游状态码。
+//
+// 提成一个方法而不是让调用方自己 && 起来:作用域闸有三道,而它们的调用点有两处
+// (scan 的热路径与管理端试跑)。两处各写一遍 && 的后果不是"多写一行",
+// 是两处迟早不一致 —— 而不一致的表现恰好是最坏的那种:试跑面板说"不在作用域"、
+// 线上照样命中,或者反过来。管理端试跑的全部价值就是它与线上判据逐字节相同。
+func (cr *compiledRule) applies(in scanInput) bool {
+	return cr.inScope(in.Model, in.Group) && cr.statusInScope(in.StatusCode)
+}
+
+// statusInScope 判断上游状态码是否落在规则声明的状态码作用域内。空作用域 = 全部。
+//
+// 这道闸让"status_code + 正文"成为一条规则:正文由 MatchType 判,状态码由这里判,
+// 两者是 AND。没有它的话,项目方给的那条 Anthropic 拒绝
+// (400 + "flagged for possible cybersecurity risk")只能拆成两条规则,
+// 而两条规则会各自命中、各自计数、各自扣费 —— 一次上游拒绝算成两次违规。
+func (cr *compiledRule) statusInScope(status int) bool {
+	if len(cr.statusScope) == 0 {
+		return true
+	}
+	for _, sr := range cr.statusScope {
+		if status >= sr.lo && status <= sr.hi {
+			return true
+		}
+	}
+	return false
+}
 
 // inScope 判断规则是否作用于当前模型与分组。空作用域 = 全部。
 //
@@ -543,11 +593,19 @@ func scanPrompt(s *snapshot, in scanInput) *verdict {
 // scanPost 执行上游阶段匹配。关键词/正则作用于"错误文本 + 软违规原因"的拼接,
 // 这样一条词表规则既能匹配上游错误消息,也能匹配 content_filter 之类的软信号。
 func scanPost(s *snapshot, in scanInput) *verdict {
-	text := in.UpstreamText
-	if in.RejectReason != "" {
-		text = text + "\n" + in.RejectReason
+	return scan(s.postRules, s.postWords, in, scanPostText(in))
+}
+
+// scanPostText 拼出上游阶段参与文本匹配的那一段。
+//
+// 提成函数是因为管理端试跑必须用**同一段**拼接:试跑面板的全部价值是
+// "它与线上判据逐字节相同",而这里的拼接顺序(错误正文在前、软违规原因在后,
+// 中间一个换行)会影响 snippetAround 截出来的窗口,抄第二份迟早会漂。
+func scanPostText(in scanInput) string {
+	if in.RejectReason == "" {
+		return in.UpstreamText
 	}
-	return scan(s.postRules, s.postWords, in, text)
+	return in.UpstreamText + "\n" + in.RejectReason
 }
 
 func scan(rules []*compiledRule, dict []string, in scanInput, text string) *verdict {
@@ -587,7 +645,7 @@ func scan(rules []*compiledRule, dict []string, in scanInput, text string) *verd
 			scanTimeouts.Add(1)
 			break
 		}
-		if !cr.inScope(in.Model, in.Group) {
+		if !cr.applies(in) {
 			continue
 		}
 		terms := matchRule(cr, in, text, lower, hitWords)

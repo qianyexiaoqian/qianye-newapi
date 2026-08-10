@@ -60,7 +60,13 @@ function probDraft(): QyLotDraft {
     max_total_entries: 100,
     tiers: [
       { tier: 1, name: '一等奖', amount_quota: 5000, count: 1, win_ppm: 20000 },
-      { tier: 2, name: '二等奖', amount_quota: 1000, count: 3, win_ppm: 100000 },
+      {
+        tier: 2,
+        name: '二等奖',
+        amount_quota: 1000,
+        count: 3,
+        win_ppm: 100000,
+      },
     ],
   }
 }
@@ -128,8 +134,20 @@ describe('概率制的可达性', () => {
       {
         ...probDraft(),
         tiers: [
-          { tier: 1, name: 'a', amount_quota: 5000, count: 100, win_ppm: 600000 },
-          { tier: 2, name: 'b', amount_quota: 5000, count: 100, win_ppm: 600000 },
+          {
+            tier: 1,
+            name: 'a',
+            amount_quota: 5000,
+            count: 100,
+            win_ppm: 600000,
+          },
+          {
+            tier: 2,
+            name: 'b',
+            amount_quota: 5000,
+            count: 100,
+            win_ppm: 600000,
+          },
         ],
       },
       yaml,
@@ -143,7 +161,9 @@ describe('概率制的可达性', () => {
       {
         ...probDraft(),
         max_total_entries: 100,
-        tiers: [{ tier: 1, name: 'a', amount_quota: 10, count: 1, win_ppm: 1000 }],
+        tiers: [
+          { tier: 1, name: 'a', amount_quota: 10, count: 1, win_ppm: 1000 },
+        ],
       },
       yaml,
       50_000_000,
@@ -152,7 +172,10 @@ describe('概率制的可达性', () => {
     assert.ok(thin.includes('qy_lot_v_prob_budget_short'))
 
     // 配对的正例：一份合法的概率制草稿必须能通过。
-    assert.deepEqual(qyLotValidateDraft(probDraft(), yaml, 50_000_000, 2000), [])
+    assert.deepEqual(
+      qyLotValidateDraft(probDraft(), yaml, 50_000_000, 2000),
+      []
+    )
   })
 
   test('表单里真的有那一格，而且只在概率制下出现', () => {

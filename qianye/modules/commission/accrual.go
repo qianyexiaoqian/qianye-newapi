@@ -170,7 +170,18 @@ func writeAccrual(ctx context.Context, in accrualInput) (bool, error) {
 	if gdb == nil {
 		return false, db.ErrNotReady
 	}
-	gdb = gdb.WithContext(ctx)
+	return writeAccrualTx(gdb.WithContext(ctx), in)
+}
+
+// writeAccrualTx 是 writeAccrual 的显式句柄版本,语义完全相同。
+//
+// 存在的理由只有一个:管理端的手工增减佣金必须在**持有余额行锁的那个事务里**
+// 落账目行(见 api_admin_adjust.go)。自取 db.Get() 会拿到另一条连接,
+// 那条 INSERT 就跑在锁外,校验读到的余额与写入之间重新出现了间隙。
+func writeAccrualTx(gdb *gorm.DB, in accrualInput) (bool, error) {
+	if gdb == nil {
+		return false, db.ErrNotReady
+	}
 	if in.Gross.IsZero() {
 		return false, nil
 	}

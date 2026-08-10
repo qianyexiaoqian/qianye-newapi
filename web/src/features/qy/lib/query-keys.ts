@@ -134,6 +134,9 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'commission', 'health'] as const,
   adminCommissionBalances: (params: unknown) =>
     [...qyKeys.all, 'admin', 'commission', 'balances', params] as const,
+  /** AFF 关系列表（绑定中 / 已解绑两个 scope 共用，scope 在 params 里）。 */
+  adminCommissionRelations: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'commission', 'relations', params] as const,
 
   adminTransferRecords: (params: unknown) =>
     [...qyKeys.all, 'admin', 'transfer', 'records', params] as const,
@@ -177,6 +180,20 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'violation', 'stats'] as const,
   adminViolationCounters: (params: unknown) =>
     [...qyKeys.all, 'admin', 'violation', 'counters', params] as const,
+  adminViolationBanPolicies: () =>
+    [...qyKeys.all, 'admin', 'violation', 'ban-policies'] as const,
+  // 影响面预览带参数：阈值/窗口/动作任意一项变了，那个数字就必须重算。
+  // 不把参数放进 key 的话，管理员改完阈值看到的仍是上一次的数 —— 而这个数
+  // 正是他决定要不要按下保存的唯一依据。
+  adminViolationBanPolicyImpact: (params: unknown) =>
+    [
+      ...qyKeys.all,
+      'admin',
+      'violation',
+      'ban-policies',
+      'impact',
+      params,
+    ] as const,
 
   // ── 抽奖 / 竞猜（管理端）──
   adminLotteryActivities: (params: unknown) =>

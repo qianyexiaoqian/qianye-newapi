@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
@@ -102,12 +101,15 @@ func userSummary(c *gin.Context) {
 		badRequest(c, "无法识别当前用户")
 		return
 	}
-	cfg := config.Get().Violation
+	// 阈值与窗口按**这个用户所在分组**的策略档取。取全局值的话,配了专属档的
+	// 分组会看到一组与自己无关的数字 —— 而这个接口的全部目的就是让用户知道
+	// "我还剩几次",给错的数比不给更糟。
+	policy := resolveBanPolicy(c.GetString("group"))
 
 	var counter Counter
 	_ = db.Get().Where("user_id = ?", userId).Take(&counter).Error
 
-	windowHours := cfg.AutoBanWindowHours
+	windowHours := policy.WindowHours
 	if windowHours <= 0 {
 		windowHours = 24
 	}
@@ -117,8 +119,8 @@ func userSummary(c *gin.Context) {
 		hit = 0
 	}
 	remaining := 0
-	if cfg.AutoBanThreshold > 0 {
-		remaining = cfg.AutoBanThreshold - hit
+	if policy.Threshold > 0 {
+		remaining = policy.Threshold - hit
 		if remaining < 0 {
 			remaining = 0
 		}
@@ -130,10 +132,14 @@ func userSummary(c *gin.Context) {
 		Select("COALESCE(SUM(fee_quota),0)").Scan(&feeTotal)
 
 	respond(c, gin.H{
-		"hit_count":       hit,
-		"window_hours":    windowHours,
-		"ban_threshold":   cfg.AutoBanThreshold,
-		"remaining":       remaining,
+		"hit_count":     hit,
+		"window_hours":  windowHours,
+		"ban_threshold": policy.Threshold,
+		"remaining":     remaining,
+		// 达到阈值之后会发生什么必须一并告知:同一个"还剩 2 次"在
+		// 「仅记录」档下不会有任何后果,在「封号」档下是账号被限制。
+		// 只给数字不给动作,用户无从判断该不该紧张。
+		"policy_action":   policy.Action,
 		"total_fee_quota": feeTotal,
 	})
 }

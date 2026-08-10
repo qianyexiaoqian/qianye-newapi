@@ -244,7 +244,12 @@ func handleHit(c *gin.Context, info *relaycommon.RelayInfo, phase string, in sca
 		// insufficient_balance_policy = ban:扣不到钱就直接顶到阈值,立刻进入封号判定。
 		// (只可能来自 chargeFee → applyBalancePolicy,而影子分支根本不调 chargeFee,
 		// 所以这一条不会在影子模式下发生。)
-		weight = config.Get().Violation.AutoBanThreshold
+		//
+		// 阈值必须按**这个用户所在分组**的那一档取。取全局 YAML 值的话,
+		// 一个分组的阈值被调到 3、YAML 里还写着 10 时,这条"一次顶满"的路径
+		// 会给出 10 —— 比该档要求的还多,而多出来的部分会一直留在计数器里,
+		// 让该用户在解封后的下一次违规立刻再次越线。
+		weight = resolveBanPolicy(info.UsingGroup).Threshold
 	}
 	// 影子记录也留下 count_weight:它回答"若真实执行,这一次会给计数加几"。
 	// 它**不会**被写进计数器(persist 里影子直接跳过 bumpCounter),
@@ -313,7 +318,10 @@ func persistRecord(ctx context.Context, gdb *gorm.DB, rec *Record, payload *Payl
 	if shadow || weight <= 0 {
 		return nil
 	}
-	st, err := bumpCounter(ctx, gdb, rec.UserId, weight)
+	// 分组取记录里冻结的那一个(命中当时用户实际在用的分组),不是"现在去查一次"。
+	// 异步 worker 可能在几秒后才跑到这里,期间用户分组可以被管理员改掉,
+	// 而按新分组的阈值去判一次几秒前的违规是错的。
+	st, err := bumpCounter(ctx, gdb, rec.UserId, weight, rec.UsingGroup)
 	if err != nil {
 		return err
 	}
@@ -369,7 +377,19 @@ func newRecord(c *gin.Context, info *relaycommon.RelayInfo, phase string, in sca
 		RequestId:    truncate(requestId, 64),
 		Ip:           truncate(c.ClientIP(), 64),
 		MatchedTerms: truncate(joinTerms(v.Terms), 1024),
-		MatchSnippet: truncate(v.Snippet, 2048),
+		// 命中片段落库前必须脱敏。此前只有归档证据(buildEvidence)走 redact,
+		// 主表这一列是原文直存 —— 而它恰恰是管理端列表**直接整行返回**的那一列,
+		// 比归档更容易被看到。
+		//
+		// 上游阶段让这个缺口变得具体:上游错误正文经常把请求内容原样回抄
+		// (RelayErrorHandler 在 showBodyWhenFail 下会把整个响应体拼进
+		// apiErr.Err,不少провайдер 的 400 会带上出错的那一段输入),
+		// 于是用户的邮箱、手机号、密钥会顺着一次上游拒绝落进违规记录表。
+		//
+		// 两个阶段一起脱敏,不做区分:prompt 片段同样是用户原文,同样的风险,
+		// 而"只有一半列被脱敏"这种不对称迟早会被下一个人当成 bug 抹平 ——
+		// 抹平的方向大概率是去掉限制。
+		MatchSnippet: truncate(redactSnippet(v.Snippet), 2048),
 		CounterAfter: counterAfter,
 		Status:       RecordActive,
 		FeeStatus:    FeeStatusNone,

@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 
 	"gorm.io/gorm"
@@ -27,6 +26,13 @@ type counterState struct {
 	// 阻碍解除后的下一次违规会重新走到封号判定。
 	// 重复封号由 (user_id, ban_cycle) 唯一索引兜住,代价只是一次冲突插入。
 	Reached bool
+	// Policy 是本次推进所依据的策略档(按用户当时的分组解析)。
+	//
+	// 必须随计数一起返回,而不是让下游再解析一次:两次解析之间策略表可能被改
+	// (管理端改阈值 → invalidateBanPolicies → 下一次读回源),于是"按 A 档
+	// 判定达到阈值"和"按 B 档执行处置"会落在同一条链路上,
+	// 而 Ban 行冻结下来的 threshold 与真正触发它的那个数字对不上。
+	Policy BanPolicy
 }
 
 // bumpCounter 原子地推进用户的滚动窗口计数。
@@ -45,8 +51,13 @@ type counterState struct {
 //     提交,因此这次读到的必然是本次推进的结果,而不会读到别人已经推进过的值。
 //     (刻意不用 LAST_INSERT_ID():它是会话级变量,GORM 连接池会把 Exec 与 Raw
 //     发到不同连接上,跨连接读到的是别人的值 —— 这是最隐蔽的一类 bug。)
-func bumpCounter(ctx context.Context, gdb *gorm.DB, userId, weight int) (counterState, error) {
+//
+// userGroup 决定用哪一档策略:窗口长度与阈值都来自那一档,不再是全局 YAML。
+// 空分组由 resolveBanPolicy 折进兜底档。
+func bumpCounter(ctx context.Context, gdb *gorm.DB, userId, weight int, userGroup string) (counterState, error) {
 	var st counterState
+	policy := resolveBanPolicy(userGroup)
+	st.Policy = policy
 	if weight <= 0 {
 		return st, nil
 	}
@@ -54,8 +65,7 @@ func bumpCounter(ctx context.Context, gdb *gorm.DB, userId, weight int) (counter
 		return st, db.ErrNotReady
 	}
 
-	cfg := config.Get().Violation
-	windowHours := cfg.AutoBanWindowHours
+	windowHours := policy.WindowHours
 	if windowHours <= 0 {
 		windowHours = 24
 	}
@@ -88,10 +98,12 @@ func bumpCounter(ctx context.Context, gdb *gorm.DB, userId, weight int) (counter
 	})
 	if err != nil {
 		db.MarkFailure(err)
-		return counterState{}, err
+		// 失败也要带着策略回去:调用方靠 st.Policy 写审计与日志,
+		// 返回一个零值 Policy 会让"当时按哪一档判的"变成空白。
+		return counterState{Policy: policy}, err
 	}
 
-	st.Reached = reachedThreshold(st.HitCount, cfg.AutoBanThreshold)
+	st.Reached = reachedThreshold(st.HitCount, policy.Threshold)
 	return st, nil
 }
 
@@ -105,7 +117,7 @@ func reachedThreshold(after, threshold int) bool {
 // (user_id, ban_cycle) 唯一索引就是分布式互斥锁:一个封禁周期内只可能有一个
 // 节点插入成功。created == false 表示本周期已被认领,此时返回库里那一行 ——
 // 调用方需要看它的状态才能判断"是已有结论"还是"被速率闸推迟、现在可以提升执行"。
-func claimBan(ctx context.Context, gdb *gorm.DB, userId, cycle, hitCount int, recordId int64, status string) (*Ban, bool, error) {
+func claimBan(ctx context.Context, gdb *gorm.DB, userId, cycle, hitCount int, recordId int64, status string, policy BanPolicy) (*Ban, bool, error) {
 	if gdb == nil {
 		return nil, false, db.ErrNotReady
 	}
@@ -114,9 +126,13 @@ func claimBan(ctx context.Context, gdb *gorm.DB, userId, cycle, hitCount int, re
 		BanCycle:        cycle,
 		TriggerRecordId: recordId,
 		HitCountAt:      hitCount,
-		Threshold:       config.Get().Violation.AutoBanThreshold,
-		Status:          status,
-		CreatedAt:       common.GetTimestamp(),
+		// 阈值与动作来自**本次判定用的那一档**,不是"现在配置里写着什么"。
+		// 后者会在管理员改完策略之后把历史封禁行解释成另一个原因。
+		Threshold:    policy.Threshold,
+		PolicyGroup:  truncate(policy.UserGroup, 64),
+		PolicyAction: policy.Action,
+		Status:       status,
+		CreatedAt:    common.GetTimestamp(),
 	}
 	res := gdb.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(row)
 	if res.Error != nil {
@@ -237,10 +253,13 @@ func openNewBanCycle(userId int, resetCount bool) error {
 //     影子期间的命中**不会**累积到 hit_count,所以"熔断解除后下一次违规会重新
 //     走到这里"依赖的是那次**真实**命中自己的权重,而不是影子期间攒下的计数。
 //     这正是裁决 2 要的语义:观察期不给用户留下任何处置负债。
+//   - 「仅记录」档:落一行 observed 就返回。它与熔断分支的区别是**必须留行** ——
+//     熔断是系统自己的临时刹车(不该污染封禁列表),而「仅记录」是管理员选定的
+//     长期口径,那份"谁越了线"的名单正是这一档存在的全部理由。
 //   - 速率闸:直接以 deferred 状态落行(而不是"先落 pending 再改状态"),
 //     进程在两步之间崩溃会留下一行会被补偿任务执行的 pending,那等于绕过速率闸。
-//   - 已存在的行:只有 deferred 可以被提升。pending / failed 是补偿任务的地盘,
-//     banned / skipped / unbanned 是已经有结论的终态。
+//   - 已存在的行:只有 deferred 与 observed 可以被提升(两者都还没有结论)。
+//     pending / failed 是补偿任务的地盘,banned / skipped / unbanned 是终态。
 func resolveBanClaim(ctx context.Context, gdb *gorm.DB, rec *Record, st counterState) *Ban {
 	if gdb == nil || !st.Reached {
 		return nil
@@ -253,12 +272,27 @@ func resolveBanClaim(ctx context.Context, gdb *gorm.DB, rec *Record, st counterS
 		return nil
 	}
 
+	// 「仅记录」档在这里止步:落一行 observed 让管理员看得见谁越了线,
+	// 但一个字节都不碰主库。它是终态,不会被补偿任务捡起来执行 ——
+	// 那正是这一档的定义。认领仍然走 claimBan,是因为
+	// (user_id, ban_cycle) 唯一索引同样要保证一个周期只写一行:
+	// 越线之后的每一次违规都会再走到这里,不去认领就会刷出一串重复行。
+	if st.Policy.Action == PolicyActionRecord {
+		if _, created, err := claimBan(ctx, gdb, rec.UserId, st.BanCycle, st.HitCount,
+			rec.Id, BanObserved, st.Policy); err == nil && created {
+			common.SysLog(fmt.Sprintf(
+				"qianye/violation: 用户 %d 违规计数已达 %d(策略档 %q,阈值 %d),该档只要求记录,未处置账号",
+				rec.UserId, st.HitCount, policyLabel(st.Policy), st.Policy.Threshold))
+		}
+		return nil
+	}
+
 	rateExceeded := banRateExceeded()
 	status := BanPending
 	if rateExceeded {
 		status = BanDeferred
 	}
-	ban, created, err := claimBan(ctx, gdb, rec.UserId, st.BanCycle, st.HitCount, rec.Id, status)
+	ban, created, err := claimBan(ctx, gdb, rec.UserId, st.BanCycle, st.HitCount, rec.Id, status, st.Policy)
 	if err != nil || ban == nil {
 		return nil
 	}
@@ -271,13 +305,29 @@ func resolveBanClaim(ctx context.Context, gdb *gorm.DB, rec *Record, st counterS
 		return nil
 	}
 	if !created {
-		if ban.Status != BanDeferred {
+		// 可提升的只有两种"还没有结论"的状态:
+		//   - deferred:速率闸挡下的,闸松了就该执行;
+		//   - observed:落行时策略档是「仅记录」,而现在这一档已经被改成
+		//     restrict/ban。不提升的话,管理员把策略收紧之后,**已经越线的存量
+		//     账号永远不会被处置** —— 他们的本周期唯一键早已被 observed 行占住,
+		//     后续每一次违规都撞冲突返回,收紧动作对他们完全无效。
+		//     这正是影响面预览要回答的那批人,预览说会处置、实际不处置是最坏的组合。
+		// pending / failed 是补偿任务的地盘,banned / skipped / unbanned 是终态。
+		if ban.Status != BanDeferred && ban.Status != BanObserved {
 			return nil
 		}
-		// deferred → pending 的 CAS 是这条提升路径唯一的互斥手段。
+		from := ban.Status
+		// CAS 精确锁定读到的那个状态,是这条提升路径唯一的互斥手段。
+		// 提升的同时把阈值与动作改写成**当前这一档**:这一行原本冻结的是
+		// 「仅记录」档的判据,执行的却是新档,两者不一致会让复盘对不上。
 		res := gdb.WithContext(ctx).Model(&Ban{}).
-			Where("id = ? AND status = ?", ban.Id, BanDeferred).
-			Update("status", BanPending)
+			Where("id = ? AND status = ?", ban.Id, from).
+			Updates(map[string]any{
+				"status":        BanPending,
+				"threshold":     st.Policy.Threshold,
+				"policy_group":  truncate(st.Policy.UserGroup, 64),
+				"policy_action": st.Policy.Action,
+			})
 		if res.Error != nil {
 			db.MarkFailure(res.Error)
 			return nil
@@ -286,6 +336,9 @@ func resolveBanClaim(ctx context.Context, gdb *gorm.DB, rec *Record, st counterS
 			return nil
 		}
 		ban.Status = BanPending
+		ban.Threshold = st.Policy.Threshold
+		ban.PolicyGroup = truncate(st.Policy.UserGroup, 64)
+		ban.PolicyAction = st.Policy.Action
 	}
 	noteBan()
 	return ban

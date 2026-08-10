@@ -110,3 +110,88 @@ func TestQyResolveNewUserGroup_DefaultImplIsIdentity(t *testing.T) {
 	assert.Equal(t, "", model.QyResolveNewUserGroup(""))
 	assert.Equal(t, "vip", model.QyResolveNewUserGroup("vip"))
 }
+
+// 只读查询侧的默认实现必须给出**上游兜底分组**,而不是空串。
+//
+// 空串在 service.GetUserUsableGroups 里是「匿名口径」,与「新用户会落进
+// default」是两个截然不同的答案 —— 模型广场的未登录展示直接消费这个返回值,
+// 返回空串会让扩展禁用的站点重新退回"未登录看到空页面"。
+func TestQyNewUserGroup_DefaultImplIsUpstreamDefault(t *testing.T) {
+	assert.Equal(t, model.UpstreamDefaultUserGroup, model.QyNewUserGroup())
+	assert.Equal(t, upstreamDefaultGroup, model.UpstreamDefaultUserGroup,
+		"本模块的兜底常量与上游那一份必须是同一个字符串,抄成两份就会说两句话")
+}
+
+// TestNewUserGroupAgreesWithResolveNewUserGroup —— 只读查询侧与写入侧必须永远
+// 给出同一个分组。
+//
+// 断言的右侧是**数据库里真正落下的值**(走 model.User 的真实插入路径),
+// 左侧是模型广场未登录展示所消费的那个查询。两者分家的表现是:
+// 访客在价格页上看到 A 的模型与倍率,注册完发现自己在 B ——
+// 一次页面级的价格欺骗,而且两侧各自的单测都会是绿的。
+func TestNewUserGroupAgreesWithResolveNewUserGroup(t *testing.T) {
+	cases := []struct {
+		name       string
+		groupRatio string
+		configured string
+		want       string
+	}{
+		{
+			name:       "未配置回落上游兜底分组",
+			groupRatio: `{"default":1,"vip":0.8}`,
+			configured: "",
+			want:       upstreamDefaultGroup,
+		},
+		{
+			name:       "配置生效",
+			groupRatio: `{"default":1,"vip":0.8}`,
+			configured: "vip",
+			want:       "vip",
+		},
+		{
+			name:       "配置的分组已被删掉时回落",
+			groupRatio: `{"default":1}`,
+			configured: "vip",
+			want:       upstreamDefaultGroup,
+		},
+		{
+			name:       "auto 永远不作为用户分组下发",
+			groupRatio: `{"default":1,"auto":1}`,
+			configured: autoGroup,
+			want:       upstreamDefaultGroup,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			extDB := newExtDB(t)
+			mainDB := newMainDB(t)
+			useGroupRatio(t, tc.groupRatio)
+			installHook(t)
+			if tc.configured != "" {
+				seedDefaultGroup(t, extDB, tc.configured)
+			}
+
+			assert.Equal(t, tc.want, model.QyNewUserGroup(), "只读查询侧")
+			assert.Equal(t, tc.want, insertUser(t, mainDB, "qy-agree-user", ""), "写入侧(库里真正落下的值)")
+		})
+	}
+}
+
+// 扩展库不可用时,只读查询侧必须与写入侧一起 fail-open 到上游兜底分组。
+//
+// 单独列一条是因为这条路径上两侧的代码不同:写入侧靠"返回空串 → 数据库列默认值",
+// 查询侧没有数据库兜底,必须自己给出 upstreamDefaultGroup。
+func TestNewUserGroupExtensionDBDownFallsBackToUpstreamDefault(t *testing.T) {
+	extDB := newExtDB(t)
+	newMainDB(t)
+	useGroupRatio(t, `{"default":1,"vip":0.8}`)
+	installHook(t)
+	seedDefaultGroup(t, extDB, "vip")
+	require.Equal(t, "vip", model.QyNewUserGroup())
+
+	qyDBHealthy.Store(false)
+	resetCache()
+
+	assert.Equal(t, upstreamDefaultGroup, model.QyNewUserGroup())
+}

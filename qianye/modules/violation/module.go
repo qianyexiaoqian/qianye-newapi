@@ -1,11 +1,13 @@
 package violation
 
 import (
+	"context"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/qianye/config"
+	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/module"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
@@ -29,6 +31,7 @@ func (Mod) Tables() []any {
 		&Counter{},
 		&Ban{},
 		&Appeal{},
+		&BanPolicy{},
 	}
 }
 
@@ -52,6 +55,19 @@ func (Mod) InstallHooks() {
 	// 编译出来一律按影子跑 —— 结果是对的,但管理端列表会显示一个渲染不出来的
 	// 第三种模式,运营看到的就是"我这条规则既不是影子也不是真实"。
 	runRuleModeMigration()
+
+	// 兜底策略档必须在预热之前补建:第一条违规可能在启动后的几毫秒内就到,
+	// 而那时如果一行策略都没有,resolveBanPolicy 会落到 YAML 兜底 ——
+	// 结果是对的(YAML 就是种子),但管理端会先看到一张空表,
+	// 让人以为"策略还没配、所以现在不封号"。
+	if gdb := db.Get(); gdb != nil {
+		if err := ensureDefaultBanPolicy(context.Background(), gdb); err != nil {
+			common.SysError("qianye/violation: 兜底封号策略补建失败(将回落到 YAML 阈值): " + err.Error())
+		}
+		if err := reloadBanPolicies(context.Background(), gdb); err != nil {
+			common.SysError("qianye/violation: 封号策略预热失败(将回落到 YAML 阈值): " + err.Error())
+		}
+	}
 
 	if err := reload(true); err != nil {
 		common.SysError("qianye/violation: 规则快照预热失败(热路径将放行,稍后自动重试): " + err.Error())
@@ -80,6 +96,9 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/violation/appeals", adminListAppeals)
 	g.GET("/violation/stats", adminStats)
 	g.GET("/violation/counters", adminListCounters)
+	g.GET("/violation/ban-policies", adminListBanPolicies)
+	// 影响面预览是只读的,但它要跨库扫描,所以挂搜索限流而不是完全裸奔。
+	g.GET("/violation/ban-policies/impact", middleware.SearchRateLimit(), adminBanPolicyImpact)
 
 	// 写接口一律挂关键操作限流:它们要么直接改钱/改账号状态,
 	// 要么改的是决定这两者的规则。
@@ -91,6 +110,14 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 十几秒前拉下来的拷贝,整体写回去会把这期间别人对 pattern / mode / 作用域
 	// 的改动一起静默回滚 —— 而回滚的正是决定谁被扣钱、谁被封号的那几列。
 	g.PATCH("/violation/rules/:id/enabled", crit, adminSetRuleEnabled)
+	// 列表多选之后的批量操作。刻意是两条**动作独立**的路由,而不是一条带 op 参数的
+	// 万能批量接口:批量启停与批量改作用分组的危险面完全不同(前者要过"选中里有没有
+	// 真实模式规则"这道确认闸,后者要过"覆盖还是追加、哪一种名单"这道),
+	// 揉进一个入口就必须在同一份校验里表达两套互不相干的前置条件。
+	//
+	// mode(影子 / 真实)**不在**批量里,理由见 adminBatchSetRuleEnabled 的注释。
+	g.POST("/violation/rules/batch/enabled", crit, adminBatchSetRuleEnabled)
+	g.POST("/violation/rules/batch/group-scope", crit, adminBatchSetRuleGroupScope)
 	g.DELETE("/violation/rules/:id", crit, adminDeleteRule)
 	g.POST("/violation/rules/test", adminTestRule)
 	// 一键导入内置防护规则包。导入出来一律是影子模式的普通规则行,
@@ -103,6 +130,12 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 改模式就是改那条规则,不再有第二个入口。
 	g.POST("/violation/breaker/reset", crit, adminResetBreaker)
 	g.POST("/violation/counters/:userId/reset", crit, adminResetCounter)
+	// 兜底档与普通档是两条路由,不是一个带 is_default 参数的接口。
+	// 路径决定身份:没有任何请求体能把普通档变成兜底档、或把兜底档降级 ——
+	// 而"兜底档被降级"与"兜底档被删除"是同一件事(见 model.go 的三道锁)。
+	g.PUT("/violation/ban-policies/default", crit, func(c *gin.Context) { adminUpsertBanPolicy(c, true) })
+	g.PUT("/violation/ban-policies", crit, func(c *gin.Context) { adminUpsertBanPolicy(c, false) })
+	g.DELETE("/violation/ban-policies/:id", crit, adminDeleteBanPolicy)
 }
 
 func (Mod) StartTasks() {

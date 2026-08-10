@@ -33,8 +33,10 @@ import {
 import { CHANNEL_STATUS } from '@/features/channels/constants'
 import { channelsQueryKeys } from '@/features/channels/lib'
 
+import { QyAmountText } from '../components/qy-amount-text'
 import { QyConfirmDialog } from '../components/qy-confirm-dialog'
 import { qyErrorMessage } from '../lib/api'
+import { formatQyQuotaLedger } from '../lib/format'
 import {
   qyBatchChannelStatus,
   qyBatchDeleteChannels,
@@ -93,8 +95,14 @@ export function QyChannelBulkResultOutlet() {
  *   删除      不可逆确认 + 勾选 + 列出渠道名
  */
 export function QyChannelBulkActions(props: {
-  /** 当前选中的渠道。只需要 id 与 name —— name 用在确认与失败列表里。 */
-  channels: Array<{ id: number; name: string }>
+  /**
+   * 当前选中的渠道。
+   *
+   * `used_quota` 是列表页那一列的原值（quota 整数），确认框据此复述
+   * "这一次要抹掉多少钱"。少了它，管理员在按下一个不可逆按钮之前，
+   * 屏幕上只有一个条数 —— 而 20 个渠道可能对应 3 块钱，也可能对应 3 万块。
+   */
+  channels: Array<{ id: number; name: string; used_quota: number }>
   /** 批次跑完之后清空选中态。 */
   onDone: () => void
   /** 无 `channel:sensitive_write` 时禁用删除与重置。真正说了算的是后端。 */
@@ -122,36 +130,50 @@ export function QyChannelBulkActions(props: {
    * 接口回 200 不等于事情做成了，判据是响应体里的 succeeded/failed，
    * 而不是 HTTP 状态码好不好看。
    */
-  const finish = (title: string) => (result: QyChannelBatchResult) => {
-    // 报告先开:openReport 写的是组件树之外的 store,而下面的 props.onDone()
-    // 会把选中数清成 0、连带卸载本组件。顺序反过来的那一版里,这一句 setState
-    // 落在已卸载的实例上被静默丢弃 —— 屏幕上只剩一句红色 toast,而它指向的
-    // "明细"没有任何入口。判据见 channel-bulk/__tests__/result-store.test.ts。
-    if (result.failed > 0 || result.skipped > 0) {
-      openReport({ result, title })
-    }
-    queryClient.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
-    setConfirming(null)
-    props.onDone()
+  const finish =
+    <T extends QyChannelBatchResult>(
+      title: string,
+      /**
+       * 全成功时的提示文案。默认只说条数；重置那一路覆盖它，
+       * 把后端回来的**真正被抹掉的金额**说出来 —— 确认框里那个数是估算，
+       * 结果不能把估算值复述一遍当成事实。
+       */
+      okMessage?: (result: T) => string
+    ) =>
+    (result: T) => {
+      // 报告先开:openReport 写的是组件树之外的 store,而下面的 props.onDone()
+      // 会把选中数清成 0、连带卸载本组件。顺序反过来的那一版里,这一句 setState
+      // 落在已卸载的实例上被静默丢弃 —— 屏幕上只剩一句红色 toast,而它指向的
+      // "明细"没有任何入口。判据见 channel-bulk/__tests__/result-store.test.ts。
+      if (result.failed > 0 || result.skipped > 0) {
+        openReport({ result, title })
+      }
+      queryClient.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
+      setConfirming(null)
+      props.onDone()
 
-    if (result.failed > 0) {
-      // 有失败就一定把明细摊开：toast 装不下 20 行，也留不住，而管理员
-      // 接下来要做的事需要那份名单一直在屏幕上。
-      toast.error(t('qy_chops_toast_partial', { count: result.failed }))
-      return
-    }
-    if (result.skipped > 0) {
-      // 全是"本来就不用动"也要说出来：它常常意味着选错范围了。
+      if (result.failed > 0) {
+        // 有失败就一定把明细摊开：toast 装不下 20 行，也留不住，而管理员
+        // 接下来要做的事需要那份名单一直在屏幕上。
+        toast.error(t('qy_chops_toast_partial', { count: result.failed }))
+        return
+      }
+      if (result.skipped > 0) {
+        // 全是"本来就不用动"也要说出来：它常常意味着选错范围了。
+        toast.success(
+          t('qy_chops_toast_with_skipped', {
+            done: result.succeeded,
+            skipped: result.skipped,
+          })
+        )
+        return
+      }
       toast.success(
-        t('qy_chops_toast_with_skipped', {
-          done: result.succeeded,
-          skipped: result.skipped,
-        })
+        okMessage
+          ? okMessage(result)
+          : t('qy_chops_toast_ok', { count: result.succeeded })
       )
-      return
     }
-    toast.success(t('qy_chops_toast_ok', { count: result.succeeded }))
-  }
 
   const onError = (error: unknown) => {
     setConfirming(null)
@@ -178,7 +200,12 @@ export function QyChannelBulkActions(props: {
   const resetMutation = useMutation({
     mutationFn: () =>
       qyBatchResetChannelUsage(ids, { resetUsedQuota, resetBalance }),
-    onSuccess: finish(t('qy_chops_reset_title')),
+    onSuccess: finish(t('qy_chops_reset_title'), (result) =>
+      t('qy_chops_toast_reset_ok', {
+        count: result.succeeded,
+        amount: formatQyQuotaLedger(result.cleared_used_quota),
+      })
+    ),
     onError,
   })
 
@@ -245,12 +272,15 @@ export function QyChannelBulkActions(props: {
         // 这里只是不让用户白按一次。
         confirmDisabled={!resetUsedQuota && !resetBalance}
         details={
-          <ResetOptions
-            usedQuota={resetUsedQuota}
-            balance={resetBalance}
-            onUsedQuotaChange={setResetUsedQuota}
-            onBalanceChange={setResetBalance}
-          />
+          <div className='space-y-4'>
+            <ResetImpact channels={props.channels} willClear={resetUsedQuota} />
+            <ResetOptions
+              usedQuota={resetUsedQuota}
+              balance={resetBalance}
+              onUsedQuotaChange={setResetUsedQuota}
+              onBalanceChange={setResetBalance}
+            />
+          </div>
         }
         onConfirm={() => resetMutation.mutate()}
       />
@@ -300,6 +330,70 @@ function IconAction(props: {
         <p>{props.label}</p>
       </TooltipContent>
     </Tooltip>
+  )
+}
+
+/**
+ * 「这一次要抹掉多少」的复述。
+ *
+ * # 为什么条数不够
+ *
+ * `used_quota` 清零没有任何补算路径：日志表里还有逐条流水，但渠道行上那个累计值
+ * 回不来。而"选中 20 个渠道"这句话完全不足以让人判断该不该按下去 —— 同样是
+ * 20 个渠道，可能对应 3 块钱，也可能对应 3 万块。金额必须在按下确认之前
+ * 出现在同一屏上，而且要用站内余额口径（`QyAmountText` → 上游
+ * `formatQuotaWithCurrency`），与列表页那一列、钱包页、日志页完全一致；
+ * 直接把 quota 整数摊出来等于让管理员自己心算汇率。
+ *
+ * 已经是 0 的那些单独计数：它们不会有任何变化，混进总数会让人以为
+ * "20 个渠道都有消耗"。
+ *
+ * `willClear` 为 false（没勾「清空已用额度」）时，这一屏必须说清楚上面那笔钱
+ * 这次**不会**被清 —— 否则金额与不可逆警示同屏出现，读起来就是"要清这么多"。
+ */
+function ResetImpact(props: {
+  channels: Array<{ id: number; name: string; used_quota: number }>
+  willClear: boolean
+}) {
+  const { t } = useTranslation()
+  const total = props.channels.reduce(
+    (sum, channel) =>
+      sum + (Number.isFinite(channel.used_quota) ? channel.used_quota : 0),
+    0
+  )
+  const withUsage = props.channels.filter((channel) => channel.used_quota > 0)
+  const alreadyZero = props.channels.length - withUsage.length
+
+  return (
+    <div className='space-y-2 rounded-md border p-3'>
+      <div className='flex items-center justify-between gap-4 text-sm'>
+        <span className='text-muted-foreground'>
+          {t('qy_chops_reset_selected_count')}
+        </span>
+        <span className='font-medium tabular-nums'>
+          {t('qy_chops_reset_channel_count', { count: props.channels.length })}
+        </span>
+      </div>
+      <div className='flex items-center justify-between gap-4 text-sm'>
+        <span className='text-muted-foreground'>
+          {t('qy_chops_reset_total_used')}
+        </span>
+        <QyAmountText quota={total} variant='ledger' className='font-medium' />
+      </div>
+      {alreadyZero > 0 && (
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_chops_reset_already_zero', { count: alreadyZero })}
+        </p>
+      )}
+      {!props.willClear && (
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_chops_reset_used_quota_not_selected')}
+        </p>
+      )}
+      {withUsage.length > 0 && (
+        <ChannelNameList channels={withUsage} showUsedQuota />
+      )}
+    </div>
   )
 }
 
@@ -372,30 +466,51 @@ function ResetOptions(props: {
 }
 
 /**
- * 待删除渠道的名字清单。
+ * 受影响渠道的清单。
  *
  * 需求点名要「明确显示影响条数与渠道名」：只说"确定删除 20 个渠道吗"，
  * 用户无法发现自己多勾了一行 —— 而删除之后没有撤销键。
  *
+ * `showUsedQuota` 打开时逐行带上这个渠道的已用额度：重置那一屏的合计能回答
+ * "一共多少"，但回答不了"是哪一个渠道占了大头"，而后者恰恰是发现选错范围
+ * （比如误勾了主力渠道）唯一的信号。
+ *
  * 超过 12 条只列前 12 个再加一句"还有 N 个"：全量铺开会把确认按钮顶出屏幕，
- * 而那正是这一屏最需要用户看见的东西。
+ * 而那正是这一屏最需要用户看见的东西。重置这一路按金额从大到小排，
+ * 被折叠掉的因此永远是最小的那些。
  */
 function ChannelNameList(props: {
-  channels: Array<{ id: number; name: string }>
+  channels: Array<{ id: number; name: string; used_quota?: number }>
+  showUsedQuota?: boolean
 }) {
   const { t } = useTranslation()
-  const shown = props.channels.slice(0, 12)
-  const rest = props.channels.length - shown.length
+  const ordered =
+    props.showUsedQuota === true
+      ? [...props.channels].sort(
+          (a, b) => (b.used_quota ?? 0) - (a.used_quota ?? 0)
+        )
+      : props.channels
+  const shown = ordered.slice(0, 12)
+  const rest = ordered.length - shown.length
 
   return (
     <div className='space-y-2'>
       <ul className='max-h-48 space-y-1 overflow-y-auto rounded-md border p-2 text-sm'>
         {shown.map((channel) => (
-          <li key={channel.id} className='truncate'>
-            <span className='font-medium'>
-              {channel.name === '' ? `#${channel.id}` : channel.name}
+          <li key={channel.id} className='flex items-center gap-2'>
+            <span className='min-w-0 flex-1 truncate'>
+              <span className='font-medium'>
+                {channel.name === '' ? `#${channel.id}` : channel.name}
+              </span>
+              <span className='text-muted-foreground ml-1'>#{channel.id}</span>
             </span>
-            <span className='text-muted-foreground ml-1'>#{channel.id}</span>
+            {props.showUsedQuota === true && (
+              <QyAmountText
+                quota={channel.used_quota ?? 0}
+                variant='ledger'
+                className='shrink-0 text-xs'
+              />
+            )}
           </li>
         ))}
       </ul>

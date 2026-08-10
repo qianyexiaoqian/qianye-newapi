@@ -20,7 +20,10 @@ func GetPerfMetricsSummary(c *gin.Context) {
 	}
 
 	activeGroups := append(lo.Keys(ratio_setting.GetGroupRatioCopy()), "auto")
-	activeGroups = QyGroupVisFilterGroupKeys(c.GetInt("id"), c.GetString("group"), activeGroups)
+	// 与 /api/pricing 同一个观察者口径:未登录时按注册默认用户分组过滤。
+	// 两处必须一致 —— 分家的表现是模型广场上有价格的模型没有可用率、
+	// 或者反过来,而两块数据就并排显示在同一张卡片上。
+	activeGroups = QyGroupVisFilterGroupKeys(c.GetInt("id"), plazaViewerUserGroup(c), activeGroups)
 	result, err := perfmetrics.QuerySummaryAll(hours, activeGroups)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -67,7 +70,7 @@ func GetPerfMetrics(c *gin.Context) {
 	}
 
 	result.Groups = filterActiveGroups(result.Groups)
-	result.Groups = QyGroupVisFilterPerfGroups(c.GetInt("id"), c.GetString("group"), result.Groups)
+	result.Groups = QyGroupVisFilterPerfGroups(c.GetInt("id"), plazaViewerUserGroup(c), result.Groups)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

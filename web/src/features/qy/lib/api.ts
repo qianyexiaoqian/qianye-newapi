@@ -236,6 +236,24 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_withdrawn_over_available: 'qy_err_cb_over_available',
   qy_withdrawn_over_earned: 'qy_err_cb_over_earned',
   qy_withdrawn_overflow: 'qy_err_cb_overflow',
+  // AFF 关系绑定/解绑（qianye/modules/commission/api_admin_relation.go）。
+  // 六个 code 要求管理员做的下一步完全不同：改一个人 / 先解绑 / 这条绑定本身
+  // 不该做 / 刷新重来。合并成一句"参数有误"只会让人对着同一个必然失败的
+  // 请求反复重试。
+  qy_rel_self_invite: 'qy_err_rel_self_invite',
+  qy_rel_user_not_found: 'qy_err_rel_user_not_found',
+  qy_rel_already_bound: 'qy_err_rel_already_bound',
+  qy_rel_cycle: 'qy_err_rel_cycle',
+  qy_rel_not_bound: 'qy_err_rel_not_bound',
+  qy_rel_conflict: 'qy_err_rel_conflict',
+  // 手工增减佣金（qianye/modules/commission/api_admin_adjust.go）。
+  // over_reclaimable 是「这个数填大了，减不了这么多」，overflow 是「加得太多」，
+  // idem_key_conflict 是「同一个弹窗改了金额又提交」—— 后者尤其不能说成
+  // "操作冲突"：账本上执行的是上一次的金额，管理员必须知道这件事。
+  qy_adj_over_reclaimable: 'qy_err_adj_over_reclaimable',
+  qy_adj_overflow: 'qy_err_adj_overflow',
+  qy_adj_user_not_found: 'qy_err_adj_user_not_found',
+  qy_idem_key_conflict: 'qy_err_adj_idem_conflict',
 
   // ── 订阅套餐（qianye/modules/subscription）──
   // 不登记的话这四个 code 会被按 HTTP 状态码归类：409 → `qy_err_conflict`

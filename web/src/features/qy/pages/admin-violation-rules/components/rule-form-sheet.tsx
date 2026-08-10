@@ -112,6 +112,9 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
   // 「选了频率判据却还看着关键词的说明」是这一页最容易误导人的状态。
   const matchType = form.watch('match_type')
   const isRate = matchType === 'request_rate'
+  // 生效阶段决定状态码作用域这一格显不显示：prompt 阶段没有上游响应，
+  // 摆一个填了也永不生效的格子只会让人以为自己配对了。
+  const phase = form.watch('phase')
 
   /**
    * 分组作用域的候选清单。
@@ -339,6 +342,31 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
               <p>{t('qy_vio_rate_caveat_nodes')}</p>
               <p>{t('qy_vio_rate_caveat_ladder')}</p>
             </div>
+          )}
+
+          {/* 状态码作用域。
+                它是「status_code + 正文」写成一条规则的全部机制:正文由匹配方式判、
+                状态码由这里判,两者是 AND。放在模型/分组作用域旁边而不是塞进
+                pattern 里,是因为它就是第三道作用域闸,心智模型完全一致。
+                prompt 阶段没有上游响应,所以那一档下整个字段隐藏 —— 摆一个
+                填了也永不生效的格子,只会让人以为自己配对了。 */}
+          {phase !== 'prompt' && (
+            <FormField
+              control={form.control}
+              name='status_scope'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_status_scope')}</FormLabel>
+                  <FormControl>
+                    <Input placeholder='400 或 400,403 或 400-499' {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    {t('qy_vio_field_status_scope_desc')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
           )}
 
           <FormField

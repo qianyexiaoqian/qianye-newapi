@@ -106,6 +106,17 @@ export type QyViolationRule = {
   match_type: QyViolationMatchType
   pattern: string
   case_sensitive: boolean
+  /**
+   * 上游 HTTP 状态码前置条件。空 = 不限；否则逗号分隔的状态码或区间
+   * （`400` / `400,403` / `400-499`），语法与 `status_code` 匹配方式的 pattern 相同。
+   *
+   * 它**不是**第七种匹配方式，是一道与全部匹配方式正交的作用域闸 ——
+   * 「status_code + 正文」因此可以写成**一条**规则。拆成两条的话，
+   * 一次上游拒绝会被两条规则各命中一次、各计一次数、各扣一次费。
+   *
+   * 只对上游阶段有意义：prompt 阶段还没有上游响应，后端会拒绝保存。
+   */
+  status_scope: string
   model_scope: string
   group_scope: string
   group_scope_mode: QyViolationGroupScopeMode
@@ -136,6 +147,8 @@ export type QyViolationRuleInput = {
   match_type: QyViolationMatchType
   pattern: string
   case_sensitive: boolean
+  /** 上游状态码作用域。见 `QyViolationRule.status_scope`。 */
+  status_scope: string
   model_scope: string
   group_scope: string
   group_scope_mode: QyViolationGroupScopeMode
@@ -274,6 +287,7 @@ export type QyViolationBuiltinCategoryId =
   | 'jailbreak'
   | 'pressure'
   | 'reverse'
+  | 'upstream'
 
 export type QyViolationBuiltinCategory = {
   id: QyViolationBuiltinCategoryId
@@ -313,6 +327,8 @@ export type QyViolationBuiltinItem = {
   match_type: QyViolationMatchType
   pattern: string
   case_sensitive: boolean
+  /** 上游拒绝类条目自带的状态码作用域；其余类别为空串。 */
+  status_scope: string
   priority: number
   count_weight: number
   severity: number
@@ -395,3 +411,55 @@ export type QyViolationRecord = {
   has_payload: boolean
   created_at: number
 }
+
+/* ─────────────────────────── 多选批量操作 ─────────────────────────── */
+
+/**
+ * 单条规则在一次批量里的结局。
+ *
+ * **三档而不是成功/失败两分**。`skipped` = 库里本来就是目标状态，一个字节都不用动，
+ * 它**不是失败**：把它算进失败里，一次「全选 → 批量启用」会报「18 条启用失败」，
+ * 管理员会去排查一个根本不存在的故障（上游渠道批量接口正是栽在这里）。
+ */
+export type QyViolationBatchOutcome = 'failed' | 'ok' | 'skipped'
+
+export type QyViolationBatchItem = {
+  id: number
+  /** 规则名。失败列表里只有 id 的话，管理员得回列表页一个个对照才知道是哪条。 */
+  name: string
+  outcome: QyViolationBatchOutcome
+  /** 稳定标识，前端据此映射 i18n 文案。 */
+  code?: string
+  /** 后端中文兜底，只在 `code` 未被前端登记时显示，不保证可翻译。 */
+  detail?: string
+}
+
+/**
+ * 批次结果。
+ *
+ * `total === succeeded + skipped + failed` 是后端保证的恒等式，也是前端唯一能信的
+ * 东西：少了它，「选 20 条、成功 18 条」就无法回答剩下 2 条是失败了还是本来就不用动。
+ *
+ * 整批**一律 200**，即使一条都没成功 —— 逐条明细才是这个接口的产品，而 qy 的
+ * `unwrap` 在 `success:false` 时直接抛错并丢掉 data。判据是响应体里的
+ * `succeeded` / `failed`，不是 HTTP 状态码。
+ */
+export type QyViolationBatchResult = {
+  total: number
+  succeeded: number
+  skipped: number
+  failed: number
+  items: QyViolationBatchItem[]
+}
+
+/**
+ * 批量作用分组的三种写法。
+ *
+ *   `replace` 覆盖：整串换成填的这几个，方向一起换。填空 = 对全部分组生效。
+ *   `append`  追加：并进现有名单末尾，已有的不重复。
+ *   `remove`  移除：从现有名单里摘掉。
+ *
+ * 界面上**必须**说清楚当前是哪一种。让人猜「批量设置分组」到底是覆盖还是追加，
+ * 一次误判就是一批规则的作用域被整串抹掉，而列表上那几条看起来一个字都没改。
+ */
+export type QyViolationBatchScopeOp = 'append' | 'remove' | 'replace'

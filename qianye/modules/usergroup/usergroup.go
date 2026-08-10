@@ -57,6 +57,9 @@ func (Mod) Name() string { return "usergroup" }
 // 预热失败不阻塞启动 —— 扩展库连不上时注册必须照常进行。
 func (Mod) InstallHooks() {
 	model.QyResolveNewUserGroup = resolveNewUserGroup
+	// 只读查询侧。写入侧(上面那一行)与查询侧必须同时注入:只注入一半的表现是
+	// 「新用户注册进 A,而未登录访客在模型广场上看到的是 default 的模型与价格」。
+	model.QyNewUserGroup = newUserGroup
 	warmDefaultGroup()
 }
 

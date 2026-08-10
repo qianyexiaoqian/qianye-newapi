@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ScrollText, Settings2, Wallet } from 'lucide-react'
+import { Link2, ScrollText, Settings2, Wallet } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -51,7 +51,15 @@ import { ClawbackDialog } from './components/clawback-dialog'
 
 /** 与后端 `commission/model.go` 的四个计佣行状态一致。 */
 const STATUS_OPTIONS = ['accrued', 'settled', 'risk_hold', 'voided'] as const
-const SOURCE_OPTIONS = ['topup', 'redemption', 'consume', 'clawback'] as const
+// manual 是管理员手工增减佣金落下的账目行（`api_admin_adjust.go`）。它必须能被
+// 单独筛出来：那是唯一没有业务单据触发的一类佣金，对账时第一个要看的就是它。
+const SOURCE_OPTIONS = [
+  'topup',
+  'redemption',
+  'consume',
+  'clawback',
+  'manual',
+] as const
 
 /**
  * 佣金审核。
@@ -232,6 +240,16 @@ export function QyAdminCommissionRecords() {
         >
           <Wallet aria-hidden='true' />
           {t('qy_cb_title')}
+        </Button>
+        {/* AFF 关系列表同样没有独立的侧栏入口(qy-settlement 分组已占满 7 行),
+            这个按钮是它唯一的入口 —— 删掉它整页就变成只能靠背 URL 到达的死链。 */}
+        <Button
+          variant='outline'
+          size='sm'
+          render={<Link to='/qy/admin/commission-records/relations' />}
+        >
+          <Link2 aria-hidden='true' />
+          {t('qy_rel_title')}
         </Button>
         <Button
           variant='outline'

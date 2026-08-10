@@ -78,6 +78,23 @@ export type QySetWithdrawnResult = {
   after: QyCommissionBalance
 }
 
+/**
+ * 手工增减佣金的返回。
+ *
+ * `delta_quota` 是**实际落账**的那个数：幂等重放时是 0，`created` 同时为假。
+ * `reclaimable_ceiling` 是后端在持锁事务里算出来的扣减上限，回显给前端用于
+ * 校准提示——弹窗里那个上限来自列表快照，可能已经过时。
+ */
+export type QyAdjustCommissionResult = {
+  user_id: number
+  delta_quota: number
+  created: boolean
+  accrual_no: string
+  reclaimable_ceiling: number
+  before: QyCommissionBalance
+  after: QyCommissionBalance
+}
+
 /** 列表排序口径，与后端 `balanceSortOrders` 的键逐字一致。 */
 export const QY_BALANCE_SORTS = [
   'available',

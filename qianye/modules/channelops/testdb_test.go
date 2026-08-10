@@ -143,6 +143,57 @@ func resultOf(t *testing.T, res *httptest.ResponseRecorder) batchResult {
 	return body.Data
 }
 
+// resetBody 拼一个重置请求体。两个开关都必须显式出现在 JSON 里 ——
+// 后端不给默认值,漏掉一个就是"什么都别清"。
+func resetBody(ids []int, usedQuota, balance bool) string {
+	body, err := common.Marshal(resetReq{
+		Ids: ids, ResetUsedQuota: usedQuota, ResetBalance: balance,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
+}
+
+// resetResultOf 解出重置端点的信封:通用批次报告 + 两个合计。
+//
+// 合计走的是同一个 JSON 对象(resetResult 内嵌 batchResult),所以这里顺带
+// 复用 resultOf 的三档恒等式断言 —— 内嵌字段一旦被挪进子对象,前端那边
+// `result.succeeded` 会变成 undefined,而 TypeScript 拦不住来自网络的形状。
+func resetResultOf(t *testing.T, res *httptest.ResponseRecorder) resetResult {
+	t.Helper()
+	base := resultOf(t, res)
+	var body struct {
+		Data struct {
+			ClearedUsedQuota int64   `json:"cleared_used_quota"`
+			ClearedBalance   float64 `json:"cleared_balance"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(res.Body.Bytes(), &body))
+	return resetResult{
+		batchResult:      base,
+		ClearedUsedQuota: body.Data.ClearedUsedQuota,
+		ClearedBalance:   body.Data.ClearedBalance,
+	}
+}
+
+// resetAfterSnap 是重置审计的 after 快照里本模块自己关心的那几栏。
+type resetAfterSnap struct {
+	ClearedUsedQuotaTotal int64      `json:"cleared_used_quota_total"`
+	ClearedUsedQuota      [][2]int64 `json:"cleared_used_quota"`
+	ClearedDetailOmitted  int        `json:"cleared_detail_omitted"`
+	SkippedIds            []int      `json:"skipped_ids"`
+}
+
+// parseResetAfter 解析审计快照。解不出来直接 fail:被截断的快照不是合法 JSON,
+// 而"解析失败"正是那次信息丢失唯一的外部信号。
+func parseResetAfter(t *testing.T, snap string) resetAfterSnap {
+	t.Helper()
+	var out resetAfterSnap
+	require.NoError(t, common.UnmarshalJsonStr(snap, &out), "snap=%s", snap)
+	return out
+}
+
 // codeOf 解出失败信封里的业务 code。
 func codeOf(t *testing.T, res *httptest.ResponseRecorder) string {
 	t.Helper()

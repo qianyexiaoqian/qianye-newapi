@@ -402,14 +402,6 @@ func DeleteTokenById(id int, userId int) (err error) {
 	return token.Delete()
 }
 
-// IncreaseTokenQuota returns quota to a token (refund or negative settle delta).
-//
-// Always writes through to the database. `remain_quota` is the token-side gate —
-// PreConsumeTokenQuota reads it inside the WHERE clause of the statement that
-// spends it — and a gate cannot be half synchronous, half queued: the pre-consume
-// would be visible immediately while its reversal sat in the queue for a whole
-// BATCH_UPDATE_INTERVAL, rejecting the token's own next request. See the note on
-// DecreaseUserQuota.
 func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
@@ -421,6 +413,10 @@ func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
 				common.SysLog("failed to increase token quota: " + err.Error())
 			}
 		})
+	}
+	if common.BatchUpdateEnabled {
+		addNewRecord(BatchUpdateTypeTokenQuota, tokenId, quota)
+		return nil
 	}
 	return increaseTokenQuota(tokenId, quota)
 }
@@ -436,58 +432,6 @@ func increaseTokenQuota(id int, quota int) (err error) {
 	return err
 }
 
-// ErrInsufficientTokenQuota reports that a conditional token pre-consume could
-// not be applied because remain_quota no longer covers the requested amount.
-var ErrInsufficientTokenQuota = errors.New("token quota is not enough")
-
-// PreConsumeTokenQuota deducts a pre-consume amount from a token's remaining
-// quota **only if** it still covers the amount, in a single conditional UPDATE.
-//
-// Same time-of-check/time-of-use hazard as PreConsumeUserQuota: the old flow
-// read the token, compared remain_quota, then issued an unconditional
-// decrement, so concurrent requests each saw the same sufficient balance and a
-// limited token's cap was breached (measured: 8 of 12 concurrent per-call
-// requests succeeded against a 10,000 remain_quota, leaving -70,000).
-//
-// `unlimited` skips the balance predicate for unlimited tokens, matching the
-// previous `!relayInfo.TokenUnlimited && token.RemainQuota < quota` check;
-// their remain_quota is still decremented so it keeps acting as a running
-// consumption counter. Never routed through the batch-update queue: a queued
-// delta cannot carry a condition.
-func PreConsumeTokenQuota(id int, key string, quota int, unlimited bool) error {
-	if quota < 0 {
-		return errors.New("quota 不能为负数！")
-	}
-	if quota == 0 {
-		return nil
-	}
-	tx := DB.Model(&Token{}).Where("id = ?", id)
-	if !unlimited {
-		tx = tx.Where("remain_quota >= ?", quota)
-	}
-	result := tx.Updates(map[string]interface{}{
-		"remain_quota":  gorm.Expr("remain_quota - ?", quota),
-		"used_quota":    gorm.Expr("used_quota + ?", quota),
-		"accessed_time": common.GetTimestamp(),
-	})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return fmt.Errorf("%w, need quota: %d", ErrInsufficientTokenQuota, quota)
-	}
-	if common.RedisEnabled {
-		gopool.Go(func() {
-			if err := cacheDecrTokenQuota(key, int64(quota)); err != nil {
-				common.SysLog("failed to decrease token quota: " + err.Error())
-			}
-		})
-	}
-	return nil
-}
-
-// DecreaseTokenQuota charges a token unconditionally (settle side). Always
-// writes through to the database, for the same reason as IncreaseTokenQuota.
 func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
@@ -499,6 +443,10 @@ func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 				common.SysLog("failed to decrease token quota: " + err.Error())
 			}
 		})
+	}
+	if common.BatchUpdateEnabled {
+		addNewRecord(BatchUpdateTypeTokenQuota, id, -quota)
+		return nil
 	}
 	return decreaseTokenQuota(id, quota)
 }

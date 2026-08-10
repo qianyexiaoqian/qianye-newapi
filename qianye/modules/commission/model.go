@@ -21,6 +21,15 @@ const (
 	SourceRedemption = "redemption"
 	SourceConsume    = "consume"
 	SourceClawback   = "clawback"
+	// SourceManual 是管理员手工增减佣金落下的账目行(见 api_admin_adjust.go)。
+	//
+	// 它必须是一条 accrual 而不是直接改 qy_commission_balance 的某一列:
+	// 余额行上的每一分钱都由「Σ计佣 − Σ已结算 = 未结算」这条恒等式解释,
+	// 绕过账本直接改列会让这条式子当场失效,而结算流水里没有任何一行能解释差额。
+	//
+	// 这一路没有下线(invitee_id 落 0)也没有费率(rate_bps 落 0):
+	// 手工调整既不来自某一笔消费/充值,也不按任何比例算出来。
+	SourceManual = "manual"
 )
 
 // 计佣行状态。
@@ -167,11 +176,20 @@ func (Settlement) TableName() string { return "qy_commission_settlement" }
 
 // InviteRelation 是邀请关系快照。
 //
+// # 它不是权威,users.inviter_id 才是
+//
+// 计佣链路上"谁是这个人的邀请人"永远只问主库的 users.inviter_id
+// (resolveInviter → peekInviter),本表只是**懒建**的展示快照:
+// ensureRelation 在某个下线第一次产生佣金时才写这一行。因此本表的行数
+// 天然少于真实的绑定数(备份库实测:users 里 375 条绑定,本表 8 行),
+// 拿它当"AFF 关系列表"的数据源会漏掉绝大多数关系。
+//
 // 存在的意义是"已邀请用户列表"这个页面:脱敏名在服务端算好并缓存在这里,
 // 列表页零主库访问,也就不存在把真实用户名/邮箱漏给邀请人的可能。
 //
 // 项目没有独立的邀请绑定时间列(users.inviter_id 是注册时一次性写入),
-// 所以 BoundAt 只能取 users.created_at。
+// 所以自动建出来的行 BoundAt 只能取 users.created_at;管理员手工绑定的行
+// 取绑定发生的那一刻 —— 两者都是"这条关系是什么时候成立的"这个事实。
 type InviteRelation struct {
 	InviteeId int `json:"invitee_id" gorm:"primaryKey"`
 	InviterId int `json:"inviter_id" gorm:"not null;index:idx_qy_ir_inviter"`
@@ -182,6 +200,17 @@ type InviteRelation struct {
 	InviteeRef string `json:"invitee_ref" gorm:"type:varchar(16);not null;uniqueIndex:uk_qy_ir_ref"`
 
 	BoundAt int64 `json:"bound_at" gorm:"not null;default:0"`
+
+	// UnboundAt 是管理员解绑这条关系的时刻,0 表示仍然绑定中。
+	//
+	// 解绑**不删除本行**,理由是历史佣金要保留:qy_commission_accrual 里那些
+	// 已经产生的计佣行都指着这个 invitee_id,删掉快照会让它们在流水页上失去
+	// 脱敏名与 invitee_ref,而账本行本身仍然在那里 —— 那是最糟的组合
+	// (钱还在账上,但谁也说不清是谁挣的)。
+	//
+	// 真正让这条关系停止计佣的是主库 users.inviter_id 被清零;本列只是把
+	// "曾经绑过、什么时候解的"这个事实留在扩展库里,供管理端反查。
+	UnboundAt int64 `json:"unbound_at" gorm:"not null;default:0;index:idx_qy_ir_unbound"`
 
 	// 刻意不在这里维护"累计基数/累计佣金"两个计数器:那需要每条消费事件
 	// 多写一次库,而且一旦与 accrual 漂移就再也对不回去。列表页按
