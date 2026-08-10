@@ -160,7 +160,11 @@ func mergeOverrides(base opSettings, rows map[string]string) opSettings {
 			base.ShowEntry = b
 		}
 	}
-	if v, ok := parseIntIn(rows, keyMaxActiveActivities, 1, 1000); ok {
+	// 上界必须与 settingBounds() 同源取自 YAML。写死一个 1000 的后果不是"写入
+	// 时被拦住就行了":写入闸门只管**今后**的写入,升级之前已经落库的越界覆盖
+	// (旧上界允许到 1000)会继续被这里读出来并生效,敞口一点没关,而配置页会
+	// 同时显示 effective=500 与 bounds.max=20 却不报任何异常。
+	if v, ok := parseIntIn(rows, keyMaxActiveActivities, 1, c.MaxActiveActivities); ok {
 		base.MaxActiveActivities = v
 	}
 	if v, ok := parseIntIn(rows, keyMaxGuessFeeBps, 0, c.MaxGuessFeeBps); ok {

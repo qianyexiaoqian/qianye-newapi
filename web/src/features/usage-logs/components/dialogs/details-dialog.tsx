@@ -1254,6 +1254,18 @@ export function DetailsDialog(props: DetailsDialogProps) {
                 mono
               />
             )}
+            {/*
+              套餐吃满 amount_total 之后由钱包补收的那一段。不渲染它，本节里
+              「套餐本次消耗」与整笔账单之间会凭空差一截，而那截是真的从余额扣的。
+            */}
+            {other.wallet_quota_deducted != null &&
+              other.wallet_quota_deducted > 0 && (
+                <DetailRow
+                  label={t('Charged to balance')}
+                  value={formatLogQuota(other.wallet_quota_deducted)}
+                  mono
+                />
+              )}
           </DetailSection>
         )}
 

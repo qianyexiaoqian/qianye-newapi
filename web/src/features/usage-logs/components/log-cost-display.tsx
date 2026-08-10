@@ -30,7 +30,7 @@ import {
 } from '@/components/ui/tooltip'
 import { formatLogQuota } from '@/lib/format'
 
-import { hasToolSurcharge } from '../lib/format'
+import { hasToolSurcharge, splitSubscriptionCharge } from '../lib/format'
 import type { LogOtherData } from '../types'
 
 interface LogCostDisplayProps {
@@ -92,8 +92,19 @@ function QuotaBadge(props: { quota: number }) {
   )
 }
 
-function SubscriptionBadge(props: { quota: number }) {
+/**
+ * 订阅角标。
+ *
+ * `quota` 是**整笔**账单，不等于套餐吃下的那一段：套餐撞到 amount_total 上限时
+ * 差额由钱包补收（`wallet_quota_deducted`）。把整笔说成「订阅扣除」会让用户以为
+ * 余额没动过，而那笔钱是真从余额里扣走的，所以两段都有值时分开写。
+ */
+function SubscriptionBadge(props: { quota: number; walletShortfall?: number }) {
   const { t } = useTranslation()
+  const { fromSubscription, fromWallet } = splitSubscriptionCharge(
+    props.quota,
+    props.walletShortfall
+  )
 
   return (
     <Tooltip>
@@ -110,7 +121,10 @@ function SubscriptionBadge(props: { quota: number }) {
       />
       <TooltipContent>
         <span>
-          {t('Deducted by subscription')}: {formatLogQuota(props.quota)}
+          {t('Deducted by subscription')}: {formatLogQuota(fromSubscription)}
+          {fromWallet > 0
+            ? ` + ${t('Charged to balance')}: ${formatLogQuota(fromWallet)}`
+            : null}
         </span>
       </TooltipContent>
     </Tooltip>
@@ -133,7 +147,10 @@ export function LogCostDisplay(props: LogCostDisplayProps) {
     <TooltipProvider>
       <div className='inline-flex items-center gap-1'>
         {isSubscription ? (
-          <SubscriptionBadge quota={props.quota} />
+          <SubscriptionBadge
+            quota={props.quota}
+            walletShortfall={props.other?.wallet_quota_deducted}
+          />
         ) : (
           <QuotaBadge quota={props.quota} />
         )}

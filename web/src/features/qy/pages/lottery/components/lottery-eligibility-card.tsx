@@ -22,7 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 
 import { qyArray } from '../../../lib/array'
-import { qyLotMissingKey } from '../lib/display'
+import { qyLotMissingKey, qyLotMissingValues } from '../lib/display'
 import type { QyLotEligibility, QyLotMissing } from '../types'
 
 /**
@@ -75,9 +75,9 @@ export function QyLotEligibilityCard(props: {
 /**
  * 一条缺失项的措辞。
  *
- * `need` / `have` 原样交给 i18n 插值：把它们格式化成额度还是天数，取决于是哪一条
- * 条件，而那件事只有文案本身知道。未登记的 code 回落成一句通用文案 + 原始 code，
- * 用户至少能把它贴给客服，而不是对着一行空白。
+ * `need` / `have` 的单位由 `qyLotMissingValues` 判定：额度口径的先换算成站内
+ * 余额（与钱包页、日志页同一格式），天数与次数原样透传。未登记的 code 回落成
+ * 一句通用文案 + 原始 code，用户至少能把它贴给客服，而不是对着一行空白。
  */
 function describe(
   missing: QyLotMissing,
@@ -86,7 +86,6 @@ function describe(
   const key = qyLotMissingKey(missing)
   return t(key, {
     defaultValue: t('qy_lot_miss_unknown', { code: missing.code }),
-    need: missing.need ?? '',
-    have: missing.have ?? '',
+    ...qyLotMissingValues(missing),
   })
 }

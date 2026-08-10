@@ -189,8 +189,17 @@ func ChargeEntry(ctx context.Context, in EntryInput) (*Entry, error) {
 		return nil, execErr
 	}
 
+	// 从这里往下,entry.EntryNo 一律换成资金单指向的那一个,而且是**就地覆盖**
+	// 而不是新起一个局部变量:后面每一处收尾都要用它,留着一个仍指向本次现摇值
+	// 的字段,下一个人加一行代码就会再踩一次(那正是这个缺陷的形状)。
+	// 覆盖之后 entry 这个对象只用于收尾,不再回写任何库。
+	entry.EntryNo = settledEntryNo(order, entry)
+
 	// **Execute 返回 nil 不代表业务侧已落定。** 主库已扣款而扩展库回写失败时
 	// 它同样返回 (order, nil)。settleGuard 是全模块统一的收尾姿势。
+	// 幂等命中时这次补做是安全的空转:原参与早已 success,markEntrySuccess 的
+	// `WHERE status = pending` 命中 0 行即返回,而 snap.Applied 为 false,
+	// quota_before/after 不会被本次的空快照覆盖。
 	if err := settleGuard(ctx, order, func(tx *gorm.DB) error {
 		return markEntrySuccess(tx, entry.EntryNo, &snap)
 	}); err != nil {
@@ -588,8 +597,10 @@ func afterDebit(e *Entry, orderNo string, snap quotaSnapshot) {
 	// "累计/近期消费满 N 才能参加"这道门槛可以被抽奖本身刷高:花 100 参与一场
 	// 低门槛活动 → 消费 +100 → 满足高门槛活动。那是一个自举漏洞。
 	// 用 LogTypeTopup 则会污染充值统计。
+	//
+	// 正文里的金额换算成站内余额,口径见 ledgerLogContent。
 	model.QyRecordLedgerLog(e.UserId, model.LogTypeSystem,
-		fmt.Sprintf("参与活动扣除 %d 额度 [%s]", e.Amount, e.EntryNo), orderNo,
+		ledgerLogContent("参与活动扣除", e.Amount, e.EntryNo), orderNo,
 		map[string]any{
 			"qy_module":       "lottery",
 			"qy_lot_entry_no": e.EntryNo,
@@ -717,6 +728,8 @@ func releaseEntryOnFailure(ctx context.Context, order *qymodel.FundOrder, e *Ent
 	if order == nil || order.Status != qymodel.StatusFailed {
 		return
 	}
+	// 与 ChargeEntry 的收尾同源:要回滚的是**资金单指向的**那条明细。
+	e.EntryNo = settledEntryNo(order, e)
 	if mainSideApplied(order.OrderNo) {
 		common.SysError(fmt.Sprintf(
 			"qianye/lottery: 参与 %s 的资金单 %s 被判失败但主库探针显示已生效,不回滚,交对账任务",
@@ -777,6 +790,26 @@ func loadActivityByNo(ctx context.Context, actNo string) (*Activity, error) {
 		return nil, errNotOpen
 	}
 	return &a, nil
+}
+
+// settledEntryNo 是**这张资金单真正结算的**那条参与明细的编号。
+//
+// 收尾(markEntrySuccess / markEntryFailed)与回读一律认它,绝不认本次请求现摇
+// 的 e.EntryNo。二者只在一种情况下不同,而那恰好是幂等键唯一存在的理由:
+// 同一个 client_request_id 原样重放时,twophase.Execute 走 resolveExisting 直接
+// 返回原单并**跳过整个 LocalDetail 闭包**,所以 newEntryNo() 这次摇出来的串从未
+// 落过库。拿它去回读必然 ErrRecordNotFound → wrapInternal → HTTP 500
+// 「处理失败,请稍后重试」。用户在同一个弹窗里怎么重试都是 500(前端把 crid 钉在
+// 打开弹窗那一刻),只能关掉重开换一个新 crid —— 于是真的多投一注、真的多扣一笔,
+// 正是这条幂等键要拦住的那一注。
+//
+// order.RefId 在两条路径上都是权威值:新建单时 fundingFacts 就是拿 e.EntryNo
+// 填的它。补偿任务的 resolveEntryAfterCompensation 用的也是它。
+func settledEntryNo(order *qymodel.FundOrder, e *Entry) string {
+	if order != nil && order.RefId != "" {
+		return order.RefId
+	}
+	return e.EntryNo
 }
 
 func reloadEntry(ctx context.Context, gdb *gorm.DB, entryNo string) (*Entry, error) {

@@ -457,7 +457,7 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 			}
 			relayInfo.SubscriptionPostDelta += applied
 			if shortfall := delta - applied; shortfall > 0 {
-				if err := model.DecreaseUserQuota(relayInfo.UserId, int(shortfall), false); err != nil {
+				if err := model.DecreaseUserQuota(relayInfo.UserId, int(shortfall)); err != nil {
 					return err
 				}
 				relayInfo.SubscriptionWalletShortfall += shortfall
@@ -466,9 +466,9 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 	} else {
 		// Wallet
 		if quota > 0 {
-			err = model.DecreaseUserQuota(relayInfo.UserId, quota, false)
+			err = model.DecreaseUserQuota(relayInfo.UserId, quota)
 		} else {
-			err = model.IncreaseUserQuota(relayInfo.UserId, -quota, false)
+			err = model.IncreaseUserQuota(relayInfo.UserId, -quota)
 		}
 		if err != nil {
 			return err

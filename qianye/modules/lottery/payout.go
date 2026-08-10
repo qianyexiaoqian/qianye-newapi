@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
@@ -250,7 +251,7 @@ func afterCredit(p *Payout, orderNo string) {
 		logType = model.LogTypeRefund
 	}
 	model.QyRecordLedgerLog(p.UserId, logType,
-		fmt.Sprintf("%s %d 额度 [%s]", payoutLabel(p.Kind), p.AmountQuota, p.PayoutNo), orderNo,
+		ledgerLogContent(payoutLabel(p.Kind), p.AmountQuota, p.PayoutNo), orderNo,
 		map[string]any{
 			"qy_module":        "lottery",
 			"qy_lot_payout_no": p.PayoutNo,
@@ -268,6 +269,23 @@ func payoutLabel(kind string) string {
 	default:
 		return "活动退款到账"
 	}
+}
+
+// ledgerLogContent 拼一条账本日志的正文:「动作 + 金额 + 单号」。
+//
+// 扣费与派奖共用同一个拼法。用户在"日志"页看到的是这两行挨在一起 ——
+// 一行写 ＄0.002、另一行写 1000,他会以为那不是同一种数。
+//
+// 金额走 logger.LogQuota,与签到(controller/checkin.go)、余额划转
+// (qianye/modules/transfer)同一口径,尊重站点的额度展示设置:
+// USD/CNY/自定义币种下是「＄0.002000 额度」,TOKENS 下回落成「1000 点额度」。
+// 也就是说"关掉货币展示"的站点仍然看得到原始整数,只是多了「点」这个单位。
+//
+// **换算只影响展示。**落库的金额列、进承诺哈希的 dec(amount)、以及
+// other["qy_quota"] 全部仍是 quota 整数 —— 对账与前端计算读的是它们,
+// 绝不回过头来解析这句话。
+func ledgerLogContent(action string, quota int64, no string) string {
+	return fmt.Sprintf("%s %s [%s]", action, logger.LogQuota(int(quota)), no)
 }
 
 // payoutIdemKey 是这一笔当前代次的幂等键。
@@ -564,6 +582,11 @@ func mainSideApplied(orderNo string) bool {
 // 同一个 (act_id, code) 未解决时不重复插:一条卡单每 10 秒被扫一次,
 // 不去重会在几小时内把异常列表刷成同一条消息的几千份拷贝,
 // 而那正好会淹没真正的新异常。
+//
+// 但**去重不等于丢弃**:detail 里写的是"重算 X 与物化 Y 不一致"这种当场算出来的
+// 数字,篡改再次发生时它会变。只跳过不更新,运营看到的就是一个早已不成立的旧数字,
+// 而这条 flag 又是本模块唯一的事后篡改出口(qy_lot_flag 没有别的写入方)。
+// 所以命中已有未解决行时改为**刷新 detail**,CreatedAt 保持首次检出时刻不动。
 func raiseFlag(ctx context.Context, actId int64, code, detail string) {
 	gdb := db.Get()
 	if gdb == nil {
@@ -571,26 +594,38 @@ func raiseFlag(ctx context.Context, actId int64, code, detail string) {
 	}
 	// 句柄一次性绑上租约的预算:逐条 WithContext 漏一条,就等于在这条链路上开了一个
 	// 没有上界的口子 —— 语句级预算只对 WithContext 的语句生效。
-	gdb = gdb.WithContext(ctx)
-	var n int64
-	if err := gdb.WithContext(ctx).Model(&Flag{}).
-		Where("act_id = ? AND code = ? AND resolved = ?", actId, code, false).
-		Count(&n).Error; err != nil {
+	if err := upsertFlag(gdb.WithContext(ctx), actId, code, detail); err != nil {
 		db.MarkFailure(err)
-		return
 	}
-	if n > 0 {
-		return
+}
+
+// upsertFlag 是 raiseFlag 的落库语义:同一个未解决的 (act_id, code) 只留一行,
+// 但 detail 每次刷新,首次检出时刻保持不动。
+//
+// resolved=true 的历史行**不参与**去重 —— 这正是"处理完之后同类异常还能再报"的
+// 前提,也是为什么必须有一个把 resolved 置 true 的产品入口(handleAdminResolveFlag)。
+func upsertFlag(gdb *gorm.DB, actId int64, code, detail string) error {
+	detail = audit.Truncate(detail, 512)
+	var existing Flag
+	err := gdb.Model(&Flag{}).
+		Where("act_id = ? AND code = ? AND resolved = ?", actId, code, false).
+		Take(&existing).Error
+	switch {
+	case err == nil:
+		if existing.Detail == detail {
+			return nil
+		}
+		return gdb.Model(&Flag{}).Where("id = ?", existing.Id).
+			Update("detail", detail).Error
+	case !errors.Is(err, gorm.ErrRecordNotFound):
+		return err
 	}
-	row := &Flag{
+	return gdb.Create(&Flag{
 		ActId:     actId,
 		Code:      code,
-		Detail:    audit.Truncate(detail, 512),
+		Detail:    detail,
 		CreatedAt: common.GetTimestamp(),
-	}
-	if err := gdb.WithContext(ctx).Create(row).Error; err != nil {
-		db.MarkFailure(err)
-	}
+	}).Error
 }
 
 func minInt(a, b int) int {

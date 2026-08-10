@@ -52,9 +52,9 @@ func (w *WalletFunding) Settle(delta int) error {
 		return nil
 	}
 	if delta > 0 {
-		return model.DecreaseUserQuota(w.userId, delta, false)
+		return model.DecreaseUserQuota(w.userId, delta)
 	}
-	return model.IncreaseUserQuota(w.userId, -delta, false)
+	return model.IncreaseUserQuota(w.userId, -delta)
 }
 
 func (w *WalletFunding) Refund() error {
@@ -63,7 +63,7 @@ func (w *WalletFunding) Refund() error {
 	}
 	// IncreaseUserQuota 是 quota += N 的非幂等操作，不能重试，否则会多退额度。
 	// 订阅的 RefundSubscriptionPreConsume 有 requestId 幂等保护所以可以重试。
-	return model.IncreaseUserQuota(w.userId, w.consumed, false)
+	return model.IncreaseUserQuota(w.userId, w.consumed)
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ func (s *SubscriptionFunding) Settle(delta int) error {
 	// 套餐撞到 amount_total 上限，剩下的差额必须落到钱包上，否则这笔已经服务完成
 	// 的请求就白送了。方向与 WalletFunding.Settle 的正差额一致：无条件扣，
 	// 余额不足的部分记为欠费，保证「日志记多少 == 实际收多少」。
-	if err := model.DecreaseUserQuota(s.userId, int(shortfall), false); err != nil {
+	if err := model.DecreaseUserQuota(s.userId, int(shortfall)); err != nil {
 		return err
 	}
 	s.settleWalletShortfall = shortfall

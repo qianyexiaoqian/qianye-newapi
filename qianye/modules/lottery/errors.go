@@ -129,6 +129,10 @@ var (
 		"奖品总额度超过系统上限")
 	errActiveCapExceeded = newBizError(http.StatusConflict, "qy_lot_active_cap",
 		"同时进行中的活动数量已达上限")
+	errFlagNotFound = newBizError(http.StatusNotFound, "qy_lot_flag_not_found",
+		"找不到该对账异常")
+	errFlagAlreadyResolved = newBizError(http.StatusConflict, "qy_lot_flag_resolved",
+		"该对账异常已被处理")
 	// errCommitMismatch 触发时**绝不以种子为准继续开奖**。它拦得住"改了种子
 	// 忘了改哈希"这一类真实事故,也拦得住有人直接改库。
 	errCommitMismatch = errors.New("qianye/lottery: 种子与承诺哈希不一致,拒绝开奖")

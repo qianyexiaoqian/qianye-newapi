@@ -120,6 +120,10 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.POST("/lottery/payouts/:payout_no/fulfill", crit, handleFulfillPrize)
 	g.POST("/lottery/payouts/:payout_no/unfulfill", crit, handleUnfulfillPrize)
 	g.POST("/lottery/payouts/:payout_no/reveal", crit, handleRevealPrizeSecret)
+	// 关掉一条已经处理完的对账异常。没有它 qy_lot_flag 只写不改,而 raiseFlag
+	// 按 (act_id, code, resolved=false) 去重 —— 第一条落下之后这场活动这一类的
+	// 检出就永久哑火,运营只能去改库。写审计。
+	g.POST("/lottery/flags/:id/resolve", crit, handleAdminResolveFlag)
 	g.PUT("/lottery/config", crit, handlePutConfig)
 
 	// 双色球期次系列。注资是平台唯一一处主动扩大发行上限的动作,

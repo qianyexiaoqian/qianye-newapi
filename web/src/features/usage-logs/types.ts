@@ -263,6 +263,14 @@ export interface LogOtherData {
   subscription_consumed?: number
   subscription_remain?: number
   subscription_total?: number
+  /**
+   * 订阅结算撞到套餐 amount_total 上限时，改由**钱包**补收的那一段。
+   *
+   * 之前这个字段恒为 0（差额被静默丢弃，平台少收），所以前端从来不读它。现在它
+   * 是真的从用户余额里扣走的钱：`quota = subscription_consumed + wallet_quota_deducted`。
+   * 不渲染它，账单页上「套餐本次消耗 X」与「本笔 Y」之间那一段就无人认领。
+   */
+  wallet_quota_deducted?: number
 }
 
 /**

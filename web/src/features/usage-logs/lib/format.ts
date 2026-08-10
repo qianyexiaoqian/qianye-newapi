@@ -109,6 +109,32 @@ function hasLegacySearchSurcharge(
 }
 
 /**
+ * 一笔订阅计费的账单是怎么分摊的。
+ *
+ * 套餐余额吃到 amount_total 上限之后，剩下的差额由**钱包**补收，后端把它写在
+ * `other.wallet_quota_deducted` 上。在此之前那个字段恒为 0（差额被静默丢弃，
+ * 平台少收），所以前端从来没读过它，账单页把整笔都说成「由订阅抵扣」。
+ * 现在那一段是真的从用户余额里扣走的钱，不拆开就是在告诉用户余额没动过。
+ *
+ * 只在 `wallet_quota_deducted > 0` 时才拆：绝大多数订阅日志仍然是整笔走套餐，
+ * 那时多写一句「+ 从余额补收 0」只会制造噪声。补收额大于等于整笔账单（理论上
+ * 只有脏数据能做到）时同样不拆，免得算出一个负的订阅金额。
+ */
+export function splitSubscriptionCharge(
+  quota: number,
+  walletDeducted: number | undefined
+): { fromSubscription: number; fromWallet: number } {
+  const wallet =
+    typeof walletDeducted === 'number' &&
+    Number.isFinite(walletDeducted) &&
+    walletDeducted > 0 &&
+    walletDeducted < quota
+      ? walletDeducted
+      : 0
+  return { fromSubscription: quota - wallet, fromWallet: wallet }
+}
+
+/**
  * Check whether a consume log includes an actual tool-call surcharge.
  * Structured surcharge items cover current logs, while the legacy fields keep
  * historical Web Search, File Search, and Image Generation logs visible.

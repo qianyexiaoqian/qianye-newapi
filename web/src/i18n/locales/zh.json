@@ -2001,6 +2001,7 @@
     "Filters": "筛选器",
     "Filters active": "筛选已启用",
     "Final Consumed": "最终消耗",
+    "Charged to balance": "从余额补收",
     "Final cost = base × multiplier when conditions match": "匹配条件时，最终费用 = 基础费用 × 倍率",
     "Final price multiplier (0.95 = 5% discount": "最终价格乘数 (0.95 = 5% 折扣",
     "Finance": "金融",

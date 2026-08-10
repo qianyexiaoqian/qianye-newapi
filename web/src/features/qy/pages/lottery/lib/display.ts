@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { formatQyQuotaLedger } from '../../../lib/format'
 import type { QyStatus } from '../../../lib/types'
 import type {
   QyLotEntryStatus,
@@ -102,6 +103,45 @@ export function qyLotOutcomeKey(outcome: QyLotOutcome): string | null {
  */
 export function qyLotMissingKey(missing: QyLotMissing): string {
   return `qy_lot_miss_${missing.code}`
+}
+
+/**
+ * `need` / `have` 是站内额度的那几条缺失项。
+ *
+ * 后端把这两个数一律按 `int64` 下发，单位是什么只有条件本身知道：
+ * `account_age` 是天、`violation_hits` 是次，而这四条是 quota。把 quota 原样
+ * 渲染出来，用户看到的是「余额未达门槛（需 5000000，当前 4999998）」—— 一串
+ * 他在钱包页从来没见过的大整数，既算不出还差多少、也不知道要充多少。
+ *
+ * 新增 quota 口径的缺失项时**必须**同步加进这里；漏掉的后果只是文案退回原始
+ * 整数，typecheck 与运行时都不会报错，所以另有一条源码级测试守着。
+ */
+const QUOTA_VALUED_MISSING: ReadonlySet<string> = new Set([
+  'balance',
+  'stake',
+  'used_quota',
+  'recent_spend',
+])
+
+/**
+ * 一条缺失项交给 i18n 插值的 `need` / `have`。
+ *
+ * quota 口径的走站内额度格式化，其余（天数、次数）原样透传 —— 单位由文案自己
+ * 补。`null` / `undefined` 回落成空串而不是 `0`：「需 0」是一句会误导人的假话。
+ * 非数字（后端理论上可以塞 bool / string）也原样透传：那时不存在可换算的额度，
+ * 硬塞进格式化函数只会得到一个 `-`，比原文更没信息。
+ */
+export function qyLotMissingValues(missing: QyLotMissing): {
+  need: QyLotMissing['need']
+  have: QyLotMissing['have']
+} {
+  const quota = QUOTA_VALUED_MISSING.has(missing.code)
+  const render = (value: QyLotMissing['need']) => {
+    if (value == null) return ''
+    if (!quota || typeof value !== 'number') return value
+    return formatQyQuotaLedger(value)
+  }
+  return { need: render(missing.need), have: render(missing.have) }
 }
 
 /**

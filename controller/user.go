@@ -1174,7 +1174,7 @@ func ManageUser(c *gin.Context) {
 				common.ApiErrorI18n(c, i18n.MsgUserQuotaChangeZero)
 				return
 			}
-			if err := model.IncreaseUserQuota(user.Id, req.Value, true); err != nil {
+			if err := model.IncreaseUserQuota(user.Id, req.Value); err != nil {
 				common.ApiError(c, err)
 				return
 			}
@@ -1186,7 +1186,7 @@ func ManageUser(c *gin.Context) {
 				common.ApiErrorI18n(c, i18n.MsgUserQuotaChangeZero)
 				return
 			}
-			if err := model.DecreaseUserQuota(user.Id, req.Value, true); err != nil {
+			if err := model.DecreaseUserQuota(user.Id, req.Value); err != nil {
 				common.ApiError(c, err)
 				return
 			}

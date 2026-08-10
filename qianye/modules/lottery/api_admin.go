@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -1129,6 +1130,90 @@ func handleAdminListFlags(c *gin.Context) {
 		return
 	}
 	respondOK(c, gin.H{"items": rows, "total": total, "p": page, "page_size": size})
+}
+
+// resolveFlagRequest 是标记异常已处理的请求体。
+type resolveFlagRequest struct {
+	Note string `json:"note"`
+}
+
+// handleAdminResolveFlag 把一条对账异常标记为已处理。
+//
+// 没有它,qy_lot_flag 是一张只写不改的表:raiseFlag 按 (act_id, code, resolved=false)
+// 去重,所以第一条落下之后,**这场活动这一类的检出就永久哑火**。对 published/locked
+// 的活动还能靠活动自己走完生命周期来收场;对 finished 就是永久的 —— 而
+// auditFinishedChains 恰恰把 finished 也纳入了持续复核,历史公正查询的全部内容
+// 都在那里。运营在产品里必须能关掉一条已经处理完的异常,否则只能去改库。
+func handleAdminResolveFlag(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagCore) {
+		return
+	}
+	// 路径 ID 走 httpq:上界是解析的一部分,strconv.Atoi 的上界是 MaxInt64。
+	id, ok := httpq.PathInt64(c, "id")
+	if !ok {
+		respondErr(c, errBadRequest("异常编号不合法"))
+		return
+	}
+	var req resolveFlagRequest
+	// 备注可选:请求体允许为空。
+	_ = c.ShouldBindJSON(&req)
+	note := strings.TrimSpace(req.Note)
+	if err := rejectControlChars(note, "处理备注"); err != nil {
+		respondErr(c, err)
+		return
+	}
+
+	gdb := db.Get()
+	if gdb == nil {
+		respondErr(c, db.ErrNotReady)
+		return
+	}
+	ctx, cancel := guard.ColdContext(context.Background())
+	defer cancel()
+	adminId := c.GetInt("id")
+	traceNo := "qy_lot_flag:" + strconv.FormatInt(id, 10)
+
+	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var flag Flag
+		if e := tx.Where("id = ?", id).Take(&flag).Error; e != nil {
+			if errors.Is(e, gorm.ErrRecordNotFound) {
+				return errFlagNotFound
+			}
+			return e
+		}
+		// resolved 上的 CAS 就是这里唯一需要的并发保障,不必再加行锁:两个管理员
+		// 同时点,只有一个的 UPDATE 命中 1 行,另一个拿到"已处理",
+		// resolved_by 不会被后点的那个人覆盖。
+		res := tx.Model(&Flag{}).
+			Where("id = ? AND resolved = ?", id, false).
+			Updates(map[string]any{
+				"resolved":    true,
+				"resolved_by": adminId,
+				"resolved_at": common.GetTimestamp(),
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 1 {
+			return errFlagAlreadyResolved
+		}
+		return audit.WriteTx(tx, audit.Entry{
+			TraceNo:     traceNo,
+			Category:    auditCategory,
+			Action:      "lottery.flag.resolve",
+			ActorType:   qymodel.ActorAdmin,
+			ActorUserId: adminId,
+			ActorName:   c.GetString("username"),
+			Result:      qymodel.ResultOK,
+			Reason:      note,
+		})
+	})
+	if err != nil {
+		writeAdminAudit(c, "lottery.flag.resolve", traceNo, qymodel.ResultFail, auditReason(err), "", "")
+		respondErr(c, err)
+		return
+	}
+	respondOK(c, gin.H{"id": id, "resolved": true})
 }
 
 // ─────────────────────────── 构造与校验 ───────────────────────────

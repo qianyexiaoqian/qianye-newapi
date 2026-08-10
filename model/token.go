@@ -402,6 +402,14 @@ func DeleteTokenById(id int, userId int) (err error) {
 	return token.Delete()
 }
 
+// IncreaseTokenQuota returns quota to a token (refund or negative settle delta).
+//
+// Always writes through to the database. `remain_quota` is the token-side gate —
+// PreConsumeTokenQuota reads it inside the WHERE clause of the statement that
+// spends it — and a gate cannot be half synchronous, half queued: the pre-consume
+// would be visible immediately while its reversal sat in the queue for a whole
+// BATCH_UPDATE_INTERVAL, rejecting the token's own next request. See the note on
+// DecreaseUserQuota.
 func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
@@ -413,10 +421,6 @@ func IncreaseTokenQuota(tokenId int, key string, quota int) (err error) {
 				common.SysLog("failed to increase token quota: " + err.Error())
 			}
 		})
-	}
-	if common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeTokenQuota, tokenId, quota)
-		return nil
 	}
 	return increaseTokenQuota(tokenId, quota)
 }
@@ -482,6 +486,8 @@ func PreConsumeTokenQuota(id int, key string, quota int, unlimited bool) error {
 	return nil
 }
 
+// DecreaseTokenQuota charges a token unconditionally (settle side). Always
+// writes through to the database, for the same reason as IncreaseTokenQuota.
 func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")
@@ -493,10 +499,6 @@ func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 				common.SysLog("failed to decrease token quota: " + err.Error())
 			}
 		})
-	}
-	if common.BatchUpdateEnabled {
-		addNewRecord(BatchUpdateTypeTokenQuota, id, -quota)
-		return nil
 	}
 	return decreaseTokenQuota(id, quota)
 }
