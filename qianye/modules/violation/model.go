@@ -43,6 +43,8 @@ const (
 	// 完全绕过。它是一道减速带,不是一堵墙。判据本身无法根治这一点 ——
 	// 逐字节比对流式与非流式的产出没有可行的在线实现。
 	MatchRequestRate = "request_rate"
+	// MatchAIReview(= "ai_review",定义在 aireview_model.go)是第七种匹配方式。
+	// 它同样不看本地文本表:pattern 是违规类型的白名单,判据来自一次外部模型调用。
 )
 
 // 分组作用域的名单方向。
@@ -161,6 +163,17 @@ const (
 	BanObserved = "observed"
 )
 
+// 触发封号的那条线。Ban.TriggerKind 的取值。
+//
+// 两条线是 OR:任一越过即要求处置。区分它们不是为了做统计,而是为了让
+// "他到底为什么在第 3 次就被封了"有一个不需要读源码的答案 —— 管理端封禁列表
+// 直接显示这一列,`category` 那几行会同时显示类型名与该类型的阈值。
+const (
+	BanTriggerGlobal   = "global"   // 账号总量线(BanPolicy.Threshold,跨全部类型)
+	BanTriggerCategory = "category" // 单类型线(Category.Threshold)
+	BanTriggerBoth     = "both"     // 同一次命中把两条线一起推过
+)
+
 // 达到阈值之后的处置动作。BanPolicy.Action 的取值。
 //
 // # 只有两个真实的账号状态,不要假装有三个
@@ -237,6 +250,130 @@ type BanPolicy struct {
 
 func (BanPolicy) TableName() string { return "qy_violation_ban_policy" }
 
+// ───────────────────────────── 违规类型 ─────────────────────────────
+
+// FallbackCategoryKey 是「未分类」兜底类型的业务键。
+//
+// 它与 BanPolicy 的兜底档同性质:没有显式类型的规则都落在这里,所以它不可删除。
+// 名字刻意是一个不像业务概念的词 —— 运营看到「未分类」就知道这里的规则还没归过类,
+// 而不会以为它是某种违规。
+const FallbackCategoryKey = "uncategorized"
+
+// Category 是一等公民的违规类型。
+//
+// # 它取代了什么
+//
+// 在此之前"类型"只存在于两个地方:内置规则目录里的 builtinCategory(**只是**
+// 管理端目录的展示分组,不落库、不参与任何判定),以及每条规则各自的 Name 与
+// PublicReason 字符串。也就是说"这个用户在破限这一类上已经犯了几次"根本无法回答 ——
+// 计数只有用户维度一个总数,而规则维度的聚合要去 record 表做范围扫描。
+// 项目方要的「违规规则计数绑定到违规类型,违规类型计次达到多少次封号」在旧结构里
+// 没有任何落点。
+//
+// # 内部说明与公示文案必须是两列
+//
+// Remark 会写匹配细节("命中 DAN / 开发者模式 / 忽略上述指令 三组词表")——
+// 那是给运营看的,直接公示等于把绕过方法印在用户手册上。PublicTitle / PublicDesc
+// 是对外那一份,只说"这一类是什么、几次会怎样"。两者共用一列的后果不是"少一列",
+// 是**永远只能二选一**:要么运营看不到细节,要么用户看得到细节。
+//
+// # 阈值只出"线",不出"处置动作"
+//
+// Threshold / WindowHours 回答"这一类累计几次算越线";越线之后**怎么处置**
+// 一律由用户所在分组的 BanPolicy.Action 决定(见 counter.go 的 resolveBanClaim)。
+// 刻意不在类型上再放一个 Action:那会造出"VIP 分组只记录、但破限类型说封号"
+// 这种没有任何取值组合能自解释的矛盾,而"到底几次封号"正是本轮要让人答得上来的问题。
+//
+// Threshold <= 0 表示这一类**不单独触发**处置,它的命中仍然计入账号总量线。
+// 存量规则迁移过来的「未分类」就是这一档 —— 因此迁移不改变任何现有站点的行为。
+type Category struct {
+	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
+	// Key 是稳定业务键,也是模块外(AI 审核)绑定类型的唯一入口(见 CategoryByKey)。
+	//
+	// 唯一索引是 (key, archive_seq) —— **不是** (key, deleted_at)。理由见 ArchiveSeq。
+	Key  string `json:"key" gorm:"type:varchar(64);not null;uniqueIndex:uk_qy_vcat_key,priority:1"`
+	Name string `json:"name" gorm:"type:varchar(64);not null;default:''"`
+	// Remark 是**内部**说明:匹配细节、误杀场景、运营口径。绝不下发用户端。
+	Remark string `json:"remark" gorm:"type:varchar(512);not null;default:''"`
+
+	// PublicTitle / PublicDesc 是**对外公示**文案,用户端只看得到这两列。
+	PublicTitle string `json:"public_title" gorm:"type:varchar(64);not null;default:''"`
+	PublicDesc  string `json:"public_desc" gorm:"type:varchar(512);not null;default:''"`
+	// Published 决定这一类是否出现在用户端公示里。
+	//
+	// 未公示不等于不生效:阈值照样算、照样封号。这两件事分开是刻意的 ——
+	// 有些类型(例如仍在观察期的新类型)不适合先告诉用户,但它的计数不该因此停摆。
+	Published bool `json:"published" gorm:"not null;default:false"`
+
+	// Enabled=false 表示这一类的**阈值**暂时停用(等价于 Threshold=0),
+	// 类型本身仍然存在、规则仍然绑着它、计数仍然累加。
+	Enabled     bool `json:"enabled" gorm:"not null;default:false"`
+	WindowHours int  `json:"window_hours" gorm:"not null;default:24"`
+	Threshold   int  `json:"threshold" gorm:"not null;default:0"`
+
+	SortOrder int `json:"sort_order" gorm:"not null;default:100"`
+	// IsFallback 标记「未分类」那一行。它是没有显式类型的规则的落点,
+	// 删掉它 = 让这些规则变成无类型的孤儿,所以删除接口拒绝它。
+	IsFallback bool `json:"is_fallback" gorm:"not null;default:false"`
+
+	CreatedAt int64 `json:"created_at" gorm:"not null"`
+	UpdatedAt int64 `json:"updated_at" gorm:"not null"`
+	UpdatedBy int   `json:"updated_by" gorm:"not null;default:0"`
+
+	// ArchiveSeq 是 key 唯一索引的第二列:活着的行恒为 0,归档时置为该行自己的 Id。
+	//
+	// # 为什么不能直接把 deleted_at 放进唯一索引
+	//
+	// 这是本轮被测试当场抓到的一个真实缺陷。唯一索引写成 (key, deleted_at) 看起来
+	// 很自然 —— "活着的行 deleted_at 都是 NULL,所以它们之间仍然唯一"。**这是错的**:
+	// MySQL、PostgreSQL、SQLite 三家的唯一索引都把 NULL 视为**互不相等**,
+	// 于是 (spam, NULL) 与 (spam, NULL) 不冲突,同一个 key 可以有任意多个活着的行。
+	// 表现是 ensureSeedCategories 每次重启都把整套种子再插一遍
+	// (TestSeedAndMigrationBindsExistingRules 的幂等子用例 6 → 12 行就是它)。
+	//
+	// # 为什么取自己的 Id 而不是时间戳
+	//
+	// 时间戳在"同一秒内归档两次同 key"时会撞;Id 是主键,天然唯一,
+	// 因此归档行之间**永远**不会冲突,同名 key 可以反复建了又归档。
+	// 活着的行恒为 0,于是 key 在活行之间是严格唯一的 —— 这正是要的约束。
+	ArchiveSeq int64 `json:"-" gorm:"not null;default:0;uniqueIndex:uk_qy_vcat_key,priority:2"`
+	// DeletedAt 是归档语义,不是删除。历史违规记录是证据,绝不级联删除;
+	// 类型行本身也留着,否则管理端点开一条历史记录会看到一个查不到的 category_id。
+	// 它只负责"默认查询里看不见",唯一性由 ArchiveSeq 负责。
+	DeletedAt gorm.DeletedAt `json:"-" gorm:"index"`
+}
+
+func (Category) TableName() string { return "qy_violation_category" }
+
+// CategoryCounter 是 (用户, 违规类型) 维度的滚动窗口计数。
+//
+// # 为什么不能从 qy_violation_record 现算
+//
+// 「这个用户在破限这一类上本窗口犯了几次」在记录表上是一次
+// (user_id, category_id, created_at >= 窗口起点) 的范围扫描,而记录表是全部扩展表里
+// 增长最快的一张,这个查询会出现在**每一条违规命中的处理路径上**。
+// 用户维度的 Counter 当初就是为了避开同一个扫描才存在的,类型维度没有理由退回去。
+//
+// # 与 Counter 的关系:两条线,一个封禁周期
+//
+// Counter 是账号总量线(跨全部类型),这张表是单类型线。两者是 OR:任一越线都要求处置。
+// 但**封禁认领的互斥键仍然只有 (user_id, ban_cycle)**,ban_cycle 只存在于 Counter 上 ——
+// 因此两条线同时越过也只会产生一次封号,不会封两次。
+//
+// 与 Counter 同口径:**只有真实命中会写这张表**,影子命中一个字节都不碰。
+type CategoryCounter struct {
+	UserId     int   `json:"user_id" gorm:"primaryKey;autoIncrement:false"`
+	CategoryId int64 `json:"category_id" gorm:"primaryKey;autoIncrement:false"`
+
+	WindowStart int64 `json:"window_start" gorm:"not null;default:0"`
+	HitCount    int   `json:"hit_count" gorm:"not null;default:0"`
+	TotalCount  int64 `json:"total_count" gorm:"not null;default:0"`
+	LastHitAt   int64 `json:"last_hit_at" gorm:"not null;default:0"`
+	UpdatedAt   int64 `json:"updated_at" gorm:"not null;default:0"`
+}
+
+func (CategoryCounter) TableName() string { return "qy_violation_cat_counter" }
+
 // 申诉状态。
 const (
 	AppealPending   = "pending"
@@ -256,6 +393,17 @@ type Rule struct {
 	// PublicReason 是写进用户计费日志与用户端列表的对外文案。
 	// 与 Name 分开:Name 常含内部代号(如 "csam_v3_高危"),直接给用户看等于泄漏规则库。
 	PublicReason string `json:"public_reason" gorm:"type:varchar(128);not null;default:''"`
+
+	// CategoryId 是这条规则所属的违规类型(见 Category)。
+	//
+	// **同一类型下多条规则的命中累加到同一个类型计数**,这正是"规则绑到类型、
+	// 类型计次封号"的落点:计数键是 category_id 而不是 rule_id。
+	//
+	// 0 表示这一行还没绑过类型。运行期不存在孤儿:categoryForRule 把 0(以及任何
+	// 指向已归档类型的值)折进「未分类」兜底类型。落库侧另有两道:写入接口把 0 解析成
+	// 兜底类型 id,启动期迁移把存量 0 一次性补齐(见 migrateRuleCategory)。
+	// 三道都指向同一个方向,漏掉任何一道都不会产生"不计数的规则"。
+	CategoryId int64 `json:"category_id" gorm:"not null;default:0;index:idx_qy_vr_category"`
 
 	Enabled bool `json:"enabled" gorm:"not null;index:idx_qy_vr_enabled_phase,priority:1"`
 	// Mode 是这条规则的执行模式:ModeShadow(影子)或 ModeEnforce(真实)。
@@ -330,6 +478,14 @@ type Rule struct {
 	// model_price_multiple 遇到高价模型 + 大倍数会一次扣穿余额,必须有闸。
 	FeeMaxQuota int64 `json:"fee_max_quota" gorm:"not null;default:0"`
 
+	// AIMinConfidence 是 ai_review 规则的置信度下限,取值 0..1,0 = 不设下限。
+	// 其它匹配方式忽略这一列。
+	//
+	// 它是 AI 审核唯一的误判闸:模型判"违规"但只有 0.3 的把握时,把它当成
+	// 一次真实违规去扣费封号是不可接受的。没有这道闸,唯一的调节手段就是
+	// 把整条规则切回影子 —— 那等于关掉它。
+	AIMinConfidence decimal.Decimal `json:"ai_min_confidence" gorm:"type:decimal(5,4);not null;default:0"`
+
 	// CountWeight = 0 允许"只扣费不累计封号";Severity 仅用于管理端排序与告警。
 	CountWeight int `json:"count_weight" gorm:"not null;default:1"`
 	Severity    int `json:"severity" gorm:"not null;default:1"`
@@ -381,8 +537,20 @@ type Record struct {
 	// PublicReason 冻结命中当时的对外文案。规则改名后用户端列表仍应显示原文案,
 	// 否则"我当时为什么被扣钱"永远对不上。
 	PublicReason string `json:"public_reason" gorm:"type:varchar(128);not null;default:''"`
-	Phase        string `json:"phase" gorm:"type:varchar(24);not null"`
-	Action       string `json:"action" gorm:"type:varchar(24);not null"`
+
+	// CategoryId / CategoryName / CategoryPublicTitle 冻结命中当时的违规类型。
+	//
+	// 三列都要冻结,理由与 PublicReason 完全一致,而且更硬:类型可以被**归档**,
+	// 归档之后再去 join 类型表就只能得到一行软删的数据或什么都没有 ——
+	// 而历史记录是证据,它必须能独立回答"这一条当时算哪一类"。
+	// CategoryName 是内部名(管理端可见),CategoryPublicTitle 是对外文案(用户端可见),
+	// 两者分开的理由见 Category 的说明。
+	CategoryId          int64  `json:"category_id" gorm:"not null;default:0;index:idx_qy_vrec_cat"`
+	CategoryName        string `json:"category_name" gorm:"type:varchar(64);not null;default:''"`
+	CategoryPublicTitle string `json:"category_public_title" gorm:"type:varchar(64);not null;default:''"`
+
+	Phase  string `json:"phase" gorm:"type:varchar(24);not null"`
+	Action string `json:"action" gorm:"type:varchar(24);not null"`
 	// Shadow = true 表示这次命中按影子处理(规则 Mode=shadow,或熔断期间全部规则
 	// 被临时按影子执行):不扣费、不阻断、不封号、**不计违规次数**,只留这一行
 	// + 证据供管理员核查。fee_quota_want 仍然是算准的("若真实执行会扣多少钱"),
@@ -447,6 +615,10 @@ type Record struct {
 	Counted bool `json:"counted" gorm:"not null;default:false"`
 	// CounterAfter 是推进之后的窗口内计数。影子记录取 CounterAfterShadow。
 	CounterAfter int `json:"counter_after" gorm:"not null;default:0"`
+	// CategoryCounterAfter 是推进之后的**该类型**窗口内计数,与 CounterAfter 同口径
+	// (影子记录取 CounterAfterShadow)。两个数必须都留:账号总量线与类型线是两条
+	// 独立的封号判据,事后复盘"他到底是撞了哪条线"只能靠这两列。
+	CategoryCounterAfter int `json:"category_counter_after" gorm:"not null;default:0"`
 
 	Status       string `json:"status" gorm:"type:varchar(16);not null;default:'active';index:idx_qy_vrec_status"`
 	RevokedBy    int    `json:"revoked_by" gorm:"not null;default:0"`
@@ -530,6 +702,18 @@ type Ban struct {
 	// 答不出"它来自哪一档"。PolicyGroup 为空串表示当时落的是兜底档。
 	PolicyGroup  string `json:"policy_group" gorm:"type:varchar(64);not null;default:''"`
 	PolicyAction string `json:"policy_action" gorm:"type:varchar(16);not null;default:''"`
+
+	// TriggerKind 冻结"这次是撞了哪条线":BanTrigger* 三个取值之一。
+	//
+	// 阈值从一条变成两条(账号总量线 + 单类型线)之后,只存 Threshold / HitCountAt
+	// 已经答不出"为什么是现在"—— 一个 hit_count=3、threshold=10 的封禁行看起来
+	// 完全说不通,除非同时看到它其实撞的是"破限类 3 次"那条线。
+	// 空串是本列出现之前的历史行,一律按账号总量线读。
+	TriggerKind string `json:"trigger_kind" gorm:"type:varchar(16);not null;default:''"`
+	// TriggerCategoryId / CategoryHitCount / CategoryThreshold 只在类型线参与触发时有值。
+	TriggerCategoryId int64 `json:"trigger_category_id" gorm:"not null;default:0"`
+	CategoryHitCount  int   `json:"category_hit_count" gorm:"not null;default:0"`
+	CategoryThreshold int   `json:"category_threshold" gorm:"not null;default:0"`
 
 	Status    string `json:"status" gorm:"type:varchar(16);not null;default:'pending';index:idx_qy_vban_status"`
 	Attempts  int    `json:"attempts" gorm:"not null;default:0"`

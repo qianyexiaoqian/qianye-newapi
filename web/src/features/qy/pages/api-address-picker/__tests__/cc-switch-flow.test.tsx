@@ -103,9 +103,8 @@ await i18next
 const { api } = await import('@/lib/api')
 const { qyKeys } = await import('../../../lib/query-keys')
 const { useQyApiAddressPicker } = await import('..')
-const { CCSwitchDialog } = await import(
-  '@/features/keys/components/dialogs/cc-switch-dialog'
-)
+const { CCSwitchDialog } =
+  await import('@/features/keys/components/dialogs/cc-switch-dialog')
 const { buildCCSwitchURL } = await import('@/features/keys/lib/cc-switch-url')
 type AddressOption = { id: number; name: string; remark: string; url: string }
 

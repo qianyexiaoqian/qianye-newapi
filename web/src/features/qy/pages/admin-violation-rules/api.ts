@@ -157,14 +157,39 @@ export function deleteQyViolationRule(id: number): Promise<unknown> {
  *
  * 这是本模块最重要的一个接口：没有它，管理员只能「改完上线看线上炸不炸」，
  * 而线上一炸就是全站用户被误扣误封。
+ *
+ * 入参按**规则的匹配维度**拆开，而不是一个万能样本框：试跑的目的是测这条规则的
+ * 逻辑，所以它该问的是这条规则真正会读到的东西。面板只发当前规则会用到的字段，
+ * 其余留空 —— 后端把这份判断（`inputs`）原样回给界面。
  */
 export function testQyViolationRule(body: {
   rule: QyViolationRuleInput
-  sample_text: string
-  model: string
-  group: string
+  /** prompt 阶段扫的请求上下文文本。 */
+  request_text: string
+  /** 上游返回的错误正文。 */
+  upstream_text: string
+  /** 上游软违规原因（`openai_finish_reason=content_filter` 之类）。 */
+  reject_reason: string
+  /** 上游 HTTP 状态码。它同时是判据与作用域闸。 */
+  status_code: number
+  /** 上游错误码。 */
+  error_code: string
   /** `request_rate` 规则的试跑输入：假设这一分钟内已有多少条非流式请求。 */
   rate_count: number
+  /**
+   * `ai_review` 规则的试跑输入：假设外部审核给出了这样一个结论。
+   *
+   * 空的 `ai_verdict` 表示这一条压根没送审（或审核失败/超时），也就是 AI 规则
+   * **必然不命中**的那一档 —— 「失败即放行」在试跑里的表达，必须能重现。
+   */
+  ai_verdict: string
+  ai_category: string
+  /** 置信度走字符串：0.8 往返一次 JSON number 会变成 0.8000000000000000444，
+   *  而它要跟规则的 ai_min_confidence 做大小比较。 */
+  ai_confidence: string
+  /** 作用域输入，可选：只影响「这条规则在不在作用域内」，不影响内容匹配。 */
+  model: string
+  group: string
 }): Promise<QyViolationRuleTestResult> {
   return qyPost<QyViolationRuleTestResult>('/admin/violation/rules/test', body)
 }

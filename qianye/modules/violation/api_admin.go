@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -40,7 +41,11 @@ type ruleUpsertReq struct {
 	// Mode 是 "shadow" / "enforce"。收字符串而不是布尔:管理端表单上这一项叫
 	// 「影子模式 / 真实模式」,是个二选一的单选,不是"要不要打开某个东西"。
 	// 空串在 apply 里被折回 shadow —— 漏传字段的默认必须是不扣钱的那一侧。
-	Mode           string `json:"mode"`
+	Mode string `json:"mode"`
+	// CategoryId 是这条规则归属的违规类型。0 / 缺省 → 由 resolveRuleCategory
+	// 落到「未分类」兜底类型,绝不留 0(那会让这条规则的命中在管理端显示成
+	// 一个查不到的类型)。
+	CategoryId     int64  `json:"category_id"`
 	Priority       int    `json:"priority"`
 	Phase          string `json:"phase"`
 	MatchType      string `json:"match_type"`
@@ -55,10 +60,14 @@ type ruleUpsertReq struct {
 	FeeFixed       string `json:"fee_fixed"`
 	FeeMultiple    string `json:"fee_multiple"`
 	FeeMaxQuota    int64  `json:"fee_max_quota"`
-	CountWeight    int    `json:"count_weight"`
-	Severity       int    `json:"severity"`
-	ArchiveContext bool   `json:"archive_context"`
-	BlockMessage   string `json:"block_message"`
+	// AIMinConfidence 是 ai_review 规则的置信度下限,走字符串与 fee_* 同理:
+	// JSON number 在前端是 float64,0.8 往返一次会变成 0.8000000000000001,
+	// 而它是一道决定这次命中算不算数的闸。
+	AIMinConfidence string `json:"ai_min_confidence"`
+	CountWeight     int    `json:"count_weight"`
+	Severity        int    `json:"severity"`
+	ArchiveContext  bool   `json:"archive_context"`
+	BlockMessage    string `json:"block_message"`
 }
 
 func (r *ruleUpsertReq) apply(dst *Rule) error {
@@ -72,6 +81,10 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 	mult, err := parseDecimal(r.FeeMultiple)
 	if err != nil {
 		return fmt.Errorf("fee_multiple 不是合法数值: %q", r.FeeMultiple)
+	}
+	conf, err := parseDecimal(r.AIMinConfidence)
+	if err != nil {
+		return fmt.Errorf("ai_min_confidence 不是合法数值: %q", r.AIMinConfidence)
 	}
 
 	// 长度不在这里截断,交给 ValidateRule 报错(见 rules.go 的 ruleVarcharLimits)。
@@ -92,6 +105,7 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 	if dst.Mode == "" {
 		dst.Mode = ModeShadow
 	}
+	dst.CategoryId = r.CategoryId
 	dst.Priority = r.Priority
 	dst.Phase = r.Phase
 	dst.MatchType = r.MatchType
@@ -111,11 +125,43 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 	dst.FeeFixed = fixed
 	dst.FeeMultiple = mult
 	dst.FeeMaxQuota = r.FeeMaxQuota
+	dst.AIMinConfidence = conf
 	dst.CountWeight = r.CountWeight
 	dst.Severity = r.Severity
 	dst.ArchiveContext = r.ArchiveContext
 	dst.BlockMessage = r.BlockMessage
 	return ValidateRule(dst)
+}
+
+// resolveRuleCategory 把规则的类型归属落实到一个**真实存在且未归档**的类型 id。
+//
+// 刻意不放进 ruleUpsertReq.apply / ValidateRule:那两个函数是纯的(不碰数据库),
+// 而"这个类型存不存在"只能查库。混进去会让全部规则校验用例都必须先建一张类型表,
+// 而它们要断言的是匹配方式与作用域,与类型无关。
+//
+// 落不到任何类型时**不是**报错,而是回落兜底:一次类型表抖动不该让运营连规则
+// 都保存不了 —— 而漏掉 category_id 的规则在运行期由 categoryForRule 兜住,
+// 影响仅限于管理端列表上显示成「未分类」。指向一个已归档类型才报错:
+// 那是运营明确选错了,静默改写会让他以为自己配的是另一类。
+func resolveRuleCategory(row *Rule) error {
+	gdb := db.Get()
+	if gdb == nil {
+		return nil
+	}
+	if row.CategoryId > 0 {
+		var cat Category
+		if err := gdb.Where("id = ?", row.CategoryId).Take(&cat).Error; err != nil {
+			return fmt.Errorf("违规类型 %d 不存在或已归档,请重新选择", row.CategoryId)
+		}
+		return nil
+	}
+	var fallback Category
+	if err := gdb.Where("is_fallback = ?", true).Take(&fallback).Error; err != nil {
+		common.SysError("qianye/violation: 「未分类」兜底类型缺失,本次规则保存不带类型: " + err.Error())
+		return nil
+	}
+	row.CategoryId = fallback.Id
+	return nil
 }
 
 func parseDecimal(s string) (decimal.Decimal, error) {
@@ -171,6 +217,10 @@ func adminCreateRule(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
+	if err := resolveRuleCategory(row); err != nil {
+		badRequest(c, err.Error())
+		return
+	}
 	row.UpdatedBy = row.CreatedBy
 	if err := db.Get().Create(row).Error; err != nil {
 		internalError(c, err)
@@ -203,6 +253,10 @@ func adminUpdateRule(c *gin.Context) {
 		"enabled": row.Enabled, "mode": row.Mode, "action": row.Action, "pattern": row.Pattern,
 	})
 	if err := req.apply(&row); err != nil {
+		badRequest(c, err.Error())
+		return
+	}
+	if err := resolveRuleCategory(&row); err != nil {
 		badRequest(c, err.Error())
 		return
 	}
@@ -393,7 +447,259 @@ func bumpRuleVersion() {
 	}
 }
 
-// adminTestRule 是规则试跑:粘一段文本,立刻看到是否命中、命中什么、耗时多少。
+// 试跑输入的字段标识。
+//
+// 它们既是请求体的 JSON 键,也是**管理端表单该渲染哪几个格子**的答案:
+// 试跑的目的是测这条规则的逻辑,所以它该问的是这条规则真正会读到的东西
+// (上下文、上游正文、状态码、错误码、频率计数),而不是雷打不动地问"模型 / 分组"。
+//
+// 模型与分组保留下来,但降级成可选的作用域输入:它们只决定"这条规则在不在
+// 作用域内",一个字节都不参与"内容匹不匹配"。
+const (
+	TestInputRequestText  = "request_text"
+	TestInputUpstreamText = "upstream_text"
+	TestInputRejectReason = "reject_reason"
+	TestInputStatusCode   = "status_code"
+	TestInputErrorCode    = "error_code"
+	TestInputRateCount    = "rate_count"
+	// AI 审核这一维度的三格:结论 / 违规类型 / 置信度。
+	//
+	// 它没有"文本样本"这一说 —— ai_review 规则读的不是上下文本身,而是外部模型
+	// 对上下文给出的**结论**(见 matchAIRule)。让试跑去问一段文本,等于把面板
+	// 变成"我猜模型会怎么判",而那正是这条规则唯一无法在本地复现的一步。
+	// 所以这里直接问结论:管理员想验证的是"模型判了 sexual@0.72,我这条
+	// min_confidence=0.8 的规则会不会命中",而这个问题本地完全答得出来。
+	TestInputAIVerdict    = "ai_verdict"
+	TestInputAICategory   = "ai_category"
+	TestInputAIConfidence = "ai_confidence"
+	TestInputModel        = "model"
+	TestInputGroup        = "group"
+)
+
+// 试跑结论。三态是这个面板的最低要求:只回一个布尔时,"不在作用域"与
+// "在作用域但没命中"会长得一模一样,而这两者对管理员的下一步完全相反 ——
+// 前者要去改作用域,后者要去改模式串。分不清就只能两边乱改。
+const (
+	TestOutcomeOutOfScope = "out_of_scope"
+	TestOutcomeNoMatch    = "no_match"
+	TestOutcomeMatched    = "matched"
+	// TestOutcomeTimeout 是第四种,也是最不能被折叠进"未命中"的那一种:
+	// 扫描预算耗尽时线上同样什么都不拦,但原因是规则太重,不是模式串写错。
+	TestOutcomeTimeout = "timeout"
+)
+
+// 作用域闸的标识,回答"是哪一道闸把它挡在门外"。
+const (
+	TestScopeFailModel  = "model"
+	TestScopeFailGroup  = "group"
+	TestScopeFailStatus = "status"
+)
+
+// ruleTestReq 是规则试跑的入参。
+//
+// 提成命名类型而不是留在 handler 里做匿名结构:守卫测试要用反射逐字段比对它与
+// 线上 scanInput 的对齐关系(见 api_admin_testrule_test.go),匿名结构在包外、
+// 甚至在同包的测试里都拿不到。
+type ruleTestReq struct {
+	Rule ruleUpsertReq `json:"rule"`
+	// Sample 是旧版试跑面板的唯一文本输入:一段样本同时灌进请求上下文与上游正文。
+	// 保留它纯粹为了兼容 —— 老前端、老脚本、以及任何存着旧请求体的人。
+	// 新面板一律改填下面按维度拆开的字段。
+	Sample string `json:"sample_text"`
+	// RequestText / UpstreamText 用指针:**缺字段**与**显式空串**必须能区分。
+	// 缺字段回落到 Sample(旧行为),显式空串就是空 —— 新面板给上游规则
+	// 只填 upstream_text 时,request_text 必须真的是空,而不是被 Sample 偷偷灌满。
+	RequestText  *string `json:"request_text"`
+	UpstreamText *string `json:"upstream_text"`
+	// RejectReason 是上游软违规信号(ContextKeyAdminRejectReason)。
+	// 线上 scanPostText 把它拼在上游正文之后一起参与匹配,而在此之前试跑面板
+	// 根本没有这一格 —— 于是一条专门盯 `openai_finish_reason=content_filter`
+	// 的规则,在试跑里只能靠"把它粘进样本框"这种碰巧成立的办法测。
+	RejectReason string `json:"reject_reason"`
+	// Model / Group 是作用域输入,可选。
+	Model string `json:"model"`
+	Group string `json:"group"`
+	// RateCount 让 request_rate 规则也能试跑。没有它,频率规则在试跑面板里
+	// 永远显示"未命中" —— 一个看起来权威、实则只是没有输入的结论,
+	// 比不给试跑更容易让人放心上线。
+	RateCount int `json:"rate_count"`
+	// StatusCode / ErrorCode 让上游阶段的规则也能试跑,理由与 RateCount 完全相同。
+	//
+	// 状态码作用域出现之后这一项从"锦上添花"变成必需:一条配了
+	// status_scope=400 的规则,在没有状态码输入的试跑里恒为"不在作用域",
+	// 管理员会以为自己写错了正文,反复改一个本来就对的模式串。
+	StatusCode int    `json:"status_code"`
+	ErrorCode  string `json:"error_code"`
+	// AIVerdict 是外部审核给出的结论:空 = 这一条压根没送审(或审核失败/超时),
+	// 也就是 ai_review 规则**必然不命中**的那一档 —— 那正是"失败即放行"在试跑里
+	// 的表达,试跑必须能重现它。非空时取 OutcomeClean / OutcomeViolation。
+	AIVerdict  string `json:"ai_verdict"`
+	AICategory string `json:"ai_category"`
+	// AIConfidence 走字符串,与本文件其余 decimal 字段同口径:JSON number 在前端
+	// 是 float64,0.8 往返一次可能变成 0.8000000000000000444,而它要跟规则的
+	// ai_min_confidence 做大小比较 —— 差一个 ulp 就是"命中"与"不命中"之别。
+	AIConfidence string `json:"ai_confidence"`
+}
+
+// input 把试跑请求翻成线上判据的输入。
+//
+// 试跑输入必须与线上的 scanInput 逐字段对齐:少一个字段,那一维度的规则在试跑里
+// 就恒为"未命中" —— 而"试跑说不命中、线上却命中"是这个面板最坏的失效方式。
+// 守卫测试拿反射钉住这份对齐(scanInput 新增字段而这里没跟上就变红)。
+func (r *ruleTestReq) input() scanInput {
+	requestText, upstreamText := r.Sample, r.Sample
+	if r.RequestText != nil {
+		requestText = *r.RequestText
+	}
+	if r.UpstreamText != nil {
+		upstreamText = *r.UpstreamText
+	}
+	var ai *aiOutcome
+	// 只有 decided() 认的两个取值才构造结论。其余一律留 nil —— 未送审、审核失败、
+	// 审核超时在线上是同一档(不命中),试跑没有理由把它们区分成三种假象。
+	if r.AIVerdict == OutcomeClean || r.AIVerdict == OutcomeViolation {
+		// 走 float64 + clampConfidence,与线上从模型响应里取置信度的那一步是
+		// 同一个函数、同一个夹取与舍入(4 位)。自己在这里 decimal 解析会得到一个
+		// 与线上差一个 ulp 的数,而它要跟 ai_min_confidence 做大小比较 ——
+		// 差一个 ulp 就是"命中"与"不命中"之别。
+		conf, err := strconv.ParseFloat(strings.TrimSpace(r.AIConfidence), 64)
+		if err != nil {
+			conf = 0
+		}
+		ai = &aiOutcome{
+			Outcome:  r.AIVerdict,
+			Violated: r.AIVerdict == OutcomeViolation,
+			// 归一走线上同一个函数:模型返回的 category 也走它。两侧不同口径就会
+			// 得到"试跑说命中、线上不命中"——本模块已经在 groupname 上栽过两次。
+			Category:   normalizeAICategory(r.AICategory),
+			Confidence: clampConfidence(conf),
+		}
+	}
+	return scanInput{
+		Model:        r.Model,
+		Group:        r.Group,
+		Text:         clipHeadTail(requestText, maxScanBytes),
+		RateCount:    r.RateCount,
+		StatusCode:   r.StatusCode,
+		ErrCode:      r.ErrorCode,
+		UpstreamText: clipHeadTail(upstreamText, maxScanBytes),
+		RejectReason: clipHeadTail(r.RejectReason, maxScanBytes),
+		AI:           ai,
+	}
+}
+
+// ruleTestInputs 列出一条规则**真正会读到**的试跑输入,顺序即表单渲染顺序。
+//
+// 这是"试跑该问什么"的唯一出处。让前端自己按 match_type 推一份,是本仓已经
+// 踩过的那类坑:两份判据迟早不一致,而不一致的表现恰好最难发现 —— 界面问了
+// 一个规则根本不看的字段(填了没用),或者漏问了它唯一看的那个(永远不命中)。
+func ruleTestInputs(phase, matchType string) []string {
+	var out []string
+	switch matchType {
+	case MatchRequestRate:
+		// 频率判据不看任何文本:pattern 是阈值,输入是窗口内的请求条数。
+		out = []string{TestInputRateCount}
+	case MatchErrorCode:
+		out = []string{TestInputErrorCode}
+	case MatchStatusCode:
+		out = []string{TestInputStatusCode}
+	case MatchAIReview:
+		out = []string{TestInputAIVerdict, TestInputAICategory, TestInputAIConfidence}
+	default:
+		// keyword / regex / upstream_text 都是文本判据,差别只在扫哪一段文本:
+		// prompt 阶段扫请求上下文,上游阶段扫"上游正文 + 软违规原因"的拼接。
+		if phase == PhasePrompt {
+			out = []string{TestInputRequestText}
+		} else {
+			out = []string{TestInputUpstreamText, TestInputRejectReason}
+		}
+	}
+	// 状态码作用域与全部匹配方式正交(见 Rule.StatusScope):哪怕判据是错误码,
+	// 一条配了 status_scope=400 的规则在没有状态码输入的试跑里恒为"不在作用域"。
+	//
+	// 只有这两个阶段手上真的有上游状态码。写成 `phase != PhasePrompt` 会把
+	// post_async(转发后异步审核)也算进来,而那一档跑在异步 worker 上、
+	// 根本没有上游响应 —— 多摆一格填了也不生效的输入,与这次改动要修的毛病同形。
+	if (phase == PhaseUpstreamErr || phase == PhaseRejectReason) &&
+		matchType != MatchStatusCode {
+		out = append(out, TestInputStatusCode)
+	}
+	// 作用域输入排在最后,且永远可选:它们不参与内容匹配。
+	return append(out, TestInputModel, TestInputGroup)
+}
+
+// ruleTestScopeFail 回答"是哪一道作用域闸把它挡在门外",空串表示在作用域内。
+//
+// 三道闸复用 compiledRule 自己的方法,一个判据都不重写:applies 的注释已经写明
+// 两处各写一遍 && 的后果,而"试跑说不在作用域、线上照样命中"正是那个后果。
+func ruleTestScopeFail(cr *compiledRule, in scanInput) string {
+	switch {
+	case !cr.groupInScope(in.Group):
+		return TestScopeFailGroup
+	case !cr.modelInScope(in.Model):
+		return TestScopeFailModel
+	case !cr.statusInScope(in.StatusCode):
+		return TestScopeFailStatus
+	}
+	return ""
+}
+
+// ruleTestBlanks 列出这条规则会读、但本次试跑没给值的输入。
+//
+// 它回答三态之外的第四个问题:"未命中"到底是规则写错了,还是样本没填全。
+// 一条 error_code 规则在错误码留空时必然未命中 —— 不说破的话,管理员会去改
+// 一个本来就对的模式串。
+//
+// 模型/分组不算(它们空着就是"不限")。拒绝原因也不算:线上它经常是空的,
+// 上游正文非空时这条规则完全测得出来,报它只会变成常态噪声 —— 所以上游文本
+// 是否为空按 scanPostText 的拼接结果判,与线上参与匹配的那一段严格一致。
+func ruleTestBlanks(in scanInput, inputs []string) []string {
+	blank := []string{}
+	for _, id := range inputs {
+		switch {
+		case id == TestInputRequestText && in.Text == "":
+			blank = append(blank, id)
+		case id == TestInputUpstreamText && scanPostText(in) == "":
+			blank = append(blank, id)
+		case id == TestInputStatusCode && in.StatusCode == 0:
+			blank = append(blank, id)
+		case id == TestInputErrorCode && in.ErrCode == "":
+			blank = append(blank, id)
+		case id == TestInputRateCount && in.RateCount == 0:
+			blank = append(blank, id)
+		case id == TestInputAIVerdict && in.AI == nil:
+			blank = append(blank, id)
+		}
+	}
+	return blank
+}
+
+// ruleTestOutcome 跑一次试跑并给出三态(+ 超时)结论。
+//
+// 与线上共用 scan / scanPostText / applies:试跑面板的全部价值是它与线上判据
+// 逐字节相同,任何"试跑专用的简化版匹配"都会把这个价值清零。
+func ruleTestOutcome(cr *compiledRule, phase string, in scanInput) (string, string, *verdict) {
+	text := in.Text
+	if phase != PhasePrompt {
+		text = scanPostText(in)
+	}
+	scopeFail := ruleTestScopeFail(cr, in)
+	v := scan([]*compiledRule{cr}, cr.words, in, text)
+	switch {
+	case v != nil && v.Rule != nil:
+		return TestOutcomeMatched, scopeFail, v
+	case scopeFail != "":
+		// 作用域优先于超时:预算耗尽时 scan 在检查 applies 之前就退出了,
+		// 但"这条规则压根不作用于你填的模型/分组/状态码"是更靠前、更可行动的答案。
+		return TestOutcomeOutOfScope, scopeFail, v
+	case v != nil && v.Timeout:
+		return TestOutcomeTimeout, scopeFail, v
+	}
+	return TestOutcomeNoMatch, scopeFail, v
+}
+
+// adminTestRule 是规则试跑:按当前规则真正会用到的维度填样本,立刻看到
+// 在不在作用域、命中没命中、命中什么、耗时多少。
 //
 // 这是本模块最重要的一个接口。没有它,管理员只能"改完上线看线上炸不炸",
 // 而线上一炸就是全站用户被误扣误封。
@@ -401,23 +707,7 @@ func adminTestRule(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return
 	}
-	var req struct {
-		Rule   ruleUpsertReq `json:"rule"`
-		Sample string        `json:"sample_text"`
-		Model  string        `json:"model"`
-		Group  string        `json:"group"`
-		// RateCount 让 request_rate 规则也能试跑。没有它,频率规则在试跑面板里
-		// 永远显示"未命中" —— 一个看起来权威、实则只是没有输入的结论,
-		// 比不给试跑更容易让人放心上线。
-		RateCount int `json:"rate_count"`
-		// StatusCode / ErrorCode 让上游阶段的规则也能试跑,理由与 RateCount 完全相同。
-		//
-		// 状态码作用域出现之后这一项从"锦上添花"变成必需:一条配了
-		// status_scope=400 的规则,在没有状态码输入的试跑里恒为"不在作用域",
-		// 管理员会以为自己写错了正文,反复改一个本来就对的模式串。
-		StatusCode int    `json:"status_code"`
-		ErrorCode  string `json:"error_code"`
-	}
+	var req ruleTestReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, "请求体格式错误")
 		return
@@ -432,31 +722,27 @@ func adminTestRule(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
-	// 试跑输入必须与线上的 scanInput 逐字段对齐,而且**同一段样本要同时填进
-	// Text 与 UpstreamText**:上游阶段的 scanPost 扫的是 UpstreamText(+ 拒绝原因),
-	// prompt 阶段的 scanPrompt 扫的是 Text。只填其中一个,另一个阶段的规则
-	// 在试跑里永远不命中 —— 而"试跑说不命中、线上却命中"是这个面板最坏的失效方式。
-	in := scanInput{
-		Model:        req.Model,
-		Group:        req.Group,
-		Text:         clipHeadTail(req.Sample, maxScanBytes),
-		RateCount:    req.RateCount,
-		StatusCode:   req.StatusCode,
-		ErrCode:      req.ErrorCode,
-		UpstreamText: clipHeadTail(req.Sample, maxScanBytes),
+	in := req.input()
+	inputs := ruleTestInputs(row.Phase, row.MatchType)
+	outcome, scopeFail, v := ruleTestOutcome(cr, row.Phase, in)
+	out := gin.H{
+		"outcome": outcome,
+		// scope_ok / matched 是旧版响应的两个布尔,原样保留:老前端还在读它们,
+		// 而这次改动的目的是把结论说清楚,不是让旧界面变成一片空白。
+		"scope_ok":     scopeFail == "",
+		"scope_fail":   scopeFail,
+		"matched":      outcome == TestOutcomeMatched,
+		"terms":        []string{},
+		"snippet":      "",
+		"inputs":       inputs,
+		"blank_inputs": ruleTestBlanks(in, inputs),
 	}
-	text := in.Text
-	if row.Phase != PhasePrompt {
-		text = scanPostText(in)
-	}
-	inScope := cr.applies(in)
-	v := scan([]*compiledRule{cr}, cr.words, in, text)
-	out := gin.H{"scope_ok": inScope, "matched": false, "terms": []string{}, "snippet": ""}
-	if v != nil && v.Rule != nil {
-		out["matched"] = true
-		out["terms"] = v.Terms
-		out["snippet"] = v.Snippet
+	if v != nil {
 		out["elapsed_us"] = v.Elapsed.Microseconds()
+		if v.Rule != nil {
+			out["terms"] = v.Terms
+			out["snippet"] = v.Snippet
+		}
 	}
 	respond(c, out)
 }
@@ -632,15 +918,10 @@ func revokeRecord(c *gin.Context, rec *Record, reason string, refund bool, opera
 	}
 
 	// 计数回退。撤销一条误判记录后,用户不该继续背着这次计数走向封号。
-	// 只在本次真正完成撤销时做:revertCounter 是无条件减法,重复执行会把当前窗口里
+	// 只在本次真正完成撤销时做:回退是无条件减法,重复执行会把当前窗口里
 	// 其他违规的合法计数一起扣掉,反而放过真正的违规用户。
-	if first && rec.Counted && rec.CountWeight > 0 {
-		var counter Counter
-		if err := gdb.Where("user_id = ?", rec.UserId).Take(&counter).Error; err == nil {
-			if e := revertCounter(rec.UserId, rec.CountWeight, counter.WindowStart); e != nil {
-				common.SysError("qianye/violation: 撤销时回退计数失败: " + e.Error())
-			}
-		}
+	if first {
+		revertHitCounters(gdb, rec)
 	}
 
 	var refunded int64

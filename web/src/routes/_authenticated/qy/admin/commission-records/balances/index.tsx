@@ -21,11 +21,13 @@ import { createFileRoute } from '@tanstack/react-router'
 import { QyAdminCommissionBalances } from '@/features/qy/pages/admin-commission-balances'
 
 // 挂在 commission-records 之下而不是平级新开一个 /qy/admin/commission-balances：
-// `lib/pages.ts` 的 qy-settlement 分组已经占满 7 行（6 页 + 1 折叠项），
-// `__tests__/pages-table.test.ts` 的"分组规模不超过上游 admin 组"用例会因为
-// 第 8 行直接变红。作为 commission-records 的子路径,它同时天然继承了
-// `page-meta.ts` 的最长前缀规则 —— Steins Gate 区段头会显示佣金审核的
-// LAB MEMO 编号与日文副标,而不是掉进"未登记"分支显示 00。
+// 三张表（逐笔计佣 / 按人汇总 / 邀请关系）是同一件事的三个视角,URL 层级把这层
+// 从属关系说出来,面包屑与"最长前缀"这类按路径工作的机制也就不必另配一张表。
+//
+// ⚠️ 侧栏入口在 `lib/pages.ts` 里（「结算 → 佣金余额」）。它一度**不在**那张表里,
+// 于是整页只能靠佣金审核页上的按钮或手敲 URL 到达 —— 项目方的原话是
+// 「UI前端怎么没看见有佣金管理的入口和UI」。补上之后由
+// `features/qy/lib/__tests__/route-entry-guard.test.ts` 盯着:有路由无入口就变红。
 //
 // 叶子路由不写守卫:登录由 `_authenticated/route.tsx` 保证,扩展启用由
 // `qy/route.tsx` 保证,管理员由 `qy/admin/route.tsx` 保证,各一处、零重复。

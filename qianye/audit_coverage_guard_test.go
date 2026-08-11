@@ -55,6 +55,10 @@ var auditWriteFuncs = map[string]bool{
 	"writeRelationAudit":     true, // commission:AFF 关系绑定/解绑,成功与失败同一出口
 	"writeAdjustAudit":       true, // commission:手工增减佣金,成功与失败同一出口
 	"writeBanPolicyAudit":    true, // violation:处置策略档写入/删除,成功与失败同一出口
+	"writeCategoryAudit":     true, // violation:违规类型写入/归档,成功与失败同一出口
+	"writeAIReviewAudit":     true, // violation:AI 审核渠道写入/删除,成功与失败同一出口
+	"writeAISettingAudit":    true, // violation:AI 审核设置(抽样率、总开关)变更,成功与失败同一出口
+	"afterAIChange":          true, // violation:bump 版本 + 重载 + 审计,三件一起做
 }
 
 // auditRequired 列出必须留痕的资金路径,值是该函数体内审计写入的**最少**次数。
@@ -152,8 +156,34 @@ var auditRequired = []struct {
 		"三条路径各一条:删掉普通档(成功)、删库失败、以及**兜底档被拒**。" +
 			"最后那一条最容易漏 —— 它在 400 分支里,而「谁试过删兜底档」正是事后要查的:" +
 			"删掉兜底档等于让所有没有专属策略的分组落进一个不存在的策略"},
+	{"modules/violation/api_admin_category.go", "adminUpsertCategory", 2,
+		"违规类型带自己的次数阈值(某一类累计 N 次即触发处置),它与策略档同级 ——" +
+			"改一次就改变了「几次会被封」。成功与失败各一条:失败分支里那一条回答的是" +
+			"「我把破限类的阈值从 10 改成 3、保存没生效」,而那正是要查的"},
+	{"modules/violation/api_admin_category.go", "adminArchiveCategory", 3,
+		"三条路径各一条:归档成功、归档失败、以及**兜底类型被拒**。" +
+			"最后那一条在 400 分支里,而「谁试过归档未分类」正是事后要查的:" +
+			"归档它会让没有显式类型的规则变成无类型的孤儿,它们的命中从此不计入任何类型线。" +
+			"归档成功那一条还要留下「这一类的规则被改绑到了哪里、改了几条」"},
 	{"modules/violation/api_user.go", "userCreateAppeal", 1,
 		"申诉提交要与裁决成对留痕,否则时间线缺掉用户那一半"},
+	{"modules/violation/api_admin_aireview.go", "adminCreateAIChannel", 3,
+		"AI 审核渠道决定**用户的请求内容被发到哪个第三方地址、用哪把密钥**。" +
+			"三条路径各一条:参数校验失败、建行失败、密钥落库失败 —— 后两者都会留下" +
+			"一条半成品渠道行,而「谁在什么时候往这里加了一个外部地址」是内容出境" +
+			"唯一能事后追责的凭据"},
+	{"modules/violation/api_admin_aireview.go", "adminUpdateAIChannel", 3,
+		"改 base_url 等于改用户内容的去向,改密钥等于换一套凭证,两者都无症状:" +
+			"接口 200、界面正常、审核照跑。before/after 快照(只含掩码,绝不含密文)" +
+			"是事后唯一能回答「原来指向哪里」的东西;校验失败、密钥写失败各留一条"},
+	{"modules/violation/api_admin_aireview.go", "adminDeleteAIChannel", 2,
+		"删掉渠道之后密钥连同地址一起消失(硬删),删的是什么只剩 before 快照能回答;" +
+			"删库失败同样要留痕 —— 那时库里到底还在不在是不确定的"},
+	{"modules/violation/api_admin_aireview.go", "adminPutAISetting", 2,
+		"抽样率直接决定每天为 AI 审核花多少钱,总开关决定用户请求内容会不会被" +
+			"发往第三方。两者都是「改一次影响之后每一笔」的量,而且都没有任何" +
+			"用户可见的症状。成功与失败各一条:被「未确认内容出境」闸门挡下的那次" +
+			"同样要查得到 —— 它说明有人正在试图打开这个开关"},
 	{"modules/commission/api_admin.go", "adminSettle", 1,
 		"手动结算把冻结佣金变成可提现余额,是真的动钱;谁按的按钮必须可查"},
 	{"modules/commission/api_admin.go", "adminInvalidateCache", 1,

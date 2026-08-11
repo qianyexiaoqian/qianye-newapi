@@ -468,6 +468,23 @@ type Violation struct {
 	EvidenceRetentionDays     int `yaml:"evidence_retention_days"`
 	RuleCacheSeconds          int `yaml:"rule_cache_seconds"`
 	ScanTimeoutMs             int `yaml:"scan_timeout_ms"`
+
+	// ─────────────────── AI 审核渠道的密钥加密 ───────────────────
+	//
+	// AI 审核渠道(qy_violation_ai_channel)上存的是第三方审核服务的 API Key。
+	// 那是一份凭证,与提现的收款账号同级:落库必须是密文,接口必须永不回显。
+	// 这三个字段与 withdraw.pii_key / pii_key_version / pii_keys_retired **同规格**
+	// (AES-256-GCM + 版本化轮换),刻意不复用后者:两个模块共用一把钥匙意味着
+	// 轮换提现密钥的那一刻,全部审核渠道同时变成不可解密 —— 而那时的表现是
+	// 「AI 审核突然全部放行」,没有任何报错。
+	//
+	// 没配 ai_review_key 时本功能仍然可用,但**存不下 api_key**:管理端保存带
+	// api_key 的渠道会被 400 拒绝并点名这个配置项。刻意不回落到明文存储 ——
+	// "配置少一行就静默降级成明文"是这类字段最常见的泄漏路径。
+	// (不需要鉴权的自建审核服务不填 api_key 即可,不受影响。)
+	AIReviewKey         string         `yaml:"ai_review_key"`
+	AIReviewKeyVersion  int            `yaml:"ai_review_key_version"`
+	AIReviewKeysRetired map[int]string `yaml:"ai_review_keys_retired"`
 }
 
 // GroupMatrix 用户分组 × 模型分组的**权威可选清单**。

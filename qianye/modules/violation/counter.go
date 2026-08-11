@@ -26,6 +26,23 @@ type counterState struct {
 	// 阻碍解除后的下一次违规会重新走到封号判定。
 	// 重复封号由 (user_id, ban_cycle) 唯一索引兜住,代价只是一次冲突插入。
 	Reached bool
+	// Category / CatHitCount / CatReached 是**单类型线**那一半。
+	//
+	// # 两条线,一个封禁周期
+	//
+	// HitCount/Reached 是账号总量线(跨全部类型,阈值来自用户分组的 BanPolicy);
+	// CatHitCount/CatReached 是这次命中所属类型自己的线(阈值来自 Category)。
+	// 两者是 OR:任一越过都要求处置。合起来的答案由 anyReached 给出。
+	//
+	// 为什么必须是 OR 而不是"类型线覆盖总量线":总量线回答的是"这个账号整体上
+	// 违规太多",类型线回答的是"这一类特别严重"。让后者覆盖前者,一个在五个类型上
+	// 各犯 9 次、每类阈值都是 10 的账号就永远不会被处置 —— 而那正是最典型的滥用形状。
+	//
+	// 封号只会发生一次:认领的互斥键是 (user_id, ban_cycle),ban_cycle 只存在于
+	// 账号维度的 Counter 上,两条线共用它。
+	Category    Category
+	CatHitCount int
+	CatReached  bool
 	// Policy 是本次推进所依据的策略档(按用户当时的分组解析)。
 	//
 	// 必须随计数一起返回,而不是让下游再解析一次:两次解析之间策略表可能被改
@@ -112,27 +129,53 @@ func reachedThreshold(after, threshold int) bool {
 	return threshold > 0 && after >= threshold
 }
 
+// anyReached 回答"这次命中之后要不要走封号判定",并说明是撞了哪条线。
+//
+// 这是"到底几次封号"这个问题在代码里的**唯一**答案:两条线各自独立判定,
+// 任一越过即触发,撞了哪条由 BanTrigger* 冻结进封禁行。没有这个单一出口,
+// 判据会散在 resolveBanClaim 与用户端公示两处,而它们一旦不一致,
+// 用户看到的"还剩几次"就会与真实处置对不上 —— 那比不给数字更糟。
+func anyReached(st counterState) (bool, string) {
+	switch {
+	case st.Reached && st.CatReached:
+		return true, BanTriggerBoth
+	case st.CatReached:
+		return true, BanTriggerCategory
+	case st.Reached:
+		return true, BanTriggerGlobal
+	}
+	return false, ""
+}
+
 // claimBan 尝试认领一次封号。
 //
 // (user_id, ban_cycle) 唯一索引就是分布式互斥锁:一个封禁周期内只可能有一个
 // 节点插入成功。created == false 表示本周期已被认领,此时返回库里那一行 ——
 // 调用方需要看它的状态才能判断"是已有结论"还是"被速率闸推迟、现在可以提升执行"。
-func claimBan(ctx context.Context, gdb *gorm.DB, userId, cycle, hitCount int, recordId int64, status string, policy BanPolicy) (*Ban, bool, error) {
+func claimBan(ctx context.Context, gdb *gorm.DB, userId, cycle int, recordId int64, status string, st counterState, trigger string) (*Ban, bool, error) {
 	if gdb == nil {
 		return nil, false, db.ErrNotReady
 	}
+	policy := st.Policy
 	row := &Ban{
 		UserId:          userId,
 		BanCycle:        cycle,
 		TriggerRecordId: recordId,
-		HitCountAt:      hitCount,
+		HitCountAt:      st.HitCount,
 		// 阈值与动作来自**本次判定用的那一档**,不是"现在配置里写着什么"。
 		// 后者会在管理员改完策略之后把历史封禁行解释成另一个原因。
 		Threshold:    policy.Threshold,
 		PolicyGroup:  truncate(policy.UserGroup, 64),
 		PolicyAction: policy.Action,
-		Status:       status,
-		CreatedAt:    common.GetTimestamp(),
+		// 类型线那一半同样要冻结。不冻结的话,一行 hit_count=3 / threshold=10 的
+		// 封禁记录在管理端看起来完全说不通 —— 它其实撞的是"破限类 3 次"那条线,
+		// 而那个事实只活在一次函数调用里。
+		TriggerKind:       trigger,
+		TriggerCategoryId: st.Category.Id,
+		CategoryHitCount:  st.CatHitCount,
+		CategoryThreshold: st.Category.Threshold,
+		Status:            status,
+		CreatedAt:         common.GetTimestamp(),
 	}
 	res := gdb.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(row)
 	if res.Error != nil {
@@ -163,12 +206,18 @@ func revertCounter(userId, weight int, windowStart int64) error {
 	if gdb == nil {
 		return db.ErrNotReady
 	}
+	// 夹到 0 用 CASE WHEN 而不是 GREATEST:后者是 MySQL/PostgreSQL 的函数,
+	// SQLite 上根本不存在(它的对应物是标量 MAX(a,b),名字与聚合函数冲突)。
+	// 扩展库按设计只跑 MySQL,但这条语句一旦在 SQLite 上执行就整条报错 ——
+	// 而调用方只把错误写进日志,于是"撤销记录时计数没退"在任何测试里都看不出来。
+	// 换成三家都认的写法,这条路径才真的被执行过一次(见
+	// TestRevertHitCountersRevertsBothLines),而不是只被推理过。
 	return gdb.Exec(`UPDATE qy_violation_counter
-		SET hit_count = GREATEST(hit_count - ?, 0),
-		    total_count = GREATEST(total_count - ?, 0),
+		SET hit_count = CASE WHEN hit_count - ? < 0 THEN 0 ELSE hit_count - ? END,
+		    total_count = CASE WHEN total_count - ? < 0 THEN 0 ELSE total_count - ? END,
 		    updated_at = ?
 		WHERE user_id = ? AND window_start = ?`,
-		weight, weight, common.GetTimestamp(), userId, windowStart).Error
+		weight, weight, weight, weight, common.GetTimestamp(), userId, windowStart).Error
 }
 
 // resetUserCounter 把某个用户当前窗口的违规计数清零,并返回清零前的那一行。
@@ -261,14 +310,15 @@ func openNewBanCycle(userId int, resetCount bool) error {
 //   - 已存在的行:只有 deferred 与 observed 可以被提升(两者都还没有结论)。
 //     pending / failed 是补偿任务的地盘,banned / skipped / unbanned 是终态。
 func resolveBanClaim(ctx context.Context, gdb *gorm.DB, rec *Record, st counterState) *Ban {
-	if gdb == nil || !st.Reached {
+	reached, trigger := anyReached(st)
+	if gdb == nil || !reached {
 		return nil
 	}
 	if tripped, reason := breakerTripped(); tripped {
 		shadowHits.Add(1)
 		common.SysLog(fmt.Sprintf(
-			"qianye/violation: 熔断已触发(%s),全部规则临时按影子执行;用户 %d 违规计数已达 %d,未执行自动封号",
-			reason, rec.UserId, st.HitCount))
+			"qianye/violation: 熔断已触发(%s),全部规则临时按影子执行;用户 %d 违规计数已达 %d(触发线 %s),未执行自动封号",
+			reason, rec.UserId, st.HitCount, trigger))
 		return nil
 	}
 
@@ -278,11 +328,11 @@ func resolveBanClaim(ctx context.Context, gdb *gorm.DB, rec *Record, st counterS
 	// (user_id, ban_cycle) 唯一索引同样要保证一个周期只写一行:
 	// 越线之后的每一次违规都会再走到这里,不去认领就会刷出一串重复行。
 	if st.Policy.Action == PolicyActionRecord {
-		if _, created, err := claimBan(ctx, gdb, rec.UserId, st.BanCycle, st.HitCount,
-			rec.Id, BanObserved, st.Policy); err == nil && created {
+		if _, created, err := claimBan(ctx, gdb, rec.UserId, st.BanCycle,
+			rec.Id, BanObserved, st, trigger); err == nil && created {
 			common.SysLog(fmt.Sprintf(
-				"qianye/violation: 用户 %d 违规计数已达 %d(策略档 %q,阈值 %d),该档只要求记录,未处置账号",
-				rec.UserId, st.HitCount, policyLabel(st.Policy), st.Policy.Threshold))
+				"qianye/violation: 用户 %d 违规计数已达 %d(触发线 %s,策略档 %q,阈值 %d),该档只要求记录,未处置账号",
+				rec.UserId, st.HitCount, trigger, policyLabel(st.Policy), st.Policy.Threshold))
 		}
 		return nil
 	}
@@ -292,7 +342,7 @@ func resolveBanClaim(ctx context.Context, gdb *gorm.DB, rec *Record, st counterS
 	if rateExceeded {
 		status = BanDeferred
 	}
-	ban, created, err := claimBan(ctx, gdb, rec.UserId, st.BanCycle, st.HitCount, rec.Id, status, st.Policy)
+	ban, created, err := claimBan(ctx, gdb, rec.UserId, st.BanCycle, rec.Id, status, st, trigger)
 	if err != nil || ban == nil {
 		return nil
 	}
@@ -327,6 +377,13 @@ func resolveBanClaim(ctx context.Context, gdb *gorm.DB, rec *Record, st counterS
 				"threshold":     st.Policy.Threshold,
 				"policy_group":  truncate(st.Policy.UserGroup, 64),
 				"policy_action": st.Policy.Action,
+				// 触发线也要跟着改写:这一行原本冻结的可能是"上次撞的是类型线",
+				// 而这次提升执行依据的是**本次**判定。两者不一致会让复盘对不上,
+				// 与 threshold/policy_action 是同一个理由。
+				"trigger_kind":        trigger,
+				"trigger_category_id": st.Category.Id,
+				"category_hit_count":  st.CatHitCount,
+				"category_threshold":  st.Category.Threshold,
 			})
 		if res.Error != nil {
 			db.MarkFailure(res.Error)
@@ -339,6 +396,10 @@ func resolveBanClaim(ctx context.Context, gdb *gorm.DB, rec *Record, st counterS
 		ban.Threshold = st.Policy.Threshold
 		ban.PolicyGroup = truncate(st.Policy.UserGroup, 64)
 		ban.PolicyAction = st.Policy.Action
+		ban.TriggerKind = trigger
+		ban.TriggerCategoryId = st.Category.Id
+		ban.CategoryHitCount = st.CatHitCount
+		ban.CategoryThreshold = st.Category.Threshold
 	}
 	noteBan()
 	return ban

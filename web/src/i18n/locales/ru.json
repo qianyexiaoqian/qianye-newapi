@@ -5250,6 +5250,10 @@
     "Model group unlocks can be configured once the plan exists — save it first, then reopen it.": "Разблокировку групп моделей можно настроить после создания плана — сначала сохраните, затем откройте снова.",
     "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "План сохранён, но разблокированные группы моделей не сохранились. Откройте план и задайте их снова",
     "Edit them under System Settings → Billing & Payment → User group: a cell of the user group × model group table is the special ratio, and setting a scope on a user group takes over the special usable group rules for that tier. Tiers with no scope keep their existing +: / -: rules fully in effect, and those legacy rules can no longer be edited anywhere — set a scope on the tier to take them over. The stored data and the billing behavior are unchanged.": "Редактируйте их в разделе «Настройки системы → Биллинг и платежи → Группа пользователя»: ячейка таблицы «группа пользователя × группа моделей» и есть специальный коэффициент, а назначение области группе пользователей перехватывает специальные правила доступных групп для этого уровня. Уровни без области сохраняют свои существующие правила +: / -: в полной силе, и эти устаревшие правила больше нигде нельзя отредактировать — назначьте область уровню, чтобы перехватить их. Сохранённые данные и тарификация не изменились.",
-    "Configure these under System Settings → Billing & Payment → User group.": "Настраивается в разделе «Настройки системы → Биллинг и платежи → Группа пользователя»."
+    "Configure these under System Settings → Billing & Payment → User group.": "Настраивается в разделе «Настройки системы → Биллинг и платежи → Группа пользователя».",
+    "A new version has been released": "Вышла новая версия",
+    "Reload the page to get the latest version.": "Перезагрузите страницу, чтобы получить последнюю версию.",
+    "Reload": "Перезагрузить",
+    "Copy error details": "Скопировать детали ошибки"
   }
 }

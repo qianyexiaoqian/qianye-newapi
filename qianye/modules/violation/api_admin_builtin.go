@@ -275,6 +275,11 @@ func importOne(gdb *gorm.DB, b builtinRule, row *Rule, upgrade bool, now int64, 
 	switch upgradeState(row, b) {
 	case BuiltinNotImported:
 		fresh := b.toRule(now, operatorId)
+		// 内置规则按内置目录里声明的类别落到同名违规类型上,而不是全部堆进「未分类」。
+		// 那份映射(builtinRule.Category)是本仓已经存在的、唯一一份可信的
+		// "规则 → 类型"关系,不用它等于把几十条已经归好类的规则倒回未分类。
+		// 查不到同名类型时回落兜底(见 categoryIdForBuiltin),导入绝不因此失败。
+		fresh.CategoryId = categoryIdForBuiltin(gdb, b.Category)
 		// 走一遍 ValidateRule:内置模板与手写规则用同一道校验门。绕过它的话,
 		// 一条编译不过的内置规则会被安静地写进库,再被 reloadCtx 安静地跳过,
 		// 表现是"导入成功、状态显示已导入、线上永不命中"。

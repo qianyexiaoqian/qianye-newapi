@@ -282,7 +282,7 @@ func TestNewRecordRedactsUpstreamSnippet(t *testing.T) {
 	}
 	in := scanInput{StatusCode: 400, UpstreamText: v.Snippet}
 
-	rec := newRecord(c, info, PhaseUpstreamErr, in, v, false, "", false)
+	rec := newRecord(captureRecordCtx(c, info), PhaseUpstreamErr, in, v, false, "", false)
 	assert.NotContains(t, rec.MatchSnippet, "alice@example.com",
 		"上游正文里的邮箱必须在落库前被替换:match_snippet 是管理端列表整行返回的一列")
 	assert.NotContains(t, rec.MatchSnippet, "sk-abcdefghijklmnop0123456789")

@@ -84,11 +84,11 @@ function qyGroupItems(groups: NavGroup[]): string[] | null {
 }
 
 describe('并进系统设置抽屉的菜单项', () => {
-  test('管理员看到的那一组 = QY_SETTINGS_PAGES，顺序一致', () => {
+  test('超级管理员看到的那一组 = QY_SETTINGS_PAGES，顺序一致', () => {
     const merged = mergeQySystemSettingsNavGroups(
       baseGroups(),
       ALL_ON,
-      ROLE.ADMIN,
+      ROLE.SUPER_ADMIN,
       t
     )
     assert.deepEqual(
@@ -100,6 +100,26 @@ describe('并进系统设置抽屉的菜单项', () => {
       merged[0]?.items.map((item) => item.title),
       ['Site & Branding', 'Operations', 'qy_nav_group_settings']
     )
+  })
+
+  /**
+   * 抽屉本体的路由要求 role === SUPER_ADMIN(100)，否则 redirect('/403')。
+   *
+   * 这一条曾经写成 `role >= ADMIN(10)` 就生成菜单项，与那道门不一致 ——
+   * 后果是 role=10 的管理员在抽屉里"有"这 8 个页面，却永远打不开承载它们的
+   * 那扇门，于是这些页面在界面上等于不存在（本仓第五次"写了但找不到"）。
+   * 这一档的入口改由 `nav.ts` 的 withQySettingsFallback 在根侧栏上补，
+   * 由 route-entry-guard.test.ts 钉住。
+   */
+  test('role=10 的管理员：抽屉里整组不生成（那扇门他打不开）', () => {
+    const merged = mergeQySystemSettingsNavGroups(
+      baseGroups(),
+      ALL_ON,
+      ROLE.ADMIN,
+      t
+    )
+    assert.equal(qyGroupItems(merged), null)
+    assert.deepEqual(merged, baseGroups(), 'role<100 时应逐字返回上游原样')
   })
 
   test('普通用户：整组不生成（不是留一个只剩标题的折叠项）', () => {
@@ -118,7 +138,7 @@ describe('并进系统设置抽屉的菜单项', () => {
       mergeQySystemSettingsNavGroups(
         baseGroups(),
         { ...ALL_ON, transfer: false },
-        ROLE.ADMIN,
+        ROLE.SUPER_ADMIN,
         t
       )
     )
@@ -141,7 +161,7 @@ describe('并进系统设置抽屉的菜单项', () => {
         ticket: false,
         group_matrix: false,
       },
-      ROLE.ADMIN,
+      ROLE.SUPER_ADMIN,
       t
     )
     // API 地址簿没有 feature 开关，所以这里仍应剩下它；断言写成"还剩谁"而不是

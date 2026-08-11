@@ -2,9 +2,7 @@ package violation
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"runtime/debug"
 
 	"github.com/QuantumNous/new-api/common"
@@ -60,9 +58,27 @@ func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.Toke
 	// 热路径绝不能因为本模块 panic:relay 是主业务,风控是附加物。
 	defer recoverHot("pre_relay_guard")
 
+	// 自己审自己的断路器,必须在**任何检测之前**短路整条 PreRelayGuard。
+	//
+	// 它一度只写在 aiPreReview 内部,也就是排在 scanPrompt 之后。后果不是递归
+	// (AI 那一层确实停得住),而是:审核渠道的 base_url 误填成本站自己时
+	// (演示环境最容易发生的一次误配),那一次出站审核请求的请求体是
+	// `<content>\n用户原文\n</content>` —— 它会被本地词表与正则完整扫描一遍,
+	// 命中就落一条违规记录、推进计数、按规则动作扣费甚至拦截,而这条记录挂在
+	// **持有那把 key 的账号**上,内容却是别人的。谁都解释不了它是怎么来的。
+	//
+	// 令牌是本进程启动时的 16 字节随机数,不是固定值:固定值等于给所有客户端
+	// 发了一张"加一行 header 即可关掉违规检测"的门票。
+	if c.Request != nil && c.Request.Header.Get(aiReviewLoopHeader) == processLoopToken {
+		return nil
+	}
+
 	maybeRefresh()
 	snap := Snapshot()
-	if !snap.hasPrompt() {
+	// hasPrompt 只覆盖转发前那一桶。转发后(异步)AI 审核的调度点也在这里
+	// (见 aireview_hook.go 顶部),所以它单独把住 aiOn 这一半 ——
+	// 漏掉的话,只配了转发后审核的站点会在这一行静默返回,而界面上功能是开着的。
+	if !snap.hasPrompt() && !snap.aiOn() {
 		return nil
 	}
 
@@ -85,6 +101,7 @@ func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.Toke
 	text := promptText(meta, info)
 	// 没有 prompt 文本时仍可能有频率规则要判。计数为 0 才是真的没有任何规则
 	// 可能命中 —— compile 把频率阈值的下界钉在 1 就是为了让这一步成立。
+	// AI 审核同理:没有内容可送审时,发一次调用去问"空字符串违规吗"纯属烧钱。
 	if text == "" && rate <= 0 {
 		return nil
 	}
@@ -97,8 +114,10 @@ func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.Toke
 	}
 	v := scanPrompt(snap, in)
 	if v == nil || v.Rule == nil {
-		noteScan(false)
-		return nil
+		// 本地规则(词表、正则、频率)一条都没命中,才轮到 AI 审核 ——
+		// 先便宜后昂贵,更硬的理由见 aiPreReview 的注释:一次请求只按一条规则处置。
+		// noteScan 由 aiPreReview 自己调用,因为它才知道最终有没有拦。
+		return aiPreReview(c, info, snap, in, in.Text)
 	}
 
 	shadow, shadowReason := effectiveShadow(v.Rule)
@@ -109,21 +128,7 @@ func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.Toke
 	if !block {
 		return nil
 	}
-
-	msg := v.Rule.R.BlockMessage
-	if msg == "" {
-		msg = defaultBlockMessage
-	}
-	return types.NewErrorWithStatusCode(
-		errors.New(msg),
-		types.ErrorCode(violationErrorCode(v.Rule.R.Id)),
-		http.StatusBadRequest,
-		// 必须跳过重试:换个渠道重发同一段违规 prompt 没有任何意义,
-		// 只会把一次违规放大成 N 次上游调用。
-		types.ErrOptionWithSkipRetry(),
-		// 违规拒绝不是渠道故障,不该计入渠道错误日志与自动禁用统计。
-		types.ErrOptionWithNoRecordErrorLog(),
-	)
+	return violationBlockError(v.Rule)
 }
 
 // PostRelayGuard 是能力 A(事后检测扣费)的入口。
@@ -170,7 +175,7 @@ func PostRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, apiErr *types.N
 	if service.IsViolationFeeCode(apiErr.GetErrorCode()) {
 		// 这一条被强制记成影子,原因是"上游已扣过"而不是规则模式或熔断 ——
 		// 拿 shadowReason 顶上去会让统计里凭空多出一批并不存在的熔断样本。
-		rec := newRecord(c, info, PhaseUpstreamErr, in, v, true, ShadowReasonDupBuiltin, false)
+		rec := newRecord(captureRecordCtx(c, info), PhaseUpstreamErr, in, v, true, ShadowReasonDupBuiltin, false)
 		rec.FeeStatus = FeeStatusSkippedDup
 		persist(rec, nil)
 		return
@@ -216,7 +221,7 @@ func effectiveShadow(cr *compiledRule) (bool, string) {
 
 // handleHit 是"命中之后要做的全部事情":扣费(同步,主库)+ 归档/计数/封号(异步,扩展库)。
 func handleHit(c *gin.Context, info *relaycommon.RelayInfo, phase string, in scanInput, v *verdict, shadow bool, shadowReason string, blocked bool) {
-	rec := newRecord(c, info, phase, in, v, shadow, shadowReason, blocked)
+	rec := newRecord(captureRecordCtx(c, info), phase, in, v, shadow, shadowReason, blocked)
 
 	res := computeFee(v.Rule, info)
 	if shadow {
@@ -325,28 +330,56 @@ func persistRecord(ctx context.Context, gdb *gorm.DB, rec *Record, payload *Payl
 	if err != nil {
 		return err
 	}
+	// 类型线用记录里**冻结的** category_id,而不是"现在去查一次规则绑的是哪一类"。
+	// 异步 worker 可能在几秒后才跑到这里,期间管理员完全可以把这条规则改绑到别的类型,
+	// 而把一次几秒前的命中记到新类型上是错的 —— 与上面分组取 rec.UsingGroup 同理。
+	//
+	// 类型计数失败**不能**吞掉整条链路:账号总量线已经推进成功,此时直接 return err
+	// 会让 maybeAutoBan 一次都不执行,总量线越过阈值的那次命中就此丢失处置。
+	// 所以只告警,并按"类型线未越过"继续走 —— 少封一次远好过总量线整体失效。
+	st.Category = categoryForRule(Snapshot(), rec.CategoryId)
+	catAfter := 0
+	if catHit, catReached, catErr := bumpCategoryCounter(ctx, gdb, rec.UserId, st.Category, weight); catErr != nil {
+		common.SysError(fmt.Sprintf(
+			"qianye/violation: 违规类型计数推进失败(用户 %d,类型 %d),本次仅按账号总量线判定: %v",
+			rec.UserId, st.Category.Id, catErr))
+	} else {
+		st.CatHitCount, st.CatReached, catAfter = catHit, catReached, catHit
+	}
 	if err := gdb.WithContext(ctx).Model(&Record{}).Where("id = ?", rec.Id).
-		Updates(map[string]any{"counted": true, "counter_after": st.HitCount}).Error; err != nil {
+		Updates(map[string]any{
+			"counted": true, "counter_after": st.HitCount,
+			"category_counter_after": catAfter,
+		}).Error; err != nil {
 		return err
 	}
 	maybeAutoBan(ctx, gdb, rec, st)
 	return nil
 }
 
-// newRecord 在 relay 线程里同步组装记录。
+// recordCtx 是记录里那些**只能在 relay 线程上取到**的字段的值快照。
 //
-// 必须同步:gin.Context 在请求结束后不能再访问,用户名/令牌名/IP 这些字段
-// 只能在这一刻取到。异步 worker 只负责写库。
-func newRecord(c *gin.Context, info *relaycommon.RelayInfo, phase string, in scanInput, v *verdict, shadow bool, shadowReason string, blocked bool) *Record {
-	// 影子记录不参与计数,counter_after 因此没有真实答案,统一取哨兵值。
-	counterAfter := 0
-	if shadow {
-		counterAfter = CounterAfterShadow
-	} else {
-		// 真实执行的记录不该带影子原因:留着会让"按原因分组"的统计里出现一批
-		// shadow=false 却写着 rule_mode 的行,而那是自相矛盾的。
-		shadowReason = ""
-	}
+// 提出来是因为 AI 审核的异步时机(phase = post_async)要在几百毫秒之后、
+// 在另一个 goroutine 上组装记录:那时 gin.Context 已经被 gin 的 sync.Pool
+// 回收给下一个请求了,再读 c.GetString("username") 拿到的可能是**别人的用户名**。
+// 这不是理论风险 —— 它的表现是违规记录挂在无辜账号上,而且完全不可复现。
+//
+// 结构体里全是值(字符串与整数),复制之后与请求生命周期彻底脱钩。
+type recordCtx struct {
+	UserId      int
+	Username    string
+	TokenId     int
+	TokenName   string
+	ModelName   string
+	UsingGroup  string
+	ChannelId   int
+	RelayFormat string
+	RequestId   string
+	Ip          string
+}
+
+// captureRecordCtx 在 relay 线程上把这些值一次性抄下来。
+func captureRecordCtx(c *gin.Context, info *relaycommon.RelayInfo) recordCtx {
 	channelId := 0
 	// ChannelMeta 是内嵌指针,prompt 阶段还没选渠道,直接读 info.ChannelId 会 panic。
 	if info.ChannelMeta != nil {
@@ -356,26 +389,67 @@ func newRecord(c *gin.Context, info *relaycommon.RelayInfo, phase string, in sca
 	if requestId == "" {
 		requestId = info.RequestId
 	}
+	return recordCtx{
+		UserId:      info.UserId,
+		Username:    truncate(c.GetString("username"), 64),
+		TokenId:     info.TokenId,
+		TokenName:   truncate(c.GetString("token_name"), 64),
+		ModelName:   truncate(info.OriginModelName, 128),
+		UsingGroup:  truncate(info.UsingGroup, 64),
+		ChannelId:   channelId,
+		RelayFormat: truncate(string(info.RelayFormat), 32),
+		RequestId:   requestId,
+		Ip:          truncate(c.ClientIP(), 64),
+	}
+}
+
+// newRecord 组装一条违规记录。
+//
+// rc 必须由 captureRecordCtx 在 relay 线程上取好(见 recordCtx 的说明)。
+// 本函数自己不碰 gin.Context,因此可以安全地在异步 worker 里调用。
+func newRecord(rc recordCtx, phase string, in scanInput, v *verdict, shadow bool, shadowReason string, blocked bool) *Record {
+	// 影子记录不参与计数,counter_after 因此没有真实答案,统一取哨兵值。
+	counterAfter := 0
+	if shadow {
+		counterAfter = CounterAfterShadow
+	} else {
+		// 真实执行的记录不该带影子原因:留着会让"按原因分组"的统计里出现一批
+		// shadow=false 却写着 rule_mode 的行,而那是自相矛盾的。
+		shadowReason = ""
+	}
+	// 类型在**命中当时**解析并冻结:规则可以被改绑、类型可以被归档,而历史记录是证据,
+	// 它必须能独立回答"这一条当时算哪一类"。categoryForRule 保证这里永不产生孤儿。
+	cat := categoryForRule(Snapshot(), v.Rule.R.CategoryId)
+	// 影子记录不参与类型计数,与 counter_after 同口径取哨兵值。
+	catCounterAfter := 0
+	if shadow {
+		catCounterAfter = CounterAfterShadow
+	}
 	return &Record{
-		RecNo:        fmt.Sprintf("vr_%s_%d", truncate(requestId, 40), v.Rule.R.Id),
-		UserId:       info.UserId,
-		Username:     truncate(c.GetString("username"), 64),
-		TokenId:      info.TokenId,
-		TokenName:    truncate(c.GetString("token_name"), 64),
+		RecNo:        fmt.Sprintf("vr_%s_%d", truncate(rc.RequestId, 40), v.Rule.R.Id),
+		UserId:       rc.UserId,
+		Username:     rc.Username,
+		TokenId:      rc.TokenId,
+		TokenName:    rc.TokenName,
 		RuleId:       v.Rule.R.Id,
 		RuleName:     truncate(v.Rule.R.Name, 128),
 		PublicReason: truncate(v.Rule.R.PublicReason, 128),
+
+		CategoryId:          cat.Id,
+		CategoryName:        truncate(cat.Name, 64),
+		CategoryPublicTitle: truncate(cat.PublicTitle, 64),
+
 		Phase:        phase,
 		Action:       v.Rule.R.Action,
 		Shadow:       shadow,
 		ShadowReason: truncate(shadowReason, 64),
 		Blocked:      blocked,
-		ModelName:    truncate(info.OriginModelName, 128),
-		UsingGroup:   truncate(info.UsingGroup, 64),
-		ChannelId:    channelId,
-		RelayFormat:  truncate(string(info.RelayFormat), 32),
-		RequestId:    truncate(requestId, 64),
-		Ip:           truncate(c.ClientIP(), 64),
+		ModelName:    rc.ModelName,
+		UsingGroup:   rc.UsingGroup,
+		ChannelId:    rc.ChannelId,
+		RelayFormat:  rc.RelayFormat,
+		RequestId:    truncate(rc.RequestId, 64),
+		Ip:           rc.Ip,
 		MatchedTerms: truncate(joinTerms(v.Terms), 1024),
 		// 命中片段落库前必须脱敏。此前只有归档证据(buildEvidence)走 redact,
 		// 主表这一列是原文直存 —— 而它恰恰是管理端列表**直接整行返回**的那一列,
@@ -389,11 +463,12 @@ func newRecord(c *gin.Context, info *relaycommon.RelayInfo, phase string, in sca
 		// 两个阶段一起脱敏,不做区分:prompt 片段同样是用户原文,同样的风险,
 		// 而"只有一半列被脱敏"这种不对称迟早会被下一个人当成 bug 抹平 ——
 		// 抹平的方向大概率是去掉限制。
-		MatchSnippet: truncate(redactSnippet(v.Snippet), 2048),
-		CounterAfter: counterAfter,
-		Status:       RecordActive,
-		FeeStatus:    FeeStatusNone,
-		CreatedAt:    common.GetTimestamp(),
+		MatchSnippet:         truncate(redactSnippet(v.Snippet), 2048),
+		CounterAfter:         counterAfter,
+		CategoryCounterAfter: catCounterAfter,
+		Status:               RecordActive,
+		FeeStatus:            FeeStatusNone,
+		CreatedAt:            common.GetTimestamp(),
 	}
 }
 

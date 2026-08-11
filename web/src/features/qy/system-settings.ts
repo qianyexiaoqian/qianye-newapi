@@ -66,8 +66,16 @@ export function mergeQySystemSettingsNavGroups(
   role: number,
   t: TFunction
 ): NavGroup[] {
-  const isAdmin = role >= ROLE.ADMIN
-  if (!isAdmin) return baseGroups
+  // 判据必须是 SUPER_ADMIN，不是 ADMIN：抽屉本体的路由
+  // （`routes/_authenticated/system-settings/route.tsx`）要求 role === 100，
+  // 否则 redirect('/403')。这两处曾经不一致，后果是 role=10 的管理员在这里
+  // 生成了 8 个菜单项，却永远打不开承载它们的那扇门 —— 那 8 个页面在界面上
+  // 等于不存在（本仓第五次"写了但找不到"）。role<100 的那一档由
+  // `nav.ts` 的 withQySettingsFallback 在根侧栏上补一个同名折叠项接住。
+  // 正向判据:`role` 可能是 undefined(未登录 / 字段缺失),而 `undefined < 100`
+  // 是 false —— 反向写法会让这一档穿过去。取反之后同样的输入得到"不生成"。
+  if (!(role >= ROLE.SUPER_ADMIN)) return baseGroups
+  const isAdmin = true
 
   const items = QY_SETTINGS_PAGES.filter((page) =>
     isQyPageVisible(page, features, isAdmin)

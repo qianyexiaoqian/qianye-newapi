@@ -46,12 +46,16 @@ export const QY_VIOLATION_PHASES: QyViolationPhase[] = [
   'prompt',
   'upstream_err',
   'reject_reason',
+  // 转发后(异步)审核。它必须在这张清单里 —— 否则 AI 审核的第二个时机在
+  // 界面上根本选不到,而后端支持它:本仓已经四次栽在"写了但找不到"上。
+  'post_async',
 ]
 
 export const QY_VIOLATION_MATCH_TYPES: QyViolationMatchType[] = [
   'keyword',
   'regex',
   'request_rate',
+  'ai_review',
   'error_code',
   'status_code',
   'upstream_text',
@@ -134,15 +138,18 @@ export const qyViolationRuleSchema = z
   .object({
     name: z.string().trim().min(1, 'qy_vio_err_name_required').max(128),
     public_reason: z.string().max(128),
+    // 违规类型。0 是合法值（= 交给后端落「未分类」），所以这里只挡负数。
+    category_id: z.number().int().min(0),
     remark: z.string().max(512),
     enabled: z.boolean(),
     mode: z.enum(['shadow', 'enforce']),
     priority: z.number().int().min(0).max(100000),
-    phase: z.enum(['prompt', 'upstream_err', 'reject_reason']),
+    phase: z.enum(['prompt', 'upstream_err', 'reject_reason', 'post_async']),
     match_type: z.enum([
       'keyword',
       'regex',
       'request_rate',
+      'ai_review',
       'error_code',
       'status_code',
       'upstream_text',
@@ -158,6 +165,7 @@ export const qyViolationRuleSchema = z
     fee_fixed: decimalString,
     fee_multiple: decimalString,
     fee_max_quota: z.number().int().min(0),
+    ai_min_confidence: decimalString,
     count_weight: z.number().int().min(0),
     severity: z.number().int().min(0).max(10),
     archive_context: z.boolean(),
@@ -196,6 +204,47 @@ export const qyViolationRuleSchema = z
         code: z.ZodIssueCode.custom,
         path: ['match_type'],
         message: 'qy_vio_err_match_phase',
+      })
+    }
+    // ── AI 审核:三条与后端 validateAIRule 同向的闸 ──
+    if (data.phase === 'post_async' && data.match_type !== 'ai_review') {
+      // 别的匹配方式在本地就能算出结果,推迟到异步只会失去拦截能力。
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['match_type'],
+        message: 'qy_vio_err_async_match',
+      })
+    }
+    if (data.match_type === 'ai_review') {
+      if (data.phase !== 'prompt' && data.phase !== 'post_async') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['phase'],
+          message: 'qy_vio_err_ai_phase',
+        })
+      }
+      // 异步时机拿不到本次请求的计费路由,扣费无法落到正确的额度池。
+      if (data.phase === 'post_async' && data.action !== 'record') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['action'],
+          message: 'qy_vio_err_async_action',
+        })
+      }
+      const conf = Number(data.ai_min_confidence.trim() || '0')
+      if (!Number.isFinite(conf) || conf < 0 || conf > 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['ai_min_confidence'],
+          message: 'qy_vio_err_ai_confidence',
+        })
+      }
+    } else if (Number(data.ai_min_confidence.trim() || '0') > 0) {
+      // 填在别的规则上一个字节都不生效,而界面上它看起来是配好的。
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ai_min_confidence'],
+        message: 'qy_vio_err_ai_confidence_type',
       })
     }
     if (data.match_type !== 'request_rate') return
@@ -238,6 +287,9 @@ export function qyEmptyViolationRule(): QyViolationRuleFormValues {
   return {
     name: '',
     public_reason: '',
+    // 新建默认不指定类型：后端会落到「未分类」兜底类型。刻意不猜一个业务类型 ——
+    // 猜错的后果是这条规则的命中记进了另一类的计数桶，而那一类的阈值判定从此全错。
+    category_id: 0,
     remark: '',
     enabled: true,
     mode: 'shadow',
@@ -255,6 +307,7 @@ export function qyEmptyViolationRule(): QyViolationRuleFormValues {
     fee_fixed: '0',
     fee_multiple: '0',
     fee_max_quota: 0,
+    ai_min_confidence: '0',
     count_weight: 1,
     severity: 1,
     archive_context: false,
@@ -268,6 +321,9 @@ export function qyViolationRuleToForm(
   return {
     name: rule.name,
     public_reason: rule.public_reason,
+    // 历史行没有这一列，后端 AutoMigrate 回填 0，启动期迁移再把它补成兜底类型 id。
+    // 读成 undefined 会让受控 Select 掉出受控态，所以这里显式折回 0。
+    category_id: rule.category_id ?? 0,
     remark: rule.remark,
     enabled: rule.enabled,
     // 未知取值一律读成影子。后端的判据是 `mode === 'enforce'`，前端读成真实
@@ -292,6 +348,9 @@ export function qyViolationRuleToForm(
     fee_mode: rule.fee_mode,
     fee_fixed: rule.fee_fixed,
     fee_multiple: rule.fee_multiple,
+    // 历史行没有这一列,后端 AutoMigrate 回填 0;读成 undefined 会让受控输入框
+    // 掉出受控态,React 在下一次输入时把已填内容整段丢掉。
+    ai_min_confidence: rule.ai_min_confidence ?? '0',
     fee_max_quota: rule.fee_max_quota,
     count_weight: rule.count_weight,
     severity: rule.severity,
@@ -310,5 +369,9 @@ export function qyViolationRuleToPayload(
     fee_fixed: values.fee_fixed.trim() === '' ? '0' : values.fee_fixed.trim(),
     fee_multiple:
       values.fee_multiple.trim() === '' ? '0' : values.fee_multiple.trim(),
+    ai_min_confidence:
+      values.ai_min_confidence.trim() === ''
+        ? '0'
+        : values.ai_min_confidence.trim(),
   }
 }

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { Link, useSearch } from '@tanstack/react-router'
 import { Link2, ScrollText, Settings2, Wallet } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -73,10 +73,17 @@ export function QyAdminCommissionRecords() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
 
+  // 从佣金余额那张表下钻进来时,URL 上带着 `?inviter_id=412`。只拿它做**初值**、
+  // 之后由输入框自己接管:双向同步会让每敲一个字符就压一条历史记录,而运营改完
+  // 筛选按返回键期望回到上一个页面,不是回到"少打一个字"的那一帧。
+  const search = useSearch({
+    from: '/_authenticated/qy/admin/commission-records/',
+  })
+
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState('')
   const [sourceType, setSourceType] = useState('')
-  const [inviterId, setInviterId] = useState('')
+  const [inviterId, setInviterId] = useState(search.inviter_id ?? '')
   const [clawbackTarget, setClawbackTarget] = useState<QyAdminAccrual | null>(
     null
   )
@@ -230,9 +237,9 @@ export function QyAdminCommissionRecords() {
         {t('qy_nav_a_commission_records')}
       </QySectionPageLayout.Title>
       <QySectionPageLayout.Actions>
-        {/* 佣金余额总览没有独立的侧栏入口（qy-settlement 分组已占满 7 行，见
-            该页路由文件的说明），这个按钮是它唯一的入口 —— 删掉它等于把整页
-            变成只能靠背 URL 才能到达的死链。 */}
+        {/* 佣金余额与 AFF 关系现在**各有一个侧栏入口**（「结算」组，本轮补上）。
+            这两个按钮不是重复：侧栏回答"从零开始去哪找"，这里回答"我正看着这
+            一笔，另外两张表怎么开"。删掉它们运营就得绕回侧栏重新找一遍。 */}
         <Button
           variant='outline'
           size='sm'
@@ -241,8 +248,6 @@ export function QyAdminCommissionRecords() {
           <Wallet aria-hidden='true' />
           {t('qy_cb_title')}
         </Button>
-        {/* AFF 关系列表同样没有独立的侧栏入口(qy-settlement 分组已占满 7 行),
-            这个按钮是它唯一的入口 —— 删掉它整页就变成只能靠背 URL 到达的死链。 */}
         <Button
           variant='outline'
           size='sm'

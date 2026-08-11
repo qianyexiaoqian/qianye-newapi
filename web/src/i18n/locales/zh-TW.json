@@ -5250,6 +5250,10 @@
     "Model group unlocks can be configured once the plan exists — save it first, then reopen it.": "解鎖模型分組需在方案建立後設定 —— 請先儲存，再重新開啟此方案。",
     "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "方案已儲存，但解鎖的模型分組未儲存。請重新開啟此方案再設定一次",
     "Edit them under System Settings → Billing & Payment → User group: a cell of the user group × model group table is the special ratio, and setting a scope on a user group takes over the special usable group rules for that tier. Tiers with no scope keep their existing +: / -: rules fully in effect, and those legacy rules can no longer be edited anywhere — set a scope on the tier to take them over. The stored data and the billing behavior are unchanged.": "請到「系統設定 → 收費與支付 → 用戶分組」編輯：那張「用戶分組 × 模型分組」表裡的一個格子就是特殊倍率；為某一檔用戶分組設定「範圍」，即接管它的特殊可用分組規則。尚未設定範圍的用戶分組，原有的 +: / -: 規則仍照常生效，而全站已經沒有任何地方能編輯它們——為那一檔設定範圍即可接管。儲存的資料與收費行為都沒有變。",
-    "Configure these under System Settings → Billing & Payment → User group.": "在「系統設定 → 收費與支付 → 用戶分組」裡設定。"
+    "Configure these under System Settings → Billing & Payment → User group.": "在「系統設定 → 收費與支付 → 用戶分組」裡設定。",
+    "A new version has been released": "已發佈新版本",
+    "Reload the page to get the latest version.": "請重新載入頁面以取得最新版本。",
+    "Reload": "重新載入",
+    "Copy error details": "複製錯誤詳情"
   }
 }

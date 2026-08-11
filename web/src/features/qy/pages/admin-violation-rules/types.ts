@@ -26,7 +26,16 @@ For commercial licensing, please contact support@quantumnous.com
  */
 
 /** 规则生效阶段。 */
-export type QyViolationPhase = 'prompt' | 'reject_reason' | 'upstream_err'
+export type QyViolationPhase =
+  | 'prompt'
+  | 'reject_reason'
+  | 'upstream_err'
+  /**
+   * 转发后(异步)审核。调度点在转发**之前**,但审核调用与其全部后果都跑在
+   * 异步队列上,本次请求一秒不等 —— 所以它恒不阻断、恒不扣费,只记录与计次。
+   * 目前只有 `ai_review` 能落在这一档(后端 `validateAIRule` 拒绝其余)。
+   */
+  | 'post_async'
 
 /**
  * 规则的执行模式 —— **「影子 / 真实」唯一的开关**。
@@ -56,6 +65,8 @@ export type QyViolationMatchType =
   | 'keyword'
   | 'regex'
   | 'request_rate'
+  /** AI 审核:判据来自一次外部模型调用,pattern 是违规类型白名单。 */
+  | 'ai_review'
   | 'status_code'
   | 'upstream_text'
 
@@ -85,6 +96,14 @@ export type QyViolationRule = {
   remark: string
   /** 写给用户看的对外文案。与内部 `name` 分开，后者常含规则代号。 */
   public_reason: string
+  /**
+   * 这条规则归属的**违规类型**（见「违规类型」页）。
+   *
+   * 类型是违规计数的归集单位：同一类型下多条规则的命中都累加到这一类的计数上，
+   * 而每个类型有自己的次数阈值。0 表示还没绑过 —— 后端会把它落到「未分类」
+   * 兜底类型，运行期也永远不会出现"不计数的规则"。
+   */
+  category_id: number
   enabled: boolean
   /** 影子 / 真实。这是决定「要不要真的扣钱、封号」的唯一开关。 */
   mode: QyViolationMode
@@ -125,6 +144,17 @@ export type QyViolationRule = {
   fee_fixed: string
   fee_multiple: string
   fee_max_quota: number
+  /**
+   * `ai_review` 规则的置信度下限,0..1 的十进制字符串,0 = 不设下限。
+   * 走字符串与 fee_* 同理:JSON number 在前端是 float64,0.8 往返一次会变成
+   * 0.8000000000000001,而它是一道决定「这次命中算不算数」的闸。
+   *
+   * **读取侧可选**:这一列出现之前写入的行、以及从旧节点读来的响应都没有它。
+   * 声明成必填会让每一处构造 `QyViolationRule` 的地方都被迫补一个假值,
+   * 而那正是"历史数据在类型上不存在"这类谎言的开端。
+   * `qyViolationRuleToForm` 用 `?? '0'` 折回不设下限。
+   */
+  ai_min_confidence?: string
   count_weight: number
   severity: number
   archive_context: boolean
@@ -140,6 +170,8 @@ export type QyViolationRuleInput = {
   name: string
   remark: string
   public_reason: string
+  /** 归属的违规类型 id。0 / 缺省 → 后端落到「未分类」兜底类型。 */
+  category_id: number
   enabled: boolean
   mode: QyViolationMode
   priority: number
@@ -157,14 +189,64 @@ export type QyViolationRuleInput = {
   fee_fixed: string
   fee_multiple: string
   fee_max_quota: number
+  /**
+   * `ai_review` 规则的置信度下限,0..1 的十进制字符串,0 = 不设下限。
+   * 走字符串与 fee_* 同理:JSON number 在前端是 float64,0.8 往返一次会变成
+   * 0.8000000000000001,而它是一道决定「这次命中算不算数」的闸。
+   */
+  ai_min_confidence: string
   count_weight: number
   severity: number
   archive_context: boolean
   block_message: string
 }
 
-/** 规则试跑结果。`scope_ok=false` 表示作用域没覆盖到试跑用的模型/分组。 */
+/**
+ * 试跑输入的字段标识。**必须与后端 `TestInput*` 常量逐字相同**
+ * （`qianye/modules/violation/api_admin.go`）—— 它们既是请求体的 JSON 键，
+ * 也是响应里 `inputs` / `blank_inputs` 的取值。
+ */
+export type QyViolationTestInput =
+  | 'ai_category'
+  | 'ai_confidence'
+  | 'ai_verdict'
+  | 'error_code'
+  | 'group'
+  | 'model'
+  | 'rate_count'
+  | 'reject_reason'
+  | 'request_text'
+  | 'status_code'
+  | 'upstream_text'
+
+/** 试跑结论。三态 + 超时，取值与后端 `TestOutcome*` 一一对应。 */
+export type QyViolationTestOutcome =
+  | 'matched'
+  | 'no_match'
+  | 'out_of_scope'
+  | 'timeout'
+
+/** 被哪一道作用域闸挡住。空串表示在作用域内，取值与后端 `TestScopeFail*` 对应。 */
+export type QyViolationTestScopeFail = '' | 'group' | 'model' | 'status'
+
+/**
+ * 规则试跑结果。
+ *
+ * `outcome` 是三态（+ 超时）结论，也是这块界面唯一该读的字段：
+ * 只看一个 `matched` 布尔时，「不在作用域」与「在作用域但没命中」长得一模一样，
+ * 而这两者的下一步完全相反 —— 前者要去改作用域，后者要去改模式串。
+ *
+ * `scope_ok` / `matched` 是旧版响应的两个布尔，后端仍然照发，这里保留类型
+ * 只为兼容读它们的旧代码。
+ */
 export type QyViolationRuleTestResult = {
+  outcome: QyViolationTestOutcome
+  /** 被哪一道作用域闸挡住：`model` / `group` / `status`，空串表示在作用域内。 */
+  scope_fail: QyViolationTestScopeFail
+  /** 这条规则真正会读到的输入标识，顺序即渲染顺序。后端说了算。 */
+  inputs: QyViolationTestInput[]
+  /** 上面那批里、本次试跑没给值的。它回答「未命中是规则错了还是样本没填全」。 */
+  blank_inputs: QyViolationTestInput[]
   scope_ok: boolean
   matched: boolean
   terms: string[]

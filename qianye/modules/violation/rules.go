@@ -73,6 +73,10 @@ type compiledRule struct {
 	// rateThreshold 是 request_rate 规则的每分钟阈值,其余匹配方式恒为 0。
 	rateThreshold int
 
+	// aiCats 是 ai_review 规则的违规类型白名单(pattern 编译而来)。
+	// nil 或空 = 不限类型,只要模型判违规就命中。
+	aiCats map[string]struct{}
+
 	// modelPats 为空表示全部模型;groups 为空表示全部分组。
 	// groups 的键一律是 groupname.Effective 归一后的比较键。
 	modelPats []string
@@ -89,6 +93,10 @@ type snapshot struct {
 
 	promptRules []*compiledRule
 	postRules   []*compiledRule
+	// asyncRules 是 phase = post_async 的规则(目前只有 ai_review 会用它)。
+	// 独立一桶而不是并进 postRules:后者的扫描发生在上游返回错误之后、
+	// relay 线程上,而这一桶整个跑在异步 worker 里,两者的输入与预算都不同。
+	asyncRules []*compiledRule
 
 	// shadowRules / enforceRules 是已启用规则按模式的分布。
 	//
@@ -106,14 +114,47 @@ type snapshot struct {
 	// 更高优先级的规则先命中 —— 计数会随规则表的形状漂移,彻底不可解释)。
 	hasRate bool
 
+	// ai 是 AI 审核的运行期配置(设置行 + 已解密的渠道池)。
+	//
+	// nil 表示"这次请求一个字节都不用为 AI 审核付出":总开关关着、设置行还没建、
+	// 抽样率为 0、或者一个可用渠道都没有 —— 四种情况在热路径上收敛成同一个
+	// 指针判空,而项目方要的「概率为 0 时整条路径零开销,不要每次都算一遍再丢弃」
+	// 正是它。判据在快照构建时算一次,不在每个请求上现算。
+	ai *aiRuntime
+	// hasAIPrompt / hasAIAsync 表示两个时机各自有没有 ai_review 规则。
+	//
+	// 两个布尔而不是一个:只配了转发后审核的站点不该为转发前那条同步路径付
+	// 任何代价,而那条路径的代价是给每个被抽中的请求加一次外部调用的延迟。
+	hasAIPrompt bool
+	hasAIAsync  bool
+
 	// promptWords / postWords 是各阶段全部 keyword 规则的词表并集,
 	// 一次 AC 扫描服务全部关键词规则,而不是每条规则扫一遍。
 	promptWords []string
 	postWords   []string
+
+	// catById / catByKey / catFallback 是违规类型表的只读视图。
+	//
+	// 与规则同快照、同版本号,不另建一份 TTL 独立的类型缓存 —— 理由写在
+	// category.go 顶部:两份缓存会让一条命中读到"新规则 + 旧类型",
+	// 计数加到旧类型上,而这种错位在任何日志里都看不出来。
+	//
+	// catFallback 是「未分类」那一行,catById 里查不到的 id 一律折进它
+	// (见 categoryForRule)。种子还没落地时它是零值,此时类型计数整体跳过,
+	// 账号总量线照常工作 —— 与本模块其余部分的 fail-open 同口径。
+	catById     map[int64]Category
+	catByKey    map[string]Category
+	catFallback Category
 }
 
 func (s *snapshot) hasPrompt() bool { return s != nil && len(s.promptRules) > 0 }
 func (s *snapshot) hasPost() bool   { return s != nil && len(s.postRules) > 0 }
+
+// aiOn 是热路径上"这次请求要不要考虑 AI 审核"的唯一判据:
+// 一次指针判空加两次布尔读,没有分配、没有加锁、没有随机数。
+func (s *snapshot) aiOn() bool {
+	return s != nil && s.ai != nil && (s.hasAIPrompt || s.hasAIAsync)
+}
 
 var (
 	current       atomic.Pointer[snapshot]
@@ -199,6 +240,27 @@ func reloadCtx(ctx context.Context, force bool) error {
 	}
 
 	s := &snapshot{version: ver.Version, loadAt: common.GetTimestamp()}
+
+	// 类型表与规则表一起装进同一份快照。查询失败不放弃整份快照:类型只影响
+	// "这次命中算哪一类、要不要撞类型线",而规则决定"要不要拦、要不要扣钱" ——
+	// 为了前者放弃后者是把主要能力赔给次要能力。此时 catById 为空,
+	// categoryForRule 全部折进零值兜底,类型计数整体跳过,账号总量线不受影响。
+	var cats []Category
+	if err := gdb.Find(&cats).Error; err != nil {
+		refreshFails.Add(1)
+		common.SysError("qianye/violation: 违规类型加载失败(本次快照不含类型,类型计数暂停): " + err.Error())
+	} else {
+		s.catById = make(map[int64]Category, len(cats))
+		s.catByKey = make(map[string]Category, len(cats))
+		for _, c := range cats {
+			s.catById[c.Id] = c
+			s.catByKey[c.Key] = c
+			if c.IsFallback {
+				s.catFallback = c
+			}
+		}
+	}
+
 	for i := range rows {
 		cr, err := compile(rows[i])
 		if err != nil {
@@ -218,9 +280,17 @@ func reloadCtx(ctx context.Context, force bool) error {
 		case PhasePrompt:
 			s.promptRules = append(s.promptRules, cr)
 			s.promptWords = append(s.promptWords, cr.words...)
-			if cr.R.MatchType == MatchRequestRate {
+			switch cr.R.MatchType {
+			case MatchRequestRate:
 				s.hasRate = true
+			case MatchAIReview:
+				s.hasAIPrompt = true
 			}
+		case PhasePostAsync:
+			// 转发后(异步)审核只可能是 ai_review —— ValidateRule 拒绝其它匹配方式
+			// 落在这一档上,因为别的判据在本地就能算,没有任何理由推迟到异步。
+			s.asyncRules = append(s.asyncRules, cr)
+			s.hasAIAsync = true
 		default:
 			s.postRules = append(s.postRules, cr)
 			s.postWords = append(s.postWords, cr.words...)
@@ -228,6 +298,17 @@ func reloadCtx(ctx context.Context, force bool) error {
 	}
 	s.promptWords = dedupe(s.promptWords)
 	s.postWords = dedupe(s.postWords)
+
+	// AI 运行期配置与规则同快照、同版本号 —— 与类型表同一条理由(见上面那段):
+	// 两份独立 TTL 的缓存会让一次请求读到"新规则 + 旧渠道",而那种错位的表现是
+	// 「刚删掉的渠道还在被调用」,在任何日志里都看不出因果。
+	// 装配失败同样不放弃整份快照:AI 审核停摆好过全部规则停摆。
+	if rt, err := buildAIRuntime(gdb, s.hasAIPrompt || s.hasAIAsync); err != nil {
+		common.SysError("qianye/violation: AI 审核配置加载失败(本次快照不含 AI 审核,全部放行): " + err.Error())
+	} else {
+		s.ai = rt
+	}
+
 	current.Store(s)
 	return nil
 }
@@ -298,6 +379,17 @@ func compile(r Rule) (*compiledRule, error) {
 				maxRequestRateThreshold, n)
 		}
 		cr.rateThreshold = n
+	case MatchAIReview:
+		// pattern 是违规类型白名单,允许为空(= 只要模型判违规就命中)。
+		// 归一成小写:模型返回的 category 也走 normalizeAICategory 归小写,
+		// 两侧不同口径就会得到一条"保存成功、界面正常、线上永不命中"的规则 ——
+		// 与 groupname 那两次同形缺陷完全一样。
+		if cats := splitList(strings.ToLower(r.Pattern)); len(cats) > 0 {
+			cr.aiCats = make(map[string]struct{}, len(cats))
+			for _, v := range cats {
+				cr.aiCats[v] = struct{}{}
+			}
+		}
 	default:
 		return nil, fmt.Errorf("未知的 match_type: %q", r.MatchType)
 	}
@@ -389,7 +481,7 @@ var ruleVarcharLimits = []ruleVarcharLimit{
 // 保证"管理端保存成功"等价于"运行期一定能编译"。
 func ValidateRule(r *Rule) error {
 	switch r.Phase {
-	case PhasePrompt, PhaseUpstreamErr, PhaseRejectReason:
+	case PhasePrompt, PhaseUpstreamErr, PhaseRejectReason, PhasePostAsync:
 	default:
 		return fmt.Errorf("phase 取值非法: %q", r.Phase)
 	}
@@ -437,6 +529,9 @@ func ValidateRule(r *Rule) error {
 	// 保存得下去、也确实会执行、但永远数不到真实频率的规则。
 	if r.MatchType == MatchRequestRate && r.Phase != PhasePrompt {
 		return fmt.Errorf("match_type %q 只能用于 %q 阶段", MatchRequestRate, PhasePrompt)
+	}
+	if err := validateAIRule(r); err != nil {
+		return err
 	}
 	switch r.GroupScopeMode {
 	case "", GroupScopeInclude, GroupScopeExclude:
@@ -513,19 +608,29 @@ func (cr *compiledRule) statusInScope(status int) bool {
 }
 
 // inScope 判断规则是否作用于当前模型与分组。空作用域 = 全部。
+func (cr *compiledRule) inScope(model, group string) bool {
+	return cr.groupInScope(group) && cr.modelInScope(model)
+}
+
+// groupInScope 与 modelInScope 拆开的理由与 applies 提成方法完全相同:
+// 管理端试跑必须回答"是哪一道闸把它挡在门外"(模型?分组?状态码?),
+// 而"未命中"与"不在作用域,而且是分组那一道"对管理员是两个截然不同的下一步。
+// 让试跑自己再判一次名单,就是本文件反复警告的那种两份判据 —— 它迟早与线上不一致。
 //
 // 分组名两侧都走 groupname.Effective:编译时归一了名单,判定时不归一等于没归一。
 // 顺带把 UsingGroup 为空的历史账号折叠进 default —— 那批账号恰恰最可疑,
 // 而在此之前任何一条挂在 default 上的规则都盖不住它们。
-func (cr *compiledRule) inScope(model, group string) bool {
-	if len(cr.groups) > 0 {
-		_, listed := cr.groups[groupname.Effective(group)]
-		// include 模式(groupExclude=false):不在名单里 → 不生效。
-		// exclude 模式(groupExclude=true):在名单里 → 豁免,不生效。
-		if listed == cr.groupExclude {
-			return false
-		}
+func (cr *compiledRule) groupInScope(group string) bool {
+	if len(cr.groups) == 0 {
+		return true
 	}
+	_, listed := cr.groups[groupname.Effective(group)]
+	// include 模式(groupExclude=false):不在名单里 → 不生效。
+	// exclude 模式(groupExclude=true):在名单里 → 豁免,不生效。
+	return listed != cr.groupExclude
+}
+
+func (cr *compiledRule) modelInScope(model string) bool {
 	if len(cr.modelPats) == 0 {
 		return true
 	}
@@ -573,6 +678,11 @@ type scanInput struct {
 	StatusCode   int
 	UpstreamText string
 	RejectReason string
+
+	// AI 是本次请求的外部审核结论。只有被抽中且审核成功返回时才非 nil ——
+	// 也就是说 ai_review 规则在**没抽中、审核失败、审核超时**时一律不命中,
+	// 这正是"失败即放行"在匹配层的表达。
+	AI *aiOutcome
 }
 
 // verdict 是匹配结论。只取优先级最高的一条规则作为处置依据 ——
@@ -730,8 +840,39 @@ func matchRule(cr *compiledRule, in scanInput, text, lower string, hitWords map[
 		// 命中词写"实测值/阈值":这是管理端复核误判时唯一能用的数字,
 		// 只写阈值的话每一条记录都长得一样,分不出"刚过线"和"高出十倍"。
 		return []string{fmt.Sprintf("req_rate %d>=%d/%ds", in.RateCount, cr.rateThreshold, rateWindowSeconds)}
+	case MatchAIReview:
+		return matchAIRule(cr, in.AI)
 	}
 	return nil
+}
+
+// matchAIRule 判断一条 ai_review 规则是否被这次审核结论命中。
+//
+// 三道闸,顺序即代价从低到高:有没有结论 → 判没判违规 → 类型与置信度对不对得上。
+//
+// 每一道的失败方向都是**不命中**(放行)。这不是可选的:审核没跑、跑挂了、
+// 模型给了个我们不认识的类型 —— 这三件事都不能推导出"这个用户违规了"。
+func matchAIRule(cr *compiledRule, out *aiOutcome) []string {
+	if out == nil || !out.decided() || !out.Violated {
+		return nil
+	}
+	if len(cr.aiCats) > 0 {
+		if _, ok := cr.aiCats[out.Category]; !ok {
+			return nil
+		}
+	}
+	// 置信度下限。规则没配(0)时不设限 —— 与 fee_max_quota 等其余"0 = 不限"
+	// 的字段同口径,而不是让 0 变成"必须 100% 确定"那种反直觉的严格。
+	if cr.R.AIMinConfidence.IsPositive() && out.Confidence.LessThan(cr.R.AIMinConfidence) {
+		return nil
+	}
+	// 命中词写"类型@置信度":与频率规则同理,管理端复核误判时要能一眼分出
+	// "刚过线"和"模型非常确定",只写类型名的话每条记录都长得一样。
+	cat := out.Category
+	if cat == "" {
+		cat = "unknown"
+	}
+	return []string{fmt.Sprintf("ai:%s@%s", cat, out.Confidence.String())}
 }
 
 // ───────────────────────────── 文本工具 ─────────────────────────────

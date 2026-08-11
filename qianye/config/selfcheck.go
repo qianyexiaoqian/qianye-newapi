@@ -242,6 +242,13 @@ var fieldConsumers = map[string]consumer{
 	"violation.evidence_retention_days":        {"qianye/modules/violation/tasks.go", "证据保留天数"},
 	"violation.rule_cache_seconds":             {"qianye/modules/violation/rules.go", "规则缓存时长"},
 	"violation.scan_timeout_ms":                {"qianye/modules/violation/rules.go", "单次正则扫描的预算"},
+	// AI 审核渠道的 api_key 加密。抽样率、提示词、超时、时机这些都在管理端
+	// (qy_violation_ai_setting 单行表)配,不在 YAML —— 只有密钥必须留在
+	// 运维手上、不经过任何 HTTP 接口。
+	"violation.ai_review_key":         {"qianye/modules/violation/aireview_crypto.go", "AI 审核渠道密钥的 AES-GCM 主密钥"},
+	"violation.ai_review_key_version": {"qianye/modules/violation/aireview_crypto.go", "新密文写入时记录的密钥版本"},
+	"violation.ai_review_keys_retired": {"qianye/modules/violation/aireview_crypto.go",
+		"历史密钥,解密轮换前写入的密文"},
 
 	// ─────────────────────── group_pricing(已下线)───────────────────────
 	//

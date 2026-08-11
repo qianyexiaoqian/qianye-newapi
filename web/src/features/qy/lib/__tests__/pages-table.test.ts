@@ -80,6 +80,13 @@ const SETTINGS_URLS = [
   // 「新注册用户落哪个分组」一个下拉，已经降级成同一个 section 上的一张卡片
   // （`features/qy/pages/admin-user-groups/default-group`）。
   '/qy/admin/violation-rules',
+  // 违规类型：它与「违规判定规则」是同一件事的两层（类型定「几次会被处置」，
+  // 规则定「什么算一次」），改一次影响之后每一笔,与抽屉里那批配置同类。
+  '/qy/admin/violation-categories',
+  // AI 内容审核:审核渠道、密钥、抽样率、成本。改一次影响之后每一笔请求
+  // (要不要送审、送到哪、花多少钱),与抽屉里那批配置同类。
+  // 它不是流水页 —— 页面上的成本统计是这份配置的**后果**,不是每天要过的账。
+  '/qy/admin/violation-ai-review',
   '/qy/admin/lottery-config',
   '/qy/admin/api-address',
 ]
@@ -87,6 +94,10 @@ const SETTINGS_URLS = [
 /** 明确**留在根侧栏**的管理页。它们进了抽屉就是运营每天多点两下。 */
 const ROOT_ADMIN_URLS = [
   '/qy/admin/commission-records',
+  // 佣金余额（按人汇总）与 AFF 关系（谁邀请了谁）同样是每天要开的流水/台账，
+  // 不是"改一次影响后续每一笔"的配置，所以留根侧栏。
+  '/qy/admin/commission-records/balances',
+  '/qy/admin/commission-records/relations',
   '/qy/admin/withdrawals',
   '/qy/admin/transfer-records',
   '/qy/admin/fund-orders',

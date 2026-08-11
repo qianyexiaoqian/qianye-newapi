@@ -76,7 +76,12 @@ var restrictedUserAllowedRoutes = map[string]struct{}{
 	// 只能一张一张单地问。这三条都是本仓已有的、比工单更结构化的通道。
 	"GET /api/qy/violation/my-summary": {},
 	"GET /api/qy/violation/my-records": {},
-	"POST /api/qy/violation/appeals":   {},
+	// 类型公示是「我到底还能犯几次」的唯一答案,而受限账号正是最需要这个答案的人:
+	// 他已经越过一次线了,不告诉他每一类的阈值与自己的计数,他只能靠再撞一次来试探。
+	// 接口只下发 published=true 的对外文案(白名单结构体 userCategoryView),
+	// 不含内部名/内部说明/规则判据,泄漏面与 my-summary 同级。
+	"GET /api/qy/violation/my-categories": {},
+	"POST /api/qy/violation/appeals":      {},
 }
 
 // restrictedUserContextKey 标记「本次请求的身份是一个受限账号」。

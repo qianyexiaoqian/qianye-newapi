@@ -18,7 +18,11 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { qyGet, qyPost } from '../../lib/api'
 import type { QyPage } from '../../lib/types'
-import type { QyMyViolationRecord, QyMyViolationSummary } from './types'
+import type {
+  QyMyViolationCategories,
+  QyMyViolationRecord,
+  QyMyViolationSummary,
+} from './types'
 
 /** 只返回真实命中（后端过滤掉 shadow 记录），影子模式下用户并未被扣钱。 */
 export function listQyMyViolations(params: {
@@ -30,6 +34,17 @@ export function listQyMyViolations(params: {
 
 export function getQyMyViolationSummary(): Promise<QyMyViolationSummary> {
   return qyGet<QyMyViolationSummary>('/violation/my-summary')
+}
+
+/**
+ * 违规类型公示：有哪些类型、各自多少次会被处置、以及自己当前每一类的计数。
+ *
+ * 只返回站点勾了「对用户公示」的类型，且只含对外文案 —— 内部说明与内部名一个
+ * 字节都不会下发（后端白名单 `userCategoryView`）。未公示的类型照样计数、
+ * 照样参与处置，只是不出现在这里。
+ */
+export function listQyMyViolationCategories(): Promise<QyMyViolationCategories> {
+  return qyGet<QyMyViolationCategories>('/violation/my-categories')
 }
 
 /** 提交申诉。后端要求理由至少 20 个字，且一条记录只允许申诉一次。 */

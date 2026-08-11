@@ -162,6 +162,21 @@ export function QyAdminCommissionBalances() {
       cellClassName: staticDataTableClassNames.actionCell,
       cell: (row) => (
         <div className='flex justify-end gap-1'>
+          {/* 下钻:这一行的四个额度是聚合值,"他这 137 额度是怎么来的"只有逐笔
+              计佣答得了。带着 inviter_id 跳过去,佣金审核页会用它做筛选初值 ——
+              这一跳此前不存在,运营只能记住用户 ID、自己走去佣金审核再手打一遍。 */}
+          <Button
+            variant='ghost'
+            size='sm'
+            render={
+              <Link
+                to='/qy/admin/commission-records'
+                search={{ inviter_id: String(row.user_id) }}
+              />
+            }
+          >
+            {t('qy_cb_accruals')}
+          </Button>
           {/* 两个动作的语义完全不同,不能合成一个按钮:
               「登记已提现」只是把额度从可提现搬到已提现(恒等式两侧不变);
               「手工增减」是真的凭空加钱/扣钱,会落一条 manual 计佣行。 */}

@@ -701,6 +701,29 @@ func validateViolation(v *Violation) error {
 	if err := checkBps("violation.global_block_rate_limit_bps", v.GlobalBlockRateLimitBps); err != nil {
 		return err
 	}
+	// AI 审核密钥是**可选**的:不配就是"存不下 api_key",不是"启动失败"。
+	// 但填了就必须是一把真钥匙 —— 填半截(比如粘贴时少了尾巴)的后果是
+	// 全部审核渠道的密钥都写不进去,而界面上只会显示一句通用失败。
+	if strings.TrimSpace(v.AIReviewKey) != "" {
+		if err := checkAESKey("violation.ai_review_key", v.AIReviewKey); err != nil {
+			return err
+		}
+	}
+	if v.AIReviewKeyVersion < 0 {
+		return fmt.Errorf("qianye: violation.ai_review_key_version 不能为负数,收到 %d", v.AIReviewKeyVersion)
+	}
+	for version, key := range v.AIReviewKeysRetired {
+		if version <= 0 {
+			return fmt.Errorf("qianye: violation.ai_review_keys_retired 的版本号必须大于 0,收到 %d", version)
+		}
+		if version == v.AIReviewKeyVersion {
+			return fmt.Errorf("qianye: violation.ai_review_keys_retired 不得包含当前启用的版本 %d"+
+				"(当前密钥只在 ai_review_key 里配一份,两处不一致会让新密文用一把钥匙、解密用另一把)", version)
+		}
+		if err := checkAESKey(fmt.Sprintf("violation.ai_review_keys_retired[%d]", version), key); err != nil {
+			return err
+		}
+	}
 	// 这里曾经有一条"shadow_mode 已关闭"的启动告警。它随全局开关一起删除了:
 	// 现在"会不会真实扣费"取决于库里有几条 mode=enforce 的规则,不是一个配置项,
 	// 启动期读不到也不该猜。等价的可见性由 GET /admin/violation/stats 的

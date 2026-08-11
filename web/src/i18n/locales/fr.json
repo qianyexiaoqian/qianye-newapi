@@ -5250,6 +5250,10 @@
     "Model group unlocks can be configured once the plan exists — save it first, then reopen it.": "Les déblocages de groupes de modèles se configurent après création du forfait — enregistrez-le puis rouvrez-le.",
     "Plan saved, but the unlocked model groups were not stored. Reopen the plan and set them again": "Forfait enregistré, mais les groupes de modèles débloqués n'ont pas été sauvegardés. Rouvrez le forfait et reconfigurez-les",
     "Edit them under System Settings → Billing & Payment → User group: a cell of the user group × model group table is the special ratio, and setting a scope on a user group takes over the special usable group rules for that tier. Tiers with no scope keep their existing +: / -: rules fully in effect, and those legacy rules can no longer be edited anywhere — set a scope on the tier to take them over. The stored data and the billing behavior are unchanged.": "Modifiez-les dans Paramètres du système → Facturation et paiement → Groupe utilisateur : une cellule du tableau groupe utilisateur × groupe de modèles est le ratio spécial, et définir une portée sur un groupe utilisateur reprend les règles spéciales de groupes utilisables pour ce niveau. Les niveaux sans portée conservent leurs règles +: / -: existantes, pleinement actives, et ces anciennes règles ne peuvent plus être modifiées nulle part — définissez une portée sur le niveau pour les reprendre. Les données enregistrées et la facturation restent inchangées.",
-    "Configure these under System Settings → Billing & Payment → User group.": "À configurer dans Paramètres du système → Facturation et paiement → Groupe utilisateur."
+    "Configure these under System Settings → Billing & Payment → User group.": "À configurer dans Paramètres du système → Facturation et paiement → Groupe utilisateur.",
+    "A new version has been released": "Une nouvelle version est disponible",
+    "Reload the page to get the latest version.": "Rechargez la page pour obtenir la dernière version.",
+    "Reload": "Recharger",
+    "Copy error details": "Copier les détails de l'erreur"
   }
 }

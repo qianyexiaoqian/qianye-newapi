@@ -58,6 +58,7 @@ function rule(patch: Partial<QyViolationRule>): QyViolationRule {
     id: 1,
     name: 'r',
     remark: '',
+    category_id: 0,
     public_reason: '',
     enabled: true,
     mode: 'shadow',

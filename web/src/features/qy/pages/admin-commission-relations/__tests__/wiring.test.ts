@@ -34,8 +34,9 @@ import { QY_RELATION_SCOPES, QY_RELATION_SORTS } from '../types'
  *
  * 这两块的真正风险不在渲染，而在四条**只会在运行时才现形**的链路：
  *
- *  1. 断链：关系页没有独立侧栏入口（`qy-settlement` 分组已占满 7 行），
- *     唯一入口是佣金审核页上的那个按钮。删掉它整页就是死链，而单测全绿；
+ *  1. 断链：关系页现在有两条入口 —— 侧栏「结算 → AFF 关系」（本轮补上，见
+ *     `lib/__tests__/route-entry-guard.test.ts`）与佣金审核页上的那个按钮。
+ *     两条都没了整页就是死链，而单测全绿；
  *  2. 同一概念的第 N 份拷贝：排序键、scope 键、事由长度下限在前后端各写一份，
  *     后端改了前端没有任何反应 —— 用户看到的是"排序选了没用"和"填了 4 个字还被拒"；
  *  3. 后端业务 code 没登记进 i18n 白名单：用户会看到后端的中文原文，
@@ -97,10 +98,10 @@ const enKeys = en as Record<string, string>
 const zhKeys = zh as Record<string, string>
 
 describe('AFF 关系页的入口链路', () => {
-  test('佣金审核页上必须有指向本页的链接 —— 那是它唯一的入口', () => {
+  test('佣金审核页上必须有指向本页的链接（侧栏之外的第二条入口）', () => {
     assert.ok(
       recordsPage.includes(`to='${RELATIONS_URL}'`),
-      `佣金审核页不再链向 ${RELATIONS_URL}：本页没有侧栏入口，删掉这个按钮就等于把整页变成死链`
+      `佣金审核页不再链向 ${RELATIONS_URL}：运营正在看某条计佣时，这个按钮是他跳去查"这条关系是谁绑的"的那一跳`
     )
   })
 
@@ -119,14 +120,21 @@ describe('AFF 关系页的入口链路', () => {
     )
   })
 
-  test('URL 嵌在 commission-records 之下，因此继承佣金审核的 LAB MEMO 编号', () => {
+  test('本页有自己的 LAB MEMO 编号与日文副标，不再蹭佣金审核的', () => {
+    // 旧断言「继承佣金审核的编号」成立的前提是本页没有独立入口，只能靠
+    // `page-meta.ts` 的最长前缀规则接住。侧栏入口本轮补上了，前提作废。
     const meta = qyPageMeta(RELATIONS_URL)
     assert.notEqual(
       meta.no,
       '00',
-      '本页脱离了 commission-records 前缀，区段头会退化成 LAB MEMO — 00'
+      '本页从页面表/编号表里掉出去了，区段头会退化成 LAB MEMO — 00'
     )
-    assert.equal(meta.no, qyPageMeta('/qy/admin/commission-records').no)
+    assert.notEqual(
+      meta.no,
+      qyPageMeta('/qy/admin/commission-records').no,
+      '本页又和佣金审核共用一个编号：那意味着它自己那一行没了'
+    )
+    assert.equal(meta.jpKey, 'qy_sg_jp_a_commission_relations')
   })
 
   test('手工增减佣金的入口挂在佣金余额页上', () => {

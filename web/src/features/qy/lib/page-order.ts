@@ -79,4 +79,18 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   // 按本表的维护规则**追加到末尾取下一个空号**，不与 `/qy/lottery`、
   // `/qy/lottery-records` 排在一起 —— 那两页的编号是用户已经记下的。
   '/qy/lottery-guess',
+  // 佣金余额与 AFF 关系此前**没有**登记进本表：它们靠 `page-meta.ts` 的最长前缀
+  // 规则继承了 `/qy/admin/commission-records` 的编号（11 号）。现在它们是侧栏上
+  // 各自独立的一行，就该有自己的号 —— 按维护规则 1 追加到末尾取空号，既有编号
+  // 一个都不动。
+  '/qy/admin/commission-records/balances',
+  '/qy/admin/commission-records/relations',
+  // 违规类型（需求：类型可增删改、规则绑到类型、类型计次触发处置、用户端公示）。
+  // 按本表的维护规则**追加到末尾取下一个空号**，绝不插到
+  // `/qy/admin/violation-rules` 后面 —— 那会让它之后的每一页集体错位。
+  '/qy/admin/violation-categories',
+  // AI 内容审核(需求:随机抽样 + 可配审核渠道 + 转发前/后两个时机)。
+  // 同样**追加到末尾取下一个空号**,不与 violation-rules / violation-categories
+  // 排在一起 —— 那两页的编号已经发出去了,重排会让用户记下的 LAB MEMO 指向别处。
+  '/qy/admin/violation-ai-review',
 ]

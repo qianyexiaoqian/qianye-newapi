@@ -36,8 +36,13 @@ import { qyKeys } from '../../lib/query-keys'
 import { QyPager } from '../components/qy-pager'
 import { QyStatGrid } from '../components/qy-stat-grid'
 import { formatQyTs } from '../ops/format'
-import { getQyMyViolationSummary, listQyMyViolations } from './api'
+import {
+  getQyMyViolationSummary,
+  listQyMyViolationCategories,
+  listQyMyViolations,
+} from './api'
 import { QyViolationAppealDialog } from './components/appeal-dialog'
+import { QyMyViolationCategoriesCard } from './components/categories-card'
 import type { QyMyViolationRecord } from './types'
 
 const PAGE_SIZE = 20
@@ -70,6 +75,16 @@ export function QyMyViolations() {
   const summaryQuery = useQuery({
     queryKey: qyKeys.violationMySummary(),
     queryFn: getQyMyViolationSummary,
+    enabled: !featureOff,
+    staleTime: 60_000,
+  })
+
+  // 违规类型公示。项目方原话：「这些在用户前端要公示出来」。
+  // 单独一个查询而不是并进 summary：它要读一张类型表 + 一批计数行，
+  // 而 summary 是每次打开页面都拉的那一个，不该被它拖慢。
+  const categoriesQuery = useQuery({
+    queryKey: qyKeys.violationMyCategories(),
+    queryFn: listQyMyViolationCategories,
     enabled: !featureOff,
     staleTime: 60_000,
   })
@@ -163,6 +178,11 @@ export function QyMyViolations() {
             </div>
           )}
 
+          {/* 公示卡片排在记录列表**之前**：用户打开这一页时最该先看到的是
+              「有哪些类型、各自几次会被处置、我现在各是几次」，而不是
+              一条条已经发生的记录。规则本身永远不公示 —— 那等于教人绕过。 */}
+          <QyMyViolationCategoriesCard data={categoriesQuery.data} />
+
           <QyPageBoundary
             query={listQuery}
             isEmpty={listQuery.data != null && records.length === 0}
@@ -185,6 +205,13 @@ export function QyMyViolations() {
                     id: 'model',
                     header: t('qy_avl_model'),
                     cell: (row: QyMyViolationRecord) => row.model_name,
+                  },
+                  {
+                    id: 'category',
+                    header: t('qy_vio_col_category'),
+                    // 命中当时冻结的公示标题。类型被归档或改名之后，
+                    // 这一行仍然显示当时那个名字。
+                    cell: (row: QyMyViolationRecord) => row.category || '—',
                   },
                   {
                     id: 'reason',

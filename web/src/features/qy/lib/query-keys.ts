@@ -78,6 +78,9 @@ export const qyKeys = {
   violationMyRecords: (params: unknown) =>
     [...qyKeys.all, 'violation', 'my-records', params] as const,
   violationMySummary: () => [...qyKeys.all, 'violation', 'my-summary'] as const,
+  /** 违规类型公示（只含 published 的类型 + 自己在每一类上的计数）。 */
+  violationMyCategories: () =>
+    [...qyKeys.all, 'violation', 'my-categories'] as const,
 
   // ── 抽奖 / 竞猜（用户端）──
   lotteryActivities: (params: unknown) =>
@@ -182,6 +185,20 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'violation', 'counters', params] as const,
   adminViolationBanPolicies: () =>
     [...qyKeys.all, 'admin', 'violation', 'ban-policies'] as const,
+  /** 违规类型（含每一类的规则条数）。 */
+  adminViolationCategories: () =>
+    [...qyKeys.all, 'admin', 'violation', 'categories'] as const,
+  /** AI 审核：渠道池、全局设置、成本统计、调用明细。 */
+  adminViolationAiChannels: () =>
+    [...qyKeys.all, 'admin', 'violation', 'ai-review', 'channels'] as const,
+  adminViolationAiSettings: () =>
+    [...qyKeys.all, 'admin', 'violation', 'ai-review', 'settings'] as const,
+  // 成本统计带天数：改了回看窗口就必须重算,否则运营看到的还是上一档的数字,
+  // 而那个数字正是"这个月花了多少"的答案。
+  adminViolationAiStats: (days: number) =>
+    [...qyKeys.all, 'admin', 'violation', 'ai-review', 'stats', days] as const,
+  adminViolationAiLogs: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'violation', 'ai-review', 'logs', params] as const,
   // 影响面预览带参数：阈值/窗口/动作任意一项变了，那个数字就必须重算。
   // 不把参数放进 key 的话，管理员改完阈值看到的仍是上一次的数 —— 而这个数
   // 正是他决定要不要按下保存的唯一依据。

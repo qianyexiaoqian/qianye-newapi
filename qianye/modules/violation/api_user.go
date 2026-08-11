@@ -28,7 +28,12 @@ type userRecordView struct {
 	CreatedAt int64  `json:"created_at"`
 	ModelName string `json:"model_name"`
 	// Reason 用规则的对外文案,不是内部规则名。
-	Reason       string `json:"reason"`
+	Reason string `json:"reason"`
+	// Category 用记录里冻结的**公示标题**(Record.CategoryPublicTitle),
+	// 绝不是 CategoryName —— 后者是内部名,常含代号。冻结列而不是现查类型表:
+	// 类型被归档或改名之后,这一条记录仍要显示当时那个名字。
+	// 该类型当时未公示(公示标题为空)时给空串,前端按"未公示"处理。
+	Category     string `json:"category"`
 	Blocked      bool   `json:"blocked"`
 	FeeQuota     int64  `json:"fee_quota"`
 	FeeStatus    string `json:"fee_status"`
@@ -46,6 +51,7 @@ func toUserView(r *Record) userRecordView {
 		CreatedAt:    r.CreatedAt,
 		ModelName:    r.ModelName,
 		Reason:       reason,
+		Category:     r.CategoryPublicTitle,
 		Blocked:      r.Blocked,
 		FeeQuota:     r.FeeQuota,
 		FeeStatus:    r.FeeStatus,
@@ -141,6 +147,160 @@ func userSummary(c *gin.Context) {
 		// 只给数字不给动作,用户无从判断该不该紧张。
 		"policy_action":   policy.Action,
 		"total_fee_quota": feeTotal,
+	})
+}
+
+// userCategoryView 是**对用户公示**的违规类型,由服务端白名单构造。
+//
+// # 这个结构体的字段清单就是隔离本身
+//
+// Category 上有两组文案:内部的 Name / Remark(写匹配细节、误杀场景、运营口径)
+// 与对外的 PublicTitle / PublicDesc。这里**只有后者**,而且是正面清单 ——
+// 复用 Category 加 `json:"-"` 是负面清单,下一次给 Category 加一列内部字段时
+// 它会默认泄露出去,而泄露的内容恰好是"怎么绕过这条线"。
+//
+// 明确不返回:Name(内部名,常含代号)、Remark(内部说明,写的就是匹配细节)、
+// Key(外部审核来源绑定用的标识)、Enabled / SortOrder / 时间戳 / 操作人。
+type userCategoryView struct {
+	Id int64 `json:"id"`
+	// Title / Description 一律取 PublicTitle / PublicDesc。它们为空时这一类
+	// 根本进不了公示列表(validateCategory 要求勾了公示就必须填标题)。
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	// Threshold 是这一类累计多少次会触发处置,0 表示这一类不单独触发。
+	Threshold   int `json:"threshold"`
+	WindowHours int `json:"window_hours"`
+	HitCount    int `json:"hit_count"`
+	Remaining   int `json:"remaining"`
+}
+
+// toUserCategoryView 把一个违规类型 + 该用户在这一类上的计数,折成对外视图。
+//
+// 提成函数不是为了缩短 handler:**内部说明与公示文案的隔离**就落在这一个函数上,
+// 而它必须能被直接测到(TestUserCategoryViewHidesInternalText 会给 Name / Remark
+// 塞进独一无二的串,再断言序列化结果里一个字都没有)。留在 handler 里的话,
+// 验证它就需要一整套 gin + 数据库夹具,而那种测试没人愿意在加字段时补。
+func toUserCategoryView(cat Category, ct CategoryCounter, now int64) userCategoryView {
+	windowHours := cat.WindowHours
+	if windowHours <= 0 {
+		windowHours = 24
+	}
+	// 窗口已经滚过就不展示旧计数,否则用户看到的"剩余次数"是错的(与 userSummary 同口径)。
+	hit := 0
+	if ct.CategoryId == cat.Id && ct.WindowStart >= now-int64(windowHours)*3600 {
+		hit = ct.HitCount
+	}
+	// Enabled=false 的类型对用户而言就是"这一类不单独触发",阈值按 0 展示。
+	// 展示库里那个正数会让用户以为还有一条线在,而它当下并不生效。
+	threshold := 0
+	if cat.Enabled {
+		threshold = cat.Threshold
+	}
+	remaining := 0
+	if threshold > 0 {
+		remaining = threshold - hit
+		if remaining < 0 {
+			remaining = 0
+		}
+	}
+	return userCategoryView{
+		Id: cat.Id,
+		// 只取对外两列。**绝不**在这里回落到 cat.Name:那是内部名,常含代号,
+		// 而"公示标题没填"已经被 validateCategory 挡在写入口(勾了公示就必须填)。
+		// 加一条回落等于给那道校验开一个后门,而后门的出口是用户的浏览器。
+		Title:       cat.PublicTitle,
+		Description: cat.PublicDesc,
+		Threshold:   threshold,
+		WindowHours: windowHours,
+		HitCount:    hit,
+		Remaining:   remaining,
+	}
+}
+
+// userListCategories 是"违规类型公示"接口:有哪些类型、各自多少次会被处置、
+// 以及**自己当前每一类的计数**。
+//
+// # 为什么要公示
+//
+// 项目方原话:「这些在用户前端要公示出来」。理由与 userSummary 一致 ——
+// 威慑价值大于泄露价值:知道"这一类再犯 1 次就会被处置"的用户会主动收敛,
+// 不知道的只会在被处置之后来发工单。公示的是**后果**,不是**判据**:
+// 后者写在 Remark 里,永远不出现在这个接口的响应里。
+//
+// # 两条线都要给
+//
+// 用户会撞的线有两条:账号总量线(跨全部类型,来自所在分组的策略档)与单类型线。
+// 只公示其中一条会让"到底几次"这个问题在另一条线上失真 —— 而失真的方向是
+// "我以为还剩 5 次,结果第 3 次就被限制了"。所以 account_* 与 items 一起返回。
+func userListCategories(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagViolation) {
+		return
+	}
+	userId := c.GetInt("id")
+	if userId <= 0 {
+		badRequest(c, "无法识别当前用户")
+		return
+	}
+	gdb := db.Get()
+	if gdb == nil {
+		internalError(c, db.ErrNotReady)
+		return
+	}
+	// published = true 是这张列表的唯一入选条件。未公示的类型照常计数、照常封号,
+	// 只是不在这里出现 —— 那是"仍在观察期的新类型"的用法(见 Category.Published)。
+	var rows []Category
+	if err := gdb.Where("published = ?", true).
+		Order("sort_order asc, id asc").Find(&rows).Error; err != nil {
+		internalError(c, err)
+		return
+	}
+
+	counters := make(map[int64]CategoryCounter, len(rows))
+	if len(rows) > 0 {
+		ids := make([]int64, 0, len(rows))
+		for _, r := range rows {
+			ids = append(ids, r.Id)
+		}
+		var cs []CategoryCounter
+		// 计数拿不到不算失败:公示的主体是"有哪些类型、几次会怎样",
+		// 计数为 0 的列表仍然有价值,而一次扩展库抖动不该让整页打不开。
+		if err := gdb.Where("user_id = ? AND category_id IN ?", userId, ids).Find(&cs).Error; err == nil {
+			for _, v := range cs {
+				counters[v.CategoryId] = v
+			}
+		}
+	}
+
+	now := common.GetTimestamp()
+	items := make([]userCategoryView, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, toUserCategoryView(r, counters[r.Id], now))
+	}
+
+	policy := resolveBanPolicy(c.GetString("group"))
+	accountWindow := policy.WindowHours
+	if accountWindow <= 0 {
+		accountWindow = 24
+	}
+	var counter Counter
+	_ = db.Get().Where("user_id = ?", userId).Take(&counter).Error
+	accountHit := counter.HitCount
+	if counter.WindowStart < now-int64(accountWindow)*3600 {
+		accountHit = 0
+	}
+
+	respond(c, gin.H{
+		"items": items,
+		// 账号总量线:跨全部类型的那条线。与 my-summary 是同一组数字,
+		// 这里一并返回是为了让"公示"这一页自己就能把两条线讲清楚,
+		// 而不是要求前端拼两个接口的结果 —— 拼错的方向是少显示一条线。
+		"account_threshold":    policy.Threshold,
+		"account_hit_count":    accountHit,
+		"account_window_hours": accountWindow,
+		"policy_action":        policy.Action,
+		// 两条线是"任一越过即触发"。这句口径由后端下发,前端不要自己写死:
+		// 判定侧改了口径而文案没改,用户看到的就是一句谎话。
+		"threshold_semantics": "any_line",
 	})
 }
 

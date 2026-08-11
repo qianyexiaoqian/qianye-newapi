@@ -33,9 +33,10 @@ import { QY_BALANCE_SORTS } from '../types'
  *
  * 这一页的真正风险不在渲染逻辑，而在三条**只会在运行时才现形**的链路：
  *
- *  1. 断链：它没有独立的侧栏入口（`qy-settlement` 分组已占满 7 行），
- *     唯一入口是佣金审核页上的那个按钮。按钮一旦被顺手删掉，整页就变成
- *     只有背下 URL 才能到达的死页，而所有单元测试照样全绿；
+ *  1. 断链：本页现在有两条入口 —— 侧栏「结算 → 佣金余额」（本轮补上，见
+ *     `lib/__tests__/route-entry-guard.test.ts`）与佣金审核页上的那个按钮。
+ *     两条都被顺手删掉时整页就只剩背 URL 一条路，而所有单元测试照样全绿；
+ *     侧栏那条由守卫测试盯，页内按钮由下面这一条盯；
  *  2. 同一概念的第 N 份拷贝：排序口径与事由长度下限在前后端各写了一份，
  *     后端改了前端不会有任何反应 —— 用户看到的是"排序选了没用"和
  *     "填了 4 个字还被后端拒"；
@@ -87,10 +88,10 @@ const enKeys = en as Record<string, string>
 const zhKeys = zh as Record<string, string>
 
 describe('佣金余额页的入口链路', () => {
-  test('佣金审核页上必须有指向本页的链接 —— 那是它唯一的入口', () => {
+  test('佣金审核页上必须有指向本页的链接（侧栏之外的第二条入口）', () => {
     assert.ok(
       recordsPage.includes(`to='${BALANCES_URL}'`),
-      `佣金审核页不再链向 ${BALANCES_URL}：本页没有侧栏入口，删掉这个按钮就等于把整页变成死链`
+      `佣金审核页不再链向 ${BALANCES_URL}：运营正看着某一笔计佣时，这个按钮是他跳到按人汇总的那一跳，删掉之后只能绕回侧栏重新找`
     )
   })
 
@@ -109,18 +110,23 @@ describe('佣金余额页的入口链路', () => {
     )
   })
 
-  test('URL 嵌在 commission-records 之下，因此继承佣金审核的 LAB MEMO 编号', () => {
-    // 这不是审美选择：`lib/pages.ts` 的 qy-settlement 分组已满 7 行，本页不能
-    // 再登记一行；而没有登记的 URL 在 `qyPageMeta` 里会掉进 "00" 分支，
-    // Steins Gate 区段头会显示 `LAB MEMO — 00`。嵌套让最长前缀规则接住它。
+  test('本页有自己的 LAB MEMO 编号与日文副标，不再蹭佣金审核的', () => {
+    // 旧断言是「继承佣金审核的编号」，理由是本页没有独立入口、不能在
+    // `lib/pages.ts` 里占一行，只能靠最长前缀规则接住。那条理由本轮作废：
+    // 侧栏入口补上了，本页在页面表里有自己的一行，于是也该有自己的号。
+    // 仍然要钉的是"不许掉进 00 分支"——那才是当初真正要防的失败。
     const meta = qyPageMeta(BALANCES_URL)
     assert.notEqual(
       meta.no,
       '00',
-      '本页脱离了 commission-records 前缀，区段头会退化成 LAB MEMO — 00'
+      '本页从页面表/编号表里掉出去了，区段头会退化成 LAB MEMO — 00'
     )
-    assert.equal(meta.no, qyPageMeta('/qy/admin/commission-records').no)
-    assert.equal(meta.jpKey, 'qy_sg_jp_a_commission_records')
+    assert.notEqual(
+      meta.no,
+      qyPageMeta('/qy/admin/commission-records').no,
+      '本页又和佣金审核共用一个编号：那意味着它自己那一行没了'
+    )
+    assert.equal(meta.jpKey, 'qy_sg_jp_a_commission_balances')
   })
 })
 

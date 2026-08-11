@@ -22,6 +22,7 @@ import {
   HandCoins,
   HeartPulse,
   LifeBuoy,
+  Link2,
   Megaphone,
   ReceiptText,
   Repeat,
@@ -29,6 +30,7 @@ import {
   ShieldAlert,
   Ticket,
   TriangleAlert,
+  Wallet,
 } from 'lucide-react'
 import type { ElementType } from 'react'
 
@@ -417,6 +419,39 @@ export const QY_PAGES: readonly QyPageDef[] = [
     icon: ReceiptText,
     jpKey: 'qy_sg_jp_a_commission_records',
   },
+  // 这两页的路由与组件从一开始就在，但**本表里一行都没有** —— 也就是说站内
+  // 唯一到得了它们的方式是佣金审核页右上角那两个按钮，或者手敲 URL。项目方的
+  // 原话是「UI前端怎么没看见有佣金管理的入口和UI」：他没看错，侧栏上确实一个
+  // 入口都没有。这是本仓第四次出现"页面写完了但没登记入口"，`__tests__/
+  // route-entry-guard.test.ts` 是这次补上的机器判据（路由 ↔ 入口双向比对）。
+  //
+  // 落点选「结算」而不是收进选择夹：这两页与佣金审核是**并列的三张表**
+  // （逐笔计佣 / 按人汇总 / 邀请关系），运营查一个人的佣金时三张表来回跳，
+  // 而侧栏一级项是唯一不依赖"先想起来该从哪一页进去"的入口。
+  //
+  // titleKey 直接复用页面自己的标题键（`qy_cb_title` / `qy_rel_title`）而不是
+  // 新造一对 `qy_nav_*`：侧栏那一行与页面大标题必须是同一个词，否则运营点进去
+  // 看到的名字和他点的名字对不上。复用等于让它们**由构造保证**一致。
+  //
+  // ⚠️ 本组加完这两行正好 7 行，已经顶到 `pages-table.test.ts` 的分组规模上限
+  // （不超过上游 admin 组）。下一个要进「结算」的页面必须先拆组或做折叠项，
+  // 那条测试会拦住它 —— 这是有意留的闸门，不要把上限改大。
+  {
+    url: '/qy/admin/commission-records/balances',
+    titleKey: 'qy_cb_title',
+    feature: 'commission',
+    group: 'qy-settlement',
+    icon: Wallet,
+    jpKey: 'qy_sg_jp_a_commission_balances',
+  },
+  {
+    url: '/qy/admin/commission-records/relations',
+    titleKey: 'qy_rel_title',
+    feature: 'commission',
+    group: 'qy-settlement',
+    icon: Link2,
+    jpKey: 'qy_sg_jp_a_commission_relations',
+  },
   {
     url: '/qy/admin/withdrawals',
     titleKey: 'qy_nav_a_withdrawals',
@@ -538,6 +573,33 @@ export const QY_PAGES: readonly QyPageDef[] = [
     titleKey: 'qy_nav_a_violation_rules',
     feature: 'violation',
     jpKey: 'qy_sg_jp_a_violation_rules',
+    group: QY_SETTINGS_GROUP,
+  },
+  // AI 内容审核。它与违规规则是同一档配置(改一次影响之后每一笔),
+  // 所以并排放在抽屉里而不是根侧栏。
+  //
+  // 单独一页而不是塞进违规规则页的一个折叠区:这一页管的是**送不送审、送到哪、
+  // 花了多少**(渠道、密钥、抽样率、成本),而规则页管的是**什么算违规、命中之后
+  // 怎么处置**。两者的读者与改动频率都不同,揉在一起会让规则页多出一个与规则
+  // 无关的密钥表单 —— 而那是本页最需要被单独审计的东西。
+  {
+    url: '/qy/admin/violation-ai-review',
+    titleKey: 'qy_nav_a_violation_ai_review',
+    feature: 'violation',
+    jpKey: 'qy_sg_jp_a_violation_ai_review',
+    group: QY_SETTINGS_GROUP,
+  },
+  // 违规类型。与「违规判定规则」紧挨着，因为两者是同一件事的两层：类型定"几次
+  // 会被处置"，规则定"什么算一次"，而规则表单里的类型下拉取值就来自这一页。
+  //
+  // **这一行不能省。** 本仓已经四次出现"页面写完、路由建好、`pages.ts` 里那一行
+  // 忘了加"——表现是站内一个入口都没有，只有手敲 URL 才到得了。
+  // `__tests__/route-entry-guard.test.ts` 会因为缺这一行而变红。
+  {
+    url: '/qy/admin/violation-categories',
+    titleKey: 'qy_nav_a_violation_categories',
+    feature: 'violation',
+    jpKey: 'qy_sg_jp_a_violation_categories',
     group: QY_SETTINGS_GROUP,
   },
   // 需求原文：「系统设置前端是否显示」。它与手续费上限、单场奖品上限一样，

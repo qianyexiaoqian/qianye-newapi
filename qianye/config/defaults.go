@@ -229,6 +229,9 @@ func applyDefaults(c *Config) {
 	intDefault(&v.EvidenceRetentionDays, 90)
 	intDefault(&v.RuleCacheSeconds, 60)
 	intDefault(&v.ScanTimeoutMs, 20)
+	// 与 withdraw.pii_key_version 同口径:未填视为 1,与密文行 key_version 列的
+	// 默认值一致 —— 三者取值一旦不同,新写入的行就会被标成一个查不到密钥的版本。
+	intDefault(&v.AIReviewKeyVersion, 1)
 
 	adoptRetiredGroupPricing(c)
 

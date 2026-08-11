@@ -160,6 +160,10 @@ export function useSidebarData(): SidebarData {
             url: '/system-settings/site',
             activeUrls: ['/system-settings'],
             icon: Settings,
+            // 抽屉本体的路由要求 role === SUPER_ADMIN，否则 redirect('/403')。
+            // 不写这一行的话 role=10 的管理员看得见这一项、点进去必然 403 ——
+            // 与紧邻的 System Info 同一档，那一项已经这么写了。
+            requiredRole: ROLE.SUPER_ADMIN,
           },
         ],
       },

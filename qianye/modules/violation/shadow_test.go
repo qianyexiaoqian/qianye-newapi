@@ -171,7 +171,7 @@ func TestNewRecordFreezesShadowAnalysisContext(t *testing.T) {
 			Terms:   []string{"badword"},
 			Snippet: "...badword...",
 		}
-		return newRecord(c, info, PhasePrompt, scanInput{}, v, shadow, reason, false)
+		return newRecord(captureRecordCtx(c, info), PhasePrompt, scanInput{}, v, shadow, reason, false)
 	}
 
 	shadowRec := build(true, ShadowReasonRuleMode)

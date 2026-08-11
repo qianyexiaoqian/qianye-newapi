@@ -130,7 +130,9 @@ describe('i18n 文案', () => {
     'qy_vio_err_rate_pattern',
     'qy_vio_err_rate_phase',
     'qy_vio_test_rate_desc',
-    'qy_vio_test_rate_count',
+    // 试跑面板的输入标签已按维度重排(qy_vio_test_input_*),频率规则那一格
+    // 跟着改名。旧的 qy_vio_test_rate_count 随万能样本框一起删掉了。
+    'qy_vio_test_input_rate_count',
     'qy_vio_rate_degraded_title',
     'qy_vio_rate_degraded_desc',
   ]

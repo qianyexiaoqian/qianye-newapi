@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { TFunction } from 'i18next'
+import { Blocks } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import type { NavGroup, NavItem, NavLink } from '@/components/layout/types'
@@ -31,7 +32,9 @@ import {
   QY_NAV_GROUPS,
   QY_SETTINGS_GROUP,
   QY_TAB_GROUPS,
+  QY_SETTINGS_PAGES,
   isQyAdminPage,
+  isQyPageVisible,
   qyEntryPages,
   type QyEntrySwitches,
   type QyNavGroupId,
@@ -224,8 +227,68 @@ export function mergeQyNavGroups(
   // 位置退化到导航末尾，入口仍然在。
   for (const group of newGroups.values()) merged.push(group)
 
-  return merged
+  return withQySettingsFallback(merged, features, role, t)
 }
+
+/**
+ * 系统设置抽屉够不着时，把那一组页面搬到根侧栏。
+ *
+ * ── 这是本仓第五次"写了但找不到"，形状与前四次不同 ──
+ *
+ * 前四次是页面表里漏了一行；这一次每一行都在，`route-entry-guard` 也全绿，
+ * 但那条守卫把"标了 {@link QY_SETTINGS_GROUP}"直接当成"有入口"，而事实是：
+ *
+ * - {@link mergeQySystemSettingsNavGroups} 只要求 `role >= ADMIN(10)` 就生成这些菜单项；
+ * - 抽屉本体的路由 `routes/_authenticated/system-settings/route.tsx` 要求
+ *   `role === SUPER_ADMIN(100)`，否则直接 `redirect('/403')`。
+ *
+ * 于是 role=10 的管理员：侧栏看得见「系统设置」→ 点进去 403 → 那 8 个 qy 页面
+ * （违规规则、违规类型、AI 内容审核、佣金设置、划转设置与分组规则、抽奖设置、
+ * API 地址）**在界面上完全不存在**，只能手敲 URL —— 而后端 `requireQyAdmin`
+ * 明明只要求 role>=10，页面本身是给他们用的。
+ *
+ * 修法刻意选"搬家"而不是"降低抽屉的角色门槛"：抽屉里还装着上游的站点设置、
+ * 计费与支付等一整套 root 专属项，为了 qy 的 8 个页面把它整扇门打开是越权。
+ * 也不选"两边都放"：同一组页面出现在两处入口，等于两份互不知情的入口，
+ * 而这正是 `pages-table` 里"每页恰好一个落点"那条守卫要防的东西。
+ *
+ * 落点是根侧栏末尾的一个折叠项，标题与图标与抽屉里那一项完全一致
+ * （`qy_nav_group_settings` + Blocks），让两种角色看到的是同一个东西换了个位置。
+ */
+function withQySettingsFallback(
+  groups: NavGroup[],
+  features: QyFeatures,
+  role: number,
+  t: TFunction
+): NavGroup[] {
+  // 判据写成**正向**的区间而不是两个反向早退：role 是从 auth store 里读出来的，
+  // 未登录/字段缺失时是 undefined，而 `undefined >= 100` 与 `undefined < 10`
+  // 同时为 false —— 反向写法会让这一档直接掉进兜底，把 8 个管理页铺进普通用户的
+  // 侧栏。正向写法在同样的输入下得到 false，方向是"不给入口"。
+  // （这不是假设：本文件的守卫测试第一次跑就是这样红的。）
+  const inFallbackBand = role >= ROLE.ADMIN && role < ROLE.SUPER_ADMIN
+  if (!inFallbackBand) return groups
+
+  const items = QY_SETTINGS_PAGES.filter((page) =>
+    isQyPageVisible(page, features, true)
+  ).map((page) => ({ title: t(page.titleKey), url: page.url }))
+  if (items.length === 0) return groups
+
+  const fallback: NavGroup = {
+    id: QY_SETTINGS_FALLBACK_GROUP_ID,
+    title: t('qy_nav_group_settings'),
+    items: [{ title: t('qy_nav_group_settings'), icon: Blocks, items }],
+  }
+  return [...groups, fallback]
+}
+
+/**
+ * 根侧栏兜底组的 id。
+ *
+ * 与抽屉里那一项共用标题，但必须有自己的 id：上游 `use-sidebar-view` 按 id
+ * 记折叠状态，跟别人重名会让两组一起展开/收起。
+ */
+export const QY_SETTINGS_FALLBACK_GROUP_ID = 'qy-settings-fallback'
 
 // ───────────────────────────── Hook ─────────────────────────────
 

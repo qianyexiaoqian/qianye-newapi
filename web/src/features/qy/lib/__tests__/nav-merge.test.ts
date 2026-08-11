@@ -127,6 +127,10 @@ describe('qy nav merge — admin, all features on', () => {
         'admin',
         'qy-settlement',
         'qy-risk',
+        // role=10 打不开系统设置抽屉（那条路由要 role=100），所以抽屉里那一组
+        // 页面在这一档退到根侧栏末尾的一个同名折叠项里。role=100 不会有这一组
+        // —— 由下面的「超级管理员」一节与 route-entry-guard 一起钉住。
+        'qy-settings-fallback',
       ]
     )
   })
@@ -183,9 +187,24 @@ describe('qy nav merge — admin, all features on', () => {
     ])
   })
 
-  test('并进系统设置抽屉的 6 页在根侧栏里一次都不出现（需求 8）', () => {
+  /**
+   * 需求 8 的正确形态是**每个角色恰好一个入口**，不是"根侧栏里永远没有"。
+   *
+   * 抽屉本体的路由要求 role === SUPER_ADMIN，所以：
+   *   · role=100 → 入口在抽屉里，根侧栏不许再有一份（本条）；
+   *   · role=10  → 抽屉打不开，入口必须在根侧栏（route-entry-guard 钉住）。
+   * 这一条曾经用 role=10 断言"根侧栏里没有"，两个条件同时成立的结果是
+   * 那 8 个页面对 role=10 一个入口都没有 —— 本仓第五次"写了但找不到"。
+   */
+  test('超级管理员：抽屉里那几页在根侧栏里一次都不出现（需求 8）', () => {
+    const superMerged = mergeQyNavGroups(
+      baseGroups(),
+      ALL_ON,
+      ROLE.SUPER_ADMIN,
+      t
+    )
     const all = new Set(
-      merged.flatMap((group) =>
+      superMerged.flatMap((group) =>
         group.items.flatMap((item) => [
           typeof item.url === 'string' ? item.url : '',
           ...(item.items ?? []).map((sub) => String(sub.url)),
@@ -218,6 +237,10 @@ describe('qy nav merge — admin, all features on', () => {
     ])
     assert.deepEqual(urlsOf(merged, 'qy-settlement'), [
       '/qy/admin/commission-records',
+      // 佣金余额与 AFF 关系：路由与页面一直都在，侧栏入口本轮才补上。
+      // 项目方原话「UI前端怎么没看见有佣金管理的入口和UI」指的就是这两行。
+      '/qy/admin/commission-records/balances',
+      '/qy/admin/commission-records/relations',
       '/qy/admin/withdrawals',
       '/qy/admin/transfer-records',
       '/qy/admin/fund-orders',
@@ -363,7 +386,9 @@ describe('qy nav merge — 边界', () => {
 
   test('新组锚定的上游分组消失时退到导航末尾，而不是整组蒸发', () => {
     const base = baseGroups().filter((group) => group.id !== 'admin')
-    const merged = mergeQyNavGroups(base, ALL_ON, ROLE.ADMIN, t)
+    // 用 role=100：这一档没有设置兜底组，末尾两个就是被"退化"的那两组，
+    // 断言因此仍然直接测的是 fail-open 那件事本身。
+    const merged = mergeQyNavGroups(base, ALL_ON, ROLE.SUPER_ADMIN, t)
     const ids = merged.map((group) => group.id)
     assert.ok(
       ids.includes('qy-settlement') && ids.includes('qy-risk'),
