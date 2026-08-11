@@ -61,14 +61,20 @@ export function QyViolationShadowBanner(props: QyViolationShadowBannerProps) {
   const stats = props.stats
   if (stats == null) return null
 
+  // `breaker` 与 `rules` 在类型上是必填的，这里仍然按可选读。类型说的是
+  // 「后端应该给」，运行期拿到的是「后端这次给了什么」：接口降级、老版本
+  // 后端、反向代理裁剪字段，任何一种都会让这两个子对象缺席，而直读一层
+  // 会在渲染中途抛 TypeError —— 整条规则页白屏，连"统计拿不到"这句话都
+  // 显示不出来。少一块横幅远好过少一整页。
   const breaker = stats.breaker
   const now = Math.floor(Date.now() / 1000)
   // 以 forced_shadow_until 为准而不是只信 forced_shadow：后者是服务端算好的
   // 快照值，而这份统计会被缓存 30 秒，熔断到期后不应继续挂着红色告警。
-  const tripped = breaker.forced_shadow && breaker.forced_shadow_until > now
+  const forcedUntil = breaker?.forced_shadow_until ?? 0
+  const tripped = breaker?.forced_shadow === true && forcedUntil > now
 
-  const enforcing = stats.rules.enforce_rule
-  const shadowing = stats.rules.shadow_rule
+  const enforcing = stats.rules?.enforce_rule ?? 0
+  const shadowing = stats.rules?.shadow_rule ?? 0
 
   if (tripped) {
     return (
@@ -79,12 +85,12 @@ export function QyViolationShadowBanner(props: QyViolationShadowBannerProps) {
           <span className='block'>{t('qy_vio_breaker_desc')}</span>
           <span className='block'>
             {t('qy_vio_breaker_reason', {
-              reason: breaker.forced_shadow_reason,
+              reason: breaker?.forced_shadow_reason ?? '',
             })}
           </span>
           <span className='block'>
             {t('qy_vio_breaker_until', {
-              time: formatQyTs(breaker.forced_shadow_until),
+              time: formatQyTs(forcedUntil),
             })}
           </span>
         </AlertDescription>

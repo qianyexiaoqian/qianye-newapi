@@ -219,6 +219,57 @@ export function QyViolationCategoryFormSheet(props: Props) {
             </div>
           </section>
 
+          {/* ── 给 AI 的判定说明：随提示词发往第三方审核服务 ──
+
+          这是**第三份文本**，它既不是内部备注也不是公示文案：
+
+            内部备注   → 只有管理端。写运营口径（谁负责复核、误杀观察）。
+            公示文案   → 用户端。绝不写判据。
+            判定说明   → 发给审核模型。**写的就是判据**。
+
+          三者共用一列的后果不是"少一列"，是永远只能二选一：拿公示文案当
+          判定说明会让模型判得更差（它刻意不含判据）；把内部备注塞进提示词
+          等于把人名与内部流程发到站外；而把判定说明公示出去就是把绕过方法
+          印给用户。所以它自成一段，并且明说这段文字会离开本站。 */}
+          <section className='space-y-3 rounded-md border p-3'>
+            <h3 className='text-sm font-medium'>{t('qy_vcat_sec_ai')}</h3>
+            <p className='text-muted-foreground text-xs'>
+              {t('qy_vcat_sec_ai_desc')}
+            </p>
+            <div className='flex items-center gap-2'>
+              <Switch
+                id='qy-vcat-ai-participates'
+                checked={!values.ai_excluded}
+                onCheckedChange={(checked) =>
+                  setValues((v) => ({ ...v, ai_excluded: checked !== true }))
+                }
+              />
+              <Label htmlFor='qy-vcat-ai-participates'>
+                {t('qy_vcat_field_ai_participates')}
+              </Label>
+            </div>
+            <p className='text-muted-foreground text-xs'>
+              {t('qy_vcat_field_ai_participates_desc')}
+            </p>
+            <div className='space-y-1.5'>
+              <Label htmlFor='qy-vcat-ai-guidance'>
+                {t('qy_vcat_field_ai_guidance')}
+              </Label>
+              <Textarea
+                id='qy-vcat-ai-guidance'
+                rows={3}
+                disabled={values.ai_excluded}
+                value={values.ai_guidance}
+                onChange={(e) =>
+                  setValues((v) => ({ ...v, ai_guidance: e.target.value }))
+                }
+              />
+              <p className='text-muted-foreground text-xs'>
+                {t('qy_vcat_field_ai_guidance_desc')}
+              </p>
+            </div>
+          </section>
+
           {/* ── 对外公示：用户端看得到 ── */}
           <section className='space-y-3 rounded-md border border-dashed p-3'>
             <h3 className='text-sm font-medium'>{t('qy_vcat_sec_public')}</h3>

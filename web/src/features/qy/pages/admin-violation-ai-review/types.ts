@@ -92,12 +92,29 @@ export type QyAiSetting = {
 /** 提示词属于哪一档。`default` 才会跟随内置默认提示词的后续升级。 */
 export type QyAiPromptSource = 'default' | 'custom'
 
-/** 自定义提示词与系统类型闭集的对账结果。默认档时两边都是空数组。 */
+/** 渲染后的提示词与违规类型表的对账结果。 */
 export type QyAiPromptCategoryReport = {
-  /** 提示词枚举了、闭集里没有的类型名 —— 模型按它回会被归成 `other`。 */
+  /**
+   * 提示词枚举了、违规类型表里没有的类型名 —— 模型按它回会被折进「未分类」。
+   * 最常见的来源是上一版留下来的自定义提示词里那一行手抄清单。
+   */
   unknown: string[]
-  /** 闭集里有、提示词没提的类型名 —— 模型不会主动返回它们。 */
+  /**
+   * 类型表里有、渲染后的提示词却没提到的类型名。
+   * 清单是自动拼进去的,所以它非空只意味着渲染这一步坏了。
+   */
   missing: string[]
+}
+
+/** 类型清单里的一项(管理端视图,正面清单:没有内部备注、没有公示文案)。 */
+export type QyAiCategoryDetail = {
+  key: string
+  name: string
+  /** 这一类有没有填「给 AI 的判定说明」。没填时模型只拿到一个英文 key。 */
+  has_guidance: boolean
+  guidance_runes: number
+  /** 兜底「未分类」:模型判了违规却归不了类时用它。 */
+  is_fallback: boolean
 }
 
 export type QyAiSettingResponse = {
@@ -106,7 +123,13 @@ export type QyAiSettingResponse = {
   /** 别用 `setting.prompt !== ''` 自己算:输入框预填之后那个判断永远为真。 */
   prompt_source: QyAiPromptSource
   prompt_categories: QyAiPromptCategoryReport
+  /** 违规类型表里参与 AI 审核的 key,**由后端从类型表现算**,不是写死的闭集。 */
   categories: string[]
+  /** 自动生成的那一段类型清单。前端用它在本地渲染预览与做同一套对账。 */
+  category_block: string
+  /** 库里那一份提示词拼上清单之后、**真正发出去**的全文。 */
+  prompt_preview: string
+  category_details: QyAiCategoryDetail[]
   key_configured: boolean
   effective: {
     /** 快照里**真正生效**的那一份,不是表单回显。两者不同时界面必须说出来。 */
@@ -128,6 +151,83 @@ export type QyAiSettingSaveResult = {
   setting: QyAiSetting
   prompt_source: QyAiPromptSource
   prompt_categories: QyAiPromptCategoryReport
+  prompt_preview: string
+}
+
+/**
+ * 一条 AI 审核作用域策略。
+ *
+ * `model_scope` / `group_scope` / `group_scope_mode` 三格与**违规规则**上的
+ * 同名列语法完全一致(后端共用同一段 compileScope):逗号或换行分隔,
+ * 模型支持 `gpt-4*` / `*-vision` 前后缀通配,分组名大小写不敏感。
+ *
+ * 两个抽样率分开是因为两个时机的代价差一个数量级:转发前是同步的,直接加在
+ * 被抽中请求的首字节延迟上;转发后是异步的,只花钱、不花用户的时间。
+ * 两个都填 0 是**免审名单**的字面写法,不是"没配"。
+ */
+export type QyAiScope = {
+  id: number
+  name: string
+  enabled: boolean
+  /** 升序,越小越先匹配。第一条匹配的策略说了算,不叠加。 */
+  priority: number
+  model_scope: string
+  group_scope: string
+  group_scope_mode: 'include' | 'exclude'
+  /** 万分比:5000 = 50%。 */
+  pre_sample_rate_bps: number
+  async_sample_rate_bps: number
+  remark: string
+  created_at: number
+  updated_at: number
+}
+
+/** 新建/编辑入参。`id` 为 0 或省略表示新建。 */
+export type QyAiScopeInput = Omit<
+  QyAiScope,
+  'id' | 'created_at' | 'updated_at'
+> & { id?: number }
+
+/**
+ * 汇总表的一行。它不是策略行的回显 —— `fallback` 与 `shadowed` 两列在库里
+ * 都不存在,它们是这份配置**作为整体**的性质,而"现在哪些分组在被监控"
+ * 问的正是这个整体。
+ */
+export type QyAiScopeSummaryRow = {
+  /** 0 = 兜底档(它没有对应的策略行,取值来自设置页的兜底抽样率)。 */
+  id: number
+  name: string
+  fallback: boolean
+  enabled: boolean
+  priority: number
+  model_scope: string
+  group_scope: string
+  group_scope_mode: 'include' | 'exclude'
+  pre_sample_rate_bps: number
+  async_sample_rate_bps: number
+  /**
+   * 这一行永远匹配不到:它前面有一条作用域为空(= 匹配一切)的启用策略。
+   * 一条被遮住的策略与一条配错作用域的策略在列表上长得一模一样,
+   * 而两者的下一步完全不同(调优先级 vs 改作用域)。
+   */
+  shadowed: boolean
+}
+
+export type QyAiScopeList = {
+  items: QyAiScope[]
+  /** 按匹配顺序排好、末尾恒为兜底档。顺序就是后端热路径的判定顺序。 */
+  summary: QyAiScopeSummaryRow[]
+  fallback_bps: number
+  max_scopes: number
+  ai_enabled: boolean
+  /** 快照里真正生效的那一份。与 items 不同说明还没重载到。 */
+  effective_active: boolean
+  active_scopes: {
+    id: number
+    name: string
+    pre_sample_rate_bps: number
+    async_sample_rate_bps: number
+  }[]
 }
 
 export type QyAiStatsRow = {

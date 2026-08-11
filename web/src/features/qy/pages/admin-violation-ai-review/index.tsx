@@ -45,25 +45,36 @@ import { qyKeys } from '../../lib/query-keys'
 import {
   createQyAiChannel,
   deleteQyAiChannel,
+  deleteQyAiScope,
   qyAiChannelsQuery,
+  qyAiScopesQuery,
   qyAiSettingsQuery,
   qyAiStatsQuery,
   testQyAiChannel,
   updateQyAiChannel,
   updateQyAiSetting,
+  upsertQyAiScope,
 } from './api'
 import {
   qyAiBpsToPercentText,
   qyAiChannelToDraft,
   qyAiDraftToInput,
   qyAiPercentTextToBps,
+  QY_AI_CATEGORY_PLACEHOLDER,
   qyAiPromptCategoryIssues,
+  qyAiRenderPrompt,
   qyAiPromptForEditor,
   qyAiPromptIsDefault,
   qyAiPromptToPayload,
+  qyAiScopeAudience,
+  qyAiScopeDraftToInput,
+  qyAiScopeHasFakeSeparator,
+  qyAiScopeRowKind,
+  qyAiScopeToDraft,
   type QyAiChannelDraft,
+  type QyAiScopeDraft,
 } from './lib/ai-review'
-import type { QyAiChannel } from './types'
+import type { QyAiChannel, QyAiScopeSummaryRow } from './types'
 
 /**
  * AI 内容审核。
@@ -107,6 +118,10 @@ export function QyAdminViolationAiReview() {
             合成一个边界会让成本统计慢拖住渠道列表的渲染。 */}
         <div className='flex flex-col gap-4'>
           <AiSettingCard />
+          {/* 作用域排在设置之后、渠道之前:先决定"审谁、审多少",
+              再决定"送到哪里"。反过来排的话,第一次打开这一页的人会先
+              配好渠道,然后以为功能已经在跑了。 */}
+          <AiScopeCard />
           <AiChannelsCard />
           <AiCostCard />
         </div>
@@ -132,9 +147,13 @@ function AiSettingCard() {
   }>(null)
 
   const data = query.data
+  // 判据是 `data?.setting` 而不是 `data`:这一页由四张卡拼成,它们同在一棵
+  // 树上、共用路由那一层的错误边界。任何一张卡在渲染中途抛异常,整页都会被
+  // 换成错误态 —— 一份少了 `setting` 的降级响应会连带打掉作用域卡与渠道卡,
+  // 而运营看到的是"AI 审核这一页打不开了"。少一张卡远好过少一整页。
   const current =
     draft ??
-    (data
+    (data?.setting
       ? {
           enabled: data.setting.enabled,
           percent: qyAiBpsToPercentText(data.setting.sample_rate_bps),
@@ -183,14 +202,23 @@ function AiSettingCard() {
     !data || !current
       ? true
       : qyAiPromptIsDefault(current.prompt, data.default_prompt)
+  // 类型清单是**发送前自动拼进去**的,所以对账与预览都必须在渲染之后做:
+  // 拿编辑框里那段原文去对账会把每一个类型都报成"缺失"。
+  const renderedPrompt =
+    !data || !current
+      ? ''
+      : qyAiRenderPrompt(
+          current.prompt,
+          data.default_prompt,
+          data.category_block
+        )
+  // 闭集来自接口。缺席时按空清单走:对账会安静下来(它对的是"提示词里有没有
+  // 清单外的名字"),而不是把这张卡连同整页一起打掉。
+  const categories = data?.categories ?? []
   const promptIssues =
     !data || !current
       ? { unknown: [], missing: [] }
-      : qyAiPromptCategoryIssues(
-          current.prompt,
-          data.default_prompt,
-          data.categories
-        )
+      : qyAiPromptCategoryIssues(renderedPrompt, categories)
 
   return (
     <QyPageBoundary query={query}>
@@ -339,13 +367,36 @@ function AiSettingCard() {
               </p>
               <p className='text-muted-foreground text-xs'>
                 {t('qy_ai_prompt_hint', {
-                  categories: data.categories.join(', '),
+                  categories: categories.join(', '),
                 })}
               </p>
 
-              {/* 类型闭集被改坏时不拒绝保存(收窄类型是合法用法),但必须
-              当场说出来:模型返回一个闭集外的类型会被归成 other,而按那个
-              名字过滤的规则从此永不命中 —— 一条零症状的静默失效。 */}
+              {/* 类型清单不再需要手工同步:它由后端从违规类型表现算,发送前
+              自动拼进提示词。运营要改哪些类型,去违规类型页改 —— 这里只说
+              清单从哪来,以及"到底发出去的是什么"。
+
+              预览是必要的而不是锦上添花:清单是拼上去的,编辑框里那段文本
+              **不是**模型读到的东西。没有预览时,"我改的那一下到底生效没有"
+              在界面上完全不可回答。 */}
+              <details className='rounded-md border p-2'>
+                <summary className='cursor-pointer text-xs font-medium'>
+                  {t('qy_ai_prompt_preview_title')}
+                </summary>
+                <p className='text-muted-foreground mt-2 text-xs'>
+                  {t('qy_ai_prompt_preview_desc', {
+                    // 占位符本身也从常量来,不在文案里再抄一遍字面量 ——
+                    // 抄的那一份会在后端改占位符的第二天开始教人写错。
+                    placeholder: QY_AI_CATEGORY_PLACEHOLDER,
+                  })}
+                </p>
+                <pre className='bg-muted mt-2 max-h-72 overflow-auto rounded p-2 text-xs whitespace-pre-wrap'>
+                  {renderedPrompt}
+                </pre>
+              </details>
+
+              {/* 提示词里手抄了一行旧类型清单时不拒绝保存(那份文本可能还有
+              别的用处),但必须当场说出来:模型照着它回一个类型表里没有的
+              名字,那一票会被折进「未分类」—— 一条零症状的静默失效。 */}
               {promptIssues.unknown.length > 0 && (
                 <Alert>
                   <AlertTriangle className='size-4' />
@@ -353,7 +404,7 @@ function AiSettingCard() {
                   <AlertDescription>
                     {t('qy_ai_prompt_cat_unknown_desc', {
                       names: promptIssues.unknown.join(', '),
-                      known: data.categories.join(', '),
+                      known: categories.join(', '),
                     })}
                   </AlertDescription>
                 </Alert>
@@ -401,6 +452,356 @@ function AiSettingCard() {
         </Card>
       ) : null}
     </QyPageBoundary>
+  )
+}
+
+// ───────────────────────────── 作用域与分档抽样 ─────────────────────────────
+
+/**
+ * 「现在哪些分组在被 AI 审核监控、各自抽多少」。
+ *
+ * ## 为什么这一页需要一张汇总表,而不是一个策略列表
+ *
+ * 运营真正要回答的问题是关于**整体**的:一条 50% 的策略被排在一条"全站 1%"
+ * 的策略后面时,它的真实抽样率是 0 —— 而在一个普通的策略列表上,这两条
+ * 看起来一模一样。所以表格按**匹配顺序**排,末尾恒为兜底档(它就是设置页
+ * 上那个抽样率),并且把"永远匹配不到"直接标出来。
+ *
+ * ## 两个时机是两列,不是一列
+ *
+ * 转发前审核同步、加延迟;转发后审核异步、只花钱。项目方的原话是
+ * 「AI审核基本都是后审核,秋后算账的」—— 后审核可以对全站开到 10%,
+ * 而转发前通常只敢对最可疑的一两个分组开。一列表达不了这个差别。
+ */
+function AiScopeCard() {
+  const { t } = useTranslation()
+  const qc = useQueryClient()
+  const query = useQuery(qyAiScopesQuery())
+  const [editing, setEditing] = useState<null | QyAiScopeDraft>(null)
+
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: qyKeys.adminViolationAiScopes() })
+    // 兜底抽样率存在设置里,而汇总表把它画成最后一行 —— 只失效一个,
+    // 那张表就会一半是新的一半是旧的。
+    void qc.invalidateQueries({ queryKey: qyKeys.adminViolationAiSettings() })
+  }
+
+  const save = useMutation({
+    mutationFn: () => {
+      if (!editing) throw new Error('no draft')
+      return upsertQyAiScope(qyAiScopeDraftToInput(editing))
+    },
+    onSuccess: () => {
+      toast.success(t('qy_ai_saved'))
+      setEditing(null)
+      invalidate()
+    },
+    onError: (e) => toast.error(qyErrorMessage(e, t)),
+  })
+
+  const remove = useMutation({
+    mutationFn: (id: number) => deleteQyAiScope(id),
+    onSuccess: () => {
+      toast.success(t('qy_ai_scope_deleted'))
+      invalidate()
+    },
+    onError: (e) => toast.error(qyErrorMessage(e, t)),
+  })
+
+  const data = query.data
+  // `summary` 在类型上是必填的，这里仍然按可选读：类型说的是「后端应该给」，
+  // 运行期拿到的是「后端这次给了什么」。缺了它直读一层会在渲染中途抛
+  // TypeError，把整张 AI 审核页打成白屏 —— 而这一页正是用来回答
+  // 「现在到底哪些分组在被监控」的，白屏时连"读不出来"都说不了。
+  const monitoredAll = data?.summary ?? []
+  const monitored = monitoredAll.filter(
+    (r) => qyAiScopeRowKind(r) === 'active'
+  )
+
+  return (
+    <QyPageBoundary query={query}>
+      {data ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('qy_ai_scope_title')}</CardTitle>
+            <CardDescription>{t('qy_ai_scope_desc')}</CardDescription>
+          </CardHeader>
+          <CardContent className='flex flex-col gap-4'>
+            {/* 一句话回答"现在到底有没有人在被监控"。零档时它是最重要的一行:
+                策略配得再漂亮,只要每一档抽样率都是 0,线上就是完全不跑。 */}
+            {monitored.length === 0 ? (
+              <Alert>
+                <AlertTriangle className='size-4' />
+                <AlertTitle>{t('qy_ai_scope_none_title')}</AlertTitle>
+                <AlertDescription>
+                  {t('qy_ai_scope_none_desc')}
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <p className='text-muted-foreground text-sm'>
+                {t('qy_ai_scope_monitored_count', { count: monitored.length })}
+              </p>
+            )}
+
+            <div className='overflow-x-auto'>
+              <table className='w-full text-sm'>
+                <thead>
+                  <tr className='text-muted-foreground text-left'>
+                    <th className='py-1'>{t('qy_ai_scope_col_name')}</th>
+                    <th className='py-1'>{t('qy_ai_scope_col_audience')}</th>
+                    <th className='py-1'>{t('qy_ai_scope_col_pre')}</th>
+                    <th className='py-1'>{t('qy_ai_scope_col_async')}</th>
+                    <th className='py-1'>{t('qy_ai_scope_col_state')}</th>
+                    <th className='py-1' />
+                  </tr>
+                </thead>
+                <tbody>
+                  {monitoredAll.map((row) => (
+                    <ScopeRow
+                      key={row.fallback ? 'fallback' : row.id}
+                      row={row}
+                      onEdit={() => {
+                        const src = data.items?.find((s) => s.id === row.id)
+                        if (src) setEditing(qyAiScopeToDraft(src))
+                      }}
+                      onDelete={() => remove.mutate(row.id)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div>
+              <Button
+                size='sm'
+                variant='outline'
+                onClick={() => setEditing(qyAiScopeToDraft())}
+              >
+                <Plus className='size-4' />
+                {t('qy_ai_scope_add')}
+              </Button>
+            </div>
+
+            {editing && (
+              <ScopeForm
+                draft={editing}
+                onChange={setEditing}
+                onCancel={() => setEditing(null)}
+                onSave={() => save.mutate()}
+                saving={save.isPending}
+              />
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
+    </QyPageBoundary>
+  )
+}
+
+function ScopeRow({
+  row,
+  onEdit,
+  onDelete,
+}: {
+  row: QyAiScopeSummaryRow
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  const { t } = useTranslation()
+  const kind = qyAiScopeRowKind(row)
+  const aud = qyAiScopeAudience(row)
+
+  // 「在监控谁」拼在这里而不是在 lib 里:文案要过 i18next,拼好的字符串
+  // 没法翻译。lib 只回答结构(全部/名单/方向),这里负责把它变成一句话。
+  const audience = aud.allGroups
+    ? t('qy_ai_scope_aud_all_groups')
+    : aud.exclude
+      ? t('qy_ai_scope_aud_exclude', { groups: aud.groups.join(', ') })
+      : t('qy_ai_scope_aud_include', { groups: aud.groups.join(', ') })
+
+  return (
+    <tr className='border-t align-top'>
+      <td className='py-1.5 pe-2'>
+        <span className='font-medium'>
+          {row.fallback ? t('qy_ai_scope_fallback_name') : row.name}
+        </span>
+        {!row.fallback && (
+          <span className='text-muted-foreground ms-2 text-xs'>
+            #{row.priority}
+          </span>
+        )}
+      </td>
+      <td className='text-muted-foreground py-1.5 pe-2 text-xs'>
+        <div>{audience}</div>
+        {!aud.allModels && (
+          <div>
+            {t('qy_ai_scope_aud_models', { models: aud.models.join(', ') })}
+          </div>
+        )}
+      </td>
+      <td className='py-1.5 pe-2'>
+        {qyAiBpsToPercentText(row.pre_sample_rate_bps)}%
+      </td>
+      <td className='py-1.5 pe-2'>
+        {qyAiBpsToPercentText(row.async_sample_rate_bps)}%
+      </td>
+      <td className='py-1.5 pe-2'>
+        <Badge variant={kind === 'active' ? 'default' : 'outline'}>
+          {t(`qy_ai_scope_kind_${kind}` as never)}
+        </Badge>
+      </td>
+      <td className='py-1.5'>
+        {/* 兜底档没有对应的行,改它要去设置卡片上那一格。 */}
+        {!row.fallback && (
+          <div className='flex gap-2'>
+            <Button size='sm' variant='outline' onClick={onEdit}>
+              {t('qy_ai_edit')}
+            </Button>
+            <Button size='sm' variant='outline' onClick={onDelete}>
+              <Trash2 className='size-4' />
+            </Button>
+          </div>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+function ScopeForm({
+  draft,
+  onChange,
+  onCancel,
+  onSave,
+  saving,
+}: {
+  draft: QyAiScopeDraft
+  onChange: (d: QyAiScopeDraft) => void
+  onCancel: () => void
+  onSave: () => void
+  saving: boolean
+}) {
+  const { t } = useTranslation()
+  const fakeSep =
+    qyAiScopeHasFakeSeparator(draft.group_scope) ||
+    qyAiScopeHasFakeSeparator(draft.model_scope)
+
+  return (
+    <div className='flex flex-col gap-3 rounded-md border p-3'>
+      <div className='grid gap-3 sm:grid-cols-2'>
+        <Field label={t('qy_ai_scope_f_name')}>
+          <Input
+            value={draft.name}
+            onChange={(e) => onChange({ ...draft, name: e.target.value })}
+          />
+        </Field>
+        <Field
+          label={t('qy_ai_scope_f_priority')}
+          hint={t('qy_ai_scope_f_priority_hint')}
+        >
+          <Input
+            type='number'
+            value={draft.priority}
+            onChange={(e) =>
+              onChange({ ...draft, priority: Number(e.target.value) || 0 })
+            }
+          />
+        </Field>
+        <Field
+          label={t('qy_ai_scope_f_groups')}
+          hint={t('qy_ai_scope_f_groups_hint')}
+        >
+          <Input
+            value={draft.group_scope}
+            onChange={(e) =>
+              onChange({ ...draft, group_scope: e.target.value })
+            }
+          />
+        </Field>
+        <Field
+          label={t('qy_ai_scope_f_mode')}
+          hint={t('qy_ai_scope_f_mode_hint')}
+        >
+          <div className='flex gap-2'>
+            {(['include', 'exclude'] as const).map((m) => (
+              <Button
+                key={m}
+                size='sm'
+                variant={draft.group_scope_mode === m ? 'default' : 'outline'}
+                onClick={() => onChange({ ...draft, group_scope_mode: m })}
+              >
+                {t(`qy_ai_scope_mode_${m}` as never)}
+              </Button>
+            ))}
+          </div>
+        </Field>
+        <Field
+          label={t('qy_ai_scope_f_models')}
+          hint={t('qy_ai_scope_f_models_hint')}
+        >
+          <Input
+            value={draft.model_scope}
+            onChange={(e) =>
+              onChange({ ...draft, model_scope: e.target.value })
+            }
+          />
+        </Field>
+        <Field
+          label={t('qy_ai_scope_f_pre')}
+          hint={t('qy_ai_scope_f_pre_hint')}
+        >
+          <Input
+            inputMode='decimal'
+            value={draft.prePercent}
+            onChange={(e) => onChange({ ...draft, prePercent: e.target.value })}
+          />
+        </Field>
+        <Field
+          label={t('qy_ai_scope_f_async')}
+          hint={t('qy_ai_scope_f_async_hint')}
+        >
+          <Input
+            inputMode='decimal'
+            value={draft.asyncPercent}
+            onChange={(e) =>
+              onChange({ ...draft, asyncPercent: e.target.value })
+            }
+          />
+        </Field>
+        <Field label={t('qy_ai_scope_f_remark')}>
+          <Input
+            value={draft.remark}
+            onChange={(e) => onChange({ ...draft, remark: e.target.value })}
+          />
+        </Field>
+      </div>
+
+      {/* 全角逗号是中文输入法下最容易发生的一次手滑,而后端不认它:
+          `vip,svip` 会被当成一个分组名去精确匹配,永远匹配不到任何人,
+          并且不会有任何报错。 */}
+      {fakeSep && (
+        <Alert>
+          <AlertTriangle className='size-4' />
+          <AlertTitle>{t('qy_ai_scope_sep_title')}</AlertTitle>
+          <AlertDescription>{t('qy_ai_scope_sep_desc')}</AlertDescription>
+        </Alert>
+      )}
+
+      <label className='flex items-center gap-2'>
+        <Switch
+          checked={draft.enabled}
+          onCheckedChange={(v) => onChange({ ...draft, enabled: v })}
+        />
+        <span className='text-sm'>{t('qy_ai_scope_f_enabled')}</span>
+      </label>
+      <div className='flex gap-2'>
+        <Button size='sm' disabled={saving} onClick={onSave}>
+          {t('qy_ai_save')}
+        </Button>
+        <Button size='sm' variant='outline' onClick={onCancel}>
+          {t('qy_ai_cancel')}
+        </Button>
+      </div>
+    </div>
   )
 }
 
@@ -481,7 +882,9 @@ function AiChannelsCard() {
             )}
 
             <div className='flex flex-col gap-2'>
-              {data.items.map((ch) => (
+              {/* `items` 缺席时按空列表走(与设置卡同一条理由):这一页四张卡
+                  共用路由那一层的错误边界,一份降级响应不该把整页打掉。 */}
+              {(data.items ?? []).map((ch) => (
                 <ChannelRow
                   key={ch.id}
                   channel={ch}
@@ -492,7 +895,7 @@ function AiChannelsCard() {
                   onDelete={() => remove.mutate(ch.id)}
                 />
               ))}
-              {data.items.length === 0 && (
+              {(data.items ?? []).length === 0 && (
                 <p className='text-muted-foreground text-sm'>
                   {t('qy_ai_channels_empty')}
                 </p>
@@ -515,7 +918,7 @@ function AiChannelsCard() {
                 draft={editing.draft}
                 existingHint={
                   editing.id
-                    ? data.items.find((c) => c.id === editing.id)?.key_hint
+                    ? data.items?.find((c) => c.id === editing.id)?.key_hint
                     : undefined
                 }
                 onChange={(d) => setEditing({ ...editing, draft: d })}

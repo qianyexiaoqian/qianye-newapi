@@ -240,34 +240,75 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
 
           {/* 违规类型。它决定这条规则的命中累加到**哪一个计数桶** ——
               同一类型下多条规则的命中会加到一起，而每个类型有自己的次数阈值。
-              不选 = 落到「未分类」兜底类型（阈值 0，即不单独触发处置）。 */}
+              不选 = 落到「未分类」兜底类型。
+
+              这一格上一轮做出来了，项目方还是回了「怎么没有绑定违规类型的
+              选项」。三处原因，都在这里修：
+                1. 它是整张表单上**唯一**一个触发器没带 `w-full` 的下拉
+                   （其余七个都有）。共享组件的默认宽度是 `w-fit`，于是它在
+                   一整行的空白里缩成一枚一百来像素的小药丸 —— 视觉上不像
+                   一个字段，像一枚徽标。
+                2. `<FormControl>` 包的是 `<Select>` 而不是 `<SelectTrigger>`，
+                   而 `Select` 根本不渲染 DOM 节点：`id` / `aria-describedby`
+                   全部落空，点标签「违规类型」四个字没有任何反应。
+                3. 下拉里同一个桶出现了两次 —— 合成的 `0`「未分类(兜底)」，
+                   以及清单里真实的那一行兜底类型。保存时后端
+                   `resolveRuleCategory` 把 0 改写成兜底类型的真实 id，
+                   于是存之前显示前者、重新打开显示后者，同一条规则的同一格
+                   会**自己变一次**。这里统一按兜底那一行显示。 */}
           <FormField
             control={form.control}
             name='category_id'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t('qy_vio_field_category')}</FormLabel>
-                <FormControl>
+            render={({ field }) => {
+              const rows = categoryQuery.data?.items ?? []
+              const fallbackId = categoryQuery.data?.fallback_id ?? 0
+              // 0 = 没显式选。后端保存时会把它落到兜底类型，所以界面此刻就按
+              // 兜底那一行显示，让「存之前」与「存之后」是同一句话。
+              const effectiveId = field.value > 0 ? field.value : fallbackId
+              const selected = rows.find(
+                (row) => row.category.id === effectiveId
+              )
+              return (
+                <FormItem>
+                  <FormLabel>{t('qy_vio_field_category')}</FormLabel>
                   <Select
-                    value={String(field.value ?? 0)}
+                    value={String(effectiveId)}
                     onValueChange={(value) =>
                       field.onChange(Number(value) || 0)
                     }
                   >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
+                    <FormControl>
+                      <SelectTrigger className='w-full'>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
                     <SelectContent>
-                      <SelectItem value='0'>
-                        {t('qy_vio_field_category_unset')}
-                      </SelectItem>
-                      {(categoryQuery.data?.items ?? []).map((row) => (
+                      {/* 清单还没到（加载中 / 拉取失败）时给一格占位。少了它，
+                          Base UI 查不到译名就把取值原样渲染成一个裸数字。 */}
+                      {rows.length === 0 && (
+                        <SelectItem value={String(effectiveId)}>
+                          {t('qy_vio_field_category_unset')}
+                        </SelectItem>
+                      )}
+                      {/* 规则指向的类型已归档、已不在清单里时同理：宁可写
+                          「已归档 #12」也不要漏一个孤零零的 12 出去。 */}
+                      {rows.length > 0 && selected == null && (
+                        <SelectItem value={String(effectiveId)}>
+                          {t('qy_vio_field_category_missing', {
+                            id: effectiveId,
+                          })}
+                        </SelectItem>
+                      )}
+                      {rows.map((row) => (
                         <SelectItem
                           key={row.category.id}
                           value={String(row.category.id)}
                         >
                           {row.category.name}
-                          {row.category.enabled && row.category.threshold > 0
+                          {row.category.is_fallback
+                            ? ` · ${t('qy_vcat_flag_fallback')}`
+                            : ''}
+                          {row.threshold_state === 'active'
                             ? ` · ${t('qy_vcat_threshold_value', {
                                 count: row.category.threshold,
                                 hours: row.category.window_hours,
@@ -277,13 +318,40 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
                       ))}
                     </SelectContent>
                   </Select>
-                </FormControl>
-                <FormDescription>
-                  {t('qy_vio_field_category_desc')}
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
+                  {/* 项目方问的原话是「这个规则触发了，计次了，应该加到哪里？」。
+                      答案不能只躺在下方小字里 —— 上一轮就是这么放的，他没读到。
+                      这一条按当前选择实时改写，并且在「记了也不会触发任何处置」
+                      的那一档换成告警色：一条规则默认落到一个阈值为 0 的桶，
+                      是运营最容易误以为「配了就会封」的地方。 */}
+                  <p
+                    className={
+                      selected != null && selected.threshold_state === 'active'
+                        ? 'text-muted-foreground rounded-md border border-dashed px-3 py-2 text-xs'
+                        : 'text-warning border-warning/40 bg-warning/5 rounded-md border px-3 py-2 text-xs'
+                    }
+                  >
+                    {selected == null
+                      ? t('qy_vio_field_category_dest_unknown')
+                      : selected.threshold_state === 'active'
+                        ? t('qy_vio_field_category_dest_active', {
+                            name: selected.category.name,
+                            count: selected.category.threshold,
+                            hours: selected.category.window_hours,
+                          })
+                        : t(
+                            selected.category.is_fallback
+                              ? 'qy_vio_field_category_dest_fallback_idle'
+                              : 'qy_vio_field_category_dest_idle',
+                            { name: selected.category.name }
+                          )}
+                  </p>
+                  <FormDescription>
+                    {t('qy_vio_field_category_desc')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )
+            }}
           />
 
           <div className='grid gap-3 sm:grid-cols-3'>

@@ -209,9 +209,18 @@ type AIReview struct {
 	Outcome string `json:"outcome" gorm:"type:varchar(24);not null;default:'';index:idx_qy_vai_outcome"`
 	// Violated / Category / Confidence / Reason 是模型给出的结构化结论。
 	// Outcome 不是 clean/violation 时这四列无意义(全零值)。
-	Violated   bool            `json:"violated" gorm:"not null;default:false"`
-	Category   string          `json:"category" gorm:"type:varchar(64);not null;default:''"`
-	Confidence decimal.Decimal `json:"confidence" gorm:"type:decimal(5,4);not null;default:0"`
+	Violated bool   `json:"violated" gorm:"not null;default:false"`
+	Category string `json:"category" gorm:"type:varchar(64);not null;default:''"`
+	// RawCategory 是模型**原样**返回的那个类型名,只在它不在类型清单里时非空。
+	//
+	// 归一之后 Category 会变成兜底类型的 key,于是"模型一直在回 porn"这件事
+	// 在归一后的列上完全看不出来 —— 而它正是"提示词与类型表脱节了"的唯一症状。
+	// 静默丢弃原值等于把唯一的线索扔掉,所以留一列。
+	//
+	// 它是模型输出的一小段文本,不是用户内容,但仍按 64 字截断:模型偶尔会
+	// 把整句理由塞进 category 字段,而那一句可能复述用户原文。
+	RawCategory string          `json:"raw_category" gorm:"type:varchar(64);not null;default:''"`
+	Confidence  decimal.Decimal `json:"confidence" gorm:"type:decimal(5,4);not null;default:0"`
 	// Reason 是模型给的理由。它可能复述用户原文,所以与 Record.MatchSnippet
 	// 同规格做脱敏(redactSnippet)之后再落库。
 	Reason string `json:"reason" gorm:"type:varchar(512);not null;default:''"`

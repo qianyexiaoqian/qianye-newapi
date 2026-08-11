@@ -28,10 +28,12 @@ import {
   qyAiChannelToDraft,
   qyAiDraftToInput,
   qyAiPercentTextToBps,
+  QY_AI_CATEGORY_PLACEHOLDER,
   qyAiPromptCategoryIssues,
   qyAiPromptForEditor,
   qyAiPromptIsDefault,
   qyAiPromptToPayload,
+  qyAiRenderPrompt,
 } from '../lib/ai-review'
 import type { QyAiChannel } from '../types'
 
@@ -211,67 +213,91 @@ describe('审核提示词的预填与档位', () => {
   })
 })
 
-describe('提示词里的违规类型闭集', () => {
-  const KNOWN = ['none', 'sexual', 'violence', 'jailbreak']
-  const DEFAULT =
-    '你是内容安全审核员。\ncategory 只能取以下之一:none, sexual, violence, jailbreak。'
+describe('类型清单的自动生成与对账', () => {
+  // 闭集来自接口下发的 categories(后端从违规类型表现算),前端不硬编码。
+  const KNOWN = ['uncategorized', 'sexual', 'jailbreak']
+  // 后端生成的那一段权威清单。前端拿它在本地渲染预览、并做同一套对账。
+  const BLOCK = [
+    '可用的 category 取值(**以本节为准**):',
+    '- none:未违规时使用。',
+    '- uncategorized(未分类)',
+    '- sexual(色情)',
+    '- jailbreak(破限)',
+  ].join('\n')
+  const DEFAULT = `你是内容安全审核员。\n${QY_AI_CATEGORY_PLACEHOLDER}`
 
-  test('默认档不对账 —— 那时提示词与代码里的闭集同源', () => {
-    assert.deepEqual(qyAiPromptCategoryIssues('', DEFAULT, KNOWN), {
-      unknown: [],
-      missing: [],
-    })
-    assert.deepEqual(qyAiPromptCategoryIssues(DEFAULT, DEFAULT, KNOWN), {
-      unknown: [],
-      missing: [],
-    })
-  })
-
-  test('改坏一个类型名:同时报「未知」与「缺失」', () => {
-    // 模型真回 porn 时会被后端归成 other,按 porn 过滤的规则永不命中。
-    const broken = DEFAULT.replace('sexual', 'porn')
-    assert.deepEqual(qyAiPromptCategoryIssues(broken, DEFAULT, KNOWN), {
-      unknown: ['porn'],
-      missing: ['sexual'],
-    })
-  })
-
-  test('收窄类型是合法用法:只报缺失,不报未知', () => {
-    const narrowed = DEFAULT.replace(
-      'none, sexual, violence, jailbreak',
-      'none, jailbreak'
+  test('有占位符就原地替换,占位符本身不留在文本里', () => {
+    const got = qyAiRenderPrompt('', DEFAULT, BLOCK)
+    assert.ok(got.includes('- jailbreak(破限)'))
+    assert.equal(
+      got.includes(QY_AI_CATEGORY_PLACEHOLDER),
+      false,
+      '占位符留在文本里会被模型当成一句要遵守的话'
     )
-    assert.deepEqual(qyAiPromptCategoryIssues(narrowed, DEFAULT, KNOWN), {
-      unknown: [],
-      missing: ['sexual', 'violence'],
-    })
+  })
+
+  test('自定义提示词没写占位符时**追加**清单,而不是什么都不做', () => {
+    // 什么都不做的后果:这份提示词永远停留在它被写下那天的类型清单上 ——
+    // 运营新建了一类,模型不知道它存在,那一类的计数永远是 0,而界面上一切正常。
+    const got = qyAiRenderPrompt('只判断有没有越狱意图。', DEFAULT, BLOCK)
+    assert.ok(got.startsWith('只判断有没有越狱意图。'), '正文不能被改写')
+    assert.ok(got.includes('- jailbreak(破限)'))
+  })
+
+  test('渲染之后一条都不缺 —— 清单是拼上去的', () => {
+    for (const stored of ['', '只判断有没有越狱意图。', DEFAULT]) {
+      assert.deepEqual(
+        qyAiPromptCategoryIssues(qyAiRenderPrompt(stored, DEFAULT, BLOCK), KNOWN),
+        { unknown: [], missing: [] }
+      )
+    }
+  })
+
+  test('上一版手抄的旧清单要报出来', () => {
+    // 类型表里没有 violence / hate,模型照着那一行回一个会被折进「未分类」。
+    const stale =
+      'category 只能取以下之一:none, sexual, jailbreak, violence, hate\n' +
+      QY_AI_CATEGORY_PLACEHOLDER
+    assert.deepEqual(
+      qyAiPromptCategoryIssues(qyAiRenderPrompt(stale, DEFAULT, BLOCK), KNOWN),
+      { unknown: ['hate', 'violence'], missing: [] }
+    )
   })
 
   test('普通英文并列不会被冤枉成类型枚举', () => {
     // 误报过两次的告警此后会被彻底忽略,那时它连真的改坏了也报不出来。
-    // 这一行是逗号分隔的 ASCII 标识符串,形状与类型枚举一模一样,靠的是
-    // 「至少两个已知类型才算枚举」那道闸把它排除掉。
-    const custom = `${DEFAULT}\n只输出 json, yaml, markdown 里的第一种。`
-    assert.deepEqual(qyAiPromptCategoryIssues(custom, DEFAULT, KNOWN), {
-      unknown: [],
-      missing: [],
-    })
+    const custom = `只输出 json, yaml, markdown 里的第一种。
+${QY_AI_CATEGORY_PLACEHOLDER}`
+    assert.deepEqual(
+      qyAiPromptCategoryIssues(qyAiRenderPrompt(custom, DEFAULT, BLOCK), KNOWN),
+      { unknown: [], missing: [] }
+    )
   })
 
   test('冒名顶替挡住:nonexistent 不算声明了 none', () => {
-    const broken = DEFAULT.replaceAll('none', 'nonexistent')
-    assert.deepEqual(qyAiPromptCategoryIssues(broken, DEFAULT, KNOWN), {
-      unknown: ['nonexistent'],
-      missing: ['none'],
-    })
+    // 按标识符切词而不是 includes —— 后者会让一份根本没声明 none 的提示词看起来是齐的。
+    assert.deepEqual(
+      qyAiPromptCategoryIssues(
+        'category: nonexistent, sexual, jailbreak, uncategorized',
+        KNOWN
+      ),
+      { unknown: ['nonexistent'], missing: [] }
+    )
+  })
+
+  test('清单没拼进去 → 报缺失,这是渲染坏掉的唯一症状', () => {
+    assert.deepEqual(
+      qyAiPromptCategoryIssues('你是审核员,判断这段话有没有问题。', KNOWN),
+      { unknown: [], missing: ['jailbreak', 'sexual', 'uncategorized'] }
+    )
   })
 
   test('闭集来自接口下发,不是前端硬编码的一份', () => {
-    // 硬编码那一份会在后端加类型的第二天开始说谎。换一个闭集,结论必须跟着变。
-    assert.deepEqual(
-      qyAiPromptCategoryIssues(DEFAULT, '别的默认值', ['none', 'porn']),
-      { unknown: [], missing: ['porn'] }
-    )
+    // 硬编码那一份会在运营新建一个类型的第二天开始说谎。换一个闭集,结论必须跟着变。
+    assert.deepEqual(qyAiPromptCategoryIssues('none, porn, spam', ['porn', 'spam']), {
+      unknown: [],
+      missing: [],
+    })
     const src = read('lib/ai-review.ts')
     assert.equal(
       /['"]self_harm['"]/.test(src),
@@ -281,14 +307,13 @@ describe('提示词里的违规类型闭集', () => {
   })
 
   test('中文顿号也认 —— 这一格的实际填写者用中文', () => {
-    const broken = DEFAULT.replace(
-      'none, sexual, violence, jailbreak',
-      'none、sexual、violence、porn'
+    assert.deepEqual(
+      qyAiPromptCategoryIssues(
+        'category:none、sexual、jailbreak、uncategorized、porn',
+        KNOWN
+      ),
+      { unknown: ['porn'], missing: [] }
     )
-    assert.deepEqual(qyAiPromptCategoryIssues(broken, DEFAULT, KNOWN), {
-      unknown: ['porn'],
-      missing: ['jailbreak'],
-    })
   })
 })
 

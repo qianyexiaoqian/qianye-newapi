@@ -159,6 +159,68 @@ func TestRuleVarcharLimitsMatchColumnTags(t *testing.T) {
 	}
 }
 
+// parseCategoryVarcharTags 反射 Category,返回 字段名 → gorm tag 里声明的字符数上限。
+//
+// 与 parseRuleVarcharTags 同一套判据、同一条理由。手写校验表与 tag 的双向比对
+// 已经由 category_test.go 的 TestCategoryVarcharLimitsMatchColumnTags 负责;
+// 这里要的是另一半 —— **种子行是代码写死的**,它和内置规则目录一样绕过全部写入
+// 校验直接 Create,于是同一次 Error 1406 完全可以在这张表上重演。
+func parseCategoryVarcharTags(t *testing.T) map[string]int {
+	t.Helper()
+	limits := map[string]int{}
+	rt := reflect.TypeOf(Category{})
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		if f.Type.Kind() != reflect.String {
+			continue
+		}
+		m := varcharLimitRe.FindStringSubmatch(f.Tag.Get("gorm"))
+		require.NotNilf(t, m,
+			"Category.%s 是 string 字段,但 gorm tag 里解析不出 type:varchar(N)。"+
+				"没有声明列宽的字段会静默退出守卫射程 —— 而种子行是代码写死的,"+
+				"超长时表现是「启动没报错、类型表却少了几行」。", f.Name)
+		n, err := strconv.Atoi(m[1])
+		require.NoError(t, err, "字段 %s 的 varchar 长度解析失败", f.Name)
+		limits[f.Name] = n
+	}
+	return limits
+}
+
+// TestSeedCategoriesFitDeclaredColumnWidths 逐条比对出厂类型与列宽。
+//
+// 本轮往 seedCategories 里加了九条上游合规类型,每条都带一段「给 AI 的判定说明」。
+// 那一列只有 varchar(256) —— 比内部说明窄一半,因为它是**每次审核调用都要付一遍**
+// 的 token。多写两句话就会撞线,而撞线的表现是那几行种子一条都没进库:
+// 类型页上少了几类,AI 的类型清单里也就少了几类,而启动日志里只有一行。
+func TestSeedCategoriesFitDeclaredColumnWidths(t *testing.T) {
+	limits := parseCategoryVarcharTags(t)
+	require.Contains(t, limits, "AIGuidance")
+
+	for _, s := range seedCategories {
+		cat := Category{
+			Key: s.Key, Name: s.Name, Remark: s.Desc,
+			PublicTitle: s.Title, PublicDesc: s.Pub, AIGuidance: s.AI,
+		}
+		row := reflect.ValueOf(cat)
+		for field, limit := range limits {
+			v := row.FieldByName(field).String()
+			assert.LessOrEqualf(t, utf8.RuneCountInString(v), limit,
+				"出厂类型 %s 的 %s 有 %d 字(%d 字节),超过列宽 varchar(%d)。"+
+					"MySQL 会以 Error 1406 拒绝整条 INSERT,表现是「启动成功、类型页少了这一行」。"+
+					"判定说明写不下就压缩判据本身 —— 它每次审核调用都要作为 token 付一遍钱。",
+				s.Key, field, utf8.RuneCountInString(v), len(v), limit)
+		}
+		// 参与 AI 审核的类型必须带判定说明。只给一个英文 key,模型分不清
+		// illegal_goods 与 cyber_attack 的边界在哪,而分不清的那一票会加到
+		// 错误的类型计数上 —— "计数说得通、结论是错的"。
+		if s.NoAI {
+			continue
+		}
+		assert.NotEmptyf(t, s.AI,
+			"出厂类型 %s 参与 AI 审核却没有「给 AI 的判定说明」:模型只会拿到一个英文 key", s.Key)
+	}
+}
+
 // TestBuiltinCatalogFitsDeclaredColumnWidths 逐条比对 toRule() 的产物与列宽。
 func TestBuiltinCatalogFitsDeclaredColumnWidths(t *testing.T) {
 	limits := parseRuleVarcharTags(t)

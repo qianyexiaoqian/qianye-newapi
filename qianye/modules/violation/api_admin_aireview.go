@@ -311,16 +311,23 @@ func adminTestAIChannel(c *gin.Context) {
 	if timeout <= 0 {
 		timeout = maxPreTimeoutMs
 	}
-	out := callAIChannel(ctx, rt, defaultAIPrompt, "今天天气不错,帮我写一封请假邮件。", timeout)
+	// 连通性测试必须用**线上同一份**提示词与类型清单:用一份精简版试通了、
+	// 线上那份因为类型清单太长被上游截断,是查不出来的。
+	vocab := Snapshot().aiVocab
+	out := callAIChannel(ctx, rt, renderAIPrompt(aiStoredPrompt(), vocab),
+		"今天天气不错,帮我写一封请假邮件。", timeout, vocab)
 	respond(c, gin.H{
-		"outcome":    out.Outcome,
-		"violated":   out.Violated,
-		"category":   out.Category,
-		"confidence": out.Confidence.String(),
-		"latency_ms": out.LatencyMs,
-		"tokens":     gin.H{"prompt": out.PromptTokens, "completion": out.CompletionTokens, "total": out.TotalTokens},
-		"cost_usd":   out.CostUsd.String(),
-		"priced":     out.Priced,
+		"outcome":  out.Outcome,
+		"violated": out.Violated,
+		"category": out.Category,
+		// 连通性测试上最值得看的一格:模型回了一个类型清单外的名字。
+		// 那说明提示词与类型表脱节,而它在正常流量里只会表现为"计数落在未分类"。
+		"raw_category": out.RawCategory,
+		"confidence":   out.Confidence.String(),
+		"latency_ms":   out.LatencyMs,
+		"tokens":       gin.H{"prompt": out.PromptTokens, "completion": out.CompletionTokens, "total": out.TotalTokens},
+		"cost_usd":     out.CostUsd.String(),
+		"priced":       out.Priced,
 	})
 }
 
@@ -348,6 +355,7 @@ func adminGetAISetting(c *gin.Context) {
 			MaxInputChars: defaultAIMaxInputChars}
 	}
 	snap := Snapshot()
+	vocab := snap.aiVocab
 	respond(c, gin.H{
 		"setting": row,
 		// default_prompt 一起下发,界面才能把它**预填**进输入框 ——
@@ -358,10 +366,22 @@ func adminGetAISetting(c *gin.Context) {
 		// 前端不能靠"文本是不是空"自己判断:预填之后输入框永远非空,
 		// 那样每个站点看起来都是"已自定义"。见 aireview_prompt.go。
 		"prompt_source": aiPromptSource(row.Prompt),
-		// 自定义提示词与类型闭集的对账。默认档时两边都是空数组。
-		"prompt_categories": inspectAIPromptCategories(row.Prompt),
-		"categories":        sortedAICategories(),
-		"key_configured":    aiKeyConfigured(),
+		// 对账的是**渲染之后**的那一份 —— 类型清单是自动拼进去的,拿库里
+		// 存的那一段去对账会把每一个类型都报成"缺失"。
+		"prompt_categories": inspectAIPromptCategories(renderAIPrompt(row.Prompt, vocab), vocab),
+		"categories":        vocab.keyList(),
+		// category_block 是自动生成的那一段类型清单;prompt_preview 是它拼进
+		// 提示词之后**真正发出去**的全文。
+		//
+		// 两个都下发,因为它们回答两个不同的问题:前者让界面能在编辑框旁边
+		// 就地做同一套对账(前端要的是"清单本身"),后者让运营在保存前看见
+		// 模型到底会读到什么 —— 而"到底发了什么"在这之前是不可见的。
+		"category_block": vocab.categoryBlock(),
+		"prompt_preview": renderAIPrompt(row.Prompt, vocab),
+		// category_details 让界面把 key 与"给 AI 的判定说明有没有填"摆在一起。
+		// 只给一串 key 的话,运营看不出哪几类是裸奔的(模型只拿到一个英文单词)。
+		"category_details": aiCategoryDetails(vocab),
+		"key_configured":   aiKeyConfigured(),
 		// effective 是**快照里真正生效的那一份**,不是这张表单的回显。
 		// 两者不同的场合很实在:抽样率填了 30% 但一个渠道都没启用时,
 		// 表单显示 30%、实际生效是"完全不跑"。没有这一段,那个差别看不见。
@@ -384,12 +404,40 @@ func aiChannelCount(s *snapshot) int {
 	return len(s.ai.Channels)
 }
 
-func sortedAICategories() []string {
-	out := make([]string, 0, len(aiCategories))
-	for k := range aiCategories {
-		out = append(out, k)
+// aiCategoryDetails 是类型闭集的管理端视图。
+//
+// **正面清单**,与 userCategoryView 同一条纪律:这里只有 key / name /
+// has_guidance,没有 Remark、没有公示文案。复用 Category 并靠 json tag 挑字段
+// 是负面清单,下一次加一列内部字段时它会默认漏出去。
+//
+// 只给 has_guidance 而不给判定说明原文:这个接口是"类型清单概览",判定说明
+// 要改就去违规类型页改,在两个页面各放一份可编辑的同一段文本必然漂移。
+func aiCategoryDetails(v aiVocabulary) []gin.H {
+	out := make([]gin.H, 0, len(v.Defs))
+	for _, d := range v.Defs {
+		out = append(out, gin.H{
+			"key":            d.Key,
+			"name":           d.Name,
+			"has_guidance":   strings.TrimSpace(d.Guidance) != "",
+			"guidance_runes": len([]rune(d.Guidance)),
+			"is_fallback":    d.Key == v.FallbackKey,
+		})
 	}
-	return dedupe(out)
+	return out
+}
+
+// aiStoredPrompt 读库里存的那一段提示词(空 = 默认档)。
+// 连通性测试要用它,而那条路径手上只有一个渠道行。
+func aiStoredPrompt() string {
+	gdb := db.Get()
+	if gdb == nil {
+		return ""
+	}
+	var row AISetting
+	if err := gdb.Where("id = ?", 1).Take(&row).Error; err != nil {
+		return ""
+	}
+	return row.Prompt
 }
 
 func adminPutAISetting(c *gin.Context) {
@@ -431,10 +479,15 @@ func adminPutAISetting(c *gin.Context) {
 	// 接口仍然返回 200(那是刻意的,见 aiPromptCategoryReport.Missing 的说明),
 	// 所以"哪里坏了"必须随这一次响应一起回去,而不是等运营下次刷新页面。
 	// 非界面客户端(脚本改配置)只有这一条路能知道自己刚刚改坏了什么。
+	savedVocab := Snapshot().aiVocab
 	respond(c, gin.H{
 		"setting":           row,
 		"prompt_source":     aiPromptSource(row.Prompt),
-		"prompt_categories": inspectAIPromptCategories(row.Prompt),
+		"prompt_categories": inspectAIPromptCategories(renderAIPrompt(row.Prompt, savedVocab), savedVocab),
+		// 保存之后运营最想确认的就是"现在发出去的到底是什么"。回显它,
+		// 界面就不需要为了看一眼而再拉一次 GET(那一次 GET 拿到的可能已经
+		// 是另一个人改过的版本)。
+		"prompt_preview": renderAIPrompt(row.Prompt, savedVocab),
 	})
 }
 
@@ -647,7 +700,8 @@ func writeAISettingAudit(c *gin.Context, result string, before, after AISetting,
 // 为什么长度不够:把"绝不执行"改成"必须执行"字数一模一样,而那一改正是
 // 把提示词注入防线关掉的改法。只记 prompt_runes 时它在审计里毫无痕迹。
 func aiSettingAuditSnap(s AISetting) map[string]any {
-	report := inspectAIPromptCategories(s.Prompt)
+	vocab := Snapshot().aiVocab
+	report := inspectAIPromptCategories(renderAIPrompt(s.Prompt, vocab), vocab)
 	return map[string]any{
 		"enabled": s.Enabled, "sample_rate_bps": s.SampleRateBps,
 		"pre_timeout_ms": s.PreTimeoutMs, "async_timeout_ms": s.AsyncTimeoutMs,

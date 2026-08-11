@@ -31,6 +31,8 @@ export type QyCategoryFormValues = {
   remark: string
   public_title: string
   public_desc: string
+  ai_guidance: string
+  ai_excluded: boolean
   published: boolean
   enabled: boolean
   window_hours: string
@@ -46,6 +48,10 @@ export function qyEmptyCategoryForm(): QyCategoryFormValues {
     remark: '',
     public_title: '',
     public_desc: '',
+    ai_guidance: '',
+    // 新建默认**参与** AI 审核:运营新建一个类型时想的就是"让 AI 也认这一类"。
+    // 排除是例外(判据不是文本,例如按频率判的蒸馏),不是默认。
+    ai_excluded: false,
     // 新建默认**不公示**：公示文案还没写,先亮出来只会给用户一行空白。
     published: false,
     // 阈值默认启用但为 0 —— 0 表示这一类不单独触发处置。与后端种子同口径:
@@ -67,6 +73,8 @@ export function qyCategoryToForm(
     remark: cat.remark,
     public_title: cat.public_title,
     public_desc: cat.public_desc,
+    ai_guidance: cat.ai_guidance,
+    ai_excluded: cat.ai_excluded,
     published: cat.published,
     enabled: cat.enabled,
     window_hours: String(cat.window_hours),
@@ -86,6 +94,8 @@ export function qyCategoryFormToPayload(
     remark: values.remark,
     public_title: values.public_title.trim(),
     public_desc: values.public_desc,
+    ai_guidance: values.ai_guidance,
+    ai_excluded: values.ai_excluded,
     published: values.published,
     enabled: values.enabled,
     window_hours: Number(values.window_hours) || 0,
@@ -97,6 +107,16 @@ export function qyCategoryFormToPayload(
 
 /** key 的取值域必须与后端 validateCategory 逐字一致。 */
 const KEY_RE = /^[a-z0-9_-]+$/
+
+/**
+ * `none` 是 AI 审核里"未违规"的取值,不是一个违规类型。后端 validateCategory
+ * 拒绝它 —— 建成类型的话,发给模型的清单里会同时出现"none = 未违规"与
+ * "none = 某个违规类型",而模型两边都对不上。
+ */
+const QY_VCAT_RESERVED_KEY = 'none'
+
+/** 判定说明的字数上限,与后端 categoryAIGuidanceMax 同值。 */
+const QY_VCAT_AI_GUIDANCE_MAX = 256
 
 /**
  * 前端校验。它**不是**权限判断，后端会再校验一遍 —— 它只是不让管理员白按一次。
@@ -112,6 +132,7 @@ export function qyValidateCategoryForm(
   const key = values.key.trim().toLowerCase()
   if (key === '') return t('qy_vcat_err_key_required')
   if (!KEY_RE.test(key)) return t('qy_vcat_err_key_charset')
+  if (key === QY_VCAT_RESERVED_KEY) return t('qy_vcat_err_key_reserved')
   if (values.name.trim() === '') return t('qy_vcat_err_name_required')
   if (values.published && values.public_title.trim() === '') {
     return t('qy_vcat_err_public_title_required')
@@ -123,6 +144,11 @@ export function qyValidateCategoryForm(
   const threshold = Number(values.threshold)
   if (!Number.isFinite(threshold) || threshold < 0) {
     return t('qy_vcat_err_threshold_range')
+  }
+  // 判定说明的上限比内部说明窄一半(后端 categoryAIGuidanceMax = 256):
+  // 它是**每一次审核调用都要付一遍**的 token,而类型条数由运营决定、没有上界。
+  if (values.ai_guidance.length > QY_VCAT_AI_GUIDANCE_MAX) {
+    return t('qy_vcat_err_ai_guidance_len', { max: QY_VCAT_AI_GUIDANCE_MAX })
   }
   return null
 }

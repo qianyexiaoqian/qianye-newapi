@@ -24,6 +24,8 @@ import type {
   QyAiChannelList,
   QyAiChannelTestResult,
   QyAiReviewLog,
+  QyAiScopeInput,
+  QyAiScopeList,
   QyAiSetting,
   QyAiSettingResponse,
   QyAiSettingSaveResult,
@@ -87,4 +89,20 @@ export function testQyAiChannel(id: number) {
 
 export function updateQyAiSetting(body: Omit<QyAiSetting, 'id'>) {
   return qyPut<QyAiSettingSaveResult>('/admin/violation/ai-review/settings', body)
+}
+
+export function qyAiScopesQuery() {
+  return {
+    queryKey: qyKeys.adminViolationAiScopes(),
+    queryFn: () => qyGet<QyAiScopeList>('/admin/violation/ai-review/scopes'),
+  }
+}
+
+/** 新建与编辑同一个入口:请求体带 id 即为编辑(与违规类型同形)。 */
+export function upsertQyAiScope(body: QyAiScopeInput) {
+  return qyPut<unknown>('/admin/violation/ai-review/scopes', body)
+}
+
+export function deleteQyAiScope(id: number) {
+  return qyDelete<unknown>(`/admin/violation/ai-review/scopes/${id}`)
 }

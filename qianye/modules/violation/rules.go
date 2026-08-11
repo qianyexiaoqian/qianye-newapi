@@ -77,12 +77,46 @@ type compiledRule struct {
 	// nil 或空 = 不限类型,只要模型判违规就命中。
 	aiCats map[string]struct{}
 
+	// scopeMatcher 是模型 + 分组这两道作用域闸。
+	//
+	// 内嵌一个共享类型而不是继续摊三个裸字段:AI 审核的作用域策略
+	// (aireview_scope.go)判的是**同一件事** —— 同一个 UsingGroup、同一份
+	// 前后缀通配语法。让它们共用字面意义上的同一段代码,是因为第二份实现
+	// 的失效形状已经在本模块出现过两次(groupname 大小写):两份判据不一致时,
+	// 症状是"界面上配好了、线上从不生效",而没有任何报错指向它。
+	scopeMatcher
+}
+
+// scopeMatcher 是「模型 + 用户分组」作用域的唯一一份判据。
+//
+// 它同时服务违规规则(compiledRule)与 AI 审核作用域策略(aiScopeRT)。
+// 两者对"作用域"的定义必须逐字节相同,否则运营在两页上看到同样的输入框、
+// 得到不同的结果。
+type scopeMatcher struct {
 	// modelPats 为空表示全部模型;groups 为空表示全部分组。
 	// groups 的键一律是 groupname.Effective 归一后的比较键。
 	modelPats []string
 	groups    map[string]struct{}
 	// groupExclude 为真时 groups 是黑名单(豁免分组),否则是白名单。
 	groupExclude bool
+}
+
+// compileScope 把三格文本(模型作用域 / 分组作用域 / 方向)编译成运行期判据。
+//
+// 分组名必须走 groupname:扩展库与主库的分组列都是大小写不敏感的排序规则,
+// 而 Go 的 map 查表是精确匹配。管理端配 "VIP"、用户实际分组是 "vip" 时,
+// 这里不归一就是一条保存成功、界面正常、线上永不命中的配置 ——
+// 同形缺陷在 commission 与 transfer 已经各出过一次。
+func compileScope(modelScope, groupScope, groupScopeMode string) scopeMatcher {
+	m := scopeMatcher{modelPats: splitList(strings.ToLower(modelScope))}
+	if g := splitList(groupScope); len(g) > 0 {
+		m.groups = make(map[string]struct{}, len(g))
+		for _, v := range g {
+			m.groups[groupname.Effective(v)] = struct{}{}
+		}
+		m.groupExclude = groupScopeMode == GroupScopeExclude
+	}
+	return m
 }
 
 // snapshot 是规则的只读内存视图。整体替换(atomic.Pointer),读端零锁;
@@ -145,6 +179,11 @@ type snapshot struct {
 	catById     map[int64]Category
 	catByKey    map[string]Category
 	catFallback Category
+
+	// aiVocab 是发给审核模型的违规类型清单,从**同一批**类型行算出来。
+	// 与 catById 同源同刻:两次查询会让规则、类型计数、AI 闭集来自不同时刻,
+	// 而"规则按新类型过滤、闭集还是旧的"的表现是那条规则永不命中。
+	aiVocab aiVocabulary
 }
 
 func (s *snapshot) hasPrompt() bool { return s != nil && len(s.promptRules) > 0 }
@@ -260,6 +299,10 @@ func reloadCtx(ctx context.Context, force bool) error {
 			}
 		}
 	}
+	// 类型表加载失败时 cats 为 nil,闭集因此是零值 —— resolveCategory 会把
+	// 一切判定折进兜底类型,不限类型的 ai_review 规则照常命中。少一个能力,
+	// 不是整体停摆,与本模块其余部分同口径。
+	s.aiVocab = buildAIVocabulary(cats)
 
 	for i := range rows {
 		cr, err := compile(rows[i])
@@ -303,7 +346,7 @@ func reloadCtx(ctx context.Context, force bool) error {
 	// 两份独立 TTL 的缓存会让一次请求读到"新规则 + 旧渠道",而那种错位的表现是
 	// 「刚删掉的渠道还在被调用」,在任何日志里都看不出因果。
 	// 装配失败同样不放弃整份快照:AI 审核停摆好过全部规则停摆。
-	if rt, err := buildAIRuntime(gdb, s.hasAIPrompt || s.hasAIAsync); err != nil {
+	if rt, err := buildAIRuntime(gdb, s.hasAIPrompt || s.hasAIAsync, s.aiVocab); err != nil {
 		common.SysError("qianye/violation: AI 审核配置加载失败(本次快照不含 AI 审核,全部放行): " + err.Error())
 	} else {
 		s.ai = rt
@@ -404,18 +447,7 @@ func compile(r Rule) (*compiledRule, error) {
 		cr.statusScope = append(cr.statusScope, sr)
 	}
 
-	cr.modelPats = splitList(strings.ToLower(r.ModelScope))
-	// 分组名必须走 groupname:扩展库与主库的分组列都是大小写不敏感的排序规则,
-	// 而 Go 的 map 查表是精确匹配。管理端配 "VIP"、用户实际分组是 "vip" 时,
-	// 这里不归一就是一条保存成功、界面正常、线上永不命中的规则 ——
-	// 同形缺陷在 commission 与 transfer 已经各出过一次。
-	if g := splitList(r.GroupScope); len(g) > 0 {
-		cr.groups = make(map[string]struct{}, len(g))
-		for _, v := range g {
-			cr.groups[groupname.Effective(v)] = struct{}{}
-		}
-		cr.groupExclude = r.GroupScopeMode == GroupScopeExclude
-	}
+	cr.scopeMatcher = compileScope(r.ModelScope, r.GroupScope, r.GroupScopeMode)
 	return cr, nil
 }
 
@@ -517,11 +549,21 @@ func ValidateRule(r *Rule) error {
 		case MatchErrorCode, MatchStatusCode, MatchUpstreamText:
 			return fmt.Errorf("match_type %q 只能用于上游阶段", r.MatchType)
 		}
-		// 同理:prompt 阶段还没有上游响应,状态码恒为 0,任何非空状态码作用域
-		// 都会把这条规则永久关在门外。允许保存等于埋一条"配置正确却永不命中"的规则,
-		// 而这类失效没有任何报错,只能靠有人去数命中量才会发现。
+	}
+	// 状态码作用域只有"已经拿到上游响应"的两个阶段填得有意义。
+	//
+	// scanInput.StatusCode 只在 PostRelayGuard 里被填(见 guard.go),prompt 与
+	// post_async 两个阶段拿到的恒是 0,而 statusInScope 对任何非空作用域都会把 0
+	// 判在外面 —— 于是这条规则永久关在门外:保存成功、界面正常、命中量恒为 0,
+	// 没有任何报错。
+	//
+	// prompt 那一半原本就挡住了;post_async 是**本轮新增**的阶段(AI 转发后审核
+	// 专用),它同样拿不到状态码。漏掉它的后果最隐蔽:转发后审核本来就是"秋后
+	// 算账",没人会盯着它当场生效,一条永不命中的规则可以挂几个月不被发现。
+	if r.Phase == PhasePrompt || r.Phase == PhasePostAsync {
 		if strings.TrimSpace(r.StatusScope) != "" {
-			return fmt.Errorf("状态码作用域只能用于上游阶段(当前 phase 为 %q)", r.Phase)
+			return fmt.Errorf("状态码作用域只能用于上游阶段(当前 phase 为 %q):"+
+				"该阶段还没有上游响应,状态码恒为 0,填了它这条规则一次都不会命中", r.Phase)
 		}
 	}
 	// 反过来:请求频率只有在"即将发往上游"这一刻才有意义。挂在上游阶段的话,
@@ -607,9 +649,12 @@ func (cr *compiledRule) statusInScope(status int) bool {
 	return false
 }
 
-// inScope 判断规则是否作用于当前模型与分组。空作用域 = 全部。
-func (cr *compiledRule) inScope(model, group string) bool {
-	return cr.groupInScope(group) && cr.modelInScope(model)
+// inScope 判断作用域是否覆盖当前模型与分组。空作用域 = 全部。
+//
+// 挂在 scopeMatcher 上、由 compiledRule 内嵌继承:违规规则与 AI 审核作用域
+// 策略调用的是同一个方法体,不存在"两处各判一次"的可能。
+func (m scopeMatcher) inScope(model, group string) bool {
+	return m.groupInScope(group) && m.modelInScope(model)
 }
 
 // groupInScope 与 modelInScope 拆开的理由与 applies 提成方法完全相同:
@@ -620,23 +665,23 @@ func (cr *compiledRule) inScope(model, group string) bool {
 // 分组名两侧都走 groupname.Effective:编译时归一了名单,判定时不归一等于没归一。
 // 顺带把 UsingGroup 为空的历史账号折叠进 default —— 那批账号恰恰最可疑,
 // 而在此之前任何一条挂在 default 上的规则都盖不住它们。
-func (cr *compiledRule) groupInScope(group string) bool {
-	if len(cr.groups) == 0 {
+func (m scopeMatcher) groupInScope(group string) bool {
+	if len(m.groups) == 0 {
 		return true
 	}
-	_, listed := cr.groups[groupname.Effective(group)]
+	_, listed := m.groups[groupname.Effective(group)]
 	// include 模式(groupExclude=false):不在名单里 → 不生效。
 	// exclude 模式(groupExclude=true):在名单里 → 豁免,不生效。
-	return listed != cr.groupExclude
+	return listed != m.groupExclude
 }
 
-func (cr *compiledRule) modelInScope(model string) bool {
-	if len(cr.modelPats) == 0 {
+func (m scopeMatcher) modelInScope(model string) bool {
+	if len(m.modelPats) == 0 {
 		return true
 	}
-	m := strings.ToLower(model)
-	for _, p := range cr.modelPats {
-		if matchGlob(p, m) {
+	low := strings.ToLower(model)
+	for _, p := range m.modelPats {
+		if matchGlob(p, low) {
 			return true
 		}
 	}
@@ -871,6 +916,16 @@ func matchAIRule(cr *compiledRule, out *aiOutcome) []string {
 	cat := out.Category
 	if cat == "" {
 		cat = "unknown"
+	}
+	if out.CategoryUnknown {
+		// 折进兜底的那一票必须在命中词上就看得出来。只写 uncategorized 的话,
+		// 复核的人会以为模型明确说了"归不了类",而它实际上说的是 "porn" ——
+		// 两者的下一步完全不同(前者调提示词,后者去建一个类型)。
+		raw := out.RawCategory
+		if raw == "" {
+			raw = "空"
+		}
+		return []string{fmt.Sprintf("ai:%s(raw=%s)@%s", cat, raw, out.Confidence.String())}
 	}
 	return []string{fmt.Sprintf("ai:%s@%s", cat, out.Confidence.String())}
 }

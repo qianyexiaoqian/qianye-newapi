@@ -19,12 +19,13 @@ import (
 
 // AI 审核在 relay 热路径上的挂载。
 //
-// 两个时机共用**一次**调用,调度点都在 PreRelayGuard:
+// 两个时机的调度点都在 PreRelayGuard:
 //
 //	转发前(phase=prompt)      同步 → 结论回来才继续,命中即拒。代价是延迟。
 //	转发后(phase=post_async)  异步 → 丢进 guard.HotAsync,本次请求一秒不等。
 //
-// 两个都配时只发一次调用,异步那一侧复用同步的结论(见 aiPreReview)。
+// 抽样是**各摇各的**(两个时机的抽样率可以按作用域分别配,见 aireview_scope.go),
+// 但同时被抽中时只发一次调用:异步那一侧复用同步的结论(见 aiPreReview)。
 
 // aiPreReview 是 AI 审核的唯一入口,由 PreRelayGuard 在本地规则**全部未命中**
 // 之后调用。返回非 nil 表示拦截。
@@ -51,7 +52,36 @@ func aiPreReview(c *gin.Context, info *relaycommon.RelayInfo, snap *snapshot, in
 		noteScan(false)
 		return nil
 	}
-	if !sampleAI(snap.ai.SampleRateBps) {
+	// ── 作用域闸,排在抽样之前 ──
+	//
+	// 顺序是契约,不是优化。反过来(先摇骰子、抽中之后再判这条请求在不在
+	// 作用域内)会让界面上那个"10%"变成"作用域内的 10% 乘以一个谁也说不出来
+	// 的数",而抽样率是本功能唯一的成本闸门,它必须是字面意思。
+	//
+	// sampleRatesFor 是纯内存比较:没有分配、没有加锁、没有随机数。作用域外的
+	// 请求在这里就返回 0/0,一次 crypto/rand 都不摇 —— aiSampleRolls 计数器
+	// 钉住了这一点(见 TestAIScopeSamplingZeroCost)。
+	preBps, asyncBps := snap.ai.sampleRatesFor(in.Model, in.Group)
+	// 两个时机各自还要有规则在等着。只配了转发后规则的站点不该为转发前那条
+	// 同步路径付任何代价 —— 那条路径的代价是给用户加一次外部调用的延迟。
+	if !snap.hasAIPrompt {
+		preBps = 0
+	}
+	if !snap.hasAIAsync {
+		asyncBps = 0
+	}
+	// 两个时机**各摇各的**。共用一次抽样的话,转发后想开 10%、转发前只想开
+	// 1% 就无法表达:同一枚骰子的结果会把两者绑成同一批请求。
+	//
+	// `preBps > 0 &&` 不是可有可无的短路,它**就是**零开销契约的落点:
+	// 作用域外(以及作用域内但该时机免审)的请求在这里连 sampleAI 都不进,
+	// 因此 aiSampleRolls 一次都不加。这一行之前一度还有一句
+	// `if preBps <= 0 && asyncBps <= 0 { return }`,读起来像"零开销靠它兜住",
+	// 而它其实一个分支都挡不住(删掉之后行为与计数逐字节不变)。留着这种
+	// 看起来是防线、实际是复读的语句,下一个人重构时会先删掉真正的那道闸。
+	doPre := preBps > 0 && sampleAI(preBps)
+	doAsync := asyncBps > 0 && sampleAI(asyncBps)
+	if !doPre && !doAsync {
 		noteScan(false)
 		return nil
 	}
@@ -62,7 +92,7 @@ func aiPreReview(c *gin.Context, info *relaycommon.RelayInfo, snap *snapshot, in
 	files := filesOf(info)
 
 	var out *aiOutcome
-	if snap.hasAIPrompt {
+	if doPre {
 		ctx := context.Background()
 		if c.Request != nil {
 			ctx = c.Request.Context()
@@ -70,15 +100,15 @@ func aiPreReview(c *gin.Context, info *relaycommon.RelayInfo, snap *snapshot, in
 		out = runAIReview(ctx, snap.ai, text, snap.ai.PreTimeoutMs)
 	}
 
-	if snap.hasAIAsync {
+	if doAsync {
 		// 转发后审核。同步侧已经拿到结论时直接复用,不发第二次调用 ——
-		// 否则同时配了两个时机的站点会为每个被抽中的请求付两份钱,
-		// 而界面上的抽样率只有一个数字,那个数字会从此变成假的。
+		// 否则同时被两个时机抽中的请求会付两份钱,而两次调用问的是同一段
+		// 文本、用的是同一份提示词,第二次的答案不会带来任何新信息。
 		dispatchAIAsync(snap, rc, in, text, files, out)
 	}
 
 	if out == nil {
-		// 只配了转发后审核:同步侧什么都没做,请求原样继续。
+		// 只有转发后审核被抽中:同步侧什么都没做,请求原样继续。
 		noteScan(false)
 		return nil
 	}
@@ -228,6 +258,7 @@ func newAIReviewRow(rc recordCtx, phase string, out *aiOutcome, ruleId, recordId
 		Outcome:          out.Outcome,
 		Violated:         out.Violated,
 		Category:         truncate(out.Category, 64),
+		RawCategory:      truncate(out.RawCategory, 64),
 		Confidence:       out.Confidence,
 		Reason:           out.Reason,
 		PromptTokens:     out.PromptTokens,

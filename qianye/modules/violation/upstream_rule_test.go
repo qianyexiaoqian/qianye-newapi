@@ -113,31 +113,61 @@ func TestStatusScopeAcceptsListsAndRanges(t *testing.T) {
 	}
 }
 
-// TestValidateRuleRejectsStatusScopeOnPromptPhase 挡的是一条"永不命中"的规则。
+// TestValidateRuleRejectsStatusScopeBeforeUpstream 挡的是一条"永不命中"的规则。
 //
-// prompt 阶段没有上游响应,状态码恒为 0。允许保存的话,管理员会得到一条
-// 保存成功、界面正常、线上一次都不会命中的规则 —— 而这类失效没有任何报错。
-func TestValidateRuleRejectsStatusScopeOnPromptPhase(t *testing.T) {
+// scanInput.StatusCode 只在 PostRelayGuard 里被填(见 guard.go)。转发之前的两个
+// 阶段 —— prompt 与 post_async(AI 转发后审核专用)—— 拿到的恒是 0,而
+// statusInScope 会把 0 判在任何非空作用域之外。允许保存的话,管理员会得到一条
+// 保存成功、界面正常、线上一次都不会命中的规则,而这类失效没有任何报错。
+//
+// post_async 那一半是本轮补上的:漏掉它的后果最隐蔽 —— 转发后审核本来就是
+// "秋后算账",没人会盯着它当场生效,一条永不命中的规则可以挂几个月不被发现。
+func TestValidateRuleRejectsStatusScopeBeforeUpstream(t *testing.T) {
 	base := Rule{
 		Name: "t", Mode: ModeShadow, MatchType: MatchKeyword, Pattern: "foo",
 		Action: ActionRecord, FeeMode: FeeNone,
 	}
+	// post_async 只接受 ai_review(validateAIRule),所以它那一档要换匹配方式。
+	aiBase := base
+	aiBase.MatchType = MatchAIReview
+	aiBase.Pattern = ""
 
-	prompt := base
-	prompt.Phase = PhasePrompt
-	prompt.StatusScope = "400"
-	assert.Error(t, ValidateRule(&prompt), "prompt 阶段配状态码作用域 = 一条永不命中的规则")
-
-	promptNoScope := base
-	promptNoScope.Phase = PhasePrompt
-	assert.NoError(t, ValidateRule(&promptNoScope))
+	cases := []struct {
+		name    string
+		rule    Rule
+		scope   string
+		wantErr bool
+	}{
+		{"prompt + 状态码作用域 → 拒", base, "400", true},
+		{"prompt 不填状态码作用域 → 收", base, "", false},
+		{"post_async + 状态码作用域 → 拒", aiBase, "400", true},
+		{"post_async 不填状态码作用域 → 收", aiBase, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := tc.rule
+			if tc.rule.MatchType == MatchAIReview {
+				r.Phase = PhasePostAsync
+			} else {
+				r.Phase = PhasePrompt
+			}
+			r.StatusScope = tc.scope
+			err := ValidateRule(&r)
+			if tc.wantErr {
+				require.Error(t, err, "该阶段拿不到状态码,配了它就是一条永不命中的规则")
+				assert.Contains(t, err.Error(), "状态码作用域")
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
 
 	upstream := base
 	upstream.Phase = PhaseUpstreamErr
 	upstream.MatchType = MatchUpstreamText
 	upstream.Pattern = "denied"
 	upstream.StatusScope = "400"
-	assert.NoError(t, ValidateRule(&upstream))
+	assert.NoError(t, ValidateRule(&upstream), "上游阶段才是它唯一有意义的地方")
 
 	bad := upstream
 	bad.StatusScope = "4xx"

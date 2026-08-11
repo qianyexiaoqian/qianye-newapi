@@ -73,6 +73,10 @@ func rtForServer(url string, timeoutMs int) *aiRuntime {
 	return &aiRuntime{
 		SampleRateBps: 10000, PreTimeoutMs: timeoutMs, AsyncTimeoutMs: timeoutMs,
 		MaxInputChars: defaultAIMaxInputChars,
+		// 闭集必须是**出厂那一份**,不能留零值:零值闭集会把每一个类型都判成
+		// "清单外"并折进兜底,于是这一批用例断言的类型全都变成 uncategorized ——
+		// 测出来的是归一兜底,不是它们本来要测的那件事。
+		Vocab: seedAIVocabulary(),
 		Channels: []*aiChannelRT{{
 			Id: 1, Name: "fake", URL: chatCompletionsURL(url), Model: "fake-model",
 			APIKey: "test-not-a-real-key", Weight: 1,
@@ -366,7 +370,10 @@ func TestParseAIVerdictTolerance(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, v.Violation)
 			assert.Equal(t, tc.wantViol, *v.Violation)
-			assert.Equal(t, tc.wantCat, normalizeAICategory(v.Category))
+			// 断言的是**解析出来的原值**,不再过一遍归一:归一现在要一份
+			// 类型闭集(见 aiVocabulary.resolveCategory,它有自己的表驱动用例),
+			// 在这里顺带测它只会让"解析容错"与"闭集归一"两件事纠缠在一起。
+			assert.Equal(t, tc.wantCat, v.Category)
 		})
 	}
 }
@@ -501,35 +508,11 @@ func TestAICategoryFilterIsCaseInsensitiveOnBothSides(t *testing.T) {
 	cr, err := compile(Rule{MatchType: MatchAIReview, Pattern: "SEXUAL, JailBreak"})
 	require.NoError(t, err)
 
+	vocab := seedAIVocabulary()
 	out := &aiOutcome{Outcome: OutcomeViolation, Violated: true,
-		Category: normalizeAICategory("JAILBREAK"), Confidence: decimal.NewFromFloat(0.9)}
+		Category: vocab.resolveCategory("JAILBREAK", true).Key, Confidence: decimal.NewFromFloat(0.9)}
 	assert.NotEmpty(t, matchAIRule(cr, out),
 		"管理端填大写、模型回大写,两侧都要归一 —— 否则这条规则保存成功、界面正常、线上永不命中")
-}
-
-// TestNormalizeAICategoryFoldsUnknownToOther 钉住闭集之外的归一方向。
-func TestNormalizeAICategoryFoldsUnknownToOther(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"sexual", "sexual"}, {"  Hate  ", "hate"},
-		{"涉黄", "other"}, {"NSFW", "other"}, {"", ""},
-	}
-	for _, tc := range tests {
-		t.Run(tc.in, func(t *testing.T) {
-			assert.Equal(t, tc.want, normalizeAICategory(tc.in))
-		})
-	}
-}
-
-// TestAIPromptDeclaresEveryCategory 是两份事实的对账。
-//
-// aiCategories(代码里的闭集)与 defaultAIPrompt(告诉模型的闭集)必须一致。
-// 提示词里多一个类型而代码没有,那个类型会被归成 other,于是按类型过滤的规则
-// 永远匹配不上 —— 又一条"配置正确却永不命中"。
-func TestAIPromptDeclaresEveryCategory(t *testing.T) {
-	for cat := range aiCategories {
-		assert.Contains(t, defaultAIPrompt, cat,
-			"默认提示词没有告诉模型 %q 这个类型,规则却可以按它过滤", cat)
-	}
 }
 
 // ─────────────────────── 校验:每一条都挡一种静默失效 ───────────────────────

@@ -16,7 +16,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { QyAiChannel, QyAiChannelInput } from '../types'
+import type {
+  QyAiChannel,
+  QyAiChannelInput,
+  QyAiScope,
+  QyAiScopeInput,
+  QyAiScopeSummaryRow,
+} from '../types'
 
 /**
  * AI 审核页的纯逻辑。抽出来是因为这里有两处**不能靠肉眼保证**的转换:
@@ -117,12 +123,50 @@ export function qyAiPromptToPayload(
   return qyAiPromptIsDefault(prompt, defaultPrompt) ? '' : prompt
 }
 
-/** 提示词里的违规类型闭集与系统闭集的对账结果。 */
+/** 提示词里的违规类型枚举与违规类型表的对账结果。 */
 export type QyAiPromptCategoryIssues = {
-  /** 提示词枚举了、系统闭集里却没有的名字。模型真按它回会被归成 `other`。 */
+  /**
+   * 提示词枚举了、违规类型表里却没有的名字。
+   *
+   * 上一版留下来的自定义提示词里往往还手抄着一行
+   * `none, sexual, violence, ...`,而本站的类型表里根本没有那些名字。
+   * 模型照着那一行回一个,那一票会被折进「未分类」。
+   */
   unknown: string[]
-  /** 系统闭集里有、提示词一次都没提的名字。模型不会主动返回它们。 */
+  /**
+   * 类型表里有、**渲染之后**的提示词却一次都没提到的名字。
+   *
+   * 正常情况下恒为空:清单是自动拼进去的。它非空只意味着渲染这一步坏了。
+   */
   missing: string[]
+}
+
+/**
+ * 自定义提示词里声明"类型清单插在这里"的占位符。必须与后端
+ * `aiPromptCategoryPlaceholder` 逐字一致。
+ */
+export const QY_AI_CATEGORY_PLACEHOLDER = '{{categories}}'
+
+/**
+ * 把编辑框里的提示词与接口下发的类型清单拼成**真正会发出去**的那一份。
+ *
+ * 与后端 `renderAIPrompt` 逐条同形:有占位符就原地替换,没有就追加在末尾。
+ * 前端必须有这一份,因为下面的对账要在渲染**之后**做 —— 拿编辑框里那段
+ * 原文去对账会把每一个类型都报成"缺失",而全是噪声的告警等于没有告警。
+ *
+ * 它同时是预览:运营在保存前就能看见模型会读到什么,而"到底发了什么"
+ * 在这之前是不可见的。
+ */
+export function qyAiRenderPrompt(
+  prompt: string,
+  defaultPrompt: string,
+  categoryBlock: string
+): string {
+  const base = prompt.trim() === '' ? defaultPrompt : prompt
+  if (base.includes(QY_AI_CATEGORY_PLACEHOLDER)) {
+    return base.split(QY_AI_CATEGORY_PLACEHOLDER).join(categoryBlock)
+  }
+  return `${base.replace(/\n+$/, '')}\n\n${categoryBlock}`
 }
 
 const QY_AI_IDENTIFIER = /[A-Za-z][A-Za-z0-9_-]*/g
@@ -131,28 +175,31 @@ const QY_AI_CATEGORY_RUN =
   /[A-Za-z][A-Za-z0-9_-]*(?:[ \t]*[,、][ \t]*[A-Za-z][A-Za-z0-9_-]*)+/g
 
 /**
- * 对账提示词里的类型闭集。**闭集本身来自接口下发的 `categories`**,
- * 前端不硬编码一份 —— 硬编码的那一份会在后端加类型的第二天开始说谎。
+ * 对账**渲染之后**的提示词与违规类型表。闭集本身来自接口下发的 `categories`,
+ * 前端不硬编码一份 —— 硬编码的那一份会在运营新建一个类型的第二天开始说谎。
+ *
+ * 传进来的必须是 `qyAiRenderPrompt` 的产物,不是编辑框里那段原文。
  *
  * 与后端 inspectAIPromptCategories 同一套判定,给的是编辑时的即时反馈;
  * 后端那一份才是入库时的权威,并且会进审计。
  */
 export function qyAiPromptCategoryIssues(
-  prompt: string,
-  defaultPrompt: string,
+  rendered: string,
   categories: string[]
 ): QyAiPromptCategoryIssues {
-  // 默认档不对账:那时提示词与代码里的闭集同源,对账只会产出噪声。
-  if (qyAiPromptIsDefault(prompt, defaultPrompt)) {
-    return { unknown: [], missing: [] }
-  }
-  const known = new Set(categories.map((c) => c.toLowerCase()))
-  const lower = prompt.toLowerCase()
+  if (categories.length === 0) return { unknown: [], missing: [] }
+  // `none` 是"未违规"的取值,不属于类型表,但它在提示词里合法 ——
+  // 把它算成未知会让每一份提示词都报一条噪声。
+  const known = new Set([...categories.map((c) => c.toLowerCase()), 'none'])
+  const lower = rendered.toLowerCase()
 
   // 出现过没有:按标识符切词,而不是 includes —— 后者会让 `none` 被
   // `nonexistent` 冒名顶替,于是一份根本没声明 none 的提示词看起来是齐的。
   const present = new Set(lower.match(QY_AI_IDENTIFIER) ?? [])
-  const missing = [...known].filter((c) => !present.has(c)).sort()
+  const missing = categories
+    .map((c) => c.toLowerCase())
+    .filter((c) => !present.has(c))
+    .sort()
 
   const unknown = new Set<string>()
   for (const run of lower.match(QY_AI_CATEGORY_RUN) ?? []) {
@@ -166,6 +213,143 @@ export function qyAiPromptCategoryIssues(
     }
   }
   return { unknown: [...unknown].sort(), missing }
+}
+
+// ─────────────────────── 作用域策略的纯逻辑 ───────────────────────
+//
+// 这一块回答的是「现在哪些分组在被 AI 审核监控、各自抽多少」。在此之前
+// 抽样率是全站一个数字,而项目方要的是「AI内容审核要可以监控分组」。
+//
+// 两处不能靠肉眼保证的转换在这里,都有单测:
+//   - 百分比 ↔ 万分比(复用上面那两个函数,不再写第二份);
+//   - 「这一档到底在监控谁」的一句话描述 —— include / exclude 方向写反不会有
+//     任何症状,而写反的后果是一批本该豁免的分组开始把内容发往第三方。
+
+/** 作用域策略表单的草稿形态。两个抽样率在表单里是百分比文本。 */
+export type QyAiScopeDraft = {
+  id?: number
+  name: string
+  enabled: boolean
+  priority: number
+  model_scope: string
+  group_scope: string
+  group_scope_mode: 'include' | 'exclude'
+  prePercent: string
+  asyncPercent: string
+  remark: string
+}
+
+export function qyAiScopeToDraft(s?: QyAiScope): QyAiScopeDraft {
+  return {
+    id: s?.id,
+    name: s?.name ?? '',
+    // 新建默认**停用**:一条策略一保存就可能立刻改变谁的内容被发往第三方,
+    // 那件事该由一次显式的开关动作触发,而不是"我先建一条看看"的副作用。
+    enabled: s?.enabled ?? false,
+    priority: s?.priority ?? 100,
+    model_scope: s?.model_scope ?? '',
+    group_scope: s?.group_scope ?? '',
+    group_scope_mode: s?.group_scope_mode ?? 'include',
+    prePercent: qyAiBpsToPercentText(s?.pre_sample_rate_bps ?? 0),
+    asyncPercent: qyAiBpsToPercentText(s?.async_sample_rate_bps ?? 0),
+    remark: s?.remark ?? '',
+  }
+}
+
+export function qyAiScopeDraftToInput(draft: QyAiScopeDraft): QyAiScopeInput {
+  return {
+    id: draft.id,
+    name: draft.name.trim(),
+    enabled: draft.enabled,
+    priority: draft.priority,
+    model_scope: draft.model_scope.trim(),
+    group_scope: draft.group_scope.trim(),
+    group_scope_mode: draft.group_scope_mode,
+    // 解析失败一律回 0(= 这个时机不审),那是**不花钱**的那一侧。
+    // 反过来(解析失败落到全量送审)会把一次手滑变成一次成本暴涨,
+    // 而且是把用户内容发往第三方的那种。
+    pre_sample_rate_bps: qyAiPercentTextToBps(draft.prePercent),
+    async_sample_rate_bps: qyAiPercentTextToBps(draft.asyncPercent),
+    remark: draft.remark.trim(),
+  }
+}
+
+/** 一行汇总在界面上的定性,决定它用哪种底色与哪句说明。 */
+export type QyAiScopeRowKind =
+  /** 永远匹配不到:前面有一条作用域为空的启用策略把请求全收走了。 */
+  | 'shadowed'
+  /** 已停用,一个请求都收不到。 */
+  | 'disabled'
+  /** 两个时机都是 0 —— 免审名单,这是有意义的配置,不是"没配"。 */
+  | 'exempt'
+  /** 正在监控。 */
+  | 'active'
+
+/**
+ * 汇总行的定性。**顺序有讲究**:被遮住优先于停用优先于免审。
+ *
+ * 一条被遮住的策略哪怕抽样率写着 50%,它的真实抽样率也是 0;先报"免审"
+ * 会让人以为只要把抽样率改回去就好,而真正要改的是优先级。
+ */
+export function qyAiScopeRowKind(row: QyAiScopeSummaryRow): QyAiScopeRowKind {
+  if (row.shadowed) return 'shadowed'
+  if (!row.enabled) return 'disabled'
+  if (row.pre_sample_rate_bps <= 0 && row.async_sample_rate_bps <= 0) {
+    return 'exempt'
+  }
+  return 'active'
+}
+
+/**
+ * 「这一档在监控谁」的结构化描述,交给界面去套 i18n 文案。
+ *
+ * 不在这里拼中文:文案要过 i18next,而拼好的字符串没法翻译。这里只回答
+ * 三件事 —— 是不是全部分组、名单是什么、方向是哪一边。
+ */
+export function qyAiScopeAudience(row: QyAiScopeSummaryRow): {
+  allGroups: boolean
+  allModels: boolean
+  groups: string[]
+  models: string[]
+  exclude: boolean
+} {
+  const groups = qyAiSplitScopeList(row.group_scope)
+  const models = qyAiSplitScopeList(row.model_scope)
+  return {
+    allGroups: groups.length === 0,
+    allModels: models.length === 0,
+    groups,
+    models,
+    // 名单为空时方向没有意义:后端 compileScope 在名单为空时根本不看方向,
+    // 界面显示"排除(空名单)"会让人以为它排除了什么。
+    exclude: groups.length > 0 && row.group_scope_mode === 'exclude',
+  }
+}
+
+/**
+ * 作用域名单的切分,与后端 `splitList` **逐字符同口径**:分隔符只有
+ * 半角逗号与换行(`, \n \r`),两侧空白去掉,空项丢掉。
+ *
+ * 全角逗号「,」故意**不是**分隔符 —— 后端不认它。在这里多认一个分隔符会
+ * 造出最坏的那种偏差:界面上显示成两个分组、后端只认出一个长得像
+ * `vip,svip` 的分组名,于是这条策略永远匹配不到,而界面上它看起来完全正常。
+ */
+export function qyAiSplitScopeList(raw: string): string[] {
+  return raw
+    .split(/[,\n\r]/)
+    .map((s) => s.trim())
+    .filter((s) => s !== '')
+}
+
+/**
+ * 这一格里有没有**看起来像分隔符、实际不是**的字符(全角逗号、顿号、分号)。
+ *
+ * 中文输入法下打出全角逗号是最容易发生的一次手滑,而它的后果是整条策略
+ * 静默失效:`vip,svip` 会被当成一个分组名去精确匹配,永远匹配不到任何人。
+ * 后端不会报错(它是一个合法的字符串),所以只能在这里当场说出来。
+ */
+export function qyAiScopeHasFakeSeparator(raw: string): boolean {
+  return /[，、;；]/.test(raw)
 }
 
 /** 渠道表单的草稿形态。`apiKey` 为 null 表示"这次不动密钥"。 */

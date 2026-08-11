@@ -36,6 +36,7 @@ func (Mod) Tables() []any {
 		&CategoryCounter{},
 		&AIChannel{},
 		&AISetting{},
+		&AIScope{},
 		&AIReview{},
 	}
 }
@@ -163,6 +164,10 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 读接口不挂限流(它们是列表与统计);写接口一律挂关键操作限流:
 	// 渠道地址与密钥决定用户内容被发到哪里,抽样率与总开关决定花多少钱。
 	g.GET("/violation/ai-review/channels", adminListAIChannels)
+	// 作用域策略:「现在哪些分组在被监控、各自抽多少」的唯一入口。
+	// 它连同兜底档一起下发一张按匹配顺序排好的汇总表 —— 顺序就是热路径的
+	// 判定顺序,界面上排反了,运营会照着一个错误的心智模型去调优先级。
+	g.GET("/violation/ai-review/scopes", adminListAIScopes)
 	g.GET("/violation/ai-review/settings", adminGetAISetting)
 	g.GET("/violation/ai-review/logs", adminListAIReviews)
 	g.GET("/violation/ai-review/stats", adminAIReviewStats)
@@ -173,6 +178,11 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 没有它的话,这个按钮就是一个可以被反复点的、代替我们花钱的出站放大器。
 	g.POST("/violation/ai-review/channels/:id/test", crit, adminTestAIChannel)
 	g.PUT("/violation/ai-review/settings", crit, adminPutAISetting)
+	// 作用域策略的增改与删除。新建与编辑共用一个入口(请求体带 id 即为编辑),
+	// 与违规类型同形。改一条策略同时改变"谁的内容被发往第三方"与"花多少钱",
+	// 所以与渠道、设置同级挂关键操作限流。
+	g.PUT("/violation/ai-review/scopes", crit, adminUpsertAIScope)
+	g.DELETE("/violation/ai-review/scopes/:id", crit, adminDeleteAIScope)
 	// 兜底档与普通档是两条路由,不是一个带 is_default 参数的接口。
 	// 路径决定身份:没有任何请求体能把普通档变成兜底档、或把兜底档降级 ——
 	// 而"兜底档被降级"与"兜底档被删除"是同一件事(见 model.go 的三道锁)。

@@ -51,6 +51,8 @@ import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyKeys } from '../../lib/query-keys'
 import type { QyPage } from '../../lib/types'
+import { qyAdminViolationCategoriesQuery } from '../admin-violation-categories/api'
+import type { QyViolationCategoryRow } from '../admin-violation-categories/types'
 import { QyPager } from '../components/qy-pager'
 import { qyOpsErrorMessage } from '../ops/errors'
 import { formatQyTs, QY_EMPTY_TEXT } from '../ops/format'
@@ -130,6 +132,19 @@ export function QyAdminViolationRules() {
     queryFn: () => listQyViolationRules(params),
     staleTime: 15_000,
   })
+
+  // 违规类型清单。列表页要靠它把 `category_id` 翻成人话 —— 少了这一列，
+  // 「这条规则触发了记到哪里」在列表上完全看不出来，只能逐条打开抽屉去数。
+  // 拉不到不影响列表：那一列退回「未分类(兜底)」的措辞，不显示裸主键。
+  const categoryQuery = useQuery(qyAdminViolationCategoriesQuery())
+  const categoryById = useMemo(() => {
+    const map = new Map<number, QyViolationCategoryRow>()
+    for (const row of categoryQuery.data?.items ?? []) {
+      map.set(row.category.id, row)
+    }
+    return map
+  }, [categoryQuery.data])
+  const categoryFallbackId = categoryQuery.data?.fallback_id ?? 0
 
   const statsQuery = useQuery({
     queryKey: qyKeys.adminViolationStats(),
@@ -283,7 +298,7 @@ export function QyAdminViolationRules() {
               推进，所以它自己就是「这一页需不需要看这条提示」的开关。
               不摆出来的话，运营会照着被稀释成 1/N 的数字一路调低阈值，
               等 Redis 恢复、真实计数回来时一次性误伤一大批人。 */}
-          {(statsQuery.data?.breaker.rate_local_hits ?? 0) > 0 && (
+          {(statsQuery.data?.breaker?.rate_local_hits ?? 0) > 0 && (
             <Alert className='border-warning/40 bg-warning/5 [&>svg]:text-warning'>
               <Gauge />
               <AlertTitle>{t('qy_vio_rate_degraded_title')}</AlertTitle>
@@ -413,6 +428,55 @@ export function QyAdminViolationRules() {
                     id: 'name',
                     header: t('qy_vio_field_name'),
                     cell: (row: QyViolationRule) => row.name,
+                  },
+                  {
+                    id: 'category',
+                    header: t('qy_vio_col_category'),
+                    // 「命中记到哪个桶」必须在列表就看得见。
+                    //
+                    // 两件事一起显示，因为单看类型名回答不了项目方的问题：
+                    // 类型名说明记到哪里，阈值状态说明记满了会不会有事。
+                    // 阈值为 0 的类型上挂再多规则也封不了人，而那一档在列表上
+                    // 与「已经配好了」长得一模一样 —— 所以它单独染成 outline
+                    // 徽标，而不是和生效中的那一档共用一种写法。
+                    cell: (row: QyViolationRule) => {
+                      // category_id=0 的历史规则在运行期折进兜底类型，这里按
+                      // 同一口径显示，别让列表说「未分类」而后端记到别处。
+                      const target =
+                        row.category_id > 0
+                          ? row.category_id
+                          : categoryFallbackId
+                      const entry = categoryById.get(target)
+                      if (entry == null) {
+                        return (
+                          <span className='text-muted-foreground'>
+                            {t('qy_vio_col_category_none')}
+                          </span>
+                        )
+                      }
+                      return (
+                        <span className='flex flex-wrap items-center gap-1'>
+                          {entry.category.name}
+                          {entry.category.is_fallback && (
+                            <Badge variant='outline'>
+                              {t('qy_vcat_flag_fallback')}
+                            </Badge>
+                          )}
+                          {entry.threshold_state === 'active' ? (
+                            <Badge variant='secondary'>
+                              {t('qy_vcat_threshold_value', {
+                                count: entry.category.threshold,
+                                hours: entry.category.window_hours,
+                              })}
+                            </Badge>
+                          ) : (
+                            <Badge variant='outline'>
+                              {t('qy_vcat_threshold_off')}
+                            </Badge>
+                          )}
+                        </span>
+                      )
+                    },
                   },
                   {
                     id: 'phase',

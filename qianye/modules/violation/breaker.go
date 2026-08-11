@@ -187,6 +187,10 @@ func breakerStats() map[string]any {
 		"record_drops":         recordDrops.Load(),
 		"scan_timeouts":        scanTimeouts.Load(),
 		"rule_refresh_fails":   refreshFails.Load(),
+		// AI 审核抽样被评估的次数 = 通过了作用域闸的请求数。它是抽样率的分母:
+		// 审核明细行数远小于 `ai_sample_rolls × 抽样率` 时,说明作用域闸把流量
+		// 挡在了外面(或者相反,某条策略覆盖得比想象中广)。
+		"ai_sample_rolls": aiSampleRolls.Load(),
 		// 频率计数的降级可见性。rate_local_hits > 0 表示计数正落在**每节点各数各的**
 		// 进程内兜底上,多节点部署时单节点看到的条数只有真实值的约 1/N ——
 		// 不把它摆出来,运营会照着被稀释的数字一路调低阈值。

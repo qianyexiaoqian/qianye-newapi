@@ -214,6 +214,11 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'violation', 'ai-review', 'channels'] as const,
   adminViolationAiSettings: () =>
     [...qyKeys.all, 'admin', 'violation', 'ai-review', 'settings'] as const,
+  // 作用域策略与设置分开一个 key,但改任何一个都要让另一个失效:兜底抽样率
+  // 存在设置里、策略存在这张表里,而汇总表把两者画在同一张表上 —— 只失效
+  // 其中一个,那张表就会一半是新的一半是旧的。
+  adminViolationAiScopes: () =>
+    [...qyKeys.all, 'admin', 'violation', 'ai-review', 'scopes'] as const,
   // 成本统计带天数：改了回看窗口就必须重算,否则运营看到的还是上一档的数字,
   // 而那个数字正是"这个月花了多少"的答案。
   adminViolationAiStats: (days: number) =>

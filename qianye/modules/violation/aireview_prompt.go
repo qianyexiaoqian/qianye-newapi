@@ -72,22 +72,30 @@ func aiPromptFingerprint(prompt string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-// aiPromptCategoryReport 是自定义提示词与 aiCategories 闭集的对账结果。
+// aiPromptCategoryReport 是**实际发出去的那一份**提示词与类型闭集的对账结果。
+//
+// 对账对象在本轮变了:上一版对的是"库里存的那一段文本"与代码里的
+// aiCategories;现在类型清单由 renderAIPrompt 自动拼进去,所以对账要在
+// 渲染**之后**做 —— 那才是模型真正读到的东西。
 //
 // 空数组而不是 nil:这两个字段会直接下发给管理端,前端对着 null 调 .map
 // 会整页白屏(本仓 nil_array_json_test.go 钉的就是这一类)。
 type aiPromptCategoryReport struct {
-	// Unknown 是提示词枚举了、闭集里却没有的类型名。模型真按它回,
-	// normalizeAICategory 会把它归成 "other" —— 按那个名字过滤的规则永不命中。
-	// 这是"改坏了那一行"最典型的形状。
-	Unknown []string `json:"unknown"`
-	// Missing 是闭集里有、提示词却一次都没提的类型名。模型不会主动返回它们,
-	// 于是按它们过滤的规则从此静默失效。
+	// Unknown 是提示词枚举了、类型表里却没有的类型名。
 	//
-	// 只告警不拒绝:**收窄类型是合法用法**(只关心 sexual 与 jailbreak 的站点
-	// 完全可以把别的删掉),而 validateAIRule 的注释里也写明"运营完全可能定义
-	// 一套自己的类型名"。在一段自由文本上做启发式解析然后据此拒绝保存,
-	// 误判时运营无从辩解,只能眼看着这一格再也存不进去。
+	// 自动生成之后它仍然会出现,而且是这一版**唯一真正要紧**的那一项:
+	// 上一版留下来的自定义提示词里往往还手抄着一行
+	// `none, sexual, violence, ...`,而本站的类型表里根本没有 sexual。
+	// 渲染时权威清单被追加在后面,但模型仍可能照着上面那行回 sexual ——
+	// 那一票会被 resolveCategory 折进「未分类」。
+	// 处置办法是把手抄的那一行删掉,或者把它换成 {{categories}} 占位符。
+	Unknown []string `json:"unknown"`
+	// Missing 是类型表里有、渲染后的提示词却一次都没提到的类型名。
+	//
+	// 正常情况下它**恒为空**:清单是自动拼进去的。它非空只意味着一件事 ——
+	// 渲染这一步出了问题(类型表这一轮没加载上、或者拼接被改坏了)。
+	// 留着这一项就是为了让那种事故有一个症状,而不是"提示词看起来正常、
+	// 只是少了几个类型"。
 	Missing []string `json:"missing"`
 }
 
@@ -110,33 +118,40 @@ var aiCategoryRunRe = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_-]*(?:[ \t]*[,、][
 
 var aiCategorySepRe = regexp.MustCompile(`[ \t]*[,、][ \t]*`)
 
-// inspectAIPromptCategories 对账一份自定义提示词与代码里的类型闭集。
+// inspectAIPromptCategories 对账**渲染之后**的提示词与本轮类型闭集。
 //
-// 默认档(空串)直接返回干净:那时两份事实同源,已由
-// TestAIPromptDeclaresEveryCategory 钉住,再对一次账只会产出噪声。
-func inspectAIPromptCategories(prompt string) aiPromptCategoryReport {
+// 传进来的必须是 renderAIPrompt 的产物,不是库里那一段:后者不含自动拼上去的
+// 清单,拿它对账会把每一个类型都报成"缺失",而全是噪声的告警等于没有告警。
+//
+// 闭集为空(类型表这一轮没加载上)时直接返回干净:那时对账的两边都不可信,
+// 报出来的东西只会把人引向错误的方向。
+func inspectAIPromptCategories(rendered string, vocab aiVocabulary) aiPromptCategoryReport {
 	report := aiPromptCategoryReport{Unknown: []string{}, Missing: []string{}}
-	if strings.TrimSpace(prompt) == "" {
+	if strings.TrimSpace(rendered) == "" || len(vocab.keys) == 0 {
 		return report
 	}
-	lower := strings.ToLower(prompt)
+	lower := strings.ToLower(rendered)
 
 	present := make(map[string]bool, 64)
 	for _, tok := range aiIdentifierRe.FindAllString(lower, -1) {
 		present[tok] = true
 	}
-	for cat := range aiCategories {
+	for cat := range vocab.keys {
 		if !present[cat] {
 			report.Missing = append(report.Missing, cat)
 		}
 	}
+
+	// none 参与"已知"判定但不属于类型表:它是提示词里合法的取值,把它算成
+	// 未知会让**每一份**提示词都报一条噪声。
+	isKnown := func(tok string) bool { return tok == aiNoViolationCategory || vocab.known(tok) }
 
 	seen := make(map[string]bool, 8)
 	for _, run := range aiCategoryRunRe.FindAllString(lower, -1) {
 		tokens := aiCategorySepRe.Split(run, -1)
 		known := 0
 		for _, tok := range tokens {
-			if _, ok := aiCategories[tok]; ok {
+			if isKnown(tok) {
 				known++
 			}
 		}
@@ -147,7 +162,7 @@ func inspectAIPromptCategories(prompt string) aiPromptCategoryReport {
 			continue
 		}
 		for _, tok := range tokens {
-			if _, ok := aiCategories[tok]; ok || seen[tok] {
+			if isKnown(tok) || seen[tok] {
 				continue
 			}
 			seen[tok] = true

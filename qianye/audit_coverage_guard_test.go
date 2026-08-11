@@ -58,6 +58,7 @@ var auditWriteFuncs = map[string]bool{
 	"writeCategoryAudit":     true, // violation:违规类型写入/归档,成功与失败同一出口
 	"writeAIReviewAudit":     true, // violation:AI 审核渠道写入/删除,成功与失败同一出口
 	"writeAISettingAudit":    true, // violation:AI 审核设置(抽样率、总开关)变更,成功与失败同一出口
+	"writeAIScopeAudit":      true, // violation:AI 审核作用域策略(谁被送审、抽多少)写入/删除,成功与失败同一出口
 	"afterAIChange":          true, // violation:bump 版本 + 重载 + 审计,三件一起做
 }
 
@@ -191,6 +192,16 @@ var auditRequired = []struct {
 			"发往第三方。两者都是「改一次影响之后每一笔」的量,而且都没有任何" +
 			"用户可见的症状。成功与失败各一条:被「未确认内容出境」闸门挡下的那次" +
 			"同样要查得到 —— 它说明有人正在试图打开这个开关"},
+	{"modules/violation/api_admin_aiscope.go", "adminUpsertAIScope", 5,
+		"一条作用域策略同时决定两件事:**谁的请求内容会被发往第三方**,以及为此花多少钱。" +
+			"两者都没有任何用户可见的症状 —— 接口 200、界面正常、业务照跑。把一个分组从 " +
+			"exclude 名单里拿掉,或者把它的抽样率从 1% 改成 50%,事后只有 before/after 快照" +
+			"能回答「原来是什么样」。校验失败、条数查询失败、撞上条数上限、写库失败四条" +
+			"失败路径各留一条:「我配了三次都没保存上」只能靠失败审计回答"},
+	{"modules/violation/api_admin_aiscope.go", "adminDeleteAIScope", 2,
+		"删掉一条策略之后,原本被它覆盖的分组会**落回兜底抽样率** —— 可能从 0 变成在审、" +
+			"也可能从 50% 变成 1%,而界面上只是少了一行。删的是什么只剩 before 快照能回答;" +
+			"删库失败同样要留痕,那时库里到底还在不在是不确定的"},
 	{"modules/commission/api_admin.go", "adminSettle", 1,
 		"手动结算把冻结佣金变成可提现余额,是真的动钱;谁按的按钮必须可查"},
 	{"modules/commission/api_admin.go", "adminInvalidateCache", 1,

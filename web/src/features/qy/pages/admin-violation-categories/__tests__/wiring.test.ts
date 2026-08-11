@@ -215,6 +215,8 @@ describe('前端校验与后端同口径', () => {
       remark: '',
       public_title: '',
       public_desc: '',
+      ai_guidance: '',
+      ai_excluded: false,
       published: false,
       enabled: true,
       window_hours: 24,

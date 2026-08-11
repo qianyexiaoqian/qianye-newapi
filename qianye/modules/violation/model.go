@@ -305,8 +305,54 @@ type Category struct {
 	// 有些类型(例如仍在观察期的新类型)不适合先告诉用户,但它的计数不该因此停摆。
 	Published bool `json:"published" gorm:"not null;default:false"`
 
+	// AIGuidance 是**第三份文本**:给审核模型看的判定说明。
+	//
+	// # 三份文本各去哪里,这一段就是它们的边界
+	//
+	//	Remark       内部备注   → 只有管理端。不进提示词,不进用户端。
+	//	PublicTitle  公示文案   → 用户端。绝不写判据。
+	//	PublicDesc
+	//	AIGuidance   判定说明   → 随提示词发往第三方审核服务。不进用户端。
+	//
+	// 为什么不能拿 Remark 顶上:Remark 写的是运营口径("这一类误杀多,先观察"、
+	// "李四负责复核"),把它塞进提示词是在给模型灌噪声,还会把内部人名、
+	// 复核流程一起送到第三方。反过来 AIGuidance 写的是判据("请求可执行的漏洞
+	// 利用代码、C2 框架、勒索软件"),它与 Remark 只是碰巧都"内部",用途不同。
+	//
+	// 为什么不能拿 PublicDesc 顶上:公示文案泄露判定细节等于把绕过方法印给用户,
+	// 而判定说明**必须**写细节 —— 两者的要求是直接矛盾的,共用一列只能二选一。
+	//
+	// 空串表示这一类只把 Key 与 Name 告诉模型,不给额外判据。那是可用的
+	// (类型名本身通常已经有信息量),只是准确率会低一档。
+	// 列宽刻意比 Remark(512)窄一半:这一段是**每一次审核调用都要付一遍**的
+	// token,而类型条数由运营决定、没有上界。512 × 20 个类型是一份没人会注意到
+	// 的固定成本,而它每天要被付几十万遍。
+	AIGuidance string `json:"ai_guidance" gorm:"type:varchar(256);not null;default:''"`
+	// AIExcluded=true 表示这一类**不出现在发给审核模型的类型清单里**。
+	//
+	// # 为什么是"排除"而不是"启用"
+	//
+	// 两条理由,方向一致:
+	//
+	//  1. 升级安全。存量库里这一列会被 AutoMigrate 补成 false,于是升级上来的
+	//     站点全部类型照常参与 —— 不需要一次"把老行刷成 true"的迁移,
+	//     而那种迁移一旦每次启动都跑,管理员关掉的开关会在下次重启被打开。
+	//  2. 出厂语义。新建一个类型时运营想的是"让 AI 也认这一类",默认参与才对得上。
+	//
+	// # 什么时候真的要排除
+	//
+	// 判据不是文本的类型。本仓出厂就有两个:distill(判据是请求频率,不看文本)
+	// 与 upstream(判据是上游返回的策略性 4xx)。把它们写进类型清单,模型会
+	// 对着一段普通对话猜"这像不像批量采集",而那一票命中会加到一个语义完全
+	// 不同的计数上 —— 那正是"配置正确却算错账"。
+	AIExcluded bool `json:"ai_excluded" gorm:"not null;default:false"`
+
 	// Enabled=false 表示这一类的**阈值**暂时停用(等价于 Threshold=0),
 	// 类型本身仍然存在、规则仍然绑着它、计数仍然累加。
+	//
+	// 它与 AIExcluded 是两件事,不要合并:关掉阈值是"这条线先不生效",
+	// 排除 AI 是"这一类模型判不了"。合成一个开关的话,运营为了暂停一条线
+	// 就会顺手把这一类从 AI 的类型清单里删掉,而清单变了模型的输出分布就变了。
 	Enabled     bool `json:"enabled" gorm:"not null;default:false"`
 	WindowHours int  `json:"window_hours" gorm:"not null;default:24"`
 	Threshold   int  `json:"threshold" gorm:"not null;default:0"`

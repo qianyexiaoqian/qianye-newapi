@@ -97,6 +97,15 @@ export function QyAdminViolationCategories() {
   const unsetCount = rows.filter(
     (row) => row.threshold_state === 'unset' && !row.category.is_fallback
   ).length
+  // 「一个都没配」是与「还有 N 个没配」性质不同的一件事，所以单独说一句。
+  //
+  // 上面那条横幅刻意把兜底排除在外（它不是业务类型），可现网正好是**全部**
+  // 六类连同兜底一起都是 0 —— 也就是说单类型线一次都不会触发。那条按业务类型
+  // 计数的横幅在这一档只说「还有 6 个没配线」，读起来像"配了几个、还差几个"，
+  // 而真相是"这条线整条是关的"。规则表单那一格已经按单条规则说过一次，
+  // 这里是全站口径的那一句。
+  const allIdle =
+    rows.length > 0 && rows.every((row) => row.threshold_state !== 'active')
 
   return (
     <QySectionPageLayout>
@@ -140,6 +149,12 @@ export function QyAdminViolationCategories() {
             <p className='text-muted-foreground rounded-md border border-dashed p-3 text-xs'>
               {t('qy_vcat_two_lines_note')}
             </p>
+
+            {allIdle && (
+              <p className='text-warning border-warning/40 bg-warning/5 rounded-md border p-3 text-xs'>
+                {t('qy_vcat_all_idle_banner')}
+              </p>
+            )}
 
             {/* 「还有 N 类没配线」。不给这一条的话，六行"不计门槛"看起来
                 与"已经配好了"没有区别 —— 而它们的差别是这套功能生效没有。 */}

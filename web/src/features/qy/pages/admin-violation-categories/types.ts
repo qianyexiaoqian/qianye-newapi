@@ -31,10 +31,30 @@ export type QyViolationCategory = {
   /** 稳定业务键。外部审核来源（AI 审核）按它绑定类型，改名不影响它。 */
   key: string
   name: string
-  /** 内部说明。**绝不**渲染进任何面向用户的位置。 */
+  /** 内部说明。**绝不**渲染进任何面向用户的位置,也**不**进 AI 提示词。 */
   remark: string
   public_title: string
   public_desc: string
+  /**
+   * 给审核模型看的判定说明。**第三份文本**,与 `remark`、`public_*` 各去各的:
+   *
+   *   remark        → 只有管理端。写运营口径。
+   *   public_title  → 用户端。绝不写判据。
+   *   public_desc
+   *   ai_guidance   → 随提示词发往第三方审核服务。写判据。不进用户端。
+   *
+   * 拿公示文案当判定说明会让模型判得更差(它刻意不含判据);反过来把判定说明
+   * 公示出去等于把绕过方法印给用户。
+   */
+  ai_guidance: string
+  /**
+   * 这一类**不**出现在发给审核模型的类型清单里。
+   *
+   * 只给判据不是文本的类型用:蒸馏看的是请求频率、上游拒绝看的是上游 4xx。
+   * 把它们放进清单,模型会对着单条请求猜,而猜出来的那一票会加到一个语义
+   * 完全不同的计数上。
+   */
+  ai_excluded: boolean
   published: boolean
   /** 这一类的**阈值**是否生效。false 等价于 threshold=0，计数照常累加。 */
   enabled: boolean
@@ -96,6 +116,8 @@ export type QyViolationCategoryInput = {
   remark: string
   public_title: string
   public_desc: string
+  ai_guidance: string
+  ai_excluded: boolean
   published: boolean
   enabled: boolean
   window_hours: number

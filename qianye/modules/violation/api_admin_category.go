@@ -42,6 +42,14 @@ type categoryUpsertReq struct {
 	PublicDesc  string `json:"public_desc"`
 	Published   bool   `json:"published"`
 
+	// AIGuidance / AIExcluded 是 AI 审核那一侧的两格。
+	//
+	// AIGuidance 是**第三份文本**(内部备注 / 公示文案 / 给 AI 的判定说明),
+	// 三份的去向各不相同,见 model.go 的 Category.AIGuidance。
+	// AIExcluded 只给"判据不是文本"的类型用(蒸馏看频率、上游拒绝看 4xx)。
+	AIGuidance string `json:"ai_guidance"`
+	AIExcluded bool   `json:"ai_excluded"`
+
 	Enabled     bool `json:"enabled"`
 	WindowHours int  `json:"window_hours"`
 	Threshold   int  `json:"threshold"`
@@ -196,6 +204,8 @@ func adminUpsertCategory(c *gin.Context) {
 		PublicTitle: req.PublicTitle,
 		PublicDesc:  req.PublicDesc,
 		Published:   req.Published,
+		AIGuidance:  req.AIGuidance,
+		AIExcluded:  req.AIExcluded,
 		Enabled:     req.Enabled,
 		WindowHours: req.WindowHours,
 		Threshold:   req.Threshold,
@@ -475,5 +485,10 @@ func categoryAuditSnap(cat Category) map[string]any {
 		"published": cat.Published, "enabled": cat.Enabled,
 		"window_hours": cat.WindowHours, "threshold": cat.Threshold,
 		"is_fallback": cat.IsFallback,
+		// 判定说明会随提示词发往第三方审核服务,改它等于改"什么算这一类" ——
+		// 与改提示词同级。整段进快照会把 SnapshotMaxBytes 撑爆(与
+		// aiSettingAuditSnap 同一条理由),所以只记"有没有、多长、参不参与"。
+		"ai_excluded":       cat.AIExcluded,
+		"ai_guidance_runes": len([]rune(cat.AIGuidance)),
 	}
 }

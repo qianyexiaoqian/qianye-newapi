@@ -186,6 +186,9 @@ func TestRuleTestInputsFollowTheRule(t *testing.T) {
 // 就必须能分别落到"不在作用域""在作用域但没命中""命中"这三格上。
 func TestRuleTestOutcomeThreeStates(t *testing.T) {
 	useGenerousScanBudget(t)
+	// AI 类型的归一读的是快照里的类型闭集(与线上同一份),零值快照会把
+	// 每一个类型都折进兜底,于是这一批用例断言的就不再是它们要测的东西。
+	installSeedVocabSnapshot(t)
 
 	cases := []struct {
 		name      string
@@ -397,6 +400,7 @@ func TestRuleTestOutcomeThreeStates(t *testing.T) {
 // request_text 会被 sample_text 偷偷灌满,于是一条 prompt 规则用上游样本也"命中" ——
 // 一个凭空捏造的绿灯。
 func TestRuleTestRequestSeparatesTextChannels(t *testing.T) {
+	installSeedVocabSnapshot(t)
 	t.Run("缺字段回落到 sample_text", func(t *testing.T) {
 		var req ruleTestReq
 		require.NoError(t, json.Unmarshal([]byte(`{"sample_text":"abc"}`), &req))

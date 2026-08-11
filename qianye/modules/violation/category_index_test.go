@@ -34,6 +34,11 @@ type legacyCategory struct {
 	Remark      string `gorm:"type:varchar(512);not null"`
 	PublicTitle string `gorm:"type:varchar(64);not null"`
 	PublicDesc  string `gorm:"type:varchar(512);not null"`
+	// 这个 fixture 复刻的是**旧的唯一索引形状**,不是"某个历史版本的完整列集"。
+	// 列必须跟着 Category 走 —— ensureSeedCategories 会写全部列,少一列就是
+	// "no such column",而那个错误与本文件要证明的索引缺陷毫无关系。
+	AIGuidance  string `gorm:"type:varchar(256);not null"`
+	AIExcluded  bool   `gorm:"not null"`
 	Published   bool   `gorm:"not null"`
 	Enabled     bool   `gorm:"not null"`
 	WindowHours int    `gorm:"not null"`

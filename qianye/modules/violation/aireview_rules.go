@@ -64,9 +64,12 @@ func validateAIRule(r *Rule) error {
 			r.AIMinConfidence.String())
 	}
 	// 类型白名单里的每一项都要能与模型返回的 category 精确对上。
-	// 这里只挡字符集(大小写与空格是最常见的填法错误,而它们的表现是
-	// "这条规则永远不命中"),不挡具体取值 —— 提示词可以被改写,
-	// 运营完全可能定义一套自己的类型名。
+	//
+	// 这里挡两件事:字符集(大小写与空格是最常见的填法错误,表现是"这条规则
+	// 永远不命中"),以及保留值 none。**不挡具体取值** —— 类型清单现在来自
+	// qy_violation_category,而这个函数是纯校验、手上没有库句柄;更实际的是
+	// 运营完全可能先写规则再建类型,在这里拒绝会把那个顺序变成非法。
+	// 填了一个不存在的类型的后果由管理端的对账提示承担,不由写入闸承担。
 	for _, cat := range splitList(strings.ToLower(r.Pattern)) {
 		for _, ch := range cat {
 			if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' {
@@ -74,6 +77,15 @@ func validateAIRule(r *Rule) error {
 			}
 			return fmt.Errorf("违规类型 %q 含非法字符:类型名只能包含小写字母、数字、下划线与连字符"+
 				"(它要与审核模型返回的 category 精确匹配,一个空格就会让这条规则永不命中)", cat)
+		}
+		// none 是"未违规"的取值,不是一个违规类型。把它写进白名单的规则
+		// 一次都不会命中(matchAIRule 的第一道闸就是 out.Violated),
+		// 而界面上它看起来配得很合理 —— 又一条"保存得下去、线上永不生效"。
+		if cat == aiNoViolationCategory {
+			return fmt.Errorf("%q 表示「未违规」,不是一个违规类型,不能写进类型白名单:"+
+				"这条规则只在模型判定违规时才会被考虑,填 %q 等于让它永不命中。"+
+				"要「只要判违规就命中、不看类型」请把类型白名单留空",
+				aiNoViolationCategory, aiNoViolationCategory)
 		}
 	}
 	return nil
@@ -165,9 +177,12 @@ func validateAIChannel(ch *AIChannel) error {
 // 没有规则消费它,拉两张表纯属给每个刷新周期加两次往返。
 //
 // 返回 (nil, nil) 表示"本功能这一轮不生效",这是一个**正常**结果而不是错误:
-// 总开关关着、抽样率为 0、一个渠道都没启用、渠道密钥全都解不开 —— 四种都归它。
-// 只有查询本身失败才返回 error。
-func buildAIRuntime(gdb *gorm.DB, needed bool) (*aiRuntime, error) {
+// 总开关关着、兜底率与全部策略的抽样率都是 0、一个渠道都没启用、渠道密钥
+// 全都解不开 —— 四种都归它。只有查询本身失败才返回 error。
+// vocab 是**快照已经从同一批类型行算好**的那份闭集。传进来而不是在这里再查
+// 一次库:两次查询会让规则、类型计数、AI 闭集三者可能来自不同时刻,而"规则按
+// 新类型过滤、闭集还是旧的"的表现是那条规则永不命中。
+func buildAIRuntime(gdb *gorm.DB, needed bool, vocab aiVocabulary) (*aiRuntime, error) {
 	if !needed || gdb == nil {
 		return nil, nil
 	}
@@ -176,7 +191,18 @@ func buildAIRuntime(gdb *gorm.DB, needed bool) (*aiRuntime, error) {
 		// 设置行还没建(第一次部署)不是错误,按"未启用"处理。
 		return nil, nil
 	}
-	if !setting.Enabled || setting.SampleRateBps <= 0 {
+	if !setting.Enabled {
+		return nil, nil
+	}
+	// 作用域策略必须在"抽样率是否为 0"这道闸**之前**读:兜底率 0 + 一条
+	// "高风险分组 50%" 的策略是最典型的用法(只盯某几个分组),而旧判据
+	// (`SampleRateBps <= 0 → 整体不生效`)会把它整个关掉 —— 界面上策略
+	// 配得好好的,线上一次都不跑,而且零报错。
+	scopes, err := buildAIScopes(gdb)
+	if err != nil {
+		return nil, err
+	}
+	if !aiScopesReachAnySampling(setting.SampleRateBps, scopes) {
 		return nil, nil
 	}
 
@@ -190,7 +216,18 @@ func buildAIRuntime(gdb *gorm.DB, needed bool) (*aiRuntime, error) {
 		PreTimeoutMs:   clampInt(setting.PreTimeoutMs, minAITimeoutMs, maxPreTimeoutMs),
 		AsyncTimeoutMs: clampInt(setting.AsyncTimeoutMs, minAITimeoutMs, maxAsyncTimeoutMs),
 		Prompt:         setting.Prompt,
+		Vocab:          vocab,
 		MaxInputChars:  clampInt(setting.MaxInputChars, 200, maxAIMaxInputChars),
+		Scopes:         scopes,
+	}
+	// 闭集只剩兜底那一条(或干脆是空的)时告警一次:此时模型只能回 none 或
+	// 「未分类」,按具体类型过滤的规则一条都不会命中。原因通常是类型表这一轮
+	// 没加载上,或者全部类型都被标了"不参与 AI 审核"。不阻断 —— 不限类型的
+	// 规则照常工作,而把整个功能关掉是更大的损失。
+	if len(rt.Vocab.Defs) <= 1 {
+		common.SysError("qianye/violation: AI 审核的违规类型清单为空(只有兜底类型)," +
+			"模型将无法给出具体类型,按类型过滤的 ai_review 规则不会命中。" +
+			"请确认违规类型页至少有一条未被标记为「不参与 AI 审核」的类型")
 	}
 	for i := range rows {
 		row := rows[i]

@@ -566,13 +566,18 @@ func (r *ruleTestReq) input() scanInput {
 		if err != nil {
 			conf = 0
 		}
+		violated := r.AIVerdict == OutcomeViolation
+		// 归一走线上同一个函数、同一份类型闭集:模型返回的 category 也走它。
+		// 两侧不同口径就会得到"试跑说命中、线上不命中"—— 本模块已经在
+		// groupname 上栽过两次。闭集取当前快照,与线上这一刻用的是同一份。
+		res := Snapshot().aiVocab.resolveCategory(r.AICategory, violated)
 		ai = &aiOutcome{
-			Outcome:  r.AIVerdict,
-			Violated: r.AIVerdict == OutcomeViolation,
-			// 归一走线上同一个函数:模型返回的 category 也走它。两侧不同口径就会
-			// 得到"试跑说命中、线上不命中"——本模块已经在 groupname 上栽过两次。
-			Category:   normalizeAICategory(r.AICategory),
-			Confidence: clampConfidence(conf),
+			Outcome:         r.AIVerdict,
+			Violated:        violated,
+			Category:        res.Key,
+			RawCategory:     clipRunes(res.Raw, 64),
+			CategoryUnknown: res.Fallback,
+			Confidence:      clampConfidence(conf),
 		}
 	}
 	return scanInput{

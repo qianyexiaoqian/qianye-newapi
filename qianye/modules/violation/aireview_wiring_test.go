@@ -38,7 +38,7 @@ func newAIWiringDB(t *testing.T) *gorm.DB {
 	sqlDB.SetMaxOpenConns(1) // 内存库按连接隔离
 	require.NoError(t, gdb.AutoMigrate(
 		&Rule{}, &RuleVersion{}, &Record{}, &Payload{},
-		&Category{}, &AISetting{}, &AIChannel{}, &AIReview{},
+		&Category{}, &AISetting{}, &AIChannel{}, &AIReview{}, &AIScope{},
 	))
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return gdb
@@ -79,7 +79,7 @@ func TestBuildAIRuntimeCollapsesToNil(t *testing.T) {
 				}).Error)
 			}
 
-			rt, err := buildAIRuntime(gdb, tc.needed)
+			rt, err := buildAIRuntime(gdb, tc.needed, seedAIVocabulary())
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantActive, rt != nil)
 		})
@@ -111,7 +111,7 @@ func TestBuildAIRuntimeSkipsUndecryptableChannel(t *testing.T) {
 	require.NoError(t, gdb.Model(&AIChannel{}).Where("id = ?", bad.Id).
 		Updates(map[string]any{"key_nonce": nonce, "key_cipher": cipher, "key_version": version}).Error)
 
-	rt, err := buildAIRuntime(gdb, true)
+	rt, err := buildAIRuntime(gdb, true, seedAIVocabulary())
 	require.NoError(t, err)
 	require.NotNil(t, rt)
 	require.Len(t, rt.Channels, 1, "解不开密钥的渠道必须整条跳过,而不是裸调")
@@ -341,7 +341,11 @@ func TestAIAsyncReviewRecordsWithoutCharging(t *testing.T) {
 	useGenerousScanBudget(t)
 	gdb := newAIWiringDB(t)
 	srv := newFakeReviewServer(t, func(w http.ResponseWriter, _ string) {
-		_, _ = w.Write([]byte(okVerdict(true, "spam", 0.88, 200, 30)))
+		// 类型名必须是**违规类型表里真实存在**的 key(rtForServer 装的是出厂
+		// 那一份闭集)。随便编一个名字会被 resolveCategory 折进「未分类」,
+		// 于是这条按类型过滤的规则不命中 —— 而那正是本轮要让人看得见的行为,
+		// 不该在这里被当成"测试挂了"。
+		_, _ = w.Write([]byte(okVerdict(true, CatFraudSpam, 0.88, 200, 30)))
 	})
 
 	// 类型表:命中之后必须冻结到违规类型上(与另一路的类型体系对接)。
@@ -357,7 +361,7 @@ func TestAIAsyncReviewRecordsWithoutCharging(t *testing.T) {
 	// "撞上方言错误"当探针来证明,这里专注于记录本身与类型冻结。
 	rule, err := compile(Rule{
 		Id: 51, Name: "AI-垃圾信息", Enabled: true, Mode: ModeEnforce, Phase: PhasePostAsync,
-		MatchType: MatchAIReview, Pattern: "spam", Action: ActionRecord,
+		MatchType: MatchAIReview, Pattern: CatFraudSpam, Action: ActionRecord,
 		CountWeight: 0, CategoryId: cat.Id, PublicReason: "垃圾信息",
 	})
 	require.NoError(t, err)
@@ -384,7 +388,7 @@ func TestAIAsyncReviewRecordsWithoutCharging(t *testing.T) {
 	assert.Zero(t, rec.FeeQuota)
 	assert.Equal(t, cat.Id, rec.CategoryId, "命中必须落到违规类型上,不另造一套记录")
 	assert.Equal(t, "垃圾信息", rec.CategoryName)
-	assert.Contains(t, rec.MatchedTerms, "spam")
+	assert.Contains(t, rec.MatchedTerms, CatFraudSpam)
 
 	t.Run("权重大于 0 时真的会去推进违规计数", func(t *testing.T) {
 		// 探针:SQLite 跑不了 bumpCounter 的 MySQL 方言语句,所以"走到了那一步"
@@ -392,7 +396,7 @@ func TestAIAsyncReviewRecordsWithoutCharging(t *testing.T) {
 		// 这一条立刻变绿 —— 那正是它要挡住的回归(异步审核只落记录、不计次)。
 		counted, err := compile(Rule{
 			Id: 54, Name: "AI-计次", Enabled: true, Mode: ModeEnforce, Phase: PhasePostAsync,
-			MatchType: MatchAIReview, Pattern: "spam", Action: ActionRecord,
+			MatchType: MatchAIReview, Pattern: CatFraudSpam, Action: ActionRecord,
 			CountWeight: 1, CategoryId: cat.Id,
 		})
 		require.NoError(t, err)
