@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 /* eslint-disable react-refresh/only-export-components */
 import { useQueryClient } from '@tanstack/react-query'
-import type { ColumnDef } from '@tanstack/react-table'
+import type { Column, ColumnDef, Table } from '@tanstack/react-table'
 import {
   AlertTriangle,
   ChevronDown,
@@ -32,7 +32,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
-import { BadgeListCell } from '@/components/data-table'
+import { BadgeListCell, DataTableColumnHeader } from '@/components/data-table'
 import { GroupBadge } from '@/components/group-badge'
 import { ProviderBadge } from '@/components/provider-badge'
 import { StatusBadge, type StatusBadgeProps } from '@/components/status-badge'
@@ -46,6 +46,14 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+// qy 扩展：「已使用 / 剩余」这一列上的清零直达入口。
+// 两个入口都**不经过右上角的「批量操作」开关** —— 那个开关是前置步骤，
+// 不打开它行首连勾选框都没有，底部也永远不浮出工具条，而项目方三次都是
+// 对着这一列问"清零功能在哪"。理由与形状见 features/qy/channel-bulk/reset-usage.tsx。
+import {
+  QyChannelResetUsageColumnAction,
+  QyChannelResetUsageRowAction,
+} from '@/features/qy/channel-bulk/reset-usage'
 import { toIntlLocale } from '@/i18n/languages'
 import {
   formatCurrencyFromUSD,
@@ -323,6 +331,59 @@ const MAX_INLINE_BALANCE_CHARS = 8
 const SENSITIVE_MASK = '••••'
 
 /**
+ * 「已使用 / 剩余」列的表头 —— 列名 + 清零的直达入口（qy 扩展）。
+ *
+ * 入口挂在表头上，是因为项目方三次都在看这一列。它自带勾选面板，
+ * **不需要先打开右上角的「批量操作」开关**：那个开关是一道前置步骤，
+ * 而"看到这一列 → 发起清零"必须在两次点击之内完成。
+ *
+ * 列名本身仍然交给上游的 `DataTableColumnHeader` 渲染，而不是写成一段纯文本：
+ * 排序（升序 / 降序）与「隐藏此列」都长在那个组件上，自己拼一个 <span> 会把
+ * 它们一起弄丢 —— 加一条更短的路不该以弄坏这一列原有的功能为代价。
+ *
+ * 渠道取自 `flatRows`：标签聚合模式下父行是标签、真正的渠道在子行，
+ * 只读顶层会得到一串清不了的标签名。聚合行自己被 `isTagAggregateRow` 滤掉 ——
+ * 它没有 id 对应的渠道行，后端会整条报 not_found。
+ */
+function BalanceColumnHeader({
+  table,
+  column,
+}: {
+  table: Table<Channel>
+  column: Column<Channel, unknown>
+}) {
+  const { t } = useTranslation()
+
+  return (
+    <div className='flex items-center gap-1'>
+      <DataTableColumnHeader column={column} title={t('Used / Remaining')} />
+      <QyChannelResetUsageColumnAction
+        channels={resettableChannelsOf(table.getCoreRowModel().flatRows)}
+      />
+    </div>
+  )
+}
+
+/**
+ * 当前这一屏里"能被清零"的渠道。
+ *
+ * 标签聚合模式下父行是标签、真正的渠道在子行，所以取 `flatRows` 而不是顶层；
+ * 聚合行自己被滤掉 —— 它没有对应的渠道记录，后端会整条报 not_found。
+ */
+export function resettableChannelsOf(
+  rows: { original: Channel }[]
+): { id: number; name: string; used_quota: number }[] {
+  return rows
+    .map((row) => row.original)
+    .filter((channel) => !isTagAggregateRow(channel))
+    .map((channel) => ({
+      id: channel.id,
+      name: channel.name,
+      used_quota: channel.used_quota ?? 0,
+    }))
+}
+
+/**
  * Balance cell component with click to update
  */
 function BalanceCell({ channel }: { channel: Channel }) {
@@ -484,6 +545,17 @@ function BalanceCell({ channel }: { channel: Channel }) {
             <p>{sensitiveVisible ? usedLabel : maskedUsedLabel}</p>
           </TooltipContent>
         </Tooltip>
+        {/* qy 扩展：单渠道清零。刻意贴着「已使用」这半边、而不是放在行尾的
+            更多菜单里 —— 清掉的就是它左边那个数。右边「剩余」那半边原有的
+            "点一下更新余额"保持不动：两个动作落点分开，才不会让人以为
+            点一下两个都清。 */}
+        <QyChannelResetUsageRowAction
+          channel={{
+            id: channel.id,
+            name: channel.name,
+            used_quota: usedQuota,
+          }}
+        />
         <Tooltip>
           <TooltipTrigger
             render={
@@ -1091,9 +1163,17 @@ export function useChannelsColumns(
       // Balance column (Used/Remaining)
       {
         accessorKey: 'balance',
-        header: t('Used / Remaining'),
+        // header 从字符串变成组件之后，「显示/隐藏列」菜单与卡片视图的字段名
+        // 会回落到列 id（那会显示成 "balance"）—— 所以列名在这里补一份。
+        // meta.label 只是**列名**，不参与表头渲染（见 data-table-header.tsx 里
+        // renderHeaderContent 的注释：它曾经排在函数型 header 前面，把这一列的
+        // 清零入口整个吞掉过）。
+        meta: { label: t('Used / Remaining') },
+        header: ({ table, column }) => (
+          <BalanceColumnHeader table={table} column={column} />
+        ),
         cell: ({ row }) => <BalanceCell channel={row.original} />,
-        size: 180,
+        size: 200,
       },
 
       // Response Time column

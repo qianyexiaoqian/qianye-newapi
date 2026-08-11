@@ -45,6 +45,10 @@ const upstreamToolbar = join(
   here,
   '../../../channels/components/data-table-bulk-actions.tsx'
 )
+const upstreamTable = join(
+  here,
+  '../../../channels/components/channels-table.tsx'
+)
 
 const read = (path: string) => readFileSync(path, 'utf8')
 
@@ -61,36 +65,44 @@ describe('批次报告必须挂在工具条之外', () => {
     )
   })
 
-  test('上游工具条把 Outlet 渲染在 </BulkActionsToolbar> 之后', () => {
-    const source = read(upstreamToolbar)
-    const closingTag = source.indexOf('</BulkActionsToolbar>')
-    const outlet = source.indexOf('<QyChannelBulkResultOutlet')
-    assert.ok(closingTag > 0, '上游工具条的结构变了，这条锁需要重新校准')
+  test('Outlet 挂在页面级，且全页只有这一处', () => {
+    const table = read(upstreamTable)
+    const outlet = table.indexOf('<QyChannelBulkResultOutlet')
+    const bulkSlot = table.indexOf('bulkActions=')
     assert.ok(outlet > 0, 'Outlet 没有被渲染，失败明细将永远打不开')
     assert.ok(
-      outlet > closingTag,
-      'Outlet 落回了工具条内部 —— 选中数归零时它会跟着被卸载'
+      outlet > bulkSlot,
+      'Outlet 落回了 bulkActions 插槽里 —— 「批量操作」开关关着时那个插槽是 null，' +
+        '而清零的两个直达入口正是在开关关着时也能提交的'
+    )
+    assert.equal(
+      read(upstreamToolbar).includes('<QyChannelBulkResultOutlet'),
+      false,
+      '工具条里又挂了一个 Outlet：两个实例会同时渲染同一份报告'
     )
   })
 
-  test('finish() 先开报告、再清空选中态', () => {
-    const source = read(join(bulkDir, 'index.tsx'))
-    // 注释里出现的同名字样不算数：这条锁看的是真正会执行的那几行。
-    const finish = source
-      .slice(
-        source.indexOf('const finish ='),
-        source.indexOf('const onError =')
-      )
+  test('finish() 先开报告、再走收尾回调', () => {
+    // 三个入口共用的收尾。注释里出现的同名字样不算数：这条锁看的是
+    // 真正会执行的那几行。
+    const finish = read(join(bulkDir, 'batch-finish.ts'))
       .split('\n')
-      .filter((line) => !line.trimStart().startsWith('//'))
+      .filter((line) => {
+        const trimmed = line.trimStart()
+        return (
+          !trimmed.startsWith('//') &&
+          !trimmed.startsWith('*') &&
+          !trimmed.startsWith('/*')
+        )
+      })
       .join('\n')
     const opened = finish.indexOf('openReport(')
-    const done = finish.indexOf('props.onDone()')
+    const done = finish.indexOf('onDone()')
     assert.ok(opened > 0 && done > 0)
     assert.ok(
       opened < done,
-      'props.onDone() 走在 openReport 前面 —— 清空选中会卸载本组件，' +
-        '之后的写入落在一个已经不存在的实例上'
+      'onDone() 走在 openReport 前面 —— 它会清空选中态（卸载工具条）或关掉' +
+        '直达入口的弹窗，之后的写入落在一个已经不存在的实例上'
     )
   })
 })

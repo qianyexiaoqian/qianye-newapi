@@ -262,16 +262,21 @@ function getHeaderSizeStyle<TData>(
 
 function renderHeaderContent<TData>(header: Header<TData, unknown>) {
   if (header.isPlaceholder) return null
-  const { header: headerDef, meta } = header.column.columnDef
+  const { header: headerDef } = header.column.columnDef
   // A string header means the user wrote e.g. `header: t('Name')` — auto-render
   // with DataTableColumnHeader so sorting works without boilerplate.
-  // A function (including TanStack's default accessor-key fallback) is passed
-  // through as-is. meta.label is kept as a fallback for legacy columns.
   if (typeof headerDef === 'string') {
     return <DataTableColumnHeader column={header.column} title={headerDef} />
   }
-  if (meta?.label) {
-    return <DataTableColumnHeader column={header.column} title={meta.label} />
-  }
+  // A function header owns its own rendering and is passed through as-is.
+  //
+  // `meta.label` used to be consulted first, as a fallback title. That silently
+  // swallowed every function header on a column that also declared a label: the
+  // column rendered a plain DataTableColumnHeader and whatever the header
+  // function returned — including interactive controls — never reached the DOM,
+  // with no type error and no runtime signal. `meta.label` is a *label* (used by
+  // the column-visibility menu and the card layout, see `toolbar/view-options`
+  // and `layout/card-cell-utils`), not a header renderer, so it no longer
+  // competes here.
   return flexRender(headerDef, header.getContext())
 }

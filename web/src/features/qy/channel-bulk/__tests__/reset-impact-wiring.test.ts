@@ -99,7 +99,9 @@ describe('渠道列表的多选控件', () => {
 })
 
 describe('清空已用额度的二次确认', () => {
-  const bulk = codeOf(read(join(bulkDir, 'index.tsx')))
+  // 确认框、影响面复述、提交都在 reset-usage.tsx —— 工具条、列表头、行内
+  // 三个入口共用这一份。多一份拷贝就是多一处会各自漂移的不可逆闸门。
+  const bulk = codeOf(read(join(bulkDir, 'reset-usage.tsx')))
 
   test('选中的渠道带着 used_quota 传进来', () => {
     const wiring = codeOf(
@@ -111,8 +113,10 @@ describe('清空已用额度的二次确认', () => {
         '而它是管理员按下不可逆按钮之前唯一能看到的量级'
     )
     assert.ok(
-      bulk.includes('used_quota: number'),
-      'QyChannelBulkActions 不再要求 used_quota，接线断了也不会有类型错误'
+      codeOf(read(join(bulkDir, 'channel-name-list.tsx'))).includes(
+        'used_quota: number'
+      ),
+      '批量动作的入参不再要求 used_quota，接线断了也不会有类型错误'
     )
   })
 
@@ -141,9 +145,7 @@ describe('清空已用额度的二次确认', () => {
   })
 
   test('确认框仍然是不可逆档（醒目警示 + 强制勾选）', () => {
-    const resetDialog = bulk.slice(
-      bulk.indexOf("open={confirming === 'reset'}")
-    )
+    const resetDialog = bulk.slice(bulk.indexOf('<QyConfirmDialog'))
     const dialogEnd = resetDialog.indexOf('/>')
     assert.ok(dialogEnd > 0)
     assert.ok(

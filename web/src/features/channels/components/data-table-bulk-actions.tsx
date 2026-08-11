@@ -34,12 +34,11 @@ import {
 } from '@/components/ui/tooltip'
 // qy 扩展：启停/删除/重置统计的替代实现，逐条回报结果并按危险度分级二次确认。
 // 扩展关闭时 useQyChannelBulkVisible() 为 false，下面上游那三个按钮原样回落。
-// Outlet 必须挂在 </BulkActionsToolbar> 之外：工具条在选中数归零时 return null，
-// 而批次收尾第一件事就是清空选中态（上游自己的两个弹窗放在外面也是这个原因）。
-import {
-  QyChannelBulkActions,
-  QyChannelBulkResultOutlet,
-} from '@/features/qy/channel-bulk'
+// 批次报告（QyChannelBulkResultOutlet）不在这里挂：工具条在选中数归零时
+// return null，而批次收尾第一件事就是清空选中态；何况清零还有两个不经过
+// 「批量操作」开关的直达入口，那时这个文件根本没被渲染。挂载点在
+// channels-table.tsx 的页面级返回值上，全页只有一处。
+import { QyChannelBulkActions } from '@/features/qy/channel-bulk'
 import { useQyChannelBulkVisible } from '@/features/qy/channel-bulk/visible'
 import {
   ADMIN_PERMISSION_ACTIONS,
@@ -245,8 +244,6 @@ export function DataTableBulkActions<TData>({
           </Tooltip>
         )}
       </BulkActionsToolbar>
-
-      {qyBulkVisible && <QyChannelBulkResultOutlet />}
 
       {/* Set Tag Dialog */}
       <Dialog

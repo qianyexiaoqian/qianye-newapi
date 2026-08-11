@@ -40,6 +40,16 @@ type QyConfirmDialogProps = {
    * 并强制用户勾选确认框才能提交。
    */
   irreversible?: boolean
+  /**
+   * 覆盖警示块里那句正文。
+   *
+   * 默认那句是资金口径的（"确认后资金会立即变动"），因为 qy 这边绝大多数不可逆
+   * 动作确实在动钱。但"不可逆"不等于"动钱"：清空渠道统计抹掉的是本站自己记的
+   * 累计数，谁的余额都不变。照抄资金口径会让人以为按下去要扣钱或退钱，而同屏
+   * 另一句说明写的又是"上游的真实用量不会被改动"—— 两句话互相打架，比不说更糟。
+   * 所以不可逆但不动钱的动作在这里换掉正文。
+   */
+  irreversibleDesc?: ReactNode
   confirmText?: string
   cancelText?: string
   isLoading?: boolean
@@ -108,7 +118,7 @@ export function QyConfirmDialog(props: QyConfirmDialogProps) {
               {t('qy_common_irreversible')}
             </p>
             <p className='text-muted-foreground text-xs'>
-              {t('qy_common_irreversible_desc')}
+              {props.irreversibleDesc ?? t('qy_common_irreversible_desc')}
             </p>
             <Label htmlFor={acknowledgeId} className='text-sm font-normal'>
               <Checkbox
