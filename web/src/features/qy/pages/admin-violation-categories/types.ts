@@ -48,10 +48,24 @@ export type QyViolationCategory = {
   updated_at: number
 }
 
+/**
+ * 阈值三态。**由后端下发，前端不要自己从 (enabled, threshold) 推。**
+ *
+ * 判定侧 `unset` 与 `disabled` 完全等价（两者都不出线），正因为等价才容易被
+ * 写成同一个分支 —— 而那一塌就是项目方看到的现象：六个类型全显示一个 0，
+ * 分不出「还没配」与「配了但关着」，于是「到多少次封号」在界面上等于不存在。
+ *
+ *   - `unset`    从来没配过线。命中照常计数、照常计入账号总量线；
+ *   - `disabled` 配过线但阈值开关关着。数字还在，当下不生效；
+ *   - `active`   线正在生效。
+ */
+export type QyViolationThresholdState = 'unset' | 'disabled' | 'active'
+
 export type QyViolationCategoryRow = {
   category: QyViolationCategory
   /** 当前绑在这一类上的规则条数（兜底那一行含 category_id=0 的历史规则）。 */
   rule_count: number
+  threshold_state: QyViolationThresholdState
 }
 
 export type QyViolationCategoryList = {
@@ -94,6 +108,66 @@ export type QyViolationCategoryInput = {
 export type QyViolationCategorySaved = {
   category: QyViolationCategory
   impact: QyViolationCategoryImpact
+}
+
+/**
+ * 一条建议阈值。
+ *
+ * `why` 会原样显示在弹窗里：一个没有理由的数字，管理员只能全盘照抄或全盘不用，
+ * 而这两种都不是「按自己站点的情况拍板」。
+ *
+ * `applicable === false` 时 `skip_reason` 必有值 —— 一个只灰不给理由的行会被
+ * 当成 bug，而管理员的下一步就是绕过界面直接改库。
+ */
+export type QyViolationThresholdSuggestion = {
+  id: number
+  key: string
+  name: string
+  current_threshold: number
+  current_window_hours: number
+  current_enabled: boolean
+  state: QyViolationThresholdState
+  suggested_threshold: number
+  suggested_window_hours: number
+  why: string
+  applicable: boolean
+  skip_reason: string
+  /** 按建议线，这一类现在有多少存量账号**已经处在越线状态**。 */
+  impact: QyViolationCategoryImpact
+}
+
+/**
+ * 建议阈值预览。
+ *
+ * `affected_users` 是**去重后**的账号数：逐类相加会把同时越两类线的人算两次，
+ * 而这个数正是管理员按下确认之前唯一会读的东西。
+ *
+ * `account_action` 是这些人越线之后会被**怎么**处置（来自兜底策略档）。类型线
+ * 只决定「几次」，动作一律由用户所在分组的策略档决定 —— 不显示它，确认弹窗
+ * 就只能说「会触发处置」，而站点当前的兜底动作可能正是封号。
+ */
+export type QyViolationThresholdSuggestions = {
+  items: QyViolationThresholdSuggestion[]
+  applicable_count: number
+  affected_users: number
+  capped: boolean
+  account_action: string
+  account_threshold: number
+  threshold_semantics: string
+}
+
+/** 应用回执。`acts_immediately` 恒为 false —— 应用只写类型表，不处置任何人。 */
+export type QyViolationThresholdApplied = {
+  applied: {
+    id: number
+    key: string
+    name: string
+    threshold: number
+    window_hours: number
+  }[]
+  applied_count: number
+  affected_users: number
+  acts_immediately: boolean
 }
 
 /** 归档回执。`records_intact` 恒为 true —— 历史违规记录是证据，绝不级联删除。 */

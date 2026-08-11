@@ -206,7 +206,7 @@ func TestPreRelayGuardDrivesRequestRate(t *testing.T) {
 	require.Error(t, err, "PreRelayGuard 必须自己推进频率计数并在达到阈值时拦截")
 	var apiErr *types.NewAPIError
 	require.True(t, errors.As(err, &apiErr))
-	assert.Equal(t, types.ErrorCode(violationErrorCode(9)), apiErr.GetErrorCode())
+	assert.Equal(t, types.ErrorCode(violationErrorCode()), apiErr.GetErrorCode())
 
 	t.Run("流式请求既不计数也不判定", func(t *testing.T) {
 		// 判据的已知局限:客户端加一行 "stream": true 就能完全绕过。

@@ -1,7 +1,6 @@
 package violation
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -281,7 +280,7 @@ func writeConsumeLog(c *gin.Context, info *relaycommon.RelayInfo, cr *compiledRu
 	}
 	other := map[string]any{
 		"violation_fee":       true,
-		"violation_fee_code":  violationErrorCode(cr.R.Id),
+		"violation_fee_code":  violationErrorCode(),
 		"qy_violation_rec_no": rec.RecNo,
 		"qy_reason":           reason,
 		"fee_quota":           res.Charged,
@@ -305,8 +304,22 @@ func writeConsumeLog(c *gin.Context, info *relaycommon.RelayInfo, cr *compiledRu
 	})
 }
 
-func violationErrorCode(ruleId int64) string {
-	return fmt.Sprintf("qy_violation.%d", ruleId)
+// violationErrorCode 是拦截错误对**终端用户**暴露的错误码。
+//
+// # 为什么不带规则主键
+//
+// 它曾经是 fmt.Sprintf("qy_violation.%d", ruleId)。规则主键对用户没有任何用途,
+// 却给了一个可枚举的信号:反复改写 prompt、看这个码变不变,就能推断出自己撞的是
+// 哪一条规则、以及某一次改写有没有绕开它 —— 相当于把规则库做成了一个免费的
+// 在线试探接口,而规则库正是这套系统里最不该被试探的东西。
+//
+// 排障能力没有丢:规则 id / 规则名 / 命中词写在计费日志的 admin_info 里
+// (formatUserLogs 会为普通用户删掉 admin_info),违规记录另有 RecNo,
+// 拦截消息本身也带 request id。管理员照样能从一次投诉定位到规则,用户不能。
+const violationErrorCodeValue = "qy_violation"
+
+func violationErrorCode() string {
+	return violationErrorCodeValue
 }
 
 func decimalFromConfig(s string) decimal.Decimal {

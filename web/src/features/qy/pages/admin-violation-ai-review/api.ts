@@ -26,6 +26,7 @@ import type {
   QyAiReviewLog,
   QyAiSetting,
   QyAiSettingResponse,
+  QyAiSettingSaveResult,
   QyAiStats,
 } from './types'
 
@@ -85,5 +86,5 @@ export function testQyAiChannel(id: number) {
 }
 
 export function updateQyAiSetting(body: Omit<QyAiSetting, 'id'>) {
-  return qyPut<QyAiSetting>('/admin/violation/ai-review/settings', body)
+  return qyPut<QyAiSettingSaveResult>('/admin/violation/ai-review/settings', body)
 }

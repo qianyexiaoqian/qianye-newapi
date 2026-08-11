@@ -112,7 +112,13 @@ func adminListCategories(c *gin.Context) {
 		if r.IsFallback {
 			n += byId[0]
 		}
-		items = append(items, gin.H{"category": r, "rule_count": n})
+		items = append(items, gin.H{
+			"category": r, "rule_count": n,
+			// 阈值三态由后端下发,前端不要自己从 (enabled, threshold) 推。
+			// 判定侧 unset 与 disabled 完全等价,而界面上它们是两句不同的话 ——
+			// 让前端各推一遍的结果是"还没配"被显示成一个看起来像 0 次就封的 0。
+			"threshold_state": categoryThresholdState(r),
+		})
 	}
 	respond(c, gin.H{
 		"items":       items,
@@ -120,7 +126,7 @@ func adminListCategories(c *gin.Context) {
 		// 阈值口径必须与用户端公示、与封号判定是同一句话,所以由后端下发而不是
 		// 让前端把它写死在文案里 —— 两处各写一份,改一处就会出现"界面说 OR、
 		// 实际是 AND"这种没人查得出来的落差。
-		"threshold_semantics": "any_line",
+		"threshold_semantics": thresholdSemanticsAnyLine,
 	})
 }
 

@@ -33,6 +33,10 @@ import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { useQyConfig } from '../../hooks/use-qy-config'
 import { qyKeys } from '../../lib/query-keys'
+import {
+  qyRemainingDisplay,
+  qyRemainingLineKey,
+} from '../../lib/violation-thresholds'
 import { QyPager } from '../components/qy-pager'
 import { QyStatGrid } from '../components/qy-stat-grid'
 import { formatQyTs } from '../ops/format'
@@ -120,6 +124,17 @@ export function QyMyViolations() {
     summary == null || summary.ban_threshold <= 0
       ? 0
       : Math.min(100, (summary.hit_count / summary.ban_threshold) * 100)
+  const remainingDisplay = qyRemainingDisplay(
+    summary ?? { ban_threshold: 0, remaining: 0 }
+  )
+  // 三态各自的字面。查表而不是嵌套三元：这一格的三种状态说的是三件完全不同的
+  // 事（已被处置 / 没有门槛 / 还差几次），叠成一行三元之后新增一态必然写错。
+  const remainingText = {
+    banned: t('qy_vio_my_remaining_banned'),
+    none: t('qy_common_unlimited'),
+    countdown:
+      remainingDisplay.kind === 'countdown' ? remainingDisplay.remaining : 0,
+  }[remainingDisplay.kind]
 
   return (
     <QySectionPageLayout>
@@ -147,20 +162,28 @@ export function QyMyViolations() {
                   {
                     key: 'remaining',
                     label: t('qy_vio_my_remaining'),
-                    // 剩余 1 次时标红：这是用户主动收敛行为的最后提醒。
+                    // 三态由 qyRemainingDisplay 定，**不要**在这里重新拿
+                    // ban_threshold 推：那个字段只描述账号总量线，而处置由
+                    // 两条线的 OR 触发。详见该函数的注释。
                     value: (
                       <span
                         className={
-                          summary.ban_threshold > 0 && summary.remaining <= 1
+                          remainingDisplay.kind === 'banned' ||
+                          (remainingDisplay.kind === 'countdown' &&
+                            remainingDisplay.remaining <= 1)
                             ? 'text-destructive'
                             : undefined
                         }
                       >
-                        {summary.ban_threshold > 0
-                          ? summary.remaining
-                          : t('qy_common_unlimited')}
+                        {remainingText}
                       </span>
                     ),
+                    // 撞的是哪条线必须说：同一个「还剩 1 次」，落在账号总量线上
+                    // 和落在某一个违规类型上，用户该收敛的行为不是同一件事。
+                    hint:
+                      remainingDisplay.kind === 'countdown'
+                        ? t(qyRemainingLineKey(remainingDisplay.line))
+                        : undefined,
                   },
                   {
                     key: 'total_fee',

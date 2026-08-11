@@ -18,8 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
-import { useForm, type Control, type UseFormGetValues } from 'react-hook-form'
+import { useEffect } from 'react'
+import { useForm, type Control } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -55,12 +55,7 @@ import {
 } from '../../../lib/group-options'
 import { qyAdminViolationCategoriesQuery } from '../../admin-violation-categories/api'
 import { qyOpsErrorMessage } from '../../ops/errors'
-import { formatQyMicros } from '../../ops/format'
-import {
-  createQyViolationRule,
-  testQyViolationRule,
-  updateQyViolationRule,
-} from '../api'
+import { createQyViolationRule, updateQyViolationRule } from '../api'
 import {
   QY_VIOLATION_ACTIONS,
   QY_VIOLATION_FEE_MODES,
@@ -76,14 +71,8 @@ import {
   qyViolationRuleToPayload,
   type QyViolationRuleFormValues,
 } from '../lib/rule-form'
-import { qyRuleTestContentInputs, qyRuleTestInputs } from '../lib/rule-test'
-import type {
-  QyViolationMatchType,
-  QyViolationPhase,
-  QyViolationRule,
-  QyViolationRuleTestResult,
-  QyViolationTestInput,
-} from '../types'
+import type { QyViolationRule } from '../types'
+import { QyRuleTester } from './rule-tester'
 
 type QyRuleFormSheetProps = {
   open: boolean
@@ -837,10 +826,25 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
             />
           </div>
 
+          {/* 试跑面板里那两个判据选择器写回的就是这里的同一个表单字段 ——
+              不是一份副本。所以「在试跑区就地改阶段」与「回到上面改」完全等价，
+              改完保存的也是同一份规则。 */}
           <QyRuleTester
             getValues={form.getValues}
             phase={phase}
             matchType={matchType}
+            onPhaseChange={(value) =>
+              form.setValue('phase', value, {
+                shouldDirty: true,
+                shouldValidate: true,
+              })
+            }
+            onMatchTypeChange={(value) =>
+              form.setValue('match_type', value, {
+                shouldDirty: true,
+                shouldValidate: true,
+              })
+            }
           />
         </form>
       </QyResponsiveDialog>
@@ -873,306 +877,5 @@ function QyRuleSwitchField(props: {
         </FormItem>
       )}
     />
-  )
-}
-
-/**
- * 规则试跑面板。
- *
- * 用 `getValues()` 而不是订阅表单：试跑是「点一下才发生」的动作，
- * 订阅会让每敲一个字符都重渲染整块面板。
- *
- * # 它问什么，由规则说了算
- *
- * 这块面板曾经不论规则是什么，都固定问「样本文本 + 模型 + 分组」。那三格对
- * 大多数规则都是错的问题：一条错误码规则要的是错误码，一条上游规则要的是
- * 上游正文与状态码，一条频率规则一段文本都不看。而模型和分组根本不参与
- * 内容匹配，它们只决定「这条规则在不在作用域内」—— 把它们摆在最显眼的位置，
- * 等于把试跑引向一个它回答不了的问题。
- *
- * 现在字段由 `qyRuleTestInputs(phase, match_type)` 决定，跑完之后改用后端回的
- * `inputs`（后端说了算，两边不一致时以线上判据为准）。
- */
-function QyRuleTester(props: {
-  getValues: UseFormGetValues<QyViolationRuleFormValues>
-  phase: QyViolationPhase
-  matchType: QyViolationMatchType
-}) {
-  const { t } = useTranslation()
-  const [requestText, setRequestText] = useState('')
-  const [upstreamText, setUpstreamText] = useState('')
-  const [rejectReason, setRejectReason] = useState('')
-  const [statusCode, setStatusCode] = useState('')
-  const [errorCode, setErrorCode] = useState('')
-  const [rateCount, setRateCount] = useState('')
-  const [aiVerdict, setAiVerdict] = useState('')
-  const [aiCategory, setAiCategory] = useState('')
-  const [aiConfidence, setAiConfidence] = useState('')
-  const [model, setModel] = useState('')
-  const [group, setGroup] = useState('')
-  const [result, setResult] = useState<QyViolationRuleTestResult | null>(null)
-
-  const inputs = qyRuleTestInputs(props.phase, props.matchType)
-  const asks = (id: QyViolationTestInput) => inputs.includes(id)
-
-  const testMutation = useMutation({
-    mutationFn: () =>
-      testQyViolationRule({
-        rule: qyViolationRuleToPayload(props.getValues()),
-        // 只发这条规则会读的字段，其余一律发空：一个上游样本被同时灌进
-        // 请求上下文，会让 prompt 规则凭空「命中」—— 一个捏造出来的绿灯。
-        request_text: asks('request_text') ? requestText : '',
-        upstream_text: asks('upstream_text') ? upstreamText : '',
-        reject_reason: asks('reject_reason') ? rejectReason : '',
-        status_code: asks('status_code') ? Number(statusCode.trim()) || 0 : 0,
-        error_code: asks('error_code') ? errorCode.trim() : '',
-        rate_count: asks('rate_count') ? Number(rateCount.trim()) || 0 : 0,
-        ai_verdict: asks('ai_verdict') ? aiVerdict : '',
-        ai_category: asks('ai_category') ? aiCategory.trim() : '',
-        ai_confidence: asks('ai_confidence') ? aiConfidence.trim() : '',
-        model,
-        group,
-      }),
-    onSuccess: setResult,
-    onError: (error) => {
-      setResult(null)
-      toast.error(qyOpsErrorMessage(error, t))
-    },
-  })
-
-  // 「能不能跑」只看内容输入：模型与分组留空的语义是「不限」，
-  // 拿它们当必填会把一次本来跑得动的试跑锁死。
-  const filled: Record<QyViolationTestInput, string> = {
-    request_text: requestText,
-    upstream_text: upstreamText,
-    reject_reason: rejectReason,
-    status_code: statusCode,
-    error_code: errorCode,
-    rate_count: rateCount,
-    ai_verdict: aiVerdict,
-    ai_category: aiCategory,
-    ai_confidence: aiConfidence,
-    model,
-    group,
-  }
-  const canRun = qyRuleTestContentInputs(inputs).some(
-    (id) => filled[id].trim() !== ''
-  )
-
-  return (
-    <div className='space-y-3 rounded-lg border p-3'>
-      <div>
-        <h3 className='text-sm font-medium'>{t('qy_vio_test_title')}</h3>
-        <p className='text-muted-foreground text-xs'>
-          {props.matchType === 'request_rate'
-            ? t('qy_vio_test_rate_desc')
-            : t('qy_vio_test_desc')}
-        </p>
-      </div>
-
-      {asks('request_text') && (
-        <QyTestField label={t('qy_vio_test_input_request_text')}>
-          <Textarea
-            rows={3}
-            value={requestText}
-            onChange={(event) => setRequestText(event.target.value)}
-            placeholder={t('qy_vio_test_input_request_text_ph')}
-          />
-        </QyTestField>
-      )}
-      {asks('upstream_text') && (
-        <QyTestField label={t('qy_vio_test_input_upstream_text')}>
-          <Textarea
-            rows={3}
-            value={upstreamText}
-            onChange={(event) => setUpstreamText(event.target.value)}
-            placeholder={t('qy_vio_test_input_upstream_text_ph')}
-          />
-        </QyTestField>
-      )}
-      {asks('reject_reason') && (
-        <QyTestField
-          label={t('qy_vio_test_input_reject_reason')}
-          description={t('qy_vio_test_input_reject_reason_desc')}
-        >
-          <Input
-            value={rejectReason}
-            onChange={(event) => setRejectReason(event.target.value)}
-            placeholder={t('qy_vio_test_input_reject_reason_ph')}
-          />
-        </QyTestField>
-      )}
-      {asks('ai_verdict') && (
-        <QyTestField
-          label={t('qy_vio_test_input_ai_verdict')}
-          description={t('qy_vio_test_input_ai_verdict_desc')}
-        >
-          <Select
-            value={aiVerdict}
-            onValueChange={(value) => setAiVerdict(value ?? '')}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder={t('qy_vio_test_ai_verdict_none')} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value='violation'>
-                {t('qy_vio_test_ai_verdict_violation')}
-              </SelectItem>
-              <SelectItem value='clean'>
-                {t('qy_vio_test_ai_verdict_clean')}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </QyTestField>
-      )}
-      <div className='flex flex-wrap gap-2'>
-        {asks('ai_category') && (
-          <Input
-            className='w-40'
-            value={aiCategory}
-            onChange={(event) => setAiCategory(event.target.value)}
-            placeholder={t('qy_vio_test_input_ai_category')}
-          />
-        )}
-        {asks('ai_confidence') && (
-          <Input
-            className='w-40'
-            inputMode='decimal'
-            value={aiConfidence}
-            onChange={(event) => setAiConfidence(event.target.value)}
-            placeholder={t('qy_vio_test_input_ai_confidence')}
-          />
-        )}
-        {asks('status_code') && (
-          <Input
-            className='w-40'
-            inputMode='numeric'
-            value={statusCode}
-            onChange={(event) => setStatusCode(event.target.value)}
-            placeholder={t('qy_vio_test_input_status_code')}
-          />
-        )}
-        {asks('error_code') && (
-          <Input
-            className='w-56'
-            value={errorCode}
-            onChange={(event) => setErrorCode(event.target.value)}
-            placeholder={t('qy_vio_test_input_error_code')}
-          />
-        )}
-        {asks('rate_count') && (
-          <Input
-            className='w-40'
-            inputMode='numeric'
-            value={rateCount}
-            onChange={(event) => setRateCount(event.target.value)}
-            placeholder={t('qy_vio_test_input_rate_count')}
-          />
-        )}
-      </div>
-
-      <div className='space-y-2 border-t pt-2'>
-        <p className='text-muted-foreground text-xs'>
-          {t('qy_vio_test_scope_desc')}
-        </p>
-        <div className='flex flex-wrap gap-2'>
-          <Input
-            className='w-40'
-            value={model}
-            onChange={(event) => setModel(event.target.value)}
-            placeholder={t('qy_vio_test_model_optional')}
-          />
-          <Input
-            className='w-40'
-            value={group}
-            onChange={(event) => setGroup(event.target.value)}
-            placeholder={t('qy_vio_test_group_optional')}
-          />
-          <Button
-            type='button'
-            variant='secondary'
-            disabled={testMutation.isPending || !canRun}
-            onClick={() => testMutation.mutate()}
-          >
-            {t('qy_vio_test_run')}
-          </Button>
-        </div>
-      </div>
-
-      {result != null && <QyRuleTestResult result={result} />}
-    </div>
-  )
-}
-
-/** 试跑输入的一格。标签 + 可选说明 + 控件，五个格子共用同一份排版。 */
-function QyTestField(props: {
-  label: string
-  description?: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className='space-y-1'>
-      <p className='text-xs font-medium'>{props.label}</p>
-      {props.description != null && (
-        <p className='text-muted-foreground text-xs'>{props.description}</p>
-      )}
-      {props.children}
-    </div>
-  )
-}
-
-/**
- * 试跑结论。**三态必须彼此可分**，这是整块面板的关键。
- *
- * 只回一个「命中 / 未命中」时，「规则压根不作用于你填的模型/分组/状态码」和
- * 「规则确实作用于它、但模式串没匹配上」长得一模一样 —— 管理员分不清该改
- * 作用域还是该改模式串，只能两边乱改。所以这里先说落在哪一态，
- * 不在作用域时还要点名是哪一道闸，未命中时还要点名哪几格没填。
- */
-function QyRuleTestResult(props: { result: QyViolationRuleTestResult }) {
-  const { t } = useTranslation()
-  const { result } = props
-  const tone =
-    result.outcome === 'matched'
-      ? 'text-success'
-      : result.outcome === 'no_match'
-        ? 'text-muted-foreground'
-        : 'text-warning'
-
-  return (
-    <div className='bg-muted/40 space-y-1 rounded-md p-2 text-xs'>
-      <p className={tone}>{t(`qy_vio_test_outcome_${result.outcome}`)}</p>
-      {result.outcome === 'out_of_scope' && result.scope_fail !== '' && (
-        <p className='text-warning'>
-          {t(`qy_vio_test_scope_fail_${result.scope_fail}`)}
-        </p>
-      )}
-      {result.outcome === 'no_match' && result.blank_inputs.length > 0 && (
-        <p className='text-warning'>
-          {t('qy_vio_test_blank_inputs', {
-            fields: result.blank_inputs
-              .map((id) => t(`qy_vio_test_input_${id}`))
-              .join('、'),
-          })}
-        </p>
-      )}
-      {result.terms.length > 0 && (
-        <p className='break-all'>
-          {t('qy_vio_test_terms', { terms: result.terms.join(', ') })}
-        </p>
-      )}
-      {result.snippet !== '' && (
-        <p className='break-all'>
-          {t('qy_vio_test_snippet', { snippet: result.snippet })}
-        </p>
-      )}
-      {result.elapsed_us != null && (
-        <p>
-          {t('qy_vio_test_elapsed', {
-            elapsed: formatQyMicros(result.elapsed_us),
-          })}
-        </p>
-      )}
-    </div>
   )
 }

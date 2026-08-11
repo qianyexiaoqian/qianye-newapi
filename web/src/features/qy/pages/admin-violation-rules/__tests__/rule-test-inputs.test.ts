@@ -228,7 +228,9 @@ describe('试跑面板与后端逐字对齐', () => {
 })
 
 describe('试跑面板的渲染形状', () => {
-  const sheet = read('components/rule-form-sheet.tsx')
+  // 试跑面板已经从规则表单抽屉里搬进自己的文件（表单那份 1100 行里，试跑只是
+  // 末尾一小段，而它现在要自带判据条与缺席维度说明）。断言跟着搬。
+  const sheet = read('components/rule-tester.tsx')
 
   test('每一个内容格子各自条件渲染，而不是一个万能样本框', () => {
     for (const id of [

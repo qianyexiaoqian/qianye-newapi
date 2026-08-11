@@ -305,11 +305,33 @@ describe('i18n 键齐全', () => {
     'qy_vio_cat_desc',
     'qy_vio_cat_account_line',
     'qy_vio_cat_account_line_off',
-    'qy_vio_cat_threshold',
-    'qy_vio_cat_threshold_off',
-    'qy_vio_cat_progress',
-    'qy_vio_cat_progress_off',
     'qy_vio_cat_any_line_note',
+    // 阈值三态：unset / disabled / active 各一句。塌成两句就是项目方看到的现象。
+    'qy_vcat_threshold_unset',
+    'qy_vcat_threshold_disabled',
+    'qy_vcat_unset_banner',
+    // 建议阈值弹窗。
+    'qy_vcat_sug_open',
+    'qy_vcat_sug_title',
+    'qy_vcat_sug_desc',
+    'qy_vcat_sug_impact',
+    'qy_vcat_sug_action_note',
+    'qy_vcat_sug_not_immediate',
+    'qy_vcat_sug_capped',
+    'qy_vcat_sug_change',
+    'qy_vcat_sug_skipped',
+    'qy_vcat_sug_row_impact',
+    'qy_vcat_sug_apply',
+    'qy_vcat_sug_applied',
+    // 用户端那一句话：「你违规了【XX】N 次，到 M 次封号」。
+    'qy_vio_cat_sentence',
+    'qy_vio_cat_sentence_off',
+    'qy_vio_cat_remaining',
+    'qy_vio_cat_remaining_none',
+    // 处置动作的三个取值，公示句子要把它插进去。
+    'qy_vio_policy_action_record',
+    'qy_vio_policy_action_restrict',
+    'qy_vio_policy_action_ban',
   ]
 
   test('zh / en 都有,且没有一个是空串', () => {

@@ -31,7 +31,89 @@ import * as React from 'react'
 import { useMediaQuery } from '@/hooks'
 import { cn } from '@/lib/utils'
 
-const Select = SelectPrimitive.Root
+/**
+ * selectItemText 把一个 `<SelectItem>` 的子树折成纯文本。
+ *
+ * 只取字符串与数字叶子:图标、徽章之类的元素在关着的触发器上没有位置,
+ * 而拿 ReactNode 当 label 会让 Base UI 的 typeahead(它对 label 做 String())
+ * 匹配到 "[object Object]"。
+ */
+function selectItemText(node: React.ReactNode): string {
+  if (node == null || typeof node === 'boolean') return ''
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(selectItemText).join('')
+  if (React.isValidElement(node)) {
+    return selectItemText(
+      (node.props as { children?: React.ReactNode }).children
+    )
+  }
+  return ''
+}
+
+/**
+ * collectSelectItemLabels 在 `<Select>` 的子树里找出全部 `<SelectItem>`,
+ * 收成 Base UI 需要的 `value → 文案` 映射。
+ */
+function collectSelectItemLabels(
+  node: React.ReactNode,
+  out: Record<string, React.ReactNode>
+) {
+  React.Children.forEach(node, (child) => {
+    if (!React.isValidElement(child)) return
+    const props = child.props as {
+      value?: unknown
+      children?: React.ReactNode
+    }
+    if (child.type === SelectItem) {
+      // value 为 null/undefined 的项一律跳过:Base UI 的 hasNullItemLabel 会因为
+      // 映射里存在 "null" 这个键而**吞掉 placeholder**,那是一个与本修复无关的
+      // 行为改变。
+      if (props.value == null) return
+      const label = selectItemText(props.children).trim()
+      if (label !== '') out[String(props.value)] = label
+      return
+    }
+    collectSelectItemLabels(props.children, out)
+  })
+}
+
+/**
+ * Select 在调用方没有显式给 `items` 时,自动从 `<SelectItem>` 子树里推出它。
+ *
+ * ── 为什么必须做这件事 ──
+ * Base UI 的 `<Select.Value/>` 只会从 Root 的 `items`(或 `itemToStringLabel`)
+ * 里查译名,查不到就退回 `stringifyAsLabel(value)`,也就是**枚举原始取值**。
+ * 而 `<SelectContent>` 走 Portal 且关闭时不 keepMounted —— `<SelectItem>` 的
+ * 标签从未注册过。结果是:下拉**展开时**是「转发前」「正则」,**收起时**变成
+ * `prompt` `regex`,主键型的取值(违规类型)干脆显示成裸数字 `2`。
+ * 也就是说,一张表单上同一个字段有两种写法,而先看到的那一种是英文/数字。
+ *
+ * ── 为什么修在这里,而不是逐个调用点补 items ──
+ * 全站 65 个文件用到这个 Select,改动前基本没有一处传 items。逐处补是 65 次
+ * 手工同步,而且每加一个新的下拉都要有人记得再补一次 —— 这种约定第一次就会漏。
+ * 放在共享组件里,`items` 与 `<SelectItem>` 的文案**同源**,不存在漂移。
+ *
+ * ── 影响面为什么是安全的 ──
+ * `items` 在 Base UI 的 select 里只被 `SelectValue` 一处消费
+ * (store.js 里唯一的读点是 `selectors.items`,再就是 `hasNullItemLabel`,
+ * 而后者只在"未选中 + 给了 placeholder"时才查,上面已经跳过了 null 取值)。
+ * 显式传了 `items` 的调用方保持原样,推不出任何标签时回退 `undefined`,
+ * 即完全维持改动前的行为。
+ */
+function Select<Value, Multiple extends boolean | undefined = false>(
+  props: SelectPrimitive.Root.Props<Value, Multiple>
+) {
+  const { items, children } = props
+  const derivedItems = React.useMemo(() => {
+    if (items != null) return items
+    const collected: Record<string, React.ReactNode> = {}
+    collectSelectItemLabels(children, collected)
+    return Object.keys(collected).length > 0 ? collected : undefined
+  }, [items, children])
+
+  return <SelectPrimitive.Root {...props} items={derivedItems} />
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (

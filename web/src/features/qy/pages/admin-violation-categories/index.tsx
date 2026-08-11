@@ -18,7 +18,15 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Archive, Eye, EyeOff, Pencil, Plus, ScrollText } from 'lucide-react'
+import {
+  Archive,
+  Eye,
+  EyeOff,
+  Pencil,
+  Plus,
+  ScrollText,
+  Wand2,
+} from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -32,12 +40,14 @@ import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyKeys } from '../../lib/query-keys'
+import { qyThresholdStateKey } from '../../lib/violation-thresholds'
 import { qyOpsErrorMessage } from '../ops/errors'
 import {
   qyAdminViolationCategoriesQuery,
   qyArchiveViolationCategory,
 } from './api'
 import { QyViolationCategoryFormSheet } from './components/category-form-sheet'
+import { QySuggestedThresholdsDialog } from './components/suggested-thresholds-dialog'
 import type { QyViolationCategory, QyViolationCategoryRow } from './types'
 
 /**
@@ -65,6 +75,7 @@ export function QyAdminViolationCategories() {
   const [sheetOpen, setSheetOpen] = useState(false)
   const [pendingArchive, setPendingArchive] =
     useState<QyViolationCategoryRow | null>(null)
+  const [suggestOpen, setSuggestOpen] = useState(false)
 
   const archiveMutation = useMutation({
     mutationFn: (row: QyViolationCategoryRow) =>
@@ -80,6 +91,12 @@ export function QyAdminViolationCategories() {
   })
 
   const rows = query.data?.items ?? []
+  // 「还没配线」的类型数。出厂时它是 6 —— 也就是"到多少次封号"这件事在界面上
+  // 一次都没有被回答过。把它顶在页面上，是因为这一页最容易被误读成"已经配好了"：
+  // 六行齐齐整整、每行都有阈值列，只是列里全写着"不计门槛"。
+  const unsetCount = rows.filter(
+    (row) => row.threshold_state === 'unset' && !row.category.is_fallback
+  ).length
 
   return (
     <QySectionPageLayout>
@@ -94,6 +111,15 @@ export function QyAdminViolationCategories() {
         >
           <ScrollText aria-hidden='true' />
           {t('qy_nav_a_violation_rules')}
+        </Button>
+        <Button
+          type='button'
+          variant='outline'
+          size='sm'
+          onClick={() => setSuggestOpen(true)}
+        >
+          <Wand2 aria-hidden='true' />
+          {t('qy_vcat_sug_open')}
         </Button>
         <Button
           type='button'
@@ -114,6 +140,23 @@ export function QyAdminViolationCategories() {
             <p className='text-muted-foreground rounded-md border border-dashed p-3 text-xs'>
               {t('qy_vcat_two_lines_note')}
             </p>
+
+            {/* 「还有 N 类没配线」。不给这一条的话，六行"不计门槛"看起来
+                与"已经配好了"没有区别 —— 而它们的差别是这套功能生效没有。 */}
+            {unsetCount > 0 && (
+              <div className='flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed p-3 text-xs'>
+                <span>{t('qy_vcat_unset_banner', { count: unsetCount })}</span>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  onClick={() => setSuggestOpen(true)}
+                >
+                  <Wand2 aria-hidden='true' />
+                  {t('qy_vcat_sug_open')}
+                </Button>
+              </div>
+            )}
 
             <StaticDataTable
               data={rows}
@@ -139,13 +182,23 @@ export function QyAdminViolationCategories() {
                 {
                   id: 'threshold',
                   header: t('qy_vcat_col_threshold'),
-                  cell: (row: QyViolationCategoryRow) =>
-                    row.category.enabled && row.category.threshold > 0
-                      ? t('qy_vcat_threshold_value', {
-                          count: row.category.threshold,
-                          hours: row.category.window_hours,
-                        })
-                      : t('qy_vcat_threshold_off'),
+                  // 三态各一句话，**由后端下发的 threshold_state 决定**：
+                  // 「还没配」与「配了但关着」在封号判定上等价，在这一列上却是
+                  // 两句不同的话。把它们塌成同一个 0 正是项目方看到的现象。
+                  cell: (row: QyViolationCategoryRow) => (
+                    <span
+                      className={
+                        row.threshold_state === 'active'
+                          ? undefined
+                          : 'text-muted-foreground'
+                      }
+                    >
+                      {t(qyThresholdStateKey(row.threshold_state), {
+                        count: row.category.threshold,
+                        hours: row.category.window_hours,
+                      })}
+                    </span>
+                  ),
                 },
                 {
                   id: 'rules',
@@ -217,6 +270,11 @@ export function QyAdminViolationCategories() {
             />
           </div>
         </QyPageBoundary>
+
+        <QySuggestedThresholdsDialog
+          open={suggestOpen}
+          onOpenChange={setSuggestOpen}
+        />
 
         <QyViolationCategoryFormSheet
           open={sheetOpen}

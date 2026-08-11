@@ -23,7 +23,7 @@ import (
 func TestBlockErrorSurvivesUpstreamWrapping(t *testing.T) {
 	blocked := types.NewErrorWithStatusCode(
 		errors.New(defaultBlockMessage),
-		types.ErrorCode(violationErrorCode(7)),
+		types.ErrorCode(violationErrorCode()),
 		http.StatusBadRequest,
 		types.ErrOptionWithSkipRetry(),
 		types.ErrOptionWithNoRecordErrorLog(),
@@ -33,8 +33,12 @@ func TestBlockErrorSurvivesUpstreamWrapping(t *testing.T) {
 		types.ErrOptionWithStatusCode(http.StatusBadRequest))
 
 	require.NotNil(t, wrapped)
-	assert.Equal(t, types.ErrorCode("qy_violation.7"), wrapped.GetErrorCode(),
-		"上游包装后错误码必须仍是违规规则的码,而不是 model_price_error")
+	// 期望值走 violationErrorCode() 而不是抄一份字面量:这条断言守的是
+	// "包装之后码没被换掉",不是"码长什么样"(那由 TestViolationErrorCodeCarriesNoRuleId
+	// 单独守)。抄字面量的结果是改一次码要在两个测试里各改一次,而其中一个
+	// 会被忘掉 —— 上一次就是这么红的。
+	assert.Equal(t, types.ErrorCode(violationErrorCode()), wrapped.GetErrorCode(),
+		"上游包装后错误码必须仍是违规拦截的码,而不是 model_price_error")
 	assert.Equal(t, http.StatusBadRequest, wrapped.StatusCode)
 	assert.Equal(t, defaultBlockMessage, wrapped.Error())
 	assert.True(t, types.IsSkipRetryError(wrapped),

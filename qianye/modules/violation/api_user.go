@@ -120,17 +120,17 @@ func userSummary(c *gin.Context) {
 		windowHours = 24
 	}
 	// 窗口已经滚过就不该再展示旧计数,否则用户看到的"剩余次数"是错的。
+	now := common.GetTimestamp()
 	hit := counter.HitCount
-	if counter.WindowStart < common.GetTimestamp()-int64(windowHours)*3600 {
+	if counter.WindowStart < now-int64(windowHours)*3600 {
 		hit = 0
 	}
-	remaining := 0
-	if policy.Threshold > 0 {
-		remaining = policy.Threshold - hit
-		if remaining < 0 {
-			remaining = 0
-		}
-	}
+	// "还差几次"必须跨**两条线**取最小值,不能只算账号总量线。
+	// 处置由 anyReached 的 OR 判定触发,最先到达的那条线说了算;只按账号线算,
+	// 在"账号线 10、某一类 3"这种普通配置下会告诉用户"还剩 8 次",
+	// 而他下一次命中就被封了。给反向的数字比不给数字更糟。
+	cats, catHits := userCategoryLines(userId, now)
+	nearest := nearestThresholdLine(policy.Threshold, hit, cats, catHits)
 
 	var feeTotal int64
 	db.Get().Model(&Record{}).
@@ -138,16 +138,98 @@ func userSummary(c *gin.Context) {
 		Select("COALESCE(SUM(fee_quota),0)").Scan(&feeTotal)
 
 	respond(c, gin.H{
-		"hit_count":     hit,
+		"hit_count": hit,
+		// window_hours / ban_threshold 描述的仍然是**账号总量线**那一条。
+		// 上面那个 "N / M" 统计块问的就是这条线,换成最近那条线会让同一个
+		// hit_count 配上另一条线的分母。
 		"window_hours":  windowHours,
 		"ban_threshold": policy.Threshold,
-		"remaining":     remaining,
+		// remaining 是**两条线里最近的那一条**还差几次,只在 remaining_line
+		// 不是 none 时有意义。前端不要再用 ban_threshold > 0 判断要不要显示它:
+		// 账号线关着、某一类开着 3 次,是完全合法的配置。
+		"remaining":      nearest.Remaining,
+		"remaining_line": nearest.Line,
 		// 达到阈值之后会发生什么必须一并告知:同一个"还剩 2 次"在
 		// 「仅记录」档下不会有任何后果,在「封号」档下是账号被限制。
 		// 只给数字不给动作,用户无从判断该不该紧张。
-		"policy_action":   policy.Action,
+		"policy_action": policy.Action,
+		// banned 让前端能停掉倒计时。已经被封的人看到"距离封号还剩 7"
+		// 是这一页最糟的一种错:他会以为自己还能用,而实际每一次调用都是 403。
+		"banned":          violationBanned(userId, counter.BanCycle),
 		"total_fee_quota": feeTotal,
 	})
+}
+
+// userCategoryLines 读出当前对这个用户**生效**的全部单类型线,以及各自窗口内的计数。
+//
+// 入选条件与 categoryReached 逐字同构(Enabled 且 Threshold > 0),
+// 刻意**不看 published**:published 只决定这一类出不出现在公示列表里,
+// 不决定它计不计数、触不触发。按 published 过滤会让"还差几次"在观察期类型上
+// 重新失真,而那正是这个函数存在的原因。
+//
+// 读失败返回空:倒计时算不出来时退回"看不出最近的线"是安全方向,
+// 一次扩展库抖动不该让整页打不开。
+func userCategoryLines(userId int, now int64) ([]Category, map[int64]int) {
+	gdb := db.Get()
+	if gdb == nil {
+		return nil, nil
+	}
+	var cats []Category
+	if err := gdb.Where("enabled = ? AND threshold > ?", true, 0).Find(&cats).Error; err != nil {
+		return nil, nil
+	}
+	if len(cats) == 0 {
+		return nil, nil
+	}
+	ids := make([]int64, 0, len(cats))
+	for _, cat := range cats {
+		ids = append(ids, cat.Id)
+	}
+	var counters []CategoryCounter
+	if err := gdb.Where("user_id = ? AND category_id IN ?", userId, ids).Find(&counters).Error; err != nil {
+		return cats, nil
+	}
+	hits := make(map[int64]int, len(counters))
+	byId := make(map[int64]Category, len(cats))
+	for _, cat := range cats {
+		byId[cat.Id] = cat
+	}
+	for _, ct := range counters {
+		cat, ok := byId[ct.CategoryId]
+		if !ok {
+			continue
+		}
+		windowHours := cat.WindowHours
+		if windowHours <= 0 {
+			windowHours = 24
+		}
+		// 窗口已经滚过就不算(与 toUserCategoryView / userSummary 同口径)。
+		if ct.WindowStart < now-int64(windowHours)*3600 {
+			continue
+		}
+		hits[ct.CategoryId] = ct.HitCount
+	}
+	return cats, hits
+}
+
+// violationBanned 回答"这个用户此刻是不是正被违规系统封着"。
+//
+// 判据是**当前封禁周期**上有一行 banned:BanCycle 在每次解封时 +1,
+// 所以旧周期的封禁行不会把一个已经解封的人继续说成被封。
+// 查不到或读失败一律按未封禁 —— 把"没被封"说成"被封"会让人白白去发工单,
+// 而反方向的错(把被封说成没被封)由 remaining 那一路兜住。
+func violationBanned(userId, banCycle int) bool {
+	gdb := db.Get()
+	if gdb == nil {
+		return false
+	}
+	var count int64
+	if err := gdb.Model(&Ban{}).
+		Where("user_id = ? AND ban_cycle = ? AND status = ?", userId, banCycle, BanBanned).
+		Count(&count).Error; err != nil {
+		return false
+	}
+	return count > 0
 }
 
 // userCategoryView 是**对用户公示**的违规类型,由服务端白名单构造。
@@ -298,9 +380,14 @@ func userListCategories(c *gin.Context) {
 		"account_hit_count":    accountHit,
 		"account_window_hours": accountWindow,
 		"policy_action":        policy.Action,
+		// banned 让公示卡片能在"已达门槛"与"已经被处置"之间分开说话。
+		// 达到门槛的那一刻账号就已经被封了(anyReached 用的是"已达"而不是
+		// "恰好跨越"),此时再写一句"下一次违规就会被封"是一句已经过期的预告 ——
+		// 而这个用户此刻最需要的是知道自己已经被封、该去申诉。
+		"banned": violationBanned(userId, counter.BanCycle),
 		// 两条线是"任一越过即触发"。这句口径由后端下发,前端不要自己写死:
 		// 判定侧改了口径而文案没改,用户看到的就是一句谎话。
-		"threshold_semantics": "any_line",
+		"threshold_semantics": thresholdSemanticsAnyLine,
 	})
 }
 

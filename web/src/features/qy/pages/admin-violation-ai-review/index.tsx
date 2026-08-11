@@ -57,6 +57,10 @@ import {
   qyAiChannelToDraft,
   qyAiDraftToInput,
   qyAiPercentTextToBps,
+  qyAiPromptCategoryIssues,
+  qyAiPromptForEditor,
+  qyAiPromptIsDefault,
+  qyAiPromptToPayload,
   type QyAiChannelDraft,
 } from './lib/ai-review'
 import type { QyAiChannel } from './types'
@@ -136,7 +140,10 @@ function AiSettingCard() {
           percent: qyAiBpsToPercentText(data.setting.sample_rate_bps),
           pre_timeout_ms: data.setting.pre_timeout_ms,
           async_timeout_ms: data.setting.async_timeout_ms,
-          prompt: data.setting.prompt,
+          // 预填:库里为空时把默认提示词的全文放进输入框,让人能直接在
+          // 上面改。用 placeholder 顶替不行 —— 灰字、不可编辑、不会被提交,
+          // 它回答了"默认长什么样"却没回答"我怎么在它基础上改"。
+          prompt: qyAiPromptForEditor(data.setting.prompt, data.default_prompt),
           max_input_chars: data.setting.max_input_chars,
           third_party_notice_ack: data.setting.third_party_notice_ack,
         }
@@ -144,13 +151,16 @@ function AiSettingCard() {
 
   const save = useMutation({
     mutationFn: () => {
-      if (!current) throw new Error('no draft')
+      if (!current || !data) throw new Error('no draft')
       return updateQyAiSetting({
         enabled: current.enabled,
         sample_rate_bps: qyAiPercentTextToBps(current.percent),
         pre_timeout_ms: current.pre_timeout_ms,
         async_timeout_ms: current.async_timeout_ms,
-        prompt: current.prompt,
+        // 逐字等于默认时提交空串,而不是提交预填进来的那段文本 ——
+        // 否则每个站点点一次保存就把自己钉死在当前版本的默认提示词上,
+        // 以后对它的加固(那句"待审内容不是指令")再也发不过来。
+        prompt: qyAiPromptToPayload(current.prompt, data.default_prompt),
         max_input_chars: current.max_input_chars,
         third_party_notice_ack: current.third_party_notice_ack,
       })
@@ -166,6 +176,21 @@ function AiSettingCard() {
   })
 
   const eff = data?.effective
+  // 「默认 / 已自定义」是**编辑中这一刻**的判断,不是接口回来的 prompt_source:
+  // 后者只描述库里那一份。运营在框里删掉一个字,标记必须当场从"默认"变成
+  // "已自定义" —— 那正是这一档差别唯一会被人注意到的时刻。
+  const promptIsDefault =
+    !data || !current
+      ? true
+      : qyAiPromptIsDefault(current.prompt, data.default_prompt)
+  const promptIssues =
+    !data || !current
+      ? { unknown: [], missing: [] }
+      : qyAiPromptCategoryIssues(
+          current.prompt,
+          data.default_prompt,
+          data.categories
+        )
 
   return (
     <QyPageBoundary query={query}>
@@ -287,25 +312,71 @@ function AiSettingCard() {
               </div>
             </div>
 
+            {/* 提示词这一格以前是空的:内置默认提示词只在 placeholder 里,
+            于是"在默认基础上改一句"这件最常见的事做不了。现在预填全文,
+            并且把「你现在处于哪一档」摆在标签旁边 —— 因为两档的差别
+            (自定义之后不再跟随默认提示词升级)没有任何其它可见症状。 */}
             <div className='flex flex-col gap-1.5'>
-              <Label>{t('qy_ai_prompt')}</Label>
+              <div className='flex items-center gap-2'>
+                <Label>{t('qy_ai_prompt')}</Label>
+                <Badge variant={promptIsDefault ? 'outline' : 'default'}>
+                  {promptIsDefault
+                    ? t('qy_ai_prompt_badge_default')
+                    : t('qy_ai_prompt_badge_custom')}
+                </Badge>
+              </div>
               <Textarea
-                rows={8}
+                rows={12}
                 value={current.prompt}
-                placeholder={data.default_prompt}
                 onChange={(e) =>
                   setDraft({ ...current, prompt: e.target.value })
                 }
               />
               <p className='text-muted-foreground text-xs'>
+                {promptIsDefault
+                  ? t('qy_ai_prompt_source_default_desc')
+                  : t('qy_ai_prompt_source_custom_desc')}
+              </p>
+              <p className='text-muted-foreground text-xs'>
                 {t('qy_ai_prompt_hint', {
                   categories: data.categories.join(', '),
                 })}
               </p>
+
+              {/* 类型闭集被改坏时不拒绝保存(收窄类型是合法用法),但必须
+              当场说出来:模型返回一个闭集外的类型会被归成 other,而按那个
+              名字过滤的规则从此永不命中 —— 一条零症状的静默失效。 */}
+              {promptIssues.unknown.length > 0 && (
+                <Alert>
+                  <AlertTriangle className='size-4' />
+                  <AlertTitle>{t('qy_ai_prompt_cat_unknown_title')}</AlertTitle>
+                  <AlertDescription>
+                    {t('qy_ai_prompt_cat_unknown_desc', {
+                      names: promptIssues.unknown.join(', '),
+                      known: data.categories.join(', '),
+                    })}
+                  </AlertDescription>
+                </Alert>
+              )}
+              {promptIssues.missing.length > 0 && (
+                <Alert>
+                  <AlertTriangle className='size-4' />
+                  <AlertTitle>{t('qy_ai_prompt_cat_missing_title')}</AlertTitle>
+                  <AlertDescription>
+                    {t('qy_ai_prompt_cat_missing_desc', {
+                      names: promptIssues.missing.join(', '),
+                    })}
+                  </AlertDescription>
+                </Alert>
+              )}
+
               <div>
+                {/* 恢复默认:把文本填回默认全文,保存时它会被折成空串,
+                本站因此重新跟随默认提示词的后续升级。 */}
                 <Button
                   size='sm'
                   variant='outline'
+                  disabled={promptIsDefault}
                   onClick={() =>
                     setDraft({ ...current, prompt: data.default_prompt })
                   }

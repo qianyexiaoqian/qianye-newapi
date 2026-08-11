@@ -123,6 +123,8 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/violation/categories", adminListCategories)
 	// 类型阈值的影响面预览。只读但要扫计数表,挂搜索限流而不是完全裸奔。
 	g.GET("/violation/categories/impact", middleware.SearchRateLimit(), adminCategoryImpact)
+	// 内置类型的建议阈值 + 逐类影响面。只读,同样要扫计数表。
+	g.GET("/violation/categories/suggestions", middleware.SearchRateLimit(), adminSuggestedThresholds)
 	// 影响面预览是只读的,但它要跨库扫描,所以挂搜索限流而不是完全裸奔。
 	g.GET("/violation/ban-policies/impact", middleware.SearchRateLimit(), adminBanPolicyImpact)
 
@@ -181,6 +183,9 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 与策略档同形 —— 两者的校验、二次确认、审计口径完全一致,拆成两条路由
 	// 就是把同一段逻辑抄两份,而漏抄的那一份大概率是二次确认。
 	g.PUT("/violation/categories", crit, adminUpsertCategory)
+	// 一键写入建议阈值。它只补空(当前阈值为 0 的类型),绝不覆盖手填过的线,
+	// 且没有 confirm 一律 409 —— 语义与影响面口径写在 adminApplySuggestedThresholds 上。
+	g.POST("/violation/categories/apply-suggested", crit, adminApplySuggestedThresholds)
 	// DELETE 是**归档**,不是删除:历史违规记录一行不动,规则改绑到 reassign_to
 	// (缺省「未分类」)。语义写在 adminArchiveCategory 上,界面文案必须照抄。
 	g.DELETE("/violation/categories/:id", crit, adminArchiveCategory)

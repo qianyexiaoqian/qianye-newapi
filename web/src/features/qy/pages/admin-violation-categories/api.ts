@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { queryOptions } from '@tanstack/react-query'
 
-import { qyDelete, qyGet, qyPut } from '../../lib/api'
+import { qyDelete, qyGet, qyPost, qyPut } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import type {
   QyViolationCategoryArchived,
@@ -26,6 +26,8 @@ import type {
   QyViolationCategoryInput,
   QyViolationCategoryList,
   QyViolationCategorySaved,
+  QyViolationThresholdApplied,
+  QyViolationThresholdSuggestions,
 } from './types'
 
 /**
@@ -88,5 +90,40 @@ export function qyArchiveViolationCategory(id: number, reassignTo?: number) {
     reassignTo == null || reassignTo <= 0 ? '' : `?reassign_to=${reassignTo}`
   return qyDelete<QyViolationCategoryArchived>(
     `/violation/categories/${id}${suffix}`
+  )
+}
+
+/**
+ * 内置类型的建议阈值 + 逐类影响面。
+ *
+ * 建议值只活在后端代码里，**不在出厂种子里** —— 种子一旦带值，升级上来的站点
+ * 会在部署完成的那一秒开始按一套没有人设定过的线封人。这个接口是那条纪律的
+ * 出口：我们把想过的线摆出来，落库要有人看着影响面按下确认。
+ *
+ * `staleTime: 0`：这里面每一个数字都是「按下确认会发生什么」的依据。
+ */
+export function qyViolationThresholdSuggestionsQuery() {
+  return queryOptions({
+    queryKey: qyKeys.adminViolationCategorySuggestions(),
+    queryFn: () =>
+      qyGet<QyViolationThresholdSuggestions>('/violation/categories/suggestions'),
+    staleTime: 0,
+  })
+}
+
+/**
+ * 把建议线落库。**这个动作会真的改变谁会被封号。**
+ *
+ * 两条纪律在后端强制，前端只是照做：
+ *   - **只补空**：只有当前阈值为 0 的类型会被写，管理员手填过的线绝不被顶掉；
+ *   - **先出数**：`confirm` 为 false 时后端回 409 并带上完整预览。
+ *
+ * 应用本身不处置任何人（回执里的 `acts_immediately` 恒为 false）：写的只是类型表，
+ * 已越线的账号会在各自下一次违规命中时才被处置。
+ */
+export function qyApplyViolationThresholdSuggestions(confirm: boolean) {
+  return qyPost<QyViolationThresholdApplied>(
+    '/violation/categories/apply-suggested',
+    { confirm }
   )
 }

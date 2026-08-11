@@ -79,14 +79,33 @@ export type QyAiSetting = {
   sample_rate_bps: number
   pre_timeout_ms: number
   async_timeout_ms: number
+  /**
+   * **空串 = 用内置默认提示词,并跟随它的后续升级**;非空 = 本站自定义的一份。
+   * 界面上输入框会被预填成默认全文,所以"输入框非空"绝不等于"已自定义" ——
+   * 那一档要看 `prompt_source`。
+   */
   prompt: string
   max_input_chars: number
   third_party_notice_ack: boolean
 }
 
+/** 提示词属于哪一档。`default` 才会跟随内置默认提示词的后续升级。 */
+export type QyAiPromptSource = 'default' | 'custom'
+
+/** 自定义提示词与系统类型闭集的对账结果。默认档时两边都是空数组。 */
+export type QyAiPromptCategoryReport = {
+  /** 提示词枚举了、闭集里没有的类型名 —— 模型按它回会被归成 `other`。 */
+  unknown: string[]
+  /** 闭集里有、提示词没提的类型名 —— 模型不会主动返回它们。 */
+  missing: string[]
+}
+
 export type QyAiSettingResponse = {
   setting: QyAiSetting
   default_prompt: string
+  /** 别用 `setting.prompt !== ''` 自己算:输入框预填之后那个判断永远为真。 */
+  prompt_source: QyAiPromptSource
+  prompt_categories: QyAiPromptCategoryReport
   categories: string[]
   key_configured: boolean
   effective: {
@@ -99,6 +118,16 @@ export type QyAiSettingResponse = {
     max_pre_timeout: number
     max_async_timeout: number
   }
+}
+
+/**
+ * 保存设置的回显。与 GET 同形,因为提示词把类型闭集改坏时接口仍然返回 200
+ * (收窄类型是合法用法,不该被拒),"哪里坏了"必须随这一次响应一起回来。
+ */
+export type QyAiSettingSaveResult = {
+  setting: QyAiSetting
+  prompt_source: QyAiPromptSource
+  prompt_categories: QyAiPromptCategoryReport
 }
 
 export type QyAiStatsRow = {

@@ -201,6 +201,14 @@ export const qyKeys = {
   /** 违规类型（含每一类的规则条数）。 */
   adminViolationCategories: () =>
     [...qyKeys.all, 'admin', 'violation', 'categories'] as const,
+  /**
+   * 内置类型的建议阈值 + 逐类影响面。
+   *
+   * 与类型列表分开一个 key：应用之后两者都要失效，但打开建议弹窗时不该顺手
+   * 重拉一整张列表 —— 那个列表正是弹窗背后那一页，重拉会让它在弹窗底下抖一下。
+   */
+  adminViolationCategorySuggestions: () =>
+    [...qyKeys.all, 'admin', 'violation', 'categories', 'suggestions'] as const,
   /** AI 审核：渠道池、全局设置、成本统计、调用明细。 */
   adminViolationAiChannels: () =>
     [...qyKeys.all, 'admin', 'violation', 'ai-review', 'channels'] as const,

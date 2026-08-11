@@ -118,7 +118,7 @@ func violationBlockError(cr *compiledRule) error {
 	}
 	return types.NewErrorWithStatusCode(
 		errors.New(msg),
-		types.ErrorCode(violationErrorCode(cr.R.Id)),
+		types.ErrorCode(violationErrorCode()),
 		http.StatusBadRequest,
 		types.ErrOptionWithSkipRetry(),
 		types.ErrOptionWithNoRecordErrorLog(),

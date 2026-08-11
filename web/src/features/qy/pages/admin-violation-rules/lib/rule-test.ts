@@ -95,3 +95,108 @@ export function qyRuleTestContentInputs(
 ): QyViolationTestInput[] {
   return inputs.filter((id) => !QY_VIOLATION_TEST_SCOPE_INPUTS.includes(id))
 }
+
+/**
+ * 试跑面板认识的**全部内容维度**，顺序即渲染顺序。
+ *
+ * 这是一份完整清单，不是某条规则的清单：任何一条规则都只读其中一小部分。
+ * 剩下的那些不会消失 —— 它们进「这条规则读不到」的只读说明里。
+ */
+export const QY_VIOLATION_TEST_DIMENSIONS: QyViolationTestInput[] = [
+  'request_text',
+  'upstream_text',
+  'reject_reason',
+  'status_code',
+  'error_code',
+  'rate_count',
+  'ai_verdict',
+  'ai_category',
+  'ai_confidence',
+]
+
+/** 一个维度**缺席的理由**。每一个取值对应一条 `qy_vio_test_absent_*` 文案。 */
+export type QyViolationTestAbsentReason =
+  /** 匹配方式是 AI 审核以外的判据，没有模型结论可读。 */
+  | 'match_not_ai'
+  /** 匹配方式不是错误码判据，不比对上游返回代码。 */
+  | 'match_not_error_code'
+  /** 匹配方式不是频率判据，不数窗口内的请求条数。 */
+  | 'match_not_rate'
+  /** 匹配方式压根不读文本（频率 / 错误码 / 状态码 / AI 审核）。 */
+  | 'match_not_text'
+  /** 转发后异步审核跑在队列上，本次请求的上游响应早已交付。 */
+  | 'phase_async'
+  /** 阶段在转发前，那时上游还没返回。 */
+  | 'phase_no_upstream'
+  /** 阶段在上游侧，判据扫的是上游返回的内容而不是请求上下文。 */
+  | 'phase_not_prompt'
+
+export type QyViolationTestAbsentDimension = {
+  id: QyViolationTestInput
+  reason: QyViolationTestAbsentReason
+}
+
+/**
+ * 这条规则**读不到**的维度，以及每一个读不到的**理由**。
+ *
+ * 为什么要有这个函数：面板此前只渲染规则会读的那几格，其余静默省略。于是一条
+ * prompt 阶段的关键词规则在界面上只剩「请求上下文」一格 —— 项目方看到的正是
+ * 这一屏，得出的结论是「上游返回文本、返回代码、状态码这些维度根本没做」。
+ * 功能一直是对的，缺的是**判据本身没被摆出来**。
+ *
+ * 「asked」一律由 `qyRuleTestInputs` 反推，绝不另写一套判据：两份会漂移，而漂移
+ * 的表现是最坏的一种 —— 一格既被说明成「读不到」，又真的被发去后端参与判定。
+ * 这里只额外负责一件事：那一格为什么不在里面。
+ */
+export function qyRuleTestAbsentDimensions(
+  phase: QyViolationPhase,
+  matchType: QyViolationMatchType
+): QyViolationTestAbsentDimension[] {
+  const asked = new Set<QyViolationTestInput>(
+    qyRuleTestInputs(phase, matchType)
+  )
+  // 文本判据：这三种扫的都是一段文本，差别只在扫哪一段。其余判据（频率 /
+  // 错误码 / 状态码 / AI 审核）一个字节的文本都不读，缺席该怪匹配方式而不是阶段。
+  const textual =
+    matchType === 'keyword' ||
+    matchType === 'regex' ||
+    matchType === 'upstream_text'
+
+  const out: QyViolationTestAbsentDimension[] = []
+  for (const id of QY_VIOLATION_TEST_DIMENSIONS) {
+    if (asked.has(id)) continue
+    switch (id) {
+      case 'request_text':
+        out.push({
+          id,
+          reason: textual ? 'phase_not_prompt' : 'match_not_text',
+        })
+        break
+      case 'upstream_text':
+      case 'reject_reason':
+        out.push({
+          id,
+          reason: textual ? 'phase_no_upstream' : 'match_not_text',
+        })
+        break
+      case 'status_code':
+        // 状态码判据恒问状态码，上游两阶段也恒问，所以缺席只剩两种可能：
+        // 转发前上游还没返回，或者转发后异步手上已经没有响应了。
+        out.push({
+          id,
+          reason: phase === 'post_async' ? 'phase_async' : 'phase_no_upstream',
+        })
+        break
+      case 'error_code':
+        out.push({ id, reason: 'match_not_error_code' })
+        break
+      case 'rate_count':
+        out.push({ id, reason: 'match_not_rate' })
+        break
+      default:
+        // ai_verdict / ai_category / ai_confidence 三格同进同出。
+        out.push({ id, reason: 'match_not_ai' })
+    }
+  }
+  return out
+}

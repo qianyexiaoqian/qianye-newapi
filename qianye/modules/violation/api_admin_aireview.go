@@ -350,11 +350,18 @@ func adminGetAISetting(c *gin.Context) {
 	snap := Snapshot()
 	respond(c, gin.H{
 		"setting": row,
-		// default_prompt 一起下发,界面上"恢复默认"才有东西可填,
-		// 而不是让运营去源码里抄一段提示词。
+		// default_prompt 一起下发,界面才能把它**预填**进输入框 ——
+		// 不预填的话运营看不见内置提示词的内容,也就无从在它基础上改。
+		// 它同时是"恢复默认"那个按钮要填回去的东西。
 		"default_prompt": defaultAIPrompt,
-		"categories":     sortedAICategories(),
-		"key_configured": aiKeyConfigured(),
+		// prompt_source 是界面上「默认 / 已自定义」那个标记的唯一来源。
+		// 前端不能靠"文本是不是空"自己判断:预填之后输入框永远非空,
+		// 那样每个站点看起来都是"已自定义"。见 aireview_prompt.go。
+		"prompt_source": aiPromptSource(row.Prompt),
+		// 自定义提示词与类型闭集的对账。默认档时两边都是空数组。
+		"prompt_categories": inspectAIPromptCategories(row.Prompt),
+		"categories":        sortedAICategories(),
+		"key_configured":    aiKeyConfigured(),
 		// effective 是**快照里真正生效的那一份**,不是这张表单的回显。
 		// 两者不同的场合很实在:抽样率填了 30% 但一个渠道都没启用时,
 		// 表单显示 30%、实际生效是"完全不跑"。没有这一段,那个差别看不见。
@@ -420,7 +427,15 @@ func adminPutAISetting(c *gin.Context) {
 		return
 	}
 	afterAIChange(c, "", nil, nil, func() { writeAISettingAudit(c, qymodel.ResultOK, before, row, nil) })
-	respond(c, row)
+	// 回显与 GET 同形。多出来的两个字段不是装饰:提示词把类型闭集改坏时
+	// 接口仍然返回 200(那是刻意的,见 aiPromptCategoryReport.Missing 的说明),
+	// 所以"哪里坏了"必须随这一次响应一起回去,而不是等运营下次刷新页面。
+	// 非界面客户端(脚本改配置)只有这一条路能知道自己刚刚改坏了什么。
+	respond(c, gin.H{
+		"setting":           row,
+		"prompt_source":     aiPromptSource(row.Prompt),
+		"prompt_categories": inspectAIPromptCategories(row.Prompt),
+	})
 }
 
 // ───────────────────────────── 明细与成本 ─────────────────────────────
@@ -623,15 +638,28 @@ func writeAISettingAudit(c *gin.Context, result string, before, after AISetting,
 	})
 }
 
+// aiSettingAuditSnap 是设置行的审计快照。
+//
+// 提示词直接决定"什么算违规",所以改它必须留痕 —— 但整段进快照会把
+// audit 的 SnapshotMaxBytes 撑爆并截掉后面的字段(本仓踩过的形状)。
+// 折中是记指纹:长度 + sha256 前 16 位 + 属于哪一档 + 类型闭集的对账结果。
+//
+// 为什么长度不够:把"绝不执行"改成"必须执行"字数一模一样,而那一改正是
+// 把提示词注入防线关掉的改法。只记 prompt_runes 时它在审计里毫无痕迹。
 func aiSettingAuditSnap(s AISetting) map[string]any {
+	report := inspectAIPromptCategories(s.Prompt)
 	return map[string]any{
 		"enabled": s.Enabled, "sample_rate_bps": s.SampleRateBps,
 		"pre_timeout_ms": s.PreTimeoutMs, "async_timeout_ms": s.AsyncTimeoutMs,
 		"max_input_chars":        s.MaxInputChars,
 		"third_party_notice_ack": s.ThirdPartyNoticeAck,
-		// 提示词只留长度与是否自定义:它可能有几千字,整段进审计会把
-		// SnapshotMaxBytes 撑爆并截掉后面的字段(那正是本仓踩过的形状)。
-		"prompt_customized": strings.TrimSpace(s.Prompt) != "",
-		"prompt_runes":      len([]rune(s.Prompt)),
+		"prompt_customized":      strings.TrimSpace(s.Prompt) != "",
+		"prompt_runes":           len([]rune(s.Prompt)),
+		"prompt_source":          aiPromptSource(s.Prompt),
+		"prompt_sha256":          aiPromptFingerprint(s.Prompt),
+		// 类型闭集被改坏时接口照样 200,界面上也只是一条告警。审计里留下
+		// 这两项,"从哪一次改动开始按类型过滤的规则就不命中了"才有得查。
+		"prompt_unknown_categories": report.Unknown,
+		"prompt_missing_categories": report.Missing,
 	}
 }

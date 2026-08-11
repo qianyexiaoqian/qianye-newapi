@@ -129,6 +129,14 @@ func reachedThreshold(after, threshold int) bool {
 	return threshold > 0 && after >= threshold
 }
 
+// thresholdSemanticsAnyLine 是"两条线任一越过即触发"这个口径的机器可读名。
+//
+// 它挂在 anyReached 旁边而不是接口层,因为下面那个 switch **就是**这个口径本身。
+// 管理端列表、建议阈值预览、用户端公示三处都下发这个常量:有人把判定改成
+// "两条都要越过"时,改的是 anyReached,而这个常量必须跟着改 —— 于是三处文案
+// 一起变。三处各写一份字面量的结果是界面说 OR、实际是 AND,而没有任何测试会红。
+const thresholdSemanticsAnyLine = "any_line"
+
 // anyReached 回答"这次命中之后要不要走封号判定",并说明是撞了哪条线。
 //
 // 这是"到底几次封号"这个问题在代码里的**唯一**答案:两条线各自独立判定,
@@ -145,6 +153,73 @@ func anyReached(st counterState) (bool, string) {
 		return true, BanTriggerGlobal
 	}
 	return false, ""
+}
+
+// 用户端"还差几次"落在哪条线上。
+const (
+	ThresholdLineNone     = "none"
+	ThresholdLineAccount  = "account"
+	ThresholdLineCategory = "category"
+)
+
+// thresholdLineState 是"离处置最近的那条线"的答案:哪条线、还差几次。
+type thresholdLineState struct {
+	// Line 取 ThresholdLine* 之一。none 表示当前一条生效的线都没有,
+	// 此时 Remaining 无意义(调用方必须按"不设门槛"渲染,而不是渲染 0)。
+	Line string
+	// Remaining 是这条线上还差几次。已达门槛时为 0。
+	Remaining int
+	// CategoryId 只在 Line == ThresholdLineCategory 时有意义。
+	// 它是**内部标识**,调用方要拿它去查公示标题时必须自己确认那一类已公示。
+	CategoryId int64
+}
+
+// nearestThresholdLine 在账号总量线与全部单类型线里挑出"还差最少"的那一条。
+//
+// # 为什么必须取全局最小值,而不是只算账号总量线
+//
+// anyReached 的语义是 OR:任一条线越过就触发处置。于是用户真正会被处置的时点
+// 由**最先到达的那条线**决定,而不是账号总量线。只按账号总量线算"还剩几次",
+// 在"账号线 10、某一类 3"这种再普通不过的配置下会告诉用户"还剩 8 次",
+// 而他下一次命中就被封了 —— 这不是少给信息,是给了一个反向的信息。
+//
+// # 为什么未公示的类型也要参与
+//
+// published 只决定"这一类出不出现在公示列表里",不决定它计不计数、触不触发。
+// 把未公示的类型排除在这个最小值之外,就是让公示页在观察期类型上重新失真。
+// 折中点在于:数字必须诚实,而**是哪一类**可以不说 —— 这里只回 CategoryId,
+// 调用方对未公示的类型不给名字即可。
+//
+// # 判据必须与 categoryReached / reachedThreshold 逐字同构
+//
+// 一条线"生效"的条件就是那两个函数里的条件:账号线要 threshold > 0,
+// 类型线要 Enabled 且 Threshold > 0。任何一处放宽,用户看到的倒计时
+// 就会与真实处置对不上。
+func nearestThresholdLine(accountThreshold, accountHit int, cats []Category, catHits map[int64]int) thresholdLineState {
+	best := thresholdLineState{Line: ThresholdLineNone}
+	consider := func(line string, categoryId int64, threshold, hit int) {
+		remaining := threshold - hit
+		if remaining < 0 {
+			remaining = 0
+		}
+		// 严格小于:两条线并列最近时保留先看到的那一条,而账号总量线先被考虑。
+		// 并列时报账号线更保守 —— 它是所有用户都存在的那条线,不需要额外解释。
+		if best.Line != ThresholdLineNone && remaining >= best.Remaining {
+			return
+		}
+		best = thresholdLineState{Line: line, Remaining: remaining, CategoryId: categoryId}
+	}
+
+	if accountThreshold > 0 {
+		consider(ThresholdLineAccount, 0, accountThreshold, accountHit)
+	}
+	for _, cat := range cats {
+		if !cat.Enabled || cat.Threshold <= 0 {
+			continue
+		}
+		consider(ThresholdLineCategory, cat.Id, cat.Threshold, catHits[cat.Id])
+	}
+	return best
 }
 
 // claimBan 尝试认领一次封号。

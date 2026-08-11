@@ -82,6 +82,10 @@ func validateAIRule(r *Rule) error {
 // validateAISetting 校验全局设置。上下界都不是装饰:
 // 每一个越界值都对应一种"看起来开着、实际不生效或代价失控"的状态。
 func validateAISetting(s *AISetting) error {
+	// 提示词的归一放在校验里,而不是各个 handler 里:这是唯一的写入校验闸,
+	// 放这里意味着以后新增任何一条写入路径都自动带上"逐字等于默认 → 存空串"。
+	// 见 aireview_prompt.go 顶部对这条折叠的完整理由。
+	s.Prompt = normalizeAIPrompt(s.Prompt)
 	if s.SampleRateBps < 0 || s.SampleRateBps > 10000 {
 		return fmt.Errorf("抽样率必须在 0..10000 之间(万分比,30%% = 3000),当前为 %d", s.SampleRateBps)
 	}
