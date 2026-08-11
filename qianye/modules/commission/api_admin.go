@@ -1,6 +1,7 @@
 package commission
 
 import (
+	"context"
 	"encoding/json" // 仅取 RawMessage 类型;编解码一律走 common.*
 	"errors"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
@@ -17,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -576,6 +579,40 @@ func adminSettle(c *gin.Context) {
 //
 // 拉黑只停止未来计佣,不回收已发放的佣金 —— 回收要走冲正,那是另一个决定,
 // 必须由人显式做出并留下理由。
+//
+// # 这个处理器修过两个缺陷,两个都要在这里说清楚
+//
+// ## 一、"参数格式错" 与 "这条记录压根没有邀请关系" 被混成同一个 400
+//
+// 旧代码写的是 `if err := ...; err != nil || req.InviteeId <= 0`,两种完全
+// 不同的失败共用 `qy_invalid_param` + "请求格式错误"。而实际撞上这个 400 的
+// 是**手工调整产生的计佣行**:它们 invitee_id = 0(见 api_admin_adjust.go ——
+// 这笔钱不是从谁的消费里分出来的,不挂在任何下线上),运营在佣金流水页对着
+// 这样一行点「拉黑」,拿到的提示是"请求参数有误",于是他会怀疑自己填错了、
+// 再点一次,或者更糟 —— 怀疑刚才那次是不是已经扣了钱。
+//
+// 现在分成两个 code:`qy_invalid_param` 只保留给真正的报文问题,
+// "这一行不挂在任何邀请关系上"是 `qy_rel_no_relation`,文案直接回答
+// "为什么这一行不能拉黑"。前端据此**根本不渲染**这个按钮(治本),
+// 这条 400 是治标的第二道闸。
+//
+// ## 二、拉黑一条真实存在的关系会静默地什么都不做,却回 200
+//
+// 旧代码直接 `Model(&InviteRelation{}).Where("invitee_id = ?").Updates(...)`。
+// 而 qy_invite_relation 是**懒建**的快照:ensureRelation 只在某个下线第一次
+// 产生佣金时才写那一行。备份库实测 users 里 377 条绑定、快照表 11 行 ——
+// 也就是说 **97% 的真实关系在这张表里没有行**,`Updates` 影响 0 行,
+// 接口照样回 `{"blocked":true}`。
+//
+// 后果不是"少了个提示":`blockedInvitees()` 读的正是
+// `qy_invite_relation WHERE blocked = true`,快照行不存在 = 这个人从来没被
+// 拉黑过。运营看到成功提示,以为自刷已经被止住,而佣金一分不少地继续计给
+// 上线。实测证据:对 1316(users.inviter_id = 1302,快照表无行)拉黑返回
+// 200 success,而 `SELECT ... WHERE invitee_id = 1316` 仍然是 0 行。
+//
+// 修法是**按权威字段补建快照行**,与 markRelationUnbound 对缺行的处理同一手法:
+// 主库 users.inviter_id 说这条关系存在,快照就该有一行;主库说不存在而快照也
+// 没有,才是真的"没有这条关系"(`qy_rel_not_bound`)。
 func adminBlockRelation(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCommission) {
 		return
@@ -585,32 +622,123 @@ func adminBlockRelation(c *gin.Context) {
 		Blocked   bool   `json:"blocked"`
 		Reason    string `json:"reason"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.InviteeId <= 0 {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, "qy_invalid_param", "请求格式错误")
 		return
 	}
-	err := db.Get().Model(&InviteRelation{}).Where("invitee_id = ?", req.InviteeId).
-		Updates(map[string]any{
-			"blocked":    req.Blocked,
-			"risk_flags": truncate(req.Reason, 255),
-			"updated_at": common.GetTimestamp(),
-		}).Error
-	if err != nil {
-		internalError(c, err)
+	if req.InviteeId <= 0 {
+		// 与上面那条 400 刻意用不同的 code:前端要能分辨"我发错了报文"
+		// 与"这一行本来就不是一条邀请关系"。
+		badRequest(c, "qy_rel_no_relation",
+			"这条记录没有关联的邀请关系(手工调整等非邀请来源的计佣行不挂在任何下线上),无法拉黑")
 		return
 	}
+
+	ctx := c.Request.Context()
+	before := relationSnapshot(ctx, req.InviteeId)
+	inviterId, err := setRelationBlocked(ctx, req.InviteeId, req.Blocked, req.Reason)
+	if err != nil {
+		writeRelationAudit(c, "commission.relation.block", req.InviteeId, qymodel.ResultFail,
+			blockVerb(req.Blocked)+"邀请关系失败: "+err.Error()+" | 事由: "+req.Reason,
+			before, relationSnapshot(ctx, req.InviteeId))
+		respondRelationError(c, err)
+		return
+	}
+
 	invalidateBlocked()
-	audit.Write(c, audit.Entry{
-		Category:     qymodel.AuditCategoryCommission,
-		Action:       "commission.relation.block",
-		ActorType:    qymodel.ActorAdmin,
-		ActorUserId:  c.GetInt("id"),
-		ActorName:    c.GetString("username"),
-		TargetUserId: req.InviteeId,
-		Result:       qymodel.ResultOK,
-		Reason:       req.Reason,
+	writeRelationAudit(c, "commission.relation.block", req.InviteeId, qymodel.ResultOK,
+		blockVerb(req.Blocked)+"邀请关系(邀请人 "+itoa(inviterId)+
+			"):只停止未来计佣,已发放的佣金不回收(要收回须单独走冲正)| 事由: "+req.Reason,
+		before, relationSnapshot(ctx, req.InviteeId))
+	respond(c, gin.H{
+		"invitee_id": req.InviteeId,
+		"inviter_id": inviterId,
+		"blocked":    req.Blocked,
 	})
-	respond(c, gin.H{"invitee_id": req.InviteeId, "blocked": req.Blocked})
+}
+
+func blockVerb(blocked bool) string {
+	if blocked {
+		return "拉黑"
+	}
+	return "解封"
+}
+
+// setRelationBlocked 把拉黑标记写进快照表,快照行缺失时按主库的权威字段补建。
+//
+// 返回这条关系的邀请人 id,供审计与响应回显 —— 拉黑之后运营最需要知道的是
+// "我刚刚断掉的是谁的进项"。
+func setRelationBlocked(ctx context.Context, inviteeId int, blocked bool, reason string) (int, error) {
+	gdb := db.Get()
+	if gdb == nil {
+		return 0, db.ErrNotReady
+	}
+	if model.DB == nil {
+		return 0, db.ErrNotReady
+	}
+
+	var invitee model.User
+	err := model.DB.WithContext(ctx).Model(&model.User{}).
+		Select("id", "username", "email", "inviter_id", "created_at").
+		Where("id = ?", inviteeId).Take(&invitee).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, errRelUserMissing
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	var snaps []InviteRelation
+	if err := gdb.WithContext(ctx).Where("invitee_id = ?", inviteeId).
+		Limit(1).Find(&snaps).Error; err != nil {
+		db.MarkFailure(err)
+		return 0, err
+	}
+
+	// 权威字段优先:主库说"现在绑着谁"才是这条关系此刻的样子。主库为 0 时
+	// 回落到快照的 inviter_id —— 那是"已解绑但历史还在"的形状,对它解封
+	// (blocked=false)仍然有意义。两边都没有,才是真的没有这条关系。
+	inviterId := invitee.InviterId
+	if inviterId == 0 && len(snaps) > 0 {
+		inviterId = snaps[0].InviterId
+	}
+	if inviterId == 0 {
+		return 0, errRelNotBound
+	}
+
+	now := common.GetTimestamp()
+	if len(snaps) > 0 {
+		if err := gdb.WithContext(ctx).Model(&InviteRelation{}).
+			Where("invitee_id = ?", inviteeId).
+			Updates(map[string]any{
+				"blocked":    blocked,
+				"risk_flags": truncate(reason, 255),
+				"updated_at": now,
+			}).Error; err != nil {
+			db.MarkFailure(err)
+			return 0, err
+		}
+		return inviterId, nil
+	}
+
+	// 快照缺行。补一行而不是回 200 假装成功 —— blockedInvitees() 只认这张表,
+	// 没有行就等于没拉黑。bound_at 取下线的注册时间:自动绑定发生在那一刻。
+	row := InviteRelation{
+		InviteeId:  inviteeId,
+		InviterId:  inviterId,
+		MaskedName: truncate(MaskUsername(displayName(invitee)), 64),
+		InviteeRef: inviteeRef(inviteeId, refSalt()),
+		BoundAt:    invitee.CreatedAt,
+		RiskFlags:  truncate(reason, 255),
+		Blocked:    blocked,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := gdb.WithContext(ctx).Save(&row).Error; err != nil {
+		db.MarkFailure(err)
+		return 0, err
+	}
+	return inviterId, nil
 }
 
 // adminInvalidateCache 在管理员改过 users.inviter_id 之后手动失效缓存。
@@ -649,6 +777,10 @@ func adminInvalidateCache(c *gin.Context) {
 // degraded.* > 0 是第二类必须盯着的信号,性质与丢队列相反:钱照发了,但发的
 // 是按默认口径算出来的钱。降级行与正常行在 qy_commission_accrual 里长得
 // 一模一样,只有这个计数器能告诉运营"哪段时间的佣金要复核"。
+//
+// ledger_check 是第三类,也是最安静的一类:账本自己跟自己对不上。它不会报错、
+// 不会丢队列、不会降级,三张表各自看起来都很正常 —— 只有把它们三个放在一起
+// 减一次才看得见。加进来的直接原因见 ledgerCheck 的说明。
 func adminHealth(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCommission) {
 		return
@@ -663,9 +795,148 @@ func adminHealth(c *gin.Context) {
 		"pending_inviters":   len(pending),
 		"blocked_relations":  len(blockedInvitees(ctx)),
 		"effective_settings": effectiveCtx(ctx),
+		"ledger_check":       ledgerCheck(ctx),
 		"degraded": gin.H{
 			"settings":   settingsDegrade.stats(),
 			"group_rate": groupRateDegrade.stats(),
 		},
 	})
+}
+
+// maxLedgerCheckUsers 是一次体检最多核对多少行余额。
+//
+// 超过就只报"这次没查全",而不是拖着体检接口跑一张全表 join —— 体检本身把
+// 站点拖慢,是最没道理的一种故障。
+const maxLedgerCheckUsers = 20000
+
+// ledgerCheck 是返佣账本的自洽性体检。
+//
+// # 为什么必须由**服务端**报,而不是留给谁去写 SQL
+//
+// 本模块有两条恒等式,它们都不会自己喊疼:
+//
+//	I1  Σ计佣行.settled_amount(status≠voided) == Σ结算单(granted−reclaimed) + 未结算余数
+//	I2  可提现 + 冻结 + 已提现 == 累计earned − 累计clawback
+//
+// I2 每一行余额上都算好了(balanceView.LedgerDrift),运营在余额页一眼能看见。
+// **I1 此前站内任何地方都看不见** —— 它跨 qy_commission_accrual、
+// qy_commission_settlement、qy_commission_balance 三张表,任何单表视图都答不了。
+//
+// 这不是假想的风险:备份库上 inviter 1622 的 I1 漂移是 −0.3663,而他的 I2 恰好
+// 是 0,于是余额页、总表、健康面板三个地方全都显示"这行账很正常"。成因指纹是
+// qy_commission_accrual 的 id 跨到 90 却只剩 28 行 —— 有人删过计佣行。账本是
+// append-only 的,删掉一行的钱不会跟着消失,它只是从此对不上。
+//
+// 所以这里报的是"哪几行对不上、差多少、最坏的是谁",让下一次漂移在发生当天
+// 就有人看得见,而不是等下一轮排查时再从 SQL 里刨出来。
+//
+// # self_invited_users
+//
+// 顺带体检的一条数据异常:users.inviter_id == users.id(自己邀请自己)。
+// 计佣热路径已经挡住了它(hook.go 两处 `e.InviterId == inviteeId` 直接跳过),
+// 写路径也有 qy_rel_self_invite 拦着,所以**它不会产生钱**;但存量数据里那一条
+// 谁也不会主动去查,而同样的形状出现在真人身上就是一条自刷返佣关系。
+//
+// 读失败不让整个健康面板 500:体检项缺失时明说 ok=false,而队列、缓存、降级
+// 那几个指标本来就该继续可见 —— 排查故障时最不需要的就是"健康页也打不开"。
+func ledgerCheck(ctx context.Context) gin.H {
+	out := gin.H{"ok": false, "checked_users": 0}
+	gdb := db.Get()
+	if gdb == nil {
+		out["error"] = db.ErrNotReady.Error()
+		return out
+	}
+
+	var balances []Balance
+	if err := gdb.WithContext(ctx).Limit(maxLedgerCheckUsers + 1).Find(&balances).Error; err != nil {
+		db.MarkFailure(err)
+		out["error"] = err.Error()
+		return out
+	}
+	if len(balances) > maxLedgerCheckUsers {
+		out["error"] = "余额行数超过一次体检的上界 " + strconv.Itoa(maxLedgerCheckUsers) +
+			",本次未核对;需要把体检改成离线任务"
+		return out
+	}
+
+	var accrued []struct {
+		InviterId int
+		Settled   string
+	}
+	if err := gdb.WithContext(ctx).Model(&Accrual{}).
+		Select("inviter_id, COALESCE(SUM(settled_amount), 0) AS settled").
+		Where("status <> ?", StatusVoided).Group("inviter_id").Scan(&accrued).Error; err != nil {
+		db.MarkFailure(err)
+		out["error"] = err.Error()
+		return out
+	}
+	settledByUser := make(map[int]decimal.Decimal, len(accrued))
+	for _, r := range accrued {
+		d, err := decimal.NewFromString(r.Settled)
+		if err != nil {
+			continue
+		}
+		settledByUser[r.InviterId] = d
+	}
+
+	var granted []struct {
+		UserId int
+		Net    int64
+	}
+	if err := gdb.WithContext(ctx).Model(&Settlement{}).
+		Select("user_id, COALESCE(SUM(granted_quota - reclaimed_quota), 0) AS net").
+		Group("user_id").Scan(&granted).Error; err != nil {
+		db.MarkFailure(err)
+		out["error"] = err.Error()
+		return out
+	}
+	grantedByUser := make(map[int]int64, len(granted))
+	for _, r := range granted {
+		grantedByUser[r.UserId] = r.Net
+	}
+
+	settleDrifted, balanceDrifted := 0, 0
+	worstUser := 0
+	worstDrift := decimal.Zero
+	totalDrift := decimal.Zero
+	for _, b := range balances {
+		// I1:计佣行结算掉的钱,必须等于结算单发出去的钱加上还没凑够一个额度的余数。
+		drift := settledByUser[b.UserId].
+			Sub(decimal.NewFromInt(grantedByUser[b.UserId])).
+			Sub(b.UnsettledAmount)
+		if !drift.IsZero() {
+			settleDrifted++
+			totalDrift = totalDrift.Add(drift)
+			if drift.Abs().GreaterThan(worstDrift.Abs()) {
+				worstDrift, worstUser = drift, b.UserId
+			}
+		}
+		// I2:与余额页那一列同一条恒等式,在这里做成全站计数 —— 一行一行翻过去
+		// 找非零值,是没有人会做的事。
+		if b.AvailableQuota != b.TotalEarnedQuota-b.TotalClawbackQuota-b.FrozenQuota-b.WithdrawnQuota {
+			balanceDrifted++
+		}
+	}
+
+	selfInvited := 0
+	if model.DB != nil {
+		var n int64
+		// 列与列比较,三种数据库写法一致;两个列名都不是保留字,不需要方言引号。
+		if err := model.DB.WithContext(ctx).Model(&model.User{}).
+			Where("inviter_id = id").Count(&n).Error; err == nil {
+			selfInvited = int(n)
+		}
+	}
+
+	out["ok"] = true
+	out["checked_users"] = len(balances)
+	// settle_drift 就是那条此前站内看不见的 I1。
+	out["settle_drifted_users"] = settleDrifted
+	out["settle_drift_total"] = totalDrift.String()
+	out["settle_drift_worst_user_id"] = worstUser
+	out["settle_drift_worst"] = worstDrift.String()
+	// balance_drift 是余额页 ledger_drift 那一列的全站计数(I2)。
+	out["balance_drifted_users"] = balanceDrifted
+	out["self_invited_users"] = selfInvited
+	return out
 }

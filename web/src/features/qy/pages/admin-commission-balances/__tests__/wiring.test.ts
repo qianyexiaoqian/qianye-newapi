@@ -88,25 +88,68 @@ const enKeys = en as Record<string, string>
 const zhKeys = zh as Record<string, string>
 
 describe('佣金余额页的入口链路', () => {
-  test('佣金审核页上必须有指向本页的链接（侧栏之外的第二条入口）', () => {
+  /**
+   * 本页本轮从「结算」组的一级项**降级成「用户佣金」的第三张标签**。
+   *
+   * 入口没有变少，形状变了：侧栏那一行现在写「用户佣金」，本页是它下面的
+   * 一张标签；佣金审核页上那个按钮仍然在，只是改走 `qyTabTarget` 直接落到
+   * 宿主页 + 对应 hash（硬写旧 url 也到得了，但要先经一次重定向白闪）。
+   *
+   * 所以判据从"页面里有 `to='<旧 url>'`"改成"页面里出现了这个 url"——
+   * 后者对两种写法都成立，而它要守的东西没变：**这个跳转不许被顺手删掉**。
+   */
+  test('佣金审核页上必须有指向本页的跳转（侧栏之外的第二条入口）', () => {
     assert.ok(
-      recordsPage.includes(`to='${BALANCES_URL}'`),
+      recordsPage.includes(BALANCES_URL),
       `佣金审核页不再链向 ${BALANCES_URL}：运营正看着某一笔计佣时，这个按钮是他跳到按人汇总的那一跳，删掉之后只能绕回侧栏重新找`
+    )
+    assert.ok(
+      recordsPage.includes('qyTabTarget('),
+      '跳转绕开了 qyTabTarget：会先落到旧路由再被重定向弹回来，用户看到一次白闪'
     )
   })
 
-  test('路由文件存在且挂的是本页组件', () => {
+  test('旧路由保留成指向宿主页的重定向', () => {
     assert.ok(existsSync(routeFile), `缺少路由文件 ${routeFile}`)
     const source = readFileSync(routeFile, 'utf8')
+    // 本页收进选择夹之后不再有自己的路由组件，但旧地址**必须**还能到 ——
+    // 它此前是侧栏上的一行，运营的书签与工单里贴出去的链接都还指着它。
     assert.ok(
-      source.includes('QyAdminCommissionBalances'),
-      '路由文件没有挂载 QyAdminCommissionBalances'
+      source.includes("to: '/qy/admin/commission-records/users'"),
+      '旧路由没有重定向到「用户佣金」宿主页，旧书签会 404'
+    )
+    assert.ok(
+      source.includes('qyTabHash('),
+      '重定向没有带上标签 hash，跳过去会停在第一张标签而不是本页'
     )
     assert.ok(
       source.includes(
         "'/_authenticated/qy/admin/commission-records/balances/'"
       ),
       '路由 id 与目录结构不一致，生成的 routeTree 会指向别处'
+    )
+  })
+
+  /** 正文组件必须还在，且仍然挂着「登记已提现」与「手工增减」两个动作。 */
+  test('本页正文被宿主页真的渲染了', () => {
+    const hub = readFileSync(
+      join(
+        webSrc,
+        'features',
+        'qy',
+        'pages',
+        'admin-commission-users',
+        'hub.tsx'
+      ),
+      'utf8'
+    )
+    assert.ok(
+      hub.includes('QyAdminCommissionBalancesBody'),
+      '宿主页没给本页正文：`QyPageTabs` 会安静地跳过这张标签，整页就此从前端消失'
+    )
+    assert.ok(
+      hub.includes(`'${BALANCES_URL}'`),
+      `宿主页的 bodies 里没有 ${BALANCES_URL}`
     )
   })
 

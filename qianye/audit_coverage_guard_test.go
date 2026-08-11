@@ -188,6 +188,12 @@ var auditRequired = []struct {
 		"手动结算把冻结佣金变成可提现余额,是真的动钱;谁按的按钮必须可查"},
 	{"modules/commission/api_admin.go", "adminInvalidateCache", 1,
 		"缓存失效是「改完费率立刻生效」这条动作链的最后一步"},
+	{"modules/commission/api_admin.go", "adminBlockRelation", 2,
+		"拉黑一条邀请关系 = 从这一刻起这个人的消费不再给上线分成,是一次没有任何" +
+			"用户可见症状的资金决定。这条埋点还兜着一个刚修掉的形状:快照表是懒建的" +
+			"(线上 377 条真实关系 / 11 行快照),旧实现对缺行的关系 Updates 影响 0 行" +
+			"却照样回 200 —— 运营以为自刷被止住,佣金却一分不少地继续发。" +
+			"失败那条同样要留痕:「有人正在试图拉黑一个不存在的账号」正是最需要查到的形状"},
 	{"modules/commission/api_admin.go", "adminPutConfig", 2,
 		"费率变更成功与失败都要留痕"},
 	{"modules/commission/api_admin_relation.go", "adminBindRelation", 2,
@@ -196,6 +202,14 @@ var auditRequired = []struct {
 			"before/after 快照(跨两个库拼出来)是事后唯一能回答「原来绑的是谁、" +
 			"当时拉黑了没有」的东西;被防环/已绑定闸门拒绝的那次同样要留痕 —— " +
 			"「有人正在试图给一个已经有上线的账号改指向」正是最需要查到的形状"},
+	{"modules/commission/api_admin_relation.go", "adminRebindRelation", 2,
+		"换绑把 users.inviter_id 从一个人挪到另一个人 —— 从这一刻起,这个账号此后所有的" +
+			"消费与充值都改给新上线分成,而老上线名下已经产生的佣金全部保留。" +
+			"这两句话合起来才是这次操作的全貌,而它们只存在于这条埋点的正文里" +
+			"(响应里的 kept_commission_quota 是它的量化形式);before/after 快照跨两个库拼出来," +
+			"是事后唯一能回答「原来绑的是谁」的东西 —— 主库那一格已经被覆盖了。" +
+			"被防环/自邀请/同人闸门拒绝的那次同样要留痕",
+	},
 	{"modules/commission/api_admin_relation.go", "adminUnbindRelation", 2,
 		"解绑之后主库的 inviter_id 就被清零了,「他曾经是谁的下线」在主库里一个字都不剩。" +
 			"这条埋点的正文里写死了「已产生的佣金全部保留、不再产生新的」这条语义与" +

@@ -237,10 +237,11 @@ describe('qy nav merge — admin, all features on', () => {
     ])
     assert.deepEqual(urlsOf(merged, 'qy-settlement'), [
       '/qy/admin/commission-records',
-      // 佣金余额与 AFF 关系：路由与页面一直都在，侧栏入口本轮才补上。
-      // 项目方原话「UI前端怎么没看见有佣金管理的入口和UI」指的就是这两行。
-      '/qy/admin/commission-records/balances',
-      '/qy/admin/commission-records/relations',
+      // 佣金入口收敛：此前这里有三行（计佣流水 / 佣金余额 / AFF 关系），
+      // 而项目方要的是「一个用户佣金列表」、不要第四个割裂的页面。余额与关系
+      // 变成了「用户佣金」的第二、三张标签，侧栏因此只剩两行 ——
+      // 一个「按用户看」、一个「按流水看」。两页都没有被删。
+      '/qy/admin/commission-records/users',
       '/qy/admin/withdrawals',
       '/qy/admin/transfer-records',
       '/qy/admin/fund-orders',

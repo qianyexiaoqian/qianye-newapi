@@ -34,10 +34,30 @@ import { qyErrorMessage } from '../../../lib/api'
 import { qyKeys } from '../../../lib/query-keys'
 import { QY_FUND_REASON_MIN_RUNES, qyRuneLength } from '../../lib/constants'
 import { qyAdjustCommission } from '../api'
-import type { QyCommissionBalance } from '../types'
+
+/**
+ * 这个弹窗**真正需要**的字段，只有五个。
+ *
+ * 收窄成结构类型而不是继续要求一个完整的 `QyCommissionBalance`：「用户佣金」
+ * 那张表的行来自另一个接口（`/admin/commission/users`，人从主库出），它有这
+ * 五个字段但没有余额页那一整套。两种选择摆在面前时——在调用点写一个适配对象，
+ * 还是把入参收窄到实际用到的那几个字段——后者更诚实：适配对象要凭空编出
+ * `user_resolved` 这类本表根本没有的值，而编出来的值会被当成事实渲染。
+ *
+ * `user_resolved` 可选：来自主库分页的那张表里每一行都是查出来的真实账号，
+ * 不存在"这个 id 查不到"的情形，缺省即视为已解析。
+ */
+export type QyAdjustSubject = {
+  user_id: number
+  username: string
+  user_resolved?: boolean
+  available_quota: number
+  /** decimal(30,10) 字符串。只用于算扣减上限的**提示**，判据永远在后端。 */
+  unsettled_amount: string
+}
 
 type AdjustCommissionDialogProps = {
-  balance: QyCommissionBalance | null
+  balance: QyAdjustSubject | null
   onClose: () => void
 }
 
@@ -113,9 +133,10 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
 
   let subject: string | undefined
   if (balance != null) {
-    subject = balance.user_resolved
-      ? `${balance.username} (#${balance.user_id})`
-      : `#${balance.user_id}`
+    subject =
+      balance.user_resolved !== false
+        ? `${balance.username} (#${balance.user_id})`
+        : `#${balance.user_id}`
   }
 
   return (

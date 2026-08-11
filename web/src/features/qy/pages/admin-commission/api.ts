@@ -17,8 +17,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { queryOptions } from '@tanstack/react-query'
+import type { TFunction } from 'i18next'
 
-import { qyDelete, qyGet, qyPost, qyPut } from '../../lib/api'
+import {
+  isQyError,
+  qyDelete,
+  qyErrorMessage,
+  qyGet,
+  qyPost,
+  qyPut,
+} from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import type { QyPage } from '../../lib/types'
 import type {
@@ -133,14 +141,40 @@ export function qySettleCommission(userId: number) {
   )
 }
 
-/** 拉黑/解封一条邀请关系。只停止未来计佣，已发放的佣金要另走冲正。 */
+/**
+ * 拉黑/解封一条邀请关系。只停止未来计佣，已发放的佣金要另走冲正。
+ *
+ * 响应里的 `inviter_id` 是后端回显的这条关系的邀请人 —— 拉黑之后运营最需要
+ * 知道的是"我刚刚断掉的是谁的进项"。
+ */
 export function qyBlockInviteRelation(input: {
   invitee_id: number
   blocked: boolean
   reason: string
 }) {
-  return qyPost<{ invitee_id: number; blocked: boolean }>(
+  return qyPost<{ invitee_id: number; inviter_id: number; blocked: boolean }>(
     '/admin/commission/relations/block',
     input
   )
+}
+
+/**
+ * 拉黑失败时该显示的**唯一一句**话。
+ *
+ * 后端现在按情形给出独立的 code，所以这里只剩一件事要做：把**通用**的
+ * `qyErrorMessage` 用上，让 `qy_rel_no_relation` / `qy_rel_user_not_found` /
+ * `qy_rel_not_bound` 各出各的那一句。
+ *
+ * 保留这个函数而不是让调用点直接用 `qyErrorMessage`，是因为 `network` 这一档
+ * 需要**显式**保留："请求可能已经生效" 在拉黑上是准确的（后端可能已经写完
+ * 快照行才断的连），而它在参数错误那一档是有害的 —— 项目方看到的正是这两句
+ * 同屏，读起来像"我刚才那一下也许扣了这个人的钱"。把这条分档写在这里，
+ * 等于把"哪一档才配说可能已经生效"钉死在一个地方。
+ */
+export function qyBlockRelationErrorMessage(
+  error: unknown,
+  t: TFunction
+): string {
+  if (isQyError(error) && error.kind === 'network') return t('qy_err_network')
+  return qyErrorMessage(error, t)
 }

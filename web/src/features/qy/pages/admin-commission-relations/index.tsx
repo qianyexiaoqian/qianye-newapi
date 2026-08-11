@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
 import { Link2, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -35,7 +34,6 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
-import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 import { qyAdminRelationsQuery } from './api'
@@ -62,8 +60,15 @@ import {
  * 「绑定中」来自主库；「已解绑」只能来自快照——解绑之后主库的 `inviter_id` 已经
  * 清零，"他曾经是谁的下线"在主库里一个字都不剩。已解绑那一页存在的意义就是
  * 回答"这条关系历史上挣了多少、那笔钱还在不在"。
+ *
+ * ── 为什么是 Body 而不是整页 ──
+ * 本页已被收进「用户佣金」的选择夹（`QY_TAB_GROUPS`），侧栏上不再有独立的
+ * 一行。区段头由宿主页 `admin-commission-users/hub.tsx` 出，这里只提供正文。
+ * 它没有被"并掉"：跨用户列全部关系、以及**已解绑**那一档历史，用户总览那张
+ * 按人聚合的表答不了 —— 那正是它继续存在的理由。
+ * 旧地址 `/qy/admin/commission-records/relations` 保留成重定向。
  */
-export function QyAdminCommissionRelations() {
+export function QyAdminCommissionRelationsBody() {
   const { t } = useTranslation()
 
   const [page, setPage] = useState(1)
@@ -216,115 +221,101 @@ export function QyAdminCommissionRelations() {
   const resetPage = () => setPage(1)
 
   return (
-    <QySectionPageLayout>
-      <QySectionPageLayout.Title>{t('qy_rel_title')}</QySectionPageLayout.Title>
-      <QySectionPageLayout.Actions>
+    <div className='space-y-3'>
+      <div className='bg-muted/40 text-muted-foreground rounded-md border p-3 text-xs'>
+        <p className='text-foreground font-medium'>{t('qy_rel_authority')}</p>
+        <p className='mt-1'>{t('qy_rel_authority_hint')}</p>
+      </div>
+
+      <div className='flex flex-wrap items-center gap-2'>
+        {/* 「新增绑定」从区段头搬进筛选行：收进选择夹之后本页没有自己的
+            页头了，而这个按钮是手工建立一条邀请关系唯一的入口。 */}
         <Button variant='outline' size='sm' onClick={() => setBindOpen(true)}>
           <Plus aria-hidden='true' />
           {t('qy_rel_bind')}
         </Button>
-        <Button
-          variant='outline'
+        <NativeSelect
           size='sm'
-          render={<Link to='/qy/admin/commission-records' />}
+          aria-label={t('qy_rel_scope')}
+          value={scope}
+          onChange={(event) => {
+            resetPage()
+            setScope(event.target.value as QyRelationScope)
+          }}
         >
-          {t('qy_nav_a_commission_records')}
-        </Button>
-      </QySectionPageLayout.Actions>
-      <QySectionPageLayout.Content>
-        <div className='space-y-3'>
-          <div className='bg-muted/40 text-muted-foreground rounded-md border p-3 text-xs'>
-            <p className='text-foreground font-medium'>
-              {t('qy_rel_authority')}
-            </p>
-            <p className='mt-1'>{t('qy_rel_authority_hint')}</p>
-          </div>
+          {QY_RELATION_SCOPES.map((value) => (
+            <NativeSelectOption key={value} value={value}>
+              {t(`qy_rel_scope_${value}`)}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
 
-          <div className='flex flex-wrap items-center gap-2'>
-            <NativeSelect
-              size='sm'
-              aria-label={t('qy_rel_scope')}
-              value={scope}
-              onChange={(event) => {
-                resetPage()
-                setScope(event.target.value as QyRelationScope)
-              }}
-            >
-              {QY_RELATION_SCOPES.map((value) => (
-                <NativeSelectOption key={value} value={value}>
-                  {t(`qy_rel_scope_${value}`)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
+        <Input
+          className='h-8 w-48'
+          value={username}
+          placeholder={t('qy_rel_username_ph')}
+          onChange={(event) => {
+            resetPage()
+            setUsername(event.target.value)
+          }}
+        />
+        <Input
+          className='h-8 w-40'
+          inputMode='numeric'
+          value={inviterId}
+          placeholder={t('qy_rel_inviter_id_ph')}
+          onChange={(event) => {
+            resetPage()
+            setInviterId(event.target.value)
+          }}
+        />
 
-            <Input
-              className='h-8 w-48'
-              value={username}
-              placeholder={t('qy_rel_username_ph')}
-              onChange={(event) => {
-                resetPage()
-                setUsername(event.target.value)
-              }}
-            />
-            <Input
-              className='h-8 w-40'
-              inputMode='numeric'
-              value={inviterId}
-              placeholder={t('qy_rel_inviter_id_ph')}
-              onChange={(event) => {
-                resetPage()
-                setInviterId(event.target.value)
-              }}
-            />
+        <NativeSelect
+          size='sm'
+          aria-label={t('qy_rel_sort')}
+          value={sort}
+          onChange={(event) => {
+            resetPage()
+            setSort(event.target.value as QyRelationSort)
+          }}
+        >
+          {QY_RELATION_SORTS.map((value) => (
+            <NativeSelectOption key={value} value={value}>
+              {t(`qy_rel_sort_${value}`)}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+      </div>
 
-            <NativeSelect
-              size='sm'
-              aria-label={t('qy_rel_sort')}
-              value={sort}
-              onChange={(event) => {
-                resetPage()
-                setSort(event.target.value as QyRelationSort)
-              }}
-            >
-              {QY_RELATION_SORTS.map((value) => (
-                <NativeSelectOption key={value} value={value}>
-                  {t(`qy_rel_sort_${value}`)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </div>
-
-          <QyPageBoundary
-            query={query}
-            isEmpty={items.length === 0}
-            emptyIcon={Link2}
-            emptyTitle={t('qy_rel_empty_title')}
-            emptyDescription={t('qy_rel_empty_desc')}
-          >
-            <div className='w-full overflow-x-auto'>
-              <StaticDataTable
-                columns={columns}
-                data={items}
-                getRowKey={(row) => `${row.inviter_id}-${row.invitee_id}`}
-                tableClassName='min-w-[1000px]'
-              />
-            </div>
-            <QyPager
-              page={page}
-              pageSize={QY_PAGE_SIZE}
-              total={query.data?.total ?? 0}
-              disabled={query.isFetching}
-              onPageChange={setPage}
-            />
-          </QyPageBoundary>
+      <QyPageBoundary
+        query={query}
+        isEmpty={items.length === 0}
+        emptyIcon={Link2}
+        emptyTitle={t('qy_rel_empty_title')}
+        emptyDescription={t('qy_rel_empty_desc')}
+      >
+        <div className='w-full overflow-x-auto'>
+          <StaticDataTable
+            columns={columns}
+            data={items}
+            getRowKey={(row) => `${row.inviter_id}-${row.invitee_id}`}
+            tableClassName='min-w-[1000px]'
+          />
         </div>
-      </QySectionPageLayout.Content>
+        <QyPager
+          page={page}
+          pageSize={QY_PAGE_SIZE}
+          total={query.data?.total ?? 0}
+          disabled={query.isFetching}
+          onPageChange={setPage}
+        />
+      </QyPageBoundary>
 
       <BindRelationDialog open={bindOpen} onClose={() => setBindOpen(false)} />
       <UnbindRelationDialog
         relation={unbindTarget}
         onClose={() => setUnbindTarget(null)}
       />
-    </QySectionPageLayout>
+    </div>
   )
 }

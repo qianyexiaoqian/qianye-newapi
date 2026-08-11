@@ -93,4 +93,9 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   // 同样**追加到末尾取下一个空号**,不与 violation-rules / violation-categories
   // 排在一起 —— 那两页的编号已经发出去了,重排会让用户记下的 LAB MEMO 指向别处。
   '/qy/admin/violation-ai-review',
+  // 用户佣金（一行 = 一个用户）。它是佣金管理选择夹的宿主，另外两张标签
+  // （AFF 关系 / 佣金余额）的编号原地不动 —— 被收进选择夹不改变"它们各自
+  // 是一个页面"这件事，`page-meta.ts` 仍然按最长前缀把它们认出来。
+  // 按维护规则 1 追加到末尾取空号，既有编号一个都不动。
+  '/qy/admin/commission-records/users',
 ]

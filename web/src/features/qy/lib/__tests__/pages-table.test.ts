@@ -94,8 +94,9 @@ const SETTINGS_URLS = [
 /** 明确**留在根侧栏**的管理页。它们进了抽屉就是运营每天多点两下。 */
 const ROOT_ADMIN_URLS = [
   '/qy/admin/commission-records',
-  // 佣金余额（按人汇总）与 AFF 关系（谁邀请了谁）同样是每天要开的流水/台账，
-  // 不是"改一次影响后续每一笔"的配置，所以留根侧栏。
+  // 用户佣金（一行一个用户）与它的两张标签（AFF 关系 / 佣金余额）同样是每天
+  // 要开的流水/台账，不是"改一次影响后续每一笔"的配置，所以留根侧栏。
+  '/qy/admin/commission-records/users',
   '/qy/admin/commission-records/balances',
   '/qy/admin/commission-records/relations',
   '/qy/admin/withdrawals',
@@ -110,7 +111,7 @@ const ROOT_ADMIN_URLS = [
 ]
 
 /**
- * 收进选择夹、因而**没有独立侧栏入口**的 6 个页面（需求 2 / 3）。
+ * 收进选择夹、因而**没有独立侧栏入口**的页面（需求 2 / 3，以及本轮的佣金收敛）。
  *
  * 写成快照而不是从 `QY_TAB_GROUPS` 反推：反推等于用被测数据证明被测数据，
  * 把三页搬错宿主也照样全绿。
@@ -125,6 +126,11 @@ const HOSTED_URLS = [
   // 需求 2（抽奖轮）：竞猜与我的参与收进 `/qy/lottery` 的选择夹，侧栏只剩一行。
   '/qy/lottery-guess',
   '/qy/lottery-records',
+  // 佣金收敛：AFF 关系与佣金余额收进 `/qy/admin/commission-records/users`
+  // 的选择夹。侧栏上的三个佣金入口因此收成两个 —— 「用户佣金」（按用户看）
+  // 与「计佣流水」（按流水看）。两页都没有被删，只是不再各占一行。
+  '/qy/admin/commission-records/relations',
+  '/qy/admin/commission-records/balances',
 ]
 
 describe('qy page table structure', () => {
@@ -210,7 +216,7 @@ describe('qy page table structure', () => {
 })
 
 describe('qy 选择夹（需求 2 / 3）', () => {
-  test('三个选择夹的成员逐项冻结', () => {
+  test('四个选择夹的成员逐项冻结', () => {
     assert.deepEqual(
       QY_TAB_GROUPS.map((group) => [group.host, [...group.pages]]),
       [
@@ -220,12 +226,43 @@ describe('qy 选择夹（需求 2 / 3）', () => {
           ['/qy/affiliate', '/qy/invitees', '/qy/withdraw', '/qy/withdrawals'],
         ],
         [
+          // 佣金管理三张表收进同一个宿主。判据是**主键**：这三张表的一行分别是
+          // 一个用户 / 一对邀请关系 / 一个用户的余额，主键都跟着人走；
+          // 「计佣流水」的一行是一笔计佣（`accrual_no`），它是账本本身，
+          // 所以留在自己那一行、不进这个选择夹。
+          '/qy/admin/commission-records/users',
+          [
+            '/qy/admin/commission-records/users',
+            '/qy/admin/commission-records/relations',
+            '/qy/admin/commission-records/balances',
+          ],
+        ],
+        [
           '/qy/lottery',
           ['/qy/lottery', '/qy/lottery-guess', '/qy/lottery-records'],
         ],
       ],
-      '选择夹的成员或顺序变了：项目方点名要的是「发起划转/划转记录/支付密码」、「我的邀请概览/已邀请用户/佣金提现/佣金提现记录」与「抽奖/竞猜/我的参与」'
+      '选择夹的成员或顺序变了：项目方点名要的是「发起划转/划转记录/支付密码」、「我的邀请概览/已邀请用户/佣金提现/佣金提现记录」、「用户总览/AFF 关系/佣金余额」与「抽奖/竞猜/我的参与」'
     )
+  })
+
+  /**
+   * 佣金管理的入口数**收敛到二**。
+   *
+   * 项目方要的是「一个用户佣金列表」，不是第四个割裂的页面；此前侧栏「结算」
+   * 组里佣金相关有三行（计佣流水 / 佣金余额 / AFF 关系）。这条断言盯的是
+   * 反向漂移：有人为了"方便"把余额或关系再放回侧栏，三行就回来了。
+   */
+  test('侧栏上的佣金入口恰好两个：按用户看 + 按流水看', () => {
+    const rows = QY_PAGES.filter(
+      (page) =>
+        page.url.startsWith('/qy/admin/commission-records') &&
+        !isQyPageHosted(page.url)
+    ).map((page) => page.url)
+    assert.deepEqual(rows.sort(), [
+      '/qy/admin/commission-records',
+      '/qy/admin/commission-records/users',
+    ])
   })
 
   /**
@@ -240,7 +277,7 @@ describe('qy 选择夹（需求 2 / 3）', () => {
     assert.equal(group?.pages.length, 3)
   })
 
-  test('被收进选择夹的正好是这 8 页', () => {
+  test('被收进选择夹的正好是这 10 页', () => {
     assert.deepEqual(
       QY_PAGES.filter((page) => isQyPageHosted(page.url))
         .map((page) => page.url)

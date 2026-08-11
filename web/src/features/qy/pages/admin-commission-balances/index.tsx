@@ -34,7 +34,6 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
-import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 import { qyAdminBalancesQuery } from './api'
@@ -61,8 +60,14 @@ import {
  * `derived_available_quota` / `ledger_drift` 由后端算好下发，本页一个字都不重算：
  * 这条恒等式在后端已经被结算 / 冲正 / 提现三条路径各实现了一遍，
  * 前端再实现第四遍就是在等它漂移。
+ *
+ * ── 为什么是 Body 而不是整页 ──
+ * 本页已被收进「用户佣金」的选择夹（`QY_TAB_GROUPS`），侧栏上不再有独立的
+ * 一行。区段头（`LAB MEMO — NN` + 大标题）由宿主页 `admin-commission-users/
+ * hub.tsx` 出，这里只提供正文 —— 标签里再套一层区段头会得到两级标题。
+ * 旧地址 `/qy/admin/commission-records/balances` 保留成重定向。
  */
-export function QyAdminCommissionBalances() {
+export function QyAdminCommissionBalancesBody() {
   const { t } = useTranslation()
 
   const [page, setPage] = useState(1)
@@ -198,101 +203,87 @@ export function QyAdminCommissionBalances() {
   const resetPage = () => setPage(1)
 
   return (
-    <QySectionPageLayout>
-      <QySectionPageLayout.Title>{t('qy_cb_title')}</QySectionPageLayout.Title>
-      <QySectionPageLayout.Actions>
-        <Button
-          variant='outline'
+    <div className='space-y-3'>
+      <div className='bg-muted/40 text-muted-foreground rounded-md border p-3 text-xs'>
+        <p className='text-foreground font-medium'>{t('qy_cb_formula')}</p>
+        <p className='mt-1'>{t('qy_cb_formula_hint')}</p>
+      </div>
+
+      <div className='flex flex-wrap items-center gap-2'>
+        <Input
+          className='h-8 w-40'
+          inputMode='numeric'
+          value={userId}
+          placeholder={t('qy_cb_user_id_ph')}
+          onChange={(event) => {
+            resetPage()
+            setUserId(event.target.value)
+          }}
+        />
+        <Input
+          className='h-8 w-48'
+          value={username}
+          placeholder={t('qy_cb_username_ph')}
+          onChange={(event) => {
+            resetPage()
+            setUsername(event.target.value)
+          }}
+        />
+        <NativeSelect
           size='sm'
-          render={<Link to='/qy/admin/commission-records' />}
+          aria-label={t('qy_cb_sort')}
+          value={sort}
+          onChange={(event) => {
+            resetPage()
+            setSort(event.target.value as QyBalanceSort)
+          }}
         >
-          {t('qy_nav_a_commission_records')}
-        </Button>
-      </QySectionPageLayout.Actions>
-      <QySectionPageLayout.Content>
-        <div className='space-y-3'>
-          <div className='bg-muted/40 text-muted-foreground rounded-md border p-3 text-xs'>
-            <p className='text-foreground font-medium'>{t('qy_cb_formula')}</p>
-            <p className='mt-1'>{t('qy_cb_formula_hint')}</p>
-          </div>
+          {QY_BALANCE_SORTS.map((value) => (
+            <NativeSelectOption key={value} value={value}>
+              {t(`qy_cb_sort_${value}`)}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
+      </div>
 
-          <div className='flex flex-wrap items-center gap-2'>
-            <Input
-              className='h-8 w-40'
-              inputMode='numeric'
-              value={userId}
-              placeholder={t('qy_cb_user_id_ph')}
-              onChange={(event) => {
-                resetPage()
-                setUserId(event.target.value)
-              }}
-            />
-            <Input
-              className='h-8 w-48'
-              value={username}
-              placeholder={t('qy_cb_username_ph')}
-              onChange={(event) => {
-                resetPage()
-                setUsername(event.target.value)
-              }}
-            />
-            <NativeSelect
-              size='sm'
-              aria-label={t('qy_cb_sort')}
-              value={sort}
-              onChange={(event) => {
-                resetPage()
-                setSort(event.target.value as QyBalanceSort)
-              }}
-            >
-              {QY_BALANCE_SORTS.map((value) => (
-                <NativeSelectOption key={value} value={value}>
-                  {t(`qy_cb_sort_${value}`)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </div>
+      {totals != null && (
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_cb_totals', {
+            available: totals.available_quota,
+            withdrawn: totals.withdrawn_quota,
+          })}
+        </p>
+      )}
 
-          {totals != null && (
-            <p className='text-muted-foreground text-xs'>
-              {t('qy_cb_totals', {
-                available: totals.available_quota,
-                withdrawn: totals.withdrawn_quota,
-              })}
-            </p>
-          )}
-
-          <QyPageBoundary
-            query={query}
-            isEmpty={items.length === 0}
-            emptyIcon={Wallet}
-            emptyTitle={t('qy_cb_empty_title')}
-            emptyDescription={t('qy_cb_empty_desc')}
-          >
-            <div className='w-full overflow-x-auto'>
-              <StaticDataTable
-                columns={columns}
-                data={items}
-                getRowKey={(row) => row.user_id}
-                tableClassName='min-w-[1100px]'
-              />
-            </div>
-            <QyPager
-              page={page}
-              pageSize={QY_PAGE_SIZE}
-              total={query.data?.total ?? 0}
-              disabled={query.isFetching}
-              onPageChange={setPage}
-            />
-          </QyPageBoundary>
+      <QyPageBoundary
+        query={query}
+        isEmpty={items.length === 0}
+        emptyIcon={Wallet}
+        emptyTitle={t('qy_cb_empty_title')}
+        emptyDescription={t('qy_cb_empty_desc')}
+      >
+        <div className='w-full overflow-x-auto'>
+          <StaticDataTable
+            columns={columns}
+            data={items}
+            getRowKey={(row) => row.user_id}
+            tableClassName='min-w-[1100px]'
+          />
         </div>
-      </QySectionPageLayout.Content>
+        <QyPager
+          page={page}
+          pageSize={QY_PAGE_SIZE}
+          total={query.data?.total ?? 0}
+          disabled={query.isFetching}
+          onPageChange={setPage}
+        />
+      </QyPageBoundary>
 
       <SetWithdrawnDialog balance={target} onClose={() => setTarget(null)} />
       <AdjustCommissionDialog
         balance={adjustTarget}
         onClose={() => setAdjustTarget(null)}
       />
-    </QySectionPageLayout>
+    </div>
   )
 }

@@ -246,6 +246,18 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_rel_cycle: 'qy_err_rel_cycle',
   qy_rel_not_bound: 'qy_err_rel_not_bound',
   qy_rel_conflict: 'qy_err_rel_conflict',
+  // 换绑专属：换成他现在这个上线。回 400 而不是当空操作回成功，见
+  // `adminRebindRelation` 的说明。
+  qy_rel_same_inviter: 'qy_err_rel_same_inviter',
+  // 「这一行不挂在任何邀请关系上」。项目方今天撞到的就是它：手工调整产生的
+  // 计佣行 invitee_id = 0（那笔钱不是从谁的消费里分出来的），对着它点「拉黑」
+  // 必然失败。此前后端与「报文格式错」共用 qy_invalid_param，运营看到的是
+  // "请求参数有误"，于是会怀疑自己填错了、再点一次。
+  //
+  // 复用 `qy_cm_block_no_relation` 这句已有的文案而不是新造一个键：它本来就是
+  // 为这一档写的（"没有任何数据被改动"那半句尤其要留着），此前挂在一个按 kind
+  // 分档的本地函数上，现在后端给了独立 code，它终于能挂到 code 上。
+  qy_rel_no_relation: 'qy_cm_block_no_relation',
   // 手工增减佣金（qianye/modules/commission/api_admin_adjust.go）。
   // over_reclaimable 是「这个数填大了，减不了这么多」，overflow 是「加得太多」，
   // idem_key_conflict 是「同一个弹窗改了金额又提交」—— 后者尤其不能说成

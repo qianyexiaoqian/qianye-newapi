@@ -98,19 +98,36 @@ const enKeys = en as Record<string, string>
 const zhKeys = zh as Record<string, string>
 
 describe('AFF 关系页的入口链路', () => {
-  test('佣金审核页上必须有指向本页的链接（侧栏之外的第二条入口）', () => {
+  /**
+   * 本页本轮从「结算」组的一级项**降级成「用户佣金」的第二张标签**。
+   * 入口没有变少，形状变了 —— 判据随之从"页面里有 `to='<旧 url>'`"改成
+   * "页面里出现了这个 url"（跳转改走 `qyTabTarget`，直接落到宿主页 + hash）。
+   *
+   * 它**没有**被「用户总览」并掉：跨用户列全部关系、以及「已解绑」那一档
+   * 历史（解绑之后主库 `users.inviter_id` 已经清零，只有扩展库快照答得了），
+   * 按人聚合的那张表一条都给不出来。
+   */
+  test('佣金审核页上必须有指向本页的跳转（侧栏之外的第二条入口）', () => {
     assert.ok(
-      recordsPage.includes(`to='${RELATIONS_URL}'`),
+      recordsPage.includes(RELATIONS_URL),
       `佣金审核页不再链向 ${RELATIONS_URL}：运营正在看某条计佣时，这个按钮是他跳去查"这条关系是谁绑的"的那一跳`
+    )
+    assert.ok(
+      recordsPage.includes('qyTabTarget('),
+      '跳转绕开了 qyTabTarget：会先落到旧路由再被重定向弹回来，用户看到一次白闪'
     )
   })
 
-  test('路由文件存在且挂的是本页组件', () => {
+  test('旧路由保留成指向宿主页的重定向', () => {
     assert.ok(existsSync(routeFile), `缺少路由文件 ${routeFile}`)
     const source = readFileSync(routeFile, 'utf8')
     assert.ok(
-      source.includes('QyAdminCommissionRelations'),
-      '路由文件没有挂载 QyAdminCommissionRelations'
+      source.includes("to: '/qy/admin/commission-records/users'"),
+      '旧路由没有重定向到「用户佣金」宿主页，旧书签会 404'
+    )
+    assert.ok(
+      source.includes('qyTabHash('),
+      '重定向没有带上标签 hash，跳过去会停在第一张标签而不是本页'
     )
     assert.ok(
       source.includes(
@@ -118,6 +135,48 @@ describe('AFF 关系页的入口链路', () => {
       ),
       '路由 id 与目录结构不一致，生成的 routeTree 会指向别处'
     )
+  })
+
+  test('本页正文被宿主页真的渲染了', () => {
+    const hub = readFileSync(
+      join(
+        webSrc,
+        'features',
+        'qy',
+        'pages',
+        'admin-commission-users',
+        'hub.tsx'
+      ),
+      'utf8'
+    )
+    assert.ok(
+      hub.includes('QyAdminCommissionRelationsBody'),
+      '宿主页没给本页正文：`QyPageTabs` 会安静地跳过这张标签，整页就此从前端消失'
+    )
+    assert.ok(
+      hub.includes(`'${RELATIONS_URL}'`),
+      `宿主页的 bodies 里没有 ${RELATIONS_URL}`
+    )
+  })
+
+  /** 「新增绑定」是手工建立一条邀请关系唯一的入口，随页头搬进了筛选行。 */
+  test('新增绑定按钮跟着搬进了正文', () => {
+    const body = readFileSync(
+      join(
+        webSrc,
+        'features',
+        'qy',
+        'pages',
+        'admin-commission-relations',
+        'index.tsx'
+      ),
+      'utf8'
+    )
+    assert.ok(
+      body.includes('BindRelationDialog'),
+      '关系页丢了「新增绑定」弹窗：手工建立邀请关系就此没有入口'
+    )
+    assert.ok(body.includes("t('qy_rel_bind')"))
   })
 
   test('本页有自己的 LAB MEMO 编号与日文副标，不再蹭佣金审核的', () => {

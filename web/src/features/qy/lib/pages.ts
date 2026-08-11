@@ -22,7 +22,6 @@ import {
   HandCoins,
   HeartPulse,
   LifeBuoy,
-  Link2,
   Megaphone,
   ReceiptText,
   Repeat,
@@ -30,7 +29,7 @@ import {
   ShieldAlert,
   Ticket,
   TriangleAlert,
-  Wallet,
+  Users,
 } from 'lucide-react'
 import type { ElementType } from 'react'
 
@@ -170,6 +169,36 @@ export const QY_TAB_GROUPS: readonly QyTabGroupDef[] = [
     host: '/qy/affiliate',
     titleKey: 'qy_nav_commission_hub',
     pages: ['/qy/affiliate', '/qy/invitees', '/qy/withdraw', '/qy/withdrawals'],
+  },
+  {
+    // 项目方原话：「我需要的是新增一个用户佣金列表，我可以查看/编辑用户的佣金，
+    // 以及查看拉了多少用户，以及编辑/移除/添加这个用户的佣金绑定关系。」
+    //
+    // ── 为什么是选择夹而不是第四张平级的表 ──
+    // 在此之前佣金管理在侧栏上是**三个平级入口**（计佣流水 / 佣金余额 /
+    // AFF 关系），而它们回答的其实是同一件事的三个切面。再加一张「用户佣金」
+    // 就是第四个割裂的入口，项目方点名不要。
+    //
+    // 收敛的判据是**主键**：一行是一个用户，还是一笔账？
+    //   · 「用户佣金」「AFF 关系」「佣金余额」的主键都跟着**人**走
+    //     （一个用户 / 一对邀请关系 / 一个用户的余额），收进这一个宿主；
+    //   · 「计佣流水」的主键是一笔计佣（`accrual_no`），它是账本本身，
+    //     留在自己那一行。
+    // 于是侧栏从三行收成两行：一个「按用户看」、一个「按流水看」。
+    //
+    // 三张标签**都不是**彼此的重复：
+    //   · 用户总览 = 运营台（这个人的上下线、余额、行内改佣金与改绑定）；
+    //   · AFF 关系 = 按关系看（跨用户列全部关系，含已解绑的历史，
+    //     那部分在主库里已经一个字都不剩，只有快照表答得了）；
+    //   · 佣金余额 = 对账台（四列额度的恒等式、`ledger_drift`、
+    //     以及「已提现」额度的迁移登记）。
+    host: '/qy/admin/commission-records/users',
+    titleKey: 'qy_nav_commission_users_hub',
+    pages: [
+      '/qy/admin/commission-records/users',
+      '/qy/admin/commission-records/relations',
+      '/qy/admin/commission-records/balances',
+    ],
   },
   {
     // 需求 2（抽奖轮）原话：「抽奖竞猜和我的参与放到一个页面，不要单独写一个
@@ -419,38 +448,48 @@ export const QY_PAGES: readonly QyPageDef[] = [
     icon: ReceiptText,
     jpKey: 'qy_sg_jp_a_commission_records',
   },
+  // 「用户佣金」——**一行 = 一个用户**。项目方原话：「我需要的是新增一个用户
+  // 佣金列表，我可以查看/编辑用户的佣金，以及查看拉了多少用户，以及编辑/移除/
+  // 添加这个用户的佣金绑定关系。」
+  //
+  // 它同时是佣金管理选择夹的宿主（见 `QY_TAB_GROUPS`）：侧栏那一行写的是**组名**
+  // 「用户佣金」，组里第一张标签才写本行的 `titleKey`（用户总览）。
+  //
+  // 这一行取代了此前「佣金余额」与「AFF 关系」各自占的那两行 —— 它们没有被删，
+  // 而是变成了本组的第二、三张标签。侧栏因此从三个佣金入口收成两个：
+  // 「用户佣金」（按用户看）与「计佣流水」（按流水看）。
+  {
+    url: '/qy/admin/commission-records/users',
+    titleKey: 'qy_cu_title',
+    feature: 'commission',
+    group: 'qy-settlement',
+    icon: Users,
+    jpKey: 'qy_sg_jp_a_commission_users',
+  },
   // 这两页的路由与组件从一开始就在，但**本表里一行都没有** —— 也就是说站内
   // 唯一到得了它们的方式是佣金审核页右上角那两个按钮，或者手敲 URL。项目方的
   // 原话是「UI前端怎么没看见有佣金管理的入口和UI」：他没看错，侧栏上确实一个
   // 入口都没有。这是本仓第四次出现"页面写完了但没登记入口"，`__tests__/
   // route-entry-guard.test.ts` 是这次补上的机器判据（路由 ↔ 入口双向比对）。
   //
-  // 落点选「结算」而不是收进选择夹：这两页与佣金审核是**并列的三张表**
-  // （逐笔计佣 / 按人汇总 / 邀请关系），运营查一个人的佣金时三张表来回跳，
-  // 而侧栏一级项是唯一不依赖"先想起来该从哪一页进去"的入口。
+  // 本轮它们从「结算」组的一级项**降级成选择夹成员**（用户佣金的第二、三张
+  // 标签），因此不再写 group / icon —— 写了侧栏会多出两行点进去就被重定向
+  // 甩走的入口（`pages-table.test.ts` 双向断言）。入口没有变少，只是从"三行
+  // 平级"变成"一行 + 两张标签"。
   //
-  // titleKey 直接复用页面自己的标题键（`qy_cb_title` / `qy_rel_title`）而不是
-  // 新造一对 `qy_nav_*`：侧栏那一行与页面大标题必须是同一个词，否则运营点进去
-  // 看到的名字和他点的名字对不上。复用等于让它们**由构造保证**一致。
-  //
-  // ⚠️ 本组加完这两行正好 7 行，已经顶到 `pages-table.test.ts` 的分组规模上限
-  // （不超过上游 admin 组）。下一个要进「结算」的页面必须先拆组或做折叠项，
-  // 那条测试会拦住它 —— 这是有意留的闸门，不要把上限改大。
-  {
-    url: '/qy/admin/commission-records/balances',
-    titleKey: 'qy_cb_title',
-    feature: 'commission',
-    group: 'qy-settlement',
-    icon: Wallet,
-    jpKey: 'qy_sg_jp_a_commission_balances',
-  },
+  // titleKey 仍然复用页面自己的标题键（`qy_cb_title` / `qy_rel_title`）：标签上
+  // 那个词与页面大标题必须是同一个，复用等于让它们**由构造保证**一致。
   {
     url: '/qy/admin/commission-records/relations',
     titleKey: 'qy_rel_title',
     feature: 'commission',
-    group: 'qy-settlement',
-    icon: Link2,
     jpKey: 'qy_sg_jp_a_commission_relations',
+  },
+  {
+    url: '/qy/admin/commission-records/balances',
+    titleKey: 'qy_cb_title',
+    feature: 'commission',
+    jpKey: 'qy_sg_jp_a_commission_balances',
   },
   {
     url: '/qy/admin/withdrawals',

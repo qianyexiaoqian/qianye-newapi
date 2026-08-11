@@ -10,9 +10,11 @@ import (
 	_ "unsafe" // //go:linkname 需要
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -226,4 +228,108 @@ func TestQuotaOverride_DropsValuesAboveInt32(t *testing.T) {
 	assert.EqualValues(t, 1000, s.MinSettleQuota,
 		"越界的门槛必须回落到默认值,而不是生效")
 	assert.EqualValues(t, 2147483647, s.DailyCapQuota, "边界值必须照常生效")
+}
+
+// ───────────────── 账本体检:那条站内此前看不见的恒等式 ─────────────────
+
+// ledgerCheckView 是健康面板体检段的测试侧形状。
+type ledgerCheckView struct {
+	OK                bool   `json:"ok"`
+	CheckedUsers      int    `json:"checked_users"`
+	SettleDrifted     int    `json:"settle_drifted_users"`
+	SettleDriftTotal  string `json:"settle_drift_total"`
+	SettleDriftWorst  string `json:"settle_drift_worst"`
+	SettleWorstUserId int    `json:"settle_drift_worst_user_id"`
+	BalanceDrifted    int    `json:"balance_drifted_users"`
+	SelfInvitedUsers  int    `json:"self_invited_users"`
+}
+
+// healthLedgerCheck 取出健康面板的体检段。
+func healthLedgerCheck(t *testing.T) ledgerCheckView {
+	t.Helper()
+	rec := callAdminHandler(t, http.MethodGet, "/api/qy/admin/commission/health", "", adminHealth)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var resp struct {
+		Data struct {
+			LedgerCheck ledgerCheckView `json:"ledger_check"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &resp))
+	return resp.Data.LedgerCheck
+}
+
+// TestAdminHealth_ReportsLedgerIdentityDrift 守的是"账本自己跟自己对不上,
+// 但站内没有任何一个地方看得见"这件事。
+//
+// 两条恒等式:
+//
+//	I1  Σ计佣行.settled_amount(status≠voided) == Σ结算单(granted−reclaimed) + 未结算余数
+//	I2  可提现 + 冻结 + 已提现 == 累计earned − 累计clawback
+//
+// I2 在余额页每一行上都算好了;**I1 跨三张表,此前没有任何视图答得了它**。
+// 备份库实测:inviter 1622 的 I1 漂移 −0.3663,而他的 I2 恰好是 0 —— 于是余额页、
+// 用户总表、健康面板三处都显示"这行账很正常"。本用例把那个形状复刻成 fixture:
+// **只有 I1 坏、I2 完好**,体检必须点名是谁、差多少。
+//
+// 回滚验证:把 adminHealth 里的 ledger_check 去掉,或让 I1 那一段跟着 I2 一起算,
+// 本用例立刻变红。
+func TestAdminHealth_ReportsLedgerIdentityDrift(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, commissionRateConfig("10", "5"))
+	useAdminAPI(t)
+	mainDB := useMainDB(t, &model.User{})
+
+	// 自邀请:计佣热路径已经挡住它(不会产生钱),但存量数据里没人会去查。
+	seedUser(t, mainDB, 700, "self-inviter", 700, 1000)
+	seedUser(t, mainDB, 701, "clean", 0, 1000)
+
+	now := common.GetTimestamp()
+	// 干净的一行:结算掉 500,结算单发了 500,余数 0 —— I1 与 I2 都成立。
+	require.NoError(t, gdb.Create(&Balance{
+		UserId: 701, AvailableQuota: 500, TotalEarnedQuota: 500,
+		UnsettledAmount: decimal.Zero, AvailableFiat: decimal.Zero,
+		CreatedAt: now, UpdatedAt: now,
+	}).Error)
+	seedAccrual(t, gdb, 1, func(a *Accrual) {
+		a.InviterId, a.InviteeId = 701, 801
+		a.GrossAmount, a.SettledAmount = decimal.NewFromInt(500), decimal.NewFromInt(500)
+		a.Status = StatusSettled
+	})
+	require.NoError(t, gdb.Create(&Settlement{
+		SettleNo: "S-CLEAN", UserId: 701, GrantedQuota: 500,
+		DeltaAmount: decimal.NewFromInt(500), CarryBefore: decimal.Zero,
+		CarryAfter: decimal.Zero, UsdRateWeighted: decimal.Zero,
+		FiatDelta: decimal.Zero, CreatedAt: now,
+	}).Error)
+
+	// 坏的一行:计佣行说结算掉了 500.5,结算单只发了 500,余数记的是 0.1 ——
+	// 少了 0.4。而四列额度自洽,I2 = 0(正是 1622 的形状)。
+	require.NoError(t, gdb.Create(&Balance{
+		UserId: 700, AvailableQuota: 500, TotalEarnedQuota: 500,
+		UnsettledAmount: decimal.RequireFromString("0.1"), AvailableFiat: decimal.Zero,
+		CreatedAt: now, UpdatedAt: now,
+	}).Error)
+	seedAccrual(t, gdb, 2, func(a *Accrual) {
+		a.InviterId, a.InviteeId = 700, 802
+		a.GrossAmount = decimal.RequireFromString("500.5")
+		a.SettledAmount = decimal.RequireFromString("500.5")
+		a.Status = StatusSettled
+	})
+	require.NoError(t, gdb.Create(&Settlement{
+		SettleNo: "S-DRIFT", UserId: 700, GrantedQuota: 500,
+		DeltaAmount: decimal.NewFromInt(500), CarryBefore: decimal.Zero,
+		CarryAfter: decimal.Zero, UsdRateWeighted: decimal.Zero,
+		FiatDelta: decimal.Zero, CreatedAt: now,
+	}).Error)
+
+	lc := healthLedgerCheck(t)
+	assert.True(t, lc.OK)
+	assert.Equal(t, 2, lc.CheckedUsers)
+	assert.Equal(t, 1, lc.SettleDrifted, "只有 700 那一行对不上")
+	assert.Equal(t, 700, lc.SettleWorstUserId, "体检必须点名是谁 —— 否则运营还是得自己写 SQL")
+	assert.Equal(t, "0.4", lc.SettleDriftWorst, "500.5 − 500 − 0.1 = 0.4")
+	assert.Equal(t, "0.4", lc.SettleDriftTotal)
+	assert.Equal(t, 0, lc.BalanceDrifted,
+		"I2 全都成立 —— 这正是这条漂移此前藏得住的原因:余额页那一列看不见它")
+	assert.Equal(t, 1, lc.SelfInvitedUsers, "存量的自邀请数据要有人报出来")
 }

@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearch } from '@tanstack/react-router'
-import { Link2, ScrollText, Settings2, Wallet } from 'lucide-react'
+import { Link2, ScrollText, Settings2, Users, Wallet } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -38,9 +38,11 @@ import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyErrorMessage } from '../../lib/api'
+import { qyTabTarget } from '../../lib/pages'
 import { qyKeys } from '../../lib/query-keys'
 import {
   qyAdminAccrualsQuery,
+  qyBlockRelationErrorMessage,
   qyBlockInviteRelation,
   qySettleCommission,
 } from '../admin-commission/api'
@@ -116,7 +118,11 @@ export function QyAdminCommissionRecords() {
       )
       await queryClient.invalidateQueries({ queryKey: qyKeys.all })
     },
-    onError: (error) => toast.error(qyErrorMessage(error, t)),
+    // 后端现在给的是逐条独立的 code（`qy_rel_no_relation` /
+    // `qy_rel_user_not_found` / `qy_rel_not_bound`），各出**一句**准确的话。
+    // 项目方看到的"参数有误 + 可能已经生效"两句同屏，来自于那时后端把所有
+    // 400 混成一个 qy_invalid_param，而"可能已经生效"只该出现在 network 那一档。
+    onError: (error) => toast.error(qyBlockRelationErrorMessage(error, t)),
   })
 
   const columns: StaticDataTableColumn<QyAdminAccrual>[] = [
@@ -203,20 +209,33 @@ export function QyAdminCommissionRecords() {
           >
             {t('qy_cm_settle')}
           </Button>
-          <Button
-            variant='ghost'
-            size='sm'
-            disabled={blockMutation.isPending}
-            onClick={() =>
-              blockMutation.mutate({
-                invitee_id: row.invitee_id,
-                blocked: true,
-                reason: t('qy_cm_block_default_reason'),
-              })
-            }
-          >
-            {t('qy_cm_block')}
-          </Button>
+          {/* 「拉黑」只在这一行**真的挂在一条邀请关系上**时才渲染。
+              手工调整落下的计佣行（`source_type = manual`）的 `invitee_id` 是 0：
+              它不是任何人邀请任何人产生的，后端 `adminBlockRelation` 对
+              `invitee_id <= 0` 直接 400。此前这里无条件渲染，于是那些行上有一个
+              点了必然报错的按钮 —— 而报出来的还是一句让人以为扣了钱的话。 */}
+          {row.invitee_id > 0 ? (
+            <Button
+              variant='ghost'
+              size='sm'
+              disabled={blockMutation.isPending}
+              onClick={() =>
+                blockMutation.mutate({
+                  invitee_id: row.invitee_id,
+                  blocked: true,
+                  reason: t('qy_cm_block_default_reason'),
+                })
+              }
+            >
+              {t('qy_cm_block')}
+            </Button>
+          ) : (
+            // 不渲染按钮，但也不留一片空白：运营需要知道"这一行为什么没有这个
+            // 动作"，否则他会以为是页面坏了，转而去别处找同一个按钮。
+            <span className='text-muted-foreground self-center text-xs'>
+              {t('qy_cm_block_na')}
+            </span>
+          )}
           <Button
             variant='ghost'
             size='sm'
@@ -237,24 +256,42 @@ export function QyAdminCommissionRecords() {
         {t('qy_nav_a_commission_records')}
       </QySectionPageLayout.Title>
       <QySectionPageLayout.Actions>
-        {/* 佣金余额与 AFF 关系现在**各有一个侧栏入口**（「结算」组，本轮补上）。
-            这两个按钮不是重复：侧栏回答"从零开始去哪找"，这里回答"我正看着这
-            一笔，另外两张表怎么开"。删掉它们运营就得绕回侧栏重新找一遍。 */}
+        {/* 佣金余额与 AFF 关系现在是「用户佣金」的两张标签（侧栏上那一行）。
+            这三个按钮不是重复：侧栏回答"从零开始去哪找"，这里回答"我正看着这
+            一笔，另外那几张表怎么开"。删掉它们运营就得绕回侧栏重新找一遍。
+
+            跳转一律走 `qyTabTarget`：直接 `to='/qy/admin/commission-records/
+            balances'` 也到得了（旧路由会重定向），但那是**先离开再被弹回来**，
+            用户看到的是一次白闪，而且选中的标签由重定向那一跳决定。 */}
         <Button
           variant='outline'
           size='sm'
-          render={<Link to='/qy/admin/commission-records/balances' />}
+          render={
+            <Link {...qyTabTarget('/qy/admin/commission-records/users')} />
+          }
         >
-          <Wallet aria-hidden='true' />
-          {t('qy_cb_title')}
+          <Users aria-hidden='true' />
+          {t('qy_cu_title')}
         </Button>
         <Button
           variant='outline'
           size='sm'
-          render={<Link to='/qy/admin/commission-records/relations' />}
+          render={
+            <Link {...qyTabTarget('/qy/admin/commission-records/relations')} />
+          }
         >
           <Link2 aria-hidden='true' />
           {t('qy_rel_title')}
+        </Button>
+        <Button
+          variant='outline'
+          size='sm'
+          render={
+            <Link {...qyTabTarget('/qy/admin/commission-records/balances')} />
+          }
+        >
+          <Wallet aria-hidden='true' />
+          {t('qy_cb_title')}
         </Button>
         <Button
           variant='outline'

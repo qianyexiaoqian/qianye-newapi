@@ -16,23 +16,28 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
-import { QyAdminCommissionBalances } from '@/features/qy/pages/admin-commission-balances'
+import { qyTabHash } from '@/features/qy/lib/pages'
 
-// 挂在 commission-records 之下而不是平级新开一个 /qy/admin/commission-balances：
-// 三张表（逐笔计佣 / 按人汇总 / 邀请关系）是同一件事的三个视角,URL 层级把这层
-// 从属关系说出来,面包屑与"最长前缀"这类按路径工作的机制也就不必另配一张表。
-//
-// ⚠️ 侧栏入口在 `lib/pages.ts` 里（「结算 → 佣金余额」）。它一度**不在**那张表里,
-// 于是整页只能靠佣金审核页上的按钮或手敲 URL 到达 —— 项目方的原话是
-// 「UI前端怎么没看见有佣金管理的入口和UI」。补上之后由
-// `features/qy/lib/__tests__/route-entry-guard.test.ts` 盯着:有路由无入口就变红。
-//
-// 叶子路由不写守卫:登录由 `_authenticated/route.tsx` 保证,扩展启用由
-// `qy/route.tsx` 保证,管理员由 `qy/admin/route.tsx` 保证,各一处、零重复。
+/**
+ * 旧路由 —— 本页已被收进 `/qy/admin/commission-records/users` 的选择夹
+ * （`QY_TAB_GROUPS`）。
+ *
+ * 保留成重定向而不是删掉：这个地址此前是侧栏上的一行，运营的书签、历史记录
+ * 与工单里贴出去的链接都还指着它。目标 hash 由 `qyTabHash` 现算，与宿主页认
+ * 标签用的是同一个函数 —— 不可能出现"跳过去了但选中的是另一张"。
+ *
+ * `replace`：旧地址不该留在历史栈里，否则用户按返回键会被立刻再弹回来。
+ */
 export const Route = createFileRoute(
   '/_authenticated/qy/admin/commission-records/balances/'
 )({
-  component: QyAdminCommissionBalances,
+  beforeLoad: () => {
+    throw redirect({
+      to: '/qy/admin/commission-records/users',
+      hash: qyTabHash('/qy/admin/commission-records/balances'),
+      replace: true,
+    })
+  },
 })

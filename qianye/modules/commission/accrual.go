@@ -387,6 +387,8 @@ func truncate(s string, max int) string {
 
 func itoa(v int) string { return strconv.Itoa(v) }
 
+func itoa64(v int64) string { return strconv.FormatInt(v, 10) }
+
 // consumeIdemKey 是消费日聚合的幂等键。
 //
 // 除了(下线、自然日)之外还带上**冻结的费率与分组**,因为日聚合行是

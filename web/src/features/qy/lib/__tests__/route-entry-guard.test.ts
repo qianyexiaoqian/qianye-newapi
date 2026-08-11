@@ -173,6 +173,16 @@ const EXEMPT: { url: string; why: string }[] = [
   },
 ]
 
+/**
+ * 一条被扫到的路由。
+ *
+ * `redirectTo` 非空表示这个文件**只重定向、不渲染任何内容**（`beforeLoad` 里
+ * 抛 `redirect()`、没有 `component`）。这类路由不是"一个页面"，它没有内容可
+ * 到达，因此不需要自己的导航入口 —— 但它指向的那个 url 必须真的到得了，
+ * 否则旧书签会被送进一个同样没有入口的地方。下面两条断言分开守这两件事。
+ */
+type ScannedRoute = { url: string; redirectTo: string | null }
+
 /** 路由文件路径 → 页面 url；不是"一个页面"的返回 null。 */
 function routeUrl(relativePath: string): string | null {
   const posix = relativePath.replaceAll('\\', '/')
@@ -188,9 +198,9 @@ function routeUrl(relativePath: string): string | null {
   return `/qy/${posix.slice(0, -'/index.tsx'.length)}`
 }
 
-/** 递归收集 `src/routes/_authenticated/qy/` 下的所有页面 url。 */
-function scanRouteUrls(): string[] {
-  const urls: string[] = []
+/** 递归收集 `src/routes/_authenticated/qy/` 下的所有页面路由。 */
+function scanRoutes(): ScannedRoute[] {
+  const routes: ScannedRoute[] = []
   const walk = (dir: string, prefix: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`
@@ -200,14 +210,22 @@ function scanRouteUrls(): string[] {
       }
       if (!entry.name.endsWith('.tsx')) continue
       const url = routeUrl(rel)
-      if (url != null) urls.push(url)
+      if (url == null) continue
+      const source = readFileSync(join(dir, entry.name), 'utf8')
+      // 判据是"没有 component"而不是"出现了 redirect"：带守卫的页面同样会在
+      // beforeLoad 里 redirect（如权限不足跳 /403），它仍然是一个有内容的页面。
+      const target = source.includes('component:')
+        ? null
+        : (/redirect\(\{[\s\S]*?to:\s*'([^']+)'/.exec(source)?.[1] ?? null)
+      routes.push({ url, redirectTo: target })
     }
   }
   walk(qyRoutesDir, '')
-  return urls.sort()
+  return routes.sort((a, b) => a.url.localeCompare(b.url))
 }
 
-const routeUrls = scanRouteUrls()
+const routes = scanRoutes()
+const routeUrls = routes.map((route) => route.url)
 const registered = new Set(QY_PAGES.map((page) => page.url))
 const indexUrls = new Set(QY_INDEX_PAGES.map((page) => page.url))
 const exemptUrls = new Set(EXEMPT.map((item) => item.url))
@@ -234,15 +252,46 @@ describe('qy 路由 ↔ 导航入口', () => {
    * 那一行忘了加，于是站内一个入口都没有。
    */
   test('每条路由都在页面表里有登记（否则站内一个入口都没有）', () => {
-    const orphans = routeUrls.filter(
-      (url) =>
-        !registered.has(url) && !indexUrls.has(url) && !exemptUrls.has(url)
-    )
+    const orphans = routes
+      .filter(
+        (route) =>
+          // 纯重定向的旧地址不是"一个页面"，它由下面那条断言单独守。
+          route.redirectTo == null &&
+          !registered.has(route.url) &&
+          !indexUrls.has(route.url) &&
+          !exemptUrls.has(route.url)
+      )
+      .map((route) => route.url)
     assert.deepEqual(
       orphans,
       [],
       `以下页面有路由但没有任何入口，只能手敲 URL 才到得了 —— 请在 lib/pages.ts 里登记，或写进本文件的 EXEMPT 并说明入口在哪：\n${orphans.join('\n')}`
     )
+  })
+
+  /**
+   * 重定向必须落到一个**真的到得了**的地方。
+   *
+   * 旧地址留成重定向是为了接住书签与工单里贴出去的链接；如果目标本身也没有
+   * 入口（或者干脆写错了），那这条重定向只是把人从一个死胡同送进另一个。
+   */
+  test('纯重定向的旧地址都指向登记过的页面', () => {
+    const stubs = routes.filter((route) => route.redirectTo != null)
+    assert.ok(
+      stubs.length > 0,
+      '一条重定向都没扫到 —— 判据多半坏了，本条会变成空转'
+    )
+    // 目标可以是 qy 自己的页面，也可以是**上游**页面（钱包那三张标签的宿主
+    // 就是 `/wallet`）。后者不在 QY_PAGES 里，但它是选择夹登记过的宿主，
+    // 所以判据取两者的并集，而不是把上游宿主一律当成断链。
+    const hosts = new Set(QY_TAB_GROUPS.map((group) => group.host))
+    for (const stub of stubs) {
+      const target = stub.redirectTo as string
+      assert.ok(
+        registered.has(target) || hosts.has(target),
+        `${stub.url} 重定向到 ${target}，而后者既不在 QY_PAGES 里、也不是任何选择夹的宿主 —— 旧书签会被送进一个同样没有入口的地址`
+      )
+    }
   })
 
   /** 豁免清单不许烂掉：指向已删路由的豁免会把一条真的孤儿悄悄放行。 */
@@ -391,36 +440,58 @@ describe('qy 路由 ↔ 导航入口', () => {
   })
 
   /**
-   * 佣金管理的两个入口，源码级钉死。
+   * 佣金管理的按人入口，源码级钉死。
    *
    * 上面那条通用守卫已经能拦住"再删一次"，这一条另外钉的是**落点**：
    * 项目方要的是从侧栏点得到，进了设置抽屉或被收进某张标签都不算数
    * （抽屉在 `/system-settings` 下要求 role=100，普通管理员够不着）。
+   *
+   * 本轮的形状与上一轮相反：上一轮是"两页写完了但侧栏一行都没有"，这一轮是
+   * 把那两行**收进一个宿主**（项目方原话是不要再造第四个割裂的页面）。所以
+   * 这里既钉宿主必须在侧栏一级项上，也钉那两页必须仍然是它的标签 —— 少了
+   * 后半句，把两页悄悄删掉照样全绿。
    */
-  test('佣金余额与 AFF 关系是「结算」组的一级项', () => {
+  test('用户佣金是「结算」组的一级项，另外两张表是它的标签', () => {
+    const hubUrl = '/qy/admin/commission-records/users'
+    const hub = QY_PAGES.find((item) => item.url === hubUrl)
+    assert.ok(hub != null, `${hubUrl} 又从页面表里消失了`)
+    assert.equal(
+      hub.group,
+      'qy-settlement',
+      `${hubUrl} 不在「结算」组的一级项上，侧栏里点不到`
+    )
+    assert.ok(hub.icon != null, `${hubUrl} 缺图标，整行会与上游项左对齐错位`)
+    assert.equal(isQyPageHosted(hubUrl), false, '宿主页自己被收进了选择夹')
+    assert.ok(
+      sidebarUrls(ROLE.ADMIN).has(hubUrl),
+      'role=10 的管理员在侧栏上看不到用户佣金'
+    )
+
+    const group = QY_TAB_GROUPS.find((item) => item.host === hubUrl)
+    assert.ok(group != null, `${hubUrl} 不再是任何选择夹的宿主`)
     for (const url of [
-      '/qy/admin/commission-records/balances',
       '/qy/admin/commission-records/relations',
+      '/qy/admin/commission-records/balances',
     ]) {
-      const page = QY_PAGES.find((item) => item.url === url)
-      assert.ok(page != null, `${url} 又从页面表里消失了`)
-      assert.equal(
-        page.group,
-        'qy-settlement',
-        `${url} 不在「结算」组的一级项上，侧栏里点不到`
+      assert.ok(
+        group.pages.includes(url),
+        `${url} 从用户佣金的选择夹里掉出去了 —— 它此前是侧栏上的一行，现在既不是标签也不是一级项，等于整页没了入口`
       )
-      assert.ok(page.icon != null, `${url} 缺图标，整行会与上游项左对齐错位`)
-      assert.equal(isQyPageHosted(url), false, `${url} 被收进了别人的选择夹`)
+      assert.equal(
+        isQyPageHosted(url),
+        true,
+        `${url} 不再被判成选择夹成员，侧栏会多出一行点了就被重定向甩走的入口`
+      )
     }
   })
 
   /**
-   * 佣金审核页上那两个按钮不许跟着入口一起删。
+   * 佣金审核页上那几个按钮不许跟着入口一起删。
    *
    * 侧栏入口与页内跳转解决的是两件事：侧栏回答"从零开始去哪找"，页内按钮
-   * 回答"我正在看这一笔，另外两张表怎么开"。两者都在，运营才不用记路径。
+   * 回答"我正在看这一笔，另外那几张表怎么开"。两者都在，运营才不用记路径。
    */
-  test('佣金审核页仍然直连另外两张表', () => {
+  test('佣金审核页仍然直连另外三张表', () => {
     const source = readFileSync(
       join(
         srcDir,
@@ -433,10 +504,17 @@ describe('qy 路由 ↔ 导航入口', () => {
       'utf8'
     )
     for (const url of [
+      '/qy/admin/commission-records/users',
       '/qy/admin/commission-records/balances',
       '/qy/admin/commission-records/relations',
     ]) {
       assert.ok(source.includes(url), `佣金审核页丢了指向 ${url} 的按钮`)
     }
+    // 跳转走 qyTabTarget 而不是硬写旧 url：后者到得了，但是**先离开宿主页再被
+    // 弹回来**，用户看到一次白闪，而且选中哪张标签由重定向那一跳决定。
+    assert.ok(
+      source.includes('qyTabTarget('),
+      '页内跳转绕开了 qyTabTarget，会经过一次旧路由重定向'
+    )
   })
 })

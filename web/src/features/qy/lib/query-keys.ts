@@ -140,6 +140,19 @@ export const qyKeys = {
   /** AFF 关系列表（绑定中 / 已解绑两个 scope 共用，scope 在 params 里）。 */
   adminCommissionRelations: (params: unknown) =>
     [...qyKeys.all, 'admin', 'commission', 'relations', params] as const,
+  /** 「用户佣金」列表：一行一个用户（余额 + 上下线 + 关系状态）。 */
+  adminCommissionUsers: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'commission', 'users', params] as const,
+  /** 某个用户的下线列表（权威口径来自主库 users.inviter_id）。 */
+  adminCommissionUserDownlines: (params: unknown) =>
+    [
+      ...qyKeys.all,
+      'admin',
+      'commission',
+      'users',
+      'downlines',
+      params,
+    ] as const,
 
   adminTransferRecords: (params: unknown) =>
     [...qyKeys.all, 'admin', 'transfer', 'records', params] as const,

@@ -68,6 +68,10 @@ var (
 	errRelCycle       = errors.New("这条绑定会形成邀请环路(A 邀 B、B 又邀 A)")
 	errRelNotBound    = errors.New("该账号当前没有绑定邀请人")
 	errRelRaced       = errors.New("邀请关系已被另一次操作改动,请刷新后重试")
+	// errRelSameInviter 挡住"换成他现在的这个人"。回 400 而不是当空操作回 200:
+	// 换绑的语义是"从此以后佣金归另一个人",运营点了确认却什么都没变,
+	// 却看到成功提示,下一步就会去账本里找那笔并不存在的变化。
+	errRelSameInviter = errors.New("新的邀请人与当前邀请人是同一个账号,没有需要改动的地方")
 )
 
 var relationErrCodes = map[error]string{
@@ -77,6 +81,7 @@ var relationErrCodes = map[error]string{
 	errRelCycle:       "qy_rel_cycle",
 	errRelNotBound:    "qy_rel_not_bound",
 	errRelRaced:       "qy_rel_conflict",
+	errRelSameInviter: "qy_rel_same_inviter",
 }
 
 // maxInviteChainDepth 是防环时向上追溯的层数上界。
@@ -607,6 +612,241 @@ func upsertRelationSnapshot(ctx context.Context, inviterId int, invitee model.Us
 	}
 }
 
+// ───────────────────────── 换绑 ─────────────────────────
+
+// adminRebindRelation 把一个账号的邀请人**换成另一个人**。
+//
+// # 为什么它是独立的一条路由,而不是给 bind 加个 force 参数
+//
+// adminBindRelation 对"已经有上线"一律拒绝(errRelAlreadyBd),那条拒绝本身是
+// 对的:绑定是"这个人此前没有上线"这个前提下的动作,让它顺手覆盖等于把一个
+// 需要单独决定的事情做成了副作用。换绑是**另一个决定** —— 它要回答的问题是
+// "把这个人从 A 名下挪到 B 名下",而 bind 回答不了这个问题,因为它连"原来是谁"
+// 都不需要知道。分成两条路由之后,审计里也天然分成两种 action。
+//
+// # 已经产生的佣金怎么办
+//
+// **历史保留、不再产生新的** —— 与解绑逐字相同的语义,理由见本文件开头:
+// qy_commission_accrual 是 append-only 的账本,A 名下那些计佣行已经变成了
+// A 的可提现余额、甚至已经提现走了。换绑只改"从下一笔开始算给谁",一个字节
+// 都不动账本。响应里的 kept_commission_quota 就是这句话的量化形式:
+// 那是**原邀请人**从这条关系上已经挣到、并且会继续留在他名下的钱。
+//
+// 要把 A 名下的那笔钱要回来,必须单独走冲正(commission.clawback)。
+//
+// # 三道闸门与绑定完全一致
+//
+// 自邀请、防环(向上追溯 inviter_id 链,任意长度)、目标账号必须存在。
+// 多一道:新旧邀请人相同直接拒。
+func adminRebindRelation(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagCommission) {
+		return
+	}
+	var req struct {
+		InviteeId int    `json:"invitee_id"`
+		InviterId int    `json:"inviter_id"`
+		Reason    string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, "qy_invalid_param", "请求格式错误")
+		return
+	}
+	if req.InviteeId <= 0 || req.InviterId <= 0 {
+		badRequest(c, "qy_invalid_param", "必须同时指定新的邀请人与被邀请人")
+		return
+	}
+	reason, ok := requireReason(c, req.Reason)
+	if !ok {
+		return
+	}
+
+	ctx := c.Request.Context()
+	before := relationSnapshot(ctx, req.InviteeId)
+	out, err := rebindRelation(ctx, req.InviterId, req.InviteeId)
+	if err != nil {
+		writeRelationAudit(c, "commission.relation.rebind", req.InviteeId, qymodel.ResultFail,
+			"换绑邀请关系失败: "+err.Error()+" | 事由: "+reason,
+			before, relationSnapshot(ctx, req.InviteeId))
+		respondRelationError(c, err)
+		return
+	}
+
+	invalidateInviter(req.InviteeId)
+	invalidateBlocked()
+	writeRelationAudit(c, "commission.relation.rebind", req.InviteeId, qymodel.ResultOK,
+		"换绑邀请关系: "+out.InviteeName+" 的邀请人由 "+itoa(out.OldInviterId)+
+			" 改为 "+out.NewInviterName+"(不补发上游 aff_quota 邀请奖励);"+
+			"原邀请人名下已产生的佣金全部保留(额度 "+itoa64(out.KeptQuota)+
+			"),只是从此不再产生新的;要收回已发放部分须单独走冲正 | 事由: "+reason,
+		before, relationSnapshot(ctx, req.InviteeId))
+	respond(c, gin.H{
+		"invitee_id": req.InviteeId,
+		// old/new 都回显:前端的确认框与成功提示都要写清楚"从谁挪到了谁"。
+		"old_inviter_id": out.OldInviterId,
+		"inviter_id":     req.InviterId,
+		"rebound":        true,
+		// 原邀请人从这条关系上已经挣到、并且继续留在他名下的钱。
+		"kept_commission_quota": out.KeptQuota,
+	})
+}
+
+// rebindOutcome 是一次换绑的结局,只用于回显与审计,不参与任何资金动作。
+type rebindOutcome struct {
+	OldInviterId   int
+	NewInviterName string
+	InviteeName    string
+	KeptQuota      int64
+}
+
+// rebindRelation 把权威字段从旧邀请人改到新邀请人,再更新扩展库快照。
+//
+// 顺序与 bindRelation 一致:先写主库(权威),再补快照。反过来的话主库失败时
+// 列表上会出现一条并不生效的关系。
+func rebindRelation(ctx context.Context, newInviterId, inviteeId int) (*rebindOutcome, error) {
+	if newInviterId == inviteeId {
+		return nil, errRelSelfInvite
+	}
+	if model.DB == nil {
+		return nil, db.ErrNotReady
+	}
+	var users []model.User
+	if err := model.DB.WithContext(ctx).Model(&model.User{}).
+		Select("id", "username", "email", "inviter_id", "created_at").
+		Where("id IN ?", []int{newInviterId, inviteeId}).Find(&users).Error; err != nil {
+		return nil, err
+	}
+	byId := map[int]model.User{}
+	for _, u := range users {
+		byId[u.Id] = u
+	}
+	inviter, okInviter := byId[newInviterId]
+	invitee, okInvitee := byId[inviteeId]
+	if !okInviter || !okInvitee {
+		return nil, errRelUserMissing
+	}
+	oldInviterId := invitee.InviterId
+	if oldInviterId == 0 {
+		// 没有上线的账号该走「绑定」。回 errRelNotBound 而不是顺手绑上:
+		// 两个动作的确认框写的话不一样(换绑要说明原邀请人的佣金怎么办),
+		// 悄悄替运营换一个动作执行是最不该做的事。
+		return nil, errRelNotBound
+	}
+	if oldInviterId == newInviterId {
+		return nil, errRelSameInviter
+	}
+	// 防环走的是主库权威字段,与绑定同一个实现:新邀请人顺着 inviter_id 往上
+	// 能走到被邀请人,就说明这一改会成环(A→B→C→A 同样挡得住)。
+	cyclic, err := invitePathReaches(ctx, newInviterId, inviteeId)
+	if err != nil {
+		return nil, err
+	}
+	if cyclic {
+		return nil, errRelCycle
+	}
+
+	// CAS 到观察到的那个旧邀请人上:并发下别人刚改过指向时必须失败,
+	// 而不是把别人刚写进去的绑定覆盖掉。
+	res := model.DB.WithContext(ctx).Model(&model.User{}).
+		Where("id = ? AND inviter_id = ?", inviteeId, oldInviterId).
+		Update("inviter_id", newInviterId)
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil, errRelRaced
+	}
+	// 刻意不动 users.aff_count / aff_quota / aff_history:那是上游注册时
+	// inviteUser() 发的另一套邀请奖励,换绑不是重新注册,补发等于凭空造钱。
+
+	// 先把旧关系保留下来的佣金算出来,再覆盖快照 —— 快照主键是 invitee_id,
+	// upsertRelationSnapshot 会把 (旧邀请人, 这个下线) 那一行覆盖掉。账本不受
+	// 影响(计佣行原样都在),但这个数字必须在覆盖前读,否则读到的是新关系的 0。
+	kept := pairCommissionQuota(ctx, oldInviterId, inviteeId)
+	upsertRelationSnapshot(ctx, newInviterId, invitee)
+
+	return &rebindOutcome{
+		OldInviterId:   oldInviterId,
+		NewInviterName: displayName(inviter),
+		InviteeName:    displayName(invitee),
+		KeptQuota:      kept,
+	}, nil
+}
+
+// pairCommissionQuota 返回 (邀请人, 被邀请人) 这一对历史上累计产生的佣金额度。
+//
+// 向下取整:回显与审计里的钱宁可略小于账本,也不能虚报。读失败返回 0 而不是
+// 中断整个动作 —— 主库那一侧已经改完了,为了一个回显数字把它回滚才是真的坏。
+func pairCommissionQuota(ctx context.Context, inviterId, inviteeId int) int64 {
+	return pairCommissionQuotas(ctx, [][2]int{{inviterId, inviteeId}})[[2]int{inviterId, inviteeId}]
+}
+
+// pairCommissionQuotas 是 pairCommissionQuota 的批量形式:一次查询回答一整页。
+//
+// # 为什么必须是同一份实现
+//
+// 这个数字出现在两个地方,而它们必须是同一个数:
+//
+//	换绑/解绑的响应与审计    kept_commission_quota  —— 动作**之后**的回显
+//	用户佣金总表的每一行      inviter_commission_quota —— 动作**之前**的确认框
+//
+// 确认框上写"这笔钱会留在原邀请人名下",点下去之后的成功提示又念一遍同一个数。
+// 两处若各算各的,迟早会出现"确认框说 0、点完说 13517"这种当着运营的面自相
+// 矛盾的场面 —— 那正是本轮修掉的缺陷(前端原本渲染的是 total_earned_quota,
+// 一个语义完全不同的数)。所以单数版本委托给复数版本,而不是各写一遍 SQL。
+//
+// 一次 GROUP BY 查完整页,与页长无关,不是 N+1。按 (inviter, invitee) 双列
+// 分组而不是只按 invitee:一个下线换过几次上线时,账本里同一个 invitee 下挂着
+// 几个不同 inviter 的计佣行,只按 invitee 求和会把别人名下的钱也算进来。
+//
+// 读失败返回空表(调用方拿到 0)而不是中断:调用方一侧要么已经改完了主库,
+// 要么只是在渲染一个列表,都不该为一个回显数字失败。
+func pairCommissionQuotas(ctx context.Context, pairs [][2]int) map[[2]int]int64 {
+	out := make(map[[2]int]int64, len(pairs))
+	if len(pairs) == 0 {
+		return out
+	}
+	gdb := db.Get()
+	if gdb == nil {
+		return out
+	}
+	wanted := make(map[[2]int]bool, len(pairs))
+	invitees := make([]int, 0, len(pairs))
+	seen := make(map[int]bool, len(pairs))
+	for _, p := range pairs {
+		wanted[p] = true
+		if seen[p[1]] {
+			continue
+		}
+		seen[p[1]] = true
+		invitees = append(invitees, p[1])
+	}
+
+	var rows []struct {
+		InviterId int
+		InviteeId int
+		Gross     string
+	}
+	if err := gdb.WithContext(ctx).Model(&Accrual{}).
+		Select("inviter_id, invitee_id, COALESCE(SUM(gross_amount), 0) AS gross").
+		Where("invitee_id IN ? AND status <> ?", invitees, StatusVoided).
+		Group("inviter_id, invitee_id").Scan(&rows).Error; err != nil {
+		db.MarkFailure(err)
+		return out
+	}
+	for _, r := range rows {
+		key := [2]int{r.InviterId, r.InviteeId}
+		if !wanted[key] {
+			continue
+		}
+		d, err := decimal.NewFromString(r.Gross)
+		if err != nil {
+			continue
+		}
+		out[key] = int64(common.QuotaFromDecimal(d.Floor()))
+	}
+	return out
+}
+
 // ───────────────────────── 解绑 ─────────────────────────
 
 // adminUnbindRelation 解除一条邀请关系。
@@ -735,18 +975,7 @@ func markRelationUnbound(ctx context.Context, inviterId int, invitee model.User)
 		}
 	}
 
-	var raw string
-	if err := gdb.WithContext(ctx).Model(&Accrual{}).
-		Where("inviter_id = ? AND invitee_id = ? AND status <> ?", inviterId, invitee.Id, StatusVoided).
-		Select("COALESCE(SUM(gross_amount), 0)").Scan(&raw).Error; err != nil {
-		db.MarkFailure(err)
-		return 0
-	}
-	d, err := decimal.NewFromString(raw)
-	if err != nil {
-		return 0
-	}
-	return int64(common.QuotaFromDecimal(d.Floor()))
+	return pairCommissionQuota(ctx, inviterId, invitee.Id)
 }
 
 // ───────────────────────── 共用件 ─────────────────────────
@@ -847,5 +1076,6 @@ func displayName(u model.User) string {
 func registerRelationRoutes(g *gin.RouterGroup, crit gin.HandlerFunc) {
 	g.GET("/commission/relations", middleware.SearchRateLimit(), adminListRelations)
 	g.POST("/commission/relations/bind", crit, adminBindRelation)
+	g.POST("/commission/relations/rebind", crit, adminRebindRelation)
 	g.POST("/commission/relations/unbind", crit, adminUnbindRelation)
 }
