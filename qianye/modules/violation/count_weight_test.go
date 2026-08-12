@@ -5,15 +5,12 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"reflect"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 
-	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
 // count_weight_test.go —— 「计数权重」这一格的口径,以及 severity 退场之后的兼容性。
@@ -29,10 +26,11 @@ import (
 //     算式直接写出来(「约 {{hits}} 次命中到线」,hits = ceil(threshold / weight))。
 //     下面第一张表就是这句话在后端的判据 —— 界面上的算式与真实计数必须逐格相等,
 //     否则运营按着界面配出来的规则会在一个他没预期的次数上封人。
-//   - severity **移除**,因为它从头到尾只写不读。表单、API 字段与内置种子全部撤掉,
-//     但**数据库列保留**(删列是跨三种数据库的不可逆迁移,而没人读的列代价为零)。
-//     这个取舍只有在"列还在、结构体不再映射它"这一对状态下才成立,所以它必须被测到:
-//     见 TestLegacySeverityColumnIsLeftAloneByRuleWrites。
+//   - severity **移除**,因为它从头到尾只写不读。表单、API 字段与内置种子先撤掉,
+//     数据库列随后也删了(项目方确认尚未上线生产,"删列不可逆"这条理由不再成立)。
+//     删列本身与它的幂等性、以及"删列不动内置规则指纹"这一条,见
+//     severity_drop_test.go。这里只保留写入面的兼容性:旧前端继续发这个字段
+//     必须照常保存成功。
 
 // TestCountWeightIsAMultiplierAgainstTheCategoryThreshold 把管理端表单上那句
 // 「N 次 × 权重 ≥ 阈值 → 约 N 次到线」钉在真实计数上。
@@ -244,80 +242,6 @@ func TestRuleUpsertKeepsCountWeightAndIgnoresLegacySeverity(t *testing.T) {
 	}
 }
 
-// TestLegacySeverityColumnIsLeftAloneByRuleWrites 是"留列不留字段"这个取舍的判据。
-//
-// 取舍本身:severity 没有任何读点,所以表单与 API 字段撤掉;但删列是跨 SQLite /
-// MySQL / PostgreSQL 的不可逆迁移,而一个没人读的列的代价是零,所以列保留。
-// 让这个取舍成立的关键是**结构体不再映射它** —— 只有这样 GORM 的 Save 才不会
-// 把既有行的历史取值改写成零值(将来真要给它一个用途时,数据还在)。
-//
-// 这条测试就是那句"不再映射"的机器判据:
-//   - 有人把 `Severity int` 加回 Rule 上 → Save 会带上这一列,历史值被改写成 0,红;
-//   - 有人顺手写一条 DROP COLUMN 迁移 → 建表/写入路径与这条测试的假设不再一致,
-//     插入仍然会成功,但下面对历史值的断言会失去意义,届时必须显式面对它。
-//
-// 用 SQLite 建列跑真 SQL,而不是反射断言字段不存在:后者只能证明"结构体上没有它",
-// 证明不了"写入不会碰它"—— 而后者才是这个取舍的全部内容。
-func TestLegacySeverityColumnIsLeftAloneByRuleWrites(t *testing.T) {
-	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	sqlDB, err := gdb.DB()
-	require.NoError(t, err)
-	sqlDB.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	// Rule 上不该再有这个字段 —— 有的话下面的 Save 会把历史值冲掉。
-	// 先断言它,再建列:反过来的话,加回字段之后 AutoMigrate 已经把列建好了,
-	// 下面那条 ALTER 会以「列重复」失败,报出来的是一条与真实原因无关的错。
-	_, mapped := reflect.TypeOf(Rule{}).FieldByName("Severity")
-	require.False(t, mapped,
-		"Rule 上又出现了 Severity 字段。它没有任何读点,加回来只会让 Save 改写一列没人看的数据;"+
-			"真要给它一个用途,那是一次新功能,得先有读点")
-
-	require.NoError(t, gdb.AutoMigrate(&Rule{}))
-
-	// 现网的表是带这一列的(GORM 从不删列),这里把那个状态复现出来。
-	// 三种数据库上它都是 `NOT NULL DEFAULT 1`,所以不写它的 INSERT 照样合法。
-	require.NoError(t, gdb.Exec(
-		"ALTER TABLE qy_violation_rule ADD COLUMN severity integer NOT NULL DEFAULT 1").Error)
-
-	// 新建:列不在结构体上,由数据库默认值兜住,插入不得失败。
-	row := Rule{
-		Name: "qy-probe", Enabled: true, Mode: ModeShadow,
-		Phase: PhasePrompt, MatchType: MatchKeyword, Pattern: "危险",
-		Action: ActionRecord, FeeMode: FeeNone, GroupScopeMode: GroupScopeInclude,
-		CountWeight: 2, CreatedAt: 1000, UpdatedAt: 1000,
-	}
-	require.NoError(t, gdb.Create(&row).Error, "结构体不映射 severity 时,新建规则必须照常成功")
-
-	var seeded int
-	require.NoError(t, gdb.Raw("SELECT severity FROM qy_violation_rule WHERE id = ?", row.Id).
-		Scan(&seeded).Error)
-	assert.Equal(t, 1, seeded, "新行的 severity 应由列自带的 DEFAULT 1 兜住")
-
-	// 把它改成一个"运营当年配过"的值,再走一次完整的管理端更新路径。
-	require.NoError(t, gdb.Exec("UPDATE qy_violation_rule SET severity = 3 WHERE id = ?", row.Id).Error)
-
-	var loaded Rule
-	require.NoError(t, gdb.Where("id = ?", row.Id).Take(&loaded).Error)
-	var req ruleUpsertReq
-	require.NoError(t, common.UnmarshalJsonStr(
-		`{"name":"qy-probe-renamed","phase":"prompt","match_type":"keyword","pattern":"危险",`+
-			`"mode":"shadow","action":"record","fee_mode":"none","count_weight":4}`, &req))
-	require.NoError(t, req.apply(&loaded))
-	require.NoError(t, gdb.Save(&loaded).Error)
-
-	var after int
-	require.NoError(t, gdb.Raw("SELECT severity FROM qy_violation_rule WHERE id = ?", row.Id).
-		Scan(&after).Error)
-	assert.Equal(t, 3, after,
-		"编辑一条规则不该把 severity 的历史取值冲掉 —— 那正是「留列不留字段」要保住的东西")
-
-	var reread Rule
-	require.NoError(t, gdb.Where("id = ?", row.Id).Take(&reread).Error)
-	assert.Equal(t, "qy-probe-renamed", reread.Name, "这次更新本身必须真的写进去了")
-	assert.Equal(t, 4, reread.CountWeight)
-}
-
 // TestBuiltinCatalogNeverDecidesCountWeight 固化内置目录对权重的态度。
 //
 // 目录里的条目一律 CountWeight = 1:权重是运营对"这一类值几次"的判断,与 Mode /
@@ -349,8 +273,10 @@ func TestBuiltinCatalogNeverDecidesCountWeight(t *testing.T) {
 	                  这句话被抽掉之后应有的形状
 	B3  guard.go:persistRecord 给类型线传常量 1
 	                → TestPersistRecordFeedsTheSameWeightToBothLines 红
-	B4  model.go:把 `Severity int` 字段加回 Rule
-	                → TestLegacySeverityColumnIsLeftAloneByRuleWrites 红在反射那一格
+	B4  api_admin.go:让 ruleUpsertReq 的解码对未知键报错(模拟"多发一个已删字段就 400")
+	                → TestRuleUpsertKeepsCountWeightAndIgnoresLegacySeverity 红在
+	                  "旧前端仍然发 severity" 那一格。
+	                  severity 字段/列本身的变异见 severity_drop_test.go 末尾。
 	B5  guard.go:persistRecord 给账号总量线传常量 1
 	                → TestPersistRecordFeedsTheSameWeightToBothLines 红
 	B6  builtin.go:把目录里第一条的 CountWeight 改成 3

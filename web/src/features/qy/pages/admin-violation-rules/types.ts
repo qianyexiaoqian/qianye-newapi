@@ -161,7 +161,8 @@ export type QyViolationRule = {
    * 达到该类型的 `threshold` 才触发处置。0 = 只按处置动作办,一条线都不推进。
    *
    * 这里曾经还有一个 `severity`(1..3)。它没有任何读点,已随表单一并移除;
-   * 数据库列还在,但后端不再下发,也不再接收。
+   * 后端不再下发也不再接收,数据库列随后也删掉了。
+   * 旧脚本继续发这个键仍然是无害的:后端解码忽略未知键,保存照常成功。
    */
   count_weight: number
   archive_context: boolean

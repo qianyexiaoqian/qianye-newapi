@@ -553,13 +553,15 @@ type Rule struct {
 	// 已经由类型自己的阈值与窗口表达,再留一个装饰性的 1..3 只会让管理员
 	// 以为改它会改变什么。所以表单、API 字段与内置种子全部移除。
 	//
-	// **数据库列 `severity` 保留**,故意不映射到结构体上:
-	//   - 删列是跨三种数据库的不可逆迁移(SQLite 甚至没有 DROP COLUMN 的
-	//     通用写法),而一个没人读的列的代价是零;
-	//   - 不映射意味着 GORM 的 Save/Create 都不碰它,既有行的历史取值原样保留
-	//     (将来真要给它一个用途时数据还在),新行由列自带的
-	//     `NOT NULL DEFAULT 1` 兜住。
-	// 不要因为"结构体上看不到它"就再加一次 AutoMigrate 或 DROP COLUMN。
+	// **数据库列 `severity` 也已删除**(dropLegacySeverityColumn,启动期一次性)。
+	// 上一轮保留它的理由是"删列不可逆",而项目方确认本项目尚未上线生产,
+	// 那条理由不再成立 —— 留一个没人读的列只会让后来者反复重新调查它是干什么的。
+	//
+	// 它不影响内置规则指纹:指纹是 sha256(pattern),从来不含 severity,
+	// 所以删列不会把任何已导入的内置规则误报成 "modified"(见 builtin.go)。
+	//
+	// 不要把这个字段加回来。真要给"严重程度"一个用途,那是一次新功能,
+	// 得先有读点 —— 而现在的读点应该是违规类型的阈值。
 
 	ArchiveContext bool `json:"archive_context" gorm:"not null;default:false"`
 	// BlockMessage 是返回给客户端的文案。严禁把命中词写进来 —— 等于告诉刷子绕过方法。

@@ -118,7 +118,9 @@ type ViolationRule struct {
 	CountWeight int `gorm:"not null;default:1" json:"count_weight"` // 命中一次给账号总量线与所绑类型线各加几,0 = 一条线都不推进
 	// Severity(1=低 2=中 3=高)在实现中**已移除**:它从头到尾只写不读,
 	// 违规类型体系落地后"这一类有多严重"由类型自己的阈值/窗口表达。
-	// 数据库列 `severity` 保留但不再映射到结构体,见 model.go 的说明。
+	// 数据库列 `severity` 也已删除(启动期一次性迁移 dropLegacySeverityColumn,
+	// 幂等、对没有该列的库是 no-op)。删列不影响内置规则指纹:指纹是
+	// sha256(pattern),从来不含 severity,所以不会产生"内置规则已被修改"的假告警。
 
 	// —— 上下文归档 ——
 	ArchiveContext bool `gorm:"not null;default:true" json:"archive_context"`
