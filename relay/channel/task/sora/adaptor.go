@@ -224,7 +224,7 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return &buf, nil
 	}
 
-	return common.ReaderOnly(storage), nil
+	return common.NewReplayableBodyReader(storage), nil
 }
 
 // DoRequest delegates to common helper.

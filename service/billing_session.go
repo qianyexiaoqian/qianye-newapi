@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -218,6 +219,25 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			s.tokenConsumed = 0
 		}
 		// TODO: model 层应定义哨兵错误（如 ErrNoActiveSubscription），用 errors.Is 替代字符串匹配
+		if errors.Is(err, ErrInsufficientWalletQuota) {
+			userQuota, quotaErr := model.GetUserQuota(s.relayInfo.UserId, false)
+			if quotaErr != nil {
+				userQuota = 0
+			}
+			// 合并上游原子预扣后**新增**的一条拒绝路径,必须和其它五条一样被记下来,
+			// 否则它就是这份计数里唯一的盲区(而且是最常见的那一类:余额判据)。
+			//
+			// reason 刻意不复用 wallet_empty:走到这里说明 NewBillingSession 的
+			// 事前余额检查**通过了**,是并发的另一路请求先把余额拿走,原子预扣才
+			// 失败的。它与「进来时余额就不够」是两种现象;分开计数既能让
+			// wallet_empty 的同比口径保持不变(那是 CompletionRatio 杀伤面的度量),
+			// 又能让"到底有多少请求真的在抢余额"变得可观测。
+			logPreConsumeRejected(c, s.relayInfo, "wallet_race", effectiveQuota, err)
+			return types.NewErrorWithStatusCode(
+				fmt.Errorf("用户额度不足, 剩余额度: %s", logger.FormatQuota(userQuota)),
+				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
+				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "no active subscription") || strings.Contains(errMsg, "subscription quota insufficient") {
 			logPreConsumeRejected(c, s.relayInfo, "subscription", effectiveQuota, err)

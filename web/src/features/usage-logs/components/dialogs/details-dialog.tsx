@@ -75,6 +75,7 @@ import {
   isViolationFeeLog,
   getFirstResponseTimeColor,
   getResponseTimeColor,
+  getReasoningEffortVariant,
   renderAuditContent,
 } from '../../lib/format'
 import {
@@ -635,12 +636,12 @@ export function DetailsDialog(props: DetailsDialogProps) {
     qyConfig.enabled && qyConfig.log_metrics.show_reasoning_effort
       ? getReasoning(other)
       : null
-  let reasoningEffortVariant: StatusBadgeProps['variant'] = 'green'
-  if (other?.reasoning_effort === 'high') {
-    reasoningEffortVariant = 'orange'
-  } else if (other?.reasoning_effort === 'medium') {
-    reasoningEffortVariant = 'yellow'
-  }
+  // 上游把这段 if/else 提成了 getReasoningEffortVariant，并且比我们原来那三档更全
+  // （max/xhigh/low/minimal/none，且先 trim+toLowerCase）。扩展关闭时走的就是这条
+  // 回退分支，直接取上游实现，不再维护第二份配色表。
+  const reasoningEffortVariant = getReasoningEffortVariant(
+    other?.reasoning_effort
+  )
 
   return (
     <Dialog
@@ -1141,6 +1142,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
               compact
               billingExpr={decodeBillingExprB64(other.expr_b64)}
               matchedTierLabel={other.matched_tier}
+              requestRules={other.request_rules}
               hideCacheColumns={!hasAnyCacheTokens(other)}
             />
           </DetailSection>
