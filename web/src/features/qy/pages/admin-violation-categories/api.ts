@@ -39,11 +39,26 @@ import type {
  *
  * `staleTime: 0`：类型不分页、行数是个位数，而"刚保存完还显示旧阈值"在一个
  * 直接决定谁被封号的页面上是不可接受的。
+ *
+ * `signal` 必须透传,而且必须是**读取**它 —— 这不是省一点带宽的优化。
+ *
+ * query-core 只在 queryFn 真的取过 `context.signal` 时才把 `#abortSignalConsumed`
+ * 置真(query.js:211-219);而最后一个 observer 卸载时,只有这一位是真才会走
+ * `retryer.cancel({revert:true})` 把 fetchStatus 退回 idle,否则只调
+ * `cancelRetry()` —— 那个函数只置一个「别再重试」的标志,既不中断在途请求,
+ * 也不改 fetchStatus(query.js:156-171)。
+ *
+ * 于是不读 signal 的后果是:一次收不到响应的请求会让这个 query 永久卡在
+ * fetching,离开页面也退不回 idle,再进来时 Query.fetch() 直接返回那条死 promise。
+ * 这个 key 同时被违规类型页、违规规则页、AI 审核页共用,一次挂起污染三页。
  */
 export function qyAdminViolationCategoriesQuery() {
   return queryOptions({
     queryKey: qyKeys.adminViolationCategories(),
-    queryFn: () => qyGet<QyViolationCategoryList>('/violation/categories'),
+    queryFn: ({ signal }) =>
+      qyGet<QyViolationCategoryList>('/violation/categories', undefined, {
+        signal,
+      }),
     staleTime: 0,
   })
 }

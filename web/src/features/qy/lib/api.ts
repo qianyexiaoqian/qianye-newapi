@@ -491,6 +491,20 @@ function unwrap<T>(data: unknown, status: number): T {
 const QY_BASE_CONFIG: ApiRequestConfig = {
   skipErrorHandler: true,
   skipBusinessError: true,
+  // 没有这一行,一个「发出去但永远收不到响应」的请求会永远挂着 —— XHR 的默认
+  // timeout 是 0,也就是无限等。它不是理论风险,违规类型页整块塌成永久转圈就是
+  // 它:那一个 promise 永不落定,于是 React Query 里 key 为
+  // `qy/admin/violation/categories` 的 query 永远停在
+  // status='pending' + fetchStatus='fetching'。这个状态是**自锁**的 ——
+  // query-core 的 Query.fetch() 在 fetchStatus!=='idle' 且 retryer 未 rejected 时
+  // 直接返回那条死掉的 promise、不再发请求(query.js:183-193),而
+  // optionalRemove() 又要求 fetchStatus==='idle' 才回收(query.js:63-67),
+  // 于是它连 GC 都躲过去,重新挂载、invalidate、refetch 全部无效,只有整页重载能救。
+  //
+  // 30s 的依据是「比任何 qy 接口的服务端上界都宽」:最慢的一个是 AI 渠道试跑,
+  // 后端已经把它钉死在 15s(qianye/modules/violation/api_admin_aireview.go:308),
+  // 其余都是个位数毫秒的管理端 CRUD。调用方仍可用 `config.timeout` 单独放宽。
+  timeout: 30_000,
 }
 
 /**
