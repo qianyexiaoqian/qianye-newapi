@@ -56,7 +56,7 @@ export function qyAdminViolationCategoriesQuery() {
   return queryOptions({
     queryKey: qyKeys.adminViolationCategories(),
     queryFn: ({ signal }) =>
-      qyGet<QyViolationCategoryList>('/violation/categories', undefined, {
+      qyGet<QyViolationCategoryList>('/admin/violation/categories', undefined, {
         signal,
       }),
     staleTime: 0,
@@ -78,7 +78,7 @@ export function qyPreviewViolationCategoryImpact(params: {
   enabled: boolean
 }) {
   return qyGet<{ impact: QyViolationCategoryImpact }>(
-    '/violation/categories/impact',
+    '/admin/violation/categories/impact',
     params
   )
 }
@@ -91,7 +91,7 @@ export function qyPreviewViolationCategoryImpact(params: {
  * 前端弹没弹窗，它信任的是"这一位只可能由那次交互产生"。
  */
 export function qySaveViolationCategory(body: QyViolationCategoryInput) {
-  return qyPut<QyViolationCategorySaved>('/violation/categories', body)
+  return qyPut<QyViolationCategorySaved>('/admin/violation/categories', body)
 }
 
 /**
@@ -104,7 +104,7 @@ export function qyArchiveViolationCategory(id: number, reassignTo?: number) {
   const suffix =
     reassignTo == null || reassignTo <= 0 ? '' : `?reassign_to=${reassignTo}`
   return qyDelete<QyViolationCategoryArchived>(
-    `/violation/categories/${id}${suffix}`
+    `/admin/violation/categories/${id}${suffix}`
   )
 }
 
@@ -121,7 +121,9 @@ export function qyViolationThresholdSuggestionsQuery() {
   return queryOptions({
     queryKey: qyKeys.adminViolationCategorySuggestions(),
     queryFn: () =>
-      qyGet<QyViolationThresholdSuggestions>('/violation/categories/suggestions'),
+      qyGet<QyViolationThresholdSuggestions>(
+        '/admin/violation/categories/suggestions'
+      ),
     staleTime: 0,
   })
 }
@@ -138,7 +140,7 @@ export function qyViolationThresholdSuggestionsQuery() {
  */
 export function qyApplyViolationThresholdSuggestions(confirm: boolean) {
   return qyPost<QyViolationThresholdApplied>(
-    '/violation/categories/apply-suggested',
+    '/admin/violation/categories/apply-suggested',
     { confirm }
   )
 }

@@ -22,6 +22,11 @@
 # Shell scripts
 *.sh text eol=lf
 
+# 路由清单由 go test 生成、由前端守卫逐行读。`* text=auto` 会在
+# core.autocrlf=true 的机器上把它检出成 CRLF,而生成端写的是 LF ——
+# 那会让 TestQyRouteManifestIsCurrent 在一台干净的 Windows 机器上凭空变红。
+qianye/route_manifest.txt text eol=lf
+
 # Binary files
 *.png binary
 *.jpg binary
