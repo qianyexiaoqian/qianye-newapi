@@ -194,7 +194,7 @@ func TestAIReviewFailureDirections(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := newFakeReviewServer(t, tc.handler)
-			out := runAIReview(context.Background(), rtForServer(srv.URL, tc.timeoutMs), "任意内容", tc.timeoutMs)
+			out := runAIReview(context.Background(), rtForServer(srv.URL, tc.timeoutMs), nil, "任意内容", tc.timeoutMs)
 
 			require.NotNil(t, out, "runAIReview 永不返回 nil —— 调用方没有 nil 分支")
 			assert.Equal(t, tc.wantOutcome, out.Outcome)
@@ -215,7 +215,7 @@ func TestAIReviewFailureDirections(t *testing.T) {
 // 但方向必须一致 —— 都不拦。
 func TestAIReviewAllChannelsDown(t *testing.T) {
 	t.Run("一个渠道都没有", func(t *testing.T) {
-		out := runAIReview(context.Background(), &aiRuntime{SampleRateBps: 10000}, "内容", 1000)
+		out := runAIReview(context.Background(), &aiRuntime{SampleRateBps: 10000}, nil, "内容", 1000)
 		require.NotNil(t, out)
 		assert.Equal(t, OutcomeNoChannel, out.Outcome)
 		assert.False(t, out.decided())
@@ -233,7 +233,7 @@ func TestAIReviewAllChannelsDown(t *testing.T) {
 		})
 		rt.totalWeight = 2
 
-		out := runAIReview(context.Background(), rt, "内容", 1000)
+		out := runAIReview(context.Background(), rt, nil, "内容", 1000)
 		require.NotNil(t, out)
 		assert.Equal(t, OutcomeUpstreamError, out.Outcome)
 		assert.False(t, out.decided(), "渠道全挂必须放行 —— 审核服务的可用性一定低于网关自身")
@@ -256,7 +256,7 @@ func TestAIReviewAllChannelsDown(t *testing.T) {
 			},
 			totalWeight: 1000,
 		}
-		out := runAIReview(context.Background(), rt, "内容", 2000)
+		out := runAIReview(context.Background(), rt, nil, "内容", 2000)
 		require.NotNil(t, out)
 		assert.Equal(t, OutcomeClean, out.Outcome, "第一个渠道失败后必须落到第二个")
 		assert.True(t, out.decided())
@@ -273,7 +273,7 @@ func TestAIReviewSuccessAndCost(t *testing.T) {
 	srv := newFakeReviewServer(t, func(w http.ResponseWriter, _ string) {
 		_, _ = w.Write([]byte(okVerdict(true, "jailbreak", 0.93, 1000, 500)))
 	})
-	out := runAIReview(context.Background(), rtForServer(srv.URL, 2000), "越狱样本", 2000)
+	out := runAIReview(context.Background(), rtForServer(srv.URL, 2000), nil, "越狱样本", 2000)
 
 	require.NotNil(t, out)
 	assert.Equal(t, OutcomeViolation, out.Outcome)
@@ -333,7 +333,7 @@ func TestAICostUnpricedChannelStaysZero(t *testing.T) {
 	rt.Channels[0].PriceInPerM = decimal.Zero
 	rt.Channels[0].PriceOutPerM = decimal.Zero
 
-	out := runAIReview(context.Background(), rt, "正常内容", 2000)
+	out := runAIReview(context.Background(), rt, nil, "正常内容", 2000)
 	require.NotNil(t, out)
 	assert.Equal(t, 1000, out.TotalTokens, "token 必须照记 —— 那次调用确实花了钱")
 	assert.Equal(t, "0", out.CostUsd.String())

@@ -155,8 +155,15 @@ export type QyViolationRule = {
    * `qyViolationRuleToForm` 用 `?? '0'` 折回不设下限。
    */
   ai_min_confidence?: string
+  /**
+   * 命中一次给计数加几 —— 账号总量线与这条规则所绑违规类型的类型线是同一个数。
+   * 它与类型阈值是**乘数与阈值**的关系:N 次命中推进 `N × count_weight`,
+   * 达到该类型的 `threshold` 才触发处置。0 = 只按处置动作办,一条线都不推进。
+   *
+   * 这里曾经还有一个 `severity`(1..3)。它没有任何读点,已随表单一并移除;
+   * 数据库列还在,但后端不再下发,也不再接收。
+   */
   count_weight: number
-  severity: number
   archive_context: boolean
   block_message: string
   created_at: number
@@ -195,8 +202,8 @@ export type QyViolationRuleInput = {
    * 0.8000000000000001,而它是一道决定「这次命中算不算数」的闸。
    */
   ai_min_confidence: string
+  /** 命中一次给计数加几。见 `QyViolationRule.count_weight`。 */
   count_weight: number
-  severity: number
   archive_context: boolean
   block_message: string
 }
@@ -412,8 +419,8 @@ export type QyViolationBuiltinItem = {
   /** 上游拒绝类条目自带的状态码作用域；其余类别为空串。 */
   status_scope: string
   priority: number
+  /** 内置目录里恒为 1:权重是运营对「这一类值几次」的判断,目录不替他填。 */
   count_weight: number
-  severity: number
 
   state: QyViolationBuiltinState
   /** 未导入时为 0。 */

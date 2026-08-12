@@ -134,6 +134,40 @@ func TestSuggestedThresholdsShape(t *testing.T) {
 	})
 }
 
+// TestEverySeededCategoryHasASuggestedLine 是**反向**的那条约束:
+// TestSuggestedThresholdsShape 保证"建议表里的键都是真类型",这里保证
+// "真类型都在建议表里"。
+//
+// # 这不是补全癖,是实测抓到的一次静默失效
+//
+// 出厂种子最初是六类,建议表配了其中五类(兜底不配)。后来种子补进九条上游合规
+// 类型(cyber_attack / minor_safety / … / fraud_spam),而建议表没跟着长。
+// 后果不是"少了几个建议",而是:
+//
+//   - 「应用建议阈值」按下去之后,十四个公示类型里仍有九个 threshold=0;
+//   - 管理端那九行显示"未配阈值 · 不计门槛",看起来与"配好了"只差一句措辞;
+//   - **用户端那九行显示「这一类仅记录,不计封号门槛」** —— 项目方报的
+//     「到多少次封号」在这九类上仍然没有答案,而它们恰恰是内容风险最高的九类。
+//
+// 也就是说:加一条种子类型而忘了加建议线,失效是完全静默的,页面上一切正常。
+// 所以这条断言必须挂在种子表上,而不是挂在一份手抄的键清单上。
+func TestEverySeededCategoryHasASuggestedLine(t *testing.T) {
+	for _, s := range seedCategories {
+		t.Run(s.Key, func(t *testing.T) {
+			sug, ok := suggestedCategoryThresholds[s.Key]
+			if s.Key == FallbackCategoryKey {
+				assert.False(t, ok,
+					"兜底类型必须留在建议表之外:它是所有还没归类的规则(以及 AI 判了违规却给不出类型的那一票)的落点")
+				return
+			}
+			require.Truef(t, ok,
+				"种子类型 %q 没有建议线:「应用建议阈值」跳过它之后,它在用户端会永远显示"+
+					"「这一类仅记录,不计封号门槛」,而管理端看起来只是措辞不同", s.Key)
+			assert.Positive(t, sug.Threshold)
+		})
+	}
+}
+
 // TestCategoryThresholdStateSeparatesUnsetFromDisabled 是"threshold=0 的语义"
 // 在代码里的落点。
 //
@@ -215,10 +249,15 @@ func TestApplySuggestedThresholdsOnlyFillsUnset(t *testing.T) {
 	})
 
 	t.Run("逐类留痕,且快照是整行不是拼出来的几列", func(t *testing.T) {
+		// 期望条数由建议表算出来,不写死:上面刻意把 jailbreak 手填成 10、
+		// 把 reverse 的开关关掉,所以被补上的正好是"有建议线的类型"减去这两个。
+		// 写死一个数字会在种子表长出新类型时变成一次假失败,而那次失败与本用例
+		// 要守的"只补空"毫无关系。
+		wantAudited := len(suggestedCategoryThresholds) - 2
 		var logs []qymodel.AuditLog
 		require.NoError(t, gdb.Where("action = ?", "categories.apply_suggested").Find(&logs).Error)
-		require.Len(t, logs, 3,
-			"三个被补上的类型各一行:一条汇总行答不出「哪几类被配上了、当时写的是几次」")
+		require.Len(t, logs, wantAudited,
+			"每个被补上的类型各一行:一条汇总行答不出「哪几类被配上了、当时写的是几次」")
 		for _, l := range logs {
 			assert.Equal(t, qymodel.ResultOK, l.Result)
 			require.NotEmpty(t, l.AfterSnap)
@@ -280,7 +319,11 @@ func TestSuggestionPreviewAffectedUsersDeduplicates(t *testing.T) {
 	// 管理员既要知道"总共多少人",也要知道"是哪一类把人推过去的"。
 	assert.Equal(t, 1, byKey[CatPressure].Impact.Matched)
 	assert.Equal(t, 2, byKey[CatDistill].Impact.Matched)
-	assert.Equal(t, 5, preview.ApplicableCount, "六个内置类型里,兜底那一个没有建议值")
+	// 本夹具里每一类都还没配线,所以"可应用"就等于"建议表里有几条"。
+	// 用建议表的长度算,而不是写死一个数:种子长出新类型时这个数会跟着长,
+	// 而写死的那一份会在一次与本用例无关的改动上变红。
+	assert.Equal(t, len(suggestedCategoryThresholds), preview.ApplicableCount,
+		"每一个有建议线的内置类型都该可应用;兜底类型没有建议值,不在其中")
 
 	// 处置动作必须一并给出:类型线只决定"几次",越线之后是记录/限制/封号
 	// 由用户所在分组的策略档决定。不带上它,确认弹窗只能说"会触发处置"。

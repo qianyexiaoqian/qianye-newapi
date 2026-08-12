@@ -61,6 +61,8 @@ function summaryRow(
     group_scope_mode: 'include',
     pre_sample_rate_bps: 5000,
     async_sample_rate_bps: 5000,
+    prompt_source: 'inherit',
+    category_id: 0,
     shadowed: false,
     ...over,
   }
@@ -86,6 +88,8 @@ describe('作用域草稿与请求体', () => {
       group_scope_mode: 'include',
       pre_sample_rate_bps: 5000,
       async_sample_rate_bps: 1000,
+      prompt: '',
+      category_id: 0,
       remark: '',
       created_at: 0,
       updated_at: 0,
@@ -107,6 +111,8 @@ describe('作用域草稿与请求体', () => {
       group_scope_mode: 'exclude',
       pre_sample_rate_bps: 250,
       async_sample_rate_bps: 10000,
+      prompt: '本档判定说明',
+      category_id: 12,
       remark: '备注',
       created_at: 0,
       updated_at: 0,
@@ -116,6 +122,10 @@ describe('作用域草稿与请求体', () => {
     assert.equal(back.async_sample_rate_bps, 10000)
     assert.equal(back.group_scope_mode, 'exclude')
     assert.equal(back.id, 7)
+    // 提示词与类型绑定同样要原样往返：往返丢字段的表现是"编辑一下抽样率就把
+    // 这一档的提示词清空了"，而清空之后它会静默回到继承全局。
+    assert.equal(back.prompt, '本档判定说明')
+    assert.equal(back.category_id, 12)
   })
 
   test('抽样率解析失败一律落到 0,绝不落到全量送审', () => {

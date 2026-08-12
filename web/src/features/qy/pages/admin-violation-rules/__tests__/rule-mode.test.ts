@@ -91,7 +91,6 @@ function serverRule(patch: Partial<QyViolationRule>): QyViolationRule {
     fee_multiple: '0',
     fee_max_quota: 0,
     count_weight: 1,
-    severity: 1,
     archive_context: false,
     block_message: '',
     created_at: 0,

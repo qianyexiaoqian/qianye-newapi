@@ -77,7 +77,7 @@ func TestAIScopeSampleRatesFor(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			pre, async := rt.sampleRatesFor(tc.model, tc.group)
+			_, pre, async := rt.scopeFor(tc.model, tc.group)
 			assert.Equal(t, tc.wantPre, pre, tc.why)
 			assert.Equal(t, tc.wantAsync, async, tc.why)
 		})
@@ -96,8 +96,8 @@ func TestAIScopeExcludeDirection(t *testing.T) {
 		scopeRT("exclude", "", "internal,batch", GroupScopeExclude, 5000, 5000)}}
 
 	for _, g := range groups {
-		incPre, _ := inc.sampleRatesFor("gpt-4o", g)
-		excPre, _ := exc.sampleRatesFor("gpt-4o", g)
+		_, incPre, _ := inc.scopeFor("gpt-4o", g)
+		_, excPre, _ := exc.scopeFor("gpt-4o", g)
 		// 兜底率是 0,所以"没匹配上"= 0,"匹配上"= 5000。两个方向必须恰好相反。
 		assert.NotEqual(t, incPre, excPre,
 			"分组 %q:include 与 exclude 必须严格互补,否则方向写反了不会有任何症状", g)

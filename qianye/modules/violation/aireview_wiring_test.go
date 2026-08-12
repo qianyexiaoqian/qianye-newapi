@@ -374,7 +374,7 @@ func TestAIAsyncReviewRecordsWithoutCharging(t *testing.T) {
 		UsingGroup: "default", RequestId: "req-async-1"}
 	in := scanInput{Model: "gpt-4o", Group: "default", Text: "买粉丝加微信"}
 
-	err = runAIAsyncReview(context.Background(), gdb, rtForServer(srv.URL, 3000),
+	err = runAIAsyncReview(context.Background(), gdb, rtForServer(srv.URL, 3000), nil,
 		[]*compiledRule{rule}, rc, in, in.Text, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), srv.calls.Load())
@@ -400,7 +400,7 @@ func TestAIAsyncReviewRecordsWithoutCharging(t *testing.T) {
 			CountWeight: 1, CategoryId: cat.Id,
 		})
 		require.NoError(t, err)
-		err = runAIAsyncReview(context.Background(), gdb, rtForServer(srv.URL, 3000),
+		err = runAIAsyncReview(context.Background(), gdb, rtForServer(srv.URL, 3000), nil,
 			[]*compiledRule{counted}, recordCtx{UserId: 9009, RequestId: "req-async-counted"},
 			in, in.Text, nil, nil)
 		require.Error(t, err, "真实模式的异步命中必须推进违规计数(项目方要的「只记录与计次」的后半句)")
@@ -436,7 +436,7 @@ func TestAIAsyncReviewLogsEvenWithoutHit(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = runAIAsyncReview(context.Background(), gdb, rtForServer(srv.URL, 3000),
+	err = runAIAsyncReview(context.Background(), gdb, rtForServer(srv.URL, 3000), nil,
 		[]*compiledRule{rule}, recordCtx{UserId: 9002, RequestId: "req-async-2"},
 		scanInput{}, "正常内容", nil, nil)
 	require.NoError(t, err)
@@ -473,7 +473,7 @@ func TestAIAsyncReviewReusesPrimedVerdict(t *testing.T) {
 
 	primed := &aiOutcome{Outcome: OutcomeViolation, Violated: true, Category: "spam",
 		Confidence: decimal.NewFromFloat(0.9), ChannelId: 1, ChannelName: "sync"}
-	err = runAIAsyncReview(context.Background(), gdb, rtForServer(srv.URL, 3000),
+	err = runAIAsyncReview(context.Background(), gdb, rtForServer(srv.URL, 3000), nil,
 		[]*compiledRule{rule}, recordCtx{UserId: 9003, RequestId: "req-async-3"},
 		scanInput{}, "内容", nil, primed)
 	require.NoError(t, err)

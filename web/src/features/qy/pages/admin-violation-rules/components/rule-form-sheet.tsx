@@ -130,6 +130,24 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
     ...qyAdminViolationCategoriesQuery(),
     enabled: props.open,
   })
+  // 「违规类型」与「计数权重」是同一件事的两半：命中加到**哪个桶**、一次加**几**。
+  // 两格都要读「当前选中的类型 + 它的阈值」，所以在这里算一次，两边共用。
+  const categoryRows = categoryQuery.data?.items ?? []
+  const categoryId = form.watch('category_id')
+  // 0 = 没显式选。后端保存时会把它落到兜底类型，所以界面此刻就按兜底那一行显示，
+  // 让「存之前」与「存之后」是同一句话。
+  const effectiveCategoryId =
+    categoryId > 0 ? categoryId : (categoryQuery.data?.fallback_id ?? 0)
+  const selectedCategory = categoryRows.find(
+    (row) => row.category.id === effectiveCategoryId
+  )
+  const countWeight = form.watch('count_weight')
+  // 「N 次命中 × 权重 ≥ 阈值」里的 N。向上取整：计数是整数步进的，权重 3 配阈值
+  // 10 时第 4 次命中才到线（3×3=9 < 10）。权重 0 永远到不了线，由调用处单独说。
+  const hitsToThreshold =
+    selectedCategory != null && countWeight > 0
+      ? Math.ceil(selectedCategory.category.threshold / countWeight)
+      : 0
   const groupOptions = groupQuery.data?.options ?? []
   const groupScopeEntries = qySplitViolationGroupScope(
     form.watch('group_scope')
@@ -260,14 +278,10 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
             control={form.control}
             name='category_id'
             render={({ field }) => {
-              const rows = categoryQuery.data?.items ?? []
-              const fallbackId = categoryQuery.data?.fallback_id ?? 0
-              // 0 = 没显式选。后端保存时会把它落到兜底类型，所以界面此刻就按
-              // 兜底那一行显示，让「存之前」与「存之后」是同一句话。
-              const effectiveId = field.value > 0 ? field.value : fallbackId
-              const selected = rows.find(
-                (row) => row.category.id === effectiveId
-              )
+              // 三个取值在组件顶部算好（计数权重那一格要读同一份），这里只起别名。
+              const rows = categoryRows
+              const effectiveId = effectiveCategoryId
+              const selected = selectedCategory
               return (
                 <FormItem>
                   <FormLabel>{t('qy_vio_field_category')}</FormLabel>
@@ -765,49 +779,69 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
             />
           )}
 
-          <div className='grid gap-3 sm:grid-cols-2'>
-            <FormField
-              control={form.control}
-              name='count_weight'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_vio_field_count_weight')}</FormLabel>
-                  <FormControl>
-                    <Input
-                      type='number'
-                      value={field.value}
-                      onChange={(event) =>
-                        field.onChange(Number(event.target.value))
-                      }
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    {t('qy_vio_field_count_weight_desc')}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-            <FormField
-              control={form.control}
-              name='severity'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('qy_vio_field_severity')}</FormLabel>
-                  <FormControl>
-                    <Input
-                      type='number'
-                      value={field.value}
-                      onChange={(event) =>
-                        field.onChange(Number(event.target.value))
-                      }
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
+          {/* 计数权重。项目方看着截图问的是「规则已经绑了类型、类型带阈值了，
+              这一格还留着做什么」—— 答案是它与阈值不是同一件事，而是**乘数**：
+              命中一次给上面那个桶加 count_weight，加到该类型的阈值才触发处置。
+              所以这一格必须紧跟着「违规类型」，并且把算式直接写出来。
+
+              旧文案「填 0 表示只扣费、不累计封号」是**类型体系之前**的口径：
+              那时只有一条账号总量线，句子里没有「加到哪个桶」这一层，于是它读起来
+              像是在讲扣费开关，而不是在讲计数。
+
+              这里同时删掉了并排的「严重级别」。它从头到尾只写不读（全仓没有任何
+              消费者），摆在计数权重旁边只会让人以为「级别越高越容易被封」。 */}
+          <FormField
+            control={form.control}
+            name='count_weight'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('qy_vio_field_count_weight')}</FormLabel>
+                <FormControl>
+                  <Input
+                    type='number'
+                    value={field.value}
+                    onChange={(event) =>
+                      field.onChange(Number(event.target.value))
+                    }
+                  />
+                </FormControl>
+                {/* 与类型那一格同一套配色约定：能真正触发处置的那一档是中性的，
+                    「配了也不会封人」的那两档（权重 0、类型没阈值）用告警色。 */}
+                <p
+                  className={
+                    countWeight > 0 &&
+                    selectedCategory != null &&
+                    selectedCategory.threshold_state === 'active'
+                      ? 'text-muted-foreground rounded-md border border-dashed px-3 py-2 text-xs'
+                      : 'text-warning border-warning/40 bg-warning/5 rounded-md border px-3 py-2 text-xs'
+                  }
+                >
+                  {countWeight <= 0
+                    ? t('qy_vio_field_count_weight_math_zero')
+                    : selectedCategory == null
+                      ? t('qy_vio_field_count_weight_math_unknown', {
+                          weight: countWeight,
+                        })
+                      : selectedCategory.threshold_state === 'active'
+                        ? t('qy_vio_field_count_weight_math_active', {
+                            name: selectedCategory.category.name,
+                            weight: countWeight,
+                            threshold: selectedCategory.category.threshold,
+                            hours: selectedCategory.category.window_hours,
+                            hits: hitsToThreshold,
+                          })
+                        : t('qy_vio_field_count_weight_math_idle', {
+                            name: selectedCategory.category.name,
+                            weight: countWeight,
+                          })}
+                </p>
+                <FormDescription>
+                  {t('qy_vio_field_count_weight_desc')}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
           <FormField
             control={form.control}

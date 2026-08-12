@@ -321,7 +321,12 @@ func reviewText(text string, maxChars int) string {
 // "永不返回 error"是刻意的:调用方只有一种正确的处置方式(失败即放行),
 // 给它一个 error 参数只会让某个调用点某天写出 `if err != nil { return block }`。
 // 失败的**种类**通过 Outcome 表达,落进 AIReview 行供事后追查。
-func runAIReview(ctx context.Context, rt *aiRuntime, text string, timeoutMs int) *aiOutcome {
+//
+// sc 是本次请求命中的作用域策略(nil = 兜底档)。它在这里只有一个用途:
+// 决定用哪一份**基底**提示词。类型清单仍然由 renderAIPrompt 从类型表现算 ——
+// 作用域提示词覆盖的是"判定说明",不是那份闭集,否则每加一个违规类型就要
+// 回去改 N 份作用域提示词,而漏改的那几份会静默地永远返回旧类型。
+func runAIReview(ctx context.Context, rt *aiRuntime, sc *aiScopeRT, text string, timeoutMs int) *aiOutcome {
 	started := time.Now()
 	channels := pickAIChannels(rt)
 	if len(channels) == 0 {
@@ -330,7 +335,7 @@ func runAIReview(ctx context.Context, rt *aiRuntime, text string, timeoutMs int)
 	body := reviewText(text, rt.MaxInputChars)
 	// 类型清单在这里拼进提示词。渲染一次、全部渠道共用同一份文本 ——
 	// 逐渠道渲染只会让"两个渠道拿到的清单不一样"变成可能。
-	prompt := renderAIPrompt(rt.Prompt, rt.Vocab)
+	prompt := renderAIPrompt(rt.promptFor(sc), rt.Vocab)
 
 	// timeoutMs 是**整次审核**的预算,不是每个渠道各一份。
 	//

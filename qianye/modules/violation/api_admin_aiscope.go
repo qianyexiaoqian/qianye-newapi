@@ -42,7 +42,16 @@ type aiScopeUpsertReq struct {
 	GroupScopeMode     string `json:"group_scope_mode"`
 	PreSampleRateBps   int    `json:"pre_sample_rate_bps"`
 	AsyncSampleRateBps int    `json:"async_sample_rate_bps"`
-	Remark             string `json:"remark"`
+	// Prompt 空 = 用全局那一份。**不是**指针:这一格没有"不动它"这一档 ——
+	// 表单每次都把当前值整段提交,而空串是一个有意义的取值(回到继承)。
+	// 渠道密钥那三态(不动/清除/换新)在这里没有对应物,照抄一个指针只会
+	// 让"清空这一档的提示词"变得表达不了。
+	Prompt string `json:"prompt"`
+	// CategoryId 0 = 不指定。写入闸会确认它指向一个**活着的**类型 ——
+	// 指向已归档类型的配置在界面上看起来完全正常,而线上每次命中都会退回
+	// 规则自己那一档并打一条告警(见 resolveCategoryOverride)。
+	CategoryId int64  `json:"category_id"`
+	Remark     string `json:"remark"`
 }
 
 func (r *aiScopeUpsertReq) apply(dst *AIScope) error {
@@ -54,6 +63,8 @@ func (r *aiScopeUpsertReq) apply(dst *AIScope) error {
 	dst.GroupScopeMode = r.GroupScopeMode
 	dst.PreSampleRateBps = r.PreSampleRateBps
 	dst.AsyncSampleRateBps = r.AsyncSampleRateBps
+	dst.Prompt = r.Prompt
+	dst.CategoryId = r.CategoryId
 	dst.Remark = r.Remark
 	return validateAIScope(dst)
 }
@@ -90,6 +101,13 @@ func adminListAIScopes(c *gin.Context) {
 			active = append(active, gin.H{
 				"id": s.Id, "name": s.Name,
 				"pre_sample_rate_bps": s.PreBps, "async_sample_rate_bps": s.AsyncBps,
+				// 提示词与类型绑定也要出现在"真正生效的那一份"里:它们同样是
+				// 存下来之后要等一次重载才进快照的东西,而两者不一致时的表现
+				// (还在用上一版提示词问、还记到上一个类型上)完全无声。
+				// 提示词原文不下发,只给档位 —— 它已经在表单里了,重复一份
+				// 只会多一条把 4000 字塞进列表响应的路径。
+				"prompt_source": aiScopePromptSource(s.Prompt),
+				"category_id":   s.CategoryId,
 			})
 		}
 	}
@@ -142,6 +160,23 @@ func adminUpsertAIScope(c *gin.Context) {
 		writeAIScopeAudit(c, aiScopeAction(req.Id), qymodel.ResultFail, before, &row, err)
 		badRequest(c, err.Error())
 		return
+	}
+	// 「命中一律记为」必须指向一个**活着的**类型。
+	//
+	// 这道闸在写入侧,而不是等运行期发现:一个指向已归档类型的 id 在界面上
+	// 与正常配置长得一模一样(界面只显示"未知类型"或干脆空着),而线上的表现
+	// 是这一档的类型绑定**静默失效** —— 命中照落、计数落到规则自己那一档,
+	// 没有任何 4xx、没有任何界面提示,只有服务端日志里一条告警。
+	// 软删作用域已经把归档行排除在外,所以这一次 Take 同时挡住"不存在"与"已归档"。
+	if row.CategoryId > 0 {
+		var cat Category
+		if err := gdb.Where("id = ?", row.CategoryId).Take(&cat).Error; err != nil {
+			err = fmt.Errorf("「命中一律记为」指向的违规类型(id=%d)不存在或已归档 —— "+
+				"请在违规类型页确认它还在,或把这一档改回「不指定」", row.CategoryId)
+			writeAIScopeAudit(c, aiScopeAction(req.Id), qymodel.ResultFail, before, &row, err)
+			badRequest(c, err.Error())
+			return
+		}
 	}
 	// 条数上限挡的是热路径:sampleRatesFor 是每个请求都要跑的线性扫描。
 	// 只数**启用中**的行,停用的档不参与匹配,留着它们没有代价。
@@ -264,6 +299,14 @@ func aiScopeAuditSnap(s *AIScope) map[string]any {
 		"group_scope_mode":      s.GroupScopeMode,
 		"pre_sample_rate_bps":   s.PreSampleRateBps,
 		"async_sample_rate_bps": s.AsyncSampleRateBps,
-		"remark":                s.Remark,
+		// 提示词进审计的是**指纹 + 档位**,不是原文:audit 的 SnapshotMaxBytes
+		// 会把 4000 字的一段截掉、连带把后面的字段一起吃掉(本仓踩过的形状)。
+		// 而只记长度是不够的 —— 把"绝不执行"改成"必须执行"字数一样,
+		// 那恰好是把这一档的审核关掉的改法。见 aiPromptFingerprint。
+		"prompt_source":      aiScopePromptSource(s.Prompt),
+		"prompt_fingerprint": aiPromptFingerprint(s.Prompt),
+		// 类型绑定改了谁的计数往哪一类走,而计数是封号判据。必须留痕。
+		"category_id": s.CategoryId,
+		"remark":      s.Remark,
 	}
 }

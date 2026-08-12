@@ -36,7 +36,7 @@ func goodRule(enabled bool) *Rule {
 		Name: "关键词规则", Enabled: enabled, Mode: ModeShadow,
 		Phase: PhasePrompt, MatchType: MatchKeyword, Pattern: "越狱\n破限",
 		Action: ActionRecord, FeeMode: FeeNone, GroupScopeMode: GroupScopeInclude,
-		Priority: 100, CountWeight: 1, Severity: 1,
+		Priority: 100, CountWeight: 1,
 		CreatedAt: 1000, UpdatedAt: 1000, CreatedBy: 7, UpdatedBy: 7,
 	}
 }

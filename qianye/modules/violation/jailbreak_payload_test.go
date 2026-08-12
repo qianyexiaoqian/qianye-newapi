@@ -162,7 +162,7 @@ var jailbreakProbes = []jailbreakProbe{
 //
 // 断言的是**具体哪条规则**而不只是"命中了",因为 scan 只返回优先级最高的一条:
 // 只断言非空的话,一条新规则把旧规则的命中抢走也照样绿,而那意味着记录里的
-// 规则名、public_reason、severity 全变了,运营看到的东西与预期完全不同。
+// 规则名、public_reason、违规类型归属全变了,运营看到的东西与预期完全不同。
 func TestJailbreakPayloadDetection(t *testing.T) {
 	useTestConfig(t, "  enabled: true\n")
 	useGenerousScanBudget(t)

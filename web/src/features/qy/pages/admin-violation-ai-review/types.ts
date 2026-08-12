@@ -177,10 +177,36 @@ export type QyAiScope = {
   /** 万分比:5000 = 50%。 */
   pre_sample_rate_bps: number
   async_sample_rate_bps: number
+  /**
+   * **这一档自己的**审核提示词。空 = 用设置卡片上那一份全局提示词
+   * (全局也空则用内置默认)。
+   *
+   * 它只覆盖「判定说明」那一段:违规类型清单永远由后端从违规类型表现算并拼进去,
+   * **不要在这里手抄一份清单** —— 抄了之后运营在类型页新建一个类型,
+   * 这一档会静默地永远返回旧类型。要指定清单出现的位置,用
+   * {@link QY_AI_CATEGORY_PLACEHOLDER} 占位符。
+   */
+  prompt: string
+  /**
+   * 这一档的命中**一律**记为哪个违规类型。0 = 不指定(按规则自己绑的类型记)。
+   *
+   * 优先级:它覆盖规则绑定的类型;而模型返回的 category 永不直接决定记录类型
+   * (它继续只做规则的类型白名单判据,原值留在审核明细上)。
+   */
+  category_id: number
   remark: string
   created_at: number
   updated_at: number
 }
+
+/**
+ * 这一档的提示词属于哪一档。
+ *
+ * 与全局那一格的 `QyAiPromptSource` **不是同一个枚举**:那边的 `default` 指
+ * 「用内置默认并跟随它升级」,这边的 `inherit` 指「用全局那一份」,
+ * 而全局那一份完全可能是本站自定义的。混用会让界面把「继承」显示成「默认」。
+ */
+export type QyAiScopePromptSource = 'inherit' | 'custom'
 
 /** 新建/编辑入参。`id` 为 0 或省略表示新建。 */
 export type QyAiScopeInput = Omit<
@@ -206,6 +232,15 @@ export type QyAiScopeSummaryRow = {
   pre_sample_rate_bps: number
   async_sample_rate_bps: number
   /**
+   * 这一档用的是继承来的提示词还是自己写的一份。兜底档恒为 `inherit`。
+   *
+   * 摆在汇总表上而不是只在编辑表单里:一份写坏的作用域提示词与一份正常的
+   * 在列表上长得完全一样,而它的后果是这一档的判定口径整体偏掉。
+   */
+  prompt_source: QyAiScopePromptSource
+  /** 这一档指定的「命中一律记为」类型 id,0 = 不指定。类型名去违规类型清单里 join。 */
+  category_id: number
+  /**
    * 这一行永远匹配不到:它前面有一条作用域为空(= 匹配一切)的启用策略。
    * 一条被遮住的策略与一条配错作用域的策略在列表上长得一模一样,
    * 而两者的下一步完全不同(调优先级 vs 改作用域)。
@@ -227,6 +262,9 @@ export type QyAiScopeList = {
     name: string
     pre_sample_rate_bps: number
     async_sample_rate_bps: number
+    /** 提示词原文不下发,只给档位 —— 它已经在表单里了。 */
+    prompt_source: QyAiScopePromptSource
+    category_id: number
   }[]
 }
 

@@ -420,6 +420,9 @@ func newRecord(rc recordCtx, phase string, in scanInput, v *verdict, shadow bool
 	// 类型在**命中当时**解析并冻结:规则可以被改绑、类型可以被归档,而历史记录是证据,
 	// 它必须能独立回答"这一条当时算哪一类"。categoryForRule 保证这里永不产生孤儿。
 	cat := categoryForRule(Snapshot(), v.Rule.R.CategoryId)
+	if v.CategoryOverride > 0 {
+		cat = resolveCategoryOverride(v.CategoryOverride, cat)
+	}
 	// 影子记录不参与类型计数,与 counter_after 同口径取哨兵值。
 	catCounterAfter := 0
 	if shadow {

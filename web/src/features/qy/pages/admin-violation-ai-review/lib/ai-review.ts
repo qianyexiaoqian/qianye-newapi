@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { qyAppendGroupName } from '../../../lib/group-options'
 import type {
   QyAiChannel,
   QyAiChannelInput,
@@ -236,6 +237,17 @@ export type QyAiScopeDraft = {
   group_scope_mode: 'include' | 'exclude'
   prePercent: string
   asyncPercent: string
+  /**
+   * 这一档自己的审核提示词。空 = 继承全局那一份。
+   *
+   * **刻意不像全局那一格那样预填**:全局那一格预填是为了让人能在内置默认的
+   * 基础上改,而这一格空着本身就是一个有意义、而且是默认的取值(继承)。
+   * 预填的后果是每建一档就顺手固化一份副本,从此与全局脱钩 —— 运营改了全局
+   * 提示词,这些档一个都不会跟着变,而界面上它们看起来只是"填过内容"。
+   */
+  prompt: string
+  /** 命中一律记为哪个违规类型。0 = 不指定(按规则自己绑的记)。 */
+  category_id: number
   remark: string
 }
 
@@ -252,6 +264,8 @@ export function qyAiScopeToDraft(s?: QyAiScope): QyAiScopeDraft {
     group_scope_mode: s?.group_scope_mode ?? 'include',
     prePercent: qyAiBpsToPercentText(s?.pre_sample_rate_bps ?? 0),
     asyncPercent: qyAiBpsToPercentText(s?.async_sample_rate_bps ?? 0),
+    prompt: s?.prompt ?? '',
+    category_id: s?.category_id ?? 0,
     remark: s?.remark ?? '',
   }
 }
@@ -270,8 +284,43 @@ export function qyAiScopeDraftToInput(draft: QyAiScopeDraft): QyAiScopeInput {
     // 而且是把用户内容发往第三方的那种。
     pre_sample_rate_bps: qyAiPercentTextToBps(draft.prePercent),
     async_sample_rate_bps: qyAiPercentTextToBps(draft.asyncPercent),
+    // 只有空白的提示词折成空串(= 继承)。后端 validateAIScope 也会折一次
+    // (它才是权威,别的客户端绕不过去);这里折是为了让界面上的
+    // 「继承 / 已自定义」标记在保存前就与真正入库的东西一致。
+    prompt: draft.prompt.trim() === '' ? '' : draft.prompt,
+    category_id: draft.category_id > 0 ? draft.category_id : 0,
     remark: draft.remark.trim(),
   }
+}
+
+/**
+ * 这一档的提示词属于哪一档。与后端 `aiScopePromptSource` 同口径。
+ *
+ * 不复用全局那一格的 {@link qyAiPromptIsDefault}:那一个把"逐字等于内置默认"
+ * 也算成默认档,而在作用域这一格里,一段逐字等于内置默认的文本是**自定义**——
+ * 它与"继承全局"在语义上完全不同(全局那一份可能是本站改过的)。
+ */
+export function qyAiScopePromptSource(prompt: string): 'inherit' | 'custom' {
+  return prompt.trim() === '' ? 'inherit' : 'custom'
+}
+
+/**
+ * 「这一档实际会发出去的基底提示词」预览用的文本。三档回落,与后端
+ * `aiRuntime.promptFor` + `renderAIPrompt` 的前两步逐条同形:
+ * 作用域自己的 → 全局 → 内置默认。
+ *
+ * 类型清单不在这里拼:调用方拿它去喂 {@link qyAiRenderPrompt},
+ * 那才是真正发出去的全文。分两步是因为"用了哪一档的基底"与"清单拼对了没有"
+ * 是两个独立的问题,合成一个函数时任何一边坏了都指向同一处。
+ */
+export function qyAiScopeEffectivePrompt(
+  scopePrompt: string,
+  globalPrompt: string,
+  defaultPrompt: string
+): string {
+  if (scopePrompt.trim() !== '') return scopePrompt
+  if (globalPrompt.trim() !== '') return globalPrompt
+  return defaultPrompt
 }
 
 /** 一行汇总在界面上的定性,决定它用哪种底色与哪句说明。 */
@@ -335,10 +384,29 @@ export function qyAiScopeAudience(row: QyAiScopeSummaryRow): {
  * `vip,svip` 的分组名,于是这条策略永远匹配不到,而界面上它看起来完全正常。
  */
 export function qyAiSplitScopeList(raw: string): string[] {
-  return raw
-    .split(/[,\n\r]/)
-    .map((s) => s.trim())
-    .filter((s) => s !== '')
+  return raw.split(QY_AI_SCOPE_SEPARATOR).map((s) => s.trim()).filter((s) => s !== '')
+}
+
+/**
+ * 分组作用域这一格的分隔符。**必须与后端 `splitList` 逐字符一致**:
+ * 只有半角逗号与换行。
+ *
+ * 刻意不复用共享层的 `QY_GROUP_LIST_SEPARATOR`(它多认一个分号):
+ * 划转那一侧的后端 `parseGroupList` 认分号,违规这一侧的 `splitList` 不认 ——
+ * 在这里多认一个分隔符会造出最坏的那种偏差,界面上显示成两个分组、
+ * 后端只认出一个长得像 `vip;svip` 的分组名,于是这条策略永远匹配不到,
+ * 而界面上它看起来完全正常。
+ */
+export const QY_AI_SCOPE_SEPARATOR = /[,\n\r]/
+
+/**
+ * 从分组下拉里选中一项时把它追加进作用域名单,已经在里面就原样返回。
+ *
+ * 复用共享层的 {@link qyAppendGroupName}(归一后比对,避免 `VIP` 与 `vip`
+ * 各占一行),只把分隔符换成违规这一侧的那一个。
+ */
+export function qyAiAppendScopeGroup(raw: string, entry: string): string {
+  return qyAppendGroupName(raw, entry, QY_AI_SCOPE_SEPARATOR)
 }
 
 /**

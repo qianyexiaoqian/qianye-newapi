@@ -64,10 +64,14 @@ type ruleUpsertReq struct {
 	// JSON number 在前端是 float64,0.8 往返一次会变成 0.8000000000000001,
 	// 而它是一道决定这次命中算不算数的闸。
 	AIMinConfidence string `json:"ai_min_confidence"`
-	CountWeight     int    `json:"count_weight"`
-	Severity        int    `json:"severity"`
-	ArchiveContext  bool   `json:"archive_context"`
-	BlockMessage    string `json:"block_message"`
+	// CountWeight 是"这一次命中给计数加几"(账号总量线与所绑类型线同一个数)。
+	// 0 = 只按 Action / FeeMode 处置,一条线都不推进。见 Rule.CountWeight。
+	//
+	// 这里曾经还有一个 severity。它没有任何读点,已随表单一并移除;
+	// 旧前端继续发这个字段是无害的(JSON 解码忽略未知键),数据库列也还在。
+	CountWeight    int    `json:"count_weight"`
+	ArchiveContext bool   `json:"archive_context"`
+	BlockMessage   string `json:"block_message"`
 }
 
 func (r *ruleUpsertReq) apply(dst *Rule) error {
@@ -127,7 +131,6 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 	dst.FeeMaxQuota = r.FeeMaxQuota
 	dst.AIMinConfidence = conf
 	dst.CountWeight = r.CountWeight
-	dst.Severity = r.Severity
 	dst.ArchiveContext = r.ArchiveContext
 	dst.BlockMessage = r.BlockMessage
 	return ValidateRule(dst)

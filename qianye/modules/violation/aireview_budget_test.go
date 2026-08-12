@@ -49,7 +49,7 @@ func TestPreReviewBudgetCoversTheWholeCallNotEachChannel(t *testing.T) {
 			Prompt: defaultAIPrompt, MaxInputChars: defaultAIMaxInputChars, totalWeight: 2,
 		}
 		started := time.Now()
-		out := runAIReview(context.Background(), rt, "待审内容", budgetMs)
+		out := runAIReview(context.Background(), rt, nil, "待审内容", budgetMs)
 		elapsed := time.Since(started)
 
 		require.NotNil(t, out)
@@ -67,7 +67,7 @@ func TestPreReviewBudgetCoversTheWholeCallNotEachChannel(t *testing.T) {
 			totalWeight:   1,
 		}
 		started := time.Now()
-		out := runAIReview(context.Background(), rt, "待审内容", budgetMs)
+		out := runAIReview(context.Background(), rt, nil, "待审内容", budgetMs)
 		elapsed := time.Since(started)
 
 		require.NotNil(t, out)
@@ -83,7 +83,7 @@ func TestPreReviewBudgetCoversTheWholeCallNotEachChannel(t *testing.T) {
 			},
 			Prompt: defaultAIPrompt, MaxInputChars: defaultAIMaxInputChars, totalWeight: 2,
 		}
-		out := runAIReview(context.Background(), rt, "待审内容", budgetMs)
+		out := runAIReview(context.Background(), rt, nil, "待审内容", budgetMs)
 		require.NotNil(t, out)
 		assert.Equal(t, OutcomeTimeout, out.Outcome,
 			"超时必须单独成一态:与 upstream_error 合并会让运维分不清该调预算还是查网络")

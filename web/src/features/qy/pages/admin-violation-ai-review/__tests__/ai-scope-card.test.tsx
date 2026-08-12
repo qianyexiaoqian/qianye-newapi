@@ -148,6 +148,8 @@ const scopes: QyAiScopeList = {
       group_scope_mode: 'include',
       pre_sample_rate_bps: 0,
       async_sample_rate_bps: 5000,
+      prompt_source: 'custom',
+      category_id: 12,
       shadowed: false,
     },
     {
@@ -161,6 +163,8 @@ const scopes: QyAiScopeList = {
       group_scope_mode: 'include',
       pre_sample_rate_bps: 0,
       async_sample_rate_bps: 0,
+      prompt_source: 'inherit',
+      category_id: 0,
       shadowed: false,
     },
   ],
@@ -291,6 +295,42 @@ describe('AI 审核作用域卡', () => {
       (rows[1]?.textContent ?? '').includes(dict.qy_ai_scope_fallback_name),
       `末行不是兜底档：${rows[1]?.textContent}`
     )
+  })
+
+  /*
+   * 「问什么」与「记成哪一类」也必须出现在汇总表上。
+   *
+   * 两者与抽样率一样，没有任何用户可见的症状：一份写坏的作用域提示词、一档
+   * 绑错了的违规类型，在列表上与正常的长得完全一样，而前者让这一档的判定口径
+   * 整体偏掉、后者让类型计次（封号判据的一条线）落到别处。
+   *
+   * 类型名这里刻意断言成 `#12`：本测试没有网络，违规类型清单必然拉不到，
+   * 而那时**绝不能**显示成空白 —— 空白读起来是"这一档没指定"，
+   * 与"指定了但名字没查到"是两种完全不同的处置。
+   */
+  test('汇总表摆出了提示词档位与「记为类型」，类型清单拉不到时退回显示 id', async () => {
+    const container = await mountPage(scopes)
+    const table = scopeTable(container)
+    assert.ok(table, '页面上找不到作用域汇总表')
+    const heads = [...table.querySelectorAll('thead th')].map((n) =>
+      (n.textContent ?? '').trim()
+    )
+    assert.ok(heads.includes(dict.qy_ai_scope_col_prompt), '缺「提示词」列')
+    assert.ok(heads.includes(dict.qy_ai_scope_col_category), '缺「记为类型」列')
+
+    const first = (table.querySelectorAll('tbody tr')[0]?.textContent ??
+      '') as string
+    assert.ok(
+      first.includes(dict.qy_ai_scope_prompt_custom),
+      `这一档写了自己的提示词，却没标出来：${first}`
+    )
+    assert.ok(first.includes('#12'), `类型名查不到时必须退回显示 id：${first}`)
+
+    // 兜底档没有策略行，只可能继承全局，且永远不指定类型。
+    const last = (table.querySelectorAll('tbody tr')[1]?.textContent ??
+      '') as string
+    assert.ok(last.includes(dict.qy_ai_scope_prompt_inherit))
+    assert.ok(last.includes(dict.qy_ai_scope_category_none))
   })
 
   test('一档都没在监控时，说的是"没有分组在被监控"而不是留白', async () => {

@@ -58,10 +58,13 @@ func aiPreReview(c *gin.Context, info *relaycommon.RelayInfo, snap *snapshot, in
 	// 作用域内)会让界面上那个"10%"变成"作用域内的 10% 乘以一个谁也说不出来
 	// 的数",而抽样率是本功能唯一的成本闸门,它必须是字面意思。
 	//
-	// sampleRatesFor 是纯内存比较:没有分配、没有加锁、没有随机数。作用域外的
+	// scopeFor 是纯内存比较:没有分配、没有加锁、没有随机数。作用域外的
 	// 请求在这里就返回 0/0,一次 crypto/rand 都不摇 —— aiSampleRolls 计数器
 	// 钉住了这一点(见 TestAIScopeSamplingZeroCost)。
-	preBps, asyncBps := snap.ai.sampleRatesFor(in.Model, in.Group)
+	//
+	// sc 一路带到审核调用与命中处置:这一档用哪份提示词、命中记成哪一类,
+	// 与抽样率来自**同一次**匹配。分两次查会让它们在快照刷新时来自不同版本。
+	sc, preBps, asyncBps := snap.ai.scopeFor(in.Model, in.Group)
 	// 两个时机各自还要有规则在等着。只配了转发后规则的站点不该为转发前那条
 	// 同步路径付任何代价 —— 那条路径的代价是给用户加一次外部调用的延迟。
 	if !snap.hasAIPrompt {
@@ -97,14 +100,14 @@ func aiPreReview(c *gin.Context, info *relaycommon.RelayInfo, snap *snapshot, in
 		if c.Request != nil {
 			ctx = c.Request.Context()
 		}
-		out = runAIReview(ctx, snap.ai, text, snap.ai.PreTimeoutMs)
+		out = runAIReview(ctx, snap.ai, sc, text, snap.ai.PreTimeoutMs)
 	}
 
 	if doAsync {
 		// 转发后审核。同步侧已经拿到结论时直接复用,不发第二次调用 ——
 		// 否则同时被两个时机抽中的请求会付两份钱,而两次调用问的是同一段
 		// 文本、用的是同一份提示词,第二次的答案不会带来任何新信息。
-		dispatchAIAsync(snap, rc, in, text, files, out)
+		dispatchAIAsync(snap, sc, rc, in, text, files, out)
 	}
 
 	if out == nil {
@@ -113,7 +116,7 @@ func aiPreReview(c *gin.Context, info *relaycommon.RelayInfo, snap *snapshot, in
 		return nil
 	}
 
-	v := matchAIVerdict(snap.promptRules, in, out)
+	v := matchAIVerdict(snap.promptRules, in, out, sc)
 	if v == nil || v.Rule == nil {
 		noteScan(false)
 		// 没命中也要落审核明细:抽样跑了、钱花了,而这是唯一的痕迹。
@@ -160,7 +163,15 @@ func violationBlockError(cr *compiledRule) error {
 // 与本地 scan 共用 applies(作用域闸)与 matchAIRule(判据),顺序也一样是
 // 按优先级取第一条 —— 管理端试跑与线上判据必须逐字节相同,而"作用域"这一半
 // 最容易在第二份实现里被漏掉。
-func matchAIVerdict(rules []*compiledRule, in scanInput, out *aiOutcome) *verdict {
+//
+// # 作用域指定的类型只影响"记成哪一类",绝不影响"命中不命中"
+//
+// sc.CategoryId 落在 verdict.CategoryOverride 上,由 newRecord 消费。它**不**
+// 参与 matchAIRule 的类型白名单判定:那张白名单问的是"模型说了什么",而覆盖
+// 问的是"我们怎么归档"。混在一起的后果是一条作用域指定了类型 X 之后,
+// 全站所有白名单为 X 的规则会突然命中这一档里的**每一次**违规判定 ——
+// 一次静默的、成数量级的判据放宽,而界面上什么都没变。
+func matchAIVerdict(rules []*compiledRule, in scanInput, out *aiOutcome, sc *aiScopeRT) *verdict {
 	if out == nil || !out.decided() {
 		return nil
 	}
@@ -172,7 +183,10 @@ func matchAIVerdict(rules []*compiledRule, in scanInput, out *aiOutcome) *verdic
 		if len(terms) == 0 {
 			continue
 		}
-		return &verdict{Rule: cr, Terms: terms, Snippet: out.Reason}
+		return &verdict{
+			Rule: cr, Terms: terms, Snippet: out.Reason,
+			CategoryOverride: scopeCategoryId(sc),
+		}
 	}
 	return nil
 }
@@ -183,7 +197,7 @@ func matchAIVerdict(rules []*compiledRule, in scanInput, out *aiOutcome) *verdic
 //
 // primed 非 nil 时是同步侧已经拿到的结论,直接复用;为 nil 时在 worker 里
 // 自己发一次调用(只配了转发后审核的站点走这条)。
-func dispatchAIAsync(snap *snapshot, rc recordCtx, in scanInput, text string, files []*types.FileMeta, primed *aiOutcome) {
+func dispatchAIAsync(snap *snapshot, sc *aiScopeRT, rc recordCtx, in scanInput, text string, files []*types.FileMeta, primed *aiOutcome) {
 	rt, rules := snap.ai, snap.asyncRules
 	guard.HotAsync("violation.ai_review_async", func(ctx context.Context) error {
 		gdb := db.Get()
@@ -193,7 +207,11 @@ func dispatchAIAsync(snap *snapshot, rc recordCtx, in scanInput, text string, fi
 		// 句柄必须在这里就接上 ctx:worker 的预算(hot_async_timeout_ms)只对
 		// WithContext 过的语句生效,漏接会让一条慢查询一直等到驱动层 readTimeout,
 		// 期间它占着仅有的 2 个 hot worker 之一,把整条队列堵死。
-		return runAIAsyncReview(ctx, gdb.WithContext(ctx), rt, rules, rc, in, text, files, primed)
+		//
+		// sc 与 rt 一样是快照里的只读指针:快照整体不可变、每次刷新整份替换,
+		// 所以异步 worker 几百毫秒后读到的仍然是**当时**那一档的配置 ——
+		// 这正确,审核问的就是那一刻的口径。
+		return runAIAsyncReview(ctx, gdb.WithContext(ctx), rt, sc, rules, rc, in, text, files, primed)
 	})
 }
 
@@ -203,13 +221,13 @@ func dispatchAIAsync(snap *snapshot, rc recordCtx, in scanInput, text string, fi
 // **只能在这里被直接测到**:异步命中要落记录并推进计数、而且恒不扣费恒不阻断。
 // 它上面那层是 guard.HotAsync —— 测试环境里扩展不可用,队列作业根本不会执行,
 // 断言会永远为真(与 persistRecord 从 persist 里提出来是同一条理由)。
-func runAIAsyncReview(ctx context.Context, gdb *gorm.DB, rt *aiRuntime, rules []*compiledRule,
+func runAIAsyncReview(ctx context.Context, gdb *gorm.DB, rt *aiRuntime, sc *aiScopeRT, rules []*compiledRule,
 	rc recordCtx, in scanInput, text string, files []*types.FileMeta, primed *aiOutcome) error {
 	out := primed
 	if out == nil {
-		out = runAIReview(ctx, rt, text, rt.AsyncTimeoutMs)
+		out = runAIReview(ctx, rt, sc, text, rt.AsyncTimeoutMs)
 	}
-	v := matchAIVerdict(rules, in, out)
+	v := matchAIVerdict(rules, in, out, sc)
 	if v == nil || v.Rule == nil {
 		return persistAIReviewCtx(ctx, gdb, newAIReviewRow(rc, PhasePostAsync, out, 0, 0))
 	}

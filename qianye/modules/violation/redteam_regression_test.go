@@ -303,7 +303,7 @@ var redTeamProbes = []redTeamProbe{
 //
 // 与 TestJailbreakPayloadDetection 同一套断言语义:命中的断言**具体哪条规则**背锅
 // (只断言非空的话,一条新规则抢走旧规则的命中也照样绿,而那意味着记录里的规则名、
-// public_reason、severity 全变了);不覆盖的断言必须继续不命中。
+// public_reason、违规类型归属全变了);不覆盖的断言必须继续不命中。
 func TestRedTeamBypassRegression(t *testing.T) {
 	useTestConfig(t, "  enabled: true\n")
 	useGenerousScanBudget(t)

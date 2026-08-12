@@ -166,8 +166,9 @@ export const qyViolationRuleSchema = z
     fee_multiple: decimalString,
     fee_max_quota: z.number().int().min(0),
     ai_min_confidence: decimalString,
+    // 命中一次给计数加几。0 合法（只按处置动作办、一条线都不推进），负数不合法
+    // ——后端 ValidateRule 同判据（rules.go 的「count_weight 不得为负数」）。
     count_weight: z.number().int().min(0),
-    severity: z.number().int().min(0).max(10),
     archive_context: z.boolean(),
     block_message: z.string().max(512),
   })
@@ -309,7 +310,6 @@ export function qyEmptyViolationRule(): QyViolationRuleFormValues {
     fee_max_quota: 0,
     ai_min_confidence: '0',
     count_weight: 1,
-    severity: 1,
     archive_context: false,
     block_message: '',
   }
@@ -353,7 +353,6 @@ export function qyViolationRuleToForm(
     ai_min_confidence: rule.ai_min_confidence ?? '0',
     fee_max_quota: rule.fee_max_quota,
     count_weight: rule.count_weight,
-    severity: rule.severity,
     archive_context: rule.archive_context,
     block_message: rule.block_message,
   }

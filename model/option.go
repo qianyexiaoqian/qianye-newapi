@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -229,6 +230,24 @@ func validateOptionValue(key string, value string) error {
 		// 一条 case 都没有,于是一份 `{"vip":-5}` 可以经通用 option 端点直接落库,
 		// 随后那一档人每充 100 元得到一张 -500 的负价订单(见 CheckTopupGroupRatio)。
 		return common.CheckTopupGroupRatio(value)
+	case "ModelRatio", "CompletionRatio", "ModelPrice", "CacheRatio",
+		"CreateCacheRatio", "ImageRatio", "AudioRatio", "AudioCompletionRatio":
+		// 定价 JSON 表。这一组此前一条 case 都没有,而它们全都是**会装载失败**的键:
+		// updateOptionMap 把它们交给 LoadFromJsonString,解析不了就返回错误,
+		// 于是内存里的那张表停在旧值、库里已经是坏值,重启后装载再失败一次 ——
+		// 库与内存永久分家,而界面读的是库,会显示成「已经改好了」。
+		//
+		// 这不是假想:本仓演示库里 AudioCompletionRatio 的值就是字符串 `<nil>`
+		// (另有 StripePriceId / TelegramBotToken 两个同样的值,但那两个键不解析
+		// JSON,所以只是脏数据、不产生分家),SyncOptions 每 60 秒把
+		// 「failed to update option map: invalid character '<'」打进一次日志,
+		// 而音频补全倍率从此再也装载不进来。它是经某条绕过 controller 的路径落库的
+		// —— controller/option.go 对这几个键里的一部分做了校验,但那道校验挡不住
+		// 扩展模块的批量写、ratio_sync 的远端推送,以及直接改库。
+		//
+		// 这里只断言「它能被装载」,刻意不追加非负之类的业务约束:那会改变既有站点
+		// 已经存下的取值的合法性,是另一次需要拍板的收紧,不该混在一次修复里。
+		return validatePricingJSONTable(key, value)
 	case billing_setting.BillingExprOptionKey:
 		// 阶梯表达式是全站唯一能把「扣费」算成负数的计费载体(`p * 3 - 20000`
 		// 这种"前 2 万 token 免费"的促销形状很自然,而 param(...) 还直接取自
@@ -236,6 +255,19 @@ func validateOptionValue(key string, value string) error {
 		// 函数此前一个调用者都没有:坏表达式可以直接落库、重启不自愈,而
 		// controller/ratio_sync.go 还会把远端站点推来的表达式原样写进这个键。
 		return billing_setting.ValidateBillingExprJSON(value)
+	}
+	return nil
+}
+
+// validatePricingJSONTable 断言一张定价表真的能被 updateOptionMap 装载进内存。
+//
+// 判据必须与装载端**逐字节同源**:装载走 common.Unmarshal 到 map[string]float64,
+// 这里就解到同一个形状。松一点(例如只判 json.Valid)会放行 `[]` 与
+// `{"gpt-4o":"2"}` 这种合法 JSON 但装载不了的值,那道闸就等于没有。
+func validatePricingJSONTable(key string, value string) error {
+	var parsed map[string]float64
+	if err := common.Unmarshal([]byte(value), &parsed); err != nil {
+		return fmt.Errorf("%s 不是合法的定价表(必须是 {\"模型名\": 数字} 形状的 JSON): %w", key, err)
 	}
 	return nil
 }

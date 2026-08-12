@@ -738,6 +738,14 @@ type verdict struct {
 	Snippet string
 	Elapsed time.Duration
 	Timeout bool
+	// CategoryOverride 非 0 时**覆盖规则自己绑的违规类型**,由 newRecord 消费。
+	//
+	// 目前唯一的来源是 AI 审核作用域策略上的「这一档的命中一律记为」。
+	// 本地扫描永远留 0:那条路上没有第二个类型来源,而多一个恒为 0 的字段
+	// 比多一条"只有 AI 才走"的分支容易读得多。
+	//
+	// 它是**记录归档**的覆盖,不是判据的覆盖:命中与否仍然完全由规则决定。
+	CategoryOverride int64
 }
 
 // scanPrompt 执行 prompt 阶段匹配。

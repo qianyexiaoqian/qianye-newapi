@@ -82,6 +82,43 @@ type AIScope struct {
 	PreSampleRateBps   int `json:"pre_sample_rate_bps" gorm:"not null;default:0"`
 	AsyncSampleRateBps int `json:"async_sample_rate_bps" gorm:"not null;default:0"`
 
+	// Prompt 是**这一档自己的**审核提示词。空 = 用 AISetting.Prompt(它再空则用
+	// defaultAIPrompt)。项目方的原话是「设置这个分组的AI审核提示词」。
+	//
+	// # 为什么一份全局提示词不够
+	//
+	// 作用域已经能表达"只盯自助注册分组",但送过去问的仍然是同一句话。而运营给
+	// 不同分组开审核的**理由**本来就不同:自助注册分组要看的是批量套模型,
+	// 内部对接分组要看的是有没有人拿它跑越权内容。用一份提示词同时问这两件事,
+	// 只能写成一份把两边都稀释掉的通用文案 —— 那正是"开了审核但判不准"的来源。
+	//
+	// # 它只覆盖"判定说明",类型清单仍然自动生成
+	//
+	// 发出去的那一份由 renderAIPrompt 拼:这一列(或全局那一列)是**基底**,
+	// 违规类型闭集永远由 qy_violation_category 现算并追加/替换占位符。
+	// 所以作用域提示词**不需要、也不应该**手抄一份类型清单 —— 抄了就会在
+	// 运营新建一个类型的第二天开始说谎(见 aireview_vocab.go 顶部)。
+	//
+	// # 与全局那一列的一个刻意差别:这里不做"逐字等于默认 → 存空"的折叠
+	//
+	// 全局那一列折叠是为了让站点跟随 defaultAIPrompt 的后续加固。这一列的空串
+	// 语义是**"用全局那一份"**,而全局那一份可能是本站自定义的 —— 把一段逐字
+	// 等于默认的作用域提示词折成空串,会把它悄悄换成"跟随全局自定义",
+	// 与运营写下它时的意思完全相反。
+	Prompt string `json:"prompt" gorm:"type:text"`
+
+	// CategoryId 是「这一档的命中一律记为哪个违规类型」。0 = 不指定。
+	//
+	// # 优先级:它覆盖规则自己绑的类型,而 AI 回的类型永不直接决定记录类型
+	//
+	// 完整取舍写在 resolveCategoryOverride 上。一句话:它是运营点选过的确定值,
+	// 而模型返回的 category 是一次自由输出 —— 把封号计数挂在后者上,
+	// "这个用户在破限这一类上第几次"就成了一个不可复现的数。
+	//
+	// 0 时行为与这一列存在之前**逐字节相同**(记录类型仍来自规则),
+	// 因此升级上来的站点什么都不用做。
+	CategoryId int64 `json:"category_id" gorm:"not null;default:0"`
+
 	Remark    string `json:"remark" gorm:"type:varchar(512);not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"not null"`
 	UpdatedAt int64  `json:"updated_at" gorm:"not null"`
@@ -105,6 +142,10 @@ type aiScopeRT struct {
 	scopeMatcher
 	PreBps   int
 	AsyncBps int
+	// Prompt 空 = 用 aiRuntime.Prompt。取值见 aiRuntime.promptFor。
+	Prompt string
+	// CategoryId 0 = 不指定,命中仍按规则自己绑的类型记。见 resolveCategoryOverride。
+	CategoryId int64
 }
 
 // aiSampleRolls 是**抽样函数被调用**的累计次数。
@@ -120,25 +161,58 @@ type aiScopeRT struct {
 //     而两者对抽样率含义的破坏是彻底的(10% 会变成"作用域内的某个未知比例")。
 var aiSampleRolls atomic.Int64
 
-// sampleRatesFor 返回本次请求两个时机各自的抽样率(万分比)。
+// scopeFor 解析本次请求落在哪一档:第一条匹配的策略,以及它的两个抽样率。
+//
+// sc 为 nil 表示**兜底档**(没有对应的策略行),此时两个抽样率都是
+// AISetting.SampleRateBps,提示词与类型绑定也都回落到全局那一份 ——
+// 这正是一条策略都没有时的行为,与这张表存在之前完全一致。
 //
 // 纯内存比较:没有分配、没有加锁、没有随机数、没有数据库。它排在抽样之前,
 // 这个顺序是**契约**而不是优化 —— 反过来(先抽样再判作用域)会让界面上那个
 // "10%" 变成"作用域内的 10% 乘以一个谁也说不出来的数",而抽样率是本功能
 // 唯一的成本闸门,它必须是字面意思。
 //
-// 都不匹配时落到 fallback(AISetting.SampleRateBps),这也是一条策略都没有
-// 时的行为 —— 与这张表存在之前完全一致。
-func (rt *aiRuntime) sampleRatesFor(model, group string) (pre, async int) {
+// 返回策略本体而不只是两个数字,是因为"审谁、抽多少、问什么、记成哪一类"
+// 现在是**同一条策略**上的四件事。分两次查(一次拿抽样率、一次拿提示词)会让
+// 两者在并发刷新快照时来自不同版本 —— 那种错位的表现是"这条命中被记到了
+// 另一档指定的类型上",而记录里没有任何字段能指向原因。
+func (rt *aiRuntime) scopeFor(model, group string) (sc *aiScopeRT, pre, async int) {
 	if rt == nil {
-		return 0, 0
+		return nil, 0, 0
 	}
 	for _, s := range rt.Scopes {
 		if s.inScope(model, group) {
-			return s.PreBps, s.AsyncBps
+			return s, s.PreBps, s.AsyncBps
 		}
 	}
-	return rt.SampleRateBps, rt.SampleRateBps
+	return nil, rt.SampleRateBps, rt.SampleRateBps
+}
+
+// promptFor 给出这一次审核真正要用的**基底**提示词(类型清单还没拼进来)。
+//
+// 三档回落,顺序固定:作用域自己的 → 全局 AISetting.Prompt → defaultAIPrompt
+// (最后一档在 renderAIPrompt 里)。空白串按"没写"处理:一个只按了几下空格的
+// 输入框与真正留空在运营心里是同一件事,而在这里分开会让那一档送出去一份
+// 只有空白的判定说明。
+func (rt *aiRuntime) promptFor(sc *aiScopeRT) string {
+	if sc != nil && strings.TrimSpace(sc.Prompt) != "" {
+		return sc.Prompt
+	}
+	if rt == nil {
+		return ""
+	}
+	return rt.Prompt
+}
+
+// scopeCategoryId 是这一档指定的"命中一律记为"类型 id,0 = 不指定。
+// 收在一个函数里是因为 sc 可能为 nil(兜底档),而每个调用点各写一次
+// `if sc != nil` 迟早会漏掉其中一处,漏掉的表现是一次 nil 解引用 panic
+// —— 在 relay 热路径上。
+func scopeCategoryId(sc *aiScopeRT) int64 {
+	if sc == nil {
+		return 0
+	}
+	return sc.CategoryId
 }
 
 // buildAIScopes 把启用中的策略行编译进快照。
@@ -162,6 +236,8 @@ func buildAIScopes(gdb *gorm.DB) ([]*aiScopeRT, error) {
 			scopeMatcher: compileScope(row.ModelScope, row.GroupScope, row.GroupScopeMode),
 			PreBps:       clampInt(row.PreSampleRateBps, 0, 10000),
 			AsyncBps:     clampInt(row.AsyncSampleRateBps, 0, 10000),
+			Prompt:       row.Prompt,
+			CategoryId:   row.CategoryId,
 		})
 	}
 	return out, nil
@@ -224,8 +300,36 @@ func validateAIScope(s *AIScope) error {
 	if s.AsyncSampleRateBps < 0 || s.AsyncSampleRateBps > 10000 {
 		return fmt.Errorf("转发后抽样率必须在 0..10000 之间(万分比,30%% = 3000),当前为 %d", s.AsyncSampleRateBps)
 	}
+	// 只有空白的提示词一律归成空串(= 用全局那一份)。留着它会让这一档发出去
+	// 一份只有空白的判定说明,而界面上"这一档有自己的提示词"那个标记是亮的。
+	if strings.TrimSpace(s.Prompt) == "" {
+		s.Prompt = ""
+	}
+	if n := utf8.RuneCountInString(s.Prompt); n > maxAIPromptRunes {
+		return fmt.Errorf("这一档的审核提示词过长(%d 字,上限 %d 字)—— 它每次调用都要作为 token 付一遍钱",
+			n, maxAIPromptRunes)
+	}
+	// 提示词里禁止手抄类型清单的**占位符之外**的东西这件事不在这里挡(那是自由
+	// 文本,挡不住也不该挡),但负数 id 是纯粹的脏数据:它永远解析不到任何类型,
+	// 而 resolveCategoryOverride 会因此每次命中打一条告警。
+	if s.CategoryId < 0 {
+		return fmt.Errorf("违规类型 id 非法(%d);不指定请留 0", s.CategoryId)
+	}
 	return nil
 }
+
+// aiScopePromptSource 回答"这一档的提示词是继承全局的还是自己写的"。
+// 与全局那一格的 aiPromptSource 分开:两者的空串含义不同(那边空 = 内置默认,
+// 这边空 = 跟随全局),共用一个函数会让界面上把"继承"显示成"默认"。
+func aiScopePromptSource(prompt string) string {
+	if strings.TrimSpace(prompt) == "" {
+		return aiScopePromptInherit
+	}
+	return aiPromptSourceCustom
+}
+
+// aiScopePromptInherit 是"这一档没写自己的提示词,用全局那一份"。
+const aiScopePromptInherit = "inherit"
 
 // aiScopeSummaryRow 是「现在到底哪些分组在被监控、各自多少」这个问题的一行答案。
 //
@@ -243,6 +347,16 @@ type aiScopeSummaryRow struct {
 	GroupScopeMode string `json:"group_scope_mode"`
 	PreBps         int    `json:"pre_sample_rate_bps"`
 	AsyncBps       int    `json:"async_sample_rate_bps"`
+	// PromptSource 是 "inherit"(用全局那一份)或 "custom"(这一档自己写了一份)。
+	//
+	// 摆在汇总表上而不是只在编辑表单里:一份写坏的作用域提示词与一份正常的
+	// 在列表上长得完全一样,而它的后果是这一档的判定口径整体偏掉 ——
+	// 抽样率照跑、花销照付、结论全是 clean。兜底档恒为 inherit。
+	PromptSource string `json:"prompt_source"`
+	// CategoryId 是这一档指定的"命中一律记为"类型,0 = 不指定(按规则自己绑的记)。
+	// 只下发 id,类型名由界面用**已有的**违规类型清单接口去 join ——
+	// 在这里再拼一份名字就是第二份会漂移的事实。
+	CategoryId int64 `json:"category_id"`
 	// Shadowed 为真表示这一行**永远不会被匹配到**:它前面有一条作用域为空
 	// (= 匹配一切)的启用策略把所有请求都收走了。
 	//
@@ -268,7 +382,9 @@ func summarizeAIScopes(rows []AIScope, fallbackBps int) []aiScopeSummaryRow {
 			ModelScope: r.ModelScope, GroupScope: r.GroupScope,
 			GroupScopeMode: r.GroupScopeMode,
 			PreBps:         r.PreSampleRateBps, AsyncBps: r.AsyncSampleRateBps,
-			Shadowed: r.Enabled && covered,
+			PromptSource: aiScopePromptSource(r.Prompt),
+			CategoryId:   r.CategoryId,
+			Shadowed:     r.Enabled && covered,
 		}
 		out = append(out, row)
 		if r.Enabled && strings.TrimSpace(r.ModelScope) == "" && strings.TrimSpace(r.GroupScope) == "" {
@@ -279,6 +395,8 @@ func summarizeAIScopes(rows []AIScope, fallbackBps int) []aiScopeSummaryRow {
 		Name: "未匹配任何策略", Fallback: true, Enabled: true,
 		Priority: 1 << 30, GroupScopeMode: GroupScopeInclude,
 		PreBps: fallbackBps, AsyncBps: fallbackBps,
+		// 兜底档没有策略行,提示词与类型绑定都只能是全局那一份。
+		PromptSource: aiScopePromptInherit,
 		// 兜底档被遮住是**正常且常见**的:配了一条"全站 1%"的策略之后,
 		// 兜底那一格就再也用不到了。标出来是为了让人知道改它没有用。
 		Shadowed: covered,

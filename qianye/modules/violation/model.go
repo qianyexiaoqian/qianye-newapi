@@ -532,9 +532,34 @@ type Rule struct {
 	// 把整条规则切回影子 —— 那等于关掉它。
 	AIMinConfidence decimal.Decimal `json:"ai_min_confidence" gorm:"type:decimal(5,4);not null;default:0"`
 
-	// CountWeight = 0 允许"只扣费不累计封号";Severity 仅用于管理端排序与告警。
+	// CountWeight 是这条规则命中一次给计数**加几**。
+	//
+	// 它落在两条线上,同一个数:账号总量线(bumpCounter)与这条规则所绑违规类型的
+	// 类型线(bumpCategoryCounter)。所以它与类型阈值是**乘数与阈值**的关系,
+	// 不是同一件事的两种写法:N 次命中推进 N × CountWeight,达到该类型的
+	// Threshold 才触发处置。权重 2 配阈值 10,五次命中就到线。
+	//
+	// CountWeight = 0 是一档合法配置:命中照样按 Action / FeeMode 处置
+	// (记录、扣费、拦截都照做),但**一条线都不推进** —— 这条规则永远不会
+	// 把任何人推向封号。用在"这一类只想收钱/只想留证据"的规则上。
+	//
+	// 影子命中不写计数器(persistRecord 直接跳过 bumpCounter),但记录里仍然
+	// 留下这个权重,回答"若真实执行,这一次会给计数加几"。
 	CountWeight int `json:"count_weight" gorm:"not null;default:1"`
-	Severity    int `json:"severity" gorm:"not null;default:1"`
+
+	// 这里曾经还有一个 Severity(1=低 2=中 3=高)。它从头到尾**只写不读**:
+	// 全仓除了 upsert 赋值与内置种子之外没有任何消费者,既不参与判定、
+	// 不参与排序、也不进导出与告警。违规类型体系落地之后,"这一类有多严重"
+	// 已经由类型自己的阈值与窗口表达,再留一个装饰性的 1..3 只会让管理员
+	// 以为改它会改变什么。所以表单、API 字段与内置种子全部移除。
+	//
+	// **数据库列 `severity` 保留**,故意不映射到结构体上:
+	//   - 删列是跨三种数据库的不可逆迁移(SQLite 甚至没有 DROP COLUMN 的
+	//     通用写法),而一个没人读的列的代价是零;
+	//   - 不映射意味着 GORM 的 Save/Create 都不碰它,既有行的历史取值原样保留
+	//     (将来真要给它一个用途时数据还在),新行由列自带的
+	//     `NOT NULL DEFAULT 1` 兜住。
+	// 不要因为"结构体上看不到它"就再加一次 AutoMigrate 或 DROP COLUMN。
 
 	ArchiveContext bool `json:"archive_context" gorm:"not null;default:false"`
 	// BlockMessage 是返回给客户端的文案。严禁把命中词写进来 —— 等于告诉刷子绕过方法。

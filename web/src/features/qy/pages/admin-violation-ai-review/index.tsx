@@ -33,15 +33,30 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { ComboboxInput } from '@/components/ui/combobox-input'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyErrorMessage } from '../../lib/api'
+import {
+  qyGroupOptionLabel,
+  qyGroupOptionsQuery,
+  qyNormalizeGroupName,
+  qyUnknownGroupNames,
+} from '../../lib/group-options'
 import { qyKeys } from '../../lib/query-keys'
+import { qyAdminViolationCategoriesQuery } from '../admin-violation-categories/api'
 import {
   createQyAiChannel,
   deleteQyAiChannel,
@@ -56,6 +71,7 @@ import {
   upsertQyAiScope,
 } from './api'
 import {
+  qyAiAppendScopeGroup,
   qyAiBpsToPercentText,
   qyAiChannelToDraft,
   qyAiDraftToInput,
@@ -68,9 +84,12 @@ import {
   qyAiPromptToPayload,
   qyAiScopeAudience,
   qyAiScopeDraftToInput,
+  qyAiScopeEffectivePrompt,
   qyAiScopeHasFakeSeparator,
+  qyAiScopePromptSource,
   qyAiScopeRowKind,
   qyAiScopeToDraft,
+  qyAiSplitScopeList,
   type QyAiChannelDraft,
   type QyAiScopeDraft,
 } from './lib/ai-review'
@@ -508,6 +527,23 @@ function AiScopeCard() {
     onError: (e) => toast.error(qyErrorMessage(e, t)),
   })
 
+  // 违规类型清单。复用**已有的**违规类型页那个 query，不另开一个端点：
+  // 同一份事实开两个接口，迟早会出现两页各自认为对方是错的那种状态。
+  //
+  // 它与分组清单同性质 —— **只是输入辅助**：拉不到时下面的选择器会退化成
+  // 「只能选不指定」并给出提示，绝不阻止保存已有配置。
+  const categoryQuery = useQuery(qyAdminViolationCategoriesQuery())
+  // 只取这一格用得上的三样。**不**把整行 QyViolationCategory 传下去：
+  // 那一行里有 `remark`（内部备注）与 `ai_guidance`（判定说明），
+  // 两者都不该出现在一个"挑一个类型"的下拉里。
+  const categories = (categoryQuery.data?.items ?? []).map((row) => ({
+    id: row.category.id,
+    name: row.category.name,
+    is_fallback: row.category.is_fallback,
+  }))
+  const categoryName = (id: number) =>
+    categories.find((c) => c.id === id)?.name ?? ''
+
   const data = query.data
   // `summary` 在类型上是必填的，这里仍然按可选读：类型说的是「后端应该给」，
   // 运行期拿到的是「后端这次给了什么」。缺了它直读一层会在渲染中途抛
@@ -551,6 +587,10 @@ function AiScopeCard() {
                     <th className='py-1'>{t('qy_ai_scope_col_audience')}</th>
                     <th className='py-1'>{t('qy_ai_scope_col_pre')}</th>
                     <th className='py-1'>{t('qy_ai_scope_col_async')}</th>
+                    {/* 「问什么」与「记成哪一类」是这一档的另外两半，它们与抽样率
+                        一样没有任何用户可见的症状 —— 只能摆在表上。 */}
+                    <th className='py-1'>{t('qy_ai_scope_col_prompt')}</th>
+                    <th className='py-1'>{t('qy_ai_scope_col_category')}</th>
                     <th className='py-1'>{t('qy_ai_scope_col_state')}</th>
                     <th className='py-1' />
                   </tr>
@@ -560,6 +600,7 @@ function AiScopeCard() {
                     <ScopeRow
                       key={row.fallback ? 'fallback' : row.id}
                       row={row}
+                      categoryName={categoryName(row.category_id)}
                       onEdit={() => {
                         const src = data.items?.find((s) => s.id === row.id)
                         if (src) setEditing(qyAiScopeToDraft(src))
@@ -585,6 +626,8 @@ function AiScopeCard() {
             {editing && (
               <ScopeForm
                 draft={editing}
+                categories={categories}
+                categoriesLoaded={categoryQuery.isSuccess}
                 onChange={setEditing}
                 onCancel={() => setEditing(null)}
                 onSave={() => save.mutate()}
@@ -600,10 +643,13 @@ function AiScopeCard() {
 
 function ScopeRow({
   row,
+  categoryName,
   onEdit,
   onDelete,
 }: {
   row: QyAiScopeSummaryRow
+  /** 违规类型清单里 join 出来的名字。空串 = 没指定，或者清单没拉到。 */
+  categoryName: string
   onEdit: () => void
   onDelete: () => void
 }) {
@@ -646,6 +692,21 @@ function ScopeRow({
         {qyAiBpsToPercentText(row.async_sample_rate_bps)}%
       </td>
       <td className='py-1.5 pe-2'>
+        <Badge
+          variant={row.prompt_source === 'custom' ? 'secondary' : 'outline'}
+          className='font-normal'
+        >
+          {t(`qy_ai_scope_prompt_${row.prompt_source}` as never)}
+        </Badge>
+      </td>
+      <td className='text-muted-foreground py-1.5 pe-2 text-xs'>
+        {row.category_id > 0
+          ? /* 清单没拉到时退回显示 id：显示一个空格会让人以为这一档没指定，
+               而它其实指定了 —— 那是两种完全不同的处置。 */
+            categoryName || `#${row.category_id}`
+          : t('qy_ai_scope_category_none')}
+      </td>
+      <td className='py-1.5 pe-2'>
         <Badge variant={kind === 'active' ? 'default' : 'outline'}>
           {t(`qy_ai_scope_kind_${kind}` as never)}
         </Badge>
@@ -669,12 +730,16 @@ function ScopeRow({
 
 function ScopeForm({
   draft,
+  categories,
+  categoriesLoaded,
   onChange,
   onCancel,
   onSave,
   saving,
 }: {
   draft: QyAiScopeDraft
+  categories: { id: number; name: string; is_fallback: boolean }[]
+  categoriesLoaded: boolean
   onChange: (d: QyAiScopeDraft) => void
   onCancel: () => void
   onSave: () => void
@@ -684,6 +749,43 @@ function ScopeForm({
   const fakeSep =
     qyAiScopeHasFakeSeparator(draft.group_scope) ||
     qyAiScopeHasFakeSeparator(draft.model_scope)
+
+  /**
+   * 分组候选清单。**复用**违规规则页与划转分组规则页共用的那一份
+   * (`features/qy/lib/group-options`，走已有的 `GET /admin/transfer/group-rules`)，
+   * 不新开端点、不另写一份取数：同一份事实开两个来源，迟早会出现两页各自
+   * 认为对方是错的那种状态。
+   *
+   * 它**永远只是输入辅助**：拉不到、过期、名字不在里面，都不阻止保存 ——
+   * 历史分组（倍率表里已删、users 里还有人挂着）恰恰是最需要被监控的那批。
+   */
+  const groupQuery = useQuery(qyGroupOptionsQuery())
+  const groupOptions = groupQuery.data?.options ?? []
+  const groupEntries = qyAiSplitScopeList(draft.group_scope)
+  // 清单为空（拉取失败，或者站点真的一个分组都没定义）时一律不算未定义分组：
+  // 那会把每一个名字都标成黄的，是一片假警报 —— 而假警报比没有警报更糟。
+  const unknownGroups =
+    groupOptions.length === 0
+      ? []
+      : qyUnknownGroupNames(
+          [...new Set(groupEntries.map(qyNormalizeGroupName))],
+          groupOptions
+        )
+  const groupBadges = groupEntries.map((name, index) => ({
+    key: `${name}#${index}`,
+    name,
+    unknown: unknownGroups.includes(qyNormalizeGroupName(name)),
+  }))
+
+  // 全局那一份提示词与内置默认：这一格留空时到底继承的是哪一段文本，
+  // 只有摆出来运营才知道自己"什么都不填"意味着什么。
+  const settingQuery = useQuery(qyAiSettingsQuery())
+  const promptSource = qyAiScopePromptSource(draft.prompt)
+  const effectivePrompt = qyAiScopeEffectivePrompt(
+    draft.prompt,
+    settingQuery.data?.setting.prompt ?? '',
+    settingQuery.data?.default_prompt ?? ''
+  )
 
   return (
     <div className='flex flex-col gap-3 rounded-md border p-3'>
@@ -706,16 +808,96 @@ function ScopeForm({
             }
           />
         </Field>
+        {/* 分组作用域。
+            原来这里是一个裸文本框：打错一个字母，这一档就静默挂在一个不存在的
+            分组上 —— 保存成功、界面正常、线上一个请求都不监控，而且没有任何
+            信号。换成「带元数据的下拉 + 保留自由输入 + 未定义分组软告警」，
+            口径与违规规则页那一格完全一致（共用 features/qy/lib/group-options）。 */}
         <Field
           label={t('qy_ai_scope_f_groups')}
           hint={t('qy_ai_scope_f_groups_hint')}
         >
-          <Input
-            value={draft.group_scope}
-            onChange={(e) =>
-              onChange({ ...draft, group_scope: e.target.value })
-            }
-          />
+          <div className='flex flex-col gap-2'>
+            <ComboboxInput
+              options={groupOptions.map((option) => ({
+                value: option.name,
+                label: qyGroupOptionLabel(
+                  option,
+                  groupQuery.data?.probe_ok === true,
+                  t
+                ),
+              }))}
+              value=''
+              onValueChange={(picked) =>
+                onChange({
+                  ...draft,
+                  group_scope: qyAiAppendScopeGroup(draft.group_scope, picked),
+                })
+              }
+              emptyText='qy_trg_group_picker_empty'
+              placeholder={t('qy_ai_scope_group_pick')}
+            />
+            {/* 下拉解决「站点现在有哪些分组」，文本框解决「站点已经不认的历史
+                分组仍要能配」—— 后者恰恰是最需要被审的那批账号。 */}
+            <Input
+              placeholder='default,vip'
+              value={draft.group_scope}
+              onChange={(e) =>
+                onChange({ ...draft, group_scope: e.target.value })
+              }
+            />
+            {groupBadges.length > 0 && (
+              <div className='flex flex-wrap gap-1'>
+                {groupBadges.map((badge) => (
+                  <Badge
+                    key={badge.key}
+                    variant={badge.unknown ? 'warning' : 'secondary'}
+                    className='font-normal'
+                    title={
+                      badge.unknown
+                        ? t('qy_ai_scope_group_unknown_hint')
+                        : undefined
+                    }
+                  >
+                    {badge.name}
+                    {/* 只靠颜色区分「站点定义过 / 没定义过」，色觉障碍用户拿到
+                        的是一串一模一样的名字。 */}
+                    {badge.unknown && (
+                      <span className='sr-only'>
+                        {' '}
+                        {t('qy_ai_scope_group_unknown_hint')}
+                      </span>
+                    )}
+                  </Badge>
+                ))}
+              </div>
+            )}
+            {/* 三种非正常状态各自说清楚。任何一种都**不**禁用上面的文本框：
+                把人卡在一个拉不到的下拉前面，等于让他配不了作用域。 */}
+            {groupQuery.isPending && (
+              <p className='text-muted-foreground text-xs'>
+                {t('qy_ai_scope_group_loading')}
+              </p>
+            )}
+            {groupQuery.isError && (
+              <p className='text-warning text-xs'>
+                {t('qy_ai_scope_group_failed')}
+              </p>
+            )}
+            {groupQuery.isSuccess && groupOptions.length === 0 && (
+              <p className='text-muted-foreground text-xs'>
+                {t('qy_ai_scope_group_empty')}
+              </p>
+            )}
+            {/* 软告警，不是错误：不禁用提交。 */}
+            {unknownGroups.length > 0 && (
+              <p className='text-warning text-xs'>
+                {t('qy_ai_scope_group_unknown', {
+                  groups: unknownGroups.join('、'),
+                })}
+              </p>
+            )}
+          </div>
         </Field>
         <Field
           label={t('qy_ai_scope_f_mode')}
@@ -767,12 +949,96 @@ function ScopeForm({
             }
           />
         </Field>
+        {/* 「命中一律记为」。
+            它覆盖规则自己绑的类型，而模型返回的 category 永不直接决定记录类型 ——
+            后者逐次调用波动，而类型计数是封号判据的一条线。留「不指定」时行为
+            与这一格出现之前完全一致。 */}
+        <Field
+          label={t('qy_ai_scope_f_category')}
+          hint={t('qy_ai_scope_f_category_hint')}
+        >
+          <Select
+            value={String(draft.category_id)}
+            onValueChange={(v) =>
+              onChange({ ...draft, category_id: Number(v) || 0 })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue placeholder={t('qy_ai_scope_category_none')} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='0'>
+                {t('qy_ai_scope_category_none')}
+              </SelectItem>
+              {categories.map((c) => (
+                <SelectItem key={c.id} value={String(c.id)}>
+                  {c.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {/* 清单拉不到时说出来，而不是显示一个只有「不指定」的下拉：
+              后者看起来像"这个站点没有违规类型"，那是一句谎话。 */}
+          {!categoriesLoaded && (
+            <p className='text-muted-foreground text-xs'>
+              {t('qy_ai_scope_category_loading')}
+            </p>
+          )}
+        </Field>
         <Field label={t('qy_ai_scope_f_remark')}>
           <Input
             value={draft.remark}
             onChange={(e) => onChange({ ...draft, remark: e.target.value })}
           />
         </Field>
+      </div>
+
+      {/* 这一档自己的审核提示词。
+          刻意**不预填**：空着本身就是默认且有意义的取值（继承全局那一份）。
+          预填的后果是每建一档就顺手固化一份副本，从此与全局脱钩 —— 运营改了
+          全局提示词，这些档一个都不会跟着变，而界面上它们只是"填过内容"。 */}
+      <div className='flex flex-col gap-2'>
+        <div className='flex items-center gap-2'>
+          <Label className='text-sm'>{t('qy_ai_scope_f_prompt')}</Label>
+          <Badge
+            variant={promptSource === 'custom' ? 'secondary' : 'outline'}
+            className='font-normal'
+          >
+            {t(`qy_ai_scope_prompt_${promptSource}` as never)}
+          </Badge>
+          {promptSource === 'custom' && (
+            <Button
+              size='sm'
+              variant='outline'
+              onClick={() => onChange({ ...draft, prompt: '' })}
+            >
+              {t('qy_ai_scope_prompt_reset')}
+            </Button>
+          )}
+        </div>
+        <Textarea
+          rows={6}
+          value={draft.prompt}
+          placeholder={t('qy_ai_scope_prompt_placeholder')}
+          onChange={(e) => onChange({ ...draft, prompt: e.target.value })}
+        />
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_ai_scope_f_prompt_hint', {
+            placeholder: QY_AI_CATEGORY_PLACEHOLDER,
+          })}
+        </p>
+        {/* 留空时把继承来的那一段摆出来：不摆的话，"什么都不填"到底意味着
+            什么完全不可见 —— 而它可能是内置默认，也可能是本站改过的全局那一份。 */}
+        {promptSource === 'inherit' && effectivePrompt !== '' && (
+          <details className='text-muted-foreground text-xs'>
+            <summary className='cursor-pointer'>
+              {t('qy_ai_scope_prompt_inherited_show')}
+            </summary>
+            <pre className='mt-1 whitespace-pre-wrap break-words'>
+              {effectivePrompt}
+            </pre>
+          </details>
+        )}
       </div>
 
       {/* 全角逗号是中文输入法下最容易发生的一次手滑,而后端不认它:

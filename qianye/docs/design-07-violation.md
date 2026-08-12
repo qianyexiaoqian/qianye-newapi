@@ -115,8 +115,10 @@ type ViolationRule struct {
 	// 单笔扣费上限(美元),0 = 不限。防止倍数配置失误一次扣光余额
 
 	// —— 计数与封禁 ——
-	CountWeight int `gorm:"not null;default:1" json:"count_weight"` // 计入违规次数的权重,0 = 不计数
-	Severity    int `gorm:"not null;default:1" json:"severity"`     // 1=低 2=中 3=高,仅用于管理端排序/告警
+	CountWeight int `gorm:"not null;default:1" json:"count_weight"` // 命中一次给账号总量线与所绑类型线各加几,0 = 一条线都不推进
+	// Severity(1=低 2=中 3=高)在实现中**已移除**:它从头到尾只写不读,
+	// 违规类型体系落地后"这一类有多严重"由类型自己的阈值/窗口表达。
+	// 数据库列 `severity` 保留但不再映射到结构体,见 model.go 的说明。
 
 	// —— 上下文归档 ——
 	ArchiveContext bool `gorm:"not null;default:true" json:"archive_context"`
@@ -458,7 +460,7 @@ user  := g.Group("/self", middleware.UserAuth())
   action: 'record'|'charge'|'block'|'block_and_charge';
   fee_mode: 'none'|'fixed'|'model_price_multiple'|'prompt_quota_multiple';
   fee_amount: string; fee_multiple: string; fee_max_amount: string;   // decimal 走字符串,避免 JS 精度丢失
-  count_weight: number; severity: number;
+  count_weight: number;   // severity 已移除,见 §1.1
   archive_context: boolean; block_message: string;
 }
 ```
@@ -1413,7 +1415,7 @@ effective_shadow = 全局影子(qy_settings 覆盖 / YAML / 熔断回落) OR rul
 
 ### 12.6 告警通道
 - 封号时给用户发邮件(`ban_notify_email`,复用项目 `common.SendEmail`);
-- 管理员告警:命中高危规则(`severity=3`)、熔断打开、队列丢弃 > 0、单用户 1 分钟内命中 > 10 次 → 走项目已有的通知机制(与 `service.NotifyRootUser` 同路径);
+- 管理员告警:熔断打开、队列丢弃 > 0、单用户 1 分钟内命中 > 10 次 → 走项目已有的通知机制(与 `service.NotifyRootUser` 同路径);(原设计里的「命中 `severity=3` 的高危规则」这一条随 severity 一并作废 —— 严重程度现在由违规类型的阈值表达)
 - `/health` 被管理端页面每 30s 轮询,异常时页面顶部红条。
 
 ### 12.7 审计完备性
