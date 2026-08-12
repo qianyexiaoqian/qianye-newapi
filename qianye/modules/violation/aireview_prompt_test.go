@@ -211,7 +211,7 @@ func TestInspectAIPromptCategoriesReportsMissingWhenRenderBreaks(t *testing.T) {
 // 绕过它 —— 而绕过之后没有任何症状,只是那个站点从此收不到默认提示词的升级。
 func TestValidateAISettingNormalizesPrompt(t *testing.T) {
 	base := AISetting{
-		SampleRateBps: 1000, PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
+		PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
 		MaxInputChars: defaultAIMaxInputChars,
 	}
 	tests := []struct {

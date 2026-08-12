@@ -602,6 +602,10 @@ func TestValidateCategory(t *testing.T) {
 		{"公示了但没填公示标题", func(c *Category) { c.PublicTitle = "" }, "必须填写公示标题"},
 		{"不公示就可以不填公示标题", func(c *Category) { c.PublicTitle = ""; c.Published = false }, ""},
 		{"窗口为 0", func(c *Category) { c.WindowHours = 0 }, "统计窗口必须在"},
+		// -1 是「不限期限」哨兵,合法;其余负数一律拒绝。完整取值域表见
+		// window_unlimited_test.go。
+		{"窗口为 -1(不限期限哨兵)", func(c *Category) { c.WindowHours = WindowUnlimited }, ""},
+		{"窗口为负(不是哨兵)", func(c *Category) { c.WindowHours = -2 }, "统计窗口必须在"},
 		{"窗口超过上界", func(c *Category) { c.WindowHours = maxCategoryWindowHours + 1 }, "统计窗口必须在"},
 		{"阈值为负", func(c *Category) { c.Threshold = -1 }, "次数阈值必须在"},
 		{"阈值 0 合法(这一类不单独触发)", func(c *Category) { c.Threshold = 0 }, ""},

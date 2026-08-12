@@ -228,6 +228,33 @@ func adminDeleteAIChannel(c *gin.Context) {
 		notFound(c)
 		return
 	}
+	// 还有作用域策略指着它时直接拒绝。
+	//
+	// 删掉一个被指定的渠道,那几档从此每一次都走 no_channel —— 不审核、
+	// 直接放行,而界面上它们看起来配得好好的。这是本模块最典型的静默失效形状,
+	// 而它在这里可以被一次 400 完全挡住:运营要么先把那几档改回「不指定」,
+	// 要么换一个渠道,两种都是一次显式的、有审计的动作。
+	//
+	// 不做成"删除时自动把那几档改回不指定":那等于替运营决定"发给谁都行",
+	// 而指定渠道的理由往往正是"只能发给这一个"。
+	var pinned []AIScope
+	if err := gdb.Where("channel_id = ?", id).Order("id asc").Limit(10).Find(&pinned).Error; err != nil {
+		internalError(c, err)
+		return
+	}
+	if len(pinned) > 0 {
+		names := make([]string, 0, len(pinned))
+		for _, s := range pinned {
+			names = append(names, s.Name)
+		}
+		err := fmt.Errorf("渠道「%s」还被 %d 条 AI 审核作用域策略指定着(%s)—— "+
+			"删掉它会让这几档每次都走「无可用渠道」并直接放行(不会回落到其它渠道)。"+
+			"请先把这些策略的审核渠道改成「不指定」或换一个渠道",
+			row.Name, len(pinned), strings.Join(names, "、"))
+		writeAIReviewAudit(c, "ai_channel_delete", qymodel.ResultFail, &row, nil, err)
+		badRequest(c, err.Error())
+		return
+	}
 	// 硬删而不是软删:这一行的价值全部在密钥里,而密钥恰恰是最该真正消失的东西。
 	// 历史审核明细(qy_violation_ai_review)冗余了 channel_name,删掉渠道不会
 	// 让成本账目失去可读性 —— 那正是那一列冗余存在的理由。
@@ -333,9 +360,11 @@ func adminTestAIChannel(c *gin.Context) {
 
 // ───────────────────────────── 设置 ─────────────────────────────
 
+// aiSettingReq 刻意**没有** sample_rate_bps:全局抽样率已经下线,
+// 送不送审只由作用域策略表回答。多留一个被忽略的字段,下一个人照着它写前端
+// 时会得到一个"填了、保存成功、完全没用"的输入框。
 type aiSettingReq struct {
 	Enabled             bool   `json:"enabled"`
-	SampleRateBps       int    `json:"sample_rate_bps"`
 	PreTimeoutMs        int    `json:"pre_timeout_ms"`
 	AsyncTimeoutMs      int    `json:"async_timeout_ms"`
 	Prompt              string `json:"prompt"`
@@ -455,7 +484,7 @@ func adminPutAISetting(c *gin.Context) {
 
 	now := common.GetTimestamp()
 	row := AISetting{
-		Id: 1, Enabled: req.Enabled, SampleRateBps: req.SampleRateBps,
+		Id: 1, Enabled: req.Enabled,
 		PreTimeoutMs: req.PreTimeoutMs, AsyncTimeoutMs: req.AsyncTimeoutMs,
 		Prompt: req.Prompt, MaxInputChars: req.MaxInputChars,
 		ThirdPartyNoticeAck: req.ThirdPartyNoticeAck,
@@ -671,8 +700,9 @@ func aiChannelAuditSnap(ch *AIChannel) map[string]any {
 
 // writeAISettingAudit 是设置变更的审计出口,成功与失败同一出口。
 //
-// 抽样率与总开关是这一页最重的两个数字:前者直接决定花多少钱,后者决定
-// 用户内容会不会被发往第三方。两者的变更都必须能事后追到人。
+// 总开关决定用户内容会不会被发往第三方,提示词决定什么算违规。两者的变更都
+// 必须能事后追到人。(抽样率不在这里了 —— 它挂在作用域策略上,由
+// writeAIScopeAudit 留痕。)
 func writeAISettingAudit(c *gin.Context, result string, before, after AISetting, err error) {
 	reason := ""
 	if err != nil {
@@ -703,7 +733,7 @@ func aiSettingAuditSnap(s AISetting) map[string]any {
 	vocab := Snapshot().aiVocab
 	report := inspectAIPromptCategories(renderAIPrompt(s.Prompt, vocab), vocab)
 	return map[string]any{
-		"enabled": s.Enabled, "sample_rate_bps": s.SampleRateBps,
+		"enabled":        s.Enabled,
 		"pre_timeout_ms": s.PreTimeoutMs, "async_timeout_ms": s.AsyncTimeoutMs,
 		"max_input_chars":        s.MaxInputChars,
 		"third_party_notice_ack": s.ThirdPartyNoticeAck,

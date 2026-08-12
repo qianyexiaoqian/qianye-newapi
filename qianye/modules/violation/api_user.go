@@ -115,14 +115,14 @@ func userSummary(c *gin.Context) {
 	var counter Counter
 	_ = db.Get().Where("user_id = ?", userId).Take(&counter).Error
 
-	windowHours := policy.WindowHours
-	if windowHours <= 0 {
-		windowHours = 24
-	}
+	// windowHours 可能是 WindowUnlimited(-1)。它原样下发给前端 ——
+	// 前端据此把"24 小时内累计"换成"累计",而不是显示一个 -1 小时的窗口。
+	windowHours := effectiveWindowHours(policy.WindowHours)
 	// 窗口已经滚过就不该再展示旧计数,否则用户看到的"剩余次数"是错的。
+	// 无限窗口下这个下界是负数,判据恒为假,计数一直展示。
 	now := common.GetTimestamp()
 	hit := counter.HitCount
-	if counter.WindowStart < now-int64(windowHours)*3600 {
+	if counter.WindowStart < windowFloor(now, windowHours) {
 		hit = 0
 	}
 	// "还差几次"必须跨**两条线**取最小值,不能只算账号总量线。
@@ -199,12 +199,9 @@ func userCategoryLines(userId int, now int64) ([]Category, map[int64]int) {
 		if !ok {
 			continue
 		}
-		windowHours := cat.WindowHours
-		if windowHours <= 0 {
-			windowHours = 24
-		}
 		// 窗口已经滚过就不算(与 toUserCategoryView / userSummary 同口径)。
-		if ct.WindowStart < now-int64(windowHours)*3600 {
+		// 无限窗口的下界是负数,这一条永远不会跳过。
+		if ct.WindowStart < windowFloor(now, cat.WindowHours) {
 			continue
 		}
 		hits[ct.CategoryId] = ct.HitCount
@@ -250,7 +247,10 @@ type userCategoryView struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	// Threshold 是这一类累计多少次会触发处置,0 表示这一类不单独触发。
-	Threshold   int `json:"threshold"`
+	Threshold int `json:"threshold"`
+	// WindowHours 是这一类的统计窗口。取 WindowUnlimited(-1)表示**不限期限**,
+	// 前端必须据此改口径("累计"而不是"N 小时内累计")。它不是一个可以参与算术
+	// 的小时数,前端拿它做除法或格式化成时长都会得到一个负数时间。
 	WindowHours int `json:"window_hours"`
 	HitCount    int `json:"hit_count"`
 	Remaining   int `json:"remaining"`
@@ -263,13 +263,13 @@ type userCategoryView struct {
 // 塞进独一无二的串,再断言序列化结果里一个字都没有)。留在 handler 里的话,
 // 验证它就需要一整套 gin + 数据库夹具,而那种测试没人愿意在加字段时补。
 func toUserCategoryView(cat Category, ct CategoryCounter, now int64) userCategoryView {
-	windowHours := cat.WindowHours
-	if windowHours <= 0 {
-		windowHours = 24
-	}
+	// WindowHours 原样下发 WindowUnlimited(-1),由前端换成"累计"的说法。
+	// 折成一个具体小时数会在公示页写下一个错的时间口径,而这一页的读者正在
+	// 用它判断"我还剩几次" —— 说成"24 小时内累计"会让他以为等一天就清零。
+	windowHours := effectiveWindowHours(cat.WindowHours)
 	// 窗口已经滚过就不展示旧计数,否则用户看到的"剩余次数"是错的(与 userSummary 同口径)。
 	hit := 0
-	if ct.CategoryId == cat.Id && ct.WindowStart >= now-int64(windowHours)*3600 {
+	if ct.CategoryId == cat.Id && ct.WindowStart >= windowFloor(now, windowHours) {
 		hit = ct.HitCount
 	}
 	// Enabled=false 的类型对用户而言就是"这一类不单独触发",阈值按 0 展示。
@@ -360,14 +360,11 @@ func userListCategories(c *gin.Context) {
 	}
 
 	policy := resolveBanPolicy(c.GetString("group"))
-	accountWindow := policy.WindowHours
-	if accountWindow <= 0 {
-		accountWindow = 24
-	}
+	accountWindow := effectiveWindowHours(policy.WindowHours)
 	var counter Counter
 	_ = db.Get().Where("user_id = ?", userId).Take(&counter).Error
 	accountHit := counter.HitCount
-	if counter.WindowStart < now-int64(accountWindow)*3600 {
+	if counter.WindowStart < windowFloor(now, accountWindow) {
 		accountHit = 0
 	}
 

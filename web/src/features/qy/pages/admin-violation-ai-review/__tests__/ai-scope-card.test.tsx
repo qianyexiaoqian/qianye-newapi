@@ -25,8 +25,11 @@ For commercial licensing, please contact support@quantumnous.com
  *
  * 所以这里挂真组件、真 i18n:
  *
- *  1. 汇总表真的渲染出来了,而且**末行是兜底档** —— 界面顺序就是热路径的
- *     判定顺序,排反了运营会照着一个错误的心智模型去调优先级。
+ *  1. 汇总表真的渲染出来了,而且表里**只有真实存在的策略行** —— 兜底档连同
+ *     全局抽样率一起下线了,现在"没有任何策略命中"的答案恒为不审核,
+ *     画一行恒为 0% 的假行只会让人以为那里还有个可调的旋钮。
+ *     另外「送到哪个渠道」这一列必须在:指定的渠道被停用之后这一档不再审核
+ *     任何内容,而它在列表上与一条正常策略长得一模一样。
  *  2. 响应里少了 `summary` 时这一页仍然是一页。类型上它是必填的,但类型说的是
  *     「后端应该给」,运行期拿到的是「后端这次给了什么」(接口降级、老版本
  *     后端、反向代理裁剪)。直读一层会在渲染中途抛 TypeError,把整页打掉,
@@ -131,6 +134,9 @@ const scopes: QyAiScopeList = {
       group_scope_mode: 'include',
       pre_sample_rate_bps: 0,
       async_sample_rate_bps: 5000,
+      category_id: 12,
+      channel_id: 3,
+      prompt: '',
       remark: '',
       created_at: 0,
       updated_at: 0,
@@ -140,7 +146,6 @@ const scopes: QyAiScopeList = {
     {
       id: 7,
       name: '自助注册分组',
-      fallback: false,
       enabled: true,
       priority: 10,
       model_scope: '',
@@ -150,28 +155,14 @@ const scopes: QyAiScopeList = {
       async_sample_rate_bps: 5000,
       prompt_source: 'custom',
       category_id: 12,
-      shadowed: false,
-    },
-    {
-      id: 0,
-      name: '未匹配任何策略',
-      fallback: true,
-      enabled: true,
-      priority: 1 << 30,
-      model_scope: '',
-      group_scope: '',
-      group_scope_mode: 'include',
-      pre_sample_rate_bps: 0,
-      async_sample_rate_bps: 0,
-      prompt_source: 'inherit',
-      category_id: 0,
+      channel_id: 3,
       shadowed: false,
     },
   ],
-  fallback_bps: 0,
   max_scopes: 64,
   ai_enabled: true,
   effective_active: true,
+  channels: [{ id: 3, name: '自建审核端点', enabled: true, model: 'm' }],
   active_scopes: [],
 }
 
@@ -200,7 +191,6 @@ const routeTree = rootRoute.addChildren([pageRoute])
 const settings = {
   setting: {
     enabled: false,
-    sample_rate_bps: 0,
     pre_timeout_ms: 1500,
     async_timeout_ms: 8000,
     prompt: '',
@@ -279,21 +269,85 @@ function scopeTable(container: HTMLElement): Element | null {
 }
 
 describe('AI 审核作用域卡', () => {
-  test('汇总表接进了页面，且末行是兜底档', async () => {
+  test('汇总表接进了页面，表里只有真实存在的策略行', async () => {
     const container = await mountPage(scopes)
     const table = scopeTable(container)
     assert.ok(table, '页面上找不到作用域汇总表')
     const rows = [...table.querySelectorAll('tbody tr')]
-    assert.equal(rows.length, 2, '汇总行数不对')
+    assert.equal(
+      rows.length,
+      1,
+      '汇总行数不对：兜底档已经不存在，一行都不该多画出来'
+    )
     assert.ok(
       (rows[0]?.textContent ?? '').includes('自助注册分组'),
       `第一行不是优先级最高的那一档：${rows[0]?.textContent}`
     )
-    // 末行恒为兜底档。它不是排版偏好：热路径就是"前面都不匹配才落到它"，
-    // 界面上排在别处会让人以为兜底率能盖住上面的策略。
+  })
+
+  /*
+   * 每一行都有一个一键启停开关。
+   *
+   * 项目方要的是「增删改走弹窗、列表保留一键动作」。启停必须留在列表上：
+   * 它是这一页唯一一个高频、单字段的动作，"打开弹窗 → 翻一个开关 → 保存"
+   * 要三次点击，而它决定的是一批用户的请求内容会不会被发往第三方。
+   */
+  test('每一行都有启停开关，而且它反映的是这一档当前的状态', async () => {
+    const container = await mountPage(scopes)
+    const table = scopeTable(container)
+    assert.ok(table)
+    const row = table.querySelectorAll('tbody tr')[0]
+    const toggle = row?.querySelector('[role="switch"]')
+    assert.ok(toggle, '列表行上没有启停开关')
+    assert.equal(
+      toggle.getAttribute('aria-checked'),
+      'true',
+      '这一档是启用的，开关却显示成关着'
+    )
+  })
+
+  /*
+   * 「送到哪个渠道」这一列。
+   *
+   * 留空那一档写的是"按权重随机"而不是"默认渠道"：渠道表上没有 priority，
+   * 两个渠道各 50% 权重时"默认渠道"这句话就是假的，而运营会按那句话去理解
+   * 自己的数据流向。
+   */
+  test('汇总表摆出了「送到哪个渠道」，并把 id join 成了名字', async () => {
+    const container = await mountPage(scopes)
+    const table = scopeTable(container)
+    assert.ok(table)
+    const heads = [...table.querySelectorAll('thead th')].map((n) =>
+      (n.textContent ?? '').trim()
+    )
+    assert.ok(heads.includes(dict.qy_ai_scope_col_channel), '缺「审核渠道」列')
+    const first = table.querySelectorAll('tbody tr')[0]?.textContent ?? ''
     assert.ok(
-      (rows[1]?.textContent ?? '').includes(dict.qy_ai_scope_fallback_name),
-      `末行不是兜底档：${rows[1]?.textContent}`
+      first.includes('自建审核端点'),
+      `指定的渠道没有 join 成名字：${first}`
+    )
+  })
+
+  /*
+   * 指定的渠道被停用之后必须当场说出来。
+   *
+   * 这一档从此每一次都走「无可用渠道」并直接放行 —— 后端**绝不**回落到随机池
+   * （回落会把用户内容发去运营明确没有选的端点）。也就是说它已经完全停止工作，
+   * 而在没有这一格告警的列表上，它与一条正常策略长得一模一样。
+   */
+  test('指定的渠道被停用时，这一行被标成「渠道不可用」并给出一句话', async () => {
+    const broken = {
+      ...scopes,
+      channels: [{ id: 3, name: '自建审核端点', enabled: false, model: 'm' }],
+    }
+    const text = (await mountPage(broken)).textContent ?? ''
+    assert.ok(
+      text.includes(dict.qy_ai_scope_kind_channel_down),
+      '渠道被停用的那一档没有被标出来'
+    )
+    assert.ok(
+      text.includes(dict.qy_ai_scope_channel_disabled),
+      '没有说清后果 —— 只标一个状态词，运营不知道它意味着"这一档不再审核"'
     )
   })
 
@@ -325,12 +379,47 @@ describe('AI 审核作用域卡', () => {
       `这一档写了自己的提示词，却没标出来：${first}`
     )
     assert.ok(first.includes('#12'), `类型名查不到时必须退回显示 id：${first}`)
+  })
 
-    // 兜底档没有策略行，只可能继承全局，且永远不指定类型。
-    const last = (table.querySelectorAll('tbody tr')[1]?.textContent ??
-      '') as string
-    assert.ok(last.includes(dict.qy_ai_scope_prompt_inherit))
-    assert.ok(last.includes(dict.qy_ai_scope_category_none))
+  /*
+   * 新增 / 编辑走弹窗（项目方点名：「添加作用域策略，编辑作用域策略改成弹窗
+   * 的方式」）。
+   *
+   * 断言落在**弹窗真的开出来了**，而不是"点击没报错"：改造前这里是一段内联
+   * 表单，展开在表格下面把表格推出屏幕，"我正在改的是哪一行"完全看不见。
+   * 一个只把 `editing` 置了值、却没有任何浮层的实现，在页面上与改造前一模一样。
+   */
+  test('点「新增」开出弹窗，而不是在表格下面展开一段内联表单', async () => {
+    const container = await mountPage(scopes)
+    assert.equal(
+      document.body.querySelectorAll('[role="dialog"]').length,
+      0,
+      '还没点就已经有浮层了'
+    )
+
+    const addButton = [...container.querySelectorAll('button')].find((b) =>
+      (b.textContent ?? '').includes(dict.qy_ai_scope_add)
+    )
+    assert.ok(addButton, '找不到「新增作用域策略」按钮')
+    await act(async () => {
+      addButton.dispatchEvent(new Event('click', { bubbles: true }))
+    })
+
+    const dialog = document.body.querySelector('[role="dialog"]')
+    assert.ok(dialog, '点了新增却没有开出弹窗')
+    const text = dialog.textContent ?? ''
+    assert.ok(
+      text.includes(dict.qy_ai_scope_create_title),
+      `弹窗标题不对：${text.slice(0, 120)}`
+    )
+    // 「保存」必须在弹窗里够得着 —— 长表单里按钮跟着正文滚走时，
+    // 用户会以为没有保存键。
+    assert.ok(text.includes(dict.qy_ai_save), '弹窗里没有保存按钮')
+    // 「送到哪个渠道」这一格也要在表单里，否则这一列只能看不能改。
+    assert.ok(
+      text.includes(dict.qy_ai_scope_f_channel),
+      '弹窗表单里没有「审核渠道」那一格'
+    )
   })
 
   test('一档都没在监控时，说的是"没有分组在被监控"而不是留白', async () => {
@@ -378,10 +467,10 @@ describe('AI 审核作用域卡', () => {
   test('响应缺 summary 时不白屏，卡片标题仍在', async () => {
     const container = await mountPage({
       items: [],
-      fallback_bps: 0,
       max_scopes: 64,
       ai_enabled: true,
       effective_active: true,
+      channels: [],
       active_scopes: [],
     })
     assert.ok(

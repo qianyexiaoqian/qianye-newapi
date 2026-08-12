@@ -20,7 +20,10 @@ import { useTranslation } from 'react-i18next'
 
 import { Progress } from '@/components/ui/progress'
 
-import { qyEnforcementActionKey } from '../../../lib/violation-thresholds'
+import {
+  qyEnforcementActionKey,
+  qyWindowIsUnlimited,
+} from '../../../lib/violation-thresholds'
 import type { QyMyViolationCategories } from '../types'
 
 /**
@@ -73,19 +76,32 @@ export function QyMyViolationCategoriesCard(props: {
         </p>
       </div>
 
-      {/* 账号总量线。它跨全部类型，与下面每一类各自的线是并列关系。 */}
+      {/* 账号总量线。它跨全部类型，与下面每一类各自的线是并列关系。
+          窗口是「不限期限」时整句换一句说：原句里的「{{hours}} 小时内」在
+          哨兵下会渲染成「-1 小时内」，而更糟的是——就算它渲染成 24，那也是
+          一句**错的承诺**：用户会以为等一天就清零，而实际那些次数永远算数。 */}
       <div className='bg-muted/40 rounded-md px-3 py-2 text-xs'>
-        {data.account_threshold > 0
-          ? t('qy_vio_cat_account_line', {
-              hit: data.account_hit_count,
-              threshold: data.account_threshold,
-              hours: data.account_window_hours,
-              action: actionLabel,
-            })
-          : t('qy_vio_cat_account_line_off', {
-              hit: data.account_hit_count,
-              hours: data.account_window_hours,
-            })}
+        {qyWindowIsUnlimited(data.account_window_hours)
+          ? data.account_threshold > 0
+            ? t('qy_vio_cat_account_line_unlimited', {
+                hit: data.account_hit_count,
+                threshold: data.account_threshold,
+                action: actionLabel,
+              })
+            : t('qy_vio_cat_account_line_off_unlimited', {
+                hit: data.account_hit_count,
+              })
+          : data.account_threshold > 0
+            ? t('qy_vio_cat_account_line', {
+                hit: data.account_hit_count,
+                threshold: data.account_threshold,
+                hours: data.account_window_hours,
+                action: actionLabel,
+              })
+            : t('qy_vio_cat_account_line_off', {
+                hit: data.account_hit_count,
+                hours: data.account_window_hours,
+              })}
       </div>
 
       <ul className='space-y-3'>
@@ -101,13 +117,20 @@ export function QyMyViolationCategoriesCard(props: {
                   下一次违规就被封。 */}
               <p className='text-sm'>
                 {item.threshold > 0
-                  ? t('qy_vio_cat_sentence', {
-                      title: item.title,
-                      hit: item.hit_count,
-                      threshold: item.threshold,
-                      hours: item.window_hours,
-                      action: actionLabel,
-                    })
+                  ? t(
+                      // 「不限期限」下那句「（24 小时内累计）」必须整句换掉，
+                      // 不能只把数字换成 -1：留着一个时间口径就是留着一句假话。
+                      qyWindowIsUnlimited(item.window_hours)
+                        ? 'qy_vio_cat_sentence_unlimited'
+                        : 'qy_vio_cat_sentence',
+                      {
+                        title: item.title,
+                        hit: item.hit_count,
+                        threshold: item.threshold,
+                        hours: item.window_hours,
+                        action: actionLabel,
+                      }
+                    )
                   : t('qy_vio_cat_sentence_off', {
                       title: item.title,
                       hit: item.hit_count,

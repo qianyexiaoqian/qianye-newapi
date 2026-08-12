@@ -34,6 +34,7 @@ import {
 } from '@/components/ui/table'
 
 import { qyKeys } from '../../../lib/query-keys'
+import { qyWindowIsUnlimited } from '../../../lib/violation-thresholds'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { deleteQyViolationBanPolicy, listQyViolationBanPolicies } from '../api'
 import type { QyViolationBanPolicy } from '../types'
@@ -166,7 +167,11 @@ export function QyViolationBanPoliciesTab() {
                   </div>
                 </TableCell>
                 <TableCell>
-                  {t('qy_vio_policy_hours', { hours: policy.window_hours })}
+                  {/* 哨兵直接渲染会变成「-1 小时」。这一列是管理员判断
+                      "这一档到底怎么算次数"的唯一入口,印错口径等于印错判据。 */}
+                  {qyWindowIsUnlimited(policy.window_hours)
+                    ? t('qy_vio_window_unlimited')
+                    : t('qy_vio_policy_hours', { hours: policy.window_hours })}
                 </TableCell>
                 <TableCell>
                   {policy.threshold > 0

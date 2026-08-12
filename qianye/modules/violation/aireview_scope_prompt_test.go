@@ -439,21 +439,19 @@ func TestSummarizeAIScopesCarriesPromptAndCategory(t *testing.T) {
 	rows := []AIScope{
 		{Id: 1, Name: "继承全局", Enabled: true, Priority: 10, GroupScope: "vip"},
 		{Id: 2, Name: "自己的提示词", Enabled: true, Priority: 20, GroupScope: "selfserve",
-			Prompt: "本档判定说明", CategoryId: 12},
+			Prompt: "本档判定说明", CategoryId: 12, ChannelId: 7},
 	}
-	got := summarizeAIScopes(rows, 100)
-	require.Len(t, got, 3)
+	got := summarizeAIScopes(rows)
+	require.Len(t, got, 2)
 
 	assert.Equal(t, aiScopePromptInherit, got[0].PromptSource)
 	assert.Zero(t, got[0].CategoryId)
+	assert.Zero(t, got[0].ChannelId, "没指定渠道 = 0(按权重随机)")
 
 	assert.Equal(t, aiPromptSourceCustom, got[1].PromptSource)
 	assert.Equal(t, int64(12), got[1].CategoryId)
-
-	assert.True(t, got[2].Fallback)
-	assert.Equal(t, aiScopePromptInherit, got[2].PromptSource,
-		"兜底档没有策略行,提示词只可能是全局那一份")
-	assert.Zero(t, got[2].CategoryId)
+	assert.Equal(t, int64(7), got[1].ChannelId,
+		"指定渠道决定这一档的用户内容被发去哪个第三方端点,它必须出现在汇总表上")
 }
 
 // TestBuildAIScopesCarriesPromptAndCategory 钉住这两列真的进了快照。
@@ -478,7 +476,7 @@ func TestBuildAIScopesCarriesPromptAndCategory(t *testing.T) {
 	assert.Equal(t, "本档判定说明", scopes[0].Prompt)
 	assert.Equal(t, int64(12), scopes[0].CategoryId)
 
-	rt := &aiRuntime{SampleRateBps: 100, Prompt: "全局判定说明", Scopes: scopes}
+	rt := &aiRuntime{Prompt: "全局判定说明", Scopes: scopes}
 	sc, pre, async := rt.scopeFor("gpt-4o", "selfserve")
 	require.NotNil(t, sc)
 	assert.Equal(t, 0, pre)
@@ -486,11 +484,13 @@ func TestBuildAIScopesCarriesPromptAndCategory(t *testing.T) {
 	assert.Equal(t, "本档判定说明", rt.promptFor(sc))
 	assert.Equal(t, int64(12), scopeCategoryId(sc))
 
-	t.Run("作用域外仍然落兜底,且拿的是全局提示词", func(t *testing.T) {
+	t.Run("作用域外两个抽样率都是 0,没有兜底档", func(t *testing.T) {
 		sc, pre, async := rt.scopeFor("gpt-4o", "default")
 		assert.Nil(t, sc)
-		assert.Equal(t, 100, pre)
-		assert.Equal(t, 100, async)
+		assert.Equal(t, 0, pre, "没有任何策略命中 ⇒ 不审核,而不是落到某个全局值")
+		assert.Equal(t, 0, async)
+		// promptFor 仍然回落到全局那一份:它只在真的要发调用时才被读到,
+		// 而那条路径上 sc 一定非 nil。留着这一档是为了 nil 安全。
 		assert.Equal(t, "全局判定说明", rt.promptFor(sc))
 		assert.Zero(t, scopeCategoryId(sc))
 	})
@@ -503,7 +503,7 @@ func TestBuildAIScopesCarriesPromptAndCategory(t *testing.T) {
 func TestAIScopePromptLengthMatchesGlobalCap(t *testing.T) {
 	oversize := strings.Repeat("判", maxAIPromptRunes+1)
 
-	setting := AISetting{Enabled: false, SampleRateBps: 0,
+	setting := AISetting{Enabled: false,
 		PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
 		MaxInputChars: defaultAIMaxInputChars, Prompt: oversize}
 	assert.Error(t, validateAISetting(&setting), "全局那一格必须拒绝超长提示词")

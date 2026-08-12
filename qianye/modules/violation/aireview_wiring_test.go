@@ -46,10 +46,14 @@ func newAIWiringDB(t *testing.T) *gorm.DB {
 
 // ─────────────────────── 快照装配:三种"不生效"必须收敛成 nil ───────────────────────
 
-// TestBuildAIRuntimeCollapsesToNil 钉住"概率为 0 时整条路径零开销"。
+// TestBuildAIRuntimeCollapsesToNil 钉住"不生效时整条路径零开销"。
 //
-// 热路径判据是 `snap.ai == nil` 这一次指针判空。只要装配没有在这三种情况下
+// 热路径判据是 `snap.ai == nil` 这一次指针判空。只要装配没有在这几种情况下
 // 返回 nil,热路径就会开始摇随机数、算预算、甚至发调用 —— 而界面上功能是关着的。
+//
+// 「一条策略都没有」这一格是本轮新增的最重要的一条:全局抽样率下线之后,
+// **空策略表就是"不审核"**。它要是没收敛成 nil,热路径会在每个请求上白跑一遍
+// 作用域扫描,而且"没有策略 = 不审核"这句话在装配层就先失守了。
 func TestBuildAIRuntimeCollapsesToNil(t *testing.T) {
 	useAIReviewKey(t)
 
@@ -57,14 +61,17 @@ func TestBuildAIRuntimeCollapsesToNil(t *testing.T) {
 		name       string
 		setting    AISetting
 		withChan   bool
+		scopeBps   int
+		noScope    bool
 		needed     bool
 		wantActive bool
 	}{
-		{name: "一条 ai_review 规则都没有 → 连表都不查", setting: AISetting{Id: 1, Enabled: true, SampleRateBps: 10000}, withChan: true, needed: false},
-		{name: "总开关关着", setting: AISetting{Id: 1, Enabled: false, SampleRateBps: 10000}, withChan: true, needed: true},
-		{name: "抽样率为 0", setting: AISetting{Id: 1, Enabled: true, SampleRateBps: 0}, withChan: true, needed: true},
-		{name: "一个启用的渠道都没有", setting: AISetting{Id: 1, Enabled: true, SampleRateBps: 10000}, withChan: false, needed: true},
-		{name: "全部就绪 → 生效", setting: AISetting{Id: 1, Enabled: true, SampleRateBps: 3000}, withChan: true, needed: true, wantActive: true},
+		{name: "一条 ai_review 规则都没有 → 连表都不查", setting: AISetting{Id: 1, Enabled: true}, withChan: true, scopeBps: 10000, needed: false},
+		{name: "总开关关着", setting: AISetting{Id: 1, Enabled: false}, withChan: true, scopeBps: 10000, needed: true},
+		{name: "一条作用域策略都没有 → 不生效(没有任何隐藏兜底)", setting: AISetting{Id: 1, Enabled: true}, withChan: true, noScope: true, needed: true},
+		{name: "策略在,但两个时机都是 0(免审名单)", setting: AISetting{Id: 1, Enabled: true}, withChan: true, scopeBps: 0, needed: true},
+		{name: "一个启用的渠道都没有", setting: AISetting{Id: 1, Enabled: true}, withChan: false, scopeBps: 10000, needed: true},
+		{name: "全部就绪 → 生效", setting: AISetting{Id: 1, Enabled: true}, withChan: true, scopeBps: 3000, needed: true, wantActive: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,6 +79,13 @@ func TestBuildAIRuntimeCollapsesToNil(t *testing.T) {
 			s := tc.setting
 			s.PreTimeoutMs, s.AsyncTimeoutMs, s.MaxInputChars = 1500, 8000, defaultAIMaxInputChars
 			require.NoError(t, gdb.Create(&s).Error)
+			if !tc.noScope {
+				require.NoError(t, gdb.Create(&AIScope{
+					Name: "全站", Enabled: true, Priority: 100,
+					GroupScopeMode:   GroupScopeInclude,
+					PreSampleRateBps: tc.scopeBps, AsyncSampleRateBps: tc.scopeBps,
+				}).Error)
+			}
 			if tc.withChan {
 				require.NoError(t, gdb.Create(&AIChannel{
 					Name: "fake", BaseUrl: "https://example.invalid/v1", Model: "m",
@@ -94,8 +108,12 @@ func TestBuildAIRuntimeSkipsUndecryptableChannel(t *testing.T) {
 	useAIReviewKey(t)
 	gdb := newAIWiringDB(t)
 	require.NoError(t, gdb.Create(&AISetting{
-		Id: 1, Enabled: true, SampleRateBps: 10000,
+		Id: 1, Enabled: true,
 		PreTimeoutMs: 1500, AsyncTimeoutMs: 8000, MaxInputChars: defaultAIMaxInputChars,
+	}).Error)
+	require.NoError(t, gdb.Create(&AIScope{
+		Name: "全站", Enabled: true, Priority: 100, GroupScopeMode: GroupScopeInclude,
+		PreSampleRateBps: 10000, AsyncSampleRateBps: 10000,
 	}).Error)
 
 	good := AIChannel{Name: "good", BaseUrl: "https://example.invalid/v1", Model: "m", Weight: 1, Enabled: true}
@@ -128,8 +146,12 @@ func TestReloadPutsAIRulesInTheRightBuckets(t *testing.T) {
 	useAIReviewKey(t)
 	gdb := newAIWiringDB(t)
 	require.NoError(t, gdb.Create(&AISetting{
-		Id: 1, Enabled: true, SampleRateBps: 10000,
+		Id: 1, Enabled: true,
 		PreTimeoutMs: 1500, AsyncTimeoutMs: 8000, MaxInputChars: defaultAIMaxInputChars,
+	}).Error)
+	require.NoError(t, gdb.Create(&AIScope{
+		Name: "全站", Enabled: true, Priority: 100, GroupScopeMode: GroupScopeInclude,
+		PreSampleRateBps: 10000, AsyncSampleRateBps: 10000,
 	}).Error)
 	require.NoError(t, gdb.Create(&AIChannel{
 		Name: "fake", BaseUrl: "https://example.invalid/v1", Model: "m", Weight: 1, Enabled: true,
@@ -286,12 +308,12 @@ func TestAIPreReviewSkipsZeroSampleAndLoopback(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	t.Run("抽样率为 0 时一次调用都不发", func(t *testing.T) {
+	t.Run("命中的那一档抽样率为 0 时一次调用都不发", func(t *testing.T) {
 		srv := newFakeReviewServer(t, func(w http.ResponseWriter, _ string) {
 			_, _ = w.Write([]byte(okVerdict(true, "sexual", 1, 1, 1)))
 		})
 		rt := rtForServer(srv.URL, 2000)
-		rt.SampleRateBps = 0
+		rt.Scopes = []*aiScopeRT{scopeRT("免审", "", "", GroupScopeInclude, 0, 0)}
 		snap := &snapshot{promptRules: []*compiledRule{rule}, hasAIPrompt: true, ai: rt}
 		c, info := newRelayTestCtx(t)
 		in := scanInput{Text: "内容"}

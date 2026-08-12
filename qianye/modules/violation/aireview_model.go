@@ -127,24 +127,23 @@ func (ch AIChannel) HasKey() bool { return len(ch.KeyCipher) > 0 }
 //
 // # 为什么是全局而不是挂在规则上
 //
-// 抽样率是**成本闸门**,它只有一个:三条 ai_review 规则各配 30% 不等于
-// "总共 30%",而运营心里想的一定是后者。提示词与超时同理 —— 一次请求只发
-// 一次审核调用(见 aireview.go),多条规则共用同一份结论,那么这些参数本来
-// 就只可能有一份。挂到规则上会造出 N 份必须手工保持一致的拷贝。
+// 提示词与超时:一次请求只发一次审核调用(见 aireview.go),多条规则共用同一
+// 份结论,那么这些参数本来就只可能有一份。挂到规则上会造出 N 份必须手工保持
+// 一致的拷贝。
 //
-// # 抽样率用万分比整数
+// # 这里**没有**抽样率
 //
-// 与本仓其余比率字段同口径(5% = 500)。浮点百分比在"抽样"这种要复现的地方
-// 是纯粹的负担:0.1 往返一次 JSON 就不再是 0.1。
+// 曾经有一列 sample_rate_bps(全局抽样率 + 作用域都不命中时的兜底)。它已经
+// 连同那条兜底一起删掉:它把这一页最重要的问题变得答不出来 —— 作用域表上
+// 一条策略都没有、看起来什么都没监控,而线上全站 5% 的请求内容正在被发往
+// 第三方。现在"送不送审"只由作用域策略表回答,表上没有的就是不审。
+// 存量值的迁移见 migrate.go 的 migrateAISampleRateToScope。
 type AISetting struct {
 	Id int `json:"id" gorm:"primaryKey;autoIncrement:false"` // 恒为 1
 
 	// Enabled 是 AI 审核的总开关。关掉之后 ai_review 规则一条都不会命中
 	// (快照直接不装配它们),热路径连一次随机数都不摇。
 	Enabled bool `json:"enabled" gorm:"not null;default:false"`
-
-	// SampleRateBps 是抽样率,0..10000(万分比)。0 = 不抽,整条路径零开销。
-	SampleRateBps int `json:"sample_rate_bps" gorm:"not null;default:0"`
 
 	// PreTimeoutMs 是**转发前审核**的时间预算,上限 maxPreTimeoutMs。
 	//

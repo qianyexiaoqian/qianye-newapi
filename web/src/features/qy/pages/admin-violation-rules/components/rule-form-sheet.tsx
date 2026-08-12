@@ -53,6 +53,10 @@ import {
   qyNormalizeGroupName,
   qyUnknownGroupNames,
 } from '../../../lib/group-options'
+import {
+  qyThresholdStateKey,
+  qyWindowIsUnlimited,
+} from '../../../lib/violation-thresholds'
 import { qyAdminViolationCategoriesQuery } from '../../admin-violation-categories/api'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { createQyViolationRule, updateQyViolationRule } from '../api'
@@ -322,11 +326,20 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
                           {row.category.is_fallback
                             ? ` · ${t('qy_vcat_flag_fallback')}`
                             : ''}
+                          {/* 窗口那一半必须过 qyThresholdStateKey：写死不带
+                              _unlimited 的键时，一个配成「不限期限」的类型会在
+                              这个下拉里显示「-1 小时内 5 次」。 */}
                           {row.threshold_state === 'active'
-                            ? ` · ${t('qy_vcat_threshold_value', {
-                                count: row.category.threshold,
-                                hours: row.category.window_hours,
-                              })}`
+                            ? ` · ${t(
+                                qyThresholdStateKey(
+                                  row.threshold_state,
+                                  row.category.window_hours
+                                ),
+                                {
+                                  count: row.category.threshold,
+                                  hours: row.category.window_hours,
+                                }
+                              )}`
                             : ` · ${t('qy_vcat_threshold_off')}`}
                         </SelectItem>
                       ))}
@@ -347,11 +360,20 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
                     {selected == null
                       ? t('qy_vio_field_category_dest_unknown')
                       : selected.threshold_state === 'active'
-                        ? t('qy_vio_field_category_dest_active', {
-                            name: selected.category.name,
-                            count: selected.category.threshold,
-                            hours: selected.category.window_hours,
-                          })
+                        ? t(
+                            // 这一句是「规则触发了会记到哪、几次触发处置」的
+                            // 唯一答案。不限期限时整句换掉，而不是把 -1 塞进
+                            // 「{{hours}} 小时内」—— 后者读起来完全正常，
+                            // 却让管理员照着一个不存在的配置去绑规则。
+                            qyWindowIsUnlimited(selected.category.window_hours)
+                              ? 'qy_vio_field_category_dest_active_unlimited'
+                              : 'qy_vio_field_category_dest_active',
+                            {
+                              name: selected.category.name,
+                              count: selected.category.threshold,
+                              hours: selected.category.window_hours,
+                            }
+                          )
                         : t(
                             selected.category.is_fallback
                               ? 'qy_vio_field_category_dest_fallback_idle'
@@ -823,13 +845,22 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
                           weight: countWeight,
                         })
                       : selectedCategory.threshold_state === 'active'
-                        ? t('qy_vio_field_count_weight_math_active', {
-                            name: selectedCategory.category.name,
-                            weight: countWeight,
-                            threshold: selectedCategory.category.threshold,
-                            hours: selectedCategory.category.window_hours,
-                            hits: hitsToThreshold,
-                          })
+                        ? t(
+                            // 同上：这一句在算「几次命中到线」，窗口印错等于
+                            // 让那笔账建立在一个不存在的时间口径上。
+                            qyWindowIsUnlimited(
+                              selectedCategory.category.window_hours
+                            )
+                              ? 'qy_vio_field_count_weight_math_active_unlimited'
+                              : 'qy_vio_field_count_weight_math_active',
+                            {
+                              name: selectedCategory.category.name,
+                              weight: countWeight,
+                              threshold: selectedCategory.category.threshold,
+                              hours: selectedCategory.category.window_hours,
+                              hits: hitsToThreshold,
+                            }
+                          )
                         : t('qy_vio_field_count_weight_math_idle', {
                             name: selectedCategory.category.name,
                             weight: countWeight,

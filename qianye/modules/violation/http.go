@@ -2,6 +2,8 @@ package violation
 
 import (
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/httpq"
@@ -52,4 +54,20 @@ var listPaging = httpq.Spec{}
 
 func pathInt64(c *gin.Context, key string) (int64, bool) {
 	return httpq.PathInt64(c, key)
+}
+
+// queryWindowHours 解析两个影响面预览接口的 ?window_hours=,支持无限窗口哨兵。
+//
+// httpq.Int 只认非负十进制(负号在别处一律是参数污染,那是它刻意的设计),
+// 所以 WindowUnlimited 走一条显式分支:查询串**恰好**是 "-1" 时取哨兵,
+// 其余交回 httpq.Int。不放宽 httpq 本身 —— 让全站的整数查询参数开始接受负数,
+// 只为了这两个接口的一个哨兵,是把一次局部需求变成一道全局口子。
+//
+// 预览与保存必须认同一套取值:预览不认 -1 的话,管理员在表单里勾上"不限期限"
+// 之后看到的影响面仍然是按 24 小时算的那个数,而他就是靠这个数决定要不要按保存。
+func queryWindowHours(c *gin.Context) int {
+	if strings.TrimSpace(c.Query("window_hours")) == strconv.Itoa(WindowUnlimited) {
+		return WindowUnlimited
+	}
+	return httpq.Int(c, "window_hours", defaultWindowHours)
 }

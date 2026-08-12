@@ -41,6 +41,10 @@ import {
   qyGroupOptionsQuery,
 } from '../../../lib/group-options'
 import { qyKeys } from '../../../lib/query-keys'
+import {
+  QY_WINDOW_UNLIMITED,
+  qyWindowIsUnlimited,
+} from '../../../lib/violation-thresholds'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import {
   previewQyViolationBanPolicyImpact,
@@ -58,10 +62,22 @@ const MAX_THRESHOLD = 1_000_000
 type FormState = {
   userGroup: string
   enabled: boolean
+  /**
+   * 小时数输入框的值。**不限期限时它不参与提交**，由 `windowUnlimited` 接管。
+   *
+   * 两格在表单态里并存、提交时折成库里那一列,与违规类型表单同口径:
+   * 勾上不限期限之后管理员填过的小时数要留在框里,取消勾选时原样回来。
+   */
   windowHours: number
+  windowUnlimited: boolean
   threshold: number
   action: QyViolationBanPolicyAction
   remark: string
+}
+
+/** 把表单里的两格折成库里那一列。折叠只发生在这里,所以不存在"两个字段不一致"。 */
+function formWindowHours(form: FormState): number {
+  return form.windowUnlimited ? QY_WINDOW_UNLIMITED : form.windowHours
 }
 
 function toForm(policy: QyViolationBanPolicy | null): FormState {
@@ -70,6 +86,8 @@ function toForm(policy: QyViolationBanPolicy | null): FormState {
       userGroup: '',
       enabled: true,
       windowHours: 24,
+      // 新建默认**有窗口**:不限期限是一档需要人主动选的收紧配置。
+      windowUnlimited: false,
       threshold: 0,
       // 新建默认落「仅记录」:新增一档策略最不该产生的效果就是当场封掉一批人。
       // 与内置规则一律落影子是同一个取舍 —— 先观察，确认之后再收紧。
@@ -80,7 +98,12 @@ function toForm(policy: QyViolationBanPolicy | null): FormState {
   return {
     userGroup: policy.user_group,
     enabled: policy.enabled,
-    windowHours: policy.window_hours,
+    // 不限期限的行没有小时数可回填,给框里留 24 —— 取消勾选时最不意外的落点。
+    // 绝不回填哨兵:它会以 `-1` 的形态出现在输入框里。
+    windowHours: qyWindowIsUnlimited(policy.window_hours)
+      ? 24
+      : policy.window_hours,
+    windowUnlimited: qyWindowIsUnlimited(policy.window_hours),
     threshold: policy.threshold,
     action: policy.action,
     remark: policy.remark,
@@ -128,10 +151,13 @@ export function QyViolationBanPolicyDialog(props: {
   const groupQuery = useQuery({ ...qyGroupOptionsQuery(), enabled: props.open })
   const groupOptions = groupQuery.data?.options ?? []
 
+  // 预览与保存必须用同一个窗口:预览按 24 小时算、保存按不限期限落库的话,
+  // 弹窗上那个"已有 N 个账号越线"是按另一套口径算出来的数,
+  // 而管理员就是靠它决定要不要按确认。
   const impactParams = {
     user_group: isDefault ? '' : form.userGroup.trim(),
     threshold: form.threshold,
-    window_hours: form.windowHours,
+    window_hours: formWindowHours(form),
     action: form.action,
   }
   const impactQuery = useQuery({
@@ -146,7 +172,7 @@ export function QyViolationBanPolicyDialog(props: {
   const mutation = useMutation({
     mutationFn: () => {
       const body = {
-        window_hours: form.windowHours,
+        window_hours: formWindowHours(form),
         threshold: form.threshold,
         action: form.action,
         remark: form.remark,
@@ -174,8 +200,11 @@ export function QyViolationBanPolicyDialog(props: {
   })
 
   const groupMissing = !isDefault && form.userGroup.trim() === ''
+  // 勾了不限期限时小时数框不参与提交,也就不该挡住提交按钮 —— 挡下去的话,
+  // 一个清空了小时数、只想选"不限期限"的管理员会看到一个他点不动的按钮。
   const windowInvalid =
-    form.windowHours < 1 || form.windowHours > MAX_WINDOW_HOURS
+    !form.windowUnlimited &&
+    (form.windowHours < 1 || form.windowHours > MAX_WINDOW_HOURS)
   const thresholdInvalid = form.threshold < 0 || form.threshold > MAX_THRESHOLD
   const canSubmit = !groupMissing && !windowInvalid && !thresholdInvalid
 
@@ -270,11 +299,14 @@ export function QyViolationBanPolicyDialog(props: {
             <Label htmlFor={`${fieldId}-window`}>
               {t('qy_vio_policy_field_window')}
             </Label>
+            {/* 勾了「不限期限」就禁用这一格,而不是清空它:两格同时可编辑会让人
+                以为"不限期限 + 72 小时"是一种配置,而库里只有一列。 */}
             <Input
               id={`${fieldId}-window`}
               type='number'
               min={1}
               max={MAX_WINDOW_HOURS}
+              disabled={form.windowUnlimited}
               value={form.windowHours}
               onChange={(event) =>
                 setForm((prev) => ({
@@ -305,6 +337,28 @@ export function QyViolationBanPolicyDialog(props: {
               {t('qy_vio_policy_field_threshold_desc')}
             </p>
           </div>
+        </div>
+
+        {/* 「不限期限」。与上面那格小时数是**互斥**的两种窗口写法,所以紧挨着放,
+            勾上之后小时数框变灰。下面那句说明不能省:无限窗口累计的是**计数器**,
+            不是违规记录表,真实含义是"自这一行计数器建立、或最近一次被清零起"。
+            不写清楚,运营会以为它是真的全历史。 */}
+        <div className='flex items-start justify-between gap-4 rounded-lg border p-3'>
+          <div className='min-w-0 space-y-1'>
+            <Label htmlFor={`${fieldId}-window-unlimited`}>
+              {t('qy_vio_window_unlimited_switch')}
+            </Label>
+            <p className='text-muted-foreground text-xs'>
+              {t('qy_vio_window_unlimited_hint')}
+            </p>
+          </div>
+          <Switch
+            id={`${fieldId}-window-unlimited`}
+            checked={form.windowUnlimited}
+            onCheckedChange={(checked) =>
+              setForm((prev) => ({ ...prev, windowUnlimited: checked }))
+            }
+          />
         </div>
 
         <div className='space-y-1'>

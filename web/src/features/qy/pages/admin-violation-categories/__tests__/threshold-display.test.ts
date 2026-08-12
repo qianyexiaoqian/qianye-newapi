@@ -109,9 +109,20 @@ describe('阈值三态', () => {
       ),
       'utf8'
     )
+    // 去掉全部空白再比对：这一段被 prettier 折成了四行，按原文匹配等于把
+    // 断言绑在格式化结果上，下一次改缩进就红。
+    const dense = page.replace(/\s+/g, '')
     assert.ok(
-      page.includes('qyThresholdStateKey(row.threshold_state)'),
+      dense.includes('qyThresholdStateKey(row.threshold_state,'),
       '阈值列必须用后端下发的三态。前端自己推的话，判定侧改了口径这里不会跟着改'
+    )
+    // 窗口必须一起传进去：不传的话「不限期限」的类型会渲染成
+    // 「-1 小时内 3 次」——一个看起来像 bug、实际是口径丢失的数字。
+    assert.ok(
+      dense.includes(
+        'qyThresholdStateKey(row.threshold_state,row.category.window_hours)'
+      ),
+      '阈值列没有把窗口传给文案选择器，「不限期限」会被渲染成 -1 小时'
     )
     assert.ok(
       !page.includes('row.category.enabled && row.category.threshold > 0'),

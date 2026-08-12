@@ -50,8 +50,12 @@ type aiScopeUpsertReq struct {
 	// CategoryId 0 = 不指定。写入闸会确认它指向一个**活着的**类型 ——
 	// 指向已归档类型的配置在界面上看起来完全正常,而线上每次命中都会退回
 	// 规则自己那一档并打一条告警(见 resolveCategoryOverride)。
-	CategoryId int64  `json:"category_id"`
-	Remark     string `json:"remark"`
+	CategoryId int64 `json:"category_id"`
+	// ChannelId 0 = 不指定,按权重在全部启用渠道里随机。写入闸会确认它指向一个
+	// **存在且启用**的渠道:指向一个停用渠道的策略在界面上与正常的完全一样,
+	// 而线上它每一次都走 no_channel(绝不回落到随机池,见 AIScope.ChannelId)。
+	ChannelId int64  `json:"channel_id"`
+	Remark    string `json:"remark"`
 }
 
 func (r *aiScopeUpsertReq) apply(dst *AIScope) error {
@@ -65,6 +69,7 @@ func (r *aiScopeUpsertReq) apply(dst *AIScope) error {
 	dst.AsyncSampleRateBps = r.AsyncSampleRateBps
 	dst.Prompt = r.Prompt
 	dst.CategoryId = r.CategoryId
+	dst.ChannelId = r.ChannelId
 	dst.Remark = r.Remark
 	return validateAIScope(dst)
 }
@@ -90,6 +95,19 @@ func adminListAIScopes(c *gin.Context) {
 	if err := gdb.Where("id = ?", 1).Take(&setting).Error; err != nil {
 		setting = AISetting{Id: 1}
 	}
+	// 渠道清单只取"这一格 join 得上"的三样。整行下发会把密文列的 json tag
+	// 之外的东西也带出去,而这里要回答的问题只有"这个 id 还在不在、还开着没"。
+	var channels []AIChannel
+	if err := gdb.Order("id asc").Find(&channels).Error; err != nil {
+		internalError(c, err)
+		return
+	}
+	channelRows := make([]gin.H, 0, len(channels))
+	for _, ch := range channels {
+		channelRows = append(channelRows, gin.H{
+			"id": ch.Id, "name": ch.Name, "enabled": ch.Enabled, "model": ch.Model,
+		})
+	}
 
 	snap := Snapshot()
 	// active_scopes 是**快照里真正生效的那一份**,不是这张表的回显。两者不同的
@@ -108,17 +126,23 @@ func adminListAIScopes(c *gin.Context) {
 				// 只会多一条把 4000 字塞进列表响应的路径。
 				"prompt_source": aiScopePromptSource(s.Prompt),
 				"category_id":   s.CategoryId,
+				// 指定渠道同样是"存下来要等一次重载才进快照"的东西,而它不一致
+				// 时的表现(还在往上一个端点发用户内容)完全无声。
+				"channel_id": s.ChannelId,
 			})
 		}
 	}
 	respond(c, gin.H{
 		"items": rows,
-		// summary 才是这一页的主体:它按匹配顺序排,末尾恒为兜底档,
-		// 并标出被遮住(永远匹配不到)的行。
-		"summary":          summarizeAIScopes(rows, setting.SampleRateBps),
-		"fallback_bps":     setting.SampleRateBps,
-		"max_scopes":       maxAIScopes,
-		"ai_enabled":       setting.Enabled,
+		// summary 才是这一页的主体:它按匹配顺序排,并标出被遮住(永远匹配
+		// 不到)的行。末尾**不再有兜底档** —— 全局抽样率已下线,没有任何策略
+		// 命中的请求一律不审核,画一行恒为 0% 的假行只会让人以为那还有个旋钮。
+		"summary":    summarizeAIScopes(rows),
+		"max_scopes": maxAIScopes,
+		"ai_enabled": setting.Enabled,
+		// channels 让界面把 channel_id join 成名字,并把"指定的渠道已停用/
+		// 已删除"这两种静默失效当场标出来。
+		"channels":         channelRows,
 		"effective_active": snap.ai != nil,
 		"active_scopes":    active,
 	})
@@ -161,14 +185,26 @@ func adminUpsertAIScope(c *gin.Context) {
 		badRequest(c, err.Error())
 		return
 	}
-	// 「命中一律记为」必须指向一个**活着的**类型。
+	// ── 下面两道引用闸只在**这一档启用中**时生效 ──
 	//
-	// 这道闸在写入侧,而不是等运行期发现:一个指向已归档类型的 id 在界面上
-	// 与正常配置长得一模一样(界面只显示"未知类型"或干脆空着),而线上的表现
-	// 是这一档的类型绑定**静默失效** —— 命中照落、计数落到规则自己那一档,
-	// 没有任何 4xx、没有任何界面提示,只有服务端日志里一条告警。
+	// 它们防的是同一件事:一个指向已归档类型 / 已停用渠道的策略在界面上与正常
+	// 配置长得一模一样,而线上它静默失效。但"静默失效"只对**会参与匹配**的档
+	// 成立 —— 停用的档一次都不会被 scopeFor 看到,拦它挡不住任何东西。
+	//
+	// 而拦下来的代价是实打实的:归档一个类型、停用一个坏渠道都是被支持的日常
+	// 动作(adminArchiveCategory 只接管规则,不管 AI 作用域;渠道停用侧没有对称
+	// 的闸),做完之后指着它的那一档立刻变成**任何保存都 400**。管理员被界面
+	// 提示"这一档已失效,请关掉它",而列表上的一键启停走的正是这个 upsert ——
+	// 他关不掉。除了关不掉,那一档的改名、调抽样率、改分组也一并动不了,唯一
+	// 被接受的保存是把这一格改回"不指定",而那是一次含义完全不同的永久变更
+	// (指定渠道的理由往往正是"只能发给这一个")。
+	//
+	// 所以判据与下面的条数上限同形:`row.Enabled` 为假一律放行。想重新启用时,
+	// 那次提交带的就是 enabled=true,闸在**它真正开始生效的那一刻**照样拦得住。
+	//
+	// 「命中一律记为」必须指向一个**活着的**类型。
 	// 软删作用域已经把归档行排除在外,所以这一次 Take 同时挡住"不存在"与"已归档"。
-	if row.CategoryId > 0 {
+	if row.Enabled && row.CategoryId > 0 {
 		var cat Category
 		if err := gdb.Where("id = ?", row.CategoryId).Take(&cat).Error; err != nil {
 			err = fmt.Errorf("「命中一律记为」指向的违规类型(id=%d)不存在或已归档 —— "+
@@ -178,7 +214,31 @@ func adminUpsertAIScope(c *gin.Context) {
 			return
 		}
 	}
-	// 条数上限挡的是热路径:sampleRatesFor 是每个请求都要跑的线性扫描。
+	// 指定的审核渠道必须**存在且启用**(同样只在启用中的档上要求,理由见上)。
+	//
+	// 线上指向停用渠道的表现是每一次都走 no_channel —— 这一档从此不审核,
+	// 没有 4xx、没有界面提示,只有成本页上 no_channel 那一格悄悄长起来。
+	// 绝不在运行期回落到随机池:那会把用户内容发给运营明确没有选的端点,
+	// 而"只能发给这一个"往往正是指定渠道的全部理由(见 AIScope.ChannelId)。
+	if row.Enabled && row.ChannelId > 0 {
+		var ch AIChannel
+		if err := gdb.Where("id = ?", row.ChannelId).Take(&ch).Error; err != nil {
+			err = fmt.Errorf("指定的审核渠道(id=%d)不存在 —— "+
+				"请在审核渠道卡片里确认它还在,或把这一格改回「不指定(按权重随机)」", row.ChannelId)
+			writeAIScopeAudit(c, aiScopeAction(req.Id), qymodel.ResultFail, before, &row, err)
+			badRequest(c, err.Error())
+			return
+		}
+		if !ch.Enabled {
+			err := fmt.Errorf("指定的审核渠道「%s」当前是停用状态 —— "+
+				"停用的渠道不会进快照,这一档会每次都走「无可用渠道」并直接放行(不会回落到其它渠道)。"+
+				"请先启用该渠道,或把这一格改回「不指定(按权重随机)」", ch.Name)
+			writeAIScopeAudit(c, aiScopeAction(req.Id), qymodel.ResultFail, before, &row, err)
+			badRequest(c, err.Error())
+			return
+		}
+	}
+	// 条数上限挡的是热路径:scopeFor 是每个请求都要跑的线性扫描。
 	// 只数**启用中**的行,停用的档不参与匹配,留着它们没有代价。
 	if row.Enabled {
 		var enabled int64
@@ -307,6 +367,9 @@ func aiScopeAuditSnap(s *AIScope) map[string]any {
 		"prompt_fingerprint": aiPromptFingerprint(s.Prompt),
 		// 类型绑定改了谁的计数往哪一类走,而计数是封号判据。必须留痕。
 		"category_id": s.CategoryId,
-		"remark":      s.Remark,
+		// 指定渠道决定这一档的用户内容被发到**哪个第三方端点**。改它是本页
+		// 唯一一个能改变数据出境目的地的动作,必须留痕。
+		"channel_id": s.ChannelId,
+		"remark":     s.Remark,
 	}
 }

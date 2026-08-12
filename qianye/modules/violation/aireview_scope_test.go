@@ -12,7 +12,7 @@ import (
 //
 // 这里只钉三类不变量,每一类都对应一种"配置正确却不按预期跑"的失效:
 //
-//  1. **匹配顺序与兜底**:第一条匹配的策略说了算,都不匹配才落兜底。
+//  1. **匹配顺序与"没有兜底"**:第一条匹配的策略说了算,一条都不匹配 = 不审核。
 //     配错了没有任何症状 —— 抽样本来就是概率性的,少抽到一半看起来像运气。
 //  2. **作用域外零开销**:不在作用域内的请求连抽样函数都不许调用。
 //     反过来(先抽中再丢弃)会让界面上的"10%"变成一个谁也算不出来的数。
@@ -33,9 +33,8 @@ func scopeRT(name, modelScope, groupScope, mode string, pre, async int) *aiScope
 // TestAIScopeSampleRatesFor 是作用域解析的表驱动主用例。
 func TestAIScopeSampleRatesFor(t *testing.T) {
 	// 现网最典型的一份配置:高风险自助分组重点看,内部对接分组一律免审,
-	// 其余走兜底。三档同时存在,顺序决定一切。
+	// 其余谁都不匹配 = 不审核。四档同时存在,顺序决定一切。
 	rt := &aiRuntime{
-		SampleRateBps: 100, // 兜底 1%
 		Scopes: []*aiScopeRT{
 			scopeRT("内部对接·免审", "", "internal,batch", GroupScopeInclude, 0, 0),
 			scopeRT("视觉模型·全量后审", "*-vision,gpt-4*", "", GroupScopeInclude, 0, 10000),
@@ -70,9 +69,9 @@ func TestAIScopeSampleRatesFor(t *testing.T) {
 		{"名单与请求两侧大小写都不同", "claude-3-opus", "SVIP", 2000, 2000, ""},
 		{"自助分组 + 视觉模型:模型档排在前面", "gpt-4-vision", "selfserve", 0, 10000,
 			"两条都匹配时取 priority 更靠前的那条,不叠加 —— 叠加没有任何一种定义是运营预期的"},
-		{"谁都不匹配 → 兜底", "claude-3-opus", "default", 100, 100,
-			"兜底是一条策略都没有时的行为,也是这张表存在之前的行为"},
-		{"空分组折进 default,同样走兜底", "claude-3-opus", "", 100, 100,
+		{"谁都不匹配 → 两个时机都是 0", "claude-3-opus", "default", 0, 0,
+			"没有兜底档:表上没写的分组就是不审核,而不是落到某个看不见的全局值"},
+		{"空分组折进 default,同样不审核", "claude-3-opus", "", 0, 0,
 			"UsingGroup 为空的历史账号恰恰最可疑,不能因为空串就漏出作用域"},
 	}
 	for _, tc := range tests {
@@ -98,7 +97,7 @@ func TestAIScopeExcludeDirection(t *testing.T) {
 	for _, g := range groups {
 		_, incPre, _ := inc.scopeFor("gpt-4o", g)
 		_, excPre, _ := exc.scopeFor("gpt-4o", g)
-		// 兜底率是 0,所以"没匹配上"= 0,"匹配上"= 5000。两个方向必须恰好相反。
+		// 没匹配上 = 0(没有兜底档),匹配上 = 5000。两个方向必须恰好相反。
 		assert.NotEqual(t, incPre, excPre,
 			"分组 %q:include 与 exclude 必须严格互补,否则方向写反了不会有任何症状", g)
 	}
@@ -153,7 +152,7 @@ func TestAIScopeSamplingZeroCost(t *testing.T) {
 				_, _ = w.Write([]byte(okVerdict(false, "none", 0.1, 1, 1)))
 			})
 			rt := rtForServer(srv.URL, 2000)
-			rt.SampleRateBps = 0 // 兜底 0:作用域外 = 完全不审
+			// 覆盖掉夹具自带的那条全站策略:这一批用例要的就是"作用域外"。
 			rt.Scopes = []*aiScopeRT{
 				scopeRT("自助注册", "gpt-4*", "selfserve", GroupScopeInclude, 10000, 0),
 			}
@@ -235,7 +234,6 @@ func TestAIScopePhasesSampleIndependently(t *testing.T) {
 				_, _ = w.Write([]byte(okVerdict(false, "none", 0.1, 1, 1)))
 			})
 			rt := rtForServer(srv.URL, 2000)
-			rt.SampleRateBps = 0
 			rt.Scopes = []*aiScopeRT{
 				scopeRT("自助注册", "", "selfserve", GroupScopeInclude, tc.pre, tc.async),
 			}
@@ -257,30 +255,27 @@ func TestAIScopePhasesSampleIndependently(t *testing.T) {
 	}
 }
 
-// TestAIScopesReachAnySampling 钉住"兜底率为 0 但策略非 0"必须整体生效。
+// TestAIScopesReachAnySampling 钉住装配层的判据只剩策略表。
 //
-// 旧判据是 `SampleRateBps <= 0 → 整份 AI 配置不生效`。它与"只盯高风险分组"
-// 这个最典型的用法直接冲突:兜底 0 + 一条 50% 的策略会被整个关掉,
-// 而界面上策略配得好好的、线上一次都不跑、零报错。
+// 这是「移除兜底策略,策略要手动添加才能生效」在代码里的落点:空表 = 整份
+// AI 配置这一轮不生效,而不是空表 = 用某个隐藏的默认值。
 func TestAIScopesReachAnySampling(t *testing.T) {
 	tests := []struct {
-		name     string
-		fallback int
-		scopes   []*aiScopeRT
-		want     bool
+		name   string
+		scopes []*aiScopeRT
+		want   bool
 	}{
-		{"兜底非 0 → 生效", 100, nil, true},
-		{"兜底 0 且一条策略都没有 → 不生效", 0, nil, false},
-		{"兜底 0 + 转发前 50% 的策略 → 生效", 0,
+		{"一条策略都没有 → 不生效(没有任何隐藏兜底)", nil, false},
+		{"只配转发前 50% 的策略 → 生效",
 			[]*aiScopeRT{scopeRT("高风险", "", "selfserve", GroupScopeInclude, 5000, 0)}, true},
-		{"兜底 0 + 只配转发后的策略 → 生效", 0,
+		{"只配转发后的策略 → 生效",
 			[]*aiScopeRT{scopeRT("后审", "", "", GroupScopeInclude, 0, 1000)}, true},
-		{"兜底 0 + 全部策略都是 0 → 不生效", 0,
+		{"全部策略都是 0(免审名单)→ 不生效",
 			[]*aiScopeRT{scopeRT("免审", "", "internal", GroupScopeInclude, 0, 0)}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, aiScopesReachAnySampling(tc.fallback, tc.scopes))
+			assert.Equal(t, tc.want, aiScopesReachAnySampling(tc.scopes))
 		})
 	}
 }
@@ -338,7 +333,8 @@ func TestValidateAIScope(t *testing.T) {
 }
 
 // TestSummarizeAIScopes 钉住「一眼看出谁在被监控」那张表的两条性质:
-// 兜底恒在最后一行,以及被遮住的行必须被标出来。
+// 表里**只有真实存在的策略行**(不再有那一行假的兜底档),
+// 以及被遮住的行必须被标出来。
 //
 // 遮蔽标记不是装饰:一条被遮住的策略与一条配错了作用域的策略在列表上长得
 // 一模一样,而两者的下一步完全不同(调优先级 vs 改作用域)。
@@ -349,39 +345,32 @@ func TestSummarizeAIScopes(t *testing.T) {
 		{Id: 3, Name: "高风险", Enabled: true, Priority: 30, GroupScope: "selfserve"},
 		{Id: 4, Name: "停用的档", Enabled: false, Priority: 40},
 	}
-	got := summarizeAIScopes(rows, 100)
+	got := summarizeAIScopes(rows)
 
-	require.Len(t, got, 5, "汇总表 = 全部策略行 + 一行兜底")
+	require.Len(t, got, 4,
+		"汇总表 = 全部策略行,一行不多 —— 兜底档已经不存在,画一行恒为 0% 的假行"+
+			"只会让人以为那里还有个可调的旋钮")
 	assert.False(t, got[0].Shadowed, "有作用域的第一条不会被遮住")
 	assert.False(t, got[1].Shadowed, "作用域为空的那一条自己不被遮住")
 	assert.True(t, got[2].Shadowed,
 		"排在'全站'档后面的策略永远匹配不到 —— 不标出来,它看起来和配错作用域一模一样")
 	assert.False(t, got[3].Shadowed, "停用的档不参与判定,标成被遮住只会制造噪声")
 
-	last := got[4]
-	assert.True(t, last.Fallback, "兜底恒在最后一行:界面顺序必须等于热路径的判定顺序")
-	assert.Equal(t, 100, last.PreBps)
-	assert.Equal(t, 100, last.AsyncBps)
-	assert.True(t, last.Shadowed, "有'全站'档时兜底再也用不到,改它没有用")
-
 	t.Run("没有全站档时谁都不被遮住", func(t *testing.T) {
 		got := summarizeAIScopes([]AIScope{
 			{Id: 1, Name: "高风险", Enabled: true, GroupScope: "selfserve"},
-		}, 100)
-		require.Len(t, got, 2)
+		})
+		require.Len(t, got, 1)
 		assert.False(t, got[0].Shadowed)
-		assert.False(t, got[1].Shadowed)
-		assert.True(t, got[1].Fallback)
 	})
 
 	t.Run("停用的全站档遮不住任何人", func(t *testing.T) {
 		got := summarizeAIScopes([]AIScope{
 			{Id: 1, Name: "停用的全站档", Enabled: false},
 			{Id: 2, Name: "高风险", Enabled: true, GroupScope: "selfserve"},
-		}, 100)
-		require.Len(t, got, 3)
+		})
+		require.Len(t, got, 2)
 		assert.False(t, got[1].Shadowed, "停用的档一个请求都收不到")
-		assert.False(t, got[2].Shadowed)
 	})
 }
 

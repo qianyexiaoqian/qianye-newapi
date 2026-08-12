@@ -29,6 +29,7 @@ import { Textarea } from '@/components/ui/textarea'
 
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
+import { QY_WINDOW_UNLIMITED } from '../../../lib/violation-thresholds'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import {
   qyPreviewViolationCategoryImpact,
@@ -110,7 +111,12 @@ export function QyViolationCategoryFormSheet(props: Props) {
       qyPreviewViolationCategoryImpact({
         id: values.id,
         threshold: Number(values.threshold) || 0,
-        window_hours: Number(values.window_hours) || 0,
+        // 预览与保存必须用同一个窗口:预览按 24 小时算、保存按不限期限落库的话,
+        // 弹窗上那个"已有 N 个账号越线"是按另一套口径算出来的数,
+        // 而管理员就是靠它决定要不要按确认。
+        window_hours: values.window_unlimited
+          ? QY_WINDOW_UNLIMITED
+          : Number(values.window_hours) || 0,
         enabled: values.enabled,
       }),
     onSuccess: (data) => setPendingCount(data.impact.matched),
@@ -357,10 +363,15 @@ export function QyViolationCategoryFormSheet(props: Props) {
                 <Label htmlFor='qy-vcat-window'>
                   {t('qy_vcat_field_window')}
                 </Label>
+                {/* 勾了「不限期限」就禁用小时数框，而不是把它清空:
+                    两格同时可编辑会让人以为"不限期限 + 72 小时"是一种配置,
+                    而库里只有一列,那个组合根本不存在。禁用但保留原值,
+                    取消勾选时管理员填过的数字原样回来。 */}
                 <Input
                   id='qy-vcat-window'
                   type='number'
                   min={1}
+                  disabled={values.window_unlimited}
                   value={values.window_hours}
                   onChange={(e) =>
                     setValues((v) => ({ ...v, window_hours: e.target.value }))
@@ -379,6 +390,34 @@ export function QyViolationCategoryFormSheet(props: Props) {
                   }
                 />
               </div>
+            </div>
+            {/* 「不限期限」。它与上面那格小时数是**互斥**的两种窗口写法，所以放在
+                同一节里、紧挨着,并且勾上之后小时数框会变灰 —— 两格看起来都能填
+                的话,管理员会以为它们叠加。
+
+                下面那句说明不能省:无限窗口累计的是**计数器**,不是违规记录表,
+                所以它的真实含义是"自这一行计数器建立、或最近一次被清零起"。
+                不写清楚,运营会以为它是真的全历史,而管理员一次「重置计数」就把
+                这个数清了 —— 那正是"界面说的和实际不是一回事"。 */}
+            <div className='flex items-start justify-between gap-4 rounded-lg border p-3'>
+              <div className='min-w-0 space-y-1'>
+                <Label htmlFor='qy-vcat-window-unlimited'>
+                  {t('qy_vio_window_unlimited_switch')}
+                </Label>
+                <p className='text-muted-foreground text-xs'>
+                  {t('qy_vio_window_unlimited_hint')}
+                </p>
+              </div>
+              <Switch
+                id='qy-vcat-window-unlimited'
+                checked={values.window_unlimited}
+                onCheckedChange={(checked) =>
+                  setValues((v) => ({
+                    ...v,
+                    window_unlimited: checked === true,
+                  }))
+                }
+              />
             </div>
           </section>
         </form>

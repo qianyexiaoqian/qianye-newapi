@@ -71,8 +71,14 @@ func okVerdict(violation bool, category string, confidence float64, promptTok, c
 
 func rtForServer(url string, timeoutMs int) *aiRuntime {
 	return &aiRuntime{
-		SampleRateBps: 10000, PreTimeoutMs: timeoutMs, AsyncTimeoutMs: timeoutMs,
+		PreTimeoutMs: timeoutMs, AsyncTimeoutMs: timeoutMs,
 		MaxInputChars: defaultAIMaxInputChars,
+		// 一条覆盖全部分组、两个时机都 100% 的策略。
+		//
+		// 全局抽样率与兜底档已经下线,"送不送审"只由策略表回答,所以这个夹具
+		// 必须自带一条 —— 否则每一条用例都会在作用域闸那里就返回,
+		// 断言"发了几次调用"全都变成恒真的 0。
+		Scopes: []*aiScopeRT{scopeRT("全站", "", "", GroupScopeInclude, 10000, 10000)},
 		// 闭集必须是**出厂那一份**,不能留零值:零值闭集会把每一个类型都判成
 		// "清单外"并折进兜底,于是这一批用例断言的类型全都变成 uncategorized ——
 		// 测出来的是归一兜底,不是它们本来要测的那件事。
@@ -215,7 +221,7 @@ func TestAIReviewFailureDirections(t *testing.T) {
 // 但方向必须一致 —— 都不拦。
 func TestAIReviewAllChannelsDown(t *testing.T) {
 	t.Run("一个渠道都没有", func(t *testing.T) {
-		out := runAIReview(context.Background(), &aiRuntime{SampleRateBps: 10000}, nil, "内容", 1000)
+		out := runAIReview(context.Background(), &aiRuntime{}, nil, "内容", 1000)
 		require.NotNil(t, out)
 		assert.Equal(t, OutcomeNoChannel, out.Outcome)
 		assert.False(t, out.decided())
@@ -249,7 +255,7 @@ func TestAIReviewAllChannelsDown(t *testing.T) {
 
 		// 权重全压在死渠道上,让它几乎必然被先抽中。
 		rt := &aiRuntime{
-			SampleRateBps: 10000, MaxInputChars: defaultAIMaxInputChars,
+			MaxInputChars: defaultAIMaxInputChars,
 			Channels: []*aiChannelRT{
 				{Id: 1, Name: "dead", URL: chatCompletionsURL(deadURL), Model: "m", Weight: 999},
 				{Id: 2, Name: "good", URL: chatCompletionsURL(good.URL), Model: "m", Weight: 1},
@@ -578,7 +584,7 @@ func TestValidateAIRule(t *testing.T) {
 
 func TestValidateAISetting(t *testing.T) {
 	base := AISetting{
-		SampleRateBps: 3000, PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
+		PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
 		MaxInputChars: defaultAIMaxInputChars,
 	}
 	tests := []struct {
@@ -587,11 +593,6 @@ func TestValidateAISetting(t *testing.T) {
 		wantErr string
 	}{
 		{name: "默认值合法", mutate: func(*AISetting) {}},
-		{
-			name:    "抽样率超过 100% 被拒",
-			mutate:  func(s *AISetting) { s.SampleRateBps = 10001 },
-			wantErr: "抽样率",
-		},
 		{
 			name:    "转发前超时超过硬上限被拒(它直接加在用户的延迟上)",
 			mutate:  func(s *AISetting) { s.PreTimeoutMs = maxPreTimeoutMs + 1 },

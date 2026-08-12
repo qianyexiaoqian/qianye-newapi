@@ -1594,12 +1594,19 @@ func adminListCounters(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
+	// 阈值与窗口一并下发:光看 hit_count 无法判断"离封号还有几次",
+	// 而前端自己抄一份阈值就是同一个值的第二份拷贝。
+	//
+	// 取的是**兜底策略档**,不是 YAML 的两个旧字段。判定侧早就换成了按分组解析的
+	// 策略档(resolveBanPolicy),YAML 只在库里连兜底行都没有时当种子用 ——
+	// 继续下发 YAML 值,管理员改完兜底档之后这张卡片会一直显示改之前的数字,
+	// 而它标题上写的正是"离封号还有几次"。窗口可能是 WindowUnlimited(-1),
+	// 由前端换成"累计"的说法。
+	fallback := banPolicies().fallback
 	respond(c, gin.H{
 		"items": rows, "total": total,
-		// 阈值一并下发:光看 hit_count 无法判断"离封号还有几次",
-		// 而前端自己抄一份阈值就是同一个值的第二份拷贝。
-		"threshold":    config.Get().Violation.AutoBanThreshold,
-		"window_hours": config.Get().Violation.AutoBanWindowHours,
+		"threshold":    fallback.Threshold,
+		"window_hours": effectiveWindowHours(fallback.WindowHours),
 	})
 }
 

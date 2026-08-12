@@ -18,6 +18,11 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { TFunction } from 'i18next'
 
+import {
+  QY_WINDOW_UNLIMITED,
+  qyWindowIsUnlimited,
+  qyWindowWidens,
+} from '../../../lib/violation-thresholds'
 import type {
   QyViolationCategory,
   QyViolationCategoryInput,
@@ -35,7 +40,16 @@ export type QyCategoryFormValues = {
   ai_excluded: boolean
   published: boolean
   enabled: boolean
+  /**
+   * 小时数输入框的内容。**不限期限时它不参与提交**，由 `window_unlimited` 接管。
+   *
+   * 两个字段在表单态里并存、在提交时折成一个数字，是刻意的：勾上不限期限之后
+   * 用户填过的小时数必须留在框里，取消勾选时要能原样回来。若表单态也只留一个
+   * 数字，取消勾选就只能回落到一个硬编码的 24 —— 那会把管理员刚填的 72 吃掉。
+   * 折叠只发生在 `qyCategoryFormToPayload` 一处，所以库里永远只有一个事实。
+   */
   window_hours: string
+  window_unlimited: boolean
   threshold: string
   sort_order: string
 }
@@ -58,6 +72,9 @@ export function qyEmptyCategoryForm(): QyCategoryFormValues {
     // 新建一个类型绝不该顺手给它一条没人设定过的封号线。
     enabled: true,
     window_hours: '24',
+    // 新建默认**有窗口**。不限期限是一档需要人主动选的收紧配置：它让一年前的
+    // 命中永远算数，绝不该是某人新建类型时顺手带上的默认值。
+    window_unlimited: false,
     threshold: '0',
     sort_order: '100',
   }
@@ -77,7 +94,12 @@ export function qyCategoryToForm(
     ai_excluded: cat.ai_excluded,
     published: cat.published,
     enabled: cat.enabled,
-    window_hours: String(cat.window_hours),
+    // 不限期限的行没有小时数可回填，给框里留一个 24 —— 那是取消勾选时最不意外的
+    // 落点，也是这一列的出厂值。绝不回填 -1：它会以 `-1` 的形态出现在输入框里。
+    window_hours: qyWindowIsUnlimited(cat.window_hours)
+      ? '24'
+      : String(cat.window_hours),
+    window_unlimited: qyWindowIsUnlimited(cat.window_hours),
     threshold: String(cat.threshold),
     sort_order: String(cat.sort_order),
   }
@@ -98,7 +120,11 @@ export function qyCategoryFormToPayload(
     ai_excluded: values.ai_excluded,
     published: values.published,
     enabled: values.enabled,
-    window_hours: Number(values.window_hours) || 0,
+    // 两个表单字段在这里折成库里那一列。勾了不限期限就发哨兵，小时数一律忽略 ——
+    // 发一个"既是 -1 又是 72"的组合是不可能的，因为库里只有一列。
+    window_hours: values.window_unlimited
+      ? QY_WINDOW_UNLIMITED
+      : Number(values.window_hours) || 0,
     threshold: Number(values.threshold) || 0,
     sort_order: Number(values.sort_order) || 0,
     confirm,
@@ -137,9 +163,13 @@ export function qyValidateCategoryForm(
   if (values.published && values.public_title.trim() === '') {
     return t('qy_vcat_err_public_title_required')
   }
-  const window = Number(values.window_hours)
-  if (!Number.isFinite(window) || window < 1) {
-    return t('qy_vcat_err_window_range')
+  // 勾了不限期限时小时数框不参与提交，也就不该拦住保存 —— 拦下去的话，
+  // 一个清空了小时数、只想选"不限期限"的管理员会看到一句他改不掉的报错。
+  if (!values.window_unlimited) {
+    const window = Number(values.window_hours)
+    if (!Number.isFinite(window) || window < 1) {
+      return t('qy_vcat_err_window_range')
+    }
   }
   const threshold = Number(values.threshold)
   if (!Number.isFinite(threshold) || threshold < 0) {
@@ -165,9 +195,16 @@ export function qyCategoryTightens(
   values: QyCategoryFormValues
 ): boolean {
   const threshold = Number(values.threshold) || 0
-  const window = Number(values.window_hours) || 0
+  // 窗口先折成库里那一列的形状再比：勾了不限期限就是哨兵。
+  // 直接拿输入框里的小时数比大小，会让「24 → 不限期限」看起来毫无变化。
+  const window = values.window_unlimited
+    ? QY_WINDOW_UNLIMITED
+    : Number(values.window_hours) || 0
   if (!values.enabled || threshold <= 0) return false
   if (before == null) return true
   if (!before.enabled || before.threshold <= 0) return true
-  return threshold < before.threshold || window > before.window_hours
+  return (
+    threshold < before.threshold ||
+    qyWindowWidens(before.window_hours, window)
+  )
 }

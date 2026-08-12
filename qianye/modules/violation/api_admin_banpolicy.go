@@ -217,7 +217,9 @@ func tightensBanPolicy(hasBefore bool, before, next BanPolicy) bool {
 	if next.Threshold > 0 && (before.Threshold <= 0 || next.Threshold < before.Threshold) {
 		return true
 	}
-	if next.WindowHours > before.WindowHours {
+	// 裸的 `>` 在这里是错的:无限窗口是 -1,比任何正数都小,于是
+	// "24 小时 → 不限期限"这个最激进的改动会被判成放宽。见 windowWidens。
+	if windowWidens(before.WindowHours, next.WindowHours) {
 		return true
 	}
 	return policyActionWeight(next.Action) > policyActionWeight(before.Action)
@@ -304,7 +306,7 @@ func adminBanPolicyImpact(c *gin.Context) {
 		action = PolicyActionBan
 	}
 	impact, err := countBanPolicyImpact(c.Request.Context(), gdb, model.DB, group,
-		httpq.Int(c, "threshold", 0), httpq.Int(c, "window_hours", 24), action)
+		httpq.Int(c, "threshold", 0), queryWindowHours(c), action)
 	if err != nil {
 		internalError(c, err)
 		return

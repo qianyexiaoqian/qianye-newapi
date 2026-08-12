@@ -268,6 +268,7 @@ describe('作用域绑定违规类型', () => {
     async_sample_rate_bps: 5000,
     prompt: '',
     category_id: 0,
+    channel_id: 0,
     remark: '',
     created_at: 0,
     updated_at: 0,

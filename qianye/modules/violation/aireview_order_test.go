@@ -81,8 +81,9 @@ func TestLocalRuleHitSkipsAIReviewEntirely(t *testing.T) {
 			srv := newFakeReviewServer(t, func(w http.ResponseWriter, _ string) {
 				_, _ = w.Write([]byte(okVerdict(true, "jailbreak", 0.95, 1, 1)))
 			})
+			// rtForServer 自带一条覆盖全站、两个时机都 100% 的策略 ——
+			// 抽样绝不会成为"没跑"的另一种解释。
 			rt := rtForServer(srv.URL, 3000)
-			rt.SampleRateBps = 10000 // 兜底 100%:抽样绝不会成为"没跑"的另一种解释
 
 			prev := current.Load()
 			current.Store(&snapshot{

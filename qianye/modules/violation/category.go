@@ -695,12 +695,11 @@ func bumpCategoryCounter(ctx context.Context, gdb *gorm.DB, userId int, cat Cate
 	if gdb == nil {
 		return 0, false, db.ErrNotReady
 	}
-	windowHours := cat.WindowHours
-	if windowHours <= 0 {
-		windowHours = 24
-	}
 	now := common.GetTimestamp()
-	winFrom := now - int64(windowHours)*3600
+	// 无限窗口(WindowUnlimited)下 winFrom 是负数,第一条"把过期窗口清零"的
+	// 条件更新因此永远匹配不到任何行(window_start 是 Unix 时间戳,恒 >= 0),
+	// 计数只增不清 —— 这正是"没有窗口期限,达到次数就封号"。
+	winFrom := windowFloor(now, cat.WindowHours)
 
 	hit := 0
 	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -936,8 +935,13 @@ func validateCategory(cat *Category) error {
 	if cat.Published && cat.PublicTitle == "" {
 		return fmt.Errorf("勾选了对用户公示时,必须填写公示标题(不能用内部名称代替)")
 	}
-	if cat.WindowHours < 1 || cat.WindowHours > maxCategoryWindowHours {
-		return fmt.Errorf("统计窗口必须在 1..%d 小时之间,当前为 %d", maxCategoryWindowHours, cat.WindowHours)
+	// 窗口只有两种合法形状:1..上界的小时数,或哨兵 WindowUnlimited(不限期限)。
+	// 0 与其余负数一律拒绝 —— 它们在读点会静默回落成 24 小时,而"保存成功但生效的
+	// 不是我填的数"是这张表上最难查的一类问题。
+	if cat.WindowHours != WindowUnlimited &&
+		(cat.WindowHours < 1 || cat.WindowHours > maxCategoryWindowHours) {
+		return fmt.Errorf("统计窗口必须在 1..%d 小时之间,或取 %d 表示不限期限(达到次数即触发,不看时间跨度),当前为 %d",
+			maxCategoryWindowHours, WindowUnlimited, cat.WindowHours)
 	}
 	if cat.Threshold < 0 || cat.Threshold > maxCategoryThreshold {
 		return fmt.Errorf("次数阈值必须在 0..%d 之间(0 表示这一类不单独触发处置),当前为 %d",

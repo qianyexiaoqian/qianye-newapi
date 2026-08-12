@@ -219,8 +219,14 @@ func buildSuggestionPreview(ctx context.Context, gdb *gorm.DB) (suggestionPrevie
 		// 只补空:手填过的线绝不被建议值顶掉,那是一次静默收紧。
 		switch {
 		case state != thresholdUnset:
-			view.SkipReason = fmt.Sprintf("这一类已经配过线(%d 次 / %d 小时),建议值不会覆盖已有配置",
-				cat.Threshold, cat.WindowHours)
+			// 窗口写成 "%d 小时" 在无限窗口上会印出 "-1 小时"。这一句是管理员判断
+			// "要不要手工去改这一类"的唯一依据,印错口径等于让他按一个不存在的配置做决定。
+			window := fmt.Sprintf("%d 小时", effectiveWindowHours(cat.WindowHours))
+			if cat.WindowHours == WindowUnlimited {
+				window = "不限期限"
+			}
+			view.SkipReason = fmt.Sprintf("这一类已经配过线(%d 次 / %s),建议值不会覆盖已有配置",
+				cat.Threshold, window)
 		case !cat.Enabled:
 			view.SkipReason = "这一类的阈值开关当前是关闭的,写进去也不会生效,请先在编辑里打开"
 		default:
@@ -271,12 +277,11 @@ func countSuggestionAffectedUsers(ctx context.Context, gdb *gorm.DB, cats []Cate
 	parts := make([]string, 0, len(cats))
 	args := make([]any, 0, len(cats)*3)
 	for _, cat := range cats {
-		windowHours := cat.WindowHours
-		if windowHours <= 0 {
-			windowHours = 24
-		}
+		// 与 countCategoryImpact 逐字同构:无限窗口下 winFrom 是负数,
+		// `window_start >= ?` 于是放行全部计数行 —— 影响面必须与判定同口径,
+		// 这里少算一个人,管理员按下确认之后就多封一个人。
 		parts = append(parts, "(category_id = ? AND hit_count >= ? AND window_start >= ?)")
-		args = append(args, cat.Id, cat.Threshold, now-int64(windowHours)*3600)
+		args = append(args, cat.Id, cat.Threshold, windowFloor(now, cat.WindowHours))
 	}
 	// 列名全是普通标识符(category_id / hit_count / window_start / user_id),
 	// 三家数据库都不需要方言引号 —— 这里不能出现 `group` / `key` 那类保留字。

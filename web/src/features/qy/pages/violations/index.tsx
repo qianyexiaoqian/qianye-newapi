@@ -36,6 +36,7 @@ import { qyKeys } from '../../lib/query-keys'
 import {
   qyRemainingDisplay,
   qyRemainingLineKey,
+  qyWindowIsUnlimited,
 } from '../../lib/violation-thresholds'
 import { QyPager } from '../components/qy-pager'
 import { QyStatGrid } from '../components/qy-stat-grid'
@@ -154,9 +155,13 @@ export function QyMyViolations() {
                       summary.ban_threshold > 0
                         ? `${summary.hit_count} / ${summary.ban_threshold}`
                         : String(summary.hit_count),
-                    hint: t('qy_vio_my_window_hint', {
-                      hours: summary.window_hours,
-                    }),
+                    // 「滚动 N 小时窗口」在不限期限下是一句假话:那些次数
+                    // 永远不会因为时间过去而清零。整句换掉,不是换个数字。
+                    hint: qyWindowIsUnlimited(summary.window_hours)
+                      ? t('qy_vio_my_window_hint_unlimited')
+                      : t('qy_vio_my_window_hint', {
+                          hours: summary.window_hours,
+                        }),
                     emphasis: true,
                   },
                   {

@@ -324,15 +324,15 @@ func persistAIReviewCtx(ctx context.Context, gdb *gorm.DB, row *AIReview) error 
 //
 // 与 ensureDefaultBanPolicy 同一条理由:没有这一行时管理端会先看到一张空表,
 // 让人以为"还没配、所以现在不生效"—— 而那句话恰好是对的,却看不出默认值是什么。
-// 出厂值刻意是**关闭 + 抽样率 0**:AI 审核要花钱、要把用户内容发往第三方,
-// 这两件事都不该由一次二进制升级替站点决定。
+// 出厂值刻意是**关闭**,而且作用域策略表是空的(空表 = 不审核):AI 审核要
+// 花钱、要把用户内容发往第三方,这两件事都不该由一次二进制升级替站点决定。
 func ensureAISetting(ctx context.Context, gdb *gorm.DB) error {
 	if gdb == nil {
 		return db.ErrNotReady
 	}
 	now := common.GetTimestamp()
 	row := AISetting{
-		Id: 1, Enabled: false, SampleRateBps: 0,
+		Id: 1, Enabled: false,
 		PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
 		Prompt: "", MaxInputChars: defaultAIMaxInputChars,
 		ThirdPartyNoticeAck: false,

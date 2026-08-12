@@ -72,11 +72,17 @@ export type QyAiChannelList = {
   key_configured: boolean
 }
 
+/**
+ * AI 审核的全局设置。
+ *
+ * 这里**没有抽样率**:「送不送审」只由作用域策略表回答,一条策略都没有就是
+ * 不审核。曾经有一个全局 `sample_rate_bps`(同时是作用域都不命中时的兜底),
+ * 它已经下线 —— 它让这一页最重要的问题答不出来:作用域表上一条策略都没有、
+ * 看起来什么都没监控,而线上全站 5% 的请求内容正在被发往第三方。
+ */
 export type QyAiSetting = {
   id: number
   enabled: boolean
-  /** 万分比:3000 = 30%。 */
-  sample_rate_bps: number
   pre_timeout_ms: number
   async_timeout_ms: number
   /**
@@ -194,6 +200,15 @@ export type QyAiScope = {
    * (它继续只做规则的类型白名单判据,原值留在审核明细上)。
    */
   category_id: number
+  /**
+   * 这一档送到哪个审核渠道。**0 = 不指定**,含义是「按权重在全部启用渠道里
+   * 随机」—— 不是「用某一个固定渠道」,渠道表上没有 priority 这种东西。
+   *
+   * 指定的渠道被停用或删除时,这一档**不审核**(每次都是「无可用渠道」并直接
+   * 放行),运行期绝不回落到随机池:回落会把用户内容发去运营明确没有选的端点,
+   * 而「只能发给这一个」往往正是指定渠道的全部理由。
+   */
+  channel_id: number
   remark: string
   created_at: number
   updated_at: number
@@ -215,15 +230,16 @@ export type QyAiScopeInput = Omit<
 > & { id?: number }
 
 /**
- * 汇总表的一行。它不是策略行的回显 —— `fallback` 与 `shadowed` 两列在库里
- * 都不存在,它们是这份配置**作为整体**的性质,而"现在哪些分组在被监控"
- * 问的正是这个整体。
+ * 汇总表的一行。它不是策略行的回显 —— `shadowed` 在库里不存在,它是这份配置
+ * **作为整体**的性质,而"现在哪些分组在被监控"问的正是这个整体。
+ *
+ * 表里**只有真实存在的策略行**:曾经末尾还有一行「未匹配任何策略」的兜底档,
+ * 它连同全局抽样率一起下线了 —— 现在那个问题的答案恒为"不审核",
+ * 画一行恒为 0% 的假行只会让人以为那里还有个可调的旋钮。
  */
 export type QyAiScopeSummaryRow = {
-  /** 0 = 兜底档(它没有对应的策略行,取值来自设置页的兜底抽样率)。 */
   id: number
   name: string
-  fallback: boolean
   enabled: boolean
   priority: number
   model_scope: string
@@ -241,6 +257,14 @@ export type QyAiScopeSummaryRow = {
   /** 这一档指定的「命中一律记为」类型 id,0 = 不指定。类型名去违规类型清单里 join。 */
   category_id: number
   /**
+   * 这一档指定的审核渠道 id,0 = 不指定(按权重随机)。
+   *
+   * 同样只给 id,名字去 `channels` 里 join —— 那张表上还有 `enabled`,
+   * 而「指定的渠道被停用了」正是这一格最要紧的一种状态,只有 join 之后
+   * 才看得出来。
+   */
+  channel_id: number
+  /**
    * 这一行永远匹配不到:它前面有一条作用域为空(= 匹配一切)的启用策略。
    * 一条被遮住的策略与一条配错作用域的策略在列表上长得一模一样,
    * 而两者的下一步完全不同(调优先级 vs 改作用域)。
@@ -250,11 +274,15 @@ export type QyAiScopeSummaryRow = {
 
 export type QyAiScopeList = {
   items: QyAiScope[]
-  /** 按匹配顺序排好、末尾恒为兜底档。顺序就是后端热路径的判定顺序。 */
+  /** 按匹配顺序排好(没有兜底档)。顺序就是后端热路径的判定顺序。 */
   summary: QyAiScopeSummaryRow[]
-  fallback_bps: number
   max_scopes: number
   ai_enabled: boolean
+  /**
+   * 渠道清单,只够 join 用的四样。它让界面把 `channel_id` 变成名字,
+   * 并把「指定的渠道已停用 / 已删除」这两种静默失效当场标出来。
+   */
+  channels: { id: number; name: string; enabled: boolean; model: string }[]
   /** 快照里真正生效的那一份。与 items 不同说明还没重载到。 */
   effective_active: boolean
   active_scopes: {
@@ -265,6 +293,7 @@ export type QyAiScopeList = {
     /** 提示词原文不下发,只给档位 —— 它已经在表单里了。 */
     prompt_source: QyAiScopePromptSource
     category_id: number
+    channel_id: number
   }[]
 }
 

@@ -82,12 +82,8 @@ func bumpCounter(ctx context.Context, gdb *gorm.DB, userId, weight int, userGrou
 		return st, db.ErrNotReady
 	}
 
-	windowHours := policy.WindowHours
-	if windowHours <= 0 {
-		windowHours = 24
-	}
 	now := common.GetTimestamp()
-	winFrom := now - int64(windowHours)*3600
+	winFrom := windowFloor(now, policy.WindowHours)
 
 	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec(`INSERT INTO qy_violation_counter
@@ -127,6 +123,111 @@ func bumpCounter(ctx context.Context, gdb *gorm.DB, userId, weight int, userGrou
 // reachedThreshold 判断计数是否已经达到封号阈值。阈值 <= 0 表示关闭自动封号。
 func reachedThreshold(after, threshold int) bool {
 	return threshold > 0 && after >= threshold
+}
+
+// ───────────────────────────── 统计窗口 ─────────────────────────────
+//
+// 窗口这一列同时出现在两处:BanPolicy.WindowHours(账号总量线)与
+// Category.WindowHours(单类型线)。两处的取值语义、回落规则、以及"无限"的
+// 表示法必须逐字一致 —— 界面上它们并排显示,一个说"24 小时内累计"、另一个说
+// "累计",用户会以为其中一个写错了。所以口径只落在下面这三个函数上,
+// **任何地方都不要再写 `if windowHours <= 0 { windowHours = 24 }`**。
+
+// WindowUnlimited 是「统计窗口没有期限」的哨兵值:达到次数就处置,
+// 不管那些命中分布在多长的时间里。
+//
+// # 为什么是 -1,不是 0,也不是另加一个布尔列
+//
+// 0 **已经有语义了**:本文件、category.go、api_user.go、api_admin_category.go、
+// banpolicy.go 一共七处读点全都写着 `if windowHours <= 0 { windowHours = 24 }`,
+// 也就是"没配 ⇒ 按 24 小时算"。拿 0 当"无限"要同时做两件事:把字面义反过来
+// (窗口为零 = 永不过期),以及静默改写任何一行存量 0 的含义 —— 那一行原本按
+// 24 小时判,改完之后一年前的命中重新算数,**用户会因为一次配置迁移被封号**,
+// 而库里没有任何东西记录这件事发生过。本仓在 `commission.holding_days: 0`
+// 上栽过同一个坑(显式 0 被当成没填),不再栽第二次。
+//
+// 另加一个布尔列 window_unlimited 的语义最清楚,代价是"两个字段要保持一致":
+// (unlimited=true, hours=72) 这种组合能被写进库,而它没有意义;要挡住它就得
+// 在两个校验器、两个表单、两条迁移上各写一遍归一,而漏掉的那一处会让界面显示
+// 72 小时、判定按无限执行。哨兵值是单字段,不存在"不一致"这个状态。
+//
+// # -1 是干净的:它在存量数据里不可能出现
+//
+// 两个写入口(validateBanPolicy / validateCategory)历来都要求 >= 1;种子、
+// AutoMigrate 默认值、yamlFallbackPolicy 给的都是 24。也就是说本列的持久化取值
+// 只可能是正数 —— 现网核对过一遍,两张表全部行都是 24,一个 0 都没有。
+// 因此启用这个哨兵**不改写任何一行存量配置的语义**,不需要迁移。
+//
+// # 其余负数一律不是"无限"
+//
+// 判据刻意写成 `== WindowUnlimited` 而不是 `< 0`。DBA 手工插进来的 -7 会落进
+// 下面的 `<= 0` 回落分支变成 24 小时 —— 那是**保守方向**(窗口更短、更少人被封)。
+// 反过来把任意负数都当成无限,一次手滑就是全站范围的窗口放大。
+const WindowUnlimited = -1
+
+// defaultWindowHours 是窗口没配(0 或无法识别的负数)时的回落值。
+// 它同时是 BanPolicy / Category 两张表的 gorm 默认值,三处必须同数。
+const defaultWindowHours = 24
+
+// windowUnlimitedFloor 是无限窗口的时间下界。
+//
+// 它会直接进 SQL 与 `window_start < ?` 比较,而 window_start 是 Unix 时间戳、
+// 恒 >= 0,所以任何负数都能保证"窗口永不过期"。取 -1 而不是 math.MinInt64:
+// 后者一旦被谁当成时间戳打印出来是公元前 2.9 亿年,而 -1 一眼就是个哨兵。
+const windowUnlimitedFloor int64 = -1
+
+// effectiveWindowHours 把库里那一列折成**实际生效**的窗口,给展示与回显用。
+//
+// 无限窗口原样返回 WindowUnlimited:它不是一个小时数,任何调用方拿它做算术
+// (乘 3600、跟别的窗口比大小)都是错的,所以刻意不折成一个很大的数字 ——
+// 那种"够大就当无限"的写法会在下一次有人把上界调大时静默失效。
+func effectiveWindowHours(windowHours int) int {
+	if windowHours == WindowUnlimited {
+		return WindowUnlimited
+	}
+	if windowHours <= 0 {
+		return defaultWindowHours
+	}
+	return windowHours
+}
+
+// windowFloor 给出滚动窗口的时间下界:window_start 小于它就说明窗口已经滚过,
+// 计数该清零;计数查询也用它当"只算这个时间点之后的"下界。
+//
+// 无限窗口返回 windowUnlimitedFloor,于是窗口永不滚动、计数只增不清。
+//
+// # 无限窗口到底"累计"到多久以前 —— 界面必须照这句话写
+//
+// 它累计的是**计数器行**里的 hit_count,不是违规记录表的历史。所以它的真实
+// 含义是"自这一行计数器建立、或最近一次被清零起的累计",而清零有三个来源:
+// 管理员在计数器列表里点「重置」(resetUserCounter)、解封时勾了「清零计数」
+// (openNewBanCycle)、以及管理员撤销一条违规记录时的回退(revertHitCounters)。
+// 违规记录表的保留期清理(runRetentionGC)**不影响**这个数 —— 计数从来不从
+// 记录表现算。反过来说,超过保留期的那几次在管理端已经查不到明细,但它们仍然
+// 算在这个数里,这一点也必须让运营知道。
+func windowFloor(now int64, windowHours int) int64 {
+	if windowHours == WindowUnlimited {
+		return windowUnlimitedFloor
+	}
+	return now - int64(effectiveWindowHours(windowHours))*3600
+}
+
+// windowWidens 判断窗口从 before 改成 next 是不是**变长了**。
+//
+// 它只服务于二次确认那条判据(tightensBanPolicy / categoryTightens):窗口变长
+// 意味着更久以前的命中重新算数,一批原本够不到线的账号当场处在越线状态。
+//
+// 无限必须排在所有有限值之上。写成裸的 `next.WindowHours > before.WindowHours`
+// 时 -1 比任何正数都小,于是"24 小时 → 无限"这个**本轮最激进的一种改动**
+// 会被判成放宽,连影响面预览都不弹 —— 那正是二次确认要防的形状。
+func windowWidens(before, next int) bool {
+	if next == WindowUnlimited {
+		return before != WindowUnlimited
+	}
+	if before == WindowUnlimited {
+		return false
+	}
+	return effectiveWindowHours(next) > effectiveWindowHours(before)
 }
 
 // thresholdSemanticsAnyLine 是"两条线任一越过即触发"这个口径的机器可读名。

@@ -27,6 +27,7 @@ import { Input } from '@/components/ui/input'
 
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
 import { qyKeys } from '../../../lib/query-keys'
+import { qyWindowIsUnlimited } from '../../../lib/violation-thresholds'
 import { QyPager } from '../../components/qy-pager'
 import { qyOpsErrorMessage } from '../../ops/errors'
 import { formatQyTs, QY_EMPTY_TEXT } from '../../ops/format'
@@ -91,10 +92,15 @@ export function QyViolationCounterCard() {
       <div>
         <h2 className='text-sm font-medium'>{t('qy_vio_counter_title')}</h2>
         <p className='text-muted-foreground text-xs'>
-          {t('qy_vio_counter_desc', {
-            hours: countersQuery.data?.window_hours ?? 0,
-            threshold,
-          })}
+          {/* 窗口来自兜底策略档,可能是「不限期限」哨兵。整句换一句说,而不是
+              把 -1 塞进 {{hours}} —— 这句话的全部作用就是说清"这些次数按什么
+              时间口径算",印成「近 -1 小时窗口」等于把它作废。 */}
+          {qyWindowIsUnlimited(countersQuery.data?.window_hours)
+            ? t('qy_vio_counter_desc_unlimited', { threshold })
+            : t('qy_vio_counter_desc', {
+                hours: countersQuery.data?.window_hours ?? 0,
+                threshold,
+              })}
         </p>
       </div>
 

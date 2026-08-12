@@ -208,10 +208,16 @@ export function QyAdminViolationCategories() {
                           : 'text-muted-foreground'
                       }
                     >
-                      {t(qyThresholdStateKey(row.threshold_state), {
-                        count: row.category.threshold,
-                        hours: row.category.window_hours,
-                      })}
+                      {t(
+                        qyThresholdStateKey(
+                          row.threshold_state,
+                          row.category.window_hours
+                        ),
+                        {
+                          count: row.category.threshold,
+                          hours: row.category.window_hours,
+                        }
+                      )}
                     </span>
                   ),
                 },

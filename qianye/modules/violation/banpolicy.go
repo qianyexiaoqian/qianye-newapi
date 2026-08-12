@@ -57,14 +57,12 @@ var (
 // 在事故当天悄悄改变封号阈值。
 func yamlFallbackPolicy() BanPolicy {
 	cfg := config.Get().Violation
-	windowHours := cfg.AutoBanWindowHours
-	if windowHours <= 0 {
-		windowHours = 24
-	}
 	return BanPolicy{
-		IsDefault:   true,
-		Enabled:     true,
-		WindowHours: windowHours,
+		IsDefault: true,
+		Enabled:   true,
+		// YAML 里写 -1 同样表示不限期限:这个字段是兜底档的种子,让它比库里那一行
+		// 少一种取值,会让"我在 YAML 里配了无限、界面上却显示 24 小时"成立。
+		WindowHours: effectiveWindowHours(cfg.AutoBanWindowHours),
 		Threshold:   cfg.AutoBanThreshold,
 		Action:      PolicyActionBan,
 	}
@@ -195,8 +193,13 @@ func validateBanPolicy(p *BanPolicy) error {
 		return fmt.Errorf("action 取值非法: %q(只能是 %q / %q / %q)",
 			p.Action, PolicyActionRecord, PolicyActionRestrict, PolicyActionBan)
 	}
-	if p.WindowHours < 1 || p.WindowHours > maxPolicyWindowHours {
-		return fmt.Errorf("统计窗口必须在 1..%d 小时之间,当前为 %d", maxPolicyWindowHours, p.WindowHours)
+	// 与 validateCategory 逐字同构:1..上界的小时数,或哨兵 WindowUnlimited。
+	// 两处窗口的取值域必须一样,否则管理端会出现"类型能配无限、策略档不能"这种
+	// 说不出理由的差别,而它落到用户端就是两条并排的线用两套时间口径说话。
+	if p.WindowHours != WindowUnlimited &&
+		(p.WindowHours < 1 || p.WindowHours > maxPolicyWindowHours) {
+		return fmt.Errorf("统计窗口必须在 1..%d 小时之间,或取 %d 表示不限期限(达到次数即触发,不看时间跨度),当前为 %d",
+			maxPolicyWindowHours, WindowUnlimited, p.WindowHours)
 	}
 	if p.Threshold < 0 || p.Threshold > maxPolicyThreshold {
 		return fmt.Errorf("次数阈值必须在 0..%d 之间(0 表示不自动处置),当前为 %d",
@@ -283,8 +286,10 @@ const (
 // 已经被限制的人不会被"再限制一次")、排除 root(disableUserForViolation 永不
 // 处置 root,把它算进预览等于虚报)。
 func countBanPolicyImpact(ctx context.Context, gdb *gorm.DB, mainDB *gorm.DB, group string, threshold, windowHours int, action string) (banPolicyImpact, error) {
+	// WindowHours 回显**生效值**而不是入参原样:入参可能是 0(前端漏传),
+	// 而预览是按 24 小时算的。回显原样会让弹窗上的"按 0 小时窗口"与实际口径对不上。
 	out := banPolicyImpact{
-		Action: action, Threshold: threshold, WindowHours: windowHours,
+		Action: action, Threshold: threshold, WindowHours: effectiveWindowHours(windowHours),
 		UserIds: make([]int, 0, impactSampleSize),
 	}
 	if gdb == nil || mainDB == nil {
@@ -295,10 +300,9 @@ func countBanPolicyImpact(ctx context.Context, gdb *gorm.DB, mainDB *gorm.DB, gr
 	if threshold <= 0 {
 		return out, nil
 	}
-	if windowHours <= 0 {
-		windowHours = 24
-	}
-	winFrom := common.GetTimestamp() - int64(windowHours)*3600
+	// 无限窗口下 winFrom 是负数,`window_start >= ?` 因此放行全部计数行 ——
+	// 影响面必须与判定同口径,少一条过滤都会让预览少报。
+	winFrom := windowFloor(common.GetTimestamp(), windowHours)
 
 	var candidates []int
 	if err := gdb.WithContext(ctx).Model(&Counter{}).

@@ -182,9 +182,6 @@ func (ch *aiChannelRT) priced() bool {
 // aiRuntime 是 AI 审核在快照里的那一份。nil 表示本功能整体不生效
 // (没开、没设置行、或一个可用渠道都没有),热路径据此走零开销分支。
 type aiRuntime struct {
-	// SampleRateBps 是**兜底**抽样率:一条作用域策略都没匹配上时用它。
-	// 一条策略都没有的站点(升级上来的默认状态)因此行为完全不变。
-	SampleRateBps  int
 	PreTimeoutMs   int
 	AsyncTimeoutMs int
 	// Prompt 是**库里存的**那一份(空 = 用默认)。发出去的那一份要经
@@ -196,8 +193,24 @@ type aiRuntime struct {
 	Channels      []*aiChannelRT
 	totalWeight   int
 	// Scopes 是按 priority 升序排好的作用域策略,第一条匹配的说了算。
+	// 一条都不匹配 = 不审核,没有兜底档。
 	// 见 aireview_scope.go —— 它是"只盯某几个分组"与"分组分档抽样"的实现。
 	Scopes []*aiScopeRT
+}
+
+// channelById 在快照里找一个渠道。找不到表示它已经被停用、删除,或者这一轮
+// 密钥解不开(buildAIRuntime 会跳过那种渠道)—— 三者对调用方是同一件事:
+// 这一档指定的那个端点现在用不了。
+func (rt *aiRuntime) channelById(id int64) *aiChannelRT {
+	if rt == nil || id <= 0 {
+		return nil
+	}
+	for _, ch := range rt.Channels {
+		if ch.Id == id {
+			return ch
+		}
+	}
+	return nil
 }
 
 // aiOutcome 是一次审核调用的完整结果,既喂给规则匹配,也直接落成 AIReview 行。
@@ -260,13 +273,27 @@ func sampleAI(bps int) bool {
 	return n.Int64() < int64(bps)
 }
 
-// pickAIChannels 按权重随机排出本次要尝试的渠道顺序,最多 maxAIAttempts 个。
+// pickAIChannels 排出本次要尝试的渠道顺序。
 //
-// 加权随机而不是"永远打第一个":权重是运营表达"主用哪个、备用哪个"的方式,
-// 而恒定顺序会让备用渠道永远不被验证 —— 等到主渠道真挂了那天,才发现备用
-// 渠道的密钥三个月前就过期了。
-func pickAIChannels(rt *aiRuntime) []*aiChannelRT {
+// sc 指定了渠道时(ChannelId > 0)结果只有那一个,而且**指定的渠道不可用时
+// 返回空**,绝不回落到随机池 —— 完整理由写在 AIScope.ChannelId 上,一句话:
+// 回落会把内容发去一个运营明确没有选的端点,而那正是指定渠道要挡的事。
+// 返回空的后果是 runAIReview 给出 OutcomeNoChannel,请求放行、明细留痕。
+//
+// 没有指定时按权重随机排,最多 maxAIAttempts 个。加权随机而不是"永远打第一个":
+// 权重是运营表达"主用哪个、备用哪个"的方式,而恒定顺序会让备用渠道永远不被
+// 验证 —— 等到主渠道真挂了那天,才发现备用渠道的密钥三个月前就过期了。
+//
+// 指定渠道时**没有第二次尝试**:那正是"指定"的字面意思。同一档想要故障转移
+// 请留空走加权随机池。
+func pickAIChannels(rt *aiRuntime, sc *aiScopeRT) []*aiChannelRT {
 	if rt == nil || len(rt.Channels) == 0 {
+		return nil
+	}
+	if sc != nil && sc.ChannelId > 0 {
+		if ch := rt.channelById(sc.ChannelId); ch != nil {
+			return []*aiChannelRT{ch}
+		}
 		return nil
 	}
 	pool := make([]*aiChannelRT, len(rt.Channels))
@@ -322,13 +349,14 @@ func reviewText(text string, maxChars int) string {
 // 给它一个 error 参数只会让某个调用点某天写出 `if err != nil { return block }`。
 // 失败的**种类**通过 Outcome 表达,落进 AIReview 行供事后追查。
 //
-// sc 是本次请求命中的作用域策略(nil = 兜底档)。它在这里只有一个用途:
-// 决定用哪一份**基底**提示词。类型清单仍然由 renderAIPrompt 从类型表现算 ——
-// 作用域提示词覆盖的是"判定说明",不是那份闭集,否则每加一个违规类型就要
-// 回去改 N 份作用域提示词,而漏改的那几份会静默地永远返回旧类型。
+// sc 是本次请求命中的作用域策略(nil = 没有任何策略命中,理论上到不了这里 ——
+// 抽样率会是 0)。它在这里有两个用途:决定用哪一份**基底**提示词,以及送到
+// 哪个渠道。类型清单仍然由 renderAIPrompt 从类型表现算 —— 作用域提示词覆盖
+// 的是"判定说明",不是那份闭集,否则每加一个违规类型就要回去改 N 份作用域
+// 提示词,而漏改的那几份会静默地永远返回旧类型。
 func runAIReview(ctx context.Context, rt *aiRuntime, sc *aiScopeRT, text string, timeoutMs int) *aiOutcome {
 	started := time.Now()
-	channels := pickAIChannels(rt)
+	channels := pickAIChannels(rt, sc)
 	if len(channels) == 0 {
 		return &aiOutcome{Outcome: OutcomeNoChannel, LatencyMs: msSince(started)}
 	}

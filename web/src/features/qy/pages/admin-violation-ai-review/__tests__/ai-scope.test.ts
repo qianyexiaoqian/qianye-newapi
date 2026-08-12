@@ -24,6 +24,7 @@ import zh from '@/i18n/qy/zh.json'
 
 import {
   qyAiScopeAudience,
+  qyAiScopeChannelState,
   qyAiScopeDraftToInput,
   qyAiScopeHasFakeSeparator,
   qyAiScopeRowKind,
@@ -53,7 +54,6 @@ function summaryRow(
   return {
     id: 1,
     name: '高风险',
-    fallback: false,
     enabled: true,
     priority: 100,
     model_scope: '',
@@ -63,6 +63,7 @@ function summaryRow(
     async_sample_rate_bps: 5000,
     prompt_source: 'inherit',
     category_id: 0,
+    channel_id: 0,
     shadowed: false,
     ...over,
   }
@@ -90,6 +91,7 @@ describe('作用域草稿与请求体', () => {
       async_sample_rate_bps: 1000,
       prompt: '',
       category_id: 0,
+      channel_id: 0,
       remark: '',
       created_at: 0,
       updated_at: 0,
@@ -113,6 +115,7 @@ describe('作用域草稿与请求体', () => {
       async_sample_rate_bps: 10000,
       prompt: '本档判定说明',
       category_id: 12,
+      channel_id: 4,
       remark: '备注',
       created_at: 0,
       updated_at: 0,
@@ -126,6 +129,9 @@ describe('作用域草稿与请求体', () => {
     // 这一档的提示词清空了"，而清空之后它会静默回到继承全局。
     assert.equal(back.prompt, '本档判定说明')
     assert.equal(back.category_id, 12)
+    // 指定渠道同理:往返丢掉它 = 这一档静默回到「按权重随机」,
+    // 于是用户内容开始被发去运营明确没有选的端点,而界面上什么都没变。
+    assert.equal(back.channel_id, 4)
   })
 
   test('抽样率解析失败一律落到 0,绝不落到全量送审', () => {
@@ -200,6 +206,68 @@ describe('汇总行的定性', () => {
   for (const c of cases) {
     test(c.name, () => {
       assert.equal(qyAiScopeRowKind(c.row), c.want)
+    })
+  }
+
+  test('指定的渠道坏了:抽样照跑,但每次都是「无可用渠道」+ 放行', () => {
+    assert.equal(
+      qyAiScopeRowKind(summaryRow({ channel_id: 9 }), { channelBroken: true }),
+      'channel_down',
+      '这一档实际上已经不审核任何内容,而它在列表上与正常策略长得一模一样'
+    )
+  })
+
+  test('免审排在渠道坏掉之前 —— 两个抽样率都是 0 时渠道是什么状态都无关', () => {
+    assert.equal(
+      qyAiScopeRowKind(
+        summaryRow({
+          pre_sample_rate_bps: 0,
+          async_sample_rate_bps: 0,
+          channel_id: 9,
+        }),
+        { channelBroken: true }
+      ),
+      'exempt',
+      '报"渠道不可用"会把人引去修一个根本不影响结果的东西'
+    )
+  })
+})
+
+describe('指定审核渠道这一格的定性', () => {
+  const channels = [
+    { id: 1, enabled: true },
+    { id: 2, enabled: false },
+  ]
+  const cases: {
+    name: string
+    channelId: number
+    channels: { id: number; enabled: boolean }[]
+    want: string
+  }[] = [
+    { name: '0 = 不指定,按权重随机', channelId: 0, channels, want: 'default' },
+    { name: '指定一个启用中的渠道', channelId: 1, channels, want: 'ok' },
+    {
+      name: '指定的渠道被停用了 —— 这一档已经不再审核任何内容',
+      channelId: 2,
+      channels,
+      want: 'disabled',
+    },
+    {
+      name: '指定的渠道被删了',
+      channelId: 99,
+      channels,
+      want: 'missing',
+    },
+    {
+      name: '渠道清单拉不到时报 missing,而不是把一条停止工作的策略画成正常的',
+      channelId: 1,
+      channels: [],
+      want: 'missing',
+    },
+  ]
+  for (const c of cases) {
+    test(c.name, () => {
+      assert.equal(qyAiScopeChannelState(c.channelId, c.channels), c.want)
     })
   }
 })
@@ -279,8 +347,12 @@ describe('拼出来的 i18n 键两侧都在', () => {
       'qy_ai_scope_kind_exempt',
       'qy_ai_scope_kind_disabled',
       'qy_ai_scope_kind_shadowed',
+      'qy_ai_scope_kind_channel_down',
       'qy_ai_scope_mode_include',
       'qy_ai_scope_mode_exclude',
+      // `qy_ai_scope_channel_${state}` 这一族同样是拼出来的。
+      'qy_ai_scope_channel_disabled',
+      'qy_ai_scope_channel_missing',
     ]) {
       assert.ok(key in zhKeys, `zh.json 缺少 ${key}`)
       assert.ok(key in enKeys, `en.json 缺少 ${key}`)

@@ -28,6 +28,49 @@ For commercial licensing, please contact support@quantumnous.com
 const ENFORCEMENT_ACTIONS = ['record', 'restrict', 'ban'] as const
 
 /**
+ * 统计窗口「不限期限」的哨兵值，与后端 `violation.WindowUnlimited` 同值。
+ *
+ * ── 为什么前端也必须认识它 ──
+ * 后端把这个值**原样**下发（`window_hours: -1`），刻意不折成一个具体小时数：
+ * 折成 24 是撒谎（用户会以为等一天就清零），而它本来就不是一个小时数。
+ * 所以每一处显示窗口的地方都要先问 `qyWindowIsUnlimited`，再决定说
+ * 「{{hours}} 小时内累计」还是「累计（不限时间）」。
+ *
+ * 直接把它当数字渲染的后果是界面上出现「-1 小时内累计」。
+ */
+export const QY_WINDOW_UNLIMITED = -1
+
+/** 这个窗口是不是「不限期限」。判据是**恰好等于**哨兵，与后端逐字同构。 */
+export function qyWindowIsUnlimited(hours: number | undefined): boolean {
+  return hours === QY_WINDOW_UNLIMITED
+}
+
+/**
+ * 窗口从 `before` 改成 `next` 是不是**变长了**。与后端 `windowWidens` 同形。
+ *
+ * 用途只有一个：决定要不要在保存前弹二次确认。裸的 `next > before` 在这里是错的
+ * —— 哨兵是 -1，比任何正数都小，于是「24 小时 → 不限期限」这个最激进的改动会被
+ * 判成放宽，二次确认与影响面预览一起被跳过。方向不对称：漏判会让一批存量账号在
+ * 管理员毫不知情的情况下越线，误判只是多点一次。
+ */
+export function qyWindowWidens(before: number, next: number): boolean {
+  if (qyWindowIsUnlimited(next)) return !qyWindowIsUnlimited(before)
+  if (qyWindowIsUnlimited(before)) return false
+  return qyWindowEffectiveHours(next) > qyWindowEffectiveHours(before)
+}
+
+/**
+ * 把窗口折成**实际生效**的小时数。与后端 `effectiveWindowHours` 同形：
+ * 0 与无法识别的负数一律回落 24（那是这一列历来的"没配"语义），
+ * 哨兵原样返回 —— 它不是小时数，任何算术都是错的。
+ */
+export function qyWindowEffectiveHours(hours: number | undefined): number {
+  if (hours === QY_WINDOW_UNLIMITED) return QY_WINDOW_UNLIMITED
+  if (hours == null || !Number.isFinite(hours) || hours <= 0) return 24
+  return hours
+}
+
+/**
  * 把后端下发的处置动作折成一个**一定存在**的 i18n 键。
  *
  * 不直接拿 `t(\`qy_vio_policy_action_${action}\`)`：`action` 是服务端下发的自由
@@ -49,12 +92,23 @@ export function qyEnforcementActionKey(action: string | undefined): string {
  * 正是项目方看到的现象 —— 六个类型全是 0，看起来像"0 次就封"，而"到多少次封号"
  * 这件事在界面上等于不存在。
  */
-export function qyThresholdStateKey(state: string | undefined): string {
+export function qyThresholdStateKey(
+  state: string | undefined,
+  windowHours?: number
+): string {
+  // 「不限期限」不是第四态 —— 它是同一个 active/disabled 里**窗口那一半**的写法。
+  // 两句文案里的 `{{hours}}` 在哨兵下会渲染成「-1 小时内 3 次」，所以带窗口的
+  // 那两句各有一个不带小时数的孪生键。unset 那一句本来就不提窗口，不需要分叉。
+  const unlimited = qyWindowIsUnlimited(windowHours)
   switch (state) {
     case 'active':
-      return 'qy_vcat_threshold_value'
+      return unlimited
+        ? 'qy_vcat_threshold_value_unlimited'
+        : 'qy_vcat_threshold_value'
     case 'disabled':
-      return 'qy_vcat_threshold_disabled'
+      return unlimited
+        ? 'qy_vcat_threshold_disabled_unlimited'
+        : 'qy_vcat_threshold_disabled'
     default:
       return 'qy_vcat_threshold_unset'
   }

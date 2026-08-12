@@ -181,7 +181,11 @@ func TestValidateBanPolicy(t *testing.T) {
 		{"非法动作", BanPolicy{UserGroup: "vip", WindowHours: 24, Threshold: 5, Action: "delete"}, false},
 		{"动作为空", BanPolicy{UserGroup: "vip", WindowHours: 24, Threshold: 5}, false},
 		{"窗口为 0", BanPolicy{UserGroup: "vip", WindowHours: 0, Threshold: 5, Action: PolicyActionBan}, false},
-		{"窗口为负", BanPolicy{UserGroup: "vip", WindowHours: -1, Threshold: 5, Action: PolicyActionBan}, false},
+		// -1 是「不限期限」哨兵,合法;其余负数一律拒绝(它们在读点会静默回落
+		// 24 小时,而"保存成功但生效的不是我填的数"是这张表上最难查的一类问题)。
+		// 取值域的完整表在 window_unlimited_test.go。
+		{"窗口为 -1(不限期限哨兵)", BanPolicy{UserGroup: "vip", WindowHours: WindowUnlimited, Threshold: 5, Action: PolicyActionBan}, true},
+		{"窗口为负(不是哨兵)", BanPolicy{UserGroup: "vip", WindowHours: -2, Threshold: 5, Action: PolicyActionBan}, false},
 		{"窗口超上界", BanPolicy{UserGroup: "vip", WindowHours: maxPolicyWindowHours + 1, Threshold: 5, Action: PolicyActionBan}, false},
 		{"阈值为负", BanPolicy{UserGroup: "vip", WindowHours: 24, Threshold: -1, Action: PolicyActionBan}, false},
 		{"阈值超上界", BanPolicy{UserGroup: "vip", WindowHours: 24, Threshold: maxPolicyThreshold + 1, Action: PolicyActionBan}, false},

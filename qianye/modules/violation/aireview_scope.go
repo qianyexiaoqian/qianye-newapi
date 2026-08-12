@@ -30,15 +30,24 @@ import (
 //
 // 所以是一张策略表:每条策略 = 一个作用域 + 两个时机各自的抽样率。
 // 热路径按 priority 升序取**第一条**匹配的策略(与规则表同一套心智:
-// 优先级最高的一条说了算,不叠加),都不匹配时落到 AISetting.SampleRateBps。
+// 优先级最高的一条说了算,不叠加)。
 //
-// ═════════════════════ 迁移:零动作、零行为变化 ═════════════════════
+// ═════════════════════ 没有兜底档 ═════════════════════
 //
-// 一条策略都没有时,sampleRatesFor 返回的就是 AISetting.SampleRateBps ——
-// 与这张表存在之前逐字节相同。已有站点升级上来什么都不用做,行为不变。
-// 也因此**不需要**在 AISetting 上加"转发前兜底/转发后兜底"两列:要给兜底
-// 分时机的站点建一条作用域全空的策略即可(它匹配一切请求,天然是兜底)。
-// 加两列的代价是一次带哨兵值的数据迁移,而那正是本模块最不该有的东西。
+// 项目方的原话:「移除兜底策略,策略要手动添加,绑定分组。才能生效。
+// 全局审核抽样率移除一下」。所以语义是一句话:
+//
+//	**没有任何作用域策略命中 ⇒ 不审核。**
+//
+// 曾经在 AISetting 上的那一列全局抽样率(sample_rate_bps)已经删掉,连同
+// scopeFor 末尾那条回落。理由不是"少一个字段更干净",是它把这一页最重要的
+// 那个问题变得答不出来:界面上一条策略都没有、看起来什么都没监控,而线上
+// 全站 5% 的请求内容正在被发往第三方 —— 一个没有任何入口能看见的成本与
+// 隐私事实。策略表反过来:表上写着谁在被监控,表上没有的就是没有。
+//
+// 存量那一个值不会被静默丢弃,迁移把它转成一条覆盖全部分组的策略行,
+// 见 migrate.go 的 migrateAISampleRateToScope —— 它是否启用取决于那个值
+// 当时**是不是真的在生效**,而不是取决于它非零。
 
 // AIScope 是一条 AI 审核作用域策略。
 //
@@ -119,6 +128,41 @@ type AIScope struct {
 	// 因此升级上来的站点什么都不用做。
 	CategoryId int64 `json:"category_id" gorm:"not null;default:0"`
 
+	// ChannelId 是「这一档送到哪个审核渠道」。0 = 不指定,走默认选取。
+	//
+	// # 「默认」到底是谁:加权随机,不是"第一个"
+	//
+	// 留空时 pickAIChannels 在**全部启用中的渠道**里按 AIChannel.Weight 做加权
+	// 随机,最多试 maxAIAttempts 个。渠道表上没有 priority 这种东西 ——
+	// 权重就是运营表达"主用哪个、备用哪个"的唯一方式。所以留空的准确含义是
+	// 「按权重随机分流」,不是「用某一个固定渠道」,界面上必须这么写:
+	// 把它说成"默认渠道"会让人以为存在一个确定的答案,而两个渠道各 50% 时
+	// 那句话就是假的。
+	//
+	// # 为什么需要指定
+	//
+	// 作用域已经能表达"只盯自助注册分组",但送到哪里仍然是全站一份加权随机。
+	// 而运营给不同分组开审核的**约束**本来就不同:内部对接分组的内容可能只
+	// 允许发给自建的那个端点,自助注册分组用便宜的小模型就够。混在一个随机
+	// 池里时,前者会以某个概率把内容发给云端厂商 —— 一次没人授权、也没有任何
+	// 症状的数据出境。
+	//
+	// # 指定的渠道停用/删除时:这一档不审核,**绝不回落到默认池**
+	//
+	// 回落是"静默降级"的教科书形状:配置看起来还在、审核照跑、花销照付,
+	// 而内容被发去了一个运营明确没有选的地方 —— 上一段那条约束正是为了挡住
+	// 这件事,回落等于在它最要紧的时候把它关掉。
+	//
+	// 所以运行期的处置是 OutcomeNoChannel:本次不审核、请求放行(与本模块
+	// 其余失败方向一致),并在 qy_violation_ai_review 上留一行 no_channel。
+	// 它不是无声的 —— 成本页按 outcome 分组,一档指定的渠道被停掉之后
+	// no_channel 会立刻长出来;管理端作用域列表也会把这一行标红。
+	//
+	// 写入侧另有一道闸:upsert 时渠道必须存在**且启用**,删除渠道时若还有
+	// 策略指着它则直接拒绝(见 api_admin_aiscope.go / adminDeleteAIChannel)。
+	// 两道闸的方向一致 —— 让"这一档不再审核"永远是一次显式动作的结果。
+	ChannelId int64 `json:"channel_id" gorm:"not null;default:0"`
+
 	Remark    string `json:"remark" gorm:"type:varchar(512);not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"not null"`
 	UpdatedAt int64  `json:"updated_at" gorm:"not null"`
@@ -146,6 +190,8 @@ type aiScopeRT struct {
 	Prompt string
 	// CategoryId 0 = 不指定,命中仍按规则自己绑的类型记。见 resolveCategoryOverride。
 	CategoryId int64
+	// ChannelId 0 = 不指定,按权重在全部启用渠道里随机。见 pickAIChannels。
+	ChannelId int64
 }
 
 // aiSampleRolls 是**抽样函数被调用**的累计次数。
@@ -163,19 +209,19 @@ var aiSampleRolls atomic.Int64
 
 // scopeFor 解析本次请求落在哪一档:第一条匹配的策略,以及它的两个抽样率。
 //
-// sc 为 nil 表示**兜底档**(没有对应的策略行),此时两个抽样率都是
-// AISetting.SampleRateBps,提示词与类型绑定也都回落到全局那一份 ——
-// 这正是一条策略都没有时的行为,与这张表存在之前完全一致。
+// **sc 为 nil ⇒ 两个抽样率都是 0 ⇒ 不审核。** 没有兜底档:一条策略都不命中的
+// 请求不产生任何审核开销,连一次随机数都不摇。这条回落曾经落到
+// AISetting.SampleRateBps 上,那一列已经删掉,理由见本文件顶部。
 //
 // 纯内存比较:没有分配、没有加锁、没有随机数、没有数据库。它排在抽样之前,
 // 这个顺序是**契约**而不是优化 —— 反过来(先抽样再判作用域)会让界面上那个
 // "10%" 变成"作用域内的 10% 乘以一个谁也说不出来的数",而抽样率是本功能
 // 唯一的成本闸门,它必须是字面意思。
 //
-// 返回策略本体而不只是两个数字,是因为"审谁、抽多少、问什么、记成哪一类"
-// 现在是**同一条策略**上的四件事。分两次查(一次拿抽样率、一次拿提示词)会让
-// 两者在并发刷新快照时来自不同版本 —— 那种错位的表现是"这条命中被记到了
-// 另一档指定的类型上",而记录里没有任何字段能指向原因。
+// 返回策略本体而不只是两个数字,是因为"审谁、抽多少、问什么、送到哪、
+// 记成哪一类"现在是**同一条策略**上的五件事。分两次查(一次拿抽样率、
+// 一次拿提示词)会让两者在并发刷新快照时来自不同版本 —— 那种错位的表现是
+// "这条命中被记到了另一档指定的类型上",而记录里没有任何字段能指向原因。
 func (rt *aiRuntime) scopeFor(model, group string) (sc *aiScopeRT, pre, async int) {
 	if rt == nil {
 		return nil, 0, 0
@@ -185,7 +231,7 @@ func (rt *aiRuntime) scopeFor(model, group string) (sc *aiScopeRT, pre, async in
 			return s, s.PreBps, s.AsyncBps
 		}
 	}
-	return nil, rt.SampleRateBps, rt.SampleRateBps
+	return nil, 0, 0
 }
 
 // promptFor 给出这一次审核真正要用的**基底**提示词(类型清单还没拼进来)。
@@ -238,6 +284,7 @@ func buildAIScopes(gdb *gorm.DB) ([]*aiScopeRT, error) {
 			AsyncBps:     clampInt(row.AsyncSampleRateBps, 0, 10000),
 			Prompt:       row.Prompt,
 			CategoryId:   row.CategoryId,
+			ChannelId:    row.ChannelId,
 		})
 	}
 	return out, nil
@@ -245,13 +292,12 @@ func buildAIScopes(gdb *gorm.DB) ([]*aiScopeRT, error) {
 
 // aiScopesReachAnySampling 回答"这份配置有没有任何一条路径会真的送审"。
 //
-// buildAIRuntime 用它替换掉原来的 `SampleRateBps <= 0 → 整体不生效`:兜底率
-// 为 0 但某条策略配了 50% 是**最典型**的用法(只盯高风险分组),而旧判据会把
-// 它整个关掉 —— 界面上策略配得好好的,线上一次都不跑,零报错。
-func aiScopesReachAnySampling(fallbackBps int, scopes []*aiScopeRT) bool {
-	if fallbackBps > 0 {
-		return true
-	}
+// 全局抽样率删掉之后判据只剩策略表:一条启用的、某个时机非 0 的策略都没有时,
+// 整份 AI 配置这一轮不装配,热路径连快照上那个指针都不用读。
+//
+// 它同时是"策略要手动添加才能生效"这句话在装配层的落点 —— 空表 = 不生效,
+// 而不是空表 = 用某个隐藏的默认值。
+func aiScopesReachAnySampling(scopes []*aiScopeRT) bool {
 	for _, s := range scopes {
 		if s.PreBps > 0 || s.AsyncBps > 0 {
 			return true
@@ -315,6 +361,12 @@ func validateAIScope(s *AIScope) error {
 	if s.CategoryId < 0 {
 		return fmt.Errorf("违规类型 id 非法(%d);不指定请留 0", s.CategoryId)
 	}
+	// 渠道 id 同理:负数永远解析不到任何渠道,而它的表现是这一档从此每次都走
+	// no_channel —— 一个只在成本页上看得出来的静默失效。渠道**存不存在、启没启用**
+	// 不在这里挡(这个函数是纯校验、手上没有库句柄),那道闸在 adminUpsertAIScope。
+	if s.ChannelId < 0 {
+		return fmt.Errorf("审核渠道 id 非法(%d);不指定(按权重随机)请留 0", s.ChannelId)
+	}
 	return nil
 }
 
@@ -333,13 +385,15 @@ const aiScopePromptInherit = "inherit"
 
 // aiScopeSummaryRow 是「现在到底哪些分组在被监控、各自多少」这个问题的一行答案。
 //
-// 它不是策略行的回显:Shadowed 与 Fallback 两列在库里都不存在,它们是
-// **这一份配置作为整体**的性质,而运营真正要看的正是这个整体。
+// 它不是策略行的回显:Shadowed 列在库里不存在,它是**这一份配置作为整体**的
+// 性质,而运营真正要看的正是这个整体。
+//
+// 曾经这张表末尾还有一行「未匹配任何策略」的兜底档(Fallback=true),取值来自
+// 那一列全局抽样率。两者一起删掉了:现在"未匹配任何策略"的答案恒为不审核,
+// 而画一行恒为 0% 的假行只会让人以为那里还有个可调的旋钮。
 type aiScopeSummaryRow struct {
-	Id   int64  `json:"id"` // 0 = 兜底档(它没有对应的策略行)
-	Name string `json:"name"`
-	// Fallback 为真时这一行是「未匹配任何策略」那一档,取值来自 AISetting.SampleRateBps。
-	Fallback       bool   `json:"fallback"`
+	Id             int64  `json:"id"`
+	Name           string `json:"name"`
 	Enabled        bool   `json:"enabled"`
 	Priority       int    `json:"priority"`
 	ModelScope     string `json:"model_scope"`
@@ -357,6 +411,11 @@ type aiScopeSummaryRow struct {
 	// 只下发 id,类型名由界面用**已有的**违规类型清单接口去 join ——
 	// 在这里再拼一份名字就是第二份会漂移的事实。
 	CategoryId int64 `json:"category_id"`
+	// ChannelId 是这一档指定的审核渠道,0 = 不指定(按权重随机)。
+	// 与 CategoryId 同样只下发 id,名字由界面用**已有的**渠道列表接口去 join ——
+	// 那张表上还有"启用中没有",而"指定的渠道被停用了"正是这一格最要紧的一种
+	// 状态,只有 join 之后才看得出来。
+	ChannelId int64 `json:"channel_id"`
 	// Shadowed 为真表示这一行**永远不会被匹配到**:它前面有一条作用域为空
 	// (= 匹配一切)的启用策略把所有请求都收走了。
 	//
@@ -366,40 +425,30 @@ type aiScopeSummaryRow struct {
 	Shadowed bool `json:"shadowed"`
 }
 
-// summarizeAIScopes 把策略表 + 兜底率折成一张"谁在被监控"的表。
+// summarizeAIScopes 把策略表折成一张"谁在被监控"的表。
 //
-// 排序即匹配顺序,最后一行恒为兜底档 —— 因为热路径就是这样跑的,
-// 界面上的顺序与判定顺序不一致时,运营会照着一个错误的心智模型去调优先级。
+// 排序即匹配顺序 —— 因为热路径就是这样跑的,界面上的顺序与判定顺序不一致时,
+// 运营会照着一个错误的心智模型去调优先级。
 //
 // 注意入参是**库里的全部策略行**(含未启用的),不是快照里那份:管理列表要
 // 显示停用的档,而停用的档不参与遮蔽计算(它一个请求都收不到)。
-func summarizeAIScopes(rows []AIScope, fallbackBps int) []aiScopeSummaryRow {
-	out := make([]aiScopeSummaryRow, 0, len(rows)+1)
+func summarizeAIScopes(rows []AIScope) []aiScopeSummaryRow {
+	out := make([]aiScopeSummaryRow, 0, len(rows))
 	covered := false // 前面是否已经有一条启用的、作用域为空的策略
 	for _, r := range rows {
-		row := aiScopeSummaryRow{
+		out = append(out, aiScopeSummaryRow{
 			Id: r.Id, Name: r.Name, Enabled: r.Enabled, Priority: r.Priority,
 			ModelScope: r.ModelScope, GroupScope: r.GroupScope,
 			GroupScopeMode: r.GroupScopeMode,
 			PreBps:         r.PreSampleRateBps, AsyncBps: r.AsyncSampleRateBps,
 			PromptSource: aiScopePromptSource(r.Prompt),
 			CategoryId:   r.CategoryId,
+			ChannelId:    r.ChannelId,
 			Shadowed:     r.Enabled && covered,
-		}
-		out = append(out, row)
+		})
 		if r.Enabled && strings.TrimSpace(r.ModelScope) == "" && strings.TrimSpace(r.GroupScope) == "" {
 			covered = true
 		}
 	}
-	out = append(out, aiScopeSummaryRow{
-		Name: "未匹配任何策略", Fallback: true, Enabled: true,
-		Priority: 1 << 30, GroupScopeMode: GroupScopeInclude,
-		PreBps: fallbackBps, AsyncBps: fallbackBps,
-		// 兜底档没有策略行,提示词与类型绑定都只能是全局那一份。
-		PromptSource: aiScopePromptInherit,
-		// 兜底档被遮住是**正常且常见**的:配了一条"全站 1%"的策略之后,
-		// 兜底那一格就再也用不到了。标出来是为了让人知道改它没有用。
-		Shadowed: covered,
-	})
 	return out
 }

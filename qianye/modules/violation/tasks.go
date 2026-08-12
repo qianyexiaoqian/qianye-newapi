@@ -61,9 +61,19 @@ func runRetentionGC(ctx context.Context) {
 	}
 
 	// 已经归零且从未被封禁的计数行没有任何价值,顺手回收。
-	windowHours := config.Get().Violation.AutoBanWindowHours
-	if windowHours <= 0 {
-		windowHours = 24
+	//
+	// 这一处**刻意不走 windowFloor**,是本模块里唯一一个不跟随"不限期限"的窗口读点:
+	// 它算的不是判定口径,而是一个保留期年龄(窗口的两倍)。哨兵 -1 代进去会得到
+	// now+7200 —— 一个**未来**的时间点,于是这条 DELETE 从"回收两个窗口之前的空行"
+	// 变成"回收全部空行,包括刚刚建出来的那些"。方向虽然良性(删的始终是
+	// `ban_cycle = 0 AND total_count = 0`,即从来没有过命中的行,而 total_count 只增
+	// 不清,有过命中的行永远不在范围内),但那是巧合,不是设计。
+	//
+	// 所以这里用 effectiveWindowHours 之后再把哨兵单独折成默认值:GC 需要一个有限
+	// 的年龄,而"不限期限"对保留期没有意义。不要把这一处抄到任何有判定意义的地方。
+	windowHours := effectiveWindowHours(config.Get().Violation.AutoBanWindowHours)
+	if windowHours == WindowUnlimited {
+		windowHours = defaultWindowHours
 	}
 	staleBefore := common.GetTimestamp() - int64(windowHours)*3600*2
 	if err := gdb.WithContext(ctx).Exec(

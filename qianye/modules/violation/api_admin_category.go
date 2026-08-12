@@ -159,7 +159,7 @@ func adminCategoryImpact(c *gin.Context) {
 	cat := Category{
 		Id:          httpq.Int64(c, "id", 0),
 		Enabled:     c.Query("enabled") != "false",
-		WindowHours: httpq.Int(c, "window_hours", 24),
+		WindowHours: queryWindowHours(c),
 		Threshold:   httpq.Int(c, "threshold", 0),
 	}
 	impact, err := countCategoryImpact(c.Request.Context(), gdb, cat)
@@ -384,7 +384,10 @@ func categoryTightens(hasBefore bool, before, next Category) bool {
 	if !before.Enabled || before.Threshold <= 0 {
 		return true // 从"不出线"变成"出线"
 	}
-	return next.Threshold < before.Threshold || next.WindowHours > before.WindowHours
+	// 窗口比较必须走 windowWidens:无限窗口是 -1,裸的 `>` 会把
+	// "24 小时 → 不限期限"判成放宽,而那是这张表上最激进的一种改动。
+	return next.Threshold < before.Threshold ||
+		windowWidens(before.WindowHours, next.WindowHours)
 }
 
 // categoryImpact 是"把这一类调成这套阈值,有多少存量账号已经越过这条线"。
@@ -407,8 +410,10 @@ type categoryImpact struct {
 // 提前过滤 —— 类型线不带分组条件,少一次跨库扫描换来的是这个预览可以做得很轻。
 // 代价是数字可能略微高估(含已被限制的账号),接口层文案照此说明。
 func countCategoryImpact(ctx context.Context, gdb *gorm.DB, cat Category) (categoryImpact, error) {
+	// WindowHours 回显**生效值**(见 countBanPolicyImpact 的同一处理):
+	// 回显入参原样会让弹窗上写的窗口与实际按之计算的窗口对不上。
 	out := categoryImpact{
-		Threshold: cat.Threshold, WindowHours: cat.WindowHours,
+		Threshold: cat.Threshold, WindowHours: effectiveWindowHours(cat.WindowHours),
 		UserIds: make([]int, 0, impactSampleSize),
 	}
 	if gdb == nil {
@@ -417,11 +422,9 @@ func countCategoryImpact(ctx context.Context, gdb *gorm.DB, cat Category) (categ
 	if cat.Id <= 0 || !cat.Enabled || cat.Threshold <= 0 {
 		return out, nil
 	}
-	windowHours := cat.WindowHours
-	if windowHours <= 0 {
-		windowHours = 24
-	}
-	winFrom := common.GetTimestamp() - int64(windowHours)*3600
+	// 无限窗口下 winFrom 是负数,`window_start >= ?` 放行全部计数行 ——
+	// 预览与判定必须同口径。
+	winFrom := windowFloor(common.GetTimestamp(), cat.WindowHours)
 
 	var ids []int
 	if err := gdb.WithContext(ctx).Model(&CategoryCounter{}).

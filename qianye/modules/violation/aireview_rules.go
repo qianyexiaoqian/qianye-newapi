@@ -98,9 +98,6 @@ func validateAISetting(s *AISetting) error {
 	// 放这里意味着以后新增任何一条写入路径都自动带上"逐字等于默认 → 存空串"。
 	// 见 aireview_prompt.go 顶部对这条折叠的完整理由。
 	s.Prompt = normalizeAIPrompt(s.Prompt)
-	if s.SampleRateBps < 0 || s.SampleRateBps > 10000 {
-		return fmt.Errorf("抽样率必须在 0..10000 之间(万分比,30%% = 3000),当前为 %d", s.SampleRateBps)
-	}
 	if s.PreTimeoutMs < minAITimeoutMs || s.PreTimeoutMs > maxPreTimeoutMs {
 		return fmt.Errorf("转发前审核超时必须在 %d..%d 毫秒之间(它直接加在被抽中请求的响应延迟上),当前为 %d",
 			minAITimeoutMs, maxPreTimeoutMs, s.PreTimeoutMs)
@@ -177,7 +174,7 @@ func validateAIChannel(ch *AIChannel) error {
 // 没有规则消费它,拉两张表纯属给每个刷新周期加两次往返。
 //
 // 返回 (nil, nil) 表示"本功能这一轮不生效",这是一个**正常**结果而不是错误:
-// 总开关关着、兜底率与全部策略的抽样率都是 0、一个渠道都没启用、渠道密钥
+// 总开关关着、一条能送审的策略都没有(含空表)、一个渠道都没启用、渠道密钥
 // 全都解不开 —— 四种都归它。只有查询本身失败才返回 error。
 // vocab 是**快照已经从同一批类型行算好**的那份闭集。传进来而不是在这里再查
 // 一次库:两次查询会让规则、类型计数、AI 闭集三者可能来自不同时刻,而"规则按
@@ -194,15 +191,13 @@ func buildAIRuntime(gdb *gorm.DB, needed bool, vocab aiVocabulary) (*aiRuntime, 
 	if !setting.Enabled {
 		return nil, nil
 	}
-	// 作用域策略必须在"抽样率是否为 0"这道闸**之前**读:兜底率 0 + 一条
-	// "高风险分组 50%" 的策略是最典型的用法(只盯某几个分组),而旧判据
-	// (`SampleRateBps <= 0 → 整体不生效`)会把它整个关掉 —— 界面上策略
-	// 配得好好的,线上一次都不跑,而且零报错。
+	// 送不送审只由策略表回答:一条启用的、某个时机非 0 的策略都没有 = 整份
+	// 配置这一轮不生效。这就是「策略要手动添加才能生效」在装配层的落点。
 	scopes, err := buildAIScopes(gdb)
 	if err != nil {
 		return nil, err
 	}
-	if !aiScopesReachAnySampling(setting.SampleRateBps, scopes) {
+	if !aiScopesReachAnySampling(scopes) {
 		return nil, nil
 	}
 
@@ -212,7 +207,6 @@ func buildAIRuntime(gdb *gorm.DB, needed bool, vocab aiVocabulary) (*aiRuntime, 
 	}
 
 	rt := &aiRuntime{
-		SampleRateBps:  setting.SampleRateBps,
 		PreTimeoutMs:   clampInt(setting.PreTimeoutMs, minAITimeoutMs, maxPreTimeoutMs),
 		AsyncTimeoutMs: clampInt(setting.AsyncTimeoutMs, minAITimeoutMs, maxAsyncTimeoutMs),
 		Prompt:         setting.Prompt,

@@ -248,6 +248,8 @@ export type QyAiScopeDraft = {
   prompt: string
   /** 命中一律记为哪个违规类型。0 = 不指定(按规则自己绑的记)。 */
   category_id: number
+  /** 送到哪个审核渠道。0 = 不指定(按权重在全部启用渠道里随机)。 */
+  channel_id: number
   remark: string
 }
 
@@ -266,6 +268,7 @@ export function qyAiScopeToDraft(s?: QyAiScope): QyAiScopeDraft {
     asyncPercent: qyAiBpsToPercentText(s?.async_sample_rate_bps ?? 0),
     prompt: s?.prompt ?? '',
     category_id: s?.category_id ?? 0,
+    channel_id: s?.channel_id ?? 0,
     remark: s?.remark ?? '',
   }
 }
@@ -289,8 +292,41 @@ export function qyAiScopeDraftToInput(draft: QyAiScopeDraft): QyAiScopeInput {
     // 「继承 / 已自定义」标记在保存前就与真正入库的东西一致。
     prompt: draft.prompt.trim() === '' ? '' : draft.prompt,
     category_id: draft.category_id > 0 ? draft.category_id : 0,
+    channel_id: draft.channel_id > 0 ? draft.channel_id : 0,
     remark: draft.remark.trim(),
   }
+}
+
+/** 一条策略的「送到哪个渠道」这一格在界面上的定性。 */
+export type QyAiScopeChannelState =
+  /** 没指定:按权重在全部启用渠道里随机。 */
+  | 'default'
+  /** 指定了,而且那个渠道还在、还开着。 */
+  | 'ok'
+  /** 指定了,但那个渠道被停用了 —— 这一档每次都会走「无可用渠道」并直接放行。 */
+  | 'disabled'
+  /** 指定了,但清单里根本没有这个 id(被删了,或者清单没拉到)。 */
+  | 'missing'
+
+/**
+ * 这一档的渠道现在是什么状态。
+ *
+ * 存在的唯一理由是那两种**零症状**的失效:指定的渠道被停用、或者被删掉。
+ * 两种情况下这一档都不再审核任何内容(运行期绝不回落到随机池 —— 回落会把
+ * 用户内容发去运营明确没有选的端点),而列表上它与一条正常策略长得完全一样。
+ *
+ * 渠道清单为空时一律回 `missing` 而不是 `ok`:清单拉不到与渠道真被删掉在
+ * 这里分不开,而报一个偏保守的状态只会让人多点一次编辑;反过来报 `ok`
+ * 会把一条已经停止工作的策略画成正常的。
+ */
+export function qyAiScopeChannelState(
+  channelId: number,
+  channels: { id: number; enabled: boolean }[]
+): QyAiScopeChannelState {
+  if (channelId <= 0) return 'default'
+  const hit = channels.find((c) => c.id === channelId)
+  if (!hit) return 'missing'
+  return hit.enabled ? 'ok' : 'disabled'
 }
 
 /**
@@ -331,6 +367,11 @@ export type QyAiScopeRowKind =
   | 'disabled'
   /** 两个时机都是 0 —— 免审名单,这是有意义的配置,不是"没配"。 */
   | 'exempt'
+  /**
+   * 指定的审核渠道已停用或已删除:抽样照跑,但每一次都是「无可用渠道」+ 放行。
+   * 这一档实际上不再审核任何内容,而它在列表上与正常策略长得一模一样。
+   */
+  | 'channel_down'
   /** 正在监控。 */
   | 'active'
 
@@ -340,12 +381,18 @@ export type QyAiScopeRowKind =
  * 一条被遮住的策略哪怕抽样率写着 50%,它的真实抽样率也是 0;先报"免审"
  * 会让人以为只要把抽样率改回去就好,而真正要改的是优先级。
  */
-export function qyAiScopeRowKind(row: QyAiScopeSummaryRow): QyAiScopeRowKind {
+export function qyAiScopeRowKind(
+  row: QyAiScopeSummaryRow,
+  opts: { channelBroken?: boolean } = {}
+): QyAiScopeRowKind {
   if (row.shadowed) return 'shadowed'
   if (!row.enabled) return 'disabled'
   if (row.pre_sample_rate_bps <= 0 && row.async_sample_rate_bps <= 0) {
     return 'exempt'
   }
+  // 渠道坏掉排在免审**后面**:两个抽样率都是 0 时这一档压根不会发起调用,
+  // 渠道是什么状态完全无关,报"渠道不可用"会把人引去修一个不影响结果的东西。
+  if (opts.channelBroken) return 'channel_down'
   return 'active'
 }
 
