@@ -36,7 +36,15 @@ import (
 func TestNoAutoScopeCreation(t *testing.T) {
 	// 管理端的接管开关。它是**唯一**允许创建/更新 scope 行的入口,
 	// 而且它挂着 CriticalRateLimit + 审计 + 切 enforce 前的影响面闸门。
-	allowed := map[string]struct{}{"adminPutScope": {}}
+	allowed := map[string]struct{}{
+		"adminPutScope": {},
+		// migrateShadowScopesToEnforce 只对**已存在**的行做 UPDATE
+		// (WHERE mode='shadow' / WHERE allow_auto=false),没有任何分支会 INSERT。
+		// 本守卫防的是"没有人按过按钮却多出一行",而它恰恰相反:它让运营早就
+		// 亲手勾好、却因为 shadow 而一直没生效的那份清单开始生效。
+		// 用例仍然覆盖它不建行 —— 见 TestShadowMigrationNeverCreatesScopeRow。
+		"migrateShadowScopesToEnforce": {},
+	}
 
 	// 会写出一条 scope 行的 GORM 动词。Delete 不在其列:撤销范围是回退方向,
 	// 任何路径都可以做;而本守卫防的是"没有人按过按钮却多出一行"。

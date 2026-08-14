@@ -4,7 +4,7 @@ package groupmatrix
 //
 // 三张表全部以 user_group 为主键或索引前缀,而它们表达的都是**配置**而不是账目:
 //
-//	qy_group_scopes        这一档人有没有设定过可用范围、shadow 还是 enforce
+//	qy_group_scopes        这一档人有没有设定过可用范围(有行即生效)
 //	qy_group_grants        这一档人具体能选哪些模型分组(权威清单)
 //	qy_group_write_denies  影子期"本可拒绝"的计数
 //
@@ -47,7 +47,7 @@ func probeResidue(gdb *gorm.DB, userGroup string) ([]groupns.Residue, error) {
 	return []groupns.Residue{
 		{
 			Module: "groupmatrix", Table: Scope{}.TableName(),
-			Label: "可用范围设定(shadow / enforce)", Rows: scopes,
+			Label: "可用范围设定(有行即生效)", Rows: scopes,
 			Disposition: groupns.ResidueClean,
 			Detail: "留着的话行轴会凭空多出一档已经不存在的用户分组 —— " +
 				"listUserGroups 把 scopes 的键也并进候选",

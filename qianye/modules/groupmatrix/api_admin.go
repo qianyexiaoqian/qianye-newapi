@@ -553,9 +553,9 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 			Registered: registered, Observed: observed[ug],
 			DisplayName: reg.DisplayName, Note: reg.Note,
 			Enabled: reg.Enabled, SortOrder: reg.SortOrder,
-			// 未设定范围时下发 shadow 而不是空串:前端的 mode 是一个二值枚举,
+			// 未设定范围时 Mode 仍下发一个非空值:前端的 mode 曾是一个二值枚举,
 			// 空串会让它在 managed 被打开的那一刻落进"两个选项都没选中"的状态。
-			Mode: ModeShadow, ScopeState: ScopeStateUnset,
+			Mode: ModeEnforce, ScopeState: ScopeStateUnset,
 			// nil 切片会被序列化成 JSON null,前端对着 null 调 .map 会白屏。
 			ModelGroups: make([]string, 0),
 			// 没配过充值倍率时 Ratio 留 null,而**生效值仍然要给**:
@@ -1295,8 +1295,9 @@ func validateCells(cells []Cell, scopes map[string]Scope, before map[string]map[
 			// (见 Resolve),给一个没设范围的用户分组写备注等于写一条死配置,
 			// 而它会在管理端回读时显示出来 —— 运营会以为已经配好了。
 			return fmt.Errorf("用户分组 %q 还没有自己的可用模型分组清单,所以现在还不能勾选模型分组、"+
-				"也不能给某一格单独写备注。请先在这一档的编辑弹窗里、「可用范围的力度」那一段把范围打开"+
-				"(先选「影子」只观察不拦人,确认无误再切「强制」),再回到下面的清单里勾选与写备注。",
+				"也不能给某一格单独写备注。请先在这一档的编辑弹窗里把「可用范围」打开,"+
+				"再回到下面的清单里勾选与写备注。注意:范围一旦打开就**立即生效**,"+
+				"该用户分组能选的模型分组从此完全由这份清单决定。",
 				cell.UserGroup)
 		}
 		if cell.Action == ActionGrant && !ratio_setting.ContainsGroupRatio(cell.ModelGroup) {
@@ -1462,14 +1463,14 @@ func grantsToLists(grants map[string]map[string]struct{}) map[string][]string {
 // ───────────────── PUT /group-matrix/scope/:user_group ─────────────────
 
 type putScopeReq struct {
+	// Managed = 这一档要不要有自己的可用范围。true 建行(**立即生效**),false 删行。
+	//
+	// 刻意**没有** Mode 字段:shadow 已下线,行存在即生效。老客户端仍可能带
+	// 一个 mode 字符串上来,ShouldBindJSON 会直接忽略它 —— 忽略比报错好,
+	// 那个字段现在无论取什么值结果都一样。
 	Managed   bool   `json:"managed"`
-	Mode      string `json:"mode"`
 	AllowAuto *bool  `json:"allow_auto"`
 	Note      string `json:"note"`
-	// 切到 **enforce** 时必填:服务端会重算并比对,任一不符返回 409。
-	// 切到 shadow 不需要(shadow 不产生任何影响)。
-	DraftHash  string `json:"draft_hash"`
-	ImpactHash string `json:"impact_hash"`
 }
 
 // adminPutScope 建立/撤销接管,或切换 shadow ↔ enforce。
@@ -1498,10 +1499,6 @@ func adminPutScope(c *gin.Context) {
 		badRequest(c, "请求体格式错误")
 		return
 	}
-	if req.Managed && req.Mode != ModeShadow && req.Mode != ModeEnforce {
-		badRequest(c, "mode 必须是 shadow 或 enforce")
-		return
-	}
 
 	gdb := db.Get()
 	var before Scope
@@ -1517,39 +1514,15 @@ func adminPutScope(c *gin.Context) {
 		action = auditActionModeUpdate
 	}
 
-	// 切 enforce 是唯一会真的把用户挡在门外的动作,必须先看过影响面。
-	if req.Managed && req.Mode == ModeEnforce {
-		if req.DraftHash == "" || req.ImpactHash == "" {
-			writeScopeFailure(c, action, &before, nil, errors.New("切 enforce 缺少 draft_hash / impact_hash"))
-			badRequest(c, "切换到 enforce 之前必须先调 POST /group-matrix/preview 看过影响面,"+
-				"并把返回的 draft_hash 与 impact_hash 一起回传")
-			return
-		}
-		fresh, err := previewDigest(userGroup)
-		if err != nil {
-			internalError(c, err)
-			return
-		}
-		if fresh.Incomplete {
-			writeScopeFailure(c, action, &before, nil, errors.New("影响面统计不完整,禁止切 enforce"))
-			conflict(c, "影响面统计不完整(超时或超过 max_preview_pairs),"+
-				"在看不见影响面的情况下禁止切 enforce —— 宁可切不了")
-			return
-		}
-		if fresh.DraftHash != req.DraftHash {
-			// 切 enforce 用的是**已落库**的清单,所以服务端重算出来的草稿指纹
-			// 必然是"空动作列表"的那一个。对不上说明客户端预览的是一份还没保存的
-			// 草稿 —— 那正是「预览的是 A、保存的是 B」。
-			writeScopeFailure(c, action, &before, nil, errors.New("draft_hash 不匹配"))
-			conflict(c, "预览用的是一份尚未保存的草稿。请先保存清单改动,再重新预览,最后才切 enforce")
-			return
-		}
-		if fresh.ImpactHash != req.ImpactHash {
-			writeScopeFailure(c, action, &before, nil, errors.New("impact_hash 不匹配"))
-			conflict(c, "影响面已经变化(预览之后有人建了新令牌、改了倍率表或改了清单),请重新预览")
-			return
-		}
-	}
+	// ── 这里曾经有一道「切 enforce 前必须先看影响面」的闸门,已整体拆除 ──
+	//
+	// 它要求客户端先调 preview、把 draft_hash 与 impact_hash 一起回传,对不上
+	// 就 409。拆掉的理由是项目方拍板的口径变了:编辑用户分组的模型分组**立即生效**,
+	// 令牌被挡就挡,提醒一下即可。闸门在新口径下只剩摩擦 —— 运营勾完清单还要
+	// 多走两步才能让它生效,而那两步正是上一版里全站没人走完的那两步。
+	//
+	// 影响面本身没有消失:adminPutMatrix 保存清单之后会把受影响的令牌数
+	// 一起返回,由前端直接提示。preview 端点也保留,供想先看一眼的人主动调用。
 
 	now := common.GetTimestamp()
 	var after *Scope
@@ -1560,7 +1533,8 @@ func adminPutScope(c *gin.Context) {
 		} else if existed {
 			allowAuto = before.AllowAuto
 		}
-		after = newScope(userGroup, req.Mode, allowAuto, req.Note, c.GetInt("id"), now)
+		// mode 恒为 enforce:行存在即生效,不再有第二档。
+		after = newScope(userGroup, ModeEnforce, allowAuto, req.Note, c.GetInt("id"), now)
 	}
 
 	// 首次接管的预填必须在写 scope 行**之前**算好:写完之后再算,
@@ -1705,10 +1679,19 @@ func currentUsableGroups(userGroup string) []string {
 
 // defaultAllowAuto 首次接管时 auto 的预填值 = 「auto 当前是否在可选清单里」。
 // 不借收紧之机顺手关掉一个功能:零行为变更的开箱状态是硬要求。
-func defaultAllowAuto(userGroup string) bool {
-	_, ok := service.GetUserUsableGroups(userGroup)[autoGroup]
-	return ok
-}
+// defaultAllowAuto 是首次给一档人建范围时「允许 auto」的初值。
+//
+// ── 为什么恒为 true,而不是沿用上游此刻的可选清单 ──
+//
+// 老实现是 `_, ok := service.GetUserUsableGroups(userGroup)[autoGroup]`,也就是
+// 「上游全局白名单里有没有 auto 键」。那个推导在本站恒为 false —— 白名单是空的 ——
+// 于是每一档新建的范围都自动禁掉了 auto,而运营从来没做过这个决定。
+//
+// auto 本身不放宽任何权限:令牌的 auto 候选会被 FilterUserTokenAutoGroups 按
+// 这一档的可选清单再过滤一遍,用户不可能借它用到清单外的模型分组。它决定的只是
+// 「这一档的人能不能让令牌在自己已有的几个分组之间按序故障转移」,
+// 而项目方拍板要的正是这个能力。要关的那一档,在编辑弹窗里显式关掉即可。
+func defaultAllowAuto(string) bool { return true }
 
 // ───────────────── POST /group-matrix/repair-token ─────────────────
 

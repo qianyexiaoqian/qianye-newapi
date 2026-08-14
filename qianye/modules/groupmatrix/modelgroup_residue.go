@@ -80,7 +80,7 @@ func probeModelGroupResidues(tx *gorm.DB, modelGroup string) ([]groupns.Residue,
 			"。它们是 enforce(权威清单),而清单里**只有**这一个模型分组 —— " +
 			"删掉之后这些档的用户一个模型分组都选不到:模型列表为空、" +
 			"新建令牌选不了分组、已有的显式分组令牌全部 403。" +
-			"请先在「用户分组」页给它们补一个别的模型分组,或把范围改回 shadow / 取消范围"
+			"请先在「用户分组」页给它们补一个别的模型分组,或取消这一档的范围设定"
 	}
 
 	return []groupns.Residue{

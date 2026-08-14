@@ -72,28 +72,35 @@ func TestUsableGroupDescriptionLadder(t *testing.T) {
 		"三级都空时回落到分组名本身,绝不能是空串 —— 下拉里那一行总要有字")
 }
 
-// TestGrantNoteDoesNotLeakIntoShadow 守 shadow 与未设范围两档的**指针恒等**契约。
+// TestScopeTakesEffectImmediately 守新口径:**有 scope 行 = 清单立即生效**。
 //
-// 按格备注是一段装饰文案,而"未生效 = 逐位等于上游"是这套设计唯一可证的回退依据。
-// 为了把文案提前显示出来而在 shadow 里返回一张新 map,等于拿回退能力换装饰品,
-// 并且会让 shadow(「配好了但一个字节都不生效」)变成"挡不住人却改了文案"的半生效态。
-func TestGrantNoteDoesNotLeakIntoShadow(t *testing.T) {
+// 它替换掉的是 TestGrantNoteDoesNotLeakIntoShadow —— 那条守的是 shadow 档
+// 「配好了但一个字节都不生效」的指针恒等契约,而 shadow 已整体下线。
+// 「未设范围 = 逐位等于上游」这条回退依据没有丢,仍由
+// bitexact_test.go 的 TestResolveReturnsUpstreamPointerWhenNotManaged 覆盖。
+//
+// 这一条正面钉住项目方拍板的那句话:编辑用户分组的模型分组之后立即生效,
+// 不需要第二步。回归形状是「运营勾完清单、保存成功、刷新之后什么都没发生」。
+func TestScopeTakesEffectImmediately(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, true)
 	syncHotAsync(t)
 	useUpstreamGroups(t,
-		map[string]string{"paid": "白名单原文"},
-		map[string]float64{"vip": 1, "paid": 1})
+		map[string]string{"paid": "白名单原文", "other": "另一个"},
+		map[string]float64{"vip": 1, "paid": 1, "other": 1})
 
-	seedScope(t, gdb, "vip", ModeShadow, false, "paid")
-	seedGrantNote(t, gdb, "vip", "paid", "影子期不该出现的备注")
+	seedScope(t, gdb, "vip", ModeEnforce, false, "paid")
+	seedGrantNote(t, gdb, "vip", "paid", "这一格专属备注")
 
-	upstream := map[string]string{"paid": "白名单原文"}
+	upstream := map[string]string{"paid": "白名单原文", "other": "另一个"}
 	got := Resolve("vip", upstream)
 
-	require.Equal(t, upstream, got)
-	assert.Equal(t, "白名单原文", got["paid"],
-		"shadow 下必须逐位返回上游 —— 一段备注不值得推翻「未生效 = 上游」这条回退依据")
+	assert.Equal(t, map[string]string{"paid": "这一格专属备注"}, got,
+		"清单只授权了 paid,所以结果必须恰好是它一个,且按格备注当场生效")
+	assert.NotContains(t, got, "other",
+		"没授权的模型分组必须当场消失,而不是等某个第二步开关")
+	assert.Equal(t, map[string]string{"paid": "白名单原文", "other": "另一个"}, upstream,
+		"绝不能改写调用方那张 map")
 }
 
 // TestSetNoteNeverCreatesGrant 守 set_note 的边界:它只改文案,不改成员资格。
@@ -302,6 +309,6 @@ func TestValidateCellsUnmanagedErrorPointsAtTheUI(t *testing.T) {
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "PUT /")
 	assert.NotContains(t, err.Error(), "scope 行")
-	assert.Contains(t, err.Error(), "可用范围的力度",
+	assert.Contains(t, err.Error(), "可用范围",
 		"正文必须点名界面上真的存在的那个控件")
 }

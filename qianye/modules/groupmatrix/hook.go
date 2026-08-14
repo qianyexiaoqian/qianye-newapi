@@ -39,19 +39,20 @@ import (
 //	(c) 该用户分组没有 scope 行(unmanaged / inherit)
 //	(d) 快照从未成功加载过
 //
-// 另加一种:scope.mode == shadow —— 清单已配置但刻意不生效。
-//
-// 被接管且 enforce 时返回一张**新分配**的 map:绝不返回快照内部那一张,
+// 被接管时返回一张**新分配**的 map:绝不返回快照内部那一张,
 // 调用方 delete 一个 key 就会污染全站鉴权,而且无法复现。
 //
-// ══════════ 按格备注为什么只在 enforce 这一档生效 ══════════
+// ══════════ 「配了就生效」是项目方拍板的口径 ══════════
 //
-// 备注是"这一格"的属性,而"这一格存不存在"在 shadow / 未设范围两档里都还没成立:
-// 那两档 return 的是 upstream 那一张 map 的**指针**,契约 (c) 与 bitexact_test 都
-// 钉在这上面。为了一段文案去破坏"未生效 = 逐位等于上游"这条唯一可证的回退依据,
-// 是拿回退能力换一个装饰品。shadow 的语义本来就是「配好了但一个字节都不生效」,
-// 让它半生效(挡不住人、却改了文案)比不生效更难解释。
-// 运营要预览按格备注,看管理端那一份解析结果即可(effective_note)。
+// 本模块曾经有第三档 shadow(清单已配、但一个字节都不生效),用来在切换前先观察
+// 影响面。它已整体下线,理由是它在本站是**空转的**:全局白名单
+// options.UserUsableGroups 是空的,影子期用户本来就几乎什么都选不到,于是
+// 「先观察现状不变」这个前提根本不成立 —— 保护的是一个不存在的风险,
+// 代价却是运营在管理端勾完模型分组、保存成功、刷新之后什么都没发生。
+//
+// 现在只有两档:**有 scope 行 = 清单立即生效,没有 = 逐位返回上游**。
+// 令牌因此被挡不再阻止保存,改为保存后把受影响的令牌数直接告诉运营
+// (见 api_admin.go 的 adminPutMatrix)。
 func Resolve(userGroup string, upstream map[string]string) map[string]string {
 	if !enabled() {
 		return upstream
@@ -93,7 +94,9 @@ func Resolve(userGroup string, upstream map[string]string) map[string]string {
 	}
 
 	scope, ok := s.Scopes[userGroup]
-	if !ok || scope.Mode != ModeEnforce {
+	if !ok {
+		// 没有 scope 行 = 未设定范围 = 全部模型分组按各自兜底倍率可用。
+		// 逐位返回上游那一张 map 的指针,bitexact_test 钉在这上面。
 		return upstream
 	}
 
@@ -125,8 +128,19 @@ func Resolve(userGroup string, upstream map[string]string) map[string]string {
 		out[mg] = setting.GetUsableGroupDescription(mg)
 	}
 	if scope.AllowAuto {
+		// ── auto 直接注入,不再要求它先出现在 upstream 里 ──
+		//
+		// 老写法是 `if desc, ok := upstream[autoGroup]; ok`,也就是只在**上游全局
+		// 白名单**里已经有 auto 键时才注回。那让「这一档允不允许 auto」实际上由
+		// 一份与用户分组无关的全局配置说了算:本站 UserUsableGroups 是空的,
+		// 于是 allow_auto 打开也永远不生效 —— 又一个「配了没反应」的开关。
+		//
+		// 权威清单的整个立意就是"这一档能选什么由这一档自己决定",auto 不该例外。
+		// 文案仍走 setting 那一份,与全站同源。
 		if desc, ok := upstream[autoGroup]; ok {
 			out[autoGroup] = desc
+		} else {
+			out[autoGroup] = setting.GetUsableGroupDescription(autoGroup)
 		}
 	}
 	return out
@@ -140,8 +154,8 @@ func Resolve(userGroup string, upstream map[string]string) map[string]string {
 //     的名字都会被挡,而他根本没碰分组。那是把"将来会 403"
 //     换成"现在就改不动",不是改进。
 //  2. 新分组为空    → 放行。回落用户分组永远合法,而且这是孤儿令牌唯一的自救出口。
-//  3. 未启用 / 写侧开关关 / 快照未加载 / unmanaged / shadow → 放行(shadow 下记一条影子拒绝)。
-//     **一个状态同时控制读写两侧的严格性**,不允许 enforce 从写侧先漏进来。
+//  3. 未启用 / 写侧开关关 / 快照未加载 / unmanaged → 放行。
+//     **一个状态同时控制读写两侧的严格性**,不允许收紧从写侧先漏进来。
 //  4. 新分组 = auto → 由 scope.AllowAuto 决定,**与读侧同一个判据**。
 //     这一条刻意排在 scope 查找之后:早期版本把 auto 放在最前面无条件豁免,
 //     于是 enforce + AllowAuto=false 时令牌保存得下、每次请求却被读侧
@@ -194,12 +208,6 @@ func CheckTokenGroup(c *gin.Context, oldGroup, newGroup string) (err error) {
 		//
 		// 判据与读侧同源(同一份 planentitlement 快照与 per-user 缓存),
 		// 默认实现恒返回 false —— 订阅侧没接入时这一行行为中性。
-		return nil
-	}
-	if scope.Mode != ModeEnforce {
-		// 影子期:只记录,不阻断。这一档是唯一**可归因**的影子拒绝来源 ——
-		// 读侧那个挂载点拿不到被查询的 key(见 WriteDeny 的注释)。
-		recordWriteDeny(userGroup, newGroup, c.GetInt("id"))
 		return nil
 	}
 	if newGroup == autoGroup {

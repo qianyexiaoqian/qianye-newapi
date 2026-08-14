@@ -125,6 +125,12 @@ func (Mod) InstallHooks() {
 	if !enabled() {
 		return
 	}
+	// 存量 shadow 行改写成生效。必须排在预热**之前**:预热会把清单编译进快照,
+	// 而快照那一步对非 enforce 的行会打一条告警 —— 顺序反了的话,每次升级
+	// 都会先刷一屏"mode 不是 enforce"的告警,再由迁移把它们改掉。
+	if common.IsMasterNode {
+		migrateShadowScopesToEnforce()
+	}
 	if err := reload(); err != nil {
 		common.SysError("qianye/groupmatrix: 可选清单快照预热失败(本次启动后先按上游全局白名单放行," +
 			"权威清单暂不生效,稍后自动重试): " + err.Error())

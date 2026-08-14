@@ -123,9 +123,8 @@ func TestResolveReturnsUpstreamPointerWhenNotManaged(t *testing.T) {
 		{"(d) 快照从未加载", true, func(t *testing.T) {
 			current.Store(nil)
 		}, "vip"},
-		{"(e) 已接管但 shadow", true, func(t *testing.T) {
-			seedScope(t, gdb, "vip", ModeShadow, false, "default")
-		}, "vip"},
+		// 「(e) 已接管但 shadow」这一档已随 shadow 模式一并删除:
+		// 现在有 scope 行就一定生效,不存在"接管了却仍逐位返回上游"的组合。
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

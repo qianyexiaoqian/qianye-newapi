@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { ChevronDown, Eye, ShieldCheck } from 'lucide-react'
+import { ChevronDown, ShieldCheck } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -120,67 +120,27 @@ export function QyUgScopeModeStrip(props: {
         <div className='flex min-w-0 flex-wrap items-center gap-1.5'>
           <Badge
             variant='outline'
-            className={cn(
-              'px-1.5 py-0 text-[11px]',
-              enforced
-                ? 'border-destructive/50 text-destructive'
-                : 'border-warning/50 text-warning'
-            )}
+            className='border-destructive/50 text-destructive px-1.5 py-0 text-[11px]'
           >
-            {enforced ? (
-              <ShieldCheck aria-hidden='true' className='size-3' />
-            ) : (
-              <Eye aria-hidden='true' className='size-3' />
-            )}
-            {enforced
-              ? t('qy_ugl_mode_enforce_chip')
-              : t('qy_ugl_mode_shadow_chip')}
+            <ShieldCheck aria-hidden='true' className='size-3' />
+            {t('qy_ugl_mode_enforce_chip')}
           </Badge>
           <span className='text-muted-foreground text-xs'>
-            {enforced
-              ? t('qy_ugl_mode_enforce_desc')
-              : t('qy_ugl_mode_shadow_desc')}
+            {t('qy_ugl_mode_enforce_desc')}
           </span>
         </div>
 
-        {enforced ? (
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            disabled={props.scope.isSaving}
-            onClick={() =>
-              props.scope.onSubmit({
-                managed: true,
-                mode: 'shadow',
-                allow_auto: allowAuto,
-                note,
-              })
-            }
-          >
-            {t('qy_ugl_mode_to_shadow')}
-          </Button>
-        ) : (
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            onClick={() => setSwitching((open) => !open)}
-          >
-            {t('qy_ugl_mode_to_enforce')}
-          </Button>
-        )}
+        {/*
+          ── 这里曾经是「切回影子 / 切到强制」两个按钮 ──
+
+          shadow 模式已整体下线:有 scope 行 = 清单立即生效,没有第二档,
+          因此也就没有可切的东西。留着一个点了不会有任何变化的按钮,
+          正是这一轮在消灭的形状(后端已经不再读请求体里的 mode 字段)。
+
+          清单本身的增删仍然由下面那张表直接完成,保存即生效。
+        */}
       </div>
 
-      {/*
-        ── 切回「先观察」是止血动作，所以它**不设闸门，只把代价说在前面** ──
-
-        它同样是一次范围写入，成功之后强制回读服务端状态、清空本地草稿。
-        另外三个提交点（建清单 / 回落全局 / 更多范围设置）都因此被禁用，
-        这一个不能：运营点它的时刻是"发现拦错了人"，而把停止拦人的按钮
-        锁在一份未保存的草稿后面，代价是一批用户继续 403。
-        不设闸门 ≠ 可以不说 —— 静默丢弃时屏幕上只有一句绿色的「范围已保存」。
-      */}
       {enforced && props.scope.hasUnsavedDraft && (
         <p className='text-destructive text-xs leading-5'>
           {t('qy_ugl_mode_to_shadow_discards_draft')}

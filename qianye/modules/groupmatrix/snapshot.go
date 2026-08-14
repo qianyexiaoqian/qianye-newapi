@@ -294,11 +294,17 @@ func buildSnapshot(scopes []Scope, grants []Grant) *Snapshot {
 			// 让它出现在 Scopes 里只会制造一个永远不会被读到的配置项。
 			continue
 		}
-		if sc.Mode != ModeShadow && sc.Mode != ModeEnforce {
+		// mode 列已收敛成单一取值:**行存在即生效**。
+		//
+		// 存量的 shadow 行由 migrateShadowScopesToEnforce 在启动时改写,这里
+		// 只兜住"迁移还没跑到 / 有人手改了库"这两种情况。方向选生效而不是不生效:
+		// 不生效正是刚刚被下线的那个形状(配好了、保存成功、什么都没发生),
+		// 而生效至少是可见的 —— 运营会立刻看到分组变了。
+		if sc.Mode != ModeEnforce {
 			common.SysError(fmt.Sprintf(
-				"qianye/groupmatrix: 用户分组 %q 的 mode=%q 非法(可选 shadow|enforce),"+
-					"按 shadow 处理(不生效)", sc.UserGroup, sc.Mode))
-			sc.Mode = ModeShadow
+				"qianye/groupmatrix: 用户分组 %q 的 mode=%q 不是 enforce(shadow 已下线),"+
+					"按生效处理", sc.UserGroup, sc.Mode))
+			sc.Mode = ModeEnforce
 		}
 		s.Scopes[sc.UserGroup] = sc
 		// 被接管但零授权时这里必须是**空 map 而不是缺键**:
@@ -350,4 +356,60 @@ func buildSnapshot(scopes []Scope, grants []Grant) *Snapshot {
 		}
 	}
 	return s
+}
+
+// migrateShadowScopesToEnforce 把存量的 shadow 行改写成 enforce。
+//
+// ═══════════════════════ 为什么这次迁移必须做,而且必须在启动时做 ═══════════════════════
+//
+// shadow 的语义是「清单已配、但一个字节都不生效」。它下线之后,读取侧不再判 mode ——
+// 也就是说那些行**从这次升级起自动开始生效**。留着 mode='shadow' 这个值不改,
+// 库里就会有一批"写着影子、实际在生效"的行:任何人去查库都会得到与线上相反的结论,
+// 而这类不一致正是排障时最贵的东西。
+//
+// 迁移只改 mode 一个字段,grants 一条都不动 —— 那份清单本来就是运营亲手勾的,
+// 这次升级要做的恰恰是让它开始生效。
+//
+// 只在主节点跑:从节点同时改会互相覆盖同样的值,除了噪声没有别的效果。
+func migrateShadowScopesToEnforce() {
+	gdb := db.Get()
+	if gdb == nil {
+		return
+	}
+	res := gdb.Model(&Scope{}).Where("mode = ?", ModeShadow).
+		Updates(map[string]any{"mode": ModeEnforce})
+	if res.Error != nil {
+		// 不阻断启动:快照编译那一步也会把非 enforce 的行按生效处理(见上面),
+		// 所以行为已经是对的,这里失败只影响"库里的值与行为是否一致"。
+		common.SysError("qianye/groupmatrix: shadow 范围迁移失败(行为不受影响,但库里的 mode 值会与实际不符): " +
+			res.Error.Error())
+		return
+	}
+	if res.RowsAffected > 0 {
+		common.SysLog(fmt.Sprintf(
+			"qianye/groupmatrix: 已把 %d 档用户分组的可用范围由「影子」改为立即生效 —— "+
+				"这些档此前配好了清单但一个字节都没生效,现在它们的模型分组清单开始起作用",
+			res.RowsAffected))
+	}
+
+	// 存量行的 allow_auto 一并抬成允许。
+	//
+	// 它当初是由 defaultAllowAuto 从**上游全局白名单里有没有 auto 键**推出来的,
+	// 而那份白名单在本站是空的 —— 于是每一档都被自动禁掉了 auto,运营从来没做过
+	// 这个决定。它是一个推导出来的artifact,不是一次选择,所以可以安全地纠正。
+	//
+	// auto 不放宽任何权限:令牌的 auto 候选仍会被这一档的可选清单过滤一遍。
+	autoRes := gdb.Model(&Scope{}).Where("allow_auto = ?", false).
+		Updates(map[string]any{"allow_auto": true})
+	if autoRes.Error != nil {
+		common.SysError("qianye/groupmatrix: allow_auto 迁移失败: " + autoRes.Error.Error())
+		return
+	}
+	if autoRes.RowsAffected > 0 {
+		common.SysLog(fmt.Sprintf(
+			"qianye/groupmatrix: 已为 %d 档用户分组打开「允许 auto」—— "+
+				"此前它是由一份空的全局白名单推导出来的,并非运营的选择;"+
+				"用户从此可以自定义令牌的分组顺序并按序故障转移",
+			autoRes.RowsAffected))
+	}
 }
