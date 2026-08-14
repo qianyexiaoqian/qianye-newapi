@@ -149,7 +149,7 @@ describe('没有自己的清单时，列表读的是实际可用名单而不是�
 
   test('残留 grant 行的那一项落进「可添加」，不冒充已分配', () => {
     assert.deepEqual(
-      view.addable.map((column) => column.name),
+      view.addable.map((entry) => entry.column.name),
       ['pool-b']
     )
   })
@@ -191,7 +191,7 @@ describe('有自己的清单时，列表 = grant ∪ 草稿', () => {
       [['pool-b', 'scope']]
     )
     assert.deepEqual(
-      view.addable.map((column) => column.name),
+      view.addable.map((entry) => entry.column.name),
       ['pool-a', 'pool-c']
     )
     assert.equal(view.memberCount, 1)
@@ -229,7 +229,7 @@ describe('仅经套餐可达的模型分组留在列表里，但不算清单成�
 
   test('它不进「可添加」，也不计入 memberCount', () => {
     assert.deepEqual(
-      view.addable.map((column) => column.name),
+      view.addable.map((entry) => entry.column.name),
       ['pool-b']
     )
     /*

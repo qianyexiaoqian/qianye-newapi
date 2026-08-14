@@ -294,7 +294,7 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
               : t('qy_ugl_add_title', { count: view.addable.length })}
           </p>
           <ul className='max-h-56 space-y-1 overflow-y-auto'>
-            {view.addable.map((column) => (
+            {view.addable.map(({ column, planTitles }) => (
               <li
                 key={column.name}
                 className='flex flex-wrap items-center justify-between gap-2 rounded-md p-1'
@@ -329,6 +329,22 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
                     而屏幕上没有任何一处解释那几个去哪了。原因写在 title 上，
                     含下一步该去哪配。
                   */}
+                  {/*
+                    「已被某个套餐解锁」标在**候选项**这一侧,而不是把它插进
+                    上面那张清单 —— 那张表回答的是"我给这一档配了什么",而套餐
+                    解锁挂在人身上、与用户分组无关。标在这里既说清了现状
+                    (买了套餐的人本就能用它、倍率照样在扣钱),又不占用清单的行。
+                  */}
+                  {planTitles.length > 0 && (
+                    <span
+                      className='text-info text-[10px]'
+                      title={t('qy_ugl_origin_plan_hint', {
+                        plans: planTitles.join('、'),
+                      })}
+                    >
+                      {t('qy_ugl_addable_via_plan')}
+                    </span>
+                  )}
                   {!column.grantable && (
                     <Badge
                       variant='outline'

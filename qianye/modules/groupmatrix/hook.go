@@ -319,9 +319,22 @@ func UserAutoGroups(userGroup string) []string {
 		return nil
 	}
 	if !scope.AllowAuto {
-		// 这一档不许用 auto。返回空切片而不是 nil —— 回落全局清单会让
-		// allow_auto=false 这个开关在 auto 的候选池上完全失效。
+		// 这一档不许用 auto。空切片而不是 nil。
 		return []string{}
 	}
-	return splitAutoOrder(scope.AutoOrder)
+	// ── 有 scope 行就是权威的:配了什么就是什么,**没有兜底** ──
+	//
+	// 早先这里在 auto_order 为空时返回 nil,让调用方回落到全站的
+	// options.AutoGroups。项目方拍板推翻了它:「他是根据每个用户组分配的模型
+	// 分组单独配置的,没有兜底这个说法,如果没有配置那就没有」。
+	//
+	// 回落全局的实际后果也确实说不通:全局清单里的分组未必在这一档的授权清单
+	// 里,回落之后还要被 IsUserSelectableGroup 逐个滤掉,于是运营看到的是
+	// 「我没给这一档配 auto 顺序,它却按另一份我看不见的清单在转」。
+	//
+	// nil 只留给"这一档根本没有 scope 行"(未设范围 = 上游口径,见上面的提前返回)。
+	if order := splitAutoOrder(scope.AutoOrder); order != nil {
+		return order
+	}
+	return []string{}
 }

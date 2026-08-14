@@ -76,11 +76,18 @@ export type QyUgListItem = {
   planTitles: string[]
 }
 
+/** 一个候选项：模型分组本身，外加「它已经被某个套餐解锁了」这条注记。 */
+export type QyUgAddable = {
+  column: QyGmModelGroup
+  /** 非空 = 已有套餐解锁了它（此时该分组对买了套餐的人本就可用，倍率照样在扣钱）。 */
+  planTitles: string[]
+}
+
 export type QyUgListView = {
-  /** 列表本身，按列轴顺序。 */
+  /** 列表本身，按列轴顺序。**只含这一档真的授权过的**，不含套餐可达。 */
   items: QyUgListItem[]
-  /** 「添加模型分组」入口里能挑的那些（既不在清单里、也不经套餐可达）。 */
-  addable: QyGmModelGroup[]
+  /** 「添加模型分组」入口里能挑的那些（这一档清单里还没有的）。 */
+  addable: QyUgAddable[]
   /** 这一档有没有自己的清单。 */
   scoped: boolean
   /**
@@ -109,7 +116,7 @@ export function qyUgListView(
   const fallback = new Set(userGroup.model_groups)
 
   const items: QyUgListItem[] = []
-  const addable: QyGmModelGroup[] = []
+  const addable: QyUgAddable[] = []
   let memberCount = 0
 
   for (const column of data.model_groups) {
@@ -132,21 +139,21 @@ export function qyUgListView(
       continue
     }
 
-    const viaPlan =
-      cell?.reachable_via === 'plan' || cell?.reachable_via === 'both'
-    if (viaPlan) {
-      items.push({
-        name: column.name,
-        baseRatio: column.base_ratio,
-        hasChannels: column.has_channels,
-        origin: 'plan',
-        selfEdge: column.name === userGroup.name,
-        planTitles: cell?.plan_titles ?? [],
-      })
-      continue
-    }
+    /*
+      ── 套餐可达的分组**不进这张清单** ──
 
-    addable.push(column)
+      它此前被 push 进 items,于是「这一档能用的模型分组」里混着一批
+      **这一档根本没有授权**的行。项目方原话:「为何套餐可达的分组会直接插入在
+      用户分组列内,不要这样」。
+
+      混进来是错的,理由不只是观感:这张表回答的是"我给这一档配了什么",而套餐
+      解锁挂在**人**身上、与用户分组无关(见 planentitlement 的「不绑定用户组」)。
+      两者并排会让运营以为撤销那一行就能收回权限 —— 撤不回,那一行根本不是他配的。
+
+      它仍然可以被添加(那是一次真实的授权),所以照旧落进 addable;
+      「已经被某个套餐解锁了」这件事在候选项那一侧标注,不再占用清单的行。
+    */
+    addable.push({ column, planTitles: cell?.plan_titles ?? [] })
   }
 
   return { items, addable, scoped, memberCount }

@@ -3228,5 +3228,6 @@
   "qy_ugl_col_note": "Per-group note",
   "qy_ugl_col_actions": "Actions",
   "qy_ugl_channels_yes": "yes",
-  "qy_ugl_channels_none": "none"
+  "qy_ugl_channels_none": "none",
+  "qy_ugl_addable_via_plan": "unlocked by a plan"
 }
