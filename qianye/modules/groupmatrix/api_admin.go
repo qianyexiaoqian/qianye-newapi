@@ -1395,6 +1395,15 @@ func applyGrantCells(gdb *gorm.DB, cells []Cell, operatorId int) error {
 				Delete(&Grant{}).Error; err != nil {
 				return err
 			}
+			// 取消授权时,把它从这一档的默认 auto 顺序里一并摘掉。
+			//
+			// 不摘的话运行期确实也安全(GetUserAutoGroup 会按当前权限过滤),
+			// 但管理端仍然会把它显示在顺序里 —— 运营看到的是「A → 已撤销的 B → C」,
+			// 实际执行的是「A → C」。界面与行为不一致比少一个功能更难排查,
+			// 而这里的修法只是一次逐行读改写。
+			if err := dropFromAutoOrder(tx, cell.UserGroup, cell.ModelGroup); err != nil {
+				return err
+			}
 		}
 		for _, cell := range cells {
 			if cell.Action != ActionGrant {
@@ -1470,7 +1479,12 @@ type putScopeReq struct {
 	// 那个字段现在无论取什么值结果都一样。
 	Managed   bool   `json:"managed"`
 	AllowAuto *bool  `json:"allow_auto"`
-	Note      string `json:"note"`
+	// AutoOrder 是这一档人默认的 auto 尝试顺序。
+	//
+	// nil = 这次不动它(沿用库里那份);空数组 = 清空成"回落全局清单"。
+	// 指针语义在这里是必需的:两者在 JSON 里都长得像"没给",而它们的效果相反。
+	AutoOrder *[]string `json:"auto_order"`
+	Note      string    `json:"note"`
 }
 
 // adminPutScope 建立/撤销接管,或切换 shadow ↔ enforce。
@@ -1534,7 +1548,11 @@ func adminPutScope(c *gin.Context) {
 			allowAuto = before.AllowAuto
 		}
 		// mode 恒为 enforce:行存在即生效,不再有第二档。
-		after = newScope(userGroup, ModeEnforce, allowAuto, req.Note, c.GetInt("id"), now)
+		autoOrder := splitAutoOrder(before.AutoOrder)
+		if req.AutoOrder != nil {
+			autoOrder = *req.AutoOrder
+		}
+		after = newScope(userGroup, ModeEnforce, allowAuto, autoOrder, req.Note, c.GetInt("id"), now)
 	}
 
 	// 首次接管的预填必须在写 scope 行**之前**算好:写完之后再算,
@@ -1875,4 +1893,33 @@ func conflict(c *gin.Context, msg string) {
 func internalError(c *gin.Context, err error) {
 	common.SysError("qianye/groupmatrix: 接口处理失败: " + err.Error())
 	respondFail(c, http.StatusInternalServerError, "qy_internal_error", "处理失败,请稍后重试")
+}
+
+
+// dropFromAutoOrder 把一个模型分组从**某一档**的默认 auto 顺序里摘掉。
+//
+// 与 sweepAutoOrder(删模型分组时扫全表)的区别只是作用域:这里是"这一档
+// 不再被授权用它",那里是"它整个不存在了"。两处刻意各写各的 WHERE ——
+// 合成一个带可选参数的函数会让调用点读起来像"可能扫全表也可能扫一行"。
+func dropFromAutoOrder(tx *gorm.DB, userGroup, modelGroup string) error {
+	var scope Scope
+	err := tx.Where("user_group = ?", userGroup).Take(&scope).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	current := splitAutoOrder(scope.AutoOrder)
+	kept := make([]string, 0, len(current))
+	for _, g := range current {
+		if g != modelGroup {
+			kept = append(kept, g)
+		}
+	}
+	if len(kept) == len(current) {
+		return nil
+	}
+	return tx.Model(&Scope{}).Where("user_group = ?", userGroup).
+		Update("auto_order", joinAutoOrder(kept)).Error
 }

@@ -133,7 +133,7 @@ func mustJSON(t *testing.T, v any) string {
 
 func seedScope(t *testing.T, gdb *gorm.DB, userGroup, mode string, allowAuto bool, grants ...string) {
 	t.Helper()
-	require.NoError(t, gdb.Create(newScope(userGroup, mode, allowAuto, "", 1, 1)).Error)
+	require.NoError(t, gdb.Create(newScope(userGroup, mode, allowAuto, nil, "", 1, 1)).Error)
 	for i, mg := range grants {
 		require.NoError(t, gdb.Create(&Grant{
 			UserGroup: userGroup, ModelGroup: mg, SortOrder: i,

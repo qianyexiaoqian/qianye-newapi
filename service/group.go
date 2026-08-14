@@ -106,7 +106,13 @@ func IsUserSelectableGroup(userGroup, groupName string) bool {
 func GetUserAutoGroup(userGroup string) []string {
 	autoGroups := make([]string, 0)
 	seen := make(map[string]struct{})
-	for _, group := range setting.GetAutoGroups() {
+	// 优先用这一档人自己配的顺序;没配(nil)才回落全站那份。
+	// 空切片不是 nil —— 它表示"这一档明确配成了不试任何分组",必须被尊重。
+	candidates := QyUserAutoGroups(userGroup)
+	if candidates == nil {
+		candidates = setting.GetAutoGroups()
+	}
+	for _, group := range candidates {
 		if !IsUserSelectableGroup(userGroup, group) {
 			continue
 		}

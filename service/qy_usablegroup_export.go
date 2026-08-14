@@ -201,3 +201,25 @@ var QyCheckTokenGroupChange = func(c *gin.Context, oldGroup, newGroup string) er
 var QyPlaygroundGroupAllowed = func(c *gin.Context, usingGroup, requestedGroup string) bool {
 	return GroupInUserUsableGroups(usingGroup, requestedGroup) || requestedGroup == usingGroup
 }
+
+// QyUserAutoGroups 给出「这个用户分组**默认**的 auto 尝试顺序」。
+//
+// ─────────────────────── 它解决的是什么 ───────────────────────
+//
+// 上游只有一份全站共用的 options.AutoGroups,于是"auto 先试哪个池子"对所有
+// 用户分组一视同仁 —— 而这恰恰最该按档区分:付费档该先试独占池,免费档该先试
+// 免费池。项目方拍板改成按用户分组单独配。
+//
+// ─────────────────────── 契约 ───────────────────────
+//
+// 返回 nil ⇒ 这一档没有单独配,调用方回落到全局 options.AutoGroups。
+// 空切片与 nil **不同**:空切片表示"这一档明确配成了不试任何分组"。
+// 实现方必须把这两者区分开,否则「没配」会变成「一个都不试」,而那会让每一档
+// 新建的范围都自动把 auto 变成一个必然失败的选项。
+//
+// 返回值只是**顺序建议**,不是授权:调用方仍会用 IsUserSelectableGroup 逐个过滤。
+// 因此实现体不必(也不应该)自己判权限 —— 两处各判一次的表现是同一个分组在
+// 令牌页可选、在 auto 里却被静默跳过。
+//
+// 禁止查库、禁止取锁:它挂在 GetUserAutoGroup 上,而后者在 relay 分发路径上。
+var QyUserAutoGroups = func(userGroup string) []string { return nil }

@@ -122,6 +122,7 @@ func (Mod) InstallHooks() {
 	service.QyResolveUsableGroups = Resolve
 	service.QyCheckTokenGroupChange = CheckTokenGroup
 	service.QyPlaygroundGroupAllowed = PlaygroundGroupAllowed
+	service.QyUserAutoGroups = UserAutoGroups
 	if !enabled() {
 		return
 	}

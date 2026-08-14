@@ -485,16 +485,32 @@ export type QyGmSaveResponse = QyGmMatrixResponse & {
 
 /** `PUT /api/qy/admin/group-matrix/scope/:user_group` 的请求体。 */
 export type QyGmScopeRequest = {
+  /** true = 这一档要有自己的可用范围（**保存即生效**）；false = 撤销范围。 */
   managed: boolean
-  mode: QyGmMode
+  /**
+   * @deprecated shadow 模式已下线，后端 `putScopeReq` 不再解析这个字段。
+   *
+   * 保留成**可选**而不是直接删掉：删掉会连带推倒 `QyGmPreviewResponse` 与两个
+   * 外壳里一整串仍然有用的预览类型，而那与本次改动无关。传不传都一样 ——
+   * 有范围行就生效，没有第二档。新代码不要再传。
+   */
+  mode?: QyGmMode
   allow_auto: boolean
   note: string
   /**
-   * 切到 `enforce` 时必填 —— 与 PUT 矩阵同一道闸门。
+   * 这一档**默认**的 auto 尝试顺序。
    *
-   * 设计文档把「切 enforce 需要双哈希」写在矩阵 PUT 那一节，而 mode 实际是
-   * 由本端点改的；这里按**行为**归位：真正开始阻断流量的那一次写入必须带闸门，
-   * 无论它走哪个 URL。切回 `shadow` / 取消接管不需要（都不会打断流量）。
+   * 省略 = 这次不动它（沿用服务端那份）；空数组 = 清空成「回落全局清单」。
+   * 两者效果相反，所以必须用「有没有这个字段」来区分，不能用长度判。
+   *
+   * 它只是默认值：令牌自己存了有序清单时走令牌那一份。两者都会再被当前权限过滤。
+   */
+  auto_order?: string[]
+  /**
+   * @deprecated 「切 enforce 前必须回传双哈希」的闸门已随 shadow 一并拆除。
+   *
+   * 后端不再校验它们；预览端点本身保留（想先看一眼影响面仍然可以调），
+   * 只是它不再是保存的前置条件。
    */
   draft_hash?: string
   impact_hash?: string

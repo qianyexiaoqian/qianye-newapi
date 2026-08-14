@@ -44,6 +44,13 @@ func TestNoAutoScopeCreation(t *testing.T) {
 		// 亲手勾好、却因为 shadow 而一直没生效的那份清单开始生效。
 		// 用例仍然覆盖它不建行 —— 见 TestShadowMigrationNeverCreatesScopeRow。
 		"migrateShadowScopesToEnforce": {},
+		// 下面两个是「默认 auto 顺序」的同步:模型分组被删 / 被取消授权时,
+		// 把它从 auto_order 里摘掉。两者都是 Model(&Scope{}).Where(...).Update(),
+		// 目标是**已存在**的行,没有任何分支会 INSERT —— 它们改的是行里的一个
+		// 字段,不是行的存在性,而本守卫防的正是后者(没有人按过按钮却多出一行)。
+		// 不摘的表现是管理端显示「A → 已删的 B → C」而实际执行「A → C」。
+		"dropFromAutoOrder": {},
+		"sweepAutoOrder":    {},
 	}
 
 	// 会写出一条 scope 行的 GORM 动词。Delete 不在其列:撤销范围是回退方向,

@@ -152,5 +152,46 @@ func sweepModelGroupResidues(tx *gorm.DB, modelGroup string) error {
 	if err := tx.Where("model_group = ?", modelGroup).Delete(&Grant{}).Error; err != nil {
 		return err
 	}
-	return tx.Where("model_group = ?", modelGroup).Delete(&WriteDeny{}).Error
+	if err := tx.Where("model_group = ?", modelGroup).Delete(&WriteDeny{}).Error; err != nil {
+		return err
+	}
+	return sweepAutoOrder(tx, modelGroup)
+}
+
+// sweepAutoOrder 把这个模型分组从所有用户分组的默认 auto 顺序里摘掉。
+//
+// ── 为什么必须真的改数据,而不是只靠运行期过滤 ──
+//
+// 运行期确实已经安全:GetUserAutoGroup 会用 IsUserSelectableGroup 逐个过滤,
+// 一个已删除的模型分组不可能被选中。但**留在库里的那一项会显示在管理端**,
+// 于是运营看到的顺序是「A → 已删的 B → C」,而真正执行的是「A → C」。
+// 界面与行为不一致正是这个仓反复栽跟头的形状,而这里的修法极其便宜。
+//
+// 逐行读改写而不是一句 SQL 的字符串替换:AutoOrder 是逗号分隔的名字列表,
+// 用 REPLACE(auto_order, 'x', '') 会把 "xy" 里的 x 也换掉,而模型分组名之间
+// 存在前缀关系是完全正常的(「浅梦号池测试」与「浅梦号池测试2」)。
+// 范围行的数量级是"用户分组档数",几十行,逐行处理毫无压力。
+func sweepAutoOrder(tx *gorm.DB, modelGroup string) error {
+	var scopes []Scope
+	if err := tx.Where("auto_order <> ''").Find(&scopes).Error; err != nil {
+		return err
+	}
+	for i := range scopes {
+		current := splitAutoOrder(scopes[i].AutoOrder)
+		kept := make([]string, 0, len(current))
+		for _, g := range current {
+			if g != modelGroup {
+				kept = append(kept, g)
+			}
+		}
+		if len(kept) == len(current) {
+			continue
+		}
+		next := joinAutoOrder(kept)
+		if err := tx.Model(&Scope{}).Where("user_group = ?", scopes[i].UserGroup).
+			Update("auto_order", next).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }

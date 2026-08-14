@@ -198,7 +198,6 @@ export function QyUgScopeModeStrip(props: {
               onClick={() =>
                 props.scope.onSubmit({
                   managed: true,
-                  mode: 'enforce',
                   allow_auto: allowAuto,
                   note,
                 })
@@ -258,15 +257,13 @@ export function QyUgScopeModeStrip(props: {
             />
           </div>
           {/*
-            强制档保存这两个字段同样要过闸门：后端对 `managed && mode=enforce`
-            的每一次写入都要求双哈希，不区分这次改的是不是模式本身。按钮就地
-            说明，而不是让运营敲完再吃一个 400。
+            这里曾经有一句「保存这两项也要先跑预览」的提示与对应的 disabled。
+
+            后端那道「切 enforce 前必须回传双哈希」的闸门已随 shadow 一并拆除,
+            于是它变成了一道只存在于前端的锁:`enforced` 现在恒为真,
+            运营改个备注或开关都会发现保存按钮是灰的,而屏幕上要求他先去跑一次
+            与这次改动毫无关系的影响面预览。
           */}
-          {enforced && !enforceUnlocked && (
-            <p className='text-muted-foreground text-xs leading-5'>
-              {t('qy_ugl_advanced_needs_preview')}
-            </p>
-          )}
           {/*
             影子档保存这两项此前一道闸门都没有（那一整条与号在 `enforced`
             为假时短路），而它同样会回读并清空草稿。这两项都不是止血动作，
@@ -282,14 +279,11 @@ export function QyUgScopeModeStrip(props: {
               type='button'
               size='sm'
               disabled={
-                props.scope.isSaving ||
-                props.scope.hasUnsavedDraft ||
-                (enforced && !enforceUnlocked)
+                props.scope.isSaving || props.scope.hasUnsavedDraft
               }
               onClick={() =>
                 props.scope.onSubmit({
                   managed: true,
-                  mode: row.mode,
                   allow_auto: allowAuto,
                   note,
                 })

@@ -1,5 +1,7 @@
 package groupmatrix
 
+import "strings"
+
 // 接管模式。**行存在即生效**,不再有第二档。
 const (
 	// ModeEnforce 清单是权威的:该用户分组能选哪些模型分组完全由 grants 决定。
@@ -69,6 +71,30 @@ type Scope struct {
 	// 会让 AutoMigrate 每次重启都发一条 ALTER TABLE(见 AGENTS.md)。
 	// 默认值在 Go 侧的 newScope 里给。
 	AllowAuto bool `json:"allow_auto" gorm:"not null"`
+
+	// AutoOrder 是这一档人**默认**的 auto 分组尝试顺序,逗号分隔的模型分组名。
+	//
+	// ── 它替代的是什么 ──
+	//
+	// 上游只有一份**全站共用**的 options.AutoGroups。于是"auto 先试哪个池子"
+	// 对所有用户分组一视同仁 —— 而这恰恰是最该按档区分的东西:付费档该先试
+	// 独占池,免费档该先试免费池。项目方拍板改成按用户分组单独配。
+	//
+	// ── 空 = 回落全局清单,不是"一个都不试" ──
+	//
+	// 空串必须表示"这一档没单独配,沿用全站那份"。反过来(空 = 空清单)会让
+	// 每一档新建的范围都自动把 auto 变成一个必然失败的选项,而运营从没做过
+	// 这个决定 —— 与 allow_auto 当初那个 artifact 是同一个形状。
+	//
+	// ── 它只是**默认值** ──
+	//
+	// 令牌自己存了有序清单时走令牌那一份(service.GetRequestAutoGroups),
+	// 这里这份只在令牌选择"继承"时生效。两者都会再被当前权限过滤一遍。
+	//
+	// 存逗号分隔而不是 JSON:成员是模型分组名,而模型分组名的合法字符集里
+	// 没有逗号(saveModelGroup 校验),因此不存在转义问题;而一个纯文本列
+	// 在三种数据库上的行为完全一致,不必操心 JSON 列的方言差异。
+	AutoOrder string `json:"auto_order" gorm:"type:varchar(1024);not null;default:''"`
 
 	Note string `json:"note" gorm:"type:varchar(255);not null;default:''"`
 
@@ -159,15 +185,52 @@ type WriteDeny struct {
 func (WriteDeny) TableName() string { return "qy_group_write_denies" }
 
 // newScope 构造一条接管登记行。布尔默认值在这里给,不走 GORM 的 default tag。
-func newScope(userGroup, mode string, allowAuto bool, note string, operatorId int, now int64) *Scope {
+func newScope(userGroup, mode string, allowAuto bool, autoOrder []string, note string, operatorId int, now int64) *Scope {
 	return &Scope{
 		UserGroup:  userGroup,
 		Mode:       mode,
 		AllowAuto:  allowAuto,
+		AutoOrder:  joinAutoOrder(autoOrder),
 		Note:       truncate(note, maxNoteLen),
 		OperatorId: operatorId,
 		UpdatedAt:  now,
 	}
+}
+
+// joinAutoOrder / splitAutoOrder 是 AutoOrder 列的唯一编解码入口。
+//
+// 去重并丢弃空串:重复项会让 auto 在同一个池子上试两次(第二次必然同样失败),
+// 而空串会变成一个查不到任何渠道的分组名。两者都只会在故障转移时白白多烧一次
+// 上游超时。
+func joinAutoOrder(groups []string) string {
+	seen := make(map[string]struct{}, len(groups))
+	out := make([]string, 0, len(groups))
+	for _, g := range groups {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			continue
+		}
+		if _, dup := seen[g]; dup {
+			continue
+		}
+		seen[g] = struct{}{}
+		out = append(out, g)
+	}
+	return strings.Join(out, ",")
+}
+
+func splitAutoOrder(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func truncate(s string, max int) string {

@@ -100,7 +100,7 @@ func TestUserGroupTableCarriesEveryColumn(t *testing.T) {
 		groupns.UserGroup{Name: "brand_new", DisplayName: "刚建的", Note: "还没有人",
 			Enabled: true, DefaultMode: groupns.DefaultModeInherit},
 	)
-	require.NoError(t, gdb.Create(newScope("vip", ModeEnforce, false, "为什么给这一档设范围", 1, 1)).Error)
+	require.NoError(t, gdb.Create(newScope("vip", ModeEnforce, false, nil, "为什么给这一档设范围", 1, 1)).Error)
 	require.NoError(t, gdb.Create(&Grant{
 		UserGroup: "vip", ModelGroup: "paid", Note: "这一格专属备注", CreatedAt: 1, UpdatedAt: 1,
 	}).Error)
@@ -207,7 +207,7 @@ func TestUserGroupTableTellsTheTruthAboutEnforcement(t *testing.T) {
 	useCrossRatios(t, `{}`)
 	useModelGroupNote(t, map[string]string{})
 
-	require.NoError(t, gdb.Create(newScope("shadowed", ModeShadow, false, "", 1, 1)).Error)
+	require.NoError(t, gdb.Create(newScope("shadowed", ModeShadow, false, nil, "", 1, 1)).Error)
 	require.NoError(t, gdb.Create(&Grant{
 		UserGroup: "shadowed", ModelGroup: "paid", CreatedAt: 1, UpdatedAt: 1}).Error)
 	require.NoError(t, reload())
@@ -256,7 +256,7 @@ func TestUserGroupTableExcludesModelGroups(t *testing.T) {
 
 	seedUserGroupRegistry(t, gdb, groupns.UserGroup{
 		Name: "vip", Enabled: true, DefaultMode: groupns.DefaultModeInherit})
-	require.NoError(t, gdb.Create(newScope("scoped_only", ModeShadow, false, "", 1, 1)).Error)
+	require.NoError(t, gdb.Create(newScope("scoped_only", ModeShadow, false, nil, "", 1, 1)).Error)
 	require.NoError(t, reload())
 
 	view, err := buildMatrixView(gdb)

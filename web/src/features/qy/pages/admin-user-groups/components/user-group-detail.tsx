@@ -502,7 +502,6 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
             {
               managed: true,
               // 新清单一律先建成影子：这一次点击本身不该让任何人当场 403。
-              mode: 'shadow',
               allow_auto: props.userGroup.allow_auto,
               note: props.userGroup.scope_note,
             },
@@ -533,7 +532,6 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
         onFallback={() => {
           props.scope.onSubmit({
             managed: false,
-            mode: props.userGroup.mode,
             allow_auto: props.userGroup.allow_auto,
             note: props.userGroup.scope_note,
           })

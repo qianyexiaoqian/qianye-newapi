@@ -296,3 +296,32 @@ func recordWriteDeny(userGroup, modelGroup string, userId int) {
 		return upsertWriteDeny(ctx, userGroup, modelGroup, userId)
 	})
 }
+
+
+// UserAutoGroups 是 service.QyUserAutoGroups 的实现体:这一档人默认的 auto 顺序。
+//
+// 返回 nil = 这一档没单独配,调用方回落全站 options.AutoGroups。
+// 返回空切片 = 明确配成了"不试任何分组"(allow_auto 关掉时就是这一档)。
+// 两者必须分开,否则「没配」会变成「一个都不试」,而 auto 会静默变成一个必然失败的选项。
+//
+// 只做 atomic load + map 查找 + 一次字符串切分:它挂在 GetUserAutoGroup 上,
+// 而后者在 relay 分发路径上(见 service/qy_usablegroup_export.go 的契约)。
+func UserAutoGroups(userGroup string) []string {
+	if !enabled() || userGroup == "" {
+		return nil
+	}
+	s := activeSnapshot()
+	if s == nil {
+		return nil
+	}
+	scope, ok := s.Scopes[userGroup]
+	if !ok {
+		return nil
+	}
+	if !scope.AllowAuto {
+		// 这一档不许用 auto。返回空切片而不是 nil —— 回落全局清单会让
+		// allow_auto=false 这个开关在 auto 的候选池上完全失效。
+		return []string{}
+	}
+	return splitAutoOrder(scope.AutoOrder)
+}

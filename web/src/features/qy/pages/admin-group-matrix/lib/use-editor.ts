@@ -478,20 +478,12 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
    */
   const submitScope = useCallback(
     (userGroup: string, body: QyGmScopeRequest, afterApply?: () => void) => {
-      scopeMutation.mutate({
-        userGroup,
-        body:
-          body.mode === 'enforce' && enforcePreview?.userGroup === userGroup
-            ? {
-                ...body,
-                draft_hash: enforcePreview.result.draft_hash,
-                impact_hash: enforcePreview.result.impact_hash,
-              }
-            : body,
-        afterApply,
-      })
+      // 这里曾经在 mode=enforce 时把预览的双哈希附加上去。
+      // 那道闸门已随 shadow 一并下线(有范围行就生效,没有"开始阻断"那一刻可以挂闸门),
+      // 后端也不再解析这两个字段,附加它们只会让请求体多两个被忽略的键。
+      scopeMutation.mutate({ userGroup, body, afterApply })
     },
-    [enforcePreview, scopeMutation]
+    [scopeMutation]
   )
 
   return {
