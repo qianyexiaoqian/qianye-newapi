@@ -227,7 +227,7 @@ func gateSeat(tx *gorm.DB, plan *model.SubscriptionPlan, userId int, source stri
 	// end_time > now),他此刻不在里面,不该享受"在里面的人续订必过"的待遇。
 	var mine int64
 	if err := q.Model(&model.UserSubscription{}).
-		Where("plan_id = ? AND user_id = ? AND status = ? AND end_time > ?",
+		Where("plan_id = ? AND user_id = ? AND status = ? AND "+model.SubscriptionActiveEndTimeSQL,
 			planId, userId, statusActive, now).
 		Count(&mine).Error; err != nil {
 		return failOpen(planId, err)

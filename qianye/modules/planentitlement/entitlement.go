@@ -253,7 +253,7 @@ func loadActivePlanIds(ctx context.Context, userId int) ([]int, error) {
 		}, 0, 4)
 		err := model.DB.WithContext(ctx).Model(&model.UserSubscription{}).
 			Select("plan_id", "end_time", "amount_total", "amount_used", "next_reset_time", "allow_wallet_overflow").
-			Where("user_id = ? AND status = ? AND end_time > ?", userId, statusActive, common.GetTimestamp()).
+			Where("user_id = ? AND status = ? AND "+model.SubscriptionActiveEndTimeSQL, userId, statusActive, common.GetTimestamp()).
 			Order("end_time asc, id asc").
 			Find(&rows).Error
 		if err != nil {

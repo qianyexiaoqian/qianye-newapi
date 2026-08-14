@@ -22,6 +22,12 @@ const (
 	SubscriptionDurationDay    = "day"
 	SubscriptionDurationHour   = "hour"
 	SubscriptionDurationCustom = "custom"
+	// SubscriptionDurationPermanent 永久有效:算不出结束时间,end_time 存 0。
+	//
+	// 判据见 SubscriptionActiveEndTimeSQL —— 到期扫描本来就写着
+	// `end_time > 0 AND end_time <= ?`,所以 0 天然不会被扫到,不需要为永久档
+	// 新增任何到期分支。
+	SubscriptionDurationPermanent = "permanent"
 )
 
 // Subscription quota reset period
@@ -189,6 +195,26 @@ type SubscriptionPlan struct {
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
 }
 
+// SubscriptionActiveEndTimeSQL 是「这条订阅此刻仍然有效」在 end_time 上的**唯一判据**。
+//
+// ═════════════════ end_time = 0 表示永久有效 ═════════════════
+//
+// 永久档(SubscriptionDurationPermanent)算不出结束时间,存 0。选 0 而不是"存一个
+// 很大的数"是因为到期扫描本来就写着 `end_time > 0 AND end_time <= ?` —— 0 天然
+// 不会被扫到,不需要为永久档新增任何到期分支;而"很大的数"只是把问题推到那个数
+// 真的到来的那一天,且在此之前一直显示成一个假的到期日。
+//
+// ═════════════════ 为什么必须只有一处定义 ═════════════════
+//
+// 「仍然有效」这个判据在本仓有 12 个调用点(升级订阅探测、可用额度、套餐解锁的
+// 模型分组、名额闸门、持有人清单…)。手写 `end_time > ?` 的那些会把永久订阅
+// 判成已过期,而每一处的表现都不一样:有的是额度用不了、有的是解锁的模型分组
+// 突然消失、有的是名额没被占住。这类缺陷不会一起暴露,只会一个一个地被发现。
+//
+// subscription_active_predicate_test.go 扫源码钉死:除到期扫描外,任何地方都不许
+// 再手写 end_time 的有效性判据。
+const SubscriptionActiveEndTimeSQL = "(end_time = 0 OR end_time > ?)"
+
 func (p *SubscriptionPlan) BeforeCreate(tx *gorm.DB) error {
 	now := common.GetTimestamp()
 	p.CreatedAt = now
@@ -309,6 +335,11 @@ type SubscriptionResetResult struct {
 func calcPlanEndTime(start time.Time, plan *SubscriptionPlan) (int64, error) {
 	if plan == nil {
 		return 0, errors.New("plan is nil")
+	}
+	// 永久档要排在 duration_value 校验之前:它压根不用填时长,
+	// 排在后面的话运营必须为一个"永久"的商品编一个大于 0 的月数。
+	if plan.DurationUnit == SubscriptionDurationPermanent {
+		return 0, nil
 	}
 	if plan.DurationValue <= 0 && plan.DurationUnit != SubscriptionDurationCustom {
 		return 0, errors.New("duration_value must be > 0")
@@ -453,7 +484,7 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 	}
 	// If another active upgraded subscription exists, keep the current group.
 	var activeSub UserSubscription
-	activeQuery := tx.Where("user_id = ? AND status = ? AND end_time > ? AND id <> ? AND upgrade_group <> ''",
+	activeQuery := tx.Where("user_id = ? AND status = ? AND "+SubscriptionActiveEndTimeSQL+" AND id <> ? AND upgrade_group <> ''",
 		sub.UserId, "active", now, sub.Id).
 		Order("end_time desc, id desc").
 		Limit(1).
@@ -852,7 +883,7 @@ func GetAllActiveUserSubscriptions(userId int) ([]SubscriptionSummary, error) {
 	}
 	now := common.GetTimestamp()
 	var subs []UserSubscription
-	err := DB.Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+	err := DB.Where("user_id = ? AND status = ? AND "+SubscriptionActiveEndTimeSQL, userId, "active", now).
 		Order("end_time desc, id desc").
 		Find(&subs).Error
 	if err != nil {
@@ -870,7 +901,7 @@ func HasActiveUserSubscription(userId int) (bool, error) {
 	now := common.GetTimestamp()
 	var count int64
 	if err := DB.Model(&UserSubscription{}).
-		Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+		Where("user_id = ? AND status = ? AND "+SubscriptionActiveEndTimeSQL, userId, "active", now).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
@@ -1046,7 +1077,7 @@ func adminResetUserSubscriptionsByPlanTx(tx *gorm.DB, userId int, plan *Subscrip
 	}
 	var subs []UserSubscription
 	if err := lockForUpdate(tx).
-		Where("user_id = ? AND plan_id = ? AND status = ? AND end_time > ?", userId, plan.Id, "active", now).
+		Where("user_id = ? AND plan_id = ? AND status = ? AND "+SubscriptionActiveEndTimeSQL, userId, plan.Id, "active", now).
 		Order("end_time asc, id asc").
 		Find(&subs).Error; err != nil {
 		return nil, err
@@ -1068,7 +1099,7 @@ func adminResetPlanSubscriptionsTx(tx *gorm.DB, plan *SubscriptionPlan, now int6
 	}
 	var subs []UserSubscription
 	if err := lockForUpdate(tx).
-		Where("plan_id = ? AND status = ? AND end_time > ?", plan.Id, "active", now).
+		Where("plan_id = ? AND status = ? AND "+SubscriptionActiveEndTimeSQL, plan.Id, "active", now).
 		Order("user_id asc, end_time asc, id asc").
 		Find(&subs).Error; err != nil {
 		return nil, err
@@ -1168,7 +1199,7 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 
 			// If there's an active upgraded subscription, keep current group.
 			var activeSub UserSubscription
-			activeQuery := tx.Where("user_id = ? AND status = ? AND end_time > ? AND upgrade_group <> ''",
+			activeQuery := tx.Where("user_id = ? AND status = ? AND "+SubscriptionActiveEndTimeSQL+" AND upgrade_group <> ''",
 				userId, "active", now).
 				Order("end_time desc, id desc").
 				Limit(1).
@@ -1326,7 +1357,7 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 
 		var subs []UserSubscription
 		if err := lockForUpdate(tx).
-			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+			Where("user_id = ? AND status = ? AND "+SubscriptionActiveEndTimeSQL, userId, "active", now).
 			Order("end_time asc, id asc").
 			Find(&subs).Error; err != nil {
 			return errors.New("no active subscription")

@@ -150,7 +150,10 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 	if req.Plan.DurationUnit == "" {
 		req.Plan.DurationUnit = model.SubscriptionDurationMonth
 	}
-	if req.Plan.DurationValue <= 0 && req.Plan.DurationUnit != model.SubscriptionDurationCustom {
+	// 永久档不用填时长:补一个默认的 1 只会在管理端显示成「永久 · 1 个月」。
+	if req.Plan.DurationValue <= 0 &&
+		req.Plan.DurationUnit != model.SubscriptionDurationCustom &&
+		req.Plan.DurationUnit != model.SubscriptionDurationPermanent {
 		req.Plan.DurationValue = 1
 	}
 	if req.Plan.MaxPurchasePerUser < 0 {
@@ -216,7 +219,10 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 	if req.Plan.DurationUnit == "" {
 		req.Plan.DurationUnit = model.SubscriptionDurationMonth
 	}
-	if req.Plan.DurationValue <= 0 && req.Plan.DurationUnit != model.SubscriptionDurationCustom {
+	// 永久档不用填时长:补一个默认的 1 只会在管理端显示成「永久 · 1 个月」。
+	if req.Plan.DurationValue <= 0 &&
+		req.Plan.DurationUnit != model.SubscriptionDurationCustom &&
+		req.Plan.DurationUnit != model.SubscriptionDurationPermanent {
 		req.Plan.DurationValue = 1
 	}
 	if req.Plan.MaxPurchasePerUser < 0 {

@@ -148,7 +148,7 @@ func userEntitlements(c *gin.Context) {
 	now := common.GetTimestamp()
 	subs := make([]model.UserSubscription, 0, 8)
 	if err := model.DB.WithContext(ctx).
-		Where("user_id = ? AND status = ? AND end_time > ?", userId, statusActive, now).
+		Where("user_id = ? AND status = ? AND "+model.SubscriptionActiveEndTimeSQL, userId, statusActive, now).
 		Order("end_time asc, id asc").
 		Find(&subs).Error; err != nil {
 		internalError(c, err)

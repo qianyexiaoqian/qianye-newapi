@@ -119,7 +119,7 @@ func readPlanView(ctx context.Context, plan *model.SubscriptionPlan) (entitlemen
 	}
 	var active int64
 	if err := model.DB.WithContext(ctx).Model(&model.UserSubscription{}).
-		Where("user_id > 0 AND plan_id = ? AND status = ? AND end_time > ?",
+		Where("user_id > 0 AND plan_id = ? AND status = ? AND "+model.SubscriptionActiveEndTimeSQL,
 			plan.Id, statusActive, common.GetTimestamp()).
 		Count(&active).Error; err != nil {
 		return entitlementView{}, err

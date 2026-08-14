@@ -75,7 +75,7 @@ func activeHolders(q *gorm.DB, planIds []int, now int64) (map[int]int64, error) 
 // 两种投影,连 now 都由调用方一次取好往下传(见下面 adminPlanHolders)。
 func holdingSubscriptions(q *gorm.DB, planIds []int, now int64) *gorm.DB {
 	return q.Model(&model.UserSubscription{}).
-		Where("plan_id IN ? AND status = ? AND end_time > ?", planIds, statusActive, now)
+		Where("plan_id IN ? AND status = ? AND "+model.SubscriptionActiveEndTimeSQL, planIds, statusActive, now)
 }
 
 // holderRow 是下钻列表的一行:一个**人**在该套餐下的占用汇总。
