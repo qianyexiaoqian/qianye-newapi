@@ -247,7 +247,9 @@ func buildAIRuntime(gdb *gorm.DB, needed bool, vocab aiVocabulary) (*aiRuntime, 
 			TimeoutMs: row.TimeoutMs, Weight: weight,
 			PriceInPerM: row.PriceInPerM, PriceOutPerM: row.PriceOutPerM,
 		})
-		rt.totalWeight += weight
+		// 权重合计刻意**不**在这里缓存一份:pickAIChannels 要在摘掉"这一档指定
+		// 的那个渠道"之后再算,而一个装配期算好的合计在那一刻就是错的 ——
+		// 错的表现是加权随机偏向某一个渠道,一种只能靠统计才看得出来的偏差。
 	}
 	if len(rt.Channels) == 0 {
 		// 一个可用渠道都没有 = 每次都会走 no_channel 分支放行。

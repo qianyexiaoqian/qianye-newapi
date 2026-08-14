@@ -74,6 +74,13 @@ func (Mod) InstallHooks() {
 	// 详见 migrateAISampleRateToScope。
 	runAILegacySampleRateMigration()
 
+	// 存量的"没绑分组"策略巡检。只读、只打日志,排在迁移之后是为了让上面刚建出来
+	// 的那一条也被数进去 —— 它正是这份清单最典型的一员。
+	//
+	// 它不做任何自动处置:自动停用等于一次升级悄悄关掉一条正在生效的风控,
+	// 自动补上全部分组则正是项目方要避免的全站匹配。见 runUnboundGroupScopeReport。
+	runUnboundGroupScopeReport()
+
 	// 违规类型的种子与规则绑定迁移同样排在预热之前:预热会把类型装进快照,
 	// 而没有种子时 catFallback 是零值 —— 类型计数整体跳过。结果是对的
 	// (账号总量线照常工作),但管理端会先看到一张空的类型表,

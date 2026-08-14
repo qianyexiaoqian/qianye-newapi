@@ -283,13 +283,18 @@ func newAIReviewRow(rc recordCtx, phase string, out *aiOutcome, ruleId, recordId
 		CompletionTokens: out.CompletionTokens,
 		TotalTokens:      out.TotalTokens,
 		CostUsd:          out.CostUsd,
-		LatencyMs:        out.LatencyMs,
-		RuleId:           ruleId,
-		RecordId:         recordId,
-		RequestId:        truncate(rc.RequestId, 64),
-		ModelName:        rc.ModelName,
-		UsingGroup:       rc.UsingGroup,
-		CreatedAt:        common.GetTimestamp(),
+		// 判据里的 TotalTokens > 0 不是多余的:一条一次调用都没成功的链
+		// (全是连不上、或者压根没渠道)Priced 也是 false,但它的花费 0 是准的,
+		// 把它标成"算不准"会让成本页的告警数字被一堆网络故障灌满。
+		CostUnknown: out.TotalTokens > 0 && !out.Priced,
+		LatencyMs:   out.LatencyMs,
+		Attempts:    out.Attempts,
+		RuleId:      ruleId,
+		RecordId:    recordId,
+		RequestId:   truncate(rc.RequestId, 64),
+		ModelName:   rc.ModelName,
+		UsingGroup:  rc.UsingGroup,
+		CreatedAt:   common.GetTimestamp(),
 	}
 }
 

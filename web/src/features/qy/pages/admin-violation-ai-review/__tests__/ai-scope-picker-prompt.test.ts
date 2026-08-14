@@ -269,6 +269,7 @@ describe('作用域绑定违规类型', () => {
     prompt: '',
     category_id: 0,
     channel_id: 0,
+    channel_failover: false,
     remark: '',
     created_at: 0,
     updated_at: 0,

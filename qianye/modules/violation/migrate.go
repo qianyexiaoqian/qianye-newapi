@@ -224,7 +224,7 @@ const legacyAISampleRateColumn = "sample_rate_bps"
 // 标成"被遮住",删掉即可。没有行为影响,所以不为它引入一次租约。
 const migratedAIScopeName = "全局兜底抽样率(迁移)"
 
-// migrateAISampleRateToScope 把存量的全局抽样率转成一条覆盖全部分组的策略。
+// migrateAISampleRateToScope 把存量的全局抽样率转成一条**停用的**、覆盖全部分组的策略。
 //
 // # 为什么不能直接删掉那一列
 //
@@ -234,39 +234,48 @@ const migratedAIScopeName = "全局兜底抽样率(迁移)"
 // 而"为什么掉"没有任何地方写着。项目方必须知道这件事,而让他知道的办法不是
 // 一行发布说明,是库里多出来一条他删得掉、也开得起来的策略。
 //
-// # 启用与否取决于它当时**是不是真的在生效**,不是取决于它非零
+// # 迁出来的那条策略**一律是停用的**
 //
 // 这一列的 0 有明确定义(「0 = 不抽,整条路径零开销」,而且出厂就是 0),
 // 不存在"零值与未设置不可分"的问题:0 就是不抽,不迁。
 //
-// 非 0 时还要再问一句:AI 审核的总开关开着吗?
+// 非 0 时曾经还要再问一句"AI 审核的总开关开着吗",开着就建一条**启用**的策略,
+// 好逐字节保住那 X% 的原行为。这条分支现在没有了:它建出来的正是一条作用域
+// 覆盖全站的启用策略,而项目方随后明确「强制绑定分组,全站模型还是太高了一点」,
+// validateAIScope 已经不接受这种行(见 aireview_scope.go)。
+// 让迁移成为全站策略的唯一制造者,等于给这条规则开一个只有代码里看得见的例外。
 //
-//	Enabled = true   那 X% 正在把用户内容发往第三方 → 建**启用**的策略,
-//	                 逐字节保住原行为(它排在最后,前面的策略照旧优先)。
-//	Enabled = false  那个数字一次都没生效过 → 建**停用**的策略,把值原样留着。
-//	                 此时若建成启用的,管理员下次打开总开关就会突然全站送审,
-//	                 而他按新语义的预期是"我还没建任何策略,所以不会审"——
-//	                 那正是项目方要移除兜底的原因。
+// 代价说清楚,不糊过去:**升级前那 X% 的兜底送审会停下来**,直到运营给这一条
+// 补上分组并启用。这是一次风控收缩,所以它不能是无声的,三处同时留痕:
 //
-// 两条分支的共同点:那个数字一个都没丢,它就在策略行上,开关就在旁边。
+//	启动日志  runAILegacySampleRateMigration 打出原值、以及它当时是不是真的在生效
+//	策略行    值原样留在 pre/async 两列上,备注写明它从哪来、为什么是停的
+//	管理端    这一行的 group_unbound 为真,列表上标出来(见 aiScopeSummaryRow)
+//
+// 反过来(继续建成启用的)才是真正危险的那一侧:一条谁都没看过、覆盖全站、
+// 而且按新规则**永远无法在界面上被再次保存**的启用策略。
+//
+// wasActive 回答"它当时是不是真的在生效"(总开关开着 + 值非 0)。
+// 它决定启动日志的措辞:一次真实的风控收缩与一个从未生效过的数字被搬了个地方,
+// 对运维是两件事,而事后没有任何地方能重新算出这个布尔值 —— 列已经删了。
 //
 // # 优先级取最大值(10000),也就是排在最后
 //
 // 它是"别的都不匹配时"的那一档,语义上必须垫底。既有策略的默认优先级是 100,
 // 所以任何现存策略都排在它前面 —— 与旧代码里"先找匹配的策略、都不匹配才落
 // 兜底"的顺序逐字节一致。
-func migrateAISampleRateToScope(ctx context.Context, gdb *gorm.DB) (created bool, bps int, err error) {
+func migrateAISampleRateToScope(ctx context.Context, gdb *gorm.DB) (created bool, bps int, wasActive bool, err error) {
 	if gdb == nil {
-		return false, 0, db.ErrNotReady
+		return false, 0, false, db.ErrNotReady
 	}
 	m := gdb.WithContext(ctx).Migrator()
 	if !m.HasTable(&AISetting{}) || !m.HasTable(&AIScope{}) {
-		return false, 0, nil
+		return false, 0, false, nil
 	}
 	// 列已经不在 = 这个站点要么已经迁过,要么是全新建的库(结构体上没有这一
 	// 列,AutoMigrate 根本不会建它)。两种都是 no-op。
 	if !m.HasColumn(&AISetting{}, legacyAISampleRateColumn) {
-		return false, 0, nil
+		return false, 0, false, nil
 	}
 
 	// 结构体上已经没有这一列了,所以只能按列名取。Scan 到 []int 而不是 Take
@@ -276,10 +285,10 @@ func migrateAISampleRateToScope(ctx context.Context, gdb *gorm.DB) (created bool
 	if err := gdb.WithContext(ctx).Table(AISetting{}.TableName()).
 		Where("id = ?", 1).Pluck(legacyAISampleRateColumn, &values).Error; err != nil {
 		db.MarkFailure(err)
-		return false, 0, err
+		return false, 0, false, err
 	}
 	if len(values) == 0 || values[0] <= 0 {
-		return false, 0, nil
+		return false, 0, false, nil
 	}
 	bps = clampInt(values[0], 0, 10000)
 
@@ -287,40 +296,129 @@ func migrateAISampleRateToScope(ctx context.Context, gdb *gorm.DB) (created bool
 	if err := gdb.WithContext(ctx).Table(AISetting{}.TableName()).
 		Where("id = ?", 1).Pluck("enabled", &enabled).Error; err != nil {
 		db.MarkFailure(err)
-		return false, bps, err
+		return false, bps, false, err
 	}
+	// 值非 0 到这里已经成立,所以"当时是不是真的在生效"就只剩总开关这一问。
+	wasActive = enabled
 
 	var existing int64
 	if err := gdb.WithContext(ctx).Model(&AIScope{}).
 		Where("name = ?", migratedAIScopeName).Count(&existing).Error; err != nil {
 		db.MarkFailure(err)
-		return false, bps, err
+		return false, bps, wasActive, err
 	}
 	if existing > 0 {
-		return false, bps, nil
+		return false, bps, wasActive, nil
 	}
 
 	now := common.GetTimestamp()
 	row := AIScope{
 		Name: migratedAIScopeName,
-		// 见上面那一段:开关跟着"它当时是不是真的在生效"。
-		Enabled:  enabled,
+		// 一律停用,理由见上:它的作用域覆盖全站,而覆盖全站的策略现在不允许启用。
+		Enabled:  false,
 		Priority: 10000,
-		// 作用域全空 = 匹配一切请求,这正是"兜底"的字面写法。
+		// 作用域全空 = 匹配一切请求,这正是"兜底"的字面写法 —— 也正是它必须
+		// 停着的原因。管理端会把这一行标成「未绑定分组」。
 		ModelScope: "", GroupScope: "", GroupScopeMode: GroupScopeInclude,
 		// 旧代码里兜底对两个时机给的是同一个数,原样搬过来。
 		PreSampleRateBps: bps, AsyncSampleRateBps: bps,
 		Remark: fmt.Sprintf("自动迁移自已下线的「全局审核抽样率」(%s = %d,即 %.2f%%)。"+
 			"全局抽样率与兜底档已移除:现在没有任何策略命中的请求一律不审核。"+
-			"这一条覆盖全部分组与模型,用来保留原来的兜底行为 —— 确认不再需要可直接删除。",
-			legacyAISampleRateColumn, bps, float64(bps)/100),
+			"这一条覆盖全部分组与模型,而覆盖全站的策略已不允许启用,所以它是**停用**的 —— "+
+			"原来的 %.2f%% 兜底送审已经停止。要恢复监控,请在「用户分组」里列出具体分组再启用;"+
+			"确认不再需要可直接删除。",
+			legacyAISampleRateColumn, bps, float64(bps)/100, float64(bps)/100),
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := gdb.WithContext(ctx).Create(&row).Error; err != nil {
 		db.MarkFailure(err)
-		return false, bps, err
+		return false, bps, wasActive, err
 	}
-	return true, bps, nil
+	return true, bps, wasActive, nil
+}
+
+// unboundGroupScopeRows 是启动期的存量巡检:库里还有哪些策略**没有绑定到具体分组**。
+//
+// # 为什么要巡检,而不是在迁移里把它们改掉
+//
+// 「强制绑定分组」是一道**写入闸**(validateAIScope),它管不到已经躺在库里的行。
+// 而对存量行能做的三件事里有两件是错的:
+//
+//	自动停用   一条正在生效的风控被一次升级悄悄关掉 —— 抽样照常显示在界面上,
+//	           成本页第二天掉下去,而"为什么掉"没有任何地方写着。
+//	自动填上全部分组  那正是项目方要避免的全站匹配,只是换了一种写法,
+//	           而且从此看不出这条策略原本没绑过分组。
+//
+// 剩下的一件是:**原样留着,但让它在每一处都看得见**。运行期照旧匹配(热路径
+// 不认识"合不合规",它只认作用域),管理端列表把这一行标出来(group_unbound),
+// 而这个函数负责启动日志那一处 —— 三处里唯一一处不需要有人正好打开那一页。
+//
+// # 为什么在 Go 里过滤而不是写进 WHERE
+//
+// 判据要与写入闸逐字节同一份(aiScopeGroupUnbound),而它包含 TrimSpace:
+// 存量行的 group_scope 可能带着两侧空白(归一只在写入侧发生过),
+// 而 `group_scope = ”` 这种 WHERE 在三家数据库上对 `'  '` 都是假。
+// 表本身是十几行的量级(启用中的上限是 maxAIScopes = 64),全表扫一遍的代价
+// 在启动期不可测量。Limit 只是防一张被脚本灌坏的表把启动日志刷爆。
+func unboundGroupScopeRows(ctx context.Context, gdb *gorm.DB) ([]AIScope, error) {
+	if gdb == nil {
+		return nil, db.ErrNotReady
+	}
+	if !gdb.WithContext(ctx).Migrator().HasTable(&AIScope{}) {
+		return nil, nil
+	}
+	var rows []AIScope
+	if err := gdb.WithContext(ctx).Order("priority asc, id asc").
+		Limit(1000).Find(&rows).Error; err != nil {
+		db.MarkFailure(err)
+		return nil, err
+	}
+	out := make([]AIScope, 0, 4)
+	for _, r := range rows {
+		if aiScopeGroupUnbound(r.GroupScope, r.GroupScopeMode) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// runUnboundGroupScopeReport 把上面那份巡检结果打进启动日志。
+//
+// 只读,不改任何一行,因此不看 auto_migrate(那个开关的意思是"表结构由 DBA 管",
+// 而这里一条 DDL 都不发),也不需要租约 —— 每个节点各打一遍是对的,
+// 因为"这台机器上的快照里有一条覆盖全站的策略"就是每台机器各自的事实。
+//
+// 分两段说:**启用中的**那些正在匹配全站,是要立刻处理的;停用的那些只是
+// 开不起来。两者混成一个数字时,运维分不清"我现在有没有在全站送审"。
+func runUnboundGroupScopeReport() {
+	gdb := db.Get()
+	if gdb == nil {
+		return
+	}
+	rows, err := unboundGroupScopeRows(context.Background(), gdb)
+	if err != nil {
+		common.SysError("qianye/violation: 作用域策略的分组绑定巡检失败(不影响任何判定): " + err.Error())
+		return
+	}
+	active, idle := make([]string, 0, 2), make([]string, 0, 2)
+	for _, r := range rows {
+		label := fmt.Sprintf("#%d %s", r.Id, r.Name)
+		if r.Enabled {
+			active = append(active, label)
+			continue
+		}
+		idle = append(idle, label)
+	}
+	if len(active) == 0 && len(idle) == 0 {
+		return
+	}
+	common.SysError(common.MapToJsonStr(map[string]any{
+		"msg": "qianye/violation: 存在没有绑定分组的 AI 审核作用域策略(分组名单为空,或方向是「排除」= 名单之外的全部分组)。" +
+			"启用中的那些正在按全站匹配,请在管理端补齐分组;新的写入已经不接受这种配置。" +
+			"存量行不会被自动改写或停用 —— 静默关掉一条正在生效的风控比留着它更危险",
+		"enabled_and_matching_all": active,
+		"disabled_needs_groups":    idle,
+	}))
 }
 
 // dropLegacyAISampleRateColumn 删掉 qy_violation_ai_setting.sample_rate_bps。
@@ -351,11 +449,11 @@ func runAILegacySampleRateMigration() {
 		return
 	}
 	ctx := context.Background()
-	created, bps, err := migrateAISampleRateToScope(ctx, gdb)
+	created, bps, wasActive, err := migrateAISampleRateToScope(ctx, gdb)
 	if err != nil {
 		common.SysError(common.MapToJsonStr(map[string]any{
 			"msg": "qianye/violation: 全局审核抽样率迁移失败 —— " +
-				"该值不会再生效(全局抽样率与兜底档已下线),请手工在 AI 审核作用域页建一条覆盖全部分组的策略",
+				"该值不会再生效(全局抽样率与兜底档已下线),请手工在 AI 审核作用域页建一条绑定了分组的策略",
 			"legacy_sample_rate_bps": bps,
 			"error":                  err.Error(),
 		}))
@@ -363,10 +461,19 @@ func runAILegacySampleRateMigration() {
 	}
 	if created {
 		common.SysError(common.MapToJsonStr(map[string]any{
-			"msg": "qianye/violation: 已把「全局审核抽样率」迁移成一条覆盖全部分组的作用域策略;" +
-				"全局抽样率与兜底档已下线,今后没有任何策略命中的请求一律不审核",
+			"msg": "qianye/violation: 已把「全局审核抽样率」迁移成一条**停用**的作用域策略;" +
+				"全局抽样率与兜底档已下线,而覆盖全站的策略不允许启用(强制绑定分组)。" +
+				"值原样留在这条策略上,补齐「用户分组」后即可启用",
 			"scope_name":             migratedAIScopeName,
 			"legacy_sample_rate_bps": bps,
+			// 这个布尔是唯一一次说出"这次升级到底停掉了什么"的机会:列马上就删了,
+			// 事后没有任何地方能重新算出它。
+			"was_active_before_upgrade": wasActive,
+			"impact": map[bool]string{
+				true: "升级前这个抽样率正在生效 —— 原来按该比例送审的那部分流量" +
+					"从现在起不再送审,直到有人给这条策略绑定分组并启用",
+				false: "升级前 AI 审核总开关是关的,这个抽样率一次都没生效过,本次迁移不改变任何行为",
+			}[wasActive],
 		}))
 	}
 	if _, err := dropLegacyAISampleRateColumn(ctx, gdb); err != nil {

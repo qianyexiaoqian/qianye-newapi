@@ -88,7 +88,6 @@ func rtForServer(url string, timeoutMs int) *aiRuntime {
 			APIKey: "test-not-a-real-key", Weight: 1,
 			PriceInPerM: decimal.NewFromFloat(1), PriceOutPerM: decimal.NewFromFloat(2),
 		}},
-		totalWeight: 1,
 	}
 }
 
@@ -237,7 +236,6 @@ func TestAIReviewAllChannelsDown(t *testing.T) {
 		rt.Channels = append(rt.Channels, &aiChannelRT{
 			Id: 2, Name: "fake2", URL: chatCompletionsURL(deadURL), Model: "m", Weight: 1,
 		})
-		rt.totalWeight = 2
 
 		out := runAIReview(context.Background(), rt, nil, "内容", 1000)
 		require.NotNil(t, out)
@@ -260,7 +258,6 @@ func TestAIReviewAllChannelsDown(t *testing.T) {
 				{Id: 1, Name: "dead", URL: chatCompletionsURL(deadURL), Model: "m", Weight: 999},
 				{Id: 2, Name: "good", URL: chatCompletionsURL(good.URL), Model: "m", Weight: 1},
 			},
-			totalWeight: 1000,
 		}
 		out := runAIReview(context.Background(), rt, nil, "内容", 2000)
 		require.NotNil(t, out)

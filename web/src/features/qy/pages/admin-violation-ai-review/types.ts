@@ -207,8 +207,19 @@ export type QyAiScope = {
    * 指定的渠道被停用或删除时,这一档**不审核**(每次都是「无可用渠道」并直接
    * 放行),运行期绝不回落到随机池:回落会把用户内容发去运营明确没有选的端点,
    * 而「只能发给这一个」往往正是指定渠道的全部理由。
+   *
+   * 上面这段描述的是 `channel_failover` 关着时的行为,也就是出厂行为。
    */
   channel_id: number
+  /**
+   * 「指定的渠道不可用时,退到加权随机池」。只在 `channel_id > 0` 时有意义
+   * (没指定时本来就走池子),后端会在 `channel_id` 为 0 时把它一并归零。
+   *
+   * **默认关**:打开它把「只发给这一个」变成「这一个不行就发给池子里的任何
+   * 一个」,也就是把用户内容的出境目的地从一个变成一组。那不该由一次升级
+   * 替站点决定 —— 存量配置的行为因此逐字节不变。
+   */
+  channel_failover: boolean
   remark: string
   created_at: number
   updated_at: number
@@ -265,6 +276,25 @@ export type QyAiScopeSummaryRow = {
    */
   channel_id: number
   /**
+   * 「指定的渠道不可用时退到加权随机池」。`channel_id` 为 0 时恒为 `false`。
+   *
+   * 必须出现在列表上,不能只藏在编辑弹窗里:它改变的是**用户内容会被发到
+   * 哪些第三方端点**。运营看到「审核渠道: 内部自建」时的默认理解是"只有它",
+   * 而开着这一位时那句话是假的 —— 一次超时就足以让内容去到别处。
+   */
+  channel_failover: boolean
+  /**
+   * 这一行没有绑定到任何具体分组:名单为空(= 全部分组),或者方向是排除
+   * (= 名单之外的全部分组)。
+   *
+   * 这样的行现在**存不进来**(后端 validateAIScope 拒绝启用它们),所以它只
+   * 可能是存量:「强制绑定分组」之前建的,或者是全局抽样率迁移出来的那一条。
+   * 存量行不会被自动改写或停用(静默关掉一条正在生效的风控比留着它更危险),
+   * 所以启用中的那些**还在按全站匹配** —— 而它们在这张表上与一条只盯一个
+   * 分组的策略长得完全一样。这一列就是把那个差别摆出来的唯一办法。
+   */
+  group_unbound: boolean
+  /**
    * 这一行永远匹配不到:它前面有一条作用域为空(= 匹配一切)的启用策略。
    * 一条被遮住的策略与一条配错作用域的策略在列表上长得一模一样,
    * 而两者的下一步完全不同(调优先级 vs 改作用域)。
@@ -294,6 +324,12 @@ export type QyAiScopeList = {
     prompt_source: QyAiScopePromptSource
     category_id: number
     channel_id: number
+    /**
+     * 快照里那一位。与表单里的不一致说明还没重载到 —— 而它的不一致最难察觉:
+     * 关掉之后要等一次重载才真的停,中间这段时间界面写着"关",
+     * 线上仍然在往池子里退。
+     */
+    channel_failover: boolean
   }[]
 }
 
@@ -313,7 +349,10 @@ export type QyAiStats = {
   total_tokens: number
   total_cost_usd: string
   violated_calls: number
-  /** 发出去了但算不出钱的调用数(渠道没填单价)。> 0 时总额是被低估的。 */
+  /**
+   * 花费算不准的审核次数:整条重试链一分钱都没算出来,或者链上有一次产生了
+   * token 却没单价(混价链,cost_usd 是正数但只是下界)。> 0 时总额被低估。
+   */
   unpriced_calls: number
 }
 
@@ -333,7 +372,11 @@ export type QyAiReviewLog = {
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
+  /** 整条重试链的合计花费。cost_unknown 为真时它只是下界。 */
   cost_usd: string
+  cost_unknown: boolean
+  /** 这一次审核实际发出的调用次数(含失败的那几次),0 = 这一列存在之前的行。 */
+  attempts: number
   latency_ms: number
   rule_id: number
   record_id: number

@@ -562,8 +562,9 @@ func adminListAIReviews(c *gin.Context) {
 //   - 跑了多少次(按结局分)——含全部失败,那是 fail-open 是否在静默吞掉一切的答案
 //   - 花了多少 token
 //   - 花了多少钱
-//   - 有多少次调用**算不出钱**(渠道没填单价)—— 没有这个数,一个 $0 的总额
-//     会被当成"没花钱",而它可能是"全站都没填单价"
+//   - 有多少次调用的花费**算不准**(链上有渠道没填单价)—— 没有这个数,一个
+//     $0 的总额会被当成"没花钱",而它可能是"全站都没填单价";一个偏低的正数
+//     则会被当成真值,那是混价重试链的形状
 func adminAIReviewStats(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return
@@ -604,10 +605,17 @@ func adminAIReviewStats(c *gin.Context) {
 		totalTok += r.TotalTok
 		totalCost = totalCost.Add(r.CostUsdSum)
 	}
-	// 「算不出钱」的调用数:确实发出去了(有 token)却一分钱都没算出来。
+	// 「花费算不准」的调用数。判据有两条腿,缺一条就会漏掉一整类:
+	//
+	//	cost_usd <= 0    确实发出去了(有 token)却一分钱都没算出来 —— 整条链都没单价。
+	//	cost_unknown     算出来了,但已知是**下界**:链上有一次产生了 token 却没单价。
+	//
+	// 只有第一条腿时,混价链(一个有单价的渠道 + 一个没有的,两次都产生了 token)
+	// 的 cost_usd 是正数,于是它不会被算进来 —— 界面把一个偏低的数字当成准确值
+	// 展示,而"这个月比预算省了 40%"没有人会来查。见 AIReview.CostUnknown。
 	var unpriced int64
 	if err := db.Get().Model(&AIReview{}).
-		Where("created_at >= ? AND total_tokens > 0 AND cost_usd <= 0", from).
+		Where("created_at >= ? AND total_tokens > 0 AND (cost_usd <= 0 OR cost_unknown = ?)", from, true).
 		Count(&unpriced).Error; err != nil {
 		internalError(c, err)
 		return

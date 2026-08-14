@@ -156,6 +156,8 @@ const scopes: QyAiScopeList = {
       prompt_source: 'custom',
       category_id: 12,
       channel_id: 3,
+      channel_failover: false,
+      group_unbound: false,
       shadowed: false,
     },
   ],
@@ -352,6 +354,50 @@ describe('AI 审核作用域卡', () => {
   })
 
   /*
+   * 故障转移这一位必须出现在列表上,不能只藏在编辑弹窗里。
+   *
+   * 「指定了 A」与「指定了 A,但 A 不行时会发给别人」是两种不同的数据流向,
+   * 而它们在这一格里只差一个 badge。不画的话,运营看着「审核渠道: 内部自建」
+   * 得到的是一个已经不成立的预期 —— 而这一页上另一条更要紧的事实
+   * (谁的内容被发往第三方)正是建立在那个预期上的。
+   */
+  test('开着故障转移的那一档,列表上写着它会退到别的渠道', async () => {
+    const withFailover = {
+      ...scopes,
+      summary: [{ ...scopes.summary[0], channel_failover: true }],
+    }
+    const text = (await mountPage(withFailover)).textContent ?? ''
+    assert.ok(
+      text.includes(dict.qy_ai_scope_channel_failover_on),
+      '指定渠道旁边没有标出故障转移 —— ' +
+        '运营会以为内容只会去到他选的那一个端点'
+    )
+  })
+
+  /*
+   * 指定渠道坏了 + 开着故障转移:这一档**没有**失效,它退到了加权随机池。
+   *
+   * 报"渠道不可用"会把人引去修一个不影响判定结果的东西;真正该说的是另一件
+   * 事(内容正在发往你没有指定的端点)。两句话的下一步动作完全不同。
+   */
+  test('指定的渠道停用 + 开着转移:说的是"落到池子上了",不是"这一档不再审核"', async () => {
+    const broken = {
+      ...scopes,
+      summary: [{ ...scopes.summary[0], channel_failover: true }],
+      channels: [{ id: 3, name: '自建审核端点', enabled: false, model: 'm' }],
+    }
+    const text = (await mountPage(broken)).textContent ?? ''
+    assert.ok(
+      !text.includes(dict.qy_ai_scope_kind_channel_down),
+      '开了转移的档不该被标成「渠道不可用」—— 它照常在审'
+    )
+    assert.ok(
+      text.includes(dict.qy_ai_scope_channel_broken_failover),
+      '没有说清真正发生的事:每一次都直接落在加权随机池上'
+    )
+  })
+
+  /*
    * 「问什么」与「记成哪一类」也必须出现在汇总表上。
    *
    * 两者与抽样率一样，没有任何用户可见的症状：一份写坏的作用域提示词、一档
@@ -494,6 +540,89 @@ describe('AI 审核作用域卡', () => {
     })
     assert.ok(scopeTable(container), '设置卡降级把作用域卡一起带走了')
   })
+
+  /*
+   * 存量的「没绑分组」行必须在列表上说出来。
+   *
+   * 项目方要的是「强制绑定分组」,而那道闸只管**新的写入**:升级前建的空作用域
+   * 策略照旧躺在库里,也照旧在按全站匹配 —— 它没有被自动停用,因为悄悄关掉一条
+   * 正在生效的风控比留着它更危险。于是这一行成了全站唯一一个"抽样率作用在所有
+   * 用户身上"的地方,而它在这张表上与一条只盯一个分组的策略长得完全一样。
+   */
+  test('存量未绑定分组的行被标出来，启用中的那句话点明它在按全站匹配', async () => {
+    const legacy = {
+      ...scopes,
+      summary: [
+        {
+          ...scopes.summary[0]!,
+          group_scope: '',
+          group_unbound: true,
+          enabled: true,
+        },
+      ],
+    }
+    const text = (await mountPage(legacy)).textContent ?? ''
+    assert.ok(
+      text.includes(dict.qy_ai_scope_unbound_active),
+      `启用中的未绑定行没有被标出来：${text.slice(0, 200)}`
+    )
+  })
+
+  test('停用的未绑定行说的是"补上分组才能启用"，不是"正在全站匹配"', async () => {
+    const legacy = {
+      ...scopes,
+      summary: [
+        {
+          ...scopes.summary[0]!,
+          group_scope: '',
+          group_unbound: true,
+          enabled: false,
+        },
+      ],
+    }
+    const text = (await mountPage(legacy)).textContent ?? ''
+    assert.ok(
+      text.includes(dict.qy_ai_scope_unbound_idle),
+      '停用的未绑定行没有给出"补齐分组才能启用"的说明'
+    )
+    assert.ok(
+      !text.includes(dict.qy_ai_scope_unbound_active),
+      '停用的档一个请求都收不到，说它"正在按全站匹配"是假的'
+    )
+  })
+
+  /*
+   * 分组这一格是必填,而且拦在**保存键**上。
+   *
+   * 新建出来的草稿分组就是空的,所以弹窗一开就该是这个状态。让它可保存、再由
+   * 后端回一句 400 也"能用",但那句话出现在弹窗外面的 toast 里 —— 人正看着表单,
+   * 提示却在别处,而且他刚刚已经把十来格填完了。
+   */
+  test('新建弹窗一开:分组为空 → 保存键是灰的,并且当场说明为什么必填', async () => {
+    const container = await mountPage(scopes)
+    const addButton = [...container.querySelectorAll('button')].find((b) =>
+      (b.textContent ?? '').includes(dict.qy_ai_scope_add)
+    )
+    assert.ok(addButton, '找不到「新增作用域策略」按钮')
+    await act(async () => {
+      addButton.dispatchEvent(new Event('click', { bubbles: true }))
+    })
+
+    const dialog = document.body.querySelector('[role="dialog"]')
+    assert.ok(dialog, '点了新增却没有开出弹窗')
+    const save = [...dialog.querySelectorAll('button')].find((b) =>
+      (b.textContent ?? '').includes(dict.qy_ai_save)
+    )
+    assert.ok(save, '弹窗里没有保存按钮')
+    assert.ok(
+      save.hasAttribute('disabled'),
+      '分组还没填,保存键却是可点的 —— 这一条只能等后端 400,而那句话在弹窗外面'
+    )
+    assert.ok(
+      (dialog.textContent ?? '').includes(dict.qy_ai_scope_group_required),
+      '没有说明为什么必填 —— 运营的第一反应会是"以前留空就行,现在坏了"'
+    )
+  })
 })
 
 /*
@@ -509,4 +638,8 @@ describe('AI 审核作用域卡', () => {
  *     报错原文：`undefined is not an object (evaluating 'data.setting.enabled')`，
  *     异常发生在 <AiSettingCard>，而**红的是作用域卡的用例** —— 那正是爆炸半径
  *     这件事的形状：坏的是别人，消失的是你。
+ *  S6 行里那段 `row.group_unbound && …` 删掉          → 「存量未绑定分组的行…」两条红
+ *  S7 未绑定行的两句话不分启停(恒用 active 那一句)   → 「停用的未绑定行…」红
+ *  S8 保存键的 `bindingError !== null` 去掉           → 「新建弹窗一开…」红
+ *     (保存键可点,而那一档存下去之后永远开不起来)
  */

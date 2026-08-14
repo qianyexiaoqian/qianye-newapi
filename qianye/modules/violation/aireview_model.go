@@ -224,13 +224,47 @@ type AIReview struct {
 	// 同规格做脱敏(redactSnippet)之后再落库。
 	Reason string `json:"reason" gorm:"type:varchar(512);not null;default:''"`
 
+	// 这四列是**整条重试链**的合计,不是最后一次调用的用量。
+	//
+	// 故障转移让"一次抽样 = 一次调用"变成了"一次抽样 = 最多 maxAIAttempts 次
+	// 调用",而其中 bad_json 那一种是已经付过钱的。只记最后一次会让这张表
+	// 系统性低估花费 —— 而这张表存在的全部理由就是回答"到底花了多少"。
+	// 累加口径见 aiChainCost。
 	PromptTokens     int `json:"prompt_tokens" gorm:"not null;default:0"`
 	CompletionTokens int `json:"completion_tokens" gorm:"not null;default:0"`
 	TotalTokens      int `json:"total_tokens" gorm:"not null;default:0"`
 	// CostUsd 由渠道单价 × token 算出。渠道没填单价时恒为 0,
 	// 界面据 priced 标记区分"没花钱"与"不知道花了多少"。
-	CostUsd   decimal.Decimal `json:"cost_usd" gorm:"type:decimal(18,8);not null;default:0"`
-	LatencyMs int             `json:"latency_ms" gorm:"not null;default:0"`
+	CostUsd decimal.Decimal `json:"cost_usd" gorm:"type:decimal(18,8);not null;default:0"`
+	// CostUnknown 为真表示上面那个数字是**下界**而不是真值:这一次审核的重试链上
+	// 至少有一次调用产生了 token 却算不出钱(那个渠道没填单价)。
+	//
+	// # 为什么靠 cost_usd 反推不出来
+	//
+	// 成本页原先用 `total_tokens > 0 AND cost_usd <= 0` 找"算不出钱的调用"。
+	// 混价链(一个填了单价的渠道 + 一个没填的,两次都产生了 token)算出来的
+	// cost_usd 是**正数**,于是这一行从那个判据下面溜过去 —— 而它恰恰正是偏低的
+	// 那一种,界面还会把它当成准确值展示。偏低是最没人会去核对的方向。
+	// 故障转移把"一次抽样 = 一次调用"变成了"最多三次调用",混价链因此不再是
+	// 一种理论情形:池子里只要有一个渠道没填单价,它随时会被加权随机抽到。
+	//
+	// # 为什么叫 cost_unknown 而不是 cost_known
+	//
+	// 为了让零值站在正确的一边。AutoMigrate 给存量行 ADD COLUMN 时回填 false,
+	// 含义是"没有任何理由认为这一行算不准",与这一列存在之前的口径逐字节一致。
+	// 反过来(cost_known 默认 false)会把全部历史行一夜之间判成"算不准",
+	// 在成本页上凭空点亮一条谁也复核不了的告警。
+	CostUnknown bool `json:"cost_unknown" gorm:"not null;default:false"`
+	LatencyMs   int  `json:"latency_ms" gorm:"not null;default:0"`
+	// Attempts 是这一次审核实际发出的调用次数(含失败的那几次)。
+	//
+	// 它是上面那几列的**分母**:没有它,一行 3 倍于常态的花费看不出是"这次
+	// 送审的内容特别长"还是"前两个渠道挂了各付了一次钱",而两者的处置人不同
+	// (前者调 max_input_chars,后者去修渠道)。
+	//
+	// 0 表示这一行是在这一列存在之前写下的(或者一次调用都没发出去,
+	// 例如 no_channel)—— 刻意不回填 1:猜一个数字比留一个空更糟。
+	Attempts int `json:"attempts" gorm:"not null;default:0"`
 
 	// RuleId / RecordId 是与既有违规体系的接线口:判违规且落到某条 ai_review
 	// 规则上时,这里写下那条规则与它产生的记录 id。0 表示没落到任何规则

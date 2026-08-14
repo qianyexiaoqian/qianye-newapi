@@ -35,18 +35,28 @@ func TestPreReviewBudgetCoversTheWholeCallNotEachChannel(t *testing.T) {
 	a := newFakeReviewServer(t, stall)
 	b := newFakeReviewServer(t, stall)
 
-	const budgetMs = 400
-	// 容差刻意给得很松(2 倍预算):本测试要抓的是"预算被乘以渠道数"这种
-	// 量级错误,不是几十毫秒的调度抖动。修复前这里是 2 倍预算之上。
-	const tolerance = 2 * budgetMs * time.Millisecond
+	const budgetMs = 600
+	// 渠道自己也填了超时,而且**比总预算大** —— 这是现网的形状(渠道 id=1 的
+	// timeout_ms 是 5000,而转发前预算的硬上限同样是 5000)。
+	//
+	// 这一行是这条守卫的全部力气所在。夹具原先把它留在 0,于是每次尝试的预算
+	// 退化到 minAITimeoutMs(200ms),两三个渠道加起来仍然远在容差之内 ——
+	// 实测把整段外层 WithTimeout 删掉(`if timeoutMs > 0` 改成 `if false`,
+	// 等于退回"每个渠道各拿一份完整预算"那个已修复的缺陷),这条测试与
+	// aireview_failover_test.go 的墙钟那条**双双照样是绿的**。
+	// 也就是说,守的不是渠道超时,守的是"渠道超时不许突破总预算"。
+	const chTimeoutMs = 2500
+	// 容差 = 预算 + 一份固定抖动,不再是"2 倍预算"。倍数容差与"预算被乘以
+	// 渠道数"是同一个量级,天生挡不住它;而本地 httptest 的调度抖动是几十毫秒级。
+	const tolerance = budgetMs*time.Millisecond + 400*time.Millisecond
 
 	t.Run("两个渠道都挂死时,总耗时仍受单份预算约束", func(t *testing.T) {
 		rt := &aiRuntime{
 			Channels: []*aiChannelRT{
-				{Id: 1, Name: "a", URL: chatCompletionsURL(a.URL), Model: "m", Weight: 1},
-				{Id: 2, Name: "b", URL: chatCompletionsURL(b.URL), Model: "m", Weight: 1},
+				{Id: 1, Name: "a", URL: chatCompletionsURL(a.URL), Model: "m", Weight: 1, TimeoutMs: chTimeoutMs},
+				{Id: 2, Name: "b", URL: chatCompletionsURL(b.URL), Model: "m", Weight: 1, TimeoutMs: chTimeoutMs},
 			},
-			Prompt: defaultAIPrompt, MaxInputChars: defaultAIMaxInputChars, totalWeight: 2,
+			Prompt: defaultAIPrompt, MaxInputChars: defaultAIMaxInputChars,
 		}
 		started := time.Now()
 		out := runAIReview(context.Background(), rt, nil, "待审内容", budgetMs)
@@ -61,10 +71,11 @@ func TestPreReviewBudgetCoversTheWholeCallNotEachChannel(t *testing.T) {
 
 	t.Run("单渠道同样受同一份预算约束", func(t *testing.T) {
 		rt := &aiRuntime{
-			Channels:      []*aiChannelRT{{Id: 1, Name: "a", URL: chatCompletionsURL(a.URL), Model: "m", Weight: 1}},
+			Channels: []*aiChannelRT{
+				{Id: 1, Name: "a", URL: chatCompletionsURL(a.URL), Model: "m", Weight: 1, TimeoutMs: chTimeoutMs},
+			},
 			Prompt:        defaultAIPrompt,
 			MaxInputChars: defaultAIMaxInputChars,
-			totalWeight:   1,
 		}
 		started := time.Now()
 		out := runAIReview(context.Background(), rt, nil, "待审内容", budgetMs)
@@ -78,10 +89,10 @@ func TestPreReviewBudgetCoversTheWholeCallNotEachChannel(t *testing.T) {
 	t.Run("预算耗尽的结局是超时(放行),不是拦截", func(t *testing.T) {
 		rt := &aiRuntime{
 			Channels: []*aiChannelRT{
-				{Id: 1, Name: "a", URL: chatCompletionsURL(a.URL), Model: "m", Weight: 1},
-				{Id: 2, Name: "b", URL: chatCompletionsURL(b.URL), Model: "m", Weight: 1},
+				{Id: 1, Name: "a", URL: chatCompletionsURL(a.URL), Model: "m", Weight: 1, TimeoutMs: chTimeoutMs},
+				{Id: 2, Name: "b", URL: chatCompletionsURL(b.URL), Model: "m", Weight: 1, TimeoutMs: chTimeoutMs},
 			},
-			Prompt: defaultAIPrompt, MaxInputChars: defaultAIMaxInputChars, totalWeight: 2,
+			Prompt: defaultAIPrompt, MaxInputChars: defaultAIMaxInputChars,
 		}
 		out := runAIReview(context.Background(), rt, nil, "待审内容", budgetMs)
 		require.NotNil(t, out)

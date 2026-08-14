@@ -57,13 +57,25 @@ const (
 	// 但仍受 guard 异步 worker 的预算约束,填得再大也没有意义。
 	maxAsyncTimeoutMs = 30000
 
-	// maxAIAttempts 是单次审核最多尝试的渠道数。
+	// maxAIAttempts 是单次审核最多尝试的渠道数(含第一次)。
 	//
-	// 2 而不是"全部":转发前审核的总时间必须有上界,而"渠道数 × 单渠道超时"
-	// 没有上界 —— 配了 8 个渠道又全都不通时,预算会被放大 8 倍。
-	// 第一个渠道挂了还有第二个,这已经覆盖了"某一家在抖"的绝大多数情形;
-	// 两个都挂通常意味着是本机出网有问题,再试第三个也没用。
-	maxAIAttempts = 2
+	// # 为什么有上界
+	//
+	// 不是为了时间 —— 时间已经由**一份**总预算钉死(见 runAIReview 的
+	// WithTimeout 与 aiAttemptBudget),尝试多少次都不会让最坏延迟变大。
+	// 上界防的是**钱**:重试链上唯一一种"已经付过 token"的失败是 bad_json
+	// (响应回来了、只是不是我们要的形状),它每重试一次就再付一次。
+	// 没有上界时,一个配错了的站点会把每一次抽样变成 N 次付费调用。
+	//
+	// # 为什么是 3 而不是 2
+	//
+	// 指定渠道 + 故障转移的链是「指定的那个」+「池子里补位的」。上界为 2 时
+	// 补位只有一次机会,而加权随机完全可能正好补到另一个也挂着的渠道 ——
+	// 结果是三个健康渠道闲着、请求走 fail-open。3 让指定档也有两次补位。
+	//
+	// 值得重试的失败(连不上 / 5xx / 401 / 429)都**不产生 token**,所以第三次
+	// 尝试在绝大多数情形下的边际成本是零。
+	maxAIAttempts = 3
 
 	// defaultAIMaxInputChars 是送审内容的默认字符上限。
 	//
@@ -191,7 +203,6 @@ type aiRuntime struct {
 	Vocab         aiVocabulary
 	MaxInputChars int
 	Channels      []*aiChannelRT
-	totalWeight   int
 	// Scopes 是按 priority 升序排好的作用域策略,第一条匹配的说了算。
 	// 一条都不匹配 = 不审核,没有兜底档。
 	// 见 aireview_scope.go —— 它是"只盯某几个分组"与"分组分档抽样"的实现。
@@ -230,12 +241,150 @@ type aiOutcome struct {
 	ChannelName     string
 	Model           string
 
+	// PromptTokens / CompletionTokens / TotalTokens / CostUsd 在一次调用里是
+	// 那次调用的用量;runAIReview 返回之前会把它们换成**整条重试链**的合计
+	// (见 aiChainCost)。理由写在那里:只记最后一次会让成本系统性偏低。
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
 	CostUsd          decimal.Decimal
 	Priced           bool
 	LatencyMs        int
+	// Attempts 是这次审核实际发出的调用次数(含失败的那几次)。
+	// 它是"为什么这一行的花费是别行的三倍"唯一说得出口的答案。
+	Attempts int
+
+	// retryable 只在 runAIReview 的循环里活着,不落库、不下发。
+	// 它回答的是"这一种失败换一个渠道再试有没有意义",见 aiStatusRetryable。
+	retryable bool
+}
+
+// aiStatusRetryable 回答"上游回了这个状态码,换一个渠道再试有没有意义"。
+//
+// ═══════════════ 分类错了会怎样 ═══════════════
+//
+// 分错的两个方向不对称,所以判据也不对称:
+//
+//	该重试却没重试   这一次审核放行了。代价是漏掉一条被抽中的请求 ——
+//	                 而 fail-open 本来就接受这个代价。
+//	不该重试却重试了 同一个请求被送去 N 个渠道,每一个都付一次 token。
+//	                 抽样率 10% 对应的账单变成 N 倍,而界面上那个 10% 没变。
+//
+// 所以判据是"这次失败**属于这个渠道**吗":属于渠道的换一个有用,
+// 属于请求本身的换一个只是把同一个拒绝再买 N 遍。
+//
+//	401 / 403 / 402   这把**钥匙**的问题(过期、没权限、欠费)。别的渠道
+//	                  用的是别的钥匙 —— 值得试。
+//	404               这个渠道的 base_url 填错了(本页最常见的误配)。
+//	                  别的渠道地址不同 —— 值得试。
+//	408 / 429 / 5xx   这一家在抖或在限流。值得试。
+//	400 / 413 / 422   **请求本身**被拒(参数不认、体积超限、格式不合)。
+//	                  我们发给每个渠道的是同一个请求体,换一个渠道会得到
+//	                  同一个 400,而且是付费买来的。不重试。
+//	其余 4xx          按"请求本身的问题"处理,理由同上。
+func aiStatusRetryable(status int) bool {
+	switch status {
+	case http.StatusPaymentRequired, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	}
+	return status >= 500
+}
+
+// aiChainCost 累计整条重试链的 token 与花费。
+//
+// # 为什么不能只记最后一次调用
+//
+// 重试链上的每一次调用都真的发出去了。其中 bad_json 那一种**已经付过钱**
+// (响应回来了、usage 也回来了,只是内容不是我们要的形状)。只把最后一次
+// 写进 qy_violation_ai_review,成本页上的数字就会系统性偏低 —— 而偏低的
+// 方向恰好是最没人会去核对的那一侧:"这个月比预算省了 40%"没人会来查。
+//
+// 项目方对这张表的原话是「没有这个,开了概率抽样之后没人知道花了多少」。
+// 重试把"一次抽样 = 一次调用"变成了"一次抽样 = 最多三次调用",那句话要继续
+// 成立,合计就必须是链上的合计。
+type aiChainCost struct {
+	Attempts         int
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	CostUsd          decimal.Decimal
+	// anyTokens 为真表示链上至少有一次调用真的产生了用量。
+	anyTokens bool
+	// costKnown 为假表示链上有一次**产生了 token 却算不出钱**的调用
+	// (那个渠道没填单价)。此时合计花费是一个下界,不是真值。
+	costKnown bool
+}
+
+func (c *aiChainCost) add(res *aiOutcome) {
+	c.Attempts++
+	c.PromptTokens += res.PromptTokens
+	c.CompletionTokens += res.CompletionTokens
+	c.TotalTokens += res.TotalTokens
+	if res.CostUsd.IsPositive() {
+		c.CostUsd = c.CostUsd.Add(res.CostUsd)
+	}
+	if res.TotalTokens > 0 {
+		c.anyTokens = true
+		if !res.Priced {
+			// 一次算不出钱的调用就足以让整条链的合计变成下界。
+			c.costKnown = false
+		}
+	}
+}
+
+// applyTo 把合计盖到最终那一条结局上。调用方拿到的 out 因此描述的是
+// "这一次审核"(哪个渠道给出了结论、一共花了多少),而不是"最后一次调用"。
+func (c *aiChainCost) applyTo(out *aiOutcome) *aiOutcome {
+	out.Attempts = c.Attempts
+	out.PromptTokens = c.PromptTokens
+	out.CompletionTokens = c.CompletionTokens
+	out.TotalTokens = c.TotalTokens
+	out.CostUsd = c.CostUsd
+	// Priced 的含义始终是"这个花费数字算得准",而不是"这个渠道填了单价"。
+	// 链上只要有一次产生了 token 却没单价,这个合计就不准。
+	out.Priced = c.anyTokens && c.costKnown
+	return out
+}
+
+// aiAttemptBudget 给一次尝试从**剩余总预算**里切一块。
+//
+// ═══════════════ 为什么要切,而不是每次都给满 ═══════════════
+//
+// 总预算是一个 ctx 上的 deadline,这一条是硬契约(管理端那一格的文案承诺的
+// 就是这个数)。但"每次尝试都给到 deadline"会让**第一个卡住的渠道吃掉全部
+// 预算**,于是故障转移在最需要它的那一种故障上恰好不发生 —— 上游挂起。
+//
+// 反过来平分(总预算 ÷ 尝试数)也不行:两个渠道时,一个平时 900ms 出结论的
+// 健康渠道会被 1500ms 预算的一半(750ms)砍掉,换来一次本来不会发生的超时。
+// 那是把常态路径的成功率拿去换异常路径的一次补位。
+//
+// 所以是**留底**而不是平分:这一次拿"剩下的减去后面每次各留一个最小可用片
+// (minAITimeoutMs)",后面的尝试各自再照这条规则算一遍。
+//
+//	预算 1500、两次尝试:第一次拿 1300;它若秒失败(连不上 / 5xx / 401,
+//	                     也就是绝大多数值得重试的失败),第二次拿到的仍然
+//	                     接近 1500 —— 常态路径一点没少。
+//	                     它若真的挂起,第二次拿 200,聊胜于无,而 1500 这个
+//	                     上界纹丝不动。
+//
+// 渠道自己的 TimeoutMs 仍然取小者:那一格的存在理由是"本地小模型 50ms、
+// 云端大模型 2s,一个数字卡不住两者"。
+//
+// 这只是**切分**,不是上界。上界永远是外层那一个 WithTimeout:即使这里算错,
+// callAIChannel 的子 ctx 也活不过父 ctx 的 deadline。
+func aiAttemptBudget(remainingMs, attemptsLeft, channelTimeoutMs int) int {
+	if attemptsLeft < 1 {
+		attemptsLeft = 1
+	}
+	slice := remainingMs - (attemptsLeft-1)*minAITimeoutMs
+	if slice < minAITimeoutMs {
+		slice = minAITimeoutMs
+	}
+	if channelTimeoutMs > 0 && channelTimeoutMs < slice {
+		slice = channelTimeoutMs
+	}
+	return slice
 }
 
 // decided 表示模型真的给出了一个可用的结论。只有它为真时规则才可能命中 ——
@@ -273,42 +422,76 @@ func sampleAI(bps int) bool {
 	return n.Int64() < int64(bps)
 }
 
-// pickAIChannels 排出本次要尝试的渠道顺序。
+// pickAIChannels 排出本次要尝试的渠道顺序,最多 maxAIAttempts 个。
 //
-// sc 指定了渠道时(ChannelId > 0)结果只有那一个,而且**指定的渠道不可用时
-// 返回空**,绝不回落到随机池 —— 完整理由写在 AIScope.ChannelId 上,一句话:
-// 回落会把内容发去一个运营明确没有选的端点,而那正是指定渠道要挡的事。
-// 返回空的后果是 runAIReview 给出 OutcomeNoChannel,请求放行、明细留痕。
+// ═══════════════════ 三条链,由这一档自己选 ═══════════════════
 //
-// 没有指定时按权重随机排,最多 maxAIAttempts 个。加权随机而不是"永远打第一个":
-// 权重是运营表达"主用哪个、备用哪个"的方式,而恒定顺序会让备用渠道永远不被
-// 验证 —— 等到主渠道真挂了那天,才发现备用渠道的密钥三个月前就过期了。
+//	没指定渠道             按权重在全部启用渠道里随机、不放回,取到上限为止。
+//	指定了 + 转移开关关着   只有它一个。指定的字面意思,也是这一列的出厂行为。
+//	指定了 + 转移开关开着   它排第一,后面按权重从**其余**渠道里随机补位。
 //
-// 指定渠道时**没有第二次尝试**:那正是"指定"的字面意思。同一档想要故障转移
-// 请留空走加权随机池。
+// 加权随机而不是"永远打第一个":权重是运营表达"主用哪个、备用哪个"的方式,
+// 而恒定顺序会让备用渠道永远不被验证 —— 等到主渠道真挂了那天,才发现备用
+// 渠道的密钥三个月前就过期了。
+//
+// ═══════════════════ 为什么故障转移必须是开关,不能默认打开 ═══════════════════
+//
+// 指定渠道这一列的**原始理由**是数据流向:内部对接分组的内容只允许发给自建
+// 的那个端点。默认打开转移等于把存量配置里的每一条"只发给 A"静默改写成
+// "A 不行就发给任何人"—— 一次没人按下过、也没有任何症状的数据出境扩大。
+//
+// 所以开关默认关(AIScope.ChannelFailover 出厂 false),存量行为逐字节不变;
+// 打开它是一次显式动作,会写审计,而且列表上那一格会写着"故障转移: 开"。
+// 界面上必须能看出这两种链的区别 —— 运营看到"我指定了 A"时的预期是只有 A,
+// 不能让这个预期在他不知情的时候变成假的。
+//
+// ═══════════════════ 指定的渠道压根不在快照里时 ═══════════════════
+//
+// 停用、删除、这一轮密钥解不开 —— 三者对这一档是同一件事。
+//
+//	转移开关关着  返回空 ⇒ OutcomeNoChannel ⇒ 不审核、放行、明细留痕。
+//	              绝不悄悄换一个:那会把内容发去运营明确没有选的端点,
+//	              而"只能发给这一个"往往正是指定它的全部理由。
+//	转移开关开着  退到池子。开关的字面意思就是"这一档可以用别的渠道",
+//	              而"已经被停掉"与"刚刚开始超时"对这一档的用户是同一件事。
+//	              配置侧的信号不会因此丢失:作用域列表仍然会把这一格标红
+//	              (那是拿渠道表 join 出来的,与运行期无关)。
 func pickAIChannels(rt *aiRuntime, sc *aiScopeRT) []*aiChannelRT {
 	if rt == nil || len(rt.Channels) == 0 {
 		return nil
 	}
+	out := make([]*aiChannelRT, 0, maxAIAttempts)
+	var pinnedId int64
 	if sc != nil && sc.ChannelId > 0 {
-		if ch := rt.channelById(sc.ChannelId); ch != nil {
-			return []*aiChannelRT{ch}
+		pinned := rt.channelById(sc.ChannelId)
+		if !sc.ChannelFailover {
+			if pinned == nil {
+				return nil
+			}
+			return []*aiChannelRT{pinned}
 		}
-		return nil
+		if pinned != nil {
+			out = append(out, pinned)
+			pinnedId = pinned.Id
+		}
 	}
-	pool := make([]*aiChannelRT, len(rt.Channels))
-	copy(pool, rt.Channels)
-	total := rt.totalWeight
 
-	limit := maxAIAttempts
-	if limit > len(pool) {
-		limit = len(pool)
+	// 权重合计在这里现算而不是读快照上的一个字段:指定的那个渠道要从池子里
+	// 摘出去,一个预先算好的合计在那一刻就是错的,而错的表现是加权随机偏向
+	// 某一个渠道 —— 一种没有任何症状、只能靠统计才看得出来的偏差。
+	pool := make([]*aiChannelRT, 0, len(rt.Channels))
+	total := int64(0)
+	for _, ch := range rt.Channels {
+		if ch.Id == pinnedId {
+			continue
+		}
+		pool = append(pool, ch)
+		total += int64(ch.Weight)
 	}
-	out := make([]*aiChannelRT, 0, limit)
-	for len(out) < limit && len(pool) > 0 {
+	for len(out) < maxAIAttempts && len(pool) > 0 {
 		idx := 0
 		if total > 0 && len(pool) > 1 {
-			n, err := rand.Int(rand.Reader, big.NewInt(int64(total)))
+			n, err := rand.Int(rand.Reader, big.NewInt(total))
 			if err == nil {
 				acc := int64(0)
 				for i, ch := range pool {
@@ -321,7 +504,7 @@ func pickAIChannels(rt *aiRuntime, sc *aiScopeRT) []*aiChannelRT {
 			}
 		}
 		out = append(out, pool[idx])
-		total -= pool[idx].Weight
+		total -= int64(pool[idx].Weight)
 		pool = append(pool[:idx], pool[idx+1:]...)
 	}
 	return out
@@ -374,34 +557,51 @@ func runAIReview(ctx context.Context, rt *aiRuntime, sc *aiScopeRT, text string,
 	// 硬上限 5000,真实最坏是 10 秒,症状看起来像上游故障。
 	//
 	// 收成一次 WithTimeout 之后,契约与文案重新一致:最坏就是这个数。
+	// 加了故障转移之后这一点尤其不能松:重试是在这个数**里面**切分的
+	// (见 aiAttemptBudget),不是每重试一次就重新计一遍。
 	// 下面 `ctx.Err() != nil` 那一跳因此变成"总预算已耗尽,不再试下一个渠道"。
+	deadline := time.Time{}
 	if timeoutMs > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutMs)*time.Millisecond)
 		defer cancel()
+		deadline, _ = ctx.Deadline()
 	}
 
+	// costKnown 起手为真:一条一次调用都没成功的链(全是连不上)算出来的
+	// 花费 0 是准的,而"链上有一次产生了 token 却没单价"才会把它推翻。
+	chain := aiChainCost{CostUsd: decimal.Zero, costKnown: true}
 	var last *aiOutcome
-	for _, ch := range channels {
+	for i, ch := range channels {
 		if ctx.Err() != nil {
 			break
 		}
-		budget := timeoutMs
-		if ch.TimeoutMs > 0 && ch.TimeoutMs < budget {
-			budget = ch.TimeoutMs
+		budget := ch.TimeoutMs
+		if !deadline.IsZero() {
+			remaining := int(time.Until(deadline) / time.Millisecond)
+			if remaining <= 0 {
+				break
+			}
+			budget = aiAttemptBudget(remaining, len(channels)-i, ch.TimeoutMs)
 		}
 		res := callAIChannel(ctx, ch, prompt, body, budget, rt.Vocab)
-		res.LatencyMs = msSince(started)
+		chain.add(res)
 		if res.decided() {
-			return res
+			res.LatencyMs = msSince(started)
+			return chain.applyTo(res)
 		}
 		last = res
+		if !res.retryable {
+			// 这一种失败换一个渠道会得到同一个答案(请求本身被拒),
+			// 再试只是把同一个拒绝按尝试次数买 N 遍。见 aiStatusRetryable。
+			break
+		}
 	}
 	if last == nil {
 		last = &aiOutcome{Outcome: OutcomeNoChannel}
 	}
 	last.LatencyMs = msSince(started)
-	return last
+	return chain.applyTo(last)
 }
 
 func msSince(t time.Time) int {
@@ -492,13 +692,18 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 		ResponseFormat: &chatRespFormat{Type: "json_object"},
 	})
 	if err != nil {
+		// 请求体序列化失败与渠道无关(每个渠道发的是同一段 JSON)。
+		// 不重试:换一个渠道会在同一行再失败一次。
 		out.Outcome = OutcomeUpstreamError
 		return out
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ch.URL, bytes.NewReader(payload))
 	if err != nil {
+		// 这一条几乎只可能是 ch.URL 不合法 —— 那是**这个渠道**的配置问题,
+		// 别的渠道地址不同,值得试。
 		out.Outcome = OutcomeUpstreamError
+		out.retryable = true
 		return out
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -516,6 +721,12 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 		} else {
 			out.Outcome = OutcomeUpstreamError
 		}
+		// 连不上、被重置、这一家挂起 —— 全是"属于这个渠道"的失败,换一个有用。
+		//
+		// 超时同样标可重试,而这**不会**让总预算被绕过:总预算耗尽时循环顶上
+		// 那一跳(ctx.Err() / remaining <= 0)先一步退出。这里的超时指的是
+		// "这个渠道自己的那一片时间用完了",剩下的预算还在,可以给下一个。
+		out.retryable = true
 		// 绝不打印 ch.URL 之外的东西,尤其不打印请求体 —— 那里面是用户原文。
 		common.SysError(fmt.Sprintf("qianye/violation: AI 审核渠道 %d(%s)调用失败: %v",
 			ch.Id, ch.Name, err))
@@ -526,19 +737,29 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 	// 响应体也要限长:一个坏掉的上游可能返回几十 MB,而我们只需要几百字节。
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		// 响应读一半断了 = 传输层的问题,与连不上同一类。
 		out.Outcome = OutcomeUpstreamError
+		out.retryable = true
 		return out
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		out.Outcome = OutcomeUpstreamError
-		common.SysError(fmt.Sprintf("qianye/violation: AI 审核渠道 %d(%s)返回 HTTP %d",
-			ch.Id, ch.Name, resp.StatusCode))
+		out.retryable = aiStatusRetryable(resp.StatusCode)
+		// 把"要不要换渠道再试"打进日志:同一个 502 在只配了一个渠道的站点上
+		// 与在配了三个的站点上,运维要做的事完全不同。
+		common.SysError(fmt.Sprintf(
+			"qianye/violation: AI 审核渠道 %d(%s)返回 HTTP %d,是否换渠道重试=%t",
+			ch.Id, ch.Name, resp.StatusCode, out.retryable))
 		return out
 	}
 
 	var parsed chatResponse
 	if err := common.Unmarshal(raw, &parsed); err != nil || len(parsed.Choices) == 0 {
+		// 响应不是 OpenAI 兼容形态。通常是地址指到了一个网关/错误页,
+		// 或者这个"OpenAI 兼容"实现其实不兼容 —— 都是这个渠道的问题,
+		// 换一个渠道(它跑的多半是另一个模型、另一个实现)值得试。
 		out.Outcome = OutcomeBadJSON
+		out.retryable = true
 		return out
 	}
 	// token 与花费即使在结论解析失败时也要记:那次调用照样是花了钱的,
@@ -554,7 +775,12 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 
 	verdict, err := parseAIVerdict(parsed.Choices[0].Message.Content)
 	if err != nil {
+		// 这个模型不肯按格式回答。**这是唯一一种已经付过钱的可重试失败**
+		// (usage 就在上面几行刚记下来),所以它是重试上界真正防的那件事:
+		// 换一个渠道通常意味着换一个模型,值得试一次;而没有上界时,一个
+		// 配错了的站点会把每一次抽样变成 N 次付费调用。
 		out.Outcome = OutcomeBadJSON
+		out.retryable = true
 		return out
 	}
 	out.Violated = verdict.Violation != nil && *verdict.Violation

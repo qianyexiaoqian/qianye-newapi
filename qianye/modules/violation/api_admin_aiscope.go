@@ -54,8 +54,12 @@ type aiScopeUpsertReq struct {
 	// ChannelId 0 = 不指定,按权重在全部启用渠道里随机。写入闸会确认它指向一个
 	// **存在且启用**的渠道:指向一个停用渠道的策略在界面上与正常的完全一样,
 	// 而线上它每一次都走 no_channel(绝不回落到随机池,见 AIScope.ChannelId)。
-	ChannelId int64  `json:"channel_id"`
-	Remark    string `json:"remark"`
+	ChannelId int64 `json:"channel_id"`
+	// ChannelFailover 是「指定的渠道不可用时退到加权随机池」。默认 false ——
+	// 老客户端不带这个字段时,这一档的行为与这一列存在之前逐字节相同。
+	// ChannelId 为 0 时由 validateAIScope 归零(那时它没有任何含义)。
+	ChannelFailover bool   `json:"channel_failover"`
+	Remark          string `json:"remark"`
 }
 
 func (r *aiScopeUpsertReq) apply(dst *AIScope) error {
@@ -70,6 +74,7 @@ func (r *aiScopeUpsertReq) apply(dst *AIScope) error {
 	dst.Prompt = r.Prompt
 	dst.CategoryId = r.CategoryId
 	dst.ChannelId = r.ChannelId
+	dst.ChannelFailover = r.ChannelFailover
 	dst.Remark = r.Remark
 	return validateAIScope(dst)
 }
@@ -129,6 +134,9 @@ func adminListAIScopes(c *gin.Context) {
 				// 指定渠道同样是"存下来要等一次重载才进快照"的东西,而它不一致
 				// 时的表现(还在往上一个端点发用户内容)完全无声。
 				"channel_id": s.ChannelId,
+				// 故障转移这一位同理,而且它的不一致更难察觉:关掉之后要等一次
+				// 重载才真的停,中间这段时间界面写着"关",线上仍然在往池子里退。
+				"channel_failover": s.ChannelFailover,
 			})
 		}
 	}
@@ -230,9 +238,21 @@ func adminUpsertAIScope(c *gin.Context) {
 			return
 		}
 		if !ch.Enabled {
-			err := fmt.Errorf("指定的审核渠道「%s」当前是停用状态 —— "+
-				"停用的渠道不会进快照,这一档会每次都走「无可用渠道」并直接放行(不会回落到其它渠道)。"+
-				"请先启用该渠道,或把这一格改回「不指定(按权重随机)」", ch.Name)
+			// 后果分两种说,因为它们真的不同 —— 而"说错的那一半"正是运营用来
+			// 判断这条报错要不要认真对待的依据。
+			//
+			// 开着故障转移时这一档并没有停止工作(它会退到池子),所以拦它的
+			// 理由不是"你会失去审核",而是"你指定的那个端点已经不在链上了":
+			// 指定渠道表达的往往是数据流向约束,而现在生效的是池子。
+			// 那种状态可以存在(存量、渠道临时停用),但不该由一次保存**新建**
+			// 出来 —— 否则勾一下故障转移就成了绕开这道闸的办法。
+			outcome := "这一档会每次都走「无可用渠道」并直接放行(不会回落到其它渠道)"
+			if row.ChannelFailover {
+				outcome = "这一档开着故障转移,于是每一次审核都会直接落到加权随机池上 —— " +
+					"你指定的这个端点一次都不会被用到,而「只能发给这一个」往往正是指定它的理由"
+			}
+			err := fmt.Errorf("指定的审核渠道「%s」当前是停用状态 —— 停用的渠道不会进快照,%s。"+
+				"请先启用该渠道,或把这一格改回「不指定(按权重随机)」", ch.Name, outcome)
 			writeAIScopeAudit(c, aiScopeAction(req.Id), qymodel.ResultFail, before, &row, err)
 			badRequest(c, err.Error())
 			return
@@ -370,6 +390,10 @@ func aiScopeAuditSnap(s *AIScope) map[string]any {
 		// 指定渠道决定这一档的用户内容被发到**哪个第三方端点**。改它是本页
 		// 唯一一个能改变数据出境目的地的动作,必须留痕。
 		"channel_id": s.ChannelId,
-		"remark":     s.Remark,
+		// 打开故障转移把"只发给这一个"变成"这一个不行就发给池子里的任何一个",
+		// 也就是把出境目的地从一个变成一组。它与上面那一格是同一类事实,
+		// 而且更容易被顺手打开(它是一个开关,不是一次选择),必须留痕。
+		"channel_failover": s.ChannelFailover,
+		"remark":           s.Remark,
 	}
 }

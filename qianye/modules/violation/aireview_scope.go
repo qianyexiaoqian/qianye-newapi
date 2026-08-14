@@ -45,9 +45,17 @@ import (
 // 全站 5% 的请求内容正在被发往第三方 —— 一个没有任何入口能看见的成本与
 // 隐私事实。策略表反过来:表上写着谁在被监控,表上没有的就是没有。
 //
-// 存量那一个值不会被静默丢弃,迁移把它转成一条覆盖全部分组的策略行,
-// 见 migrate.go 的 migrateAISampleRateToScope —— 它是否启用取决于那个值
-// 当时**是不是真的在生效**,而不是取决于它非零。
+// 存量那一个值不会被静默丢弃,迁移把它转成一条策略行(见 migrate.go 的
+// migrateAISampleRateToScope)。那条行**一律是停用的**:它的作用域覆盖全站,
+// 而覆盖全站的策略现在不允许启用(见下一段)。值原样留在行上,补齐分组就能开。
+//
+// ═════════════════════ 启用中的策略必须绑定分组 ═════════════════════
+//
+// 项目方原话:「强制绑定分组,全站模型还是太高了一点」。一条覆盖全站的策略把
+// 抽样率这唯一的成本闸门作用在**所有**用户身上,而它与一条只盯一个分组的策略
+// 在列表上长得完全一样。所以 validateAIScope 拒绝启用两种写法:分组名单为空,
+// 以及 exclude 名单(= 名单之外的全部分组,而且随着新分组的建立自动变宽)。
+// 存量的这种行不会被改写,只会被标出来 —— 判据是 aiScopeGroupUnbound。
 
 // AIScope 是一条 AI 审核作用域策略。
 //
@@ -149,6 +157,8 @@ type AIScope struct {
 	//
 	// # 指定的渠道停用/删除时:这一档不审核,**绝不回落到默认池**
 	//
+	// (以下描述的是 ChannelFailover 关着时的行为,也就是出厂行为。)
+	//
 	// 回落是"静默降级"的教科书形状:配置看起来还在、审核照跑、花销照付,
 	// 而内容被发去了一个运营明确没有选的地方 —— 上一段那条约束正是为了挡住
 	// 这件事,回落等于在它最要紧的时候把它关掉。
@@ -162,6 +172,31 @@ type AIScope struct {
 	// 策略指着它则直接拒绝(见 api_admin_aiscope.go / adminDeleteAIChannel)。
 	// 两道闸的方向一致 —— 让"这一档不再审核"永远是一次显式动作的结果。
 	ChannelId int64 `json:"channel_id" gorm:"not null;default:0"`
+
+	// ChannelFailover 是「指定的渠道不可用时,退到加权随机池」。
+	//
+	// 只在 ChannelId > 0 时有意义(没指定时本来就走池子),validateAIScope
+	// 会在 ChannelId 归零时把它一并归零 —— 留一个悬空的"开着的开关"会让
+	// 列表上出现"按权重随机 · 故障转移开"这种自相矛盾的一格。
+	//
+	// # 为什么是开关,而不是直接改成"总是能退"
+	//
+	// 项目方的原话是「加一下故障转移吧」,而上面那一整段说的是"指定渠道
+	// 往往表达的是数据流向约束"。两件事都是真的,冲突点在**默认值**:
+	// 默认打开等于把存量里每一条"只发给 A"静默改写成"A 不行就发给任何人",
+	// 那是一次没人按下过、也没有任何症状的数据出境扩大。
+	//
+	// 所以出厂 false:升级上来的站点行为逐字节不变。打开它是一次显式动作,
+	// 进审计,而且作用域列表那一格会写着"故障转移: 开" —— 因为运营看到
+	// "我指定了 A"时的预期是只有 A,这个预期不能在他不知情时变成假的。
+	//
+	// # 打开之后退到哪、退几次
+	//
+	// 指定的那个排第一,后面按权重从**其余**启用渠道里随机补位,整条链
+	// 最多 maxAIAttempts 个渠道,全部挤在**同一份**时间预算里
+	// (见 pickAIChannels 与 aiAttemptBudget)。指定的渠道已经被停用/删除时
+	// 同样退到池子:开关的字面意思就是"这一档可以用别的渠道"。
+	ChannelFailover bool `json:"channel_failover" gorm:"not null;default:false"`
 
 	Remark    string `json:"remark" gorm:"type:varchar(512);not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"not null"`
@@ -192,6 +227,9 @@ type aiScopeRT struct {
 	CategoryId int64
 	// ChannelId 0 = 不指定,按权重在全部启用渠道里随机。见 pickAIChannels。
 	ChannelId int64
+	// ChannelFailover 为真时,指定的渠道失败后退到加权随机池补位。
+	// 只在 ChannelId > 0 时有意义,见 AIScope.ChannelFailover。
+	ChannelFailover bool
 }
 
 // aiSampleRolls 是**抽样函数被调用**的累计次数。
@@ -285,6 +323,9 @@ func buildAIScopes(gdb *gorm.DB) ([]*aiScopeRT, error) {
 			Prompt:       row.Prompt,
 			CategoryId:   row.CategoryId,
 			ChannelId:    row.ChannelId,
+			// 漏掉这一位的表现是"开关在界面上是开的、线上从不转移" ——
+			// 一次故障时它看起来只是"审核又放行了",没有任何地方指向这里。
+			ChannelFailover: row.ChannelFailover,
 		})
 	}
 	return out, nil
@@ -328,6 +369,42 @@ func validateAIScope(s *AIScope) error {
 		return fmt.Errorf("group_scope_mode 取值非法: %q(只能是 %q 或 %q)",
 			s.GroupScopeMode, GroupScopeInclude, GroupScopeExclude)
 	}
+	// ── 启用中的策略必须绑定到具体分组 ──
+	//
+	// 项目方原话:「强制绑定分组,全站模型还是太高了一点」。要挡的不是"作用域这一格
+	// 是空的",是**一条策略能覆盖全站**这件事 —— 空名单与 exclude 名单是它的两种写法,
+	// 只挡前一种等于加了一道多点一次鼠标就能绕过的闸。
+	//
+	//	空名单        compileScope 不建 groups 集合,groupInScope 恒为 true = 全部分组。
+	//	exclude 名单  匹配的是**名单之外的全部分组** —— 而且它随时间变宽:明天新建的
+	//	              分组第二天就自动进入监控,没有任何人配置过这件事。
+	//	              「豁免某几个分组」的写法在本模块另有一个更直白的:把那几个分组
+	//	              放在高优先级、两个抽样率都填 0(见 PreSampleRateBps 的说明)。
+	//
+	// # 为什么只在 Enabled 时要求,而不是无条件必填
+	//
+	// 与上面那两道引用闸(类型已归档 / 渠道已停用,见 api_admin_aiscope.go)同一个判据,
+	// 理由也同一条:停用的档一次都不会被 scopeFor 看到,拦它挡不住任何东西,而拦下来的
+	// 代价是实打实的 —— 列表上的一键启停走的正是这个 upsert,无条件必填会让一条**存量的、
+	// 正在生效的**空作用域策略连"关掉"都做不到(那次提交带的 group_scope 仍然是空的)。
+	// 一道本意是收缩暴露面的校验,反过来把唯一能立刻收缩暴露面的动作堵死。
+	//
+	// 判据放在 Enabled 上不留任何缺口:buildAIScopes 只装配启用中的行,
+	// 一条停用的空作用域策略在热路径上与不存在完全等价,而它想生效就必须再过一次这道闸。
+	if s.Enabled {
+		if s.GroupScope == "" {
+			return fmt.Errorf("启用中的作用域策略必须绑定用户分组 —— " +
+				"分组留空等于匹配全站:这一档的抽样率会作用在所有用户身上,把他们的请求内容发往第三方。" +
+				"请在「用户分组」里列出要监控的分组;想先存草稿,可以把这一档保存为停用")
+		}
+		if s.GroupScopeMode == GroupScopeExclude {
+			return fmt.Errorf("启用中的作用域策略不能用「排除」方向 —— " +
+				"排除的含义是「名单之外的全部分组」,它同样覆盖全站,而且会随时间变宽:" +
+				"明天新建的分组会自动进入监控,没有人配置过这件事。" +
+				"请改用「包含」并逐个列出要监控的分组;要豁免某几个分组," +
+				"给它们单建一档高优先级、两个抽样率都填 0 的策略")
+		}
+	}
 	if n := utf8.RuneCountInString(s.ModelScope); n > 2048 {
 		return fmt.Errorf("模型作用域过长(%d 字,上限 2048 字)", n)
 	}
@@ -367,7 +444,32 @@ func validateAIScope(s *AIScope) error {
 	if s.ChannelId < 0 {
 		return fmt.Errorf("审核渠道 id 非法(%d);不指定(按权重随机)请留 0", s.ChannelId)
 	}
+	// 没指定渠道时,故障转移这一位归零而不是报错。
+	//
+	// 它不是"悄悄改写运营的配置":没指定渠道时本来就走加权随机池,这一位开着
+	// 与关着的运行期行为**逐字节相同**,归零改的只是它的显示形态。留着一个
+	// 悬空的 true,列表上会出现「按权重随机 · 故障转移: 开」这种自相矛盾的一格,
+	// 而运营会据此以为自己配了点什么。
+	//
+	// 报错是更糟的那个选择:表单上这一格在"不指定"时是隐藏的,报错会让一次
+	// 「把指定渠道改回不指定」的正常保存莫名其妙地 400。
+	if s.ChannelId == 0 {
+		s.ChannelFailover = false
+	}
 	return nil
+}
+
+// aiScopeGroupUnbound 回答「这一档有没有真的绑定到具体分组上」。
+//
+// 两种写法都是"没绑":名单为空(compileScope 不建 groups 集合,分组这道闸恒为真),
+// 以及 exclude 名单(匹配名单之外的全部分组)。写入闸、汇总表与启动期的存量巡检
+// 必须用同一个判据 —— 三处各写一遍 `GroupScope == ""` 时,漏掉 exclude 的那一处
+// 就是这条规则的缺口,而缺口的表现是一条覆盖全站的策略在列表上显示得完全正常。
+//
+// 入参是两列原文而不是 *AIScope:调用点之一(启动期巡检)读的是库里的存量行,
+// 那些行的 group_scope 可能带着两侧空白 —— 归一只在写入侧发生过。
+func aiScopeGroupUnbound(groupScope, mode string) bool {
+	return strings.TrimSpace(groupScope) == "" || mode == GroupScopeExclude
 }
 
 // aiScopePromptSource 回答"这一档的提示词是继承全局的还是自己写的"。
@@ -416,6 +518,23 @@ type aiScopeSummaryRow struct {
 	// 那张表上还有"启用中没有",而"指定的渠道被停用了"正是这一格最要紧的一种
 	// 状态,只有 join 之后才看得出来。
 	ChannelId int64 `json:"channel_id"`
+	// ChannelFailover 是「指定的渠道不可用时退到加权随机池」。ChannelId 为 0 时恒假。
+	//
+	// 必须出现在列表上,不能只藏在编辑表单里:它改变的是**用户内容会被发到
+	// 哪些第三方端点**。运营看到「审核渠道: 内部自建」时的默认理解是"只有它",
+	// 而开着这一位时那句话是假的 —— 一次超时就足以让内容去到别处。
+	// 一格 badge 的成本换的是这个预期不再有机会静默地变成假的。
+	ChannelFailover bool `json:"channel_failover"`
+	// GroupUnbound 为真表示这一行**没有绑定到任何具体分组**:名单是空的
+	// (= 全部分组),或者方向是排除(= 名单之外的全部分组)。
+	//
+	// 这样的行按现在的写入闸**存不进来**(见 validateAIScope),所以它只可能是
+	// 存量:在「强制绑定分组」之前建的,或者是全局抽样率迁移出来的那一条。
+	// 它们一律照原样留着 —— 静默改写或丢弃一条正在生效的风控配置比多一条
+	// 不合规的行危险得多 —— 但必须在这一页上看得见,因为一条覆盖全站的策略与
+	// 一条只盯一个分组的策略在列表上长得完全一样,而两者的成本与数据出境面
+	// 差着整个站点。启用中的那些还在照常匹配,停用的那些则是"补齐分组才能启用"。
+	GroupUnbound bool `json:"group_unbound"`
 	// Shadowed 为真表示这一行**永远不会被匹配到**:它前面有一条作用域为空
 	// (= 匹配一切)的启用策略把所有请求都收走了。
 	//
@@ -444,7 +563,12 @@ func summarizeAIScopes(rows []AIScope) []aiScopeSummaryRow {
 			PromptSource: aiScopePromptSource(r.Prompt),
 			CategoryId:   r.CategoryId,
 			ChannelId:    r.ChannelId,
-			Shadowed:     r.Enabled && covered,
+			// 没指定渠道时恒假,与 validateAIScope 的归一同口径:存量里可能躺着
+			// 一行 channel_id=0 而 channel_failover=1(这一列刚加,写入闸之前存的),
+			// 照原样下发会让列表画出一个不存在的状态。
+			ChannelFailover: r.ChannelId > 0 && r.ChannelFailover,
+			GroupUnbound:    aiScopeGroupUnbound(r.GroupScope, r.GroupScopeMode),
+			Shadowed:        r.Enabled && covered,
 		})
 		if r.Enabled && strings.TrimSpace(r.ModelScope) == "" && strings.TrimSpace(r.GroupScope) == "" {
 			covered = true

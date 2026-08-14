@@ -64,6 +64,8 @@ function summaryRow(
     prompt_source: 'inherit',
     category_id: 0,
     channel_id: 0,
+    channel_failover: false,
+    group_unbound: false,
     shadowed: false,
     ...over,
   }
@@ -92,6 +94,7 @@ describe('作用域草稿与请求体', () => {
       prompt: '',
       category_id: 0,
       channel_id: 0,
+      channel_failover: false,
       remark: '',
       created_at: 0,
       updated_at: 0,
@@ -116,6 +119,7 @@ describe('作用域草稿与请求体', () => {
       prompt: '本档判定说明',
       category_id: 12,
       channel_id: 4,
+      channel_failover: true,
       remark: '备注',
       created_at: 0,
       updated_at: 0,
@@ -132,6 +136,31 @@ describe('作用域草稿与请求体', () => {
     // 指定渠道同理:往返丢掉它 = 这一档静默回到「按权重随机」,
     // 于是用户内容开始被发去运营明确没有选的端点,而界面上什么都没变。
     assert.equal(back.channel_id, 4)
+    // 故障转移这一位往返丢掉的方向恰好相反、但同样无声:开着的被丢成关着的,
+    // 于是运营以为自己配了转移,真到指定渠道挂掉那天,这一档直接放行。
+    assert.equal(back.channel_failover, true)
+  })
+
+  test('没指定渠道时,故障转移这一位一律归零', () => {
+    // 「按权重随机 · 故障转移: 开」不是一个存在的状态:没指定渠道时本来就走
+    // 池子,这一位开着与关着的运行期行为逐字节相同。留着它,列表上会画出一个
+    // 自相矛盾的组合,而运营会据此以为自己配了点什么。
+    // 后端 validateAIScope 也归一次(它才是权威),这里归是为了让保存前后
+    // 列表上那一格是同一个东西。
+    const draft = qyAiScopeToDraft()
+    const back = qyAiScopeDraftToInput({
+      ...draft,
+      channel_id: 0,
+      channel_failover: true,
+    })
+    assert.equal(back.channel_failover, false)
+
+    const pinned = qyAiScopeDraftToInput({
+      ...draft,
+      channel_id: 9,
+      channel_failover: true,
+    })
+    assert.equal(pinned.channel_failover, true, '指定了渠道时必须原样带过去')
   })
 
   test('抽样率解析失败一律落到 0,绝不落到全量送审', () => {
@@ -214,6 +243,20 @@ describe('汇总行的定性', () => {
       qyAiScopeRowKind(summaryRow({ channel_id: 9 }), { channelBroken: true }),
       'channel_down',
       '这一档实际上已经不审核任何内容,而它在列表上与正常策略长得一模一样'
+    )
+  })
+
+  test('指定的渠道坏了但开着故障转移:不是失效,这一档照常在审', () => {
+    // 开了转移之后,指定渠道被停用/删除只意味着"每次都直接落到加权随机池上"——
+    // 审核照常发生。把它标成"渠道不可用"会让人去修一个不影响判定结果的东西,
+    // 而真正该说的是另一件事(内容正在发往你没有指定的端点),那是一句提示,
+    // 不是一种失效状态,两者不能共用同一种底色。
+    assert.equal(
+      qyAiScopeRowKind(
+        summaryRow({ channel_id: 9, channel_failover: true }),
+        { channelBroken: true }
+      ),
+      'active'
     )
   })
 

@@ -86,6 +86,7 @@ import {
   qyAiScopeChannelState,
   qyAiScopeDraftToInput,
   qyAiScopeEffectivePrompt,
+  qyAiScopeGroupBindingError,
   qyAiScopeHasFakeSeparator,
   qyAiScopePromptSource,
   qyAiScopeRowKind,
@@ -94,6 +95,7 @@ import {
   type QyAiChannelDraft,
   type QyAiScopeChannelState,
   type QyAiScopeDraft,
+  type QyAiScopeGroupBindingError,
   type QyAiScopeRowKind,
 } from './lib/ai-review'
 import type {
@@ -743,6 +745,17 @@ function ScopeRow({
             {t('qy_ai_scope_aud_models', { models: aud.models.join(', ') })}
           </div>
         )}
+        {/* 存量的"没绑分组"行。新的写入已经不接受这种配置,所以它只可能是
+            升级前留下来的 —— 而它没有被自动停用(静默关掉一条正在生效的风控
+            比留着它更危险),也就是说**启用中的那些还在按全站匹配**。
+            两种状态分开说:一个是"正在全站送审",一个只是"开不起来"。 */}
+        {row.group_unbound && (
+          <div className='text-warning mt-1'>
+            {row.enabled
+              ? t('qy_ai_scope_unbound_active')
+              : t('qy_ai_scope_unbound_idle')}
+          </div>
+        )}
       </td>
       <td className='py-1.5 pe-2'>
         {qyAiBpsToPercentText(row.pre_sample_rate_bps)}%
@@ -777,9 +790,21 @@ function ScopeRow({
             ? t('qy_ai_scope_channel_default')
             : channelName || `#${row.channel_id}`}
         </Badge>
+        {/* 「指定了 A」与「指定了 A,但 A 不行时会发给别人」是两种不同的数据
+            流向,而它们在这一格里只差这一个 badge。不画的话,运营看着
+            「审核渠道: 内部自建」得到的是一个已经不成立的预期。 */}
+        {row.channel_failover && (
+          <Badge variant='outline' className='ms-1 font-normal'>
+            {t('qy_ai_scope_channel_failover_on')}
+          </Badge>
+        )}
         {channelBroken && (
           <div className='text-warning mt-1'>
-            {t(`qy_ai_scope_channel_${channelState}` as never)}
+            {t(
+              row.channel_failover
+                ? 'qy_ai_scope_channel_broken_failover'
+                : (`qy_ai_scope_channel_${channelState}` as never)
+            )}
           </div>
         )}
       </td>
@@ -848,6 +873,10 @@ function ScopeFormDialog({
   saving: boolean
 }) {
   const { t } = useTranslation()
+  // 「必须绑定分组」这一条挡在保存键上,而不是等后端回 400:那一格是这张表单
+  // 上唯一一个填错了就让整条策略开不起来的地方,而 400 的措辞出现在弹窗外面
+  // 的 toast 里 —— 人正看着表单,提示却在别处。
+  const bindingError = draft ? qyAiScopeGroupBindingError(draft) : null
   return (
     <QyResponsiveDialog
       open={draft !== null}
@@ -865,9 +894,9 @@ function ScopeFormDialog({
             {t('qy_ai_cancel')}
           </Button>
           <Button
-            disabled={saving || draft === null}
+            disabled={saving || draft === null || bindingError !== null}
             onClick={() => {
-              if (draft) onSave(draft)
+              if (draft && bindingError === null) onSave(draft)
             }}
           >
             {t('qy_ai_save')}
@@ -878,6 +907,7 @@ function ScopeFormDialog({
       {draft && (
         <ScopeForm
           draft={draft}
+          bindingError={bindingError}
           categories={categories}
           categoriesLoaded={categoriesLoaded}
           channels={channels}
@@ -890,12 +920,15 @@ function ScopeFormDialog({
 
 function ScopeForm({
   draft,
+  bindingError,
   categories,
   categoriesLoaded,
   channels,
   onChange,
 }: {
   draft: QyAiScopeDraft
+  /** 「必须绑定分组」的校验结果,null = 通过。保存键与这一格的提示共用它。 */
+  bindingError: QyAiScopeGroupBindingError
   categories: { id: number; name: string; is_fallback: boolean }[]
   categoriesLoaded: boolean
   channels: { id: number; name: string; enabled: boolean; model: string }[]
@@ -965,14 +998,19 @@ function ScopeForm({
             }
           />
         </Field>
-        {/* 分组作用域。
+        {/* 分组作用域。**必填**。
             原来这里是一个裸文本框：打错一个字母，这一档就静默挂在一个不存在的
             分组上 —— 保存成功、界面正常、线上一个请求都不监控，而且没有任何
             信号。换成「带元数据的下拉 + 保留自由输入 + 未定义分组软告警」，
-            口径与违规规则页那一格完全一致（共用 features/qy/lib/group-options）。 */}
+            口径与违规规则页那一格完全一致（共用 features/qy/lib/group-options）。
+
+            留空曾经的含义是"全部分组",现在不再被接受(项目方:「强制绑定分组,
+            全站模型还是太高了一点」)—— 一条覆盖全站的策略把抽样率这唯一的成本
+            闸门作用在所有用户身上,而它在列表上与一条只盯一个分组的策略长得一样。 */}
         <Field
           label={t('qy_ai_scope_f_groups')}
           hint={t('qy_ai_scope_f_groups_hint')}
+          required
         >
           <div className='flex flex-col gap-2'>
             <ComboboxInput
@@ -1054,23 +1092,40 @@ function ScopeForm({
                 })}
               </p>
             )}
+            {/* 这一条是错误,不是告警:保存键同时是灰的。它必须说清"为什么必填",
+                否则运营的第一反应是"以前留空就行,现在坏了"。 */}
+            {bindingError === 'empty' && (
+              <p className='text-destructive text-xs' role='alert'>
+                {t('qy_ai_scope_group_required')}
+              </p>
+            )}
           </div>
         </Field>
         <Field
           label={t('qy_ai_scope_f_mode')}
           hint={t('qy_ai_scope_f_mode_hint')}
         >
-          <div className='flex gap-2'>
-            {(['include', 'exclude'] as const).map((m) => (
-              <Button
-                key={m}
-                size='sm'
-                variant={draft.group_scope_mode === m ? 'default' : 'outline'}
-                onClick={() => onChange({ ...draft, group_scope_mode: m })}
-              >
-                {t(`qy_ai_scope_mode_${m}` as never)}
-              </Button>
-            ))}
+          <div className='flex flex-col gap-2'>
+            <div className='flex gap-2'>
+              {(['include', 'exclude'] as const).map((m) => (
+                <Button
+                  key={m}
+                  size='sm'
+                  variant={draft.group_scope_mode === m ? 'default' : 'outline'}
+                  onClick={() => onChange({ ...draft, group_scope_mode: m })}
+                >
+                  {t(`qy_ai_scope_mode_${m}` as never)}
+                </Button>
+              ))}
+            </div>
+            {/* 排除 = 名单之外的全部分组,与"留空"是同一件事的另一种写法,
+                所以启用中的策略同样不接受它。按钮不禁用:一条存量的 exclude
+                策略要能被打开、看清、改成包含 —— 禁用按钮只会让人卡在原地。 */}
+            {bindingError === 'exclude' && (
+              <p className='text-destructive text-xs' role='alert'>
+                {t('qy_ai_scope_mode_exclude_blocked')}
+              </p>
+            )}
           </div>
         </Field>
         <Field
@@ -1185,6 +1240,33 @@ function ScopeForm({
             <p className='text-warning text-xs'>
               {t(`qy_ai_scope_channel_${channelState}` as never)}
             </p>
+          )}
+          {/* 故障转移。**只在指定了渠道时出现** —— 没指定时本来就走加权随机池,
+              那时摆一个"失败后退到随机池"的开关是在问一个没有含义的问题。
+
+              默认关,而且这里刻意用一整段说清打开之后会发生什么:它把
+              「只发给这一个」变成「这一个不行就发给池子里的任何一个」,
+              也就是把用户内容的出境目的地从一个变成一组。指定渠道这一格的
+              原始理由往往正是数据流向约束,所以这一步必须是运营自己按下的。 */}
+          {draft.channel_id > 0 && (
+            <label className='mt-2 flex items-start gap-2'>
+              <Switch
+                checked={draft.channel_failover}
+                onCheckedChange={(v) =>
+                  onChange({ ...draft, channel_failover: v })
+                }
+              />
+              <span className='text-sm'>
+                {t('qy_ai_scope_f_failover')}
+                <span className='text-muted-foreground block text-xs'>
+                  {t(
+                    draft.channel_failover
+                      ? 'qy_ai_scope_f_failover_on'
+                      : 'qy_ai_scope_f_failover_off'
+                  )}
+                </span>
+              </span>
+            </label>
           )}
         </Field>
         <Field label={t('qy_ai_scope_f_remark')}>
@@ -1554,15 +1636,31 @@ function ChannelForm({
 function Field({
   label,
   hint,
+  required,
   children,
 }: {
   label: string
   hint?: string
+  /**
+   * 必填。星号只是记号,真正拦住保存的是弹窗那一层的校验 —— 但没有它,
+   * 「为什么保存键是灰的」要靠人往下读一行小字才答得出来。
+   */
+  required?: boolean
   children: React.ReactNode
 }) {
+  const { t } = useTranslation()
   return (
     <div className='flex flex-col gap-1.5'>
-      <Label>{label}</Label>
+      <Label>
+        {label}
+        {required && (
+          <span className='text-destructive ms-0.5' aria-hidden='true'>
+            *
+          </span>
+        )}
+        {/* 星号只有颜色和形状,读屏软件念不出"必填"。 */}
+        {required && <span className='sr-only'> {t('qy_ai_f_required')}</span>}
+      </Label>
       {children}
       {hint && <p className='text-muted-foreground text-xs'>{hint}</p>}
     </div>

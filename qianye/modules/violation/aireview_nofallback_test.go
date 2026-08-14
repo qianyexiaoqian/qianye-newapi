@@ -119,13 +119,15 @@ func TestAIReviewWithoutMatchingScopeIsFreeOfCharge(t *testing.T) {
 //
 // 加权随机那一半也一起断言:留空的准确含义是「按权重在全部启用渠道里随机」,
 // 不是「用某一个固定渠道」。界面上这两句话给运营的预期完全不同。
+//
+// 这里测的是**故障转移开关关着**时的形态,也就是出厂行为 —— 升级上来的站点
+// 必须逐字节不变。开着之后的链形见 aireview_failover_test.go。
 func TestPickAIChannelsHonoursScopeChannel(t *testing.T) {
 	rt := &aiRuntime{
 		Channels: []*aiChannelRT{
 			{Id: 1, Name: "主用", URL: "https://a.invalid/v1/chat/completions", Model: "m", Weight: 9},
 			{Id: 2, Name: "备用", URL: "https://b.invalid/v1/chat/completions", Model: "m", Weight: 1},
 		},
-		totalWeight: 10,
 	}
 
 	tests := []struct {
@@ -141,9 +143,10 @@ func TestPickAIChannelsHonoursScopeChannel(t *testing.T) {
 			why: "权重是运营表达主备的唯一方式;恒定顺序会让备用渠道永远不被验证",
 		},
 		{
-			name:  "指定备用渠道:只用它,不带第二次尝试",
+			name:  "指定备用渠道 + 转移关着:只用它,不带第二次尝试",
 			scope: &aiScopeRT{ChannelId: 2}, wantNames: []string{"备用"},
-			why: "指定的字面意思就是只发给它;要故障转移请留空走加权随机池",
+			why: "指定的字面意思就是只发给它 —— 要它在失败后退到池子," +
+				"得显式打开这一档的故障转移开关(默认关)",
 		},
 		{
 			name:  "指定的渠道已停用/已删除:一个都不返回,绝不回落到随机池",
@@ -161,7 +164,11 @@ func TestPickAIChannelsHonoursScopeChannel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := pickAIChannels(rt, tc.scope)
 			if tc.wantAny {
-				assert.Len(t, got, maxAIAttempts, tc.why)
+				// 链长是"上界与池子大小取小者":这个夹具只有两个渠道,
+				// 而上界是 maxAIAttempts —— 直接断言上界会在有人调大它的那天
+				// 变成一条与被测行为无关的红。上界本身在
+				// TestPickAIChannelsFailoverChain 里用一个够大的池子测。
+				assert.Len(t, got, len(rt.Channels), tc.why)
 				for _, ch := range got {
 					assert.Contains(t, []string{"主用", "备用"}, ch.Name, tc.why)
 				}
@@ -280,17 +287,22 @@ func newAILegacySettingDB(t *testing.T) *gorm.DB {
 //
 // 全局抽样率曾经是**作用域都不命中时的兜底**。直接删列等于把那部分流量从
 // "按 X% 送审"改成"一律不送审"—— 一次没有任何症状的风控收缩。所以要先把值
-// 搬成一条覆盖全部分组的策略。
+// 搬成一条策略行。
 //
-// 表里那四格分别对应四种现网状态,判据是"这条策略建不建、建出来开不开"。
+// 那条行**一律是停用的**:它的作用域覆盖全站,而「强制绑定分组」之后覆盖全站的
+// 策略不允许启用(validateAIScope)。让迁移成为全站策略的唯一制造者,等于给那条
+// 规则开一个只有代码里看得见的例外。代价(升级前那 X% 的兜底送审会停下来)由
+// wasActive 说出来 —— 列马上就删了,事后没有任何地方能重新算出这个布尔值。
+//
+// 表里那四格分别对应四种现网状态,判据是"这条策略建不建、以及它当时在不在生效"。
 func TestMigrateAISampleRateToScope(t *testing.T) {
 	tests := []struct {
-		name        string
-		legacyBps   int
-		aiEnabled   bool
-		wantCreated bool
-		wantEnabled bool
-		why         string
+		name          string
+		legacyBps     int
+		aiEnabled     bool
+		wantCreated   bool
+		wantWasActive bool
+		why           string
 	}{
 		{
 			name: "值为 0:什么都不建", legacyBps: 0, aiEnabled: true,
@@ -299,20 +311,22 @@ func TestMigrateAISampleRateToScope(t *testing.T) {
 				"不存在「零值与未设置不可分」,0 就是不抽,没有东西要搬",
 		},
 		{
-			name: "值非 0 且总开关开着:建一条**启用**的策略", legacyBps: 500, aiEnabled: true,
-			wantCreated: true, wantEnabled: true,
-			why: "那 5% 正在把用户内容发往第三方 —— 建成停用的等于删掉一条" +
-				"正在生效的风控,而且没有任何症状",
+			name:      "值非 0 且总开关开着:仍然建**停用**的策略,但报出它当时在生效",
+			legacyBps: 500, aiEnabled: true,
+			wantCreated: true, wantWasActive: true,
+			why: "那 5% 覆盖的是全站,而覆盖全站的策略已不允许启用 —— " +
+				"迁移不能成为唯一一个还能造出这种行的地方。收缩是真的,所以它必须" +
+				"被 wasActive 报出来,而不是悄悄发生",
 		},
 		{
-			name: "值非 0 但总开关关着:建一条**停用**的策略,值原样留着", legacyBps: 500, aiEnabled: false,
-			wantCreated: true, wantEnabled: false,
-			why: "那个数字一次都没生效过。建成启用的话,管理员下次打开总开关" +
-				"就会突然全站送审,而他按新语义的预期是「我还没建任何策略,所以不会审」",
+			name: "值非 0 但总开关关着:建一条停用的策略,值原样留着", legacyBps: 500, aiEnabled: false,
+			wantCreated: true, wantWasActive: false,
+			why: "那个数字一次都没生效过,这一格连「收缩」都算不上 —— " +
+				"wasActive 必须为假,否则启动日志会报一次没发生过的风控收缩",
 		},
 		{
 			name: "100% 也照搬", legacyBps: 10000, aiEnabled: true,
-			wantCreated: true, wantEnabled: true, why: "",
+			wantCreated: true, wantWasActive: true, why: "",
 		},
 	}
 	for _, tc := range tests {
@@ -326,9 +340,10 @@ func TestMigrateAISampleRateToScope(t *testing.T) {
 				"UPDATE qy_violation_ai_setting SET sample_rate_bps = ? WHERE id = 1",
 				tc.legacyBps).Error)
 
-			created, bps, err := migrateAISampleRateToScope(context.Background(), gdb)
+			created, bps, wasActive, err := migrateAISampleRateToScope(context.Background(), gdb)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantCreated, created, tc.why)
+			assert.Equal(t, tc.wantWasActive, wasActive, tc.why)
 
 			var rows []AIScope
 			require.NoError(t, gdb.Order("id asc").Find(&rows).Error)
@@ -340,12 +355,15 @@ func TestMigrateAISampleRateToScope(t *testing.T) {
 			got := rows[0]
 			assert.Equal(t, tc.legacyBps, bps)
 			assert.Equal(t, migratedAIScopeName, got.Name)
-			assert.Equal(t, tc.wantEnabled, got.Enabled, tc.why)
+			assert.False(t, got.Enabled,
+				"覆盖全站的策略不允许启用 —— 迁移不能是唯一一个还能造出这种行的地方")
 			assert.Equal(t, tc.legacyBps, got.PreSampleRateBps,
 				"旧兜底对两个时机给的是同一个数,必须原样搬过来")
 			assert.Equal(t, tc.legacyBps, got.AsyncSampleRateBps)
 			assert.Empty(t, got.GroupScope, "作用域全空 = 匹配一切,这就是「兜底」的字面写法")
 			assert.Empty(t, got.ModelScope)
+			assert.True(t, aiScopeGroupUnbound(got.GroupScope, got.GroupScopeMode),
+				"管理端要能把这一行标成「未绑定分组」,否则运营只看到一条莫名其妙停着的策略")
 			assert.Equal(t, 10000, got.Priority,
 				"它是「别的都不匹配时」的那一档,必须排在最后 —— "+
 					"既有策略的默认优先级是 100,任何现存策略都排在它前面")
@@ -353,7 +371,7 @@ func TestMigrateAISampleRateToScope(t *testing.T) {
 				"备注要说清这条是从哪来的,否则三个月后没人知道能不能删")
 
 			t.Run("重复执行是幂等的", func(t *testing.T) {
-				again, _, err := migrateAISampleRateToScope(context.Background(), gdb)
+				again, _, _, err := migrateAISampleRateToScope(context.Background(), gdb)
 				require.NoError(t, err)
 				assert.False(t, again, "第二次不该再建一条")
 				var n int64
@@ -365,16 +383,17 @@ func TestMigrateAISampleRateToScope(t *testing.T) {
 
 	t.Run("设置行还不存在(全新部署)时是 no-op", func(t *testing.T) {
 		gdb := newAILegacySettingDB(t)
-		created, bps, err := migrateAISampleRateToScope(context.Background(), gdb)
+		created, bps, wasActive, err := migrateAISampleRateToScope(context.Background(), gdb)
 		require.NoError(t, err)
 		assert.False(t, created)
 		assert.Zero(t, bps)
+		assert.False(t, wasActive)
 	})
 
 	t.Run("列已经不在时是 no-op(已迁过 / 全新建的库)", func(t *testing.T) {
 		gdb := newAIWiringDB(t) // 按当前结构体建表:根本没有这一列
 		require.NoError(t, gdb.Create(&AISetting{Id: 1, Enabled: true}).Error)
-		created, _, err := migrateAISampleRateToScope(context.Background(), gdb)
+		created, _, _, err := migrateAISampleRateToScope(context.Background(), gdb)
 		require.NoError(t, err)
 		assert.False(t, created)
 	})
@@ -427,9 +446,12 @@ func TestMigrateThenDropKeepsTheNumberSomewhere(t *testing.T) {
 	require.NoError(t, gdb.Exec(
 		"UPDATE qy_violation_ai_setting SET sample_rate_bps = 500 WHERE id = 1").Error)
 
-	created, _, err := migrateAISampleRateToScope(context.Background(), gdb)
+	created, _, wasActive, err := migrateAISampleRateToScope(context.Background(), gdb)
 	require.NoError(t, err)
 	require.True(t, created)
+	require.True(t, wasActive,
+		"总开关开着 + 值非 0 = 它当时真的在生效。这个布尔是启动日志唯一一次"+
+			"说出「这次升级停掉了什么」的机会 —— 列马上就删了,事后算不回来")
 	dropped, err := dropLegacyAISampleRateColumn(context.Background(), gdb)
 	require.NoError(t, err)
 	require.True(t, dropped)
@@ -439,18 +461,35 @@ func TestMigrateThenDropKeepsTheNumberSomewhere(t *testing.T) {
 	assert.Equal(t, 500, row.PreSampleRateBps, "那 5% 必须还在,只是换了个地方")
 	assert.False(t, gdb.Migrator().HasColumn(&AISetting{}, legacyAISampleRateColumn))
 
-	// 而且它真的能被装配进快照并生效 —— 迁移出来一条"存在但不生效"的策略
-	// 与丢掉它是同一件事。
+	// 「强制绑定分组」之后它是停着的,而且不能靠改一个开关就复活:那一格是空的,
+	// 写入闸会拒。停着的代价是真实的(那 5% 不再送审),换来的是"没有任何一条
+	// 覆盖全站的策略是被自动打开的"。
+	require.False(t, row.Enabled)
+	row.Enabled = true
+	assert.Error(t, validateAIScope(&row),
+		"补齐分组之前,这一条连保存成启用都不该被接受 —— "+
+			"否则迁移就成了全站策略的后门")
+
 	useAIReviewKey(t)
 	require.NoError(t, gdb.AutoMigrate(&AIChannel{}))
 	require.NoError(t, gdb.Create(&AIChannel{
 		Name: "fake", BaseUrl: "https://example.invalid/v1", Model: "m",
 		Weight: 1, Enabled: true,
 	}).Error)
+
+	// 而值确实没有被埋掉:补上分组、启用,它原样生效。
+	// 这一步是"停用"与"丢弃"的分界线 —— 少了它,上面那条断言只证明了库里
+	// 躺着一行谁也用不上的数据。
+	row.GroupScope = "selfserve"
+	require.NoError(t, validateAIScope(&row))
+	require.NoError(t, gdb.Save(&row).Error)
 	rt, err := buildAIRuntime(gdb, true, seedAIVocabulary())
 	require.NoError(t, err)
-	require.NotNil(t, rt, "迁移出来的策略必须能让整份配置继续生效")
-	_, pre, async := rt.scopeFor("gpt-4o", "谁都没配过的分组")
-	assert.Equal(t, 500, pre, "旧兜底覆盖的正是这种「谁都不匹配」的请求")
+	require.NotNil(t, rt, "补齐分组之后,那个数字必须原样生效")
+	_, pre, async := rt.scopeFor("gpt-4o", "selfserve")
+	assert.Equal(t, 500, pre, "搬过来的是同一个数,不是一个新的默认值")
 	assert.Equal(t, 500, async)
+	_, pre, async = rt.scopeFor("gpt-4o", "谁都没配过的分组")
+	assert.Zero(t, pre, "绑定分组之后它只覆盖那个分组 —— 这正是项目方要的收缩")
+	assert.Zero(t, async)
 }

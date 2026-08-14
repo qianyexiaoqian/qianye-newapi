@@ -250,6 +250,13 @@ export type QyAiScopeDraft = {
   category_id: number
   /** 送到哪个审核渠道。0 = 不指定(按权重在全部启用渠道里随机)。 */
   channel_id: number
+  /**
+   * 指定的渠道不可用时,退到加权随机池。只在 `channel_id > 0` 时有意义。
+   *
+   * 默认关:打开它把「只发给这一个」变成「这一个不行就发给池子里的任何一个」,
+   * 也就是把用户内容的出境目的地从一个变成一组。
+   */
+  channel_failover: boolean
   remark: string
 }
 
@@ -269,6 +276,9 @@ export function qyAiScopeToDraft(s?: QyAiScope): QyAiScopeDraft {
     prompt: s?.prompt ?? '',
     category_id: s?.category_id ?? 0,
     channel_id: s?.channel_id ?? 0,
+    // 新建默认**关**,与后端出厂值一致。默认开会让每一条新建的指定渠道策略
+    // 都自带一个运营没按过的"允许发给别人"。
+    channel_failover: s?.channel_failover ?? false,
     remark: s?.remark ?? '',
   }
 }
@@ -293,8 +303,45 @@ export function qyAiScopeDraftToInput(draft: QyAiScopeDraft): QyAiScopeInput {
     prompt: draft.prompt.trim() === '' ? '' : draft.prompt,
     category_id: draft.category_id > 0 ? draft.category_id : 0,
     channel_id: draft.channel_id > 0 ? draft.channel_id : 0,
+    // 没指定渠道时一并归零。后端 validateAIScope 也会归一次(它才是权威,
+    // 别的客户端绕不过去);这里归是为了让保存前后列表上那一格是同一个东西 ——
+    // 把"不指定"存成"按权重随机 · 故障转移: 开"会让人以为自己配了点什么。
+    channel_failover: draft.channel_id > 0 && draft.channel_failover,
     remark: draft.remark.trim(),
   }
+}
+
+/**
+ * 「这一档绑定分组了吗」的校验结果。`null` = 可以保存。
+ *
+ * 与后端 `validateAIScope` 同一件事,报的也是同两种写法:
+ *
+ *	`empty`    分组名单是空的 = 匹配全站。
+ *	`exclude`  排除方向 = 名单之外的全部分组,而且随着新分组的建立自动变宽。
+ *
+ * 项目方原话:「强制绑定分组,全站模型还是太高了一点」。
+ */
+export type QyAiScopeGroupBindingError = 'empty' | 'exclude' | null
+
+/**
+ * 表单能不能保存。**与后端刻意不完全同形**,两处差别都是有意的:
+ *
+ *  1. 分组名单为空时**一律**拦(后端只在 `enabled` 时拦)。这一格在界面上是
+ *     必填项:一条不绑分组的策略永远开不起来,让人先存下再发现开不了,
+ *     等于把错误推迟到最不该发现它的时刻。
+ *  2. 排除方向只在**启用**时拦。存量里可能躺着一条 exclude 的策略,而它的
+ *     修法之一就是"先关掉再说"—— 编辑态无条件拦会让人连备注都改不了。
+ *     真正的闸在启用那一刻,后端也在同一个位置。
+ *
+ * 后端那一份才是权威(别的客户端绕不过去),这里是为了让人在点保存之前就
+ * 看见原因,而不是收到一句 400。
+ */
+export function qyAiScopeGroupBindingError(
+  draft: Pick<QyAiScopeDraft, 'group_scope' | 'group_scope_mode' | 'enabled'>
+): QyAiScopeGroupBindingError {
+  if (draft.group_scope.trim() === '') return 'empty'
+  if (draft.enabled && draft.group_scope_mode === 'exclude') return 'exclude'
+  return null
 }
 
 /** 一条策略的「送到哪个渠道」这一格在界面上的定性。 */
@@ -368,8 +415,13 @@ export type QyAiScopeRowKind =
   /** 两个时机都是 0 —— 免审名单,这是有意义的配置,不是"没配"。 */
   | 'exempt'
   /**
-   * 指定的审核渠道已停用或已删除:抽样照跑,但每一次都是「无可用渠道」+ 放行。
-   * 这一档实际上不再审核任何内容,而它在列表上与正常策略长得一模一样。
+   * 指定的审核渠道已停用或已删除,**而且这一档没开故障转移**:抽样照跑,
+   * 但每一次都是「无可用渠道」+ 放行。这一档实际上不再审核任何内容,
+   * 而它在列表上与正常策略长得一模一样。
+   *
+   * 开了故障转移的那些不算这一档:它们退到加权随机池,审核照常发生 ——
+   * 报"渠道不可用"会把人引去修一个不影响判定结果的东西。它们仍然有一句
+   * 提示(内容正在发往运营没有指定的端点),但那是提示,不是失效。
    */
   | 'channel_down'
   /** 正在监控。 */
@@ -392,7 +444,11 @@ export function qyAiScopeRowKind(
   }
   // 渠道坏掉排在免审**后面**:两个抽样率都是 0 时这一档压根不会发起调用,
   // 渠道是什么状态完全无关,报"渠道不可用"会把人引去修一个不影响结果的东西。
-  if (opts.channelBroken) return 'channel_down'
+  //
+  // 开着故障转移时同理:这一档会退到加权随机池,审核照常发生,它不是失效。
+  // 那种状态另有一句提示(内容正在发往运营没有指定的端点),但那句提示与
+  // "这一档已经不再审核任何内容"是两件完全不同的事,不能共用同一种底色。
+  if (opts.channelBroken && !row.channel_failover) return 'channel_down'
   return 'active'
 }
 
