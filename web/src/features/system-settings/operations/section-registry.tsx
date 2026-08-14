@@ -17,7 +17,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { SystemBehaviorSection } from '../general/system-behavior-section'
-import { EmailSettingsSection } from '../integrations/email-settings-section'
 import { SmtpAccountsSection } from '../integrations/smtp-accounts-section'
 import { SmtpSendLogSection } from '../integrations/smtp-send-log-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
@@ -62,36 +61,18 @@ const OPERATIONS_SECTIONS = [
     ),
   },
   {
-    id: 'email',
-    titleKey: 'SMTP Email',
-    build: (settings: OperationsSettings) => (
-      <EmailSettingsSection
-        defaultValues={{
-          SMTPServer: settings.SMTPServer,
-          SMTPPort: settings.SMTPPort,
-          SMTPAccount: settings.SMTPAccount,
-          SMTPFrom: settings.SMTPFrom,
-          SMTPToken: settings.SMTPToken,
-          SMTPSSLEnabled: settings.SMTPSSLEnabled,
-          SMTPStartTLSEnabled: settings.SMTPStartTLSEnabled,
-          SMTPInsecureSkipVerify: settings.SMTPInsecureSkipVerify,
-          SMTPForceAuthLogin: settings.SMTPForceAuthLogin,
-        }}
-      />
-    ),
-  },
-  {
     /*
-      多发件账号。它与上面那个单账号表单是「接管」关系而不是并列：
-      账号表非空时，后端 common.ResolveSMTPAccount 完全不再看那组老配置。
-      两者刻意不合并 —— 老配置是升级安全网，多账号出问题时要能原样退回去。
+      SMTP 发件账号。原来那个单账号表单（id: 'email'）已整体移除：
+      它的配置在升级后第一次启动时由 model.MigrateLegacySMTPAccount 一次性迁进
+      账号表（account_id = "legacy"），此后账号表是唯一事实源，发件路径不再
+      回落老配置 —— 留着回落的话，运营把最后一个账号停用之后，系统会悄悄改用
+      一套他以为早就废弃的凭据继续发信。
     */
     id: 'smtp-accounts',
     titleKey: 'qy_smtp_accounts_title',
     build: (settings: OperationsSettings) => (
       <SmtpAccountsSection
         defaultValues={{
-          SMTPAccounts: settings.SMTPAccounts,
           SMTPSendMode: settings.SMTPSendMode,
           SMTPFixedAccountID: settings.SMTPFixedAccountID,
         }}

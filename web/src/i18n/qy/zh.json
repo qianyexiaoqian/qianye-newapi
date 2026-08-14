@@ -3183,7 +3183,7 @@
   "qy_gs_token_default_no_user_groups": "还没有任何用户分组。",
   "qy_gs_token_default_saved": "令牌默认分组已保存",
   "qy_smtp_accounts_title": "SMTP 多发件账号",
-  "qy_smtp_accounts_desc": "配置多个发件邮箱并把发送量摊开，避免单个邮箱一小时内发太多而被收件方判成垃圾邮件（SMTP 仍会返回成功，这件事对发件方不可见）。此表非空时，上面「SMTP 邮件」那份单账号配置整体不再参与发件；清空此表即原样退回单账号。",
+  "qy_smtp_accounts_desc": "配置多个发件邮箱并把发送量摊开，避免单个邮箱一小时内发太多而被收件方判成垃圾邮件（SMTP 仍会返回成功，这件事对发件方不可见）。原来的单账号「SMTP 邮箱」配置已在升级时自动迁移成下方列表的第一条，该表单已移除——账号表现在是唯一配置入口。",
   "qy_smtp_send_mode": "发件模式",
   "qy_smtp_mode_sequential": "依次（轮询）",
   "qy_smtp_mode_random": "随机",
@@ -3223,5 +3223,14 @@
   "qy_smtp_log_col_status": "状态",
   "qy_smtp_log_col_duration": "耗时",
   "qy_smtp_log_empty": "暂无发件记录",
-  "qy_smtp_log_total": "共 {{count}} 条"
+  "qy_smtp_log_total": "共 {{count}} 条",
+  "qy_smtp_save_mode": "保存发件模式",
+  "qy_smtp_col_enabled": "启用",
+  "qy_smtp_col_hour_usage": "近一小时",
+  "qy_smtp_col_actions": "操作",
+  "qy_smtp_edit_account": "编辑发件账号",
+  "qy_smtp_dialog_desc": "密码留空表示不修改。发件地址留空则使用账号本身。",
+  "qy_smtp_token_keep_hint": "留空以保留现有密码",
+  "qy_smtp_no_password": "未设密码",
+  "qy_smtp_field_sort_order": "排序（依次模式的轮转顺序，小的在前）"
 }

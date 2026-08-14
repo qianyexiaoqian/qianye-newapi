@@ -40,7 +40,6 @@ const defaultOperationsSettings: OperationsSettings = {
   SMTPStartTLSEnabled: false,
   SMTPInsecureSkipVerify: false,
   SMTPForceAuthLogin: false,
-  SMTPAccounts: '',
   SMTPSendMode: 'sequential',
   SMTPFixedAccountID: '',
   WorkerUrl: '',

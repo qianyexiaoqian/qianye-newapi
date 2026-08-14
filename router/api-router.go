@@ -287,6 +287,16 @@ func SetApiRouter(router *gin.Engine) {
 			emailLogRoute.DELETE("/", controller.DeleteEmailSendLogs)
 		}
 
+		// SMTP 发件账号。整组只给管理员 —— 它持有全站的发件凭据。
+		smtpAccountRoute := apiRouter.Group("/smtp-account")
+		smtpAccountRoute.Use(middleware.AdminAuth())
+		{
+			smtpAccountRoute.GET("/", controller.GetSmtpAccounts)
+			smtpAccountRoute.POST("/", controller.CreateSmtpAccount)
+			smtpAccountRoute.PUT("/", controller.UpdateSmtpAccount)
+			smtpAccountRoute.DELETE("/:id", controller.DeleteSmtpAccount)
+		}
+
 		systemTaskRoute := apiRouter.Group("/system-task")
 		systemTaskRoute.Use(middleware.RootAuth())
 		{

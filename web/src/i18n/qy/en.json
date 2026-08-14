@@ -3183,7 +3183,7 @@
   "qy_gs_token_default_no_user_groups": "No user groups yet.",
   "qy_gs_token_default_saved": "Token default groups saved",
   "qy_smtp_accounts_title": "SMTP Multi-Account",
-  "qy_smtp_accounts_desc": "Configure multiple sender mailboxes and spread the volume across them, so a single mailbox does not send so much in one hour that recipients start classifying the whole batch as spam (SMTP still returns success, so this is invisible to the sender). While this table is non-empty, the single-account SMTP settings above no longer take part in sending; clear the table to fall straight back to them.",
+  "qy_smtp_accounts_desc": "Configure multiple sender mailboxes and spread the volume across them, so a single mailbox does not send so much in one hour that recipients start classifying the whole batch as spam (SMTP still returns success, so this is invisible to the sender). The old single-account SMTP form was migrated into the first row below on upgrade and has been removed — this table is now the only place SMTP is configured.",
   "qy_smtp_send_mode": "Send mode",
   "qy_smtp_mode_sequential": "Sequential (round-robin)",
   "qy_smtp_mode_random": "Random",
@@ -3223,5 +3223,14 @@
   "qy_smtp_log_col_status": "Status",
   "qy_smtp_log_col_duration": "Duration",
   "qy_smtp_log_empty": "No send records yet",
-  "qy_smtp_log_total": "{{count}} records"
+  "qy_smtp_log_total": "{{count}} records",
+  "qy_smtp_save_mode": "Save send mode",
+  "qy_smtp_col_enabled": "Enabled",
+  "qy_smtp_col_hour_usage": "Last hour",
+  "qy_smtp_col_actions": "Actions",
+  "qy_smtp_edit_account": "Edit sender account",
+  "qy_smtp_dialog_desc": "Leave the password blank to keep it unchanged. Leave the From address blank to use the account itself.",
+  "qy_smtp_token_keep_hint": "Leave blank to keep the existing password",
+  "qy_smtp_no_password": "no password",
+  "qy_smtp_field_sort_order": "Order (rotation order in sequential mode, lowest first)"
 }

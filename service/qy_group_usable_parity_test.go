@@ -49,7 +49,10 @@ func upstreamGetUserUsableGroups(userGroup string, special map[string]map[string
 			}
 		}
 		if _, ok := groupsCopy[userGroup]; !ok {
-			groupsCopy[userGroup] = "用户分组"
+			// 用常量而不是字面量:这份复刻要隔离的是**收窄**(哪些键在、哪些不在),
+			// 不是那段说明文案。写死字面量的话,一次纯文案调整会让这组
+			// 「差异恰好是一个键」的断言整片变红,而键集合一个都没变。
+			groupsCopy[userGroup] = SelfUsableGroupDescription
 		}
 	}
 	return QyResolveUsableGroups(userGroup, groupsCopy)
@@ -241,7 +244,7 @@ func TestSelfInsertNarrowingIsTheOnlyDifference(t *testing.T) {
 	after := GetUserUsableGroups("没倍率的一档人")
 	assert.Equal(t, map[string]string{
 		"公共池":     "公共",
-		"没倍率的一档人": "用户分组",
+		"没倍率的一档人": SelfUsableGroupDescription,
 	}, before, "上游:无条件补自己")
 	assert.Equal(t, map[string]string{"公共池": "公共"}, after, "收窄后:不补")
 	assert.Equal(t, len(before)-1, len(after), "差异必须恰好是一个键,不多不少")

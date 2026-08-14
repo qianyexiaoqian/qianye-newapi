@@ -331,6 +331,21 @@ func InitResources() error {
 	}
 	model.InitOptionMap()
 
+	// 把老的单账号 SMTP 配置一次性迁进发件账号表。
+	//
+	// 必须排在 InitOptionMap() 之后:SMTPServer/SMTPAccount/SMTPToken 那组
+	// 全局变量正是在那一步才从 options 里装载,排在前面会迁进来一条全空的账号。
+	//
+	// 只在主节点跑:从节点同时迁会撞 account_id 的唯一索引,而那条报错除了
+	// 制造噪声之外没有任何信息量(该建的行主节点已经建了)。
+	//
+	// 迁移失败不阻断启动:发不出邮件是功能降级,起不来是全站故障。
+	if common.IsMasterNode {
+		if err := model.MigrateLegacySMTPAccount(); err != nil {
+			common.SysError("SMTP: 原单账号配置迁移失败,请在「SMTP 发件账号」里手工补一条: " + err.Error())
+		}
+	}
+
 	// 清理旧的磁盘缓存文件
 	common.CleanupOldCacheFiles()
 

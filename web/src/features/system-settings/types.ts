@@ -348,7 +348,6 @@ export type OperationsSettings = {
   SMTPStartTLSEnabled: boolean
   SMTPInsecureSkipVerify: boolean
   SMTPForceAuthLogin: boolean
-  SMTPAccounts: string
   SMTPSendMode: string
   SMTPFixedAccountID: string
   WorkerUrl: string

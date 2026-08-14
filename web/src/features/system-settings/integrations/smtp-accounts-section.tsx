@@ -16,13 +16,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
-import { Plus, Trash2 } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -37,68 +45,50 @@ import { Switch } from '@/components/ui/switch'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 import {
-  emptySmtpAccount,
+  createSmtpAccount,
+  deleteSmtpAccount,
+  emptySmtpAccountPayload,
   getSmtpAccountStats,
-  parseSmtpAccounts,
-  type SmtpAccount,
+  listSmtpAccounts,
+  toPayload,
+  updateSmtpAccount,
+  type SmtpAccountPayload,
   type SmtpSendMode,
 } from './smtp-accounts-api'
 
 type Props = {
   defaultValues: {
-    SMTPAccounts: string
     SMTPSendMode: string
     SMTPFixedAccountID: string
   }
 }
 
 /**
- * 生成一个新账号的 id。
+ * SMTP 发件账号。
  *
- * id 是发件台账与用量统计的归集键，一旦用过就不能再改，因此这里生成的是一个
- * 与账号名无关的随机串 —— 拿邮箱地址或名字当 id 的话，运营改个备注名就会让
- * 历史统计断成两截。
- */
-function newAccountId(): string {
-  return `smtp_${Math.random().toString(36).slice(2, 10)}`
-}
-
-/**
- * 多 SMTP 发件账号。
+ * ── 存储形态 ──
  *
- * ── 与上面那个「SMTP 邮件」单账号表单的关系 ──
+ * 一行一个账号存在独立数据库表里（不是 options 里的一块 JSON），因此单条增删改
+ * 只碰那一行：两个管理员同屏各改一个账号不会互相覆盖，停用一个号也不必把全部
+ * 账号（含密码）重新写回去。发件模式与固定账号仍是站级标量，留在 options。
  *
- * **这张表非空时，单账号那份配置整体不再参与发件。** 后端
- * `common.ResolveSMTPAccount` 只在账号表为空时才回落到那组老配置（"legacy" 账号）。
- * 两者刻意不合并：老配置是升级安全网，必须能在多账号出问题时原样退回去。
+ * ── 与旧的「SMTP 邮件」单账号表单的关系 ──
  *
- * ── 为什么要多个账号 ──
- *
- * 单个发件邮箱一小时内发太多，收件方会开始把整批邮件判成垃圾，而 SMTP 依旧
- * 返回成功 —— 这件事对发件方完全不可见。所以每个账号可以配一个小时上限，
- * 触顶的账号在择号时被跳过。
+ * 旧表单已整体移除。原有配置在升级后第一次启动时被一次性迁进本表（account_id
+ * 固定为 `legacy`），此后账号表是唯一事实源，发件路径不再回落老配置。
  */
 export function SmtpAccountsSection({ defaultValues }: Props) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const updateOption = useUpdateOption()
 
-  const [accounts, setAccounts] = useState<SmtpAccount[]>(() =>
-    parseSmtpAccounts(defaultValues.SMTPAccounts)
-  )
   const [mode, setMode] = useState<SmtpSendMode>(
     (defaultValues.SMTPSendMode as SmtpSendMode) || 'sequential'
   )
   const [fixedId, setFixedId] = useState(defaultValues.SMTPFixedAccountID || '')
+  const [editing, setEditing] = useState<SmtpAccountPayload | null>(null)
+  const [isNew, setIsNew] = useState(false)
 
-  /*
-    服务端回读到达时用它替换本地一切。本地状态是「我请求过什么」，回读是
-    「服务端现在是什么」；把前者当后者渲染，一次部分失败就会画出一个从未
-    存在过的成功画面。依赖列原始字符串而不是 defaultValues 对象 —— 上层每次
-    渲染都新造一个对象，按对象比会在父级重渲染时把正在编辑的内容清掉。
-  */
-  useEffect(() => {
-    setAccounts(parseSmtpAccounts(defaultValues.SMTPAccounts))
-  }, [defaultValues.SMTPAccounts])
   useEffect(() => {
     setMode((defaultValues.SMTPSendMode as SmtpSendMode) || 'sequential')
   }, [defaultValues.SMTPSendMode])
@@ -106,60 +96,70 @@ export function SmtpAccountsSection({ defaultValues }: Props) {
     setFixedId(defaultValues.SMTPFixedAccountID || '')
   }, [defaultValues.SMTPFixedAccountID])
 
+  const accountsQuery = useQuery({
+    queryKey: ['smtp-accounts'],
+    queryFn: listSmtpAccounts,
+    retry: false,
+  })
   const statsQuery = useQuery({
     queryKey: ['smtp-account-stats'],
     queryFn: () => getSmtpAccountStats(),
     retry: false,
   })
+
+  const accounts = useMemo(
+    () => accountsQuery.data?.data ?? [],
+    [accountsQuery.data]
+  )
   const statsById = useMemo(() => {
-    const map = new Map<string, { lastHour: number; total: number }>()
-    for (const s of statsQuery.data?.data ?? []) {
-      map.set(s.account_id, { lastHour: s.last_hour, total: s.total })
-    }
+    const map = new Map<string, number>()
+    for (const s of statsQuery.data?.data ?? []) map.set(s.account_id, s.last_hour)
     return map
   }, [statsQuery.data])
 
-  const patch = (index: number, next: Partial<SmtpAccount>) => {
-    setAccounts((prev) =>
-      prev.map((a, i) => (i === index ? { ...a, ...next } : a))
-    )
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['smtp-accounts'] })
+    queryClient.invalidateQueries({ queryKey: ['smtp-account-stats'] })
   }
 
-  const onSave = async () => {
-    // 保存前把端口与上限归一成数字：受控 Input 给的是字符串，直接 JSON 化会让
-    // 后端拿到 `"port":"587"` 而结构体字段是 int —— 整张表解析失败，
-    // 表现是「保存报了个看不懂的错，而界面上每个字段都填得好好的」。
-    const payload = accounts.map((a) => ({
-      ...a,
-      port: Number(a.port) || 0,
-      hourly_limit: Number(a.hourly_limit) || 0,
-    }))
+  const saveMutation = useMutation({
+    mutationFn: (payload: SmtpAccountPayload) =>
+      payload.id > 0 ? updateSmtpAccount(payload) : createSmtpAccount(payload),
+    onSuccess: (data) => {
+      if (!data.success) {
+        toast.error(data.message || t('Failed to update setting'))
+        return
+      }
+      toast.success(t('Setting updated successfully'))
+      setEditing(null)
+      refresh()
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const removeMutation = useMutation({
+    mutationFn: (id: number) => deleteSmtpAccount(id),
+    onSuccess: (data) => {
+      if (!data.success) {
+        toast.error(data.message || t('Failed to update setting'))
+        return
+      }
+      toast.success(t('Setting updated successfully'))
+      refresh()
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const saveMode = async () => {
     try {
-      await updateOption.mutateAsync({
-        key: 'SMTPAccounts',
-        value: JSON.stringify(payload),
-      })
       await updateOption.mutateAsync({ key: 'SMTPSendMode', value: mode })
       await updateOption.mutateAsync({
         key: 'SMTPFixedAccountID',
         value: fixedId,
       })
     } catch {
-      // useUpdateOption 已经弹过失败详情，这里不重复报错。
+      // useUpdateOption 已经弹过失败详情。
     }
-  }
-
-  const addAccount = () => {
-    setAccounts((prev) => [...prev, emptySmtpAccount(newAccountId())])
-  }
-
-  const removeAccount = (index: number) => {
-    const removed = accounts[index]
-    setAccounts((prev) => prev.filter((_, i) => i !== index))
-    // 删掉的正好是固定模式指定的那个 → 一并清掉，否则保存后后端会打一条
-    // 「固定账号不存在，本次回落到 X」的告警，而设置页显示的仍是那个已删的号。
-    if (removed && removed.id === fixedId) setFixedId('')
-    toast.message(t('qy_smtp_removed_pending_save'))
   }
 
   return (
@@ -168,14 +168,14 @@ export function SmtpAccountsSection({ defaultValues }: Props) {
         {t('qy_smtp_accounts_desc')}
       </p>
 
-      <div className='mb-6 grid gap-4 sm:grid-cols-2'>
-        <div className='space-y-2'>
-          <Label>{t('qy_smtp_send_mode')}</Label>
+      <div className='mb-6 flex flex-wrap items-end gap-3'>
+        <div className='space-y-1.5'>
+          <Label className='text-xs'>{t('qy_smtp_send_mode')}</Label>
           <Select
             value={mode}
             onValueChange={(v) => setMode((v as SmtpSendMode) ?? 'sequential')}
           >
-            <SelectTrigger>
+            <SelectTrigger className='w-48'>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -189,162 +189,274 @@ export function SmtpAccountsSection({ defaultValues }: Props) {
         </div>
 
         {mode === 'fixed' && (
-          <div className='space-y-2'>
-            <Label>{t('qy_smtp_fixed_account')}</Label>
+          <div className='space-y-1.5'>
+            <Label className='text-xs'>{t('qy_smtp_fixed_account')}</Label>
             <Select value={fixedId} onValueChange={(v) => setFixedId(v ?? '')}>
-              <SelectTrigger>
+              <SelectTrigger className='w-56'>
                 <SelectValue placeholder={t('qy_smtp_fixed_placeholder')} />
               </SelectTrigger>
               <SelectContent>
                 {accounts.map((a) => (
-                  <SelectItem key={a.id} value={a.id}>
-                    {a.name || a.account || a.id}
+                  <SelectItem key={a.account_id} value={a.account_id}>
+                    {a.name || a.account || a.account_id}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
         )}
+
+        <Button
+          type='button'
+          variant='outline'
+          onClick={saveMode}
+          disabled={updateOption.isPending}
+        >
+          {t('qy_smtp_save_mode')}
+        </Button>
       </div>
 
-      <div className='space-y-4'>
-        {accounts.length === 0 && (
-          <p className='text-muted-foreground text-sm'>
-            {t('qy_smtp_no_accounts')}
-          </p>
-        )}
-
-        {accounts.map((account, index) => {
-          const stat = statsById.get(account.id)
-          return (
-            <div key={account.id} className='rounded-lg border p-4'>
-              <div className='mb-3 flex items-center justify-between gap-3'>
-                <div className='flex items-center gap-3'>
+      <div className='overflow-x-auto rounded-lg border'>
+        <table className='w-full text-sm'>
+          <thead className='bg-muted/50'>
+            <tr className='text-left'>
+              <th className='p-2 font-medium'>{t('qy_smtp_col_enabled')}</th>
+              <th className='p-2 font-medium'>{t('qy_smtp_field_name')}</th>
+              <th className='p-2 font-medium'>{t('qy_smtp_field_server')}</th>
+              <th className='p-2 font-medium'>{t('qy_smtp_field_account')}</th>
+              <th className='p-2 font-medium'>{t('qy_smtp_col_hour_usage')}</th>
+              <th className='p-2 font-medium'>{t('qy_smtp_col_actions')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.length === 0 && (
+              <tr>
+                <td className='text-muted-foreground p-4 text-center' colSpan={6}>
+                  {accountsQuery.isPending
+                    ? t('Loading...')
+                    : t('qy_smtp_no_accounts')}
+                </td>
+              </tr>
+            )}
+            {accounts.map((a) => (
+              <tr key={a.id} className='border-t'>
+                <td className='p-2'>
                   <Switch
-                    checked={account.enabled}
-                    onCheckedChange={(v) => patch(index, { enabled: v })}
+                    checked={a.enabled}
+                    onCheckedChange={(v) =>
+                      saveMutation.mutate({ ...toPayload(a), enabled: v })
+                    }
                   />
-                  <span className='text-sm font-medium'>
-                    {account.name || account.account || account.id}
-                  </span>
-                  {stat && (
-                    <span className='text-muted-foreground text-xs'>
-                      {t('qy_smtp_stat_inline', {
-                        hour: stat.lastHour,
-                        total: stat.total,
-                      })}
+                </td>
+                <td className='p-2'>
+                  <span className='font-medium'>{a.name || '—'}</span>
+                  {!a.has_token && (
+                    <span className='text-destructive ml-2 text-xs'>
+                      {t('qy_smtp_no_password')}
                     </span>
                   )}
-                </div>
-                <Button
-                  type='button'
-                  variant='ghost'
-                  size='icon'
-                  onClick={() => removeAccount(index)}
-                  aria-label={t('Delete')}
-                >
-                  <Trash2 className='size-4' />
-                </Button>
-              </div>
-
-              <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
-                <Field label={t('qy_smtp_field_name')}>
-                  <Input
-                    value={account.name}
-                    onChange={(e) => patch(index, { name: e.target.value })}
-                  />
-                </Field>
-                <Field label={t('qy_smtp_field_server')}>
-                  <Input
-                    value={account.server}
-                    onChange={(e) => patch(index, { server: e.target.value })}
-                  />
-                </Field>
-                <Field label={t('qy_smtp_field_port')}>
-                  <Input
-                    type='number'
-                    value={account.port}
-                    onChange={(e) =>
-                      patch(index, { port: Number(e.target.value) })
-                    }
-                  />
-                </Field>
-                <Field label={t('qy_smtp_field_account')}>
-                  <Input
-                    value={account.account}
-                    onChange={(e) => patch(index, { account: e.target.value })}
-                  />
-                </Field>
-                <Field label={t('qy_smtp_field_token')}>
-                  <Input
-                    type='password'
-                    value={account.token}
-                    onChange={(e) => patch(index, { token: e.target.value })}
-                  />
-                </Field>
-                <Field label={t('qy_smtp_field_from')}>
-                  <Input
-                    value={account.from}
-                    onChange={(e) => patch(index, { from: e.target.value })}
-                  />
-                </Field>
-                <Field label={t('qy_smtp_field_hourly_limit')}>
-                  <Input
-                    type='number'
-                    min={0}
-                    value={account.hourly_limit}
-                    onChange={(e) =>
-                      patch(index, { hourly_limit: Number(e.target.value) })
-                    }
-                  />
-                </Field>
-              </div>
-
-              <div className='mt-3 flex flex-wrap gap-x-6 gap-y-2'>
-                <Toggle
-                  label={t('qy_smtp_field_ssl')}
-                  checked={account.ssl_enabled}
-                  onChange={(v) => patch(index, { ssl_enabled: v })}
-                />
-                <Toggle
-                  label={t('qy_smtp_field_starttls')}
-                  checked={account.start_tls_enabled}
-                  onChange={(v) => patch(index, { start_tls_enabled: v })}
-                />
-                <Toggle
-                  label={t('qy_smtp_field_skip_verify')}
-                  checked={account.insecure_skip_verify}
-                  onChange={(v) => patch(index, { insecure_skip_verify: v })}
-                />
-                <Toggle
-                  label={t('qy_smtp_field_force_login')}
-                  checked={account.force_auth_login}
-                  onChange={(v) => patch(index, { force_auth_login: v })}
-                />
-              </div>
-            </div>
-          )
-        })}
+                </td>
+                <td className='p-2 break-all'>
+                  {a.server}:{a.port}
+                </td>
+                <td className='p-2 break-all'>{a.account}</td>
+                <td className='p-2 whitespace-nowrap'>
+                  {statsById.get(a.account_id) ?? 0}
+                  {a.hourly_limit > 0 ? ` / ${a.hourly_limit}` : ''}
+                </td>
+                <td className='p-2'>
+                  <div className='flex gap-1'>
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='icon'
+                      aria-label={t('Edit')}
+                      onClick={() => {
+                        setIsNew(false)
+                        setEditing(toPayload(a))
+                      }}
+                    >
+                      <Pencil className='size-4' />
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='icon'
+                      aria-label={t('Delete')}
+                      onClick={() => removeMutation.mutate(a.id)}
+                    >
+                      <Trash2 className='size-4' />
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
-      <div className='mt-4 flex gap-2'>
-        <Button type='button' variant='outline' onClick={addAccount}>
+      <div className='mt-4'>
+        <Button
+          type='button'
+          variant='outline'
+          onClick={() => {
+            setIsNew(true)
+            setEditing(emptySmtpAccountPayload())
+          }}
+        >
           <Plus className='mr-1 size-4' />
           {t('qy_smtp_add_account')}
         </Button>
-        <Button type='button' onClick={onSave} disabled={updateOption.isPending}>
-          {t('Save')}
-        </Button>
       </div>
+
+      <SmtpAccountDialog
+        value={editing}
+        isNew={isNew}
+        onClose={() => setEditing(null)}
+        onSave={(payload) => saveMutation.mutate(payload)}
+        saving={saveMutation.isPending}
+      />
     </SettingsSection>
   )
 }
 
-function Field(props: { label: string; children: React.ReactNode }) {
+function SmtpAccountDialog(props: {
+  value: SmtpAccountPayload | null
+  isNew: boolean
+  onClose: () => void
+  onSave: (payload: SmtpAccountPayload) => void
+  saving: boolean
+}) {
+  const { t } = useTranslation()
+  const [draft, setDraft] = useState<SmtpAccountPayload | null>(props.value)
+
+  useEffect(() => setDraft(props.value), [props.value])
+
+  if (!draft) return null
+  const patch = (next: Partial<SmtpAccountPayload>) =>
+    setDraft({ ...draft, ...next })
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && props.onClose()}>
+      <DialogContent className='max-h-[85vh] overflow-y-auto sm:max-w-2xl'>
+        <DialogHeader>
+          <DialogTitle>
+            {props.isNew ? t('qy_smtp_add_account') : t('qy_smtp_edit_account')}
+          </DialogTitle>
+          <DialogDescription>{t('qy_smtp_dialog_desc')}</DialogDescription>
+        </DialogHeader>
+
+        <div className='grid gap-3 sm:grid-cols-2'>
+          <Field label={t('qy_smtp_field_name')}>
+            <Input
+              value={draft.name}
+              onChange={(e) => patch({ name: e.target.value })}
+            />
+          </Field>
+          <Field label={t('qy_smtp_field_server')}>
+            <Input
+              value={draft.server}
+              onChange={(e) => patch({ server: e.target.value })}
+            />
+          </Field>
+          <Field label={t('qy_smtp_field_port')}>
+            <Input
+              type='number'
+              value={draft.port}
+              onChange={(e) => patch({ port: Number(e.target.value) })}
+            />
+          </Field>
+          <Field label={t('qy_smtp_field_account')}>
+            <Input
+              value={draft.account}
+              onChange={(e) => patch({ account: e.target.value })}
+            />
+          </Field>
+          <Field
+            label={t('qy_smtp_field_token')}
+            hint={props.isNew ? undefined : t('qy_smtp_token_keep_hint')}
+          >
+            <Input
+              type='password'
+              value={draft.token}
+              onChange={(e) => patch({ token: e.target.value })}
+            />
+          </Field>
+          <Field label={t('qy_smtp_field_from')}>
+            <Input
+              value={draft.from_addr}
+              onChange={(e) => patch({ from_addr: e.target.value })}
+            />
+          </Field>
+          <Field label={t('qy_smtp_field_hourly_limit')}>
+            <Input
+              type='number'
+              min={0}
+              value={draft.hourly_limit}
+              onChange={(e) => patch({ hourly_limit: Number(e.target.value) })}
+            />
+          </Field>
+          <Field label={t('qy_smtp_field_sort_order')}>
+            <Input
+              type='number'
+              value={draft.sort_order}
+              onChange={(e) => patch({ sort_order: Number(e.target.value) })}
+            />
+          </Field>
+        </div>
+
+        <div className='mt-2 flex flex-wrap gap-x-6 gap-y-2'>
+          <Toggle
+            label={t('qy_smtp_field_ssl')}
+            checked={draft.ssl_enabled}
+            onChange={(v) => patch({ ssl_enabled: v })}
+          />
+          <Toggle
+            label={t('qy_smtp_field_starttls')}
+            checked={draft.start_tls_enabled}
+            onChange={(v) => patch({ start_tls_enabled: v })}
+          />
+          <Toggle
+            label={t('qy_smtp_field_skip_verify')}
+            checked={draft.insecure_skip_verify}
+            onChange={(v) => patch({ insecure_skip_verify: v })}
+          />
+          <Toggle
+            label={t('qy_smtp_field_force_login')}
+            checked={draft.force_auth_login}
+            onChange={(v) => patch({ force_auth_login: v })}
+          />
+        </div>
+
+        <DialogFooter>
+          <Button type='button' variant='outline' onClick={props.onClose}>
+            {t('Cancel')}
+          </Button>
+          <Button
+            type='button'
+            onClick={() => props.onSave(draft)}
+            disabled={props.saving}
+          >
+            {t('Save')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function Field(props: {
+  label: string
+  hint?: string
+  children: React.ReactNode
+}) {
   return (
     <div className='space-y-1.5'>
       <Label className='text-xs'>{props.label}</Label>
       {props.children}
+      {props.hint && (
+        <p className='text-muted-foreground text-xs'>{props.hint}</p>
+      )}
     </div>
   )
 }

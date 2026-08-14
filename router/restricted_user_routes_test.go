@@ -122,6 +122,8 @@ var restrictedDeniedSessionPrefixes = []string{
 	// SMTP 发件台账。整棵子树同构(三条全是 AdminAuth),而且台账里带收件人邮箱
 	// 与发件账号名 —— 两者合起来足以还原「站点在用哪些邮箱、给谁发过信」。
 	"/api/email-log/",
+	// SMTP 发件账号。整棵子树同构(全是 AdminAuth),持有全站发件凭据。
+	"/api/smtp-account/",
 	"/api/models/",
 	"/api/option/",
 	"/api/performance/",

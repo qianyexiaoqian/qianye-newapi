@@ -13,15 +13,18 @@ import (
 // 而 email_test.go 里那批老用例正是靠"账号表是空的"才走进 legacy 分支的。
 func withAccounts(t *testing.T, jsonStr string, mode string, fixedID string) {
 	t.Helper()
-	prevAccounts := smtpAccounts.Load()
+	prevProvider := SMTPAccountsProvider
 	prevMode, prevFixed := SMTPSendMode, SMTPFixedAccountID
 	prevUsage := SMTPHourlyUsage
 	t.Cleanup(func() {
-		smtpAccounts.Store(prevAccounts)
+		SMTPAccountsProvider = prevProvider
 		SMTPSendMode, SMTPFixedAccountID = prevMode, prevFixed
 		SMTPHourlyUsage = prevUsage
 	})
-	require.NoError(t, UpdateSMTPAccountsByJSONString(jsonStr))
+
+	var accounts []SMTPAccountConfig
+	require.NoError(t, UnmarshalJsonStr(jsonStr, &accounts))
+	SMTPAccountsProvider = func() []SMTPAccountConfig { return accounts }
 	SMTPSendMode, SMTPFixedAccountID = mode, fixedID
 }
 
@@ -30,12 +33,12 @@ const twoAccounts = `[
   {"id":"b","name":"B","enabled":true,"server":"smtp.b.com","port":587,"account":"b@b.com","token":"t"}
 ]`
 
-// TestResolveFallsBackToLegacyWhenNoAccounts 钉住「没配账号表 = 逐位沿用旧行为」。
+// TestLegacySMTPAccountMapsOldGlobals 钉住老单账号配置 → 账号的换算。
 //
-// 这是升级安全性的全部依据：绝大多数部署在升级二进制的那一天并没有配账号表，
-// 这一条一旦破了，它们的邮件当场全停。
-func TestResolveFallsBackToLegacyWhenNoAccounts(t *testing.T) {
-	withAccounts(t, `[]`, SMTPSendModeSequential, "")
+// 它只服务**一次性迁移**(model.MigrateLegacySMTPAccount),发件路径已经不再
+// 回落到它。换算错了的表现是升级当天迁进来一条连不上的账号,而运营在新界面上
+// 看到的字段全是对的 —— 因为错的是没显示的那几个。
+func TestLegacySMTPAccountMapsOldGlobals(t *testing.T) {
 	withSMTPSettings(t)
 	SMTPServer = "smtp.legacy.com"
 	SMTPPort = 465
@@ -44,11 +47,11 @@ func TestResolveFallsBackToLegacyWhenNoAccounts(t *testing.T) {
 	SMTPFrom = ""
 	SMTPSSLEnabled = true
 
-	got, err := ResolveSMTPAccount()
-	require.NoError(t, err)
+	got := LegacySMTPAccount()
 	assert.Equal(t, "legacy", got.ID)
 	assert.Equal(t, "smtp.legacy.com", got.Server)
 	assert.Equal(t, 465, got.Port)
+	assert.Equal(t, "tok", got.Token)
 	assert.True(t, got.SSLEnabled)
 	// From 为空时回落 Account —— 与旧代码那句 `if SMTPFrom == "" {...}` 同义，
 	// 但不写回全局变量。
@@ -56,15 +59,22 @@ func TestResolveFallsBackToLegacyWhenNoAccounts(t *testing.T) {
 	assert.Equal(t, "", SMTPFrom, "解析发件地址不得写回全局配置")
 }
 
-// TestResolveErrorsWhenNothingConfigured 没账号表、老配置也空 → 报错而不是发出一封空信。
-func TestResolveErrorsWhenNothingConfigured(t *testing.T) {
-	withAccounts(t, `[]`, SMTPSendModeSequential, "")
+// TestResolveErrorsWhenNoAccounts 账号表为空 → 报错,**不再**回落老全局变量。
+//
+// 留着回落的话,运营把最后一个账号停用之后,系统会悄悄改用一套他以为早就
+// 废弃的凭据继续发信。
+func TestResolveErrorsWhenNoAccounts(t *testing.T) {
+	// 顺序要紧:withSMTPSettings 会装一个「由老全局变量现算」的 provider
+	// (那批协议用例要靠它),所以清空账号表的 withAccounts 必须排在它之后,
+	// 否则这条用例测到的是 legacy provider 而不是空账号表。
 	withSMTPSettings(t)
-	SMTPServer = ""
-	SMTPAccount = ""
+	SMTPServer = "smtp.legacy.com"
+	SMTPAccount = "legacy@x.com"
+	SMTPToken = "tok"
+	withAccounts(t, `[]`, SMTPSendModeSequential, "")
 
 	_, err := ResolveSMTPAccount()
-	require.Error(t, err)
+	require.Error(t, err, "账号表为空必须报错,而不是改用老配置继续发")
 }
 
 // TestResolveSequentialRotates 依次模式必须轮着来。
@@ -207,34 +217,10 @@ func TestResolveRandomStaysWithinEligible(t *testing.T) {
 	}
 }
 
-func TestValidateSMTPAccounts(t *testing.T) {
-	require.NoError(t, ValidateSMTPAccounts(``))
-	require.NoError(t, ValidateSMTPAccounts(`[]`))
-	require.NoError(t, ValidateSMTPAccounts(`[{"id":"a","server":"s","port":587}]`))
-
-	require.Error(t, ValidateSMTPAccounts(`[{"server":"s"}]`), "缺 id 必须被拒")
-	require.Error(t, ValidateSMTPAccounts(
-		`[{"id":"a","server":"s"},{"id":"a","server":"t"}]`), "id 重复必须被拒")
-	require.Error(t, ValidateSMTPAccounts(`[{"id":"a"}]`), "既无服务器也无账号名必须被拒")
-	require.Error(t, ValidateSMTPAccounts(
-		`[{"id":"a","server":"s","port":70000}]`), "端口越界必须被拒")
-	require.Error(t, ValidateSMTPAccounts(
-		`[{"id":"a","server":"s","hourly_limit":-1}]`), "负的小时上限必须被拒")
-	require.Error(t, ValidateSMTPAccounts(`not json`))
-}
-
 func TestValidateSMTPSendMode(t *testing.T) {
 	for _, mode := range []string{SMTPSendModeFixed, SMTPSendModeRandom, SMTPSendModeSequential} {
 		require.NoError(t, ValidateSMTPSendMode(mode))
 	}
 	require.Error(t, ValidateSMTPSendMode("roundrobin"), "拼错的模式必须被拒，不能静默退回依次")
 	require.Error(t, ValidateSMTPSendMode(""))
-}
-
-// TestUpdateSMTPAccountsRejectsPartialWrite 解析失败不得留下半张账号表。
-func TestUpdateSMTPAccountsRejectsPartialWrite(t *testing.T) {
-	withAccounts(t, twoAccounts, SMTPSendModeSequential, "")
-
-	require.Error(t, UpdateSMTPAccountsByJSONString(`[{"id":`))
-	assert.Len(t, SMTPAccounts(), 2, "解析失败后原账号表必须原样保留")
 }

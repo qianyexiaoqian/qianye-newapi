@@ -68,7 +68,6 @@ func InitOptionMap() {
 	common.OptionMap["SMTPStartTLSEnabled"] = strconv.FormatBool(common.SMTPStartTLSEnabled)
 	common.OptionMap["SMTPInsecureSkipVerify"] = strconv.FormatBool(common.SMTPInsecureSkipVerify)
 	common.OptionMap["SMTPForceAuthLogin"] = strconv.FormatBool(common.SMTPForceAuthLogin)
-	common.OptionMap["SMTPAccounts"] = common.SMTPAccounts2JSONString()
 	common.OptionMap["SMTPSendMode"] = common.SMTPSendMode
 	common.OptionMap["SMTPFixedAccountID"] = common.SMTPFixedAccountID
 	common.OptionMap["Notice"] = ""
@@ -225,8 +224,6 @@ func validateOptionValue(key string, value string) error {
 		return setting.ValidateMaxTokenAutoGroups(value)
 	case "TokenDefaultGroups":
 		return setting.ValidateTokenDefaultGroups(value)
-	case "SMTPAccounts":
-		return common.ValidateSMTPAccounts(value)
 	case "SMTPSendMode":
 		return common.ValidateSMTPSendMode(value)
 	case "GroupRatio":
@@ -488,8 +485,6 @@ func updateOptionMap(key string, value string) (err error) {
 		err = setting.UpdateMaxTokenAutoGroups(value)
 	case "TokenDefaultGroups":
 		err = setting.UpdateTokenDefaultGroupsByJSONString(value)
-	case "SMTPAccounts":
-		err = common.UpdateSMTPAccountsByJSONString(value)
 	case "SMTPSendMode":
 		common.SMTPSendMode = value
 	case "SMTPFixedAccountID":

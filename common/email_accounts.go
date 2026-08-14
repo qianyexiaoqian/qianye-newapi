@@ -26,7 +26,6 @@ package common
 import (
 	"fmt"
 	"math/rand"
-	"strings"
 	"sync/atomic"
 )
 
@@ -97,8 +96,14 @@ func (a SMTPAccountConfig) Valid() bool {
 	return a.Server != "" || a.Account != ""
 }
 
-// smtpAccounts 是账号表快照。整体替换,不做原地改写。
-var smtpAccounts atomic.Pointer[[]SMTPAccountConfig]
+// SMTPAccountsProvider 返回当前全部发件账号,由 model 包在 init 里注入。
+//
+// 每次择号都调它(即每发一封邮件查一次库)。这是刻意的:发信是低频动作,
+// 一次带索引的查询远比"内存快照 + 刷新周期 + 多节点陈旧 + 预热失败降级态"
+// 这一整套便宜,而后者正是本仓其余快照模块里最难排查的一类问题。
+//
+// 默认返回 nil ⇒ common 包在没有数据库的场景(单测、离线工具)照样可用。
+var SMTPAccountsProvider = func() []SMTPAccountConfig { return nil }
 
 // smtpRoundRobin 是依次模式的游标。
 var smtpRoundRobin atomic.Uint64
@@ -126,62 +131,8 @@ type SMTPSendRecord struct {
 // 而验证码发不出去是用户问题,后者严重得多。
 var SMTPRecordSend = func(SMTPSendRecord) {}
 
-// SMTPAccounts 返回当前账号表的副本。
-func SMTPAccounts() []SMTPAccountConfig {
-	p := smtpAccounts.Load()
-	if p == nil {
-		return nil
-	}
-	out := make([]SMTPAccountConfig, len(*p))
-	copy(out, *p)
-	return out
-}
-
-// SMTPAccounts2JSONString 序列化账号表,用于写回 options。
-func SMTPAccounts2JSONString() string {
-	accounts := SMTPAccounts()
-	if accounts == nil {
-		accounts = []SMTPAccountConfig{}
-	}
-	b, err := Marshal(accounts)
-	if err != nil {
-		SysLog("error marshalling smtp accounts: " + err.Error())
-		return "[]"
-	}
-	return string(b)
-}
-
-// ValidateSMTPAccounts 校验待保存的账号表。
-//
-//nolint:gocyclo
-//
-// 在管理端保存时同步返回错误,而不是存下一份永远选不中任何账号的配置。
-func ValidateSMTPAccounts(jsonStr string) error {
-	accounts, err := parseSMTPAccounts(jsonStr)
-	if err != nil {
-		return err
-	}
-	seen := make(map[string]bool, len(accounts))
-	for i, a := range accounts {
-		if a.ID == "" {
-			return fmt.Errorf("第 %d 个 SMTP 账号缺少 id —— 发件台账与用量统计都按 id 归集,缺了就统计不到它", i+1)
-		}
-		if seen[a.ID] {
-			return fmt.Errorf("SMTP 账号 id 重复: %q —— 两个账号的发件量会被记到同一本账上", a.ID)
-		}
-		seen[a.ID] = true
-		if !a.Valid() {
-			return fmt.Errorf("SMTP 账号 %q 既没有服务器也没有账号名,发不出任何邮件", a.ID)
-		}
-		if a.Port < 0 || a.Port > 65535 {
-			return fmt.Errorf("SMTP 账号 %q 的端口 %d 非法", a.ID, a.Port)
-		}
-		if a.HourlyLimit < 0 {
-			return fmt.Errorf("SMTP 账号 %q 的小时上限不能为负(0 表示不限)", a.ID)
-		}
-	}
-	return nil
-}
+// SMTPAccounts 返回当前全部发件账号。
+func SMTPAccounts() []SMTPAccountConfig { return SMTPAccountsProvider() }
 
 // ValidateSMTPSendMode 校验发件模式。
 //
@@ -197,33 +148,15 @@ func ValidateSMTPSendMode(mode string) error {
 	}
 }
 
-// UpdateSMTPAccountsByJSONString 覆盖整张账号表。
-func UpdateSMTPAccountsByJSONString(jsonStr string) error {
-	accounts, err := parseSMTPAccounts(jsonStr)
-	if err != nil {
-		return err
-	}
-	smtpAccounts.Store(&accounts)
-	return nil
-}
-
-func parseSMTPAccounts(jsonStr string) ([]SMTPAccountConfig, error) {
-	trimmed := strings.TrimSpace(jsonStr)
-	if trimmed == "" {
-		return []SMTPAccountConfig{}, nil
-	}
-	var accounts []SMTPAccountConfig
-	if err := UnmarshalJsonStr(trimmed, &accounts); err != nil {
-		return nil, fmt.Errorf("SMTP 账号表不是合法的 JSON 数组: %w", err)
-	}
-	return accounts, nil
-}
-
-// legacySMTPAccount 把那组老全局变量包成一个隐式账号。
+// LegacySMTPAccount 把那组老的单账号全局变量包成一个账号。
 //
-// ID 固定为 "legacy",于是"升级前就在发的那些邮件"和"升级后没配账号表时发的"
-// 在台账里归到同一本账上,统计不会因为一次升级断成两截。
-func legacySMTPAccount() SMTPAccountConfig {
+// **它只剩一个用途:一次性迁移。** 发件路径已经不再回落到它 ——
+// 账号表是唯一事实源。model.MigrateLegacySMTPAccount 在启动时用它把老配置
+// 导入成账号表的第一条,之后老配置就是一份没有任何读取方的死数据。
+//
+// ID 固定为 "legacy",于是"升级前就在发的那些邮件"和"迁移进来这一条"
+// 在发件台账里归到同一本账上,统计不会因为一次升级断成两截。
+func LegacySMTPAccount() SMTPAccountConfig {
 	return SMTPAccountConfig{
 		ID:                 "legacy",
 		Name:               "默认(单账号配置)",
@@ -258,11 +191,10 @@ func legacySMTPAccount() SMTPAccountConfig {
 func ResolveSMTPAccount() (SMTPAccountConfig, error) {
 	all := SMTPAccounts()
 	if len(all) == 0 {
-		legacy := legacySMTPAccount()
-		if !legacy.Valid() {
-			return SMTPAccountConfig{}, fmt.Errorf("SMTP 服务器未配置")
-		}
-		return legacy, nil
+		// 不再回落到老的单账号全局变量:账号表是唯一事实源(老配置已在启动时
+		// 一次性迁移进来)。留着回落的话,运营把最后一个账号停用之后,系统会
+		// 悄悄改用一套他以为早就废弃的凭据继续发信。
+		return SMTPAccountConfig{}, fmt.Errorf("没有配置任何 SMTP 发件账号")
 	}
 
 	usable := make([]SMTPAccountConfig, 0, len(all))

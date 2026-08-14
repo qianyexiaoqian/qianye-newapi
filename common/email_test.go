@@ -252,8 +252,23 @@ func withSMTPSettings(t *testing.T) {
 	originalSMTPFrom := SMTPFrom
 	originalSMTPToken := SMTPToken
 	originalSystemName := SystemName
+	originalProvider := SMTPAccountsProvider
+
+	/*
+		这批用例是通过设置那组老全局变量来驱动真实 SMTP 协议行为的
+		(STARTTLS / 隐式 TLS / 各种认证机制)。发件路径改成「账号表是唯一
+		事实源」之后,它们必须先有一个账号才走得到协议那一层。
+
+		provider 刻意是**惰性**的:每次调用才现算 LegacySMTPAccount(),
+		于是各用例在本函数之后赋的那些全局变量照样生效 —— 换成在这里求值
+		一次的话,拿到的会是一份全空的账号,而每个用例都得再改一遍。
+	*/
+	SMTPAccountsProvider = func() []SMTPAccountConfig {
+		return []SMTPAccountConfig{LegacySMTPAccount()}
+	}
 
 	t.Cleanup(func() {
+		SMTPAccountsProvider = originalProvider
 		SMTPServer = originalSMTPServer
 		SMTPPort = originalSMTPPort
 		SMTPSSLEnabled = originalSMTPSSLEnabled
@@ -369,7 +384,7 @@ func TestSMTPPlainAuthRejectsRemotePlaintextConnection(t *testing.T) {
 	client, err := smtp.NewClient(conn, SMTPServer)
 	require.NoError(t, err)
 
-	err = client.Auth(getSMTPAuth(legacySMTPAccount()))
+	err = client.Auth(getSMTPAuth(LegacySMTPAccount()))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unencrypted connection")
 
@@ -391,7 +406,7 @@ func TestNewSMTPClientHonorsExplicitStartTLSWhenPortIs465(t *testing.T) {
 	SMTPStartTLSEnabled = true
 	SMTPInsecureSkipVerify = true
 
-	client, err := newSMTPClient(fmt.Sprintf("%s:%d", server.host, server.port), legacySMTPAccount())
+	client, err := newSMTPClient(fmt.Sprintf("%s:%d", server.host, server.port), LegacySMTPAccount())
 	require.NoError(t, err)
 	defer client.Close()
 
@@ -414,7 +429,7 @@ func TestNewSMTPClientKeepsImplicitTLSForLegacyPort465(t *testing.T) {
 	SMTPStartTLSEnabled = false
 	SMTPInsecureSkipVerify = true
 
-	client, err := newSMTPClient(fmt.Sprintf("%s:%d", server.host, server.port), legacySMTPAccount())
+	client, err := newSMTPClient(fmt.Sprintf("%s:%d", server.host, server.port), LegacySMTPAccount())
 	require.NoError(t, err)
 	defer client.Close()
 }

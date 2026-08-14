@@ -21,61 +21,87 @@ import { api } from '@/lib/api'
 /** 发件模式。后端 `common.SMTPSendMode*` 三个常量的镜像。 */
 export type SmtpSendMode = 'fixed' | 'random' | 'sequential'
 
-/** 一个 SMTP 发件账号。字段与后端 `common.SMTPAccountConfig` 一一对应。 */
+/**
+ * 一个 SMTP 发件账号（管理端视角）。
+ *
+ * **没有 token 字段** —— 后端从不回显密码（回显等于把全部发件凭据发给每一个
+ * 打开设置页的管理员）。提交时留空表示「不改密码」，`has_token` 用来区分
+ * 「这个号还没配密码」与「配了但不给你看」：少了它两种状态在页面上一模一样，
+ * 而前者发一封信就会认证失败。
+ */
 export type SmtpAccount = {
-  id: string
+  id: number
+  account_id: string
   name: string
   enabled: boolean
   server: string
   port: number
   account: string
-  token: string
-  from: string
+  from_addr: string
   ssl_enabled: boolean
   start_tls_enabled: boolean
   insecure_skip_verify: boolean
   force_auth_login: boolean
   /** 一小时内允许发出的封数，0 表示不限。 */
   hourly_limit: number
+  sort_order: number
+  has_token: boolean
 }
 
-export function emptySmtpAccount(id: string): SmtpAccount {
+/** 新建/编辑时提交的载荷。`token` 留空即不改密码。 */
+export type SmtpAccountPayload = Omit<SmtpAccount, 'has_token'> & {
+  token: string
+}
+
+export function emptySmtpAccountPayload(): SmtpAccountPayload {
   return {
-    id,
+    id: 0,
+    // 与账号名无关的随机串：account_id 是发件台账与用量统计的归集键，
+    // 拿邮箱或名字当它的话，运营改个备注名就会让历史统计断成两截。
+    account_id: `smtp_${Math.random().toString(36).slice(2, 10)}`,
     name: '',
     enabled: true,
     server: '',
     port: 587,
     account: '',
     token: '',
-    from: '',
+    from_addr: '',
     ssl_enabled: false,
     start_tls_enabled: false,
     insecure_skip_verify: false,
     force_auth_login: false,
     hourly_limit: 0,
+    sort_order: 0,
   }
 }
 
-/**
- * 解析存在 option 里的账号表。
- *
- * 任何解析失败都回落成空数组而不是抛错：这份 JSON 由管理端自己写回，理论上
- * 永远合法；但真出现坏值时，整页白屏比"账号表看起来是空的"糟得多 ——
- * 后者至少还能重新配一遍，前者连设置页都进不去。
- */
-export function parseSmtpAccounts(raw: string | undefined): SmtpAccount[] {
-  if (!raw) return []
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.map((item) => ({
-      ...emptySmtpAccount(''),
-      ...(item as Partial<SmtpAccount>),
-    }))
-  } catch {
-    return []
-  }
+export function toPayload(a: SmtpAccount): SmtpAccountPayload {
+  const { has_token: _hasToken, ...rest } = a
+  return { ...rest, token: '' }
+}
+
+export async function listSmtpAccounts(): Promise<{
+  success: boolean
+  message?: string
+  data?: SmtpAccount[]
+}> {
+  const res = await api.get('/api/smtp-account/')
+  return res.data
+}
+
+export async function createSmtpAccount(payload: SmtpAccountPayload) {
+  const res = await api.post('/api/smtp-account/', payload)
+  return res.data as { success: boolean; message?: string }
+}
+
+export async function updateSmtpAccount(payload: SmtpAccountPayload) {
+  const res = await api.put('/api/smtp-account/', payload)
+  return res.data as { success: boolean; message?: string }
+}
+
+export async function deleteSmtpAccount(id: number) {
+  const res = await api.delete(`/api/smtp-account/${id}`)
+  return res.data as { success: boolean; message?: string }
 }
 
 /** 单个账号的发送量统计。 */
