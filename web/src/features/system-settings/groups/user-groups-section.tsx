@@ -807,11 +807,11 @@ function QyUgUsableCell(props: { row: QyGmUserGroup }) {
         那一档只剩一枚红色的「一个都不能用」，运营据此以为这一档已经被锁死，
         下一步可能是紧急迁人 —— 而 shadow 期这批人此刻什么都没被拦。
       */}
-      {row.scope_state !== 'unset' && !row.scope_enforced && (
-        <StatusBadge variant='warning' copyable={false}>
-          {t('qy_ug_scope_shadow')}
-        </StatusBadge>
-      )}
+      {/*
+        这里曾经挂「清单已配 · 但尚未生效(影子)」徽标。shadow 已下线:
+        有范围行就一定生效,`scope_enforced` 恒为真,这个徽标永远不会出现,
+        留着只会让下一个人以为还存在一个"配了不生效"的状态。
+      */}
     </div>
   )
 }

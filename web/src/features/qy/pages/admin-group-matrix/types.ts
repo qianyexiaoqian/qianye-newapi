@@ -176,6 +176,18 @@ export type QyGmModelGroup = {
   base_ratio: string
   /** 该模型分组下是否还有启用的渠道。false 时格子上出「没有渠道」的提示。 */
   has_channels: boolean
+  /**
+   * false = 这一列**不能被授权**，界面必须置灰而不是隐藏。
+   *
+   * 今天唯一的成因是「登记了但没配分组倍率」：上游对不在 `GroupRatio` 里的
+   * 分组直接用「分组已被弃用」403，所以授权它只会造出必然报错的令牌。
+   *
+   * 之所以要下发这一行而不是干脆不下发：**消失的条目无法解释自己**。
+   * 模型分组列表页有 11 个、这里只剩 8 个时，运营唯一能得到的结论是"代码写错了"。
+   */
+  grantable: boolean
+  /** `grantable` 为 false 时给运营看的原话，含下一步该去哪。 */
+  not_grantable_reason?: string
   /** 登记表里的展示名。没登记过时是空串。 */
   display_name: string
   /**

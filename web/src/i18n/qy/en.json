@@ -3232,5 +3232,6 @@
   "qy_smtp_dialog_desc": "Leave the password blank to keep it unchanged. Leave the From address blank to use the account itself.",
   "qy_smtp_token_keep_hint": "Leave blank to keep the existing password",
   "qy_smtp_no_password": "no password",
-  "qy_smtp_field_sort_order": "Order (rotation order in sequential mode, lowest first)"
+  "qy_smtp_field_sort_order": "Order (rotation order in sequential mode, lowest first)",
+  "qy_ugl_not_grantable_short": "no ratio · not grantable"
 }

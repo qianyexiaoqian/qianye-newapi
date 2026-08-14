@@ -3232,5 +3232,6 @@
   "qy_smtp_dialog_desc": "密码留空表示不修改。发件地址留空则使用账号本身。",
   "qy_smtp_token_keep_hint": "留空以保留现有密码",
   "qy_smtp_no_password": "未设密码",
-  "qy_smtp_field_sort_order": "排序（依次模式的轮转顺序，小的在前）"
+  "qy_smtp_field_sort_order": "排序（依次模式的轮转顺序，小的在前）",
+  "qy_ugl_not_grantable_short": "未配倍率 · 不可授权"
 }

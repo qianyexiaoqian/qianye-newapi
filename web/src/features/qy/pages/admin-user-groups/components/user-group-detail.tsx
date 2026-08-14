@@ -142,7 +142,8 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
     才真的替换全局清单。而这一屏建出来的清单一律是 shadow —— 无条件按 enforce
     的口径写那一句，运营读完会认为收紧已经落地然后走人，实际上什么都没拦住。
   */
-  const enforced = props.userGroup.mode === 'enforce'
+  // 曾经用来区分「已生效 / 影子」两种文案。shadow 下线后有范围行就一定生效,
+  // 这个判断恒为真,留着会让下一个人以为还存在第二种状态。
   /** 这一档已经有清单、但清单里一项都不剩（含未保存的草稿）。 */
   const emptyList = scoped && view.memberCount === 0
   const otherUserGroups = props.data.user_groups
@@ -202,8 +203,7 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
           */}
           <p className='text-muted-foreground text-xs leading-5'>
             {!scoped && t('qy_ugl_fallback_note')}
-            {scoped &&
-              (enforced ? t('qy_ugl_own_note') : t('qy_ugl_own_note_shadow'))}
+            {scoped && t('qy_ugl_own_note')}
           </p>
         </div>
 
@@ -322,6 +322,22 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
                       {t('qy_group_matrix_col_no_channels_short')}
                     </Badge>
                   )}
+                  {/*
+                    没配倍率的模型分组在这里是**看得见但点不动**的。
+
+                    藏起来的表现是「模型分组列表页有 11 个、这里只有 8 个」，
+                    而屏幕上没有任何一处解释那几个去哪了。原因写在 title 上，
+                    含下一步该去哪配。
+                  */}
+                  {!column.grantable && (
+                    <Badge
+                      variant='outline'
+                      className='border-destructive/50 text-destructive px-1 py-0 text-[10px]'
+                      title={column.not_grantable_reason}
+                    >
+                      {t('qy_ugl_not_grantable_short')}
+                    </Badge>
+                  )}
                 </div>
                 <Button
                   type='button'
@@ -331,6 +347,8 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
                   aria-label={t('qy_ugl_add_one_label', {
                     modelGroup: column.name,
                   })}
+                  disabled={!column.grantable}
+                  title={column.not_grantable_reason}
                   onClick={() => requestMembership(column.name, true)}
                 >
                   <Plus aria-hidden='true' />
@@ -484,7 +502,6 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
                 count: props.userGroup.model_groups.length,
               })}
             </p>
-            <p>{t('qy_ugl_create_shadow')}</p>
             {props.scope.hasUnsavedDraft && (
               <p className='text-destructive'>
                 {t('qy_ugl_create_discards_draft')}
@@ -736,9 +753,7 @@ function QyUgCellNote(props: {
         <p className='text-warning text-[11px] leading-4'>
           {t('qy_ug_cell_note_pending', {
             note: cell.effective_note,
-            state: props.enforced
-              ? t('qy_ug_cell_note_pending_generic')
-              : t('qy_ug_scope_shadow'),
+            state: t('qy_ug_cell_note_pending_generic'),
           })}
         </p>
       )}

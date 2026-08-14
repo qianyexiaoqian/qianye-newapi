@@ -209,6 +209,17 @@ type modelGroupRow struct {
 	UsableDescription string `json:"usable_description"`
 	// HasChannels 为 false 时该分组下没有任何可用渠道,授权它等于什么都没给。
 	HasChannels bool `json:"has_channels"`
+	// Grantable 为 false 时这一列**不能被授权**,前端必须置灰而不是隐藏。
+	//
+	// 今天唯一的成因是「登记了但没配分组倍率」:上游对不在 GroupRatio 里的分组
+	// 直接用「分组已被弃用」403,所以授权它只会造出必然报错的令牌。
+	//
+	// 下发这个布尔、而不是干脆不下发这一行,是因为**消失的条目无法解释自己**:
+	// 模型分组列表页有 11 个、这里只剩 8 个时,运营唯一能得到的结论是"你代码写错了"。
+	Grantable bool `json:"grantable"`
+	// NotGrantableReason 是 Grantable=false 时给运营看的原话,含下一步该去哪。
+	// 空串表示可授权。
+	NotGrantableReason string `json:"not_grantable_reason,omitempty"`
 }
 
 type cellView struct {
@@ -911,7 +922,7 @@ func listModelGroups(registry map[string]groupns.ModelGroup, whitelist map[strin
 	ratios := ratio_setting.GetGroupRatioCopy()
 	withChannels := groupsWithEnabledAbilities()
 
-	out := make([]modelGroupRow, 0, len(ratios))
+	out := make([]modelGroupRow, 0, len(ratios)+len(registry))
 	for name, ratio := range ratios {
 		if name == autoGroup {
 			continue
@@ -921,10 +932,37 @@ func listModelGroups(registry map[string]groupns.ModelGroup, whitelist map[strin
 		out = append(out, modelGroupRow{
 			Name: name, DisplayName: reg.DisplayName, Note: reg.Note,
 			BaseRatio: ratioText(ratio), HasChannels: withChannels[name],
+			Grantable: true,
 			// 「用户可选」的判据是**键存不存在**,不是 value 有没有内容:
 			// 一个 value 为空串的键仍然是"放行",而按 value 判会把它读成"没放行",
 			// 于是运营删掉一段说明文案就顺手把一个分组从全站下拉里撤了。
 			UserSelectable: selectable, UsableDescription: desc,
+		})
+	}
+	// ── 登记了、但没配倍率的模型分组也要列出来(置灰、不可授权)──
+	//
+	// 它们**授权不了**:上游 middleware/auth.go 对不在 GroupRatio 里的分组直接用
+	// 「分组已被弃用」403,validateCells 因此在写入侧就拒绝。这一点没变。
+	//
+	// 变的是**不再把它们藏起来**。藏起来的表现是:模型分组列表页有 11 个,
+	// 这里只有 8 个,而屏幕上没有任何一处解释那 3 个去哪了 —— 项目方原话
+	// 「可选的模型分组数量和模型分组列表的少了很多?你代码没写错?」。
+	// 一个看得见、写明原因的置灰行,比一个凭空消失的条目便宜得多。
+	for name, reg := range registry {
+		if name == autoGroup {
+			continue
+		}
+		if _, hasRatio := ratios[name]; hasRatio {
+			continue
+		}
+		desc, selectable := whitelist[name]
+		out = append(out, modelGroupRow{
+			Name: name, DisplayName: reg.DisplayName, Note: reg.Note,
+			BaseRatio: "", HasChannels: withChannels[name],
+			UserSelectable: selectable, UsableDescription: desc,
+			Grantable: false,
+			NotGrantableReason: "这个模型分组还没有配分组倍率,授权它没有意义 —— " +
+				"上游会在请求时用「分组已被弃用」把用户挡掉。请先到「模型分组」页给它配一个倍率。",
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

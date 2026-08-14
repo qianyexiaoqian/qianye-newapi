@@ -83,9 +83,8 @@ export function QyUgScopeModeStrip(props: {
 }) {
   const { t } = useTranslation()
   const row = props.userGroup
-  const enforced = row.mode === 'enforce'
-
-  const [switching, setSwitching] = useState(false)
+  // enforced / switching / enforceUnlocked 三个状态随 shadow 一并删除:
+  // 有范围行就一定生效,没有第二档可切,也就没有需要解锁的确认动作。
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [allowAuto, setAllowAuto] = useState(row.allow_auto)
   const [note, setNote] = useState(row.scope_note)
@@ -105,14 +104,7 @@ export function QyUgScopeModeStrip(props: {
   useEffect(() => {
     setAllowAuto(latestRow.current.allow_auto)
     setNote(latestRow.current.scope_note)
-    setSwitching(false)
   }, [rowName])
-
-  const preview = props.scope.enforcePreview
-  const enforceUnlocked =
-    preview != null &&
-    !preview.preview_incomplete &&
-    !props.scope.hasUnsavedDraft
 
   return (
     <div className='space-y-2 rounded-md border p-2'>
@@ -141,73 +133,18 @@ export function QyUgScopeModeStrip(props: {
         */}
       </div>
 
-      {enforced && props.scope.hasUnsavedDraft && (
-        <p className='text-destructive text-xs leading-5'>
-          {t('qy_ugl_mode_to_shadow_discards_draft')}
-        </p>
-      )}
+      {/*
+        这里曾经是两块随 shadow 一并作废的 UI:
 
-      {/* 切 enforce 的那一段：说清楚会发生什么 → 看影响面 → 才允许确认。 */}
-      {!enforced && switching && (
-        <div className='space-y-2 rounded-md border border-dashed p-2'>
-          <p className='text-xs leading-5'>{t('qy_ugl_mode_enforce_intro')}</p>
-          <p className='text-muted-foreground text-xs leading-5'>
-            {t('qy_group_scope_enforce_plan_bypass_note')}
-          </p>
-          {!enforceUnlocked && (
-            <p className='text-destructive text-xs leading-5'>
-              {props.scope.hasUnsavedDraft
-                ? t('qy_group_matrix_enforce_needs_saved_draft')
-                : t('qy_group_matrix_mode_switch_confirm')}
-            </p>
-          )}
-          <div className='flex flex-wrap items-center gap-2'>
-            <Button
-              type='button'
-              variant='outline'
-              size='sm'
-              disabled={props.scope.isPreviewing || props.scope.hasUnsavedDraft}
-              onClick={props.scope.onPreviewForEnforce}
-            >
-              {t('qy_group_matrix_enforce_preview_btn', {
-                userGroup: row.name,
-              })}
-            </Button>
-            {preview != null && (
-              <span className='text-muted-foreground text-xs tabular-nums'>
-                {t('qy_group_matrix_enforce_preview_summary', {
-                  broken: preview.newly_broken.length,
-                  tokens: preview.total_newly_broken_tokens ?? 0,
-                })}
-              </span>
-            )}
-          </div>
-          <div className='flex flex-wrap justify-end gap-2'>
-            <Button
-              type='button'
-              variant='ghost'
-              size='sm'
-              onClick={() => setSwitching(false)}
-            >
-              {t('qy_common_cancel')}
-            </Button>
-            <Button
-              type='button'
-              size='sm'
-              disabled={props.scope.isSaving || !enforceUnlocked}
-              onClick={() =>
-                props.scope.onSubmit({
-                  managed: true,
-                  allow_auto: allowAuto,
-                  note,
-                })
-              }
-            >
-              {t('qy_ugl_mode_enforce_confirm')}
-            </Button>
-          </div>
-        </div>
-      )}
+          1. 「切回『先观察』会把未保存的格子改动丢掉」那条红字警告 ——
+             已经没有可切回去的东西了;而且它把 `**不设闸门**` 这种 markdown
+             原样印在屏幕上(这段文案从来没有经过 markdown 渲染)。
+          2. 「切到强制」的确认面板(说明 → 跑影响面 → 解锁确认)——
+             `enforced` 现在恒为真,它永远不会渲染,留着只会让人以为闸门还在。
+
+        影响面预览本身没有删:它仍然是一个可以主动调的只读端点,
+        只是不再是保存的前置条件。
+      */}
 
       {/*
         `auto` 伪分组与范围备注收在一个折叠区里。

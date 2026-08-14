@@ -45,6 +45,7 @@ function modelGroup(name: string): QyGmModelGroup {
     name,
     base_ratio: '1',
     has_channels: true,
+  grantable: true,
     display_name: '',
     note: '',
     user_selectable: true,
