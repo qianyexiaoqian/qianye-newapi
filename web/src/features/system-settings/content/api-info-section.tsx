@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Plus, Trash2, Save } from 'lucide-react'
+import { ArrowDown, ArrowUp, Plus, Trash2, Save } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -236,6 +236,30 @@ export function ApiInfoSection({ enabled, data }: ApiInfoSectionProps) {
     setShowDialog(false)
   }
 
+  /**
+   * 上移 / 下移一行。
+   *
+   * ── 顺序就是这份数据的语义 ──
+   *
+   * 这份清单存成一个 JSON 数组,**数组顺序就是控制台上的展示顺序**;此前唯一能
+   * 改顺序的办法是把中间几条删掉再按想要的次序重新加一遍。扩展那边的 API 地址簿
+   * (qianye/modules/apiaddr)一开始就有 sort_order,这里对齐它。
+   *
+   * 与那边的实现不同点:那边是数据库表、排序键是一个显式的 sort_order 列;
+   * 这里是一个 JSON 数组,数组下标本身就是全序,不需要再引入一个会与下标不一致的
+   * 排序字段 —— 多一个字段就多一处"字段说 3、实际排第 5"的机会。
+   *
+   * 只改草稿,不立即写服务端:与这一页其它编辑动作一致(改完统一按「保存」),
+   * 否则调一次顺序就产生一次写入,而运营通常要连点好几下才排到想要的位置。
+   */
+  const moveApiInfo = (index: number, direction: 'down' | 'up') => {
+    const target = direction === 'up' ? index - 1 : index + 1
+    if (target < 0 || target >= apiInfoList.length) return
+    const next = [...apiInfoList]
+    ;[next[index], next[target]] = [next[target], next[index]]
+    setDraftApiInfoList(next)
+  }
+
   const handleSaveAll = async () => {
     try {
       const result = await updateOption.mutateAsync({
@@ -369,6 +393,42 @@ export function ApiInfoSection({ enabled, data }: ApiInfoSectionProps) {
                   <span className='text-sm capitalize'>{apiInfo.color}</span>
                 </div>
               ),
+            },
+            {
+              id: 'sort',
+              header: t('Order'),
+              className: 'w-24',
+              cell: (apiInfo) => {
+                const index = apiInfoList.findIndex(
+                  (item) => item.id === apiInfo.id
+                )
+                return (
+                  <div className='flex items-center gap-0.5'>
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='icon'
+                      className='size-7'
+                      aria-label={t('Move up')}
+                      disabled={index <= 0}
+                      onClick={() => moveApiInfo(index, 'up')}
+                    >
+                      <ArrowUp className='size-4' />
+                    </Button>
+                    <Button
+                      type='button'
+                      variant='ghost'
+                      size='icon'
+                      className='size-7'
+                      aria-label={t('Move down')}
+                      disabled={index < 0 || index >= apiInfoList.length - 1}
+                      onClick={() => moveApiInfo(index, 'down')}
+                    >
+                      <ArrowDown className='size-4' />
+                    </Button>
+                  </div>
+                )
+              },
             },
             {
               id: 'actions',

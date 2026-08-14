@@ -5272,5 +5272,8 @@
     "Reload the page to get the latest version.": "请重新加载页面以获取最新版本。",
     "Reload": "重新加载",
     "Copy error details": "复制错误详情"
-  }
+  },
+  "Order": "排序",
+  "Move up": "上移",
+  "Move down": "下移"
 }

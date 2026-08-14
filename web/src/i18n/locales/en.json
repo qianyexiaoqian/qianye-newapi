@@ -5272,5 +5272,8 @@
     "Reload the page to get the latest version.": "Reload the page to get the latest version.",
     "Reload": "Reload",
     "Copy error details": "Copy error details"
-  }
+  },
+  "Order": "Order",
+  "Move up": "Move up",
+  "Move down": "Move down"
 }
