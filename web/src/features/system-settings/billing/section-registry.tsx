@@ -22,6 +22,7 @@ import { CheckinSettingsSection } from '../general/checkin-settings-section'
 import { PricingSection } from '../general/pricing-section'
 import { QuotaSettingsSection } from '../general/quota-settings-section'
 import { ModelGroupsSection } from '../groups/model-groups-section'
+import { TokenDefaultGroupsSection } from '../groups/token-default-groups-section'
 import { UserGroupsSection } from '../groups/user-groups-section'
 import { PaymentSettingsSection } from '../integrations/payment-settings-section'
 import { RatioSettingsCard } from '../models/ratio-settings-card'
@@ -170,6 +171,21 @@ const BILLING_SECTIONS = [
     titleKey: 'qy_gs_user_groups_title',
     build: (settings: BillingSettings) => (
       <UserGroupsSection defaultValues={getUserGroupDefaults(settings)} />
+    ),
+  },
+  {
+    /*
+      「令牌默认分组」单独成页而不是并进「用户分组」页：那一页的表行来自扩展的
+      分组矩阵接口，`group_matrix` 关掉时整张表是空的，编辑器会跟着消失 ——
+      而这项配置与可用范围无关，必须在扩展未启用时照样能配。
+      归属登记见 `../groups/lib/group-options.ts` 的 `TOKEN_DEFAULT_PAGE_KEYS`。
+    */
+    id: 'token-default-groups',
+    titleKey: 'qy_gs_token_default_title',
+    build: (settings: BillingSettings) => (
+      <TokenDefaultGroupsSection
+        defaultValues={{ TokenDefaultGroups: settings.TokenDefaultGroups }}
+      />
     ),
   },
   {

@@ -10,44 +10,44 @@ import (
 	"time"
 )
 
-func generateMessageID() (string, error) {
-	split := strings.Split(SMTPFrom, "@")
+func generateMessageID(from string) (string, error) {
+	split := strings.Split(from, "@")
 	if len(split) < 2 {
 		return "", fmt.Errorf("invalid SMTP account")
 	}
-	domain := strings.Split(SMTPFrom, "@")[1]
+	domain := split[1]
 	return fmt.Sprintf("<%d.%s@%s>", time.Now().UnixNano(), GetRandomString(12), domain), nil
 }
 
-func shouldUseSMTPLoginAuth() bool {
-	if SMTPForceAuthLogin {
+func shouldUseSMTPLoginAuth(account SMTPAccountConfig) bool {
+	if account.ForceAuthLogin {
 		return true
 	}
-	return isOutlookServer(SMTPAccount) || slices.Contains(EmailLoginAuthServerList, SMTPServer)
+	return isOutlookServer(account.Account) || slices.Contains(EmailLoginAuthServerList, account.Server)
 }
 
-func getSMTPAuth() smtp.Auth {
-	return AutoSMTPAuth(SMTPAccount, SMTPToken)
+func getSMTPAuth(account SMTPAccountConfig) smtp.Auth {
+	return AutoSMTPAuth(account)
 }
 
-func shouldAuthenticateSMTP() bool {
-	return SMTPAccount != "" && SMTPToken != ""
+func shouldAuthenticateSMTP(account SMTPAccountConfig) bool {
+	return account.Account != "" && account.Token != ""
 }
 
-func smtpTLSConfig() *tls.Config {
+func smtpTLSConfig(account SMTPAccountConfig) *tls.Config {
 	return &tls.Config{
-		ServerName:         SMTPServer,
-		InsecureSkipVerify: SMTPInsecureSkipVerify, // #nosec G402 -- admin-controlled SMTP compatibility option.
+		ServerName:         account.Server,
+		InsecureSkipVerify: account.InsecureSkipVerify, // #nosec G402 -- admin-controlled SMTP compatibility option.
 	}
 }
 
-func newSMTPClient(addr string) (*smtp.Client, error) {
-	if SMTPSSLEnabled || (SMTPPort == 465 && !SMTPStartTLSEnabled) {
-		conn, err := tls.Dial("tcp", addr, smtpTLSConfig())
+func newSMTPClient(addr string, account SMTPAccountConfig) (*smtp.Client, error) {
+	if account.SSLEnabled || (account.Port == 465 && !account.StartTLSEnabled) {
+		conn, err := tls.Dial("tcp", addr, smtpTLSConfig(account))
 		if err != nil {
 			return nil, err
 		}
-		client, err := smtp.NewClient(conn, SMTPServer)
+		client, err := smtp.NewClient(conn, account.Server)
 		if err != nil {
 			_ = conn.Close()
 			return nil, err
@@ -60,13 +60,13 @@ func newSMTPClient(addr string) (*smtp.Client, error) {
 		return nil, err
 	}
 
-	if SMTPStartTLSEnabled {
+	if account.StartTLSEnabled {
 		startTLSSupported, _ := client.Extension("STARTTLS")
 		if !startTLSSupported {
 			_ = client.Close()
 			return nil, fmt.Errorf("SMTP server does not support STARTTLS")
 		}
-		if err := client.StartTLS(smtpTLSConfig()); err != nil {
+		if err := client.StartTLS(smtpTLSConfig(account)); err != nil {
 			_ = client.Close()
 			return nil, err
 		}
@@ -75,16 +75,47 @@ func newSMTPClient(addr string) (*smtp.Client, error) {
 	return client, nil
 }
 
+// SendEmail 发一封邮件。
+//
+// 账号由 ResolveSMTPAccount 按当前发件模式挑出(固定 / 随机 / 依次);
+// 账号表为空时它返回由老全局变量拼出的隐式账号,行为与多账号功能上线前
+// 逐位一致。每一次尝试 —— 无论成败 —— 都落一条发件台账。
 func SendEmail(subject string, receiver string, content string) error {
-	if SMTPFrom == "" { // for compatibility
-		SMTPFrom = SMTPAccount
+	account, err := ResolveSMTPAccount()
+	if err != nil {
+		return err
 	}
-	id, err2 := generateMessageID()
-	if err2 != nil {
-		return err2
+	started := time.Now()
+	err = sendEmailWith(account, subject, receiver, content)
+
+	// 台账在**返回之前**落,且失败也要落:运维排查"为什么这个人没收到"时,
+	// 最需要的恰恰是那些失败记录,而它们在旧实现里只在 Quit 失败那一种情况下
+	// 进过一次系统日志。SMTPRecordSend 的实现体自己吞掉一切错误(见其注释),
+	// 台账写不进去绝不影响本次发件的返回值。
+	rec := SMTPSendRecord{
+		AccountID:   account.ID,
+		AccountName: account.Name,
+		From:        account.FromAddress(),
+		Receiver:    receiver,
+		Subject:     subject,
+		Success:     err == nil,
+		DurationMs:  time.Since(started).Milliseconds(),
 	}
-	if SMTPServer == "" && SMTPAccount == "" {
+	if err != nil {
+		rec.ErrorMsg = err.Error()
+	}
+	SMTPRecordSend(rec)
+	return err
+}
+
+func sendEmailWith(account SMTPAccountConfig, subject string, receiver string, content string) error {
+	from := account.FromAddress()
+	if account.Server == "" && account.Account == "" {
 		return fmt.Errorf("SMTP 服务器未配置")
+	}
+	id, err := generateMessageID(from)
+	if err != nil {
+		return err
 	}
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
 	mail := []byte(fmt.Sprintf("To: %s\r\n"+
@@ -93,26 +124,25 @@ func SendEmail(subject string, receiver string, content string) error {
 		"Date: %s\r\n"+
 		"Message-ID: %s\r\n"+ // 添加 Message-ID 头
 		"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
-		receiver, SystemName, SMTPFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
-	auth := getSMTPAuth()
-	addr := fmt.Sprintf("%s:%d", SMTPServer, SMTPPort)
+		receiver, SystemName, from, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
+	auth := getSMTPAuth(account)
+	addr := fmt.Sprintf("%s:%d", account.Server, account.Port)
 	to := strings.Split(receiver, ";")
-	var err error
-	client, err := newSMTPClient(addr)
+	client, err := newSMTPClient(addr, account)
 	if err != nil {
 		return err
 	}
 	defer client.Close()
-	if shouldAuthenticateSMTP() {
+	if shouldAuthenticateSMTP(account) {
 		if err = client.Auth(auth); err != nil {
 			return err
 		}
 	}
-	if err = client.Mail(SMTPFrom); err != nil {
+	if err = client.Mail(from); err != nil {
 		return err
 	}
-	for _, receiver := range to {
-		if err = client.Rcpt(receiver); err != nil {
+	for _, rcpt := range to {
+		if err = client.Rcpt(rcpt); err != nil {
 			return err
 		}
 	}

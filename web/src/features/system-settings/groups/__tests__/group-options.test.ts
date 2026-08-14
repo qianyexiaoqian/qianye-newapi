@@ -30,6 +30,7 @@ import {
   moveAutoGroup,
   parseAutoGroups,
   serializeAutoGroups,
+  TOKEN_DEFAULT_PAGE_KEYS,
   type GroupOptionKey,
 } from '../lib/group-options'
 
@@ -50,10 +51,11 @@ describe('分组配置项的归属（完备且互斥）', () => {
     USER_GROUP_PAGE_KEYS,
     GROUP_MATRIX_PAGE_KEYS,
     MODEL_GROUP_PAGE_KEYS,
+    TOKEN_DEFAULT_PAGE_KEYS,
     READ_ONLY_GROUP_OPTION_KEYS,
   ]
 
-  test('并集恰好是全部 7 项：没有配置项在合并中落单', () => {
+  test('并集恰好是全部 8 项：没有配置项在合并中落单', () => {
     const seen = new Set<string>()
     for (const bucket of buckets) for (const key of bucket) seen.add(key)
     assert.deepEqual(

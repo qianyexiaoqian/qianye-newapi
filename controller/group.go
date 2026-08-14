@@ -124,5 +124,32 @@ func GetUserGroups(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data":    usableGroups,
+		// default_group 是令牌创建界面的**预选值**,不是权限。
+		//
+		// 只下发这一个已解析的字符串,绝不下发那张「用户分组 → 模型分组」全量映射:
+		// 那张映射的键集合等于本站有哪些用户分组,下发给普通用户等于把全站分档结构
+		// 暴露给每一个登录账号(与 GetUserGroupOptions 只给管理端是同一条理由)。
+		//
+		// 落在该用户真实可选清单之外时返回空串,由前端退回原有的默认选中逻辑 ——
+		// 判据用的就是上面刚算完的 usableGroups,因此它天然同时满足
+		// 「模型分组存在」与「这个人能选」两件事,不会预选一个用户一提交就被
+		// 写入侧校验拒绝的分组。
+		"default_group": resolveTokenDefaultGroup(userGroup, usableGroups),
 	})
+}
+
+// resolveTokenDefaultGroup 把配置里的预选值裁到该用户真实可选的范围内。
+//
+// 单独成函数是为了让这条裁剪有直接的测试落点:它是全站唯一一处把
+// 「运营配了什么」与「这个人能选什么」求交的地方,而两者分家的表现是
+// 用户打开新建令牌就看到一个他提交不了的分组,且完全不知道该改哪里。
+func resolveTokenDefaultGroup(userGroup string, usableGroups map[string]map[string]interface{}) string {
+	name := setting.GetTokenDefaultGroup(userGroup)
+	if name == "" {
+		return ""
+	}
+	if _, ok := usableGroups[name]; !ok {
+		return ""
+	}
+	return name
 }

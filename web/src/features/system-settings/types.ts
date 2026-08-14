@@ -282,6 +282,7 @@ export type BillingSettings = {
   AutoGroups: string
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
+  TokenDefaultGroups: string
   PayAddress: string
   EpayId: string
   EpayKey: string
@@ -347,6 +348,9 @@ export type OperationsSettings = {
   SMTPStartTLSEnabled: boolean
   SMTPInsecureSkipVerify: boolean
   SMTPForceAuthLogin: boolean
+  SMTPAccounts: string
+  SMTPSendMode: string
+  SMTPFixedAccountID: string
   WorkerUrl: string
   WorkerValidKey: string
   WorkerAllowHttpImageRequestEnabled: boolean

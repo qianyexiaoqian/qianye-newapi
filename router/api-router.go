@@ -277,6 +277,16 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute.GET("/self", middleware.UserAuth(), controller.GetUserLogs)
 		logRoute.GET("/self/search", middleware.UserAuth(), middleware.SearchRateLimit(), controller.SearchUserLogs)
 
+		// SMTP 发件台账。整组只给管理员:台账里带收件人邮箱与发件账号名,
+		// 两者合起来足以还原「站点在用哪些邮箱、给谁发过信」。
+		emailLogRoute := apiRouter.Group("/email-log")
+		emailLogRoute.Use(middleware.AdminAuth())
+		{
+			emailLogRoute.GET("/", controller.GetEmailSendLogs)
+			emailLogRoute.GET("/stats", controller.GetEmailAccountStats)
+			emailLogRoute.DELETE("/", controller.DeleteEmailSendLogs)
+		}
+
 		systemTaskRoute := apiRouter.Group("/system-task")
 		systemTaskRoute.Use(middleware.RootAuth())
 		{

@@ -68,6 +68,9 @@ func InitOptionMap() {
 	common.OptionMap["SMTPStartTLSEnabled"] = strconv.FormatBool(common.SMTPStartTLSEnabled)
 	common.OptionMap["SMTPInsecureSkipVerify"] = strconv.FormatBool(common.SMTPInsecureSkipVerify)
 	common.OptionMap["SMTPForceAuthLogin"] = strconv.FormatBool(common.SMTPForceAuthLogin)
+	common.OptionMap["SMTPAccounts"] = common.SMTPAccounts2JSONString()
+	common.OptionMap["SMTPSendMode"] = common.SMTPSendMode
+	common.OptionMap["SMTPFixedAccountID"] = common.SMTPFixedAccountID
 	common.OptionMap["Notice"] = ""
 	common.OptionMap["About"] = ""
 	common.OptionMap["HomePageContent"] = ""
@@ -123,6 +126,7 @@ func InitOptionMap() {
 	common.OptionMap["AutoGroups"] = setting.AutoGroups2JsonString()
 	common.OptionMap["DefaultUseAutoGroup"] = strconv.FormatBool(setting.DefaultUseAutoGroup)
 	common.OptionMap["MaxTokenAutoGroups"] = strconv.Itoa(setting.GetMaxTokenAutoGroups())
+	common.OptionMap["TokenDefaultGroups"] = setting.TokenDefaultGroups2JSONString()
 	common.OptionMap["PayMethods"] = operation_setting.PayMethods2JsonString()
 	common.OptionMap["GitHubClientId"] = ""
 	common.OptionMap["GitHubClientSecret"] = ""
@@ -219,6 +223,12 @@ func validateOptionValue(key string, value string) error {
 		return operation_setting.ValidateToolPricesJSON(value)
 	case "MaxTokenAutoGroups":
 		return setting.ValidateMaxTokenAutoGroups(value)
+	case "TokenDefaultGroups":
+		return setting.ValidateTokenDefaultGroups(value)
+	case "SMTPAccounts":
+		return common.ValidateSMTPAccounts(value)
+	case "SMTPSendMode":
+		return common.ValidateSMTPSendMode(value)
 	case "GroupRatio":
 		return ratio_setting.CheckGroupRatio(value)
 	case "GroupGroupRatio":
@@ -476,6 +486,14 @@ func updateOptionMap(key string, value string) (err error) {
 		err = setting.UpdateAutoGroupsByJsonString(value)
 	case "MaxTokenAutoGroups":
 		err = setting.UpdateMaxTokenAutoGroups(value)
+	case "TokenDefaultGroups":
+		err = setting.UpdateTokenDefaultGroupsByJSONString(value)
+	case "SMTPAccounts":
+		err = common.UpdateSMTPAccountsByJSONString(value)
+	case "SMTPSendMode":
+		common.SMTPSendMode = value
+	case "SMTPFixedAccountID":
+		common.SMTPFixedAccountID = value
 	case "CustomCallbackAddress":
 		operation_setting.CustomCallbackAddress = value
 	case "EpayId":

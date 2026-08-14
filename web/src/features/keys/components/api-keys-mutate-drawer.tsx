@@ -169,6 +169,19 @@ export function ApiKeysMutateDrawer({
     [groupsData]
   )
   const backendHasAuto = groups.some((g) => g.value === 'auto')
+  /*
+    服务端按当前用户的用户分组解析出的预选模型分组（`default_group`）。
+
+    再过一次本地 `groups` 是防御性的：服务端已经用同一份可选清单裁过一次，
+    但下拉框真正渲染的是 `groups` 这一份。两者万一分家，预选一个下拉里根本
+    不存在的值会让新建表单停在一个既提交不了、也看不出该改哪里的状态 ——
+    而用户从头到尾没碰过那一栏。落空时回 undefined，走原有的默认选中逻辑。
+  */
+  const defaultGroup = useMemo(() => {
+    const name = groupsData?.default_group
+    if (!name) return undefined
+    return groups.some((g) => g.value === name) ? name : undefined
+  }, [groupsData, groups])
   const availableAutoGroupNames = useMemo(
     () => groups.filter((group) => group.value !== 'auto').map((g) => g.value),
     [groups]
@@ -233,7 +246,10 @@ export function ApiKeysMutateDrawer({
       }
     } else {
       form.reset(
-        getApiKeyFormDefaultValues(defaultUseAutoGroup && backendHasAuto)
+        getApiKeyFormDefaultValues(
+          defaultUseAutoGroup && backendHasAuto,
+          defaultGroup
+        )
       )
       setInitializedTarget(target)
     }
@@ -243,6 +259,7 @@ export function ApiKeysMutateDrawer({
     currentRow,
     form,
     defaultUseAutoGroup,
+    defaultGroup,
     statusLoading,
     backendHasAuto,
     groupsFetched,

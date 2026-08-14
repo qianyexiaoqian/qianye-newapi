@@ -369,7 +369,7 @@ func TestSMTPPlainAuthRejectsRemotePlaintextConnection(t *testing.T) {
 	client, err := smtp.NewClient(conn, SMTPServer)
 	require.NoError(t, err)
 
-	err = client.Auth(getSMTPAuth())
+	err = client.Auth(getSMTPAuth(legacySMTPAccount()))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unencrypted connection")
 
@@ -391,7 +391,7 @@ func TestNewSMTPClientHonorsExplicitStartTLSWhenPortIs465(t *testing.T) {
 	SMTPStartTLSEnabled = true
 	SMTPInsecureSkipVerify = true
 
-	client, err := newSMTPClient(fmt.Sprintf("%s:%d", server.host, server.port))
+	client, err := newSMTPClient(fmt.Sprintf("%s:%d", server.host, server.port), legacySMTPAccount())
 	require.NoError(t, err)
 	defer client.Close()
 
@@ -414,7 +414,7 @@ func TestNewSMTPClientKeepsImplicitTLSForLegacyPort465(t *testing.T) {
 	SMTPStartTLSEnabled = false
 	SMTPInsecureSkipVerify = true
 
-	client, err := newSMTPClient(fmt.Sprintf("%s:%d", server.host, server.port))
+	client, err := newSMTPClient(fmt.Sprintf("%s:%d", server.host, server.port), legacySMTPAccount())
 	require.NoError(t, err)
 	defer client.Close()
 }

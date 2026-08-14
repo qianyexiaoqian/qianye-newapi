@@ -52,6 +52,7 @@ export const GROUP_OPTION_KEYS = [
   'AutoGroups',
   'MaxTokenAutoGroups',
   'DefaultUseAutoGroup',
+  'TokenDefaultGroups',
 ] as const
 
 export type GroupOptionKey = (typeof GROUP_OPTION_KEYS)[number]
@@ -98,6 +99,22 @@ export const USER_GROUP_PAGE_KEYS = [
  * 「它和上面那张矩阵是什么关系」的独立表格。项目方点名的四列里就有它。
  */
 export const GROUP_MATRIX_PAGE_KEYS = ['GroupGroupRatio'] as const
+
+/**
+ * D「令牌默认分组」页负责的键。
+ *
+ * `TokenDefaultGroups` 是「用户分组 → 令牌创建界面预选哪个模型分组」的映射，
+ * 主语是**用户分组**，因此按上面那条归属判据它本该并进 A 页。刻意单独成页，
+ * 理由是 A 页的表行来自扩展的分组矩阵接口（`qyGmMatrixQuery`）——
+ * `group_matrix` 关掉时那张表整个是空的，编辑器会跟着一起消失，而这项配置
+ * 与可用范围毫无关系、必须在扩展未启用时照样能配。
+ *
+ * 它的候选清单走上游的 `/api/user-group/options` 与 `/api/model-group/options`，
+ * 两个端点都不依赖扩展。
+ *
+ * 归属守卫因此从三份清单变成四份，「两两不交 + 并集完备」两条断言一字未改。
+ */
+export const TOKEN_DEFAULT_PAGE_KEYS = ['TokenDefaultGroups'] as const
 
 /**
  * B 栏里**经 `updateOption` 写回**的那一部分 —— 现在是空的。

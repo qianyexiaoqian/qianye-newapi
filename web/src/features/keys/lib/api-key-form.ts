@@ -117,15 +117,34 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   tokenCount: 1,
 }
 
+/**
+ * 新建令牌时表单的初始值。
+ *
+ * `defaultGroup` 是服务端按**当前用户的用户分组**解析出来的预选模型分组
+ * (`GET /api/user/self/groups` 的 `default_group`),没配 / 该用户选不了时是空串。
+ *
+ * ── 优先级:按用户分组的预选 > 全局「默认使用自动分组」──
+ *
+ * 前者严格更具体。反过来的话,只要站点打开了 `DefaultUseAutoGroup`,
+ * 这项按分组的配置对任何人都不生效 —— 那是一个「配了没反应」的开关,
+ * 而运营在设置页看到自己明明配好了。想让某一档默认走 auto,
+ * 把那一档的默认模型分组直接配成 `auto` 即可,表达能力没有损失。
+ *
+ * `defaultGroup` 为空时逐位等于本功能上线之前的行为。
+ */
 export function getApiKeyFormDefaultValues(
-  defaultUseAutoGroup: boolean
+  defaultUseAutoGroup: boolean,
+  defaultGroup?: string
 ): ApiKeyFormValues {
+  const group = defaultGroup || (defaultUseAutoGroup ? 'auto' : DEFAULT_GROUP)
   return {
     ...API_KEY_FORM_DEFAULT_VALUES,
-    group: defaultUseAutoGroup ? 'auto' : DEFAULT_GROUP,
+    group,
     auto_groups_mode: 'inherit',
     auto_groups: [],
-    cross_group_retry: defaultUseAutoGroup,
+    // 跟随最终选中的分组,而不是那个全局开关:预选成 auto 就该开跨组重试,
+    // 预选成具体分组就不该开 —— 两者分家会让新建出来的令牌带一个用户没见过的行为。
+    cross_group_retry: group === 'auto',
   }
 }
 

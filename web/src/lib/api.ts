@@ -58,6 +58,14 @@ export async function getUserGroups(): Promise<{
   success: boolean
   message?: string
   data?: Record<string, { desc: string; ratio: number | string }>
+  /**
+   * 令牌创建界面的预选模型分组，由服务端按当前用户的用户分组解析。
+   *
+   * 空串表示没配、或配的那个分组该用户选不了 —— 两种情况前端都退回原有的
+   * 默认选中逻辑。服务端刻意只下发这一个已解析的值，不下发全量映射
+   * （那张映射的键集合等于本站有哪些用户分组）。
+   */
+  default_group?: string
 }> {
   const res = await api.get('/api/user/self/groups')
   return res.data

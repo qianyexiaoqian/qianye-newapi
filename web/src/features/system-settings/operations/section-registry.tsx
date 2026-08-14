@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { SystemBehaviorSection } from '../general/system-behavior-section'
 import { EmailSettingsSection } from '../integrations/email-settings-section'
+import { SmtpAccountsSection } from '../integrations/smtp-accounts-section'
+import { SmtpSendLogSection } from '../integrations/smtp-send-log-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
 import { LogSettingsSection } from '../maintenance/log-settings-section'
@@ -77,6 +79,29 @@ const OPERATIONS_SECTIONS = [
         }}
       />
     ),
+  },
+  {
+    /*
+      多发件账号。它与上面那个单账号表单是「接管」关系而不是并列：
+      账号表非空时，后端 common.ResolveSMTPAccount 完全不再看那组老配置。
+      两者刻意不合并 —— 老配置是升级安全网，多账号出问题时要能原样退回去。
+    */
+    id: 'smtp-accounts',
+    titleKey: 'qy_smtp_accounts_title',
+    build: (settings: OperationsSettings) => (
+      <SmtpAccountsSection
+        defaultValues={{
+          SMTPAccounts: settings.SMTPAccounts,
+          SMTPSendMode: settings.SMTPSendMode,
+          SMTPFixedAccountID: settings.SMTPFixedAccountID,
+        }}
+      />
+    ),
+  },
+  {
+    id: 'smtp-send-log',
+    titleKey: 'qy_smtp_log_title',
+    build: () => <SmtpSendLogSection />,
   },
   {
     id: 'worker',
