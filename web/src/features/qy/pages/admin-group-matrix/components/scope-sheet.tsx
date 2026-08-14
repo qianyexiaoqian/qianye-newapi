@@ -194,21 +194,16 @@ export function QyGmScopeForm(props: QyGmScopeFormProps) {
       {managed && (
         <>
           <div className='space-y-2'>
-            <Label>{t('qy_group_matrix_mode_label')}</Label>
-            <div className='grid gap-2'>
-              <QyGmModeOption
-                active={mode === 'shadow'}
-                title={t('qy_group_matrix_mode_shadow')}
-                desc={t('qy_group_matrix_mode_shadow_desc')}
-                onSelect={() => setMode('shadow')}
-              />
-              <QyGmModeOption
-                active={mode === 'enforce'}
-                title={t('qy_group_matrix_mode_enforce')}
-                desc={t('qy_group_matrix_mode_enforce_desc')}
-                onSelect={() => setMode('enforce')}
-              />
-            </div>
+            {/*
+              ── 这里曾经是「影子 / 强制」二选一 ──
+
+              shadow 已整体下线:有范围行就立即生效,没有第二档可选。留着一组
+              选中了也不会有任何差别的单选框,正是这一轮在消灭的形状
+              (后端 putScopeReq 已经不再解析 mode 字段)。
+
+              「打开范围 = 这一档从此只能用清单里的模型分组」这句话没有丢,
+              它就在上面那个开关的说明里。
+            */}
             {/*
                 强制模式**不是绝对的**，而这一点在别处一个字都看不到：
                 套餐解锁是并集，且叠在范围替换之后（读侧 QyUsableGroupsForUser、
@@ -313,28 +308,5 @@ export function QyGmScopeForm(props: QyGmScopeFormProps) {
         </Button>
       </div>
     </div>
-  )
-}
-
-function QyGmModeOption(props: {
-  active: boolean
-  title: string
-  desc: string
-  onSelect: () => void
-}) {
-  return (
-    <button
-      type='button'
-      onClick={props.onSelect}
-      aria-pressed={props.active}
-      className={
-        props.active
-          ? 'border-primary bg-primary/5 rounded-lg border p-3 text-start'
-          : 'hover:bg-muted/50 rounded-lg border p-3 text-start'
-      }
-    >
-      <span className='block text-sm font-medium'>{props.title}</span>
-      <span className='text-muted-foreground block text-xs'>{props.desc}</span>
-    </button>
   )
 }

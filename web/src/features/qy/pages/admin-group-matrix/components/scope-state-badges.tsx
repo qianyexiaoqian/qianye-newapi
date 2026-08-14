@@ -19,7 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
 
 import type { QyGmUserGroup } from '../types'
 
@@ -110,16 +109,11 @@ export function QyGmScopeStateBadges(props: QyGmScopeStateBadgesProps) {
       {scoped && (
         <Badge
           variant='outline'
-          className={cn(
-            'px-1 py-0 text-[10px]',
-            props.userGroup.mode === 'enforce'
-              ? 'border-destructive/50 text-destructive'
-              : 'border-warning/50 text-warning'
-          )}
+          className='border-destructive/50 text-destructive px-1 py-0 text-[10px]'
         >
-          {props.userGroup.mode === 'enforce'
-            ? t('qy_group_matrix_mode_enforce')
-            : t('qy_group_matrix_mode_shadow')}
+          {/* 有范围行就一定生效 —— shadow 下线后 mode 恒为 enforce,
+              按它分叉只会让人以为还存在一个"配了不生效"的状态。 */}
+          {t('qy_group_matrix_mode_enforce')}
         </Badge>
       )}
     </>
