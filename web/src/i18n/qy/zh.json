@@ -3221,5 +3221,12 @@
   "qy_smtp_token_keep_hint": "留空以保留现有密码",
   "qy_smtp_no_password": "未设密码",
   "qy_smtp_field_sort_order": "排序（依次模式的轮转顺序，小的在前）",
-  "qy_ugl_not_grantable_short": "未配倍率 · 不可授权"
+  "qy_ugl_not_grantable_short": "未配倍率 · 不可授权",
+  "qy_ugl_col_model_group": "模型分组",
+  "qy_ugl_col_ratio": "倍率",
+  "qy_ugl_col_channels": "渠道",
+  "qy_ugl_col_note": "本档单独备注",
+  "qy_ugl_col_actions": "操作",
+  "qy_ugl_channels_yes": "有",
+  "qy_ugl_channels_none": "无"
 }

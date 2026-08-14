@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Boxes, Package, Plus, Settings2, TriangleAlert, X } from 'lucide-react'
+import { Boxes, Plus, Settings2, TriangleAlert, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -384,103 +384,145 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
         </p>
       )}
 
-      <ul
+      {/*
+        ── 为什么是表格,不是一行一张卡 ──
+
+        上一版每行把「名字 + 兜底倍率徽标 + 没渠道徽标 + 套餐徽标」挤在一格,
+        倍率编辑器在第二格,备注再独占一整行。同一屏里三种颜色的徽标重复十几次,
+        项目方原话:「现在这样的有点晃眼睛」。
+
+        表格把同类信息压进同一列:倍率永远在倍率列、备注永远在备注列,眼睛只需
+        沿着一列往下扫。徽标随之降级成该列里的一个普通字 —— 「渠道」列写「无」
+        比一个橙色徽标更容易被扫到,因为它出现的位置是固定的。
+
+        语义一个都没减:套餐可达仍然单独标出(它既不是"在清单里"也不是"用不了",
+        而且那一格的倍率此刻正在扣钱),没有渠道仍然显眼。
+      */}
+      <div
         className={cn(
-          'min-h-0 space-y-1',
+          'min-h-0 overflow-x-auto rounded-md border',
           (props.scrollList ?? true) && 'max-h-[52vh] overflow-y-auto'
         )}
       >
-        {view.items.map((item) => {
-          const key = qyGmCellKey(props.userGroup.name, item.name)
-          const cell = props.serverCells.get(key)
-          const entry = props.draft.get(key)
-          return (
-            <li
-              key={item.name}
-              className='grid grid-cols-1 items-center gap-1 rounded-md border p-1.5 sm:grid-cols-[minmax(0,1fr)_minmax(9rem,14rem)_auto] sm:gap-2'
-            >
-              <div className='flex min-w-0 flex-wrap items-center gap-1.5'>
-                <span
-                  className='min-w-0 truncate text-xs font-medium'
-                  title={t('qy_group_matrix_col_label', {
-                    modelGroup: item.name,
-                  })}
-                >
-                  {item.name}
-                </span>
-                <Badge
-                  variant='outline'
-                  className='text-muted-foreground px-1 py-0 text-[10px] tabular-nums'
-                >
-                  {t('qy_group_matrix_base_ratio', { ratio: item.baseRatio })}
-                </Badge>
-                {!item.hasChannels && (
-                  <Badge
-                    variant='outline'
-                    className='border-warning/50 text-warning px-1 py-0 text-[10px]'
-                    title={t('qy_group_matrix_col_no_channels')}
-                  >
-                    {t('qy_group_matrix_col_no_channels_short')}
-                  </Badge>
-                )}
-                {/*
-                  「仅经套餐可达」是第三种状态，既不是"在清单里"也不是"用不了"。
-                  画成任何一个都是假陈述，而它那一格的倍率此刻正在扣钱。
-                */}
-                {item.origin === 'plan' && (
-                  <Badge
-                    variant='outline'
-                    className='border-info/50 text-info px-1 py-0 text-[10px]'
-                    title={t('qy_ugl_origin_plan_hint', {
-                      plans: item.planTitles.join('、'),
-                    })}
-                  >
-                    <Package aria-hidden='true' className='size-2.5' />
-                    {t('qy_ugl_origin_plan')}
-                  </Badge>
-                )}
-              </div>
+        <table className='w-full text-xs'>
+          <thead className='bg-muted/40 sticky top-0 z-10'>
+            <tr className='text-left'>
+              <th className='px-2 py-1.5 font-medium'>
+                {t('qy_ugl_col_model_group')}
+              </th>
+              <th className='px-2 py-1.5 font-medium'>
+                {t('qy_ugl_col_ratio')}
+              </th>
+              <th className='px-2 py-1.5 font-medium'>
+                {t('qy_ugl_col_channels')}
+              </th>
+              <th className='px-2 py-1.5 font-medium'>
+                {t('qy_ugl_col_note')}
+              </th>
+              <th className='px-2 py-1.5 font-medium'>
+                {t('qy_ugl_col_actions')}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {view.items.map((item) => {
+              const key = qyGmCellKey(props.userGroup.name, item.name)
+              const cell = props.serverCells.get(key)
+              const entry = props.draft.get(key)
+              return (
+                <tr key={item.name} className='border-t align-top'>
+                  <td className='px-2 py-1.5'>
+                    <span
+                      className='block max-w-[14rem] truncate font-medium'
+                      title={t('qy_group_matrix_col_label', {
+                        modelGroup: item.name,
+                      })}
+                    >
+                      {item.name}
+                    </span>
+                    {/*
+                      「仅经套餐可达」是第三种状态,既不是"在清单里"也不是"用不了"。
+                      画成任何一个都是假陈述,而它那一格的倍率此刻正在扣钱。
+                      降级成一行小字而不是彩色徽标:它每屏最多出现一两次,
+                      而徽标的视觉重量是按"每行都可能有"来定的。
+                    */}
+                    {item.origin === 'plan' && (
+                      <span
+                        className='text-info block text-[11px]'
+                        title={t('qy_ugl_origin_plan_hint', {
+                          plans: item.planTitles.join('、'),
+                        })}
+                      >
+                        {t('qy_ugl_origin_plan')}
+                      </span>
+                    )}
+                  </td>
 
-              <QyGmMatrixCell
-                userGroup={props.userGroup.name}
-                modelGroup={item.name}
-                cell={cell}
-                entry={entry}
-                granted={item.origin !== 'plan'}
-                ratio={qyGmRatioDraftOf(cell, entry)}
-                baseRatio={item.baseRatio}
-                scoped={scoped}
-                reachableVia={cell?.reachable_via}
-                planTitles={cell?.plan_titles}
-                selfEdge={item.selfEdge}
-                onRatioChange={(ratio) => props.onRatioChange(item.name, ratio)}
-              />
+                  <td className='px-2 py-1.5'>
+                    <QyGmMatrixCell
+                      userGroup={props.userGroup.name}
+                      modelGroup={item.name}
+                      cell={cell}
+                      entry={entry}
+                      granted={item.origin !== 'plan'}
+                      ratio={qyGmRatioDraftOf(cell, entry)}
+                      baseRatio={item.baseRatio}
+                      scoped={scoped}
+                      reachableVia={cell?.reachable_via}
+                      planTitles={cell?.plan_titles}
+                      selfEdge={item.selfEdge}
+                      onRatioChange={(ratio) =>
+                        props.onRatioChange(item.name, ratio)
+                      }
+                    />
+                  </td>
 
-              <QyUgRowAction item={item} onRequest={requestMembership} />
+                  <td className='px-2 py-1.5 whitespace-nowrap'>
+                    {item.hasChannels ? (
+                      <span className='text-muted-foreground'>
+                        {t('qy_ugl_channels_yes')}
+                      </span>
+                    ) : (
+                      <span
+                        className='text-warning'
+                        title={t('qy_group_matrix_col_no_channels')}
+                      >
+                        {t('qy_ugl_channels_none')}
+                      </span>
+                    )}
+                  </td>
 
-              {/*
-                按格备注独占一行、横跨整行。
+                  <td className='px-2 py-1.5'>
+                    {/*
+                      按格备注**只画在真的写得进去的行上**:后端有两道硬闸门
+                      (这一档得有自己的清单、这一格得在清单里),只有 scope 这一种
+                      来源同时满足。写不进去的行给一个破折号而不是禁用输入框 ——
+                      一屏十几个灰输入框正是"晃眼睛"的另一半来源。
+                    */}
+                    {props.onNoteChange != null && item.origin === 'scope' ? (
+                      <QyUgCellNote
+                        modelGroup={item.name}
+                        cell={cell}
+                        value={qyGmNoteDraftOf(cell, entry)}
+                        enforced={props.userGroup.scope_enforced}
+                        onChange={(note) =>
+                          props.onNoteChange?.(item.name, note)
+                        }
+                      />
+                    ) : (
+                      <span className='text-muted-foreground'>—</span>
+                    )}
+                  </td>
 
-                **只画在真的写得进去的行上**：后端对按格备注有两道硬闸门（这一档
-                得有自己的清单、这一格得在清单里），而列表里只有 `scope` 那一种
-                来源同时满足两者。上一版对不满足的行照样画一个禁用的输入框，
-                并在每一行下面重复同一段解释 —— 站上绝大多数分组都没有自己的
-                清单，于是那段话在一屏里出现十几遍。现在它一次都不出现：写不进
-                去的行根本没有这个框，为什么写不进去由上面那一句总说明回答。
-              */}
-              {props.onNoteChange != null && item.origin === 'scope' && (
-                <QyUgCellNote
-                  modelGroup={item.name}
-                  cell={cell}
-                  value={qyGmNoteDraftOf(cell, entry)}
-                  enforced={props.userGroup.scope_enforced}
-                  onChange={(note) => props.onNoteChange?.(item.name, note)}
-                />
-              )}
-            </li>
-          )
-        })}
-      </ul>
+                  <td className='px-2 py-1.5'>
+                    <QyUgRowAction item={item} onRequest={requestMembership} />
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
 
       {/*
         第一次增删 = 为这一档建立独立清单。
@@ -731,7 +773,7 @@ function QyUgCellNote(props: {
   const { cell } = props
 
   return (
-    <div className='space-y-1 sm:col-span-3'>
+    <div className='space-y-1'>
       <Input
         value={props.value}
         className='h-7 text-xs'

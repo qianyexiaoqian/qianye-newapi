@@ -3221,5 +3221,12 @@
   "qy_smtp_token_keep_hint": "Leave blank to keep the existing password",
   "qy_smtp_no_password": "no password",
   "qy_smtp_field_sort_order": "Order (rotation order in sequential mode, lowest first)",
-  "qy_ugl_not_grantable_short": "no ratio · not grantable"
+  "qy_ugl_not_grantable_short": "no ratio · not grantable",
+  "qy_ugl_col_model_group": "Model group",
+  "qy_ugl_col_ratio": "Ratio",
+  "qy_ugl_col_channels": "Channels",
+  "qy_ugl_col_note": "Per-group note",
+  "qy_ugl_col_actions": "Actions",
+  "qy_ugl_channels_yes": "yes",
+  "qy_ugl_channels_none": "none"
 }
