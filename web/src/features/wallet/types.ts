@@ -33,7 +33,26 @@ export interface ApiResponse<T = unknown> {
  * Standard API response types
  */
 export type TopupInfoResponse = ApiResponse<TopupInfo>
-export type RedemptionResponse = ApiResponse<number>
+/**
+ * 兑换结果的说明字段。
+ *
+ * 与 `data` 并列而不是取代它：`data` 一直是「本次进钱包的额度」这个数字，
+ * 兑换码扩出套餐商品之前外部脚本读的就是它。套餐码在 `data` 里是 0（它确实
+ * 一分额度都没加），具体发了什么在这里。
+ */
+export interface RedeemDetail {
+  /** 'quota' | 'plan' | 'usergroup'，对应后端 model.RedemptionProduct*。 */
+  product_type: string
+  quota: number
+  plan_id?: number
+  plan_title?: string
+  /** 非空表示这次兑换把用户分组升到了这里。 */
+  upgrade_group?: string
+}
+
+export type RedemptionResponse = ApiResponse<number> & {
+  redeem?: RedeemDetail
+}
 export type AmountResponse = ApiResponse<string>
 export type PaymentResponse = ApiResponse<Record<string, unknown>> & {
   url?: string

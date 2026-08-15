@@ -28,7 +28,16 @@ export const subscriptionPlanSchema = z.object({
   subtitle: z.string().optional(),
   price_amount: z.number(),
   currency: z.string().default('USD'),
-  duration_unit: z.enum(['year', 'month', 'day', 'hour', 'custom']),
+  // 'permanent' 是永久档：后端 `model.SubscriptionDurationPermanent`，end_time
+  // 存 0，到期扫描的 `end_time > 0` 天然扫不到它。duration_value 对它无意义。
+  duration_unit: z.enum([
+    'year',
+    'month',
+    'day',
+    'hour',
+    'custom',
+    'permanent',
+  ]),
   duration_value: z.number(),
   custom_seconds: z.number().optional(),
   quota_reset_period: z.enum(['never', 'daily', 'weekly', 'monthly', 'custom']),
@@ -39,6 +48,15 @@ export const subscriptionPlanSchema = z.object({
   allow_wallet_overflow: z.boolean().optional().default(true),
   max_purchase_per_user: z.number(),
   total_amount: z.number(),
+  /**
+   * 纯商品：不带任何订阅余额，只负责改用户分组。
+   *
+   * 与 `total_amount === 0` 是**两件事**，不能互相替代 —— 后者的语义是"不限
+   * 额度"（后端预扣那句 `if sub.AmountTotal > 0` 会直接跳过余额检查）。界面上
+   * 把纯商品显示成"不限额度"，运营就会以为自己卖出去的是一份无限余额。
+   * 三态见后端 `model.SubscriptionPlan.NoQuota` 的注释。
+   */
+  no_quota: z.boolean().optional().default(false),
   upgrade_group: z.string().optional(),
   downgrade_group: z.string().optional(),
   stripe_price_id: z.string().optional(),

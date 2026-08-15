@@ -4,12 +4,32 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 
 	"gorm.io/gorm"
 )
+
+// 兑换码的商品类型。一张码只绑一种,不做组合包。
+const (
+	// RedemptionProductQuota 余额:直接给用户加额度,兑换码原本的唯一形态。
+	RedemptionProductQuota = "quota"
+	// RedemptionProductPlan 订阅套餐:发一条 UserSubscription。
+	RedemptionProductPlan = "plan"
+	// RedemptionProductUserGroup 用户组商品:同样是发一条 UserSubscription,
+	// 只是它绑的那个套餐是纯商品档(SubscriptionPlan.NoQuota)—— 不带余额、只改用户组。
+	//
+	// 它与 plan 共用同一条发放路径是**刻意的**:两者的差别整个落在套餐本身,
+	// 而不在兑换码这一侧。给它们各写一条发放路径,只会让 upgrade_group /
+	// prev_user_group / no_quota 这些快照字段有两处需要同步维护。
+	RedemptionProductUserGroup = "usergroup"
+)
+
+// RedemptionSubscriptionSource 是兑换码发出的订阅在 user_subscriptions.source 里的取值。
+// 与 "order"(在线支付)、"admin"(管理端手动绑定)并列,用来在事后分辨这条订阅的来路。
+const RedemptionSubscriptionSource = "redemption"
 
 type Redemption struct {
 	Id           int            `json:"id"`
@@ -24,6 +44,48 @@ type Redemption struct {
 	UsedUserId   int            `json:"used_user_id"`
 	DeletedAt    gorm.DeletedAt `gorm:"index"`
 	ExpiredTime  int64          `json:"expired_time" gorm:"bigint"` // 过期时间，0 表示不过期
+
+	// ProductType 这张码兑换的是什么商品。取值见 RedemptionProduct* 常量。
+	// 判定一律走 ProductKind(),不要直接比较这个字段 —— 存量数据是空串。
+	//
+	// ⚠ 这一列非 quota 时,上面的 Quota 是**没有意义的死数据**,而且不一定是 0:
+	// quota 列带 `default:100`,GORM 对带默认值的列会把零值整列略过、交给数据库
+	// 补默认值,所以建套餐码时那个刻意的 0 落库其实是 100。想读额度的地方
+	// 必须先过 ProductKind(),不能只看 Quota 是不是零。
+	ProductType string `json:"product_type" gorm:"type:varchar(16);default:'quota'"`
+	// ProductId 商品类型是 plan / usergroup 时指向 subscription_plans.id;余额码恒为 0。
+	ProductId int `json:"product_id" gorm:"default:0"`
+}
+
+// ProductKind 返回这张码实际要发放的商品类型。
+//
+// 存量兑换码建于 product_type 这一列存在之前,值是空串,必须按余额码处理 ——
+// 否则升级那一刻,库里所有还没兑换的码会一起变成"商品类型不认识"。
+// 列上的 default:'quota' 只管新插入的行,救不了已经在库里的那些,
+// 所以判定只认这一处,不认那个默认值。
+func (redemption *Redemption) ProductKind() string {
+	kind := strings.TrimSpace(redemption.ProductType)
+	if kind == "" {
+		return RedemptionProductQuota
+	}
+	return kind
+}
+
+// RedeemResult 描述一次成功的兑换到底给了用户什么。
+//
+// 兑换码不再只发余额之后,单独一个 quota int 已经表达不了结果:套餐码一分额度都不加,
+// 它给的是一条订阅,可能还顺带把用户组升了。调用方应当按 ProductType 分支,
+// 而不是靠"quota 是不是 0"去猜 —— 一张 0 额度的余额码同样满足那个条件。
+type RedeemResult struct {
+	ProductType string `json:"product_type"`
+	// Quota 本次真正加进钱包的额度。套餐 / 用户组码恒为 0。
+	Quota int `json:"quota"`
+	// PlanId、PlanTitle 只有套餐 / 用户组码有值。
+	PlanId    int    `json:"plan_id,omitempty"`
+	PlanTitle string `json:"plan_title,omitempty"`
+	// UpgradeGroup 非空表示这次兑换确实把用户组升到了这里(套餐配了升级组、
+	// 而用户原本不在该组)。用户组商品的兑换成功提示要靠它才说得具体。
+	UpgradeGroup string `json:"upgrade_group,omitempty"`
 }
 
 func GetAllRedemptions(startIdx int, num int) (redemptions []*Redemption, total int64, err error) {
@@ -134,12 +196,12 @@ func GetRedemptionById(id int) (*Redemption, error) {
 	return &redemption, err
 }
 
-func Redeem(key string, userId int) (quota int, err error) {
+func Redeem(key string, userId int) (*RedeemResult, error) {
 	if key == "" {
-		return 0, errors.New("未提供兑换码")
+		return nil, errors.New("未提供兑换码")
 	}
 	if userId == 0 {
-		return 0, errors.New("无效的 user id")
+		return nil, errors.New("无效的 user id")
 	}
 	redemption := &Redemption{}
 
@@ -147,8 +209,11 @@ func Redeem(key string, userId int) (quota int, err error) {
 	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
 		keyCol = `"key"`
 	}
+	// plan 只有套餐 / 用户组码会被赋值,兑换成功后靠它区分两条收尾路径。
+	var plan *SubscriptionPlan
+	var subscription *UserSubscription
 	common.RandomSleep()
-	err = DB.Transaction(func(tx *gorm.DB) error {
+	err := DB.Transaction(func(tx *gorm.DB) error {
 		err := lockForUpdate(tx).Where(keyCol+" = ?", key).First(redemption).Error
 		if err != nil {
 			return errors.New("无效的兑换码")
@@ -158,6 +223,21 @@ func Redeem(key string, userId int) (quota int, err error) {
 		}
 		if redemption.ExpiredTime != 0 && redemption.ExpiredTime < common.GetTimestamp() {
 			return errors.New("该兑换码已过期")
+		}
+		productKind := redemption.ProductKind()
+		if productKind != RedemptionProductQuota {
+			// 套餐在 CAS 之前查:套餐被删或被停用时,这次兑换要整个失败,
+			// 而不是把码标成已用再发现发不出货。反正同一事务,报错即回滚。
+			if productKind != RedemptionProductPlan && productKind != RedemptionProductUserGroup {
+				return fmt.Errorf("未知的兑换码商品类型: %s", productKind)
+			}
+			plan, err = getSubscriptionPlanByIdTx(tx, redemption.ProductId)
+			if err != nil {
+				return err
+			}
+			if !plan.Enabled {
+				return errors.New("套餐未启用")
+			}
 		}
 		// Compare-and-swap on status: only the transaction that flips
 		// enabled -> used may credit quota, so a concurrent redeem of the
@@ -175,16 +255,52 @@ func Redeem(key string, userId int) (quota int, err error) {
 		if result.RowsAffected == 0 {
 			return errors.New("该兑换码已被使用")
 		}
-		return tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota + ?", redemption.Quota)).Error
+		if plan == nil {
+			return tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota + ?", redemption.Quota)).Error
+		}
+		// 发订阅必须与上面那次 CAS 在**同一个事务**里:拆成两步的话,中间任何一次
+		// 失败都会留下"码已经标成已用、订阅却没发出去"——用户手里的码作废了,东西没拿到。
+		//
+		// 先锁用户行,与 CompleteSubscriptionOrder / AdminBindSubscription 一致:
+		// 让 CreateUserSubscriptionFromPlanTx 里的 MaxPurchasePerUser 检查按用户串行,
+		// 否则同一个人同时兑换两张同套餐的码可以一起穿过购买上限。
+		var userRow User
+		if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&userRow).Error; err != nil {
+			return err
+		}
+		subscription, err = CreateUserSubscriptionFromPlanTx(tx, userId, plan, RedemptionSubscriptionSource)
+		return err
 	})
 	if err != nil {
 		common.SysError("redemption failed: " + err.Error())
-		return 0, ErrRedeemFailed
+		return nil, ErrRedeemFailed
 	}
-	syncCreditUserQuotaCache(userId, redemption.Quota, "redemption")
-	RecordLog(userId, LogTypeTopup, fmt.Sprintf("通过兑换码充值 %s，兑换码ID %d", logger.LogQuota(redemption.Quota), redemption.Id))
-	QyOnRedeemSuccess(userId, redemption.Id, redemption.Quota)
-	return redemption.Quota, nil
+	if plan == nil {
+		syncCreditUserQuotaCache(userId, redemption.Quota, "redemption")
+		RecordLog(userId, LogTypeTopup, fmt.Sprintf("通过兑换码充值 %s，兑换码ID %d", logger.LogQuota(redemption.Quota), redemption.Id))
+		QyOnRedeemSuccess(userId, redemption.Id, redemption.Quota)
+		return &RedeemResult{ProductType: RedemptionProductQuota, Quota: redemption.Quota}, nil
+	}
+	// 套餐 / 用户组码没有一分钱进钱包,所以既不同步额度缓存,也不触发充值返佣。
+	//
+	// QyOnRedeemSuccess 尤其不能顺手带上:它按**充值额度**给邀请人分成,而套餐码的
+	// redemption.Quota 并不是 0 —— 那一列带 `default:100`,建码时写的 0 被数据库
+	// 换成了默认值(见 Redemption.ProductType 上的说明)。照抄余额码那三行的话,
+	// 每张套餐码都会按一笔从未发生过的充值给上线结一次佣。
+	upgradeGroup := ""
+	if subscription.PrevUserGroup != "" {
+		// PrevUserGroup 非空正是 CreateUserSubscriptionFromPlanTx 里"确实执行了升级"
+		// 的标记 —— 用户本来就在目标组时它是空的,那种情况没必要刷缓存。
+		upgradeGroup = strings.TrimSpace(subscription.UpgradeGroup)
+		refreshSubscriptionUserGroupCache(userId, "redemption subscription")
+	}
+	RecordLog(userId, LogTypeTopup, fmt.Sprintf("通过兑换码开通订阅 %s，兑换码ID %d", plan.Title, redemption.Id))
+	return &RedeemResult{
+		ProductType:  redemption.ProductKind(),
+		PlanId:       plan.Id,
+		PlanTitle:    plan.Title,
+		UpgradeGroup: upgradeGroup,
+	}, nil
 }
 
 func (redemption *Redemption) Insert() error {
@@ -199,6 +315,10 @@ func (redemption *Redemption) SelectUpdate() error {
 }
 
 // Update Make sure your token's fields is completed, because this will update non-zero values
+//
+// product_type / product_id 刻意不在这份清单里:商品类型在建码那一刻就定死,与 key 同级。
+// 允许改的话,一张已经发给用户的"送 10 美元"的码可以被悄悄改成"送年度套餐",
+// 而码面上的字没有任何变化。要换商品就重新建一批。
 func (redemption *Redemption) Update() error {
 	var err error
 	err = DB.Model(redemption).Select("name", "status", "quota", "redeemed_time", "expired_time").Updates(redemption).Error

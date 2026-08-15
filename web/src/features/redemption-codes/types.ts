@@ -33,6 +33,16 @@ export const redemptionSchema = z.object({
   redeemed_time: z.number(),
   expired_time: z.number(), // 0 for never expires
   used_user_id: z.number(),
+  /**
+   * 这张码兑换的是什么商品：'quota' | 'plan' | 'usergroup'。
+   *
+   * optional 不是防御性写法，是真实存在的状态：这一列是后加的，库里那批还没
+   * 兑换的存量码是空串。判定一律走 `getRedemptionProductType()`，它把空串归到
+   * 余额 —— 与后端 `Redemption.ProductKind()` 同一口径。
+   */
+  product_type: z.string().optional(),
+  /** 商品类型是 plan / usergroup 时指向订阅套餐 id；余额码为 0。 */
+  product_id: z.number().optional(),
 })
 
 export type Redemption = z.infer<typeof redemptionSchema>
@@ -77,6 +87,10 @@ export interface RedemptionFormData {
   expired_time: number
   count?: number // Only for create
   status?: number // Only for status update
+  // 商品类型只在创建时有意义：后端 Redemption.Update() 的字段白名单里没有它们，
+  // 建码那一刻定死，与 key 同级。
+  product_type?: string
+  product_id?: number
 }
 
 // ============================================================================

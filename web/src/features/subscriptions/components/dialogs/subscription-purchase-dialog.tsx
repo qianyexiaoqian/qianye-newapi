@@ -121,10 +121,9 @@ export function SubscriptionPurchaseDialog(props: Props) {
     (props.purchaseCount || 0) >= (props.purchaseLimit || 0)
   // 与钱包页那张套餐卡走**同一条**事实清单，包括"购买后用户分组会被改写成什么"
   // 这两行。原来这里传 false 再在下面手搓两块 GroupBadge，等于同一件事有两处
-  // 实现：这一版把「升级分组 / 降级分组」从管理端撤掉时，只改一处必然会漏另一处，
-  // 而漏掉的那一处正是用户掏钱前看的那一屏。
+  // 实现：改一处必然会漏另一处，而漏掉的那一处正是用户掏钱前看的那一屏。
   const facts = buildPlanFacts(plan, t, {
-    includeLegacyGroupRewrite: true,
+    includeUserGroupChange: true,
     purchaseCount: props.purchaseCount,
     entitlement: props.entitlement,
   })

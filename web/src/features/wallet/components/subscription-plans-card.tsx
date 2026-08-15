@@ -304,7 +304,14 @@ export function SubscriptionPlansCard({
                   const remainDays = getRemainingDays(sub)
                   const usagePercent = getUsagePercent(sub)
                   const now = Date.now() / 1000
-                  const isExpired = (subscription?.end_time || 0) < now
+                  // end_time = 0 是「永久有效」，不是 1970-01-01。后端对"这条
+                  // 订阅此刻仍然有效"只有一条判据（model 的
+                  // SubscriptionActiveEndTimeSQL）：`end_time = 0 OR end_time > ?`。
+                  // 漏掉前半句，一份永久订阅在这一屏上会被显示成"已过期 ·
+                  // 1970/1/1 到期"，而它其实好好地在生效。
+                  const endTime = subscription?.end_time || 0
+                  const isPermanent = endTime === 0
+                  const isExpired = !isPermanent && endTime < now
                   const isCancelled = subscription?.status === 'cancelled'
                   const isActive =
                     subscription?.status === 'active' && !isExpired
@@ -355,7 +362,10 @@ export function SubscriptionPlansCard({
                           </span>
                           {statusBadge}
                         </div>
-                        {isActive && (
+                        {/* 永久订阅没有"还剩几天"：getRemainingDays 对
+                            end_time = 0 返回 0，照着渲染就是「剩余 0 天」——
+                            一句会让人立刻跑来问"我买的永久怎么今天就到期了"的话。 */}
+                        {isActive && !isPermanent && (
                           <span className='text-muted-foreground'>
                             {t('{{count}} days remaining', {
                               count: remainDays,
@@ -364,10 +374,14 @@ export function SubscriptionPlansCard({
                         )}
                       </div>
                       <div className='text-muted-foreground mt-1.5'>
-                        {endTimeLabel}{' '}
-                        {new Date(
-                          (subscription?.end_time || 0) * 1000
-                        ).toLocaleString()}
+                        {isPermanent ? (
+                          t('qy_sub_no_end_time')
+                        ) : (
+                          <>
+                            {endTimeLabel}{' '}
+                            {new Date(endTime * 1000).toLocaleString()}
+                          </>
+                        )}
                       </div>
                       {isActive && nextResetTime > 0 && (
                         <div className='text-muted-foreground mt-1'>
@@ -432,7 +446,7 @@ export function SubscriptionPlansCard({
               const count = planPurchaseCountMap.get(plan.id) || 0
               const reached = limit > 0 && count >= limit
               const facts = buildPlanFacts(plan, t, {
-                includeLegacyGroupRewrite: true,
+                includeUserGroupChange: true,
                 purchaseCount: count,
                 entitlement: qyPlanDisclosure(entitlements, plan.id),
               })

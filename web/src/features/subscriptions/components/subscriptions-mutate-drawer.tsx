@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useQuery } from '@tanstack/react-query'
 import {
   Boxes,
   CalendarClock,
@@ -25,6 +26,7 @@ import {
   KeyRound,
   Settings2,
   TriangleAlert,
+  UserCog,
   Users,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -64,6 +66,7 @@ import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
 import { isQyError, qyErrorMessage } from '@/features/qy/lib/api'
 import { QyPlanBalanceScopeField } from '@/features/qy/plan-entitlement/balance-scope-field'
 import { useQyPlanUnlockGroups } from '@/features/qy/plan-entitlement/use-plan-unlock-groups'
+import { getUserGroupOptions } from '@/features/users/api'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { cn } from '@/lib/utils'
 
@@ -75,7 +78,11 @@ import {
   createWaffoPancakeSubscriptionProduct,
   listWaffoPancakeSubscriptionProductOptions,
 } from '../api'
-import { getDurationUnitOptions, getResetPeriodOptions } from '../constants'
+import {
+  getDurationUnitOptions,
+  getResetPeriodOptions,
+  PLAN_GROUP_KEEP,
+} from '../constants'
 import {
   getPlanFormSchema,
   PLAN_FORM_DEFAULTS,
@@ -204,8 +211,30 @@ export function SubscriptionsMutateDrawer({
     }
   }, [open, currentRow, form, seatCapSupported])
 
+  // 用户分组候选。刻意用 `/api/user-group/options`（users.group 的 distinct +
+  // 登记表）而不是模型分组那一份 —— 后端 `validatePlanUserGroups` 校验的正是
+  // 这个集合，两边取不同的清单会让下拉里选得到的名字在保存时被 400 挡回来。
+  const userGroupsQuery = useQuery({
+    queryKey: ['user-group-options'],
+    queryFn: getUserGroupOptions,
+    staleTime: 5 * 60 * 1000,
+  })
+  const userGroups = userGroupsQuery.data?.data || []
+
   const durationUnit = form.watch('duration_unit')
   const resetPeriod = form.watch('quota_reset_period')
+  // 纯商品：整个「额度」段的内容都由它决定，所以必须 watch 而不是 getValues。
+  const pureProduct = form.watch('no_quota')
+  const upgradeGroup = form.watch('upgrade_group')
+  const downgradeGroup = form.watch('downgrade_group')
+  // 存量套餐指向的分组可能已经一个用户都没有了（那几个人到期降级或注销），
+  // 于是它不在候选清单里。后端为此专门放行了「现存套餐已经在用」的名字
+  // （model.QyPlanUserGroupsInUse），下拉这边必须同样把当前值补进去 ——
+  // 否则运营只是想改个价格，一打开就发现分组那一格自己空了。
+  const groupItems = [...userGroups]
+  for (const current of [upgradeGroup, downgradeGroup]) {
+    if (current && !groupItems.includes(current)) groupItems.push(current)
+  }
   // 「额度用尽后能不能用钱包余额」的两句后果说明按它加粗其中一句。watch 而不是
   // getValues：getValues 不订阅变更，运营拨动开关时两句话不会跟着换重点。
   const walletOverflow = form.watch('allow_wallet_overflow')
@@ -663,7 +692,120 @@ export function SubscriptionsMutateDrawer({
             </SideDrawerSection>
           )}
 
-          {/* ── 3. 套餐自带的额度 ────────────────────────────────────────
+          {/* ── 3. 购买后改用户分组（把套餐当用户组商品卖）────────────────
+
+              与上面那一段是**两条不同的路子**，必须分成两段：上面是"在原有用户
+              分组之上多解锁几个模型分组"，这里是"把人从一个用户分组搬到另一个"。
+              后者会连带换掉他的可用范围、倍率与自动分组，是一件重得多的事。
+
+              这两个字段落的是上游 `subscription_plans` 的 upgrade_group /
+              downgrade_group，购买时由 `CreateUserSubscriptionFromPlanTx` 改
+              `users.group`、到期由 `ExpireDueSubscriptions` 改回去。它们此前没有
+              编辑入口，于是"卖用户组"这个形态在管理端压根配不出来，而后端那两段
+              逻辑一直在跑 —— 存量套餐照改不误，运营却看不到是谁改的。 */}
+          <SideDrawerSection>
+            <h3 className='flex items-center gap-2 text-sm font-medium'>
+              <IconBadge tone='chart-3' size='xs'>
+                <UserCog />
+              </IconBadge>
+              {t('qy_plan_group_product_title')}
+            </h3>
+            <p className='text-muted-foreground text-xs leading-5'>
+              {t('qy_plan_group_product_desc')}
+            </p>
+
+            {/* 候选没读到时说出来。空下拉与"站上只有一个用户分组"长得一样，
+                而前者会让运营以为自己配的分组丢了。 */}
+            {userGroupsQuery.isError && (
+              <p className='text-destructive text-xs'>
+                {t('qy_plan_group_options_failed')}
+              </p>
+            )}
+
+            <FormField
+              control={form.control}
+              name='upgrade_group'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Upgrade Group')}</FormLabel>
+                  <Select
+                    // 空串是「不改」这个取值本身，但 Base UI 把空串当成未选中并
+                    // 回落到 placeholder，于是"选了不改"与"还没选"在屏幕上无法
+                    // 区分。哨兵只活在这一对回调之间，表单里存的仍然是空串。
+                    value={field.value || PLAN_GROUP_KEEP}
+                    onValueChange={(v) =>
+                      field.onChange(v === PLAN_GROUP_KEEP ? '' : v)
+                    }
+                  >
+                    <FormControl>
+                      <SelectTrigger className='w-full'>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent alignItemWithTrigger={false}>
+                      <SelectGroup>
+                        <SelectItem value={PLAN_GROUP_KEEP}>
+                          {t('qy_plan_group_keep')}
+                        </SelectItem>
+                        {groupItems.map((group) => (
+                          <SelectItem key={group} value={group}>
+                            {group}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    {t('qy_plan_upgrade_group_hint')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='downgrade_group'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Downgrade Group')}</FormLabel>
+                  <Select
+                    value={field.value || PLAN_GROUP_KEEP}
+                    onValueChange={(v) =>
+                      field.onChange(v === PLAN_GROUP_KEEP ? '' : v)
+                    }
+                  >
+                    <FormControl>
+                      <SelectTrigger className='w-full'>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent alignItemWithTrigger={false}>
+                      <SelectGroup>
+                        {/* 这一档在两个下拉里是**不同的意思**：上面是"购买不动
+                            分组"，这里是"回退到他购买前的原分组"。文案共用一条
+                            会让人以为到期什么都不会发生。 */}
+                        <SelectItem value={PLAN_GROUP_KEEP}>
+                          {t('qy_plan_group_col_revert_prev')}
+                        </SelectItem>
+                        {groupItems.map((group) => (
+                          <SelectItem key={group} value={group}>
+                            {group}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    {t('qy_plan_downgrade_group_hint')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </SideDrawerSection>
+
+          {/* ── 4. 套餐自带的额度 ────────────────────────────────────────
 
               「有多少钱、多久回一次血、这笔钱能花在哪、花完了怎么办」四件事
               摆在同一段里。它们此前散在三个地方（额度在基本信息、重置在自己
@@ -680,101 +822,150 @@ export function SubscriptionsMutateDrawer({
               {t('qy_plan_section_quota_desc')}
             </p>
 
-            <FormField
-              control={form.control}
-              name='total_amount'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>
-                    {t('Quota ({{currency}})', { currency: currencyLabel })}
-                  </FormLabel>
-                  <FormControl>
-                    <Input
-                      {...field}
-                      type='number'
-                      min={0}
-                      step={tokensOnly ? 1 : 0.01}
-                      placeholder={
-                        tokensOnly
-                          ? t('Enter quota in tokens')
-                          : t('Enter quota in {{currency}}', {
-                              currency: currencyLabel,
-                            })
-                      }
-                      onChange={(e) =>
-                        field.onChange(Number.parseFloat(e.target.value) || 0)
-                      }
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    {t(
-                      'Total quota included in the plan, usable per billing period. 0 means unlimited.'
-                    )}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+            {/* 纯商品开关排在额度输入框**之前**：它决定下面那一格存不存在，
+                摆在后面就会变成"填完额度才发现这一格根本不该填"。
 
-            <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+                它必须是一个独立字段而不是"额度填 0"：0 的语义是**不限额度**
+                （后端预扣那句 `if sub.AmountTotal > 0` 直接跳过余额检查），
+                拿 0 当"没有余额"卖用户组，换来的是给每个买家一份无限余额。 */}
+            <div className='border-border/60 flex flex-col gap-2 rounded-md border p-3'>
               <FormField
                 control={form.control}
-                name='quota_reset_period'
+                name='no_quota'
                 render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Reset Cycle')}</FormLabel>
-                    <Select
-                      items={resetPeriodOpts.map((o) => ({
-                        value: o.value,
-                        label: o.label,
-                      }))}
-                      onValueChange={field.onChange}
-                      value={field.value}
-                    >
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent alignItemWithTrigger={false}>
-                        <SelectGroup>
-                          {resetPeriodOpts.map((o) => (
-                            <SelectItem key={o.value} value={o.value}>
-                              {o.label}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
+                  <FormItem className={sideDrawerSwitchItemClassName()}>
+                    <FormLabel className='!mt-0'>
+                      {t('qy_plan_pure_product')}
+                    </FormLabel>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
                   </FormItem>
                 )}
               />
+              <p
+                className={cn(
+                  'text-xs leading-5',
+                  pureProduct ? 'text-foreground' : 'text-muted-foreground'
+                )}
+              >
+                {t('qy_plan_pure_product_hint')}
+              </p>
+              {pureProduct && (
+                <p className='text-muted-foreground text-xs leading-5'>
+                  {t('qy_plan_pure_product_no_quota')}
+                </p>
+              )}
+            </div>
 
+            {/* 纯商品时整格消失而不是置灰：置灰的输入框里仍然摆着一个数字，
+                而那个数字既不生效也不会被保存，只会让人反复回来确认它。 */}
+            {!pureProduct && (
               <FormField
                 control={form.control}
-                name='quota_reset_custom_seconds'
+                name='total_amount'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>{t('Custom Seconds')}</FormLabel>
+                    <FormLabel>
+                      {t('Quota ({{currency}})', { currency: currencyLabel })}
+                    </FormLabel>
                     <FormControl>
                       <Input
                         {...field}
                         type='number'
                         min={0}
-                        disabled={resetPeriod !== 'custom'}
+                        step={tokensOnly ? 1 : 0.01}
+                        placeholder={
+                          tokensOnly
+                            ? t('Enter quota in tokens')
+                            : t('Enter quota in {{currency}}', {
+                                currency: currencyLabel,
+                              })
+                        }
                         onChange={(e) =>
-                          field.onChange(
-                            Number.parseInt(e.target.value, 10) || 0
-                          )
+                          field.onChange(Number.parseFloat(e.target.value) || 0)
                         }
                       />
                     </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Total quota included in the plan, usable per billing period. 0 means unlimited.'
+                      )}
+                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
-            </div>
+            )}
+
+            {/* 重置周期跟着额度一起消失：没有余额的套餐"多久回一次血"是个
+                无从回答的问题，留着它只会让人以为纯商品也有一笔钱在循环。
+                （react-hook-form 默认不 unregister，所以关掉纯商品之后原来填的
+                周期还在，不会因为这次隐藏而丢。） */}
+            {!pureProduct && (
+              <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+                <FormField
+                  control={form.control}
+                  name='quota_reset_period'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Reset Cycle')}</FormLabel>
+                      <Select
+                        items={resetPeriodOpts.map((o) => ({
+                          value: o.value,
+                          label: o.label,
+                        }))}
+                        onValueChange={field.onChange}
+                        value={field.value}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent alignItemWithTrigger={false}>
+                          <SelectGroup>
+                            {resetPeriodOpts.map((o) => (
+                              <SelectItem key={o.value} value={o.value}>
+                                {o.label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='quota_reset_custom_seconds'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Custom Seconds')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type='number'
+                          min={0}
+                          disabled={resetPeriod !== 'custom'}
+                          onChange={(e) =>
+                            field.onChange(
+                              Number.parseInt(e.target.value, 10) || 0
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+            )}
 
             {/* 余额使用范围。它此前只在行操作的另一个弹窗里可编辑，抽屉里是
                 只读的 —— 于是"这笔钱能花在哪"这个决定与"解锁哪些分组"分在了
@@ -851,7 +1042,7 @@ export function SubscriptionsMutateDrawer({
             </div>
           </SideDrawerSection>
 
-          {/* ── 4. 有效期 ────────────────────────────────────────────── */}
+          {/* ── 5. 有效期 ────────────────────────────────────────────── */}
           <SideDrawerSection>
             <h3 className='flex items-center gap-2 text-sm font-medium'>
               <IconBadge tone='chart-4' size='xs'>
@@ -895,7 +1086,10 @@ export function SubscriptionsMutateDrawer({
                 )}
               />
 
-              {durationUnit === 'custom' ? (
+              {/* 三档三种右格，写成并列的 && 而不是嵌套三元：自定义要秒数、
+                  常规档要数值、永久档**一格都不要**。永久档留一个"必须填 1"的
+                  输入框，是在为一个不存在的时长向运营要一个假答案。 */}
+              {durationUnit === 'custom' && (
                 <FormField
                   control={form.control}
                   name='custom_seconds'
@@ -918,7 +1112,9 @@ export function SubscriptionsMutateDrawer({
                     </FormItem>
                   )}
                 />
-              ) : (
+              )}
+
+              {durationUnit !== 'custom' && durationUnit !== 'permanent' && (
                 <FormField
                   control={form.control}
                   name='duration_value'
@@ -943,9 +1139,18 @@ export function SubscriptionsMutateDrawer({
                 />
               )}
             </div>
+
+            {/* 右格空掉之后必须补一句：一个只有左格的有效期段，看起来像是
+                另一格没加载出来。这句同时点破"永久 ⇒ 到期回退分组永远不执行"，
+                那是配了上一段之后最容易踩空的一条。 */}
+            {durationUnit === 'permanent' && (
+              <p className='text-muted-foreground text-xs leading-5'>
+                {t('qy_plan_duration_permanent_hint')}
+              </p>
+            )}
           </SideDrawerSection>
 
-          {/* ── 5. 卖给多少人 ───────────────────────────────────────────
+          {/* ── 6. 卖给多少人 ───────────────────────────────────────────
 
               两个限购维度必须放在同一段里并排显示，且各自说清楚"数的是什么"。
               拆开摆、或者两格都只写一句"0 表示不限"，运营就会把"全站只招 100 人"
@@ -1084,7 +1289,7 @@ export function SubscriptionsMutateDrawer({
             </div>
           </SideDrawerSection>
 
-          {/* ── 6. 第三方支付 ─────────────────────────────────────────── */}
+          {/* ── 7. 第三方支付 ─────────────────────────────────────────── */}
           <SideDrawerSection>
             <h3 className='flex items-center gap-2 text-sm font-medium'>
               <IconBadge tone='chart-1' size='xs'>

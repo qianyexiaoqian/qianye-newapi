@@ -27,6 +27,9 @@ export function formatDuration(
   t: TFunction
 ): string {
   const unit = plan?.duration_unit || 'month'
+  // 永久档必须在 duration_value 之前返回：它的 duration_value 是 0，落到下面
+  // 那个 `|| 1` 会把「永久」显示成「1 个月」—— 一个看起来完全正常的假到期。
+  if (unit === 'permanent') return t('qy_plan_duration_permanent')
   const value = plan?.duration_value || 1
   const unitLabels: Record<string, string> = {
     year: t('years'),

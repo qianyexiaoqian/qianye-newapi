@@ -82,11 +82,15 @@ export function formatPlanPrice(plan: Partial<SubscriptionPlan>): string {
  *
  * 仅供购买前参考：真实到期时间由后端按下单时刻计算，跨月钳位（1/31 + 1 月）
  * 等细节可能与这里有出入，所以文案上必须标注"预计"。
+ *
+ * 永久档在这里没有答案（后端 end_time 存 0），返回破折号；调用方本来就该整行
+ * 不渲染，这里只是不把一个 dayjs 认不得的单位算成"从今天起 1 个月后到期"。
  */
 export function formatPlanExpiryPreview(
   plan: Partial<SubscriptionPlan>
 ): string {
   const unit = plan?.duration_unit || 'month'
+  if (unit === 'permanent') return '-'
   const base = dayjs()
   let end = base.add(Number(plan?.custom_seconds || 0), 'second')
   if (unit !== 'custom') {
@@ -162,21 +166,17 @@ export function formatPlanBalanceScope(
 
 export interface BuildPlanFactsOptions {
   /**
-   * 是否把「购买后用户分组会被改写成什么」并入事实列表。
+   * 是否把「购买后 / 到期后用户分组会变成什么」并入事实列表。
    *
-   * ── 这一项为什么还在，而且默认关 ──
+   * 默认关是给"不关心分组的调用方"留的口子，而不是因为这件事不重要：套餐可以
+   * 被当成**用户组商品**卖（`upgrade_group` 一配，购买就
+   * `UPDATE users SET group = …`，到期由 `ExpireDueSubscriptions` 改回去），
+   * 而换用户分组会连带换掉买家的可用范围、倍率与自动分组 —— 这必须在**掏钱
+   * 之前**说清楚。所有面向买家的入口（套餐卡、购买弹窗）都要打开它。
    *
-   * 管理端已经不再提供这两个字段的编辑入口：用户分组与模型分组分离之后，买套餐
-   * 只该多解锁几个**模型分组**，不该把人从一个用户分组搬到另一个。但上游
-   * `CreateUserSubscriptionFromPlanTx` 那段改写 `users.group` 的逻辑一行没动，
-   * 于是**存量套餐仍然会改写**（直到管理员在新表单里把它保存一次，见
-   * lib/plan-form.ts）。
-   *
-   * 只要它还会发生，就必须在**掏钱之前**告诉买家：换一个用户分组会连带换掉他的
-   * 可用范围、倍率与自动分组。所以这两行不是历史包袱，是仍然有效的风险披露 ——
-   * 而且它们本来就只在字段非空时渲染，那批套餐清干净之后会自动消失。
+   * 两行本来就只在字段非空时渲染，所以纯额度套餐上不会多出任何噪音。
    */
-  includeLegacyGroupRewrite?: boolean
+  includeUserGroupChange?: boolean
   /** 当前用户已购次数，用于渲染 `已购 1/3`。 */
   purchaseCount?: number
   /**
@@ -195,7 +195,8 @@ export interface BuildPlanFactsOptions {
  * 生成套餐事实清单。
  *
  * 语义约定沿用后端：`total_amount === 0` 表示不限量、`max_purchase_per_user === 0`
- * 表示不限购，这两种情况分别渲染成"无限"和整行不渲染。
+ * 表示不限购，这两种情况分别渲染成"无限"和整行不渲染；`no_quota` 是独立的第三态
+ * （纯商品，压根不带余额），它必须先于前者判断。
  */
 export function buildPlanFacts(
   plan: Partial<SubscriptionPlan>,
@@ -207,6 +208,16 @@ export function buildPlanFacts(
   const reset = formatResetPeriod(plan, t)
   const count = Number(opts.purchaseCount || 0)
   const grant = opts.entitlement
+
+  // 纯商品必须**先**判断：它落库的 total_amount 是 0，而 0 走的是"不限量"
+  // 那一支 —— 一个只卖用户分组、一分余额都不带的套餐会在买家眼前显示成
+  // 「无限额度」，而那是站上最贵的一句误导。
+  let quotaValue = t('Unlimited')
+  if (plan?.no_quota === true) {
+    quotaValue = t('qy_plan_quota_pure_product')
+  } else if (total > 0) {
+    quotaValue = formatQuota(total)
+  }
 
   const facts: (PlanFact | null)[] = [
     {
@@ -220,13 +231,18 @@ export function buildPlanFacts(
     {
       id: 'quota',
       label: t('Total Quota'),
-      value: total > 0 ? formatQuota(total) : t('Unlimited'),
+      value: quotaValue,
     },
-    {
-      id: 'expiry',
-      label: t('qy_plan_expiry_preview'),
-      value: formatPlanExpiryPreview(plan),
-    },
+    // 永久档没有到期日（后端 end_time 存 0），"预计到期"这一行无从填起：
+    // 与其显示一个破折号让人以为算不出来，不如整行不渲染 —— 上面那行有效期
+    // 已经写着「永久有效」。
+    plan?.duration_unit === 'permanent'
+      ? null
+      : {
+          id: 'expiry',
+          label: t('qy_plan_expiry_preview'),
+          value: formatPlanExpiryPreview(plan),
+        },
     // 解锁与余额范围排在到期时间之后、限购之前：它们是"买了能得到什么"，
     // 比"买了之后还能不能再买"更靠近掏钱这个决定。
     grant == null
@@ -258,10 +274,12 @@ export function buildPlanFacts(
           value: `${count} / ${limit}`,
         }
       : null,
-    opts.includeLegacyGroupRewrite && plan?.upgrade_group
+    opts.includeUserGroupChange && plan?.upgrade_group
       ? { id: 'upgrade', label: t('Upgrade Group'), value: plan.upgrade_group }
       : null,
-    opts.includeLegacyGroupRewrite && plan?.downgrade_group
+    // downgrade 只在**显式配了目标分组**时渲染。留空的语义是"回退到购买前的
+    // 原分组"，那是买家自己原来的位置，写成一行事实既没有信息也无从表达。
+    opts.includeUserGroupChange && plan?.downgrade_group
       ? {
           id: 'downgrade',
           label: t('Downgrade Group'),

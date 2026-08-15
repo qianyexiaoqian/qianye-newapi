@@ -30,7 +30,13 @@ import {
 } from '@/components/ui/tooltip'
 import { formatQuota, formatTimestampToDate } from '@/lib/format'
 
-import { REDEMPTION_FILTER_EXPIRED, REDEMPTION_STATUSES } from '../constants'
+import {
+  REDEMPTION_FILTER_EXPIRED,
+  REDEMPTION_PRODUCT_TYPE,
+  REDEMPTION_PRODUCT_TYPE_LABEL_KEYS,
+  REDEMPTION_STATUSES,
+  getRedemptionProductType,
+} from '../constants'
 import { isRedemptionExpired, isTimestampExpired } from '../lib'
 import { type Redemption } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
@@ -155,9 +161,38 @@ export function useRedemptionsColumns(): ColumnDef<Redemption>[] {
       size: 320,
     },
     {
+      id: 'product_type',
+      accessorKey: 'product_type',
+      header: t('qy_redemption_product_type'),
+      cell: ({ row }) => {
+        const productType = getRedemptionProductType(row.original.product_type)
+        return (
+          <StatusBadge
+            label={t(REDEMPTION_PRODUCT_TYPE_LABEL_KEYS[productType])}
+            variant={
+              productType === REDEMPTION_PRODUCT_TYPE.QUOTA
+                ? 'neutral'
+                : 'success'
+            }
+            copyable={false}
+            className='-ml-1.5'
+          />
+        )
+      },
+      enableSorting: false,
+      size: 120,
+    },
+    {
       accessorKey: 'quota',
       header: t('Quota'),
       cell: ({ row }) => {
+        // 套餐 / 用户组码没有额度可发，显示金额只会让人以为它还会加钱。
+        if (
+          getRedemptionProductType(row.original.product_type) !==
+          REDEMPTION_PRODUCT_TYPE.QUOTA
+        ) {
+          return <span className='text-muted-foreground text-sm'>-</span>
+        }
         const quota = row.getValue('quota') as number
         return (
           <StatusBadge

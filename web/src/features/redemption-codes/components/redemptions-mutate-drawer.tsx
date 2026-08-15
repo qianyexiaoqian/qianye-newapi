@@ -42,6 +42,14 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
   Sheet,
   SheetClose,
   SheetContent,
@@ -50,6 +58,8 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { getAdminPlans } from '@/features/subscriptions/api'
+import type { SubscriptionPlan } from '@/features/subscriptions/types'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import {
   formatQuota,
@@ -60,7 +70,12 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { addTimeToDate } from '@/lib/time'
 
 import { createRedemption, updateRedemption, getRedemption } from '../api'
-import { SUCCESS_MESSAGES } from '../constants'
+import {
+  REDEMPTION_PRODUCT_TYPE,
+  REDEMPTION_VALIDATION,
+  SUCCESS_MESSAGES,
+  getRedemptionProductTypeOptions,
+} from '../constants'
 import {
   getRedemptionFormSchema,
   type RedemptionFormValues,
@@ -93,11 +108,38 @@ export function RedemptionsMutateDrawer({
   const [loadedRedemption, setLoadedRedemption] = useState<Redemption | null>(
     null
   )
+  const [plans, setPlans] = useState<SubscriptionPlan[]>([])
 
   const form = useForm<RedemptionFormValues>({
     resolver: zodResolver(getRedemptionFormSchema(t)),
     defaultValues: REDEMPTION_FORM_DEFAULT_VALUES,
   })
+  const productType = form.watch('product_type')
+  const isQuotaProduct = productType === REDEMPTION_PRODUCT_TYPE.QUOTA
+
+  // 套餐清单只在抽屉打开时拉一次。失败不弹 toast：这一格是可选的（余额码根本
+  // 用不到它），为它糊一个错误提示只会盖住用户真正在做的事；下拉留空 + 表单校验
+  // 拦住提交，已经足够说明问题。
+  useEffect(() => {
+    if (!open) {
+      setPlans([])
+      return
+    }
+
+    let ignoreResult = false
+    void getAdminPlans()
+      .then((result) => {
+        if (ignoreResult || !result.success || !result.data) return
+        setPlans(
+          result.data.map((record) => record.plan).filter((plan) => plan.enabled)
+        )
+      })
+      .catch(() => undefined)
+
+    return () => {
+      ignoreResult = true
+    }
+  }, [open])
 
   // Load existing data when updating
   useEffect(() => {
@@ -203,8 +245,18 @@ export function RedemptionsMutateDrawer({
     if (!isUpdate) {
       const name = form.getValues('name')
       if (!name?.trim()) {
-        const quota = parseQuotaFromDollars(form.getValues('quota_dollars'))
-        form.setValue('name', formatQuota(quota), { shouldValidate: true })
+        // 名字留空时替运营起一个：余额码用金额，套餐码用套餐名。
+        // 套餐码沿用金额的话，每一张都会叫 "$0.00"，列表里彻底分不开。
+        const planId = form.getValues('product_id')
+        const planTitle = plans.find((plan) => plan.id === planId)?.title
+        const fallbackName =
+          form.getValues('product_type') === REDEMPTION_PRODUCT_TYPE.QUOTA ||
+          !planTitle
+            ? formatQuota(parseQuotaFromDollars(form.getValues('quota_dollars')))
+            : // 套餐名最长 128 字，兑换码名字上限 20 —— 不截断的话，替人起的
+              // 这个名字会当场被自己的校验判为非法。
+              planTitle.slice(0, REDEMPTION_VALIDATION.NAME_MAX_LENGTH)
+        form.setValue('name', fallbackName, { shouldValidate: true })
       }
     }
 
@@ -215,6 +267,16 @@ export function RedemptionsMutateDrawer({
     const newDate = addTimeToDate(months, days, hours)
     form.setValue('expired_time', newDate)
   }
+
+  const productTypeOptions = getRedemptionProductTypeOptions(t)
+  // 下拉里标出「纯商品」：用户组商品要的正是这一档（不带余额、只改用户分组），
+  // 而套餐列表里两种档次长得一模一样，不标的话运营只能靠记。
+  const planOptions = plans.map((plan) => ({
+    value: String(plan.id),
+    label: plan.no_quota
+      ? `${plan.title} · ${t('qy_redemption_plan_pure_product')}`
+      : plan.title,
+  }))
 
   const { meta: currencyMeta } = getCurrencyDisplay()
   const currencyLabel = getCurrencyLabel()
@@ -288,34 +350,119 @@ export function RedemptionsMutateDrawer({
 
                 <FormField
                   control={form.control}
-                  name='quota_dollars'
+                  name='product_type'
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>{quotaLabel}</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          type='number'
-                          step={quotaStep}
-                          placeholder={quotaPlaceholder}
-                          onChange={(e) =>
-                            field.onChange(
-                              Number.parseFloat(e.target.value) || 0
-                            )
-                          }
-                        />
-                      </FormControl>
+                      <FormLabel>{t('qy_redemption_product_type')}</FormLabel>
+                      <Select
+                        items={productTypeOptions}
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        disabled={isUpdate}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent alignItemWithTrigger={false}>
+                          <SelectGroup>
+                            {productTypeOptions.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
                       <FormDescription>
-                        {tokensOnly
-                          ? t('Enter the quota amount in tokens')
-                          : t('Enter the quota amount in {{currency}}', {
-                              currency: currencyLabel,
-                            })}
+                        {isUpdate
+                          ? t('qy_redemption_product_type_locked')
+                          : t('qy_redemption_product_type_hint')}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
+
+                {isQuotaProduct ? (
+                  <FormField
+                    control={form.control}
+                    name='quota_dollars'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{quotaLabel}</FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            type='number'
+                            step={quotaStep}
+                            placeholder={quotaPlaceholder}
+                            onChange={(e) =>
+                              field.onChange(
+                                Number.parseFloat(e.target.value) || 0
+                              )
+                            }
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {tokensOnly
+                            ? t('Enter the quota amount in tokens')
+                            : t('Enter the quota amount in {{currency}}', {
+                                currency: currencyLabel,
+                              })}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                ) : (
+                  <FormField
+                    control={form.control}
+                    name='product_id'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('qy_redemption_plan')}</FormLabel>
+                        <Select
+                          items={planOptions}
+                          // Select 的取值是字符串，而 product_id 是数字：两边各自
+                          // 转一次，不要把表单值改成字符串——它要原样进请求体。
+                          value={field.value > 0 ? String(field.value) : ''}
+                          onValueChange={(value) =>
+                            field.onChange(Number.parseInt(String(value), 10) || 0)
+                          }
+                          disabled={isUpdate}
+                        >
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue
+                                placeholder={t('qy_redemption_plan_placeholder')}
+                              />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent alignItemWithTrigger={false}>
+                            <SelectGroup>
+                              {planOptions.map((option) => (
+                                <SelectItem
+                                  key={option.value}
+                                  value={option.value}
+                                >
+                                  {option.label}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        <FormDescription>
+                          {planOptions.length === 0
+                            ? t('qy_redemption_plan_empty')
+                            : t('qy_redemption_plan_hint')}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
 
                 <FormField
                   control={form.control}

@@ -59,6 +59,64 @@ export const REDEMPTION_STATUSES: Record<
   },
 } as const
 
+// ============================================================================
+// Redemption Product Types
+// ============================================================================
+
+/**
+ * 一张码只绑一种商品，不做组合包。取值与后端 `model.RedemptionProduct*` 一致。
+ *
+ * PLAN 与 USER_GROUP 在后端走的是**同一条发放路径**（都发一条 UserSubscription），
+ * 差别整个落在绑定的那个套餐上：用户组商品绑的是纯商品档（`no_quota`），
+ * 不带余额、只改用户分组。这里分成两项是为了运营能在列表里一眼看出卖的是什么。
+ */
+export const REDEMPTION_PRODUCT_TYPE = {
+  QUOTA: 'quota',
+  PLAN: 'plan',
+  USER_GROUP: 'usergroup',
+} as const
+
+export type RedemptionProductType =
+  (typeof REDEMPTION_PRODUCT_TYPE)[keyof typeof REDEMPTION_PRODUCT_TYPE]
+
+/**
+ * 把兑换码上的 product_type 归一成一个已知类型。
+ *
+ * 空串 / undefined 一律是余额码：这一列是后加的，存量码上没有值。
+ * 与后端 `Redemption.ProductKind()` 是同一条规则，两边必须一起改。
+ */
+export function getRedemptionProductType(
+  productType?: string
+): RedemptionProductType {
+  const kind = productType?.trim()
+  if (
+    kind === REDEMPTION_PRODUCT_TYPE.PLAN ||
+    kind === REDEMPTION_PRODUCT_TYPE.USER_GROUP
+  ) {
+    return kind
+  }
+  return REDEMPTION_PRODUCT_TYPE.QUOTA
+}
+
+/** labelKey 是 qy i18n 的键，用 t(labelKey) 取文案。 */
+export const REDEMPTION_PRODUCT_TYPE_LABEL_KEYS: Record<
+  RedemptionProductType,
+  string
+> = {
+  [REDEMPTION_PRODUCT_TYPE.QUOTA]: 'qy_redemption_product_quota',
+  [REDEMPTION_PRODUCT_TYPE.PLAN]: 'qy_redemption_product_plan',
+  [REDEMPTION_PRODUCT_TYPE.USER_GROUP]: 'qy_redemption_product_usergroup',
+}
+
+export function getRedemptionProductTypeOptions(t: TFunction) {
+  return (
+    Object.values(REDEMPTION_PRODUCT_TYPE) as RedemptionProductType[]
+  ).map((value) => ({
+    value,
+    label: t(REDEMPTION_PRODUCT_TYPE_LABEL_KEYS[value]),
+  }))
+}
+
 // Virtual status filter value for expired redemption codes
 // Note: "Expired" is not a real DB status, it's computed from expired_time
 export const REDEMPTION_FILTER_EXPIRED = 'expired'
@@ -111,6 +169,9 @@ export const ERROR_MESSAGES = {
   NAME_LENGTH_INVALID: 'Name must be between {{min}} and {{max}} characters',
   COUNT_INVALID: 'Count must be between {{min}} and {{max}}',
   EXPIRED_TIME_INVALID: 'Expired time cannot be earlier than current time',
+  // qy i18n 键：商品类型是本 fork 加的能力，文案不进 locales/。
+  PLAN_REQUIRED: 'qy_redemption_plan_required',
+  QUOTA_POSITIVE: 'qy_redemption_quota_positive',
 } as const
 
 /** For form schema only: returns translated messages with interpolation. */

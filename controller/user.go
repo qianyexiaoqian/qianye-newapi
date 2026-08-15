@@ -1373,17 +1373,21 @@ func TopUp(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	quota, err := model.Redeem(req.Key, id)
+	result, err := model.Redeem(req.Key, id)
 	if err != nil {
 		// 不向用户暴露兑换失败的细分原因，避免攻击者根据错误类型判断兑换码状态。
 		common.ApiErrorI18n(c, i18n.MsgRedeemFailed)
 		logger.LogError(c, fmt.Sprintf("failed to redeem key %s for user %d: %s", req.Key, id, err.Error()))
 		return
 	}
+	// data 保持「本次进钱包的额度」这个数字不变:兑换码扩出套餐商品之前,它就是这个
+	// 契约,外部脚本读的也是它。套餐码在这里是 0 —— 那不是敷衍,是事实,它一分额度都没加。
+	// 具体发了什么放在同级的 redeem 里,前端据此换一套提示文案。
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    quota,
+		"data":    result.Quota,
+		"redeem":  result,
 	})
 }
 

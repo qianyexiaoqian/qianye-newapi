@@ -281,7 +281,22 @@ export function useSubscriptionsColumns(
         header: t('Plan Quota'),
         meta: { mobileHidden: true },
         cell: ({ row }) => {
-          const total = Number(row.original.plan.total_amount || 0)
+          const plan = row.original.plan
+          // 纯商品要抢在 `total > 0` 之前判：它落库的 total_amount 是 0，
+          // 而 0 走的是"不限额度"那一支。也就是说不特判的话，一个一分余额都
+          // 不带、只卖用户分组的套餐，会在这一列显示成「无限」—— 与它真正的
+          // 语义正好相反，而列表页是运营唯一一眼扫过全部套餐的地方。
+          if (plan.no_quota) {
+            return (
+              <StatusBadge
+                label={t('qy_plan_quota_pure_product')}
+                variant='warning'
+                copyable={false}
+                className='-ml-1.5'
+              />
+            )
+          }
+          const total = Number(plan.total_amount || 0)
           return (
             <span className='text-muted-foreground'>
               {total > 0 ? formatQuota(total) : t('Unlimited')}
@@ -291,42 +306,57 @@ export function useSubscriptionsColumns(
         size: 150,
       },
       /*
-        存量的「购买改写用户分组」。
+        「购买后改用户分组」—— 把套餐当用户组商品卖的那一档。
 
-        ── 为什么这一列还在，而且用的是告警色 ──
+        购买时由 `CreateUserSubscriptionFromPlanTx` 改 `users.group`、到期由
+        `ExpireDueSubscriptions` 改回去。换用户分组会连带换掉买家的可用范围、
+        倍率与自动分组，是比「解锁几个模型分组」重得多的一件事，所以它必须在
+        列表页一眼看得到，而不是只在编辑抽屉里躺着。
 
-        表单里的「升级分组 / 降级分组」已经撤掉了（用户分组与模型分组分离之后，
-        买套餐只该多解锁几个模型分组，不该把人搬到另一个用户分组）。但上游那两列
-        与读它们的那段逻辑**一行没动**：`CreateUserSubscriptionFromPlanTx` 在
-        `upgrade_group != ''` 时照样 `UPDATE users SET group = …`，到期由
-        `ExpireDueSubscriptions` 再改回去。
-
-        也就是说，**从未在新表单里保存过的存量套餐仍然会改写用户分组**。把这一列
-        一并删掉，就是把一个还在跑的行为从界面上抹掉：运营会发现有人的用户分组
-        自己变了，而站内没有任何一个页面显示过哪个套餐会干这件事。
-
-        清除方式不需要迁移脚本：打开该套餐的编辑抽屉、保存一次即可 —— 新表单恒
-        提交空的 upgrade_group / downgrade_group（见 lib/plan-form.ts）。这一列
-        就是那批套餐的待办清单，清空之后它整列都是「—」。
+        两块徽章必须各自带前缀标签：只并排摆两个分组名，运营无从判断哪个是买入
+        哪个是到期 —— 而这两者填反的后果是"一买就掉到低级组、到期反而升级"。
+        降级留空同理，它不是"没配"而是「回退到购买前的原分组」，写成空白会被
+        读成"到期什么都不会发生"。
       */
       {
-        id: 'legacy_group_rewrite',
-        header: t('Legacy user group rewrite'),
+        id: 'user_group_change',
+        header: t('qy_plan_group_product_title'),
         meta: { mobileHidden: true },
         cell: ({ row }) => {
           const upgrade = row.original.plan.upgrade_group
           const downgrade = row.original.plan.downgrade_group
+          // 没配升级组时，到期那一步压根不会触发（`ExpireDueSubscriptions` 要求
+          // downgrade_group 或 upgrade_group 之一非空，且回退原组还要求当前分组
+          // 仍等于升级组）。两个都空就是"这个套餐不碰用户分组"。
           if (!upgrade && !downgrade) {
             return <span className='text-muted-foreground'>—</span>
           }
           return (
-            <BadgeCell>
-              {upgrade && <GroupBadge group={upgrade} />}
-              {downgrade && <GroupBadge group={downgrade} />}
-            </BadgeCell>
+            <div className='flex flex-col gap-1'>
+              {upgrade && (
+                <BadgeCell>
+                  <span className='text-muted-foreground text-xs'>
+                    {t('qy_plan_group_col_upgrade')}
+                  </span>
+                  <GroupBadge group={upgrade} />
+                </BadgeCell>
+              )}
+              <BadgeCell>
+                <span className='text-muted-foreground text-xs'>
+                  {t('qy_plan_group_col_downgrade')}
+                </span>
+                {downgrade ? (
+                  <GroupBadge group={downgrade} />
+                ) : (
+                  <span className='text-muted-foreground text-xs'>
+                    {t('qy_plan_group_col_revert_prev')}
+                  </span>
+                )}
+              </BadgeCell>
+            </div>
           )
         },
-        size: 160,
+        size: 200,
       },
       {
         id: 'actions',

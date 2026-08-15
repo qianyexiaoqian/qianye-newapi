@@ -130,3 +130,47 @@ describe('套餐事实清单里的解锁披露', () => {
     )
   })
 })
+
+describe('纯商品与永久档的事实文案', () => {
+  /**
+   * 站上最贵的一句误导：纯商品落库的 `total_amount` 是 0，而 0 走的是
+   * 「不限额度」那一支。不特判的话，一个一分余额都不带、只卖用户分组的套餐
+   * 会在买家眼前显示成「无限额度」—— 与它真正的语义正好相反。
+   */
+  test('纯商品的额度绝不显示成「不限」', () => {
+    const facts = buildPlanFacts({ ...plan, no_quota: true, total_amount: 0 }, t)
+    assert.equal(factValue(facts, 'quota'), 'qy_plan_quota_pure_product')
+    assert.notEqual(factValue(facts, 'quota'), 'Unlimited')
+  })
+
+  test('total_amount 为 0 而非纯商品时仍然是「不限」', () => {
+    const facts = buildPlanFacts(
+      { ...plan, no_quota: false, total_amount: 0 },
+      t
+    )
+    assert.equal(
+      factValue(facts, 'quota'),
+      'Unlimited',
+      '这是上游既有的"不限额度"口径，不能被纯商品那一支顺手改掉'
+    )
+  })
+
+  /**
+   * 永久档在后端 `end_time` 存 0，没有到期日可算。留着这一行只会显示一个
+   * 破折号或一个由 dayjs 猜出来的假日期，而"有效期：永久有效"那一行已经把
+   * 事实说全了。
+   */
+  test('永久档不渲染「预计到期」，有效期写成永久', () => {
+    const facts = buildPlanFacts(
+      { ...plan, duration_unit: 'permanent', duration_value: 0 },
+      t
+    )
+    assert.equal(factValue(facts, 'expiry'), undefined)
+    assert.equal(factValue(facts, 'duration'), 'qy_plan_duration_permanent')
+  })
+
+  test('常规档仍然渲染「预计到期」', () => {
+    const facts = buildPlanFacts(plan, t)
+    assert.notEqual(factValue(facts, 'expiry'), undefined)
+  })
+})

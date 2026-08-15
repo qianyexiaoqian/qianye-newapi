@@ -30,7 +30,16 @@ export function getPlanFormSchema(t: TFunction) {
     // "Data too long" from MySQL or a silently truncated description.
     subtitle: z.string().max(255, t('qy_plan_subtitle_too_long')).optional(),
     price_amount: z.coerce.number().min(0, t('Please enter amount')),
-    duration_unit: z.enum(['year', 'month', 'day', 'hour', 'custom']),
+    duration_unit: z.enum([
+      'year',
+      'month',
+      'day',
+      'hour',
+      'custom',
+      'permanent',
+    ]),
+    // 永久档的输入框不显示，值仍然留在表单里（默认 1），所以 min(1) 不会挡住
+    // 它；真正落库的值由 formValuesToPlanPayload 按档位归零。
     duration_value: z.coerce.number().min(1),
     custom_seconds: z.coerce.number().min(0).optional(),
     quota_reset_period: z.enum([
@@ -51,6 +60,11 @@ export function getPlanFormSchema(t: TFunction) {
     // 因此不会出现在 formValuesToPlanPayload 的结果里。
     max_total_users: z.coerce.number().min(0),
     total_amount: z.coerce.number().min(0),
+    no_quota: z.boolean(),
+    // 购买后 / 到期回退的用户分组。空串是**有语义的取值**（不改 / 回退原组），
+    // 不是"没填"，所以这里不做 min(1) 之类的必填校验。
+    upgrade_group: z.string(),
+    downgrade_group: z.string(),
     stripe_price_id: z.string().optional(),
     creem_product_id: z.string().optional(),
     waffo_pancake_product_id: z.string().optional(),
@@ -75,6 +89,9 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   max_purchase_per_user: 0,
   max_total_users: 0,
   total_amount: 0,
+  no_quota: false,
+  upgrade_group: '',
+  downgrade_group: '',
   stripe_price_id: '',
   creem_product_id: '',
   waffo_pancake_product_id: '',
@@ -100,6 +117,9 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     // 调用方必须自己挡住"没读到就照着 0 保存"，否则会悄悄抹掉已设的名额上限。
     max_total_users: 0,
     total_amount: quotaUnitsToDollars(Number(plan.total_amount || 0)),
+    no_quota: plan.no_quota === true,
+    upgrade_group: plan.upgrade_group || '',
+    downgrade_group: plan.downgrade_group || '',
     stripe_price_id: plan.stripe_price_id || '',
     creem_product_id: plan.creem_product_id || '',
     waffo_pancake_product_id: plan.waffo_pancake_product_id || '',
@@ -111,12 +131,19 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
   // `model.SubscriptionPlan`，多出来的键会被 Go 静默丢弃 —— 表单显示"保存成功"
   // 而名额压根没落库。它由 setPlanSeatLimit 单独写进扩展库。
   const { max_total_users, ...planValues } = values
+  const pureProduct = values.no_quota === true
   return {
     plan: {
       ...planValues,
       price_amount: Number(values.price_amount || 0),
       currency: 'USD',
-      duration_value: Number(values.duration_value || 0),
+      // 永久档没有时长可言，落 0。后端的 `duration_value <= 0` 兜底只对**非**
+      // 永久/自定义档补 1，所以 0 会原样留在库里 —— 列表页才不会把一个永久套餐
+      // 显示成「1 个月」，而那是一个看起来完全正常的假到期日。
+      duration_value:
+        values.duration_unit === 'permanent'
+          ? 0
+          : Number(values.duration_value || 0),
       custom_seconds: Number(values.custom_seconds || 0),
       quota_reset_period: values.quota_reset_period || 'never',
       quota_reset_custom_seconds:
@@ -125,27 +152,26 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
           : 0,
       sort_order: Number(values.sort_order || 0),
       max_purchase_per_user: Number(values.max_purchase_per_user || 0),
-      total_amount: parseQuotaFromDollars(Number(values.total_amount || 0)),
-      // ── 升级分组 / 降级分组：显式清空，不是"忘了传" ──────────────────────
+      no_quota: pureProduct,
+      // 纯商品归零总额度：这一格在界面上已经不显示了，把上一次的旧值继续提交
+      // 只会在库里留下一个谁都看不见、却会在关掉纯商品那一刻突然复活的数字。
+      // 归零本身不会变成"不限额度"——纯商品由 no_quota 判定，购买时后端按
+      // `model.PureProductAmountTotal` 钉成 1 个 quota 单位。
+      total_amount: pureProduct
+        ? 0
+        : parseQuotaFromDollars(Number(values.total_amount || 0)),
+      // ── 购买后 / 到期回退的用户分组 ────────────────────────────────────
       //
-      // 这两列在上游 `subscription_plans` 上仍然存在，而且**仍然在跑**：
-      // `model.CreateUserSubscriptionFromPlanTx` 在 `upgrade_group != ''` 时会
-      // 直接 `UPDATE users SET group = <upgrade_group>`，到期由
-      // `ExpireDueSubscriptions` 再改回去。用户分组与模型分组分离之后，这正是
-      // 要消灭的东西：买套餐只该多解锁几个**模型分组**，不该把人从一个用户分组
-      // 搬到另一个用户分组（那会连带换掉他的可用范围、倍率与自动分组）。
+      // 这两列由 `model.CreateUserSubscriptionFromPlanTx`（购买时
+      // `UPDATE users SET group = <upgrade_group>`）与 `ExpireDueSubscriptions`
+      // （到期改回去）消费，是「把套餐当用户组商品卖」这条路子的全部实现。
       //
-      // 上游 `AdminUpdateSubscriptionPlan` 用的是**显式 map 全量覆盖**，
-      // `upgrade_group` / `downgrade_group` 恒在 map 里。所以这里"不传"与
-      // "传空串"落库结果完全一样（Go 零值），区别只在读代码的人能不能看出来这是
-      // 有意为之。写成显式空串：任何一次在新表单里保存套餐，都会把这两列清掉，
-      // 从此该套餐不再改写 `users.group`。
-      //
-      // **没被重新保存过的存量套餐仍然会改写 users.group** —— 那不是这一行能
-      // 解决的，所以列表页保留了一列专门把这批套餐标出来（见
-      // subscriptions-columns.tsx 的 legacy_group_rewrite 列）。
-      upgrade_group: '',
-      downgrade_group: '',
+      // 空串**是取值而不是缺省**：upgrade 空 = 购买不动用户分组；downgrade 空 =
+      // 到期回退到购买前的原分组（购买那一刻快照进 `prev_user_group`）。上游
+      // `AdminUpdateSubscriptionPlan` 是显式 map 全量覆盖，两列恒在 map 里，
+      // 所以这里传什么就是什么，包括把已配的分组清回空。
+      upgrade_group: (values.upgrade_group || '').trim(),
+      downgrade_group: (values.downgrade_group || '').trim(),
     },
   }
 }
