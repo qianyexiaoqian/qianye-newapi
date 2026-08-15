@@ -30,6 +30,19 @@ const (
 	SubscriptionDurationPermanent = "permanent"
 )
 
+// 订阅状态。仓库里此前一直用字面量("active" / "refunded"),这里只为新增的
+// 那一档定义常量 —— 不把存量字面量一起改成常量是刻意的:那会碰到十几处与本次
+// 改动无关的代码,而 diff 越大越难看出"这次到底改了什么"。
+const (
+	// SubscriptionStatusSuperseded 被后买的用户组商品顶替掉。
+	//
+	// 与 expired 分开:expired 是"时间到了",superseded 是"用户自己买了别的组,
+	// 剩余时间作废"。客服要能回答「我上个月买的 VIP 去哪了」,而两者的答案不同。
+	//
+	// 不删行同理:那条订阅是用户真的花过钱的,删掉之后没有任何地方查得到它。
+	SubscriptionStatusSuperseded = "superseded"
+)
+
 // Subscription quota reset period
 const (
 	SubscriptionResetNever   = "never"
@@ -568,6 +581,227 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 	return target, nil
 }
 
+// applyUserGroupPurchaseRulesTx 执行「用户组商品」的三条购买规则(项目方 2026-08-14 拍板)。
+//
+// 只对 upgrade_group 非空的套餐生效 —— 普通套餐一个字节都不受影响,
+// 这是本函数唯一的启用条件,也是它可以被安全加进既有购买路径的理由。
+//
+// ═══════════════════════ 三条规则 ═══════════════════════
+//
+//	同一目标用户组 + 已有的那条是永久 → 拒绝。他已经永久拥有了,再卖一次是骗钱。
+//	同一目标用户组 + 已有的那条有时效 → **延期**,不新建订阅。
+//	不同目标用户组                     → 旧的那条**直接作废**,剩余时间不折算、不退款。
+//
+// 第三条是不可逆的,所以购买入口必须在下单**之前**就告诉用户会顶掉什么
+// (见 PreviewUserGroupPurchase)。这里只负责执行,不负责征求同意 ——
+// 把确认塞进事务里会让"用户没点确认"变成一次事务回滚,而那时钱可能已经收了。
+//
+// ═══════════════════════ 返回值语义 ═══════════════════════
+//
+//	(nil, nil)  没有触发任何规则,调用方继续正常新建订阅
+//	(sub, nil)  已经延期了既有订阅,调用方**不要再新建**
+//	(nil, err)  拒绝购买
+func applyUserGroupPurchaseRulesTx(tx *gorm.DB, userId int, plan *SubscriptionPlan) (*UserSubscription, error) {
+	target := strings.TrimSpace(plan.UpgradeGroup)
+	if target == "" {
+		return nil, nil
+	}
+	now := GetDBTimestamp()
+
+	var actives []UserSubscription
+	if err := lockForUpdate(tx).
+		Where("user_id = ? AND status = ? AND upgrade_group <> '' AND "+SubscriptionActiveEndTimeSQL,
+			userId, "active", now).
+		Order("id asc").
+		Find(&actives).Error; err != nil {
+		return nil, err
+	}
+
+	for i := range actives {
+		existing := &actives[i]
+		if strings.TrimSpace(existing.UpgradeGroup) != target {
+			continue
+		}
+		// ── 同一个用户组 ──
+		if existing.EndTime == 0 {
+			return nil, errors.New("你已经永久拥有该用户组,无需重复购买")
+		}
+		if plan.DurationUnit == SubscriptionDurationPermanent {
+			// 时效档升永久:直接把它变成永久,而不是新开一条。
+			// 新开一条的话两条都活着,到期回退那一步要处理"永久的还在、时效的到期了",
+			// 而它算出来的结论正好是"保持当前组"——对,但多一条永远查不清的僵尸订阅。
+			if err := tx.Model(&UserSubscription{}).Where("id = ?", existing.Id).
+				Updates(map[string]any{"end_time": 0, "updated_at": now}).Error; err != nil {
+				return nil, err
+			}
+			existing.EndTime = 0
+			return existing, nil
+		}
+		// 时效 + 时效:从**原到期时间**往后接,不是从现在往后接。
+		// 从现在接会把用户已经买过、还没用完的那段时间吃掉。
+		base := time.Unix(existing.EndTime, 0)
+		if existing.EndTime < now {
+			base = time.Unix(now, 0)
+		}
+		newEnd, err := calcPlanEndTime(base, plan)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Model(&UserSubscription{}).Where("id = ?", existing.Id).
+			Updates(map[string]any{"end_time": newEnd, "updated_at": now}).Error; err != nil {
+			return nil, err
+		}
+		existing.EndTime = newEnd
+		return existing, nil
+	}
+
+	// ── 走到这里说明没有同组的,那么所有异组的都要被顶掉 ──
+	//
+	// 作废用 status=superseded 而不是删行:那条订阅是用户真的花钱买过的,
+	// 删掉之后客服无法回答"我上个月买的 VIP 去哪了"。同时把 end_time 推到当下,
+	// 让它在任何"仍然有效"的判据下都立刻失效。
+	//
+	// 刻意**不**触发它的到期回退:回退会把用户的组降回旧的 prev_user_group,
+	// 而紧接着新订阅又要把组改成 target —— 中间那一瞬用户处在一个谁都没配过的
+	// 状态,而且两次写 users.group 会在审计里留下一条看不懂的往返。
+	for i := range actives {
+		existing := &actives[i]
+		if err := tx.Model(&UserSubscription{}).Where("id = ?", existing.Id).
+			Updates(map[string]any{
+				"status":     SubscriptionStatusSuperseded,
+				"end_time":   now,
+				"updated_at": now,
+			}).Error; err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+// DetachUserGroupSubscriptionsTx 在**管理员手动改用户组**时,把那些"负责改组"的
+// 订阅从到期回退中摘出来。
+//
+// ═══════════════════════ 为什么必须摘 ═══════════════════════
+//
+// 到期回退任务会按订阅的 downgrade_group / prev_user_group 把用户的组改回去。
+// 管理员刚手工把某个人设成 A,而他名下还挂着一条会在下周到期、回退目标是 B 的
+// 订阅 —— 到了那天,任务会把管理员这次的操作**无声地覆盖掉**,而没有任何人
+// 记得那条订阅的存在。项目方拍板:管理员改组时清掉那条记录,并在操作前提醒。
+//
+// 摘的方式是把 upgrade_group / downgrade_group / prev_user_group 三个快照清空,
+// **不动 status 与 end_time**:
+//
+//	订阅本身还活着(它可能还带着余额,那是用户花钱买的,不能一起作废)
+//	只是它不再对"这个人属于哪个用户组"负任何责任
+//
+// downgradeUserGroupForSubscriptionTx 的第一条判断正是
+// 「downgrade_group 与 upgrade_group 都空 → 什么都不做」,所以清空之后它天然
+// 不再参与回退,不需要在回退那侧再加一个分支。
+//
+// 返回被摘掉的条数,供调用方写审计与提示。
+func DetachUserGroupSubscriptionsTx(tx *gorm.DB, userId int) (int64, error) {
+	if tx == nil || userId <= 0 {
+		return 0, nil
+	}
+	res := tx.Model(&UserSubscription{}).
+		Where("user_id = ? AND upgrade_group <> ''", userId).
+		Updates(map[string]any{
+			"upgrade_group":   "",
+			"downgrade_group": "",
+			"prev_user_group": "",
+			"updated_at":      GetDBTimestamp(),
+		})
+	return res.RowsAffected, res.Error
+}
+
+// CountUserGroupSubscriptions 数一个用户名下还有几条"负责改组"的订阅。
+//
+// 给管理端在**保存之前**做提醒用:改组会把它们全部摘掉,而那是不可逆的。
+// 只读、不锁 —— 它跑在管理员点开用户编辑页的路径上。
+func CountUserGroupSubscriptions(userId int) (int64, error) {
+	if userId <= 0 {
+		return 0, nil
+	}
+	var count int64
+	err := DB.Model(&UserSubscription{}).
+		Where("user_id = ? AND upgrade_group <> ''", userId).
+		Count(&count).Error
+	return count, err
+}
+
+// UserGroupPurchasePreview 是下单**之前**要告诉用户的后果。
+type UserGroupPurchasePreview struct {
+	// TargetGroup 买完之后他会在哪个用户组。
+	TargetGroup string `json:"target_group"`
+	// Action ∈ {"new", "extend", "supersede", "reject"}
+	Action string `json:"action"`
+	// SupersededGroups 会被顶掉的用户组名(Action = supersede 时非空)。
+	SupersededGroups []string `json:"superseded_groups,omitempty"`
+	// Message 给用户看的原话。
+	Message string `json:"message"`
+}
+
+// PreviewUserGroupPurchase 在下单前算出这次购买会发生什么。
+//
+// ═══════════ 为什么必须有这一步 ═══════════
+//
+// 跨组购买会把旧组剩余的时间**直接作废**,不折算、不退款(项目方拍板)。
+// 这是不可逆的,所以它必须在用户付钱**之前**就写在屏幕上。
+//
+// 刻意与执行分开:把确认塞进购买事务里,会让"用户没点确认"变成一次事务回滚,
+// 而那时候钱可能已经收了。预览是只读的,执行是事务的,两者判据同源
+// (都看 upgrade_group 与 SubscriptionActiveEndTimeSQL),但生命周期不同。
+//
+// 判据同源但不共用一个函数:执行那侧必须在事务里带行锁,而预览不能锁 ——
+// 一个用户刷一下商品页就锁住自己所有订阅行是不可接受的。
+func PreviewUserGroupPurchase(userId int, plan *SubscriptionPlan) (*UserGroupPurchasePreview, error) {
+	if plan == nil {
+		return nil, errors.New("invalid plan")
+	}
+	target := strings.TrimSpace(plan.UpgradeGroup)
+	out := &UserGroupPurchasePreview{TargetGroup: target, Action: "new"}
+	if target == "" {
+		out.Action = "new"
+		return out, nil
+	}
+	now := common.GetTimestamp()
+	var actives []UserSubscription
+	if err := DB.Where("user_id = ? AND status = ? AND upgrade_group <> '' AND "+SubscriptionActiveEndTimeSQL,
+		userId, "active", now).Find(&actives).Error; err != nil {
+		return nil, err
+	}
+
+	for i := range actives {
+		if strings.TrimSpace(actives[i].UpgradeGroup) != target {
+			continue
+		}
+		if actives[i].EndTime == 0 {
+			out.Action = "reject"
+			out.Message = "你已经永久拥有「" + target + "」,无需重复购买。"
+			return out, nil
+		}
+		out.Action = "extend"
+		if plan.DurationUnit == SubscriptionDurationPermanent {
+			out.Message = "你已拥有「" + target + "」,本次购买会把它变为永久有效。"
+		} else {
+			out.Message = "你已拥有「" + target + "」,本次购买会在现有到期时间之后继续顺延。"
+		}
+		return out, nil
+	}
+
+	for i := range actives {
+		out.SupersededGroups = append(out.SupersededGroups, strings.TrimSpace(actives[i].UpgradeGroup))
+	}
+	if len(out.SupersededGroups) > 0 {
+		out.Action = "supersede"
+		out.Message = "你当前的「" + strings.Join(out.SupersededGroups, "、") +
+			"」尚未到期。购买本商品会立即顶替它,**剩余时间直接作废、不折算也不退款,且不可撤销**。"
+		return out, nil
+	}
+	out.Message = "购买后你的用户组将变更为「" + target + "」。"
+	return out, nil
+}
+
 func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *SubscriptionPlan, source string) (*UserSubscription, error) {
 	if tx == nil {
 		return nil, errors.New("tx is nil")
@@ -588,6 +822,14 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		if count >= int64(plan.MaxPurchasePerUser) {
 			return nil, errors.New("已达到该套餐购买上限")
 		}
+	}
+	// 用户组商品的三条购买规则。只作用于"会改用户组"的套餐,
+	// 普通套餐(upgrade_group 为空)完全不受影响。
+	if extended, err := applyUserGroupPurchaseRulesTx(tx, userId, plan); err != nil {
+		return nil, err
+	} else if extended != nil {
+		// 同组续期:没有产生新订阅,直接把延长后的那条返回给调用方。
+		return extended, nil
 	}
 	nowUnix := GetDBTimestamp()
 	now := time.Unix(nowUnix, 0)

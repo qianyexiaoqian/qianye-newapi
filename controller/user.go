@@ -703,9 +703,26 @@ func UpdateUser(c *gin.Context) {
 	}
 	updatePassword := updatedUser.Password != ""
 	authzTouched := false
+	// 管理员手工改了用户组时,把那些"负责改组"的订阅摘出到期回退。
+	//
+	// 不摘的话:管理员刚把某人设成 A,而他名下还挂着一条下周到期、回退目标是 B
+	// 的订阅 —— 到了那天,到期任务会把这次操作**无声地覆盖掉**,而那时候没有
+	// 任何人记得那条订阅。项目方拍板:改组即清记录(界面上另有保存前的提醒)。
+	//
+	// 放在同一个事务里:改组成功但没摘干净,等于留下一颗定时炸弹。
+	groupChanged := strings.TrimSpace(updatedUser.Group) != "" &&
+		strings.TrimSpace(updatedUser.Group) != strings.TrimSpace(originUser.Group)
+	var detachedSubs int64
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := updatedUser.EditWithTx(tx, updatePassword); err != nil {
 			return err
+		}
+		if groupChanged {
+			n, err := model.DetachUserGroupSubscriptionsTx(tx, updatedUser.Id)
+			if err != nil {
+				return err
+			}
+			detachedSubs = n
 		}
 		touched, err := updateAdminPermissionsForUserInTx(c, tx, updatedUser.Id, originUser.Role, updatedUser.AdminPermissions)
 		authzTouched = touched
@@ -730,10 +747,18 @@ func UpdateUser(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAuditFor(c, updatedUser.Id, "user.update", map[string]interface{}{
+	auditPayload := map[string]interface{}{
 		"username": originUser.Username,
 		"id":       updatedUser.Id,
-	})
+	}
+	if groupChanged {
+		// 改组与"摘掉了几条订阅"必须一起进审计:事后只看到用户组变了,
+		// 没人能解释他买的那条 VIP 为什么不再回退。
+		auditPayload["group_from"] = originUser.Group
+		auditPayload["group_to"] = updatedUser.Group
+		auditPayload["detached_group_subscriptions"] = detachedSubs
+	}
+	recordManageAuditFor(c, updatedUser.Id, "user.update", auditPayload)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

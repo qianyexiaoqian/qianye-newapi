@@ -60,11 +60,11 @@ type SMTPAccountConfig struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
 
-	Server   string `json:"server"`
-	Port     int    `json:"port"`
-	Account  string `json:"account"`
-	Token    string `json:"token"`
-	From     string `json:"from"`
+	Server  string `json:"server"`
+	Port    int    `json:"port"`
+	Account string `json:"account"`
+	Token   string `json:"token"`
+	From    string `json:"from"`
 
 	SSLEnabled         bool `json:"ssl_enabled"`
 	StartTLSEnabled    bool `json:"start_tls_enabled"`

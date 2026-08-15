@@ -93,14 +93,18 @@ func readSubscriptionSource(t *testing.T) string {
 	return string(raw)
 }
 
-// extractFunc 取出一个函数的源码文本(到下一个顶格 func 为止)。
+// extractFunc 取出一个函数的**函数体**,到它顶格的收尾大括号为止。
+//
+// 切在顶格 `}` 而不是下一个 `func `:后者会把下一个函数的**文档注释**一起吃进来,
+// 于是「本函数不得出现 X」这类断言,会被隔壁注释里顺口提到的 X 误判成失败 ——
+// 这条测试自己先踩过一次(TestCrossGroupSupersedesWithoutRefund)。
 func extractFunc(t *testing.T, src, signature string) string {
 	t.Helper()
 	start := strings.Index(src, signature)
 	require.GreaterOrEqual(t, start, 0, "找不到函数 %s", signature)
 	rest := src[start+len(signature):]
-	if next := strings.Index(rest, "\nfunc "); next >= 0 {
-		return rest[:next]
+	if end := strings.Index(rest, "\n}\n"); end >= 0 {
+		return rest[:end]
 	}
 	return rest
 }

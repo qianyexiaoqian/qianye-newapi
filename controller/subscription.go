@@ -261,7 +261,7 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"creem_product_id":           req.Plan.CreemProductId,
 			"waffo_pancake_product_id":   req.Plan.WaffoPancakeProductId,
 			"max_purchase_per_user":      req.Plan.MaxPurchasePerUser,
-			"no_quota":                  req.Plan.NoQuota,
+			"no_quota":                   req.Plan.NoQuota,
 			"total_amount":               req.Plan.TotalAmount,
 			"upgrade_group":              req.Plan.UpgradeGroup,
 			"downgrade_group":            req.Plan.DowngradeGroup,
@@ -573,4 +573,41 @@ func validatePlanUserGroups(upgradeGroup, downgradeGroup string) error {
 		return errors.New("降级分组 " + downgradeGroup + " 不是一个用户分组(它必须是 users.group 里真实存在的值,或已在分组登记表里声明过)")
 	}
 	return nil
+}
+
+// GetSubscriptionPurchasePreview 在下单**之前**告诉用户这次购买会发生什么。
+//
+// ═══════════════════════ 为什么必须有这个接口 ═══════════════════════
+//
+// 用户组商品的跨组购买会把旧组剩余的时间**直接作废**,不折算、不退款
+// (项目方 2026-08-14 拍板)。这是不可逆的,所以它必须在用户付钱**之前**就
+// 写在屏幕上 —— 事后再解释等于让客服替一次静默的资损背书。
+//
+// 只读、不写、不锁:它跑在用户浏览商品的路径上,而不是下单路径上。
+// 真正的执行判据在 model.applyUserGroupPurchaseRulesTx 里,两者判据同源
+// (都看 upgrade_group 与 SubscriptionActiveEndTimeSQL),但生命周期不同 ——
+// 预览会被反复刷,执行只能发生一次且必须在事务里带行锁。
+//
+// 普通套餐(upgrade_group 为空)返回 action=new,前端据此不弹任何额外确认。
+func GetSubscriptionPurchasePreview(c *gin.Context) {
+	planId, err := strconv.Atoi(c.Param("id"))
+	if err != nil || planId <= 0 {
+		common.ApiErrorMsg(c, "无效的套餐 id")
+		return
+	}
+	plan, err := model.GetSubscriptionPlanById(planId)
+	if err != nil || plan == nil {
+		common.ApiErrorMsg(c, "套餐不存在")
+		return
+	}
+	if !plan.Enabled {
+		common.ApiErrorMsg(c, "该套餐已下架")
+		return
+	}
+	preview, err := model.PreviewUserGroupPurchase(c.GetInt("id"), plan)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, preview)
 }
