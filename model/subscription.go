@@ -187,6 +187,25 @@ type SubscriptionPlan struct {
 	// Total quota (amount in quota units, 0 = unlimited)
 	TotalAmount int64 `json:"total_amount" gorm:"type:bigint;not null;default:0"`
 
+	// NoQuota 把这个套餐变成**纯商品**:不带任何订阅余额,只负责改用户组。
+	//
+	// ═══════ 为什么不能用 TotalAmount = 0 表达「没有余额」═══════
+	//
+	// 因为 0 的语义是**不限额度**:预扣那一段写着 `if sub.AmountTotal > 0` 才
+	// 检查余额,0 直接跳过检查。也就是说拿 0 当"没有余额"来卖用户组商品,
+	// 换来的是给每个买家一份**无限订阅余额**。这是资损口子,不是显示问题。
+	//
+	// 两者是真正不同的三态,必须用独立字段区分:
+	//
+	//	NoQuota=true            纯商品,压根不参与出资
+	//	NoQuota=false, Total=0  不限额度
+	//	NoQuota=false, Total>0  有限额度
+	//
+	// 平凡 bool(默认 false)是刻意的:存量套餐全都是带余额的,而
+	// AGENTS.md 禁止给 bool 加 gorm default —— MySQL 与 PostgreSQL 对布尔默认值
+	// 的归一化不同,会让 AutoMigrate 每次重启都发一条 ALTER TABLE。
+	NoQuota bool `json:"no_quota" gorm:"not null"`
+
 	// Quota reset period for plan
 	QuotaResetPeriod        string `json:"quota_reset_period" gorm:"type:varchar(16);default:'never'"`
 	QuotaResetCustomSeconds int64  `json:"quota_reset_custom_seconds" gorm:"type:bigint;default:0"`
@@ -283,6 +302,13 @@ type UserSubscription struct {
 
 	AmountTotal int64 `json:"amount_total" gorm:"type:bigint;not null;default:0"`
 	AmountUsed  int64 `json:"amount_used" gorm:"type:bigint;not null;default:0"`
+
+	// NoQuota 是购买那一刻从套餐拍下的快照:这条订阅是不是纯商品(不带余额)。
+	//
+	// 快照而不是每次回查套餐:运营事后把套餐从"纯商品"改成"带余额",不该让
+	// 已经卖出去的那批订阅凭空长出一份余额;反过来同理。这与本表其它几个
+	// 快照字段(upgrade_group / downgrade_group / allow_wallet_overflow)同一口径。
+	NoQuota bool `json:"no_quota" gorm:"not null"`
 
 	StartTime int64  `json:"start_time" gorm:"bigint"`
 	EndTime   int64  `json:"end_time" gorm:"bigint;index;index:idx_user_sub_active,priority:3"`
@@ -569,6 +595,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		UserId:              userId,
 		PlanId:              plan.Id,
 		AmountTotal:         plan.TotalAmount,
+		NoQuota:             plan.NoQuota,
 		AmountUsed:          0,
 		StartTime:           now.Unix(),
 		EndTime:             endUnix,
@@ -1357,7 +1384,14 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 
 		var subs []UserSubscription
 		if err := lockForUpdate(tx).
-			Where("user_id = ? AND status = ? AND "+SubscriptionActiveEndTimeSQL, userId, "active", now).
+			// no_quota 的订阅是**纯商品**,不参与出资 —— 必须在 SQL 里就排除掉。
+			//
+			// 放到循环里再 continue 是不够的:这条查询带 FOR UPDATE,把纯商品行
+			// 一起锁进来会让"改用户组的商品"和"扣钱"互相排队,而它们本无关系。
+			// 更要紧的是下面那句 `if sub.AmountTotal > 0` —— 纯商品的 AmountTotal
+			// 是 0,而 0 的语义是**不限额度**,漏掉它等于给每个买家一份无限余额。
+			Where("user_id = ? AND status = ? AND no_quota = ? AND "+SubscriptionActiveEndTimeSQL,
+				userId, "active", false, now).
 			Order("end_time asc, id asc").
 			Find(&subs).Error; err != nil {
 			return errors.New("no active subscription")
