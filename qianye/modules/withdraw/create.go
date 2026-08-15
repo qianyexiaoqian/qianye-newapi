@@ -135,16 +135,36 @@ func create(c *gin.Context, userId int, req createRequest) (*orderView, error) {
 
 // submitInTx 是提交申请的全部扩展库副作用,跑在同一个事务里。
 //
-// 顺序不变量:【幂等重放判定必须排在风控闸门之前】。
+// # 顺序不变量一:佣金余额行锁必须是本事务的第一条语句
+//
+// 风控闸门(冷却 / 日笔数 / 日额度 / 未终态单数)全是"先 COUNT 再 INSERT"。
+// 此前第一把行锁在 FreezeForWithdraw 里,也就是排在闸门【之后】:并发的 N 个
+// 事务在 MySQL 的 REPEATABLE READ 快照里各读各的旧计数,一起通过闸门,再被
+// 余额行锁排成一队先后落单 —— 实测 8 并发全过,daily_max_count=3 与
+// max_pending_orders=3 双双失效。余额行锁本身仍然兜住资损(佣金不会超发),
+// 但日额度、冷却、反刷号这三道闸是空的。
+//
+// 把同一把锁提到最前面,闸门就与落单共享了这把锁。它必须在 findByIdemKey
+// 之前:那是一次普通查询,MySQL 的快照建立在事务的第一次一致性读那一刻,
+// 让它跑在加锁前,后面的计数读到的仍是旧快照,提锁就白提了(见
+// commission.LockBalance)。
+//
+// # 顺序不变量二:幂等重放判定必须排在风控闸门之前
+//
 // 同一个 client_request_id 的重试是原单的重放,不是第二笔申请。放在闸门之后的话,
 // 原单自己占掉的冷却窗口与日限额会把它自己的重试判成违规 —— 用户看到的是
 // "提现失败",而单其实已经落库、佣金已经冻结。这条顺序写反了只在冷却窗口内
 // 复现,人工测试极难碰上,所以必须由回归测试钉住。
 //
+// 两条不变量不冲突:加锁不是闸门,重放判定仍然排在所有闸门之前。
+//
 // 返回非 nil 的 *Withdrawal 表示本次是重放,调用方应原样回原单且不写审计。
 func submitInTx(tx *gorm.DB, w *Withdrawal, payee *Payee, acc acceptedRequest,
 	cfg config.Withdraw, actorName string) (*Withdrawal, error) {
 
+	if err := commission.LockBalance(tx, w.UserId); err != nil {
+		return nil, err
+	}
 	replay, err := findByIdemKey(tx, w.UserId, acc.IdemKey)
 	if err != nil || replay != nil {
 		return replay, err
@@ -280,15 +300,17 @@ func loadDailyUsage(tx *gorm.DB, userId int) (dailyUsage, error) {
 
 // enforceCreateLimits 是申请阶段的额度与频率闸门。
 //
-// 必须与落单在【同一个扩展库事务】内:判定与写入之间只要存在提交间隙,
-// 并发请求就会同时读到旧计数、同时通过校验 —— 这与 checkDailyCount 一直以来
-// 待在事务里的理由完全一样。
+// 调用约定:必须与落单在【同一个扩展库事务】内,且调用点已经持有该用户的佣金
+// 余额行锁(submitInTx 的第一条语句)。两个条件缺一不可 ——
 //
-// 诚实说明它挡不住什么:同事务不等于串行化。两笔并发申请可能都在各自的快照里
-// 读到旧计数,随后被 FreezeForWithdraw 的余额行锁排成一队先后提交,于是限额被
-// 多放行一笔。要根治得在判定之前就锁住该用户的余额行,而那把锁属于 commission
-// 模块。频率闸门多放行一笔不构成资损(佣金冻结才是准入判定),因此按当前形态
-// 收敛;真正的硬闸门是 FreezeForWithdraw 的 `WHERE available_quota >= ?`。
+//	只同事务不加锁:并发申请各在各的 REPEATABLE READ 快照里读到旧计数,
+//	                一起通过闸门,实测 8 并发全过;
+//	只加锁不同事务:判定与落单之间存在提交间隙,别人可以插进来。
+//
+// 早先这里写着"同事务不等于串行化,但多放行一笔不构成资损,故按当前形态收敛"。
+// 前半句是对的,后半句站不住:资损确实由 FreezeForWithdraw 的
+// `WHERE available_quota >= ?` 兜住,但日额度、冷却与反刷号这三道闸要拦的
+// 本来就不是资损,而是"一个账号一天能发多少笔"。它们被绕过时,余额闸一无所知。
 //
 // 这四项(max_quota_per_order 在 acceptCreate、其余三项在这里)此前定义了、
 // 校验了、赋了默认值,却没有任何消费方。运维看着一份写满上限的 YAML,

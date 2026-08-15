@@ -22,7 +22,9 @@ package model
 
 import (
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
@@ -71,9 +73,18 @@ func RecordEmailSend(rec common.SMTPSendRecord) {
 	if DB == nil {
 		return
 	}
-	errMsg := rec.ErrorMsg
+	// 错误信息直接来自上游 SMTP 的响应,既可能不是合法 UTF-8(服务器用 GBK /
+	// Latin-1 回中文),也可能长到需要截断。两件事都必须在落库前处理干净:
+	// MySQL 遇到非法字节序列会拒收**整条 INSERT**(Error 1366),PostgreSQL 同理,
+	// 于是「运维最需要的那条失败记录」恰好成了唯一一条没落库的 ——
+	// 而这正是发件台账存在的理由。SQLite 会照单全收,所以这个坑在本地测不出来。
+	errMsg := strings.ToValidUTF8(rec.ErrorMsg, "")
 	if len(errMsg) > emailSendLogErrorMaxLen {
+		// 按字节切会把最后一个多字节字符劈成半个,退到最近的字符边界上。
 		errMsg = errMsg[:emailSendLogErrorMaxLen]
+		for len(errMsg) > 0 && !utf8.ValidString(errMsg) {
+			errMsg = errMsg[:len(errMsg)-1]
+		}
 	}
 	entry := &EmailSendLog{
 		AccountId:   rec.AccountID,

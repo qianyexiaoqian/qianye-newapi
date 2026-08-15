@@ -27,6 +27,7 @@ import {
   getQyAvailStateStyle,
   QY_AVAIL_NO_VALUE_STYLE,
   QY_AVAIL_TONE_STYLES,
+  qyAvailCellState,
   qyAvailOutcomeKey,
   qyAvailRowScale,
   qyAvailToneOf,
@@ -74,6 +75,13 @@ export function QyAvailabilityMatrix(props: QyAvailabilityMatrixProps) {
 
   const metric = props.metric
   const groups = props.matrix.groups
+
+  // 被截断掉的模型整行都没查过。用后端显式下发的 covered_models 判定，
+  // 而不是「格子在不在 cells 里」——后者与「该分组不提供这个模型」不可分辨。
+  const covered = useMemo(
+    () => new Set(props.matrix.covered_models),
+    [props.matrix.covered_models]
+  )
 
   // 每个模型一行的相对刻度。可用率走六态，不需要相对刻度。
   const rowScales = useMemo(() => {
@@ -135,6 +143,7 @@ export function QyAvailabilityMatrix(props: QyAvailabilityMatrixProps) {
                   model={model}
                   group={group.group}
                   cell={cell}
+                  measured={covered.has(model)}
                   metric={metric}
                   scale={rowScales.get(model) ?? null}
                   onSelect={props.onSelectCell}
@@ -159,18 +168,22 @@ export function QyAvailabilityMatrix(props: QyAvailabilityMatrixProps) {
  *
  * `not_offered`（该分组根本不提供这个模型）不可点击：点开一个空抽屉
  * 只会让人怀疑是页面坏了。其余状态哪怕没有数字也允许点开看时序。
+ *
+ * `measured` 为假表示这一格因为响应被截断而**根本没查过**，状态是「未知」
+ * 而不是「未提供」，理由见 {@link qyAvailCellState}。
  */
 function QyAvailabilityMatrixCell(props: {
   model: string
   group: string
   cell: QyAvailCell | undefined
+  measured: boolean
   metric: QyAvailMetricDef
   scale: QyAvailRowScale
   onSelect: (cell: QyAvailCell) => void
 }) {
   const { t } = useTranslation()
   const { cell, metric } = props
-  const state = cell?.state ?? 'not_offered'
+  const state = qyAvailCellState(cell, props.measured)
   const stateStyle = getQyAvailStateStyle(state)
   const disabled = cell == null || state === 'not_offered'
 
@@ -181,13 +194,22 @@ function QyAvailabilityMatrixCell(props: {
 
   // 可用率用六态。性能指标没有取值时既不能用六态的绿色（那会把「可用率正常
   // 但延迟样本不足」画成一个绿色的空格），也没有相对色可着。
+  //
+  // 没查过的格子在任何主指标下都走「未知」那套灰底：性能指标的「无取值」样式是
+  // 透明的，会被读成「查了，只是样本不足」——同样是一个我们给不出的结论。
   let style: { cellClass: string; glyph: string } = stateStyle
-  if (metric.key !== 'availability' && state !== 'not_offered') {
+  if (
+    props.measured &&
+    metric.key !== 'availability' &&
+    state !== 'not_offered'
+  ) {
     style = value == null ? QY_AVAIL_NO_VALUE_STYLE : toneStyle
   }
 
   const lines = [`${props.model} · ${props.group}`]
-  if (metric.key === 'availability') {
+  if (!props.measured) {
+    lines.push(t('qy_avl_not_measured'))
+  } else if (metric.key === 'availability') {
     lines.push(t(stateStyle.labelKey))
   } else if (value != null && tone !== 'none') {
     lines.push(t(toneStyle.labelKey))

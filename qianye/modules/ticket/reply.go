@@ -1,6 +1,8 @@
 package ticket
 
 import (
+	"errors"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
@@ -49,12 +51,24 @@ func nextStatus(current string, in replyInput) string {
 
 // appendMessage 往工单里追加一条消息,并按需推进状态。
 //
-// 整个动作在一个事务里:消息插入、条数计数、状态跃迁、图片绑定四者要么都成立
-// 要么都不成立。拆开做的话,中途失败会留下"消息在、状态没跟上"的单 ——
-// 客服队列因此漏掉一张用户正在等的工单,而没有任何地方会报错。
+// 整个动作在一个事务里:回复冷却、条数上限、消息插入、条数计数、状态跃迁、
+// 图片绑定要么都成立要么都不成立。拆开做的话,中途失败会留下"消息在、状态没
+// 跟上"的单 —— 客服队列因此漏掉一张用户正在等的工单,而没有任何地方会报错。
 //
-// 状态跃迁用带条件的 UPDATE(`WHERE id=? AND status=?`)判定并发,绝不"先读
-// 后写":两个管理员同时回复同一张单时,先读后写会让其中一次的状态更新静默丢失。
+// # 第一条语句必须是这张工单的行锁
+//
+// 冷却与条数上限都是"先查再插"的闸门。此前冷却判定整个待在事务【外面】
+// (handler 里调 checkReplyCooldown,走的还是 db.Get() 而不是事务句柄),
+// 实测 6 并发回复全过;条数上限虽然在事务里,却同样被 REPEATABLE READ 的
+// 快照绕过 —— 两条并发回复各读各的旧计数一起通过。
+//
+// 锁这张工单的主键行,而不是锁用户:冷却口径本来就是"这张单里该用户的上一条
+// 消息",条数上限也是按单算,而且管理员与用户会同时回同一张单 —— 按用户加锁
+// 既拦不住跨身份的那一对,又会把一个人在不同工单上的回复无谓地串起来。
+// 加锁必须排在任何普通查询之前(快照建立时机见 userstate.go)。
+//
+// 状态跃迁仍然保留带条件的 UPDATE(`WHERE id=? AND status=?`):行锁只在本事务
+// 期间成立,而 t.Status 是调用方在事务【开始之前】读到的,期间可能已被改写。
 func appendMessage(t *Ticket, in replyInput, refs []string) (*Message, error) {
 	cfg := config.Get().Ticket
 	now := common.GetTimestamp()
@@ -72,9 +86,25 @@ func appendMessage(t *Ticket, in replyInput, refs []string) (*Message, error) {
 	to := nextStatus(t.Status, in)
 
 	err := db.Get().Transaction(func(tx *gorm.DB) error {
-		// 条数上限在事务里重查,不信任外面读到的 MessageCount:两条并发回复
-		// 会双双读到同一个旧计数一起通过。上限本身不是安全边界,但它守的是
-		// "详情接口还打得开"这条底线,越界一次就再也回不去。
+		var locked Ticket
+		if err := db.LockForUpdate(tx).Select("id").Where("id = ?", t.Id).
+			Take(&locked).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				// 工单从不删除,走到这里只能是调用方拿着一个凭空捏造的 id。
+				return errNotFound
+			}
+			return err
+		}
+		// 冷却只卡用户,不卡管理员(理由见 checkReplyCooldown)。判定在锁内,
+		// 于是"同一张单里我上一条是什么时候"这个问题在并发下只有一个答案。
+		if in.AuthorType == qymodel.ActorUser {
+			if err := checkReplyCooldown(tx, t.Id, in.AuthorId, now); err != nil {
+				return err
+			}
+		}
+		// 条数上限在事务里重查,不信任外面读到的 MessageCount。上限本身不是
+		// 安全边界,但它守的是"详情接口还打得开"这条底线 —— 消息表是
+		// append-only 的,越界一次就再也回不去。
 		var cnt int64
 		if err := tx.Model(&Message{}).Where("ticket_id = ?", t.Id).Count(&cnt).Error; err != nil {
 			return err
@@ -214,20 +244,25 @@ func reopenTicket(t *Ticket) error {
 //
 // 按"这张单里该用户的上一条消息"算而不是全局最后一条:两张不同工单各回一句
 // 是正常操作,合起来算会让人在第二张单里莫名被拒。
-func checkReplyCooldown(ticketId int64, userId int, now int64) error {
+//
+// tx 必须是 appendMessage 那个事务的句柄,且调用点必须在工单行锁【之后】。
+// 它此前收的是 ticketId 并自己去拿 db.Get(),也就是判定跑在事务外、不持任何锁:
+// 6 个并发回复各查各的、各自都看到"上一条还在冷却窗口之外",于是全部放行。
+// 参数从 ticketId 改成 tx 不是为了好看 —— 是为了让"从事务外调用"这件事
+// 在编译期就写不出来。
+func checkReplyCooldown(tx *gorm.DB, ticketId int64, userId int, now int64) error {
 	secs := config.Get().Ticket.ReplyCooldownSecs
 	if secs <= 0 {
 		return nil
 	}
 	var last Message
-	err := db.Get().Select("created_at").
+	err := tx.Select("created_at").
 		Where("ticket_id = ? AND author_type = ? AND author_id = ?", ticketId, qymodel.ActorUser, userId).
 		Order("id desc").Limit(1).Take(&last).Error
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	}
 	if err != nil {
-		db.MarkFailure(err)
 		return err
 	}
 	if now-last.CreatedAt < int64(secs) {

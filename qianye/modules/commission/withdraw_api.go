@@ -48,6 +48,28 @@ func Withdrawable(userId int) (int64, error) {
 	return bal.AvailableQuota, nil
 }
 
+// LockBalance 取得该用户佣金余额行的排他锁,行不存在则先补一行。
+//
+// 提现模块用它把【申请阶段的风控闸门】与 FreezeForWithdraw 收敛到同一把锁上。
+//
+// 为什么这件事必须由本包提供:余额行是本模块与提现模块早就约定好的唯一加锁点
+// (见 lockBalance),提现那边自己再挑一行来锁,等于凭空造出第二把锁,
+// 两把锁互不认识,谁也拦不住谁。
+//
+// 调用约定:**必须是所在事务的第一条语句**。MySQL 的 REPEATABLE READ 快照建立
+// 在事务里的第一次一致性读那一刻,加锁读不建立快照 —— 先做过普通查询再来加锁,
+// 拿到锁之后读到的仍是加锁前的旧快照,基于计数的闸门会照样被并发绕过。
+func LockBalance(tx *gorm.DB, userId int) error {
+	if tx == nil {
+		return errors.New("commission: 必须在扩展库事务内调用")
+	}
+	if userId <= 0 {
+		return ErrInvalidAmount
+	}
+	_, err := lockBalance(tx, userId)
+	return err
+}
+
 // FreezeForWithdraw 在扩展库事务内冻结提现额度。
 //
 // 调用约定(提现模块必须遵守):

@@ -100,7 +100,9 @@ func TestCheckCreateLimits(t *testing.T) {
 // 消息条数上限是"详情接口还打得开"这条底线,越界一次就再也回不去
 // (它是 append-only 表,删不掉)。这里验证它真的在事务里拦,而不是只写在配置里。
 func TestAppendMessage_MessageLimit(t *testing.T) {
-	gdb := newEnv(t, "  max_messages_per_ticket: 2\n")
+	// 显式关掉回复冷却:它现在与条数上限在同一个事务里判(appendMessage),
+	// 不关的话本用例会先撞上冷却,测到的就不是条数上限了。
+	gdb := newEnv(t, "  max_messages_per_ticket: 2\n  reply_cooldown_seconds: 0\n")
 	tk := seedTicket(t, gdb, "T1", nil)
 
 	in := replyInput{AuthorType: "user", AuthorId: 1, AuthorName: "alice", Body: "第一条"}

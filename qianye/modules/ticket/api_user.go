@@ -1,7 +1,6 @@
 package ticket
 
 import (
-	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
@@ -172,11 +171,9 @@ func handleReply(c *gin.Context) {
 		respondErr(c, errClosed)
 		return
 	}
-	if err := checkReplyCooldown(t.Id, userId, common.GetTimestamp()); err != nil {
-		respondErr(c, err)
-		return
-	}
-
+	// 回复冷却【不在这里判】:它是一道"先查再插"的闸门,只有和消息插入待在
+	// 同一个事务、同一把工单行锁下才成立。这里再补一次判定不会更安全,
+	// 只会制造"看起来判过了"的错觉(见 appendMessage)。
 	m, err := appendMessage(t, replyInput{
 		AuthorType: qymodel.ActorUser,
 		AuthorId:   userId,

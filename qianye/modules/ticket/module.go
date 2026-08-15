@@ -18,7 +18,7 @@ type Mod struct{ module.Base }
 func (Mod) Name() string { return "ticket" }
 
 func (Mod) Tables() []any {
-	return []any{&Ticket{}, &Message{}, &Attachment{}}
+	return []any{&Ticket{}, &Message{}, &Attachment{}, &UserState{}}
 }
 
 // RegisterUserRoutes 挂载普通用户接口。传入的组已挂 UserAuth。

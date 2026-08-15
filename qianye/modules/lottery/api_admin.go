@@ -615,8 +615,17 @@ func handleCancelActivity(c *gin.Context) {
 		if _, err := excludePendingEntries(tx, act.Id, now); err != nil {
 			return err
 		}
+		// 封盘同样是**唯一**冻结名单快照的地方,取消绕过它的后果与上面那条对称:
+		// roster_hash 留空,而任何第三方按公开条目重算出来的都是一个非空哈希 ——
+		// 于是每一场被取消的活动在自家验证脚本第 3 步就判 FAIL。
+		hash, count, err := freezeRosterOnCancel(ctx, tx, act, now)
+		if err != nil {
+			return err
+		}
 		return writeActivityEvent(tx, act.Id, act.Status, StatusSettling, ActionCancel,
-			qymodel.ActorAdmin, c.GetInt("id"), map[string]any{"reason": reason})
+			qymodel.ActorAdmin, c.GetInt("id"), map[string]any{
+				"reason": reason, "roster_hash": hash, "roster_count": count,
+			})
 	})
 	if err != nil {
 		if !errors.Is(err, errStatusConflict) {
@@ -633,6 +642,45 @@ func handleCancelActivity(c *gin.Context) {
 		snapText(activitySnapshot(act, nil)),
 		snapText(map[string]any{"status": StatusSettling, "outcome": OutcomeCancelled}))
 	respondOK(c, gin.H{"act_no": actNo, "status": StatusSettling, "outcome": OutcomeCancelled})
+}
+
+// freezeRosterOnCancel 在整场取消时补上封盘那一步没走到的名单冻结。
+//
+// 取消可以从 published 直接跳到 settling,而 lockActivity 是**唯一**写
+// roster_hash 的地方。少了这一步,活动行上的 roster_hash 永远是空串,而
+// 证据链下发的条目仍然完整 —— 任何第三方(包括本仓自带的 lottery-verify.py)
+// 按公开条目重算出的都是一个非空哈希,对不上就直接停在第 3 步,连"本应中奖
+// 名单"那段判断"管理员是不是看了结果才决定不开"的材料都算不出来。
+// 一个参与者都没有的场次同样会 FAIL:空名单的哈希是 H(域, act_no, commit, "0", "")
+// 而不是空串。
+//
+// 与封盘同一条纪律:必须在 pending→excluded 清扫**之后**、同一个事务内读名单。
+// 已经封过盘的活动(roster_hash 非空)绝不覆盖 —— 那份快照可能早已被人抓走。
+// 草稿没有承诺哈希,名单原像无从谈起,跳过。
+func freezeRosterOnCancel(ctx context.Context, tx *gorm.DB, act *Activity, now int64) (string, int, error) {
+	// 判据取事务内回读的那一行,不是进 handler 时读到的那一份:上面那次状态 CAS
+	// 已经在活动行上取得了锁,而并发的封盘任务恰好可能在这两次读之间落盘。
+	var cur Activity
+	if err := tx.Where("id = ?", act.Id).Take(&cur).Error; err != nil {
+		return "", 0, err
+	}
+	if cur.CommitHash == "" || cur.RosterHash != "" {
+		return cur.RosterHash, cur.RosterCount, nil
+	}
+	roster, err := loadRoster(ctx, tx, act.Id)
+	if err != nil {
+		return "", 0, err
+	}
+	hash, count := RosterHashFor(cur.Algo, cur.ActNo, cur.CommitHash, rosterLines(roster))
+	err = tx.Model(&Activity{}).Where("id = ?", act.Id).Updates(map[string]any{
+		"roster_hash":  hash,
+		"roster_count": count,
+		"updated_at":   now,
+	}).Error
+	if err != nil {
+		return "", 0, err
+	}
+	return hash, count, nil
 }
 
 // ─────────────────────────── 竞猜结果 ───────────────────────────

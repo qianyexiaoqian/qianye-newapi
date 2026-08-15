@@ -268,6 +268,7 @@ export function QyAvailability() {
                   <TabsContent value='table'>
                     <QyAvailabilityTable
                       cells={matrix.cells}
+                      truncated={matrix.truncated}
                       onSelectCell={setSelectedCell}
                     />
                   </TabsContent>
