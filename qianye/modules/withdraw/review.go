@@ -301,6 +301,23 @@ func resolveHold(c *gin.Context, id int64, decision, rawEvidence string) (*admin
 	if w.Status != StatusPaying {
 		return nil, errIllegalTransition
 	}
+	// paying 不是"等人裁决"的状态,而是**每一笔正在执行中的到账单**都会经过的状态:
+	// startPaying 与资金单落库同事务提交,之后整个 applyOnMainDB → AfterCommit →
+	// markSuccess 期间它都是 paying 且 reconcile_state 为空。扩展库回写失败时资金单
+	// 停在 pending,这张单会在非 hold 的 paying 上一直待到补偿探针跑完退避阶梯 ——
+	// 那恰恰是运维会去翻"卡住的单"的时刻。
+	//
+	// 只判 status 的话,对一张主库已经加完额度的在途单裁一次 failed,
+	// UnfreezeForWithdraw 会把佣金退回可用池,而随后的 finishPaid CAS 落空、静默
+	// 返回 nil:用户既拿到了站内额度,又保住了可以再提一次的佣金。两边差额恰好等于
+	// 裁决金额,而佣金侧的 available+frozen+withdrawn == earned-clawback 照样成立,
+	// 任何只看佣金账的对账都发现不了。
+	//
+	// 因此这道闸门与 markPaid 的 method 闸门同级 —— 是资金安全边界而不是参数校验:
+	// 人工裁决只能作用在补偿链路明确标记为"不可判定"(hold)的单上。
+	if w.ReconcileState != ReconcileHold {
+		return nil, errIllegalTransition
+	}
 	a := actorOf(c)
 
 	err = db.Get().Transaction(func(tx *gorm.DB) error {

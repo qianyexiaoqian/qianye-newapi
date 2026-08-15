@@ -42,17 +42,9 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 	}
 	gdb = gdb.WithContext(ctx)
 
-	remaining, err := netAccrued(gdb, inviteeId)
-	if err != nil {
-		return err
-	}
-	// 冲正上限是"这个下线到目前为止一共产生过多少净佣金"。
-	// 超额冲正会让邀请人为别的下线挣的钱买单。净额为零时这个下线要么
-	// 从未产生过佣金、要么已经被冲平,两种情况都无事可做。
-	if remaining.LessThanOrEqual(decimal.Zero) {
-		return nil
-	}
-
+	// 上限必须等 origin 定下来才算得出:它要按"负数行记在谁名下"收口(见
+	// netAccrued),而那个人正是 origin.InviterId。这条路径本身是低频的,
+	// 多做一次原单查询换一个正确的上限,是划算的。
 	origin, err := consumeOriginForRefund(gdb, inviteeId, bucketDate(common.GetTimestamp()))
 	if err != nil {
 		return err
@@ -73,6 +65,17 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 		// "这笔被冲了多少"的溯源指向一笔无关的账。UsdRate 留零,
 		// writeAccrual 会取当前汇率。
 		origin = &Accrual{InviterId: e.InviterId, RateUnits: d.Units, RateGroup: d.Group}
+	}
+
+	remaining, err := netAccrued(gdb, inviteeId, origin.InviterId)
+	if err != nil {
+		return err
+	}
+	// 冲正上限是"这个下线给这个邀请人一共挣过多少净佣金"。
+	// 超额冲正会让邀请人为别人名下的计佣买单。净额为零时这一对要么
+	// 从未产生过佣金、要么已经被冲平,两种情况都无事可做。
+	if remaining.LessThanOrEqual(decimal.Zero) {
+		return nil
 	}
 
 	amount := calcGross(refundQuota, origin.RateUnits)
@@ -156,11 +159,24 @@ func consumeOriginForRefund(gdb *gorm.DB, inviteeId int, day string) (*Accrual, 
 	return &rows[0], nil
 }
 
-// netAccrued 返回某个下线名下的净计佣额(已扣除历史冲正)。
-func netAccrued(gdb *gorm.DB, inviteeId int) (decimal.Decimal, error) {
+// netAccrued 返回**这一对(邀请人, 下线)**之间的净计佣额(已扣除历史冲正)。
+//
+// 必须同时按 inviter_id 收口,不能只按 invitee_id:负数行是记在 origin.InviterId
+// 名下的,上限却按别人名下的计佣算出来,就等于让 A 挣的钱去给 B 的冲正兜底。
+// 两条真实路径会踩到:
+//
+//   - 换绑(api_admin_relation.go 的 rebindRelation 明确支持,且历史佣金留在原
+//     邀请人名下):下线先给 A 挣了 100 万,换绑到 B 之后只挣了 10,这时对 B 的
+//     那一行冲正 50 万照样通过,B 凭空背上 50 万欠账。
+//   - 手工调整(api_admin_adjust.go 写 InviteeId: 0):按 invitee_id=0 汇总等于
+//     "全站所有手工调整之和",上限彻底失去意义。实测中一个只入账过 1000 的账号
+//     被冲正了 30 万,unsettled_amount 变成 -299000 且 debt_blocked 置位 ——
+//     佣金侧的 available+frozen+withdrawn == earned-clawback 恒等式照样成立,
+//     超额部分全进了负数结转,对账发现不了。
+func netAccrued(gdb *gorm.DB, inviteeId, inviterId int) (decimal.Decimal, error) {
 	var raw string
 	err := gdb.Model(&Accrual{}).
-		Where("invitee_id = ? AND status <> ?", inviteeId, StatusVoided).
+		Where("invitee_id = ? AND inviter_id = ? AND status <> ?", inviteeId, inviterId, StatusVoided).
 		Select("COALESCE(SUM(gross_amount), 0)").Scan(&raw).Error
 	if err != nil {
 		db.MarkFailure(err)
@@ -192,7 +208,7 @@ func manualClawback(ctx context.Context, accrualId int64, quota int64, idemSuffi
 	}
 
 	amount := decimal.NewFromInt(quota)
-	remaining, err := netAccrued(gdb, origin.InviteeId)
+	remaining, err := netAccrued(gdb, origin.InviteeId, origin.InviterId)
 	if err != nil {
 		return nil, err
 	}
