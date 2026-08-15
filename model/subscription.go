@@ -1698,6 +1698,22 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 			}
 			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
 			if err != nil {
+				// 套餐行已被删掉,而用户身上这条订阅还指着它。
+				//
+				// 必须跳过这一条,不能 return:一条脏数据会让整个事务失败,而
+				// 失败的错误码不是「余额不足」,service/billing_session.go 里的
+				// 钱包回落判断因此不成立 —— 表现是这个用户**所有**请求全部被打挂,
+				// 纯钱包付费也救不回来、换任何模型分组也救不回来。
+				//
+				// 跳过之后这条订阅只是不再出资(它本来也定不出价:重置周期、
+				// 额度上限、绑定分组全在被删掉的那一行里),用户回落到钱包,
+				// 与「这个套餐已经用完了」是同一种表现。
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					common.SysError(fmt.Sprintf(
+						"user subscription %d (user %d) points at deleted plan %d; skipping it for funding",
+						sub.Id, userId, sub.PlanId))
+					continue
+				}
 				return err
 			}
 			if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {

@@ -129,6 +129,16 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'request-audits', params] as const,
   adminLeases: () => [...qyKeys.all, 'admin', 'leases'] as const,
 
+  /**
+   * 管理端查某个用户的支付密码状态。
+   *
+   * 逐用户一个 key。消费方是**上游**用户管理表格里的「重置支付密码」弹窗，
+   * 不是某个 qy 页面 —— 挂在 qy 前缀下是为了重置成功后能被
+   * `invalidateQueries({ queryKey: qyKeys.all })` 一起冲掉。
+   */
+  adminPayPassword: (userId: number) =>
+    [...qyKeys.all, 'admin', 'pay-password', userId] as const,
+
   adminCommissionConfig: () =>
     [...qyKeys.all, 'admin', 'commission', 'config'] as const,
   adminCommissionRecords: (params: unknown) =>

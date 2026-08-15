@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/modules/commission"
+	"github.com/QuantumNous/new-api/qianye/modules/paypass"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
@@ -84,6 +85,32 @@ func handleGetConfig(c *gin.Context) {
 }
 
 // handleCreate 是唯一会动佣金的用户入口,已挂 CriticalRateLimit。
+//
+// # 验密闸门为什么在这里,而不在 submitInTx 里
+//
+// design-13-paypass.md §0 把「佣金提现未接入支付密码」列为已知缺口:
+// 拿到会话的攻击者挡不住划转,却能走提现把钱**真的转出站外**。这一行补的就是它。
+//
+// 位置有三个硬约束,缺一条都不成立:
+//
+//   - 必须在 ShouldBindJSON **之后** —— 密码随请求体来;
+//   - 必须在 create() **之前** —— create 里就开始预检余额、组装单据,
+//     进事务后第一条语句就是佣金余额行锁,放进去等于"先动钱再问密码";
+//   - 必须在**事务之外**。这一条是本模块特有的,理由有两层:
+//     ① submitInTx 的顺序不变量要求佣金余额行锁是事务的第一条语句
+//     (见 submitInTx 的说明与 TestSubmitInTxLocksBeforeItReads),
+//     验密塞在锁之前会直接把那把锁挤到第二位,四道风控闸门当场静默失效;
+//     ② 就算放在锁**之后**也不行 —— bcrypt(cost 10)是几十毫秒的 CPU 开销,
+//     那会把每一笔提现的行锁持有时间抬到 bcrypt 的量级,同一用户的并发申请
+//     全排在这把锁后面;而且 paypass.verify 用的是自己的 db.Get() 句柄
+//     (它必须脱离请求 ctx,否则客户端断连就能取消失败计数写入),
+//     在持锁事务里再去借第二条连接写另一张表,是连接池耗尽型死锁的标准形状。
+//
+// 验密失败时零副作用:此刻还没有任何单据、任何冻结、任何事务。
+//
+// Require 不通过时已写好响应并 Abort,这里直接 return。它没有任何可以表达
+// 豁免的入参 —— 想给提现开后门的人必须先改 paypass.Require 的签名,
+// 那是一次看得见的动作,而不是在调用点悄悄包一个 if。
 func handleCreate(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagWithdraw) {
 		return
@@ -91,6 +118,15 @@ func handleCreate(c *gin.Context) {
 	var req createRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondErr(c, errInvalidParam)
+		return
+	}
+	// 没设过支付密码时**拒绝并引导去设置**(paypass 返回 qy_pay_pwd_not_set),
+	// 不放行。放行看起来"照顾了老用户",实际是把闸门变成一个自助开关:
+	// 盗号者拿到会话后只要挑一个没设过密码的账号,提现就完全不设防 ——
+	// 而提现是钱**离开站点**的那条路,比只在站内挪账的划转更不该宽松。
+	// 划转(裁决 1「首次使用强制设置」)与抽奖已经是这个口径,三条出钱路径
+	// 对同一个问题给出两种答案,正是下一个绕过被造出来的地方。
+	if !paypass.Require(c, c.GetInt("id"), req.PayPassword) {
 		return
 	}
 	view, err := create(c, c.GetInt("id"), req)

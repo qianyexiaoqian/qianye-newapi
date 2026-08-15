@@ -240,12 +240,6 @@ function QyUgGroupDialogBody(props: {
             scope={{
               isSaving: editor.isScopeSaving,
               hasUnsavedDraft: editor.counts.total > 0,
-              enforcePreview:
-                editor.enforcePreview?.userGroup === row.name
-                  ? editor.enforcePreview.result
-                  : null,
-              isPreviewing: editor.isEnforcePreviewing,
-              onPreviewForEnforce: () => editor.runEnforcePreview(row.name),
               onSubmit: (body, afterApply) =>
                 editor.submitScope(row.name, body, afterApply),
             }}

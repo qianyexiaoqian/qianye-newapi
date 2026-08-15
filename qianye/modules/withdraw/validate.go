@@ -82,6 +82,12 @@ type createRequest struct {
 	// 图片本体从不随本请求走 —— JSON 里塞 base64 会让整条申请链路(含幂等重放)
 	// 拖着几 MiB 的负载,而这条路径上真正稀缺的是事务时间。
 	ProofRef string `json:"proof_ref"`
+
+	// PayPassword 是资金二次确认。它**不进** acceptedRequest,也永远不落库:
+	// 唯一的消费方是 handleCreate 里那一次 paypass.Require,用完即弃。
+	// 让它随请求体走而不是走 paypass.HeaderPayPassword,是因为申请本来就是
+	// 一次 JSON 提交,多一个请求头只会让前端在两处维护同一个值。
+	PayPassword string `json:"pay_password"`
 }
 
 // acceptedRequest 是通过受理校验后的规范化请求。

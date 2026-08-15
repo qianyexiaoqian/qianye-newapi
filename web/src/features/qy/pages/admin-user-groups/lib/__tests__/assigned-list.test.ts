@@ -88,8 +88,10 @@ function userGroup(
     active_token_count: 3,
     managed: scopeState !== 'unset',
     scope_state: scopeState,
-    mode: 'shadow',
-    scope_enforced: false,
+    // 影子档下线之后后端只下发这一个值（未设范围的行也是），
+    // 有范围行 = 清单立即生效。
+    mode: 'enforce',
+    scope_enforced: scopeState !== 'unset',
     allow_auto: false,
     scope_note: '',
     self_excluded: false,

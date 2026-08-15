@@ -188,6 +188,17 @@ export type QyWithdrawCreateRequest = {
    * `proof_ref` 是直接报错而不是静默忽略的（`qy_wd_proof_disabled`）。
    */
   proof_ref?: string
+
+  /**
+   * 支付密码。后端 `handleCreate` 在**进事务之前**用它跑一次 `paypass.Require`，
+   * 不通过就直接 403，一张单都不会落库、一分佣金都不会冻结。
+   *
+   * 必填而不是可选：漏传与传空串在后端是同一种结果（`qy_pay_pwd_required`），
+   * 但把它标成可选会让下一个新增调用点以为"不带也行"。
+   * 用户没设过支付密码时后端返回 `qy_pay_pwd_not_set` 并要求先去设置 ——
+   * 提现是钱离开站点的那条路，不存在"没设过就放行"这个档位。
+   */
+  pay_password: string
 }
 
 /** 审核队列角标。 */

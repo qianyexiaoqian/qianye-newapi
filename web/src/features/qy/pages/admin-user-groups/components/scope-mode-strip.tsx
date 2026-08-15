@@ -28,54 +28,47 @@ import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 
 import type {
-  QyGmPreviewResponse,
   QyGmScopeRequest,
   QyGmUserGroup,
 } from '../../admin-group-matrix/types'
 
 /**
  * 提交范围行的那一条通道 —— 两个外壳都从 `useQyGmEditor.submitScope` 走，
- * 所以切 enforce 的双哈希闸门只有一份实现。
+ * 所以「这次写入会清空草稿」那道闸门只有一份实现。
  *
  * `afterApply` 在服务端状态回读**之后**执行（回读会清空本地草稿），
  * 用于"先建清单、再把这一次的增删写进草稿"这条两步动作。
  */
 export type QyUgScopeSubmit = {
   isSaving: boolean
-  /** 矩阵上还有没保存的格子。切 enforce 之前必须先保存（后端按哈希比对）。 */
-  hasUnsavedDraft: boolean
   /**
-   * 针对**这一个**用户分组的影响面预览结果；没预览过时为 `null`。
+   * 矩阵上还有没保存的格子。
    *
-   * 必须是单分组预览：服务端切换时用 `previewDigest(userGroup)` 只重算这一个
-   * 分组，复用整页那份通用预览会让两侧的 `impact_hash` 永不相等，enforce 被
-   * 409 永久锁死。
+   * 范围写入是**另一个端点**，成功之后会强制回读服务端状态、清空本地草稿。
+   * 所以每一个范围写入入口都要先看它，否则运营刚改的倍率静默消失，屏幕上
+   * 只剩一句绿色的「范围已保存」。
    */
-  enforcePreview: QyGmPreviewResponse | null
-  isPreviewing: boolean
-  onPreviewForEnforce: () => void
+  hasUnsavedDraft: boolean
   onSubmit: (body: QyGmScopeRequest, afterApply?: () => void) => void
 }
 
 /**
- * 「这份清单现在算不算数」—— shadow / enforce 的状态与切换。
+ * 「这份清单现在算不算数」—— 状态条。
  *
  * ── 为什么它在列表**旁边**，而不是列表**前面** ──
  *
  * 上一版把"有没有 scope 行"和"以什么力度生效"合成一个前置表单：不先在那里
  * 把开关打开，下面整张清单的勾选框全是灰的。运营初见只会读成「什么都点不动」，
  * 而屏幕上唯一的解释是一段要求他先理解内部数据模型的话。现在"有没有清单"由
- * 列表内容隐式表达（第一次增删时建、清空时删），这里只剩下一个**真正的运营
- * 决定**：配好的这份清单，是先只观察，还是现在就拦人。
+ * 列表内容隐式表达（第一次增删时建、清空时删）。
  *
- * 它仍然必须存在。灰度能力（先配好、观察一段、确认无误再真拦人）是资金与权限
- * 变更唯一的安全网，而"这一档现在到底拦不拦人"必须一眼可见 —— 那两种状态下
- * 同一份清单的行为完全相反。
+ * ── 只剩一档 ──
  *
- * ── 切 enforce 保留 409 闸门 ──
+ * 曾经这里还有第二个运营决定：这份清单是先只观察（shadow），还是现在就拦人
+ * （enforce）。影子档已整体下线 —— 有范围行 = 清单立即生效，没有第二档可切。
  *
- * 切过去是这一页唯一会让一批用户当场 403 的动作，所以它是这里唯一需要展开、
- * 需要先看影响面的分支。切回 shadow 不打断任何流量，一次点击即可。
+ * 它仍然必须存在，因为「这一档现在会拦人」这件事必须一眼可见：运营配完一份
+ * 会让一批令牌 403 的清单，屏幕上不能一个字都没提醒过他。
  */
 export function QyUgScopeModeStrip(props: {
   userGroup: QyGmUserGroup
@@ -83,8 +76,6 @@ export function QyUgScopeModeStrip(props: {
 }) {
   const { t } = useTranslation()
   const row = props.userGroup
-  // enforced / switching / enforceUnlocked 三个状态随 shadow 一并删除:
-  // 有范围行就一定生效,没有第二档可切,也就没有需要解锁的确认动作。
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [allowAuto, setAllowAuto] = useState(row.allow_auto)
   const [note, setNote] = useState(row.scope_note)
@@ -121,30 +112,7 @@ export function QyUgScopeModeStrip(props: {
             {t('qy_ugl_mode_enforce_desc')}
           </span>
         </div>
-
-        {/*
-          ── 这里曾经是「切回影子 / 切到强制」两个按钮 ──
-
-          shadow 模式已整体下线:有 scope 行 = 清单立即生效,没有第二档,
-          因此也就没有可切的东西。留着一个点了不会有任何变化的按钮,
-          正是这一轮在消灭的形状(后端已经不再读请求体里的 mode 字段)。
-
-          清单本身的增删仍然由下面那张表直接完成,保存即生效。
-        */}
       </div>
-
-      {/*
-        这里曾经是两块随 shadow 一并作废的 UI:
-
-          1. 「切回『先观察』会把未保存的格子改动丢掉」那条红字警告 ——
-             已经没有可切回去的东西了;而且它把 `**不设闸门**` 这种 markdown
-             原样印在屏幕上(这段文案从来没有经过 markdown 渲染)。
-          2. 「切到强制」的确认面板(说明 → 跑影响面 → 解锁确认)——
-             `enforced` 现在恒为真,它永远不会渲染,留着只会让人以为闸门还在。
-
-        影响面预览本身没有删:它仍然是一个可以主动调的只读端点,
-        只是不再是保存的前置条件。
-      */}
 
       {/*
         `auto` 伪分组与范围备注收在一个折叠区里。
@@ -194,17 +162,9 @@ export function QyUgScopeModeStrip(props: {
             />
           </div>
           {/*
-            这里曾经有一句「保存这两项也要先跑预览」的提示与对应的 disabled。
-
-            后端那道「切 enforce 前必须回传双哈希」的闸门已随 shadow 一并拆除,
-            于是它变成了一道只存在于前端的锁:`enforced` 现在恒为真,
-            运营改个备注或开关都会发现保存按钮是灰的,而屏幕上要求他先去跑一次
-            与这次改动毫无关系的影响面预览。
-          */}
-          {/*
-            影子档保存这两项此前一道闸门都没有（那一整条与号在 `enforced`
-            为假时短路），而它同样会回读并清空草稿。这两项都不是止血动作，
-            所以这里与建清单、回落全局取同一个口径：先保存或撤销格子改动。
+            保存这两项也是一次范围写入 —— 它同样回读服务端状态、清空整张矩阵的
+            未保存草稿。它不是止血动作（没有任何人因为它继续 403），所以这里与
+            建清单、回落全局取同一个口径：先保存或撤销格子改动，再回来。
           */}
           {props.scope.hasUnsavedDraft && (
             <p className='text-destructive text-xs leading-5'>
@@ -215,9 +175,7 @@ export function QyUgScopeModeStrip(props: {
             <Button
               type='button'
               size='sm'
-              disabled={
-                props.scope.isSaving || props.scope.hasUnsavedDraft
-              }
+              disabled={props.scope.isSaving || props.scope.hasUnsavedDraft}
               onClick={() =>
                 props.scope.onSubmit({
                   managed: true,

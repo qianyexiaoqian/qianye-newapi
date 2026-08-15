@@ -78,6 +78,20 @@ func buildCompletionRatioMetaValue(optionValues map[string]string) string {
 	return string(jsonBytes)
 }
 
+// secretOptionKeys 列出那些**整块值里含凭据、而键名不带任何敏感后缀**的 option 键。
+//
+// GetOptions 的脱敏原本只有一条后缀启发式(Token / Secret / Key / secret / api_key)。
+// 后缀对单值键够用,对**聚合键**是失效的:一块 JSON 里嵌着的密码字段撑不起键名的后缀。
+// SMTPAccounts 就是这么漏出去的 —— 它的值是一整个发件账号数组,每个元素都带明文密码,
+// 而键名结尾是个 "s"。它现在已由 model.MigrateLegacySMTPAccount 从库里清掉,
+// 这份清单是第二道:options 表是全站唯一"任何键都能落进来、随后原样进 OptionMap"
+// 的表(见 model.updateOptionMap),孤儿行、手改库、旧二进制的写入都能把它带回来。
+//
+// 新增聚合型配置时,只要它的值里可能出现凭据,就把键名加进来 —— 不要指望改键名去凑后缀。
+var secretOptionKeys = map[string]struct{}{
+	"SMTPAccounts": {},
+}
+
 func GetOptions(c *gin.Context) {
 	var options []*model.Option
 	optionValues := make(map[string]string)
@@ -87,7 +101,9 @@ func GetOptions(c *gin.Context) {
 			continue
 		}
 		value := common.Interface2String(v)
-		isSensitiveKey := strings.HasSuffix(k, "Token") ||
+		_, isSecretKey := secretOptionKeys[k]
+		isSensitiveKey := isSecretKey ||
+			strings.HasSuffix(k, "Token") ||
 			strings.HasSuffix(k, "Secret") ||
 			strings.HasSuffix(k, "Key") ||
 			strings.HasSuffix(k, "secret") ||

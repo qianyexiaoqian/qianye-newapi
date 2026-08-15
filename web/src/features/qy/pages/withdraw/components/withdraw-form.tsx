@@ -40,6 +40,7 @@ import { cn } from '@/lib/utils'
 import { QyAmountInput } from '../../../components/qy-amount-input'
 import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
+import { QyPayPasswordField } from '../../../components/qy-pay-password-field'
 import { useQyAfterMoneyChange } from '../../../hooks/use-qy-after-money-change'
 import { isQyError, qyErrorMessage } from '../../../lib/api'
 import { qyTabTarget } from '../../../lib/pages'
@@ -99,6 +100,9 @@ export function WithdrawForm(props: WithdrawFormProps) {
   const [proof, setProof] = useState<QyProofSelection>(QY_PROOF_NONE)
   /** 提交成功后靠换 key 把上传控件整个重挂，顺带触发它的 revokeObjectURL。 */
   const [proofKey, setProofKey] = useState(0)
+  const [payPassword, setPayPassword] = useState('')
+  /** 支付密码处于"提交一定失败"的状态（未设置 / 已锁定 / 状态读不到）。 */
+  const [payBlocked, setPayBlocked] = useState(false)
 
   const payeesQuery = useQuery({
     ...qyWithdrawPayeesQuery(),
@@ -125,6 +129,9 @@ export function WithdrawForm(props: WithdrawFormProps) {
       setPayeeValues({})
       setProof(QY_PROOF_NONE)
       setProofKey((value) => value + 1)
+      // 支付密码只服务于**这一次**提交，成功后必须立刻从内存里清掉：
+      // 留着的话下一笔申请会带着上一次输入的密码静默通过确认弹窗。
+      setPayPassword('')
       await afterMoneyChange()
       // 同上：提现记录是「推广佣金」选择夹里的隔壁一张标签。
       await navigate(qyTabTarget('/qy/withdrawals'))
@@ -145,6 +152,9 @@ export function WithdrawForm(props: WithdrawFormProps) {
       method,
       quota,
       remark: remark.trim(),
+      // 提现是钱**离开站点**的那条路，后端 handleCreate 在进事务之前就要验密。
+      // 不 trim：支付密码里的空格是密码的一部分，替用户去掉等于改了他的密码。
+      pay_password: payPassword,
     }
     // 凭证只服务于法币打款。**quota 单绝不能带 proof_ref** —— 后端
     // `acceptCreate` 对此直接报错而不是静默忽略（静默忽略会让那张图永远停在
@@ -333,23 +343,36 @@ export function WithdrawForm(props: WithdrawFormProps) {
         title={t('qy_wd_confirm_title')}
         description={t('qy_wd_confirm_desc')}
         confirmText={t('qy_wd_submit')}
+        confirmDisabled={payBlocked || payPassword.length === 0}
         details={
-          <dl className='divide-border divide-y text-sm'>
-            <ConfirmRow
-              label={t('qy_wd_method')}
-              value={t(`qy_wd_m_${method}`)}
-            />
-            <ConfirmRow
-              label={t('qy_wd_amount')}
-              value={<QyAmountText quota={quota} />}
-            />
-            {method === 'fiat' && (
+          <div className='space-y-3'>
+            <dl className='divide-border divide-y text-sm'>
               <ConfirmRow
-                label={t('qy_wd_fiat_amount')}
-                value={t('qy_wd_fiat_amount_pending')}
+                label={t('qy_wd_method')}
+                value={t(`qy_wd_m_${method}`)}
               />
-            )}
-          </dl>
+              <ConfirmRow
+                label={t('qy_wd_amount')}
+                value={<QyAmountText quota={quota} />}
+              />
+              {method === 'fiat' && (
+                <ConfirmRow
+                  label={t('qy_wd_fiat_amount')}
+                  value={t('qy_wd_fiat_amount_pending')}
+                />
+              )}
+            </dl>
+            {/* 支付密码格放在确认弹窗里而不是主表单：它对应的是"这一次提交"，
+                而主表单的值（金额、收款人、凭证）会被反复修改与复用。
+                与划转、抽奖同一个组件、同一个后端闸门 —— 三条出钱路径共用一处
+                判定，不存在第二套。 */}
+            <QyPayPasswordField
+              value={payPassword}
+              onChange={setPayPassword}
+              disabled={createMutation.isPending}
+              onBlockedChange={setPayBlocked}
+            />
+          </div>
         }
         onConfirm={() => {
           const body = buildBody()

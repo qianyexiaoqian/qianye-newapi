@@ -99,3 +99,44 @@ export function qyResetPayPasswordByEmail(body: {
 }) {
   return qyPost<{ is_set: boolean }>('/pay-password/recover/reset', body)
 }
+
+// ───────────────────────────── 管理端 ─────────────────────────────
+
+/**
+ * 管理端读某个用户的支付密码状态。
+ *
+ * 与用户端 `/pay-password` 是同一个 `statusView`，因此复用同一个类型 ——
+ * 后端 `handleAdminGetStatus` 与 `handleGetStatus` 走的就是同一个 `loadStatus`。
+ *
+ * `staleTime: 0` 的理由与用户端那份一致：重置之后必须立刻看到 `is_set` 变成
+ * false，缓存住会让管理员以为自己什么都没点到、于是再点一次。
+ */
+export function qyAdminPayPasswordStatusQuery(userId: number) {
+  return queryOptions({
+    queryKey: qyKeys.adminPayPassword(userId),
+    queryFn: () => qyGet<QyPayPasswordStatus>(`/admin/pay-password/${userId}`),
+    staleTime: 0,
+    enabled: userId > 0,
+  })
+}
+
+/**
+ * 管理员强制重置(清空)某个用户的支付密码。
+ *
+ * **后端不接受、也不存在"代设新密码"的形态**：`clearPasswordByAdmin` 只把
+ * hash 清空并保留行，用户下一次动钱时会被 `qy_pay_pwd_not_set` 拦下并引导去
+ * 重新设置。管理员全程不接触密码明文 —— 有了代设入口，"支付密码只有本人知道"
+ * 这个前提就不成立，事后也无法自证不是管理员动的钱。
+ *
+ * `reason` 是**必填**（后端 `errReasonRequired`）：重置会让用户下一次划转/提现
+ * 被直接拦下，审计必须能回答"为什么"。
+ */
+export function qyAdminResetPayPassword(params: {
+  userId: number
+  reason: string
+}) {
+  return qyPost<QyPayPasswordStatus>(
+    `/admin/pay-password/${params.userId}/reset`,
+    { reason: params.reason }
+  )
+}

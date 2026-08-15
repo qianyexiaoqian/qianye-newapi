@@ -63,7 +63,9 @@ function userGroup(
     active_token_count: 0,
     managed: false,
     scope_state: 'unset',
-    mode: 'shadow',
+    // 影子档下线之后后端只下发这一个值：未设范围的行也带 enforce
+    // （空串会让老前端的二值枚举落进"两个选项都没选中"）。
+    mode: 'enforce',
     scope_enforced: false,
     allow_auto: true,
     scope_note: '',

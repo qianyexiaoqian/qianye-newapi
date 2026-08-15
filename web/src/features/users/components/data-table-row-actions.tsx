@@ -28,6 +28,7 @@ import {
   ShieldAlert,
   Link2,
   CreditCard,
+  Wallet,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -46,6 +47,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { QyResetPayPasswordDialog } from '@/features/qy/components/qy-reset-pay-password-dialog'
+import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
 import { UserSubscriptionsDialog } from '@/features/subscriptions/components/dialogs/user-subscriptions-dialog'
 
 import { manageUser, resetUserPasskey, resetUserTwoFA } from '../api'
@@ -72,6 +75,13 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const [resetTwoFAOpen, setResetTwoFAOpen] = useState(false)
   const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
   const [subscriptionsDialogOpen, setSubscriptionsDialogOpen] = useState(false)
+  const [resetPayPasswordOpen, setResetPayPasswordOpen] = useState(false)
+  // 支付密码是 qy 扩展的功能。扩展关掉时后端整棵 /api/qy/** 都不注册，
+  // 点进去只会拿到 404，所以入口必须跟着配置走而不是常驻。
+  // 判据用 `enabled` 而不是某个 feature flag：后端 handleAdminReset 走的是
+  // guard.FlagCore —— 划转被临时关停时管理员仍然必须能重置(那正是出事时的
+  // 第一个动作，之后才轮到处理用户的申诉)。
+  const qyEnabled = useQyConfig().enabled
 
   const handleEdit = () => {
     setCurrentRow(user)
@@ -250,6 +260,24 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuShortcut>
         </DropdownMenuItem>
 
+        {qyEnabled && (
+          // 与 Passkey / 2FA 同一档:都是"用户忘了自己的某个凭据,管理员帮他
+          // 清掉重设"。跟着这一档一起对 root 禁用 —— 本菜单里所有针对凭据的
+          // 破坏性动作对 root 都是禁的,单独给这一条开口子会变成越权演练场。
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.preventDefault()
+              setResetPayPasswordOpen(true)
+            }}
+            disabled={isRoot}
+          >
+            {t('qy_pp_admin_reset_menu')}
+            <DropdownMenuShortcut>
+              <Wallet size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
+        )}
+
         <DropdownMenuSeparator />
 
         <DropdownMenuItem
@@ -301,6 +329,15 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         user={{ id: user.id, username: user.username }}
         onSuccess={triggerRefresh}
       />
+
+      {qyEnabled && (
+        <QyResetPayPasswordDialog
+          open={resetPayPasswordOpen}
+          onOpenChange={setResetPayPasswordOpen}
+          userId={user.id}
+          username={user.username}
+        />
+      )}
     </div>
   )
 }

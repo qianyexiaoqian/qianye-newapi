@@ -66,7 +66,7 @@ type QyUgGroupDetailProps = {
    * 一个自由文本框会把它压成一堵墙；配置弹窗一次只看一档，才画得下。
    */
   onNoteChange?: (modelGroup: string, note: string) => void
-  /** 范围行的提交通道（建清单 / 清空 / shadow ↔ enforce）。 */
+  /** 范围行的提交通道（建清单 / 清空 / 改范围设置）。 */
   scope: QyUgScopeSubmit
   /**
    * 打开独立的「范围设置」抽屉。
@@ -107,15 +107,15 @@ type QyUgGroupDetailProps = {
  *   · **一个添加入口** —— 从尚未分配的里面挑，带兜底倍率与「无渠道」标记；
  *   · 「有没有自己的清单」由**列表内容**隐式表达：第一次增删时后端建 scope 行，
  *     清空时（确认之后）删掉它；
- *   · 「先观察 / 现在就生效」留在列表上方的状态条里 —— 它是真正的运营决定
- *     （灰度），不是前置开关，见 {@link QyUgScopeModeStrip}。
+ *   · 「这份清单会拦人」写在列表上方的状态条里 —— 有清单就一定生效，
+ *     它是一句提醒而不是前置开关，见 {@link QyUgScopeModeStrip}。
  *
  * ── 倍率框在**每一行**上都可编辑，包括"仅经套餐可达"的那些 ──
  *
  * 倍率与可选清单是两份独立的数据（前者落上游 `options.GroupGroupRatio`，
- * 后者落扩展库）。没有自己清单的那一档、影子模式下的那一档、以及经套餐可达
- * 的那些格子，倍率都 100% 在扣钱。倍率随可选性一起消失，这一屏就会变成
- * 「真的在扣钱的那些价一个都改不了」。判定与渲染共用 {@link QyGmMatrixCell}。
+ * 后者落扩展库）。没有自己清单的那一档、以及经套餐可达的那些格子，倍率都
+ * 100% 在扣钱。倍率随可选性一起消失，这一屏就会变成「真的在扣钱的那些价
+ * 一个都改不了」。判定与渲染共用 {@link QyGmMatrixCell}。
  */
 export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
   const { t } = useTranslation()
@@ -136,14 +136,6 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
   const [pendingClear, setPendingClear] = useState<string | null>(null)
 
   const scoped = view.scoped
-  /*
-    「这份清单现在算不算数」。**总说明必须按它分叉**：同一份清单在 shadow 下
-    一个字节都不生效（清单外的请求照旧放行、照旧按全局清单计价），在 enforce 下
-    才真的替换全局清单。而这一屏建出来的清单一律是 shadow —— 无条件按 enforce
-    的口径写那一句，运营读完会认为收紧已经落地然后走人，实际上什么都没拦住。
-  */
-  // 曾经用来区分「已生效 / 影子」两种文案。shadow 下线后有范围行就一定生效,
-  // 这个判断恒为真,留着会让下一个人以为还存在第二种状态。
   /** 这一档已经有清单、但清单里一项都不剩（含未保存的草稿）。 */
   const emptyList = scoped && view.memberCount === 0
   const otherUserGroups = props.data.user_groups
@@ -198,8 +190,11 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
             **这一屏关于"清单从哪来"的说明，全站只有这一句。**
 
             上一版把同一件事说了三遍（顶部两段 + 每一行下面重复一段），而三段
-            里有两段说的是同一个内部状态。这里按当前状态三选一（没有清单 /
-            有清单但只观察 / 有清单且真的在拦人），其余位置一个字都不再重复。
+            里有两段说的是同一个内部状态。这里按当前状态二选一，其余位置一个字
+            都不再重复。
+
+            两句**不许互串**：把「只有下面列出的可用」说给一个还跟着全局清单走
+            的档，是一句假陈述 —— 运营读完会认为收紧已经落地然后走人。
           */}
           <p className='text-muted-foreground text-xs leading-5'>
             {!scoped && t('qy_ugl_fallback_note')}
@@ -254,8 +249,8 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
         </div>
       </div>
 
-      {/* 生效力度：有自己的清单时才有意义 —— 给一个不存在的清单标
-          shadow/enforce 是纯粹的噪声。 */}
+      {/* 生效力度：有自己的清单时才有意义 —— 给一个还跟着全局清单走的档标
+          「会拦人」是纯粹的噪声，而且是一句假陈述。 */}
       {scoped && (
         <QyUgScopeModeStrip userGroup={props.userGroup} scope={props.scope} />
       )}
@@ -520,7 +515,6 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
                         modelGroup={item.name}
                         cell={cell}
                         value={qyGmNoteDraftOf(cell, entry)}
-                        enforced={props.userGroup.scope_enforced}
                         onChange={(note) =>
                           props.onNoteChange?.(item.name, note)
                         }
@@ -576,7 +570,6 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
           props.scope.onSubmit(
             {
               managed: true,
-              // 新清单一律先建成影子：这一次点击本身不该让任何人当场 403。
               allow_auto: props.userGroup.allow_auto,
               note: props.userGroup.scope_note,
             },
@@ -772,17 +765,16 @@ function QyUgClearListDialog(props: {
  *
  * ── 「写进去了但用户看不到」这一档 ──
  *
- * `mode=shadow` 时清单一个字节都不生效，按格备注同样不生效（读侧逐位返回
- * 上游）。这时备注**写得进库**，所以不拦；但后端回读的 `note_pending` 会为真，
- * 这里必须挂一句说明用户此刻实际看到的是哪一段，否则它与"已生效"长得一模一样。
- * 判据用后端下发的字段，不在前端拿 `note` 与 `note_source` 自己比：那条比法
- * 是一条隐式规则，漏在任何一个外壳上，那个外壳就会把影子期的备注画成已生效。
+ * 备注写得进库、而用户此刻读到的仍然是阶梯上更靠后的那一段时（后端回读的
+ * `note_pending` 为真），这里必须挂一句说明他实际看到的是哪一段，否则它与
+ * "已生效"长得一模一样。判据用后端下发的那个布尔，不在前端拿 `note` 与
+ * `note_source` 自己比：那条比法是一条隐式规则，漏在任何一个外壳上，
+ * 那个外壳就会把一段用户根本看不到的文字画成已生效。
  */
 function QyUgCellNote(props: {
   modelGroup: string
   cell: QyGmCell | undefined
   value: string
-  enforced: boolean
   onChange: (note: string) => void
 }) {
   const { t } = useTranslation()

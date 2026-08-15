@@ -25,8 +25,10 @@ package model
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"gorm.io/gorm"
 )
 
 // SmtpAccount 是一个 SMTP 发件账号。
@@ -199,53 +201,164 @@ func DeleteSmtpAccount(id int) error {
 	return DB.Delete(&SmtpAccount{}, id).Error
 }
 
-// MigrateLegacySMTPAccount 把老的单账号 SMTP 配置一次性导入成账号表的一条。
+// retiredSMTPAccountsOptionKey 是中途那一版「多账号存成一整块 JSON」留下的 option 键。
 //
-// ═══════════════════════ 幂等判据:AccountId = "legacy" 这一行存不存在 ═══════════════════════
+// 它的值是一个账号数组,**每个元素都带明文密码**。账号改存独立表之后它一个读取方
+// 都没有了,但那一行还在 options 表里,而 loadOptionsFromDatabase 会把库里的**任何**
+// 键装进 common.OptionMap,GetOptions 随后按后缀判敏感 —— "SMTPAccounts" 不带任何
+// 敏感后缀,于是整块含密码的 JSON 原样下发给了设置页。
+const retiredSMTPAccountsOptionKey = "SMTPAccounts"
+
+// retiredSMTPOptionKeys 是 SMTP 配置在 options 表里占过、而现在一个读取方都没有的全部键。
 //
-// 不用"表是不是空的"当判据:运营完全可能先加了新账号、再重启,那时表非空,
-// 老配置就永远迁不进来,而设置页上老表单已经被移除 —— 那套凭据会变成一份
-// 谁都看不见、也删不掉的死数据。
+// 前九个是最早那版单账号表单(它们唯一的用途是被 LegacySMTPAccount 读一次、
+// 迁进账号表),最后一个是上面那块多账号 JSON。发件路径只认 smtp_accounts 表,
+// 这些键留在库里既是一份会与事实不符的影子配置,也是一份没人看管的明文凭据。
+var retiredSMTPOptionKeys = []string{
+	"SMTPServer",
+	"SMTPPort",
+	"SMTPAccount",
+	"SMTPToken",
+	"SMTPFrom",
+	"SMTPSSLEnabled",
+	"SMTPStartTLSEnabled",
+	"SMTPInsecureSkipVerify",
+	"SMTPForceAuthLogin",
+	retiredSMTPAccountsOptionKey,
+}
+
+// MigrateLegacySMTPAccount 把老的单账号 SMTP 配置一次性导入成账号表的一条,
+// 并在同一个事务里把 options 表里那组已经退役的 SMTP 键**消费掉**。
 //
-// 也不用"迁移标记 option"当判据:多加一个状态就多一个会与事实不符的地方,
-// 而"那一行在不在"本身就是自描述的。
+// ═══════════════════════ 幂等判据:老配置那几行还在不在 ═══════════════════════
 //
-// 老配置为空(从没配过 SMTP)时什么都不做 —— 导入一个发不出信的空账号,
-// 只会让择号在一个必然失败的候选里轮转。
+// 判据**不能**是"账号表里有没有 account_id = legacy 这一行":那一行是可以被运营
+// 在界面上删掉的,而删掉之后判据就又变成了"没迁过",于是下次重启原样插回去 ——
+// 表现是这个号「删不掉」,重启一次复活一次,而它带着一套运营已经决定弃用的凭据
+// 继续参与轮转发信。判据必须能区分「还没迁过」与「迁过了但被人删了」,
+// 而"那一行在不在"回答不了第二个问题。
+//
+// 改成消费源:迁移成功的同时把老配置那几行删掉,于是
+//
+//	源还在  ⇒ 还没迁过   ⇒ 迁
+//	源没了  ⇒ 迁过了     ⇒ 不迁(账号被删掉也不再复活)
+//
+// 这与本仓 migrateLegacyOption(退役前端配置)是同一套形状:迁完即删源。
+// 它也不引入"迁移标记"那种额外状态 —— 判据仍然是自描述的,只是换了个自描述的东西。
+//
+// 首次升级的老站点照样自动迁得过来:那时源还在,行为与改动前逐位一致。
+//
+// 老配置为空(从没配过 SMTP)时不导入账号 —— 导入一个发不出信的空账号,
+// 只会让择号在一个必然失败的候选里轮转 —— 但那几行仍然要清掉。
 func MigrateLegacySMTPAccount() error {
 	if DB == nil {
 		return nil
 	}
-	legacy := common.LegacySMTPAccount()
-	// 迁移用 Configured(填了一半也算配过);能不能发信由 Valid 在择号时判。
-	if !legacy.Configured() {
+	purged := false
+	// 日志一律等事务提交之后再发:在事务里发的话,一次晚到的回滚会留下一条
+	// 「已迁移」,而 main.go 那边同时打出「迁移失败」—— 排障的人只能二选一地猜。
+	var commitLogs []string
+	var commitWarning string
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var source []Option
+		if err := tx.Where(map[string]any{"key": retiredSMTPOptionKeys}).Find(&source).Error; err != nil {
+			return err
+		}
+		if len(source) == 0 {
+			return nil
+		}
+		values := make(map[string]string, len(source))
+		for _, option := range source {
+			values[option.Key] = option.Value
+		}
+
+		// 「以前配过吗」问的是**库里那几行**,而不是进程里的全局变量。两者本该一致
+		// (全局变量正是 InitOptionMap 从这些行装载来的),真不一致时以库为准:
+		// 否则一次装载顺序上的意外会让这里把"还没读进来的配置"当成"没配过",
+		// 而下一步是删源 —— 那一步不可逆。迁移用 Configured(填了一半也算配过);
+		// 能不能发信由 Valid 在择号时判。
+		legacySource := common.SMTPAccountConfig{Server: values["SMTPServer"], Account: values["SMTPAccount"]}
+		if legacySource.Configured() {
+			legacy := common.LegacySMTPAccount()
+			var existing int64
+			if err := tx.Model(&SmtpAccount{}).Where("account_id = ?", legacy.ID).Count(&existing).Error; err != nil {
+				return err
+			}
+			// 已经有 legacy 那一行(上一版代码迁过、但没消费源)时只消费源,不重复插入。
+			if existing == 0 {
+				now := common.GetTimestamp()
+				row := &SmtpAccount{
+					AccountId:          legacy.ID,
+					Name:               legacy.Name,
+					Enabled:            true,
+					Server:             legacy.Server,
+					Port:               legacy.Port,
+					Account:            legacy.Account,
+					Token:              legacy.Token,
+					FromAddr:           legacy.From,
+					SSLEnabled:         legacy.SSLEnabled,
+					StartTLSEnabled:    legacy.StartTLSEnabled,
+					InsecureSkipVerify: legacy.InsecureSkipVerify,
+					ForceAuthLogin:     legacy.ForceAuthLogin,
+					SortOrder:          0,
+					CreatedAt:          now,
+					UpdatedAt:          now,
+				}
+				// 校验不过就让整个事务回滚:源没被消费,下次启动还能再试,
+				// 而不是把一份迁不进来的配置直接删掉。
+				if err := validateSmtpAccount(row); err != nil {
+					return err
+				}
+				if err := tx.Create(row).Error; err != nil {
+					return err
+				}
+				commitLogs = append(commitLogs,
+					fmt.Sprintf("SMTP: 已把原单账号配置(%s)迁移成发件账号表的第一条", legacy.Server))
+			}
+		}
+
+		// 多账号 JSON 不自动导入账号表:那份 JSON 里的条目带着 enabled,导进来就会
+		// 直接进入轮转,而它从来没经过写入侧校验(本仓演示库里那一条的 server 就是 "8")
+		// —— 一个连不上的号进轮转的表现是「固定比例的验证码发不出去」。
+		// 因此这里只把它们**报出来**,由运营在「SMTP 发件账号」里决定要不要重建。
+		if raw := strings.TrimSpace(values[retiredSMTPAccountsOptionKey]); raw != "" {
+			var stranded []common.SMTPAccountConfig
+			if err := common.Unmarshal([]byte(raw), &stranded); err != nil {
+				commitWarning = "SMTP: 退役的 SMTPAccounts 配置解析失败,已按原样删除: " + err.Error()
+			} else if len(stranded) > 0 {
+				labels := make([]string, 0, len(stranded))
+				for _, account := range stranded {
+					labels = append(labels, fmt.Sprintf("%s(%s / %s)", account.ID, account.Name, account.Server))
+				}
+				commitLogs = append(commitLogs,
+					"SMTP: 已删除退役的 SMTPAccounts 配置(那块 JSON 里存着明文密码,而发件早已只读账号表)。"+
+						"下列账号只存在于这个键里,如仍需使用请在「SMTP 发件账号」里重新添加(密码要重新填): "+
+						strings.Join(labels, ", "))
+			}
+		}
+
+		if err := tx.Where(map[string]any{"key": retiredSMTPOptionKeys}).Delete(&Option{}).Error; err != nil {
+			return err
+		}
+		purged = true
 		return nil
-	}
-	var count int64
-	if err := DB.Model(&SmtpAccount{}).Where("account_id = ?", legacy.ID).Count(&count).Error; err != nil {
+	})
+	if err != nil {
 		return err
 	}
-	if count > 0 {
-		return nil
+	for _, line := range commitLogs {
+		common.SysLog(line)
 	}
-	row := &SmtpAccount{
-		AccountId:          legacy.ID,
-		Name:               legacy.Name,
-		Enabled:            true,
-		Server:             legacy.Server,
-		Port:               legacy.Port,
-		Account:            legacy.Account,
-		Token:              legacy.Token,
-		FromAddr:           legacy.From,
-		SSLEnabled:         legacy.SSLEnabled,
-		StartTLSEnabled:    legacy.StartTLSEnabled,
-		InsecureSkipVerify: legacy.InsecureSkipVerify,
-		ForceAuthLogin:     legacy.ForceAuthLogin,
-		SortOrder:          0,
+	if commitWarning != "" {
+		common.SysError(commitWarning)
 	}
-	if err := CreateSmtpAccount(row); err != nil {
-		return err
+	if purged {
+		// SMTPAccounts 不在 InitOptionMap 的种子里 —— 它进内存的唯一途径就是那条孤儿行。
+		// 删掉之后 OptionMap 回到「从没见过这个键」的形状,本进程也不必等重启。
+		// 其余几个键 InitOptionMap 会以空值种下,留在图里不含凭据。
+		common.OptionMapRWMutex.Lock()
+		delete(common.OptionMap, retiredSMTPAccountsOptionKey)
+		common.OptionMapRWMutex.Unlock()
 	}
-	common.SysLog(fmt.Sprintf("SMTP: 已把原单账号配置(%s)迁移成发件账号表的第一条", legacy.Server))
 	return nil
 }

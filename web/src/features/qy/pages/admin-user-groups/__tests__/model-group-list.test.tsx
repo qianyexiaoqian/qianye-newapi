@@ -40,19 +40,38 @@ For commercial licensing, please contact support@quantumnous.com
  *      必须二选一；
  *   4. 还没有清单的那一档：列表读的是它此刻真的能用的那些，增删先问一句
  *      「建立独立清单」，**没有任何禁用的勾选框、也没有那三段重复长文**；
- *   5. shadow / enforce 一眼可见，且切 enforce 仍受影响面闸门约束。
+ *   5. 「这份清单会拦人」在有清单时说得出口、在没有清单时一个字都不提。
+ *
+ * ── 影子档（shadow）下线之后这一份保下来的是什么 ──
+ *
+ * 曾经这一屏还有第二个运营决定：配好的清单是先只观察（shadow），还是现在就
+ * 拦人（enforce）。项目方要求整个去掉 —— 编辑用户分组即刻生效，令牌该拦就拦。
+ * 于是「两档之间怎么切、切之前要过哪些闸门」这一整族用例覆盖的行为不复存在，
+ * 连同它们一起删掉；而下面两件事在只剩一档之后**恒成立**，因此改写保留：
+ *
+ *   · 有清单 ⇒ 屏幕上说得出「会拦人」，没有清单 ⇒ 一个字都不提（假陈述）；
+ *   · 总说明按「有没有自己的清单」二选一，两句不许互串。
+ *
+ * 「建清单不该让任何人当场 403」这条保证此前挂在 shadow 上（新清单一律先建成
+ * 影子）。它没有随 shadow 消失，只是改由**清单先按此刻真的能用的那些原样建立**
+ * 来兑现，所以那一条也改写保留，断言换成确认弹窗里的那句承诺。
  *
  * 文案走真实的 `src/i18n/qy/zh.json`：键写错时 i18next 原样吐键名，下面的
  * 中文断言当场变红。
  *
- * 变异实验（七条，逐条跑过；基线 111 pass / 0 fail）：
- *   · `QyUgRowAction` 的「移除」提前 `return null`         → 14 条红
- *   · 每一列都无条件进 `addable`                            →  8 条红
- *   · 「移除最后一项」的判据从 `<= 1` 改成 `<= 0`           → 10 条红
- *   · 没有清单时按 `granted` 而不是 `model_groups` 画列表   → 11 条红
- *   · 切 enforce 的确认键去掉 `enforceUnlocked` 判据        →  2 条红
- *   · 建清单的确认键不再看 `hasUnsavedDraft`                →  8 条红
- *   · 备注框画在每一行上（不看 `origin === 'scope'`）       →  8 条红
+ * 变异实验（十二条，逐条跑过；基线 20 pass / 0 fail）：
+ *   · `QyUgRowAction` 的「移除」提前 `return null`          → 9 条红
+ *   · 每一列都无条件进 `addable`                            → 1 条红
+ *   · 「移除最后一项」的判据从 `<= 1` 改成 `<= 0`           → 5 条红
+ *   · 没有清单时按 `granted` 而不是 `model_groups` 画列表   → 4 条红
+ *   · 建清单的确认键不再看 `hasUnsavedDraft`                → 1 条红
+ *   · 备注框画在每一行上（不看 `origin === 'scope'`）       → 1 条红
+ *   · 建清单弹窗改按列轴长度报数                            → 1 条红
+ *   · 建清单跳过 `afterApply`，直接落草稿                   → 1 条红
+ *   · 状态条不再看 `scoped`，无条件渲染                     → 1 条红
+ *   · 状态条上那枚「会拦人」徽章删掉                        → 1 条红
+ *   · 总说明的两句对调（`scoped` ↔ `!scoped`）              → 1 条红
+ *   · 「更多范围设置」的保存键不再看 `hasUnsavedDraft`      → 1 条红
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -66,7 +85,6 @@ import type {
   QyGmCell,
   QyGmMatrixResponse,
   QyGmModelGroup,
-  QyGmPreviewResponse,
   QyGmScopeRequest,
   QyGmUserGroup,
 } from '../../admin-group-matrix/types'
@@ -177,8 +195,10 @@ function userGroup(patch: Partial<QyGmUserGroup>): QyGmUserGroup {
     active_token_count: 3,
     managed: true,
     scope_state: 'set',
-    mode: 'shadow',
-    scope_enforced: false,
+    // 影子档下线之后后端只可能下发这一种组合：有范围行 = 清单立即生效
+    // （存量的 shadow 行由 migrateShadowScopesToEnforce 在启动时改写）。
+    mode: 'enforce',
+    scope_enforced: true,
     allow_auto: false,
     scope_note: '',
     self_excluded: false,
@@ -188,25 +208,6 @@ function userGroup(patch: Partial<QyGmUserGroup>): QyGmUserGroup {
 }
 
 const COLUMNS = ['pool-a', 'pool-b', 'pool-c'].map(modelGroup)
-
-const PREVIEW: QyGmPreviewResponse = {
-  draft_hash: 'd',
-  impact_hash: 'i',
-  base_ratio_hash: 'h',
-  preview_incomplete: false,
-  approximate_user_group: false,
-  log_days: 30,
-  newly_broken: [],
-  already_broken: [],
-  newly_allowed: [],
-  self_excluded: [],
-  case_near_miss: [],
-  orphan_group_names: [],
-  empty_group_tokens: 0,
-  auto_groups_shrink: 0,
-  total_newly_broken_tokens: 0,
-  total_already_broken_tokens: 0,
-}
 
 type Recorded = {
   toggles: Array<[string, boolean]>
@@ -235,7 +236,6 @@ async function mountDetail(options: {
   row: QyGmUserGroup
   cells: QyGmCell[]
   hasUnsavedDraft?: boolean
-  enforcePreview?: QyGmPreviewResponse | null
 }): Promise<Recorded> {
   await unmountAll()
   const log: Recorded = { toggles: [], scopes: [], afterApply: [] }
@@ -271,9 +271,6 @@ async function mountDetail(options: {
         scope={{
           isSaving: false,
           hasUnsavedDraft: options.hasUnsavedDraft ?? false,
-          enforcePreview: options.enforcePreview ?? null,
-          isPreviewing: false,
-          onPreviewForEnforce: () => {},
           onSubmit: (body, afterApply) => {
             log.scopes.push(body)
             log.afterApply.push(afterApply)
@@ -523,6 +520,7 @@ describe('还没有自己的清单：列表 = 此刻真的能用的那些，增�
   const row = userGroup({
     managed: false,
     scope_state: 'unset',
+    scope_enforced: false,
     model_groups: ['pool-a', 'pool-b'],
   })
 
@@ -580,20 +578,31 @@ describe('还没有自己的清单：列表 = 此刻真的能用的那些，增�
     }
   })
 
-  test('移除先问「建立独立清单」，确认后建 shadow 行，回读之后才落这次改动', async () => {
+  /*
+    ── 「这一下点击本身不该让任何人当场 403」 ──
+
+    这条保证此前挂在 shadow 上：新清单一律先建成影子，配错了也拦不住人。
+    影子档下线之后它由**清单的初始内容**兑现 —— 先按这一档此刻真的能用的那些
+    原样建立，再叠这一次增删。所以确认弹窗里那句「按此刻真的能用的那 N 个原样
+    建立」不是一句客套，它是这条保证在屏幕上唯一的落款，而 N 必须取
+    `model_groups`（后端算好的"此刻真的能用的那些"），不是草稿里勾了几个。
+  */
+  test('移除先问「建立独立清单」，说清按现状原样建立，回读之后才落这次改动', async () => {
     const log = await mountDetail({ row, cells })
     await click(buttonByLabel(removeLabel('pool-a')))
     assert.deepEqual(log.toggles, [], '建清单之前落草稿，后端会拒绝这次写入')
-    assert.ok(screenText().includes(copy('qy_ugl_create_shadow')))
+    assert.ok(
+      screenText().includes(
+        fill('qy_ugl_create_carries', {
+          count: String(row.model_groups.length),
+        })
+      ),
+      '新清单按"此刻真的能用的那 2 个"原样建立 —— 报错了数就等于向运营承诺了一件它不会做的事'
+    )
 
     await click(button(copy('qy_ugl_create_confirm')))
     assert.equal(log.scopes.length, 1)
     assert.equal(log.scopes[0].managed, true)
-    assert.equal(
-      log.scopes[0].mode,
-      'shadow',
-      '这一下点击本身不该让任何人当场 403'
-    )
 
     assert.deepEqual(
       log.toggles,
@@ -617,116 +626,47 @@ describe('还没有自己的清单：列表 = 此刻真的能用的那些，增�
   })
 })
 
-/* ── 5. 灰度维度没有丢 ─────────────────────────────────────────────── */
+/* ── 5. 有清单 = 会拦人，且范围写入照样受草稿闸门约束 ───────────────── */
 
-describe('shadow / enforce：一眼可见，切过去仍受影响面闸门约束', () => {
+describe('有自己的清单：屏上直说"会拦人"，范围写入受草稿闸门约束', () => {
   const cells = [cell('pool-a', { granted: true })]
 
-  test('影子档：屏幕上直说"不拦人"', async () => {
-    await mountDetail({
-      row: userGroup({ model_groups: ['pool-a'], mode: 'shadow' }),
-      cells,
-    })
-    assert.ok(screenText().includes(copy('qy_ugl_mode_shadow_chip')))
-  })
-
-  test('强制档：屏幕上直说"会拦人"', async () => {
-    await mountDetail({
-      row: userGroup({
-        model_groups: ['pool-a'],
-        mode: 'enforce',
-        scope_enforced: true,
-      }),
-      cells,
-    })
-    assert.ok(screenText().includes(copy('qy_ugl_mode_enforce_chip')))
-  })
-
-  test('没看过影响面 → 切 enforce 的确认键按不动', async () => {
-    const log = await mountDetail({
-      row: userGroup({ model_groups: ['pool-a'], mode: 'shadow' }),
-      cells,
-    })
-    await click(button(copy('qy_ugl_mode_to_enforce')))
-    assert.equal(
-      button(copy('qy_ugl_mode_enforce_confirm')).disabled,
-      true,
-      '切 enforce 是这一页唯一会让一批用户当场 403 的动作'
-    )
-    assert.deepEqual(log.scopes, [])
-  })
-
-  test('有未保存草稿 → 即便预览过也按不动（服务端按哈希比对）', async () => {
-    await mountDetail({
-      row: userGroup({ model_groups: ['pool-a'], mode: 'shadow' }),
-      cells,
-      hasUnsavedDraft: true,
-      enforcePreview: PREVIEW,
-    })
-    await click(button(copy('qy_ugl_mode_to_enforce')))
-    assert.equal(button(copy('qy_ugl_mode_enforce_confirm')).disabled, true)
-  })
-
-  test('预览过且草稿已保存 → 才提交 mode:enforce', async () => {
-    const log = await mountDetail({
-      row: userGroup({ model_groups: ['pool-a'], mode: 'shadow' }),
-      cells,
-      enforcePreview: PREVIEW,
-    })
-    await click(button(copy('qy_ugl_mode_to_enforce')))
-    await click(button(copy('qy_ugl_mode_enforce_confirm')))
-    assert.equal(log.scopes.length, 1)
-    assert.equal(log.scopes[0].mode, 'enforce')
-    assert.equal(log.scopes[0].managed, true)
-  })
-
-  test('切回影子不设闸（它不打断任何流量）', async () => {
-    const log = await mountDetail({
-      row: userGroup({
-        model_groups: ['pool-a'],
-        mode: 'enforce',
-        scope_enforced: true,
-      }),
-      cells,
-    })
-    await click(button(copy('qy_ugl_mode_to_shadow')))
-    assert.equal(log.scopes.length, 1)
-    assert.equal(log.scopes[0].mode, 'shadow')
-  })
-
   /*
-    切回影子仍然是一次范围写入 —— 它同样回读、同样清空草稿。它是这一屏上
-    唯一一个**不设闸门**的写入点（止血比保住一份草稿重要），但「不设闸门」
-    不等于可以不说：静默丢弃时屏幕上只会出现一句绿色的「范围已保存」。
+    影子档下线之后只剩一档：有范围行 = 清单立即生效。于是「这份清单会拦人」
+    这句话在有清单时**恒成立** —— 但恒成立不等于可以不说：运营刚配完的这份
+    清单会让一批令牌当场 403，屏幕上必须有一处直说这件事。
+
+    另一半同样重要，而且方向相反：还跟着全局清单走的那一档不许出现这句话。
+    给一个不存在的清单标「会拦人」既是噪声也是假陈述，运营会据此认为收紧
+    已经落地然后走人。
   */
-  test('有未保存草稿时，切回影子仍然能按，但必须先把代价说出来', async () => {
-    const log = await mountDetail({
+  test('有清单就直说"会拦人"，还没有清单的那一档一个字都不提', async () => {
+    await mountDetail({ row: userGroup({ model_groups: ['pool-a'] }), cells })
+    assert.ok(
+      screenText().includes(copy('qy_ugl_mode_enforce_chip')),
+      '配完一份会让人 403 的清单，屏幕上不能一个字都没提醒过他'
+    )
+
+    await mountDetail({
       row: userGroup({
+        managed: false,
+        scope_state: 'unset',
+        scope_enforced: false,
         model_groups: ['pool-a'],
-        mode: 'enforce',
-        scope_enforced: true,
       }),
       cells,
-      hasUnsavedDraft: true,
     })
     assert.ok(
-      screenText().includes(copy('qy_ugl_mode_to_shadow_discards_draft')),
-      '止血动作可以不闸，但不能不说'
+      !screenText().includes(copy('qy_ugl_mode_enforce_chip')),
+      '这一档还跟着全局「用户可选分组」走，说它"会拦人"是一句假陈述'
     )
-    assert.equal(
-      button(copy('qy_ugl_mode_to_shadow')).disabled,
-      false,
-      '把停止拦人的按钮锁在一份未保存的草稿后面，代价是一批用户继续 403'
-    )
-    await click(button(copy('qy_ugl_mode_to_shadow')))
-    assert.equal(log.scopes.length, 1)
   })
 
-  test('影子档保存「更多范围设置」同样会丢草稿 —— 这里闸住', async () => {
-    // 这一条整条与号此前在 shadow 档上短路（只看 enforced），于是保存
-    // allow_auto / 范围备注是同样的静默清空，而它不是止血动作。
+  test('保存「更多范围设置」会丢草稿 —— 这里闸住', async () => {
+    // 保存 allow_auto / 范围备注同样是一次范围写入：它回读服务端状态、清空
+    // 整张矩阵的草稿。它不是止血动作，所以与建清单、回落全局取同一个口径。
     const log = await mountDetail({
-      row: userGroup({ model_groups: ['pool-a'], mode: 'shadow' }),
+      row: userGroup({ model_groups: ['pool-a'] }),
       cells,
       hasUnsavedDraft: true,
     })
@@ -738,47 +678,48 @@ describe('shadow / enforce：一眼可见，切过去仍受影响面闸门约束
   })
 })
 
-/* ── 6. 总说明必须按「这份清单现在算不算数」分叉 ─────────────────────── */
+/* ── 6. 总说明必须按「有没有自己的清单」分叉 ─────────────────────────── */
 
-describe('总说明：shadow 档不许说成 enforce 档', () => {
+describe('总说明：按「有没有自己的清单」二选一，两句不许互串', () => {
   const cells = [cell('pool-a', { granted: true })]
 
   /*
-    这一屏创建的每一份清单都是 shadow（`qy_ugl_create_shadow` 明说一律建成
-    影子）。总说明无条件按 enforce 的口径写，运营建完清单回到列表读到的第一句
-    就是「只有下面列出的模型分组可用，全局清单不再生效」—— 他据此认为收紧已经
-    落地然后走人，而 shadow 下清单一个字节都不生效，清单外的请求照旧放行、
-    照旧按全局清单计费。下方状态条同时显示「先观察 · 不拦人」，两句直接矛盾，
-    而先读到的那一句语气更肯定。
+    这两句在屏幕上是**先读到的那一句**，语气都很肯定，而它们说的是相反的
+    两件事：一句是「只有下面列出的模型分组可用，全局清单对它整体不再生效」，
+    另一句是「这一档还跟着全局清单走」。串了任意一个方向都没有报错：
+    往还没有清单的那一档说前者，运营认为收紧已经落地然后走人；往已经有清单的
+    那一档说后者，他会以为自己刚配的清单一个字节都不算数，再去别处重配一遍。
   */
-  test('影子档：说的是"不生效"，不是"只有这些可用"', async () => {
-    await mountDetail({
-      row: userGroup({ model_groups: ['pool-a'], mode: 'shadow' }),
-      cells,
-    })
-    const text = screenText()
+  test('有清单读到"只有下面列出的可用"，没有清单读到"跟着全局清单走"', async () => {
+    await mountDetail({ row: userGroup({ model_groups: ['pool-a'] }), cells })
+    const scopedText = screenText()
     assert.ok(
-      text.includes(copy('qy_ugl_own_note_shadow')),
-      '影子档必须读到"清单还不算数"'
+      scopedText.includes(copy('qy_ugl_own_note')),
+      '有清单必须读到"只有下面列出的可用"'
     )
     assert.ok(
-      !text.includes(copy('qy_ugl_own_note')),
-      'enforce 那一句在影子档上是一句假陈述 —— 它比不说更糟'
+      !scopedText.includes(copy('qy_ugl_fallback_note')),
+      '"还跟着全局清单走"在已经有清单的那一档上是一句假陈述'
     )
-  })
 
-  test('强制档：才轮到"只有下面列出的可用"', async () => {
     await mountDetail({
       row: userGroup({
+        managed: false,
+        scope_state: 'unset',
+        scope_enforced: false,
         model_groups: ['pool-a'],
-        mode: 'enforce',
-        scope_enforced: true,
       }),
       cells,
     })
-    const text = screenText()
-    assert.ok(text.includes(copy('qy_ugl_own_note')))
-    assert.ok(!text.includes(copy('qy_ugl_own_note_shadow')))
+    const fallbackText = screenText()
+    assert.ok(
+      fallbackText.includes(copy('qy_ugl_fallback_note')),
+      '没有清单必须读到"跟着全局清单走"'
+    )
+    assert.ok(
+      !fallbackText.includes(copy('qy_ugl_own_note')),
+      '"只有下面列出的可用"在这一档上是一句假陈述 —— 它比不说更糟'
+    )
   })
 
   test('清单空着这件事整屏只说一次', async () => {
@@ -811,6 +752,7 @@ describe('总说明：shadow 档不许说成 enforce 档', () => {
       row: userGroup({
         managed: false,
         scope_state: 'unset',
+        scope_enforced: false,
         model_groups: ['pool-a'],
       }),
       cells: [],
