@@ -333,10 +333,5 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
-	// 把上游没并进 completion_tokens 的推理 token 补回去(理由见该方法的注释)。
-	// 必须在 return 之前做:调用方拿到这个 Usage 之后直接用于计费与写日志,
-	// 之后没有任何一处会再看上游的 total_tokens。
-	simpleResponse.Usage.ReconcileReasoningTokens()
-
 	return &simpleResponse.Usage, nil
 }

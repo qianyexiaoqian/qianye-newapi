@@ -149,9 +149,6 @@ func handleLastResponse(lastStreamData string, responseId *string, createAt *int
 	if service.ValidUsage(lastStreamResponse.Usage) {
 		*containStreamUsage = true
 		*usage = lastStreamResponse.Usage
-		// 与非流式同一处理:流式的最后一帧 usage 同样可能把推理 token 只算进
-		// total_tokens。两条路径必须同口径,否则同一个模型流式与非流式收费不同。
-		(*usage).ReconcileReasoningTokens()
 		if !info.ShouldIncludeUsage {
 			*shouldSendLastResp = lo.SomeBy(lastStreamResponse.Choices, func(choice dto.ChatCompletionsStreamResponseChoice) bool {
 				return choice.Delta.GetContentString() != "" || choice.Delta.GetReasoningContent() != ""
