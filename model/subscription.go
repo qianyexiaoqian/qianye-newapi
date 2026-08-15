@@ -606,6 +606,19 @@ func applyUserGroupPurchaseRulesTx(tx *gorm.DB, userId int, plan *SubscriptionPl
 	if target == "" {
 		return nil, nil
 	}
+	// ── 只有**纯商品**才适用这套规则 ──
+	//
+	// 带额度的「升组 + 送额度」套餐(最自然的 VIP 会员配置)不能走续期分支:
+	// 那条分支只改 end_time,不新建行、不加 amount_total、不清 amount_used。
+	// 而 PurchaseSubscriptionWithBalance 是**先扣钱**再进来的,续期分支不回滚那笔扣款 ——
+	// 于是用户第二次付了全款,买到的是零可用额度(实测:两笔各 50000 quota 的订单,
+	// 订阅仍停在 amount_used = amount_total 的用尽状态)。
+	//
+	// 纯商品没有这个问题:它本来就不带额度,续期改的确实只有有效期。
+	// 带额度的套餐一律走下面的正常新建路径,由 MaxPurchasePerUser 去限购。
+	if !plan.NoQuota {
+		return nil, nil
+	}
 	now := GetDBTimestamp()
 
 	var actives []UserSubscription
@@ -823,20 +836,25 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 			return nil, errors.New("已达到该套餐购买上限")
 		}
 	}
-	// 用户组商品的三条购买规则。只作用于"会改用户组"的套餐,
-	// 普通套餐(upgrade_group 为空)完全不受影响。
-	if extended, err := applyUserGroupPurchaseRulesTx(tx, userId, plan); err != nil {
-		return nil, err
-	} else if extended != nil {
-		// 同组续期:没有产生新订阅,直接把延长后的那条返回给调用方。
-		return extended, nil
-	}
 	nowUnix := GetDBTimestamp()
 	now := time.Unix(nowUnix, 0)
 	endUnix, err := calcPlanEndTime(now, plan)
 	err = QyGateSubscriptionSeat(tx, plan, userId, source, err)
 	if err != nil {
 		return nil, err
+	}
+	// 用户组商品的三条购买规则。只作用于"会改用户组"的套餐,
+	// 普通套餐(upgrade_group 为空)完全不受影响。
+	//
+	// **必须排在 QyGateSubscriptionSeat 之后。** 早先它排在前面,于是同组续期那条
+	// 分支会在名额闸门跑之前 return —— 结果是「先买同组的不限量档、再买限量档」
+	// 可以绕开全站名额:第二笔走进续期分支、直接返回,闸门根本没执行,而订单表里
+	// 留下一条限量套餐的成功订单、订阅表里却没有对应的行(收入归因也落错了套餐)。
+	if extended, err := applyUserGroupPurchaseRulesTx(tx, userId, plan); err != nil {
+		return nil, err
+	} else if extended != nil {
+		// 同组续期:没有产生新订阅,直接把延长后的那条返回给调用方。
+		return extended, nil
 	}
 	resetBase := now
 	nextReset := calcNextResetTime(resetBase, plan, endUnix)
