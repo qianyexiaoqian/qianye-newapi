@@ -129,8 +129,23 @@ func validateSmtpAccount(a *SmtpAccount) error {
 	if a.AccountId == "" {
 		return fmt.Errorf("account_id 不能为空 —— 发件台账与用量统计都按它归集")
 	}
-	if a.Server == "" && a.Account == "" {
-		return fmt.Errorf("既没有服务器也没有账号名,发不出任何邮件")
+	// 服务器与账号**都必须填**,不是"填一个就行"。
+	//
+	// 早先判的是 `Server == "" && Account == ""`(两个都空才拒),于是只填账号名、
+	// 漏填服务器的号能保存成功、enabled=true、并进入择号轮转 —— 每被轮到一次就
+	// 失败一次,而设置页上它看起来完全正常。依次/随机模式下的表现是
+	// 「固定比例的验证码发不出去」,而且没有任何一处会指出是哪个号的问题。
+	//
+	// 项目方原话:「smtp账号和服务器信息要保存完整,因为随时可能是其他服务器
+	// 来发信,不填写怎么写」。
+	if a.Server == "" {
+		return fmt.Errorf("必须填写 SMTP 服务器 —— 随时可能换别的服务器发信,不填就发不出去")
+	}
+	// 账号刻意**不**强制:有些 SMTP 服务器不要求认证(内网中继),
+	// 那种配置的账号与密码天然是空的,发件路径已有不认证的分支。
+	// 真正不可缺的是服务器 —— 没有它连都连不上。
+	if a.Port <= 0 {
+		return fmt.Errorf("必须填写端口(常用 25 / 465 / 587)")
 	}
 	if a.Port < 0 || a.Port > 65535 {
 		return fmt.Errorf("端口 %d 非法", a.Port)
@@ -202,7 +217,8 @@ func MigrateLegacySMTPAccount() error {
 		return nil
 	}
 	legacy := common.LegacySMTPAccount()
-	if !legacy.Valid() {
+	// 迁移用 Configured(填了一半也算配过);能不能发信由 Valid 在择号时判。
+	if !legacy.Configured() {
 		return nil
 	}
 	var count int64

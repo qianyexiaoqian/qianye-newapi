@@ -91,9 +91,33 @@ func (a SMTPAccountConfig) FromAddress() string {
 	return a.Account
 }
 
-// Valid 判定这个账号是否具备发件的最低条件。
-func (a SMTPAccountConfig) Valid() bool {
+// Configured 判定「这里以前配过东西吗」。
+//
+// 只给一次性迁移用(LegacySMTPAccount → 账号表):老部署可能只填了服务器或
+// 只填了账号,那也是"配过",迁进来之后由运营在管理端补全。
+func (a SMTPAccountConfig) Configured() bool {
 	return a.Server != "" || a.Account != ""
+}
+
+// Valid 判定「这个账号现在发得出信吗」。
+//
+// ── 为什么与 Configured 是两个谓词 ──
+//
+// 同一个 `||` 表达式此前同时回答这两个问题,而它们的正确答案不同:
+// 迁移问的是"以前配过吗"(填了一半也算),择号问的是"现在能发吗"(必须填全)。
+// 合成一个的后果是漏填服务器的号进了轮转,每被轮到一次就失败一次,
+// 而设置页上它看起来完全正常 —— 表现为「固定比例的验证码发不出去」。
+//
+// 判据是**服务器非空**,而不是"服务器与账号都非空":有些 SMTP 服务器不要求认证
+// (内网中继、本机 relay),那种账号的 Account/Token 天然是空的,
+// shouldAuthenticateSMTP 已经为它留了不认证的分支。要求账号非空会把这类合法配置
+// 一并挡掉 —— common 包里那条 TestSendEmailSkipsAuthWhenCredentialsAreEmpty
+// 测的正是它。
+//
+// 写入侧(model.validateSmtpAccount)已经拒绝没有服务器的账号,这里是第二道:
+// 手改数据库、或存量迁移进来的半截配置,都不该被选中去发信。
+func (a SMTPAccountConfig) Valid() bool {
+	return a.Server != ""
 }
 
 // SMTPAccountsProvider 返回当前全部发件账号,由 model 包在 init 里注入。
