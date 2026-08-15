@@ -20,6 +20,7 @@ import type { StatusVariant } from '@/components/status-badge'
 
 import { formatQyAvailability, formatQyMs, QY_EMPTY_TEXT } from '../ops/format'
 import type {
+  QyAvailCell,
   QyAvailMetricKey,
   QyAvailPerf,
   QyAvailSortMode,
@@ -274,6 +275,25 @@ const QY_AVAIL_UNKNOWN_STYLE: QyAvailStateStyle = {
 /** 取六态样式。未登记的取值回落成中性，后端加枚举时前端最多「不好看」。 */
 export function getQyAvailStateStyle(state: QyAvailState): QyAvailStateStyle {
   return QY_AVAIL_STATE_STYLES[state] ?? QY_AVAIL_UNKNOWN_STYLE
+}
+
+/**
+ * 一个格子该按哪种状态渲染。
+ *
+ * ★ `measured` 为假（该模型不在 `covered_models` 里）时必须是 `unknown`，
+ * **绝不能**是 `not_offered`。两者的区别是「我们没查」与「我们查了，该分组不提供
+ * 这个模型」——后者是一个肯定断言。默认 `max_series_per_query=200`、一页 30 个
+ * 模型，只要有 ≥7 个可见分组就每页必然截断，于是这条断言会被批量地印错。
+ *
+ * 缺失的格子（`cell == null`）同样按未知处理：被覆盖的模型后端保证整行都在，
+ * 真的缺了就说明这一格没查到，而不是查到了「不提供」。
+ */
+export function qyAvailCellState(
+  cell: QyAvailCell | undefined,
+  measured: boolean
+): QyAvailState {
+  if (!measured || cell == null) return 'unknown'
+  return cell.state
 }
 
 /** 失败原因 / 口径条目的 i18n key。未登记的原样显示英文标识。 */

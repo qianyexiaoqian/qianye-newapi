@@ -123,6 +123,15 @@ export type QyAvailMatrix = {
   definition: QyAvailDefinition
   groups: QyAvailGroupInfo[]
   models: string[]
+  /**
+   * `models` 里**真正被查询覆盖**的那些。
+   *
+   * 没有它，截断就是不可分辨的：被截掉的格子在 `cells` 里缺席，而「该分组不提供
+   * 这个模型」在 `cells` 里同样缺席。修复前前端把这两种情况一律画成「未提供」——
+   * 一个根本没查过的格子被写成了肯定断言。不在这份清单里的模型，整行都必须
+   * 降级成「未知」。
+   */
+  covered_models: string[]
   total_models: number
   page: number
   page_size: number

@@ -15,6 +15,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // 本模块的业务函数一律走 db.Get() 自取句柄(与生产代码一致),所以测试必须
@@ -41,10 +42,22 @@ func newTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	// 内存库按连接隔离,多连接会各看到一个空库。
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, gdb.AutoMigrate(&Ticket{}, &Message{}, &Attachment{}))
+	// 扩展库固定是 MySQL,db.LockForUpdate 无条件挂 FOR UPDATE,而 sqlite 不认。
+	// 这是本仓既有做法(见 modules/transfer/contacts_test.go)。
+	// 注意:被吞掉的只是这条 SQL 子句,不是加锁语义本身 —— 真正的并发回归
+	// 由 concurrency_test.go 负责,那里的引擎必须能真的加锁。
+	gdb.ClauseBuilders["FOR"] = func(clause.Clause, clause.Builder) {}
+	require.NoError(t, gdb.AutoMigrate(ticketTables()...))
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return gdb
 }
+
+// ticketTables 直接取模块注册表,不另抄一份。
+//
+// 抄一份的下场是:以后谁给 Mod.Tables() 加了张表却忘了同步这里,测试库会少
+// 一张表,而那条 "no such table" 会伪装成被测逻辑的失败(闸门返回的是数据库
+// 错误而不是业务错误),排查方向从一开始就是错的。
+func ticketTables() []any { return Mod{}.Tables() }
 
 // newEnv 接上测试库并加载一份可用配置,返回句柄。
 func newEnv(t *testing.T, extraTicketYAML string) *gorm.DB {

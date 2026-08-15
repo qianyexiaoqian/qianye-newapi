@@ -42,9 +42,15 @@ import type { QyAvailCell } from '../types'
  *
  * 与热力图共用同一份 `cells`，因此两个视图之间切换不会重新请求，
  * 也不可能出现「两个视图数字不一致」这种排查起来最费时的问题。
+ *
+ * 截断提示是必需的，而且不能只做在热力图上：表格里被截掉的模型是**整行消失**，
+ * 页面上看不出与「这个模型本来就没有数据」有任何区别，用户会以为自己看到的是
+ * 全部结果。
  */
 export function QyAvailabilityTable(props: {
   cells: QyAvailCell[]
+  /** 响应命中 `max_series_per_query`，表格里少了若干模型。 */
+  truncated: boolean
   onSelectCell: (cell: QyAvailCell) => void
 }) {
   const { t } = useTranslation()
@@ -136,11 +142,16 @@ export function QyAvailabilityTable(props: {
   )
 
   return (
-    <StaticDataTable
-      columns={columns}
-      data={props.cells}
-      getRowKey={(row) => `${row.model} ${row.group}`}
-      emptyContent={t('qy_avl_empty_no_data')}
-    />
+    <div className='space-y-2'>
+      <StaticDataTable
+        columns={columns}
+        data={props.cells}
+        getRowKey={(row) => `${row.model} ${row.group}`}
+        emptyContent={t('qy_avl_empty_no_data')}
+      />
+      {props.truncated && (
+        <p className='text-warning px-1 text-xs'>{t('qy_avl_truncated')}</p>
+      )}
+    </div>
   )
 }

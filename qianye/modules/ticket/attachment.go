@@ -94,11 +94,18 @@ func acceptImageUpload(c *gin.Context, userId int) (*Attachment, error) {
 		CreatedAt:  common.GetTimestamp(),
 	}
 
-	// 计数与插入同事务:分开做的话,并发提交会双双读到旧计数一起通过,
-	// 上限形同虚设。
+	// 两道闸与插入共享 lockUserState 那把行锁,而且加锁是本事务的第一条语句。
+	//
+	// 只做到"计数与插入同事务"是不够的:MySQL 默认 REPEATABLE READ,并发上传的
+	// 每个事务在自己的快照里读计数,同时读到旧值、同时通过,实测直接超配额。
+	// 而这是"单个账号占满宿主机磁盘"唯一的总量闸(下面 quota 那段解释了为什么
+	// 其他任何一道闸都拦不到这条路径),它被绕过的后果是不可回收的磁盘占用。
 	limit := pendingUploadMax()
 	quota := cfg.ImageUserQuotaBytes
 	err = db.Get().Transaction(func(tx *gorm.DB) error {
+		if err := lockUserState(tx, userId); err != nil {
+			return err
+		}
 		var cnt int64
 		if err := tx.Model(&Attachment{}).
 			Where("user_id = ? AND ticket_id = 0 AND purged_at = 0", userId).

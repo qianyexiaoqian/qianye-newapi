@@ -3,7 +3,6 @@ package availability
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,7 +36,15 @@ const (
 	// 迟到的 flush(节点卡顿、DB 短暂不可用后回填)会改写已经 rollup 过的小时,
 	// 只推进游标就会永久丢掉这部分数据;覆盖语义让重跑是安全的。
 	rollupBacktrackHours = 3
+
+	// maxRollupHoursPerRun 是单轮汇总的**整点条数**上限,不是墙钟跨度上限。
+	// 两者的差别就是本模块最贵的那个 bug,理由见 pendingRollupHours。
 	maxRollupHoursPerRun = 48
+
+	// rollupUpsertBatch 是小时表批量 upsert 的分批大小。
+	// (分组 × 模型) 的基数通常 < 500,分批只是给基数失控的站点兜底,
+	// 避免单条 INSERT 的占位符撞上 MySQL 的 65535 上限。
+	rollupUpsertBatch = 200
 )
 
 // startTasks 启动本模块的后台任务。
@@ -168,21 +175,19 @@ func runRollup(ctx context.Context) {
 		return
 	}
 	// 只汇总已经走完的整点:把半小时的数据固化成"一小时"会让曲线凭空塌陷。
-	endHour := alignHour(common.GetTimestamp())
-	start, ok := rollupStart(gdb, endHour)
-	if !ok {
+	hours, ok := pendingRollupHours(gdb, alignHour(common.GetTimestamp()))
+	if !ok || len(hours) == 0 {
 		return
 	}
-	if end := start + maxRollupHoursPerRun*3600; end < endHour {
-		endHour = end
-	}
 
-	cols := counterColumns()
-	for h := start; h < endHour; h += 3600 {
+	// 覆盖语义的赋值列清单:全部计数列 + updated_at。一次算好复用,
+	// 免得每个整点都重建一遍同样的切片。
+	assign := append(counterColumns(), "updated_at")
+	for _, h := range hours {
 		if ctx.Err() != nil {
 			return // 租约已丢失,立刻停手,否则就是双跑
 		}
-		n, err := rollupHour(gdb, h, cols)
+		n, err := rollupHour(gdb, h, assign)
 		if err != nil {
 			db.MarkFailure(err)
 			warnThrottled("rollup", err)
@@ -193,64 +198,88 @@ func runRollup(ctx context.Context) {
 	statRollupAt.Store(common.GetTimestamp())
 }
 
-// rollupStart 计算本轮起点。
+// pendingRollupHours 列出本轮要汇总的整点,时间升序。
 //
-// 不单独维护游标表:小时表自己的 MAX(bucket_ts) 就是游标,少一处需要与数据
-// 保持一致的状态。回退 rollupBacktrackHours 个小时重跑,吸收迟到数据。
-func rollupStart(gdb *gorm.DB, endHour int64) (int64, bool) {
+// 游标仍取自小时表的 MAX(bucket_ts) —— 不单独维护游标表,少一处需要与数据保持
+// 一致的状态;回退 rollupBacktrackHours 个小时重跑,吸收迟到的 flush。
+//
+// ★ 但窗口必须由 5 分钟表里**真实存在的整点**决定,不能是"游标 + N 小时墙钟"。
+// 两者叠加会死锁:5 分钟表一旦出现超过 (maxRollupHoursPerRun - rollupBacktrackHours)
+// 小时的空档,窗口里就一行新数据都查不到 → 小时表 MAX 不变 → 下一轮算出同一个
+// 窗口 → 游标永久卡死。线上实测的样子是小时表停在 1 行、5 分钟表已横跨 14 天、
+// rollup 空跑了一千多轮;而前端「7 天 / 30 天」读的正是小时表(见 query.go 的
+// useHourTable),5 分钟表到期清理后这段历史就永久没了。
+//
+// 改成直接问"游标之后哪些整点有数据",空档被一次跳过。成本上限没有放松:
+// 每轮仍然最多 maxRollupHoursPerRun 条,只是这个数从"48 小时墙钟"变成
+// "48 个有数据的整点",而且每条都保证真的会写出行,不再有空转。
+func pendingRollupHours(gdb *gorm.DB, endHour int64) ([]int64, bool) {
 	var latest int64
 	if err := gdb.Table(hourTable).Select("COALESCE(MAX(bucket_ts), 0)").Scan(&latest).Error; err != nil {
 		db.MarkFailure(err)
 		warnThrottled("rollup_cursor", err)
-		return 0, false
+		return nil, false
 	}
+	var from int64 // 小时表为空时从 5 分钟表最早的一行开始补齐
 	if latest > 0 {
-		start := alignHour(latest) - rollupBacktrackHours*3600
-		return start, start < endHour
+		from = alignHour(latest) - rollupBacktrackHours*3600
 	}
 
-	// 小时表还是空的:从 5 分钟表最早的一行开始补齐。
-	var earliest int64
-	if err := gdb.Table(bucketTable).Select("COALESCE(MIN(bucket_ts), 0)").Scan(&earliest).Error; err != nil {
+	// bucket_ts - (bucket_ts % 3600) 是三个库通用的"对齐到整点"写法:
+	// MySQL 的 `/` 返回小数、整除要用方言 DIV,而 `%` 三个库语义一致。
+	var hours []int64
+	err := gdb.Table(bucketTable).
+		Select("bucket_ts - (bucket_ts % 3600) AS hour_ts").
+		Where("bucket_ts >= ? AND bucket_ts < ?", from, endHour).
+		Group("bucket_ts - (bucket_ts % 3600)").
+		Order("hour_ts ASC").
+		Limit(maxRollupHoursPerRun).
+		Scan(&hours).Error
+	if err != nil {
 		db.MarkFailure(err)
 		warnThrottled("rollup_cursor", err)
-		return 0, false
+		return nil, false
 	}
-	if earliest == 0 {
-		return 0, false
-	}
-	start := alignHour(earliest)
-	return start, start < endHour
+	return hours, true
 }
 
 // rollupHour 汇总单个整点。
 //
-// ★ 覆盖语义(= VALUES(col)),不是累加 —— 这是与 flush 完全相反的一点,
+// ★ 覆盖语义(冲突时整列赋值),不是累加 —— 这是与 flush 完全相反的一点,
 // 也是本模块最容易写错的地方。源数据是完整的一小时,重跑必须得到同样的结果;
 // 写成累加的话,每重跑一次数字就翻一倍。
-func rollupHour(gdb *gorm.DB, hourTs int64, cols []string) (int64, error) {
-	sums := make([]string, 0, len(cols))
-	updates := make([]string, 0, len(cols)+1)
-	for _, col := range cols {
-		sums = append(sums, "SUM("+col+")")
-		updates = append(updates, col+" = VALUES("+col+")")
+//
+// 刻意不用 `INSERT ... SELECT ... ON DUPLICATE KEY UPDATE`:那是 MySQL 方言,
+// 违反"三库兼容"的硬约束,更要命的是单测跑在 SQLite 上,方言语句在测试里
+// 一行都跑不到 —— rollup 恰恰是最难在生产上察觉出错的一段。改成
+// 「聚合查询 + clause.OnConflict 批量写回」之后 GORM 按方言渲染冲突子句
+// (MySQL 的 VALUES(col) / SQLite 与 PostgreSQL 的 excluded.col),
+// 代价只是多一次往返,换来的是这条路径能被真正测到。
+func rollupHour(gdb *gorm.DB, hourTs int64, assign []string) (int64, error) {
+	var rows []Bucket
+	err := gdb.Table(bucketTable).
+		Select(selectSums("group_name, model_name")).
+		Where("bucket_ts >= ? AND bucket_ts < ?", hourTs, hourTs+3600).
+		Group("group_name, model_name").
+		Find(&rows).Error
+	if err != nil {
+		return 0, err
 	}
-	updates = append(updates, "updated_at = VALUES(updated_at)")
+	if len(rows) == 0 {
+		return 0, nil
+	}
 
-	// SELECT 列表里的两个常量直接内联而不用占位符:它们是本地计算出的 int64,
-	// 不存在注入面;而 INSERT ... SELECT 的投影位上放无类型占位符,
-	// 在预编译语句下 MySQL 的类型推断并不稳定。
-	sql := fmt.Sprintf(
-		`INSERT INTO %s (bucket_ts, group_name, model_name, %s, updated_at)
-		 SELECT %d, group_name, model_name, %s, %d
-		 FROM %s WHERE bucket_ts >= ? AND bucket_ts < ?
-		 GROUP BY group_name, model_name
-		 ON DUPLICATE KEY UPDATE %s`,
-		hourTable, strings.Join(cols, ", "),
-		hourTs, strings.Join(sums, ", "), common.GetTimestamp(),
-		bucketTable, strings.Join(updates, ", "))
-
-	res := gdb.Exec(sql, hourTs, hourTs+3600)
+	now := common.GetTimestamp()
+	for i := range rows {
+		rows[i].BucketTs = hourTs
+		rows[i].UpdatedAt = now
+	}
+	res := gdb.Table(hourTable).Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "bucket_ts"}, {Name: "group_name"}, {Name: "model_name"},
+		},
+		DoUpdates: clause.AssignmentColumns(assign),
+	}).CreateInBatches(rows, rollupUpsertBatch)
 	return res.RowsAffected, res.Error
 }
 

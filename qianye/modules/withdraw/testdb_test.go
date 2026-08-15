@@ -5,10 +5,12 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/modules/commission"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // newTestDB 建一个只承载提现相关表的内存库。
@@ -24,9 +26,24 @@ func newTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	// 内存库按连接隔离,多连接会各看到一个空库。
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, gdb.AutoMigrate(&Withdrawal{}, &Payee{}, &PayeeAccount{}, &Event{}, &PiiAudit{}, &Proof{}))
+	// 扩展库固定是 MySQL,db.LockForUpdate 无条件挂 FOR UPDATE,而 sqlite 不认。
+	// 这是本仓既有做法(见 modules/transfer/contacts_test.go)。
+	// 被吞掉的只是 SQL 子句,不是加锁语义 —— 真正的并发回归见 concurrency_test.go。
+	gdb.ClauseBuilders["FOR"] = func(clause.Clause, clause.Builder) {}
+	require.NoError(t, gdb.AutoMigrate(withdrawTables()...))
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return gdb
+}
+
+// withdrawTables 是提现测试要建的表:模块自己的那几张,加上佣金那两张。
+//
+// 本模块的表直接取模块注册表,不另抄一份 —— 抄一份的下场是以后谁加了张表却
+// 忘了同步这里,测试库少一张表,而那条 "no such table" 会伪装成被测逻辑的失败。
+//
+// 佣金那两张必须一起建:申请阶段本来就跨模块 —— submitInTx 的第一条语句是
+// commission.LockBalance(余额行锁),收尾是 FreezeForWithdraw(写冻结流水)。
+func withdrawTables() []any {
+	return append(Mod{}.Tables(), &commission.Balance{}, &commission.FreezeRecord{})
 }
 
 // seedWithdrawal 插入一张提现单。唯一索引(withdraw_no、idem_scope+idem_key)

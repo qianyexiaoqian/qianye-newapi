@@ -40,8 +40,9 @@ func newTicketNo() string {
 // 要么都不成立。拆开做的话,中途失败会留下一张没有正文的空工单 ——
 // 客服打开它只能看到一个标题,而用户以为自己已经把问题说清楚了。
 //
-// 四道防滥用闸门(冷却 / 日限 / 未关闭数 / 图片数)都在这个事务里判,
-// 而不是事务外:并发提交会双双读到旧计数一起通过,闸门形同虚设。
+// 防滥用闸门(冷却 / 日限 / 未关闭数)由 checkCreateLimits 在这个事务的
+// 【最开头】判,而且是在拿到该用户的行锁之后才判 —— 只是"在事务里判"并不
+// 足以让闸门成立,理由见 checkCreateLimits 与 userstate.go。
 func create(c *gin.Context, userId int, username string, req createRequest) (*ticketView, error) {
 	acc, err := acceptCreate(req)
 	if err != nil {
@@ -122,7 +123,18 @@ func create(c *gin.Context, userId int, username string, req createRequest) (*ti
 	return toUserView(t, []Message{*m}, nil), nil
 }
 
-// checkCreateLimits 是建单的四道闸,全部在建单事务内执行。
+// checkCreateLimits 是建单的三道闸,全部在建单事务内、且持有该用户的行锁时执行。
+//
+// # 先加锁,再判定
+//
+// 这三道闸都是"先 COUNT 再 INSERT"。此前的注释宣称"在事务里判所以并发安全",
+// 那是错的:MySQL 默认 REPEATABLE READ,并发的 N 个事务各读各的快照,同时读到
+// 旧计数、同时通过 —— 实测 8 并发建单 8/8 成功,max_open_per_user=5 与
+// cooldown=60s 一道都没关上。真正让闸门成立的是 lockUserState 那把行锁:
+// 它把同一个用户的并发建单排成一队,而且必须是本事务的第一条语句
+// (快照建立时机,见 userstate.go 的说明)。
+//
+// # 判定顺序
 //
 // 顺序是刻意的:先判最便宜、最可能命中的(冷却只看一行的时间戳),
 // 再判要 count 的两条。反过来的话,一个循环提交的脚本会让每一次被拒
@@ -132,6 +144,9 @@ func create(c *gin.Context, userId int, username string, req createRequest) (*ti
 // 在这里必须逐条兑现:写成 `if cnt >= cfg.X` 而漏掉 `cfg.X > 0`,
 // 会让填 0 的站点一张单都建不出来。
 func checkCreateLimits(tx *gorm.DB, userId int, now int64) error {
+	if err := lockUserState(tx, userId); err != nil {
+		return err
+	}
 	cfg := config.Get().Ticket
 
 	if cfg.CooldownSecs > 0 {

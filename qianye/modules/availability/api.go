@@ -52,12 +52,19 @@ type matrixResponse struct {
 	Definition    Definition  `json:"definition"`
 	Groups        []groupInfo `json:"groups"`
 	Models        []string    `json:"models"`
-	TotalModels   int         `json:"total_models"`
-	Page          int         `json:"page"`
-	PageSize      int         `json:"page_size"`
-	Truncated     bool        `json:"truncated"`
-	Cells         []cell      `json:"cells"`
-	Overall       cell        `json:"overall"`
+	// CoveredModels 是 Models 里**真正被查询覆盖**的那些。
+	//
+	// 没有它,截断就是不可分辨的:被截掉的格子在响应里长得和"该分组不提供这个
+	// 模型"一模一样(两者都是 cells 里没有这一项),前端于是把一个根本没查过的
+	// 格子渲染成了"未提供" —— 一个肯定断言。Truncated 只说明"有东西被截了",
+	// 说不出被截的是哪些,前端无法据此把结论降级成"未知"。
+	CoveredModels []string `json:"covered_models"`
+	TotalModels   int      `json:"total_models"`
+	Page          int      `json:"page"`
+	PageSize      int      `json:"page_size"`
+	Truncated     bool     `json:"truncated"`
+	Cells         []cell   `json:"cells"`
+	Overall       cell     `json:"overall"`
 }
 
 // getMatrix 是主看板:分组 × 模型的可用率矩阵。
@@ -78,7 +85,8 @@ func getMatrix(c *gin.Context) {
 		respond(c, matrixResponse{
 			StartTs: r.StartTs, EndTs: r.EndTs,
 			BucketSeconds: r.granularitySeconds(), Granularity: granularityLabel(r),
-			Definition: d, Groups: []groupInfo{}, Models: []string{}, Cells: []cell{},
+			Definition: d, Groups: []groupInfo{}, Models: []string{},
+			CoveredModels: []string{}, Cells: []cell{},
 		})
 		return
 	}
@@ -102,20 +110,23 @@ func getMatrix(c *gin.Context) {
 	// 之前一次性算出来的:平台分组数一多,这里就先按 页内模型数 × 分组数 分配了
 	// 一大片内存,而真正用到的永远不超过 limit。
 	out := make([]cell, 0, min(limit, len(pageModels)*len(groups)))
+	covered := make([]string, 0, len(pageModels))
 	truncated := false
 	for _, name := range pageModels {
+		// ★ 整行要么全给、要么不给。逐格截断是最坏的一种:半行留下的空缺在响应里
+		// 与"该分组不提供这个模型"完全不可分辨,前端于是把根本没查过的格子画成
+		// "未提供"。默认 max_series_per_query=200、前端一页 30 个模型,
+		// 只要有 ≥7 个可见分组就必然每页都撞上,这不是边角情况。
+		if len(out)+len(groups) > limit {
+			truncated = true
+			break
+		}
 		for _, g := range groups {
-			if len(out) >= limit {
-				truncated = true
-				break
-			}
 			key := cellKey{group: g, model: name}
 			_, offered := groupOfferedModels(g)[name]
 			out = append(out, buildCell(key, cells[key], offered, d))
 		}
-		if truncated {
-			break
-		}
+		covered = append(covered, name)
 	}
 	sortCells(out, sortMode)
 
@@ -126,12 +137,15 @@ func getMatrix(c *gin.Context) {
 		Definition:    d,
 		Groups:        groupInfos(groups, visible),
 		Models:        pageModels,
+		CoveredModels: covered,
 		TotalModels:   total,
 		Page:          page,
 		PageSize:      pageSize,
 		Truncated:     truncated,
 		Cells:         out,
-		Overall:       overallCell(out, cells, groups, pageModels, d),
+		// KPI 只汇总真正查过的模型:拿被截掉的模型去凑总数,页面上会出现
+		// "整体可用率的分母比矩阵里所有格子加起来还大"这种对不上的账。
+		Overall: overallCell(out, cells, groups, covered, d),
 	})
 }
 
