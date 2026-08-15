@@ -48,6 +48,25 @@ func TestPureProductFlagIsSnapshotOnPurchase(t *testing.T) {
 		"购买时必须把套餐的 NoQuota 拍进 UserSubscription")
 }
 
+// TestPureProductStoresTinyAmountNotZero 纯商品落库的额度必须是 1,不是 0。
+//
+// 这是第二道闸:出资查询里那条 no_quota 过滤是第一道。只留第一道的话,
+// 将来任何一条绕过它的路径拿到的都是 AmountTotal=0 —— 而 0 的语义是**不限额度**,
+// 那条路径会安静地给出无限余额。落成 1 之后,最坏情况也只是一个 quota 单位。
+func TestPureProductStoresTinyAmountNotZero(t *testing.T) {
+	pure := &SubscriptionPlan{NoQuota: true, TotalAmount: 0}
+	require.Equal(t, PureProductAmountTotal, planAmountTotal(pure),
+		"纯商品必须落成一个极小的正数,而不是 0(0 = 不限额度)")
+	require.Positive(t, PureProductAmountTotal,
+		"必须严格大于 0,否则预扣那句 `if AmountTotal > 0` 会整段跳过余额检查")
+
+	unlimited := &SubscriptionPlan{NoQuota: false, TotalAmount: 0}
+	require.Zero(t, planAmountTotal(unlimited), "不限额度的套餐仍然落 0")
+
+	limited := &SubscriptionPlan{NoQuota: false, TotalAmount: 500}
+	require.EqualValues(t, 500, planAmountTotal(limited), "有限额度原样落库")
+}
+
 // TestNoQuotaIsDistinctFromUnlimited 三态必须可区分。
 //
 // NoQuota=true            纯商品,不参与出资

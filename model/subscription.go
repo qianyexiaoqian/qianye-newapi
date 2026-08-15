@@ -246,6 +246,36 @@ func (p *SubscriptionPlan) BeforeUpdate(tx *gorm.DB) error {
 	return nil
 }
 
+// PureProductAmountTotal 是纯商品落库时的额度:**1 个 quota 单位**,不是 0。
+//
+// ═══════════ 为什么不是 0 ═══════════
+//
+// 0 的语义是**不限额度** —— 预扣那一句 `if sub.AmountTotal > 0` 会直接跳过余额
+// 检查。纯商品一旦以 0 落库,任何漏掉 NoQuota 判断的路径都会把它当成一份
+// 永远花不完的余额。1 让这条订阅在**数据层面**就是"几乎没有钱":
+// remain(1) < 任何一次真实请求的预扣额,于是必然被跳过、落到钱包。
+//
+// 项目方原话:「没有额度的你就设定一个很小的数值 0.000001 这种」。
+// 单位是 quota 而不是美元(int64),所以能存的最小正值就是 1 —— 按本站
+// 500000 quota = 1 美元换算,它是 0.000002 美元,比那个数还小。
+//
+// ═══════════ 它与 NoQuota 是两道闸,不是二选一 ═══════════
+//
+//	NoQuota      运营面的概念,也是出资查询里那条 SQL 过滤(纯商品压根不被选中)
+//	本常量       数据面的兜底,万一将来有路径绕过了那条过滤,它拿到的也只有 1
+//
+// 只留前者:漏一处过滤就退化成无限余额。只留后者:运营得知道"1"是个魔法数,
+// 而且零成本请求(倍率 0 的模型)真的会把这 1 个单位吃掉一次。两道都留最省心。
+const PureProductAmountTotal int64 = 1
+
+// planAmountTotal 给出这个套餐落库时应该写入的订阅额度。
+func planAmountTotal(plan *SubscriptionPlan) int64 {
+	if plan.NoQuota {
+		return PureProductAmountTotal
+	}
+	return plan.TotalAmount
+}
+
 func (p *SubscriptionPlan) NormalizeDefaults() {
 	if p.AllowBalancePay == nil {
 		p.AllowBalancePay = common.GetPointer(true)
@@ -594,7 +624,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	sub := &UserSubscription{
 		UserId:              userId,
 		PlanId:              plan.Id,
-		AmountTotal:         plan.TotalAmount,
+		AmountTotal:         planAmountTotal(plan),
 		NoQuota:             plan.NoQuota,
 		AmountUsed:          0,
 		StartTime:           now.Unix(),
