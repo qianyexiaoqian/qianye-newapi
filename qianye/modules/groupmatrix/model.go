@@ -157,33 +157,6 @@ type Grant struct {
 
 func (Grant) TableName() string { return "qy_group_grants" }
 
-// WriteDeny 记录影子期**令牌写入侧**本可拒绝的一次分组变更。
-//
-// 只有这一档来源,所以不设 source 列。
-//
-// 读侧(middleware/auth.go)的影子拒绝在那个挂载点上**记不出来**:
-// 上游的调用形式是 `GetUserUsableGroups(userGroup)[tokenGroup]` —— hook 只拿得到
-// userGroup 与整张 map,拿不到被查询的那个 key。硬做出来的"本可拒绝数"是假的,
-// 而且列表类调用(模型广场、价格表)会与鉴权调用混进同一个计数器,
-// 一个开着模型广场的管理员就能把它刷成几千。
-//
-// 影子期读侧的证据来源因此是日志库聚合(preview 的 L2 块):精确、可回溯、
-// 能区分调用性质。这个不对称是有意的,不是漏了一半。
-type WriteDeny struct {
-	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
-
-	UserGroup  string `json:"user_group" gorm:"column:user_group;type:varchar(64);not null;uniqueIndex:uk_qy_gdeny_pair,priority:1"`
-	ModelGroup string `json:"model_group" gorm:"column:model_group;type:varchar(64);not null;uniqueIndex:uk_qy_gdeny_pair,priority:2"`
-
-	Count     int64 `json:"count" gorm:"not null;default:0"`
-	FirstSeen int64 `json:"first_seen" gorm:"not null;default:0"`
-	LastSeen  int64 `json:"last_seen" gorm:"not null;default:0"`
-
-	SampleUserId int `json:"sample_user_id" gorm:"not null;default:0"`
-}
-
-func (WriteDeny) TableName() string { return "qy_group_write_denies" }
-
 // newScope 构造一条接管登记行。布尔默认值在这里给,不走 GORM 的 default tag。
 func newScope(userGroup, mode string, allowAuto bool, autoOrder []string, note string, operatorId int, now int64) *Scope {
 	return &Scope{

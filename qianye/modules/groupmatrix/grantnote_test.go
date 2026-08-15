@@ -235,20 +235,24 @@ func TestResolveCellNoteReportsSource(t *testing.T) {
 	assert.Equal(t, NoteSourceGroupName, src)
 }
 
-// TestResolveCellNoteSkipsGrantNoteWhenNotEnforced 钉住管理端与 Resolve 的
+// TestResolveCellNoteSkipsGrantNoteWhenScopeUnset 钉住管理端与 Resolve 的
 // **生效条件**同源。
 //
-// Resolve 在 mode != enforce 时逐位返回上游,按格备注一个字节都不生效
-// (hook.go 的 `scope.Mode != ModeEnforce` 分支)。管理端如果照旧把第 1 级算进去,
-// 那一格的 effective_note / note_source 会显示成"已生效",而运营在影子期
-// 「先配好再切 enforce」时核对文案用的正是这个字段 —— 他会验收通过一段
-// 用户永远看不到的文字。
-func TestResolveCellNoteSkipsGrantNoteWhenNotEnforced(t *testing.T) {
+// 没有 scope 行时 Resolve 逐位返回上游,按格备注一个字节都不生效(hook.go 里
+// `s.Scopes[userGroup]` 缺键的那条提前返回)。管理端如果照旧把第 1 级算进去,
+// 那一格的 effective_note / note_source 会显示成"已生效" —— 而运营完全可能
+// 先在还没设范围的那一行把文案敲好、下一步才去设范围,他会验收通过一段
+// 用户此刻永远看不到的文字。
+//
+// 谓词只有"有没有 scope 行"这一个:shadow 下线之后读侧不再判 mode,
+// 这里跟着判 mode 会让一条存量 shadow 行在管理端显示成"备注没生效",
+// 而用户那边它已经生效了。
+func TestResolveCellNoteSkipsGrantNoteWhenScopeUnset(t *testing.T) {
 	whitelist := map[string]string{"paid": "白名单原文"}
 
 	note, src := resolveCellNote("按格", "模型分组", whitelist, "paid", false)
 	assert.Equal(t, "模型分组", note,
-		"影子档必须回落到下一级:用户此刻看到的就是模型分组备注")
+		"没设范围的那一档必须回落到下一级:用户此刻看到的就是模型分组备注")
 	assert.Equal(t, NoteSourceModelGroup, src)
 
 	note, src = resolveCellNote("按格", "", whitelist, "paid", false)

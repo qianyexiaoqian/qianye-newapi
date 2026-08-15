@@ -164,28 +164,28 @@ func Health() map[string]any {
 		// 报它是为了回答一个必然会被问到的问题:"扩展库里怎么有一张不在任何
 		// Tables() 里的表,是不是漏迁移了"。第二反应通常是"删掉试试",而那一步
 		// 不可逆。清单与手工 DROP 语句见 qianye/docs/retired_tables.md。
-		"retired_tables":     []string{"qy_group_seen"},
+		"retired_tables":     []string{"qy_group_seen", "qy_group_write_denies"},
 		"needs_attention":    s == nil && enabled(),
 		"unloaded_behaviour": "分组可选清单未加载,当前按上游全局白名单放行(读侧恒等返回,写侧校验一并放行)",
 	}
 	if s == nil {
 		return out
 	}
-	managed, enforced := 0, 0
-	for _, sc := range s.Scopes {
-		managed++
-		if sc.Mode == ModeEnforce {
-			enforced++
-		}
-	}
+	// 有 scope 行就是生效,所以这三个键是同一个数:managed_groups 是"这个模块在管谁"、
+	// enforced_groups 是"谁此刻真的被限制着"、scoped_groups 是"谁显式设过范围",
+	// shadow 下线之后三个问题的答案合并了。**刻意不在这里再判一次 sc.Mode** ——
+	// 快照里的 Mode 已由 buildSnapshot 归一化,判它只会把已经下线的第三档写回读取路径,
+	// 而"读侧不看 mode、别处看 mode"正是本模块修过的那种分叉。三个键都留着:
+	// 健康面板与孤儿基线面板都在读,合并成一个键换不来任何东西。
+	scoped := len(s.Scopes)
 	dropped := make([]string, 0, len(s.DroppedGrants))
 	dropped = append(dropped, s.DroppedGrants...)
 	age := common.GetTimestamp() - loadedAt.Load()
 	stale := age > maxStaleSeconds()
 	out["dropped_grants"] = dropped
-	out["managed_groups"] = managed
-	out["enforced_groups"] = enforced
-	out["scoped_groups"] = managed
+	out["managed_groups"] = scoped
+	out["enforced_groups"] = scoped
+	out["scoped_groups"] = scoped
 	out["snapshot_age_secs"] = age
 	out["snapshot_version"] = s.Version
 	out["snapshot_stale"] = stale

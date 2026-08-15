@@ -1,7 +1,6 @@
 package groupmatrix
 
 import (
-	"context"
 	"net/http/httptest"
 	"reflect"
 	"testing"
@@ -160,33 +159,19 @@ func TestCheckTokenGroupIsGatedByTheSameSwitchAsTheReadSide(t *testing.T) {
 		"快照未加载时读侧恒等返回,写侧必须同步放行")
 }
 
-// TestShadowModeRecordsWriteDenyWithoutBlocking 守影子期的**唯一**可归因证据源。
+// 这里曾经有 TestShadowModeRecordsWriteDenyWithoutBlocking,守「影子期的写入拒绝
+// 必须可归因、且不阻断」。它随 shadow 档一起删除,而不是改写:
 //
-// 影子的全部意义是"配好了、先看看会挡掉谁"。不记录就没有证据,而没有证据的
-// 影子期只是把 enforce 推迟了几天,并没有降低任何风险。
+// 它断言的两件事都已经没有承载者。「不阻断」在两档口径下无处安放 —— 现在只有
+// 「有 scope 行 = 真拒绝」与「没有 = 真放行」,不存在"本可拒绝但放行"的第三种结果,
+// 也就没有什么可记录的。「可归因」守的是那张计数表的折叠累加语义,而写入它的
+// 唯一分支(`scope.Mode != ModeEnforce`)在 shadow 下线时就删掉了。
 //
-// 同时断言它**不阻断**:影子期挡住用户建令牌,就等于 enforce 从写侧提前生效了。
-func TestShadowModeRecordsWriteDenyWithoutBlocking(t *testing.T) {
-	gdb := newTestDB(t)
-	useConfig(t, true)
-	syncHotAsync(t)
-	useUpstreamGroups(t,
-		map[string]string{"default": "默认分组"},
-		map[string]float64{"default": 1, "vip": 1, "paid": 1})
-	seedScope(t, gdb, "vip", ModeShadow, false, "default")
-
-	// 影子期的记录必须能归因到具体的 (用户分组, 模型分组),否则数字没法用。
-	require.NoError(t, upsertWriteDeny(context.Background(), "vip", "paid", 42))
-	require.NoError(t, upsertWriteDeny(context.Background(), "vip", "paid", 43))
-
-	denies := listWriteDenies(gdb)
-	require.Len(t, denies, 1, "同一个组合必须折叠成一行累加,而不是每次写一行")
-	assert.EqualValues(t, 2, denies[0].Count)
-	assert.Equal(t, "vip", denies[0].UserGroup)
-	assert.Equal(t, "paid", denies[0].ModelGroup)
-	assert.EqualValues(t, 43, denies[0].SampleUserId, "样本用户取最近一次,便于抽查")
-	assert.Positive(t, denies[0].FirstSeen)
-}
+// 它之所以还绿,正是因为它绕开生产路径直接调 upsertWriteDeny —— 一条测试
+// 只要肯直接调 helper,就能让一个零调用方的子系统看起来还在服役。
+//
+// 写入侧真正拦人的那条分支由 TestCheckTokenGroupRejectsUnlistedGroupUnderEnforce
+// 覆盖,它走的是 CheckTokenGroup 本身。
 
 // TestUpstreamHookVariablesAreWiredByInstallHooks 守的是"实现写好了但没接上"。
 //

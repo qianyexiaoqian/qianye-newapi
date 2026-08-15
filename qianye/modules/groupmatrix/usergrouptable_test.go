@@ -216,10 +216,13 @@ func TestUserGroupTableTellsTheTruthAboutEnforcement(t *testing.T) {
 	require.NoError(t, err)
 	rows := rowsByName(view)
 
+	// 存量遗留行:mode 写着 shadow(迁移没跑到的窗口),而读侧自 shadow 下线起
+	// 一个字都不看 mode —— 这份清单此刻正在限制人。管理端必须说同一句话:
+	// 画成「尚未生效」会让运营以为这一档还没被收紧,而他手上正有人在 403。
 	shadowed := rows["shadowed"]
 	assert.Equal(t, ScopeStateSet, shadowed.ScopeState, "确实配过清单")
-	assert.False(t, shadowed.ScopeEnforced,
-		"shadow 的清单一个字节都不生效 —— 把它画成「已生效」是让界面撒谎")
+	assert.True(t, shadowed.ScopeEnforced,
+		"有 scope 行就是生效,与 Resolve 同一个谓词 —— 回头判 mode 会让界面撒谎")
 
 	dual := rows["legacy_dual"]
 	assert.True(t, dual.SelfInserted,
@@ -256,7 +259,7 @@ func TestUserGroupTableExcludesModelGroups(t *testing.T) {
 
 	seedUserGroupRegistry(t, gdb, groupns.UserGroup{
 		Name: "vip", Enabled: true, DefaultMode: groupns.DefaultModeInherit})
-	require.NoError(t, gdb.Create(newScope("scoped_only", ModeShadow, false, nil, "", 1, 1)).Error)
+	require.NoError(t, gdb.Create(newScope("scoped_only", ModeEnforce, false, nil, "", 1, 1)).Error)
 	require.NoError(t, reload())
 
 	view, err := buildMatrixView(gdb)

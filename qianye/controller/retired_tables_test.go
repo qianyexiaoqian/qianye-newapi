@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/qianye/modules/groupmatrix"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,8 +41,18 @@ func TestRetiredTablesMatchTheDoc(t *testing.T) {
 	for _, row := range retiredTables {
 		reported[row["table"].(string)] = true
 	}
-	// groupmatrix 自报的那张不在本清单里(它的模块还在),显式豁免。
-	reported["qy_group_seen"] = true
+	// groupmatrix 自报的那几张不在本清单里(它的模块还在,只是表退役了)。
+	//
+	// 豁免必须**从 Health() 里读**,不能在这里抄一份名字:抄下来的名单会让反向
+	// 对账对这几张表整段失效 —— 文档登记了、接口其实不报,而这正是这条测试存在
+	// 的唯一理由。读实际下发的那一份,豁免与被豁免的东西就永远是同一个来源。
+	gmRetired, ok := groupmatrix.Health()["retired_tables"].([]string)
+	require.True(t, ok,
+		"groupmatrix.Health() 必须以 []string 报出它自报的退役表 —— "+
+			"那是这几张表在运行时唯一的说明")
+	for _, name := range gmRetired {
+		reported[name] = true
+	}
 
 	for _, line := range strings.Split(string(doc), "\n") {
 		if !strings.HasPrefix(strings.TrimSpace(line), "| `qy_") {

@@ -31,11 +31,12 @@ For commercial licensing, please contact support@quantumnous.com
  *     后端下发的 `model_groups` 在这一支取的是上游 `GetUserUsableGroups` 的
  *     实际结果 —— 那才是这一档人此刻真的能用的东西。
  *
- *  2. **仅经套餐可达的模型分组必须留在列表里。** 它不在清单内（`granted` 为
- *     假），但买了对应套餐的用户照样能用它，且**那一格的倍率正在扣钱**。
- *     按"清单成员"过滤掉它，运营就再也改不到那个价，而站内没有任何一页显示过
- *     这一档人能到达它。所以它进列表，只是标成另一种来源、并且不给"移除"
- *     （范围里本来就没有它，移无可移）。
+ *  2. **仅经套餐可达的模型分组不进列表，但必须留在这一屏上。** 它不在清单内
+ *     （`granted` 为假），而列表回答的是"我给这一档配了什么" —— 套餐解锁挂在
+ *     **人**身上、与用户分组无关，混进来会让运营以为撤销那一行就能收回权限。
+ *     可它同样不能整屏消失：买了对应套餐的用户照样能用它，且**那一格的倍率
+ *     正在扣钱**，抹掉之后站内就没有任何一页显示过这一档人能到达它。所以它
+ *     落进候选项（`addable`），并在那一侧带上让它可达的套餐名。
  *
  *  3. **列表只走列轴。** 清单里可以引用一个已经从 `options.GroupRatio` 消失
  *     的模型分组；那种项已经不可达，列出来只会让人以为还能用。后端另有一条
@@ -60,9 +61,12 @@ import type {
  *  - `scope`    这一档自己的清单里有它（可移除）。
  *  - `fallback` 这一档还没有自己的清单，它来自全局「用户可选分组」（移除它 =
  *               先为这一档建立独立清单）。
- *  - `plan`     清单里没有它，但某个套餐解锁了它。**倍率照样在扣钱**。
+ *
+ * 曾经还有第三个取值 `plan`（清单里没有它、某个套餐解锁了它）。它不再进这份
+ * 列表 —— 见文件头规则 2 与 {@link QyUgAddable.planTitles}。**两个取值都表示
+ * "这一档真的能用它"**，所以列表里的每一行都可以移除。
  */
-export type QyUgListOrigin = 'fallback' | 'plan' | 'scope'
+export type QyUgListOrigin = 'fallback' | 'scope'
 
 export type QyUgListItem = {
   name: string
@@ -72,8 +76,6 @@ export type QyUgListItem = {
   origin: QyUgListOrigin
   /** 与用户分组同名的那一列 —— 删掉它并不会让分组为空的令牌发不出请求。 */
   selfEdge: boolean
-  /** 让这一项可达的套餐名（`origin === 'plan'` 时才有值）。 */
-  planTitles: string[]
 }
 
 /** 一个候选项：模型分组本身，外加「它已经被某个套餐解锁了」这条注记。 */
@@ -91,11 +93,11 @@ export type QyUgListView = {
   /** 这一档有没有自己的清单。 */
   scoped: boolean
   /**
-   * 清单里此刻有几项 —— **不含仅经套餐可达的那些**。
+   * 清单里此刻有几项 —— **只数 `items`，屏幕上那些候选项一个都不算**。
    *
-   * 「移除这一项之后就一个都不剩了」这个判据只能用它：把套餐可达的项算进来，
-   * 清空清单的那一次点击就不会弹出那个二选一的确认，而"回落全局清单"与
-   * 「一个都不给用」的两个错误方向分别是整档全放行和整档 403。
+   * 「移除这一项之后就一个都不剩了」这个判据只能用它：把套餐可达之类的候选项
+   * 算进来，清空清单的那一次点击就不会弹出那个二选一的确认，而"回落全局清单"
+   * 与「一个都不给用」的两个错误方向分别是整档全放行和整档 403。
    */
   memberCount: number
 }
@@ -134,7 +136,6 @@ export function qyUgListView(
         hasChannels: column.has_channels,
         origin: scoped ? 'scope' : 'fallback',
         selfEdge: column.name === userGroup.name,
-        planTitles: [],
       })
       continue
     }

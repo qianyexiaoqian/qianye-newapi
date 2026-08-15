@@ -15,7 +15,6 @@ package groupmatrix
 //     指针相等是"未配置 = 上游"最强的可证形式,由 bitexact_test.go 钉死。
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -286,17 +285,6 @@ var ownerUserGroup = func(c *gin.Context) (string, bool) {
 	}
 	return u.Group, true
 }
-
-// recordWriteDeny 累加一条影子期写入拒绝。
-//
-// 走 HotAsync 而不是同步写:这是观测数据,绝不该让一次扩展库抖动
-// 卡住用户建令牌的请求。丢一条影子样本不影响任何判断。
-func recordWriteDeny(userGroup, modelGroup string, userId int) {
-	hotAsync("groupmatrix.write_deny", func(ctx context.Context) error {
-		return upsertWriteDeny(ctx, userGroup, modelGroup, userId)
-	})
-}
-
 
 // UserAutoGroups 是 service.QyUserAutoGroups 的实现体:这一档人默认的 auto 顺序。
 //

@@ -143,7 +143,6 @@ function QyUgGroupDialogBody(props: {
             selfExcluded={editor.selfExcluded}
             caseNearMiss={editor.caseNearMiss}
             warnings={data.warnings}
-            shadowWriteDenies={data.shadow_write_denies}
             emptyScopeGroups={editor.emptyScopeGroups}
             onReload={editor.reload}
           />

@@ -15,10 +15,9 @@ package groupns
 //	扩展 qy_user_groups.default_model_group     用户分组的默认模型分组(pin)
 //	扩展 qy_group_grants.model_group            用户分组 × 模型分组的权威授权
 //	扩展 qy_plan_group_grants.model_group       套餐解锁
-//	扩展 qy_group_write_denies.model_group      影子期写入拒绝计数
 //
 // 上游"删除一个模型分组"的全部实现是:在模型分组页把一行从 GroupRatio 里去掉。
-// 其余十一处一个都不动。表现分三档,从轻到重:
+// 其余十处一个都不动。表现分三档,从轻到重:
 //
 //	轻   白名单里还留着这个键 → 用户在令牌下拉里照样看得到它
 //	中   授权 / 套餐解锁 / auto 顺序里还留着 → 一批永远不会命中的配置

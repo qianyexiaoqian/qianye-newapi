@@ -94,17 +94,21 @@ type Mod struct{ module.Base }
 
 func (Mod) Name() string { return "groupmatrix" }
 
-// Tables 刻意**不含** qy_group_seen。
+// Tables 刻意**不含** qy_group_seen 与 qy_group_write_denies。
 //
-// 那张表是上一轮「新分组默认全遮断」的登记簿,本轮随该默认一并下线。
-// 摘出 AutoMigrate 而**不 DROP**:它是"上一轮到底自动遮断过谁"的唯一证据
-// (本站为 0 行,但这个 0 本身也是结论)。退役登记见 qianye/docs/retired_tables.md,
-// 观察期结束后由人手工执行 DROP —— 不写进代码、不做成迁移、不自动执行。
+// 前者是上一轮「新分组默认全遮断」的登记簿,本轮随该默认一并下线;
+// 后者是影子期「令牌写入侧本可拒绝」的计数,随 shadow 档下线 —— 写入它的那条
+// 分支(`scope.Mode != ModeEnforce`)已经不存在,而现在的两档里没有任何一档
+// 会"本可拒绝但放行":有 scope 行就是真拒绝,没有就是真放行。
+//
+// 两张都是摘出 AutoMigrate 而**不 DROP**:它们各自是"上一轮到底发生过什么"的
+// 唯一证据(本站均为 0 行,但这个 0 本身也是结论)。退役登记见
+// qianye/docs/retired_tables.md,观察期结束后由人手工执行 DROP ——
+// 不写进代码、不做成迁移、不自动执行。
 func (Mod) Tables() []any {
 	return []any{
 		&Scope{},
 		&Grant{},
-		&WriteDeny{},
 	}
 }
 

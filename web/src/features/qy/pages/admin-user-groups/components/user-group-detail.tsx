@@ -110,12 +110,16 @@ type QyUgGroupDetailProps = {
  *   · 「这份清单会拦人」写在列表上方的状态条里 —— 有清单就一定生效，
  *     它是一句提醒而不是前置开关，见 {@link QyUgScopeModeStrip}。
  *
- * ── 倍率框在**每一行**上都可编辑，包括"仅经套餐可达"的那些 ──
+ * ── 倍率框在**每一行**上都可编辑 ──
  *
  * 倍率与可选清单是两份独立的数据（前者落上游 `options.GroupGroupRatio`，
- * 后者落扩展库）。没有自己清单的那一档、以及经套餐可达的那些格子，倍率都
- * 100% 在扣钱。倍率随可选性一起消失，这一屏就会变成「真的在扣钱的那些价
- * 一个都改不了」。判定与渲染共用 {@link QyGmMatrixCell}。
+ * 后者落扩展库）。没有自己清单的那一档，它的每一格倍率都 100% 在扣钱。倍率
+ * 随可选性一起消失，这一屏就会变成「真的在扣钱的那些价一个都改不了」。判定与
+ * 渲染共用 {@link QyGmMatrixCell}。
+ *
+ * 仅经套餐可达的模型分组**不在这份列表里**（见 {@link qyUgListView}），它只在
+ * 「添加模型分组」的候选项那一侧带一条「已被套餐解锁」的注记；那些格子的倍率
+ * 在整页矩阵那一屏上改。
  */
 export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
   const { t } = useTranslation()
@@ -406,8 +410,8 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
         沿着一列往下扫。徽标随之降级成该列里的一个普通字 —— 「渠道」列写「无」
         比一个橙色徽标更容易被扫到,因为它出现的位置是固定的。
 
-        语义一个都没减:套餐可达仍然单独标出(它既不是"在清单里"也不是"用不了",
-        而且那一格的倍率此刻正在扣钱),没有渠道仍然显眼。
+        语义一个都没减:没有渠道仍然显眼;套餐可达那一类不再占用清单的行,
+        它标在「添加模型分组」的候选项那一侧(见 qyUgListView)。
       */}
       <div
         className={cn(
@@ -451,22 +455,6 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
                     >
                       {item.name}
                     </span>
-                    {/*
-                      「仅经套餐可达」是第三种状态,既不是"在清单里"也不是"用不了"。
-                      画成任何一个都是假陈述,而它那一格的倍率此刻正在扣钱。
-                      降级成一行小字而不是彩色徽标:它每屏最多出现一两次,
-                      而徽标的视觉重量是按"每行都可能有"来定的。
-                    */}
-                    {item.origin === 'plan' && (
-                      <span
-                        className='text-info block text-[11px]'
-                        title={t('qy_ugl_origin_plan_hint', {
-                          plans: item.planTitles.join('、'),
-                        })}
-                      >
-                        {t('qy_ugl_origin_plan')}
-                      </span>
-                    )}
                   </td>
 
                   <td className='px-2 py-1.5'>
@@ -475,10 +463,14 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
                       modelGroup={item.name}
                       cell={cell}
                       entry={entry}
-                      granted={item.origin !== 'plan'}
+                      // 列表里的每一行都是这一档真的能用的（`scope` 或
+                      // `fallback`），不存在"画在这里但没授权"的行。
+                      granted
                       ratio={qyGmRatioDraftOf(cell, entry)}
                       baseRatio={item.baseRatio}
                       scoped={scoped}
+                      // 已授权、同时又被套餐解锁的那些行（`reachable_via` 为
+                      // `both`）仍然要标出来：撤销这一行收不回套餐给的那一半。
                       reachableVia={cell?.reachable_via}
                       planTitles={cell?.plan_titles}
                       selfEdge={item.selfEdge}
@@ -615,15 +607,16 @@ export function QyUgGroupDetail(props: QyUgGroupDetailProps) {
 }
 
 /**
- * 行尾的那一个动作键。
+ * 行尾的那一个动作键 —— **列表里的每一行都是「移除」**。
  *
- * 三种来源对应两种动作，而**它们的措辞不能共用**：
+ * 两种来源对应同一个动作，但那一次点击的后果不同，差别由调用方的确认弹窗说明：
  *
- *   · `scope`    这一档自己的清单里有它 → 「移除」
- *   · `fallback` 全局清单给的 → 同样是「移除」，但那一次点击会先为这一档
- *                建立独立清单（由调用方的确认弹窗说明）
- *   · `plan`     清单里没有它、套餐让它可达 → **不能移除**（移无可移），
- *                能做的是把它正式加进清单
+ *   · `scope`    这一档自己的清单里有它 → 直接落草稿
+ *   · `fallback` 全局清单给的 → 先为这一档建立独立清单，再落这次移除
+ *
+ * 曾经还有第三种来源 `plan`（清单里没有它、套餐让它可达），它在这里画的是
+ * 「加入清单」而不是「移除」。那类行已经不进列表（见 {@link qyUgListView}），
+ * 它现在只出现在「添加模型分组」的候选项里，那一侧本来就只有添加键。
  */
 function QyUgRowAction(props: {
   item: QyUgListItem
@@ -631,22 +624,6 @@ function QyUgRowAction(props: {
 }) {
   const { t } = useTranslation()
   const { item } = props
-
-  if (item.origin === 'plan') {
-    return (
-      <Button
-        type='button'
-        variant='ghost'
-        size='sm'
-        className='h-7 justify-self-end'
-        aria-label={t('qy_ugl_add_one_label', { modelGroup: item.name })}
-        onClick={() => props.onRequest(item.name, true)}
-      >
-        <Plus aria-hidden='true' />
-        {t('qy_ugl_add_one')}
-      </Button>
-    )
-  }
 
   return (
     <Button

@@ -209,18 +209,20 @@ func buildOrphanReport() (*orphanReport, error) {
 	return rep, nil
 }
 
-// enforcedGroupNames 列出当前真的在 enforce 的用户分组。它决定了上面那份
+// enforcedGroupNames 列出此刻真的被权威清单限制着的用户分组。它决定了上面那份
 // 基线还算不算"与本功能无关"。
+//
+// 判据是**有没有 scope 行**,与 Resolve 同源。shadow 下线之后读侧一个字都不看 mode,
+// 所以这里也不看:漏掉一档正在被限制的分组,等于让报告说"这些数字与本功能无关",
+// 而那一档的令牌恰恰是被本功能打断的。
 func enforcedGroupNames() []string {
 	out := make([]string, 0)
 	s, ok := SnapshotView()
 	if !ok {
 		return out
 	}
-	for name, sc := range s.Scopes {
-		if sc.Mode == ModeEnforce {
-			out = append(out, name)
-		}
+	for name := range s.Scopes {
+		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out

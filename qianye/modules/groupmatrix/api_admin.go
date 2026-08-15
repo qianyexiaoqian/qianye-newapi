@@ -110,9 +110,6 @@ type userGroupRow struct {
 	// service.GetUserUsableGroups 的实际结果。前端直接渲染它,不必再从 cells 里
 	// 过滤一遍 —— 过滤条件是后端才知道的事,让前端重推一遍必然漂移。
 	//
-	// ⚠ 它是**配置值**,不一定是"此刻真的在生效的值":mode=shadow 的清单一个
-	// 字节都不生效(读侧逐位返回上游)。所以这一列必须与 ScopeEnforced 同屏,
-	// 前端在 shadow 上出「尚未生效」徽章。
 	//
 	// ⚠ 它**不受列轴约束**。列轴(modelGroups)是从 options.GroupRatio 的键派生的,
 	// 而清单里完全可能引用一个已从倍率表消失的模型分组。早先这一列是在列轴循环
@@ -152,11 +149,10 @@ type userGroupRow struct {
 
 	// ScopeEnforced 回答「这份清单**此刻真的在限制人**吗」。
 	//
-	// ScopeState=set 只说明"配过清单",而 mode=shadow 的清单一个字节都不生效
-	// (读侧 Resolve 逐位返回上游)。两者摆在一起会让界面显示成"已设范围"
-	// 而实际谁都拦不住 —— 项目方的口径是「设了可用模型分组则用户只能选这些」,
-	// 那句话对应的**只有 enforce**。所以这个布尔必须单独下发,
-	// 而不是让前端从 mode 字符串里推(推错的方向是把 shadow 画成已生效)。
+	// 它是**行为谓词而不是配置回显** —— 配置原值另有 Mode 那一列。shadow 下线之后
+	// 读侧只认"有没有 scope 行",所以设过范围的行上它恒为真。字段保留而不是删掉:
+	// 前端已经按它渲染,而"清单在不在生效"是这一页必须能回答的问题,
+	// 哪天再出现一档"配了不生效"的状态,答案要有地方落。
 	ScopeEnforced bool `json:"scope_enforced"`
 
 	// SelfInserted 表示这一档人能选到**与自己同名的模型分组**,而这一条
@@ -369,14 +365,13 @@ type savePartial struct {
 // 进同一个缓存键 —— 下一次渲染 model_groups 是 undefined,整页崩到错误边界,
 // 而改动其实已经落库了。
 type matrixView struct {
-	UserGroups        []userGroupRow  `json:"user_groups"`
-	ModelGroups       []modelGroupRow `json:"model_groups"`
-	Cells             []cellView      `json:"cells"`
-	BaseRatioHash     string          `json:"base_ratio_hash"`
-	Snapshot          gin.H           `json:"snapshot"`
-	Warnings          []string        `json:"warnings"`
-	ShadowWriteDenies []WriteDeny     `json:"shadow_write_denies"`
-	Partial           *savePartial    `json:"partial,omitempty"`
+	UserGroups    []userGroupRow  `json:"user_groups"`
+	ModelGroups   []modelGroupRow `json:"model_groups"`
+	Cells         []cellView      `json:"cells"`
+	BaseRatioHash string          `json:"base_ratio_hash"`
+	Snapshot      gin.H           `json:"snapshot"`
+	Warnings      []string        `json:"warnings"`
+	Partial       *savePartial    `json:"partial,omitempty"`
 
 	// SupportsGrantNote 恒为 true:本版本认 set_note / clear_note 两个动作。
 	//
@@ -593,7 +588,11 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 			policy.UnsetGroups++
 		default:
 			row.Mode, row.AllowAuto, row.ScopeNote = sc.Mode, sc.AllowAuto, sc.Note
-			row.ScopeEnforced = sc.Mode == ModeEnforce
+			// 有 scope 行就是生效,与 Resolve 同一个谓词。**不许回头判 sc.Mode**:
+			// 读侧自 shadow 下线起一个字都不看它,而一条存量 mode='shadow' 行
+			// (迁移没跑到的窗口,见 scopedUserGroupsLeftWithNothing)此刻正在
+			// 限制人 —— 判 mode 会把它画成「尚未生效」,那是让界面撒谎的反方向。
+			row.ScopeEnforced = true
 			_, self := grants[ug][ug]
 			row.SelfExcluded = !self
 			if len(grants[ug]) == 0 {
@@ -637,8 +636,11 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 	cells := make([]cellView, 0, len(userGroups)*len(modelGroups))
 	for _, ug := range userGroups {
 		upstream, unmanaged := upstreamUsable[ug]
-		// 按格备注只在 enforce 那一档被 Resolve 读到,管理端的解析必须用同一个判据。
-		enforced := !unmanaged && scopes[ug].Mode == ModeEnforce
+		// 按格备注只在**设过范围**的那一档被 Resolve 读到(没设范围时它逐位返回上游,
+		// 按格备注一个字节都到不了用户眼前),管理端的解析必须用同一个谓词。
+		// 这里刻意不再判 sc.Mode:读侧不判,判了就会让一条存量 shadow 行在管理端
+		// 显示成"备注没生效",而用户那边它已经生效了。
+		scoped := !unmanaged
 		for _, mg := range modelGroups {
 			granted := false
 			if unmanaged {
@@ -652,7 +654,7 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 				ReachableByPlans: make([]string, 0),
 				Note:             grantNotes[ug][mg.Name],
 			}
-			cv.EffectiveNote, cv.NoteSource = resolveCellNote(cv.Note, mg.Note, whitelist, mg.Name, enforced)
+			cv.EffectiveNote, cv.NoteSource = resolveCellNote(cv.Note, mg.Note, whitelist, mg.Name, scoped)
 			cv.NotePending = cv.Note != "" && cv.NoteSource != NoteSourceGrant
 			cv.RatioSource = RatioSourceGroupRatio
 			if v, ok := ratios[ug][mg.Name]; ok {
@@ -701,14 +703,7 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 	return &matrixView{
 		UserGroups: rows, ModelGroups: modelGroups, Cells: cells,
 		BaseRatioHash: baseHash, Snapshot: snapInfo,
-		Warnings: matrixWarnings(userGroups, modelGroups, grants, topupRatios),
-		// 影子期的写入拒绝。它是**唯一可归因**的影子证据来源:
-		// 读侧那个挂载点拿不到被查询的 key(理由见 WriteDeny 的注释),
-		// 所以那一半的证据来自 preview 的日志聚合。
-		//
-		// 不下发它的话,这张表就是一张只写不读的表 —— 而只写不读的观测数据
-		// 与没有观测是同一回事,只是更容易让人以为自己有证据。
-		ShadowWriteDenies: listWriteDenies(gdb),
+		Warnings:          matrixWarnings(userGroups, modelGroups, grants, topupRatios),
 		ScopePolicy:       policy,
 		SupportsGrantNote: true,
 	}, nil
@@ -976,12 +971,12 @@ func listModelGroups(registry map[string]groupns.ModelGroup, whitelist map[strin
 // 这里只是把同样两步按显示需要拆开命名。写第二份 if 链的表现是
 // 「管理端预览的文案与用户看到的不是同一段」。
 //
-// enforced 为 false 时**跳过第 1 级**:那一档的 Resolve 逐位返回上游,
-// 按格备注一个字节都不生效。把它算进来的表现是管理端把一段用户永远看不到的
-// 文字显示成"已生效",而运营在 shadow 期做的正是"先配好再切 enforce"、
-// 核对文案用的正是这个字段。
-func resolveCellNote(grantNote, modelGroupNote string, whitelist map[string]string, modelGroup string, enforced bool) (string, string) {
-	if enforced && grantNote != "" {
+// scoped 为 false(这一档没有 scope 行)时**跳过第 1 级**:那一档的 Resolve
+// 逐位返回上游,按格备注一个字节都不生效。把它算进来的表现是管理端把一段
+// 用户永远看不到的文字显示成"已生效",而运营核对文案用的正是这个字段 ——
+// 运营完全可能先在还没设范围的那一行把文案敲好,下一步才去设范围。
+func resolveCellNote(grantNote, modelGroupNote string, whitelist map[string]string, modelGroup string, scoped bool) (string, string) {
+	if scoped && grantNote != "" {
 		return grantNote, NoteSourceGrant
 	}
 	if modelGroupNote != "" {
@@ -1515,8 +1510,8 @@ type putScopeReq struct {
 	// 刻意**没有** Mode 字段:shadow 已下线,行存在即生效。老客户端仍可能带
 	// 一个 mode 字符串上来,ShouldBindJSON 会直接忽略它 —— 忽略比报错好,
 	// 那个字段现在无论取什么值结果都一样。
-	Managed   bool   `json:"managed"`
-	AllowAuto *bool  `json:"allow_auto"`
+	Managed   bool  `json:"managed"`
+	AllowAuto *bool `json:"allow_auto"`
 	// AutoOrder 是这一档人默认的 auto 尝试顺序。
 	//
 	// nil = 这次不动它(沿用库里那份);空数组 = 清空成"回落全局清单"。
@@ -1932,7 +1927,6 @@ func internalError(c *gin.Context, err error) {
 	common.SysError("qianye/groupmatrix: 接口处理失败: " + err.Error())
 	respondFail(c, http.StatusInternalServerError, "qy_internal_error", "处理失败,请稍后重试")
 }
-
 
 // dropFromAutoOrder 把一个模型分组从**某一档**的默认 auto 顺序里摘掉。
 //

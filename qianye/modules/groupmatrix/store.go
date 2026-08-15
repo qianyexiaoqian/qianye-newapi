@@ -1,7 +1,6 @@
 package groupmatrix
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"gorm.io/gorm"
@@ -213,22 +211,6 @@ func loadGrantRows(gdb *gorm.DB) ([]Grant, error) {
 	return rows, nil
 }
 
-// listWriteDenies 读出影子期的写入拒绝计数,按次数降序。
-//
-// 读失败只记日志、返回空切片:这是观测数据,不能让它挡住整个矩阵页 ——
-// 而矩阵页打不开的时刻,恰恰是最需要看它的时刻。
-func listWriteDenies(gdb *gorm.DB) []WriteDeny {
-	out := make([]WriteDeny, 0)
-	if gdb == nil {
-		return out
-	}
-	if err := gdb.Order("count desc, id asc").Limit(200).Find(&out).Error; err != nil {
-		common.SysError("qianye/groupmatrix: 读取影子写入拒绝失败(「用户分组」页其余部分不受影响): " + err.Error())
-		return make([]WriteDeny, 0)
-	}
-	return out
-}
-
 // groupByRaw 以**原样表达式**做 GROUP BY。
 //
 // ══════════════ 为什么不能直接用 gdb.Group(col) ══════════════
@@ -251,48 +233,6 @@ func countGrants(gdb *gorm.DB) (int64, error) {
 	var n int64
 	err := gdb.Model(&Grant{}).Count(&n).Error
 	return n, err
-}
-
-// upsertWriteDeny 累加一条影子期写入拒绝。
-//
-// 先 Update 再 Create:唯一索引保证并发下最多有一个 Create 成功,
-// 失败的那次退回 Update。不用 ON DUPLICATE KEY —— 扩展库固定 MySQL,
-// 但这段逻辑也会在 SQLite 上跑测试。
-func upsertWriteDeny(ctx context.Context, userGroup, modelGroup string, userId int) error {
-	gdb := db.Get()
-	if gdb == nil {
-		return db.ErrNotReady
-	}
-	gdb = gdb.WithContext(ctx)
-	now := common.GetTimestamp()
-
-	res := gdb.Model(&WriteDeny{}).
-		Where("user_group = ? AND model_group = ?", userGroup, modelGroup).
-		Updates(map[string]any{
-			"count":          gorm.Expr("count + 1"),
-			"last_seen":      now,
-			"sample_user_id": userId,
-		})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected > 0 {
-		return nil
-	}
-	err := gdb.Create(&WriteDeny{
-		UserGroup: userGroup, ModelGroup: modelGroup,
-		Count: 1, FirstSeen: now, LastSeen: now, SampleUserId: userId,
-	}).Error
-	if err == nil {
-		return nil
-	}
-	// 并发下另一个请求抢先建了行:退回累加。
-	return gdb.Model(&WriteDeny{}).
-		Where("user_group = ? AND model_group = ?", userGroup, modelGroup).
-		Updates(map[string]any{
-			"count":     gorm.Expr("count + 1"),
-			"last_seen": now,
-		}).Error
 }
 
 // ─────────────────────────── 草稿与指纹 ───────────────────────────

@@ -250,7 +250,6 @@ async function mountDetail(options: {
     base_ratio_hash: 'h',
     snapshot: { loaded: true, age_seconds: 1, version: 1 },
     warnings: [],
-    shadow_write_denies: [],
   }
 
   const container = document.createElement('div')

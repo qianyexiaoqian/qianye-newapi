@@ -31,8 +31,9 @@ var qyDBHandle atomic.Pointer[gorm.DB]
 //go:linkname qyConfig github.com/QuantumNous/new-api/qianye/config.current
 var qyConfig atomic.Pointer[config.Config]
 
-// extTables 刻意与 Mod.Tables() 保持一致 —— 不含已退役的 qy_group_seen。
-func extTables() []any { return []any{&Scope{}, &Grant{}, &WriteDeny{}} }
+// extTables 刻意与 Mod.Tables() 保持一致 —— 不含已退役的
+// qy_group_seen 与 qy_group_write_denies。
+func extTables() []any { return []any{&Scope{}, &Grant{}} }
 
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()

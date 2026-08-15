@@ -344,23 +344,6 @@ export type QyGmSnapshotInfo = {
 }
 
 /**
- * 影子期的一次令牌写入拒绝。
- *
- * 这是影子模式**唯一可归因**的证据来源：读侧的挂载点拿得到 userGroup 与整张
- * 可选 map，却拿不到被查询的那个 key，因此记不出「这次查的是哪个模型分组」。
- * 不把它渲染出来，`qy_group_write_denies` 就是一张只写不读的表 —— 而只写不读
- * 的观测数据与没有观测是同一回事，只是更容易让人以为自己有证据。
- */
-export type QyGmWriteDeny = {
-  user_group: string
-  model_group: string
-  count: number
-  first_seen: number
-  last_seen: number
-  sample_user_id: number
-}
-
-/**
  * `GET /api/qy/admin/group-matrix` 的响应，也是 PUT 成功后**强制回读**的形状。
  *
  * 保存后回读同一个结构而不是让前端乐观合并：两库不原子，部分失败时运营必须
@@ -382,8 +365,6 @@ export type QyGmMatrixResponse = {
   snapshot: QyGmSnapshotInfo
   /** 保存前应当被看见、但**不拦截**的问题（大小写近似、授权了空池子…）。 */
   warnings: string[]
-  /** 影子期的写入拒绝计数。见 {@link QyGmWriteDeny}。 */
-  shadow_write_denies: QyGmWriteDeny[]
   /**
    * 当前口径本身，由接口下发而**不是前端写死**。
    *

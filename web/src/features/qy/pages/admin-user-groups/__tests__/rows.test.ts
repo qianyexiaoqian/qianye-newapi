@@ -114,7 +114,6 @@ function matrix(
     base_ratio_hash: 'h',
     snapshot: { loaded: true, age_seconds: 0, version: 1 },
     warnings: [],
-    shadow_write_denies: [],
   }
 }
 

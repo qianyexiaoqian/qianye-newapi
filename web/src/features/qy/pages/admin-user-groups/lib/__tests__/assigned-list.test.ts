@@ -109,7 +109,6 @@ function matrix(cells: QyGmCell[]): QyGmMatrixResponse {
     base_ratio_hash: 'h',
     snapshot: { loaded: true, age_seconds: 1, version: 1 },
     warnings: [],
-    shadow_write_denies: [],
   }
 }
 
@@ -200,12 +199,19 @@ describe('有自己的清单时，列表 = grant ∪ 草稿', () => {
   })
 })
 
-describe('仅经套餐可达的模型分组留在列表里，但不算清单成员', () => {
+describe('仅经套餐可达的模型分组不进清单，落在候选项那一侧', () => {
   /*
-    它不在清单内（`granted` 为假），但买了对应套餐的用户照样能用它，**而且
-    那一格的倍率正在扣钱**。按"清单成员"过滤掉它，运营就再也改不到那个价，
-    而站内没有任何一页显示过这一档人能到达它 —— 几周后他为别的目的把那一列的
-    兜底倍率从 1.0 调到 3.0，这批人当场按 3 倍扣费。
+    项目方原话：「为何套餐可达的分组会直接插入在用户分组列内，不要这样」。
+
+    它此前被 push 进 `items`，于是「这一档能用的模型分组」里混着一批**这一档
+    根本没有授权**的行。这张表回答的是"我给这一档配了什么"，而套餐解锁挂在
+    **人**身上、与用户分组无关，两者并排会让运营以为撤销那一行就能收回权限 ——
+    撤不回，那一行根本不是他配的。
+
+    但它也不能从这一屏整个消失：买了对应套餐的用户照样能用它，**而且那一格的
+    倍率正在扣钱**。抹掉之后站内没有任何一页显示过这一档人能到达它 —— 几周后
+    运营为别的目的把那一列的兜底倍率从 1.0 调到 3.0，这批人当场按 3 倍扣费。
+    所以它落进候选项，并在那一侧带上让它可达的套餐名。
   */
   const cells = [
     cell('pool-a', { granted: true }),
@@ -218,26 +224,30 @@ describe('仅经套餐可达的模型分组留在列表里，但不算清单成�
   const row = userGroup('set', ['pool-a'])
   const view = qyUgListView(matrix(cells), index(cells), new Map(), row)
 
-  test('它进列表，来源是 plan', () => {
+  test('它不进列表 —— 那张表只回答"我给这一档配了什么"', () => {
     assert.deepEqual(
       view.items.map((item) => [item.name, item.origin]),
-      [
-        ['pool-a', 'scope'],
-        ['pool-c', 'plan'],
-      ]
+      [['pool-a', 'scope']],
+      '把它列进来，运营会以为撤销那一行就能收回权限 —— 那一行根本不是他配的'
     )
-    assert.deepEqual(view.items[1].planTitles, ['月卡'])
   })
 
-  test('它不进「可添加」，也不计入 memberCount', () => {
+  test('它落进「可添加」，并带上解锁它的套餐名', () => {
     assert.deepEqual(
-      view.addable.map((entry) => entry.column.name),
-      ['pool-b']
+      view.addable.map((entry) => [entry.column.name, entry.planTitles]),
+      [
+        ['pool-b', []],
+        ['pool-c', ['月卡']],
+      ],
+      '套餐名是「这一档人已经能到达它、倍率正在扣钱」在这一屏上唯一的落款'
     )
+  })
+
+  test('它不计入 memberCount', () => {
     /*
-      memberCount 是「再移一项就一个都不剩了」那道二选一确认的判据。把套餐
-      可达的项算进来，清空清单的那一次点击就不会弹出确认 —— 而「回落全局清单」
-      与「一个都不给用」的两个错误方向分别是整档全放行和整档 403。
+      memberCount 是「再移一项就一个都不剩了」那道二选一确认的判据。把屏幕上
+      那些候选项也算进来，清空清单的那一次点击就不会弹出确认 —— 而「回落全局
+      清单」与「一个都不给用」的两个错误方向分别是整档全放行和整档 403。
     */
     assert.equal(view.memberCount, 1)
   })

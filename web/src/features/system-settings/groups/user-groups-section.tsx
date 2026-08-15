@@ -203,7 +203,6 @@ export function UserGroupsSection(props: {
       · `warnings` —— 后端现算的待办，其中一条以「【需要处理】」开头，明说某一档的
         清单里有已从倍率表消失的模型分组（那正是「可用模型分组」那一列看起来
         不对劲时的真实原因）。
-      · `shadow_write_denies` —— 影子期唯一可归因的证据。
 
     早先它们只能在点开某一档的编辑弹窗之后才看得到，而运营没有理由去点。
   */
@@ -404,7 +403,6 @@ export function UserGroupsSection(props: {
           // 这里再画一遍只会把同一件事说两次。
           caseNearMiss={[]}
           warnings={matrixQuery.data.warnings}
-          shadowWriteDenies={matrixQuery.data.shadow_write_denies}
           emptyScopeGroups={banner.emptyScopeGroups}
           onReload={() => void matrixQuery.refetch()}
         />

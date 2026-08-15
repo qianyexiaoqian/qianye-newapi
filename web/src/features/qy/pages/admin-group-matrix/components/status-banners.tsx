@@ -23,7 +23,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 
 import { formatQyDuration } from '../../ops/format'
-import type { QyGmSavePartial, QyGmSnapshotInfo, QyGmWriteDeny } from '../types'
+import type { QyGmSavePartial, QyGmSnapshotInfo } from '../types'
 
 type QyGmStatusBannersProps = {
   snapshot: QyGmSnapshotInfo
@@ -37,8 +37,6 @@ type QyGmStatusBannersProps = {
   caseNearMiss: { left: string; right: string }[]
   /** 后端下发的、保存前应当被看见但**不拦截**的问题。 */
   warnings: string[]
-  /** 影子期的写入拒绝计数 —— 影子模式唯一可归因的证据。 */
-  shadowWriteDenies: QyGmWriteDeny[]
   /**
    * **设了范围、却一个模型分组都没勾**的用户分组名。
    *
@@ -193,31 +191,11 @@ export function QyGmStatusBanners(props: QyGmStatusBannersProps) {
       )}
 
       {/*
-        影子期的写入拒绝。**这是影子模式唯一可归因的证据。**
-        读侧的挂载点拿得到 userGroup 与整张可选 map，却拿不到被查询的那个 key，
-        所以它记不出「这次查的是哪个模型分组」。不渲染这一段，
-        `qy_group_write_denies` 就是一张只写不读的表 —— 运营会在没有任何影子
-        证据的情况下切 enforce，而那些次尝试背后的用户当场 403。
+        这里曾经有一条「影子期记录到的令牌写入拒绝」横幅。它随 shadow 档一起删掉：
+        标题里的每一个词都在描述一个已经不存在的状态，而它的行动号召是「切
+        enforce 之前先看看会挡掉谁」—— 现在没有 enforce 可切，勾完就生效，
+        运营照着它去找的是一个不存在的开关。
       */}
-      {props.shadowWriteDenies.length > 0 && (
-        <Alert>
-          <TriangleAlert />
-          <AlertTitle>{t('qy_group_matrix_shadow_denies_title')}</AlertTitle>
-          <AlertDescription>
-            <ul className='space-y-0.5 text-xs tabular-nums'>
-              {props.shadowWriteDenies.map((deny) => (
-                <li key={`${deny.user_group} ${deny.model_group}`}>
-                  {t('qy_group_matrix_shadow_denies_row', {
-                    userGroup: deny.user_group,
-                    modelGroup: deny.model_group,
-                    count: deny.count,
-                  })}
-                </li>
-              ))}
-            </ul>
-          </AlertDescription>
-        </Alert>
-      )}
 
       {/* 后端算出来的、保存前应当被看见但不拦截的问题（授权了空池子等）。 */}
       {props.warnings.length > 0 && (
