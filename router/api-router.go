@@ -158,6 +158,9 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			subscriptionRoute.GET("/plans", controller.GetSubscriptionPlans)
 			subscriptionRoute.GET("/self", controller.GetSubscriptionSelf)
+			// 下单前的后果预览。挂在用户面而不是管理端:它要回答的是
+			// 「**我**买这个会顶掉什么」,判据依赖当前登录用户名下的订阅。
+			subscriptionRoute.GET("/plans/:id/preview", controller.GetSubscriptionPurchasePreview)
 			subscriptionRoute.POST("/balance/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestBalancePay)
 			subscriptionRoute.POST("/epay/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestEpay)
 			subscriptionRoute.POST("/stripe/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestStripePay)

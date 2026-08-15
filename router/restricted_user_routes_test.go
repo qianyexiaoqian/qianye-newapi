@@ -235,6 +235,9 @@ var restrictedDeniedSessionRoutes = []string{
 	"POST /api/qy/lottery/activities/:act_no/entries",
 	// 订阅
 	"GET /api/subscription/plans",
+	// 下单前的后果预览。与 /plans 同一档:只读、只回答"我买这个会发生什么",
+	// 不产生任何写入。受限账号能看商品就该能看到它会顶掉自己什么。
+	"GET /api/subscription/plans/:id/preview",
 	"GET /api/subscription/self",
 	"POST /api/subscription/balance/pay",
 	"POST /api/subscription/creem/pay",
