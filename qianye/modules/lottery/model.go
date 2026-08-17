@@ -62,6 +62,26 @@ type Activity struct {
 	// Intro 是纯文本,前端不渲染 HTML。
 	Intro string `json:"intro" gorm:"type:text"`
 
+	// ── 卡片背景图(封面)──
+	//
+	// 两种来源,**互斥**,至多一个非空。两列而不是一列 varchar 加前缀:
+	// 它们的校验与生命周期根本不同 —— CoverUrl 是一个只做形状校验的自由字符串,
+	// CoverRef 是指向 qy_lot_covers 的引用,背后挂着磁盘上的一个文件和一整套
+	// 孤儿回收。挤进一列意味着每一次读都要先解析一次前缀,而一个恰好长得像
+	// 引用的外链就会被送进错误的那条分支。
+	//
+	// **封面不进任何哈希原像**(commit/rules/spec 全都不含它),因此它是活动
+	// 发布之后仍然可改的极少数字段之一 —— 一个 404 的封面在已发布活动上必须
+	// 能被修好,而奖档、时刻、条件永远不能。这条取舍写在管理端的换图弹窗上。
+	//
+	// CoverUrl 只接受 http/https,且**服务端从不去拉取它**(浏览器直接加载),
+	// 所以这条路上没有 SSRF 面。理由与判定见 cover.go。
+	CoverUrl string `json:"cover_url" gorm:"type:varchar(500);not null;default:''"`
+	// CoverRef 指向 qy_lot_covers.ref。图片本体在本地磁盘上,本列只是指针 ——
+	// 绝不在这里存 base64:大厅列表是抽奖的首屏,每一次分页查询都会把
+	// 那几百 KB 的字符串一起读出来、序列化、压缩、发出去。
+	CoverRef string `json:"cover_ref" gorm:"type:varchar(64);not null;default:''"`
+
 	// StakeQuota 强制 > 0。免费场在 v1 明确不做:twophase 的入口校验强制
 	// 0 < amount ≤ MaxQuota,0 元要另开一条不动钱的路径 = 第二套状态机 +
 	// 第二套幂等 + 第二套补偿,而需求原文就是"用户花费多少余额参与抽奖"。
@@ -188,6 +208,25 @@ type Activity struct {
 
 	CancelReason string `json:"cancel_reason" gorm:"type:varchar(255);not null;default:''"`
 	CreatedBy    int    `json:"created_by" gorm:"not null;default:0"`
+
+	// ── 下架(「关闭」)──
+	//
+	// HiddenAt > 0 表示这一场已从用户端的活动大厅撤下。它与 Outcome/Status
+	// **完全正交**:下架一个字节的资金都不动、一条记录都不删、随时可撤回,
+	// 与 cancel(整场取消 → 必然全额退款 → 不可逆)是两件事。
+	//
+	// 刻意不做成 status 的一个新取值:Status 是单向线性的状态机,而下架可逆;
+	// 塞进去就等于给状态机加了一条回退边,而"这一步之后还能不能动钱"
+	// 从此要多推理一层。
+	//
+	// 下架只遮住**大厅列表**,活动详情、我的参与、匿名证据链一律照常可达 ——
+	// 一场活动的公正性一旦公布过就不能被运营收回,而参与过的人必须还能查到
+	// 自己那一票。这条取舍写在管理端的下架弹窗上。
+	HiddenAt int64 `json:"hidden_at" gorm:"not null;default:0"`
+	HiddenBy int   `json:"hidden_by" gorm:"not null;default:0"`
+	// HiddenReason 只对管理员可见(它不进任何用户侧接口),但必填:
+	// 一次没有理由的下架,事后无法与"结果不好看所以藏起来"区分开。
+	HiddenReason string `json:"hidden_reason" gorm:"type:varchar(255);not null;default:''"`
 
 	CreatedAt   int64 `json:"created_at" gorm:"not null;default:0;index:idx_qy_lot_act_pick,priority:3"`
 	UpdatedAt   int64 `json:"updated_at" gorm:"not null;default:0"`

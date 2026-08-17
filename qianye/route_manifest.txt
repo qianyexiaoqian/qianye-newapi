@@ -10,6 +10,8 @@ DELETE /api/qy/admin/api-addresses/:id
 DELETE /api/qy/admin/commission/group-rates
 DELETE /api/qy/admin/group-namespace/model-groups/:name
 DELETE /api/qy/admin/group-namespace/user-groups/:name
+DELETE /api/qy/admin/lottery/activities/:act_no
+DELETE /api/qy/admin/lottery/covers/:ref
 DELETE /api/qy/admin/ticket/images/:ref
 DELETE /api/qy/admin/transfer/group-limits
 DELETE /api/qy/admin/transfer/group-rules/:id
@@ -101,6 +103,7 @@ GET /api/qy/config
 GET /api/qy/lottery/activities
 GET /api/qy/lottery/activities/:act_no
 GET /api/qy/lottery/activities/:act_no/eligibility
+GET /api/qy/lottery/covers/:ref
 GET /api/qy/lottery/my-entries
 GET /api/qy/lottery/my/prizes/:payout_no
 GET /api/qy/lottery/public/:act_no/proof
@@ -150,8 +153,11 @@ POST /api/qy/admin/group-namespace/user-groups/:name/rename
 POST /api/qy/admin/lottery/activities
 POST /api/qy/admin/lottery/activities/:act_no/cancel
 POST /api/qy/admin/lottery/activities/:act_no/guess-result
+POST /api/qy/admin/lottery/activities/:act_no/hide
 POST /api/qy/admin/lottery/activities/:act_no/payouts/:payout_no/retry
 POST /api/qy/admin/lottery/activities/:act_no/publish
+POST /api/qy/admin/lottery/activities/:act_no/unhide
+POST /api/qy/admin/lottery/covers
 POST /api/qy/admin/lottery/flags/:id/resolve
 POST /api/qy/admin/lottery/payouts/:payout_no/fulfill
 POST /api/qy/admin/lottery/payouts/:payout_no/reveal
@@ -212,6 +218,7 @@ PUT /api/qy/admin/group-namespace/model-groups/:name
 PUT /api/qy/admin/group-namespace/user-groups/:name
 PUT /api/qy/admin/group-namespace/user-groups/:name/default
 PUT /api/qy/admin/lottery/activities/:act_no
+PUT /api/qy/admin/lottery/activities/:act_no/cover
 PUT /api/qy/admin/lottery/config
 PUT /api/qy/admin/subscription/plans/:plan_id/entitlement
 PUT /api/qy/admin/subscription/plans/:plan_id/seat-limit

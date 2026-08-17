@@ -33,7 +33,7 @@ import {
  * contentLayout)连同它们的 cookie 读写、setter、`data-theme-*` 属性写入一并
  * 删除。留下来的只有一件事:**把固定预设写到 `<body>` 上**。
  *
- * 那一个属性不能省:整套 Steins Gate 主题 CSS 都挂在
+ * 那一个属性不能省:整套 Midnight Signal 主题 CSS 都挂在
  * `[data-theme-preset='steins-gate']` 作用域下,不写等于主题整个失效。
  *
  * Provider 本身保留(而不是把 `<ThemeCustomizationProvider>` 从 `__root.tsx`

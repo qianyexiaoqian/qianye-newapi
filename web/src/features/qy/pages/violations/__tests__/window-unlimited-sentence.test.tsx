@@ -90,9 +90,8 @@ await i18next.use(initReactI18next).init({
   resources: { zh: { translation: zhKeys } },
 })
 
-const { QyMyViolationCategoriesCard } = await import(
-  '../components/categories-card'
-)
+const { QyMyViolationCategoriesCard } =
+  await import('../components/categories-card')
 
 const reactTestGlobals = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
@@ -258,15 +257,11 @@ describe('账号总量线那一条的时间口径', () => {
       account_window_hours: UNLIMITED,
     })
     assert.ok(
-      text.includes(
-        say('qy_vio_cat_account_line_off_unlimited', { hit: 4 })
-      ),
+      text.includes(say('qy_vio_cat_account_line_off_unlimited', { hit: 4 })),
       `账号线（未设门槛）没有换句：${text}`
     )
     assert.ok(
-      !text.includes(
-        say('qy_vio_cat_account_line_off', { hit: 4, hours: 24 })
-      ),
+      !text.includes(say('qy_vio_cat_account_line_off', { hit: 4, hours: 24 })),
       `账号线仍然在说 24 小时：${text}`
     )
   })

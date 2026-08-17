@@ -87,6 +87,11 @@ var restrictedAnonymousRoutes = []string{
 	"POST /api/subscription/epay/return",
 	// 抽奖公正性证据链:要求登录等于把历史公正查询锁在注册墙后面
 	"GET /api/qy/lottery/public/:act_no/proof",
+	// 活动封面:面向所有访客的招贴,与证据链同一档匿名。
+	// 只回**已经绑定到某场活动**的那些(handleGetCover 判 act_id>0 && bound_at>0),
+	// 管理员挑到一半的上传与被删活动的封面一律取不到;ref 是 128 位随机十六进制,
+	// 不存在枚举路径。挂在登录之后的话,大厅首屏并排十几张图对未登录访客全是破图。
+	"GET /api/qy/lottery/covers/:ref",
 	// mj 出图:注册在 TokenAuth 之前
 	"GET /mj/image/:id",
 	"GET /:mode/mj/image/:id",

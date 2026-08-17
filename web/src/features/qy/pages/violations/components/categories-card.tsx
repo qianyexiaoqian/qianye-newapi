@@ -71,9 +71,7 @@ export function QyMyViolationCategoriesCard(props: {
     <section className='space-y-3 rounded-lg border p-4'>
       <div className='space-y-1'>
         <h2 className='text-sm font-medium'>{t('qy_vio_cat_title')}</h2>
-        <p className='text-muted-foreground text-xs'>
-          {t('qy_vio_cat_desc')}
-        </p>
+        <p className='text-muted-foreground text-xs'>{t('qy_vio_cat_desc')}</p>
       </div>
 
       {/* 账号总量线。它跨全部类型，与下面每一类各自的线是并列关系。

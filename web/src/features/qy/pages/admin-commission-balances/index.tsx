@@ -63,7 +63,7 @@ import {
  *
  * ── 为什么是 Body 而不是整页 ──
  * 本页已被收进「用户佣金」的选择夹（`QY_TAB_GROUPS`），侧栏上不再有独立的
- * 一行。区段头（`LAB MEMO — NN` + 大标题）由宿主页 `admin-commission-users/
+ * 一行。区段头（`GATE NN` + 大标题）由宿主页 `admin-commission-users/
  * hub.tsx` 出，这里只提供正文 —— 标签里再套一层区段头会得到两级标题。
  * 旧地址 `/qy/admin/commission-records/balances` 保留成重定向。
  */

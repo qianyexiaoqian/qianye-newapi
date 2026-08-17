@@ -49,7 +49,7 @@ export function QyStatGrid(props: QyStatGridProps) {
 
   if (props.items.length === 0) return null
 
-  // Steins Gate 的"纸面而非卡片"(规范 §1):同样四项数字，改用发丝线分栏 +
+  // Midnight Signal 的"纸面而非卡片"(规范 §1):同样四项数字，改用发丝线分栏 +
   // 等宽显示级数值 + 标注式标签，去掉四张卡片与它们的边框/圆角/内边距。
   // 这是本主题与默认主题在同一屏上差别最大的一处，卡片化会立刻把它打回原形。
   //
@@ -57,13 +57,13 @@ export function QyStatGrid(props: QyStatGridProps) {
   // 标签移到数值上方并改成极小号大写宽字距。标签上移是真的换 DOM 顺序，
   // 不是用 flex order 做视觉换位 —— 读屏顺序也应该是"这是什么 → 是多少"，
   // order 只改绘制顺序、不改朗读顺序，那样两种用户看到的是两个不同的界面。
-  // 样式挂在 .qy-sg-readout 上，见 styles/qy-sg-data.css 里关于特异度的说明。
+  // 样式挂在 .qy-sg-readout 上，见 styles/qy-sg-apply.css §10。
   if (steinsGate) {
     return (
       <div
         className={cn('qy-sg-stats qy-sg-readout', props.className)}
         style={
-          // 列数跟随实际项数（上限 4）——见 styles/qy-sg-pages.css 里的说明。
+          // 列数跟随实际项数（上限 4）——见 styles/qy-sg-apply.css §10 里的说明。
           {
             '--qy-sg-stat-cols': Math.min(props.items.length, 4),
           } as CSSProperties

@@ -41,6 +41,7 @@ import { QyStatGrid } from '../components/qy-stat-grid'
 import { QY_EMPTY_TEXT, formatQyDuration, formatQyTs } from '../ops/format'
 import { QyKeyValue } from '../ops/qy-ops-ui'
 import { qyLotActivityQuery, qyLotEligibilityQuery } from './api'
+import { QyLotCover } from './components/lottery-cover'
 import { QyLotEligibilityCard } from './components/lottery-eligibility-card'
 import { QyLotEntryDialog } from './components/lottery-entry-dialog'
 import { QyLotFairnessPanel } from './components/lottery-fairness-panel'
@@ -111,6 +112,13 @@ export function QyLotteryDetail() {
         <QyPageBoundary query={query}>
           {activity != null && (
             <div className='space-y-4'>
+              {/*
+                头图。大厅卡片上是什么图，点进来就还是什么图 —— 两处不一致会让
+                用户以为自己点错了。没配封面时这里落在同一个兜底上（玩法图标 +
+                渐变），而不是塌成一条空白：空白与"还在加载"长得一样。
+              */}
+              <QyLotCover activity={activity} variant='hero' />
+
               <div className='flex flex-wrap items-center gap-2'>
                 <Badge variant='outline'>
                   {isBall
@@ -123,7 +131,10 @@ export function QyLotteryDetail() {
                   </Badge>
                 )}
                 <QyStatusBadge
-                  status={qyLotActivityBadgeStatus(activity.status)}
+                  status={qyLotActivityBadgeStatus(
+                    activity.status,
+                    activity.outcome
+                  )}
                 />
                 {outcomeKey != null && (
                   <Badge variant='secondary'>{t(outcomeKey)}</Badge>

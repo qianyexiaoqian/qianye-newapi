@@ -55,11 +55,16 @@ export const THEME_PRESETS = [
     swatches: ['oklch(0.984 0.005 95)', 'oklch(0.685 0.142 38)'],
   },
   {
-    // 编辑感暖色系:米白纸面 + 锈橙强调,深色版翻转为暖近黑 + 偏红强调。
-    // 色值由参考稿的十六进制精确换算,定义在 styles/qy-sg-tokens.css。
+    // Midnight Signal:近黑画布 + 一支 236 的浅蓝做信号灯,亮色版由暗色派生。
+    // slug 沿用 steins-gate 是因为它是承重标识符(三个 CSS 的每条选择器 +
+    // FIXED_THEME_PRESET + features/qy 的 hook + 四个测试),改名的收益是零。
+    // 参考稿那一支是紫 #af50ff,项目方裁定换成浅蓝 —— 承重的是「一支高饱和色 +
+    // 95% 中性」这条结构,不是那一支具体是什么颜色。
+    // 色值定义在 styles/qy-sg-tokens.css;口径见
+    // qianye/docs/design-14-midnight-signal.md。
     value: 'steins-gate',
-    name: 'Steins Gate',
-    swatches: ['oklch(0.959 0.016 86.4)', 'oklch(0.575 0.157 41.5)'],
+    name: 'Midnight Signal',
+    swatches: ['oklch(0.14 0 236)', 'oklch(0.76 0.14 236)'],
   },
   {
     value: 'simple-large',
@@ -116,7 +121,7 @@ export const FIXED_THEME_PRESET: ThemePreset = 'steins-gate'
 /**
  * `<body>` 上承载预设的属性名。
  *
- * **绝不能不写。** 整套 Steins Gate 主题 CSS（`styles/qy-sg-*.css`，一千三百
+ * **绝不能不写。** 整套 Midnight Signal 主题 CSS（`styles/qy-sg-*.css`，一千三百
  * 多行）全部挂在 `[data-theme-preset='steins-gate']` 作用域下，属性一丢主题
  * 整个失效，页面会退回上游裸样式。
  *

@@ -17,6 +17,38 @@ import (
 
 // admin_support.go —— 管理端与证据链接口共用的读取、快照与审计辅助。
 
+// lockActivityStatus 取活动行的写锁,并回报**锁内那一份**真实状态。
+//
+// # 为什么不能拿一条 UPDATE 的 RowsAffected 当状态闸门
+//
+// "UPDATE … WHERE id=? AND status=? SET updated_at=now,再断言 RowsAffected==1"
+// 读起来像一次无懈可击的 CAS,在 MySQL 上却不是:go-sql-driver 默认回报的是
+// **改变行数**而不是匹配行数(qianye/db/db.go 的 normalizeDSN 从不设
+// clientFoundRows,也不该设 —— 本模块另有几十处拿 RowsAffected 当"确实改到了"
+// 用,翻转它会一次性改掉所有这些判据的含义)。于是当 SET 的每一列都恰好等于
+// 行里已有的值(updated_at 已经是当前这一秒、或者管理员保存了一份没改动过的
+// 草稿),MySQL 回 0 行,一次完全合法的操作被回绝成"活动状态已变化,请刷新
+// 后重试" —— 指向一个并不存在的并发冲突。
+//
+// 更糟的是整个 Go 测试套抓不到它:SQLite(glebarez)回报的是匹配行数,恒为 1,
+// 用例全绿,只有 MySQL 生产库会踩。所以这条口径必须收在一个地方,
+// 由 qianye/lottery_rows_affected_guard_test.go 钉住"没有第二份"。
+//
+// 只有 SET 里**至少有一列必然与原值不同**的 UPDATE(status 迁移、hidden_at
+// 0↔now、resolved false→true)才可以继续用 RowsAffected 当闸门 —— 那些地方
+// 匹配即改变,两种口径同义。
+func lockActivityStatus(tx *gorm.DB, id int64) (string, error) {
+	var row Activity
+	err := db.LockForUpdate(tx).Select("id", "status").Where("id = ?", id).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", errActivityNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return row.Status, nil
+}
+
 // errBadRequest 是参数类错误的统一形状。
 //
 // 每一种参数错误都单独造一个包级变量,只会得到一堆只用一次的符号;
@@ -73,8 +105,11 @@ func loadActivityAny(ctx context.Context, gdb *gorm.DB, actNo string) (*Activity
 
 // loadSeedForReveal 是包内**唯一**读取种子原文的函数。
 //
-// 它只有三个合法调用点:发布时算 commit_hash、开奖时算 final_seed、
-// 揭示后把种子放进证据链。别处一律用 loadSalts 那个只取盐的投影 ——
+// 它只有四个合法调用点:发布时算 commit_hash、开奖时算 final_seed、
+// 揭示后把种子放进证据链,以及**彻底删除一场活动之前**把种子写进审计
+// (buildDeleteEvidence)—— 那一份审计是删完之后唯一还能证明
+// "当初公布的 commit_hash 确实是这个种子算出来的"的东西,而对一场已结束的
+// 活动来说种子本来就已经在 proof 里公开过。别处一律用 loadSalts 那个只取盐的投影 ——
 // 把这条约束做成"只有一个函数能读"而不是"大家记得别读",
 // 是因为泄漏一次就永久毁掉这场活动的公正性,而没有任何测试会因此变红。
 //
@@ -180,6 +215,9 @@ func activitySnapshot(a *Activity, in *activityInput) map[string]any {
 		m["rules_hash"] = a.RulesHash
 		m["spec_hash"] = a.SpecHash
 		m["commit_hash"] = a.CommitHash
+		// 下架状态进快照:一次"先下架、再删除"的组合操作,事后要能看出这一场
+		// 在被删之前是不是已经从用户视野里消失了。
+		m["hidden_at"] = a.HiddenAt
 	}
 	if in != nil {
 		m["prize_count"] = len(in.Prizes)

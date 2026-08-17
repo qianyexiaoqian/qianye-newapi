@@ -255,7 +255,10 @@ describe('每一个读不到的维度都有一条指对了地方的理由', () =
         )
         // 同一格既被问、又被说成读不到 —— 两套判据漂移时最坏的表现。
         for (const id of absent) {
-          assert.ok(!asked.includes(id), `${phase} × ${matchType}：${id} 两边都在`)
+          assert.ok(
+            !asked.includes(id),
+            `${phase} × ${matchType}：${id} 两边都在`
+          )
         }
       }
     }
@@ -288,18 +291,15 @@ describe('说明文案齐备且插值口径一致', () => {
       }
     }
     // 七种理由一个都不能少：漏一条，界面上那一行会渲染成键名本身。
-    assert.deepEqual(
-      [...reasons].sort(),
-      [
-        'match_not_ai',
-        'match_not_error_code',
-        'match_not_rate',
-        'match_not_text',
-        'phase_async',
-        'phase_no_upstream',
-        'phase_not_prompt',
-      ]
-    )
+    assert.deepEqual([...reasons].sort(), [
+      'match_not_ai',
+      'match_not_error_code',
+      'match_not_rate',
+      'match_not_text',
+      'phase_async',
+      'phase_no_upstream',
+      'phase_not_prompt',
+    ])
     for (const reason of reasons) {
       const key = `qy_vio_test_absent_${reason}`
       assert.ok(key in zh, `zh.json 缺少 ${key}`)
@@ -322,7 +322,11 @@ describe('说明文案齐备且插值口径一致', () => {
     // 说明里如果念的是阶段，管理员会去把阶段改来改去，而那一格永远不会出现。
     const bundles = [zh, en] as Record<string, string>[]
     for (const bundle of bundles) {
-      for (const reason of ['phase_async', 'phase_no_upstream', 'phase_not_prompt']) {
+      for (const reason of [
+        'phase_async',
+        'phase_no_upstream',
+        'phase_not_prompt',
+      ]) {
         const text = bundle[`qy_vio_test_absent_${reason}`]
         assert.ok(text.includes('{{phase}}'), `${reason} 没有念出阶段`)
         assert.ok(!text.includes('{{match}}'), `${reason} 不该念匹配方式`)
@@ -444,9 +448,8 @@ const { act, useState } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const i18next = (await import('i18next')).default
 const { initReactI18next } = await import('react-i18next')
-const { QueryClient, QueryClientProvider } = await import(
-  '@tanstack/react-query'
-)
+const { QueryClient, QueryClientProvider } =
+  await import('@tanstack/react-query')
 
 await i18next.use(initReactI18next).init({
   interpolation: { escapeValue: false },
@@ -475,10 +478,14 @@ after(() => {
  * 试跑面板的探针。判据由**面板自己的选择器**改 —— 探针只提供表单那一侧的
  * 落点（`onPhaseChange` / `onMatchTypeChange`），与 `rule-form-sheet` 的接线同形。
  */
-let switchTo: ((next: Partial<{
-  matchType: QyViolationMatchType
-  phase: QyViolationPhase
-}>) => void) | null = null
+let switchTo:
+  | ((
+      next: Partial<{
+        matchType: QyViolationMatchType
+        phase: QyViolationPhase
+      }>
+    ) => void)
+  | null = null
 
 function TesterProbe(props: {
   phase: QyViolationPhase
@@ -562,7 +569,9 @@ describe('试跑面板自己说清楚「为什么只有这几格」', () => {
     )
     for (const trigger of triggers) {
       assert.equal(
-        trigger.closest('[hidden],[style*="display:none"],[style*="display: none"]'),
+        trigger.closest(
+          '[hidden],[style*="display:none"],[style*="display: none"]'
+        ),
         null,
         '判据选择器藏在一个不可见的祖先里：存在但看不见，与静默省略同形'
       )

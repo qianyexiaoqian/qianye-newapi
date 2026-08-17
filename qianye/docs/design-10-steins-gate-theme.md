@@ -1,5 +1,15 @@
 # Steins Gate 主题设计规范
 
+> ## ⚠ 本文件已作废（2026-08-15）
+>
+> 全站 UI 已按新的参考稿（`qianye/docs/ui-reference/`，dope.security 抽取的
+> **Midnight Signal**：近黑画布 + 单支紫）整体重做。现行口径是
+> **`qianye/docs/design-14-midnight-signal.md`**。
+>
+> 本文件描述的暖纸面 + 锈橙、齿轮水印、日文副标、胶囊按钮那一套**已经不在代码里**，
+> 照它改代码只会把新主题改坏。保留是因为它记录了「为什么只换调色板不算换主题」
+> 这条判断的来龙去脉（§0），design-14 §0.1 引用了它。
+
 本文件是主题改造的**唯一口径来源**。参考稿:
 `C:\Users\Administrator\Desktop\qianye\newapi-shujv\steins-gate-day-浅色.html`(昼)、
 `steins-gate-night-深色.html`(夜)。

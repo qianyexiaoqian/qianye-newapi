@@ -30,6 +30,7 @@ import { QyPageBoundary } from '../../../components/qy-page-boundary'
 import { qyArray } from '../../../lib/array'
 import { QyPager } from '../../components/qy-pager'
 import { QY_LOT_PAGE_SIZE, qyLotActivitiesQuery } from '../api'
+import type { QyLotHallPhase } from '../api'
 import { useQyNowSeconds } from '../lib/use-now'
 import type { QyLotKind } from '../types'
 import { QyLotActivityCard } from './lottery-activity-card'
@@ -59,9 +60,9 @@ import { QyLotActivityCard } from './lottery-activity-card'
  */
 export type QyLotHallState = {
   onPageChange: (page: number) => void
-  onScopeChange: (scope: 'done' | 'open') => void
+  onScopeChange: (scope: QyLotHallPhase) => void
   page: number
-  scope: 'done' | 'open'
+  scope: QyLotHallPhase
 }
 
 export function QyLotHallList(props: QyLotHallState & { kind: QyLotKind }) {
@@ -83,27 +84,42 @@ export function QyLotHallList(props: QyLotHallState & { kind: QyLotKind }) {
   const isAdmin =
     (useAuthStore((state) => state.auth.user?.role) ?? ROLE.GUEST) >= ROLE.ADMIN
 
+  /*
+    分区参数走 `phase`，取值 `live` / `ended` —— 与后端 `hallPhases` 的键逐字
+    一致。这里曾经发的是 `status=open|done`，后端读的却是 `phase`，两张标签
+    因此拿回同一份列表；口径只留一套名字就没有第二处可以漂移。
+  */
   const params = {
     p: page,
     page_size: QY_LOT_PAGE_SIZE,
     kind: props.kind,
-    status: scope,
+    phase: scope,
   }
   const query = useQuery(qyLotActivitiesQuery(params))
-  const items = qyArray(query.data?.items)
+  /*
+    草稿在这里**再挡一次**。说了算的仍是后端那句 `WHERE status <> 'draft'`
+    （见 `qianye/modules/lottery/api_user.go` 的 hallQuery），这一行是第二道：
+    草稿是一份还没有承诺、随时可能被改掉的规则，让用户看见它一眼就是一次
+    真实的泄漏，而它可以由任何一次列表查询的重构悄悄造成 —— 上一版那个没有
+    default 分支的 phase switch 正是这类"改一处、静默换掉整份结果集"的先例。
+    代价只是这一行；漏出去的代价不是。
+  */
+  const items = qyArray(query.data?.items).filter(
+    (activity) => activity.status !== 'draft'
+  )
 
   return (
     <div className='space-y-3'>
       <Tabs
         value={scope}
         onValueChange={(value) => {
-          props.onScopeChange(value === 'done' ? 'done' : 'open')
+          props.onScopeChange(value === 'ended' ? 'ended' : 'live')
           props.onPageChange(1)
         }}
       >
         <TabsList>
-          <TabsTrigger value='open'>{t('qy_lot_tab_open')}</TabsTrigger>
-          <TabsTrigger value='done'>{t('qy_lot_tab_done')}</TabsTrigger>
+          <TabsTrigger value='live'>{t('qy_lot_tab_open')}</TabsTrigger>
+          <TabsTrigger value='ended'>{t('qy_lot_tab_done')}</TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -120,7 +136,7 @@ export function QyLotHallList(props: QyLotHallState & { kind: QyLotKind }) {
           自己点错了标签。
         */
         emptyTitle={
-          scope === 'open'
+          scope === 'live'
             ? t('qy_lot_empty_open_title')
             : t('qy_lot_empty_done_title')
         }
@@ -135,6 +151,12 @@ export function QyLotHallList(props: QyLotHallState & { kind: QyLotKind }) {
             ? t('qy_lot_empty_draw_desc')
             : t('qy_lot_empty_guess_desc')
         }
+        /*
+          「进行中」空掉是常态而不是异常：一批活动结束、下一批还没发布的间隙里，
+          默认视图对每个人都是空的。此时把人原地晾着，他会以为整个玩法坏了 ——
+          实测库里就是 0 条进行中、64 条已结束。所以这一档给一条通往历史的出口，
+          管理员则给创建入口（他要的是"去开一场新的"，不是"去翻旧的"）。
+        */
         emptyAction={
           isAdmin ? (
             <Button
@@ -144,6 +166,17 @@ export function QyLotHallList(props: QyLotHallState & { kind: QyLotKind }) {
             >
               <Plus aria-hidden='true' />
               {t('qy_lot_empty_admin_create')}
+            </Button>
+          ) : scope === 'live' ? (
+            <Button
+              size='sm'
+              variant='outline'
+              onClick={() => {
+                props.onScopeChange('ended')
+                props.onPageChange(1)
+              }}
+            >
+              {t('qy_lot_empty_open_see_done')}
             </Button>
           ) : undefined
         }

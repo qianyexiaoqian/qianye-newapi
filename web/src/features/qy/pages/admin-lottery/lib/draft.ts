@@ -74,6 +74,15 @@ export type QyLotDraft = {
   series_no: string
   title: string
   intro: string
+  /**
+   * 卡片背景图，两种来源互斥：填一个外链地址，或上传一张图拿到 `cover_ref`。
+   *
+   * 草稿里两个字段都留着（而不是一个联合类型），是为了让运营在两种来源之间
+   * 来回切时不丢掉上一次填的东西 —— 提交时由 {@link qyLotDraftToInput}
+   * 按"上传优先"归一成互斥的一对。
+   */
+  cover_url: string
+  cover_ref: string
   stake_quota: number
   open_at: number
   close_at: number
@@ -108,6 +117,8 @@ export function qyLotEmptyDraft(defaultFeeBps: number): QyLotDraft {
     series_no: '',
     title: '',
     intro: '',
+    cover_url: '',
+    cover_ref: '',
     stake_quota: 0,
     open_at: now + hour,
     close_at: now + 25 * hour,
@@ -253,6 +264,13 @@ export function qyLotValidateDraft(
   const errors: string[] = []
 
   if (draft.title.trim() === '') errors.push('qy_lot_v_title_required')
+  // 外链的形状校验。后端 `normalizeCoverURL` 有一份对应判定，这里复现它只是
+  // 为了别让运营走完四步才吃一个 400 —— 而"地址填错了"是这一格唯一会犯的错。
+  if (draft.cover_ref === '' && draft.cover_url.trim() !== '') {
+    if (!/^https?:\/\//i.test(draft.cover_url.trim())) {
+      errors.push('qy_lot_v_cover_url')
+    }
+  }
   // v1 没有免费场：`stake_quota` 必须 > 0。两阶段入口本身就要求金额 > 0，
   // 0 元要另开一条不动钱的路径 = 第二套状态机 + 第二套幂等 + 第二套补偿。
   if (draft.stake_quota <= 0) errors.push('qy_lot_v_stake_required')
@@ -517,6 +535,11 @@ export function qyLotDraftToInput(draft: QyLotDraft): QyLotCreateInput {
     series_no: isBall ? draft.series_no : '',
     title: draft.title.trim(),
     intro: draft.intro,
+    // 两种来源在这一刻归一成互斥的一对，**上传优先**：后端对两者同时非空是
+    // 直接 400，而运营在表单里先传了图又顺手粘了个地址是很正常的操作序列。
+    // 归一放在提交这一刻而不是编辑时，草稿里就还留着他填过的另一个。
+    cover_url: draft.cover_ref === '' ? draft.cover_url.trim() : '',
+    cover_ref: draft.cover_ref,
     stake_quota: draft.stake_quota,
     open_at: draft.open_at,
     close_at: draft.close_at,

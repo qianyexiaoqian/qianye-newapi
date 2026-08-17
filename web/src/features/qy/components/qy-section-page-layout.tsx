@@ -30,8 +30,8 @@ import { qyPageMeta } from '../lib/page-meta'
 
 /**
  * qy 页面的统一外壳 —— 在上游 `SectionPageLayout` 之外套一层，
- * 只做一件事：Steins Gate 主题下把 `<Title>` 的内容换成参考稿的三段式区段头
- * （等宽序号 `LAB MEMO — 07` + 衬线大标题 + 日文副标）。
+ * 只做一件事：Midnight Signal 主题下把 `<Title>` 的内容换成参考稿的三段式区段头
+ * （等宽序号 `GATE 07` + 戳记大标题 + 大写英文页面代号）。
  *
  * 为什么包一层而不是改上游组件：
  *   - `components/layout/` 是上游文件，`channels/dashboard/keys/models` 四个上游
@@ -41,9 +41,9 @@ import { qyPageMeta } from '../lib/page-meta'
  *     `<SectionPageLayout.Title>` 写法一个字都不用改 —— 上游用 `child.type ===`
  *     做插槽识别，共用同一个函数引用才能被认出来。
  *
- * 为什么条件渲染而不是纯 CSS 隐藏：序号与日文副标是**新增的文本内容**，
+ * 为什么条件渲染而不是纯 CSS 隐藏：序号与页面代号是**新增的文本内容**，
  * 不是既有元素的样式。切到别的预设时它们必须从 DOM 里消失（屏幕阅读器、
- * 页面搜索、复制粘贴都不该看到「LAB MEMO」），单靠 `display:none` 做不到，
+ * 页面搜索、复制粘贴都不该看到「GATE」），单靠 `display:none` 做不到，
  * 而在预设作用域外写规则又违反规范 §5.1。
  */
 export function QySectionPageLayout(props: SectionPageLayoutProps) {
@@ -65,19 +65,19 @@ export function QySectionPageLayout(props: SectionPageLayoutProps) {
         <SectionPageLayout.Title>
           {/* 全部用 <span>：这段会被上游放进 <h2> 里，而 <h2> 只接受
               phrasing content，塞 <div> 是非法嵌套。排版由 CSS 的
-              display 覆写完成，见 styles/qy-sg-pages.css。 */}
+              display 覆写完成，见 styles/qy-sg-apply.css §10。 */}
           <span className='qy-sg-page-head'>
             <span className='qy-sg-page-head-main'>
               <span className='qy-sg-no'>
-                {t('qy_sg_lab_memo', { no: meta.no })}
+                {t('qy_sg_stamp_no', { no: meta.no })}
               </span>
               <span className='qy-sg-sec-title'>{title}</span>
             </span>
-            {meta.jpKey != null && (
-              // 装饰性字形，不参与朗读：屏幕阅读器把日文假名混进中文页面标题里
-              // 只会制造噪声。
-              <span className='qy-sg-jp' aria-hidden='true'>
-                {t(meta.jpKey)}
+            {meta.codeKey != null && (
+              // 装饰性字形，不参与朗读：屏幕阅读器把一串大写英文代号混进中文
+              // 页面标题里只会制造噪声。
+              <span className='qy-sg-code' aria-hidden='true'>
+                {t(meta.codeKey)}
               </span>
             )}
           </span>

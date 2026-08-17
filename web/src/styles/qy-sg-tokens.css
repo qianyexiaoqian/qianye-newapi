@@ -17,351 +17,355 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /*
- * Steins Gate 主题 —— 令牌层(色板 + 字体轴 + 主题私有派生量)
+ * Midnight Signal 主题 —— 令牌层(色板 + 字体轴 + 主题私有派生量)
+ *
+ * 预设 slug 仍是 `steins-gate`,类名前缀仍是 `qy-sg-` —— 它们是承重标识符
+ * (三个 CSS 的每条选择器 + FIXED_THEME_PRESET + features/qy 的 hook + 四个测试),
+ * 改名的收益是零。主题对外的名字见 lib/theme-customization.ts 的 THEME_PRESETS。
  *
  * 整套主题只有三个文件:tokens(取值)、shape(形状配方)、apply(挂载)。
  * 本文件是【所有取值的唯一来源】,其余两个只写规则,颜色一律 var() 引用这里。
- * --qy-sg-* 的颜色类派生量只能在本文件声明 —— 同一个量两处定义,后加载的会
- * 静默覆盖前一份,是最难查的一类样式 bug(styles/__tests__ 里有用例把关)。
+ * 同一个量两处定义,后加载的会静默覆盖前一份,是最难查的一类样式 bug
+ * (styles/__tests__/qy-sg-tokens.test.ts 里有用例把关)。
  *
- * ══ 第四版:昼夜合并成一条可推导的关系 ══
+ * 现行口径:qianye/docs/design-14-midnight-signal.md
+ * 参考稿  :qianye/docs/ui-reference/DESIGN.md(dope.security 抽取)
  *
- * 前三版的昼间是【另一套品牌】:Anthropic 官方色板(#FAF9F5 纸面 + #D97757
- * 陶土,色相 38.8),与夜间的混凝土灰 + 金(色相 88.5)没有任何色相关系。
- * 拨一下 dark 开关看到的是另一个产品,而且仓库里因此存在两份 Anthropic 色板。
+ * ══ 第五版:近黑 + 一支蓝 ══
  *
- * 第四版把昼间改成从夜间【派生】,两条规则:
+ * 第四版取材于一款游戏的 UI 截图:中间调混凝土灰底 + 金 + 橙。第五版整体换取材,
+ * 参考稿的一句话是 midnight terminal with violet beacons ——
+ * 近黑画布、一支高饱和色做信号灯、无投影、发丝线分层。
  *
- *   规则一 · 色相角昼夜共用。夜间从游戏截图逐像素量出来的三个色相角
- *           —— 混凝土 197、金 88.5、橙 46.1 —— 昼间原样沿用,
- *           只改明度与彩度。昼间的暖白纸面走【金的色相角】(极高明度、
- *           彩度 0.009),所以它是暖白而不是冷白,同时仍在同一族里。
+ * ⚠ ── 与参考稿【刻意不同】的一处:那一支是【浅蓝 236】而不是参考稿的紫 305.1 ──
+ * 参考稿的 Signal Violet 是 #af50ff,项目方看过实装之后判定"这紫色有点丑",
+ * 改成浅蓝。这是**审美裁定,不是漂移** —— 下一个读代码的人不要把它"修"回 305.1。
+ * 参考稿真正承重的是【一支高饱和色 + 95% 中性】这条结构,不是那一支具体是什么颜色;
+ * 色相角一改,整套色板与六条形状都不受影响,这也正是本架构值钱的地方。
+ * 换色时同时挪了 --info(原来是 245 的蓝,与新品牌色只差 9°,两支会糊在一起),
+ * 见下方语义色那一段。
  *
- *   规则二 · 层次方向昼夜镜像。夜间的面是从混凝土墙上【凿进去】的,
- *           card / popover / sidebar 全部比页面底色暗;昼间是纸上【浮起来】的,
- *           同样三个面全部比纸面亮。muted / secondary / accent 反过来:
- *           夜间在底色之上、昼间在纸面之下。
+ * 三条规则,全部由测试钉住:
  *
- * 这两条都由 styles/__tests__/qy-sg-tokens.test.ts 钉住:谁再往里塞一个
- * 色相角不属于 {197, 88.5, 46.1, 语义色四档} 的强调色,或者把某个面的
- * 明暗方向搞反,用例直接红。
+ *   规则一 · 一支色相。参考稿原话是 the palette is 95% achromatic and one violet。
+ *           落到硬规则:【除了色相角 236 那一支蓝,全站中性档的彩度一律为 0】。
+ *           例外只有四个功能性语义色与借用它们的两档图表色 —— 后台必须能把
+ *           失败/成功/警告/提示分开,那是功能不是装饰,在测试里按名单登记放行。
  *
- * ══ 昼夜取值来源 ══
- *   夜 = 游戏内 UI 截图 QQ20260801-092529.png(CONTROLLER 按键说明页)
- *        + 对话场景 QQ20260801-091815.png,每个基色逐像素量出:
- *          底色 #4E5252 / 字 #E7EBE7 / 分隔线峰值 #949694 /
- *          金 #FFC800 / 橙 #EF7129 / 暗角 #1E2221
- *   昼 = 由夜按上面两条规则算出来的,不再引用任何外部品牌色板。
+ *   规则二 · 面 = 墨色洗在画布上。参考稿的分层机制是
+ *           elevation comes from hairline strokes and translucent washes,
+ *           never shadows。所以六个面不各自挑颜色,而是同一支墨色的六档浓度:
+ *           sidebar 1.5% / card 3% / popover 4.5% / muted 5.5% /
+ *           secondary 7% / accent 9%。夜间墨色是纸白,昼间墨色是近黑,
+ *           因此六个面【夜间全部比画布亮、昼间全部比画布暗】,且离画布的距离单调递增。
+ *
+ *   规则三 · 昼间由夜间派生。蓝在两边都是 236,昼间只压明度、彩度不上涨;
+ *           中性档两边都是彩度 0。不引入第二套品牌色。
+ *
+ * ══ 几个反解出来的明度 ══
+ *
+ * 昼间的蓝压到 L=0.527 不是挑好看的:--primary 会被上游一堆 text-primary 当文字色用,
+ * 压在纸面上要 ≥4.5:1,同时纸面色压在它上面(bg-primary text-primary-foreground)
+ * 也要 ≥4.5:1 —— 这两条在同一个明度上同时取到 4.96:1。它因此是一支【深海蓝】而不是
+ * 浅蓝:浅蓝在纸面上根本读不出来,这是白底决定的,不是选色失误。夜间才是那支浅蓝。
+ *
+ * accent 的 9% 是【满足「次级正文压在 hover 底上仍有 4.5:1」的上界】。
+ * 12% 那一档实测昼间只有 4.12:1,所以阶梯到 9% 为止。
+ *
+ * 次级正文夜间 L=0.609 正好是参考稿 Steel #828384 的明度,昼间 L=0.498;
+ * 两边都是「压在最深的那个面(accent)上仍有 4.5:1」的边界值。
+ *
+ * ── 彩度全部贴着 sRGB 色域上界取,越界会被浏览器裁色 ──
+ * 一旦裁色,离线算出来的对比度就不作数了(算的是越界值,渲染的是裁过的值)。
+ * 蓝在中等明度下的可用彩度比紫低不少,所以这一版每一支有彩色的彩度都是
+ * 「该明度下 sRGB 允许的最大值再留 0.002 余量」反解出来的,不是随手写的整数。
  *
  * ══ 派生量为什么保留 color-mix ══
- * 昼夜切换本身就靠它:发丝线、辉光、柔光叠加全部从 --background /
- * --foreground / --primary 派生,夜块只需覆写"公式本身不同"的那几个百分比。
- * 退回硬编码等于把二十来个量翻倍成四十个。
+ * 昼夜切换本身就靠它:发丝线、洗色、辉光全部从 --background / --foreground /
+ * --primary 派生,夜块只需覆写「公式本身不同」的那几个百分比。
  *
  * ── 一条改公式前必须知道的实测约束 ──
- * color-mix(in oklch, A p%, B) 里,若某个操作数近中性灰,Chrome 会把它的
- * 色相判为 powerless。一侧有彩度 + 一侧近中性时结果保持有彩色那一侧的色相
- * (--qy-sg-accent-deep / accent-soft 靠的就是这个);两侧都近中性时
- * (--qy-sg-faint)结果比离线换算偏品红 4~8/255。灰阶装饰档,接受,
- * 但不要照着离线计算器改注释值。
+ * color-mix(in oklch, A p%, B) 里,若某个操作数近中性灰,Chrome 会把它的色相判为
+ * powerless。本主题的中性档彩度【恰好为 0】,所以中性 × 中性的混合结果严格保持中性,
+ * 有彩 × 中性(accent-deep / glow)保持有彩那一侧的色相 —— 比第四版那套近中性灰
+ * 相互混合要可预期得多,不会再出现「离线换算与浏览器实测偏品红 4~8/255」。
  *
  * ══ 与主题轴的关系 ══
- * 调色板的五个轴(preset / font / radius / scale / contentLayout)已随
- * 「移除主题设置」整体删除,站点固定为本预设。遗留下来的两条约束仍然成立:
- * font —— 刻意【不】设置 --font-body。`:root` 已把它定义为 --font-sans,
- *         在这里写死只会多一份会漂移的拷贝。
+ * 调色板的五个轴(preset / font / radius / scale / contentLayout)已随「移除主题
+ * 设置」整体删除,站点固定为本预设。遗留下来的两条约束仍然成立:
+ * font  —— 刻意【不】设置 --font-body。:root 已把它定义为 --font-sans,
+ *          在这里写死只会多一份会漂移的拷贝。
  * scale —— 尺寸量一律 rem / clamp(),跟随根字号缩放(浏览器缩放仍要能用)。
  */
 
 /* ══════════════════════════ 昼 · 纸面 ══════════════════════════
  *
- * 明度轴翻转后的同一套色相:暖白纸面 + 深金 + 深琥珀。
- * 强调色压到 L≈0.54 才能在纸上当【文字色】用(--primary 会出现在
- * LAB MEMO 序号、编号行序号、铭牌上),这一档实测 4.74:1。
+ * 参考稿是 dark-only,昼间整套由夜间按上面的规则二、规则三算出来。
+ * 中性档的明度与夜间【关于画布严格对称】:两个画布相距 0.841,
+ * 每一档洗色的百分比相同,所以昼夜的 |L - 画布L| 一一相等。
  */
 
 [data-theme-preset='steins-gate'] {
-  /* 纸面与墨色。纸面走金的色相角(88.5)+ 极低彩度 = 暖白;
-   * 墨色走混凝土色相角(197),取值正好落在夜间暗角那一档。 */
-  --background: oklch(0.977 0.009 88.5); /* #FAF7F1 */
-  --foreground: oklch(0.247 0.006 197); /* #1E2222,15.07:1 */
+  /* 纸面与墨色。参考稿的 Almost White #f7f9fa 带 0.003 的冷调,肉眼不可辨;
+   * 这里统一到彩度 0(纸面因此落在 #f9f9f9,单通道差 2/255),
+   * 换来的是「彩度为 0 即中性」这条一行说得清、也一行测得了的规则。 */
+  --background: oklch(0.981 0 236); /* #f9f9f9 */
+  --foreground: oklch(0.14 0 236); /* #090909 参考稿 Near Black,18.85:1 */
 
-  /* 面向上浮(与夜块镜像) */
-  --card: oklch(0.992 0.005 88.5); /* #FEFCF9 */
-  --card-foreground: oklch(0.247 0.006 197);
-  --popover: oklch(1 0 88.5); /* #FFFFFF */
-  --popover-foreground: oklch(0.247 0.006 197);
+  /* 面朝墨色走(昼间即比纸面暗),与夜块镜像 */
+  --card: oklch(0.956 0 236); /* #f0f0f0 墨 3% */
+  --card-foreground: oklch(0.14 0 236);
+  --popover: oklch(0.943 0 236); /* #ececec 墨 4.5% */
+  --popover-foreground: oklch(0.14 0 236);
 
-  /* 深金。夜间的 #FFC800 压到能在纸上读的明度,色相角一格不动。
-   * 4.74:1 —— 既能当文字色,反过来纸面色压在它上面也是 4.74:1,
-   * 所以 --primary-foreground 直接取纸面本身。 */
-  --primary: oklch(0.54 0.14 88.5); /* #906800 */
-  --primary-foreground: oklch(0.977 0.009 88.5);
+  /* 品牌蓝的压深档。色相角一格不动,只降明度、彩度不上涨。
+   * 4.96:1 —— 既能当文字色,反过来纸面色压在它上面也是 4.96:1,
+   * 所以 --primary-foreground 直接取纸面本身。
+   * 白底上读得出的蓝必然是深海蓝,那支浅蓝在夜块。 */
+  --primary: oklch(0.527 0.114 236); /* #0074a3,4.96:1 */
+  --primary-foreground: oklch(0.981 0 236);
 
-  /* 中间层向纸面【之下】走(与夜块镜像) */
-  --secondary: oklch(0.938 0.012 88.5); /* #EEEAE2 */
-  --secondary-foreground: oklch(0.34 0.008 197); /* #333939 */
-  --muted: oklch(0.955 0.01 88.5); /* #F3F0E9 */
-  --muted-foreground: oklch(0.52 0.008 197); /* #646A6A,5.14:1 */
-  --accent: oklch(0.915 0.014 88.5); /* #E7E3D9 */
-  --accent-foreground: oklch(0.247 0.006 197);
+  --secondary: oklch(0.922 0 236); /* #e5e5e5 墨 7% */
+  --secondary-foreground: oklch(0.29 0 236); /* #2b2b2b */
+  --muted: oklch(0.935 0 236); /* #e9e9e9 墨 5.5% */
+  --muted-foreground: oklch(0.498 0 236); /* #636363,压在 accent 上 4.56:1 */
+  --accent: oklch(0.905 0 236); /* #dfdfdf 墨 9%,hover 面 */
+  --accent-foreground: oklch(0.14 0 236);
 
-  /* 语义色。明度按"压在纸面上 ≥4.5:1"反解,不是先挑好看的再解释 ——
-   * 它们会被当作正文色用(幽灵按钮就是 color: var(--destructive))。
-   * destructive 的色相 27 与 ember 的 46.1 拉开一档,免得"删除"撞强调色。 */
-  --destructive: oklch(0.52 0.19 27); /* #BE2323,5.69:1 */
-  --destructive-foreground: oklch(0.977 0.009 88.5);
-  --success: oklch(0.5 0.11 148); /* #2F743D,5.34:1 */
-  --success-foreground: oklch(0.977 0.009 88.5);
-  --warning: oklch(0.55 0.13 68); /* #A26000,4.68:1 */
-  --warning-foreground: oklch(0.977 0.009 88.5);
-  --info: oklch(0.53 0.12 240); /* #0573AA,4.87:1 */
-  --info-foreground: oklch(0.977 0.009 88.5);
-  --neutral: oklch(0.52 0.008 197);
-  --neutral-foreground: oklch(0.247 0.006 197);
+  /* 语义色。明度按「压在纸面上 ≥4.5:1」反解 —— 它们会被当作正文色用
+   * (幽灵按钮就是 color: var(--destructive))。这四支是唯一登记在册的族外色相,
+   * 理由是后台必须能把四种状态区分开,那是功能不是装饰。 */
+  --destructive: oklch(0.572 0.19 27); /* #d03833,4.61:1 */
+  --destructive-foreground: oklch(0.981 0 236);
+  --success: oklch(0.533 0.141 152); /* #008341,4.62:1 */
+  --success-foreground: oklch(0.981 0 236);
+  --warning: oklch(0.554 0.116 75); /* #9a6703,4.61:1 */
+  --warning-foreground: oklch(0.981 0 236);
+  --info: oklch(0.538 0.092 200); /* #007e83,4.62:1 青,与品牌蓝拉开 36° */
+  --info-foreground: oklch(0.981 0 236);
+  --neutral: oklch(0.498 0 236);
+  --neutral-foreground: oklch(0.14 0 236);
 
   /* 边框取不透明值,避免在半透明浮层上叠两次而变深;
-   * 需要真正半透明的场合用 --qy-sg-hair。 */
-  --border: oklch(0.878 0.01 88.5); /* #D9D7D0 */
-  --input: oklch(0.878 0.01 88.5);
-  --ring: oklch(0.54 0.14 88.5);
+   * 需要真正半透明的场合用 --qy-sg-hair / --qy-sg-hair-strong。
+   * #cfcfcf 正好是墨 20%,与 --qy-sg-hair-strong 同一档。 */
+  --border: oklch(0.855 0 236); /* #cfcfcf */
+  --input: oklch(0.855 0 236);
+  --ring: oklch(0.527 0.114 236);
 
-  /* 图表:主色 + 第二强调色 + 两个语义色 + 一档中性,不自创色相 */
-  --chart-1: oklch(0.54 0.14 88.5);
-  --chart-2: oklch(0.52 0.17 46.1);
-  --chart-3: oklch(0.53 0.12 240);
-  --chart-4: oklch(0.5 0.11 148);
-  --chart-5: oklch(0.72 0.01 197); /* #9EA7A7 */
+  /* 图表:蓝 + 蓝的第二档 + 两支语义(警告/成功)+ 一档中性。不自创色相。
+   * chart-3 取警告的橙而不是 info 的青:info 换位之后离品牌蓝只有 36°,
+   * 折线图上三条蓝绿色的线是分不出来的。 */
+  --chart-1: oklch(0.527 0.114 236);
+  --chart-2: oklch(0.52 0.075 236);
+  --chart-3: oklch(0.554 0.116 75);
+  --chart-4: oklch(0.533 0.141 152);
+  --chart-5: oklch(0.62 0 236);
 
-  --sidebar: oklch(0.986 0.008 88.5); /* #FDFAF4,浮在纸面之上 */
-  --sidebar-foreground: oklch(0.34 0.008 197);
-  --sidebar-primary: oklch(0.54 0.14 88.5);
-  --sidebar-primary-foreground: oklch(0.977 0.009 88.5);
-  --sidebar-accent: oklch(0.915 0.014 88.5);
-  --sidebar-accent-foreground: oklch(0.247 0.006 197);
-  --sidebar-border: oklch(0.878 0.01 88.5);
-  --sidebar-ring: oklch(0.54 0.14 88.5);
+  --sidebar: oklch(0.968 0 236); /* #f4f4f4 墨 1.5% */
+  --sidebar-foreground: oklch(0.29 0 236);
+  --sidebar-primary: oklch(0.527 0.114 236);
+  --sidebar-primary-foreground: oklch(0.981 0 236);
+  --sidebar-accent: oklch(0.905 0 236);
+  --sidebar-accent-foreground: oklch(0.14 0 236);
+  --sidebar-border: oklch(0.855 0 236);
+  --sidebar-ring: oklch(0.527 0.114 236);
 
-  --skeleton-base: oklch(0.945 0.01 88.5);
-  --skeleton-highlight: oklch(0.977 0.009 88.5);
+  --skeleton-base: oklch(0.935 0 236);
+  --skeleton-highlight: oklch(0.968 0 236);
 
-  /* --radius 刻意不在这个块里声明,见本文件下方那条独立规则。 */
+  /* 圆角基准取参考稿的控件档 8px。
+   * 参考稿只给了三个圆角:控件 8px、小控件 6px、票面 19.2px、以及胶囊。
+   * 8px 放在这里当基准,shadcn 的 rounded-md/sm 会自动落到 6/4px;
+   * 票面与胶囊由 apply 层显式覆盖,它们不跟随这个基准。
+   *
+   * 这里原本带一个 :not([data-theme-radius]) 给上游的 radius 轴让路。
+   * radius 轴随「移除主题设置」删除后,data-theme-radius 再没有任何写入方,
+   * 那个 :not() 恒真 —— 留着只会让下一个读代码的人以为还有一条能拨的轴。
+   * 上游 [data-theme-radius='…'] 覆盖块保持原样不动,它们从此永不匹配。 */
+  --radius: 0.5rem;
 
   /* ══ 字体三分工 ══
-   * 铁律:凡是"数字""标识符""状态标签""列标题",一律等宽 + 宽字距 + 大写。
-   * 这是本主题跨昼夜唯一不打折的识别特征,也是瘦身后优先级最高的一条。 */
-
-  --qy-sg-serif: var(--font-serif); /* 标题 */
-  --qy-sg-sans: var(--font-sans); /* 正文 */
-  /* 等宽:一切数据、标签、序号、读数。JetBrains Mono 由
+   *
+   * 参考稿点名的三款字体在本仓库各有一款已装的替代品,不引外部网络资源:
+   *   Whyte Inktrap      → Public Sans   (参考稿给的替代是 Inter / General Sans)
+   *   Whyte Inktrap Mono → JetBrains Mono(参考稿原文点名)
+   *   GrandSlang         → Lora Italic   (参考稿原文点名)
+   *
+   * ⚠ CJK 陷阱:--qy-sg-mono 的回退栈末端是 monospace,中文字形会掉进浏览器的
+   * 通用等宽回退(Windows 上通常是 Courier New,再回退到 SimSun),字形不受控。
+   * 规则是:【只有确定是纯拉丁的字符串才用等宽轴】—— 序号、页面代号、数字读数。
+   * 任何可能含中文的位置一律走 --qy-sg-sans,靠字距与大写拿效果。
+   *
+   * ── 参考稿的第三支声部(GrandSlang 意大利斜体衬线)刻意【没有】采用 ──
+   * 它在参考稿里只出现在 88~146px 的 hero 大字上,而本站每一处展示级字串都是中文:
+   * Lora 没有 CJK 字形,回退到 Noto Serif SC 之后 font-style: italic 只能由浏览器
+   * 合成倾斜,中文合成斜体是公认的坏排版。与其留一个没有消费方的字体轴
+   * (本仓库最高频的缺陷形状),不如显式不采用并写明理由。
+   * 参考稿的另外两支(几何无衬线 + 戳记等宽)已经足以承担识别度。 */
+  --qy-sg-sans: var(--font-sans);
+  /* 等宽:一切纯拉丁的数据、标签、序号、读数。JetBrains Mono 由
    * @fontsource-variable/jetbrains-mono 本地提供(index.css 里 @import),
-   * 注册名带 Variable 后缀;后面几档是系统回退,不走任何外部网络资源。 */
+   * 注册名带 Variable 后缀;后面几档是系统回退。 */
   --qy-sg-mono:
     'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'Cascadia Mono',
     'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
 
-  /* ══ 主题私有派生量 ══ */
+  /* ══ 主题私有派生量 ══
+   *
+   * 每一个都必须在三个文件里有 var() 消费方 —— qy-sg-tokens.test.ts 有用例
+   * 反向扫描。「定义了没有消费方」是本仓库累计出现十几次的头号缺陷形状。 */
 
-  /* 发丝线两档。昼间 10%(实测合成 #E2E1DE)是"几乎看不见"的分隔;
-   * strong 档 22%(#C8C6C3)给表头下边框这类需要看得见的分隔。 */
-  --qy-sg-hair: color-mix(in oklch, var(--foreground) 10%, transparent);
-  --qy-sg-hair-strong: color-mix(in oklch, var(--foreground) 22%, transparent);
+  /* 发丝线两档。参考稿:0.5px or 1px solid #f7f9fa at 10-20% opacity,
+   * replaces shadows and heavy borders everywhere。
+   * 昼间 11%(实测合成 #dadada)是「几乎看不见」的分隔;
+   * strong 档 20%(#c2c2c2)给表头、票面这类需要看得见的分隔。 */
+  --qy-sg-hair: color-mix(in oklch, var(--foreground) 11%, transparent);
+  --qy-sg-hair-strong: color-mix(in oklch, var(--foreground) 20%, transparent);
 
-  /* 强调色低透明度叠加:行 hover 底、徽章底、图标盒底。 */
-  --qy-sg-accent-soft: color-mix(in oklch, var(--primary) 10%, transparent);
-
-  /* 深强调色,实心控件 hover 的落点。与黑混合而非与墨色混合:黑的彩度为 0,
-   * 色相 powerless,混出来严格保持 --primary 的色相,只压明度与彩度。 */
-  --qy-sg-accent-deep: color-mix(in oklch, var(--primary) 84%, black);
+  /* 半透明洗色 —— 参考稿用它代替「给面挑一个颜色」。
+   * 票面底、幽灵按钮底、表格行 hover 底。strong 档给需要更实一点的 hover。 */
+  --qy-sg-wash: color-mix(in oklch, var(--foreground) 4%, transparent);
+  --qy-sg-wash-strong: color-mix(in oklch, var(--foreground) 8%, transparent);
 
   /* 三级文字。shadcn 只有 foreground / muted-foreground 两档,
-   * 序号、日文副标、轴标需要更淡的第三档。这一档【不】保证 4.5:1 ——
-   * 它的语义就是"可以不读的字",任何正文都不许用它。 */
+   * 序号、页面代号、轴标需要更淡的第三档。这一档【不】保证 4.5:1 ——
+   * 它的语义就是「可以不读的字」,任何正文都不许用它。 */
   --qy-sg-faint: color-mix(
     in oklch,
-    var(--muted-foreground) 62%,
+    var(--muted-foreground) 60%,
     var(--background)
   );
 
-  /* 辉光。焦点环用它。昼间 22%:纸面上的焦点提示是"轻描边"不是"发光"。 */
+  /* 蓝的第二档 —— 对应参考稿的 Lavender Mist,角色原文是
+   * soft tint paired with Signal Violet for contrast-safe text。
+   * 【文字用这一档,不用 --primary 本身】:参考稿的 Don't 里写着
+   * don't use Signal Violet for borders, text, or body backgrounds ——
+   * 换成蓝之后这条纪律照旧,只是那支色从紫变成了蓝。
+   * 昼间压到 L=0.52(5.14:1),夜间取 L=0.86 的浅蓝 #a2d9fc(13.17:1)。 */
+  --qy-sg-mist: oklch(0.52 0.075 236);
+
+  /* 辉光之一:焦点环。昼间 22%,纸面上的焦点提示是「轻描边」不是「发光」。 */
   --qy-sg-glow: color-mix(in oklch, var(--primary) 22%, transparent);
+
+  /* 辉光之二:径向蓝晕。参考稿把那一支高饱和色当跑道灯用,
+   * 原话 treat it as signal lighting, not theme color ——
+   * 【挂载层引用本变量的次数上限是 2】,由 qy-sg-apply.test.ts 钉住。 */
+  --qy-sg-bloom: radial-gradient(
+    ellipse 62% 58% at 50% 0%,
+    color-mix(in oklch, var(--primary) 20%, transparent) 0%,
+    transparent 72%
+  );
+
+  /* 选中文本。底色是品牌蓝的低透明度叠加,字色回到正文色 —— 昼夜同一条公式。 */
+  --qy-sg-selection-bg: color-mix(in oklch, var(--primary) 26%, transparent);
+  --qy-sg-selection-fg: var(--foreground);
 
   /* 全局统一缓动,所有过渡都引它,不要各写各的 */
   --qy-sg-ease: cubic-bezier(0.16, 1, 0.3, 1);
 
-  /* 胶囊圆角。刻意不写成 calc(var(--radius) * n):999px 是身份标识,
-   * 不跟随 radius 轴。 */
+  /* 胶囊圆角。参考稿的 1584px 在任何真实尺寸下都等于「全圆」,取 999px 同效。
+   * 本主题里胶囊留给徽章 —— 按钮走 8px 直角档,与上一版正好相反,见 design-14 §3。 */
   --qy-sg-pill: 999px;
 
-  /* 浮层磨砂,dialog / popover / dropdown / sheet 统一这一档 */
-  --qy-sg-blur: blur(16px) saturate(1.1);
+  /* 浮层磨砂。参考稿 Frosted Nav Bar 的那一档:backdrop-filter: blur(10px)。 */
+  --qy-sg-blur: blur(10px) saturate(1.05);
 
-  /* "松呼吸"的三个间距量。rem 而不是 px,以便跟随 scale 轴。 */
-  --qy-sg-sec-gap: clamp(5.625rem, 11vw, 8.75rem);
-  --qy-sg-head-gap: clamp(2.75rem, 6vw, 4.25rem);
-  --qy-sg-leading: 1.95;
-
-  /* 第二强调色。夜 = 游戏表头那条橙 #EF7129;昼 = 同色相角压深。
-   * 存在的理由是表头横幅需要"渐变的另一端"。 */
-  --qy-sg-ember: oklch(0.52 0.17 46.1); /* #B23D00,5.51:1 */
-
-  /* 边缘压暗色。夜间是游戏画面四周的暗角(实测 #1E2221),投影与遮罩由它出发;
-   * 昼间没有暗角这回事,取墨色 8% 落在纸面上,只当"比边框再淡一档的边缘提示"。 */
-  --qy-sg-vignette: color-mix(
-    in oklch,
-    var(--foreground) 8%,
-    var(--background)
-  );
-
-  /* ── 表头横幅:昼夜【同一条公式】,夜块不覆写 ──
-   * 夜间是游戏里最强的一处构图(金 → 橙的列标题带);第四版把昼间也做成
-   * 同一条带子,而不是前几版那种"几乎看不见的陶土洗色"。能这么做的前提
-   * 正是昼间强调色已经压到可读档:横幅文字取 --primary-foreground,
-   * 夜间是暗角色(压金 10.35:1 / 压橙 5.43:1),昼间是纸面色
-   * (压金 4.74:1 / 压橙 5.51:1),四头都过 4.5。
-   *
-   * 前几版夜块的四停靠点(淡金 → 金 → 橙 → 橙)是照截图 x 轴扫描来的,
-   * 淡金那一端在昼间会让纸面色的字掉到 3:1 以下,与"一条公式"不可兼得。
-   * 取舍结果:保留"金 → 橙、右半段恒定"的关系,舍掉最左那一小段淡金。 */
-  --qy-sg-band: linear-gradient(
-    100deg,
-    var(--primary) 0%,
-    var(--qy-sg-ember) 78%,
-    var(--qy-sg-ember) 100%
-  );
-  --qy-sg-band-fg: var(--primary-foreground);
-
-  /* 唯一允许的投影:卡片、图表容器这类需要浮起来的块。 */
-  --qy-sg-lift-shadow: 0 12px 32px
-    color-mix(in oklch, var(--foreground) 6%, transparent);
-
-  /* 遮罩层 */
-  --qy-sg-overlay: color-mix(in oklch, var(--foreground) 35%, transparent);
-
-  /* 选中文本。昼间只换底不换字色。 */
-  --qy-sg-selection-bg: color-mix(in oklch, var(--primary) 22%, transparent);
-  --qy-sg-selection-fg: var(--foreground);
+  /* 「松呼吸」的三个量。参考稿 sectionGap 120px、body line-height 1.5。
+   * rem 而不是 px,以便跟随根字号缩放。 */
+  --qy-sg-sec-gap: clamp(4.5rem, 9vw, 7.5rem);
+  --qy-sg-head-gap: clamp(2rem, 4.5vw, 3.25rem);
+  --qy-sg-leading: 1.6;
 }
 
-/* ── 圆角 ────────────────────────────────────────────────────────────────
- * 本预设的圆角偏方正。
- *
- * 这里原本带一个 `:not([data-theme-radius])`,用来给上游的 radius 轴让路。
- * radius 轴随「移除主题设置」一并删除后(`lib/theme-customization.ts`),
- * `data-theme-radius` 再没有任何写入方,那个 `:not()` 恒真 —— 留着只会让
- * 下一个读代码的人以为还有一条能拨的轴。上游 `[data-theme-radius='…']` 覆盖块
- * 保持原样不动(那是上游文件),它们从此永不匹配。 */
-[data-theme-preset='steins-gate'] {
-  --radius: 0.375rem;
-}
-
-/* ══════════════════════════ 夜 · 游戏截图 ══════════════════════════
+/* ══════════════════════════ 夜 · 参考稿本体 ══════════════════════════
  *
  * 两个选择器命中同一个元素(preset 写在 <body>,.dark 写在 <html>),
- * 所以这里只覆写"公式本身就不同"的量:
+ * 所以这里只覆写「公式本身就不同」的量:
  *   - 标准色板整套换值(这是换底色,不是调参);
- *   - --qy-sg-hair / accent-soft / glow 的百分比昼夜不同;
- *   - --qy-sg-ember / vignette 换值;
- *   - --qy-sg-lift-shadow / overlay 改由暗角色出发;
- *   - --qy-sg-selection-* 加重并翻转前景。
- * 其余派生量(三个字体轴、ease、pill、blur、三个间距量、leading、faint、
- * accent-deep、band、band-fg)公式两边一致,不重复声明 —— 它们 var() 到的
- * 标准变量已经在本块换了值,会自动跟着翻转。重复声明才是危险的。
+ *   - --qy-sg-hair / hair-strong / glow 的百分比昼夜不同(暗底吃光,要更强);
+ *   - --qy-sg-mist 换值(它是色板锚点)。
+ * 其余派生量(两个字体轴、两档洗色、faint、bloom、selection-*、ease、pill、
+ * blur、三个间距量)公式两边一致,【不重复声明】——
+ * 它们 var() 到的标准变量已经在本块换了值,会自动跟着翻转。重复声明才是危险的。
  *
  * ── 关于对比度 ──
- * 混凝土灰是【中间调】底色,这是它与常规暗色主题最大的不同:常规暗底(近黑)
- * 上任何饱和色都能拉开对比度,中间调则两头都被挤。四个语义色的明度全部按
- * "压在 #4E5252 上 ≥4.5:1"反解,彩度只能取该明度下 sRGB 色域允许的最大值 ——
- * destructive 因此偏浅(#FDB1A8 而不是纯红),这是底色决定的。
+ * 近黑画布给了很大余量,四个语义色的明度全部按「压在 #090909 上 7:1」反解,
+ * 比 4.5 的下限多留了一截 —— 它们同时要当徽章底色用,底色上的字取虚空色,
+ * 那一头也是 7:1。
  */
 
 .dark [data-theme-preset='steins-gate'] {
-  /* 混凝土墙面。截图里表格行底 28.6% 的像素正好落在这个值上。
-   * 微冷灰绿(色相 197,彩度 0.005),不是中性灰也不是暖灰。 */
-  --background: oklch(0.435 0.005 197); /* #4E5252 */
-  --foreground: oklch(0.936 0.007 145.5); /* #E7EBE7 字形实测峰值,6.57:1 */
+  /* 参考稿 Near Black —— 原话是 the default void everything else floats in。 */
+  --background: oklch(0.14 0 236); /* #090909 */
+  --foreground: oklch(0.981 0 236); /* #f9f9f9,18.85:1 */
 
-  /* 面向下【凿】(与昼块镜像):越靠近浮层越接近暗角色。 */
-  --card: oklch(0.42 0.005 197); /* #4A4E4E */
-  --card-foreground: oklch(0.936 0.007 145.5);
-  --popover: oklch(0.363 0.007 196.9); /* #3A3F3F */
-  --popover-foreground: oklch(0.936 0.007 145.5);
+  /* 面朝墨色走(夜间即比虚空亮),与昼块镜像。
+   * 卡片只比画布亮一档 —— 参考稿把卡片底色也写成 Near Black,
+   * 分层靠的是发丝线;这里保留 3% 的洗色让「面」在语义上仍然成立,
+   * 但要小到 without leaving the void。 */
+  --card: oklch(0.165 0 236); /* #0e0e0e */
+  --card-foreground: oklch(0.981 0 236);
+  --popover: oklch(0.178 0 236); /* #111111 */
+  --popover-foreground: oklch(0.981 0 236);
 
-  /* 金 —— 游戏 UI 的第一强调色:页码"02"、HELP 标志、标题框边、对话框顶边
-   * 那条金线,全是它。实测 #FFC400~#FFCF00,取 #FFC800,压在混凝土上 5.09:1。 */
-  --primary: oklch(0.857 0.175 88.5); /* #FFC800 */
-  --primary-foreground: oklch(0.247 0.006 179.1); /* #1E2221 暗角色,10.35:1 */
+  /* 品牌蓝 —— 全站唯一的有彩声部,压在虚空上 9.47:1。
+   * 取材位置对应参考稿的 Signal Violet(#af50ff),但色相换成了 236,见文件头。
+   * 明度取到 0.76 才是"浅蓝":再低就成了深海蓝,信号灯的感觉没了。
+   * 前景取虚空色(9.47:1):参考稿的那一支是【填充】,填充上的字回到近黑。 */
+  --primary: oklch(0.76 0.14 236); /* #43befd */
+  --primary-foreground: oklch(0.14 0 236);
 
-  /* 中间层向底色【之上】抬(与昼块镜像) */
-  --secondary: oklch(0.484 0.008 196.9); /* #5A6060 */
-  --secondary-foreground: oklch(0.905 0.006 170.4); /* #DCE1DF */
-  --muted: oklch(0.467 0.006 196.9); /* #565B5B */
-  --muted-foreground: oklch(0.828 0.007 174.3); /* #C2C8C6,4.66:1 */
-  --accent: oklch(0.516 0.008 219.6); /* #63696B,噪声上界,当 hover 面 */
-  --accent-foreground: oklch(0.936 0.007 145.5);
+  --secondary: oklch(0.199 0 236); /* #161616 */
+  --secondary-foreground: oklch(0.955 0 236); /* #f0f0f0 参考稿 Soft White */
+  --muted: oklch(0.186 0 236); /* #131313 */
+  --muted-foreground: oklch(0.609 0 236); /* #838383 参考稿 Steel,5.23:1 */
+  --accent: oklch(0.216 0 236); /* #1a1a1a,hover 面 */
+  --accent-foreground: oklch(0.981 0 236);
 
-  --destructive: oklch(0.83 0.09 27); /* #FDB1A8,4.54:1 */
-  --destructive-foreground: oklch(0.247 0.006 179.1);
-  --success: oklch(0.8 0.196 148); /* #4DDF70,4.56:1 */
-  --success-foreground: oklch(0.247 0.006 179.1);
-  --warning: oklch(0.825 0.122 68); /* #FAB66A,4.51:1 */
-  --warning-foreground: oklch(0.247 0.006 179.1);
-  --info: oklch(0.815 0.088 240); /* #8DCBF6,4.53:1 */
-  --info-foreground: oklch(0.247 0.006 179.1);
-  --neutral: oklch(0.828 0.007 174.3);
-  --neutral-foreground: oklch(0.936 0.007 145.5);
+  --destructive: oklch(0.706 0.186 27); /* #ff685d,7.02:1 */
+  --destructive-foreground: oklch(0.14 0 236);
+  --success: oklch(0.664 0.175 152); /* #00b05a,7.00:1 */
+  --success-foreground: oklch(0.14 0 236);
+  --warning: oklch(0.69 0.146 75); /* #cf8c00,7.01:1 */
+  --warning-foreground: oklch(0.14 0 236);
+  --info: oklch(0.671 0.112 200); /* #10aab1,7.00:1 青,与品牌蓝拉开 36° */
+  --info-foreground: oklch(0.14 0 236);
+  --neutral: oklch(0.609 0 236);
+  --neutral-foreground: oklch(0.981 0 236);
 
-  /* 游戏里的表格线是浅灰白细线,峰值实测 #949694。--border 取比峰值柔一档的
-   * 不透明值;要复刻那种"看得见的白线"时用 --qy-sg-hair-strong。 */
-  --border: oklch(0.632 0.006 182.9); /* #868B8A */
-  --input: oklch(0.632 0.006 182.9);
-  --ring: oklch(0.857 0.175 88.5);
+  /* 参考稿 Graphite,原话就是 subtle dividers。 */
+  --border: oklch(0.398 0 236); /* #474747 */
+  --input: oklch(0.398 0 236);
+  --ring: oklch(0.76 0.14 236);
 
-  --chart-1: oklch(0.857 0.175 88.5);
-  --chart-2: oklch(0.689 0.175 46.1);
-  --chart-3: oklch(0.815 0.088 240);
-  --chart-4: oklch(0.8 0.196 148);
-  --chart-5: oklch(0.826 0.006 153.8); /* #C3C7C4 */
+  --chart-1: oklch(0.76 0.14 236);
+  --chart-2: oklch(0.86 0.075 236);
+  --chart-3: oklch(0.69 0.146 75);
+  --chart-4: oklch(0.664 0.175 152);
+  --chart-5: oklch(0.72 0 236);
 
-  --sidebar: oklch(0.397 0.007 196.9); /* #434848,比正文面再凹一档 */
-  --sidebar-foreground: oklch(0.905 0.006 170.4);
-  --sidebar-primary: oklch(0.857 0.175 88.5);
-  --sidebar-primary-foreground: oklch(0.247 0.006 179.1);
-  --sidebar-accent: oklch(0.481 0.006 196.9);
-  --sidebar-accent-foreground: oklch(0.936 0.007 145.5);
-  --sidebar-border: oklch(0.632 0.006 182.9);
-  --sidebar-ring: oklch(0.857 0.175 88.5);
+  --sidebar: oklch(0.153 0 236); /* #0c0c0c,比正文面更贴近虚空 */
+  --sidebar-foreground: oklch(0.955 0 236);
+  --sidebar-primary: oklch(0.76 0.14 236);
+  --sidebar-primary-foreground: oklch(0.14 0 236);
+  --sidebar-accent: oklch(0.216 0 236);
+  --sidebar-accent-foreground: oklch(0.981 0 236);
+  --sidebar-border: oklch(0.398 0 236);
+  --sidebar-ring: oklch(0.76 0.14 236);
 
-  --skeleton-base: oklch(0.481 0.006 196.9);
-  --skeleton-highlight: oklch(0.543 0.007 185.1);
+  --skeleton-base: oklch(0.186 0 236);
+  --skeleton-highlight: oklch(0.216 0 236);
 
-  /* strong 档 46% 是量出来的:字色 #E7EBE7 以 46% 叠在混凝土上实测合成
-   * #979697,截图里单元格边框峰值 #949694,逐通道差 (3,2,3)。
-   * 昼间的 10/22% 在这里会被暗底吃光。 */
-  --qy-sg-hair: color-mix(in oklch, var(--foreground) 20%, transparent);
-  --qy-sg-hair-strong: color-mix(in oklch, var(--foreground) 46%, transparent);
+  /* 昼间的 11/20% 在这里会被暗底吃掉一档,两档各加 6 个百分点:
+   * 14% 实测合成 #232323,26% 合成 #3d3d3d —— 后者与参考稿 Graphite #474747
+   * 同一个视觉层级,正是它给发丝线定的位置。 */
+  --qy-sg-hair: color-mix(in oklch, var(--foreground) 14%, transparent);
+  --qy-sg-hair-strong: color-mix(in oklch, var(--foreground) 26%, transparent);
 
-  /* 金色低透明度叠加。16% 合成后是暖橄榄调,正是金光落在混凝土上的样子。 */
-  --qy-sg-accent-soft: color-mix(in oklch, var(--primary) 16%, transparent);
+  /* 对应参考稿 Lavender Mist 的位置。压在虚空上 13.17:1,是「有蓝味的正文色」。 */
+  --qy-sg-mist: oklch(0.86 0.075 236); /* #a2d9fc */
 
   /* 暗底吃光,辉光要更亮才看得见 */
-  --qy-sg-glow: color-mix(in oklch, var(--primary) 32%, transparent);
-
-  /* 表头那条橙,实测 #EF7131 / #EF6E2E */
-  --qy-sg-ember: oklch(0.689 0.175 46.1); /* #EF7129 */
-
-  /* 暗角。画面四周压到的那一档,实测 #191C1B~#1C2121 */
-  --qy-sg-vignette: oklch(0.247 0.006 179.1); /* #1E2221 */
-
-  /* 投影由暗角色出发。近黑底上"投影糊成脏色"那条老理由对中间调的混凝土
-   * 不成立:暗角色压在 #4E5252 上是清楚可见的一圈暗边,正是游戏里面板的样子。 */
-  --qy-sg-lift-shadow: 0 14px 34px
-    color-mix(in oklch, var(--qy-sg-vignette) 46%, transparent);
-
-  /* 遮罩把画面压向暗角色而不是压向底色,对应对话场景里上半屏被压暗的关系。 */
-  --qy-sg-overlay: color-mix(in oklch, var(--qy-sg-vignette) 72%, transparent);
-
-  /* 金底 + 暗角色字。50% 实测合成 #A78D2A,压暗角色字 4.97:1。 */
-  --qy-sg-selection-bg: color-mix(in oklch, var(--primary) 50%, transparent);
-  --qy-sg-selection-fg: var(--qy-sg-vignette);
+  --qy-sg-glow: color-mix(in oklch, var(--primary) 30%, transparent);
 }

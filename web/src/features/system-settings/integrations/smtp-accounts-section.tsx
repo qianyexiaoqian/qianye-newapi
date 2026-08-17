@@ -113,7 +113,8 @@ export function SmtpAccountsSection({ defaultValues }: Props) {
   )
   const statsById = useMemo(() => {
     const map = new Map<string, number>()
-    for (const s of statsQuery.data?.data ?? []) map.set(s.account_id, s.last_hour)
+    for (const s of statsQuery.data?.data ?? [])
+      map.set(s.account_id, s.last_hour)
     return map
   }, [statsQuery.data])
 
@@ -231,7 +232,10 @@ export function SmtpAccountsSection({ defaultValues }: Props) {
           <tbody>
             {accounts.length === 0 && (
               <tr>
-                <td className='text-muted-foreground p-4 text-center' colSpan={6}>
+                <td
+                  className='text-muted-foreground p-4 text-center'
+                  colSpan={6}
+                >
                   {accountsQuery.isPending
                     ? t('Loading...')
                     : t('qy_smtp_no_accounts')}

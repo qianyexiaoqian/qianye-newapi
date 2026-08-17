@@ -135,7 +135,7 @@ function splitSelectorList(selector: string) {
   return out
 }
 
-describe('Steins Gate 挂载层 · 浮层定位', () => {
+describe('Midnight Signal 挂载层 · 浮层定位', () => {
   test('主题不得给自带 fixed/absolute/sticky 的 slot 写 position', () => {
     const { positioned, seen } = collectNativePositions()
     // 前置条件:扫描本身必须有效。一个都没扫到说明正则跟不上组件写法的变化,

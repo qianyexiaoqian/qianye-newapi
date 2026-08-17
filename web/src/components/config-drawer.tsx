@@ -64,7 +64,7 @@ const Item = RadioPrimitive.Root
  * 项目方裁决「移除主题设置功能,不要给用户能使用主题设置,只给类似首页的
  * 明暗调整即可」。上游的 preset / font / radius / scale / contentLayout 五组
  * 控件连同它们的 cookie 读写一起删掉了(见 `lib/theme-customization.ts`),
- * 站点主题固定为 Steins Gate。
+ * 站点主题固定为 Midnight Signal。
  *
  * 这里保留的三组 —— 侧边栏样式、布局、书写方向 —— 不属于主题轴:它们由
  * `layout-provider` / `direction-provider` 管理,只改结构不改观感,

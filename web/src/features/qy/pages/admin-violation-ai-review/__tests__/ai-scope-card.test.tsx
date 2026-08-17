@@ -85,9 +85,8 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const i18next = (await import('i18next')).default
 const { initReactI18next } = await import('react-i18next')
-const { QueryClient, QueryClientProvider } = await import(
-  '@tanstack/react-query'
-)
+const { QueryClient, QueryClientProvider } =
+  await import('@tanstack/react-query')
 const {
   Outlet,
   RouterProvider,

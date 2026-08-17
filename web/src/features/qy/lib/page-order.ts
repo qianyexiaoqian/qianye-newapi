@@ -17,13 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * `LAB MEMO — NN` 序号的唯一真源。
+ * `GATE NN` 序号的唯一真源。
  *
  * ── 为什么是一张冻结的字面量表，而不是从导航结构派生 ──
  * 序号原本取自 `nav.ts` 里页面的声明顺序。那等于把「实验记录编号」这个**对外
  * 可见的稳定标识**绑死在「侧边栏怎么排」这个**随时会调整的展示决定**上：这次
  * 把 23 个页面按语义拆进上游分组，声明顺序必然重排，23 个编号会集体错位 ——
- * 用户昨天记下的 `LAB MEMO — 14` 今天指向另一个页面。
+ * 用户昨天记下的 `GATE 14` 今天指向另一个页面。
  *
  * 所以这里把编号显式冻结成字面量，导航怎么重排都不影响它。
  *
@@ -59,7 +59,7 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   // 因此按维护规则 2 删行 —— 它是**末尾之前**的一行，后面三页（资金订单、
   // 审计日志、健康检查）各前移一号。这是删行不可避免的代价，规则 2 已经把它
   // 说成可接受（历史编号本就随页面消失）；被动的三页都是管理端页面，
-  // `LAB MEMO` 编号在那几页上是装饰，不像用户侧页面那样会被记下来引用。
+  // `GATE` 编号在那几页上是装饰，不像用户侧页面那样会被记下来引用。
   '/qy/admin/fund-orders',
   '/qy/admin/audit-logs',
   '/qy/admin/health',
@@ -73,7 +73,7 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   // `/qy/admin/group-matrix` 曾占本表的第 29 号。它整体搬进了上游抽屉的
   // 「计费与支付 → 用户分组」，不再是本表登记的页面，因此按维护规则 2 删行 ——
   // 它是**末尾之前**的一行，删掉会让 `/qy/lottery-guess` 从 30 号变成 29 号。
-  // 这是可接受的：`LAB MEMO` 编号跟随页面消失，而竞猜页是本轮同批新增的，
+  // 这是可接受的：`GATE` 编号跟随页面消失，而竞猜页是本轮同批新增的，
   // 还没有用户记下过它的号；重排既有编号仍然禁止。
   // 竞猜从大厅的一个筛选值升成独立页面（需求 2 的选择夹第二张标签）。
   // 按本表的维护规则**追加到末尾取下一个空号**，不与 `/qy/lottery`、
@@ -91,7 +91,7 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   '/qy/admin/violation-categories',
   // AI 内容审核(需求:随机抽样 + 可配审核渠道 + 转发前/后两个时机)。
   // 同样**追加到末尾取下一个空号**,不与 violation-rules / violation-categories
-  // 排在一起 —— 那两页的编号已经发出去了,重排会让用户记下的 LAB MEMO 指向别处。
+  // 排在一起 —— 那两页的编号已经发出去了,重排会让用户记下的 GATE 指向别处。
   '/qy/admin/violation-ai-review',
   // 用户佣金（一行 = 一个用户）。它是佣金管理选择夹的宿主，另外两张标签
   // （AFF 关系 / 佣金余额）的编号原地不动 —— 被收进选择夹不改变"它们各自

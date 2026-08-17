@@ -29,10 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  getModelGroupOptions,
-  getUserGroupOptions,
-} from '@/features/users/api'
+import { getModelGroupOptions, getUserGroupOptions } from '@/features/users/api'
 
 import { SettingsSection } from '../components/settings-section'
 import { useGroupOptionSave } from './lib/use-group-option-save'
@@ -52,7 +49,8 @@ function parseDefaults(raw: string | undefined): DefaultsMap {
   if (!raw) return {}
   try {
     const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+      return {}
     const out: DefaultsMap = {}
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof v === 'string' && k !== '' && v !== '') out[k] = v

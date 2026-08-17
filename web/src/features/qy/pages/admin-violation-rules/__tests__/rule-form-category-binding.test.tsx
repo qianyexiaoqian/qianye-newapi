@@ -87,9 +87,8 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const i18next = (await import('i18next')).default
 const { initReactI18next } = await import('react-i18next')
-const { QueryClient, QueryClientProvider } = await import(
-  '@tanstack/react-query'
-)
+const { QueryClient, QueryClientProvider } =
+  await import('@tanstack/react-query')
 
 await i18next.use(initReactI18next).init({
   interpolation: { escapeValue: false },
@@ -100,9 +99,8 @@ await i18next.use(initReactI18next).init({
 
 const { QyRuleFormSheet } = await import('../components/rule-form-sheet')
 const { qyKeys } = await import('../../../lib/query-keys')
-const { qyViolationRuleToForm, qyViolationRuleToPayload } = await import(
-  '../lib/rule-form'
-)
+const { qyViolationRuleToForm, qyViolationRuleToPayload } =
+  await import('../lib/rule-form')
 
 const dict = zh as Record<string, string>
 
@@ -228,9 +226,7 @@ function formFieldLabels(): string[] {
   assert.ok(form, '规则表单没有渲染')
   return [...form.querySelectorAll('[data-slot="form-item"]')]
     .map((item) =>
-      (
-        item.querySelector('[data-slot="form-label"]')?.textContent ?? ''
-      ).trim()
+      (item.querySelector('[data-slot="form-label"]')?.textContent ?? '').trim()
     )
     .filter((label) => label !== '')
 }
@@ -426,7 +422,10 @@ describe('命中之后加到哪里', () => {
       '{{name}}',
       '破限(越狱)'
     )
-    assert.ok(text.includes(expected), `缺少未配阈值结论：${text.slice(0, 400)}`)
+    assert.ok(
+      text.includes(expected),
+      `缺少未配阈值结论：${text.slice(0, 400)}`
+    )
   })
 
   test('类型清单读不出来时不漏裸主键，并说明保存不受影响', async () => {

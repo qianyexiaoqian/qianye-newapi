@@ -71,7 +71,7 @@ const QY_AVAIL_ADMIN_ONLY_PREFIXES = [
 
 const QY_AVAIL_ADMIN_NAV_KEYS = [
   'qy_nav_a_availability',
-  'qy_sg_jp_a_availability',
+  'qy_sg_code_a_availability',
   'qy_sg_nav_en_a_availability',
 ]
 

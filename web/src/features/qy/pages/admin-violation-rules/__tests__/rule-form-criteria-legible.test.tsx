@@ -86,9 +86,8 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const i18next = (await import('i18next')).default
 const { initReactI18next } = await import('react-i18next')
-const { QueryClient, QueryClientProvider } = await import(
-  '@tanstack/react-query'
-)
+const { QueryClient, QueryClientProvider } =
+  await import('@tanstack/react-query')
 
 await i18next.use(initReactI18next).init({
   interpolation: { escapeValue: false },
@@ -295,7 +294,11 @@ describe('规则编辑抽屉第一屏能读出判据', () => {
     ]
 
     for (const item of cases) {
-      assert.notEqual(item.field, '', '字段标签的 i18n 键取不到，测试锚点已失效')
+      assert.notEqual(
+        item.field,
+        '',
+        '字段标签的 i18n 键取不到，测试锚点已失效'
+      )
       const shown = fieldValueText(item.field)
       assert.notEqual(
         shown,
@@ -362,7 +365,10 @@ describe('共享 Select 收起时显示的是选项文案', () => {
       texts.includes('破限(越狱)'),
       `没有推出译名，实际：${JSON.stringify(texts)}`
     )
-    assert.ok(!texts.includes('2'), `仍然漏出裸主键，实际：${JSON.stringify(texts)}`)
+    assert.ok(
+      !texts.includes('2'),
+      `仍然漏出裸主键，实际：${JSON.stringify(texts)}`
+    )
   })
 
   test('调用方显式给的 items 优先，推导不许顶掉它', async () => {

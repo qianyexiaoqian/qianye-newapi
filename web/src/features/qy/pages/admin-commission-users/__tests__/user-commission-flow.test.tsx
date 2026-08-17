@@ -365,9 +365,7 @@ describe('确认框把资金语义直接说出来', () => {
    * 此时挂一个金额出来，运营会以为这次操作会动到那笔钱。
    */
   test('建立新关系的两档不显示任何保留金额', async () => {
-    await mountDialog(
-      userRow({ inviter_id: 0, total_earned_quota: 137_200 })
-    )
+    await mountDialog(userRow({ inviter_id: 0, total_earned_quota: 137_200 }))
     const text = screenText()
     assert.ok(
       !text.includes(copy('qy_cu_rel_kept_from_inviter')),

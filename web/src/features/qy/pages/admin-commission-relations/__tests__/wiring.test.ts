@@ -179,21 +179,21 @@ describe('AFF 关系页的入口链路', () => {
     assert.ok(body.includes("t('qy_rel_bind')"))
   })
 
-  test('本页有自己的 LAB MEMO 编号与日文副标，不再蹭佣金审核的', () => {
+  test('本页有自己的 GATE 编号与页面代号，不再蹭佣金审核的', () => {
     // 旧断言「继承佣金审核的编号」成立的前提是本页没有独立入口，只能靠
     // `page-meta.ts` 的最长前缀规则接住。侧栏入口本轮补上了，前提作废。
     const meta = qyPageMeta(RELATIONS_URL)
     assert.notEqual(
       meta.no,
       '00',
-      '本页从页面表/编号表里掉出去了，区段头会退化成 LAB MEMO — 00'
+      '本页从页面表/编号表里掉出去了，区段头会退化成 GATE 00'
     )
     assert.notEqual(
       meta.no,
       qyPageMeta('/qy/admin/commission-records').no,
       '本页又和佣金审核共用一个编号：那意味着它自己那一行没了'
     )
-    assert.equal(meta.jpKey, 'qy_sg_jp_a_commission_relations')
+    assert.equal(meta.codeKey, 'qy_sg_code_a_commission_relations')
   })
 
   test('手工增减佣金的入口挂在佣金余额页上', () => {

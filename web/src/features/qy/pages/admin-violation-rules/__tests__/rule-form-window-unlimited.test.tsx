@@ -83,9 +83,8 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const i18next = (await import('i18next')).default
 const { initReactI18next } = await import('react-i18next')
-const { QueryClient, QueryClientProvider } = await import(
-  '@tanstack/react-query'
-)
+const { QueryClient, QueryClientProvider } =
+  await import('@tanstack/react-query')
 
 await i18next.use(initReactI18next).init({
   interpolation: { escapeValue: false },
@@ -438,7 +437,10 @@ describe('新增的两句文案', () => {
     ]) {
       const zhText = dict[key]
       assert.ok(zhText, `zh.json 里没有 ${key}`)
-      assert.ok(!zhText.includes('{{hours}}'), `${key} 的中文里还留着 {{hours}}`)
+      assert.ok(
+        !zhText.includes('{{hours}}'),
+        `${key} 的中文里还留着 {{hours}}`
+      )
       assert.ok(!zhText.includes('小时'), `${key} 的中文里还写着小时`)
     }
   })

@@ -272,6 +272,33 @@ var auditRequired = []struct {
 			"成功那条写在 WriteTx 里(与状态转移同生共死),事务一回滚就消失,失败必须在事务外补一条"},
 	{"modules/lottery/api_admin.go", "handleCancelActivity", 2,
 		"取消是管理员唯一能改变活动结局的动作,必然触发全额退款;被拒绝的那次同样是重要信号"},
+	{"modules/lottery/api_admin_retire.go", "handleDeleteActivity", 2,
+		"删除是本模块唯一一处让证据消失的动作:活动、投注、事件、选项、派奖、奖品、" +
+			"种子、密钥履历、旗标十一张表一起走,删完之后**审计行是唯一还能证明这一场存在过的东西**。" +
+			"它的 before 快照里装着 commit_hash / seed / roster_hash / chain_head 与全部资金口径," +
+			"事后要回答「那一场到底公不公正、发了多少钱」只剩这一行。" +
+			"被六道硬闸门(未结束/资金未落定/文本奖未履行/参与未结算/异常未处理/系列结转未收口)" +
+			"或二次确认拒绝的那次同样要留痕 —— 「有人正在试图删掉一场还欠着钱的活动」" +
+			"正是最需要事后能查到的形状"},
+	{"modules/lottery/api_admin_retire.go", "handleHideActivity", 2,
+		"下架把一场活动从用户端大厅撤下。它不动钱、可逆,但「这一场为什么突然从站上消失了」" +
+			"只有这条埋点能回答;非终态被拒的那次同样要留痕 —— 下架一场进行中的活动" +
+			"等于一次隐蔽的提前截止,那正是本模块从头到尾在防的形状"},
+	{"modules/lottery/api_admin_retire.go", "handleUnhideActivity", 2,
+		"重新上架同样要留痕:一场被下架过又放回去的活动,事后要能看出这段空窗期是谁开的"},
+	{"modules/lottery/api_admin_cover.go", "handleSetActivityCover", 2,
+		"换封面是**极少数在 publish 之后仍然可写**的活动字段(它不进任何哈希原像)。" +
+			"正因如此它是唯一一个能在活动进行中改变卡片外观的动作:一场标着「一等奖 100 元」" +
+			"的活动,封面上画什么由这条接口决定,而封面是用户在大厅里最先看到的东西。" +
+			"before/after 两份快照回答「那一刻挂的是哪一张」;" +
+			"被并发换图拒掉的那次同样要留痕 —— 那说明两个人正在同一场活动上互相覆盖"},
+	{"modules/lottery/api_admin_cover.go", "handleUploadCover", 1,
+		"上传封面是本模块唯一一条能往宿主机磁盘上写字节的路径。" +
+			"「这个管理员账号传了多少张、多大」在事后只有这条埋点能回答;" +
+			"失败的上传没有产生任何存储副作用,由请求台账覆盖,所以下界是 1 而不是 2"},
+	{"modules/lottery/api_admin_cover.go", "handleDiscardCover", 1,
+		"与上传那条成对:一张图从磁盘上出现与消失都要能对上," +
+			"否则「这个账号现在还占着多少」只剩一半答案"},
 	{"modules/lottery/api_admin.go", "handleSetGuessResult", 2,
 		"竞猜结果是链下事实、由人手工指定,是全模块最大的信任缺口 —— " +
 			"谁在什么时候录了什么、依据是什么,必须永久可查"},

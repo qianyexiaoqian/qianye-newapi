@@ -17,9 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { SystemBehaviorSection } from '../general/system-behavior-section'
+import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
 import { SmtpAccountsSection } from '../integrations/smtp-accounts-section'
 import { SmtpSendLogSection } from '../integrations/smtp-send-log-section'
-import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
 import { LogSettingsSection } from '../maintenance/log-settings-section'
 import { PerformanceSection } from '../maintenance/performance-section'

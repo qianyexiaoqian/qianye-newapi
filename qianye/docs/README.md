@@ -44,6 +44,15 @@
 | [design-03-withdraw.md](design-03-withdraw.md) | 需求 2b:提现申请、审核、历史 |
 | [design-07-violation.md](design-07-violation.md) | 需求 7:违规检测 |
 
+### UI 主题
+
+| 文件 | 内容 |
+|---|---|
+| [design-14-midnight-signal.md](design-14-midnight-signal.md) | **现行口径**:全站 UI(近黑画布 + 单支紫),色板推导、六条签名形状、三个契约测试 |
+| [ui-reference/](ui-reference/) | 参考稿原件(dope.security 抽取):`DESIGN.md` 是文字规范,其余是抽取出来的取值 |
+| ~~design-10-steins-gate-theme.md~~ | **已作废**,只保留「为什么只换调色板不算换主题」那段论证 |
+| ~~design-11-sg-hud-layer.md~~ | **已作废**,只保留「遮住颜色看轮廓」这条验收标准的由来 |
+
 ### 裁定(**实施前必读**)
 
 [99-coherence-review.md](99-coherence-review.md) — 跨模块一致性审查。

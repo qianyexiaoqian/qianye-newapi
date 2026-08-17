@@ -88,7 +88,10 @@ export function testQyAiChannel(id: number) {
 }
 
 export function updateQyAiSetting(body: Omit<QyAiSetting, 'id'>) {
-  return qyPut<QyAiSettingSaveResult>('/admin/violation/ai-review/settings', body)
+  return qyPut<QyAiSettingSaveResult>(
+    '/admin/violation/ai-review/settings',
+    body
+  )
 }
 
 export function qyAiScopesQuery() {

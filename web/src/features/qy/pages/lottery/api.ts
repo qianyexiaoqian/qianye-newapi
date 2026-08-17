@@ -34,12 +34,26 @@ import type {
 /** 大厅一页的条数。卡片比表格行高，一屏放不下更多。 */
 export const QY_LOT_PAGE_SIZE = 12
 
+/**
+ * 大厅分区。**参数名与取值必须与后端 `hallPhases` 逐字一致**。
+ *
+ * 上一版这里叫 `status`、取值是 `open|done`，而后端读的是 `phase`、只认
+ * `live|ended`，那个 switch 又没有 default 分支 —— 于是两张标签发出两个不同的
+ * URL、拿回同一份列表（全部非草稿），全链路没有任何一处报错。库里当时
+ * published/locked/settling 一条都没有，用户点开「进行中」看到的是 64 条已经
+ * 结束的活动，这就是项目方反馈的"已结束和进行中没有进行区分"。
+ *
+ * 现在后端对未登记的取值一律 400（`qy_lot_bad_phase`），再漂移一次会当场炸，
+ * 不会再安静地退回"两张标签一模一样"。
+ */
+export type QyLotHallPhase = 'ended' | 'live'
+
 export type QyLotActivityListParams = {
   p: number
   page_size: number
   kind?: string
-  /** `open` = 进行中（published/locked/settling），`done` = 已结束。 */
-  status?: string
+  /** `live` = 进行中（published/locked/settling），`ended` = 已结束。 */
+  phase?: QyLotHallPhase
 }
 
 export function qyLotActivitiesQuery(params: QyLotActivityListParams) {

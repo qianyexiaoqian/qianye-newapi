@@ -98,11 +98,7 @@ import {
   type QyAiScopeGroupBindingError,
   type QyAiScopeRowKind,
 } from './lib/ai-review'
-import type {
-  QyAiChannel,
-  QyAiScope,
-  QyAiScopeSummaryRow,
-} from './types'
+import type { QyAiChannel, QyAiScope, QyAiScopeSummaryRow } from './types'
 
 /**
  * AI 内容审核。
@@ -1318,7 +1314,7 @@ function ScopeForm({
             <summary className='cursor-pointer'>
               {t('qy_ai_scope_prompt_inherited_show')}
             </summary>
-            <pre className='mt-1 whitespace-pre-wrap break-words'>
+            <pre className='mt-1 break-words whitespace-pre-wrap'>
               {effectivePrompt}
             </pre>
           </details>

@@ -138,7 +138,10 @@ describe('纯商品与永久档的事实文案', () => {
    * 会在买家眼前显示成「无限额度」—— 与它真正的语义正好相反。
    */
   test('纯商品的额度绝不显示成「不限」', () => {
-    const facts = buildPlanFacts({ ...plan, no_quota: true, total_amount: 0 }, t)
+    const facts = buildPlanFacts(
+      { ...plan, no_quota: true, total_amount: 0 },
+      t
+    )
     assert.equal(factValue(facts, 'quota'), 'qy_plan_quota_pure_product')
     assert.notEqual(factValue(facts, 'quota'), 'Unlimited')
   })

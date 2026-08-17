@@ -555,9 +555,12 @@ function listSourceFiles(root: string): string[] {
 /**
  * 扫出前端**全部** qy 请求路径。
  *
- * 认两种调用形状：
+ * 认三种形状：
  *   1. `qyGet/qyPost/qyPut/qyPatch/qyDelete(path, …)` —— 绝大多数；
- *   2. `api.get(\`${QY_API_PREFIX}…\`)` —— 取二进制的那几处刻意绕开信封解包。
+ *   2. `api.get(\`${QY_API_PREFIX}…\`)` —— 取二进制的那几处刻意绕开信封解包；
+ *   3. 任何以 QY_API_PREFIX 开头的模板串 —— 不经过任何请求库、直接交给浏览器的
+ *      地址（抽奖封面的 `<img src>` 走匿名端点，属于这一档）。按 GET 记账；
+ *      与前两条重叠的会被记两次，无害 —— 对账按候选路径逐条判定，结果相同。
  *
  * `qyMutate(method, path)` 不认：只有 `lib/api.ts` 里那四个转发壳在用它，路径是
  * 形参。那个文件整体在守卫的豁免清单里。
@@ -610,6 +613,22 @@ export function collectQyRequestPaths(srcRoot: string): QyRequestScan {
       if (!arg.includes('QY_API_PREFIX')) continue
       const inlined = arg.replaceAll('QY_API_PREFIX', `'${QY_API_PREFIX}'`)
       push(m.index, METHOD_BY_AXIOS[m[1]], arg, evalExpr(inlined, ctx))
+    }
+
+    // 第三种形状：**不经过任何请求库**、直接交给浏览器的地址。
+    //
+    // 目前只有抽奖封面在用（`<img src={qyLotCoverSrc(activity)}>` 走匿名端点，
+    // 所以它是一个纯字符串，从头到尾没有一层请求库经手）。对它瞎着会很贵：
+    // 一条写错的 `<img src>` 不抛异常、不进任何失败统计，表现只是"大厅每张卡
+    // 都是碎图标" —— 而本守卫存在的那类缺陷（少一个 /admin 前缀）正是以这种
+    // 方式躲过三轮排查的。
+    //
+    // 只认以 `${QY_API_PREFIX}` 开头的模板串；与前两条形状重叠的会被记两次，
+    // 无害 —— 对账按候选路径逐条判定，同一条路径判两次结果相同。
+    const rawRe = /`\$\{QY_API_PREFIX\}[^`]*`/g
+    while ((m = rawRe.exec(src)) != null) {
+      const inlined = m[0].replaceAll('QY_API_PREFIX', `'${QY_API_PREFIX}'`)
+      push(m.index, 'GET', m[0], evalExpr(inlined, ctx))
     }
   }
 

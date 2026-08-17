@@ -27,6 +27,7 @@ import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
 import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
 import { formatQyDuration, formatQyTs } from '../../ops/format'
+import { QyLotCover } from './lottery-cover'
 import {
   qyLotActivityBadgeStatus,
   qyLotCountdown,
@@ -71,7 +72,11 @@ export function QyLotActivityCard(props: {
   const KindIcon = isBall ? CircleDot : (KIND_ICON[activity.kind] ?? Target)
 
   return (
-    <Card className='flex h-full flex-col'>
+    <Card className='flex h-full flex-col overflow-hidden pt-0'>
+      {/* 背景图压在卡片最顶上，与卡片同宽、无留白 —— 所以这张 Card 去掉了
+          顶部 padding 并开了 overflow-hidden，否则图的直角会戳出圆角边框。
+          没配封面时这里画的是兜底图案而不是空白：空白与"还在加载"长得一样。 */}
+      <QyLotCover activity={activity} />
       <CardHeader className='space-y-2'>
         <div className='flex flex-wrap items-center gap-2'>
           <Badge variant='outline' className='gap-1'>
@@ -84,7 +89,7 @@ export function QyLotActivityCard(props: {
             </Badge>
           )}
           <QyStatusBadge
-            status={qyLotActivityBadgeStatus(activity.status)}
+            status={qyLotActivityBadgeStatus(activity.status, activity.outcome)}
             className='shrink-0'
           />
           {outcomeKey != null && (

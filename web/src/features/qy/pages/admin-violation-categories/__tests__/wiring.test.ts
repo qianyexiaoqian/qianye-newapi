@@ -182,10 +182,7 @@ describe('前端校验与后端同口径', () => {
   test('key 的取值域与后端 validateCategory 一致', () => {
     const t = ((key: string) => key) as never
     const base = { ...qyEmptyCategoryForm(), name: '类型' }
-    assert.equal(
-      qyValidateCategoryForm({ ...base, key: 'spam_v3-x' }, t),
-      null
-    )
+    assert.equal(qyValidateCategoryForm({ ...base, key: 'spam_v3-x' }, t), null)
     assert.equal(
       qyValidateCategoryForm({ ...base, key: '垃圾' }, t),
       'qy_vcat_err_key_charset'
@@ -253,7 +250,7 @@ describe('前端校验与后端同口径', () => {
 describe('i18n 键齐全', () => {
   const keys = [
     'qy_nav_a_violation_categories',
-    'qy_sg_jp_a_violation_categories',
+    'qy_sg_code_a_violation_categories',
     'qy_vcat_create',
     'qy_vcat_edit',
     'qy_vcat_archive',

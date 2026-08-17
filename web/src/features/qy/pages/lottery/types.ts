@@ -361,6 +361,18 @@ export type QyLotActivityBrief = {
   status: QyLotStatus
   outcome: QyLotOutcome
   title: string
+  /**
+   * 卡片背景图的两种来源，互斥，至多一个非空；两个都空 = 没配封面。
+   *
+   * 后端下发的是**原始的两列**而不是一个拼好的 `src`：两者的信任级别不同。
+   * 外链是管理员随手填的第三方主机，要挂 `referrerPolicy="no-referrer"`
+   * （否则每一位访客的来源地址都会被送过去）；站内引用不需要。合成一个字符串
+   * 之后，这个区分就只能靠"它是不是以 / 开头"来猜。
+   *
+   * 老后端不下发这两个字段，一律容忍 `undefined`。
+   */
+  cover_url?: string
+  cover_ref?: string
   stake_quota: number
   open_at: number
   close_at: number
@@ -400,6 +412,9 @@ export type QyLotActivityDetail = {
   outcome: QyLotOutcome
   title: string
   intro: string
+  /** 封面。口径与 {@link QyLotActivityBrief} 上那两个字段完全一致。 */
+  cover_url?: string
+  cover_ref?: string
   stake_quota: number
   open_at: number
   close_at: number

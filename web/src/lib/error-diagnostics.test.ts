@@ -117,7 +117,10 @@ describe('describeError', () => {
       describeError({
         name: 'AxiosError',
         message: 'Request failed with status code 500',
-        config: { method: 'post', url: '/api/qy/lottery/activities/A1/entries' },
+        config: {
+          method: 'post',
+          url: '/api/qy/lottery/activities/A1/entries',
+        },
         response: {
           status: 500,
           headers: { 'x-oneapi-request-id': 'REQ-1' },
@@ -136,7 +139,8 @@ describe('describeError', () => {
 describe('claimStaleAssetReload', () => {
   function memoryStorage(initial?: string) {
     const store = new Map<string, string>()
-    if (initial !== undefined) store.set('new-api:stale-asset-reload-at', initial)
+    if (initial !== undefined)
+      store.set('new-api:stale-asset-reload-at', initial)
     return {
       getItem: (key: string) => store.get(key) ?? null,
       setItem: (key: string, value: string) => void store.set(key, value),

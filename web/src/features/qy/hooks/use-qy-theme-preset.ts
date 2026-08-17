@@ -48,7 +48,7 @@ function readPreset(): string | null {
   return document.body?.getAttribute(THEME_PRESET_ATTRIBUTE) ?? null
 }
 
-/** Steins Gate 主题的专属构图（区段头、编号行、概览栏）只在该预设下渲染。 */
+/** Midnight Signal 主题的专属构图（区段头、编号行、概览栏）只在该预设下渲染。 */
 export function useQyIsSteinsGate(): boolean {
   return (
     useSyncExternalStore(subscribe, readPreset, () => null) === 'steins-gate'

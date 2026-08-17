@@ -56,8 +56,7 @@ import type { QyAiScope } from '../types'
  */
 
 const SRC = new URL('..', import.meta.url)
-const read = (relative: string) =>
-  readFileSync(new URL(relative, SRC), 'utf-8')
+const read = (relative: string) => readFileSync(new URL(relative, SRC), 'utf-8')
 
 const dict = zh as Record<string, string>
 
@@ -103,7 +102,10 @@ describe('分组选择器复用的是共享清单,不是第二份实现', () => 
       'qy_ai_scope_group_failed',
       'qy_ai_scope_group_empty',
     ]) {
-      assert.ok(page.includes(key), `缺少 ${key}:拉取失败会变成一个没有解释的空下拉`)
+      assert.ok(
+        page.includes(key),
+        `缺少 ${key}:拉取失败会变成一个没有解释的空下拉`
+      )
       assert.ok(dict[key], `${key} 没有中文文案`)
     }
     // 清单为空(拉取失败,或者站点真的一个分组都没定义)时不许标未定义分组:
@@ -231,7 +233,10 @@ describe('作用域提示词覆盖全局', () => {
     for (const base of [SCOPE, GLOBAL, DEFAULT]) {
       const rendered = qyAiRenderPrompt(base, DEFAULT, block)
       assert.ok(rendered.includes(base), `基底 "${base}" 必须原样出现`)
-      assert.ok(rendered.includes(block), `基底 "${base}" 也要带上自动生成的清单`)
+      assert.ok(
+        rendered.includes(block),
+        `基底 "${base}" 也要带上自动生成的清单`
+      )
     }
     // 占位符决定清单出现在哪一段,而不是被迫接受"总在最后"。
     const withPlaceholder = qyAiRenderPrompt(

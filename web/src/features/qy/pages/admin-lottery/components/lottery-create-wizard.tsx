@@ -68,6 +68,7 @@ import {
   type QyLotPlay,
 } from '../lib/draft'
 import type { QyLotAdminConfig, QyLotSeries } from '../types'
+import { QyLotCoverField } from './lottery-cover-field'
 import { QyLotRulesEditor } from './lottery-rules-editor'
 
 const STEPS = ['basic', 'spec', 'rules', 'review'] as const
@@ -211,6 +212,7 @@ export function QyLotCreateWizard(props: {
           {step === 'basic' && (
             <BasicStep
               draft={draft}
+              config={props.config}
               onChange={patch}
               // 玩法切换不能走 `patch`：它要同时归位 `kind`、`draw_mode` 与
               // `series_no` 三个字段，而归位规则（哪个该清、哪个该留）在
@@ -284,6 +286,7 @@ export function QyLotCreateWizard(props: {
 
 function BasicStep(props: {
   draft: QyLotDraft
+  config: QyLotAdminConfig | undefined
   onChange: (patch: Partial<QyLotDraft>) => void
   onSelectPlay: (play: QyLotPlay) => void
   seriesList: QyLotSeries[]
@@ -439,6 +442,15 @@ function BasicStep(props: {
           {t('qy_lot_intro_plain_hint')}
         </p>
       </div>
+
+      {/* 背景图紧跟在简介之后：它与标题、简介同属"这张卡长什么样"，
+          而后面几格全是钱与时刻。分开摆会让运营在四十来个字段里找不到它 ——
+          「找不到」正是双色球入口那条反馈的形状。 */}
+      <QyLotCoverField
+        value={{ cover_ref: draft.cover_ref, cover_url: draft.cover_url }}
+        config={props.config}
+        onChange={(next) => props.onChange(next)}
+      />
 
       <div className='space-y-1'>
         <Label htmlFor={`${id}-stake`}>{t('qy_lot_stake')}</Label>

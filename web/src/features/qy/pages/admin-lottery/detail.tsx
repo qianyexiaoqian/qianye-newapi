@@ -16,11 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft, ExternalLink } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -30,7 +31,9 @@ import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
+import { qyErrorMessage } from '../../lib/api'
 import { formatQyQuotaLedger } from '../../lib/format'
+import { qyKeys } from '../../lib/query-keys'
 import { QyStatGrid } from '../components/qy-stat-grid'
 import { QyLotRulesList } from '../lottery/components/lottery-rules-list'
 import { QyLotSpecTable } from '../lottery/components/lottery-spec-table'
@@ -40,12 +43,15 @@ import {
 } from '../lottery/lib/display'
 import { QY_EMPTY_TEXT, formatQyTs } from '../ops/format'
 import { QyKeyValue } from '../ops/qy-ops-ui'
-import { qyAdminLotActivityQuery } from './api'
+import { qyAdminLotActivityQuery, unhideQyLotActivity } from './api'
 import { QyLotCancelDialog } from './components/lottery-cancel-dialog'
+import { QyLotCoverDialog } from './components/lottery-cover-dialog'
+import { QyLotDeleteDialog } from './components/lottery-delete-dialog'
 import { QyLotEntriesTab } from './components/lottery-entries-tab'
 import { QyLotEventsTab } from './components/lottery-events-tab'
 import { QyLotFulfillQueueTab } from './components/lottery-fulfill-queue-tab'
 import { QyLotGuessResultDialog } from './components/lottery-guess-result-dialog'
+import { QyLotHideDialog } from './components/lottery-hide-dialog'
 import { QyLotPayoutsTab } from './components/lottery-payouts-tab'
 import { QyLotPublishDialog } from './components/lottery-publish-dialog'
 
@@ -70,9 +76,26 @@ export function QyAdminLotteryDetail() {
 
   const [publishOpen, setPublishOpen] = useState(false)
   const [cancelOpen, setCancelOpen] = useState(false)
+  const [coverOpen, setCoverOpen] = useState(false)
+  const [hideOpen, setHideOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
   const [resultOpen, setResultOpen] = useState(false)
 
+  const queryClient = useQueryClient()
   const query = useQuery(qyAdminLotActivityQuery(actNo))
+  /*
+    重新上架不配弹窗：它没有任何代价 —— 不动钱、不改状态机、只是把这一场放回
+    活动大厅。给一个没有代价的动作套一层确认，只会训练运营对确认框整体失去
+    敏感，而真正需要读完的那两个（取消、删除）就在同一排按钮上。
+  */
+  const unhide = useMutation({
+    mutationFn: () => unhideQyLotActivity(actNo),
+    onSuccess: async () => {
+      toast.success(t('qy_lot_unhide_done'))
+      await queryClient.invalidateQueries({ queryKey: qyKeys.all })
+    },
+    onError: (error) => toast.error(qyErrorMessage(error, t)),
+  })
   const view = query.data
   const activity = view?.activity
   // 对外稳定的获胜编号在选项行上（`is_winner`），不在活动行上：活动行只有
@@ -93,6 +116,11 @@ export function QyAdminLotteryDetail() {
     activity != null &&
     activity.status !== 'finished' &&
     activity.outcome === ''
+  // 「下架」与「删除」都只对已结束的场次开放，而且两者都**不动钱** ——
+  // 与上面那个会全额退款的 canCancel 恰好互斥，同一场活动永远不会同时出现
+  // 「取消」和这两个按钮。运营因此不必在两个红按钮之间猜哪个会退钱。
+  const isFinished = activity?.status === 'finished'
+  const isHidden = (activity?.hidden_at ?? 0) > 0
   const canSetResult =
     activity != null &&
     activity.kind === 'guess' &&
@@ -133,6 +161,18 @@ export function QyAdminLotteryDetail() {
             {t('qy_lot_a_view_public')}
           </Button>
         )}
+        {/* 换封面**不限状态**：它不进任何哈希原像，所以是 publish 之后仍然
+            可写的极少数字段之一。没有这个入口的话，一个 404 的外链封面挂在
+            已发布的活动上就永远修不好 —— 那条改活动的接口整条被 409 挡死。 */}
+        {activity != null && (
+          <Button
+            size='sm'
+            variant='outline'
+            onClick={() => setCoverOpen(true)}
+          >
+            {t('qy_lot_cover_change')}
+          </Button>
+        )}
         {canPublish && (
           <Button size='sm' onClick={() => setPublishOpen(true)}>
             {t('qy_lot_publish_title')}
@@ -152,6 +192,34 @@ export function QyAdminLotteryDetail() {
             {t('qy_lot_cancel_title')}
           </Button>
         )}
+        {isFinished &&
+          (isHidden ? (
+            <Button
+              size='sm'
+              variant='outline'
+              disabled={unhide.isPending}
+              onClick={() => unhide.mutate()}
+            >
+              {t('qy_lot_unhide_title')}
+            </Button>
+          ) : (
+            <Button
+              size='sm'
+              variant='outline'
+              onClick={() => setHideOpen(true)}
+            >
+              {t('qy_lot_hide_title')}
+            </Button>
+          ))}
+        {isFinished && (
+          <Button
+            size='sm'
+            variant='destructive'
+            onClick={() => setDeleteOpen(true)}
+          >
+            {t('qy_lot_delete_title')}
+          </Button>
+        )}
       </QySectionPageLayout.Actions>
       <QySectionPageLayout.Content>
         <QyPageBoundary query={query}>
@@ -168,10 +236,18 @@ export function QyAdminLotteryDetail() {
                     : t(`qy_lot_kind_${activity.kind}`)}
                 </Badge>
                 <QyStatusBadge
-                  status={qyLotActivityBadgeStatus(activity.status)}
+                  status={qyLotActivityBadgeStatus(
+                    activity.status,
+                    activity.outcome
+                  )}
                 />
                 {outcomeKey != null && (
                   <Badge variant='secondary'>{t(outcomeKey)}</Badge>
+                )}
+                {/* 下架之后这一页与在架时长得一模一样，运营会反复问「到底关掉
+                    了没有」然后再关一次。这枚徽标是唯一的答案。 */}
+                {isHidden && (
+                  <Badge variant='outline'>{t('qy_lot_hidden_badge')}</Badge>
                 )}
                 <span className='text-muted-foreground font-mono text-xs'>
                   {activity.act_no}
@@ -370,6 +446,11 @@ export function QyAdminLotteryDetail() {
                           {activity.cancel_reason}
                         </QyKeyValue>
                       )}
+                      {isHidden && (
+                        <QyKeyValue label={t('qy_lot_hide_reason')}>
+                          {activity.hidden_reason}
+                        </QyKeyValue>
+                      )}
                     </div>
 
                     <div className='space-y-3 rounded-lg border p-3'>
@@ -428,6 +509,13 @@ export function QyAdminLotteryDetail() {
             open={publishOpen}
             onOpenChange={setPublishOpen}
           />
+          <QyLotCoverDialog
+            open={coverOpen}
+            onOpenChange={setCoverOpen}
+            actNo={activity.act_no}
+            coverUrl={activity.cover_url ?? ''}
+            coverRef={activity.cover_ref ?? ''}
+          />
           <QyLotCancelDialog
             activity={activity}
             open={cancelOpen}
@@ -438,6 +526,16 @@ export function QyAdminLotteryDetail() {
             options={view?.options ?? []}
             open={resultOpen}
             onOpenChange={setResultOpen}
+          />
+          <QyLotHideDialog
+            activity={activity}
+            open={hideOpen}
+            onOpenChange={setHideOpen}
+          />
+          <QyLotDeleteDialog
+            activity={activity}
+            open={deleteOpen}
+            onOpenChange={setDeleteOpen}
           />
         </>
       )}

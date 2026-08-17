@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /*
- * 「移除主题设置、主题固定为 Steins Gate」的行为回归。
+ * 「移除主题设置、主题固定为 Midnight Signal」的行为回归。
  *
  * 守三件事，都是改坏了**页面照常渲染、肉眼一时看不出来**的：
  *
@@ -116,7 +116,7 @@ beforeEach(() => {
   }
 })
 
-describe('站点主题固定为 Steins Gate', () => {
+describe('站点主题固定为 Midnight Signal', () => {
   test('provider 把预设属性写到 <body> 上', async () => {
     await mountProvider()
     assert.equal(

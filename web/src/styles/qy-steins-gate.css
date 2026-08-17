@@ -17,32 +17,35 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /*
- * Steins Gate 主题 —— 汇总入口。
+ * Midnight Signal 主题 —— 汇总入口。
+ *
+ * 文件名与预设 slug 仍是 steins-gate:它们是承重标识符(三个 CSS 的每条选择器 +
+ * FIXED_THEME_PRESET + features/qy 的 hook + 四个测试),改名的收益是零。
+ * 主题对外的名字见 lib/theme-customization.ts 的 THEME_PRESETS。
  *
  * 本文件【只做 @import】,不写任何规则。这样 index.css 里那一行
  * `@import './qy-steins-gate.css'` 永远不用动,主题内部怎么拆分文件都不外溢。
  *
  * 顺序即层叠顺序,不要随手调换:
  *   tokens  所有取值(色板、字体轴、派生量)的唯一来源,必须第一个加载
- *   shape   六条签名形状的配方(几何量、clip-path 点表、走线瓦片),
+ *   shape   六条签名形状的配方(几何量、走线瓦片、渐变配方),
  *           只声明自定义属性、不写选择器规则,引用 tokens 的颜色
- *   apply   把形状挂到 ~25 个 data-slot 与 qy 页面骨架上。
+ *   apply   把形状挂到 24 个 data-slot 与 qy 页面骨架上。
  *           一条形状 = 一条规则,属性集合只写一次
  *
  * 全部规则限定在 [data-theme-preset='steins-gate'] 作用域内,切到任何其他预设
  * 都逐像素不受影响;上游组件源码一行未改,靠 shadcn 的 data-slot 锚点挂进去。
  *
- * 第四版把第三版的十个文件 6068 行压到三个文件。删掉的是:
- * 装饰层(颗粒/暗角/齿轮/滚动条 —— 遮住颜色看轮廓一样都读不出)、
- * 落地页的版式重排(只留去色,见 apply §12)、
- * 15 个零引用的类,以及按钮/表单/分段控件上那 103 个逐槽规则块。
+ * 现行设计规范:qianye/docs/design-14-midnight-signal.md
+ * 参考稿      :qianye/docs/ui-reference/(dope.security 抽取)
  *
- * 被删掉的那几个文件里有大量"某条设计规范为什么被推翻"的论证注释。它们没有
- * 迁进新文件,也没有另写文档 —— 它们是【已经结案的历史】,留在版本库里即可:
+ * 历代版本里有大量「某条设计规范为什么被推翻」的论证注释。它们是【已经结案的
+ * 历史】,留在版本库里即可,不往新文件里搬:
+ *   git log -p -- web/src/styles/qy-sg-shape.css     游戏截图取材的双层直角框
  *   git log -p -- web/src/styles/qy-sg-frame.css     切角与 L 形角标的推翻过程
- *   git log -p -- web/src/styles/qy-sg-landing.css   落地页版式重排的完整版
+ *   git log -p -- web/src/styles/qy-sg-landing.css   第三版落地页版式重排
  *   git log -p -- web/src/styles/qy-sg-decor.css     颗粒/齿轮/滚动条的取材
- * 现行设计规范仍在 qianye/docs/design-10 与 design-11。
+ * design-10 与 design-11 已在文件头标注作废,不要照它们改代码。
  */
 
 @import './qy-sg-tokens.css';

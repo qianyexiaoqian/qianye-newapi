@@ -29,10 +29,10 @@ const USER_URL = '/qy/availability'
  * 管理端可用率总览已按项目方要求移除；**用户端必须完好无损** —— 可用率是给全体
  * 用户看的，把管理页删成"整个功能没了"是这次改动最容易犯的错。
  *
- * 登记点有三处（`nav.ts` 的 ADMIN_PAGES、`page-meta.ts` 的日文副标、
- * `use-qy-nav-en-label.ts` 的英文副标），本项目反复出现"同一概念的第 N 份拷贝
+ * 登记点有三处（`nav.ts` 的 ADMIN_PAGES、`page-meta.ts` 的页面代号、
+ * `use-qy-nav-en-label.ts` 的侧栏英文副标），本项目反复出现"同一概念的第 N 份拷贝
  * 各自漂移"，所以两个方向都断言：管理页三处都不许留，用户页三处都不许丢。
- * 英文副标那份靠 `outcome-i18n-keys.test.ts` 的键缺失断言间接钉住
+ * 侧栏英文副标那份靠 `outcome-i18n-keys.test.ts` 的键缺失断言间接钉住
  * （它是 hook，独立于 React 渲染取不到）。
  */
 describe('admin availability page removal', () => {
@@ -48,8 +48,8 @@ describe('admin availability page removal', () => {
     // 管理区 `/qy/admin` 的副标 —— 断言的是"不再有自己那条登记"，
     // 而不是"完全无匹配"，否则这条会被回落行为假绿/假红。
     const meta = qyPageMeta(ADMIN_URL)
-    assert.notEqual(meta.jpKey, 'qy_sg_jp_a_availability')
-    assert.equal(meta.no, '00', '已移除的页面不得再占一个 LAB MEMO 序号')
+    assert.notEqual(meta.codeKey, 'qy_sg_code_a_availability')
+    assert.equal(meta.no, '00', '已移除的页面不得再占一个 GATE 序号')
   })
 
   test('keeps the user-facing availability page fully registered', () => {
@@ -59,6 +59,6 @@ describe('admin availability page removal', () => {
     )
     const meta = qyPageMeta(USER_URL)
     assert.notEqual(meta.no, '00')
-    assert.equal(meta.jpKey, 'qy_sg_jp_availability')
+    assert.equal(meta.codeKey, 'qy_sg_code_availability')
   })
 })

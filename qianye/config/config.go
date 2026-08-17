@@ -707,6 +707,23 @@ type Lottery struct {
 	// MaxGuessFeeBps 防运营把 5% 手滑打成 50%。
 	MaxGuessFeeBps int `yaml:"max_guess_fee_bps"`
 
+	// CoverEnabled 决定管理员能否**上传**活动卡片背景图。默认开。
+	//
+	// 它只管上传那一条路:置 false 之后仍然可以填一个外链地址 —— 两者的成本
+	// 完全不同,上传要在宿主机磁盘上留文件,外链一个字节都不占。想要"卡片可以
+	// 有背景图,但本站不存任何图片"的站点,要的正是这一档。
+	//
+	// 落盘位置与工单截图、提现凭证同一套(qianye/service/imagestore),因此
+	// 带着同一条部署约束:多节点各存各的,A 节点收到的上传 B 节点取不到。
+	CoverEnabled *bool `yaml:"cover_enabled"`
+	// CoverMaxBytes 单张封面的字节上限,必须落在 1..MaxLotteryCoverBytes。
+	// 0 不是"不限制"(那等于把堆交给上传者),validateLottery 会拒绝启动;
+	// 不想收图请用 cover_enabled: false。
+	//
+	// 默认值比工单截图小:封面是大厅首屏上并排十几张一起加载的图,
+	// 一张 8 MiB 的原图会把首屏拖到不可用,而它并不会因此更清楚。
+	CoverMaxBytes int64 `yaml:"cover_max_bytes"`
+
 	SpendScanIntervalSeconds int `yaml:"spend_scan_interval_seconds"`
 	SpendScanBatch           int `yaml:"spend_scan_batch"`
 	// SpendGapGuardSeconds 是消费扫描的时间护栏:自增 id 在插入时分配、提交
@@ -721,6 +738,19 @@ func (l Lottery) EntryShown() bool { return boolOr(l.ShowEntry, true) }
 
 // ProofOpen 表示证据链端点是否匿名可访问。
 func (l Lottery) ProofOpen() bool { return boolOr(l.ProofPublic, true) }
+
+// CoverOn 表示是否允许上传活动封面。默认开。
+//
+// 只影响上传:外链封面不看这个开关(它不往磁盘上写任何东西)。
+func (l Lottery) CoverOn() bool { return boolOr(l.CoverEnabled, true) }
+
+// MaxLotteryCoverBytes 是 lottery.cover_max_bytes 的硬上界。
+//
+// 与 MaxTicketImageBytes / MaxWithdrawProofBytes 同一条理由(校验魔数要把整张
+// 图读进内存),真正的判定常量在 qianye/service/imagestore.MaxBytes,这里只是把
+// 它搬到 config 包里供校验器引用 —— config 是被 imagestore 依赖的一方,
+// 不能反向 import。
+const MaxLotteryCoverBytes = 8 << 20
 
 // ───────────────────────────── 布尔取值辅助 ─────────────────────────────
 //

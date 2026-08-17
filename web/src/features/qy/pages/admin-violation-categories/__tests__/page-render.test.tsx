@@ -89,9 +89,8 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const i18next = (await import('i18next')).default
 const { initReactI18next } = await import('react-i18next')
-const { QueryClient, QueryClientProvider } = await import(
-  '@tanstack/react-query'
-)
+const { QueryClient, QueryClientProvider } =
+  await import('@tanstack/react-query')
 const {
   Outlet,
   RouterProvider,
@@ -113,8 +112,9 @@ const { QyAdminViolationCategories } = await import('../index')
 // 桩必须打在它的 adapter 上。打在 fetch 上会让请求整体失败,于是这一页永远
 // 渲染成「页面加载失败」—— 一个看起来在测错误态、实际什么都没测的用例。
 const httpClient = await import('@/lib/http-client')
-const axiosApi = (httpClient as unknown as { api: { defaults: { adapter: unknown } } })
-  .api
+const axiosApi = (
+  httpClient as unknown as { api: { defaults: { adapter: unknown } } }
+).api
 
 const reactTestGlobals = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
@@ -220,9 +220,30 @@ async function mountPage(rows: QyViolationCategoryRow[]): Promise<string> {
 
 /** 现网形状:五类已配线、九类还没配、一个兜底。 */
 const liveShape: QyViolationCategoryRow[] = [
-  row({ id: 2, key: 'jailbreak', name: '破限(越狱)', threshold: 3, state: 'active', rules: 10 }),
-  row({ id: 3, key: 'reverse', name: '逆向(套提示词)', threshold: 3, state: 'active', rules: 4 }),
-  row({ id: 4, key: 'distill', name: '蒸馏(批量采集)', threshold: 5, state: 'active', rules: 1 }),
+  row({
+    id: 2,
+    key: 'jailbreak',
+    name: '破限(越狱)',
+    threshold: 3,
+    state: 'active',
+    rules: 10,
+  }),
+  row({
+    id: 3,
+    key: 'reverse',
+    name: '逆向(套提示词)',
+    threshold: 3,
+    state: 'active',
+    rules: 4,
+  }),
+  row({
+    id: 4,
+    key: 'distill',
+    name: '蒸馏(批量采集)',
+    threshold: 5,
+    state: 'active',
+    rules: 1,
+  }),
   row({
     id: 5,
     key: 'pressure',
@@ -234,7 +255,14 @@ const liveShape: QyViolationCategoryRow[] = [
   }),
   row({ id: 131, key: 'cyber_attack', name: '网络攻击与逆向', state: 'unset' }),
   row({ id: 138, key: 'self_harm', name: '自伤与自杀', state: 'unset' }),
-  row({ id: 1, key: 'uncategorized', name: '未分类', fallback: true, state: 'unset', rules: 1 }),
+  row({
+    id: 1,
+    key: 'uncategorized',
+    name: '未分类',
+    fallback: true,
+    state: 'unset',
+    rules: 1,
+  }),
 ]
 
 describe('这一页打得开', () => {
@@ -264,14 +292,18 @@ describe('这一页打得开', () => {
       .replaceAll('{{hours}}', '24')
     assert.ok(text.includes(active), `生效那一档没渲染出来:${text}`)
     assert.ok(text.includes(zhKeys['qy_vcat_threshold_unset'].split('{{')[0]))
-    assert.ok(text.includes(zhKeys['qy_vcat_threshold_disabled'].split('{{')[0]))
+    assert.ok(
+      text.includes(zhKeys['qy_vcat_threshold_disabled'].split('{{')[0])
+    )
   })
 
   test('「还有 N 类没配」只数业务类型,兜底不算', async () => {
     const text = await mountPage(liveShape)
     // liveShape 里 unset 的业务类型是 cyber_attack 与 self_harm 两条,兜底不计入。
     assert.ok(
-      text.includes(zhKeys['qy_vcat_unset_banner'].replaceAll('{{count}}', '2')),
+      text.includes(
+        zhKeys['qy_vcat_unset_banner'].replaceAll('{{count}}', '2')
+      ),
       `未配阈值的计数不对(兜底被算进去了?):${text}`
     )
   })
@@ -301,7 +333,9 @@ describe('变异验证:两条横幅真的跟着数据走', () => {
     )
     // 六个业务类型 + 一个兜底 ⇒ 未配计数是 6,不是 7。
     assert.ok(
-      text.includes(zhKeys['qy_vcat_unset_banner'].replaceAll('{{count}}', '6')),
+      text.includes(
+        zhKeys['qy_vcat_unset_banner'].replaceAll('{{count}}', '6')
+      ),
       `未配阈值的计数把兜底算进去了:${text}`
     )
   })

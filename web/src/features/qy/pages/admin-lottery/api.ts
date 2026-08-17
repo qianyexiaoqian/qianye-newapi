@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { queryOptions } from '@tanstack/react-query'
 
-import { qyGet, qyPost, qyPut } from '../../lib/api'
+import { qyDelete, qyGet, qyPost, qyPut } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import type { QyPage } from '../../lib/types'
 import type {
@@ -30,6 +30,7 @@ import type {
   QyLotAdminFlag,
   QyLotAdminPayout,
   QyLotAdminTextPrize,
+  QyLotCoverUpload,
   QyLotCreateInput,
   QyLotPrizeSecret,
   QyLotSeries,
@@ -71,6 +72,48 @@ export function qyAdminLotActivityQuery(actNo: string) {
   })
 }
 
+/**
+ * 上传一张封面，拿到可以填进活动的 `ref`。
+ *
+ * 两步式（先传图拿 ref、再保存活动）不是偷懒：保存活动那一步跑在一个要写四张表
+ * 的事务里，把几 MiB 的上行塞进去等于让事务持有时间跟着管理员的带宽走。
+ * 与工单图片同一条口径。
+ */
+export function uploadQyLotCover(file: File): Promise<QyLotCoverUpload> {
+  const form = new FormData()
+  form.append('file', file)
+  return qyPost<QyLotCoverUpload>('/admin/lottery/covers', form)
+}
+
+/**
+ * 丢弃一张**已上传但还没保存进任何活动**的封面。
+ *
+ * 没有它，管理员在向导里换一张图只会把本地那一项换掉，服务端那条未绑定的行
+ * 会一直占着待用配额 —— 十次"选了又换"之后他在 24 小时宽限期到期之前再也
+ * 传不了图，而收到的提示是"请先保存活动"，一个他此刻无法执行的动作。
+ */
+export function discardQyLotCover(ref: string): Promise<unknown> {
+  return qyDelete<unknown>(`/admin/lottery/covers/${encodeURIComponent(ref)}`)
+}
+
+/**
+ * 换掉一场活动的封面。两个字段都传空串 = 清空。
+ *
+ * **不限活动状态**，这是刻意的:封面不进 commit / rules / spec 三个哈希原像的
+ * 任何一个，它不参与结果推导、也不是对用户的任何一项承诺 —— 而一个 404 的
+ * 外链封面挂在正在进行的活动上时必须有办法修好。奖档、时刻、参与条件永远
+ * 不在此列（它们只能在 `draft` 阶段改）。
+ */
+export function setQyLotActivityCover(
+  actNo: string,
+  body: { cover_url: string; cover_ref: string }
+): Promise<{ cover_ref: string; cover_url: string }> {
+  return qyPut<{ cover_ref: string; cover_url: string }>(
+    actPath(actNo, '/cover'),
+    body
+  )
+}
+
 /** 创建。落地即 `draft`，种子在这一刻由服务端生成 —— 请求体里没有它。 */
 export function createQyLotActivity(
   body: QyLotCreateInput
@@ -101,6 +144,50 @@ export function cancelQyLotActivity(
   body: { reason: string }
 ): Promise<unknown> {
   return qyPost<unknown>(actPath(actNo, '/cancel'), body)
+}
+
+/**
+ * 下架：把一场**已结束**的活动从用户端的活动大厅撤下。
+ *
+ * 它与 {@link cancelQyLotActivity} 是两件事，弹窗上必须分得开：取消会全额退款
+ * 并推动状态机，下架一分钱都不动、随时可以撤回。
+ *
+ * 下架**不遮**活动详情、我的参与与匿名证据链 —— 公正性一旦公布过就不能被运营
+ * 收回，而参与过的人必须还能查到自己那一票。后端只允许对 `finished` 下架：
+ * 下架一场进行中的活动等于一次隐蔽的提前截止。
+ */
+export function hideQyLotActivity(
+  actNo: string,
+  body: { reason: string }
+): Promise<{ hidden_at: number }> {
+  return qyPost<{ hidden_at: number }>(actPath(actNo, '/hide'), body)
+}
+
+/** 重新上架。下架本来就是可逆的，不给撤回入口等于把它变成不可逆。 */
+export function unhideQyLotActivity(
+  actNo: string
+): Promise<{ hidden_at: number }> {
+  return qyPost<{ hidden_at: number }>(actPath(actNo, '/unhide'))
+}
+
+/**
+ * **彻底删除**一场活动。不可逆。
+ *
+ * 删掉的是这一场的全部行：活动、投注、事件、选项、派奖、奖品、种子、
+ * 兑换码履历、对账异常。删完之后**审计行是唯一还能证明这一场存在过的东西**，
+ * 而那一场的公正性从此无法被任何人验证（证据链端点会返回 404，仓库自带的
+ * `lottery-verify.py` 再也拉不到数据）。
+ *
+ * 后端有六道硬闸门（未结束 / 出款未落定 / 文本奖未履行 / 参与未结算 /
+ * 对账异常未处理 / 双色球系列结转未收口），任何一条不满足都会回 409 并附上
+ * 精确的 `code`；`confirm_act_no` 必须与活动编号逐字相同 —— 二次确认在
+ * **服务端**校验，只在前端弹一个"确定吗"挡不住脚本化的误调用。
+ */
+export function deleteQyLotActivity(
+  actNo: string,
+  body: { confirm_act_no: string; reason: string }
+): Promise<unknown> {
+  return qyDelete<unknown>(actPath(actNo), body)
 }
 
 /**

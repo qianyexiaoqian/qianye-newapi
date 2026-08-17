@@ -292,10 +292,21 @@ export function QyAdminLottery() {
                       return (
                         <span className='inline-flex flex-wrap items-center gap-1.5'>
                           <QyStatusBadge
-                            status={qyLotActivityBadgeStatus(row.status)}
+                            status={qyLotActivityBadgeStatus(
+                              row.status,
+                              row.outcome
+                            )}
                           />
                           {outcomeKey != null && (
                             <Badge variant='secondary'>{t(outcomeKey)}</Badge>
+                          )}
+                          {/* 已下架的场次在这一列之外与在架的完全同形。
+                              没有这枚徽标，运营在列表上分不出哪几场已经从
+                              用户端撤下，只能逐个点进详情去看。 */}
+                          {row.hidden_at > 0 && (
+                            <Badge variant='outline'>
+                              {t('qy_lot_hidden_badge')}
+                            </Badge>
                           )}
                         </span>
                       )

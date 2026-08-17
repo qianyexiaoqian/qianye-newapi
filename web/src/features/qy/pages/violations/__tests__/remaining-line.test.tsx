@@ -178,7 +178,9 @@ describe('违规记录页那一格的接线', () => {
       '倒计时又回到了 ban_threshold 推导 —— 账号线关着时会把 2 次说成"不限"'
     )
     assert.ok(
-      !source.includes("summary.ban_threshold > 0\n                          ? summary.remaining"),
+      !source.includes(
+        'summary.ban_threshold > 0\n                          ? summary.remaining'
+      ),
       '倒计时又回到了 ban_threshold 推导'
     )
   })
@@ -223,9 +225,8 @@ await i18next.use(initReactI18next).init({
   resources: { zh: { translation: zhKeys } },
 })
 
-const { QyMyViolationCategoriesCard } = await import(
-  '../components/categories-card'
-)
+const { QyMyViolationCategoriesCard } =
+  await import('../components/categories-card')
 
 const reactTestGlobals = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean

@@ -113,6 +113,12 @@ func handleGetConfig(c *gin.Context) {
 			"max_options":                  cfg.MaxOptions,
 			"max_stake_quota":              cfg.MaxStakeQuota,
 			"spend_max_lookback_days":      cfg.SpendMaxLookbackDays,
+			// 封面上传的三项。前端据此决定"上传"按钮出不出现、accept 写什么、
+			// 以及在本地就把超限的文件拦下来 —— 让用户把 5 MiB 传完再看到 413,
+			// 是最贵的一种拒绝方式。accept 只是体验,真正的判定是服务端的魔数。
+			"cover_enabled":     cfg.CoverOn(),
+			"cover_max_bytes":   cfg.CoverMaxBytes,
+			"cover_accept_mime": CoverAcceptMimes(),
 			// spend_ready_from 是运行期事实而不是配置项:它由重算任务在整个窗口
 			// 回填完成之后写入。放在只读段里,是因为管理员必须看得到它 ——
 			// 为 0 时任何带"近 N 日消费"的活动都会被拒绝创建。

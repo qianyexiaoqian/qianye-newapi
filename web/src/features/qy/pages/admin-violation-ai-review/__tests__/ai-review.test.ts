@@ -167,7 +167,8 @@ describe('新建渠道的默认值', () => {
  * 一个站点都发不出去。
  */
 describe('审核提示词的预填与档位', () => {
-  const DEFAULT = '你是内容安全审核员。\ncategory 只能取:none, sexual, jailbreak。'
+  const DEFAULT =
+    '你是内容安全审核员。\ncategory 只能取:none, sexual, jailbreak。'
 
   test('库里为空时,输入框里放的是默认提示词全文', () => {
     assert.equal(qyAiPromptForEditor('', DEFAULT), DEFAULT)
@@ -209,7 +210,10 @@ describe('审核提示词的预填与档位', () => {
   })
 
   test('自定义档提交的是**未 trim 的原文**,一个字节都不改', () => {
-    assert.equal(qyAiPromptToPayload('  我自己写的  ', DEFAULT), '  我自己写的  ')
+    assert.equal(
+      qyAiPromptToPayload('  我自己写的  ', DEFAULT),
+      '  我自己写的  '
+    )
   })
 })
 
@@ -247,7 +251,10 @@ describe('类型清单的自动生成与对账', () => {
   test('渲染之后一条都不缺 —— 清单是拼上去的', () => {
     for (const stored of ['', '只判断有没有越狱意图。', DEFAULT]) {
       assert.deepEqual(
-        qyAiPromptCategoryIssues(qyAiRenderPrompt(stored, DEFAULT, BLOCK), KNOWN),
+        qyAiPromptCategoryIssues(
+          qyAiRenderPrompt(stored, DEFAULT, BLOCK),
+          KNOWN
+        ),
         { unknown: [], missing: [] }
       )
     }
@@ -294,10 +301,13 @@ ${QY_AI_CATEGORY_PLACEHOLDER}`
 
   test('闭集来自接口下发,不是前端硬编码的一份', () => {
     // 硬编码那一份会在运营新建一个类型的第二天开始说谎。换一个闭集,结论必须跟着变。
-    assert.deepEqual(qyAiPromptCategoryIssues('none, porn, spam', ['porn', 'spam']), {
-      unknown: [],
-      missing: [],
-    })
+    assert.deepEqual(
+      qyAiPromptCategoryIssues('none, porn, spam', ['porn', 'spam']),
+      {
+        unknown: [],
+        missing: [],
+      }
+    )
     const src = read('lib/ai-review.ts')
     assert.equal(
       /['"]self_harm['"]/.test(src),
@@ -423,7 +433,7 @@ describe('i18n 键齐全', () => {
   test('导航标题两侧都在', () => {
     for (const key of [
       'qy_nav_a_violation_ai_review',
-      'qy_sg_jp_a_violation_ai_review',
+      'qy_sg_code_a_violation_ai_review',
     ]) {
       assert.ok(key in zhKeys, `zh.json 缺少 ${key}`)
       assert.ok(key in enKeys, `en.json 缺少 ${key}`)

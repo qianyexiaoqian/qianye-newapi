@@ -252,10 +252,9 @@ describe('汇总行的定性', () => {
     // 而真正该说的是另一件事(内容正在发往你没有指定的端点),那是一句提示,
     // 不是一种失效状态,两者不能共用同一种底色。
     assert.equal(
-      qyAiScopeRowKind(
-        summaryRow({ channel_id: 9, channel_failover: true }),
-        { channelBroken: true }
-      ),
+      qyAiScopeRowKind(summaryRow({ channel_id: 9, channel_failover: true }), {
+        channelBroken: true,
+      }),
       'active'
     )
   })

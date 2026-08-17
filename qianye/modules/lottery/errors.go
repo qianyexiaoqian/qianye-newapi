@@ -81,6 +81,11 @@ var (
 	errBadAmount    = newBizError(http.StatusBadRequest, "qy_lot_bad_amount", "投注金额不符合本场规则")
 	errBadRequestID = newBizError(http.StatusBadRequest, "qy_lot_bad_request_id",
 		"请求标识非法(长度需在 1..64 之间)")
+	// errBadPhase 让大厅分区的参数名漂移**变成一次可见的失败**。它替换的是一个
+	// 没有 default 分支的 switch:前端发 `status=open|done`、后端读 `phase`,
+	// 两张标签因此返回同一份列表,而没有任何一处报错、没有一条日志。
+	errBadPhase = newBizError(http.StatusBadRequest, "qy_lot_bad_phase",
+		"大厅分区参数非法(只接受 live / ended)")
 )
 
 // 管理员与活动创建者禁止参与这条硬规则**不在这里**,而是 Evaluate 里的

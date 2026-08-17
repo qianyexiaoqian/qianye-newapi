@@ -144,7 +144,11 @@ describe('处置动作的文案键', () => {
       ['qy_sentinel_unknown_action', 'qy_vio_policy_action_ban'],
     ]
     for (const [action, key] of cases) {
-      assert.equal(qyEnforcementActionKey(action), key, `action=${String(action)}`)
+      assert.equal(
+        qyEnforcementActionKey(action),
+        key,
+        `action=${String(action)}`
+      )
     }
   })
 
@@ -174,7 +178,12 @@ describe('用户端公示的那一句话', () => {
   test('项目方要的四件事都在同一句里：类型名、我的次数、门槛、到了会怎样', () => {
     for (const lang of ['zh', 'en'] as const) {
       const text = (lang === 'zh' ? zhKeys : enKeys).qy_vio_cat_sentence
-      for (const slot of ['{{title}}', '{{hit}}', '{{threshold}}', '{{action}}']) {
+      for (const slot of [
+        '{{title}}',
+        '{{hit}}',
+        '{{threshold}}',
+        '{{action}}',
+      ]) {
         assert.ok(
           text.includes(slot),
           `${lang} 的公示句缺少 ${slot}：项目方原话是「你违规了什么 XX 类型多少次，到多少次封号」，四件事缺一件这句话就答不完整`
@@ -194,7 +203,7 @@ describe('用户端公示的那一句话', () => {
     )
     // 组件必须真的分流，而不是把 0 也塞进主句。
     assert.ok(
-      card.includes("item.threshold > 0") &&
+      card.includes('item.threshold > 0') &&
         card.includes('qy_vio_cat_sentence_off'),
       '公示卡片没有为"未配阈值"分流'
     )
@@ -252,7 +261,13 @@ describe('"到底几次封号"的最终判定规则写在管理端界面上', ()
   }[] = [
     {
       label: '单类型线',
-      segs: ['features', 'qy', 'pages', 'admin-violation-categories', 'index.tsx'],
+      segs: [
+        'features',
+        'qy',
+        'pages',
+        'admin-violation-categories',
+        'index.tsx',
+      ],
       key: 'qy_vcat_two_lines_note',
       pointsTo: { zh: '「违规处置策略」', en: 'violation enforcement policy' },
     },

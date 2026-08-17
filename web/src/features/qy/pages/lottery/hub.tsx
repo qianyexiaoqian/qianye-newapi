@@ -24,6 +24,7 @@ import { useQyConfig } from '../../hooks/use-qy-config'
 import { QyPageTabs } from '../components/qy-page-tabs'
 import { QyLotteryGuessBody } from '../lottery-guess'
 import { QyLotteryRecordsBody } from '../lottery-records'
+import type { QyLotHallPhase } from './api'
 import { QyLotteryDrawBody } from './index'
 
 /**
@@ -52,9 +53,9 @@ export function QyLotteryHub() {
     核对一条再切回来，那一屏就没了。宿主不随标签卸载，状态放在这里才留得住。
     两张各一份：抽奖与竞猜是两批不同的活动，共用一个页码只会互相把对方翻走。
   */
-  const [drawScope, setDrawScope] = useState<'done' | 'open'>('open')
+  const [drawScope, setDrawScope] = useState<QyLotHallPhase>('live')
   const [drawPage, setDrawPage] = useState(1)
-  const [guessScope, setGuessScope] = useState<'done' | 'open'>('open')
+  const [guessScope, setGuessScope] = useState<QyLotHallPhase>('live')
   const [guessPage, setGuessPage] = useState(1)
 
   return (

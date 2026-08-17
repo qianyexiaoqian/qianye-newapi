@@ -95,9 +95,8 @@ await i18next.use(initReactI18next).init({
   resources: { zh: { translation: zhKeys } },
 })
 
-const { QyMyViolationCategoriesCard } = await import(
-  '../components/categories-card'
-)
+const { QyMyViolationCategoriesCard } =
+  await import('../components/categories-card')
 
 const reactTestGlobals = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
@@ -403,13 +402,14 @@ describe('变异验证:这一格真的由 threshold 决定', () => {
       item({ id: 2, title: '绕过安全策略', hit_count: 1 }),
     ])
 
-    assert.ok(on.includes(say('qy_vio_cat_remaining', { remaining: 2, action: BAN })))
     assert.ok(
-      !off.includes('还差'),
-      `没有线的类型不该有「还差几次」:${off}`
+      on.includes(say('qy_vio_cat_remaining', { remaining: 2, action: BAN }))
     )
+    assert.ok(!off.includes('还差'), `没有线的类型不该有「还差几次」:${off}`)
     assert.ok(
-      off.includes(say('qy_vio_cat_sentence_off', { title: '绕过安全策略', hit: 1 })),
+      off.includes(
+        say('qy_vio_cat_sentence_off', { title: '绕过安全策略', hit: 1 })
+      ),
       `落回「仅记录」失败:${off}`
     )
   })

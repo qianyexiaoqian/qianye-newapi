@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /*
- * Steins Gate 挂载层的契约测试。
+ * Midnight Signal 挂载层的契约测试。
  *
  * 令牌层那个测试管的是"颜色对不对";这个测试管的是"接上了没有"——
  * 主题瘦身之后最容易复发的四种缺陷,一条对一条:
@@ -27,10 +27,19 @@ For commercial licensing, please contact support@quantumnous.com
  *    评审也看不出来 —— 只有反向扫一遍 src 才知道。
  * 2. 【断链 · 组件侧】组件写了 className='qy-sg-xxx',而 CSS 里没有这个类。
  *    这一半更隐蔽:页面照常渲染,只是那处样式静默退回默认。
- * 3. 【规模回弹】挂载面从 25 个 slot 长回 184 个。名单在这里冻结,
+ * 3. 【规模回弹】挂载面从 24 个 slot 长回 184 个。名单在这里冻结,
  *    加一个都必须先改测试,顺带在 code review 里解释为什么值得。
- * 4. 【分层塌陷】shape 写规则、apply 写取值,两层职责一混就退回第三版那种
+ * 4. 【分层塌陷】shape 写配方、apply 写取值,两层职责一混就退回第三版那种
  *    "十个文件互相覆盖"的状态。这里从结构上钉住。
+ *
+ * 另有两条是第五版换取材之后新加的,它们钉的是参考稿里最容易被稀释的两条纪律:
+ *
+ * 5. 【零投影】参考稿原话:the system is shadowless by design。
+ *    主题里出现的每一条 box-shadow,取值只能是 none。层次全部交给发丝线与
+ *    半透明洗色 —— 只要有人为了"这里看起来太平"加回一条投影,整套语言就散了。
+ * 6. 【辉光配额】参考稿把那一支高饱和色定义成跑道灯而不是主题色:
+ *    one feature card glow, one filled action, and one accent stroke per page。
+ *    径向辉光的引用次数因此上限是 2(后台页头一处、落地页首屏一处)。
  *
  * 用例只解析源文件,不需要渲染引擎(本仓库前端测试跑在 node:test 下)。
  */
@@ -53,7 +62,7 @@ const themeCss = [readCss('qy-sg-tokens.css'), shapeCss, applyCss].join('\n')
 
 /* ── 1. 三文件结构 ───────────────────────────────────────────────────── */
 
-describe('Steins Gate 主题的文件结构', () => {
+describe('Midnight Signal 主题的文件结构', () => {
   test('只有 tokens / shape / apply 三个文件', () => {
     const files = readdirSync(stylesDir)
       .filter((f) => f.startsWith('qy-sg-') && f.endsWith('.css'))
@@ -97,7 +106,7 @@ describe('Steins Gate 主题的文件结构', () => {
 /* ── 2. 挂载面冻结 ───────────────────────────────────────────────────── */
 
 test('挂载的 data-slot 就是冻结的这 24 个', () => {
-  // 第三版挂了 184 个。多出来的那些在"遮住颜色只看轮廓"的验收下一条也读不出来,
+  // 第三版挂了 184 个。多出来的那些在"抹成灰度只看轮廓"的验收下一条也读不出来,
   // 却让每次上游升级都要重新核对。要加就先改这份名单。
   const mounted = [
     ...new Set(
@@ -231,16 +240,18 @@ describe('属性锚点接线', () => {
 /* ── 5. 六条签名形状都还在 ───────────────────────────────────────────── */
 
 describe('六条签名形状的落点', () => {
-  // 验收标准是"遮住颜色只看轮廓,仍要认得出不是默认主题"。承载它的就是这六处;
+  // 验收标准是"抹成灰度只看轮廓,仍要认得出不是默认主题"。承载它的就是这六处;
   // 瘦身的边界也在这里 —— 再删就不达标了。
   const signatures: Array<[string, RegExp]> = [
-    ['① 标注走等宽宽字距大写', /text-transform:\s*uppercase/],
-    ['② 双层直角框的环配方', /clip-path:\s*var\(--qy-sg-frame-clip\)/],
-    ['③ 表格每格独立盒', /border-spacing:\s*var\(--qy-sg-cell-gap\)/],
-    ['③ 强调色表头带', /background:\s*var\(--qy-sg-band\)/],
-    ['④ 侧栏英文副标与走线', /mask-image:\s*var\(--qy-sg-trace-tile\)/],
-    ['⑤ 区段头序号与日文副标', /\.qy-sg-no|\.qy-sg-jp/],
-    ['⑥ 状态徽章直角', /\[data-slot='status-badge'\]/],
+    ['① 戳记走等宽宽字距大写', /text-transform:\s*uppercase/],
+    ['② 票面的大圆角', /border-radius:\s*var\(--qy-sg-pass-radius\)/],
+    [
+      '③ 时刻表行 hover 的紫竖线',
+      /background-image:\s*var\(--qy-sg-tick-fill\)/,
+    ],
+    ['④ 侧栏与页头的航线', /mask-image:\s*var\(--qy-sg-route-tile\)/],
+    ['⑤ 辉光', /var\(--qy-sg-bloom\)/],
+    ['⑥ 坐标戳记的 + 号', /content:\s*var\(--qy-sg-mark\)/],
   ]
   for (const [label, pattern] of signatures) {
     test(label, () => {
@@ -250,11 +261,43 @@ describe('六条签名形状的落点', () => {
 
   test('铭牌保持 table-caption 盒,不退回 inline-block', () => {
     // 浏览器实测:给 <caption> 写 display:inline-block 会让它脱离 caption 盒、
-    // 被塞进一个匿名表格行，铭牌于是渲染在【表头带与首行之间】而不是表格上方。
-    // 第三版就是这么写的，看截图才发现。这条把它钉住。
+    // 被塞进一个匿名表格行,铭牌于是渲染在【表头与首行之间】而不是表格上方。
+    // 第三版就是这么写的,看截图才发现。这条把它钉住。
     const rule = /\[data-slot='table-caption'\]\s*\{([^}]*)\}/.exec(applyCss)
     assert.ok(rule, '找不到 table-caption 的规则')
     assert.match(rule[1], /display:\s*table-caption/)
     assert.doesNotMatch(rule[1], /display:\s*inline-block/)
   })
+})
+
+/* ── 6. 零投影 ───────────────────────────────────────────────────────── */
+
+test('主题里的每一条 box-shadow 取值都是 none', () => {
+  // 参考稿:elevation comes from hairline strokes and translucent washes,
+  // never shadows / don't apply box-shadows beyond the nav's single 1px hairline。
+  // 那唯一一处例外是导航条,而本主题没有接管导航条,所以实际是零。
+  const offenders = [
+    ...stripComments(themeCss).matchAll(/box-shadow\s*:\s*([^;}]+)/g),
+  ]
+    .map((m) => m[1].trim())
+    .filter((value) => value !== 'none')
+  assert.deepEqual(
+    offenders,
+    [],
+    `这些投影会把「发丝线分层」那套语言拆掉:${offenders.join(' / ')}`
+  )
+})
+
+/* ── 7. 辉光配额 ─────────────────────────────────────────────────────── */
+
+test('径向辉光最多出现两处', () => {
+  // 参考稿:the violet is rationed to one or two cards per page — when it
+  // appears, it should feel like a signal, not a theme。
+  // 两处的分配是:后台页头一处、落地页首屏一处。
+  const uses = [...applyCss.matchAll(/var\(--qy-sg-bloom\)/g)].length
+  assert.ok(
+    uses <= 2,
+    `--qy-sg-bloom 被引用了 ${uses} 次,那支色就从信号灯变回主题色了`
+  )
+  assert.ok(uses > 0, '辉光一处都没有,形状五就没有落点了')
 })

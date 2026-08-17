@@ -140,9 +140,9 @@ describe('i18n', () => {
   })
 
   test('导航与副标齐全', () => {
-    // 侧栏英文副标（`qy_sg_nav_en_*`）已按需求 6 整体移除，所以这里只剩两件；
+    // 侧栏侧栏英文副标（`qy_sg_nav_en_*`）已按需求 6 整体移除，所以这里只剩两件；
     // 它不在的事实由 `lib/__tests__/pages-table.test.ts` 反向钉住。
-    for (const key of ['qy_nav_pay_password', 'qy_sg_jp_pay_password']) {
+    for (const key of ['qy_nav_pay_password', 'qy_sg_code_pay_password']) {
       assert.ok(key in (en as Record<string, string>), `en 缺少 ${key}`)
       assert.ok(key in (zh as Record<string, string>), `zh 缺少 ${key}`)
     }

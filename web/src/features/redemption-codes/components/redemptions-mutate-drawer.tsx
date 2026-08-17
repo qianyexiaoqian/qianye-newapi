@@ -131,7 +131,9 @@ export function RedemptionsMutateDrawer({
       .then((result) => {
         if (ignoreResult || !result.success || !result.data) return
         setPlans(
-          result.data.map((record) => record.plan).filter((plan) => plan.enabled)
+          result.data
+            .map((record) => record.plan)
+            .filter((plan) => plan.enabled)
         )
       })
       .catch(() => undefined)
@@ -252,7 +254,9 @@ export function RedemptionsMutateDrawer({
         const fallbackName =
           form.getValues('product_type') === REDEMPTION_PRODUCT_TYPE.QUOTA ||
           !planTitle
-            ? formatQuota(parseQuotaFromDollars(form.getValues('quota_dollars')))
+            ? formatQuota(
+                parseQuotaFromDollars(form.getValues('quota_dollars'))
+              )
             : // 套餐名最长 128 字，兑换码名字上限 20 —— 不截断的话，替人起的
               // 这个名字会当场被自己的校验判为非法。
               planTitle.slice(0, REDEMPTION_VALIDATION.NAME_MAX_LENGTH)
@@ -368,7 +372,10 @@ export function RedemptionsMutateDrawer({
                         <SelectContent alignItemWithTrigger={false}>
                           <SelectGroup>
                             {productTypeOptions.map((option) => (
-                              <SelectItem key={option.value} value={option.value}>
+                              <SelectItem
+                                key={option.value}
+                                value={option.value}
+                              >
                                 {option.label}
                               </SelectItem>
                             ))}
@@ -429,14 +436,18 @@ export function RedemptionsMutateDrawer({
                           // 转一次，不要把表单值改成字符串——它要原样进请求体。
                           value={field.value > 0 ? String(field.value) : ''}
                           onValueChange={(value) =>
-                            field.onChange(Number.parseInt(String(value), 10) || 0)
+                            field.onChange(
+                              Number.parseInt(String(value), 10) || 0
+                            )
                           }
                           disabled={isUpdate}
                         >
                           <FormControl>
                             <SelectTrigger>
                               <SelectValue
-                                placeholder={t('qy_redemption_plan_placeholder')}
+                                placeholder={t(
+                                  'qy_redemption_plan_placeholder'
+                                )}
                               />
                             </SelectTrigger>
                           </FormControl>

@@ -192,9 +192,7 @@ export function QyRuleTester(props: {
         className='bg-muted/40 space-y-2 rounded-md border p-2'
         data-qy-test-criteria=''
       >
-        <p className='text-xs'>
-          {t('qy_vio_test_criteria_now', criteria)}
-        </p>
+        <p className='text-xs'>{t('qy_vio_test_criteria_now', criteria)}</p>
         <div className='flex flex-wrap gap-2'>
           <label className='space-y-1 text-xs'>
             <span className='text-muted-foreground'>

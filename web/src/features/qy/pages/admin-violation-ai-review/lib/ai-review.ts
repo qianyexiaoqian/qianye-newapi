@@ -487,7 +487,10 @@ export function qyAiScopeAudience(row: QyAiScopeSummaryRow): {
  * `vip,svip` 的分组名,于是这条策略永远匹配不到,而界面上它看起来完全正常。
  */
 export function qyAiSplitScopeList(raw: string): string[] {
-  return raw.split(QY_AI_SCOPE_SEPARATOR).map((s) => s.trim()).filter((s) => s !== '')
+  return raw
+    .split(QY_AI_SCOPE_SEPARATOR)
+    .map((s) => s.trim())
+    .filter((s) => s !== '')
 }
 
 /**

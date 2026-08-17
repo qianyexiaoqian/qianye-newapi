@@ -70,11 +70,7 @@ describe('违规类型 query 的可取消性', () => {
 
     const query = client.getQueryCache().find({ queryKey: options.queryKey })
     assert.ok(query != null, 'query 应当已经建立')
-    assert.equal(
-      query.state.fetchStatus,
-      'fetching',
-      '前置条件:请求应当正在飞'
-    )
+    assert.equal(query.state.fetchStatus, 'fetching', '前置条件:请求应当正在飞')
     assert.ok(
       sawSignal != null,
       'queryFn 必须读取并透传 signal —— 只有读过,query-core 才认为它可取消'

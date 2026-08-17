@@ -85,9 +85,8 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const i18next = (await import('i18next')).default
 const { initReactI18next } = await import('react-i18next')
-const { QueryClient, QueryClientProvider } = await import(
-  '@tanstack/react-query'
-)
+const { QueryClient, QueryClientProvider } =
+  await import('@tanstack/react-query')
 
 await i18next.use(initReactI18next).init({
   interpolation: { escapeValue: false },
@@ -237,9 +236,7 @@ function formFieldLabels(): string[] {
   assert.ok(form, '规则表单没有渲染')
   return [...form.querySelectorAll('[data-slot="form-item"]')]
     .map((item) =>
-      (
-        item.querySelector('[data-slot="form-label"]')?.textContent ?? ''
-      ).trim()
+      (item.querySelector('[data-slot="form-label"]')?.textContent ?? '').trim()
     )
     .filter((label) => label !== '')
 }

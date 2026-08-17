@@ -40,7 +40,7 @@ import type { QyFeatures } from './types'
  *
  * ── 为什么合并 ──
  * 同一份页面清单此前散在三个文件里：`nav.ts`（标题 + 功能开关）、
- * `lib/page-meta.ts`（日文副标）、`hooks/use-qy-nav-en-label.ts`（英文副标），
+ * `lib/page-meta.ts`（页面代号）、`hooks/use-qy-nav-en-label.ts`（侧栏英文副标），
  * 本次重排还要再引入第四份（lucide 图标 —— 上游每个侧栏项都有图标，qy 项
  * 一个都没有，混进上游分组后会左对齐错位）。四份拷贝各自漂移是本项目反复
  * 出现的缺陷形状，所以这里一次性收敛成一张表，三个消费方改成从这里派生。
@@ -292,17 +292,17 @@ export type QyPageDef = {
   /** lucide 图标。折叠项的子项不需要（上游二级菜单本来就不带图标）。 */
   icon?: ElementType
   /**
-   * Steins Gate 区段头的日文副标 key（见 `lib/page-meta.ts`）。
+   * Midnight Signal 区段头的页面代号 key（见 `lib/page-meta.ts`）。
    *
    * ── 为什么没有对应的 `enKey` ──
    * 曾经有：侧栏每个 qy 菜单项下面挂一行英文小号大写副标。项目方的反馈是
    * 「新增的二开功能下面你都加了英文，原有的你没有加，好丑，你要统一下」。
-   * 统一的方向选了做减法 —— 给上游 20+ 个菜单项编英文副标既要长期维护，
+   * 统一的方向选了做减法 —— 给上游 20+ 个菜单项编侧栏英文副标既要长期维护，
    * 又会在上游增删菜单时漂移回"有的有、有的没有"，正是这次被投诉的形态。
-   * 区段头的日文副标留着：它挂在 qy 自己的页面标题上，不与上游菜单并排，
+   * 区段头的页面代号留着：它挂在 qy 自己的页面标题上，不与上游菜单并排，
    * 不存在"隔壁那一行没有"的对照。
    */
-  jpKey: string
+  codeKey: string
 }
 
 /**
@@ -321,7 +321,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'general',
     after: '/dashboard/models',
     icon: Gauge,
-    jpKey: 'qy_sg_jp_availability',
+    codeKey: 'qy_sg_code_availability',
   },
 
   // ── 钱包页「余额划转」选项卡组（需求 2）──
@@ -331,19 +331,19 @@ export const QY_PAGES: readonly QyPageDef[] = [
     url: '/qy/transfer',
     titleKey: 'qy_nav_transfer_send',
     feature: 'transfer',
-    jpKey: 'qy_sg_jp_transfer',
+    codeKey: 'qy_sg_code_transfer',
   },
   {
     url: '/qy/transfer-logs',
     titleKey: 'qy_nav_transfer_logs',
     feature: 'transfer',
-    jpKey: 'qy_sg_jp_transfer_logs',
+    codeKey: 'qy_sg_code_transfer_logs',
   },
   {
     url: '/qy/pay-password',
     titleKey: 'qy_nav_pay_password',
     feature: 'transfer',
-    jpKey: 'qy_sg_jp_pay_password',
+    codeKey: 'qy_sg_code_pay_password',
   },
 
   // ── 新组「推广」──
@@ -355,25 +355,25 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'commission',
     group: 'qy-growth',
     icon: Megaphone,
-    jpKey: 'qy_sg_jp_affiliate',
+    codeKey: 'qy_sg_code_affiliate',
   },
   {
     url: '/qy/invitees',
     titleKey: 'qy_nav_invitees',
     feature: 'commission',
-    jpKey: 'qy_sg_jp_invitees',
+    codeKey: 'qy_sg_code_invitees',
   },
   {
     url: '/qy/withdraw',
     titleKey: 'qy_nav_withdraw',
     feature: 'withdraw',
-    jpKey: 'qy_sg_jp_withdraw',
+    codeKey: 'qy_sg_code_withdraw',
   },
   {
     url: '/qy/withdrawals',
     titleKey: 'qy_nav_withdrawals',
     feature: 'withdraw',
-    jpKey: 'qy_sg_jp_withdrawals',
+    codeKey: 'qy_sg_code_withdrawals',
   },
   {
     // 工单落在「推广」组是权宜：它不是推广，但它是**用户主动发起的自助事务**，
@@ -385,7 +385,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'ticket',
     group: 'qy-growth',
     icon: LifeBuoy,
-    jpKey: 'qy_sg_jp_tickets',
+    codeKey: 'qy_sg_code_tickets',
   },
   {
     url: '/qy/violations',
@@ -393,7 +393,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'violation',
     group: 'qy-growth',
     icon: ShieldAlert,
-    jpKey: 'qy_sg_jp_violations',
+    codeKey: 'qy_sg_code_violations',
   },
   // 抽奖落在「推广」组：它和邀请返佣一样是拉新与促活的手段，用户的心智
   // 也在同一处（"平台给我的东西在哪"）。三行都挂 `entry: 'lottery'`——
@@ -409,7 +409,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     entry: 'lottery',
     group: 'qy-growth',
     icon: Ticket,
-    jpKey: 'qy_sg_jp_lottery',
+    codeKey: 'qy_sg_code_lottery',
   },
   {
     // 竞猜从大厅的一个筛选值升成一张独立标签：它与抽奖的**资金语义不同**
@@ -419,14 +419,14 @@ export const QY_PAGES: readonly QyPageDef[] = [
     titleKey: 'qy_nav_lottery_guess',
     feature: 'lottery',
     entry: 'lottery',
-    jpKey: 'qy_sg_jp_lottery_guess',
+    codeKey: 'qy_sg_code_lottery_guess',
   },
   {
     url: '/qy/lottery-records',
     titleKey: 'qy_nav_lottery_records',
     feature: 'lottery',
     entry: 'lottery',
-    jpKey: 'qy_sg_jp_lottery_records',
+    codeKey: 'qy_sg_code_lottery_records',
   },
 
   // ── 上游 admin：各自紧跟语义最近的上游管理项 ──
@@ -436,7 +436,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'admin',
     after: '/system-info',
     icon: HeartPulse,
-    jpKey: 'qy_sg_jp_a_health',
+    codeKey: 'qy_sg_code_a_health',
   },
 
   // ── 新组「结算」：钱怎么流动，管理员视角 ──
@@ -446,7 +446,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'commission',
     group: 'qy-settlement',
     icon: ReceiptText,
-    jpKey: 'qy_sg_jp_a_commission_records',
+    codeKey: 'qy_sg_code_a_commission_records',
   },
   // 「用户佣金」——**一行 = 一个用户**。项目方原话：「我需要的是新增一个用户
   // 佣金列表，我可以查看/编辑用户的佣金，以及查看拉了多少用户，以及编辑/移除/
@@ -464,7 +464,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'commission',
     group: 'qy-settlement',
     icon: Users,
-    jpKey: 'qy_sg_jp_a_commission_users',
+    codeKey: 'qy_sg_code_a_commission_users',
   },
   // 这两页的路由与组件从一开始就在，但**本表里一行都没有** —— 也就是说站内
   // 唯一到得了它们的方式是佣金审核页右上角那两个按钮，或者手敲 URL。项目方的
@@ -483,13 +483,13 @@ export const QY_PAGES: readonly QyPageDef[] = [
     url: '/qy/admin/commission-records/relations',
     titleKey: 'qy_rel_title',
     feature: 'commission',
-    jpKey: 'qy_sg_jp_a_commission_relations',
+    codeKey: 'qy_sg_code_a_commission_relations',
   },
   {
     url: '/qy/admin/commission-records/balances',
     titleKey: 'qy_cb_title',
     feature: 'commission',
-    jpKey: 'qy_sg_jp_a_commission_balances',
+    codeKey: 'qy_sg_code_a_commission_balances',
   },
   {
     url: '/qy/admin/withdrawals',
@@ -497,7 +497,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'withdraw',
     group: 'qy-settlement',
     icon: HandCoins,
-    jpKey: 'qy_sg_jp_a_withdrawals',
+    codeKey: 'qy_sg_code_a_withdrawals',
   },
   {
     url: '/qy/admin/transfer-records',
@@ -505,14 +505,14 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'transfer',
     group: 'qy-settlement',
     icon: Repeat,
-    jpKey: 'qy_sg_jp_a_transfer_records',
+    codeKey: 'qy_sg_code_a_transfer_records',
   },
   {
     url: '/qy/admin/fund-orders',
     titleKey: 'qy_nav_a_fund_orders',
     group: 'qy-settlement',
     icon: ScrollText,
-    jpKey: 'qy_sg_jp_a_fund_orders',
+    codeKey: 'qy_sg_code_a_fund_orders',
   },
   // 抽奖活动管理落在「结算」组而不是「风控」：这一页每天要看的是本场收入 /
   // 奖品支出 / 待派奖笔数，与佣金结算、提现审核是同一类账，不是风控处置。
@@ -522,7 +522,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'lottery',
     group: 'qy-settlement',
     icon: Ticket,
-    jpKey: 'qy_sg_jp_a_lottery',
+    codeKey: 'qy_sg_code_a_lottery',
   },
 
   // ── 新组「风控与审计」──
@@ -532,7 +532,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'violation',
     group: 'qy-risk',
     icon: TriangleAlert,
-    jpKey: 'qy_sg_jp_a_violations',
+    codeKey: 'qy_sg_code_a_violations',
   },
   {
     // 工单审核台留在根侧栏而不是进系统设置抽屉：它是**每天要开**的流水页，
@@ -542,14 +542,14 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'ticket',
     group: 'qy-risk',
     icon: LifeBuoy,
-    jpKey: 'qy_sg_jp_a_tickets',
+    codeKey: 'qy_sg_code_a_tickets',
   },
   {
     url: '/qy/admin/audit-logs',
     titleKey: 'qy_nav_a_audit_logs',
     group: 'qy-risk',
     icon: ClipboardList,
-    jpKey: 'qy_sg_jp_a_audit_logs',
+    codeKey: 'qy_sg_code_a_audit_logs',
   },
 
   // ── 并进上游「系统设置」抽屉（需求 8）──
@@ -562,21 +562,21 @@ export const QY_PAGES: readonly QyPageDef[] = [
     url: '/qy/admin/commission',
     titleKey: 'qy_nav_a_commission',
     feature: 'commission',
-    jpKey: 'qy_sg_jp_a_commission',
+    codeKey: 'qy_sg_code_a_commission',
     group: QY_SETTINGS_GROUP,
   },
   {
     url: '/qy/admin/transfer-config',
     titleKey: 'qy_nav_a_transfer_config',
     feature: 'transfer',
-    jpKey: 'qy_sg_jp_a_transfer_config',
+    codeKey: 'qy_sg_code_a_transfer_config',
     group: QY_SETTINGS_GROUP,
   },
   {
     url: '/qy/admin/transfer-group-rules',
     titleKey: 'qy_nav_a_transfer_group_rules',
     feature: 'transfer',
-    jpKey: 'qy_sg_jp_a_transfer_group_rules',
+    codeKey: 'qy_sg_code_a_transfer_group_rules',
     group: QY_SETTINGS_GROUP,
   },
   // 「分组定价」已下线：同一模型分组内的逐模型定价能力被收敛成
@@ -611,7 +611,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     url: '/qy/admin/violation-rules',
     titleKey: 'qy_nav_a_violation_rules',
     feature: 'violation',
-    jpKey: 'qy_sg_jp_a_violation_rules',
+    codeKey: 'qy_sg_code_a_violation_rules',
     group: QY_SETTINGS_GROUP,
   },
   // AI 内容审核。它与违规规则是同一档配置(改一次影响之后每一笔),
@@ -625,7 +625,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     url: '/qy/admin/violation-ai-review',
     titleKey: 'qy_nav_a_violation_ai_review',
     feature: 'violation',
-    jpKey: 'qy_sg_jp_a_violation_ai_review',
+    codeKey: 'qy_sg_code_a_violation_ai_review',
     group: QY_SETTINGS_GROUP,
   },
   // 违规类型。与「违规判定规则」紧挨着，因为两者是同一件事的两层：类型定"几次
@@ -638,7 +638,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     url: '/qy/admin/violation-categories',
     titleKey: 'qy_nav_a_violation_categories',
     feature: 'violation',
-    jpKey: 'qy_sg_jp_a_violation_categories',
+    codeKey: 'qy_sg_code_a_violation_categories',
     group: QY_SETTINGS_GROUP,
   },
   // 需求原文：「系统设置前端是否显示」。它与手续费上限、单场奖品上限一样，
@@ -647,7 +647,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     url: '/qy/admin/lottery-config',
     titleKey: 'qy_nav_a_lottery_config',
     feature: 'lottery',
-    jpKey: 'qy_sg_jp_a_lottery_config',
+    codeKey: 'qy_sg_code_a_lottery_config',
     group: QY_SETTINGS_GROUP,
   },
   // 可选 API 地址簿。改一次影响之后每一个用户复制出来的连接信息，与费率、
@@ -658,7 +658,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
   {
     url: '/qy/admin/api-address',
     titleKey: 'qy_nav_a_api_address',
-    jpKey: 'qy_sg_jp_a_api_address',
+    codeKey: 'qy_sg_code_a_api_address',
     group: QY_SETTINGS_GROUP,
   },
 ]
@@ -666,14 +666,14 @@ export const QY_PAGES: readonly QyPageDef[] = [
 /**
  * 两个工作区索引页（`/qy`、`/qy/admin`）。
  *
- * 它们不是功能页而是分组入口，所以不占 `LAB MEMO` 编号（`qyPageMeta` 给 `00`），
+ * 它们不是功能页而是分组入口，所以不占 `GATE` 编号（`qyPageMeta` 给 `00`），
  * 也不出现在侧边栏里 —— 重排之后 23 个页面各自挂在语义相关的上游分组下，
- * 侧栏不再需要"先进工作区再选功能"这一跳。它们仍是有效路由，Steins Gate
+ * 侧栏不再需要"先进工作区再选功能"这一跳。它们仍是有效路由，Midnight Signal
  * 主题下渲染「機能一覧」总览（`home/index.tsx`）。
  */
-export const QY_INDEX_PAGES: readonly { url: string; jpKey: string }[] = [
-  { url: '/qy', jpKey: 'qy_sg_jp_workspace' },
-  { url: '/qy/admin', jpKey: 'qy_sg_jp_admin_workspace' },
+export const QY_INDEX_PAGES: readonly { url: string; codeKey: string }[] = [
+  { url: '/qy', codeKey: 'qy_sg_code_workspace' },
+  { url: '/qy/admin', codeKey: 'qy_sg_code_admin_workspace' },
 ]
 
 /**
@@ -723,7 +723,7 @@ export function isQyPageVisible(
  * 必须只有一处判定：两边各写一遍 filter 的话，收进选择夹的页面会在其中一边
  * 留下一行点了就被重定向甩走的死链 —— 那正是本仓反复出现的断链形状。
  *
- * 返回顺序 = `QY_PAGES` 的声明顺序；索引页另按 `LAB MEMO` 编号重排。
+ * 返回顺序 = `QY_PAGES` 的声明顺序；索引页另按 `GATE` 编号重排。
  */
 export function qyEntryPages(
   features: QyFeatures,

@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/modules/paypass"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // api_user.go —— 用户侧接口。
@@ -28,6 +29,15 @@ type activityBrief struct {
 	Status  string `json:"status"`
 	Outcome string `json:"outcome"`
 	Title   string `json:"title"`
+
+	// CoverUrl / CoverRef 是卡片背景图的两种来源,至多一个非空。
+	//
+	// 下发**原始的两列**而不是一个拼好的 src:两者的信任级别不同,前端必须能
+	// 分开对待 —— 外链要挂 referrerPolicy="no-referrer"(不把访客的来源地址
+	// 送给管理员随手填的第三方主机),站内引用不需要。合成一个字符串之后
+	// 这个区分就只能靠"它是不是以 / 开头"来猜。
+	CoverUrl string `json:"cover_url"`
+	CoverRef string `json:"cover_ref"`
 
 	StakeQuota int64 `json:"stake_quota"`
 	OpenAt     int64 `json:"open_at"`
@@ -103,6 +113,9 @@ type activityDetail struct {
 	Outcome string `json:"outcome"`
 	Title   string `json:"title"`
 	Intro   string `json:"intro"`
+	// 详情页也给封面:从大厅点进来时,头图不接上会让人怀疑自己点错了活动。
+	CoverUrl string `json:"cover_url"`
+	CoverRef string `json:"cover_ref"`
 
 	StakeQuota     int64 `json:"stake_quota"`
 	BetMinQuota    int64 `json:"bet_min_quota"`
@@ -168,10 +181,80 @@ type activityDetail struct {
 	PayPasswordThresholdQuota int64 `json:"pay_password_threshold_quota"`
 }
 
+// hallPhase 是大厅一个分区的口径:它包含哪些状态、按什么排序。
+//
+// # 为什么排序不是创建顺序
+//
+// 大厅要回答的第一个问题是「我现在还能参加什么」。按 id 倒序排,一场今晚就
+// 截止的活动会被今天刚建的、下周才截止的压到第二页去 —— 而"还剩多久"正是
+// 用户唯一来不及补救的那个量。
+//
+//   - live 段:能参加的(published)整体排在只能等结果的(locked/settling)
+//     前面,组内按**下一个关键时刻**升序 —— published 是 close_at(最后能报名
+//     的那一刻),locked/settling 是 draw_at(结果揭晓的那一刻)。
+//   - ended 段:按 settled_at 倒序。刻意不用 draw_at:一场在开奖前就被取消的
+//     活动,draw_at 仍停在原定开奖时间(可能还在未来),拿它排序会让一场早就
+//     退完款的活动插在昨天刚开的奖前面。settled_at 是活动真正落定的那一刻,
+//     库里 64 条 finished 全部非零。
+//
+// CASE WHEN 是标准 SQL,SQLite / MySQL / PostgreSQL 三家同义;表达式里只有
+// 常量与列名,不拼接任何用户输入。
+type hallPhase struct {
+	order    string
+	statuses []string
+}
+
+var hallPhases = map[string]hallPhase{
+	"live": {
+		statuses: []string{StatusPublished, StatusLocked, StatusSettling},
+		order: "CASE WHEN status = 'published' THEN 0 ELSE 1 END ASC, " +
+			"CASE WHEN status = 'published' THEN close_at ELSE draw_at END ASC, id DESC",
+	},
+	// 已结束的活动必须永久可查 —— 那正是需求里的"历史公正查询"。
+	"ended": {
+		statuses: []string{StatusFinished},
+		order:    "settled_at DESC, id DESC",
+	},
+}
+
+// hallQuery 按大厅口径拼出活动查询:草稿与已下架永不下发、按玩法过滤、
+// 按分区过滤并定序。
+//
+// 抽成一个吃 *gorm.DB 的函数是为了让这段口径**能被真的跑一遍数据库测到**:
+// handler 走的是 db.Get() 那个只连 MySQL 的全局句柄,在测试里起不来,而
+// "两张标签返回同一份列表"恰恰只在这段拼装里看得见 —— 上一版正是在这里
+// 静默失效了一整个版本。
+func hallQuery(gdb *gorm.DB, kind, phase string) (*gorm.DB, error) {
+	// hidden_at > 0 是管理员的「下架」。它与草稿并列写在这一行,而不是散在
+	// handler 里:大厅口径只有这一个执行点,加在别处迟早会有一条分支漏掉。
+	q := gdb.Model(&Activity{}).Where("status <> ? AND hidden_at = ?", StatusDraft, 0)
+	if kind != "" {
+		q = q.Where("kind = ?", kind)
+	}
+	// 空串 = 不分区(全部非草稿)。未登记的取值一律 400,**绝不静默忽略**:
+	// 上一版前端发的是 `status=open|done`、这里读的却是 `phase`,于是"进行中"
+	// 与"已结束"两张标签返回同一份列表,而全链路没有任何一处报错 —— 项目方
+	// 反馈的"当前已结束和进行中没有进行区分"就是它。参数名一旦再漂移,
+	// 这一行会当场把它变成一次可见的失败。
+	if phase == "" {
+		return q.Order("id desc"), nil
+	}
+	p, ok := hallPhases[phase]
+	if !ok {
+		return nil, errBadPhase
+	}
+	return q.Where("status IN (?)", p.statuses).Order(p.order), nil
+}
+
 // handleListActivities 返回活动大厅。
 //
 // 草稿永不下发:它还没有承诺,内容随时可能变,提前泄漏等于让人看到一个
 // 可能被改掉的规则。
+//
+// 被管理员下架(hidden_at > 0)的场次同样不在大厅里。**这是下架的全部效果** ——
+// 活动详情、我的参与与匿名证据链一律照常可达:公正性一旦公布过就不能被运营
+// 收回,而参与过的人必须还能查到自己那一票。下架只能作用于已结束的场次
+// (见 api_admin_retire.go),所以它不可能被用来悄悄提前截止一场进行中的活动。
 func handleListActivities(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagLottery) {
 		return
@@ -182,17 +265,10 @@ func handleListActivities(c *gin.Context) {
 		respondErr(c, db.ErrNotReady)
 		return
 	}
-	q := gdb.WithContext(c.Request.Context()).Model(&Activity{}).
-		Where("status <> ?", StatusDraft)
-	if v := c.Query("kind"); v != "" {
-		q = q.Where("kind = ?", v)
-	}
-	switch c.Query("phase") {
-	case "ended":
-		// 已结束的活动必须永久可查 —— 那正是需求里的"历史公正查询"。
-		q = q.Where("status = ?", StatusFinished)
-	case "live":
-		q = q.Where("status IN (?)", []string{StatusPublished, StatusLocked, StatusSettling})
+	q, err := hallQuery(gdb.WithContext(c.Request.Context()), c.Query("kind"), c.Query("phase"))
+	if err != nil {
+		respondErr(c, err)
+		return
 	}
 
 	var total int64
@@ -202,7 +278,7 @@ func handleListActivities(c *gin.Context) {
 		return
 	}
 	rows := make([]Activity, 0, size)
-	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, wrapInternal("查询活动", err))
 		return
@@ -224,8 +300,9 @@ func handleListActivities(c *gin.Context) {
 		a := rows[i]
 		items = append(items, activityBrief{
 			ActNo: a.ActNo, Kind: a.Kind, Status: a.Status, Outcome: a.Outcome,
-			Title: a.Title, StakeQuota: a.StakeQuota,
-			OpenAt: a.OpenAt, CloseAt: a.CloseAt, DrawAt: a.DrawAt,
+			Title: a.Title, CoverUrl: a.CoverUrl, CoverRef: a.CoverRef,
+			StakeQuota: a.StakeQuota,
+			OpenAt:     a.OpenAt, CloseAt: a.CloseAt, DrawAt: a.DrawAt,
 			ActiveCount: a.ActiveCount, PoolQuota: a.PoolQuota,
 			PrizeTotalQuota: prizeTotals[a.Id],
 			MyEntryCount:    mine[a.Id],
@@ -267,6 +344,7 @@ func handleGetActivity(c *gin.Context) {
 	detail := activityDetail{
 		ActNo: act.ActNo, Kind: act.Kind, Status: act.Status, Outcome: act.Outcome,
 		Title: act.Title, Intro: act.Intro,
+		CoverUrl: act.CoverUrl, CoverRef: act.CoverRef,
 		StakeQuota: act.StakeQuota, BetMinQuota: act.BetMinQuota, BetMaxQuota: act.BetMaxQuota,
 		OpenAt: act.OpenAt, CloseAt: act.CloseAt, DrawAt: act.DrawAt,
 		SettleDeadline: act.SettleDeadline,

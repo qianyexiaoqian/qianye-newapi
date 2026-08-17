@@ -130,7 +130,9 @@ describe('qy 请求的落定期限', () => {
         assert.equal(seen.length, 1)
         const timeout = seen[0]
         assert.ok(
-          typeof timeout === 'number' && timeout > 0 && Number.isFinite(timeout),
+          typeof timeout === 'number' &&
+            timeout > 0 &&
+            Number.isFinite(timeout),
           `qy 请求必须带有限超时,实际:${String(timeout)}`
         )
       })

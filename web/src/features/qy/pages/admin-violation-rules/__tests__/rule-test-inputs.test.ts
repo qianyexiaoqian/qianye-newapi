@@ -23,10 +23,7 @@ import { describe, test } from 'node:test'
 import en from '@/i18n/qy/en.json'
 import zh from '@/i18n/qy/zh.json'
 
-import {
-  qyRuleTestContentInputs,
-  qyRuleTestInputs,
-} from '../lib/rule-test'
+import { qyRuleTestContentInputs, qyRuleTestInputs } from '../lib/rule-test'
 import type {
   QyViolationMatchType,
   QyViolationPhase,
@@ -164,7 +161,9 @@ describe('试跑输入跟着规则走', () => {
     // 「能不能跑」只看内容输入。把作用域算进去，一次本来跑得动的试跑就被锁死了 ——
     // 而它们留空的语义恰恰是「不限」。
     for (const tc of cases) {
-      const content = qyRuleTestContentInputs(qyRuleTestInputs(tc.phase, tc.matchType))
+      const content = qyRuleTestContentInputs(
+        qyRuleTestInputs(tc.phase, tc.matchType)
+      )
       assert.ok(!content.includes('model'), `${tc.name}：模型不该算内容输入`)
       assert.ok(!content.includes('group'), `${tc.name}：分组不该算内容输入`)
       assert.ok(content.length > 0, `${tc.name}：这条规则一个内容输入都没有`)
@@ -213,7 +212,9 @@ describe('试跑面板与后端逐字对齐', () => {
   test('后端每一种结论与作用域闸都有文案', () => {
     const keys = [
       ...backendConsts('TestOutcome').map((v) => `qy_vio_test_outcome_${v}`),
-      ...backendConsts('TestScopeFail').map((v) => `qy_vio_test_scope_fail_${v}`),
+      ...backendConsts('TestScopeFail').map(
+        (v) => `qy_vio_test_scope_fail_${v}`
+      ),
       ...backendConsts('TestInput').map((v) => `qy_vio_test_input_${v}`),
       'qy_vio_test_blank_inputs',
       'qy_vio_test_scope_desc',

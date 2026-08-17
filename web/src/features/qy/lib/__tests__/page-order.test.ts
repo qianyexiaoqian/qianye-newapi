@@ -24,10 +24,10 @@ import { QY_PAGE_URL_ORDER } from '@/features/qy/lib/page-order'
 import { QY_PAGES } from '@/features/qy/lib/pages'
 
 /**
- * `LAB MEMO — NN` 与导航结构解耦之后的两条守则。
+ * `GATE NN` 与导航结构解耦之后的两条守则。
  *
  * 编号从前是 `nav.ts` 里页面的声明顺序派生的，把 23 个页面按语义拆进上游分组
- * 那一刻，所有编号会集体错位 —— 用户记下的 `LAB MEMO — 14` 指向了别的页面。
+ * 那一刻，所有编号会集体错位 —— 用户记下的 `GATE 14` 指向了别的页面。
  * 所以：
  *   ① **快照**：下面这份字面量是重排之前的实际编号，逐项相等，防误改；
  *   ② **集合恒等**：编号表与页面表的 url 集合必须完全一致，防漂移
@@ -89,7 +89,7 @@ describe('qy page order', () => {
     const inOrder = new Set(QY_PAGE_URL_ORDER)
 
     for (const url of inTable) {
-      assert.ok(inOrder.has(url), `${url} 在页面表里但没有 LAB MEMO 编号`)
+      assert.ok(inOrder.has(url), `${url} 在页面表里但没有 GATE 编号`)
     }
     for (const url of inOrder) {
       assert.ok(inTable.has(url), `${url} 有编号但已经不在页面表里`)

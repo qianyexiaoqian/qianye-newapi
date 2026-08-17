@@ -44,6 +44,15 @@ export type QyLotAdminActivity = {
   act_no: string
   kind: QyLotKind
   /**
+   * 卡片背景图的两种来源，互斥，至多一个非空。
+   *
+   * 它**不进任何哈希原像**（commit / rules / spec 三个都不含它），所以它是
+   * publish 之后仍然可改的极少数字段之一 —— 一个 404 的封面挂在正在进行的
+   * 活动上时必须能被修好，而奖档、时刻、参与条件永远不能。
+   */
+  cover_url?: string
+  cover_ref?: string
+  /**
    * 定档方式（`rank` / `prob` / `ball`）。老活动不下发，按 `rank` 处理。
    *
    * 它是活动行上的一列而不是新的 `kind`：生命周期任务按 kind 扫表，新增一个
@@ -135,6 +144,22 @@ export type QyLotAdminActivity = {
   locked_at: number
   revealed_at: number
   settled_at: number
+
+  /**
+   * 下架时刻，0 = 在架上。
+   *
+   * 「下架」与「取消」是两件事，界面上必须分得开：取消会**全额退款**并推动
+   * 状态机，下架一分钱都不动、只把这一场从用户端的活动大厅撤下，而且随时
+   * 可以撤回。它只能作用于已结束的场次 —— 下架一场进行中的活动等于一次隐蔽
+   * 的提前截止，那正是这个模块从头到尾在防的形状。
+   *
+   * 下架**不遮**活动详情、我的参与与匿名证据链：公正性一旦公布过就不能被
+   * 运营收回。
+   */
+  hidden_at: number
+  hidden_by: number
+  /** 下架理由。只在管理端出现，不进任何用户侧接口。 */
+  hidden_reason: string
 }
 
 /** 本场收支。`held_quota` 是"已经确定要发、只是还没发出去"的那一部分。 */
@@ -179,6 +204,7 @@ export type QyLotAdminActivityBrief = Pick<
   | 'created_at'
   | 'draw_at'
   | 'draw_mode'
+  | 'hidden_at'
   | 'issue_no'
   | 'kind'
   | 'open_at'
@@ -213,6 +239,20 @@ export type QyLotAdminActivityBrief = Pick<
  * 字段名与 `qianye/modules/lottery/api_admin.go` 的 `activityInput`
  * 逐字对齐，一个字都不能改。
  */
+/**
+ * 上传一张封面之后拿到的东西。
+ *
+ * `ref` 是**服务端生成**的对外标识，落盘文件名与它无关（那一份是另一串随机数，
+ * 前端从头到尾看不到）。原始文件名连存都不存：它本身可能是 PII，而且拼进路径
+ * 是路径穿越最短的一条路。
+ */
+export type QyLotCoverUpload = {
+  ref: string
+  mime_type: string
+  size: number
+  created_at: number
+}
+
 export type QyLotCreateInput = {
   kind: QyLotKind
   /** 定档方式。为空按 `rank` 处理，只对 `kind='draw'` 有意义。 */
@@ -227,6 +267,9 @@ export type QyLotCreateInput = {
   series_no?: string
   title: string
   intro: string
+  /** 封面。两种来源互斥；口径与 {@link QyLotAdminActivity} 上那两个字段一致。 */
+  cover_url: string
+  cover_ref: string
   stake_quota: number
   open_at: number
   close_at: number
@@ -468,6 +511,20 @@ export type QyLotYamlReadonly = {
    * 而不是等用户报名时才发现。
    */
   spend_ready_from: number
+  /**
+   * 封面上传的三项。
+   *
+   * `cover_enabled` 只管**上传**那一条路：关掉之后仍然可以填外链 —— 外链一个
+   * 字节的磁盘都不占，而上传要在宿主机上留文件。想要"卡片可以有背景图，但本站
+   * 不存任何图片"的站点，要的正是这一档。
+   *
+   * `cover_max_bytes` / `cover_accept_mime` 让表单在**本地**就把不合规的文件
+   * 拦下来：让运营把 5 MiB 传完再看到 413 是最贵的一种拒绝方式。两者都不是
+   * 权威 —— 真正的判定是服务端的魔数与 MaxBytesReader。
+   */
+  cover_enabled?: boolean
+  cover_max_bytes?: number
+  cover_accept_mime?: string[]
 }
 
 export type QyLotAdminConfig = {

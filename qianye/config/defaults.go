@@ -277,6 +277,7 @@ func applyDefaults(c *Config) {
 	intDefault(&lt.MaxOptions, 12)
 	intDefault(&lt.DefaultGuessFeeBps, 500)
 	intDefault(&lt.MaxGuessFeeBps, 2000)
+	int64Default(&lt.CoverMaxBytes, 2<<20)
 	intDefault(&lt.SpendScanIntervalSeconds, 60)
 	intDefault(&lt.SpendScanBatch, 2000)
 	intDefault(&lt.SpendGapGuardSeconds, 60)

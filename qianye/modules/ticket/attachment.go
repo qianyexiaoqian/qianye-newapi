@@ -321,7 +321,8 @@ func serveAttachment(c *gin.Context, a *Attachment) {
 		respondErr(c, errImagePurged)
 		return
 	}
-	imagestore.Serve(c, full, a.MimeType, downloadName(a))
+	// 工单截图是**私密内容**(用户可能贴身份材料),缓存口径只能是 CachePrivate。
+	imagestore.Serve(c, full, a.MimeType, downloadName(a), imagestore.CachePrivate)
 }
 
 // downloadName 是回给浏览器的文件名。

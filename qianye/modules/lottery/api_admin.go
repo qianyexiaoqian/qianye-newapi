@@ -69,6 +69,10 @@ type activityInput struct {
 	DrawMode string `json:"draw_mode"`
 	Title    string `json:"title"`
 	Intro    string `json:"intro"`
+	// CoverUrl / CoverRef 是卡片背景图的两种来源,互斥。归一化与互斥判定走
+	// resolveCoverInput —— 创建、修改、单独换图三条路共用同一份判定。
+	CoverUrl string `json:"cover_url"`
+	CoverRef string `json:"cover_ref"`
 
 	StakeQuota  int64 `json:"stake_quota"`
 	BetMinQuota int64 `json:"bet_min_quota"`
@@ -158,6 +162,12 @@ func handleCreateActivity(c *gin.Context) {
 		if err := tx.Create(act).Error; err != nil {
 			return err
 		}
+		// 认领封面必须与建活动同事务:分开做的话,建活动失败会留下一张
+		// 已经指着这场活动、而这场活动并不存在的封面 —— 它既不算孤儿
+		// (act_id 非 0),也不属于任何活动,只有"活动已删除"那条口径能捞到它。
+		if err := bindCover(tx, act.Id, act.ActNo, "", act.CoverRef, c.GetInt("id")); err != nil {
+			return err
+		}
 		// 种子与两个盐在草稿期就落库。绝不等到 publish ——
 		// publish 那一刻要算 commit_hash,种子必须已经存在且不可能被本次请求影响。
 		if err := tx.Create(&Seed{
@@ -191,10 +201,16 @@ func handleCreateActivity(c *gin.Context) {
 		})
 	})
 	if err != nil {
-		db.MarkFailure(err)
+		// 封面换绑会在这个事务里抛出 errCoverNotFound —— 那是一条该回给运营的
+		// 400("这张图不存在或已被别的活动用了"),无条件包成 500 会让他
+		// 收到"处理失败,请稍后重试",而重试一万次都是同一个结果。
+		if _, ok := AsBizError(err); !ok {
+			db.MarkFailure(err)
+			err = wrapInternal("创建活动", err)
+		}
 		writeAdminAudit(c, "lottery.activity.create", "", qymodel.ResultFail,
 			auditReason(err), "", snapText(activitySnapshot(act, &in)))
-		respondErr(c, wrapInternal("创建活动", err))
+		respondErr(c, err)
 		return
 	}
 
@@ -256,14 +272,29 @@ func handleUpdateActivity(c *gin.Context) {
 	next.CreatedBy = old.CreatedBy
 
 	err = gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		res := tx.Model(&Activity{}).
-			Where("id = ? AND status = ?", old.Id, StatusDraft).
-			Updates(draftUpdates(next))
-		if res.Error != nil {
-			return res.Error
+		// 锁内复核状态,而不是拿 Updates 的 RowsAffected 当闸门:管理员保存一份
+		// **没改动过**的草稿(双击保存、客户端重投)时 draftUpdates 的每一列都
+		// 等于原值,MySQL 回 0 行,一次完全正常的保存被回绝成"活动状态已变化"。
+		// 理由与口径见 lockActivityStatus。
+		status, err := lockActivityStatus(tx, old.Id)
+		if err != nil {
+			return err
 		}
-		if res.RowsAffected != 1 {
+		if status != StatusDraft {
 			return errStatusConflict
+		}
+		// WHERE 上的 status 留着当第二道保险:行锁已经握在手里,它永远成立,
+		// 但它让这条语句单独读起来也是安全的。
+		if err := tx.Model(&Activity{}).
+			Where("id = ? AND status = ?", old.Id, StatusDraft).
+			Updates(draftUpdates(next)).Error; err != nil {
+			return err
+		}
+		// 封面的换绑与活动行的 UPDATE 同事务:被换下来的那一张要在同一刻拿到
+		// detached_at,否则一次回滚之后活动行上仍指着它、而它已经被标成垃圾,
+		// 回收任务会在宽限期后把一张**正在用**的图从磁盘上删掉。
+		if err := bindCover(tx, old.Id, old.ActNo, old.CoverRef, next.CoverRef, c.GetInt("id")); err != nil {
+			return err
 		}
 		// 奖档与选项整体替换。草稿期还没有任何参与,不存在引用完整性问题;
 		// 逐条 diff 只会多一套要维护的合并逻辑。
@@ -292,7 +323,10 @@ func handleUpdateActivity(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		if !errors.Is(err, errStatusConflict) {
+		// 判据是"它是不是一条可以安全回给用户的业务错误",而不是"它是不是
+		// errStatusConflict":封面换绑会在这个事务里抛出 errCoverNotFound,
+		// 按单值比对的话它会被包成 500,而它本该是一条明确的 400。
+		if _, ok := AsBizError(err); !ok {
 			db.MarkFailure(err)
 			err = wrapInternal("修改活动", err)
 		}
@@ -914,6 +948,7 @@ func handleAdminListActivities(c *gin.Context) {
 			IssueNo:          a.IssueNo,
 			OpenFlagCount:    flagCounts[a.Id],
 			CreatedAt:        a.CreatedAt,
+			HiddenAt:         a.HiddenAt,
 		})
 	}
 	respondOK(c, gin.H{"items": items, "total": total, "p": page, "page_size": size})
@@ -950,6 +985,11 @@ type adminActivityBrief struct {
 
 	OpenFlagCount int   `json:"open_flag_count"`
 	CreatedAt     int64 `json:"created_at"`
+
+	// HiddenAt > 0 = 这一场已从用户端大厅撤下。它必须出现在**列表**上:
+	// 下架之后这一行在管理端看起来与在架的完全一样,运营会反复问
+	// "到底关掉了没有",然后再关一次。
+	HiddenAt int64 `json:"hidden_at"`
 }
 
 // handleAdminGetActivity 返回单个活动的完整视图(含奖档/选项与收支)。
@@ -1337,6 +1377,15 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 	if err := rejectControlCharsAllowingBreaks("活动说明", in.Intro); err != nil {
 		return nil, nil, nil, err
 	}
+	// 封面在这里只做**形状**校验(协议、长度、互斥);"这个 ref 是不是我传的、
+	// 是不是还没被别的活动认领"要在事务里用一条带条件的 UPDATE 回答,
+	// 先查后写在并发下会让同一张图被两场活动同时认领。
+	coverURL, coverRef, err := resolveCoverInput(coverInput{
+		CoverUrl: in.CoverUrl, CoverRef: in.CoverRef,
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	// 免费场在 v1 明确不做:twophase 的入口强制 0 < amount ≤ MaxQuota。
 	if in.StakeQuota <= 0 || in.StakeQuota > cfg.MaxStakeQuota ||
 		in.StakeQuota > int64(common.MaxQuota) {
@@ -1373,6 +1422,8 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 		Outcome:            OutcomeNone,
 		Title:              title,
 		Intro:              in.Intro,
+		CoverUrl:           coverURL,
+		CoverRef:           coverRef,
 		StakeQuota:         in.StakeQuota,
 		OpenAt:             in.OpenAt,
 		CloseAt:            in.CloseAt,
@@ -1820,9 +1871,13 @@ func checkActiveCap(ctx context.Context, gdb *gorm.DB) error {
 // 但这段代码离"有人复制它去改已发布活动"只有一步。
 func draftUpdates(a *Activity) map[string]any {
 	return map[string]any{
-		"kind":            a.Kind,
-		"title":           a.Title,
-		"intro":           a.Intro,
+		"kind":  a.Kind,
+		"title": a.Title,
+		"intro": a.Intro,
+		// 封面两列一起写。少写一列的后果是"从上传图改回外链"之后两列同时非空,
+		// 而显示哪一张只能由前端的判断顺序回答。
+		"cover_url":       a.CoverUrl,
+		"cover_ref":       a.CoverRef,
 		"stake_quota":     a.StakeQuota,
 		"bet_min_quota":   a.BetMinQuota,
 		"bet_max_quota":   a.BetMaxQuota,

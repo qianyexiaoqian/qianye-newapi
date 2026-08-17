@@ -41,6 +41,9 @@ func tables() []any {
 		// Series 不是证据表,但它是**资金闸门表**:删一行等于把一个双色球系列
 		// 的累计发行上限抹掉。同样不注册任何清理任务。
 		&Series{},
+		// Cover 是本模块**唯一**可被清理的非派生表:它是磁盘上那张封面图的
+		// 指针,而不是任何事实的证据。它的回收口径见 cover.go 的 pruneCovers。
+		&Cover{},
 	}
 }
 
@@ -63,6 +66,10 @@ func (Mod) InstallHooks() {
 // 这个通用扩展点存在的唯一理由。
 func (Mod) RegisterPublicRoutes(g *gin.RouterGroup) {
 	g.GET("/lottery/public/:act_no/proof", handleGetProof)
+	// 卡片背景图。匿名的理由与代价见 api_admin_cover.go 的文件头:
+	// `<img src>` 这条请求由浏览器发出、不带 Authorization 头,而封面本来就是
+	// 面向所有访客的招贴。只回**已经用在某场活动上**的那些,未绑定的上传取不到。
+	g.GET("/lottery/covers/:ref", handleGetCover)
 }
 
 // RegisterUserRoutes 挂载普通用户接口。传入的组已挂 UserAuth。
@@ -110,6 +117,20 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 发布是不可逆的:承诺哈希一经生成,条件/奖档/选项/四个时刻/费率全部只读。
 	g.POST("/lottery/activities/:act_no/publish", crit, handlePublishActivity)
 	g.POST("/lottery/activities/:act_no/cancel", crit, handleCancelActivity)
+	// 「关闭」与「删除」是两个动作,与 cancel 都不一样:
+	//   hide/unhide 只把已结束的场次从用户端大厅撤下/放回,不动一分钱、可逆;
+	//   DELETE 彻底抹掉这一场的十一张表,不可逆,过六道硬闸门 + 服务端二次确认。
+	// 三者的代价差异在管理端弹窗的第一行各写一遍(见 api_admin_retire.go)。
+	g.POST("/lottery/activities/:act_no/hide", crit, handleHideActivity)
+	g.POST("/lottery/activities/:act_no/unhide", crit, handleUnhideActivity)
+	g.DELETE("/lottery/activities/:act_no", crit, handleDeleteActivity)
+	// 封面。上传要落磁盘,是本模块唯一一条能消耗宿主机存储的入口 ——
+	// 必须挂关键操作限流,而不是只靠 coverPendingMax 那道计数闸门。
+	g.POST("/lottery/covers", crit, handleUploadCover)
+	g.DELETE("/lottery/covers/:ref", crit, handleDiscardCover)
+	// 换封面**不限活动状态**:它不进任何哈希原像,因此是 publish 之后仍然
+	// 可写的极少数字段之一(理由见 api_admin_cover.go)。
+	g.PUT("/lottery/activities/:act_no/cover", crit, handleSetActivityCover)
 	g.POST("/lottery/activities/:act_no/guess-result", crit, handleSetGuessResult)
 	g.POST("/lottery/activities/:act_no/payouts/:payout_no/retry", crit, handleRetryPayout)
 	// 文本奖的履行 / 撤销 / 揭示。三个都写审计(成功与失败各一条)。
@@ -181,6 +202,12 @@ func (Mod) StartTasks() {
 		runSpendRecalc(ctx)
 		pruneSpendDaily(ctx)
 	})
+
+	// 封面回收。周期一小时:三条到期口径的粒度都是"小时"级(宽限期 24 小时),
+	// 跑得更勤只会空扫。必须走 lease.Run —— common.IsMasterNode 只是个环境变量,
+	// 多节点都配成 master 时回收会双跑,而双跑的表现是同一批文件被删两次
+	// (第二次报"文件不存在"并把整批标记跳过)。
+	lease.Run("lottery.cover_prune", time.Hour, pruneCovers)
 }
 
 func seconds(v, fallback int) time.Duration {

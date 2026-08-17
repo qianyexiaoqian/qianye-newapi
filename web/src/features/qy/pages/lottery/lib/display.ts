@@ -48,7 +48,38 @@ const ACTIVITY_BADGE: Record<string, QyStatus> = {
   finished: 'success',
 }
 
-export function qyLotActivityBadgeStatus(status: QyLotStatus): QyStatus {
+/**
+ * `finished` 那一档的颜色由**结局**决定，而不是由状态。
+ *
+ * `finished` 本身不是一个结局，它只表示"不再变了"。把它一律染成 `success`
+ * 绿色，等于对一场取消退款、一场人数不够流局、一场逾期未结算的活动都说
+ * "一切顺利" —— 而用户刚发现钱退回来了。六种结局里只有 `drawn` 是真的开出了奖。
+ *
+ * 三种 void 与 cancelled 都是全额退款，但语义不同：`cancelled` 是平台主动撤下
+ * （用中性色，它不是异常），三种 `void_*` 是规则触发的作废（用 `reversed`
+ * 紫色，与全站"已冲正"的资金语义一致 —— 那笔钱确实原路回去了）。
+ *
+ * 文字仍由 {@link qyLotOutcomeKey} 那一枚副徽章给出，六种结局各一句；
+ * 这里只负责让颜色别说反话。
+ */
+const OUTCOME_BADGE: Record<string, QyStatus> = {
+  drawn: 'success',
+  cancelled: 'cancelled',
+  void_min_entries: 'reversed',
+  void_no_winner: 'reversed',
+  void_all_correct: 'reversed',
+  void_deadline: 'reversed',
+}
+
+export function qyLotActivityBadgeStatus(
+  status: QyLotStatus,
+  outcome?: QyLotOutcome
+): QyStatus {
+  if (status === 'finished' && outcome != null && outcome !== '') {
+    // 后端将来新增一种结局时回落到 `success`（老行为），不会白屏、也不会
+    // 把一个没见过的字符串当成状态色渲染出来。
+    return OUTCOME_BADGE[outcome] ?? 'success'
+  }
   return ACTIVITY_BADGE[status] ?? status
 }
 

@@ -22,10 +22,7 @@ import { describe, test } from 'node:test'
 import en from '@/i18n/qy/en.json'
 import zh from '@/i18n/qy/zh.json'
 
-import {
-  qyAiScopeGroupBindingError,
-  qyAiScopeToDraft,
-} from '../lib/ai-review'
+import { qyAiScopeGroupBindingError, qyAiScopeToDraft } from '../lib/ai-review'
 
 /**
  * ai-scope-group-binding.test.ts —— 「一条策略必须绑定分组」的前端那一半。
@@ -133,6 +130,8 @@ describe('提示文案两侧都在', () => {
     // 留着那句话比没有提示更糟:它教的正是现在会被拒的那种配法,
     // 而人照做之后收到的是一句他觉得自相矛盾的报错。
     assert.ok(!zhKeys.qy_ai_scope_f_groups_hint?.includes('留空表示全部分组'))
-    assert.ok(!enKeys.qy_ai_scope_f_groups_hint?.includes('empty means all groups'))
+    assert.ok(
+      !enKeys.qy_ai_scope_f_groups_hint?.includes('empty means all groups')
+    )
   })
 })

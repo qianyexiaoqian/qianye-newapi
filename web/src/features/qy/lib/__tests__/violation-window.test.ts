@@ -160,10 +160,8 @@ describe('违规类型表单：两格折成一列', () => {
       '库里只有一列，"不限期限 + 72 小时"这种组合不存在'
     )
     assert.equal(
-      qyCategoryFormToPayload(
-        { ...values, window_unlimited: false },
-        false
-      ).window_hours,
+      qyCategoryFormToPayload({ ...values, window_unlimited: false }, false)
+        .window_hours,
       72,
       '取消勾选之后必须把填过的小时数发出去，而不是回落到一个硬编码的 24'
     )
@@ -229,10 +227,7 @@ describe('违规类型表单：两格折成一列', () => {
 
 describe('管理端类型列表的阈值那一格', () => {
   test('不限期限时换成不带小时数的那一句', () => {
-    assert.equal(
-      qyThresholdStateKey('active', 24),
-      'qy_vcat_threshold_value'
-    )
+    assert.equal(qyThresholdStateKey('active', 24), 'qy_vcat_threshold_value')
     assert.equal(
       qyThresholdStateKey('active', QY_WINDOW_UNLIMITED),
       'qy_vcat_threshold_value_unlimited'

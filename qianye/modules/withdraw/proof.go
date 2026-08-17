@@ -243,7 +243,8 @@ func serveProof(c *gin.Context, p *Proof) {
 		respondErr(c, errProofPurged)
 		return
 	}
-	imagestore.Serve(c, full, p.MimeType, proofDownloadName(p))
+	// 打款凭证含 PII(卡号、姓名、流水),缓存口径只能是 CachePrivate。
+	imagestore.Serve(c, full, p.MimeType, proofDownloadName(p), imagestore.CachePrivate)
 }
 
 // proofDownloadName 是回给浏览器的文件名。

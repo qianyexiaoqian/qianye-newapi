@@ -23,10 +23,7 @@ import {
   qyWindowIsUnlimited,
   qyWindowWidens,
 } from '../../../lib/violation-thresholds'
-import type {
-  QyViolationCategory,
-  QyViolationCategoryInput,
-} from '../types'
+import type { QyViolationCategory, QyViolationCategoryInput } from '../types'
 
 /** 表单态。数字一律走字符串：受控 number 输入清空时会得到 NaN。 */
 export type QyCategoryFormValues = {
@@ -204,7 +201,6 @@ export function qyCategoryTightens(
   if (before == null) return true
   if (!before.enabled || before.threshold <= 0) return true
   return (
-    threshold < before.threshold ||
-    qyWindowWidens(before.window_hours, window)
+    threshold < before.threshold || qyWindowWidens(before.window_hours, window)
   )
 }

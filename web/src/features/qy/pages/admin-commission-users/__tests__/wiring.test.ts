@@ -402,7 +402,7 @@ describe('i18n 键完整', () => {
     'qy_cm_block_no_relation',
     'qy_cm_unblock',
     'qy_err_rel_same_inviter',
-    'qy_sg_jp_a_commission_users',
+    'qy_sg_code_a_commission_users',
     // 下面几组是模板字符串拼出来的，字面量扫描器看不见，这里显式列全。
     ...QY_COMMISSION_USER_SORTS.map((sort) => `qy_cu_sort_${sort}`),
     ...QY_COMMISSION_USER_FILTERS.map((flag) => `qy_cu_filter_${flag}`),

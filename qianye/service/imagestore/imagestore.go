@@ -311,19 +311,43 @@ func (s *Store) Locate(storedName string) (string, error) {
 	return full, nil
 }
 
+// CachePrivate 是**私密内容**的缓存口径:工单截图、提现凭证这类
+// "只有特定几个人有权看"的图片一律用它。no-store 让内容既不进共享代理,
+// 也不落进浏览器的磁盘缓存 —— 一台共用电脑上按后退键不该翻出别人的身份材料。
+const CachePrivate = "private, no-store"
+
+// CachePublicImmutable 是**公开且按 ref 不可变**内容的缓存口径。
+//
+// 用它的前提有两条,缺一条都不能用:
+//
+//  1. 这份内容对任何人都是同一份(否则 public 会让代理把 A 的图发给 B);
+//  2. 一个 ref 对应的字节永远不变 —— 本包的落盘名由 crypto/rand 生成且
+//     Write 带 O_EXCL,同名覆盖不可能发生,所以这一条天然成立。
+//
+// 存在的理由是抽奖大厅:卡片背景图是首屏上并排十几张的图,配 no-store 等于
+// 每次进大厅都把它们重新拉一遍。
+const CachePublicImmutable = "public, max-age=604800, immutable"
+
 // Serve 把文件回给**已鉴权**的调用者。鉴权由调用方在此之前完成。
 //
-// 三个响应头都是必须的:
+// 四个响应头都是必须的:
 //   - Content-Type 由入库时的魔数判定给出,不由扩展名或请求头决定
 //   - X-Content-Type-Options: nosniff 让浏览器不要自作主张改判类型 ——
 //     一份伪装成 JPEG 的 HTML 不能因为浏览器"猜"出 text/html 就被当页面执行
-//   - Cache-Control: private, no-store 防止内容进共享缓存或磁盘缓存
-//
-// downloadName 必须由服务端拼出,永远不含用户提供的任何字符串。
-func Serve(c *gin.Context, fullPath, mime, downloadName string) {
+//   - Cache-Control 由调用方在 CachePrivate / CachePublicImmutable 里二选一。
+//     做成参数而不是写死:两种内容的口径相反,而写死一个再让另一方在调用前
+//     自己 c.Header 覆盖是行不通的 —— 本函数里的 c.Header 会把它盖掉,
+//     于是"我明明设了缓存"变成一句没有任何效果的代码。空串按私密处理,
+//     因为把公开当私密只是慢一点,反过来是泄漏。
+//   - Content-Disposition 的 downloadName 必须由服务端拼出,
+//     永远不含用户提供的任何字符串。
+func Serve(c *gin.Context, fullPath, mime, downloadName, cacheControl string) {
+	if cacheControl == "" {
+		cacheControl = CachePrivate
+	}
 	c.Header("Content-Type", mime)
 	c.Header("X-Content-Type-Options", "nosniff")
-	c.Header("Cache-Control", "private, no-store")
+	c.Header("Cache-Control", cacheControl)
 	c.Header("Content-Disposition", `inline; filename="`+downloadName+`"`)
 	c.File(fullPath)
 }

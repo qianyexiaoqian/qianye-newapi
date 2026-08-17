@@ -206,6 +206,14 @@ func validateLottery(l *Lottery) error {
 	if l.PayoutMaxAttempts <= 0 {
 		return fmt.Errorf("qianye: lottery.payout_max_attempts 必须大于 0")
 	}
+	// 封面要整张读进内存才能校验魔数,上限必须有硬顶。校验放在 cover_enabled
+	// 之外:填 0 或天文数字都是配置错误,不该等到某天打开上传功能才第一次暴露。
+	if l.CoverMaxBytes <= 0 || l.CoverMaxBytes > MaxLotteryCoverBytes {
+		return fmt.Errorf("qianye: lottery.cover_max_bytes 必须在 1..%d 字节之间,收到 %d"+
+			"(封面需整张读进内存做魔数校验,不设硬顶等于把堆交给上传者;"+
+			"不想收图请用 cover_enabled: false)",
+			MaxLotteryCoverBytes, l.CoverMaxBytes)
+	}
 	if l.SpendMaxLookbackDays <= 0 {
 		return fmt.Errorf("qianye: lottery.spend_max_lookback_days 必须大于 0")
 	}

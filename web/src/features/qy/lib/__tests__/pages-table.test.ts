@@ -40,7 +40,7 @@ import zh from '@/i18n/qy/zh.json'
 
 /**
  * `lib/pages.ts` 是页面清单的唯一登记处（标题 / 功能开关 / 侧栏落点 / 图标 /
- * 日文副标合成一行）。合并之前这些信息散在三个文件里，本项目反复踩
+ * 页面代号合成一行）。合并之前这些信息散在三个文件里，本项目反复踩
  * "同一概念的第 N 份拷贝各自漂移"，所以这里把结构不变式全部钉死。
  */
 
@@ -404,9 +404,9 @@ describe('qy page table routes', () => {
    * 每个登记的 url 都必须有一个真实的路由文件。
    *
    * 这条守卫此前不存在，代价是 `/qy/lottery-guess` 登记进了 `QY_PAGES` 与
-   * LAB MEMO 编号表、却没有对应的路由 —— 站内不会产生死链（选择夹成员会被
+   * GATE 编号表、却没有对应的路由 —— 站内不会产生死链（选择夹成员会被
    * `qyEntryPages` 从侧栏滤掉，站内跳转一律走 `qyTabTarget`），所以任何测试
-   * 都不会红；只有从工单/聊天里拿到手敲地址的用户会撞上 404，而 LAB MEMO
+   * 都不会红；只有从工单/聊天里拿到手敲地址的用户会撞上 404，而 GATE
    * 给它分配的编号永远渲染不出来。
    *
    * 判据是"文件存在"而不是"routeTree 里有"：routeTree.gen.ts 是构建产物，
@@ -432,7 +432,7 @@ describe('qy page table routes', () => {
 describe('qy page table i18n', () => {
   test('每个登记的 key 在 en 与 zh 里都存在', () => {
     const keys = [
-      ...QY_PAGES.flatMap((page) => [page.titleKey, page.jpKey]),
+      ...QY_PAGES.flatMap((page) => [page.titleKey, page.codeKey]),
       ...QY_NAV_GROUPS.map((group) => group.titleKey),
       ...QY_TAB_GROUPS.map((group) => group.titleKey),
       'qy_nav_group_settings',
@@ -478,14 +478,14 @@ describe('qy page table i18n', () => {
 })
 
 /**
- * 需求 6：侧栏英文副标已整体去掉。
+ * 需求 6：侧栏侧栏英文副标已整体去掉。
  *
  * 这三条是**反向**断言，专门盯"改了又长回来"：数据（`enKey`）、文案
  * （`qy_sg_nav_en_*`）、渲染（`nav-group.tsx` 的挂载点）三处任何一处复活都会红。
  * 只钉其中一处不够 —— 本仓反复出现的形状正是"数据还在但没人渲染"（死数据）
  * 与"组件渲染了但数据没了"（空节点）。
  */
-describe('侧栏英文副标已移除（需求 6）', () => {
+describe('侧栏侧栏英文副标已移除（需求 6）', () => {
   test('页面表里不再有 enKey 这类装饰性副标字段', () => {
     for (const page of QY_PAGES) {
       assert.equal(
@@ -504,7 +504,7 @@ describe('侧栏英文副标已移除（需求 6）', () => {
     assert.deepEqual(
       leftovers,
       [],
-      '英文副标文案是死键，会一直被翻译工具带着走'
+      '侧栏英文副标文案是死键，会一直被翻译工具带着走'
     )
   })
 
@@ -519,7 +519,7 @@ describe('侧栏英文副标已移除（需求 6）', () => {
     )
     assert.ok(
       !navGroupSource.includes('qy-sg-nav-en'),
-      'nav-group.tsx 里又出现了英文副标节点'
+      'nav-group.tsx 里又出现了侧栏英文副标节点'
     )
   })
 })

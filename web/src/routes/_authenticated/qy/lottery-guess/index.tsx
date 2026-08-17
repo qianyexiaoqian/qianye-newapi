@@ -24,7 +24,7 @@ import { qyTabHash } from '@/features/qy/lib/pages'
  * 竞猜 —— 本页是 `/qy/lottery` 选择夹里的一张标签，没有独立入口。
  *
  * 它仍然需要一个真实路由：`/qy/lottery-guess` 已经登记进 `QY_PAGES` 与
- * LAB MEMO 编号表，而那两处是**对外可见的稳定标识**。少了这个文件，任何人
+ * GATE 编号表，而那两处是**对外可见的稳定标识**。少了这个文件，任何人
  * 手敲这个地址（或按 `/qy/lottery-records` 的经验类推）拿到的是 404，
  * 而不是像它的两张姊妹标签那样被送到宿主页的对应位置。
  *

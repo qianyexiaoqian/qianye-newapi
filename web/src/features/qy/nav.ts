@@ -61,7 +61,7 @@ import type { QyConfig, QyFeatures } from './lib/types'
  * 它们是宿主页上的标签而不是独立页面，因此 `qyEntryPages` 会把它们滤掉。
  * 侧栏因此比上一轮少了两个折叠项与两行 —— 这正是项目方要的。
  *
- * 落点、图标、日文副标全部来自 `lib/pages.ts` 的单张表，本文件只负责
+ * 落点、图标、页面代号全部来自 `lib/pages.ts` 的单张表，本文件只负责
  * "把表变成上游要的 NavGroup 结构"。
  *
  * ── 为什么删掉 drill-in ──
@@ -334,7 +334,7 @@ export function useQySidebarGroups(baseGroups: NavGroup[]): NavGroup[] {
  * `/qy` 与 `/qy/admin` 索引页（`home/index.tsx`）用的扁平清单。
  *
  * 与侧栏是**同一张表的另一种投影**，不是第二份拷贝：侧栏按功能语义打散，
- * 索引页按"我的 / 管理"两栏平铺并按 `LAB MEMO` 编号升序排列 —— 那正是
+ * 索引页按"我的 / 管理"两栏平铺并按 `GATE` 编号升序排列 —— 那正是
  * 索引页该干的事（一屏看全），也是移动端侧栏收起时唯一的总览入口。
  *
  * 分组 id 保持 `qy-personal` / `qy-admin`：`home/index.tsx` 按 id 查表。

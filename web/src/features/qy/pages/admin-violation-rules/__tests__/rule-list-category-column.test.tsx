@@ -84,9 +84,8 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const i18next = (await import('i18next')).default
 const { initReactI18next } = await import('react-i18next')
-const { QueryClient, QueryClientProvider } = await import(
-  '@tanstack/react-query'
-)
+const { QueryClient, QueryClientProvider } =
+  await import('@tanstack/react-query')
 // 这一页的外壳 `QySectionPageLayout` 用了 `useLocation`，没有路由上下文直接抛，
 // 所以挂一个只有一条路由的内存路由 —— 它只是让外壳能渲染，不参与任何断言。
 const {
@@ -247,31 +246,34 @@ async function mountList(
   // 统计也必须预置。它与类型列无关，但页面顶部直接读 `data.breaker.*`：
   // 不给的话这次查询会去发真实请求，整包跑时别的用例装的全局 fetch 桩会回一份
   // 空对象，于是页面在渲染中途抛错、表格根本不渲染 —— 症状是"单跑绿、合跑红"。
-  queryClient.setQueryData(qyKeys.adminViolationStats(), statsOverride ?? {
-    hours: 24,
-    record_count: 0,
-    blocked: 0,
-    shadow_count: 0,
-    fee_quota: 0,
-    clamp_count: 0,
-    ban_count: 0,
-    by_rule: [],
-    by_model: [],
-    breaker: { rate_local_hits: 0 },
-    rules: {
-      version: 1,
-      loaded_at: 0,
-      prompt_rule: 1,
-      post_rule: 0,
-      shadow_rule: 1,
-      enforce_rule: 0,
-    },
-    policy: {
-      insufficient_balance: 'record_only',
-      auto_ban_threshold: 0,
-      auto_ban_window_h: 24,
-    },
-  })
+  queryClient.setQueryData(
+    qyKeys.adminViolationStats(),
+    statsOverride ?? {
+      hours: 24,
+      record_count: 0,
+      blocked: 0,
+      shadow_count: 0,
+      fee_quota: 0,
+      clamp_count: 0,
+      ban_count: 0,
+      by_rule: [],
+      by_model: [],
+      breaker: { rate_local_hits: 0 },
+      rules: {
+        version: 1,
+        loaded_at: 0,
+        prompt_rule: 1,
+        post_rule: 0,
+        shadow_rule: 1,
+        enforce_rule: 0,
+      },
+      policy: {
+        insufficient_balance: 'record_only',
+        auto_ban_threshold: 0,
+        auto_ban_window_h: 24,
+      },
+    }
+  )
   // qy 扩展开关。`QyPageBoundary` 在 `status === 'disabled'` 时整块换成
   // 「本站未启用该功能」的空态，表格根本不渲染。单跑时这次查询失败 →
   // status 是 unknown → 照常放行；整包跑时别的用例装的桩会让它落到"关闭"，
@@ -309,9 +311,7 @@ function rulesTable(container: HTMLElement): Element {
     // 别的用例可能已经把它初始化成另一份资源，届时 `t()` 返回的是 key 本身。
     if (table.querySelector('thead [role="checkbox"]') != null) return table
   }
-  assert.fail(
-    `页面上找不到规则表（共 ${tables.length} 张表）`
-  )
+  assert.fail(`页面上找不到规则表（共 ${tables.length} 张表）`)
 }
 
 /** 规则表的表头文字，按屏幕上的先后顺序。 */
@@ -365,8 +365,14 @@ describe('规则列表的违规类型列', () => {
     const text = rowCells(container, 0)[at] ?? ''
     assert.notEqual(text, dict.qy_vio_col_category_none)
     assert.ok(text.includes('未分类'), `类型名缺失：${text}`)
-    assert.ok(text.includes(dict.qy_vcat_flag_fallback), `兜底标记缺失：${text}`)
-    assert.ok(text.includes(dict.qy_vcat_threshold_off), `阈值状态缺失：${text}`)
+    assert.ok(
+      text.includes(dict.qy_vcat_flag_fallback),
+      `兜底标记缺失：${text}`
+    )
+    assert.ok(
+      text.includes(dict.qy_vcat_threshold_off),
+      `阈值状态缺失：${text}`
+    )
   })
 
   test('category_id=0 的历史规则按兜底类型显示，与后端口径一致', async () => {
@@ -378,7 +384,10 @@ describe('规则列表的违规类型列', () => {
     // 那一行的阈值状态会一起显示 —— 那才是“真的查到了那一行”的证据。
     assert.notEqual(text, dict.qy_vio_col_category_none)
     assert.ok(text.includes('未分类'), `没折进兜底类型：${text}`)
-    assert.ok(text.includes(dict.qy_vcat_flag_fallback), `兜底标记缺失：${text}`)
+    assert.ok(
+      text.includes(dict.qy_vcat_flag_fallback),
+      `兜底标记缺失：${text}`
+    )
     assert.ok(
       text.includes(dict.qy_vcat_threshold_off),
       `阈值状态缺失：${text}`

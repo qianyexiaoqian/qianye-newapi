@@ -26,7 +26,7 @@ For commercial licensing, please contact support@quantumnous.com
  * that activates it. Loaded globally so font-switching is instantaneous
  * with no FOUT once the variable is fetched. */
 @import '@fontsource-variable/lora';
-/* 等宽轴。Steins Gate 主题把一切数字、标识符、状态标签、列标题都排成等宽 +
+/* 等宽轴。Midnight Signal 主题把一切数字、标识符、状态标签、列标题都排成等宽 +
  * 宽字距(见 `--qy-sg-mono`),需要一款本地托管的等宽字体 —— 参考稿用的
  * Google Fonts <link> 属于外部网络资源,不能照搬。与 Lora 同理全局加载,
  * 切主题时字体已经在,不会闪一下再换。 */
@@ -35,7 +35,7 @@ For commercial licensing, please contact support@quantumnous.com
 @import './theme.css';
 @import './theme-presets.css';
 /* 千夜扩展的预设。单独成文件以避免与上游 theme-presets.css 的改动冲突。
- * qy-theme-presets 收纳纯配色型的 qy 预设;qy-steins-gate 是 Steins Gate
+ * qy-theme-presets 收纳纯配色型的 qy 预设;qy-steins-gate 是 Midnight Signal
  * 主题的汇总入口(色板 + 构图 + 组件形态),它必须排在所有基础组件样式
  * 之后才能覆盖它们。 */
 @import './qy-theme-presets.css';

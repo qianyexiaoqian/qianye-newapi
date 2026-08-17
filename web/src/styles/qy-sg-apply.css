@@ -17,37 +17,42 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /*
- * Steins Gate 主题 —— 挂载层
+ * Midnight Signal 主题 —— 挂载层
  *
  * 把 qy-sg-shape.css 的六条形状挂到组件与页面上。纪律只有两条,但都是硬的:
  *
  *   1. 【一条形状 = 一条规则】。属性集合只写一次,要覆盖多少个组件就往选择器
  *      列表里加多少个 data-slot。CSS 没有 mixin,把同一组声明抄到第二个规则里
- *      就是这个项目反复踩的"同一概念的第 N 份拷贝各自漂移"。
- *   2. 【取值不落在这里】。尺寸、线宽、点表、瓦片在 shape,颜色在 tokens,
+ *      就是这个项目反复踩的「同一概念的第 N 份拷贝各自漂移」。
+ *   2. 【取值不落在这里】。尺寸、线宽、瓦片在 shape,颜色在 tokens,
  *      本文件只写 var()。唯一的例外是纯布局量(grid 列宽、padding、gap),
  *      它们不属于任何一条形状。
  *
  * 作用域:每条规则都带 [data-theme-preset='steins-gate'],切到别的预设逐像素
  * 回到上游形态。上游组件源码一行未改,锚点全是已核对存在的 data-slot ——
  * 注意 badge / sidebar-menu-button 这类走的是 Base UI 的
- * useRender({ state: { slot: '…' } }),grep "data-slot=" 扫不到,要两路都扫:
+ * useRender 传 slot 名,grep 属性写法扫不到,要两路都扫:
  *   grep -rhoE "data-slot=[\"'{][^\"'}]*" src/components/ui/
  *   grep -rhoE "slot: '[^']*'"            src/components/ui/
  *
- * ── 挂载面为什么只有 ~25 个 slot ──
- * 第三版挂了 184 个。多出来的那些(按钮的 41 个规则块、表单控件的 37 个、
- * 分段控件的 25 个)在"遮住颜色只看轮廓"的验收下一条也读不出来,却让每次
- * 上游升级都要重新核对。第四版只保留六条形状真正需要的挂载点,
- * 名单由 styles/__tests__/qy-sg-apply.test.ts 钉死,加一个都要先改测试。
+ * ── 挂载面为什么只有 24 个 slot ──
+ * 六条形状真正需要的就这些。名单由 styles/__tests__/qy-sg-apply.test.ts 钉死,
+ * 加一个都要先改测试,顺带在 code review 里解释为什么值得。
+ *
+ * ── 零投影 ──
+ * 参考稿:the system is shadowless by design。本文件里出现的每一条 box-shadow,
+ * 取值只能是 none —— 同样有测试钉着。层次全部交给发丝线与半透明洗色。
+ *
+ * 口径:qianye/docs/design-14-midnight-signal.md
  */
 
 /* ══════════════════════════════════════════════════════════════
- * §1 形状一 · 标注排版
+ * §1 形状一 · 戳记标注
  *
  * 列头、状态徽章、侧栏分组标题、表单标签、键值行的键、区段序号 ——
- * 凡是"这是什么"而不是"这是多少"的字,一律等宽 + 宽字距 + 大写。
- * 遮住颜色之后,这一条是最先被认出来的特征。
+ * 凡是「这是什么」而不是「这是多少」的字,一律等宽 + 0.2em 字距 + 大写。
+ * 参考稿的原话是 the tracking IS the design;抹成灰度之后,这一条是最先被
+ * 认出来的特征。
  * ══════════════════════════════════════════════════════════════ */
 
 [data-theme-preset='steins-gate']
@@ -68,30 +73,28 @@ For commercial licensing, please contact support@quantumnous.com
   text-transform: uppercase;
 }
 
-/* 序号("LAB MEMO — 01"、编号行的"/ 01")。与标注同一枚排版,
- * 只是转强调色 —— 它是标注里唯一需要被一眼找到的一档。 */
+/* 序号(区段头的 GATE 07、编号行的 / 07)。与标注同一枚排版,只是转品牌色的第二档
+ * —— 参考稿把 Lavender Mist 的角色写作 contrast-safe text,文字用第二档而不用
+ * 品牌色本身(Don't use Signal Violet for borders, text...)。 */
 [data-theme-preset='steins-gate'] :is(.qy-sg-no, .qy-sg-idx) {
   font-family: var(--qy-sg-mono);
   font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0.26em;
+  letter-spacing: var(--qy-sg-label-track);
   font-variant-numeric: tabular-nums;
   text-transform: uppercase;
-  color: var(--primary);
+  color: var(--qy-sg-mist);
 }
 
 /* ══════════════════════════════════════════════════════════════
  * §2 形状一(丝印档)· 副标
  *
- * 中文大字 + 等宽英文/日文小字成对出现,是本主题第二强的识别特征:
- * 区段头右侧的日文副标、统计块的英文代号、工作区索引的分组标签。
- * 它们全是装饰性字形,消费方一律 aria-hidden。
- *
- * 侧栏菜单项曾经也在这一档(英文小号大写副标),已整体去掉 —— 只有 qy 的项
- * 有副标、上游的没有,那不是识别特征而是不齐。
+ * 中文大字 + 等宽英文小字成对出现,是本主题第二强的识别特征:
+ * 区段头右侧的页面代号、统计块的补充说明。它们全是装饰性字形,
+ * 消费方一律 aria-hidden 或本身就是补充信息。
  * ══════════════════════════════════════════════════════════════ */
 
-[data-theme-preset='steins-gate'] :is(.qy-sg-jp, .qy-sg-stat-sub) {
+[data-theme-preset='steins-gate'] :is(.qy-sg-code, .qy-sg-stat-sub) {
   font-family: var(--qy-sg-mono);
   font-size: var(--qy-sg-micro-size);
   font-weight: 400;
@@ -99,13 +102,6 @@ For commercial licensing, please contact support@quantumnous.com
   letter-spacing: var(--qy-sg-micro-track);
   text-transform: uppercase;
   color: var(--qy-sg-faint);
-}
-
-/* 日文副标不大写(片假名没有大小写,text-transform 只会让浏览器多做一次
- * 无用的字形映射),字距再宽半档。 */
-[data-theme-preset='steins-gate'] .qy-sg-jp {
-  text-transform: none;
-  letter-spacing: 0.4em;
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -129,36 +125,17 @@ For commercial licensing, please contact support@quantumnous.com
 }
 
 /* ══════════════════════════════════════════════════════════════
- * §4 形状二 · 双层直角框
+ * §4 形状二 · 票面
  *
- * 卡片与四种浮层共用同一个环配方。宿主先清掉圆角矩形的痕迹并让出定位
- * 上下文,再由 ::before 画外框环、::after 画第二层线。
+ * 大圆角 + 一条发丝线 + 一层半透明洗色 + 零投影 + 松内边距。
+ * 卡片与六种浮层共用同一条规则。
  *
- * 【特异度是刻意抬高的】body 前缀把宿主规则抬到 (0,3,1)。上游给这些 slot
- * 的 border / rounded-* 是 Tailwind 工具类,同为 (0,1,0) 时源序会让它们赢回
- * 圆角发丝线框,框就白写了。
+ * 【特异度是刻意抬高的】body 前缀把规则抬到 (0,3,1)。上游给这些 slot 的
+ * border / rounded-* / shadow-* 是 Tailwind 工具类,同为 (0,1,0) 时源序会让
+ * 它们赢回默认形态,票面就白写了。
  *
- * 【表格不在名单里】截图里的表格没有外框,只有一格一格的独立盒(见 §5)。
- * 外壳再画一圈框就是"框套格子",两种分隔语言叠在一起。
- *
- * 【position 必须与外观分成两条规则】外观(border / radius)七个 slot 通吃,
- * 但 `position: relative` 只能给**原本就是 static** 的那三个。
- *
- * 这里踩过一次:七个 slot 写在同一条规则里一起吃 `position: relative`。
- * 上游给 dialog / alert-dialog / sheet / drawer 的 `.fixed` 是 (0,1,0) 的
- * Tailwind 工具类,而本规则被 body 前缀抬到了 (0,2,1) —— **主题赢,浮层被打回
- * 文档流**。portal 挂在 `<body>` 末尾,于是弹窗不再悬浮在视口中央,而是掉到
- * 整页内容的最下面,`top: 50%` 又把它再往下推半个页高。项目方看到的
- * 「弹窗从下面伸出来、怎么改都没用」就是这个 —— 组件侧改多少次居中都无效,
- * 因为定位根本没轮到组件说话。
- *
- * 反过来,原本 static 的三个(card 与两种菜单浮层,后两者真正的定位在
- * Base UI 的 Positioner 包一层上)不给 relative,::before / ::after 的
- * `inset: 0` 就会去找更外层的定位祖先,框跑到别的盒子上。
- *
- * 判据:`__tests__/qy-sg-overlay-position.test.ts` 会读这个文件,逐个 slot
- * 比对 `components/ui/*.tsx` 里的原生定位,主题再敢给 fixed/absolute 的
- * slot 写 position 就直接失败。
+ * 【表格不在名单里】时刻表没有外框(见 §5)。外壳再画一圈就是「框套行」,
+ * 两种分隔语言叠在一起。
  * ══════════════════════════════════════════════════════════════ */
 
 body[data-theme-preset='steins-gate']
@@ -171,43 +148,34 @@ body[data-theme-preset='steins-gate']
     [data-slot='popover-content'],
     [data-slot='dropdown-menu-content']
   ) {
-  border: 0;
-  border-radius: 0;
+  border: var(--qy-sg-pass-line) solid var(--qy-sg-hair-strong);
+  border-radius: var(--qy-sg-pass-radius);
+  background-color: var(--qy-sg-wash);
+  box-shadow: none;
+  transition: border-color 0.28s var(--qy-sg-ease);
 }
 
-/* 只有这三个是 static,需要主题补一个定位上下文出来。
- * 另外四个(dialog / alert-dialog / sheet / drawer)自带 `fixed`,
- * 本身就是合格的包含块,主题**一个字都不能碰它们的 position**。 */
+/* 卡片的内边距单独给:六种浮层的内边距由各自的 header/footer 结构决定,
+ * 一起改会把弹窗撑变形。
+ *
+ * 【为什么纵横分两条规则】上游 Card 只有 py-4,横向内边距在
+ * card-header / card-content / card-footer 这三个子块的 px-4 上
+ * (这样 <img> 作为直接子元素才能通铺到卡片边缘)。直接给 Card 写 padding
+ * 会与子块的 px-4 叠加成双层内边距,并且把通铺图片顶出圆角。
+ * 所以纵向给宿主、横向给子块,并用 :is(div, header, footer) 把 <img> 排除在外。 */
+body[data-theme-preset='steins-gate'] [data-slot='card'] {
+  padding-block: var(--qy-sg-pass-pad);
+  gap: var(--qy-sg-pass-pad);
+}
+
 body[data-theme-preset='steins-gate']
-  :is(
-    [data-slot='card'],
-    [data-slot='popover-content'],
-    [data-slot='dropdown-menu-content']
-  ) {
-  position: relative;
+  [data-slot='card']
+  > :is(div, header, footer) {
+  padding-inline: var(--qy-sg-pass-pad);
 }
 
-body[data-theme-preset='steins-gate']
-  :is(
-    [data-slot='card'],
-    [data-slot='dialog-content'],
-    [data-slot='alert-dialog-content'],
-    [data-slot='sheet-content'],
-    [data-slot='drawer-content'],
-    [data-slot='popover-content'],
-    [data-slot='dropdown-menu-content']
-  )::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  /* 必须有:这一层铺满整个面板并压在内容之上,不关掉指针事件会吃掉所有点击 */
-  pointer-events: none;
-  background-color: var(--qy-sg-frame-color);
-  clip-path: var(--qy-sg-frame-clip);
-  transition: background-color 0.28s var(--qy-sg-ease);
-}
-
+/* 交互语言是「线变亮」,不是「块浮起」。同时掐掉上游 index.css 给卡片的
+ * hover 位移与投影 —— 两套反馈叠在一起会让边线跟着抖。 */
 body[data-theme-preset='steins-gate']
   :is(
     [data-slot='card'],
@@ -217,40 +185,29 @@ body[data-theme-preset='steins-gate']
     [data-slot='drawer-content'],
     [data-slot='popover-content'],
     [data-slot='dropdown-menu-content']
-  )::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-image: var(--qy-sg-frame-marks);
-  background-size: var(--qy-sg-frame-marks-size);
-  background-position: var(--qy-sg-frame-marks-pos);
-  background-repeat: no-repeat;
-}
-
-/* 交互语言是"线变深",不是"块浮起"。同时掐掉上游 index.css 给卡片的
- * hover 位移与投影 —— 两套反馈叠在一起会让框跟着抖。 */
-body[data-theme-preset='steins-gate'] [data-slot='card']:hover {
+  ):hover {
   transform: none;
-  box-shadow: var(--qy-sg-lift-shadow);
+  border-color: var(--qy-sg-mist);
+  box-shadow: none;
 }
 
+/* 浮层磨砂 —— 参考稿 Frosted Nav Bar 那一档。卡片不参与(它不浮在内容之上)。
+ *
+ * 【position 一个字都不能碰】dialog / alert-dialog / sheet / drawer 的定位是
+ * 上游 Tailwind 的 .fixed,特异度 (0,1,0);本文件带 body 前缀的规则是 (0,2,1),
+ * 会赢下来把浮层打回文档流 —— portal 挂在 <body> 末尾,弹窗于是掉到整页内容的
+ * 最下方,top: 50% 再把它往下推半个页高。项目方那句「弹窗从下面伸出来、怎么改
+ * 都没用」就是这个,组件侧改多少次居中都无效。
+ * __tests__/qy-sg-overlay-position.test.ts 会读本文件逐个 slot 比对上游的原生
+ * 定位,主题再敢给自带定位的 slot 写 position 就直接失败。
+ *
+ * 第五版的票面不需要伪元素铺边框层(边框就是 border),所以原本给 card /
+ * popover / dropdown-menu 补的那条 position: relative 也一并去掉了 ——
+ * 本文件只剩 §6 航线那一处 position,而它挂的是自带静态定位的侧栏头。
+ *
+ * 【body 前缀不能省】上面那条票面规则带 body 前缀是 (0,2,1),
+ * 这里若写成 (0,2,0) 就会被它压住,背景仍是票面的洗色、磨砂看不出来。 */
 body[data-theme-preset='steins-gate']
-  :is(
-    [data-slot='card'],
-    [data-slot='dialog-content'],
-    [data-slot='alert-dialog-content'],
-    [data-slot='sheet-content'],
-    [data-slot='drawer-content'],
-    [data-slot='popover-content'],
-    [data-slot='dropdown-menu-content']
-  ):hover::before {
-  background-color: color-mix(in oklch, var(--primary) 40%, transparent);
-}
-
-/* 浮层磨砂。四种浮层共用一档,卡片不参与(它不浮在内容之上)。 */
-[data-theme-preset='steins-gate']
   :is(
     [data-slot='dialog-content'],
     [data-slot='alert-dialog-content'],
@@ -259,19 +216,16 @@ body[data-theme-preset='steins-gate']
     [data-slot='popover-content'],
     [data-slot='dropdown-menu-content']
   ) {
-  /* 只写不带前缀的这一行。实测:同时写 backdrop-filter 与
-   * -webkit-backdrop-filter,lightningcss 会按前缀组折叠,输出【只剩】
-   * -webkit- 那条,标准属性反而被删掉。需要前缀时由构建自己补。 */
   backdrop-filter: var(--qy-sg-blur);
-  box-shadow: var(--qy-sg-lift-shadow);
+  background-color: color-mix(in oklch, var(--popover) 86%, transparent);
 }
 
 /* ══════════════════════════════════════════════════════════════
- * §5 形状三 · 表格每格独立盒 + 强调色表头带
+ * §5 形状三 · 时刻表
  *
- * 截图里最强的一处结构。默认主题的表格是"整块框 + 横向分隔线",
- * 这里改成"没有外框,每格自己一个盒,盒之间留 4px 缝",
- * 表头是一条金 → 橙的填充带。遮住颜色只看轮廓,这一条独立就能认出来。
+ * 默认主题的表格是「整块框 + 横向分隔线 + 斑马纹」。这里改成航班信息板:
+ * 无外框、无斑马纹、无单元格盒,只有横向发丝线与戳记式列头。
+ * 抹成灰度只看轮廓,这一条独立就能认出来。
  * ══════════════════════════════════════════════════════════════ */
 
 [data-theme-preset='steins-gate'] [data-slot='table-container'] {
@@ -281,54 +235,70 @@ body[data-theme-preset='steins-gate']
 }
 
 [data-theme-preset='steins-gate'] [data-slot='table'] {
-  border-collapse: separate;
-  border-spacing: var(--qy-sg-cell-gap);
+  border-collapse: collapse;
 }
 
-[data-theme-preset='steins-gate']
-  :is([data-slot='table-row'], [data-slot='table-body']) {
+[data-theme-preset='steins-gate'] [data-slot='table-body'] {
   border: 0;
   background: transparent;
 }
 
-/* 每格一个独立盒 */
-[data-theme-preset='steins-gate'] [data-slot='table-cell'] {
-  border: var(--qy-sg-cell-line) solid var(--qy-sg-hair-strong);
-  border-radius: 0;
-  background: var(--card);
+/* 行:只有一条下发丝线,没有底色。 */
+[data-theme-preset='steins-gate'] [data-slot='table-row'] {
+  border: 0;
+  border-bottom: var(--qy-sg-rule) solid var(--qy-sg-hair);
+  background: transparent;
 }
 
-[data-theme-preset='steins-gate']
-  [data-slot='table-row']:hover
-  [data-slot='table-cell'] {
-  border-color: color-mix(in oklch, var(--primary) 55%, transparent);
-  background: var(--qy-sg-accent-soft);
-}
-
-/* 表头带。整行铺满同一条渐变:每个 th 只画渐变的一段(background-attachment
- * 没法跨单元格续接),所以把渐变挂在 thead 的行上,th 自己透明 ——
- * border-spacing 会在 th 之间留缝,缝里露出的正是行底那条带子,
- * 与截图里"一条连续的带子上写着列名"一致。 */
+/* 表头:上下各一条更实的线,本身不填色 —— 参考稿没有实色表头带,
+ * 它的层级差全靠线宽与戳记排版。 */
 [data-theme-preset='steins-gate']
   thead
   [data-slot='table-row']:has([data-slot='table-head']) {
-  background: var(--qy-sg-band);
+  border-top: var(--qy-sg-rule) solid var(--qy-sg-hair-strong);
+  border-bottom: var(--qy-sg-rule) solid var(--qy-sg-hair-strong);
+  background: transparent;
 }
 
 [data-theme-preset='steins-gate'] [data-slot='table-head'] {
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--qy-sg-band-fg);
+  color: var(--secondary-foreground);
+  padding-block: var(--qy-sg-row-pad);
+}
+
+[data-theme-preset='steins-gate'] [data-slot='table-cell'] {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding-block: var(--qy-sg-row-pad);
+}
+
+/* hover:整行洗一层色,首格左侧补一条 2px 品牌色竖线 —— 参考稿允许的那「一处强调
+ * 笔画」。用 background-image 画而不是 border-left(会让整行位移 2px)
+ * 也不是 box-shadow: inset(违反零投影)。 */
+[data-theme-preset='steins-gate'] [data-slot='table-row']:hover {
+  background: var(--qy-sg-wash);
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='table-row']:hover
+  [data-slot='table-cell']:first-child {
+  background-image: var(--qy-sg-tick-fill);
+  background-repeat: no-repeat;
 }
 
 /* ══════════════════════════════════════════════════════════════
- * §6 形状四 · 侧栏与页头的电路走线
+ * §6 形状四 · 侧栏与页头的航线
  *
  * 走线的宿主全是上游组件渲染的元素,加不了类名,只能按 data-slot / :has()
  * 自下而上选中再挂 ::after —— 这也是形状层只导出变量、不导出工具类的原因。
  * ══════════════════════════════════════════════════════════════ */
 
+/* 两个宿主原本都是静态定位(侧栏头是 flex flex-col gap-2 p-2),
+ * 补一个定位上下文出来给 ::after 用。走线要通铺到容器两侧,不能跟着
+ * 侧栏头的 p-2 缩进,所以用 absolute + left/right: 0 而不是块级流。 */
 [data-theme-preset='steins-gate'] [data-slot='sidebar-header'],
 [data-theme-preset='steins-gate'] div:has(> div > div > h2 > .qy-sg-page-head) {
   position: relative;
@@ -343,77 +313,85 @@ body[data-theme-preset='steins-gate']
   left: 0;
   right: 0;
   /* 把整条带子的垂直中心对准原 border-bottom 的位置 */
-  bottom: calc(var(--qy-sg-trace-h) / -2);
-  height: var(--qy-sg-trace-h);
+  bottom: calc(var(--qy-sg-route-h) / -2);
+  height: var(--qy-sg-route-h);
   pointer-events: none;
-  background-color: var(--qy-sg-trace-color);
-  mask-image: var(--qy-sg-trace-tile);
-  mask-size: var(--qy-sg-trace-tile-size);
+  background-color: var(--qy-sg-route-color);
+  mask-image: var(--qy-sg-route-tile);
+  mask-size: var(--qy-sg-route-tile-size);
   mask-repeat: repeat-x;
   mask-position: left center;
 }
 
-/* 侧栏分组标题下方一条发丝线,把"组"这件事画出来(§1 已给它标注排版) */
+/* 侧栏分组标题下方一条发丝线,把「组」这件事画出来(§1 已给它戳记排版) */
 [data-theme-preset='steins-gate'] [data-slot='sidebar-group-label'] {
-  border-bottom: 1px solid var(--qy-sg-hair);
+  border-bottom: var(--qy-sg-rule) solid var(--qy-sg-hair);
   padding-bottom: 0.375rem;
   margin-bottom: 0.25rem;
   color: var(--qy-sg-faint);
 }
 
 /* ══════════════════════════════════════════════════════════════
- * §7 形状五 · 标题铭牌
+ * §7 形状六 · 坐标戳记(表格铭牌)
  *
- * 语义宿主是"表格自己的标题"—— 正是 CONTROLLER 之于那张按键表。
+ * 参考稿的收尾签名:左边一个 + 号,右边一行等宽小字。
+ * 语义宿主是「表格自己的标题」。
  * ══════════════════════════════════════════════════════════════ */
 
 [data-theme-preset='steins-gate'] [data-slot='table-caption'] {
-  /* 【不要改成 inline-block】第三版就是 inline-block,实测的后果是 <caption>
-   * 脱离 caption 盒、被塞进匿名表格行,铭牌渲染在表头带与首行【之间】。
-   * 保持 table-caption 才落在表格上方;宽度用 max-content 让框贴住文字。 */
+  /* 【不要改成 inline-block】实测的后果是 <caption> 脱离 caption 盒、被塞进
+   * 一个匿名表格行,铭牌于是渲染在表头与首行【之间】而不是表格上方。
+   * 保持 table-caption 才落在表格上方。 */
   display: table-caption;
   caption-side: top;
-  width: max-content;
-  margin-bottom: 0.625rem;
-  border: var(--qy-sg-plaque-inner) solid var(--primary);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.75rem;
+  border: 0;
+  border-bottom: var(--qy-sg-rule) solid var(--qy-sg-hair);
   border-radius: 0;
-  outline: var(--qy-sg-plaque-outer) solid var(--primary);
-  outline-offset: var(--qy-sg-plaque-gap);
-  padding: var(--qy-sg-plaque-pad);
   background: transparent;
-  color: var(--primary);
-  font-family: var(--qy-sg-serif);
-  font-weight: 700;
-  font-size: 1.0625rem;
-  line-height: 1.25;
-  letter-spacing: 0.04em;
+  color: var(--qy-sg-mist);
+  font-family: var(--qy-sg-mono);
+  font-size: var(--qy-sg-label-size);
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: var(--qy-sg-label-track);
+  text-align: left;
   text-transform: uppercase;
 }
 
+[data-theme-preset='steins-gate'] [data-slot='table-caption']::before {
+  content: var(--qy-sg-mark);
+  margin-right: var(--qy-sg-mark-gap);
+  color: var(--primary);
+}
+
 /* ══════════════════════════════════════════════════════════════
- * §8 形状六 · 状态徽章:直角 + 一圈发丝线
+ * §8 徽章:胶囊 + 戳记
  *
- * 徽章是本主题唯一【不】走胶囊的小控件:胶囊留给按钮(身份标识),
- * 徽章走直角,与单元格盒同一种语言。排版已由 §1 给出,这里只给几何。
+ * 参考稿把胶囊留给小标签(Ghost Pill Button / badge),把方角留给按钮。
+ * 这与第四版正好相反,是刻意跟着参考稿换的。排版已由 §1 给出,这里只给几何。
  * ══════════════════════════════════════════════════════════════ */
 
 [data-theme-preset='steins-gate']
   :is([data-slot='badge'], [data-slot='status-badge']) {
-  border-radius: 0;
+  border-radius: var(--qy-sg-pill);
   border-width: var(--qy-sg-chip-line);
   padding: var(--qy-sg-chip-pad);
+  box-shadow: none;
 }
 
 /* ══════════════════════════════════════════════════════════════
- * §9 控件的两种形态
+ * §9 按钮与输入类
  *
- * 只有两条:按钮是胶囊,输入类是直角。第三版在这两类上写了 103 个规则块
- * (按钮 41 / 表单控件 37 / 分段控件 25),遮住颜色一条也读不出来。
+ * 参考稿只给了两个按钮圆角(8px 与全胶囊)与一个小控件档(6px)。
+ * 按钮取 8px,输入类取 6px。
  * ══════════════════════════════════════════════════════════════ */
 
 [data-theme-preset='steins-gate'] [data-slot='button'] {
-  border-radius: var(--qy-sg-pill);
-  letter-spacing: 0.06em;
+  border-radius: var(--qy-sg-ctl-radius);
+  letter-spacing: 0.02em;
+  box-shadow: none;
 }
 
 [data-theme-preset='steins-gate']
@@ -423,14 +401,15 @@ body[data-theme-preset='steins-gate']
     [data-slot='select-trigger'],
     [data-slot='native-select']
   ) {
-  border-radius: 0;
+  border-radius: var(--qy-sg-field-radius);
   border-color: var(--qy-sg-hair-strong);
+  box-shadow: none;
 }
 
 /* ══════════════════════════════════════════════════════════════
  * §10 qy 页面骨架
  *
- * 区段头(序号 + 大标题 + 日文副标)、概览数字栏、工作区索引行。
+ * 区段头(序号 + 戳记大标题 + 页面代号)、概览数字栏、工作区索引行。
  * 这三处是页面级构图,没有对应的上游组件,由 qy 的组件写显式类名。
  * 类名与消费方的对应关系由 styles/__tests__/qy-sg-apply.test.ts 双向校验:
  * CSS 里定义了却没人用、或组件用了 CSS 里没有,两个方向都会红。
@@ -465,33 +444,44 @@ body[data-theme-preset='steins-gate']
   min-width: 0;
 }
 
+/* 区段大标题 = 戳记档。【走无衬线轴不走等宽轴】:它装的是中文页面标题,
+ * 等宽轴的回退栈末端只有 monospace,中文字形会掉进浏览器的通用等宽回退。
+ * 效果由字距与大写承担,不由字体承担。 */
 [data-theme-preset='steins-gate'] .qy-sg-sec-title {
-  font-family: var(--qy-sg-serif);
-  font-weight: 800;
-  font-size: clamp(1.375rem, 2.4vw, 1.875rem);
+  font-family: var(--qy-sg-sans);
+  font-weight: 400;
+  font-size: var(--qy-sg-stamp-size);
   line-height: 1.3;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--qy-sg-stamp-track);
+  text-transform: uppercase;
   color: var(--foreground);
   overflow-wrap: anywhere;
 }
 
+/* 辉光之一 · 页头。参考稿把那一支高饱和色当跑道灯,每页一处。
+ * 画成宿主自己的 background-image 而不是伪元素:::after 已经被航线占用,
+ * 而 background 天然画在内容之下,不需要处理层叠上下文。 */
 @media (min-width: 640px) {
   [data-theme-preset='steins-gate']
     div:has(> div > div > h2 > .qy-sg-page-head) {
     padding-top: 2rem;
     padding-bottom: 1.5rem;
+    background-image: var(--qy-sg-bloom);
+    background-repeat: no-repeat;
+    background-size: 100% 220%;
   }
 }
 
-/* 窄屏日文副标会把标题挤成一列窄条,直接收起 —— 它是装饰件,不是信息。 */
+/* 窄屏页面代号会把标题挤成一列窄条,直接收起 —— 它是装饰件,不是信息。 */
 @media (max-width: 640px) {
-  [data-theme-preset='steins-gate'] .qy-sg-jp {
+  [data-theme-preset='steins-gate'] .qy-sg-code {
     display: none;
   }
 }
 
 /* ── 概览数字栏(QyStatGrid)──
- * 同样的信息 shadcn 默认会给四个 Card,这里只画三条竖线:纸面而非卡片。
+ * 同样的信息 shadcn 默认会给四个 Card,这里只画三条竖线:参考稿的
+ * the card IS the row — no visible container, the spacing creates the boundary。
  * 列数由组件按实际项数写进 --qy-sg-stat-cols(3~4 项不定)。 */
 [data-theme-preset='steins-gate'] .qy-sg-stats {
   display: grid;
@@ -500,7 +490,7 @@ body[data-theme-preset='steins-gate']
 
 [data-theme-preset='steins-gate'] .qy-sg-stat {
   padding: 2.125rem 1.625rem;
-  border-left: 1px solid var(--qy-sg-hair);
+  border-left: var(--qy-sg-rule) solid var(--qy-sg-hair);
 }
 
 [data-theme-preset='steins-gate'] .qy-sg-stat:first-child {
@@ -509,9 +499,10 @@ body[data-theme-preset='steins-gate']
 }
 
 [data-theme-preset='steins-gate'] .qy-sg-stat-num {
-  font-weight: 500;
+  font-weight: 400;
   font-size: clamp(1.625rem, 3.2vw, 2.375rem);
   line-height: 1.15;
+  letter-spacing: -0.02em;
   color: var(--foreground);
 }
 
@@ -547,7 +538,7 @@ body[data-theme-preset='steins-gate']
   [data-theme-preset='steins-gate'] .qy-sg-stat {
     padding: 1.5rem 0;
     border-left: none;
-    border-top: 1px solid var(--qy-sg-hair);
+    border-top: var(--qy-sg-rule) solid var(--qy-sg-hair);
   }
 
   [data-theme-preset='steins-gate'] .qy-sg-stat:first-child {
@@ -556,9 +547,10 @@ body[data-theme-preset='steins-gate']
 }
 
 /* ── 工作区索引(qy 首页)──
- * 编辑式编号行:没有卡片、没有斑马纹,只有一条上发丝线,hover 时整行右移。 */
+ * 参考稿 Feature Row Card:the card IS the row。没有卡片、没有斑马纹,
+ * 只有一条上发丝线,hover 时整行右移。 */
 [data-theme-preset='steins-gate'] .qy-sg-rows {
-  border-bottom: 1px solid var(--qy-sg-hair);
+  border-bottom: var(--qy-sg-rule) solid var(--qy-sg-hair);
 }
 
 [data-theme-preset='steins-gate'] .qy-sg-index > .qy-sg-row {
@@ -567,7 +559,7 @@ body[data-theme-preset='steins-gate']
   align-items: baseline;
   gap: clamp(1rem, 3vw, 2.5rem);
   padding-block: 1.125rem;
-  border-top: 1px solid var(--qy-sg-hair);
+  border-top: var(--qy-sg-rule) solid var(--qy-sg-hair);
   color: inherit;
   text-decoration: none;
   transition: padding-left 0.3s var(--qy-sg-ease);
@@ -578,11 +570,11 @@ body[data-theme-preset='steins-gate']
 }
 
 [data-theme-preset='steins-gate'] .qy-sg-row-title {
-  font-family: var(--qy-sg-serif);
-  font-size: 1.1875rem;
-  font-weight: 600;
+  font-family: var(--qy-sg-sans);
+  font-size: 1.125rem;
+  font-weight: 400;
   line-height: 1.5;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
   color: var(--foreground);
 }
 
@@ -591,11 +583,11 @@ body[data-theme-preset='steins-gate']
   > .qy-sg-row:hover
   .qy-sg-row-title,
 [data-theme-preset='steins-gate'] .qy-sg-index > .qy-sg-row:hover .qy-sg-idx {
-  color: var(--primary);
+  color: var(--qy-sg-mist);
 }
 
 [data-theme-preset='steins-gate'] .qy-sg-index-group {
-  margin-top: clamp(2rem, 5vw, 3.5rem);
+  margin-top: var(--qy-sg-head-gap);
 }
 
 [data-theme-preset='steins-gate'] .qy-sg-index-group:first-child {
@@ -608,9 +600,21 @@ body[data-theme-preset='steins-gate']
   color: var(--qy-sg-faint);
 }
 
-/* 读数行:"> OBS // 1.048596 FIELD β · STABLE"。分页条与概览栏共用。 */
+/* 读数行 —— 形状六的第二个消费方。分页条与概览栏共用。 */
 [data-theme-preset='steins-gate'] .qy-sg-readout {
-  letter-spacing: 0.12em;
+  letter-spacing: var(--qy-sg-readout-track);
+}
+
+[data-theme-preset='steins-gate'] .qy-sg-readout::before {
+  content: var(--qy-sg-mark);
+  margin-right: var(--qy-sg-mark-gap);
+  color: var(--qy-sg-mist);
+}
+
+/* 概览栏整块也带 .qy-sg-readout(它是 grid 容器),那里的 + 号会落在
+ * 第一格之前的网格流里,把列数挤乱 —— 只让行内形态的读数出这个标记。 */
+[data-theme-preset='steins-gate'] .qy-sg-stats::before {
+  content: none;
 }
 
 /* 键值行的分隔线跟随发丝线 */
@@ -636,8 +640,8 @@ body[data-theme-preset='steins-gate']
 /* ══════════════════════════════════════════════════════════════
  * §11 焦点环与选中文本
  *
- * 焦点环用 outline 而不是 box-shadow,并顺手把上游的 Tailwind ring 清零:
- * 本文件是 index.css 顶层的无层(unlayered)导入,而 ring 工具类在
+ * 焦点环用 outline 而不是 box-shadow(零投影),并顺手把上游的 Tailwind ring
+ * 清零:本文件是 index.css 顶层的无层(unlayered)导入,而 ring 工具类在
  * @layer utilities 里 —— 无层恒胜有层,两者同时渲染会出现双环。
  * 用 :focus-visible 而非 :focus:鼠标点击不该出现焦点环。
  * ══════════════════════════════════════════════════════════════ */
@@ -655,25 +659,24 @@ body[data-theme-preset='steins-gate']
   color: var(--qy-sg-selection-fg);
 }
 
+/* 正文行距。参考稿 body line-height 1.5,这里取 1.6 给中文多一点呼吸。
+ * 只作用在 body 上靠继承传下去,不逐个组件写。 */
+[data-theme-preset='steins-gate'] {
+  line-height: var(--qy-sg-leading);
+}
+
 /* ══════════════════════════════════════════════════════════════
- * §12 公共落地页的去色
+ * §12 公共落地页
  *
- * ── 为什么这一节没有跟着 qy-sg-landing.css(383 行)一起删掉 ──
- *
- * 落地页通篇 Tailwind 工具类、一个 data-slot 都没有,拿类名当锚点确实脆。
- * 但它的问题不是"主题够不到",而是【它主动与主题冲突】:hero 与 CTA 的三层
- * radial-gradient 写死在 React 的 style 属性里,标题渐变、徽章、图标全是
- * blue / violet / purple / emerald / amber 的字面量 —— 这些颜色不跟随任何
- * CSS 变量,是未登录用户第一眼看到的一屏。
- *
- * 所以保留的只有【一件事】:把硬编码的色字面量换成主题色。删掉的是 383 行里
- * 那些重排落地页版式的部分(bento 宫格、胶囊、终端外壳、图标盒、眉标排版),
- * 它们才是"上游一改就静默失效"的大头,而且改不改都不影响识别度。
- *
+ * ── 锚点为什么是 Tailwind 类名 ──
+ * 落地页(features/home)通篇工具类,一个 data-slot 都没有。拿类名当锚点确实脆,
  * 失效模式是 fail-open:上游哪天把 text-blue-600 换成别的,本节不再命中,
- * 落地页退回上游的蓝 —— 与没有本节时完全一样,不会白屏也不会错位。
+ * 落地页退回上游形态 —— 与没有本节时完全一样,不会白屏也不会错位。
  *
- * 作用域根 `.min-h-svh:has(> section .landing-animate-fade-up)`:
+ * 能用【语义元素】(section / h2 / p / footer)的地方一律优先用语义元素,
+ * 它们比类名字符串稳得多。
+ *
+ * 作用域根 .min-h-svh:has(> section .landing-animate-fade-up):
  * .landing-animate-fade-up 只可能来自 features/home 的 hero 与
  * components/animate-in-view(全仓 AnimateInView 只有那三个 section 消费),
  * 因此对 pricing / rankings / about / legal 恒为 false —— 它们同样走
@@ -682,63 +685,194 @@ body[data-theme-preset='steins-gate']
 
 [data-theme-preset='steins-gate']
   .min-h-svh:has(> section .landing-animate-fade-up) {
-  /* 两块行内 radial-gradient。!important 是唯一手段:上游写在 style 属性里。 */
-  & section > div[aria-hidden][style*='radial-gradient'] {
-    opacity: 1;
-    background:
-      radial-gradient(
-        ellipse 62% 52% at 18% 14%,
-        color-mix(in oklch, var(--primary) 24%, transparent) 0%,
-        transparent 68%
-      ),
-      radial-gradient(
-        ellipse 54% 44% at 84% 10%,
-        color-mix(in oklch, var(--qy-sg-ember) 22%, transparent) 0%,
-        transparent 70%
-      ) !important;
+  /* ── 通铺画布 ──
+   * 参考稿:edge-to-edge dark bands with no visual dividers between them —
+   * rhythm comes from generous sectionGap。所以统计条那圈上下边框与底色去掉,
+   * 区段之间只靠间距分隔。 */
+  & > div[class~='border-y'] {
+    border-color: transparent;
+    background: transparent;
   }
 
-  /* 标题的三段蓝紫渐变字 → 金 → 橙 */
+  & > section[class~='border-t'] {
+    border-color: var(--qy-sg-hair);
+  }
+
+  & > section {
+    padding-block: var(--qy-sg-sec-gap);
+  }
+
+  /* ── 辉光之二 · 首屏 ──
+   * 上游把三层蓝紫 radial 写死在 style 属性里,!important 是唯一手段。
+   * 只留首屏这一处:参考稿 the violet is rationed to one or two cards per page。 */
+  & > section:first-of-type > div[aria-hidden][style*='radial-gradient'] {
+    opacity: 1;
+    background: var(--qy-sg-bloom) !important;
+  }
+
+  /* CTA 区那一块 radial 直接熄掉 —— 配额已经用完。 */
+  & > section:not(:first-of-type) > div[aria-hidden][style*='radial-gradient'] {
+    background: none !important;
+  }
+
+  /* ── 区段头戳记化 ──
+   * 每个区段都是「一行大写小字眉标 + 一个 h2」。眉标转戳记档,
+   * h2 转参考稿的 display 排版:字重压到 300、字距收紧、字号放大。 */
+  & :is(section, div) > div p[class*='uppercase'] {
+    font-family: var(--qy-sg-mono);
+    font-size: var(--qy-sg-label-size);
+    font-weight: 500;
+    letter-spacing: var(--qy-sg-label-track);
+    color: var(--qy-sg-mist);
+  }
+
+  & h1,
+  & h2 {
+    font-weight: 300;
+    letter-spacing: -0.02em;
+  }
+
+  & h1 {
+    font-size: clamp(2.5rem, 5.5vw, 4rem);
+    line-height: 1.1;
+  }
+
+  & h2 {
+    font-size: clamp(1.75rem, 3.4vw, 2.75rem);
+    line-height: 1.15;
+  }
+
+  /* 标题里那段蓝紫渐变字 → 品牌蓝 → 第二档 */
   & :is(h1, h2) > span.text-transparent {
     background-image: linear-gradient(
       100deg,
       var(--primary) 0%,
-      var(--qy-sg-ember) 100%
+      var(--qy-sg-mist) 100%
     );
   }
 
-  /* 按用途分四组一次性改写,而不是按色阶逐条列举。
-     判别实色与半透明靠类名里有没有斜杠:Tailwind 的透明度修饰符写作
-     `bg-blue-500/5`,实色是 `bg-blue-500`;`[class~=…]` 匹配完整 token,
-     不会被 `bg-blue-500/5` 命中。 */
+  /* ── 发丝线取代卡片与阴影 ──
+   * bento 宫格本来就是 gap-px + 容器底色的发丝线网格,只需要把圆角换成票面档;
+   * 应用胶囊、图标盒、步骤盒的边框统一到发丝线,投影一律清零。 */
+  & div[class*='rounded-xl'][class*='border'],
+  & div[class*='rounded-2xl'][class*='border'] {
+    border-radius: var(--qy-sg-pass-radius);
+    border-color: var(--qy-sg-hair);
+  }
+
+  & [class*='shadow-'] {
+    box-shadow: none;
+  }
+
+  & a[class*='rounded-full'][class*='border'] {
+    border-color: var(--qy-sg-hair);
+    background-color: var(--qy-sg-wash);
+  }
+
+  & a[class*='rounded-full'][class*='border']:hover {
+    border-color: var(--qy-sg-mist);
+    background-color: var(--qy-sg-wash-strong);
+  }
+
+  /* ── 坐标页脚 ──
+   * 参考稿的收尾签名。footer 是语义元素,比类名稳。 */
+  & footer {
+    border-top: var(--qy-sg-rule) solid var(--qy-sg-hair);
+    font-family: var(--qy-sg-mono);
+    letter-spacing: var(--qy-sg-readout-track);
+  }
+
+  /* ── 去色 ──
+   *
+   * 上游把七八种色阶写死在类名里。这里按【用途】改写而不是按色阶逐条列举,
+   * 并且把整张 Tailwind 色板都列全 —— 只列 blue/violet 那几支的话,上游哪天
+   * 把 text-blue-600 换成 text-sky-600,页面上就会留下一处孤零零的蓝
+   * (首屏终端演示里的 Key 就正是 text-sky-*,上一版恰好漏掉了它)。
+   *
+   * 文字分三档而不是一律压成同一个颜色:首屏的终端演示是代码高亮,
+   * Command / Flag / Key / String / Number 五个角色靠颜色区分,全压成一种色
+   * 会让那块变成一坨看不出结构的字。三档正好落在本主题已有的三级文字上:
+   *   最亮  → 命令、成功态      (green / emerald / teal / lime)
+   *   蓝味  → 标识符、键、标志   (blue / sky / cyan / indigo)
+   *   次级  → 字面量、强调       (红橙黄 + 紫粉一族)
+   * 抹成灰度看仍是"一段有层次的代码",但整块只剩白 / 蓝 / 灰三个调子。
+   * 上游的蓝族落在带品牌味的那一档:换成蓝主题之后再让 text-blue-* 变灰,
+   * 读代码的人会以为是写错了。
+   *
+   * 判别实色与半透明靠类名里有没有斜杠:Tailwind 的透明度修饰符写作
+   * `bg-blue-500/5`,实色是 `bg-blue-500`;`[class~=…]` 匹配完整 token,
+   * 不会被 `bg-blue-500/5` 命中。 */
+  & [class*='text-green-'],
+  & [class*='text-emerald-'],
+  & [class*='text-teal-'],
+  & [class*='text-lime-'] {
+    color: var(--foreground);
+  }
+
   & [class*='text-blue-'],
+  & [class*='text-sky-'],
+  & [class*='text-cyan-'],
+  & [class*='text-indigo-'] {
+    color: var(--qy-sg-mist);
+  }
+
+  & [class*='text-red-'],
+  & [class*='text-orange-'],
+  & [class*='text-amber-'],
+  & [class*='text-yellow-'],
   & [class*='text-violet-'],
   & [class*='text-purple-'],
-  & [class*='text-emerald-'],
-  & [class*='text-amber-'] {
-    color: var(--primary);
+  & [class*='text-fuchsia-'],
+  & [class*='text-pink-'],
+  & [class*='text-rose-'] {
+    color: var(--muted-foreground);
   }
 
-  & [class*='bg-blue-400/'],
-  & [class*='bg-blue-500/'],
-  & [class*='bg-violet-400/'],
-  & [class*='bg-violet-500/'],
-  & [class*='bg-emerald-400/'],
-  & [class*='bg-emerald-500/'],
-  & [class*='bg-amber-400/'],
-  & [class*='bg-amber-500/'] {
-    background-color: var(--qy-sg-accent-soft);
+  /* 底色与边框:全部退回洗色与发丝线,一支都不留。
+   * 这一条【必须排在下面的实色块规则之前】—— 两条特异度相同,靠源序分胜负:
+   * 广谱的这条先把所有 bg-<族>- 洗掉,再由后面那条把少数几个实色块提回强调色。
+   * 反过来写的话,实色块会被这条洗掉,参考稿唯一允许的那处填充就没了。 */
+  & [class*='bg-red-'],
+  & [class*='bg-orange-'],
+  & [class*='bg-amber-'],
+  & [class*='bg-yellow-'],
+  & [class*='bg-lime-'],
+  & [class*='bg-green-'],
+  & [class*='bg-emerald-'],
+  & [class*='bg-teal-'],
+  & [class*='bg-cyan-'],
+  & [class*='bg-sky-'],
+  & [class*='bg-blue-'],
+  & [class*='bg-indigo-'],
+  & [class*='bg-violet-'],
+  & [class*='bg-purple-'],
+  & [class*='bg-fuchsia-'],
+  & [class*='bg-pink-'],
+  & [class*='bg-rose-'] {
+    background-color: var(--qy-sg-wash-strong);
   }
 
-  & [class*='border-blue-400/'],
-  & [class*='border-blue-500/'],
-  & [class*='border-emerald-400/'],
-  & [class*='border-emerald-500/'],
-  & [class*='border-amber-400/'],
-  & [class*='border-violet-400/'] {
-    border-color: color-mix(in oklch, var(--primary) 40%, transparent);
+  & [class*='border-red-'],
+  & [class*='border-orange-'],
+  & [class*='border-amber-'],
+  & [class*='border-yellow-'],
+  & [class*='border-lime-'],
+  & [class*='border-green-'],
+  & [class*='border-emerald-'],
+  & [class*='border-teal-'],
+  & [class*='border-cyan-'],
+  & [class*='border-sky-'],
+  & [class*='border-blue-'],
+  & [class*='border-indigo-'],
+  & [class*='border-violet-'],
+  & [class*='border-purple-'],
+  & [class*='border-fuchsia-'],
+  & [class*='border-pink-'],
+  & [class*='border-rose-'] {
+    border-color: var(--qy-sg-hair-strong);
   }
 
+  /* 实色块 —— 参考稿允许的那「一处填充」。 */
   & [class~='bg-blue-400'],
   & [class~='bg-blue-500'],
   & [class~='bg-emerald-500'],
@@ -758,8 +892,8 @@ body[data-theme-preset='steins-gate']
 /* ══════════════════════════════════════════════════════════════
  * §13 prefers-reduced-motion
  *
- * 停的是位移与过渡,静态形态(双层框、单元格盒、表头带、铭牌、走线)全部保留 ——
- * 规范要求的正是"停动效、留形态"。
+ * 停的是位移与过渡,静态形态(票面、时刻表、航线、铭牌、戳记)全部保留 ——
+ * 规范要求的正是「停动效、留形态」。
  * ══════════════════════════════════════════════════════════════ */
 
 @media (prefers-reduced-motion: reduce) {
@@ -772,7 +906,7 @@ body[data-theme-preset='steins-gate']
       [data-slot='drawer-content'],
       [data-slot='popover-content'],
       [data-slot='dropdown-menu-content']
-    )::before {
+    ) {
     transition: none;
   }
 

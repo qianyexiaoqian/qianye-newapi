@@ -318,8 +318,40 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_payout_not_found: 'qy_lot_err_payout_not_found',
   qy_lot_payout_needs_manual: 'qy_lot_err_payout_needs_manual',
   qy_lot_bad_request: 'qy_lot_err_bad_request',
+  // 卡片背景图。十一个 code 各自要求的下一步完全不同：换一张更小的 / 换一种
+  // 格式 / 先保存或移除待用的那几张 / 地址写错了 / 两种来源只能二选一 /
+  // 刷新后重试。不登记就全塌成一句"请求参数不合法"，而运营会去改别的字段。
+  qy_lot_cover_disabled: 'qy_lot_err_cover_disabled',
+  qy_lot_cover_required: 'qy_lot_err_cover_required',
+  qy_lot_cover_too_large: 'qy_lot_err_cover_too_large',
+  qy_lot_cover_type: 'qy_lot_err_cover_type',
+  qy_lot_cover_not_found: 'qy_lot_err_cover_not_found',
+  qy_lot_cover_purged: 'qy_lot_err_cover_purged',
+  qy_lot_cover_pending_limit: 'qy_lot_err_cover_pending_limit',
+  qy_lot_cover_store_failed: 'qy_lot_err_cover_store_failed',
+  qy_lot_cover_both_sources: 'qy_lot_err_cover_both_sources',
+  qy_lot_cover_bad_url: 'qy_lot_err_cover_bad_url',
+  qy_lot_cover_raced: 'qy_lot_err_cover_raced',
   qy_lot_proof_not_ready: 'qy_lot_err_proof_not_ready',
   qy_lot_proof_disabled: 'qy_lot_err_proof_disabled',
+  // 「彻底删除」的六道硬闸门 + 两道前置。八个 code 全都是 409/400，不登记就会
+  // 塌成一句"操作冲突"，而它们要求运营做的下一步完全不同：等出款落定 / 先去
+  // 发那串兑换码 / 先处理对账异常 / 先关闭双色球系列再从最新一期往前删 /
+  // 把编号原样敲一遍 / 去把审计打开。塌成一句话的后果是运营反复点同一个按钮。
+  qy_lot_delete_not_finished: 'qy_lot_err_delete_not_finished',
+  qy_lot_delete_funds_open: 'qy_lot_err_delete_funds_open',
+  qy_lot_delete_text_pending: 'qy_lot_err_delete_text_pending',
+  qy_lot_delete_entry_open: 'qy_lot_err_delete_entry_open',
+  qy_lot_delete_flag_open: 'qy_lot_err_delete_flag_open',
+  qy_lot_delete_series_live: 'qy_lot_err_delete_series_live',
+  qy_lot_delete_evidence_broken: 'qy_lot_err_delete_evidence_broken',
+  qy_lot_delete_confirm: 'qy_lot_err_delete_confirm',
+  qy_lot_delete_audit_off: 'qy_lot_err_delete_audit_off',
+  // 下架（「关闭」）。not_finished 与另外两个的处置完全不同：前者是"这一场还没
+  // 结束，你要的其实是取消"，后两个只是刷新一下就好。
+  qy_lot_hide_not_finished: 'qy_lot_err_hide_not_finished',
+  qy_lot_hide_already: 'qy_lot_err_hide_already',
+  qy_lot_hide_not_hidden: 'qy_lot_err_hide_not_hidden',
 
   // ── 渠道批量操作（qianye/modules/channelops/errors.go）──
   // 五个整批级别的 code。不登记的话它们会按 HTTP 400 塌成一句"请求参数不合法"，
