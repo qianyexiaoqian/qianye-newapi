@@ -57,6 +57,7 @@ import {
 } from './api'
 import {
   qyCommissionFieldMeta,
+  qyIsValidNullablePercent,
   qyIsValidPercent,
   qyNormalizePercent,
 } from './lib/fields'
@@ -161,8 +162,20 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
   })
 
   const percentKeys = new Set(config.percent_keys)
-  const changes = collectChanges(config, draft, percentKeys, scale)
-  const invalidKey = findInvalid(draft, percentKeys, scale)
+  // 可空的百分比键（目前只有兑换码档）。空在这里不是"没填完"，而是一个
+  // 要提交上去的取值："取消这一档，跟随充值档"。
+  const nullablePercentKeys = new Set(config.nullable_percent_keys)
+  const followsTopupLabel = t('qy_cm_f_redemption_follows', {
+    percent: config.effective.topup_rate_percent,
+  })
+  const changes = collectChanges(
+    config,
+    draft,
+    percentKeys,
+    nullablePercentKeys,
+    scale
+  )
+  const invalidKey = findInvalid(draft, percentKeys, nullablePercentKeys, scale)
 
   return (
     <>
@@ -179,6 +192,16 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
               fieldKey={key}
               value={draft[key] ?? ''}
               isPercent={percentKeys.has(key)}
+              nullable={nullablePercentKeys.has(key)}
+              // 留空时旁边要写清楚"那实际是几个点"。只画一个空输入框的话，
+              // 运营看不出兑换码到底返多少，而这一档正是他要调的那一项。
+              emptyMeansText={
+                nullablePercentKeys.has(key)
+                  ? t('qy_cm_f_redemption_follows', {
+                      percent: config.effective.topup_rate_percent,
+                    })
+                  : null
+              }
               scale={scale}
               overridden={config.overrides[key] != null}
               onChange={(value) =>
@@ -227,7 +250,8 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
                     change.key,
                     change.from,
                     percentKeys,
-                    scale
+                    scale,
+                    followsTopupLabel
                   )}{' '}
                   →{' '}
                   <strong>
@@ -235,7 +259,8 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
                       change.key,
                       change.to,
                       percentKeys,
-                      scale
+                      scale,
+                      followsTopupLabel
                     )}
                   </strong>
                 </span>
@@ -245,6 +270,8 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
         }
         onConfirm={() => {
           const patch: Record<string, string> = {}
+          // 空串是**要发出去的取值**，不是"跳过这一项"：后端据此删掉
+          // qy_settings 里那行覆盖，让该档回到跟随充值档。
           for (const change of changes) patch[change.key] = change.to
           saveMutation.mutate(patch)
         }}
@@ -257,6 +284,10 @@ function ConfigField(props: {
   fieldKey: string
   value: string
   isPercent: boolean
+  /** 留空是否合法。为真时空表示"没单独配"，不是"没填完"。 */
+  nullable?: boolean
+  /** 留空时在提示里补的那一句（"跟随充值档 10%"）。 */
+  emptyMeansText?: string | null
   scale: QyUsdScale
   overridden: boolean
   onChange: (value: string) => void
@@ -269,8 +300,11 @@ function ConfigField(props: {
     ? null
     : parseIntegerDraft(props.fieldKey, props.value, props.scale)
   const invalid = props.isPercent
-    ? !qyIsValidPercent(props.value)
+    ? !(props.nullable === true
+        ? qyIsValidNullablePercent(props.value)
+        : qyIsValidPercent(props.value))
     : parsed == null
+  const isEmpty = props.nullable === true && props.value.trim() === ''
 
   return (
     <div className='space-y-1.5'>
@@ -303,6 +337,11 @@ function ConfigField(props: {
       </div>
       <p className='text-muted-foreground text-xs'>
         {meta == null ? props.fieldKey : t(meta.hintKey)}
+        {/* 留空当前意味着什么，必须写在旁边：一个空输入框本身回答不了
+            "那这一档实际返几个点"，而这正是运营点进来要看的那个数。 */}
+        {isEmpty && props.emptyMeansText != null && (
+          <> {props.emptyMeansText}</>
+        )}
         {/* 存进库的仍然是额度整数。显示出来，运营翻审计与后端日志时才对得上号。 */}
         {asUsd && parsed != null && (
           <> {t('qy_cfg_usd_equals_quota', { quota: parsed })}</>
@@ -360,6 +399,15 @@ type QyGroupRateDraft = {
   groupName: string
   topup: string
   consume: string
+  /**
+   * 本组是否单独设兑换码档。
+   *
+   * 用一个**独立的开关**而不是"输入框空着就算不配"：兑换码档的 0% 是合法
+   * 配置，而空输入框与"填了 0"在一个只有输入框的界面上长得太像。开关关掉时
+   * 提交 `null`，打开时提交 `redemption` 的内容（含 `'0'`）。
+   */
+  redemptionEnabled: boolean
+  redemption: string
   enabled: boolean
   remark: string
   /** 编辑既有规则时锁住分组名：改名等于删一条加一条，两条审计比一条清楚。 */
@@ -370,6 +418,8 @@ const EMPTY_GROUP_DRAFT: QyGroupRateDraft = {
   groupName: '',
   topup: '',
   consume: '',
+  redemptionEnabled: false,
+  redemption: '',
   enabled: true,
   remark: '',
   locked: false,
@@ -420,7 +470,9 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
     draft != null &&
     (draft.groupName.trim() === '' ||
       !qyIsValidPercent(draft.topup) ||
-      !qyIsValidPercent(draft.consume))
+      !qyIsValidPercent(draft.consume) ||
+      // 开关打开就必须填出一个合法比例；关着的时候输入框里剩什么都不算数。
+      (draft.redemptionEnabled && !qyIsValidPercent(draft.redemption)))
 
   return (
     <Card data-card-hover='false'>
@@ -454,6 +506,9 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
                   {t('qy_cm_f_consume_rate')}
                 </th>
                 <th className='py-1.5 pe-3 font-medium'>
+                  {t('qy_cm_f_redemption_rate')}
+                </th>
+                <th className='py-1.5 pe-3 font-medium'>
                   {t('qy_cm_gr_enabled')}
                 </th>
                 <th className='py-1.5 pe-3 font-medium'>
@@ -466,7 +521,7 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
               {config.group_rates.length === 0 && (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className='text-muted-foreground py-3 text-center'
                   >
                     {t('qy_cm_gr_empty')}
@@ -483,6 +538,21 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
                   </td>
                   <td className='py-2 pe-3 tabular-nums'>
                     {rule.consume_rate_percent}%
+                  </td>
+                  {/* null 与 "0" 必须画成两样东西。用 `!= null` 而不是真值
+                      判断：`'0'` 在 JS 里是假值，写成 `rule.x ? … : 跟随`
+                      会把一个显式 0% 的分组显示成"跟随充值档"，而那两者
+                      在钱上差的正是一整档比例。 */}
+                  <td className='py-2 pe-3 tabular-nums'>
+                    {rule.redemption_rate_percent != null ? (
+                      `${rule.redemption_rate_percent}%`
+                    ) : (
+                      <span className='text-muted-foreground'>
+                        {t('qy_cm_gr_redemption_inherit', {
+                          percent: groupEffectiveRedemptionPercent(rule, config),
+                        })}
+                      </span>
+                    )}
                   </td>
                   <td className='py-2 pe-3'>
                     {t(rule.enabled ? 'qy_common_on' : 'qy_cm_gr_fallback')}
@@ -501,6 +571,9 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
                             groupName: rule.group_name,
                             topup: rule.topup_rate_percent,
                             consume: rule.consume_rate_percent,
+                            redemptionEnabled:
+                              rule.redemption_rate_percent != null,
+                            redemption: rule.redemption_rate_percent ?? '',
                             enabled: rule.enabled,
                             remark: rule.remark,
                             locked: true,
@@ -597,6 +670,51 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
                 </div>
               </div>
             </div>
+            <div className='space-y-1.5'>
+              <label className='flex items-center gap-2 text-sm'>
+                <input
+                  type='checkbox'
+                  checked={draft.redemptionEnabled}
+                  onChange={(e) =>
+                    setDraft({
+                      ...draft,
+                      redemptionEnabled: e.target.checked,
+                      // 打开时给一个起始值，免得开关一开就是非法状态；
+                      // 起始值取本组的充值档，也就是关掉时的实际口径。
+                      redemption: e.target.checked
+                        ? draft.redemption === ''
+                          ? draft.topup
+                          : draft.redemption
+                        : draft.redemption,
+                    })
+                  }
+                />
+                {t('qy_cm_gr_redemption_toggle')}
+              </label>
+              {draft.redemptionEnabled ? (
+                <div className='flex items-center gap-2'>
+                  <Input
+                    id='qy-cm-gr-redemption'
+                    inputMode='decimal'
+                    aria-label={t('qy_cm_f_redemption_rate')}
+                    value={draft.redemption}
+                    aria-invalid={!qyIsValidPercent(draft.redemption)}
+                    onChange={(e) =>
+                      setDraft({ ...draft, redemption: e.target.value })
+                    }
+                  />
+                  <span className='text-muted-foreground text-sm'>%</span>
+                </div>
+              ) : (
+                <p className='text-muted-foreground text-xs'>
+                  {t('qy_cm_gr_redemption_off_hint', {
+                    percent: qyIsValidPercent(draft.topup)
+                      ? qyNormalizePercent(draft.topup)
+                      : config.effective.topup_rate_percent,
+                  })}
+                </p>
+              )}
+            </div>
             <label className='flex items-center gap-2 text-sm'>
               <input
                 type='checkbox'
@@ -618,6 +736,12 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
                     group_name: draft.groupName.trim(),
                     topup_rate_percent: qyNormalizePercent(draft.topup),
                     consume_rate_percent: qyNormalizePercent(draft.consume),
+                    // 开关关着就显式发 null。这个接口是整行 upsert，
+                    // 省掉这个字段与发 null 后端是同一个结果，但写出来
+                    // 才看得见"这一次保存把兑换码档取消了"。
+                    redemption_rate_percent: draft.redemptionEnabled
+                      ? qyNormalizePercent(draft.redemption)
+                      : null,
                     enabled: draft.enabled,
                     remark: draft.remark,
                   })
@@ -650,7 +774,15 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
             <p className='text-sm'>
               <span className='font-mono'>{pendingDelete.group_name}</span>：
               {pendingDelete.topup_rate_percent}% /{' '}
-              {pendingDelete.consume_rate_percent}%
+              {pendingDelete.consume_rate_percent}% /{' '}
+              {pendingDelete.redemption_rate_percent != null
+                ? `${pendingDelete.redemption_rate_percent}%`
+                : t('qy_cm_gr_redemption_inherit', {
+                    percent: groupEffectiveRedemptionPercent(
+                      pendingDelete,
+                      config
+                    ),
+                  })}
             </p>
           )
         }
@@ -660,6 +792,27 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
       />
     </Card>
   )
+}
+
+/**
+ * 一条没单独配兑换码档的分组规则，实际按几个点返。
+ *
+ * 与后端 `redemptionRateUnits` 的取值顺序逐条对齐：本组没配 ⇒ 全局兑换码档
+ * ⇒ 本组充值档。表格必须把这个数算出来写在"跟随"旁边，否则运营看着一列
+ * "跟随"根本不知道跟到了哪儿 —— 而这一列决定的是平台真金白银要付多少。
+ *
+ * 注意判定用的是 `redemption_rate_follows_topup` 而不是
+ * `redemption_rate_percent === ''`：显式 0% 的全局档必须压过本组充值档，
+ * 而 `'0'` 与 `''` 在任何真值判断里都是同一边。
+ */
+function groupEffectiveRedemptionPercent(
+  rule: QyCommissionGroupRate,
+  config: QyCommissionAdminConfig
+): string {
+  if (!config.effective.redemption_rate_follows_topup) {
+    return config.effective.redemption_rate_percent
+  }
+  return rule.topup_rate_percent
 }
 
 /**
@@ -707,6 +860,7 @@ function collectChanges(
   config: QyCommissionAdminConfig,
   draft: Record<string, string>,
   percentKeys: Set<string>,
+  nullablePercentKeys: Set<string>,
   scale: QyUsdScale
 ): QyConfigChange[] {
   const out: QyConfigChange[] = []
@@ -715,6 +869,13 @@ function collectChanges(
       config.effective[key as keyof QyCommissionEffective] ?? ''
     )
     if (percentKeys.has(key)) {
+      // 可空键的空串是一个**取值**（"取消这一档"），必须走完整的比较与提交，
+      // 不能跟"填了一半的非法输入"一起被 continue 掉 —— 那样运营清空输入框
+      // 再保存，会得到一个成功提示和一份原封不动的配置。
+      if (nullablePercentKeys.has(key) && raw.trim() === '') {
+        if (current !== '') out.push({ key, from: current, to: '' })
+        continue
+      }
       if (!qyIsValidPercent(raw)) continue
       const next = qyNormalizePercent(raw)
       if (next !== qyNormalizePercent(current)) {
@@ -733,11 +894,15 @@ function collectChanges(
 function findInvalid(
   draft: Record<string, string>,
   percentKeys: Set<string>,
+  nullablePercentKeys: Set<string>,
   scale: QyUsdScale
 ): string | null {
   for (const [key, raw] of Object.entries(draft)) {
     if (percentKeys.has(key)) {
-      if (!qyIsValidPercent(raw)) return key
+      const ok = nullablePercentKeys.has(key)
+        ? qyIsValidNullablePercent(raw)
+        : qyIsValidPercent(raw)
+      if (!ok) return key
       continue
     }
     if (parseIntegerDraft(key, raw, scale) == null) return key
@@ -745,14 +910,23 @@ function findInvalid(
   return null
 }
 
-/** 复述一处改动的值。`value` 是存储用的字面量（百分比字符串或额度整数）。 */
+/**
+ * 复述一处改动的值。`value` 是存储用的字面量（百分比字符串或额度整数）。
+ *
+ * 空的百分比要复述成 `emptyLabel`（"跟随充值档 10%"）而不是一个孤零零的
+ * `%`：确认弹窗是运营在动费率之前看到的最后一屏，"3% → %" 读不出来这一次
+ * 改的是什么，而它改的恰恰是一整档比例。
+ */
 function formatChangeValue(
   key: string,
   value: string,
   percentKeys: Set<string>,
-  scale: QyUsdScale
+  scale: QyUsdScale,
+  emptyLabel: string
 ): string {
-  if (percentKeys.has(key)) return `${value}%`
+  if (percentKeys.has(key)) {
+    return value.trim() === '' ? emptyLabel : `${value}%`
+  }
   if (!isUsdField(key, scale)) return value
   return qyFormatQuotaAsUsd(Number(value), scale)
 }

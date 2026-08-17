@@ -49,24 +49,21 @@ func adminGetConfig(c *gin.Context) {
 		// 费率一律以**百分比字符串**下发。用字符串而不是 JSON 数字:
 		// 10.25 在 JS 的 Number 里同样是二进制浮点,回填输入框时可能变成
 		// 10.249999999999998,运营再点一次保存就把这个数字存进了资金配置。
-		"effective": gin.H{
-			keyTopupRatePercent:   s.TopupRatePercent(),
-			keyConsumeRatePercent: s.ConsumeRatePercent(),
-			keyMinSettleQuota:     s.MinSettleQuota,
-			keyMaxPerOrderQuota:   s.MaxPerOrderQuota,
-			keyHoldingDays:        s.HoldingDays,
-			keyDailyCapQuota:      s.DailyCapQuota,
-			keyLargeAlertQuota:    s.LargeAlertQuota,
-			keyMinInviteeAgeHour:  s.MinInviteeAgeHours,
-		},
-		"overrides":     overrides,
-		"editable_keys": editableKeys,
-		"percent_keys":  []string{keyTopupRatePercent, keyConsumeRatePercent},
-		"group_rates":   groupRateViews(rules),
+		"effective": settingsSnapshot(s),
+		"overrides": overrides,
+		// editable_keys 决定前端渲染哪些输入框。percent_keys 里的键取值是
+		// 百分比字符串;nullable_percent_keys 是其中**允许留空**的那些,空
+		// 表示"没单独配,跟随充值档"。前端不猜哪个键可空 —— 猜错的方向恰好是
+		// 把空当成 0 提交上来,那是一次没有人批准的费率归零。
+		"editable_keys":         editableKeys,
+		"percent_keys":          []string{keyTopupRatePercent, keyConsumeRatePercent, keyRedemptionRatePercent},
+		"nullable_percent_keys": []string{keyRedemptionRatePercent},
+		"group_rates":           groupRateViews(rules),
 		"yaml_readonly": gin.H{
 			"enabled":                       cm.Enabled,
 			"topup_rate_percent":            cm.TopupRatePercent,
 			"consume_rate_percent":          cm.ConsumeRatePercent,
+			"redemption_rate_percent":       cm.RedemptionRatePercent,
 			"exclude_redemption_and_manual": cm.ExcludeRedemptionAndManual,
 			"exclude_subscription_consume":  cm.ExcludeSubscriptionConsume,
 			"refund_clawback":               cm.RefundClawback,
@@ -108,6 +105,14 @@ func adminPutConfig(c *gin.Context) {
 			return
 		}
 		lit := jsonScalarLiteral(raw)
+		if isNullablePercentKey(k) && strings.TrimSpace(lit) == "" {
+			// 空 = 清掉这条覆盖,让该档回落到 YAML(YAML 也没写就是"跟随充值档")。
+			// 记成空串,写库那一步据此走 DELETE 而不是 UPSERT —— 留一行 v=''
+			// 在 qy_settings 里同样能被读成"没配",但它会让运营在库里看到一条
+			// 空值行,而"这一行到底算不算配过"是没人愿意再猜一遍的问题。
+			normalized[k] = ""
+			continue
+		}
 		if isPercentKey(k) {
 			units, err := config.RatePercentUnits(lit)
 			if err != nil {
@@ -167,6 +172,16 @@ func adminPutConfig(c *gin.Context) {
 	// 那时接口已经改过库了,却只回了个 500,运营重试一次就可能再改一遍。
 	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, k := range keys {
+			// 空值只可能来自可空百分比键(其余键的校验早已 400),含义是
+			// "取消这条覆盖"。删除必须跟其余键在同一个事务里:把兑换码档改回
+			// 「跟随充值档」和调整充值档本身常常是同一次操作,一半生效的组合
+			// 是谁都没有批准过的。
+			if normalized[k] == "" {
+				if err := deleteSettingTx(tx, k); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := writeSetting(tx, k, normalized[k], operatorId); err != nil {
 				return err
 			}
@@ -260,12 +275,24 @@ func settingsSnapshot(s opSettings) map[string]any {
 	return map[string]any{
 		keyTopupRatePercent:   s.TopupRatePercent(),
 		keyConsumeRatePercent: s.ConsumeRatePercent(),
-		keyMinSettleQuota:     s.MinSettleQuota,
-		keyMaxPerOrderQuota:   s.MaxPerOrderQuota,
-		keyHoldingDays:        s.HoldingDays,
-		keyDailyCapQuota:      s.DailyCapQuota,
-		keyLargeAlertQuota:    s.LargeAlertQuota,
-		keyMinInviteeAgeHour:  s.MinInviteeAgeHours,
+		// 兑换码档下发**两个**值,缺一不可:
+		//
+		//	redemption_rate_percent            配的是什么("" = 没单独配)
+		//	redemption_rate_effective_percent  实际按几个点算(没配时 = 充值档)
+		//
+		// 只发第一个,界面上是一个空输入框,运营看不出兑换码到底返几个点;
+		// 只发第二个,输入框会被回填成充值档的数字,运营下一次保存就把
+		// "跟随"固化成了一个显式费率,从此改充值档不再带动兑换码 —— 一次
+		// 什么都没改的保存,静默改变了系统行为。
+		keyRedemptionRatePercent:            s.RedemptionRatePercent(),
+		"redemption_rate_effective_percent": s.EffectiveRedemptionRatePercent(),
+		"redemption_rate_follows_topup":     s.RedemptionRateUnits == nil,
+		keyMinSettleQuota:                   s.MinSettleQuota,
+		keyMaxPerOrderQuota:                 s.MaxPerOrderQuota,
+		keyHoldingDays:                      s.HoldingDays,
+		keyDailyCapQuota:                    s.DailyCapQuota,
+		keyLargeAlertQuota:                  s.LargeAlertQuota,
+		keyMinInviteeAgeHour:                s.MinInviteeAgeHours,
 	}
 }
 
@@ -290,23 +317,29 @@ type groupRateView struct {
 	GroupName      string `json:"group_name"`
 	TopupPercent   string `json:"topup_rate_percent"`
 	ConsumePercent string `json:"consume_rate_percent"`
-	Enabled        bool   `json:"enabled"`
-	Remark         string `json:"remark"`
-	OperatorId     int    `json:"operator_id"`
-	UpdatedAt      int64  `json:"updated_at"`
+	// RedemptionPercent 是本组的兑换码档。**null = 本组没单独配**,
+	// 按 redemptionRateUnits 的顺序回落(全局兑换码档 → 本组充值档)。
+	// 用指针而不是空串:JS 里 "" 与 "0" 都是假值,只有 null 不会被
+	// `value ? … : 跟随` 这类写法把显式 0% 也画成"跟随"。
+	RedemptionPercent *string `json:"redemption_rate_percent"`
+	Enabled           bool    `json:"enabled"`
+	Remark            string  `json:"remark"`
+	OperatorId        int     `json:"operator_id"`
+	UpdatedAt         int64   `json:"updated_at"`
 }
 
 func groupRateViews(rows []GroupRate) []groupRateView {
 	out := make([]groupRateView, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, groupRateView{
-			GroupName:      r.GroupName,
-			TopupPercent:   r.TopupPercent(),
-			ConsumePercent: r.ConsumePercent(),
-			Enabled:        r.Enabled,
-			Remark:         r.Remark,
-			OperatorId:     r.OperatorId,
-			UpdatedAt:      r.UpdatedAt,
+			GroupName:         r.GroupName,
+			TopupPercent:      r.TopupPercent(),
+			ConsumePercent:    r.ConsumePercent(),
+			RedemptionPercent: r.RedemptionPercent(),
+			Enabled:           r.Enabled,
+			Remark:            r.Remark,
+			OperatorId:        r.OperatorId,
+			UpdatedAt:         r.UpdatedAt,
 		})
 	}
 	return out
@@ -328,8 +361,13 @@ func adminPutGroupRate(c *gin.Context) {
 		GroupName      string `json:"group_name"`
 		TopupPercent   string `json:"topup_rate_percent"`
 		ConsumePercent string `json:"consume_rate_percent"`
-		Enabled        bool   `json:"enabled"`
-		Remark         string `json:"remark"`
+		// RedemptionPercent 可空,而且**字段缺失与 null 是同一个意思**:
+		// 本组不单独配兑换码档。这条兼容性是刻意的 —— 本接口是整行 upsert,
+		// 老版本前端(以及运维手里的脚本)发的报文里根本没有这个字段,
+		// 缺失被读成"不配"正好让它们保持升级前的行为。
+		RedemptionPercent *string `json:"redemption_rate_percent"`
+		Enabled           bool    `json:"enabled"`
+		Remark            string  `json:"remark"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, "qy_invalid_param", "请求格式错误")
@@ -354,6 +392,18 @@ func adminPutGroupRate(c *gin.Context) {
 		badRequest(c, "qy_invalid_param", "消费返佣比例"+err.Error())
 		return
 	}
+	// 兑换码档:null 与空串都表示"本组不单独配"。只有填了内容才校验并落值,
+	// 而 "0" 走的是这条正常路径 —— 显式 0% 与不配是两件事,这一行是它们唯一
+	// 的分岔点。
+	var redemptionUnits *int
+	if req.RedemptionPercent != nil && strings.TrimSpace(*req.RedemptionPercent) != "" {
+		units, err := config.RatePercentUnits(*req.RedemptionPercent)
+		if err != nil {
+			badRequest(c, "qy_invalid_param", "兑换码返佣比例"+err.Error())
+			return
+		}
+		redemptionUnits = &units
+	}
 
 	ctx := c.Request.Context()
 	before, err := findGroupRate(ctx, group)
@@ -362,12 +412,13 @@ func adminPutGroupRate(c *gin.Context) {
 		return
 	}
 	row := GroupRate{
-		GroupName:        group,
-		TopupRateUnits:   topupUnits,
-		ConsumeRateUnits: consumeUnits,
-		Enabled:          req.Enabled,
-		Remark:           truncate(req.Remark, 255),
-		OperatorId:       c.GetInt("id"),
+		GroupName:           group,
+		TopupRateUnits:      topupUnits,
+		ConsumeRateUnits:    consumeUnits,
+		RedemptionRateUnits: redemptionUnits,
+		Enabled:             req.Enabled,
+		Remark:              truncate(req.Remark, 255),
+		OperatorId:          c.GetInt("id"),
 	}
 	if err := upsertGroupRate(ctx, &row); err != nil {
 		internalError(c, err)
@@ -437,11 +488,26 @@ func adminDeleteGroupRate(c *gin.Context) {
 	respond(c, gin.H{"group_name": group, "deleted": true})
 }
 
+// accrualView 是一条计佣行加上"它背后那条邀请关系此刻的开关状态"。
+//
+// 为什么要多这一位:停止计佣(拉黑)是一个**可逆开关**,后端从一开始就收
+// `blocked bool`、同一个接口既停又恢复。但计佣流水页此前拿不到当前状态,
+// 只能画一个单向的「停止计佣」按钮 —— 于是"停了就再也恢复不了"变成了
+// 运营眼里的事实,进而变成"这套审核是不是多余、不如直接解绑关系"的结论。
+// 状态不下发,恢复入口就无法存在;这一位是那个入口的前提。
+type accrualView struct {
+	Accrual
+	// RelationBlocked = qy_invite_relation.blocked。invitee_id ≤ 0 的行
+	// (手工调整)不挂在任何关系上,恒为 false。
+	RelationBlocked bool `json:"relation_blocked"`
+}
+
 // adminListRecords 分页查询全平台计佣流水。
 func adminListRecords(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCommission) {
 		return
 	}
+	ctx := c.Request.Context()
 	page, size := httpq.Paginate(c, listPaging)
 	q := db.Get().Model(&Accrual{})
 
@@ -472,15 +538,45 @@ func adminListRecords(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
-	// 下发给前端的数组一律显式初始化,理由见 qianye/json_array_guard_test.go。
 	rows := make([]Accrual, 0, size)
 	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
 	}
+	// 补上"这条关系此刻是不是被停了"。
+	//
+	// 刻意**不**走 blockedInvitees():那份快照缓存 60 秒,而运营点完「恢复计佣」
+	// 立刻就会看这张列表 —— 读缓存会让按钮在一整个 TTL 里显示成没生效,
+	// 运营于是再点一次。本页每次只有一屏行,按这一屏的 invitee_id 直查一次库。
+	ids := make([]int, 0, len(rows))
+	seen := make(map[int]bool, len(rows))
+	for _, r := range rows {
+		if r.InviteeId > 0 && !seen[r.InviteeId] {
+			seen[r.InviteeId] = true
+			ids = append(ids, r.InviteeId)
+		}
+	}
+	blocked := make(map[int]bool, len(ids))
+	if len(ids) > 0 {
+		var blockedIds []int
+		if err := db.Get().WithContext(ctx).Model(&InviteRelation{}).
+			Where("blocked = ? AND invitee_id IN ?", true, ids).
+			Pluck("invitee_id", &blockedIds).Error; err != nil {
+			internalError(c, err)
+			return
+		}
+		for _, id := range blockedIds {
+			blocked[id] = true
+		}
+	}
 	// 管理端返回原始行:管理员本就有权看到完整的 user_id 与订单号,
 	// 脱敏只针对"邀请人看下线"这个方向。
-	respond(c, gin.H{"items": rows, "total": total, "p": page, "page_size": size})
+	// 下发给前端的数组一律显式初始化,理由见 qianye/json_array_guard_test.go。
+	items := make([]accrualView, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, accrualView{Accrual: r, RelationBlocked: blocked[r.InviteeId]})
+	}
+	respond(c, gin.H{"items": items, "total": total, "p": page, "page_size": size})
 }
 
 // adminClawback 人工冲正。
@@ -639,7 +735,7 @@ func adminBlockRelation(c *gin.Context) {
 	inviterId, err := setRelationBlocked(ctx, req.InviteeId, req.Blocked, req.Reason)
 	if err != nil {
 		writeRelationAudit(c, "commission.relation.block", req.InviteeId, qymodel.ResultFail,
-			blockVerb(req.Blocked)+"邀请关系失败: "+err.Error()+" | 事由: "+req.Reason,
+			blockVerb(req.Blocked)+"邀请关系的计佣失败: "+err.Error()+" | 事由: "+req.Reason,
 			before, relationSnapshot(ctx, req.InviteeId))
 		respondRelationError(c, err)
 		return
@@ -647,8 +743,8 @@ func adminBlockRelation(c *gin.Context) {
 
 	invalidateBlocked()
 	writeRelationAudit(c, "commission.relation.block", req.InviteeId, qymodel.ResultOK,
-		blockVerb(req.Blocked)+"邀请关系(邀请人 "+itoa(inviterId)+
-			"):只停止未来计佣,已发放的佣金不回收(要收回须单独走冲正)| 事由: "+req.Reason,
+		blockVerb(req.Blocked)+"邀请关系的计佣(邀请人 "+itoa(inviterId)+"):"+
+			blockOutcome(req.Blocked)+" | 事由: "+req.Reason,
 		before, relationSnapshot(ctx, req.InviteeId))
 	respond(c, gin.H{
 		"invitee_id": req.InviteeId,
@@ -657,11 +753,27 @@ func adminBlockRelation(c *gin.Context) {
 	})
 }
 
+// blockVerb 与 blockOutcome 拼出这条审计的正文。
+//
+// 拆成方向相关的两段,是因为共用一句话曾经写出过自相矛盾的记录:
+// 解封那一次的正文是「解封邀请关系:只停止未来计佣,已发放的佣金不回收」——
+// 前半句说恢复、后半句说停止。审计正文是事后仲裁"这一刻到底发生了什么"的
+// 唯一凭据,它不能两头都占。
+//
+// 动词跟界面走(停止计佣 / 恢复计佣):运营在界面上按的是那两个字,
+// 事后来查审计时找的也是那两个字。
 func blockVerb(blocked bool) string {
 	if blocked {
-		return "拉黑"
+		return "停止"
 	}
-	return "解封"
+	return "恢复"
+}
+
+func blockOutcome(blocked bool) string {
+	if blocked {
+		return "邀请关系保留(可追溯、可随时恢复),只停止未来计佣;已发放的佣金不回收(要收回须单独走冲正)"
+	}
+	return "从此刻起恢复计佣;停止期间发生的消费与充值不补算,已发放的佣金不受影响"
 }
 
 // setRelationBlocked 把拉黑标记写进快照表,快照行缺失时按主库的权威字段补建。
@@ -708,12 +820,16 @@ func setRelationBlocked(ctx context.Context, inviteeId int, blocked bool, reason
 
 	now := common.GetTimestamp()
 	if len(snaps) > 0 {
+		// 只写 block_reason,**不碰 risk_flags** —— 后者是 ensureRelation 写的
+		// 自动风控标记(reciprocal_invite),一次人工停/恢复就把它抹掉的话,
+		// AFF 关系页上那个徽标从此显示的是人写的话,而"系统判定为互刷"这个
+		// 事实再也看不到了。两列各管各的。
 		if err := gdb.WithContext(ctx).Model(&InviteRelation{}).
 			Where("invitee_id = ?", inviteeId).
 			Updates(map[string]any{
-				"blocked":    blocked,
-				"risk_flags": truncate(reason, 255),
-				"updated_at": now,
+				"blocked":      blocked,
+				"block_reason": truncate(reason, 255),
+				"updated_at":   now,
 			}).Error; err != nil {
 			db.MarkFailure(err)
 			return 0, err
@@ -724,15 +840,15 @@ func setRelationBlocked(ctx context.Context, inviteeId int, blocked bool, reason
 	// 快照缺行。补一行而不是回 200 假装成功 —— blockedInvitees() 只认这张表,
 	// 没有行就等于没拉黑。bound_at 取下线的注册时间:自动绑定发生在那一刻。
 	row := InviteRelation{
-		InviteeId:  inviteeId,
-		InviterId:  inviterId,
-		MaskedName: truncate(MaskUsername(displayName(invitee)), 64),
-		InviteeRef: inviteeRef(inviteeId, refSalt()),
-		BoundAt:    invitee.CreatedAt,
-		RiskFlags:  truncate(reason, 255),
-		Blocked:    blocked,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		InviteeId:   inviteeId,
+		InviterId:   inviterId,
+		MaskedName:  truncate(MaskUsername(displayName(invitee)), 64),
+		InviteeRef:  inviteeRef(inviteeId, refSalt()),
+		BoundAt:     invitee.CreatedAt,
+		BlockReason: truncate(reason, 255),
+		Blocked:     blocked,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	if err := gdb.WithContext(ctx).Save(&row).Error; err != nil {
 		db.MarkFailure(err)

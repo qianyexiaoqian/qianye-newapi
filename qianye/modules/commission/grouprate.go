@@ -36,6 +36,12 @@ package commission
 //
 // 回落到全局默认费率(YAML 的 *_rate_percent,可被运营覆盖)。禁用某条规则
 // 等价于回落,不等于零费率 —— 想给某个分组零费率请显式填 0。
+//
+// # 三档比例
+//
+// 充值、消费、兑换码。前两档在两级(全局/分组)上都是必填的整数;兑换码档
+// 在两级上都**可空**,空 = 没单独配。取值顺序与"为什么必须可空"见
+// redemptionRateUnits 的说明 —— 一句话:0% 是合法配置,不能拿它表示没配。
 
 import (
 	"context"
@@ -73,6 +79,18 @@ type GroupRate struct {
 	TopupRateUnits   int `json:"topup_rate_units" gorm:"not null;default:0"`
 	ConsumeRateUnits int `json:"consume_rate_units" gorm:"not null;default:0"`
 
+	// RedemptionRateUnits 是这个分组的**兑换码**档。**可空**,与上面两列不同:
+	// NULL = 本组没单独配兑换码档。
+	//
+	// 必须可空,而且不能改成 not null default 0:这一列是后加的,而
+	// AutoMigrate 给存量行填的就是列默认值。默认 0 意味着升级那一刻,
+	// 每一条已有的分组规则都变成"该分组兑换码返 0%",全站兑换码佣金
+	// 静默归零。NULL 则让存量行继续走它一直在走的那条路(跟随充值档)。
+	//
+	// 0 仍然是可写入的合法值,含义是显式 0% —— 两者在这一列上分得开,
+	// 这正是选可空列而不是哨兵值(-1 之类)的理由:哨兵值迟早会有人当成费率算。
+	RedemptionRateUnits *int `json:"redemption_rate_units" gorm:"column:redemption_rate_units"`
+
 	// Enabled 为 false 时该规则不生效,等价于回落全局默认 ——
 	// 不是"零费率"。想要零费率请把两个比例显式填 0。
 	Enabled bool `json:"enabled" gorm:"not null"`
@@ -88,6 +106,19 @@ func (GroupRate) TableName() string { return "qy_commission_group_rate" }
 // TopupPercent / ConsumePercent 是下发给管理端的百分比形式。
 func (g GroupRate) TopupPercent() string   { return config.FormatRatePercent(g.TopupRateUnits) }
 func (g GroupRate) ConsumePercent() string { return config.FormatRatePercent(g.ConsumeRateUnits) }
+
+// RedemptionPercent 返回本组兑换码档的百分比,没单独配时返回 nil。
+//
+// 返回指针而不是空串:管理端要把"没配(跟随)"与"显式 0%"渲染成两种东西,
+// JSON 里的 null 与 "0" 是唯一不会被前端的假值判断("" 与 "0" 都会被
+// `!value` 吃掉)误读的一对。
+func (g GroupRate) RedemptionPercent() *string {
+	if g.RedemptionRateUnits == nil {
+		return nil
+	}
+	p := config.FormatRatePercent(*g.RedemptionRateUnits)
+	return &p
+}
 
 // ───────────────────────── 缓存 ─────────────────────────
 
@@ -204,31 +235,70 @@ type rateDecision struct {
 
 // resolveRate 决定一次计佣按几个点返。
 //
-// group 一律是**被邀请人**的分组(口径见文件头)。source 取 SourceConsume
-// 或其余(充值/兑换码),它们各有一档比例。
+// group 一律是**被邀请人**的分组(口径见文件头)。共有三档比例:
 //
-// 未配置或被禁用时回落全局默认费率。分组名为空按 default 分组判定(见 billingGroup),
-// 因此 "" 也可能命中一条规则 —— 那正是它应该走的那一条。
+//	SourceConsume     消费档
+//	SourceRedemption  兑换码档(可空,见下)
+//	其余(充值/任务补扣/…) 充值档
+//
+// 未配置或被禁用的分组回落全局默认费率。分组名为空按 default 分组判定
+// (见 billingGroup),因此 "" 也可能命中一条规则 —— 那正是它应该走的那一条。
 func resolveRate(ctx context.Context, group, source string, s opSettings) rateDecision {
 	g := billingGroup(group)
-	fallback := s.TopupRateUnits
-	if source == SourceConsume {
-		fallback = s.ConsumeRateUnits
-	}
 	// Group 记的是**判定用的那个值**而不是原始输入:流水行冻结的分组必须能
 	// 让人拿着它复算出同一个费率,记原始的 "VIP" 而按 "vip" 算是解释不通的。
-	d := rateDecision{Units: fallback, Group: g}
-	rule, ok := groupRates(ctx)[g]
-	if !ok {
-		return d
-	}
-	d.Matched = true
-	if source == SourceConsume {
-		d.Units = rule.ConsumeRateUnits
-	} else {
-		d.Units = rule.TopupRateUnits
+	d := rateDecision{Group: g}
+	rule, matched := groupRates(ctx)[g]
+	d.Matched = matched
+
+	switch source {
+	case SourceConsume:
+		d.Units = s.ConsumeRateUnits
+		if matched {
+			d.Units = rule.ConsumeRateUnits
+		}
+	case SourceRedemption:
+		d.Units = redemptionRateUnits(rule, matched, s)
+	default:
+		d.Units = s.TopupRateUnits
+		if matched {
+			d.Units = rule.TopupRateUnits
+		}
 	}
 	return d
+}
+
+// redemptionRateUnits 是兑换码那一档的取值顺序。
+//
+// # 顺序
+//
+//  1. 分组兑换码档(该分组显式配了,含显式 0%)
+//  2. 全局兑换码档(全站显式配了,含显式 0%)
+//  3. 分组充值档(命中了分组规则)
+//  4. 全局充值档
+//
+// 3 与 4 合起来就是"没人配过兑换码档 ⇒ 完全跟随充值档",而那正是这一档出现
+// 之前的行为(旧代码 `source != consume → TopupRateUnits`,分组优先)。
+// 所以**任何存量站点升级上来、什么都不改,兑换码返佣一分不变** —— 这是本档
+// 唯一不可让步的约束,也是 1/2 两级都必须用可空类型而不是 0 的原因。
+//
+// # 为什么 2 排在 3 前面
+//
+// 反过来(分组充值档优先于全局兑换码档)的话,全局这一档对"配过分组规则的
+// 分组"完全失效:运营把全局兑换码档设成 0% 想停掉兑换码返佣,vip 那批用户
+// 却照旧按 vip 的充值档拿钱,而界面上还写着 0%。全局档是一条**全站策略**,
+// 分组只在它自己也表态时才盖过它。
+func redemptionRateUnits(rule GroupRate, matched bool, s opSettings) int {
+	if matched && rule.RedemptionRateUnits != nil {
+		return *rule.RedemptionRateUnits
+	}
+	if s.RedemptionRateUnits != nil {
+		return *s.RedemptionRateUnits
+	}
+	if matched {
+		return rule.TopupRateUnits
+	}
+	return s.TopupRateUnits
 }
 
 // ───────────────────────── 写入 ─────────────────────────
@@ -262,9 +332,13 @@ func upsertGroupRate(ctx context.Context, row *GroupRate) error {
 	row.UpdatedAt = now
 	err := gdb.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "group_name"}},
+		// redemption_rate_units 必须在这份清单里:它是**可以被改回 NULL 的**
+		// (运营取消该分组的兑换码档,让它回到跟随)。漏掉这一列会让"取消"
+		// 变成一次静默的空操作 —— 界面回显成功、规则却还在按旧的兑换码档
+		// 给这批用户发钱,而这正是本仓最忌讳的"看到的与生效的不一致"。
 		DoUpdates: clause.AssignmentColumns([]string{
-			"topup_rate_units", "consume_rate_units", "enabled",
-			"remark", "operator_id", "updated_at",
+			"topup_rate_units", "consume_rate_units", "redemption_rate_units",
+			"enabled", "remark", "operator_id", "updated_at",
 		}),
 	}).Create(row).Error
 	if err != nil {

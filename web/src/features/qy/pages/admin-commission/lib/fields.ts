@@ -67,6 +67,13 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     min: 0,
     max: 100,
   },
+  redemption_rate_percent: {
+    labelKey: 'qy_cm_f_redemption_rate',
+    hintKey: 'qy_cm_f_redemption_rate_hint',
+    unit: 'percent',
+    min: 0,
+    max: 100,
+  },
   min_settle_quota: {
     labelKey: 'qy_cm_f_min_settle',
     hintKey: 'qy_cm_f_min_settle_hint',
@@ -137,6 +144,17 @@ export function qyIsValidPercent(raw: string): boolean {
   if (!/^\d+(\.\d{1,2})?$/.test(s)) return false
   const value = Number(s)
   return Number.isFinite(value) && value >= 0 && value <= 100
+}
+
+/**
+ * 校验一个**可空**百分比输入：空是合法的，含义是"没单独配，跟随充值档"。
+ *
+ * 单独一个函数而不是给 `qyIsValidPercent` 加参数：调用点必须一眼看出
+ * 这里的空到底算不算数。兑换码档是全仓唯一一个"空有含义"的费率输入框，
+ * 而 0% 又恰好是一个合法配置 —— 两者混起来的代价是一整档费率。
+ */
+export function qyIsValidNullablePercent(raw: string): boolean {
+  return raw.trim() === '' || qyIsValidPercent(raw)
 }
 
 /** 去掉尾随零，与后端 `FormatRatePercent` 的输出形状对齐（"10.250" → "10.25"）。 */

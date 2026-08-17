@@ -97,6 +97,16 @@ const QY_DYNAMIC_KEYS = [
   'qy_lot_why_blocked_not_revealed',
   'qy_lot_why_blocked_not_in_roster',
   'qy_lot_why_blocked_voided',
+  // 套餐发售时间窗的四态徽章。`planSaleBadge()` 返回 `{ labelKey }`，
+  // 单元格写的是 `t(badge.labelKey)` —— 字面量扫描器看不见。清单对齐
+  // `features/subscriptions/lib/sale-window.ts` 里 planSaleBadge 的四个返回值。
+  //
+  // 漏掉的表现是管理端套餐列表的「状态」列整列渲染成裸键 `qy_plan_sale_state_*`，
+  // 而那一列正是运营判断"这个套餐现在卖不卖得出去"的唯一入口。
+  'qy_plan_sale_state_disabled',
+  'qy_plan_sale_state_upcoming',
+  'qy_plan_sale_state_on_sale',
+  'qy_plan_sale_state_ended',
 ]
 
 /**

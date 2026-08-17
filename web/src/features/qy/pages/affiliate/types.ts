@@ -45,6 +45,13 @@ export type QyCommissionSummary = {
   rate: {
     topup_bps: number
     consume_bps: number
+    /**
+     * 兑换码那一档的**生效值**（百分比 × 100）。后端已经把"没单独配就跟随
+     * 充值档"那一步算完了，前端拿到的永远是一个能直接显示的数。
+     */
+    redemption_bps: number
+    /** 为真表示这一档没单独配、正跟随充值档，界面据此标一句话。 */
+    redemption_follows_topup: boolean
   }
   policy: {
     holding_days: number

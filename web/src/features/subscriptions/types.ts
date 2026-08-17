@@ -44,6 +44,28 @@ export const subscriptionPlanSchema = z.object({
   quota_reset_custom_seconds: z.number().optional(),
   enabled: z.boolean(),
   sort_order: z.number(),
+  /**
+   * 发售时间窗（unix 秒）。**0 = 不限制**，不是 1970-01-01。
+   *
+   * 与后端 `model.SubscriptionPlan.SaleStartAt / SaleEndAt` 同一口径，也与本表
+   * 已有的两个 0（`user_subscriptions.end_time = 0` 永久有效、
+   * `next_reset_time = 0` 不重置）一致。
+   *
+   * 方向不对称，这是唯一要小心的地方：`sale_start_at` 的 0 天然安全
+   * （`now >= 0` 恒真），`sale_end_at` 的 0 天然危险（`now < 0` 恒假）——
+   * 少写一句特判就是把全站每一个没配停售时间的套餐一起显示成"已停售"。
+   * 判定收敛在 `lib/sale-window.ts` 的 planSaleState()，不要在组件里手写。
+   *
+   * `.optional()` 而不是 `.default(0)`：这两个字段**真的可能不存在**（后端还没
+   * 升级的实例不下发它们），而 `SubscriptionPlan` 是 API 响应的类型断言、不走
+   * 运行时校验 —— 标成必填是在类型上撒谎，`undefined` 照样会到达运行时。
+   *
+   * 所有消费方一律 `Number(x || 0)` 把它归到"不限制"那一档；判定收敛在
+   * `lib/sale-window.ts`，不要在组件里手写比较（`undefined` 参与比较得到的是
+   * NaN，而 NaN 的每一次比较都是 false —— 结果碰巧对，但没人推理过为什么）。
+   */
+  sale_start_at: z.number().optional(),
+  sale_end_at: z.number().optional(),
   allow_balance_pay: z.boolean().optional().default(true),
   allow_wallet_overflow: z.boolean().optional().default(true),
   max_purchase_per_user: z.number(),

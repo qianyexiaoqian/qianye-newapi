@@ -49,7 +49,14 @@ import {
   getSelfSubscriptionFull,
 } from '@/features/subscriptions/api'
 import { SubscriptionPurchaseDialog } from '@/features/subscriptions/components/dialogs/subscription-purchase-dialog'
-import { buildPlanFacts, formatPlanPrice } from '@/features/subscriptions/lib'
+import {
+  buildPlanFacts,
+  formatPlanPrice,
+  formatSaleCountdown,
+  formatSaleTime,
+  planSaleState,
+  secondsUntilSaleStart,
+} from '@/features/subscriptions/lib'
 import type {
   PlanRecord,
   UserSubscriptionRecord,
@@ -92,6 +99,23 @@ export function SubscriptionPlansCard({
 
   const [purchaseOpen, setPurchaseOpen] = useState(false)
   const [selectedPlan, setSelectedPlan] = useState<PlanRecord | null>(null)
+
+  /*
+    未开售套餐的倒计时需要一个每秒推进的时钟。
+
+    单独一个 state 而不是在渲染里调 Date.now()：React 不会因为时间流逝重渲染，
+    倒计时会一直停在打开页面那一刻的值，而且**开售那一刻页面不会自己解锁** ——
+    用户盯着一个写着"还剩 0 秒"的灰按钮，只能靠刷新才发现已经能买了。
+
+    无条件每秒跑，不按"页面上有没有未开售套餐"去条件启停：一个 setInterval
+    的代价远小于那段条件逻辑的出错面（它得随 plans 变化重建，而漏掉依赖的
+    表现正是倒计时不动）。tick 只是一个数字，不触发任何请求。
+  */
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   // 「买了能多用哪个模型分组」「这笔余额只能花在什么上」。上游的套餐接口不带
   // 这两条事实，而它们正是本站某些套餐**唯一的卖点**与唯一的使用限制。
@@ -445,6 +469,13 @@ export function SubscriptionPlansCard({
               const limit = Number(plan.max_purchase_per_user || 0)
               const count = planPurchaseCountMap.get(plan.id) || 0
               const reached = limit > 0 && count >= limit
+              // 三态与后端 model.PlanSaleWindowError 同一条判据（lib/sale-window）。
+              // 这里手写一遍比较的话，「界面说能买、接口说不能」这类分歧会
+              // 立刻出现，而两侧各自看都对。
+              const saleState = planSaleState(plan, nowMs)
+              const countdown = secondsUntilSaleStart(plan, nowMs)
+              const saleStartText = formatSaleTime(plan.sale_start_at)
+              const saleEndText = formatSaleTime(plan.sale_end_at)
               const facts = buildPlanFacts(plan, t, {
                 includeUserGroupChange: true,
                 purchaseCount: count,
@@ -516,9 +547,58 @@ export function SubscriptionPlansCard({
                       ))}
                     </div>
 
+                    {/* 在售但设了停售时间：把"卖到几号为止"摆在按钮上面。
+                        这是买家做决定要用的信息（再不买就没了），而不是一条
+                        事后才需要的注解，所以不并进上面的事实清单。 */}
+                    {saleState === 'on_sale' && saleEndText !== '' && (
+                      <p className='text-muted-foreground mb-2 text-xs'>
+                        {t('qy_plan_sale_until', { time: saleEndText })}
+                      </p>
+                    )}
+
                     <Separator className='mb-3' />
 
-                    {reached ? (
+                    {/* 未开售 / 已停售的按钮**先于**限购判断:一个已停售的套餐
+                        即使没到限购次数也买不了,而"已达购买上限"会把用户引去
+                        追一个不存在的次数问题。 */}
+                    {saleState === 'upcoming' ? (
+                      <div className='space-y-1.5'>
+                        <Button variant='outline' className='w-full' disabled>
+                          {t('qy_plan_sale_state_upcoming')}
+                        </Button>
+                        {/* 有开售时间就倒计时,没有就退回静态"敬请期待"。
+                            countdown 为 null 的唯一可能是"配了开售时间但已经
+                            到点"—— 那时 saleState 已经不是 upcoming 了,所以
+                            这个分支实际只在渲染与 tick 之间的一瞬出现。 */}
+                        <p className='text-muted-foreground text-center text-xs'>
+                          {countdown != null
+                            ? t('qy_plan_sale_countdown', {
+                                remain: formatSaleCountdown(countdown, t),
+                              })
+                            : t('qy_plan_sale_coming_soon')}
+                        </p>
+                        {saleStartText !== '' && (
+                          <p className='text-muted-foreground text-center text-xs'>
+                            {t('qy_plan_sale_start_label')}: {saleStartText}
+                          </p>
+                        )}
+                      </div>
+                    ) : saleState === 'ended' ? (
+                      <div className='space-y-1.5'>
+                        {/* 项目方原话:「对已停售的不再显示购买按钮」。这里保留
+                            一个禁用按钮而不是整个删掉,是因为卡片其余部分照常
+                            渲染 —— 按钮位置突然空掉,看起来像是这一块没加载出来。
+                            禁用态在语义上已经是"点不了",而且读屏会念出 disabled。 */}
+                        <Button variant='outline' className='w-full' disabled>
+                          {t('qy_plan_sale_state_ended')}
+                        </Button>
+                        {/* 停售最容易引发的一句工单是"那我买过的那份还在不在"。
+                            答案就写在这里,不等用户来问。 */}
+                        <p className='text-muted-foreground text-center text-xs'>
+                          {t('qy_plan_sale_ended_buyer_hint')}
+                        </p>
+                      </div>
+                    ) : reached ? (
                       <Tooltip>
                         <TooltipTrigger render={<div />}>
                           <Button variant='outline' className='w-full' disabled>

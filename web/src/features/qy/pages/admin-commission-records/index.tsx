@@ -40,12 +40,11 @@ import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyErrorMessage } from '../../lib/api'
 import { qyTabTarget } from '../../lib/pages'
 import { qyKeys } from '../../lib/query-keys'
+import { qyAdminAccrualsQuery, qySettleCommission } from '../admin-commission/api'
 import {
-  qyAdminAccrualsQuery,
-  qyBlockRelationErrorMessage,
-  qyBlockInviteRelation,
-  qySettleCommission,
-} from '../admin-commission/api'
+  BlockRelationDialog,
+  type QyBlockRelationTarget,
+} from '../admin-commission/components/block-relation-dialog'
 import type { QyAdminAccrual } from '../admin-commission/types'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
@@ -89,6 +88,9 @@ export function QyAdminCommissionRecords() {
   const [clawbackTarget, setClawbackTarget] = useState<QyAdminAccrual | null>(
     null
   )
+  const [blockTarget, setBlockTarget] = useState<QyBlockRelationTarget | null>(
+    null
+  )
 
   const query = useQuery(
     qyAdminAccrualsQuery({
@@ -108,21 +110,6 @@ export function QyAdminCommissionRecords() {
       await queryClient.invalidateQueries({ queryKey: qyKeys.all })
     },
     onError: (error) => toast.error(qyErrorMessage(error, t)),
-  })
-
-  const blockMutation = useMutation({
-    mutationFn: qyBlockInviteRelation,
-    onSuccess: async (result) => {
-      toast.success(
-        result.blocked ? t('qy_cm_block_ok') : t('qy_cm_unblock_ok')
-      )
-      await queryClient.invalidateQueries({ queryKey: qyKeys.all })
-    },
-    // 后端现在给的是逐条独立的 code（`qy_rel_no_relation` /
-    // `qy_rel_user_not_found` / `qy_rel_not_bound`），各出**一句**准确的话。
-    // 项目方看到的"参数有误 + 可能已经生效"两句同屏，来自于那时后端把所有
-    // 400 混成一个 qy_invalid_param，而"可能已经生效"只该出现在 network 那一档。
-    onError: (error) => toast.error(qyBlockRelationErrorMessage(error, t)),
   })
 
   const columns: StaticDataTableColumn<QyAdminAccrual>[] = [
@@ -145,7 +132,16 @@ export function QyAdminCommissionRecords() {
       header: t('qy_aff_invitee'),
       className: staticDataTableClassNames.compactHeaderCell,
       cellClassName: staticDataTableClassNames.compactCell,
-      cell: (row) => `#${row.invitee_id}`,
+      // 关系当前被停时打标：不然运营点开确认框才知道自己按的是「恢复」，
+      // 而这一列恰恰是他判断"这条关系现在是什么状态"的地方。
+      cell: (row) => (
+        <span className='inline-flex items-center gap-1.5'>
+          {`#${row.invitee_id}`}
+          {row.relation_blocked && (
+            <Badge variant='destructive'>{t('qy_rel_state_blocked')}</Badge>
+          )}
+        </span>
+      ),
     },
     {
       id: 'source',
@@ -209,25 +205,27 @@ export function QyAdminCommissionRecords() {
           >
             {t('qy_cm_settle')}
           </Button>
-          {/* 「拉黑」只在这一行**真的挂在一条邀请关系上**时才渲染。
+          {/* 「停止计佣」只在这一行**真的挂在一条邀请关系上**时才渲染。
               手工调整落下的计佣行（`source_type = manual`）的 `invitee_id` 是 0：
               它不是任何人邀请任何人产生的，后端 `adminBlockRelation` 对
               `invitee_id <= 0` 直接 400。此前这里无条件渲染，于是那些行上有一个
-              点了必然报错的按钮 —— 而报出来的还是一句让人以为扣了钱的话。 */}
+              点了必然报错的按钮 —— 而报出来的还是一句让人以为扣了钱的话。
+
+              按钮的方向由 `relation_blocked` 决定，与用户佣金页那一处完全一致。
+              此前这里写死 `blocked: true`，于是本页只能停、不能恢复 ——
+              项目方看的正是这一页，"停止计佣没法恢复"这个结论对它成立。 */}
           {row.invitee_id > 0 ? (
             <Button
               variant='ghost'
               size='sm'
-              disabled={blockMutation.isPending}
               onClick={() =>
-                blockMutation.mutate({
-                  invitee_id: row.invitee_id,
-                  blocked: true,
-                  reason: t('qy_cm_block_default_reason'),
+                setBlockTarget({
+                  inviteeId: row.invitee_id,
+                  blocked: row.relation_blocked,
                 })
               }
             >
-              {t('qy_cm_block')}
+              {row.relation_blocked ? t('qy_cm_unblock') : t('qy_cm_block')}
             </Button>
           ) : (
             // 不渲染按钮，但也不留一片空白：运营需要知道"这一行为什么没有这个
@@ -384,6 +382,13 @@ export function QyAdminCommissionRecords() {
       <ClawbackDialog
         accrual={clawbackTarget}
         onClose={() => setClawbackTarget(null)}
+      />
+
+      {/* 停止 / 恢复计佣共用同一个弹窗：方向由行上的当前状态决定，
+          「停止计佣」与「解绑」的区别写在里面。 */}
+      <BlockRelationDialog
+        target={blockTarget}
+        onClose={() => setBlockTarget(null)}
       />
     </QySectionPageLayout>
   )

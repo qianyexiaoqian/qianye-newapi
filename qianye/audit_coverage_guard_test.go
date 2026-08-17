@@ -60,6 +60,7 @@ var auditWriteFuncs = map[string]bool{
 	"writeAISettingAudit":    true, // violation:AI 审核设置(抽样率、总开关)变更,成功与失败同一出口
 	"writeAIScopeAudit":      true, // violation:AI 审核作用域策略(谁被送审、抽多少)写入/删除,成功与失败同一出口
 	"afterAIChange":          true, // violation:bump 版本 + 重载 + 审计,三件一起做
+	"writePlanAudit":         true, // controller/subscription.go:订阅套餐写接口,成功与失败同一出口
 }
 
 // auditRequired 列出必须留痕的资金路径,值是该函数体内审计写入的**最少**次数。
@@ -382,6 +383,25 @@ var auditRequired = []struct {
 	{"modules/ticket/api_user.go", "handleDiscardImage", 1,
 		"丢弃会真的从磁盘删文件。上传留痕而删除不留痕的话," +
 			"「这个账号传过多少、现在还剩什么」在事后只剩一半答案"},
+	// 下面三条是**上游 controller/ 里的接口**,不在 qianye/modules/** 之内。
+	// 登记它们的理由:它们与本目录下的资金配置接口是同一类东西(改一次决定
+	// 此后谁能付款、按什么价),而在补上埋点之前整个 controller/subscription.go
+	// 零审计 —— 佣金侧每一次配置写入都有审计,套餐侧一条都没有,资金相关配置
+	// 面上两套标准。路径写成 ../ 是因为本测试跑在 qianye/ 目录下。
+	{"../controller/subscription.go", "AdminCreateSubscriptionPlan", 2,
+		"新建一个套餐就是往货架上放一件商品:价格、时长、发售窗、送多少额度," +
+			"全都在这一次请求里定下。成功与失败各一条 —— 建库失败那次留下的是" +
+			"「有人在这一刻试图上架一个 X 元的套餐」,与成功的那次同等重要"},
+	{"../controller/subscription.go", "AdminUpdateSubscriptionPlan", 2,
+		"sale_start_at / sale_end_at 是**到点自动上下架**,与 enabled(手动上下架)" +
+			"一起决定此刻谁能付款;price_amount / total_amount 决定收多少钱、给多少额度。" +
+			"改错任何一格的表现都是「套餐从货架上消失了」或「该停售的还在收钱」," +
+			"而接口照常 200、界面照常渲染、没有任何报错。before/after 是事后唯一能" +
+			"回答「谁把发售时间改了、原来是什么」的东西;写失败同样留痕"},
+	{"../controller/subscription.go", "AdminUpdateSubscriptionPlanStatus", 2,
+		"列表行内的快速上下架与 violation 的规则快速启停同形:下架方向完全无症状," +
+			"套餐只是从售卖页消失,与「从来没建过」无法区分。谁在什么时候把哪个套餐" +
+			"下架了,只剩这条埋点能回答;写失败同样留痕"},
 }
 
 func TestFundPathsKeepTheirAuditWrites(t *testing.T) {

@@ -47,6 +47,8 @@ import {
 import {
   buildPlanFacts,
   formatPlanPrice,
+  formatSaleTime,
+  planSaleState,
   type PlanEntitlementDisclosure,
 } from '../../lib'
 import type { PlanRecord } from '../../types'
@@ -140,7 +142,21 @@ export function SubscriptionPurchaseDialog(props: Props) {
   // 用户看得见"没读到"这句话，此时是否继续由他自己决定 —— 挡死会让一次扩展库
   // 抖动变成"全站买不了套餐"。
   const entitlementPending = props.entitlement?.state === 'loading'
-  const payBlocked = paying || limitReached || entitlementPending
+  /*
+    发售时间窗:这张弹窗上的**第二道**闸门。
+
+    卡片那边已经不给未开售/已停售的套餐渲染可点的按钮了,这里再挡一次不是
+    重复 —— 弹窗可以在停售时刻**之前**打开、在之后才点付款(用户去泡了杯茶),
+    而卡片的三态是在卡片那次渲染里算的。这里每次渲染重算,tick 由钱包页那个
+    每秒的时钟推着走,于是弹窗会在停售那一秒当场把付款按钮全部灰掉。
+
+    真正的最终判据仍然在后端(四个下单接口 + 余额购买),这两道都只是别让用户
+    走到"点了才被拒"。
+  */
+  const saleState = planSaleState(plan)
+  const saleWindowBlocked = saleState !== 'on_sale'
+  const payBlocked =
+    paying || limitReached || entitlementPending || saleWindowBlocked
 
   const handlePayStripe = async () => {
     setPaying(true)
@@ -339,7 +355,24 @@ export function SubscriptionPurchaseDialog(props: Props) {
           </div>
         </div>
 
-        {limitReached && (
+        {/* 时间窗的告警排在限购之前:两者都成立时(一个已停售、又恰好买满了),
+            该说的是"已停售"—— 那是无法解决的那一条,而"已达上限"会让用户去
+            追一个次数问题。 */}
+        {saleWindowBlocked && (
+          <Alert variant='destructive'>
+            <AlertDescription>
+              {saleState === 'upcoming'
+                ? `${t('qy_plan_sale_state_upcoming')}${
+                    formatSaleTime(plan.sale_start_at) !== ''
+                      ? ` · ${t('qy_plan_sale_start_label')}: ${formatSaleTime(plan.sale_start_at)}`
+                      : ''
+                  }`
+                : t('qy_plan_sale_ended_buyer_hint')}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {!saleWindowBlocked && limitReached && (
           <Alert variant='destructive'>
             <AlertDescription>
               {t('Purchase limit reached')} ({props.purchaseCount}/

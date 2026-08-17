@@ -115,7 +115,8 @@ func TestAdminBlockRelation_BlocksRelationWithoutSnapshotRow(t *testing.T) {
 	require.NotNil(t, rel, "快照缺行时必须按主库的权威字段补建,否则这次拉黑等于没做")
 	assert.True(t, rel.Blocked)
 	assert.Equal(t, 41, rel.InviterId, "补出来的行必须挂在主库那个权威邀请人上")
-	assert.Equal(t, "疑似自刷", rel.RiskFlags)
+	assert.Equal(t, "疑似自刷", rel.BlockReason, "人工事由落 block_reason")
+	assert.Equal(t, "", rel.RiskFlags, "risk_flags 是自动风控的地盘,人工事由不许写进去")
 	assert.EqualValues(t, 2000, rel.BoundAt, "自动绑定发生在注册那一刻")
 
 	// 计佣链路真正读的是这个集合。上面那一行不进这里,拉黑就是白做的。

@@ -393,7 +393,6 @@ describe('i18n 键完整', () => {
     'qy_cu_tab_withdrawals',
     'qy_cu_tab_invitees',
     'qy_cu_settled_hint',
-    'qy_cu_block_default_reason',
     'qy_cu_rel_action',
     'qy_cu_rel_semantics',
     'qy_cu_rel_target_hint',

@@ -129,6 +129,8 @@ var fieldConsumers = map[string]consumer{
 	"commission.enabled":              {"qianye/guard/guard.go", "featureOn(FlagCommission)"},
 	"commission.topup_rate_percent":   {"qianye/modules/commission/settings.go", "充值返佣百分比(全局默认),在此换算成内部整数费率并可被运营覆盖"},
 	"commission.consume_rate_percent": {"qianye/modules/commission/settings.go", "消费返佣百分比(全局默认),同上"},
+	"commission.redemption_rate_percent": {"qianye/modules/commission/settings.go",
+		"兑换码返佣百分比(全局默认)。留空 = 没单独配 = 跟随充值档(升级前行为),\"0\" 是显式 0%"},
 	"commission.topup_rate_bps": {"qianye/config/defaults.go",
 		"⚠ 已废弃:仅作兼容,加载时由 adoptDeprecatedRates 换算进 topup_rate_percent 并告警;与新字段矛盾时启动失败"},
 	"commission.consume_rate_bps": {"qianye/config/defaults.go",

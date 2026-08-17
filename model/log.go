@@ -325,6 +325,22 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	}
 }
 
+// 渠道可用性测试写出的消费日志既不是真实消费,也不该进返佣。
+//
+// ChannelTestLogOtherKey 是**判据**:other[ChannelTestLogOtherKey] == true 由
+// controller/channel-test.go 在写日志时打上,qianye/modules/commission 的硬排除
+// 认这一个键。与 other["violation_fee"] 同形 —— 排除项靠显式标记,不靠文案。
+//
+// ChannelTestTokenName 是这条日志的 token_name 文案,同时被保留为兜底判据
+// (给标记出现之前写下的存量日志用)。它是一个会被人当成"文案"去改、去做 i18n
+// 的字符串,而改掉它在没有标记的年代等于让排除静默失效 —— 表现是渠道测试
+// 开始给管理员的上线发钱,接口照常 200、日志照常写、没有任何症状。
+// 因此两处必须共用这一个常量,由 model/channel_test_marker_test.go 的源码扫描守卫钉住。
+const (
+	ChannelTestLogOtherKey = "channel_test"
+	ChannelTestTokenName   = "模型测试"
+)
+
 type RecordConsumeLogParams struct {
 	ChannelId        int                    `json:"channel_id"`
 	PromptTokens     int                    `json:"prompt_tokens"`

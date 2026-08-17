@@ -42,6 +42,14 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		common.ApiErrorMsg(c, "套餐未启用")
 		return
 	}
+	// 发售时间窗:与 !plan.Enabled 并列的第二道下单闸门。四个网关各写一遍而不是
+	// 收进一个共享 helper,是因为这四个 handler 本来就逐行同构(取套餐 → 名额预检
+	// → 启用检查 → 各自的 product id 检查),抽走其中一句反而让"这里一共挡了几件事"
+	// 变得要跳文件才看得清。
+	if err := model.PlanSaleWindowError(plan, common.GetTimestamp()); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	if plan.PriceAmount < 0.01 {
 		common.ApiErrorMsg(c, "套餐金额过低")
 		return

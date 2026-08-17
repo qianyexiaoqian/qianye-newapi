@@ -29,6 +29,19 @@ For commercial licensing, please contact support@quantumnous.com
 export type QyCommissionEffective = {
   topup_rate_percent: string
   consume_rate_percent: string
+  /**
+   * 兑换码这一档**配的是什么**。空串 = 没单独配 = 跟随充值档；`"0"` = 显式 0%。
+   *
+   * 这两件事必须分开显示：0% 是一个合法的运营配置（兑换码多用于活动赠送，
+   * 不想为它付佣金），而"没配"是每一个升级上来的站点的样子。把回落值填进
+   * 输入框的话，运营下一次保存就把"跟随"固化成了一个显式数字，从此改充值档
+   * 不再带动兑换码 —— 一次什么都没改的保存，静默改变了系统行为。
+   */
+  redemption_rate_percent: string
+  /** 兑换码档**实际按几个点算**：没单独配时等于充值档。只读，不可提交。 */
+  redemption_rate_effective_percent: string
+  /** `redemption_rate_percent === ''` 的服务端版本，前端不自己推。 */
+  redemption_rate_follows_topup: boolean
   min_settle_quota: number
   max_per_order_quota: number
   holding_days: number
@@ -48,6 +61,8 @@ export type QyCommissionYamlReadonly = {
   enabled: boolean
   topup_rate_percent: string
   consume_rate_percent: string
+  /** YAML 里的兑换码档。空串就是"没写这一项"，也就是跟随充值档。 */
+  redemption_rate_percent: string
   exclude_redemption_and_manual: boolean
   exclude_subscription_consume: boolean
   refund_clawback: boolean
@@ -68,6 +83,14 @@ export type QyCommissionGroupRate = {
   group_name: string
   topup_rate_percent: string
   consume_rate_percent: string
+  /**
+   * 本组的兑换码档。**`null` = 本组没单独配**，按后端
+   * `redemptionRateUnits` 的顺序回落（全局兑换码档 → 本组充值档）。
+   *
+   * 后端刻意发 `null` 而不是空串：JS 里 `''` 与 `'0'` 都是假值，
+   * 只有 `null` 不会被 `value ? … : 跟随` 这类写法把显式 0% 也画成"跟随"。
+   */
+  redemption_rate_percent: string | null
   enabled: boolean
   remark: string
   operator_id: number
@@ -81,6 +104,13 @@ export type QyCommissionAdminConfig = {
   editable_keys: string[]
   /** 这些键的取值是百分比字符串，其余键是整数。由后端给出，前端不猜。 */
   percent_keys: string[]
+  /**
+   * `percent_keys` 里**允许留空**的那些。空表示"没单独配，跟随充值档"。
+   *
+   * 同样由后端给出：前端猜错的方向恰好是把空当成 `0` 提交上去，
+   * 而那是一次没有人批准的费率归零。
+   */
+  nullable_percent_keys: string[]
   group_rates: QyCommissionGroupRate[]
   yaml_readonly: QyCommissionYamlReadonly
 }
@@ -110,4 +140,12 @@ export type QyAdminAccrual = {
   bucket_date: string
   remark: string
   created_at: number
+  /**
+   * 这一行背后那条邀请关系**此刻**是不是被停止计佣了（后端每次列表现查，
+   * 不走 60 秒缓存）。`invitee_id <= 0` 的手工调整行恒为 false。
+   *
+   * 没有这一位，本页就只能画一个单向的「停止计佣」按钮 —— 而"停了就没法恢复"
+   * 正是项目方对这套功能的全部意见。
+   */
+  relation_blocked: boolean
 }

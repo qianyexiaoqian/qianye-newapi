@@ -106,6 +106,13 @@ export function UnbindRelationDialog(props: UnbindRelationDialogProps) {
             <AlertDescription>{t('qy_rel_unbind_semantics')}</AlertDescription>
           </Alert>
 
+          {/* 「解绑」的对照面。运营多数时候真正想要的是"先停一段时间看看"，
+              而那是「停止计佣」——关系还在，随时能恢复。不写在这里的话，
+              他只会看到两个按钮和两个名字，然后按下不可逆的那一个。 */}
+          <p className='text-muted-foreground text-xs'>
+            {t('qy_rel_unbind_vs_block')}
+          </p>
+
           <dl className='divide-border divide-y text-sm'>
             <div className='flex justify-between gap-3 py-1.5 first:pt-0'>
               <dt className='text-muted-foreground'>

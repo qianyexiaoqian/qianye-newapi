@@ -41,6 +41,11 @@ func SubscriptionRequestStripePay(c *gin.Context) {
 		common.ApiErrorMsg(c, "套餐未启用")
 		return
 	}
+	// 发售时间窗,与 !plan.Enabled 并列。理由见 subscription_payment_epay.go 同处。
+	if err := model.PlanSaleWindowError(plan, common.GetTimestamp()); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	if plan.StripePriceId == "" {
 		common.ApiErrorMsg(c, "该套餐未配置 StripePriceId")
 		return

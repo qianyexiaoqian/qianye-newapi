@@ -521,6 +521,9 @@ func ensureSubscriptionPlanTableSQLite() error {
 ` + "`custom_seconds`" + ` bigint NOT NULL DEFAULT 0,
 ` + "`enabled`" + ` numeric DEFAULT 1,
 ` + "`sort_order`" + ` integer DEFAULT 0,
+` + "`sale_start_at`" + ` bigint NOT NULL DEFAULT 0,
+` + "`sale_end_at`" + ` bigint NOT NULL DEFAULT 0,
+` + "`no_quota`" + ` numeric NOT NULL DEFAULT 0,
 ` + "`allow_balance_pay`" + ` numeric DEFAULT 1,
 ` + "`allow_wallet_overflow`" + ` numeric DEFAULT 1,
 ` + "`stripe_price_id`" + ` varchar(128) DEFAULT '',
@@ -558,6 +561,16 @@ PRIMARY KEY (` + "`id`" + `)
 		{Name: "custom_seconds", DDL: "`custom_seconds` bigint NOT NULL DEFAULT 0"},
 		{Name: "enabled", DDL: "`enabled` numeric DEFAULT 1"},
 		{Name: "sort_order", DDL: "`sort_order` integer DEFAULT 0"},
+		// 发售时间窗。0 = 不限制,与 SubscriptionPlan 上的注释同一口径;
+		// 存量行补出来的正是 0,也就是「随时可以购买」—— 迁移不改变任何存量行为。
+		{Name: "sale_start_at", DDL: "`sale_start_at` bigint NOT NULL DEFAULT 0"},
+		{Name: "sale_end_at", DDL: "`sale_end_at` bigint NOT NULL DEFAULT 0"},
+		// no_quota 此前**漏在这张清单外**(而 SQLite 走的是这条手工路径,不是
+		// AutoMigrate)。漏掉的后果不是"少一个功能":GORM 生成的 INSERT 恒带
+		// no_quota 列,于是 SQLite 上**新建任何套餐**都会 `table subscription_plans
+		// has no column named no_quota`。单测看不见,因为测试夹具直接用
+		// AutoMigrate 建表。补进来是幂等的:已有该列的库走上面那句 continue。
+		{Name: "no_quota", DDL: "`no_quota` numeric NOT NULL DEFAULT 0"},
 		{Name: "allow_balance_pay", DDL: "`allow_balance_pay` numeric DEFAULT 1"},
 		{Name: "allow_wallet_overflow", DDL: "`allow_wallet_overflow` numeric DEFAULT 1"},
 		{Name: "stripe_price_id", DDL: "`stripe_price_id` varchar(128) DEFAULT ''"},

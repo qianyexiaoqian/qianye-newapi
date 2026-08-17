@@ -25,16 +25,31 @@ func TestHardExcluded(t *testing.T) {
 	assert.True(t, hardExcluded(violation))
 
 	// 渠道可用性测试跑在管理员账号上,不是真实消费。
+	// 首选判据是写日志那一侧打的显式标记,与文案无关。
+	channelTestMarked := model.RecordConsumeLogParams{
+		Quota: 1000, TokenId: 7, TokenName: "运营自己建的令牌",
+		Other: map[string]interface{}{model.ChannelTestLogOtherKey: true},
+	}
+	assert.True(t, hardExcluded(channelTestMarked))
+
+	// 兜底判据:标记出现之前写下的存量日志只有 token_name 可认。
 	channelTest := model.RecordConsumeLogParams{
-		Quota: 1000, TokenId: 0, TokenName: "模型测试",
+		Quota: 1000, TokenId: 0, TokenName: model.ChannelTestTokenName,
 	}
 	assert.True(t, hardExcluded(channelTest))
 
 	// 同名令牌但确实是用户自己建的(TokenId > 0),不能误杀。
 	realToken := model.RecordConsumeLogParams{
-		Quota: 1000, TokenId: 7, TokenName: "模型测试",
+		Quota: 1000, TokenId: 7, TokenName: model.ChannelTestTokenName,
 	}
 	assert.False(t, hardExcluded(realToken))
+
+	// 标记为 false 不等于命中 —— 只有显式 true 才算。
+	notMarked := model.RecordConsumeLogParams{
+		Quota: 1000, TokenId: 7, TokenName: "default",
+		Other: map[string]interface{}{model.ChannelTestLogOtherKey: false},
+	}
+	assert.False(t, hardExcluded(notMarked))
 
 	normal := model.RecordConsumeLogParams{
 		Quota: 1000, TokenId: 3, TokenName: "default",

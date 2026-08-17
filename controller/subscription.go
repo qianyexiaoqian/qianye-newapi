@@ -8,6 +8,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
@@ -94,6 +96,75 @@ func SubscriptionRequestBalancePay(c *gin.Context) {
 
 // ---- Admin APIs ----
 
+// 套餐写接口的审计动作标识。稳定英文串,与 qy_audit_logs.action 一一对应。
+const (
+	auditActionPlanCreate = "subscription.plan.create"
+	auditActionPlanUpdate = "subscription.plan.update"
+	auditActionPlanStatus = "subscription.plan.status"
+)
+
+// planAuditSnapshot 冻结一份"这个套餐此刻能不能被买、按什么价、买到什么"的快照。
+//
+// 只取决定资金与可售性的字段,不是整行 dump:整行里混着一堆展示字段,
+// 每次改标题都会让 before/after 长得像一次大改动,真正要看的那一格反而找不到。
+func planAuditSnapshot(p *model.SubscriptionPlan) map[string]any {
+	if p == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":                    p.Id,
+		"title":                 p.Title,
+		"enabled":               p.Enabled,
+		"price_amount":          p.PriceAmount,
+		"currency":              p.Currency,
+		"duration_unit":         p.DurationUnit,
+		"duration_value":        p.DurationValue,
+		"custom_seconds":        p.CustomSeconds,
+		"sale_start_at":         p.SaleStartAt,
+		"sale_end_at":           p.SaleEndAt,
+		"no_quota":              p.NoQuota,
+		"total_amount":          p.TotalAmount,
+		"max_purchase_per_user": p.MaxPurchasePerUser,
+		"upgrade_group":         p.UpgradeGroup,
+		"downgrade_group":       p.DowngradeGroup,
+		"quota_reset_period":    p.QuotaResetPeriod,
+	}
+}
+
+// writePlanAudit 是套餐写接口的唯一审计出口,成功与失败共用同一条路径。
+//
+// # 为什么这一组接口必须留痕
+//
+// enabled 是手动上下架,sale_start_at / sale_end_at 是到点自动上下架 —— 三者
+// 合起来决定"此刻谁能付款"。改错任何一格的表现都是"套餐从货架上消失了"或
+// "已经该停售的套餐还在收钱",而接口本身照常 200、界面照常渲染、没有任何报错。
+// 在这条埋点之前,整个 controller/subscription.go 零审计:改动落库即生效,
+// 事后连"谁在什么时候把停售时间提前了"都无从查起,而同一站点的佣金侧
+// 每一次配置写入都有审计 —— 资金相关配置面上两套标准。
+//
+// 校验失败(400)不在这里留痕:那一类没有产生任何存储副作用,由请求台账覆盖,
+// 与 withdraw/handleUploadProof 的下界取 1 同理。
+func writePlanAudit(c *gin.Context, action string, result string, reason string, before, after *model.SubscriptionPlan) {
+	// 两个快照必须显式留成 any(nil) 而不是直接塞 planAuditSnapshot 的返回值:
+	// 一个 nil map 装进 any 之后不等于 nil(接口带着类型),audit.snapshotJSON
+	// 的 `v == nil` 分支会漏过去,新建操作的 before 就会落成字面量 "null" ——
+	// 与"这一格真的被改成了 null"在详情页上无法区分。
+	var beforeSnap, afterSnap any
+	if before != nil {
+		beforeSnap = planAuditSnapshot(before)
+	}
+	if after != nil {
+		afterSnap = planAuditSnapshot(after)
+	}
+	audit.WriteConfigUpdate(c, audit.ConfigChange{
+		Action: action,
+		Result: result,
+		Reason: reason,
+		Before: beforeSnap,
+		After:  afterSnap,
+	})
+}
+
 func AdminListSubscriptionPlans(c *gin.Context) {
 	var plans []model.SubscriptionPlan
 	if err := model.DB.Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
@@ -164,6 +235,10 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "总额度不能为负数")
 		return
 	}
+	if err := model.ValidatePlanSaleWindow(req.Plan.SaleStartAt, req.Plan.SaleEndAt); err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
 	req.Plan.DowngradeGroup = strings.TrimSpace(req.Plan.DowngradeGroup)
 	if err := validatePlanUserGroups(req.Plan.UpgradeGroup, req.Plan.DowngradeGroup); err != nil {
@@ -177,10 +252,12 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 	}
 	err := model.DB.Create(&req.Plan).Error
 	if err != nil {
+		writePlanAudit(c, auditActionPlanCreate, qymodel.ResultFail, err.Error(), nil, &req.Plan)
 		common.ApiError(c, err)
 		return
 	}
 	model.InvalidateSubscriptionPlanCache(req.Plan.Id)
+	writePlanAudit(c, auditActionPlanCreate, qymodel.ResultOK, "", nil, &req.Plan)
 	common.ApiSuccess(c, req.Plan)
 }
 
@@ -233,6 +310,10 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "总额度不能为负数")
 		return
 	}
+	if err := model.ValidatePlanSaleWindow(req.Plan.SaleStartAt, req.Plan.SaleEndAt); err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
 	req.Plan.DowngradeGroup = strings.TrimSpace(req.Plan.DowngradeGroup)
 	if err := validatePlanUserGroups(req.Plan.UpgradeGroup, req.Plan.DowngradeGroup); err != nil {
@@ -245,18 +326,32 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		return
 	}
 
+	// Before 快照直接读主库而不是走 getSubscriptionPlanByIdTx:后者会命中
+	// 300 秒的套餐缓存,拿到的可能是上一次改动之前的样子,而审计的 before
+	// 必须是"这次写入真正覆盖掉的那一行"。查不到行时留空快照 —— 对不存在的
+	// id 调用本接口在改动前就是静默成功(Updates 影响 0 行),不在这里改行为。
+	var before model.SubscriptionPlan
+	beforePtr := &before
+	if err := model.DB.Where("id = ?", id).First(&before).Error; err != nil {
+		beforePtr = nil
+	}
+
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		// update plan (allow zero values updates with map)
 		updateMap := map[string]interface{}{
-			"title":                      req.Plan.Title,
-			"subtitle":                   req.Plan.Subtitle,
-			"price_amount":               req.Plan.PriceAmount,
-			"currency":                   req.Plan.Currency,
-			"duration_unit":              req.Plan.DurationUnit,
-			"duration_value":             req.Plan.DurationValue,
-			"custom_seconds":             req.Plan.CustomSeconds,
-			"enabled":                    req.Plan.Enabled,
-			"sort_order":                 req.Plan.SortOrder,
+			"title":          req.Plan.Title,
+			"subtitle":       req.Plan.Subtitle,
+			"price_amount":   req.Plan.PriceAmount,
+			"currency":       req.Plan.Currency,
+			"duration_unit":  req.Plan.DurationUnit,
+			"duration_value": req.Plan.DurationValue,
+			"custom_seconds": req.Plan.CustomSeconds,
+			"enabled":        req.Plan.Enabled,
+			"sort_order":     req.Plan.SortOrder,
+			// 两列恒在 map 里,所以「把已配的发售/停售时间清回不限制」是做得到的。
+			// 走 Updates(struct) 的话 0 会被当成零值跳过,运营再也取消不了停售时间。
+			"sale_start_at":              req.Plan.SaleStartAt,
+			"sale_end_at":                req.Plan.SaleEndAt,
 			"stripe_price_id":            req.Plan.StripePriceId,
 			"creem_product_id":           req.Plan.CreemProductId,
 			"waffo_pancake_product_id":   req.Plan.WaffoPancakeProductId,
@@ -281,10 +376,12 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		writePlanAudit(c, auditActionPlanUpdate, qymodel.ResultFail, err.Error(), beforePtr, &req.Plan)
 		common.ApiError(c, err)
 		return
 	}
 	model.InvalidateSubscriptionPlanCache(id)
+	writePlanAudit(c, auditActionPlanUpdate, qymodel.ResultOK, "", beforePtr, &req.Plan)
 	common.ApiSuccess(c, nil)
 }
 
@@ -307,11 +404,22 @@ func AdminUpdateSubscriptionPlanStatus(c *gin.Context) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
+	var before model.SubscriptionPlan
+	beforePtr := &before
+	if err := model.DB.Where("id = ?", id).First(&before).Error; err != nil {
+		beforePtr = nil
+	}
+	after := before
+	after.Id = id
+	after.Enabled = *req.Enabled
+
 	if err := model.DB.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Update("enabled", *req.Enabled).Error; err != nil {
+		writePlanAudit(c, auditActionPlanStatus, qymodel.ResultFail, err.Error(), beforePtr, &after)
 		common.ApiError(c, err)
 		return
 	}
 	model.InvalidateSubscriptionPlanCache(id)
+	writePlanAudit(c, auditActionPlanStatus, qymodel.ResultOK, "", beforePtr, &after)
 	common.ApiSuccess(c, nil)
 }
 
@@ -602,6 +710,12 @@ func GetSubscriptionPurchasePreview(c *gin.Context) {
 	}
 	if !plan.Enabled {
 		common.ApiErrorMsg(c, "该套餐已下架")
+		return
+	}
+	// 未开售 / 已停售同样在预览这一步就说清楚。预览是购买弹窗打开时就发的,
+	// 让"买不了"在按下付款之前出现,而不是等到网关下单接口把它退回来。
+	if err := model.PlanSaleWindowError(plan, common.GetTimestamp()); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	preview, err := model.PreviewUserGroupPurchase(c.GetInt("id"), plan)

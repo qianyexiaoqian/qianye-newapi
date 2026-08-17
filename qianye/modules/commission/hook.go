@@ -71,7 +71,15 @@ func hardExcluded(p model.RecordConsumeLogParams) bool {
 		return true
 	}
 	// 渠道可用性测试跑在管理员账号上,不是真实消费。
-	if p.TokenId == 0 && p.TokenName == "模型测试" {
+	//
+	// 首选判据是写日志那一侧打的显式标记(与 violation_fee 同形)。
+	// TokenName 那条是兜底:它靠一个会被当成文案去改、去做 i18n 的中文字面量,
+	// 单独用它的话改文案就等于静默恢复返佣。两处共用 model 的常量,
+	// 并由 model/channel_test_marker_test.go 钉住"标记必须被打上"。
+	if v, ok := p.Other[model.ChannelTestLogOtherKey].(bool); ok && v {
+		return true
+	}
+	if p.TokenId == 0 && p.TokenName == model.ChannelTestTokenName {
 		return true
 	}
 	return false

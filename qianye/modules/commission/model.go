@@ -216,9 +216,20 @@ type InviteRelation struct {
 	// 多写一次库,而且一旦与 accrual 漂移就再也对不回去。列表页按
 	// inviter_id 聚合 qy_commission_accrual 即可,数据永远自洽。
 
+	// RiskFlags 是**自动风控**写的标记(目前只有 reciprocal_invite:互邀环路)。
+	// 它由 ensureRelation 在建快照时算出,此后不该被任何人工动作覆盖 ——
+	// 覆盖掉的话 AFF 关系页上那个徽标显示的就是人写的话,而"这条关系是系统
+	// 自动判定为互刷的"这个事实再也看不到了。人工停止/恢复计佣的事由写
+	// BlockReason,两列各管各的。
 	RiskFlags string `json:"risk_flags" gorm:"type:varchar(255);not null;default:''"`
 	// Blocked 由管理员设置,置位后该关系不再计佣。已发放的佣金不回收。
 	Blocked bool `json:"blocked" gorm:"not null"`
+	// BlockReason 是管理员最近一次停止/恢复计佣填的事由。
+	//
+	// 零值语义:空串 = 没有填过事由(或这条关系从未被人工停过),**不是**
+	// "事由是空的"。它与 Blocked 是两件事 —— 恢复计佣时事由照样留下,
+	// 因为"为什么恢复"与"为什么停"同样是事后要查的。
+	BlockReason string `json:"block_reason" gorm:"type:varchar(255);not null;default:''"`
 
 	CreatedAt int64 `json:"created_at" gorm:"not null;default:0"`
 	UpdatedAt int64 `json:"updated_at" gorm:"not null;default:0"`

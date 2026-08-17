@@ -50,7 +50,18 @@ export type QyAffRelation = {
 
   snapshot_present: boolean
   blocked: boolean
+  /**
+   * **自动风控**写的标记（目前只有 `reciprocal_invite`：A 邀 B 且 B 又邀 A）。
+   * 由后端 `ensureRelation` 在建快照时算出，人工停/恢复计佣不会覆盖它。
+   */
   risk_flags: string
+  /**
+   * 管理员最近一次停止/恢复计佣填的事由。
+   *
+   * 空串 = 从没填过（或这条关系从没被人工动过），**不是**"事由是空的"。
+   * 它与 `blocked` 完全正交：恢复计佣时事由照样留下，所以不能拿它推断开关状态。
+   */
+  block_reason: string
 }
 
 export type QyAffRelationPage = {

@@ -70,6 +70,12 @@ export function qyUpsertCommissionGroupRate(input: {
   group_name: string
   topup_rate_percent: string
   consume_rate_percent: string
+  /**
+   * 兑换码档。**必须显式传 `null` 才表示"本组不单独配"** —— 后端把字段缺失
+   * 与 `null` 当成同一件事，但这个接口是**整行 upsert**，把它漏掉就等于
+   * 每次保存都在悄悄取消这一档。传 `'0'` 是显式 0%，两者不能互相顶替。
+   */
+  redemption_rate_percent: string | null
   enabled: boolean
   remark: string
 }) {

@@ -34,6 +34,10 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import {
+  BlockRelationDialog,
+  type QyBlockRelationTarget,
+} from '../admin-commission/components/block-relation-dialog'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 import { qyAdminRelationsQuery } from './api'
@@ -78,6 +82,12 @@ export function QyAdminCommissionRelationsBody() {
   const [inviterId, setInviterId] = useState('')
   const [bindOpen, setBindOpen] = useState(false)
   const [unbindTarget, setUnbindTarget] = useState<QyAffRelation | null>(null)
+  // 停止/恢复计佣的目标。与解绑并排放在同一行按钮里 —— 这一页原来只有
+  // 「解绑」，而关系还在、只是不计佣这条可逆的路在这里根本看不到，
+  // 运营的结论只能是要停就只能解绑。
+  const [blockTarget, setBlockTarget] = useState<QyBlockRelationTarget | null>(
+    null
+  )
 
   const query = useQuery(
     qyAdminRelationsQuery({
@@ -187,8 +197,16 @@ export function QyAdminCommissionRelationsBody() {
           {row.blocked && (
             <Badge variant='destructive'>{t('qy_rel_state_blocked')}</Badge>
           )}
+          {/* 自动风控标记与人工事由分成两格：前者是系统判定（reciprocal_invite），
+              后者是运营写的话。混在一格里两个都会说错，而这正是本轮修掉的缺陷
+              ——setRelationBlocked 原来把人工事由写进 risk_flags 顶掉了它。 */}
           {row.risk_flags !== '' && (
             <Badge variant='outline'>{row.risk_flags}</Badge>
+          )}
+          {row.block_reason !== '' && (
+            <Badge variant='outline' title={row.block_reason}>
+              {t('qy_rel_block_reason_badge', { reason: row.block_reason })}
+            </Badge>
           )}
         </span>
       ),
@@ -205,13 +223,29 @@ export function QyAdminCommissionRelationsBody() {
               {t('qy_rel_history_only')}
             </span>
           ) : (
-            <Button
-              variant='ghost'
-              size='sm'
-              onClick={() => setUnbindTarget(row)}
-            >
-              {t('qy_rel_unbind')}
-            </Button>
+            <>
+              {/* 方向由这一行当前的 blocked 决定，不写死 —— 写死一个方向正是
+                  「停了就恢复不了」这个结论的来源（计佣流水页原来就是这样）。 */}
+              <Button
+                variant='ghost'
+                size='sm'
+                onClick={() =>
+                  setBlockTarget({
+                    inviteeId: row.invitee_id,
+                    blocked: row.blocked,
+                  })
+                }
+              >
+                {row.blocked ? t('qy_cm_unblock') : t('qy_cm_block')}
+              </Button>
+              <Button
+                variant='ghost'
+                size='sm'
+                onClick={() => setUnbindTarget(row)}
+              >
+                {t('qy_rel_unbind')}
+              </Button>
+            </>
           )}
         </div>
       ),
@@ -315,6 +349,12 @@ export function QyAdminCommissionRelationsBody() {
       <UnbindRelationDialog
         relation={unbindTarget}
         onClose={() => setUnbindTarget(null)}
+      />
+      {/* 与计佣流水页、用户佣金下钻共用同一个确认框：三页对「停止 / 恢复计佣」
+          与「解绑」的解释必须逐字一致，各写一份迟早会漂移成三种说法。 */}
+      <BlockRelationDialog
+        target={blockTarget}
+        onClose={() => setBlockTarget(null)}
       />
     </div>
   )

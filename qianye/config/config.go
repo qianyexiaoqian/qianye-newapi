@@ -214,6 +214,20 @@ type Commission struct {
 	TopupRatePercent   string `yaml:"topup_rate_percent"`
 	ConsumeRatePercent string `yaml:"consume_rate_percent"`
 
+	// RedemptionRatePercent 是**兑换码**这一档的返佣比例。
+	//
+	// # 空串 = 没单独配 = 跟随充值档,而 "0" 是显式 0%
+	//
+	// 这两件事必须分得开。兑换码在本档出现之前一直走充值档
+	// (grouprate.go 的 resolveRate:source != consume 就取 TopupRateUnits),
+	// 所以本字段的**默认必须是空串**:任何存量站点升级上来,没写这个键,
+	// 兑换码返佣一分不变。用 0 当"没配"会让一次升级把所有站点的兑换码返佣
+	// 静默清零 —— 而 0% 恰恰是一个合法且常见的运营配置(兑换码多用于活动
+	// 赠送,不想为它付佣金),两者必须各自可表达。
+	//
+	// 因此 defaults.go 刻意**不给它设默认值**,validate 也只在非空时校验格式。
+	RedemptionRatePercent string `yaml:"redemption_rate_percent"`
+
 	// TopupRateBpsDeprecated / ConsumeRateBpsDeprecated 是 1.x 的万分比字段。
 	//
 	// Deprecated: 请改用 topup_rate_percent / consume_rate_percent。

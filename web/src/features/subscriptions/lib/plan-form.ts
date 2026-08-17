@@ -23,6 +23,43 @@ import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
 
 import type { SubscriptionPlan, PlanPayload } from '../types'
 
+/**
+ * 表单里发售/停售两格的载体是 `<input type="datetime-local">` 的字符串，
+ * 不是时间戳数字。**空串 = 不限制**，与落库的 0 一一对应。
+ *
+ * 为什么不直接在表单里存数字：`datetime-local` 的 value 必须是
+ * `YYYY-MM-DDTHH:mm`，而"用户把日期清空"这个动作产生的是空串。若表单存数字，
+ * 清空只能表达成 0，而 0 在 `<input type="number">` 之外的任何控件上都要再翻译
+ * 一次——两次翻译就是两处可以写反的地方。字符串一路带到提交那一刻再转成秒。
+ */
+function saleTimeToInput(ts: number | undefined): string {
+  const value = Number(ts || 0)
+  if (value === 0) return ''
+  const d = new Date(value * 1000)
+  if (Number.isNaN(d.getTime())) return ''
+  // 必须用本地时间字段拼串：`toISOString()` 是 UTC，运营填的 10:00 会在这里
+  // 变成 02:00（东八区），而他填进去、保存、再打开就看到时间自己变了。
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  )
+}
+
+/**
+ * `datetime-local` 字符串 → unix 秒。空串 / 解析不出来 → 0（不限制）。
+ *
+ * `new Date('2026-08-17T10:00')` 按**本地时区**解析，与上面的 `saleTimeToInput`
+ * 互为逆运算——两边任何一侧改用 UTC 都会让"填进去再打开"出现固定的时区偏移。
+ */
+export function saleTimeToUnix(input: string | undefined): number {
+  const raw = (input || '').trim()
+  if (raw === '') return 0
+  const ms = new Date(raw).getTime()
+  if (Number.isNaN(ms)) return 0
+  return Math.floor(ms / 1000)
+}
+
 export function getPlanFormSchema(t: TFunction) {
   return z.object({
     title: z.string().min(1, t('Please enter plan title')),
@@ -51,6 +88,11 @@ export function getPlanFormSchema(t: TFunction) {
     ]),
     quota_reset_custom_seconds: z.coerce.number().min(0).optional(),
     enabled: z.boolean(),
+    // 发售时间窗。空串 = 不限制（默认），见 saleTimeToInput 的注释。
+    // 跨字段的「停售必须晚于发售」校验挂在整个 object 的 superRefine 上 ——
+    // 单字段 schema 看不到另一格的值。
+    sale_start_at_input: z.string(),
+    sale_end_at_input: z.string(),
     sort_order: z.coerce.number(),
     allow_balance_pay: z.boolean(),
     allow_wallet_overflow: z.boolean(),
@@ -69,6 +111,22 @@ export function getPlanFormSchema(t: TFunction) {
     creem_product_id: z.string().optional(),
     waffo_pancake_product_id: z.string().optional(),
   })
+    .superRefine((values, ctx) => {
+      const start = saleTimeToUnix(values.sale_start_at_input)
+      const end = saleTimeToUnix(values.sale_end_at_input)
+      // 与后端 model.ValidatePlanSaleWindow 同一条判据，包括"任意一端为 0
+      // （不限制）时不做比较"这一点 —— 少了它，"只填停售时间"会被算成
+      // `end <= 0` 之外的另一支而误拒，而那是完全合法的配置。
+      if (start === 0 || end === 0) return
+      if (end <= start) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          // 报在停售那一格上：运营刚动的是它，错误提示必须出现在他的视线里。
+          path: ['sale_end_at_input'],
+          message: t('qy_plan_sale_window_invalid'),
+        })
+      }
+    })
 }
 
 export type PlanFormValues = z.infer<ReturnType<typeof getPlanFormSchema>>
@@ -83,6 +141,9 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   quota_reset_period: 'never',
   quota_reset_custom_seconds: 0,
   enabled: true,
+  // 空串 = 不限制。项目方原话：「默认为不限制，随时可以购买」。
+  sale_start_at_input: '',
+  sale_end_at_input: '',
   sort_order: 0,
   allow_balance_pay: true,
   allow_wallet_overflow: true,
@@ -108,6 +169,8 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     quota_reset_period: plan.quota_reset_period || 'never',
     quota_reset_custom_seconds: Number(plan.quota_reset_custom_seconds || 0),
     enabled: plan.enabled !== false,
+    sale_start_at_input: saleTimeToInput(plan.sale_start_at),
+    sale_end_at_input: saleTimeToInput(plan.sale_end_at),
     sort_order: Number(plan.sort_order || 0),
     allow_balance_pay: plan.allow_balance_pay !== false,
     allow_wallet_overflow: plan.allow_wallet_overflow !== false,
@@ -130,11 +193,24 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
   // 总名额必须在这里摘掉：上游 `AdminUpsertSubscriptionPlanRequest` 绑到
   // `model.SubscriptionPlan`，多出来的键会被 Go 静默丢弃 —— 表单显示"保存成功"
   // 而名额压根没落库。它由 setPlanSeatLimit 单独写进扩展库。
-  const { max_total_users, ...planValues } = values
+  // 两个 `_input` 字段同样必须摘掉：它们是表单自己的形状（datetime-local 字符串），
+  // 上游 `AdminUpsertSubscriptionPlanRequest` 绑到 model.SubscriptionPlan，
+  // 多出来的键会被 Go 静默丢弃，而真正该落库的 sale_start_at / sale_end_at
+  // 反倒一个都没传 —— 表单显示"保存成功"，时间窗压根没进库。
+  const {
+    max_total_users,
+    sale_start_at_input,
+    sale_end_at_input,
+    ...planValues
+  } = values
   const pureProduct = values.no_quota === true
   return {
     plan: {
       ...planValues,
+      // 空串 → 0（不限制）。上游 AdminUpdateSubscriptionPlan 是显式 map 全量
+      // 覆盖，两列恒在 map 里，所以这里传 0 就是真的把已配的时间窗清回不限制。
+      sale_start_at: saleTimeToUnix(sale_start_at_input),
+      sale_end_at: saleTimeToUnix(sale_end_at_input),
       price_amount: Number(values.price_amount || 0),
       currency: 'USD',
       // 永久档没有时长可言，落 0。后端的 `duration_value <= 0` 兜底只对**非**

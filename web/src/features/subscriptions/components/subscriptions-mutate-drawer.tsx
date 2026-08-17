@@ -25,6 +25,7 @@ import {
   CreditCard,
   KeyRound,
   Settings2,
+  Timer,
   TriangleAlert,
   UserCog,
   Users,
@@ -86,8 +87,10 @@ import {
 import {
   getPlanFormSchema,
   PLAN_FORM_DEFAULTS,
+  planSaleState,
   planToFormValues,
   formValuesToPlanPayload,
+  saleTimeToUnix,
   type PlanFormValues,
 } from '../lib'
 import type { PlanRecord, PlanUsage } from '../types'
@@ -238,6 +241,18 @@ export function SubscriptionsMutateDrawer({
   // 「额度用尽后能不能用钱包余额」的两句后果说明按它加粗其中一句。watch 而不是
   // getValues：getValues 不订阅变更，运营拨动开关时两句话不会跟着换重点。
   const walletOverflow = form.watch('allow_wallet_overflow')
+  // 发售时间窗的两格。watch 而不是 getValues：下面那句"此刻在售 / 未开售 /
+  // 已停售"要跟着运营的输入实时变，getValues 不订阅变更就只会停在打开时的值。
+  //
+  // 三态用 lib/sale-window 的 planSaleState 算，与买家侧那一屏、与后端
+  // model.PlanSaleWindowError 是同一条判据 —— 管理端说"在售"、买家侧说
+  // "已停售"这类分歧，全部来自三处各写一份比较。
+  const saleStartInput = form.watch('sale_start_at_input')
+  const saleEndInput = form.watch('sale_end_at_input')
+  const saleStateNow = planSaleState({
+    sale_start_at: saleTimeToUnix(saleStartInput),
+    sale_end_at: saleTimeToUnix(saleEndInput),
+  })
   // Gate "+ Create on Pancake" on the same checks the mint handler runs.
   const watchedTitle = form.watch('title')
   const watchedPrice = form.watch('price_amount')
@@ -1146,6 +1161,93 @@ export function SubscriptionsMutateDrawer({
             {durationUnit === 'permanent' && (
               <p className='text-muted-foreground text-xs leading-5'>
                 {t('qy_plan_duration_permanent_hint')}
+              </p>
+            )}
+          </SideDrawerSection>
+
+          {/* ── 5b. 发售时间窗 ────────────────────────────────────────────
+
+              与上面那一段是**两个不同的时间**，所以分成两段而不是并进"有效期"
+              的四格网格里：上面说的是"买了之后能用多久"，这里说的是"这个套餐
+              在哪一段时间里可以被买"。两者混在一格网格里，运营会把"卖一个月"
+              填进有效期、把"用一个月"填进停售时间——两种填错都不报错。
+
+              两格都留空 = 不限制，随时可买（默认，也是全部存量套餐迁移后的取值）。
+              时间窗与上面基本信息里的「启用状态」是**与**的关系，
+              qy_plan_sale_window_desc 把这一条写死在屏幕上而不是让人猜。 */}
+          <SideDrawerSection>
+            <h3 className='flex items-center gap-2 text-sm font-medium'>
+              <IconBadge tone='chart-5' size='xs'>
+                <Timer />
+              </IconBadge>
+              {t('qy_plan_sale_window_title')}
+            </h3>
+            <p className='text-muted-foreground text-xs leading-5'>
+              {t('qy_plan_sale_window_desc')}
+            </p>
+
+            <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+              <FormField
+                control={form.control}
+                name='sale_start_at_input'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('qy_plan_sale_start_label')}</FormLabel>
+                    <FormControl>
+                      {/* datetime-local 按浏览器本地时区取值，与
+                          saleTimeToInput / saleTimeToUnix 的本地时区解析成对。
+                          运营填 10:00 看到的就是 10:00。 */}
+                      <Input {...field} type='datetime-local' />
+                    </FormControl>
+                    <FormDescription>
+                      {t('qy_plan_sale_unlimited_hint')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='sale_end_at_input'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('qy_plan_sale_end_label')}</FormLabel>
+                    <FormControl>
+                      <Input {...field} type='datetime-local' />
+                    </FormControl>
+                    <FormDescription>
+                      {t('qy_plan_sale_unlimited_hint')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            {/* 停售的后果必须写在这一格旁边，而不是等运营事后发现。
+                两句各说一半：不动已购、但挡续费。第二句尤其不能省——
+                "续费算不算新购买"两种都说得通，界面上不写死，运营就会按自己
+                的理解去承诺，而后端只实现了其中一种。 */}
+            <p className='text-muted-foreground text-xs leading-5'>
+              {t('qy_plan_sale_ended_hint')}
+            </p>
+
+            {/* 已经配了时间窗时，把当前这一刻的三态直接说出来。
+                两个时间戳摆在那里，运营得自己心算"现在到底在不在售"，
+                而这正是他打开这张表单最常想确认的一件事。 */}
+            {(saleStartInput !== '' || saleEndInput !== '') && (
+              <p
+                className={cn(
+                  'text-xs leading-5',
+                  saleStateNow === 'on_sale'
+                    ? 'text-muted-foreground'
+                    : 'text-destructive'
+                )}
+              >
+                {saleStateNow === 'upcoming' && t('qy_plan_sale_now_upcoming')}
+                {saleStateNow === 'ended' && t('qy_plan_sale_now_ended')}
+                {saleStateNow === 'on_sale' && t('qy_plan_sale_now_on_sale')}
               </p>
             )}
           </SideDrawerSection>

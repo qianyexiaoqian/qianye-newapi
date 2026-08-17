@@ -67,11 +67,22 @@ func getSummary(c *gin.Context) {
 		// 比例对外一律是百分比字符串。旧的 *_bps 键继续下发是为了不打断
 		// 已在跑的前端页面(它们自己再除以 100),等页面切到 *_percent 之后
 		// 可以直接删掉这两行。
+		//
+		// 兑换码是第三档。下发的是**生效值**(没单独配时等于充值档)而不是
+		// 配置值:用户端要回答的是"我下线用兑换码充值,我能拿几个点",
+		// 空字符串在这里没有意义。redemption_follows_topup 保留那一位事实,
+		// 界面据此在数字后面标一句"跟随充值档",省掉运营的一轮客服问答。
+		//
+		// 与充值/消费两档一样,这里给的是**全局**档:分组差异化费率按下线的
+		// 分组逐笔解析,邀请人事先并不知道下一个下线落在哪个分组。
 		"rate": gin.H{
-			"topup_percent":   s.TopupRatePercent(),
-			"consume_percent": s.ConsumeRatePercent(),
-			"topup_bps":       s.TopupRateUnits,
-			"consume_bps":     s.ConsumeRateUnits,
+			"topup_percent":            s.TopupRatePercent(),
+			"consume_percent":          s.ConsumeRatePercent(),
+			"redemption_percent":       s.EffectiveRedemptionRatePercent(),
+			"topup_bps":                s.TopupRateUnits,
+			"consume_bps":              s.ConsumeRateUnits,
+			"redemption_bps":           s.EffectiveRedemptionRateUnits(),
+			"redemption_follows_topup": s.RedemptionRateUnits == nil,
 		},
 		"policy": gin.H{
 			"holding_days":            s.HoldingDays,

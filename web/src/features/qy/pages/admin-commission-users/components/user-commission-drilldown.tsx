@@ -16,10 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -29,15 +28,14 @@ import { formatTimestampToDate } from '@/lib/format'
 import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
-import { qyKeys } from '../../../lib/query-keys'
 import { qyAdminRelationsQuery } from '../../admin-commission-relations/api'
 import { UnbindRelationDialog } from '../../admin-commission-relations/components/unbind-relation-dialog'
 import type { QyAffRelation } from '../../admin-commission-relations/types'
+import { qyAdminAccrualsQuery } from '../../admin-commission/api'
 import {
-  qyAdminAccrualsQuery,
-  qyBlockInviteRelation,
-  qyBlockRelationErrorMessage,
-} from '../../admin-commission/api'
+  BlockRelationDialog,
+  type QyBlockRelationTarget,
+} from '../../admin-commission/components/block-relation-dialog'
 import { qyAdminWithdrawalsQuery } from '../../admin-withdrawals/api'
 import type { QyCommissionUser } from '../types'
 
@@ -73,17 +71,20 @@ type UserCommissionDrilldownProps = {
  */
 export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
   const { t } = useTranslation()
-  const queryClient = useQueryClient()
   const user = props.user
 
   const [tab, setTab] = useState('accruals')
   const [unbindTarget, setUnbindTarget] = useState<QyAffRelation | null>(null)
+  const [blockTarget, setBlockTarget] = useState<QyBlockRelationTarget | null>(
+    null
+  )
 
   // 换一个人必须回到第一张标签：停在「提现」上会让运营以为自己看的还是上一个
   // 人的单子 —— 两个人的提现列表长得一模一样，只有金额不同。
   useEffect(() => {
     setTab('accruals')
     setUnbindTarget(null)
+    setBlockTarget(null)
   }, [user])
 
   const userId = user?.user_id ?? 0
@@ -126,20 +127,6 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
       inviter_id: String(userId),
     }),
     enabled: enabled && tab === 'invitees',
-  })
-
-  const blockMutation = useMutation({
-    mutationFn: qyBlockInviteRelation,
-    onSuccess: async (result) => {
-      toast.success(
-        result.blocked ? t('qy_cm_block_ok') : t('qy_cm_unblock_ok')
-      )
-      await queryClient.invalidateQueries({ queryKey: qyKeys.all })
-    },
-    // 与佣金审核页共用同一档分级：后端按情形给出独立的 code，各出**一句**
-    // 准确的话；只有 `network` 那一档才配说"请求可能已经生效"。两句同屏
-    // 正是项目方看到的那个屏幕。
-    onError: (error) => toast.error(qyBlockRelationErrorMessage(error, t)),
   })
 
   let subject: string | undefined
@@ -320,15 +307,16 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                         </span>
                       </span>
                       <span className='flex shrink-0 gap-1'>
+                        {/* 与佣金审核页共用同一个确认框：方向由行上的当前状态
+                            决定，「停止计佣」与「解绑」的区别写在里面 ——
+                            这两个按钮在这里就是挨着的。 */}
                         <Button
                           variant='ghost'
                           size='sm'
-                          disabled={blockMutation.isPending}
                           onClick={() =>
-                            blockMutation.mutate({
-                              invitee_id: row.invitee_id,
-                              blocked: !row.blocked,
-                              reason: t('qy_cu_block_default_reason'),
+                            setBlockTarget({
+                              inviteeId: row.invitee_id,
+                              blocked: row.blocked,
                             })
                           }
                         >
@@ -362,6 +350,11 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
       <UnbindRelationDialog
         relation={unbindTarget}
         onClose={() => setUnbindTarget(null)}
+      />
+
+      <BlockRelationDialog
+        target={blockTarget}
+        onClose={() => setBlockTarget(null)}
       />
     </>
   )

@@ -151,6 +151,9 @@ type relationView struct {
 	SnapshotPresent bool   `json:"snapshot_present"`
 	Blocked         bool   `json:"blocked"`
 	RiskFlags       string `json:"risk_flags"`
+	// BlockReason 是管理员最近一次停止/恢复计佣填的事由。与 RiskFlags 分列下发:
+	// 前者是人写的话,后者是自动风控的判定,混在一格里两个都会说错。
+	BlockReason string `json:"block_reason"`
 }
 
 // relationPair 是 (邀请人, 被邀请人) 这个复合键。
@@ -321,6 +324,7 @@ func listUnboundRelations(ctx context.Context, f relationFilter) ([]relationView
 			SnapshotPresent: true,
 			Blocked:         r.Blocked,
 			RiskFlags:       r.RiskFlags,
+			BlockReason:     r.BlockReason,
 			TotalCommission: decimal.Zero.String(),
 		})
 	}
@@ -409,6 +413,7 @@ func hydrateRelationViews(ctx context.Context, views []relationView) error {
 			v.UnboundAt = r.UnboundAt
 			v.Blocked = r.Blocked
 			v.RiskFlags = r.RiskFlags
+			v.BlockReason = r.BlockReason
 		}
 		if a, ok := totals[key]; ok {
 			v.TotalCommission = a.Gross.String()
@@ -596,15 +601,16 @@ func upsertRelationSnapshot(ctx context.Context, inviterId int, invitee model.Us
 	}
 	now := common.GetTimestamp()
 	row := InviteRelation{
-		InviteeId:  invitee.Id,
-		InviterId:  inviterId,
-		MaskedName: truncate(MaskUsername(displayName(invitee)), 64),
-		InviteeRef: inviteeRef(invitee.Id, refSalt()),
-		BoundAt:    now,
-		RiskFlags:  "",
-		Blocked:    false,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		InviteeId:   invitee.Id,
+		InviterId:   inviterId,
+		MaskedName:  truncate(MaskUsername(displayName(invitee)), 64),
+		InviteeRef:  inviteeRef(invitee.Id, refSalt()),
+		BoundAt:     now,
+		RiskFlags:   "",
+		BlockReason: "",
+		Blocked:     false,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	if err := gdb.WithContext(ctx).Save(&row).Error; err != nil {
 		db.MarkFailure(err)

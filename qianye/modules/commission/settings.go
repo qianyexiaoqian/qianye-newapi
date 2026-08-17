@@ -29,6 +29,11 @@ const (
 	keyTopupRatePercent   = "topup_rate_percent"
 	keyConsumeRatePercent = "consume_rate_percent"
 
+	// keyRedemptionRatePercent 是兑换码那一档,与上面两个键**语义不同**:
+	// 它是可空的。空串(或这一行根本不存在)= 没单独配 = 跟随充值档,
+	// "0" 才是显式 0%。理由见 config.Commission.RedemptionRatePercent。
+	keyRedemptionRatePercent = "redemption_rate_percent"
+
 	keyMinSettleQuota    = "min_settle_quota"
 	keyMaxPerOrderQuota  = "max_per_order_quota"
 	keyHoldingDays       = "holding_days"
@@ -47,13 +52,24 @@ const (
 // editableKeys 限定管理端可写的键。白名单而非黑名单:
 // 让管理端能往共享 KV 表里写任意键,等于把别的模块的配置面也交出去了。
 var editableKeys = []string{
-	keyTopupRatePercent, keyConsumeRatePercent, keyMinSettleQuota, keyMaxPerOrderQuota,
+	keyTopupRatePercent, keyConsumeRatePercent, keyRedemptionRatePercent,
+	keyMinSettleQuota, keyMaxPerOrderQuota,
 	keyHoldingDays, keyDailyCapQuota, keyLargeAlertQuota, keyMinInviteeAgeHour,
 }
 
 // percentKeys 是取值为百分比字符串的键,其余键一律是整数。
 func isPercentKey(k string) bool {
-	return k == keyTopupRatePercent || k == keyConsumeRatePercent
+	return k == keyTopupRatePercent || k == keyConsumeRatePercent ||
+		isNullablePercentKey(k)
+}
+
+// isNullablePercentKey 是百分比键里**允许为空**的那一部分。
+//
+// 空在这里不是"没填",而是一个有含义的取值:"这一档没单独配,跟随充值档"。
+// 单独列出来是因为写入路径要为它分叉 —— 其余百分比键收到空串必须 400
+// (那是运营把输入框清空了),而这些键收到空串要去**删掉**那一行覆盖。
+func isNullablePercentKey(k string) bool {
+	return k == keyRedemptionRatePercent
 }
 
 // opSettings 是 YAML 与运营覆盖合并后的生效配置。
@@ -61,19 +77,52 @@ type opSettings struct {
 	// TopupRateUnits / ConsumeRateUnits 是内部整数费率:百分比 × 100
 	// (10.25% = 1025)。对外(YAML、接口、界面)一律换算回百分比,
 	// 对内一律整数 —— 资金计算不接受浮点误差。
-	TopupRateUnits     int
-	ConsumeRateUnits   int
-	MinSettleQuota     int64
-	MaxPerOrderQuota   int64
-	HoldingDays        int
-	DailyCapQuota      int64 // 0 = 不限
-	LargeAlertQuota    int64 // 0 = 不告警
-	MinInviteeAgeHours int   // 0 = 不限
+	TopupRateUnits   int
+	ConsumeRateUnits int
+	// RedemptionRateUnits 是兑换码那一档,**指针**:nil = 没单独配。
+	//
+	// 不能用 int 的 0 表示"没配":0% 是一个合法且常见的运营配置(兑换码
+	// 多用于活动赠送,不想为它付佣金)。用 0 兼任"没配"的话,升级那一刻
+	// 全站兑换码返佣会静默清零,而账本上看不出任何异常 —— 每一行都自洽,
+	// 只是费率变了。这正是本仓栽过多次的零值陷阱。
+	RedemptionRateUnits *int
+	MinSettleQuota      int64
+	MaxPerOrderQuota    int64
+	HoldingDays         int
+	DailyCapQuota       int64 // 0 = 不限
+	LargeAlertQuota     int64 // 0 = 不告警
+	MinInviteeAgeHours  int   // 0 = 不限
 }
 
 // TopupRatePercent / ConsumeRatePercent 是下发给接口与前端的百分比形式。
 func (s opSettings) TopupRatePercent() string   { return config.FormatRatePercent(s.TopupRateUnits) }
 func (s opSettings) ConsumeRatePercent() string { return config.FormatRatePercent(s.ConsumeRateUnits) }
+
+// RedemptionRatePercent 是**配的是什么**:没单独配时返回空串,而不是充值档的值。
+// 接口回显与审计快照都用它 —— 把回落值当成配置值显示,运营下一次保存就会把
+// "跟随"固化成一个显式数字,从此改充值档不再带动兑换码。
+func (s opSettings) RedemptionRatePercent() string {
+	if s.RedemptionRateUnits == nil {
+		return ""
+	}
+	return config.FormatRatePercent(*s.RedemptionRateUnits)
+}
+
+// EffectiveRedemptionRateUnits 是**实际按几个点算**:没单独配时跟随充值档。
+//
+// 它只回答全局这一层。分组那一层的覆盖在 resolveRate 里,那里的顺序是
+// 分组兑换码档 → 这里 → 分组充值档 → 全局充值档。
+func (s opSettings) EffectiveRedemptionRateUnits() int {
+	if s.RedemptionRateUnits == nil {
+		return s.TopupRateUnits
+	}
+	return *s.RedemptionRateUnits
+}
+
+// EffectiveRedemptionRatePercent 是上面那个数的百分比形式,给接口与界面回显。
+func (s opSettings) EffectiveRedemptionRatePercent() string {
+	return config.FormatRatePercent(s.EffectiveRedemptionRateUnits())
+}
 
 // settingsCacheSeconds 是运营配置的刷新周期。
 //
@@ -125,6 +174,8 @@ func effectiveCtx(ctx context.Context) opSettings {
 	cm := config.Get().Commission
 	base.TopupRateUnits = configRateUnits("topup_rate_percent", cm.TopupRatePercent)
 	base.ConsumeRateUnits = configRateUnits("consume_rate_percent", cm.ConsumeRatePercent)
+	base.RedemptionRateUnits = configNullableRateUnits(
+		"redemption_rate_percent", cm.RedemptionRatePercent)
 	base.MinSettleQuota = cm.MinSettleQuota
 	base.MaxPerOrderQuota = cm.MaxPerOrderQuota
 	base.HoldingDays = cm.HoldingDays
@@ -212,6 +263,24 @@ func configRateUnits(field, raw string) int {
 	return units
 }
 
+// configNullableRateUnits 换算 YAML 里**可空**的百分比字段(目前只有兑换码档)。
+//
+// 空串一律返回 nil 而不是 0:那是"没单独配,跟随充值档"的唯一写法,
+// 也是每一个存量站点升级上来的样子。写错了值同样返回 nil —— 与
+// configRateUnits 回落 0 的取舍不同,这里回落到"跟随充值档"才是保持
+// 存量行为,而按 0 计佣等于替一个填错格式的运营做出"兑换码不返佣"的决定。
+func configNullableRateUnits(field, raw string) *int {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	units, err := config.RatePercentUnits(raw)
+	if err != nil {
+		warnf("commission.%s = %q 无法解析,本次按「跟随充值档」处理: %v", field, raw, err)
+		return nil
+	}
+	return &units
+}
+
 // isQuotaKey 说出哪些可编辑项是"额度"。写入校验与读取回落共用它,
 // 因此"界面能填的"与"库里能生效的"永远是同一个区间。
 func isQuotaKey(key string) bool {
@@ -225,6 +294,7 @@ func isQuotaKey(key string) bool {
 func applyOverrides(s *opSettings, m map[string]string) {
 	rateOverride(&s.TopupRateUnits, m[keyTopupRatePercent], m[legacyKeyTopupRateBps])
 	rateOverride(&s.ConsumeRateUnits, m[keyConsumeRatePercent], m[legacyKeyConsumeRateBps])
+	nullableRateOverride(&s.RedemptionRateUnits, m[keyRedemptionRatePercent])
 	quotaOverride(&s.MinSettleQuota, keyMinSettleQuota, m[keyMinSettleQuota])
 	quotaOverride(&s.MaxPerOrderQuota, keyMaxPerOrderQuota, m[keyMaxPerOrderQuota])
 	intOverride(&s.HoldingDays, m[keyHoldingDays])
@@ -260,6 +330,29 @@ func rateOverride(dst *int, percentRaw, legacyBpsRaw string) {
 		return
 	}
 	*dst = v
+}
+
+// nullableRateOverride 应用运营覆盖的**兑换码档**费率。
+//
+// 与 rateOverride 的两处不同,都是零值陷阱逼出来的:
+//
+//  1. 没有 1.x 万分比旧键要兼容 —— 这一档是新增的,1.x 根本没有它。
+//  2. 空值(行不存在,或者行存在但 v 为空)一律**不动 dst**,让 YAML 的取值
+//     说了算,而 YAML 的空串本身就是 nil。绝不能在这里把空写成 0:那会把
+//     "运营删掉了这条覆盖"变成"运营把兑换码返佣设成了 0%"。
+//
+// 越界/非法值同样丢弃并告警,理由与 rateOverride 逐字相同:qy_settings 是
+// 可以被人手工 UPDATE 的,钳到边界会静默生效一个谁都没批准的费率。
+func nullableRateOverride(dst **int, percentRaw string) {
+	if strings.TrimSpace(percentRaw) == "" {
+		return
+	}
+	v, err := config.RatePercentUnits(percentRaw)
+	if err != nil {
+		warnf("qy_settings 里的兑换码返佣比例 %q 非法,已忽略: %v", percentRaw, err)
+		return
+	}
+	*dst = &v
 }
 
 func intOverride(dst *int, raw string) {
@@ -322,6 +415,25 @@ func writeSetting(tx *gorm.DB, key, value string, operatorId int) error {
 		Columns:   []clause.Column{{Name: "scope"}, {Name: "k"}},
 		DoUpdates: clause.AssignmentColumns([]string{"v", "operator_id", "updated_at"}),
 	}).Create(&row).Error
+	if err != nil {
+		db.MarkFailure(err)
+	}
+	return err
+}
+
+// deleteSettingTx 在给定事务内清掉一条运营覆盖,让该项回落到 YAML。
+//
+// 与 dropSetting 的区别不只是句柄:那个函数服务的是"新键写好了,顺手清掉
+// 同义的旧键",失败无伤大雅所以刻意在事务外;这里清的是**运营本次要改的那一项**
+// (把兑换码档从显式数字改回「跟随充值档」),它和同批次其它键必须同生共死 ——
+// 一半生效的费率组合是谁都没有批准过的。
+//
+// 删不到行不是错误:本来就没有覆盖,与删掉了覆盖是同一个终态。
+func deleteSettingTx(tx *gorm.DB, key string) error {
+	if tx == nil {
+		return db.ErrNotReady
+	}
+	err := tx.Where("scope = ? AND k = ?", settingScope, key).Delete(&qymodel.Setting{}).Error
 	if err != nil {
 		db.MarkFailure(err)
 	}

@@ -158,6 +158,19 @@ function PolicyCard(props: { summary: QyCommissionSummary }) {
       }),
     },
     {
+      key: 'redemption',
+      label: t('qy_aff_rate_redemption'),
+      // 后端下发的已经是生效值（没单独配时等于充值档），这里不再回落一次 ——
+      // 前端各算一遍回落规则，就是"看到的与生效的不一致"的标准起点。
+      value: summary.rate.redemption_follows_topup
+        ? t('qy_aff_rate_value_follows_topup', {
+            percent: summary.rate.redemption_bps / 100,
+          })
+        : t('qy_aff_rate_value', {
+            percent: summary.rate.redemption_bps / 100,
+          }),
+    },
+    {
       key: 'holding',
       label: t('qy_aff_holding_days'),
       value: t('qy_aff_days_value', { days: summary.policy.holding_days }),

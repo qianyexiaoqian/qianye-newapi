@@ -238,6 +238,18 @@ func Redeem(key string, userId int) (*RedeemResult, error) {
 			if !plan.Enabled {
 				return errors.New("套餐未启用")
 			}
+			// 停售/未开售同样挡住兑换码,判据与手动下架(上面那句)一致 ——
+			// 时间窗本来就是"到点自动 enabled",两者对兑换码的效果理应相同。
+			//
+			// 这一句必须排在下面的 CAS **之前**:排在之后的话,码已经被标成 used,
+			// 虽然同事务回滚能救回来,但那是靠"恰好在一个事务里"这个偶然,
+			// 与上面那条注释所说的顺序理由是同一条。
+			//
+			// 挡住不消耗兑换码:失败即回滚,码仍然是 enabled,运营把停售时间改掉
+			// 之后它照样能用。
+			if err := PlanSaleWindowError(plan, common.GetTimestamp()); err != nil {
+				return err
+			}
 		}
 		// Compare-and-swap on status: only the transaction that flips
 		// enabled -> used may credit quota, so a concurrent redeem of the

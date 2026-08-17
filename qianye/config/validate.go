@@ -513,6 +513,15 @@ func validateCommission(cm *Commission) error {
 		"consume", cm.ConsumeRatePercent, cm.ConsumeRateBpsDeprecated); err != nil {
 		return err
 	}
+	// 兑换码档刻意**不**走 checkRatePair:那里空串是错误(充值/消费两档必须
+	// 有值),而这里空串是唯一能表达"没单独配兑换码档,跟随充值档"的写法。
+	// 填了就必须是合法百分比 —— 写错的费率宁可开不起来,也不能带着一个
+	// 谁都没批准的数字给兑换码发钱。
+	if s := strings.TrimSpace(cm.RedemptionRatePercent); s != "" {
+		if _, err := RatePercentUnits(s); err != nil {
+			return fmt.Errorf("qianye: commission.redemption_rate_percent %w", err)
+		}
+	}
 	if cm.Levels != 1 {
 		return fmt.Errorf("qianye: commission.levels 当前仅支持 1 级,收到 %d", cm.Levels)
 	}

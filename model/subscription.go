@@ -179,6 +179,41 @@ type SubscriptionPlan struct {
 	Enabled   bool `json:"enabled" gorm:"default:true"`
 	SortOrder int  `json:"sort_order" gorm:"type:int;default:0"`
 
+	// SaleStartAt / SaleEndAt 是**发售时间窗**:这个套餐在哪一段时间里可以被买。
+	//
+	// ═══════════ 0 是「不限制」,不是 1970 ═══════════
+	//
+	// 判据不是约定俗成,而是这两张表上既有的口径:
+	//
+	//	user_subscriptions.end_time = 0        永久有效(SubscriptionActiveEndTimeSQL)
+	//	user_subscriptions.next_reset_time = 0 不重置(calcNextResetTime 的 never 档)
+	//	user_subscriptions.last_reset_time = 0 从未重置过
+	//
+	// 全仓没有任何一处把这几列的 0 当成"1970-01-01"去比较 —— 到期扫描写的是
+	// `end_time > 0 AND end_time <= ?`,前半句就是为了把 0 摘出去。所以在这两列上
+	// 继续用 0 表示"不限"是与既有语义一致的,而不是又发明一个新约定。
+	//
+	// 但**方向不对称**,这是唯一需要小心的地方:
+	//
+	//	SaleStartAt = 0 天然安全 —— `now >= 0` 恒真,不写特判也是"随时可买"。
+	//	SaleEndAt   = 0 天然危险 —— `now < 0` 恒假,不写特判就变成"所有套餐一律停售"。
+	//
+	// 所以 PlanSaleWindowError 里那句 `endAt != PlanSaleWindowUnlimited &&` 是
+	// 必需的,和 SubscriptionActiveEndTimeSQL 里的 `end_time = 0 OR` 是同一件事。
+	//
+	// ═══════════ 窗口是左闭右开 [start, end) ═══════════
+	//
+	// 与 SubscriptionActiveEndTimeSQL 的 `end_time > ?` 同口径:到了停售那一秒
+	// 就已经停售。于是 start == end 是一个空窗口(永远买不了),校验里直接拒绝。
+	//
+	// ═══════════ 与 Enabled 是「与」的关系 ═══════════
+	//
+	// 可购买 = Enabled && 在窗口内。Enabled 是运营手动的上下架开关,时间窗是
+	// 到点自动上下架 —— 两者任何一个说"不",就是不。或的关系说不通:那意味着
+	// 一个被手动下架的套餐会在开售时间到达时自己重新上架。
+	SaleStartAt int64 `json:"sale_start_at" gorm:"type:bigint;not null;default:0"`
+	SaleEndAt   int64 `json:"sale_end_at" gorm:"type:bigint;not null;default:0"`
+
 	AllowBalancePay *bool `json:"allow_balance_pay"`
 
 	// Allow falling back to wallet balance after subscription quota is exhausted (empty = true)
@@ -246,6 +281,102 @@ type SubscriptionPlan struct {
 // subscription_active_predicate_test.go 扫源码钉死:除到期扫描外,任何地方都不许
 // 再手写 end_time 的有效性判据。
 const SubscriptionActiveEndTimeSQL = "(end_time = 0 OR end_time > ?)"
+
+// PlanSaleWindowUnlimited 是发售/停售两列上「不限制」的取值。
+//
+// 具名而不是散落的裸 0:这两列的 0 与 price_amount 的 0、total_amount 的 0
+// 语义完全不同(那两个 0 分别是"免费"与"不限额度"),读代码的人不该靠上下文猜。
+const PlanSaleWindowUnlimited int64 = 0
+
+// PlanSaleWindowMaxUnix 是发售/停售时间的上界:9999-12-31T23:59:59Z。
+//
+// 存在的理由不是"谁会把套餐定在一万年后开售",而是别让一个手滑粘进来的
+// 毫秒时间戳(13 位,约 1.7e12,合公元 55000 年)变成一个看起来像配好了、
+// 实际永远不开售的套餐 —— 那种错误在管理端页面上完全看不出来,因为
+// JavaScript 的 `new Date(1.7e12 * 1000)` 直接是 Invalid Date,渲染成空白。
+const PlanSaleWindowMaxUnix int64 = 253402300799
+
+var (
+	// ErrPlanNotOnSaleYet / ErrPlanSaleEnded 是两句**不同**的话,不能合并成
+	// 一句"该套餐当前不可购买":前者用户再等等就买得到,后者永远买不到了。
+	// 客服要能只看报错就回答"还要等多久"还是"别等了"。
+	ErrPlanNotOnSaleYet = errors.New("该套餐尚未开售,请等待开售时间")
+	// 「续费」两个字必须写进这句话里。停售之后老用户来续,得到的报错如果只说
+	// "已停售",他的合理理解是"我买过的那份也没了" —— 而事实恰恰相反。
+	ErrPlanSaleEnded = errors.New("该套餐已停售,不再接受新购买与续费;已购买的订阅不受影响,有效期照常")
+)
+
+// ValidatePlanSaleWindow 校验管理端提交的发售时间窗。
+//
+// 两条:不许为负、不许超过上界;以及**两端都设了的时候,停售必须晚于发售**。
+// 只设一端是合法的(只设发售 = 到点开卖、永不停售;只设停售 = 立刻开卖、到点停),
+// 所以 endAt <= startAt 这条判断必须先排除掉任意一端为 0 的情况 —— 否则
+// "只设停售时间"会被算成 `endAt <= 0` 而被误拒。
+func ValidatePlanSaleWindow(startAt, endAt int64) error {
+	for _, v := range []int64{startAt, endAt} {
+		if v < 0 {
+			return errors.New("发售/停售时间不能为负数")
+		}
+		if v > PlanSaleWindowMaxUnix {
+			return errors.New("发售/停售时间超出可用范围(应为秒级 Unix 时间戳)")
+		}
+	}
+	if startAt != PlanSaleWindowUnlimited && endAt != PlanSaleWindowUnlimited && endAt <= startAt {
+		// 相等也拒:窗口是左闭右开,[X, X) 是一个永远买不到的空窗口,
+		// 而管理端上它看起来像是"这一刻开售、这一刻停售",完全不像配错了。
+		return errors.New("停售时间必须晚于发售时间")
+	}
+	return nil
+}
+
+// PlanSaleWindowError 是「此刻能不能**新买**这个套餐」在时间窗上的唯一判据。
+//
+// ═══════════════ 它挡的是新购买,不是已购订阅 ═══════════════
+//
+// 本函数只被购买入口调用(余额购买、四个支付网关的下单、兑换码、购买预览)。
+// 它**不出现在**任何一条读取已有订阅的路径上 —— 停售不作废任何人已经买到手的
+// 订阅,那条订阅照常有效到它自己的 end_time。这一点在测试里单独钉住
+// (TestSaleWindowDoesNotTouchPurchasedSubscriptions)。
+//
+// ═══════════════ 「续费」算不算新购买:算 ═══════════════
+//
+// 本仓压根没有独立的续费接口。用户所谓的"续费"就是**再买一次同一个套餐**,
+// 走的是与首次购买逐字相同的那几条路径。唯一形似续费的是
+// applyUserGroupPurchaseRulesTx 的同组延期分支,而那条分支跑在
+// CreateUserSubscriptionFromPlanTx 内部 —— 那时余额已经扣了、订单已经付了,
+// 在那里拒绝等于收了钱不给货(与 gate.go §四 同一个形状)。
+//
+// 所以判断只能落在付款之前,而付款之前分不出"这是续费还是首购"。既然只能二选一,
+// 选"算新购买":停售的语义是把商品下架,如果续费不受限,一个月付的套餐会被
+// 老用户无限期续下去,运营永远退不掉它 —— 那时"停售"这个功能等于不存在,
+// 只能回头去关 enabled(而那正是时间窗要替代的手工动作)。
+//
+// 界面文案必须写明这一条,不能让用户自己猜:见 qy_plan_sale_ended_hint。
+//
+// ═══════════════ 已付款的回调不走这里 ═══════════════
+//
+// CompleteSubscriptionOrder(支付回调)刻意不调用本函数,与它同样不理会
+// plan.Enabled 是同一个判断:那一刻用户的钱已经付掉了,拒绝只会让订单永久卡在
+// pending,而没有任何退款路径。残余风险:用户在停售前一分钟打开收银台、停售后
+// 才付款,这一单会成交。窗口宽度等于一次支付的时长,后果是业务性的(多卖一单),
+// 与"卡死一笔已付款订单"不在一个量级。
+//
+// 管理员绑定(AdminBindSubscription)同样不走这里,与 gate.go 对停用套餐的处理
+// 同口径:管理员手工发放是上游允许的动作,时间窗是面向买家的闸门。
+func PlanSaleWindowError(plan *SubscriptionPlan, now int64) error {
+	if plan == nil {
+		return nil
+	}
+	if plan.SaleStartAt != PlanSaleWindowUnlimited && now < plan.SaleStartAt {
+		return ErrPlanNotOnSaleYet
+	}
+	// `!= PlanSaleWindowUnlimited` 不能省:0 表示永不停售,而 `now < 0` 恒假,
+	// 省掉它就是把全站每一个没配停售时间的套餐一起下架。
+	if plan.SaleEndAt != PlanSaleWindowUnlimited && now >= plan.SaleEndAt {
+		return ErrPlanSaleEnded
+	}
+	return nil
+}
 
 func (p *SubscriptionPlan) BeforeCreate(tx *gorm.DB) error {
 	now := common.GetTimestamp()
@@ -1118,6 +1249,12 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 		}
 		if !plan.Enabled {
 			return errors.New("套餐未启用")
+		}
+		// 发售时间窗排在扣款之前(下面才 lockForUpdate 用户行并扣 quota)。
+		// 排在扣款之后的话,拒绝会让整个事务回滚 —— 结果虽然也对,但用户看到的
+		// 是"扣款失败"而不是"未开售/已停售",而这两句要做的下一步完全不同。
+		if err := PlanSaleWindowError(plan, common.GetTimestamp()); err != nil {
+			return err
 		}
 		if plan.PriceAmount < 0 {
 			return errors.New("套餐价格不能为负数")

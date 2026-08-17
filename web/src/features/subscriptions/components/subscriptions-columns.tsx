@@ -27,7 +27,12 @@ import { TableId } from '@/components/table-id'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatQuota } from '@/lib/format'
 
-import { formatDuration, formatResetPeriod } from '../lib'
+import {
+  formatDuration,
+  formatResetPeriod,
+  formatSaleTime,
+  planSaleBadge,
+} from '../lib'
 import type { PlanRecord, PlanSeatUsage } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
 import { useSubscriptions } from './subscriptions-provider'
@@ -136,28 +141,53 @@ export function useSubscriptionsColumns(
         ),
         size: 100,
       },
+      /*
+        状态列是**手动上下架与发售时间窗的合成**，一格四态:
+        已下架 / 未开售 / 在售 / 已停售。
+
+        合成而不是加一列，是因为运营在这一列问的问题只有一个：「这个套餐现在
+        卖不卖得出去」。拆成两列的话，"enabled=开 + 已停售"要横着读两格才能
+        得出"卖不出去"，而这一列的全部价值就是不用读两格。
+
+        优先级（已下架 > 时间窗）与配色都由 lib/sale-window 的 planSaleBadge
+        统一给出，买家侧、编辑抽屉里的同一事实走的是同一组函数 ——
+        三处各写一份比较，迟早出现"列表说在售、点进去说停售"。
+
+        具体的开售/停售时刻放进 title：一列徽章回答"能不能卖"，
+        悬停回答"到几点为止"，而不是把两个时间戳挤进 80px 的格子里。
+      */
       {
         accessorFn: (row) => row.plan.enabled,
         id: 'enabled',
         header: t('Status'),
         meta: { mobileBadge: true },
-        cell: ({ row }) =>
-          row.original.plan.enabled ? (
+        cell: ({ row }) => {
+          const plan = row.original.plan
+          const badge = planSaleBadge(plan)
+          const start = formatSaleTime(plan.sale_start_at)
+          const end = formatSaleTime(plan.sale_end_at)
+          const windowParts = [
+            start ? `${t('qy_plan_sale_start_label')}: ${start}` : '',
+            end ? `${t('qy_plan_sale_end_label')}: ${end}` : '',
+          ].filter(Boolean)
+          return (
             <StatusBadge
-              label={t('Enable')}
-              variant='success'
+              // 四个键都是字面量常量，只是取值经过一次查表 —— 扫描器看不见它们，
+              // 所以 planSaleBadge 返回的四个键登记在 i18n-key-coverage 的
+              // QY_DYNAMIC_KEYS 里。漏掉的表现是这一格渲染成裸键。
+              label={t(badge.labelKey)}
+              variant={badge.variant}
               copyable={false}
               className='-ml-1.5'
+              title={
+                windowParts.length > 0
+                  ? windowParts.join(' · ')
+                  : t('qy_plan_sale_unlimited_hint')
+              }
             />
-          ) : (
-            <StatusBadge
-              label={t('Disable')}
-              variant='neutral'
-              copyable={false}
-              className='-ml-1.5'
-            />
-          ),
-        size: 80,
+          )
+        },
+        size: 90,
       },
       // 占用人数：数据来自 qy 扩展（上游表上没有这个数）。扩展未启用时整列消失，
       // 而不是留一列错误 —— 功能本来就不存在。

@@ -498,9 +498,9 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
 		ModelName:        info.OriginModelName,
-		TokenName:        "模型测试",
+		TokenName:        model.ChannelTestTokenName,
 		Quota:            quota,
-		Content:          "模型测试",
+		Content:          model.ChannelTestTokenName,
 		UseTimeSeconds:   int(consumedTime),
 		IsStream:         info.IsStream,
 		Group:            info.UsingGroup,
@@ -558,6 +558,9 @@ func buildTestLogOther(c *gin.Context, info *relaycommon.RelayInfo, priceData ho
 	if tieredResult != nil {
 		service.InjectTieredBillingInfo(other, info, tieredResult)
 	}
+	// 显式标记这条日志来自渠道可用性测试。返佣的硬排除认这个键,
+	// 不再依赖 token_name 的中文文案(改文案/做 i18n 会让排除静默失效)。
+	other[model.ChannelTestLogOtherKey] = true
 	return other
 }
 
