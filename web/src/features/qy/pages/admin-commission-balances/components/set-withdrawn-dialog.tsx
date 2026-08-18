@@ -30,6 +30,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyErrorMessage } from '../../../lib/api'
+import { formatQyQuotaLedger } from '../../../lib/format'
 import { qyKeys } from '../../../lib/query-keys'
 import { qySetCommissionWithdrawn } from '../api'
 import type { QyCommissionBalance } from '../types'
@@ -77,7 +78,9 @@ export function SetWithdrawnDialog(props: SetWithdrawnDialogProps) {
       toast.success(
         result.delta_quota === 0
           ? t('qy_cb_set_noop')
-          : t('qy_cb_set_ok', { delta: result.delta_quota })
+          : t('qy_cb_set_ok', {
+              delta: formatQyQuotaLedger(result.delta_quota),
+            })
       )
       await queryClient.invalidateQueries({ queryKey: qyKeys.all })
       props.onClose()
@@ -97,6 +100,12 @@ export function SetWithdrawnDialog(props: SetWithdrawnDialogProps) {
   const delta = balance == null ? 0 : targetValue - balance.withdrawn_quota
   const nextAvailable = balance == null ? 0 : balance.available_quota - delta
   const overCeiling = targetValid && targetValue > ceiling
+  // 上限约束的是**输入框那一格**，而那一格填的是额度整数，所以双写：
+  // 只印 `$0.27` 的话，管理员没有任何办法知道该往框里敲哪个整数。
+  const ceilingText = t('qy_common_quota_with_amount', {
+    quota: ceiling,
+    amount: formatQyQuotaLedger(ceiling),
+  })
   const reasonValid = reason.trim().length >= REASON_MIN_RUNES
 
   let subject: string | undefined
@@ -148,7 +157,7 @@ export function SetWithdrawnDialog(props: SetWithdrawnDialogProps) {
               onChange={(event) => setTarget(event.target.value)}
             />
             <p className='text-muted-foreground text-xs'>
-              {t('qy_cb_set_target_hint', { ceiling })}
+              {t('qy_cb_set_target_hint', { ceiling: ceilingText })}
             </p>
           </div>
 
@@ -160,11 +169,11 @@ export function SetWithdrawnDialog(props: SetWithdrawnDialogProps) {
                   {delta === 0
                     ? t('qy_cb_set_preview_noop')
                     : t('qy_cb_set_preview', {
-                        delta: Math.abs(delta),
+                        delta: formatQyQuotaLedger(Math.abs(delta)),
                         direction: t(
                           delta > 0 ? 'qy_cb_set_dir_out' : 'qy_cb_set_dir_back'
                         ),
-                        next: nextAvailable,
+                        next: formatQyQuotaLedger(nextAvailable),
                       })}
                 </AlertDescription>
               </Alert>
@@ -172,7 +181,7 @@ export function SetWithdrawnDialog(props: SetWithdrawnDialogProps) {
           {overCeiling && (
             <Alert variant='destructive'>
               <AlertDescription>
-                {t('qy_cb_set_over_ceiling', { ceiling })}
+                {t('qy_cb_set_over_ceiling', { ceiling: ceilingText })}
               </AlertDescription>
             </Alert>
           )}

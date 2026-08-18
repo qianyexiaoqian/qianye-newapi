@@ -5,6 +5,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -93,5 +95,88 @@ func TestUserStatusAllowsSession(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, common.UserStatusAllowsSession(tc.status))
 		})
+	}
+}
+
+// 登录接口的「账号是否存在」不能只在响应体上不可区分,耗时上也不能。
+//
+// 判据不用计时(机器负载一变就是假红/假绿,纪律明令禁止),改为数 bcrypt 的
+// 调用次数:不存在的用户名、存在但没有口令摘要的半截行、存在且密码错,三条
+// 失败路径都必须恰好跑一次口令比较。少跑一次,那条路径就快二十倍,用户名可以
+// 被逐个枚举。
+func TestValidateAndFillSpendsTheSameBcryptWorkOnEveryFailure(t *testing.T) {
+	truncateTables(t)
+	const password = "timing-oracle-pass-1"
+	hashed, err := common.Password2Hash(password)
+	require.NoError(t, err)
+
+	present := &User{
+		Username: "timing-present", Password: hashed, Role: common.RoleCommonUser,
+		Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1,
+		AffCode: "aff-timing-present",
+	}
+	require.NoError(t, DB.Create(present).Error)
+	noHash := &User{
+		Username: "timing-nohash", Password: hashed, Role: common.RoleCommonUser,
+		Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1,
+		AffCode: "aff-timing-nohash",
+	}
+	require.NoError(t, DB.Create(noHash).Error)
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", noHash.Id).
+		Update("password", "").Error)
+
+	original := validatePasswordAndHash
+	t.Cleanup(func() { validatePasswordAndHash = original })
+
+	for _, tc := range []struct {
+		name      string
+		username  string
+		password  string
+		wantErr   error
+		wantCalls int
+	}{
+		{"账号不存在", "timing-nobody", password, ErrInvalidCredentials, 1},
+		{"有行但没有口令摘要", "timing-nohash", password, ErrInvalidCredentials, 1},
+		{"账号存在但密码错", "timing-present", "wrong-password", ErrInvalidCredentials, 1},
+		{"账号存在且密码对", "timing-present", password, nil, 1},
+		// 空口令在查库之前就被挡掉,这一条不构成预言机:任何用户名都走同一条路。
+		{"用户名为空", "", password, ErrUserEmptyCredentials, 0},
+		{"口令为空", "timing-present", "", ErrUserEmptyCredentials, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			validatePasswordAndHash = func(pwd, hash string) bool {
+				calls++
+				return original(pwd, hash)
+			}
+			user := &User{Username: tc.username, Password: tc.password}
+			gotErr := user.ValidateAndFill()
+			if tc.wantErr == nil {
+				require.NoError(t, gotErr)
+			} else {
+				assert.ErrorIs(t, gotErr, tc.wantErr)
+			}
+			assert.Equal(t, tc.wantCalls, calls, "口令比较的次数决定了这条路径的耗时量级")
+		})
+	}
+}
+
+// 补齐工作量的那段摘要必须真的等价:cost 与真实口令一致,且永不匹配任何输入。
+// cost 写错(比如手抄成 $2a$04$)时补的时间只有真实路径的 1/64,预言机照旧存在。
+func TestMissingUserPasswordHashMatchesRealCost(t *testing.T) {
+	cost, err := bcrypt.Cost([]byte(missingUserPasswordHash))
+	require.NoError(t, err, "哨兵摘要必须是一段合法的 bcrypt 摘要")
+	assert.Equal(t, bcrypt.DefaultCost, cost,
+		"哨兵摘要的 cost 必须与 common.Password2Hash 用的一致")
+
+	realHash, err := common.Password2Hash("any-real-password")
+	require.NoError(t, err)
+	realCost, err := bcrypt.Cost([]byte(realHash))
+	require.NoError(t, err)
+	assert.Equal(t, realCost, cost)
+
+	for _, pwd := range []string{"", "password", "admin", missingUserPasswordHash} {
+		assert.False(t, common.ValidatePasswordAndHash(pwd, missingUserPasswordHash),
+			"哨兵摘要绝不能与任何口令匹配")
 	}
 }

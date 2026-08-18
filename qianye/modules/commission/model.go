@@ -12,6 +12,8 @@
 package commission
 
 import (
+	"github.com/QuantumNous/new-api/qianye/config"
+
 	"github.com/shopspring/decimal"
 )
 
@@ -148,6 +150,22 @@ type Balance struct {
 }
 
 func (Balance) TableName() string { return "qy_commission_balance" }
+
+// frozenFiatCurrency 给出一行法币余额到底是哪一种钱。
+//
+// AvailableFiat 是按每次结算当时的汇率一笔笔累起来的,币种必须来自同一时刻 ——
+// 拿当前的 withdraw.fiat_currency 去顶替,等于运营改一次配置,全部历史金额
+// 一个数字没动、标签却全变了。
+//
+// 空串只出现在 FiatCurrency 这一列被真正写入之前的存量行上(结算过一次就会
+// 被补上)。那些行本来就是按当时的全局配置算出来的,所以回落到当前配置是
+// 它们唯一正确的答案;而 config 侧已经有一条闸门保证这个值与汇率来源自洽。
+func frozenFiatCurrency(frozen string) string {
+	if frozen != "" {
+		return frozen
+	}
+	return config.Get().Withdraw.FiatCurrency
+}
 
 // Settlement 是一次结算批次,同时也是余数的完整审计轨迹。
 //

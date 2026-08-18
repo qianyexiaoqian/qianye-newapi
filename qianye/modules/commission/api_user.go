@@ -62,8 +62,13 @@ func getSummary(c *gin.Context) {
 		"pending_mature_quota": pendingMature.Floor().String(),
 		"debt_blocked":         bal.DebtBlocked,
 		"available_fiat":       bal.AvailableFiat.Round(2).String(),
-		"fiat_currency":        config.Get().Withdraw.FiatCurrency,
-		"last_settled_at":      bal.LastSettledAt,
+		// 币种取**余额行上冻结的那一个**,不是当前配置。available_fiat 是按结算
+		// 当时的汇率一笔笔累起来的,币种也必须来自同一时刻,否则运营改一次
+		// withdraw.fiat_currency,历史金额一个字没动、标签全变了。
+		// 空串是补上这一列之前的存量行(结算过一次就会被写上),只有这一种情况
+		// 才回落到当前配置 —— 这些行本来就是按当前配置那条链路算出来的。
+		"fiat_currency":   frozenFiatCurrency(bal.FiatCurrency),
+		"last_settled_at": bal.LastSettledAt,
 		// 比例对外一律是百分比字符串。旧的 *_bps 键继续下发是为了不打断
 		// 已在跑的前端页面(它们自己再除以 100),等页面切到 *_percent 之后
 		// 可以直接删掉这两行。

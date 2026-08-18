@@ -3,6 +3,7 @@ package violation
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/shopspring/decimal"
@@ -336,5 +337,68 @@ func TestClipTermsBoundsWrites(t *testing.T) {
 	for _, v := range out {
 		assert.LessOrEqual(t, len(v), maxMatchedTermLen)
 		assert.True(t, isValidUTF8(v))
+	}
+}
+
+// 扫描预算耗尽时,**第一条规则仍然必须被评估**。
+//
+// 修的是这条:预算的起点原来取在 scan() 的第一行,把 normalizeForScan +
+// ToLower + AcSearch(词典变了要现建自动机)这三步一次性开销也算了进去,
+// 而唯一的 deadline 判定又在规则循环的最顶上。机器一忙就会出现"一条规则都
+// 没跑就 break、按放行返回"的结局 —— 对外只有 scanTimeouts 加 1,管理端看到
+// 的是"没扫出问题",与"扫过了、确实没事"完全无法区分。规则一旦从 shadow
+// 改成 enforce,这就是一次静默漏检。
+//
+// 判据不用计时(纪律禁止),直接给一个已经过期的 deadline。
+func TestScanBudgetNeverSkipsEveryRule(t *testing.T) {
+	useTestConfig(t)
+	first := mustCompile(t, Rule{
+		Phase: PhasePrompt, MatchType: MatchRegex, Action: ActionRecord,
+		Name: "第一条", Pattern: `第一条命中`,
+	})
+	second := mustCompile(t, Rule{
+		Phase: PhasePrompt, MatchType: MatchRegex, Action: ActionRecord,
+		Name: "第二条", Pattern: `第二条命中`,
+	})
+
+	expired := time.Now().Add(-time.Hour)
+	generous := time.Now().Add(time.Hour)
+
+	for _, tc := range []struct {
+		name        string
+		rules       []*compiledRule
+		deadline    time.Time
+		text        string
+		wantRule    string
+		wantTimeout bool
+	}{
+		{"预算已耗尽,第一条就命中 → 照样判出来", []*compiledRule{first, second}, expired,
+			"这里有第一条命中的样本", "第一条", false},
+		{"只剩一条规则,预算已耗尽 → 照样评估", []*compiledRule{first}, expired,
+			"这里有第一条命中的样本", "第一条", false},
+		{"预算已耗尽,要靠第二条才命中 → 只有第二条被跳过", []*compiledRule{first, second}, expired,
+			"这里有第二条命中的样本", "", true},
+		{"预算充足 → 第二条照常命中", []*compiledRule{first, second}, generous,
+			"这里有第二条命中的样本", "第二条", false},
+		{"预算充足且谁都不命中 → 不是超时,是真的没事", []*compiledRule{first, second}, generous,
+			"一段完全正常的话", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := normalizeForScan(tc.text)
+			v := scanRulesBefore(tc.rules, scanInput{Text: tc.text}, text,
+				strings.ToLower(text), nil, time.Now(), tc.deadline)
+			if tc.wantRule == "" && !tc.wantTimeout {
+				assert.Nil(t, v)
+				return
+			}
+			require.NotNil(t, v)
+			assert.Equal(t, tc.wantTimeout, v.Timeout)
+			if tc.wantRule == "" {
+				assert.Nil(t, v.Rule)
+				return
+			}
+			require.NotNil(t, v.Rule)
+			assert.Equal(t, tc.wantRule, v.Rule.R.Name)
+		})
 	}
 }

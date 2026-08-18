@@ -109,8 +109,10 @@ function InviteesTable() {
       header: t('qy_aff_total_commission'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      // 佣金是 decimal(30,10) 字符串，原样展示：转成 number 会在长尾小数上丢位。
-      cell: (row) => row.total_commission,
+      // 与左边的「计佣基数」同一个单位，所以走同一个展示件：原样印
+      // decimal(30,10) 字符串换不来精度（展示只留 4 位小数），只换来
+      // 一列 `0.4700000000` 挨着一列 `$2.74`。
+      cell: (row) => <QyAmountText quota={row.total_commission} />,
     },
     {
       id: 'status',
@@ -202,7 +204,7 @@ function CommissionRecordsTable() {
       header: t('qy_aff_gross'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => row.gross_amount,
+      cell: (row) => <QyAmountText quota={row.gross_amount} />,
     },
     {
       id: 'mature',

@@ -40,7 +40,10 @@ import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyErrorMessage } from '../../lib/api'
 import { qyTabTarget } from '../../lib/pages'
 import { qyKeys } from '../../lib/query-keys'
-import { qyAdminAccrualsQuery, qySettleCommission } from '../admin-commission/api'
+import {
+  qyAdminAccrualsQuery,
+  qySettleCommission,
+} from '../admin-commission/api'
 import {
   BlockRelationDialog,
   type QyBlockRelationTarget,
@@ -162,15 +165,17 @@ export function QyAdminCommissionRecords() {
       header: t('qy_aff_gross'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      // decimal(30,10) 字符串原样展示：转 number 会在长尾小数上丢位。
-      cell: (row) => row.gross_amount,
+      // 与左边的「计佣基数」同一个单位（gross = base_quota × 费率），所以走
+      // 同一个展示件。原样印 decimal(30,10) 字符串换不来精度 —— 展示只留 4 位
+      // 小数 —— 只换来一列 `1370.0000000000` 挨着一列 `$2.74`。
+      cell: (row) => <QyAmountText quota={row.gross_amount} />,
     },
     {
       id: 'settled',
       header: t('qy_cm_settled_amount'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactMutedNumericCell,
-      cell: (row) => row.settled_amount,
+      cell: (row) => <QyAmountText quota={row.settled_amount} />,
     },
     {
       id: 'status',

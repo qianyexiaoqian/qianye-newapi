@@ -105,7 +105,9 @@ export function ClawbackDialog(props: ClawbackDialogProps) {
             </div>
             <div className='flex justify-between gap-3 py-1.5 last:pb-0'>
               <dt className='text-muted-foreground'>{t('qy_aff_gross')}</dt>
-              <dd className='tabular-nums'>{props.accrual.gross_amount}</dd>
+              <dd>
+                <QyAmountText quota={props.accrual.gross_amount} />
+              </dd>
             </div>
           </dl>
 

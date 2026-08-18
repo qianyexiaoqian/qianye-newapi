@@ -44,6 +44,7 @@ import { QyPayPasswordField } from '../../../components/qy-pay-password-field'
 import { useQyAfterMoneyChange } from '../../../hooks/use-qy-after-money-change'
 import { isQyError, qyErrorMessage } from '../../../lib/api'
 import { qyTabTarget } from '../../../lib/pages'
+import { QyFiatText } from '../../components/qy-fiat-text'
 import { qyRuneLength } from '../../lib/constants'
 import { useQyRequestId } from '../../lib/request-id'
 import { qyCreateWithdrawal, qyWithdrawPayeesQuery } from '../api'
@@ -419,17 +420,26 @@ function FiatRateNotice(props: { config: QyWithdrawConfig }) {
         <ul className='list-inside list-disc space-y-0.5'>
           <li>{t('qy_wd_rate_currency', { currency: fiat.currency })}</li>
           {fiat.preview_fx_rate != null && (
-            <li>{t('qy_wd_rate_preview', { rate: fiat.preview_fx_rate })}</li>
+            // 方向必须写出来。这一行原来只印一个裸数字「当前参考汇率：1」，
+            // 而这个数正是把额度折成法币的那个系数（quota / quota_per_unit ×
+            // 它）—— 站点没维护过汇率时它就是 1，页面照样标着 CNY，看起来
+            // 完全正常。写成「1 USD = 1 CNY」，配错的那一刻就自己暴露了。
+            <li>
+              {t('qy_wd_rate_preview', {
+                rate: fiat.preview_fx_rate,
+                currency: fiat.currency,
+              })}
+            </li>
           )}
           {fiat.fee_bps > 0 && (
             <li>{t('qy_wd_rate_fee', { percent: fiat.fee_bps / 100 })}</li>
           )}
           {fiat.min_amount !== '' && (
-            <li>
-              {t('qy_wd_rate_min', {
-                amount: fiat.min_amount,
-                currency: fiat.currency,
-              })}
+            // 法币口径，不能走额度展示件（那会按当前汇率再折算一次）。
+            // 但也不能裸印后端的 decimal 字符串 —— 那是 `10.000000`。
+            <li className='inline-flex flex-wrap items-center gap-1'>
+              {t('qy_wd_rate_min_label')}
+              <QyFiatText amount={fiat.min_amount} currency={fiat.currency} />
             </li>
           )}
           <li>{t('qy_wd_rate_frozen_note')}</li>

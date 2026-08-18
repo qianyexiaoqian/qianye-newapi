@@ -54,6 +54,7 @@ GET /api/qy/admin/lottery/series
 GET /api/qy/admin/lottery/text-prizes
 GET /api/qy/admin/pay-password/:user_id
 GET /api/qy/admin/request-audits
+GET /api/qy/admin/restricted-notice
 GET /api/qy/admin/subscription/plans-usage
 GET /api/qy/admin/subscription/plans/:plan_id/entitlement
 GET /api/qy/admin/subscription/plans/:plan_id/holders
@@ -109,6 +110,7 @@ GET /api/qy/lottery/my/prizes/:payout_no
 GET /api/qy/lottery/public/:act_no/proof
 GET /api/qy/lottery/series/:series_no
 GET /api/qy/pay-password
+GET /api/qy/restricted-notice
 GET /api/qy/session-stats
 GET /api/qy/subscription/entitlements
 GET /api/qy/ticket/:no
@@ -220,6 +222,7 @@ PUT /api/qy/admin/group-namespace/user-groups/:name/default
 PUT /api/qy/admin/lottery/activities/:act_no
 PUT /api/qy/admin/lottery/activities/:act_no/cover
 PUT /api/qy/admin/lottery/config
+PUT /api/qy/admin/restricted-notice
 PUT /api/qy/admin/subscription/plans/:plan_id/entitlement
 PUT /api/qy/admin/subscription/plans/:plan_id/seat-limit
 PUT /api/qy/admin/transfer/config

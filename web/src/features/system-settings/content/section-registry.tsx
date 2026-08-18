@@ -24,6 +24,7 @@ import { ChatSettingsSection } from './chat-settings-section'
 import { DashboardSection } from './dashboard-section'
 import { DrawingSettingsSection } from './drawing-settings-section'
 import { FAQSection } from './faq-section'
+import { QyRestrictedNoticeSection } from './qy-restricted-notice-section'
 import { UptimeKumaSection } from './uptime-kuma-section'
 
 /**
@@ -62,6 +63,17 @@ const CONTENT_SECTIONS = [
         data={settings['console_setting.announcements']}
       />
     ),
+  },
+  {
+    /*
+      受限账号公告。紧挨着站点公告，因为它们是同一类东西 —— 面向用户的站点文案，
+      只是受众不同：这一段只发给被限制的账号（后端按身份下发，见
+      qianye/controller/restricted_notice.go）。
+      它不吃 ContentSettings：数据在扩展库的 qy_settings 里，自带保存按钮。
+    */
+    id: 'qy-restricted-notice',
+    titleKey: 'qy_restricted_notice_title',
+    build: () => <QyRestrictedNoticeSection />,
   },
   {
     id: 'api-info',

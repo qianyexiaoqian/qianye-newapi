@@ -270,10 +270,26 @@ withdraw:
   methods: ["quota", "fiat"]
   min_quota: 500000
   min_fiat_amount: "100"
+  # fiat_currency 与 rate_freeze_mode 是**绑在一起**的,配置加载时会校验:
+  #
+  #   operation_setting 档的汇率取自站点的 USDExchangeRate,而它在上游的定义
+  #   是 USD → CNY(controller/billing.go 与 logger/logger.go 都按
+  #   `cny := usd * rate` 用它)。所以这一档产出的金额只可能是人民币,
+  #   fiat_currency 只能是 "CNY";填别的会让站点起不来,并给出补救动作。
+  #
+  #   要用别的币种,把 rate_freeze_mode 改成 "fixed",并在 rate_freeze_fixed
+  #   里写明 1 USD 折合多少该币种 —— 那一档的汇率是运维自己写死的一个数。
+  #
+  # 这条闸门挡的是一次**静默的汇率错标**:数字看起来完全正常,只有线下按
+  # 单据币种打款的人会发现付错了。同理,站点若从来没维护过 USDExchangeRate
+  # (出厂 7.3,有的站点为了让额度按美元显示改成了 1),提现单上的金额就是
+  # 美元量级却标着 CNY —— 提现表单上那句「当前参考汇率:1 USD = X CNY」
+  # 就是给运维看的自检位。
   fiat_currency: "CNY"
   fiat_fee_bps: 0
   # 佣金产生时冻结当时汇率。USDExchangeRate 是管理员可随时修改的全局变量,
-  # 不冻结的话历史对账永远对不上。
+  # 不冻结的话历史对账永远对不上。币种与金额一起冻结在
+  # qy_commission_balance.fiat_currency 上,用户端下发的是那一列,不是当前配置。
   rate_freeze_mode: "operation_setting"   # operation_setting | fixed
   rate_freeze_fixed: "7.3"
   # quota 方式审核通过后是否立即自动兑现成平台余额。

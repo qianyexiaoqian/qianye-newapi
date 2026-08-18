@@ -75,6 +75,14 @@ export const qyKeys = {
    */
   apiAddresses: () => [...qyKeys.all, 'api-addresses'] as const,
 
+  /**
+   * 受限账号公告（管理员配的那段申诉指引）。
+   *
+   * 只在受限账号上取数（见 `lib/restricted-notice.ts` 的 `enabled` 判据），
+   * 正常账号的浏览器不会发出这次请求。
+   */
+  restrictedNotice: () => [...qyKeys.all, 'restricted-notice'] as const,
+
   violationMyRecords: (params: unknown) =>
     [...qyKeys.all, 'violation', 'my-records', params] as const,
   violationMySummary: () => [...qyKeys.all, 'violation', 'my-summary'] as const,
@@ -128,6 +136,17 @@ export const qyKeys = {
   adminRequestAudits: (params: unknown) =>
     [...qyKeys.all, 'admin', 'request-audits', params] as const,
   adminLeases: () => [...qyKeys.all, 'admin', 'leases'] as const,
+
+  /**
+   * 受限账号公告（管理端草稿档，含长度上限）。
+   *
+   * 与用户端的 {@link qyKeys.restrictedNotice} 是两个 key，不是同一份数据的
+   * 两个视图：管理端读得到关闭状态下留着的草稿标题/正文，用户端在关闭状态下
+   * 拿到的是空串。共用一个 key 会让管理端保存后失效缓存时，把一份**含草稿**
+   * 的数据塞进用户端那份的位置。
+   */
+  adminRestrictedNotice: () =>
+    [...qyKeys.all, 'admin', 'restricted-notice'] as const,
 
   /**
    * 管理端查某个用户的支付密码状态。

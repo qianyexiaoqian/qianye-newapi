@@ -34,6 +34,7 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { formatQyQuotaLedger } from '../../lib/format'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 import { qyAdminBalancesQuery } from './api'
@@ -151,7 +152,9 @@ export function QyAdminCommissionBalancesBody() {
           ) : (
             // 漂移必须在改钱**之前**被看见：这一行的账本与结算流水已经对不上了。
             <Badge variant='destructive'>
-              {t('qy_cb_check_drift', { drift: row.ledger_drift })}
+              {t('qy_cb_check_drift', {
+                drift: formatQyQuotaLedger(row.ledger_drift),
+              })}
             </Badge>
           )}
           {row.debt_blocked && (
@@ -249,8 +252,8 @@ export function QyAdminCommissionBalancesBody() {
       {totals != null && (
         <p className='text-muted-foreground text-xs'>
           {t('qy_cb_totals', {
-            available: totals.available_quota,
-            withdrawn: totals.withdrawn_quota,
+            available: formatQyQuotaLedger(totals.available_quota),
+            withdrawn: formatQyQuotaLedger(totals.withdrawn_quota),
           })}
         </p>
       )}

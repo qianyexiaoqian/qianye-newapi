@@ -32,6 +32,7 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { formatQyQuotaLedger } from '../../lib/format'
 import { QyFiatText } from '../components/qy-fiat-text'
 import { QyStatGrid, type QyStatItem } from '../components/qy-stat-grid'
 import { qyAffiliateCodeQuery, qyCommissionSummaryQuery } from './api'
@@ -64,11 +65,20 @@ export function QyAffiliateOverviewBody() {
             key: 'available',
             label: t('qy_aff_available'),
             value: <QyAmountText quota={summary.available_quota} />,
+            /*
+              这一行是整屏**唯一**一个不是站内额度的数：它按计佣当刻冻结的
+              汇率折算，提现按它出款，不能与上面那个额度相加。所以它必须
+              带一句说明 —— 站点把展示币种配成 CNY 时，上面那个额度渲染成
+              `¥0.27`、这一个渲染成 `1.97 CNY`，只靠形状分不出两件事。
+            */
             hint: (
-              <QyFiatText
-                amount={summary.available_fiat}
-                currency={summary.fiat_currency}
-              />
+              <span className='inline-flex items-center gap-1'>
+                {t('qy_aff_fiat_label')}
+                <QyFiatText
+                  amount={summary.available_fiat}
+                  currency={summary.fiat_currency}
+                />
+              </span>
             ),
             emphasis: true,
           },
@@ -84,7 +94,7 @@ export function QyAffiliateOverviewBody() {
             value: <QyAmountText quota={summary.total_earned_quota} />,
             hint: t('qy_aff_withdrawn_hint', {
               // 已提现是累计值，与"当前可提"分开展示，避免用户把两者相加。
-              value: summary.withdrawn_quota,
+              value: formatQyQuotaLedger(summary.withdrawn_quota),
             }),
           },
           {
@@ -92,8 +102,12 @@ export function QyAffiliateOverviewBody() {
             label: t('qy_aff_invitees'),
             value: summary.invitee_count,
             hint: t('qy_aff_pending_hint', {
-              pending: summary.pending_mature_quota,
-              carry: summary.unsettled_amount,
+              // 这两个也是站内额度（`pending` 是还没过成熟期的计佣、
+              // `carry` 是不足 1 额度的余数），只是后端以 decimal 字符串
+              // 下发。裸印出来就是 `未成熟 13517.0000000000`，而隔壁卡片
+              // 上的可提现印的是 `$0.27` —— 同一种钱两种写法。
+              pending: formatQyQuotaLedger(summary.pending_mature_quota),
+              carry: formatQyQuotaLedger(summary.unsettled_amount),
             }),
           },
         ]

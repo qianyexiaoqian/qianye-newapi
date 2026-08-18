@@ -222,7 +222,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                           {row.invitee_id}
                         </span>
                       </span>
-                      <span className='tabular-nums'>{row.gross_amount}</span>
+                      <QyAmountText quota={row.gross_amount} />
                     </li>
                   ))}
                 </ul>
@@ -247,7 +247,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                         {formatTimestampToDate(row.created_at)} · #
                         {row.invitee_id}
                       </span>
-                      <span className='tabular-nums'>{row.settled_amount}</span>
+                      <QyAmountText quota={row.settled_amount} />
                     </li>
                   ))}
                 </ul>

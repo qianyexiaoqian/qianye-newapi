@@ -61,6 +61,8 @@ var auditWriteFuncs = map[string]bool{
 	"writeAIScopeAudit":      true, // violation:AI 审核作用域策略(谁被送审、抽多少)写入/删除,成功与失败同一出口
 	"afterAIChange":          true, // violation:bump 版本 + 重载 + 审计,三件一起做
 	"writePlanAudit":         true, // controller/subscription.go:订阅套餐写接口,成功与失败同一出口
+
+	"writeRestrictedNoticeAudit": true, // qianye/controller:受限账号公告写入,成功与失败同一出口
 }
 
 // auditRequired 列出必须留痕的资金路径,值是该函数体内审计写入的**最少**次数。
@@ -383,6 +385,12 @@ var auditRequired = []struct {
 	{"modules/ticket/api_user.go", "handleDiscardImage", 1,
 		"丢弃会真的从磁盘删文件。上传留痕而删除不留痕的话," +
 			"「这个账号传过多少、现在还剩什么」在事后只剩一半答案"},
+	{"controller/restricted_notice.go", "AdminPutRestrictedNotice", 2,
+		"受限账号公告会渲染在**每一个**受限账号的首屏上,内容是申诉渠道与联系方式 ——" +
+			"把它改成一个第三方的联系方式,就是把所有正在申诉的人导给别人,而接口照常 200。" +
+			"before/after 是事后唯一能回答「谁把申诉入口改到哪去了、原来写的是什么」的东西;" +
+			"被长度闸拒绝的那次同样留痕:「有人正在试图往受限用户首屏塞一段超长文本」" +
+			"与成功的那次同等重要"},
 	// 下面三条是**上游 controller/ 里的接口**,不在 qianye/modules/** 之内。
 	// 登记它们的理由:它们与本目录下的资金配置接口是同一类东西(改一次决定
 	// 此后谁能付款、按什么价),而在补上埋点之前整个 controller/subscription.go

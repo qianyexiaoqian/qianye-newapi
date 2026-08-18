@@ -69,6 +69,15 @@ func registerUserRoutes(g *gin.RouterGroup) {
 	// 为一个只读计数新建一个模块,只会让 modules_test.go 的目录/注册表一致性
 	// 多守一个空壳。与 /health、/version 同一档:直接挂在这里。
 	g.GET("/session-stats", qyctl.UserSessionStats)
+	// 受限账号公告。与 /session-stats 同一档:「受限账号」是会话鉴权链上的一档
+	// 身份(middleware/restricted_user.go),不属于任何业务模块 —— 管理员在上游
+	// 用户管理页上禁用任何一个账号都会产生这个状态,与 violation / ticket 开没开
+	// 无关。挂进某个模块的话,那个模块被关掉时这段解释就连配都配不了。
+	//
+	// **它必须同时出现在 middleware/restricted_user.go 的白名单里**:漏了的话
+	// 这条路径对受限账号 403,而受限落地页上那块公告位会一直空着 ——
+	// 恰好是它要解决的那个问题的加强版。
+	g.GET("/restricted-notice", qyctl.UserRestrictedNotice)
 }
 
 // registerAdminRoutes 挂载管理端接口。
@@ -88,6 +97,10 @@ func registerAdminRoutes(g *gin.RouterGroup) {
 	// 与内存里的分组倍率表,不属于任何业务模块,存在的唯一理由是上游
 	// GetGroupRatio 找不到分组时会静默按 1.0 倍扣费(理由见 AdminGroupRatioOrphans)。
 	g.GET("/group-ratio/orphans", qyctl.AdminGroupRatioOrphans)
+	g.GET("/restricted-notice", qyctl.AdminGetRestrictedNotice)
+	// 这段文案会渲染在**每一个**受限账号的首屏上,写它等于改一段对外承诺
+	// (申诉渠道、联系方式、封禁政策)。挂关键操作限流,并且成功与失败都写审计。
+	g.PUT("/restricted-notice", middleware.CriticalRateLimit(), qyctl.AdminPutRestrictedNotice)
 	g.GET("/audit-logs", qyctl.AdminListAuditLogs)
 	g.GET("/request-audits", qyctl.AdminListRequestAudits)
 	g.GET("/leases", qyctl.AdminListLeases)

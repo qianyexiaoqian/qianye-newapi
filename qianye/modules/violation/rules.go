@@ -780,7 +780,6 @@ func scan(rules []*compiledRule, dict []string, in scanInput, text string) *verd
 	if budget <= 0 {
 		budget = 20 * time.Millisecond
 	}
-	deadline := start.Add(budget)
 
 	// 字符层归一**必须在这一步**,而不是靠某条规则的模式串去兼容:
 	// `Ign<U+200B>ore all previous instructions` 对 RE2 与 AC 都是一个全新的字符串,
@@ -799,11 +798,33 @@ func scan(rules []*compiledRule, dict []string, in scanInput, text string) *verd
 		}
 	}
 
+	// 预算的起点在归一与词典扫描**之后**。
+	//
+	// 它原来取在函数第一行,于是 normalizeForScan + strings.ToLower + AcSearch
+	// (词典变了要现建一次自动机)这三步的耗时也算进预算里,机器一忙就会出现
+	// "一条规则都没跑就 break、按放行返回"的结局:对外只有 scanTimeouts 加 1,
+	// 管理端看不到这一条压根没被扫过。注释里说的"规则数 × 文本长度的累积开销"
+	// 也正是从这里开始才成立,一次性的准备工作不属于它。
+	deadline := time.Now().Add(budget)
+	return scanRulesBefore(rules, in, text, lower, hitWords, start, deadline)
+}
+
+// scanRulesBefore 在 deadline 之前尽可能多地评估规则。
+//
+// 单独一层是为了让「预算耗尽时到底跑没跑过规则」可以被直接断言:计时做判据
+// 在纪律里是禁止的,而这里唯一说得清的性质就是"给一个已经过期的 deadline,
+// 第一条规则仍然必须被评估"。
+func scanRulesBefore(rules []*compiledRule, in scanInput, text, lower string,
+	hitWords map[string]struct{}, start time.Time, deadline time.Time) *verdict {
 	timedOut := false
-	for _, cr := range rules {
+	for i, cr := range rules {
 		// 超时预算按规则粒度检查。RE2 单条正则在 64KB 上界内的耗时是可预测的,
 		// 真正需要防的是"规则数 × 文本长度"的累积开销。
-		if time.Now().After(deadline) {
+		//
+		// 第一条规则**永远**要跑:预算的意义是"别把 N 条规则全跑完",不是
+		// "一条都别跑"。零命中地放行与"扫过了、没事"在日志里长得一模一样,
+		// 而后者才是这个模块存在的理由。
+		if i > 0 && time.Now().After(deadline) {
 			timedOut = true
 			scanTimeouts.Add(1)
 			break

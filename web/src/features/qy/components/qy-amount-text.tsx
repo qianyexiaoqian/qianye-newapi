@@ -18,11 +18,21 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { cn } from '@/lib/utils'
 
-import { formatQyQuotaHero, formatQyQuotaLedger } from '../lib/format'
+import {
+  formatQyQuotaHero,
+  formatQyQuotaLedger,
+  qyQuotaValue,
+  type QyQuotaAmount,
+} from '../lib/format'
 
 type QyAmountTextProps = {
-  /** 站内额度（quota 整数）。`null` / `undefined` 显示 `-`。 */
-  quota: number | null | undefined
+  /**
+   * 站内额度。整数（余额三件套）与 `decimal(30,10)` 字符串（佣金账本的
+   * `gross_amount` / `settled_amount` / `unsettled_amount`）都收 —— 它们本来
+   * 就是同一个单位，见 `lib/format.ts` 的 {@link QyQuotaAmount}。
+   * `null` / `undefined` / 解析不出来的字符串显示 `-`。
+   */
+  quota: QyQuotaAmount
   /**
    * `ledger` 明细口径：不缩写，用于表格与单据详情；
    * `hero` 概览口径：允许缩写（1.2K），用于统计卡片。
@@ -41,7 +51,8 @@ type QyAmountTextProps = {
  * 再走一次 quota→USD→展示币种会造成双重换算。
  */
 export function QyAmountText(props: QyAmountTextProps) {
-  if (props.quota == null || !Number.isFinite(props.quota)) {
+  const value = qyQuotaValue(props.quota)
+  if (value == null) {
     return (
       <span className={cn('text-muted-foreground', props.className)}>-</span>
     )
@@ -49,8 +60,8 @@ export function QyAmountText(props: QyAmountTextProps) {
 
   const format =
     props.variant === 'hero' ? formatQyQuotaHero : formatQyQuotaLedger
-  const isNegative = props.quota < 0
-  const prefix = props.signed === true && props.quota > 0 ? '+' : ''
+  const isNegative = value < 0
+  const prefix = props.signed === true && value > 0 ? '+' : ''
 
   return (
     <span
@@ -61,7 +72,7 @@ export function QyAmountText(props: QyAmountTextProps) {
       )}
     >
       {prefix}
-      {format(props.quota)}
+      {format(value)}
     </span>
   )
 }

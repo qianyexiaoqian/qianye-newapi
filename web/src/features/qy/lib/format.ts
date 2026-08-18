@@ -30,9 +30,37 @@ import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
  * 那会被再乘一次当前汇率造成双重换算。法币走各自模块的展示组件。
  */
 
+/**
+ * 账本上的额度金额。
+ *
+ * 佣金账本里的 `gross_amount` / `settled_amount` / `unsettled_amount` 与余额行
+ * 上的 `available_quota` / `frozen_quota` / `withdrawn_quota` **是同一个单位**
+ * （都是站内额度）：`gross = base_quota × 费率`（`accrual.go` 的 `calcGross`），
+ * 结算时 `floor(carry + Δgross)` 直接加进 `available_quota`
+ * （`settle.go` 的 `computeSettlement`）。差别只有一处 —— 前者是
+ * `decimal(30,10)` 的精确值、后端以**字符串**下发以免 JS 丢位，后者是整数。
+ *
+ * 所以展示层必须把这两类渲染成同一个东西。一列印 `$0.27`、隔壁一列印
+ * `1370.0000000000`，看的人无从判断这两个数能不能相加 —— 而它们恰恰能。
+ *
+ * 这里的解析只服务于排版：结果不回流参与任何运算，长尾小数在展示精度
+ * （最多 4 位）下本来就看不见。**法币金额不能走这里**，理由见文件头。
+ */
+export type QyQuotaAmount = number | string | null | undefined
+
+/** 额度金额 → 可格式化的数值。解析不出来（含空串、NaN、±Inf）返回 `null`。 */
+export function qyQuotaValue(amount: QyQuotaAmount): number | null {
+  if (amount == null) return null
+  if (typeof amount === 'number') return Number.isFinite(amount) ? amount : null
+  const raw = amount.trim()
+  if (raw === '') return null
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 /** 明细展示：不缩写，保留 4 位小数，用于表格与单据详情。 */
-export function formatQyQuotaLedger(quota: number | null | undefined): string {
-  return formatQuotaWithCurrency(quota, {
+export function formatQyQuotaLedger(amount: QyQuotaAmount): string {
+  return formatQuotaWithCurrency(qyQuotaValue(amount), {
     digitsLarge: 2,
     digitsSmall: 4,
     abbreviate: false,
@@ -40,8 +68,8 @@ export function formatQyQuotaLedger(quota: number | null | undefined): string {
 }
 
 /** 概览展示：允许缩写（1.2K），用于统计卡片与图表轴。 */
-export function formatQyQuotaHero(quota: number | null | undefined): string {
-  return formatQuotaWithCurrency(quota, {
+export function formatQyQuotaHero(amount: QyQuotaAmount): string {
+  return formatQuotaWithCurrency(qyQuotaValue(amount), {
     digitsLarge: 2,
     digitsSmall: 4,
     abbreviate: true,

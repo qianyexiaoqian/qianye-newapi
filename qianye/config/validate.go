@@ -21,6 +21,15 @@ const (
 	RateFreezeOperationSetting = "operation_setting"
 	RateFreezeFixed            = "fixed"
 
+	// OperationSettingFiatCurrency 是 rate_freeze_mode = operation_setting 这一档
+	// **唯一可能产出的币种**。
+	//
+	// 汇率取自 operation_setting.USDExchangeRate,而上游对这个变量的定义是死的:
+	// controller/billing.go 与 logger/logger.go 都按 `cny := usd * USDExchangeRate`
+	// 用它,quota_display_type = CNY 那一支也是同一条式子。所以这一模式下
+	// quota/QuotaPerUnit × 汇率 的结果只能是人民币,不是"某种法币"。
+	OperationSettingFiatCurrency = "CNY"
+
 	InsufficientClamp    = "clamp"
 	InsufficientNegative = "negative"
 	InsufficientBan      = "ban"
@@ -536,6 +545,26 @@ func validateCommission(cm *Commission) error {
 }
 
 func validateWithdraw(w *Withdraw) error {
+	// 法币口径的自洽性必须在 enabled 之前校验。
+	//
+	// 金额与币种是两个互不校验的旋钮:金额由 rate_freeze_mode 选出的汇率生成,
+	// 币种是 fiat_currency 这串自由文本。operation_setting 档的汇率是
+	// USD → CNY(见 OperationSettingFiatCurrency),把币种标成别的东西就是一次
+	// **静默的汇率错标** —— 数字看起来完全正常,只有线下按单据币种打款的人
+	// 会发现付错了(按 7.3 的汇率是七倍)。
+	//
+	// 放在 enabled 之前,是因为佣金模块的 available_fiat 与用户端佣金页的
+	// 「折合法币」不看 withdraw.enabled:提现关掉了,那个数字照样在页面上。
+	if w.RateFreezeMode == RateFreezeOperationSetting &&
+		!strings.EqualFold(strings.TrimSpace(w.FiatCurrency), OperationSettingFiatCurrency) {
+		return fmt.Errorf("qianye: withdraw.fiat_currency = %q 与 rate_freeze_mode = %q 对不上。\n"+
+			"    这一档的汇率取自站点的 USDExchangeRate,而它在上游的定义是 USD → %s,\n"+
+			"    因此产出的金额只可能是 %s;标成别的币种,提现单上的数字与币种就不是同一件事。\n"+
+			"    要用别的币种,把 withdraw.rate_freeze_mode 改成 \"fixed\" 并在 rate_freeze_fixed 里\n"+
+			"    写明 1 USD 折合多少该币种。",
+			w.FiatCurrency, RateFreezeOperationSetting,
+			OperationSettingFiatCurrency, OperationSettingFiatCurrency)
+	}
 	if !w.Enabled {
 		return nil
 	}

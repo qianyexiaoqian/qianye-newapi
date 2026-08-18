@@ -35,6 +35,7 @@ import { Switch } from '@/components/ui/switch'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { formatQyQuotaLedger } from '../../lib/format'
 import { AdjustCommissionDialog } from '../admin-commission-balances/components/adjust-commission-dialog'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
@@ -397,7 +398,9 @@ function LedgerCheckBadge(props: { row: QyCommissionUser }) {
   }
   return (
     <Badge variant='destructive'>
-      {t('qy_cb_check_drift', { drift: row.ledger_drift })}
+      {t('qy_cb_check_drift', {
+        drift: formatQyQuotaLedger(row.ledger_drift),
+      })}
     </Badge>
   )
 }

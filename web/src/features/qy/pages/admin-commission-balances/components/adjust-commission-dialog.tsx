@@ -31,6 +31,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyErrorMessage } from '../../../lib/api'
+import { formatQyQuotaLedger } from '../../../lib/format'
 import { qyKeys } from '../../../lib/query-keys'
 import { QY_FUND_REASON_MIN_RUNES, qyRuneLength } from '../../lib/constants'
 import { qyAdjustCommission } from '../api'
@@ -107,7 +108,7 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
     onSuccess: async (result) => {
       toast.success(
         result.created
-          ? t('qy_adj_ok', { delta: result.delta_quota })
+          ? t('qy_adj_ok', { delta: formatQyQuotaLedger(result.delta_quota) })
           : t('qy_adj_replayed')
       )
       await queryClient.invalidateQueries({ queryKey: qyKeys.all })
@@ -129,6 +130,12 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
     balance == null ? 0 : Math.max(0, balance.available_quota + carry)
   const overCeiling =
     direction === 'sub' && amountValid && amountValue > ceilingHint
+  // 上限是**输入框那一格**的上限，而那一格填的是额度整数，所以这里必须双写：
+  // 只印 `$0.27` 的话，管理员没有任何办法知道该往框里敲哪个整数。
+  const ceilingText = t('qy_common_quota_with_amount', {
+    quota: ceilingHint,
+    amount: formatQyQuotaLedger(ceilingHint),
+  })
   const reasonValid = qyRuneLength(reason.trim()) >= QY_FUND_REASON_MIN_RUNES
 
   let subject: string | undefined
@@ -163,7 +170,13 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
             </div>
             <div className='flex justify-between gap-3 py-1.5 last:pb-0'>
               <dt className='text-muted-foreground'>{t('qy_adj_unsettled')}</dt>
-              <dd className='tabular-nums'>{balance.unsettled_amount}</dd>
+              {/* 未结算余数与上面的可提现是**同一个单位**（都是站内额度，
+                  只是这一个还没满 1 整数、由后端以 decimal 字符串下发）。
+                  一个印 `$0.27`、一个印 `0.4700000000`，看的人会以为它们
+                  是两种钱，而调整上限恰恰是这两个数加起来。 */}
+              <dd>
+                <QyAmountText quota={balance.unsettled_amount} />
+              </dd>
             </div>
           </dl>
 
@@ -197,7 +210,7 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
             />
             <p className='text-muted-foreground text-xs'>
               {direction === 'sub'
-                ? t('qy_adj_amount_hint_sub', { ceiling: ceilingHint })
+                ? t('qy_adj_amount_hint_sub', { ceiling: ceilingText })
                 : t('qy_adj_amount_hint_add')}
             </p>
           </div>
@@ -205,7 +218,7 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
           {overCeiling && (
             <Alert variant='destructive'>
               <AlertDescription>
-                {t('qy_adj_over_ceiling', { ceiling: ceilingHint })}
+                {t('qy_adj_over_ceiling', { ceiling: ceilingText })}
               </AlertDescription>
             </Alert>
           )}

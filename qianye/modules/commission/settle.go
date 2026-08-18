@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
@@ -314,6 +315,17 @@ func settleUser(inviterId int) error {
 		}
 		fiatDelta, newFiat := applyFiat(bal, out.NetQuota, weighted)
 		settlement.FiatDelta = fiatDelta
+		// 币种与金额必须一起冻结,否则 available_fiat 是一个不知道自己是什么钱的数。
+		// 这一列在被补上之前一直是空串(全站零处赋值),用户端只好拿**当前**全局
+		// 配置去顶替 —— 那正是"逐笔冻结汇率"这条设计在币种维度上的缺口:
+		// 运营改一次 withdraw.fiat_currency,全部历史余额的币种标签会跟着一起变。
+		fiatCurrency := config.Get().Withdraw.FiatCurrency
+		if bal.FiatCurrency != "" && bal.FiatCurrency != fiatCurrency {
+			// 换币种不会重算存量,新旧两种钱会叠在同一个数里。这里只能留痕:
+			// 拒绝结算等于把佣金全站冻住,静默改写更糟。
+			warnf("邀请人 %d 的法币余额币种由 %s 变为 %s,存量 %s 未按新币种重算",
+				inviterId, bal.FiatCurrency, fiatCurrency, bal.AvailableFiat.String())
+		}
 		if err := tx.Create(&settlement).Error; err != nil {
 			return err
 		}
@@ -325,6 +337,7 @@ func settleUser(inviterId int) error {
 		updates := map[string]any{
 			"unsettled_amount": out.CarryAfter,
 			"available_fiat":   newFiat,
+			"fiat_currency":    fiatCurrency,
 			"debt_blocked":     out.CarryAfter.IsNegative(),
 			"last_settled_at":  now,
 			"updated_at":       now,

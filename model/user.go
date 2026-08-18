@@ -984,6 +984,25 @@ func deleteUserAuthenticationData(tx *gorm.DB, userId int) error {
 	return deleteUserOAuthBindingsByUserId(tx, userId)
 }
 
+// missingUserPasswordHash 是一段合法但**永不与任何口令匹配**的 bcrypt 摘要。
+//
+// 存在理由:ValidateAndFill 下面那段注释要求「用户名不存在」与「用户名存在但
+// 密码错」无法区分,但只把响应体做成逐字节相同是不够的 —— 不存在的用户名会在
+// 查库那一步直接返回,根本不跑 bcrypt,而存在的用户名要花掉一整个 cost=10 的
+// 密钥派生。实测均值 3.0ms vs 59.6ms,差二十倍,用户名可以被逐个枚举出来。
+//
+// 因此不存在的用户也要对这段摘要跑一次同样的比较,结果丢弃,唯一的作用是把
+// 工作量补齐。cost 必须与 Password2Hash 用的 bcrypt.DefaultCost 一致,否则补的
+// 工作量对不上,时间差照样存在(有 TestMissingUserPasswordHashMatchesRealCost 钉住)。
+const missingUserPasswordHash = "$2a$10$QGcc56BP9AWZyqEs9dHJkOi5/dZu4k2VEYH93fXLJo7jhRRpixzfq"
+
+// validatePasswordAndHash 指向真正的口令校验。
+//
+// 做成变量是为了让「两条路径花掉同一份 bcrypt」这条契约可以被断言:纪律禁止用
+// 计时做判据(机器负载一变就是假红/假绿),所以测试改为数调用次数。生产路径
+// 永远是 common.ValidatePasswordAndHash。
+var validatePasswordAndHash = common.ValidatePasswordAndHash
+
 // ValidateAndFill check password & user status
 func (user *User) ValidateAndFill() (err error) {
 	// When querying with struct, GORM will only query with non-zero fields,
@@ -998,14 +1017,18 @@ func (user *User) ValidateAndFill() (err error) {
 	err = DB.Where("username = ? OR email = ?", username, username).First(user).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 比较结果刻意丢弃,见 missingUserPasswordHash。
+			validatePasswordAndHash(password, missingUserPasswordHash)
 			return ErrInvalidCredentials
 		}
 		return fmt.Errorf("%w: %v", ErrDatabase, err)
 	}
 	if user.Password == "" {
+		// 半截数据(有行、没口令摘要)同理:直接返回会把这一行也变成一个更快的分支。
+		validatePasswordAndHash(password, missingUserPasswordHash)
 		return ErrInvalidCredentials
 	}
-	okay := common.ValidatePasswordAndHash(password, user.Password)
+	okay := validatePasswordAndHash(password, user.Password)
 	if !okay {
 		return ErrInvalidCredentials
 	}
