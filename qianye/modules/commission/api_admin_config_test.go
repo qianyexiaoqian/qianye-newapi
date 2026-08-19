@@ -333,3 +333,50 @@ func TestAdminHealth_ReportsLedgerIdentityDrift(t *testing.T) {
 		"I2 全都成立 —— 这正是这条漂移此前藏得住的原因:余额页那一列看不见它")
 	assert.Equal(t, 1, lc.SelfInvitedUsers, "存量的自邀请数据要有人报出来")
 }
+
+// TestAdminSettleAcceptsUserIdFromQueryOrBody 守"参数位置不能与紧邻的同类
+// 接口相反"。
+//
+// POST /commission/settle 与 POST /commission/balances/adjust 是同一组管理端
+// 写接口,前者只读查询串、后者只读请求体。运营工具按 adjust 的形状发
+// {"user_id":…} 过来,拿到的是 "必须指定 user_id" —— 一句与事实直接冲突的
+// 提示;而且那一支在 badRequest 之前返回,连失败审计都不写,事后查不到有人试过。
+//
+// 断言从 HTTP 处理器进,三种发法都要能落到同一个 settleOne 上。
+func TestAdminSettleAcceptsUserIdFromQueryOrBody(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target string
+		body   string
+		want   int
+	}{
+		{name: "查询串", target: "/admin/commission/settle?user_id=4242", body: "", want: http.StatusOK},
+		{name: "请求体", target: "/admin/commission/settle", body: `{"user_id":4242}`, want: http.StatusOK},
+		{name: "两个都给时查询串优先", target: "/admin/commission/settle?user_id=4242", body: `{"user_id":7}`, want: http.StatusOK},
+		{name: "两处都没有才 400", target: "/admin/commission/settle", body: `{}`, want: http.StatusBadRequest},
+		{name: "报文坏了也不能当成给了", target: "/admin/commission/settle", body: `{`, want: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gdb := newTestDB(t)
+			useConfig(t, commissionConfig(1))
+			useMoneyGlobals(t, 7.3, 500000)
+			useAdminAPI(t)
+			// 4242 有一笔够发的余数:结算真的会落一张单,于是"到底settle了谁"
+			// 有一个落在库里的判据,而不是只看 HTTP 码。
+			seedBalance(t, gdb, 4242, "4000")
+
+			rec := callAdminHandler(t, http.MethodPost, tc.target, tc.body, adminSettle)
+			require.Equal(t, tc.want, rec.Code, rec.Body.String())
+
+			rows := settlementsOf(t, gdb, 4242)
+			if tc.want != http.StatusOK {
+				assert.Empty(t, rows, "参数没给全却真的结算了")
+				return
+			}
+			require.Len(t, rows, 1, "接口回了 200 但没有任何一张结算单落库")
+			assert.EqualValues(t, 4000, rows[0].GrantedQuota)
+			assert.Empty(t, settlementsOf(t, gdb, 7),
+				"请求体里的 user_id 盖掉了查询串 —— 结算落到了另一个人头上")
+		})
+	}
+}

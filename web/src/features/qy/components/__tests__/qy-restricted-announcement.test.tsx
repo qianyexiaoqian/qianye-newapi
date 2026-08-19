@@ -312,14 +312,19 @@ describe('受限账号公告', () => {
     const here = dirname(fileURLToPath(import.meta.url))
     const targets = [
       join(here, '..', 'qy-restricted-notice.tsx'),
+      // 管理端编辑面：**已从「系统设置 → 内容管理」搬到扩展的「受限账号」页**
+      // （项目方原话：「受限制账号，在系统设置里面单独进行配置。」）。
+      // 路径跟着改，而不是把这一条删掉 —— 净化档是搬家最容易在复制粘贴里
+      // 掉队的东西，而它掉队的表现是运营预览没问题、上线后受限用户首屏上
+      // 多一个假登录框。
       join(
         here,
         '..',
         '..',
-        '..',
-        'system-settings',
-        'content',
-        'qy-restricted-notice-section.tsx'
+        'pages',
+        'admin-restricted-accounts',
+        'components',
+        'notice-card.tsx'
       ),
     ]
     for (const target of targets) {

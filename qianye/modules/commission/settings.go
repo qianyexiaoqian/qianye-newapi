@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/guard"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -34,6 +35,17 @@ const (
 	// "0" 才是显式 0%。理由见 config.Commission.RedemptionRatePercent。
 	keyRedemptionRatePercent = "redemption_rate_percent"
 
+	// keyFiatRateDefault 是「站内佣金余额 → 法币」折算比例的**兜底档**。
+	//
+	// 取值是十进制字符串("7.3"),不是百分比 —— 它是一个乘数,不是一个比率,
+	// 所以它既不在 isPercentKey 里也不在 isQuotaKey 里,写入侧单独一支。
+	// 层级、口径与零值语义见 fiatrate.go 的文件头。
+	//
+	// 与可空的兑换码档不同,这一行**不可被清空**:清空之后没配分组档的用户会
+	// 悄悄退回充值页汇率,而界面上还写着兜底档。想要「兜底 = 充值汇率」就把那个
+	// 数字显式填进来,让它成为一个有人签字的决定。
+	keyFiatRateDefault = "fiat_rate_default"
+
 	keyMinSettleQuota    = "min_settle_quota"
 	keyMaxPerOrderQuota  = "max_per_order_quota"
 	keyHoldingDays       = "holding_days"
@@ -53,6 +65,7 @@ const (
 // 让管理端能往共享 KV 表里写任意键,等于把别的模块的配置面也交出去了。
 var editableKeys = []string{
 	keyTopupRatePercent, keyConsumeRatePercent, keyRedemptionRatePercent,
+	keyFiatRateDefault,
 	keyMinSettleQuota, keyMaxPerOrderQuota,
 	keyHoldingDays, keyDailyCapQuota, keyLargeAlertQuota, keyMinInviteeAgeHour,
 }
@@ -72,6 +85,14 @@ func isNullablePercentKey(k string) bool {
 	return k == keyRedemptionRatePercent
 }
 
+// isFiatRateKey 是取值为**法币折算比例**的键(目前只有兜底档)。
+//
+// 单独一支而不是塞进百分比那一支:它是一个乘数(7.3 = 一美元折 7.3 元),
+// 不是一个 0..100 的比率,校验区间、上界、小数位数与百分比全不一样。
+// 混进去的后果是运营在界面上看到一个写着 "%" 的输入框,填 7.3 之后
+// 佣金按 7.3% 折算 —— 一个差了两个数量级的资金参数。
+func isFiatRateKey(k string) bool { return k == keyFiatRateDefault }
+
 // opSettings 是 YAML 与运营覆盖合并后的生效配置。
 type opSettings struct {
 	// TopupRateUnits / ConsumeRateUnits 是内部整数费率:百分比 × 100
@@ -86,12 +107,19 @@ type opSettings struct {
 	// 全站兑换码返佣会静默清零,而账本上看不出任何异常 —— 每一行都自洽,
 	// 只是费率变了。这正是本仓栽过多次的零值陷阱。
 	RedemptionRateUnits *int
-	MinSettleQuota      int64
-	MaxPerOrderQuota    int64
-	HoldingDays         int
-	DailyCapQuota       int64 // 0 = 不限
-	LargeAlertQuota     int64 // 0 = 不告警
-	MinInviteeAgeHours  int   // 0 = 不限
+	// FiatRateDefault 是法币折算比例的兜底档,**指针**:nil = 从未配过,
+	// 此时回落全站充值汇率(fiatrate.go 的第 3 层)。
+	//
+	// 不能用零值兼任"没配":0 会让 applyFiat 一分法币都不加而额度照加,
+	// available_fiat 与 available_quota 就此永久漂移。0 在这一档是非法值,
+	// 不是一个含义。存量站点升级上来一律是 nil,行为一分不变。
+	FiatRateDefault    *decimal.Decimal
+	MinSettleQuota     int64
+	MaxPerOrderQuota   int64
+	HoldingDays        int
+	DailyCapQuota      int64 // 0 = 不限
+	LargeAlertQuota    int64 // 0 = 不告警
+	MinInviteeAgeHours int   // 0 = 不限
 }
 
 // TopupRatePercent / ConsumeRatePercent 是下发给接口与前端的百分比形式。
@@ -122,6 +150,18 @@ func (s opSettings) EffectiveRedemptionRateUnits() int {
 // EffectiveRedemptionRatePercent 是上面那个数的百分比形式,给接口与界面回显。
 func (s opSettings) EffectiveRedemptionRatePercent() string {
 	return config.FormatRatePercent(s.EffectiveRedemptionRateUnits())
+}
+
+// FiatRateDefaultString 是**配的是什么**:没配过时返回空串,而不是全站汇率。
+//
+// 与 RedemptionRatePercent 同一条理由:把回落值当成配置值回显,运营下一次
+// 保存就把"跟随全站汇率"固化成一个显式数字,此后改充值汇率不再带动佣金折算 ——
+// 一次什么都没改的保存,静默改变了系统行为。
+func (s opSettings) FiatRateDefaultString() string {
+	if s.FiatRateDefault == nil {
+		return ""
+	}
+	return s.FiatRateDefault.String()
 }
 
 // settingsCacheSeconds 是运营配置的刷新周期。
@@ -295,6 +335,7 @@ func applyOverrides(s *opSettings, m map[string]string) {
 	rateOverride(&s.TopupRateUnits, m[keyTopupRatePercent], m[legacyKeyTopupRateBps])
 	rateOverride(&s.ConsumeRateUnits, m[keyConsumeRatePercent], m[legacyKeyConsumeRateBps])
 	nullableRateOverride(&s.RedemptionRateUnits, m[keyRedemptionRatePercent])
+	fiatRateOverride(&s.FiatRateDefault, m[keyFiatRateDefault])
 	quotaOverride(&s.MinSettleQuota, keyMinSettleQuota, m[keyMinSettleQuota])
 	quotaOverride(&s.MaxPerOrderQuota, keyMaxPerOrderQuota, m[keyMaxPerOrderQuota])
 	intOverride(&s.HoldingDays, m[keyHoldingDays])
@@ -350,6 +391,27 @@ func nullableRateOverride(dst **int, percentRaw string) {
 	v, err := config.RatePercentUnits(percentRaw)
 	if err != nil {
 		warnf("qy_settings 里的兑换码返佣比例 %q 非法,已忽略: %v", percentRaw, err)
+		return
+	}
+	*dst = &v
+}
+
+// fiatRateOverride 应用运营覆盖的**法币折算兜底档**。
+//
+// 空值(行不存在,或者行存在但 v 为空)一律不动 dst —— 那是"从未配过",
+// 由 fiatRateFor 回落全站充值汇率。非法值同样丢弃并告警,与 rateOverride /
+// quotaOverride 逐字同一条理由:qy_settings 是可以被人手工 UPDATE 的,
+// 钳到边界会静默生效一个谁都没批准的比例,而丢弃只是回落到下一层。
+//
+// 尤其不能把非法值钳成 0:那会让 applyFiat 一分法币都不加而额度照加,
+// 是本档唯一一种"不报错、不告警、账本自己慢慢漂"的失败形状。
+func fiatRateOverride(dst **decimal.Decimal, raw string) {
+	if strings.TrimSpace(raw) == "" {
+		return
+	}
+	v, err := parseFiatRate(raw)
+	if err != nil {
+		warnf("qy_settings 里的兜底法币比例 %q 非法,已忽略: %v", raw, err)
 		return
 	}
 	*dst = &v
@@ -542,6 +604,14 @@ var (
 	// settingsDegrade 计"运营配置读不到,本次按上一份快照或 YAML 默认费率计佣"。
 	// 消费方是本文件的 effectiveCtx。
 	settingsDegrade = &degradeRecord{}
+
+	// fiatRateDegrade 计"法币折算比例没能走到它本该走的那一层"。
+	//
+	// 三种触发:分组档读不到(整表回落)、库里某一层存着非法比例、上线的分组
+	// 解析失败。消费方是 fiatrate.go 的 fiatRates / fiatRateFor / inviterFiatRate。
+	// 必须计数的理由与另外两个降级完全一致 —— 比例会被冻结进 accrual 行,
+	// 事后再也分不出"这行是降级"还是"当时配的就是这个"。
+	fiatRateDegrade = &degradeRecord{}
 
 	// groupRateDegrade 计"分组费率读不到,本次按全局默认费率计佣"。
 	// 消费方是 grouprate.go 的 groupRates(),它两条**返回空表**的回落路径

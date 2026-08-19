@@ -101,6 +101,11 @@ func registerAdminRoutes(g *gin.RouterGroup) {
 	// 这段文案会渲染在**每一个**受限账号的首屏上,写它等于改一段对外承诺
 	// (申诉渠道、联系方式、封禁政策)。挂关键操作限流,并且成功与失败都写审计。
 	g.PUT("/restricted-notice", middleware.CriticalRateLimit(), qyctl.AdminPutRestrictedNotice)
+	// 受限账号总览:当前有多少个受限账号 + 受限账号还能到达哪几档接口。
+	// 只读,不碰扩展库(计数查主库 users,分档表是进程内常量),因此不走 requireCore。
+	// 没有对应的写端点是刻意的:白名单是代码里的显式清单,做成可配等于把
+	// 「新增接口默认对受限账号开放」这个失败模式请回来。
+	g.GET("/restricted-accounts", qyctl.AdminRestrictedAccountsOverview)
 	g.GET("/audit-logs", qyctl.AdminListAuditLogs)
 	g.GET("/request-audits", qyctl.AdminListRequestAudits)
 	g.GET("/leases", qyctl.AdminListLeases)

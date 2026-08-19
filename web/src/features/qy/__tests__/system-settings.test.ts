@@ -176,7 +176,16 @@ describe('并进系统设置抽屉的菜单项', () => {
     // `withQyBillingSectionNavItems` 判定，判据只有「扩展是否启用」——
     // `group_matrix.enabled` 关掉时入口照样留着，点进去看到后端 guard 返回 404
     // 之后的中性空态，明确告诉你没开，而不是变成一个静默消失的菜单。
-    assert.deepEqual(qyGroupItems(merged), ['/qy/admin/api-address'])
+    //
+    // 「受限账号」同样没有开关，而且**不能有**：受限态是会话鉴权链上的一档身份
+    // （`middleware/restricted_user.go`），管理员在用户管理页上禁用任何一个账号
+    // 都会产生它，与 violation / ticket 两个模块开没开完全无关。挂上任何一个
+    // YAML 开关，都会造出"受限状态照常发生，而解释它、配置它的那一页连入口都
+    // 没有"—— 本仓反复出现的「功能在，入口没了」。
+    assert.deepEqual(qyGroupItems(merged), [
+      '/qy/admin/api-address',
+      '/qy/admin/restricted-accounts',
+    ])
   })
 })
 

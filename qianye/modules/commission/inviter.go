@@ -89,6 +89,12 @@ func resolveInviter(ctx context.Context, userId int) (inviterEntry, bool, error)
 	if e, ok := peekInviter(userId); ok {
 		return e, false, nil
 	}
+	// 主库句柄还没装上就回错而不是解引用 nil。调用方(计佣写入、法币比例解析)
+	// 全都能优雅降级,而这里一个 panic 会顺着 singleflight 的 doCall 炸掉
+	// **所有**在这一批合并等待的协程 —— 一次启动竞态换来整片 worker 崩溃。
+	if model.DB == nil {
+		return inviterEntry{}, false, errors.New("commission: 主库尚未初始化")
+	}
 	type resolved struct {
 		entry inviterEntry
 	}
@@ -160,8 +166,61 @@ func inviterCacheStats() map[string]any {
 	}
 }
 
+// unknownInviterWarnEvery 是同一类解析失败两次落日志之间的最小间隔(秒)。
+//
+// 与 guard.logThrottled 同一个数量级,理由也一样:这条日志是给人看"现在
+// 主库有问题"的信号,一分钟一条足够,而它的**上限**才是要紧的事。
+const unknownInviterWarnEvery = int64(60)
+
+var (
+	unknownInviterMu      sync.Mutex
+	unknownInviterLastLog int64
+	unknownInviterSkipped int64
+)
+
+// takeUnknownInviterWarnSlot 是限频的判定本体:放行则返回 true 与"上次放行
+// 之后被压掉的条数",否则把这一条计进压掉的数里并返回 false。
+//
+// now 由调用方传入而不是自己取,这样这条规则可以在没有时钟的情况下逐格走查——
+// 限频最要紧的性质("窗口内只放行一次"和"压掉的条数一条不丢")恰恰是靠
+// 时间边界成立的,而用真实时钟去测它只能靠 sleep。
+func takeUnknownInviterWarnSlot(now int64) (bool, int64) {
+	unknownInviterMu.Lock()
+	defer unknownInviterMu.Unlock()
+	if unknownInviterLastLog != 0 && now-unknownInviterLastLog < unknownInviterWarnEvery {
+		unknownInviterSkipped++
+		return false, 0
+	}
+	unknownInviterLastLog = now
+	skipped := unknownInviterSkipped
+	unknownInviterSkipped = 0
+	return true, skipped
+}
+
 // warnUnknownInviter 在解析失败时限频告警。用户被删掉是正常现象,
 // 但持续失败意味着主库有问题,不能完全静默。
+//
+// # 为什么必须限频
+//
+// resolveInviter 只把 gorm.ErrRecordNotFound 写进缓存(那是"这个用户没了",
+// 是稳定事实);其余错误 —— 主库超时、连接被打满、慢查询堆积 —— 一律直接
+// 返回且**不进缓存**。于是主库一抖动,同一个用户的每一次 relay 请求都会重查
+// 一次主库并走到这里,而这是整个返佣模块唯一一个按 relay QPS 增长的写入点。
+//
+// 不限频的后果是它恰好在主库已经不健康的那一刻,再按 QPS 给它加一份读压力
+// 和一份日志量 —— 故障期间最不该做的两件事。旁边 guard.logThrottled 早就
+// 有这个节流,而这一条在它之前就打出来了,所以那道闸拦不住。
+//
+// 被压掉的条数记在下一条日志里,否则"限频"会变成"丢失",看日志的人无法
+// 判断这是偶发一次还是持续了一分钟的风暴。
 func warnUnknownInviter(userId int, err error) {
-	common.SysError("qianye: 解析邀请关系失败 user=" + strconv.Itoa(userId) + ": " + err.Error())
+	ok, skipped := takeUnknownInviterWarnSlot(common.GetTimestamp())
+	if !ok {
+		return
+	}
+	msg := "qianye: 解析邀请关系失败 user=" + strconv.Itoa(userId) + ": " + err.Error()
+	if skipped > 0 {
+		msg += "(另有 " + strconv.FormatInt(skipped, 10) + " 条同类失败被限频压掉)"
+	}
+	common.SysError(msg)
 }

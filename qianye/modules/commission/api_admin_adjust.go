@@ -217,6 +217,15 @@ func applyManualAdjust(ctx context.Context, in manualAdjustInput) (*adjustOutcom
 	idemKey := SourceManual + ":" + itoa(in.OperatorId) + ":" + in.ClientId
 	out := &adjustOutcome{}
 
+	// 法币折算比例按**被调整的这个人**(他就是这条 manual 行的 inviter)的
+	// 分组解析,与自动计佣同口径。不解析的话 writeAccrualTx 会取全站充值汇率,
+	// 于是同一个人的自动佣金按分组档折算、手工补的那一笔按另一个比例折算,
+	// available_fiat 里从此混着两种价 —— 而手工调整正是事后最需要说得清的一笔。
+	//
+	// 刻意在开事务之前解析:它要读主库 users.group,而事务里握着
+	// qy_commission_balance 的行锁,跨库读绝不能发生在锁内。
+	fiat := inviterFiatRate(ctx, in.UserId, effectiveCtx(ctx))
+
 	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		bal, err := lockBalance(tx, in.UserId)
 		if err != nil {
@@ -268,6 +277,7 @@ func applyManualAdjust(ctx context.Context, in manualAdjustInput) (*adjustOutcom
 			// 与 manualClawback 同一手法。
 			BaseQuota: in.Delta,
 			Gross:     decimal.NewFromInt(in.Delta),
+			UsdRate:   fiat.Rate,
 			// 立即成熟:手工调整不是从下线消费里分出来的钱,没有任何理由陪着
 			// 成熟期等 —— 那只会让运营以为接口没生效。
 			MatureAt: 0,
