@@ -177,6 +177,10 @@ func QyRewriteUserGroupTx(from, to, mode string) (QyUserGroupRewrite, error) {
 		return QyUserGroupRewrite{}, err
 	}
 
+	// 一批人的分组刚被改写。返佣模块按 user_id 缓存账号分组(它决定这个人作为
+	// 推广人时的返佣费率),这里传 0 让它整表清空而不是逐个删:改写规模可以是
+	// 几万行,而逐个删要在调用方持有一份 id 清单的同时再走几万次锁。
+	QyOnUserGroupChanged(0)
 	if err := DB.Model(&User{}).
 		Where(commonGroupCol+" = ? AND deleted_at IS NULL", from).
 		Count(&out.Stragglers).Error; err != nil {

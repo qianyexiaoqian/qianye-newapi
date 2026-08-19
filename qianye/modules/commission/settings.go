@@ -607,16 +607,28 @@ var (
 
 	// fiatRateDegrade 计"法币折算比例没能走到它本该走的那一层"。
 	//
-	// 三种触发:分组档读不到(整表回落)、库里某一层存着非法比例、上线的分组
-	// 解析失败。消费方是 fiatrate.go 的 fiatRates / fiatRateFor / inviterFiatRate。
-	// 必须计数的理由与另外两个降级完全一致 —— 比例会被冻结进 accrual 行,
-	// 事后再也分不出"这行是降级"还是"当时配的就是这个"。
+	// 两种触发:分组档读不到(整表回落)、库里某一层存着非法比例。消费方是
+	// fiatrate.go 的 fiatRates / fiatRateFor。必须计数的理由与另外两个降级完全
+	// 一致 —— 比例会被冻结进 accrual 行,事后再也分不出"这行是降级"还是
+	// "当时配的就是这个"。
 	fiatRateDegrade = &degradeRecord{}
 
 	// groupRateDegrade 计"分组费率读不到,本次按全局默认费率计佣"。
 	// 消费方是 grouprate.go 的 groupRates(),它两条**返回空表**的回落路径
 	// 各上报一次(沿用旧快照不上报 —— 那是缓存的正常语义,费率仍然是对的)。
 	groupRateDegrade = &degradeRecord{}
+
+	// inviterGroupDegrade 计"主库读不到**上线**那一行,本次费率与法币比例
+	// 一起跳过分组层"。消费方是 pricing.go 的 resolveInviterPricing。
+	//
+	// 单独一个计数器而不是并进上面两个:另外两个说的是"配置读不到",这一个
+	// 说的是"人读不到",而后者恰恰是本轮把两档口径都改成上线分组之后**新增**
+	// 的那一个主库依赖。运营看健康面板要能一眼分清"是扩展库挂了"还是
+	// "主库挂了",这两件事的处置完全不同。
+	//
+	// 它也是这条路上唯一的痕迹:降级那一批 accrual 行的 rate_group 是空串
+	// (见 rateDecision.Group),而空串在库里安静得很。
+	inviterGroupDegrade = &degradeRecord{}
 )
 
 func (d *degradeRecord) note(reason string) {

@@ -221,12 +221,9 @@ func TestRedemptionAccrualUsesRedemptionRate(t *testing.T) {
 	useConfig(t, commissionRateConfig("10", "5"))
 	seedGlobalRedemptionOverride(t, gdb, "3")
 
-	getInviterCache().Set(900, inviterEntry{
-		InviterId:      42,
-		InviteeName:    "u900",
-		InviteeCreated: common.GetTimestamp() - 30*86400,
-		InviteeGroup:   "vip",
-	})
+	// 费率按**上线**的分组取:42 在 vip,下线 900 在 default。
+	cacheUser(42, 0, "vip")
+	cacheUser(900, 42, "default")
 
 	ctx := context.Background()
 	require.NoError(t, accrueOneShot(ctx, 900, 20000, decimal.Zero,
@@ -247,12 +244,9 @@ func TestRedemptionAccrualFollowsTopupWhenUnset(t *testing.T) {
 	useConfig(t, commissionRateConfig("10", "5"))
 	seedRedemptionGroupRate(t, gdb, "vip", "12.5", "8.25", nil)
 
-	getInviterCache().Set(900, inviterEntry{
-		InviterId:      42,
-		InviteeName:    "u900",
-		InviteeCreated: common.GetTimestamp() - 30*86400,
-		InviteeGroup:   "vip",
-	})
+	// 费率按**上线**的分组取:42 在 vip,下线 900 在 default。
+	cacheUser(42, 0, "vip")
+	cacheUser(900, 42, "default")
 
 	ctx := context.Background()
 	require.NoError(t, accrueOneShot(ctx, 900, 20000, decimal.Zero,

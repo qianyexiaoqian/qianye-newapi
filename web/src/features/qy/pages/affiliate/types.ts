@@ -42,6 +42,11 @@ export type QyCommissionSummary = {
   available_fiat: string
   fiat_currency: string
   last_settled_at: number
+  /**
+   * 三档返佣比例。全部是**这个账号自己**的生效值，不是全局默认值 ——
+   * 费率按推广人自己所在的用户分组解析（后端 grouprate.go 的口径），
+   * 所以"我能拿几个点"对每个人是一个确定的数字。
+   */
   rate: {
     topup_bps: number
     consume_bps: number
@@ -52,7 +57,35 @@ export type QyCommissionSummary = {
     redemption_bps: number
     /** 为真表示这一档没单独配、正跟随充值档，界面据此标一句话。 */
     redemption_follows_topup: boolean
+    /**
+     * 解析用的用户分组名（已归一化）。空串表示后端这次没能解析出账号分组，
+     * 界面此时不显示分组来源，而不是编一个名字出来。
+     */
+    group: string
+    /**
+     * 为真表示命中了该分组单独配的档；为假表示这个分组没单独配，
+     * 三个数字都来自下面的全局默认档。这一位是界面回答"为什么是这个数"
+     * 的唯一依据 —— 少了它，页面永远解释不了它自己。
+     */
+    group_matched: boolean
+    global_topup_percent: string
+    global_consume_percent: string
+    global_redemption_percent: string
   }
+  /**
+   * 名下还没被结算吸收的计佣行里，**最早的那个成熟时刻**（unix 秒）。
+   * 0 表示没有在途佣金，或者在途的都已经成熟（对界面是同一句话：下一次日结就发）。
+   *
+   * 它与 `policy.payout_day_offset` 的分工是后端刻意定死的：
+   *
+   * - `payout_day_offset` 按**当前配置**算出的 T+N，只对**此后新产生**的消费成立；
+   * - 本字段是**账本上写着的事实**，成熟期逐行冻结，改配置不追溯已冻结的行。
+   *
+   * 所以这一页必须两个都显示，且不能拿配置去反算历史 —— 运营把
+   * `holding_days` 从 7 改成 0 的那天，一个昨天就挣到钱的用户看到的
+   * 「T+1 到账」是错的，而他自己那笔的成熟时刻只有这个字段答得出。
+   */
+  pending_earliest_mature_at: number
   policy: {
     holding_days: number
     min_settle_quota: number

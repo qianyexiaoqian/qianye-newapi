@@ -247,6 +247,10 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	}
 
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
+		// 结算失败 ≠ 不收钱:请求已经跑完,只能继续往下把日志写完。但日志记的是
+		// 全额真实花费,而这笔钱实际没收到 —— 标记必须落在这一行上,否则事后
+		// 无从分辨"已收讫"与"记了没收到"。
+		relayInfo.SettleFailure = err.Error()
 		logger.LogError(ctx, "error settling billing: "+err.Error())
 	}
 
@@ -260,6 +264,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
+	attachSettleFailure(ctx, relayInfo, other)
 	attachGroupRatioFallback(ctx, relayInfo, other)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
@@ -382,6 +387,10 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	}
 
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
+		// 结算失败 ≠ 不收钱:请求已经跑完,只能继续往下把日志写完。但日志记的是
+		// 全额真实花费,而这笔钱实际没收到 —— 标记必须落在这一行上,否则事后
+		// 无从分辨"已收讫"与"记了没收到"。
+		relayInfo.SettleFailure = err.Error()
 		logger.LogError(ctx, "error settling billing: "+err.Error())
 	}
 
@@ -395,6 +404,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
+	attachSettleFailure(ctx, relayInfo, other)
 	attachGroupRatioFallback(ctx, relayInfo, other)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
@@ -446,19 +456,18 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 		}
 		delta := int64(quota)
 		if delta != 0 {
-			// 与 SubscriptionFunding.Settle 同口径：套餐撞到 amount_total 上限时
-			// 只吃下能吃的部分，剩余差额改由钱包补收，绝不静默丢弃。
-			applied, err := model.SettleUserSubscriptionDelta(relayInfo.SubscriptionId, delta)
+			// 与 SubscriptionFunding.Settle 同一份实现：套餐撞到 amount_total
+			// 上限时只吃下能吃的部分，剩余差额按钱包出资闸门的裁决落到钱包或
+			// 被核销，绝不静默丢弃。
+			split, err := settleSubscriptionDelta(
+				relayInfo.UserId, relayInfo.UserGroup, relayInfo.UsingGroup,
+				relayInfo.SubscriptionId, delta)
 			if err != nil {
 				return err
 			}
-			relayInfo.SubscriptionPostDelta += applied
-			if shortfall := delta - applied; shortfall > 0 {
-				if err := model.DecreaseUserQuota(relayInfo.UserId, int(shortfall), false); err != nil {
-					return err
-				}
-				relayInfo.SubscriptionWalletShortfall += shortfall
-			}
+			relayInfo.SubscriptionPostDelta += split.Applied
+			relayInfo.SubscriptionWalletShortfall += split.WalletCharged
+			relayInfo.SubscriptionWrittenOff += split.WrittenOff
 		}
 	} else {
 		// Wallet

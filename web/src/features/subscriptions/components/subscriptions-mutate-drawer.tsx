@@ -1050,9 +1050,25 @@ export function SubscriptionsMutateDrawer({
                   运营会以为关掉它就等于"这个用户不许花钱包"，而那是站内任何一处
                   配置都表达不了的意思。 */}
               {!walletOverflow && (
-                <p className='text-muted-foreground text-xs leading-5'>
-                  {t('qy_plan_wallet_overflow_off_membership')}
-                </p>
+                <>
+                  <p className='text-muted-foreground text-xs leading-5'>
+                    {t('qy_plan_wallet_overflow_off_membership')}
+                  </p>
+                  {/* 部分预扣的尾巴。运营勾"不允许"时以为后果只有"拦住下一次
+                      请求"，而实际上还有一段是**平台自己吃下**的：套餐余额不够
+                      整额预扣时按剩余额度部分预扣（否则尾数永远花不掉），这一笔
+                      真实花费超出那点尾数的话，请求已经跑完，超出的部分既不进
+                      套餐也不进钱包。不写出来就没有人知道这个开关会让站点少收钱。 */}
+                  <p className='text-muted-foreground text-xs leading-5'>
+                    {t('qy_plan_wallet_overflow_off_writeoff')}
+                  </p>
+                  {/* 生效前提。funding_gate_mode 默认是 off —— 也就是说不写这一句
+                      的话，运营关掉这个开关、保存成功、然后什么都不会发生，而界面
+                      上面三句话都在描述"会发生什么"。一个静默无效的开关比没有更糟。 */}
+                  <p className='text-muted-foreground text-xs leading-5'>
+                    {t('qy_plan_wallet_overflow_off_gatemode')}
+                  </p>
+                </>
               )}
             </div>
           </SideDrawerSection>

@@ -1235,6 +1235,11 @@ func adminHealth(c *gin.Context) {
 			// 不会让任何额度数字看起来不对,只会让那批佣金的**法币**口径偏掉,
 			// 而 available_fiat 是提现金额的唯一依据。
 			"fiat_rate": fiatRateDegrade.stats(),
+			// inviter_group 是本轮把费率口径改到上线分组之后新增的依赖:
+			// 两档比例现在都取自**上线**那一行 users,主库读不到他就两档
+			// 一起跳过分组层。与上面两个分开报,是因为处置不同 ——
+			// 这一个响意味着主库有问题,不是扩展库。
+			"inviter_group": inviterGroupDegrade.stats(),
 		},
 	})
 }

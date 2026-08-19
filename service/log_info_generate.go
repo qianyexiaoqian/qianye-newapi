@@ -72,6 +72,34 @@ func attachQuotaSaturation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, o
 		clamp.Op, clamp.Kind, clamp.Original, clamp.Clamped, relayInfo.UserId, relayInfo.OriginModelName))
 }
 
+// attachSettleFailure 把「这一笔结算失败了」这件事写进消费日志的
+// other.admin_info.settle_failed,并留一条与请求关联的后端告警。
+//
+// 结算失败时代码只能继续往下走(请求已经跑完,退不回上游 token),日志照常按
+// 全额真实花费记账 —— 于是 logs.quota 与实际收到的钱分家,而账面上没有任何
+// 一处指出这件事。这个键就是那唯一的指路牌:按它可以把漏收的笔捞出来补。
+// 与 attachQuotaSaturation 同形,嵌在 admin_info 下天然只对管理员可见。
+func attachSettleFailure(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+	if relayInfo == nil || other == nil {
+		return
+	}
+	if relayInfo.SettleFailure == "" {
+		return
+	}
+	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	if !ok || adminInfo == nil {
+		adminInfo = map[string]interface{}{}
+		other["admin_info"] = adminInfo
+	}
+	adminInfo["settle_failed"] = map[string]interface{}{
+		"error":          relayInfo.SettleFailure,
+		"billing_source": relayInfo.BillingSource,
+	}
+	logger.LogWarn(ctx, fmt.Sprintf(
+		"settlement failed but the consume log still records the full charge: user=%d model=%s source=%s: %s",
+		relayInfo.UserId, relayInfo.OriginModelName, relayInfo.BillingSource, relayInfo.SettleFailure))
+}
+
 // attachGroupRatioFallback nests a "billed at the fail-open ratio 1.0" marker
 // under other.admin_info.group_ratio_missing and emits a request-correlated
 // backend audit line. Shape and权限模型 copied verbatim from
@@ -251,6 +279,15 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other map[string]interf
 		// exception is a settlement that overshot amount_total, where the
 		// uncollected remainder is charged to the wallet instead of being lost.
 		other["wallet_quota_deducted"] = relayInfo.SubscriptionWalletShortfall
+		// ...unless the plan that unlocked this model group forbids wallet
+		// overflow, in which case nobody pays that remainder and the platform
+		// absorbs it. The log's `quota` column still records the full charge, so
+		// without this key the row reads as "billed N, collected less than N"
+		// with no explanation. Invariant for reconciliation:
+		//   quota == subscription_consumed + wallet_quota_deducted + subscription_written_off
+		if relayInfo.SubscriptionWrittenOff != 0 {
+			other["subscription_written_off"] = relayInfo.SubscriptionWrittenOff
+		}
 	}
 }
 

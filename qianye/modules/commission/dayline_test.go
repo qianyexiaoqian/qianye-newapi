@@ -97,11 +97,10 @@ func TestBucketMatureAtLandsOnADayBoundary(t *testing.T) {
 			dayOpen, ok := dayKeyStart(day)
 			require.True(t, ok)
 
-			holding := tc.holdingDays
-			if holding < 0 {
-				holding = 0
-			}
-			mature := bucketMatureAt(day, holding)
+			// 负数**直接喂给被测函数**。在测试里先钳一次的话,这一条子用例
+			// 就只在考 payoutDayOffset,而 bucketMatureAt 会不会算出比消费日
+			// 还早的成熟时刻根本没被问过 —— 那正是它此前的状态。
+			mature := bucketMatureAt(day, tc.holdingDays)
 
 			assert.Equal(t, dayOpen+int64(tc.wantN)*86400, mature,
 				"成熟时刻必须正好落在第 T+N 天的日界上")

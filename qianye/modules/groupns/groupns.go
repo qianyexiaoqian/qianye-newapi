@@ -89,6 +89,8 @@ func (Mod) InstallHooks() {
 	service.QyResolveDefaultModelGroup = ResolveDefaultModelGroup
 	service.QyGroupRatioMissingDenied = GroupRatioMissingDenied
 	service.QyModelGroupFundingAllowed = ModelGroupFundingAllowed
+	service.QyWalletMayCoverSubscriptionShortfall = WalletMayCoverSubscriptionShortfall
+	service.QyNoteSubscriptionWriteOff = NoteShortfallWriteOff
 	service.QyNotePinRejected = NotePinRejected
 	service.QyPinnedModelGroups = PinnedModelGroups
 	service.QyDeclaredUserGroups = DeclaredUserGroups
@@ -288,6 +290,51 @@ func EnforcedFundingDenies() map[string]int64 {
 	defer shadowMu.Unlock()
 	out := make(map[string]int64, len(enforceDenies))
 	for k, v := range enforceDenies {
+		out[k] = v
+	}
+	return out
+}
+
+// writeOffQuota 是 enforce 档**核销掉**的额度总量(按 用户分组→模型分组 分桶)。
+//
+// 它与 enforceDenies 计的是两件不同的事,不能合并:
+//
+//	enforceDenies  请求**没跑**,平台一分钱没花,用户吃 403。
+//	writeOffQuota  请求**跑完了**,上游 token 已经烧掉,套餐扣到上限为止,
+//	               剩下这一段谁也不出 —— 平台自己吃下。
+//
+// 后者是真金白银的免单,所以计的是**额度**而不是次数:运营要看的是"这个月因为
+// 这条规则少收了多少",次数回答不了。
+//
+// 只登记**真的落定了**的核销:闸门说"不得补收"之后还要去领核销名额
+// (model.ClaimSubscriptionWriteOff,每张套餐每个重置周期一份),没领到的那些笔
+// 最后扣的是钱包。早先在闸门里就先记一笔,于是这个数字虚高的部分恰好等于
+// 已经向用户收到的钱,而并发越高虚高越多 —— 那是运营用来决定这条规则要不要
+// 继续开的数字。
+var writeOffQuota = map[string]int64{}
+
+func noteShortfallWriteOff(userId int, userGroup, modelGroup string, shortfall int64) {
+	key := userGroup + "→" + modelGroup
+	// 刻意同步执行、不走 HotAsync:调用方紧接着就要按返回值决定钱的去向,
+	// 而这一段跑在结算路径上、量极小(核销名额每张套餐每个重置周期只有一份,
+	// 由 model.ClaimSubscriptionWriteOff 发放)。
+	shadowMu.Lock()
+	writeOffQuota[key] += shortfall
+	total := writeOffQuota[key]
+	shadowMu.Unlock()
+	common.SysError(fmt.Sprintf(
+		"qianye/groupns: [生效] 用户 %d 的 %s 结算差额 %d 被核销(钱包不补收),该键累计 %d —— "+
+			"该模型分组纯靠套餐解锁、套餐额度已用尽,且套餐设置了不允许钱包续付。"+
+			"请求已经跑完,这一段由平台承担;要改成照收请把该套餐的 allow_wallet_overflow 打开",
+		userId, key, shortfall, total))
+}
+
+// ShortfallWriteOffs 返回已核销额度的快照,供健康面板使用。
+func ShortfallWriteOffs() map[string]int64 {
+	shadowMu.Lock()
+	defer shadowMu.Unlock()
+	out := make(map[string]int64, len(writeOffQuota))
+	for k, v := range writeOffQuota {
 		out[k] = v
 	}
 	return out

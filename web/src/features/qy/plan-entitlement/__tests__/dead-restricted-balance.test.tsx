@@ -489,12 +489,19 @@ describe('套餐表单说清了这笔额度怎么用', () => {
     for (const key of [
       'qy_plan_wallet_overflow_on_hint',
       'qy_plan_wallet_overflow_off_hint',
+      // 「不勾」的后果不止"拦住下一次请求"这一条。少了下面两句，运营看到的
+      // 是一个说得比做得多的开关：
+      //   off_writeoff  部分预扣的尾巴由**平台**吃下，不是收不到也不是拦住
+      //   off_gatemode  funding_gate_mode 默认 off，此时这个开关静默无效
+      'qy_plan_wallet_overflow_off_writeoff',
+      'qy_plan_wallet_overflow_off_gatemode',
     ]) {
       assert.ok(
         source.includes(key),
         `缺 ${key}：这个开关此前只有一个标签、不勾的后果一个字都没写，` +
-          '而不勾的后果是持有该套餐的用户被「订阅额度不足」挡下、' +
-          '连自己的钱包余额也不许用'
+          '而不勾的后果是持有该套餐的用户吃 403 access_denied、' +
+          '连自己的钱包余额也不许用；再加上结算尾巴由平台核销、' +
+          '以及站点闸门没开到 enforce 时整个开关不生效'
       )
     }
   })

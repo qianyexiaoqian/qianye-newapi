@@ -226,17 +226,39 @@ describe('文案', () => {
   })
 
   test('口径与"不追溯"必须写在界面上', () => {
-    // 项目方要的两句话。少了第一句,运营会以为这一档和上面那张费率表同口径;
-    // 少了第二句,他会以为调高比例能给老用户补差价。
+    // 项目方要的三句话。少了第一句，运营不知道该填谁的分组；少了第二句，
+    // 他会以为这一档和上面那张费率表按不同的人算（2026-08-18 之前确实如此，
+    // 费率按下线、比例按上线 —— 那个分叉已经统一掉，而界面必须说出来，
+    // 否则按旧记忆填表的人会以为自己填错了）；少了第三句，他会以为调高比例
+    // 能给老用户补差价。
     const scopeZh = (zh as Record<string, string>).qy_cm_fr_scope_desc
-    assert.ok(scopeZh.includes('上线') || scopeZh.includes('邀请人'))
+    assert.ok(scopeZh.includes('上线') || scopeZh.includes('推广人'))
+    assert.ok(scopeZh.includes('同一个人'))
     assert.ok(scopeZh.includes('冻结'))
     assert.ok(
       (zh as Record<string, string>).qy_cm_fr_forward_only.includes('此后')
     )
     const scopeEn = (en as Record<string, string>).qy_cm_fr_scope_desc
-    assert.ok(scopeEn.includes('inviter'))
+    assert.ok(scopeEn.includes('inviter') || scopeEn.includes('promoter'))
+    assert.ok(scopeEn.includes('same person'))
     assert.ok(scopeEn.includes('frozen'))
+  })
+
+  test('费率表那一侧同样要写明口径是推广人自己的分组', () => {
+    // 这一条是本轮口径变更的界面落点。旧文案写的是"按下线的分组算"，而
+    // 生效的是上线的分组 —— 照着旧文案填表的人会给"客户档位"配费率，
+    // 每一行都保存成功、每一笔佣金都自洽，只是全站发错了钱。
+    const zhTitle = (zh as Record<string, string>).qy_cm_gr_scope_title
+    const zhDesc = (zh as Record<string, string>).qy_cm_gr_scope_desc
+    assert.ok(zhTitle.includes('推广人') || zhTitle.includes('上线'))
+    assert.ok(!zhTitle.includes('按下线'), '标题不能再写成"按下线分组"')
+    assert.ok(zhDesc.includes('冻结'))
+    const enTitle = (en as Record<string, string>).qy_cm_gr_scope_title
+    assert.ok(enTitle.includes('promoter') || enTitle.includes('inviter'))
+    assert.ok(
+      !/Based on the invitee/i.test(enTitle),
+      'title must no longer say it keys on the invitee'
+    )
   })
 
   test('占位符两侧一致', () => {

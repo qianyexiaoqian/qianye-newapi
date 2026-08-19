@@ -54,6 +54,11 @@ type adjustResponse struct {
 		Created            bool   `json:"created"`
 		AccrualNo          string `json:"accrual_no"`
 		ReclaimableCeiling int64  `json:"reclaimable_ceiling"`
+		After              struct {
+			Username     string `json:"username"`
+			UserResolved bool   `json:"user_resolved"`
+			InviteeCount int    `json:"invitee_count"`
+		} `json:"after"`
 	} `json:"data"`
 }
 
@@ -157,6 +162,22 @@ func TestAdminAdjust_IncreaseLandsAsAccrualNotAColumnEdit(t *testing.T) {
 	assert.Contains(t, logs[0].Reason, "漏算的推广佣金")
 	assert.Contains(t, logs[0].BeforeSnap, `"available_quota":0`)
 	assert.Contains(t, logs[0].AfterSnap, `"available_quota":5000`)
+
+	// 审计快照里的身份必须是**这一次真的去主库读到的**。
+	//
+	// 早先这两段快照直接用 newBalanceView(它是从扩展库的余额行造出来的),
+	// 于是 username 恒为空串、user_resolved 恒为 false。而 user_resolved=false
+	// 有明确语义:"主库里读不到这个 id(账号已删,或这一次主库读失败)"。
+	// 结果是每一条改钱审计都永久带着一个假的"账号不可解析"标记 —— 事后仲裁时
+	// 分不清"当时账号真的没了"和"当时代码没去查",而审计详情页是把这段 JSON
+	// 原样展开给管理员看的。
+	for _, snap := range []string{logs[0].BeforeSnap, logs[0].AfterSnap} {
+		assert.Contains(t, snap, `"username":"inviter"`, "快照里必须是真实用户名")
+		assert.Contains(t, snap, `"user_resolved":true`,
+			"账号明明还在,这一位却恒为 false —— 审计里不能留一句永远说谎的话")
+	}
+	assert.Equal(t, "inviter", got.Data.After.Username)
+	assert.True(t, got.Data.After.UserResolved)
 }
 
 // TestAdminAdjust_DecreaseIsBoundedByReclaimableCeiling 守下界。

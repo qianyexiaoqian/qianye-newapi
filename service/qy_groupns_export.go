@@ -163,3 +163,54 @@ var QyGroupRatioMissingDenied = func(modelGroup string) bool { return false }
 var QyModelGroupFundingAllowed = func(userId int, userGroup, modelGroup string) (allowed bool, reason string) {
 	return true, ""
 }
+
+// QyWalletMayCoverSubscriptionShortfall 判定「套餐撞到 amount_total 上限之后,
+// 剩下那一段能不能由**钱包**补收」。
+//
+// ═══════════ 它和 QyModelGroupFundingAllowed 是同一条规则的两个时刻 ═══════════
+//
+// QyModelGroupFundingAllowed 问的是「这次请求能不能由钱包出资」——
+// 问在**服务交付之前**,答"不能"就 403,一分钱不花。
+//
+// 本 hook 问的是「这一段差额能不能由钱包补收」—— 问在**服务已经交付之后**。
+// 它存在的原因是套餐可以只覆盖一部分:余额不够一次预扣额时按剩余额度**部分预扣**
+// (见 model.pickFundingSubscription),真实花费超出那点余额时,差额撞到
+// amount_total 上限,此前**无条件**落到钱包上 —— 也就是说
+// allow_wallet_overflow=false 的套餐照样让钱包付了钱,那个开关在这条路径上
+// 从来没有被问过。
+//
+// 两个时刻必须用同一套判据,否则同一个人在两处得到两种答案:
+//
+//	contains(U, M)                     → 可以补收(此人不靠套餐也能用 M)
+//	M 不是套餐解锁的                   → 可以补收(不归本闸门管)
+//	解锁 M 的套餐还有余额 / 任一 O=真   → 可以补收
+//	以上都不成立                       → **不得**补收
+//
+// 答"不得"时调用方不能再拒绝请求(请求已经跑完了,拒绝换不回上游 token),
+// 只能把这一段**核销**掉:套餐扣到上限为止,钱包一分不动,差额记进日志的
+// subscription_written_off。核销量由 model.ClaimSubscriptionWriteOff 封顶:
+// 每张套餐每个重置周期只发一份核销名额,随 amount_used 一起归零;名额用完之后
+// 的并发差额回落钱包并留 SysError。
+//
+// (这条上界曾经写成「核销之后 amount_used == amount_total,
+// pickFundingSubscription 的 `remain <= 0 → continue` 让这张套餐再也拿不到部分
+// 预扣」—— 那条推理只在串行下成立:多路请求可以各自先拿到预扣、再各自超支,
+// 核销笔数 = 在飞路数,平台白送的额度随并发线性放大。)
+//
+// 默认恒 true ⇒ 钱包照常补收 ⇒ **逐位等于扩展未启用时的行为**。
+// fail 方向同样倒向 true:读不到判据时宁可收钱,也不要凭空免单。
+var QyWalletMayCoverSubscriptionShortfall = func(userId int, userGroup, modelGroup string, shortfall int64) bool {
+	return true
+}
+
+// QyNoteSubscriptionWriteOff 登记一笔**真的核销掉了**的差额。
+//
+// 它必须与判定分开,原因是判定发生在领核销名额**之前**:闸门说"不得补收"只是
+// 表达了一条规则,而这一段最后到底由平台吃下还是回落钱包,取决于紧接着那次
+// model.ClaimSubscriptionWriteOff 抢没抢到名额。此前登记写在闸门里,于是名额
+// 用尽后照样扣了钱包的那些笔也被计成免单 —— 报表上的"这条规则让我少收了多少"
+// 恰好虚高了"实际向用户收到的那部分",而并发越高虚高越多。
+//
+// 只在 split.WrittenOff 真的落定之后调用,参数就是落定的那个数。
+// 默认空实现 ⇒ 扩展未启用时什么都不发生。
+var QyNoteSubscriptionWriteOff = func(userId int, userGroup, modelGroup string, quota int64) {}

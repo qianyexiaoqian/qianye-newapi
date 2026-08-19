@@ -353,9 +353,10 @@ func buildUserCommissionRows(ctx context.Context, c *gin.Context) ([]userCommiss
 		// 扩展库的余额行造出来的,它那两个字段本来就是等着被主库补上的。
 		bv.Username = u.Username
 		bv.UserResolved = true
-		// 下线数覆盖成权威口径。余额行上那个 invitee_count 是计佣路径顺手维护
-		// 的计数器,只在"这个下线产生过佣金"时才动过 —— 拿它当"拉了多少人"
-		// 会比真实值小一大截。
+		// 下线数一律现算。余额行上曾经有一个 invitee_count 列,注释声称"计佣路径
+		// 顺手维护",而它**从来没有任何写入方** —— 全库每一个真正有下线的推广人
+		// 在那一列上都是 0。该列已从模型里摘掉,这里保留覆盖是因为 newBalanceView
+		// 造出来的是零值。
 		bv.InviteeCount = downlines[u.Id]
 
 		row := userCommissionView{

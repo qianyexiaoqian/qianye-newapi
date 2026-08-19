@@ -181,8 +181,8 @@ func adminAdjustCommission(c *gin.Context) {
 		"created":             out.Created,
 		"accrual_no":          out.AccrualNo,
 		"reclaimable_ceiling": out.Ceiling,
-		"before":              newBalanceView(out.Before),
-		"after":               newBalanceView(after),
+		"before":              resolvedBalanceView(c.Request.Context(), out.Before),
+		"after":               resolvedBalanceView(c.Request.Context(), after),
 	})
 }
 
@@ -218,13 +218,19 @@ func applyManualAdjust(ctx context.Context, in manualAdjustInput) (*adjustOutcom
 	out := &adjustOutcome{}
 
 	// 法币折算比例按**被调整的这个人**(他就是这条 manual 行的 inviter)的
-	// 分组解析,与自动计佣同口径。不解析的话 writeAccrualTx 会取全站充值汇率,
-	// 于是同一个人的自动佣金按分组档折算、手工补的那一笔按另一个比例折算,
-	// available_fiat 里从此混着两种价 —— 而手工调整正是事后最需要说得清的一笔。
+	// 分组解析,与自动计佣同口径 —— 走同一个入口 resolveInviterPricing,
+	// 不在这里另写一次"取谁的分组"。不解析的话 writeAccrualTx 会取全站充值
+	// 汇率,于是同一个人的自动佣金按分组档折算、手工补的那一笔按另一个比例
+	// 折算,available_fiat 里从此混着两种价 —— 而手工调整正是事后最需要说得
+	// 清的一笔。
+	//
+	// 这条路只取 Fiat:manual 行不写 rate_units/rate_group(金额由运营直接
+	// 给出,不是 base × rate 算出来的),所以 source 传什么都不影响结果,
+	// 如实传 SourceManual。
 	//
 	// 刻意在开事务之前解析:它要读主库 users.group,而事务里握着
 	// qy_commission_balance 的行锁,跨库读绝不能发生在锁内。
-	fiat := inviterFiatRate(ctx, in.UserId, effectiveCtx(ctx))
+	fiat := resolveInviterPricing(ctx, in.UserId, SourceManual, effectiveCtx(ctx)).Fiat
 
 	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		bal, err := lockBalance(tx, in.UserId)
@@ -372,8 +378,8 @@ func requireExistingUser(ctx context.Context, userId int) error {
 // 把账本改坏"要看的两个数。TraceNo 挂账目单号,审计与账本行互相指得回去。
 func writeAdjustAudit(c *gin.Context, userId int, delta int64, result, reason string,
 	before, after Balance, accrualNo string) {
-	beforeSnap, _ := common.Marshal(newBalanceView(before))
-	afterSnap, _ := common.Marshal(newBalanceView(after))
+	beforeSnap, _ := common.Marshal(resolvedBalanceView(c.Request.Context(), before))
+	afterSnap, _ := common.Marshal(resolvedBalanceView(c.Request.Context(), after))
 	audit.Write(c, audit.Entry{
 		TraceNo:      accrualNo,
 		Category:     qymodel.AuditCategoryCommission,

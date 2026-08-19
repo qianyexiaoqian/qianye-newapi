@@ -21,7 +21,10 @@ var (
 	accrualAccumulated = newCounter()
 	accrualFailed      = newCounter()
 	accrualSkipped     = newCounter() // 风控/口径排除
-	topupScanned       = newCounter()
+	// accrualCapped 是"单笔封顶削掉过增量"的次数。它不为零就意味着账本里
+	// 有 gross < base×rate 的行,运营需要据此判断 max_per_order_quota 是不是配小了。
+	accrualCapped = newCounter()
+	topupScanned  = newCounter()
 	// topupHeld 是"因为有订单计佣失败,本轮游标被钉住"的次数。
 	// 持续增长意味着有一笔充值返佣卡住了,后面的订单也在排队等它。
 	topupHeld       = newCounter()
@@ -39,6 +42,7 @@ func metricsSnapshot() map[string]any {
 		"accrual_accumulated": accrualAccumulated.Load(),
 		"accrual_failed":      accrualFailed.Load(),
 		"accrual_skipped":     accrualSkipped.Load(),
+		"accrual_capped":      accrualCapped.Load(),
 		"topup_scanned":       topupScanned.Load(),
 		"topup_cursor_held":   topupHeld.Load(),
 		"clawback_created":    clawbackCreated.Load(),

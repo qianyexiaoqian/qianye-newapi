@@ -502,6 +502,19 @@ type UserSubscription struct {
 	// Whether wallet fallback is allowed after this subscription's quota is exhausted (snapshot from plan)
 	AllowWalletOverflow bool `json:"allow_wallet_overflow"`
 
+	// WriteOffCount 是本重置周期内平台已经为这张套餐核销过几次结算差额。
+	//
+	// 核销发生在「套餐扣到 amount_total 为止、剩下的差额又不许由钱包补收」时。
+	// service/funding_source.go 曾把「至多核销一次」当成结构性事实写进注释:
+	// 核销之后 amount_used == amount_total,pickFundingSubscription 的
+	// `remain <= 0 → continue` 会让这张套餐再也拿不到预扣。这句话只在**串行**下
+	// 成立 —— N 路并发各自拿到一份预扣、各自超支、各自核销,核销笔数 = 在飞路数,
+	// 总额随并发线性放大(实测 10 路把一张面值 10000 的套餐核销掉 40000)。
+	//
+	// 于是把它从"假设"变成"闩":每个重置周期只发一次核销名额,由
+	// ClaimSubscriptionWriteOff 在行锁里发放,随 amount_used 一起归零。
+	WriteOffCount int `json:"write_off_count" gorm:"not null;default:0"`
+
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
 }
@@ -668,6 +681,70 @@ func getUserGroupByIdTx(tx *gorm.DB, userId int) (string, error) {
 	return group, nil
 }
 
+// userGroupBeforeUpgradeChainTx 回答:这个人在「当前这条升组链」开始之前属于哪个分组。
+//
+// ═══════════════════════ 为什么不能直接用"买之前那一刻的分组" ═══════════════════════
+//
+// prev_user_group 是到期(或被管理员作废)时把人放回去的那个目标。早先它记的是
+// 「创建这条订阅的那一刻用户在哪个组」,于是名下已经有一条会改组的订阅时,它记下的
+// 是**上一条订阅刚刚给他的那个付费组**。两条真实路径因此把付费分组永久送了出去:
+//
+//   - 跨组顶替:default → 买 VIP(prev=default)→ 买 GOLD。GOLD 那一行记的 prev 是
+//     VIP —— 而 VIP 那条订阅在同一个事务里已经被作废、剩余时间不折算不退款。
+//     GOLD 到期后人被放回 VIP,此刻他名下一条会改组的订阅都没有了,再没有任何
+//     任务会碰他的分组。先买贵的再买便宜的,等便宜的到期就白拿贵的那一档。
+//
+//   - 续费:default → 买"升组+送额度"的 VIP(prev=default)→ 同一个套餐再买一次。
+//     第二次购买时用户已经在 VIP 里,老逻辑于是把 prev 留空;而到期扫描取的是
+//     end_time 最大的那条 expired 行,正好是这条空 prev 的行,判到 prev=="" 就
+//     直接放弃回退 —— 第一行上明明记着 default 却从不被读。所有订阅到期之后
+//     用户永久留在 VIP。续费是最常见的动作,而 downgrade_group 留空是管理端的默认档。
+//
+// ═══════════════════════ 判据 ═══════════════════════
+//
+// 只看**还站着的**那条链(active 与 superseded):它们要么正在给用户撑着某个组,
+// 要么是刚刚在这个事务里被顶掉的前一档。expired 的行刻意不看 —— 那条链已经
+// 走完、人已经被放回去了,当前分组本身就是新的起点(比如上一条订阅带着显式的
+// downgrade_group 把人放到了 silver,他现在就是 silver,不该再回 default)。
+//
+// 取 id 最小的那一条(链根)。链上每一环从此都携带同一个根,所以到期时读哪一环
+// 都得到同一个答案。
+//
+// 返回 fallback(调用方传当前分组)表示"没有正在站着的链",此时买之前那一刻
+// 就是链的起点 —— 与改动前完全一致。
+func userGroupBeforeUpgradeChainTx(tx *gorm.DB, userId int, fallback string) string {
+	var rows []UserSubscription
+	err := tx.Where("user_id = ? AND upgrade_group <> '' AND prev_user_group <> '' AND status IN (?, ?)",
+		userId, "active", SubscriptionStatusSuperseded).
+		Order("id asc").Limit(1).Find(&rows).Error
+	if err != nil || len(rows) == 0 {
+		return fallback
+	}
+	return strings.TrimSpace(rows[0].PrevUserGroup)
+}
+
+// legacyPrevUserGroupTx 是给**升级之前**就落库的那些行准备的兜底。
+//
+// userGroupBeforeUpgradeChainTx 只能让今后新建的行携带正确的链根;库里已经存在的
+// 行(顶替链里记着付费组的、续费那条 prev 为空的)不会被回填 —— 那是一张
+// 快照表,事后改写它等于篡改"当时记了什么"这个事实。所以回退这一侧必须能
+// 自己把链走回去:选中的那一行 prev 为空时,回落到该用户所有已经不再活跃的
+// 会改组订阅里 id 最小、prev 非空的那一条。
+//
+// 只在没有显式 downgrade_group、且用户当前确实还坐在那条订阅给的组里时才会走到
+// 这里(两个判据都在调用方),所以它至多把人放回一个更早的免费档,不会把人
+// 提到任何他没买过的组。
+func legacyPrevUserGroupTx(tx *gorm.DB, userId int) string {
+	var rows []UserSubscription
+	err := tx.Where("user_id = ? AND upgrade_group <> '' AND prev_user_group <> '' AND status <> ?",
+		userId, "active").
+		Order("id asc").Limit(1).Find(&rows).Error
+	if err != nil || len(rows) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(rows[0].PrevUserGroup)
+}
+
 func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now int64) (string, error) {
 	if tx == nil || sub == nil {
 		return "", errors.New("invalid downgrade args")
@@ -701,6 +778,11 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 			return "", nil
 		}
 		target = strings.TrimSpace(sub.PrevUserGroup)
+		if target == "" {
+			// 升级之前落的行:prev 为空(或记着已经被顶掉的付费组)。走回链根,
+			// 否则这个人就被永久留在一个付费分组里,而且没有任何任务会再碰他。
+			target = legacyPrevUserGroupTx(tx, sub.UserId)
+		}
 	}
 	if target == "" || target == currentGroup {
 		return "", nil
@@ -1000,12 +1082,20 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		if err != nil {
 			return nil, err
 		}
+		// 回退目标必须是「这条升组链开始之前」那个分组,不是「买这一次之前」那个。
+		// 两者只在用户名下已经有一条会改组的订阅时才不同,而那正好是两种最常见的
+		// 动作:跨组顶替(先买 VIP 再买 GOLD)与续费(同一个升组套餐买第二次)。
+		prevGroup = userGroupBeforeUpgradeChainTx(tx, userId, currentGroup)
 		if currentGroup != upgradeGroup {
-			prevGroup = currentGroup
 			if err := tx.Model(&User{}).Where("id = ?", userId).
 				Update("group", upgradeGroup).Error; err != nil {
 				return nil, err
 			}
+		}
+		if prevGroup == upgradeGroup {
+			// 链根就是目标组本身(理论上到不了,靠上面的继承已经排除)。
+			// 留空比留一个"回退到你已经在的组"更诚实。
+			prevGroup = ""
 		}
 	}
 	allowWalletOverflow := true
@@ -1038,6 +1128,11 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 }
 
 func refreshSubscriptionUserGroupCache(userId int, operation string) {
+	// 返佣模块把这个人的账号分组缓存在自己的进程内表里,而那个分组决定他作为
+	// 推广人时的返佣费率与法币折算比例。它必须在 RefreshUserGroupCache **之前**
+	// 通知:后者在没开 Redis 的部署上第一行就 return,把通知写在它后面等于
+	// 单机部署永远收不到这个事件。
+	QyOnUserGroupChanged(userId)
 	if err := RefreshUserGroupCache(userId); err != nil {
 		common.SysError(fmt.Sprintf("failed to refresh user group cache after %s for user %d: %v", operation, userId, err))
 	}
@@ -1492,6 +1587,7 @@ func resetUserSubscriptionTx(tx *gorm.DB, sub *UserSubscription, plan *Subscript
 		return errors.New("invalid reset args")
 	}
 	sub.AmountUsed = 0
+	sub.WriteOffCount = 0
 	if advanceResetTime {
 		nextReset := calcNextResetTime(time.Unix(now, 0), plan, sub.EndTime)
 		sub.NextResetTime = nextReset
@@ -1683,11 +1779,20 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 			target := strings.TrimSpace(lastExpired.DowngradeGroup)
 			if target == "" {
 				upgradeGroup := strings.TrimSpace(lastExpired.UpgradeGroup)
-				prevGroup := strings.TrimSpace(lastExpired.PrevUserGroup)
-				if upgradeGroup == "" || prevGroup == "" {
+				if upgradeGroup == "" {
 					return nil
 				}
 				if currentGroup != upgradeGroup {
+					return nil
+				}
+				prevGroup := strings.TrimSpace(lastExpired.PrevUserGroup)
+				if prevGroup == "" {
+					// 同一个升组套餐买第二次时,老逻辑把 prev 留空(那一刻用户已经在
+					// 目标组里),而这里取的正是 end_time 最大的那一条 —— 于是第一行
+					// 上记着的 default 从不被读,人永久留在升级分组。
+					prevGroup = legacyPrevUserGroupTx(tx, userId)
+				}
+				if prevGroup == "" {
 					return nil
 				}
 				target = prevGroup
@@ -1767,6 +1872,7 @@ func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, pl
 		return nil
 	}
 	sub.AmountUsed = 0
+	sub.WriteOffCount = 0
 	sub.LastResetTime = base.Unix()
 	sub.NextResetTime = next
 	return tx.Save(sub).Error
@@ -1972,7 +2078,9 @@ func RefundSubscriptionPreConsume(requestId string) error {
 			record.Status = "refunded"
 			return tx.Save(&record).Error
 		}
-		if err := PostConsumeUserSubscriptionDelta(record.UserSubscriptionId, -record.PreConsumed); err != nil {
+		// 必须走 tx 版本:用全局 DB 另开事务会让退款先独立提交,
+		// 外层回滚时钱已经退了而幂等记录还是 consumed,重试即重复退款。
+		if err := postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, -record.PreConsumed); err != nil {
 			return err
 		}
 		record.Status = "refunded"
@@ -2076,6 +2184,48 @@ func GetSubscriptionPlanInfoByUserSubscriptionId(userSubscriptionId int) (*Subsc
 // So settlement clamps to the subscription's hard cap and returns the applied
 // amount; the caller is responsible for collecting the shortfall from the
 // wallet. amount_total stays a real ceiling and no money goes missing.
+// ClaimSubscriptionWriteOff 领取本重置周期内这张套餐的核销名额。
+//
+// 返回 true 表示这一次差额可以由平台核销;返回 false 表示这个周期的名额已经
+// 被别的并发请求用掉了,调用方必须给这笔钱另找去处(见
+// service/funding_source.go)。名额随 amount_used 一起在重置时归零。
+//
+// 用行锁而不是条件 UPDATE:SQLite 上 lockForUpdate 是空操作,所以额外用
+// `WHERE id = ? AND write_off_count = ?` 的 CAS 兜一层,三种数据库上都只会有
+// 一个调用方拿到 RowsAffected == 1。
+func ClaimSubscriptionWriteOff(userSubscriptionId int) (bool, error) {
+	if userSubscriptionId <= 0 {
+		return false, errors.New("invalid userSubscriptionId")
+	}
+	claimed := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var sub UserSubscription
+		if err := lockForUpdate(tx).
+			Where("id = ?", userSubscriptionId).
+			First(&sub).Error; err != nil {
+			return err
+		}
+		if sub.WriteOffCount > 0 {
+			return nil
+		}
+		res := tx.Model(&UserSubscription{}).
+			Where("id = ? AND write_off_count = ?", userSubscriptionId, sub.WriteOffCount).
+			Updates(map[string]any{
+				"write_off_count": sub.WriteOffCount + 1,
+				"updated_at":      common.GetTimestamp(),
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		claimed = res.RowsAffected == 1
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return claimed, nil
+}
+
 func SettleUserSubscriptionDelta(userSubscriptionId int, delta int64) (applied int64, err error) {
 	if userSubscriptionId <= 0 {
 		return 0, errors.New("invalid userSubscriptionId")
@@ -2119,20 +2269,41 @@ func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error
 		return nil
 	}
 	return DB.Transaction(func(tx *gorm.DB) error {
-		var sub UserSubscription
-		if err := lockForUpdate(tx).
-			Where("id = ?", userSubscriptionId).
-			First(&sub).Error; err != nil {
-			return err
-		}
-		newUsed := sub.AmountUsed + delta
-		if newUsed < 0 {
-			newUsed = 0
-		}
-		if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
-			return fmt.Errorf("subscription used exceeds total, used=%d total=%d", newUsed, sub.AmountTotal)
-		}
-		sub.AmountUsed = newUsed
-		return tx.Save(&sub).Error
+		return postConsumeUserSubscriptionDeltaTx(tx, userSubscriptionId, delta)
 	})
+}
+
+// postConsumeUserSubscriptionDeltaTx 在**调用方的事务**里改订阅已用量。
+//
+// 存在的理由是 RefundSubscriptionPreConsume:它此前在自己的事务里直接调
+// PostConsumeUserSubscriptionDelta,而后者用的是全局 DB 句柄、另开一个事务。
+// 退款因此先独立提交,外层再把幂等记录标成 refunded —— 外层那一步一旦失败
+// (连接被 kill、主备切换、代理超时,以及 SQLite 上**必现**的 SQLITE_BUSY:
+// 内层提交让外层的读快照失效),外层回滚回滚不掉内层已提交的额度返还,
+// 而 record.Status 仍是 consumed,service/funding_source.go 的 refundWithRetry
+// 会把整件事重试 3 次,每次都再退一遍(实测一笔 3000 的预扣被退成 9000)。
+// 内外同事务之后,退款与幂等标记要么一起成立要么一起不成立;
+// 顺带也消掉了「外层持记录锁、内层用另一条连接去拿订阅行锁」的锁序倒挂。
+func postConsumeUserSubscriptionDeltaTx(tx *gorm.DB, userSubscriptionId int, delta int64) error {
+	if userSubscriptionId <= 0 {
+		return errors.New("invalid userSubscriptionId")
+	}
+	if delta == 0 {
+		return nil
+	}
+	var sub UserSubscription
+	if err := lockForUpdate(tx).
+		Where("id = ?", userSubscriptionId).
+		First(&sub).Error; err != nil {
+		return err
+	}
+	newUsed := sub.AmountUsed + delta
+	if newUsed < 0 {
+		newUsed = 0
+	}
+	if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
+		return fmt.Errorf("subscription used exceeds total, used=%d total=%d", newUsed, sub.AmountTotal)
+	}
+	sub.AmountUsed = newUsed
+	return tx.Save(&sub).Error
 }

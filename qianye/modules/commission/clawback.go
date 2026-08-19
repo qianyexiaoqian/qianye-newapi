@@ -61,21 +61,20 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 			return nil
 		}
 		s := effectiveCtx(ctx)
-		d := resolveRate(ctx, e.InviteeGroup, SourceConsume, s)
+		// 费率与法币比例都按**当刻的上线分组**解析,走与计佣写入侧同一个入口:
+		// 这一路本来就是"没有原单可复制,只能按当前口径",那就该是当前的
+		// **完整**口径。分开取(或让 writeAccrual 去拿全站充值汇率)会让配了
+		// 分组档的上线在这条路上按另一套口径冲正,而他的原单是按分组档发出去的
+		// —— 差额永久留在 available_fiat 上。
+		//
 		// RefAccrualId 留 0:确实没有可指向的原单,随便挂一行会让管理端
 		// "这笔被冲了多少"的溯源指向一笔无关的账。
-		//
-		// 法币折算比例同样按**当刻的上线分组**解析,而不是让 writeAccrual
-		// 去取全站充值汇率:这一路本来就是"没有原单可复制,只能按当前口径",
-		// 那就该是当前的**完整**口径。取全站汇率会让配了分组档的上线在这条
-		// 路上按另一个比例冲正,而他的原单是按分组档发出去的 —— 差额永久
-		// 留在 available_fiat 上。
-		fiat := inviterFiatRate(ctx, e.InviterId, s)
+		p := resolveInviterPricing(ctx, e.InviterId, SourceConsume, s)
 		origin = &Accrual{
 			InviterId: e.InviterId,
-			RateUnits: d.Units,
-			RateGroup: d.Group,
-			UsdRate:   fiat.Rate,
+			RateUnits: p.Rate.Units,
+			RateGroup: p.Rate.Group,
+			UsdRate:   p.Fiat.Rate,
 		}
 	}
 
@@ -90,7 +89,7 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 		return nil
 	}
 
-	amount := calcGross(refundQuota, origin.RateUnits)
+	amount := clawbackAmountFor(refundQuota, origin)
 	if amount.GreaterThan(remaining) {
 		amount = remaining
 	}
@@ -128,6 +127,33 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 		clawbackCreated.Add(1)
 	}
 	return nil
+}
+
+// clawbackAmountFor 算一笔退款应当冲回多少佣金。
+//
+// 一般情况就是"按原单冻结的费率重算"。但原单可能被单笔封顶(max_per_order_quota)
+// 削过:那一行 gross_amount < base_quota × rate_bps / 10000,按费率重算会冲掉
+// 比当初实际发出去的更多 —— 上线为一笔只挣到 100 的消费被冲掉 500,方向是
+// 平台凭空多收回,而且冲正行自己也是一条 base×rate ≠ gross 的不自洽行。
+// netAccrued 只在冲到这一对(上线,下线)的净额见底时才截住,截不住"多冲了
+// 但还没冲光"的中间那一大段。
+//
+// 所以按原单**实际计到的比例**等比冲正:
+//
+//	amount = 按费率重算 × gross / (gross + capped)
+//
+// 没被削过时 capped 为 0,这个式子逐位退化成 calcGross(refundQuota, rate),
+// 与改动前完全一致。
+func clawbackAmountFor(refundQuota int64, origin *Accrual) decimal.Decimal {
+	full := calcGross(refundQuota, origin.RateUnits)
+	if !origin.CappedAmount.IsPositive() {
+		return full
+	}
+	theoretical := origin.GrossAmount.Add(origin.CappedAmount)
+	if !theoretical.IsPositive() {
+		return full
+	}
+	return full.Mul(origin.GrossAmount).Div(theoretical)
 }
 
 // consumeOriginForRefund 找出一笔消费退款应当按哪一行冻结的费率冲正。

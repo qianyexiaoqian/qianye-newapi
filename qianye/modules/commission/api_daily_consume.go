@@ -110,8 +110,12 @@ const (
 	// 而运营只会不停地刷新页面,把 9 分钟乘以刷新次数。
 	dailyConsumeQueryTimeout = 20 * time.Second
 
-	// logsDailyConsumeIndex 是本报表依赖的覆盖索引名。
+	// logsDailyConsumeIndex 是主表(按人聚合)依赖的覆盖索引名。
 	logsDailyConsumeIndex = "idx_qy_logs_daily_consume"
+
+	// logsUserDailyIndex 是按天下钻(按人等值 + 按天聚合)依赖的覆盖索引名。
+	// 两条为什么不能合并、以及没有它时下钻有多慢,见 logs_index.go 的文件头。
+	logsUserDailyIndex = "idx_qy_logs_user_daily"
 )
 
 var (
@@ -245,6 +249,106 @@ func aggregateCommissionByInvitee(r dailyRange, inviterId int) (map[int]commissi
 	out := make(map[int]commissionAgg, len(rows))
 	for _, row := range rows {
 		out[row.InviteeId] = row
+	}
+	return out, nil
+}
+
+// dayBucketSQL 是"把 created_at 归到哪一天"的 SQL 表达式,返回该天日界的
+// **偏移后**秒数(减掉 dayOffsetSeconds 才是真实 unix 秒)。
+//
+// # 为什么是纯整数取模,不是 DATE()/FROM_UNIXTIME()/DATE_TRUNC()
+//
+// 三种数据库的日期函数没有一个是通用的:MySQL 的 FROM_UNIXTIME 受会话时区
+// 影响、PostgreSQL 只有 to_timestamp + date_trunc、SQLite 是 strftime,
+// 而 ClickHouse 又是另一套。更要命的是**时区**:任何一个走"日期类型"的写法
+// 都会把日界交给数据库会话的 TZ 决定,而返佣的日界是 dayline.go 里那一个
+// 固定偏移 —— 两者一旦不同,下钻出来的每日金额与主表的区间合计对不上,
+// 而且是差一小时那种最难发现的对不上。
+//
+// `+`、`-`、`%` 在四种方言下语义完全一致(注意不能用 `/`:MySQL 的 `/` 返回
+// DECIMAL 而不是整除)。off 走参数而不是拼进字符串。
+//
+// 实测这个表达式不破坏覆盖索引:EXPLAIN 的 Extra 仍是 `Using index`,
+// 31 天下钻 163 ms(见 logs_index.go 文件头那张表)。
+func dayBucketSQL(column string) (string, int64) {
+	off := dayOffsetSeconds()
+	shifted := "(" + column + " + ?)"
+	return shifted + " - (" + shifted + " % " + strconv.FormatInt(secondsPerDay, 10) + ")", off
+}
+
+// userDayAgg 是某个用户某一天的 logs 侧聚合。
+type userDayAgg struct {
+	DayStart     int64 `gorm:"column:day_start"`
+	RequestCount int64 `gorm:"column:request_count"`
+	ConsumeQuota int64 `gorm:"column:consume_quota"`
+}
+
+// aggregateUserDailyConsume 按天汇总**一个**用户在区间内的消费。
+//
+// 为什么下钻是单独一条接口、而不是给主表加一个天维度:主表一行 = 一个人,
+// 行数不随天数膨胀,maxDailyConsumeRows 那个上界才守得住"20000 个人"这个
+// 语义;把天加进主表的 GROUP BY,同一份数据在 31 天区间下会变成人数 × 天数,
+// 上界的含义从"多少人"变成"多少格",导出的 CSV 也跟着换了一张表。
+//
+// 单人下钻的代价则是**有界的**:输出至多 maxDailyConsumeDays 行,而扫描量
+// 由 (user_id, type, created_at, quota) 这条索引收窄到这一个人在这段时间里的
+// 行。没有那条索引时优化器会改走 idx_user_id_id 并逐行回表,实测 6.5 秒
+// (见 logs_index.go 的文件头)—— 所以这条接口与那条索引是一起交付的。
+func aggregateUserDailyConsume(ctx context.Context, r dailyRange, userId int) ([]userDayAgg, error) {
+	if model.LOG_DB == nil {
+		return nil, errors.New("日志库未初始化")
+	}
+	expr, off := dayBucketSQL("created_at")
+	var rows []userDayAgg
+	err := model.LOG_DB.WithContext(ctx).Model(&model.Log{}).
+		Select(expr+" AS day_start, COUNT(*) AS request_count, COALESCE(SUM(quota),0) AS consume_quota",
+			off, off).
+		Where("user_id = ?", userId).
+		Where("type = ?", model.LogTypeConsume).
+		Where("created_at >= ? AND created_at < ?", r.StartTs, r.EndTs).
+		Group("day_start").
+		Limit(maxDailyConsumeDays + 1).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// aggregateCommissionByDay 按天汇总**一个**下线在区间内产生的计佣。
+//
+// 区间用 bucket_date 而不是 created_at,理由与 aggregateCommissionByInvitee
+// 完全一致:日聚合行会被同一天里后续的消费反复累加,created_at 永远停在
+// 当天第一笔。
+//
+// 同一天可能有多行(费率、汇率、成熟期、上线任一变化都会落新行),所以这里
+// 必须 SUM 而不是取一行 —— 主表那条的口径也是 SUM,两处对得上才能让下钻的
+// 每日合计等于主表那一格。
+func aggregateCommissionByDay(inviteeId int, r dailyRange) (map[string]commissionAgg, error) {
+	type dayRow struct {
+		BucketDate string          `gorm:"column:bucket_date"`
+		BaseQuota  int64           `gorm:"column:base_quota"`
+		Gross      decimal.Decimal `gorm:"column:gross"`
+	}
+	var rows []dayRow
+	err := db.Get().Model(&Accrual{}).
+		Select("bucket_date, COALESCE(SUM(base_quota),0) AS base_quota, COALESCE(SUM(gross_amount),0) AS gross").
+		Where("source_type = ?", SourceConsume).
+		Where("invitee_id = ?", inviteeId).
+		Where("bucket_date >= ? AND bucket_date <= ?", r.StartDay, r.EndDay).
+		Where("status <> ?", StatusVoided).
+		Group("bucket_date").Find(&rows).Error
+	if err != nil {
+		db.MarkFailure(err)
+		return nil, err
+	}
+	out := make(map[string]commissionAgg, len(rows))
+	for _, row := range rows {
+		out[row.BucketDate] = commissionAgg{
+			InviteeId: inviteeId,
+			BaseQuota: row.BaseQuota,
+			Gross:     row.Gross,
+		}
 	}
 	return out, nil
 }
@@ -582,6 +686,108 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// adminUserDailyConsume 是主表某一行的按天下钻:一个人 × 区间内的每一天。
+//
+// # 为什么是下钻,不是给主表加一个天维度
+//
+// 三条路都试过(实测数字见 logs_index.go 的文件头):
+//
+//	主表直接按天分组   数据没坏,但一行的语义从"一个人"变成"一个人的一天",
+//	                   maxDailyConsumeRows 的上界跟着换了含义,导出的 CSV 也换了
+//	                   一张表;而运营打开这一页的第一个问题始终是"谁在花钱"。
+//	默认区间锁成一天   等于把 7 天 / 31 天这两个已经跑得动的档位一起砍掉,
+//	                   为一个显示问题付了功能的钱。
+//	点开一行再拉这个人 主表语义不动,扫描量被 (user_id, …) 那条索引收窄到一个人,
+//	                   输出行数被区间上界锁死在 31 行以内。← 选它
+//
+// # 空的那些天要不要给
+//
+// 给。区间内每一天都出一行,没消费的那天全是 0。缺行的表会让运营把"这天没花钱"
+// 与"这天的数据没查出来"看成同一件事,而这恰恰是他打开下钻要区分的东西。
+// 行数上界因此就是 maxDailyConsumeDays,与查询本身返回多少行无关。
+func adminUserDailyConsume(c *gin.Context) {
+	// 走 httpq.Int 而不是 strconv.Atoi:上界必须是解析的一部分。
+	// 缺失、非纯数字、负号、超界一律回落 0,在这里就是"没给 user_id",
+	// 而 user_id 必填正是这条接口不退化成全站按天聚合的前提。
+	userId := httpq.Int(c, "user_id", 0)
+	if userId <= 0 {
+		badRequest(c, "qy_daily_user_required", "必须指定 user_id")
+		return
+	}
+	r, err := parseDailyRange(c, common.GetTimestamp())
+	if err != nil {
+		respondDailyConsumeError(c, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), dailyConsumeQueryTimeout)
+	defer cancel()
+
+	aggs, err := aggregateUserDailyConsume(ctx, r, userId)
+	if err != nil {
+		respondDailyConsumeError(c, err)
+		return
+	}
+	comms, err := aggregateCommissionByDay(userId, r)
+	if err != nil {
+		respondDailyConsumeError(c, err)
+		return
+	}
+
+	// 归一到日键之后再对齐:logs 侧给的是偏移后的日界秒数,计佣表侧给的是
+	// yyyymmdd。两者都由 dayline.go 定义,换算走同一处,不在这里自己算。
+	off := dayOffsetSeconds()
+	byDay := make(map[string]userDayAgg, len(aggs))
+	for _, a := range aggs {
+		byDay[dayKey(a.DayStart-off)] = a
+	}
+
+	items := make([]gin.H, 0, r.Days)
+	var sumReq, sumConsume, sumBase int64
+	sumGross := decimal.Zero
+	for i := 0; i < r.Days; i++ {
+		ts := r.StartTs + int64(i)*secondsPerDay
+		day := dayKey(ts)
+		a := byDay[day]
+		cm := comms[day]
+		uncounted := maxInt64(a.ConsumeQuota-cm.BaseQuota, 0)
+		sumReq += a.RequestCount
+		sumConsume += a.ConsumeQuota
+		sumBase += cm.BaseQuota
+		sumGross = sumGross.Add(cm.Gross)
+		items = append(items, gin.H{
+			"date":                  day,
+			"day_start":             ts,
+			"request_count":         a.RequestCount,
+			"consume_quota":         a.ConsumeQuota,
+			"commission_base_quota": cm.BaseQuota,
+			"uncounted_quota":       uncounted,
+			"commission_gross":      cm.Gross.String(),
+		})
+	}
+
+	respond(c, gin.H{
+		"user_id": userId,
+		"items":   items,
+		"range": gin.H{
+			"start_date": r.StartDay,
+			"end_date":   r.EndDay,
+			"days":       r.Days,
+			"max_days":   maxDailyConsumeDays,
+		},
+		"summary": gin.H{
+			"request_count":         sumReq,
+			"consume_quota":         sumConsume,
+			"commission_base_quota": sumBase,
+			"uncounted_quota":       maxInt64(sumConsume-sumBase, 0),
+			"commission_gross":      sumGross.String(),
+		},
+		// 这一条报的是**下钻自己那条**索引,不是主表那条:两条各建各的,
+		// 主表快不代表下钻快,反过来也一样。
+		"index_ready": logsIndexReady(logsUserDailyIndex),
+	})
 }
 
 // adminExportDailyConsume 导出 CSV。

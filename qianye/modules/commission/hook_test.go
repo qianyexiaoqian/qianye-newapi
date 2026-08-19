@@ -74,11 +74,12 @@ func TestIsSubscriptionConsume(t *testing.T) {
 }
 
 // TestAllSourcesUseAccountGroupForRate 锁定四条来源共用同一个分组口径:
-// 下线的【账号分组】(users.group,即 inviterEntry.InviteeGroup)。
+// **上线**的【账号分组】(users.group,即 inviterEntry.Group)。
 //
-// 这是选定的口径 —— 佣金档位跟人走,不跟单次请求走。四条来源必须一致:
-// 只要有一条改成按"本次请求的计价分组"解析,同一个下线同一天就会同时出现
-// 两个费率档,日聚合桶按 (下线, 日期, 费率) 建键,于是裂成多行,
+// 这是选定的口径 —— 费率是推广人自己的等级属性,跟人走、不跟单次请求走、
+// 更不跟被推广的人走。四条来源必须一致:只要有一条改回按下线分组(或按
+// "本次请求的计价分组")解析,同一个上线同一天就会同时出现两个费率档,
+// 日聚合桶按 (下线, 日期, 分组, 费率) 建键,于是裂成多行,
 // 对账时"这个下线这天返了多少"再也不是一个数。
 //
 // 消费与任务补扣走 accrueConsume,充值与兑换码走 accrueOneShot ——
@@ -90,16 +91,11 @@ func TestAllSourcesUseAccountGroupForRate(t *testing.T) {
 	// 这样"没按分组走"会直接体现成金额不同,而不是碰巧相等。
 	seedGroupRate(t, gdb, "vip", "12", "8", true)
 
-	newInvitee := func(id int) {
-		getInviterCache().Set(id, inviterEntry{
-			InviterId:      42,
-			InviteeName:    "u" + itoa(id),
-			InviteeCreated: common.GetTimestamp() - 30*86400,
-			InviteeGroup:   "vip",
-		})
-	}
+	// 上线 42 在 vip;三个下线一律在 default(没配分组档)。
+	// 下线的分组与结果无关正是本条要钉的事实之一。
+	cacheUser(42, 0, "vip")
 	for _, id := range []int{910, 911, 912} {
-		newInvitee(id)
+		cacheUser(id, 42, "default")
 	}
 
 	ctx := context.Background()

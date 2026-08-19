@@ -50,6 +50,9 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// GET 贵一个量级,所以跟用户端列表一样挂搜索限流。
 	g.GET("/commission/daily-consume", middleware.SearchRateLimit(), adminListDailyConsume)
 	g.GET("/commission/daily-consume/export", middleware.SearchRateLimit(), adminExportDailyConsume)
+	// 主表某一行的按天下钻。单人 + 至多 31 天,由 idx_qy_logs_user_daily 收窄,
+	// 但仍然扫主库,所以与上面两条同一档限流。
+	g.GET("/commission/daily-consume/by-day", middleware.SearchRateLimit(), adminUserDailyConsume)
 
 	// 写接口一律挂关键操作限流:它们要么直接改钱,要么改决定钱的参数。
 	crit := middleware.CriticalRateLimit()

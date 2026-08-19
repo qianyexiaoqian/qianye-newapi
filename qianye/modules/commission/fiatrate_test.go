@@ -52,13 +52,14 @@ func seedFiatDefault(t *testing.T, gdb *gorm.DB, raw string) {
 // cacheUser 把一个账号的分组塞进邀请关系缓存。
 //
 // inviterId 为 0 表示"这个人自己没有上线",上线正是这种样子 ——
-// inviterFiatRate 读的是同一份缓存里那条记录的 InviteeGroup(= 这个账号的分组)。
+// resolveInviterPricing 读的是同一份缓存里那条记录的 Group(= 这个账号的分组),
+// 费率与法币折算比例两档都从它取值。
 func cacheUser(userId, inviterId int, group string) {
 	getInviterCache().Set(userId, inviterEntry{
 		InviterId:      inviterId,
 		InviteeName:    "u" + itoa(userId),
 		InviteeCreated: common.GetTimestamp() - 30*86400,
-		InviteeGroup:   group,
+		Group:          group,
 	})
 }
 
@@ -164,11 +165,15 @@ func TestFiatRateNoUsableLayer(t *testing.T) {
 
 // TestFiatRateUsesInviterGroupNotInviteeGroup 是本档最重要的一条:口径。
 //
-// 上线 42 在 promoter 组(法币比例 9),下线 900 在 vip 组(法币比例 3)。
-// 两个比例故意不同,而且两个分组各自还配了**费率**规则 —— 于是:
+// 上线 42 在 promoter 组,下线 900 在 vip 组。两个分组各自配了**互不相同**的
+// 费率与法币比例,于是"取错了人"会体现成两个具体的错数字,而不是碰巧相等:
 //
-//	费率     必须取下线的 vip(8%)
-//	法币比例 必须取上线的 promoter(9)
+//	费率     必须取上线 promoter 的 1%(取成下线是 8%)
+//	法币比例 必须取上线 promoter 的 9 (取成下线是 3、取成全站汇率是 6)
+//
+// 2026-08-18 之前这里断言的是"费率取下线、比例取上线" —— 那个分叉不是设计,
+// 是两轮开发各自选了一个口径。现在两档同源,见 grouprate.go 的口径说明与
+// pricing.go 的文件头。
 //
 // 把 hook.go 里的 e.InviterId 改成 ev.InviteeId,这条测试立刻变红;
 // 而只在一个分组上配比例的测试,改成哪一侧都照样全绿。
@@ -190,10 +195,13 @@ func TestFiatRateUsesInviterGroupNotInviteeGroup(t *testing.T) {
 		consumeEvent{InviteeId: 900, Quota: 10000, At: at}))
 
 	row := accrualOfInvitee(t, gdb, 900)
-	assert.Equal(t, 800, row.RateUnits, "费率仍按下线 vip 的 8%")
-	assert.Equal(t, "vip", row.RateGroup)
+	assert.Equal(t, 100, row.RateUnits, "费率必须按上线 promoter 的 1%;取成下线的会是 8%")
+	assert.Equal(t, "promoter", row.RateGroup)
 	assert.Equal(t, "9", row.UsdRate.String(),
 		"法币比例必须按上线 promoter 的 9;取成下线的会是 3,取成全站汇率会是 6")
+	// 同一行上的两档必须出自同一个分组 —— 这正是本轮统一口径的那条不变量。
+	assert.Equal(t, row.RateGroup, "promoter",
+		"rate_group 与 usd_rate 必须能被同一个分组解释")
 }
 
 // TestAccrueOneShotFreezesInviterFiatRate 覆盖充值/兑换码那一路。
@@ -265,19 +273,19 @@ func TestFiatRateFallsBackThroughSettings(t *testing.T) {
 
 	// 第 3 层:什么都没配,走全站充值汇率 6。这是每一个存量站点升级上来的样子。
 	require.Nil(t, effective().FiatRateDefault, "前提:兜底档从未配过")
-	assert.Equal(t, "6", inviterFiatRate(ctx, 42, effective()).Rate.String())
-	assert.Equal(t, fiatLayerGlobal, inviterFiatRate(ctx, 42, effective()).Layer)
+	assert.Equal(t, "6", resolveInviterPricing(ctx, 42, SourceConsume, effective()).Fiat.Rate.String())
+	assert.Equal(t, fiatLayerGlobal, resolveInviterPricing(ctx, 42, SourceConsume, effective()).Fiat.Layer)
 
 	// 第 2 层:配上兜底档。
 	seedFiatDefault(t, gdb, "7.3")
 	require.NotNil(t, effective().FiatRateDefault, "兜底档没能从 qy_settings 读出来")
-	d := inviterFiatRate(ctx, 42, effective())
+	d := resolveInviterPricing(ctx, 42, SourceConsume, effective()).Fiat
 	assert.Equal(t, "7.3", d.Rate.String())
 	assert.Equal(t, fiatLayerDefault, d.Layer)
 
 	// 第 1 层:再配上分组档。
 	seedFiatRate(t, gdb, "promoter", "9", true)
-	d = inviterFiatRate(ctx, 42, effective())
+	d = resolveInviterPricing(ctx, 42, SourceConsume, effective()).Fiat
 	assert.Equal(t, "9", d.Rate.String())
 	assert.Equal(t, fiatLayerGroup, d.Layer)
 	assert.Equal(t, "promoter", d.Group)
@@ -286,7 +294,7 @@ func TestFiatRateFallsBackThroughSettings(t *testing.T) {
 	removed, err := deleteFiatRate(ctx, "promoter")
 	require.NoError(t, err)
 	require.True(t, removed)
-	d = inviterFiatRate(ctx, 42, effective())
+	d = resolveInviterPricing(ctx, 42, SourceConsume, effective()).Fiat
 	assert.Equal(t, "7.3", d.Rate.String())
 	assert.Equal(t, fiatLayerDefault, d.Layer)
 }

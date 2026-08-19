@@ -98,3 +98,44 @@ export type QyDailyConsumeSort =
   | 'request_count'
   | 'uncounted_quota'
   | 'user_id'
+
+/**
+ * 按天下钻的一行 = 这个用户的某一天。与后端 `adminUserDailyConsume` 的
+ * `items` 逐字对应。
+ *
+ * 区间内**每一天都有一行**，没消费的那天全是 0：缺行的表会让运营把
+ * “这天没花钱”与“这天没查出来”看成同一件事，而这恰恰是他点开下钻要区分的。
+ */
+export type QyDailyConsumeByDayRow = {
+  /** yyyymmdd。日界由后端的 `commission.day_offset_minutes` 决定，前端不自己算。 */
+  date: string
+  /** 该天日界的 unix 秒。排序与画图用它，不要拿 `date` 去 parse。 */
+  day_start: number
+  request_count: number
+  consume_quota: number
+  commission_base_quota: number
+  uncounted_quota: number
+  /** decimal 字符串。 */
+  commission_gross: string
+}
+
+export type QyDailyConsumeByDayPage = {
+  user_id: number
+  items: QyDailyConsumeByDayRow[]
+  range: QyDailyConsumeRange
+  summary: {
+    request_count: number
+    consume_quota: number
+    commission_base_quota: number
+    uncounted_quota: number
+    commission_gross: string
+  }
+  /**
+   * 下钻**自己那条**覆盖索引在不在（`idx_qy_logs_user_daily`），
+   * 与主表那条各建各的：主表快不代表下钻快。
+   *
+   * 为假时这条查询会从百毫秒掉到数秒（备份库实测 31 天区间 163ms → 6523ms），
+   * 所以必须显式出现在界面上。
+   */
+  index_ready: boolean
+}

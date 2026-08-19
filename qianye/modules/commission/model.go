@@ -81,13 +81,13 @@ type Accrual struct {
 	// 历史查询,换不来任何东西。对外(YAML、管理端、前端)一律是百分比。
 	RateUnits int `json:"rate_bps" gorm:"column:rate_bps;not null;default:0"`
 
-	// RateGroup 是计佣当刻冻结的【被邀请人(下线)】分组。
+	// RateGroup 是计佣当刻冻结的【推广人(上线)】分组。
 	//
-	// 为什么按下线的分组而不是邀请人的分组,见 grouprate.go 的口径说明。
+	// 为什么按上线的分组而不是被推广人的分组,见 grouprate.go 与 pricing.go 的口径说明。
 	// 冻结的理由与 UsdRate 完全一样:分组费率是运营可随时改的,不冻结的话
 	// 事后没有任何办法解释"这条 2 月的佣金为什么是 8% 而不是现在的 5%"。
 	//
-	// 空串表示计佣时该下线没有分组信息;费率是否命中了分组规则要看
+	// 空串表示计佣时读不到该上线的分组信息;费率是否命中了分组规则要看
 	// RateUnits 与当时的全局默认是否一致,本列只负责记录事实。
 	RateGroup string `json:"rate_group" gorm:"type:varchar(64);not null;default:''"`
 
@@ -95,6 +95,22 @@ type Accrual struct {
 	// 用增量而非 status 翻转来驱动结算,日聚合行才能"边增长边结算"。
 	GrossAmount   decimal.Decimal `json:"gross_amount" gorm:"type:decimal(30,10);not null;default:0"`
 	SettledAmount decimal.Decimal `json:"settled_amount" gorm:"type:decimal(30,10);not null;default:0"`
+
+	// CappedAmount 是单笔封顶(commission.max_per_order_quota)从这一行累计削掉的金额。
+	//
+	// 有了它,被削过的行才重新可复算:
+	//
+	//	base_quota × rate_bps / 10000 == gross_amount + capped_amount
+	//
+	// 没有它的时候,"触顶少发"与"费率被人改错"在账面上完全同形,而封顶是同模块
+	// 唯一一处不留痕的截断(结算 int32 触顶写 Remark、充值换算触顶打告警)。
+	//
+	// 零值口径:0 = **这一行没有被封顶削减过**,不是"未知"。两类行会是 0——
+	// 从来没触顶的行(绝大多数),以及本次修复上线之前就已经被削过的存量行。
+	// 后者刻意不回填:账本 append-only,金额列的历史值是冻结事实,补一个
+	// 事后算出来的数字进去等于把"我们改写过它"这件事抹掉。存量被削行仍然
+	// 对不平,那正是它当时被写坏的样子。
+	CappedAmount decimal.Decimal `json:"capped_amount" gorm:"type:decimal(30,10);not null;default:0"`
 
 	// UsdRate 冻结计佣当时的汇率。USDExchangeRate 是管理员可随时热改的全局变量,
 	// 不冻结的话历史对账永远对不上。
@@ -141,8 +157,19 @@ type Balance struct {
 	AvailableFiat decimal.Decimal `json:"available_fiat" gorm:"type:decimal(18,6);not null;default:0"`
 	FiatCurrency  string          `json:"fiat_currency" gorm:"type:varchar(8);not null;default:''"`
 
-	InviteeCount int  `json:"invitee_count" gorm:"not null;default:0"`
-	DebtBlocked  bool `json:"debt_blocked" gorm:"not null"`
+	DebtBlocked bool `json:"debt_blocked" gorm:"not null"`
+
+	// 这里曾经有一个 InviteeCount(下线数)。它**从来没有任何写入方** ——
+	// 设计稿里写着"计佣路径顺手维护",实现从未落地,于是全库每一个真正有下线的
+	// 推广人在这一列上都是 0(实测 658 行里 24 个非零值与真实下线数无关,
+	// 是灌库夹具留下的)。管理端「佣金余额总览」把它原样下发,而同一个数字在
+	// 用户端与「佣金总表」页是现算的 —— 三个页面两套口径,其中一套恒为 0。
+	//
+	// 现在下线数一律现算(hydrateBalanceViews / api_admin_users.go 同一份口径:
+	// qy_invite_relation 里 unbound_at = 0 的行数)。
+	//
+	// 字段从模型里摘掉而不是 DropColumn:SQLite 上 GORM 的 DropColumn 会静默失败,
+	// 而一个没人读也没人写的列留在表里是无害的。
 
 	LastSettledAt int64 `json:"last_settled_at" gorm:"not null;default:0"`
 	CreatedAt     int64 `json:"created_at" gorm:"not null;default:0"`

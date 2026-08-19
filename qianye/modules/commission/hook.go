@@ -28,6 +28,10 @@ func installHooks() {
 	model.QyOnConsumeLog = onConsumeLog
 	model.QyOnRedeemSuccess = onRedeemSuccess
 	model.QyOnTaskBillingLog = onTaskBillingLog
+	// 账号分组变了就失效那一条邀请缓存。分组现在决定这个人作为推广人时的
+	// 返佣费率与法币折算比例,而两者都会被**冻结**进账本 —— 晚生效五分钟
+	// 不是"晚五分钟看到",是那五分钟的钱永久按旧档发出去了。
+	model.QyOnUserGroupChanged = invalidateInviter
 }
 
 // onConsumeLog 跑在 relay 结算线程上,必须是 O(1) 且无 I/O。
@@ -128,39 +132,35 @@ func accrueConsume(ctx context.Context, ev consumeEvent) error {
 		accrualSkipped.Add(1)
 		return nil
 	}
-	// 费率按【下线的账号分组】(users.group)解析,并连同分组一起冻结进这一行。
+	// 费率与法币折算比例都按【上线(推广人)自己的账号分组】(users.group)解析,
+	// 由 resolveInviterPricing 一处取分组、一个字符串喂两档(口径与理由见
+	// grouprate.go 与 pricing.go 的文件头)。两者连同分组一起冻结进这一行。
 	//
-	// 这是选定的口径:佣金档位跟人走,不跟单次请求走 —— "这个下线是 VIP 客户,
-	// 所以他的消费按 8% 返" 是运营能直接讲清楚的规则,四条来源(消费、充值、
-	// 兑换码、任务补扣)也因此共用同一个档位,对账时一个下线一天只对应一个费率。
+	// 关键性质:**下线换分组不再改动上线的费率**。费率是推广人自己的等级属性,
+	// 由被推广的人静默改掉是上一版的缺陷 —— 推广人看不见、无法预测、账本还
+	// 每一行自洽。
 	//
-	// 已知的代价:令牌可以指定分组、auto 分组还会逐请求变化,所以本次请求的
-	// **计价分组**可能与账号分组不同。上下线串通时,下线把令牌指到低毛利分组
-	// (平台按薄利收钱)、佣金仍按账号分组的高费率算,能占到差价。需要事后排查时,
-	// 主库 logs 表本身就按请求记了实际计价分组,与本表按 (下线, 日期) join 即可
-	// 比对 —— 不需要在扩展库再存一份。
-	rate := resolveRate(ctx, e.InviteeGroup, SourceConsume, s)
-	gross := capGross(calcGross(ev.Quota, rate.Units), s.MaxPerOrderQuota)
+	// 口径跟人走、不跟单次请求走:令牌可以指定分组、auto 分组还会逐请求变化,
+	// 所以本次请求的**计价分组**与费率分组本来就不是一回事(现在更明显了 ——
+	// 计价分组是下线的,费率分组是上线的)。需要事后排查时,主库 logs 表按请求
+	// 记了实际计价分组,与本表按 (下线, 日期) join 即可比对。
+	p := resolveInviterPricing(ctx, e.InviterId, SourceConsume, s)
+	rate, fiat := p.Rate, p.Fiat
+	gross, capped := capGross(calcGross(ev.Quota, rate.Units), s.MaxPerOrderQuota)
 	if gross.IsZero() {
 		return nil
 	}
 	day := bucketDate(ev.At)
-	// 法币折算比例按【上线的账号分组】解析,与费率那一档**相反**(费率按下线)。
-	// 两个口径为什么必须分开,见 fiatrate.go 的文件头:费率跟毛利走,折算比例
-	// 跟收款人走 —— available_fiat 是上线的钱,提现单也是上线在提。
-	//
-	// 与费率一样在这里冻结进 accrual 行,因此改比例只影响此后的计佣与结算,
-	// 已经算进 available_fiat 的绝对值不会被重算。
-	fiat := inviterFiatRate(ctx, e.InviterId, s)
 	_, err = writeAccrual(ctx, accrualInput{
 		SourceType: SourceConsume,
-		IdemKey:    consumeIdemKey(e.InviterId, ev.InviteeId, day, rate, fiat),
+		IdemKey:    consumeIdemKey(e.InviterId, ev.InviteeId, day, rate, fiat, s.HoldingDays),
 		InviterId:  e.InviterId,
 		InviteeId:  ev.InviteeId,
 		BaseQuota:  ev.Quota,
 		RateUnits:  rate.Units,
 		RateGroup:  rate.Group,
 		Gross:      gross,
+		Capped:     capped,
 		UsdRate:    fiat.Rate,
 		MatureAt:   bucketMatureAt(day, s.HoldingDays),
 		BucketDate: day,
@@ -246,20 +246,17 @@ func accrueOneShot(ctx context.Context, inviteeId int, baseQuota int64, baseMone
 		return nil
 	}
 	s := effective()
-	// 与消费路径同口径:按下线的账号分组解析费率(见 accrueConsume 处的说明)。
+	// 与消费路径同口径:两档都按**上线**的账号分组解析(见 accrueConsume 处的说明)。
 	//
-	// 幂等键在这里是订单号,不掺费率 —— 一笔充值无论如何只能返一次佣,
-	// 费率变了也不能变成两行。
-	rate := resolveRate(ctx, e.InviteeGroup, sourceType, s)
-	gross := capGross(calcGross(baseQuota, rate.Units), s.MaxPerOrderQuota)
+	// 幂等键在这里是订单号,不掺费率也不掺比例 —— 一笔充值/兑换无论如何只能
+	// 返一次佣,费率或比例变了也不能变成两行。
+	p := resolveInviterPricing(ctx, e.InviterId, sourceType, s)
+	rate, fiat := p.Rate, p.Fiat
+	gross, capped := capGross(calcGross(baseQuota, rate.Units), s.MaxPerOrderQuota)
 	if gross.IsZero() {
 		return nil
 	}
 	now := common.GetTimestamp()
-	// 法币折算比例按上线分组解析并冻结,与消费路径同口径(见 accrueConsume)。
-	// 这一路的幂等键是订单号,不掺比例 —— 一笔充值无论如何只能返一次佣,
-	// 比例变了也不能变成两行。
-	fiat := inviterFiatRate(ctx, e.InviterId, s)
 	_, err = writeAccrual(ctx, accrualInput{
 		SourceType: sourceType,
 		IdemKey:    idemKey,
@@ -271,6 +268,7 @@ func accrueOneShot(ctx context.Context, inviteeId int, baseQuota int64, baseMone
 		RateUnits:  rate.Units,
 		RateGroup:  rate.Group,
 		Gross:      gross,
+		Capped:     capped,
 		UsdRate:    fiat.Rate,
 		MatureAt:   now + int64(s.HoldingDays)*86400,
 		Status:     StatusAccrued,

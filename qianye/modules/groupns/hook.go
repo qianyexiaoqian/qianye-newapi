@@ -200,18 +200,82 @@ func GroupRatioMissingDenied(modelGroup string) bool {
 // 快照未加载、开关未开、余额读不到、拒绝前的回源失败 —— 全部返回 (true, "")。
 // fail-closed 会让付费用户在缓存抖动时突然失去分组,而那种失败在日志里没有形状。
 func ModelGroupFundingAllowed(userId int, userGroup, modelGroup string) (bool, string) {
-	if !enabled() || cfg().FundingGateMode == config.FundingGateOff {
+	if !walletFundingBlocked(userId, userGroup, modelGroup) {
 		return true, ""
 	}
-	if userId <= 0 || modelGroup == "" || modelGroup == autoGroup {
+	if cfg().FundingGateMode == config.FundingGateShadow {
+		// 影子期:只记录,不阻断。数字稳定之后再翻 enforce。
+		noteShadowFundingDeny(userId, userGroup, modelGroup)
 		return true, ""
+	}
+	// enforce 档是**真会拒人**的档位,必须留下痕迹:调用方带
+	// ErrOptionWithNoRecordErrorLog,被拒的请求也不写消费日志,数据库里一行都没有。
+	noteEnforcedFundingDeny(userId, userGroup, modelGroup)
+	return false, fmt.Sprintf(
+		"模型分组 %q 由您持有的套餐解锁,该套餐额度已用尽,而您的用户分组 %q 不包含它;"+
+			"该套餐同时设置了「额度用尽后不允许使用钱包余额」。"+
+			"请续费套餐,或把令牌分组切换到您的用户分组可用的分组",
+		modelGroup, userGroup)
+}
+
+// WalletMayCoverSubscriptionShortfall 是 service.QyWalletMayCoverSubscriptionShortfall
+// 的实现体:「套餐撞到 amount_total 上限之后,剩下那一段能不能由钱包补收」。
+//
+// 判据与 ModelGroupFundingAllowed **逐字同源**(同一个 walletFundingBlocked),
+// 差别只有三处,而这三处全部来自"问的时刻不同":
+//
+//  1. 它问在服务**已经交付之后**,所以答"不得补收"不产生任何面向用户的错误 ——
+//     调用方把这一段核销掉,不是拒绝请求。
+//  2. 因此没有 reason 文案:没有人会读到它。
+//  3. 计数分开:"拒了 N 次请求"和"核销了 N 笔差额"是两件事,混进同一个计数器
+//     会让运营既看不出杀伤面,也看不出免单量。**核销量不在这里记** ——
+//     这里只知道"规则说不许补收",不知道紧接着那次核销名额有没有抢到;
+//     名额用尽的那些笔最后是扣了钱包的,记成免单就是把已经收到的钱算成让利。
+//     真正落定之后由调用方调 NoteShortfallWriteOff 登记。
+//
+// 时序上它必须在 SettleUserSubscriptionDelta **提交之后**调用:判据里的 funded
+// 要看到那一笔已经把套餐扣到上限的事实,否则 funded 仍为真、恒放行。
+func WalletMayCoverSubscriptionShortfall(userId int, userGroup, modelGroup string, shortfall int64) bool {
+	if shortfall <= 0 {
+		return true
+	}
+	if !walletFundingBlocked(userId, userGroup, modelGroup) {
+		return true
+	}
+	if cfg().FundingGateMode == config.FundingGateShadow {
+		noteShadowFundingDeny(userId, userGroup, modelGroup)
+		return true
+	}
+	return false
+}
+
+// NoteShortfallWriteOff 登记一笔**已经落定**的核销(service.QyNoteSubscriptionWriteOff
+// 的实现体)。参数是真的由平台吃下的那个数,不是闸门看到的差额。
+func NoteShortfallWriteOff(userId int, userGroup, modelGroup string, quota int64) {
+	if quota <= 0 {
+		return
+	}
+	noteShortfallWriteOff(userId, userGroup, modelGroup, quota)
+}
+
+// walletFundingBlocked 是钱包出资闸门的**判据本身**,不含灰度档位、不含计数、
+// 不含文案。两个入口(请求前的 ModelGroupFundingAllowed、结算后的
+// WalletMayCoverSubscriptionShortfall)共用它,规则因此只有一份。
+//
+// 返回 true = 判据成立,钱包**不该**为这个模型分组出资。
+func walletFundingBlocked(userId int, userGroup, modelGroup string) bool {
+	if !enabled() || cfg().FundingGateMode == config.FundingGateOff {
+		return false
+	}
+	if userId <= 0 || modelGroup == "" || modelGroup == autoGroup {
+		return false
 	}
 
 	// 第一项:纯用户分组口径的成员资格。零 I/O(进程内快照 + map 查找)。
 	// 刻意**不**走 QyUsableGroupsForUser:那个函数会把套餐解锁并进来,
 	// 于是第一项与第二项塌成同一件事,后面的判定永远不会生效。
 	if _, ok := service.GetUserUsableGroups(userGroup)[modelGroup]; ok {
-		return true, ""
+		return false
 	}
 
 	// 第一问走缓存,零 I/O。它只用来回答"这一档归不归本闸门管":
@@ -220,7 +284,7 @@ func ModelGroupFundingAllowed(userId int, userGroup, modelGroup string) (bool, s
 		// M 不是套餐解锁的。这一档**不由本闸门拒绝** —— 上游 middleware/auth.go
 		// 已经在鉴权处挡过一次了,能走到计费的请求说明它在某种口径下是被允许的。
 		// 越权拒绝会把一次口径差异变成一次线上故障。
-		return true, ""
+		return false
 	}
 
 	// ── 剩下的判据一律由主库当场回答,放行与拒绝**两个方向都是** ──
@@ -237,23 +301,7 @@ func ModelGroupFundingAllowed(userId int, userGroup, modelGroup string) (bool, s
 	// 查询,自带 50ms 硬超时与 singleflight 去重。这道闸门管的是钱,不能拿一份
 	// 一分钟前的余额作数。
 	unlocked, funded, allowOverflow := PlanUnlockFundingState(userId, modelGroup, true)
-	if !unlocked || funded || allowOverflow {
-		return true, ""
-	}
-
-	if cfg().FundingGateMode == config.FundingGateShadow {
-		// 影子期:只记录,不阻断。数字稳定之后再翻 enforce。
-		noteShadowFundingDeny(userId, userGroup, modelGroup)
-		return true, ""
-	}
-	// enforce 档是**真会拒人**的档位,必须留下痕迹:调用方带
-	// ErrOptionWithNoRecordErrorLog,被拒的请求也不写消费日志,数据库里一行都没有。
-	noteEnforcedFundingDeny(userId, userGroup, modelGroup)
-	return false, fmt.Sprintf(
-		"模型分组 %q 由您持有的套餐解锁,该套餐额度已用尽,而您的用户分组 %q 不包含它;"+
-			"该套餐同时设置了「额度用尽后不允许使用钱包余额」。"+
-			"请续费套餐,或把令牌分组切换到您的用户分组可用的分组",
-		modelGroup, userGroup)
+	return unlocked && !funded && !allowOverflow
 }
 
 // autoGroup 是上游的伪分组名。它不是任何池子,永远不参与出资判定。

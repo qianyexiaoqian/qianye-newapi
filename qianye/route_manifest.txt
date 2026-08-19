@@ -29,6 +29,7 @@ GET /api/qy/admin/audit-logs
 GET /api/qy/admin/commission/balances
 GET /api/qy/admin/commission/config
 GET /api/qy/admin/commission/daily-consume
+GET /api/qy/admin/commission/daily-consume/by-day
 GET /api/qy/admin/commission/daily-consume/export
 GET /api/qy/admin/commission/health
 GET /api/qy/admin/commission/records

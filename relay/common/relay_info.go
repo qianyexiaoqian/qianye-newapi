@@ -137,6 +137,12 @@ type RelayInfo struct {
 	// SubscriptionWalletShortfall is the part of a subscription settlement that
 	// exceeded amount_total and was therefore charged to the wallet instead.
 	SubscriptionWalletShortfall int64
+	// SubscriptionWrittenOff is the part of a subscription settlement that
+	// exceeded amount_total and could *not* be charged to the wallet, because
+	// the plan that unlocked this model group forbids wallet overflow. The
+	// request had already been served, so the platform absorbs it. Without this
+	// field the consume log would claim a charge nobody actually paid.
+	SubscriptionWrittenOff int64
 	// WssReservedQuota accumulates the realtime (WSS) per-turn quota that has
 	// already been reserved on the billing session, so the end-of-session
 	// settlement charges the total exactly once instead of twice.
@@ -163,6 +169,16 @@ type RelayInfo struct {
 	// int32 bound (or NaN fallback) while computing this request's charge.
 	// It is surfaced onto the consume/task log's admin_info for auditing.
 	QuotaClamp *common.QuotaClamp
+
+	// SettleFailure 非空表示这一笔的**结算失败了**(主库写不进去:连接池耗尽、
+	// 锁等待超时、单表不可写),而消费日志仍然按全额真实花费落库。
+	//
+	// 不记的话,那一行 logs 读起来与正常收讫的一行**一模一样**,只有后端日志里
+	// 一句 LogError,事后既无法发现也无法补收。对账不变量
+	// quota == subscription_consumed + wallet_quota_deducted + subscription_written_off
+	// 在这种时候必然不成立,必须有一个键说明差在哪。
+	// 与 QuotaClamp / GroupRatioFallback 同形,落 other.admin_info。
+	SettleFailure string
 
 	// GroupRatioFallback 非 nil 表示这一笔的分组倍率是**上游 fail-open 兜出来的
 	// 1.0**,不是任何人配出来的:模型分组不在 options.GroupRatio 里,而这一笔的价

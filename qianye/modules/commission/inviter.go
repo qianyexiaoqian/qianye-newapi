@@ -25,13 +25,19 @@ type inviterEntry struct {
 	InviterId      int
 	InviteeName    string
 	InviteeCreated int64
-	// InviteeGroup 是下线所在的分组,分组差异化费率按它取值(口径见 grouprate.go)。
+	// Group 是**这一行所属用户自己**的账号分组(users.group),不是他上线的。
+	//
+	// 早先叫 InviteeGroup,因为费率那一档按下线分组取值,而这个缓存在计佣
+	// 路径上只被用来查下线。现在费率与法币折算比例都按**上线**分组取值
+	// (口径见 grouprate.go 与 fiatrate.go),同一个结构体会被拿去查上线,
+	// 于是"Invitee"这个前缀在一半的调用点上是错的 —— 一个会让人把上线的
+	// 分组读成下线分组的字段名,在资金代码里是最贵的那种命名。
 	//
 	// 与邀请关系一起缓存而不是另开一次查询:两者出自同一行 users,
-	// 分开查等于把主库读压力翻倍。代价是换组后最多 InviterCacheSecs
-	// 才反映到费率上,这对一个按天聚合的返佣账本可以接受;要立刻生效
-	// 可以走管理端的"失效缓存"。
-	InviteeGroup string
+	// 分开查等于把主库读压力翻倍。代价是换组后最多 InviterCacheSecs 才反映到
+	// 费率上;主库那一侧改分组的出口(套餐升降级、管理端改用户、分组迁移)
+	// 都调 model.QyOnUserGroupChanged 立即失效这一条,见 installHooks。
+	Group string
 }
 
 const inviterCacheCapacity = 200000
@@ -128,7 +134,7 @@ func resolveInviter(ctx context.Context, userId int) (inviterEntry, bool, error)
 			InviterId:      row.InviterId,
 			InviteeName:    name,
 			InviteeCreated: row.CreatedAt,
-			InviteeGroup:   row.Group,
+			Group:          row.Group,
 		}
 		getInviterCache().Set(userId, e)
 		return resolved{entry: e}, nil
@@ -139,8 +145,13 @@ func resolveInviter(ctx context.Context, userId int) (inviterEntry, bool, error)
 	return v.(resolved).entry, true, nil
 }
 
-// invalidateInviter 在管理员改动 users.inviter_id 之后手动失效。
-// userId <= 0 表示清空全部。
+// invalidateInviter 在 users 那一行的**邀请关系或分组**变化之后手动失效。
+// userId <= 0 表示清空全部(分组批量迁移走这一支)。
+//
+// 分组也在这条路上,是因为同一个缓存值同时承载 InviterId 与 Group,而 Group
+// 现在直接决定这个人作为**上线**时的返佣费率与法币折算比例。不失效的表现是:
+// 推广人刚升到 vip,接下来最长 InviterCacheSecs 里他名下的消费仍按旧档计佣,
+// 而那些行的费率是**冻结**的 —— 事后再刷缓存也追不回来。
 func invalidateInviter(userId int) {
 	if userId <= 0 {
 		getInviterCache().Purge()

@@ -69,6 +69,55 @@ commission:
 	assert.False(t, c.GroupMatrix.Enabled)
 }
 
+// TestRetiredGroupPricingSectionIsSafeToDelete 是"这一段现在可以删了"的证据。
+//
+// 上面那条测的是**留着不炸**。本条测的是相反的一半:**删掉也不掉东西**。
+//
+// 为什么这一半需要单独钉住:本仓有过"缺一段配置 = 整块功能静默不可见"的先例
+// (sections.go 文件头列了三次)。判据不是"我看了一眼代码觉得没事",而是
+//
+//	① 缺段能加载(它不在任何必填校验里);
+//	② 缺段与写了这一段,解析出来的 Config **逐字段相等** ——
+//	   也就是说这一段确实一个消费方都没有,删它不改变任何行为;
+//	③ 它不在 moduleGates 里,所以缺段不会触发"模块静默关闭"的启动告警,
+//	   删掉之后启动日志是干净的(否则运维会以为自己删坏了什么)。
+//
+// 演示站 data/qianye-prod.yaml 里的那一段据此删除。
+func TestRetiredGroupPricingSectionIsSafeToDelete(t *testing.T) {
+	const withSection = `
+enabled: true
+database:
+  dsn: "u:p@tcp(127.0.0.1:3306)/qy"
+group_pricing:
+  enabled: true
+  shadow_mode: true
+  shadow_flush_interval_seconds: 10
+`
+	const withoutSection = `
+enabled: true
+database:
+  dsn: "u:p@tcp(127.0.0.1:3306)/qy"
+`
+	with, _, err := parseFile(writeTemp(t, withSection))
+	require.NoError(t, err)
+	without, _, err := parseFile(writeTemp(t, withoutSection))
+	require.NoError(t, err, "缺 group_pricing 段必须照常加载")
+
+	assert.Nil(t, without.GroupPricingDeprecated)
+	// declared 集合天然不同(一个写了这一段、一个没写),那正是它的职责;
+	// 比较的是**行为**,所以把它排除在外之后逐字段相等。
+	with.declared, without.declared = nil, nil
+	assert.Equal(t, with, without,
+		"写了 group_pricing 与没写解析出来的配置必须完全一样 —— "+
+			"不一样就说明这一段还有消费方,不能从演示站的 YAML 里删")
+
+	for _, g := range ModuleGates() {
+		assert.NotEqual(t, "group_pricing", g.Section,
+			"group_pricing 出现在 moduleGates 里 = 删掉这一段会在启动日志里报"+
+				"「模块静默关闭」,而它根本不是一个还活着的模块")
+	}
+}
+
 // TestRetiredNewGroupKeysDoNotResurrectAnySwitch 守语义,不只守可解析性。
 //
 // 光能解析是不够的:如果占位字段的值还能被谁读到,"新分组默认全遮断"就会以

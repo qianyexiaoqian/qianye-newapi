@@ -77,8 +77,12 @@ func accrualOfInvitee(t *testing.T, gdb *gorm.DB, inviteeId int) Accrual {
 	return rows[0]
 }
 
-// TestResolveRateByInviteeGroup 锁定分组费率的解析口径。
-func TestResolveRateByInviteeGroup(t *testing.T) {
+// TestResolveRateByInviterGroup 锁定分组费率的解析口径。
+//
+// resolveRate 只认一个分组字符串,"这个字符串是谁的"由 resolveInviterPricing
+// 决定(见 TestInviterGroupDecidesRate)。本表守的是另一半:给定分组,三档
+// 各自取到哪个值、回落到哪里、以及冻结进流水的分组是不是判定用的那个值。
+func TestResolveRateByInviterGroup(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, commissionRateConfig("10", "5"))
 
@@ -137,21 +141,17 @@ func TestAccrueConsumeFreezesGroupRate(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, commissionRateConfig("10", "5"))
 	seedGroupRate(t, gdb, "vip", "12", "8", true)
+	// wholesale 也配一档,而且与 vip 的数字完全不同 —— 下线被放进这一档,
+	// 于是"取错了人的分组"会体现成一个具体的、错得很明显的金额(1.5% 而不是
+	// 8%),而不是碰巧与回落值相等。
+	seedGroupRate(t, gdb, "wholesale", "3", "1.5", true)
 
-	// 下线 900 属于 vip,邀请人 42。缓存命中即不回主库。
-	getInviterCache().Set(900, inviterEntry{
-		InviterId:      42,
-		InviteeName:    "u900",
-		InviteeCreated: common.GetTimestamp() - 30*86400,
-		InviteeGroup:   "vip",
-	})
-	// 下线 901 没有分组规则,必须回落全局默认。
-	getInviterCache().Set(901, inviterEntry{
-		InviterId:      42,
-		InviteeName:    "u901",
-		InviteeCreated: common.GetTimestamp() - 30*86400,
-		InviteeGroup:   "default",
-	})
+	// 上线 42 在 vip;上线 43 没有分组规则,必须回落全局默认。
+	cacheUser(42, 0, "vip")
+	cacheUser(43, 0, "default")
+	// 两个下线**都**在 wholesale。费率按上线取,所以下线在哪一档完全不影响结果。
+	cacheUser(900, 42, "wholesale")
+	cacheUser(901, 43, "wholesale")
 
 	at := common.GetTimestamp()
 	require.NoError(t, accrueConsume(context.Background(),
@@ -160,12 +160,12 @@ func TestAccrueConsumeFreezesGroupRate(t *testing.T) {
 		consumeEvent{InviteeId: 901, Quota: 10000, At: at}))
 
 	vipRow := accrualOfInvitee(t, gdb, 900)
-	assert.Equal(t, 800, vipRow.RateUnits, "vip 的 8% 没有生效")
+	assert.Equal(t, 800, vipRow.RateUnits, "上线 42 在 vip,必须按 vip 的 8% 返")
 	assert.Equal(t, "vip", vipRow.RateGroup, "分组必须冻结进行,否则事后解释不了这一行")
 	assert.Equal(t, "800", vipRow.GrossAmount.String(), "10000 × 8% = 800")
 
 	defRow := accrualOfInvitee(t, gdb, 901)
-	assert.Equal(t, 500, defRow.RateUnits, "未配置的分组必须回落全局默认 5%")
+	assert.Equal(t, 500, defRow.RateUnits, "上线 43 没配分组档,必须回落全局默认 5%")
 	assert.Equal(t, "default", defRow.RateGroup)
 	assert.Equal(t, "500", defRow.GrossAmount.String())
 }
@@ -181,12 +181,8 @@ func TestAccrueConsumeSplitsRowWhenRateChanges(t *testing.T) {
 	seedGroupRate(t, gdb, "vip", "12", "8", true)
 
 	at := common.GetTimestamp()
-	getInviterCache().Set(900, inviterEntry{
-		InviterId:      42,
-		InviteeName:    "u900",
-		InviteeCreated: at - 30*86400,
-		InviteeGroup:   "vip",
-	})
+	cacheUser(42, 0, "vip")
+	cacheUser(900, 42, "default")
 	require.NoError(t, accrueConsume(context.Background(),
 		consumeEvent{InviteeId: 900, Quota: 10000, At: at}))
 
@@ -216,12 +212,8 @@ func TestAccrueOneShotFreezesGroupRate(t *testing.T) {
 	useConfig(t, commissionRateConfig("10", "5"))
 	seedGroupRate(t, gdb, "vip", "12.5", "8", true)
 
-	getInviterCache().Set(900, inviterEntry{
-		InviterId:      42,
-		InviteeName:    "u900",
-		InviteeCreated: common.GetTimestamp() - 30*86400,
-		InviteeGroup:   "vip",
-	})
+	cacheUser(42, 0, "vip")
+	cacheUser(900, 42, "default")
 	require.NoError(t, accrueOneShot(context.Background(), 900, 10000,
 		decimal.Zero, SourceTopup, topupIdemKey("TX-1"), "TX-1"))
 

@@ -45,22 +45,38 @@ func calcGross(baseQuota int64, rateUnits int) decimal.Decimal {
 		Div(rateUnitsDivisor)
 }
 
-// capGross 对单笔佣金封顶。
+// capGross 对单笔佣金封顶,并把"削掉了多少"一起交出来。
 //
 // 作用在"单次计佣增量"上而不是日聚合行的总额:日聚合行会跨越一整天,
 // 用它当上限等于给用户设了个日封顶,那是另一个语义(见 opSettings.DailyCapQuota)。
-func capGross(gross decimal.Decimal, maxPerOrder int64) decimal.Decimal {
+//
+// # 为什么必须返回削减量
+//
+// 封顶命中之后,那一行的 base_quota × rate_bps / 10000 就不再等于 gross_amount。
+// 这正是本模块把费率、汇率、成熟期统统塞进幂等键所要防的那一件事:一条谁也
+// 复算不出来的账目行,"触顶"与"费率配错/被人改过"在账面上长得一模一样。
+// 单靠把封顶值也塞进幂等键**解决不了**这个问题 —— 键只保证同一行内封顶值恒定,
+// 而 base 仍然逐笔累加、gross 每笔各自被削到上限,两边照样对不平。
+//
+// 所以削减量必须作为**事实**落在行上(Accrual.CappedAmount),让
+//
+//	base_quota × rate_bps / 10000 == gross_amount + capped_amount
+//
+// 重新成为一条可以逐行验证的恒等式。同模块其他所有截断都留痕
+// (settle.go 的 int32 触顶写 Remark、topup_scan.go 的换算触顶打告警、
+// 日结的 Capped 写 Note),封顶此前是唯一一处静默截断。
+func capGross(gross decimal.Decimal, maxPerOrder int64) (capped, shaved decimal.Decimal) {
 	if maxPerOrder <= 0 {
-		return gross
+		return gross, decimal.Zero
 	}
 	limit := decimal.NewFromInt(maxPerOrder)
 	if gross.GreaterThan(limit) {
-		return limit
+		return limit, gross.Sub(limit)
 	}
 	if gross.LessThan(limit.Neg()) {
-		return limit.Neg()
+		return limit.Neg(), gross.Sub(limit.Neg())
 	}
-	return gross
+	return gross, decimal.Zero
 }
 
 // maxSafeAmount 是落库前的合理性闸门。decimal(30,10) 的容量是 10^20,
@@ -97,7 +113,16 @@ func bucketDate(ts int64) string { return dayKey(ts) }
 // 这里的"整天结束"就是 dayline 的日界,因此成熟时刻恰好落在某个日界上,
 // 而一日一结算在日界之后的第一次心跳开跑 —— mature_at <= now 成立,当天发出。
 // 到账日 = 消费日 + holding_days + 1(见 payoutDayOffset)。
+//
+// 负数一律按 0 处理,与 payoutDayOffset 同一条钳位。commission.holding_days
+// 没有 validate 规则拦负数(见 config/defaults.go 的说明),而 -1 会让整天的
+// 佣金在**这一天刚开始**时就成熟 —— 当天的消费当天可提,防套利延迟反向生效,
+// 而界面上 payoutDayOffset 已经把它显示成 T+1。两处钳位必须一致,否则又是
+// 一次"界面写的到账日与事实差一天"。
 func bucketMatureAt(day string, holdingDays int) int64 {
+	if holdingDays < 0 {
+		holdingDays = 0
+	}
 	start, ok := dayKeyStart(day)
 	if !ok {
 		return common.GetTimestamp() + int64(holdingDays)*secondsPerDay
@@ -141,6 +166,11 @@ type accrualInput struct {
 	RateUnits int
 	RateGroup string
 	Gross     decimal.Decimal
+	// Capped 是单笔封顶(max_per_order_quota)从本次增量里削掉的金额,
+	// 永远是非负数。它与 Gross 一起落库,使得
+	// base_quota × rate_bps / 10000 == gross_amount + capped_amount
+	// 在被削过的行上依然成立 —— 见 capGross 的说明。
+	Capped decimal.Decimal
 
 	// UsdRate 为零时取当前汇率。冲正必须显式传入原单的汇率,
 	// 否则冲正与原单会按两个不同汇率折算法币,账永远平不了。
@@ -211,6 +241,7 @@ func writeAccrualTx(gdb *gorm.DB, in accrualInput) (bool, error) {
 		RateUnits:    in.RateUnits,
 		RateGroup:    truncate(in.RateGroup, 64),
 		GrossAmount:  in.Gross,
+		CappedAmount: in.Capped,
 		UsdRate:      usdRate,
 		Status:       in.Status,
 		RiskFlags:    truncate(in.RiskFlags, 255),
@@ -234,7 +265,10 @@ func writeAccrualTx(gdb *gorm.DB, in accrualInput) (bool, error) {
 			DoUpdates: clause.Assignments(map[string]any{
 				"base_quota":   gorm.Expr("qy_commission_accrual.base_quota + ?", in.BaseQuota),
 				"gross_amount": gorm.Expr("qy_commission_accrual.gross_amount + ?", in.Gross),
-				"updated_at":   now,
+				// 削减量与基数、佣金同步累加:一天里可能有些增量触顶、有些没有,
+				// 只有把每一次削掉的量都累上去,那条恒等式才对整行成立。
+				"capped_amount": gorm.Expr("qy_commission_accrual.capped_amount + ?", in.Capped),
+				"updated_at":    now,
 			}),
 		}
 	}
@@ -254,6 +288,14 @@ func writeAccrualTx(gdb *gorm.DB, in accrualInput) (bool, error) {
 		accrualCreated.Add(1)
 	}
 	alertLargeAccrual(in)
+	// 封顶必须留痕:计数器给管理端健康面板,日志给排障。少发钱是运营
+	// 显式配置的策略,但"这一行被削过"绝不能只存在于配置里。
+	if in.Capped.IsPositive() {
+		accrualCapped.Add(1)
+		warnf("单笔封顶命中:%s/%s 的佣金被从 %s 削到 %s(上限 %d,邀请人 %d, 下线 %d)",
+			in.SourceType, in.IdemKey, in.Gross.Add(in.Capped).String(), in.Gross.String(),
+			effective().MaxPerOrderQuota, in.InviterId, in.InviteeId)
+	}
 	return inserted, nil
 }
 
@@ -396,10 +438,25 @@ func itoa64(v int64) string { return strconv.FormatInt(v, 10) }
 // consumeIdemKey 是消费日聚合的幂等键。
 //
 // 除了(下线、自然日)之外还带上**冻结的费率与分组**,因为日聚合行是
-// "边增长边结算"的:桶会跨越一整天,而这一天里下线可能换了分组、运营
+// "边增长边结算"的:桶会跨越一整天,而这一天里**上线**可能换了分组、运营
 // 可能调了费率。只按(下线、日期)聚合的话,后来的增量会按新费率算出
 // gross 累加进一行标着旧费率的记录里,那一行从此 base × rate ≠ gross,
 // 永远对不平,也没法向用户解释。
+//
+// 键里的 rate.Group 从 2026-08-18 起是**上线**的分组(此前是下线的,见
+// grouprate.go 的口径说明)。两个直接后果:
+//
+//   - **上线**当天换分组 ⇒ 落两行,换组之前那段按旧档、之后那段按新档。
+//     这与"运营改费率当天多出一行"是同一条处理方式,也是账面上应该看得见的事实。
+//   - **下线**换分组不再影响这个键 ⇒ 同一天的消费继续累加进同一行。
+//     旧口径下这里会莫名其妙裂成两行,而裂开的原因(别人换了组)与这笔佣金
+//     的收款人毫无关系。
+//
+// 口径切换那一天,同一个(下线、日期)桶可能同时存在旧口径的一行(rate_group
+// 是下线的组)与新口径的一行(rate_group 是上线的组)。**这不会重复发钱**:
+// base_quota 与 gross_amount 是按事件增量累加上去的,不是从主库日志重算的,
+// 每一个消费事件只会被投递一次、只落进它当时那把键对应的那一行。切换只是把
+// 后续事件引到了另一行上。存量行是冻结事实,不迁移、不改写。
 //
 // 费率变了就落新的一行:唯一索引照样防重复,每一行仍然自洽。代价只是
 // 改费率当天多出一行,而这正是账面上应该看得见的事实。
@@ -411,7 +468,10 @@ func itoa64(v int64) string { return strconv.FormatInt(v, 10) }
 // 而账面上没有任何东西显示这里发生过一次调价。上线换组、运营改档、
 // 全站汇率变动都会走到这里,处理方式与费率完全一致:落新的一行。
 //
-// **上线也必须进键**(inviterId)。ON CONFLICT 的 DoUpdates 只累加 base_quota /
+// **上线也必须进键**(inviterId)。它与 rate.Group 现在指向同一个人,但仍然
+// 都要在键里:同一个上线可以在两个分组之间来回换(键的分组段变了、上线段没变),
+// 而两个不同的上线也可以恰好在同一个分组(键的分组段相同、上线段不同)。
+// 少任何一段都会让其中一种情形撞进别人的行。ON CONFLICT 的 DoUpdates 只累加 base_quota /
 // gross_amount,不改 inviter_id;上线不在键里的话,换绑(或解绑后改绑)当天
 // 下线后续的消费会撞上旧上线那一行的唯一键,金额被原子累加进去而 inviter_id
 // 保持旧值 —— 钱结结实实发给了前一个上线,三条恒等式却全部成立,没有任何
@@ -420,10 +480,27 @@ func itoa64(v int64) string { return strconv.FormatInt(v, 10) }
 //
 // 进键之后换绑当天会落两行:换绑之前那段仍归旧上线(他确实挣到了),之后那段
 // 归新上线。这与"费率变了就落新的一行"是同一条处理方式。
-func consumeIdemKey(inviterId int, inviteeId int, day string, rate rateDecision, fiat fiatDecision) string {
+//
+// **成熟期也必须进键**(holdingDays)。它决定这一行的 mature_at,而日聚合桶的
+// ON CONFLICT 只累加金额、不改 mature_at —— 不进键的话,运营在某天中午把
+// holding_days 从 7 改成 0,当天**已经建过桶**的下线在那之后产生的消费会被
+// 累加进一行标着旧成熟期的记录里,那部分钱按旧策略再压 7 天,而管理端与用户端
+// 都按新配置显示 T+1。这与费率/汇率进键是同一条理由的第三次应用:凡是被冻结
+// 进行、事后又决定这一行怎么处置的策略值,都必须参与聚合身份,否则同一行里会
+// 混进两套策略,而账面上没有任何东西显示这里改过配置。
+//
+// 代价同样是"改配置当天多出一行",而这正是账面上应该看得见的事实。
+//
+// 传进来的值必须与写进 MatureAt 的那个**同源钳位**(bucketMatureAt 把负数按 0
+// 处理):键里写 -1、行上却是 0,就会出现两个键指向同一个成熟期的分裂桶。
+func consumeIdemKey(inviterId int, inviteeId int, day string, rate rateDecision, fiat fiatDecision, holdingDays int) string {
+	if holdingDays < 0 {
+		holdingDays = 0
+	}
 	return SourceConsume + ":" + itoa(inviteeId) + ":" + day +
 		":" + rate.Group + ":" + itoa(rate.Units) +
 		":" + fiat.Rate.String() +
+		":h" + itoa(holdingDays) +
 		":u" + itoa(inviterId)
 }
 

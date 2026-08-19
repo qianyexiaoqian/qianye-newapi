@@ -114,7 +114,10 @@ type balanceView struct {
 	UnsettledAmount string `json:"unsettled_amount"`
 	AvailableFiat   string `json:"available_fiat"`
 
-	DebtBlocked   bool  `json:"debt_blocked"`
+	DebtBlocked bool `json:"debt_blocked"`
+	// InviteeCount 一律由 hydrateBalanceViews 现算(qy_invite_relation 里
+	// unbound_at = 0 的行数),与「佣金总表」页同一份口径。余额行上曾经有一个
+	// 同名列,但它没有任何写入方 —— 下发它等于对所有真正有下线的推广人报 0。
 	InviteeCount  int   `json:"invitee_count"`
 	LastSettledAt int64 `json:"last_settled_at"`
 	UpdatedAt     int64 `json:"updated_at"`
@@ -134,7 +137,6 @@ func newBalanceView(b Balance) balanceView {
 		UnsettledAmount:    b.UnsettledAmount.String(),
 		AvailableFiat:      b.AvailableFiat.Round(2).String(),
 		DebtBlocked:        b.DebtBlocked,
-		InviteeCount:       b.InviteeCount,
 		LastSettledAt:      b.LastSettledAt,
 		UpdatedAt:          b.UpdatedAt,
 	}
@@ -275,13 +277,59 @@ func hydrateBalanceViews(ctx context.Context, rows []Balance) []balanceView {
 	for _, u := range users {
 		names[u.Id] = u.Username
 	}
+	downlines := downlineCounts(ctx, ids)
 	for i := range views {
 		if name, ok := names[views[i].UserId]; ok {
 			views[i].Username = name
 			views[i].UserResolved = true
 		}
+		views[i].InviteeCount = downlines[views[i].UserId]
 	}
 	return views
+}
+
+// resolvedBalanceView 是单行版的 hydrateBalanceViews。
+//
+// 手工增减佣金与迁移已提现额度那两条路(以及它们各自的审计前后快照)以前直接用
+// newBalanceView:那是从**扩展库**的余额行造出来的形状,username 恒为空串、
+// user_resolved 恒为 false。而 user_resolved=false 这一位有明确语义——"主库里
+// 读不到这个 id(账号已删,或这一次主库读失败)"。于是每一条改钱审计的前后快照
+// 都永久带着一个假的"账号不可解析"标记,事后仲裁时分不清"当时账号真的没了"
+// 与"当时代码没去查";审计详情页是原样展开这段 JSON 的,管理员看得到它。
+func resolvedBalanceView(ctx context.Context, b Balance) balanceView {
+	views := hydrateBalanceViews(ctx, []Balance{b})
+	if len(views) == 0 {
+		return newBalanceView(b)
+	}
+	return views[0]
+}
+
+// downlineCounts 数每个上线名下还在绑的下线条数。
+//
+// 与 api_admin_users.go 同一份口径(qy_invite_relation 里 unbound_at = 0),
+// 这是全仓唯一权威的算法 —— 余额行上那个同名列没有任何写入方。
+// 读不到就返回空表:少一个展示数字远好于让整页余额打不开。
+func downlineCounts(ctx context.Context, inviterIds []int) map[int]int {
+	out := map[int]int{}
+	gdb := db.Get()
+	if gdb == nil || len(inviterIds) == 0 {
+		return out
+	}
+	var rows []struct {
+		InviterId int
+		Cnt       int
+	}
+	if err := gdb.WithContext(ctx).Model(&InviteRelation{}).
+		Select("inviter_id, COUNT(*) AS cnt").
+		Where("inviter_id IN ? AND unbound_at = 0", inviterIds).
+		Group("inviter_id").Scan(&rows).Error; err != nil {
+		common.SysError("qianye/commission: 统计佣金余额对应下线数失败: " + err.Error())
+		return out
+	}
+	for _, r := range rows {
+		out[r.InviterId] = r.Cnt
+	}
+	return out
 }
 
 // adminSetWithdrawn 把某个用户的「已提现」额度设成给定的绝对值,差额从可提现划转。
@@ -400,8 +448,8 @@ func adminSetWithdrawn(c *gin.Context) {
 	respond(c, gin.H{
 		"user_id":     req.UserId,
 		"delta_quota": delta,
-		"before":      newBalanceView(before),
-		"after":       newBalanceView(after),
+		"before":      resolvedBalanceView(c.Request.Context(), before),
+		"after":       resolvedBalanceView(c.Request.Context(), after),
 	})
 }
 
@@ -425,8 +473,8 @@ func currentBalance(ctx context.Context, userId int) Balance {
 // 快照走 balanceView 而不是裸结构体:事后翻审计的是人,而 balanceView 里带着
 // 派生可提现与漂移量 —— 那正是判断"这次改动是否把账本改坏了"要看的两个数。
 func writeWithdrawnAudit(c *gin.Context, userId int, delta int64, result, reason string, before, after Balance) {
-	beforeSnap, _ := common.Marshal(newBalanceView(before))
-	afterSnap, _ := common.Marshal(newBalanceView(after))
+	beforeSnap, _ := common.Marshal(resolvedBalanceView(c.Request.Context(), before))
+	afterSnap, _ := common.Marshal(resolvedBalanceView(c.Request.Context(), after))
 	audit.Write(c, audit.Entry{
 		Category:     qymodel.AuditCategoryCommission,
 		Action:       "commission.balance.withdrawn.set",

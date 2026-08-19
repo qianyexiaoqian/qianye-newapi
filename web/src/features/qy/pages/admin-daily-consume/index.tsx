@@ -37,8 +37,16 @@ import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyErrorMessage } from '../../lib/api'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
-import { exportQyDailyConsume, qyAdminDailyConsumeQuery } from './api'
-import type { QyDailyConsumeRow, QyDailyConsumeSort } from './types'
+import {
+  exportQyDailyConsume,
+  qyAdminDailyConsumeByDayQuery,
+  qyAdminDailyConsumeQuery,
+} from './api'
+import type {
+  QyDailyConsumeByDayRow,
+  QyDailyConsumeRow,
+  QyDailyConsumeSort,
+} from './types'
 
 /** 与后端 `dailyConsumeSorts` 的键集合逐字一致。 */
 const SORT_OPTIONS: readonly QyDailyConsumeSort[] = [
@@ -59,11 +67,128 @@ function toApiDate(value: string): string {
   return value.replaceAll('-', '')
 }
 
+/** 把后端的 `yyyymmdd` 还原成可读的 `yyyy-mm-dd`。 */
+function fromApiDate(value: string): string {
+  if (value.length !== 8) return value
+  return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6)}`
+}
+
 /** 昨天的 `yyyy-mm-dd`，用作两个日期框的初值。 */
 function yesterdayInputValue(): string {
   const d = new Date()
   d.setDate(d.getDate() - 1)
   return d.toISOString().slice(0, 10)
+}
+
+/**
+ * 某一行点开之后的按天明细。
+ *
+ * 单独一条接口、只查这一个人：主表一行 = 一个人，行数不随天数膨胀；把天加进
+ * 主表的分组之后，20000 行的上界、排序键、导出的 CSV 会一起换成另一张表，
+ * 而运营打开这一页的第一个问题始终是“谁在花钱”。
+ *
+ * 区间内每一天都有一行（没消费的那天全是 0），由后端补齐 —— 缺行的表会让
+ * “这天没花钱”与“这天没查出来”长得一模一样。
+ */
+function ByDayPanel(props: {
+  user: QyDailyConsumeRow
+  startDate: string
+  endDate: string
+  onClose: () => void
+}) {
+  const { t } = useTranslation()
+  const query = useQuery(
+    qyAdminDailyConsumeByDayQuery({
+      user_id: props.user.user_id,
+      start_date: props.startDate,
+      end_date: props.endDate,
+    })
+  )
+  const rows = query.data?.items ?? []
+
+  const columns: StaticDataTableColumn<QyDailyConsumeByDayRow>[] = [
+    {
+      id: 'date',
+      header: t('qy_dc_by_day_date'),
+      className: staticDataTableClassNames.compactHeaderCell,
+      cellClassName: staticDataTableClassNames.compactCell,
+      cell: (row) => fromApiDate(row.date),
+    },
+    {
+      id: 'requests',
+      header: t('qy_dc_requests'),
+      className: staticDataTableClassNames.compactHeaderCellRight,
+      cellClassName: staticDataTableClassNames.compactNumericCell,
+      cell: (row) => row.request_count,
+    },
+    {
+      id: 'consume',
+      header: t('qy_dc_consume'),
+      className: staticDataTableClassNames.compactHeaderCellRight,
+      cellClassName: staticDataTableClassNames.compactNumericCell,
+      cell: (row) => <QyAmountText quota={row.consume_quota} />,
+    },
+    {
+      id: 'base',
+      header: t('qy_dc_commission_base'),
+      className: staticDataTableClassNames.compactHeaderCellRight,
+      cellClassName: staticDataTableClassNames.compactNumericCell,
+      cell: (row) => <QyAmountText quota={row.commission_base_quota} />,
+    },
+    {
+      id: 'uncounted',
+      header: t('qy_dc_uncounted'),
+      className: staticDataTableClassNames.compactHeaderCellRight,
+      cellClassName: staticDataTableClassNames.compactNumericCell,
+      cell: (row) =>
+        row.uncounted_quota > 0 ? (
+          <QyAmountText quota={row.uncounted_quota} />
+        ) : (
+          <span className='text-muted-foreground'>-</span>
+        ),
+    },
+  ]
+
+  return (
+    <div className='border-border space-y-2 rounded-md border p-3'>
+      <div className='flex items-center justify-between gap-3'>
+        <span className='text-sm font-medium'>
+          {t('qy_dc_by_day_title', {
+            name:
+              props.user.display_name ||
+              props.user.username ||
+              `#${props.user.user_id}`,
+          })}
+        </span>
+        <Button variant='ghost' size='sm' onClick={props.onClose}>
+          {t('qy_dc_by_day_close')}
+        </Button>
+      </div>
+
+      {query.data?.index_ready === false && (
+        <p className='text-destructive flex items-center gap-1.5 text-sm'>
+          <AlertTriangle aria-hidden='true' className='size-4' />
+          {t('qy_dc_by_day_index_missing')}
+        </p>
+      )}
+      {query.isError && (
+        <p className='text-destructive text-sm'>
+          {qyErrorMessage(query.error, t)}
+        </p>
+      )}
+      {!query.isPending && rows.length === 0 && (
+        <p className='text-muted-foreground text-sm'>
+          {t('qy_dc_by_day_empty')}
+        </p>
+      )}
+
+      <StaticDataTable
+        columns={columns}
+        data={rows}
+        getRowKey={(row) => row.date}
+      />
+    </div>
+  )
 }
 
 /**
@@ -90,6 +215,9 @@ export function QyAdminDailyConsume() {
   const [sort, setSort] = useState<QyDailyConsumeSort>('consume_quota')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [page, setPage] = useState(1)
+  // 点开的那一行。同一时刻只展开一行：两条下钻同时在飞会让运营分不清
+  // 面板里的数字属于谁，而这条查询本身就是按人发的。
+  const [openUserId, setOpenUserId] = useState<number | null>(null)
 
   const filters = {
     start_date: toApiDate(startDate),
@@ -182,6 +310,25 @@ export function QyAdminDailyConsume() {
         ),
     },
     {
+      id: 'by-day',
+      header: '',
+      className: staticDataTableClassNames.compactHeaderCell,
+      cellClassName: staticDataTableClassNames.compactCell,
+      cell: (row) => (
+        <Button
+          variant='ghost'
+          size='sm'
+          onClick={() =>
+            setOpenUserId((cur) => (cur === row.user_id ? null : row.user_id))
+          }
+        >
+          {openUserId === row.user_id
+            ? t('qy_dc_by_day_close')
+            : t('qy_dc_by_day')}
+        </Button>
+      ),
+    },
+    {
       id: 'inviter',
       header: t('qy_dc_inviter'),
       className: staticDataTableClassNames.compactHeaderCell,
@@ -203,6 +350,9 @@ export function QyAdminDailyConsume() {
   ]
 
   const resetPage = () => setPage(1)
+  // 翻页/换区间之后那一行可能已经不在当前页上，此时面板自然消失 ——
+  // 留一个指向不在表里的人的面板，比不显示更容易被看错。
+  const openRow = rows.find((row) => row.user_id === openUserId)
 
   return (
     <QySectionPageLayout>
@@ -321,6 +471,15 @@ export function QyAdminDailyConsume() {
           data={rows}
           getRowKey={(row) => row.user_id}
         />
+        {openRow !== undefined && (
+          <ByDayPanel
+            key={openRow.user_id}
+            user={openRow}
+            startDate={filters.start_date}
+            endDate={filters.end_date}
+            onClose={() => setOpenUserId(null)}
+          />
+        )}
         <QyPager
           page={data?.p ?? page}
           pageSize={data?.page_size ?? QY_PAGE_SIZE}

@@ -238,7 +238,10 @@ func adminReport(c *gin.Context) {
 		"funding_gate_mode":       cfg().FundingGateMode,
 		"shadow_funding_denies":   ShadowFundingDenies(),
 		"enforced_funding_denies": EnforcedFundingDenies(),
-		"default_model_group_on":  defaultResolveOn(),
+		// 核销额度与拒绝次数分开报:前者是"请求跑完了、平台自己吃下这一段",
+		// 后者是"请求根本没跑"。合成一个数字既看不出杀伤面也看不出免单量。
+		"shortfall_write_offs":   ShortfallWriteOffs(),
+		"default_model_group_on": defaultResolveOn(),
 	})
 }
 

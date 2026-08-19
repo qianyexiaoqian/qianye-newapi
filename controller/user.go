@@ -753,6 +753,17 @@ func UpdateUser(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if groupChanged {
+		// 返佣模块按 user_id 缓存账号分组,而那个分组决定这个人作为**推广人**
+		// 时的返佣费率与法币折算比例(qianye/modules/commission/grouprate.go)。
+		//
+		// 这一句不能只写在 model.User.Edit 里:本处理器为了把"摘订阅"与改组
+		// 放进同一个事务,直接调的是 EditWithTx,整个绕过了 Edit —— 也就是说
+		// 管理端改分组这条**最常用**的路径,恰恰是那层通知覆盖不到的那一条。
+		// 漏掉的表现是改完之后最长 InviterCacheSecs(默认 300 秒)里,他名下
+		// 产生的佣金仍按旧档计,而费率是冻结的,事后刷缓存也追不回来。
+		model.QyOnUserGroupChanged(updatedUser.Id)
+	}
 	auditPayload := map[string]interface{}{
 		"username": originUser.Username,
 		"id":       updatedUser.Id,

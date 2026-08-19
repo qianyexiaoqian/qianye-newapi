@@ -153,6 +153,11 @@ export function QyAffiliateOverviewBody() {
  *
  * 比例后端以 bps（万分比整数）下发，这里只在展示时除以 100 换成百分比 ——
  * 全链路用整数是为了让"5% 到底是多少"可复现，前端不要把它变回浮点再传回去。
+ *
+ * 三个比例是**这个账号自己**的生效值：费率按推广人所在的用户分组解析，
+ * 所以这一页必须同时回答"我走哪一档、为什么"，否则一个走 vip 档的人看到
+ * 一个数字却不知道它从哪来，客服会一直被问同一个问题。那句解释由
+ * rate.group / rate.group_matched 两位事实驱动，前端不复刻回落规则。
  */
 function PolicyCard(props: { summary: QyCommissionSummary }) {
   const { t } = useTranslation()
@@ -185,6 +190,21 @@ function PolicyCard(props: { summary: QyCommissionSummary }) {
           }),
     },
     {
+      // 「你走哪一档」。上面三行数字全部来自这一档，不写出来的话它们看起来
+      // 像是全站统一的比例 —— 而配了分组档的站点上，那是一句错话。
+      //
+      // group 为空表示后端这次没解析出账号分组（主库读失败），此时既不说
+      // 命中也不说回落：编一个分组名比不说更糟。
+      key: 'tier',
+      label: t('qy_aff_rate_tier'),
+      value:
+        summary.rate.group === ''
+          ? t('qy_aff_rate_tier_unknown')
+          : summary.rate.group_matched
+            ? t('qy_aff_rate_tier_matched', { group: summary.rate.group })
+            : t('qy_aff_rate_tier_fallback', { group: summary.rate.group }),
+    },
+    {
       key: 'holding',
       label: t('qy_aff_holding_days'),
       value: t('qy_aff_days_value', { days: summary.policy.holding_days }),
@@ -205,6 +225,27 @@ function PolicyCard(props: { summary: QyCommissionSummary }) {
           : t('qy_aff_payout_eta_value', {
               days: summary.policy.payout_day_offset,
             }),
+    },
+    // 「已经挣到的那批钱什么时候成熟」。
+    //
+    // 上面那行 T+N 是按**当前配置**算的，只对此后新产生的消费成立；成熟期
+    // 逐行冻结，运营改一次 holding_days 不会追溯已冻结的行。所以这一行给的是
+    // 账本上写着的事实，而不是拿配置反算出来的日期 —— 少了它，改配置那天
+    // 这一页对每个已经有在途佣金的人都在说一句差一天的话。
+    //
+    // 后端下发 0 的语义是"没有需要等的东西"（没有在途佣金，或在途的都已成熟），
+    // 两者对用户是同一句话，所以合并成一行文案，不再细分。
+    {
+      key: 'pending-mature',
+      label: t('qy_aff_pending_mature_at'),
+      value:
+        summary.pending_earliest_mature_at > 0 ? (
+          formatTimestampToDate(summary.pending_earliest_mature_at)
+        ) : (
+          <span className='text-muted-foreground'>
+            {t('qy_aff_pending_mature_none')}
+          </span>
+        ),
     },
     {
       key: 'min-settle',
@@ -239,6 +280,7 @@ function PolicyCard(props: { summary: QyCommissionSummary }) {
           ))}
         </dl>
         <ul className='text-muted-foreground list-inside list-disc space-y-1 text-xs'>
+          <li>{t('qy_aff_rate_scope_note')}</li>
           {summary.policy.exclude_redemption && (
             <li>{t('qy_aff_exclude_redemption')}</li>
           )}

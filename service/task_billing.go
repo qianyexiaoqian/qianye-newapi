@@ -52,6 +52,7 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 		other["upstream_model_name"] = info.UpstreamModelName
 	}
 	attachQuotaSaturation(c, info, other)
+	attachSettleFailure(c, info, other)
 	attachGroupRatioFallback(c, info, other)
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId: info.ChannelId,
@@ -89,11 +90,13 @@ func taskIsSubscription(task *model.Task) bool {
 
 // taskFundingSplit 记录一次任务资金调整**真正落在哪里**。
 //
-// 只有订阅出资才可能分裂成两笔:套餐吃下 SubscriptionApplied,撞到 amount_total
-// 上限的那部分改由钱包补收(WalletShortfall)。钱包出资恒为零值。
+// 只有订阅出资才可能分裂成三笔:套餐吃下 SubscriptionApplied,撞到 amount_total
+// 上限的那部分或者由钱包补收(WalletShortfall),或者在这个模型分组不许钱包出资时
+// 由平台核销(WrittenOff)。钱包出资恒为零值。
 type taskFundingSplit struct {
 	SubscriptionApplied int64
 	WalletShortfall     int64
+	WrittenOff          int64
 }
 
 // taskAdjustFunding 调整任务的资金来源（钱包或订阅），delta > 0 表示扣费，delta < 0 表示退还。
@@ -107,28 +110,41 @@ type taskFundingSplit struct {
 func taskAdjustFunding(task *model.Task, delta int) (taskFundingSplit, error) {
 	var split taskFundingSplit
 	if taskIsSubscription(task) {
-		applied, err := model.SettleUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
+		sub, err := settleSubscriptionDelta(
+			task.UserId, taskUserGroup(task), task.Group,
+			task.PrivateData.SubscriptionId, int64(delta))
 		if err != nil {
 			return split, err
 		}
-		split.SubscriptionApplied = applied
-		shortfall := int64(delta) - applied
-		// 只补收正差额。负差额(退款没能全额退进套餐,例如套餐已被续期清零)
-		// 绝不往钱包里补:那笔钱当初未必是从钱包出的,补进去就是凭空发钱。
-		// 方向与 SubscriptionFunding.Settle 一致。
-		if shortfall <= 0 {
-			return split, nil
-		}
-		if err := model.DecreaseUserQuota(task.UserId, int(shortfall), false); err != nil {
-			return split, err
-		}
-		split.WalletShortfall = shortfall
+		split.SubscriptionApplied = sub.Applied
+		split.WalletShortfall = sub.WalletCharged
+		split.WrittenOff = sub.WrittenOff
 		return split, nil
 	}
 	if delta > 0 {
 		return split, model.DecreaseUserQuota(task.UserId, delta, false)
 	}
 	return split, model.IncreaseUserQuota(task.UserId, -delta, false)
+}
+
+// taskUserGroup 取这个任务的用户分组:**提交那一刻落库的那个值**,历史行回落现读。
+//
+// 两个调用方都拿它当判据的一半:交叉倍率是 (用户分组, 模型分组) 这一对,
+// 钱包出资闸门的第一项也是「用户分组含不含这个模型分组」。任务运行期间用户被
+// 降级/升级时,现读会让预扣与结算落在不同的格子上(详见
+// model.TaskBillingContext.UserGroup)。
+//
+// 读不到时返回空串。两个调用方的 fail 方向都是"和改动前一样":倍率那侧回落到
+// task.Group,闸门那侧的空分组读不到成员资格 —— 所以这里宁可多一次带缓存的
+// GetUserById,也不要把空串当答案用。
+func taskUserGroup(task *model.Task) string {
+	if bc := task.PrivateData.BillingContext; bc != nil && bc.UserGroup != "" {
+		return bc.UserGroup
+	}
+	if user, err := model.GetUserById(task.UserId, false); err == nil {
+		return user.Group
+	}
+	return ""
 }
 
 // taskAdjustTokenQuota 调整任务的令牌额度，delta > 0 表示扣费，delta < 0 表示退还。
@@ -339,6 +355,12 @@ func settleTaskQuotaDelta(
 		other["subscription_id"] = task.PrivateData.SubscriptionId
 		other["subscription_post_delta"] = split.SubscriptionApplied
 		other["wallet_quota_deducted"] = split.WalletShortfall
+		// 核销掉的那一段必须单独出现:它既没进套餐也没进钱包,而账单金额
+		// (logQuota)照样把它算了进去。少这一个键,对账的人看到的就是
+		// 「计费 N、套餐 + 钱包合计 < N」而没有任何解释。
+		if split.WrittenOff != 0 {
+			other["subscription_written_off"] = split.WrittenOff
+		}
 	}
 	for _, clamp := range clamps {
 		attachQuotaSaturationToOther(other, clamp)
@@ -381,15 +403,7 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	// 只 pin 模型分组等于只 pin 了一半 —— 任务运行期间用户被降级/升级,预扣与结算
 	// 就落在矩阵的两个不同格子上(详见 model.TaskBillingContext.UserGroup)。
 	// 历史行没有这个字段,回落到现读,逐位等于改动前。
-	userGroup := ""
-	if bc := task.PrivateData.BillingContext; bc != nil {
-		userGroup = bc.UserGroup
-	}
-	if userGroup == "" {
-		if user, err := model.GetUserById(task.UserId, false); err == nil {
-			userGroup = user.Group
-		}
-	}
+	userGroup := taskUserGroup(task)
 	group := task.Group
 	if group == "" {
 		group = userGroup

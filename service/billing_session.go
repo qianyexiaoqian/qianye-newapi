@@ -26,10 +26,9 @@ import (
 type BillingSession struct {
 	relayInfo        *relaycommon.RelayInfo
 	funding          FundingSource
-	preConsumedQuota int  // 实际预扣额度（信任用户可能为 0）
+	preConsumedQuota int  // 实际预扣额度
 	tokenConsumed    int  // 令牌额度实际扣减量
 	extraReserved    int  // 发送前补充预扣的额度（订阅退款时需要单独回滚）
-	trusted          bool // 是否命中信任额度旁路
 	fundingSettled   bool // funding.Settle 已成功，资金来源已提交
 	settled          bool // Settle 全部完成（资金 + 令牌）
 	refunded         bool // Refund 已调用
@@ -77,6 +76,7 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	if sub, ok := s.funding.(*SubscriptionFunding); ok {
 		s.relayInfo.SubscriptionPostDelta += sub.SettleApplied()
 		s.relayInfo.SubscriptionWalletShortfall += sub.SettleWalletShortfall()
+		s.relayInfo.SubscriptionWrittenOff += sub.SettleWrittenOff()
 	}
 	s.settled = true
 	return tokenErr
@@ -167,7 +167,7 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.settled || s.refunded || s.trusted || targetQuota <= s.preConsumedQuota {
+	if s.settled || s.refunded || targetQuota <= s.preConsumedQuota {
 		return nil
 	}
 
@@ -192,20 +192,30 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 }
 
 // ---------------------------------------------------------------------------
-// PreConsume — 统一预扣费入口（含信任额度旁路）
+// PreConsume — 统一预扣费入口
 // ---------------------------------------------------------------------------
 
-// preConsume 执行预扣费：信任检查 -> 令牌预扣 -> 资金来源预扣。
+// preConsume 执行预扣费：令牌预扣 -> 资金来源预扣。
 // 任一步骤失败时原子回滚已完成的步骤。
 func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIError {
 	effectiveQuota := quota
 
-	// ---- 信任额度旁路 ----
-	if s.shouldTrust(c) {
-		s.trusted = true
-		effectiveQuota = 0
-		logger.LogInfo(c, fmt.Sprintf("用户 %d 额度充足, 信任且不需要预扣费 (funding=%s)", s.relayInfo.UserId, s.funding.Source()))
-	} else if effectiveQuota > 0 {
+	// ══════════ 这里曾经有一条「信任额度旁路」,已经删除 ══════════
+	//
+	// 旧逻辑:余额(或令牌余额)超过 common.GetTrustQuota()(硬编码 10×QuotaPerUnit
+	// = $10)时把 effectiveQuota 置 0,于是令牌预扣与资金预扣**两步一起跳过** ——
+	// model.TryReserveUserQuota 那把 `WHERE quota >= ?` 的原子闩根本没被调用。
+	//
+	// 后果是全站唯一的额度上限在并发下彻底失效:N 路请求各自读到同一个余额快照、
+	// 各自判定「这个人付得起」,中间没有任何预占把额度扣住,结算时
+	// model.DecreaseUserQuota 无下限地扣。实测余额 $10.000002 的账号 50 路并发
+	// 打到 -$90,200 路打到 -$328,损失随并发线性放大且无上界;令牌
+	// remain_quota 这条「这把 key 最多花多少」的硬约束同样被击穿到负数。
+	//
+	// 旁路省下的是每请求一次原子预留的写入 —— 拿一个可被任意放大的资损换它,
+	// 不是一笔划算的买卖。余额充足的用户走同一条预留路径只会成功,
+	// 唯一被改变的就是「余额到底够不够」这件事从此由数据库说了算。
+	if effectiveQuota > 0 {
 		logger.LogInfo(c, fmt.Sprintf("用户 %d 需要预扣费 %s (funding=%s)", s.relayInfo.UserId, logger.FormatQuota(effectiveQuota), s.funding.Source()))
 	}
 
@@ -336,42 +346,6 @@ func logPreConsumeRejected(c *gin.Context, info *relaycommon.RelayInfo, reason s
 		reason, info.UserId, info.TokenId, info.OriginModelName, info.UsingGroup, quota, err.Error()))
 }
 
-// shouldTrust 统一信任额度检查，适用于钱包和订阅。
-func (s *BillingSession) shouldTrust(c *gin.Context) bool {
-	// 异步任务（ForcePreConsume=true）必须预扣全额，不允许信任旁路
-	if s.relayInfo.ForcePreConsume {
-		return false
-	}
-
-	trustQuota := common.GetTrustQuota()
-	if trustQuota <= 0 {
-		return false
-	}
-
-	// 检查令牌是否充足
-	tokenTrusted := s.relayInfo.TokenUnlimited
-	if !tokenTrusted {
-		tokenQuota := c.GetInt("token_quota")
-		tokenTrusted = tokenQuota > trustQuota
-	}
-	if !tokenTrusted {
-		return false
-	}
-
-	switch s.funding.Source() {
-	case BillingSourceWallet:
-		return s.relayInfo.UserQuota > trustQuota
-	case BillingSourceSubscription:
-		// 订阅不能启用信任旁路。原因：
-		// 1. PreConsumeUserSubscription 要求 amount>0 来创建预扣记录并锁定订阅
-		// 2. SubscriptionFunding.PreConsume 忽略参数，始终用 s.amount 预扣
-		// 3. 若信任旁路将 effectiveQuota 设为 0，会导致 preConsumedQuota 与实际订阅预扣不一致
-		return false
-	default:
-		return false
-	}
-}
-
 // syncRelayInfo 将 BillingSession 的状态同步到 RelayInfo 的兼容字段上。
 func (s *BillingSession) syncRelayInfo() {
 	info := s.relayInfo
@@ -485,6 +459,9 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 				amount:    subConsume,
 
 				usingGroup: relayInfo.UsingGroup,
+				// 结算差额撞上限时要问「用户分组含不含 usingGroup」,零值会被
+				// 闸门读成"不含",所以这里必须给真值。
+				userGroup: relayInfo.UserGroup,
 			},
 		}
 		// 必须传 subConsume 而非 preConsumedQuota，保证 SubscriptionFunding.amount、

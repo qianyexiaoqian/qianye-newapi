@@ -14,15 +14,17 @@ package commission
 // 本文件把它分成三层,并保留全站汇率作为最后一层,使任何存量站点升级上来、
 // 什么都不配时行为一分不变。
 //
-// # 口径:按【邀请人(上线)】的分组,与费率那一档**相反**
+// # 口径:按【邀请人(上线)】的分组,与费率那一档**同源**
 //
-// grouprate.go 的三档费率取的是**下线**的分组(那里的文件头逐条讲了理由)。
-// 法币比例取的是**上线**的分组。这不是疏忽,两者回答的是两个不同的问题:
+// grouprate.go 的三档费率与本文件的折算比例取的是**同一个人在同一时刻**的
+// 账号分组:收款人自己的分组。两者由 pricing.go 的 resolveInviterPricing 一处
+// 解析、一个字符串喂两档,谁都不能单独决定"取谁的分组"。
 //
-//	费率     = "从下线掉的这笔额度里,平台愿意分出去几个点"  → 跟毛利走 → 下线分组
-//	法币比例 = "这个推广者的佣金余额,平台按什么价结给他"      → 跟收款人走 → 上线分组
+// 曾经不是这样:本档一直按上线分组,而费率那一档按**下线**分组。那个不一致
+// 在账面上完全看不出来 —— 一条 accrual 行的 rate_group 记着下线的分组、
+// usd_rate 却是按上线分组算出来的,三条恒等式全部成立。2026-08-18 统一到上线。
 //
-// 三条理由:
+// 按上线分组的三条理由(费率那一侧的理由见 grouprate.go 文件头):
 //
 //  1. **谁被折算就用谁的档。** available_fiat 是上线的钱,提现单是上线在提,
 //     打款也是打给上线。用下线的分组决定上线能拿多少法币,等于让一个上线
@@ -33,11 +35,9 @@ package commission
 //     同一个上线的余额是 N 个下线分组的加权混合,界面上根本画不出"你走的是
 //     哪一层" —— 而那正是本档要求的东西。
 //
-//  3. **自助加薪的风险与费率那一档不同量级。** 费率那里拒绝"按上线分组",
-//     是因为费率乘的是**别人**的消费额、上不封顶,买一次高档位就能永久放大
-//     名下所有下线带来的支出。法币比例乘的是上线**自己已经挣到**的那笔余额,
-//     总额早已被费率档封死;调高比例只改变同一笔佣金的计价单位,不会凭空
-//     多出一分佣金。而且"VIP 推广者按更高比例结汇"本来就是运营想要的杠杆。
+//  3. **总额已被费率档封死。** 折算比例乘的是上线自己已经挣到的那笔余额,
+//     调高比例只改变同一笔佣金的计价单位,不会凭空多出一分佣金。
+//     "VIP 推广者按更高比例结汇"本来就是运营想要的杠杆。
 //
 // # 层级
 //
@@ -107,9 +107,11 @@ const (
 
 // FiatRate 是一条按分组的法币折算比例。
 //
-// 刻意**不复用** qy_commission_group_rate 那张表:那一行的三档费率按下线分组
-// 判定,这一列按上线分组判定。把两个口径塞进同一行,意味着同一个 group_name
-// 在同一行里要被拿去比对两个不同的人 —— 这正是资金代码里最贵的那种误读。
+// 刻意**不复用** qy_commission_group_rate 那张表,即便两者现在按同一个人的
+// 分组判定:一张表意味着"给某个分组配法币比例"必须连带填三个返佣百分比
+// (反之亦然),而运营调这两件事的节奏完全不同 —— 费率是招募政策,比例是
+// 结汇价格。两张表各自可增删,层级与回落也各写各的(费率回落全局默认值,
+// 比例回落兜底档再回落全站汇率),塞进一行会让两套回落规则互相绊住。
 type FiatRate struct {
 	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
 
@@ -312,6 +314,10 @@ func fiatRateFor(rule *FiatRate, s opSettings) fiatDecision {
 //
 // group 一律是**邀请人**的分组(口径见文件头)。空分组按 default 判定,
 // 与 billingGroup 在费率那一侧的口径完全一致。
+//
+// **不要直接调用它。** 计佣路径一律走 pricing.go 的 resolveInviterPricing,
+// 由那里保证费率与本档取的是同一个人同一时刻的分组;直接调用等于重新打开
+// 两档口径分叉的那道口子。由 pricing_single_resolver_guard_test.go 钉住。
 func resolveFiatRate(ctx context.Context, group string, s opSettings) fiatDecision {
 	g := billingGroup(group)
 	var rule *FiatRate
@@ -324,24 +330,6 @@ func resolveFiatRate(ctx context.Context, group string, s opSettings) fiatDecisi
 		fiatRateDegrade.note(d.Degraded)
 	}
 	return d
-}
-
-// inviterFiatRate 是计佣写入侧的入口:按邀请人此刻的账号分组解析比例。
-//
-// 解析不到邀请人的分组时**跳过分组层**而不是按 default 分组判定:那两件事
-// 的结果可能差一整档比例,而"主库读失败"绝不该被当成"这个人在 default 组"。
-// 走到这一步说明主库刚刚出过错,回落 + 留痕比猜一个分组安全。
-func inviterFiatRate(ctx context.Context, inviterId int, s opSettings) fiatDecision {
-	e, _, err := resolveInviter(ctx, inviterId)
-	if err != nil {
-		d := fiatRateFor(nil, s)
-		fiatRateDegrade.note("读取上线分组失败,已跳过分组档: " + err.Error())
-		if d.Degraded != "" {
-			fiatRateDegrade.note(d.Degraded)
-		}
-		return d
-	}
-	return resolveFiatRate(ctx, e.InviteeGroup, s)
 }
 
 // ───────────────────────── 写入 ─────────────────────────

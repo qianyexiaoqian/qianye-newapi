@@ -182,6 +182,9 @@ export const qyKeys = {
   /** 日消费明细：一行一个用户在某个日期区间内的消费额（数据源是主库 logs）。 */
   adminDailyConsume: (params: unknown) =>
     [...qyKeys.all, 'admin', 'commission', 'daily-consume', params] as const,
+  /** 日消费明细的按天下钻：一行一天，只查一个人（点开主表某一行才发）。 */
+  adminDailyConsumeByDay: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'commission', 'daily-consume', 'by-day', params] as const,
   /** 我名下的下线在某个日期区间内的计佣基数（用户端，口径是计佣表）。 */
   inviteeDaily: (params: unknown) =>
     [...qyKeys.all, 'commission', 'invitee-daily', params] as const,

@@ -757,6 +757,11 @@ func (user *User) Update(updatePassword bool) error {
 	}); err != nil {
 		return err
 	}
+	// 这条路可以改 group(管理端编辑用户)。不比对新旧值就通知,是刻意的:
+	// UpdateWithTx 之后 user 已经被回读成库里的最新一行,原值早就没了,而
+	// 通知的代价只是删掉一条进程内缓存、下次读时回一次主库。漏通知的代价
+	// 则是那个人作为推广人的返佣费率错上五分钟,且那五分钟的费率被冻结进账本。
+	QyOnUserGroupChanged(user.Id)
 	if err := updateUserCache(*user); err != nil {
 		return err
 	}
@@ -818,6 +823,8 @@ func (user *User) Edit(updatePassword bool) error {
 	}); err != nil {
 		return err
 	}
+	// EditWithTx 的 updates 里显式带着 "group",理由同 Update。
+	QyOnUserGroupChanged(user.Id)
 	if err := updateUserCache(*user); err != nil {
 		return err
 	}

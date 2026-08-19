@@ -22,7 +22,11 @@ import { api } from '@/lib/api'
 
 import { QY_API_PREFIX, qyErrorFromBlobFailure, qyGet } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
-import type { QyDailyConsumePage, QyDailyConsumeSort } from './types'
+import type {
+  QyDailyConsumeByDayPage,
+  QyDailyConsumePage,
+  QyDailyConsumeSort,
+} from './types'
 
 export type QyDailyConsumePaging = {
   p: number
@@ -121,4 +125,33 @@ export async function exportQyDailyConsume(
   } catch (error) {
     throw await qyErrorFromBlobFailure(error)
   }
+}
+
+/**
+ * 按天下钻。对应 `GET /api/qy/admin/commission/daily-consume/by-day`。
+ *
+ * 为什么是单独一条接口、而不是给主表加一个天维度：主表一行 = 一个人，
+ * 行数不随天数膨胀，20000 行的上界才守得住“多少人”这个语义；把天加进
+ * 主表的 GROUP BY 之后，31 天区间下同一份数据会变成人数 × 天数，上界的含义、
+ * 排序键、导出的 CSV 全部跟着换一张表 —— 而运营打开这一页的第一个问题
+ * 始终是“谁在花钱”。
+ *
+ * `enabled` 由调用方给：这条查询只在某一行被点开时才发，不能跟着主表一起拉。
+ */
+export function qyAdminDailyConsumeByDayQuery(params: {
+  user_id: number
+  start_date?: string
+  end_date?: string
+}) {
+  const query: Record<string, unknown> = { user_id: params.user_id }
+  if (params.start_date) query.start_date = params.start_date
+  if (params.end_date) query.end_date = params.end_date
+  return queryOptions({
+    queryKey: qyKeys.adminDailyConsumeByDay(query),
+    queryFn: () =>
+      qyGet<QyDailyConsumeByDayPage>(
+        '/admin/commission/daily-consume/by-day',
+        query
+      ),
+  })
 }

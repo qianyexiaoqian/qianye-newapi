@@ -2,28 +2,44 @@ package commission
 
 // grouprate.go —— 按分组差异化的返佣费率。
 //
-// # 口径:按【被邀请人(下线)】的分组,不是邀请人的分组
+// # 口径:按【推广人(上线)自己】的分组,不是被推广人的分组
 //
 // 这两种口径的业务含义完全不同,必须选一个并且讲清楚:
 //
-//	按下线分组   = "这个用户带来的收益,按他自己的档位返"
-//	按邀请人分组 = "这个推广者的等级决定他能拿几个点"
+//	按上线分组 = "这个推广者的等级决定他能拿几个点"
+//	按下线分组 = "这个用户带来的收益,按他自己的档位返"
 //
-// 本项目选前者,三条理由:
+// 本项目选前者。**这一档曾经按下线分组**,2026-08-18 改成上线分组,理由:
 //
-//  1. **费率要跟着毛利走。** 佣金基数是下线消费/充值掉的额度,而平台从这笔
-//     额度上赚多少,取决于下线所在分组的倍率 —— 低价分组同样的上游成本只
-//     换回更少的额度,毛利本来就薄。用邀请人的分组算,等于让"推广者自己
-//     买了什么档位"去决定平台为**别人**的消费付多少钱,费率与毛利彻底脱钩,
-//     一个买了低价分组的大客户被高档位推广者邀请就会直接倒贴。
+//  1. **费率是推广人自己的等级属性,不该由被推广的人决定。** 按下线分组时,
+//     下线自己买个套餐换了分组,就**静默改掉了上线的返佣比例** —— 推广人
+//     完全不知道自己的费率被别人改了,而账本每一行仍然自洽、base × rate = gross
+//     照样成立、没有任何降级计数器会响。一个推广人无法解释、无法预测、也无法
+//     影响的费率,不是一个可以拿去招募推广人的费率。
 //
-//  2. **按邀请人分组可以自助加薪。** 邀请人只要给自己买一个高档位分组,
-//     名下所有下线的返佣比例立刻整体上浮 —— 一次消费换永久费率提升,
-//     是标准的套利路径。按下线分组则要求他去说服每一个下线换档,而下线
-//     换到高档位本身就意味着平台单位用量收入更高,激励方向是自洽的。
+//  2. **可解释,而且能在界面上画出来。** 上线打开"我的推广"要看见"你现在走
+//     vip 档,消费返 8%"。按下线分组的话,他的实际费率是名下 N 个下线各自
+//     分组的加权混合,界面上根本写不出"你走哪一档",只能写一句全局默认值 ——
+//     而那个数字对配了分组档的站点是**错的**。
 //
-//  3. **可解释。** 一条计佣行冻结的是"这个下线当时在哪个分组、按几个点返",
-//     用户和客服看同一行就能对上,不需要再去查邀请人当时的档位。
+//  3. **与法币折算比例同源。** fiatrate.go 的三层比例一直按上线分组解析
+//     (available_fiat 是上线的钱)。两档取不同人的分组时,同一次计佣里
+//     "费率按 A 的分组、折算按 B 的分组",没有任何人能一眼说出这笔钱是怎么来的。
+//     现在两者取的是**同一个人在同一时刻**的分组,由 resolveInviterPricing
+//     一处解析、pricing_single_resolver_guard_test.go 钉死。
+//
+// # 放弃的那条理由,以及它换来的风险
+//
+// 旧口径的核心论据是"费率要跟着毛利走":佣金基数是下线掉的额度,而平台从这笔
+// 额度上赚多少取决于**下线**分组的倍率。这条论据本身没错,代价是上面第 1 条。
+// 项目方拍板选可解释性。
+//
+// 换来的已知风险是**自助加薪**:上线给自己买一个高档位分组,名下所有下线的
+// 返佣比例立刻整体上浮。控制手段有三个,都已在库里:
+//
+//   - 分组费率表是运营显式配的,不配就全站一个默认值,没有自助空间;
+//   - MaxPerOrderQuota / DailyCapQuota 封住单笔与单日上限;
+//   - 高档位分组本身要花钱买,且换组会立刻反映到他自己的**计价倍率**上。
 //
 // # 冻结
 //
@@ -227,7 +243,12 @@ func billingGroup(g string) string { return groupname.Effective(g) }
 type rateDecision struct {
 	// Units 是本次计佣生效的费率(百分比 × 100)。
 	Units int
-	// Group 是被邀请人当时所在的分组,原样记录(即便没有命中规则)。
+	// Group 是**上线**当时所在的分组,原样记录(即便没有命中规则)。
+	//
+	// 空串是一个独立含义:主库读不到上线那一行,本次整个跳过了分组层
+	// (见 resolveInviterPricing)。它与 "default" 不是一回事 —— 后者是
+	// "确实解析到了,而这个人就在默认分组"。冻结进 rate_group 之后,
+	// 空串这一行事后能被认出来是一次降级。
 	Group string
 	// Matched 表示是否命中了分组规则。只用于日志与管理端解释,不参与算钱。
 	Matched bool
@@ -235,7 +256,7 @@ type rateDecision struct {
 
 // resolveRate 决定一次计佣按几个点返。
 //
-// group 一律是**被邀请人**的分组(口径见文件头)。共有三档比例:
+// group 一律是**上线(推广人)**的分组(口径见文件头)。共有三档比例:
 //
 //	SourceConsume     消费档
 //	SourceRedemption  兑换码档(可空,见下)
@@ -243,29 +264,41 @@ type rateDecision struct {
 //
 // 未配置或被禁用的分组回落全局默认费率。分组名为空按 default 分组判定
 // (见 billingGroup),因此 "" 也可能命中一条规则 —— 那正是它应该走的那一条。
+//
+// **不要直接调用它。** 计佣路径一律走 resolveInviterPricing,那里同时解析费率
+// 与法币比例、并保证两者取自同一个人同一时刻的分组;直接调用等于把"取谁的
+// 分组"这个决定重新散到各个调用点上,而那正是本轮在消灭的形状。
+// 由 pricing_single_resolver_guard_test.go 钉住。
 func resolveRate(ctx context.Context, group, source string, s opSettings) rateDecision {
 	g := billingGroup(group)
 	// Group 记的是**判定用的那个值**而不是原始输入:流水行冻结的分组必须能
 	// 让人拿着它复算出同一个费率,记原始的 "VIP" 而按 "vip" 算是解释不通的。
-	d := rateDecision{Group: g}
 	rule, matched := groupRates(ctx)[g]
-	d.Matched = matched
+	return rateDecision{Units: rateUnitsFor(rule, matched, source, s), Group: g, Matched: matched}
+}
 
+// rateUnitsFor 是三档取值的纯函数部分:命中的规则(matched 为假时 rule 无意义)
+// 加上全局配置,决定本次按几个点返。
+//
+// 抽出来不是为了让 resolveRate 短一行,而是因为**降级路径也要用它**:
+// 主库读不到上线分组时,resolveInviterPricing 必须跳过分组层拿到纯全局档,
+// 而那条路上根本没有分组名可以喂给 resolveRate。让两条路走同一个 switch,
+// 是"降级时的费率与没配分组时的费率完全一致"这条不变量的唯一保证。
+func rateUnitsFor(rule GroupRate, matched bool, source string, s opSettings) int {
 	switch source {
 	case SourceConsume:
-		d.Units = s.ConsumeRateUnits
 		if matched {
-			d.Units = rule.ConsumeRateUnits
+			return rule.ConsumeRateUnits
 		}
+		return s.ConsumeRateUnits
 	case SourceRedemption:
-		d.Units = redemptionRateUnits(rule, matched, s)
+		return redemptionRateUnits(rule, matched, s)
 	default:
-		d.Units = s.TopupRateUnits
 		if matched {
-			d.Units = rule.TopupRateUnits
+			return rule.TopupRateUnits
 		}
+		return s.TopupRateUnits
 	}
-	return d
 }
 
 // redemptionRateUnits 是兑换码那一档的取值顺序。

@@ -42,11 +42,28 @@ func TestCalcGrossKeepsFullPrecision(t *testing.T) {
 
 func TestCapGross(t *testing.T) {
 	g := decimal.RequireFromString("120.5")
-	assert.Equal(t, "120.5", capGross(g, 0).String(), "上限为 0 表示不限制")
-	assert.Equal(t, "100", capGross(g, 100).String())
-	assert.Equal(t, "120.5", capGross(g, 1000).String())
-	// 冲正是负额,封顶必须对称,否则一笔巨额退款会把邀请人的余额抽干。
-	assert.Equal(t, "-100", capGross(g.Neg(), 100).String())
+
+	// 第二个返回值是"削掉了多少"。它必须与封顶后的金额一起交出来,否则
+	// 那一行从此 base × rate ≠ gross 而没有任何字段解释得了差额。
+	for _, tc := range []struct {
+		name         string
+		gross        decimal.Decimal
+		cap          int64
+		want, shaved string
+	}{
+		{"上限为 0 表示不限制", g, 0, "120.5", "0"},
+		{"触顶", g, 100, "100", "20.5"},
+		{"没触顶", g, 1000, "120.5", "0"},
+		// 冲正是负额,封顶必须对称,否则一笔巨额退款会把邀请人的余额抽干。
+		{"负额触顶", g.Neg(), 100, "-100", "-20.5"},
+	} {
+		got, shaved := capGross(tc.gross, tc.cap)
+		assert.Equal(t, tc.want, got.String(), tc.name)
+		assert.Equal(t, tc.shaved, shaved.String(), tc.name+" 的削减量")
+		// 恒等式:封顶后的金额 + 削减量 == 原始金额。落库之后它就是
+		// gross_amount + capped_amount == base_quota × rate_bps / 10000。
+		assert.True(t, got.Add(shaved).Equal(tc.gross), tc.name+" 削减量必须补得平")
+	}
 }
 
 // TestNormalizeIdemKeyIsInjective 确认超长键不会被截断成同一个值。
@@ -69,33 +86,44 @@ func TestNormalizeIdemKeyIsInjective(t *testing.T) {
 func TestIdemKeyShapes(t *testing.T) {
 	vip := rateDecision{Units: 500, Group: "vip"}
 	fx := fiatDecision{Rate: decimal.NewFromFloat(7.3), Layer: fiatLayerGroup, Group: "vip"}
-	assert.Equal(t, "consume:7:20260730:vip:500:7.3:u3", consumeIdemKey(3, 7, "20260730", vip, fx))
+	assert.Equal(t, "consume:7:20260730:vip:500:7.3:h7:u3", consumeIdemKey(3, 7, "20260730", vip, fx, 7))
 
 	// 费率或分组一变就必须换一行:日聚合桶是"边增长边结算"的,把新费率
 	// 算出的 gross 累加进一行标着旧费率的记录里,那一行从此
 	// base × rate ≠ gross,永远对不平也没法向用户解释。
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx),
-		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 800, Group: "vip"}, fx))
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx),
-		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "default"}, fx))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
+		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 800, Group: "vip"}, fx, 7))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
+		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "default"}, fx, 7))
 	// 法币折算比例同理:usd_rate 不参与 gross 的算术,但结算按它的加权平均
 	// 折算 available_fiat —— 一行标着 7.3 却有一半 gross 是在比例改成 7.5
 	// 之后挣的,那半笔钱就永久按旧比例入账,而账面上看不出这里调过价。
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx),
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
 		consumeIdemKey(3, 7, "20260730", vip,
-			fiatDecision{Rate: decimal.NewFromFloat(7.5), Layer: fiatLayerGroup, Group: "vip"}))
+			fiatDecision{Rate: decimal.NewFromFloat(7.5), Layer: fiatLayerGroup, Group: "vip"}, 7))
 	// Matched / Layer / Group 只用于日志与管理端解释,不参与算钱,
 	// 更不该影响幂等键 —— 同一个比例走哪一层落到账上是同一笔钱。
-	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, fx),
+	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
 		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "vip", Matched: true},
-			fiatDecision{Rate: decimal.NewFromFloat(7.3), Layer: fiatLayerDefault}))
+			fiatDecision{Rate: decimal.NewFromFloat(7.3), Layer: fiatLayerDefault}, 7))
 
 	// 上线换了就必须换一行。ON CONFLICT 的 DoUpdates 只累加金额、不改
 	// inviter_id,上线不在键里的话,换绑当天下线后续的消费会撞上旧上线那一行,
 	// 钱被原子累加进去而 inviter_id 保持旧值 —— 结结实实发给了前一个上线,
 	// 而三条恒等式全部成立,没有任何降级计数器会响。
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx),
-		consumeIdemKey(4, 7, "20260730", vip, fx))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
+		consumeIdemKey(4, 7, "20260730", vip, fx, 7))
+
+	// 成熟期变了也必须换一行。日聚合桶的 ON CONFLICT 只累加金额、**不改
+	// mature_at**:成熟期不在键里的话,运营中午把 holding_days 从 7 改成 0,
+	// 当天已经建过桶的下线在那之后的消费会累加进一行标着旧成熟期的记录里,
+	// 那部分钱按旧策略再压 7 天,而界面按新配置写着 T+1。
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
+		consumeIdemKey(3, 7, "20260730", vip, fx, 0))
+	// 负的成熟期与 0 必须落同一个键:bucketMatureAt 把负数钳到 0,键里不钳的话
+	// 同一个成熟时刻会分裂成两个桶。
+	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, fx, 0),
+		consumeIdemKey(3, 7, "20260730", vip, fx, -1))
 
 	assert.Equal(t, "topup:TX-1", topupIdemKey(" TX-1 "))
 	assert.Equal(t, "redemption:99", redemptionIdemKey(99))

@@ -56,9 +56,14 @@ func TestQyTaskSettlementHookPointExists(t *testing.T) {
 		"RecalculateTaskQuotaByTokens 里缺少 QyGroupTaskRatio 挂载点:"+
 			"任务类模型的分组级折扣会在差额结算时被追扣回全局价,而管理界面上看不出来")
 
-	fallbackIdx := qySvcIndexOf(seq, "GetUserById")
+	// 分组解析现在住在 taskUserGroup 里(提交时刻落库的 BillingContext.UserGroup,
+	// 历史行回落 GetUserById)。它有两个调用方 —— 差额结算这一处,以及钱包出资闸门
+	// 在结算尾巴上的那一处 —— 两处必须拿到同一个用户分组,所以判据只有一份。
+	// 这条断言守的东西一个字没变:分组必须先解析出来,QyGroupTaskRatio 才有意义。
+	fallbackIdx := qySvcIndexOf(seq, "taskUserGroup")
 	require.GreaterOrEqual(t, fallbackIdx, 0,
-		"RecalculateTaskQuotaByTokens 里找不到分组回落(task.Group 为空时读 users.group)")
+		"RecalculateTaskQuotaByTokens 里找不到分组解析(taskUserGroup:"+
+			"提交时刻的 BillingContext.UserGroup,为空时回落 users.group)")
 	assert.Greater(t, hookIdx, fallbackIdx,
 		"QyGroupTaskRatio 必须排在分组解析之后:提前调用会拿空分组去查规则,永远查不到")
 }
