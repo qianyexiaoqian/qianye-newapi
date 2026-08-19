@@ -152,14 +152,16 @@ var fieldConsumers = map[string]consumer{
 	"commission.refund_clawback":               {"qianye/modules/commission/hook.go", "退款时是否追回已发佣金"},
 
 	// ─────────────────────────── withdraw ───────────────────────────
-	"withdraw.enabled":                {"qianye/guard/guard.go", "featureOn(FlagWithdraw)"},
-	"withdraw.methods":                {"qianye/modules/withdraw/validate.go", "允许的提现方式,不在表内即拒绝"},
-	"withdraw.min_quota":              {"qianye/modules/withdraw/validate.go", "最低提现额度"},
-	"withdraw.min_fiat_amount":        {"qianye/modules/withdraw/pricing.go", "法币方式的最低金额"},
-	"withdraw.fiat_currency":          {"qianye/modules/withdraw/create.go", "法币币种,落单时冻结"},
+	"withdraw.enabled":         {"qianye/guard/guard.go", "featureOn(FlagWithdraw)"},
+	"withdraw.methods":         {"qianye/modules/withdraw/validate.go", "允许的提现方式,不在表内即拒绝"},
+	"withdraw.min_quota":       {"qianye/modules/withdraw/validate.go", "最低提现额度"},
+	"withdraw.min_fiat_amount": {"qianye/modules/withdraw/create.go", "法币方式的最低金额"},
+	// 币种的消费点在**佣金侧**:提现单的币种取自 qy_commission_balance.fiat_currency,
+	// 而那一列是结算时按当时的这个配置冻上去的。提现模块自己不再读它 ——
+	// 读当前配置等于让运营改一次标签就把全部历史金额换成另一种钱。
+	"withdraw.fiat_currency": {"qianye/modules/commission/settle.go",
+		"法币币种,结算时冻进佣金余额行;提现单原样沿用那一列"},
 	"withdraw.fiat_fee_bps":           {"qianye/modules/withdraw/create.go", "法币打款手续费率"},
-	"withdraw.rate_freeze_mode":       {"qianye/modules/withdraw/pricing.go", "汇率取运营配置还是固定值"},
-	"withdraw.rate_freeze_fixed":      {"qianye/modules/withdraw/pricing.go", "固定汇率取值"},
 	"withdraw.auto_credit_on_approve": {"qianye/modules/withdraw/credit.go", "审核通过是否自动到账"},
 	"withdraw.daily_max_count":        {"qianye/modules/withdraw/create.go", "每日提现笔数上限"},
 	"withdraw.payee_account_max":      {"qianye/modules/withdraw/payee.go", "每人可保存的收款方式数量"},
@@ -174,6 +176,14 @@ var fieldConsumers = map[string]consumer{
 	"withdraw.max_quota_per_order":    {"qianye/modules/withdraw/validate.go", "单笔提现上限"},
 	"withdraw.daily_max_quota":        {"qianye/modules/withdraw/create.go", "单日提现总额上限"},
 	"withdraw.pii_retention_days":     {"qianye/modules/withdraw/payee.go", "收款信息密文的保留天数"},
+	// 这两个键随「提现侧独立汇率」一并下线。消费点指向 defaults.go 而不是删掉登记:
+	// 自检面板必须能回答"我 YAML 里还写着这一行,它现在起什么作用",
+	// 而答案是"什么作用都没有,只会在启动时喊一声"。(同 group_matrix 那两个键)
+	"withdraw.rate_freeze_mode": {"qianye/config/defaults.go",
+		"⚠ 已下线:提现单的法币金额现在恒等于冻结时从佣金账本削走的那个数,提现侧没有自己的汇率。" +
+			"加载时由 adoptRetiredRateFreeze 告警并忽略"},
+	"withdraw.rate_freeze_fixed": {"qianye/config/defaults.go",
+		"⚠ 已下线:理由同上。此前它会让单据金额与账本金额差出一个倍数"},
 	"withdraw.proof_enabled": {"qianye/modules/withdraw/proof.go",
 		"是否允许给法币提现附一张凭证图片(经 ProofOn(),已并入「法币方式已开放」这一前提);" +
 			"关掉后上传接口直接拒绝,已存在的图片仍可下载直到被清理"},

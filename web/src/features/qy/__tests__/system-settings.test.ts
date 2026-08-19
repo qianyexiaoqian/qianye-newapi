@@ -60,6 +60,7 @@ const ALL_ON: QyFeatures = {
   violation: true,
   ticket: true,
   group_matrix: true,
+  pay_password: true,
 }
 
 /** 上游抽屉的最小复刻：一个分组、两个折叠项。 */
@@ -160,6 +161,7 @@ describe('并进系统设置抽屉的菜单项', () => {
         violation: false,
         ticket: false,
         group_matrix: false,
+        pay_password: false,
       },
       ROLE.SUPER_ADMIN,
       t

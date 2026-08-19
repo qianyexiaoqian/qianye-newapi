@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/service/twophase"
 
 	"gorm.io/gorm"
 )
@@ -671,11 +672,18 @@ func planFullRefund(ctx context.Context, gdb *gorm.DB, act *Activity) error {
 
 // convergeExcluded 收敛封盘时未决的参与。
 //
-// **退款由资金单的终态驱动,永不投机性地登记。** 三种情况:
+// **退款由资金单的终态驱动,永不投机性地登记。** 四种情况:
 //
-//	Success           → 钱确实收了但没参加,登记退款
-//	Failed            → 什么都没发生,标 failed
-//	pending/uncertain → 不动,下一轮再看;超时落 flag 转人工
+//	Success                  → 钱确实收了但没参加,登记退款
+//	Failed + 探针说主库没动    → 什么都没发生,标 failed
+//	Failed + 探针说主库动过    → 钱真的扣了,照样登记退款,并落一条 flag
+//	其余(含探针判不出来)      → 不动,下一轮再看;超时落 flag 转人工
+//
+// Failed 必须再探一次针,不能直接判 failed:markFailed 对**任何** mainErr 都置
+// Failed,而 commit 阶段断连时事务其实已经提交。同一个包的 releaseEntryOnFailure
+// 正是为这件事才调 ProbeMainSide 的。这里闭眼判 failed 的后果是用户的参与费被
+// 静默吞掉:convergeExcluded 跑完活动就 finished,runSettle 不再扫,
+// 模块内没有任何补登退款的接口,Failed 单也不接受人工裁决。
 //
 // 曾经的做法是封盘时就给 pending 条目登记退款,再在"确认没扣钱"时把那笔
 // 退款标成 paid 且金额记 0 —— 那是在资金表里写一条假的成功记录,
@@ -703,35 +711,30 @@ func convergeExcluded(ctx context.Context, gdb *gorm.DB, act *Activity) {
 		if err := gdb.WithContext(ctx).Where("order_no = ?", e.OrderNo).
 			Take(&order).Error; err != nil {
 			// 没有资金单说明这条压根没进跨库链路,直接判失败。
-			if err := gdb.WithContext(ctx).Model(&Entry{}).
-				Where("id = ? AND status = ?", e.Id, EntryExcluded).
-				Update("status", EntryFailed).Error; err != nil {
-				db.MarkFailure(err)
-			}
+			markExcludedFailed(ctx, gdb, e.Id)
 			continue
 		}
 
 		switch order.Status {
 		case qymodel.StatusSuccess:
-			plans := []PayoutPlan{{
-				EntryId: e.Id, UserId: e.UserId, Kind: PayoutRefund, Amount: e.Amount,
-			}}
-			err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-				if err := PlanPayouts(tx, act.Id, plans); err != nil {
-					return err
-				}
-				return tx.Model(&Entry{}).
-					Where("id = ? AND status = ?", e.Id, EntryExcluded).
-					Update("status", EntryRefunded).Error
-			})
-			if err != nil {
-				db.MarkFailure(err)
-			}
+			refundExcluded(ctx, gdb, act.Id, e)
 		case qymodel.StatusFailed:
-			if err := gdb.WithContext(ctx).Model(&Entry{}).
-				Where("id = ? AND status = ?", e.Id, EntryExcluded).
-				Update("status", EntryFailed).Error; err != nil {
-				db.MarkFailure(err)
+			switch twophase.ProbeMainSide(&order) {
+			case twophase.MainNotApplied:
+				markExcludedFailed(ctx, gdb, e.Id)
+			case twophase.MainApplied:
+				// 资金单说失败、主库说钱已经扣了 —— 两者矛盾,但钱确实不在用户账上,
+				// 必须退。同时落红点:这是一张需要人复核的资金单,不能只靠退款掩过去。
+				raiseFlag(ctx, act.Id, FlagEntryStuck,
+					"参与 "+e.EntryNo+" 的资金单被判失败但主库探针显示已扣款,已按退款收敛: "+e.OrderNo)
+				refundExcluded(ctx, gdb, act.Id, e)
+			default:
+				// 判不出来:钱可能已经动了,不猜。留在 excluded 等下一轮探针,
+				// 活动也因此不会收尾 —— 这正是想要的:没人被静默吞掉。
+				if manualAfter > 0 && now-e.CreatedAt > manualAfter {
+					raiseFlag(ctx, act.Id, FlagEntryStuck,
+						"参与 "+e.EntryNo+" 的资金单被判失败但主库是否已扣款无法判定: "+e.OrderNo)
+				}
 			}
 		default:
 			// pending / uncertain:钱可能已经动了,不猜。
@@ -740,6 +743,35 @@ func convergeExcluded(ctx context.Context, gdb *gorm.DB, act *Activity) {
 					"参与 "+e.EntryNo+" 的资金单长期不可判定: "+e.OrderNo)
 			}
 		}
+	}
+}
+
+// refundExcluded 给一条被排除的参与登记全额退款。
+//
+// 计数不在这里动:pending_count 已经由 excludePendingEntries 一次性回落过,
+// 再动一次就是同一条参与被扣两遍。
+func refundExcluded(ctx context.Context, gdb *gorm.DB, actId int64, e *Entry) {
+	plans := []PayoutPlan{{
+		EntryId: e.Id, UserId: e.UserId, Kind: PayoutRefund, Amount: e.Amount,
+	}}
+	if err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := PlanPayouts(tx, actId, plans); err != nil {
+			return err
+		}
+		return tx.Model(&Entry{}).
+			Where("id = ? AND status = ?", e.Id, EntryExcluded).
+			Update("status", EntryRefunded).Error
+	}); err != nil {
+		db.MarkFailure(err)
+	}
+}
+
+// markExcludedFailed 把一条确认没有动过钱的被排除参与判失败。
+func markExcludedFailed(ctx context.Context, gdb *gorm.DB, entryId int64) {
+	if err := gdb.WithContext(ctx).Model(&Entry{}).
+		Where("id = ? AND status = ?", entryId, EntryExcluded).
+		Update("status", EntryFailed).Error; err != nil {
+		db.MarkFailure(err)
 	}
 }
 

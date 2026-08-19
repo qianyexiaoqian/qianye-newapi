@@ -62,6 +62,12 @@ var (
 	errAdjustOverflow = errors.New("增加后的可提现佣金会超过单账户额度上限")
 	// errAdjustUserMissing 挡住手滑打错 user_id 凭空建出一行余额。
 	errAdjustUserMissing = errors.New("该用户不存在(或已被删除)")
+	// errAdjustSelfDealing 挡住"给自己记一笔佣金"。见 guard/fund_actor.go:
+	// 这是自铸 → 自提 → 自批那条链的第一环,也是最便宜的一环。
+	errAdjustSelfDealing = errors.New("不能调整自己的佣金,请由另一位管理员操作")
+	// errAdjustTargetPeer 挡住"给同级或更高级的管理员记一笔佣金",
+	// 与上游 canManageTargetRole 同一条判据。
+	errAdjustTargetPeer = errors.New("无权调整同级或更高权限账号的佣金")
 	// errAdjustIdemConflict 表示同一个 client_request_id 换了参数重放。
 	errAdjustIdemConflict = errors.New("该请求标识已被另一次调整占用,请刷新后重新发起")
 )
@@ -70,6 +76,8 @@ var adjustErrCodes = map[error]string{
 	errAdjustOverReclaimable: "qy_adj_over_reclaimable",
 	errAdjustOverflow:        "qy_adj_overflow",
 	errAdjustUserMissing:     "qy_adj_user_not_found",
+	errAdjustSelfDealing:     "qy_self_dealing",
+	errAdjustTargetPeer:      "qy_target_not_manageable",
 	errAdjustIdemConflict:    "qy_idem_key_conflict",
 }
 
@@ -79,7 +87,11 @@ type manualAdjustInput struct {
 	Delta      int64
 	Reason     string
 	OperatorId int
-	ClientId   string
+	// OperatorRole 是操作人在**本次请求**里的角色,由 middleware.AdminAuth()
+	// 写进上下文。它与 OperatorId 一起决定这次调整有没有资格发生,见
+	// guard.SelfDealing / guard.ManageableTarget。
+	OperatorRole int
+	ClientId     string
 }
 
 // adjustOutcome 是一次手工调整的结局。
@@ -139,11 +151,12 @@ func adminAdjustCommission(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	out, err := applyManualAdjust(ctx, manualAdjustInput{
-		UserId:     req.UserId,
-		Delta:      delta,
-		Reason:     reason,
-		OperatorId: c.GetInt("id"),
-		ClientId:   clientId,
+		UserId:       req.UserId,
+		Delta:        delta,
+		Reason:       reason,
+		OperatorId:   c.GetInt("id"),
+		OperatorRole: c.GetInt("role"),
+		ClientId:     clientId,
 	})
 	if err != nil {
 		// 审计落在事务之外,否则它会跟着一起回滚 —— 而"有人在这一刻试图给某个人
@@ -204,7 +217,7 @@ func adjustAuditReason(created bool, delta int64, reason string) string {
 // 四件事必须在同一把锁下:锁外做校验时,结算任务或提现冻结可以在校验与写入之间
 // 把可提现搬走,那时这条负额行落下去就会变成一笔谁都没批准的欠账。
 func applyManualAdjust(ctx context.Context, in manualAdjustInput) (*adjustOutcome, error) {
-	if err := requireExistingUser(ctx, in.UserId); err != nil {
+	if err := requireAdjustableTarget(ctx, in); err != nil {
 		return nil, err
 	}
 	gdb := db.Get()
@@ -355,21 +368,43 @@ func reclaimableCeiling(tx *gorm.DB, bal *Balance) (int64, error) {
 	return ceiling, nil
 }
 
-// requireExistingUser 确认目标账号真的存在。
+// requireAdjustableTarget 回答"这个管理员现在有资格给这个账号记一笔佣金吗"。
 //
-// 不做这一步的话,把 user_id 打错一位就会在 qy_commission_balance 里凭空建出
-// 一行余额(lockBalance 不存在即建),而那一行永远不会有人来认领。
-func requireExistingUser(ctx context.Context, userId int) error {
+// 三问合一,共用同一次主库查询:
+//
+//  1. 目标账号真的存在吗 —— 不问的话,把 user_id 打错一位就会在
+//     qy_commission_balance 里凭空建出一行余额(lockBalance 不存在即建),
+//     而那一行永远不会有人来认领;
+//  2. 操作人是不是就是受益人 —— 这是"自铸佣金 → 自己发起提现 → 自己批准"
+//     那条链的起点(见 guard/fund_actor.go);
+//  3. 受益人是不是同级或更高权限的账号 —— 与上游 canManageTargetRole 对齐,
+//     堵掉两个管理员互相记账的闭环。
+//
+// 自营与越级都在**开事务之前**判掉:它们与余额、幂等键都无关,越早拒绝,
+// qy_commission_balance 上那把行锁被握住的时间越短。
+func requireAdjustableTarget(ctx context.Context, in manualAdjustInput) error {
+	if guard.SelfDealing(in.OperatorId, in.UserId) {
+		return errAdjustSelfDealing
+	}
 	if model.DB == nil {
 		return db.ErrNotReady
 	}
-	var row struct{ Id int }
+	var row struct {
+		Id   int
+		Role int
+	}
 	err := model.DB.WithContext(ctx).Model(&model.User{}).
-		Select("id").Where("id = ?", userId).Take(&row).Error
+		Select("id", "role").Where("id = ?", in.UserId).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return errAdjustUserMissing
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if !guard.ManageableTarget(in.OperatorRole, row.Role) {
+		return errAdjustTargetPeer
+	}
+	return nil
 }
 
 // writeAdjustAudit 落一条手工调整审计,成功与失败共用。
@@ -399,8 +434,13 @@ func writeAdjustAudit(c *gin.Context, userId int, delta int64, result, reason st
 func respondAdjustError(c *gin.Context, err error) {
 	if code, ok := adjustErrCodes[err]; ok {
 		status := http.StatusBadRequest
-		if errors.Is(err, errAdjustIdemConflict) {
+		switch {
+		case errors.Is(err, errAdjustIdemConflict):
 			status = http.StatusConflict
+		case errors.Is(err, errAdjustSelfDealing), errors.Is(err, errAdjustTargetPeer):
+			// 403 而不是 400:参数没问题,是**这个人**不该做这件事。
+			// 前端据此提示"换一位管理员操作",而不是让他改数字重试。
+			status = http.StatusForbidden
 		}
 		respondFail(c, status, code, err.Error())
 		return

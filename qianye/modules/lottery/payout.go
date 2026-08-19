@@ -362,8 +362,11 @@ func failPayout(ctx context.Context, gdb *gorm.DB, p *Payout, order *qymodel.Fun
 		return
 	}
 
-	if mainSideApplied(order.OrderNo) {
-		holdPayout(ctx, gdb, p, "资金单被判失败但主库探针显示已生效,需人工核对")
+	// 换代次 = 换幂等键 = 重新对主库加一次钱。只有探针明确说"主库没动"才允许,
+	// 探针关掉 / 探针报错 / 探针行缺失都必须走人工:那三种"查不到"里都可能藏着
+	// 一笔已经加过的钱,再发一次是无声超发。
+	if twophase.ProbeMainSide(order) != twophase.MainNotApplied {
+		holdPayout(ctx, gdb, p, "资金单被判失败但主库是否已生效无法排除,需人工核对")
 		return
 	}
 	if p.Attempts >= maxAttempts {
@@ -469,7 +472,8 @@ func RetryPayout(ctx context.Context, payoutNo string) error {
 			return markPayoutPaid(tx, payoutNo)
 		})
 	case order.Status == qymodel.StatusFailed:
-		if mainSideApplied(order.OrderNo) {
+		// 与 failPayout 同一条判据:只有"确定没动"才换代次重开单。
+		if twophase.ProbeMainSide(&order) != twophase.MainNotApplied {
 			return errPayoutNeedsManual
 		}
 		nextEpoch = p.Epoch + 1
@@ -557,24 +561,6 @@ func settleGuard(ctx context.Context, order *qymodel.FundOrder, apply func(tx *g
 		return errNotSettled
 	}
 	return nil
-}
-
-// mainSideApplied 用主库 outbox 探针判定资金变更是否真的生效。
-//
-// 主库事务在 commit 阶段断连时 GORM 会返回错误,但事务其实可能已经提交。
-// 探针本身失败时一律按"可能已生效"处理:宁可让一笔出款多等一会儿人工,
-// 也不能重复发放 —— 前者是运营成本,后者是可被反复利用的超发漏洞。
-func mainSideApplied(orderNo string) bool {
-	if !config.Get().TwoPhase.OutboxEnabled() {
-		return false
-	}
-	applied, err := model.QyProbeFundOutbox(orderNo)
-	if err != nil {
-		common.SysError("qianye/lottery: 单号 " + orderNo +
-			" 探测主库 outbox 失败,按可能已生效处理: " + err.Error())
-		return true
-	}
-	return applied
 }
 
 // raiseFlag 落一条对账异常,管理端红点直读。

@@ -61,8 +61,16 @@ func handleGetConfig(c *gin.Context) {
 		"withdrawable_quota":  withdrawable,
 	}
 	if cfg.HasWithdrawMethod(config.WithdrawMethodFiat) {
+		// 币种与汇率都取自**账本**(qy_commission_balance),不是当前配置:
+		// 单据金额已经改成"冻结时从 available_fiat 削走的那个数",预览再按
+		// 充值页汇率算就会重新出现"页面写 ¥850、单据开 ¥100"的那种落差。
+		ledger, err := commission.WithdrawableFiat(userId)
+		if err != nil {
+			respondErr(c, err)
+			return
+		}
 		fiat := gin.H{
-			"currency":       cfg.FiatCurrency,
+			"currency":       ledger.Currency,
 			"min_amount":     cfg.MinFiatAmount,
 			"fee_bps":        cfg.FiatFeeBps,
 			"payee_channels": SupportedChannels(),
@@ -73,11 +81,18 @@ func handleGetConfig(c *gin.Context) {
 			"proof_max_bytes": cfg.ProofMaxBytes,
 			"proof_accept":    ProofAcceptMimes(),
 		}
-		// 汇率只是预览值。真正生效的是提交那一刻冻结进单据的汇率,
-		// 前端必须把这一点显式告诉用户,否则汇率一变就会有人来投诉。
-		if rates, err := freezeRates(); err == nil {
-			fiat["preview_quota_per_unit"] = rates.QuotaPerUnit.String()
-			fiat["preview_fx_rate"] = rates.FxRate.String()
+		// 汇率只是预览值:它是"当前这笔可提余额的平均结汇比例",由账本反解
+		// (available_fiat ÷ available_quota 折成的 usd)。真正生效的是提交
+		// 那一刻从账本冻走的绝对金额,前端必须把这一点显式告诉用户 ——
+		// 提交前又结算进一笔新佣金,平均比例就会变。
+		//
+		// 余额为 0 或法币折算不可用时不下发这两项(前端按缺省处理,不显示那一行):
+		// 编一个 1 出来会让"站点从没维护过比例"看起来完全正常。
+		if perUnit, err := frozenQuotaPerUnit(); err == nil {
+			if rate := impliedFxRate(ledger.Amount, withdrawable, perUnit); rate.IsPositive() {
+				fiat["preview_quota_per_unit"] = perUnit.String()
+				fiat["preview_fx_rate"] = rate.String()
+			}
 		}
 		data["fiat"] = fiat
 	}

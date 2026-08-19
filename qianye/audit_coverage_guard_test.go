@@ -62,6 +62,7 @@ var auditWriteFuncs = map[string]bool{
 	"writeAIScopeAudit":      true, // violation:AI 审核作用域策略(谁被送审、抽多少)写入/删除,成功与失败同一出口
 	"afterAIChange":          true, // violation:bump 版本 + 重载 + 审计,三件一起做
 	"writePlanAudit":         true, // controller/subscription.go:订阅套餐写接口,成功与失败同一出口
+	"recordManageAudit":      true, // controller/:管理端资源写接口的统一审计出口(兑换码/渠道/系统设置)
 
 	"writeRestrictedNoticeAudit":   true, // qianye/controller:受限账号公告写入,成功与失败同一出口
 	"writeDailyConsumeExportAudit": true, // commission:日消费明细导出,成功与失败同一出口
@@ -433,6 +434,11 @@ var auditRequired = []struct {
 			"改错任何一格的表现都是「套餐从货架上消失了」或「该停售的还在收钱」," +
 			"而接口照常 200、界面照常渲染、没有任何报错。before/after 是事后唯一能" +
 			"回答「谁把发售时间改了、原来是什么」的东西;写失败同样留痕"},
+	{"../controller/redemption.go", "UpdateRedemption", 1,
+		"兑换码是一条发钱通道:面额可以被改、状态可以被翻,而两者都没有任何用户可见的症状。" +
+			"在补上这条埋点之前它只落一条路由级兜底日志(只有 method/path/status)——" +
+			"没有码 id、没有 before/after,事后无从判断「哪张码被改过面额、哪张被翻回启用」," +
+			"而这正是「一张码为什么发了两遍钱」唯一能查的地方"},
 	{"../controller/subscription.go", "AdminUpdateSubscriptionPlanStatus", 2,
 		"列表行内的快速上下架与 violation 的规则快速启停同形:下架方向完全无症状," +
 			"套餐只是从售卖页消失,与「从来没建过」无法区分。谁在什么时候把哪个套餐" +

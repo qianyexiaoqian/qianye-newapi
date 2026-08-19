@@ -9,6 +9,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// SecurityProofScopeWithdrawPayeeRead 是提现收款信息明文的安全验证范围。
+//
+// 它定义在这里而不是 controller,是因为签发侧(controller 的 scope 白名单)与
+// 消费侧(qianye/modules/withdraw 的管理端 handler)分属两个互不 import 的包,
+// 而这两侧一旦拼错一个字母,表现是"验证做了、但那张 proof 永远对不上",
+// 而不是编译错误。middleware 是两侧都已经依赖的最低层。
+//
+// 门槛为什么落在"第二因子"而不是 RootAuth:与渠道上游 API Key 不同,收款账号
+// 是**打款操作本身必须看到的东西** —— 法币提现要人工去银行/钱包转账,把它收成
+// root 专属等于全站只有 root 一个人能付款。所以这里要的是"确认坐在键盘前的
+// 确实是这个管理员本人"(被盗的会话/PAT 单独拿不到明文),而不是抬高角色。
+const SecurityProofScopeWithdrawPayeeRead = "withdraw.payee.read"
+
 // SecureVerificationRequired protects channel key disclosure. Other sensitive
 // operations validate their narrower proof scopes in their controller.
 func SecureVerificationRequired() gin.HandlerFunc {

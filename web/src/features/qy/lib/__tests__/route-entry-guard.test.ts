@@ -49,6 +49,7 @@ const ALL_ON: QyFeatures = {
   violation: true,
   ticket: true,
   group_matrix: true,
+  pay_password: true,
 }
 
 /** 上游根导航的最小复刻，锚点与 nav-merge.test.ts 同源。 */

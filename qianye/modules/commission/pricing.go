@@ -63,7 +63,7 @@ func (p pricingDecision) sameGroup() bool { return p.Rate.Group == p.Fiat.Group 
 func resolveInviterPricing(ctx context.Context, inviterId int, source string, s opSettings) pricingDecision {
 	e, _, err := resolveInviter(ctx, inviterId)
 	if err != nil {
-		inviterGroupDegrade.note("读取上线分组失败,费率与法币比例一起跳过分组层: " + err.Error())
+		inviterGroupDegrade.noteCtx(ctx, "读取上线分组失败,费率与法币比例一起跳过分组层: "+err.Error())
 		// 费率:matched=false 走纯全局档,与"这个分组没配规则"完全同一条路径
 		// (共用 rateUnitsFor)。Group 留空,标记本行是一次降级。
 		//
@@ -72,7 +72,7 @@ func resolveInviterPricing(ctx context.Context, inviterId int, source string, s 
 		// 各计各的,合并计数会让排查的人看不出到底哪一个在响。
 		fiat := fiatRateFor(nil, s)
 		if fiat.Degraded != "" {
-			fiatRateDegrade.note(fiat.Degraded)
+			fiatRateDegrade.noteCtx(ctx, fiat.Degraded)
 		}
 		return pricingDecision{
 			Rate: rateDecision{Units: rateUnitsFor(GroupRate{}, false, source, s)},

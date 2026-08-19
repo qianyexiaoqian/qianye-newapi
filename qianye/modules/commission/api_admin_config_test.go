@@ -49,6 +49,11 @@ func callAdminHandler(t *testing.T, method, target, body string, h gin.HandlerFu
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("id", 7)
 	c.Set("username", "admin7")
+	// middleware.AdminAuth() 在生产里必然同时写入 id / username / role
+	// (middleware/auth.go:212-214)。role 不能省:动钱接口的越级判据
+	// (guard.ManageableTarget)读的就是它,少写这一行等于让所有用例
+	// 跑在一个"角色未知"的操作人身上。
+	c.Set("role", common.RoleAdminUser)
 	h(c)
 	return rec
 }

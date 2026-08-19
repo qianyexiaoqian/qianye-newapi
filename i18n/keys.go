@@ -51,14 +51,20 @@ const (
 	MsgTokenExpiredCannotEnable  = "token.expired_cannot_enable"
 	MsgTokenExhaustedCannotEable = "token.exhausted_cannot_enable"
 	MsgTokenInvalid              = "token.invalid"
-	MsgTokenNotProvided          = "token.not_provided"
-	MsgTokenExpired              = "token.expired"
-	MsgTokenExhausted            = "token.exhausted"
-	MsgTokenStatusUnavailable    = "token.status_unavailable"
-	MsgTokenDbError              = "token.db_error"
-	MsgTokenAutoGroupsTooMany    = "token.auto_groups_too_many"
-	MsgTokenAutoGroupsDuplicate  = "token.auto_groups_duplicate"
-	MsgTokenAutoGroupsInvalid    = "token.auto_groups_invalid"
+	// MsgTokenOwnerMissing 是「令牌行还在,但它所属的账号已经不在了」。
+	// 软删除(用户自助注销 / 管理端「删除」按钮)不清理 tokens 表,也没有任何
+	// 后台任务会去清,所以这些令牌会一直被脚本继续调用。它必须与真正的
+	// 数据库故障分开:合并成一句「Database error」会让删号后的残留调用
+	// 在监控里染成 5xx,把真实故障淹掉。
+	MsgTokenOwnerMissing        = "token.owner_missing"
+	MsgTokenNotProvided         = "token.not_provided"
+	MsgTokenExpired             = "token.expired"
+	MsgTokenExhausted           = "token.exhausted"
+	MsgTokenStatusUnavailable   = "token.status_unavailable"
+	MsgTokenDbError             = "token.db_error"
+	MsgTokenAutoGroupsTooMany   = "token.auto_groups_too_many"
+	MsgTokenAutoGroupsDuplicate = "token.auto_groups_duplicate"
+	MsgTokenAutoGroupsInvalid   = "token.auto_groups_invalid"
 )
 
 // Redemption related messages
@@ -76,6 +82,7 @@ const (
 	MsgRedemptionProductTypeInvalid = "redemption.product_type_invalid"
 	MsgRedemptionQuotaPositive      = "redemption.quota_positive"
 	MsgRedemptionPlanInvalid        = "redemption.plan_invalid"
+	MsgRedemptionStatusLocked       = "redemption.status_locked"
 )
 
 // User related messages

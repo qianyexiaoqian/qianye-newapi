@@ -246,16 +246,16 @@ func TestPayeeDigest_DistinguishesChannelAndFields(t *testing.T) {
 
 // 规范化必须只依赖内容,不依赖 map 的插入顺序 —— Go 的 map 遍历顺序是随机的,
 // 依赖它的话同一个账号每次算出的指纹都不一样。
-func TestCanonicalPayee_OrderIndependent(t *testing.T) {
+func TestCanonicalPayeeRecord_OrderIndependent(t *testing.T) {
 	a := map[string]string{"real_name": "张三", "account": "13800138000"}
 	b := map[string]string{"account": "13800138000", "real_name": "张三"}
-	assert.Equal(t, canonicalPayee(ChannelAlipay, a), canonicalPayee(ChannelAlipay, b))
+	assert.Equal(t, canonicalPayeeRecord(ChannelAlipay, a), canonicalPayeeRecord(ChannelAlipay, b))
 }
 
 // 分隔符必须无歧义:两组不同的字段值不能拼出同一个规范串。
-func TestCanonicalPayee_NoDelimiterAmbiguity(t *testing.T) {
-	a := canonicalPayee(ChannelAlipay, map[string]string{"account": "ab", "real_name": "cd"})
-	b := canonicalPayee(ChannelAlipay, map[string]string{"account": "a", "real_name": "bcd"})
+func TestCanonicalPayeeRecord_NoDelimiterAmbiguity(t *testing.T) {
+	a := canonicalPayeeRecord(ChannelAlipay, map[string]string{"account": "ab", "real_name": "cd"})
+	b := canonicalPayeeRecord(ChannelAlipay, map[string]string{"account": "a", "real_name": "bcd"})
 	assert.NotEqual(t, a, b)
 }
 

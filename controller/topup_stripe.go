@@ -88,6 +88,13 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 	id := c.GetInt("id")
 	user, _ := model.GetUserById(id, false)
 	chargedMoney := GetChargedAmount(float64(req.Amount), *user)
+	// Stripe 到账额度按 Money(已乘分组倍率)换算，所以上界必须落在 Money 上，
+	// 不能只看 req.Amount：倍率 > 1 的分组在 10000 这道闸之内也能把换算顶穿。
+	// 换算触顶的订单在回调结算时整笔回滚，用户付了钱却永远拿不到额度。
+	if _, err := (&model.TopUp{PaymentProvider: model.PaymentProviderStripe, Money: chargedMoney}).CreditQuota(); err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "充值数量过大，请减少单笔充值数量", "data": 10})
+		return
+	}
 
 	reference := fmt.Sprintf("new-api-ref-%d-%d-%s", user.Id, time.Now().UnixMilli(), randstr.String(4))
 	referenceId := "ref_" + common.Sha1([]byte(reference))

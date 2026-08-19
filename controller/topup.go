@@ -187,6 +187,26 @@ func getMinTopup() int64 {
 	return int64(minTopup)
 }
 
+// getMaxTopup 返回单笔充值允许的最大数量，口径与 getMinTopup 一致（跟随展示类型）。
+//
+// 上界不是产品策略，是结算侧的硬约束：额度换算走 common.QuotaFromDecimalStrict，
+// 结果超过 common.MaxQuota 就报错并让整笔结算事务回滚 —— 订单永远停在 pending、
+// 网关对着 fail 无限重投、管理员补单走同一个换算同样失败。也就是说，
+// 一张超过这个数的订单只要真的被付掉，钱就进了网关而额度一分到不了用户手上。
+// 因此这道闸必须在下单时就关上。
+func getMaxTopup() int64 {
+	if common.QuotaPerUnit <= 0 {
+		return int64(common.MaxQuota)
+	}
+	maxUnits := decimal.NewFromInt(int64(common.MaxQuota)).
+		Div(decimal.NewFromFloat(common.QuotaPerUnit)).Floor()
+	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
+		// TOKENS 模式下前端传的是 tokens，落库的 Amount 是 tokens/QuotaPerUnit 取整。
+		return maxUnits.Mul(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart()
+	}
+	return maxUnits.IntPart()
+}
+
 func RequestEpay(c *gin.Context) {
 	var req EpayRequest
 	err := c.ShouldBindJSON(&req)
@@ -196,6 +216,10 @@ func RequestEpay(c *gin.Context) {
 	}
 	if req.Amount < getMinTopup() {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", getMinTopup())})
+		return
+	}
+	if req.Amount > getMaxTopup() {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能大于 %d", getMaxTopup())})
 		return
 	}
 

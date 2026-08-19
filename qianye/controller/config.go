@@ -58,6 +58,12 @@ func GetConfig(c *gin.Context) {
 			// 出现一条指向 404 的链接和一句不成立的断言(「下面这些规则整体
 			// 不再生效」),而实际上一条都没被接管、规则全部照常生效。
 			"group_matrix": cfg.GroupMatrix.Enabled,
+			// pay_password 没有自己的配置字段:支付密码是划转/提现/抽奖的第二因子,
+			// 只要其中任意一条路径开着,设置/修改/找回的入口就必须出现。
+			// 前端此前把这一页标成 feature:'transfer',于是关掉划转 = 侧栏里
+			// 连点都点不到,而提现照旧要求验密 —— 佣金就此被困在账上。
+			// 表达式只此一处(guard.featureOn),前端与后端不许各写一份。
+			"pay_password": guard.FeatureConfigured(guard.FlagPayPassword),
 		},
 		// 娱乐功能的展示开关。show_entry 关掉之后接口仍然可用:已参与的用户
 		// 必须还能查自己的记录与已结束活动的证据链,那正是"历史公正查询"。

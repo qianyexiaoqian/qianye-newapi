@@ -38,6 +38,7 @@ func adminGetConfig(c *gin.Context) {
 		return
 	}
 	presentLegacyOverridesAsPercent(overrides)
+	redactSecretOverrides(overrides)
 	s := effectiveCtx(ctx)
 	cm := config.Get().Commission
 	rules, err := listGroupRates(ctx)
@@ -312,6 +313,29 @@ func presentLegacyOverridesAsPercent(overrides map[string]string) {
 			continue
 		}
 		overrides[newKey] = config.FormatRatePercent(bps)
+	}
+}
+
+// secretOverrideKeys 是**绝不下发**的运营覆盖键。
+//
+// invitee_ref_salt 是 inviteeRef 的 HMAC 密钥,settings.go 明写它「部署一次、
+// 永不轮换」(轮换会让全部历史 ref 失效)。它不在 editableKeys 里,写这一侧
+// 早就关死了,但读这一侧此前把 qy_settings 里的 commission 覆盖**整个** map
+// 原样回显 —— 于是一个永不可轮换的密钥出现在一个会被截图、被前端缓存、
+// 被日志代理与错误上报记录的 JSON 里。
+//
+// 白名单式地删,而不是"以后记得别加":新增任何 scope=commission 的密钥类配置
+// 只要登记进这里就自动不下发。
+var secretOverrideKeys = []string{keyRefSalt}
+
+// redactSecretOverrides 就地摘掉密钥类覆盖。
+//
+// 刻意是"删掉"而不是"替换成 ***":前端只按 editableKeys 渲染输入框,一个
+// 掩码值除了给人一种"这里有个可以改的东西"的错觉之外没有任何用处,而它一旦
+// 被原样提交回来就是把密钥写成八个星号。
+func redactSecretOverrides(overrides map[string]string) {
+	for _, k := range secretOverrideKeys {
+		delete(overrides, k)
 	}
 }
 
@@ -1216,6 +1240,10 @@ func adminHealth(c *gin.Context) {
 		"metrics":       metricsSnapshot(),
 		"hot_queue":     guard.QueueStats(),
 		"inviter_cache": inviterCacheStats(),
+		// cache_sync 是五把进程内缓存的跨节点失效通道。enabled=false 或
+		// failed 持续增长,意味着别的节点可能仍在按旧费率/旧拉黑名单计佣 ——
+		// 那是一段没有任何账本痕迹的错价窗口(见 cachesync.go)。
+		"cache_sync": cacheSyncStats(),
 		// daily_settle 是一日一结算之后**唯一**能回答"今天的佣金发了没有"的
 		// 一段。pending_inviters 在这个节奏下几乎没有信息量:一天里绝大部分
 		// 时间它都是"有一堆人等着",那是正常的,而"今天那一跑挂在半路"

@@ -346,6 +346,16 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 		}
 
 		userCache, err := model.GetUserCache(token.UserId)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 与 TokenAuth 同一处理(理由见那里的长注释):令牌所属账号已被
+			// 软删除是一个稳定可复现的凭据状态,不是数据库故障。
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"message": common.TranslateMessage(c, i18n.MsgTokenOwnerMissing),
+			})
+			c.Abort()
+			return
+		}
 		if err != nil {
 			common.SysLog(fmt.Sprintf("TokenAuthReadOnly GetUserCache error for user %d: %v", token.UserId, err))
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -468,6 +478,22 @@ func TokenAuth() func(c *gin.Context) {
 		}
 
 		userCache, err := model.GetUserCache(token.UserId)
+		// 令牌所属账号已被软删除:tokens 行还在(两条软删除路径都不清理它,
+		// 也没有任何后台任务会清),users 行已经进了软删除作用域,于是
+		// GetUserCache 必然回 record not found。
+		//
+		// 这不是数据库故障,而是一个稳定可复现的凭据状态,方向上也一直是
+		// fail-closed(请求确实被拒、不计费)。错的只是它的**表达**:
+		// 500 + "Database error" 会让"删号之后忘记下线的脚本继续重试"这类
+		// 高频调用在监控里与真实的数据库故障同色,把真故障淹掉。
+		// 会话链(ValidateAccessToken 命中软删除作用域后返回 nil,nil)本来
+		// 就回 401,令牌链在这里与它对齐。
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			abortWithOpenAiMessage(c, http.StatusUnauthorized,
+				common.TranslateMessage(c, i18n.MsgTokenOwnerMissing),
+				types.ErrorCodeAccessDenied)
+			return
+		}
 		if err != nil {
 			common.SysLog(fmt.Sprintf("TokenAuth GetUserCache error for user %d: %v", token.UserId, err))
 			abortWithOpenAiMessage(c, http.StatusInternalServerError,

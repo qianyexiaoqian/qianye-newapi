@@ -56,7 +56,7 @@ type recoverResetRequest struct {
 
 // handleGetStatus 返回当前用户的支付密码状态,供前端决定弹"设置"还是"输入"。
 func handleGetStatus(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagTransfer) {
+	if !guard.RequireAPI(c, guard.FlagPayPassword) {
 		return
 	}
 	ctx, cancel := guard.ColdContext(c.Request.Context())
@@ -73,7 +73,7 @@ func handleGetStatus(c *gin.Context) {
 // handleSet 是首次设置。已设置时返回 qy_pay_pwd_already_set,不允许覆盖 ——
 // 覆盖等于"不知道旧密码也能改密码",支付密码就没有意义了。
 func handleSet(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagTransfer) {
+	if !guard.RequireAPI(c, guard.FlagPayPassword) {
 		return
 	}
 	var req setRequest
@@ -116,7 +116,7 @@ func handleSet(c *gin.Context) {
 // handleChange 是"知道旧密码"的修改。旧密码走与划转完全相同的 verify ——
 // 包括错误计数与锁定,否则这里就成了一个不受锁定策略约束的密码试探口。
 func handleChange(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagTransfer) {
+	if !guard.RequireAPI(c, guard.FlagPayPassword) {
 		return
 	}
 	var req changeRequest
@@ -176,7 +176,7 @@ func handleChange(c *gin.Context) {
 // 允许在这里填一个新邮箱再往那个邮箱发码,等于给了一条"绕过原邮箱改绑"的路 ——
 // 拿到会话的攻击者可以把找回邮箱换成自己的,支付密码立刻形同虚设。
 func handleRecoverCode(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagTransfer) {
+	if !guard.RequireAPI(c, guard.FlagPayPassword) {
 		return
 	}
 	userId := c.GetInt("id")
@@ -214,7 +214,7 @@ func handleRecoverCode(c *gin.Context) {
 
 // handleRecoverReset 用邮箱验证码重设支付密码,并清掉锁定。
 func handleRecoverReset(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagTransfer) {
+	if !guard.RequireAPI(c, guard.FlagPayPassword) {
 		return
 	}
 	var req recoverResetRequest

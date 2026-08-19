@@ -59,7 +59,10 @@ func newBallMainDB(t *testing.T, quota int) *gorm.DB {
 	sqlDB, err := gdb.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, gdb.AutoMigrate(&model.User{}, &model.Log{}))
+	// 探针表跟着一起建:main_outbox_enabled 默认就是 true,线上每一笔跨库资金
+	// 操作都会先在这张表上认领单号。少了它,测试跑的是一条线上根本不存在的
+	// "没有探针"的分支 —— 而"没有探针"恰恰是资金判定里最危险的那一支。
+	require.NoError(t, gdb.AutoMigrate(&model.User{}, &model.Log{}, &model.QyFundOutbox{}))
 
 	prevType := common.MainDatabaseType()
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)

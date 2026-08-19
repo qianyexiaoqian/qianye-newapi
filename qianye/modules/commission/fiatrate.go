@@ -76,6 +76,7 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 
 	"github.com/shopspring/decimal"
@@ -217,7 +218,7 @@ func fiatRates(ctx context.Context) map[string]FiatRate {
 		if snapshot != nil {
 			return snapshot
 		}
-		fiatRateDegrade.note("读取分组法币比例失败: " + db.ErrNotReady.Error())
+		fiatRateDegrade.noteCtx(ctx, "读取分组法币比例失败: "+db.ErrNotReady.Error())
 		return map[string]FiatRate{}
 	}
 	var rows []FiatRate
@@ -226,7 +227,7 @@ func fiatRates(ctx context.Context) map[string]FiatRate {
 		if snapshot != nil {
 			return snapshot
 		}
-		fiatRateDegrade.note("读取分组法币比例失败: " + err.Error())
+		fiatRateDegrade.noteCtx(ctx, "读取分组法币比例失败: "+err.Error())
 		return map[string]FiatRate{}
 	}
 	m := make(map[string]FiatRate, len(rows))
@@ -244,7 +245,16 @@ func fiatRates(ctx context.Context) map[string]FiatRate {
 	return m
 }
 
+// invalidateFiatRates 失效本进程的法币比例快照,并广播给其它节点。
+// 理由与 invalidateGroupRates 逐字相同:比例逐笔冻结进 usd_rate,
+// 而 available_fiat 是线下打款的唯一依据。
 func invalidateFiatRates() {
+	invalidateFiatRatesLocal()
+	publishInvalidation(cacheKindFiatRate, 0)
+}
+
+// invalidateFiatRatesLocal 只清本进程,供 cachesync 重放远端流水时使用。
+func invalidateFiatRatesLocal() {
 	fiatRateMu.Lock()
 	fiatRateCache = nil
 	fiatRateLoaded = 0
@@ -327,7 +337,21 @@ func resolveFiatRate(ctx context.Context, group string, s opSettings) fiatDecisi
 	d := fiatRateFor(rule, s)
 	d.Group = g
 	if d.Degraded != "" {
-		fiatRateDegrade.note(d.Degraded)
+		fiatRateDegrade.noteCtx(ctx, d.Degraded)
+	}
+	// 币种错标:这一层的汇率是 USDExchangeRate,上游对它的定义是 USD → CNY,
+	// 所以折出来的只能是人民币;而 withdraw.fiat_currency 会被原样贴到
+	// qy_commission_balance.fiat_currency 上,并跟着提现单走到线下打款的人手里。
+	//
+	// 这个判定曾经是配置加载期的一条硬闸,靠 withdraw.rate_freeze_mode 判断
+	// "这个站点用的是不是充值汇率"。那个旋钮已经删除(它是提现错价的根源),
+	// 而"配没配折算档"写在扩展库里、随时可增删,配置期读不到 —— 唯一同时看得见
+	// 「走了哪一层」与「标的什么币种」的地方就是这里。
+	if d.Layer == fiatLayerGlobal && !strings.EqualFold(
+		strings.TrimSpace(config.Get().Withdraw.FiatCurrency), config.GlobalRateFiatCurrency) {
+		fiatRateDegrade.noteCtx(ctx, "本次法币折算回落到全站充值汇率(USD → "+
+			config.GlobalRateFiatCurrency+"),而 withdraw.fiat_currency 标的是 "+
+			config.Get().Withdraw.FiatCurrency+" —— 账本里攒的是人民币,标签是另一种钱")
 	}
 	return d
 }

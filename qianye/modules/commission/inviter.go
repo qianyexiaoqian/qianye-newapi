@@ -152,7 +152,17 @@ func resolveInviter(ctx context.Context, userId int) (inviterEntry, bool, error)
 // 现在直接决定这个人作为**上线**时的返佣费率与法币折算比例。不失效的表现是:
 // 推广人刚升到 vip,接下来最长 InviterCacheSecs 里他名下的消费仍按旧档计佣,
 // 而那些行的费率是**冻结**的 —— 事后再刷缓存也追不回来。
+//
+// 它同时广播给其它节点(cachesync.go)。不广播的表现最贵:分组变更只失效
+// 处理那次写操作的那一个进程,其余每个节点在最长 InviterCacheSecs 里按旧档
+// 冻结佣金,而本模块语义明确「改比例不追溯」。
 func invalidateInviter(userId int) {
+	invalidateInviterLocal(userId)
+	publishInvalidation(cacheKindInviter, userId)
+}
+
+// invalidateInviterLocal 只清本进程,供 cachesync 重放远端流水时使用。
+func invalidateInviterLocal(userId int) {
 	if userId <= 0 {
 		getInviterCache().Purge()
 		return

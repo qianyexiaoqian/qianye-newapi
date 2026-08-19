@@ -115,6 +115,13 @@ func (*CreemAdaptor) RequestPay(c *gin.Context, req *CreemPayRequest) {
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
+	// 产品额度由管理端配置,同样要过结算侧那道换算:超过 common.MaxQuota 的产品
+	// 在回调结算时整笔回滚,用户付了钱却永远拿不到额度、订单永久 pending。
+	if _, quotaErr := topUp.CreditQuota(); quotaErr != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Creem 产品充值额度超出上限 user_id=%d product_id=%s quota=%d error=%q", id, selectedProduct.ProductId, selectedProduct.Quota, quotaErr.Error()))
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "该产品的充值额度配置超出上限"})
+		return
+	}
 	err = topUp.Insert()
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Creem 创建充值订单失败 user_id=%d trade_no=%s product_id=%s error=%q", id, referenceId, selectedProduct.ProductId, err.Error()))

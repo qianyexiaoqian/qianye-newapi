@@ -141,7 +141,14 @@ func getSummary(c *gin.Context) {
 //
 // userId 在这里既是"看板的主人"也是"计佣时的上线",两者本来就是同一个人。
 func rateSummary(c *gin.Context, userId int, s opSettings) gin.H {
-	ctx := c.Request.Context()
+	// 展示路径必须**闭嘴**:同一次页面刷新在这里解析三次,而降级计数器的全部
+	// 用途是回答「哪段时间的佣金要复核」。不静默的话,任何一个已登录用户按住
+	// F5 就能把那个计数器按 3 倍速率推上去,真正的降级被淹没在里面
+	// (口径与理由见 settings.go 的 silentDegradeCtx)。
+	//
+	// 只静默上报,不改变解析本身:界面上写的费率与账本按同一条路径算出来,
+	// 这正是 pricing.go 存在的理由。
+	ctx := silentDegradeCtx(c.Request.Context())
 	topup := resolveInviterPricing(ctx, userId, SourceTopup, s)
 	consume := resolveInviterPricing(ctx, userId, SourceConsume, s)
 	redemption := resolveInviterPricing(ctx, userId, SourceRedemption, s)

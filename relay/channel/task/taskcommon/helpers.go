@@ -18,7 +18,9 @@ func UnmarshalMetadata(metadata map[string]any, target any) error {
 		return nil
 	}
 	// Prevent metadata from overriding model fields to avoid billing bypass.
-	delete(metadata, "model")
+	// 名单在 relaycommon 里统一维护 —— 上游对「模型」的字段名不止 "model" 一个
+	// (kling=model_name、jimeng=req_key),只删 "model" 等于只挡住一部分适配器。
+	relaycommon.StripModelSelectionMetadata(metadata)
 	metaBytes, err := common.Marshal(metadata)
 	if err != nil {
 		return fmt.Errorf("marshal metadata failed: %w", err)

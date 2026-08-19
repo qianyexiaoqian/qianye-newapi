@@ -71,8 +71,8 @@ func creditQuota(ctx context.Context, w *Withdrawal) error {
 	// 只有"主库确定未生效"才允许退回佣金。pending / uncertain 都意味着钱可能
 	// 已经动了,自动退回就是纯资损,必须交给对账任务与人工。
 	if order != nil && order.Status == qymodel.StatusFailed {
-		if mainSideApplied(order.OrderNo) {
-			holdForReview(w, "资金单被判失败但主库探针显示已生效,需人工核对")
+		if mainSideApplied(order) {
+			holdForReview(w, "资金单被判失败但无法排除主库已加额度,需人工核对")
 			return err
 		}
 		failWithdrawal(w, err)
@@ -80,22 +80,14 @@ func creditQuota(ctx context.Context, w *Withdrawal) error {
 	return err
 }
 
-// mainSideApplied 用主库 outbox 探针判定资金变更是否真的生效。
+// mainSideApplied 判定资金变更是否真的生效,判不出来时按"已生效"处理。
 //
 // 主库事务在 commit 阶段断连时,GORM 会返回错误,但事务其实可能已经提交。
-// 仅凭错误就退回佣金,等于"额度已经加了却把佣金原样还给用户"。
-// 探针本身失败时一律按"可能已生效"处理:宁可让佣金多冻一会儿等人工,
-// 也不能错退 —— 前者是体验问题,后者是可被反复利用的超发漏洞。
-func mainSideApplied(orderNo string) bool {
-	if !config.Get().TwoPhase.OutboxEnabled() {
-		return false
-	}
-	applied, err := model.QyProbeFundOutbox(orderNo)
-	if err != nil {
-		common.SysError("qianye/withdraw: 单号 " + orderNo + " 探测主库 outbox 失败,按可能已生效处理: " + err.Error())
-		return true
-	}
-	return applied
+// 仅凭错误就退回佣金,等于"额度已经加了却把佣金原样还给用户"。因此只有
+// twophase.MainNotApplied 这一个明确取值才允许退回:探针关掉、探针报错、探针行
+// 缺失都按"可能已生效"处理 —— 宁可让佣金多冻一会儿等人工,也不能错退。
+func mainSideApplied(order *qymodel.FundOrder) bool {
+	return twophase.ProbeMainSide(order) != twophase.MainNotApplied
 }
 
 // startPaying 是跨库执行的准入闸门。

@@ -224,7 +224,26 @@ func markUncertain(ctx context.Context, order *qymodel.FundOrder, reason string)
 	})
 }
 
-// PruneOutbox 清理主库 outbox 中已终态单的历史行,避免无限增长。
+// PruneOutbox 清理主库 outbox 中已成功单的历史行,避免无限增长。
+//
+// # 只清 Success 单,而且是逐行判定
+//
+// 探针行是"主库那一笔钱到底动没动"的唯一权威证据(见 ProbeMainSide)。
+// 需要这条证据的恰恰是**非 Success** 的单:Failed 单可能是 commit 阶段断连造成的
+// 误判,钱其实已经动了;Pending / Uncertain 更是等着人或补偿任务来判。
+// 已经 Success 的单没有人会再去问"动没动",它们的探针行才是可以丢的历史。
+//
+// 旧实现按 created_at 一刀切,并只用一个全局闸门(存在早于保留期的 Pending/Uncertain
+// 单就整体暂缓)来"保护"证据。这个闸门恰好漏掉了 Failed —— 而 Failed 正是探针存在的
+// 唯一理由。后果是:保留期一到,一笔 commit 断连的出款就失去了全部证据,
+// ProbeMainSide 只能读出"没生效",管理端一按重试就把同一笔奖金再发一次,
+// 且账上不留任何痕迹。所以判据必须从"全局 + 时间"改成"逐行 + 资金单状态"。
+//
+// 顺带修掉的副作用:全局闸门意味着一笔卡住的 Pending 单会让整张表永远停止清理。
+// 逐行判定严格更精确,不需要那道闸门。
+//
+// 查不到对应资金单的探针行一律保留:那是"主库动过钱但扩展库没有对应记账"的孤儿证据,
+// 删掉它等于把一笔说不清的资金变更从系统里彻底抹掉。
 func PruneOutbox(ctx context.Context) {
 	cfg := config.Get().TwoPhase
 	if !cfg.OutboxEnabled() || cfg.OutboxRetentionDays <= 0 {
@@ -232,18 +251,10 @@ func PruneOutbox(ctx context.Context) {
 	}
 	before := common.GetTimestamp() - int64(cfg.OutboxRetentionDays)*86400
 
-	// 只清理扩展库侧已终态的单,避免删掉还需要探针判定的记录。
-	var stuck int64
-	if err := db.Get().WithContext(ctx).Model(&qymodel.FundOrder{}).
-		Where("created_at < ? AND status IN ?", before,
-			[]int8{qymodel.StatusPending, qymodel.StatusUncertain}).
-		Count(&stuck).Error; err != nil {
-		db.MarkFailure(err)
-		return
-	}
-	if stuck > 0 {
-		common.SysLog(fmt.Sprintf(
-			"qianye: 仍有 %d 笔早于保留期的未终态资金单,暂缓清理 outbox", stuck))
+	// 扩展库不可用时一行都不能删:判据全在那一侧,读不到就等于不知道哪些行
+	// 已经没用了 —— 那正是"按时间盲删"的老毛病。
+	gdb := db.Get()
+	if gdb == nil {
 		return
 	}
 
@@ -257,24 +268,60 @@ func PruneOutbox(ctx context.Context) {
 	// 上限 maxPruneRounds 是为了让单轮工作量有界(默认 200×50 = 1 万行/轮),
 	// 每轮之间让出并检查租约:失去租约后继续删会与接管节点双跑。
 	const maxPruneRounds = 50
-	var total int64
+	var total, kept, cursor int64
 	for i := 0; i < maxPruneRounds; i++ {
 		if ctx.Err() != nil {
 			break
 		}
-		deleted, err := model.QyPruneFundOutbox(before, batch)
+		rows, err := model.QyScanFundOutbox(before, cursor, batch)
+		if err != nil {
+			common.SysError("qianye: 扫描主库 outbox 失败: " + err.Error())
+			break
+		}
+		if len(rows) == 0 {
+			break
+		}
+		cursor = rows[len(rows)-1].Id
+
+		nos := make([]string, 0, len(rows))
+		for j := range rows {
+			nos = append(nos, rows[j].OrderNo)
+		}
+		var settled []string
+		if err := gdb.WithContext(ctx).Model(&qymodel.FundOrder{}).
+			Where("order_no IN ? AND status = ?", nos, qymodel.StatusSuccess).
+			Pluck("order_no", &settled).Error; err != nil {
+			db.MarkFailure(err)
+			common.SysError("qianye: 清理 outbox 前查扩展库资金单状态失败: " + err.Error())
+			break
+		}
+		done := make(map[string]struct{}, len(settled))
+		for _, no := range settled {
+			done[no] = struct{}{}
+		}
+		ids := make([]int64, 0, len(rows))
+		for j := range rows {
+			if _, ok := done[rows[j].OrderNo]; ok {
+				ids = append(ids, rows[j].Id)
+			}
+		}
+		kept += int64(len(rows) - len(ids))
+
+		deleted, err := model.QyDeleteFundOutbox(ids)
 		if err != nil {
 			common.SysError("qianye: 清理主库 outbox 失败: " + err.Error())
 			break
 		}
 		total += deleted
-		if deleted < int64(batch) {
+		if len(rows) < batch {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if total > 0 {
-		common.SysLog(fmt.Sprintf("qianye: 已清理 %d 行历史 outbox", total))
+	if total > 0 || kept > 0 {
+		common.SysLog(fmt.Sprintf(
+			"qianye: 已清理 %d 行历史 outbox,保留 %d 行(对应资金单尚未成功,探针仍是唯一证据)",
+			total, kept))
 	}
 }
 

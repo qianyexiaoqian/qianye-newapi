@@ -124,6 +124,17 @@ func TestValidateAndFillSpendsTheSameBcryptWorkOnEveryFailure(t *testing.T) {
 	require.NoError(t, DB.Create(noHash).Error)
 	require.NoError(t, DB.Model(&User{}).Where("id = ?", noHash.Id).
 		Update("password", "").Error)
+	// 空串只是"半截数据"里最显眼的一种。任何非 bcrypt 值(用户导入/迁移、直连
+	// SQL 改密、将来的数据修复脚本)同样让 bcrypt 在解析阶段就返回,不做密钥派生
+	// —— 实测这类账号的登录拒绝比正常账号快十几倍,用户名枚举就此重开。
+	badHash := &User{
+		Username: "timing-badhash", Password: hashed, Role: common.RoleCommonUser,
+		Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1,
+		AffCode: "aff-timing-badhash",
+	}
+	require.NoError(t, DB.Create(badHash).Error)
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", badHash.Id).
+		Update("password", "!qy-not-a-bcrypt-hash!").Error)
 
 	original := validatePasswordAndHash
 	t.Cleanup(func() { validatePasswordAndHash = original })
@@ -137,6 +148,7 @@ func TestValidateAndFillSpendsTheSameBcryptWorkOnEveryFailure(t *testing.T) {
 	}{
 		{"账号不存在", "timing-nobody", password, ErrInvalidCredentials, 1},
 		{"有行但没有口令摘要", "timing-nohash", password, ErrInvalidCredentials, 1},
+		{"有行但口令摘要不是 bcrypt", "timing-badhash", password, ErrInvalidCredentials, 1},
 		{"账号存在但密码错", "timing-present", "wrong-password", ErrInvalidCredentials, 1},
 		{"账号存在且密码对", "timing-present", password, nil, 1},
 		// 空口令在查库之前就被挡掉,这一条不构成预言机:任何用户名都走同一条路。
@@ -144,9 +156,9 @@ func TestValidateAndFillSpendsTheSameBcryptWorkOnEveryFailure(t *testing.T) {
 		{"口令为空", "timing-present", "", ErrUserEmptyCredentials, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			calls := 0
+			var compared []string
 			validatePasswordAndHash = func(pwd, hash string) bool {
-				calls++
+				compared = append(compared, hash)
 				return original(pwd, hash)
 			}
 			user := &User{Username: tc.username, Password: tc.password}
@@ -156,7 +168,15 @@ func TestValidateAndFillSpendsTheSameBcryptWorkOnEveryFailure(t *testing.T) {
 			} else {
 				assert.ErrorIs(t, gotErr, tc.wantErr)
 			}
-			assert.Equal(t, tc.wantCalls, calls, "口令比较的次数决定了这条路径的耗时量级")
+			require.Len(t, compared, tc.wantCalls, "口令比较的次数决定了这条路径的耗时量级")
+			// 次数相同还不够:比较的对象必须是一段**能真正吃掉一次密钥派生**的摘要。
+			// 拿一个非 bcrypt 值去比,CompareHashAndPassword 在解析阶段就返回,
+			// 这条路径照样比正常账号快十几倍 —— 计数看不出来,时间看得出来。
+			for _, hash := range compared {
+				cost, err := bcrypt.Cost([]byte(hash))
+				require.NoError(t, err, "被比较的摘要必须是合法 bcrypt,否则这次比较是空转")
+				assert.Equal(t, bcrypt.DefaultCost, cost, "补的工作量必须与真实口令同 cost")
+			}
 		})
 	}
 }

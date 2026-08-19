@@ -394,8 +394,8 @@ func releaseOnFailure(order *qymodel.FundOrder, cause error) {
 	if order == nil || order.Status != qymodel.StatusFailed {
 		return
 	}
-	if mainSideApplied(order.OrderNo) {
-		// 资金单被判成 failed,但主库 outbox 说钱已经动了 —— 两者矛盾,只能转人工。
+	if mainSideApplied(order) {
+		// 资金单被判成 failed,但无法排除主库那一侧已经动过钱 —— 只能转人工。
 		markUncertainAfterConflict(order.OrderNo)
 		return
 	}
@@ -409,23 +409,14 @@ func releaseOnFailure(order *qymodel.FundOrder, cause error) {
 	}
 }
 
-// mainSideApplied 用主库 outbox 探针判定资金变更到底有没有真的生效。
+// mainSideApplied 判定资金变更到底有没有真的生效,判不出来时按"已生效"处理。
 //
 // 存在理由:主库事务在 commit 阶段断连时,GORM 会返回错误,但事务其实可能已经提交。
 // 仅凭错误就退还风控预占,等于"钱已经转走却把额度原样还给用户",是纯资损。
-// 探针自身失败时一律按"可能已生效"处理:宁可让用户当天少一次额度,
-// 也不能错退 —— 前者是体验问题,后者是可被反复利用的超发漏洞。
-func mainSideApplied(orderNo string) bool {
-	if !config.Get().TwoPhase.OutboxEnabled() {
-		return false
-	}
-	applied, err := model.QyProbeFundOutbox(orderNo)
-	if err != nil {
-		common.SysError("qianye/transfer: 单号 " + orderNo +
-			" 探测主库 outbox 失败,按可能已生效处理: " + err.Error())
-		return true
-	}
-	return applied
+// 因此只有 twophase.MainNotApplied 这一个明确取值才允许退还:探针关掉、探针报错、
+// 探针行缺失都归入"可能已生效"——宁可让用户当天少一次额度,也不能错退。
+func mainSideApplied(order *qymodel.FundOrder) bool {
+	return twophase.ProbeMainSide(order) != twophase.MainNotApplied
 }
 
 func markUncertainAfterConflict(orderNo string) {

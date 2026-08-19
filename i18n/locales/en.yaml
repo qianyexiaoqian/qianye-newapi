@@ -43,6 +43,7 @@ token.get_info_failed: "Failed to get token info, please try again later"
 token.expired_cannot_enable: "Token has expired and cannot be enabled. Please modify the expiration time or set it to never expire"
 token.exhausted_cannot_enable: "Token quota is exhausted and cannot be enabled. Please modify the remaining quota or set it to unlimited"
 token.invalid: "Invalid token"
+token.owner_missing: "The account this token belongs to no longer exists"
 token.not_provided: "Token not provided"
 token.expired: "This token has expired"
 token.exhausted: "This token quota is exhausted TokenStatusExhausted[sk-{{.Prefix}}***{{.Suffix}}]"
@@ -66,6 +67,7 @@ redemption.expire_time_invalid: "Expiration time cannot be earlier than current 
 redemption.product_type_invalid: "Unknown redemption code product type"
 redemption.quota_positive: "Quota must be greater than 0 for a balance redemption code"
 redemption.plan_invalid: "Please select an existing and enabled subscription plan"
+redemption.status_locked: "A redeemed code cannot be re-enabled or disabled; issue a new code instead"
 
 # User messages
 user.password_login_disabled: "Password login has been disabled by administrator"

@@ -163,6 +163,8 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq, in
 	if err := req.UnmarshalMetadata(&videoRequest); err != nil {
 		return nil, errors.Wrap(err, "unmarshal metadata to video request failed")
 	}
+	// 模型由鉴权与计费认定,不由 metadata 说了算。
+	videoRequest.Model = info.UpstreamModelName
 
 	return videoRequest, nil
 }

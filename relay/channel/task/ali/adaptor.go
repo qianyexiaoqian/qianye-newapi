@@ -417,9 +417,6 @@ func (a *TaskAdaptor) convertToAliRequest(info *relaycommon.RelayInfo, req relay
 			aliReq.Parameters.Duration = seconds
 		}
 	}
-	if aliReq.Parameters.Duration <= 0 {
-		aliReq.Parameters.Duration = 5 // 默认5秒
-	}
 
 	// 从 metadata 中提取额外参数
 	if req.Metadata != nil {
@@ -435,6 +432,30 @@ func (a *TaskAdaptor) convertToAliRequest(info *relaycommon.RelayInfo, req relay
 
 	if aliReq.Model != upstreamModel {
 		return nil, errors.New("can't change model with metadata")
+	}
+
+	// 时长的下界必须补在 metadata 覆写**之后**。覆写之前兜底等于没兜:
+	// metadata.parameters.duration=0 会同时做两件事 —— Duration 带 omitempty,
+	// 0 被序列化时整个字段消失,上游按它自己的默认时长(万相是 5 秒)出片;而计费侧
+	// 的 seconds 乘数拿到 0,被 AddOtherRatio 的 ratio>0 判为非法后静默丢弃,丢弃
+	// 的语义等于乘数 1。于是「按 1 秒收钱、按 5 秒出片」,稳定 5 倍少收。
+	if aliReq.Parameters.Duration <= 0 {
+		aliReq.Parameters.Duration = 5 // 默认5秒
+	}
+	// 上界同样要在这里判:validateTaskDurationBounds 只看顶层 duration/seconds,
+	// 看不到 metadata。计费侧对超界值取 min 封顶,转发侧不封顶,差额就是免费段 ——
+	// 与其两边各钳一次,不如直接拒绝,让计费与转发永远是同一个数。
+	if aliReq.Parameters.Duration > relaycommon.MaxTaskDurationSeconds {
+		return nil, fmt.Errorf("invalid duration: %d, must not exceed %d seconds",
+			aliReq.Parameters.Duration, relaycommon.MaxTaskDurationSeconds)
+	}
+
+	// 分辨率乘数算不出来就不许发给上游。原先 sizeToResolution 报错只让
+	// EstimateBilling 提前 return,连 seconds 乘数一起丢掉,而那个 size 照样原样
+	// 转发 —— 计费按 1 倍、出片按真实分辨率。计费算不出来的请求必须失败,
+	// 不能「算不出来就不乘」。
+	if _, err := ProcessAliOtherRatios(aliReq); err != nil {
+		return nil, err
 	}
 
 	if err := normalizeWan27I2VInput(aliReq, req); err != nil {

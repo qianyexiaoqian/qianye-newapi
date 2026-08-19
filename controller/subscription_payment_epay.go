@@ -71,6 +71,22 @@ func SubscriptionRequestEpay(c *gin.Context) {
 			return
 		}
 	}
+	// 用户组商品的「你已经永久拥有该用户组」这一条,必须在**下单之前**问。
+	//
+	// 它在 CreateUserSubscriptionFromPlanTx 里是一条 return error,而支付回调
+	// 走的就是那个函数 —— 付款之后才撞上它,整个事务回滚、订单永久停在 pending、
+	// 钱收了货发不出。现在回调侧对已付款的一档改成放行(见 isPaidSubscriptionSource),
+	// 但那是兜底;真正该拦住用户的位置是这里,钱还没出的时候。
+	//
+	// 四个网关各写一遍,与上面那两道闸门同样的理由:这个 handler 一共挡了几件事,
+	// 应该在同一屏里看得完。
+	if preview, err := model.PreviewUserGroupPurchase(userId, plan); err != nil {
+		common.ApiError(c, err)
+		return
+	} else if preview.Action == model.UserGroupPurchaseActionReject {
+		common.ApiErrorMsg(c, preview.Message)
+		return
+	}
 
 	callBackAddress := service.GetCallbackAddress()
 	returnUrl, err := url.Parse(callBackAddress + "/api/subscription/epay/return")
@@ -102,6 +118,9 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		PaymentProvider: model.PaymentProviderEpay,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
+		// 下单那一刻的套餐随订单走。回调按快照发货,运营在用户付款途中改这张
+		// 套餐的价格/额度/时长/升级组不会改变这一单的内容。见 PlanSnapshot。
+		PlanSnapshot: model.SubscriptionPlanSnapshot(plan),
 	}
 	if err := order.Insert(); err != nil {
 		common.ApiErrorMsg(c, "创建订单失败")

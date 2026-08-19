@@ -74,7 +74,7 @@ func cancelByUser(c *gin.Context, userId int, id int64) (*orderView, error) {
 // quota 方式且开启了自动到账时,通过之后立即触发跨库兑现。兑现的错误不会让
 // 审核动作回滚 —— 审核已经是既成事实,兑现的中间态由对账任务收敛。
 func approve(c *gin.Context, id int64) (*adminOrderView, error) {
-	w, err := loadWithdrawal(id)
+	w, err := loadDecidableWithdrawal(c, id)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +124,7 @@ func approve(c *gin.Context, id int64) (*adminOrderView, error) {
 // 共用同一道全集群准入闸门,连点两次不会加两次额度。因此这里的状态与方式
 // 判断只是给管理员一个明确的拒绝理由,不是防重的依据。
 func creditNow(c *gin.Context, id int64) (*adminOrderView, error) {
-	w, err := loadWithdrawal(id)
+	w, err := loadDecidableWithdrawal(c, id)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +161,7 @@ func reject(c *gin.Context, id int64, rawReason string) (*adminOrderView, error)
 	if err != nil || reason == "" {
 		return nil, errReasonRequired
 	}
-	w, err := loadWithdrawal(id)
+	w, err := loadDecidableWithdrawal(c, id)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +209,7 @@ func markPaid(c *gin.Context, id int64, payoutRef string, paidAt int64, note str
 	if err != nil || ref == "" {
 		return nil, errPayoutRefMissing
 	}
-	w, err := loadWithdrawal(id)
+	w, err := loadDecidableWithdrawal(c, id)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +256,7 @@ func markFailed(c *gin.Context, id int64, rawReason string) (*adminOrderView, er
 	if err != nil || reason == "" {
 		return nil, errReasonRequired
 	}
-	w, err := loadWithdrawal(id)
+	w, err := loadDecidableWithdrawal(c, id)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +294,7 @@ func resolveHold(c *gin.Context, id int64, decision, rawEvidence string) (*admin
 	if decision != DecisionPaid && decision != DecisionFailed {
 		return nil, errInvalidParam
 	}
-	w, err := loadWithdrawal(id)
+	w, err := loadDecidableWithdrawal(c, id)
 	if err != nil {
 		return nil, err
 	}
@@ -377,6 +377,31 @@ func writeDecisionAudit(c *gin.Context, w *Withdrawal, action, actorType string,
 		Reason:       reason,
 		AfterSnap:    common.MapToJsonStr(map[string]any{"status": w.Status, "method": w.Method}),
 	})
+}
+
+// loadDecidableWithdrawal 取一张即将被人工下结论的单,并挡住自审自批。
+//
+// 六个管理端决定(通过 / 拒绝 / 标记已打款 / 立即兑现 / 标记打款失败 / 人工裁决)
+// 全部从这里取单,是刻意的单一入口:审计发现的那条链
+// 「自己给自己记佣金 → 自己发起提现 → **自己批准**」在这里断掉,
+// 而只要有人再加第七个决定,他要么走这个入口、要么在
+// review_self_approval_test.go 的 AST 守卫下变红。
+//
+// 只读的 handleAdminGet 刻意不走这里:管理员能看到自己那张单的详情不构成问题,
+// 而把它一起挡掉只会让人以为单据丢了。
+func loadDecidableWithdrawal(c *gin.Context, id int64) (*Withdrawal, error) {
+	w, err := loadWithdrawal(id)
+	if err != nil {
+		return nil, err
+	}
+	if guard.SelfDealing(c.GetInt("id"), w.UserId) {
+		// 留痕:一次被拒的自审自批不是手滑,它是这条链上最容易被反复尝试的
+		// 一步,而事后仲裁只认审计表。写成 ResultFail 是如实的 —— 单据没动。
+		writeDecisionAudit(c, w, "withdraw.self_review_denied",
+			qymodel.ActorAdmin, actorOf(c), errSelfReview.Msg, qymodel.ResultFail)
+		return nil, errSelfReview
+	}
+	return w, nil
 }
 
 func loadWithdrawal(id int64) (*Withdrawal, error) {

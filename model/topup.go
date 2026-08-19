@@ -20,9 +20,23 @@ type TopUp struct {
 	PaymentMethod   string  `json:"payment_method" gorm:"type:varchar(50)"`
 	PaymentProvider string  `json:"payment_provider" gorm:"type:varchar(50);default:''"`
 	CreateTime      int64   `json:"create_time"`
-	CompleteTime    int64   `json:"complete_time"`
-	Status          string  `json:"status"`
+	// CompleteTime 订单转 success 的时刻。索引是给佣金侧的迟付回收扫描用的：
+	// 它要按「最近完成」而不是「id 区间」找回被单向游标越过的订单。
+	CompleteTime int64  `json:"complete_time" gorm:"index"`
+	Status       string `json:"status"`
+	// CompleteSource 这笔订单是被谁推成 success 的。
+	// 零值(空串)= 支付网关正常回调，也包括尚未完成的订单；
+	// TopUpCompleteSourceAdmin = 管理员在后台补单。
+	//
+	// 它存在的唯一理由是让「管理员补单不返佣」这条风控口径有一个真判据：
+	// 补单不改 payment_method(那一列记的是用户当初选的支付方式)，
+	// 靠 payment_method == "manual" 识别补单永远不会命中，
+	// 反而会在运营把某个易支付通道命名成 manual 时误杀真实付款。
+	CompleteSource string `json:"complete_source" gorm:"type:varchar(20);default:''"`
 }
+
+// TopUpCompleteSourceAdmin 标记这笔订单由管理员后台补单完成。
+const TopUpCompleteSourceAdmin = "admin"
 
 const (
 	PaymentMethodStripe       = "stripe"
@@ -46,6 +60,33 @@ var (
 	ErrTopUpNotFound         = errors.New("topup not found")
 	ErrTopUpStatusInvalid    = errors.New("topup status invalid")
 )
+
+// CreditQuota 按支付渠道把订单换算成到账额度。
+//
+// 各条渠道的换算口径本来就不一致（creem 的 Amount 已经是额度、stripe 按 Money
+// 换算、其余按 Amount × QuotaPerUnit），这里是唯一一份：结算侧(RechargeXxx /
+// ManualCompleteTopUp)与下单侧的上界校验必须共用它。
+//
+// 分开写会直接变成资损：换算走 common.QuotaFromDecimalStrict，结果超过
+// common.MaxQuota 即报错并让整笔结算事务回滚，订单永远停在 pending。
+// 下单侧若不用同一个判据挡住，用户付出去的钱换不回一分额度，
+// 而且管理员补单走的是同一个换算，同样救不回来。
+func (topUp *TopUp) CreditQuota() (int, error) {
+	switch topUp.PaymentProvider {
+	case PaymentProviderCreem:
+		// Creem 的 Amount 本身就是额度（下单时从服务端产品表取），不再乘单价。
+		return common.QuotaFromDecimalStrict(decimal.NewFromInt(topUp.Amount))
+	case PaymentProviderStripe:
+		// Stripe 的 Money 是经分组倍率换算后的金额数量。
+		return common.QuotaFromDecimalStrict(
+			decimal.NewFromFloat(topUp.Money).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
+		)
+	default:
+		return common.QuotaFromDecimalStrict(
+			decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
+		)
+	}
+}
 
 func (topUp *TopUp) Insert() error {
 	var err error
@@ -140,9 +181,7 @@ func RechargeEpay(tradeNo string, actualPaymentMethod string, callerIp string) (
 			topUp.PaymentMethod = actualPaymentMethod
 		}
 		var quotaErr error
-		quotaToAdd, quotaErr = common.QuotaFromDecimalStrict(
-			decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
-		)
+		quotaToAdd, quotaErr = topUp.CreditQuota()
 		if quotaErr != nil || quotaToAdd <= 0 {
 			return errors.New("无效的充值额度")
 		}
@@ -210,9 +249,7 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 			return err
 		}
 
-		quota, err = common.QuotaFromDecimalStrict(
-			decimal.NewFromFloat(topUp.Money).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
-		)
+		quota, err = topUp.CreditQuota()
 		if err != nil || quota <= 0 {
 			return errors.New("无效的充值额度")
 		}
@@ -420,25 +457,18 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 			return errors.New("订单状态不是待支付，无法补单")
 		}
 
-		// 计算应充值额度：
-		// - Stripe 订单：Money 代表经分组倍率换算后的美元数量，直接 * QuotaPerUnit
-		// - 其他订单（如易支付）：Amount 为美元数量，* QuotaPerUnit
+		// 换算口径与网关回调结算共用 CreditQuota，补单不能比正常回调多给或少给。
 		var quotaErr error
-		if topUp.PaymentProvider == PaymentProviderStripe {
-			quotaToAdd, quotaErr = common.QuotaFromDecimalStrict(
-				decimal.NewFromFloat(topUp.Money).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
-			)
-		} else {
-			quotaToAdd, quotaErr = common.QuotaFromDecimalStrict(
-				decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
-			)
-		}
+		quotaToAdd, quotaErr = topUp.CreditQuota()
 		if quotaErr != nil || quotaToAdd <= 0 {
 			return errors.New("无效的充值额度")
 		}
 
-		// 标记完成
+		// 标记完成。CompleteSource 必须落库：它是「管理员补单不返佣」这条风控口径
+		// 事后唯一能把补单与真实付款区分开的字段，payment_method 记的是用户当初
+		// 选的支付方式，补单一个字都不会改它。
 		topUp.CompleteTime = common.GetTimestamp()
+		topUp.CompleteSource = TopUpCompleteSourceAdmin
 		topUp.Status = common.TopUpStatusSuccess
 		if err := tx.Save(topUp).Error; err != nil {
 			return err
@@ -499,7 +529,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 		}
 
 		// Creem 直接使用 Amount 作为充值额度（整数）
-		quota, err = common.QuotaFromDecimalStrict(decimal.NewFromInt(topUp.Amount))
+		quota, err = topUp.CreditQuota()
 		if err != nil || quota <= 0 {
 			return errors.New("无效的充值额度")
 		}
@@ -569,9 +599,7 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 			return errors.New("充值订单状态错误")
 		}
 
-		quotaToAdd, err = common.QuotaFromDecimalStrict(
-			decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
-		)
+		quotaToAdd, err = topUp.CreditQuota()
 		if err != nil || quotaToAdd <= 0 {
 			return errors.New("无效的充值额度")
 		}
@@ -629,9 +657,7 @@ func RechargeWaffoPancake(tradeNo string) (err error) {
 			return errors.New("充值订单状态错误")
 		}
 
-		quotaToAdd, err = common.QuotaFromDecimalStrict(
-			decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
-		)
+		quotaToAdd, err = topUp.CreditQuota()
 		if err != nil || quotaToAdd <= 0 {
 			return errors.New("无效的充值额度")
 		}

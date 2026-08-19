@@ -22,6 +22,10 @@ export type SecurityProofScope =
   | 'channel.key.read'
   | 'passkey.register'
   | 'passkey.delete'
+  // 提现收款信息明文（银行卡号 / 钱包地址 / PayPal 邮箱）。
+  // 后端白名单见 controller/secure_verification.go 的 isAllowedSecurityProofScope，
+  // scope 字面量由 middleware.SecurityProofScopeWithdrawPayeeRead 定义。
+  | 'withdraw.payee.read'
 
 export interface SecurityProof {
   proof_token: string

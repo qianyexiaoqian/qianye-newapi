@@ -122,7 +122,15 @@
   用请求 ctx 会让**客户端主动断连**取消掉失败计数的写入 —— 攻击者每次发完立刻断开,
   就能无限试密码而计数一次都不涨。
 - **没有"关闭支付密码校验"的开关**:一个能关掉验密的配置项本身就是那条绕过路径。
-  功能总闸是 `transfer.enabled`,划转整体关掉时这条路径根本不会被执行到。
+  总闸是**调用方自己的功能开关**,那条路径整体关掉时验密根本不会被执行到。
+
+  ⚠ 2026-08-19 修订:本条原文写的是「功能总闸是 `transfer.enabled`」,那在 paypass
+  只服务划转时成立。提现与抽奖接进来之后它就过期了 —— 用户侧的设置/改密/找回接口
+  当时全都门在 `guard.FlagTransfer` 上,于是 `transfer.enabled=false` +
+  `withdraw.enabled=true` 这个合法组合下,没设过密码的用户提现恒 403
+  `qy_pay_pwd_not_set`,而去设置时恒 404 `qy_feature_off`,佣金永久困在账上,
+  管理员也只能 reset(清空)不能代设。现在这几个接口门在 `guard.FlagPayPassword`
+  = `transfer || withdraw || lottery` 上。
 
 ### 2.5 强度规则
 

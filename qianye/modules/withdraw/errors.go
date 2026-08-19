@@ -73,6 +73,12 @@ var (
 	errDailyCountReached = newBizError("qy_wd_daily_count_reached", "已达今日提现次数上限", http.StatusTooManyRequests)
 	errFiatBelowMin      = newBizError("qy_wd_fiat_below_min", "低于法币最低提现金额", http.StatusBadRequest)
 	errFeeEatsAll        = newBizError("qy_wd_fee_eats_all", "扣除手续费后实付金额为 0", http.StatusBadRequest)
+	// errFiatUnavailable 与 errInsufficient 刻意分开:后者是"你没这么多佣金",
+	// 前者是"你的佣金在账本上折不出一个正的法币值"(available_fiat = 0 而额度是正的)。
+	// 合成一条会让用户对着一个明明有余额的账号反复重试,而真正要做的是让管理员
+	// 去补佣金法币折算档 —— 用户自己一步都改不了,所以是 500 而不是 400。
+	errFiatUnavailable = newBizError("qy_wd_fiat_unavailable",
+		"该笔佣金暂时无法折算为法币,请联系管理员或改用站内额度提现", http.StatusInternalServerError)
 )
 
 // 申请阶段的风控闸门(withdraw.max_quota_per_order / daily_max_quota /
@@ -107,6 +113,15 @@ var (
 	// 对 quota 单执行等于把佣金吃掉(paid 是终态、不可逆、对账也扫不到)。
 	errNotFiatOrder  = newBizError("qy_wd_not_fiat_order", "站内额度提现不能标记为线下打款,请使用「立即兑现」或「标记打款失败」", http.StatusConflict)
 	errNotQuotaOrder = newBizError("qy_wd_not_quota_order", "线下法币提现不能兑现为站内额度,请使用「标记已打款」", http.StatusConflict)
+
+	// errSelfReview 是自审自批闸门。见 loadDecidableWithdrawal 与
+	// qianye/guard/fund_actor.go —— 提现单的**每一个**人工决定都要经过它,
+	// 包括退回佣金的那几个:四眼原则管的是"谁有资格对这张单下结论",
+	// 不是"这次结论对申请人有没有好处"。申请人自己想撤单仍然走用户端的
+	// POST /withdraw/:id/cancel,不需要管理员身份,所以这道闸门不会把
+	// 任何人的单据锁死。
+	errSelfReview = newBizError("qy_wd_self_review",
+		"不能审核自己提交的提现申请,请由另一位管理员处理", http.StatusForbidden)
 )
 
 // 配置与密钥错误。
@@ -140,6 +155,8 @@ func respondErr(c *gin.Context, err error) {
 		respondErr(c, errInsufficient)
 	case errors.Is(err, commission.ErrDebtBlocked):
 		respondErr(c, errDebtBlocked)
+	case errors.Is(err, commission.ErrFiatUnavailable):
+		respondErr(c, errFiatUnavailable)
 	case errors.Is(err, commission.ErrInvalidAmount):
 		respondErr(c, errAmountOutOfRange)
 	case errors.Is(err, twophase.ErrAmountOutOfRange):

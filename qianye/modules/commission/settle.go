@@ -440,11 +440,12 @@ func settleUser(inviterId int) (more bool, err error) {
 			return err
 		}
 		s := effective()
-		dailyRemain, err := dailyRemaining(tx, inviterId, s.DailyCapQuota, now)
+		win, err := resolveCapWindow(tx, bal, s.DailyCapQuota, now)
 		if err != nil {
 			return err
 		}
-		out := computeSettlement(bal.UnsettledAmount, delta, bal.AvailableQuota, s.MinSettleQuota, dailyRemain)
+		out := computeSettlement(bal.UnsettledAmount, delta, bal.AvailableQuota,
+			s.MinSettleQuota, win.remaining(s.DailyCapQuota))
 		if out.Clamp != nil {
 			// 单轮结算触顶 int32 是绝不该发生的事,必须留痕并告警;
 			// 未发完的部分仍在 CarryAfter 里,下轮继续。
@@ -504,13 +505,22 @@ func settleUser(inviterId int) (more bool, err error) {
 			return err
 		}
 
+		// 日封顶窗口与余额在同一次写里推进。只累加发放:回收(负 net)不退还
+		// 当天的封顶额度 —— 封顶限的是"一天最多发出去多少",不是净额,
+		// 否则一次冲正就能换回一份新的发放余量。
+		capGrantedAfter := win.Granted
+		if out.NetQuota > 0 {
+			capGrantedAfter += out.NetQuota
+		}
 		updates := map[string]any{
-			"unsettled_amount": out.CarryAfter,
-			"available_fiat":   newFiat,
-			"fiat_currency":    fiatCurrency,
-			"debt_blocked":     out.CarryAfter.IsNegative(),
-			"last_settled_at":  now,
-			"updated_at":       now,
+			"daily_cap_window_start": win.Start,
+			"daily_cap_granted":      capGrantedAfter,
+			"unsettled_amount":       out.CarryAfter,
+			"available_fiat":         newFiat,
+			"fiat_currency":          fiatCurrency,
+			"debt_blocked":           out.CarryAfter.IsNegative(),
+			"last_settled_at":        now,
+			"updated_at":             now,
 		}
 		switch {
 		case out.NetQuota > 0:
@@ -598,27 +608,62 @@ func lockBalance(tx *gorm.DB, userId int) (*Balance, error) {
 	return &bal, nil
 }
 
-// dailyRemaining 返回今日还能发多少。返回 -1 表示不设封顶。
+// capWindow 是日封顶的当前窗口:起点与窗口内已发出的额度。
 //
-// "今日"的日界与 bucket_date 分桶、一日一结算的"今天"同源(dayline.go),
-// 三者用不同口径会让日封顶削掉的那部分横跨两个自然日。
-func dailyRemaining(tx *gorm.DB, userId int, cap int64, now int64) (int64, error) {
+// 它随余额行一起持久化(Balance.DailyCapWindowStart / DailyCapGranted),
+// 而不是每次拿当前日界去现算 —— 理由见 Balance 上那两列的说明。
+type capWindow struct {
+	Start   int64
+	Granted int64
+}
+
+// remaining 返回本窗口还能发多少。cap <= 0(不设封顶)时返回 -1。
+func (w capWindow) remaining(cap int64) int64 {
 	if cap <= 0 {
-		return -1, nil
+		return -1
 	}
-	windowStart := dayStart(now)
-	var used int64
-	err := tx.Model(&Settlement{}).
-		Where("user_id = ? AND created_at >= ?", userId, windowStart).
-		Select("COALESCE(SUM(granted_quota), 0)").Scan(&used).Error
-	if err != nil {
-		return 0, err
-	}
-	remain := cap - used
+	remain := cap - w.Granted
 	if remain < 0 {
 		remain = 0
 	}
-	return remain, nil
+	return remain
+}
+
+// resolveCapWindow 判定这一次结算落在哪个日封顶窗口里。
+//
+// 调用方必须已经持有该用户的余额行锁(lockBalance),bal 就是锁内读到的那一行。
+//
+// 三条分支:
+//
+//	窗口起点为 0    本列上线前的存量行。按旧口径(结算行 created_at)补一次
+//	               「今天已发」,否则升级当天封顶白白多一份。
+//	已满 24 小时    开新窗口,起点取当前日界(dayStart),已发清零。
+//	其余           沿用余额行上记着的窗口。**日界怎么挪都进不了这一支**,
+//	               这正是「改一次配置就把封顶重新加满」被堵死的地方。
+//
+// 「已满 24 小时」而不是「日界变了」是这条修复的全部要点:稳定偏移下两者
+// 完全等价(相邻日界正好相差 86400),而偏移被改动时前者不会凭空多出一个窗口。
+func resolveCapWindow(tx *gorm.DB, bal *Balance, cap int64, now int64) (capWindow, error) {
+	switch {
+	case bal.DailyCapWindowStart == 0:
+		w := capWindow{Start: dayStart(now)}
+		if cap <= 0 {
+			// 没开封顶就不必为存量行多查一次:开启封顶那一刻会走到这里补。
+			return w, nil
+		}
+		var used int64
+		if err := tx.Model(&Settlement{}).
+			Where("user_id = ? AND created_at >= ?", bal.UserId, w.Start).
+			Select("COALESCE(SUM(granted_quota), 0)").Scan(&used).Error; err != nil {
+			return capWindow{}, err
+		}
+		w.Granted = used
+		return w, nil
+	case now >= bal.DailyCapWindowStart+secondsPerDay:
+		return capWindow{Start: dayStart(now)}, nil
+	default:
+		return capWindow{Start: bal.DailyCapWindowStart, Granted: bal.DailyCapGranted}, nil
+	}
 }
 
 // absorbAccruals 用 CAS 回写"已被吸收多少"。

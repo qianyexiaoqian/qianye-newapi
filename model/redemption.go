@@ -221,10 +221,22 @@ func Redeem(key string, userId int) (*RedeemResult, error) {
 		if redemption.Status != common.RedemptionCodeStatusEnabled {
 			return errors.New("该兑换码已被使用")
 		}
+		// 核销痕迹是比 status 更硬的判据:status 是一列可以被管理端写回去的值,
+		// redeemed_time / used_user_id 记的是"这张码确实已经发过货"这个事实。
+		// 一张码只兑一次是下游依赖的不变量 —— 佣金幂等键 redemption:<id> 正建立
+		// 在它之上 —— 所以最后一道闸必须落在真正动钱的这一层,而不是只落在入口校验上。
+		if redemption.RedeemedTime != 0 || redemption.UsedUserId != 0 {
+			return errors.New("该兑换码已被使用")
+		}
 		if redemption.ExpiredTime != 0 && redemption.ExpiredTime < common.GetTimestamp() {
 			return errors.New("该兑换码已过期")
 		}
 		productKind := redemption.ProductKind()
+		if productKind == RedemptionProductQuota && redemption.Quota <= 0 {
+			// 余额码的面额必须为正。非正面额兑换出去的是一笔倒扣:用户余额被扣走,
+			// 而接口回 success、日志记的是一条"充值"。建码侧拦得住,这里是动钱前的最后一道。
+			return errors.New("该兑换码额度无效")
+		}
 		if productKind != RedemptionProductQuota {
 			// 套餐在 CAS 之前查:套餐被删或被停用时,这次兑换要整个失败,
 			// 而不是把码标成已用再发现发不出货。反正同一事务,报错即回滚。
@@ -255,7 +267,8 @@ func Redeem(key string, userId int) (*RedeemResult, error) {
 		// enabled -> used may credit quota, so a concurrent redeem of the
 		// same code loses here even without a row lock (e.g. on SQLite).
 		result := tx.Model(&Redemption{}).
-			Where("id = ? AND status = ?", redemption.Id, common.RedemptionCodeStatusEnabled).
+			Where("id = ? AND status = ? AND redeemed_time = 0 AND used_user_id = 0",
+				redemption.Id, common.RedemptionCodeStatusEnabled).
 			Updates(map[string]interface{}{
 				"redeemed_time": common.GetTimestamp(),
 				"status":        common.RedemptionCodeStatusUsed,

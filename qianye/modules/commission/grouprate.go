@@ -179,7 +179,7 @@ func groupRates(ctx context.Context) map[string]GroupRate {
 		if snapshot != nil {
 			return snapshot
 		}
-		groupRateDegrade.note("读取分组费率失败: " + db.ErrNotReady.Error())
+		groupRateDegrade.noteCtx(ctx, "读取分组费率失败: "+db.ErrNotReady.Error())
 		return map[string]GroupRate{}
 	}
 	var rows []GroupRate
@@ -188,7 +188,7 @@ func groupRates(ctx context.Context) map[string]GroupRate {
 		if snapshot != nil {
 			return snapshot
 		}
-		groupRateDegrade.note("读取分组费率失败: " + err.Error())
+		groupRateDegrade.noteCtx(ctx, "读取分组费率失败: "+err.Error())
 		return map[string]GroupRate{}
 	}
 	m := make(map[string]GroupRate, len(rows))
@@ -207,7 +207,18 @@ func groupRates(ctx context.Context) map[string]GroupRate {
 	return m
 }
 
+// invalidateGroupRates 失效本进程的分组费率快照,并广播给其它节点。
+//
+// 广播不是锦上添花:费率会被**逐笔冻结**进 accrual 行,别的节点晚 60 秒看到
+// 新费率,就是那 60 秒里每一笔佣金都按旧档永久发错(见 cachesync.go)。
 func invalidateGroupRates() {
+	invalidateGroupRatesLocal()
+	publishInvalidation(cacheKindGroupRate, 0)
+}
+
+// invalidateGroupRatesLocal 只清本进程。重放远端流水时用它,否则两个节点
+// 会把对方的失效再广播回去。
+func invalidateGroupRatesLocal() {
 	groupRateMu.Lock()
 	groupRateCache = nil
 	groupRateLoaded = 0

@@ -30,6 +30,7 @@ type BillingSession struct {
 	tokenConsumed    int  // 令牌额度实际扣减量
 	extraReserved    int  // 发送前补充预扣的额度（订阅退款时需要单独回滚）
 	fundingSettled   bool // funding.Settle 已成功，资金来源已提交
+	tokenSettled     bool // 令牌额度已按差额调整过一次（资金侧失败也算，不能调第二遍）
 	settled          bool // Settle 全部完成（资金 + 令牌）
 	refunded         bool // Refund 已调用
 	mu               sync.Mutex
@@ -50,15 +51,24 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		return nil
 	}
 	// 1) 调整资金来源（仅在尚未提交时执行，防止重复调用）
+	//
+	// 资金侧失败**不再**直接 return:令牌额度与它是两笔独立的账,把令牌那一步
+	// 一起跳过只会让 token.remain_quota 永久停在预扣值(正差额时用户白得一截
+	// 消费上限,负差额时被多占一截)。资金侧的失败仍然原样返回给调用方,
+	// 由 relayInfo.SettleFailure 落进日志的 admin_info(见 attachSettleFailure)。
+	var fundingErr error
 	if !s.fundingSettled {
 		if err := s.funding.Settle(delta); err != nil {
-			return err
+			fundingErr = err
+		} else {
+			s.fundingSettled = true
 		}
-		s.fundingSettled = true
 	}
-	// 2) 调整令牌额度
+	// 2) 调整令牌额度（tokenSettled 保证它至多执行一次：资金侧失败时本次不置
+	//    settled，调用方若再来一次结算，令牌不能被调第二遍）
 	var tokenErr error
-	if !s.relayInfo.IsPlayground && delta != 0 {
+	if !s.tokenSettled && !s.relayInfo.IsPlayground && delta != 0 {
+		s.tokenSettled = true
 		if delta > 0 {
 			tokenErr = model.DecreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, delta)
 		} else {
@@ -77,6 +87,10 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		s.relayInfo.SubscriptionPostDelta += sub.SettleApplied()
 		s.relayInfo.SubscriptionWalletShortfall += sub.SettleWalletShortfall()
 		s.relayInfo.SubscriptionWrittenOff += sub.SettleWrittenOff()
+	}
+	if fundingErr != nil {
+		// 不置 settled:资金侧确实没收到钱,这一笔不该被标成"已结清"。
+		return fundingErr
 	}
 	s.settled = true
 	return tokenErr
@@ -273,6 +287,84 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 	s.syncRelayInfo()
 
 	return nil
+}
+
+// requirePartialReserveBacked 挡住「套餐只出得起一部分,而剩下那部分谁都付不起」
+// 的请求。
+//
+// ═══════════ 它补的是哪一道被跳过的门槛 ═══════════
+//
+// 钱包那条路强制 userQuota >= preConsumedQuota(tryWallet 的 wallet_threshold
+// 那一档)。套餐这条路只要还剩 >= 1 个 quota,pickFundingSubscription 的第二轮
+// 就按剩余额度**部分预扣**并放行整个请求,而 NewBillingSession 的路由是
+// 「订阅出得了资就不再看钱包」—— 于是钱包余额判据在预扣阶段一次都不会被问到。
+//
+// 真实花费在结算时才落地(settleSubscriptionDelta):撞到 amount_total 上限的
+// 那一段无条件扣钱包(余额可为负)。实测:钱包 0 + 一张 remain=1 的套餐,
+// 真打上游一条 gemini-3.1-pro-high 的长请求 → HTTP 200,users.quota 0 → −190,300。
+// 同一个账号把套餐拿掉就是 403。也就是说尾数那 1 个 quota 换来了一次
+// **不受任何余额判据约束**的请求。
+//
+// ═══════════ 判据:总可用资金必须覆盖预扣估算额 ═══════════
+//
+// 套餐吃下 preConsumed,剩下的 shortfall = amount − preConsumed 由钱包兜底,
+// 所以要求 userQuota >= shortfall —— 与纯钱包路径「userQuota >= 预扣额」是同一
+// 条规则,只是套餐先付掉了一部分。
+//
+// 这**不会**把「尾数必须花得掉」推翻:钱包里有钱的人照旧走部分预扣把尾数花光
+// (实测的 10,000 quota 钱包对 1 quota 的尾数绰绰有余),被挡住的只有"两边都
+// 付不起"的那一类 —— 而他在没有第二轮的年代本来就会被 403。
+//
+// ═══════════ 闸门说"钱包不得补收"时不拦 ═══════════
+//
+// 那一档差额按配置由平台核销(model.ClaimSubscriptionWriteOff 每个重置周期
+// 只发一份名额),运营就是要让这类分组不花用户的钱;拿钱包余额去拦他等于
+// 把那个配置反过来用。
+func (s *BillingSession) requirePartialReserveBacked(c *gin.Context) *types.NewAPIError {
+	sub, ok := s.funding.(*SubscriptionFunding)
+	if !ok {
+		return nil
+	}
+	shortfall := sub.amount - sub.preConsumed
+	if shortfall <= 0 {
+		return nil
+	}
+	info := s.relayInfo
+	if !QyWalletMayCoverSubscriptionShortfall(info.UserId, info.UserGroup, info.UsingGroup, shortfall) {
+		return nil
+	}
+	userQuota, err := model.GetUserQuota(info.UserId, false)
+	if err != nil {
+		return types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+	}
+	if int64(userQuota) >= shortfall {
+		info.UserQuota = userQuota
+		return nil
+	}
+	// 拒绝之前必须把已经预扣掉的套餐额度与令牌额度退回去 —— 这一笔请求根本没跑。
+	//
+	// 同步退,不走 Refund 的异步 gopool:这条路上会话还没有交给任何人,退款
+	// 落库之前就返回 403 的话,用户紧接着的下一次请求会读到一个仍然被占着的
+	// 尾数,表现成"明明有余额却一直被拒"。s.refunded 顺手置上,杜绝二次退款。
+	s.refunded = true
+	if err := s.funding.Refund(); err != nil {
+		common.SysLog("error refunding subscription pre-consume after partial reserve was rejected: " + err.Error())
+	}
+	if s.tokenConsumed > 0 && !info.IsPlayground {
+		if err := model.IncreaseTokenQuota(info.TokenId, info.TokenKey, s.tokenConsumed); err != nil {
+			common.SysLog("error rolling back token quota after partial reserve was rejected: " + err.Error())
+		}
+	}
+	s.tokenConsumed = 0
+	// 额度列是 32 位;走 quota_math 的饱和转换而不是裸 int(),越界会被夹住并留痕。
+	rejectErr := fmt.Errorf("预扣费额度失败, 套餐余额仅够 %s, 钱包剩余额度 %s 不足以补足差额 %s",
+		logger.FormatQuota(common.QuotaFromFloat(float64(sub.preConsumed))),
+		logger.FormatQuota(userQuota),
+		logger.FormatQuota(common.QuotaFromFloat(float64(shortfall))))
+	logPreConsumeRejected(c, info, "subscription_partial_uncovered", s.preConsumedQuota, rejectErr)
+	return types.NewErrorWithStatusCode(
+		rejectErr, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
+		types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 }
 
 func (s *BillingSession) reserveFunding(delta int) error {
@@ -486,6 +578,9 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 	}
 	session, apiErr := trySubscription()
 	if apiErr == nil {
+		if apiErr := session.requirePartialReserveBacked(c); apiErr != nil {
+			return nil, apiErr
+		}
 		return session, nil
 	}
 	// 只有「订阅这一笔出不了资」才回落到钱包。这一档由 preConsume 统一映射成

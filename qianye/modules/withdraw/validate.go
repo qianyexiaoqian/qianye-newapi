@@ -2,6 +2,7 @@ package withdraw
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
@@ -53,6 +54,50 @@ var payeeSpecs = map[string][]payeeField{
 	ChannelPaypal: {
 		{Key: "email", Required: true, MinRunes: 5, MaxRunes: 128},
 	},
+}
+
+// payeeAccountKey 指出每个渠道里"钱最终去哪"的那**一个**字段。
+//
+// 风控指纹只摘要这一个字段(见 payeeDigest):其余字段是收款人的自述,
+// 同一张卡上它们可以每次都写得不一样,而钱去的仍是同一个账号。
+// 新增渠道时必须同时在这里登记,否则该渠道的指纹会回落到整条记录的旧口径,
+// 跨账号信号对它静默失效。
+var payeeAccountKey = map[string]string{
+	ChannelAlipay: "account",
+	ChannelWechat: "account",
+	ChannelBank:   "account_no",
+	ChannelUSDT:   "address",
+	ChannelPaypal: "email",
+}
+
+// normalizePayeeAccount 按渠道归一账号字段,让"同一个账号的不同写法"摘出同一个指纹。
+//
+// 空白一律去掉(含全角空格):卡号写成 "6225 8801 3762 4156" 与写成一整串
+// 是同一张卡,而 acceptPayee 只做首尾 TrimSpace,中间的空格原样留着。
+//
+// 大小写按渠道分开处理,不能一刀切:
+//   - paypal 的 email、alipay/wechat 的账号(手机号或邮箱)问的是"同一个信箱/
+//     同一个账号",邮箱域名大小写不敏感,Mule@Example.com 与 mule@example.com
+//     是同一个收款目的地,必须折成小写;
+//   - bank 的账号可能是 IBAN(字母数字混排,书写惯例是大写并用空格/连字符分组),
+//     折成大写并去掉连字符;
+//   - usdt_trc20 的地址是 Base58,大小写本身就是地址的一部分,折叠会把两个
+//     不同的钱包地址并成一个 —— 这里只去空白,一个字符都不动。
+func normalizePayeeAccount(channel, raw string) string {
+	s := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, raw)
+	switch channel {
+	case ChannelBank:
+		return strings.ToUpper(strings.ReplaceAll(s, "-", ""))
+	case ChannelUSDT:
+		return s
+	default:
+		return strings.ToLower(s)
+	}
 }
 
 // SupportedChannels 返回全部收款渠道标识,供前端渲染选择器。
@@ -188,7 +233,7 @@ func acceptProofRef(raw string, cfg config.Withdraw) (string, error) {
 
 // acceptPayee 校验并规范化收款信息。
 //
-// 返回的 map 只含规格里声明过的键,顺序无关(指纹由 canonicalPayee 排序保证稳定)。
+// 返回的 map 只含规格里声明过的键,顺序无关(指纹由 canonicalPayee* 的排序/取字段保证稳定)。
 func acceptPayee(rawChannel string, raw map[string]string) (string, map[string]string, error) {
 	channel := strings.TrimSpace(rawChannel)
 	spec, ok := payeeSpecs[channel]
@@ -211,7 +256,7 @@ func acceptPayee(rawChannel string, raw map[string]string) (string, map[string]s
 		if n := utf8.RuneCountInString(v); n < f.MinRunes || n > f.MaxRunes {
 			return "", nil, errPayeeInvalid
 		}
-		// 控制字符会破坏 canonicalPayee 的分隔符语义,也可能是注入尝试。
+		// 控制字符会破坏 canonicalPayee* 的分隔符语义,也可能是注入尝试。
 		if strings.ContainsAny(v, "\x00\x1e\x1f\n\r") {
 			return "", nil, errPayeeInvalid
 		}

@@ -403,6 +403,9 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq, in
 	if err := taskcommon.UnmarshalMetadata(req.Metadata, &r); err != nil {
 		return nil, errors.Wrap(err, "unmarshal metadata failed")
 	}
+	// req_key 就是即梦的模型选择字段:写回鉴权/计费认定的那个,metadata 改不动。
+	// 必须排在下面的 3.0 转换之前 —— 转换的输入正是 ReqKey。
+	r.ReqKey = info.UpstreamModelName
 
 	// 即梦视频3.0 ReqKey转换
 	// https://www.volcengine.com/docs/85621/1792707

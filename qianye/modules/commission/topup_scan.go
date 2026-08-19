@@ -17,24 +17,35 @@ import (
 // topupCursorKey 是低水位游标在共享 qy_kv 表里的键。
 const topupCursorKey = "commission.topup_low_water"
 
+// topupSweepKey 是迟付回收扫描的时间水位线在共享 qy_kv 表里的键。
+// 存的是"已经回收到哪个 complete_time 为止"。
+const topupSweepKey = "commission.topup_sweep_high_water"
+
 const (
 	topupScanBatch      = 500
 	topupScanMaxBatches = 20 // 单轮最多处理 10000 行,避免一次持锁太久
+	// topupSweepGrace 是迟付回收水位线的安全余量(秒)。
+	//
+	// 水位线永远停在"本轮开始时刻减去这个余量",宁可重扫也不越过:一笔订单可能
+	// 在本轮取数之后、水位线写入之前才提交,而 complete_time 取的是它自己的时刻。
+	// 重扫的代价只是一次命中唯一键的空插入,越过的代价是佣金永久丢失。
+	topupSweepGrace = 120
 )
 
-// runTopupScan 扫描主库 top_ups 并为已成功的订单计佣。
+// runTopupScan 扫描主库 top_ups 并为已成功的订单计佣。它由两趟组成。
 //
-// 为什么不用轮询 complete_time 或 updated_at:
-//   - top_ups 根本没有 updated_at 列;
-//   - epay 回调只改 status,complete_time 恒为 0;
-//   - 订单先以 pending 插入、之后才转 success。
-//
-// 三条事实叠加,任何"只往前走的 id 游标"都必然漏单 —— 订单 100 还 pending 时
-// 游标已经走到 200,等它转 success 就再也不会被看到。
-//
+// 【前向低水位游标】top_ups 没有 updated_at 列,订单又先以 pending 插入、
+// 之后才转 success,所以任何"只往前走的 id 游标"都会漏单 —— 订单 100 还
+// pending 时游标已经走到 200,等它转 success 就再也不会被看到。
 // 解法是低水位:游标只推进到"窗口内最早那个仍未决的订单之前"。窗口外的
-// pending 视为死单(epay 订单会过期),不再守候,于是重扫成本只与
-// 窗口内的订单量有关,不随历史总量增长。
+// pending 不再守候(否则一笔永不支付的订单会把游标永久钉死),于是重扫成本
+// 只与窗口内的订单量有关,不随历史总量增长。
+//
+// 【迟付回收】上面那句"窗口外的 pending 不再守候"是一个真实的缺口:被放过的
+// 订单照样可以在几天后被合法回调付成 success(见 sweepLateTopups)。
+// 第二趟按 complete_time 把它们捞回来 —— 现在所有结算路径都会写
+// complete_time,时间维度因此可用,而它恰好与 id 维度正交:漏掉的那些订单的
+// 共同特征正是"id 早、完成晚"。两趟共用幂等键 topup:<trade_no>,重叠无害。
 func runTopupScan(ctx context.Context) {
 	if !config.Get().Commission.Enabled {
 		return
@@ -44,6 +55,9 @@ func runTopupScan(ctx context.Context) {
 		warnf("读取充值扫描游标失败: %v", err)
 		return
 	}
+	// 迟付回收排在前向扫描**之前**:此刻 low 还是上一轮的游标,本轮刚支付的订单
+	// 都在它上面,不会被这一趟白扫一遍,回收面只剩真正被越过的那些。
+	sweepLateTopups(ctx, low)
 
 	lookback := lookbackStart()
 	for i := 0; i < topupScanMaxBatches; i++ {
@@ -146,6 +160,64 @@ func lowWaterAfter(o scanOutcome) int64 {
 	return next
 }
 
+// sweepLateTopups 回收「前向游标已经越过、之后才转 success」的充值订单。
+//
+// 为什么必须有这一趟:前向游标为了不被永不支付的死单钉死,会放过窗口外的
+// pending 单(见 scanBatch)。但"放过"不等于"那笔订单不会再被支付" ——
+// epay 的回调对订单年龄零校验、网关侧的支付链接通常长期有效、订阅单同理、
+// 管理员还能对着一张老单补单。一旦它在游标之后才转 success,
+// 扫描语句 `WHERE id > low` 单向不可回头,这笔佣金就永久丢了:
+// 幂等键 topup:<trade_no> 只防重复不防遗漏,账本三张表全部自洽,
+// 健康面板与流水页都看不出少了一行,站内也没有任何地方拿 success 充值单
+// 去对过计佣行。首启 bootstrap 一次性放过的存量 pending 单同样落在这个形状里。
+//
+// 回收判据用 complete_time 而不是 id:漏掉的那些订单的共同点正是"id 早、完成晚"。
+// 水位线只跟时间走,与游标无关,因此一笔在窗口外被支付的订单照样能被捞回来。
+func sweepLateTopups(ctx context.Context, low int64) {
+	if low <= 0 {
+		return
+	}
+	startedAt := common.GetTimestamp()
+	watermark, err := loadTopupSweepWatermark(startedAt)
+	if err != nil {
+		warnf("读取迟付回收水位线失败: %v", err)
+		return
+	}
+	var rows []model.TopUp
+	err = model.DB.WithContext(ctx).
+		Where("id <= ? AND status = ? AND complete_time > ?",
+			low, common.TopUpStatusSuccess, watermark).
+		Order("complete_time asc").Limit(topupScanBatch).Find(&rows).Error
+	if err != nil {
+		warnf("扫描迟付充值订单失败: %v", err)
+		return
+	}
+	for idx := range rows {
+		if ctx.Err() != nil {
+			return
+		}
+		r := &rows[idx]
+		if err := accrueTopUp(ctx, r); err != nil {
+			// 水位线不推进,下一轮连着它一起重来。与前向扫描的 MinFailed 同一取舍:
+			// 停滞看得见,漏发看不见。
+			warnf("迟付充值订单 id=%d trade_no=%s 计佣失败,回收水位线不再前进: %v", r.Id, r.TradeNo, err)
+			return
+		}
+		topupLateSwept.Add(1)
+	}
+	next := startedAt - topupSweepGrace
+	if len(rows) >= topupScanBatch {
+		// 本轮被批次上限截断:水位线只能推到最后一行那一刻之前,剩下的下一轮继续。
+		next = rows[len(rows)-1].CompleteTime - 1
+	}
+	if next <= watermark {
+		return
+	}
+	if err := saveTopupSweepWatermark(next); err != nil {
+		warnf("写入迟付回收水位线失败: %v", err)
+	}
+}
+
 func lookbackStart() int64 {
 	hours := config.Get().Commission.TopupScanLookbackHours
 	if hours <= 0 {
@@ -179,8 +251,16 @@ func excludedTopUp(t *model.TopUp) bool {
 	if t.PaymentProvider == model.PaymentProviderBalance || t.PaymentMethod == model.PaymentMethodBalance {
 		return true
 	}
-	// 管理员补单没有独立标记(上游未提供),只能靠 payment_method 兜底识别。
-	if config.Get().Commission.ExcludeRedemptionAndManual && t.PaymentMethod == "manual" {
+	// 管理员补单认 complete_source。
+	//
+	// 旧判据是 payment_method == "manual",而全仓没有任何一条路径会把它写成
+	// 这个值:ManualCompleteTopUp 原样保留用户下单时选的支付方式,只把 "admin"
+	// 传给日志的 provider 形参,那个值不落 top_ups 表。于是"管理员补单不返佣"
+	// 这半个开关从来没生效过 —— 运营在配置注释里读到的是两条都堵上了,
+	// 实际上"让小号建单再补单"这条凭空造佣金的路一直开着。
+	// 反过来它还是个活着的误判:支付方式的 type 由管理端自由填写,
+	// 一旦有人把某个易支付通道命名成 manual,真实付款会被整批误杀。
+	if config.Get().Commission.ExcludeRedemptionAndManual && t.CompleteSource == model.TopUpCompleteSourceAdmin {
 		return true
 	}
 	return false
@@ -286,12 +366,52 @@ func bootstrapCursor() (int64, error) {
 	return maxId, nil
 }
 
+// loadTopupSweepWatermark 读迟付回收水位线,不存在时按 now 落一条。
+//
+// 零值不能当"从头扫":那会把平台上线以来所有已完成的充值全部补返一遍佣金 ——
+// 与 bootstrapCursor 拒绝补历史是同一条理由。缺键的语义是"从现在开始看",
+// 所以初始化必须写进库,而不是每轮临时取一个 now。
+func loadTopupSweepWatermark(now int64) (int64, error) {
+	gdb := db.Get()
+	if gdb == nil {
+		return 0, db.ErrNotReady
+	}
+	var row qymodel.KV
+	err := gdb.Where("k = ?", topupSweepKey).Take(&row).Error
+	if err == nil {
+		v, convErr := strconv.ParseInt(row.V, 10, 64)
+		if convErr != nil {
+			return now, nil
+		}
+		return v, nil
+	}
+	// 首次落库退一个安全余量:恰好在这一秒完成、而且已经落在游标下方的订单
+	// 否则会卡在 `complete_time > watermark` 的边界上被整个跳过。
+	bootstrap := now - topupSweepGrace
+	if err := saveTopupSweepWatermark(bootstrap); err != nil {
+		return 0, err
+	}
+	common.SysLog("qianye/commission: 迟付回收水位线初始化为 " + strconv.FormatInt(bootstrap, 10) +
+		"(历史已完成订单不补返佣金)")
+	return bootstrap, nil
+}
+
+func saveTopupSweepWatermark(v int64) error {
+	return saveKV(topupSweepKey, v)
+}
+
 func saveTopupCursor(v int64) error {
+	return saveKV(topupCursorKey, v)
+}
+
+// saveKV 写一条扫描水位线。游标与迟付回收水位线共用同一张 qy_kv 表、
+// 同一套 upsert 与失败标记,分开写只会得到两段除键名外逐字节相同的代码。
+func saveKV(key string, v int64) error {
 	gdb := db.Get()
 	if gdb == nil {
 		return db.ErrNotReady
 	}
-	row := qymodel.KV{K: topupCursorKey, V: strconv.FormatInt(v, 10), UpdatedAt: common.GetTimestamp()}
+	row := qymodel.KV{K: key, V: strconv.FormatInt(v, 10), UpdatedAt: common.GetTimestamp()}
 	err := gdb.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "k"}},
 		DoUpdates: clause.AssignmentColumns([]string{"v", "updated_at"}),

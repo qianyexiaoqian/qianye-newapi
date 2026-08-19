@@ -81,6 +81,17 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 		}
 	}
 
+	// 用户组商品的「你已经永久拥有该用户组」这一条,必须在**下单之前**问:
+	// 它在 CreateUserSubscriptionFromPlanTx 里是一条 return error,而支付回调走的
+	// 就是那个函数 —— 付款之后才撞上它,订单永久停在 pending、钱收了货发不出。
+	if preview, err := model.PreviewUserGroupPurchase(userId, plan); err != nil {
+		common.ApiError(c, err)
+		return
+	} else if preview.Action == model.UserGroupPurchaseActionReject {
+		common.ApiErrorMsg(c, preview.Message)
+		return
+	}
+
 	// WAFFO_PANCAKE_SUB- prefix (vs. wallet's WAFFO_PANCAKE-) drives webhook
 	// dispatch in WaffoPancakeWebhook.
 	tradeNo := fmt.Sprintf("WAFFO_PANCAKE_SUB-%d-%d-%s", userId, time.Now().UnixMilli(), randstr.String(6))
@@ -94,6 +105,9 @@ func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
 		PaymentProvider: model.PaymentProviderWaffoPancake,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
+		// 下单那一刻的套餐随订单走:回调按快照发货,运营在用户付款途中改这张
+		// 套餐的价格/额度/时长/升级组不会改变这一单的内容。见 PlanSnapshot。
+		PlanSnapshot: model.SubscriptionPlanSnapshot(plan),
 	}
 	if err := order.Insert(); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo Pancake 订阅订单创建失败 user_id=%d plan_id=%d trade_no=%s error=%q", userId, plan.Id, tradeNo, err.Error()))

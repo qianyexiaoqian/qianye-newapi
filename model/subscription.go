@@ -33,6 +33,26 @@ const (
 // 订阅状态。仓库里此前一直用字面量("active" / "refunded"),这里只为新增的
 // 那一档定义常量 —— 不把存量字面量一起改成常量是刻意的:那会碰到十几处与本次
 // 改动无关的代码,而 diff 越大越难看出"这次到底改了什么"。
+// SubscriptionSourceOrder 是 CreateUserSubscriptionFromPlanTx 的 source 里
+// **钱已经收了**的那一档:支付网关回调 CompleteSubscriptionOrder。
+//
+// 它是资金安全的判据,不是日志分类。这一档下任何一条业务规则返回 error 都会
+// 让整个事务回滚 —— 订单永久停在 pending、订阅发不出、top_ups 一行都没有,
+// 而本仓没有定时任务会关掉它,也没有管理端补单或退款接口(AdminBindSubscription
+// 走同一个函数,补发撞同一堵墙),只能手工改库。
+//
+// 判据集中在 isPaidSubscriptionSource,与 qianye/modules/subscription/gate.go §四
+// 的名额闸门同一条口径。
+const SubscriptionSourceOrder = "order"
+
+// isPaidSubscriptionSource 报告这条创建路径是不是"钱已经收了"。
+//
+// 只有网关回调一档:余额购买("balance")那条路是同一个事务里先扣的 quota,
+// 回滚会把扣款一起回滚,拒绝是安全的;兑换码与管理员发放同理(没有外部收款)。
+func isPaidSubscriptionSource(source string) bool {
+	return source == SubscriptionSourceOrder
+}
+
 const (
 	// SubscriptionStatusSuperseded 被后买的用户组商品顶替掉。
 	//
@@ -357,9 +377,27 @@ func ValidatePlanSaleWindow(startAt, endAt int64) error {
 //
 // CompleteSubscriptionOrder(支付回调)刻意不调用本函数,与它同样不理会
 // plan.Enabled 是同一个判断:那一刻用户的钱已经付掉了,拒绝只会让订单永久卡在
-// pending,而没有任何退款路径。残余风险:用户在停售前一分钟打开收银台、停售后
-// 才付款,这一单会成交。窗口宽度等于一次支付的时长,后果是业务性的(多卖一单),
-// 与"卡死一笔已付款订单"不在一个量级。
+// pending,而没有任何退款路径。
+//
+// ─────────────── 残余风险的真实宽度:不是"一次支付的时长" ───────────────
+//
+// 这里曾经写着"窗口宽度等于一次支付的时长"。那是错的:pending 订单在本仓侧
+// 没有任何上界(epay 的下单参数里没有时间戳,签名也就无从校验新鲜度;演示站
+// 主库里最老的 pending 单挂了近三个月),所以「在售时下单 → 停售之后再付款」
+// 这条路的窗口宽度取决于第三方网关还认不认那张付款单,与本仓无关。
+//
+// 于是这条残余风险按两件事分别处理:
+//
+//	卖出去的到底是什么  由 SubscriptionOrder.PlanSnapshot 钉死 —— 陈旧订单成交时
+//	                    发的是**下单那一刻**的套餐,运营就地改价/加量不会顺着
+//	                    这些订单流出去。这一半是资金问题,已经堵住。
+//	运营视图            ExpireStalePendingSubscriptionOrders 把超龄 pending 打成
+//	                    expired,让"还有多少单可能成交"变成一个看得见的数。
+//	                    它**不**拒绝发货(见 CompleteSubscriptionOrder),
+//	                    因为收了钱不发货比多卖一单严重得多。
+//
+// 剩下真正没堵的只有"多卖一单"本身(限量套餐的名额会因此溢出),那是业务性的,
+// 与名额闸门对 source=="order" 的处理同一条口径。
 //
 // 管理员绑定(AdminBindSubscription)同样不走这里,与 gate.go 对停用套餐的处理
 // 同口径:管理员手工发放是上游允许的动作,时间窗是面向买家的闸门。
@@ -444,6 +482,68 @@ type SubscriptionOrder struct {
 	CompleteTime    int64  `json:"complete_time"`
 
 	ProviderPayload string `json:"provider_payload" gorm:"type:text"`
+
+	// PlanSnapshot 是**下单那一刻**的套餐整行 JSON。
+	//
+	// ═══════════ 为什么订单必须自带套餐 ═══════════
+	//
+	// 支付回调按 order.PlanId **现读**套餐,而下单与付款之间隔着用户的付款时长
+	// (最短几十秒,最长没有上界 —— pending 订单不会自己消失)。这段时间里运营
+	// 就地编辑同一个 plan_id 的价格/额度/时长/升级组是完全合法的运营动作,
+	// 于是订单只快照了 Money、货却按新内容发:实测「下单时 1 元 / 1000 额度」
+	// 的订单在套餐被改成「199 元 / 9,000,000 额度 / 12 个月 / vip」之后回调,
+	// 用户花 1 元拿到了 9,000,000 额度。反方向(降价或减量)则是用户按旧的
+	// 高价付款、拿到缩水的货。
+	//
+	// 快照让「付了多少钱」与「买到什么」出自同一时刻 —— 订单是一份合同,
+	// 合同的内容不该在对方付款的路上被改。
+	//
+	// ═══════════ 空串是什么 ═══════════
+	//
+	// 空串 = 本列上线之前创建的存量订单(以及余额购买这种下单即成交、
+	// 中间没有任何时间差的路径)。此时回落到按 plan_id 现读,即改动前的行为。
+	// 不给它一个"默认套餐"是刻意的:读不出内容的订单只能问库,猜出来的合同
+	// 比现读更危险。
+	PlanSnapshot string `json:"-" gorm:"type:text"`
+}
+
+// SubscriptionPlanSnapshot 把下单那一刻的套餐序列化成订单要带走的那份合同。
+//
+// 序列化失败时返回空串而不是报错:快照缺失只会退回"按 plan_id 现读"这条
+// 改动前就在跑的路径,而为了一次 Marshal 失败拒绝创建订单,等于把一个
+// 可降级的问题升级成用户买不了东西。
+func SubscriptionPlanSnapshot(plan *SubscriptionPlan) string {
+	if plan == nil || plan.Id == 0 {
+		return ""
+	}
+	buf, err := common.Marshal(plan)
+	if err != nil {
+		common.SysError(fmt.Sprintf("failed to snapshot subscription plan %d into order: %v", plan.Id, err))
+		return ""
+	}
+	return string(buf)
+}
+
+// subscriptionOrderPlan 给出这张订单**应当按哪一份套餐**发货。
+//
+// 优先用下单时的快照;快照缺失/解析不出/plan_id 对不上时回落到现读。
+// plan_id 对不上必须回落而不是报错:那说明这一行的快照写错了对象,
+// 按它发货比按现读更离谱。
+func subscriptionOrderPlan(order *SubscriptionOrder) (*SubscriptionPlan, error) {
+	if order == nil {
+		return nil, errors.New("invalid subscription order")
+	}
+	if strings.TrimSpace(order.PlanSnapshot) != "" {
+		var snapshot SubscriptionPlan
+		if err := common.UnmarshalJsonStr(order.PlanSnapshot, &snapshot); err != nil || snapshot.Id != order.PlanId {
+			common.SysError(fmt.Sprintf(
+				"subscription order %s carries an unusable plan snapshot (plan_id=%d, err=%v); falling back to the live plan",
+				order.TradeNo, order.PlanId, err))
+		} else {
+			return &snapshot, nil
+		}
+	}
+	return GetSubscriptionPlanById(order.PlanId)
 }
 
 func (o *SubscriptionOrder) Insert() error {
@@ -712,9 +812,16 @@ func getUserGroupByIdTx(tx *gorm.DB, userId int) (string, error) {
 //
 // 返回 fallback(调用方传当前分组)表示"没有正在站着的链",此时买之前那一刻
 // 就是链的起点 —— 与改动前完全一致。
+// 判据只看 prev_user_group,**不要求** upgrade_group 仍然非空:跨组顶替时
+// 带额度的那条订阅是被"摘掉改组身份"(upgrade_group 清空、余额与有效期保留)
+// 而不是被作废的,它照样是这条链的根。prev_user_group 只会由
+// CreateUserSubscriptionFromPlanTx 在 upgrade_group 非空时写入,所以
+// 「prev 非空」本身已经蕴含了"这一行曾经负责改组";而管理员手工改组那条路
+// (DetachUserGroupSubscriptionsTx)会把 prev 一并清空,链根随之作废 —— 那正是
+// 「管理员说了算」的意思。
 func userGroupBeforeUpgradeChainTx(tx *gorm.DB, userId int, fallback string) string {
 	var rows []UserSubscription
-	err := tx.Where("user_id = ? AND upgrade_group <> '' AND prev_user_group <> '' AND status IN (?, ?)",
+	err := tx.Where("user_id = ? AND prev_user_group <> '' AND status IN (?, ?)",
 		userId, "active", SubscriptionStatusSuperseded).
 		Order("id asc").Limit(1).Find(&rows).Error
 	if err != nil || len(rows) == 0 {
@@ -809,12 +916,36 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 // (见 PreviewUserGroupPurchase)。这里只负责执行,不负责征求同意 ——
 // 把确认塞进事务里会让"用户没点确认"变成一次事务回滚,而那时钱可能已经收了。
 //
+// ═══════════════ 「作废」作废的是组与时间,不是钱 ═══════════════
+//
+// 项目方拍板那条规则的原话是「A 组没到期时买 B 组 → A 组**剩余时间**直接作废」,
+// 说的是**用户组商品**(定义就是"纯商品,没有余额")。但选行 SQL 只看
+// `upgrade_group <> ” AND status='active'`,被顶掉的完全可以是一张
+// 「升组 + 送额度」的付费订阅 —— 那条路上 status 被写成 superseded、end_time
+// 推到当下,里面**没花完的余额一起消失**(实测:一件几块钱的纯商品把一张
+// ¥1296 套餐剩下的 9.9 亿 quota 原地销毁,没有退款、没有告知、不可撤销)。
+//
+// 所以顶替按订阅带不带额度分两种落法:
+//
+//	纯商品(no_quota)      → 照旧 superseded + end_time=now。它只有时间,规则原样成立。
+//	带额度的订阅           → 只**摘掉它的改组身份**(upgrade_group/downgrade_group 清空),
+//	                        status 与 end_time 一个字节不动。用户组权益立刻让位给新买的那件
+//	                        (这就是"作废"),而他花钱买的那笔余额继续出资到原到期日。
+//
+// 摘身份而不是删身份:prev_user_group 必须留着,它是这条升组链的**链根**,
+// 紧接着新建的那条订阅要靠它算到期回退目标(见 userGroupBeforeUpgradeChainTx,
+// 那条查询因此不再要求 upgrade_group 非空)。丢了链根 = 新订阅把"回退到 vip"
+// 记进快照,而用户根本不再拥有 vip。
+//
 // ═══════════════════════ 返回值语义 ═══════════════════════
 //
 //	(nil, nil)  没有触发任何规则,调用方继续正常新建订阅
 //	(sub, nil)  已经延期了既有订阅,调用方**不要再新建**
 //	(nil, err)  拒绝购买
-func applyUserGroupPurchaseRulesTx(tx *gorm.DB, userId int, plan *SubscriptionPlan) (*UserSubscription, error) {
+//
+// source 是资金安全判据:已付款的那一档(见 isPaidSubscriptionSource)一条
+// 拒绝也不许返回 —— 拒绝会让整个事务回滚,订单永久停在 pending,钱收了货发不出。
+func applyUserGroupPurchaseRulesTx(tx *gorm.DB, userId int, plan *SubscriptionPlan, source string) (*UserSubscription, error) {
 	target := strings.TrimSpace(plan.UpgradeGroup)
 	if target == "" {
 		return nil, nil
@@ -850,7 +981,21 @@ func applyUserGroupPurchaseRulesTx(tx *gorm.DB, userId int, plan *SubscriptionPl
 		}
 		// ── 同一个用户组 ──
 		if existing.EndTime == 0 {
-			return nil, errors.New("你已经永久拥有该用户组,无需重复购买")
+			if !isPaidSubscriptionSource(source) {
+				return nil, errors.New("你已经永久拥有该用户组,无需重复购买")
+			}
+			// 钱已经收了。永久组没有任何可以"再给一点"的东西(延期到永久之后
+			// 还是永久),但拒绝会让订单永久卡在 pending —— 那是收了钱、货发不出、
+			// 也没有人能补单或退款。把既有那条原样交回去,订单照常成交、
+			// top_ups 落行(收入与返佣不会凭空少一笔),同时留下这条日志给运营去退款。
+			//
+			// 下单前本来就该被拦住:四个网关 handler 在创建订单之前调
+			// PreviewUserGroupPurchase,action=="reject" 直接不让下单。走到这里
+			// 说明是那之后的竞态(或管理员/兑换码在中间把永久组发了出去)。
+			common.SysError(fmt.Sprintf(
+				"user %d already owns user group %q permanently but a paid subscription order (source=%s, plan %d) arrived; completing the order without granting anything — refund it manually",
+				userId, target, source, plan.Id))
+			return existing, nil
 		}
 		if plan.DurationUnit == SubscriptionDurationPermanent {
 			// 时效档升永久:直接把它变成永久,而不是新开一条。
@@ -890,14 +1035,25 @@ func applyUserGroupPurchaseRulesTx(tx *gorm.DB, userId int, plan *SubscriptionPl
 	// 刻意**不**触发它的到期回退:回退会把用户的组降回旧的 prev_user_group,
 	// 而紧接着新订阅又要把组改成 target —— 中间那一瞬用户处在一个谁都没配过的
 	// 状态,而且两次写 users.group 会在审计里留下一条看不懂的往返。
+	//
+	// 带额度的订阅只摘身份、不动 status/end_time(理由见函数头):作废的是
+	// 用户组权益,不是用户已经付过钱的余额。
 	for i := range actives {
 		existing := &actives[i]
+		update := map[string]any{
+			"status":     SubscriptionStatusSuperseded,
+			"end_time":   now,
+			"updated_at": now,
+		}
+		if !existing.NoQuota {
+			update = map[string]any{
+				"upgrade_group":   "",
+				"downgrade_group": "",
+				"updated_at":      now,
+			}
+		}
 		if err := tx.Model(&UserSubscription{}).Where("id = ?", existing.Id).
-			Updates(map[string]any{
-				"status":     SubscriptionStatusSuperseded,
-				"end_time":   now,
-				"updated_at": now,
-			}).Error; err != nil {
+			Updates(update).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -929,8 +1085,11 @@ func DetachUserGroupSubscriptionsTx(tx *gorm.DB, userId int) (int64, error) {
 	if tx == nil || userId <= 0 {
 		return 0, nil
 	}
+	// 选行同时看 prev_user_group:跨组顶替留下的那些行 upgrade_group 已经被摘空、
+	// 但 prev_user_group 还留着当链根(见 userGroupBeforeUpgradeChainTx)。
+	// 漏掉它们的话,管理员刚手工设好的组会在下一次购买时被那个旧链根覆写。
 	res := tx.Model(&UserSubscription{}).
-		Where("user_id = ? AND upgrade_group <> ''", userId).
+		Where("user_id = ? AND (upgrade_group <> '' OR prev_user_group <> '')", userId).
 		Updates(map[string]any{
 			"upgrade_group":   "",
 			"downgrade_group": "",
@@ -954,6 +1113,19 @@ func CountUserGroupSubscriptions(userId int) (int64, error) {
 		Count(&count).Error
 	return count, err
 }
+
+// UserGroupPurchasePreview.Action 的四个取值。
+//
+// UserGroupPurchaseActionReject 是唯一一个**下单入口必须自己处理**的:
+// 它对应 applyUserGroupPurchaseRulesTx 里那条「你已经永久拥有该用户组」的拒绝,
+// 而那条拒绝跑在收款之后的事务里 —— 四个网关 handler 不在下单前问一遍的话,
+// 用户会先付款、再撞上它,订单永久停在 pending。
+const (
+	UserGroupPurchaseActionNew       = "new"
+	UserGroupPurchaseActionExtend    = "extend"
+	UserGroupPurchaseActionSupersede = "supersede"
+	UserGroupPurchaseActionReject    = "reject"
+)
 
 // UserGroupPurchasePreview 是下单**之前**要告诉用户的后果。
 type UserGroupPurchasePreview struct {
@@ -1015,13 +1187,23 @@ func PreviewUserGroupPurchase(userId int, plan *SubscriptionPlan) (*UserGroupPur
 		return out, nil
 	}
 
+	keepsQuota := false
 	for i := range actives {
 		out.SupersededGroups = append(out.SupersededGroups, strings.TrimSpace(actives[i].UpgradeGroup))
+		if !actives[i].NoQuota {
+			keepsQuota = true
+		}
 	}
 	if len(out.SupersededGroups) > 0 {
 		out.Action = "supersede"
 		out.Message = "你当前的「" + strings.Join(out.SupersededGroups, "、") +
 			"」尚未到期。购买本商品会立即顶替它,**剩余时间直接作废、不折算也不退款,且不可撤销**。"
+		// 被顶掉的里面有带额度的订阅时必须补这一句 —— 上一句只说了"时间",
+		// 而用户最担心的恰恰是钱。执行侧的口径见 applyUserGroupPurchaseRulesTx:
+		// 带额度的订阅只被摘掉改组身份,余额与有效期原样保留。
+		if keepsQuota {
+			out.Message += "其中带额度的套餐**余额不会被清空**:它只是不再决定你的用户组,剩余额度仍可继续使用到原到期时间。"
+		}
 		return out, nil
 	}
 	out.Message = "购买后你的用户组将变更为「" + target + "」。"
@@ -1046,7 +1228,20 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 			return nil, err
 		}
 		if count >= int64(plan.MaxPurchasePerUser) {
-			return nil, errors.New("已达到该套餐购买上限")
+			// 已付款的那一档只能放行,与名额闸门 §四 同一条口径:这里返回错误
+			// → 整个事务回滚 → 订单永久停在 pending、钱已经收了、货发不出,
+			// 而本仓既没有定时任务会关掉它,也没有管理端补单或退款接口
+			// (AdminBindSubscription 走的是同一个函数,补发也撞同一堵墙)。
+			//
+			// 限购是**下单前**的闸门(四个网关 handler 各自的 CountUserSubscriptionsByPlan
+			// 预检),不是收款后的闸门。预检与付款之间被别人/别的路径占满是竞态,
+			// 溢出一份的后果是业务性的,卡死一笔已付款订单的后果是资损性的。
+			if !isPaidSubscriptionSource(source) {
+				return nil, errors.New("已达到该套餐购买上限")
+			}
+			common.SysError(fmt.Sprintf(
+				"subscription plan %d hit its per-user purchase limit (%d) for user %d, but the payment was already taken (source=%s); granting it anyway to avoid a stuck paid order",
+				plan.Id, plan.MaxPurchasePerUser, userId, source))
 		}
 	}
 	nowUnix := GetDBTimestamp()
@@ -1063,7 +1258,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	// 分支会在名额闸门跑之前 return —— 结果是「先买同组的不限量档、再买限量档」
 	// 可以绕开全站名额:第二笔走进续期分支、直接返回,闸门根本没执行,而订单表里
 	// 留下一条限量套餐的成功订单、订阅表里却没有对应的行(收入归因也落错了套餐)。
-	if extended, err := applyUserGroupPurchaseRulesTx(tx, userId, plan); err != nil {
+	if extended, err := applyUserGroupPurchaseRulesTx(tx, userId, plan, source); err != nil {
 		return nil, err
 	} else if extended != nil {
 		// 同组续期:没有产生新订阅,直接把延长后的那条返回给调用方。
@@ -1165,10 +1360,22 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		if order.Status == common.TopUpStatusSuccess {
 			return nil
 		}
-		if order.Status != common.TopUpStatusPending {
+		// expired 也照常发货。
+		//
+		// 超龄的 pending 订单会被 ExpireStalePendingSubscriptionOrders 打成
+		// expired,那只是**给运营看的**状态(这一单大概率是被丢弃的收银台),
+		// 不是"这笔钱我们不认了"。真的收到一条签名合法的回调,说明用户确实
+		// 把钱付了 —— 此时拒绝就是收了钱不发货,而本仓没有任何退款路径。
+		if order.Status != common.TopUpStatusPending && order.Status != common.TopUpStatusExpired {
 			return ErrSubscriptionOrderStatusInvalid
 		}
-		plan, err := GetSubscriptionPlanById(order.PlanId)
+		if order.Status == common.TopUpStatusExpired {
+			common.SysError(fmt.Sprintf(
+				"subscription order %s was already marked expired (created at %d) but a payment callback arrived; shipping it anyway",
+				order.TradeNo, order.CreateTime))
+		}
+		// 按**下单那一刻**的套餐发货,而不是现读。见 SubscriptionOrder.PlanSnapshot。
+		plan, err := subscriptionOrderPlan(&order)
 		if err != nil {
 			return err
 		}
@@ -1181,7 +1388,7 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		if err := lockForUpdate(tx).Select("id").Where("id = ?", order.UserId).First(&userRow).Error; err != nil {
 			return err
 		}
-		subscription, err := CreateUserSubscriptionFromPlanTx(tx, order.UserId, plan, "order")
+		subscription, err := CreateUserSubscriptionFromPlanTx(tx, order.UserId, plan, SubscriptionSourceOrder)
 		if err != nil {
 			return err
 		}
@@ -1280,6 +1487,66 @@ func ExpireSubscriptionOrder(tradeNo string, expectedPaymentProvider string) err
 		order.CompleteTime = common.GetTimestamp()
 		return tx.Save(&order).Error
 	})
+}
+
+// SubscriptionOrderPendingTTL 是一张 pending 订阅订单在被打成 expired 之前
+// 能挂多久(秒)。
+//
+// ═══════════ 为什么必须有这个上界 ═══════════
+//
+// 在此之前**没有任何一处**会关掉 pending 的订阅订单:ExpireSubscriptionOrder
+// 只在 epay 拉起支付失败与 Stripe 会话过期时被调到,没有定时任务、管理端也
+// 没有订单接口。于是「打开收银台、没付钱」的订单永久堆积(演示站主库里
+// 78 条,最早的近 3 个月),运营看不出哪些还活着,而"这个套餐已停售"这句话
+// 在这堆订单面前是不成立的。
+//
+// ═══════════ 它不是"这笔钱不认了" ═══════════
+//
+// expired 只改变**运营视图**:CompleteSubscriptionOrder 仍然接受 expired 的
+// 订单并照常发货(见那里的注释)。所以这个 TTL 定短了也不会吃掉任何人的钱,
+// 最坏只是让一张真的会被付款的单子先显示成过期。默认 72 小时。
+//
+// <= 0 关闭清扫(留给不希望后台动订单表的部署)。
+func SubscriptionOrderPendingTTL() int64 {
+	return int64(common.GetEnvOrDefault("SUBSCRIPTION_ORDER_PENDING_TTL", 72*3600))
+}
+
+// ExpireStalePendingSubscriptionOrders 把创建时间早于 now-ttl 的 pending
+// 订阅订单打成 expired,返回本批处理条数。
+func ExpireStalePendingSubscriptionOrders(ttlSeconds int64, limit int) (int, error) {
+	if ttlSeconds <= 0 {
+		return 0, nil
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	cutoff := common.GetTimestamp() - ttlSeconds
+	var orders []SubscriptionOrder
+	if err := DB.Where("status = ? AND create_time > 0 AND create_time < ?", common.TopUpStatusPending, cutoff).
+		Order("id asc").
+		Limit(limit).
+		Find(&orders).Error; err != nil {
+		return 0, err
+	}
+	if len(orders) == 0 {
+		return 0, nil
+	}
+	ids := make([]int, 0, len(orders))
+	for i := range orders {
+		ids = append(ids, orders[i].Id)
+	}
+	// 按 id + status 更新:并发的支付回调可能刚好把其中一条改成 success,
+	// 那一条就不该被这批扫描碰到。
+	res := DB.Model(&SubscriptionOrder{}).
+		Where("id IN ? AND status = ?", ids, common.TopUpStatusPending).
+		Updates(map[string]any{
+			"status":        common.TopUpStatusExpired,
+			"complete_time": common.GetTimestamp(),
+		})
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return int(res.RowsAffected), nil
 }
 
 // Admin bind (no payment). Creates a UserSubscription from a plan.
@@ -2081,7 +2348,16 @@ func RefundSubscriptionPreConsume(requestId string) error {
 		// 必须走 tx 版本:用全局 DB 另开事务会让退款先独立提交,
 		// 外层回滚时钱已经退了而幂等记录还是 consumed,重试即重复退款。
 		if err := postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, -record.PreConsumed); err != nil {
-			return err
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			// 订阅行已经被管理端硬删掉了(AdminDeleteUserSubscription 不理会
+			// 在途的预扣记录)。预扣额随行一起消失,没有任何东西可退 ——
+			// 但记录必须落成 refunded,否则 refundWithRetry 会为一件永远不会
+			// 成功的事重试 3 次,并把这条记录永久卡在 consumed。
+			common.SysError(fmt.Sprintf(
+				"subscription %d for pre-consume record %s is gone; marking the record refunded without returning quota",
+				record.UserSubscriptionId, record.RequestId))
 		}
 		record.Status = "refunded"
 		return tx.Save(&record).Error
@@ -2226,6 +2502,26 @@ func ClaimSubscriptionWriteOff(userSubscriptionId int) (bool, error) {
 	return claimed, nil
 }
 
+// SettleUserSubscriptionDelta 把一次结算差额落到订阅上,返回**真正落进去**的那部分。
+//
+// ═══════════ 订阅行已经不在了:落 0,不报错 ═══════════
+//
+// 管理端的「删除」按钮(AdminDeleteUserSubscription)是硬删行,而且不理会
+// subscription_pre_consume_records 里那条在途记录。请求在途时按下它,结算这一步
+// 就会 record not found —— 而这个错误一路冒到 service.SettleBilling 的调用方,
+// 那里只打一行日志就继续把**全额**写进消费日志。实测:同一笔消费,对照组收
+// 25,010,删行组收 **0**(其中本该由钱包补收的 20,010 一分没扣),两条日志的
+// quota 都写 25,010,令牌余额也停在预扣值。
+//
+// 订阅行没了,套餐这一侧确实无处可落 —— 但那不代表这一笔不用收:撞到
+// amount_total 上限之后本来就该由钱包补收(或按闸门核销),而那一段与被删掉的
+// 行毫无关系。所以这里回报 applied=0 让调用方照常把整段差额交给钱包出资闸门,
+// 而不是把整个结算链一起打断。
+//
+// **只对 delta > 0(还要再收钱)这个方向宽容。** delta < 0 是把钱退回套餐,
+// 行没了就是真的退不回去,而那是"用户少拿钱"的方向 —— 必须原样报错,让调用方
+// 保留它的重试/人工对账标记(见 service.RefundTaskQuota:退款失败时不清 task.Quota)。
+// 两个方向都宽容的话,一次删行会把一笔本该人工跟进的退款静默记成"已退"。
 func SettleUserSubscriptionDelta(userSubscriptionId int, delta int64) (applied int64, err error) {
 	if userSubscriptionId <= 0 {
 		return 0, errors.New("invalid userSubscriptionId")
@@ -2238,6 +2534,13 @@ func SettleUserSubscriptionDelta(userSubscriptionId int, delta int64) (applied i
 		if err := lockForUpdate(tx).
 			Where("id = ?", userSubscriptionId).
 			First(&sub).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) && delta > 0 {
+				common.SysError(fmt.Sprintf(
+					"user subscription %d disappeared before settlement (delta=%d); settling it as applied=0 so the shortfall still reaches the wallet",
+					userSubscriptionId, delta))
+				applied = 0
+				return nil
+			}
 			return err
 		}
 		newUsed := sub.AmountUsed + delta

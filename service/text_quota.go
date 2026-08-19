@@ -76,13 +76,31 @@ func (s *textQuotaSummary) hasBillableUsage() bool {
 	return s.TotalTokens > 0 || !s.ToolCallSurchargeQuota.IsZero()
 }
 
-// clampUpstreamTokenCount 把上游自报的 token 数夹到非负。
+// maxUpstreamTokenCount 是单个上游自报 token 分量的上界。
+//
+// 取 MaxInt32 的理由:额度列本身就是 32 位,common/quota_math.go 的饱和转换最终
+// 也停在这里,所以更大的 token 数在金额上没有任何新含义,只会把中间量推进溢出区。
+// 现实里没有任何一次请求接近这个量级,所以这道夹取对真实流量是恒等的。
+const maxUpstreamTokenCount = math.MaxInt32
+
+// clampUpstreamTokenCount 把上游自报的 token 数夹进 [0, maxUpstreamTokenCount]。
 // 负数只可能来自坏掉的、或被中间人改写过的上游,而一个负分量会把同一笔里真实
-// 发生的另一个分量一起抵消掉,表现为整笔免单。夹住之后仍留一条 SysError,
-// 让「某个渠道在报负数」这件事仍然可被发现,而不是变成一行看不出异常的 quota=0。
-func clampUpstreamTokenCount(relayInfo *relaycommon.RelayInfo, field string, count int) int {
-	if count >= 0 {
-		return count
+// 发生的另一个分量一起抵消掉,表现为整笔免单。上界同理:prompt 与 completion
+// 各报 MaxInt64 时,两者相加会**回绕成 -2**,hasBillableUsage() 判成「这笔没有
+// 可计费用量」,整笔免单 —— 溢出发生在判据上,金额侧的饱和保护一点都用不上。
+// 夹住之后仍留一条 SysError,让「某个渠道在报离谱数字」这件事仍然可被发现,
+// 而不是变成一行看不出异常的 quota=0。
+//
+// 形参取 int64 而不是 int 是刻意的:调用方常常要先把两个上游自报的分量加起来
+// (completion + 推理 token),那次加法必须在比 int 更宽的类型里做,否则夹取本身
+// 会被加法的回绕绕过去。
+func clampUpstreamTokenCount(relayInfo *relaycommon.RelayInfo, field string, count int64) int {
+	if count >= 0 && count <= maxUpstreamTokenCount {
+		return int(count)
+	}
+	clamped := 0
+	if count > 0 {
+		clamped = maxUpstreamTokenCount
 	}
 	// 只取 OriginModelName:ChannelId 挂在嵌入的 *ChannelMeta 上,而它在
 	// InitChannelMeta 之前是 nil,读它会在这条纯粹的告警路径上把请求打挂。
@@ -91,9 +109,25 @@ func clampUpstreamTokenCount(relayInfo *relaycommon.RelayInfo, field string, cou
 		modelName = relayInfo.OriginModelName
 	}
 	common.SysError(fmt.Sprintf(
-		"upstream reported a negative %s (%d) for model %s; clamped to 0",
-		field, count, modelName))
-	return 0
+		"upstream reported an out-of-range %s (%d) for model %s; clamped to %d",
+		field, count, modelName, clamped))
+	return clamped
+}
+
+// capUpstreamSubsetTokens 把「按协议是 prompt_tokens 子集」的那些明细夹回 prompt。
+// 超出即上游自报数据自相矛盾,记一条 SysError 让它可被发现。
+func capUpstreamSubsetTokens(relayInfo *relaycommon.RelayInfo, field string, count, promptTokens int) int {
+	if count <= promptTokens {
+		return count
+	}
+	modelName := ""
+	if relayInfo != nil {
+		modelName = relayInfo.OriginModelName
+	}
+	common.SysError(fmt.Sprintf(
+		"upstream reported %s (%d) larger than prompt_tokens (%d) for model %s; capped at prompt_tokens",
+		field, count, promptTokens, modelName))
+	return promptTokens
 }
 
 func cacheWriteTokensTotal(summary textQuotaSummary) int {
@@ -331,17 +365,33 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	// (含真实发生的 prompt 侧)免单。往上有饱和转换兜着,往下一道闸都没有。
 	//
 	// 逐分量夹到 0 而不是只夹合计:合计非负但某一路为负同样会把另一路吃掉。
-	summary.PromptTokens = clampUpstreamTokenCount(relayInfo, "prompt_tokens", usage.PromptTokens)
+	summary.PromptTokens = clampUpstreamTokenCount(relayInfo, "prompt_tokens", int64(usage.PromptTokens))
 	summary.CompletionTokens = clampUpstreamTokenCount(relayInfo, "completion_tokens",
-		usage.CompletionTokens+reasoningTokensOutsideCompletion(usage))
-	summary.TotalTokens = summary.PromptTokens + summary.CompletionTokens
-	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
-	summary.CacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
-	summary.CacheCreationTokens5m = usage.ClaudeCacheCreation5mTokens
-	summary.CacheCreationTokens1h = usage.ClaudeCacheCreation1hTokens
-	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
-	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
+		int64(usage.CompletionTokens)+int64(reasoningTokensOutsideCompletion(usage)))
+	// 合计同样走 int64:两个分量各自已经合法(≤ MaxInt32),但在 32 位构建上相加
+	// 仍会溢出;两者都已非负,所以这里只可能撞上界,不再重复告警。
+	summary.TotalTokens = int(min(int64(summary.PromptTokens)+int64(summary.CompletionTokens), int64(maxUpstreamTokenCount)))
+	summary.CacheTokens = clampUpstreamTokenCount(relayInfo, "cached_tokens", int64(usage.PromptTokensDetails.CachedTokens))
+	summary.CacheCreationTokens = clampUpstreamTokenCount(relayInfo, "cache_creation_tokens", int64(usage.PromptTokensDetails.CacheCreationTokensTotal()))
+	summary.CacheCreationTokens5m = clampUpstreamTokenCount(relayInfo, "cache_creation_5m_tokens", int64(usage.ClaudeCacheCreation5mTokens))
+	summary.CacheCreationTokens1h = clampUpstreamTokenCount(relayInfo, "cache_creation_1h_tokens", int64(usage.ClaudeCacheCreation1hTokens))
+	summary.ImageTokens = clampUpstreamTokenCount(relayInfo, "image_tokens", int64(usage.PromptTokensDetails.ImageTokens))
+	summary.AudioTokens = clampUpstreamTokenCount(relayInfo, "audio_tokens", int64(usage.PromptTokensDetails.AudioTokens))
 	legacyClaudeDerived := isLegacyClaudeDerivedOpenAIUsage(relayInfo, usage)
+	// OpenAI 语义下 prompt_tokens_details 的各路明细按协议都是 prompt_tokens 的
+	// **子集**(下面 baseTokens 正是逐项从 prompt 里减掉它们)。上游报一个大于
+	// prompt_tokens 的 cached_tokens 时,那一段是净加上去的:扣费与真实 prompt
+	// 规模彻底脱钩,单次请求即可把用户余额打到 int32 饱和(实测 −21 亿)。
+	// 按子集语义夹回 prompt 是这里唯一站得住的上界。
+	//
+	// Claude 语义(以及由 Claude 派生的旧 OpenAI 形状)下 prompt_tokens 本就不含
+	// 缓存段,不存在这层子集关系,所以那两条路不夹 —— 夹了才是错的。
+	if !summary.IsClaudeUsageSemantic && !legacyClaudeDerived {
+		summary.CacheTokens = capUpstreamSubsetTokens(relayInfo, "cached_tokens", summary.CacheTokens, summary.PromptTokens)
+		summary.CacheCreationTokens = capUpstreamSubsetTokens(relayInfo, "cache_creation_tokens", summary.CacheCreationTokens, summary.PromptTokens)
+		summary.ImageTokens = capUpstreamSubsetTokens(relayInfo, "image_tokens", summary.ImageTokens, summary.PromptTokens)
+		summary.AudioTokens = capUpstreamSubsetTokens(relayInfo, "audio_tokens", summary.AudioTokens, summary.PromptTokens)
+	}
 	isOpenRouterClaudeBilling := relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelType == constant.ChannelTypeOpenRouter &&
 		summary.IsClaudeUsageSemantic

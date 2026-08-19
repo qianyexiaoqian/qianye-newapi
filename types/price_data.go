@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/QuantumNous/new-api/common"
+
 	"github.com/shopspring/decimal"
 )
 
@@ -34,6 +36,13 @@ type PriceData struct {
 
 func (p *PriceData) AddOtherRatio(key string, ratio float64) {
 	if !isValidOtherRatio(ratio) {
+		// 丢弃一个非法乘数,语义上等于把它当成 1 —— 也就是「这一档不收钱」。
+		// 守卫本身是对的(不能让 0/NaN/+Inf 参与金额计算),但静默丢弃会让
+		// 「用户把某个乘数推到了 0」这件事在账单上看不出任何痕迹(ali 的
+		// metadata.parameters.duration=0 就是这么变成 5 倍少收的)。
+		// 乘数只该由适配器夹好之后交上来,走到这里就是产出侧漏了下界。
+		common.SysError(fmt.Sprintf(
+			"other ratio %q dropped: %v is not a valid multiplier (must be > 0 and finite); billing falls back to 1", key, ratio))
 		return
 	}
 	if p.otherRatios == nil {

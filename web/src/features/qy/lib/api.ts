@@ -146,6 +146,14 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_wd_payee_not_found: 'qy_err_wd_payee_not_found',
   qy_wd_payee_limit: 'qy_err_wd_payee_limit',
   qy_wd_reason_required: 'qy_err_wd_reason_required',
+  // 安全验证（middleware/secure_verification.go）。这四个 code 是上游大写格式，
+  // 不带 qy_ 前缀 —— 提现收款明文接口把它们透传给了 qy 信封的解析层，
+  // 不登记就会塌成一句"权限不足"，而正确的下一步是"重新验证一次身份"。
+  SECURITY_PROOF_REQUIRED: 'qy_err_security_proof',
+  SECURITY_PROOF_INVALID: 'qy_err_security_proof',
+  SECURITY_PROOF_EXPIRED: 'qy_err_security_proof',
+  SECURITY_PROOF_SCOPE_MISMATCH: 'qy_err_security_proof',
+  SECURITY_PROOF_METHOD_MISMATCH: 'qy_err_security_proof',
   qy_wd_payout_ref_required: 'qy_err_wd_payout_ref_required',
   qy_wd_user_unavailable: 'qy_err_wd_user_unavailable',
   qy_wd_insufficient_commission: 'qy_err_wd_insufficient',
@@ -154,6 +162,7 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_wd_daily_count_reached: 'qy_err_wd_daily_count',
   qy_wd_fiat_below_min: 'qy_err_wd_fiat_below_min',
   qy_wd_fee_eats_all: 'qy_err_wd_fee_eats_all',
+  qy_wd_fiat_unavailable: 'qy_err_wd_fiat_unavailable',
   qy_wd_not_found: 'qy_err_wd_not_found',
   qy_wd_status_conflict: 'qy_err_wd_status_conflict',
   qy_wd_illegal_transition: 'qy_err_wd_illegal_transition',

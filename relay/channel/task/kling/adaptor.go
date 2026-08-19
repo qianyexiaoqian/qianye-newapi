@@ -284,9 +284,14 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq, in
 		r.ModelName = "kling-v1"
 		r.Model = "kling-v1"
 	}
+	billedModel, billedModelName := r.Model, r.ModelName
 	if err := taskcommon.UnmarshalMetadata(req.Metadata, &r); err != nil {
 		return nil, errors.Wrap(err, "unmarshal metadata failed")
 	}
+	// 模型由鉴权与计费认定,不由 metadata 说了算。UnmarshalMetadata 已经删掉了
+	// model/model_name 这些键,这里再写回去是第二道:任何新的合并路径(比如把整包
+	// 原始 body 塞进 metadata 的 kling 原生路由)都不可能让上游收到别的模型。
+	r.Model, r.ModelName = billedModel, billedModelName
 	return &r, nil
 }
 

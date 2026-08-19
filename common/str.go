@@ -126,6 +126,24 @@ func MaskEmail(email string) string {
 	return "***@" + email[atIndex+1:]
 }
 
+// MaskCredential 把一段仍然有效的凭据(兑换码、令牌、密钥)压成只够对号入座的
+// 尾巴,供日志与错误文本使用。
+//
+// 日志的读者面比数据库宽得多:文件、容器 stdout、日志采集平台、日志备份。
+// 一串还没被兑换的兑换码落进这些地方,等于把它的面值送给任何有日志读取权的人。
+// 但把它整段抹成 "***" 又会让客服无法把用户报的那张码与日志里的那一行对上,
+// 于是保留末 4 位:32 位十六进制码丢掉 16 bit 之后仍有约 106 bit 不可猜,
+// 而"末四位 1a2b 那张"足够定位到唯一一行。
+//
+// 短于 8 个字符的值一个字符都不露:那种长度的凭据本来就撑不住部分泄漏。
+func MaskCredential(secret string) string {
+	secret = strings.TrimSpace(secret)
+	if len(secret) < 8 {
+		return "***"
+	}
+	return "***" + secret[len(secret)-4:]
+}
+
 // MaskSensitiveInfo moved to the conversion kit (kitutil) because the types
 // package error formatting depends on it; host callers keep this name.
 func MaskSensitiveInfo(str string) string {

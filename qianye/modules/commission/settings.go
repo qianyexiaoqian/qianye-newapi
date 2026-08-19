@@ -234,7 +234,7 @@ func effectiveCtx(ctx context.Context) opSettings {
 		// 读不到覆盖值时退回上一份快照、再退回 YAML,而不是让计佣停摆:
 		// 少一个运营微调远比"整条返佣链路挂掉"轻。但必须留痕 —— 降级算出来的
 		// 佣金和正常佣金在流水上长得一模一样,不计数事后就无从复核。
-		settingsDegrade.note("读取运营配置失败: " + err.Error())
+		settingsDegrade.noteCtx(ctx, "读取运营配置失败: "+err.Error())
 		settingsMu.Lock()
 		defer settingsMu.Unlock()
 		if settingsCache != nil {
@@ -257,7 +257,14 @@ func effectiveCtx(ctx context.Context) opSettings {
 }
 
 // invalidateSettings 在管理端改配置后立即失效缓存,避免"改完 60 秒还没生效"的困惑。
+// 同时广播给其它节点 —— 否则"立即生效"只对收到这次请求的那一个进程成立。
 func invalidateSettings() {
+	invalidateSettingsLocal()
+	publishInvalidation(cacheKindSettings, 0)
+}
+
+// invalidateSettingsLocal 只清本进程,供 cachesync 重放远端流水时使用。
+func invalidateSettingsLocal() {
 	settingsMu.Lock()
 	settingsCache = nil
 	settingsLoaded = 0
@@ -630,6 +637,52 @@ var (
 	// (见 rateDecision.Group),而空串在库里安静得很。
 	inviterGroupDegrade = &degradeRecord{}
 )
+
+// degradeSilenceKey 标记"这一次解析是**展示**,不是计佣"。
+//
+// # 为什么需要它
+//
+// degraded.* 这几个计数器的全部用途是回答「哪段时间的佣金要复核」——
+// 降级算出来的账目与正常账目在流水上长得一模一样,除了这个计数器再没有
+// 第二个痕迹。fiatDecision 的注释因此写着「判定函数刻意不自己上报降级」。
+//
+// 而费率与法币比例被收进 resolveInviterPricing 这一个入口之后,用户端
+// 「我的推广」页也走同一条解析路径,并且对同一个人连解析三次(充值/消费/
+// 兑换码三档)。于是任何一个已登录用户按住 F5 就能把计数器按 3 倍速率推上去:
+// 「要复核的佣金区间」变成了「用户刷新页面的次数」的函数,而真正的降级
+// 会被淹没在里面(last_at 被一路推到刚刚、last_reason 被跨原因覆盖、
+// 60 秒的告警槽也被只读流量占满)。
+//
+// 修法不是让展示路径复刻一份判定(那正是 pricing.go 存在的理由要避免的),
+// 而是让它**走同一条路但闭嘴**:结果照旧准确,只是不往取证计数器里写。
+// 判据挂在 ctx 上而不是加参数,是为了让 resolveRate / resolveFiatRate /
+// groupRates 的签名不变 —— 单一解析入口那条守卫钉的就是这几个签名。
+type degradeSilenceKey struct{}
+
+// silentDegradeCtx 把 ctx 标成"只读展示"。只有展示路径可以用它:
+// 任何会把结果冻结进账本的路径都必须让降级被记下来。
+func silentDegradeCtx(ctx context.Context) context.Context {
+	return context.WithValue(ctx, degradeSilenceKey{}, true)
+}
+
+func degradeSilenced(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(degradeSilenceKey{}).(bool)
+	return v
+}
+
+// noteCtx 是接调用方 ctx 的上报形式:展示路径静默,计佣路径照常计数。
+//
+// 零值口径:ctx 上没有这个标记 = 计佣路径 = 照常上报。也就是说漏加标记
+// 只会让计数器多计,不会让一次真实降级被吞掉 —— 这是两个方向里安全的那一边。
+func (d *degradeRecord) noteCtx(ctx context.Context, reason string) {
+	if degradeSilenced(ctx) {
+		return
+	}
+	d.note(reason)
+}
 
 func (d *degradeRecord) note(reason string) {
 	now := common.GetTimestamp()

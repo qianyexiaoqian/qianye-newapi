@@ -294,28 +294,23 @@ withdraw:
   methods: ["quota", "fiat"]
   min_quota: 500000
   min_fiat_amount: "100"
-  # fiat_currency 与 rate_freeze_mode 是**绑在一起**的,配置加载时会校验:
+  # fiat_currency 只是**标签**,金额不由它决定。
   #
-  #   operation_setting 档的汇率取自站点的 USDExchangeRate,而它在上游的定义
-  #   是 USD → CNY(controller/billing.go 与 logger/logger.go 都按
-  #   `cny := usd * rate` 用它)。所以这一档产出的金额只可能是人民币,
-  #   fiat_currency 只能是 "CNY";填别的会让站点起不来,并给出补救动作。
+  # 一张法币提现单的金额 == 冻结时从佣金账本 available_fiat 里削走的那个数,
+  # 而 available_fiat 是按「佣金法币折算比例」一笔笔攒起来的:
+  # 分组档 -> 兜底档 -> 全站充值汇率(三层都在管理端的佣金页配,不在这里)。
   #
-  #   要用别的币种,把 rate_freeze_mode 改成 "fixed",并在 rate_freeze_fixed
-  #   里写明 1 USD 折合多少该币种 —— 那一档的汇率是运维自己写死的一个数。
+  # 提现侧曾经还有一套自己的汇率(rate_freeze_mode / rate_freeze_fixed),
+  # 与账本各算各的:账面冻走 850 CNY,单据只让运营付 100 CNY。那两个键已删除,
+  # 「平台按自己的结算价打款」现在的落点是佣金侧的折算档 —— 它在计佣当刻就
+  # 冻进账本,用户在「我的推广」页看到的数字与提现单上的数字因此必然相等。
   #
-  # 这条闸门挡的是一次**静默的汇率错标**:数字看起来完全正常,只有线下按
-  # 单据币种打款的人会发现付错了。同理,站点若从来没维护过 USDExchangeRate
-  # (出厂 7.3,有的站点为了让额度按美元显示改成了 1),提现单上的金额就是
-  # 美元量级却标着 CNY —— 提现表单上那句「当前参考汇率:1 USD = X CNY」
-  # 就是给运维看的自检位。
+  # 所以这里只剩一条约束:没配任何折算档时,比例回落到全站 USDExchangeRate,
+  # 而上游对它的定义是 USD -> CNY,此时标成别的币种就是一次静默的汇率错标
+  # (数字看起来完全正常,只有线下按单据币种打款的人会发现付错了)。
+  # 填了非 CNY 会在启动日志里告警,回落到充值汇率那一层时还会计一次降级。
   fiat_currency: "CNY"
   fiat_fee_bps: 0
-  # 佣金产生时冻结当时汇率。USDExchangeRate 是管理员可随时修改的全局变量,
-  # 不冻结的话历史对账永远对不上。币种与金额一起冻结在
-  # qy_commission_balance.fiat_currency 上,用户端下发的是那一列,不是当前配置。
-  rate_freeze_mode: "operation_setting"   # operation_setting | fixed
-  rate_freeze_fixed: "7.3"
   # quota 方式审核通过后是否立即自动兑现成平台余额。
   #
   # true (默认):管理员点"通过"即触发跨库兑现;进程崩在中途时对账任务会重新拾起。

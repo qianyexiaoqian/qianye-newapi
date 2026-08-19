@@ -1030,8 +1030,14 @@ func (user *User) ValidateAndFill() (err error) {
 		}
 		return fmt.Errorf("%w: %v", ErrDatabase, err)
 	}
-	if user.Password == "" {
+	if !common.IsPasswordHash(user.Password) {
 		// 半截数据(有行、没口令摘要)同理:直接返回会把这一行也变成一个更快的分支。
+		//
+		// 判据是"这串值能不能被 bcrypt 拿去派生密钥",而不是"它是不是空串"。
+		// 空串只是这类半截数据里最显眼的一种:任何非 bcrypt 值(用户导入/迁移、
+		// 直连 SQL 改密、将来的数据修复脚本写进 password 列的东西)同样会让
+		// bcrypt.CompareHashAndPassword 在解析阶段就返回,这一行于是比正常账号
+		// 快十几倍 —— 上一段整段设计要关掉的枚举口子在这个子集上原样重开。
 		validatePasswordAndHash(password, missingUserPasswordHash)
 		return ErrInvalidCredentials
 	}
@@ -1412,9 +1418,15 @@ func updateUserUsedQuotaAndRequestCount(id int, quota int, count int) {
 	//}
 }
 
-func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, requestCount int) {
+// updateUserQuotaUsedQuotaAndRequestCount 落一个用户在本批里累计的额度变动。
+//
+// 返回 error 而不是自己吞掉:调用方(batchUpdate)必须知道这一批有没有落库,
+// 失败时要把增量重新排队。原先这里只打一行日志就返回,而队列在调用之前已经
+// 被整体换出 —— 一次数据库抖动就等于把那批扣费永久抹掉,logs 里记着钱花了,
+// users.quota 一分没动。
+func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, requestCount int) error {
 	if quota == 0 && usedQuota == 0 && requestCount == 0 {
-		return
+		return nil
 	}
 
 	err := DB.Model(&User{}).Where("id = ?", id).Updates(
@@ -1427,6 +1439,7 @@ func updateUserQuotaUsedQuotaAndRequestCount(id int, quota int, usedQuota int, r
 	if err != nil {
 		common.SysLog("failed to batch update user quota, used quota and request count: " + err.Error())
 	}
+	return err
 }
 
 // GetUsernameById gets username from Redis first, falls back to DB if needed

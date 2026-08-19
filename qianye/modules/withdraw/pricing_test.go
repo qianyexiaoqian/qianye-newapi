@@ -1,12 +1,9 @@
 package withdraw
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/shopspring/decimal"
@@ -14,133 +11,126 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func loadWithdrawYAML(t *testing.T, body string) {
-	t.Helper()
-	yaml := "enabled: true\ndatabase:\n  dsn: \"u:p@tcp(127.0.0.1:3306)/qy\"\n" + body
-	p := filepath.Join(t.TempDir(), "qianye.yaml")
-	require.NoError(t, os.WriteFile(p, []byte(yaml), 0o600))
-	t.Setenv(config.EnvConfigPath, p)
-	require.NoError(t, config.Load())
-}
-
-func TestFreezeRates_FixedMode(t *testing.T) {
-	loadWithdrawYAML(t, `withdraw:
-  enabled: true
-  methods: ["quota"]
-  rate_freeze_mode: "fixed"
-  rate_freeze_fixed: "6.85"
-`)
-	rates, err := freezeRates()
-	require.NoError(t, err)
-	assert.True(t, rates.FxRate.Equal(decimal.RequireFromString("6.85")))
-	assert.True(t, rates.QuotaPerUnit.Equal(decimal.NewFromFloat(common.QuotaPerUnit)))
-}
-
-// operation_setting.USDExchangeRate 是管理员可以随时热改的全局变量。
-// 冻结的意义就在这里:改了之后,新单跟着变,已经建好的单一分不动。
-func TestFreezeRates_TracksOperationSetting(t *testing.T) {
-	loadWithdrawYAML(t, `withdraw:
-  enabled: true
-  methods: ["quota"]
-`)
-	original := operation_setting.USDExchangeRate
-	t.Cleanup(func() { operation_setting.USDExchangeRate = original })
-
-	operation_setting.USDExchangeRate = 7.3
-	first, err := freezeRates()
-	require.NoError(t, err)
-
-	operation_setting.USDExchangeRate = 9.9
-	second, err := freezeRates()
-	require.NoError(t, err)
-
-	assert.True(t, first.FxRate.Equal(decimal.NewFromFloat(7.3)))
-	assert.True(t, second.FxRate.Equal(decimal.NewFromFloat(9.9)))
-}
-
-// 管理员把汇率改成 0 是完全可能的。放行的话整单金额算成 0,
-// 用户白白损失一笔佣金,所以必须拒绝建单而不是安静地算出 0。
-func TestFreezeRates_RejectsNonPositiveRate(t *testing.T) {
-	loadWithdrawYAML(t, `withdraw:
-  enabled: true
-  methods: ["quota"]
-`)
-	original := operation_setting.USDExchangeRate
-	t.Cleanup(func() { operation_setting.USDExchangeRate = original })
-
-	operation_setting.USDExchangeRate = 0
-	_, err := freezeRates()
-	assert.ErrorIs(t, err, errRateUnavailable)
-}
-
-// 已冻结的参数一旦传进来,换算结果就不该再受全局变量影响。
-// 这是"历史对账永远对得上"的技术前提 —— 谁把 computeFiat 改成直接读全局,
-// 这条测试就会红。
-func TestComputeFiat_IgnoresLiveGlobalRate(t *testing.T) {
-	original := operation_setting.USDExchangeRate
-	t.Cleanup(func() { operation_setting.USDExchangeRate = original })
-
-	frozen := frozenRates{
-		QuotaPerUnit: decimal.NewFromInt(500000),
-		FxRate:       decimal.RequireFromString("7.3"),
-	}
-	before, err := computeFiat(500000, frozen, 0)
-	require.NoError(t, err)
-
-	operation_setting.USDExchangeRate = 99
-	after, err := computeFiat(500000, frozen, 0)
-	require.NoError(t, err)
-
-	assert.True(t, before.Gross.Equal(after.Gross))
-	assert.True(t, before.Gross.Equal(decimal.RequireFromString("7.3")))
-}
-
-func TestComputeFiat(t *testing.T) {
-	frozen := frozenRates{
-		QuotaPerUnit: decimal.NewFromInt(500000),
-		FxRate:       decimal.RequireFromString("7.3"),
-	}
+// splitFiat 拿到的已经是账本给出的应付金额,它只负责拆手续费。
+// 三段必须永远加得上,否则财务无法复核。
+func TestSplitFiat(t *testing.T) {
 	cases := []struct {
 		name            string
-		quota           int64
+		gross           string
 		feeBps          int
-		gross, fee, net string
+		wantG, wantF    string
+		wantN           string
+		wantErrContains error
 	}{
-		{"零手续费", 5000000, 0, "73", "0", "73"},
-		{"2% 手续费", 5000000, 200, "73", "1.46", "71.54"},
-		{"不足一分的手续费按 6 位保留", 500000, 1, "7.3", "0.00073", "7.29927"},
+		{name: "零手续费", gross: "73", feeBps: 0, wantG: "73", wantF: "0", wantN: "73"},
+		{name: "2% 手续费", gross: "73", feeBps: 200, wantG: "73", wantF: "1.46", wantN: "71.54"},
+		{name: "不足一分的手续费按 6 位保留", gross: "7.3", feeBps: 1,
+			wantG: "7.3", wantF: "0.00073", wantN: "7.29927"},
+		{name: "账本给出的位数超过 6 位时先按存储精度收敛", gross: "10.0000004", feeBps: 0,
+			wantG: "10", wantF: "0", wantN: "10"},
+		{name: "手续费吃光全部金额时拒绝建单", gross: "73", feeBps: 10000,
+			wantErrContains: errFeeEatsAll},
+		{name: "账本折不出正金额", gross: "0", feeBps: 0, wantErrContains: errAmountOutOfRange},
+		{name: "费率越界", gross: "73", feeBps: 10001, wantErrContains: errRateUnavailable},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := computeFiat(tc.quota, frozen, tc.feeBps)
+			got, err := splitFiat(decimal.RequireFromString(tc.gross), tc.feeBps)
+			if tc.wantErrContains != nil {
+				assert.ErrorIs(t, err, tc.wantErrContains)
+				return
+			}
 			require.NoError(t, err)
-			assert.True(t, got.Gross.Equal(decimal.RequireFromString(tc.gross)), "gross=%s", got.Gross)
-			assert.True(t, got.Fee.Equal(decimal.RequireFromString(tc.fee)), "fee=%s", got.Fee)
-			assert.True(t, got.Net.Equal(decimal.RequireFromString(tc.net)), "net=%s", got.Net)
-			// 恒等式:三个字段必须永远加得上,否则财务无法复核。
-			assert.True(t, got.Gross.Equal(got.Fee.Add(got.Net)))
+			assert.True(t, got.Gross.Equal(decimal.RequireFromString(tc.wantG)), "gross=%s", got.Gross)
+			assert.True(t, got.Fee.Equal(decimal.RequireFromString(tc.wantF)), "fee=%s", got.Fee)
+			assert.True(t, got.Net.Equal(decimal.RequireFromString(tc.wantN)), "net=%s", got.Net)
+			assert.True(t, got.Gross.Equal(got.Fee.Add(got.Net)), "应付 == 手续费 + 实付")
 		})
 	}
 }
 
-func TestComputeFiat_RejectsFullFee(t *testing.T) {
-	frozen := frozenRates{
-		QuotaPerUnit: decimal.NewFromInt(500000),
-		FxRate:       decimal.RequireFromString("7.3"),
+// 冻结汇率是**反解出来的展示值**,不参与算钱:它必须由账本给出的金额反推,
+// 而不是反过来拿一个汇率去算金额 —— 后者正是"账面 850、单据 100"的成因。
+func TestImpliedFxRate(t *testing.T) {
+	perUnit := decimal.NewFromInt(500000)
+
+	cases := []struct {
+		name  string
+		gross string
+		quota int64
+		want  string
+	}{
+		{"分组档 8.5:50,000,000 额度折 850", "850", 50000000, "8.5"},
+		{"全站汇率 1", "100", 50000000, "1"},
+		{"部分提现的比例不变", "425", 25000000, "8.5"},
+		{"额度为 0 时给不出汇率", "850", 0, "0"},
 	}
-	// 手续费吃掉全部金额时必须拒绝建单,而不是落一张实付 0 的单据。
-	_, err := computeFiat(500000, frozen, 10000)
-	assert.ErrorIs(t, err, errFeeEatsAll)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := impliedFxRate(decimal.RequireFromString(tc.gross), tc.quota, perUnit)
+			assert.True(t, got.Equal(decimal.RequireFromString(tc.want)), "rate=%s", got)
+		})
+	}
+
+	t.Run("额度单位非法时给不出汇率", func(t *testing.T) {
+		assert.True(t, impliedFxRate(decimal.NewFromInt(850), 50000000, decimal.Zero).IsZero())
+	})
 }
 
-func TestComputeFiat_RejectsInvalidInput(t *testing.T) {
-	frozen := frozenRates{
-		QuotaPerUnit: decimal.NewFromInt(500000),
-		FxRate:       decimal.RequireFromString("7.3"),
-	}
-	_, err := computeFiat(0, frozen, 0)
-	assert.ErrorIs(t, err, errAmountOutOfRange)
+// 提现侧不再有自己的汇率:充值页汇率怎么改,都不该影响单据金额。
+//
+// 这条与 TestPriceFiatInTx_AmountComesFromLedgerNotRechargeRate 是一对 ——
+// 这里守的是"计价函数根本不认识那个全局变量",那里守的是端到端的落库金额。
+func TestSplitFiat_IgnoresLiveGlobalRate(t *testing.T) {
+	original := operation_setting.USDExchangeRate
+	t.Cleanup(func() { operation_setting.USDExchangeRate = original })
 
-	_, err = computeFiat(500000, frozen, 10001)
+	operation_setting.USDExchangeRate = 1
+	before, err := splitFiat(decimal.RequireFromString("850"), 0)
+	require.NoError(t, err)
+
+	operation_setting.USDExchangeRate = 99
+	after, err := splitFiat(decimal.RequireFromString("850"), 0)
+	require.NoError(t, err)
+
+	assert.True(t, before.Gross.Equal(after.Gross))
+	assert.True(t, before.Gross.Equal(decimal.RequireFromString("850")))
+}
+
+// 管理员把 QuotaPerUnit 改成 0 是完全可能的。放行的话冻结汇率会被 0 除,
+// 只能编一个数字出来,所以必须拒绝建单。
+func TestFrozenQuotaPerUnit_RejectsNonPositive(t *testing.T) {
+	original := common.QuotaPerUnit
+	t.Cleanup(func() { common.QuotaPerUnit = original })
+
+	common.QuotaPerUnit = 500000
+	perUnit, err := frozenQuotaPerUnit()
+	require.NoError(t, err)
+	assert.True(t, perUnit.Equal(decimal.NewFromInt(500000)))
+
+	common.QuotaPerUnit = 0
+	_, err = frozenQuotaPerUnit()
 	assert.ErrorIs(t, err, errRateUnavailable)
+}
+
+func TestMinFiatAmount(t *testing.T) {
+	cases := []struct {
+		name, raw, want string
+		wantErr         bool
+	}{
+		{name: "空串表示不设下限", raw: "  ", want: "0"},
+		{name: "正常取值", raw: "100", want: "100"},
+		{name: "非法取值拒绝建单", raw: "十块", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := minFiatAmount(tc.raw)
+			if tc.wantErr {
+				assert.ErrorIs(t, err, errRateUnavailable)
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, got.Equal(decimal.RequireFromString(tc.want)), "got=%s", got)
+		})
+	}
 }

@@ -290,9 +290,13 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq) (*
 	}
 
 	metadata := req.Metadata
+	billedModel := r.Model
 	if err := taskcommon.UnmarshalMetadata(metadata, &r); err != nil {
 		return nil, errors.Wrap(err, "unmarshal metadata failed")
 	}
+	// 模型由鉴权与计费认定,不由 metadata 说了算(BuildRequestBody 在未做模型映射时
+	// 会把 body.Model 回写进 info.UpstreamModelName,这一行让那条回写不可被污染)。
+	r.Model = billedModel
 
 	if sec, _ := strconv.Atoi(req.Seconds); sec > 0 {
 		r.Duration = lo.ToPtr(dto.IntValue(sec))

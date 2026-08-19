@@ -18,11 +18,15 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation } from '@tanstack/react-query'
 import { ShieldAlert } from 'lucide-react'
-import { useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { CopyButton } from '@/components/copy-button'
+import {
+  SecureVerificationDialog,
+  useSecureVerification,
+} from '@/features/auth/secure-verification'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -65,6 +69,17 @@ export function RevealPayeeDialog(props: RevealPayeeDialogProps) {
     setPlain(null)
   }, [props.withdrawalId])
 
+  const {
+    open: verificationOpen,
+    methods: verificationMethods,
+    state: verificationState,
+    executeVerification,
+    withVerification,
+    cancel: cancelVerification,
+    setCode: setVerificationCode,
+    switchMethod: switchVerificationMethod,
+  } = useSecureVerification()
+
   const revealMutation = useMutation({
     mutationFn: qyRevealPayee,
     onSuccess: (data) => setPlain(data),
@@ -72,6 +87,27 @@ export function RevealPayeeDialog(props: RevealPayeeDialogProps) {
   })
 
   const reasonTooShort = [...reason.trim()].length < MIN_REASON_RUNES
+
+  /**
+   * 明文必须先过一次 2FA / Passkey。
+   *
+   * 后端 `handleAdminRevealPayee` 把安全证明放在最前面，没有证明一律 403 ——
+   * 所以这里不是"顺手加一层"，而是这条路唯一能走通的形状。证明按
+   * `withdraw.payee.read` 这个 scope 单独签发，用完即弃：`useSecureVerification`
+   * 只把它作为局部变量传给一次调用，不落 localStorage、不进 react-query 缓存。
+   */
+  const requestReveal = useCallback(
+    async (proofToken?: string) => {
+      if (props.withdrawalId == null) return
+      if (!proofToken) throw new Error(t('qy_wd_reveal_proof_required'))
+      return revealMutation.mutateAsync({
+        id: props.withdrawalId,
+        reason: reason.trim(),
+        proofToken,
+      })
+    },
+    [props.withdrawalId, reason, revealMutation, t]
+  )
 
   return (
     <QyResponsiveDialog
@@ -107,9 +143,14 @@ export function RevealPayeeDialog(props: RevealPayeeDialogProps) {
               disabled={reasonTooShort || revealMutation.isPending}
               onClick={() => {
                 if (props.withdrawalId == null) return
-                revealMutation.mutate({
-                  id: props.withdrawalId,
-                  reason: reason.trim(),
+                void withVerification(requestReveal, {
+                  scope: 'withdraw.payee.read',
+                  preferredMethod: 'passkey',
+                  title: t('qy_wd_reveal_verify_title'),
+                  description: t('qy_wd_reveal_verify_desc'),
+                }).catch(() => {
+                  // withVerification 失败时 hook 自己已经 toast 过一次，
+                  // 这里只负责别让未捕获的 rejection 冒到控制台。
                 })
               }}
             >
@@ -143,6 +184,21 @@ export function RevealPayeeDialog(props: RevealPayeeDialogProps) {
           </dl>
         )}
       </div>
+
+      <SecureVerificationDialog
+        open={verificationOpen}
+        onOpenChange={(open) => {
+          if (!open) cancelVerification()
+        }}
+        methods={verificationMethods}
+        state={verificationState}
+        onVerify={async (method, code) => {
+          await executeVerification(method, code)
+        }}
+        onCancel={cancelVerification}
+        onCodeChange={setVerificationCode}
+        onMethodChange={switchVerificationMethod}
+      />
     </QyResponsiveDialog>
   )
 }

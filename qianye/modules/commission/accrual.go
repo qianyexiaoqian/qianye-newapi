@@ -161,8 +161,10 @@ type accrualInput struct {
 
 	BaseQuota int64
 	BaseMoney decimal.Decimal
-	// RateUnits 是本次生效的费率(百分比 × 100),RateGroup 是它来自哪个
-	// 被邀请人分组。两者一起冻结进行,事后才解释得清"这笔为什么是这个数"。
+	// RateUnits 是本次生效的费率(百分比 × 100),RateGroup 是判定它时用的
+	// 那个分组 —— 【推广人(上线)自己】的分组,不是被推广人的
+	// (口径见 grouprate.go 与 pricing.go,由 resolveInviterPricing 一处解析)。
+	// 两者一起冻结进行,事后才解释得清"这笔为什么是这个数"。
 	RateUnits int
 	RateGroup string
 	Gross     decimal.Decimal
@@ -410,7 +412,18 @@ func blockedInvitees(ctx context.Context) map[int]bool {
 	return m
 }
 
+// invalidateBlocked 失效本进程的拉黑快照,并广播给其它节点。
+//
+// 拉黑是「立刻停止给这条关系计佣」的紧急开关,而它此前只在按下按钮的那一个
+// 节点上生效 —— 其余节点最长 60 秒里继续给刷单账号全额计佣并落账,
+// 落下的行没有任何下游复核,会一路结算成可提现余额。
 func invalidateBlocked() {
+	invalidateBlockedLocal()
+	publishInvalidation(cacheKindBlocked, 0)
+}
+
+// invalidateBlockedLocal 只清本进程,供 cachesync 重放远端流水时使用。
+func invalidateBlockedLocal() {
 	blockedMu.Lock()
 	blockedSet = nil
 	blockedLoaded = 0

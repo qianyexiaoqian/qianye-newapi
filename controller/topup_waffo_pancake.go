@@ -351,6 +351,11 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", setting.WaffoPancakeMinTopUp)})
 		return
 	}
+	// 上界与易支付同源:超过它的订单结算时换算触顶,钱进了网关而额度一分到不了。
+	if req.Amount > getMaxTopup() {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能大于 %d", getMaxTopup())})
+		return
+	}
 
 	id := c.GetInt("id")
 	user, err := model.GetUserById(id, false)

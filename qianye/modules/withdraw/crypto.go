@@ -97,23 +97,63 @@ func openPayee(nonce, ciphertext []byte, aad string, keyVersion int) (map[string
 }
 
 // payeeDigest 计算收款信息的风控指纹。
+//
+// 指纹回答的问题只有一个:"钱最终去的是不是同一个收款账号"。model.go:66 与
+// design-03 全篇("同一收款账号被多个 user_id 使用即刷单信号")说的都是这件事,
+// 它的两个消费方也都只问这件事 —— markSharedPayee 的跨用户标红,以及
+// ensureReplayMatches 判断"重放的这一笔钱去的还是不是原来那张卡"。
+//
+// 所以原像只取该渠道的**账号字段**并按渠道归一,不再把整条记录一起摘要。
+// 把 real_name / bank_name / 可选的 branch 一起进 HMAC,意味着同一张银行卡
+// 只要在支行栏里多打一个字符、或把"招商银行"写成"招商银行股份有限公司",
+// 指纹就完全不同,shared_payee 永不触发 —— 提现路径上唯一的跨账户刷单信号,
+// 一个字符即可关闭,而且不需要攻击者知道这回事:三个小号各自手填一遍卡信息,
+// 写法上的自然差异就足够让报警消失,漏报是常态而非例外。
+//
+// 账号字段取不到时(渠道不在 payeeAccountKey 里,或该字段归一化之后为空)
+// 回落到整条记录的旧口径。这个回落是必需的而不是保守:少了它,一批账号字段
+// 为空的记录会全部摘出同一个指纹,既凭空互相标红,又会让 ensureReplayMatches
+// 把两笔收款人不同的申请判成同一笔 —— 那才是真的把钱打到别人卡上。
 func payeeDigest(channel string, data map[string]string) (string, error) {
 	secret := strings.TrimSpace(config.Get().Withdraw.DigestKey)
 	if secret == "" {
 		return "", errDigestKeyMissing
 	}
+	preimage, ok := canonicalPayeeAccount(channel, data)
+	if !ok {
+		preimage = canonicalPayeeRecord(channel, data)
+	}
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(canonicalPayee(channel, data)))
+	mac.Write([]byte(preimage))
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
-// canonicalPayee 把收款信息规范化成稳定字符串。
+// canonicalPayeeAccount 把"钱去哪"规范化成稳定字符串,ok=false 表示这条记录
+// 认不出账号字段,调用方应回落到整条记录的口径。
+//
+// 域前缀 payee-account-v1 把这一族原像与 canonicalPayeeRecord 的原像彻底分开:
+// 两种口径在同一列里共存(改口径之前写下的行仍是旧口径),前缀保证它们不会
+// 因为恰好拼出同一个串而互相命中。将来再改归一规则要连前缀一起改版本号。
+func canonicalPayeeAccount(channel string, data map[string]string) (string, bool) {
+	ch := strings.TrimSpace(channel)
+	key, ok := payeeAccountKey[ch]
+	if !ok {
+		return "", false
+	}
+	account := normalizePayeeAccount(ch, data[key])
+	if account == "" {
+		return "", false
+	}
+	return "payee-account-v1\x1f" + ch + "\x1e" + key + "\x1f" + account, true
+}
+
+// canonicalPayeeRecord 把整条收款信息规范化成稳定字符串。
 //
 // 刻意不用 JSON 序列化:指纹要在多年、跨版本之间保持一致,而 JSON 库的键序、
 // 转义与空白策略都可能随依赖升级而改变。手工拼接的分隔符形式没有这个风险。
 // 分隔符取 US(0x1f)/RS(0x1e) 这两个控制字符,收款信息里不可能出现,
 // 因此不存在"张三|李"与"张|三李"撞成同一指纹的歧义。
-func canonicalPayee(channel string, data map[string]string) string {
+func canonicalPayeeRecord(channel string, data map[string]string) string {
 	keys := make([]string, 0, len(data))
 	for k := range data {
 		keys = append(keys, k)

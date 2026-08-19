@@ -343,7 +343,11 @@ export const QY_PAGES: readonly QyPageDef[] = [
   {
     url: '/qy/pay-password',
     titleKey: 'qy_nav_pay_password',
-    feature: 'transfer',
+    // 不是 'transfer'：支付密码是划转/提现/抽奖共用的第二因子，后端
+    // `guard.FlagPayPassword` 下发的就是这三者的并集。标成 'transfer' 时，
+    // 「只开提现、不开站内互转」这个完全合法的组合会让这一页从侧栏消失，
+    // 而提现仍然要求验密 —— 用户没有任何地方能把密码设上。
+    feature: 'pay_password',
     codeKey: 'qy_sg_code_pay_password',
   },
 

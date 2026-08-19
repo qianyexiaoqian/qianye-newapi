@@ -101,7 +101,13 @@ func batchUpdate() {
 			case BatchUpdateTypeTokenQuota:
 				err := increaseTokenQuota(key, value)
 				if err != nil {
-					common.SysLog("failed to batch update token quota: " + err.Error())
+					// 落库失败必须把增量还回队列,下一轮重试。
+					// 队列在上面已经被整体换出,不还回去这笔扣减就永久消失了 ——
+					// 而消费日志照写不误,logs 记的钱与令牌实际被扣的钱从此对不上。
+					// addNewRecord 是按 id 相加的,重排队与本轮期间新产生的增量
+					// 会自动合并,不会覆盖。
+					addNewRecord(i, key, value)
+					common.SysLog("failed to batch update token quota (requeued): " + err.Error())
 				}
 			case BatchUpdateTypeChannelUsedQuota:
 				updateChannelUsedQuota(key, value)
@@ -124,7 +130,17 @@ func batchUpdate() {
 		userIDs[key] = struct{}{}
 	}
 	for key := range userIDs {
-		updateUserQuotaUsedQuotaAndRequestCount(key, userQuotaStore[key], usedQuotaStore[key], requestCountStore[key])
+		if err := updateUserQuotaUsedQuotaAndRequestCount(key,
+			userQuotaStore[key], usedQuotaStore[key], requestCountStore[key]); err != nil {
+			// 三列走同一条 UPDATE 语句,失败就是三列都没落库(单语句原子),
+			// 所以三个增量一起还回队列。不还回去的后果是**用户白嫖**:
+			// quota 没被扣、used_quota 与 request_count 也没涨,而这笔消费
+			// 已经写进 logs 并且照常计佣发钱 —— 平台在同一笔上亏两次。
+			addNewRecord(BatchUpdateTypeUserQuota, key, userQuotaStore[key])
+			addNewRecord(BatchUpdateTypeUsedQuota, key, usedQuotaStore[key])
+			addNewRecord(BatchUpdateTypeRequestCount, key, requestCountStore[key])
+			common.SysLog("failed to batch update user quota (requeued): " + err.Error())
+		}
 	}
 	common.SysLog("batch update finished")
 }

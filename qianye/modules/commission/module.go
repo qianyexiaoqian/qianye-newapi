@@ -26,6 +26,7 @@ func (Mod) Tables() []any {
 		&GroupRate{},
 		&FiatRate{},
 		&SettleRun{},
+		&CacheInvalidation{},
 	}
 }
 
@@ -60,8 +61,10 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.PUT("/commission/group-rates", crit, adminPutGroupRate)
 	g.DELETE("/commission/group-rates", crit, adminDeleteGroupRate)
 	// 分组法币折算比例。与费率分开两条路由而不是塞进 group-rates 的报文:
-	// 那一行按**下线**分组判定,这一行按**上线**分组判定(见 fiatrate.go),
-	// 合成一次 upsert 会让同一个 group_name 在同一个请求里指两个不同的人。
+	// 两张表现在都按**上线**分组判定(见 pricing.go),但它们是两件不同的
+	// 运营决策 —— 费率是招募政策(返几个点),比例是结汇价格(一点值多少钱),
+	// 调整节奏与审批人都不同。合成一次 upsert 会强迫运营改一个的时候连带
+	// 填另一个,而两张表各自的层级与回落规则也会互相绊住(见 fiatrate.go)。
 	g.PUT("/commission/fiat-rates", crit, adminPutFiatRate)
 	g.DELETE("/commission/fiat-rates", crit, adminDeleteFiatRate)
 	g.POST("/commission/clawback", crit, adminClawback)
@@ -109,6 +112,11 @@ func (Mod) StartTasks() {
 	//
 	// 租约只保证"同一时刻只有一个节点在跑",不保证"今天只跑一次"——
 	// 后者由 qy_commission_settle_run 上的条件写承担。
+	// 跨节点缓存失效通道。刻意**不走 lease**:租约保证的是"只有一个节点跑",
+	// 而这里要的恰恰是"每一个节点都在听" —— 少一个节点听,它就是那个继续
+	// 按旧费率发钱的节点(见 cachesync.go)。
+	startCacheSync()
+
 	lease.Run("commission.settle", time.Duration(settleHeartbeat)*time.Second, runSettle)
 	lease.Run("commission.topup_scan", time.Duration(scanEvery)*time.Second, runTopupScan)
 	// 日消费明细那条覆盖索引的补建。挂在这里而不是启动路径上:

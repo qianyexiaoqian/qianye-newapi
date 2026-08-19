@@ -27,7 +27,11 @@ var (
 	topupScanned  = newCounter()
 	// topupHeld 是"因为有订单计佣失败,本轮游标被钉住"的次数。
 	// 持续增长意味着有一笔充值返佣卡住了,后面的订单也在排队等它。
-	topupHeld       = newCounter()
+	topupHeld = newCounter()
+	// topupLateSwept 是"被前向游标越过之后才转 success、由迟付回收扫描捞回来"
+	// 的订单数。它不为零说明确实有订单在窗口外才被支付 —— 这些佣金在补上这一趟
+	// 之前是静默丢失的,没有任何一处对得出来。
+	topupLateSwept  = newCounter()
 	clawbackCreated = newCounter()
 	settleRuns      = newCounter()
 	settleGranted   = newCounter() // 累计发放的整数额度
@@ -45,6 +49,7 @@ func metricsSnapshot() map[string]any {
 		"accrual_capped":      accrualCapped.Load(),
 		"topup_scanned":       topupScanned.Load(),
 		"topup_cursor_held":   topupHeld.Load(),
+		"topup_late_swept":    topupLateSwept.Load(),
 		"clawback_created":    clawbackCreated.Load(),
 		"settle_runs":         settleRuns.Load(),
 		"settle_granted":      settleGranted.Load(),

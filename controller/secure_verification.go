@@ -82,6 +82,11 @@ func isAllowedSecurityProofScope(scope string) bool {
 	switch scope {
 	case securityProofScopeChannelKeyRead, securityProofScopePasskeyRegister, securityProofScopePasskeyDelete:
 		return true
+	// 提现收款信息明文(银行卡号 / 钱包地址 / PayPal 邮箱)。消费方是扩展的
+	// GET /api/qy/admin/withdraw/:id/payee,scope 常量定义在 middleware,
+	// 因为签发侧与消费侧分属两个互不 import 的包。
+	case middleware.SecurityProofScopeWithdrawPayeeRead:
+		return true
 	default:
 		return false
 	}

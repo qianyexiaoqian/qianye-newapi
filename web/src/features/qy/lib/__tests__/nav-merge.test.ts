@@ -53,6 +53,7 @@ const ALL_ON: QyFeatures = {
   violation: true,
   ticket: true,
   group_matrix: true,
+  pay_password: true,
 }
 
 const ALL_OFF: QyFeatures = {
@@ -64,6 +65,7 @@ const ALL_OFF: QyFeatures = {
   violation: false,
   ticket: false,
   group_matrix: false,
+  pay_password: false,
 }
 
 /** 上游根导航的最小复刻，只保留本测试用到的锚点。 */

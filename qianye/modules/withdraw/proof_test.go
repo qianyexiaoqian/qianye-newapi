@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -417,11 +418,14 @@ func TestBindProof(t *testing.T) {
 func TestSubmitInTx_BadProofRefRollsBackTheWholeOrder(t *testing.T) {
 	loadProofConfig(t, "")
 	gdb := newTestDB(t)
+	// 法币单的金额来自佣金账本,定价排在落单之前 —— 不给余额(或余额折出来的
+	// 法币低于 min_fiat_amount)的话会先撞上准入错误,测不到凭证绑定这一步。
+	seedFiatBalance(t, gdb, 7, 500000, "850", "CNY")
 
 	w := &Withdrawal{
 		WithdrawNo: "WD-rollback", IdemScope: idemScope, IdemKey: idemKeyOf(7, "cli-rollback"),
 		UserId: 7, Method: config.WithdrawMethodFiat, Status: StatusPending,
-		Quota: 500000, HasProof: true,
+		Quota: 500000, HasProof: true, FrozenQuotaPerUnit: decimal.NewFromInt(500000),
 		CreatedAt: common.GetTimestamp(), UpdatedAt: common.GetTimestamp(),
 	}
 	acc := acceptedRequest{IdemKey: "cli-rollback", Method: config.WithdrawMethodFiat,

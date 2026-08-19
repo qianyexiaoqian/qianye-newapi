@@ -86,6 +86,24 @@ func runSubscriptionQuotaResetOnce() {
 		if _, err := model.CleanupSubscriptionPreConsumeRecords(7 * 24 * 3600); err == nil {
 			subscriptionCleanupLast.Store(time.Now().Unix())
 		}
+		// 超龄的 pending 订阅订单打成 expired。放在这条半小时一次的支线上而不是
+		// 每分钟的主循环:它是运营视图的清洁工作,不影响任何一笔钱的去向
+		// (expired 的订单收到合法回调照样发货,见 model.CompleteSubscriptionOrder)。
+		staleOrders := 0
+		for {
+			n, err := model.ExpireStalePendingSubscriptionOrders(model.SubscriptionOrderPendingTTL(), subscriptionResetBatchSize)
+			if err != nil {
+				logger.LogWarn(ctx, fmt.Sprintf("stale subscription order sweep failed: %v", err))
+				break
+			}
+			staleOrders += n
+			if n < subscriptionResetBatchSize {
+				break
+			}
+		}
+		if staleOrders > 0 {
+			logger.LogInfo(ctx, fmt.Sprintf("marked %d stale pending subscription orders as expired", staleOrders))
+		}
 	}
 	if common.DebugEnabled && (totalReset > 0 || totalExpired > 0) {
 		logger.LogDebug(ctx, "subscription maintenance: reset_count=%d, expired_count=%d", totalReset, totalExpired)

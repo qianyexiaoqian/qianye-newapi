@@ -235,9 +235,12 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq, in
 		MovementAmplitude: "auto",
 		Bgm:               false,
 	}
+	billedModel := r.Model
 	if err := taskcommon.UnmarshalMetadata(req.Metadata, &r); err != nil {
 		return nil, errors.Wrap(err, "unmarshal metadata failed")
 	}
+	// 模型由鉴权与计费认定,不由 metadata 说了算。
+	r.Model = billedModel
 	return &r, nil
 }
 

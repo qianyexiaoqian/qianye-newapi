@@ -992,6 +992,8 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 func (t *TaskSubmitReq) UnmarshalMetadata(v any) error {
 	metadata := t.Metadata
 	if metadata != nil {
+		// 与 taskcommon.UnmarshalMetadata 同一道闸:metadata 不得改写模型选择字段。
+		StripModelSelectionMetadata(metadata)
 		metadataBytes, err := common.Marshal(metadata)
 		if err != nil {
 			return fmt.Errorf("marshal metadata failed: %w", err)

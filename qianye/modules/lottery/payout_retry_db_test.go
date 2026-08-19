@@ -53,14 +53,15 @@ func newPayoutEnv(t *testing.T, lot config.Lottery) *gorm.DB {
 
 	prevHandle := qyDBHandle.Swap(gdb)
 	prevHealthy := qyDBHealthy.Swap(true)
-	// outbox 显式关掉:探针查的是主库,而这一组用例根本没有主库。关掉之后
-	// mainSideApplied 恒返回 false,正好对应"主库确认没生效"这一支判据 ——
-	// 需要另一支的用例自己造一张 Success 单来表达。
-	outboxOff := false
+	// 探针表必须真的接上:重试的判据就是"主库那一笔到底动没动"。
+	// 把 outbox 关掉去测,等于让 ProbeMainSide 的"不可判定"支伪装成
+	// "确定没生效" —— 那正是这一组用例要防的缺陷,不能写进测试前提。
+	newProbeMainDB(t)
+	outboxOn := true
 	prevCfg := qyConfig.Swap(&config.Config{
 		Enabled:  true,
 		Lottery:  lot,
-		TwoPhase: config.TwoPhase{MainOutboxEnabled: &outboxOff},
+		TwoPhase: config.TwoPhase{MainOutboxEnabled: &outboxOn, OutboxRetentionDays: 30, BatchSize: 200},
 	})
 	t.Cleanup(func() {
 		qyDBHandle.Store(prevHandle)

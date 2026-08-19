@@ -40,6 +40,23 @@ const (
 	FlagGroupMatrix  Flag = "group_matrix"
 	FlagLottery      Flag = "lottery"
 	FlagTicket       Flag = "ticket"
+
+	// FlagPayPassword 是支付密码自身的可用性,它不属于任何一个模块。
+	//
+	// 支付密码没有自己的 enabled —— 它是**其它出钱路径的第二因子**,
+	// 所以"能不能用"必须等于"有没有哪条路径会要它":划转、提现、
+	// 超过门槛的抽奖参与。
+	//
+	// 这里曾经直接用 FlagTransfer:paypass 起初只服务划转,gate.go 里写着
+	// 「功能总闸是 transfer.enabled,划转整体关掉时这条路径根本不会被执行到」。
+	// 后来提现与抽奖也接了进来,那个假设就过期了 —— transfer.enabled=false +
+	// withdraw.enabled=true 这个完全合法的组合(出厂 YAML 两个都是 false,
+	// 「只开佣金+提现、不开站内互转」是再自然不过的产品选择)下,
+	// 凡是没设过支付密码的用户 POST /withdraw 恒 403 qy_pay_pwd_not_set,
+	// 而他去设置时 POST /pay-password 恒 404 qy_feature_off:两个错误互不提及
+	// 对方,佣金永久滞留在 available_quota,管理端提现队列却空空如也。
+	// 管理员也救不了 —— 他只能 reset(清空)与 unlock,不能代设。
+	FlagPayPassword Flag = "pay_password"
 )
 
 // 响应 code。前端按 code 映射到 i18n 文案,message 只作兜底,
@@ -64,6 +81,13 @@ func Feature(f Flag) bool {
 	return featureOn(f)
 }
 
+// FeatureConfigured 只回答"配置上这个功能开着吗",不看扩展库是否可达。
+//
+// 用途只有一个:前端引导端点 GetConfig 要下发功能开关,而它必须在扩展库
+// 不可用时照样如实回答(那一层由 available 字段单独表达)。派生开关
+// (FlagPayPassword)没有对应的配置字段,调用方抄一份 OR 表达式就是第二份拷贝。
+func FeatureConfigured(f Flag) bool { return featureOn(f) }
+
 func featureOn(f Flag) bool {
 	c := config.Get()
 	switch f {
@@ -87,6 +111,12 @@ func featureOn(f Flag) bool {
 		return c.Lottery.Enabled
 	case FlagTicket:
 		return c.Ticket.Enabled
+	case FlagPayPassword:
+		// 三条会要求验密的路径,任意一条开着,支付密码就必须可设、可改、可找回。
+		// 与 withdraw/api_user.go 的 paypass.Require、transfer/handler.go 的
+		// paypass.Require、lottery/api_user.go 的 PayPasswordRequired 一一对应:
+		// 谁接了验密,谁就要出现在这里。
+		return c.Transfer.Enabled || c.Withdraw.Enabled || c.Lottery.Enabled
 	default:
 		return false
 	}

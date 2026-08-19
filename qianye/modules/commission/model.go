@@ -87,8 +87,14 @@ type Accrual struct {
 	// 冻结的理由与 UsdRate 完全一样:分组费率是运营可随时改的,不冻结的话
 	// 事后没有任何办法解释"这条 2 月的佣金为什么是 8% 而不是现在的 5%"。
 	//
-	// 空串表示计佣时读不到该上线的分组信息;费率是否命中了分组规则要看
-	// RateUnits 与当时的全局默认是否一致,本列只负责记录事实。
+	// 空串表示计佣时读不到该上线的分组信息(pricing.go 的降级标记 ——
+	// "读不到这个人"与"这个人在 default 组"是两件事,账本上必须分得开);
+	// 费率是否命中了分组规则要看 RateUnits 与当时的全局默认是否一致,
+	// 本列只负责记录事实。
+	//
+	// **这一列在库里是双语义的**:2026-08-18 之前落的行冻结的是【下线】分组
+	// (那时费率按下线分组判定),之后的行是【上线】分组。存量行不迁移、不改写
+	// —— 冻结值是"当时按什么算的"这个事实。对账时先看 created_at 落在哪一侧。
 	RateGroup string `json:"rate_group" gorm:"type:varchar(64);not null;default:''"`
 
 	// GrossAmount 是不截断的精确佣金,GrossAmount - SettledAmount 即待结算增量。
@@ -158,6 +164,32 @@ type Balance struct {
 	FiatCurrency  string          `json:"fiat_currency" gorm:"type:varchar(8);not null;default:''"`
 
 	DebtBlocked bool `json:"debt_blocked" gorm:"not null"`
+
+	// DailyCapWindowStart / DailyCapGranted 是日封顶(max_daily_quota_per_inviter)
+	// 的窗口状态,与余额在同一把行锁下变更。
+	//
+	// # 为什么不能像以前那样现算
+	//
+	// 「今日已发」曾经是 `SUM(granted_quota) WHERE created_at >= dayStart(now)`,
+	// 而 dayStart 的日界完全由 commission.day_offset_minutes 决定。那个值不进
+	// 幂等键、不进结算行、不参与任何身份:改一次配置重启(或灰度期间两个节点
+	// 取值不同),窗口起点就整体平移,已发的结算行整批掉出窗口,SUM 读到 0,
+	// **当天的日封顶原地满血复活**。日封顶是单个推广人「一天最多拿多少」的
+	// 唯一总量闸门,击穿它等于当天风控失效,而结算行本身完全自洽、没有任何
+	// 计数器会响。
+	//
+	// 现在窗口起点被**记在余额行上**,新窗口只在「距上一个窗口起点已满 24 小时」
+	// 时才开。日界怎么挪都不会凭空造出第二个窗口;偏移往前挪时最坏是当天那一份
+	// 封顶晚几个小时才开(钱留在 unsettled 里,下一跑照发),方向是保守的那一边。
+	//
+	// # 零值口径
+	//
+	// DailyCapWindowStart == 0 = 本列上线前的存量行(以及从没结算过的人)。
+	// 此时按旧口径查一次结算行补出「今天已发多少」,否则升级当天每个人的封顶
+	// 都会白白多出一份。DailyCapGranted 只累加发放,回收(clawback)不减 ——
+	// 封顶限的是「一天最多发出去多少」,不是净额。
+	DailyCapWindowStart int64 `json:"daily_cap_window_start" gorm:"not null;default:0"`
+	DailyCapGranted     int64 `json:"daily_cap_granted" gorm:"not null;default:0"`
 
 	// 这里曾经有一个 InviteeCount(下线数)。它**从来没有任何写入方** ——
 	// 设计稿里写着"计佣路径顺手维护",实现从未落地,于是全库每一个真正有下线的

@@ -922,6 +922,8 @@ rate_bps / usd_rate = ★ 复制原单的值，不用当前值
 | R9 | GORM callback panic 污染主项目写事务 | 回调体首行 `defer recoverAndLog()` |
 | R10 | 管理员补单标记晚于计佣落地 | `recharge_grace_seconds`(10s) 延迟 + 若已计佣则 `QyOnManualTopUpCompleted` 触发补偿冲正（`CB:M{tradeNo}`） |
 | R11 | 进程退出丢失内存聚合（最多 30s） | 缩短 flush 间隔可配；默认接受，A16 暴露 `pending_buckets` 供运维判断 |
+| R12 | **多节点:在 node A 改分组/费率/法币比例/拉黑,node B 的进程内快照仍是旧的** | 五把缓存(邀请关系+上线分组、运营参数、拉黑名单、分组费率、法币比例)全部只在本进程失效,而费率与折算比例是**逐笔冻结**进账本的,那段窗口里的每一分钱都按旧档永久发错(改比例不追溯)。修法:每次本地失效同时往 `qy_commission_cache_invalidation` 追加一行,各节点每 2 秒重放游标之后的流水并在本地失效(`cachesync.go`)。窗口从 300s/60s 收敛到一个轮询周期;`GET /admin/commission/health` 的 `cache_sync` 段暴露 enabled/cursor/published/applied/failed |
+| R13 | **同一自然日里改 `day_offset_minutes`,日封顶原地满血复活** | 「今日已发」曾按 `SUM(granted_quota) WHERE created_at >= dayStart(now)` 现算,日界一挪已发的结算行整批掉出窗口。改成把窗口起点与已发额度记在 `qy_commission_balance.daily_cap_window_start/daily_cap_granted` 上,**新窗口只在距上一个窗口起点满 86400 秒时才开**(`settle.go: resolveCapWindow`)。存量行(起点=0)按旧口径补一次今日已发 |
 
 ### 10.3 边界条件
 

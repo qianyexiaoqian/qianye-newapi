@@ -7,81 +7,102 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func seedOutbox(t *testing.T, orderNo string, createdAt int64) {
+	t.Helper()
+	require.NoError(t, DB.Create(&QyFundOutbox{
+		OrderNo: orderNo, Kind: "transfer", UserId: 1, Amount: 1, CreatedAt: createdAt,
+	}).Error)
+}
+
+func resetOutbox(t *testing.T) {
+	t.Helper()
+	require.NoError(t, DB.AutoMigrate(&QyFundOutbox{}))
+	require.NoError(t, DB.Exec("DELETE FROM qy_fund_outbox").Error)
+	t.Cleanup(func() { DB.Exec("DELETE FROM qy_fund_outbox") })
+}
+
 // C5:outbox 清理必须真的按批执行。
 //
 // 旧实现是 DB.Where(...).Limit(batch).Delete(...)。GORM 只在方言把 "LIMIT"
 // 列进 DeleteClauses 时才渲染它,而这只有 MySQL 驱动做了 —— postgres 与
 // sqlite 的 DeleteClauses 里没有 LIMIT,会静默生成一条不带 LIMIT 的 DELETE
-// 一次删光。本测试跑在 sqlite 上(TestMain 的库),因此旧实现会删掉全部行而
-// 不是 batch 行,直接失败。
-func TestQyPruneFundOutbox_BatchesAcrossDialects(t *testing.T) {
-	require.NoError(t, DB.AutoMigrate(&QyFundOutbox{}))
-	t.Cleanup(func() { DB.Exec("DELETE FROM qy_fund_outbox") })
-	require.NoError(t, DB.Exec("DELETE FROM qy_fund_outbox").Error)
-
-	// 10 行过期 + 3 行未过期。
+// 一次删光。本测试跑在 sqlite 上(TestMain 的库),因此不按批的实现会一次
+// 捞回全部行而不是 batch 行,直接失败。
+func TestQyScanFundOutbox_BatchesAcrossDialects(t *testing.T) {
+	resetOutbox(t)
 	for i := 0; i < 10; i++ {
-		require.NoError(t, DB.Create(&QyFundOutbox{
-			OrderNo: "OLD-" + string(rune('a'+i)), Kind: "transfer", UserId: 1, Amount: 1,
-			CreatedAt: 100,
-		}).Error)
+		seedOutbox(t, "OLD-"+string(rune('a'+i)), 100)
 	}
 	for i := 0; i < 3; i++ {
-		require.NoError(t, DB.Create(&QyFundOutbox{
-			OrderNo: "NEW-" + string(rune('a'+i)), Kind: "transfer", UserId: 1, Amount: 1,
-			CreatedAt: 300,
-		}).Error)
+		seedOutbox(t, "NEW-"+string(rune('a'+i)), 300)
 	}
 
-	countAll := func() int64 {
-		var n int64
-		require.NoError(t, DB.Model(&QyFundOutbox{}).Count(&n).Error)
-		return n
-	}
-
-	deleted, err := QyPruneFundOutbox(200, 3)
+	rows, err := QyScanFundOutbox(200, 0, 3)
 	require.NoError(t, err)
-	assert.EqualValues(t, 3, deleted, "一轮只能删 batch 行,否则会在业务库上产生一次删光的长事务")
-	assert.EqualValues(t, 10, countAll())
+	require.Len(t, rows, 3, "一轮只能捞 batch 行,否则会在业务库上产生一次删光的长事务")
+	for _, row := range rows {
+		assert.EqualValues(t, 100, row.CreatedAt, "未到保留期的行不该进入候选")
+	}
 
-	// 反复调用直到删完过期行,未过期行一行都不能少。
-	total := deleted
-	for {
-		n, err := QyPruneFundOutbox(200, 3)
+	// 游标推进:整段过期行走完为止,未过期的一行都不能出现。
+	// 轮次显式设上界 —— 游标一旦失效,这个循环会永远捞回同一批行,
+	// 让用例挂死而不是报错。宁可判"轮次超了"也不要一个跑不完的测试。
+	var seen int
+	cursor := int64(0)
+	for round := 0; round < 8; round++ {
+		batch, err := QyScanFundOutbox(200, cursor, 3)
 		require.NoError(t, err)
-		total += n
-		if n == 0 {
+		if len(batch) == 0 {
 			break
 		}
+		for _, row := range batch {
+			assert.EqualValues(t, 100, row.CreatedAt)
+		}
+		seen += len(batch)
+		require.Greater(t, batch[0].Id, cursor, "游标必须真的推进,否则清理会永远停在原地")
+		cursor = batch[len(batch)-1].Id
 	}
-	assert.EqualValues(t, 10, total)
-	assert.EqualValues(t, 3, countAll(), "未到保留期的行必须原样保留")
-
-	var left []QyFundOutbox
-	require.NoError(t, DB.Find(&left).Error)
-	for _, row := range left {
-		assert.EqualValues(t, 300, row.CreatedAt)
-	}
+	assert.Equal(t, 10, seen)
 }
 
-// batch 非正数时必须退化成默认批量,而不是退化成"不限"把表删光。
-func TestQyPruneFundOutbox_NonPositiveBatchFallsBackToDefault(t *testing.T) {
-	require.NoError(t, DB.AutoMigrate(&QyFundOutbox{}))
-	require.NoError(t, DB.Exec("DELETE FROM qy_fund_outbox").Error)
-	t.Cleanup(func() { DB.Exec("DELETE FROM qy_fund_outbox") })
-
+// batch 非正数时必须退化成默认批量,而不是退化成"不限"。
+func TestQyScanFundOutbox_NonPositiveBatchFallsBackToDefault(t *testing.T) {
+	resetOutbox(t)
 	for i := 0; i < 5; i++ {
-		require.NoError(t, DB.Create(&QyFundOutbox{
-			OrderNo: "Z-" + string(rune('a'+i)), Kind: "transfer", UserId: 1, Amount: 1,
-			CreatedAt: 100,
-		}).Error)
+		seedOutbox(t, "Z-"+string(rune('a'+i)), 100)
 	}
 
-	deleted, err := QyPruneFundOutbox(200, 0)
+	rows, err := QyScanFundOutbox(200, 0, 0)
 	require.NoError(t, err)
-	assert.EqualValues(t, 5, deleted)
+	assert.Len(t, rows, 5)
 
-	deleted, err = QyPruneFundOutbox(200, 10)
+	rows, err = QyScanFundOutbox(50, 0, 10)
 	require.NoError(t, err)
-	assert.EqualValues(t, 0, deleted, "没有可删的行时不应报错也不应发出 DELETE")
+	assert.Empty(t, rows, "没有到期的行时不该捞回任何东西")
+}
+
+// 删除只认主键列表:调用方必须先逐行确认过"这一行的证据使命已经结束"。
+// 空列表绝不能退化成一条无 WHERE 的 DELETE 把整张表清空。
+func TestQyDeleteFundOutbox_ByIdsOnly(t *testing.T) {
+	resetOutbox(t)
+	for i := 0; i < 4; i++ {
+		seedOutbox(t, "D-"+string(rune('a'+i)), 100)
+	}
+
+	deleted, err := QyDeleteFundOutbox(nil)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, deleted)
+	var n int64
+	require.NoError(t, DB.Model(&QyFundOutbox{}).Count(&n).Error)
+	assert.EqualValues(t, 4, n, "空列表必须是零操作,绝不能删光整张表")
+
+	rows, err := QyScanFundOutbox(200, 0, 2)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	deleted, err = QyDeleteFundOutbox([]int64{rows[0].Id, rows[1].Id})
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, deleted)
+
+	require.NoError(t, DB.Model(&QyFundOutbox{}).Count(&n).Error)
+	assert.EqualValues(t, 2, n)
 }

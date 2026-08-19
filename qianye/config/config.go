@@ -285,15 +285,31 @@ type Commission struct {
 // Withdraw 佣金提现。两种方式并存,用户自选:
 // quota = 佣金兑换为平台余额(审核通过自动到账);fiat = 线下法币打款(人工)。
 type Withdraw struct {
-	Enabled             bool     `yaml:"enabled"`
-	Methods             []string `yaml:"methods"`
-	MinQuota            int64    `yaml:"min_quota"`
-	MinFiatAmount       string   `yaml:"min_fiat_amount"`
-	FiatCurrency        string   `yaml:"fiat_currency"`
-	FiatFeeBps          int      `yaml:"fiat_fee_bps"`
-	RateFreezeMode      string   `yaml:"rate_freeze_mode"`
-	RateFreezeFixed     string   `yaml:"rate_freeze_fixed"`
-	AutoCreditOnApprove *bool    `yaml:"auto_credit_on_approve"`
+	Enabled       bool     `yaml:"enabled"`
+	Methods       []string `yaml:"methods"`
+	MinQuota      int64    `yaml:"min_quota"`
+	MinFiatAmount string   `yaml:"min_fiat_amount"`
+	FiatCurrency  string   `yaml:"fiat_currency"`
+	FiatFeeBps    int      `yaml:"fiat_fee_bps"`
+
+	// RateFreezeModeDeprecated / RateFreezeFixedDeprecated 是提现侧那套**独立汇率**
+	// 的两个键。
+	//
+	// Deprecated: 已下线。它们决定的是"提现单按哪个汇率开金额",而佣金账本的
+	// available_fiat 是按计佣当刻的三层折算比例(分组档 -> 兜底档 -> 全站汇率)
+	// 攒起来的 —— 两套计价各算各的,于是账本冻走 850 CNY、单据只让运营付 100 CNY。
+	// 现在单据金额恒等于账本冻走的那个数(见 commission.QuoteWithdrawFiat),
+	// "平台按自己的结算价打款"的落点改为佣金侧的法币折算档。
+	//
+	// 保留这两个字段**仅为**让仍写着这些键的部署能够启动:本包是严格解析
+	// (KnownFields(true),见 Load),直接删字段会让那些部署在升级二进制的那一刻
+	// 启动失败。加载时告警并置 nil。
+	//
+	// 必须是指针:普通 string 的零值分不清"没写"与"写了空串",而这里要靠
+	// "写没写过"来决定要不要喊那一声。
+	RateFreezeModeDeprecated  *string `yaml:"rate_freeze_mode"`
+	RateFreezeFixedDeprecated *string `yaml:"rate_freeze_fixed"`
+	AutoCreditOnApprove       *bool   `yaml:"auto_credit_on_approve"`
 	// DailyMaxCount 单个用户每日可提交的提现单数,0 表示不限制。
 	DailyMaxCount int `yaml:"daily_max_count"`
 	// PayeeAccountMax 单个用户可保存的收款方式数量,0 表示不限制。

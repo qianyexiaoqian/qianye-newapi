@@ -83,7 +83,7 @@ func create(c *gin.Context, userId int, req createRequest) (*orderView, error) {
 		if isDuplicateKey(err) {
 			// 预读没看到而唯一索引挡下了:两个完全相同的请求同时进来。
 			// 返回原单而不是报错 —— 这是双击、多标签、客户端超时重试的正常结果。
-			return loadByIdemKey(userId, acc)
+			return loadByIdemKey(w, acc)
 		}
 		db.MarkFailure(err)
 		// 被风控闸门(冷却、日限额、频次)挡下的申请在此之前零留痕:
@@ -110,7 +110,7 @@ func create(c *gin.Context, userId int, req createRequest) (*orderView, error) {
 	if replay != nil {
 		// 幂等命中:本次没有产生任何副作用,因此也不写 submit 审计 ——
 		// 审计表是事后仲裁的唯一凭据,一次点击重试三次不该看起来像申请了三笔。
-		if err := ensureReplayMatches(replay, acc); err != nil {
+		if err := ensureReplayMatches(replay, w); err != nil {
 			return nil, err
 		}
 		return toUserView(replay, nil), nil
@@ -172,6 +172,12 @@ func submitInTx(tx *gorm.DB, w *Withdrawal, payee *Payee, acc acceptedRequest,
 	if err := enforceCreateLimits(tx, w.UserId, w.Quota, cfg, w.CreatedAt); err != nil {
 		return nil, err
 	}
+	// 定价必须在落单之前、且在同一把余额行锁之内:金额取自账本的
+	// available_fiat,锁外算出来的数与稍后 FreezeForWithdraw 真正削走的数
+	// 可能已经被一次并发结算改开。
+	if err := priceFiatInTx(tx, w, cfg); err != nil {
+		return nil, err
+	}
 	// 先落单再冻结:单据的唯一索引冲突要在动佣金之前就把事务打断,
 	// 否则一次重复提交会白白走一遍冻结再回滚。
 	if err := tx.Create(w).Error; err != nil {
@@ -191,6 +197,11 @@ func submitInTx(tx *gorm.DB, w *Withdrawal, payee *Payee, acc acceptedRequest,
 			return nil, err
 		}
 	}
+	// 共用收款账号的标记必须在本单落库之后重算:算在落库之前的话,
+	// 同一张卡上时间最早的那张单永远数不到别人,于是永不带标记(见 markSharedPayee)。
+	if err := markSharedPayee(tx, w); err != nil {
+		return nil, err
+	}
 	if err := commission.FreezeForWithdraw(tx, w.UserId, w.Quota, w.WithdrawNo); err != nil {
 		return nil, err
 	}
@@ -209,7 +220,7 @@ func submitInTx(tx *gorm.DB, w *Withdrawal, payee *Payee, acc acceptedRequest,
 func buildWithdrawal(c *gin.Context, user *model.User, acc acceptedRequest, cfg config.Withdraw) (
 	*Withdrawal, *Payee, error) {
 
-	rates, err := freezeRates()
+	perUnit, err := frozenQuotaPerUnit()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -230,8 +241,7 @@ func buildWithdrawal(c *gin.Context, user *model.User, acc acceptedRequest, cfg 
 		Method:             acc.Method,
 		Status:             StatusPending,
 		Quota:              acc.Quota,
-		FrozenQuotaPerUnit: rates.QuotaPerUnit,
-		FrozenFxRate:       rates.FxRate,
+		FrozenQuotaPerUnit: perUnit,
 		Remark:             acc.Remark,
 		HasProof:           acc.ProofRef != "",
 		ClientIp:           truncate(c.ClientIP(), 64),
@@ -243,19 +253,8 @@ func buildWithdrawal(c *gin.Context, user *model.User, acc acceptedRequest, cfg 
 		return w, nil, nil
 	}
 
-	amounts, err := computeFiat(acc.Quota, rates, cfg.FiatFeeBps)
-	if err != nil {
-		return nil, nil, err
-	}
-	minAmount, err := minFiatAmount()
-	if err != nil {
-		return nil, nil, err
-	}
-	if amounts.Gross.LessThan(minAmount) {
-		return nil, nil, errFiatBelowMin
-	}
-	w.Currency = cfg.FiatCurrency
-	w.GrossAmount, w.FeeAmount, w.NetAmount = amounts.Gross, amounts.Fee, amounts.Net
+	// 金额三段与币种不在这里定 —— 它们只能由佣金账本在持锁事务内给出,
+	// 见 priceFiatInTx。这里只先把与账本无关的部分组装好。
 	w.FeeBps = cfg.FiatFeeBps
 
 	channel, data, err := resolvePayee(user.Id, acc)
@@ -269,8 +268,53 @@ func buildWithdrawal(c *gin.Context, user *model.User, acc acceptedRequest, cfg 
 	w.PayeeChannel = channel
 	w.PayeeMasked = payee.Masked
 	w.PayeeDigest = payee.Digest
-	w.RiskFlags = digestRiskFlag(user.Id, payee.Digest)
+	// RiskFlags 由 markSharedPayee 在落单之后算(见那里的说明):
+	// 在这里算的话,同一张卡上时间最早的那张单永远数不到别人。
 	return w, payee, nil
+}
+
+// priceFiatInTx 按佣金账本给这张法币单定金额与币种。
+//
+// # 为什么金额只能来自账本,而且只能在事务里定
+//
+// 用户在「我的推广」页看到的 available_fiat,是按**计佣当刻**的三层折算比例
+// (分组档 → 兜底档 → 全站汇率)一笔笔攒起来的绝对值;冻结时按额度比例等比
+// 削走。提现单要付的就是被削走的那一笔 —— 两侧同源,"这笔提现打多少钱"
+// 全站才只有一个答案。
+//
+// 此前这里是另一套独立计价(quota / QuotaPerUnit × 充值页汇率),与账本毫无
+// 关系:配一个 8.5 的分组结汇档,账面冻走 850 CNY 而单据只开 100 CNY;
+// 把充值汇率从 1 改到 7.3,同一笔按比例 1 冻结的余额开出 7.3 倍的单。
+// 默认配置下两者恰好相等,所以它是"配置即触发"的潜伏错价,而不是装完就错。
+//
+// 事务内定价还有第二个理由:锁外读到的余额与 FreezeForWithdraw 真正削走的数
+// 之间隔着一次可能的并发结算/冲正。同一把行锁之内两次读同一行,两个数才必然相等。
+//
+// method != fiat 的单没有法币侧,直接跳过。
+func priceFiatInTx(tx *gorm.DB, w *Withdrawal, cfg config.Withdraw) error {
+	if w.Method != config.WithdrawMethodFiat {
+		return nil
+	}
+	quote, err := commission.QuoteWithdrawFiat(tx, w.UserId, w.Quota)
+	if err != nil {
+		return err
+	}
+	amounts, err := splitFiat(quote.Amount, cfg.FiatFeeBps)
+	if err != nil {
+		return err
+	}
+	minAmount, err := minFiatAmount(cfg.MinFiatAmount)
+	if err != nil {
+		return err
+	}
+	if amounts.Gross.LessThan(minAmount) {
+		return errFiatBelowMin
+	}
+	w.Currency = quote.Currency
+	w.GrossAmount, w.FeeAmount, w.NetAmount = amounts.Gross, amounts.Fee, amounts.Net
+	w.FeeBps = cfg.FiatFeeBps
+	w.FrozenFxRate = impliedFxRate(amounts.Gross, w.Quota, w.FrozenQuotaPerUnit)
+	return nil
 }
 
 // dailyUsage 是用户当日的提现用量快照。
@@ -403,9 +447,10 @@ func findByIdemKey(tx *gorm.DB, userId int, clientKey string) (*Withdrawal, erro
 	return &w, nil
 }
 
-// loadByIdemKey 在唯一索引冲突后回读已有单。
-func loadByIdemKey(userId int, acc acceptedRequest) (*orderView, error) {
-	w, err := findByIdemKey(db.Get(), userId, acc.IdemKey)
+// loadByIdemKey 在唯一索引冲突后回读已有单。incoming 是本次组装好的单,
+// 只用来判定"重放的是不是同一笔申请"。
+func loadByIdemKey(incoming *Withdrawal, acc acceptedRequest) (*orderView, error) {
+	w, err := findByIdemKey(db.Get(), incoming.UserId, acc.IdemKey)
 	if err != nil {
 		db.MarkFailure(err)
 		return nil, fmt.Errorf("qianye/withdraw: 幂等冲突但无法回读原单: %w", err)
@@ -413,9 +458,9 @@ func loadByIdemKey(userId int, acc acceptedRequest) (*orderView, error) {
 	if w == nil {
 		// 唯一索引刚刚拦下、回读却查不到,只能是原单在这两步之间被删掉了。
 		// 这是数据异常,不能静默当成"没申请过"再放一次。
-		return nil, fmt.Errorf("qianye/withdraw: 幂等冲突但原单不存在(用户 %d)", userId)
+		return nil, fmt.Errorf("qianye/withdraw: 幂等冲突但原单不存在(用户 %d)", incoming.UserId)
 	}
-	if err := ensureReplayMatches(w, acc); err != nil {
+	if err := ensureReplayMatches(w, incoming); err != nil {
 		return nil, err
 	}
 	return toUserView(w, nil), nil
@@ -427,8 +472,20 @@ func loadByIdemKey(userId int, acc acceptedRequest) (*orderView, error) {
 // 由前端在打开弹窗时生成并缓存(裁定 C10),用户在同一个弹窗里改完金额再提交
 // 仍然沿用它。此时把原单当成本次结果返回,用户会把"那笔 300 的申请"读成
 // "我这笔 500 成功了" —— 必须 409 让前端刷新。
-func ensureReplayMatches(w *Withdrawal, acc acceptedRequest) error {
-	if w.Quota != acc.Quota || w.Method != acc.Method {
+//
+// 收款方式同理,而且更要命:金额改错了用户至少看得见数字不对,收款人改错了
+// 界面上只有一串脱敏值,而钱会照着**原来那张卡**打出去。同一个弹窗里换一张
+// 收款账号再提交,client_request_id 一个字都没变。此前这里只比金额与方式,
+// 漏掉的正是这条链路上唯一决定"钱去哪"的字段。
+//
+// 比的是指纹而不是 payee_ref:同一张卡存两次会得到两个 ref,但指纹相同 ——
+// 那本来就是同一个收款目的地,不该判成冲突。指纹的口径是"钱去哪"(该渠道的
+// 账号字段,见 payeeDigest),所以只把户名写法改了一下的重放同样不算冲突:
+// 钱去的仍是同一个账号,而这里要挡的是"钱去了另一个账号"。
+func ensureReplayMatches(replay, incoming *Withdrawal) error {
+	if replay.Quota != incoming.Quota ||
+		replay.Method != incoming.Method ||
+		replay.PayeeDigest != incoming.PayeeDigest {
 		return errIdemConflict
 	}
 	return nil

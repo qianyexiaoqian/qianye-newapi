@@ -140,7 +140,7 @@ func (QyWithdrawal) TableName() string { return "qy_withdrawals" }
 | `idx_qywd_status` | `status, method` | 管理端审核队列 |
 | `idx_qywd_status_updated` | `status, updated_at` | 补偿任务扫超时 |
 | `idx_qywd_paid_at` | `paid_at` | 财务按打款日导出 |
-| `idx_qywd_payee_digest` | `payee_digest` | 同收款账号多账户风控 |
+| `idx_qywd_payee_digest` | `payee_digest` | 同收款账号多账户风控（指纹只覆盖账号字段，见 §8.1） |
 | `idx_qywd_reconcile` | `reconcile_state` | 对账异常队列 |
 
 ### 1.2 `qy_withdrawal_payees` —— 收款信息（PII，1:1，独立表）
@@ -370,16 +370,23 @@ withdrawal:
  6. 生成单号：
     withdraw_no = "QYW" + yyyymmdd + 12位随机（common.GetRandomString）
     claim_no    = "QYC" + strings.ReplaceAll(common.GetUUID(), "-", "")
- 7. 冻结价格参数（★ 关键）：
-    frozen_quota_per_unit = decimal.NewFromFloat(common.QuotaPerUnit)
-    frozen_fx_rate        = decimal.NewFromFloat(operation_setting.USDExchangeRate)
-    校验两者均 > 0，否则 500「计费参数异常，请联系管理员」
-    gross = commission_amount / frozen_quota_per_unit * frozen_fx_rate   （decimal 全程）
+ 7. 冻结价格参数（★ 关键，2026-08-19 修订：金额改由佣金账本给出）：
+    frozen_quota_per_unit = decimal.NewFromFloat(common.QuotaPerUnit)   // 仍然冻结，>0 否则拒绝建单
+    gross = commission.QuoteWithdrawFiat(tx, user_id, quota)            // == 本次冻结从
+                                                                       //    qy_commission_balance.available_fiat
+                                                                       //    削走的绝对值
+    frozen_fx_rate = gross / (quota / frozen_quota_per_unit)            // 反解，只用于展示与对账
+
+    ⚠ 本条曾写作 `frozen_fx_rate = operation_setting.USDExchangeRate`，即提现侧
+    自带一套汇率。它与 design-02-commission §法币折算（分组档 → 兜底档 → 全站汇率，
+    逐笔冻进 available_fiat）是两个互不相干的数：实测账本冻走 850 CNY、单据只让运营
+    付 100 CNY，而「VIP 按更高比例结汇」这个杠杆对打款完全失效。现在两侧同源，
+    withdraw.rate_freeze_mode / rate_freeze_fixed 两个配置键已下线。
     fee   = max(gross * fiat_fee_rate + fiat_fee_fixed, fiat_fee_min).RoundBank(4)
     net   = gross - fee ；要求 net > 0 且 gross >= fiat_min_amount
  8. PII 处理（method=fiat）：
-    plain := canonicalJSON(payee)         // 键排序、去空格，保证 digest 稳定
-    digest := hex(HMAC-SHA256(piiKey, plain))
+    account := normalize(payee[账号字段])  // 只取该渠道「钱去哪」的那一个字段并归一
+    digest := hex(HMAC-SHA256(digestKey, "payee-account-v1" + channel + account))
     nonce  := crypto/rand 12 字节
     cipher := AES-256-GCM.Seal(nonce, plain, AAD=withdraw_no)  // AAD 绑定单号，防密文换单
     masked := maskByChannel(payee)
@@ -490,7 +497,8 @@ withdrawal:
 ### 4.3 线下法币打款（无跨库风险）
 
 ```
- P1  管理员在队列点「查看完整收款信息」→ POST .../payee
+ P1  管理员在队列点「查看完整收款信息」→ 先过一次 2FA/Passkey（scope: withdraw.payee.read）
+     → 带 X-Security-Proof 调 .../payee
      解密 → 写 qy_pii_audits → 返回明文（前端仅在弹窗内展示，不落 localStorage/不入 react-query 缓存）
  P2  管理员线下转账
  P3  POST .../pay { payout_ref（必填）, paid_at（可选，默认 now）, payout_note }
@@ -739,7 +747,20 @@ func QyLockForUpdate(tx *gorm.DB) *gorm.DB { return lockForUpdate(tx) }
 - 密钥来源：YAML `withdrawal.pii_key`（base64 32 字节），**不落任何数据库**。支持 `pii_key_version` + `pii_keys_history` 数组做轮换。
 - Nonce：每条 12 字节 `crypto/rand`，独立列存储。
 - 落库：`Cipher varbinary(4096)`，`Nonce varbinary(16)`。
-- 索引/去重靠 `Digest = HMAC-SHA256(key, canonicalJSON)`，**明文永不建索引**。
+- 索引/去重靠 `Digest = HMAC-SHA256(digest_key, 归一化后的账号)`，**明文永不建索引**。
+
+  ⚠ 原像曾是整条收款信息（`canonicalJSON`，含自由文本 `real_name` / `bank_name` /
+  可选 `branch`，且 email 不折大小写）。那与本列的用途——「同一**收款账号**被多个
+  user_id 使用」——不是同一个问题：同一张卡只要在支行栏里多打一个字符、把「招商银行」
+  写成「招商银行股份有限公司」，指纹就完全不同，`shared_payee` 永不触发。端到端实测
+  三个账号同一张卡，只有字段逐字相同的那个报警。而且它不需要攻击者知道这回事——
+  三个小号各自手填一遍，写法上的自然差异就够让报警消失，漏报是常态而非例外。
+  现在原像只取该渠道的账号字段（bank→`account_no`、alipay/wechat→`account`、
+  paypal→`email`、usdt_trc20→`address`）并按渠道归一：一律去空白；邮箱/账号折小写；
+  银行账号折大写并去连字符；USDT 地址是 Base58，大小写是地址本身，一个字符都不折。
+  认不出账号字段时回落到整条记录的旧口径——**不能**回落到空原像，否则一批记录会
+  摘出同一个指纹，既互相误标红，又会让幂等重放把两个不同的收款人判成同一笔。
+  改口径之前写下的行仍是旧口径，与新行互不命中：本仓从未上线，无存量线索需要迁移。
 
 ### 8.2 展示脱敏
 
@@ -754,9 +775,31 @@ func QyLockForUpdate(tx *gorm.DB) *gorm.DB { return lockForUpdate(tx) }
 
 姓名脱敏用 rune 切片（`[]rune(name)[:1] + "*"`），不能用字节切片（会切坏中文）。
 
+### 8.2.1 人工决定的四眼原则
+
+六个管理端人工决定（通过 / 拒绝 / 标记已打款 / 立即兑现 / 标记打款失败 / 人工裁决）
+一律经 `loadDecidableWithdrawal` 取单，**申请人是操作人本人时返回 403
+`qy_wd_self_review`** 并写一条 `withdraw.self_review_denied` 失败审计。
+
+理由是资金安全而不是流程洁癖：管理端还有一条手工增减佣金的接口，
+「自己给自己记一笔佣金 → 自己发起提现 → 自己批准」在改造前是一条无需第二个账号、
+零事前控制的自助铸币链（`quota` 单在批准瞬间直接跨库落进主库 `users.quota`）。
+判据在 `qianye/guard/fund_actor.go`，与手工增减佣金共用同一份。
+
+拒绝**包含**退回佣金的那几个决定：四眼原则管的是「谁有资格对这张单下结论」，
+不是「这次结论对申请人有没有好处」。申请人想撤掉自己的单仍然走用户端的
+`POST /withdraw/:id/cancel`，不需要管理员身份，所以这道闸门不会把任何人的单据锁死。
+
 ### 8.3 访问控制与审计
 
-- 明文只能通过 **A4（POST，需 `AdminAuth()`）** 获取，且：
+- 明文只能通过 **A4（需 `AdminAuth()`）** 获取，且：
+  - **必须带一张 `withdraw.payee.read` 范围的安全证明**（`X-Security-Proof`，由 2FA
+    或 Passkey 现场签发，见 `middleware.SecurityProofScopeWithdrawPayeeRead`）。
+    这道闸门排在事由校验与取单之前，且 **PAT 认证一律过不去**（PAT 没有会话身份，
+    `RequireSecurityProof` 直接判 `SECURITY_PROOF_INVALID`）——
+    「拿到管理员会话/PAT ＝ 拿到全站收款明文」这条路因此被封死。
+    刻意**不**抬成 `RootAuth()`：收款账号是法币打款动作本身必须看到的东西，
+    收成 root 专属等于全站只有 root 能付款，运营会绕道把明文抄进工单，PII 反而流得更散。
   - 强制填写 `reason`（≥4 字符）；
   - 每次调用写一条 `qy_pii_audits`；
   - 前端**不缓存**（`react-query` 用 `gcTime: 0`），弹窗关闭即从内存丢弃，不写 `localStorage`；

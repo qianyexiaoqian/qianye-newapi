@@ -59,7 +59,7 @@ var qyConfig atomic.Pointer[config.Config]
 func extTables() []any {
 	return []any{
 		&Accrual{}, &Balance{}, &Settlement{}, &InviteRelation{}, &FreezeRecord{},
-		&GroupRate{}, &FiatRate{}, &SettleRun{},
+		&GroupRate{}, &FiatRate{}, &SettleRun{}, &CacheInvalidation{},
 		&qymodel.Setting{}, &qymodel.KV{}, &qymodel.AuditLog{},
 	}
 }

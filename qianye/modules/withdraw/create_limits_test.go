@@ -344,23 +344,36 @@ func TestSubmitInTx_ReplayResolvedBeforeRiskGate(t *testing.T) {
 }
 
 // 幂等键只保证"不重复执行",保证不了"重放的是同一个请求"。
-// client_request_id 由前端在打开弹窗时生成并缓存,用户改完金额再提交仍然沿用它 ——
-// 此时返回原单等于告诉用户"你这笔 500 的申请成功了",而库里躺着的是那笔 300 的。
+// client_request_id 由前端在打开弹窗时生成并缓存,用户改完金额**或改完收款账号**
+// 再提交仍然沿用它 —— 此时返回原单等于告诉用户"你这笔 500 的申请成功了",
+// 而库里躺着的是那笔 300 的;换收款人那一半更要命:界面上只有一串脱敏值,
+// 而钱会照着原来那张卡打出去。
 func TestEnsureReplayMatches(t *testing.T) {
-	origin := &Withdrawal{Quota: 500000, Method: config.WithdrawMethodQuota}
+	origin := &Withdrawal{
+		Quota:       500000,
+		Method:      config.WithdrawMethodFiat,
+		PayeeDigest: "digest-of-card-A",
+	}
 
 	cases := []struct {
-		name string
-		acc  acceptedRequest
-		want error
+		name     string
+		incoming *Withdrawal
+		want     error
 	}{
-		{"同一笔请求的重放", acceptedRequest{Quota: 500000, Method: config.WithdrawMethodQuota}, nil},
-		{"换金额", acceptedRequest{Quota: 900000, Method: config.WithdrawMethodQuota}, errIdemConflict},
-		{"换方式", acceptedRequest{Quota: 500000, Method: config.WithdrawMethodFiat}, errIdemConflict},
+		{"同一笔请求的重放", &Withdrawal{
+			Quota: 500000, Method: config.WithdrawMethodFiat, PayeeDigest: "digest-of-card-A"}, nil},
+		{"换金额", &Withdrawal{
+			Quota: 900000, Method: config.WithdrawMethodFiat, PayeeDigest: "digest-of-card-A"}, errIdemConflict},
+		{"换方式", &Withdrawal{
+			Quota: 500000, Method: config.WithdrawMethodQuota, PayeeDigest: "digest-of-card-A"}, errIdemConflict},
+		{"换收款账号(钱会打到原来那张卡)", &Withdrawal{
+			Quota: 500000, Method: config.WithdrawMethodFiat, PayeeDigest: "digest-of-card-B"}, errIdemConflict},
+		{"同一张卡存了两次(ref 不同、指纹相同)不算冲突", &Withdrawal{
+			Quota: 500000, Method: config.WithdrawMethodFiat, PayeeDigest: "digest-of-card-A"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ensureReplayMatches(origin, tc.acc)
+			err := ensureReplayMatches(origin, tc.incoming)
 			if tc.want == nil {
 				assert.NoError(t, err)
 				return

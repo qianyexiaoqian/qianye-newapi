@@ -302,8 +302,16 @@ func acceptAmount(act *Activity, in EntryInput) (int64, error) {
 		return 0, errBadOption
 	}
 	amount := in.Amount
-	if amount <= 0 {
-		// 竞猜不填金额时按单注额,与抽奖同形。
+	if amount < 0 {
+		// 显式的负数与"没填"在 wire 上完全可区分,不能合并成同一条回落分支。
+		// 参与是不可逆消费:把一个明确写着 -5 的请求静默当成"按单注额下注",
+		// 等于替用户下了一笔他没打算下的注并真的扣钱。与本函数对超上限、
+		// 对非法选项一律 400 的口径保持一致。
+		return 0, errBadAmount
+	}
+	if amount == 0 {
+		// 0 是 int64 的零值,也就是"请求里没有 amount 字段"——竞猜不填金额时
+		// 按单注额,与抽奖同形。这是前端当前唯一在走的路径。
 		amount = act.StakeQuota
 	}
 	if act.BetMinQuota > 0 && amount < act.BetMinQuota {
@@ -730,12 +738,14 @@ func releaseEntryOnFailure(ctx context.Context, order *qymodel.FundOrder, e *Ent
 	}
 	// 与 ChargeEntry 的收尾同源:要回滚的是**资金单指向的**那条明细。
 	e.EntryNo = settledEntryNo(order, e)
-	if mainSideApplied(order.OrderNo) {
+	// 回滚预占等于宣布"这笔钱没扣过"。只有探针明确说主库没动才敢这么宣布,
+	// 探针关掉 / 报错 / 行缺失一律按"可能已扣"处理:错判的代价是用户被白扣一笔。
+	if twophase.ProbeMainSide(order) != twophase.MainNotApplied {
 		common.SysError(fmt.Sprintf(
-			"qianye/lottery: 参与 %s 的资金单 %s 被判失败但主库探针显示已生效,不回滚,交对账任务",
+			"qianye/lottery: 参与 %s 的资金单 %s 被判失败但无法排除主库已生效,不回滚,交对账任务",
 			e.EntryNo, order.OrderNo))
 		raiseFlag(ctx, e.ActId, FlagEntryStuck,
-			"资金单被判失败但主库探针显示已生效: "+order.OrderNo)
+			"资金单被判失败但无法排除主库已扣款: "+order.OrderNo)
 		return
 	}
 	code := "qy_lot_failed"

@@ -183,6 +183,8 @@ func UpdateRedemption(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	beforeStatus := cleanRedemption.Status
+	beforeQuota := cleanRedemption.Quota
 	if statusOnly == "" {
 		if valid, msg := validateExpiredTime(c, redemption.ExpiredTime); !valid {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": msg})
@@ -195,10 +197,34 @@ func UpdateRedemption(c *gin.Context) {
 		// 发出去的金额 —— 商品类型本身不可改(见 Redemption.Update),所以这里
 		// 认库里那张码的类型,而不是请求体里的。
 		if cleanRedemption.ProductKind() == model.RedemptionProductQuota {
+			// 与 AddRedemption 同一道闸:改码这一侧原先完全不校验,于是一张
+			// 面额可以被改成负数,兑换时直接从用户余额里倒扣,而接口、前端提示
+			// 与充值日志三处都在说"充值成功"。建码拦得住、改码拦不住,
+			// 等于同一个业务不变量只守住了一半。
+			if redemption.Quota <= 0 {
+				common.ApiErrorI18n(c, i18n.MsgRedemptionQuotaPositive)
+				return
+			}
 			cleanRedemption.Quota = redemption.Quota
 		}
 	}
 	if statusOnly != "" {
+		// 状态机:只允许在启用 <-> 禁用之间切换。
+		//
+		// 已兑换(used)是终态。把它翻回 enabled 会让同一张码被再兑一次 ——
+		// 而 redeemed_time / used_user_id 不会被清,第一次兑换的核销痕迹被静默覆盖,
+		// 佣金侧的幂等键又是 redemption:<id>,于是钱发两遍、佣金只算一遍,账目自相矛盾。
+		// 兄弟接口 controller/token.go 的 status_only 分支本来就有状态机约束,
+		// 兑换码这一侧漏了。
+		if redemption.Status != common.RedemptionCodeStatusEnabled &&
+			redemption.Status != common.RedemptionCodeStatusDisabled {
+			common.ApiErrorI18n(c, i18n.MsgRedemptionStatusLocked)
+			return
+		}
+		if cleanRedemption.Status == common.RedemptionCodeStatusUsed {
+			common.ApiErrorI18n(c, i18n.MsgRedemptionStatusLocked)
+			return
+		}
 		cleanRedemption.Status = redemption.Status
 	}
 	err = cleanRedemption.Update()
@@ -206,6 +232,17 @@ func UpdateRedemption(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	// 兑换码是一条发钱通道,改它必须能事后追责。在此之前这个接口只落一条
+	// 路由级兜底日志(只有 method/path/status),既没有码 id 也没有前后值 ——
+	// 「哪张码被改过面额、哪张被翻回启用」事后无从判断。
+	recordManageAudit(c, "redemption.update", map[string]interface{}{
+		"redemption_id": cleanRedemption.Id,
+		"status_only":   statusOnly != "",
+		"status_before": beforeStatus,
+		"status_after":  cleanRedemption.Status,
+		"quota_before":  logger.LogQuota(beforeQuota),
+		"quota_after":   logger.LogQuota(cleanRedemption.Quota),
+	})
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

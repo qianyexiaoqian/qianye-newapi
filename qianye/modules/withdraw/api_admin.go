@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
@@ -292,12 +293,36 @@ func handleAdminResolve(c *gin.Context) {
 // handleAdminRevealPayee 返回收款信息明文。
 //
 // 这是全模块唯一能拿到明文的出口,因此:
+//   - 必须带一张 withdraw.payee.read 的安全证明(2FA 或 Passkey 现场签发),
+//     见下面「为什么是第二因子」
 //   - 强制填写事由(≥4 字符),没有事由的访问事后无法区分正常核对与顺手看看
 //   - 每次调用写一条 qy_pii_audits + 一条全局审计,只增不改
 //   - 密文损坏 / AAD 不符回 400 与明确提示(联系用户重新提供);密钥版本没配
 //     则回 500 —— 后者是运维事故,让管理员去找用户要一遍银行卡号是错的解法
+//
+// # 为什么是第二因子,而不是 RootAuth
+//
+// 原先这条路的门槛只有 role≥10 加一段自由文本 reason。同一份代码对**同一量级**
+// 的秘密(渠道上游 API Key,POST /api/channel/:id/key)坚持 RootAuth +
+// SecureVerificationRequired,两者差了两档 —— 于是任何一个管理员会话或 PAT
+// 泄漏,都等于全站提现用户的银行卡号 / 钱包地址 / PayPal 邮箱被批量导出
+// (改 :id 遍历即可),留痕只是事后可追溯。
+//
+// 抬角色是错的解法:收款账号是**打款动作本身必须看到的东西** —— 法币提现要人
+// 拿着卡号去银行或钱包转账,收成 root 专属等于全站只有 root 能付款,运营会立刻
+// 绕道(把明文抄进工单、导出成表格),PII 反而流得更散。
+// 真正要挡的是"拿到会话就等于拿到明文":安全证明绑死当前会话且必须现场过一次
+// 2FA/Passkey,被盗的会话与 PAT(PAT 根本没有 session identity,直接被
+// RequireSecurityProof 判 SECURITY_PROOF_INVALID)都拿不到它。
+// 叠加既有的 CriticalRateLimit(20 次 / 20 分钟),"批量扒库"这条路被封死。
 func handleAdminRevealPayee(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
+		return
+	}
+	// 安全证明排在最前面:它是这条路上唯一的事前控制,而后面每一步
+	// (取单、解密、写 PII 审计)都已经在碰这条单据的数据了。
+	if !middleware.RequireSecurityProof(c,
+		middleware.SecurityProofScopeWithdrawPayeeRead, []string{"2fa", "passkey"}) {
 		return
 	}
 	id, ok := pathId(c)

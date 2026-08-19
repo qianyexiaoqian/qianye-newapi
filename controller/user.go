@@ -1419,7 +1419,14 @@ func TopUp(c *gin.Context) {
 	if err != nil {
 		// 不向用户暴露兑换失败的细分原因，避免攻击者根据错误类型判断兑换码状态。
 		common.ApiErrorI18n(c, i18n.MsgRedeemFailed)
-		logger.LogError(c, fmt.Sprintf("failed to redeem key %s for user %d: %s", req.Key, id, err.Error()))
+		// 日志里只留末 4 位。兑换失败**不消耗**兑换码:套餐停用、销售时间窗未开、
+		// 超出单人购买上限、DB 故障这几条分支走完之后,那张码仍然是 status=enabled,
+		// 面值分文未动。把它整串写进日志,等于让任何有日志读取权的人(运维、日志
+		// 采集平台、日志备份)拿走一张活码,抢在合法持有者重试之前用任意账号兑走。
+		// 失败原因由 model.Redeem 自己的 SysError 记录,两条日志按时间相邻,
+		// 客服凭末 4 位就能把用户报的那张码对上。
+		logger.LogError(c, fmt.Sprintf("failed to redeem key %s for user %d: %s",
+			common.MaskCredential(req.Key), id, err.Error()))
 		return
 	}
 	// data 保持「本次进钱包的额度」这个数字不变:兑换码扩出套餐商品之前,它就是这个

@@ -91,6 +91,33 @@ func adoptRetiredNewGroupDeny(gm *GroupMatrix) {
 	}
 }
 
+// adoptRetiredRateFreeze 处置已下线的提现侧独立汇率两个键。
+//
+// 它们曾经决定提现单的金额按哪个汇率开(充值页汇率或一个写死的固定值),
+// 与佣金账本 available_fiat 的三层折算比例互不相干 —— 那正是"用户在推广页
+// 看到 850、单据只开 100"这个错价缺陷的根源。单据金额现已恒等于冻结时从账本
+// 削走的那个数,这两个键一个字节都不再参与算钱。
+//
+// 同样不能直接删字段:KnownFields(true) 下,任何仍写着它们的部署会在升级
+// 二进制的那一刻启动失败。保留 Deprecated 占位吸收,在这里喊一声并置 nil ——
+// 置 nil 是刻意的,断掉后来者把它重新当成汇率源读回去的可能。
+//
+// 告警走 SysError:这两个键曾经改变的是**打款金额**,运维必须看见它们失效了。
+func adoptRetiredRateFreeze(w *Withdraw) {
+	if w.RateFreezeModeDeprecated != nil {
+		common.SysError("qianye: withdraw.rate_freeze_mode 已废弃并被忽略 —— " +
+			"提现单的法币金额现在恒等于冻结时从佣金账本 available_fiat 削走的那个数," +
+			"提现侧不再有自己的汇率。要让某个分组按更高的价结汇,请在管理端佣金页配" +
+			"「法币折算档」(分组档 / 兜底档),它在计佣当刻就冻进账本")
+		w.RateFreezeModeDeprecated = nil
+	}
+	if w.RateFreezeFixedDeprecated != nil {
+		common.SysError("qianye: withdraw.rate_freeze_fixed 已废弃并被忽略 —— " +
+			"理由同 rate_freeze_mode。这个固定汇率此前会让单据金额与账本金额差出一个倍数")
+		w.RateFreezeFixedDeprecated = nil
+	}
+}
+
 // bpsToPercent 把万分比整数换算成百分比字符串,只做整数除法与取余,
 // 不经过 float64 —— 这条路径最终会喂给费率解析,精度不能在这里丢。
 //
@@ -177,14 +204,13 @@ func applyDefaults(c *Config) {
 	intDefault(&cm.TopupScanLookbackHours, 72)
 
 	w := &c.Withdraw
+	adoptRetiredRateFreeze(w)
 	if len(w.Methods) == 0 {
 		w.Methods = []string{WithdrawMethodQuota, WithdrawMethodFiat}
 	}
 	int64Default(&w.MinQuota, 500000)
 	strDefault(&w.MinFiatAmount, "100")
 	strDefault(&w.FiatCurrency, "CNY")
-	strDefault(&w.RateFreezeMode, RateFreezeOperationSetting)
-	strDefault(&w.RateFreezeFixed, "7.3")
 	intDefault(&w.DailyMaxCount, 3)
 	intDefault(&w.PayeeAccountMax, 3)
 	intDefault(&w.ReviewSLAHours, 72)

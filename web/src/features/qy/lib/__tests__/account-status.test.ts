@@ -65,6 +65,7 @@ const ALL_ON: QyFeatures = {
   violation: true,
   ticket: true,
   group_matrix: true,
+  pay_password: true,
 }
 
 const ALL_OFF: QyFeatures = { ...ALL_ON }

@@ -374,26 +374,64 @@ func prunePiiAudits(ctx context.Context, gdb *gorm.DB, batch int) {
 	}
 }
 
-// digestRiskFlag 判定该收款账号是否已被其他用户使用过。
+// RiskSharedPayee 是"这个收款账号被多个用户用过"的标记值。
+//
+// 前端按 `qy_wd_risk_${risk_flags}` 直接查文案(admin-withdrawals 的
+// review-dialog.tsx),所以这一列存的是**单个**标记而不是逗号集合。
+// 将来真要第二个标记,得先把两侧的表示法一起改掉。
+const RiskSharedPayee = "shared_payee"
+
+// markSharedPayee 在本单落库之后,重算"这张收款账号是不是被多个人用着",
+// 并把标记补给**同一指纹下所有还没带标记的单**。
 //
 // 不拒绝,只标红:家庭共用收款账号是真实场景,硬拒绝的误伤远大于收益。
 // 但"N 个小号 → 同一个收款账号"是刷单党的典型特征,必须让审核的人看见。
-func digestRiskFlag(userId int, digest string) string {
-	if digest == "" {
-		return ""
+//
+// # 为什么要回补,以及为什么必须在落单之后算
+//
+// 此前这一列是在**建单那一刻、落库之前**算出来的:数一数
+// `payee_digest = ? AND user_id <> ?` 有几行。于是同一张卡上时间最早的那张单
+// 数到的永远是 0 —— 它永久不带标记,而后来者带。管理端队列默认 `id asc`
+// 先进先出,`risk_only=true` 更是把没标记的那张整个过滤掉,所以团伙里第一个人
+// (往往是金额最大的主号)恰好排在最前、且没有任何风控提示地被审核通过;
+// 等第二张单亮红灯时,第一笔钱已经打出去了。实测:三张同指纹单
+// 50/51/52,只有 50 是干净的,而 50 正是被 approve → mark-paid 走完的那张。
+//
+// 现在改成"落单之后再算":本单已经在表里,任何一个已经存在的**别的** user_id
+// 都意味着这张卡此刻被至少两个人用着,于是同指纹的每一张单(含最早那张、
+// 含已经终态的历史单)一起补上标记。风控视图从"漏掉第一张"变成"一张不漏"。
+//
+// 回补刻意包含终态单:那些单的资金结论不会因此改变,但事后追查"这张卡上
+// 一共走过哪些单"时,它们必须能被 risk_only 筛出来 —— 那正是这条线索的用途。
+//
+// 用 UpdateColumn 而不是 Update:updated_at 是"这张单最后一次被处理"的时间,
+// 管理端按它排序与筛选。补一个风控标记不是对单据的处理,不该把一批历史单
+// 顶到列表最前面。
+//
+// # 已知边界
+//
+// 两个用户在**同一瞬间**各自提交第一张同指纹单时,两个事务在各自的快照里都
+// 看不到对方那一行,于是都不标记;第三张单落下来时两张都会被补上。这是提示性
+// 信号可以接受的口径 —— 它不门住任何资金动作,而要在这里做到严格串行,
+// 代价是给一张按指纹分布的表加跨用户的间隙锁。
+func markSharedPayee(tx *gorm.DB, w *Withdrawal) error {
+	if w.PayeeDigest == "" {
+		return nil
 	}
-	var cnt int64
-	err := db.Get().Model(&Withdrawal{}).
-		Where("payee_digest = ? AND user_id <> ?", digest, userId).
-		Count(&cnt).Error
-	if err != nil {
-		// 风控查询失败不阻断申请:它是提示信息,不是准入条件。
-		db.MarkFailure(err)
-		common.SysError("qianye/withdraw: 收款指纹风控查询失败(已忽略): " + err.Error())
-		return ""
+	var others int64
+	if err := tx.Model(&Withdrawal{}).
+		Where("payee_digest = ? AND user_id <> ?", w.PayeeDigest, w.UserId).
+		Count(&others).Error; err != nil {
+		return err
 	}
-	if cnt > 0 {
-		return "shared_payee"
+	if others == 0 {
+		return nil
 	}
-	return ""
+	if err := tx.Model(&Withdrawal{}).
+		Where("payee_digest = ? AND risk_flags = ?", w.PayeeDigest, "").
+		UpdateColumn("risk_flags", RiskSharedPayee).Error; err != nil {
+		return err
+	}
+	w.RiskFlags = RiskSharedPayee
+	return nil
 }

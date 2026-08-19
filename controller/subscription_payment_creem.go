@@ -88,6 +88,17 @@ func SubscriptionRequestCreemPay(c *gin.Context) {
 		}
 	}
 
+	// 用户组商品的「你已经永久拥有该用户组」这一条,必须在**下单之前**问:
+	// 它在 CreateUserSubscriptionFromPlanTx 里是一条 return error,而支付回调走的
+	// 就是那个函数 —— 付款之后才撞上它,订单永久停在 pending、钱收了货发不出。
+	if preview, err := model.PreviewUserGroupPurchase(userId, plan); err != nil {
+		common.ApiError(c, err)
+		return
+	} else if preview.Action == model.UserGroupPurchaseActionReject {
+		common.ApiErrorMsg(c, preview.Message)
+		return
+	}
+
 	reference := "sub-creem-ref-" + randstr.String(6)
 	referenceId := "sub_ref_" + common.Sha1([]byte(reference+time.Now().String()+user.Username))
 
@@ -101,6 +112,9 @@ func SubscriptionRequestCreemPay(c *gin.Context) {
 		PaymentProvider: model.PaymentProviderCreem,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
+		// 下单那一刻的套餐随订单走:回调按快照发货,运营在用户付款途中改这张
+		// 套餐的价格/额度/时长/升级组不会改变这一单的内容。见 PlanSnapshot。
+		PlanSnapshot: model.SubscriptionPlanSnapshot(plan),
 	}
 	if err := order.Insert(); err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "创建订单失败"})

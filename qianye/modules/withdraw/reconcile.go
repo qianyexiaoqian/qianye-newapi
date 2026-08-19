@@ -190,7 +190,7 @@ func settleOnePaying(w *Withdrawal) {
 		return
 	}
 
-	switch decideSettle(order.Status, func() bool { return mainSideApplied(w.OrderNo) }) {
+	switch decideSettle(order.Status, func() bool { return mainSideApplied(&order) }) {
 	case actionFinish:
 		if err := db.Get().Transaction(func(tx *gorm.DB) error {
 			return finishPaid(tx, w, order.OrderNo)

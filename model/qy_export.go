@@ -112,9 +112,13 @@ func QyProbeFundOutbox(orderNo string) (bool, error) {
 	return cnt > 0, nil
 }
 
-// QyPruneFundOutbox 清理历史 outbox 行。调用方必须确保对应资金单已处于终态。
+// QyScanFundOutbox 按主键游标读回一批早于 before 的探针行,供清理任务逐行判定。
 //
-// 先查主键再按主键删,不能写成 DB.Where(...).Limit(batch).Delete(...):
+// 刻意只读不删:一行探针到底能不能删,取决于它对应的资金单在**扩展库**里的状态,
+// 而这个包只认识主库。把"选哪些行"和"删哪些行"拆开,清理任务才有机会在中间
+// 插入那道判定 —— 合起来写成一条按 created_at 的 DELETE,就等于按时间销毁证据。
+//
+// 用 SELECT + 主键 IN 删,不能写成 DB.Where(...).Limit(batch).Delete(...):
 // GORM 的 LIMIT 子句只有在方言把 "LIMIT" 列进 DeleteClauses 时才会被渲染,
 // 而这只有 MySQL 驱动做了 —— postgres 与 sqlite 的 DeleteClauses 里没有 LIMIT,
 // 它们会静默生成一条不带 LIMIT 的 DELETE 把整段历史一次删光。主库可以是这三种
@@ -122,15 +126,26 @@ func QyProbeFundOutbox(orderNo string) (bool, error) {
 // 大量 WAL 与锁等待,而且没有任何报错提示。
 //
 // SELECT 上的 Limit 三种方言都支持,因此这个写法在哪个主库上都真正按批执行。
-func QyPruneFundOutbox(before int64, batch int) (int64, error) {
+// afterId 是主键游标:留下不能删的行之后,下一批必须从它之后继续,否则每一轮
+// 都会重新捞到同一批"删不掉的行",清理再也推进不下去。
+func QyScanFundOutbox(before, afterId int64, batch int) ([]QyFundOutbox, error) {
 	if batch <= 0 {
 		batch = 200
 	}
-	var ids []int64
-	if err := DB.Model(&QyFundOutbox{}).Where("created_at < ?", before).
-		Order("id").Limit(batch).Pluck("id", &ids).Error; err != nil {
-		return 0, err
+	var rows []QyFundOutbox
+	err := DB.Model(&QyFundOutbox{}).
+		Where("created_at < ? AND id > ?", before, afterId).
+		Order("id").Limit(batch).Find(&rows).Error
+	if err != nil {
+		return nil, err
 	}
+	return rows, nil
+}
+
+// QyDeleteFundOutbox 按主键删除指定的探针行。
+//
+// 只接受主键列表:调用方必须已经逐行确认过"这一行的证据使命已经结束"。
+func QyDeleteFundOutbox(ids []int64) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}

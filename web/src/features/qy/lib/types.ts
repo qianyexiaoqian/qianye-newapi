@@ -67,6 +67,15 @@ export type QyFeatures = {
   ticket: boolean
   /** 用户分组 × 模型分组 矩阵。关掉时隐藏管理端入口与上游分组倍率页的指路提示。 */
   group_matrix: boolean
+  /**
+   * 支付密码。它没有自己的 `enabled` —— 后端下发的是
+   * `transfer || withdraw || lottery`（`guard.FlagPayPassword`）。
+   *
+   * 这一页此前标的是 `feature: 'transfer'`：关掉划转，「支付密码」整页从侧栏
+   * 消失，而提现照旧无条件要求验密 —— 没设过密码的用户提现恒被拒，
+   * 想去设置却连入口都找不到，佣金永久滞留在账上。
+   */
+  pay_password: boolean
 }
 
 /** 钱包页三个入口卡的显隐开关。 */

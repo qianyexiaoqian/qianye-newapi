@@ -135,9 +135,20 @@ export function qyResolveWithdrawal(input: {
  *   - 必须是显式的一次性动作（mutation），绝不能做成 query 让 react-query
  *     在窗口聚焦/重连时自动重放 —— 那会凭空刷出一串"管理员查看了收款信息"；
  *   - `reason` 后端要求 ≥ 4 个字符，前端也要拦一次，别让人白点一次审计。
+ *
+ * `proofToken` 是 `withdraw.payee.read` 范围的安全证明，由 2FA / Passkey 现场
+ * 签发。后端 `handleAdminRevealPayee` 把它作为第一道闸门：**没有它一律 403**，
+ * 所以这个参数不是可选的增强，缺了就拿不到任何东西。之所以不做成拦截器里的
+ * 全局注入，是因为证明按 scope 签发、只对这一个接口有效。
  */
-export function qyRevealPayee(input: { id: number; reason: string }) {
-  return qyGet<QyPayeePlain>(`/admin/withdraw/${input.id}/payee`, {
-    reason: input.reason,
-  })
+export function qyRevealPayee(input: {
+  id: number
+  reason: string
+  proofToken: string
+}) {
+  return qyGet<QyPayeePlain>(
+    `/admin/withdraw/${input.id}/payee`,
+    { reason: input.reason },
+    { headers: { 'X-Security-Proof': input.proofToken } }
+  )
 }
