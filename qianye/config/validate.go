@@ -541,6 +541,13 @@ func validateCommission(cm *Commission) error {
 		return fmt.Errorf("qianye: commission.min_settle_quota 必须大于 0" +
 			"(佣金按 decimal 累计,达到该值才结算为整数 quota,否则小额佣金会被截断归零)")
 	}
+	// 日界偏移必须落在真实时区的范围里(UTC-12 .. UTC+14)。
+	// 越界的值不会报错、不会崩,只会让 bucket_date 与结算日界一起漂到一个
+	// 不存在的时区上 —— 那是一次全站日聚合重新分桶,而没有任何东西会喊。
+	if cm.DayOffsetMinutes < -720 || cm.DayOffsetMinutes > 840 {
+		return fmt.Errorf("qianye: commission.day_offset_minutes 必须落在 -720..840"+
+			"(UTC-12 .. UTC+14),收到 %d", cm.DayOffsetMinutes)
+	}
 	return nil
 }
 

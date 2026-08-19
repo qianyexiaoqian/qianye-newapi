@@ -190,6 +190,23 @@ function PolicyCard(props: { summary: QyCommissionSummary }) {
       value: t('qy_aff_days_value', { days: summary.policy.holding_days }),
     },
     {
+      // 「T+N 到账」。佣金改成一日一结算之后，"多久能拿到钱"不再取决于
+      // 结算周期，而是一句固定的话：消费之后第 N 天的日界跑那一次。
+      //
+      // N 由后端算好（`payout_day_offset = holding_days + 1`），前端不复刻
+      // 那条规则 —— 两边各算一遍的结果就是界面上写着一个会被追问的错数字。
+      key: 'payout-eta',
+      label: t('qy_aff_payout_eta'),
+      value:
+        summary.policy.day_offset_minutes === 0
+          ? t('qy_aff_payout_eta_value_utc', {
+              days: summary.policy.payout_day_offset,
+            })
+          : t('qy_aff_payout_eta_value', {
+              days: summary.policy.payout_day_offset,
+            }),
+    },
+    {
       key: 'min-settle',
       label: t('qy_aff_min_settle'),
       value: <QyAmountText quota={summary.policy.min_settle_quota} />,

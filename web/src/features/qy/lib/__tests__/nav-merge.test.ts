@@ -242,6 +242,10 @@ describe('qy nav merge — admin, all features on', () => {
       // 变成了「用户佣金」的第二、三张标签，侧栏因此只剩两行 ——
       // 一个「按用户看」、一个「按流水看」。两页都没有被删。
       '/qy/admin/commission-records/users',
+      // 日消费明细。它与佣金那两行同属"对账"，而且答的正是佣金页答不了的
+      // 那一半（0% 分组、没有上线、被罚过款的用户在计佣表里一行都没有），
+      // 所以必须挨着它们，不能挪去运营组。
+      '/qy/admin/daily-consume',
       '/qy/admin/withdrawals',
       '/qy/admin/transfer-records',
       '/qy/admin/fund-orders',

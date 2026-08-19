@@ -111,12 +111,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	request, err := helper.GetAndValidateRequest(c, relayFormat)
 	if err != nil {
-		// Map "request body too large" to 413 so clients can handle it correctly
-		if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
-			newAPIError = types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
-		} else {
-			newAPIError = types.NewError(err, types.ErrorCodeInvalidRequest)
-		}
+		newAPIError = requestValidationError(err)
 		return
 	}
 
@@ -667,4 +662,23 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 		return false
 	}
 	return true
+}
+
+// requestValidationError 把 GetAndValidateRequest 的错误映射成对外的 API 错误。
+//
+// 请求本身不合法(JSON 解析失败、max_tokens / n 越界……)必须是 400。
+// types.NewError 的默认状态码是 500,于是本仓所有计费边界闸门
+// (relay/helper 的 maxTokensLimit、dto.MaxImageN)对外都表现成"服务器炸了":
+// 客户端与上层网关会把 500 当故障重试,一个写死了非法 max_tokens 的客户端
+// 就变成无限重试流量,监控上也分不开"参数错"和"服务端故障"。AGENTS.md 的
+// 计费安全不变量对这些闸门的要求原话就是 400。
+//
+// 请求体过大单独映射到 413,让客户端能分辨"要拆包"而不是"要改参数"。
+func requestValidationError(err error) *types.NewAPIError {
+	if common.IsRequestBodyTooLargeError(err) || errors.Is(err, common.ErrRequestBodyTooLarge) {
+		return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed,
+			http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
+	}
+	return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest,
+		http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 }

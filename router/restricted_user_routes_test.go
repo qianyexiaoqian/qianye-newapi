@@ -190,6 +190,9 @@ var restrictedDeniedSessionRoutes = []string{
 	// 会话链上的 relay:playground 走 UserAuth,最容易被当成普通管理台接口漏进白名单
 	"POST /pg/chat/completions",
 	// 钱:划转 / 提现 / 佣金
+	// invitee-daily 与 invitees 同一类:受限账号不该继续看自己名下的推广收益,
+	// 更不该看下线的活跃度 —— 它是"我的推广"那一屏的组成部分,而整屏对受限账号关闭。
+	"GET /api/qy/commission/invitee-daily",
 	"GET /api/qy/commission/invitees",
 	"GET /api/qy/commission/records",
 	"GET /api/qy/commission/summary",

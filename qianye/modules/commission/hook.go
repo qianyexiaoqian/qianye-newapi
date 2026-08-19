@@ -145,15 +145,23 @@ func accrueConsume(ctx context.Context, ev consumeEvent) error {
 		return nil
 	}
 	day := bucketDate(ev.At)
+	// 法币折算比例按【上线的账号分组】解析,与费率那一档**相反**(费率按下线)。
+	// 两个口径为什么必须分开,见 fiatrate.go 的文件头:费率跟毛利走,折算比例
+	// 跟收款人走 —— available_fiat 是上线的钱,提现单也是上线在提。
+	//
+	// 与费率一样在这里冻结进 accrual 行,因此改比例只影响此后的计佣与结算,
+	// 已经算进 available_fiat 的绝对值不会被重算。
+	fiat := inviterFiatRate(ctx, e.InviterId, s)
 	_, err = writeAccrual(ctx, accrualInput{
 		SourceType: SourceConsume,
-		IdemKey:    consumeIdemKey(ev.InviteeId, day, rate),
+		IdemKey:    consumeIdemKey(e.InviterId, ev.InviteeId, day, rate, fiat),
 		InviterId:  e.InviterId,
 		InviteeId:  ev.InviteeId,
 		BaseQuota:  ev.Quota,
 		RateUnits:  rate.Units,
 		RateGroup:  rate.Group,
 		Gross:      gross,
+		UsdRate:    fiat.Rate,
 		MatureAt:   bucketMatureAt(day, s.HoldingDays),
 		BucketDate: day,
 		Status:     StatusAccrued,
@@ -248,6 +256,10 @@ func accrueOneShot(ctx context.Context, inviteeId int, baseQuota int64, baseMone
 		return nil
 	}
 	now := common.GetTimestamp()
+	// 法币折算比例按上线分组解析并冻结,与消费路径同口径(见 accrueConsume)。
+	// 这一路的幂等键是订单号,不掺比例 —— 一笔充值无论如何只能返一次佣,
+	// 比例变了也不能变成两行。
+	fiat := inviterFiatRate(ctx, e.InviterId, s)
 	_, err = writeAccrual(ctx, accrualInput{
 		SourceType: sourceType,
 		IdemKey:    idemKey,
@@ -259,6 +271,7 @@ func accrueOneShot(ctx context.Context, inviteeId int, baseQuota int64, baseMone
 		RateUnits:  rate.Units,
 		RateGroup:  rate.Group,
 		Gross:      gross,
+		UsdRate:    fiat.Rate,
 		MatureAt:   now + int64(s.HoldingDays)*86400,
 		Status:     StatusAccrued,
 	})

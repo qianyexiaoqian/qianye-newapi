@@ -42,6 +42,23 @@ export type QyCommissionEffective = {
   redemption_rate_effective_percent: string
   /** `redemption_rate_percent === ''` 的服务端版本，前端不自己推。 */
   redemption_rate_follows_topup: boolean
+  /**
+   * 「站内佣金余额 → 法币」折算比例的**兜底档**。空串 = 从未配过，
+   * 此时回落全站充值汇率（`fiat_rate_global`）。
+   *
+   * 它是一个**乘数**（`7.3` = 一美元折 7.3 元），不是百分比 —— 界面上绝不能
+   * 画成带 `%` 的输入框，那会让运营填 7.3 之后以为自己配的是 7.3%。
+   *
+   * 与兑换码档不同，这一档**不可清空**：清空之后没配分组档的用户会悄悄退回
+   * 充值页汇率，而界面上还写着兜底档。后端收到空串直接 400。
+   */
+  fiat_rate_default: string
+  /** 没配分组档的人**实际**按几折算。只读，不可提交。 */
+  fiat_rate_effective: string
+  /** 上面那个数来自哪一层：`default`（兜底档）/ `global`（全站充值汇率）/ `none`。 */
+  fiat_rate_effective_layer: QyFiatRateLayer
+  /** 全站充值汇率，也就是层级里的最后一层。只读。 */
+  fiat_rate_global: string
   min_settle_quota: number
   max_per_order_quota: number
   holding_days: number
@@ -66,7 +83,22 @@ export type QyCommissionYamlReadonly = {
   exclude_redemption_and_manual: boolean
   exclude_subscription_consume: boolean
   refund_clawback: boolean
+  /**
+   * 结算调度的**心跳周期**，不再是结算周期。
+   *
+   * 佣金已改成一日一结算（后端 `settle_daily.go`）：每次心跳只判断"今天这一次
+   * 跑过了没有"，没跑过才抢占并排空整个队列。所以调小它既不会让用户更早拿到
+   * 钱，也不再让 `qy_commission_settlement` 变长 —— 展示时不要再把它说成
+   * "多久结算一次"，那句话会把运营引向一个不存在的旋钮。
+   */
   settle_interval_seconds: number
+  /**
+   * 返佣「一天」相对 UTC 的偏移（分钟）。0 = UTC，480 = UTC+8。
+   *
+   * 它同时决定日聚合分桶、成熟时刻、日封顶窗口与一日一结算的日界 ——
+   * 界面上凡是出现"昨日/今日佣金"的地方，说的都是这个口径下的那一天。
+   */
+  day_offset_minutes: number
   topup_scan_interval_seconds: number
   topup_scan_lookback_hours: number
   inviter_cache_seconds: number
@@ -97,6 +129,40 @@ export type QyCommissionGroupRate = {
   updated_at: number
 }
 
+/**
+ * 法币折算比例命中的层级。层级顺序：分组档 → 兜底档 → 全站充值汇率。
+ *
+ * `none` = 三层都拿不出一个大于 0 的比例（管理员把全站充值汇率改成了 0
+ * 且没配兜底档）。此时佣金的法币折算是 0 —— 额度照加、法币不加，
+ * 界面必须把它标成异常而不是当成一个正常配置画出来。
+ */
+export type QyFiatRateLayer = 'group' | 'default' | 'global' | 'none'
+
+/**
+ * 一条分组法币折算比例。
+ *
+ * 口径是**邀请人（上线）的分组**，与分组费率**相反**（那一档按下线）。
+ * 理由见后端 `qianye/modules/commission/fiatrate.go` 的文件头：
+ * 费率跟毛利走，折算比例跟收款人走 —— `available_fiat` 是上线的钱，
+ * 提现单也是上线在提。
+ */
+export type QyCommissionFiatRate = {
+  group_name: string
+  /** 本行配的比例（十进制字符串）。 */
+  rate: string
+  /**
+   * 这个分组**实际**按几折算。规则被禁用（或比例被人手工改坏）时它指向
+   * 兜底档 / 全站汇率 —— 界面必须能一眼看出"这一行现在其实没在生效"，
+   * 否则关掉一条规则和删掉它长得一模一样。
+   */
+  effective_rate: string
+  effective_layer: QyFiatRateLayer
+  enabled: boolean
+  remark: string
+  operator_id: number
+  updated_at: number
+}
+
 export type QyCommissionAdminConfig = {
   effective: QyCommissionEffective
   /** `qy_settings` 里的运营覆盖，值一律是字符串。 */
@@ -111,7 +177,16 @@ export type QyCommissionAdminConfig = {
    * 而那是一次没有人批准的费率归零。
    */
   nullable_percent_keys: string[]
+  /**
+   * 取值为**法币折算比例**（一个乘数，不是百分比）的键。
+   *
+   * 同样由后端给出：前端猜错的方向恰好是把它当成百分比渲染，
+   * 运营填 7.3 就以为自己配的是 7.3%，而实际生效的是"一美元折 7.3 元" ——
+   * 一个差了两个数量级的资金参数。
+   */
+  fiat_rate_keys: string[]
   group_rates: QyCommissionGroupRate[]
+  fiat_rates: QyCommissionFiatRate[]
   yaml_readonly: QyCommissionYamlReadonly
 }
 
@@ -148,4 +223,43 @@ export type QyAdminAccrual = {
    * 正是项目方对这套功能的全部意见。
    */
   relation_blocked: boolean
+}
+
+/** 一次结算运行的记录。与后端 `runView` 逐字对应。 */
+export type QyDailySettleRun = {
+  run_date: string
+  status: string
+  holder: string
+  attempts: number
+  started_at: number
+  finished_at: number
+  heartbeat_at: number
+  duration_sec: number
+  rounds: number
+  processed: number
+  failed: number
+  granted_quota: number
+  reclaimed_quota: number
+  remark: string
+}
+
+/**
+ * `GET /admin/commission/health` 里 `daily_settle` 那一段。
+ *
+ * 佣金改成一天结算一次之后，「今天这一跑成了没有」变成一个每天只有一次机会的
+ * 问题：跑挂了，当天剩下所有人的佣金都要等到明天，而用户端与其它页面上没有
+ * 任何症状。所以它必须出现在界面上，而不是只躺在接口的 JSON 里。
+ */
+export type QyDailySettleSnapshot = {
+  /** 结算日界口径下的“今天”，不是 UTC 自然日也不是服务器本地日。 */
+  today: string
+  /** 日界相对 UTC 的偏移分钟数。面板必须说清用的是哪个日界。 */
+  day_offset_minutes: number
+  next_run_after: number
+  max_attempts: number
+  /** 只有 `status=done` 才为真 —— 有人失败绝不报“今天跑过了”。 */
+  ran_today: boolean
+  current?: QyDailySettleRun
+  /** 昨天那一跑。昨天没跑成是今天才会被发现的事，必须同屏可见。 */
+  previous?: QyDailySettleRun
 }

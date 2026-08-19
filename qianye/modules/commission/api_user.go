@@ -90,9 +90,21 @@ func getSummary(c *gin.Context) {
 			"redemption_follows_topup": s.RedemptionRateUnits == nil,
 		},
 		"policy": gin.H{
-			"holding_days":            s.HoldingDays,
-			"min_settle_quota":        s.MinSettleQuota,
+			"holding_days":     s.HoldingDays,
+			"min_settle_quota": s.MinSettleQuota,
+			// settle_interval_seconds 现在是调度心跳,不是"多久发一次钱"。
+			// 用户端不该再拿它推算到账时间,所以下面直接给出结论:
+			//
+			//	payout_day_offset = holding_days + 1
+			//
+			// 那个 +1 是"消费所在的那一天要整天结束才封板"的直接后果
+			// (见 bucketMatureAt),不是四舍五入出来的:holding_days=0 也是
+			// **次日**到账。不把它算好下发,前端就得自己复刻这条规则,
+			// 而它一旦与后端算得不一样,界面上就是一句会被追问的错话。
 			"settle_interval_seconds": cm.SettleIntervalSecs,
+			"settle_daily":            true,
+			"payout_day_offset":       payoutDayOffset(s.HoldingDays),
+			"day_offset_minutes":      cm.DayOffsetMinutes,
 			"exclude_redemption":      cm.ExcludeRedemptionAndManual,
 			"exclude_subscription":    cm.ExcludeSubscriptionConsume,
 		},

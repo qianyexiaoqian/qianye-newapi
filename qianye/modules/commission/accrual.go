@@ -83,22 +83,26 @@ func normalizeIdemKey(raw string) string {
 
 // bucketDate 返回消费日聚合的自然日键。
 //
-// 固定用 UTC:节点可能分布在不同时区,用本地时间会让同一笔消费在不同节点
-// 落进不同的桶,唯一索引失效、行数翻倍。
-func bucketDate(ts int64) string {
-	return time.Unix(ts, 0).UTC().Format("20060102")
-}
+// 日界口径由 dayline.go 统一给出(默认 UTC),与一日一结算的"今天"、日封顶
+// 窗口、桶的成熟时刻是同一个定义 —— 四处必须同源,否则今天这一跑吸收的
+// 就是横跨两个自然日的半截数据。绝不能在这里直接用 time.Local:计佣落在
+// 任意 relay 节点上,各节点 TZ 不同会让同一笔消费进两个桶。
+func bucketDate(ts int64) string { return dayKey(ts) }
 
 // bucketMatureAt 返回日聚合桶的成熟时间:整天结束之后再加成熟期。
 //
 // 不用"首次写入时间 + N 天":桶会持续增长到当天结束,用首次写入时间会让
 // 当天晚些时候的消费提前成熟,削弱成熟期本来的防套利作用。
+//
+// 这里的"整天结束"就是 dayline 的日界,因此成熟时刻恰好落在某个日界上,
+// 而一日一结算在日界之后的第一次心跳开跑 —— mature_at <= now 成立,当天发出。
+// 到账日 = 消费日 + holding_days + 1(见 payoutDayOffset)。
 func bucketMatureAt(day string, holdingDays int) int64 {
-	t, err := time.ParseInLocation("20060102", day, time.UTC)
-	if err != nil {
-		return common.GetTimestamp() + int64(holdingDays)*86400
+	start, ok := dayKeyStart(day)
+	if !ok {
+		return common.GetTimestamp() + int64(holdingDays)*secondsPerDay
 	}
-	return t.Unix() + 86400 + int64(holdingDays)*86400
+	return start + secondsPerDay + int64(holdingDays)*secondsPerDay
 }
 
 // newSerialNo 生成对外单号。
@@ -399,9 +403,28 @@ func itoa64(v int64) string { return strconv.FormatInt(v, 10) }
 //
 // 费率变了就落新的一行:唯一索引照样防重复,每一行仍然自洽。代价只是
 // 改费率当天多出一行,而这正是账面上应该看得见的事实。
-func consumeIdemKey(inviteeId int, day string, rate rateDecision) string {
+//
+// **冻结的法币折算比例同理进键**(fiat.Rate)。这一列(usd_rate)不参与
+// gross 的算术,所以混两套比例不会当场破坏 base × rate = gross;它坏的是
+// 另一件事 —— 结算按 usd_rate 的加权平均折算 available_fiat,一行标着 7.0
+// 却有一半 gross 是在比例改成 7.5 之后挣的,那半笔钱就永久按旧比例入账,
+// 而账面上没有任何东西显示这里发生过一次调价。上线换组、运营改档、
+// 全站汇率变动都会走到这里,处理方式与费率完全一致:落新的一行。
+//
+// **上线也必须进键**(inviterId)。ON CONFLICT 的 DoUpdates 只累加 base_quota /
+// gross_amount,不改 inviter_id;上线不在键里的话,换绑(或解绑后改绑)当天
+// 下线后续的消费会撞上旧上线那一行的唯一键,金额被原子累加进去而 inviter_id
+// 保持旧值 —— 钱结结实实发给了前一个上线,三条恒等式却全部成立,没有任何
+// 降级计数器会响。实测:rebind 之后再消费,accrual 原地从 base 200 长到 400、
+// inviter_id 仍是旧上线,随后被日结吸收进旧上线的可提现余额。
+//
+// 进键之后换绑当天会落两行:换绑之前那段仍归旧上线(他确实挣到了),之后那段
+// 归新上线。这与"费率变了就落新的一行"是同一条处理方式。
+func consumeIdemKey(inviterId int, inviteeId int, day string, rate rateDecision, fiat fiatDecision) string {
 	return SourceConsume + ":" + itoa(inviteeId) + ":" + day +
-		":" + rate.Group + ":" + itoa(rate.Units)
+		":" + rate.Group + ":" + itoa(rate.Units) +
+		":" + fiat.Rate.String() +
+		":u" + itoa(inviterId)
 }
 
 func topupIdemKey(tradeNo string) string { return SourceTopup + ":" + strings.TrimSpace(tradeNo) }

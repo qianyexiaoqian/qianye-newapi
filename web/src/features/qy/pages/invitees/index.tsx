@@ -27,13 +27,22 @@ import {
   type StaticDataTableColumn,
 } from '@/components/data-table'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
-import { qyCommissionRecordsQuery, qyInviteesQuery } from '../affiliate/api'
-import type { QyCommissionRecord, QyInvitee } from '../affiliate/types'
+import {
+  qyCommissionRecordsQuery,
+  qyInviteeDailyQuery,
+  qyInviteesQuery,
+} from '../affiliate/api'
+import type {
+  QyCommissionRecord,
+  QyInvitee,
+  QyInviteeDaily,
+} from '../affiliate/types'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 
@@ -58,12 +67,16 @@ export function QyInviteesBody() {
       <TabsList>
         <TabsTrigger value='invitees'>{t('qy_aff_tab_people')}</TabsTrigger>
         <TabsTrigger value='records'>{t('qy_aff_tab_records')}</TabsTrigger>
+        <TabsTrigger value='daily'>{t('qy_id_title')}</TabsTrigger>
       </TabsList>
       <TabsContent value='invitees'>
         <InviteesTable />
       </TabsContent>
       <TabsContent value='records'>
         <CommissionRecordsTable />
+      </TabsContent>
+      <TabsContent value='daily'>
+        <InviteeDailyTable />
       </TabsContent>
     </Tabs>
   )
@@ -245,5 +258,150 @@ function CommissionRecordsTable() {
         onPageChange={setPage}
       />
     </QyPageBoundary>
+  )
+}
+
+/** 昨天的 `yyyy-mm-dd`，用作两个日期框的初值（与后端的缺省口径一致）。 */
+function yesterdayInputValue(): string {
+  const d = new Date()
+  d.setDate(d.getDate() - 1)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * 我的下线在一段时间里贡献了多少（「已邀请用户」旁边的第三张次级标签）。
+ *
+ * # 为什么它不给「消费额」
+ *
+ * 上面那张「已邀请用户」给的是**开天辟地以来**的累计，答不了「我上周推的那批
+ * 人这周还在用吗」——这一张补的就是那个区间。补的只有区间，口径一个字没变：
+ * 仍然是计佣基数（`base_quota`），不是下线账户的真实消费。
+ *
+ * 真实消费额比基数大，而大出来的那部分装着违规扣费（下线被罚了多少款）、
+ * 渠道测试、0% 商务价分组、以及关系被停止计佣的那段时间。把它下发给上线，
+ * 每一项都是**新增**的泄漏，其中一项直接暴露了下线的处罚记录。基数本身不是
+ * 新增泄漏 —— 它早就在隔壁那张「佣金流水」里逐笔下发了，而且它正是"我凭什么
+ * 拿到这笔钱"的凭据。
+ *
+ * 人名仍然只有后端算好的脱敏名与 `invitee_ref`，真实用户名/邮箱/user_id
+ * 一个都不下发。
+ */
+function InviteeDailyTable() {
+  const { t } = useTranslation()
+  const [page, setPage] = useState(1)
+  const [startDate, setStartDate] = useState(yesterdayInputValue)
+  const [endDate, setEndDate] = useState(yesterdayInputValue)
+
+  const query = useQuery(
+    qyInviteeDailyQuery({
+      p: page,
+      page_size: QY_PAGE_SIZE,
+      start_date: startDate.replaceAll('-', ''),
+      end_date: endDate.replaceAll('-', ''),
+    })
+  )
+  const items = query.data?.items ?? []
+
+  const columns: StaticDataTableColumn<QyInviteeDaily>[] = [
+    {
+      id: 'name',
+      header: t('qy_id_invitee'),
+      className: staticDataTableClassNames.compactHeaderCell,
+      cellClassName: staticDataTableClassNames.compactCell,
+      cell: (row) => (
+        <span className='inline-flex min-w-0 items-center gap-2'>
+          <span className='truncate'>{row.masked_name || '-'}</span>
+          <span className='text-muted-foreground shrink-0 font-mono text-xs'>
+            {row.ref}
+          </span>
+        </span>
+      ),
+    },
+    {
+      id: 'base',
+      header: t('qy_id_base'),
+      className: staticDataTableClassNames.compactHeaderCellRight,
+      cellClassName: staticDataTableClassNames.compactNumericCell,
+      cell: (row) => <QyAmountText quota={row.base_quota} />,
+    },
+    {
+      id: 'commission',
+      header: t('qy_id_commission'),
+      className: staticDataTableClassNames.compactHeaderCellRight,
+      cellClassName: staticDataTableClassNames.compactNumericCell,
+      cell: (row) => <QyAmountText quota={row.commission} />,
+    },
+    {
+      id: 'status',
+      header: t('qy_common_status'),
+      className: staticDataTableClassNames.compactHeaderCell,
+      cellClassName: staticDataTableClassNames.compactCell,
+      cell: (row) =>
+        row.blocked ? (
+          <Badge variant='destructive'>{t('qy_id_blocked')}</Badge>
+        ) : (
+          <Badge variant='secondary'>{t('qy_aff_active')}</Badge>
+        ),
+    },
+  ]
+
+  return (
+    <div className='flex flex-col gap-3'>
+      <p className='text-muted-foreground text-sm'>{t('qy_id_range_hint')}</p>
+      <div className='flex flex-wrap items-end gap-2'>
+        <label className='flex flex-col gap-1 text-xs'>
+          {t('qy_dc_start_date')}
+          <Input
+            type='date'
+            value={startDate}
+            onChange={(e) => {
+              setStartDate(e.target.value)
+              setPage(1)
+            }}
+          />
+        </label>
+        <label className='flex flex-col gap-1 text-xs'>
+          {t('qy_dc_end_date')}
+          <Input
+            type='date'
+            value={endDate}
+            onChange={(e) => {
+              setEndDate(e.target.value)
+              setPage(1)
+            }}
+          />
+        </label>
+      </div>
+      {query.data !== undefined && (
+        <p className='text-muted-foreground text-sm'>
+          {t('qy_id_summary', {
+            days: query.data.range.days,
+            invitees: query.data.summary.invitee_count,
+          })}
+        </p>
+      )}
+      <QyPageBoundary
+        query={query}
+        isEmpty={items.length === 0}
+        emptyIcon={Users}
+        emptyTitle={t('qy_aff_empty_people_title')}
+        emptyDescription={t('qy_aff_empty_people_desc')}
+      >
+        <div className='w-full overflow-x-auto'>
+          <StaticDataTable
+            columns={columns}
+            data={items}
+            getRowKey={(row) => row.ref}
+          />
+        </div>
+        <QyPager
+          page={page}
+          pageSize={QY_PAGE_SIZE}
+          total={query.data?.total ?? 0}
+          disabled={query.isFetching}
+          onPageChange={setPage}
+        />
+      </QyPageBoundary>
+    </div>
   )
 }

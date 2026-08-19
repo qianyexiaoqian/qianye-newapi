@@ -216,9 +216,14 @@ func TestModelPriceHelperRequestBillingRatiosOnlyApplyToFixedPrice(t *testing.T)
 			wantImageCount: true,
 		},
 		{
-			name:         "ratio price ignores request billing ratios",
-			model:        "ratio-image-price",
-			wantQuota:    15000,
+			name:  "ratio price ignores request billing ratios",
+			model: "ratio-image-price",
+			// 倍率路径的预扣额 =(prompt + max_tokens × CompletionRatio) × ModelRatio。
+			// 这一格没给 max_tokens,走 defaultPreConsumeMaxTokens 兜底
+			// (省略 max_tokens 时对输出侧一个 token 都不预留,一次请求就能把余额
+			// 扣成负数,见 pre_consume_estimate_test.go)。这里的判据是
+			// **BillingRatios 里的 n=3 不参与**,所以写成公式而不是一个魔数。
+			wantQuota:    (1000 + defaultPreConsumeMaxTokens) * 15,
 			wantUsePrice: false,
 		},
 	}

@@ -107,6 +107,16 @@ const QY_DYNAMIC_KEYS = [
   'qy_plan_sale_state_upcoming',
   'qy_plan_sale_state_on_sale',
   'qy_plan_sale_state_ended',
+  // 受限账号可达面的分档文案。页面写的是
+  // `t(\`qy_ra_cap_${cap.key}\`, { defaultValue: cap.key })` —— 字面量扫描器
+  // 看不见它，而 defaultValue 会把缺键渲染成 `ticket` 这种裸英文单词，
+  // 连"裸键"这个明显信号都没有。清单对齐后端
+  // `qianye/controller/restricted_accounts.go` 里 restrictedCapabilities 的
+  // 四个 Key，那份表由 Go 测试与会话白名单双向核对。
+  'qy_ra_cap_self',
+  'qy_ra_cap_notice',
+  'qy_ra_cap_violation',
+  'qy_ra_cap_ticket',
 ]
 
 /**

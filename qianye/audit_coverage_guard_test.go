@@ -54,6 +54,7 @@ var auditWriteFuncs = map[string]bool{
 	"writeScopeFailure":      true, // groupmatrix:接管变更失败的补写
 	"writeRelationAudit":     true, // commission:AFF 关系绑定/解绑,成功与失败同一出口
 	"writeAdjustAudit":       true, // commission:手工增减佣金,成功与失败同一出口
+	"writeFiatRateAudit":     true, // commission:分组法币折算比例写入/删除,同一出口
 	"writeBanPolicyAudit":    true, // violation:处置策略档写入/删除,成功与失败同一出口
 	"writeCategoryAudit":     true, // violation:违规类型写入/归档,成功与失败同一出口
 	"writeAIReviewAudit":     true, // violation:AI 审核渠道写入/删除,成功与失败同一出口
@@ -62,7 +63,8 @@ var auditWriteFuncs = map[string]bool{
 	"afterAIChange":          true, // violation:bump 版本 + 重载 + 审计,三件一起做
 	"writePlanAudit":         true, // controller/subscription.go:订阅套餐写接口,成功与失败同一出口
 
-	"writeRestrictedNoticeAudit": true, // qianye/controller:受限账号公告写入,成功与失败同一出口
+	"writeRestrictedNoticeAudit":   true, // qianye/controller:受限账号公告写入,成功与失败同一出口
+	"writeDailyConsumeExportAudit": true, // commission:日消费明细导出,成功与失败同一出口
 }
 
 // auditRequired 列出必须留痕的资金路径,值是该函数体内审计写入的**最少**次数。
@@ -211,6 +213,15 @@ var auditRequired = []struct {
 			"删库失败同样要留痕,那时库里到底还在不在是不确定的"},
 	{"modules/commission/api_admin.go", "adminSettle", 1,
 		"手动结算把冻结佣金变成可提现余额,是真的动钱;谁按的按钮必须可查"},
+	{"modules/commission/api_admin.go", "adminClawback", 2,
+		"人工冲正直接把上线的佣金扣回去。成功要留痕是显然的;失败同样要 —— " +
+			"一次把某一对净额冲满之后,同一个 client_request_id 的合法重试会拿到" +
+			"「没有可冲正的佣金」,而这条与事实相反的提示此前在审计表里一点痕迹都没有," +
+			"「有人在这一刻试图冲正」根本查不到"},
+	{"modules/commission/api_admin.go", "adminRerunDailySettle", 1,
+		"一日一结算之下,重跑今天这一轮是当天那一跑挂掉之后唯一的整轮补救入口。" +
+			"它不直接动钱,但它决定当天剩下那批人今天还能不能拿到钱,而且只会在" +
+			"出过故障的那一天被按下 —— 事后复盘必须看得见是谁按的"},
 	{"modules/commission/api_admin.go", "adminInvalidateCache", 1,
 		"缓存失效是「改完费率立刻生效」这条动作链的最后一步"},
 	{"modules/commission/api_admin.go", "adminBlockRelation", 2,
@@ -221,6 +232,15 @@ var auditRequired = []struct {
 			"失败那条同样要留痕:「有人正在试图拉黑一个不存在的账号」正是最需要查到的形状"},
 	{"modules/commission/api_admin.go", "adminPutConfig", 2,
 		"费率变更成功与失败都要留痕"},
+	{"modules/commission/api_admin.go", "adminPutFiatRate", 1,
+		"分组法币折算比例决定平台按什么价把佣金结给推广者。它比费率更隐蔽:" +
+			"不改变任何一个额度数字,只改变那些额度值多少钱 —— 界面上的额度余额" +
+			"一动不动,提现单上的金额却变了。而且它是逐笔冻结的,改完之后新旧两批" +
+			"佣金按两个比例入账,「这个人的 available_fiat 为什么是这个数」事后" +
+			"只能靠这条埋点的前后快照回答"},
+	{"modules/commission/api_admin.go", "adminDeleteFiatRate", 1,
+		"删掉分组档之后该分组回落兜底档,可能从 9 变成 7.3 —— 而界面上只是少了一行。" +
+			"删的是什么只剩 before 快照能回答"},
 	{"modules/commission/api_admin_relation.go", "adminBindRelation", 2,
 		"手工绑定 AFF 关系改的是主库 users.inviter_id —— 从这一刻起,这个人此后所有的" +
 			"消费与充值都会给另一个账号分成。它同时会把快照上的拉黑标记清掉。" +
@@ -245,6 +265,13 @@ var auditRequired = []struct {
 			"它落成一条 manual 计佣行(账目可追溯),但「为什么要加这 5000」只存在于" +
 			"这条埋点的事由里;越过可回收上限被 400 挡下的那次同样要留痕 —— " +
 			"运营看到 400 会换个数再试,没有这条就分不清哪一次真的生效了"},
+	{"modules/commission/api_daily_consume.go", "adminExportDailyConsume", 3,
+		"日消费明细导出是这个模块里泄漏面最大的**读**操作:一次请求把一个区间内" +
+			"全站每个人花了多少、属于哪个分组、上线是谁整表带走。它不改钱,所以不在" +
+			"上面那些资金路径里,但事后追查数据外流时这里正好是个盲区 —— " +
+			"「谁在什么时候导走了哪个区间、多少行」只存在于这条埋点里。" +
+			"三条:成功一条,区间/关键词被拒一条,取数失败一条 —— 后两条尤其重要," +
+			"连续试探区间上界正是拖库前的典型形状"},
 	{"modules/transfer/api_admin_config.go", "adminPutTransferConfig", 3,
 		"门槛变更:成功、回读失败、事务回滚三条路径各一条"},
 	{"modules/transfer/api_admin_limits.go", "adminPutGroupLimit", 2,

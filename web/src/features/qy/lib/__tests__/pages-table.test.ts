@@ -89,6 +89,11 @@ const SETTINGS_URLS = [
   '/qy/admin/violation-ai-review',
   '/qy/admin/lottery-config',
   '/qy/admin/api-address',
+  // 受限账号。项目方原话：「受限制账号，在系统设置里面单独进行配置。」
+  // 它进抽屉的判据与同组其余几页一致：页面上唯一可写的东西（受限账号公告）
+  // 改一次影响之后**每一个**被限制的账号的首屏；另外两块（计数、可达面清单）
+  // 是只读现状，不是每天要过的流水。
+  '/qy/admin/restricted-accounts',
 ]
 
 /** 明确**留在根侧栏**的管理页。它们进了抽屉就是运营每天多点两下。 */
@@ -99,6 +104,9 @@ const ROOT_ADMIN_URLS = [
   '/qy/admin/commission-records/users',
   '/qy/admin/commission-records/balances',
   '/qy/admin/commission-records/relations',
+  // 日消费明细是运营每天要开的报表（"昨天谁消费了多少"），不是"改一次影响
+  // 后续每一笔"的配置，所以留根侧栏。
+  '/qy/admin/daily-consume',
   '/qy/admin/withdrawals',
   '/qy/admin/transfer-records',
   '/qy/admin/fund-orders',

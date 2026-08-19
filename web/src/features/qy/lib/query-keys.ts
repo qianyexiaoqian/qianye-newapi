@@ -149,6 +149,16 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'restricted-notice'] as const,
 
   /**
+   * 受限账号总览（当前受限账号数 + 受限账号仍可到达的接口分档）。
+   *
+   * 与 {@link qyKeys.adminRestrictedNotice} 分开：那一份是**草稿**（保存后要
+   * 失效重取），这一份是**现状**（保存公告不会改变受限账号的数量）。共用一个
+   * key 会让每次保存公告都白跑一次主库计数。
+   */
+  adminRestrictedAccounts: () =>
+    [...qyKeys.all, 'admin', 'restricted-accounts'] as const,
+
+  /**
    * 管理端查某个用户的支付密码状态。
    *
    * 逐用户一个 key。消费方是**上游**用户管理表格里的「重置支付密码」弹窗，
@@ -169,6 +179,12 @@ export const qyKeys = {
   /** AFF 关系列表（绑定中 / 已解绑两个 scope 共用，scope 在 params 里）。 */
   adminCommissionRelations: (params: unknown) =>
     [...qyKeys.all, 'admin', 'commission', 'relations', params] as const,
+  /** 日消费明细：一行一个用户在某个日期区间内的消费额（数据源是主库 logs）。 */
+  adminDailyConsume: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'commission', 'daily-consume', params] as const,
+  /** 我名下的下线在某个日期区间内的计佣基数（用户端，口径是计佣表）。 */
+  inviteeDaily: (params: unknown) =>
+    [...qyKeys.all, 'commission', 'invitee-daily', params] as const,
   /** 「用户佣金」列表：一行一个用户（余额 + 上下线 + 关系状态）。 */
   adminCommissionUsers: (params: unknown) =>
     [...qyKeys.all, 'admin', 'commission', 'users', params] as const,

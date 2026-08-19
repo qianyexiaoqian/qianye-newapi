@@ -244,7 +244,30 @@ type Commission struct {
 	// HoldingDays 佣金成熟期,从消费所在自然日结束起算(见 modules/commission
 	// 的 bucketMatureAt)。0 是合法策略:当天结束即可结算,不设防套利延迟。
 	// 不写这个键才取默认的 7 天。
-	HoldingDays        int `yaml:"holding_days"`
+	HoldingDays int `yaml:"holding_days"`
+	// DayOffsetMinutes 是返佣「一天」相对 UTC 的偏移(分钟),UTC+8 填 480。
+	//
+	// 它同时决定四件事,而且必须同时决定 —— 否则「今天结算的是横跨两个自然日
+	// 的半截数据」:
+	//
+	//   1. 消费日聚合桶的键 bucket_date(accrual.go bucketDate)
+	//   2. 桶的成熟时刻 mature_at(accrual.go bucketMatureAt:桶所在日结束 + 成熟期)
+	//   3. 日封顶的「今日已发」窗口(settle.go dailyRemaining)
+	//   4. 一日一结算的「今天」(settle_daily.go dayKey)
+	//
+	// **0 是 UTC,也就是本字段出现之前的行为**,存量部署不写这一项行为一个字
+	// 不变。这一点是刻意的:bucket_date 已经按 UTC 落了库并进了幂等键,
+	// 默认换时区等于在升级的那一刻把全站日聚合重新分桶。
+	//
+	// 多节点必须填同一个值。填成本地时区(time.Local)而不是显式偏移是不行的:
+	// 结算与计佣可以落在任意节点上,各节点的 TZ 一旦不同,同一笔消费会进两个桶,
+	// 唯一索引失效、行数翻倍,而"今天跑过了没有"也会各说各话。
+	DayOffsetMinutes int `yaml:"day_offset_minutes"`
+	// SettleIntervalSecs 是结算调度的**心跳周期**,不再是结算周期本身。
+	//
+	// 改成一日一结算之后,runSettle 每次心跳只做一件事:看今天这一次跑过没有,
+	// 没跑过就抢占并排空整个队列。所以这个值只影响"日界过后多久开始跑"
+	// (最坏一个心跳)与"今天跑挂了多久后重试",不再影响结算表的行数。
 	SettleIntervalSecs int `yaml:"settle_interval_seconds"`
 	// InviterCacheSecs 缓存 users.inviter_id。消费返佣挂在 relay 结算路径上,
 	// 裸查会给主库加上与 relay QPS 等量的读压力。

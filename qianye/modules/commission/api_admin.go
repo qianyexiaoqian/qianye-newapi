@@ -45,6 +45,11 @@ func adminGetConfig(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
+	fiatRules, err := listFiatRates(ctx)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
 	respond(c, gin.H{
 		// 费率一律以**百分比字符串**下发。用字符串而不是 JSON 数字:
 		// 10.25 在 JS 的 Number 里同样是二进制浮点,回填输入框时可能变成
@@ -58,7 +63,12 @@ func adminGetConfig(c *gin.Context) {
 		"editable_keys":         editableKeys,
 		"percent_keys":          []string{keyTopupRatePercent, keyConsumeRatePercent, keyRedemptionRatePercent},
 		"nullable_percent_keys": []string{keyRedemptionRatePercent},
-		"group_rates":           groupRateViews(rules),
+		// fiat_rate_keys 是取值为**法币折算比例**(一个乘数,不是百分比)的键。
+		// 前端据此渲染一个不带 "%" 的输入框 —— 把它画成百分比框,运营填 7.3
+		// 就会以为自己配的是 7.3%,而实际生效的是"一美元折 7.3 元"。
+		"fiat_rate_keys": []string{keyFiatRateDefault},
+		"group_rates":    groupRateViews(rules),
+		"fiat_rates":     fiatRateViews(fiatRules, s),
 		"yaml_readonly": gin.H{
 			"enabled":                       cm.Enabled,
 			"topup_rate_percent":            cm.TopupRatePercent,
@@ -67,10 +77,15 @@ func adminGetConfig(c *gin.Context) {
 			"exclude_redemption_and_manual": cm.ExcludeRedemptionAndManual,
 			"exclude_subscription_consume":  cm.ExcludeSubscriptionConsume,
 			"refund_clawback":               cm.RefundClawback,
-			"settle_interval_seconds":       cm.SettleIntervalSecs,
-			"topup_scan_interval_seconds":   cm.TopupScanIntervalSec,
-			"topup_scan_lookback_hours":     cm.TopupScanLookbackHours,
-			"inviter_cache_seconds":         cm.InviterCacheSecs,
+			// 一日一结算之后这一项是**心跳周期**,不再是结算周期。
+			// 前端的只读展示必须跟着改口径,否则运营会照着它去推算
+			// "我改小一点用户就能早点拿到钱"—— 那件事现在由 day_offset_minutes
+			// 与 holding_days 决定。
+			"settle_interval_seconds":     cm.SettleIntervalSecs,
+			"day_offset_minutes":          cm.DayOffsetMinutes,
+			"topup_scan_interval_seconds": cm.TopupScanIntervalSec,
+			"topup_scan_lookback_hours":   cm.TopupScanLookbackHours,
+			"inviter_cache_seconds":       cm.InviterCacheSecs,
 		},
 	})
 }
@@ -111,6 +126,36 @@ func adminPutConfig(c *gin.Context) {
 			// 在 qy_settings 里同样能被读成"没配",但它会让运营在库里看到一条
 			// 空值行,而"这一行到底算不算配过"是没人愿意再猜一遍的问题。
 			normalized[k] = ""
+			continue
+		}
+		if isFiatRateKey(k) {
+			// 兜底档单独一支:它是一个乘数(7.3 = 一美元折 7.3 元),
+			// 不是 0..100 的百分比,也不是额度。
+			//
+			// 清空这一档要用 JSON null,**不能**用空串,两者在这里语义相反:
+			//
+			//   - ""   → 400。空串只可能来自"运营把输入框清空了又按了保存",
+			//     而这一档的零值/空值全都是资损形状(见 parseFiatRate),
+			//     把它当成一次删除等于让一次误操作静默改掉全站佣金折算口径。
+			//   - null → 删掉这条覆盖,回落到第三层(全站充值汇率)。
+			//
+			// 这一支不能省。fiatRateFor 声明的第三层是"全站充值汇率",而在它
+			// 出现之前,兜底档一旦配过就再也回不去 —— 手填一个与当前
+			// USDExchangeRate 相同的数字只是数值上的巧合:充值汇率此后再改,
+			// 佣金折算不会跟着走,而界面上仍然显示 layer=default。产品自己
+			// 定义的一层永久不可达,只能进库里 DELETE,运营没有这条路。
+			if isJSONNull(raw) {
+				normalized[k] = ""
+				continue
+			}
+			rate, err := parseFiatRate(lit)
+			if err != nil {
+				badRequest(c, "qy_invalid_param", "法币折算兜底比例"+err.Error())
+				return
+			}
+			// 存规范化后的形状("7.30" → "7.3"),否则前后对比与审计快照
+			// 会出现一堆没有任何人改过的假差异。
+			normalized[k] = rate.String()
 			continue
 		}
 		if isPercentKey(k) {
@@ -172,7 +217,8 @@ func adminPutConfig(c *gin.Context) {
 	// 那时接口已经改过库了,却只回了个 500,运营重试一次就可能再改一遍。
 	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, k := range keys {
-			// 空值只可能来自可空百分比键(其余键的校验早已 400),含义是
+			// 空值只可能来自两处:可空百分比键收到空串,或法币兜底档收到
+			// 显式 null(其余键的校验早已 400)。两者含义相同 ——
 			// "取消这条覆盖"。删除必须跟其余键在同一个事务里:把兑换码档改回
 			// 「跟随充值档」和调整充值档本身常常是同一次操作,一半生效的组合
 			// 是谁都没有批准过的。
@@ -272,6 +318,9 @@ func presentLegacyOverridesAsPercent(overrides map[string]string) {
 // settingsSnapshot 把生效配置摊成对外形状:费率是百分比字符串,其余是整数。
 // 接口回显与审计快照共用它,免得两处形状漂移。
 func settingsSnapshot(s opSettings) map[string]any {
+	// 没配分组档的人走哪一层、按几折算。传 nil 表示"分组层没有取值",
+	// 与 fiatRateFor 在真实计佣路径上的判定是同一个函数,不另写一份。
+	fallback := fiatRateFor(nil, s)
 	return map[string]any{
 		keyTopupRatePercent:   s.TopupRatePercent(),
 		keyConsumeRatePercent: s.ConsumeRatePercent(),
@@ -287,12 +336,28 @@ func settingsSnapshot(s opSettings) map[string]any {
 		keyRedemptionRatePercent:            s.RedemptionRatePercent(),
 		"redemption_rate_effective_percent": s.EffectiveRedemptionRatePercent(),
 		"redemption_rate_follows_topup":     s.RedemptionRateUnits == nil,
-		keyMinSettleQuota:                   s.MinSettleQuota,
-		keyMaxPerOrderQuota:                 s.MaxPerOrderQuota,
-		keyHoldingDays:                      s.HoldingDays,
-		keyDailyCapQuota:                    s.DailyCapQuota,
-		keyLargeAlertQuota:                  s.LargeAlertQuota,
-		keyMinInviteeAgeHour:                s.MinInviteeAgeHours,
+		// 法币折算的兜底档同样下发**三个**值,理由与兑换码那一档同构:
+		//
+		//	fiat_rate_default            配的是什么("" = 从未配过)
+		//	fiat_rate_effective          没配分组档的人实际按几折算
+		//	fiat_rate_effective_layer    上面那个数来自哪一层(default / global / none)
+		//
+		// 只发第一个,界面上是个空输入框,运营看不出佣金到底按什么比例折;
+		// 只发第二个,输入框会被回填成全站充值汇率,运营下一次保存就把"跟随
+		// 全站汇率"固化成了一个显式数字 —— 一次什么都没改的保存,静默切断了
+		// 佣金折算与充值汇率的联动。
+		keyFiatRateDefault:          s.FiatRateDefaultString(),
+		"fiat_rate_effective":       fallback.Rate.String(),
+		"fiat_rate_effective_layer": fallback.Layer,
+		// 全站充值汇率(第 3 层)原样下发。审计快照要靠它解释"当时没配兜底档,
+		// 于是按这个数折算" —— 它不是本模块的配置,却决定本模块的钱。
+		"fiat_rate_global":   currentUsdRate().String(),
+		keyMinSettleQuota:    s.MinSettleQuota,
+		keyMaxPerOrderQuota:  s.MaxPerOrderQuota,
+		keyHoldingDays:       s.HoldingDays,
+		keyDailyCapQuota:     s.DailyCapQuota,
+		keyLargeAlertQuota:   s.LargeAlertQuota,
+		keyMinInviteeAgeHour: s.MinInviteeAgeHours,
 	}
 }
 
@@ -301,6 +366,17 @@ func settingsSnapshot(s opSettings) map[string]any {
 // 数字原样返回(绝不先解析成 float64 —— 10.25 会在那一步就失真),
 // 字符串脱掉引号。两种写法都收是刻意的:前端发字符串最安全,但工具、
 // 脚本和历史客户端习惯发数字,让它们直接 400 只会制造无谓的故障。
+// isJSONNull 判断一个字段是不是显式写成了 JSON null。
+//
+// 必须在 jsonScalarLiteral 之前判:那个函数会把 null 原样返回成字面量
+// "null",与运营真的填了 null 这四个字母分不开。
+//
+// 存在的理由是"清空"和"填错了"必须是两个不同的动作:对法币折算兜底档
+// 来说,空串是误操作(400),null 才是"我要回落到全站充值汇率"。
+func isJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
+}
+
 func jsonScalarLiteral(raw json.RawMessage) string {
 	s := strings.TrimSpace(string(raw))
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
@@ -488,6 +564,165 @@ func adminDeleteGroupRate(c *gin.Context) {
 	respond(c, gin.H{"group_name": group, "deleted": true})
 }
 
+// fiatRateView 是一条分组法币比例下发给管理端的形状。
+type fiatRateView struct {
+	GroupName string `json:"group_name"`
+	// Rate 是十进制字符串。与费率同一条理由:JSON number 到了 JS 那一侧就是
+	// 二进制浮点,7.25 有可能回填成 7.249999999999999,运营再点一次保存就把
+	// 这个数存进了资金配置。
+	Rate string `json:"rate"`
+	// EffectiveRate / EffectiveLayer 是这个分组**实际**按几折算、走的哪一层。
+	// 规则被禁用(或比例非法)时它们指向兜底档/全站汇率 —— 界面必须能一眼
+	// 看出"这一行现在其实没在生效",否则关掉一条规则和删掉它长得一模一样。
+	EffectiveRate  string `json:"effective_rate"`
+	EffectiveLayer string `json:"effective_layer"`
+	Enabled        bool   `json:"enabled"`
+	Remark         string `json:"remark"`
+	OperatorId     int    `json:"operator_id"`
+	UpdatedAt      int64  `json:"updated_at"`
+}
+
+func fiatRateViews(rows []FiatRate, s opSettings) []fiatRateView {
+	out := make([]fiatRateView, 0, len(rows))
+	for i := range rows {
+		r := rows[i]
+		d := fiatRateFor(&r, s)
+		out = append(out, fiatRateView{
+			GroupName:      r.GroupName,
+			Rate:           r.Rate.String(),
+			EffectiveRate:  d.Rate.String(),
+			EffectiveLayer: d.Layer,
+			Enabled:        r.Enabled,
+			Remark:         r.Remark,
+			OperatorId:     r.OperatorId,
+			UpdatedAt:      r.UpdatedAt,
+		})
+	}
+	return out
+}
+
+// adminPutFiatRate 新增或修改一条分组法币折算比例。
+//
+// 与分组费率一样必须写审计:它直接决定平台按什么价把佣金结给推广者,
+// 而且更隐蔽 —— 它不改变任何一个额度数字,只改变那些额度值多少钱。
+//
+// 改动**只对此后的计佣与结算生效**:比例在计佣当刻冻结进
+// qy_commission_accrual.usd_rate,已经算进 available_fiat 的是按当时比例
+// 算出的绝对值,不会被重算。这句话同时写在界面上。
+func adminPutFiatRate(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagCommission) {
+		return
+	}
+	var req struct {
+		GroupName string `json:"group_name"`
+		Rate      string `json:"rate"`
+		Enabled   bool   `json:"enabled"`
+		Remark    string `json:"remark"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		badRequest(c, "qy_invalid_param", "请求格式错误")
+		return
+	}
+	group := normalizeGroup(req.GroupName)
+	if group == "" {
+		badRequest(c, "qy_invalid_param", "必须指定分组名")
+		return
+	}
+	if len([]rune(group)) > 64 {
+		badRequest(c, "qy_invalid_param", "分组名过长")
+		return
+	}
+	rate, err := parseFiatRate(req.Rate)
+	if err != nil {
+		badRequest(c, "qy_invalid_param", "法币折算比例"+err.Error())
+		return
+	}
+
+	ctx := c.Request.Context()
+	before, err := findFiatRate(ctx, group)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	row := FiatRate{
+		GroupName:  group,
+		Rate:       rate,
+		Enabled:    req.Enabled,
+		Remark:     truncate(req.Remark, 255),
+		OperatorId: c.GetInt("id"),
+	}
+	if err := upsertFiatRate(ctx, &row); err != nil {
+		internalError(c, err)
+		return
+	}
+	s := effectiveCtx(ctx)
+	writeFiatRateAudit(c, "commission.fiat_rate.update",
+		"修改分组法币折算比例(只对此后的计佣与结算生效): "+group, before, &row, s)
+	respond(c, fiatRateViews([]FiatRate{row}, s)[0])
+}
+
+// adminDeleteFiatRate 删除一条分组档,该分组随即回落兜底档。
+//
+// 只有分组档可删。兜底档是 qy_settings 的一项配置,写入侧拒绝空值 ——
+// 删掉兜底档会让一批没配分组档的用户悄悄退回充值页汇率,而界面上还写着
+// 兜底档,这正是本仓在 default 用户分组与违规兜底类型上栽过两次的坑。
+func adminDeleteFiatRate(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagCommission) {
+		return
+	}
+	group := normalizeGroup(c.Query("group_name"))
+	if group == "" {
+		badRequest(c, "qy_invalid_param", "必须指定分组名")
+		return
+	}
+	ctx := c.Request.Context()
+	before, err := findFiatRate(ctx, group)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	removed, err := deleteFiatRate(ctx, group)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if !removed {
+		badRequest(c, "qy_not_found", "该分组没有单独的法币折算比例")
+		return
+	}
+	writeFiatRateAudit(c, "commission.fiat_rate.delete",
+		"删除分组法币折算比例(回落兜底档): "+group, before, nil, effectiveCtx(ctx))
+	respond(c, gin.H{"group_name": group, "deleted": true})
+}
+
+// writeFiatRateAudit 落一条分组法币比例变更审计,写入与删除共用。
+//
+// 快照里带上**生效后的比例与层级**而不只是这一行的原始值:事后翻审计的人
+// 要回答的是"这一改之后那批用户按几折算",而在规则被禁用、比例非法时,
+// 行里的数字与实际生效的数字根本不是同一个。
+func writeFiatRateAudit(c *gin.Context, action, reason string, before, after *FiatRate, s opSettings) {
+	audit.Write(c, audit.Entry{
+		Category:    qymodel.AuditCategoryConfig,
+		Action:      action,
+		ActorType:   qymodel.ActorAdmin,
+		ActorUserId: c.GetInt("id"),
+		ActorName:   c.GetString("username"),
+		Result:      qymodel.ResultOK,
+		Reason:      reason,
+		BeforeSnap:  fiatRateSnapshot(before, s),
+		AfterSnap:   fiatRateSnapshot(after, s),
+	})
+}
+
+// fiatRateSnapshot 是一条分组法币比例的审计快照,nil 渲染成空串(该行不存在)。
+func fiatRateSnapshot(row *FiatRate, s opSettings) string {
+	if row == nil {
+		return ""
+	}
+	b, _ := common.Marshal(fiatRateViews([]FiatRate{*row}, s)[0])
+	return string(b)
+}
+
 // accrualView 是一条计佣行加上"它背后那条邀请关系此刻的开关状态"。
 //
 // 为什么要多这一位:停止计佣(拉黑)是一个**可逆开关**,后端从一开始就收
@@ -606,14 +841,29 @@ func adminClawback(c *gin.Context) {
 	operatorId := c.GetInt("id")
 	created, err := manualClawback(c.Request.Context(), req.AccrualId, req.Quota,
 		itoa(operatorId)+":"+req.ClientRequestId, req.Reason)
-	if errors.Is(err, ErrClawbackIdemConflict) {
-		// 同一个 client_request_id 换了参数重放。返回 409 而不是 200:
-		// 回 200 就等于承认这次冲正成功了,而资金侧执行的是上一次的参数。
-		respondFail(c, http.StatusConflict, "qy_idem_key_conflict",
-			"该请求标识已被另一次冲正占用,请刷新后重新发起")
-		return
-	}
 	if err != nil {
+		// 失败也要写审计。人工冲正是直接改钱的动作,"有人在这一刻试过、被拒了"
+		// 与"成功了"同样需要留痕 —— 紧邻的 adminSettle 就是成功失败同一出口,
+		// 这里原本两条失败分支一条审计都不写,事后完全查不到。
+		reason := req.Reason + " / 失败: " + err.Error()
+		audit.Write(c, audit.Entry{
+			Category:     qymodel.AuditCategoryCommission,
+			Action:       "commission.clawback",
+			ActorType:    qymodel.ActorAdmin,
+			ActorUserId:  operatorId,
+			ActorName:    c.GetString("username"),
+			TargetUserId: 0,
+			AmountQuota:  req.Quota,
+			Result:       qymodel.ResultFail,
+			Reason:       truncate(reason, 255),
+		})
+		if errors.Is(err, ErrClawbackIdemConflict) {
+			// 同一个 client_request_id 换了参数重放。返回 409 而不是 200:
+			// 回 200 就等于承认这次冲正成功了,而资金侧执行的是上一次的参数。
+			respondFail(c, http.StatusConflict, "qy_idem_key_conflict",
+				"该请求标识已被另一次冲正占用,请刷新后重新发起")
+			return
+		}
 		badRequest(c, "qy_clawback_failed", err.Error())
 		return
 	}
@@ -635,14 +885,67 @@ func adminClawback(c *gin.Context) {
 	respond(c, gin.H{"accrual_no": created.AccrualNo, "gross_amount": created.GrossAmount.String()})
 }
 
+// adminRerunDailySettle 让今天这一轮结算重新开跑。
+//
+// 它不结算任何人,只把 qy_commission_settle_run 里今天那一行改回"还要再跑",
+// 真正的排空交给下一次心跳(见 rearmDailyRun 的注释)。
+func adminRerunDailySettle(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagCommission) {
+		return
+	}
+	now := common.GetTimestamp()
+	day := dayKey(now)
+	rearmed, err := rearmDailyRun(day, now)
+	result := qymodel.ResultOK
+	reason := "重新排期今天(" + day + ")的结算运行"
+	if err != nil {
+		result = qymodel.ResultFail
+		reason += " / 失败: " + err.Error()
+	} else if !rearmed {
+		reason += " / 今天还没有运行记录,下一次心跳本就会跑"
+	}
+	// 这一条不动钱,但它决定"当天剩下那批人今天还能不能拿到钱",
+	// 而且只有在出过故障的那一天才会被按下 —— 事后复盘要能看见是谁按的。
+	audit.Write(c, audit.Entry{
+		Category:    qymodel.AuditCategoryCommission,
+		Action:      "commission.settle.rerun",
+		ActorType:   qymodel.ActorAdmin,
+		ActorUserId: c.GetInt("id"),
+		ActorName:   c.GetString("username"),
+		Result:      result,
+		Reason:      truncate(reason, 255),
+	})
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	respond(c, gin.H{"run_date": day, "rearmed": rearmed})
+}
+
 // adminSettle 立即结算,不必等下一个周期。
+//
+// user_id 查询串与 JSON 请求体都收。只收查询串是不行的:紧邻的同类写接口
+// POST /commission/balances/adjust 从请求体读,两个接口摆在一起而参数位置
+// 相反,调用方发 {"user_id":123} 拿到的是 "必须指定 user_id" —— 一句与
+// "我明明传了 user_id" 直接冲突的提示,而且这一支在 badRequest 之前返回,
+// 连一条失败审计都不写,事后完全查不到有人试过。
 func adminSettle(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCommission) {
 		return
 	}
 	userId := httpq.Int(c, "user_id", 0)
 	if userId <= 0 {
-		badRequest(c, "qy_invalid_param", "必须指定 user_id")
+		// 请求体是可选的:查询串给够了就不必带 body,报文坏了也不该盖掉
+		// 查询串那一路 —— 这里只在查询串没给出 user_id 时才去看它。
+		var req struct {
+			UserId int `json:"user_id"`
+		}
+		if err := c.ShouldBindJSON(&req); err == nil {
+			userId = req.UserId
+		}
+	}
+	if userId <= 0 {
+		badRequest(c, "qy_invalid_param", "必须指定 user_id(查询串 ?user_id= 或请求体 {\"user_id\":…})")
 		return
 	}
 	// 手动结算会把成熟的冻结佣金变成可提现余额,也就是真的动钱。
@@ -869,6 +1172,12 @@ func adminInvalidateCache(c *gin.Context) {
 	// 按了"失效缓存"、看到成功提示,却仍要等最长 settingsCacheSeconds
 	// 才真正生效 —— 这期间发出去的佣金按旧费率冻结进账本,追不回来。
 	invalidateGroupRates()
+	// 法币折算比例的分组档同理(fiatrate.go 的 fiatRateCache)。它与分组费率是
+	// 同一形状的第五把缓存,当初漏在这里的后果一模一样:比例不是通过本模块的
+	// PUT 改的时候(直接改扩展库、从备份恢复、或者多节点部署里在另一个节点上改的),
+	// 运营按了"失效缓存"仍要干等一分钟,而这一分钟里发出去的佣金按旧比例冻结
+	// 进 accrual.usd_rate,按本模块"逐笔冻结、改比例不追溯"的语义永不重算。
+	invalidateFiatRates()
 	// 失效缓存本身不改任何账目,但它是"改完费率立刻让新价生效"这条动作链的
 	// 最后一步 —— 排查"这笔佣金为什么按新费率算"时,需要知道这一步发生在
 	// 哪个时刻、是谁做的。
@@ -904,10 +1213,17 @@ func adminHealth(c *gin.Context) {
 	ctx := c.Request.Context()
 	pending, _ := pendingInviters(settleInviterBatch)
 	respond(c, gin.H{
-		"metrics":            metricsSnapshot(),
-		"hot_queue":          guard.QueueStats(),
-		"inviter_cache":      inviterCacheStats(),
-		"topup_low_water":    peekTopupCursor(),
+		"metrics":       metricsSnapshot(),
+		"hot_queue":     guard.QueueStats(),
+		"inviter_cache": inviterCacheStats(),
+		// daily_settle 是一日一结算之后**唯一**能回答"今天的佣金发了没有"的
+		// 一段。pending_inviters 在这个节奏下几乎没有信息量:一天里绝大部分
+		// 时间它都是"有一堆人等着",那是正常的,而"今天那一跑挂在半路"
+		// 在它上面看起来一模一样。
+		"daily_settle":    dailySettleSnapshot(common.GetTimestamp()),
+		"topup_low_water": peekTopupCursor(),
+		// pending_inviters 只取第一页,所以它是"至少有这么多人在等",
+		// 封顶 settleInviterBatch,不是队列全长。
 		"pending_inviters":   len(pending),
 		"blocked_relations":  len(blockedInvitees(ctx)),
 		"effective_settings": effectiveCtx(ctx),
@@ -915,6 +1231,10 @@ func adminHealth(c *gin.Context) {
 		"degraded": gin.H{
 			"settings":   settingsDegrade.stats(),
 			"group_rate": groupRateDegrade.stats(),
+			// fiat_rate 与另外两个同一条理由,而且它更安静:折算比例走错一层
+			// 不会让任何额度数字看起来不对,只会让那批佣金的**法币**口径偏掉,
+			// 而 available_fiat 是提现金额的唯一依据。
+			"fiat_rate": fiatRateDegrade.stats(),
 		},
 	})
 }

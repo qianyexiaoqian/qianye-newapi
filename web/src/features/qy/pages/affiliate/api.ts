@@ -27,6 +27,7 @@ import type {
   QyCommissionRecord,
   QyCommissionSummary,
   QyInvitee,
+  QyInviteeDailyPage,
 } from './types'
 
 export function qyCommissionSummaryQuery() {
@@ -79,5 +80,35 @@ export function qyAffiliateCodeQuery() {
         : ''
     },
     staleTime: 5 * 60 * 1000,
+  })
+}
+
+/**
+ * 我名下的下线在一个日期区间内贡献了多少计佣基数。
+ *
+ * 对应 `GET /api/qy/commission/invitee-daily`。它与 `qyInviteesQuery` 的区别
+ * 只有一个:**区间**。那一条给的是开天辟地以来的累计,回答不了「我上周推的
+ * 那批人这周还在用吗」。
+ *
+ * 口径是计佣表(`base_quota`),不是主库的真实消费额 —— 理由见
+ * `types.ts` 上 `QyInviteeDaily` 的说明,以及后端
+ * `api_daily_consume.go` 里 `listMyInviteeDailyConsume` 的注释。
+ */
+export function qyInviteeDailyQuery(params: {
+  p: number
+  page_size: number
+  /** yyyymmdd。两个都留空 = 昨日(后端的缺省口径)。 */
+  start_date?: string
+  end_date?: string
+}) {
+  const query: Record<string, unknown> = {
+    p: params.p,
+    page_size: params.page_size,
+  }
+  if (params.start_date) query.start_date = params.start_date
+  if (params.end_date) query.end_date = params.end_date
+  return queryOptions({
+    queryKey: qyKeys.inviteeDaily(query),
+    queryFn: () => qyGet<QyInviteeDailyPage>('/commission/invitee-daily', query),
   })
 }

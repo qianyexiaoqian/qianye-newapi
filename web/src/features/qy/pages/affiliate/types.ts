@@ -56,7 +56,29 @@ export type QyCommissionSummary = {
   policy: {
     holding_days: number
     min_settle_quota: number
+    /**
+     * 结算调度的**心跳周期**，不是"多久发一次钱"。佣金已改成一日一结算
+     * （后端 `settle_daily.go`），所以这个数字不该再出现在到账时间的说明里。
+     */
     settle_interval_seconds: number
+    /** 恒为 true 的口径标记：自动结算是一天一次，不是按周期轮询。 */
+    settle_daily: boolean
+    /**
+     * 「消费之后第几天到账」里的那个 N，后端算好下发（`payoutDayOffset`）。
+     *
+     * **它等于 `holding_days + 1`，前端不要自己加这个 1，更不要直接显示
+     * `holding_days`**：那个 +1 来自"消费所在的那一天要整天结束才封板"，
+     * 是账本的规则不是四舍五入 —— `holding_days: 0` 也是**次日**到账。
+     * 两边各算一遍的结果就是界面上写着一个会被用户追问的错数字。
+     */
+    payout_day_offset: number
+    /**
+     * 返佣「一天」相对 UTC 的偏移（分钟）。0 = UTC，480 = UTC+8。
+     *
+     * 界面上说「次日到账」时必须能说清是谁的次日：站点配 0 时，
+     * 国内用户的"次日"其实是北京时间早上 8 点。
+     */
+    day_offset_minutes: number
     exclude_redemption: boolean
     exclude_subscription: boolean
   }
@@ -97,4 +119,40 @@ export type QyCommissionRecord = {
   mature_at: number
   bucket_date: string
   created_at: number
+}
+
+/**
+ * 某个下线在一个日期区间内的**计佣基数**与佣金。
+ *
+ * 这里刻意**没有**「消费额」这一列。上线看得到的是佣金基数,不是下线账户的
+ * 真实消费:两者的差里装着违规扣费(下线被罚了多少款)、渠道测试、0% 商务价
+ * 分组、以及被停止计佣的那段时间 —— 每一项都是下线或平台的事,不是拉他进来
+ * 的人该知道的。基数本身不是新增泄漏,它早就在佣金流水里逐笔下发了。
+ */
+export type QyInviteeDaily = {
+  ref: string
+  masked_name: string
+  base_quota: number
+  /** decimal 字符串。 */
+  commission: string
+  blocked: boolean
+}
+
+/** 下线区间消费页的整包响应。 */
+export type QyInviteeDailyPage = {
+  items: QyInviteeDaily[]
+  total: number
+  p: number
+  page_size: number
+  range: {
+    start_date: string
+    end_date: string
+    days: number
+    max_days: number
+  }
+  summary: {
+    invitee_count: number
+    base_quota: number
+    commission: string
+  }
 }

@@ -60,11 +60,23 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 		if e.InviterId == 0 || e.InviterId == inviteeId {
 			return nil
 		}
-		d := resolveRate(ctx, e.InviteeGroup, SourceConsume, effectiveCtx(ctx))
+		s := effectiveCtx(ctx)
+		d := resolveRate(ctx, e.InviteeGroup, SourceConsume, s)
 		// RefAccrualId 留 0:确实没有可指向的原单,随便挂一行会让管理端
-		// "这笔被冲了多少"的溯源指向一笔无关的账。UsdRate 留零,
-		// writeAccrual 会取当前汇率。
-		origin = &Accrual{InviterId: e.InviterId, RateUnits: d.Units, RateGroup: d.Group}
+		// "这笔被冲了多少"的溯源指向一笔无关的账。
+		//
+		// 法币折算比例同样按**当刻的上线分组**解析,而不是让 writeAccrual
+		// 去取全站充值汇率:这一路本来就是"没有原单可复制,只能按当前口径",
+		// 那就该是当前的**完整**口径。取全站汇率会让配了分组档的上线在这条
+		// 路上按另一个比例冲正,而他的原单是按分组档发出去的 —— 差额永久
+		// 留在 available_fiat 上。
+		fiat := inviterFiatRate(ctx, e.InviterId, s)
+		origin = &Accrual{
+			InviterId: e.InviterId,
+			RateUnits: d.Units,
+			RateGroup: d.Group,
+			UsdRate:   fiat.Rate,
+		}
 	}
 
 	remaining, err := netAccrued(gdb, inviteeId, origin.InviterId)
@@ -207,6 +219,29 @@ func manualClawback(ctx context.Context, accrualId int64, quota int64, idemSuffi
 		return nil, ErrNothingToClawback
 	}
 
+	key := SourceClawback + ":manual:" + idemSuffix
+
+	// 幂等回读必须**早于**"还有没有可冲的钱"这道判断。
+	//
+	// 一次把某一对(上线,下线)的净额冲满(或超额冲正被削到恰好归零)之后,
+	// remaining 就是 0。此时同一个 client_request_id 的合法重试(HTTP 超时后
+	// 前端原样重发,弹窗不换键)会被下面的 remaining<=0 提前拦掉,拿到一条
+	// "没有可冲正的佣金" —— 与事实完全相反:钱其实已经冲掉了。管理员照着这句
+	// 提示会去改金额再试,而专门为重放写的参数比对与 409 冲突保护在这条路径上
+	// 根本到不了,"同一个键被换了参数重放"这件事也就无法被识别。
+	var replay Accrual
+	err := gdb.Where("idem_scope = ? AND idem_key = ?", SourceClawback, normalizeIdemKey(key)).
+		Take(&replay).Error
+	if err == nil {
+		if err := sameClawbackRequest(&replay, accrualId, quota); err != nil {
+			return nil, err
+		}
+		return &replay, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+
 	amount := decimal.NewFromInt(quota)
 	remaining, err := netAccrued(gdb, origin.InviteeId, origin.InviterId)
 	if err != nil {
@@ -219,7 +254,6 @@ func manualClawback(ctx context.Context, accrualId int64, quota int64, idemSuffi
 		amount = remaining
 	}
 
-	key := SourceClawback + ":manual:" + idemSuffix
 	inserted, err := writeAccrual(ctx, accrualInput{
 		SourceType: SourceClawback,
 		IdemKey:    key,

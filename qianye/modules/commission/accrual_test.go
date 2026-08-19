@@ -68,18 +68,34 @@ func TestNormalizeIdemKeyIsInjective(t *testing.T) {
 
 func TestIdemKeyShapes(t *testing.T) {
 	vip := rateDecision{Units: 500, Group: "vip"}
-	assert.Equal(t, "consume:7:20260730:vip:500", consumeIdemKey(7, "20260730", vip))
+	fx := fiatDecision{Rate: decimal.NewFromFloat(7.3), Layer: fiatLayerGroup, Group: "vip"}
+	assert.Equal(t, "consume:7:20260730:vip:500:7.3:u3", consumeIdemKey(3, 7, "20260730", vip, fx))
 
 	// 费率或分组一变就必须换一行:日聚合桶是"边增长边结算"的,把新费率
 	// 算出的 gross 累加进一行标着旧费率的记录里,那一行从此
 	// base × rate ≠ gross,永远对不平也没法向用户解释。
-	assert.NotEqual(t, consumeIdemKey(7, "20260730", vip),
-		consumeIdemKey(7, "20260730", rateDecision{Units: 800, Group: "vip"}))
-	assert.NotEqual(t, consumeIdemKey(7, "20260730", vip),
-		consumeIdemKey(7, "20260730", rateDecision{Units: 500, Group: "default"}))
-	// Matched 只用于日志与管理端解释,不参与算钱,更不该影响幂等键。
-	assert.Equal(t, consumeIdemKey(7, "20260730", vip),
-		consumeIdemKey(7, "20260730", rateDecision{Units: 500, Group: "vip", Matched: true}))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx),
+		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 800, Group: "vip"}, fx))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx),
+		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "default"}, fx))
+	// 法币折算比例同理:usd_rate 不参与 gross 的算术,但结算按它的加权平均
+	// 折算 available_fiat —— 一行标着 7.3 却有一半 gross 是在比例改成 7.5
+	// 之后挣的,那半笔钱就永久按旧比例入账,而账面上看不出这里调过价。
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx),
+		consumeIdemKey(3, 7, "20260730", vip,
+			fiatDecision{Rate: decimal.NewFromFloat(7.5), Layer: fiatLayerGroup, Group: "vip"}))
+	// Matched / Layer / Group 只用于日志与管理端解释,不参与算钱,
+	// 更不该影响幂等键 —— 同一个比例走哪一层落到账上是同一笔钱。
+	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, fx),
+		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "vip", Matched: true},
+			fiatDecision{Rate: decimal.NewFromFloat(7.3), Layer: fiatLayerDefault}))
+
+	// 上线换了就必须换一行。ON CONFLICT 的 DoUpdates 只累加金额、不改
+	// inviter_id,上线不在键里的话,换绑当天下线后续的消费会撞上旧上线那一行,
+	// 钱被原子累加进去而 inviter_id 保持旧值 —— 结结实实发给了前一个上线,
+	// 而三条恒等式全部成立,没有任何降级计数器会响。
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx),
+		consumeIdemKey(4, 7, "20260730", vip, fx))
 
 	assert.Equal(t, "topup:TX-1", topupIdemKey(" TX-1 "))
 	assert.Equal(t, "redemption:99", redemptionIdemKey(99))

@@ -28,6 +28,7 @@ import {
   ScrollText,
   ShieldAlert,
   Ticket,
+  TrendingUp,
   TriangleAlert,
   Users,
 } from 'lucide-react'
@@ -491,6 +492,20 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'commission',
     codeKey: 'qy_sg_code_a_commission_balances',
   },
+  // 日消费明细。项目方原话：「可以查询昨日使用记录哪个用户消费了多少」。
+  //
+  // 它挂在「结算」组而不是「运营」组：运营看这张表的动机与看佣金流水是同一个 ——
+  // 对账。它同时也是佣金那几页答不了的那一半问题（0% 分组、没有上线、被罚过款的
+  // 用户在计佣表里一行都没有），所以两者必须在同一个组里挨着，否则运营会以为
+  // 佣金流水就是全部的消费。
+  {
+    url: '/qy/admin/daily-consume',
+    titleKey: 'qy_dc_title',
+    feature: 'commission',
+    group: 'qy-settlement',
+    icon: TrendingUp,
+    codeKey: 'qy_sg_code_a_daily_consume',
+  },
   {
     url: '/qy/admin/withdrawals',
     titleKey: 'qy_nav_a_withdrawals',
@@ -659,6 +674,23 @@ export const QY_PAGES: readonly QyPageDef[] = [
     url: '/qy/admin/api-address',
     titleKey: 'qy_nav_a_api_address',
     codeKey: 'qy_sg_code_a_api_address',
+    group: QY_SETTINGS_GROUP,
+  },
+  // 受限账号。项目方原话：「受限制账号，在系统设置里面单独进行配置。」
+  //
+  // 它进抽屉而不是留根侧栏，判据与同组其余几页一致：这一页上唯一可写的东西
+  // （受限账号公告）改一次影响之后**每一个**被限制的账号的首屏，属于"改一次
+  // 影响后续每一笔"那一档；页面上另外两块（受限账号计数、可达面清单）是只读的
+  // 现状，不是每天要过的流水。
+  //
+  // 不挂 `feature`：受限态是会话鉴权链上的一档身份（`middleware/restricted_user.go`），
+  // 管理员在上游用户管理页上禁用任何一个账号都会产生它 —— 与 violation / ticket
+  // 两个模块开没开完全无关。挂上任何一个 YAML 开关，都会造出"受限状态照常发生，
+  // 而解释它的那一页连入口都没有"。
+  {
+    url: '/qy/admin/restricted-accounts',
+    titleKey: 'qy_nav_a_restricted_accounts',
+    codeKey: 'qy_sg_code_a_restricted_accounts',
     group: QY_SETTINGS_GROUP,
   },
 ]

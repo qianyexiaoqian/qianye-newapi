@@ -223,6 +223,7 @@ func ValidateUserToken(key string) (token *Token, err error) {
 	}
 	token, err = GetTokenByKey(key, false)
 	if err == nil {
+		reviveExhaustedToken(token)
 		if token.Status == common.TokenStatusExhausted ||
 			token.Status == common.TokenStatusExpired ||
 			token.Status != common.TokenStatusEnabled {
@@ -255,6 +256,34 @@ func ValidateUserToken(key string) (token *Token, err error) {
 		return nil, ErrTokenInvalid
 	}
 	return nil, fmt.Errorf("%w: %v", ErrDatabase, err)
+}
+
+// reviveExhaustedToken 把「余额已经回来了、状态却停在已耗尽」的令牌放回启用。
+//
+// 下面那段 RemainQuota <= 0 的判断会把令牌落库写成 TokenStatusExhausted,而
+// 预扣费是**估算额**(通常是真实花费的几十到上百倍):一次正常并发里某一路把
+// remain_quota 恰好扣到 0,这张令牌就被判死;随后结算退款把额度加回来,却没有
+// 任何一条路径会把状态改回去 —— 实测一张退款后仍有 3570 额度的令牌永久返回
+// 401 Invalid token,只能靠用户自己去令牌页手动重新启用,而界面上只写着
+// 「已耗尽」,不会告诉他钱还在。
+//
+// 自愈放在鉴权入口而不是退款路径上:退款有好几个入口(结算差额、失败全额退、
+// 订阅补偿),每处补一遍必然漏;而「额度回来了就该能用」是这里唯一要判的事。
+// 与 controller/token.go 手动重新启用的闸门同一条判据(RemainQuota > 0)。
+func reviveExhaustedToken(token *Token) {
+	if token == nil || token.Status != common.TokenStatusExhausted {
+		return
+	}
+	if !token.UnlimitedQuota && token.RemainQuota <= 0 {
+		return
+	}
+	token.Status = common.TokenStatusEnabled
+	if err := token.SelectUpdate(); err != nil {
+		// 写失败就退回原状态:宁可这一次仍然 401,也不能让内存里的状态
+		// 与库里不一致,那会让下一次读缓存的判断更难解释。
+		token.Status = common.TokenStatusExhausted
+		common.SysLog("failed to revive exhausted token: " + err.Error())
+	}
 }
 
 func GetTokenByIds(id int, userId int) (*Token, error) {

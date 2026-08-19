@@ -59,7 +59,7 @@ var qyConfig atomic.Pointer[config.Config]
 func extTables() []any {
 	return []any{
 		&Accrual{}, &Balance{}, &Settlement{}, &InviteRelation{}, &FreezeRecord{},
-		&GroupRate{},
+		&GroupRate{}, &FiatRate{}, &SettleRun{},
 		&qymodel.Setting{}, &qymodel.KV{}, &qymodel.AuditLog{},
 	}
 }
@@ -108,6 +108,7 @@ func resetCommissionCaches() {
 	invalidateSettings()
 	invalidateBlocked()
 	invalidateGroupRates()
+	invalidateFiatRates()
 	invalidateInviter(0)
 	saltOnce.Lock()
 	saltCache = ""
@@ -220,4 +221,17 @@ func balanceOf(t *testing.T, gdb *gorm.DB, userId int) *Balance {
 		return nil
 	}
 	return &rows[0]
+}
+
+// settleUserOnce 断言 settleUser 既没报错,也没有"还有一批没吸收完"。
+//
+// settleUser 从只返回 error 改成 (more, error) 是因为一日一结算把它的单轮
+// 取批上界(settleAccrualBatch)变成了**日级**上界。既有用例的样本都远小于
+// 一批,more 恒为 false —— 若哪天不是了,那说明样本本身已经越过了这条上界,
+// 断言必须当场红,而不是让"只结算了一部分"悄悄通过。
+func settleUserOnce(t *testing.T, inviterId int) {
+	t.Helper()
+	more, err := settleUser(inviterId)
+	require.NoError(t, err)
+	require.False(t, more, "样本超过了单轮取批上界,这条用例的结论不再成立")
 }

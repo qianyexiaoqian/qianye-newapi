@@ -228,6 +228,41 @@ func composeTieredTextQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaS
 // calculateTextQuotaSummary expects a usage already remapped by
 // effectiveBillingUsage; PostTextConsumeQuota performs that remap once and shares
 // the result with tiered billing, affinity observation and logging.
+// reasoningTokensOutsideCompletion 返回上游放在 completion_tokens **之外**的
+// 思考 token 数。
+//
+// 「思考 token 要计费」是本仓既定口径:原生 Gemini 路径把 ThoughtsTokenCount
+// 加进 CompletionTokens(service/billing_usage.go),Gemini→OpenAI 转换用
+// TotalTokens − PromptTokens 兜底(relaykit/relayconvert),本地兜底计数也把
+// GetReasoningContent() 算进去(relay/channel/openai)。唯独 OpenAI 兼容渠道
+// (type=1)这条主路直接采信上游的 completion_tokens,而实测中的上游把 reasoning
+// 放在它**之外**:gemini-3-flash 一次 {prompt 3, completion 1, total 57,
+// reasoning 53} 的真实调用只收到了 1 个输出 token 的钱,少收 50 倍;
+// gemini-3.1-pro-high 的 {completion 0, reasoning 99} 更是按纯输入收费。
+//
+// 只认一种确凿形状:上游自己报了 reasoning_tokens,且
+// prompt + completion + reasoning 恰好等于上游自己报的 total,而
+// prompt + completion 不等于 total。三个数字互相印证时才补,任何一处对不上
+// 就原样不动 —— Claude 语义下 prompt_tokens 不含缓存读写,total 本来就大于
+// prompt + completion,拿差额当思考 token 会凭空多收钱。宁可继续少收,
+// 也不能靠猜多收。
+func reasoningTokensOutsideCompletion(usage *dto.Usage) int {
+	if usage == nil {
+		return 0
+	}
+	reasoning := usage.CompletionTokenDetails.ReasoningTokens
+	if reasoning <= 0 || usage.TotalTokens <= 0 {
+		return 0
+	}
+	if usage.PromptTokens+usage.CompletionTokens == usage.TotalTokens {
+		return 0
+	}
+	if usage.PromptTokens+usage.CompletionTokens+reasoning != usage.TotalTokens {
+		return 0
+	}
+	return reasoning
+}
+
 func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) textQuotaSummary {
 	summary := textQuotaSummary{
 		ModelName:            relayInfo.OriginModelName,
@@ -255,8 +290,8 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	}
 
 	summary.PromptTokens = usage.PromptTokens
-	summary.CompletionTokens = usage.CompletionTokens
-	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	summary.CompletionTokens = usage.CompletionTokens + reasoningTokensOutsideCompletion(usage)
+	summary.TotalTokens = summary.PromptTokens + summary.CompletionTokens
 	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
 	summary.CacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
 	summary.CacheCreationTokens5m = usage.ClaudeCacheCreation5mTokens

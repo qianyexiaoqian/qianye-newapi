@@ -7,6 +7,7 @@
 # 因此组前缀 /api/qy、/api/qy/admin 与参数段名都与线上逐字一致。
 # 消费方:web/src/features/qy/__tests__/qy-request-paths.ts
 DELETE /api/qy/admin/api-addresses/:id
+DELETE /api/qy/admin/commission/fiat-rates
 DELETE /api/qy/admin/commission/group-rates
 DELETE /api/qy/admin/group-namespace/model-groups/:name
 DELETE /api/qy/admin/group-namespace/user-groups/:name
@@ -27,6 +28,8 @@ GET /api/qy/admin/api-addresses
 GET /api/qy/admin/audit-logs
 GET /api/qy/admin/commission/balances
 GET /api/qy/admin/commission/config
+GET /api/qy/admin/commission/daily-consume
+GET /api/qy/admin/commission/daily-consume/export
 GET /api/qy/admin/commission/health
 GET /api/qy/admin/commission/records
 GET /api/qy/admin/commission/relations
@@ -54,6 +57,7 @@ GET /api/qy/admin/lottery/series
 GET /api/qy/admin/lottery/text-prizes
 GET /api/qy/admin/pay-password/:user_id
 GET /api/qy/admin/request-audits
+GET /api/qy/admin/restricted-accounts
 GET /api/qy/admin/restricted-notice
 GET /api/qy/admin/subscription/plans-usage
 GET /api/qy/admin/subscription/plans/:plan_id/entitlement
@@ -97,6 +101,7 @@ GET /api/qy/admin/withdraw/stats
 GET /api/qy/api-addresses
 GET /api/qy/availability/matrix
 GET /api/qy/availability/series
+GET /api/qy/commission/invitee-daily
 GET /api/qy/commission/invitees
 GET /api/qy/commission/records
 GET /api/qy/commission/summary
@@ -143,6 +148,7 @@ POST /api/qy/admin/commission/relations/block
 POST /api/qy/admin/commission/relations/rebind
 POST /api/qy/admin/commission/relations/unbind
 POST /api/qy/admin/commission/settle
+POST /api/qy/admin/commission/settle/rerun
 POST /api/qy/admin/config/reload
 POST /api/qy/admin/fund-orders/:order_no/reprobe
 POST /api/qy/admin/fund-orders/:order_no/resolve
@@ -213,6 +219,7 @@ POST /api/qy/withdraw/payees
 POST /api/qy/withdraw/proofs
 PUT /api/qy/admin/api-addresses/:id
 PUT /api/qy/admin/commission/config
+PUT /api/qy/admin/commission/fiat-rates
 PUT /api/qy/admin/commission/group-rates
 PUT /api/qy/admin/group-matrix
 PUT /api/qy/admin/group-matrix/scope/:user_group

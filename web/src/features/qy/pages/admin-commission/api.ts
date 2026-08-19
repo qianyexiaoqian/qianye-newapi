@@ -32,7 +32,9 @@ import type { QyPage } from '../../lib/types'
 import type {
   QyAdminAccrual,
   QyCommissionAdminConfig,
+  QyCommissionFiatRate,
   QyCommissionGroupRate,
+  QyDailySettleSnapshot,
 } from './types'
 
 export function qyAdminCommissionConfigQuery() {
@@ -53,9 +55,13 @@ export function qyAdminCommissionConfigQuery() {
  * JS 这一侧就是二进制浮点，10.25 有可能被序列化成 10.249999999999998。
  * 字符串把运营填的那个数字原样交给后端的 decimal 解析。
  *
+ * `null` 是法币折算兜底档专用的"清掉这条覆盖，回落全站充值汇率"。它与空串
+ * **不能**互换：空串在那一档是误操作（后端 400），因为兜底档的零值/空值
+ * 全都是资损形状。可空的百分比键反过来——它们用空串表达"取消这一档"。
+ *
  * 调用方成功后重新 GET 一次即可，别去适配响应体。
  */
-export function qyUpdateCommissionConfig(patch: Record<string, string>) {
+export function qyUpdateCommissionConfig(patch: Record<string, string | null>) {
   return qyPut<unknown>('/admin/commission/config', patch)
 }
 
@@ -80,6 +86,32 @@ export function qyUpsertCommissionGroupRate(input: {
   remark: string
 }) {
   return qyPut<QyCommissionGroupRate>('/admin/commission/group-rates', input)
+}
+
+/**
+ * 新增或覆盖一条分组**法币折算比例**（按分组名 upsert）。
+ *
+ * 口径是**邀请人（上线）的分组**，与分组费率相反。比例是十进制字符串
+ * （`'7.3'`），必须大于 0 —— 后端把 `0` 当非法输入拒掉，它既不是"免费"
+ * 也不是"没配"：0 会让额度照加而法币不加，两侧从此永久漂移。
+ *
+ * 改动**只对此后的计佣与结算生效**：比例在计佣当刻冻结进账本行，
+ * 已经算出来的法币余额是绝对值，不会被重算。
+ */
+export function qyUpsertCommissionFiatRate(input: {
+  group_name: string
+  rate: string
+  enabled: boolean
+  remark: string
+}) {
+  return qyPut<QyCommissionFiatRate>('/admin/commission/fiat-rates', input)
+}
+
+/** 删除一条分组法币折算比例。该分组随即回落兜底档，不是变成 0。 */
+export function qyDeleteCommissionFiatRate(groupName: string) {
+  return qyDelete<{ group_name: string; deleted: boolean }>(
+    `/admin/commission/fiat-rates?group_name=${encodeURIComponent(groupName)}`
+  )
 }
 
 /** 删除一条分组费率规则。该分组随即回落到全局默认费率，不是变成零费率。 */
@@ -137,6 +169,33 @@ export function qyClawbackAccrual(input: {
   return qyPost<{ accrual_no: string; gross_amount: string }>(
     '/admin/commission/clawback',
     input
+  )
+}
+
+/**
+ * 结算调度快照。只取 `daily_settle` 那一段。
+ *
+ * 一日一结算之后，「今天这一跑成了没有」是运营唯一需要盯的那个数：跑挂了
+ * 当天剩下所有人的佣金都要等到明天，而这件事在用户端与其它页面上没有任何症状。
+ */
+export function qyAdminCommissionHealthQuery() {
+  return queryOptions({
+    queryKey: qyKeys.adminCommissionHealth(),
+    queryFn: () =>
+      qyGet<{ daily_settle: QyDailySettleSnapshot }>('/admin/commission/health'),
+  })
+}
+
+/**
+ * 重跑今天这一轮结算。
+ *
+ * 它不直接结算任何人，只把今天那一行运行记录改回「还要再跑」，真正的排空交给
+ * 下一次心跳 —— 排空可能持续很久，放在 HTTP 请求线程里会让运营以为超时失败
+ * 又点一次。
+ */
+export function qyRerunDailySettle() {
+  return qyPost<{ run_date: string; rearmed: boolean }>(
+    '/admin/commission/settle/rerun'
   )
 }
 

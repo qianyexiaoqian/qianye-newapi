@@ -126,9 +126,12 @@ type billingRouteCase struct {
 	gateAllows      bool
 	// 期望
 	wantSource string // BillingSourceSubscription / BillingSourceWallet / "" 表示失败
-	wantCode   types.ErrorCode
-	wantGate   int // 闸门被问的次数
-	why        string
+	// wantSubConsumed 是套餐这一次真正被扣掉的额度。0 = 与 billingRoutePreQ 相同
+	// (整额预扣);余额不足一次预扣额时套餐按剩余额度**部分**出资。
+	wantSubConsumed int64
+	wantCode        types.ErrorCode
+	wantGate        int // 闸门被问的次数
+	why             string
 }
 
 func billingRouteTable() []billingRouteCase {
@@ -179,8 +182,12 @@ func billingRouteTable() []billingRouteCase {
 			name:    "有订阅 + 尾数(余额>0 但不够本次预扣) + 钱包够",
 			withSub: true, subTotal: 10_000, subUsed: 10_000 - (billingRoutePreQ - 1),
 			candidateUsable: true, walletQuota: 10_000, gateAllows: true,
-			wantSource: BillingSourceWallet, wantGate: 1,
-			why: "候选循环跳过余额不够本次预扣的订阅;尾数花不掉是已知且刻意不改的",
+			wantSource: BillingSourceSubscription, wantGate: 0,
+			wantSubConsumed: billingRoutePreQ - 1,
+			why: "尾数必须花得掉。筛候选用的是**预扣估算额**(真实花费的几十到上百倍)," +
+				"整额覆盖不了就跳过的话,每张套餐用到尾巴都会留下「一次预扣额 − 1」的死钱," +
+				"用户看到的是「套餐还有余额,却在扣钱包」。现在套餐先出到 0,不够的部分" +
+				"在结算时由钱包补收(那条路径本来就存在)",
 		},
 		{
 			name: "有订阅 + 余额耗尽 + 闸门拒绝 + 钱包够", withSub: true, subTotal: 10_000, subUsed: 10_000,
@@ -266,7 +273,11 @@ func TestNewBillingSessionRoutesSubscriptionFirstThenWallet(t *testing.T) {
 				}
 			case BillingSourceSubscription:
 				assert.Equal(t, tc.walletQuota, userQuotaNow(t), "走套餐时钱包一分钱都不该动")
-				assert.Equal(t, tc.subUsed+billingRoutePreQ, subAmountUsed(t, subId))
+				consumed := tc.wantSubConsumed
+				if consumed == 0 {
+					consumed = billingRoutePreQ
+				}
+				assert.Equal(t, tc.subUsed+consumed, subAmountUsed(t, subId))
 			}
 		})
 	}

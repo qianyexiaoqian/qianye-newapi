@@ -1826,6 +1826,11 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		if len(subs) == 0 {
 			return errors.New("no active subscription")
 		}
+		// 先把候选筛一遍并把该重置的重置掉,再选人。
+		//
+		// 选人分两轮(见下面 pickFundingSubscription),而重置是**写操作**,
+		// 放在选人循环里会被跑两遍;分开之后每条候选只重置一次。
+		usable := make([]UserSubscription, 0, len(subs))
 		for _, candidate := range subs {
 			sub := candidate
 			// 「余额仅限绑定的模型分组」的套餐,在本次请求的模型分组对不上时跳过。
@@ -1856,18 +1861,21 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 			if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
 				return err
 			}
+			usable = append(usable, sub)
+		}
+
+		picked, consume := pickFundingSubscription(usable, amount)
+		if picked == nil {
+			return fmt.Errorf("subscription quota insufficient, need=%d", amount)
+		}
+		{
+			sub := *picked
 			usedBefore := sub.AmountUsed
-			if sub.AmountTotal > 0 {
-				remain := sub.AmountTotal - usedBefore
-				if remain < amount {
-					continue
-				}
-			}
 			record := &SubscriptionPreConsumeRecord{
 				RequestId:          requestId,
 				UserId:             userId,
 				UserSubscriptionId: sub.Id,
-				PreConsumed:        amount,
+				PreConsumed:        consume,
 				Status:             "consumed",
 			}
 			if err := tx.Create(record).Error; err != nil {
@@ -1885,23 +1893,65 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 				}
 				return err
 			}
-			sub.AmountUsed += amount
+			sub.AmountUsed += consume
 			if err := tx.Save(&sub).Error; err != nil {
 				return err
 			}
 			returnValue.UserSubscriptionId = sub.Id
-			returnValue.PreConsumed = amount
+			returnValue.PreConsumed = consume
 			returnValue.AmountTotal = sub.AmountTotal
 			returnValue.AmountUsedBefore = usedBefore
 			returnValue.AmountUsedAfter = sub.AmountUsed
 			return nil
 		}
-		return fmt.Errorf("subscription quota insufficient, need=%d", amount)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return returnValue, nil
+}
+
+// pickFundingSubscription 从候选里挑出这一次由谁出资、出多少。
+//
+// 两轮,顺序不能换 —— 两轮合起来才既保住既有语义又修掉尾数被困死的问题:
+//
+//	第一轮 找一张能**整额**覆盖本次预扣额的(候选已按最先到期在前排好)。
+//	       这一轮就是改动之前的全部行为:余额不够的那张顺延给下一张。
+//	第二轮 一张都覆盖不了时,取最先到期且还有余额的那张,按剩余额度部分预扣。
+//
+// 为什么需要第二轮:筛候选用的是**预扣估算额**,而预扣额是真实花费的几十到
+// 上百倍。只有第一轮的话,每张余额型套餐用到尾巴时都会留下「一次预扣额 − 1」
+// 的残额 —— 那笔钱既花不掉(后续请求的预扣额只会更大),也没有任何提示,
+// 用户看到的是「套餐还有余额,却在扣钱包」;整张 amount_total 小于一次预扣额
+// 的套餐更是从头到尾一次都出不了资。实测阈值精确落在预扣额上:残 3048 走套餐,
+// 残 3047 走钱包。
+//
+// 部分预扣不会少收钱:不够的那部分在结算时由 SettleUserSubscriptionDelta 夹到
+// amount_total、差额落钱包 —— 那条「撞上限则钱包补收」的路径本来就存在,
+// 这里只是让它提前一步开始工作,不新增任何一种结算形态。
+//
+// amount_total <= 0 是**不限量**(不是零额度),这样的候选在第一轮就整额命中。
+func pickFundingSubscription(usable []UserSubscription, amount int64) (*UserSubscription, int64) {
+	for _, allowPartial := range []bool{false, true} {
+		for i := range usable {
+			sub := &usable[i]
+			if sub.AmountTotal <= 0 {
+				return sub, amount
+			}
+			remain := sub.AmountTotal - sub.AmountUsed
+			if remain <= 0 {
+				continue
+			}
+			if remain < amount {
+				if !allowPartial {
+					continue
+				}
+				return sub, remain
+			}
+			return sub, amount
+		}
+	}
+	return nil, 0
 }
 
 // RefundSubscriptionPreConsume is idempotent and refunds pre-consumed subscription quota by requestId.

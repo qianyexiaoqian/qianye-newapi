@@ -36,10 +36,19 @@ func modelPriceNotConfiguredError(modelName string, userId int) error {
 // https://docs.claude.com/en/docs/build-with-claude/prompt-caching#1-hour-cache-duration
 const claudeCacheCreation1hMultiplier = 6 / 3.75
 
-// defaultTieredPreConsumeMaxTokens is the fallback completion-token estimate
-// used for tiered expression pre-consume when the client omits max_tokens, so
-// the pre-consumed quota still reflects a plausible output cost in paid groups.
-const defaultTieredPreConsumeMaxTokens = 8192
+// defaultPreConsumeMaxTokens 是客户端省略 max_tokens 时,预扣费对输出侧使用的
+// 兜底上限。
+//
+// OpenAI 协议里 max_tokens 是可选的,省略是**默认用法**而不是异常输入。省略时
+// 若对输出一个 token 都不预留,预扣额就只覆盖输入侧,而结算按
+// `prompt + completion * CompletionRatio` 无条件扣款(见 service/text_quota.go
+// 与 service/funding_source.go 的正差额分支),差额直接把余额扣成负数:实测
+// gemini-3-flash(ModelRatio 0.6 / CompletionRatio 5)一次请求就能把 3100 额度
+// 的钱包打到 -11621,三路并发打到 -29476,而这一切与余额多少无关。
+//
+// 阶梯计价(tiered_expr)一开始就有这条兜底,倍率计价没有 —— 两条路径同一件事
+// 用同一个数,不再各留各的缺口。
+const defaultPreConsumeMaxTokens = 8192
 
 // HandleGroupRatio checks for "auto_group" in the context and updates the group ratio and relayInfo.UsingGroup if present
 func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hosttypes.GroupRatioInfo {
@@ -85,7 +94,11 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 // prompt-side reservation.
 func preConsumeTokenEstimate(promptTokens int, maxTokens int, completionRatio float64) float64 {
 	estimate := float64(common.Max(promptTokens, common.PreConsumedQuota))
-	if maxTokens > 0 && completionRatio > 0 {
+	// max_tokens 缺省时用兜底上限,不能按 0 处理:见 defaultPreConsumeMaxTokens。
+	if maxTokens <= 0 {
+		maxTokens = defaultPreConsumeMaxTokens
+	}
+	if completionRatio > 0 {
 		estimate += float64(maxTokens) * completionRatio
 	}
 	return estimate
@@ -295,7 +308,7 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 
 	estimatedCompletionTokens := meta.MaxTokens
 	if estimatedCompletionTokens == 0 && groupRatioInfo.GroupRatio != 0 {
-		estimatedCompletionTokens = defaultTieredPreConsumeMaxTokens
+		estimatedCompletionTokens = defaultPreConsumeMaxTokens
 	}
 
 	requestInput, err := ResolveIncomingBillingExprRequestInput(c, info)

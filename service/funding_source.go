@@ -119,18 +119,39 @@ func (s *SubscriptionFunding) PreConsume(_ int) error {
 	return nil
 }
 
+// subscriptionSettleDelta 把"按请求预扣额算出来的差额"换算成"套餐这一侧真正
+// 该增减多少"。
+//
+// requested 是想扣的额度(令牌那一侧就是按它预扣、按它退的),preConsumed 是
+// 套餐余额不够时**实际**扣到的那一部分。两者相等时这里恒等变换。
+//
+//	想扣 3048 / 只扣到 100 / 真实花费 28   → delta −3020 → subDelta −72(退回 28)
+//	想扣 3048 / 只扣到 100 / 真实花费 5000 → delta  1952 → subDelta 4900(撞上限后落钱包)
+func subscriptionSettleDelta(delta int, requested, preConsumed int64) int64 {
+	return int64(delta) + (requested - preConsumed)
+}
+
 func (s *SubscriptionFunding) Settle(delta int) error {
 	s.settleApplied = 0
 	s.settleWalletShortfall = 0
-	if delta == 0 {
+	// 套餐可能只按**剩余额度**部分预扣(见 model.PreConsumeUserSubscription):
+	// 想扣 s.amount,实际只扣到了 s.preConsumed。调用方给的 delta 是按"想扣多少"
+	// 算的(令牌那一侧确实是按它预扣的,退款也按它退),套餐这一侧必须把这段差
+	// 补回来,否则退款方向会连着把套餐里**别的**消费一起退掉,补扣方向又会少收。
+	//
+	// 举例:想扣 3048、套餐只剩 100、真实花费 28 —— delta = 28−3048 = −3020,
+	// 补回 3048−100 = 2948 之后 subDelta = −72,套餐从 100 退回 28,分毫不差;
+	// 若真实花费 5000,subDelta = 4900,套餐撞上限只吃下 0,4900 落钱包。
+	subDelta := subscriptionSettleDelta(delta, s.amount, s.preConsumed)
+	if subDelta == 0 {
 		return nil
 	}
-	applied, err := model.SettleUserSubscriptionDelta(s.subscriptionId, int64(delta))
+	applied, err := model.SettleUserSubscriptionDelta(s.subscriptionId, subDelta)
 	if err != nil {
 		return err
 	}
 	s.settleApplied = applied
-	shortfall := int64(delta) - applied
+	shortfall := subDelta - applied
 	if shortfall <= 0 {
 		return nil
 	}

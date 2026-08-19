@@ -46,7 +46,7 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		return nil
 	}
 	delta := actualQuota - s.preConsumedQuota
-	if delta == 0 {
+	if delta == 0 && !s.fundingHasPartialReserve() {
 		s.settled = true
 		return nil
 	}
@@ -59,7 +59,7 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	}
 	// 2) 调整令牌额度
 	var tokenErr error
-	if !s.relayInfo.IsPlayground {
+	if !s.relayInfo.IsPlayground && delta != 0 {
 		if delta > 0 {
 			tokenErr = model.DecreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, delta)
 		} else {
@@ -80,6 +80,16 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	}
 	s.settled = true
 	return tokenErr
+}
+
+// fundingHasPartialReserve 报告资金来源是不是"只预扣到了一部分"。
+//
+// 套餐余额不足一次预扣额时按剩余额度部分预扣,于是即便差额 delta 恰好为 0
+// (真实花费等于预扣估算额),套餐那一侧仍然欠着 amount − preConsumed 没收。
+// 差额为 0 就早退会把这段钱永久漏掉。
+func (s *BillingSession) fundingHasPartialReserve() bool {
+	sub, ok := s.funding.(*SubscriptionFunding)
+	return ok && sub.amount != sub.preConsumed
 }
 
 // Refund 退还所有预扣费，幂等安全，异步执行。

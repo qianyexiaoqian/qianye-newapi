@@ -98,4 +98,11 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   // 是一个页面"这件事，`page-meta.ts` 仍然按最长前缀把它们认出来。
   // 按维护规则 1 追加到末尾取空号，既有编号一个都不动。
   '/qy/admin/commission-records/users',
+  // 受限账号（系统设置里单独的一段）。按维护规则 1 追加到末尾取空号，
+  // 既有编号一个都不动 —— 尤其不能插到同属设置抽屉的那几页中间。
+  '/qy/admin/restricted-accounts',
+  // 日消费明细（项目方原话：「可以查询昨日使用记录哪个用户消费了多少」）。
+  // 按维护规则 1 追加到末尾取空号，既有编号一个都不动 —— 尤其不能插到
+  // `/qy/admin/commission-records` 后面，那会让它之后的每一页集体错位。
+  '/qy/admin/daily-consume',
 ]

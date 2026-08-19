@@ -51,7 +51,7 @@ func TestSettleFreezesFiatCurrencyOnBalance(t *testing.T) {
 		useMoneyGlobals(t, 7.3, 500000)
 
 		seedBalance(t, gdb, 42, "4000")
-		require.NoError(t, settleUser(42))
+		settleUserOnce(t, 42)
 
 		bal := balanceOf(t, gdb, 42)
 		require.NotNil(t, bal)
@@ -68,7 +68,7 @@ func TestSettleFreezesFiatCurrencyOnBalance(t *testing.T) {
 		bal := seedBalance(t, gdb, 43, "4000")
 		require.Empty(t, bal.FiatCurrency, "夹具必须真的是一行存量空串,否则这条永真")
 
-		require.NoError(t, settleUser(43))
+		settleUserOnce(t, 43)
 		assert.Equal(t, "CNY", balanceOf(t, gdb, 43).FiatCurrency)
 	})
 }

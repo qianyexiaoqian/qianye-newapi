@@ -41,11 +41,30 @@ For commercial licensing, please contact support@quantumnous.com
  */
 export const QY_MAX_QUOTA = 2147483647
 
+/**
+ * 法币折算比例的上界，与后端 `maxFiatRateValue` 逐字一致。
+ *
+ * 一百万足以覆盖任何真实币种（越南盾、印尼盾在两万五量级），同时把手滑
+ * 多敲几个零的后果限制成"一个一眼能看出来的离谱数字"。
+ */
+export const QY_MAX_FIAT_RATE = 1000000
+
+/** 法币折算比例的最大小数位，与后端存储列 `decimal(18,8)` 一致。 */
+export const QY_FIAT_RATE_DECIMALS = 8
+
 export type QyCommissionFieldMeta = {
   labelKey: string
   hintKey: string
-  /** `percent` 百分比（最多两位小数）；`quota` 站内额度；`plain` 纯计数。 */
-  unit: 'percent' | 'plain' | 'quota'
+  /**
+   * `percent` 百分比（最多两位小数）；`quota` 站内额度；`plain` 纯计数；
+   * `fiat_rate` 法币折算比例。
+   *
+   * `fiat_rate` 必须与 `percent` 分开：它是一个**乘数**（`7.3` = 一美元折
+   * 7.3 元），区间是 `(0, 1000000]`、最多 8 位小数，而且 0 是非法值不是
+   * "免费"。当成百分比渲染的话，输入框旁边会多一个 `%`，运营填 7.3
+   * 就以为自己配的是 7.3% —— 差两个数量级的资金参数。
+   */
+  unit: 'percent' | 'plain' | 'quota' | 'fiat_rate'
   min: number
   max: number
   /** 0 是否表示"不限"。是的话要在输入框旁提示，否则运营会以为填 0 等于关掉。 */
@@ -73,6 +92,15 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     unit: 'percent',
     min: 0,
     max: 100,
+  },
+  fiat_rate_default: {
+    labelKey: 'qy_cm_f_fiat_rate_default',
+    hintKey: 'qy_cm_f_fiat_rate_default_hint',
+    unit: 'fiat_rate',
+    // 下界写 0 只是元数据上的形式：真正的判定在 qyIsValidFiatRate 里，
+    // 那里 0 是**非法**的（0 不是"免费"，见 fields 顶部的说明）。
+    min: 0,
+    max: QY_MAX_FIAT_RATE,
   },
   min_settle_quota: {
     labelKey: 'qy_cm_f_min_settle',
@@ -155,6 +183,50 @@ export function qyIsValidPercent(raw: string): boolean {
  */
 export function qyIsValidNullablePercent(raw: string): boolean {
   return raw.trim() === '' || qyIsValidPercent(raw)
+}
+
+/**
+ * 校验一个**法币折算比例**输入。区间 `(0, 1000000]`，最多 8 位小数。
+ *
+ * 与 `qyIsValidPercent` 分成两个函数而不是加参数，理由与可空百分比那一对
+ * 完全相同：调用点必须一眼看出这里的 0 和空到底算不算数。
+ *
+ * # 0 与空都是非法
+ *
+ * `0` 不是"免费/不折算"：它会让后端 `applyFiat` 一分法币都不加而额度照加，
+ * `available_fiat` 与 `available_quota` 从此永久漂移，提现按前者折算会给
+ * 用户 0 元，而他的站内佣金余额明明是正的。想停掉某个分组的佣金，
+ * 既有的杠杆是把返佣费率设成 0%（两侧都停在 0，账是平的）。
+ *
+ * 空串同理不是"清掉这一档"：兜底档不可清空（清空之后没配分组档的用户会
+ * 悄悄退回充值页汇率，而界面上还写着兜底档）。后端两处都直接 400，
+ * 前端这里先标红，免得运营点了保存才知道。
+ */
+export function qyIsValidFiatRate(raw: string): boolean {
+  const s = raw.trim()
+  // 与后端 parseFiatRate 逐条对齐：正则先卡形状与小数位（不用 Number()
+  // 判小数位，`Number('0.000000001')` 之后就再也看不出原始写了几位了）。
+  if (!new RegExp(`^\\d+(\\.\\d{1,${QY_FIAT_RATE_DECIMALS}})?$`).test(s)) {
+    return false
+  }
+  const value = Number(s)
+  return Number.isFinite(value) && value > 0 && value <= QY_MAX_FIAT_RATE
+}
+
+/**
+ * 规范化一个法币折算比例，与后端 `decimal.Decimal.String()` 的输出形状对齐
+ * （`"7.30"` → `"7.3"`、`"007"` → `"7"`）。非法输入原样返回。
+ *
+ * 全程字符串运算，**绝不经过 `Number()`**：`String(Number('0.00000001'))`
+ * 会得到 `'1e-8'`，那既提交不上去，也会让"改了没改"的比较永远判成改了。
+ */
+export function qyNormalizeFiatRate(raw: string): string {
+  const s = raw.trim()
+  if (!qyIsValidFiatRate(s)) return s
+  const [rawInt, rawFrac = ''] = s.split('.')
+  const int = rawInt.replace(/^0+(?=\d)/, '')
+  const frac = rawFrac.replace(/0+$/, '')
+  return frac === '' ? int : `${int}.${frac}`
 }
 
 /** 去掉尾随零，与后端 `FormatRatePercent` 的输出形状对齐（"10.250" → "10.25"）。 */
