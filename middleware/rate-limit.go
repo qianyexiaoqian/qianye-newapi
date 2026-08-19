@@ -145,15 +145,38 @@ func writeRateLimited(c *gin.Context, retryAfterSeconds int64) {
 }
 
 func rateLimitFactory(maxRequestNum int, duration int64, mark string) func(c *gin.Context) {
+	return rateLimitFactoryScoped(maxRequestNum, duration, mark, false)
+}
+
+// rateLimitFactoryScoped 造一个限流中间件。perRoute 为真时,桶的 key 里带上路由
+// 模板(c.FullPath()),即**每条路由各有一个**计数器。
+//
+// 关键接口(CriticalRateLimit)必须 perRoute:此前它们共用同一个字面量 mark
+// "CT",于是充值/兑换码、划转、提现、登录/注册、甚至匿名的 GET /api/ratio_config
+// 与前端每 15 分钟一次的 auth/refresh 全部挤在同一个 20 次/20 分钟的 IP 计数器
+// 里。同一出口 IP(公司 NAT、机场、基站)下任何一个人刷任意一个关键接口,就能让
+// 其余所有人 20 分钟内提不了现、充不了值、登不上;NAT 后十几个活跃标签页的正常
+// 续期就足以自己把桶吃光,不需要攻击者。
+//
+// 按路由分桶不削弱防护:登录爆破看的是登录那条路由自己的 20 次,与「有没有人在
+// 另一个接口上刷」无关。全局限流(GlobalWebRateLimit / GlobalAPIRateLimit)刻意
+// 不分路由 —— 它们要度量的就是这个 IP 的总量。
+func rateLimitFactoryScoped(maxRequestNum int, duration int64, mark string, perRoute bool) func(c *gin.Context) {
+	scopedMark := func(c *gin.Context) string {
+		if !perRoute {
+			return mark
+		}
+		return mark + ":" + c.FullPath()
+	}
 	if common.RedisEnabled {
 		return func(c *gin.Context) {
-			redisRateLimiter(c, maxRequestNum, duration, mark)
+			redisRateLimiter(c, maxRequestNum, duration, scopedMark(c))
 		}
 	}
 	// It's safe to call multi times.
 	inMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
 	return func(c *gin.Context) {
-		memoryRateLimiter(c, maxRequestNum, duration, mark)
+		memoryRateLimiter(c, maxRequestNum, duration, scopedMark(c))
 	}
 }
 
@@ -173,7 +196,7 @@ func GlobalAPIRateLimit() func(c *gin.Context) {
 
 func CriticalRateLimit() func(c *gin.Context) {
 	if common.CriticalRateLimitEnable {
-		return rateLimitFactory(common.CriticalRateLimitNum, common.CriticalRateLimitDuration, "CT")
+		return rateLimitFactoryScoped(common.CriticalRateLimitNum, common.CriticalRateLimitDuration, "CT", true)
 	}
 	return defNext
 }

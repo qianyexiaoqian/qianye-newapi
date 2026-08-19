@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -81,22 +82,37 @@ func shouldChargeViolationFee(err *types.NewAPIError) bool {
 	return HasCSAMViolationMarker(err)
 }
 
+// calcViolationFeeQuota 把「违规罚款金额(美元)」换算成额度。
+//
+// 曾经这里是 `decimal…Round(0).IntPart()` 再 `int(quota)` —— 正是 AGENTS.md
+// 明令禁止的裸转换。IntPart() 在结果超出 int64 时走 big.Int.Int64() 的回绕:
+// amount=3.7e13 会算出 53,255,926,290,448,384 这种垃圾值,amount=1.9e13 直接
+// 回绕成负数、被下面那句 `<= 0 → 0` 静默吞掉(罚款凭空消失且零日志)。而
+// users.quota 是 32 位列,任何一档都足以把余额打成天文数字的负数。
+//
+// 改走 common/quota_math.go 的饱和转换:越界被夹到 MaxQuota 并留下 SysError,
+// 与同仓 qianye/modules/violation/fee.go 那套(Checked + 多道封顶)口径一致。
 func calcViolationFeeQuota(amount, groupRatio float64) int {
-	if amount <= 0 {
+	if amount <= 0 || math.IsNaN(amount) || math.IsInf(amount, 0) {
 		return 0
 	}
-	if groupRatio <= 0 {
+	if groupRatio <= 0 || math.IsNaN(groupRatio) || math.IsInf(groupRatio, 0) {
 		return 0
 	}
-	quota := decimal.NewFromFloat(amount).
-		Mul(decimal.NewFromFloat(common.QuotaPerUnit)).
-		Mul(decimal.NewFromFloat(groupRatio)).
-		Round(0).
-		IntPart()
+	quota, clamp := common.QuotaFromDecimalChecked(
+		decimal.NewFromFloat(amount).
+			Mul(decimal.NewFromFloat(common.QuotaPerUnit)).
+			Mul(decimal.NewFromFloat(groupRatio)),
+	)
+	if clamp != nil {
+		common.SysError(fmt.Sprintf(
+			"violation fee quota saturated: amount=%v groupRatio=%v clamp=%v",
+			amount, groupRatio, clamp.AuditMap()))
+	}
 	if quota <= 0 {
 		return 0
 	}
-	return int(quota)
+	return quota
 }
 
 // ChargeViolationFeeIfNeeded charges an additional fee after the normal flow finishes (including refund).

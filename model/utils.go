@@ -39,6 +39,23 @@ func InitBatchUpdater() {
 	})
 }
 
+// FlushBatchUpdates 把内存队列里还没落库的额度变动立刻写进数据库。
+//
+// BATCH_UPDATE_ENABLED=true 时,用户额度增减、令牌额度增减、used_quota、
+// request_count 全部只落在进程内存的 map 里,由 InitBatchUpdater 起的 goroutine
+// 每 BATCH_UPDATE_INTERVAL 秒(默认 5)刷一次。此前优雅退出只调
+// SaveQuotaDataCache()(那是看板缓存,与额度队列无关),于是 SIGTERM/崩溃时最后
+// 一个窗口内的**全站**扣费与退款被静默丢弃,一行日志都没有,而消费日志照写不误
+// —— logs 记的钱与用户实际被扣的钱从此对不上。
+//
+// 幂等:队列在 batchUpdate() 里被整体取走再落库,重复调用只是多跑一次空转。
+func FlushBatchUpdates() {
+	if !common.BatchUpdateEnabled {
+		return
+	}
+	batchUpdate()
+}
+
 func addNewRecord(type_ int, id int, value int) {
 	batchUpdateLocks[type_].Lock()
 	defer batchUpdateLocks[type_].Unlock()

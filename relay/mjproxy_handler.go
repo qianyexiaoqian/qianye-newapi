@@ -211,20 +211,51 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		}
 	}
 
-	userQuota, err := model.GetUserQuota(info.UserId, false)
-	if err != nil {
-		return &dto.MidjourneyResponse{
-			Code:        4,
-			Description: err.Error(),
+	// 与 RelayMidjourneySubmit 同一处缺陷、同一种修法:先原子预留,不再用
+	// 读后再用的余额快照(实测 20 路并发把一次 swap 的余额扣成 -475000)。
+	reservedQuota := 0
+	if priceData.Quota > 0 {
+		reserved, reserveErr := model.TryReserveUserQuota(info.UserId, priceData.Quota)
+		if reserveErr != nil {
+			return &dto.MidjourneyResponse{
+				Code:        4,
+				Description: reserveErr.Error(),
+			}
+		}
+		if !reserved {
+			return &dto.MidjourneyResponse{
+				Code:        4,
+				Description: "quota_not_enough",
+			}
+		}
+		reservedQuota = priceData.Quota
+		if !info.IsPlayground {
+			tokenReserved, tokenErr := model.TryReserveTokenQuota(info.TokenId, info.TokenKey, priceData.Quota, info.TokenUnlimited)
+			if tokenErr != nil || !tokenReserved {
+				if refundErr := model.IncreaseUserQuota(info.UserId, reservedQuota, false); refundErr != nil {
+					common.SysLog("error rolling back midjourney swap-face user quota reservation: " + refundErr.Error())
+				}
+				reservedQuota = 0
+				return &dto.MidjourneyResponse{
+					Code:        4,
+					Description: "token_quota_not_enough",
+				}
+			}
 		}
 	}
-
-	if userQuota-priceData.Quota < 0 {
-		return &dto.MidjourneyResponse{
-			Code:        4,
-			Description: "quota_not_enough",
+	defer func() {
+		if reservedQuota <= 0 {
+			return
 		}
-	}
+		if refundErr := model.IncreaseUserQuota(info.UserId, reservedQuota, false); refundErr != nil {
+			common.SysLog("error refunding midjourney swap-face user quota reservation: " + refundErr.Error())
+		}
+		if !info.IsPlayground {
+			if refundErr := model.IncreaseTokenQuota(info.TokenId, info.TokenKey, reservedQuota); refundErr != nil {
+				common.SysLog("error refunding midjourney swap-face token quota reservation: " + refundErr.Error())
+			}
+		}
+	}()
 	requestURL := getMjRequestPath(c.Request.URL.String())
 	baseURL := c.GetString("base_url")
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
@@ -234,10 +265,11 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	}
 	defer func() {
 		if mjResp.StatusCode == 200 && mjResp.Response.Code == 1 {
-			err := service.PostConsumeQuota(info, priceData.Quota, 0, true)
+			err := service.PostConsumeQuota(info, 0, priceData.Quota, true)
 			if err != nil {
 				common.SysLog("error consuming token remain quota: " + err.Error())
 			}
+			reservedQuota = 0
 
 			tokenName := c.GetString("token_name")
 			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, constant.MjActionSwapFace)
@@ -518,20 +550,57 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 
-	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
-	if err != nil {
-		return &dto.MidjourneyResponse{
-			Code:        4,
-			Description: err.Error(),
+	// 提交路径此前是「读余额 → 判一次 → 最长 60s 的上游调用 → defer 里才真扣钱」
+	// 的 check-then-act:并发请求全部通过同一个余额快照,一张图的余额能换任意
+	// 多张图(实测 8 路并发把 users.quota 与 tokens.remain_quota 双双扣到
+	// -350000,40 路扣到 -1,950,000)。改成先原子预留、失败即拒绝 —— 与 /v1
+	// 主路同一把 `WHERE quota >= ?` 的闩(model.TryReserveUserQuota)。
+	reservedQuota := 0
+	if consumeQuota && priceData.Quota > 0 {
+		reserved, reserveErr := model.TryReserveUserQuota(relayInfo.UserId, priceData.Quota)
+		if reserveErr != nil {
+			return &dto.MidjourneyResponse{
+				Code:        4,
+				Description: reserveErr.Error(),
+			}
+		}
+		if !reserved {
+			return &dto.MidjourneyResponse{
+				Code:        4,
+				Description: "quota_not_enough",
+			}
+		}
+		reservedQuota = priceData.Quota
+		if !relayInfo.IsPlayground {
+			tokenReserved, tokenErr := model.TryReserveTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, priceData.Quota, relayInfo.TokenUnlimited)
+			if tokenErr != nil || !tokenReserved {
+				if refundErr := model.IncreaseUserQuota(relayInfo.UserId, reservedQuota, false); refundErr != nil {
+					common.SysLog("error rolling back midjourney user quota reservation: " + refundErr.Error())
+				}
+				reservedQuota = 0
+				return &dto.MidjourneyResponse{
+					Code:        4,
+					Description: "token_quota_not_enough",
+				}
+			}
 		}
 	}
-
-	if consumeQuota && userQuota-priceData.Quota < 0 {
-		return &dto.MidjourneyResponse{
-			Code:        4,
-			Description: "quota_not_enough",
+	// 任何没有走到「结算」的出口(上游报错、提交被拒、任务落库失败)都要把预留原样
+	// 退回。结算分支把 reservedQuota 清零;defer 是 LIFO,结算那个 defer 注册得更
+	// 晚所以先跑,这里看到的就是它的结论。
+	defer func() {
+		if reservedQuota <= 0 {
+			return
 		}
-	}
+		if refundErr := model.IncreaseUserQuota(relayInfo.UserId, reservedQuota, false); refundErr != nil {
+			common.SysLog("error refunding midjourney user quota reservation: " + refundErr.Error())
+		}
+		if !relayInfo.IsPlayground {
+			if refundErr := model.IncreaseTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, reservedQuota); refundErr != nil {
+				common.SysLog("error refunding midjourney token quota reservation: " + refundErr.Error())
+			}
+		}
+	}()
 
 	midjResponseWithStatus, responseBody, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	if err != nil {
@@ -541,10 +610,13 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 
 	defer func() {
 		if consumeQuota && midjResponseWithStatus.StatusCode == 200 {
-			err := service.PostConsumeQuota(relayInfo, priceData.Quota, 0, true)
+			// 额度在请求前已经原子预留过,这里只做余额提醒与统计:传 quota=0、
+			// preConsumedQuota=priceData.Quota,避免同一笔被扣两次。
+			err := service.PostConsumeQuota(relayInfo, 0, priceData.Quota, true)
 			if err != nil {
 				common.SysLog("error consuming token remain quota: " + err.Error())
 			}
+			reservedQuota = 0
 			tokenName := c.GetString("token_name")
 			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s，ID %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, midjRequest.Action, midjResponse.Result)
 			other := service.GenerateMjOtherInfo(relayInfo, priceData)

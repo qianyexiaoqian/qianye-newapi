@@ -124,13 +124,21 @@ func TestNearestThresholdLineTakesMinimumAcrossBothLines(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := nearestThresholdLine(tc.accountThreshold, tc.accountHit, tc.cats, tc.hits)
+			got := nearestThresholdLine(tc.accountThreshold, tc.accountHit, 24, tc.cats, tc.hits)
 			assert.Equal(t, tc.wantLine, got.Line)
 			if tc.wantLine == ThresholdLineNone {
 				return
 			}
 			assert.Equal(t, tc.wantRemaining, got.Remaining)
 			assert.Equal(t, tc.wantCategoryId, got.CategoryId)
+			// 这条线自己的三个数必须一起交出来 —— 否则界面上会出现「触发线:类型」
+			// 配上账号总量线的窗口与阈值,一句话里混着两条线的数字。
+			assert.Equal(t, got.Threshold-got.HitCount > 0,
+				got.Remaining > 0, "remaining 必须由这条线自己的阈值与计数解释得通")
+			if tc.wantLine == ThresholdLineCategory {
+				assert.Equal(t, tc.hits[got.CategoryId], got.HitCount,
+					"类型线报的必须是这一类自己的计数,不是账号总量线的")
+			}
 		})
 	}
 }
@@ -173,7 +181,7 @@ func TestNearestThresholdLineAgreesWithAnyReached(t *testing.T) {
 
 			// 展示侧。
 			line := nearestThresholdLine(
-				tc.accountThreshold, tc.accountHit,
+				tc.accountThreshold, tc.accountHit, 24,
 				[]Category{tc.category}, map[int64]int{tc.category.Id: tc.categoryHit},
 			)
 

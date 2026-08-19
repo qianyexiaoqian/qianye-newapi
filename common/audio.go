@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 
 	"github.com/abema/go-mp4"
 	"github.com/go-audio/aiff"
@@ -44,8 +45,25 @@ func GetAudioDuration(ctx context.Context, f io.ReadSeeker, ext string) (duratio
 	default:
 		return 0, fmt.Errorf("unsupported audio format: %s", ext)
 	}
+	if err != nil {
+		return 0, err
+	}
+	// 解析器「没报错但也没解析出时长」必须当成失败,不能当成 0 秒。
+	//
+	// 时长是转写计费的**唯一**依据(service/token_counter.go 把它换算成
+	// prompt token),而好几个解析器在内容与扩展名不符时返回 (0, nil):
+	// .ogg/.oga/.opus 的 getOpusDuration 一个 OggS 页头都没扫到就 EOF 退出,
+	// totalGranulePos 保持 0;.mp3 与 .m4a 也各有自己的 0/NaN 出口。
+	// 于是 0 秒 → 0 token → hasBillableUsage() 判成「没有可计费用量」→ 整笔免单,
+	// 而上游照常把音频转写出来并按分钟向平台收费。改一个文件名就能白嫖。
+	//
+	// 报错的后果是 controller/relay.go 的 EstimateRequestToken 以 400 拒绝这次
+	// 请求 —— 与 .flac/.webm 等解析失败时本来就有的行为一致。
+	if math.IsNaN(duration) || math.IsInf(duration, 0) || duration <= 0 {
+		return 0, fmt.Errorf("unable to determine audio duration for %s (parsed %v); the file may be truncated or not actually %s", ext, duration, ext)
+	}
 	SysLog(fmt.Sprintf("GetAudioDuration: duration=%f", duration))
-	return duration, err
+	return duration, nil
 }
 
 // getMP3Duration 解析 MP3 文件以获取时长。
@@ -87,6 +105,20 @@ func getWAVDuration(r io.ReadSeeker) (float64, error) {
 	}
 
 	pcmSize := int64(dec.PCMSize)
+
+	// data chunk 声明的字节数是**客户端写的**,与文件里实际有多少音频数据无关。
+	// 只信它的话,同一份 16KB 的文件既可以自称 600 秒(多收 588 倍),也可以自称
+	// 2 字节(少收 588 倍)。真实可读字节数是硬事实,拿它当上界:声明值超过实际
+	// 剩余字节就按实际的算。声明值偏小不动它 —— 遵守同一字段的上游也只会解码
+	// 那么多,少报的人拿不到超出部分的转写结果。
+	if pcmSize > 0 {
+		dataStart, _ := r.Seek(0, io.SeekCurrent)
+		endPos, _ := r.Seek(0, io.SeekEnd)
+		r.Seek(dataStart, io.SeekStart)
+		if available := endPos - dataStart; available > 0 && pcmSize > available {
+			pcmSize = available
+		}
+	}
 
 	// 如果读出来的 Size 是 0，尝试用文件大小反推
 	if pcmSize == 0 {

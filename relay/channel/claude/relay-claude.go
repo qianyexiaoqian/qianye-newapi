@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -207,6 +208,22 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		}
 	})
 	if err != nil {
+		// 上游在流中途报错(Anthropic 流式协议里的 overloaded_error / api_error,
+		// 或某一行 data 的 JSON 解不开)。此前这里 `return nil, err` 把已经累计的
+		// claudeInfo.Usage 整份丢掉:调用方据此走 Billing.Refund() 全额退预扣,
+		// PostTextConsumeQuota 一次都不会跑 —— 正文已经推给客户端、上游 token
+		// 已经真烧掉,平台一分不收,而且 logs 表连一行都不写,事后无从对账。
+		//
+		// 已经产生用量的流按已知用量结算,与 openai/gemini/dify/baidu/responses
+		// 那几个流式 handler 的 `return usage, nil` 同口径;真正一个 token 都没
+		// 产生的流(开流即错)仍把错误交回去,让重试与错误日志照常工作。
+		if claudeInfo.Usage != nil && (claudeInfo.Usage.PromptTokens > 0 || claudeInfo.Usage.CompletionTokens > 0) {
+			common.SysError(fmt.Sprintf(
+				"claude stream aborted mid-flight after usage was produced (prompt=%d completion=%d, model=%s); billing the accumulated usage instead of refunding: %s",
+				claudeInfo.Usage.PromptTokens, claudeInfo.Usage.CompletionTokens,
+				info.OriginModelName, err.Error()))
+			return claudeInfo.Usage, nil
+		}
 		return nil, err
 	}
 

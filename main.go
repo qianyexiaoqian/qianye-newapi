@@ -242,6 +242,9 @@ func main() {
 	if common.DataExportEnabled {
 		model.SaveQuotaDataCache()
 	}
+	// BATCH_UPDATE_ENABLED 下额度变动只在内存里排队,最后一个刷新窗口(默认 5 秒)
+	// 里的全站扣费与退款不落库就会被静默丢弃。必须在退出前刷一次。
+	model.FlushBatchUpdates()
 	common.SysLog("server exited")
 }
 

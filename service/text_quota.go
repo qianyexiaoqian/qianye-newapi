@@ -76,6 +76,26 @@ func (s *textQuotaSummary) hasBillableUsage() bool {
 	return s.TotalTokens > 0 || !s.ToolCallSurchargeQuota.IsZero()
 }
 
+// clampUpstreamTokenCount 把上游自报的 token 数夹到非负。
+// 负数只可能来自坏掉的、或被中间人改写过的上游,而一个负分量会把同一笔里真实
+// 发生的另一个分量一起抵消掉,表现为整笔免单。夹住之后仍留一条 SysError,
+// 让「某个渠道在报负数」这件事仍然可被发现,而不是变成一行看不出异常的 quota=0。
+func clampUpstreamTokenCount(relayInfo *relaycommon.RelayInfo, field string, count int) int {
+	if count >= 0 {
+		return count
+	}
+	// 只取 OriginModelName:ChannelId 挂在嵌入的 *ChannelMeta 上,而它在
+	// InitChannelMeta 之前是 nil,读它会在这条纯粹的告警路径上把请求打挂。
+	modelName := ""
+	if relayInfo != nil {
+		modelName = relayInfo.OriginModelName
+	}
+	common.SysError(fmt.Sprintf(
+		"upstream reported a negative %s (%d) for model %s; clamped to 0",
+		field, count, modelName))
+	return 0
+}
+
 func cacheWriteTokensTotal(summary textQuotaSummary) int {
 	if summary.CacheCreationTokens5m > 0 || summary.CacheCreationTokens1h > 0 {
 		splitCacheWriteTokens := summary.CacheCreationTokens5m + summary.CacheCreationTokens1h
@@ -207,9 +227,25 @@ func composeTieredTextQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaS
 
 	if tieredResult != nil {
 		if snap := relayInfo.TieredBillingSnapshot; snap != nil {
-			quota, clamp := common.QuotaFromDecimalChecked(decimal.NewFromFloat(tieredResult.ActualQuotaBeforeGroup).
-				Mul(decimal.NewFromFloat(snap.GroupRatio)).
-				Add(summary.ToolCallSurchargeQuota))
+			// 这一支刻意**不用** TryTieredSettle 已经取整过的 tieredQuota,而是从
+			// before-group 重算,避免引入第二次舍入。代价是 TryTieredSettle 在
+			// 返回前打的那道非负地板(tiered_settle.go)也一并被绕开了:
+			// ActualQuotaBeforeGroup 是表达式的原始结果,运营写的
+			// `p*3 + c*15 - 20000` 这类促销式在小 token 数上就是负的。
+			//
+			// 负值经 SettleBilling 变成负 delta → 资金来源执行 Increase,扣费变成
+			// 给用户充值,而工具附加费(web_search 默认单价硬编码 10.0)只需要一次
+			// 调用就能把这条路走通 —— 实测每请求凭空生成 4850 额度,循环无上限。
+			// 所以地板必须在这里再走一遍,和 tiered_settle.go 那道逐字同义。
+			base := decimal.NewFromFloat(tieredResult.ActualQuotaBeforeGroup).
+				Mul(decimal.NewFromFloat(snap.GroupRatio))
+			if base.IsNegative() {
+				common.SysError(fmt.Sprintf(
+					"tiered billing expression produced a negative quota (%s) for model %s while composing tool-call surcharges; clamped to 0",
+					base.String(), relayInfo.OriginModelName))
+				base = decimal.Zero
+			}
+			quota, clamp := common.QuotaFromDecimalChecked(base.Add(summary.ToolCallSurchargeQuota))
 			noteQuotaClamp(relayInfo, clamp)
 			return quota
 		}
@@ -289,8 +325,15 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		}
 	}
 
-	summary.PromptTokens = usage.PromptTokens
-	summary.CompletionTokens = usage.CompletionTokens + reasoningTokensOutsideCompletion(usage)
+	// 上游报回来的 token 数是**外部输入**,协议上不该为负,但坏掉的/被改写的上游
+	// 会给出负数。此前这里原样相加:prompt=1000、completion=-1000000 让
+	// TotalTokens 变成负数,hasBillableUsage() 判成「这笔没有可计费用量」,整笔
+	// (含真实发生的 prompt 侧)免单。往上有饱和转换兜着,往下一道闸都没有。
+	//
+	// 逐分量夹到 0 而不是只夹合计:合计非负但某一路为负同样会把另一路吃掉。
+	summary.PromptTokens = clampUpstreamTokenCount(relayInfo, "prompt_tokens", usage.PromptTokens)
+	summary.CompletionTokens = clampUpstreamTokenCount(relayInfo, "completion_tokens",
+		usage.CompletionTokens+reasoningTokensOutsideCompletion(usage))
 	summary.TotalTokens = summary.PromptTokens + summary.CompletionTokens
 	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
 	summary.CacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
@@ -490,6 +533,8 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	}
 
 	if err := SettleBilling(ctx, relayInfo, summary.Quota); err != nil {
+		// 见 attachSettleFailure:结算失败但日志照记全额,差额必须留下指路牌。
+		relayInfo.SettleFailure = err.Error()
 		logger.LogError(ctx, "error settling billing: "+err.Error())
 	}
 
@@ -563,6 +608,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	}
 
 	attachQuotaSaturation(ctx, relayInfo, other)
+	attachSettleFailure(ctx, relayInfo, other)
 	attachGroupRatioFallback(ctx, relayInfo, other)
 	QyLogMetricsAttachCacheBasis(other, summary.PromptTokens, summary.CacheTokens, cacheWriteTokens, summary.IsClaudeUsageSemantic)
 

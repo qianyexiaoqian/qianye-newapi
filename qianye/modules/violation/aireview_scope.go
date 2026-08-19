@@ -408,6 +408,9 @@ func validateAIScope(s *AIScope) error {
 	if n := utf8.RuneCountInString(s.ModelScope); n > 2048 {
 		return fmt.Errorf("模型作用域过长(%d 字,上限 2048 字)", n)
 	}
+	if err := validateGroupScopeList(s.GroupScope); err != nil {
+		return err
+	}
 	if n := utf8.RuneCountInString(s.GroupScope); n > 1024 {
 		return fmt.Errorf("分组作用域过长(%d 字,上限 1024 字)", n)
 	}

@@ -45,8 +45,9 @@ type ruleUpsertReq struct {
 	// CategoryId 是这条规则归属的违规类型。0 / 缺省 → 由 resolveRuleCategory
 	// 落到「未分类」兜底类型,绝不留 0(那会让这条规则的命中在管理端显示成
 	// 一个查不到的类型)。
-	CategoryId     int64  `json:"category_id"`
-	Priority       int    `json:"priority"`
+	CategoryId int64 `json:"category_id"`
+	// 指针:0 是一档合法优先级(最先判),漏传才落出厂默认 100。
+	Priority       *int   `json:"priority,omitempty"`
 	Phase          string `json:"phase"`
 	MatchType      string `json:"match_type"`
 	Pattern        string `json:"pattern"`
@@ -70,7 +71,9 @@ type ruleUpsertReq struct {
 	// 这里曾经还有一个 severity。它没有任何读点,已随表单一并移除,
 	// 数据库列也已删除(见 dropLegacySeverityColumn)。
 	// 旧前端继续发这个字段仍然是无害的:JSON 解码忽略未知键,保存照常成功。
-	CountWeight    int    `json:"count_weight"`
+	// 指针:必须分得开"漏传这个字段"与"显式填 0"。0 是一档合法配置
+	// (只处置、不推进任何一条线),而漏传要落在出厂默认 1 上。
+	CountWeight    *int   `json:"count_weight,omitempty"`
 	ArchiveContext bool   `json:"archive_context"`
 	BlockMessage   string `json:"block_message"`
 }
@@ -111,7 +114,9 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 		dst.Mode = ModeShadow
 	}
 	dst.CategoryId = r.CategoryId
-	dst.Priority = r.Priority
+	if r.Priority != nil {
+		dst.Priority = *r.Priority
+	}
 	dst.Phase = r.Phase
 	dst.MatchType = r.MatchType
 	dst.Pattern = r.Pattern
@@ -131,7 +136,11 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 	dst.FeeMultiple = mult
 	dst.FeeMaxQuota = r.FeeMaxQuota
 	dst.AIMinConfidence = conf
-	dst.CountWeight = r.CountWeight
+	// nil = 这次请求没提这个字段:新建时保留构造函数给的出厂默认,
+	// 编辑时保留这一行原来的值。绝不能在这里折成 0。
+	if r.CountWeight != nil {
+		dst.CountWeight = *r.CountWeight
+	}
 	dst.ArchiveContext = r.ArchiveContext
 	dst.BlockMessage = r.BlockMessage
 	return ValidateRule(dst)
@@ -216,7 +225,16 @@ func adminCreateRule(c *gin.Context) {
 		badRequest(c, "请求体格式错误")
 		return
 	}
-	row := &Rule{CreatedAt: common.GetTimestamp(), UpdatedAt: common.GetTimestamp(), CreatedBy: c.GetInt("id")}
+	// 出厂默认写在这里而不是 gorm `default:` 标签上:标签会让 GORM 在 INSERT 时
+	// 跳过零值,把管理员显式填的 0 改写成数据库默认值(count_weight 0→1 会让一条
+	// 「只拦截不计数」的规则开始把人推向封号,priority 0→100 会让"最先判"失效)。
+	row := &Rule{
+		CountWeight: 1,
+		Priority:    100,
+		CreatedAt:   common.GetTimestamp(),
+		UpdatedAt:   common.GetTimestamp(),
+		CreatedBy:   c.GetInt("id"),
+	}
 	if err := req.apply(row); err != nil {
 		badRequest(c, err.Error())
 		return
@@ -1629,7 +1647,17 @@ func adminResetCounter(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&req)
 
-	before, reset, err := resetUserCounter(c.Request.Context(), db.Get(), userId)
+	before, catsBefore, reset, err := resetUserCounter(c.Request.Context(), db.Get(), userId)
+	// 类型线是与账号总量线并列的封号触发器,而管理端没有任何页面显示它。
+	// 重置把两条线一起清了,那么"清之前每条线上各是多少"就必须一起进审计与响应,
+	// 否则管理员根本不知道刚才那一下动了什么。
+	catBefore := make([]map[string]any, 0, len(catsBefore))
+	for _, cc := range catsBefore {
+		catBefore = append(catBefore, map[string]any{
+			"category_id": cc.CategoryId, "hit_count": cc.HitCount,
+			"window_start": cc.WindowStart, "total_count": cc.TotalCount,
+		})
+	}
 	// 审计写在返回之前,成功与失败都写:清零会直接改变"这个账号离封号还有几次",
 	// 事后必须能追溯到人。
 	result, reason := qymodel.ResultOK, truncate(req.Reason, 512)
@@ -1649,13 +1677,17 @@ func adminResetCounter(c *gin.Context) {
 		BeforeSnap: common.MapToJsonStr(map[string]any{
 			"hit_count": before.HitCount, "window_start": before.WindowStart,
 			"total_count": before.TotalCount, "ban_cycle": before.BanCycle,
+			"category_counters": catBefore,
 		}),
 	})
 	if err != nil {
 		internalError(c, err)
 		return
 	}
-	respond(c, gin.H{"reset": reset, "hit_count_before": before.HitCount})
+	respond(c, gin.H{
+		"reset": reset, "hit_count_before": before.HitCount,
+		"category_counters_before": catBefore,
+	})
 }
 
 // adminResetBreaker 手动解除**熔断**导致的强制影子回落。

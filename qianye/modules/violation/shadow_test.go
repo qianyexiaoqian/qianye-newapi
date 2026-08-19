@@ -207,17 +207,29 @@ func TestResetUserCounterClearsOnlyTheBanDriver(t *testing.T) {
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	require.NoError(t, gdb.AutoMigrate(&Counter{}))
+	require.NoError(t, gdb.AutoMigrate(&Counter{}, &CategoryCounter{}))
 
 	require.NoError(t, gdb.Create(&Counter{
 		UserId: 42, WindowStart: 1000, HitCount: 7, TotalCount: 31, BanCycle: 2,
 		LastHitAt: 1500, UpdatedAt: 1500,
 	}).Error)
+	// 类型线是与账号总量线并列的封号触发器(anyReached 是 OR)。只清总量线的话,
+	// 一个被类型线封掉的账号在"解封 + 重置计数"之后类型计数仍然停在阈值上,
+	// 判据是 after >= threshold ⇒ 下一次同类命中必然再次越线;类型窗口配成 -1
+	// (不限期限)时那个计数永远不会自然滚出,账号从此"解封一次、再犯一次就再封",
+	// 而管理端没有任何页面显示这条线。
+	require.NoError(t, gdb.Create(&CategoryCounter{
+		UserId: 42, CategoryId: 2904, WindowStart: 1000, HitCount: 5, TotalCount: 9,
+		LastHitAt: 1500, UpdatedAt: 1500,
+	}).Error)
 
-	before, reset, err := resetUserCounter(context.Background(), gdb, 42)
+	before, catsBefore, reset, err := resetUserCounter(context.Background(), gdb, 42)
 	require.NoError(t, err)
 	assert.True(t, reset)
 	assert.Equal(t, 7, before.HitCount, "审计要靠这个返回值记录清零前的状态")
+	require.Len(t, catsBefore, 1, "清零前的类型线计数必须一起交给审计")
+	assert.Equal(t, 5, catsBefore[0].HitCount)
+	assert.EqualValues(t, 2904, catsBefore[0].CategoryId)
 
 	var row Counter
 	require.NoError(t, gdb.Where("user_id = ?", 42).Take(&row).Error)
@@ -226,8 +238,14 @@ func TestResetUserCounterClearsOnlyTheBanDriver(t *testing.T) {
 	assert.Equal(t, 2, row.BanCycle, "封禁周期回退会让自动封号对该用户永久失效")
 	assert.Greater(t, row.WindowStart, int64(1000), "窗口必须重新起算")
 
+	var cat CategoryCounter
+	require.NoError(t, gdb.Where("user_id = ? AND category_id = ?", 42, 2904).Take(&cat).Error)
+	assert.Equal(t, 0, cat.HitCount, "类型线必须一起清 —— 否则给的不是重新开始,是'再犯一次就再封'")
+	assert.EqualValues(t, 9, cat.TotalCount, "类型线的终身累计同样不得被清掉")
+	assert.Greater(t, cat.WindowStart, int64(1000), "类型线的窗口也必须重新起算")
+
 	t.Run("没有计数行时不算失败", func(t *testing.T) {
-		_, reset, err := resetUserCounter(context.Background(), gdb, 99)
+		_, _, reset, err := resetUserCounter(context.Background(), gdb, 99)
 		require.NoError(t, err)
 		assert.False(t, reset)
 	})

@@ -130,7 +130,7 @@ func userSummary(c *gin.Context) {
 	// 在"账号线 10、某一类 3"这种普通配置下会告诉用户"还剩 8 次",
 	// 而他下一次命中就被封了。给反向的数字比不给数字更糟。
 	cats, catHits := userCategoryLines(userId, now)
-	nearest := nearestThresholdLine(policy.Threshold, hit, cats, catHits)
+	nearest := nearestThresholdLine(policy.Threshold, hit, windowHours, cats, catHits)
 
 	var feeTotal int64
 	db.Get().Model(&Record{}).
@@ -149,6 +149,13 @@ func userSummary(c *gin.Context) {
 		// 账号线关着、某一类开着 3 次,是完全合法的配置。
 		"remaining":      nearest.Remaining,
 		"remaining_line": nearest.Line,
+		// 最近那条线**自己的**三个数。缺了它们,界面上就会出现「触发线:类型」
+		// 配「阈值 0、窗口 24 小时」这种自相矛盾的一句话 —— 那两个数描述的是
+		// 账号总量线,而把人封掉的是另一条(实测:类型线阈值 2、不限期限)。
+		// 用户没有任何办法从这一份响应里看出数字对不上。
+		"remaining_threshold":    nearest.Threshold,
+		"remaining_window_hours": nearest.WindowHours,
+		"remaining_hit_count":    nearest.HitCount,
 		// 达到阈值之后会发生什么必须一并告知:同一个"还剩 2 次"在
 		// 「仅记录」档下不会有任何后果,在「封号」档下是账号被限制。
 		// 只给数字不给动作,用户无从判断该不该紧张。

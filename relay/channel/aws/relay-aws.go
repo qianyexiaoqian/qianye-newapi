@@ -296,6 +296,17 @@ streamLoop:
 				info.SetFirstResponseTime()
 				respErr := claude.HandleStreamResponseData(c, info, claudeInfo, string(v.Value.Bytes))
 				if respErr != nil {
+					// 与 claude.ClaudeStreamHandler 同一口径:上游中途报错时,
+					// 已经产生的用量必须交回去结算,否则正文已交付、上游 token
+					// 已烧掉,平台却全额退预扣且 logs 一行不写。
+					if claudeInfo.Usage != nil && (claudeInfo.Usage.PromptTokens > 0 || claudeInfo.Usage.CompletionTokens > 0) {
+						common.SysError(fmt.Sprintf(
+							"aws bedrock claude stream aborted mid-flight after usage was produced (prompt=%d completion=%d, model=%s); billing the accumulated usage instead of refunding: %s",
+							claudeInfo.Usage.PromptTokens, claudeInfo.Usage.CompletionTokens,
+							info.OriginModelName, respErr.Error()))
+						_ = stream.Close()
+						return nil, claudeInfo.Usage
+					}
 					return respErr, nil
 				}
 			case *bedrockruntimeTypes.UnknownUnionMember:

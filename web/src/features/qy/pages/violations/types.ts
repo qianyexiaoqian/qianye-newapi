@@ -74,6 +74,19 @@ export type QyMyViolationSummary = {
    * 而用户离封号只有 3 次。
    */
   remaining_line?: 'none' | 'account' | 'category'
+  /**
+   * 最近那条线**自己的**三个数。
+   *
+   * `window_hours` / `ban_threshold` 描述的始终是账号总量线（上面那个
+   * 「N / M」统计块问的就是它）。只有那两个数时，一个被类型线封掉的人看到的是
+   * 「触发线：类型」配上「阈值 0、窗口 24 小时」，而真正把他封掉的那条线是
+   * 「阈值 2、不限期限」—— 一句话里混着两条线的数字，用户无从看出。
+   *
+   * 渲染「还差几次」的那一句提示时用这三个，不要回头去拿 `window_hours`。
+   */
+  remaining_threshold?: number
+  remaining_window_hours?: number
+  remaining_hit_count?: number
   /** 这个账号此刻是不是正被违规系统封着。已封的人不该再看到倒计时。 */
   banned?: boolean
   total_fee_quota: number

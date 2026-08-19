@@ -580,6 +580,9 @@ func ValidateRule(r *Rule) error {
 	default:
 		return fmt.Errorf("group_scope_mode 取值非法: %q", r.GroupScopeMode)
 	}
+	if err := validateGroupScopeList(r.GroupScope); err != nil {
+		return err
+	}
 	// 长度校验排在枚举校验之后:一个填错的 mode 该报"取值非法"而不是"模式过长",
 	// 前者直接指向问题,后者会把人引去数长度。
 	for _, lim := range ruleVarcharLimits {
@@ -673,6 +676,30 @@ func (m scopeMatcher) groupInScope(group string) bool {
 	// include 模式(groupExclude=false):不在名单里 → 不生效。
 	// exclude 模式(groupExclude=true):在名单里 → 豁免,不生效。
 	return listed != m.groupExclude
+}
+
+// validateGroupScopeList 挡住写在分组作用域里的通配符。
+//
+// 模型作用域走 matchGlob(支持 `*`、前缀、后缀),分组作用域走的是 map 精确查表 ——
+// 两列在同一张表单上紧挨着,语法却不一样。写 `*` 的人本意是"全站都监控",
+// 实际得到的是"一个都不监控"(除非真有一个名字就叫 `*` 的分组),而界面上没有
+// 任何一处会告诉他:AI 审核那一侧的"必须绑定分组"闸只看这一格是不是空串,
+// `*` 照样通过,汇总里还显示成"已绑定"。
+//
+// 这道闸尤其重要,因为分组作用域正是"哪些用户的请求正文会被发往第三方审核服务"
+// 的唯一入口 —— 它错在哪个方向都必须当场报出来,而不是变成一条永不生效的策略。
+//
+// 规则那一侧同理:一条 enforce 的规则写 `*` 就是一条永不生效的规则。
+func validateGroupScopeList(raw string) error {
+	for _, item := range splitList(raw) {
+		if strings.Contains(item, "*") {
+			return fmt.Errorf("用户分组作用域不支持通配符(%q):这一列是**精确名单**,"+
+				"`*` 会被当成一个名叫 `*` 的分组,于是这一档一个真实分组都匹配不到。"+
+				"模型作用域才支持 `*`,两列语法不同。"+
+				"请逐个列出要生效的分组;违规规则想对全站生效就把这一格留空", item)
+		}
+	}
+	return nil
 }
 
 func (m scopeMatcher) modelInScope(model string) bool {

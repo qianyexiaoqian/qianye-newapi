@@ -357,7 +357,12 @@ type Category struct {
 	WindowHours int  `json:"window_hours" gorm:"not null;default:24"`
 	Threshold   int  `json:"threshold" gorm:"not null;default:0"`
 
-	SortOrder int `json:"sort_order" gorm:"not null;default:100"`
+	// SortOrder 是类型在列表里的排序位。
+	//
+	// **不写 gorm `default:`**:GORM 在 INSERT 时会跳过带默认值标签的零值字段,
+	// 让数据库把 0 填成 100 —— 管理员显式排到最前面的那一类会静默排到最后。
+	// 出厂默认由建类型那一路的构造函数给(见 api_admin_category.go)。
+	SortOrder int `json:"sort_order" gorm:"not null"`
 	// IsFallback 标记「未分类」那一行。它是没有显式类型的规则的落点,
 	// 删掉它 = 让这些规则变成无类型的孤儿,所以删除接口拒绝它。
 	IsFallback bool `json:"is_fallback" gorm:"not null;default:false"`
@@ -457,8 +462,14 @@ type Rule struct {
 	// 取代了旧的 DryRun 布尔列。默认值刻意写在 gorm tag 上而不是只靠代码:
 	// AutoMigrate 给已有行 ADD COLUMN 时会用它回填,于是**现网每一条历史规则
 	// 都会落在 shadow**,这正是迁移策略要的结果(见 migrate.go)。
-	Mode     string `json:"mode" gorm:"type:varchar(16);not null;default:'shadow'"`
-	Priority int    `json:"priority" gorm:"not null;default:100"` // 升序,小者先判
+	Mode string `json:"mode" gorm:"type:varchar(16);not null;default:'shadow'"`
+	// Priority 升序,小者先判。
+	//
+	// **不写 gorm `default:`**:0 是一档合法配置(最高优先级),而 GORM 会跳过
+	// 带默认值标签的零值字段,让数据库把它填成 100 —— "我把它设成 0 让它最先判"
+	// 于是静默失效,命中顺序改由 100 这一档的次级排序决定。
+	// 出厂默认(漏传字段时的 100)由 adminCreateRule 的构造给。
+	Priority int `json:"priority" gorm:"not null"`
 
 	// Source / BuiltinKey / BuiltinVersion / BuiltinFingerprint 只对内置规则包
 	// 导入出来的规则有意义,手写规则一律留空。四列合起来回答升级时的唯一问题:
@@ -545,7 +556,12 @@ type Rule struct {
 	//
 	// 影子命中不写计数器(persistRecord 直接跳过 bumpCounter),但记录里仍然
 	// 留下这个权重,回答"若真实执行,这一次会给计数加几"。
-	CountWeight int `json:"count_weight" gorm:"not null;default:1"`
+	// **不写 gorm `default:1`**:GORM 在 INSERT 时会跳过带默认值标签的零值字段,
+	// 由数据库把 0 填成 1。于是一条管理员显式配成「只拦截、不计数」的规则,
+	// 建出来之后每次命中都在推进两条线,把用户一路推向自动封号 —— 而管理端
+	// 表单回填的仍然是 0(POST 只回 {id},运营看不到自己的配置被改写过)。
+	// 方向是**多封人**。出厂默认(漏传字段时的 1)由 adminCreateRule 的构造给。
+	CountWeight int `json:"count_weight" gorm:"not null"`
 
 	// 这里曾经还有一个 Severity(1=低 2=中 3=高)。它从头到尾**只写不读**:
 	// 全仓除了 upsert 赋值与内置种子之外没有任何消费者,既不参与判定、

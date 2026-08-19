@@ -273,6 +273,16 @@ type thresholdLineState struct {
 	// CategoryId 只在 Line == ThresholdLineCategory 时有意义。
 	// 它是**内部标识**,调用方要拿它去查公示标题时必须自己确认那一类已公示。
 	CategoryId int64
+
+	// Threshold / WindowHours / HitCount 是**这条线自己的**三个数。
+	//
+	// 用户端曾经只下发账号总量线的窗口与阈值,同时把 remaining_line 报成
+	// "类型" —— 于是被类型线封掉的人看到的是「触发线:类型」配上「阈值 0、
+	// 窗口 24 小时」,而真正把他封掉的那条线是「阈值 2、不限期限」。
+	// 一句话里两条线的数字混在一起,用户没有任何办法看出来。
+	Threshold   int
+	WindowHours int
+	HitCount    int
 }
 
 // nearestThresholdLine 在账号总量线与全部单类型线里挑出"还差最少"的那一条。
@@ -296,9 +306,9 @@ type thresholdLineState struct {
 // 一条线"生效"的条件就是那两个函数里的条件:账号线要 threshold > 0,
 // 类型线要 Enabled 且 Threshold > 0。任何一处放宽,用户看到的倒计时
 // 就会与真实处置对不上。
-func nearestThresholdLine(accountThreshold, accountHit int, cats []Category, catHits map[int64]int) thresholdLineState {
+func nearestThresholdLine(accountThreshold, accountHit, accountWindow int, cats []Category, catHits map[int64]int) thresholdLineState {
 	best := thresholdLineState{Line: ThresholdLineNone}
-	consider := func(line string, categoryId int64, threshold, hit int) {
+	consider := func(line string, categoryId int64, threshold, hit, window int) {
 		remaining := threshold - hit
 		if remaining < 0 {
 			remaining = 0
@@ -308,17 +318,21 @@ func nearestThresholdLine(accountThreshold, accountHit int, cats []Category, cat
 		if best.Line != ThresholdLineNone && remaining >= best.Remaining {
 			return
 		}
-		best = thresholdLineState{Line: line, Remaining: remaining, CategoryId: categoryId}
+		best = thresholdLineState{
+			Line: line, Remaining: remaining, CategoryId: categoryId,
+			Threshold: threshold, WindowHours: window, HitCount: hit,
+		}
 	}
 
 	if accountThreshold > 0 {
-		consider(ThresholdLineAccount, 0, accountThreshold, accountHit)
+		consider(ThresholdLineAccount, 0, accountThreshold, accountHit, accountWindow)
 	}
 	for _, cat := range cats {
 		if !cat.Enabled || cat.Threshold <= 0 {
 			continue
 		}
-		consider(ThresholdLineCategory, cat.Id, cat.Threshold, catHits[cat.Id])
+		consider(ThresholdLineCategory, cat.Id, cat.Threshold, catHits[cat.Id],
+			effectiveWindowHours(cat.WindowHours))
 	}
 	return best
 }
@@ -414,18 +428,36 @@ func revertCounter(userId, weight int, windowStart int64) error {
 // total_count 是终身累计的展示值,清掉它会让"这个账号历史上违规过多少次"
 // 这条运营信息永久消失;ban_cycle 更不能动 —— 它是封禁认领的互斥键,
 // 回退它会让该用户的自动封号撞上历史唯一键从此静默失效。
-func resetUserCounter(ctx context.Context, gdb *gorm.DB, userId int) (Counter, bool, error) {
+//
+// # 两条线必须一起清
+//
+// 封号判据是 OR:账号总量线(本表)与单类型线(qy_violation_cat_counter)任一
+// 越线都要求处置。只清总量线的话,一个被类型线封掉的账号在"解封 + 重置计数"
+// 之后类型计数仍然停在阈值上,而判据是 `after >= threshold` —— 下一次同类命中
+// 必然再次越线。类型窗口配成 -1(不限期限)时那个计数永远不会自然滚出,账号
+// 进入"解封 → 下一次同类违规立刻再封"的稳定态,而管理端没有任何页面显示类型线,
+// 运营只能改数据库。
+//
+// 第二个返回值是清零前各类型线上的计数,给审计与响应用:管理员要看得见自己
+// 这一次到底动了什么 —— 尤其是那些把他封掉的类型线。
+func resetUserCounter(ctx context.Context, gdb *gorm.DB, userId int) (Counter, []CategoryCounter, bool, error) {
 	if gdb == nil {
-		return Counter{}, false, db.ErrNotReady
+		return Counter{}, nil, false, db.ErrNotReady
 	}
 	var before Counter
 	err := gdb.WithContext(ctx).Where("user_id = ?", userId).Take(&before).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return Counter{}, false, nil
+		return Counter{}, nil, false, nil
 	}
 	if err != nil {
 		db.MarkFailure(err)
-		return Counter{}, false, err
+		return Counter{}, nil, false, err
+	}
+	var catsBefore []CategoryCounter
+	if err := gdb.WithContext(ctx).Where("user_id = ? AND hit_count > 0", userId).
+		Order("category_id asc").Find(&catsBefore).Error; err != nil {
+		db.MarkFailure(err)
+		return before, nil, false, err
 	}
 	now := common.GetTimestamp()
 	if err := gdb.WithContext(ctx).Model(&Counter{}).Where("user_id = ?", userId).
@@ -435,9 +467,33 @@ func resetUserCounter(ctx context.Context, gdb *gorm.DB, userId int) (Counter, b
 			"updated_at":   now,
 		}).Error; err != nil {
 		db.MarkFailure(err)
-		return before, false, err
+		return before, catsBefore, false, err
 	}
-	return before, true, nil
+	if _, err := resetUserCategoryCounters(ctx, gdb, userId); err != nil {
+		db.MarkFailure(err)
+		return before, catsBefore, false, err
+	}
+	return before, catsBefore, true, nil
+}
+
+// resetUserCategoryCounters 把某个用户**全部类型线**的当前窗口计数清零,
+// 返回被清掉的行数。
+//
+// 与总量线同口径:只清 hit_count 与 window_start,保留 total_count(终身累计的
+// 展示值)。类型线上没有 ban_cycle —— 封禁认领的互斥键只存在于 Counter 上,
+// 两条线共用同一个周期。
+func resetUserCategoryCounters(ctx context.Context, gdb *gorm.DB, userId int) (int64, error) {
+	if gdb == nil {
+		return 0, db.ErrNotReady
+	}
+	now := common.GetTimestamp()
+	res := gdb.WithContext(ctx).Model(&CategoryCounter{}).Where("user_id = ?", userId).
+		Updates(map[string]any{
+			"hit_count":    0,
+			"window_start": now,
+			"updated_at":   now,
+		})
+	return res.RowsAffected, res.Error
 }
 
 // openNewBanCycle 在解封时把周期 +1。
@@ -460,8 +516,17 @@ func openNewBanCycle(userId int, resetCount bool) error {
 	if resetCount {
 		sets += ", hit_count = 0"
 	}
-	return gdb.Exec(fmt.Sprintf("UPDATE qy_violation_counter SET %s WHERE user_id = ?", sets),
-		append(args, userId)...).Error
+	if err := gdb.Exec(fmt.Sprintf("UPDATE qy_violation_counter SET %s WHERE user_id = ?", sets),
+		append(args, userId)...).Error; err != nil {
+		return err
+	}
+	if !resetCount {
+		return nil
+	}
+	// 类型线必须跟着清。两条线是 OR,只清总量线的话"给一次重新开始"实际给的是
+	// "再犯一次就立刻再封" —— 而且封他的那条线在管理端一个页面都看不到。
+	_, err := resetUserCategoryCounters(context.Background(), gdb, userId)
+	return err
 }
 
 // resolveBanClaim 决定本次是否要执行封号,并把这个决定持久化。

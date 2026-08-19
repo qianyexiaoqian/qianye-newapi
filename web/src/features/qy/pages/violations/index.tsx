@@ -185,10 +185,39 @@ export function QyMyViolations() {
                     ),
                     // 撞的是哪条线必须说：同一个「还剩 1 次」，落在账号总量线上
                     // 和落在某一个违规类型上，用户该收敛的行为不是同一件事。
+                    //
+                    // 而且要连**那条线自己的窗口与阈值**一起说。上面那个
+                    // 「N / M」块与它的窗口提示描述的始终是账号总量线；只报
+                    // 「触发线：类型」而不给类型线的数，用户看到的就是
+                    // 「触发线：类型」配「阈值 0、窗口 24 小时」，两条线的数字
+                    // 混在一句话里而没有任何办法分辨。
                     hint:
-                      remainingDisplay.kind === 'countdown'
-                        ? t(qyRemainingLineKey(remainingDisplay.line))
-                        : undefined,
+                      remainingDisplay.kind === 'countdown' ? (
+                        <>
+                          {t(qyRemainingLineKey(remainingDisplay.line))}
+                          {summary.remaining_threshold != null &&
+                            summary.remaining_threshold > 0 && (
+                              <>
+                                {' · '}
+                                {qyWindowIsUnlimited(
+                                  summary.remaining_window_hours ??
+                                    summary.window_hours,
+                                )
+                                  ? t('qy_vio_my_remaining_line_scale_unlimited', {
+                                      hits: summary.remaining_hit_count ?? 0,
+                                      threshold: summary.remaining_threshold,
+                                    })
+                                  : t('qy_vio_my_remaining_line_scale', {
+                                      hits: summary.remaining_hit_count ?? 0,
+                                      threshold: summary.remaining_threshold,
+                                      hours:
+                                        summary.remaining_window_hours ??
+                                        summary.window_hours,
+                                    })}
+                              </>
+                            )}
+                        </>
+                      ) : undefined,
                   },
                   {
                     key: 'total_fee',

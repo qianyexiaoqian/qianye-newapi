@@ -53,12 +53,28 @@ type categoryUpsertReq struct {
 	Enabled     bool `json:"enabled"`
 	WindowHours int  `json:"window_hours"`
 	Threshold   int  `json:"threshold"`
-	SortOrder   int  `json:"sort_order"`
+	// 指针:0 是一档合法排序位(排最前面),漏传才落出厂默认 100。
+	SortOrder *int `json:"sort_order,omitempty"`
 
 	// Confirm 是二次确认位,与策略档同口径:收紧类型阈值会**立刻**把一批存量账号
 	// 推到越线状态,他们会在各自下一次命中时被处置。服务端不信任前端弹没弹窗,
 	// 它信任的是"这一位只可能由那次交互产生"。
 	Confirm bool `json:"confirm"`
+}
+
+// categorySortOrder 决定这次保存要写进去的排序位。
+//
+// 三态:显式给了就用它(含 0 —— 那是"排最前面",不是"没填");编辑时没给就保留
+// 原值;新建时没给才落出厂默认。写成非指针 int 的话第一态与第三态长得一模一样,
+// 而 gorm 的 `default:` 标签会把显式的 0 静默改写成 100。
+func categorySortOrder(given *int, hasBefore bool, current int) int {
+	if given != nil {
+		return *given
+	}
+	if hasBefore {
+		return current
+	}
+	return 100
 }
 
 var (
@@ -209,7 +225,7 @@ func adminUpsertCategory(c *gin.Context) {
 		Enabled:     req.Enabled,
 		WindowHours: req.WindowHours,
 		Threshold:   req.Threshold,
-		SortOrder:   req.SortOrder,
+		SortOrder:   categorySortOrder(req.SortOrder, hasBefore, before.SortOrder),
 		IsFallback:  before.IsFallback,
 		CreatedAt:   before.CreatedAt,
 	}

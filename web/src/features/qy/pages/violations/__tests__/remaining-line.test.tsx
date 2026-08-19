@@ -170,6 +170,29 @@ describe('违规记录页那一格的接线', () => {
     )
   })
 
+  test('那一格连"这条线自己的窗口与阈值"一起说', () => {
+    // 上面那个「N / M」统计块与它的窗口提示描述的始终是**账号总量线**。
+    // 只报「触发线：类型」而不给类型线自己的数，被类型线封掉的人看到的就是
+    // 「触发线：类型」配上「阈值 0、窗口 24 小时」—— 一句话里混着两条线的数字，
+    // 而真正把他封掉的那条线是「阈值 2、不限期限」。
+    assert.ok(
+      source.includes('summary.remaining_threshold'),
+      '没有用最近那条线自己的阈值 —— 提示里的分母仍是账号总量线的'
+    )
+    assert.ok(
+      source.includes('summary.remaining_window_hours'),
+      '没有用最近那条线自己的窗口 —— 不限期限的类型线会被写成 24 小时'
+    )
+    for (const key of [
+      'qy_vio_my_remaining_line_scale',
+      'qy_vio_my_remaining_line_scale_unlimited',
+    ]) {
+      assert.ok(source.includes(key), `页面没有用 ${key}`)
+      assert.ok(zhKeys[key], `zh 缺少 ${key}`)
+      assert.ok(enKeys[key], `en 缺少 ${key}`)
+    }
+  })
+
   test('那一格不再拿 ban_threshold 自己推倒计时', () => {
     // `ban_threshold` 只描述账号总量线。它还可以合法地用在「N / M」统计块与
     // 进度条上（那两处问的就是账号线），但**不许**再用来决定倒计时显示什么。
