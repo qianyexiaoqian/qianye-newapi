@@ -411,8 +411,10 @@ func releaseOnFailure(order *qymodel.FundOrder, cause error) {
 
 // mainSideApplied 判定资金变更到底有没有真的生效,判不出来时按"已生效"处理。
 //
-// 存在理由:主库事务在 commit 阶段断连时,GORM 会返回错误,但事务其实可能已经提交。
-// 仅凭错误就退还风控预占,等于"钱已经转走却把额度原样还给用户",是纯资损。
+// 存在理由:退还风控预占是不可逆动作。commit 断连那一支现在由 twophase 落
+// StatusInDoubt(不会走到这里),但 Failed 仍可能来自存量单、补偿任务或人工裁决,
+// 那几条来自另一套判据。仅凭 Failed 就退还预占,等于"钱已经转走却把额度原样还给
+// 用户",是纯资损。
 // 因此只有 twophase.MainNotApplied 这一个明确取值才允许退还:探针关掉、探针报错、
 // 探针行缺失都归入"可能已生效"——宁可让用户当天少一次额度,也不能错退。
 func mainSideApplied(order *qymodel.FundOrder) bool {

@@ -116,6 +116,13 @@ func adoptRetiredRateFreeze(w *Withdraw) {
 			"理由同 rate_freeze_mode。这个固定汇率此前会让单据金额与账本金额差出一个倍数")
 		w.RateFreezeFixedDeprecated = nil
 	}
+	if w.AutoCreditOnApproveDeprecated != nil {
+		common.SysError("qianye: withdraw.auto_credit_on_approve 已废弃并被忽略 —— " +
+			"提现现在只做佣金扣除,金额一律由管理员手动发放(站内额度或线下打款)," +
+			"审核通过后单据进入「待发放」队列,管理端点「标记已发放」才核销佣金。" +
+			"自动到账那条跨库链路已整条下线,这个开关的 true/false 都不再对应任何行为")
+		w.AutoCreditOnApproveDeprecated = nil
+	}
 }
 
 // bpsToPercent 把万分比整数换算成百分比字符串,只做整数除法与取余,
@@ -214,6 +221,7 @@ func applyDefaults(c *Config) {
 	intDefault(&w.DailyMaxCount, 3)
 	intDefault(&w.PayeeAccountMax, 3)
 	intDefault(&w.ReviewSLAHours, 72)
+	intDefault(&w.PayoutSLAHours, 72)
 	intDefault(&w.RemarkMaxRunes, 200)
 	intDefault(&w.PIIKeyVersion, 1)
 	intDefault(&w.CooldownSecs, 60)

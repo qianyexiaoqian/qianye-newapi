@@ -47,7 +47,7 @@ type orderView struct {
 	HasProof bool `json:"has_proof"`
 
 	// 需求原文的三个问题在这里闭环:
-	// 什么时候拒绝的 → ReviewedAt;拒绝理由 → RejectReason;什么时候打的款 → PaidAt。
+	// 什么时候拒绝的 → ReviewedAt;拒绝理由 → RejectReason;什么时候发的钱 → PaidAt。
 	ReviewedAt   int64  `json:"reviewed_at"`
 	RejectReason string `json:"reject_reason"`
 	PaidAt       int64  `json:"paid_at"`
@@ -63,7 +63,6 @@ type orderView struct {
 // adminOrderView 在用户视图之上补齐排障与风控字段。
 type adminOrderView struct {
 	orderView
-	OrderNo            string `json:"order_no"`
 	UserId             int    `json:"user_id"`
 	Username           string `json:"username"`
 	RiskFlags          string `json:"risk_flags"`
@@ -72,12 +71,17 @@ type adminOrderView struct {
 	PayoutOperatorId   int    `json:"payout_operator_id"`
 	PayoutOperatorName string `json:"payout_operator_name"`
 	PayoutNote         string `json:"payout_note"`
-	ReconcileState     string `json:"reconcile_state"`
 	ClientIp           string `json:"client_ip"`
 
 	// SLA 字段让前端不必自己算截止时间,也就不会因为客户端时钟偏差而误标红。
+	//
+	// 一张单在任一时刻只处在一道时限里(pending 归审核时限、approved 归发放时限),
+	// 所以两者共用同一对字段,由 slaOf 按状态选判据。拆成四个字段只会让调用方
+	// 每次都要先判状态再挑字段读,而挑错的那次不会有任何信号。
 	SLADeadline int64 `json:"sla_deadline"`
 	SLABreached bool  `json:"sla_breached"`
+	// SLAKind ∈ ""|review|payout,说明上面那对字段说的是哪一道时限。
+	SLAKind string `json:"sla_kind"`
 }
 
 func baseView(w *Withdrawal) orderView {
@@ -138,7 +142,6 @@ func publicActorName(e Event) string {
 func toAdminView(w *Withdrawal, events []Event) *adminOrderView {
 	v := &adminOrderView{
 		orderView:          baseView(w),
-		OrderNo:            w.OrderNo,
 		UserId:             w.UserId,
 		Username:           w.Username,
 		RiskFlags:          w.RiskFlags,
@@ -147,10 +150,9 @@ func toAdminView(w *Withdrawal, events []Event) *adminOrderView {
 		PayoutOperatorId:   w.PayoutOperatorId,
 		PayoutOperatorName: w.PayoutOperatorName,
 		PayoutNote:         w.PayoutNote,
-		ReconcileState:     w.ReconcileState,
 		ClientIp:           w.ClientIp,
 	}
-	v.SLADeadline, v.SLABreached = slaOf(w)
+	v.SLADeadline, v.SLABreached, v.SLAKind = slaOf(w)
 	for _, e := range events {
 		v.Events = append(v.Events, eventView{
 			Action:     e.Action,
@@ -166,14 +168,45 @@ func toAdminView(w *Withdrawal, events []Event) *adminOrderView {
 	return v
 }
 
-// slaOf 计算审核时效截止点。
+// SLA 种类。空串表示这张单当前不在任何一道时限里(终态)。
+const (
+	SLAKindReview = "review"
+	SLAKindPayout = "payout"
+)
+
+// slaOf 计算这张单当前所处那道时限的截止点。
 //
-// 只对还没审完的单有意义:已经处理过的单再标红只会污染队列的告警信号。
-func slaOf(w *Withdrawal) (deadline int64, breached bool) {
-	hours := config.Get().Withdraw.ReviewSLAHours
-	if hours <= 0 || w.Status != StatusPending {
-		return 0, false
+// 两道时限、两个起点,刻意不共用 created_at:
+//
+//	pending  —— 审核时限,从提交(created_at)起算,归审核人;
+//	approved —— 发放时限,从审核通过(reviewed_at)起算,归发放人。
+//
+// 用同一个起点的话,一张审核拖了三天的单在通过的那一刻就已经"发放超时"了,
+// 而发放的人一分钟都还没耽误 —— 两道时限就都不再指向任何具体的人。
+//
+// 终态单一律不标:已经处理完的单再标红只会污染队列的告警信号。
+func slaOf(w *Withdrawal) (deadline int64, breached bool, kind string) {
+	cfg := config.Get().Withdraw
+	switch w.Status {
+	case StatusPending:
+		if cfg.ReviewSLAHours <= 0 {
+			return 0, false, ""
+		}
+		deadline = w.CreatedAt + int64(cfg.ReviewSLAHours)*3600
+		return deadline, common.GetTimestamp() > deadline, SLAKindReview
+	case StatusApproved:
+		// reviewed_at 为 0 只可能出现在本改造之前落库的存量 approved 单上。
+		// 回落到 updated_at 而不是当成"不计时":那批单正是最该被看见的积压。
+		start := w.ReviewedAt
+		if start <= 0 {
+			start = w.UpdatedAt
+		}
+		if cfg.PayoutSLAHours <= 0 || start <= 0 {
+			return 0, false, ""
+		}
+		deadline = start + int64(cfg.PayoutSLAHours)*3600
+		return deadline, common.GetTimestamp() > deadline, SLAKindPayout
+	default:
+		return 0, false, ""
 	}
-	deadline = w.CreatedAt + int64(hours)*3600
-	return deadline, common.GetTimestamp() > deadline
 }

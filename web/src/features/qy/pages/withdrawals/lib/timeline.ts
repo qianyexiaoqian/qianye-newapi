@@ -22,13 +22,17 @@ import type { QyTimelineItem } from '../../../lib/types'
 import type { QyWithdrawal } from '../../withdraw/types'
 
 /**
- * 提现单的三段式时间线：提交 → 审核 → 打款/到账。
+ * 提现单的三段式时间线：提交（佣金已扣除）→ 审核 → 管理员发放。
  *
  * 这是需求原文三个问题的直接答案，因此每一节点的 description 都必须落到
  * **具体的事实**上，不能只写状态名：
  *   - 什么时候拒绝的 → 审核节点的 `reviewed_at` + `reject_reason`
- *   - 什么时候打的款 → 打款节点的 `paid_at` + `payout_ref`
- *   - 为什么失败     → 打款节点的 `fail_reason`
+ *   - 什么时候发的钱 → 发放节点的 `paid_at` + `payout_ref`
+ *   - 为什么失败     → 发放节点的 `fail_reason`
+ *
+ * 第三节点在 `approved` 时是 `current` 而不是 `done`：审核通过**不等于**钱到手，
+ * 系统不发钱，还要等管理员手动发放。把它画成已完成是这条链路上最容易造成
+ * "我通过了怎么没到账"工单的一处。
  *
  * 未到达的节点保留灰色占位而不是隐藏：提现要走 3 步，只画已发生的部分会让
  * 用户以为流程卡死了，实际上只是还没轮到。
@@ -112,7 +116,7 @@ export function buildQyWithdrawTimeline(
   function payoutState(): QyTimelineItem['state'] {
     if (paid) return 'done'
     if (failed) return 'failed'
-    if (status === 'approved' || status === 'paying') return 'current'
+    if (status === 'approved') return 'current'
     return 'pending'
   }
 

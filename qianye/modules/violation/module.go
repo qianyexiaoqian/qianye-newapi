@@ -50,6 +50,10 @@ func (Mod) InstallHooks() {
 	// 停在 pending 的那些单仍要被补偿任务推进,而补偿任务找不到 Resolver 时会
 	// 直接把资金单标成 success,把 fee_status 永久留在 charged。
 	twophase.RegisterResolver(qymodel.KindViolationFee, resolveAfterCompensation)
+	// PostCommit 与 Resolver 成对:前者补主库那一侧的可见结果(令牌缓存、账本行),
+	// 后者补扩展库的业务明细。少了 PostCommit,commit 断连之后钱退了、
+	// fee_status 也被补偿任务改对了,而用户的账单里一行都没有。
+	twophase.RegisterPostCommit(qymodel.KindViolationFee, postRefundFromOrder)
 
 	if !config.Get().Violation.Enabled {
 		return

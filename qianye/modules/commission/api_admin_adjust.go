@@ -43,7 +43,6 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
@@ -383,28 +382,22 @@ func reclaimableCeiling(tx *gorm.DB, bal *Balance) (int64, error) {
 // 自营与越级都在**开事务之前**判掉:它们与余额、幂等键都无关,越早拒绝,
 // qy_commission_balance 上那把行锁被握住的时间越短。
 func requireAdjustableTarget(ctx context.Context, in manualAdjustInput) error {
-	if guard.SelfDealing(in.OperatorId, in.UserId) {
+	// 判据与角色回查都在 guard.ActorMayActOn —— 本模块另外四条动钱接口
+	// (已提现迁移、绑定/换绑邀请关系、手动结算)走的是同一个函数。这里只
+	// 把哨兵错误翻回本模块的错误码表,因为 adjustErrCodes 已经是这三种情形
+	// 对外的 code 契约,换成 guard 的哨兵会改掉前端认的字符串。
+	switch err := guard.ActorMayActOn(ctx, in.OperatorId, in.OperatorRole, in.UserId); {
+	case err == nil:
+		return nil
+	case errors.Is(err, guard.ErrActorIsTarget):
 		return errAdjustSelfDealing
-	}
-	if model.DB == nil {
-		return db.ErrNotReady
-	}
-	var row struct {
-		Id   int
-		Role int
-	}
-	err := model.DB.WithContext(ctx).Model(&model.User{}).
-		Select("id", "role").Where("id = ?", in.UserId).Take(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	case errors.Is(err, guard.ErrTargetMissing):
 		return errAdjustUserMissing
-	}
-	if err != nil {
+	case errors.Is(err, guard.ErrTargetNotLower):
+		return errAdjustTargetPeer
+	default:
 		return err
 	}
-	if !guard.ManageableTarget(in.OperatorRole, row.Role) {
-		return errAdjustTargetPeer
-	}
-	return nil
 }
 
 // writeAdjustAudit 落一条手工调整审计,成功与失败共用。

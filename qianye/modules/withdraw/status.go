@@ -9,63 +9,58 @@ import (
 
 // 提现单状态。
 //
-//	pending   待审核    —— 佣金已冻结
-//	approved  已通过    —— quota 方式等待兑现;fiat 方式等待人工打款
-//	paying    兑现中    —— 跨库执行窗口,只属于 quota 方式
-//	paid      已到账/已打款(终态,佣金核销)
-//	rejected  已拒绝    (终态,佣金退回)
-//	cancelled 已撤销    (终态,佣金退回)
-//	failed    失败      (终态,佣金退回)
+//	pending   待审核    —— 佣金已从可用池扣除(转入 frozen)
+//	approved  待发放    —— 审核通过,等待管理员人工发放(佣金仍在 frozen)
+//	paid      已发放    (终态,佣金核销:frozen → withdrawn)
+//	rejected  已驳回    (终态,佣金退回 available)
+//	cancelled 已撤销    (终态,佣金退回 available)
+//	failed    发放失败  (终态,佣金退回 available)
+//
+// # 这里曾经还有一个 paying
+//
+// 它是 quota 方式「审核通过 → 跨库给主库 users.quota 加额度」那条自动到账链路
+// 的执行窗口。产品口径已经改成:**提现只做佣金扣除,金额由管理员手动发放**
+// (加站内额度或线下打款),系统不再自己动任何一分钱。
+//
+// 于是 paying 连同它背后整套东西 —— 两阶段资金单、主库 outbox 探针、
+// reconcile_state=hold 的人工裁决、approved → paying 的全集群准入 CAS ——
+// 一起没有了存在理由:它们解决的全部问题都是「跨库写主库时钱到底动没动」,
+// 而现在这条链路上没有任何跨库写入。留着一个永远不会被进入的状态,
+// 只会让下一个读状态机的人以为还有一条自动出钱的路。
 const (
 	StatusPending   = "pending"
 	StatusApproved  = "approved"
-	StatusPaying    = "paying"
 	StatusPaid      = "paid"
 	StatusRejected  = "rejected"
 	StatusCancelled = "cancelled"
 	StatusFailed    = "failed"
 )
 
-// ReconcileHold 是"主库结果不可判定,已转人工"的队列标记。
-//
-// 它附着在 paying 上而不是做成独立状态:独立状态会让状态机凭空多出一整套
-// 与"钱到底动没动"无关的转移边。裁决完成后标记清空,历史留在事件流水里 ——
-// 标记是实时队列,事件才是账。
-const ReconcileHold = "hold"
-
 // 事件动作。稳定的英文标识,前端按 key 做 i18n,不存自然语言。
 const (
-	ActionSubmit      = "submit"
-	ActionCancel      = "cancel"
-	ActionApprove     = "approve"
-	ActionReject      = "reject"
-	ActionSettleStart = "settle_start"
-	ActionSettleDone  = "settle_done"
-	ActionPay         = "pay"
-	ActionFail        = "fail"
-	ActionHold        = "hold"
-	ActionResolve     = "resolve"
+	ActionSubmit  = "submit"
+	ActionCancel  = "cancel"
+	ActionApprove = "approve"
+	ActionReject  = "reject"
+	ActionPay     = "pay"
+	ActionFail    = "fail"
 )
 
 // allowedTransitions 是状态机的唯一真相。
 //
 // 缺席即非法:任何不在表里的跃迁都会被 canTransit 拒绝,不需要在每个 handler
 // 里各写一遍 if。终态(paid/rejected/cancelled/failed)没有出边 ——
-// 提现单一旦终结就不再自动变化,误打款的冲正走人工而不是反向接口。
+// 提现单一旦终结就不再变化,误标记已发放的冲正走人工补偿(佣金手工调整),
+// 而不是给状态机加一条反向边:那条边会立刻变成"把已核销的佣金再退一次"的入口。
 var allowedTransitions = map[string]map[string]bool{
 	StatusPending: {
-		StatusApproved:  true, // 管理员审核通过
-		StatusRejected:  true, // 管理员拒绝(理由必填)
-		StatusCancelled: true, // 用户本人撤销
+		StatusApproved:  true, // 管理员审核通过,进入待发放队列
+		StatusRejected:  true, // 管理员驳回(理由必填,佣金退回)
+		StatusCancelled: true, // 用户本人撤销(佣金退回)
 	},
 	StatusApproved: {
-		StatusPaying: true, // quota 方式进入跨库兑现
-		StatusPaid:   true, // fiat 方式管理员标记已打款
-		StatusFailed: true, // fiat 方式管理员标记打款失败
-	},
-	StatusPaying: {
-		StatusPaid:   true, // 主库确认已加额度
-		StatusFailed: true, // 主库确定性失败(用户禁用/额度溢出)
+		StatusPaid:   true, // 管理员标记已发放(佣金核销)
+		StatusFailed: true, // 管理员标记发放失败(理由必填,佣金退回)
 	},
 }
 
@@ -77,10 +72,10 @@ func canTransit(from, to string) bool {
 // activeStatuses / terminalStatuses 是同一套状态的切片投影,供 SQL 的 `status IN ?` 使用。
 //
 // isTerminal 由 terminalStatuses 派生而不是各写一份 switch:新增状态却忘了登记,
-// 一边会让"未终态单上限"漏掉它,另一边会让保留期清理提前抹掉还要打款的单据密文。
+// 一边会让"未终态单上限"漏掉它,另一边会让保留期清理提前抹掉还要发放的单据密文。
 // 两处必须由同一个真相派生。
 var (
-	activeStatuses   = []string{StatusPending, StatusApproved, StatusPaying}
+	activeStatuses   = []string{StatusPending, StatusApproved}
 	terminalStatuses = []string{StatusPaid, StatusRejected, StatusCancelled, StatusFailed}
 )
 
@@ -108,7 +103,7 @@ type transition struct {
 	Detail string
 	IP     string
 
-	// Updates 是随状态一起写入的业务列(审核人、打款单号等)。
+	// Updates 是随状态一起写入的业务列(审核人、发放凭证等)。
 	// 与状态在同一条 UPDATE 里落库,避免"状态变了但审核人没记上"的半截数据。
 	Updates map[string]any
 }

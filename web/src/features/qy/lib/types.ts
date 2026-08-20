@@ -167,6 +167,9 @@ export type QyConfigPayload = {
  * `uncertain` 是资金系统的"我不知道，交给人"出口（裁定文档 C12），前端必须用
  * 告警色而不是失败色 —— 钱可能已经动了，不能让用户以为一定没成功。
  *
+ * `in_doubt` 是它前面的一档：主库 COMMIT 已经发出但结局不明，系统还在自动复判。
+ * 同样不能用失败色，但也不该用 uncertain 的告警色 —— 它不需要人介入。
+ *
  * 联合里保留 `(string & {})` 是刻意的：后端日后新增状态时前端只应降级为中性
  * 徽章，绝不能因为拿到未知字符串而崩溃。
  */
@@ -175,6 +178,7 @@ export type QyStatus =
   | 'cancelled'
   | 'failed'
   | 'frozen'
+  | 'in_doubt'
   | 'paid'
   | 'paying'
   | 'pending'
@@ -217,7 +221,8 @@ export type QyFundOrderKind =
 /**
  * 跨库两阶段资金单（`qy_fund_orders`）。
  *
- * `status` 是 int8 而不是字符串：0 待定 / 2 成功 / 3 失败 / 4 不可判定 / 5 已冲正。
+ * `status` 是 int8 而不是字符串：0 待定 / 2 成功 / 3 失败 / 4 不可判定 /
+ * 5 已冲正 / 6 结局不明（主库 COMMIT 已发出）。
  * 用 `qyFundOrderStatusName()` 转成 {@link QyStatus} 再交给徽章渲染。
  */
 export type QyFundOrder = {

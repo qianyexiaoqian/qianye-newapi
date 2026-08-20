@@ -40,11 +40,10 @@ import { qyWithdrawRecordsQuery } from '../withdraw/api'
 import type { QyWithdrawal } from '../withdraw/types'
 import { WithdrawalDetailDialog } from './components/withdrawal-detail-dialog'
 
-/** 与后端 `knownStatuses`（`withdraw/api_user.go`）一致的七个状态。 */
+/** 与后端 `knownStatuses`（`withdraw/api_user.go`）一致的六个状态。 */
 const STATUS_OPTIONS = [
   'pending',
   'approved',
-  'paying',
   'paid',
   'rejected',
   'cancelled',

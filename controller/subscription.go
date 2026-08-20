@@ -438,6 +438,12 @@ func AdminBindSubscription(c *gin.Context) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
+	// 绑定套餐等于免费发一份付费权益（额度、分组、并发档）。上游给
+	// 「管理员管理用户」装了 canManageTargetRole，却漏了这条同样能给用户
+	// 发钱的路径 —— 对 role=10 来说它同时挡住自己和同级。
+	if requireManageableUser(c, req.UserId) {
+		return
+	}
 	msg, err := model.AdminBindSubscription(req.UserId, req.PlanId, "")
 	if err != nil {
 		common.ApiError(c, err)
@@ -508,6 +514,10 @@ func AdminCreateUserSubscription(c *gin.Context) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
+	// 与 AdminBindSubscription 同一件事，只是目标走路径参数，判据必须一致。
+	if requireManageableUser(c, userId) {
+		return
+	}
 	msg, err := model.AdminBindSubscription(userId, req.PlanId, "")
 	if err != nil {
 		common.ApiError(c, err)
@@ -533,6 +543,12 @@ func AdminResetUserSubscriptionsByPlan(c *gin.Context) {
 	}
 	if req.PlanId <= 0 {
 		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+	// 重置把这个人这条套餐的已用量清回 0，也就是再送一轮额度；
+	// advance_reset_time 还会把下一次自动重置的时刻一起往前推。
+	// 与绑定同属「给这个用户发钱」，判据必须一致。
+	if requireManageableUser(c, userId) {
 		return
 	}
 	advanceResetTime := resolveAdvanceResetTime(req.AdvanceResetTime)

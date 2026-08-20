@@ -24,6 +24,11 @@ func (Mod) Tables() []any {
 
 // InstallHooks 注册补偿回调。
 // 这里没有上游 hook 要注入,只有 twophase 需要知道"确认主库生效之后找谁收尾"。
+//
+// 刻意**不注册 PostCommit**:本模块的账本行由 Resolver 里的 backfillLedger 补,
+// 它有自己的 ledger_written CAS 做"只写一次"。再注册一个 PostCommit 等于在同一件事
+// 上叠第二把幂等锁 —— 两把锁一旦对不齐(比如 PostCommit 抢到了 after_commit_at
+// 而 backfillLedger 那一侧还没置位),账本行就会漏写。用户缓存由 twophase 统一失效。
 func (Mod) InstallHooks() {
 	twophase.RegisterResolver(qymodel.KindTransfer, resolveAfterCompensation)
 }

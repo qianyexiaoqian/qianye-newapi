@@ -84,7 +84,8 @@ func TestMarkFailed_DoesNotOverrideOtherPath(t *testing.T) {
 			gdb := newStateDB(t)
 			order := seedOrder(t, gdb, "TR-"+tc.name, tc.seeded)
 
-			markFailed(context.Background(), gdb, order, errors.New("主库事务返回确定性错误"))
+			settleAfterMainFailure(context.Background(), gdb, order, phaseBody,
+				errors.New("主库事务返回确定性错误"))
 
 			assert.Equal(t, tc.wantRow, loadOrder(t, gdb, order.OrderNo).Status,
 				"库里的状态只能由赢下 CAS 的那一方改写")
@@ -104,7 +105,7 @@ func TestMarkFailed_ErrorMessageStaysValidUTF8(t *testing.T) {
 	order := seedOrder(t, gdb, "TR-utf8", qymodel.StatusPending)
 
 	long := strings.Repeat("主库锁等待超时", 200) // 每字符 3 字节,远超 512
-	markFailed(context.Background(), gdb, order, errors.New(long))
+	settleAfterMainFailure(context.Background(), gdb, order, phaseBody, errors.New(long))
 
 	got := loadOrder(t, gdb, order.OrderNo)
 	assert.Equal(t, qymodel.StatusFailed, got.Status)

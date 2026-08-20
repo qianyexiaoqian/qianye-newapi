@@ -27,6 +27,11 @@ func newRouter(t *testing.T, userId int) *gin.Engine {
 	auth := func(c *gin.Context) {
 		c.Set("id", userId)
 		c.Set("username", "u"+strconv.Itoa(userId))
+		// role 不能省:管理端两个写动作的操作人闸门(guard.ActorMayActOn)读的
+		// 就是它,而 middleware.AdminAuth() 在生产里必然与 id / username 一起
+		// 写入(middleware/auth.go)。少写这一行等于让所有用例跑在一个
+		// "角色未知"的操作人身上,而那一格是 fail-closed 的。
+		c.Set("role", common.RoleAdminUser)
 		c.Next()
 	}
 	g := r.Group("/api/qy")

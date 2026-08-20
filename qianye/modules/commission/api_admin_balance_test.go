@@ -60,6 +60,19 @@ func seedLedgerBalance(t *testing.T, gdb *gorm.DB, userId int, available, frozen
 	return b
 }
 
+// seedMainUserFor 往主库插一个普通账号,让操作人闸门(guard.ActorMayActOn)
+// 能回查到目标角色。
+//
+// 迁移编辑是本模块四条动钱接口之一,它必须先回答"操作人能不能改这个人的钱"。
+// 测试里的操作人固定是 id=7 / role=10(见 callAdminHandler),所以目标只要是
+// 一个存在的、角色更低的账号就能走完闸门 —— 闸门本身的真值表在
+// TestAdminSetWithdrawn_RefusesSelfAndPeerTargets 里单独钉。
+func seedMainUserFor(t *testing.T, userId int) {
+	t.Helper()
+	mainDB := useMainDB(t, &model.User{})
+	seedUser(t, mainDB, userId, "u"+strconv.Itoa(userId), 0, 1000)
+}
+
 // assertLedgerIdentity 断言恒等式在这一行上成立。
 func assertLedgerIdentity(t *testing.T, b *Balance) {
 	t.Helper()
@@ -89,6 +102,7 @@ func TestAdminSetWithdrawn_MovesQuotaFromAvailable(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, commissionRateConfig("10", "5"))
 	useAdminAPI(t)
+	seedMainUserFor(t, 42)
 	seedLedgerBalance(t, gdb, 42, 8000, 1000, 500, "0")
 
 	rec := callAdminHandler(t, http.MethodPost, "/api/qy/admin/commission/balances/withdrawn",
@@ -130,16 +144,18 @@ func TestAdminSetWithdrawn_IsAbsoluteAndIdempotent(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, commissionRateConfig("10", "5"))
 	useAdminAPI(t)
-	seedLedgerBalance(t, gdb, 7, 9000, 0, 0, "0")
+	// 刻意不用 7:那是 callAdminHandler 里操作人自己的 id,操作人闸门会先拒。
+	seedMainUserFor(t, 8)
+	seedLedgerBalance(t, gdb, 8, 9000, 0, 0, "0")
 
-	body := setWithdrawnBody(7, 4000, "迁移旧系统已付佣金")
+	body := setWithdrawnBody(8, 4000, "迁移旧系统已付佣金")
 	for i := 0; i < 3; i++ {
 		rec := callAdminHandler(t, http.MethodPost, "/api/qy/admin/commission/balances/withdrawn",
 			body, adminSetWithdrawn)
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	}
 
-	after := balanceOf(t, gdb, 7)
+	after := balanceOf(t, gdb, 8)
 	assert.EqualValues(t, 4000, after.WithdrawnQuota, "重复提交同一个绝对值必须是空操作")
 	assert.EqualValues(t, 5000, after.AvailableQuota, "可提现只能被划走一次")
 	assertLedgerIdentity(t, after)
@@ -160,6 +176,7 @@ func TestAdminSetWithdrawn_RejectsOverAvailable(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, commissionRateConfig("10", "5"))
 	useAdminAPI(t)
+	seedMainUserFor(t, 9)
 	seedLedgerBalance(t, gdb, 9, 1000, 0, 200, "0")
 
 	rec := callAdminHandler(t, http.MethodPost, "/api/qy/admin/commission/balances/withdrawn",
@@ -193,6 +210,7 @@ func TestAdminSetWithdrawn_RequiresReason(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, commissionRateConfig("10", "5"))
 	useAdminAPI(t)
+	seedMainUserFor(t, 11)
 	seedLedgerBalance(t, gdb, 11, 5000, 0, 0, "0")
 
 	for _, reason := range []string{"", "迁移", "   x  "} {
@@ -216,6 +234,7 @@ func TestAdminSetWithdrawn_LowersBackToAvailable(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, commissionRateConfig("10", "5"))
 	useAdminAPI(t)
+	seedMainUserFor(t, 21)
 	seedLedgerBalance(t, gdb, 21, 6000, 0, 0, "0")
 
 	rec := callAdminHandler(t, http.MethodPost, "/api/qy/admin/commission/balances/withdrawn",
@@ -244,6 +263,7 @@ func TestAdminSetWithdrawn_ScalesAvailableFiat(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, commissionRateConfig("10", "5"))
 	useAdminAPI(t)
+	seedMainUserFor(t, 31)
 	seedLedgerBalance(t, gdb, 31, 8000, 0, 0, "100")
 
 	rec := callAdminHandler(t, http.MethodPost, "/api/qy/admin/commission/balances/withdrawn",
@@ -266,6 +286,7 @@ func TestAdminSetWithdrawn_AuditCarriesSnapshots(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, commissionRateConfig("10", "5"))
 	useAdminAPI(t)
+	seedMainUserFor(t, 55)
 	seedLedgerBalance(t, gdb, 55, 7000, 0, 250, "0")
 
 	rec := callAdminHandler(t, http.MethodPost, "/api/qy/admin/commission/balances/withdrawn",

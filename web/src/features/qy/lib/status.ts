@@ -61,6 +61,16 @@ const STATUS_STYLES: Record<string, QyStatusStyle> = {
     labelKey: 'qy_common_st_uncertain',
     pulse: true,
   },
+  // 主库 COMMIT 已发出、结局不明，系统正在用探针复判。
+  //
+  // 用 info + 呼吸而不是 warning：它与 uncertain 的差别正是"还轮不到人管"——
+  // 用同一个告警色会把对账台的注意力分散到一批几十秒内就会自己收敛的单上，
+  // 而 uncertain 才是真正需要人的那一档。也不能用 failed 的红：钱很可能已经动了。
+  in_doubt: {
+    variant: 'info',
+    labelKey: 'qy_common_st_in_doubt',
+    pulse: true,
+  },
 
   // ── 工单（qianye/modules/ticket/status.go）──
   // 键名与其他单据不重叠，所以直接并进这张表而不是让工单页自己挑颜色 ——
@@ -112,6 +122,8 @@ export function qyFundOrderStatusName(status: number): QyStatus {
       return 'uncertain'
     case 5:
       return 'reversed'
+    case 6:
+      return 'in_doubt'
     default:
       return 'unknown'
   }

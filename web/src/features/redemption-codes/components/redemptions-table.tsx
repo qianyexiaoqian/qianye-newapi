@@ -139,9 +139,18 @@ export function RedemptionsTable() {
     globalFilterFn: (row, _columnId, filterValue) => {
       const name = String(row.getValue('name')).toLowerCase()
       const id = String(row.getValue('id'))
+      // 兑换码末尾也要能搜到：日志与错误文本里只留末 4 位（后端
+      // common.MaskCredential），用户报来的就是那 4 位。后端 SearchRedemptions
+      // 已按后缀匹配，这里跟上同一条口径，否则同一个输入在服务端命中、
+      // 在客户端又被过滤掉。
+      const key = String(row.getValue('key') ?? '').toLowerCase()
       const searchValue = String(filterValue).toLowerCase()
 
-      return name.includes(searchValue) || id.includes(searchValue)
+      return (
+        name.includes(searchValue) ||
+        id.includes(searchValue) ||
+        (searchValue.length >= 4 && key.endsWith(searchValue))
+      )
     },
     onPaginationChange,
     onGlobalFilterChange,
@@ -170,7 +179,7 @@ export function RedemptionsTable() {
       skeletonKeyPrefix='redemptions-skeleton'
       applyHeaderSize
       toolbarProps={{
-        searchPlaceholder: t('Filter by name or ID...'),
+        searchPlaceholder: t('Filter by name, ID, or code suffix...'),
         searchDebounceMs: 500,
         filters: [
           {

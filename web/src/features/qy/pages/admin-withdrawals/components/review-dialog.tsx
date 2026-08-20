@@ -49,13 +49,12 @@ import {
   qyFailWithdrawal,
   qyMarkWithdrawalPaid,
   qyRejectWithdrawal,
-  qyResolveWithdrawal,
 } from '../api'
 
 /** 后端 `maxReasonRunes`。理由列宽固定，超长会直接写库失败。 */
 const MAX_REASON_RUNES = 200
 
-type ReviewAction = 'fail' | 'mark-paid' | 'reject' | 'resolve'
+type ReviewAction = 'fail' | 'mark-paid' | 'reject'
 
 type ReviewDialogProps = {
   withdrawalId: number | null
@@ -64,15 +63,22 @@ type ReviewDialogProps = {
 }
 
 /**
- * 提现审核弹窗。
+ * 提现审核 / 发放弹窗。
  *
- * 三条硬性约束，都不是样式问题：
- *   1. **拒绝 / 打款失败 / 人工裁决的理由必填**，且必须写进事件流水 ——
+ * **系统不发钱。** 审核通过只是把单据放进「待发放」队列，钱由管理员自己去加
+ * 站内额度或线下打款，回来点「标记已发放」登记。因此这个弹窗承担的是
+ * "告诉管理员该发多少、发给谁"，以及"逼他把发出去的数复述一遍"。
+ *
+ * 四条硬性约束，都不是样式问题：
+ *   1. **驳回 / 发放失败的理由必填**，且必须写进事件流水 ——
  *      用户端时间线会原样展示它，那是"为什么被拒"的唯一答案；
- *   2. **标记打款必须填打款单号**，后端缺它直接 400：没有单号的打款记录
- *      在财务对账时等于没打；
- *   3. 409（`qy_wd_status_conflict`）意味着这单已被另一个管理员处理过，
- *      必须刷新列表并关闭弹窗，绝不能重试 —— 重试就是重复打款。
+ *   2. **标记已发放必须填发放凭证**，后端缺它直接 400：没有凭证的发放记录
+ *      在争议时等于没发；
+ *   3. **标记已发放必须复述实发金额**，后端要求与单据金额逐值相等。输入框
+ *      预填单据上的数、并在旁边把它显示出来 —— 让人看着数字点确认，而不是
+ *      让他背下来；改动它就会被后端挡回（`qy_wd_payout_amount_mismatch`）；
+ *   4. 409（`qy_wd_status_conflict`）意味着这单已被另一个管理员处理过，
+ *      必须刷新列表并关闭弹窗，绝不能重试 —— 重试就是重复发钱。
  */
 export function ReviewDialog(props: ReviewDialogProps) {
   const { t } = useTranslation()
@@ -80,11 +86,14 @@ export function ReviewDialog(props: ReviewDialogProps) {
   const reasonId = useId()
   const refId = useId()
   const noteId = useId()
+  const amountId = useId()
 
   const [action, setAction] = useState<ReviewAction | null>(null)
   const [reason, setReason] = useState('')
   const [payoutRef, setPayoutRef] = useState('')
   const [payoutNote, setPayoutNote] = useState('')
+  /** 实发金额的复述值。字符串而不是 number：法币是 decimal，parseFloat 会丢位。 */
+  const [payoutAmount, setPayoutAmount] = useState('')
 
   const query = useQuery({
     ...qyAdminWithdrawalQuery(props.withdrawalId ?? 0),
@@ -97,10 +106,11 @@ export function ReviewDialog(props: ReviewDialogProps) {
     setReason('')
     setPayoutRef('')
     setPayoutNote('')
+    setPayoutAmount('')
   }, [props.withdrawalId])
 
   /**
-   * 五个决策接口共用的收尾。
+   * 四个决策接口共用的收尾。
    *
    * 无论成败都要全量失效 `['qy']`：一次审核会同时改动队列、角标、单据详情
    * 与用户的佣金余额，前端没有办法精确知道哪些视图受影响。
@@ -139,20 +149,22 @@ export function ReviewDialog(props: ReviewDialogProps) {
     mutationFn: qyFailWithdrawal,
     ...handlers,
   })
-  const resolveMutation = useMutation({
-    mutationFn: qyResolveWithdrawal,
-    ...handlers,
-  })
 
   const busy =
     approveMutation.isPending ||
     rejectMutation.isPending ||
     markPaidMutation.isPending ||
-    failMutation.isPending ||
-    resolveMutation.isPending
+    failMutation.isPending
 
   const reasonLength = [...reason.trim()].length
   const reasonInvalid = reasonLength === 0 || reasonLength > MAX_REASON_RUNES
+
+  const isFiat = withdrawal?.method === 'fiat'
+  /** 单据上"该发多少"的权威值。fiat 是实付法币，quota 是额度整数。 */
+  const owedAmount = isFiat
+    ? (withdrawal?.net_amount ?? '')
+    : String(withdrawal?.quota ?? '')
+  const payoutAmountInvalid = payoutAmount.trim() === ''
 
   return (
     <QyResponsiveDialog
@@ -169,19 +181,31 @@ export function ReviewDialog(props: ReviewDialogProps) {
           {withdrawal.sla_breached && (
             <Alert variant='destructive'>
               <TriangleAlert />
-              <AlertTitle>{t('qy_wd_a_sla_title')}</AlertTitle>
+              <AlertTitle>
+                {withdrawal.sla_kind === 'payout'
+                  ? t('qy_wd_a_payout_sla_title')
+                  : t('qy_wd_a_sla_title')}
+              </AlertTitle>
               <AlertDescription>
-                {t('qy_wd_a_sla_desc', {
-                  deadline: formatTimestampToDate(withdrawal.sla_deadline),
-                })}
+                {withdrawal.sla_kind === 'payout'
+                  ? t('qy_wd_a_payout_sla_desc', {
+                      deadline: formatTimestampToDate(withdrawal.sla_deadline),
+                    })
+                  : t('qy_wd_a_sla_desc', {
+                      deadline: formatTimestampToDate(withdrawal.sla_deadline),
+                    })}
               </AlertDescription>
             </Alert>
           )}
-          {withdrawal.reconcile_state === 'hold' && (
-            <Alert variant='destructive'>
+          {withdrawal.status === 'approved' && (
+            <Alert>
               <TriangleAlert />
-              <AlertTitle>{t('qy_wd_a_hold_title')}</AlertTitle>
-              <AlertDescription>{t('qy_wd_a_hold_desc')}</AlertDescription>
+              <AlertTitle>{t('qy_wd_a_manual_payout_title')}</AlertTitle>
+              <AlertDescription>
+                {withdrawal.method === 'fiat'
+                  ? t('qy_wd_a_manual_payout_fiat')
+                  : t('qy_wd_a_manual_payout_quota')}
+              </AlertDescription>
             </Alert>
           )}
           {withdrawal.risk_flags !== '' && (
@@ -309,14 +333,18 @@ export function ReviewDialog(props: ReviewDialogProps) {
               )}
               {withdrawal.status === 'approved' && (
                 <>
-                  {withdrawal.method === 'fiat' && (
-                    <Button
-                      disabled={busy}
-                      onClick={() => setAction('mark-paid')}
-                    >
-                      {t('qy_wd_a_mark_paid')}
-                    </Button>
-                  )}
+                  {/* 两种方式共用这一个出口：钱都由管理员自己发，系统只登记。 */}
+                  <Button
+                    disabled={busy}
+                    onClick={() => {
+                      // 预填单据上的权威金额：让人看着数字点确认，而不是背下来。
+                      // 后端仍然逐值校验，改动它会被挡回。
+                      setPayoutAmount(owedAmount)
+                      setAction('mark-paid')
+                    }}
+                  >
+                    {t('qy_wd_a_mark_paid')}
+                  </Button>
                   <Button
                     variant='destructive'
                     disabled={busy}
@@ -326,20 +354,34 @@ export function ReviewDialog(props: ReviewDialogProps) {
                   </Button>
                 </>
               )}
-              {withdrawal.status === 'paying' && (
-                <Button
-                  variant='destructive'
-                  disabled={busy}
-                  onClick={() => setAction('resolve')}
-                >
-                  {t('qy_wd_a_resolve')}
-                </Button>
-              )}
             </div>
           ) : (
             <div className='space-y-3 rounded-md border p-3'>
               {action === 'mark-paid' ? (
                 <>
+                  <div className='space-y-1.5'>
+                    <Label htmlFor={amountId}>
+                      {t('qy_wd_a_payout_amount')}
+                    </Label>
+                    <Input
+                      id={amountId}
+                      value={payoutAmount}
+                      autoComplete='off'
+                      inputMode='decimal'
+                      aria-invalid={payoutAmountInvalid}
+                      onChange={(event) => setPayoutAmount(event.target.value)}
+                    />
+                    <p className='text-muted-foreground text-xs'>
+                      {isFiat
+                        ? t('qy_wd_a_payout_amount_fiat_hint', {
+                            amount: owedAmount,
+                            currency: withdrawal.currency,
+                          })
+                        : t('qy_wd_a_payout_amount_quota_hint', {
+                            quota: owedAmount,
+                          })}
+                    </p>
+                  </div>
                   <div className='space-y-1.5'>
                     <Label htmlFor={refId}>{t('qy_wd_a_payout_ref')}</Label>
                     <Input
@@ -350,7 +392,9 @@ export function ReviewDialog(props: ReviewDialogProps) {
                       onChange={(event) => setPayoutRef(event.target.value)}
                     />
                     <p className='text-muted-foreground text-xs'>
-                      {t('qy_wd_a_payout_ref_hint')}
+                      {isFiat
+                        ? t('qy_wd_a_payout_ref_hint')
+                        : t('qy_wd_a_payout_ref_quota_hint')}
                     </p>
                   </div>
                   <div className='space-y-1.5'>
@@ -365,21 +409,13 @@ export function ReviewDialog(props: ReviewDialogProps) {
                 </>
               ) : (
                 <div className='space-y-1.5'>
-                  <Label htmlFor={reasonId}>
-                    {action === 'resolve'
-                      ? t('qy_wd_a_evidence')
-                      : t('qy_wd_a_reason')}
-                  </Label>
+                  <Label htmlFor={reasonId}>{t('qy_wd_a_reason')}</Label>
                   <Textarea
                     id={reasonId}
                     rows={3}
                     value={reason}
                     aria-invalid={reasonInvalid}
-                    placeholder={
-                      action === 'resolve'
-                        ? t('qy_wd_a_evidence_ph')
-                        : t('qy_wd_a_reason_ph')
-                    }
+                    placeholder={t('qy_wd_a_reason_ph')}
                     onChange={(event) => setReason(event.target.value)}
                   />
                   <p className='text-muted-foreground text-end text-xs tabular-nums'>
@@ -425,11 +461,19 @@ export function ReviewDialog(props: ReviewDialogProps) {
                 )}
                 {action === 'mark-paid' && (
                   <Button
-                    disabled={busy || payoutRef.trim() === ''}
+                    disabled={
+                      busy || payoutRef.trim() === '' || payoutAmountInvalid
+                    }
                     onClick={() =>
                       markPaidMutation.mutate({
                         id: withdrawal.id,
                         payout_ref: payoutRef.trim(),
+                        // 两个确认字段按方式二选一。填错那个等于没填 ——
+                        // 后端按单据的 method 只看对应的那一个。
+                        confirm_quota: isFiat
+                          ? 0
+                          : Number(payoutAmount.trim() || '0'),
+                        confirm_amount: isFiat ? payoutAmount.trim() : '',
                         // 0 交给后端取当前时间：客户端时钟不可信，
                         // 后端还会拒绝未来时间。
                         paid_at: 0,
@@ -439,35 +483,6 @@ export function ReviewDialog(props: ReviewDialogProps) {
                   >
                     {t('qy_wd_a_confirm_paid')}
                   </Button>
-                )}
-                {action === 'resolve' && (
-                  <>
-                    <Button
-                      disabled={busy || reasonInvalid}
-                      onClick={() =>
-                        resolveMutation.mutate({
-                          id: withdrawal.id,
-                          decision: 'paid',
-                          evidence: reason.trim(),
-                        })
-                      }
-                    >
-                      {t('qy_wd_a_resolve_paid')}
-                    </Button>
-                    <Button
-                      variant='destructive'
-                      disabled={busy || reasonInvalid}
-                      onClick={() =>
-                        resolveMutation.mutate({
-                          id: withdrawal.id,
-                          decision: 'failed',
-                          evidence: reason.trim(),
-                        })
-                      }
-                    >
-                      {t('qy_wd_a_resolve_failed')}
-                    </Button>
-                  </>
                 )}
                 <Button
                   variant='ghost'

@@ -209,7 +209,7 @@ func TestEnforceCreateLimits(t *testing.T) {
 					w.CreatedAt = now - 86400*3 // 跨日,不受日限额影响
 				})
 				seedWithdrawal(t, gdb, "WD-b", func(w *Withdrawal) {
-					w.Status = StatusPaying
+					w.Status = StatusPending
 					w.Quota = 1
 					w.CreatedAt = now - 86400*3
 				})

@@ -1,0 +1,199 @@
+package commission
+
+import (
+	"net/http"
+	"strconv"
+	"testing"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+)
+
+// api_admin_actor_gate_test.go —— 四条动钱接口的操作人闸门。
+//
+// callAdminHandler 里的操作人固定是 id=7 / role=10(RoleAdminUser),
+// 与生产上 middleware.AdminAuth() 写进上下文的三个键一致。
+//
+// 这里守的是本轮越权梳理查出的三条自营通道:
+//
+//  1. balances/withdrawn 把**已提现调低**时,差额会回到 available_quota
+//     (newAvail = avail - delta,delta 为负)。也就是说这条"迁移登记"接口
+//     反向用就是一台铸币机:把自己的 withdrawn 清零,可提现凭空回满,
+//     再走一次提现即可落到主库额度。
+//  2. relations/bind 与 rebind 把自己设成某个高消费账号的邀请人,
+//     此后那个人每一笔消费的返佣都记到操作人头上 —— 而且不像手工调整那样
+//     留下一条 manual 计佣行,事后只看流水会以为这是真实推广。
+//  3. settle 手动结算把自己的冻结佣金提前解冻。它不造钱,但成熟期存在的理由
+//     正是"下线退款/冲正还来得及追回",自解冻等于单方面取消这段窗口。
+//
+// 对照组同样必要:把闸门写成"一律拒绝"也能让拒绝那半全绿,而那是把整个
+// 佣金管理台锁死。
+
+const gateActorId = 7 // 与 callAdminHandler 里的操作人一致
+
+// seedGateUser 往主库插一个指定角色的账号。
+func seedGateUser(t *testing.T, mainDB *gorm.DB, id int, role int) {
+	t.Helper()
+	require.NoError(t, mainDB.Create(&model.User{
+		Id: id, Username: "gate" + strconv.Itoa(id), Role: role,
+		AffCode: "gateaff" + strconv.Itoa(id),
+	}).Error)
+}
+
+func deniedAuditsOf(t *testing.T, gdb *gorm.DB, action string) []qymodel.AuditLog {
+	t.Helper()
+	var rows []qymodel.AuditLog
+	require.NoError(t, gdb.Where("action = ?", action).Order("id asc").Find(&rows).Error)
+	return rows
+}
+
+// TestAdminSetWithdrawn_RefusesSelfAndPeerTargets 钉住迁移编辑的操作人闸门。
+//
+// 变异验证:把 api_admin_balance.go 里那三行 denyActorOverTarget 删掉,
+// 两个拒绝用例的状态码、余额断言与审计断言同时变红。
+func TestAdminSetWithdrawn_RefusesSelfAndPeerTargets(t *testing.T) {
+	cases := []struct {
+		name       string
+		targetId   int
+		targetRole int
+		wantCode   string
+	}{
+		{"受益人就是操作人自己", gateActorId, common.RoleAdminUser, "qy_self_dealing"},
+		{"受益人是同级管理员", 8801, common.RoleAdminUser, "qy_target_not_manageable"},
+		{"受益人是 root", 8802, common.RoleRootUser, "qy_target_not_manageable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gdb := newTestDB(t)
+			useConfig(t, commissionRateConfig("10", "5"))
+			useAdminAPI(t)
+			mainDB := useMainDB(t, &model.User{})
+			seedGateUser(t, mainDB, tc.targetId, tc.targetRole)
+			// 已提现 5000、可提现 0:调低已提现就是把 5000 变回可提现。
+			seedLedgerBalance(t, gdb, tc.targetId, 0, 0, 5000, "0")
+
+			rec := callAdminHandler(t, http.MethodPost,
+				"/api/qy/admin/commission/balances/withdrawn",
+				setWithdrawnBody(tc.targetId, 0, "把已提现清零,额度回到可提现"),
+				adminSetWithdrawn)
+
+			require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), tc.wantCode)
+
+			after := balanceOf(t, gdb, tc.targetId)
+			require.NotNil(t, after)
+			assert.EqualValues(t, 5000, after.WithdrawnQuota, "被拒的请求不许改到库")
+			assert.EqualValues(t, 0, after.AvailableQuota,
+				"可提现一分都不许回补 —— 回补就是凭空造出一笔可提现的钱")
+
+			denied := deniedAuditsOf(t, gdb, "commission.balance.withdrawn.set.actor_denied")
+			require.Len(t, denied, 1, "被拒的动钱尝试必须留痕")
+			assert.Equal(t, qymodel.ResultFail, denied[0].Result)
+			assert.Equal(t, gateActorId, denied[0].ActorUserId)
+			assert.Equal(t, tc.targetId, denied[0].TargetUserId)
+		})
+	}
+}
+
+// TestAdminSetWithdrawn_StillEditsOrdinaryUsers 是对照组。
+func TestAdminSetWithdrawn_StillEditsOrdinaryUsers(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, commissionRateConfig("10", "5"))
+	useAdminAPI(t)
+	mainDB := useMainDB(t, &model.User{})
+	seedGateUser(t, mainDB, 8803, common.RoleCommonUser)
+	seedLedgerBalance(t, gdb, 8803, 0, 0, 5000, "0")
+
+	rec := callAdminHandler(t, http.MethodPost,
+		"/api/qy/admin/commission/balances/withdrawn",
+		setWithdrawnBody(8803, 0, "登记错了,回退这 5000"), adminSetWithdrawn)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	after := balanceOf(t, gdb, 8803)
+	assert.EqualValues(t, 0, after.WithdrawnQuota)
+	assert.EqualValues(t, 5000, after.AvailableQuota, "普通用户的迁移编辑必须照常生效")
+	assert.Empty(t, deniedAuditsOf(t, gdb, "commission.balance.withdrawn.set.actor_denied"))
+}
+
+// TestAdminBindRelation_RefusesActorAsInviter 钉住"把自己设成上线"这条。
+//
+// 变异验证:把 api_admin_relation.go 里 adminBindRelation 那三行
+// denyActorOverTarget 删掉,自营那一格从 403 变成 200,且 users.inviter_id
+// 真的被改成了操作人 —— 断言全红。
+func TestAdminBindRelation_RefusesActorAsInviter(t *testing.T) {
+	cases := []struct {
+		name        string
+		inviterId   int
+		inviterRole int
+		wantCode    string
+	}{
+		{"把自己设成上线", gateActorId, common.RoleAdminUser, "qy_self_dealing"},
+		{"把同级管理员设成上线", 8811, common.RoleAdminUser, "qy_target_not_manageable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gdb := newTestDB(t)
+			useConfig(t, commissionRateConfig("10", "5"))
+			useAdminAPI(t)
+			mainDB := useMainDB(t, &model.User{})
+			seedGateUser(t, mainDB, tc.inviterId, tc.inviterRole)
+			seedUser(t, mainDB, 8899, "whale", 0, 1000) // 高消费下线,自由人
+
+			rec := callAdminHandler(t, http.MethodPost,
+				"/api/qy/admin/commission/relations/bind",
+				bindBody(8899, tc.inviterId, "把这个人挂到我名下"), adminBindRelation)
+
+			require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), tc.wantCode)
+			assert.Zero(t, inviterIdOf(t, mainDB, 8899),
+				"被拒的绑定不许动主库的 inviter_id —— 动了此后每一笔消费的返佣都改了收款人")
+			require.Len(t, deniedAuditsOf(t, gdb, "commission.relation.bind.actor_denied"), 1)
+		})
+	}
+}
+
+// TestAdminBindRelation_StillBindsThirdParties 是对照组。
+func TestAdminBindRelation_StillBindsThirdParties(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, commissionRateConfig("10", "5"))
+	useAdminAPI(t)
+	mainDB := useMainDB(t, &model.User{})
+	seedUser(t, mainDB, 8821, "promoter", 0, 1000)
+	seedUser(t, mainDB, 8822, "invitee", 0, 2000)
+
+	rec := callAdminHandler(t, http.MethodPost,
+		"/api/qy/admin/commission/relations/bind",
+		bindBody(8822, 8821, "客服核实后手工补绑"), adminBindRelation)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, 8821, inviterIdOf(t, mainDB, 8822))
+	assert.Empty(t, deniedAuditsOf(t, gdb, "commission.relation.bind.actor_denied"))
+}
+
+// TestAdminSettle_RefusesSelfTarget 钉住"自己给自己解冻"。
+//
+// 变异验证:把 api_admin.go 里 adminSettle 那三行 denyActorOverTarget 删掉,
+// 403 变 200 且结算单真的落库,两条断言同时红。
+func TestAdminSettle_RefusesSelfTarget(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, commissionConfig(1))
+	useMoneyGlobals(t, 7.3, 500000)
+	useAdminAPI(t)
+	mainDB := useMainDB(t, &model.User{})
+	seedGateUser(t, mainDB, gateActorId, common.RoleAdminUser)
+	seedBalance(t, gdb, gateActorId, "4000")
+
+	rec := callAdminHandler(t, http.MethodPost,
+		"/admin/commission/settle?user_id="+strconv.Itoa(gateActorId), "", adminSettle)
+
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "qy_self_dealing")
+	assert.Empty(t, settlementsOf(t, gdb, gateActorId),
+		"被拒的手动结算不许落结算单 —— 落了就等于绕过成熟期把自己的佣金解冻了")
+	require.Len(t, deniedAuditsOf(t, gdb, "commission.settle.manual.actor_denied"), 1)
+}

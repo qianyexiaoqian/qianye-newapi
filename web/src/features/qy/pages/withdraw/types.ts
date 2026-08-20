@@ -25,7 +25,12 @@ import type { QyStatus } from '../../lib/types'
  * 传会在前端丢位。前端只做展示与字符串比较，禁止 `parseFloat` 后再运算。
  */
 
-/** 提现方式。`quota` = 兑换成站内额度，`fiat` = 线下法币打款。 */
+/**
+ * 提现方式。
+ *
+ * **它说的不是"系统怎么给钱",而是用户要的是哪种钱** —— 两种方式都由管理员
+ * 手动发放,系统只负责扣佣金与记账。`quota` = 站内额度,`fiat` = 现金。
+ */
 export type QyWithdrawMethod = 'fiat' | 'quota'
 
 /** 收款渠道。白名单写死在后端 `withdraw/validate.go`，配置改不了。 */
@@ -80,8 +85,13 @@ export type QyWithdrawConfig = {
   used_today: number
   payee_account_max: number
   review_sla_hours: number
-  /** quota 方式审核通过后是否自动到账。 */
-  auto_credit: boolean
+  /**
+   * 发放时限：审核通过之后多久没标记已发放算积压。0 = 不计时限。
+   *
+   * 用户端展示它是为了给一个诚实的预期：提现**不会自动到账**，审核通过之后
+   * 还要等管理员手动发放。只写审核时限会让用户以为通过即到账。
+   */
+  payout_sla_hours: number
   withdrawable_quota: number
   /** 只有开启了 fiat 方式才有这一段。 */
   fiat?: QyWithdrawFiatConfig
@@ -114,7 +124,7 @@ export type QyWithdrawEvent = {
  *
  * 需求原文的三个问题在这里闭环：
  *   什么时候拒绝的 → `reviewed_at`；拒绝理由 → `reject_reason`；
- *   什么时候打的款 → `paid_at`（配合 `payout_ref`）。
+ *   什么时候发的钱 → `paid_at`（配合 `payout_ref`）。
  */
 export type QyWithdrawal = {
   id: number
@@ -143,6 +153,7 @@ export type QyWithdrawal = {
   reviewed_at: number
   reject_reason: string
   paid_at: number
+  /** 发放凭证。fiat 是流水号/txid，quota 是管理员那次手工加额度的操作记录标识。 */
   payout_ref: string
   fail_reason: string
 
@@ -154,7 +165,6 @@ export type QyWithdrawal = {
 
 /** 管理端视图：在用户视图之上补齐排障、风控与 SLA 字段。 */
 export type QyAdminWithdrawal = QyWithdrawal & {
-  order_no: string
   user_id: number
   username: string
   /** 非空表示命中风控，目前只有 `shared_payee`（收款账号被多个账号用过）。 */
@@ -164,12 +174,19 @@ export type QyAdminWithdrawal = QyWithdrawal & {
   payout_operator_id: number
   payout_operator_name: string
   payout_note: string
-  /** `hold` 表示对账异常，已转人工裁决。 */
-  reconcile_state: string
   client_ip: string
   /** 后端算好的截止时间与超时标记，前端不自行推导，避免客户端时钟偏差误标红。 */
   sla_deadline: number
   sla_breached: boolean
+  /**
+   * 上面那对字段说的是哪一道时限：`review` = 待审、`payout` = 待发放、
+   * 空串 = 终态不计时。
+   *
+   * 一张单在任一时刻只处在一道时限里，所以两者共用同一对字段。文案必须按它
+   * 分岔：管理员看到"超时"却不知道该去审核还是去发钱，等于没提示 ——
+   * 而这两件事在组织上往往根本不是同一个人。
+   */
+  sla_kind: string
 }
 
 export type QyWithdrawCreateRequest = {
@@ -204,8 +221,15 @@ export type QyWithdrawCreateRequest = {
 /** 审核队列角标。 */
 export type QyWithdrawStats = {
   buckets: { status: string; count: number; quota: number }[]
-  reconcile_hold: number
+  /** 待审超时数（`review_sla_hours`，从提交起算）。 */
   sla_breached: number
+  /**
+   * 待发放积压数（`payout_sla_hours`，从审核通过起算）。
+   *
+   * 这是人工发放模型**新引入**的观测点：佣金在申请那一刻就离开了用户的可用池，
+   * 通过之后没人发钱，用户就是"钱扣了、东西没拿到"。
+   */
+  payout_sla_breached: number
 }
 
 /** 收款信息明文。只能通过带审计的专用接口获取。 */

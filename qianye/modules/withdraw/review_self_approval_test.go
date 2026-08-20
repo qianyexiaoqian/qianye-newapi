@@ -25,12 +25,12 @@ import (
 // review_self_approval_test.go —— 提现的自审自批闸门。
 //
 // 审计实测的那条链最后一步是:同一个 role=10 账号 POST
-// /api/qy/admin/withdraw/<自己的单>/approve → 200,status 直接 paid,
-// 主库 users.quota 当场 +50000。管理端六个人工决定当时全部只挂
-// middleware.AdminAuth(),没有任何一处比过 w.UserId 与操作人。
+// /api/qy/admin/withdraw/<自己的单>/approve → 200,单据当场终结。管理端的人工
+// 决定当时全部只挂 middleware.AdminAuth(),没有任何一处比过 w.UserId 与操作人。
 //
+// 提现改成人工发放之后决定从六个收敛到四个,闸门本身一分没变 ——
 // 这里断言两件事:
-//   - 六个决定**逐个**都拒绝自己的单,且单据状态与佣金余额纹丝不动;
+//   - 四个决定**逐个**都拒绝自己的单,且单据状态与佣金余额纹丝不动;
 //   - 别人的单照常处理(否则"修好了"其实是把管理端整个卡死)。
 
 const selfReviewAdminId = 99
@@ -54,9 +54,6 @@ func seedForSelfReview(t *testing.T, e *reviewEnv, no string, owner int,
 		Quota:      quota,
 		CreatedAt:  now,
 		UpdatedAt:  now,
-	}
-	if status == StatusPaying {
-		w.ReconcileState = ReconcileHold
 	}
 	require.NoError(t, e.ext.Create(w).Error)
 
@@ -97,11 +94,11 @@ func callSelfReview(t *testing.T, h gin.HandlerFunc, id int64, body string) *htt
 	return res
 }
 
-// selfReviewCases 是六个人工决定各自的"参数完全合法"调用。
+// selfReviewCases 是四个人工决定各自的"参数完全合法"调用。
 //
 // 参数必须合法:每个 handler 在取单之前还有各自的参数校验(理由必填、
-// 打款单号必填、裁决值白名单),用一个非法参数去打会拿到那一档的错误码,
-// 于是测试即使在闸门被删掉之后也照样"通过"。
+// 发放凭证必填、实发金额必须与单据相等),用一个非法参数去打会拿到那一档的
+// 错误码,于是测试即使在闸门被删掉之后也照样"通过"。
 var selfReviewCases = []struct {
 	name    string
 	handler gin.HandlerFunc
@@ -110,21 +107,18 @@ var selfReviewCases = []struct {
 	body    string
 }{
 	{"通过", handleAdminApprove, config.WithdrawMethodQuota, StatusPending, `{}`},
-	{"拒绝", handleAdminReject, config.WithdrawMethodQuota, StatusPending, `{"reason":"资料不符"}`},
-	{"标记已打款", handleAdminMarkPaid, config.WithdrawMethodFiat, StatusApproved,
-		`{"payout_ref":"BANK-1"}`},
-	{"立即兑现", handleAdminCreditNow, config.WithdrawMethodQuota, StatusApproved, `{}`},
-	{"标记打款失败", handleAdminFail, config.WithdrawMethodFiat, StatusApproved,
+	{"驳回", handleAdminReject, config.WithdrawMethodQuota, StatusPending, `{"reason":"资料不符"}`},
+	{"标记已发放", handleAdminMarkPaid, config.WithdrawMethodQuota, StatusApproved,
+		`{"payout_ref":"LOG-1","confirm_quota":50000}`},
+	{"标记发放失败", handleAdminFail, config.WithdrawMethodFiat, StatusApproved,
 		`{"reason":"对方账户已注销"}`},
-	{"人工裁决", handleAdminResolve, config.WithdrawMethodQuota, StatusPaying,
-		`{"decision":"paid","evidence":"主库已加额度"}`},
 }
 
-// TestAdminDecisionsRefuseTheOperatorsOwnWithdrawal 逐个证明六条路都被挡住。
+// TestAdminDecisionsRefuseTheOperatorsOwnWithdrawal 逐个证明四条路都被挡住。
 func TestAdminDecisionsRefuseTheOperatorsOwnWithdrawal(t *testing.T) {
 	for _, tc := range selfReviewCases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := newReviewEnv(t, boolPtr(true))
+			e := newReviewEnv(t)
 			// 单据的申请人就是操作人本人。
 			w := seedForSelfReview(t, e, "WD-SELF-1", selfReviewAdminId,
 				tc.method, tc.status, 50000)
@@ -140,10 +134,6 @@ func TestAdminDecisionsRefuseTheOperatorsOwnWithdrawal(t *testing.T) {
 			assert.EqualValues(t, 50000, bal.FrozenQuota, "佣金必须原样冻着")
 			assert.EqualValues(t, 0, bal.WithdrawnQuota)
 			assert.EqualValues(t, 0, bal.AvailableQuota)
-
-			var u model.User
-			require.NoError(t, e.main.Where("id = ?", selfReviewAdminId).Take(&u).Error)
-			assert.EqualValues(t, 0, u.Quota, "主库额度一分都不许到账")
 
 			// 被拒的自审自批必须留痕:它是这条链上最容易被反复尝试的一步,
 			// 而事后仲裁只认审计表。
@@ -166,7 +156,7 @@ func TestAdminDecisionsRefuseTheOperatorsOwnWithdrawal(t *testing.T) {
 func TestAdminDecisionsStillProcessOtherPeoplesWithdrawals(t *testing.T) {
 	for _, tc := range selfReviewCases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := newReviewEnv(t, boolPtr(true))
+			e := newReviewEnv(t)
 			const applicant = 7
 			w := seedForSelfReview(t, e, "WD-OTHER-1", applicant, tc.method, tc.status, 50000)
 
@@ -185,8 +175,8 @@ func TestAdminDecisionsStillProcessOtherPeoplesWithdrawals(t *testing.T) {
 // 将来任何人再加一个人工决定,只要他照着邻居抄成 loadWithdrawal,
 // 上面那些用例一条都不会红。这里直接扫 AST。
 func TestEveryAdminDecisionGoesThroughTheSelfReviewGate(t *testing.T) {
-	// 这六个函数各自代表一次不可逆的人工决定:钱去哪、佣金退不退、单据封不封。
-	decisions := []string{"approve", "creditNow", "reject", "markPaid", "markFailed", "resolveHold"}
+	// 这四个函数各自代表一次不可逆的人工决定:佣金退不退、单据封不封。
+	decisions := []string{"approve", "reject", "markPayout", "markFailed"}
 
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "review.go", nil, 0)

@@ -207,6 +207,15 @@ export function WithdrawForm(props: WithdrawFormProps) {
         <CardDescription>{t('qy_wd_form_desc')}</CardDescription>
       </CardHeader>
       <CardContent className='space-y-4'>
+        {/* 人工发放是这条链路上用户最容易误解的一点：提交之后佣金**立刻**从
+            可提余额里扣掉，而钱要等管理员手动发。不在申请页说清楚，用户会在
+            "扣了但没到账"的那几十个小时里持续开工单。放在最上面、且不可折叠。 */}
+        <Alert>
+          <Info />
+          <AlertTitle>{t('qy_wd_manual_payout_title')}</AlertTitle>
+          <AlertDescription>{t('qy_wd_manual_payout_desc')}</AlertDescription>
+        </Alert>
+
         {outOfDailyCount && (
           <Alert variant='destructive'>
             <Info />
@@ -363,6 +372,9 @@ export function WithdrawForm(props: WithdrawFormProps) {
                 />
               )}
             </dl>
+            <p className='text-muted-foreground text-xs'>
+              {t('qy_wd_confirm_manual_note')}
+            </p>
             {/* 支付密码格放在确认弹窗里而不是主表单：它对应的是"这一次提交"，
                 而主表单的值（金额、收款人、凭证）会被反复修改与复用。
                 与划转、抽奖同一个组件、同一个后端闸门 —— 三条出钱路径共用一处

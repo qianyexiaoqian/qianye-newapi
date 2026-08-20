@@ -1,12 +1,16 @@
 package violation
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
 )
@@ -44,6 +48,55 @@ func notFound(c *gin.Context) {
 func internalError(c *gin.Context, err error) {
 	common.SysError("qianye/violation: 接口处理失败: " + err.Error())
 	respondFail(c, http.StatusInternalServerError, "qy_internal_error", "处理失败,请稍后重试")
+}
+
+// denyActorOverTarget 是「处置落在谁头上」的操作人闸门:操作人不许是被处置人
+// 本人,也不许是同级或更高权限的账号。判据在 guard.ActorMayActOn,与佣金、
+// 提现、支付密码三侧共用一份实现。
+//
+// 为什么违规处置也要接这条判据:撤销一条违规记录可以带 refund=true 把扣掉的
+// 额度退回去,那是**真的动钱**;解封与计数清零不直接动钱,但它们决定这个账号
+// 还能不能继续消费、离下一次自动封号还有几次 —— 一个 role=10 管理员能给自己
+// 撤记录、退钱、解封、清零,等于违规处置对管理员这一档完全不生效,而这套系统
+// 的自动封号恰恰不看角色。
+//
+// 只读接口(记录列表、证据、封禁列表、申诉列表)刻意不接:看得到自己的违规
+// 记录不构成问题,挡掉只会让人以为记录丢了。
+//
+// action 是被拒动作的审计 action 名。被拒必须留痕:一次被拒的自营撤销不是
+// 手滑,它是"这个账号正在给自己擦记录"的形状,而事后仲裁只认审计表 ——
+// 只记成功的话,那件事看起来与"从没有人试过"完全一样。
+//
+// 返回 true 表示**已经写过响应**,调用方直接 return。
+func denyActorOverTarget(c *gin.Context, action string, targetUserId int) bool {
+	err := guard.ActorMayActOnCtx(c, targetUserId)
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, guard.ErrActorIsTarget):
+		// 403 而不是 400:参数没问题,是**这个人**不该做这件事。
+		respondFail(c, http.StatusForbidden, "qy_self_dealing",
+			"不能对自己的账号执行违规处置,请由另一位管理员操作")
+	case errors.Is(err, guard.ErrTargetNotLower):
+		respondFail(c, http.StatusForbidden, "qy_target_not_manageable",
+			"不能对同级或更高权限账号执行违规处置")
+	case errors.Is(err, guard.ErrTargetMissing):
+		notFound(c)
+	default:
+		internalError(c, err)
+		return true
+	}
+	audit.Write(c, audit.Entry{
+		Category:     qymodel.AuditCategoryViolation,
+		Action:       action + ".actor_denied",
+		ActorType:    qymodel.ActorAdmin,
+		ActorUserId:  c.GetInt("id"),
+		ActorName:    c.GetString("username"),
+		TargetUserId: targetUserId,
+		Result:       qymodel.ResultFail,
+		Reason:       err.Error(),
+	})
+	return true
 }
 
 // listPaging 是违规相关列表接口的分页口径:?p= / ?page_size=,默认 20、上限 100。

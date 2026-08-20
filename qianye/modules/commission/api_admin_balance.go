@@ -364,6 +364,14 @@ func adminSetWithdrawn(c *gin.Context) {
 		badRequest(c, "qy_invalid_param", "必须给出已提现额度的目标值")
 		return
 	}
+	// 这条接口能**双向**改钱:目标值调低时 delta 为负,available_quota 反而
+	// 变大(newAvail = avail - delta),也就是把已经发出去的佣金重新变回可提现。
+	// 缺了这道闸门,一个 role=10 管理员可以把自己的 withdrawn_quota 清零、
+	// 让可提现额度凭空回满,再走一次提现 —— 与「手工增减佣金」同一条链,
+	// 只是绕开了那边已经装好的闸门。
+	if denyActorOverTarget(c, "commission.balance.withdrawn.set", req.UserId) {
+		return
+	}
 	target := *req.WithdrawnQuota
 	if target < 0 || target > int64(common.MaxQuota) {
 		badRequest(c, "qy_invalid_param", "已提现额度必须是 0 到额度上限之间的整数")

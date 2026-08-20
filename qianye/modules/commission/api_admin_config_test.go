@@ -369,6 +369,10 @@ func TestAdminSettleAcceptsUserIdFromQueryOrBody(t *testing.T) {
 			// 4242 有一笔够发的余数:结算真的会落一张单,于是"到底settle了谁"
 			// 有一个落在库里的判据,而不是只看 HTTP 码。
 			seedBalance(t, gdb, 4242, "4000")
+			// 手动结算现在要先回答"操作人能不能给这个人解冻",判据要回查
+			// 主库角色(见 guard.ActorMayActOn),因此目标必须真的存在。
+			mainDB := useMainDB(t, &model.User{})
+			seedUser(t, mainDB, 4242, "u4242", 0, 1000)
 
 			rec := callAdminHandler(t, http.MethodPost, tc.target, tc.body, adminSettle)
 			require.Equal(t, tc.want, rec.Code, rec.Body.String())

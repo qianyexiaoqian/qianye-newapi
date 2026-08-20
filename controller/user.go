@@ -374,6 +374,27 @@ func canManageTargetRole(myRole int, targetRole int) bool {
 	return myRole == common.RoleRootUser || myRole > targetRole
 }
 
+// requireManageableUser 是 canManageTargetRole 的按 id 版本：调用点手上通常只有
+// 一个 user_id，而不是已经取好的 model.User。
+//
+// 存在的理由不是省几行：本轮越权梳理查出的漏判全部是「拿到 user_id 之后直接
+// 动钱、根本没回查目标角色」的形状（补单、套餐绑定、套餐用量重置），
+// 每个调用点自己写一遍回查，下一个新接口就会再漏一次。
+//
+// 返回 true 表示**已经写过响应**，调用方直接 return。
+func requireManageableUser(c *gin.Context, userId int) bool {
+	user, err := model.GetUserById(userId, true)
+	if err != nil {
+		common.ApiError(c, err)
+		return true
+	}
+	if !canManageTargetRole(c.GetInt("role"), user.Role) {
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionSameLevel)
+		return true
+	}
+	return false
+}
+
 func GetUser(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {

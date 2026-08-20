@@ -100,7 +100,15 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.GET("/aff", controller.GetAffCode)
 				selfRoute.GET("/topup/info", controller.GetTopUpInfo)
 				selfRoute.GET("/topup/self", controller.GetUserTopUps)
-				selfRoute.POST("/topup", middleware.CriticalRateLimit(), controller.TopUp)
+				// 兑换码入口。两把限流缺一不可,它们挡的不是同一件事:
+				//   CriticalRateLimit  按**出口 IP** 计数,挡住"一个人拿一个号狂试";
+				//   UserCriticalRateLimit 按**账号**计数,挡住"一个人换一批代理狂试"。
+				// 只有 IP 那一把时,换 IP 就完全不受限,而爆破需要的恰恰只是一个能登录的
+				// 账号 + 一批 IP;只有账号那一把时,注册一批号又能绕开。两把一起,
+				// 攻击者得同时凑齐 N 个 IP 和 N 个账号才能把尝试次数线性放大。
+				// 参照物是 aff_transfer / access-token 两条同样只需要会话的高危接口。
+				selfRoute.POST("/topup", middleware.CriticalRateLimit(),
+					middleware.UserCriticalRateLimit("redeem"), controller.TopUp)
 				selfRoute.POST("/pay", middleware.CriticalRateLimit(), controller.RequestEpay)
 				selfRoute.POST("/amount", controller.RequestAmount)
 				selfRoute.POST("/stripe/pay", middleware.CriticalRateLimit(), controller.RequestStripePay)

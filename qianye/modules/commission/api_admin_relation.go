@@ -465,6 +465,13 @@ func adminBindRelation(c *gin.Context) {
 		badRequest(c, "qy_invalid_param", "必须同时指定邀请人与被邀请人")
 		return
 	}
+	// 受益人是**邀请人**:把自己设成某个高消费用户的邀请人,等于把那个人此后
+	// 每一笔消费的返佣接到自己账上,而且不留手工调整那种一次性的账目行 ——
+	// 事后只看佣金流水会以为这是真实推广。闸门落在 inviter 上,与
+	// balances/adjust 同一条判据。
+	if denyActorOverTarget(c, "commission.relation.bind", req.InviterId) {
+		return
+	}
 	reason, ok := requireReason(c, req.Reason)
 	if !ok {
 		return
@@ -659,6 +666,10 @@ func adminRebindRelation(c *gin.Context) {
 	}
 	if req.InviteeId <= 0 || req.InviterId <= 0 {
 		badRequest(c, "qy_invalid_param", "必须同时指定新的邀请人与被邀请人")
+		return
+	}
+	// 与 bind 同理,且换绑更隐蔽:它连「这个人本来没有邀请人」这个痕迹都不留。
+	if denyActorOverTarget(c, "commission.relation.rebind", req.InviterId) {
 		return
 	}
 	reason, ok := requireReason(c, req.Reason)

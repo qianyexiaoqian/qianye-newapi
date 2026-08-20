@@ -71,7 +71,17 @@ export function QyWithdrawBody() {
               config.review_sla_hours > 0
                 ? t('qy_wd_sla_value', { hours: config.review_sla_hours })
                 : t('qy_common_unlimited'),
-            hint: config.auto_credit ? t('qy_wd_auto_credit_hint') : undefined,
+          },
+          {
+            // 发放时限必须和审核时限并排展示。只写审核时限会让用户以为
+            // "通过 = 到账"，而实际上通过之后还要等管理员手动发放。
+            key: 'payout_sla',
+            label: t('qy_wd_payout_sla'),
+            value:
+              config.payout_sla_hours > 0
+                ? t('qy_wd_sla_value', { hours: config.payout_sla_hours })
+                : t('qy_common_unlimited'),
+            hint: t('qy_wd_manual_payout_hint'),
           },
         ]
 

@@ -913,6 +913,11 @@ func adminRevokeRecord(c *gin.Context) {
 		notFound(c)
 		return
 	}
+	// refund=true 时这条路径会把扣掉的额度退回 rec.UserId —— 撤销自己的违规
+	// 记录并勾上退款,是这套系统里最短的一条自营取钱路径。
+	if denyActorOverTarget(c, "records.revoke", rec.UserId) {
+		return
+	}
 	refunded, err := revokeRecord(c, &rec, req.Reason, req.Refund, c.GetInt("id"))
 	if err != nil {
 		internalError(c, err)
@@ -1045,6 +1050,40 @@ func resolveAfterCompensation(ctx context.Context, order *qymodel.FundOrder) err
 	}
 	// IdemKey 就是 rec_no,见 refundFee。
 	return markRecordRefunded(gdb.WithContext(ctx), order.IdemKey, order.AmountQuota)
+}
+
+// postRefundFromOrder 是"主库已确认退款生效"之后必须补做的非事务收尾。
+//
+// 它与 refundFee 里那个 AfterCommit 闭包做同一件事,区别只在于**信息来源**:
+// 闭包捎带着 rec 结构体,只存在于发起退款的那个进程里;主库事务在 COMMIT 阶段
+// 断连、或扩展库回写失败时,那个闭包一次都不会跑,而钱已经退了。补偿任务与人工
+// 裁决只有 qy_fund_orders 那一行,因此这里从 rec_no 把记录读回来重建。
+//
+// 令牌缓存必须一并失效:退款会回冲 tokens.remain_quota,只失效用户缓存的话,
+// 那张令牌在缓存 TTL 内仍按退款前的额度判定。
+func postRefundFromOrder(ctx context.Context, order *qymodel.FundOrder) error {
+	gdb := db.Get()
+	if gdb == nil {
+		return db.ErrNotReady
+	}
+	var rec Record
+	if err := gdb.WithContext(ctx).Where("rec_no = ?", order.IdemKey).Take(&rec).Error; err != nil {
+		return err
+	}
+	if rec.TokenId > 0 {
+		if e := model.InvalidateUserTokensCache(rec.UserId); e != nil {
+			common.SysError("qianye/violation: 补做退款收尾时失效令牌缓存失败: " + e.Error())
+		}
+	}
+	model.QyRecordLedgerLog(rec.UserId, model.LogTypeRefund,
+		fmt.Sprintf("违规扣费撤销退还 %d(记录 %s)", order.AmountQuota, rec.RecNo),
+		order.OrderNo, map[string]interface{}{
+			"qy_violation_rec_no": rec.RecNo,
+			"qy_refund_quota":     order.AmountQuota,
+			"qy_billing_source":   rec.BillingSource,
+			"qy_token_id":         rec.TokenId,
+		})
+	return nil
 }
 
 // refundFee 通过跨库两阶段把违规扣费退还给用户,并返回**确实**退还的额度。
@@ -1283,6 +1322,10 @@ func adminUnban(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&req)
 
+	if denyActorOverTarget(c, "bans.unban", userId) {
+		return
+	}
+
 	if err := unbanUser(c, userId, req.Note, req.ResetCounter, c.GetInt("id")); err != nil {
 		internalError(c, err)
 		return
@@ -1428,6 +1471,11 @@ func adminReviewAppeal(c *gin.Context) {
 	var ap Appeal
 	if err := db.Get().Where("id = ?", id).Take(&ap).Error; err != nil {
 		notFound(c)
+		return
+	}
+	// 闸门必须落在状态翻转**之前**:approved 分支会顺手撤记录、退款、解封、
+	// 清计数,四件事全部由申诉人自己批准的话,前面三道闸门都成了摆设。
+	if denyActorOverTarget(c, "appeals.review", ap.UserId) {
 		return
 	}
 	now := common.GetTimestamp()
@@ -1646,6 +1694,10 @@ func adminResetCounter(c *gin.Context) {
 		Reason string `json:"reason"`
 	}
 	_ = c.ShouldBindJSON(&req)
+
+	if denyActorOverTarget(c, "counters.reset", userId) {
+		return
+	}
 
 	before, catsBefore, reset, err := resetUserCounter(c.Request.Context(), db.Get(), userId)
 	// 类型线是与账号总量线并列的封号触发器,而管理端没有任何页面显示它。

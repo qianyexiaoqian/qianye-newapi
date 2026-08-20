@@ -81,6 +81,15 @@ func adminMutate(c *gin.Context, action string, requireReason bool,
 	if !ok {
 		return
 	}
+	// 只读的 handleAdminGetStatus 刻意不走这道闸门:知道某个管理员的支付密码
+	// 有没有被锁,是处理申诉的前提,而看一眼状态改不了任何东西。
+	if err := adminTargetActable(c, userId); err != nil {
+		// 被拒也要留痕。一次被拒的自营重置不是手滑 —— 它是"会话已经被盗、
+		// 正在拆第二因子"这条链上最显眼的一步,而事后仲裁只认审计表。
+		writeAdminAudit(c, action+".denied", userId, qymodel.ResultFail, err.Error(), "", "")
+		respondErr(c, err)
+		return
+	}
 	var req adminActionRequest
 	// 允许空请求体:解锁不强制填理由,前端可能直接 POST 而不带 body。
 	if c.Request.ContentLength > 0 {
@@ -158,6 +167,26 @@ func adminTargetUserId(c *gin.Context) (int, bool) {
 		return 0, false
 	}
 	return userId, true
+}
+
+// adminTargetActable 是两个管理端写动作的操作人闸门。判据在
+// guard.ActorMayActOn,与佣金、提现两侧共用一份实现;这里只把哨兵错误翻成
+// 本模块的错误码表 —— 前端按 code 映射文案,同一件事出两个 code 会变成两条。
+func adminTargetActable(c *gin.Context, targetUserId int) error {
+	switch err := guard.ActorMayActOnCtx(c, targetUserId); {
+	case err == nil:
+		return nil
+	case errors.Is(err, guard.ErrActorIsTarget):
+		return errAdminSelfTarget
+	case errors.Is(err, guard.ErrTargetNotLower):
+		return errAdminPeerTarget
+	case errors.Is(err, guard.ErrTargetMissing):
+		// adminTargetUserId 已经查过一次主库,走到这里说明账号在两次查询之间
+		// 被删了。当成"目标不存在"而不是放行。
+		return errUserNotFound
+	default:
+		return err
+	}
 }
 
 // writeAdminAudit 落一条管理端操作审计。

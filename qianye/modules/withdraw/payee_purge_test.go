@@ -108,8 +108,8 @@ func TestPrunePii(t *testing.T) {
 }
 
 // 终态判定必须写进扫描条件。放在外面过滤的话,一批更老的非终态单(例如长期
-// 挂着的人工裁决单)会永远占满每一轮的 batch,后面所有到期单据从此再也轮不到 ——
-// 清理任务看起来在跑,实际一行都清不掉。
+// 无人发放、卡在待发放队列里的单)会永远占满每一轮的 batch,后面所有到期单据
+// 从此再也轮不到 —— 清理任务看起来在跑,实际一行都清不掉。
 func TestPrunePii_StuckOrdersDoNotBlockTheBatch(t *testing.T) {
 	loadRetentionConfig(t)
 	gdb := newTestDB(t)
@@ -117,8 +117,7 @@ func TestPrunePii_StuckOrdersDoNotBlockTheBatch(t *testing.T) {
 
 	// id 更小 = 更老,排在扫描的最前面。
 	stuck := seedWithdrawal(t, gdb, "WD-stuck", func(w *Withdrawal) {
-		w.Status = StatusPaying
-		w.ReconcileState = ReconcileHold
+		w.Status = StatusApproved
 	})
 	seedPayeeFor(t, gdb, stuck, old)
 	done := seedWithdrawal(t, gdb, "WD-done", func(w *Withdrawal) { w.Status = StatusPaid })

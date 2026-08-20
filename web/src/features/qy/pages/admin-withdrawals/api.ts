@@ -34,8 +34,6 @@ export type QyAdminWithdrawFilters = {
   method?: string
   user_id?: string
   withdraw_no?: string
-  /** `hold` 只看对账异常。 */
-  reconcile?: string
   /** `true` 只看命中风控的单。 */
   risk_only?: string
 }
@@ -56,7 +54,6 @@ export function qyAdminWithdrawalsQuery(filters: QyAdminWithdrawFilters) {
     'method',
     'user_id',
     'withdraw_no',
-    'reconcile',
     'risk_only',
   ] as const) {
     const value = filters[key]
@@ -96,14 +93,33 @@ export function qyRejectWithdrawal(input: { id: number; reason: string }) {
   })
 }
 
+/**
+ * 标记已发放。**系统不动钱** —— 这一步只登记"管理员已经把钱发出去了",
+ * 并把佣金从冻结转成已提现。
+ *
+ * 两个必填项都是资金安全边界,不是表单装饰:
+ *   - `payout_ref` 发放凭证。`paid` 是不可逆终态,没有凭证的发放记录在争议时
+ *     等于没发;
+ *   - `confirm_quota`(quota 单)/ `confirm_amount`(fiat 单)是管理员对
+ *     "我实际发了多少"的复述,后端要求与单据金额**逐值相等**。它让"发多少"
+ *     成为这个终态动作的显式入参,而不是点一下按钮的隐式后果 ——
+ *     一个对着待发放队列无差别 POST 的脚本过不了这一关。
+ *
+ * 两个确认字段按 `method` 二选一填,填错那个等于没填(后端返回
+ * `qy_wd_payout_amount_required`)。
+ */
 export function qyMarkWithdrawalPaid(input: {
   id: number
   payout_ref: string
+  confirm_quota?: number
+  confirm_amount?: string
   paid_at: number
   payout_note: string
 }) {
   return qyPost<QyAdminWithdrawal>(`/admin/withdraw/${input.id}/mark-paid`, {
     payout_ref: input.payout_ref,
+    confirm_quota: input.confirm_quota ?? 0,
+    confirm_amount: input.confirm_amount ?? '',
     paid_at: input.paid_at,
     payout_note: input.payout_note,
   })
@@ -112,18 +128,6 @@ export function qyMarkWithdrawalPaid(input: {
 export function qyFailWithdrawal(input: { id: number; reason: string }) {
   return qyPost<QyAdminWithdrawal>(`/admin/withdraw/${input.id}/fail`, {
     reason: input.reason,
-  })
-}
-
-/** 对账异常单的人工裁决。`decision` 只接受 `paid` / `failed`。 */
-export function qyResolveWithdrawal(input: {
-  id: number
-  decision: 'failed' | 'paid'
-  evidence: string
-}) {
-  return qyPost<QyAdminWithdrawal>(`/admin/withdraw/${input.id}/resolve`, {
-    decision: input.decision,
-    evidence: input.evidence,
   })
 }
 

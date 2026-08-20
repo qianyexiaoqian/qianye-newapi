@@ -50,7 +50,6 @@ import { ReviewDialog } from './components/review-dialog'
 const STATUS_OPTIONS = [
   'pending',
   'approved',
-  'paying',
   'paid',
   'rejected',
   'cancelled',
@@ -58,7 +57,11 @@ const STATUS_OPTIONS = [
 ] as const
 
 /**
- * 提现审核队列。
+ * 提现审核 / 发放队列。
+ *
+ * 这个页面同时是**管理员的发放待办**：系统不发钱，佣金在用户申请那一刻就已经
+ * 扣掉了，通过审核之后必须有人真的去加额度或打款。因此队列角标把两道时限分开
+ * 报（待审超时 / 待发放积压），筛选也给了一键只看待发放。
  *
  * 默认只看待审单并按申请时间正序（后端默认 `id asc`）：审核是先进先出的工作，
  * 倒序会让最老的单被新单一直往下压，而"最老"恰恰等于"最接近超时"。
@@ -73,7 +76,6 @@ export function QyAdminWithdrawals() {
   const [method, setMethod] = useState('')
   const [keyword, setKeyword] = useState('')
   const [riskOnly, setRiskOnly] = useState(false)
-  const [holdOnly, setHoldOnly] = useState(false)
   const [reviewId, setReviewId] = useState<number | null>(null)
   const [revealId, setRevealId] = useState<number | null>(null)
 
@@ -89,7 +91,6 @@ export function QyAdminWithdrawals() {
       withdraw_no: /^\d+$/.test(keyword.trim()) ? '' : keyword.trim(),
       user_id: /^\d+$/.test(keyword.trim()) ? keyword.trim() : '',
       risk_only: riskOnly ? 'true' : '',
-      reconcile: holdOnly ? 'hold' : '',
     })
   )
   const items = query.data?.items ?? []
@@ -109,6 +110,8 @@ export function QyAdminWithdrawals() {
             key: 'approved',
             label: t('qy_wd_a_stat_approved'),
             value: bucketCount(stats.buckets, 'approved'),
+            emphasis: true,
+            hint: t('qy_wd_a_stat_approved_hint'),
           },
           {
             key: 'sla',
@@ -118,12 +121,13 @@ export function QyAdminWithdrawals() {
               stats.sla_breached > 0 ? t('qy_wd_a_stat_sla_hint') : undefined,
           },
           {
-            key: 'hold',
-            label: t('qy_wd_a_stat_hold'),
-            value: stats.reconcile_hold,
+            // 待发放积压是人工发放模型新引入的敞口：佣金已经扣了，钱还没发出去。
+            key: 'payout_sla',
+            label: t('qy_wd_a_stat_payout_sla'),
+            value: stats.payout_sla_breached,
             hint:
-              stats.reconcile_hold > 0
-                ? t('qy_wd_a_stat_hold_hint')
+              stats.payout_sla_breached > 0
+                ? t('qy_wd_a_stat_payout_sla_hint')
                 : undefined,
           },
         ]
@@ -195,9 +199,6 @@ export function QyAdminWithdrawals() {
       cell: (row) => (
         <span className='inline-flex items-center gap-1.5'>
           <QyStatusBadge status={row.status} />
-          {row.reconcile_state === 'hold' && (
-            <Badge variant='destructive'>{t('qy_wd_a_hold_badge')}</Badge>
-          )}
           {row.risk_flags !== '' && (
             <Badge variant='outline'>{t('qy_wd_a_risk_badge')}</Badge>
           )}
@@ -289,14 +290,14 @@ export function QyAdminWithdrawals() {
               {t('qy_wd_a_filter_risk')}
             </Button>
             <Button
-              variant={holdOnly ? 'default' : 'outline'}
+              variant={status === 'approved' ? 'default' : 'outline'}
               size='sm'
               onClick={() => {
                 resetPage()
-                setHoldOnly(!holdOnly)
+                setStatus(status === 'approved' ? 'pending' : 'approved')
               }}
             >
-              {t('qy_wd_a_filter_hold')}
+              {t('qy_wd_a_filter_payout')}
             </Button>
           </div>
 

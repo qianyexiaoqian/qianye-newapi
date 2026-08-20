@@ -282,8 +282,15 @@ type Commission struct {
 	RefundClawback             bool `yaml:"refund_clawback"`
 }
 
-// Withdraw 佣金提现。两种方式并存,用户自选:
-// quota = 佣金兑换为平台余额(审核通过自动到账);fiat = 线下法币打款(人工)。
+// Withdraw 佣金提现。
+//
+// # 系统只做佣金扣除,金额由管理员手动发放
+//
+// 申请即从佣金可用池扣除,审核通过后单据进入「待发放」队列,管理员自己去加站内
+// 额度或线下打款,再回单据上「标记已发放」。本模块不会自动给任何人加一分钱。
+//
+// Methods 因此仍然有意义 —— 它说的不是"系统怎么给钱",而是**用户要的是哪种钱**:
+// quota = 站内额度,fiat = 现金。管理员看着单据上写的这一项决定去哪个入口发。
 type Withdraw struct {
 	Enabled       bool     `yaml:"enabled"`
 	Methods       []string `yaml:"methods"`
@@ -309,13 +316,33 @@ type Withdraw struct {
 	// "写没写过"来决定要不要喊那一声。
 	RateFreezeModeDeprecated  *string `yaml:"rate_freeze_mode"`
 	RateFreezeFixedDeprecated *string `yaml:"rate_freeze_fixed"`
-	AutoCreditOnApprove       *bool   `yaml:"auto_credit_on_approve"`
+
+	// AutoCreditOnApproveDeprecated 是「quota 单审核通过后自动兑现成站内额度」
+	// 的开关。
+	//
+	// Deprecated: 已下线。产品口径改成"提现只做佣金扣除,金额由管理员手动发放"
+	// 之后,自动到账那条跨库链路(两阶段资金单 → 主库 users.quota → outbox 探针
+	// → paying/hold 人工裁决)整条删除,这个开关的两个取值都不再对应任何行为。
+	//
+	// 保留字段**仅为**让仍写着这个键的部署能够启动:本包是严格解析
+	// (KnownFields(true),见 Load),直接删字段会让那些部署在升级二进制的那一刻
+	// 启动失败。加载时告警并置 nil。
+	AutoCreditOnApproveDeprecated *bool `yaml:"auto_credit_on_approve"`
 	// DailyMaxCount 单个用户每日可提交的提现单数,0 表示不限制。
 	DailyMaxCount int `yaml:"daily_max_count"`
 	// PayeeAccountMax 单个用户可保存的收款方式数量,0 表示不限制。
 	PayeeAccountMax int `yaml:"payee_account_max"`
 	// ReviewSLAHours 审核时限,超时的待审单在队列里标红。0 表示不计时限。
 	ReviewSLAHours int `yaml:"review_sla_hours"`
+	// PayoutSLAHours 发放时限:审核通过之后多久没标记已发放算积压。
+	//
+	// 它守的是人工发放模型**新引入**的那个敞口 —— 佣金在申请那一刻就离开了用户
+	// 的可用池,而系统不会替任何人把钱发出去。管理员一直不发也不驳回,用户就是
+	// "钱扣了、东西没拿到",而在这个字段之前站点里没有任何东西会为此出声。
+	//
+	// 从 reviewed_at 起算而不是 created_at:审核花掉的时间归 ReviewSLAHours 管。
+	// 0 表示不计时限(队列角标与积压告警一起关掉)。
+	PayoutSLAHours int `yaml:"payout_sla_hours"`
 	// RemarkMaxRunes 用户自定义说明的字数上限,必须落在 1..2000 —— 0 不是
 	// "不限制"而是"一个字都不许填",validateWithdraw 会拒绝启动。
 	RemarkMaxRunes int `yaml:"remark_max_runes"`
@@ -832,7 +859,6 @@ func (a Audit) ShouldRecordIP() bool   { return boolOr(a.RecordIP, true) }
 // 否则"我把审计关了"这句话在两张表上含义不同,而运维只会记住一句。
 func (a Audit) RequestOn() bool                { return a.On() && boolOr(a.RequestEnabled, true) }
 func (t Transfer) ReceiverMustBeEnabled() bool { return boolOr(t.RequireReceiverEnabled, true) }
-func (w Withdraw) AutoCredit() bool            { return boolOr(w.AutoCreditOnApprove, true) }
 func (w Wallet) TransferEntry() bool           { return boolOr(w.ShowTransferEntry, true) }
 func (w Wallet) CommissionEntry() bool         { return boolOr(w.ShowCommissionEntry, true) }
 func (w Wallet) WithdrawEntry() bool           { return boolOr(w.ShowWithdrawEntry, true) }

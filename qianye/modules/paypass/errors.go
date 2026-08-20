@@ -83,6 +83,22 @@ var (
 		"用户不存在", http.StatusNotFound)
 	errReasonRequired = newBizError("qy_reason_required",
 		"请填写操作原因", http.StatusBadRequest)
+
+	// errAdminSelfTarget / errAdminPeerTarget 是管理端两个写动作的操作人闸门。
+	//
+	// 支付密码是划转(把额度转给别人)的第二因子:会话被盗时它是最后一道
+	// 拦截。管理端的重置**不需要原密码、不需要邮箱验证码**,所以一个 role=10
+	// 账号对自己调用它,等于用一次 HTTP 请求把自己账号的第二因子拆掉;解锁
+	// 对自己调用则等于让错误计数永远不封顶,支付密码可以在线无限次爆破。
+	// 落在别人头上同理:对同级或更高权限的账号执行,是在拆**别人**的第二因子,
+	// 而那正是上游 canManageTargetRole 要挡的形状。
+	//
+	// 用户自己忘了支付密码仍然走用户端的邮箱找回,不需要管理员身份,
+	// 所以这两道闸门不会把任何人锁死。
+	errAdminSelfTarget = newBizError("qy_self_dealing",
+		"不能对自己的账号执行这个操作,请由另一位管理员操作(忘记支付密码请走邮箱找回)", http.StatusForbidden)
+	errAdminPeerTarget = newBizError("qy_target_not_manageable",
+		"不能对同级或更高权限账号的支付密码执行这个操作", http.StatusForbidden)
 )
 
 // respondErr 把内部错误翻译成稳定的响应信封,并 Abort。

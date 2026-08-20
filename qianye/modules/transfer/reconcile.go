@@ -118,8 +118,9 @@ func applyFundOrderStatus(orderNo string, order qymodel.FundOrder) error {
 	case qymodel.StatusSuccess:
 		return finalizeSuccess(orderNo)
 	case qymodel.StatusFailed:
-		// 再确认一次主库探针:资金单可能是在 commit 断连的模糊场景下被判失败的,
-		// 那时钱其实已经动了,退还预占就是超发。
+		// 再确认一次主库探针。commit 断连那一支现在落 in_doubt 而不是 failed,
+		// 但存量单、补偿任务与人工裁决落下的 failed 来自另一套判据,
+		// 而退还预占是不可逆的 —— 判错就是超发。
 		if mainSideApplied(&order) {
 			markUncertainAfterConflict(orderNo)
 			return nil

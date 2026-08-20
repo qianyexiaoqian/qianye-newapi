@@ -13,11 +13,8 @@ func TestCanTransit(t *testing.T) {
 		{StatusPending, StatusApproved},
 		{StatusPending, StatusRejected},
 		{StatusPending, StatusCancelled},
-		{StatusApproved, StatusPaying},
 		{StatusApproved, StatusPaid},
 		{StatusApproved, StatusFailed},
-		{StatusPaying, StatusPaid},
-		{StatusPaying, StatusFailed},
 	}
 	for _, tc := range legal {
 		assert.True(t, canTransit(tc.from, tc.to), "%s → %s 应当合法", tc.from, tc.to)
@@ -27,17 +24,16 @@ func TestCanTransit(t *testing.T) {
 		name     string
 		from, to string
 	}{
-		{"跳过审核直接到账", StatusPending, StatusPaid},
-		{"跳过审核直接兑现", StatusPending, StatusPaying},
-		{"已到账不可回退", StatusPaid, StatusFailed},
-		{"已到账不可重复到账", StatusPaid, StatusPaid},
-		{"已拒绝不可复活", StatusRejected, StatusApproved},
+		{"跳过审核直接标记已发放", StatusPending, StatusPaid},
+		{"跳过审核直接标记发放失败", StatusPending, StatusFailed},
+		{"已发放不可回退", StatusPaid, StatusFailed},
+		{"已发放不可重复发放", StatusPaid, StatusPaid},
+		{"已驳回不可复活", StatusRejected, StatusApproved},
 		{"已撤销不可复活", StatusCancelled, StatusPending},
-		{"失败不可自动重试成到账", StatusFailed, StatusPaid},
+		{"发放失败不可自动重试成已发放", StatusFailed, StatusPaid},
 		{"审核通过后不可再被撤销", StatusApproved, StatusCancelled},
-		{"审核通过后不可再被拒绝", StatusApproved, StatusRejected},
-		{"兑现中不可被撤销", StatusPaying, StatusCancelled},
-		{"兑现中不可退回待审", StatusPaying, StatusPending},
+		{"审核通过后不可再被驳回", StatusApproved, StatusRejected},
+		{"待发放不可退回待审", StatusApproved, StatusPending},
 		{"未知状态一律拒绝", "whatever", StatusPaid},
 	}
 	for _, tc := range illegal {

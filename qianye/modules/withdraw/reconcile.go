@@ -2,34 +2,33 @@ package withdraw
 
 import (
 	"context"
-	"errors"
+	"fmt"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
-	qymodel "github.com/QuantumNous/new-api/qianye/model"
-
-	"gorm.io/gorm"
 )
 
-// reconcile 收拾跨库兑现留下的中间态。
+// reconcile 是提现模块的周期性收尾任务。
 //
-// 覆盖两类卡单:
+// # 它以前是什么
 //
-//	A. approved 却没进入兑现 —— 进程崩在"审核通过"与"启动兑现"之间。
-//	   重新触发即可,startPaying 的 CAS 天然幂等。
-//	B. paying 迟迟不落终态 —— 判定依据只有 qy_fund_orders 的状态,
-//	   它背后是主库 outbox 这个唯一精确探针。绝不去 logs 里 LIKE 反查单号:
-//	   日志库可能是 ClickHouse(全表扫),而且日志写失败并不代表钱没动。
+// 跨库兑现的对账:扫 approved 却没进兑现的单、扫 paying 迟迟不落终态的单,
+// 依据主库 outbox 探针判定"钱到底动没动"。自动到账下线之后这两件事都不存在了 ——
+// 本模块不再有任何跨库写入,也就没有任何"不可判定"的中间态需要收敛。
 //
-// 顺带做保留期到期的 PII 清理 —— 它同样是"到点才做一次的收尾",
-// 与对账共用同一把租约,不必再多一个后台任务。
+// # 它现在是什么
 //
-// 三个清理面缺一不可,少一个保留期就是半个摆设:提现单上的收款快照(Payee)、
-// 用户保存的收款方式(PayeeAccount,存的是同一份银行卡号密文)、以及明文访问
-// 审计(PiiAudit,保留期独立且更长,见 piiAuditInvestigationDays)。
+// 两件"到点才做一次"的收尾,共用同一把租约:
 //
-// 本任务由 lease.Run 驱动,多节点不会双跑;即便双跑,每一步也都是 CAS。
+//	A. 待发放积压告警 —— 人工发放模型新引入的敞口。佣金在申请那一刻就离开了
+//	   用户的可用池,如果管理员一直不发放也不驳回,用户就是"钱扣了、东西没拿到"。
+//	   系统无法替他发钱,但必须让这件事**有声音**。
+//	B. 保留期到期的 PII 清理 —— 提现单上的收款快照(Payee)、用户保存的收款方式
+//	   (PayeeAccount,存的是同一份银行卡号密文)、以及明文访问审计(PiiAudit,
+//	   保留期独立且更长)。三个面缺一不可,少一个保留期就是半个摆设。
+//
+// 本任务由 lease.Run 驱动,多节点不会双跑;即便双跑,每一步也都是幂等的。
 func reconcile(ctx context.Context) {
 	if !config.Get().Withdraw.Enabled {
 		return
@@ -42,180 +41,77 @@ func reconcile(ctx context.Context) {
 	if batch <= 0 {
 		batch = 200
 	}
-	// 复用两阶段的宽限期而不是新造一个配置项:两者判定的是同一件事 ——
-	// "这笔跨库操作已经久到不像还在正常执行中了"。
-	grace := int64(config.Get().TwoPhase.PendingGraceSeconds)
-	if grace <= 0 {
-		grace = 60
-	}
-	stale := common.GetTimestamp() - grace
 
-	resumeApproved(ctx, stale, batch)
-	settlePaying(ctx, gdb, stale, batch)
+	// 一条聚合告警,不是逐单告警:积压是个总量问题,管理员一天没上线就可能有
+	// 几十张单同时超时。逐单打一行只会把真正的新异常淹掉(本仓在"未知邀请人
+	// 告警刷屏"上已经栽过一次),而运维需要知道的就一句话:有多少张、
+	// 最老的那张等了多久。实时可见性由管理端队列角标承担,日志是第二条通道。
+	if b := scanPayoutBacklog(ctx); b.Count > 0 {
+		common.SysError(fmt.Sprintf(
+			"qianye/withdraw: 有 %d 张提现单已通过审核但超过 %d 小时未标记发放"+
+				"(合计 %d 额度,最久的已等待 %d 小时)。用户的佣金已经扣除,"+
+				"请尽快发放或驳回退回",
+			b.Count, config.Get().Withdraw.PayoutSLAHours, b.Quota, b.WaitedHours()))
+	}
 	pruneExpiredPii(ctx, gdb, batch)
 }
 
-// resumeApproved 重新拾起卡在 approved 的自动到账单。
-//
-// 关掉 auto_credit_on_approve 时这里必须一起停手,否则"审核通过不自动到账"
-// 只是把自动到账推迟了一个对账周期。此时 quota 单由管理员在管理端手动兑现
-// (handleAdminCreditNow → creditNow),那条路径与这里共用 startPaying 的
-// approved → paying CAS,不会双跑。
-//
-// 注意开关只门住"从 approved 起步"这一步:一旦有人(自动或手动)把单据推进
-// paying,settlePaying 与 twophase 的补偿任务都不看这个开关,崩溃恢复照常。
-func resumeApproved(ctx context.Context, stale int64, batch int) {
-	if !config.Get().Withdraw.AutoCredit() {
-		return
+// payoutBacklog 是「有多少笔佣金已经扣了、却还没人把钱发出去」。
+type payoutBacklog struct {
+	Count int64
+	Quota int64
+	// Oldest 是积压里最早那张单的审核通过时间,0 表示没有积压。
+	Oldest int64
+}
+
+// WaitedHours 是最久的那张单已经等了多少小时。
+func (b payoutBacklog) WaitedHours() int64 {
+	if b.Oldest <= 0 {
+		return 0
 	}
-	var rows []Withdrawal
-	err := db.Get().
-		Where("status = ? AND method = ? AND updated_at < ?",
-			StatusApproved, config.WithdrawMethodQuota, stale).
-		Order("id asc").Limit(batch).Find(&rows).Error
+	return (common.GetTimestamp() - b.Oldest) / 3600
+}
+
+// scanPayoutBacklog 统计超过发放时限的待发放单。
+//
+// 判据必须与管理端角标(handleAdminStats 的 payout_sla_breached)逐字一致:
+// 日志说有 5 张、页面上写着 3 张,运维会认为其中一处坏了,然后两处都不信。
+//
+// 零值口径:PayoutSLAHours <= 0 表示彻底关掉发放时限,返回空积压(不是"全部
+// 都算积压")—— 与 slaOf 的同一个判断同向。
+//
+// 租约丢失(ctx 取消)后本次扫描不得再产生结果:接管节点会重新扫一遍,这里再
+// 喊一声只会重复。执行这条约束的是查询上的 WithContext(ctx) 本身,**不是**一句
+// 额外的 ctx.Err() 前置判断 —— 那句判断只能挡住"进函数时就已经取消",挡不住
+// 扫描过程中丢失租约,而且它挡住的两种情况 WithContext 全都挡住了。
+// 写一句挡不住任何独有情况的检查,只会让下一个人以为真正的约束在那里。
+func scanPayoutBacklog(ctx context.Context) payoutBacklog {
+	hours := config.Get().Withdraw.PayoutSLAHours
+	if hours <= 0 {
+		return payoutBacklog{}
+	}
+	gdb := db.Get()
+	if gdb == nil {
+		return payoutBacklog{}
+	}
+	deadline := common.GetTimestamp() - int64(hours)*3600
+
+	var row struct {
+		Count  int64
+		Quota  int64
+		Oldest int64
+	}
+	err := gdb.WithContext(ctx).Model(&Withdrawal{}).
+		Select("COUNT(*) AS count, COALESCE(SUM(quota), 0) AS quota, "+
+			"COALESCE(MIN(reviewed_at), 0) AS oldest").
+		// 判据是 reviewed_at 而不是 created_at:发放时限从"审核通过"起算,
+		// 审核本身有它自己的 review_sla_hours。用 created_at 会把审核花掉的
+		// 时间算进发放方的账上,两道时限互相污染就都失去意义。
+		Where("status = ? AND reviewed_at > 0 AND reviewed_at < ?", StatusApproved, deadline).
+		Scan(&row).Error
 	if err != nil {
 		db.MarkFailure(err)
-		common.SysError("qianye/withdraw: 扫描待兑现单失败: " + err.Error())
-		return
+		return payoutBacklog{}
 	}
-	for i := range rows {
-		// 失去租约后必须立刻停手,否则会与接管节点双跑。
-		if ctx.Err() != nil {
-			return
-		}
-		if err := creditQuota(ctx, &rows[i]); err != nil {
-			common.SysError("qianye/withdraw: 重试兑现单号 " + rows[i].WithdrawNo + " 失败: " + err.Error())
-		}
-	}
-}
-
-// settlePaying 依据资金单的终态收尾 paying 单。
-func settlePaying(ctx context.Context, gdb *gorm.DB, stale int64, batch int) {
-	rows, err := scanStalePaying(gdb, stale, batch)
-	if err != nil {
-		db.MarkFailure(err)
-		common.SysError("qianye/withdraw: 扫描兑现中单失败: " + err.Error())
-		return
-	}
-	for i := range rows {
-		if ctx.Err() != nil {
-			return
-		}
-		settleOnePaying(&rows[i])
-	}
-}
-
-// scanStalePaying 取出需要自动收尾的 paying 单。
-//
-// `reconcile_state <> hold` 不是可选的过滤条件,而是这条链路的资金安全边界:
-// hold 表示"主库结果不可判定,已转人工",它附着在 paying 上 —— 单据的 status
-// 仍然是 paying。不排除的话下一轮扫描会重新命中同一张单,而 failWithdrawal 的
-// CAS 条件正是 `From: paying`,必然成功:人工裁决被自动流程无声推翻,主库额度
-// 已经加过、佣金又回到可用池,同一笔钱可以再提一次。
-//
-// hold 单只能由三条路径推走:管理员的 resolveHold、补偿任务探到主库已生效后的
-// finishPaid,以及这两者共同的前提 —— 有人真的判定了"钱到底动没动"。
-func scanStalePaying(gdb *gorm.DB, stale int64, batch int) ([]Withdrawal, error) {
-	var rows []Withdrawal
-	err := gdb.
-		Where("status = ? AND reconcile_state <> ? AND settle_started_at > 0 AND settle_started_at < ?",
-			StatusPaying, ReconcileHold, stale).
-		Order("id asc").Limit(batch).Find(&rows).Error
-	return rows, err
-}
-
-// settleAction 是一张 paying 单该被怎么收尾。
-type settleAction int
-
-const (
-	// actionWait 资金单仍在推进中,这里什么都不做。
-	actionWait settleAction = iota
-	// actionFinish 主库确认已生效,补做到账收尾。
-	actionFinish
-	// actionRefund 主库确定未生效,退回佣金。
-	actionRefund
-	// actionHold 结果不可判定,转人工。
-	actionHold
-)
-
-// decideSettle 依据资金单状态与主库探针判定收尾动作。
-//
-// 抽成纯函数是因为这是全模块最贵的一次判断:判错一次的代价是"用户主库额度 +N,
-// 佣金 N 也回到可用池",同一笔佣金可以被重复领取。它必须能被直接测到,
-// 而不是埋在一个需要真实数据库才能跑到的循环里。
-//
-// probe 用惰性回调传入:探针要查主库 outbox,只有 Failed 这一条分支需要它,
-// 其余分支不该为了一个用不上的判据去做一次跨库查询。
-func decideSettle(status int8, probe func() bool) settleAction {
-	switch status {
-	case qymodel.StatusSuccess:
-		return actionFinish
-	case qymodel.StatusFailed:
-		// 资金单被判 failed【不等于】主库确定没动。
-		//
-		// twophase.markFailed 在业务线程拿到确定性错误时就会置 failed,而主库事务
-		// 完全可能是在 commit 阶段断连的 —— 服务端已提交、客户端收到 error。
-		// 那条路径从来没有探过针,所以这里必须自己再探一次 outbox
-		// (与 transfer/reconcile.go 的 applyFundOrderStatus 同口径)。
-		// 探到已生效就转人工,绝不自动退回佣金:那是可以被主动构造的超发面
-		// (在兑现瞬间打满主库连接让事务超时)。
-		if probe() {
-			return actionHold
-		}
-		return actionRefund
-	case qymodel.StatusUncertain:
-		return actionHold
-	default:
-		// 仍在 pending:交给 twophase 的补偿任务继续探针,这里不做任何判断。
-		// 提前猜一个结果就是资损的开始。
-		return actionWait
-	}
-}
-
-func settleOnePaying(w *Withdrawal) {
-	if w.OrderNo == "" {
-		// paying 与 order_no 是同一个事务写进去的,不该出现只有其一的情况。
-		holdForReview(w, "兑现中但缺少资金单号,数据异常")
-		return
-	}
-
-	var order qymodel.FundOrder
-	err := db.Get().Where("order_no = ?", w.OrderNo).Take(&order).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		holdForReview(w, "找不到对应的资金单,无法判定主库是否已生效")
-		return
-	}
-	if err != nil {
-		db.MarkFailure(err)
-		return
-	}
-
-	switch decideSettle(order.Status, func() bool { return mainSideApplied(&order) }) {
-	case actionFinish:
-		if err := db.Get().Transaction(func(tx *gorm.DB) error {
-			return finishPaid(tx, w, order.OrderNo)
-		}); err != nil {
-			db.MarkFailure(err)
-			common.SysError("qianye/withdraw: 补做单号 " + w.WithdrawNo + " 的到账收尾失败: " + err.Error())
-		}
-	case actionRefund:
-		failWithdrawal(w, errors.New(fallbackReason(order.LastError)))
-	case actionHold:
-		holdForReview(w, holdReason(order))
-	}
-}
-
-// holdReason 说明这张单为什么被转人工 —— 这是管理员裁决时看到的第一句话。
-func holdReason(order qymodel.FundOrder) string {
-	if order.Status == qymodel.StatusFailed {
-		return "资金单被判失败但主库探针显示已生效,需人工核对"
-	}
-	return "资金单已转人工裁决: " + fallbackReason(order.LastError)
-}
-
-func fallbackReason(s string) string {
-	if s == "" {
-		return "主库确认未生效"
-	}
-	return s
+	return payoutBacklog{Count: row.Count, Quota: row.Quota, Oldest: row.Oldest}
 }

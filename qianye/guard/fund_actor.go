@@ -1,6 +1,16 @@
 package guard
 
-import "github.com/QuantumNous/new-api/common"
+import (
+	"context"
+	"errors"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/qianye/db"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
 
 // fund_actor.go —— 管理端动钱接口的操作人判据。
 //
@@ -43,4 +53,71 @@ func SelfDealing(actorId, targetUserId int) bool {
 // 同理 fail-closed —— 0 不大于任何合法角色,判据自然返回 false,不需要特判。
 func ManageableTarget(actorRole, targetRole int) bool {
 	return actorRole == common.RoleRootUser || actorRole > targetRole
+}
+
+// ── 目标可作用性的统一入口 ────────────────────────────────────────────────
+//
+// SelfDealing 与 ManageableTarget 是两条判据,但「管理端的这个写动作能不能落在
+// 这个用户头上」在实践中永远是同一个问题:先问是不是自己,再问对方是不是同级
+// 或更高。分开摆着的结果是每个调用点自己拼一遍,而本轮梳理查出的六处漏判
+// (佣金已提现迁移、邀请关系绑定/换绑、手动结算、提现同级互批、支付密码重置、
+// 违规记录撤销/解封/计数清零)全部是「拼漏了其中一条」的形状。
+//
+// 因此判据留在上面不动,组合与角色回查收进 ActorMayActOn 一处。它只返回哨兵
+// 错误、不写响应:withdraw 走 respondErr、commission 走 respondFail、
+// violation 与 paypass 各有自己的错误码表,把 abort 写进 guard 会逼其中三家
+// 接受第四家的响应形状。
+
+var (
+	// ErrActorIsTarget:操作人就是受益人。
+	ErrActorIsTarget = errors.New("不能对自己执行这个操作,请由另一位管理员操作")
+	// ErrTargetNotLower:目标是同级或更高权限的账号。
+	ErrTargetNotLower = errors.New("不能对同级或更高权限的账号执行这个操作")
+	// ErrTargetMissing:目标用户不存在。
+	ErrTargetMissing = errors.New("目标用户不存在")
+)
+
+// ActorMayActOn 回答「操作人能不能把这个写动作落在 targetUserId 头上」。
+//
+// 顺序刻意是「先自营、后越级」:自营不需要查库,而越级要回查目标角色。一个
+// role=10 管理员对自己发起的操作,两条判据都会拒,但只有前者的错误信息能告诉
+// 他「换个人来」—— 后者会说「不能操作同级」,读起来像是他填错了 user_id。
+//
+// 零值口径:
+//   - actorId <= 0 走 SelfDealing 的 fail-closed(见上),直接 ErrActorIsTarget;
+//   - targetUserId <= 0 是调用点没校验参数,返回 ErrTargetMissing 而不是去查库;
+//   - actorRole 为 0 时 ManageableTarget 恒 false,同样 fail-closed。
+func ActorMayActOn(ctx context.Context, actorId, actorRole, targetUserId int) error {
+	if SelfDealing(actorId, targetUserId) {
+		return ErrActorIsTarget
+	}
+	if targetUserId <= 0 {
+		return ErrTargetMissing
+	}
+	if model.DB == nil {
+		return db.ErrNotReady
+	}
+	// Unscoped:软删除的账号仍然要按它的角色判。上游的删除是软删,一个被删掉的
+	// role=100 账号如果因为 deleted_at 不为空就查不到,判据会当成"目标不存在"
+	// 而放行 —— 而放行的正是"对一个更高权限账号动手"这件事。
+	var row struct{ Role int }
+	err := model.DB.WithContext(ctx).Unscoped().Model(&model.User{}).
+		Select("role").Where("id = ?", targetUserId).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrTargetMissing
+	}
+	if err != nil {
+		return err
+	}
+	if !ManageableTarget(actorRole, row.Role) {
+		return ErrTargetNotLower
+	}
+	return nil
+}
+
+// ActorMayActOnCtx 是 ActorMayActOn 的 gin 版:操作人一律取鉴权中间件写进
+// context 的身份,调用点不许自己传 —— 传参数的版本迟早会有人把请求体里的
+// user_id 当成操作人传进来。
+func ActorMayActOnCtx(c *gin.Context, targetUserId int) error {
+	return ActorMayActOn(c.Request.Context(), c.GetInt("id"), c.GetInt("role"), targetUserId)
 }

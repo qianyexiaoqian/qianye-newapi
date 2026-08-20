@@ -1,8 +1,8 @@
 package withdraw
 
 import (
-	"context"
 	"errors"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
@@ -13,16 +13,11 @@ import (
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
-// 人工裁决的决定值。
-const (
-	DecisionPaid   = "paid"
-	DecisionFailed = "failed"
-)
-
-// maxReasonRunes 是拒绝理由 / 失败原因 / 裁决依据的长度上限。
+// maxReasonRunes 是驳回理由 / 发放失败原因的长度上限。
 //
 // 刻意与用户说明的 remark_max_runes 解耦:后者是运营可调的展示型配置(上限 2000),
 // 而这几个字段的列宽是固定的。跟着配置走的话,运营把说明上限调大之后,
@@ -69,10 +64,11 @@ func cancelByUser(c *gin.Context, userId int, id int64) (*orderView, error) {
 	return toUserView(w, nil), nil
 }
 
-// approve 审核通过。
+// approve 审核通过,把单据放进「待发放」队列。
 //
-// quota 方式且开启了自动到账时,通过之后立即触发跨库兑现。兑现的错误不会让
-// 审核动作回滚 —— 审核已经是既成事实,兑现的中间态由对账任务收敛。
+// 这里**不再有任何出钱动作**。审核通过只表示"这笔可以发",钱由管理员自己去
+// 加额度或线下打款,再回来调 markPayout 登记。佣金在申请时就已经离开可用池,
+// 审核通过不改变佣金账本的任何一列。
 func approve(c *gin.Context, id int64) (*adminOrderView, error) {
 	w, err := loadDecidableWithdrawal(c, id)
 	if err != nil {
@@ -95,67 +91,10 @@ func approve(c *gin.Context, id int64) (*adminOrderView, error) {
 	}
 	w.ReviewerId, w.ReviewerName, w.ReviewedAt = a.Id, a.Name, now
 	writeDecisionAudit(c, w, "withdraw.approve", qymodel.ActorAdmin, a, "", qymodel.ResultOK)
-
-	if shouldAutoCredit(w) {
-		// 刻意不用 c.Request.Context():管理员的浏览器断开不该中断一笔已经在动钱的操作。
-		ctx, cancel := guard.ColdContext(context.Background())
-		defer cancel()
-		if err := creditQuota(ctx, w); err != nil {
-			// 兑现失败不改变"已审核通过"这个事实,单据的真实状态已写在库里,
-			// 直接把它回给管理员即可 —— 让他看到 failed/paying 比看到一个
-			// 语焉不详的错误更有用。
-			common.SysError("qianye/withdraw: 单号 " + w.WithdrawNo + " 兑现未完成: " + err.Error())
-		}
-	}
 	return toAdminView(w, nil), nil
 }
 
-// creditNow 由管理员对一张 approved 的 quota 单显式触发兑现。
-//
-// 存在的理由是 withdraw.auto_credit_on_approve 这个开关的 false 分支:
-// approved → paying 是 quota 单走到 paid 的唯一入边,而它只由 startPaying 写、
-// startPaying 只在 creditQuota 里被调用。审核后自动兑现与对账重试这两个
-// creditQuota 调用点都被 AutoCredit() 门住,所以开关置 false 后 quota 单会
-// 无限期停在 approved:用户既拿不到额度,管理端也只剩下"标记打款失败"
-// (退回佣金、用户白等)与 markPaid(核销佣金、一分钱不付)两条错路。
-// 本接口把 false 的语义从"quota 提现静默失效"变成"兑现改由管理员手动确认"。
-//
-// 幂等由 startPaying 的 approved → paying CAS 保证 —— 与自动到账、对账重试
-// 共用同一道全集群准入闸门,连点两次不会加两次额度。因此这里的状态与方式
-// 判断只是给管理员一个明确的拒绝理由,不是防重的依据。
-func creditNow(c *gin.Context, id int64) (*adminOrderView, error) {
-	w, err := loadDecidableWithdrawal(c, id)
-	if err != nil {
-		return nil, err
-	}
-	if w.Method != config.WithdrawMethodQuota {
-		return nil, errNotQuotaOrder
-	}
-	if w.Status != StatusApproved {
-		return nil, errIllegalTransition
-	}
-	a := actorOf(c)
-
-	// 与审核通过同一口径:管理员的浏览器断开不该中断一笔已经在动钱的操作。
-	ctx, cancel := guard.ColdContext(context.Background())
-	defer cancel()
-	creditErr := creditQuota(ctx, w)
-
-	// 成败都要落审计:这是一次人工的动钱决策,"谁在什么时候按了这个按钮"
-	// 不能只在成功时才留痕。
-	result, reason := qymodel.ResultOK, ""
-	if creditErr != nil {
-		result, reason = qymodel.ResultFail, creditErr.Error()
-	}
-	writeDecisionAudit(c, w, "withdraw.credit", qymodel.ActorAdmin, a, reason, result)
-	if creditErr != nil {
-		common.SysError("qianye/withdraw: 单号 " + w.WithdrawNo + " 手动兑现未完成: " + creditErr.Error())
-		return nil, creditErr
-	}
-	return toAdminView(w, nil), nil
-}
-
-// reject 拒绝申请。理由必填 —— 需求明确要求用户能看到"为什么被拒"。
+// reject 驳回申请,佣金退回可用池。理由必填 —— 需求明确要求用户能看到"为什么被拒"。
 func reject(c *gin.Context, id int64, rawReason string) (*adminOrderView, error) {
 	reason, err := checkRunes(rawReason, maxReasonRunes)
 	if err != nil || reason == "" {
@@ -190,22 +129,49 @@ func reject(c *gin.Context, id int64, rawReason string) (*adminOrderView, error)
 	return toAdminView(w, nil), nil
 }
 
-// markPaid 标记线下法币已打款。
+// payoutInput 是一次「标记已发放」的入参。
 //
-// 法币路径完全不触碰主库,因此不存在两阶段问题:一个扩展库事务里
-// 改状态 + 核销佣金即可。
+// ConfirmQuota / ConfirmAmount 是管理员对"我实际发了多少"的复述,必填且必须与
+// 单据金额逐值相等(见 checkPayoutConfirm)。
+type payoutInput struct {
+	PayoutRef string
+	// ConfirmQuota 用于 method=quota:管理员手工加进主库的额度。
+	ConfirmQuota int64
+	// ConfirmAmount 用于 method=fiat:线下实际打出去的法币金额,decimal 字符串。
+	ConfirmAmount string
+	PaidAt        int64
+	Note          string
+}
+
+// markPayout 登记「管理员已经把钱发出去了」,佣金随之核销(frozen → withdrawn)。
 //
-// 【方式闸门是资金安全边界,不是参数校验】本函数会把佣金从 frozen 直接转成
-// withdrawn(SettleFrozen),而它全程不碰主库 users.quota。对 method=quota 的单
-// 执行一次,结果就是"佣金被永久核销、用户一分钱没拿到":paid 是终态、
-// allowedTransitions 没有出边、没有反向接口、order_no 为空的 paid 单也不会再被
-// 对账扫到 —— 静默、不可逆、无检测。
-// 前端按 method === 'fiat' 隐藏按钮不算防线(见 acceptCreate 的注释:绕过前端
-// 只需要一个 curl),批量"标记已打款"的运维脚本更是一发就中。
-// quota 单的正确正向出口只有 creditQuota(自动到账或管理员手动兑现),
-// 反向出口是 markFailed(退回佣金)。
-func markPaid(c *gin.Context, id int64, payoutRef string, paidAt int64, note string) (*adminOrderView, error) {
-	ref, err := checkRunes(payoutRef, maxPayoutRefRunes)
+// # 系统不动钱,所以这一步全靠人的声明
+//
+// quota 单由管理员在主库那边手工加额度,fiat 单由管理员线下打款 —— 两条路本模块
+// 都不参与。本函数唯一的副作用是在扩展库一个事务里改状态 + 核销佣金,
+// 它**从不触碰主库 users.quota**。
+//
+// # 为什么两个方式共用这一个出口
+//
+// 这里以前有一道 method 闸门:markPaid 只接受 fiat 单,quota 单必须走
+// creditQuota(自动到账)。那道闸门的全部理由是"quota 单有一条会真的加额度的
+// 正向出口,别让人误用只核销不给钱的这一条"。自动到账下线之后,两种方式的
+// 正向出口本来就是同一件事 —— 人发钱、系统记账 —— 再留一道闸门就只是在挡
+// 一条并不存在的错路。
+//
+// 但那道闸门原本挡住的风险(paid 是终态、不可逆、误标记等于佣金被吃掉)一分没少,
+// 所以换成了两道**更贴切**的闸门:
+//
+//	① payout_ref 必填 —— 没有凭证的发放记录在争议时等于没发;
+//	② 实发金额必填且必须与单据金额相等 —— 让"发多少"成为这个终态动作的
+//	   显式入参,而不是点一下按钮的隐式后果。一个对着 approved 队列无差别
+//	   POST 的运维脚本,过不了这一关。
+//
+// 实发金额刻意**不落新列**:它按定义恒等于单据上已有的 Quota / NetAmount,
+// 多存一份就是又一处会漂移的拷贝(而单据金额的单一真相源正是上一轮刚统一的
+// 东西)。它作为确认入参进事件流水的 Detail,那里是 append-only 的审计面。
+func markPayout(c *gin.Context, id int64, in payoutInput) (*adminOrderView, error) {
+	ref, err := checkRunes(in.PayoutRef, maxPayoutRefRunes)
 	if err != nil || ref == "" {
 		return nil, errPayoutRefMissing
 	}
@@ -213,13 +179,14 @@ func markPaid(c *gin.Context, id int64, payoutRef string, paidAt int64, note str
 	if err != nil {
 		return nil, err
 	}
-	if w.Method != config.WithdrawMethodFiat {
-		return nil, errNotFiatOrder
+	if err := checkPayoutConfirm(w, in); err != nil {
+		return nil, err
 	}
 
 	now := common.GetTimestamp()
-	// 允许补录历史打款时间,但不接受未来时间:那要么是客户端时钟错了,
-	// 要么是有人想把打款记录做到对账窗口之外。留 5 分钟容忍时钟漂移。
+	// 允许补录历史发放时间,但不接受未来时间:那要么是客户端时钟错了,
+	// 要么是有人想把发放记录做到对账窗口之外。留 5 分钟容忍时钟漂移。
+	paidAt := in.PaidAt
 	if paidAt <= 0 || paidAt > now+300 {
 		paidAt = now
 	}
@@ -229,13 +196,19 @@ func markPaid(c *gin.Context, id int64, payoutRef string, paidAt int64, note str
 		if err := applyTransition(tx, w, transition{
 			From: StatusApproved, To: StatusPaid, Action: ActionPay,
 			ActorType: qymodel.ActorAdmin, ActorId: a.Id, ActorName: a.Name, IP: a.IP,
-			Detail: common.MapToJsonStr(map[string]any{"payout_ref": ref, "paid_at": paidAt}),
+			Detail: common.MapToJsonStr(map[string]any{
+				"payout_ref":     ref,
+				"paid_at":        paidAt,
+				"method":         w.Method,
+				"confirm_quota":  in.ConfirmQuota,
+				"confirm_amount": strings.TrimSpace(in.ConfirmAmount),
+			}),
 			Updates: map[string]any{
 				"payout_operator_id":   a.Id,
 				"payout_operator_name": truncate(a.Name, 64),
 				"paid_at":              paidAt,
 				"payout_ref":           ref,
-				"payout_note":          truncate(note, 255),
+				"payout_note":          truncate(in.Note, 255),
 			},
 		}); err != nil {
 			return err
@@ -246,11 +219,46 @@ func markPaid(c *gin.Context, id int64, payoutRef string, paidAt int64, note str
 		return nil, err
 	}
 	w.PaidAt, w.PayoutRef = paidAt, ref
-	writeDecisionAudit(c, w, "withdraw.pay", qymodel.ActorAdmin, a, ref, qymodel.ResultOK)
+	w.PayoutOperatorId, w.PayoutOperatorName = a.Id, a.Name
+	writeDecisionAudit(c, w, "withdraw.payout", qymodel.ActorAdmin, a, ref, qymodel.ResultOK)
 	return toAdminView(w, nil), nil
 }
 
-// markFailed 标记线下打款失败,佣金退回。理由必填。
+// checkPayoutConfirm 校验管理员复述的实发金额与单据金额一致。
+//
+// 按方式取不同的判据,是因为两种单据的"该发多少"根本是两个量纲:
+// quota 单发的是站内额度(整数),fiat 单发的是实付法币(decimal,已扣手续费)。
+// 拿错一个来比等于没比。
+func checkPayoutConfirm(w *Withdrawal, in payoutInput) error {
+	if w.Method == config.WithdrawMethodFiat {
+		raw := strings.TrimSpace(in.ConfirmAmount)
+		if raw == "" {
+			return errPayoutAmountRequired
+		}
+		got, err := decimal.NewFromString(raw)
+		if err != nil {
+			return errPayoutAmountRequired
+		}
+		// Equal 比的是数值不是字面量:界面上回显的 "850.00" 与库里的
+		// "850.000000" 是同一个数,不该被判成不一致。
+		if !got.Equal(w.NetAmount) {
+			return errPayoutAmountMismatch
+		}
+		return nil
+	}
+	if in.ConfirmQuota <= 0 {
+		return errPayoutAmountRequired
+	}
+	if in.ConfirmQuota != w.Quota {
+		return errPayoutAmountMismatch
+	}
+	return nil
+}
+
+// markFailed 标记发放失败,佣金退回可用池。理由必填。
+//
+// 这是「扣了佣金但发不出去」的唯一出口,两种方式都适用:线下打款被银行退回、
+// 管理员发现收款信息有误、或者单纯是队列里积压太久决定退回让用户重提。
 func markFailed(c *gin.Context, id int64, rawReason string) (*adminOrderView, error) {
 	reason, err := checkRunes(rawReason, maxReasonRunes)
 	if err != nil || reason == "" {
@@ -281,85 +289,14 @@ func markFailed(c *gin.Context, id int64, rawReason string) (*adminOrderView, er
 	return toAdminView(w, nil), nil
 }
 
-// resolveHold 对"对账异常"单做人工裁决。
-//
-// 只有人能回答"主库到底加没加额度"这个问题时才走这里 —— 管理员对照主库用户
-// 额度变动与 logs 判定后二选一。裁决依据必填并写进事件的 Reason,
-// 事后复盘要能看到"当时凭什么这么判"。
-func resolveHold(c *gin.Context, id int64, decision, rawEvidence string) (*adminOrderView, error) {
-	evidence, err := checkRunes(rawEvidence, maxReasonRunes)
-	if err != nil || evidence == "" {
-		return nil, errReasonRequired
-	}
-	if decision != DecisionPaid && decision != DecisionFailed {
-		return nil, errInvalidParam
-	}
-	w, err := loadDecidableWithdrawal(c, id)
-	if err != nil {
-		return nil, err
-	}
-	if w.Status != StatusPaying {
-		return nil, errIllegalTransition
-	}
-	// paying 不是"等人裁决"的状态,而是**每一笔正在执行中的到账单**都会经过的状态:
-	// startPaying 与资金单落库同事务提交,之后整个 applyOnMainDB → AfterCommit →
-	// markSuccess 期间它都是 paying 且 reconcile_state 为空。扩展库回写失败时资金单
-	// 停在 pending,这张单会在非 hold 的 paying 上一直待到补偿探针跑完退避阶梯 ——
-	// 那恰恰是运维会去翻"卡住的单"的时刻。
-	//
-	// 只判 status 的话,对一张主库已经加完额度的在途单裁一次 failed,
-	// UnfreezeForWithdraw 会把佣金退回可用池,而随后的 finishPaid CAS 落空、静默
-	// 返回 nil:用户既拿到了站内额度,又保住了可以再提一次的佣金。两边差额恰好等于
-	// 裁决金额,而佣金侧的 available+frozen+withdrawn == earned-clawback 照样成立,
-	// 任何只看佣金账的对账都发现不了。
-	//
-	// 因此这道闸门与 markPaid 的 method 闸门同级 —— 是资金安全边界而不是参数校验:
-	// 人工裁决只能作用在补偿链路明确标记为"不可判定"(hold)的单上。
-	if w.ReconcileState != ReconcileHold {
-		return nil, errIllegalTransition
-	}
-	a := actorOf(c)
-
-	err = db.Get().Transaction(func(tx *gorm.DB) error {
-		// 先留裁决痕迹再改状态:状态变更后 from 就丢了,事件里的
-		// "从什么状态被人工推走的"是复盘时最关键的一条信息。
-		if err := writeEvent(tx, w, transition{
-			From: StatusPaying, To: StatusPaying, Action: ActionResolve,
-			ActorType: qymodel.ActorAdmin, ActorId: a.Id, ActorName: a.Name, IP: a.IP,
-			Reason: evidence,
-			Detail: common.MapToJsonStr(map[string]any{"decision": decision, "order_no": w.OrderNo}),
-		}); err != nil {
-			return err
-		}
-		if decision == DecisionPaid {
-			return finishPaid(tx, w, w.OrderNo)
-		}
-		if err := applyTransition(tx, w, transition{
-			From: StatusPaying, To: StatusFailed, Action: ActionFail,
-			ActorType: qymodel.ActorAdmin, ActorId: a.Id, ActorName: a.Name, IP: a.IP,
-			Reason: evidence,
-			Updates: map[string]any{
-				"fail_reason":     evidence,
-				"reconcile_state": "",
-			},
-		}); err != nil {
-			return err
-		}
-		return commission.UnfreezeForWithdraw(tx, w.UserId, w.Quota, w.WithdrawNo)
-	})
-	if err != nil {
-		return nil, err
-	}
-	writeDecisionAudit(c, w, "withdraw.resolve."+decision, qymodel.ActorAdmin, a, evidence, qymodel.ResultOK)
-	return toAdminView(w, nil), nil
-}
-
 // writeDecisionAudit 记录一次人工决策。
 //
-// 每一次人工决策都必须落审计:没有它,"这笔为什么被拒""谁批准的"事后无法自证。
+// 每一次人工决策都必须落审计:没有它,"这笔为什么被拒""谁批准的""谁说发过了"
+// 事后无法自证。人工发放模型下这一条比以前更重要 —— 系统不动钱,审计表就是
+// 争议时唯一能拿出来的东西。
 //
-// result 由调用方给出而不是写死 ResultOK:动钱的人工决策(手动兑现)可能失败,
-// 把失败的尝试记成成功,事后复盘会得出"管理员兑现过一次"的错误结论。
+// result 由调用方给出而不是写死 ResultOK:被自审自批闸门挡下的尝试要记成
+// ResultFail,把它记成成功事后复盘会得出"管理员处理过一次"的错误结论。
 func writeDecisionAudit(c *gin.Context, w *Withdrawal, action, actorType string, a actor, reason, result string) {
 	audit.Write(c, audit.Entry{
 		TraceNo:      w.WithdrawNo,
@@ -381,10 +318,10 @@ func writeDecisionAudit(c *gin.Context, w *Withdrawal, action, actorType string,
 
 // loadDecidableWithdrawal 取一张即将被人工下结论的单,并挡住自审自批。
 //
-// 六个管理端决定(通过 / 拒绝 / 标记已打款 / 立即兑现 / 标记打款失败 / 人工裁决)
-// 全部从这里取单,是刻意的单一入口:审计发现的那条链
-// 「自己给自己记佣金 → 自己发起提现 → **自己批准**」在这里断掉,
-// 而只要有人再加第七个决定,他要么走这个入口、要么在
+// 四个管理端决定(通过 / 驳回 / 标记已发放 / 标记发放失败)全部从这里取单,
+// 是刻意的单一入口:审计发现的那条链
+// 「自己给自己记佣金 → 自己发起提现 → **自己批准** → 自己标记已发放」
+// 在这里断掉,而只要有人再加第五个决定,他要么走这个入口、要么在
 // review_self_approval_test.go 的 AST 守卫下变红。
 //
 // 只读的 handleAdminGet 刻意不走这里:管理员能看到自己那张单的详情不构成问题,
@@ -394,12 +331,25 @@ func loadDecidableWithdrawal(c *gin.Context, id int64) (*Withdrawal, error) {
 	if err != nil {
 		return nil, err
 	}
-	if guard.SelfDealing(c.GetInt("id"), w.UserId) {
-		// 留痕:一次被拒的自审自批不是手滑,它是这条链上最容易被反复尝试的
-		// 一步,而事后仲裁只认审计表。写成 ResultFail 是如实的 —— 单据没动。
+	// 自营与越级两条判据都在 guard.ActorMayActOn,与佣金侧共用一份实现 ——
+	// 只挡"同一个人"的话,两个 role=10 管理员互相批对方的单,闸门一次都不会响,
+	// 整条链只是从一个人变成两个人。
+	//
+	// 两种被拒都留痕:一次被拒的审核不是手滑,它是这条链上最容易被反复尝试的
+	// 一步,而事后仲裁只认审计表。写成 ResultFail 是如实的 —— 单据没动。
+	switch err := guard.ActorMayActOnCtx(c, w.UserId); {
+	case err == nil:
+	case errors.Is(err, guard.ErrActorIsTarget):
 		writeDecisionAudit(c, w, "withdraw.self_review_denied",
 			qymodel.ActorAdmin, actorOf(c), errSelfReview.Msg, qymodel.ResultFail)
 		return nil, errSelfReview
+	case errors.Is(err, guard.ErrTargetNotLower), errors.Is(err, guard.ErrTargetMissing):
+		// 目标查不到时同样拒绝:放行等于对一个连角色都读不出来的 id 下资金结论。
+		writeDecisionAudit(c, w, "withdraw.peer_review_denied",
+			qymodel.ActorAdmin, actorOf(c), errPeerReview.Msg, qymodel.ResultFail)
+		return nil, errPeerReview
+	default:
+		return nil, err
 	}
 	return w, nil
 }
@@ -434,8 +384,8 @@ func loadUserWithdrawal(userId int, id int64) (*Withdrawal, error) {
 
 func loadEvents(withdrawalId int64) ([]Event, error) {
 	var rows []Event
-	// 上限兜底:事件是 append-only,理论上不会太多,但对账异常单被反复裁决时
-	// 可能积累一批,不能让详情接口把它们全拉进内存。
+	// 上限兜底:事件是 append-only,理论上不会太多,但不能让详情接口
+	// 把一张被反复操作过的单的全部事件拉进内存。
 	err := db.Get().Where("withdrawal_id = ?", withdrawalId).
 		Order("id asc").Limit(200).Find(&rows).Error
 	if err != nil {

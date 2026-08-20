@@ -1,5 +1,37 @@
 ﻿# 需求2b:提现申请、审核与历史
 
+> ## 2026-08-19 口径变更:提现只做佣金扣除,金额由管理员手动发放
+>
+> 项目方定的新口径:「用户佣金提现只做佣金扣除处理,金额由管理员手动去增加给用户
+> 或打款给用户。」**系统不再自动给任何人一分钱。**
+>
+> 因此本文第 3 章的状态机、4.2 的跨库两阶段兑现,以及围绕它的 `paying` /
+> `reconcile_state=hold` / 资金单 / 主库 outbox 探针 / 「立即兑现」与「人工裁决」
+> 两个接口,**已整条删除**。第 3 章已按新口径重写;4.2 保留为历史记录,
+> 读的时候请当成「曾经是这样」。
+>
+> 新的完整链路:
+>
+> | 步骤 | 谁做 | 系统做什么 |
+> |---|---|---|
+> | 申请 | 用户 | 佣金**立刻**离开可用池(available → frozen),落单据 |
+> | 审核通过 | 管理员 | 单据进「待发放」队列。**不动任何一张账** |
+> | 驳回(待审) | 管理员 | 佣金原样退回 available |
+> | 发放 | 管理员**自己** | 去主库加额度 / 线下打款 —— 本模块不参与 |
+> | 标记已发放 | 管理员 | 校验凭证 + 实发金额复核,佣金 frozen → withdrawn |
+> | 标记发放失败 | 管理员 | 佣金原样退回 available |
+>
+> 三条没有变、也不许变的东西:
+>
+> 1. **单据金额仍然只有一个来源** —— 佣金账本(`commission.QuoteWithdrawFiat`
+>    与 `FreezeForWithdraw` 共用 `fiatTakenBy`,同一把行锁同一事务)。手动发放
+>    不代表数字可以是错的:管理员照着一个错数字打款,和系统自动打错款,损失一样。
+> 2. **`withdraw.methods` 仍然有意义** —— 它说的不是"系统怎么给钱",而是
+>    **用户要的是哪种钱**(quota = 站内额度,fiat = 现金)。
+> 3. **申请即扣除仍然是硬要求** —— 管理员是照着单据发钱的,同一笔佣金只要还能
+>    再发一单,就会被发第二次钱。
+
+
 # 需求 2 后半 —— 佣金提现（申请 / 审核 / 历史）设计
 
 ## 0. 模块边界与依赖契约
@@ -283,65 +315,75 @@ withdrawal:
 ## 3. 状态机
 
 ```
-                        ┌──────────── cancel(user) ────────────┐
-                        │                                      ▼
-   [submit(user)]   pending ── reject(admin, reason必填) ──► rejected
-        │              │
-        │              └── approve(admin) ──► approved
-        │                                        │
-        │        method=quota & auto_settle ─────┤
-        │                                        ▼
-        │                                     paying ──► paid
-        │                                        │  \
-        │                                        │   └─► failed
-        │                                        └─► reconcile_hold ──resolve(admin)──► paid | failed
-        │
-        └── method=fiat：approved 停留在【待打款】
-                            │
-                            ├── pay(admin, payout_ref, paid_at) ──► paid
-                            └── fail(admin, fail_reason) ──────────► failed
+                    ┌──────────── cancel(user) ────────────┐
+                    │                                      ▼
+   [submit(user)]  pending ── reject(admin, 理由必填) ──► rejected   (佣金退回)
+   佣金 → frozen      │
+                    └── approve(admin) ──► approved【待发放】
+                                              │   系统在这里什么都不做,
+                                              │   管理员自己去加额度 / 打款
+                                              │
+                                              ├── mark-paid(admin, 凭证 + 实发金额复核)
+                                              │        └──► paid      (佣金核销)
+                                              └── fail(admin, 理由必填)
+                                                       └──► failed    (佣金退回)
 ```
 
 | 状态 | 中文 | 终态 | 佣金账户 |
 |---|---|---|---|
-| `pending` | 待审核 | 否 | frozen |
-| `approved` | 已通过 / 待打款 | 否 | frozen |
-| `paying` | 兑现中 | 否（≤5min） | frozen |
-| `paid` | 已到账 / 已打款 | **是** | committed（核销） |
-| `rejected` | 已拒绝 | **是** | released（退回 available） |
-| `cancelled` | 已撤销 | **是** | released |
-| `failed` | 失败 | **是** | released |
-| （`reconcile_state=hold`） | 对账异常（非独立状态，附着在 `paying` 上） | 否 | frozen |
+| `pending` | 待审核 | 否 | frozen(已扣除) |
+| `approved` | 待发放 | 否 | frozen(已扣除) |
+| `paid` | 已发放 | **是** | withdrawn(核销) |
+| `rejected` | 已驳回 | **是** | available(退回) |
+| `cancelled` | 已撤销 | **是** | available(退回) |
+| `failed` | 发放失败 | **是** | available(退回) |
+
+**账本恒等式**在每一步都成立:
+
+```
+available + frozen + withdrawn == 申请之前的 available
+```
+
+冻结、核销、退回三种动作都只在桶之间搬,总量不变。回归见
+`review_payout_gate_test.go` 的 `assertLedgerIdentity`。
 
 **每个转移的触发者与副作用**
 
-| # | 转移 | 触发者 | 副作用（全部在**一个新库事务**内完成，除非注明） |
+| # | 转移 | 触发者 | 副作用(全部在**一个扩展库事务**内完成) |
 |---|---|---|---|
-| T1 | – → `pending` | 用户 | 建单；`Commission.Freeze`；写 event `submit` |
-| T2 | `pending` → `cancelled` | 用户本人 | CAS `WHERE status='pending'`；`Commission.Release`；event `cancel` |
-| T3 | `pending` → `rejected` | 管理员 | CAS；`Commission.Release`；写 `reject_reason/reviewer/reviewed_at`；event `reject`；**异步通知用户** |
-| T4 | `pending` → `approved` | 管理员 | CAS；写 `reviewer/reviewed_at`；event `approve`。`method=quota && auto_settle` 时立即触发 T5 |
-| T5 | `approved` → `paying` | 系统 | **CAS `WHERE status='approved'`**（这是全链路唯一的「跨库执行准入闸门」）；`paying_started_at=now`；event `settle_start` |
-| T6 | `paying` → `paid` | 系统 | 主库已加额度后回写；`Commission.Commit`；`paid_at`；event `settle_done`；通知用户 |
-| T7 | `paying` → `failed` | 系统 | **仅当主库返回确定性业务错误**；`Commission.Release`；`fail_reason`；event `settle_failed`；通知 |
-| T8 | `paying` → `reconcile_state=hold` | 系统（补偿任务） | 主库结果不确定时；event `hold`；**告警管理员** |
-| T9 | hold → `paid` / `failed` | 管理员裁决 | event `resolve`，`Detail` 记裁决依据 |
-| T10 | `approved` → `paid` | 管理员（fiat） | 校验 `payout_ref` 非空；**后端硬校验 `method=fiat`**；`Commission.Commit`；`paid_at/payout_operator/payout_ref/payout_note`；event `pay`；通知 |
-| T11 | `approved` → `failed` | 管理员（fiat） | `fail_reason` 必填；`Commission.Release`；event `fail`；通知 |
-| T12 | `approved` → `paying` | 管理员（quota，手动） | 与 T5 同一条边、同一道 CAS，只是触发者是人：管理员点「立即兑现」显式调 `creditQuota`。`auto_credit_on_approve=false` 时这是 quota 单唯一的正向出口 |
+| T1 | – → `pending` | 用户 | 建单;`commission.FreezeForWithdraw`;event `submit` |
+| T2 | `pending` → `cancelled` | 用户本人 | CAS `WHERE status='pending'`;`UnfreezeForWithdraw`;event `cancel` |
+| T3 | `pending` → `rejected` | 管理员 | CAS;`UnfreezeForWithdraw`;写 `reject_reason/reviewer/reviewed_at`;event `reject` |
+| T4 | `pending` → `approved` | 管理员 | CAS;写 `reviewer/reviewed_at`;event `approve`。**不动任何账** |
+| T5 | `approved` → `paid` | 管理员 | 校验 `payout_ref` 非空 **且** 实发金额与单据金额相等;`SettleFrozen`;写 `paid_at/payout_operator/payout_ref/payout_note`;event `pay` |
+| T6 | `approved` → `failed` | 管理员 | `fail_reason` 必填;`UnfreezeForWithdraw`;event `fail` |
 
-> **T10 的 `method=fiat` 是资金安全边界，不是参数校验。** `markPaid` 会把佣金
-> `frozen → withdrawn`，而它全程不碰主库 `users.quota`。对 quota 单执行一次即
-> 「佣金被永久核销、用户一分钱没拿到」，且 `paid` 无出边、无反向接口、`order_no`
-> 为空的 `paid` 单不会被对账再看一眼 —— 静默、不可逆、无检测。前端隐藏按钮不算
-> 防线（绕过它只需一个 curl，批量运维脚本更是一发就中），后端返回
-> `qy_wd_not_fiat_order`。反之，`method=fiat` 的单也不能走 T12（`qy_wd_not_quota_order`）：
-> 线下已经打过款，再加一笔站内额度就是重复支付。
+> **T5 的两道闸是资金安全边界,不是参数校验。** `paid` 是终态、无出边、无反向
+> 接口:误标记一次 = 佣金被永久核销而用户一分钱没拿到。而系统不动钱,它无法
+> 自证"钱到底发没发",能验证的只有"操作者是不是知道自己在发多少"——
+> 于是凭证必填(`qy_wd_payout_ref_required`)+ 实发金额必须与单据金额相等
+> (`qy_wd_payout_amount_required` / `qy_wd_payout_amount_mismatch`)。
+> 一个对着 `approved` 队列无差别 POST 的运维脚本,过不了第二关。
+>
+> 这两道闸取代了原先的 `method=fiat` 闸门。那道闸门的全部理由是「quota 单有一条
+> 会真的加额度的正向出口,别让人误用只核销不给钱的这一条」;自动到账下线之后
+> 两种方式的正向出口本来就是同一件事,再留着它只是在挡一条不存在的错路。
+>
+> **实发金额刻意不落新列**:它按定义恒等于单据上已有的 `quota` / `net_amount`,
+> 多存一份就是又一处会漂移的拷贝 —— 而单据金额的单一真相源正是上一轮刚统一的
+> 东西。它作为确认入参进事件流水的 `Detail`(append-only 审计面)。
+
+> **「扣了佣金但管理员迟迟不发放」是本次口径变更引入的唯一新敞口。**
+> 出口有两条(T3 待审阶段驳回、T6 待发放阶段标记发放失败),观测有三处:
+> 单据上的超时标记(`sla_kind=payout`)、管理端角标 `payout_sla_breached`、
+> 后台任务每轮一条**聚合**告警(不逐单刷屏)。判据一律是
+> `withdraw.payout_sla_hours`,**从 `reviewed_at` 起算** ——
+> 审核花掉的时间归 `review_sla_hours` 管,两道时限共用一个起点就都失去意义。
 
 **非法转移一律靠 `UPDATE ... WHERE id=? AND status=?` 的 `RowsAffected==0` 拒绝**，不靠先读后写（先读后写在多节点下必错）。
 
 需求原文的三个问题由此闭环：
-- 「什么时候打的款」→ `paid_at` + `payout_ref` + event `pay/settle_done`
+- 「什么时候发的钱」→ `paid_at` + `payout_ref` + event `pay`
 - 「什么时候拒绝的」→ `reviewed_at` + event `reject`
 - 「拒绝理由是什么」→ `reject_reason`（后端强校验非空且 ≤200 rune）
 
@@ -406,7 +448,12 @@ withdrawal:
 
 **事务边界**：步骤 9–12 是单一新库事务，不涉及主库，因此**申请阶段完全没有跨库风险**。这是把 GAPS §3.2(2) 的风险前移消解的关键：**佣金在申请那一刻就离开了 `available`**，之后无论兑现阶段发生什么，用户都不可能拿同一笔佣金再发一单。最坏情况只是「佣金被卡在 frozen」，需要人工处理，**永远不会变成「佣金可无限重复领取」**。
 
-### 4.2 站内额度兑现（跨库两阶段，GAPS §3.2(2) 的正面解法）
+### 4.2 站内额度兑现(跨库两阶段)—— 已整条删除,以下为历史记录
+
+> 这一节描述的是**曾经**的自动到账链路。2026-08-19 起 quota 单与 fiat 单一样
+> 由管理员手动发放,本节的资金单、outbox 探针、`paying`/`hold`、补偿与对账任务
+> 全部不再存在。保留原文只为让人读懂那批已经消失的表列(`order_no` /
+> `settle_started_at` / `reconcile_state`)当初是干什么的。
 
 触发点：T4 审核通过后（`quota_auto_settle_on_approve: true`），或补偿任务重新拾起 `approved` 单。
 

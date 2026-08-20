@@ -48,6 +48,18 @@ type FundOrder struct {
 	RefType string `json:"ref_type" gorm:"type:varchar(32);not null;default:''"`
 	RefId   string `json:"ref_id" gorm:"type:varchar(64);not null;default:'';index:idx_qy_fund_ref"`
 
+	// AfterCommitAt 是"提交后收尾(缓存失效 + 账本行)已被认领"的时间戳。
+	//
+	// 存在理由:提交后收尾有两条入口 —— 业务线程的 Request.AfterCommit,
+	// 与补偿任务确认主库已生效后的 PostCommit 回调。两条都必须能跑,
+	// 但账本行只能写一次(写两条,用户在账单里看到的就是被扣了两次钱)。
+	// 谁 CAS 赢下这一列谁执行,另一方直接跳过。
+	//
+	// 零值 0 = 尚无人认领。历史行(升级前的成功单)迁移后同样是 0,但补偿任务
+	// 只扫 pending / in_doubt,永远不会回头碰它们,因此不存在"升级后给存量成功单
+	// 补写一批账本行"的风险。
+	AfterCommitAt int64 `json:"after_commit_at" gorm:"not null;default:0"`
+
 	// Attempts / NextProbeAt 支撑补偿任务的指数退避,防止一条坏单反复打爆主库。
 	Attempts    int    `json:"attempts" gorm:"not null;default:0"`
 	NextProbeAt int64  `json:"next_probe_at" gorm:"not null;default:0;index:idx_qy_fund_probe"`
@@ -68,14 +80,47 @@ func (FundOrder) TableName() string { return "qy_fund_orders" }
 // 刻意留出 1 号位不用:GORM 的 int8 零值是 0,把 Pending 定为 0 可以让
 // "插入时忘记赋值"退化成最安全的状态,而不是意外变成 Success。
 const (
-	StatusPending int8 = 0 // 扩展库已落单,主库尚未确认
+	StatusPending int8 = 0 // 扩展库已落单,主库的 COMMIT 尚未发出
 	StatusSuccess int8 = 2 // 主库已生效且扩展库已回写
-	StatusFailed  int8 = 3 // 主库明确未生效(余额不足、用户禁用等)
+	// StatusFailed 表示主库**明确**未生效。
+	//
+	// 判据不是"Execute 返回了错误",而是"COMMIT 从来没有发出去过":
+	// 事务开启失败、事务体返回业务错误(余额不足、用户禁用)、语句执行报错 ——
+	// 这三种情况下主库不可能提交,回滚是确定且安全的。
+	//
+	// commit 阶段断连**不属于**这一态,它落 StatusInDoubt。把它也塞进 Failed
+	// 正是"抽奖双发"的根因:Failed 一旦同时意味着"没开始"和"结局不明",
+	// 每一个按 Status == Failed 回滚/重发的调用方都在拿一个歧义值做不可逆动作。
+	StatusFailed int8 = 3
 	// StatusUncertain 是资金系统必须有的"我不知道,交给人"出口。
-	// 探针耗尽重试仍无法判定时进入此态,只能由管理员在对账台裁决。
+	// 探针耗尽重试仍无法判定时进入此态,由管理员在对账台裁决,或由
+	// twophase.ReprobeUncertain 在探针恢复后自动复判。
 	StatusUncertain int8 = 4
 	StatusReversed  int8 = 5 // 已被冲正(如退款回收佣金)
+	// StatusInDoubt 表示**主库的 COMMIT 已经发出,但结果未知**。
+	//
+	// 典型来源:tx.Commit() 返回错误。数据库连接在 COMMIT 期间断掉时,
+	// 服务端仍可能把这笔事务提交下去;客户端拿到的那个 error 不含任何信息。
+	// database/sql 在 ctx 恰好于 COMMIT 期间取消时也会走到这里。
+	//
+	// 与 Pending 的区别是**证据强度**,不是流程位置:Pending 意味着 COMMIT
+	// 还没发出(补偿任务需要等主库事务自己了结),InDoubt 意味着已经发出
+	// (探针读到什么就是什么)。两者都由补偿任务推进,都绝不允许调用方回滚。
+	//
+	// 与 Uncertain 的区别是**出口**:InDoubt 由机器复判(outbox 探针),
+	// Uncertain 是探针也判不出来之后交给人的那一档。
+	StatusInDoubt int8 = 6
 )
+
+// UnsettledStatuses 是补偿任务负责推进的两个未定局状态。
+//
+// 抽成函数而不是让 compensate.go 各处手写 []int8{Pending, InDoubt}:
+// 这张列表决定了"哪些单还会被自动收敛",漏掉一处 CAS 就意味着那一档
+// 状态的单永远停在原地。它是一个稳定的业务概念,不是为了缩短调用方。
+func UnsettledStatuses() []int8 { return []int8{StatusPending, StatusInDoubt} }
+
+// IsUnsettled 表示该状态仍在补偿任务的收敛范围内。
+func IsUnsettled(s int8) bool { return s == StatusPending || s == StatusInDoubt }
 
 // StatusName 返回状态的稳定英文标识,供 API 与前端 i18n 使用。
 // 不返回中文:自然语言留给前端按 key 渲染。
@@ -91,6 +136,8 @@ func StatusName(s int8) string {
 		return "uncertain"
 	case StatusReversed:
 		return "reversed"
+	case StatusInDoubt:
+		return "in_doubt"
 	default:
 		return "unknown"
 	}

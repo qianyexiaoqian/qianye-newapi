@@ -5,10 +5,8 @@ import (
 
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/qianye/config"
-	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/module"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
-	"github.com/QuantumNous/new-api/qianye/service/twophase"
 
 	"github.com/gin-gonic/gin"
 )
@@ -23,12 +21,9 @@ func (Mod) Tables() []any {
 	return []any{&Withdrawal{}, &Payee{}, &PayeeAccount{}, &Event{}, &PiiAudit{}, &Proof{}}
 }
 
-// InstallHooks 注册补偿回调。
-//
-// 这里没有上游 hook 要注入,只有 twophase 需要知道"确认主库已生效之后找谁收尾"。
-func (Mod) InstallHooks() {
-	twophase.RegisterResolver(qymodel.KindWithdrawQuota, resolveAfterCompensation)
-}
+// 本模块**不实现 InstallHooks**:提现改成人工发放之后,它对主库零写入,
+// 既没有上游 hook 要注入,也不再需要向 twophase 登记补偿回调
+// (那条回调服务的是自动到账的跨库资金单,已随 paying 状态一并下线)。
 
 // RegisterUserRoutes 挂载普通用户接口。传入的组已挂 UserAuth。
 func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
@@ -63,32 +58,27 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// + 关键操作限流。差别只在它没有"脱敏版"可看 —— 一张图要么看得到要么看不到。
 	g.GET("/withdraw/:id/proof", middleware.CriticalRateLimit(), handleAdminGetProof)
 
-	// 人工决策一律挂关键操作限流:它们要么改钱,要么决定钱去哪。
+	// 人工决策一律挂关键操作限流:它们要么改佣金账本,要么终结一张单。
+	//
+	// 四个决定构成完整闭环:通过 → 待发放;驳回 / 发放失败 → 佣金退回;
+	// 标记已发放 → 佣金核销。没有第五条边,也没有任何一条会自动出钱。
 	crit := middleware.CriticalRateLimit()
 	g.POST("/withdraw/:id/approve", crit, handleAdminApprove)
 	g.POST("/withdraw/:id/reject", crit, handleAdminReject)
 	g.POST("/withdraw/:id/mark-paid", crit, handleAdminMarkPaid)
-	// quota 单的手动兑现入口。auto_credit_on_approve = false 时它是这类单据
-	// 唯一的正向终态出口,缺了它这个开关就是一个吃佣金的稳态。
-	g.POST("/withdraw/:id/credit", crit, handleAdminCreditNow)
 	g.POST("/withdraw/:id/fail", crit, handleAdminFail)
-	g.POST("/withdraw/:id/resolve", crit, handleAdminResolve)
 }
 
-// StartTasks 启动对账任务。
+// StartTasks 启动周期性收尾任务(待发放积压告警 + PII 保留期清理)。
 //
-// 周期取两阶段补偿间隔的两倍:本任务只负责收拾补偿任务推进完终态之后的尾巴,
-// 跑得比它还快没有意义,只会空扫。必须走 lease.Run —— common.IsMasterNode
-// 只是个环境变量,多节点都配成 master 时对账会双跑。
+// 十分钟一轮:两件事都是"到点做一次"的收尾,没有任何实时性要求。跑得更密只会
+// 空扫,跑得更疏会让一批到期密文多留几个小时。必须走 lease.Run ——
+// common.IsMasterNode 只是个环境变量,多节点都配成 master 时会双跑。
 func (Mod) StartTasks() {
 	if !config.Get().Withdraw.Enabled {
 		return
 	}
-	interval := 2 * twophase.Interval()
-	if interval < time.Minute {
-		interval = time.Minute
-	}
-	lease.Run("withdraw.reconcile", interval, reconcile)
+	lease.Run("withdraw.reconcile", 10*time.Minute, reconcile)
 }
 
 func init() { module.Register(Mod{}) }

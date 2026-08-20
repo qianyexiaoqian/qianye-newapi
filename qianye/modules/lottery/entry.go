@@ -728,10 +728,12 @@ func markEntryFailed(tx *gorm.DB, entryNo, failCode string) error {
 
 // releaseEntryOnFailure 在 Execute 返回错误时回滚预占。
 //
-// **只有 order.Status == Failed 才回滚**:pending 与 uncertain 都意味着钱
-// 可能已经动了,回滚会让用户白拿一次参与。而且回滚之前还要用主库 outbox
-// 探针复核一次 —— 主库事务在 commit 阶段断连时 GORM 会返回错误,但事务其实
-// 可能已经提交。探针本身失败一律按"可能已生效"处理。
+// **只有 order.Status == Failed 才回滚**:pending / in_doubt / uncertain 都意味着
+// 钱可能已经动了,回滚会让用户白拿一次参与。其中 in_doubt 正是"主库 COMMIT 已发出
+// 但结局不明"那一档,twophase 保证它不会被写成 Failed。
+//
+// 回滚之前仍要用主库 outbox 探针复核一次:Failed 也可能来自存量单、补偿任务或
+// 人工裁决,那几条来自另一套判据,而回滚是不可逆的。探针本身失败一律按"可能已生效"处理。
 func releaseEntryOnFailure(ctx context.Context, order *qymodel.FundOrder, e *Entry, cause error) {
 	if order == nil || order.Status != qymodel.StatusFailed {
 		return
@@ -762,6 +764,25 @@ func releaseEntryOnFailure(ctx context.Context, order *qymodel.FundOrder, e *Ent
 		db.MarkFailure(err)
 		common.SysError("qianye/lottery: 回滚参与预占失败,交对账任务: " + err.Error())
 	}
+}
+
+// postDebitFromOrder 是"主库已确认扣款生效"之后必须补做的账本行。
+//
+// afterDebit 那条路径捎带着进程内的余额快照,而 commit 断连与扩展库回写失败这两条
+// 路径上它一次都不会跑 —— 用户的额度已经少了,账单里却没有任何一行解释这笔钱去哪了。
+// 这里从资金单重建:参与号是 RefId,金额是 AmountQuota。
+//
+// 唯一丢掉的是 qy_quota_after(扣款后余额),它只存在于当时那个事务里。
+// 少一个展示字段,好过整条账本行不存在。
+func postDebitFromOrder(_ context.Context, order *qymodel.FundOrder) error {
+	model.QyRecordLedgerLog(order.UserId, model.LogTypeSystem,
+		ledgerLogContent("参与活动扣除", order.AmountQuota, order.RefId), order.OrderNo,
+		map[string]any{
+			"qy_module":       "lottery",
+			"qy_lot_entry_no": order.RefId,
+			"qy_quota":        order.AmountQuota,
+		})
+	return nil
 }
 
 // resolveEntryAfterCompensation 是补偿任务确认主库已生效后的收尾回调。

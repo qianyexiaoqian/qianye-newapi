@@ -197,11 +197,9 @@ POST /api/qy/admin/violation/rules/batch/group-scope
 POST /api/qy/admin/violation/rules/import-builtin
 POST /api/qy/admin/violation/rules/test
 POST /api/qy/admin/withdraw/:id/approve
-POST /api/qy/admin/withdraw/:id/credit
 POST /api/qy/admin/withdraw/:id/fail
 POST /api/qy/admin/withdraw/:id/mark-paid
 POST /api/qy/admin/withdraw/:id/reject
-POST /api/qy/admin/withdraw/:id/resolve
 POST /api/qy/lottery/activities/:act_no/entries
 POST /api/qy/pay-password
 POST /api/qy/pay-password/recover/code
