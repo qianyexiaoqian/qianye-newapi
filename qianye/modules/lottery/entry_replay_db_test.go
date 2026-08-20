@@ -171,15 +171,22 @@ func TestUpsertFlagDedupesWithoutFreezingTheDetail(t *testing.T) {
 	act := seedActivity(t, gdb, nil)
 
 	first := "重算奖池 11500 与物化 3000 不一致"
-	require.NoError(t, upsertFlag(gdb, act.Id, FlagPoolMismatch, first))
+	changed, err := upsertFlag(gdb, act.Id, FlagPoolMismatch, first)
+	require.NoError(t, err)
+	assert.True(t, changed, "首次检出必须报告为「新的」,调用方据此决定要不要打日志/审计")
 	var seeded Flag
 	require.NoError(t, gdb.Where("act_id = ?", act.Id).Take(&seeded).Error)
 
 	// 同一条消息重复检出:不刷屏,也不产生无谓的写。
-	require.NoError(t, upsertFlag(gdb, act.Id, FlagPoolMismatch, first))
+	changed, err = upsertFlag(gdb, act.Id, FlagPoolMismatch, first)
+	require.NoError(t, err)
+	assert.False(t, changed,
+		"逐字相同的重复检出必须报告为「不是新的」——suspendReveal 靠这个判据才不会每 15 秒往审计表追加一条一模一样的 fail 行")
 	// 第二次篡改,重算值变了。
 	refreshed := "重算奖池 10277 与物化 3000 不一致"
-	require.NoError(t, upsertFlag(gdb, act.Id, FlagPoolMismatch, refreshed))
+	changed, err = upsertFlag(gdb, act.Id, FlagPoolMismatch, refreshed)
+	require.NoError(t, err)
+	assert.True(t, changed, "detail 变了就是新情况,必须重新告警")
 
 	var rows []Flag
 	require.NoError(t, gdb.Where("act_id = ? AND code = ?", act.Id, FlagPoolMismatch).Find(&rows).Error)
@@ -191,7 +198,8 @@ func TestUpsertFlagDedupesWithoutFreezingTheDetail(t *testing.T) {
 	assert.False(t, rows[0].Resolved)
 
 	// 另一类异常照旧独立成行。
-	require.NoError(t, upsertFlag(gdb, act.Id, FlagChainDrift, "链尾对不上"))
+	_, err = upsertFlag(gdb, act.Id, FlagChainDrift, "链尾对不上")
+	require.NoError(t, err)
 	var n int64
 	require.NoError(t, gdb.Model(&Flag{}).Where("act_id = ?", act.Id).Count(&n).Error)
 	assert.Equal(t, int64(2), n)
@@ -206,11 +214,14 @@ func TestResolvedFlagDoesNotSuppressTheNextDetection(t *testing.T) {
 	gdb := newFundTestDB(t)
 	act := seedActivity(t, gdb, nil)
 
-	require.NoError(t, upsertFlag(gdb, act.Id, FlagChainDrift, "第一次"))
+	_, err := upsertFlag(gdb, act.Id, FlagChainDrift, "第一次")
+	require.NoError(t, err)
 	require.NoError(t, gdb.Model(&Flag{}).Where("act_id = ?", act.Id).
 		Updates(map[string]any{"resolved": true, "resolved_by": 1301, "resolved_at": common.GetTimestamp()}).Error)
 
-	require.NoError(t, upsertFlag(gdb, act.Id, FlagChainDrift, "处理完之后又出事了"))
+	changed, err := upsertFlag(gdb, act.Id, FlagChainDrift, "处理完之后又出事了")
+	require.NoError(t, err)
+	assert.True(t, changed, "已处理之后的新检出必须重新告警")
 
 	var rows []Flag
 	require.NoError(t, gdb.Where("act_id = ? AND code = ?", act.Id, FlagChainDrift).

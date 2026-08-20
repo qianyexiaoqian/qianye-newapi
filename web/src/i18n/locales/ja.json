@@ -1988,6 +1988,7 @@
     "Filter by model name...": "モデル名でフィルター...",
     "Filter by model...": "モデルでフィルタリング...",
     "Filter by name or ID...": "名前またはIDでフィルター...",
+    "Filter by name, ID, or code suffix...": "名前、ID、またはコード末尾でフィルター...",
     "Filter by name, ID, or key...": "名前、ID、またはキーでフィルター...",
     "Filter by name...": "名前でフィルター...",
     "Filter by node": "ノードでフィルター",
@@ -5271,6 +5272,9 @@
     "A new version has been released": "新しいバージョンが公開されました",
     "Reload the page to get the latest version.": "最新バージョンを取得するにはページを再読み込みしてください。",
     "Reload": "再読み込み",
-    "Copy error details": "エラー詳細をコピー"
+    "Copy error details": "エラー詳細をコピー",
+    "Order": "並び順",
+    "Move up": "上へ移動",
+    "Move down": "下へ移動"
   }
 }

@@ -79,6 +79,34 @@ func attachQuotaSaturation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, o
 // 全额真实花费记账 —— 于是 logs.quota 与实际收到的钱分家,而账面上没有任何
 // 一处指出这件事。这个键就是那唯一的指路牌:按它可以把漏收的笔捞出来补。
 // 与 attachQuotaSaturation 同形,嵌在 admin_info 下天然只对管理员可见。
+// attachPreConsumeShortfall 把「这一笔的预扣额没兜住真实花费」写进消费日志的
+// other.admin_info.pre_consume_shortfall,并留一条与请求关联的后端告警。
+//
+// 只在差额**相对预留额显著**时告警(否则每一笔正常请求都会响:预扣本来就是估算,
+// 小幅补收是常态),但标记一律写 —— 事后统计需要的是全量,不是被阈值过滤过的样本。
+func attachPreConsumeShortfall(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+	if relayInfo == nil || other == nil {
+		return
+	}
+	sf := relayInfo.PreConsumeShortfall
+	if sf == nil || sf.Shortfall <= 0 {
+		return
+	}
+	adminInfo, ok := other["admin_info"].(map[string]interface{})
+	if !ok || adminInfo == nil {
+		adminInfo = map[string]interface{}{}
+		other["admin_info"] = adminInfo
+	}
+	adminInfo["pre_consume_shortfall"] = sf.AuditMap()
+	// 阈值 = 补收额超过预留额本身。到这一档说明预留连一半都没覆盖,
+	// 而这正是"客户端没写 max_tokens + 模型输出远超 8192"的形状。
+	if sf.Reserved > 0 && sf.Shortfall > sf.Reserved {
+		logger.LogWarn(ctx, fmt.Sprintf(
+			"pre-consume did not cover the charge: reserved=%d charged=%d shortfall=%d user=%d model=%s",
+			sf.Reserved, sf.Charged, sf.Shortfall, relayInfo.UserId, relayInfo.OriginModelName))
+	}
+}
+
 func attachSettleFailure(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
 	if relayInfo == nil || other == nil {
 		return

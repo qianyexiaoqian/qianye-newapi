@@ -14,9 +14,30 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// redemptionCreatorScope 返回本次请求能看到哪些兑换码：root(role=100) 看全量，
+// 其余管理员只看自己发的码。见 model.scopeRedemptionsToCreator 的注释——兑换码
+// 明文等同现金，跨管理员可读就等于一个 role=10 能把别人发行的在售码整批收割进
+// 自己的钱包，而读取路径一条审计都不写。
+func redemptionCreatorScope(c *gin.Context) int {
+	if c.GetInt("role") >= common.RoleRootUser {
+		return 0
+	}
+	return c.GetInt("id")
+}
+
+// requireOwnRedemption 在按 id 操作单张码时执行同一条判据。
+func requireOwnRedemption(c *gin.Context, redemption *model.Redemption) bool {
+	scope := redemptionCreatorScope(c)
+	if scope == 0 || redemption.UserId == scope {
+		return true
+	}
+	common.ApiErrorI18n(c, i18n.MsgRedemptionInvalid)
+	return false
+}
+
 func GetAllRedemptions(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
-	redemptions, total, err := model.GetAllRedemptions(pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	redemptions, total, err := model.GetAllRedemptions(redemptionCreatorScope(c), pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -31,7 +52,7 @@ func SearchRedemptions(c *gin.Context) {
 	keyword := c.Query("keyword")
 	status := c.Query("status")
 	pageInfo := common.GetPageQuery(c)
-	redemptions, total, err := model.SearchRedemptions(keyword, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	redemptions, total, err := model.SearchRedemptions(redemptionCreatorScope(c), keyword, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -51,6 +72,9 @@ func GetRedemption(c *gin.Context) {
 	redemption, err := model.GetRedemptionById(id)
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	if !requireOwnRedemption(c, redemption) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -98,6 +122,18 @@ func AddRedemption(c *gin.Context) {
 	case model.RedemptionProductQuota:
 		if quota <= 0 {
 			common.ApiErrorI18n(c, i18n.MsgRedemptionQuotaPositive)
+			return
+		}
+		// 上界与下界同样是硬性的。quota 是 Go int(64 位),库里 redemptions.quota 与
+		// users.quota 都是 bigint,而全站的额度语义上界是 common.MaxQuota
+		// (= math.MaxInt32,见 common/quota_math.go):所有计费换算、日志/令牌列、
+		// 饱和判据都按 int32 立的。没有这道闸时,一个 role=10 管理员可以铸出面额
+		// MaxInt64 的码,兑换后 users.quota 直接等于 9223372036854775807 —— 之后
+		// 任意一次 `user.Quota += x` 都会在 Go 侧静默回绕成约 -9.2e18 的负余额
+		// (aff_transfer 那条路已实测),而这一切既不报错也不留痕。
+		// 与 model.TopUp.CreditQuota 的 QuotaFromDecimalStrict 是同一条口径。
+		if quota > common.MaxQuota {
+			common.ApiErrorI18n(c, i18n.MsgRedemptionQuotaTooLarge)
 			return
 		}
 	case model.RedemptionProductPlan, model.RedemptionProductUserGroup:
@@ -158,7 +194,15 @@ func AddRedemption(c *gin.Context) {
 
 func DeleteRedemption(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	err := model.DeleteRedemptionById(id)
+	existing, err := model.GetRedemptionById(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !requireOwnRedemption(c, existing) {
+		return
+	}
+	err = model.DeleteRedemptionById(id)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -183,6 +227,9 @@ func UpdateRedemption(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if !requireOwnRedemption(c, cleanRedemption) {
+		return
+	}
 	beforeStatus := cleanRedemption.Status
 	beforeQuota := cleanRedemption.Quota
 	if statusOnly == "" {
@@ -203,6 +250,22 @@ func UpdateRedemption(c *gin.Context) {
 			// 等于同一个业务不变量只守住了一半。
 			if redemption.Quota <= 0 {
 				common.ApiErrorI18n(c, i18n.MsgRedemptionQuotaPositive)
+				return
+			}
+			// 与建码同一条上界:少了它,改码就是绕过建码上界的侧门。
+			if redemption.Quota > common.MaxQuota {
+				common.ApiErrorI18n(c, i18n.MsgRedemptionQuotaTooLarge)
+				return
+			}
+			// 已兑换是终态,面值同样不可改。钱在兑换那一刻就按旧面值发完了,
+			// 之后改这一列不会退钱也不会补钱,只会让三处记录彼此打架:兑换码行上
+			// 写着 B、充值日志里记的是 A、用户钱包里进的是 A。事后对账时无从判断
+			// 哪一个是事实。上面的 status_only 分支已经把"已兑换不可翻回启用"锁死,
+			// 这里是同一条终态口径的另一半 —— 少了它,改面值就是一条绕过状态机的
+			// 侧门:status 动不了,但那张码的账面价值可以被任意改写。
+			if cleanRedemption.Status == common.RedemptionCodeStatusUsed &&
+				redemption.Quota != cleanRedemption.Quota {
+				common.ApiErrorI18n(c, i18n.MsgRedemptionUsedImmutable)
 				return
 			}
 			cleanRedemption.Quota = redemption.Quota

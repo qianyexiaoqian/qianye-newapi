@@ -152,3 +152,27 @@ func QuotaFromDecimalChecked(d decimal.Decimal) (int, *QuotaClamp) {
 func QuotaFromDecimalStrict(d decimal.Decimal) (int, error) {
 	return strictQuota(QuotaFromDecimalChecked(d))
 }
+
+// QuotaAddChecked adds delta to base in int64 space and saturates the result
+// into the int32 quota range, reporting the clamp when it happens.
+//
+// Plain `user.Quota += delta` is a silent int64 wrap: a wallet parked near
+// math.MaxInt64 (reachable in the past through an unbounded redemption face
+// value) turns into a ~-9.2e18 balance on the very next credit, with no error,
+// no log and no clamp marker. Every place that adds to a persisted quota
+// column must go through this instead of the bare `+`.
+func QuotaAddChecked(base int, delta int) (int, *QuotaClamp) {
+	sum := int64(base) + int64(delta)
+	switch {
+	case sum > int64(MaxQuota):
+		clamp := &QuotaClamp{Op: "QuotaAdd", Kind: QuotaClampOverflow, Original: float64(sum), Clamped: MaxQuota}
+		SysError(clamp.Error())
+		return MaxQuota, clamp
+	case sum < int64(MinQuota):
+		clamp := &QuotaClamp{Op: "QuotaAdd", Kind: QuotaClampUnderflow, Original: float64(sum), Clamped: MinQuota}
+		SysError(clamp.Error())
+		return MinQuota, clamp
+	default:
+		return int(sum), nil
+	}
+}

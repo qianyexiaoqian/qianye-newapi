@@ -83,8 +83,20 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 	// 各几次,因此挂按用户限流。
 	g.GET("/lottery/activities/:act_no/eligibility", middleware.SearchRateLimit(), handleGetEligibility)
 	// 唯一会动钱的入口。幂等键只防得住"同一次点击的重试",防不住脚本用不同
-	// client_request_id 连续发单,所以还要挂关键操作限流。
-	g.POST("/lottery/activities/:act_no/entries", middleware.CriticalRateLimit(), handleCreateEntry)
+	// client_request_id 连续发单,所以还要挂关键操作限流 —— **两把桶都要挂**。
+	//
+	// CriticalRateLimit 按 IP 分桶,而这条路要防的正是"一个被盗的会话 + 一个
+	// 代理池":同一账号换出口 IP 就换了桶,实测同一 token 打满 20 次转 429 后,
+	// 只加一个 X-Forwarded-For 就继续 200,参与费照扣。活动 Rules 的
+	// max_entries_per_user / max_attempts_per_user / cooldown_seconds 默认全为 0
+	// (= 无上限),而 lottery.pay_password_threshold_quota 默认 100000,单笔低于
+	// 它连支付密码都不触发 —— 于是这是全站唯一一条"会动钱且无任何账号级节流"
+	// 的用户路径,余额可以沿它被烧光。
+	// 划转/提现/兑换码都有账号桶(见 router/api-router.go 的 /topup),抽奖漏了。
+	g.POST("/lottery/activities/:act_no/entries",
+		middleware.CriticalRateLimit(),
+		middleware.UserCriticalRateLimit("lottery_entry"),
+		handleCreateEntry)
 	g.GET("/lottery/my-entries", handleListMyEntries)
 	// 文本奖**逐条**拉取,刻意不做批量列表:一个列表接口返回全部正文,
 	// 意味着一次越权 bug 就是全量泄漏。payout_no 由 crypto/rand 生成,不可枚举。

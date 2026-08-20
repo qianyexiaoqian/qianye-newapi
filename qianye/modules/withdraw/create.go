@@ -58,6 +58,35 @@ func create(c *gin.Context, userId int, req createRequest) (*orderView, error) {
 		return nil, errUserUnavailable
 	}
 
+	w, payee, err := buildWithdrawal(c, user, acc, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// 顺序不变量(与 submitInTx 里那条同源,只是这里是它的上一层):
+	// **幂等重放的判定必须排在任何余额/风控判据之前**。
+	//
+	// 申请一旦落库，佣金就已经离开 available 进了 frozen。此后同一个
+	// client_request_id 的重放(客户端超时后在同一个弹窗里再点一次，裁定 C10
+	// 要求沿用同一个键)如果先撞上锁外余额预检，就会因为“剩余可提余额已经少了
+	// 这一笔”而被判成 qy_wd_insufficient_commission —— 只要申请额度超过剩余可提
+	// 余额的一半就必然发生，而“提全部佣金”正是本页最常见的意图。用户看到的是
+	// “佣金不足”，同时他的佣金确实被冻住、账户页可提余额确实变少了，三者互相
+	// 矛盾；而设计稿写明这里应当返回 200 + 原单。
+	//
+	// 同一道错序还会把 ensureReplayMatches 的 409 qy_wd_idem_conflict 按金额大小
+	// 随机遮成 400，并让 debt_blocked 用户永远看不到为他定义的 qy_wd_debt_blocked
+	// (Withdrawable 对欠账账号返回 0，预检先短路)。
+	if existing, ferr := findByIdemKey(db.Get(), user.Id, acc.IdemKey); ferr != nil {
+		db.MarkFailure(ferr)
+		return nil, ferr
+	} else if existing != nil {
+		if err := ensureReplayMatches(existing, w); err != nil {
+			return nil, err
+		}
+		return toUserView(existing, nil), nil
+	}
+
 	// 锁外余额预检只为尽早给出明确错误。真正的准入判定是 FreezeForWithdraw
 	// 内部的 `WHERE available_quota >= ?` CAS —— 两次读之间余额可能被并发改动。
 	available, err := commission.Withdrawable(userId)
@@ -66,11 +95,6 @@ func create(c *gin.Context, userId int, req createRequest) (*orderView, error) {
 	}
 	if available < acc.Quota {
 		return nil, errInsufficient
-	}
-
-	w, payee, err := buildWithdrawal(c, user, acc, cfg)
-	if err != nil {
-		return nil, err
 	}
 
 	var replay *Withdrawal

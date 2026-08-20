@@ -69,6 +69,8 @@ redemption.product_type_invalid: "未知的兌換碼商品類型"
 redemption.quota_positive: "餘額兌換碼的額度必須大於 0"
 redemption.plan_invalid: "請選擇一個存在且已啟用的訂閱套餐"
 redemption.status_locked: "已兑換的兑換碼不能重新啟用或禁用，請另行發放新碼"
+redemption.used_immutable: "已兑換的兑換碼是終態，額度不能再修改"
+redemption.quota_too_large: "額度超過錢包能承載的上限"
 
 # User messages
 user.password_login_disabled: "管理員關閉了密碼登錄"

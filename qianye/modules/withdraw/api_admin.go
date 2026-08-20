@@ -40,9 +40,6 @@ func handleAdminList(c *gin.Context) {
 	if v := strings.TrimSpace(c.Query("withdraw_no")); v != "" {
 		q = q.Where("withdraw_no = ?", v)
 	}
-	if c.Query("reconcile") == "hold" {
-		q = q.Where("reconcile_state = ?", ReconcileHold)
-	}
 	if c.Query("risk_only") == "true" {
 		q = q.Where("risk_flags <> ''")
 	}
@@ -78,7 +75,11 @@ func handleAdminList(c *gin.Context) {
 	respondOK(c, gin.H{"items": items, "total": total, "p": page, "page_size": size})
 }
 
-// handleAdminStats 返回队列角标:待审 / 待打款 / 对账异常。
+// handleAdminStats 返回队列角标:待审 / 待发放 / 两条时限的超时数。
+//
+// payout_sla_breached 是人工发放模型新引入的观测点:佣金在申请那一刻就已经
+// 离开用户的可用池,审核通过后如果没人去发钱,用户就是"钱扣了、东西没拿到"。
+// 系统替不了人发钱,但必须让积压在管理端第一屏就有数。
 func handleAdminStats(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
@@ -95,10 +96,10 @@ func handleAdminStats(c *gin.Context) {
 	// 整页白屏。Find() 走的是另一条路(gorm.Scan 里 MakeSlice)不会留 nil,
 	// 但两者的差别是 GORM 的内部实现细节,不该成为我们 JSON 契约的依据。
 	// 判据与机器校验见 qianye/json_array_guard_test.go。
-	rows := make([]bucket, 0, 3)
+	rows := make([]bucket, 0, 2)
 	if err := db.Get().Model(&Withdrawal{}).
 		Select("status, COUNT(*) AS count, COALESCE(SUM(quota), 0) AS quota").
-		Where("status IN ?", []string{StatusPending, StatusApproved, StatusPaying}).
+		Where("status IN ?", activeStatuses).
 		Group("status").Scan(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, err)
@@ -106,11 +107,7 @@ func handleAdminStats(c *gin.Context) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Status < rows[j].Status })
 
-	var hold, slaBreached int64
-	if err := db.Get().Model(&Withdrawal{}).
-		Where("reconcile_state = ?", ReconcileHold).Count(&hold).Error; err != nil {
-		db.MarkFailure(err)
-	}
+	var slaBreached, payoutBreached int64
 	if hours := config.Get().Withdraw.ReviewSLAHours; hours > 0 {
 		deadline := common.GetTimestamp() - int64(hours)*3600
 		if err := db.Get().Model(&Withdrawal{}).
@@ -119,7 +116,21 @@ func handleAdminStats(c *gin.Context) {
 			db.MarkFailure(err)
 		}
 	}
-	respondOK(c, gin.H{"buckets": rows, "reconcile_hold": hold, "sla_breached": slaBreached})
+	// 发放时限从 reviewed_at 起算,不是 created_at:审核花掉的时间归审核时限管,
+	// 两道时限共用一个起点会让它们互相污染,谁也说明不了问题出在哪一段。
+	if hours := config.Get().Withdraw.PayoutSLAHours; hours > 0 {
+		deadline := common.GetTimestamp() - int64(hours)*3600
+		if err := db.Get().Model(&Withdrawal{}).
+			Where("status = ? AND reviewed_at > 0 AND reviewed_at < ?", StatusApproved, deadline).
+			Count(&payoutBreached).Error; err != nil {
+			db.MarkFailure(err)
+		}
+	}
+	respondOK(c, gin.H{
+		"buckets":             rows,
+		"sla_breached":        slaBreached,
+		"payout_sla_breached": payoutBreached,
+	})
 }
 
 // handleAdminGet 返回单据详情与完整时间线(含 Detail 与真实操作者姓名)。
@@ -149,15 +160,17 @@ type reasonRequest struct {
 	Reason string `json:"reason"`
 }
 
+// markPaidRequest 是「标记已发放」的请求体。
+//
+// confirm_quota / confirm_amount 按单据的 method 二选一必填,且必须与单据金额
+// 相等(见 markPayout)。它们不是冗余参数:系统不动钱,这个终态动作能被验证的
+// 只有"操作者是不是知道自己在发多少"。
 type markPaidRequest struct {
-	PayoutRef  string `json:"payout_ref"`
-	PaidAt     int64  `json:"paid_at"`
-	PayoutNote string `json:"payout_note"`
-}
-
-type resolveRequest struct {
-	Decision string `json:"decision"`
-	Evidence string `json:"evidence"`
+	PayoutRef     string `json:"payout_ref"`
+	ConfirmQuota  int64  `json:"confirm_quota"`
+	ConfirmAmount string `json:"confirm_amount"`
+	PaidAt        int64  `json:"paid_at"`
+	PayoutNote    string `json:"payout_note"`
 }
 
 func handleAdminApprove(c *gin.Context) {
@@ -214,31 +227,13 @@ func handleAdminMarkPaid(c *gin.Context) {
 		respondErr(c, errInvalidParam)
 		return
 	}
-	view, err := markPaid(c, id, req.PayoutRef, req.PaidAt, req.PayoutNote)
-	if err != nil {
-		respondErr(c, err)
-		return
-	}
-	respondOK(c, view)
-}
-
-// handleAdminCreditNow 对一张 approved 的 quota 单显式触发兑现。
-//
-// 这是 withdraw.auto_credit_on_approve = false 时 quota 提现唯一的正向出口:
-// 关掉自动到账后 approved → paying 没有任何自动触发者,单据会无限期停在
-// approved(详见 creditNow 的注释)。开着自动到账时它也有用 —— 对账任务
-// 拿不到租约、或某张单反复卡住时,管理员不必等下一轮扫描。
-// 重复点击安全:startPaying 的 approved → paying CAS 是全集群唯一准入闸门。
-func handleAdminCreditNow(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagCore) {
-		return
-	}
-	id, ok := pathId(c)
-	if !ok {
-		respondErr(c, errInvalidParam)
-		return
-	}
-	view, err := creditNow(c, id)
+	view, err := markPayout(c, id, payoutInput{
+		PayoutRef:     req.PayoutRef,
+		ConfirmQuota:  req.ConfirmQuota,
+		ConfirmAmount: req.ConfirmAmount,
+		PaidAt:        req.PaidAt,
+		Note:          req.PayoutNote,
+	})
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -261,28 +256,6 @@ func handleAdminFail(c *gin.Context) {
 		return
 	}
 	view, err := markFailed(c, id, req.Reason)
-	if err != nil {
-		respondErr(c, err)
-		return
-	}
-	respondOK(c, view)
-}
-
-func handleAdminResolve(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagCore) {
-		return
-	}
-	id, ok := pathId(c)
-	if !ok {
-		respondErr(c, errInvalidParam)
-		return
-	}
-	var req resolveRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondErr(c, errInvalidParam)
-		return
-	}
-	view, err := resolveHold(c, id, req.Decision, req.Evidence)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -418,6 +391,21 @@ func handleAdminPiiAudits(c *gin.Context) {
 // 管理员看一眼就拿到了全部内容,事后唯一能追的只有"谁在什么时候、以什么事由看的"。
 func handleAdminGetProof(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
+		return
+	}
+	// 安全证明与 handleAdminRevealPayee 用**同一个 scope**。
+	//
+	// 这一句原先漏了：上一轮给收款账号加固之后，同一张单的两条 PII 出口只有一条
+	// 真的加固了 —— 实测同一个 role=10 的 PAT 打 /payee 是 403
+	// SECURITY_PROOF_INVALID，打 /proof 直接 200 拿到与用户上传逐字节相同的
+	// 银行转账截图（卡号、户名、金额、时间一次性全在里面，且凭证图片**没有**
+	// 脱敏版），改 :id 还能跨用户遍历。也就是说“拿到会话/PAT ≠ 拿到明文”这个
+	// 加固目标在两条出口里只成立一条。
+	//
+	// 共用 scope 而不是新开一个：一次打款本来就要同时看收款账号和凭证，
+	// 分成两张证明只会让操作员连过两次 2FA，然后想办法绕开。
+	if !middleware.RequireSecurityProof(c,
+		middleware.SecurityProofScopeWithdrawPayeeRead, []string{"2fa", "passkey"}) {
 		return
 	}
 	id, ok := pathId(c)

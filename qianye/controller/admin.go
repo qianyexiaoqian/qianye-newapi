@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -272,24 +273,57 @@ func AdminResolveFundOrder(c *gin.Context) {
 		return
 	}
 
-	now := common.GetTimestamp()
-	res := db.Get().Model(&qymodel.FundOrder{}).
-		Where("order_no = ? AND status = ?", orderNo, qymodel.StatusUncertain).
-		Updates(map[string]any{
-			"status":     target,
-			"settled_at": now,
-			"updated_at": now,
-			// 前置校验已按字符卡过 200,这里再按 last_error 的字节宽度做一次
-			// rune 安全兜底:列宽是按字符还是按字节取决于方言与字符集,
-			// 兜底不依赖那个判断。
-			"last_error": audit.Truncate("人工裁决: "+reason, 512),
-		})
-	if res.Error != nil {
-		serverError(c, res.Error)
+	// 操作人判据:这是提现改成人工发放之后，仅存的、能让 role=10 单方面把一笔
+	// 资金单推上终态的接口，而“判成 success”会跑完整条收尾链路（提交后收尾 +
+	// 业务 Resolver），对外等于宣布“主库那一腿已经落地”。抽奖的
+	// convergeExcluded 在 Success 分支会据此给那笔参与费**真的退款**，一次探针
+	// 都不打 —— 也就是说自营裁决能变成真额度。提现/佣金/违规/支付密码四家都补了
+	// 这条判据，唯独这条通往资金终态的裁决口没补。
+	//
+	// order.UserId <= 0 是系统单（没有受益人），自营无从谈起，不套判据。
+	if order.UserId > 0 {
+		if err := guard.ActorMayActOnCtx(c, order.UserId); err != nil {
+			audit.Write(c, audit.Entry{
+				TraceNo:      orderNo,
+				Category:     qymodel.AuditCategoryFund,
+				Action:       "fund.resolve.actor_denied",
+				ActorType:    qymodel.ActorAdmin,
+				ActorUserId:  c.GetInt("id"),
+				ActorName:    c.GetString("username"),
+				TargetUserId: order.UserId,
+				AmountQuota:  order.AmountQuota,
+				Result:       qymodel.ResultFail,
+				Reason:       reason,
+			})
+			switch {
+			case errors.Is(err, guard.ErrActorIsTarget):
+				fail(c, http.StatusForbidden, "qy_self_dealing", "不能裁决自己名下的资金单,请由另一位管理员处理")
+			case errors.Is(err, guard.ErrTargetNotLower):
+				fail(c, http.StatusForbidden, "qy_target_not_manageable", "不能裁决同级或更高权限账号名下的资金单")
+			case errors.Is(err, guard.ErrTargetMissing):
+				fail(c, http.StatusForbidden, "qy_target_not_manageable", "单据归属人不存在")
+			default:
+				serverError(c, err)
+			}
+			return
+		}
+	}
+
+	// 裁决走 twophase.ResolveManually 而不是就地 UPDATE:判成 success 时必须
+	// 触发与补偿任务同一条收尾链路(提交后收尾 + 业务 Resolver),否则资金单变了
+	// 而业务侧一无所知 —— violation 的记录会永远停在 charged,用户缓存也不会失效。
+	//
+	// 理由前缀在这里拼好再交下去:last_error 的 rune 安全截断由 ResolveManually
+	// 统一做,列宽是按字符还是按字节取决于方言与字符集,兜底不该依赖那个判断。
+	ctx, cancel := guard.ColdContext(c.Request.Context())
+	defer cancel()
+	settled, err := twophase.ResolveManually(ctx, &order, target, "人工裁决: "+reason)
+	if err != nil {
+		serverError(c, err)
 		return
 	}
-	if res.RowsAffected == 0 {
-		badRequest(c, "qy_order_changed", "单据状态已变化,请刷新后重试")
+	if !settled {
+		badRequest(c, "qy_order_changed", "单据状态已变化或业务收尾未完成,请刷新后重试")
 		return
 	}
 

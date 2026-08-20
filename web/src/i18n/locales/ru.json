@@ -1988,6 +1988,7 @@
     "Filter by model name...": "Фильтр по имени модели...",
     "Filter by model...": "Фильтровать по модели...",
     "Filter by name or ID...": "Фильтр по имени или ID...",
+    "Filter by name, ID, or code suffix...": "Фильтр по имени, ID или окончанию кода...",
     "Filter by name, ID, or key...": "Фильтровать по имени, ID или ключу...",
     "Filter by name...": "Фильтр по имени...",
     "Filter by node": "Фильтр по узлу",
@@ -5271,6 +5272,9 @@
     "A new version has been released": "Вышла новая версия",
     "Reload the page to get the latest version.": "Перезагрузите страницу, чтобы получить последнюю версию.",
     "Reload": "Перезагрузить",
-    "Copy error details": "Скопировать детали ошибки"
+    "Copy error details": "Скопировать детали ошибки",
+    "Order": "Порядок",
+    "Move up": "Вверх",
+    "Move down": "Вниз"
   }
 }

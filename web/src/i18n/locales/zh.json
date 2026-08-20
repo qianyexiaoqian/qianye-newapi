@@ -1988,6 +1988,7 @@
     "Filter by model name...": "按模型名称筛选...",
     "Filter by model...": "按模型筛选...",
     "Filter by name or ID...": "按名称或 ID 筛选...",
+    "Filter by name, ID, or code suffix...": "按名称、ID 或兑换码末尾筛选...",
     "Filter by name, ID, or key...": "按名称、ID 或密钥筛选...",
     "Filter by name...": "按名称筛选...",
     "Filter by node": "按节点筛选",
@@ -5271,9 +5272,9 @@
     "A new version has been released": "已发布新版本",
     "Reload the page to get the latest version.": "请重新加载页面以获取最新版本。",
     "Reload": "重新加载",
-    "Copy error details": "复制错误详情"
-  },
-  "Order": "排序",
-  "Move up": "上移",
-  "Move down": "下移"
+    "Copy error details": "复制错误详情",
+    "Order": "排序",
+    "Move up": "上移",
+    "Move down": "下移"
+  }
 }

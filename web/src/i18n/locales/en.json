@@ -1988,6 +1988,7 @@
     "Filter by model name...": "Filter by model name...",
     "Filter by model...": "Filter by model...",
     "Filter by name or ID...": "Filter by name or ID...",
+    "Filter by name, ID, or code suffix...": "Filter by name, ID, or code suffix...",
     "Filter by name, ID, or key...": "Filter by name, ID, or key...",
     "Filter by name...": "Filter by name...",
     "Filter by node": "Filter by node",
@@ -5271,9 +5272,9 @@
     "A new version has been released": "A new version has been released",
     "Reload the page to get the latest version.": "Reload the page to get the latest version.",
     "Reload": "Reload",
-    "Copy error details": "Copy error details"
-  },
-  "Order": "Order",
-  "Move up": "Move up",
-  "Move down": "Move down"
+    "Copy error details": "Copy error details",
+    "Move up": "Move up",
+    "Move down": "Move down",
+    "Order": "Order"
+  }
 }

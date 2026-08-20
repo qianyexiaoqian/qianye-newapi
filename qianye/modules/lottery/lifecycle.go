@@ -3,6 +3,7 @@ package lottery
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -496,8 +497,17 @@ func checkQuotaBudget(tiers []Tier, payoutSum int64) error {
 // **绝不自动作废、绝不自动开奖**:两者都是在一个已知被篡改的现场上继续动钱。
 // 落一条 flag + 一条失败审计,交给人。
 func suspendReveal(ctx context.Context, act *Activity, reason string) {
+	// 日志与审计跟着 flag 的去重走:runReveal 每 15 秒重扫一次同一场被挂起的
+	// 活动,而 suspendReveal 一次都不改活动状态(它的名字是"挂起",实际只是
+	// "这一轮不开"),于是这一对不去重的调用会以每分钟 4 条的速度往
+	// qy_audit_logs 追加逐字相同的 result=fail 行 —— 一场卡住的活动一天约 6000
+	// 行,而审计保留期下限是 365 天。qy_audit_logs 是资金与运维**事后仲裁**的
+	// 那张表,不是普通日志。
+	// flag 那一侧本来就是去重的(见 upsertFlag),这里只是把同一条纪律接上。
+	if !raiseFlag(ctx, act.Id, FlagRevealRefuse, reason) {
+		return
+	}
 	common.SysError(fmt.Sprintf("qianye/lottery: 活动 %s 拒绝开奖: %s", act.ActNo, reason))
-	raiseFlag(ctx, act.Id, FlagRevealRefuse, reason)
 	writeSystemAudit("lottery.reveal", act.ActNo, qymodel.ResultFail, reason, "")
 }
 
@@ -642,6 +652,61 @@ func isFullRefundOutcome(outcome string) bool {
 // 幂等靠 uk(act_id, entry_id, kind):重复跑只会整体撞键,不会产生双份退款。
 // 竞猜的"全部猜错"在 settleGuessResult 里已经登记过一次,这里再跑一遍
 // 同样撞键返回 —— 两条路径共用同一个唯一键,不需要额外的协调。
+// refundAmountOf 返回一条参与**真正应该退**多少额度。
+//
+// 权威金额是资金单 qy_fund_orders.amount_quota（entry.order_no 是锚点，与
+// entry 同库同事务可读），而不是 qy_lot_entry.amount：后者是一张业务表上的
+// 普通列，一次 UPDATE 就能改，而 planFullRefund / refundExcluded 原先拿它直接
+// 出款、既不与资金单交叉核对也不校验已公开的 roster_hash —— 同一处篡改在开奖
+// 路径被 revealActivity 明确拒绝（roster_drift → 停手挂起），在取消/流局路径
+// 却原样变成主库真金。实测把一条 2500 的参与改成 900000，管理员一按取消就退出
+// 900000 到主库，活动行上 refund_quota 与 pool_quota 当场自相矛盾也没人拦。
+//
+// 两者不等时按**较小值**退并落一条 refund_drift：
+//   - 取较小值保证任何方向的篡改都不会变成净增发；
+//   - 仍然退钱而不是整场停手，是因为退款正是"出事之后的止损动作"，
+//     四种流局 outcome 与取消共用它，停手会把所有人的本金一起冻住。
+//
+// 资金单读不到（order_no 为空、或那张单不在）时返回 (0, false)：
+// 没有证据证明钱收过，就不能凭空发钱。
+// noteRefundDrift 把一次退款金额异常记进 qy_lot_flag。
+//
+// 走调用方手上那个句柄而不是 raiseFlag 的全局 db.Get():退款计划是在一个
+// 具体的连接/事务上算出来的,异常要与它落在同一个库上,否则跑在别的句柄上的
+// 对账(以及测试)会看到一个"金额被改过、却一条痕迹都没有"的现场。
+func noteRefundDrift(ctx context.Context, gdb *gorm.DB, actId int64, detail string) {
+	if _, err := upsertFlag(gdb.WithContext(ctx), actId, FlagRefundDrift, detail); err != nil {
+		db.MarkFailure(err)
+	}
+}
+
+func refundAmountOf(ctx context.Context, gdb *gorm.DB, actId int64, e *Entry) (int64, bool) {
+	if e.OrderNo == "" {
+		noteRefundDrift(ctx, gdb, actId,
+			"参与 "+e.EntryNo+" 没有资金单号,无法证明扣过款,已跳过退款")
+		return 0, false
+	}
+	var order qymodel.FundOrder
+	if err := gdb.WithContext(ctx).Where("order_no = ?", e.OrderNo).Take(&order).Error; err != nil {
+		noteRefundDrift(ctx, gdb, actId,
+			"参与 "+e.EntryNo+" 的资金单 "+e.OrderNo+" 读不到,已跳过退款")
+		return 0, false
+	}
+	amount := e.Amount
+	if order.AmountQuota != e.Amount {
+		noteRefundDrift(ctx, gdb, actId,
+			"参与 "+e.EntryNo+" 的明细金额与资金单不一致: entry="+strconv.FormatInt(e.Amount, 10)+
+				" order("+e.OrderNo+")="+strconv.FormatInt(order.AmountQuota, 10)+",按较小值退款")
+		if order.AmountQuota < amount {
+			amount = order.AmountQuota
+		}
+	}
+	if amount <= 0 {
+		return 0, false
+	}
+	return amount, true
+}
+
 func planFullRefund(ctx context.Context, gdb *gorm.DB, act *Activity) error {
 	roster, err := loadRoster(ctx, gdb, act.Id)
 	if err != nil {
@@ -653,11 +718,18 @@ func planFullRefund(ctx context.Context, gdb *gorm.DB, act *Activity) error {
 	plans := make([]PayoutPlan, 0, len(roster))
 	var sum int64
 	for i := range roster {
+		amount, ok := refundAmountOf(ctx, gdb, act.Id, &roster[i])
+		if !ok {
+			continue
+		}
 		plans = append(plans, PayoutPlan{
 			EntryId: roster[i].Id, UserId: roster[i].UserId,
-			Kind: PayoutRefund, Amount: roster[i].Amount,
+			Kind: PayoutRefund, Amount: amount,
 		})
-		sum += roster[i].Amount
+		sum += amount
+	}
+	if len(plans) == 0 {
+		return nil
 	}
 	return gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := PlanPayouts(tx, act.Id, plans); err != nil {
@@ -679,8 +751,9 @@ func planFullRefund(ctx context.Context, gdb *gorm.DB, act *Activity) error {
 //	Failed + 探针说主库动过    → 钱真的扣了,照样登记退款,并落一条 flag
 //	其余(含探针判不出来)      → 不动,下一轮再看;超时落 flag 转人工
 //
-// Failed 必须再探一次针,不能直接判 failed:markFailed 对**任何** mainErr 都置
-// Failed,而 commit 阶段断连时事务其实已经提交。同一个包的 releaseEntryOnFailure
+// Failed 必须再探一次针,不能直接判 failed:commit 断连那一支现在落 in_doubt
+// (归入下面的 default 分支),但 Failed 仍可能来自存量单、补偿任务或人工裁决,
+// 那几条来自另一套判据。同一个包的 releaseEntryOnFailure
 // 正是为这件事才调 ProbeMainSide 的。这里闭眼判 failed 的后果是用户的参与费被
 // 静默吞掉:convergeExcluded 跑完活动就 finished,runSettle 不再扫,
 // 模块内没有任何补登退款的接口,Failed 单也不接受人工裁决。
@@ -751,8 +824,12 @@ func convergeExcluded(ctx context.Context, gdb *gorm.DB, act *Activity) {
 // 计数不在这里动:pending_count 已经由 excludePendingEntries 一次性回落过,
 // 再动一次就是同一条参与被扣两遍。
 func refundExcluded(ctx context.Context, gdb *gorm.DB, actId int64, e *Entry) {
+	amount, ok := refundAmountOf(ctx, gdb, actId, e)
+	if !ok {
+		return
+	}
 	plans := []PayoutPlan{{
-		EntryId: e.Id, UserId: e.UserId, Kind: PayoutRefund, Amount: e.Amount,
+		EntryId: e.Id, UserId: e.UserId, Kind: PayoutRefund, Amount: amount,
 	}}
 	if err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := PlanPayouts(tx, actId, plans); err != nil {

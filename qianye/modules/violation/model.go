@@ -229,11 +229,11 @@ type BanPolicy struct {
 	// UserGroup 是 groupname.Effective 归一后的用户分组名。兜底档恒为空串。
 	// 唯一索引同时保证"一个分组只有一档"与"兜底档只有一行"。
 	UserGroup string `json:"user_group" gorm:"type:varchar(64);not null;default:'';uniqueIndex:uk_qy_vbp_group"`
-	IsDefault bool   `json:"is_default" gorm:"not null;default:false"`
+	IsDefault bool   `json:"is_default" gorm:"not null"`
 
 	// Enabled=false 表示这一档暂时停用:该分组回落到兜底档,而不是"不处置"。
 	// 兜底档的 Enabled 被忽略(它没有可回落的下一级),界面上因此不给开关。
-	Enabled bool `json:"enabled" gorm:"not null;default:false"`
+	Enabled bool `json:"enabled" gorm:"not null"`
 
 	// WindowHours 是滚动统计窗口;Threshold 是窗口内累计达到多少次触发 Action。
 	// Threshold <= 0 表示这一档不做任何自动处置(与旧的 auto_ban_threshold=0 同义)。
@@ -303,7 +303,7 @@ type Category struct {
 	//
 	// 未公示不等于不生效:阈值照样算、照样封号。这两件事分开是刻意的 ——
 	// 有些类型(例如仍在观察期的新类型)不适合先告诉用户,但它的计数不该因此停摆。
-	Published bool `json:"published" gorm:"not null;default:false"`
+	Published bool `json:"published" gorm:"not null"`
 
 	// AIGuidance 是**第三份文本**:给审核模型看的判定说明。
 	//
@@ -345,7 +345,7 @@ type Category struct {
 	// 与 upstream(判据是上游返回的策略性 4xx)。把它们写进类型清单,模型会
 	// 对着一段普通对话猜"这像不像批量采集",而那一票命中会加到一个语义完全
 	// 不同的计数上 —— 那正是"配置正确却算错账"。
-	AIExcluded bool `json:"ai_excluded" gorm:"not null;default:false"`
+	AIExcluded bool `json:"ai_excluded" gorm:"not null"`
 
 	// Enabled=false 表示这一类的**阈值**暂时停用(等价于 Threshold=0),
 	// 类型本身仍然存在、规则仍然绑着它、计数仍然累加。
@@ -353,7 +353,7 @@ type Category struct {
 	// 它与 AIExcluded 是两件事,不要合并:关掉阈值是"这条线先不生效",
 	// 排除 AI 是"这一类模型判不了"。合成一个开关的话,运营为了暂停一条线
 	// 就会顺手把这一类从 AI 的类型清单里删掉,而清单变了模型的输出分布就变了。
-	Enabled     bool `json:"enabled" gorm:"not null;default:false"`
+	Enabled     bool `json:"enabled" gorm:"not null"`
 	WindowHours int  `json:"window_hours" gorm:"not null;default:24"`
 	Threshold   int  `json:"threshold" gorm:"not null;default:0"`
 
@@ -365,7 +365,7 @@ type Category struct {
 	SortOrder int `json:"sort_order" gorm:"not null"`
 	// IsFallback 标记「未分类」那一行。它是没有显式类型的规则的落点,
 	// 删掉它 = 让这些规则变成无类型的孤儿,所以删除接口拒绝它。
-	IsFallback bool `json:"is_fallback" gorm:"not null;default:false"`
+	IsFallback bool `json:"is_fallback" gorm:"not null"`
 
 	CreatedAt int64 `json:"created_at" gorm:"not null"`
 	UpdatedAt int64 `json:"updated_at" gorm:"not null"`
@@ -488,7 +488,7 @@ type Rule struct {
 	MatchType string `json:"match_type" gorm:"type:varchar(24);not null"`
 	Pattern   string `json:"pattern" gorm:"type:text;not null"`
 	// CaseSensitive 只对 keyword / upstream_text / regex 有意义。
-	CaseSensitive bool `json:"case_sensitive" gorm:"not null;default:false"`
+	CaseSensitive bool `json:"case_sensitive" gorm:"not null"`
 
 	// StatusScope 是**上游 HTTP 状态码前置条件**,与 ModelScope / GroupScope 同性质:
 	// 它不是一种匹配方式,而是一道作用域闸 —— 空 = 不限状态码,否则逗号分隔的
@@ -529,8 +529,8 @@ type Rule struct {
 	FeeMode string `json:"fee_mode" gorm:"type:varchar(24);not null;default:'none'"`
 	// FeeFixed / FeeMultiple 为 0 时回落到 YAML 的 fixed_fee_amount / fee_multiplier,
 	// 这样"改一次配置调整全部规则"与"单条规则特殊定价"两种用法都成立。
-	FeeFixed    decimal.Decimal `json:"fee_fixed" gorm:"type:decimal(18,8);not null;default:0"`
-	FeeMultiple decimal.Decimal `json:"fee_multiple" gorm:"type:decimal(18,6);not null;default:0"`
+	FeeFixed    decimal.Decimal `json:"fee_fixed" gorm:"type:decimal(18,8);not null;default:0.00000000"`
+	FeeMultiple decimal.Decimal `json:"fee_multiple" gorm:"type:decimal(18,6);not null;default:0.000000"`
 	// FeeMaxQuota 是规则级单笔上限(quota,0 = 不限)。
 	// model_price_multiple 遇到高价模型 + 大倍数会一次扣穿余额,必须有闸。
 	FeeMaxQuota int64 `json:"fee_max_quota" gorm:"not null;default:0"`
@@ -541,7 +541,7 @@ type Rule struct {
 	// 它是 AI 审核唯一的误判闸:模型判"违规"但只有 0.3 的把握时,把它当成
 	// 一次真实违规去扣费封号是不可接受的。没有这道闸,唯一的调节手段就是
 	// 把整条规则切回影子 —— 那等于关掉它。
-	AIMinConfidence decimal.Decimal `json:"ai_min_confidence" gorm:"type:decimal(5,4);not null;default:0"`
+	AIMinConfidence decimal.Decimal `json:"ai_min_confidence" gorm:"type:decimal(5,4);not null;default:0.0000"`
 
 	// CountWeight 是这条规则命中一次给计数**加几**。
 	//
@@ -579,7 +579,7 @@ type Rule struct {
 	// 不要把这个字段加回来。真要给"严重程度"一个用途,那是一次新功能,
 	// 得先有读点 —— 而现在的读点应该是违规类型的阈值。
 
-	ArchiveContext bool `json:"archive_context" gorm:"not null;default:false"`
+	ArchiveContext bool `json:"archive_context" gorm:"not null"`
 	// BlockMessage 是返回给客户端的文案。严禁把命中词写进来 —— 等于告诉刷子绕过方法。
 	BlockMessage string `json:"block_message" gorm:"type:varchar(512);not null;default:''"`
 
@@ -647,14 +647,14 @@ type Record struct {
 	//
 	// 索引是为了"按规则筛影子命中做误判分析"这个用例:那是项目方给影子模式定的
 	// 唯一目的,而它落到 SQL 上就是 (rule_id, shadow, created_at) 三个条件。
-	Shadow bool `json:"shadow" gorm:"not null;default:false;index:idx_qy_vrec_shadow"`
+	Shadow bool `json:"shadow" gorm:"not null;index:idx_qy_vrec_shadow"`
 	// ShadowReason 回答"这一条为什么没有真实执行"。取值是 ShadowReason* 常量。
 	//
 	// 必须落库:规则今天是 shadow、明天被运营切成 enforce,事后光看记录无法区分
 	// "当时规则本身就是影子"与"当时规则是真实的,只是撞上了熔断"—— 而这两种
 	// 记录在做误判分析时的含义完全相反(前者是预期内的观察样本,后者是事故现场)。
 	ShadowReason string `json:"shadow_reason" gorm:"type:varchar(64);not null;default:''"`
-	Blocked      bool   `json:"blocked" gorm:"not null;default:false"`
+	Blocked      bool   `json:"blocked" gorm:"not null"`
 
 	ModelName   string `json:"model_name" gorm:"type:varchar(128);not null;default:''"`
 	UsingGroup  string `json:"using_group" gorm:"column:using_group;type:varchar(64);not null;default:''"`
@@ -671,9 +671,9 @@ type Record struct {
 	MatchSnippet string `json:"match_snippet" gorm:"type:varchar(2048);not null;default:''"`
 
 	FeeMode      string          `json:"fee_mode" gorm:"type:varchar(24);not null;default:'none'"`
-	FeeBaseUsd   decimal.Decimal `json:"fee_base_usd" gorm:"type:decimal(18,8);not null;default:0"`
-	FeeMultiple  decimal.Decimal `json:"fee_multiple" gorm:"type:decimal(18,6);not null;default:0"`
-	GroupRatio   decimal.Decimal `json:"group_ratio" gorm:"type:decimal(18,6);not null;default:0"`
+	FeeBaseUsd   decimal.Decimal `json:"fee_base_usd" gorm:"type:decimal(18,8);not null;default:0.00000000"`
+	FeeMultiple  decimal.Decimal `json:"fee_multiple" gorm:"type:decimal(18,6);not null;default:0.000000"`
+	GroupRatio   decimal.Decimal `json:"group_ratio" gorm:"type:decimal(18,6);not null;default:0.000000"`
 	FeeQuotaWant int64           `json:"fee_quota_want" gorm:"not null;default:0"`
 	FeeQuota     int64           `json:"fee_quota" gorm:"not null;default:0"`
 	FeeStatus    string          `json:"fee_status" gorm:"type:varchar(24);not null;default:'none'"`
@@ -701,7 +701,7 @@ type Record struct {
 	CountWeight int `json:"count_weight" gorm:"not null;default:0"`
 	// Counted 表示这次命中是否真的推进了 qy_violation_counter。
 	// 影子记录恒为 false —— 撤销记录时的计数回退因此不会对它做无中生有的减法。
-	Counted bool `json:"counted" gorm:"not null;default:false"`
+	Counted bool `json:"counted" gorm:"not null"`
 	// CounterAfter 是推进之后的窗口内计数。影子记录取 CounterAfterShadow。
 	CounterAfter int `json:"counter_after" gorm:"not null;default:0"`
 	// CategoryCounterAfter 是推进之后的**该类型**窗口内计数,与 CounterAfter 同口径
@@ -715,7 +715,7 @@ type Record struct {
 	RevokeReason string `json:"revoke_reason" gorm:"type:varchar(512);not null;default:''"`
 	RefundQuota  int64  `json:"refund_quota" gorm:"not null;default:0"`
 
-	HasPayload bool  `json:"has_payload" gorm:"not null;default:false"`
+	HasPayload bool  `json:"has_payload" gorm:"not null"`
 	CreatedAt  int64 `json:"created_at" gorm:"not null;index:idx_qy_vrec_user,priority:2;index:idx_qy_vrec_created"`
 }
 
@@ -734,11 +734,11 @@ type Payload struct {
 	OriginBytes int64 `json:"origin_bytes" gorm:"not null;default:0"`
 	RawBytes    int64 `json:"raw_bytes" gorm:"not null;default:0"`
 	StoredBytes int64 `json:"stored_bytes" gorm:"not null;default:0"`
-	Truncated   bool  `json:"truncated" gorm:"not null;default:false"`
+	Truncated   bool  `json:"truncated" gorm:"not null"`
 
 	Body []byte `json:"-" gorm:"type:mediumblob"`
 
-	Redacted    bool   `json:"redacted" gorm:"not null;default:false"`
+	Redacted    bool   `json:"redacted" gorm:"not null"`
 	RedactStats string `json:"redact_stats" gorm:"type:varchar(512);not null;default:''"`
 	// FilesSummary 是多模态描述符 JSON 数组。绝不含二进制:一条含 10 张 1MB 图片的
 	// base64 请求归档下来就是 10MB/条,1000 条/天即 300GB/月,不可接受。

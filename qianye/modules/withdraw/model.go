@@ -1,31 +1,38 @@
-// Package withdraw 实现佣金提现:申请、审核、打款与历史。
+// Package withdraw 实现佣金提现:申请、审核、发放登记与历史。
 //
-// 两条铁律,违反任何一条都会造成资损:
+// # 产品口径:提现只做佣金扣除,金额由管理员手动发放
+//
+// 本模块**不会自己动任何一分钱**。用户提交申请时佣金立刻离开可用池,审核通过后
+// 单据进入「待发放」队列;管理员照着单据上的金额自己去加站内额度或线下打款,
+// 回来在单据上「标记已发放」,系统只登记凭证与操作者,不碰主库 users.quota。
+//
+// 由此而来的两条铁律,违反任何一条都会造成资损:
 //
 //  1. 佣金在【申请那一刻】就必须离开可用池(commission.FreezeForWithdraw)。
-//     兑现方向是"扩展库扣佣金 → 主库加额度",与划转相反:主库加钱成功而扩展库
-//     扣减失败,等于同一笔佣金可以被无限次领取。申请即冻结把这个风险前移消解 ——
-//     最坏情况只是佣金卡在 frozen 需要人工处理,永远不会变成超发。
+//     不这么做的话,同一笔佣金可以在审核队列里被无限次重复申请;而管理员是照着
+//     单据发钱的,重复的单就是重复的钱。申请即冻结把这个风险前移消解 ——
+//     最坏情况只是佣金卡在 frozen 等人处理,永远不会变成超发。
 //
-//  2. 兑现只能通过 twophase.Execute。它用主库 outbox 做唯一精确探针,
-//     "主库到底动没动"有确定答案。自建一套状态机意味着自建一套无法对账的中间态。
+//  2. 「该发多少」只能有一个来源:佣金账本。法币金额取自冻结时从
+//     qy_commission_balance.available_fiat 削走的那个绝对值
+//     (commission.QuoteWithdrawFiat 与 FreezeForWithdraw 共用 fiatTakenBy,
+//     同一把行锁同一事务)。改成人工发放**不会**放松这条 —— 管理员照着一个错
+//     数字打款,和系统自动打错款,损失完全一样,区别只在于前者还多赖一个人。
 package withdraw
 
 import "github.com/shopspring/decimal"
 
-// Withdrawal 是提现单的业务明细。
+// Withdrawal 是提现单的业务明细,也是管理员的发放待办。
 //
-// 资金状态机(主库副作用是否已生效)归 qy_fund_orders,本表只承载业务生命周期
-// (待审核 → 审核 → 打款/到账)。两者以 OrderNo 软关联,跨库无外键。
+// 本表是提现的唯一状态载体。这里曾经有一个 OrderNo 软关联到 qy_fund_orders
+// (跨库两阶段的资金单),随自动到账链路一并下线:人工发放没有任何跨库副作用,
+// 也就没有"主库到底动没动"这个问题需要资金单去回答。
 type Withdrawal struct {
 	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
 
 	// WithdrawNo 是面向用户与客服的业务单号,同时充当佣金冻结/解冻/核销的 refNo。
 	// 三个动作共用同一个 refNo,佣金账户的每一次变动才能追回到具体哪张提现单。
 	WithdrawNo string `json:"withdraw_no" gorm:"type:varchar(64);not null;uniqueIndex:uk_qy_wd_no"`
-	// OrderNo 指向 qy_fund_orders,只有 quota 方式进入兑现阶段后才有值。
-	OrderNo string `json:"order_no" gorm:"type:varchar(64);not null;default:'';index:idx_qy_wd_order"`
-
 	// IdemScope + IdemKey = ("withdraw", "<userId>:<client_request_id>")(裁定 C10/C11)。
 	// 双击、多标签、客户端超时重试、负载均衡重放全靠这个唯一索引归并成一单;
 	// 进程内锁和限流都只是辅助,唯一索引才是正确性依据。
@@ -49,12 +56,12 @@ type Withdrawal struct {
 	// 热改的全局变量。不冻结的话,一年后没有任何办法复现"当时这笔佣金折合多少钱",
 	// 历史对账永远对不上。两个都要冻:只冻汇率仍会被 QuotaPerUnit 的改动破坏。
 	Currency           string          `json:"currency" gorm:"type:varchar(8);not null;default:''"`
-	FrozenQuotaPerUnit decimal.Decimal `json:"frozen_quota_per_unit" gorm:"type:decimal(18,6);not null;default:0"`
-	FrozenFxRate       decimal.Decimal `json:"frozen_fx_rate" gorm:"type:decimal(18,8);not null;default:0"`
+	FrozenQuotaPerUnit decimal.Decimal `json:"frozen_quota_per_unit" gorm:"type:decimal(18,6);not null;default:0.000000"`
+	FrozenFxRate       decimal.Decimal `json:"frozen_fx_rate" gorm:"type:decimal(18,8);not null;default:0.00000000"`
 	// 应付 / 手续费 / 实付三段拆开存,展示层再 Round(2)(裁定 C26)。
-	GrossAmount decimal.Decimal `json:"gross_amount" gorm:"type:decimal(18,6);not null;default:0"`
-	FeeAmount   decimal.Decimal `json:"fee_amount" gorm:"type:decimal(18,6);not null;default:0"`
-	NetAmount   decimal.Decimal `json:"net_amount" gorm:"type:decimal(18,6);not null;default:0"`
+	GrossAmount decimal.Decimal `json:"gross_amount" gorm:"type:decimal(18,6);not null;default:0.000000"`
+	FeeAmount   decimal.Decimal `json:"fee_amount" gorm:"type:decimal(18,6);not null;default:0.000000"`
+	NetAmount   decimal.Decimal `json:"net_amount" gorm:"type:decimal(18,6);not null;default:0.000000"`
 	// FeeBps 是本单适用的费率快照(裁定 C28,比例一律用整数万分比)。
 	// 费率改了不影响历史单据的可解释性。
 	FeeBps int `json:"fee_bps" gorm:"not null;default:0"`
@@ -81,7 +88,7 @@ type Withdrawal struct {
 	//
 	// 保留期到了图片被删除,本字段仍为 true:它回答的是"当时传没传",
 	// 不是"现在还能不能下载"。下载接口会以 qy_wd_proof_purged 明确作答。
-	HasProof bool `json:"has_proof" gorm:"not null;default:false"`
+	HasProof bool `json:"has_proof" gorm:"not null"`
 
 	// ── 审核:回答"什么时候拒绝的、拒绝理由是什么" ──────────────────────
 	ReviewerId   int    `json:"reviewer_id" gorm:"not null;default:0"`
@@ -89,20 +96,20 @@ type Withdrawal struct {
 	ReviewedAt   int64  `json:"reviewed_at" gorm:"not null;default:0"`
 	RejectReason string `json:"reject_reason" gorm:"type:varchar(512);not null;default:''"`
 
-	// ── 打款:回答"什么时候打的款" ────────────────────────────────────
+	// ── 发放登记:回答"什么时候发的、谁发的、凭什么说发过了" ──────────────
+	//
+	// 这一组是人工发放模型下**唯一**的"钱已经给了"的证据。系统不动钱,所以它
+	// 无法自证;能自证的只有"哪个管理员在什么时候声明发过、凭证是什么"。
 	PayoutOperatorId   int    `json:"payout_operator_id" gorm:"not null;default:0"`
 	PayoutOperatorName string `json:"payout_operator_name" gorm:"type:varchar(64);not null;default:''"`
 	PaidAt             int64  `json:"paid_at" gorm:"not null;default:0;index:idx_qy_wd_paid"`
-	// PayoutRef 存银行流水号 / 支付宝订单号 / 链上 txid,是争议时的唯一证据。
+	// PayoutRef 是发放凭证,必填。
+	// fiat 单存银行流水号 / 支付宝订单号 / 链上 txid;
+	// quota 单存管理员那次手工加额度的操作记录标识(主库日志 id / 工单号)。
+	// 没有它,一张 paid 单在争议时和一次误点击完全同形。
 	PayoutRef  string `json:"payout_ref" gorm:"type:varchar(128);not null;default:''"`
 	PayoutNote string `json:"payout_note" gorm:"type:varchar(255);not null;default:''"`
 	FailReason string `json:"fail_reason" gorm:"type:varchar(512);not null;default:''"`
-
-	// SettleStartedAt 是 paying 中间态的超时判定基准。
-	// 不能用 UpdatedAt —— 它会被任何一次写入覆盖掉。
-	SettleStartedAt int64 `json:"-" gorm:"not null;default:0"`
-	// ReconcileState ∈ ""|hold|resolved。hold 表示主库结果不可判定,已转人工。
-	ReconcileState string `json:"reconcile_state" gorm:"type:varchar(16);not null;default:'';index:idx_qy_wd_reconcile"`
 
 	ClientIp  string `json:"-" gorm:"type:varchar(64);not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"not null;index:idx_qy_wd_user,priority:2"`

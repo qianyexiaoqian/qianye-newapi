@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -207,6 +208,29 @@ func getMaxTopup() int64 {
 	return maxUnits.IntPart()
 }
 
+// normalizeTopUpAmount 在 TOKENS 展示模式下把充值数量向下取整到 QuotaPerUnit 的
+// 整数倍。
+//
+// 缺了它,同一笔请求的两侧口径不一致:金额用**精确除法**算(getPayMoney 的
+// dAmount.Div(dQuotaPerUnit)),落库的 Amount 却用 IntPart() 截断,结算再乘回
+// QuotaPerUnit。于是 tokens=999999 这类非整倍数的输入会按 1.999998 个单位收钱、
+// 按 1 个单位到账 —— 差额被静默吞掉,最坏接近一整个单位价,而全链路没有任何提示
+// (实测付 ¥14.60 到账 500000 tokens,少 499999)。
+//
+// 向下取整而不是报错:TOKENS 模式下 GetTopUpInfo 下发的 min_topup 没有乘
+// QuotaPerUnit,前端按它生成的档位会被后端全部拒绝,自由输入框是唯一可用路径,
+// 非整倍数是常态而不是边缘情况。取整之后金额与到账严格对应,用户付多少拿多少。
+func normalizeTopUpAmount(amount int64) int64 {
+	if operation_setting.GetQuotaDisplayType() != operation_setting.QuotaDisplayTypeTokens {
+		return amount
+	}
+	if common.QuotaPerUnit <= 0 || amount <= 0 {
+		return amount
+	}
+	units := decimal.NewFromInt(amount).Div(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart()
+	return decimal.NewFromInt(units).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart()
+}
+
 func RequestEpay(c *gin.Context) {
 	var req EpayRequest
 	err := c.ShouldBindJSON(&req)
@@ -214,6 +238,8 @@ func RequestEpay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "参数错误"})
 		return
 	}
+	// 先取整再校验与计价:金额、上下界、落库的 Amount 三者必须出自同一个数。
+	req.Amount = normalizeTopUpAmount(req.Amount)
 	if req.Amount < getMinTopup() {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", getMinTopup())})
 		return
@@ -509,6 +535,26 @@ func AdminCompleteTopUp(c *gin.Context) {
 	var req AdminCompleteTopupRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.TradeNo == "" {
 		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+
+	// 补单会直接给订单归属人加额度，而它**不需要任何真实付款**：只要先给自己
+	// 下一张待支付订单（POST /api/user/pay），再拿这个 trade_no 打一次补单，
+	// 额度就凭空到账。上游给「管理员管理用户」装了 canManageTargetRole
+	// （见 controller/user.go），却漏了这条同样给用户加额度的路径 ——
+	// 对 role=10 来说这条判据同时挡住自己和同级，正是这里要的形状。
+	topUp := model.GetTopUpByTradeNo(req.TradeNo)
+	if topUp == nil {
+		common.ApiErrorMsg(c, "充值订单不存在")
+		return
+	}
+	owner, err := model.GetUserById(topUp.UserId, true)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !canManageTargetRole(c.GetInt("role"), owner.Role) {
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionSameLevel)
 		return
 	}
 

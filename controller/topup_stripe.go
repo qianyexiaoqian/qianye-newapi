@@ -70,8 +70,8 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 		c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("充值数量不能小于 %d", getStripeMinTopup()), "data": 10})
 		return
 	}
-	if req.Amount > 10000 {
-		c.JSON(http.StatusOK, gin.H{"message": "充值数量不能大于 10000", "data": 10})
+	if req.Amount > getStripeMaxTopup() {
+		c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("充值数量不能大于 %d", getStripeMaxTopup()), "data": 10})
 		return
 	}
 
@@ -392,7 +392,17 @@ func genStripeLink(referenceId string, customerId string, email string, amount i
 	return result.URL, nil
 }
 
+// GetChargedAmount 把请求里的充值数量换算成落库的 Money。
+//
+// TOKENS 模式下必须先除以 QuotaPerUnit —— 与 getStripePayMoney 同一条口径。
+// 少了这一支,报价端(除过)与落库端(没除)差 QuotaPerUnit 倍,而
+// model.TopUp.CreditQuota 的 stripe 分支正是按 Money × QuotaPerUnit 换额度:
+// 结果要么直接顶穿 int32 让整笔结算回滚(订单永远 pending),要么按一个放大
+// 50 万倍的额度到账。
 func GetChargedAmount(count float64, user model.User) float64 {
+	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens && common.QuotaPerUnit > 0 {
+		count = count / common.QuotaPerUnit
+	}
 	topUpGroupRatio := common.GetTopupGroupRatio(user.Group)
 	if topUpGroupRatio == 0 {
 		topUpGroupRatio = 1
@@ -420,6 +430,20 @@ func getStripePayMoney(amount float64, group string) float64 {
 	}
 	payMoney := amount * setting.StripeUnitPrice * topupGroupRatio * discount
 	return payMoney
+}
+
+// getStripeMaxTopup 与 getStripeMinTopup 同口径(跟随展示类型)。
+//
+// 上界原先是硬编码的 10000,而下界在 TOKENS 模式下乘了 QuotaPerUnit ——
+// 于是 min(500000) > max(10000),**任何金额都过不去**:小于 500000 报"不能小于
+// 500000",大于等于 500000 报"不能大于 10000",两条报错互相矛盾,Stripe 充值
+// 整条通道静默不可用,而运维基本无法从提示里看出根因。
+func getStripeMaxTopup() int64 {
+	const stripeMaxUnits = 10000
+	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
+		return int64(stripeMaxUnits * int(common.QuotaPerUnit))
+	}
+	return stripeMaxUnits
 }
 
 func getStripeMinTopup() int64 {

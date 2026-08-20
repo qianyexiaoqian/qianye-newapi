@@ -121,7 +121,18 @@ func adminPutConfig(c *gin.Context) {
 			return
 		}
 		lit := jsonScalarLiteral(raw)
-		if isNullablePercentKey(k) && strings.TrimSpace(lit) == "" {
+		// JSON null 是**全表统一**的"清空"令牌。
+		//
+		// 在此之前两个可空字段的清空约定正好相反:redemption_rate_percent 只认
+		// 空串(发 null 会掉进下面的百分比分支,报「不是合法数值: "null"」——
+		// 它把 JSON null 当成了 n-u-l-l 四个字母的字符串,是未处理而不是刻意
+		// 拒绝),fiat_rate_default 只认 null(空串按下面那段注释是刻意拒绝的)。
+		// 于是**没有任何一种统一写法能在一个报文里同时清空两档**,任何非本仓
+		// 前端的调用方都得为这两个键各写一套序列化规则。
+		//
+		// 修法是把 null 补成两边都认,而不是把 fiat 的空串放开 —— 后者会让
+		// "运营把输入框清空又按了保存"静默改掉全站佣金折算口径。
+		if isNullablePercentKey(k) && (isJSONNull(raw) || strings.TrimSpace(lit) == "") {
 			// 空 = 清掉这条覆盖,让该档回落到 YAML(YAML 也没写就是"跟随充值档")。
 			// 记成空串,写库那一步据此走 DELETE 而不是 UPSERT —— 留一行 v=''
 			// 在 qy_settings 里同样能被读成"没配",但它会让运营在库里看到一条
@@ -862,6 +873,26 @@ func adminClawback(c *gin.Context) {
 		badRequest(c, "qy_invalid_param", "缺少 client_request_id")
 		return
 	}
+	// 操作人闸门。冲正是**损害方向**的动作，上一轮补判据时只覆盖了增益方向
+	// （手工增减、已提现迁移、邀请关系绑定/换绑、手动结算），于是一个 role=10
+	// 可以把同级管理员甚至 root 的佣金冲成 0、再继续冲成负的 unsettled 把对方
+	// 挂上 debt_blocked（此后对方所有新佣金先被欠账吸收、提现被冻结），而受害者
+	// 唯一的恢复入口 balances/adjust 恰恰是**接了**判据的，他自己救不回来。
+	// 闸门落在受益人（原单的上线）身上，与 relations/bind 落在 inviter_id 上同源。
+	gdb := db.Get()
+	if gdb == nil {
+		internalError(c, db.ErrNotReady)
+		return
+	}
+	var origin Accrual
+	if err := gdb.WithContext(c.Request.Context()).Where("id = ?", req.AccrualId).Take(&origin).Error; err != nil {
+		badRequest(c, "qy_clawback_failed", ErrNothingToClawback.Error())
+		return
+	}
+	if denyActorOverTarget(c, "commission.clawback", origin.InviterId) {
+		return
+	}
+
 	operatorId := c.GetInt("id")
 	created, err := manualClawback(c.Request.Context(), req.AccrualId, req.Quota,
 		itoa(operatorId)+":"+req.ClientRequestId, req.Reason)
@@ -970,6 +1001,12 @@ func adminSettle(c *gin.Context) {
 	}
 	if userId <= 0 {
 		badRequest(c, "qy_invalid_param", "必须指定 user_id(查询串 ?user_id= 或请求体 {\"user_id\":…})")
+		return
+	}
+	// 手动结算把冻结佣金提前变成可提现余额。它不凭空造钱,但它能让操作人
+	// **绕过成熟期**先拿到自己的那一份 —— 冻结期存在的理由正是「下线退款/
+	// 冲正还来得及追回」,自己给自己解冻等于单方面取消这段追回窗口。
+	if denyActorOverTarget(c, "commission.settle.manual", userId) {
 		return
 	}
 	// 手动结算会把成熟的冻结佣金变成可提现余额,也就是真的动钱。

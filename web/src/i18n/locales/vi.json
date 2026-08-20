@@ -1988,6 +1988,7 @@
     "Filter by model name...": "Lọc theo tên mô hình...",
     "Filter by model...": "Lọc theo mẫu...",
     "Filter by name or ID...": "Lọc theo tên hoặc ID...",
+    "Filter by name, ID, or code suffix...": "Lọc theo tên, ID hoặc phần cuối mã...",
     "Filter by name, ID, or key...": "Lọc theo tên, ID hoặc khóa...",
     "Filter by name...": "Lọc theo tên...",
     "Filter by node": "Lọc theo nút",
@@ -5271,6 +5272,9 @@
     "A new version has been released": "Đã phát hành phiên bản mới",
     "Reload the page to get the latest version.": "Tải lại trang để nhận phiên bản mới nhất.",
     "Reload": "Tải lại",
-    "Copy error details": "Sao chép chi tiết lỗi"
+    "Copy error details": "Sao chép chi tiết lỗi",
+    "Order": "Thứ tự",
+    "Move up": "Di chuyển lên",
+    "Move down": "Di chuyển xuống"
   }
 }

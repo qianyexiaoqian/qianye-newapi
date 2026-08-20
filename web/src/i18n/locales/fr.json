@@ -1988,6 +1988,7 @@
     "Filter by model name...": "Filtrer par nom du modèle...",
     "Filter by model...": "Filtrer par modèle...",
     "Filter by name or ID...": "Filtrer par nom ou ID...",
+    "Filter by name, ID, or code suffix...": "Filtrer par nom, ID ou fin du code...",
     "Filter by name, ID, or key...": "Filtrer par nom, ID ou clé...",
     "Filter by name...": "Filtrer par nom...",
     "Filter by node": "Filtrer par nœud",
@@ -5271,6 +5272,9 @@
     "A new version has been released": "Une nouvelle version est disponible",
     "Reload the page to get the latest version.": "Rechargez la page pour obtenir la dernière version.",
     "Reload": "Recharger",
-    "Copy error details": "Copier les détails de l'erreur"
+    "Copy error details": "Copier les détails de l'erreur",
+    "Order": "Ordre",
+    "Move up": "Monter",
+    "Move down": "Descendre"
   }
 }

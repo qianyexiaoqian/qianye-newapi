@@ -852,6 +852,39 @@ func legacyPrevUserGroupTx(tx *gorm.DB, userId int) string {
 	return strings.TrimSpace(rows[0].PrevUserGroup)
 }
 
+// alignGroupToSurvivingUpgrade 在一条升组订阅失效之后，把用户组对齐到**幸存的**
+// 那条升组订阅所给的分组。
+//
+// 原先两处（到期扫描 ExpireDueSubscriptions、管理端作废
+// downgradeUserGroupForSubscriptionTx）都是「名下还有别的活跃升组订阅就
+// `return nil` 保持当前分组」—— 判据问的是「还有没有别人」，而不是「剩下的那位
+// 给的是哪个组」。当前分组恰恰是刚刚失效的那条给的，于是：
+//
+//	先买便宜档的长周期（qy-cs-g，2 小时）→ 再买贵档的最短周期（0.5 倍率，70 秒）
+//	→ 70 秒后贵档到期 → 用户原地停在贵档，把整整 2 小时按五折用完
+//
+// 更糟的是它不是暂时的：等便宜那条也到期时，取 end_time 最大的那条 expired 行
+// 走 `currentGroup != upgradeGroup` 分支直接放弃回退，此后**再没有任何任务会碰
+// 他的分组**，永久停在高档位。实测两行全部 expired 之后 users.group 仍是贵档。
+//
+// 触发只需用户自己控制的两个变量（购买顺序 + 周期长短），不需要管理员、不需要
+// 竞态、不需要越权接口；前提只是站点配了两个及以上「带额度 + 改用户组」的套餐
+// （applyUserGroupPurchaseRulesTx 对 !NoQuota 直接放行，跨组顶替不生效，
+// 所以两条不同目标组的订阅可以合法并存）。
+//
+// 返回新的分组名；空串表示不需要改。
+func alignGroupToSurvivingUpgrade(tx *gorm.DB, userId int, currentGroup string, surviving *UserSubscription) (string, error) {
+	target := strings.TrimSpace(surviving.UpgradeGroup)
+	if target == "" || target == currentGroup {
+		return "", nil
+	}
+	if err := tx.Model(&User{}).Where("id = ?", userId).
+		Update("group", target).Error; err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
 func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now int64) (string, error) {
 	if tx == nil || sub == nil {
 		return "", errors.New("invalid downgrade args")
@@ -866,7 +899,8 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 	if err != nil {
 		return "", err
 	}
-	// If another active upgraded subscription exists, keep the current group.
+	// 名下还有别的活跃升组订阅时,分组要对齐到**那一条**给的组,而不是原样保留
+	// 当前组 —— 当前组正是刚刚被作废的这条给的。见 alignGroupToSurvivingUpgrade。
 	var activeSub UserSubscription
 	activeQuery := tx.Where("user_id = ? AND status = ? AND "+SubscriptionActiveEndTimeSQL+" AND id <> ? AND upgrade_group <> ''",
 		sub.UserId, "active", now, sub.Id).
@@ -874,7 +908,7 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 		Limit(1).
 		Find(&activeSub)
 	if activeQuery.Error == nil && activeQuery.RowsAffected > 0 {
-		return "", nil
+		return alignGroupToSurvivingUpgrade(tx, sub.UserId, currentGroup, &activeSub)
 	}
 	// Determine the downgrade target: an explicit downgrade group takes precedence,
 	// otherwise revert to the group held before purchase (legacy behavior).
@@ -2014,7 +2048,9 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 			}
 			expiredCount += int(res.RowsAffected)
 
-			// If there's an active upgraded subscription, keep current group.
+			// 名下还有活跃的升组订阅时,分组对齐到**那一条**给的组。
+			// 见 alignGroupToSurvivingUpgrade:原先在这里 return nil 保留当前组,
+			// 而当前组正是刚刚到期的那条给的。
 			var activeSub UserSubscription
 			activeQuery := tx.Where("user_id = ? AND status = ? AND "+SubscriptionActiveEndTimeSQL+" AND upgrade_group <> ''",
 				userId, "active", now).
@@ -2022,41 +2058,58 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 				Limit(1).
 				Find(&activeSub)
 			if activeQuery.Error == nil && activeQuery.RowsAffected > 0 {
+				survivorGroup, err := getUserGroupByIdTx(tx, userId)
+				if err != nil {
+					return err
+				}
+				aligned, err := alignGroupToSurvivingUpgrade(tx, userId, survivorGroup, &activeSub)
+				if err != nil {
+					return err
+				}
+				cacheGroup = aligned
 				return nil
 			}
 
-			// Find the most recently expired subscription that defines a group transition
-			// (an explicit downgrade target or an upgrade snapshot to revert).
-			var lastExpired UserSubscription
-			expiredQuery := tx.Where("user_id = ? AND status = ? AND (downgrade_group <> '' OR upgrade_group <> '')",
-				userId, "expired").
-				Order("end_time desc, id desc").
-				Limit(1).
-				Find(&lastExpired)
-			if expiredQuery.Error != nil || expiredQuery.RowsAffected == 0 {
-				return nil
-			}
 			currentGroup, err := getUserGroupByIdTx(tx, userId)
 			if err != nil {
 				return err
 			}
-			// An explicit downgrade group takes precedence; otherwise revert to the
-			// group held before purchase (legacy behavior, only when the subscription
-			// actually elevated the user).
-			target := strings.TrimSpace(lastExpired.DowngradeGroup)
+			// 显式降级目标优先:它是运营在套餐上直接指定的落点,与当前分组无关。
+			var lastExpired UserSubscription
+			expiredQuery := tx.Where("user_id = ? AND status = ? AND downgrade_group <> ''",
+				userId, "expired").
+				Order("end_time desc, id desc").
+				Limit(1).
+				Find(&lastExpired)
+			target := ""
+			if expiredQuery.Error == nil && expiredQuery.RowsAffected > 0 {
+				target = strings.TrimSpace(lastExpired.DowngradeGroup)
+			}
 			if target == "" {
-				upgradeGroup := strings.TrimSpace(lastExpired.UpgradeGroup)
-				if upgradeGroup == "" {
+				// 取**真正把这个人放到当前分组的那一条**,而不是 end_time 最大的
+				// 那一条。
+				//
+				// 原先取 end_time 最大的那一行,再用 `currentGroup != upgradeGroup`
+				// 一票否决。两条目标组不同的升组订阅并存时(带额度的套餐不走跨组
+				// 顶替,可以合法并存),先到期的那条把人留在了它的组,而 end_time
+				// 最大的那条给的是另一个组 —— 判据当场不成立,回退被放弃,此后再没有
+				// 任何任务会碰他的分组,人**永久**停在一个付费组里。
+				if strings.TrimSpace(currentGroup) == "" {
 					return nil
 				}
-				if currentGroup != upgradeGroup {
+				var setter UserSubscription
+				setterQuery := tx.Where("user_id = ? AND status = ? AND upgrade_group = ?",
+					userId, "expired", currentGroup).
+					Order("end_time desc, id desc").
+					Limit(1).
+					Find(&setter)
+				if setterQuery.Error != nil || setterQuery.RowsAffected == 0 {
 					return nil
 				}
-				prevGroup := strings.TrimSpace(lastExpired.PrevUserGroup)
+				prevGroup := strings.TrimSpace(setter.PrevUserGroup)
 				if prevGroup == "" {
 					// 同一个升组套餐买第二次时,老逻辑把 prev 留空(那一刻用户已经在
-					// 目标组里),而这里取的正是 end_time 最大的那一条 —— 于是第一行
-					// 上记着的 default 从不被读,人永久留在升级分组。
+					// 目标组里)。走回链根,否则同样是永久留在升级分组。
 					prevGroup = legacyPrevUserGroupTx(tx, userId)
 				}
 				if prevGroup == "" {

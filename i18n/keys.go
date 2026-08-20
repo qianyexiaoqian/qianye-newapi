@@ -83,6 +83,8 @@ const (
 	MsgRedemptionQuotaPositive      = "redemption.quota_positive"
 	MsgRedemptionPlanInvalid        = "redemption.plan_invalid"
 	MsgRedemptionStatusLocked       = "redemption.status_locked"
+	MsgRedemptionUsedImmutable      = "redemption.used_immutable"
+	MsgRedemptionQuotaTooLarge      = "redemption.quota_too_large"
 )
 
 // User related messages

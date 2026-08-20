@@ -65,7 +65,7 @@ func revealIdentity() service.AuthIdentity {
 }
 
 func TestRevealPayeeRequiresASecurityProof(t *testing.T) {
-	env := newReviewEnv(t, boolPtr(true))
+	env := newReviewEnv(t)
 	// 闸门放行之后 handler 会去查 qy_wd_payee —— 表不存在时拿到的是
 	// qy_internal_error,那会让"放行了"与"查不到收款信息"混成一个结果。
 	require.NoError(t, env.ext.AutoMigrate(&Payee{}))

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -38,7 +39,10 @@ func newFundTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	// 内存库按连接隔离,多连接会各看到一个空库。
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, gdb.AutoMigrate(tables()...))
+	// 资金单表也要建:一条参与在生产上**必然**有一张 qy_fund_orders 行,
+	// 而退款金额现在以它为权威(见 refundAmountOf)。夹具不建它,等于让
+	// "退款按资金单核对" 这条不变量在测试里永远走不到。
+	require.NoError(t, gdb.AutoMigrate(append(tables(), &qymodel.FundOrder{})...))
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return gdb
 }
@@ -87,7 +91,24 @@ func seedPendingEntry(t *testing.T, gdb *gorm.DB, act *Activity, userId int, amo
 	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
 		return reserveEntry(tx, act, Rules{}, e)
 	}))
+	seedEntryFundOrder(t, gdb, e)
 	return e
+}
+
+// seedEntryFundOrder 给一条参与补上它那张资金单。
+//
+// 生产上这张单由 twophase.Execute 落库,金额是这笔钱**真实**收了多少;
+// 退款侧以它为权威(refundAmountOf),所以夹具必须有它,否则新加的
+// "退款金额要与资金单交叉核对" 这条不变量在测试里等于不存在。
+func seedEntryFundOrder(t *testing.T, gdb *gorm.DB, e *Entry) {
+	t.Helper()
+	now := common.GetTimestamp()
+	require.NoError(t, gdb.Create(&qymodel.FundOrder{
+		OrderNo: e.OrderNo, Kind: qymodel.KindLotteryEntry, Status: qymodel.StatusSuccess,
+		IdemScope: "lottery", IdemKey: e.OrderNo,
+		UserId: e.UserId, AmountQuota: e.Amount, RefId: e.EntryNo,
+		CreatedAt: now, UpdatedAt: now,
+	}).Error)
 }
 
 func loadAct(t *testing.T, gdb *gorm.DB, id int64) *Activity {

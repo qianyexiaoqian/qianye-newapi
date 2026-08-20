@@ -162,7 +162,7 @@ type Activity struct {
 
 	// AllowMultiWin 刻意不用 gorm default 标签:布尔默认值在 MySQL 与
 	// PostgreSQL 上会被 AutoMigrate 反复 ALTER。业务默认值在请求归一化时给。
-	AllowMultiWin bool `json:"allow_multi_win" gorm:"not null;default:false"`
+	AllowMultiWin bool `json:"allow_multi_win" gorm:"not null"`
 	// FeeBps 是竞猜手续费万分比,publish 时冻结。
 	FeeBps int `json:"fee_bps" gorm:"not null;default:0"`
 	// MinEntriesToHold 是平台侧唯一的止损阀,且对用户完全公平:
@@ -179,7 +179,7 @@ type Activity struct {
 	// DedupIp 默认关闭。它会误伤家庭/公司/校园/运营商 NAT 共用出口的真实用户,
 	// 而 c.ClientIP() 在反代未正确配置 trusted proxies 时可被 X-Forwarded-For
 	// 伪造 —— 防御方向恰好反了。管理端表单必须写清这个代价。
-	DedupIp bool `json:"dedup_ip" gorm:"not null;default:false"`
+	DedupIp bool `json:"dedup_ip" gorm:"not null"`
 
 	// EntrySeq 是已分配的最大序号(含失败条目),哈希链顺序的唯一权威。
 	// ChainHead 是最后一条 entry 的 chain_hash,即下一条的 prev。
@@ -386,11 +386,11 @@ type Option struct {
 	Label string `json:"label" gorm:"type:varchar(80);not null;default:''"`
 	// IsCatchAll 标记"以上都不是"兜底项。没有它,"全部猜错"会频繁发生,
 	// 届时全场退款、平台零收益 —— 删除它要在管理端二次确认并明写这个代价。
-	IsCatchAll bool `json:"is_catch_all" gorm:"not null;default:false"`
+	IsCatchAll bool `json:"is_catch_all" gorm:"not null"`
 
 	BetQuota int64 `json:"bet_quota" gorm:"not null;default:0"`
 	BetCount int   `json:"bet_count" gorm:"not null;default:0"`
-	IsWinner bool  `json:"is_winner" gorm:"not null;default:false"`
+	IsWinner bool  `json:"is_winner" gorm:"not null"`
 }
 
 func (Option) TableName() string { return "qy_lot_option" }
@@ -666,7 +666,7 @@ type SpendDaily struct {
 	Cnt   int   `json:"cnt" gorm:"not null;default:0"`
 	// Final 表示该日桶已由重算道确认。增量道只会**少算**消费(方向安全),
 	// 重算道修掉它任何可能的跳行。
-	Final     bool  `json:"final" gorm:"not null;default:false"`
+	Final     bool  `json:"final" gorm:"not null"`
 	UpdatedAt int64 `json:"updated_at" gorm:"not null;default:0"`
 }
 
@@ -680,7 +680,7 @@ type Flag struct {
 	Code   string `json:"code" gorm:"type:varchar(40);not null;default:''"`
 	Detail string `json:"detail" gorm:"type:varchar(512);not null;default:''"`
 
-	Resolved   bool  `json:"resolved" gorm:"not null;default:false;index:idx_qy_lot_flag,priority:2"`
+	Resolved   bool  `json:"resolved" gorm:"not null;index:idx_qy_lot_flag,priority:2"`
 	ResolvedBy int   `json:"resolved_by" gorm:"not null;default:0"`
 	CreatedAt  int64 `json:"created_at" gorm:"not null;default:0;index:idx_qy_lot_flag,priority:3"`
 	ResolvedAt int64 `json:"resolved_at" gorm:"not null;default:0"`
@@ -710,4 +710,12 @@ const (
 	// win_ppm 就等于点名挑中奖者,改一个 amount_quota 就绕过了净增发闸门,
 	// 而这两件事原本只有用户自己下载证据链跑脚本才会发现。
 	FlagSpecDrift = "spec_drift"
+	// FlagRefundDrift 是"退款金额与那笔参与的资金单对不上"。
+	//
+	// 退款按 qy_lot_entry.amount 出款,而这笔钱**真实**收了多少写在
+	// qy_fund_orders.amount_quota 上(entry.order_no 就是锚点)。开奖侧对同一份
+	// 证据是核过的(roster_hash 对不上就停手挂起),取消/流局侧原先一次都不核 ——
+	// 于是扩展库单表的一次 UPDATE 就能变成主库净增发,而取消恰恰是"出事之后的
+	// 止损动作"。现在按资金单的金额出款,并在两者不等时留这条异常。
+	FlagRefundDrift = "refund_drift"
 )

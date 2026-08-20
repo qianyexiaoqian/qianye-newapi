@@ -72,7 +72,7 @@ type Accrual struct {
 	// BaseMoney 是充值路径的原始付款金额。必须单独存 ——
 	// common.QuotaPerUnit 是可改的全局变量,从 quota 反算付款金额,
 	// 只要它被调过一次,历史订单的法币对账就全错。
-	BaseMoney decimal.Decimal `json:"base_money" gorm:"type:decimal(18,6);not null;default:0"`
+	BaseMoney decimal.Decimal `json:"base_money" gorm:"type:decimal(18,6);not null;default:0.000000"`
 
 	// RateUnits 是计佣当刻冻结的费率,单位是"百分比 × 100"(10.25% = 1025)。
 	//
@@ -99,8 +99,8 @@ type Accrual struct {
 
 	// GrossAmount 是不截断的精确佣金,GrossAmount - SettledAmount 即待结算增量。
 	// 用增量而非 status 翻转来驱动结算,日聚合行才能"边增长边结算"。
-	GrossAmount   decimal.Decimal `json:"gross_amount" gorm:"type:decimal(30,10);not null;default:0"`
-	SettledAmount decimal.Decimal `json:"settled_amount" gorm:"type:decimal(30,10);not null;default:0"`
+	GrossAmount   decimal.Decimal `json:"gross_amount" gorm:"type:decimal(30,10);not null;default:0.0000000000"`
+	SettledAmount decimal.Decimal `json:"settled_amount" gorm:"type:decimal(30,10);not null;default:0.0000000000"`
 
 	// CappedAmount 是单笔封顶(commission.max_per_order_quota)从这一行累计削掉的金额。
 	//
@@ -116,11 +116,11 @@ type Accrual struct {
 	// 后者刻意不回填:账本 append-only,金额列的历史值是冻结事实,补一个
 	// 事后算出来的数字进去等于把"我们改写过它"这件事抹掉。存量被削行仍然
 	// 对不平,那正是它当时被写坏的样子。
-	CappedAmount decimal.Decimal `json:"capped_amount" gorm:"type:decimal(30,10);not null;default:0"`
+	CappedAmount decimal.Decimal `json:"capped_amount" gorm:"type:decimal(30,10);not null;default:0.0000000000"`
 
 	// UsdRate 冻结计佣当时的汇率。USDExchangeRate 是管理员可随时热改的全局变量,
 	// 不冻结的话历史对账永远对不上。
-	UsdRate decimal.Decimal `json:"usd_rate" gorm:"type:decimal(18,8);not null;default:0"`
+	UsdRate decimal.Decimal `json:"usd_rate" gorm:"type:decimal(18,8);not null;default:0.00000000"`
 
 	Status    string `json:"status" gorm:"type:varchar(16);not null;index:idx_qy_ca_inviter,priority:2;index:idx_qy_ca_scan,priority:1"`
 	RiskFlags string `json:"risk_flags" gorm:"type:varchar(255);not null;default:''"`
@@ -150,7 +150,7 @@ type Balance struct {
 
 	// UnsettledAmount 承载所有不足 1 额度的零头。可以为负 —— 那表示冲正金额
 	// 超过了可回收余额,即欠账,此时禁止提现,未来佣金自动优先抵扣。
-	UnsettledAmount decimal.Decimal `json:"unsettled_amount" gorm:"type:decimal(30,10);not null;default:0"`
+	UnsettledAmount decimal.Decimal `json:"unsettled_amount" gorm:"type:decimal(30,10);not null;default:0.0000000000"`
 
 	AvailableQuota     int64 `json:"available_quota" gorm:"not null;default:0"`
 	FrozenQuota        int64 `json:"frozen_quota" gorm:"not null;default:0"`
@@ -160,7 +160,7 @@ type Balance struct {
 
 	// AvailableFiat 按计佣时刻的冻结汇率折算,提现模块直接读它,
 	// 禁止用当前 USDExchangeRate 反算。
-	AvailableFiat decimal.Decimal `json:"available_fiat" gorm:"type:decimal(18,6);not null;default:0"`
+	AvailableFiat decimal.Decimal `json:"available_fiat" gorm:"type:decimal(18,6);not null;default:0.000000"`
 	FiatCurrency  string          `json:"fiat_currency" gorm:"type:varchar(8);not null;default:''"`
 
 	DebtBlocked bool `json:"debt_blocked" gorm:"not null"`
@@ -235,15 +235,15 @@ type Settlement struct {
 	UserId   int    `json:"user_id" gorm:"not null;index:idx_qy_cs_user,priority:1"`
 
 	AccrualCount int             `json:"accrual_count" gorm:"not null;default:0"`
-	DeltaAmount  decimal.Decimal `json:"delta_amount" gorm:"type:decimal(30,10);not null;default:0"`
-	CarryBefore  decimal.Decimal `json:"carry_before" gorm:"type:decimal(30,10);not null;default:0"`
-	CarryAfter   decimal.Decimal `json:"carry_after" gorm:"type:decimal(30,10);not null;default:0"`
+	DeltaAmount  decimal.Decimal `json:"delta_amount" gorm:"type:decimal(30,10);not null;default:0.0000000000"`
+	CarryBefore  decimal.Decimal `json:"carry_before" gorm:"type:decimal(30,10);not null;default:0.0000000000"`
+	CarryAfter   decimal.Decimal `json:"carry_after" gorm:"type:decimal(30,10);not null;default:0.0000000000"`
 
 	GrantedQuota   int64 `json:"granted_quota" gorm:"not null;default:0"`
 	ReclaimedQuota int64 `json:"reclaimed_quota" gorm:"not null;default:0"`
 
-	UsdRateWeighted decimal.Decimal `json:"usd_rate_weighted" gorm:"type:decimal(18,8);not null;default:0"`
-	FiatDelta       decimal.Decimal `json:"fiat_delta" gorm:"type:decimal(18,6);not null;default:0"`
+	UsdRateWeighted decimal.Decimal `json:"usd_rate_weighted" gorm:"type:decimal(18,8);not null;default:0.00000000"`
+	FiatDelta       decimal.Decimal `json:"fiat_delta" gorm:"type:decimal(18,6);not null;default:0.000000"`
 
 	Remark    string `json:"remark" gorm:"type:varchar(255);not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"not null;default:0;index:idx_qy_cs_user,priority:2"`
@@ -335,7 +335,7 @@ type FreezeRecord struct {
 	// Fiat 是本次冻结从 AvailableFiat 里扣走的法币金额。
 	// 必须原样记下来:解冻时若按"当前均价"回补,提现审核期间新结算进来的
 	// 佣金会把均价拉偏,退回的钱就和当初冻走的对不上了。
-	Fiat      decimal.Decimal `json:"fiat" gorm:"type:decimal(18,6);not null;default:0"`
+	Fiat      decimal.Decimal `json:"fiat" gorm:"type:decimal(18,6);not null;default:0.000000"`
 	CreatedAt int64           `json:"created_at" gorm:"not null;default:0"`
 }
 

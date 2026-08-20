@@ -278,7 +278,21 @@ func topUpBaseQuota(t *model.TopUp) (int64, decimal.Decimal) {
 	switch t.PaymentProvider {
 	case model.PaymentProviderCreem:
 		return t.Amount, money
-	case model.PaymentProviderStripe, "":
+	case model.PaymentProviderStripe:
+		return quotaFromDecimal(money.Mul(qpu)), money
+	case "":
+		// 空 provider 有两种来源,判据必须落在 **Amount** 上而不是 provider:
+		//   - 订阅付费单(upsertSubscriptionTopUpTx 硬编码 Amount=0)→ 按 Money;
+		//   - **payment_provider 列存在之前的历史 epay 订单**(Amount>0)→ 与
+		//     model.TopUp.CreditQuota 的 default 分支一样按 Amount × QuotaPerUnit。
+		//
+		// 原先把两者合并进 stripe 那一支(注释里写的前提是"Amount=0",代码却没查),
+		// 于是历史折扣订单(amount=10 / money=8)的计佣基数按 Money 算,与实际到账
+		// 额度差一个折扣率;开启过 operation_setting.Price ≠ 1 的站点差得更多。
+		// 这批老单仍可被管理员补单激活,补完就会被迟付回收捞进来按错口径计佣。
+		if t.Amount > 0 {
+			return quotaFromDecimal(decimal.NewFromInt(t.Amount).Mul(qpu)), money
+		}
 		return quotaFromDecimal(money.Mul(qpu)), money
 	default:
 		return quotaFromDecimal(decimal.NewFromInt(t.Amount).Mul(qpu)), money

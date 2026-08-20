@@ -27,7 +27,22 @@ type TieredResultWrapper = billingexpr.TieredResult
 // sub-categories are separately priced.
 func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVars map[string]bool) billingexpr.TokenParams {
 	p := float64(usage.PromptTokens)
-	c := float64(usage.CompletionTokens)
+	// c 必须与倍率路径走**同一条归一化**:上游把思考 token 放在 completion_tokens
+	// 之外时(gemini-3-flash 一次真实调用 {prompt 100, completion 1, reasoning 53,
+	// total 154}),倍率路径已经在 calculateTextQuotaSummary 里把它补进 completion
+	// 并计费,阶梯路径原先直接取 usage.CompletionTokens 原值 —— 于是同一条上游
+	// 响应,按倍率收 524、按表达式只收 158(诚实价 555),输出项少收 54 倍。
+	//
+	// 更糟的是消费日志里 completion_tokens 记的是**已归一化的 54**,扣的钱按 1 算,
+	// 账单自己和自己对不上:把日志里的三项代回日志里那条表达式得不到日志里的金额。
+	//
+	// 本站挂 tiered_expr 的正是 gemini 那一族,而它们的表达式把 c 的系数定在
+	// 50~120,输出侧是主要收入项 —— 少了这一句,那些模型的思考 token 全免费。
+	//
+	// reasoningTokensOutsideCompletion 自带「prompt+completion+reasoning == total
+	// 且 prompt+completion != total」的三数互证,Claude 语义天然不满足,所以这里
+	// 无条件调用是安全的,不会把 Claude 那一支多算一遍。
+	c := float64(usage.CompletionTokens + reasoningTokensOutsideCompletion(usage))
 	cr := float64(usage.PromptTokensDetails.CachedTokens)
 	cc5m := float64(usage.PromptTokensDetails.CacheCreationTokensTotal())
 	cc1h := float64(0)

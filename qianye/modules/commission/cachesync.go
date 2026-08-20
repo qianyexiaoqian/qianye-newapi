@@ -167,17 +167,54 @@ func cacheSyncWriteLoop() {
 	for msg := range cacheSyncCh {
 		// 溢出过就先补一条"全清":此时已经不知道丢了哪几条。
 		if cacheSyncOverflow.Swap(false) {
-			writeInvalidation(cacheInvalidationMsg{Kind: cacheKindAll})
+			publishWithRetry(cacheInvalidationMsg{Kind: cacheKindAll})
 		}
-		writeInvalidation(msg)
+		publishWithRetry(msg)
 	}
 }
 
-func writeInvalidation(msg cacheInvalidationMsg) {
+// cacheSyncWriteAttempts / cacheSyncWriteBackoff 控制一条失效流水的重投。
+//
+// 扩展库的一次瞬时抖动(连接耗尽、主从切换、DDL、磁盘满、甚至一条被拒的写)
+// 原先会让这条失效**被永久丢弃** —— 消息已经从 channel 里取走,既不重试也不
+// 退回队列。其余节点因此在最长一个 TTL 里(分组费率 60s、邀请关系/上线分组
+// 300s)继续按旧档**冻结**佣金,而费率一旦冻结进 accrual 就不追溯,那段窗口
+// 的钱永久发错。实测:表恢复之后也没有任何补发,node B 直到 TTL 到期才换档。
+//
+// 退避总时长刻意压在 TTL(60s)之内:重投的意义就是"赶在旧值过期之前把新值
+// 送到",拖过 TTL 之后再送到与不送没有区别。
+const (
+	cacheSyncWriteAttempts = 5
+	cacheSyncWriteBackoff  = 2 * time.Second
+)
+
+// publishWithRetry 带上界地重投一条失效流水;真的投不出去时,把
+// cacheSyncOverflow 立起来,让下一条消息先补一条"全清"。
+//
+// 注意 cacheSyncOverflow 只在**处理下一条消息**时才被消费:如果此后再没有任何
+// 失效发布,这面旗永远不会触发。所以它是最后一道兜底,不是主要手段 ——
+// 主要手段是上面那几次重投。
+func publishWithRetry(msg cacheInvalidationMsg) {
+	for attempt := 1; ; attempt++ {
+		if writeInvalidation(msg) {
+			return
+		}
+		if attempt >= cacheSyncWriteAttempts {
+			cacheSyncOverflow.Store(true)
+			warnf("缓存失效广播重投 %d 次仍失败,已置全清标记 kind=%s target=%d",
+				attempt, msg.Kind, msg.Target)
+			return
+		}
+		time.Sleep(cacheSyncWriteBackoff)
+	}
+}
+
+// writeInvalidation 写一条失效流水。返回是否成功。
+func writeInvalidation(msg cacheInvalidationMsg) bool {
 	gdb := db.Get()
 	if gdb == nil {
 		cacheSyncFailed.Add(1)
-		return
+		return false
 	}
 	ctx, cancel := guard.ColdContext(context.Background())
 	defer cancel()
@@ -192,9 +229,10 @@ func writeInvalidation(msg cacheInvalidationMsg) {
 		cacheSyncFailed.Add(1)
 		warnf("缓存失效广播写入失败(其它节点可能仍在按旧配置计佣) kind=%s target=%d: %v",
 			msg.Kind, msg.Target, err)
-		return
+		return false
 	}
 	cacheSyncPublished.Add(1)
+	return true
 }
 
 func cacheSyncPollLoop() {

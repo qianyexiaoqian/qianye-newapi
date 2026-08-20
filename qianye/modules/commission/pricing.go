@@ -33,6 +33,7 @@ package commission
 
 import (
 	"context"
+	"errors"
 )
 
 // pricingDecision 是一次计佣的定价快照,两档都会被冻结进 accrual 行。
@@ -62,6 +63,25 @@ func (p pricingDecision) sameGroup() bool { return p.Rate.Group == p.Fiat.Group 
 // source 决定走费率的哪一档(消费 / 兑换码 / 充值),法币比例不分档。
 func resolveInviterPricing(ctx context.Context, inviterId int, source string, s opSettings) pricingDecision {
 	e, _, err := resolveInviter(ctx, inviterId)
+	return pricingFromInviterEntry(ctx, e, err, source, s)
+}
+
+// pricingFromInviterEntry 把一次上线解析的结果变成定价决策。
+//
+// 它与 resolveInviterPricing 分开,是因为「解析上线」与「据此定价」是两件事,
+// 而**只有后者**决定钱:降级判据、两档共用同一个分组字符串、降级计数,全在这里。
+// 分开之后这条判据可以脱离主库直接测(见 pricing_missing_inviter_test.go),
+// 而在合成一体时它只能靠"把主库句柄置空"来触发 —— 那是生产上几乎不发生的
+// 那一支,恰恰不是本轮查出的那一支。
+func pricingFromInviterEntry(ctx context.Context, e inviterEntry, err error, source string, s opSettings) pricingDecision {
+	// "主库报错" 与 "主库里没有这一行" 是同一件事的两种形状:两者都意味着
+	// **拿不到上线的分组**,都必须跳过分组层。原先只判 err != nil,而
+	// record-not-found 走的是 err == nil + 零值 entry 那一支 —— 也就是最常见
+	// 的那种"读不到"(推广人被删/被软删)永远不会触发降级,反而被
+	// billingGroup("") 折成 "default",按 default 分组的费率与法币档冻结进账本。
+	if err == nil && e.Missing {
+		err = errors.New("上线账号在主库中不存在(可能已被删除)")
+	}
 	if err != nil {
 		inviterGroupDegrade.noteCtx(ctx, "读取上线分组失败,费率与法币比例一起跳过分组层: "+err.Error())
 		// 费率:matched=false 走纯全局档,与"这个分组没配规则"完全同一条路径

@@ -88,7 +88,28 @@ type RedeemResult struct {
 	UpgradeGroup string `json:"upgrade_group,omitempty"`
 }
 
-func GetAllRedemptions(startIdx int, num int) (redemptions []*Redemption, total int64, err error) {
+// scopeRedemptionsToCreator 把兑换码查询收窄到某个发码人名下。
+//
+// creatorId == 0 表示不收窄（只有 role=100 走这一支）。
+//
+// 兑换码是**可直接兑成余额的 bearer 凭据**：拿到那 32 位明文就等于拿到了钱。
+// 而管理端列表/搜索/详情原样吐出未兑换码的明文，于是任意 role=10 账号可以把
+// 别的管理员（或 root）已经发行、准备分给客户的整批在售码一次性读走再自己兑
+// 掉，事后只剩 used_user_id 一个间接线索。上一轮把这条判成“role=10 本来就能
+// 建码，不新增能力”——那个理由只覆盖“建自己的码”，不覆盖“收割别人已发行的
+// 码”：被收割的是站点对客户的未兑现负债，不是他自己造的价值。
+//
+// 收窄到发码人而不是遮挡明文，是因为发码/补发流程（含前端批量复制）本来就
+// 需要明文，遮挡会把正常业务一起掐掉；而按发码人分桶既保住了流程，又让
+// “读别人的码”这件事根本不存在。root 仍可见全量，运营兜底不受影响。
+func scopeRedemptionsToCreator(query *gorm.DB, creatorId int) *gorm.DB {
+	if creatorId <= 0 {
+		return query
+	}
+	return query.Where("user_id = ?", creatorId)
+}
+
+func GetAllRedemptions(creatorId int, startIdx int, num int) (redemptions []*Redemption, total int64, err error) {
 	// 开始事务
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -101,14 +122,15 @@ func GetAllRedemptions(startIdx int, num int) (redemptions []*Redemption, total 
 	}()
 
 	// 获取总数
-	err = tx.Model(&Redemption{}).Count(&total).Error
+	err = scopeRedemptionsToCreator(tx.Model(&Redemption{}), creatorId).Count(&total).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
 
 	// 获取分页数据
-	err = tx.Order("id desc").Limit(num).Offset(startIdx).Find(&redemptions).Error
+	err = scopeRedemptionsToCreator(tx.Model(&Redemption{}), creatorId).
+		Order("id desc").Limit(num).Offset(startIdx).Find(&redemptions).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
@@ -122,7 +144,7 @@ func GetAllRedemptions(startIdx int, num int) (redemptions []*Redemption, total 
 	return redemptions, total, nil
 }
 
-func SearchRedemptions(keyword string, status string, startIdx int, num int) (redemptions []*Redemption, total int64, err error) {
+func SearchRedemptions(creatorId int, keyword string, status string, startIdx int, num int) (redemptions []*Redemption, total int64, err error) {
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, 0, tx.Error
@@ -133,14 +155,46 @@ func SearchRedemptions(keyword string, status string, startIdx int, num int) (re
 		}
 	}()
 
-	query := tx.Model(&Redemption{})
+	query := scopeRedemptionsToCreator(tx.Model(&Redemption{}), creatorId)
 
 	if keyword != "" {
+		where := "name LIKE ?"
+		args := []interface{}{keyword + "%"}
 		if id, err := strconv.Atoi(keyword); err == nil {
-			query = query.Where("id = ? OR name LIKE ?", id, keyword+"%")
-		} else {
-			query = query.Where("name LIKE ?", keyword+"%")
+			where = "id = ? OR " + where
+			args = append([]interface{}{id}, args...)
 		}
+		// 兑换码在日志与错误文本里只留末 4 位(common.MaskCredential)。用户报来的
+		// 就是那 4 位,而在此之前后台只能按名称和 id 搜 —— 于是"客服凭末 4 位把码
+		// 对上库里那一行"这句话在产品里没有任何落点,掩码等于把线索也一起掩掉了。
+		//
+		// 判据刻意收紧成「十六进制片段、长度 4..32」:
+		//   - 生成的码是 uuid v4 去掉横线,恒为 32 位小写十六进制,非十六进制的
+		//     输入不可能是码片段,让它去撞 key 只会白扫一遍全表;
+		//   - 十六进制里没有 % 和 _,顺带堵死从搜索框注入 LIKE 通配符;
+		//   - 4 位以下的片段在 65536 的空间里命中太多,给不出可用的答案。
+		// 匹配走后缀(`%片段`)而不是包含,因为掩码留的就是后缀。
+		//
+		// 大小写:统一转小写再比。三个数据库的 LIKE 大小写规则并不一致
+		// (PostgreSQL 区分大小写,MySQL 的 utf8mb4 通用排序规则和 SQLite 的
+		// ASCII LIKE 不区分),而生成的码本来就只有小写,统一到小写这一侧
+		// 三个库的行为才一致。
+		fragment := strings.ToLower(strings.TrimSpace(keyword))
+		if len(fragment) >= 4 && len(fragment) <= 32 {
+			hexOnly := true
+			for i := 0; i < len(fragment); i++ {
+				c := fragment[i]
+				if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
+					hexOnly = false
+					break
+				}
+			}
+			if hexOnly {
+				where += " OR LOWER(" + commonKeyCol + ") LIKE ?"
+				args = append(args, "%"+fragment)
+			}
+		}
+		query = query.Where(where, args...)
 	}
 
 	if status != "" {
@@ -281,7 +335,24 @@ func Redeem(key string, userId int) (*RedeemResult, error) {
 			return errors.New("该兑换码已被使用")
 		}
 		if plan == nil {
-			return tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota + ?", redemption.Quota)).Error
+			// 加额度这一步必须确认真的落到了一行上。此前它只看 Error:收款人不存在
+			// (会话还在、用户已被软删)时 UPDATE 匹配 0 行、不报错,事务照常提交 ——
+			// 码被 CAS 消耗掉、状态写成 used、面值一分钱没进任何人的钱包,而接口回
+			// success、前端弹"已到账"、日志记一条充值。用户手里的码作废了,东西没拿到,
+			// 而且没有任何一处会报错。套餐分支下面那句 lockForUpdate(...).First(&userRow)
+			// 早就有这道闸(查不到就 ErrRecordNotFound),余额分支漏了同一条。
+			//
+			// 用 RowsAffected 作判据是安全的:上面已经拒掉了 Quota <= 0,加数恒 >= 1,
+			// 所以"匹配到了但值没变"这种会让 MySQL 报 0 行的情形在这里不存在。
+			credit := tx.Model(&User{}).Where("id = ?", userId).
+				Update("quota", gorm.Expr("quota + ?", redemption.Quota))
+			if credit.Error != nil {
+				return credit.Error
+			}
+			if credit.RowsAffected == 0 {
+				return errors.New("兑换码持有者不存在")
+			}
+			return nil
 		}
 		// 发订阅必须与上面那次 CAS 在**同一个事务**里:拆成两步的话,中间任何一次
 		// 失败都会留下"码已经标成已用、订阅却没发出去"——用户手里的码作废了,东西没拿到。
@@ -297,6 +368,15 @@ func Redeem(key string, userId int) (*RedeemResult, error) {
 		return err
 	})
 	if err != nil {
+		// 兑换失败**不消耗**兑换码 —— 走到这里那张码仍然是 enabled、面值分文未动,
+		// 所以这条日志一旦带上码本身,就等于把一张活码送给任何有日志读取权的人
+		// (运维、采集平台、日志备份)。
+		//
+		// 这里可以直接写 err.Error(),判据是逐条查过的:本闭包里每一个 return 都是
+		// 上面那几处自己写死的中文文本,不含 key;而下游 GORM / 驱动返回的错误也带
+		// 不出它 —— 查询用的是绑定参数(`key` = ?),三个驱动的错误文本都不回显
+		// 绑定值。唯一会回显值的是 MySQL 的唯一键冲突(`Duplicate entry 'x'`),
+		// 而这条路径上没有任何一次插入。新增分支时这条判据要重新过一遍。
 		common.SysError("redemption failed: " + err.Error())
 		return nil, ErrRedeemFailed
 	}

@@ -46,6 +46,17 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		return nil
 	}
 	delta := actualQuota - s.preConsumedQuota
+	// 预扣没兜住真实花费 —— 记一条可审计的标记。见 RelayInfo.PreConsumeShortfall:
+	// 这条差额是在请求跑完之后强制补收的,余额闸门管不住它,而钱包因此可以被
+	// 扣成负数。它不是错误(服务确实提供了),但必须留下痕迹,否则事后既看不出
+	// 放大倍数,也算不出坏账。
+	if delta > 0 && s.relayInfo != nil && s.relayInfo.PreConsumeShortfall == nil {
+		s.relayInfo.PreConsumeShortfall = &relaycommon.ReservationShortfall{
+			Reserved:  s.preConsumedQuota,
+			Charged:   actualQuota,
+			Shortfall: delta,
+		}
+	}
 	if delta == 0 && !s.fundingHasPartialReserve() {
 		s.settled = true
 		return nil

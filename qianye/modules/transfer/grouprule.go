@@ -97,7 +97,7 @@ type GroupRule struct {
 	ToGroups string `json:"to_groups" gorm:"type:varchar(1024);not null;default:''"`
 
 	// Enabled 为 false 时视同该规则不存在,因此会落到兜底规则(若有)上。
-	Enabled bool `json:"enabled" gorm:"not null;default:false"`
+	Enabled bool `json:"enabled" gorm:"not null"`
 
 	Remark string `json:"remark" gorm:"type:varchar(255);not null;default:''"`
 

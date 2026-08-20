@@ -334,8 +334,10 @@ func markPayoutPaid(tx *gorm.DB, payoutNo string) error {
 //
 //   - Failed 且探针复核确实未生效 → **换一个代次**退避重试;次数耗尽转 held。
 //   - Failed 但探针说已生效 → 两者矛盾,直接 held,绝不重试(会重复加钱)。
-//   - pending / uncertain → **保持 paying 不动**,交 twophase 补偿任务;
+//   - pending / in_doubt / uncertain → **保持 paying 不动**,交 twophase 补偿任务;
 //     重试预算耗尽后转 held,绝不让它停在一个再也不会被扫到的 paying 上。
+//     in_doubt 就是"主库 COMMIT 已发出、结局不明"那一档 —— 抽奖双发的根因正是
+//     它以前被写成 Failed,于是第一条分支拿着一个歧义值去换代次重发。
 //
 // 第一种结局必须换代次:资金单一旦是 Failed,重入 Execute 只会幂等命中原单并
 // 返回 ErrOrderFailed —— 沿用同一个幂等键的"重试"是纯粹的空转,自动重试与
@@ -514,13 +516,48 @@ func resolvePayoutAfterCompensation(ctx context.Context, order *qymodel.FundOrde
 	})
 }
 
-// InstallResolvers 注册两个补偿回调。由模块的 InstallHooks 调用。
+// postCreditFromOrder 是"主库已确认加钱生效"之后必须补做的账本行。
 //
-// 缺了它们,补偿任务会把资金单推成 success 而业务侧永远停在中间态 ——
+// afterCredit 只在业务线程里跑;commit 断连与扩展库回写失败这两条路径上它一次都不会跑,
+// 于是用户账上凭空多出一笔奖金,而账单里没有任何一行说明它从哪来 —— 用户第一反应
+// 是系统出错,客服也查不出。这里从资金单重建:出款号是 RefId。
+//
+// 需要 Payout 行是因为账本条目的类型与文案取决于 p.Kind(派奖/赔付/退款),
+// 而那一位不在资金单上(三种出款共用一个 Kind,见 qymodel.KindLotteryPayout)。
+func postCreditFromOrder(ctx context.Context, order *qymodel.FundOrder) error {
+	gdb := db.Get()
+	if gdb == nil {
+		return db.ErrNotReady
+	}
+	var p Payout
+	if err := gdb.WithContext(ctx).Where("payout_no = ?", order.RefId).Take(&p).Error; err != nil {
+		return err
+	}
+	logType := model.LogTypeSystem
+	if p.Kind == PayoutRefund {
+		logType = model.LogTypeRefund
+	}
+	model.QyRecordLedgerLog(order.UserId, logType,
+		ledgerLogContent(payoutLabel(p.Kind), order.AmountQuota, p.PayoutNo), order.OrderNo,
+		map[string]any{
+			"qy_module":        "lottery",
+			"qy_lot_payout_no": p.PayoutNo,
+			"qy_lot_kind":      p.Kind,
+			"qy_quota":         order.AmountQuota,
+		})
+	return nil
+}
+
+// InstallResolvers 注册两个补偿回调与两个提交后收尾回调。由模块的 InstallHooks 调用。
+//
+// 缺了 Resolver,补偿任务会把资金单推成 success 而业务侧永远停在中间态 ——
 // 这在本仓的 violation 上真实发生过一次。
+// 缺了 PostCommit,主库那一侧的钱动了却没有账本行,用户在"日志"页看不到任何凭据。
 func InstallResolvers() {
 	twophase.RegisterResolver(qymodel.KindLotteryEntry, resolveEntryAfterCompensation)
 	twophase.RegisterResolver(qymodel.KindLotteryPayout, resolvePayoutAfterCompensation)
+	twophase.RegisterPostCommit(qymodel.KindLotteryEntry, postDebitFromOrder)
+	twophase.RegisterPostCommit(qymodel.KindLotteryPayout, postCreditFromOrder)
 }
 
 // ─────────────────────────── 共用收尾判定 ───────────────────────────
@@ -573,16 +610,27 @@ func settleGuard(ctx context.Context, order *qymodel.FundOrder, apply func(tx *g
 // 数字,篡改再次发生时它会变。只跳过不更新,运营看到的就是一个早已不成立的旧数字,
 // 而这条 flag 又是本模块唯一的事后篡改出口(qy_lot_flag 没有别的写入方)。
 // 所以命中已有未解决行时改为**刷新 detail**,CreatedAt 保持首次检出时刻不动。
-func raiseFlag(ctx context.Context, actId int64, code, detail string) {
+// raiseFlag 返回这条异常是不是**新的**(新建,或 detail 变了)。
+//
+// 调用方据此决定要不要再打一条日志/审计:后台扫描每 15 秒重跑一次同一场活动,
+// 不带这个判据的调用点会以每分钟 4 条的速度往 qy_audit_logs 与日志文件里追加
+// 逐字相同的行,一场卡住的活动一天约 6000 行,而挂起态没有 SLA(等人),
+// 可以持续数天。本文件里的去重注释写明"不去重会在几小时内把异常列表刷成同一条
+// 消息的几千份拷贝,而那正好会淹没真正的新异常" —— 这条纪律必须能被复用,
+// 否则同一个函数里的另外两句照样刷屏(suspendReveal 就是这么发生的)。
+func raiseFlag(ctx context.Context, actId int64, code, detail string) bool {
 	gdb := db.Get()
 	if gdb == nil {
-		return
+		return false
 	}
 	// 句柄一次性绑上租约的预算:逐条 WithContext 漏一条,就等于在这条链路上开了一个
 	// 没有上界的口子 —— 语句级预算只对 WithContext 的语句生效。
-	if err := upsertFlag(gdb.WithContext(ctx), actId, code, detail); err != nil {
+	changed, err := upsertFlag(gdb.WithContext(ctx), actId, code, detail)
+	if err != nil {
 		db.MarkFailure(err)
+		return false
 	}
+	return changed
 }
 
 // upsertFlag 是 raiseFlag 的落库语义:同一个未解决的 (act_id, code) 只留一行,
@@ -590,7 +638,7 @@ func raiseFlag(ctx context.Context, actId int64, code, detail string) {
 //
 // resolved=true 的历史行**不参与**去重 —— 这正是"处理完之后同类异常还能再报"的
 // 前提,也是为什么必须有一个把 resolved 置 true 的产品入口(handleAdminResolveFlag)。
-func upsertFlag(gdb *gorm.DB, actId int64, code, detail string) error {
+func upsertFlag(gdb *gorm.DB, actId int64, code, detail string) (bool, error) {
 	detail = audit.Truncate(detail, 512)
 	var existing Flag
 	err := gdb.Model(&Flag{}).
@@ -599,14 +647,14 @@ func upsertFlag(gdb *gorm.DB, actId int64, code, detail string) error {
 	switch {
 	case err == nil:
 		if existing.Detail == detail {
-			return nil
+			return false, nil
 		}
-		return gdb.Model(&Flag{}).Where("id = ?", existing.Id).
+		return true, gdb.Model(&Flag{}).Where("id = ?", existing.Id).
 			Update("detail", detail).Error
 	case !errors.Is(err, gorm.ErrRecordNotFound):
-		return err
+		return false, err
 	}
-	return gdb.Create(&Flag{
+	return true, gdb.Create(&Flag{
 		ActId:     actId,
 		Code:      code,
 		Detail:    detail,

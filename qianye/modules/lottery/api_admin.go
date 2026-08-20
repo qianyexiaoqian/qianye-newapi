@@ -841,6 +841,21 @@ func handleRetryPayout(c *gin.Context) {
 		respondErr(c, errPayoutNotFound)
 		return
 	}
+	// 路由是 /lottery/activities/:act_no/payouts/:payout_no/retry,而这个 handler
+	// 原先一次都不读 :act_no —— URL 里那段作用域是装饰品。实测用一个纯属虚构的
+	// act_no 去 retry 别的活动下的出款,整条写路径跑完并真的划了额度。
+	// 后果不是越权(本模块管理端对所有活动一视同仁),而是:一次拼错/复制错
+	// act_no 的写调用不会被拒绝反而会成功;任何按 URL 路径段做作用域限制的外部
+	// 手段(反代规则、按活动分派的脚本)被静默绕过;错误语义也失真(拿到的是
+	// 409 状态冲突而不是 404)。
+	if actNo := c.Param("act_no"); actNo != "" {
+		var act Activity
+		if err := gdb.WithContext(ctx).Where("id = ?", p.ActId).Take(&act).Error; err != nil || act.ActNo != actNo {
+			writeAdminAudit(c, "lottery.payout.retry", payoutNo, qymodel.ResultFail, "出款不属于该活动", "", "")
+			respondErr(c, errPayoutNotFound)
+			return
+		}
+	}
 	if p.Status == PayoutPaid {
 		writeAdminAudit(c, "lottery.payout.retry", payoutNo, qymodel.ResultFail, "该笔已到账", "", "")
 		respondErr(c, errStatusConflict)

@@ -155,16 +155,26 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   SECURITY_PROOF_SCOPE_MISMATCH: 'qy_err_security_proof',
   SECURITY_PROOF_METHOD_MISMATCH: 'qy_err_security_proof',
   qy_wd_payout_ref_required: 'qy_err_wd_payout_ref_required',
+  qy_wd_payout_amount_required: 'qy_err_wd_payout_amount_required',
+  qy_wd_payout_amount_mismatch: 'qy_err_wd_payout_amount_mismatch',
   qy_wd_user_unavailable: 'qy_err_wd_user_unavailable',
   qy_wd_insufficient_commission: 'qy_err_wd_insufficient',
   qy_wd_debt_blocked: 'qy_err_wd_debt_blocked',
-  qy_wd_quota_overflow: 'qy_err_wd_quota_overflow',
   qy_wd_daily_count_reached: 'qy_err_wd_daily_count',
   qy_wd_fiat_below_min: 'qy_err_wd_fiat_below_min',
   qy_wd_fee_eats_all: 'qy_err_wd_fee_eats_all',
   qy_wd_fiat_unavailable: 'qy_err_wd_fiat_unavailable',
   qy_wd_not_found: 'qy_err_wd_not_found',
   qy_wd_status_conflict: 'qy_err_wd_status_conflict',
+  // 本轮新加的两道越权闸门。不登记就会塌成一句 qy_err_forbidden：
+  // 403 在 kindFromStatus 里被归成 'forbidden'，而 qyErrorMessage 只在
+  // kind === 'business' 时才回落后端原始 message —— 后端精心写的
+  // 「请由另一位管理员处理」/「请由更高权限的管理员处理」这两句**唯一**告诉
+  // 管理员下一步该怎么办的话，一个字都到不了界面，而且与任何其它 403 不可区分。
+  // 提现四个人工决定共用同一条渲染路径，列表页又没有任何预先标记，
+  // 审核员只能挨个点、挨个吃通用报错。
+  qy_wd_self_review: 'qy_err_wd_self_review',
+  qy_wd_peer_review: 'qy_err_wd_peer_review',
   qy_wd_illegal_transition: 'qy_err_wd_illegal_transition',
   qy_wd_in_progress: 'qy_err_in_progress',
   qy_wd_pii_key_unavailable: 'qy_err_wd_pii_unavailable',

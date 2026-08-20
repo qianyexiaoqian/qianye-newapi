@@ -180,6 +180,22 @@ type RelayInfo struct {
 	// 与 QuotaClamp / GroupRatioFallback 同形,落 other.admin_info。
 	SettleFailure string
 
+	// PreConsumeShortfall 非 nil 表示这一笔的**预扣额没有覆盖住真实花费**,
+	// 差额是在请求跑完之后强制补收的。
+	//
+	// 这不是异常路径,而是预扣估算模型的固有敞口,而它的上界不受余额闸门约束:
+	// 客户端省略 max_tokens(OpenAI 协议里它本来就是可选的,省略是默认用法)时,
+	// 预扣按 defaultPreConsumeMaxTokens=8192 兜底估输出侧,而结算按上游真实
+	// completion_tokens 无条件扣款。当代模型的输出上限普遍 32k~128k,于是
+	// 「一次完全正常的长输出」就能把钱包扣成负数,并发只是把它线性放大 ——
+	// 余额闸门此时只限制并发路数,不再限制总金额。
+	//
+	// 一时半会儿关不上这个口(把 max_tokens 写死发给上游会截断用户的正常输出,
+	// 属于产品决策),那就至少让它**可审计**:按这个键能把所有"预扣没兜住"的笔
+	// 捞出来,看放大倍数分布、看哪些模型/分组的 CompletionRatio 配得离谱,
+	// 也能算出坏账。与 QuotaClamp / SettleFailure 同形,落 other.admin_info。
+	PreConsumeShortfall *ReservationShortfall
+
 	// GroupRatioFallback 非 nil 表示这一笔的分组倍率是**上游 fail-open 兜出来的
 	// 1.0**,不是任何人配出来的:模型分组不在 options.GroupRatio 里,而这一笔的价
 	// 又恰好由它决定(没有命中交叉格)。它会被写进消费日志的
@@ -1166,4 +1182,26 @@ func RemoveGeminiDisabledFields(jsonData []byte) ([]byte, error) {
 		return jsonData, nil
 	}
 	return jsonDataAfter, nil
+}
+
+// ReservationShortfall 描述一次"预扣额没能覆盖真实花费"。
+type ReservationShortfall struct {
+	// Reserved 是请求开始时真正扣下的预留额。
+	Reserved int `json:"reserved"`
+	// Charged 是结算时算出的真实花费。
+	Charged int `json:"charged"`
+	// Shortfall = Charged - Reserved,恒为正。
+	Shortfall int `json:"shortfall"`
+}
+
+// AuditMap 渲染成消费日志 admin_info.pre_consume_shortfall 下的标记。
+func (s *ReservationShortfall) AuditMap() map[string]interface{} {
+	if s == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"reserved":  s.Reserved,
+		"charged":   s.Charged,
+		"shortfall": s.Shortfall,
+	}
 }

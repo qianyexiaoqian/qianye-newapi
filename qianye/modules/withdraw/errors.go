@@ -8,7 +8,6 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/modules/commission"
-	"github.com/QuantumNous/new-api/qianye/service/twophase"
 
 	"github.com/gin-gonic/gin"
 )
@@ -42,7 +41,16 @@ var (
 	errPayeeNotFound    = newBizError("qy_wd_payee_not_found", "收款方式不存在", http.StatusBadRequest)
 	errPayeeLimit       = newBizError("qy_wd_payee_limit", "已达收款方式数量上限", http.StatusBadRequest)
 	errReasonRequired   = newBizError("qy_wd_reason_required", "请填写理由", http.StatusBadRequest)
-	errPayoutRefMissing = newBizError("qy_wd_payout_ref_required", "请填写打款单号", http.StatusBadRequest)
+	errPayoutRefMissing = newBizError("qy_wd_payout_ref_required", "请填写发放凭证", http.StatusBadRequest)
+
+	// 实发金额是「标记已发放」的必填确认项,见 checkPayoutConfirm。
+	//
+	// 两个 code 分开:漏填是管理员少填了一个框,填错是他手上的数和单据上的数
+	// 对不上 —— 后者必须让人停下来去核对,而不是再点一次。
+	errPayoutAmountRequired = newBizError("qy_wd_payout_amount_required",
+		"请填写实际发放金额", http.StatusBadRequest)
+	errPayoutAmountMismatch = newBizError("qy_wd_payout_amount_mismatch",
+		"实际发放金额与单据金额不一致,请核对后再标记", http.StatusBadRequest)
 )
 
 // 凭证图片错误。
@@ -69,7 +77,6 @@ var (
 	errUserUnavailable   = newBizError("qy_wd_user_unavailable", "当前账号状态无法提现", http.StatusForbidden)
 	errInsufficient      = newBizError("qy_wd_insufficient_commission", "可提现佣金不足", http.StatusBadRequest)
 	errDebtBlocked       = newBizError("qy_wd_debt_blocked", "存在冲正欠账,暂不能提现", http.StatusBadRequest)
-	errQuotaOverflow     = newBizError("qy_wd_quota_overflow", "您的账户余额已达上限,请先消费后再提现", http.StatusBadRequest)
 	errDailyCountReached = newBizError("qy_wd_daily_count_reached", "已达今日提现次数上限", http.StatusTooManyRequests)
 	errFiatBelowMin      = newBizError("qy_wd_fiat_below_min", "低于法币最低提现金额", http.StatusBadRequest)
 	errFeeEatsAll        = newBizError("qy_wd_fee_eats_all", "扣除手续费后实付金额为 0", http.StatusBadRequest)
@@ -103,17 +110,13 @@ var (
 	errNotFound          = newBizError("qy_wd_not_found", "提现单不存在", http.StatusNotFound)
 	errStatusConflict    = newBizError("qy_wd_status_conflict", "该申请已被处理,请刷新后重试", http.StatusConflict)
 	errIllegalTransition = newBizError("qy_wd_illegal_transition", "当前状态不允许该操作", http.StatusConflict)
-	errInProgress        = newBizError("qy_wd_in_progress", "该请求正在处理中,请稍候", http.StatusConflict)
 
-	// 两条方式闸门。刻意不复用 errIllegalTransition:状态与方式是两回事,
-	// 一个批量脚本对着 approved 队列无差别调用时,"当前状态不允许该操作"
-	// 会把作者引向状态机,而真正的原因是他挑错了单据的提现方式。
+	// 这里曾经有 errNotFiatOrder / errNotQuotaOrder 两条方式闸门。它们守的是
+	// 「quota 单有一条会真的加额度的正向出口,别让人误用只核销不给钱的那一条」。
+	// 自动到账下线之后两种方式的正向出口是同一件事(人发钱、系统记账),
+	// 那道闸门挡的是一条不存在的错路,而它原本要防的"误标记 = 佣金被吃掉"
+	// 换成了 markPayout 里的凭证必填 + 实发金额复核。
 	//
-	// errNotFiatOrder 守的是资金安全边界:markPaid 会核销佣金却不碰主库额度,
-	// 对 quota 单执行等于把佣金吃掉(paid 是终态、不可逆、对账也扫不到)。
-	errNotFiatOrder  = newBizError("qy_wd_not_fiat_order", "站内额度提现不能标记为线下打款,请使用「立即兑现」或「标记打款失败」", http.StatusConflict)
-	errNotQuotaOrder = newBizError("qy_wd_not_quota_order", "线下法币提现不能兑现为站内额度,请使用「标记已打款」", http.StatusConflict)
-
 	// errSelfReview 是自审自批闸门。见 loadDecidableWithdrawal 与
 	// qianye/guard/fund_actor.go —— 提现单的**每一个**人工决定都要经过它,
 	// 包括退回佣金的那几个:四眼原则管的是"谁有资格对这张单下结论",
@@ -122,6 +125,17 @@ var (
 	// 任何人的单据锁死。
 	errSelfReview = newBizError("qy_wd_self_review",
 		"不能审核自己提交的提现申请,请由另一位管理员处理", http.StatusForbidden)
+
+	// errPeerReview 是自审自批之外的另一半。errSelfReview 只挡得住"同一个人"
+	// 的闭环;两个 role=10 管理员互相批对方的提现单,它一次都不会响。
+	// 佣金那一侧(balances/adjust、balances/withdrawn、relations/bind)已经按
+	// 上游 canManageTargetRole 挡住了"给同级记账",提现这一侧却仍然放行
+	// "给同级放行",于是整条链只是从一个人变成两个人。
+	//
+	// 判据与佣金那边逐字同一条(guard.ManageableTarget):root 谁都能批,
+	// 其余角色只能批**严格低于**自己的账号。
+	errPeerReview = newBizError("qy_wd_peer_review",
+		"不能审核同级或更高权限账号提交的提现申请,请由更高权限的管理员处理", http.StatusForbidden)
 )
 
 // 配置与密钥错误。
@@ -159,10 +173,6 @@ func respondErr(c *gin.Context, err error) {
 		respondErr(c, errFiatUnavailable)
 	case errors.Is(err, commission.ErrInvalidAmount):
 		respondErr(c, errAmountOutOfRange)
-	case errors.Is(err, twophase.ErrAmountOutOfRange):
-		respondErr(c, errAmountOutOfRange)
-	case errors.Is(err, twophase.ErrInProgress):
-		respondErr(c, errInProgress)
 	case errors.Is(err, db.ErrNotReady):
 		// 提现是非热路径,库不可用时 fail-close。资金路径上的 fail-open 等于送钱。
 		c.Header("Retry-After", "30")

@@ -39,9 +39,19 @@ export type QyAdminHealth = {
   /** `twophase.Stats()`。扩展库不可用时为空对象。 */
   two_phase: {
     pending?: number
+    /** 主库 COMMIT 已发出但结局不明。与 pending 分开报：这一档意味着钱可能已经动了。 */
+    in_doubt?: number
     uncertain?: number
-    oldest_pending_age_sec?: number
-    oldest_pending_order_no?: string
+    /**
+     * 「最老的未落定单」——扫的是 Pending + InDoubt 两档，不是只有 Pending。
+     * 键名刻意不叫 oldest_pending_*：与上面那个只数 Pending 的计数同名，
+     * 会让面板出现「待处理 0」配「最老待定单已挂 4 分 13 秒 + 单号 XXX」
+     * 这种自相矛盾的一屏，而英文界面下两处逐字都是 pending。
+     */
+    oldest_unsettled_age_sec?: number
+    oldest_unsettled_order_no?: string
+    oldest_uncertain_age_sec?: number
+    oldest_uncertain_order_no?: string
   }
   leases: QyTaskLease[]
   migrate: { table_count: number }

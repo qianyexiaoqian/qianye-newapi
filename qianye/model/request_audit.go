@@ -36,7 +36,7 @@ type RequestAudit struct {
 	StatusCode int `json:"status_code" gorm:"not null;default:0"`
 	// Success 冗余自 StatusCode(<400)。单独一列是为了让"只看失败"能走索引 ——
 	// 越权探测与暴力枚举全是失败请求,那正是这张表最重要的查询。
-	Success   bool  `json:"success" gorm:"not null;default:false;index:idx_qy_req_success,priority:1"`
+	Success   bool  `json:"success" gorm:"not null;index:idx_qy_req_success,priority:1"`
 	LatencyMs int64 `json:"latency_ms" gorm:"not null;default:0"`
 
 	// ActorType 复用 AuditLog 的 ActorUser/ActorAdmin/ActorSystem 三值,

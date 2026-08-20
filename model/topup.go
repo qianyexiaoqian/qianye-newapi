@@ -88,6 +88,38 @@ func (topUp *TopUp) CreditQuota() (int, error) {
 	}
 }
 
+// creditTopUpQuotaTx 把一笔充值的到账额度加到收款人头上，并要求**恰好命中一行**。
+//
+// users 带 gorm.DeletedAt 软删列，GORM 会给 UPDATE 自动补上 `AND deleted_at IS
+// NULL`。收款人在“打开收银台”与“网关回调到达”之间被停用/删除时，这条 UPDATE
+// 匹配 0 行且**不报错**：事务照常提交，订单被写成 success、CompleteTime 落库、
+// 充值成功日志也记上，而钱一分没进任何人钱包，网关侧幂等还会让重投同样认为
+// 已经成功 —— 钱收了、额度零到账、账面三处都宣称到账。
+//
+// 因此这里必须判 RowsAffected 而不是只判 error：加数恒为正，不存在“匹配到但值
+// 没变”的误判，0 行只可能是收款人不存在。返回 ErrRecordNotFound 让整笔事务回
+// 滚，订单留在 pending，人工可查可补。
+//
+// 五条结算路径（epay / stripe / creem / waffo / waffo-pancake / 管理员补单）
+// 必须共用这一份，任何新增支付渠道也走它。
+func creditTopUpQuotaTx(tx *gorm.DB, userId int, extra map[string]interface{}, quotaToAdd int) error {
+	updates := map[string]interface{}{"quota": gorm.Expr("quota + ?", quotaToAdd)}
+	for k, v := range extra {
+		if k == "quota" {
+			continue
+		}
+		updates[k] = v
+	}
+	res := tx.Model(&User{}).Where("id = ?", userId).Updates(updates)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
 func (topUp *TopUp) Insert() error {
 	var err error
 	err = DB.Create(topUp).Error
@@ -190,14 +222,7 @@ func RechargeEpay(tradeNo string, actualPaymentMethod string, callerIp string) (
 		if err := tx.Save(topUp).Error; err != nil {
 			return err
 		}
-		result := tx.Model(&User{}).Where("id = ?", topUp.UserId).Update("quota", gorm.Expr("quota + ?", quotaToAdd))
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected != 1 {
-			return gorm.ErrRecordNotFound
-		}
-		return nil
+		return creditTopUpQuotaTx(tx, topUp.UserId, nil, quotaToAdd)
 	})
 	if err != nil {
 		if !errors.Is(err, ErrTopUpNotFound) && !errors.Is(err, ErrPaymentMethodMismatch) && !errors.Is(err, ErrTopUpStatusInvalid) {
@@ -253,8 +278,7 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 		if err != nil || quota <= 0 {
 			return errors.New("无效的充值额度")
 		}
-		return tx.Model(&User{}).Where("id = ?", topUp.UserId).
-			Updates(map[string]interface{}{"stripe_customer": customerId, "quota": gorm.Expr("quota + ?", quota)}).Error
+		return creditTopUpQuotaTx(tx, topUp.UserId, map[string]interface{}{"stripe_customer": customerId}, quota)
 	})
 
 	if err != nil {
@@ -475,7 +499,7 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 		}
 
 		// 增加用户额度（立即写库，保持一致性）
-		if err := tx.Model(&User{}).Where("id = ?", topUp.UserId).Update("quota", gorm.Expr("quota + ?", quotaToAdd)).Error; err != nil {
+		if err := creditTopUpQuotaTx(tx, topUp.UserId, nil, quotaToAdd); err != nil {
 			return err
 		}
 
@@ -554,7 +578,8 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 			}
 		}
 
-		return tx.Model(&User{}).Where("id = ?", topUp.UserId).Updates(updateFields).Error
+		delete(updateFields, "quota")
+		return creditTopUpQuotaTx(tx, topUp.UserId, updateFields, quota)
 	})
 
 	if err != nil {
@@ -610,7 +635,7 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 			return err
 		}
 
-		return tx.Model(&User{}).Where("id = ?", topUp.UserId).Update("quota", gorm.Expr("quota + ?", quotaToAdd)).Error
+		return creditTopUpQuotaTx(tx, topUp.UserId, nil, quotaToAdd)
 	})
 
 	if err != nil {
@@ -668,7 +693,7 @@ func RechargeWaffoPancake(tradeNo string) (err error) {
 			return err
 		}
 
-		return tx.Model(&User{}).Where("id = ?", topUp.UserId).Update("quota", gorm.Expr("quota + ?", quotaToAdd)).Error
+		return creditTopUpQuotaTx(tx, topUp.UserId, nil, quotaToAdd)
 	})
 
 	if err != nil {

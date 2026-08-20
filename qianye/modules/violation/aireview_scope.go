@@ -80,7 +80,7 @@ type AIScope struct {
 	// Name 是给人看的档名(「自助注册分组」「内部对接·免审」)。
 	// 必填:一张只有作用域表达式的策略表,三个月后没人说得出每条是干什么的。
 	Name    string `json:"name" gorm:"type:varchar(64);not null;default:''"`
-	Enabled bool   `json:"enabled" gorm:"not null;default:false"`
+	Enabled bool   `json:"enabled" gorm:"not null"`
 
 	// Priority 升序,第一条匹配的策略说了算(与规则表同一套心智)。
 	// 不叠加:两条策略同时命中却各给一个抽样率时,"叠加"没有任何一种
@@ -196,7 +196,7 @@ type AIScope struct {
 	// 最多 maxAIAttempts 个渠道,全部挤在**同一份**时间预算里
 	// (见 pickAIChannels 与 aiAttemptBudget)。指定的渠道已经被停用/删除时
 	// 同样退到池子:开关的字面意思就是"这一档可以用别的渠道"。
-	ChannelFailover bool `json:"channel_failover" gorm:"not null;default:false"`
+	ChannelFailover bool `json:"channel_failover" gorm:"not null"`
 
 	Remark    string `json:"remark" gorm:"type:varchar(512);not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"not null"`

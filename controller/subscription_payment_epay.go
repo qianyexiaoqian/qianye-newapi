@@ -12,8 +12,10 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+
 	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
+	"github.com/shopspring/decimal"
 )
 
 type SubscriptionEpayPayRequest struct {
@@ -109,6 +111,17 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		return
 	}
 
+	// 网关金额必须过 operation_setting.Price。
+	//
+	// plan.price_amount 在本仓的三条口径里是「单位」而不是「元」:余额购买
+	// calcSubscriptionBalanceQuota 拿它 × QuotaPerUnit 换额度,前端购买弹窗同式,
+	// 佣金 topUpBaseQuota 对订阅单也按 Money × QuotaPerUnit 算基数;而钱包充值
+	// getPayMoney 对同一个「单位」是要乘汇率的。订阅走 epay 时原样把它当网关金额
+	// 发出去 —— Price 取仓库默认 7.3 时,同一件商品现金付 ¥30、余额付相当于 ¥219,
+	// 现金收入缩水到 1/Price,而 upsertSubscriptionTopUpTx 写下的那条 provider=''
+	// 的 top_ups 行会把同一个误差原样放大到佣金支出。
+	payMoney := subscriptionEpayMoney(plan.PriceAmount)
+
 	order := &model.SubscriptionOrder{
 		UserId:          userId,
 		PlanId:          plan.Id,
@@ -130,7 +143,7 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		Type:           req.PaymentMethod,
 		ServiceTradeNo: tradeNo,
 		Name:           fmt.Sprintf("SUB:%s", plan.Title),
-		Money:          strconv.FormatFloat(plan.PriceAmount, 'f', 2, 64),
+		Money:          strconv.FormatFloat(payMoney, 'f', 2, 64),
 		Device:         epay.PC,
 		NotifyUrl:      notifyUrl,
 		ReturnUrl:      returnUrl,
@@ -245,4 +258,18 @@ func SubscriptionEpayReturn(c *gin.Context) {
 		return
 	}
 	c.Redirect(http.StatusFound, paymentReturnPath("/wallet?pay=pending"))
+}
+
+// subscriptionEpayMoney 把套餐标价（与钱包充值的 amount 同一个「单位」）换算成
+// 网关要收的金额，口径与 controller/topup.go 的 getPayMoney 一致。
+//
+// 刻意不复用 getPayMoney:后者还要乘充值分组倍率与档位折扣，那两项是「充值」
+// 这个动作的促销参数，套餐有自己的定价，混进来会让同一张套餐对不同用户卖出
+// 不同的现金价而订单上却记着同一个 price_amount。
+func subscriptionEpayMoney(priceAmount float64) float64 {
+	price := operation_setting.Price
+	if price <= 0 {
+		price = 1
+	}
+	return decimal.NewFromFloat(priceAmount).Mul(decimal.NewFromFloat(price)).InexactFloat64()
 }

@@ -55,7 +55,7 @@ type Address struct {
 	// 刻意不写 `gorm:"default:true"`:MySQL 与 PostgreSQL 对布尔默认值的归一化
 	// 不同,AutoMigrate 会在每次重启时反复 ALTER TABLE(见 AGENTS.md)。
 	// "新建的地址默认启用"是业务规则,由 createReq.apply 在代码里落。
-	Enabled bool `json:"enabled" gorm:"not null;default:false"`
+	Enabled bool `json:"enabled" gorm:"not null"`
 
 	CreatedAt int64 `json:"created_at" gorm:"not null;default:0"`
 	UpdatedAt int64 `json:"updated_at" gorm:"not null;default:0"`

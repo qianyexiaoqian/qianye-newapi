@@ -569,8 +569,18 @@ func (user *User) TransferAffQuotaToQuota(quota int) error {
 	}
 
 	// 更新用户额度
+	//
+	// 这里曾经是裸的 `user.Quota += quota`：在 Go 侧做 int64 加法，没有任何上界，
+	// 也不会像 gorm.Expr("quota + ?") 那样把溢出交给数据库报错。一个被顶到
+	// math.MaxInt64 附近的钱包（历史上可由无上界的兑换码面额造出来），下一次
+	// 划转就会静默回绕成约 -9.2e18 的负余额，接口仍返回 success。
+	// 走 QuotaAddChecked：饱和到 int32 区间并留一条 SysError。
 	user.AffQuota -= quota
-	user.Quota += quota
+	newQuota, clamp := common.QuotaAddChecked(user.Quota, quota)
+	if clamp != nil {
+		return errors.New("额度已达上限，无法继续划转")
+	}
+	user.Quota = newQuota
 
 	// 保存用户状态
 	if err := tx.Save(user).Error; err != nil {

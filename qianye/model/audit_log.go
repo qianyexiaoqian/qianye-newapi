@@ -28,11 +28,11 @@ type AuditLog struct {
 	TargetUserId int `json:"target_user_id" gorm:"not null;default:0;index:idx_qy_audit_target,priority:1"`
 
 	AmountQuota int64           `json:"amount_quota" gorm:"not null;default:0"`
-	AmountFiat  decimal.Decimal `json:"amount_fiat" gorm:"type:decimal(18,6);not null;default:0"`
+	AmountFiat  decimal.Decimal `json:"amount_fiat" gorm:"type:decimal(18,6);not null;default:0.000000"`
 	Currency    string          `json:"currency" gorm:"type:varchar(8);not null;default:''"`
 	// FrozenRate 冻结佣金产生当时的汇率。USDExchangeRate 是管理员可随时修改的
 	// 全局变量,不冻结的话历史对账永远对不上。
-	FrozenRate decimal.Decimal `json:"frozen_rate" gorm:"type:decimal(18,8);not null;default:0"`
+	FrozenRate decimal.Decimal `json:"frozen_rate" gorm:"type:decimal(18,8);not null;default:0.00000000"`
 
 	Result string `json:"result" gorm:"type:varchar(16);not null"` // ok | fail | pending
 	Reason string `json:"reason" gorm:"type:varchar(512);not null;default:''"`

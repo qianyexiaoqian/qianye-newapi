@@ -38,6 +38,19 @@ type inviterEntry struct {
 	// 费率上;主库那一侧改分组的出口(套餐升降级、管理端改用户、分组迁移)
 	// 都调 model.QyOnUserGroupChanged 立即失效这一条,见 installHooks。
 	Group string
+	// Missing 表示主库里**根本没有这一行**(用户被硬删,或被软删后被
+	// deleted_at 作用域过滤掉)。
+	//
+	// 零值 false = "查到了"。这个方向是刻意的:任何一条忘了设置它的新路径,
+	// 落进的是"正常解析"而不是"降级",与旧行为一致,不会突然把全站佣金推进
+	// 降级分支。真正需要它的是**读取侧**——见 resolveInviterPricing。
+	//
+	// 没有这个字段之前,"读不到上线"与"上线的分组是空串"在结构上不可区分,
+	// 而空串会被 billingGroup 折成 "default":于是一个被删掉的推广人名下的
+	// 佣金,会按站点给 default 分组配的那一档费率**冻结进账本**,而设计声明的
+	// 是跳过分组层走全局兜底档。实测 5% 变成 33%(方向由配置决定,反过来
+	// 就是少发),同时 inviter_group 降级计数器恒不响,一点信号都没有。
+	Missing bool
 }
 
 const inviterCacheCapacity = 200000
@@ -119,9 +132,11 @@ func resolveInviter(ctx context.Context, userId int) (inviterEntry, bool, error)
 			Where("id = ?", userId).
 			Take(&row).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// 用户已被删除。缓存成"无邀请人",否则每条日志都会再查一次主库。
-			getInviterCache().Set(userId, inviterEntry{})
-			return resolved{}, nil
+			// 用户已被删除。缓存成"查不到",否则每条日志都会再查一次主库。
+			// 必须带上 Missing:见字段注释,不带就是"上线在 default 分组"。
+			missing := inviterEntry{Missing: true}
+			getInviterCache().Set(userId, missing)
+			return resolved{entry: missing}, nil
 		}
 		if err != nil {
 			return resolved{}, err

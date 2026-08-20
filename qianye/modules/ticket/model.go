@@ -96,7 +96,7 @@ type Message struct {
 	//
 	// 过滤必须写进 **WHERE**(见 loadUserMessages),不能取回来再过滤:
 	// 少写一个 if 的后果是把客服的内部判断原样发给被投诉的那个用户。
-	Internal bool `json:"internal" gorm:"not null;default:false"`
+	Internal bool `json:"internal" gorm:"not null"`
 
 	ClientIp  string `json:"-" gorm:"type:varchar(64);not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"not null;index:idx_qy_tkm_tid,priority:2"`

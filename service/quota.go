@@ -265,6 +265,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
 	attachSettleFailure(ctx, relayInfo, other)
+	attachPreConsumeShortfall(ctx, relayInfo, other)
 	attachGroupRatioFallback(ctx, relayInfo, other)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
@@ -405,6 +406,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
 	attachSettleFailure(ctx, relayInfo, other)
+	attachPreConsumeShortfall(ctx, relayInfo, other)
 	attachGroupRatioFallback(ctx, relayInfo, other)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,

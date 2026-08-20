@@ -57,7 +57,7 @@ func handleGetConfig(c *gin.Context) {
 		"used_today_quota":    usage.Quota,
 		"payee_account_max":   cfg.PayeeAccountMax,
 		"review_sla_hours":    cfg.ReviewSLAHours,
-		"auto_credit":         cfg.AutoCredit(),
+		"payout_sla_hours":    cfg.PayoutSLAHours,
 		"withdrawable_quota":  withdrawable,
 	}
 	if cfg.HasWithdrawMethod(config.WithdrawMethodFiat) {
@@ -430,6 +430,13 @@ var listPaging = httpq.Spec{}
 
 // applyStatusFilter 支持逗号分隔的多状态筛选。
 // 只接受已知状态,拒绝把任意字符串拼进 SQL 的可能。
+//
+// 一个已知状态都认不出来时**返回空集,而不是不加条件**。
+// 原先那一支是静默放宽:?status=paying(本轮下线的状态,缓存住旧 bundle 的
+// 浏览器仍会发出)、?status=PENDING(大小写不符)、拼错的任意串,都会让管理端的
+// 提现审核队列返回**全表**,而界面上的筛选器显示已生效。运营点「只看待发放」
+// 看到的是整条队列,最容易导致的操作是在一张不该处理的单上按决定按钮。
+// 筛选器的语义只能是收窄,认不出来就该是"没有匹配项"。
 func applyStatusFilter(q *gorm.DB, raw string) *gorm.DB {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -443,12 +450,12 @@ func applyStatusFilter(q *gorm.DB, raw string) *gorm.DB {
 		}
 	}
 	if len(wanted) == 0 {
-		return q
+		return q.Where("1 = 0")
 	}
 	return q.Where("status IN ?", wanted)
 }
 
 var knownStatuses = map[string]struct{}{
-	StatusPending: {}, StatusApproved: {}, StatusPaying: {},
+	StatusPending: {}, StatusApproved: {},
 	StatusPaid: {}, StatusRejected: {}, StatusCancelled: {}, StatusFailed: {},
 }

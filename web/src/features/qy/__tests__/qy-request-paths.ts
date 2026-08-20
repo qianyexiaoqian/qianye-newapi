@@ -481,7 +481,20 @@ function firstArg(src: string, open: number): string {
   return src.slice(open + 1, i).trim()
 }
 
-/** 跳过 `qyGet<…>` 的泛型实参，返回 `(` 的下标；不是调用则返回 -1。 */
+/**
+ * 跳过 `qyGet<…>` 的泛型实参，返回 `(` 的下标；不是调用则返回 -1。
+ *
+ * 这里**不能**把 `;` 当成"不是泛型"的终止符。内联对象类型里的成员分隔符正是
+ * `;`（`qyPost<{ a: number; b: boolean }>(path, …)`），而遇到它就 return -1
+ * 会让调用方的 `if (open === -1) continue` 把整个调用点**静默丢弃**：既不记
+ * site 也不记 unresolved。实测这条路吃掉了 13 处 qy 调用点（管理端申诉批准、
+ * 违规计数重置、佣金冲正/结算/重跑/关系拉黑、分组与法币费率删除、用户分组
+ * 默认值、违规规则启停、抽奖封面——全是写接口），把它们的路径改成一条后端
+ * 根本不存在的字符串，本守卫 5 pass 0 fail 全绿。
+ *
+ * 而本文件自己的纪律是"求不出来的一律显式报告，绝不静默丢弃 —— 静默丢弃等于
+ * 把守卫关掉"。深度计数本身已经能正确跨过 `<…>`，`;` 那一支只是在挡它自己。
+ */
 function skipGenerics(src: string, from: number): number {
   let i = from
   while (i < src.length && /\s/.test(src[i])) i += 1
@@ -495,7 +508,7 @@ function skipGenerics(src: string, from: number): number {
           i += 1
           break
         }
-      } else if (src[i] === ';') return -1
+      }
     }
     while (i < src.length && /\s/.test(src[i])) i += 1
   }

@@ -68,6 +68,8 @@ redemption.product_type_invalid: "Unknown redemption code product type"
 redemption.quota_positive: "Quota must be greater than 0 for a balance redemption code"
 redemption.plan_invalid: "Please select an existing and enabled subscription plan"
 redemption.status_locked: "A redeemed code cannot be re-enabled or disabled; issue a new code instead"
+redemption.used_immutable: "A redeemed code is final; its quota can no longer be changed"
+redemption.quota_too_large: "Quota exceeds the maximum a wallet can hold"
 
 # User messages
 user.password_login_disabled: "Password login has been disabled by administrator"

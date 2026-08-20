@@ -104,13 +104,13 @@ type AIChannel struct {
 	TimeoutMs int `json:"timeout_ms" gorm:"not null;default:0"`
 	// Weight 是加权随机的权重,>= 1。多渠道时按权重分流,而不是永远打第一个。
 	Weight  int  `json:"weight" gorm:"not null;default:1"`
-	Enabled bool `json:"enabled" gorm:"not null;default:false"`
+	Enabled bool `json:"enabled" gorm:"not null"`
 
 	// PriceInPerM / PriceOutPerM 是每百万 token 的美元单价,用于把 token 换算成
 	// 花费。0 表示"没填",此时 cost_usd 恒为 0,界面会把这一列标成"单价未配"——
 	// 刻意不猜一个默认价:猜错的成本数字比没有数字更糟,它会被当成真的。
-	PriceInPerM  decimal.Decimal `json:"price_in_per_m" gorm:"type:decimal(18,8);not null;default:0"`
-	PriceOutPerM decimal.Decimal `json:"price_out_per_m" gorm:"type:decimal(18,8);not null;default:0"`
+	PriceInPerM  decimal.Decimal `json:"price_in_per_m" gorm:"type:decimal(18,8);not null;default:0.00000000"`
+	PriceOutPerM decimal.Decimal `json:"price_out_per_m" gorm:"type:decimal(18,8);not null;default:0.00000000"`
 
 	Remark    string `json:"remark" gorm:"type:varchar(512);not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"not null"`
@@ -143,7 +143,7 @@ type AISetting struct {
 
 	// Enabled 是 AI 审核的总开关。关掉之后 ai_review 规则一条都不会命中
 	// (快照直接不装配它们),热路径连一次随机数都不摇。
-	Enabled bool `json:"enabled" gorm:"not null;default:false"`
+	Enabled bool `json:"enabled" gorm:"not null"`
 
 	// PreTimeoutMs 是**转发前审核**的时间预算,上限 maxPreTimeoutMs。
 	//
@@ -168,7 +168,7 @@ type AISetting struct {
 	// 它是一个**必须显式勾过一次**的闸:未确认时保存 enabled=true 会被 400 拒绝。
 	// 不做成纯前端提示,是因为纯前端的提示在下一次改版里会被顺手删掉,
 	// 而"用户内容出境"这件事需要一条查得到的记录(它连同审计一起留痕)。
-	ThirdPartyNoticeAck bool `json:"third_party_notice_ack" gorm:"not null;default:false"`
+	ThirdPartyNoticeAck bool `json:"third_party_notice_ack" gorm:"not null"`
 
 	CreatedAt int64 `json:"created_at" gorm:"not null"`
 	UpdatedAt int64 `json:"updated_at" gorm:"not null"`
@@ -208,7 +208,7 @@ type AIReview struct {
 	Outcome string `json:"outcome" gorm:"type:varchar(24);not null;default:'';index:idx_qy_vai_outcome"`
 	// Violated / Category / Confidence / Reason 是模型给出的结构化结论。
 	// Outcome 不是 clean/violation 时这四列无意义(全零值)。
-	Violated bool   `json:"violated" gorm:"not null;default:false"`
+	Violated bool   `json:"violated" gorm:"not null"`
 	Category string `json:"category" gorm:"type:varchar(64);not null;default:''"`
 	// RawCategory 是模型**原样**返回的那个类型名,只在它不在类型清单里时非空。
 	//
@@ -219,7 +219,7 @@ type AIReview struct {
 	// 它是模型输出的一小段文本,不是用户内容,但仍按 64 字截断:模型偶尔会
 	// 把整句理由塞进 category 字段,而那一句可能复述用户原文。
 	RawCategory string          `json:"raw_category" gorm:"type:varchar(64);not null;default:''"`
-	Confidence  decimal.Decimal `json:"confidence" gorm:"type:decimal(5,4);not null;default:0"`
+	Confidence  decimal.Decimal `json:"confidence" gorm:"type:decimal(5,4);not null;default:0.0000"`
 	// Reason 是模型给的理由。它可能复述用户原文,所以与 Record.MatchSnippet
 	// 同规格做脱敏(redactSnippet)之后再落库。
 	Reason string `json:"reason" gorm:"type:varchar(512);not null;default:''"`
@@ -235,7 +235,7 @@ type AIReview struct {
 	TotalTokens      int `json:"total_tokens" gorm:"not null;default:0"`
 	// CostUsd 由渠道单价 × token 算出。渠道没填单价时恒为 0,
 	// 界面据 priced 标记区分"没花钱"与"不知道花了多少"。
-	CostUsd decimal.Decimal `json:"cost_usd" gorm:"type:decimal(18,8);not null;default:0"`
+	CostUsd decimal.Decimal `json:"cost_usd" gorm:"type:decimal(18,8);not null;default:0.00000000"`
 	// CostUnknown 为真表示上面那个数字是**下界**而不是真值:这一次审核的重试链上
 	// 至少有一次调用产生了 token 却算不出钱(那个渠道没填单价)。
 	//
@@ -254,7 +254,7 @@ type AIReview struct {
 	// 含义是"没有任何理由认为这一行算不准",与这一列存在之前的口径逐字节一致。
 	// 反过来(cost_known 默认 false)会把全部历史行一夜之间判成"算不准",
 	// 在成本页上凭空点亮一条谁也复核不了的告警。
-	CostUnknown bool `json:"cost_unknown" gorm:"not null;default:false"`
+	CostUnknown bool `json:"cost_unknown" gorm:"not null"`
 	LatencyMs   int  `json:"latency_ms" gorm:"not null;default:0"`
 	// Attempts 是这一次审核实际发出的调用次数(含失败的那几次)。
 	//

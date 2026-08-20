@@ -742,12 +742,27 @@ type FundOrder struct {
 
 ```go
 const (
-	StatusPending   int8 = 0 // 新库已落单，主库尚未确认
+	StatusPending   int8 = 0 // 新库已落单，主库的 COMMIT 尚未发出
 	StatusSuccess   int8 = 2 // 主库已生效且新库已回写
-	StatusFailed    int8 = 3 // 主库明确未生效（业务校验失败/事务回滚）
-	StatusUncertain int8 = 4 // 探针无法判定，转人工
+	StatusFailed    int8 = 3 // 主库**明确**未生效：COMMIT 从未发出（事务开不起来/事务体报错）
+	StatusUncertain int8 = 4 // 探针无法判定，进人工队列（探针恢复后会自动复判）
 	StatusReversed  int8 = 5 // 已被冲正（退款回收佣金等）
+	StatusInDoubt   int8 = 6 // 主库 COMMIT 已发出但结局不明，等探针复判
 )
+```
+
+**为什么 `InDoubt` 必须与 `Failed` 分开**（本轮收敛）：
+
+旧实现对**任何** `mainErr` 都置 `Failed`，于是 `Failed` 同时承载两件完全不同的事：
+「从没开始」与「结局不明」。而 transfer / lottery / violation 三个模块都按
+`order.Status == Failed` 做**不可逆动作**（退风控预占、回滚参与名额、换代次重发出款）。
+拿一个歧义值去做不可逆动作，超发与错扣就是必然 —— 抽奖双发就是这么来的。
+
+判据是**阶段**而不是错误文本：只要 COMMIT 从来没有发出去过，主库就不可能提交。
+`applyOnMainDB` 因此手写 Begin / 事务体 / Commit 三段，而不用 gorm 的 `Transaction(fc)` 包装器
+（那个包装器把三种错误揉成同一个返回值）。
+
+```
 ```
 
 ### 4.2 主库探针表：`qy_fund_outbox`（主库，唯一精确探针）
@@ -845,7 +860,9 @@ func Execute(ctx context.Context, req Request) (*model.FundOrder, error)
 
 在新库租约 `qy:twophase:compensate` 保护下运行，每 `compensate_interval_seconds` 执行：
 
-1. `SELECT * FROM qy_fund_orders WHERE status=0 AND updated_at < now-pending_grace AND next_probe_at <= now ORDER BY id LIMIT batch_size`。
+1. `SELECT * FROM qy_fund_orders WHERE status IN (0,6) AND updated_at < now-pending_grace AND next_probe_at <= now ORDER BY id LIMIT batch_size`。
+   扫描范围是**两个**未定局状态：`Pending`（COMMIT 未发出）与 `InDoubt`（COMMIT 已发出、结局不明）。
+   两者用同一套探针判据，差别只在证据强度与告警口径。
 2. 对每条：`applied, err := model.QyProbeFundOutbox(order.OrderNo)`
    - `applied=true` → 补做步骤 3.1/3.2/3.3 + 步骤 4，置 `Success`（`AfterCommit` 幂等由各模块保证）。
    - `applied=false` 且 `now-CreatedAt > manual_review_after_seconds` → 置 `Failed`（主库确定没动，安全）。
@@ -1308,7 +1325,7 @@ func WriteTx(tx *gorm.DB, e Entry) error
 | # | Method + Path | 权限 | 请求 | 响应 data |
 |---|---|---|---|---|
 | 1 | `GET /api/qy/status` | 匿名 | — | `{enabled, available, version, features:{transfer,commission,withdraw,wallet_transfer_entry,...}, wallet:{tabs_keep_mounted}, usage_log:{show_reasoning_effort,show_cache_ratio}}` |
-| 2 | `GET /api/qy/admin/health` | 管理员 | — | `{db:{available,breaker_open_until,ping_ms,open_conns,in_use,idle,wait_count}, migrate:{applied,table_count}, two_phase:{pending,uncertain,oldest_pending_age_sec}, leases:[{name,holder,fence,lease_until,expired}], config:{path,loaded_at,mtime}}` |
+| 2 | `GET /api/qy/admin/health` | 管理员 | — | `{db:{available,breaker_open_until,ping_ms,open_conns,in_use,idle,wait_count}, migrate:{applied,table_count}, two_phase:{pending,in_doubt,uncertain,oldest_unsettled_age_sec,oldest_unsettled_order_no,oldest_uncertain_age_sec,oldest_uncertain_order_no}, leases:[{name,holder,fence,lease_until,expired}], config:{path,loaded_at,mtime}}` |
 | 3 | `GET /api/qy/admin/fund-orders` | 管理员 | query: `status,kind,user_id,order_no,ref_id,start_ts,end_ts,p,page_size` | `{items:[FundOrder],total}` |
 | 4 | `POST /api/qy/admin/fund-orders/:order_no/reprobe` | 管理员 | — | `{order_no,status,main_applied,resolved}` 立即重跑一次探针 |
 | 5 | `POST /api/qy/admin/fund-orders/:order_no/resolve` | 管理员 | `{decision:"success"\|"failed", reason}` | `{order_no,status}` 仅允许对 `Uncertain` 单执行；写审计 |
@@ -1388,7 +1405,8 @@ func WriteTx(tx *gorm.DB, e Entry) error
 | YAML 字段拼错 | `KnownFields(true)` 严格解码直接报错 —— 风控开关拼错却静默失效是最危险的失败模式 |
 | 配置文件权限泄露 | 启动时检查 `qianye.yaml` 权限，若为 world-readable 且 DSN 含密码，`SysError` 告警（不阻塞启动） |
 | `logs.request_id` 长度 | varchar(64)，单号 31 字符，安全 |
-| `Uncertain` 单 | 永远不自动结算，只能管理员在对账台 `resolve`，且必须填 `reason` 并落审计 |
+| `Uncertain` 单 | 三个出口：① `reprobeUncertain` 每 `manual_review_after_seconds` 重探一次，**只认 `MainApplied` / `MainNotApplied` 两个确定取值**自动落定（`MainUnknown` 原地不动）；② 管理员在对账台 `resolve`，必须填 `reason` 并落审计；③ `alarmOnBacklog` 每小时一条积压告警（笔数 + 金额 + 最久一笔）。自动复判的 CAS 从 `Uncertain` 出发，因此永远不会推翻管理员刚下的裁决 |
+| `InDoubt` 单 | 不需要人：它留在补偿任务的收敛范围内，探针给出确定判据后自动落 `Success` / `Failed`；判不出来才转 `Uncertain`。调用方对它一律**不回滚** |
 
 ---
 

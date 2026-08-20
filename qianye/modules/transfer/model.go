@@ -63,11 +63,11 @@ type Order struct {
 	// RiskHeld 表示风控计数仍处于"预占且可撤销"的状态。
 	// 它是结算幂等的开关:成功与失败都靠对它做 CAS 来保证同一笔只结算一次,
 	// 否则补偿任务与业务线程会把日累计重复退还。
-	RiskHeld bool `json:"-" gorm:"not null;default:false"`
+	RiskHeld bool `json:"-" gorm:"not null"`
 
 	// LedgerWritten 标记主库账本日志(logs)是否已写。
 	// 崩溃恢复时补偿任务据此决定要不要补写,避免用户看到两条重复的余额变动记录。
-	LedgerWritten bool `json:"-" gorm:"not null;default:false"`
+	LedgerWritten bool `json:"-" gorm:"not null"`
 
 	CreatedAt int64 `json:"created_at" gorm:"not null;index:idx_qy_tr_from,priority:2;index:idx_qy_tr_to,priority:2;index:idx_qy_tr_status,priority:2"`
 	SettledAt int64 `json:"settled_at" gorm:"not null;default:0"`
@@ -117,7 +117,7 @@ type LookupLog struct {
 	// Identifier 原样保存用户输入 —— 只有原值才能判断"同一个人是否在按序号遍历"。
 	Identifier string `json:"identifier" gorm:"type:varchar(64);not null;default:''"`
 	ByType     string `json:"by_type" gorm:"type:varchar(8);not null;default:''"` // id | email
-	Hit        bool   `json:"hit" gorm:"not null;default:false"`
+	Hit        bool   `json:"hit" gorm:"not null"`
 	ClientIp   string `json:"client_ip" gorm:"type:varchar(64);not null;default:''"`
 	CreatedAt  int64  `json:"created_at" gorm:"not null;index:idx_qy_tr_lk_user,priority:2"`
 }

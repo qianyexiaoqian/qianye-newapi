@@ -397,16 +397,43 @@ export function QyAdminHealth() {
                     <QyKeyValue label={t('qy_common_st_pending')}>
                       {health.two_phase.pending ?? QY_EMPTY_TEXT}
                     </QyKeyValue>
+                    {/* in_doubt = 主库 COMMIT 已发出、结局不明。它和 pending
+                        长得像但含义完全不同：钱很可能已经动了，只是还没人能证明。
+                        大于 0 就标警示色，否则它会消失在最常见的那一档里。 */}
+                    <QyKeyValue label={t('qy_common_st_in_doubt')}>
+                      <span
+                        className={
+                          (health.two_phase.in_doubt ?? 0) > 0
+                            ? 'text-warning'
+                            : undefined
+                        }
+                      >
+                        {health.two_phase.in_doubt ?? QY_EMPTY_TEXT}
+                      </span>
+                    </QyKeyValue>
                     <QyKeyValue label={t('qy_common_st_uncertain')}>
                       {health.two_phase.uncertain ?? QY_EMPTY_TEXT}
                     </QyKeyValue>
-                    <QyKeyValue label={t('qy_cfg_health_oldest_pending')}>
+                    {/* 两组「最老的一笔」各自带上自己的单号。
+                        原先只有一个「单号」行、取的还是未落定那一路，于是
+                        待人工裁决那一档给出了时长却给不出单号 —— 而对账台按
+                        id desc 排序，最老的那张恰好在最后一页。 */}
+                    <QyKeyValue label={t('qy_cfg_health_oldest_uncertain')}>
                       {formatQyDuration(
-                        health.two_phase.oldest_pending_age_sec
+                        health.two_phase.oldest_uncertain_age_sec
                       )}
                     </QyKeyValue>
-                    <QyKeyValue label={t('qy_common_order_no')}>
-                      {health.two_phase.oldest_pending_order_no ??
+                    <QyKeyValue label={t('qy_cfg_health_oldest_uncertain_no')}>
+                      {health.two_phase.oldest_uncertain_order_no ??
+                        QY_EMPTY_TEXT}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_oldest_unsettled')}>
+                      {formatQyDuration(
+                        health.two_phase.oldest_unsettled_age_sec
+                      )}
+                    </QyKeyValue>
+                    <QyKeyValue label={t('qy_cfg_health_oldest_unsettled_no')}>
+                      {health.two_phase.oldest_unsettled_order_no ??
                         QY_EMPTY_TEXT}
                     </QyKeyValue>
                     <QyKeyValue label={t('qy_cfg_health_node')}>
