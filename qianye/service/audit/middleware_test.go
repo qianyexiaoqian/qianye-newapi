@@ -43,14 +43,17 @@ func runThroughMiddleware(t *testing.T, method, routePath, requestURL string,
 	group := engine.Group("/api/qy")
 	// 与 qianye/router.go 同一个挂法:中间件在认证之前。
 	group.Use(func(c *gin.Context) {
-		if !shouldRecord(c.Request.Method, c.Request.Method+" "+c.FullPath()) {
+		// 判据一律走生产那一份 planRequestAudit / rowFor:夹具自己抄一遍的话,
+		// 生产代码改错了这些用例照样全绿。
+		plan := planRequestAudit(c.Request.Method, c.FullPath())
+		if !plan.wanted() {
 			c.Next()
 			return
 		}
 		captured := captureBody(c, c.Request.Method+" "+c.FullPath())
 		start := time.Now()
 		c.Next()
-		row = buildRequestAudit(c, captured, time.Since(start))
+		row = plan.rowFor(c, captured, time.Since(start))
 	})
 	group.Handle(method, strings.TrimPrefix(routePath, "/api/qy"), handler)
 

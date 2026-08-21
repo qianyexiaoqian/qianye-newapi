@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -156,10 +157,43 @@ const settingsCacheSeconds = 60
 // (503,可重试)远比按一份没人再确认过的门槛继续放行资金操作安全。
 const settingsStaleGraceSeconds = 600
 
+// settingsVersionCheckSeconds 是跨节点感知的上界。
+//
+// invalidateSettings() 只清**本进程**的缓存。多节点部署里,运营在 A 节点收紧
+// 某一档的单笔上限 / 日额度 / 日笔数 / 冷却 / 新账号冻结期之后,B 节点最长
+// settingsCacheSeconds(60 秒)仍按旧值放行,零告警 —— 实测过一笔在库里明写
+// 单笔上限 1000 的情况下走掉 5000 的划转,而同一时刻 /transfer/limits 还在
+// 向用户回显旧值,前后端口径一致地都是错的。
+//
+// 分组**规则**那一半刻意不缓存(见 loadGroupRules:「多节点口径不一致比多一次
+// 查库严重得多」),门槛这一半却缓存了 60 秒 —— 同一道闸门的两半采用了相反的
+// 新鲜度策略,而缓存的恰好是决定钱能走多少的那一半。
+//
+// 修法与 commission 的缓存收敛同形:加一张单行版本表,缓存命中时先花一次主键
+// 查询比对版本号,版本没变才沿用。取 2 秒与 commission 的轮询周期一致 ——
+// 一次主键查询比全量重载便宜三个数量级,而 60 秒的口径不一致窗口是真金白银。
+const settingsVersionCheckSeconds = 2
+
+// SettingsVersion 是单行表,每次门槛/分档写操作 +1。
+//
+// 与 violation.RuleVersion 同形:autoIncrement:false 是必须的 ——
+// GORM 默认会把整型主键建成 AUTO_INCREMENT,而这里的主键恒为 1。
+type SettingsVersion struct {
+	Id        int   `json:"id" gorm:"primaryKey;autoIncrement:false"` // 恒为 1
+	Version   int64 `json:"version" gorm:"not null;default:0"`
+	UpdatedAt int64 `json:"updated_at" gorm:"not null;default:0"`
+}
+
+func (SettingsVersion) TableName() string { return "qy_transfer_settings_version" }
+
 var (
 	settingsMu     sync.Mutex
 	settingsCache  *opSettings
 	settingsLoaded int64
+	// settingsVersion 是本进程这份快照对应的版本号;
+	// settingsVersionChecked 是上一次比对版本号的时刻。
+	settingsVersion        int64
+	settingsVersionChecked int64
 	// settingsEpoch 是缓存的代次,每次失效自增。
 	//
 	// 查库放到临界区之外之后,"SELECT 返回"与"写回缓存"之间就出现了一个窗口:
@@ -229,15 +263,36 @@ func effectiveCtx(ctx context.Context) (opSettings, error) {
 // 同一个故障立刻变成 fail-closed。加上上界之后,超过宽限期一律 fail-closed,
 // 方向不再取决于「保存动作和故障谁先发生」。
 func resolveSettings(ctx context.Context) (opSettings, bool, error) {
+	now := common.GetTimestamp()
 	settingsMu.Lock()
-	if settingsCache != nil && common.GetTimestamp()-settingsLoaded < settingsCacheSeconds {
+	if settingsCache != nil && now-settingsLoaded < settingsCacheSeconds {
 		snap := *settingsCache
+		knownVersion := settingsVersion
+		checkedAt := settingsVersionChecked
 		settingsMu.Unlock()
-		return snap, true, nil
+		if now-checkedAt < settingsVersionCheckSeconds {
+			return snap, true, nil
+		}
+		// 一次主键查询。读失败时沿用缓存:把一次探测失败升级成一次全量重载,
+		// 只会在扩展库已经不舒服的时候再加一份负载。
+		dbVersion, ok := readSettingsVersion(ctx)
+		settingsMu.Lock()
+		settingsVersionChecked = now
+		settingsMu.Unlock()
+		if !ok || dbVersion == knownVersion {
+			return snap, true, nil
+		}
+		// 版本变了 —— 别的节点刚改过门槛,落到下面走一次全量重载。
+	} else {
+		settingsMu.Unlock()
 	}
+	settingsMu.Lock()
 	epoch := settingsEpoch
 	settingsMu.Unlock()
 
+	// 版本号必须在拉数据**之前**读:反过来的话,两者之间的一次写入会让我们
+	// 拿到旧数据配新版本号,此后 60 秒都不会再重载。
+	loadedVersion, _ := readSettingsVersion(ctx)
 	overrides, tiers, err := loadSettingRows(ctx)
 	if err != nil {
 		settingsMu.Lock()
@@ -289,9 +344,46 @@ func resolveSettings(ctx context.Context) (opSettings, bool, error) {
 	if settingsEpoch == epoch {
 		settingsCache = &merged
 		settingsLoaded = common.GetTimestamp()
+		settingsVersion = loadedVersion
+		settingsVersionChecked = settingsLoaded
 	}
 	settingsMu.Unlock()
 	return merged, true, nil
+}
+
+// readSettingsVersion 读单行版本表。行不存在(首次部署)按 0 处理,不是错误。
+func readSettingsVersion(ctx context.Context) (int64, bool) {
+	gdb := db.Get()
+	if gdb == nil {
+		return 0, false
+	}
+	var ver SettingsVersion
+	if err := gdb.WithContext(ctx).Where("id = ?", 1).Take(&ver).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, true
+		}
+		return 0, false
+	}
+	return ver.Version, true
+}
+
+// bumpSettingsVersion 把版本号 +1,让其它节点在 settingsVersionCheckSeconds 内感知。
+//
+// 失败只告警不报错:本节点的 invalidateSettings 已经生效,漏掉的只是"别的节点
+// 早两秒还是晚六十秒知道",把它升级成一次保存失败反而更糟。
+func bumpSettingsVersion() {
+	gdb := db.Get()
+	if gdb == nil {
+		return
+	}
+	now := common.GetTimestamp()
+	const t = "qy_transfer_settings_version"
+	if err := gdb.Exec(`INSERT INTO `+t+` (id, version, updated_at)
+		VALUES (1, 1, ?)
+		`+db.UpsertHead(gdb, t, "id")+` version = `+t+`.version + 1, updated_at = ?`, now, now).Error; err != nil {
+		db.MarkFailure(err)
+		common.SysError("qianye/transfer: 门槛版本号自增失败,其他节点可能延迟感知: " + err.Error())
+	}
 }
 
 // invalidateSettings 在管理端改配置后立即失效缓存,避免"改完 60 秒还没生效"的困惑。
@@ -299,8 +391,13 @@ func invalidateSettings() {
 	settingsMu.Lock()
 	settingsCache = nil
 	settingsLoaded = 0
+	settingsVersion = 0
+	settingsVersionChecked = 0
 	settingsEpoch++
 	settingsMu.Unlock()
+	// 本进程之外还有别的节点。它们不会收到这次调用,只会在下一次版本比对时
+	// 看到号变了 —— 所以这一行是跨节点收敛的**唯一**触发点。
+	bumpSettingsVersion()
 }
 
 // loadSettingRows 读出这份快照需要的两张表:全站覆盖与按用户分组的分档。

@@ -71,20 +71,62 @@ func Middleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		routeKey := c.Request.Method + " " + c.FullPath()
-		if !shouldRecord(c.Request.Method, routeKey) {
+		plan := planRequestAudit(c.Request.Method, c.FullPath())
+		if !plan.wanted() {
 			c.Next()
 			return
 		}
 
-		body := captureBody(c, routeKey)
+		body := captureBody(c, c.Request.Method+" "+c.FullPath())
 		start := time.Now()
 		c.Next()
-		Record(buildRequestAudit(c, body, time.Since(start)))
+		if row := plan.rowFor(c, body, time.Since(start)); row != nil {
+			Record(row)
+		}
 	}
 }
 
-// shouldRecord 判断这条路由要不要进台账:全部写方法 + 白名单内的敏感读取。
+// requestAuditPlan 是「这次请求要不要进台账」的决定。
+//
+// 单独拆出来不是为了少写几行:测试夹具要让请求真的经过 gin 路由才验得到
+// c.FullPath() 与 c.Params,而夹具若自己抄一份判据,生产代码这边改错了
+// 测试照样全绿 —— 那正是这份台账最不能出的一类错。两边共用这一个函数。
+type requestAuditPlan struct {
+	// always:无条件留痕(全部写方法 + 白名单内的敏感读取)。
+	always bool
+	// onlyIfDenied:成功就不记、被 401/403 挡下才记。
+	onlyIfDenied bool
+}
+
+func (p requestAuditPlan) wanted() bool { return p.always || p.onlyIfDenied }
+
+// rowFor 在 c.Next() 之后决定这一行到底写不写,返回 nil 表示不写。
+func (p requestAuditPlan) rowFor(c *gin.Context, body string, latency time.Duration) *qymodel.RequestAudit {
+	if !p.always && p.onlyIfDenied && !isAuthDenial(c.Writer.Status()) {
+		return nil
+	}
+	if !p.wanted() {
+		return nil
+	}
+	return buildRequestAudit(c, body, latency)
+}
+
+func planRequestAudit(method, path string) requestAuditPlan {
+	always := shouldRecord(method, method+" "+path)
+	// 被挡下来的管理端读取也要留痕。「挨个戳一遍管理端接口」里有一多半是 GET,
+	// 原先一条都不记,于是最该被抓的那个形状在台账里只剩下写接口那几行。
+	// 只在 401/403 时才记:成功的列表/详情每天几千次,记下来会把台账稀释到
+	// 无法扫读,而「有人在探边界」天然稀少。
+	//
+	// 刻意只覆盖 /api/qy/admin/:受限账号的浏览器会持续轮询若干用户端只读接口,
+	// 把它们也记下来只会把真正的信号淹掉(与 admitRestrictedUser 同一条理由)。
+	return requestAuditPlan{
+		always:       always,
+		onlyIfDenied: !always && method == "GET" && strings.HasPrefix(path, "/api/qy/admin/"),
+	}
+}
+
+// shouldRecord 判断这条路由要不要无条件进台账:全部写方法 + 白名单内的敏感读取。
 func shouldRecord(method, routeKey string) bool {
 	switch method {
 	case "POST", "PUT", "PATCH", "DELETE":
@@ -94,6 +136,11 @@ func shouldRecord(method, routeKey string) bool {
 	default:
 		return false
 	}
+}
+
+// isAuthDenial 只认鉴权层的两个状态码。404/500 是业务与故障,不属于探测信号。
+func isAuthDenial(status int) bool {
+	return status == 401 || status == 403
 }
 
 // captureBody 读出请求体前缀做脱敏,并把它原样回填,让 handler 仍能读到完整 body。
@@ -142,6 +189,26 @@ func buildRequestAudit(c *gin.Context, body string, latency time.Duration) *qymo
 		path = c.Request.URL.Path
 	}
 	status := c.Writer.Status()
+	// 身份优先取鉴权放行后写进 context 的那一组;取不到时回落到
+	// common.DeniedActor*(凭据验过了、随后被 status/role 挡掉的那个人)。
+	//
+	// 没有这条回落,一个已登录的 role=1 账号挨个戳管理端接口留下的 403 行,
+	// 与真匿名扫描的 401 行在 actor_user_id / actor_role / actor_type /
+	// actor_name / auth_method 五列上逐列相同(全空),只剩一个可伪造的 IP;
+	// 而 actorType 又会把这批行读成「匿名探测」,方向性地误导仲裁人。
+	// 这个中间件被挂在鉴权之前的全部理由就是要抓这一类,不能只剩下 IP。
+	actorUserId := c.GetInt("id")
+	actorName := c.GetString("username")
+	actorRole := c.GetInt("role")
+	useAccessToken := c.GetBool("use_access_token")
+	if actorUserId <= 0 {
+		if deniedId := c.GetInt(common.DeniedActorIdKey); deniedId > 0 {
+			actorUserId = deniedId
+			actorName = c.GetString(common.DeniedActorNameKey)
+			actorRole = c.GetInt(common.DeniedActorRoleKey)
+			useAccessToken = c.GetBool(common.DeniedActorAccessTokenKey)
+		}
+	}
 	row := &qymodel.RequestAudit{
 		Action:      DeriveAction(c.Request.Method, path),
 		Method:      c.Request.Method,
@@ -149,9 +216,9 @@ func buildRequestAudit(c *gin.Context, body string, latency time.Duration) *qymo
 		StatusCode:  status,
 		Success:     status < 400,
 		LatencyMs:   latency.Milliseconds(),
-		ActorUserId: c.GetInt("id"),
-		ActorName:   Truncate(c.GetString("username"), 64),
-		ActorRole:   c.GetInt("role"),
+		ActorUserId: actorUserId,
+		ActorName:   Truncate(actorName, 64),
+		ActorRole:   actorRole,
 		Params:      Truncate(redactParams(c), 512),
 		Query:       RedactQuery(c.Request.URL.RawQuery),
 		Body:        body,
@@ -160,7 +227,7 @@ func buildRequestAudit(c *gin.Context, body string, latency time.Duration) *qymo
 		CreatedAt:   common.GetTimestamp(),
 	}
 
-	if c.GetBool("use_access_token") {
+	if useAccessToken {
 		row.AuthMethod = qymodel.AuthMethodAccessToken
 	} else if row.ActorUserId > 0 {
 		row.AuthMethod = qymodel.AuthMethodSession

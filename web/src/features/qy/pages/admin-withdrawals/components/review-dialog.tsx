@@ -41,6 +41,7 @@ import { isQyError, qyErrorMessage } from '../../../lib/api'
 import { formatQyQuotaLedger } from '../../../lib/format'
 import { qyKeys } from '../../../lib/query-keys'
 import { QyFiatText } from '../../components/qy-fiat-text'
+import { QyWithdrawProofImage } from '../../withdraw/components/withdraw-proof-image'
 import { qyPayeeChannelKey } from '../../withdraw/lib/payee-spec'
 import {
   buildQyWithdrawTimeline,
@@ -317,6 +318,19 @@ export function ReviewDialog(props: ReviewDialogProps) {
             />
             <Row label={t('qy_wd_a_client_ip')} value={withdrawal.client_ip} />
           </dl>
+
+          {/* 用户随单上传的**打款凭证**。
+              这一条原先在管理端一个调用点都没有 —— 接口写了、图片存了、保留期
+              也算了，审核提现的人却在界面上看不到它。proof_test.go 的注释白纸
+              黑字写着「少了下载，图片存进去就再也拿不出来」。
+              图片是 PII：跟着弹窗生命周期取、跟着卸载 revokeObjectURL，
+              不进 react-query 缓存（见 QyWithdrawProofImage）。 */}
+          {withdrawal.has_proof && (
+            <div className='space-y-1.5'>
+              <p className='text-xs font-medium'>{t('qy_wd_a_proof_title')}</p>
+              <QyWithdrawProofImage withdrawalId={withdrawal.id} admin />
+            </div>
+          )}
 
           <Separator />
 

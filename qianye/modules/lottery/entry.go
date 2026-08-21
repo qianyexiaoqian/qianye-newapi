@@ -121,7 +121,23 @@ func ChargeEntry(ctx context.Context, in EntryInput) (*Entry, error) {
 	// 行锁与主库行锁里,一条都没有被绕过),而失败拒绝会让扩展库抖一下就变成
 	// 全站报名中断。
 	if !effectiveCtx(ctx).playShown(playOf(act.Kind, act.DrawMode)) {
-		return nil, errPlayHidden
+		// **原样重放不是新参与。** 同一个 client_request_id 重发时,那一笔
+		// 已经扣过钱、票已经进了哈希链;让它拿回原始回执正是幂等键存在的
+		// 唯一理由(见 settledEntryNo)。放在这里挡掉的话,一个已付费的用户
+		// 在重试(移动网络、双击、页面刷新)时会收到 409「暂不受理新的参与」——
+		// 那句话暗示什么都没发生,而钱已经扣了,他只能自己想到去「我的参与」
+		// 才知道自己其实成功了。
+		//
+		// 判据是「这个幂等键在本场活动上已经有票」。它只放行重放:
+		// 全新的 crid 一律照挡,所以「关掉弹窗重开换新 crid → 真的多投一注」
+		// 那条害链仍然是堵死的。
+		replay, err := entryExistsByIdemKey(ctx, gdb, buildIdemKey(act.ActNo, crid))
+		if err != nil {
+			return nil, err
+		}
+		if !replay {
+			return nil, errPlayHidden
+		}
 	}
 	rules, err := ParseRules(act.RulesText)
 	if err != nil {
@@ -292,6 +308,24 @@ func acceptPick(act *Activity, in EntryInput) (string, error) {
 		return "", errBadPickInput
 	}
 	return normalized, nil
+}
+
+// entryExistsByIdemKey 回答「这个幂等键在本场活动上已经有票了吗」。
+//
+// 只被玩法隐藏那道闸门用来分辨「新参与」与「原样重放」。参与行与 pending
+// 资金单是同一个扩展库事务写下的(reserveEntry),所以一个真正全新的请求
+// 在这里必然查不到行 —— 这一位不会把新参与误判成重放。
+//
+// 拿不准时按「不是重放」处理:读失败即维持闸门,宁可让一次重试再报一次
+// 409,也不能因为一次查询故障把闸门整个放开。
+func entryExistsByIdemKey(ctx context.Context, gdb *gorm.DB, idemKey string) (bool, error) {
+	var count int64
+	if err := gdb.WithContext(ctx).Model(&Entry{}).
+		Where("idem_key = ?", idemKey).Limit(1).Count(&count).Error; err != nil {
+		db.MarkFailure(err)
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // buildIdemKey 拼出资金单的幂等键。

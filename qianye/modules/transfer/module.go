@@ -19,7 +19,7 @@ type Mod struct{ module.Base }
 func (Mod) Name() string { return "transfer" }
 
 func (Mod) Tables() []any {
-	return []any{&Order{}, &UserState{}, &LookupLog{}, &GroupRule{}, &GroupLimit{}, &Contact{}}
+	return []any{&Order{}, &UserState{}, &LookupLog{}, &GroupRule{}, &GroupLimit{}, &Contact{}, &SettingsVersion{}}
 }
 
 // InstallHooks 注册补偿回调。

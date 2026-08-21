@@ -193,6 +193,95 @@ func loadTiers(ctx context.Context) ([]GroupLimit, error) {
 	return rows, nil
 }
 
+// tightenOnlyKeys 列出「分档只许比全局更严」的门槛。
+//
+// 判据是这一项到底在卖什么:额度型门槛(单笔上限、日额度、日笔数、冷却、
+// 收款方入账笔数)分档放宽就是这个功能的产品形态;而新账号冻结期是一道
+// **反滥用身份闸门**,它一旦可以被分档放宽,就等于可以被一次购买抹掉。
+var tightenOnlyKeys = map[string]bool{
+	keyNewAccountFreezeHours: true,
+}
+
+// stricterSetting 返回同一个键上更严的那个取值。
+//
+// 两类语义必须分开:
+//   - 下限型(min_quota / cooldown_seconds / new_account_freeze_hours):数越大越严;
+//   - 上限型(max_per_tx / daily_max_quota / daily_max_count /
+//     receiver_daily_max_in_count):数越小越严,而 **0 表示不限**,
+//     所以 0 是最松而不是最严 —— 按 min 直接比会把「不限」当成「一分钱都不许转」。
+func stricterSetting(key string, a, b int64) int64 {
+	switch key {
+	case keyMinQuota, keyCooldownSecs, keyNewAccountFreezeHours:
+		if a > b {
+			return a
+		}
+		return b
+	default:
+		if a == 0 {
+			return b
+		}
+		if b == 0 {
+			return a
+		}
+		if a < b {
+			return a
+		}
+		return b
+	}
+}
+
+// strictestTransfer 逐项取两份门槛里更严的那个(只作用于可分档的七项)。
+func strictestTransfer(a, b config.Transfer) config.Transfer {
+	out := a
+	for _, key := range tierableKeys {
+		av, aok := transferSettingValue(a, key)
+		bv, bok := transferSettingValue(b, key)
+		if !aok || !bok {
+			continue
+		}
+		assignTransferSetting(&out, key, stricterSetting(key, av, bv))
+	}
+	return out
+}
+
+// transferForSenderDay 返回发起方这一笔该用的门槛。
+//
+// # 为什么不能只看「此刻的 users.group」
+//
+// 分档按当前分组解析,而 users.group 是**用户自己花钱就能改的**:任何一个
+// upgrade_group 指向更松档、且允许余额支付的套餐(这正是用户组商品的设计用途)
+// 都能让人在当天额度用满之后花几千 quota 换一档接着转 —— 而 qy_transfer_user_state
+// 里当天已经用掉的计数一个都不重置,只是上限换了一档。实测过 0.01 美元换到
+// 6000 倍日额度。
+//
+// # 口径
+//
+// 今天的计数是在哪一档下累起来的(dayGroup),那一档就在今天剩下的时间里
+// 继续作数:实际门槛 = 严(当前档, 今天那一档)。于是
+//   - 当天还没转过账的人换档 ⇒ dayGroup 为空 ⇒ 直接按新档,那是他买到的东西;
+//   - 当天已经转过账的人换档 ⇒ 今天仍受旧档约束,明天自然日一到重新开始。
+//
+// 跨日由 rollDay 负责:bucket 一变,dayGroup 与三个计数一起清零。
+func (s opSettings) transferForSenderDay(userGroup string, st *UserState, bucket int32) (config.Transfer, error) {
+	cur, err := s.transferFor(userGroup)
+	if err != nil {
+		return config.Transfer{}, err
+	}
+	if st == nil || st.DayBucket != bucket || st.DayOutGroup == "" {
+		return cur, nil
+	}
+	if normalizeGroupName(st.DayOutGroup) == normalizeGroupName(userGroup) {
+		return cur, nil
+	}
+	day, err := s.transferFor(st.DayOutGroup)
+	if err != nil {
+		// 今天那一档本身配坏了:按当前档走,不把一次历史错配变成这个人今天
+		// 再也转不了账。放宽方向由 transferFor 自己的 fail-closed 兜住。
+		return cur, nil
+	}
+	return strictestTransfer(cur, day), nil
+}
+
 // transferFor 返回某个用户分组**实际生效**的那份门槛,是资金路径唯一该用的入口。
 //
 // 纯函数,不碰数据库:分档合并是这一层最容易写错的一段(三态、回落、跨字段
@@ -216,9 +305,27 @@ func (s opSettings) transferFor(userGroup string) (config.Transfer, error) {
 		return out, nil
 	}
 	for _, key := range tierableKeys {
-		if v, has := row.override(key); has {
-			assignTransferSetting(&out, key, v)
+		v, has := row.override(key)
+		if !has {
+			continue
 		}
+		if tightenOnlyKeys[key] {
+			// 反滥用闸门只许分档**收紧**,不许放宽。
+			//
+			// new_account_freeze_hours 的判据分成了两半:年龄取自 users.created_at
+			// (攻击者改不了),档位取自 users.group(攻击者可以花 0.01 美元买一个
+			// 升组套餐改掉)。于是一个注册 9 秒的号买一次套餐就把一道 30 天的
+			// 反套现闸门抹掉了,而这道门存在的唯一理由正是「批量注册的小号是
+			// 零成本套现的入口」(见 loadParties)。
+			//
+			// 其余六项是额度型门槛 —— 「买高档得更宽的额度」正是这个功能要卖的
+			// 东西,不在此列。
+			global, _ := transferSettingValue(s.Transfer, key)
+			if v < global {
+				v = global
+			}
+		}
+		assignTransferSetting(&out, key, v)
 	}
 	if err := config.ValidateTransfer(&out); err != nil {
 		warnThrottled("用户分组 " + row.UserGroup + " 的划转门槛分档与当前全局门槛组合非法,已暂停该分组的划转: " + err.Error())

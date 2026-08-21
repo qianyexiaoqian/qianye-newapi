@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import type { ColumnDef } from '@tanstack/react-table'
+import type { CellContext, ColumnDef } from '@tanstack/react-table'
 import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
@@ -295,9 +295,31 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
     },
     {
       id: 'actions',
+      // cell 必须是一个**模块级的稳定引用**，不能写成内联箭头。
+      //
+      // useApiKeysColumns(now) 每次渲染都返回一个全新的数组字面量，内联箭头因此
+      // 每次都是新函数；flexRender 走的是 createElement(cell, props)，React 把
+      // “新的函数”当成新的组件类型，于是整个单元格子树连同 DataTableRowActions
+      // 一起被卸载重挂 —— 住在它里面的本地 state（线路选择窗的 pendingKey）随之清零。
+      //
+      // 两个真实后果，都在这一行上：
+      //   ① 桌面表格里第一次点 CC Switch 什么都不会发生。onClick 里
+      //      `await resolveRealKey(id)` 会写 Provider 的 loadingKeys，Provider 一变
+      //      表格重渲染 → 本行重挂 → await 回来之后 setPendingKey 落在已卸载的旧
+      //      实例上，无声丢弃。必须再点第二次（那时 key 已在缓存里、不写 state）。
+      //   ② 好不容易点开的线路选择窗最多活 30 秒：ApiKeysTable 每 30 秒推进一次
+      //      now，同一条链路再走一遍，窗口凭空消失。
+      //
+      // 手机卡片视图不受影响 —— ApiKeysMobileList 直接写 JSX，不过 flexRender。
       header: () => t('Actions'),
-      cell: ({ row }) => <DataTableRowActions row={row} />,
+      cell: ApiKeyRowActionsCell,
       meta: { pinned: 'right' as const },
     },
   ]
+}
+
+// ApiKeyRowActionsCell 是操作列的稳定组件引用。见上面那段注释：
+// 它的存在理由就是“不要在 columns 里写内联箭头”，不要顺手内联回去。
+function ApiKeyRowActionsCell({ row }: CellContext<ApiKey, unknown>) {
+  return <DataTableRowActions row={row} />
 }

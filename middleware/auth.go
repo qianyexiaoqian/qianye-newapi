@@ -48,6 +48,10 @@ func authHelper(c *gin.Context, minRole int) {
 		writeDashboardAuthError(c, err)
 		return
 	}
+	// 凭据已经验过了 —— 从这一行起「是谁」就已知,后面无论被 status 还是 role
+	// 挡掉,请求台账都必须记得下。放在两道判据之前是关键:role 不足时下面直接
+	// AbortWithStatusJSON,setDashboardAuthContext 永远不会执行。
+	noteAuthenticatedIdentity(c, user, useAccessToken)
 	// 受限账号(status = Disabled)不再一刀切 401,而是落到白名单判据上。
 	// 顺序必须保持「先判 status 再判 role」:一个被自动封禁模块封掉的管理员
 	// 绝不能因为 role 高就带着完整管理权继续操作。admitRestrictedUser 内部
@@ -96,6 +100,7 @@ func TryUserAuth() func(c *gin.Context) {
 			//
 			// 这里刻意不「降级为匿名」:匿名通过 /api/oauth/:provider 会被当成
 			// 登录/注册而不是绑定,把一次拒绝变成一次身份漂移。
+			noteAuthenticatedIdentity(c, user, credentialKind == dashboardCredentialPAT)
 			if user.Status != common.UserStatusEnabled && !admitRestrictedUser(c, user.Id, common.RoleCommonUser) {
 				return
 			}
@@ -207,6 +212,21 @@ func authorizationToken(header string) (string, bool) {
 	return header, header != ""
 }
 
+// noteAuthenticatedIdentity 记下「凭据验过了的这个人」,与鉴权是否放行无关。
+//
+// 只写 common.DeniedActor* 那一组专用键,绝不碰 "id"/"role" —— 后者的含义是
+// 「本次请求已通过鉴权」,在被拒的请求上写它们会让下游任何
+// `c.GetInt("id") > 0` 的判据把一次拒绝读成一次放行。
+func noteAuthenticatedIdentity(c *gin.Context, user *model.UserBase, useAccessToken bool) {
+	if user == nil || user.Id <= 0 {
+		return
+	}
+	c.Set(common.DeniedActorIdKey, user.Id)
+	c.Set(common.DeniedActorNameKey, user.Username)
+	c.Set(common.DeniedActorRoleKey, user.Role)
+	c.Set(common.DeniedActorAccessTokenKey, useAccessToken)
+}
+
 func setDashboardAuthContext(c *gin.Context, user *model.UserBase, identity service.AuthIdentity, useAccessToken bool) {
 	c.Header("Auth-Version", "864b7076dbcd0a3c01b5520316720ebf")
 	c.Set("username", user.Username)
@@ -282,6 +302,7 @@ func TokenOrUserAuth() func(c *gin.Context) {
 			// 混合入口(/v1/videos/:task_id/content)按凭据形状分流:走到这里
 			// 说明用的是会话凭据,因此同样受白名单管辖 —— 它绕开了 authHelper,
 			// 漏在这里等于给受限账号留了一条会话认证的 relay 读取通道。
+			noteAuthenticatedIdentity(c, user, false)
 			if user.Status != common.UserStatusEnabled && !admitRestrictedUser(c, user.Id, common.RoleCommonUser) {
 				return
 			}
@@ -332,6 +353,26 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 			}
 			c.Abort()
 			return
+		}
+
+		// IP 白名单在这条只读链上同样生效。
+		//
+		// 函数头只声明了「不检查令牌状态、过期时间和额度」——IP 限制不在豁免之列,
+		// 而它原先确实一道都没判:一把已泄漏、随后被用户用 allow_ips 绑死的 key,
+		// 仍能从任意 IP 通过 /api/usage/token/ 与 /api/log/token 读到令牌名、
+		// 总额度/已用/剩余、模型限制,以及逐条调用日志 —— 后者还带着**合法调用方
+		// 的真实来源 IP**(等于把白名单里有哪些地址交出去)与账号登录名。
+		// IP 绑定是用户为「密钥泄漏后限制损失」而设的唯一自助手段,不能只覆盖 relay。
+		if allowIps := token.GetIpLimits(); len(allowIps) > 0 {
+			ip := net.ParseIP(c.ClientIP())
+			if ip == nil || !common.IsIpInCIDRList(ip, allowIps) {
+				c.JSON(http.StatusForbidden, gin.H{
+					"success": false,
+					"message": common.TranslateMessage(c, i18n.MsgTokenIpNotAllowed),
+				})
+				c.Abort()
+				return
+			}
 		}
 
 		// TokenAuthReadOnly must keep allowing other token states to query read-only

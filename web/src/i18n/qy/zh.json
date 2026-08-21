@@ -3543,5 +3543,13 @@
   "qy_lot_cfg_play_summary_list": "大厅里当前展示:{{plays}}。",
   "qy_lot_cfg_play_summary_none": "四种玩法全部隐藏,用户侧的娱乐入口整行不再渲染(直达链接仍可进入,里面只剩「我的参与」)。",
   "qy_lot_cfg_play_summary_kept": "隐藏只影响大厅可见性、新的参与与新活动的发布。进行中的活动照常封盘、开奖、派奖,已参与的用户照常查询与领奖,管理端不受任何影响。",
-  "qy_lot_cfg_play_summary_off": "另外「在前端显示娱乐入口」当前是关闭的,所以即使有玩法开着,用户侧也看不到入口。"
+  "qy_lot_cfg_play_summary_off": "另外「在前端显示娱乐入口」当前是关闭的,所以即使有玩法开着,用户侧也看不到入口。",
+  "qy_vio_cat_none_published_note": "本站未公示具体的违规类型,但每一次违规都会计入上面的账号总计。",
+  "qy_aa_bar_loading": "正在读取线路清单…",
+  "qy_aa_bar_unavailable": "线路清单暂时读不到,当前给出的是本站地址;运营配置的备用线路可能不在其中。",
+  "qy_lot_flag_resolve": "标记已处理",
+  "qy_lot_flag_resolved_ok": "已标记为处理完毕",
+  "qy_wd_a_proof_title": "用户上传的打款凭证",
+  "qy_pp_admin_unlock_submit": "仅解锁(不清除密码)",
+  "qy_pp_admin_unlock_ok": "已解锁 {{username}} 的支付密码"
 }

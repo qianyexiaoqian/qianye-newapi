@@ -140,3 +140,25 @@ export function qyAdminResetPayPassword(params: {
     { reason: params.reason }
   )
 }
+
+/**
+ * 管理员**只解锁、不清密码**。
+ *
+ * 连错 5 次会锁 30 分钟。重置(`clearPasswordByAdmin`)顺带也会把锁打开，但那是
+ * 一次破坏性动作：密码被清掉，用户下一次动钱会被 `qy_pay_pwd_not_set` 拦住并
+ * 要求重设。「用户只是自己输错了几次、密码本身没问题」这一档需要的是解锁而不是
+ * 重置 —— 重置对话框自己就把「距离解锁还有多久」摆在那里，却只给了一个破坏性
+ * 按钮，而解锁接口一直都在，只是没有任何前端调用点。
+ *
+ * `reason` 可选（后端 `requireReason=false`）：解锁不改变任何凭据，
+ * 而重置会让用户下一次划转直接失败，两者的举证要求本来就不同。
+ */
+export function qyAdminUnlockPayPassword(params: {
+  userId: number
+  reason: string
+}) {
+  return qyPost<QyPayPasswordStatus>(
+    `/admin/pay-password/${params.userId}/unlock`,
+    { reason: params.reason }
+  )
+}

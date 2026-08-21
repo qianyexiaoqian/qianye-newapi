@@ -636,13 +636,35 @@ type SubscriptionSummary struct {
 }
 
 type SubscriptionResetResult struct {
-	PlanId           int    `json:"plan_id"`
-	MatchedCount     int    `json:"matched_count"`
-	ResetCount       int    `json:"reset_count"`
-	UserCount        int    `json:"user_count"`
-	AdvanceResetTime bool   `json:"advance_reset_time"`
-	PlanTitle        string `json:"-"`
-	AffectedUserIds  []int  `json:"-"`
+	PlanId           int  `json:"plan_id"`
+	MatchedCount     int  `json:"matched_count"`
+	ResetCount       int  `json:"reset_count"`
+	UserCount        int  `json:"user_count"`
+	AdvanceResetTime bool `json:"advance_reset_time"`
+	// SkippedCount 是「匹配到了、但操作人管不着所以没动」的订阅条数。
+	// 整盘重置必须把它报出来:否则 role=10 看到 reset_count 少了几条,
+	// 会以为那几个人的套餐没生效,而真实原因是他没有权限动那几个人。
+	SkippedCount    int    `json:"skipped_count"`
+	PlanTitle       string `json:"-"`
+	AffectedUserIds []int  `json:"-"`
+}
+
+// SubscriptionActor 是发起一次管理动作的人。
+//
+// 整盘重置(AdminResetPlanSubscriptions)与按人重置走的是同一件事 ——
+// 把 amount_used 清回 0,也就是再送一轮额度 —— 所以判据必须一致。
+// 按人那条路上有 requireManageableUser,整盘这条路上原先一道都没有,
+// 于是 role=10 只要自己名下有该套餐,一次调用就把**自己**的已用量清零,
+// 顺带动了全站该套餐持有者(含 role=100)。这里把同一条判据逐行套上去。
+type SubscriptionActor struct {
+	UserId int
+	Role   int
+}
+
+// CanManageRole 与 controller.canManageTargetRole 同义:root 谁都能管,
+// 其余人只能管严格低于自己的角色(因此管不到自己,也管不到同级)。
+func (a SubscriptionActor) CanManageRole(targetRole int) bool {
+	return a.Role == common.RoleRootUser || a.Role > targetRole
 }
 
 func calcPlanEndTime(start time.Time, plan *SubscriptionPlan) (int64, error) {
@@ -1798,6 +1820,24 @@ func buildSubscriptionSummaries(subs []UserSubscription) []SubscriptionSummary {
 }
 
 // AdminInvalidateUserSubscription marks a user subscription as cancelled and ends it immediately.
+// GetUserSubscriptionOwner 返回一条用户订阅的归属人 id。
+//
+// 作废与硬删除这两条管理端接口原先只按订阅 id 取单,不回查归属人的角色,
+// 于是 role=10 能把 role=100 已付费的有效订阅取消并删除,并连带把对方的
+// 用户分组打回默认组(分组决定可用模型与价格)。调用方拿到这个 id 之后
+// 必须过 requireManageableUser —— 与 relations/unbind、relations/block、
+// clawback 三条「目标不在报文里而在被操作资源的归属上」的接口同形。
+func GetUserSubscriptionOwner(userSubscriptionId int) (int, error) {
+	if userSubscriptionId <= 0 {
+		return 0, errors.New("invalid userSubscriptionId")
+	}
+	var sub UserSubscription
+	if err := DB.Select("id", "user_id").Where("id = ?", userSubscriptionId).First(&sub).Error; err != nil {
+		return 0, err
+	}
+	return sub.UserId, nil
+}
+
 func AdminInvalidateUserSubscription(userSubscriptionId int) (string, error) {
 	if userSubscriptionId <= 0 {
 		return "", errors.New("invalid userSubscriptionId")
@@ -1944,7 +1984,50 @@ func adminResetUserSubscriptionsByPlanTx(tx *gorm.DB, userId int, plan *Subscrip
 	return buildSubscriptionResetResult(plan, subs, advanceResetTime), nil
 }
 
-func adminResetPlanSubscriptionsTx(tx *gorm.DB, plan *SubscriptionPlan, now int64, advanceResetTime bool) (*SubscriptionResetResult, error) {
+// filterManageableSubscriptions 按操作人角色把「管不着的人」从待处理集合里剔掉。
+//
+// 返回 (可处理的, 被跳过的条数)。actor.Role <= 0 视为未提供操作人身份,
+// 此时**一条都不放行** —— 这道判据宁可让调用方显式报错,也不能因为忘了传身份
+// 就退化成「谁都能重置谁」。
+func filterManageableSubscriptions(tx *gorm.DB, subs []UserSubscription, actor SubscriptionActor) ([]UserSubscription, int, error) {
+	if len(subs) == 0 {
+		return subs, 0, nil
+	}
+	if actor.Role <= 0 {
+		return nil, len(subs), nil
+	}
+	ownerIds := make([]int, 0, len(subs))
+	seen := make(map[int]struct{}, len(subs))
+	for _, sub := range subs {
+		if _, ok := seen[sub.UserId]; ok {
+			continue
+		}
+		seen[sub.UserId] = struct{}{}
+		ownerIds = append(ownerIds, sub.UserId)
+	}
+	var owners []User
+	if err := tx.Model(&User{}).Select("id", "role").Where("id IN ?", ownerIds).Find(&owners).Error; err != nil {
+		return nil, 0, err
+	}
+	roleOf := make(map[int]int, len(owners))
+	for _, owner := range owners {
+		roleOf[owner.Id] = owner.Role
+	}
+	kept := make([]UserSubscription, 0, len(subs))
+	skipped := 0
+	for _, sub := range subs {
+		role, ok := roleOf[sub.UserId]
+		// 查不到归属人时按「管不着」处理:身份不明不是放行的理由。
+		if !ok || !actor.CanManageRole(role) {
+			skipped++
+			continue
+		}
+		kept = append(kept, sub)
+	}
+	return kept, skipped, nil
+}
+
+func adminResetPlanSubscriptionsTx(tx *gorm.DB, plan *SubscriptionPlan, now int64, advanceResetTime bool, actor SubscriptionActor) (*SubscriptionResetResult, error) {
 	if tx == nil || plan == nil {
 		return nil, errors.New("invalid reset args")
 	}
@@ -1955,12 +2038,20 @@ func adminResetPlanSubscriptionsTx(tx *gorm.DB, plan *SubscriptionPlan, now int6
 		Find(&subs).Error; err != nil {
 		return nil, err
 	}
+	matched := len(subs)
+	subs, skipped, err := filterManageableSubscriptions(tx, subs, actor)
+	if err != nil {
+		return nil, err
+	}
 	for i := range subs {
 		if err := resetUserSubscriptionTx(tx, &subs[i], plan, now, advanceResetTime); err != nil {
 			return nil, err
 		}
 	}
-	return buildSubscriptionResetResult(plan, subs, advanceResetTime), nil
+	result := buildSubscriptionResetResult(plan, subs, advanceResetTime)
+	result.MatchedCount = matched
+	result.SkippedCount = skipped
+	return result, nil
 }
 
 func AdminResetUserSubscriptionsByPlan(userId int, planId int, advanceResetTime bool) (*SubscriptionResetResult, error) {
@@ -1983,9 +2074,12 @@ func AdminResetUserSubscriptionsByPlan(userId int, planId int, advanceResetTime 
 	return result, nil
 }
 
-func AdminResetPlanSubscriptions(planId int, advanceResetTime bool) (*SubscriptionResetResult, error) {
+func AdminResetPlanSubscriptions(planId int, advanceResetTime bool, actor SubscriptionActor) (*SubscriptionResetResult, error) {
 	if planId <= 0 {
 		return nil, errors.New("invalid planId")
+	}
+	if actor.Role <= 0 {
+		return nil, errors.New("invalid actor")
 	}
 	var result *SubscriptionResetResult
 	now := GetDBTimestamp()
@@ -1994,7 +2088,7 @@ func AdminResetPlanSubscriptions(planId int, advanceResetTime bool) (*Subscripti
 		if err != nil {
 			return err
 		}
-		result, err = adminResetPlanSubscriptionsTx(tx, plan, now, advanceResetTime)
+		result, err = adminResetPlanSubscriptionsTx(tx, plan, now, advanceResetTime, actor)
 		return err
 	})
 	if err != nil {

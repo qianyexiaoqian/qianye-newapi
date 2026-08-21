@@ -143,10 +143,20 @@ export function qyUploadWithdrawProof(file: File) {
  * 就是二进制图片本身。失败时 axios 给回的 `response.data` 也是 Blob（responseType
  * 对错误响应一视同仁），所以错误还原走 `qyErrorFromBlobFailure`，否则 410
  * `qy_wd_proof_purged`（"已按保留期清理"）会被糊成一句"请求参数不合法"。
+ *
+ * `admin=true` 走管理端那条路径（按单据 id 作用域，越权判定在
+ * `loadDecidableWithdrawal` 之外的读取口上）。两条路径的响应形状逐字相同，
+ * 所以共用这一个函数 —— 抄第二份出来的下场是错误还原只修在其中一边。
  */
-export async function qyFetchWithdrawProofBlob(id: number): Promise<Blob> {
+export async function qyFetchWithdrawProofBlob(
+  id: number,
+  admin = false
+): Promise<Blob> {
+  const path = admin
+    ? `${QY_API_PREFIX}/admin/withdraw/${id}/proof`
+    : `${QY_API_PREFIX}/withdraw/${id}/proof`
   try {
-    const res = await api.get(`${QY_API_PREFIX}/withdraw/${id}/proof`, {
+    const res = await api.get(path, {
       skipErrorHandler: true,
       skipBusinessError: true,
       responseType: 'blob',

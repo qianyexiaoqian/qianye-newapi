@@ -69,7 +69,16 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 		}
 		return nil, err
 	}
-	cfg, err := settings.transferFor(senderNow.Group)
+	// 门槛按「此刻的 users.group」解析,而 users.group 是用户自己花钱就能改的
+	// (upgrade_group 套餐 + 余额支付)。当天额度用满之后换一档接着转,
+	// qy_transfer_user_state 里的计数一个都不重置、只是上限换了一档 ——
+	// 实测 0.01 美元换到 6000 倍日额度。transferForSenderDay 因此把
+	// 「今天的计数是在哪一档下累起来的」也算进来,今天剩下的时间按两档取严。
+	dayState, err := loadSenderDayState(fromUserId)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := settings.transferForSenderDay(senderNow.Group, dayState, dayBucket(common.GetTimestamp()))
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +87,7 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 	if err != nil {
 		return nil, err
 	}
+	acc.FromGroup = senderNow.Group
 
 	// 分组规则在这里一次性读出并冻结,后面两处判定共用同一份快照。
 	//

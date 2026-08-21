@@ -173,6 +173,21 @@ var CohereSafetySetting string
 const (
 	RequestIdKey         = "X-Oneapi-Request-Id"
 	UpstreamRequestIdKey = "X-Upstream-Request-Id"
+
+	// DeniedActor* 记的是「凭据验过了、但随后被 status / role 判据挡掉」的那个人。
+	//
+	// 鉴权链在 role 不足时直接 AbortWithStatusJSON,setDashboardAuthContext 从未
+	// 执行,于是 c.GetInt("id") / ("role") 恒为 0;请求台账因此把「一个已登录的
+	// 普通账号在挨个戳管理端接口」记成与真匿名扫描完全同形的一行(只剩 IP),
+	// 而 IP 是可伪造的。这几个键让台账在 403 分支上仍然记得下是谁 ——
+	// 那正是它被挂在鉴权之前的全部理由。
+	//
+	// 刻意不复用 "id"/"role":那两个键的含义是「这次请求已通过鉴权」,
+	// 在被拒的请求上写它们会让任何 `c.GetInt("id") > 0` 的判据发生身份漂移。
+	DeniedActorIdKey          = "denied_actor_id"
+	DeniedActorNameKey        = "denied_actor_name"
+	DeniedActorRoleKey        = "denied_actor_role"
+	DeniedActorAccessTokenKey = "denied_actor_use_access_token"
 )
 
 const (

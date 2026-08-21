@@ -33,8 +33,17 @@ import { qyFetchWithdrawProofBlob } from '../api'
  * 刻意**不放进 react-query 缓存**：缓存会把一张 PII 图片按 key 留在全局内存里，
  * 而 blob: URL 的撤销时机必须与这个组件的生命周期绑死。放在 effect 里，
  * cleanup 就是唯一的撤销点，弹窗一关就释放。
+ *
+ * `admin` 决定走哪一条后端路径：用户端 `/withdraw/:id/proof` 按 user_id 作用域，
+ * 管理端 `/admin/withdraw/:id/proof` 按单据 id。**两条都必须有界面** ——
+ * 管理端那一条原先一个调用点都没有，于是用户随单上传的打款凭证，
+ * 审核提现的管理员在界面上根本看不到（proof_test.go 的注释早就写着
+ * 「少了下载，图片存进去就再也拿不出来」）。
  */
-export function QyWithdrawProofImage(props: { withdrawalId: number }) {
+export function QyWithdrawProofImage(props: {
+  withdrawalId: number
+  admin?: boolean
+}) {
   const { t } = useTranslation()
   const [url, setUrl] = useState<string | null>(null)
   // 存错误对象而不是翻译好的字符串：存字符串就得把 `t` 写进 effect 依赖，
@@ -52,7 +61,10 @@ export function QyWithdrawProofImage(props: { withdrawalId: number }) {
 
     const load = async () => {
       try {
-        const blob = await qyFetchWithdrawProofBlob(props.withdrawalId)
+        const blob = await qyFetchWithdrawProofBlob(
+          props.withdrawalId,
+          props.admin === true
+        )
         // 已经卸载：不要再造 URL，否则它没有任何撤销点。
         if (cancelled) return
         objectUrl = URL.createObjectURL(blob)
@@ -69,7 +81,7 @@ export function QyWithdrawProofImage(props: { withdrawalId: number }) {
       cancelled = true
       if (objectUrl != null) URL.revokeObjectURL(objectUrl)
     }
-  }, [props.withdrawalId])
+  }, [props.withdrawalId, props.admin])
 
   if (loading) {
     return (

@@ -569,6 +569,16 @@ func AdminResetUserSubscriptionsByPlan(c *gin.Context) {
 	common.ApiSuccess(c, result)
 }
 
+// subscriptionActorOf 取「这次订阅管理动作是谁发起的」。
+//
+// 与 withdraw 的 actorOf 同一个概念:目标不是报文里的某个 user_id 而是一整批人时,
+// 判据只能下沉到数据层逐行套用,而数据层看不到 gin.Context —— 这个函数就是那道
+// 桥。它也是 qianye/actor_gate_guard_test.go 能断言「整盘重置真的把操作人传下去了」
+// 的锚点:内联成一个 composite literal 的话,AST 守卫扫不到调用,断链不会变红。
+func subscriptionActorOf(c *gin.Context) model.SubscriptionActor {
+	return model.SubscriptionActor{UserId: c.GetInt("id"), Role: c.GetInt("role")}
+}
+
 func AdminResetPlanSubscriptions(c *gin.Context) {
 	planId, _ := strconv.Atoi(c.Param("id"))
 	if planId <= 0 {
@@ -581,19 +591,25 @@ func AdminResetPlanSubscriptions(c *gin.Context) {
 		return
 	}
 	advanceResetTime := resolveAdvanceResetTime(req.AdvanceResetTime)
-	result, err := model.AdminResetPlanSubscriptions(planId, advanceResetTime)
+	// 整盘重置 = 给每一个持有者「再送一轮额度」。按人那条路上有
+	// requireManageableUser，这条路上原先一道判据都没有，于是 role=10 只要自己
+	// 名下有这张套餐，一次调用就把**自己**的已用量清零(自益)，顺带动了
+	// role=100。把同一条判据逐行套上去：管不着的人跳过并在响应里报出条数。
+	result, err := model.AdminResetPlanSubscriptions(planId, advanceResetTime, subscriptionActorOf(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	recordSubscriptionResetUserLogs(result, auditOperatorInfo(c))
-	common.SysLog(fmt.Sprintf("admin reset subscription plan %d quota: reset_count=%d user_count=%d advance_reset_time=%t",
-		result.PlanId, result.ResetCount, result.UserCount, result.AdvanceResetTime))
+	common.SysLog(fmt.Sprintf("admin reset subscription plan %d quota: reset_count=%d user_count=%d skipped=%d advance_reset_time=%t",
+		result.PlanId, result.ResetCount, result.UserCount, result.SkippedCount, result.AdvanceResetTime))
 	recordManageAudit(c, "subscription.plan_reset", map[string]interface{}{
 		"plan_id":            result.PlanId,
 		"plan_title":         result.PlanTitle,
 		"reset_count":        result.ResetCount,
 		"user_count":         result.UserCount,
+		"skipped_count":      result.SkippedCount,
+		"affected_user_ids":  result.AffectedUserIds,
 		"advance_reset_time": result.AdvanceResetTime,
 	})
 	common.ApiSuccess(c, result)
@@ -606,11 +622,26 @@ func AdminInvalidateUserSubscription(c *gin.Context) {
 		common.ApiErrorMsg(c, "无效的订阅ID")
 		return
 	}
+	// 作废是纯损害动作:把一条已生效(可能是真金白银买的)订阅立刻取消,
+	// 并把对方的用户分组打回默认组。目标不在报文里,而在订阅行的归属人上,
+	// 所以必须先回查归属人再过 canManageTargetRole —— 与 relations/unbind 同形。
+	ownerId, err := model.GetUserSubscriptionOwner(subId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if requireManageableUser(c, ownerId) {
+		return
+	}
 	msg, err := model.AdminInvalidateUserSubscription(subId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	recordManageAuditFor(c, ownerId, "subscription.user_subscription_invalidate", map[string]interface{}{
+		"target_user_id":       ownerId,
+		"user_subscription_id": subId,
+	})
 	if msg != "" {
 		common.ApiSuccess(c, gin.H{"message": msg})
 		return
@@ -625,6 +656,20 @@ func AdminDeleteUserSubscription(c *gin.Context) {
 		common.ApiErrorMsg(c, "无效的订阅ID")
 		return
 	}
+	// 硬删除比作废更狠:行没了之后连「谁的订阅被谁删了」都无从回答
+	// (source=admin / 兑换码来源的订阅连订单都没有)。同一条归属人判据。
+	ownerId, err := model.GetUserSubscriptionOwner(subId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if requireManageableUser(c, ownerId) {
+		return
+	}
+	recordManageAuditFor(c, ownerId, "subscription.user_subscription_delete", map[string]interface{}{
+		"target_user_id":       ownerId,
+		"user_subscription_id": subId,
+	})
 	msg, err := model.AdminDeleteUserSubscription(subId)
 	if err != nil {
 		common.ApiError(c, err)

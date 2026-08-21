@@ -3543,5 +3543,13 @@
   "qy_lot_cfg_play_summary_list": "Currently shown in the hall: {{plays}}.",
   "qy_lot_cfg_play_summary_none": "All four game types are hidden, so the user-facing entertainment entry is not rendered at all (a direct link still works and leaves only My entries).",
   "qy_lot_cfg_play_summary_kept": "Hiding only affects hall visibility, new entries and publishing new activities. Running activities still close, draw and pay out, entrants can still check and claim, and the admin side is unaffected.",
-  "qy_lot_cfg_play_summary_off": "Note that \"Show the entertainment entry\" is currently off, so users see no entry even when a game type is enabled."
+  "qy_lot_cfg_play_summary_off": "Note that \"Show the entertainment entry\" is currently off, so users see no entry even when a game type is enabled.",
+  "qy_vio_cat_none_published_note": "This site does not publish individual violation categories, but every violation still counts toward the account total above.",
+  "qy_aa_bar_loading": "Loading routes…",
+  "qy_aa_bar_unavailable": "The route list is temporarily unavailable; the address shown is this site's own. Any route your operator configured may be missing.",
+  "qy_lot_flag_resolve": "Mark resolved",
+  "qy_lot_flag_resolved_ok": "Marked as resolved",
+  "qy_wd_a_proof_title": "Payment proof uploaded by the user",
+  "qy_pp_admin_unlock_submit": "Unlock only (keep the password)",
+  "qy_pp_admin_unlock_ok": "Unlocked the pay password for {{username}}"
 }

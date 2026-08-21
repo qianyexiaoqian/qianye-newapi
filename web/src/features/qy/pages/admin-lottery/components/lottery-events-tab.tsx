@@ -16,16 +16,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { StaticDataTable } from '@/components/data-table'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
+import { qyErrorMessage } from '../../../lib/api'
 import { qyArray } from '../../../lib/array'
+import { qyKeys } from '../../../lib/query-keys'
 import { QY_EMPTY_TEXT, formatQyTs } from '../../ops/format'
-import { qyAdminLotEventsQuery, qyAdminLotFlagsQuery } from '../api'
+import {
+  qyAdminLotEventsQuery,
+  qyAdminLotFlagsQuery,
+  resolveQyLotFlag,
+} from '../api'
 import type { QyLotAdminEvent, QyLotAdminFlag } from '../types'
 
 /**
@@ -48,8 +56,31 @@ export function QyLotEventsTab(props: { actNo: string }) {
   const events = useQuery(qyAdminLotEventsQuery(props.actNo))
   const flags = useQuery(qyAdminLotFlagsQuery(props.actNo))
 
+  const queryClient = useQueryClient()
+
   const eventItems = qyArray(events.data?.items)
   const flagItems = qyArray(flags.data?.items)
+
+  /*
+   * 「标记已处理」是 checkActivityDeletable 第五道闸门的唯一解。
+   *
+   * 异常表原先只渲染不给动作，于是一场被 raiseFlag 报过异常的活动在管理界面上
+   * 永久删不掉（errDeleteFlagOpen），且没有任何绕法。接口一直都在，线没接。
+   */
+  const resolve = useMutation({
+    mutationFn: (id: number) => resolveQyLotFlag(id, { note: '' }),
+    onSuccess: () => {
+      toast.success(t('qy_lot_flag_resolved_ok'))
+      void queryClient.invalidateQueries({
+        queryKey: qyKeys.adminLotteryFlags(props.actNo),
+      })
+      // 活动列表上的「未处理异常」红点(open_flag_count)与删除闸门都跟着这一位走。
+      void queryClient.invalidateQueries({
+        queryKey: [...qyKeys.all, 'admin', 'lottery'],
+      })
+    },
+    onError: (error) => toast.error(qyErrorMessage(error, t)),
+  })
 
   return (
     <div className='space-y-4'>
@@ -86,6 +117,23 @@ export function QyLotEventsTab(props: { actNo: string }) {
                   row.resolved_at === 0
                     ? QY_EMPTY_TEXT
                     : formatQyTs(row.resolved_at),
+              },
+              {
+                id: 'actions',
+                header: t('qy_common_actions'),
+                cell: (row: QyLotAdminFlag) =>
+                  row.resolved ? (
+                    QY_EMPTY_TEXT
+                  ) : (
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      disabled={resolve.isPending}
+                      onClick={() => resolve.mutate(row.id)}
+                    >
+                      {t('qy_lot_flag_resolve')}
+                    </Button>
+                  ),
               },
             ]}
           />

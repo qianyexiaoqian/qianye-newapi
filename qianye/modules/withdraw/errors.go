@@ -136,6 +136,29 @@ var (
 	// 其余角色只能批**严格低于**自己的账号。
 	errPeerReview = newBizError("qy_wd_peer_review",
 		"不能审核同级或更高权限账号提交的提现申请,请由更高权限的管理员处理", http.StatusForbidden)
+
+	// errDebtBlockedPayout 是**放款侧**的欠账闸门。
+	//
+	// 建单侧一直有 errDebtBlocked(Withdrawable/FreezeForWithdraw 都判),
+	// 放款侧原先一道都没有:approve 与 markPayout 只看单据状态与操作人身份。
+	// 于是「先提现冻住 → 下线退款触发冲正把可用池吃穿 → 管理员照常审批放款」
+	// 整段畅通,而且放出去的钱可以大于欠账本身(冲正够不到已冻额度,
+	// 差额全进 unsettled 负结转,四桶恒等式照样成立,没有任何一条对账会变红)。
+	//
+	// 徽标(debt_blocked / unsettled_amount)确实一直下发到列表与详情,
+	// 但它是**唯一**的阻力 —— 靠审核人自己看见并自行决定不放款。
+	//
+	// 只挡「往外放钱」的两步(approve / mark-paid)。驳回、发放失败、用户撤单
+	// 都是把佣金退回可用池的方向,正好是冲正能吃到的地方,一律不挡 ——
+	// 挡住它们等于把欠账用户的单据永久钉死在队列里。
+	errDebtBlockedPayout = newBizError("qy_wd_debt_blocked_payout",
+		"收款人存在冲正欠账,放款已被拦下。请先在佣金余额页把欠账处理掉,或驳回这张单",
+		http.StatusConflict)
+
+	// errDebtStatusUnknown:读不出欠账状态时一律不放款。
+	// 这是一道资金闸门,「读不到」不是「没有欠账」。
+	errDebtStatusUnknown = newBizError("qy_wd_debt_status_unknown",
+		"暂时读不到收款人的佣金账本状态,放款已被拦下,请稍后重试", http.StatusServiceUnavailable)
 )
 
 // 配置与密钥错误。

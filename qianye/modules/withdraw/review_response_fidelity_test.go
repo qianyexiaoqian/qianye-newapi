@@ -90,9 +90,17 @@ func TestAdminWithdrawalViewSurfacesTheDebtBlockedPayee(t *testing.T) {
 				"审核人就是在这一屏上决定要不要把钱发出去")
 			assert.Equal(t, decimal.RequireFromString(tc.unsettled).String(), read["unsettled_amount"])
 
-			// 决策接口的响应共用同一份视图,不能把标记洗成空。
-			paid := adminViewOf(t, callAdmin(t, handleAdminMarkPaid, w.Id,
-				`{"payout_ref":"MANUAL-LOG-2","confirm_quota":500000}`))
+			// 决策接口的响应共用同一份视图,不能把标记洗成空 ——
+			// 但欠账用户的放款现在会被 ensureNoOutstandingDebt 直接拦下
+			// (见 payout_debt_gate_test.go),所以这里只在没有欠账时走到 200。
+			res := callAdmin(t, handleAdminMarkPaid, w.Id,
+				`{"payout_ref":"MANUAL-LOG-2","confirm_quota":500000}`)
+			if tc.wantBlocked {
+				require.Equal(t, http.StatusConflict, res.Code, "body=%s", res.Body.String())
+				assert.Equal(t, "qy_wd_debt_blocked_payout", respCode(t, res))
+				return
+			}
+			paid := adminViewOf(t, res)
 			assert.Equal(t, tc.wantBlocked, paid["debt_blocked"])
 		})
 	}

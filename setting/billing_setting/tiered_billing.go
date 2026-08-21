@@ -110,13 +110,53 @@ func ValidateBillingExprJSON(value string) error {
 	return nil
 }
 
-func smokeTestExpr(exprStr string) error {
-	vectors := []billingexpr.TokenParams{
-		{P: 0, C: 0, Len: 0},
-		{P: 1000, C: 1000, Len: 1000},
-		{P: 100000, C: 100000, Len: 100000},
-		{P: 1000000, C: 1000000, Len: 1000000},
+// smokeTestVectors 是保存时那道非负烟测的取值集合。
+//
+// 它必须覆盖**每一个**表达式能引用的 token 变量,而且必须让它们互相失衡。
+// 原先只有 4 条 P==C 且 7 个子类变量恒为 0 的向量,于是两整类为负的表达式能落库:
+//   - 只在 c>p 时为负,例如 tier("promo", p*3 - c*1) —— 落库之后该模型**每一次**
+//     请求都 400「pre-consume quota cannot be negative」(预扣侧 c 取 max_tokens
+//     兜底),客户端拿不到任何可操作的提示,重启也不恢复;
+//   - 只在某个子类命中时为负,例如「缓存命中返一部分钱」的 tier("c", p*3 + c*15 - cr*30)
+//     —— 平时正常收费,一旦 cached_tokens 上来金额就被地板夹成 0,静默零收入。
+//
+// 判据是「任意一个变量单独放大都不能把结果拖成负数」,所以除了 P/C 失衡,
+// 还要逐个把子类变量顶到远大于 P/C 的量级 —— 只把它们一起调大会被系数抵消掉。
+func smokeTestVectors() []billingexpr.TokenParams {
+	magnitudes := []float64{1e3, 1e5, 1e6}
+	vectors := []billingexpr.TokenParams{{}}
+	for _, m := range magnitudes {
+		// P/C 三态:相等、输入远大于输出、输出远大于输入。
+		vectors = append(vectors,
+			billingexpr.TokenParams{P: m, C: m, Len: m},
+			billingexpr.TokenParams{P: m, C: 1, Len: m},
+			billingexpr.TokenParams{P: 1, C: m, Len: 1},
+		)
+		// 逐个子类顶到 m,P/C 压到 1:任何 "减去某个子类" 的形状都会在这里翻负。
+		base := billingexpr.TokenParams{P: 1, C: 1, Len: 1}
+		for _, set := range []func(*billingexpr.TokenParams){
+			func(t *billingexpr.TokenParams) { t.CR = m; t.Len = m },
+			func(t *billingexpr.TokenParams) { t.CC = m; t.Len = m },
+			func(t *billingexpr.TokenParams) { t.CC1h = m; t.Len = m },
+			func(t *billingexpr.TokenParams) { t.Img = m },
+			func(t *billingexpr.TokenParams) { t.ImgO = m },
+			func(t *billingexpr.TokenParams) { t.AI = m },
+			func(t *billingexpr.TokenParams) { t.AO = m },
+		} {
+			v := base
+			set(&v)
+			vectors = append(vectors, v)
+		}
+		// 全部子类同时拉满,兜住「单项都不为负、合起来为负」的交叉项。
+		vectors = append(vectors, billingexpr.TokenParams{
+			P: m, C: m, Len: m, CR: m, CC: m, CC1h: m, Img: m, ImgO: m, AI: m, AO: m,
+		})
 	}
+	return vectors
+}
+
+func smokeTestExpr(exprStr string) error {
+	vectors := smokeTestVectors()
 	requests := []billingexpr.RequestInput{
 		{},
 		{
@@ -131,12 +171,31 @@ func smokeTestExpr(exprStr string) error {
 		for _, request := range requests {
 			result, _, err := billingexpr.RunExprWithRequest(exprStr, v, request)
 			if err != nil {
-				return fmt.Errorf("vector {p=%g, c=%g}: run failed: %w", v.P, v.C, err)
+				return fmt.Errorf("vector %s: run failed: %w", describeVector(v), err)
 			}
 			if result < 0 {
-				return fmt.Errorf("vector {p=%g, c=%g}: result %f < 0", v.P, v.C, result)
+				return fmt.Errorf("vector %s: result %f < 0", describeVector(v), result)
 			}
 		}
 	}
 	return nil
+}
+
+// describeVector 把翻负的那一条向量原样写进错误里。只报 {p, c} 的话,
+// 「缓存命中时为负」这种被拒的表达式在管理端只会看到 p=1 c=1,运营无从知道
+// 是哪一个变量把它拖下去的。
+func describeVector(v billingexpr.TokenParams) string {
+	parts := []string{fmt.Sprintf("p=%g", v.P), fmt.Sprintf("c=%g", v.C), fmt.Sprintf("len=%g", v.Len)}
+	for _, kv := range []struct {
+		name  string
+		value float64
+	}{
+		{"cr", v.CR}, {"cc", v.CC}, {"cc1h", v.CC1h},
+		{"img", v.Img}, {"img_o", v.ImgO}, {"ai", v.AI}, {"ao", v.AO},
+	} {
+		if kv.value != 0 {
+			parts = append(parts, fmt.Sprintf("%s=%g", kv.name, kv.value))
+		}
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
 }

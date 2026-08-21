@@ -88,6 +88,16 @@ type UserState struct {
 	// 一旦漏跑,限额就会在跨日后继续沿用昨天的计数。
 	DayBucket int32 `json:"day_bucket" gorm:"not null;default:0"`
 
+	// DayOutGroup 是今天这些转出计数**是在哪一档下**累起来的(users.group,
+	// 归一化后)。空串 = 今天还没转出过。
+	//
+	// 存在理由:分档按「此刻的 users.group」解析,而 users.group 是用户自己
+	// 花钱就能改的(升组套餐 + 余额支付)。当天额度用满之后换一档接着转,
+	// 计数一个都不重置、只是上限换了一档 —— 实测 0.01 美元换到 6000 倍日额度。
+	// 记下这一位之后,transferForSenderDay 会在今天剩下的时间里继续按旧档取严。
+	// 跨日由 rollDay 连同三个计数一起清零。
+	DayOutGroup string `json:"day_out_group" gorm:"type:varchar(64);not null;default:''"`
+
 	DayOutQuota int64 `json:"day_out_quota" gorm:"not null;default:0"`
 	DayOutCount int   `json:"day_out_count" gorm:"not null;default:0"`
 	DayInCount  int   `json:"day_in_count" gorm:"not null;default:0"`

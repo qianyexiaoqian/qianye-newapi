@@ -64,6 +64,30 @@ func cancelByUser(c *gin.Context, userId int, id int64) (*orderView, error) {
 	return toUserView(w, nil), nil
 }
 
+// ensureNoOutstandingDebt 是放款侧的欠账闸门(见 errDebtBlockedPayout)。
+//
+// 只在 approve / mark-paid 两步调用 —— 那是仅有的两个「把钱往外推」的动作。
+// 读不出账本状态时按拦下处理:这是一道资金闸门,「读不到」不等于「没有欠账」。
+func ensureNoOutstandingDebt(w *Withdrawal) error {
+	if w == nil || w.UserId <= 0 {
+		return errDebtStatusUnknown
+	}
+	statuses, err := commission.LoadDebtStatuses([]int{w.UserId})
+	if err != nil {
+		return errDebtStatusUnknown
+	}
+	st, ok := statuses[w.UserId]
+	if !ok {
+		// 没有余额行 = 从没计过佣。既然如此这张单也不该存在,但它不是欠账,
+		// 放行交给后面的 SettleFrozen 去报真正的原因(frozen 不足)。
+		return nil
+	}
+	if st.Blocked {
+		return errDebtBlockedPayout
+	}
+	return nil
+}
+
 // approve 审核通过,把单据放进「待发放」队列。
 //
 // 这里**不再有任何出钱动作**。审核通过只表示"这笔可以发",钱由管理员自己去
@@ -75,6 +99,10 @@ func approve(c *gin.Context, id int64) (*adminOrderView, error) {
 		return nil, err
 	}
 	a := actorOf(c)
+	if err := ensureNoOutstandingDebt(w); err != nil {
+		writeDecisionAudit(c, w, "withdraw.approve", qymodel.ActorAdmin, a, err.Error(), qymodel.ResultFail)
+		return nil, err
+	}
 	now := common.GetTimestamp()
 
 	err = db.Get().Transaction(func(tx *gorm.DB) error {
@@ -188,6 +216,10 @@ func markPayout(c *gin.Context, id int64, in payoutInput) (*adminOrderView, erro
 		return nil, err
 	}
 	if err := checkPayoutConfirm(w, in); err != nil {
+		return nil, err
+	}
+	if err := ensureNoOutstandingDebt(w); err != nil {
+		writeDecisionAudit(c, w, "withdraw.payout", qymodel.ActorAdmin, actorOf(c), err.Error(), qymodel.ResultFail)
 		return nil, err
 	}
 

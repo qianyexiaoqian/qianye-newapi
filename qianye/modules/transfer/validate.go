@@ -28,11 +28,15 @@ const (
 type acceptedRequest struct {
 	FromUserId int
 	ToUserId   int
-	Amount     int64
-	Fee        int64
-	Total      int64
-	Remark     string
-	IdemKey    string
+	// FromGroup 是受理这一刻发起方的用户分组(归一化后)。
+	// 它会被记进 qy_transfer_user_state.day_out_group —— 见那一列的注释:
+	// 今天的计数是在哪一档下累起来的,今天剩下的时间就继续按那一档取严。
+	FromGroup string
+	Amount    int64
+	Fee       int64
+	Total     int64
+	Remark    string
+	IdemKey   string
 }
 
 // validateCreate 做全部不需要访问数据库的受理校验。

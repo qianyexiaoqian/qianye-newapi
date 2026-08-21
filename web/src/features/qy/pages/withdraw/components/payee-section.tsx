@@ -115,7 +115,10 @@ export function PayeeSection(props: PayeeSectionProps) {
             <RadioGroupItem value={account.ref} id={`payee-${account.ref}`} />
             <Label
               htmlFor={`payee-${account.ref}`}
-              className='min-w-0 flex-1 cursor-pointer font-normal'
+              // normal-case 与线路选择窗同一条理由:主题对 [data-slot='label']
+              // 施加 uppercase,而脱敏后的收款账号(邮箱 / 卡号)是大小写敏感串,
+              // 整块大写会让用户对不上自己填过的那个账号。
+              className='min-w-0 flex-1 cursor-pointer font-normal normal-case'
             >
               <span className='flex min-w-0 flex-wrap items-center gap-x-2'>
                 <span className='text-xs font-medium'>

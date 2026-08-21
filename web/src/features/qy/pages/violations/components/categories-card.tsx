@@ -59,8 +59,22 @@ export function QyMyViolationCategoriesCard(props: {
 }) {
   const { t } = useTranslation()
   const data = props.data
-  // 站点一个类型都没公示时整块收起：一张空卡片只会让人以为页面坏了。
-  if (data == null || data.items.length === 0) return null
+  if (data == null) return null
+  // 站点一个类型都没公示时，**类型列表**收起 —— 一张只有标题没有内容的卡片
+  // 只会让人以为页面坏了。
+  //
+  // 但账号总量线不能跟着一起收：account_threshold / account_hit_count /
+  // account_window_hours 与 items 一点关系都没有，它们来自 resolveBanPolicy
+  // 与全局计数器，而**未公示的类型照样计数、照样触发处置**
+  // (后端 userCategoryLines 刻意不看 published)。
+  //
+  // 原先这里一并 return null，于是「不公示任何类型 + 设了账号总量门槛」这一种
+  // 合法配置下，一个已经 9/10 的用户在这一页上看不到任何倒计时 ——
+  // 三块统计已被移除，唯一剩下的预警渠道又被这行 guard 关掉了，
+  // 而管理员在取消公示时不会有任何提示说明连账号线也被一起关掉了。
+  const hasCategories = data.items.length > 0
+  const hasAccountLine = data.account_threshold > 0
+  if (!hasCategories && !hasAccountLine) return null
 
   // 越线之后会被怎样：仅记录 / 限制账号 / 封号。这一句在整张卡片里出现四次
   // （账号线、每一类的门槛句、还差几次、已达门槛），必须只解析一次 ——
@@ -102,80 +116,92 @@ export function QyMyViolationCategoriesCard(props: {
               })}
       </div>
 
-      <ul className='space-y-3'>
-        {data.items.map((item) => {
-          const progress =
-            item.threshold > 0
-              ? Math.min(100, (item.hit_count / item.threshold) * 100)
-              : 0
-          return (
-            <li key={item.id} className='space-y-1'>
-              {/* 项目方要的那一句话。threshold === 0 时**绝不**显示成"到 0 次封号"——
+      {hasCategories && (
+        <ul className='space-y-3'>
+          {data.items.map((item) => {
+            const progress =
+              item.threshold > 0
+                ? Math.min(100, (item.hit_count / item.threshold) * 100)
+                : 0
+            return (
+              <li key={item.id} className='space-y-1'>
+                {/* 项目方要的那一句话。threshold === 0 时**绝不**显示成"到 0 次封号"——
                   0 在后端的语义是"这一类不单独计门槛"，写成 0 会让用户以为
                   下一次违规就被封。 */}
-              <p className='text-sm'>
-                {item.threshold > 0
-                  ? t(
-                      // 「不限期限」下那句「（24 小时内累计）」必须整句换掉，
-                      // 不能只把数字换成 -1：留着一个时间口径就是留着一句假话。
-                      qyWindowIsUnlimited(item.window_hours)
-                        ? 'qy_vio_cat_sentence_unlimited'
-                        : 'qy_vio_cat_sentence',
-                      {
+                <p className='text-sm'>
+                  {item.threshold > 0
+                    ? t(
+                        // 「不限期限」下那句「（24 小时内累计）」必须整句换掉，
+                        // 不能只把数字换成 -1：留着一个时间口径就是留着一句假话。
+                        qyWindowIsUnlimited(item.window_hours)
+                          ? 'qy_vio_cat_sentence_unlimited'
+                          : 'qy_vio_cat_sentence',
+                        {
+                          title: item.title,
+                          hit: item.hit_count,
+                          threshold: item.threshold,
+                          hours: item.window_hours,
+                          action: actionLabel,
+                        }
+                      )
+                    : t('qy_vio_cat_sentence_off', {
                         title: item.title,
                         hit: item.hit_count,
-                        threshold: item.threshold,
-                        hours: item.window_hours,
-                        action: actionLabel,
-                      }
-                    )
-                  : t('qy_vio_cat_sentence_off', {
-                      title: item.title,
-                      hit: item.hit_count,
-                    })}
-              </p>
-              {item.threshold > 0 && (
-                <p
-                  className={
-                    // 剩余 1 次或已达门槛时标红：这是用户主动收敛行为的最后提醒。
-                    item.remaining <= 1
-                      ? 'text-destructive text-xs'
-                      : 'text-muted-foreground text-xs'
-                  }
-                >
-                  {item.remaining > 0
-                    ? t('qy_vio_cat_remaining', {
-                        remaining: item.remaining,
-                        action: actionLabel,
-                      })
-                    : // 「已达门槛，下一次违规即会按 X 处理」在**已经被处置之后**
-                      // 是一句过期的预告：判定用的是"已达"而不是"恰好跨越"，
-                      // 所以 hit == threshold 的那一刻账号就已经被封了。
-                      // 此刻这个人最需要知道的是自己已经被封、该去申诉。
-                      t(
-                        data.banned === true
-                          ? 'qy_vio_cat_remaining_done'
-                          : 'qy_vio_cat_remaining_none',
-                        { action: actionLabel }
-                      )}
+                      })}
                 </p>
-              )}
-              {item.description !== '' && (
-                <p className='text-muted-foreground text-xs'>
-                  {item.description}
-                </p>
-              )}
-              {item.threshold > 0 && (
-                <Progress value={progress} aria-label={item.title} />
-              )}
-            </li>
-          )
-        })}
-      </ul>
+                {item.threshold > 0 && (
+                  <p
+                    className={
+                      // 剩余 1 次或已达门槛时标红：这是用户主动收敛行为的最后提醒。
+                      item.remaining <= 1
+                        ? 'text-destructive text-xs'
+                        : 'text-muted-foreground text-xs'
+                    }
+                  >
+                    {item.remaining > 0
+                      ? t('qy_vio_cat_remaining', {
+                          remaining: item.remaining,
+                          action: actionLabel,
+                        })
+                      : // 「已达门槛，下一次违规即会按 X 处理」在**已经被处置之后**
+                        // 是一句过期的预告：判定用的是"已达"而不是"恰好跨越"，
+                        // 所以 hit == threshold 的那一刻账号就已经被封了。
+                        // 此刻这个人最需要知道的是自己已经被封、该去申诉。
+                        t(
+                          data.banned === true
+                            ? 'qy_vio_cat_remaining_done'
+                            : 'qy_vio_cat_remaining_none',
+                          { action: actionLabel }
+                        )}
+                  </p>
+                )}
+                {item.description !== '' && (
+                  <p className='text-muted-foreground text-xs'>
+                    {item.description}
+                  </p>
+                )}
+                {item.threshold > 0 && (
+                  <Progress value={progress} aria-label={item.title} />
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      )}
 
-      <p className='text-muted-foreground text-xs'>
-        {t('qy_vio_cat_any_line_note')}
-      </p>
+      {/* 一个类型都没公示时，把「未公示的类型照样计数」这句话说出来。
+          不说的话用户看到一张只有账号总量线的卡片，会以为站上没有别的门槛。 */}
+      {!hasCategories && (
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_vio_cat_none_published_note')}
+        </p>
+      )}
+
+      {hasCategories && (
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_vio_cat_any_line_note')}
+        </p>
+      )}
     </section>
   )
 }

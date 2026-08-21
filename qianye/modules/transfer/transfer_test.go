@@ -414,7 +414,7 @@ func TestEvaluateRiskAccumulatesReceiverCountAcrossSenders(t *testing.T) {
 	for i := 1; i <= limit; i++ {
 		sender := UserState{UserId: i} // 每笔都是一个全新的小号
 		require.NoError(t, evaluateRisk(sender, receiver, cfg, cfg, 1, now), "第 %d 笔应放行", i)
-		applyReservation(&sender, &receiver, 1, 1, now, bucket)
+		applyReservation(&sender, &receiver, "default", 1, 1, now, bucket)
 	}
 	assert.Equal(t, limit, receiver.DayInCount)
 
@@ -441,7 +441,7 @@ func TestReservationRoundTrip(t *testing.T) {
 	receiver := UserState{UserId: 2, DayBucket: bucket, DayInCount: 2, LifetimeInQuota: 500}
 	beforeSender, beforeReceiver := sender, receiver
 
-	applyReservation(&sender, &receiver, 1000, 1050, now, bucket)
+	applyReservation(&sender, &receiver, "default", 1000, 1050, now, bucket)
 	assert.Equal(t, int64(1150), sender.DayOutQuota)
 	assert.Equal(t, 2, sender.DayOutCount)
 	assert.Equal(t, 1, sender.PendingCount)

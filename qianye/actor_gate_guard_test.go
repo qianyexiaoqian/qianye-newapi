@@ -65,6 +65,18 @@ var actorGates = []actorGate{
 	{"POST /api/subscription/admin/bind", "controller/subscription.go", "AdminBindSubscription", "requireManageableUser"},
 	{"POST /api/subscription/admin/users/:id/subscriptions", "controller/subscription.go", "AdminCreateUserSubscription", "requireManageableUser"},
 	{"POST /api/subscription/admin/users/:id/subscriptions/reset", "controller/subscription.go", "AdminResetUserSubscriptionsByPlan", "requireManageableUser"},
+	// 整盘重置是按人重置的粗口径兄弟:同样是「把 amount_used 清回 0 = 再送一轮
+	// 额度」，而它原先一道判据都没有 —— role=10 只要自己名下有那张套餐，一次
+	// 调用就把**自己**的已用量清零(自益)，顺带动了全站该套餐持有者(含 root)。
+	// 它的目标不是一个 user_id 而是一整批人，所以判据下沉到 model 层逐行套用，
+	// 这里断言控制器把操作人身份传下去了。
+	{"POST /api/subscription/admin/plans/:id/subscriptions/reset", "controller/subscription.go", "AdminResetPlanSubscriptions", "subscriptionActorOf"},
+	// 作废与硬删除是**纯损害**方向:把一条已生效(可能是真金白银买的)订阅立刻
+	// 取消并把对方的用户分组打回默认组。目标同样不在报文里，而在订阅行的归属人
+	// 上 —— 与 relations/unbind、relations/block 完全同形，只是当初没进这张清单，
+	// 于是 role=10 能作废并硬删 role=100 的有效订阅。
+	{"POST /api/subscription/admin/user_subscriptions/:id/invalidate", "controller/subscription.go", "AdminInvalidateUserSubscription", "requireManageableUser"},
+	{"DELETE /api/subscription/admin/user_subscriptions/:id", "controller/subscription.go", "AdminDeleteUserSubscription", "requireManageableUser"},
 
 	// ── 扩展侧:佣金 ──
 	{"POST /api/qy/admin/commission/balances/adjust", "qianye/modules/commission/api_admin_adjust.go", "requireAdjustableTarget", "ActorMayActOn"},

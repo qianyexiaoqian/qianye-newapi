@@ -1,6 +1,8 @@
 package transfer
 
 import (
+	"errors"
+
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 
@@ -57,7 +59,7 @@ func reserveRisk(tx *gorm.DB, req acceptedRequest, cfg, receiverCfg config.Trans
 		return err
 	}
 
-	applyReservation(sender, receiver, req.Amount, req.Total, now, bucket)
+	applyReservation(sender, receiver, normalizeGroupName(req.FromGroup), req.Amount, req.Total, now, bucket)
 	if err := saveState(tx, sender); err != nil {
 		return err
 	}
@@ -127,14 +129,22 @@ func rollDay(s *UserState, bucket int32) {
 	s.DayOutQuota = 0
 	s.DayOutCount = 0
 	s.DayInCount = 0
+	// 记「今天的计数是在哪一档下累起来的」那一位必须跟着清:留着的话,
+	// 一个人昨天在紧档转过账,今天换到松档就会被昨天那一档继续压着。
+	s.DayOutGroup = ""
 }
 
 // applyReservation 乐观预占计数。主库失败时由 undoReservation 原路退还。
 //
 // 先占后用而不是"成功后再记账",是因为主库事务耗时不可控,
 // 期间必须已经把额度锁住,否则并发请求会重复通过同一份日限额。
-func applyReservation(sender, receiver *UserState, amount, total, now int64, bucket int32) {
+func applyReservation(sender, receiver *UserState, fromGroup string, amount, total, now int64, bucket int32) {
 	sender.DayBucket = bucket
+	// 今天第一笔转出定下这一天的档位基准;后面几笔不再覆盖 ——
+	// 覆盖的话「换到松档再转一笔」就把基准也一起换掉了,闸门等于没加。
+	if sender.DayOutGroup == "" {
+		sender.DayOutGroup = fromGroup
+	}
 	sender.DayOutQuota += total
 	sender.DayOutCount++
 	sender.LifetimeOutQuota += total
@@ -187,6 +197,7 @@ func clampNonNegative64(v int64) int64 {
 func saveState(tx *gorm.DB, s *UserState) error {
 	return tx.Model(&UserState{}).Where("user_id = ?", s.UserId).Updates(map[string]any{
 		"day_bucket":         s.DayBucket,
+		"day_out_group":      s.DayOutGroup,
 		"day_out_quota":      s.DayOutQuota,
 		"day_out_count":      s.DayOutCount,
 		"day_in_count":       s.DayInCount,
@@ -196,4 +207,29 @@ func saveState(tx *gorm.DB, s *UserState) error {
 		"pending_count":      s.PendingCount,
 		"updated_at":         s.UpdatedAt,
 	}).Error
+}
+
+// loadSenderDayState 在受理阶段(锁外)读一次发起方的当日状态。
+//
+// 只用来回答「今天的计数是在哪一档下累起来的」。锁外读足够:
+// 一个人同一时刻只可能有一笔在飞(PendingCount > 0 直接 errPendingExists),
+// 所以这一位不会在受理与锁内之间被自己改掉;而它唯一的用途是**取严**,
+// 读到旧值最多让这一笔按更严的一档判,不会放宽。
+//
+// 行不存在(从没转过账)时返回 nil,调用方按「今天还没转出过」处理。
+func loadSenderDayState(userId int) (*UserState, error) {
+	gdb := db.Get()
+	if gdb == nil {
+		return nil, db.ErrNotReady
+	}
+	var st UserState
+	err := gdb.Where("user_id = ?", userId).Take(&st).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		db.MarkFailure(err)
+		return nil, err
+	}
+	return &st, nil
 }

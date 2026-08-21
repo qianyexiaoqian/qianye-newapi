@@ -349,6 +349,28 @@ export function qyAdminLotFlagsQuery(actNo: string) {
   })
 }
 
+/**
+ * 把一条对账异常标记为「已处理」。
+ *
+ * ── 为什么这个入口必须存在 ──
+ *
+ * `checkActivityDeletable` 的第五道闸门是「本场还有未处理的对账异常」
+ * (errDeleteFlagOpen / qy_lot_delete_flag_open)。异常表原先只在界面上**渲染**，
+ * 没有任何地方能把 resolved 置为 true —— 于是一场活动只要被 raiseFlag 报过一次
+ * 异常，它在管理界面上就**永久删不掉**，而且没有任何绕法。
+ * payout.go 的注释早就写明「这也是为什么必须有一个把 resolved 置 true 的产品
+ * 入口(handleAdminResolveFlag)」：接口写了，线没接。
+ *
+ * `note` 可选，但强烈建议写：它是事后回答「当初凭什么判定这条异常没问题」的
+ * 唯一凭据，会连同处理人一起进审计。
+ */
+export function resolveQyLotFlag(
+  id: number,
+  body: { note: string }
+): Promise<unknown> {
+  return qyPost<unknown>(`/admin/lottery/flags/${id}/resolve`, body)
+}
+
 // ───────────────────────── 双色球期次系列 ─────────────────────────
 
 /**

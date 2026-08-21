@@ -134,6 +134,73 @@ function goRouteLiterals(): { file: string; fragment: string }[] {
  * 而任何一次「丢掉一整批」都远超这个余量。**真实条数明显涨上去之后要把这个
  * 下界一起抬上来**，否则它会慢慢退化回今天这个 150。
  */
+/**
+ * 「后端有、前端一处都不调」的显式豁免清单。
+ *
+ * 与 UNRESOLVED_EXEMPT 一样：每一条都要写清**为什么没有界面**。
+ * 没有理由的孤儿就是忘了接线 —— 那正是本仓复发过五次以上的
+ * 「实现了但界面上点不到」，而它不会让任何一条闸门变红。
+ */
+const ORPHAN_EXEMPT: { route: string; why: string }[] = [
+  {
+    route: 'GET /api/qy/admin/group-namespace/report',
+    why:
+      '分组命名空间的全量体检报告，一次输出几百行，是排障时 curl 的东西；' +
+      '界面上真正要用的那几个数由 user-groups / model-groups / impact 三条接口给。',
+  },
+  {
+    route: 'POST /api/qy/admin/group-namespace/backfill',
+    why:
+      '一次性回填历史分组登记，属于升级步骤而不是日常运营动作；' +
+      '误点会在大表上跑一遍全量写入，刻意不给按钮。',
+  },
+  {
+    route: 'PUT /api/qy/admin/group-namespace/user-groups/:name/default',
+    why:
+      '默认分组由「系统设置 → 计费与支付 → 用户分组」那张卡片改，' +
+      '它走的是 PUT /api/qy/admin/user-group/config（同一件事的另一条口径）。' +
+      '这一条是命名空间侧的等价入口，留给数据修复。',
+  },
+  {
+    route: 'GET /api/qy/admin/group-ratio/orphans',
+    why: 'admin-health 页的注释里已明说「想知道就去 curl」：它是对账输出，不是运营动作。',
+  },
+  {
+    route: 'GET /api/qy/admin/log-metrics/health',
+    why: '日志指标的探针端点，供外部监控轮询，不进管理界面。',
+  },
+  {
+    route: 'POST /api/qy/admin/commission/cache/invalidate',
+    why: '多节点缓存的手动收敛口，正常路径由版本号自动完成；留给排障。',
+  },
+  {
+    route: 'POST /api/qy/admin/commission/settle',
+    why:
+      '「某一个邀请人卡住」的按人兜底。界面入口本轮**有意删除**（见结算台那一段）：' +
+      '整轮补救走「结算调度 → 重跑今天这一轮」，按人兜底保留为 curl 通路。' +
+      'qianye/modules/commission/settle_rerun_boundary_test.go 守着它仍挂在管理端组上。',
+  },
+  {
+    route: 'GET /api/qy/lottery/series/:series_no',
+    why:
+      '双色球期次详情。前端的期次信息由活动详情一并下发（同一份 body 里就有 ' +
+      'ball_result / issue_no），这条是给脚本客户端的等价读口。',
+  },
+  {
+    route: 'GET /api/qy/ticket/images/:ref',
+    why:
+      '工单图片是 <img src> 直接指过去的，不经 axios —— 提取器只扫 axios 调用点，' +
+      '所以它在这里必然是孤儿，而界面上一直看得见。',
+  },
+  {
+    route: 'PUT /api/qy/admin/lottery/activities/:act_no',
+    why:
+      '【已知缺口，待拍板】草稿活动的编辑。当下草稿改不了也删不了' +
+      '（checkActivityDeletable 第一道就要求 status=finished），唯一处置是整场取消。' +
+      '补一个编辑表单是一次独立改造，不在本轮范围内。',
+  },
+]
+
 const MIN_COUNT = 230
 
 describe('qy 前后端路径对账', () => {
@@ -176,6 +243,70 @@ describe('qy 前后端路径对账', () => {
       [],
       `下面这些路径后端一条都没注册 —— 线上会是 404：\n    ${misses.join('\n    ')}\n` +
         '  （清单：qianye/route_manifest.txt，改过路由的话先重新生成）'
+    )
+  })
+
+  /*
+   * 反方向：后端注册了、前端一处都没调的路由。
+   *
+   * 正向对账(前端调的后端都注册了)防的是 404；反向防的是本仓自述复发过五次
+   * 以上的**「实现了但界面上点不到」**——后端把接口写完、挂上、写了审计、
+   * 写了 Go 测试，前端那一根线忘了接，于是它对运营来说等于不存在，
+   * 而所有闸门都是绿的。
+   *
+   * 本轮实测:239 条后端路由里有 13 条没有任何前端调用点,其中四条是真的
+   * 够不着的管理动作,最狠的一条(抽奖对账异常无法标记已解决)会让被报过异常的
+   * 场次**永久删不掉**——删除闸门 checkActivityDeletable 的第五道就是它。
+   *
+   * 因此这里要求每一条孤儿路由都写进 ORPHAN_EXEMPT 并说明**为什么没有界面**。
+   * 没有理由的孤儿 = 忘了接线,必须红。
+   */
+  test('后端注册了、前端一处都没调的路由，必须写清为什么没有界面', () => {
+    const used = new Set<string>()
+    for (const site of scan.sites) {
+      const hit = matchQyRoute(site, routes)
+      if (hit != null) used.add(`${hit.method} ${hit.path}`)
+    }
+    const orphans: string[] = []
+    for (const route of routes) {
+      const key = `${route.method} ${route.path}`
+      if (used.has(key)) continue
+      if (ORPHAN_EXEMPT.some((e) => e.route === key)) continue
+      orphans.push(key)
+    }
+    assert.deepEqual(
+      orphans,
+      [],
+      '下面这些后端路由没有任何前端调用点 —— 要么忘了接线（用户/运营点不到），' +
+        '要么是有意只留给 curl。后者请写进 ORPHAN_EXEMPT 并说明理由：' +
+        orphans
+          .map(
+            (line) => `
+    ${line}`
+          )
+          .join('')
+    )
+  })
+
+  /*
+   * 反过来也要守：豁免清单里的路由必须真的还在后端注册着。
+   * 接口删了而豁免留着，清单就会慢慢变成一堆没人看得懂的死条目。
+   */
+  test('孤儿豁免清单不许过期', () => {
+    const all = new Set(routes.map((r) => `${r.method} ${r.path}`))
+    const stale = ORPHAN_EXEMPT.filter((e) => !all.has(e.route)).map(
+      (e) => e.route
+    )
+    assert.deepEqual(
+      stale,
+      [],
+      '这些路由已经不在后端清单里了，豁免条目该一起删：' +
+        stale
+          .map(
+            (line) => `
+    ${line}`
+          )
+          .join('')
     )
   })
 

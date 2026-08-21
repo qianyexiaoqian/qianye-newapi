@@ -46,6 +46,36 @@ func hasCustomModelRatio(modelName string, currentRatio float64) bool {
 	return currentRatio != defaultRatio
 }
 
+// normalizeAudioTokenDetails 把上游只报了一半的 token 明细补齐成「一个 token 都不白送」。
+//
+// 音频计价只按 TextTokens/AudioTokens 逐项累加,而这两个数**完全由上游决定**:
+// 40+ 家上游、二手中转站、自建 OpenAI 兼容服务里,只要有一家不报 text_tokens,
+// 该渠道的音频模型就整体退化成「只收音频那几个 token」,除音频以外的输入输出全部免费。
+// /v1/responses 更狠 —— 那条协议本来就没有 text_tokens 字段,于是一次纯文本对话
+// 只要模型名撞上 gpt-4o-audio* 前缀,四项明细全是 0,金额被地板托成 1(实测 3750 → 1)。
+//
+// 倍率的文本路径在同样情形下是从 prompt 里逐项扣减子类、**剩下的按基础价收**
+// (service/text_quota.go 的 baseTokens),两条路径口径不能相反。
+// 这里取 max(上游报的, 总数−音频):
+//   - 上游报得对时(text+audio==total)是恒等变换,一分钱不多收;
+//   - 上游没报 text 时补成 total−audio,与 relay/channel/openai/audio.go 给
+//     /v1/audio/* 打的那块补丁同向;
+//   - 上游报的 text 偏小(reasoning_tokens 不算在 text 里)时按总数兜底。
+//
+// 单调不减:任何输入下结果都不低于改动前,不存在「原本收得到、改完反而少收」。
+func normalizeAudioTokenDetails(totalTokens int, d TokenDetails) TokenDetails {
+	if d.AudioTokens < 0 {
+		d.AudioTokens = 0
+	}
+	if d.TextTokens < 0 {
+		d.TextTokens = 0
+	}
+	if remainder := totalTokens - d.AudioTokens; remainder > d.TextTokens {
+		d.TextTokens = remainder
+	}
+	return d
+}
+
 func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
 	if info.UsePrice {
 		modelPrice := decimal.NewFromFloat(info.ModelPrice)
@@ -137,6 +167,8 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 		ModelRatio: modelRatio,
 		GroupRatio: actualGroupRatio,
 	}
+	quotaInfo.InputDetails = normalizeAudioTokenDetails(usage.InputTokens, quotaInfo.InputDetails)
+	quotaInfo.OutputDetails = normalizeAudioTokenDetails(usage.OutputTokens, quotaInfo.OutputDetails)
 
 	quota, clamp := calculateAudioQuota(quotaInfo)
 	noteQuotaClamp(relayInfo, clamp)
@@ -225,6 +257,8 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		ModelRatio: modelRatio,
 		GroupRatio: groupRatio,
 	}
+	quotaInfo.InputDetails = normalizeAudioTokenDetails(usage.InputTokens, quotaInfo.InputDetails)
+	quotaInfo.OutputDetails = normalizeAudioTokenDetails(usage.OutputTokens, quotaInfo.OutputDetails)
 
 	quota, clamp := calculateAudioQuota(quotaInfo)
 	noteQuotaClamp(relayInfo, clamp)
@@ -368,6 +402,8 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		ModelRatio: modelRatio,
 		GroupRatio: groupRatio,
 	}
+	quotaInfo.InputDetails = normalizeAudioTokenDetails(usage.PromptTokens, quotaInfo.InputDetails)
+	quotaInfo.OutputDetails = normalizeAudioTokenDetails(usage.CompletionTokens, quotaInfo.OutputDetails)
 
 	quota, clamp := calculateAudioQuota(quotaInfo)
 	noteQuotaClamp(relayInfo, clamp)

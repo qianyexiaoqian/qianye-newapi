@@ -35,6 +35,7 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { qyDaylineLabel, qyFormatAtDayline } from '../../lib/dayline'
 import { qyTabTarget } from '../../lib/pages'
 import {
   qyAdminAccrualsQuery,
@@ -266,9 +267,16 @@ export function QyAdminCommissionRecordsBody() {
           {settleSnapshot == null
             ? t('qy_cm_auto_settle_plain')
             : t('qy_cm_auto_settle', {
-                dayline: `UTC${settleSnapshot.day_offset_minutes >= 0 ? '+' : ''}${settleSnapshot.day_offset_minutes / 60}`,
+                // 日界标签与「下一轮开跑」的时刻必须用**同一个偏移**渲染。
+                // 后者原先走 formatTimestampToDate(浏览器本地时区),于是在
+                // UTC-7 的机器上同一句话里「日界 UTC+0」配着「17:00」,
+                // 而且日期比日界日期还早一天。瞬间是对的,口径不自洽。
+                dayline: qyDaylineLabel(settleSnapshot.day_offset_minutes),
                 days: settleSnapshot.payout_day_offset,
-                next: formatTimestampToDate(settleSnapshot.next_run_after),
+                next: qyFormatAtDayline(
+                  settleSnapshot.next_run_after,
+                  settleSnapshot.day_offset_minutes
+                ),
               })}
         </p>
         <p>

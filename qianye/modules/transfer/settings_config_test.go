@@ -48,7 +48,7 @@ import (
 // 而"读失败会怎样"本身就是这里要测的性质之一。
 func settingsTables() []any {
 	return []any{&Order{}, &UserState{}, &LookupLog{}, &GroupRule{}, &GroupLimit{},
-		&qymodel.Setting{}, &qymodel.AuditLog{}}
+		&SettingsVersion{}, &qymodel.Setting{}, &qymodel.AuditLog{}}
 }
 
 // newSettingsTestDB 建一个承载扩展库全部划转相关表的测试库,并接到 db.Get()。

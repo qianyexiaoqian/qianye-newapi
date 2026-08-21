@@ -121,7 +121,15 @@ export function QyApiAddressPickerDialog(props: Props) {
                   value={option.url}
                   className='mt-0.5'
                 />
-                <span className='min-w-0 flex-1 space-y-0.5'>
+                {/* normal-case 不是装饰:本站默认主题对 [data-slot='label'] 施加
+                    text-transform: uppercase(web/src/styles/qy-sg-apply.css),
+                    整块继承下去会把线路名、URL、备注一起变成大写。而 URL 路径
+                    **区分大小写** —— 同目录 api-base-url.ts 专门为此论证过
+                    「https://a.com/V1 不是一个能用的端点」。运营真配了带路径的
+                    线路时,屏幕上写的是 HTTPS://EXAMPLE.COM/NEWAPI/V1,
+                    用户照着念、照着往第三方客户端手填就是 404。
+                    中文界面看不出来(中文字形对 uppercase 无反应),所以它一直没被发现。 */}
+                <span className='min-w-0 flex-1 space-y-0.5 normal-case'>
                   <span className='block text-sm font-medium'>
                     {option.name}
                   </span>
