@@ -68,7 +68,8 @@ describe('到账时间:配置口径与账本事实必须同时出现', () => {
 
   test('两个数各占一行,不是把一个塞进另一个的文案里', () => {
     assert.ok(
-      INDEX.includes("key: 'payout-eta'") && INDEX.includes("key: 'pending-mature'"),
+      INDEX.includes("key: 'payout-eta'") &&
+        INDEX.includes("key: 'pending-mature'"),
       '两格必须各自成行:合并成一句话之后,"这是配置"与"这是我的钱"再也分不开'
     )
   })

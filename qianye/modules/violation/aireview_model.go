@@ -1,6 +1,10 @@
 package violation
 
-import "github.com/shopspring/decimal"
+import (
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
+
+	"github.com/shopspring/decimal"
+)
 
 // AI 审核的数据模型。
 //
@@ -91,9 +95,9 @@ type AIChannel struct {
 	BaseUrl string `json:"base_url" gorm:"type:varchar(256);not null;default:''"`
 	Model   string `json:"model" gorm:"type:varchar(128);not null;default:''"`
 
-	KeyNonce   []byte `json:"-" gorm:"type:varbinary(32)"`
-	KeyCipher  []byte `json:"-" gorm:"type:varbinary(512)"`
-	KeyVersion int    `json:"key_version" gorm:"not null;default:0"`
+	KeyNonce   qymodel.VarBinary `json:"-" gorm:"size:32"`
+	KeyCipher  qymodel.VarBinary `json:"-" gorm:"size:512"`
+	KeyVersion int               `json:"key_version" gorm:"not null;default:0"`
 	// KeyHint 是掩码提示(如 "****a1b2"),写入时算好存下来。
 	// 不在读取时现算:那需要先解密,而列表接口没有任何理由碰明文密钥。
 	KeyHint string `json:"key_hint" gorm:"type:varchar(32);not null;default:''"`

@@ -274,7 +274,11 @@ func SetApiRouter(router *gin.Engine) {
 			redemptionRoute.GET("/", controller.GetAllRedemptions)
 			redemptionRoute.GET("/search", controller.SearchRedemptions)
 			redemptionRoute.GET("/:id", controller.GetRedemption)
-			redemptionRoute.POST("/", controller.AddRedemption)
+			// 铸码提到超级管理员:兑换码明文等同现金,而这是全站唯一一条
+			// 凭空增发额度、且产物直接落进操作人自己那一桶的接口。
+			// 查/改/删不连坐 —— 它们已经被 redemptionCreatorScope 限制在
+			// 各自那一桶里,而 role=10 从此建不出码,那一桶恒为空。
+			redemptionRoute.POST("/", middleware.RootActionGate(middleware.RootActionRedemptionCreate), controller.AddRedemption)
 			redemptionRoute.PUT("/", controller.UpdateRedemption)
 			redemptionRoute.DELETE("/invalid", controller.DeleteInvalidRedemption)
 			redemptionRoute.DELETE("/:id", controller.DeleteRedemption)

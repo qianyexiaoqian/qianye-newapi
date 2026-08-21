@@ -425,10 +425,15 @@ func invalidateUserCaches(ids []int) int {
 //  4. 不与模型分组 roster 冲突(跨命名空间唯一性)
 //  5. 不是一个已经有人在用、只是还没登记的名字 —— 那种情况该走回填
 //
-// 第 3 条按 groupname.Normalize 比较而不是精确比较:扩展库固定是 MySQL,
-// qy_user_groups.name 这一列继承库默认排序规则(5.7 general_ci / 8.0 0900_ai_ci),
-// **两者都大小写不敏感**。精确比较放行的 "VIP" 会在 INSERT 时撞主键,
+// 第 3 条按 groupname.Normalize 比较而不是精确比较。它原本是为 MySQL 写的:
+// qy_user_groups.name 继承库默认排序规则(5.7 general_ci / 8.0 0900_ai_ci),
+// **两者都大小写不敏感**,精确比较放行的 "VIP" 会在 INSERT 时撞主键,
 // 报出来的是一条 Error 1062,而运营看到的是「保存失败,请稍后重试」。
+//
+// 扩展库支持 PostgreSQL 之后这条判据反而更重要:PostgreSQL 的默认排序规则
+// **大小写敏感**,库不会再替我们兜住 "VIP" 与 "vip"。也就是说唯一性从
+// "库和应用各有一道" 变成了 "只剩应用这一道" —— 去掉归一化的后果在 MySQL 上
+// 是一条难看的报错,在 PostgreSQL 上是两个同名分组真的并存,而计费侧是精确匹配。
 func validateNewUserGroupName(gdb *gorm.DB, name string) error {
 	if !registrableGroupName(name) {
 		return fmt.Errorf("分组名不能为空,且长度不能超过 %d 个字符(按字符计,不是字节)", maxGroupNameLen)

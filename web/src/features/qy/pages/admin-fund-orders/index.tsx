@@ -284,7 +284,7 @@ export function QyAdminFundOrders() {
                         {/* in_doubt 的行必须当场说清"不用你动手"，否则运营看到
                             一个不认识的状态 + 一条 COMMIT 报错，第一反应是手工重发。 */}
                         {row.status === STATUS_IN_DOUBT && (
-                          <span className='block text-muted-foreground text-xs'>
+                          <span className='text-muted-foreground block text-xs'>
                             {t('qy_cfg_fund_in_doubt_hint')}
                           </span>
                         )}

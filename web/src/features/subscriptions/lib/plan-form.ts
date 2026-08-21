@@ -61,56 +61,57 @@ export function saleTimeToUnix(input: string | undefined): number {
 }
 
 export function getPlanFormSchema(t: TFunction) {
-  return z.object({
-    title: z.string().min(1, t('Please enter plan title')),
-    // The column is varchar(255); without this the admin either gets an opaque
-    // "Data too long" from MySQL or a silently truncated description.
-    subtitle: z.string().max(255, t('qy_plan_subtitle_too_long')).optional(),
-    price_amount: z.coerce.number().min(0, t('Please enter amount')),
-    duration_unit: z.enum([
-      'year',
-      'month',
-      'day',
-      'hour',
-      'custom',
-      'permanent',
-    ]),
-    // 永久档的输入框不显示，值仍然留在表单里（默认 1），所以 min(1) 不会挡住
-    // 它；真正落库的值由 formValuesToPlanPayload 按档位归零。
-    duration_value: z.coerce.number().min(1),
-    custom_seconds: z.coerce.number().min(0).optional(),
-    quota_reset_period: z.enum([
-      'never',
-      'daily',
-      'weekly',
-      'monthly',
-      'custom',
-    ]),
-    quota_reset_custom_seconds: z.coerce.number().min(0).optional(),
-    enabled: z.boolean(),
-    // 发售时间窗。空串 = 不限制（默认），见 saleTimeToInput 的注释。
-    // 跨字段的「停售必须晚于发售」校验挂在整个 object 的 superRefine 上 ——
-    // 单字段 schema 看不到另一格的值。
-    sale_start_at_input: z.string(),
-    sale_end_at_input: z.string(),
-    sort_order: z.coerce.number(),
-    allow_balance_pay: z.boolean(),
-    allow_wallet_overflow: z.boolean(),
-    max_purchase_per_user: z.coerce.number().min(0),
-    // 全站总名额（按人去重），与上面的"每人限购次数"是两个独立维度。
-    // 它不是上游 subscription_plans 的列，只是搭表单的顺风车一起编辑，
-    // 因此不会出现在 formValuesToPlanPayload 的结果里。
-    max_total_users: z.coerce.number().min(0),
-    total_amount: z.coerce.number().min(0),
-    no_quota: z.boolean(),
-    // 购买后 / 到期回退的用户分组。空串是**有语义的取值**（不改 / 回退原组），
-    // 不是"没填"，所以这里不做 min(1) 之类的必填校验。
-    upgrade_group: z.string(),
-    downgrade_group: z.string(),
-    stripe_price_id: z.string().optional(),
-    creem_product_id: z.string().optional(),
-    waffo_pancake_product_id: z.string().optional(),
-  })
+  return z
+    .object({
+      title: z.string().min(1, t('Please enter plan title')),
+      // The column is varchar(255); without this the admin either gets an opaque
+      // "Data too long" from MySQL or a silently truncated description.
+      subtitle: z.string().max(255, t('qy_plan_subtitle_too_long')).optional(),
+      price_amount: z.coerce.number().min(0, t('Please enter amount')),
+      duration_unit: z.enum([
+        'year',
+        'month',
+        'day',
+        'hour',
+        'custom',
+        'permanent',
+      ]),
+      // 永久档的输入框不显示，值仍然留在表单里（默认 1），所以 min(1) 不会挡住
+      // 它；真正落库的值由 formValuesToPlanPayload 按档位归零。
+      duration_value: z.coerce.number().min(1),
+      custom_seconds: z.coerce.number().min(0).optional(),
+      quota_reset_period: z.enum([
+        'never',
+        'daily',
+        'weekly',
+        'monthly',
+        'custom',
+      ]),
+      quota_reset_custom_seconds: z.coerce.number().min(0).optional(),
+      enabled: z.boolean(),
+      // 发售时间窗。空串 = 不限制（默认），见 saleTimeToInput 的注释。
+      // 跨字段的「停售必须晚于发售」校验挂在整个 object 的 superRefine 上 ——
+      // 单字段 schema 看不到另一格的值。
+      sale_start_at_input: z.string(),
+      sale_end_at_input: z.string(),
+      sort_order: z.coerce.number(),
+      allow_balance_pay: z.boolean(),
+      allow_wallet_overflow: z.boolean(),
+      max_purchase_per_user: z.coerce.number().min(0),
+      // 全站总名额（按人去重），与上面的"每人限购次数"是两个独立维度。
+      // 它不是上游 subscription_plans 的列，只是搭表单的顺风车一起编辑，
+      // 因此不会出现在 formValuesToPlanPayload 的结果里。
+      max_total_users: z.coerce.number().min(0),
+      total_amount: z.coerce.number().min(0),
+      no_quota: z.boolean(),
+      // 购买后 / 到期回退的用户分组。空串是**有语义的取值**（不改 / 回退原组），
+      // 不是"没填"，所以这里不做 min(1) 之类的必填校验。
+      upgrade_group: z.string(),
+      downgrade_group: z.string(),
+      stripe_price_id: z.string().optional(),
+      creem_product_id: z.string().optional(),
+      waffo_pancake_product_id: z.string().optional(),
+    })
     .superRefine((values, ctx) => {
       const start = saleTimeToUnix(values.sale_start_at_input)
       const end = saleTimeToUnix(values.sale_end_at_input)

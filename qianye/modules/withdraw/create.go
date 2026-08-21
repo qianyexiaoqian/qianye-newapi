@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -516,13 +515,7 @@ func ensureReplayMatches(replay, incoming *Withdrawal) error {
 }
 
 // isDuplicateKey 判断错误是否为唯一索引冲突。
-// MySQL 驱动不导出结构化错误码,只能按文本匹配 —— 与地基 twophase 保持一致。
-func isDuplicateKey(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "duplicate entry") ||
-		strings.Contains(msg, "error 1062") ||
-		strings.Contains(msg, "duplicate key")
-}
+//
+// 判据统一收在 db.IsDuplicateKey:三家方言的报错文本互不相同,而这里把"撞键"
+// 当作幂等重放(errIdemReplay),漏判一家就会让重放变成建单失败。
+func isDuplicateKey(err error) bool { return db.IsDuplicateKey(err) }

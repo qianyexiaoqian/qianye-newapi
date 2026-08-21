@@ -182,7 +182,9 @@ export function qyAdminCommissionHealthQuery() {
   return queryOptions({
     queryKey: qyKeys.adminCommissionHealth(),
     queryFn: () =>
-      qyGet<{ daily_settle: QyDailySettleSnapshot }>('/admin/commission/health'),
+      qyGet<{ daily_settle: QyDailySettleSnapshot }>(
+        '/admin/commission/health'
+      ),
   })
 }
 

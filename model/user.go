@@ -284,10 +284,16 @@ func CheckUserExistOrDeleted(username string, email string) (bool, error) {
 	// check email if empty
 	var err error
 	email = NormalizeEmail(email)
+	// 用户名与邮箱同口径:都按大小写折叠比。裸 `username = ?` 只有 MySQL 的
+	// ci 排序规则替它兜底,PostgreSQL 与 SQLite 上会放行「只差大小写」的重名
+	// 注册(实测:已有 qy-fals-a 时 QY-FALS-A 在 PG 上 success、在 MySQL 上被拒),
+	// 而 username 正是工单/日志/审计/提现审核里的展示身份。判据见 mainCaseFoldedEq。
+	nameCond, nameArg := mainCaseFoldedEq("username", strings.TrimSpace(username))
 	if email == "" {
-		err = DB.Unscoped().First(&user, "username = ?", username).Error
+		err = DB.Unscoped().First(&user, nameCond, nameArg).Error
 	} else {
-		err = DB.Unscoped().First(&user, "username = ? or LOWER(email) = ?", username, email).Error
+		err = DB.Unscoped().First(&user,
+			nameCond+" or LOWER(email) = ?", nameArg, email).Error
 	}
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -441,8 +447,15 @@ func SearchUsers(keyword string, group string, role *int, status *int, startIdx 
 	query := tx.Unscoped().Model(&User{})
 
 	// 构建搜索条件
-	likeCondition := "username LIKE ? OR email LIKE ? OR display_name LIKE ?"
-	likeArgs := []interface{}{"%" + keyword + "%", "%" + keyword + "%", "%" + keyword + "%"}
+	//
+	// 三列都套 LOWER 而不是裸 LIKE:MySQL 的 ci 排序规则让 LIKE 大小写不敏感,
+	// PostgreSQL 与 SQLite 不会 —— 同一次检索在 PG 上返回 200 + 空列表,
+	// 与「这个人不存在」不可分辨(实测 keyword=QY-PG-U1:MySQL 1 条 / PG 0 条)。
+	// `%kw%` 前缀带通配,本来就用不上索引,套 LOWER 不多花任何代价。
+	// 同仓 GetRedemptionsByKeyword 早就是这个写法,这几处是漏改。
+	folded := strings.ToLower(keyword)
+	likeCondition := "LOWER(username) LIKE ? OR LOWER(email) LIKE ? OR LOWER(display_name) LIKE ?"
+	likeArgs := []interface{}{"%" + folded + "%", "%" + folded + "%", "%" + folded + "%"}
 
 	// 尝试将关键字转换为整数ID
 	keywordInt, err := strconv.Atoi(keyword)
@@ -1031,7 +1044,17 @@ func (user *User) ValidateAndFill() (err error) {
 		return ErrUserEmptyCredentials
 	}
 	// find by username or email
-	err = DB.Where("username = ? OR email = ?", username, username).First(user).Error
+	//
+	// 两个字段都按大小写折叠比,与注册时的重名判定(CheckUserExistOrDeleted)同口径。
+	// 裸 `username = ?` 在 MySQL 上靠 ci 排序规则大小写不敏感,在 PostgreSQL 与
+	// SQLite 上却是逐字节比:同一个账号、同一个口令,MySQL 上 QY-FALS-B 能登进来,
+	// PG 上一律返回「用户名或密码错误」—— 迁库当天习惯打大写用户名的存量用户
+	// 集体登不进来,而报错文案把根因彻底藏起来。判据见 mainCaseFoldedEq。
+	//
+	// 邮箱侧本来就该折叠:注册路径存的是 NormalizeEmail 之后的值。
+	nameCond, nameArg := mainCaseFoldedEq("username", username)
+	mailCond, mailArg := mainCaseFoldedEq("email", username)
+	err = DB.Where(nameCond+" OR "+mailCond, nameArg, mailArg).First(user).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// 比较结果刻意丢弃,见 missingUserPasswordHash。
@@ -1398,6 +1421,22 @@ func GetRootUser() (user *User) {
 func UpdateUserLastLoginAt(id int) {
 	if err := DB.Model(&User{}).Where("id = ?", id).Update("last_login_at", common.GetTimestamp()).Error; err != nil {
 		common.SysLog("failed to update user last_login_at: " + err.Error())
+	}
+}
+
+// UpdateUserUsedQuota 只调整累计用量，不动请求次数。
+//
+// 退款路径必须用它而不是 UpdateUserUsedQuotaAndRequestCount：退款不是一次新请求，
+// 用后者会把 request_count 也加一。而完全不调它（改动前的状态）会让「总额度」
+// (quota + used_quota) 随退款次数单调虚增，最终超过用户真实充值总额，
+// 用量报表与配额告警一起失真。同步自上游 58d4e9bd3。
+func UpdateUserUsedQuota(id int, quota int) {
+	if common.BatchUpdateEnabled {
+		addNewRecord(BatchUpdateTypeUsedQuota, id, quota)
+		return
+	}
+	if err := DB.Model(&User{}).Where("id = ?", id).Update("used_quota", gorm.Expr("used_quota + ?", quota)).Error; err != nil {
+		common.SysLog("failed to update user used quota: " + err.Error())
 	}
 }
 

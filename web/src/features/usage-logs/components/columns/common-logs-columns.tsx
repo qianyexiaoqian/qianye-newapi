@@ -109,6 +109,15 @@ function buildDetailSegments(
   if (isAdmin && other?.admin_info?.quota_saturation) {
     return [{ text: t('Quota clamped'), danger: true }, ...segments]
   }
+  // Pre-consume shortfall: deliberately NOT danger-styled. Overdraft is an
+  // accepted trade-off here (see `qianye/docs/decisions.md` D-01) and a
+  // shortfall means the settle-time top-up ran, which is normal billing —
+  // painting every one of them red is the fastest way to make the marker
+  // invisible. It is listed so the row can be recognised at a glance; pulling
+  // them out in bulk is what the "Pre-consume shortfall only" filter is for.
+  if (isAdmin && other?.admin_info?.pre_consume_shortfall) {
+    return [{ text: t('Pre-consume shortfall') }, ...segments]
+  }
   return segments
 }
 

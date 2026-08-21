@@ -608,12 +608,8 @@ func validateAmount(amount int64) error {
 	return nil
 }
 
-func isDuplicateKey(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "duplicate entry") ||
-		strings.Contains(msg, "error 1062") ||
-		strings.Contains(msg, "duplicate key")
-}
+// isDuplicateKey 判断错误是否为唯一索引冲突。
+//
+// 判据统一收在 db.IsDuplicateKey:三家方言的报错文本互不相同,而这里把"撞键"
+// 当作幂等命中(同一 idem_key 已落过单),漏判一家会让幂等重试变成真失败。
+func isDuplicateKey(err error) bool { return db.IsDuplicateKey(err) }

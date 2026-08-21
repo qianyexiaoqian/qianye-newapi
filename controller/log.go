@@ -22,7 +22,11 @@ func GetAllLogs(c *gin.Context) {
 	group := c.Query("group")
 	requestId := c.Query("request_id")
 	upstreamRequestId := c.Query("upstream_request_id")
-	logs, total, err := model.GetAllLogs(logType, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group, requestId, upstreamRequestId)
+	// 只看「预扣没兜住真实花费」的那些笔。标记本身写在 other.admin_info 下,
+	// 只有管理员看得见,而这条接口本来就是管理端专用的,不需要再加一道判据。
+	// 理由与取舍见 qianye/docs/decisions.md 的 D-01。
+	shortfallOnly := c.Query("pre_consume_shortfall") == "true"
+	logs, total, err := model.GetAllLogs(logType, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group, requestId, upstreamRequestId, shortfallOnly)
 	if err != nil {
 		common.ApiError(c, err)
 		return

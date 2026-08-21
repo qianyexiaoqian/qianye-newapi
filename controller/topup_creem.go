@@ -98,7 +98,24 @@ func (*CreemAdaptor) RequestPay(c *gin.Context, req *CreemPayRequest) {
 	}
 
 	id := c.GetInt("id")
-	user, _ := model.GetUserById(id, false)
+	// 产品额度由管理端配置,同样要过结算侧那道换算:超过 common.MaxQuota 的产品、
+	// 或者装不进收款人钱包的产品,在回调结算时整笔回滚 —— 用户付了钱却永远拿不到
+	// 额度、订单永久 pending。钱包容量这一维同步自上游 47ba9d2c6。
+	if rejectInsufficientWalletCapacity(c, id, &model.TopUp{
+		PaymentProvider: model.PaymentProviderCreem,
+		Amount:          selectedProduct.Quota,
+	}) {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Creem 产品充值额度不可入账 user_id=%d product_id=%s quota=%d", id, selectedProduct.ProductId, selectedProduct.Quota))
+		return
+	}
+
+	// user 取不到时原先直接 user.Id 解引用 —— 收款人在会话有效期内被删掉就 panic
+	// 整个进程。同步自上游 47ba9d2c6 的显式判空。
+	user, err := model.GetUserById(id, false)
+	if err != nil || user == nil {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "用户不存在"})
+		return
+	}
 
 	// 生成唯一的订单引用ID
 	reference := fmt.Sprintf("creem-api-ref-%d-%d-%s", user.Id, time.Now().UnixMilli(), randstr.String(4))
@@ -114,13 +131,6 @@ func (*CreemAdaptor) RequestPay(c *gin.Context, req *CreemPayRequest) {
 		PaymentProvider: model.PaymentProviderCreem,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
-	}
-	// 产品额度由管理端配置,同样要过结算侧那道换算:超过 common.MaxQuota 的产品
-	// 在回调结算时整笔回滚,用户付了钱却永远拿不到额度、订单永久 pending。
-	if _, quotaErr := topUp.CreditQuota(); quotaErr != nil {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Creem 产品充值额度超出上限 user_id=%d product_id=%s quota=%d error=%q", id, selectedProduct.ProductId, selectedProduct.Quota, quotaErr.Error()))
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "该产品的充值额度配置超出上限"})
-		return
 	}
 	err = topUp.Insert()
 	if err != nil {

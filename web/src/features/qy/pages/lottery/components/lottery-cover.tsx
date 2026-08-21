@@ -69,7 +69,11 @@ export function QyLotCover(props: {
 
   const shape =
     props.variant === 'hero' ? 'aspect-[3/1] rounded-lg' : 'aspect-[16/6]'
-  const box = cn('bg-muted relative w-full overflow-hidden', shape, props.className)
+  const box = cn(
+    'bg-muted relative w-full overflow-hidden',
+    shape,
+    props.className
+  )
 
   if (src == null || failedSrc === src) {
     const Icon =

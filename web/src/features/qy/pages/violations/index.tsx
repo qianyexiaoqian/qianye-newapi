@@ -201,12 +201,15 @@ export function QyMyViolations() {
                                 {' · '}
                                 {qyWindowIsUnlimited(
                                   summary.remaining_window_hours ??
-                                    summary.window_hours,
+                                    summary.window_hours
                                 )
-                                  ? t('qy_vio_my_remaining_line_scale_unlimited', {
-                                      hits: summary.remaining_hit_count ?? 0,
-                                      threshold: summary.remaining_threshold,
-                                    })
+                                  ? t(
+                                      'qy_vio_my_remaining_line_scale_unlimited',
+                                      {
+                                        hits: summary.remaining_hit_count ?? 0,
+                                        threshold: summary.remaining_threshold,
+                                      }
+                                    )
                                   : t('qy_vio_my_remaining_line_scale', {
                                       hits: summary.remaining_hit_count ?? 0,
                                       threshold: summary.remaining_threshold,

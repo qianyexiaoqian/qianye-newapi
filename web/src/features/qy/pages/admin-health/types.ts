@@ -225,3 +225,33 @@ export type QyLeaseList = {
   /** 当前节点的 holder 标识，用于在表里高亮「就是我」。 */
   self: string
 }
+
+/** 一个负余额（透支）账号。`quota` 恒为负 —— 后端刻意下发原值，见 overdraft 包注释。 */
+export interface QyOverdraftAccount {
+  user_id: number
+  username: string
+  display_name: string
+  group: string
+  status: number
+  quota: number
+}
+
+/**
+ * 负余额总览（`GET /api/qy/admin/overdraft`）。
+ *
+ * 存在理由不是"又一个报表"：本站**刻意接受**预扣/结算无下限（拍板与代价见
+ * `qianye/docs/decisions.md` D-01），而接受透支的前提是透支看得见。
+ * 这份数据是运营决定"要不要追欠费 / 封号"的依据。
+ */
+export interface QyOverdraftReport {
+  at: number
+  /** 负余额账号数。 */
+  accounts: number
+  /** 合计欠额，恒 >= 0（= -SUM(quota)）。 */
+  total_owed: number
+  /** 欠得最深的账号；没有负余额账号时为 null。 */
+  deepest: QyOverdraftAccount | null
+  top: QyOverdraftAccount[]
+  /** true 表示 `accounts > top.length`，清单被截断了。 */
+  truncated: boolean
+}

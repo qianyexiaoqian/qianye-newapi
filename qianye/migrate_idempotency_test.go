@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	glogger "gorm.io/gorm/logger"
+
+	qydb "github.com/QuantumNous/new-api/qianye/db"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,37 +37,71 @@ import (
 // 讽刺的是仓内唯一一处显式援引这条禁令的规避注释(apiaddr/model.go)自己写的是
 // `default:false`,而它恰恰在那 65 条里 —— 规避手法本身是无效的。
 //
-// 判据只能在真 MySQL 上跑(扩展库只支持 MySQL,见 qianye/db/db.go):
-// 设 QY_TEST_MYSQL_MIGRATE_DSN 指向一个**一次性**库即可。不设就干净 SKIP。
+// 判据只能在真库上跑(sqlite 验证不了方言归一化):
+// 设 QY_TEST_MYSQL_MIGRATE_DSN / QY_TEST_PG_MIGRATE_DSN 指向**一次性**库即可,
+// 不设就干净 SKIP。两种方言都必须过 —— PostgreSQL 是扩展库受支持的第二种部署,
+// 而"空转 DDL"这个缺陷完全是方言归一化差异造成的,MySQL 干净不代表 PG 干净。
 func TestExtensionAutoMigrateIsIdempotent(t *testing.T) {
-	dsn := os.Getenv("QY_TEST_MYSQL_MIGRATE_DSN")
-	if dsn == "" {
-		t.Skip("未设置 QY_TEST_MYSQL_MIGRATE_DSN,跳过(扩展库只支持 MySQL,无法在 sqlite 上验证方言归一化)")
+	cases := []struct {
+		name string
+		env  string
+	}{
+		{name: "mysql", env: "QY_TEST_MYSQL_MIGRATE_DSN"},
+		{name: "postgres", env: "QY_TEST_PG_MIGRATE_DSN"},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dsn := os.Getenv(tc.env)
+			if dsn == "" {
+				t.Skipf("未设置 %s,跳过(sqlite 上验证不了方言归一化)", tc.env)
+			}
 
-	var stmts []string
-	gdb, err := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: migrateSQLRecorder{&stmts}})
-	require.NoError(t, err)
+			// 必须走 db.DialectorFor —— 那是生产建句柄的唯一入口。
+			// 直接 postgres.Open 会绕开列信息归一化装饰器,验证的就不是生产行为。
+			dialector, err := qydb.DialectorFor(dsn)
+			require.NoError(t, err)
+			var stmts []string
+			gdb, err := gorm.Open(dialector, &gorm.Config{Logger: migrateSQLRecorder{&stmts}})
+			require.NoError(t, err)
 
-	tables := allTables()
-	require.NotEmpty(t, tables)
-	require.NoError(t, gdb.AutoMigrate(tables...), "首次迁移必须成功")
+			tables := allTables()
+			require.NotEmpty(t, tables)
+			require.NoError(t, gdb.AutoMigrate(tables...), "首次迁移必须成功")
 
-	stmts = stmts[:0]
-	require.NoError(t, gdb.AutoMigrate(tables...), "第二次迁移必须成功")
+			stmts = stmts[:0]
+			require.NoError(t, gdb.AutoMigrate(tables...), "第二次迁移必须成功")
 
-	var ddl []string
-	for _, s := range stmts {
-		up := strings.ToUpper(strings.TrimSpace(s))
-		if strings.HasPrefix(up, "ALTER TABLE") ||
-			strings.HasPrefix(up, "CREATE TABLE") ||
-			strings.HasPrefix(up, "DROP ") {
-			ddl = append(ddl, s)
-		}
+			// CREATE INDEX / CREATE UNIQUE INDEX 必须一起数进来。
+			//
+			// 判据原先只认 ALTER TABLE / CREATE TABLE / DROP,于是漏掉了一整类
+			// 空转 DDL:PostgreSQL 上索引名是 schema 级唯一的,一个被**另一张表**
+			// 占用的索引名会让 GORM 的 `CREATE INDEX IF NOT EXISTS` 既建不出索引、
+			// 也不报错,每次启动再徒劳发一遍。实测这条洞让 qy_avail_bucket_hour
+			// 缺三条索引(含唯一索引)、rollup 恒报 42P10 的真缺陷带着这条
+			// 自称守着它的测试 PASS 了整整一轮 —— 索引 DDL 与上面那三类一样
+			// 会取排他元数据锁、写进 binlog、淹掉真正的意外 DDL,没有理由被放行。
+			ddlPrefixes := []string{
+				"ALTER TABLE",
+				"CREATE TABLE",
+				"CREATE INDEX",
+				"CREATE UNIQUE INDEX",
+				"DROP ",
+			}
+			var ddl []string
+			for _, s := range stmts {
+				up := strings.ToUpper(strings.TrimSpace(s))
+				for _, prefix := range ddlPrefixes {
+					if strings.HasPrefix(up, prefix) {
+						ddl = append(ddl, s)
+						break
+					}
+				}
+			}
+			assert.Empty(t, ddl,
+				"第二次 AutoMigrate 不允许发出任何 DDL;每一条都是每次重启都会重发的空转,"+
+					"它们会在资金表上取排他元数据锁、写进 binlog,并把真正的意外 DDL 淹掉")
+		})
 	}
-	assert.Empty(t, ddl,
-		"第二次 AutoMigrate 不允许发出任何 DDL;每一条都是每次重启都会重发的空转,"+
-			"它们会在资金表上取排他元数据锁、写进 binlog,并把真正的意外 DDL 淹掉")
 }
 
 type migrateSQLRecorder struct{ stmts *[]string }

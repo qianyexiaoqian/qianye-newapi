@@ -39,6 +39,11 @@ const (
 	MsgAuthUserBanned            = "auth.user_banned"
 	MsgAuthUserRestricted        = "auth.user_restricted"
 	MsgAuthInsufficientPrivilege = "auth.insufficient_privilege"
+	// MsgAuthRootActionRequired 与 MsgAuthInsufficientPrivilege 刻意分成两句:
+	// 前者是"这条路由你整条都到不了",后者是"这个页面你能用,只有这一个动作不行"。
+	// 合成一句之后,管理员看到的"权限不足"既可能意味着该换人登录、也可能意味着
+	// 该找超管代做这一步,而这两条路完全不同。见 middleware/root_action.go。
+	MsgAuthRootActionRequired = "auth.root_action_required"
 )
 
 // Token related messages

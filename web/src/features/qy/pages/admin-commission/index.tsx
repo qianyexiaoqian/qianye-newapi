@@ -18,14 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import {
-  Info,
-  Pencil,
-  Plus,
-  RefreshCw,
-  ScrollText,
-  Trash2,
-} from 'lucide-react'
+import { Info, Pencil, Plus, RefreshCw, ScrollText, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -1450,7 +1443,9 @@ function DailySettleCard() {
               />
               <QyDailySettleField
                 label={t('qy_cm_ds_ran_today')}
-                value={snapshot.ran_today ? t('qy_cm_ds_yes') : t('qy_cm_ds_no')}
+                value={
+                  snapshot.ran_today ? t('qy_cm_ds_yes') : t('qy_cm_ds_no')
+                }
               />
             </div>
             <QyDailySettleRunView

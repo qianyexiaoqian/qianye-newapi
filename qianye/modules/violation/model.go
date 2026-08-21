@@ -15,6 +15,8 @@
 package violation
 
 import (
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
+
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
@@ -736,7 +738,7 @@ type Payload struct {
 	StoredBytes int64 `json:"stored_bytes" gorm:"not null;default:0"`
 	Truncated   bool  `json:"truncated" gorm:"not null"`
 
-	Body []byte `json:"-" gorm:"type:mediumblob"`
+	Body qymodel.MediumBlob `json:"-"`
 
 	Redacted    bool   `json:"redacted" gorm:"not null"`
 	RedactStats string `json:"redact_stats" gorm:"type:varchar(512);not null;default:''"`

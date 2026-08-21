@@ -25,14 +25,14 @@ import (
 //  3. **影子记录必须带齐做分析所需的上下文**,包括"若真实执行会扣多少钱"
 //     与"这一条为什么是影子"。
 
-// newPersistDB 建一个只承载 qy_violation_record / qy_violation_payload 的内存库。
+// newPersistDB 建一个承载 qy_violation_record / qy_violation_payload /
+// qy_violation_counter 的内存库。
 //
-// **刻意不建 qy_violation_counter。** bumpCounter 用的是 MySQL 方言的
-// `INSERT ... ON DUPLICATE KEY UPDATE`,SQLite 连语法都过不了,所以"计数变成几"
-// 在这里根本观察不到。于是把"计数器不可写"当成探针:persistRecord 只要走到
-// bumpCounter 就必然带着错误返回,而绕开它就返回 nil。
-// 这样一来两个方向都被钉死 —— 影子必须 nil、真实必须报错,
-// 把 persistRecord 里的 `shadow ||` 删掉,第一条立刻变红。
+// 计数器表以前**刻意不建**:bumpCounter 曾经写的是 MySQL 专有的
+// `INSERT ... ON DUPLICATE KEY UPDATE` + `IF()`,SQLite 连语法都过不了,
+// 于是只能把"计数器不可写"当探针 —— 影子必须 nil、真实必须报错。
+// 那种探针只能证明"走到了那一步",证明不了"加对了几"。
+// bumpCounter 改成三方言通用写法之后,计数值可以直接观察,探针换成真值断言。
 func newPersistDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -40,7 +40,7 @@ func newPersistDB(t *testing.T) *gorm.DB {
 	sqlDB, err := gdb.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1) // 内存库按连接隔离
-	require.NoError(t, gdb.AutoMigrate(&Record{}, &Payload{}))
+	require.NoError(t, gdb.AutoMigrate(&Record{}, &Payload{}, &Counter{}))
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return gdb
 }
@@ -70,8 +70,11 @@ func TestShadowHitNeverTouchesTheBanCounter(t *testing.T) {
 		gdb := newPersistDB(t)
 		rec := hitRecord("vr_shadow_1", 42, true, 3)
 
-		require.NoError(t, persistRecord(ctx, gdb, rec, nil, rec.CountWeight, true),
-			"影子命中不得触及计数器;报错说明它仍然走到了 bumpCounter")
+		require.NoError(t, persistRecord(ctx, gdb, rec, nil, rec.CountWeight, true))
+
+		var n int64
+		require.NoError(t, gdb.Model(&Counter{}).Where("user_id = ?", 42).Count(&n).Error)
+		assert.Zero(t, n, "影子命中不得在计数器表里留下任何一行")
 
 		var row Record
 		require.NoError(t, gdb.Where("rec_no = ?", "vr_shadow_1").Take(&row).Error)
@@ -86,10 +89,20 @@ func TestShadowHitNeverTouchesTheBanCounter(t *testing.T) {
 		gdb := newPersistDB(t)
 		rec := hitRecord("vr_real_1", 42, false, 3)
 
-		// 反向断言:计数器表不存在,所以"报错"恰恰证明 bumpCounter 被调用了。
+		// 正向断言:计数必须真的加到 3(= 规则的 count_weight)。
 		// 没有这一条,上一个用例可以靠"persistRecord 什么都不做"骗过去。
-		assert.Error(t, persistRecord(ctx, gdb, rec, nil, rec.CountWeight, false),
+		require.NoError(t, persistRecord(ctx, gdb, rec, nil, rec.CountWeight, false))
+
+		var c Counter
+		require.NoError(t, gdb.Where("user_id = ?", 42).Take(&c).Error,
 			"真实命中必须推进计数器")
+		assert.Equal(t, 3, c.HitCount, "权重 3 的一次真实命中把 hit_count 从 0 推到 3")
+		assert.EqualValues(t, 3, c.TotalCount)
+
+		var row Record
+		require.NoError(t, gdb.Where("rec_no = ?", "vr_real_1").Take(&row).Error)
+		assert.True(t, row.Counted, "真实命中必须标记为已计数")
+		assert.Equal(t, 3, row.CounterAfter, "counter_after 必须是推进后的真值,不是哨兵")
 	})
 
 	t.Run("权重为 0 的规则本来就不计数", func(t *testing.T) {
@@ -100,6 +113,9 @@ func TestShadowHitNeverTouchesTheBanCounter(t *testing.T) {
 		var row Record
 		require.NoError(t, gdb.Where("rec_no = ?", "vr_zero_1").Take(&row).Error)
 		assert.False(t, row.Counted)
+		var n int64
+		require.NoError(t, gdb.Model(&Counter{}).Where("user_id = ?", 42).Count(&n).Error)
+		assert.Zero(t, n, "权重 0 不该在计数器表里建行")
 	})
 }
 

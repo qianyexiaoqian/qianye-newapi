@@ -70,8 +70,11 @@ func (Mod) InstallHooks() {
 // 多定义一个恒为 true 的开关只会多出一个没人消费的配置项。
 func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/user-group/config", adminGetConfig)
-	// 改这一项会决定此后所有新用户能不能用模型,按关键操作限流。
-	g.PUT("/user-group/config", middleware.CriticalRateLimit(), adminPutConfig)
+	// 改这一项会决定此后**所有**新用户能不能用模型 —— 写一次影响的是全部
+	// 未来账号,而不是某一个人,因此按关键操作限流并提到超级管理员。
+	// 读不连坐:role=10 必须能看见当前值,否则连"为什么新用户没模型"都查不了。
+	g.PUT("/user-group/config", middleware.CriticalRateLimit(),
+		middleware.RootActionGate(middleware.RootActionUserGroupDefaultWrite), adminPutConfig)
 }
 
 func init() { module.Register(Mod{}) }

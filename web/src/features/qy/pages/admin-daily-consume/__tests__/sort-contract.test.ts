@@ -62,13 +62,7 @@ const repoRoot = join(
 /** 从 Go 源码里抠出 `dailyConsumeSorts` 那张 map 的键。 */
 function backendSortKeys(): string[] {
   const source = readFileSync(
-    join(
-      repoRoot,
-      'qianye',
-      'modules',
-      'commission',
-      'api_daily_consume.go'
-    ),
+    join(repoRoot, 'qianye', 'modules', 'commission', 'api_daily_consume.go'),
     'utf8'
   )
   const start = source.indexOf('var dailyConsumeSorts')
@@ -117,8 +111,14 @@ describe('qy 日消费明细排序契约', () => {
     for (const key of frontendSortKeys()) {
       // 缺键时 i18next 会把**键名本身**渲染出来，也就是下拉里出现一行
       // `qy_dc_sort_consume_quota`，而 typecheck 与其它测试全绿。
-      assert.ok(enKeys[`qy_dc_sort_${key}`] != null, `en.json 缺少 qy_dc_sort_${key}`)
-      assert.ok(zhKeys[`qy_dc_sort_${key}`] != null, `zh.json 缺少 qy_dc_sort_${key}`)
+      assert.ok(
+        enKeys[`qy_dc_sort_${key}`] != null,
+        `en.json 缺少 qy_dc_sort_${key}`
+      )
+      assert.ok(
+        zhKeys[`qy_dc_sort_${key}`] != null,
+        `zh.json 缺少 qy_dc_sort_${key}`
+      )
     }
   })
 })

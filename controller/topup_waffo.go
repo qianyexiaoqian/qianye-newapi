@@ -118,6 +118,11 @@ func RequestWaffoAmount(c *gin.Context) {
 		return
 	}
 
+	// 先取整再计价:报价、上下界、落库的 Amount 三者必须出自同一个数。
+	// 少这一步时 getWaffoPayMoney 用**精确除法**报价、落库却截断到整单位,
+	// tokens=999999 会按 1.999998 个单位收钱、按 1 个单位到账(与易支付被
+	// normalizeTopUpAmount 修掉的那条缺陷同形)。
+	req.Amount = normalizeTopUpAmount(req.Amount)
 	waffoMinTopup := int64(setting.WaffoMinTopUp)
 	if req.Amount < waffoMinTopup {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", waffoMinTopup)})
@@ -125,6 +130,11 @@ func RequestWaffoAmount(c *gin.Context) {
 	}
 
 	id := c.GetInt("id")
+	// 询价与下单同闸:上界 + 钱包容量。
+	if rejectInvalidTopUpQuota(c, id, req.Amount) {
+		return
+	}
+
 	group, err := model.GetUserGroup(id, true)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "获取用户分组失败"})
@@ -132,8 +142,7 @@ func RequestWaffoAmount(c *gin.Context) {
 	}
 
 	payMoney := getWaffoPayMoney(float64(req.Amount), group)
-	if payMoney <= 0.01 {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
+	if rejectPayMoneyBelowGatewayMinimum(c, payMoney) {
 		return
 	}
 
@@ -152,18 +161,20 @@ func RequestWaffoPay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "参数错误"})
 		return
 	}
+	// 与询价同一个取整口径,否则用户看到的报价与真正被收走的钱不是同一个数。
+	req.Amount = normalizeTopUpAmount(req.Amount)
 	waffoMinTopup := int64(setting.WaffoMinTopUp)
 	if req.Amount < waffoMinTopup {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", waffoMinTopup)})
 		return
 	}
+	id := c.GetInt("id")
 	// 上界与易支付同源:超过它的订单结算时换算触顶,钱进了网关而额度一分到不了。
-	if req.Amount > getMaxTopup() {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能大于 %d", getMaxTopup())})
+	// 钱包容量同源同理(同步自上游 47ba9d2c6)。
+	if rejectInvalidTopUpQuota(c, id, req.Amount) {
 		return
 	}
 
-	id := c.GetInt("id")
 	user, err := model.GetUserById(id, false)
 	if err != nil || user == nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "用户不存在"})
@@ -204,8 +215,7 @@ func RequestWaffoPay(c *gin.Context) {
 
 	group, _ := model.GetUserGroup(id, true)
 	payMoney := getWaffoPayMoney(float64(req.Amount), group)
-	if payMoney < 0.01 {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
+	if rejectPayMoneyBelowGatewayMinimum(c, payMoney) {
 		return
 	}
 
@@ -213,14 +223,12 @@ func RequestWaffoPay(c *gin.Context) {
 	merchantOrderId := fmt.Sprintf("WAFFO-%d-%d-%s", id, time.Now().UnixMilli(), randstr.String(6))
 	paymentRequestId := merchantOrderId
 
-	// Token 模式下归一化 Amount（存等价美元/CNY 数量，避免 RechargeWaffo 双重放大）
-	amount := req.Amount
-	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
-		amount = int64(float64(req.Amount) / common.QuotaPerUnit)
-		if amount < 1 {
-			amount = 1
-		}
-	}
+	// Token 模式下归一化 Amount（存等价美元/CNY 数量，避免 RechargeWaffo 双重放大）。
+	// 走与上界校验、易支付共用的 topUpStoredAmount：req.Amount 上面已经被
+	// normalizeTopUpAmount 取整到整单位，所以这里是精确除法而不是截断。
+	// 原先那句 `if amount < 1 { amount = 1 }` 是一条与校验侧方向相反的向上兜底
+	// （校验侧截断到 0 后直接拒绝），取整之后它既够不着也不再需要。
+	amount := topUpStoredAmount(req.Amount)
 
 	// 创建本地订单
 	topUp := &model.TopUp{

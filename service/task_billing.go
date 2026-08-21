@@ -228,7 +228,13 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 	// 2. 退还令牌额度
 	taskAdjustTokenQuota(ctx, task, -quota)
 
-	// 3. 记录日志
+	// 3. 回减提交时累计的用户与渠道用量；请求次数保持不变（退款不是一次新请求）。
+	// 缺这一步时 quota 退回去了而 used_quota 没减，「总额度」(quota + used_quota)
+	// 随退款次数单调虚增，最终超过用户真实充值总额。同步自上游 58d4e9bd3。
+	model.UpdateUserUsedQuota(task.UserId, -quota)
+	model.UpdateChannelUsedQuota(task.ChannelId, -quota)
+
+	// 4. 记录日志
 	other := taskBillingOther(task)
 	other["task_id"] = task.TaskID
 	other["reason"] = reason
@@ -244,7 +250,7 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 		Other:     other,
 	})
 
-	// 4. 资金退款完成后再清除持久化标记。
+	// 5. 资金退款完成后再清除持久化标记。
 	// 回写失败必须显式告警，避免漏掉潜在的重复退款风险。
 	task.Quota = 0
 	if err := task.UpdateQuota(); err != nil {
@@ -324,13 +330,18 @@ func settleTaskQuotaDelta(
 		logger.LogError(ctx, fmt.Sprintf("差额结算回写 quota 失败 task %s: %s", task.TaskID, err.Error()))
 	}
 
+	// 用量按差额调整，两个方向都要走：提交时已经按预扣额记过一次用量和一次请求，
+	// 结算这一步只修正金额。改动前负差额（退款）这一支什么都不做，于是每一笔
+	// 「预扣多了、结算退回一部分」都会在 used_quota 上永久留下那一部分虚增。
+	// 请求次数不再累加（提交时已经加过），同步自上游 58d4e9bd3。
+	model.UpdateUserUsedQuota(task.UserId, quotaDelta)
+	model.UpdateChannelUsedQuota(task.ChannelId, quotaDelta)
+
 	var logType int
 	var logQuota int
 	if quotaDelta > 0 {
 		logType = model.LogTypeConsume
 		logQuota = quotaDelta
-		model.UpdateUserUsedQuotaAndRequestCount(task.UserId, quotaDelta)
-		model.UpdateChannelUsedQuota(task.ChannelId, quotaDelta)
 	} else {
 		logType = model.LogTypeRefund
 		logQuota = -quotaDelta

@@ -109,6 +109,7 @@ export function qyInviteeDailyQuery(params: {
   if (params.end_date) query.end_date = params.end_date
   return queryOptions({
     queryKey: qyKeys.inviteeDaily(query),
-    queryFn: () => qyGet<QyInviteeDailyPage>('/commission/invitee-daily', query),
+    queryFn: () =>
+      qyGet<QyInviteeDailyPage>('/commission/invitee-daily', query),
   })
 }

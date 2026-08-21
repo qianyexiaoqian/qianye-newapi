@@ -89,7 +89,10 @@ describe('活动封面的来源翻译', () => {
   test('来源分类决定要不要挂 no-referrer', () => {
     // 外链指向管理员随手填的第三方主机。分类错了，每一位访客的来源地址
     // 都会白送给那台机器。
-    assert.equal(qyLotCoverKind({ cover_url: 'https://cdn.test/a.png' }), 'link')
+    assert.equal(
+      qyLotCoverKind({ cover_url: 'https://cdn.test/a.png' }),
+      'link'
+    )
     assert.equal(qyLotCoverKind({ cover_ref: 'abc' }), 'upload')
   })
 })

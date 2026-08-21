@@ -7,6 +7,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func insertUserForPaymentGuardTest(t *testing.T, id int, quota int) *User {
@@ -307,4 +308,72 @@ func TestRechargeEpayRejectsQuotaOverflowBeforeCompletingOrder(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, 3, getUserQuotaForPaymentGuardTest(t, user.Id))
 	assert.Equal(t, common.TopUpStatusPending, getTopUpStatusForPaymentGuardTest(t, order.TradeNo))
+}
+
+// TestRechargeEpayEnforcesFinalWalletQuotaLimit 守的是「到账额度本身合法，但加到
+// 收款人现有余额上会越过 int32 额度域」这一维。
+//
+// 单笔上界（controller.getMaxTopup）只保证这一笔自己能被表示，救不了余额已经很高
+// 的账号。谓词写在加数那条 UPDATE 里，所以并发回调不会各自读到一个通过的快照后
+// 双双加钱。同步自上游 47ba9d2c6。
+func TestRechargeEpayEnforcesFinalWalletQuotaLimit(t *testing.T) {
+	oldQuotaPerUnit := common.QuotaPerUnit
+	common.QuotaPerUnit = 500000
+	t.Cleanup(func() { common.QuotaPerUnit = oldQuotaPerUnit })
+
+	// createEpayTestOrder 的 Amount 是 2，所以到账额度恒为 2 * 500000 = 1,000,000。
+	const creditedQuota = 2 * 500000
+
+	testCases := []struct {
+		name         string
+		currentQuota int
+		wantErr      error
+		wantQuota    int
+		wantStatus   string
+	}{
+		{
+			name:         "allows exact highest representable wallet balance",
+			currentQuota: common.MaxQuota - 1 - creditedQuota,
+			wantQuota:    common.MaxQuota - 1,
+			wantStatus:   common.TopUpStatusSuccess,
+		},
+		{
+			name:         "rejects balance one unit above the ceiling",
+			currentQuota: common.MaxQuota - creditedQuota,
+			wantErr:      ErrTopUpQuotaLimitExceeded,
+			wantQuota:    common.MaxQuota - creditedQuota,
+			wantStatus:   common.TopUpStatusPending,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			truncateTables(t)
+			user := insertUserForPaymentGuardTest(t, 506, tc.currentQuota)
+			order := createEpayTestOrder(t, user.Id, "EPAYTESTWALLETLIMIT", PaymentProviderEpay, common.TopUpStatusPending)
+
+			_, err := RechargeEpay(order.TradeNo, "alipay", "127.0.0.1")
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.wantQuota, getUserQuotaForPaymentGuardTest(t, user.Id))
+			assert.Equal(t, tc.wantStatus, getTopUpStatusForPaymentGuardTest(t, order.TradeNo))
+		})
+	}
+}
+
+// TestCreditTopUpQuotaDistinguishesMissingPayeeFromFullWallet 守的是那条 0 行分支的
+// 两个成因必须报成不同的错：收款人不在 -> ErrRecordNotFound；收款人在但钱包装不下
+// -> ErrTopUpQuotaLimitExceeded。合并成一个错会让运维把「人被删了」当成「钱包满了」。
+func TestCreditTopUpQuotaDistinguishesMissingPayeeFromFullWallet(t *testing.T) {
+	truncateTables(t)
+	user := insertUserForPaymentGuardTest(t, 507, common.MaxQuota-1)
+
+	assert.ErrorIs(t, creditTopUpQuotaTx(DB, user.Id, nil, 1000), ErrTopUpQuotaLimitExceeded)
+	assert.ErrorIs(t, creditTopUpQuotaTx(DB, 999999, nil, 1000), gorm.ErrRecordNotFound)
+	assert.ErrorIs(t, creditTopUpQuotaTx(DB, user.Id, nil, 0), ErrInvalidTopUpQuota)
+	assert.ErrorIs(t, creditTopUpQuotaTx(DB, user.Id, nil, common.MaxQuota), ErrInvalidTopUpQuota)
+	assert.Equal(t, common.MaxQuota-1, getUserQuotaForPaymentGuardTest(t, user.Id))
 }

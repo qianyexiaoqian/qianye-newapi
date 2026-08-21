@@ -448,8 +448,15 @@ func DeleteRedemptionById(id int) (err error) {
 	return redemption.Delete()
 }
 
-func DeleteInvalidRedemptions() (int64, error) {
+// DeleteInvalidRedemptions 批量清掉已用 / 已禁用 / 已过期的码。
+//
+// creatorId 与 GetAllRedemptions / SearchRedemptions 同一口径(0 = 全量,
+// 其余只作用于自己发的码)。它此前**没有**这个参数,于是分桶只挡住了读、
+// 改、按 id 删,而这一条 role=10 一按就横扫全站 —— 包括超管发出去的、
+// 已经被用户兑掉的那些行,而那些行正是"这张码到底给谁了"唯一的记录。
+func DeleteInvalidRedemptions(creatorId int) (int64, error) {
 	now := common.GetTimestamp()
-	result := DB.Where("status IN ? OR (status = ? AND expired_time != 0 AND expired_time < ?)", []int{common.RedemptionCodeStatusUsed, common.RedemptionCodeStatusDisabled}, common.RedemptionCodeStatusEnabled, now).Delete(&Redemption{})
+	query := scopeRedemptionsToCreator(DB.Model(&Redemption{}), creatorId)
+	result := query.Where("status IN ? OR (status = ? AND expired_time != 0 AND expired_time < ?)", []int{common.RedemptionCodeStatusUsed, common.RedemptionCodeStatusDisabled}, common.RedemptionCodeStatusEnabled, now).Delete(&Redemption{})
 	return result.RowsAffected, result.Error
 }

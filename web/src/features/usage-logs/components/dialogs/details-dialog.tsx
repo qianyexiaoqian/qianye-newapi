@@ -847,6 +847,49 @@ export function DetailsDialog(props: DetailsDialogProps) {
           </DetailSection>
         )}
 
+        {/* Pre-consume shortfall marker (admin only).
+
+            刻意用中性 variant 而不是 danger：透支在本站是拍过板接受的取舍
+            （qianye/docs/decisions.md D-01），补收本身是**正常结算**，
+            把每一笔补收都画成红色告警，两周之后就没人再看它了。
+            它要回答的是「这一笔到底差了多少」，不是「出事了」。 */}
+        {props.isAdmin && other?.admin_info?.pre_consume_shortfall && (
+          <DetailSection
+            icon={<AlertTriangle className='size-3.5' aria-hidden='true' />}
+            label={t('Pre-consume shortfall')}
+          >
+            <p className='mb-1 text-xs wrap-break-word'>
+              {t(
+                'The reservation taken at request start did not cover the final charge; the difference was collected at settle time and may have pushed the balance negative.'
+              )}
+            </p>
+            {/* 走 formatLogQuota 而不是 String()：同一个弹窗里别处的额度
+                （费用、钱包扣减）都是按展示币种格式化的，这三行摆原始额度整数
+                会与旁边的美元数并排，被直接读成美元。 */}
+            <DetailRow
+              label={t('Reserved')}
+              value={formatLogQuota(
+                other.admin_info.pre_consume_shortfall.reserved
+              )}
+              mono
+            />
+            <DetailRow
+              label={t('Charged')}
+              value={formatLogQuota(
+                other.admin_info.pre_consume_shortfall.charged
+              )}
+              mono
+            />
+            <DetailRow
+              label={t('Shortfall')}
+              value={formatLogQuota(
+                other.admin_info.pre_consume_shortfall.shortfall
+              )}
+              mono
+            />
+          </DetailSection>
+        )}
+
         {/* Reject reason (admin only) */}
         {props.isAdmin && other?.reject_reason && (
           <DetailSection

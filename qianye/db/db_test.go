@@ -248,13 +248,16 @@ func TestContextDeadlineIsNotAConnectionFailure(t *testing.T) {
 // 进程静默卡死在迁移阶段,数据库端一条语句都看不到,日志停在"已连接"之后没有下文。
 // 这个死锁编译和单测都发现不了,只有真跑起来才暴露,所以用一条结构性断言钉住。
 func TestMigrationPoolLeavesRoomForBothLockAndDDL(t *testing.T) {
-	sqlDB, err := openMigrationConnWith(config.Database{
-		DSN: "u:p@tcp(127.0.0.1:3306)/qy_test",
-	})
-	require.NoError(t, err)
-	defer sqlDB.Close()
+	for _, dsn := range []string{
+		"u:p@tcp(127.0.0.1:3306)/qy_test",
+		"postgres://u:p@127.0.0.1:5432/qy_test?sslmode=disable",
+	} {
+		sqlDB, err := openMigrationConnWith(config.Database{DSN: dsn})
+		require.NoError(t, err, dsn)
 
-	stats := sqlDB.Stats()
-	assert.GreaterOrEqual(t, stats.MaxOpenConnections, 2,
-		"迁移池至少要 2 条连接:一条被 GET_LOCK 占着,另一条跑 DDL")
+		stats := sqlDB.Stats()
+		assert.GreaterOrEqual(t, stats.MaxOpenConnections, 2,
+			"迁移池至少要 2 条连接:一条被迁移锁占着,另一条跑 DDL(%s)", dsn)
+		require.NoError(t, sqlDB.Close())
+	}
 }

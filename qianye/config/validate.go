@@ -347,18 +347,36 @@ func validateGroupMatrix(g *GroupMatrix) error {
 	return nil
 }
 
+// validateDatabase 校验扩展库配置。
+//
+// # 受支持的方言
+//
+// MySQL(默认与主推)与 PostgreSQL >= 9.6。SQLite 与 ClickHouse 明确不支持,
+// 理由不是"没写适配"而是语义:扩展库承载资金 —— 佣金账本、两阶段资金单、
+// 提现、抽奖出款 —— 这些路径靠 SELECT ... FOR UPDATE 的行锁串行化读改写。
+// SQLite 没有行锁,LockForUpdate 只能退化成空操作,而扩展的多节点租约
+// (qy_task_leases)与迁移互斥本来就假定多个进程共享同一个库,那正是 SQLite
+// 最不擅长的形态。ClickHouse 连唯一约束都没有,幂等键无从谈起。
+//
+// 拒绝的措辞必须说出这个理由:只写"仅支持 MySQL"会让人以为是适配工作量问题,
+// 于是下一个人把 sqlite 驱动接上去,而资金串行化在那一刻静默失效。
 func validateDatabase(d *Database) error {
 	if strings.TrimSpace(d.DSN) == "" {
-		return fmt.Errorf("qianye: database.dsn 不能为空(扩展需要独立的 MySQL)")
+		return fmt.Errorf("qianye: database.dsn 不能为空(扩展需要独立的 MySQL 或 PostgreSQL)")
 	}
 	lower := strings.ToLower(strings.TrimSpace(d.DSN))
-	for _, bad := range []string{"postgres://", "postgresql://", "clickhouse://", "sqlite:", "file:"} {
+	for _, bad := range []string{"clickhouse://", "sqlite:", "file:"} {
 		if strings.HasPrefix(lower, bad) {
-			return fmt.Errorf("qianye: 本扩展仅支持 MySQL,database.dsn 不能以 %q 开头", bad)
+			return fmt.Errorf("qianye: 扩展库只支持 MySQL 与 PostgreSQL,database.dsn 不能以 %q 开头 —— "+
+				"资金路径依赖 SELECT ... FOR UPDATE 的行锁,SQLite/ClickHouse 无法提供", bad)
 		}
 	}
 	if lower == "local" || strings.HasPrefix(lower, "local ") {
-		return fmt.Errorf("qianye: 本扩展仅支持 MySQL,不支持 SQLite(database.dsn = local)")
+		return fmt.Errorf("qianye: 扩展库不支持 SQLite(database.dsn = local)—— " +
+			"资金路径依赖行锁,SQLite 上 LockForUpdate 会退化成空操作")
+	}
+	if isPostgresDSN(lower) {
+		return validatePostgresDatabase(d, lower)
 	}
 	if !strings.Contains(d.DSN, "/") {
 		return fmt.Errorf("qianye: database.dsn 格式不像 MySQL DSN(缺少库名)," +
@@ -373,6 +391,72 @@ func validateDatabase(d *Database) error {
 	}
 	// 负值会渲染出 "readTimeout=-1s" 这种 DSN,驱动直接拒绝解析,
 	// 报出来的错与"超时配错了"毫无关联 —— 在这里就拦掉。
+	if d.ReadTimeoutSeconds < 0 || d.WriteTimeoutSeconds < 0 {
+		return fmt.Errorf("qianye: database.read_timeout_seconds / write_timeout_seconds 不能为负数")
+	}
+	switch d.LogLevel {
+	case LogLevelSilent, LogLevelError, LogLevelWarn, LogLevelInfo:
+	default:
+		return fmt.Errorf("qianye: database.log_level 取值非法: %q(可选 silent|error|warn|info)", d.LogLevel)
+	}
+	return nil
+}
+
+// isPostgresDSN 判断 DSN 是否指向 PostgreSQL。
+//
+// 两种写法都要认:URL 形式(postgres:// / postgresql://)与 libpq 关键字形式
+// (host=... user=... dbname=...)。判据必须与 db.DetectDialect 完全一致,
+// 否则会出现"配置校验按 MySQL 判、驱动按 PostgreSQL 开"这种最难查的分叉。
+// 不直接调用 db 包是为了避免 config → db 的反向依赖(db 依赖 config)。
+func isPostgresDSN(lower string) bool {
+	if strings.HasPrefix(lower, "postgres://") || strings.HasPrefix(lower, "postgresql://") {
+		return true
+	}
+	for _, tok := range strings.Fields(lower) {
+		switch {
+		case strings.HasPrefix(tok, "host="),
+			strings.HasPrefix(tok, "dbname="),
+			strings.HasPrefix(tok, "user="),
+			strings.HasPrefix(tok, "port="):
+			return true
+		}
+	}
+	return false
+}
+
+// validatePostgresDatabase 是 validateDatabase 的 PostgreSQL 分支。
+//
+// 连接池与 log_level 的校验与 MySQL 完全共用;只有两处必须分开:
+//
+//  1. 库名的形状。URL 形式的库名在 path 上(postgres://h/dbname),关键字形式
+//     在 dbname= 上。拿 MySQL 那条"必须含 /"的判据去卡关键字形式会误报。
+//
+// write_timeout_seconds 在 PostgreSQL 上没有对应物(见 db.normalizePostgresDSN):
+// 读写的时间上界统一落在 read_timeout_seconds 映射出来的 statement_timeout 上。
+// 刻意**不**为此告警:它的默认值是 30,不是运维填的,每次启动喊一句
+// "本项被忽略" 只会训练所有人无视启动日志。
+func validatePostgresDatabase(d *Database, lower string) error {
+	if strings.HasPrefix(lower, "postgres://") || strings.HasPrefix(lower, "postgresql://") {
+		rest := lower[strings.Index(lower, "://")+3:]
+		path := rest
+		if i := strings.IndexAny(rest, "?"); i >= 0 {
+			path = rest[:i]
+		}
+		if i := strings.Index(path, "/"); i < 0 || strings.TrimSpace(path[i+1:]) == "" {
+			return fmt.Errorf("qianye: database.dsn 缺少库名," +
+				`期望形如 postgres://user:pass@host:5432/dbname?sslmode=disable`)
+		}
+	} else if !strings.Contains(lower, "dbname=") {
+		return fmt.Errorf("qianye: database.dsn 缺少 dbname=," +
+			`期望形如 host=127.0.0.1 port=5432 user=postgres dbname=qy_ext sslmode=disable`)
+	}
+	if d.MaxIdleConns <= 0 {
+		return fmt.Errorf("qianye: database.max_idle_conns 必须大于 0")
+	}
+	if d.MaxOpenConns < d.MaxIdleConns {
+		return fmt.Errorf("qianye: database.max_open_conns(%d) 不得小于 max_idle_conns(%d)",
+			d.MaxOpenConns, d.MaxIdleConns)
+	}
 	if d.ReadTimeoutSeconds < 0 || d.WriteTimeoutSeconds < 0 {
 		return fmt.Errorf("qianye: database.read_timeout_seconds / write_timeout_seconds 不能为负数")
 	}

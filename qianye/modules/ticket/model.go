@@ -134,7 +134,7 @@ type Attachment struct {
 	MimeType string `json:"mime_type" gorm:"type:varchar(32);not null;default:''"`
 	Size     int64  `json:"size" gorm:"not null;default:0"`
 	// Sha256 用于事后自证"下载到的与当初上传的是同一张图",也顺带能发现重复上传。
-	Sha256 string `json:"-" gorm:"type:char(64);not null;default:''"`
+	Sha256 string `json:"-" gorm:"type:varchar(64);not null;default:''"`
 
 	CreatedAt int64 `json:"created_at" gorm:"not null;default:0;index:idx_qy_tka_user,priority:2"`
 	BoundAt   int64 `json:"-" gorm:"not null;default:0"`

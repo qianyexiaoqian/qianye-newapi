@@ -59,7 +59,50 @@ var (
 	ErrPaymentMethodMismatch = errors.New("payment method mismatch")
 	ErrTopUpNotFound         = errors.New("topup not found")
 	ErrTopUpStatusInvalid    = errors.New("topup status invalid")
+	// ErrInvalidTopUpQuota 订单换算出的到账额度不可用（触顶 / 非正数）。
+	// 之前这里是五份各自 errors.New("无效的充值额度") 的字面量，调用方无法
+	// errors.Is 分辨，只能靠字符串比对。同步自上游 47ba9d2c6。
+	ErrInvalidTopUpQuota = errors.New("invalid top-up quota")
+	// ErrTopUpQuotaLimitExceeded 到账额度本身合法，但加到收款人现有余额上会
+	// 越过 int32 额度域。
+	ErrTopUpQuotaLimitExceeded = errors.New("top-up quota limit exceeded")
 )
+
+// topUpQuotaMaxCurrent 返回「收到这笔 creditedQuota 之前，钱包余额最多能是多少」。
+//
+// 额度列是 int32，可表示的最大值是 common.MaxQuota-1（common.QuotaFromDecimalStrict
+// 在 value >= MaxQuota 时报错，见 common/quota_math.go 的 saturateQuota）。
+func topUpQuotaMaxCurrent(creditedQuota int) (int, error) {
+	if creditedQuota <= 0 || creditedQuota >= common.MaxQuota {
+		return 0, ErrInvalidTopUpQuota
+	}
+	return common.MaxQuota - 1 - creditedQuota, nil
+}
+
+// ValidateTopUpQuotaCapacity 是下单前面向用户的容量预检。
+//
+// 单笔上界（controller.getMaxTopup）只保证「这一笔自己」能被表示，不保证
+// 「加到现有余额上之后」还能被表示。余额 21 亿的用户再充 4294 一样会在结算侧
+// 触顶回滚 —— 钱进了网关、额度零到账、订单永久 pending，与没有单笔上界时的
+// 后果逐字相同。
+//
+// 这里是预检，不是最终判据：从打开收银台到网关回调之间余额还会变，所以结算侧
+// creditTopUpQuotaTx 用同一条不变式做了一次原子条件更新。同步自上游 47ba9d2c6。
+func ValidateTopUpQuotaCapacity(userId int, creditedQuota int) error {
+	maxCurrentQuota, err := topUpQuotaMaxCurrent(creditedQuota)
+	if err != nil {
+		return err
+	}
+
+	var user User
+	if err := DB.Select("quota").Where("id = ?", userId).First(&user).Error; err != nil {
+		return err
+	}
+	if user.Quota > maxCurrentQuota {
+		return ErrTopUpQuotaLimitExceeded
+	}
+	return nil
+}
 
 // CreditQuota 按支付渠道把订单换算成到账额度。
 //
@@ -97,12 +140,20 @@ func (topUp *TopUp) CreditQuota() (int, error) {
 // 已经成功 —— 钱收了、额度零到账、账面三处都宣称到账。
 //
 // 因此这里必须判 RowsAffected 而不是只判 error：加数恒为正，不存在“匹配到但值
-// 没变”的误判，0 行只可能是收款人不存在。返回 ErrRecordNotFound 让整笔事务回
-// 滚，订单留在 pending，人工可查可补。
+// 没变”的误判。0 行让整笔事务回滚，订单留在 pending，人工可查可补。
 //
 // 五条结算路径（epay / stripe / creem / waffo / waffo-pancake / 管理员补单）
 // 必须共用这一份，任何新增支付渠道也走它。
+//
+// 谓词 `quota <= maxCurrent` 与加数写在同一条 UPDATE 里（同步自上游 47ba9d2c6）：
+// 分成「先读余额判一次、再加」两步的话，两个并发回调会各自读到同一个通过的快照，
+// 双双加钱把余额推过 int32 域，之后这个账号的每一次扣费换算都触顶。
 func creditTopUpQuotaTx(tx *gorm.DB, userId int, extra map[string]interface{}, quotaToAdd int) error {
+	maxCurrentQuota, err := topUpQuotaMaxCurrent(quotaToAdd)
+	if err != nil {
+		return err
+	}
+
 	updates := map[string]interface{}{"quota": gorm.Expr("quota + ?", quotaToAdd)}
 	for k, v := range extra {
 		if k == "quota" {
@@ -110,14 +161,26 @@ func creditTopUpQuotaTx(tx *gorm.DB, userId int, extra map[string]interface{}, q
 		}
 		updates[k] = v
 	}
-	res := tx.Model(&User{}).Where("id = ?", userId).Updates(updates)
+	res := tx.Model(&User{}).Where("id = ? AND quota <= ?", userId, maxCurrentQuota).Updates(updates)
 	if res.Error != nil {
 		return res.Error
 	}
-	if res.RowsAffected != 1 {
+	if res.RowsAffected == 1 {
+		return nil
+	}
+
+	// 0 行有两个成因，必须分开报：收款人不在（软删/被删，users 带 gorm.DeletedAt，
+	// GORM 会给 UPDATE 自动补 `AND deleted_at IS NULL`）→ ErrRecordNotFound；
+	// 收款人在但余额装不下 → ErrTopUpQuotaLimitExceeded。两者都让事务回滚、
+	// 订单留在 pending，但运维要能一眼分清是「人没了」还是「钱包满了」。
+	var count int64
+	if err := tx.Model(&User{}).Where("id = ?", userId).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
 		return gorm.ErrRecordNotFound
 	}
-	return nil
+	return ErrTopUpQuotaLimitExceeded
 }
 
 func (topUp *TopUp) Insert() error {
@@ -215,7 +278,7 @@ func RechargeEpay(tradeNo string, actualPaymentMethod string, callerIp string) (
 		var quotaErr error
 		quotaToAdd, quotaErr = topUp.CreditQuota()
 		if quotaErr != nil || quotaToAdd <= 0 {
-			return errors.New("无效的充值额度")
+			return ErrInvalidTopUpQuota
 		}
 		topUp.CompleteTime = common.GetTimestamp()
 		topUp.Status = common.TopUpStatusSuccess
@@ -276,7 +339,7 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 
 		quota, err = topUp.CreditQuota()
 		if err != nil || quota <= 0 {
-			return errors.New("无效的充值额度")
+			return ErrInvalidTopUpQuota
 		}
 		return creditTopUpQuotaTx(tx, topUp.UserId, map[string]interface{}{"stripe_customer": customerId}, quota)
 	})
@@ -485,7 +548,7 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 		var quotaErr error
 		quotaToAdd, quotaErr = topUp.CreditQuota()
 		if quotaErr != nil || quotaToAdd <= 0 {
-			return errors.New("无效的充值额度")
+			return ErrInvalidTopUpQuota
 		}
 
 		// 标记完成。CompleteSource 必须落库：它是「管理员补单不返佣」这条风控口径
@@ -555,7 +618,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 		// Creem 直接使用 Amount 作为充值额度（整数）
 		quota, err = topUp.CreditQuota()
 		if err != nil || quota <= 0 {
-			return errors.New("无效的充值额度")
+			return ErrInvalidTopUpQuota
 		}
 
 		// 构建更新字段，优先使用邮箱，如果邮箱为空则使用用户名
@@ -626,7 +689,7 @@ func RechargeWaffo(tradeNo string, callerIp string) (err error) {
 
 		quotaToAdd, err = topUp.CreditQuota()
 		if err != nil || quotaToAdd <= 0 {
-			return errors.New("无效的充值额度")
+			return ErrInvalidTopUpQuota
 		}
 
 		topUp.CompleteTime = common.GetTimestamp()
@@ -684,7 +747,7 @@ func RechargeWaffoPancake(tradeNo string) (err error) {
 
 		quotaToAdd, err = topUp.CreditQuota()
 		if err != nil || quotaToAdd <= 0 {
-			return errors.New("无效的充值额度")
+			return ErrInvalidTopUpQuota
 		}
 
 		topUp.CompleteTime = common.GetTimestamp()

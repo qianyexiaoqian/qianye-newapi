@@ -11,10 +11,9 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/pkg/gormdialect"
 
-	"github.com/glebarez/sqlite"
 	"gorm.io/driver/clickhouse"
-	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -51,6 +50,49 @@ func InitCol() {
 		logGroupCol = "`group`"
 		logKeyCol = "`key`"
 	}
+}
+
+// mainCaseFoldedEq / logCaseFoldedEq 返回一条「忽略大小写的等值」条件片段
+// 与配套的实参,成对使用:`cond, arg := mainCaseFoldedEq("username", name)`。
+//
+// ═══════════ 为什么需要它 ═══════════
+//
+// 同一句 `WHERE username = ?` 在三种受支持的主库上语义不同:
+//
+//	MySQL       建库默认 utf8mb4_0900_ai_ci → 大小写**不**敏感
+//	PostgreSQL  按排序规则逐字节比较        → 大小写敏感
+//	SQLite      默认 BINARY 排序规则        → 大小写敏感
+//
+// 也就是说 MySQL 的排序规则在替业务代码兜底,而这份兜底在另外两种部署上不存在。
+// 实测后果(两台同二进制、同请求的对照实例):`qy-fals-a` 已存在时再注册
+// `QY-FALS-A`,MySQL 返回「用户名已存在」,PostgreSQL 返回 success —— PG/SQLite
+// 部署上任何人都能注册一个与站长/客服只差大小写的账号(username 是工单、日志、
+// 审计、佣金关系、提现审核里的展示身份);反过来登录时 PG 上大写用户名一律
+// 报「用户名或密码错误」,存量用户迁库当天集体登不进来。
+//
+// ═══════════ 为什么不一律写成 LOWER(col) = ? ═══════════
+//
+// LOWER() 会让这条谓词用不上普通 B-Tree 索引。MySQL 的 ci 排序规则本来就
+// 大小写不敏感、且**能走索引**,给它套 LOWER() 是纯亏。因此只在没有 ci 兜底的
+// 方言上折叠 —— 净效果是三种库对同一次查询给出同一个结果集。
+//
+// 两个函数一并返回**要绑定的实参**,不是只返回条件片段:MySQL 分支必须拿到
+// 原值而不是折叠过的值。若有人刻意用 _bin/_cs 排序规则建 MySQL 库,折叠过的
+// 实参会让一个叫 `ABC` 的账号连自己的用户名都登不进来 —— 那比改动前更严格。
+// 原样传值时,ci 库上是折叠(想要的),非 ci 库上退回改动前的逐字相等
+// (不折叠,但绝不会比改动前更严格)。
+func mainCaseFoldedEq(column string, value string) (string, string) {
+	if common.UsingMainDatabase(common.DatabaseTypeMySQL) {
+		return column + " = ?", value
+	}
+	return "LOWER(" + column + ") = ?", strings.ToLower(value)
+}
+
+func logCaseFoldedEq(column string, value string) (string, string) {
+	if common.UsingLogDatabase(common.DatabaseTypeMySQL) {
+		return column + " = ?", value
+	}
+	return "LOWER(" + column + ") = ?", strings.ToLower(value)
 }
 
 var DB *gorm.DB
@@ -141,7 +183,10 @@ func chooseDB(envName string, isLog bool) (*gorm.DB, common.DatabaseType, error)
 		if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 			// Use PostgreSQL
 			common.SysLog("using PostgreSQL as database")
-			db, err := gorm.Open(postgres.New(postgres.Config{
+			// gormdialect.NewPostgres 而不是 postgres.New:上游驱动在 AutoMigrate
+			// 的比较阶段会把一批列误判成"需要变更",导致每次启动重发几十条空转
+			// ALTER。见 pkg/gormdialect 包注释。
+			db, err := gorm.Open(gormdialect.NewPostgres(postgres.Config{
 				DSN:                  dsn,
 				PreferSimpleProtocol: true, // disables implicit prepared statement usage
 			}), newGormConfig(true))
@@ -149,7 +194,10 @@ func chooseDB(envName string, isLog bool) (*gorm.DB, common.DatabaseType, error)
 		}
 		if strings.HasPrefix(dsn, "local") {
 			common.SysLog("SQL_DSN not set, using SQLite as database")
-			db, err := gorm.Open(sqlite.Open(common.SQLitePath), newGormConfig(true))
+			// gormdialect.OpenSQLite 而不是 sqlite.Open,理由见 pkg/gormdialect
+			// 包注释:上游驱动会误判一批列"需要变更",而 SQLite 上一次误判等于
+			// 整张表重建。
+			db, err := gorm.Open(gormdialect.OpenSQLite(common.SQLitePath), newGormConfig(true))
 			return db, common.DatabaseTypeSQLite, err
 		}
 		// Use MySQL
@@ -162,12 +210,13 @@ func chooseDB(envName string, isLog bool) (*gorm.DB, common.DatabaseType, error)
 				dsn += "?parseTime=true"
 			}
 		}
-		db, err := gorm.Open(mysql.Open(dsn), newGormConfig(true))
+		// gormdialect.OpenMySQL 而不是 mysql.Open,理由见 pkg/gormdialect 包注释。
+		db, err := gorm.Open(gormdialect.OpenMySQL(dsn), newGormConfig(true))
 		return db, common.DatabaseTypeMySQL, err
 	}
 	// Use SQLite
 	common.SysLog("SQL_DSN not set, using SQLite as database")
-	db, err := gorm.Open(sqlite.Open(common.SQLitePath), newGormConfig(true))
+	db, err := gorm.Open(gormdialect.OpenSQLite(common.SQLitePath), newGormConfig(true))
 	return db, common.DatabaseTypeSQLite, err
 }
 

@@ -275,10 +275,15 @@ func adminPutGroupLimit(c *gin.Context) {
 	var overCap bool
 	err = gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if !existed {
+			// 先取锚点行锁再数。原写法是 `COUNT(*) ... FOR UPDATE`,靠 MySQL 的
+			// next-key 锁把并发新建排队 —— 那句话在 PostgreSQL 上直接报
+			// "FOR UPDATE is not allowed with aggregate functions",整条写入失败;
+			// 拆开写也不行,PostgreSQL 的行锁不阻止并发插入新行。理由详见 qymodel.LockGate。
+			if err := qymodel.LockGate(tx, groupLimitCountGate); err != nil {
+				return err
+			}
 			var count int64
-			// FOR UPDATE:MySQL 会锁住被扫过的范围,两个并发的新建因此排队而不是
-			// 各自读到同一个旧计数。扩展库固定是 MySQL(见 db.LockForUpdate)。
-			if err := db.LockForUpdate(tx).Model(&GroupLimit{}).Count(&count).Error; err != nil {
+			if err := tx.Model(&GroupLimit{}).Count(&count).Error; err != nil {
 				return err
 			}
 			if count >= maxGroupLimitCount {

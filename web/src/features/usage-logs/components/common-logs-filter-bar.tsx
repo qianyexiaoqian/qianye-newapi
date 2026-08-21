@@ -87,6 +87,7 @@ function buildSearchSourceKey(values: {
   username?: unknown
   requestId?: unknown
   upstreamRequestId?: unknown
+  preConsumeShortfall?: unknown
   type?: unknown
 }) {
   return [
@@ -99,6 +100,7 @@ function buildSearchSourceKey(values: {
     values.username,
     values.requestId,
     values.upstreamRequestId,
+    values.preConsumeShortfall,
     Array.isArray(values.type) ? values.type.join(',') : values.type,
   ]
     .map((value) => String(value ?? ''))
@@ -132,6 +134,7 @@ export function CommonLogsFilterBar<TData>(
       username: searchParams.username,
       requestId: searchParams.requestId,
       upstreamRequestId: searchParams.upstreamRequestId,
+      preConsumeShortfall: searchParams.preConsumeShortfall,
       type: searchParams.type,
     }
     const filters: CommonLogFilters = {
@@ -146,6 +149,7 @@ export function CommonLogsFilterBar<TData>(
       username: searchParams.username || undefined,
       requestId: searchParams.requestId || undefined,
       upstreamRequestId: searchParams.upstreamRequestId || undefined,
+      preConsumeShortfall: searchParams.preConsumeShortfall === 'true',
     }
     return {
       sourceKey: buildSearchSourceKey(sourceValues),
@@ -162,6 +166,7 @@ export function CommonLogsFilterBar<TData>(
     searchParams.username,
     searchParams.requestId,
     searchParams.upstreamRequestId,
+    searchParams.preConsumeShortfall,
     searchParams.type,
   ])
   const [draft, setDraft] = useState<CommonLogDraft>(() => searchState)
@@ -171,7 +176,10 @@ export function CommonLogsFilterBar<TData>(
   const logType = activeDraft.logType
 
   const handleChange = useCallback(
-    (field: keyof CommonLogFilters, value: Date | string | undefined) => {
+    (
+      field: keyof CommonLogFilters,
+      value: Date | string | boolean | undefined
+    ) => {
       setDraft((current) => {
         const base =
           current.sourceKey === searchState.sourceKey ? current : searchState
@@ -238,7 +246,8 @@ export function CommonLogsFilterBar<TData>(
     !!filters.username ||
     !!filters.channel ||
     !!filters.requestId ||
-    !!filters.upstreamRequestId
+    !!filters.upstreamRequestId ||
+    !!filters.preConsumeShortfall
 
   const hasTypeFilter = logType !== LOG_TYPE_ALL_VALUE
   const hasAdditionalFilters =
@@ -250,6 +259,7 @@ export function CommonLogsFilterBar<TData>(
     isAdmin ? filters.channel : undefined,
     filters.requestId,
     filters.upstreamRequestId,
+    isAdmin ? filters.preConsumeShortfall : undefined,
   ].filter(Boolean).length
   const sensitiveType = sensitiveVisible ? 'text' : 'password'
   const logTypeItems = useMemo(
@@ -262,6 +272,16 @@ export function CommonLogsFilterBar<TData>(
   )
   const logTypeLabel =
     logTypeItems.find((type) => type.value === logType)?.label ?? t('All Types')
+  const shortfallItems = useMemo(
+    () => [
+      { value: '', label: t('All requests') },
+      { value: 'true', label: t('Pre-consume shortfall only') },
+    ],
+    [t]
+  )
+  const shortfallLabel = filters.preConsumeShortfall
+    ? t('Pre-consume shortfall only')
+    : t('All requests')
 
   const statsBar = (
     <div className='flex flex-wrap items-center gap-2'>
@@ -406,6 +426,37 @@ export function CommonLogsFilterBar<TData>(
           onKeyDown={handleKeyDown}
         />
       </LogsFilterField>
+      {/* 「预扣没兜住真实花费」的那些笔。管理员专用：标记写在
+          other.admin_info 下，普通用户的响应里那一整块会被后端剥掉，
+          给他们一个恒返回空页的筛选项只会制造困惑。
+
+          透支在本站是**拍过板接受的取舍**而不是缺陷
+          （qianye/docs/decisions.md D-01），这个筛选项就是事后把受影响的
+          请求捞出来的那把梳子 —— 没有它，标记只能靠翻库里的 other 列去找。 */}
+      {isAdmin && (
+        <LogsFilterField>
+          <Select
+            items={shortfallItems}
+            value={filters.preConsumeShortfall ? 'true' : ''}
+            onValueChange={(value) =>
+              handleChange('preConsumeShortfall', value === 'true')
+            }
+          >
+            <SelectTrigger>
+              <SelectValue>{shortfallLabel}</SelectValue>
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              <SelectGroup>
+                {shortfallItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </LogsFilterField>
+      )}
     </>
   )
 

@@ -226,12 +226,15 @@ func runSpendScan(ctx context.Context) {
 //
 // # 为什么是"先 UPDATE 再插入"而不是 ON CONFLICT ... WHERE
 //
-// 扩展库只支持 MySQL,而 gorm.io/driver/mysql 的 ON CONFLICT 构造器**整段丢弃
-// Where 子句**(它只会输出 ON DUPLICATE KEY UPDATE)。写成那样,"不往 final
-// 桶上累加"这道防护在生产上恒为空操作,冷启动时重算道刚确认过的历史日桶会被
-// 增量道再加一遍 —— 近 N 日消费变成实际值的两倍,方向恰好与设计声称的
-// "只会少算"相反,直接变成消费门槛被腰斩。SQLite(测试用)支持带 Where 的
-// ON CONFLICT,所以这个差异在测试里根本看不见。
+// `clause.OnConflict{..., Where: ...}` 在三种方言上会渲染成三种东西,
+// 而且**只有 MySQL 那一种是错的**:gorm.io/driver/mysql 整段丢弃 Where 子句
+// (它只会输出 ON DUPLICATE KEY UPDATE),PostgreSQL 与 SQLite 则会如实渲染
+// `ON CONFLICT ... DO UPDATE ... WHERE`。写成那样,"不往 final 桶上累加"
+// 这道防护在 MySQL 上恒为空操作:冷启动时重算道刚确认过的历史日桶会被增量道
+// 再加一遍 —— 近 N 日消费变成实际值的两倍,方向恰好与设计声称的"只会少算"
+// 相反,直接变成消费门槛被腰斩。而在 PostgreSQL 与 SQLite 上它是对的,
+// 于是这个缺陷在测试里(sqlite)与在 PostgreSQL 部署上都看不见,
+// **只有 MySQL 生产会中招** —— 三方言不一致的最坏形状。
 //
 // 两步写法在每种数据库上语义一致:UPDATE 只命中 final=false 的行;没命中说明
 // 这一天要么还没有行(插入),要么已经 final(插入撞唯一键,DoNothing 跳过)。

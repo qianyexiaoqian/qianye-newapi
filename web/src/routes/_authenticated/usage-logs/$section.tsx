@@ -45,6 +45,10 @@ const usageLogsSearchSchema = z.object({
   username: z.string().optional().catch(''),
   requestId: z.string().optional().catch(''),
   upstreamRequestId: z.string().optional().catch(''),
+  // 只看「预扣额没兜住真实花费」的那些笔（管理员视图专用）。
+  // 存成 URL 里的字符串 'true' 而不是布尔：这一页所有筛选项都可分享/可收藏，
+  // 而 zod 的 boolean 在 query string 里拿到的是字符串，用布尔类型会被 catch 掉。
+  preConsumeShortfall: z.string().optional().catch(''),
   startTime: z.number().optional(),
   endTime: z.number().optional(),
 })

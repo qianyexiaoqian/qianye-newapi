@@ -106,6 +106,14 @@ func registerAdminRoutes(g *gin.RouterGroup) {
 	// 没有对应的写端点是刻意的:白名单是代码里的显式清单,做成可配等于把
 	// 「新增接口默认对受限账号开放」这个失败模式请回来。
 	g.GET("/restricted-accounts", qyctl.AdminRestrictedAccountsOverview)
+	// 负余额(透支)账号总览。与 /restricted-accounts 同一档:只读主库 users,
+	// 不碰扩展库,因此不走 requireCore。
+	//
+	// 它存在的理由不是"又一个报表",而是本站**刻意接受预扣/结算无下限**这条取舍
+	// 的配套条件(拍板与代价见 qianye/docs/decisions.md 的 D-01):接受透支的前提
+	// 是透支可被看见、可被处置。没有写端点是刻意的 —— 追欠费/封号/清零都是上游
+	// 用户管理页已有的动作,这里只负责让人知道要去处置谁。
+	g.GET("/overdraft", qyctl.AdminOverdraftOverview)
 	g.GET("/audit-logs", qyctl.AdminListAuditLogs)
 	g.GET("/request-audits", qyctl.AdminListRequestAudits)
 	g.GET("/leases", qyctl.AdminListLeases)

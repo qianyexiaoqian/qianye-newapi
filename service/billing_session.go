@@ -521,6 +521,26 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 			return nil, types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
 		}
 		if userQuota <= 0 {
+			// 「余额用完了」与「你已经欠费了」对用户是两件事,文案必须分开。
+			//
+			// 本站刻意接受结算把余额扣成负数(拍板与代价见
+			// qianye/docs/decisions.md 的 D-01),所以 userQuota < 0 是一个
+			// **正常会发生**的状态,不是脏数据。此前两档共用一句
+			// 「用户额度不足, 剩余额度: -$1.23」——用户看到一个带负号的余额,
+			// 既不知道那是欠款,也不知道充值 1 块钱为什么还是被拒
+			// (充完仍然是负的)。欠费档必须自己说清楚:欠多少、要补多少。
+			//
+			// 错误码仍然是 InsufficientUserQuota:客户端的重试/降级策略按码走,
+			// 为了分辨文案而换码会让所有既有集成在这一档上改变行为。
+			// 区分只落在人读的 message 与审计用的 reason 上。
+			if userQuota < 0 {
+				err := fmt.Errorf("账户已透支, 当前欠费 %s, 请充值补足欠款后再继续调用",
+					logger.FormatQuota(-userQuota))
+				logPreConsumeRejected(c, relayInfo, "wallet_overdrawn", preConsumedQuota, err)
+				return nil, types.NewErrorWithStatusCode(
+					err, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
+					types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+			}
 			err := fmt.Errorf("用户额度不足, 剩余额度: %s", logger.FormatQuota(userQuota))
 			logPreConsumeRejected(c, relayInfo, "wallet_empty", preConsumedQuota, err)
 			return nil, types.NewErrorWithStatusCode(

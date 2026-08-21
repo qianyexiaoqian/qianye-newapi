@@ -42,10 +42,7 @@ import {
  * 读起来永远比 `x != null ? … : …` 顺眼）。
  */
 
-const INDEX = readFileSync(
-  new URL('../index.tsx', import.meta.url),
-  'utf8'
-)
+const INDEX = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8')
 
 describe('兑换码档的空值语义', () => {
   test('空是合法输入，与 0% 分得开', () => {
@@ -62,11 +59,7 @@ describe('兑换码档的空值语义', () => {
 
     // 非法值不因为可空就被放过。
     for (const bad of ['101', '-1', '1.005', 'abc']) {
-      assert.equal(
-        qyIsValidNullablePercent(bad),
-        false,
-        `${bad} 必须仍然非法`
-      )
+      assert.equal(qyIsValidNullablePercent(bad), false, `${bad} 必须仍然非法`)
     }
   })
 

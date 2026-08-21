@@ -38,15 +38,30 @@ func runRetentionGC(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// 先取一批主键再按主键删:ORDER BY / LIMIT 在 DELETE 上是 MySQL 专有扩展,
+		// PostgreSQL 会直接语法错误,而调用方只把错误写进日志 —— 证据表会静默地
+		// 永远不清理,那是本模块隐私风险最高的一张表。
+		var ids []int64
+		if err := gdb.WithContext(ctx).Table("qy_violation_payload").
+			Where("created_at < ?", before).
+			Order("created_at").
+			Limit(gcBatchSize).
+			Pluck("record_id", &ids).Error; err != nil {
+			db.MarkFailure(err)
+			common.SysError("qianye/violation: 清理证据失败: " + err.Error())
+			return
+		}
+		if len(ids) == 0 {
+			break
+		}
 		res := gdb.WithContext(ctx).Exec(
-			`DELETE FROM qy_violation_payload WHERE created_at < ? ORDER BY created_at LIMIT ?`,
-			before, gcBatchSize)
+			`DELETE FROM qy_violation_payload WHERE record_id IN ?`, ids)
 		if res.Error != nil {
 			db.MarkFailure(res.Error)
 			common.SysError("qianye/violation: 清理证据失败: " + res.Error.Error())
 			return
 		}
-		if res.RowsAffected < gcBatchSize {
+		if len(ids) < gcBatchSize {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -54,9 +69,12 @@ func runRetentionGC(ctx context.Context) {
 
 	// 记录本身保留更久(它只有约 1KB/行,而且是申诉与对账的依据),
 	// 这里只把已经没有证据的行标回 has_payload=false,避免管理端点开空白详情。
+	// 布尔列用占位符传 Go 的 bool,不写字面量 0/1:PostgreSQL 的 boolean 不接受
+	// 整数字面量(`has_payload = 1` 报 "operator does not exist: boolean = integer"),
+	// 而这里出错只被记进日志 —— 表现是详情页永远显示空白证据。
 	if err := gdb.WithContext(ctx).Exec(
-		`UPDATE qy_violation_record SET has_payload = 0
-		 WHERE has_payload = 1 AND created_at < ?`, before).Error; err != nil {
+		`UPDATE qy_violation_record SET has_payload = ?
+		 WHERE has_payload = ? AND created_at < ?`, false, true, before).Error; err != nil {
 		db.MarkFailure(err)
 	}
 

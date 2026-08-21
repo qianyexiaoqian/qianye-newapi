@@ -79,8 +79,12 @@ type Config struct {
 	declared map[string]bool `yaml:"-"`
 }
 
-// Database 独立 MySQL 连接配置。仅支持 MySQL —— 扩展自建连接,
-// 不复用主库的 SQL_MAX_IDLE_CONNS 等环境变量,也不触碰 common.SetMainDatabaseType。
+// Database 独立数据库连接配置。方言按 DSN 前缀分派(见 db.DetectDialect):
+// MySQL 5.7.8+(默认与主推)或 PostgreSQL 9.6+;SQLite 与 ClickHouse 明确不支持,
+// 理由是资金路径依赖行锁而它们提供不了(见 validateDatabase)。
+//
+// 扩展自建连接,不复用主库的 SQL_MAX_IDLE_CONNS 等环境变量,
+// 也不触碰 common.SetMainDatabaseType。
 //
 // 表前缀由各 model 的 TableName() 硬编码为 qy_,不走 GORM NamingStrategy:
 // 两处都设会双重加前缀,且配置项会让人误以为前缀可改。
@@ -95,6 +99,11 @@ type Database struct {
 	// 它们是连接级的兜底闸门(防止一条撞锁的语句占着连接等满
 	// innodb_lock_wait_timeout),不是热路径的 200ms 上界 —— 后者由 ctx 负责。
 	// 必须大于最慢的一次合法后台操作,否则正常的结算事务会被驱动层切断。
+	//
+	// PostgreSQL 上两者的对应物不对称,见 db.normalizePostgresDSN:
+	// ReadTimeoutSeconds 映射成服务端的 statement_timeout(语义更强,超时会真正
+	// 中止语句而不是只让 Go 侧放弃);WriteTimeoutSeconds **没有对应物**,
+	// 配了不生效 —— pgx 没有等价的驱动层写超时,硬造一个只会让人以为设了闸门。
 	ReadTimeoutSeconds  int    `yaml:"read_timeout_seconds"`
 	WriteTimeoutSeconds int    `yaml:"write_timeout_seconds"`
 	SlowThresholdMs     int    `yaml:"slow_threshold_ms"`

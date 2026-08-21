@@ -54,6 +54,15 @@ export interface CommonLogFilters extends CommonFilters {
   username?: string
   requestId?: string
   upstreamRequestId?: string
+  /**
+   * Admin-only: keep only the requests whose pre-consume reservation did not
+   * cover the final charge (`other.admin_info.pre_consume_shortfall`).
+   *
+   * Overdraft is an accepted trade-off on this deployment, not a bug — see
+   * `qianye/docs/decisions.md` D-01. This filter is how an operator pulls the
+   * affected requests out of the log after the fact.
+   */
+  preConsumeShortfall?: boolean
 }
 
 /**
@@ -141,6 +150,16 @@ export interface LogOtherData {
       kind: 'overflow' | 'underflow' | 'nan'
       original: number
       clamped: number
+    }
+    // Pre-consume shortfall marker: the reservation taken at request start did
+    // not cover the final charge, so the difference was force-collected at
+    // settle time — which is allowed to push the wallet negative. This is a
+    // deliberate trade-off (see `qianye/docs/decisions.md` D-01), so the marker
+    // is informational, not an error. Admin-only (nested under admin_info).
+    pre_consume_shortfall?: {
+      reserved: number
+      charged: number
+      shortfall: number
     }
   }
   // Language-independent operation descriptor (audit/login logs).
@@ -354,6 +373,7 @@ export interface GetLogsParams {
   group?: string
   request_id?: string
   upstream_request_id?: string
+  pre_consume_shortfall?: boolean
 }
 
 export interface GetLogsResponse {

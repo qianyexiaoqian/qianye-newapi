@@ -39,6 +39,7 @@ func newAIWiringDB(t *testing.T) *gorm.DB {
 	require.NoError(t, gdb.AutoMigrate(
 		&Rule{}, &RuleVersion{}, &Record{}, &Payload{},
 		&Category{}, &AISetting{}, &AIChannel{}, &AIReview{}, &AIScope{},
+		&Counter{}, &CategoryCounter{},
 	))
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return gdb
@@ -376,11 +377,7 @@ func TestAIAsyncReviewRecordsWithoutCharging(t *testing.T) {
 	require.NoError(t, gdb.Create(&cat).Error)
 
 	// CountWeight 取 0(「只记录、不累计封号」这一档合法配置)。
-	//
-	// 不是为了绕开断言:qy_violation_counter 的推进走的是 MySQL 方言的
-	// `INSERT ... ON DUPLICATE KEY UPDATE`,SQLite 连语法都过不了(shadow_test.go
-	// 已经把这一点写在 newPersistDB 上)。计数推进由本文件下面那个子测试用
-	// "撞上方言错误"当探针来证明,这里专注于记录本身与类型冻结。
+	// 计数推进由本文件下面那个子测试单独证明,这里专注于记录本身与类型冻结。
 	rule, err := compile(Rule{
 		Id: 51, Name: "AI-垃圾信息", Enabled: true, Mode: ModeEnforce, Phase: PhasePostAsync,
 		MatchType: MatchAIReview, Pattern: CatFraudSpam, Action: ActionRecord,
@@ -413,20 +410,25 @@ func TestAIAsyncReviewRecordsWithoutCharging(t *testing.T) {
 	assert.Contains(t, rec.MatchedTerms, CatFraudSpam)
 
 	t.Run("权重大于 0 时真的会去推进违规计数", func(t *testing.T) {
-		// 探针:SQLite 跑不了 bumpCounter 的 MySQL 方言语句,所以"走到了那一步"
-		// 就等价于"撞上方言错误"。把 runAIAsyncReview 里的计数推进删掉,
-		// 这一条立刻变绿 —— 那正是它要挡住的回归(异步审核只落记录、不计次)。
+		// 直接读计数值。以前这里只能拿"撞上 MySQL 方言语法错误"当探针
+		// (SQLite 跑不了旧的 ON DUPLICATE KEY UPDATE 写法),那只能证明
+		// "走到了那一步",证明不了"加对了几"。把 runAIAsyncReview 里的计数
+		// 推进删掉,这一条立刻变红 —— 那正是它要挡住的回归。
 		counted, err := compile(Rule{
 			Id: 54, Name: "AI-计次", Enabled: true, Mode: ModeEnforce, Phase: PhasePostAsync,
 			MatchType: MatchAIReview, Pattern: CatFraudSpam, Action: ActionRecord,
-			CountWeight: 1, CategoryId: cat.Id,
+			CountWeight: 2, CategoryId: cat.Id,
 		})
 		require.NoError(t, err)
-		err = runAIAsyncReview(context.Background(), gdb, rtForServer(srv.URL, 3000), nil,
+		require.NoError(t, runAIAsyncReview(context.Background(), gdb, rtForServer(srv.URL, 3000), nil,
 			[]*compiledRule{counted}, recordCtx{UserId: 9009, RequestId: "req-async-counted"},
-			in, in.Text, nil, nil)
-		require.Error(t, err, "真实模式的异步命中必须推进违规计数(项目方要的「只记录与计次」的后半句)")
-		assert.Contains(t, err.Error(), "DUPLICATE")
+			in, in.Text, nil, nil),
+			"真实模式的异步命中必须推进违规计数(项目方要的「只记录与计次」的后半句)")
+
+		var c Counter
+		require.NoError(t, gdb.Where("user_id = ?", 9009).Take(&c).Error)
+		assert.Equal(t, 2, c.HitCount, "权重 2 的一次命中把 hit_count 从 0 推到 2")
+		assert.EqualValues(t, 2, c.TotalCount)
 	})
 
 	t.Run("审核明细同时落一行,带 token 与花费", func(t *testing.T) {

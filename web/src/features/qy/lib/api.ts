@@ -154,6 +154,11 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   SECURITY_PROOF_EXPIRED: 'qy_err_security_proof',
   SECURITY_PROOF_SCOPE_MISMATCH: 'qy_err_security_proof',
   SECURITY_PROOF_METHOD_MISMATCH: 'qy_err_security_proof',
+  // 档位闸门（middleware/root_action.go）。同样是上游大写格式、不带 qy_ 前缀。
+  // 不登记就会塌成 qy_err_forbidden（"你没有执行该操作的权限"）——
+  // 那句话与"这条路由你整条都到不了"一模一样，而这里唯一有用的下一步是
+  // "这个页面你还能用，只有这一个动作要找超级管理员"。两者在界面上必须可分。
+  ROOT_ACTION_REQUIRED: 'qy_err_root_action_required',
   qy_wd_payout_ref_required: 'qy_err_wd_payout_ref_required',
   qy_wd_payout_amount_required: 'qy_err_wd_payout_amount_required',
   qy_wd_payout_amount_mismatch: 'qy_err_wd_payout_amount_mismatch',

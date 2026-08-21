@@ -70,7 +70,10 @@ func newSettingsTestDB(t *testing.T) *gorm.DB {
 	// 部分原样交给数据库执行。测试是单协程的,行锁在这里本来也没有语义。
 	gdb.ClauseBuilders["FOR"] = func(clause.Clause, clause.Builder) {}
 
-	require.NoError(t, gdb.AutoMigrate(settingsTables()...))
+	// qy_kv 是闸门锚点行所在的地基表(qymodel.LockGate)。它不属于 transfer 的
+	// settingsTables(),但"分档条数上限"这道闸门要靠它串行化 —— 少建这一张,
+	// 新建分档会 500。
+	require.NoError(t, gdb.AutoMigrate(append(settingsTables(), &qymodel.KV{})...))
 
 	prevHandle := qyDBHandle.Swap(gdb)
 	prevHealthy := qyDBHealthy.Swap(true)

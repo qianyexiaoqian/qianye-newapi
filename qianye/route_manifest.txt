@@ -56,6 +56,7 @@ GET /api/qy/admin/lottery/config
 GET /api/qy/admin/lottery/flags
 GET /api/qy/admin/lottery/series
 GET /api/qy/admin/lottery/text-prizes
+GET /api/qy/admin/overdraft
 GET /api/qy/admin/pay-password/:user_id
 GET /api/qy/admin/request-audits
 GET /api/qy/admin/restricted-accounts

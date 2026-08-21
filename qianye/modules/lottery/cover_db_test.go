@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/imagestore"
 
 	"github.com/glebarez/sqlite"
@@ -63,7 +64,10 @@ lottery:
 	// 这是本仓既有做法(见 modules/ticket/testdb_test.go)。被吞掉的只是这条
 	// SQL 子句,不是加锁语义本身 —— 单连接的内存库本来就是串行的。
 	gdb.ClauseBuilders["FOR"] = func(clause.Clause, clause.Builder) {}
-	require.NoError(t, gdb.AutoMigrate(tables()...))
+	// qy_kv 是闸门锚点行所在的地基表(qymodel.LockGate)。它不属于 lottery 的
+	// tables(),但"每人待挂封面上限"这道闸门要靠它串行化 —— 少建这一张,
+	// 上传路径会直接报 no such table。
+	require.NoError(t, gdb.AutoMigrate(append(tables(), &qymodel.KV{})...))
 
 	prevHandle := qyDBHandle.Swap(gdb)
 	prevHealthy := qyDBHealthy.Swap(true)

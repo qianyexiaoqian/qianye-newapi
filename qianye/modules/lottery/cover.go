@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/imagestore"
 
 	"github.com/gin-gonic/gin"
@@ -114,7 +116,7 @@ type Cover struct {
 	MimeType string `json:"mime_type" gorm:"type:varchar(32);not null;default:''"`
 	Size     int64  `json:"size" gorm:"not null;default:0"`
 	// Sha256 用于事后自证"取回的与当初上传的是同一张图",也顺带能发现重复上传。
-	Sha256 string `json:"-" gorm:"type:char(64);not null;default:''"`
+	Sha256 string `json:"-" gorm:"type:varchar(64);not null;default:''"`
 
 	CreatedAt int64 `json:"created_at" gorm:"not null;default:0;index:idx_qy_lot_cov_user,priority:2"`
 	BoundAt   int64 `json:"-" gorm:"not null;default:0"`
@@ -128,6 +130,10 @@ type Cover struct {
 	// 是两种不同的回答,而后者会被拿去枚举。
 	PurgedAt int64 `json:"-" gorm:"not null;default:0;index:idx_qy_lot_cov_purge,priority:2"`
 }
+
+// coverPendingGate 是"每个管理员的待挂封面上限"这道闸门的锚点行键前缀
+// (见 qymodel.LockGate)。
+const coverPendingGate = "lottery:cover_pending:"
 
 func (Cover) TableName() string { return "qy_lot_covers" }
 
@@ -291,11 +297,17 @@ func acceptCoverUpload(c *gin.Context, adminId int) (*Cover, error) {
 	// 锁,并发的第二个事务会在这里等,而不是各读各的快照 —— 而这是"一个账号
 	// 用只传图不保存把磁盘打满"唯一的总量闸,它被绕过的后果是不可回收的磁盘占用。
 	//
-	// SQLite 下 FOR UPDATE 是空操作(测试库把该子句整个吞掉),那里的正确性由
-	// 单连接串行化保证;线上的扩展库固定是 MySQL。
+	// 闸门靠**锚点行锁**串行化,不是给 COUNT 挂 FOR UPDATE。
+	// 后者只在 MySQL 的 next-key 锁下成立:PostgreSQL 会直接报
+	// "FOR UPDATE is not allowed with aggregate functions"(上传整条失败),
+	// 而 SQLite 上 FOR UPDATE 被驱动整段丢弃(闸门形同虚设)。
+	// 锚点按管理员分键 —— 闸门本来就是每人一份,共用一把会让两个管理员互相排队。
 	err = gdb.Transaction(func(tx *gorm.DB) error {
+		if err := qymodel.LockGate(tx, coverPendingGate+strconv.Itoa(adminId)); err != nil {
+			return err
+		}
 		var cnt int64
-		if err := db.LockForUpdate(tx).Model(&Cover{}).
+		if err := tx.Model(&Cover{}).
 			Where("user_id = ? AND act_id = 0 AND detached_at = 0 AND purged_at = 0", adminId).
 			Count(&cnt).Error; err != nil {
 			return err

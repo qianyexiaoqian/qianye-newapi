@@ -56,7 +56,9 @@ describe('按天下钻', () => {
   })
 
   test('下钻请求必须带 user_id', () => {
-    const fn = API.slice(API.indexOf('export function qyAdminDailyConsumeByDayQuery'))
+    const fn = API.slice(
+      API.indexOf('export function qyAdminDailyConsumeByDayQuery')
+    )
     assert.ok(
       fn.includes('user_id: params.user_id'),
       '不带 user_id 的下钻在后端是 400,在界面上是一片空白 —— 而且它一旦被放行' +
@@ -79,7 +81,10 @@ describe('按天下钻', () => {
 
   test('界面上有能点开的入口,且下钻面板真的被渲染', () => {
     assert.ok(INDEX.includes('setOpenUserId'), '缺少"点开哪一行"的状态')
-    assert.ok(INDEX.includes('<ByDayPanel'), '面板没被渲染 = 接口做完了但界面点不到')
+    assert.ok(
+      INDEX.includes('<ByDayPanel'),
+      '面板没被渲染 = 接口做完了但界面点不到'
+    )
     assert.ok(
       INDEX.includes('qyAdminDailyConsumeByDayQuery'),
       '面板没发下钻请求'

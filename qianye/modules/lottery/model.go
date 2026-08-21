@@ -39,6 +39,8 @@
 // 一切必须在本模块的表里自洽。
 package lottery
 
+import qymodel "github.com/QuantumNous/new-api/qianye/model"
+
 // ─────────────────────────── 活动 ───────────────────────────
 
 // Activity 是活动主表,抽奖与竞猜共用。永不清理。
@@ -536,9 +538,9 @@ type Payout struct {
 	// SecretKeyVersion == 0 表示**明文直存**:启用加密需要一个新的 YAML 配置键,
 	// 而配置那几个文件当前被并行工作流占用。列结构一次到位,加密是后续一次
 	// backfill 而不是一次迁移。这是一处明确记账的欠债,不是遗漏。
-	SecretNonce      []byte `json:"-" gorm:"type:blob"`
-	SecretCipher     []byte `json:"-" gorm:"type:blob"`
-	SecretKeyVersion int    `json:"-" gorm:"not null;default:0"`
+	SecretNonce      qymodel.Blob `json:"-"`
+	SecretCipher     qymodel.Blob `json:"-"`
+	SecretKeyVersion int          `json:"-" gorm:"not null;default:0"`
 
 	CreatedAt int64 `json:"created_at" gorm:"not null;default:0;index:idx_qy_lot_payout_user,priority:2"`
 	SettledAt int64 `json:"settled_at" gorm:"not null;default:0"`
@@ -615,9 +617,9 @@ type PrizeSecretHist struct {
 	PayoutNo string `json:"-" gorm:"type:varchar(32);not null;uniqueIndex:uk_qy_lot_secret_hist,priority:1"`
 	Seq      int    `json:"-" gorm:"not null;uniqueIndex:uk_qy_lot_secret_hist,priority:2"`
 
-	SecretNonce      []byte `json:"-" gorm:"type:blob"`
-	SecretCipher     []byte `json:"-" gorm:"type:blob"`
-	SecretKeyVersion int    `json:"-" gorm:"not null;default:0"`
+	SecretNonce      qymodel.Blob `json:"-"`
+	SecretCipher     qymodel.Blob `json:"-"`
+	SecretKeyVersion int          `json:"-" gorm:"not null;default:0"`
 
 	// FulfilledAt / FulfilledBy / FulfillNote 是被顶替掉的那一次履行的账面。
 	FulfilledAt  int64  `json:"-" gorm:"not null;default:0"`

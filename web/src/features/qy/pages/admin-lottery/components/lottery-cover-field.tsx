@@ -144,7 +144,7 @@ export function QyLotCoverField(props: {
       {/* 预览始终在:没配封面时 QyLotCover 画的是兜底图案,而那正是用户在大厅
           里会看到的东西 —— 让运营先看一眼再决定要不要配,比一句说明有用。 */}
       {localPreview != null ? (
-        <div className='bg-muted w-full overflow-hidden aspect-[16/6]'>
+        <div className='bg-muted aspect-[16/6] w-full overflow-hidden'>
           <img
             src={localPreview}
             alt={t('qy_lot_cover_alt')}

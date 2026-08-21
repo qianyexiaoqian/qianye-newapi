@@ -1,4 +1,4 @@
-// Package db 管理千夜扩展的独立 MySQL 连接。
+// Package db 管理千夜扩展的独立数据库连接。
 //
 // 与主库的关系(见 qianye/docs/design-00-foundation.md §2):
 //   - 完全独立的 *gorm.DB,不复用 model.DB / model.LOG_DB
@@ -6,6 +6,9 @@
 //     会污染 model.initCol() 对列名引号(反引号 vs 双引号)的判断,进而搞坏原项目
 //     所有拼接 SQL
 //   - 不复用 SQL_MAX_IDLE_CONNS 等主库环境变量,连接池参数一律来自扩展自己的 YAML
+//
+// 方言:MySQL(默认与主推)与 PostgreSQL 均受支持,按 DSN 前缀分派,
+// 分派与全部方言差异集中在 dialect.go。
 package db
 
 import (
@@ -23,9 +26,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	gormlogger "gorm.io/gorm/logger"
 )
 
@@ -67,7 +68,11 @@ func Init(cfg config.Database) error {
 		SkipDefaultTransaction: true,
 	}
 
-	gdb, err := gorm.Open(mysql.Open(dsn), gcfg)
+	dialector, err := DialectorFor(dsn)
+	if err != nil {
+		return err
+	}
+	gdb, err := gorm.Open(dialector, gcfg)
 	if err != nil {
 		return fmt.Errorf("qianye: 连接扩展数据库失败: %w", err)
 	}
@@ -206,14 +211,6 @@ func registerOpProbe(gdb *gorm.DB) error {
 	return nil
 }
 
-// LockForUpdate 给查询加行锁。
-//
-// 扩展库固定是 MySQL,不需要像 model.lockForUpdate 那样做 SQLite 分支;
-// 也不能复用它 —— 那个函数判断的是主库类型,主库若为 SQLite 会静默不加锁。
-func LockForUpdate(tx *gorm.DB) *gorm.DB {
-	return tx.Clauses(clause.Locking{Strength: "UPDATE"})
-}
-
 // Close 关闭连接池。
 //
 // 刻意不挂进 main.go 的 defer(省一行改动预算):进程退出由操作系统回收连接,
@@ -276,6 +273,9 @@ func Stats() map[string]any {
 // 上界由调用方的 ctx 负责,两者是不同层次的防线。
 func normalizeDSN(cfg config.Database) string {
 	dsn := strings.TrimSpace(cfg.DSN)
+	if DetectDialect(dsn) == DialectPostgres {
+		return normalizePostgresDSN(cfg, dsn)
+	}
 	add := func(d, kv string) string {
 		if strings.Contains(d, "?") {
 			return d + "&" + kv
@@ -303,14 +303,124 @@ func normalizeDSN(cfg config.Database) string {
 
 // migrationDSN 在业务 DSN 基础上去掉读写超时,供自动迁移专用。
 //
-// 迁移里的 GET_LOCK 等待与大表 DDL 天然会超过任何合理的连接级超时,
+// 迁移里的抢锁等待与大表 DDL 天然会超过任何合理的连接级超时,
 // 被驱动掐断的后果是启动失败或 DDL 停在半迁移态(MySQL 的 DDL 不可回滚)。
 // 迁移的时间上界由 migrateTimeout 的 ctx 负责,不需要驱动层再插一手。
 func migrationDSN(cfg config.Database) string {
 	dsn := normalizeDSN(cfg)
+	if DetectDialect(dsn) == DialectPostgres {
+		// PostgreSQL 的对应闸门是服务端 GUC statement_timeout,0 就是不限。
+		return pgSetParam(dsn, "statement_timeout", "0")
+	}
 	// 驱动把 0 解释为"永不超时",正是迁移需要的。
 	dsn = replaceParam(dsn, "readTimeout", "0")
 	return replaceParam(dsn, "writeTimeout", "0")
+}
+
+// normalizePostgresDSN 是 normalizeDSN 的 PostgreSQL 分支。
+//
+// 三个超时项在两家的对应物并不相同,必须逐条说明,否则同一份 YAML 在两种库上
+// 会得到完全不同的故障行为:
+//
+//   - connect_timeout_seconds → connect_timeout(libpq/pgx 都认,单位是**秒**)。
+//     与 MySQL 的 timeout= 语义一致:dial 阶段的上界。
+//
+//   - read_timeout_seconds → statement_timeout(单位毫秒,服务端 GUC)。
+//     这不是逐字对应:MySQL 的 readTimeout 是**驱动层**的 socket 读超时,触发时
+//     Go 侧放弃、而服务端的语句仍在跑(连接被判定为坏连接丢弃);PostgreSQL 的
+//     statement_timeout 由**服务端**执行,超时会真正中止那条语句并回滚它所在的
+//     事务,连接保持可用。方向上 PostgreSQL 这一侧更强:它解决的正是 MySQL 那条
+//     注释里担心的"连接被慢查询逐个吃光"。因此这里刻意选它,而不是去模拟一个
+//     驱动层读超时(pgx 没有等价物)。
+//
+//   - write_timeout_seconds → PostgreSQL 无对应物,刻意不映射。
+//     写入的时间上界与读一样落在 statement_timeout 上,没有第二个旋钮;
+//     硬造一个只会让运维以为自己配了什么。
+//
+// parseTime / charset 是 go-sql-driver 专有的,PostgreSQL 的 wire protocol 自带
+// 类型与编码,不需要也不接受这两个参数。
+func normalizePostgresDSN(cfg config.Database, dsn string) string {
+	dsn = pgSetIfAbsent(dsn, "connect_timeout", strconv.Itoa(effectiveSeconds(cfg.ConnectTimeoutSeconds, 5)))
+	dsn = pgSetIfAbsent(dsn, "statement_timeout",
+		strconv.Itoa(effectiveSeconds(cfg.ReadTimeoutSeconds, 30)*1000))
+	return dsn
+}
+
+// pgSetIfAbsent 只在参数缺失时补上,已写过的一律尊重运维的选择。
+func pgSetIfAbsent(dsn, key, value string) string {
+	if pgHasParam(dsn, key) {
+		return dsn
+	}
+	return pgAppendParam(dsn, key, value)
+}
+
+// pgSetParam 覆盖某个参数;不存在则追加。
+func pgSetParam(dsn, key, value string) string {
+	if !pgHasParam(dsn, key) {
+		return pgAppendParam(dsn, key, value)
+	}
+	if strings.Contains(dsn, "://") {
+		i := strings.Index(dsn, "?")
+		head, query := dsn[:i+1], dsn[i+1:]
+		parts := strings.Split(query, "&")
+		for j, part := range parts {
+			if strings.HasPrefix(strings.TrimSpace(part), key+"=") {
+				parts[j] = key + "=" + value
+			}
+		}
+		return head + strings.Join(parts, "&")
+	}
+	parts := strings.Fields(dsn)
+	for j, part := range parts {
+		if strings.HasPrefix(part, key+"=") {
+			parts[j] = key + "=" + value
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// PostgreSQL 的 DSN 有两种写法,追加参数的分隔符不同:
+//   - URL 形式  postgres://u:p@h:5432/db?sslmode=disable   —— ? / &
+//   - 关键字形式 host=h port=5432 user=u dbname=db          —— 空格
+//
+// 两种都必须支持:gorm.io/driver/postgres 的官方示例用的是关键字形式,
+// 而运维更习惯 URL 形式。
+func pgAppendParam(dsn, key, value string) string {
+	if strings.Contains(dsn, "://") {
+		if strings.Contains(dsn, "?") {
+			return dsn + "&" + key + "=" + value
+		}
+		return dsn + "?" + key + "=" + value
+	}
+	return strings.TrimSpace(dsn) + " " + key + "=" + value
+}
+
+func pgHasParam(dsn, key string) bool {
+	sep := "&"
+	if !strings.Contains(dsn, "://") {
+		sep = " "
+	}
+	for _, part := range splitPGParams(dsn, sep) {
+		if strings.HasPrefix(strings.TrimSpace(part), key+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// splitPGParams 把 DSN 切成"可能是参数"的片段。
+//
+// URL 形式先按 ? 砍掉 scheme+路径那一段,否则 host 里的 & 之类字符会混进来;
+// 关键字形式整串都是参数。
+func splitPGParams(dsn, sep string) []string {
+	if sep == "&" {
+		i := strings.Index(dsn, "?")
+		if i < 0 {
+			return nil
+		}
+		return strings.Split(dsn[i+1:], "&")
+	}
+	return strings.Fields(dsn)
 }
 
 // replaceParam 覆盖 DSN 查询串里的某个参数;不存在则追加。

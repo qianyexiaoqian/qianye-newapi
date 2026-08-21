@@ -53,10 +53,21 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/withdraw/pii-audits", handleAdminPiiAudits)
 	g.GET("/withdraw/:id", handleAdminGet)
 	// 查看明文是被审计的高敏操作,挂关键操作限流可以让"批量扒库"变得昂贵。
-	g.GET("/withdraw/:id/payee", middleware.CriticalRateLimit(), handleAdminRevealPayee)
+	//
+	// 档位与二次校验**同时**要:两者防的不是一件事 —— RootActionGate 回答
+	// "谁有资格看",X-Security-Proof 回答"此刻坐在键盘前的是不是本人"。
+	// 一张被偷走的 root 会话在没有第二因子时仍然扒不出任何一行明文;
+	// 一个诚实的 role=10 即便刚做完 2FA 也看不到。去掉任何一道都只剩一半。
+	//
+	// 代价是**只有超管能实际打款**(打款要照着收款账号去银行/钱包转账),
+	// 而四个人工决定仍是 role>=10 —— 这是项目方明确要的形状:role=10 负责
+	// 审核与状态流转,出钱那一步收口到一个人。
+	payeePii := middleware.RootActionGate(middleware.RootActionWithdrawPayeeReveal)
+	g.GET("/withdraw/:id/payee", middleware.CriticalRateLimit(), payeePii, handleAdminRevealPayee)
 	// 凭证图片与收款账号同属 PII,因此走同一套口径:必填事由 + 写 qy_pii_audits
-	// + 关键操作限流。差别只在它没有"脱敏版"可看 —— 一张图要么看得到要么看不到。
-	g.GET("/withdraw/:id/proof", middleware.CriticalRateLimit(), handleAdminGetProof)
+	// + 关键操作限流 + 同一道档位。差别只在它没有"脱敏版"可看 —— 一张图要么
+	// 看得到要么看不到。
+	g.GET("/withdraw/:id/proof", middleware.CriticalRateLimit(), payeePii, handleAdminGetProof)
 
 	// 人工决策一律挂关键操作限流:它们要么改佣金账本,要么终结一张单。
 	//

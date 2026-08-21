@@ -22,7 +22,11 @@ import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-const localesDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'locales')
+const localesDir = join(
+  dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'locales'
+)
 
 /**
  * 语言包的顶层只能有 `translation` 这一个键。
@@ -46,14 +50,16 @@ describe('语言包命名空间形状', () => {
 
   for (const file of files) {
     test(`${file} 顶层只有 translation`, () => {
-      const raw = JSON.parse(readFileSync(join(localesDir, file), 'utf8')) as Record<string, unknown>
+      const raw = JSON.parse(
+        readFileSync(join(localesDir, file), 'utf8')
+      ) as Record<string, unknown>
       const extras = Object.keys(raw).filter((k) => k !== 'translation')
       assert.deepEqual(
         extras,
         [],
         `${file} 的顶层出现了 ${extras.join(', ')}：` +
           'i18next 会把它们当成命名空间，于是这些键在任何语言下都解析不到，' +
-          '页面上显示的是键名本身',
+          '页面上显示的是键名本身'
       )
       assert.equal(typeof raw.translation, 'object')
     })
@@ -66,8 +72,9 @@ describe('语言包命名空间形状', () => {
       }
       for (const key of ['Order', 'Move up', 'Move down']) {
         assert.ok(
-          typeof raw.translation[key] === 'string' && raw.translation[key].length > 0,
-          `${file} 缺少 ${key}`,
+          typeof raw.translation[key] === 'string' &&
+            raw.translation[key].length > 0,
+          `${file} 缺少 ${key}`
         )
       }
     }

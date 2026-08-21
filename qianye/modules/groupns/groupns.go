@@ -115,22 +115,29 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 		// 删除/改名之前必须能看到影响面。只读,不限流 ——
 		// 它是那两个写接口的**前置条件**,限流它等于让运营更倾向于跳过预览。
 		r.GET("/user-groups/:name/impact", adminUserGroupImpact)
-		// 写接口一律挂 CriticalRateLimit:它们决定"空分组令牌去哪个池子",
-		// 一次误配影响一整组用户。
-		r.POST("/backfill", middleware.CriticalRateLimit(), adminBackfill)
-		r.PUT("/user-groups/:name/default", middleware.CriticalRateLimit(), adminSetDefaultModelGroup)
+		// 写接口一律挂 CriticalRateLimit + RootActionGate:它们决定
+		// "空分组令牌去哪个池子",一次误配横跨两个数据库改六张表,影响一整档人
+		// 的可用分组与账单,因此写侧整体提到超级管理员。
+		//
+		// **读侧刻意不连坐**:上面那四条 GET 仍是 role>=10。影响面预览是这些写
+		// 动作的前置条件(限制它只会让人更倾向于跳过预览),而分组名本身在模型
+		// 广场上就是公开的 —— 把读也关掉只会让 role=10 的分组矩阵页塌成空表,
+		// 那与"坏了"长得一模一样。
+		root := middleware.RootActionGate(middleware.RootActionGroupNamespaceWrite)
+		r.POST("/backfill", middleware.CriticalRateLimit(), root, adminBackfill)
+		r.PUT("/user-groups/:name/default", middleware.CriticalRateLimit(), root, adminSetDefaultModelGroup)
 		// 生命周期三件套。删除与改名会横跨两个数据库改六张表,
 		// 一次误点影响一整档人的可用分组与账单,限流档次与上面一致。
-		r.POST("/user-groups", middleware.CriticalRateLimit(), adminCreateUserGroup)
-		r.PUT("/user-groups/:name", middleware.CriticalRateLimit(), adminUpdateUserGroup)
-		r.POST("/user-groups/:name/rename", middleware.CriticalRateLimit(), adminRenameUserGroup)
-		r.DELETE("/user-groups/:name", middleware.CriticalRateLimit(), adminDeleteUserGroup)
+		r.POST("/user-groups", middleware.CriticalRateLimit(), root, adminCreateUserGroup)
+		r.PUT("/user-groups/:name", middleware.CriticalRateLimit(), root, adminUpdateUserGroup)
+		r.POST("/user-groups/:name/rename", middleware.CriticalRateLimit(), root, adminRenameUserGroup)
+		r.DELETE("/user-groups/:name", middleware.CriticalRateLimit(), root, adminDeleteUserGroup)
 		// 「一键迁移」是一个**独立动作**,不是删除的一个选项。
 		//
 		// 迁移那段逻辑此前只作为删除的副产品存在,而删除对 default 是硬拒的 ——
 		// 于是「把这一档人挪走」这件事在界面上无路可走。同一份实现
 		// (model.QyRewriteUserGroupTx)两个入口,不是两份实现。
-		r.POST("/user-groups/:name/migrate", middleware.CriticalRateLimit(), adminMigrateUserGroup)
+		r.POST("/user-groups/:name/migrate", middleware.CriticalRateLimit(), root, adminMigrateUserGroup)
 
 		// ── 模型分组这一侧 ────────────────────────────────────────────
 		//
@@ -144,8 +151,8 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 		//        那个非原子窗口在改名期间会让 InitChannelCache 读到半成状态。
 		//        射程之外,见 groupns.go 的包注释。
 		r.GET("/model-groups/:name/impact", adminModelGroupImpact)
-		r.PUT("/model-groups/:name", middleware.CriticalRateLimit(), adminUpdateModelGroup)
-		r.DELETE("/model-groups/:name", middleware.CriticalRateLimit(), adminDeleteModelGroup)
+		r.PUT("/model-groups/:name", middleware.CriticalRateLimit(), root, adminUpdateModelGroup)
+		r.DELETE("/model-groups/:name", middleware.CriticalRateLimit(), root, adminDeleteModelGroup)
 	}
 }
 

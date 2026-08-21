@@ -309,19 +309,36 @@ func runCleanup(ctx context.Context) {
 //
 // 分批是硬要求:一条 DELETE 干掉上百万行会长时间持有行锁、撑爆 binlog,
 // 顺带把同一个库上的其它扩展功能一起拖死。
+// 分批用"先取一批主键、再按主键删"而不是 DELETE ... LIMIT:
+// LIMIT 子句在 DELETE 上是 MySQL 专有扩展,PostgreSQL 直接语法错误。
+// 两跳的代价是一次额外的索引扫描(bucket_ts 上有索引),换来的是同一段代码
+// 在三种方言上行为一致 —— 与 modules/ticket/tasks.go 的处理同口径。
 func deleteBefore(ctx context.Context, gdb *gorm.DB, table string, cutoff int64) {
 	for i := 0; i < maxCleanupBatches; i++ {
 		if ctx.Err() != nil {
 			return
 		}
-		res := gdb.Exec("DELETE FROM "+table+" WHERE bucket_ts < ? LIMIT ?", cutoff, cleanupBatchSize)
+		var ids []int64
+		if err := gdb.WithContext(ctx).Table(table).
+			Where("bucket_ts < ?", cutoff).
+			Order("bucket_ts").
+			Limit(cleanupBatchSize).
+			Pluck("id", &ids).Error; err != nil {
+			db.MarkFailure(err)
+			warnThrottled("cleanup", err)
+			return
+		}
+		if len(ids) == 0 {
+			return
+		}
+		res := gdb.WithContext(ctx).Exec("DELETE FROM "+table+" WHERE id IN ?", ids)
 		if res.Error != nil {
 			db.MarkFailure(res.Error)
 			warnThrottled("cleanup", res.Error)
 			return
 		}
 		statCleanupRow.Add(res.RowsAffected)
-		if res.RowsAffected < cleanupBatchSize {
+		if int64(len(ids)) < cleanupBatchSize {
 			return
 		}
 		time.Sleep(cleanupPause)

@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stripe/stripe-go/v81"
 	"github.com/stripe/stripe-go/v81/checkout/session"
 	"github.com/stripe/stripe-go/v81/webhook"
@@ -43,8 +44,14 @@ type StripeAdaptor struct {
 }
 
 func (*StripeAdaptor) RequestAmount(c *gin.Context, req *StripePayRequest) {
+	// 与下单同一个取整口径:报价、上下界、发给 Stripe 的 quantity 必须出自同一个数。
+	req.Amount = normalizeTopUpAmount(req.Amount)
 	if req.Amount < getStripeMinTopup() {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", getStripeMinTopup())})
+		return
+	}
+	if req.Amount > getStripeMaxTopup() {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能大于 %d", getStripeMaxTopup())})
 		return
 	}
 	id := c.GetInt("id")
@@ -53,9 +60,17 @@ func (*StripeAdaptor) RequestAmount(c *gin.Context, req *StripePayRequest) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "获取用户分组失败"})
 		return
 	}
+	// 询价与下单同闸。分组倍率必须算进来:上界只看 req.Amount 的话,倍率 > 1 的
+	// 分组在 10000 这道闸之内也能把换算顶穿(同步自上游 2a0ce3475 的
+	// getStripeCreditedQuota,只是换算改走与结算共用的 model.TopUp.CreditQuota)。
+	if rejectInsufficientWalletCapacity(c, id, &model.TopUp{
+		PaymentProvider: model.PaymentProviderStripe,
+		Money:           stripeChargedMoneyForGroup(float64(req.Amount), group),
+	}) {
+		return
+	}
 	payMoney := getStripePayMoney(float64(req.Amount), group)
-	if payMoney <= 0.01 {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
+	if rejectPayMoneyBelowGatewayMinimum(c, payMoney) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "success", "data": strconv.FormatFloat(payMoney, 'f', 2, 64)})
@@ -66,6 +81,7 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "不支持的支付渠道"})
 		return
 	}
+	req.Amount = normalizeTopUpAmount(req.Amount)
 	if req.Amount < getStripeMinTopup() {
 		c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("充值数量不能小于 %d", getStripeMinTopup()), "data": 10})
 		return
@@ -86,20 +102,33 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 	}
 
 	id := c.GetInt("id")
-	user, _ := model.GetUserById(id, false)
+	// user 取不到时原先直接 *user 解引用 —— 收款人在会话有效期内被删掉就 panic
+	// 整个进程。同步自上游 47ba9d2c6 的显式判空。
+	user, err := model.GetUserById(id, false)
+	if err != nil || user == nil {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "用户不存在"})
+		return
+	}
 	chargedMoney := GetChargedAmount(float64(req.Amount), *user)
 	// Stripe 到账额度按 Money(已乘分组倍率)换算，所以上界必须落在 Money 上，
 	// 不能只看 req.Amount：倍率 > 1 的分组在 10000 这道闸之内也能把换算顶穿。
 	// 换算触顶的订单在回调结算时整笔回滚，用户付了钱却永远拿不到额度。
-	if _, err := (&model.TopUp{PaymentProvider: model.PaymentProviderStripe, Money: chargedMoney}).CreditQuota(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "充值数量过大，请减少单笔充值数量", "data": 10})
+	if rejectInsufficientWalletCapacity(c, id, &model.TopUp{
+		PaymentProvider: model.PaymentProviderStripe,
+		Money:           chargedMoney,
+	}) {
+		return
+	}
+
+	// 下单侧也要过「充值金额过低」这道闸，否则询价拒掉的一笔在下单接口上还是能建单。
+	if rejectPayMoneyBelowGatewayMinimum(c, getStripePayMoney(float64(req.Amount), user.Group)) {
 		return
 	}
 
 	reference := fmt.Sprintf("new-api-ref-%d-%d-%s", user.Id, time.Now().UnixMilli(), randstr.String(4))
 	referenceId := "ref_" + common.Sha1([]byte(reference))
 
-	payLink, err := genStripeLink(referenceId, user.StripeCustomer, user.Email, req.Amount, req.SuccessURL, req.CancelURL)
+	payLink, err := genStripeLink(referenceId, user.StripeCustomer, user.Email, stripeCheckoutQuantity(req.Amount), req.SuccessURL, req.CancelURL)
 	if err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Stripe 创建 Checkout Session 失败 user_id=%d trade_no=%s amount=%d error=%q", id, referenceId, req.Amount, err.Error()))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "拉起支付失败"})
@@ -400,10 +429,37 @@ func genStripeLink(referenceId string, customerId string, email string, amount i
 // 结果要么直接顶穿 int32 让整笔结算回滚(订单永远 pending),要么按一个放大
 // 50 万倍的额度到账。
 func GetChargedAmount(count float64, user model.User) float64 {
+	return stripeChargedMoneyForGroup(count, user.Group)
+}
+
+// stripeCheckoutQuantity 把请求里的充值数量换算成 Checkout LineItem 的 Quantity。
+//
+// StripePriceId 是「一个单位多少钱」，所以 quantity 必须是**单位数**——与报价
+// (getStripePayMoney)、落库 Money(stripeChargedMoneyForGroup)、结算换算
+// (model.TopUp.CreditQuota 的 stripe 分支 = Money × QuotaPerUnit)同一个口径。
+//
+// 原先这里直接把未经换算的 req.Amount 递给 Stripe：报价端除过 QuotaPerUnit、
+// 收银台端没除，两侧相差正好 QuotaPerUnit 倍，而一个站点只有一个 StripePriceId，
+// USD/CNY 与 TOKENS 两种展示类型不可能同时定价正确。切换展示类型时 Stripe 侧的
+// 真实扣款额会静默变化 QuotaPerUnit 倍：按单位配价时用户被报价 $8、收银台上却是
+// 五十万倍的账单；按 token 配价再切回货币展示时站方按 1/QuotaPerUnit 的价把额度
+// 卖出去。回调只认 TopUp.Money、不与 amount_total 对账，两个方向都不会被发现。
+func stripeCheckoutQuantity(amount int64) int64 {
+	if operation_setting.GetQuotaDisplayType() != operation_setting.QuotaDisplayTypeTokens || common.QuotaPerUnit <= 0 {
+		return amount
+	}
+	return decimal.NewFromInt(amount).Div(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart()
+}
+
+// stripeChargedMoneyForGroup 是「充值数量 -> 落库 Money」的唯一一份换算。
+//
+// 询价端(RequestAmount，只拿得到分组名)与下单端(RequestPay，有完整 user)必须共用
+// 它，否则上界校验用的价与真正落库的 Money 会分叉，而结算正是按 Money 换额度。
+func stripeChargedMoneyForGroup(count float64, group string) float64 {
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens && common.QuotaPerUnit > 0 {
 		count = count / common.QuotaPerUnit
 	}
-	topUpGroupRatio := common.GetTopupGroupRatio(user.Group)
+	topUpGroupRatio := common.GetTopupGroupRatio(group)
 	if topUpGroupRatio == 0 {
 		topUpGroupRatio = 1
 	}
@@ -438,12 +494,23 @@ func getStripePayMoney(amount float64, group string) float64 {
 // 于是 min(500000) > max(10000),**任何金额都过不去**:小于 500000 报"不能小于
 // 500000",大于等于 500000 报"不能大于 10000",两条报错互相矛盾,Stripe 充值
 // 整条通道静默不可用,而运维基本无法从提示里看出根因。
+// 另外它还必须与 getMaxTopup() 取小：10000 只是产品策略，而 getMaxTopup() 是结算
+// 侧的硬约束（CreditQuota 换算触顶就整笔回滚）。两道闸互不知情时，落在
+// 4295..10000 的输入被第二道闸以「充值额度超出系统可表示范围」拒掉 —— 这句话不
+// 指向任何用户能做的动作（他既没超过页面上的 10000，也不知道「可表示范围」是多少），
+// 而同一个物理约束在 epay/waffo/pancake 三条路上报的是「充值数量不能大于 4294」。
+// 取小之后四条路给出同一个数、同一句话。分组倍率 > 1 的用户仍会更早撞上第二道闸
+// （倍率是每个用户的，报不进这句全局文案里）。
 func getStripeMaxTopup() int64 {
 	const stripeMaxUnits = 10000
+	maxTopup := int64(stripeMaxUnits)
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
-		return int64(stripeMaxUnits * int(common.QuotaPerUnit))
+		maxTopup = int64(stripeMaxUnits * int(common.QuotaPerUnit))
 	}
-	return stripeMaxUnits
+	if creditable := getMaxTopup(); creditable < maxTopup {
+		return creditable
+	}
+	return maxTopup
 }
 
 func getStripeMinTopup() int64 {

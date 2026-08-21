@@ -48,7 +48,7 @@ type SettleRun struct {
 	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
 	// RunDate 是结算日界口径下的"今天"(见 dayline.go),不是 UTC 自然日,
 	// 也不是服务器本地日 —— 它必须与 bucket_date 同源。
-	RunDate string `json:"run_date" gorm:"type:char(8);not null;uniqueIndex:uk_qy_csr_date"`
+	RunDate string `json:"run_date" gorm:"type:varchar(8);not null;uniqueIndex:uk_qy_csr_date"`
 	Status  string `json:"status" gorm:"type:varchar(16);not null;default:''"`
 	// Holder 是最后一次尝试的持有者(节点名:随机后缀),与租约表同一口径。
 	Holder   string `json:"holder" gorm:"type:varchar(200);not null;default:''"`

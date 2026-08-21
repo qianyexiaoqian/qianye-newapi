@@ -27,13 +27,13 @@ import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
 import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
 import { formatQyDuration, formatQyTs } from '../../ops/format'
-import { QyLotCover } from './lottery-cover'
 import {
   qyLotActivityBadgeStatus,
   qyLotCountdown,
   qyLotOutcomeKey,
 } from '../lib/display'
 import type { QyLotActivityBrief } from '../types'
+import { QyLotCover } from './lottery-cover'
 
 /**
  * 卡片左上角那个图标。三种玩法必须一眼分得开，而 `draw_mode='ball'` 的 `kind`

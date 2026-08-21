@@ -215,6 +215,11 @@ export function buildApiParams(config: {
     ...(searchParams.upstreamRequestId
       ? { upstream_request_id: String(searchParams.upstreamRequestId) }
       : {}),
+    // 只有管理员视图才带这个参数：标记写在 other.admin_info 下，普通用户的
+    // 日志响应里那一整块会被后端剥掉，带上去只会得到一页空结果而没有解释。
+    ...(isAdmin && searchParams.preConsumeShortfall === 'true'
+      ? { pre_consume_shortfall: true }
+      : {}),
     ...buildTimeRangeParams(searchParams, false),
   }
 

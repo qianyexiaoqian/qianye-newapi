@@ -33,6 +33,7 @@ auth.user_id_mismatch: "Unauthorized, New-Api-User does not match logged in user
 auth.user_banned: "User has been banned"
 auth.user_restricted: "Your account is restricted. Only support tickets and appeals remain available."
 auth.insufficient_privilege: "Unauthorized, insufficient privileges"
+auth.root_action_required: "This action is restricted to the super administrator. Ask a super administrator to perform it."
 
 # Token messages
 token.name_too_long: "Token name is too long"

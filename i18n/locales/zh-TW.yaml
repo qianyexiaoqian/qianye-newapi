@@ -34,6 +34,7 @@ auth.user_id_mismatch: "無權進行此操作，New-Api-User 與登入使用者�
 auth.user_banned: "使用者已被封禁"
 auth.user_restricted: "帳號已被限制，目前僅可使用工單與申訴功能"
 auth.insufficient_privilege: "無權進行此操作，權限不足"
+auth.root_action_required: "此操作僅超級管理員可執行，請聯絡超級管理員代為處理"
 
 # Token messages
 token.name_too_long: "令牌名稱過長"

@@ -195,17 +195,105 @@ func getMinTopup() int64 {
 // 网关对着 fail 无限重投、管理员补单走同一个换算同样失败。也就是说，
 // 一张超过这个数的订单只要真的被付掉，钱就进了网关而额度一分到不了用户手上。
 // 因此这道闸必须在下单时就关上。
+//
+// 分子是 MaxQuota-1 而不是 MaxQuota（同步自上游 47ba9d2c6 的 getMaxTopUpAmount）：
+// common/quota_math.go 的 saturateQuota 在 value >= MaxQuota 时就报错，所以可表示
+// 的最大额度是 MaxQuota-1。用 MaxQuota 做分子在 QuotaPerUnit==1 时会算出 2147483647，
+// 而这个数恰好换算失败 —— 上界自己放行了一个必然结算回滚的值。
 func getMaxTopup() int64 {
 	if common.QuotaPerUnit <= 0 {
-		return int64(common.MaxQuota)
+		return int64(common.MaxQuota - 1)
 	}
-	maxUnits := decimal.NewFromInt(int64(common.MaxQuota)).
+	maxUnits := decimal.NewFromInt(int64(common.MaxQuota - 1)).
 		Div(decimal.NewFromFloat(common.QuotaPerUnit)).Floor()
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
-		// TOKENS 模式下前端传的是 tokens，落库的 Amount 是 tokens/QuotaPerUnit 取整。
+		// TOKENS 模式下前端传的是 tokens，而 normalizeTopUpAmount 已经把它向下取整到
+		// QuotaPerUnit 的整数倍，所以上界报的就是用户能填进输入框的那个数本身。
 		return maxUnits.Mul(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart()
 	}
 	return maxUnits.IntPart()
+}
+
+// rejectInvalidTopUpQuota 是 Amount 计价渠道（易支付 / waffo / waffo-pancake）
+// 下单与询价两侧共用的那道闸：单笔上界 + 钱包容量。
+//
+// 上界只保证「这一笔自己」能被表示；容量保证「加到收款人现有余额上」之后还能被
+// 表示。缺后者时，余额 21 亿的用户再充 4294 一样在结算侧触顶回滚，后果与完全没
+// 有上界时逐字相同。容量检查同步自上游 47ba9d2c6 的 ValidateTopUpQuotaCapacity。
+//
+// 返回 true 表示已经写过响应，调用方直接 return。
+func rejectInvalidTopUpQuota(c *gin.Context, userId int, amount int64) bool {
+	if amount > getMaxTopup() {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能大于 %d", getMaxTopup())})
+		return true
+	}
+	// 必须先换成**落库的那个 Amount**，不能直接拿请求里的数去算到账额度。
+	// TOKENS 展示模式下前端传的是 tokens，而三条渠道落库前都会除以 QuotaPerUnit
+	// （易支付在 RequestEpay 里、waffo 在 RequestWaffoPay 里、pancake 走
+	// normalizeWaffoPancakeTopUpAmount）。少这一步的话，校验会拿放大了 QuotaPerUnit
+	// 倍的数去换算，一笔完全正常的 tokens 充值会被误判成「超出可表示范围」——
+	// TOKENS 模式下整条充值通道被自己的上界闸门堵死。
+	return rejectInsufficientWalletCapacity(c, userId, &model.TopUp{Amount: topUpStoredAmount(amount)})
+}
+
+// topUpStoredAmount 把请求里的充值数量换算成落库的 TopUp.Amount（按 Amount 计价的
+// 三条渠道共用一个口径：USD/CNY 原样，TOKENS 除以 QuotaPerUnit 取整）。
+func topUpStoredAmount(amount int64) int64 {
+	if operation_setting.GetQuotaDisplayType() != operation_setting.QuotaDisplayTypeTokens {
+		return amount
+	}
+	if common.QuotaPerUnit <= 0 {
+		return amount
+	}
+	return decimal.NewFromInt(amount).Div(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart()
+}
+
+// rejectInsufficientWalletCapacity 走 model.TopUp.CreditQuota —— 与结算侧**同一个
+// 函数** —— 把订单换算成到账额度，再校验它落在 int32 域内且钱包装得下。
+//
+// 上游把这一步写成了 controller.getStripeCreditedQuota，与 model.Recharge 里的换算
+// 各写一份；这里改用 CreditQuota 是为了让「下单校验用的价」和「结算真正加的额度」
+// 在编译期就不可能分叉。creem/stripe 这类不按 Amount 计价的渠道只能走这一支。
+func rejectInsufficientWalletCapacity(c *gin.Context, userId int, topUp *model.TopUp) bool {
+	quota, err := topUp.CreditQuota()
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值额度超出系统可表示范围"})
+		return true
+	}
+	if quota <= 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值额度必须大于 0"})
+		return true
+	}
+	if err := model.ValidateTopUpQuotaCapacity(userId, quota); err != nil {
+		if errors.Is(err, model.ErrTopUpQuotaLimitExceeded) {
+			c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值后余额将超出系统上限，请先消耗部分额度"})
+			return true
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "校验充值额度失败"})
+		return true
+	}
+	return false
+}
+
+// minPayMoney 是各支付网关能受理的最小收款额（一分钱）。
+const minPayMoney = 0.01
+
+// rejectPayMoneyBelowGatewayMinimum 是「充值金额过低」这道闸的唯一一份判据。
+//
+// 原先它在每条通道上被写了两遍，而且两遍不一样：询价侧 `payMoney <= 0.01`
+// （更严）、下单侧 `payMoney < 0.01`（更松），stripe 的下单侧干脆没有。于是
+// payMoney 恰好等于 0.01 的一笔，询价接口告诉用户「充值金额过低」并把报价显示
+// 成 0，同一份请求体走下单接口却能建出一张真实订单 —— 与「询价与下单必须过同
+// 一道闸」正好相反。0.01 是网关允许的最小收款额，放行它才是正确的一侧，所以
+// 这里统一取 `< 0.01`。
+//
+// 返回 true 表示已经写过响应，调用方直接 return。
+func rejectPayMoneyBelowGatewayMinimum(c *gin.Context, payMoney float64) bool {
+	if payMoney < minPayMoney {
+		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
+		return true
+	}
+	return false
 }
 
 // normalizeTopUpAmount 在 TOKENS 展示模式下把充值数量向下取整到 QuotaPerUnit 的
@@ -244,20 +332,18 @@ func RequestEpay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", getMinTopup())})
 		return
 	}
-	if req.Amount > getMaxTopup() {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能大于 %d", getMaxTopup())})
+	id := c.GetInt("id")
+	if rejectInvalidTopUpQuota(c, id, req.Amount) {
 		return
 	}
 
-	id := c.GetInt("id")
 	group, err := model.GetUserGroup(id, true)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "获取用户分组失败"})
 		return
 	}
 	payMoney := getPayMoney(req.Amount, group)
-	if payMoney < 0.01 {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
+	if rejectPayMoneyBelowGatewayMinimum(c, payMoney) {
 		return
 	}
 
@@ -458,19 +544,23 @@ func RequestAmount(c *gin.Context) {
 		return
 	}
 
+	// 询价与下单必须过同一道闸，否则前端拿到一个报价、下单时才被拒。
+	req.Amount = normalizeTopUpAmount(req.Amount)
 	if req.Amount < getMinTopup() {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", getMinTopup())})
 		return
 	}
 	id := c.GetInt("id")
+	if rejectInvalidTopUpQuota(c, id, req.Amount) {
+		return
+	}
 	group, err := model.GetUserGroup(id, true)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "获取用户分组失败"})
 		return
 	}
 	payMoney := getPayMoney(req.Amount, group)
-	if payMoney <= 0.01 {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
+	if rejectPayMoneyBelowGatewayMinimum(c, payMoney) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "success", "data": strconv.FormatFloat(payMoney, 'f', 2, 64)})

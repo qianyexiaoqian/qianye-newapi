@@ -16,6 +16,16 @@ import (
 	"gorm.io/gorm"
 )
 
+// applyExplicitLogTextFilter 是日志页「按用户名 / 按模型名过滤」的取数条件。
+//
+// 两条分支(带 % 走 LIKE、不带 % 走等值)都按大小写折叠比:同一份筛选条件在
+// MySQL 上靠 ci 排序规则大小写不敏感,在 PostgreSQL 与 SQLite 上却是逐字节比
+// (实测 logs.username='QY-PG-U1':MySQL 20 行 / PG 0 行)。运营看到的是
+// 200 + 空列表,与「这个人没有日志」不可分辨。
+//
+// 等值那一条用 logCaseFoldedEq 而不是无条件 LOWER():logs 是本站行数最大的表
+// (演示站 470 万行),username / model_name 上都有索引,给 MySQL 套 LOWER()
+// 会把一次索引查找变成全表扫,而它的 ci 排序规则本来就已经做到了同样的事。
 func applyExplicitLogTextFilter(tx *gorm.DB, column string, value string) (*gorm.DB, error) {
 	if value == "" {
 		return tx, nil
@@ -27,23 +37,27 @@ func applyExplicitLogTextFilter(tx *gorm.DB, column string, value string) (*gorm
 		}
 		return tx.Where(condition, pattern), nil
 	}
-	return tx.Where(column+" = ?", value), nil
+	cond, arg := logCaseFoldedEq(column, value)
+	return tx.Where(cond, arg), nil
 }
 
 func buildLogLikeCondition(column string, value string) (string, string, error) {
+	// LIKE 一律折叠:`%kw%` 带前置通配,本来就用不上索引,套 LOWER 不多花代价,
+	// 换来三种日志库(含 ClickHouse)对同一个筛选给出同一个结果集。
+	folded := "LOWER(" + column + ")"
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
-		pattern, err := sanitizeClickHouseLikePattern(value)
+		pattern, err := sanitizeClickHouseLikePattern(strings.ToLower(value))
 		if err != nil {
 			return "", "", err
 		}
-		return column + " LIKE ?", pattern, nil
+		return folded + " LIKE ?", pattern, nil
 	}
 
-	pattern, err := sanitizeLikePattern(value)
+	pattern, err := sanitizeLikePattern(strings.ToLower(value))
 	if err != nil {
 		return "", "", err
 	}
-	return column + " LIKE ? ESCAPE '!'", pattern, nil
+	return folded + " LIKE ? ESCAPE '!'", pattern, nil
 }
 
 func sanitizeClickHouseLikePattern(input string) (string, error) {
@@ -483,7 +497,26 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	}
 }
 
-func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
+// PreConsumeShortfallMarker 是消费日志里「这一笔的预扣额没兜住真实花费」的标记键,
+// 由 service.attachPreConsumeShortfall 写进 other.admin_info。
+//
+// 单独提出来做常量,是因为它现在有两个消费方(写侧与本文件的筛选),
+// 而筛选用的是 LIKE 子串匹配 —— 键名一改,筛选会静默地永远返回 0 条,
+// 没有任何测试或编译错误会指出来。
+const PreConsumeShortfallMarker = "pre_consume_shortfall"
+
+// GetAllLogs 管理端日志查询。
+//
+// preConsumeShortfallOnly 只保留 other 里带 pre_consume_shortfall 标记的笔。
+// 用 LIKE 子串而不是 JSON 函数:other 是 TEXT 列,三种主库 + ClickHouse 的
+// JSON 提取语法各不相同(MySQL 的 JSON_EXTRACT、PostgreSQL 的 ::jsonb->>、
+// SQLite 的 json_extract 还要看编译选项),而这个键名是我们自己写进去的、
+// 不会出现在任何用户可控字段里,子串匹配的判据在四种库上完全一致。
+//
+// 它**没有索引**,是一次全表扫描。这是刻意接受的:这条筛选是排障动作,
+// 由管理员手点、并发为 1,而为一个不在热路径上的诊断查询加索引要付出
+// 每一次写日志的代价。真要跑大区间时先用时间条件把范围收窄。
+func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string, preConsumeShortfallOnly bool) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB
@@ -517,6 +550,9 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 	}
 	if group != "" {
 		tx = tx.Where("logs."+logGroupCol+" = ?", group)
+	}
+	if preConsumeShortfallOnly {
+		tx = tx.Where("logs.other LIKE ?", "%\""+PreConsumeShortfallMarker+"\"%")
 	}
 	err = tx.Model(&Log{}).Count(&total).Error
 	if err != nil {
@@ -718,6 +754,13 @@ func CountOldLog(ctx context.Context, targetTimestamp int64) (int64, error) {
 	return total, nil
 }
 
+// maxLogDeleteBatch 是一次按批删允许捞出的主键条数上限。
+//
+// 删除走 `WHERE id IN (…)`,每个 id 是一个绑定参数,而 PostgreSQL 的
+// 协议上限是 65535 个;调用方传进来的 BatchSize 来自任务负载,不该由它决定
+// 语句能不能被库接受。取 10000 留足余量,同时仍远大于默认批大小 100。
+const maxLogDeleteBatch = 10000
+
 func DeleteOldLogBatch(ctx context.Context, targetTimestamp int64, limit int) (int64, error) {
 	if limit <= 0 {
 		limit = 100
@@ -747,7 +790,36 @@ func DeleteOldLogBatch(ctx context.Context, targetTimestamp int64, limit int) (i
 		return total, nil
 	}
 
-	result := LOG_DB.WithContext(ctx).Where("created_at < ?", targetTimestamp).Limit(limit).Delete(&Log{})
+	// 必须写成 SELECT 主键 + DELETE ... WHERE id IN,不能写成
+	// `Where(...).Limit(limit).Delete(&Log{})`。
+	//
+	// GORM 只有在方言把 "LIMIT" 列进 DeleteClauses 时才渲染 DELETE 上的 LIMIT,
+	// 而这只有 MySQL 驱动做了(driver/mysql@v1.4.3:52 =
+	// [DELETE FROM WHERE ORDER BY LIMIT]);postgres@v1.5.2:50 是
+	// [DELETE FROM WHERE]、glebarez/sqlite@v1.9.0:62 是
+	// [DELETE FROM WHERE RETURNING] —— 两家都会**静默丢掉** LIMIT,
+	// "按批删"退化成一条无界 DELETE 把整段历史一次删光。不报错、不告警:
+	// 单个长事务、与删除量成正比的 WAL 与死元组、调用方的 ctx 取消再也无法在
+	// 批间生效、BatchSize 这个配置项完全失效、进度从 0 直接跳到 100%。
+	// 日志库可以是 SQLite / MySQL / PostgreSQL 中的任何一种(AGENTS.md 跨库要求),
+	// model/qy_export.go 的 QyScanFundOutbox 为同一个坑刻意改写过一次。
+	//
+	// SELECT 上的 Limit 三种方言都支持,因此这个写法在哪个日志库上都真正按批执行。
+	// 上界是 PostgreSQL 的绑定参数上限(65535):一次 IN 列表不能无限长,
+	// 而 BatchSize 来自任务负载。
+	if limit > maxLogDeleteBatch {
+		limit = maxLogDeleteBatch
+	}
+	var ids []int
+	if err := LOG_DB.WithContext(ctx).Model(&Log{}).
+		Where("created_at < ?", targetTimestamp).
+		Order("id").Limit(limit).Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := LOG_DB.WithContext(ctx).Where("id IN ?", ids).Delete(&Log{})
 	if nil != result.Error {
 		return 0, result.Error
 	}

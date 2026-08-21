@@ -62,8 +62,9 @@ type counterState struct {
 // 必须保证只有一个节点观察到"跨越",否则会重复封号、重复告警。
 //
 // 实现要点:
-//   - INSERT ... ON DUPLICATE KEY UPDATE 是单条原子语句,窗口过期判断与重置
-//     都在这条语句里完成,不存在"读到过期窗口再写"的竞态;
+//   - INSERT ... ON CONFLICT DO UPDATE(MySQL 上渲染成 ON DUPLICATE KEY UPDATE)
+//     是单条原子语句,窗口过期判断与重置都在这条语句里完成,不存在
+//     "读到过期窗口再写"的竞态;
 //   - 紧随其后的 SELECT 在同一个事务里执行。upsert 已经对该行加了排他锁并持有到
 //     提交,因此这次读到的必然是本次推进的结果,而不会读到别人已经推进过的值。
 //     (刻意不用 LAST_INSERT_ID():它是会话级变量,GORM 连接池会把 Exec 与 Raw
@@ -86,13 +87,21 @@ func bumpCounter(ctx context.Context, gdb *gorm.DB, userId, weight int, userGrou
 	winFrom := windowFloor(now, policy.WindowHours)
 
 	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec(`INSERT INTO qy_violation_counter
+		// 三处跨方言写法,任何一处退回 MySQL 专有形态都会让这条语句在
+		// PostgreSQL 上整条失败(而调用方只把错误写进日志):
+		//   1. 冲突子句头部由 db.UpsertHead 渲染 —— MySQL 是
+		//      ON DUPLICATE KEY UPDATE(不接受冲突列),PG/SQLite 必须给出冲突目标;
+		//   2. IF(c, a, b) 是 MySQL 专有函数,换成三家都认的 CASE WHEN;
+		//   3. SET 右侧的列引用必须带表名限定 —— PostgreSQL 上裸列名会因为
+		//      目标表与 excluded 伪表同名而报 "column reference is ambiguous"。
+		const t = "qy_violation_counter"
+		if err := tx.Exec(`INSERT INTO `+t+`
 			(user_id, window_start, hit_count, total_count, ban_cycle, last_hit_at, updated_at)
 			VALUES (?, ?, ?, ?, 0, ?, ?)
-			ON DUPLICATE KEY UPDATE
-				hit_count    = IF(window_start < ?, ?, hit_count + ?),
-				window_start = IF(window_start < ?, ?, window_start),
-				total_count  = total_count + ?,
+			`+db.UpsertHead(tx, t, "user_id")+`
+				hit_count    = CASE WHEN `+t+`.window_start < ? THEN ? ELSE `+t+`.hit_count + ? END,
+				window_start = CASE WHEN `+t+`.window_start < ? THEN ? ELSE `+t+`.window_start END,
+				total_count  = `+t+`.total_count + ?,
 				last_hit_at  = ?,
 				updated_at   = ?`,
 			userId, now, weight, weight, now, now,

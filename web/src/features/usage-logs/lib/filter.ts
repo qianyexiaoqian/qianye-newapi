@@ -58,6 +58,12 @@ export function buildSearchParams(
         ...(commonFilters.upstreamRequestId && {
           upstreamRequestId: commonFilters.upstreamRequestId,
         }),
+        // 关掉时刻意不写 `preConsumeShortfall: 'false'`，而是整个键不出现：
+        // 这一页的 URL 是可分享的，一个恒常带着 false 的键会让每一份分享出去的
+        // 链接都带上一个看起来被设过、其实没设的筛选项。
+        ...(commonFilters.preConsumeShortfall && {
+          preConsumeShortfall: 'true',
+        }),
       }
     }
     case 'drawing': {

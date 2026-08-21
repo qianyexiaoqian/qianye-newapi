@@ -54,3 +54,40 @@ func TestRedemptionListingIsScopedToItsCreator(t *testing.T) {
 		assert.Equal(t, int64(2), total)
 	})
 }
+
+// 「删除失效」此前是分桶上的一个洞:GetAll / Search / 按 id 改删都收在了发码人
+// 那一桶里,唯独这一条整表扫。它删掉的正好是 used / disabled / 已过期那些行 ——
+// 「这张码最后给了谁、什么时候被兑掉」的唯一记录 —— 于是任意 role=10 一按,
+// 超管发出去的整批码的去向就没了,而列表里看不出少了什么。
+func TestDeleteInvalidRedemptionsIsScopedToItsCreator(t *testing.T) {
+	truncateTables(t)
+	now := common.GetTimestamp()
+	rows := []*Redemption{
+		{UserId: 4201, Name: "qy-mine-used", Key: "aaaaaaaabbbbbbbbcccccccc00001111",
+			Quota: 100, Status: common.RedemptionCodeStatusUsed, CreatedTime: now},
+		{UserId: 4201, Name: "qy-mine-live", Key: "aaaaaaaabbbbbbbbcccccccc00002222",
+			Quota: 100, Status: common.RedemptionCodeStatusEnabled, CreatedTime: now},
+		{UserId: 4202, Name: "qy-theirs-used", Key: "aaaaaaaabbbbbbbbcccccccc00003333",
+			Quota: 100, Status: common.RedemptionCodeStatusUsed, CreatedTime: now},
+		{UserId: 4202, Name: "qy-theirs-expired", Key: "aaaaaaaabbbbbbbbcccccccc00004444",
+			Quota: 100, Status: common.RedemptionCodeStatusEnabled, ExpiredTime: now - 1, CreatedTime: now},
+	}
+	for _, row := range rows {
+		require.NoError(t, row.Insert())
+	}
+
+	deleted, err := DeleteInvalidRedemptions(4201)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, deleted, "只该删掉 4201 自己那一张已用码")
+
+	var names []string
+	require.NoError(t, DB.Model(&Redemption{}).Order("name asc").Pluck("name", &names).Error)
+	assert.Equal(t, []string{"qy-mine-live", "qy-theirs-expired", "qy-theirs-used"}, names)
+
+	// root(scope=0)仍然横扫全量,这是它与普通管理员唯一的差别。
+	deleted, err = DeleteInvalidRedemptions(0)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, deleted)
+	require.NoError(t, DB.Model(&Redemption{}).Order("name asc").Pluck("name", &names).Error)
+	assert.Equal(t, []string{"qy-mine-live"}, names)
+}

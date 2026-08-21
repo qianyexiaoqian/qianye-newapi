@@ -58,11 +58,7 @@ describe('planSaleState —— 与后端同一张真值表', () => {
       { sale_start_at: NOW - 3600, sale_end_at: NOW + 3600 },
       'on_sale',
     ],
-    [
-      '未开售',
-      { sale_start_at: NOW + 1, sale_end_at: NOW + 3600 },
-      'upcoming',
-    ],
+    ['未开售', { sale_start_at: NOW + 1, sale_end_at: NOW + 3600 }, 'upcoming'],
     ['已停售', { sale_start_at: NOW - 3600, sale_end_at: NOW - 1 }, 'ended'],
     // 左闭：开售那一秒就能买。
     [
@@ -116,7 +112,10 @@ describe('isPlanPurchasable —— enabled 与时间窗是「与」的关系', (
   })
 
   test('已下架 + 窗口内 = 不可买', () => {
-    assert.equal(isPlanPurchasable({ enabled: false, ...onSale }, NOW_MS), false)
+    assert.equal(
+      isPlanPurchasable({ enabled: false, ...onSale }, NOW_MS),
+      false
+    )
   })
 
   // 这一条是"或"的关系会写反的那一半：若写成或，一个被手动下架的套餐会在
@@ -162,12 +161,18 @@ describe('planSaleBadge —— 手动下架的优先级高于时间窗', () => {
   })
 
   test('启用 + 未开售 → 显示未开售', () => {
-    const badge = planSaleBadge({ enabled: true, sale_start_at: NOW + 10 }, NOW_MS)
+    const badge = planSaleBadge(
+      { enabled: true, sale_start_at: NOW + 10 },
+      NOW_MS
+    )
     assert.equal(badge.labelKey, 'qy_plan_sale_state_upcoming')
   })
 
   test('启用 + 已停售 → 显示已停售', () => {
-    const badge = planSaleBadge({ enabled: true, sale_end_at: NOW - 10 }, NOW_MS)
+    const badge = planSaleBadge(
+      { enabled: true, sale_end_at: NOW - 10 },
+      NOW_MS
+    )
     assert.equal(badge.labelKey, 'qy_plan_sale_state_ended')
   })
 
@@ -179,10 +184,7 @@ describe('planSaleBadge —— 手动下架的优先级高于时间窗', () => {
 
 describe('倒计时', () => {
   test('未到开售时间：返回剩余秒数', () => {
-    assert.equal(
-      secondsUntilSaleStart({ sale_start_at: NOW + 90 }, NOW_MS),
-      90
-    )
+    assert.equal(secondsUntilSaleStart({ sale_start_at: NOW + 90 }, NOW_MS), 90)
   })
 
   // null 表示"没有倒计时可言"，调用方据此退回静态的"敬请期待"。

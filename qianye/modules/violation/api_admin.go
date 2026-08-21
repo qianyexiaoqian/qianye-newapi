@@ -461,9 +461,10 @@ func bumpRuleVersion() {
 		return
 	}
 	now := common.GetTimestamp()
-	if err := gdb.Exec(`INSERT INTO qy_violation_rule_version (id, version, updated_at)
+	const t = "qy_violation_rule_version"
+	if err := gdb.Exec(`INSERT INTO `+t+` (id, version, updated_at)
 		VALUES (1, 1, ?)
-		ON DUPLICATE KEY UPDATE version = version + 1, updated_at = ?`, now, now).Error; err != nil {
+		`+db.UpsertHead(gdb, t, "id")+` version = `+t+`.version + 1, updated_at = ?`, now, now).Error; err != nil {
 		db.MarkFailure(err)
 		common.SysError("qianye/violation: 规则版本号自增失败,其他节点可能延迟感知: " + err.Error())
 	}

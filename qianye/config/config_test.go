@@ -81,19 +81,37 @@ func TestValidate_Database(t *testing.T) {
 			wantErr: "dsn 不能为空",
 		},
 		{
-			name:    "PostgreSQL DSN 被拒",
-			yaml:    "enabled: true\ndatabase:\n  dsn: \"postgres://u:p@h:5432/db\"\n",
-			wantErr: "仅支持 MySQL",
+			// SQLite 的拒绝理由必须说出**为什么**,不能只说"不支持":
+			// 只写"仅支持 MySQL"会被读成适配工作量问题,于是下一个人把 sqlite
+			// 驱动接上去,而资金路径的行锁串行化在那一刻静默失效。
+			name:    "SQLite 被拒,理由必须点到行锁",
+			yaml:    "enabled: true\ndatabase:\n  dsn: \"local\"\n",
+			wantErr: "行锁",
 		},
 		{
-			name:    "SQLite 被拒",
-			yaml:    "enabled: true\ndatabase:\n  dsn: \"local\"\n",
-			wantErr: "仅支持 MySQL",
+			name:    "sqlite: 前缀被拒",
+			yaml:    "enabled: true\ndatabase:\n  dsn: \"sqlite:/data/qy.db\"\n",
+			wantErr: "行锁",
+		},
+		{
+			name:    "ClickHouse 被拒",
+			yaml:    "enabled: true\ndatabase:\n  dsn: \"clickhouse://h:9000/db\"\n",
+			wantErr: "行锁",
 		},
 		{
 			name:    "缺少库名",
 			yaml:    "enabled: true\ndatabase:\n  dsn: \"u:p@tcp(127.0.0.1:3306)\"\n",
 			wantErr: "缺少库名",
+		},
+		{
+			name:    "PostgreSQL URL 缺少库名",
+			yaml:    "enabled: true\ndatabase:\n  dsn: \"postgres://u:p@h:5432\"\n",
+			wantErr: "缺少库名",
+		},
+		{
+			name:    "PostgreSQL 关键字 DSN 缺少 dbname",
+			yaml:    "enabled: true\ndatabase:\n  dsn: \"host=127.0.0.1 port=5432 user=postgres\"\n",
+			wantErr: "缺少 dbname=",
 		},
 		{
 			name:    "max_open 小于 max_idle",
@@ -111,6 +129,26 @@ func TestValidate_Database(t *testing.T) {
 			_, _, err := parseFile(writeTemp(t, tc.yaml))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// PostgreSQL 是扩展库受支持的第二种部署,两种 DSN 写法都必须过校验。
+//
+// 这条与上面那张拒绝表是一对:拒绝表只能证明"某些东西被挡住了",挡得太宽
+// (比如把 host= 开头的合法 PG DSN 当成"缺库名"的 MySQL DSN)只会在真部署
+// 那一刻才暴露 —— 而那一刻主程序是 FatalLog。
+func TestValidate_DatabaseAcceptsPostgres(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://postgres:pw@127.0.0.1:5432/qy_ext?sslmode=disable",
+		"postgresql://postgres@127.0.0.1:5432/qy_ext",
+		"host=127.0.0.1 port=5432 user=postgres dbname=qy_ext sslmode=disable",
+	} {
+		t.Run(dsn, func(t *testing.T) {
+			c, _, err := parseFile(writeTemp(t,
+				"enabled: true\ndatabase:\n  dsn: \""+dsn+"\"\n"))
+			require.NoError(t, err)
+			assert.Equal(t, dsn, c.Database.DSN)
 		})
 	}
 }

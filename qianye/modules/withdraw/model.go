@@ -20,7 +20,11 @@
 //     数字打款,和系统自动打错款,损失完全一样,区别只在于前者还多赖一个人。
 package withdraw
 
-import "github.com/shopspring/decimal"
+import (
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
+
+	"github.com/shopspring/decimal"
+)
 
 // Withdrawal 是提现单的业务明细,也是管理员的发放待办。
 //
@@ -72,7 +76,7 @@ type Withdrawal struct {
 	// PayeeDigest 用独立且不轮换的 digest_key 生成(裁定 R8)。
 	// 索引建在指纹上而不是明文上:同一收款账号被多个 user_id 使用即刷单信号,
 	// 且 PII 清除之后这条风控线索仍然有效。
-	PayeeDigest string `json:"-" gorm:"type:char(64);not null;default:'';index:idx_qy_wd_digest"`
+	PayeeDigest string `json:"-" gorm:"type:varchar(64);not null;default:'';index:idx_qy_wd_digest"`
 	RiskFlags   string `json:"risk_flags" gorm:"type:varchar(255);not null;default:''"`
 
 	// Remark 是用户自定义说明,按 rune 计数限长(withdraw.remark_max_runes)。
@@ -132,12 +136,12 @@ type Payee struct {
 	Channel   string `json:"-" gorm:"type:varchar(24);not null"`
 	CipherAlg string `json:"-" gorm:"type:varchar(24);not null;default:'aes-256-gcm'"`
 	// KeyVersion 支持密钥轮换:解密时按版本选密钥,旧密文不会因为换钥而全部作废。
-	KeyVersion int    `json:"-" gorm:"not null;default:1"`
-	Nonce      []byte `json:"-" gorm:"type:varbinary(16);not null"`
+	KeyVersion int               `json:"-" gorm:"not null;default:1"`
+	Nonce      qymodel.VarBinary `json:"-" gorm:"size:16;not null"`
 	// Cipher 在保留期到期后置空,Masked 与 Digest 保留 —— 风控与对账仍然可用。
-	Cipher []byte `json:"-" gorm:"type:varbinary(4096)"`
-	Digest string `json:"-" gorm:"type:char(64);not null;default:'';index:idx_qy_wdp_digest"`
-	Masked string `json:"-" gorm:"type:varchar(128);not null;default:''"`
+	Cipher qymodel.VarBinary `json:"-" gorm:"size:4096"`
+	Digest string            `json:"-" gorm:"type:varchar(64);not null;default:'';index:idx_qy_wdp_digest"`
+	Masked string            `json:"-" gorm:"type:varchar(128);not null;default:''"`
 
 	CreatedAt int64 `json:"-" gorm:"not null;default:0"`
 	PurgedAt  int64 `json:"-" gorm:"not null;default:0"`
@@ -156,16 +160,16 @@ type PayeeAccount struct {
 	Ref    string `json:"ref" gorm:"type:varchar(32);not null;uniqueIndex:uk_qy_wda_ref"`
 	UserId int    `json:"-" gorm:"not null;index:idx_qy_wda_user"`
 
-	Channel    string `json:"channel" gorm:"type:varchar(24);not null"`
-	Label      string `json:"label" gorm:"type:varchar(64);not null;default:''"`
-	CipherAlg  string `json:"-" gorm:"type:varchar(24);not null;default:'aes-256-gcm'"`
-	KeyVersion int    `json:"-" gorm:"not null;default:1"`
-	Nonce      []byte `json:"-" gorm:"type:varbinary(16);not null"`
+	Channel    string            `json:"channel" gorm:"type:varchar(24);not null"`
+	Label      string            `json:"label" gorm:"type:varchar(64);not null;default:''"`
+	CipherAlg  string            `json:"-" gorm:"type:varchar(24);not null;default:'aes-256-gcm'"`
+	KeyVersion int               `json:"-" gorm:"not null;default:1"`
+	Nonce      qymodel.VarBinary `json:"-" gorm:"size:16;not null"`
 	// Cipher 与 Payee.Cipher 装的是同一份银行卡号,因此也必须受同一个保留期约束:
 	// 用户删掉收款方式之后,这里的密文到期同样要清空(见 prunePayeeAccounts)。
-	Cipher []byte `json:"-" gorm:"type:varbinary(4096)"`
-	Digest string `json:"-" gorm:"type:char(64);not null;default:'';index:idx_qy_wda_digest"`
-	Masked string `json:"masked" gorm:"type:varchar(128);not null;default:''"`
+	Cipher qymodel.VarBinary `json:"-" gorm:"size:4096"`
+	Digest string            `json:"-" gorm:"type:varchar(64);not null;default:'';index:idx_qy_wda_digest"`
+	Masked string            `json:"masked" gorm:"type:varchar(128);not null;default:''"`
 
 	// DeletedAt 是软删除标记(0 = 未删除)。不用 gorm.DeletedAt:
 	// 本项目统一手工写 unix 秒时间戳,混用两套时间语义会让人读不懂。
@@ -211,7 +215,7 @@ type Proof struct {
 	MimeType string `json:"mime_type" gorm:"type:varchar(32);not null;default:''"`
 	Size     int64  `json:"size" gorm:"not null;default:0"`
 	// Sha256 用于事后自证"下载到的与当初上传的是同一张图",也顺带能发现重复上传。
-	Sha256 string `json:"-" gorm:"type:char(64);not null;default:''"`
+	Sha256 string `json:"-" gorm:"type:varchar(64);not null;default:''"`
 
 	CreatedAt int64 `json:"created_at" gorm:"not null;default:0;index:idx_qy_wdf_user,priority:2"`
 	BoundAt   int64 `json:"-" gorm:"not null;default:0"`

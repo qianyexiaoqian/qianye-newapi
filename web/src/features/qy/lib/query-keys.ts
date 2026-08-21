@@ -159,6 +159,15 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'restricted-accounts'] as const,
 
   /**
+   * 负余额（透支）总览。
+   *
+   * 与 {@link qyKeys.adminHealth} 分开：那一份要扩展库活着，这一份只查主库
+   * users，扩展库挂掉的时候它仍然答得出。共用一个 key 会让扩展库一挂、
+   * 欠款数字跟着一起消失，而那正是最需要看它的时刻。
+   */
+  adminOverdraft: () => [...qyKeys.all, 'admin', 'overdraft'] as const,
+
+  /**
    * 管理端查某个用户的支付密码状态。
    *
    * 逐用户一个 key。消费方是**上游**用户管理表格里的「重置支付密码」弹窗，
@@ -184,7 +193,14 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'commission', 'daily-consume', params] as const,
   /** 日消费明细的按天下钻：一行一天，只查一个人（点开主表某一行才发）。 */
   adminDailyConsumeByDay: (params: unknown) =>
-    [...qyKeys.all, 'admin', 'commission', 'daily-consume', 'by-day', params] as const,
+    [
+      ...qyKeys.all,
+      'admin',
+      'commission',
+      'daily-consume',
+      'by-day',
+      params,
+    ] as const,
   /** 我名下的下线在某个日期区间内的计佣基数（用户端，口径是计佣表）。 */
   inviteeDaily: (params: unknown) =>
     [...qyKeys.all, 'commission', 'invitee-daily', params] as const,

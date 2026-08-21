@@ -307,7 +307,14 @@ AutoMigrate       *bool `yaml:"auto_migrate"`         // nil → true
 `validate()` 至少覆盖：
 
 - `Enabled && Database.DSN == ""` → error
-- DSN 必须能被 `mysql.ParseDSN` 解析且不是 `postgres://` / `clickhouse://` / `local` 前缀 → 明确报「本扩展仅支持 MySQL」
+- DSN 按前缀分派方言(`db.DetectDialect`):MySQL(默认与主推)与 PostgreSQL >= 9.6 均受支持;
+  `sqlite:` / `file:` / `local` / `clickhouse://` 一律拒绝,**理由必须写进报错文案** ——
+  扩展库承载资金,佣金账本 / 两阶段资金单 / 提现 / 抽奖出款全部靠 `SELECT ... FOR UPDATE`
+  的行锁串行化读改写,SQLite 没有行锁(`db.LockForUpdate` 只能退化成空操作),
+  ClickHouse 连唯一约束都没有,幂等键无从谈起。只写「仅支持 MySQL」会被读成适配工作量问题,
+  于是下一个人把 sqlite 驱动接上去,而资金串行化在那一刻静默失效。
+  (SQLite 仍是**测试方言**:全部扩展模块的单测跑在 glebarez/sqlite 上,
+  所以每一处方言分支都必须给出正确的 SQLite 渲染。)
 - `MaxOpenConns >= MaxIdleConns > 0`
 - `LeaseRenewSeconds*2 < LeaseTTLSeconds`
 - 所有 `*_percent` ∈ [0,100]，`fee_multiplier` ∈ [0,100]
@@ -334,7 +341,13 @@ AutoMigrate       *bool `yaml:"auto_migrate"`         // nil → true
 enabled: true
 
 # ---------------------------------------------------------------------------
-# 独立 MySQL（需求 1）。仅支持 MySQL 5.7.8+ / 8.x
+# 独立数据库（需求 1）。MySQL 5.7.8+ / 8.x（默认与主推）或 PostgreSQL 9.6+
+# PostgreSQL 的 DSN 两种写法都认：
+#   postgres://qy_user:CHANGE_ME@127.0.0.1:5432/qianye?sslmode=disable
+#   host=127.0.0.1 port=5432 user=qy_user dbname=qianye sslmode=disable
+# 超时项的映射见 db.normalizePostgresDSN：connect_timeout_seconds → connect_timeout，
+# read_timeout_seconds → statement_timeout（毫秒，服务端 GUC），
+# write_timeout_seconds 在 PostgreSQL 上没有对应物，配了不生效
 # 表统一带 table_prefix 前缀，因此可以安全地与主库指向同一个 schema
 # ---------------------------------------------------------------------------
 database:
@@ -564,7 +577,35 @@ func Migrate(models ...any) error {
 }
 ```
 
-> `common.IsMasterNode` 只是 `NODE_TYPE != "slave"` 的环境变量，多个节点都可能是 master —— 所以 gate 之外**必须**再加 `GET_LOCK`，否则并发 `AutoMigrate` 会在 MySQL 上互相锁表甚至死锁（GAPS §3.2(7) 的 DDL 版本）。
+> `common.IsMasterNode` 只是 `NODE_TYPE != "slave"` 的环境变量，多个节点都可能是 master —— 所以 gate 之外**必须**再加一把跨节点互斥锁，否则并发 `AutoMigrate` 会互相锁表甚至死锁（GAPS §3.2(7) 的 DDL 版本）。
+>
+> **两种方言的锁不是同一个东西，只有净效果被对齐了**（实现见 `db.acquireMigrateLock`，
+> 逐条对照写在那里的文档注释里）：
+>
+> | 维度 | MySQL `GET_LOCK(name, t)` | PostgreSQL `pg_advisory_lock(key)` |
+> |---|---|---|
+> | 键类型 | 字符串 ≤64 字节 | int64 → 用 FNV-1a 64 折叠锁名 |
+> | 等待超时 | 内建第二个参数 | **无**。阻塞版无限等，try 版立即返回 → 用 try 版 + 500ms 轮询复刻 |
+> | 抢不到的返回 | `0` | `pg_try_advisory_lock` → `false` |
+> | 出错的返回 | `NULL` | 直接报错 |
+> | 作用域 | **服务器实例级**，跨 schema | **每个 database 一把**，不跨 database（`pg_locks.database` = 取锁会话所在库的 OID） |
+> | 重入 | 计数式（5.7+），需等量 `RELEASE_LOCK` | 计数式，需等量 `pg_advisory_unlock` |
+> | 事务 | 与事务无关，`ROLLBACK` 不释放 | session 级同样与事务无关 |
+> | 连接断开 | 立即释放 | 会话终止时释放 |
+> | 死锁检测 | 不参与 InnoDB 死锁检测 | **参与** PG 的死锁检测器 → try 版轮询天然规避 |
+>
+> 作用域这一维两家**不对称**（实测：MySQL 里 `-D qy_a` 持锁、`-D qy_b` 抢同名锁得 `0`；
+> PostgreSQL 里 `postgres` 库持锁、另一个库 `pg_try_advisory_lock` 同一个 key 得 `true`）。
+> 净效果仍然成立，因为真正需要互斥的是「多个节点共用**同一个**扩展库」，那一层两家都覆盖；
+> 差别只落在「同一个实例上的两个**独立**扩展库（prod / staging）」：PostgreSQL 上它们各迁各的、
+> 互不阻塞，MySQL 上它们会互相等，撞上时有一侧走 `errMigrationInProgress` 降级路径
+> （不会失败，每 1m 复查自愈）。
+>
+> ⚠️ 因此**不要**拿这把锁去串行化两个不同库的滚动升级：在 PostgreSQL 上那个保证不存在。
+>
+> 等待上限还必须听调用方的 `ctx`（`db.migrateLockWaitSeconds`，并留 1 秒余量）：
+> 等待上限与 ctx 预算**相等**时谁先触发是未定义的，ctx 先到会把「另一节点在迁移」
+> 变成一条真错误、进而阻断启动。同一个形状在 `97-fix-verification.md:14` 记过一次。
 
 模型清单由 `qianye/model.AllTables()` 提供，`bootstrap.go` 传入 —— 保持 `db` 包是 leaf。
 
@@ -1381,7 +1422,7 @@ func WriteTx(tx *gorm.DB, e Entry) error
 | A→B 与 B→A 并发划转死锁 | 主库事务内**按 user id 升序**依次 `QyLockForUpdate`，全项目统一顺序 |
 | 补偿任务与业务线程同时结算同一单 | 状态跃迁一律带 CAS：`WHERE order_no=? AND status=Pending`，`RowsAffected==0` 即让出 |
 | 主库事务被重试导致重复扣款 | `QyClaimFundOutbox` 唯一索引：`claimed=false` 直接跳过资金变更 |
-| 多 master 节点并发 `AutoMigrate` | `IsMasterNode` gate + MySQL `GET_LOCK`（固定同一条 `*sql.Conn`，否则 RELEASE_LOCK 打在别的连接上） |
+| 多 master 节点并发 `AutoMigrate` | `IsMasterNode` gate + 跨节点互斥锁（MySQL `GET_LOCK` / PostgreSQL `pg_try_advisory_lock` 轮询，固定同一条 `*sql.Conn`，否则释放会打在别的连接上，见 §2.2） |
 | 多节点后台任务双跑 | `qy_task_leases` 租约 + fence；所有时间比较用 `UNIX_TIMESTAMP()`（DB 时钟），消除节点时钟漂移 |
 | 老持有者网络分区恢复后写脏 | fence 单调递增；续租与批次开头校验失败即 cancel ctx 停止工作 |
 | 热路径 hook 与 relay 争抢主库连接 | `guard.HotAsync` 有界队列 + 独立 worker；inviter_id 走 `inviter_cache_seconds` 缓存（GAPS §11） |

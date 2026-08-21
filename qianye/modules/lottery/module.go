@@ -143,7 +143,18 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 换封面**不限活动状态**:它不进任何哈希原像,因此是 publish 之后仍然
 	// 可写的极少数字段之一(理由见 api_admin_cover.go)。
 	g.PUT("/lottery/activities/:act_no/cover", crit, handleSetActivityCover)
-	g.POST("/lottery/activities/:act_no/guess-result", crit, handleSetGuessResult)
+	// 设定开奖结果是本模块**唯一**提到超级管理员的动作。
+	//
+	// 抽奖(draw)与双色球的结果来自建活动时就落库的 commit-reveal 随机源,
+	// 由定时任务在承诺过的时刻揭示,没有任何管理端入口能影响它 —— 这一页
+	// 刻意没有"提前截止"、"立即开奖"、"重抽"。只有竞猜(guess)的结果是**链下
+	// 事实**,必须由人录入,那就是全站唯一一处"管理员说了算"的开奖口。
+	//
+	// 其余全部照旧 role>=10:建活动、发布、封盘、取消、隐藏、删除、换封面、
+	// 履行/撤销/揭示文本奖、解决对账标记、期次注资与关闭、改运营参数。
+	// 项目方原话:「管理员可以开活动、参与等等,但不能设定或更改开奖结果。」
+	g.POST("/lottery/activities/:act_no/guess-result", crit,
+		middleware.RootActionGate(middleware.RootActionLotteryResultSet), handleSetGuessResult)
 	g.POST("/lottery/activities/:act_no/payouts/:payout_no/retry", crit, handleRetryPayout)
 	// 文本奖的履行 / 撤销 / 揭示。三个都写审计(成功与失败各一条)。
 	//

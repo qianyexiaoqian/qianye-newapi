@@ -128,7 +128,14 @@ type Accrual struct {
 	// qy_commission_balance.available_quota 天然全部可提,提现模块无需再判时间维度。
 	MatureAt int64 `json:"mature_at" gorm:"not null;default:0;index:idx_qy_ca_scan,priority:2"`
 	// BucketDate 是消费日聚合的自然日(yyyymmdd,UTC)。非消费来源为空。
-	BucketDate string `json:"bucket_date" gorm:"type:char(8);not null;default:''"`
+	//
+	// 类型是 varchar(8) 而不是 char(8),这一处**不是**风格问题:本列的合法取值
+	// 里包含空串(充值来源不填桶),而定长 CHAR 在 PostgreSQL 上会把空串补成
+	// 8 个空格再原样读出来 —— MySQL 的 CHAR 在读取时会剥掉尾随空格,于是同一份
+	// 代码在两种方言上得到 "" 与 "        " 两个不同的值。它会顺着
+	// api_user.go 的 bucket_date 出到接口上,也会让任何 Go 端的 == "" 判断分叉。
+	// 扩展库不再使用定长 CHAR,判据见 qianye/schema_crossdb_test.go。
+	BucketDate string `json:"bucket_date" gorm:"type:varchar(8);not null;default:''"`
 
 	RefAccrualId int64 `json:"ref_accrual_id" gorm:"not null;default:0;index:idx_qy_ca_ref"`
 	SettlementId int64 `json:"settlement_id" gorm:"not null;default:0"`

@@ -75,6 +75,9 @@ var tierableKeys = []string{
 	keyNewAccountFreezeHours,
 }
 
+// groupLimitCountGate 是"分档条数上限"这道闸门的锚点行键(见 qymodel.LockGate)。
+const groupLimitCountGate = "transfer:group_limit_count"
+
 // maxGroupLimitCount 是分档条数的硬上限,理由与 maxGroupRuleCount 同源:
 // 这张表每 settingsCacheSeconds 会被全量读一遍,不设上界的话一次脚本误操作
 // 就能把它拖成慢查询,而用户分组本身就是个位数量级的东西。

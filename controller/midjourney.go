@@ -217,6 +217,12 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 				if err != nil {
 					logger.LogError(ctx, "fail to increase user quota: "+err.Error())
 				}
+				// 回减提交时累计的用量；请求次数保持不变（退款不是一次新请求）。
+				// 缺这一步时 quota 退回去了而 used_quota 没减，「总额度」
+				// (quota + used_quota) 随构图失败次数单调虚增。同步自上游 58d4e9bd3
+				// 的会计不变式（不含它那次 Midjourney 计费状态重构）。
+				model.UpdateUserUsedQuota(task.UserId, -task.Quota)
+				model.UpdateChannelUsedQuota(task.ChannelId, -task.Quota)
 				model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
 					UserId:    task.UserId,
 					LogType:   model.LogTypeRefund,

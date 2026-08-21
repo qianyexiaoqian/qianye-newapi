@@ -16,10 +16,15 @@ import (
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
-// migrateLockName 是 MySQL 命名锁的键。GET_LOCK 是连接级的,
+// migrateLockName 是迁移互斥锁的名字。
+//
+// 两种方言的实现完全不同,但作用域与释放语义必须对齐,逐条对照见
+// acquireMigrateLock 的文档注释。共同点是:锁挂在**连接/会话**上,
 // 因此必须固定在同一条 *sql.Conn 上获取和释放。
 const migrateLockName = "qy_schema_migrate"
 
@@ -27,10 +32,34 @@ const migrateLockName = "qy_schema_migrate"
 // 超时不是错误 —— 说明别的节点正在迁移,本节点跳过即可。
 const migrateLockTimeoutSeconds = 30
 
+// migrateLockPollInterval 是 PostgreSQL 分支的轮询间隔。
+//
+// MySQL 的 GET_LOCK 自带等待超时参数,PostgreSQL 的咨询锁没有:
+// pg_advisory_lock 会无限期阻塞,pg_try_advisory_lock 立刻返回。
+// 要复刻"最多等 N 秒"就只能自己轮询 try 版本。
+const migrateLockPollInterval = 500 * time.Millisecond
+
 // migrateTimeout 是整个迁移过程的预算。DDL 在大表上很慢,给足。
 const migrateTimeout = 30 * time.Minute
 
-// openMigrationConn 打开一条迁移专用连接。
+// migrationDriverName 把方言映射到 database/sql 的驱动注册名。
+//
+// 只有迁移这一处需要它:迁移必须先拿到一条**裸** *sql.Conn 来持有会话级的
+// 迁移锁,而 GORM 的 Dialector 在 Open 时就会握手(MySQL 驱动会发一条
+// SELECT VERSION()),没法先建池再连。业务路径一律走 DialectorFor。
+func migrationDriverName(d Dialect) (string, error) {
+	switch d {
+	case DialectPostgres:
+		// gorm.io/driver/postgres 依赖 pgx/v5/stdlib,后者注册的名字是 "pgx"。
+		return "pgx", nil
+	case DialectMySQL:
+		return "mysql", nil
+	default:
+		return "", fmt.Errorf("qianye: 扩展库不支持方言 %q(资金路径依赖行锁,SQLite 无法提供)", d)
+	}
+}
+
+// openMigrationConn 打开一个迁移专用连接池。
 //
 // 独立于业务连接池,DSN 里去掉了读写超时(见 migrationDSN)。
 func openMigrationConn() (*sql.DB, error) {
@@ -40,22 +69,173 @@ func openMigrationConn() (*sql.DB, error) {
 // openMigrationConnWith 是 openMigrationConn 的可测形态:配置由调用方传入,
 // 不依赖进程级的 config 单例。
 func openMigrationConnWith(cfg config.Database) (*sql.DB, error) {
-	sqlDB, err := sql.Open("mysql", migrationDSN(cfg))
+	dsn := migrationDSN(cfg)
+	driver, err := migrationDriverName(DetectDialect(dsn))
+	if err != nil {
+		return nil, err
+	}
+	sqlDB, err := sql.Open(driver, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("qianye: 打开迁移专用连接失败: %w", err)
 	}
 	// 必须允许两条连接,不能是一条。
 	//
-	// GET_LOCK 是连接级的,所以它固定占用一条(Migrate 里那个 conn 一直持有到
+	// 迁移锁是连接级的,所以它固定占用一条(Migrate 里那个 conn 一直持有到
 	// 函数返回)。AutoMigrate 会从同一个池再要一条来跑 DDL —— 池上限设成 1
 	// 的话,DDL 会永远等那条被锁占着的连接,进程静默卡死在迁移阶段:
 	// 数据库端看不到任何语句,日志停在"扩展数据库已连接"之后没有下文。
 	//
-	// 锁与 DDL 分处两条连接是正确的:GET_LOCK 的作用是跨节点互斥,
+	// 锁与 DDL 分处两条连接是正确的:迁移锁的作用是跨节点互斥,
 	// 只要有人持有即可,并不要求 DDL 跑在持锁的那条连接上。
 	sqlDB.SetMaxOpenConns(2)
 	sqlDB.SetMaxIdleConns(2)
 	return sqlDB, nil
+}
+
+// migrationGorm 在已有的迁移连接池之上建一个 GORM 会话,专用于跑 DDL。
+//
+// 必须复用同一个 *sql.DB(而不是各开各的池):池上限是 2,一条被迁移锁占着,
+// 另一条留给 DDL。
+func migrationGorm(sqlDB *sql.DB, dialect Dialect, logger gormlogger.Interface) (*gorm.DB, error) {
+	var dialector gorm.Dialector
+	switch dialect {
+	case DialectPostgres:
+		dialector = normalizedPGDialector{postgres.New(postgres.Config{Conn: sqlDB})}
+	default:
+		dialector = mysql.New(mysql.Config{Conn: sqlDB})
+	}
+	gdb, err := gorm.Open(dialector, &gorm.Config{
+		// 迁移不需要预编译语句缓存,而且 DDL 走 PrepareStmt 在部分 MySQL
+		// 版本上有兼容问题。
+		PrepareStmt: false,
+		Logger:      logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("qianye: 初始化迁移专用会话失败: %w", err)
+	}
+	return gdb, nil
+}
+
+// acquireMigrateLock 抢占迁移互斥锁,返回是否抢到。
+//
+// # MySQL GET_LOCK 与 PostgreSQL 咨询锁的逐条对照
+//
+// 这两把锁在**每一个**维度上都不同,只有语义上的净效果被刻意对齐了:
+//
+//	维度            MySQL GET_LOCK(name, t)          PostgreSQL pg_advisory_lock(key)
+//	────────────────────────────────────────────────────────────────────────────────
+//	键类型          字符串(≤64 字节)                 int64(或两个 int32)
+//	                                                 → 用 FNV-1a 64 折叠锁名,
+//	                                                   见 advisoryLockKey
+//	等待超时        内建第二个参数                    **无**。阻塞版无限等,
+//	                                                 try 版立即返回
+//	                                                 → 用 try 版 + 轮询复刻,
+//	                                                   见 migrateLockPollInterval
+//	抢不到的返回值  0                                 pg_try_advisory_lock → false
+//	出错的返回值    NULL                              直接报错
+//	作用域          **服务器实例级**,跨 schema        **每个 database 一把**
+//	                                                 (bigint 形态的咨询锁不跨库,
+//	                                                  pg_locks.database 填的是取锁
+//	                                                  会话所在库的 OID)
+//	                → 这一维两家**不对称**,实测:MySQL 上 -D qy_a 持锁、-D qy_b 抢
+//	                  同名锁得 0(被挡);PG 上 postgres 库持锁、另一个库
+//	                  pg_try_advisory_lock 同一个 key 得 true(抢到了)。
+//	                → 净效果仍然成立,因为真正需要互斥的是"多个节点共用同一个
+//	                  扩展库",那一层两家都覆盖。差别只落在"同一个实例上的两个
+//	                  独立扩展库(prod / staging)":PG 上它们各迁各的、互不阻塞;
+//	                  MySQL 上它们会互相等,撞上时有一侧拿 errMigrationInProgress
+//	                  进降级态,每 1m 复查自愈。
+//	                → 因此**不要**依赖这把锁去串行化两个不同库的滚动升级:
+//	                  在 PostgreSQL 上那个保证根本不存在。
+//	重入            计数式(5.7+),需等量 RELEASE_LOCK 计数式,需等量 unlock
+//	事务            与事务无关,ROLLBACK 不释放        session 级同样与事务无关
+//	                                                 (xact 级是另一个函数,没用)
+//	连接断开        立即释放                          会话终止时释放
+//	死锁检测        不参与 InnoDB 死锁检测            **参与** PG 的死锁检测器
+//	                                                 → PG 侧多了一种可能:抢锁语句
+//	                                                   被判定为死锁而报错。用 try 版
+//	                                                   轮询天然规避(try 版从不等待)
+//
+// ctx 到期一律按"没抢到"处理,与 MySQL 侧等待超时同口径:两者都不是错误,
+// 而是"别的节点正在迁移",调用方据此走降级分支。
+func acquireMigrateLock(ctx context.Context, conn *sql.Conn, dialect Dialect) (bool, error) {
+	wait := migrateLockWaitSeconds(ctx)
+	if dialect == DialectPostgres {
+		key := advisoryLockKey(migrateLockName)
+		deadline := time.Now().Add(time.Duration(wait) * time.Second)
+		for {
+			var got bool
+			if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&got); err != nil {
+				return false, fmt.Errorf("qianye: 获取迁移锁失败: %w", err)
+			}
+			if got {
+				return true, nil
+			}
+			if time.Now().After(deadline) {
+				return false, nil
+			}
+			select {
+			case <-ctx.Done():
+				return false, nil
+			case <-time.After(migrateLockPollInterval):
+			}
+		}
+	}
+
+	var got sql.NullInt64
+	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, ?)",
+		migrateLockName, wait).Scan(&got); err != nil {
+		// 预算到期与"锁被别人持有"是同一个结论:本节点这一轮不建表。
+		// 上面留了 1 秒余量,正常情况下走不到这里;真走到了也不该把
+		// 主程序拖成启动失败(与 PostgreSQL 分支在 ctx.Done 上的处理同口径)。
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return false, nil
+		}
+		return false, fmt.Errorf("qianye: 获取迁移锁失败: %w", err)
+	}
+	// NULL 是 MySQL 报错的表示法(比如锁名超长),它与"没抢到"不同,
+	// 但对调用方而言结论一样:本节点这一轮不该建表。
+	return got.Valid && got.Int64 == 1, nil
+}
+
+// migrateLockWaitSeconds 是本次抢锁允许等待的秒数。
+//
+// 取 migrateLockTimeoutSeconds 与 ctx 剩余预算的较小者。少了这一步,MySQL 分支
+// 会把 30 秒的等待硬塞给 GET_LOCK 而无视调用方的 ctx:ctx 到期只让 Go 侧放弃,
+// 服务端那条 GET_LOCK 仍在排队,连接被占着直到它自己超时 —— PostgreSQL 分支
+// 的轮询天然听 ctx,两家会在同一份配置下表现不同。
+func migrateLockWaitSeconds(ctx context.Context) int {
+	wait := migrateLockTimeoutSeconds
+	if dl, ok := ctx.Deadline(); ok {
+		// 留 1 秒余量,不是凑整。等待上限与 ctx 预算**相等**时谁先触发是未定义的:
+		// ctx 先到 → 驱动返回 context deadline exceeded,那是一条真错误,会让
+		// 主程序按"抢锁失败"阻断启动;GET_LOCK 先到 → 返回 0,走的是正确的
+		// "另一节点在迁移,本节点跳过"。同一个形状在 97-fix-verification.md 里
+		// 记过一次(readTimeout 30s 撞 migrateLockTimeoutSeconds 30s)。
+		if rem := int(time.Until(dl).Seconds()) - 1; rem < wait {
+			wait = rem
+		}
+	}
+	if wait < 0 {
+		wait = 0
+	}
+	return wait
+}
+
+// releaseMigrateLock 释放迁移互斥锁。
+//
+// 两家都会在连接关闭时自动释放,所以这里失败只告警不阻断 —— 但仍然要显式释放:
+// 连接归还给池之后不会立刻关闭,不显式释放会让锁一直挂到连接被池淘汰。
+func releaseMigrateLock(ctx context.Context, conn *sql.Conn, dialect Dialect) {
+	var err error
+	if dialect == DialectPostgres {
+		_, err = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", advisoryLockKey(migrateLockName))
+	} else {
+		_, err = conn.ExecContext(ctx, "SELECT RELEASE_LOCK(?)", migrateLockName)
+	}
+	if err != nil {
+		common.SysError("qianye: 释放迁移锁失败: " + err.Error())
+	}
 }
 
 // Migrate 让扩展库的 schema 达到可用状态,并核对结果。
@@ -134,8 +314,9 @@ var runAutoMigrate = autoMigrate
 // 两道门缺一不可:
 //  1. common.IsMasterNode —— 但它只是 NODE_TYPE != "slave" 这个环境变量,
 //     多个节点完全可能都被配成 master;
-//  2. MySQL GET_LOCK —— 真正的跨节点互斥。没有它,多 master 并发 AutoMigrate
-//     会在 MySQL 上互相锁表甚至死锁。
+//  2. 迁移互斥锁 —— 真正的跨节点互斥(MySQL GET_LOCK / PostgreSQL 咨询锁,
+//     逐条对照见 acquireMigrateLock)。没有它,多 master 并发 AutoMigrate
+//     会互相锁表甚至死锁。
 func autoMigrate(gdb *gorm.DB, models []any) error {
 	if !common.IsMasterNode {
 		common.SysLog("qianye: 从节点,跳过扩展库自动迁移")
@@ -151,11 +332,16 @@ func autoMigrate(gdb *gorm.DB, models []any) error {
 	// 业务连接池的 DSN 里带 readTimeout(默认 30 秒),那是给热路径兜底用的:
 	// 它是驱动层"每次读结果包"的硬 deadline,与 ctx 无关,也不区分语句类型。
 	// 而迁移里有两类必然超过它的读:
-	//  1. SELECT GET_LOCK(name, 30) —— 并发启动的另一个 master 抢锁时会阻塞满
-	//     30 秒,与 readTimeout 恰好相等,谁先触发不确定。readTimeout 先到就变成
-	//     错误,主程序 FatalLog,而正确行为是"另一节点在迁移,本节点跳过"后正常启动。
+	//  1. 抢迁移锁 —— 并发启动的另一个 master 抢锁时会阻塞满 30 秒,与 readTimeout
+	//     恰好相等,谁先触发不确定。readTimeout 先到就变成错误,主程序 FatalLog,
+	//     而正确行为是"另一节点在迁移,本节点跳过"后正常启动。
+	//     (等待上限还会再收敛到 ctx 剩余预算,见 migrateLockWaitSeconds。)
 	//  2. 大表 ADD COLUMN —— 千万行的 DDL 超过 30 秒是常态。被驱动掐断后
 	//     MySQL 的 DDL 不可回滚,表会停在半迁移态。
+	// DDL 也必须跑在迁移专用池上,不能用业务池的 gdb。
+	//
+	// 之前只把抢锁挪到了专用连接、AutoMigrate 仍走业务池 —— 修了一半,
+	// 而"锁不会超时"恰恰掩盖了"DDL 会超时"这个更严重的问题。
 	migDB, err := openMigrationConn()
 	if err != nil {
 		return err
@@ -165,40 +351,29 @@ func autoMigrate(gdb *gorm.DB, models []any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), migrateTimeout)
 	defer cancel()
 
-	// GET_LOCK / RELEASE_LOCK 必须打在同一条连接上,否则释放会作用到别的连接。
+	dialect := DetectDialect(config.Get().Database.DSN)
+
+	// 抢锁与释放锁必须打在同一条连接上,否则释放会作用到别的连接
+	// (MySQL 与 PostgreSQL 的锁都挂在会话上,这一点两家一致)。
 	conn, err := migDB.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("qianye: 获取迁移专用连接失败: %w", err)
 	}
 	defer conn.Close()
 
-	var got sql.NullInt64
-	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, ?)",
-		migrateLockName, migrateLockTimeoutSeconds).Scan(&got); err != nil {
-		return fmt.Errorf("qianye: 获取迁移锁失败: %w", err)
+	locked, err := acquireMigrateLock(ctx, conn, dialect)
+	if err != nil {
+		return err
 	}
-	if !got.Valid || got.Int64 != 1 {
+	if !locked {
 		common.SysLog("qianye: 另一节点正在执行扩展库迁移,本节点跳过")
 		return errMigrationInProgress
 	}
-	defer func() {
-		if _, err := conn.ExecContext(ctx, "SELECT RELEASE_LOCK(?)", migrateLockName); err != nil {
-			common.SysError("qianye: 释放迁移锁失败: " + err.Error())
-		}
-	}()
+	defer releaseMigrateLock(ctx, conn, dialect)
 
-	// DDL 也必须跑在迁移专用池上,不能用业务池的 gdb。
-	//
-	// 之前只把 GET_LOCK 挪到了专用连接、AutoMigrate 仍走业务池 —— 修了一半,
-	// 而"锁不会超时"恰恰掩盖了"DDL 会超时"这个更严重的问题。
-	migGorm, err := gorm.Open(mysql.New(mysql.Config{Conn: migDB}), &gorm.Config{
-		// 迁移不需要预编译语句缓存,而且 DDL 走 PrepareStmt 在部分 MySQL
-		// 版本上有兼容问题。
-		PrepareStmt: false,
-		Logger:      gdb.Logger,
-	})
+	migGorm, err := migrationGorm(migDB, dialect, gdb.Logger)
 	if err != nil {
-		return fmt.Errorf("qianye: 初始化迁移专用会话失败: %w", err)
+		return err
 	}
 	if err := migGorm.WithContext(ctx).AutoMigrate(models...); err != nil {
 		return fmt.Errorf("qianye: 扩展库自动迁移失败: %w", err)
@@ -227,13 +402,36 @@ func queryTableNames(gdb *gorm.DB) ([]string, error) {
 	// 用 Pluck 而不是 Raw+Scan 到结构体:information_schema 的列名在不同 MySQL
 	// 版本里大小写不一致(TABLE_NAME / table_name),按列名映射会静默扫不出东西,
 	// 那正好会伪装成"所有表都缺失"。Pluck 按列序号取值,不受此影响。
-	if err := gdb.WithContext(ctx).
-		Table("information_schema.tables").
-		Where("table_schema = DATABASE()").
-		Pluck("table_name", &names).Error; err != nil {
+	if err := currentSchemaTables(gdb.WithContext(ctx)).Pluck(tableNameColumn(gdb), &names).Error; err != nil {
 		return nil, err
 	}
 	return names, nil
+}
+
+// currentSchemaTables 返回"当前 schema 下的表清单"这个查询的方言无关形态。
+//
+// 三家取当前 schema 的写法互不通用:
+//   - MySQL      information_schema.tables + DATABASE()
+//   - PostgreSQL information_schema.tables + CURRENT_SCHEMA()。**不能**用
+//     current_database():PostgreSQL 的 table_schema 对应的是 schema(默认 public),
+//     不是 database;拿库名去比 schema 名永远比不上,结果是"所有表都缺失"。
+//   - SQLite     根本没有 information_schema,清单在 sqlite_master 里。
+func currentSchemaTables(tx *gorm.DB) *gorm.DB {
+	switch DialectOf(tx) {
+	case DialectPostgres:
+		return tx.Table("information_schema.tables").Where("table_schema = CURRENT_SCHEMA()")
+	case DialectSQLite:
+		return tx.Table("sqlite_master").Where("type = ?", "table")
+	default:
+		return tx.Table("information_schema.tables").Where("table_schema = DATABASE()")
+	}
+}
+
+func tableNameColumn(tx *gorm.DB) string {
+	if DialectOf(tx) == DialectSQLite {
+		return "name"
+	}
+	return "table_name"
 }
 
 // 为什么必须有缺表自检:auto_migrate=false 是被明确支持的部署方式(由 DBA 手工建表),
@@ -422,8 +620,12 @@ func TableCount() int64 {
 		return 0
 	}
 	var n int64
-	err := gdb.Raw(`SELECT COUNT(*) FROM information_schema.tables
-		WHERE table_schema = DATABASE() AND table_name LIKE 'qy\_%'`).Scan(&n).Error
+	// 转义符用 ! 而不是默认的反斜杠:MySQL 的字符串字面量本身也会吃反斜杠,
+	// PostgreSQL 在 standard_conforming_strings=on 下不会,SQLite 的 LIKE 压根
+	// 没有默认转义符 —— 显式 ESCAPE 是三家唯一的交集写法。
+	err := currentSchemaTables(gdb).
+		Where(tableNameColumn(gdb)+" LIKE ? ESCAPE '!'", "qy!_%").
+		Count(&n).Error
 	if err != nil {
 		MarkFailure(err)
 		return 0

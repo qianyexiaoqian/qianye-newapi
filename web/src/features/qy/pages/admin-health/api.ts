@@ -17,7 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { qyGet, qyPost } from '../../lib/api'
-import type { QyAdminHealth, QyLeaseList, QyVersionInfo } from './types'
+import type {
+  QyAdminHealth,
+  QyLeaseList,
+  QyOverdraftReport,
+  QyVersionInfo,
+} from './types'
 
 export function getQyAdminHealth(): Promise<QyAdminHealth> {
   return qyGet<QyAdminHealth>('/admin/health')
@@ -52,4 +57,17 @@ export function reloadQyConfig(): Promise<{
   loaded_at: number
 }> {
   return qyPost('/admin/config/reload')
+}
+
+/**
+ * 负余额（透支）总览。
+ *
+ * 刻意与 `/admin/health` 分成两个请求，理由与 `/admin/version` 那条相同：
+ * 后端那一侧 `/admin/overdraft` **不走 `requireCore`**（它只查主库 users），
+ * 扩展库不可用时仍然是 200，而 `/admin/health` 会 503。合并成一个请求
+ * 就把这个降级能力白白丢掉了 —— 而"站上现在欠了多少钱"恰恰是排障时
+ * 最不该跟着扩展库一起消失的数字。
+ */
+export function getQyOverdraft(): Promise<QyOverdraftReport> {
+  return qyGet<QyOverdraftReport>('/admin/overdraft')
 }

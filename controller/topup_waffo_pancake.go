@@ -29,12 +29,20 @@ func RequestWaffoPancakeAmount(c *gin.Context) {
 		return
 	}
 
+	// 先取整再计价:报价、上下界、落库的 Amount 三者必须出自同一个数（见
+	// normalizeTopUpAmount 的注释）。
+	req.Amount = normalizeTopUpAmount(req.Amount)
 	if req.Amount < int64(setting.WaffoPancakeMinTopUp) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", setting.WaffoPancakeMinTopUp)})
 		return
 	}
 
 	id := c.GetInt("id")
+	// 询价与下单同闸:上界 + 钱包容量。
+	if rejectInvalidTopUpQuota(c, id, req.Amount) {
+		return
+	}
+
 	group, err := model.GetUserGroup(id, true)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "获取用户分组失败"})
@@ -42,8 +50,7 @@ func RequestWaffoPancakeAmount(c *gin.Context) {
 	}
 
 	payMoney := getWaffoPancakePayMoney(req.Amount, group)
-	if payMoney <= 0.01 {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
+	if rejectPayMoneyBelowGatewayMinimum(c, payMoney) {
 		return
 	}
 
@@ -72,20 +79,6 @@ func getWaffoPancakePayMoney(amount int64, group string) float64 {
 		Mul(decimal.NewFromFloat(discount))
 
 	return payMoney.InexactFloat64()
-}
-
-func normalizeWaffoPancakeTopUpAmount(amount int64) int64 {
-	if operation_setting.GetQuotaDisplayType() != operation_setting.QuotaDisplayTypeTokens {
-		return amount
-	}
-
-	normalized := decimal.NewFromInt(amount).
-		Div(decimal.NewFromFloat(common.QuotaPerUnit)).
-		IntPart()
-	if normalized < 1 {
-		return 1
-	}
-	return normalized
 }
 
 func formatWaffoPancakeAmount(payMoney float64) string {
@@ -347,17 +340,19 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "参数错误"})
 		return
 	}
+	// 与询价同一个取整口径,否则用户看到的报价与真正被收走的钱不是同一个数。
+	req.Amount = normalizeTopUpAmount(req.Amount)
 	if req.Amount < int64(setting.WaffoPancakeMinTopUp) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", setting.WaffoPancakeMinTopUp)})
 		return
 	}
+	id := c.GetInt("id")
 	// 上界与易支付同源:超过它的订单结算时换算触顶,钱进了网关而额度一分到不了。
-	if req.Amount > getMaxTopup() {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能大于 %d", getMaxTopup())})
+	// 钱包容量同源同理(同步自上游 47ba9d2c6)。
+	if rejectInvalidTopUpQuota(c, id, req.Amount) {
 		return
 	}
 
-	id := c.GetInt("id")
 	user, err := model.GetUserById(id, false)
 	if err != nil || user == nil {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "用户不存在"})
@@ -371,15 +366,18 @@ func RequestWaffoPancakePay(c *gin.Context) {
 	}
 
 	payMoney := getWaffoPancakePayMoney(req.Amount, group)
-	if payMoney < 0.01 {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "充值金额过低"})
+	if rejectPayMoneyBelowGatewayMinimum(c, payMoney) {
 		return
 	}
 
 	tradeNo := fmt.Sprintf("WAFFO_PANCAKE-%d-%d-%s", id, time.Now().UnixMilli(), randstr.String(6))
+	// Amount 走与上界校验、易支付、waffo 共用的 topUpStoredAmount：req.Amount 上面
+	// 已被 normalizeTopUpAmount 取整到整单位，所以这里是精确除法而不是截断。原先的
+	// normalizeWaffoPancakeTopUpAmount 还带一条 `< 1 就当 1` 的向上兜底，方向与校验侧
+	// （截断到 0 后直接拒绝）相反，取整之后它既够不着也不再需要。
 	topUp := &model.TopUp{
 		UserId:          id,
-		Amount:          normalizeWaffoPancakeTopUpAmount(req.Amount),
+		Amount:          topUpStoredAmount(req.Amount),
 		Money:           payMoney,
 		TradeNo:         tradeNo,
 		PaymentMethod:   model.PaymentMethodWaffoPancake,

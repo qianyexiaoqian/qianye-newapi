@@ -315,7 +315,7 @@ func UpdateRedemption(c *gin.Context) {
 }
 
 func DeleteInvalidRedemption(c *gin.Context) {
-	rows, err := model.DeleteInvalidRedemptions()
+	rows, err := model.DeleteInvalidRedemptions(redemptionCreatorScope(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return

@@ -522,3 +522,155 @@ MJ 提交先判后扣、音频时长解析不出来就免单、上游 token 计�
 一件定期做的事（比如每两周一次），而不是等到出问题才想起来。同步时要特别留意
 `controller/topup.go`、`model/topup.go` 这两个文件 —— 我们和上游在同一个位置做了
 方向一致但实现不同的修改，合并时会冲突，应该**优先采纳上游的版本**。
+
+---
+
+# 上游后续修复的同步记录
+
+**本节时间**：2026-08-19
+**分叉点**：`ccd535ef8`（2026-08-10）
+**同步时上游 HEAD**：`f11641428`（2026-08-18），分叉点之后共 **21 个提交**
+
+项目方本轮口径：「以后只保证中间件和一些新平台的账号兼容就差不多了」。
+所以这一轮**不是全量合并**，只挑两类：**安全与资金相关的修复**、**新平台/新渠道
+适配**。其余（前端重构、依赖升级、测试框架迁移、新功能）一律不动。
+
+---
+
+## 一、充值上界：两个修法的逐点对比
+
+上游用两个提交修了这件事：
+
+| 提交 | 日期 | 做了什么 |
+|---|---|---|
+| `2a0ce3475` *fix(topup): reject uncreditable orders before payment (#6845)* | 08-14 | 新增 `getTopUpQuota` / `getMaxTopUpAmount` / `validateCreditedQuota` / `validateTopUpQuota` / `rejectInvalidTopUpQuota`，在 6 个下单/询价入口前置拦截 |
+| `47ba9d2c6` *fix(topup): guard wallet quota during recharge* | 08-14 | 再加 `model.ValidateTopUpQuotaCapacity`（下单前预检）与 `model.creditTopUpQuota`（结算侧原子条件更新），把「充完之后钱包会不会溢出」也算进去；顺带补 `GetUserById` 判空 |
+
+我们在 08-19 独立修了同一个问题（`controller.getMaxTopup` / `model.(*TopUp).CreditQuota`）。
+**这一轮做的是取并集，不是单方面打补丁。** 逐点结论：
+
+| 点 | 上游的写法 | 我们原来的写法 | 取谁 | 理由 |
+|---|---|---|---|---|
+| **上界的分子** | `MaxQuota - 1` | `MaxQuota` | **上游** | `common/quota_math.go` 的 `saturateQuota` 在 `value >= MaxQuota` 时就报错，可表示的最大额度是 `MaxQuota-1`。用 `MaxQuota` 做分子时 `QuotaPerUnit==1` 会算出 2147483647 —— 这个数恰好换算失败，**上界自己放行了一个必然回滚的值**。差一，但差的正是它要挡的那个后果 |
+| **易支付下单 `RequestEpay`** | 有 | 有 | 双方一致 | — |
+| **易支付询价 `RequestAmount`** | 有 | **没有** | **上游** | 前端会先拿到一个报价，付款时才被拒 |
+| **waffo 下单 `RequestWaffoPay`** | 有 | 有 | 双方一致 | — |
+| **waffo 询价 `RequestWaffoAmount`** | 有 | **没有** | **上游** | 同上 |
+| **pancake 下单 / 询价** | 两个都有 | 只有下单 | **上游** | 同上 |
+| **Stripe 询价 `RequestAmount`** | 有（含分组倍率） | **没有** | **上游** | Stripe 到账额度按 Money（已乘分组倍率）换算，只看 `req.Amount` 的话倍率 > 1 的分组在 10000 那道闸之内也能顶穿 |
+| **Stripe 下单 `RequestPay`** | 有 | 有 | 双方一致 | — |
+| **Stripe 上界常量** | 硬编码 `req.Amount > 10000`，而且**新加到询价侧也用了同一个硬编码** | `getStripeMaxTopup()`（跟随展示类型） | **我们** | TOKENS 模式下 `getStripeMinTopup()` 乘过 `QuotaPerUnit`（500000），于是 min(500000) > max(10000) —— **Stripe 整条通道静默不可用**，两条报错还互相矛盾。上游把这个硬编码复制到了第二个入口，等于把毛病扩大到两处 |
+| **`GetChargedAmount` 的 TOKENS 分支** | 没改（`getStripeCreditedQuota` 也不除 `QuotaPerUnit`） | 除 `QuotaPerUnit` | **我们** | 报价端 `getStripePayMoney` 是除过的，落库端不除，两侧差 500000 倍。上游的校验函数与它自己的报价函数在 TOKENS 模式下也对不上 |
+| **`normalizeTopUpAmount`（TOKENS 向下取整）** | 没有 | 有 | **我们** | 上游的 `getTopUpQuota` 只在**校验里模拟**截断，落库的 `Amount` 不取整。于是 tokens=999999 按 1.999998 个单位收钱、按 1 个单位到账，差额被静默吞掉且全链路无提示 |
+| **换算函数的唯一性** | 复制成两份：`controller.getStripeCreditedQuota` 与 `model.Recharge` 各写一遍 | `model.(*TopUp).CreditQuota()` 一份，下单侧与结算侧共用 | **我们** | 上游那两份现在就已经在 TOKENS 模式下不一致了（见上一行）。共用一个函数让「校验用的价」和「结算真加的额度」在编译期就不可能分叉 |
+| **钱包容量（充完会不会溢出）** | 有：下单前 `ValidateTopUpQuotaCapacity` + 结算侧把 `quota <= maxCurrent` 谓词写进加数那条 UPDATE | **完全没有** | **上游** | 单笔上界只保证「这一笔自己」能被表示。余额 21 亿的账号再充 4294 一样在结算侧触顶回滚 —— 钱进网关、额度零到账、订单永久 pending，与完全没有上界时的后果逐字相同。谓词与加数同一条 UPDATE 还顺带挡住了两个并发回调各读一个通过快照后双双加钱 |
+| **0 行的成因区分** | 收款人不在 → `ErrRecordNotFound`；钱包装不下 → `ErrTopUpQuotaLimitExceeded` | 只判 `RowsAffected != 1` → 一律 `ErrRecordNotFound` | **上游** | 加了容量谓词之后 0 行有两个成因，合并成一个错会让运维把「人被删了」当成「钱包满了」 |
+| **`errors.New("无效的充值额度")`** | 换成 `ErrInvalidTopUpQuota` 哨兵 | 五处字面量 | **上游** | 调用方能 `errors.Is`，不用比字符串 |
+| **`GetUserById` 判空** | 有（stripe / creem 两处 `user, _ :=` 后直接解引用） | 没有 | **上游** | 收款人在会话有效期内被删掉会 panic 整个进程 |
+| **容量超限的用户可见文案** | 英文 `top-up quota limit exceeded` 直接透给前端 | — | **我们自拟** | 该文件周边全是中文文案，透一句英文哨兵错误给终端用户不合适。哨兵错误保留英文（它是给代码看的），controller 侧映射成「充值后余额将超出系统上限，请先消耗部分额度」 |
+
+**净结果**：上界覆盖从 4 个入口扩到 10 个（6 个 Amount 计价入口 + Stripe 询价/下单 +
+Creem 下单 + 结算侧原子闸），并新增了「钱包容量」这一整维；同时保住了我们比上游多
+做对的三处（Stripe 上界跟随展示类型、`GetChargedAmount` 的 TOKENS 分支、TOKENS 取整）。
+
+---
+
+## 二、分叉点到 `f11641428` 的 21 个提交逐条过
+
+| # | sha | 标题 | 类别 | 同步? | 理由 |
+|---|---|---|---|---|---|
+| 1 | `f11641428` | fix: settle Responses cached token usage (#6892) | **资金** | 是 | `usageFromOpenAIBillingUsage` 没把 Responses 的 `InputTokensDetails.CachedTokens` 搬到 `PromptTokensDetails`，缓存命中的 token 按全价结算 —— 直接多收用户的钱。`service/billing_usage.go` 在我们 fork 里逐字节未改，干净同步，上游自带的两个测试一起拿 |
+| 2 | `137d1171f` | feat(web): fade in streamed response words… (#6895) | 前端功能 | 否 | 纯 UI 动效，与安全/资金/渠道无关 |
+| 3 | `4add708eb` | feat: channel test (#6917) | 功能 | 否 | 新功能，不在本轮两类之内 |
+| 4 | `2b0efd848` | refactor: advanced custom channel route editor (#6865) | 前端重构 | 否 | 重构，且我们前端已大幅分叉 |
+| 5 | `3dda1d50c` | fix(relaykit): preserve parameterless tools in Claude conversion (#6862) | **中间件** | 是 | 无参数工具（`parameters` 不是 map）在转 Claude 时被整个丢弃 —— 用户声明了工具、上游根本收不到。新增 `shared/claude/schema.go` 统一补 `type`/`properties` 默认值。relaykit 全部文件在我们 fork 里逐字节未改 |
+| 6 | `e2c7aa7b1` | test(web): standardize frontend tests on Vitest (#6569) | 测试基建 | 否 | 我们前端测试基线是 `bun run test`（1580 pass / 8 fail），迁移会把整个基线推翻，收益为零 |
+| 7 | `116255f07` | fix(oauth): align custom binding response fields in frontend (#6818) | 前端字段对齐 | 否 | 纯前端字段名对齐 + 7 语种文案；我们的 profile/users 前端已分叉，硬合会撞。后端 OAuth 逻辑未变 |
+| 8 | `4442bb302` | fix(relay): stop injecting empty tools into Claude requests | **中间件** | 是 | 没有工具时仍往 Claude 请求里塞 `tools: []`，改变上游对请求的解释（且与工具附加费计费相邻）。同一个文件，与 #5 一起取 |
+| 9 | `e90a7c48e` | feat: add field passthrough controls for gateway channels (#6847) | 前端功能 | 否 | 纯前端（3 个文件全在 `web/`），是**放开**透传的开关。透传恰恰是绕过计费的已知面（见本文档第 22 条 metadata），新增放开面不是我们要的 |
+| 10 | `7d09c6954` | fix: prompt_cache_key openai chat -> openai responses (#6861) | **资金** | 是 | `prompt_cache_key` 没转发到 Responses 上游 → 缓存不命中 → 用户按全价而不是缓存价被计费。文件未分叉，干净同步 |
+| 11 | `47ba9d2c6` | fix(topup): guard wallet quota during recharge | **资金** | 是（取并集） | 见上一节 |
+| 12 | `bbf67df04` | chore(deps-dev): bump electron 39.8.5→39.8.10 | 依赖 | 否 | `electron/` 桌面壳，我们不构建它 |
+| 13 | `cf38105a9` | chore(deps-dev): bump js-yaml 4.3.0→4.3.1 in /electron | 依赖 | 否 | 同上 |
+| 14 | `2a0ce3475` | fix(topup): reject uncreditable orders before payment (#6845) | **资金** | 是（取并集） | 见上一节 |
+| 15 | `e5efc73cd` | chore(deps-dev): bump tar 7.5.16→7.5.22 in /electron | 依赖 | 否 | `electron/`，不构建 |
+| 16 | `53a8739ee` | chore(deps-dev): bump fast-uri 3.1.4→3.1.5 in /electron | 依赖 | 否 | 同上 |
+| 17 | `f250f3b58` | chore(deps): bump dompurify 3.4.11→3.4.13 in /web | 依赖（安全相关） | **未同步，列为待办** | dompurify 是 XSS 消毒库，属于安全面。但这是 `web/` 的 lockfile 改动，我们前端依赖树已分叉，应该由前端侧跑 `bun update dompurify` 自己走一遍全量闸门，而不是把上游的 lockfile 片段搬过来 |
+| 18 | `626058075` | chore(deps): bump builder-util-runtime and electron-builder in /electron | 依赖 | 否 | `electron/`，不构建 |
+| 19 | `93d2df85f` | fix(ali): 阿里图片模型映射后仍用原始模型名判断协议 (#6772) | **新渠道适配** | 是 | 渠道做了模型映射之后，协议判断还看用户传的原始模型名 → 映射到的上游模型走错协议。`relay/channel/ali/adaptor.go` 未分叉，干净同步，上游自带测试一起拿 |
+| 20 | `15cfdedde` | fix(web): keep fetched model selection in sync with form (#6841) | 前端 | 否 | 纯前端表单同步，我们该组件已分叉 |
+| 21 | `58d4e9bd3` | fix(billing): 异步任务退款时同步减少 used_quota (#6795) | **资金** | 部分同步 | 见下 |
+
+### 关于 #21 为什么只同步一半
+
+上游这个提交里有两样东西：
+
+- **会计不变式**（要）：退款只退了 `quota`，没有回减 `used_quota` 和渠道 `used_quota`，
+  于是「总额度」(`quota + used_quota`) 随退款次数单调虚增，最终超过用户真实充值总额，
+  用量报表与配额告警一起失真。差额结算的**负差额**那一支同样什么都不做。
+  新增 `model.UpdateUserUsedQuota`（只动用量、不动请求次数）。
+  → **已同步**：`model/user.go` 的新函数、`service/task_billing.go` 的
+  `RefundTaskQuota` 与 `settleTaskQuotaDelta` 两处、`controller/midjourney.go` 的
+  构图失败退款一处。
+
+- **Midjourney 计费状态重构**（不要）：给 `model.Midjourney` 加 `TokenId` /
+  `BillingChannelId` 两列，新增 `PrepareMidjourneyTaskBilling` /
+  `SettleMidjourneyTaskBilling` / `RefundMidjourneyQuota`，并把
+  `PostConsumeQuota` 改成返回 `postConsumeQuotaResult`。
+  → **未同步**。理由：我们已经把 `relay/mjproxy_handler.go` 重写成**原子预留**
+  （修的是上游至今仍有的「先判余额、60 秒后才扣钱」竞态，见本文档第 3 条），
+  上游这次重构是在**它自己那个有竞态的形状**上加计费状态机。两者对同一段代码
+  给出的是不同方向的答案，硬合会把我们的原子预留拆掉。会计不变式与这个重构正交，
+  可以单独拿。
+
+---
+
+## 三、这次改了哪些文件
+
+**取并集（充值上界 + 钱包容量）**
+
+- `controller/topup.go` —— `getMaxTopup` 分子改 `MaxQuota-1`；新增
+  `rejectInvalidTopUpQuota` / `rejectInsufficientWalletCapacity`；`RequestEpay`
+  与 `RequestAmount` 两侧都过闸，询价侧补 `normalizeTopUpAmount`
+- `controller/topup_stripe.go` —— 询价侧补上界与分组倍率校验；下单侧 `GetUserById`
+  判空；抽出 `stripeChargedMoneyForGroup` 让询价与下单共用同一份换算
+- `controller/topup_creem.go` —— 产品额度改走共用闸门（含钱包容量），补 `GetUserById` 判空
+- `controller/topup_waffo.go` / `controller/topup_waffo_pancake.go` —— 询价与下单两侧都过闸
+- `model/topup.go` —— 新增 `ErrInvalidTopUpQuota` / `ErrTopUpQuotaLimitExceeded` /
+  `topUpQuotaMaxCurrent` / `ValidateTopUpQuotaCapacity`；`creditTopUpQuotaTx` 加原子
+  容量谓词并区分 0 行的两个成因；五处字面量错误换哨兵
+
+**逐字节取上游版本**（这些文件在我们 fork 里从未改动，且分叉点之后只被下列提交碰过，
+所以取 `upstream/main` 的版本 == 精确应用这些提交，不夹带别的改动）
+
+- `service/billing_usage.go` + `service/text_quota_test.go` ← `f11641428`
+- `relay/channel/ali/adaptor.go` + `adaptor_test.go` ← `93d2df85f`
+- `relaykit/relayconvert/internal/oai_chat/to_claude_messages_req.go` + 测试、
+  `internal/oai_responses/to_claude_messages_req.go`、
+  `internal/shared/claude/schema.go`（新文件）、
+  `relayconvert/claude_default_max_tokens_test.go` ← `4442bb302` + `3dda1d50c`
+- `relaykit/relayconvert/internal/oai_chat/to_oai_responses_req.go` + 测试 ← `7d09c6954`
+
+**部分同步（只取会计不变式）**
+
+- `model/user.go` —— 新增 `UpdateUserUsedQuota`
+- `service/task_billing.go` —— `RefundTaskQuota` 回减用量；`settleTaskQuotaDelta`
+  两个方向都调整用量、不再重复累加请求次数
+- `controller/midjourney.go` —— 构图失败退款回减用量
+
+**新增测试**
+
+- `controller/topup_quota_limit_test.go`（新）
+- `model/payment_method_guard_test.go`（追加 2 个）
+- `service/task_billing_used_quota_test.go`（新）
+
+---
+
+## 四、这次**没有**同步、留作待办的
+
+1. **`f250f3b58` dompurify 3.4.11→3.4.13** —— XSS 消毒库，属于安全面，但应该由前端
+   侧自己跑 `bun update` + 全量闸门，不能搬上游的 lockfile 片段。
+2. **`58d4e9bd3` 的 Midjourney 计费状态重构** —— 与我们的原子预留重写方向冲突，
+   见上文。若将来要拿，应该是「在我们的原子预留形状上重新实现一遍状态机」，
+   而不是合并上游的 diff。
+3. **上游至今未修的 27 条**（本文档第一组）—— 不变，仍然是我们自己维护的补丁。

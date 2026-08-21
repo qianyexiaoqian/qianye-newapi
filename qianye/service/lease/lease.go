@@ -4,15 +4,15 @@
 // 不是租约。多节点部署时每个节点都可能被配成 master,佣金结算、充值扫描这类任务
 // 就会同时跑,造成重复返佣、重复扣费。
 //
-// 所有时间比较都用 MySQL 的 UNIX_TIMESTAMP(),而不是 Go 端的时间 ——
+// 所有时间比较都用**库端**的当前时间,而不是 Go 端的时间 ——
 // 节点之间的时钟漂移会让基于本地时间的租约失效判断出错。
+// 具体表达式按方言渲染(db.NowEpochSQL),三家的取整方向已对齐到"截断到秒"。
 package lease
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -69,10 +69,11 @@ func Acquire(name string, ttlSeconds int) (bool, int64, error) {
 	//
 	// 换成"先 UPDATE"之后,稳态路径一条 UPDATE 就结束,零冲突;
 	// INSERT 只在表里确实没有这一行时执行一次,那是真正的首次运行。
+	now := db.NowEpochSQL(gdb)
 	res := gdb.Exec(`UPDATE qy_task_leases
 		SET holder = ?, fence = fence + 1,
-		    lease_until = UNIX_TIMESTAMP()+?, acquired_at = UNIX_TIMESTAMP(), updated_at = UNIX_TIMESTAMP()
-		WHERE name = ? AND lease_until < UNIX_TIMESTAMP()`,
+		    lease_until = `+now+`+?, acquired_at = `+now+`, updated_at = `+now+`
+		WHERE name = ? AND lease_until < `+now,
 		holder, ttlSeconds, name)
 	if res.Error != nil {
 		db.MarkFailure(res.Error)
@@ -83,7 +84,7 @@ func Acquire(name string, ttlSeconds int) (bool, int64, error) {
 		// 用条件插入区分:撞键说明是前者,不算错误。
 		err := gdb.Exec(`INSERT INTO qy_task_leases
 			(name, holder, fence, lease_until, acquired_at, updated_at)
-			VALUES (?, ?, 1, UNIX_TIMESTAMP()+?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP())`,
+			VALUES (?, ?, 1, `+now+`+?, `+now+`, `+now+`)`,
 			name, holder, ttlSeconds).Error
 		if err == nil {
 			return true, 1, nil
@@ -109,9 +110,10 @@ func Renew(name string, fence int64, ttlSeconds int) error {
 	if gdb == nil {
 		return db.ErrNotReady
 	}
+	now := db.NowEpochSQL(gdb)
 	res := gdb.Exec(`UPDATE qy_task_leases
-		SET lease_until = UNIX_TIMESTAMP()+?, updated_at = UNIX_TIMESTAMP()
-		WHERE name = ? AND holder = ? AND fence = ? AND lease_until >= UNIX_TIMESTAMP()`,
+		SET lease_until = `+now+`+?, updated_at = `+now+`
+		WHERE name = ? AND holder = ? AND fence = ? AND lease_until >= `+now,
 		ttlSeconds, name, Holder(), fence)
 	if res.Error != nil {
 		db.MarkFailure(res.Error)
@@ -129,7 +131,7 @@ func Release(name string, fence int64) error {
 	if gdb == nil {
 		return db.ErrNotReady
 	}
-	return gdb.Exec(`UPDATE qy_task_leases SET lease_until = 0, updated_at = UNIX_TIMESTAMP()
+	return gdb.Exec(`UPDATE qy_task_leases SET lease_until = 0, updated_at = `+db.NowEpochSQL(gdb)+`
 		WHERE name = ? AND holder = ? AND fence = ?`, name, Holder(), fence).Error
 }
 
@@ -218,12 +220,9 @@ func runOnce(name string, fence int64, ttl, renewEvery int, fn func(ctx context.
 	fn(ctx)
 }
 
-func isDuplicateKey(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "duplicate entry") ||
-		strings.Contains(msg, "error 1062") ||
-		strings.Contains(msg, "duplicate key")
-}
+// isDuplicateKey 判断错误是否为唯一索引冲突。
+//
+// 三家方言的报错文本各不相同,判据统一收在 db.IsDuplicateKey ——
+// 本地各抄一份的后果不是报错而是静默改变控制流:这里把"撞键"当作
+// "别的节点正持有租约"(返回 false, nil),漏判会变成把它当真错误往上抛。
+func isDuplicateKey(err error) bool { return db.IsDuplicateKey(err) }
