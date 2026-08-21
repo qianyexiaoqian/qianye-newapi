@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
+import { qyTabTarget } from '../../lib/pages'
 import { QyAdminCommissionBalancesBody } from '../admin-commission-balances'
 import { QyAdminCommissionRelationsBody } from '../admin-commission-relations'
 import { QyPageTabs } from '../components/qy-page-tabs'
@@ -61,7 +62,7 @@ export function QyAdminCommissionUsersHub() {
         <Button
           variant='outline'
           size='sm'
-          render={<Link to='/qy/admin/commission-records' />}
+          render={<Link {...qyTabTarget('/qy/admin/commission-records')} />}
         >
           <ScrollText aria-hidden='true' />
           {t('qy_nav_a_commission_records')}

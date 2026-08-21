@@ -106,7 +106,7 @@ func TestHallPhasePartitionsByStatus(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			q, err := hallQuery(gdb, "", tc.phase)
+			q, err := hallQuery(gdb, "", tc.phase, allPlaysShown())
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, actNos(t, q))
 		})
@@ -132,7 +132,7 @@ func TestHallPhaseNeverLeaksDraft(t *testing.T) {
 
 	for _, phase := range []string{"", "live", "ended"} {
 		for _, kind := range []string{"", KindDraw, KindGuess} {
-			q, err := hallQuery(gdb, kind, phase)
+			q, err := hallQuery(gdb, kind, phase, allPlaysShown())
 			require.NoError(t, err)
 			for _, no := range actNos(t, q) {
 				assert.NotContains(t, no, "draft",
@@ -150,7 +150,7 @@ func TestHallPhaseNeverLeaksDraft(t *testing.T) {
 func TestHallPhaseRejectsUnknownPhase(t *testing.T) {
 	gdb := newHallTestDB(t)
 	for _, bad := range []string{"open", "done", "all", "LIVE", "finished"} {
-		q, err := hallQuery(gdb, "", bad)
+		q, err := hallQuery(gdb, "", bad, allPlaysShown())
 		assert.Nil(t, q, "phase=%q 不该拼出查询", bad)
 		require.ErrorIs(t, err, errBadPhase, "phase=%q 被静默忽略了", bad)
 	}
@@ -178,7 +178,7 @@ func TestHallPhaseOrdersLiveByNextDeadline(t *testing.T) {
 		require.NoError(t, gdb.Create(a).Error)
 	}
 
-	q, err := hallQuery(gdb, "", "live")
+	q, err := hallQuery(gdb, "", "live", allPlaysShown())
 	require.NoError(t, err)
 	assert.Equal(t, []string{"P-soon", "P-late", "L-soon", "S-late"}, actNos(t, q))
 }
@@ -198,7 +198,7 @@ func TestHallPhaseOrdersEndedBySettledAt(t *testing.T) {
 		require.NoError(t, gdb.Create(a).Error)
 	}
 
-	q, err := hallQuery(gdb, "", "ended")
+	q, err := hallQuery(gdb, "", "ended", allPlaysShown())
 	require.NoError(t, err)
 	assert.Equal(t, []string{"D-new", "D-old", "C-cancelled"}, actNos(t, q))
 }
@@ -219,7 +219,7 @@ func TestHallPhaseKeepsAllSixOutcomesInEnded(t *testing.T) {
 		require.NoError(t, gdb.Create(a).Error)
 	}
 
-	q, err := hallQuery(gdb, "", "ended")
+	q, err := hallQuery(gdb, "", "ended", allPlaysShown())
 	require.NoError(t, err)
 	got := actNos(t, q)
 	require.Len(t, got, len(outcomes))

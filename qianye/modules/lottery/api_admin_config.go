@@ -37,6 +37,13 @@ func settingBounds() map[string]settingBound {
 	c := config.Get().Lottery
 	return map[string]settingBound{
 		keyShowEntry: {Lo: 0, Hi: 1},
+		// 四个玩法开关同样是 0/1。它们**没有 YAML 上界**可取:玩法显隐是纯展示
+		// 口径,关掉一种玩法既不放大任何资金敞口、也不放宽任何闸门 ——
+		// 唯一的硬闸仍然是 YAML 的 lottery.enabled(关掉整块)。
+		keyShowPlayDrawRank: {Lo: 0, Hi: 1},
+		keyShowPlayDrawProb: {Lo: 0, Hi: 1},
+		keyShowPlayDrawBall: {Lo: 0, Hi: 1},
+		keyShowPlayGuess:    {Lo: 0, Hi: 1},
 		// 上界同样取自 YAML。并发进行中的活动数是全站累计净增发的唯一乘数
 		// (每一场各吃一个 max_total_prize_quota,没有全站累计闸门),写死一个
 		// 1000 等于允许运营在线把敞口放大 50 倍,而 YAML 拦不住它 ——
@@ -56,6 +63,10 @@ func settingBounds() map[string]settingBound {
 func settingsSnapshot(s opSettings) map[string]int64 {
 	return map[string]int64{
 		keyShowEntry:            boolToInt64(s.ShowEntry),
+		keyShowPlayDrawRank:     boolToInt64(s.ShowPlayDrawRank),
+		keyShowPlayDrawProb:     boolToInt64(s.ShowPlayDrawProb),
+		keyShowPlayDrawBall:     boolToInt64(s.ShowPlayDrawBall),
+		keyShowPlayGuess:        boolToInt64(s.ShowPlayGuess),
 		keyMaxActiveActivities:  int64(s.MaxActiveActivities),
 		keyDefaultGuessFeeBps:   int64(s.DefaultGuessFeeBps),
 		keyMaxGuessFeeBps:       int64(s.MaxGuessFeeBps),
@@ -124,16 +135,10 @@ func handleGetConfig(c *gin.Context) {
 			// 为 0 时任何带"近 N 日消费"的活动都会被拒绝创建。
 			"spend_ready_from": SpendReadyFrom(),
 		},
-		// YAML 里那份参数的原值。运营需要知道"清掉覆盖之后会回到哪里",
-		// 否则删除覆盖这个动作等于闭眼跳。
-		"yaml_defaults": settingsSnapshot(opSettings{
-			ShowEntry:            cfg.EntryShown(),
-			MaxActiveActivities:  cfg.MaxActiveActivities,
-			DefaultGuessFeeBps:   cfg.DefaultGuessFeeBps,
-			MaxGuessFeeBps:       cfg.MaxGuessFeeBps,
-			MaxTotalPrizeQuota:   cfg.MaxTotalPrizeQuota,
-			LargePrizeAlertQuota: cfg.LargePrizeAlertQuota,
-		}),
+		// 基线值。运营需要知道"清掉覆盖之后会回到哪里",否则删除覆盖这个动作
+		// 等于闭眼跳。绝大多数键的基线来自 YAML;四个玩法开关没有 YAML 对应项,
+		// 基线恒为 1(全部显示)——键名沿用 yaml_defaults 是为了不动前端契约。
+		"yaml_defaults": settingsSnapshot(baseSettings(cfg)),
 	})
 }
 
@@ -265,6 +270,14 @@ func assignSetting(s *opSettings, key string, v int64) {
 	switch key {
 	case keyShowEntry:
 		s.ShowEntry = v != 0
+	case keyShowPlayDrawRank:
+		s.ShowPlayDrawRank = v != 0
+	case keyShowPlayDrawProb:
+		s.ShowPlayDrawProb = v != 0
+	case keyShowPlayDrawBall:
+		s.ShowPlayDrawBall = v != 0
+	case keyShowPlayGuess:
+		s.ShowPlayGuess = v != 0
 	case keyMaxActiveActivities:
 		s.MaxActiveActivities = int(v)
 	case keyDefaultGuessFeeBps:

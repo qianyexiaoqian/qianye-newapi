@@ -117,6 +117,26 @@ const QY_DYNAMIC_KEYS = [
   'qy_ra_cap_notice',
   'qy_ra_cap_violation',
   'qy_ra_cap_ticket',
+  // 娱乐玩法名。管理端配置页写的是 `t(item.labelKey)`（PLAY_SWITCHES 查表），
+  // 字面量扫描器看不见。清单对齐后端 `qianye/modules/lottery/play.go` 的
+  // 四个 Play 常量。
+  'qy_lot_play_draw_rank',
+  'qy_lot_play_draw_prob',
+  'qy_lot_play_draw_ball',
+  'qy_lot_play_guess',
+  // 玩法开关在配置页上的字段名与说明。那一页的字段整个由后端下发的
+  // `editable_keys` 驱动，取文案走
+  // ``t(`qy_lot_cfg_k_${key}`, { defaultValue: key })`` —— 缺键不会渲染成裸键，
+  // 而是渲染成 `show_play_draw_ball` 这种**看起来像正常内容**的配置键名，
+  // 连"这里少了文案"这个信号都没有。
+  'qy_lot_cfg_k_show_play_draw_rank',
+  'qy_lot_cfg_h_show_play_draw_rank',
+  'qy_lot_cfg_k_show_play_draw_prob',
+  'qy_lot_cfg_h_show_play_draw_prob',
+  'qy_lot_cfg_k_show_play_draw_ball',
+  'qy_lot_cfg_h_show_play_draw_ball',
+  'qy_lot_cfg_k_show_play_guess',
+  'qy_lot_cfg_h_show_play_guess',
 ]
 
 /**

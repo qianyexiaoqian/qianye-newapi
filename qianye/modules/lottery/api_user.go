@@ -179,6 +179,13 @@ type activityDetail struct {
 	// PayPasswordThresholdQuota 是阈值本身,让前端能在投注额输入框旁边直接说
 	// "超过多少要验密码",而不是等提交失败之后才弹出一格。
 	PayPasswordThresholdQuota int64 `json:"pay_password_threshold_quota"`
+	// PlayOpen 表示这一场所属的玩法当前是否还受理新参与(见 play.go)。
+	//
+	// 玩法被隐藏之后详情页**仍然可达** —— 已参与的人必须还能查到自己那一票、
+	// 还能看结果与证据链,所以这一页不能变 404。但"参与"按钮必须当场置灰并
+	// 说明原因:留一个点下去才被 409 顶回来的按钮,与本仓一直在补的
+	// "界面上点得到、后端不认"是同一种缺陷,只是方向反了。
+	PlayOpen bool `json:"play_open"`
 }
 
 // hallPhase 是大厅一个分区的口径:它包含哪些状态、按什么排序。
@@ -224,10 +231,16 @@ var hallPhases = map[string]hallPhase{
 // handler 走的是 db.Get() 那个只连 MySQL 的全局句柄,在测试里起不来,而
 // "两张标签返回同一份列表"恰恰只在这段拼装里看得见 —— 上一版正是在这里
 // 静默失效了一整个版本。
-func hallQuery(gdb *gorm.DB, kind, phase string) (*gorm.DB, error) {
+func hallQuery(gdb *gorm.DB, kind, phase string, set opSettings) (*gorm.DB, error) {
 	// hidden_at > 0 是管理员的「下架」。它与草稿并列写在这一行,而不是散在
 	// handler 里:大厅口径只有这一个执行点,加在别处迟早会有一条分支漏掉。
 	q := gdb.Model(&Activity{}).Where("status <> ? AND hidden_at = ?", StatusDraft, 0)
+	// 被隐藏的玩法同样不下发。它必须在**这里**而不是 handler 里过滤:
+	// 前端只会按 kind 分两张标签,而"只隐藏双色球"落不到任何一个 kind 上,
+	// 交给前端过滤等于把已经发出去的活动数据当成可以藏住的东西。
+	if clause, args := playFilterClause(set); clause != "" {
+		q = q.Where(clause, args...)
+	}
 	if kind != "" {
 		q = q.Where("kind = ?", kind)
 	}
@@ -251,6 +264,11 @@ func hallQuery(gdb *gorm.DB, kind, phase string) (*gorm.DB, error) {
 // 草稿永不下发:它还没有承诺,内容随时可能变,提前泄漏等于让人看到一个
 // 可能被改掉的规则。
 //
+// 被运营隐藏的玩法(见 play.go)同样不在大厅里,效果与下架同形:只影响大厅
+// 可见性与新参与,详情、我的参与、证据链与后台结算一律照常。区别只在粒度 ——
+// 下架针对一场,玩法开关针对一类,而且**可以作用于进行中的活动**:那一场会
+// 照常封盘、开奖、派奖,只是不再收新的参与。
+//
 // 被管理员下架(hidden_at > 0)的场次同样不在大厅里。**这是下架的全部效果** ——
 // 活动详情、我的参与与匿名证据链一律照常可达:公正性一旦公布过就不能被运营
 // 收回,而参与过的人必须还能查到自己那一票。下架只能作用于已结束的场次
@@ -265,7 +283,8 @@ func handleListActivities(c *gin.Context) {
 		respondErr(c, db.ErrNotReady)
 		return
 	}
-	q, err := hallQuery(gdb.WithContext(c.Request.Context()), c.Query("kind"), c.Query("phase"))
+	q, err := hallQuery(gdb.WithContext(c.Request.Context()),
+		c.Query("kind"), c.Query("phase"), effectiveCtx(c.Request.Context()))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -373,6 +392,7 @@ func handleGetActivity(c *gin.Context) {
 		BallResult:          act.BallResult,
 		Spec:                make([]specItem, 0, 8),
 		PayPasswordRequired: PayPasswordRequired(act.StakeQuota),
+		PlayOpen:            effectiveCtx(ctx).playShown(playOf(act.Kind, act.DrawMode)),
 
 		PayPasswordThresholdQuota: config.Get().Lottery.PayPasswordThresholdQuota,
 	}

@@ -26,26 +26,15 @@ import { EmptyState } from '@/components/empty-state'
 import { StatusBadge } from '@/components/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Progress } from '@/components/ui/progress'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { useQyConfig } from '../../hooks/use-qy-config'
 import { qyKeys } from '../../lib/query-keys'
-import {
-  qyRemainingDisplay,
-  qyRemainingLineKey,
-  qyWindowIsUnlimited,
-} from '../../lib/violation-thresholds'
 import { QyPager } from '../components/qy-pager'
-import { QyStatGrid } from '../components/qy-stat-grid'
 import { formatQyTs } from '../ops/format'
-import {
-  getQyMyViolationSummary,
-  listQyMyViolationCategories,
-  listQyMyViolations,
-} from './api'
+import { listQyMyViolationCategories, listQyMyViolations } from './api'
 import { QyViolationAppealDialog } from './components/appeal-dialog'
 import { QyMyViolationCategoriesCard } from './components/categories-card'
 import type { QyMyViolationRecord } from './types'
@@ -62,8 +51,19 @@ const MY_STATUS_VARIANT: Record<string, 'danger' | 'success' | 'warning'> = {
  * 我的违规记录。
  *
  * 存在的理由很简单：**钱被扣了必须给理由**。没有这一页，扣费对用户就是黑箱，
- * 只会换来工单与差评。展示内容严格分层 —— 时间 / 模型 / 对外原因 / 金额 /
- * 剩余次数给看，命中词与上下文不给看（那等于把规则库送出去）。
+ * 只会换来工单与差评。展示内容严格分层 —— 时间 / 模型 / 对外原因 / 金额给看，
+ * 命中词与上下文不给看（那等于把规则库送出去）。
+ *
+ * ── 这一页刻意**不**显示的三块 ──
+ * 「当前窗口违规次数」「距离封号还剩余」「累计扣费」三个统计块已按项目方要求
+ * 移除（原话：「我的违规记录，这里只显示违规类型就行」）。后端 `my-summary`
+ * 仍然如实下发那些字段，只是用户端不渲染 —— 理由与代价写在 `types.ts` 的
+ * `QyMyViolationSummary` 上，**先读那段注释再动手加回来**。
+ *
+ * 「我离处置还有多远」这件事没有丢：下面的公示卡片
+ * （`QyMyViolationCategoriesCard`）逐条给出账号总量线与每一个违规类型自己的
+ * 「我几次 / 到几次 / 到了会怎样 / 还差几次」。它是现在**唯一**的预警渠道，
+ * 站点一个类型都没公示时整块会收起，那种配置下用户不再有任何倒计时。
  */
 export function QyMyViolations() {
   const { t } = useTranslation()
@@ -77,16 +77,9 @@ export function QyMyViolations() {
 
   const featureOff = config.status === 'enabled' && !config.features.violation
 
-  const summaryQuery = useQuery({
-    queryKey: qyKeys.violationMySummary(),
-    queryFn: getQyMyViolationSummary,
-    enabled: !featureOff,
-    staleTime: 60_000,
-  })
-
   // 违规类型公示。项目方原话：「这些在用户前端要公示出来」。
-  // 单独一个查询而不是并进 summary：它要读一张类型表 + 一批计数行，
-  // 而 summary 是每次打开页面都拉的那一个，不该被它拖慢。
+  // 三个统计块移除之后这是这一页唯一的聚合视图，`my-summary` 不再被拉取
+  // （那一个接口只喂过那三块）。
   const categoriesQuery = useQuery({
     queryKey: qyKeys.violationMyCategories(),
     queryFn: listQyMyViolationCategories,
@@ -119,23 +112,7 @@ export function QyMyViolations() {
     )
   }
 
-  const summary = summaryQuery.data
   const records = listQuery.data?.items ?? []
-  const progress =
-    summary == null || summary.ban_threshold <= 0
-      ? 0
-      : Math.min(100, (summary.hit_count / summary.ban_threshold) * 100)
-  const remainingDisplay = qyRemainingDisplay(
-    summary ?? { ban_threshold: 0, remaining: 0 }
-  )
-  // 三态各自的字面。查表而不是嵌套三元：这一格的三种状态说的是三件完全不同的
-  // 事（已被处置 / 没有门槛 / 还差几次），叠成一行三元之后新增一态必然写错。
-  const remainingText = {
-    banned: t('qy_vio_my_remaining_banned'),
-    none: t('qy_common_unlimited'),
-    countdown:
-      remainingDisplay.kind === 'countdown' ? remainingDisplay.remaining : 0,
-  }[remainingDisplay.kind]
 
   return (
     <QySectionPageLayout>
@@ -144,100 +121,6 @@ export function QyMyViolations() {
       </QySectionPageLayout.Title>
       <QySectionPageLayout.Content>
         <div className='space-y-3'>
-          {summary != null && (
-            <div className='space-y-2'>
-              <QyStatGrid
-                items={[
-                  {
-                    key: 'hits',
-                    label: t('qy_vio_my_window_hits'),
-                    value:
-                      summary.ban_threshold > 0
-                        ? `${summary.hit_count} / ${summary.ban_threshold}`
-                        : String(summary.hit_count),
-                    // 「滚动 N 小时窗口」在不限期限下是一句假话:那些次数
-                    // 永远不会因为时间过去而清零。整句换掉,不是换个数字。
-                    hint: qyWindowIsUnlimited(summary.window_hours)
-                      ? t('qy_vio_my_window_hint_unlimited')
-                      : t('qy_vio_my_window_hint', {
-                          hours: summary.window_hours,
-                        }),
-                    emphasis: true,
-                  },
-                  {
-                    key: 'remaining',
-                    label: t('qy_vio_my_remaining'),
-                    // 三态由 qyRemainingDisplay 定，**不要**在这里重新拿
-                    // ban_threshold 推：那个字段只描述账号总量线，而处置由
-                    // 两条线的 OR 触发。详见该函数的注释。
-                    value: (
-                      <span
-                        className={
-                          remainingDisplay.kind === 'banned' ||
-                          (remainingDisplay.kind === 'countdown' &&
-                            remainingDisplay.remaining <= 1)
-                            ? 'text-destructive'
-                            : undefined
-                        }
-                      >
-                        {remainingText}
-                      </span>
-                    ),
-                    // 撞的是哪条线必须说：同一个「还剩 1 次」，落在账号总量线上
-                    // 和落在某一个违规类型上，用户该收敛的行为不是同一件事。
-                    //
-                    // 而且要连**那条线自己的窗口与阈值**一起说。上面那个
-                    // 「N / M」块与它的窗口提示描述的始终是账号总量线；只报
-                    // 「触发线：类型」而不给类型线的数，用户看到的就是
-                    // 「触发线：类型」配「阈值 0、窗口 24 小时」，两条线的数字
-                    // 混在一句话里而没有任何办法分辨。
-                    hint:
-                      remainingDisplay.kind === 'countdown' ? (
-                        <>
-                          {t(qyRemainingLineKey(remainingDisplay.line))}
-                          {summary.remaining_threshold != null &&
-                            summary.remaining_threshold > 0 && (
-                              <>
-                                {' · '}
-                                {qyWindowIsUnlimited(
-                                  summary.remaining_window_hours ??
-                                    summary.window_hours
-                                )
-                                  ? t(
-                                      'qy_vio_my_remaining_line_scale_unlimited',
-                                      {
-                                        hits: summary.remaining_hit_count ?? 0,
-                                        threshold: summary.remaining_threshold,
-                                      }
-                                    )
-                                  : t('qy_vio_my_remaining_line_scale', {
-                                      hits: summary.remaining_hit_count ?? 0,
-                                      threshold: summary.remaining_threshold,
-                                      hours:
-                                        summary.remaining_window_hours ??
-                                        summary.window_hours,
-                                    })}
-                              </>
-                            )}
-                        </>
-                      ) : undefined,
-                  },
-                  {
-                    key: 'total_fee',
-                    label: t('qy_vio_my_total_fee'),
-                    value: <QyAmountText quota={summary.total_fee_quota} />,
-                  },
-                ]}
-              />
-              {summary.ban_threshold > 0 && (
-                <Progress
-                  value={progress}
-                  aria-label={t('qy_vio_my_progress')}
-                />
-              )}
-            </div>
-          )}
-
           {/* 公示卡片排在记录列表**之前**：用户打开这一页时最该先看到的是
               「有哪些类型、各自几次会被处置、我现在各是几次」，而不是
               一条条已经发生的记录。规则本身永远不公示 —— 那等于教人绕过。 */}

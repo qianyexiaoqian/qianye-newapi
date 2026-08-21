@@ -379,6 +379,23 @@ func handlePublishActivity(c *gin.Context) {
 		respondErr(c, errStatusConflict)
 		return
 	}
+	// 玩法被隐藏时**不允许发布**。草稿可以照常备着 —— 草稿本来就不下发给用户,
+	// 拦在这里不妨碍运营提前把下一期做好。
+	//
+	// 拦的是发布这一刻:发布是不可逆的(承诺哈希一经生成,条件与时刻全部只读),
+	// 而发布一场用户在大厅里看不到、点进去也报不了名的活动,得到的是一场只会
+	// 走到"参与人数不足流局"的空活动 —— 那正是"实现了但界面上点不到"的翻版。
+	//
+	// 位置在时刻校验**之前**:它是最便宜也最决定性的一条。放在后面的表现是
+	// 运营先被"截止时间已过"顶回来、改完时间再提交,才发现这个玩法压根没开 ——
+	// 两趟往返,而第一趟给出的理由是个假线索。
+	if !effectiveCtx(ctx).playShown(playOf(act.Kind, act.DrawMode)) {
+		writeAdminAudit(c, "lottery.activity.publish", actNo, qymodel.ResultFail,
+			"该玩法当前已隐藏,请先在娱乐配置里打开",
+			snapText(activitySnapshot(act, nil)), "")
+		respondErr(c, errPlayHidden)
+		return
+	}
 	// 时刻必须相对**现在**仍然成立:草稿可能躺了两天,close_at 早就过去了。
 	if err := validateSchedule(act, common.GetTimestamp()); err != nil {
 		writeAdminAudit(c, "lottery.activity.publish", actNo, qymodel.ResultFail, auditReason(err),

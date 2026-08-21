@@ -95,6 +95,7 @@ import { Route as AuthenticatedQyAdminHealthIndexRouteImport } from './routes/_a
 import { Route as AuthenticatedQyAdminLotteryConfigIndexRouteImport } from './routes/_authenticated/qy/admin/lottery-config/index'
 import { Route as AuthenticatedQyAdminLotteryIndexRouteImport } from './routes/_authenticated/qy/admin/lottery/index'
 import { Route as AuthenticatedQyAdminRestrictedAccountsIndexRouteImport } from './routes/_authenticated/qy/admin/restricted-accounts/index'
+import { Route as AuthenticatedQyAdminSettlementIndexRouteImport } from './routes/_authenticated/qy/admin/settlement/index'
 import { Route as AuthenticatedQyAdminTicketsIndexRouteImport } from './routes/_authenticated/qy/admin/tickets/index'
 import { Route as AuthenticatedQyAdminTransferConfigIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-config/index'
 import { Route as AuthenticatedQyAdminTransferGroupRulesIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-group-rules/index'
@@ -594,6 +595,12 @@ const AuthenticatedQyAdminRestrictedAccountsIndexRoute =
     path: '/restricted-accounts/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
+const AuthenticatedQyAdminSettlementIndexRoute =
+  AuthenticatedQyAdminSettlementIndexRouteImport.update({
+    id: '/settlement/',
+    path: '/settlement/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
 const AuthenticatedQyAdminTicketsIndexRoute =
   AuthenticatedQyAdminTicketsIndexRouteImport.update({
     id: '/tickets/',
@@ -764,6 +771,7 @@ export interface FileRoutesByFullPath {
   '/qy/admin/lottery-config/': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/qy/admin/lottery/': typeof AuthenticatedQyAdminLotteryIndexRoute
   '/qy/admin/restricted-accounts/': typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
+  '/qy/admin/settlement/': typeof AuthenticatedQyAdminSettlementIndexRoute
   '/qy/admin/tickets/': typeof AuthenticatedQyAdminTicketsIndexRoute
   '/qy/admin/transfer-config/': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
@@ -861,6 +869,7 @@ export interface FileRoutesByTo {
   '/qy/admin/lottery-config': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/qy/admin/lottery': typeof AuthenticatedQyAdminLotteryIndexRoute
   '/qy/admin/restricted-accounts': typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
+  '/qy/admin/settlement': typeof AuthenticatedQyAdminSettlementIndexRoute
   '/qy/admin/tickets': typeof AuthenticatedQyAdminTicketsIndexRoute
   '/qy/admin/transfer-config': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/qy/admin/transfer-group-rules': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
@@ -964,6 +973,7 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/lottery-config/': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/_authenticated/qy/admin/lottery/': typeof AuthenticatedQyAdminLotteryIndexRoute
   '/_authenticated/qy/admin/restricted-accounts/': typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
+  '/_authenticated/qy/admin/settlement/': typeof AuthenticatedQyAdminSettlementIndexRoute
   '/_authenticated/qy/admin/tickets/': typeof AuthenticatedQyAdminTicketsIndexRoute
   '/_authenticated/qy/admin/transfer-config/': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/_authenticated/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
@@ -1066,6 +1076,7 @@ export interface FileRouteTypes {
     | '/qy/admin/lottery-config/'
     | '/qy/admin/lottery/'
     | '/qy/admin/restricted-accounts/'
+    | '/qy/admin/settlement/'
     | '/qy/admin/tickets/'
     | '/qy/admin/transfer-config/'
     | '/qy/admin/transfer-group-rules/'
@@ -1163,6 +1174,7 @@ export interface FileRouteTypes {
     | '/qy/admin/lottery-config'
     | '/qy/admin/lottery'
     | '/qy/admin/restricted-accounts'
+    | '/qy/admin/settlement'
     | '/qy/admin/tickets'
     | '/qy/admin/transfer-config'
     | '/qy/admin/transfer-group-rules'
@@ -1265,6 +1277,7 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/lottery-config/'
     | '/_authenticated/qy/admin/lottery/'
     | '/_authenticated/qy/admin/restricted-accounts/'
+    | '/_authenticated/qy/admin/settlement/'
     | '/_authenticated/qy/admin/tickets/'
     | '/_authenticated/qy/admin/transfer-config/'
     | '/_authenticated/qy/admin/transfer-group-rules/'
@@ -1904,6 +1917,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminRestrictedAccountsIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
+    '/_authenticated/qy/admin/settlement/': {
+      id: '/_authenticated/qy/admin/settlement/'
+      path: '/settlement'
+      fullPath: '/qy/admin/settlement/'
+      preLoaderRoute: typeof AuthenticatedQyAdminSettlementIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
     '/_authenticated/qy/admin/tickets/': {
       id: '/_authenticated/qy/admin/tickets/'
       path: '/tickets'
@@ -2044,6 +2064,7 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminLotteryConfigIndexRoute: typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   AuthenticatedQyAdminLotteryIndexRoute: typeof AuthenticatedQyAdminLotteryIndexRoute
   AuthenticatedQyAdminRestrictedAccountsIndexRoute: typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
+  AuthenticatedQyAdminSettlementIndexRoute: typeof AuthenticatedQyAdminSettlementIndexRoute
   AuthenticatedQyAdminTicketsIndexRoute: typeof AuthenticatedQyAdminTicketsIndexRoute
   AuthenticatedQyAdminTransferConfigIndexRoute: typeof AuthenticatedQyAdminTransferConfigIndexRoute
   AuthenticatedQyAdminTransferGroupRulesIndexRoute: typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
@@ -2083,6 +2104,8 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
       AuthenticatedQyAdminLotteryIndexRoute,
     AuthenticatedQyAdminRestrictedAccountsIndexRoute:
       AuthenticatedQyAdminRestrictedAccountsIndexRoute,
+    AuthenticatedQyAdminSettlementIndexRoute:
+      AuthenticatedQyAdminSettlementIndexRoute,
     AuthenticatedQyAdminTicketsIndexRoute:
       AuthenticatedQyAdminTicketsIndexRoute,
     AuthenticatedQyAdminTransferConfigIndexRoute:

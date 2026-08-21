@@ -173,5 +173,18 @@ export function useQyConnectionInfoCopy(): QyConnectionInfoCopy {
     },
   })
 
-  return { prefetch: picker.prefetch, copy: picker.pick, dialog: picker.dialog }
+  return {
+    prefetch: picker.prefetch,
+    copy: picker.pick,
+    dialog: picker.dialog,
+  }
 }
+
+/**
+ * 密钥页顶上那条「API 地址 + 复制 / 带 V1 复制」。
+ *
+ * 从这里再导出一次，而不是让调用方直接 import 那个文件：这个目录对外就是
+ * 「API 地址簿的用户侧消费口」，选线路与复制地址读的是同一份清单、同一个
+ * react-query 键，入口摆在一处才不会有人再去别处捞一份地址。
+ */
+export { QyApiAddressCopyBar } from './copy-bar'

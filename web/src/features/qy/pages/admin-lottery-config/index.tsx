@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Info, ShieldAlert } from 'lucide-react'
+import { Eye, EyeOff, Info, ShieldAlert } from 'lucide-react'
 import { useEffect, useId, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -55,7 +55,30 @@ import type { QyLotAdminConfig, QyLotEffective } from '../admin-lottery/types'
 import { QyKeyValue } from '../ops/qy-ops-ui'
 
 /** 布尔型开关。它在 `qy_settings` 里存的是 `0` / `1`，不是 `true` / `false`。 */
-const BOOLEAN_KEYS = new Set<keyof QyLotEffective>(['show_entry'])
+const BOOLEAN_KEYS = new Set<keyof QyLotEffective>([
+  'show_entry',
+  'show_play_draw_rank',
+  'show_play_draw_prob',
+  'show_play_draw_ball',
+  'show_play_guess',
+])
+
+/**
+ * 玩法开关 → 用户端那张标签上的名字。顺序 = 后端 `Plays` 的顺序。
+ *
+ * 单独一张表而不是从 `editable_keys` 里按前缀猜：这一段要回答的是「关掉之后
+ * 用户还看得到什么」，而那句话里出现的是玩法名（抽奖·按名次 / 双色球 / 竞猜），
+ * 不是配置键名。键名对不上号的提示等于没有提示。
+ */
+const PLAY_SWITCHES: readonly {
+  key: keyof QyLotEffective
+  labelKey: string
+}[] = [
+  { key: 'show_play_draw_rank', labelKey: 'qy_lot_play_draw_rank' },
+  { key: 'show_play_draw_prob', labelKey: 'qy_lot_play_draw_prob' },
+  { key: 'show_play_draw_ball', labelKey: 'qy_lot_play_draw_ball' },
+  { key: 'show_play_guess', labelKey: 'qy_lot_play_guess' },
+]
 
 /**
  * 金额字段：界面按 USD 录入与显示，存储仍是额度整数。
@@ -215,6 +238,10 @@ function EditableCard(props: { config: QyLotAdminConfig }) {
             </AlertDescription>
           </Alert>
 
+          {/* 保存前的**当前**状态，读的是服务端生效值而不是草稿：这一段回答的是
+              "线上此刻用户看到什么"，跟着草稿走会让人以为改动已经生效。 */}
+          <PlayVisibilitySummary config={config} />
+
           <QyUsdScaleNotice scale={scale} />
 
           {config.editable_keys.map((key) => (
@@ -285,6 +312,42 @@ function EditableCard(props: { config: QyLotAdminConfig }) {
         }}
       />
     </>
+  )
+}
+
+/**
+ * 「用户端此刻看到什么」。
+ *
+ * 一排开关本身回答不了这个问题：四个开关是"这一项开没开"，而运营真正要确认的是
+ * 那两张大厅标签还在不在、整行导航还渲不渲染。把结论直接写出来，是因为这一页
+ * 的失败形状是**沉默的** —— 把四个都关掉之后前台会安静地少掉一整块，
+ * 而配置页上看起来只是四个灰色的开关。
+ */
+function PlayVisibilitySummary(props: { config: QyLotAdminConfig }) {
+  const { t } = useTranslation()
+  const effective = props.config.effective
+  const shown = PLAY_SWITCHES.filter((item) => effective[item.key] === 1)
+  const entryShown = effective.show_entry === 1 && shown.length > 0
+
+  return (
+    <Alert variant={entryShown ? undefined : 'destructive'}>
+      {entryShown ? <Eye /> : <EyeOff />}
+      <AlertTitle>{t('qy_lot_cfg_play_summary_title')}</AlertTitle>
+      <AlertDescription>
+        {shown.length === 0
+          ? t('qy_lot_cfg_play_summary_none')
+          : t('qy_lot_cfg_play_summary_list', {
+              plays: shown.map((item) => t(item.labelKey)).join('、'),
+            })}
+        {/* 两句话必须分开：一句讲"大厅里还剩什么"，一句讲"已参与的人怎么办"。
+            后者是这整套开关唯一不能让步的承诺 —— 藏掉入口而已经收了钱的活动
+            还在跑，是把钱悬在半空。 */}
+        <span className='block'>{t('qy_lot_cfg_play_summary_kept')}</span>
+        {effective.show_entry !== 1 && (
+          <span className='block'>{t('qy_lot_cfg_play_summary_off')}</span>
+        )}
+      </AlertDescription>
+    </Alert>
   )
 }
 

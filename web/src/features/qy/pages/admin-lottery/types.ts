@@ -475,6 +475,17 @@ export type QyLotSeriesInput = {
 export type QyLotEffective = {
   /** 需求原文的「系统设置前端是否显示」。1 = 显示。 */
   show_entry: number
+  /**
+   * 四种玩法各自的显示/隐藏。1 = 显示，缺省（库里没有这一行）= 显示。
+   *
+   * 与 `show_entry` **串联**：前者关掉整块娱乐入口，这四个各关一种玩法。
+   * 关掉一种玩法只挡「新参与」与「大厅可见性」—— 已参与的用户照常查票、领奖，
+   * 进行中的活动照常封盘、开奖、派奖，管理端一切照旧。
+   */
+  show_play_draw_rank: number
+  show_play_draw_prob: number
+  show_play_draw_ball: number
+  show_play_guess: number
   /** 同时进行中的活动数上限。防止运营一口气开出几十场自己也管不过来。 */
   max_active_activities: number
   /** 竞猜默认手续费（万分比）。 */

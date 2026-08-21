@@ -35,6 +35,7 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { formatQyQuotaLedger } from '../../lib/format'
+import { qyTabTarget } from '../../lib/pages'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 import { qyAdminBalancesQuery } from './api'
@@ -172,13 +173,17 @@ export function QyAdminCommissionBalancesBody() {
         <div className='flex justify-end gap-1'>
           {/* 下钻:这一行的四个额度是聚合值,"他这 137 额度是怎么来的"只有逐笔
               计佣答得了。带着 inviter_id 跳过去,佣金审核页会用它做筛选初值 ——
-              这一跳此前不存在,运营只能记住用户 ID、自己走去佣金审核再手打一遍。 */}
+              这一跳此前不存在,运营只能记住用户 ID、自己走去佣金审核再手打一遍。
+
+              目标走 `qyTabTarget`:佣金审核已经是「结算台」的第二张标签,
+              直接 to 旧地址也到得了(重定向会把 inviter_id 转发过去),但那是
+              **先离开再被弹回来**,用户看到的是一次白闪。 */}
           <Button
             variant='ghost'
             size='sm'
             render={
               <Link
-                to='/qy/admin/commission-records'
+                {...qyTabTarget('/qy/admin/commission-records')}
                 search={{ inviter_id: String(row.user_id) }}
               />
             }

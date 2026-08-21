@@ -32,6 +32,14 @@ export function listQyMyViolations(params: {
   return qyGet<QyPage<QyMyViolationRecord>>('/violation/my-records', params)
 }
 
+/**
+ * 违规汇总。**当前没有任何页面调用它** —— 项目方要求用户端只留违规类型，
+ * 三个统计块（窗口违规次数 / 距离封号还剩余 / 累计扣费）已经拿掉。
+ *
+ * 保留这个客户端而不是一起删：后端 `my-summary` 仍在下发，接口有人维护、
+ * 前端却连一份类型化的读法都没有，等于把契约丢在半路。要恢复那三块统计，
+ * 先读 `types.ts` 里 `QyMyViolationSummary` 顶部那段注释，别直接接回去。
+ */
 export function getQyMyViolationSummary(): Promise<QyMyViolationSummary> {
   return qyGet<QyMyViolationSummary>('/violation/my-summary')
 }

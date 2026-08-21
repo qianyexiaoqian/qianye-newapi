@@ -74,6 +74,15 @@ export const QY_DISABLED_CONFIG: QyConfig = {
   lottery: {
     show_entry: false,
     proof_public: false,
+    // 扩展整体关掉时不该有任何娱乐入口。这里的四个 false 与
+    // normalizeQyConfig 里"缺键按显示"并不矛盾：那一条讲的是后端在场却没下发
+    // 这一段，这一条讲的是后端明确说了 enabled:false。
+    plays: {
+      draw_rank: false,
+      draw_prob: false,
+      draw_ball: false,
+      guess: false,
+    },
   },
 }
 
@@ -105,6 +114,7 @@ export function normalizeQyConfig(
   const withdraw = raw.withdraw_options ?? {}
   const transfer = raw.transfer_options ?? {}
   const lottery = raw.lottery ?? {}
+  const plays = lottery.plays ?? {}
   const enabled = bool(raw.enabled)
 
   return {
@@ -151,6 +161,19 @@ export function normalizeQyConfig(
       // 比少显示一个入口更糟 —— 前者是断链，后者只是这一期没开。
       show_entry: bool(lottery.show_entry),
       proof_public: bool(lottery.proof_public),
+      // 玩法开关的缺省方向与 show_entry **相反**，理由见 types.ts 的
+      // QyLotPlays：缺省隐藏会让一个从没动过配置的站点在升级后整块娱乐功能
+      // 静默消失，而缺省显示最多是多一格入口（列表由后端过滤，不会变成断链）。
+      //
+      // 但"缺省显示"只在扩展开着时成立：后端回 `enabled:false` 时整个响应就只有
+      // 两个字段，此时把四种玩法标成"显示"会得到一份自相矛盾的快照
+      // （`features.lottery` 是 false，玩法却全开）。所以缺省值跟着 `enabled` 走。
+      plays: {
+        draw_rank: bool(plays.draw_rank, enabled),
+        draw_prob: bool(plays.draw_prob, enabled),
+        draw_ball: bool(plays.draw_ball, enabled),
+        guess: bool(plays.guess, enabled),
+      },
     },
   }
 }

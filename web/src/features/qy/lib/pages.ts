@@ -19,7 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   ClipboardList,
   Gauge,
-  HandCoins,
   HeartPulse,
   LifeBuoy,
   Megaphone,
@@ -28,13 +27,12 @@ import {
   ScrollText,
   ShieldAlert,
   Ticket,
-  TrendingUp,
   TriangleAlert,
   Users,
 } from 'lucide-react'
 import type { ElementType } from 'react'
 
-import type { QyFeatures } from './types'
+import type { QyFeatures, QyLotPlays } from './types'
 
 /**
  * qy 扩展所有页面的**单一登记表**。
@@ -210,6 +208,32 @@ export const QY_TAB_GROUPS: readonly QyTabGroupDef[] = [
     titleKey: 'qy_nav_lottery_hub',
     pages: ['/qy/lottery', '/qy/lottery-guess', '/qy/lottery-records'],
   },
+  {
+    // 项目方原话：「把日消费明细/佣金审核，提醒审核，这些管理页面弄成选择夹，
+    // 放在一个页面上。」
+    //
+    // 「提醒审核」站内并不存在 —— 侧栏「结算」组底下与前两页并列的第三页是
+    // **提现审核**（`/qy/admin/withdrawals`），全站也没有任何叫「提醒」的页面
+    // 或接口。按上下文取提现审核。
+    //
+    // 三张标签的顺序 = 钱在系统里流动的顺序，也是运营对账时的追问顺序：
+    // 消费（谁花了多少）→ 计佣（这笔消费给上线记了多少）→ 提现（把钱付出去）。
+    // 所以第一张是日消费明细，而不是被点名最多的佣金审核。
+    //
+    // ── 为什么宿主是一个新页面，而不是让三页中的某一页当宿主 ──
+    // 复用（例如让 `/qy/admin/commission-records` 当宿主）会造出一个**名不副实
+    // 的地址**：书签栏里写着 commission-records，打开却停在日消费明细那张表；
+    // 而且三张标签在 URL 上不再平等 —— 两页重定向、一页不用。新开
+    // `/qy/admin/settlement` 之后三条旧地址一视同仁地重定向，地址本身也说得出
+    // 这一页是什么。代价是页面表多一行、GATE 编号多一个。
+    host: '/qy/admin/settlement',
+    titleKey: 'qy_nav_a_settlement',
+    pages: [
+      '/qy/admin/daily-consume',
+      '/qy/admin/commission-records',
+      '/qy/admin/withdrawals',
+    ],
+  },
 ]
 
 /**
@@ -264,6 +288,28 @@ export function qyTabTarget(url: string): { to: string; hash?: string } {
  */
 export type QyEntrySwitches = {
   lottery: boolean
+}
+
+/**
+ * 「抽奖」那一档还剩不剩玩法（按名次 / 按公示概率 / 双色球）。
+ *
+ * 三种定档方式共用一张大厅标签 —— 它们的 `kind` 都是 `draw`，双色球是活动行上
+ * 的 `draw_mode` 而不是第四张标签（见 `pages/lottery/hub.tsx`）。所以决定那张
+ * 标签渲不渲染的是「三种里还有没有一种开着」，而不是任何单独一个开关。
+ */
+export function qyLotDrawShown(plays: QyLotPlays): boolean {
+  return plays.draw_rank || plays.draw_prob || plays.draw_ball
+}
+
+/**
+ * 一个玩法都不开时，整组娱乐入口从导航里消失。
+ *
+ * 与 `show_entry=0` **完全同一形状**：路由与接口照常可达，直达链接进去仍然
+ * 只剩「我的参与」那张标签 —— 已参与的人必须还能查到自己那一票、还能领奖。
+ * 藏掉的只是入口，不是数据，更不是钱。
+ */
+export function qyAnyLotPlayShown(plays: QyLotPlays): boolean {
+  return qyLotDrawShown(plays) || plays.guess
 }
 
 export type QyPageDef = {
@@ -445,12 +491,28 @@ export const QY_PAGES: readonly QyPageDef[] = [
   },
 
   // ── 新组「结算」：钱怎么流动，管理员视角 ──
+  // 「结算台」选择夹的宿主：日消费明细 / 佣金审核 / 提现审核三张标签。
+  // 侧栏上这一行写的是组名（`QY_TAB_GROUPS.titleKey`），组里每张标签才写各自
+  // 页面的 `titleKey`。这一行取代了此前那三行平级入口。
+  //
+  // `feature: 'commission'` 只是它自己的门；组里的提现审核挂的是 `withdraw`，
+  // 而 {@link isQyPageVisible} 对宿主页额外走"任一标签可见即可见"那一条 ——
+  // 否则「只开提现、不开返佣」这个合法组合会让提现审核连同宿主一起从侧栏
+  // 消失，站内再也到不了。
+  {
+    url: '/qy/admin/settlement',
+    titleKey: 'qy_nav_a_settlement',
+    feature: 'commission',
+    group: 'qy-settlement',
+    icon: ReceiptText,
+    codeKey: 'qy_sg_code_a_settlement',
+  },
+  // 以下三页已被收进「结算台」的选择夹，因此**不写 group / icon**：
+  // 它们没有独立的侧栏入口了，旧路由只做重定向。
   {
     url: '/qy/admin/commission-records',
     titleKey: 'qy_nav_a_commission_records',
     feature: 'commission',
-    group: 'qy-settlement',
-    icon: ReceiptText,
     codeKey: 'qy_sg_code_a_commission_records',
   },
   // 「用户佣金」——**一行 = 一个用户**。项目方原话：「我需要的是新增一个用户
@@ -498,24 +560,20 @@ export const QY_PAGES: readonly QyPageDef[] = [
   },
   // 日消费明细。项目方原话：「可以查询昨日使用记录哪个用户消费了多少」。
   //
-  // 它挂在「结算」组而不是「运营」组：运营看这张表的动机与看佣金流水是同一个 ——
+  // 它是「结算台」的第一张标签：运营看这张表的动机与看佣金流水是同一个 ——
   // 对账。它同时也是佣金那几页答不了的那一半问题（0% 分组、没有上线、被罚过款的
-  // 用户在计佣表里一行都没有），所以两者必须在同一个组里挨着，否则运营会以为
-  // 佣金流水就是全部的消费。
+  // 用户在计佣表里一行都没有），所以两者必须同屏，否则运营会以为佣金流水就是
+  // 全部的消费。
   {
     url: '/qy/admin/daily-consume',
     titleKey: 'qy_dc_title',
     feature: 'commission',
-    group: 'qy-settlement',
-    icon: TrendingUp,
     codeKey: 'qy_sg_code_a_daily_consume',
   },
   {
     url: '/qy/admin/withdrawals',
     titleKey: 'qy_nav_a_withdrawals',
     feature: 'withdraw',
-    group: 'qy-settlement',
-    icon: HandCoins,
     codeKey: 'qy_sg_code_a_withdrawals',
   },
   {
@@ -737,6 +795,35 @@ export function isQyAdminPage(url: string): boolean {
  * 展示开关（系统设置抽屉里全是管理页）时，不该把菜单先抹掉再长回来。
  */
 export function isQyPageVisible(
+  page: QyPageDef,
+  features: QyFeatures,
+  isAdmin: boolean,
+  entries?: QyEntrySwitches
+): boolean {
+  if (qyPageGatesPass(page, features, isAdmin, entries)) return true
+
+  // 宿主页还有第二条路：**任何一张标签可见，宿主就必须可见**。
+  //
+  // 选择夹里的各张标签挂的功能开关不一定相同（结算台是 commission ×
+  // commission × withdraw，推广佣金是 commission × commission × withdraw ×
+  // withdraw）。只按宿主自己那一个开关判定的话，「只开提现、不开返佣」这个
+  // 完全合法的组合会让宿主整行从侧栏消失，而组里那张 withdraw 标签**并没有
+  // 被关掉** —— 它只是再也没有入口了。那正是本仓反复出现的断链形状，而且
+  // 这一次连 `route-entry-guard` 都看不见：那条守卫按"页面表里有没有登记"
+  // 判定，登记是齐的。
+  //
+  // 判定走 `qyPageGatesPass` 而不是递归调用自己：宿主页往往也是组里的第一张
+  // 标签（`/qy/affiliate`），递归会原地打转。
+  const group = QY_TAB_GROUPS.find((item) => item.host === page.url)
+  if (group == null) return false
+  return group.pages.some((url) => {
+    const tab = QY_PAGES.find((item) => item.url === url)
+    return tab != null && qyPageGatesPass(tab, features, isAdmin, entries)
+  })
+}
+
+/** 页面**自己那几道门**：角色 × 功能开关 × 站点展示开关。 */
+function qyPageGatesPass(
   page: QyPageDef,
   features: QyFeatures,
   isAdmin: boolean,

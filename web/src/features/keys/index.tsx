@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
+import { QyApiAddressCopyBar } from '@/features/qy/pages/api-address-picker'
 
 import { ApiKeysDialogs } from './components/api-keys-dialogs'
 import { ApiKeysPrimaryButtons } from './components/api-keys-primary-buttons'
@@ -35,7 +36,16 @@ export function ApiKeys() {
           <ApiKeysPrimaryButtons />
         </SectionPageLayout.Actions>
         <SectionPageLayout.Content>
-          <ApiKeysTable />
+          {/* API 地址摆在密钥表**上方**而不是收进某个菜单：用户来这一页就是
+              为了拿"密钥 + 地址"这一对，地址却一直只能靠自己看浏览器地址栏
+              或翻文档。表格自己会把剩余高度吃满（DataTablePage 的根节点是
+              h-full 的 flex 列），所以这里补一层 flex 列把它框住。 */}
+          <div className='flex h-full min-h-0 flex-col gap-2.5 sm:gap-3'>
+            <QyApiAddressCopyBar />
+            <div className='min-h-0 flex-1'>
+              <ApiKeysTable />
+            </div>
+          </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>
 

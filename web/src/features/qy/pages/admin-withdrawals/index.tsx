@@ -35,7 +35,6 @@ import { cn } from '@/lib/utils'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
-import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
 import { qyArray } from '../../lib/array'
 import { QyFiatText } from '../components/qy-fiat-text'
@@ -68,8 +67,13 @@ const STATUS_OPTIONS = [
  *
  * 超 SLA 的行整行标红，判定用后端下发的 `sla_breached` 而不是前端比时间 ——
  * 管理员机器的时钟偏差会让红色标记在两台电脑上不一致。
+ *
+ * ── 为什么是 Body 而不是整页 ──
+ * 本页已被收进「结算台」的选择夹（`QY_TAB_GROUPS`），是第三张标签。区段头
+ * （`GATE NN` + 大标题）由宿主页 `admin-settlement/hub.tsx` 出，这里只提供正文。
+ * 旧地址 `/qy/admin/withdrawals` 保留成重定向。
  */
-export function QyAdminWithdrawals() {
+export function QyAdminWithdrawalsBody() {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState('pending')
@@ -224,114 +228,109 @@ export function QyAdminWithdrawals() {
   const resetPage = () => setPage(1)
 
   return (
-    <QySectionPageLayout>
-      <QySectionPageLayout.Title>
-        {t('qy_nav_a_withdrawals')}
-      </QySectionPageLayout.Title>
-      <QySectionPageLayout.Content>
-        <div className='space-y-3'>
-          <QyStatGrid items={statItems} />
+    <>
+      <div className='space-y-3'>
+        <QyStatGrid items={statItems} />
 
-          <div className='flex flex-wrap items-center gap-2'>
-            <NativeSelect
-              size='sm'
-              aria-label={t('qy_common_status')}
-              value={status}
-              onChange={(event) => {
-                resetPage()
-                setStatus(event.target.value)
-              }}
-            >
-              <NativeSelectOption value=''>
-                {t('qy_common_all')}
-              </NativeSelectOption>
-              {STATUS_OPTIONS.map((value) => (
-                <NativeSelectOption key={value} value={value}>
-                  {t(`qy_common_st_${value}`)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-
-            <NativeSelect
-              size='sm'
-              aria-label={t('qy_wd_method')}
-              value={method}
-              onChange={(event) => {
-                resetPage()
-                setMethod(event.target.value)
-              }}
-            >
-              <NativeSelectOption value=''>
-                {t('qy_wd_filter_all_methods')}
-              </NativeSelectOption>
-              <NativeSelectOption value='quota'>
-                {t('qy_wd_m_quota')}
-              </NativeSelectOption>
-              <NativeSelectOption value='fiat'>
-                {t('qy_wd_m_fiat')}
-              </NativeSelectOption>
-            </NativeSelect>
-
-            <Input
-              className='h-8 w-56'
-              value={keyword}
-              placeholder={t('qy_wd_a_search_ph')}
-              onChange={(event) => {
-                resetPage()
-                setKeyword(event.target.value)
-              }}
-            />
-
-            <Button
-              variant={riskOnly ? 'default' : 'outline'}
-              size='sm'
-              onClick={() => {
-                resetPage()
-                setRiskOnly(!riskOnly)
-              }}
-            >
-              {t('qy_wd_a_filter_risk')}
-            </Button>
-            <Button
-              variant={status === 'approved' ? 'default' : 'outline'}
-              size='sm'
-              onClick={() => {
-                resetPage()
-                setStatus(status === 'approved' ? 'pending' : 'approved')
-              }}
-            >
-              {t('qy_wd_a_filter_payout')}
-            </Button>
-          </div>
-
-          <QyPageBoundary
-            query={query}
-            isEmpty={items.length === 0}
-            emptyIcon={Banknote}
-            emptyTitle={t('qy_wd_a_empty_title')}
-            emptyDescription={t('qy_wd_a_empty_desc')}
+        <div className='flex flex-wrap items-center gap-2'>
+          <NativeSelect
+            size='sm'
+            aria-label={t('qy_common_status')}
+            value={status}
+            onChange={(event) => {
+              resetPage()
+              setStatus(event.target.value)
+            }}
           >
-            <div className='w-full overflow-x-auto'>
-              <StaticDataTable
-                columns={columns}
-                data={items}
-                getRowKey={(row) => row.withdraw_no}
-                getRowClassName={(row) =>
-                  cn(row.sla_breached && 'bg-destructive/5')
-                }
-                tableClassName='min-w-[1000px]'
-              />
-            </div>
-            <QyPager
-              page={page}
-              pageSize={QY_PAGE_SIZE}
-              total={query.data?.total ?? 0}
-              disabled={query.isFetching}
-              onPageChange={setPage}
-            />
-          </QyPageBoundary>
+            <NativeSelectOption value=''>
+              {t('qy_common_all')}
+            </NativeSelectOption>
+            {STATUS_OPTIONS.map((value) => (
+              <NativeSelectOption key={value} value={value}>
+                {t(`qy_common_st_${value}`)}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+
+          <NativeSelect
+            size='sm'
+            aria-label={t('qy_wd_method')}
+            value={method}
+            onChange={(event) => {
+              resetPage()
+              setMethod(event.target.value)
+            }}
+          >
+            <NativeSelectOption value=''>
+              {t('qy_wd_filter_all_methods')}
+            </NativeSelectOption>
+            <NativeSelectOption value='quota'>
+              {t('qy_wd_m_quota')}
+            </NativeSelectOption>
+            <NativeSelectOption value='fiat'>
+              {t('qy_wd_m_fiat')}
+            </NativeSelectOption>
+          </NativeSelect>
+
+          <Input
+            className='h-8 w-56'
+            value={keyword}
+            placeholder={t('qy_wd_a_search_ph')}
+            onChange={(event) => {
+              resetPage()
+              setKeyword(event.target.value)
+            }}
+          />
+
+          <Button
+            variant={riskOnly ? 'default' : 'outline'}
+            size='sm'
+            onClick={() => {
+              resetPage()
+              setRiskOnly(!riskOnly)
+            }}
+          >
+            {t('qy_wd_a_filter_risk')}
+          </Button>
+          <Button
+            variant={status === 'approved' ? 'default' : 'outline'}
+            size='sm'
+            onClick={() => {
+              resetPage()
+              setStatus(status === 'approved' ? 'pending' : 'approved')
+            }}
+          >
+            {t('qy_wd_a_filter_payout')}
+          </Button>
         </div>
-      </QySectionPageLayout.Content>
+
+        <QyPageBoundary
+          query={query}
+          isEmpty={items.length === 0}
+          emptyIcon={Banknote}
+          emptyTitle={t('qy_wd_a_empty_title')}
+          emptyDescription={t('qy_wd_a_empty_desc')}
+        >
+          <div className='w-full overflow-x-auto'>
+            <StaticDataTable
+              columns={columns}
+              data={items}
+              getRowKey={(row) => row.withdraw_no}
+              getRowClassName={(row) =>
+                cn(row.sla_breached && 'bg-destructive/5')
+              }
+              tableClassName='min-w-[1000px]'
+            />
+          </div>
+          <QyPager
+            page={page}
+            pageSize={QY_PAGE_SIZE}
+            total={query.data?.total ?? 0}
+            disabled={query.isFetching}
+            onPageChange={setPage}
+          />
+        </QyPageBoundary>
+      </div>
 
       <ReviewDialog
         withdrawalId={reviewId}
@@ -342,7 +341,7 @@ export function QyAdminWithdrawals() {
         withdrawalId={revealId}
         onClose={() => setRevealId(null)}
       />
-    </QySectionPageLayout>
+    </>
   )
 }
 

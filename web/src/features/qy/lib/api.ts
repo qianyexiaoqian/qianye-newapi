@@ -321,6 +321,10 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_bad_option: 'qy_lot_err_bad_option',
   qy_lot_bad_amount: 'qy_lot_err_bad_amount',
   qy_lot_bad_request_id: 'qy_lot_err_bad_request_id',
+  // 玩法被运营隐藏。文案必须自己说清"已参与的不受影响"—— 用户看到自己参加过的
+  // 那一场突然不能再买，第一反应是自己那笔钱出事了，而这条错误在用户端与管理端
+  // （发布被拦）共用同一句。
+  qy_lot_play_hidden: 'qy_lot_err_play_hidden',
   // 三个幂等 / 落定出口必须说成三句话：in_progress 是"上一次还没落定，别再点"，
   // idem_conflict 是"换了参数还用同一个请求号，刷新重来"，not_settled 是
   // "钱可能已经动了，既不能说成功也不能说失败，去记录里复核"。

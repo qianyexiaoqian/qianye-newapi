@@ -16,12 +16,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
-import { QyAdminWithdrawals } from '@/features/qy/pages/admin-withdrawals'
+import { qyTabHash } from '@/features/qy/lib/pages'
 
-// 叶子路由不写守卫：登录由 `_authenticated/route.tsx` 保证，扩展启用由
-// `qy/route.tsx` 保证，管理员由 `qy/admin/route.tsx` 保证，各一处、零重复。
+/**
+ * 旧路由 —— 本页已被收进 `/qy/admin/settlement`（「结算台」）的选择夹
+ * （`QY_TAB_GROUPS`）。
+ *
+ * 保留成重定向而不是删掉：这个地址此前是侧栏「结算」组上的一行，运营的书签、
+ * 浏览器历史、内部文档与工单里贴出去的链接都还指着它。目标 hash 由
+ * `qyTabHash` 现算，与宿主页认标签用的是同一个函数 —— 不可能出现"跳过去了
+ * 但选中的是另一张"。
+ *
+ * `replace`：旧地址不该留在历史栈里，否则用户按返回键会被立刻再弹回来。
+ */
 export const Route = createFileRoute('/_authenticated/qy/admin/withdrawals/')({
-  component: QyAdminWithdrawals,
+  beforeLoad: () => {
+    throw redirect({
+      to: '/qy/admin/settlement',
+      hash: qyTabHash('/qy/admin/withdrawals'),
+      replace: true,
+    })
+  },
 })

@@ -263,6 +263,37 @@ export function DataTableRowActions<TData>({
         <TooltipContent>{t('Edit')}</TooltipContent>
       </Tooltip>
 
+      {/* 「一键导入 CC Switch」是操作列里的一个按钮，不是「⋯」菜单里的一项。
+          项目方原话：「API密钥那把【一键导入CC Switch】做成一个按钮显示在
+          操作列。」——它此前藏在下拉菜单里，正是本仓复发过多次的「实现了但
+          用户点不到」。图标按钮而不是带文案的按钮：与同列已有的启停 / 编辑
+          两个按钮同一形状，四个 icon-sm 加起来仍窄于该列 150px 的列宽，
+          手机端卡片视图里也是同一个组件、同一排。 */}
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              variant='ghost'
+              size='icon-sm'
+              // 悬停/聚焦就预热地址清单。菜单不再是必经之路，只靠
+              // handleMenuOpenChange 预热的话，点下去时缓存多半还是空的，
+              // 于是只配了一条线路的站点也会被弹一个只有一项的选择窗口。
+              onMouseEnter={prefetchApiAddresses}
+              onFocus={prefetchApiAddresses}
+              onClick={async () => {
+                const realKey = await resolveRealKey(apiKey.id)
+                if (!realKey) return
+                pickCcSwitchAddress(realKey)
+              }}
+              aria-label={t('CC Switch')}
+            />
+          }
+        >
+          <ArrowRightLeft />
+        </TooltipTrigger>
+        <TooltipContent>{t('Import to CC Switch')}</TooltipContent>
+      </Tooltip>
+
       <DataTableRowActionMenu
         ariaLabel={t('Open menu')}
         contentClassName='w-[200px]'
@@ -292,19 +323,6 @@ export function DataTableRowActions<TData>({
           {t('Copy Connection Info')}
           <DropdownMenuShortcut>
             <Link size={16} />
-          </DropdownMenuShortcut>
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onClick={async () => {
-            const realKey = await resolveRealKey(apiKey.id)
-            if (!realKey) return
-            pickCcSwitchAddress(realKey)
-          }}
-        >
-          {t('CC Switch')}
-          <DropdownMenuShortcut>
-            <ArrowRightLeft size={16} />
           </DropdownMenuShortcut>
         </DropdownMenuItem>
         {hasChatPresets && (

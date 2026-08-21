@@ -74,7 +74,10 @@ export function QyLotteryDetail() {
   const query = useQuery(qyLotActivityQuery(actNo))
   const activity = query.data
 
-  const open = activity != null && isQyLotOpen(activity, now)
+  // 玩法被运营隐藏时不再受理新参与。老后端不下发这个字段，按可参与处理 ——
+  // 真正说了算的仍然是后端在活动行锁与主库行锁里的那两次判定。
+  const playOpen = activity?.play_open !== false
+  const open = activity != null && isQyLotOpen(activity, now) && playOpen
   const eligibility = useQuery(qyLotEligibilityQuery(actNo, open))
 
   const countdown =
@@ -359,6 +362,14 @@ export function QyLotteryDetail() {
                         ? t('qy_lot_join_title')
                         : t('qy_lot_join_unavailable')}
                     </Button>
+                    {!playOpen && (
+                      // 置灰的按钮必须带上原因，而且要说清"已参与的不受影响"——
+                      // 用户看到自己参加过的那一场突然不能再买，第一反应是
+                      // 自己那笔钱出事了。
+                      <p className='text-muted-foreground text-xs'>
+                        {t('qy_lot_play_hidden_note')}
+                      </p>
+                    )}
                     {activity.my_entry_count > 0 && (
                       <p className='text-muted-foreground text-xs'>
                         {t('qy_lot_my_entry_count', {

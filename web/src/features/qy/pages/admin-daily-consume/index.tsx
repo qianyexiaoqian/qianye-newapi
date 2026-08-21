@@ -33,7 +33,6 @@ import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
 import { QyAmountText } from '../../components/qy-amount-text'
-import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { qyErrorMessage } from '../../lib/api'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
@@ -205,8 +204,18 @@ function ByDayPanel(props: {
  * 让这两列并排、而不是二选一，是这一页存在的全部意义:只给计佣基数的话,
  * 0% 分组与没有上线的客户在报表里根本不存在;只给消费额的话,运营对不上
  * 佣金账。
+ *
+ * ── 为什么是 Body 而不是整页 ──
+ * 本页已被收进「结算台」的选择夹（`QY_TAB_GROUPS`），侧栏上不再有独立的一行。
+ * 区段头（`GATE NN` + 大标题）由宿主页 `admin-settlement/hub.tsx` 出，这里只
+ * 提供正文 —— 标签里再套一层区段头会得到两级标题。旧地址
+ * `/qy/admin/daily-consume` 保留成重定向。
+ *
+ * 「导出 CSV」跟着正文走、不进宿主页的 Actions 槽：那个槽是三张标签共用的，
+ * 而这个按钮导出的是**本标签当前那组筛选**下的数据。放上去的话，运营在
+ * 「提现审核」标签上会看到一个导出按钮，点下去得到一份日消费报表。
  */
-export function QyAdminDailyConsume() {
+export function QyAdminDailyConsumeBody() {
   const { t } = useTranslation()
 
   const [startDate, setStartDate] = useState(yesterdayInputValue)
@@ -355,9 +364,10 @@ export function QyAdminDailyConsume() {
   const openRow = rows.find((row) => row.user_id === openUserId)
 
   return (
-    <QySectionPageLayout>
-      <QySectionPageLayout.Title>{t('qy_dc_title')}</QySectionPageLayout.Title>
-      <QySectionPageLayout.Actions>
+    <div className='space-y-3'>
+      <div className='flex flex-wrap items-start justify-between gap-2'>
+        {/* 两个金额列为什么对不上 —— 写死在页面上，而不是等运营来问。 */}
+        <p className='text-muted-foreground text-sm'>{t('qy_dc_gap_hint')}</p>
         <Button
           variant='outline'
           size='sm'
@@ -367,126 +377,121 @@ export function QyAdminDailyConsume() {
           <Download aria-hidden='true' />
           {t('qy_dc_export')}
         </Button>
-      </QySectionPageLayout.Actions>
+      </div>
 
-      <QySectionPageLayout.Content>
-        {/* 两个金额列为什么对不上 —— 写死在页面上，而不是等运营来问。 */}
-        <p className='text-muted-foreground text-sm'>{t('qy_dc_gap_hint')}</p>
+      {data?.index_ready === false && (
+        <p className='text-destructive flex items-center gap-1.5 text-sm'>
+          <AlertTriangle aria-hidden='true' className='size-4' />
+          {t('qy_dc_index_missing')}
+        </p>
+      )}
+      {(data?.accrual_users_without_logs ?? 0) > 0 && (
+        <p className='text-muted-foreground text-sm'>
+          {t('qy_dc_logs_pruned', {
+            count: data?.accrual_users_without_logs ?? 0,
+          })}
+        </p>
+      )}
 
-        {data?.index_ready === false && (
-          <p className='text-destructive flex items-center gap-1.5 text-sm'>
-            <AlertTriangle aria-hidden='true' className='size-4' />
-            {t('qy_dc_index_missing')}
-          </p>
-        )}
-        {(data?.accrual_users_without_logs ?? 0) > 0 && (
-          <p className='text-muted-foreground text-sm'>
-            {t('qy_dc_logs_pruned', {
-              count: data?.accrual_users_without_logs ?? 0,
-            })}
-          </p>
-        )}
-
-        <div className='flex flex-wrap items-end gap-2'>
-          <label className='flex flex-col gap-1 text-xs'>
-            {t('qy_dc_start_date')}
-            <Input
-              type='date'
-              value={startDate}
-              onChange={(e) => {
-                setStartDate(e.target.value)
-                resetPage()
-              }}
-            />
-          </label>
-          <label className='flex flex-col gap-1 text-xs'>
-            {t('qy_dc_end_date')}
-            <Input
-              type='date'
-              value={endDate}
-              onChange={(e) => {
-                setEndDate(e.target.value)
-                resetPage()
-              }}
-            />
-          </label>
-          <label className='flex flex-col gap-1 text-xs'>
-            {t('qy_dc_keyword')}
-            <Input
-              value={keyword}
-              placeholder={t('qy_dc_keyword_ph')}
-              onChange={(e) => {
-                setKeyword(e.target.value)
-                resetPage()
-              }}
-            />
-          </label>
-          <label className='flex flex-col gap-1 text-xs'>
-            {t('qy_dc_sort')}
-            <NativeSelect
-              value={sort}
-              onChange={(e) => {
-                setSort(e.target.value as QyDailyConsumeSort)
-                resetPage()
-              }}
-            >
-              {SORT_OPTIONS.map((key) => (
-                <NativeSelectOption key={key} value={key}>
-                  {t(`qy_dc_sort_${key}`)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </label>
-          <label className='flex flex-col gap-1 text-xs'>
-            {t('qy_dc_order')}
-            <NativeSelect
-              value={order}
-              onChange={(e) => {
-                setOrder(e.target.value === 'asc' ? 'asc' : 'desc')
-                resetPage()
-              }}
-            >
-              <NativeSelectOption value='desc'>
-                {t('qy_dc_order_desc')}
-              </NativeSelectOption>
-              <NativeSelectOption value='asc'>
-                {t('qy_dc_order_asc')}
-              </NativeSelectOption>
-            </NativeSelect>
-          </label>
-        </div>
-
-        {data !== undefined && (
-          <p className='text-muted-foreground text-sm'>
-            {t('qy_dc_summary', {
-              days: data.range.days,
-              users: data.summary.user_count,
-              requests: data.summary.request_count,
-            })}
-          </p>
-        )}
-
-        <StaticDataTable
-          columns={columns}
-          data={rows}
-          getRowKey={(row) => row.user_id}
-        />
-        {openRow !== undefined && (
-          <ByDayPanel
-            key={openRow.user_id}
-            user={openRow}
-            startDate={filters.start_date}
-            endDate={filters.end_date}
-            onClose={() => setOpenUserId(null)}
+      <div className='flex flex-wrap items-end gap-2'>
+        <label className='flex flex-col gap-1 text-xs'>
+          {t('qy_dc_start_date')}
+          <Input
+            type='date'
+            value={startDate}
+            onChange={(e) => {
+              setStartDate(e.target.value)
+              resetPage()
+            }}
           />
-        )}
-        <QyPager
-          page={data?.p ?? page}
-          pageSize={data?.page_size ?? QY_PAGE_SIZE}
-          total={data?.total ?? 0}
-          onPageChange={setPage}
+        </label>
+        <label className='flex flex-col gap-1 text-xs'>
+          {t('qy_dc_end_date')}
+          <Input
+            type='date'
+            value={endDate}
+            onChange={(e) => {
+              setEndDate(e.target.value)
+              resetPage()
+            }}
+          />
+        </label>
+        <label className='flex flex-col gap-1 text-xs'>
+          {t('qy_dc_keyword')}
+          <Input
+            value={keyword}
+            placeholder={t('qy_dc_keyword_ph')}
+            onChange={(e) => {
+              setKeyword(e.target.value)
+              resetPage()
+            }}
+          />
+        </label>
+        <label className='flex flex-col gap-1 text-xs'>
+          {t('qy_dc_sort')}
+          <NativeSelect
+            value={sort}
+            onChange={(e) => {
+              setSort(e.target.value as QyDailyConsumeSort)
+              resetPage()
+            }}
+          >
+            {SORT_OPTIONS.map((key) => (
+              <NativeSelectOption key={key} value={key}>
+                {t(`qy_dc_sort_${key}`)}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        </label>
+        <label className='flex flex-col gap-1 text-xs'>
+          {t('qy_dc_order')}
+          <NativeSelect
+            value={order}
+            onChange={(e) => {
+              setOrder(e.target.value === 'asc' ? 'asc' : 'desc')
+              resetPage()
+            }}
+          >
+            <NativeSelectOption value='desc'>
+              {t('qy_dc_order_desc')}
+            </NativeSelectOption>
+            <NativeSelectOption value='asc'>
+              {t('qy_dc_order_asc')}
+            </NativeSelectOption>
+          </NativeSelect>
+        </label>
+      </div>
+
+      {data !== undefined && (
+        <p className='text-muted-foreground text-sm'>
+          {t('qy_dc_summary', {
+            days: data.range.days,
+            users: data.summary.user_count,
+            requests: data.summary.request_count,
+          })}
+        </p>
+      )}
+
+      <StaticDataTable
+        columns={columns}
+        data={rows}
+        getRowKey={(row) => row.user_id}
+      />
+      {openRow !== undefined && (
+        <ByDayPanel
+          key={openRow.user_id}
+          user={openRow}
+          startDate={filters.start_date}
+          endDate={filters.end_date}
+          onClose={() => setOpenUserId(null)}
         />
-      </QySectionPageLayout.Content>
-    </QySectionPageLayout>
+      )}
+      <QyPager
+        page={data?.p ?? page}
+        pageSize={data?.page_size ?? QY_PAGE_SIZE}
+        total={data?.total ?? 0}
+        onPageChange={setPage}
+      />
+    </div>
   )
 }

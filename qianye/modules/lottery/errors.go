@@ -86,6 +86,13 @@ var (
 	// 两张标签因此返回同一份列表,而没有任何一处报错、没有一条日志。
 	errBadPhase = newBizError(http.StatusBadRequest, "qy_lot_bad_phase",
 		"大厅分区参数非法(只接受 live / ended)")
+	// errPlayHidden 是"这一类玩法当前不对外开放"。
+	//
+	// 409 而不是 404:活动确实存在、详情页照常打得开、已参与的人照常能查票
+	// 与领奖,不能对着一个还在跑的活动说"不存在"。文案里必须说清"已参与的
+	// 不受影响",否则用户看到拒绝的第一反应是自己那笔钱出事了。
+	errPlayHidden = newBizError(http.StatusConflict, "qy_lot_play_hidden",
+		"该玩法当前未对外开放,暂不受理新的参与;已参与的记录与奖励不受影响")
 )
 
 // 管理员与活动创建者禁止参与这条硬规则**不在这里**,而是 Evaluate 里的

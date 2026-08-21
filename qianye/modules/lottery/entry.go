@@ -110,6 +110,19 @@ func ChargeEntry(ctx context.Context, in EntryInput) (*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 玩法被隐藏时不再受理**新的**参与,但这一场的其余一切照旧:已经收下的
+	// 参与照常封盘、开奖、派奖、退款,已参与的人照常查票与领奖(见 play.go)。
+	//
+	// 闸门放在这里而不是 handler 里:这是"新参与"的唯一执行点,放到 HTTP 层
+	// 意味着日后任何一条新入口都要记得再抄一遍。
+	//
+	// 读不到配置时 effectiveCtx 回落到基线 = 全部显示,即**失败放行**。
+	// 这是刻意的:这一项是展示口径,不是资金或资格闸门(那两类在下面的活动
+	// 行锁与主库行锁里,一条都没有被绕过),而失败拒绝会让扩展库抖一下就变成
+	// 全站报名中断。
+	if !effectiveCtx(ctx).playShown(playOf(act.Kind, act.DrawMode)) {
+		return nil, errPlayHidden
+	}
 	rules, err := ParseRules(act.RulesText)
 	if err != nil {
 		return nil, err

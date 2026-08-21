@@ -424,3 +424,52 @@ func TestDailySettleSnapshotAnswersThePanelQuestions(t *testing.T) {
 		assert.Equal(t, settleRunDone, prev["status"])
 	})
 }
+
+// TestDailySettleSnapshotCarriesThePayoutOffset 钉住健康面板下发的 T+N。
+//
+// # 为什么这个数必须在这份快照里
+//
+// 管理端佣金审核页上的「立即结算」按钮已经撤掉(项目方原话:「全部由系统到
+// 时间自动结算」)。撤掉一个按钮的代价是运营再也没有"我现在就让它到账"这条
+// 路,于是"那到底什么时候到账"必须由界面回答 —— 否则他只会来问人。
+//
+// 那一页需要的三个数(日界、下一次开跑、T+N)里,前两个本来就在这份快照里,
+// 只有 N 不在。前端**不能**自己算 holding_days + 1:那是第三份口径
+// (后端 payoutDayOffset、用户端 policy.payout_day_offset、前端再一份),
+// 而这个 +1 恰恰是最容易被写成 +0 的地方 —— 桶要等一整天结束才封板。
+//
+// # 期望是独立算出来的
+//
+// N = holding_days + 1,负数按 0 钳位(与 bucketMatureAt 同一条钳位)。
+// 下面每一行的 want 都是照这条式子手算的,不是从 payoutDayOffset 读回来的。
+//
+// 变异验证:
+//   - 把 dailySettleSnapshot 里的 payoutDayOffset(...) 改成 effective().HoldingDays
+//     (少了 +1) → 四条子用例全红;
+//   - 整行删掉 → require.Contains 红。
+func TestDailySettleSnapshotCarriesThePayoutOffset(t *testing.T) {
+	newTestDB(t)
+	now := common.GetTimestamp()
+
+	for _, tc := range []struct {
+		name        string
+		holdingDays int
+		want        int
+	}{
+		{"成熟期 0 也是次日到账,不是当天", 0, 1},
+		{"成熟期 1 天 → T+2", 1, 2},
+		{"成熟期 7 天 → T+8", 7, 8},
+		{"负数按 0 钳位,与 bucketMatureAt 同源", -3, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := dayConfig(480)
+			cfg.Commission.HoldingDays = tc.holdingDays
+			useConfig(t, cfg)
+
+			snap := dailySettleSnapshot(now)
+			require.Contains(t, snap, "payout_day_offset",
+				"撤掉「立即结算」之后,界面靠这个数回答『什么时候到账』")
+			assert.Equal(t, tc.want, snap["payout_day_offset"])
+		})
+	}
+}

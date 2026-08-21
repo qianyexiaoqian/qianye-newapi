@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /*
- * 「CC Switch」这个菜单项**必须**先经过线路选择。
+ * 「CC Switch」这个入口**必须**先经过线路选择。
  *
  * # 为什么要一条源码级的守卫
  *
@@ -27,20 +27,28 @@ For commercial licensing, please contact support@quantumnous.com
  * 第一半做完之后 CC Switch 那条路仍然直挂在 `setOpen('cc-switch')` 上 ——
  * 两个入口就差这么一行，谁也不会注意到。
  *
- * 绕过它的代价是**静默**的：菜单项照样能点，配置窗口照样弹，只是里面的接口
+ * 绕过它的代价是**静默**的：入口照样能点，配置窗口照样弹，只是里面的接口
  * 地址永远是系统设置里那一个。用户把它导进客户端、跑一段时间之后才发现自己
  * 根本没走上想走的那条线路。typecheck 全绿，交互测试（另一份文件）测的是
- * 组合好之后的行为、测不到"真实的那个菜单项到底调了谁"。
+ * 组合好之后的行为、测不到"真实的那个入口到底调了谁"。
  *
  * 所以这里对着 AST 钉死三件事：
  *
- *   1. CC Switch 菜单项的 onClick 里只有 `pickCcSwitchAddress(...)`，
+ *   1. CC Switch 按钮的 onClick 里只有 `pickCcSwitchAddress(...)`，
  *      没有任何 `setOpen(` —— 它没有能力直接掀开配置窗口。
  *   2. 全文件里 `setOpen('cc-switch')` 只出现一次，且落在传给
  *      `useQyApiAddressPicker` 的那个对象字面量里 —— 也就是"选完线路之后"。
  *   3. 选中的地址真的被交出去了：`setCcSwitchAddress` 在同一个回调里被调用，
  *      并且 `ApiKeysDialogs` 把它当作 `apiAddress` 传给了配置窗口。
  *      少了这一步，用户选了线路、配置里却还是站点地址 —— 这正是最难发现的那种错。
+ *
+ * # 入口从菜单项变成了操作列里的按钮
+ *
+ * 项目方后来又提：「API密钥那把【一键导入CC Switch】做成一个按钮显示在
+ * 操作列。」——原先它是「⋯」下拉里的一项，属于本仓复发过多次的「实现了但
+ * 用户点不到」。所以这份守卫顺带钉住**它不能再退回下拉菜单**：一旦有人把
+ * 它挪回 `DropdownMenuItem`，这里就红。它真的渲染在操作列里（而不是只在
+ * 源码里存在）由 `cc-switch-entry-render.test.tsx` 用一次真实渲染守。
  *
  * 断的是 AST 而不是正则：注释、字符串、格式化换行都不会让它误报或漏报。
  */
@@ -98,31 +106,34 @@ function sourceOf(path: string) {
 }
 
 /**
- * 取「CC Switch」那个菜单项的 onClick 源码。
+ * 取「CC Switch」那个按钮的 onClick 源码。
  *
- * 认的是 `t('CC Switch')` 这个渲染出来的文案，而不是变量名或出现顺序：
- * 菜单项换位置、回调改名都不该让这条守卫失效，而文案一改就是另一个入口了。
+ * 认的是 `aria-label={t('CC Switch')}`，而不是变量名或出现顺序：按钮换位置、
+ * 回调改名都不该让这条守卫失效，而文案一改就是另一个入口了。图标按钮没有可见
+ * 文本，`aria-label` 就是它对用户/读屏软件公开的那个名字。
  */
-function ccSwitchMenuItemOnClick(): string {
+function ccSwitchButtonOnClick(): string {
   const { program, slice } = sourceOf(rowActionsPath)
   const found: string[] = []
   walk(program, (node) => {
-    if (node.type !== 'JSXElement') return
-    const opening = node.openingElement as Node | undefined
-    const name = (opening?.name as { name?: string } | undefined)?.name
-    if (name !== 'DropdownMenuItem') return
-    if (!slice(node).includes("t('CC Switch')")) return
-    const attrs = (opening?.attributes ?? []) as Node[]
+    if (node.type !== 'JSXOpeningElement') return
+    const name = (node.name as { name?: string } | undefined)?.name
+    if (name !== 'Button') return
+    const attrs = (node.attributes ?? []) as Node[]
+    const label = attrs.find(
+      (a) => (a.name as { name?: string } | undefined)?.name === 'aria-label'
+    )
+    if (label == null || slice(label.value) !== "{t('CC Switch')}") return
     const onClick = attrs.find(
       (a) => (a.name as { name?: string } | undefined)?.name === 'onClick'
     )
-    assert.ok(onClick != null, 'CC Switch 菜单项没有 onClick')
+    assert.ok(onClick != null, 'CC Switch 按钮没有 onClick')
     found.push(slice(onClick.value))
   })
   assert.equal(
     found.length,
     1,
-    `应当恰好有一个「CC Switch」菜单项，找到 ${found.length} 个`
+    `操作列里应当恰好有一个「CC Switch」按钮，找到 ${found.length} 个`
   )
   return found[0]
 }
@@ -148,15 +159,33 @@ function apiAddressPickerCallArgument(): string {
 }
 
 describe('CC Switch 入口必须先经过线路选择', () => {
-  test('菜单项自己掀不开配置窗口，只能把密钥交给线路选择', () => {
-    const onClick = ccSwitchMenuItemOnClick()
+  test('按钮自己掀不开配置窗口，只能把密钥交给线路选择', () => {
+    const onClick = ccSwitchButtonOnClick()
     assert.ok(
       onClick.includes('pickCcSwitchAddress('),
-      `「CC Switch」菜单项绕过了线路选择，直接就把配置窗口打开了：\n${onClick}`
+      `「CC Switch」按钮绕过了线路选择，直接就把配置窗口打开了：\n${onClick}`
     )
     assert.ok(
       !onClick.includes('setOpen('),
-      `「CC Switch」菜单项自己调了 setOpen —— 那就是把选线路这一步跳过去了：\n${onClick}`
+      `「CC Switch」按钮自己调了 setOpen —— 那就是把选线路这一步跳过去了：\n${onClick}`
+    )
+  })
+
+  test('入口留在操作列里，不许退回「⋯」下拉', () => {
+    const { program, slice } = sourceOf(rowActionsPath)
+    const inMenu: string[] = []
+    walk(program, (node) => {
+      if (node.type !== 'JSXElement') return
+      const opening = node.openingElement as Node | undefined
+      const name = (opening?.name as { name?: string } | undefined)?.name
+      if (name !== 'DropdownMenuItem') return
+      if (!slice(node).includes("t('CC Switch')")) return
+      inMenu.push(slice(node))
+    })
+    assert.deepEqual(
+      inMenu,
+      [],
+      '「CC Switch」又被收回下拉菜单里了 —— 项目方要的是操作列上一个直接能点的按钮'
     )
   })
 

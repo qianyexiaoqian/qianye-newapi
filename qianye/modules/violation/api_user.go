@@ -96,6 +96,21 @@ func userListRecords(c *gin.Context) {
 
 // userSummary 告诉用户"当前窗口违规几次、还差几次会被封号"。
 //
+// ── 用户端目前不渲染这一份响应 ──
+//
+// 项目方要求「我的违规记录」那一页只显示违规类型,三个统计块(窗口违规次数 /
+// 距离封号还剩余 / 累计扣费)已经从前端移除,这个接口因此暂时没有页面消费者。
+// **它仍然如实下发,不要顺手瘦身**:
+//
+//   - remaining / remaining_line / remaining_* 那一组编码的是"两条线 OR、
+//     取最先到达的那条"这个判定口径,与封号判定(nearestThresholdLine /
+//     anyReached)同源。删字段会把改动带到那条链上,而那条链决定的是
+//     "这个账号会不会被封" —— 风险与收益完全不对等。
+//   - 管理端排障与将来恢复前端展示都要靠它。
+//
+// 前端侧的保留理由与代价写在
+// web/src/features/qy/pages/violations/types.ts 的 QyMyViolationSummary 顶部。
+//
 // 威慑价值大于泄露价值:知道"再违规 2 次就封号"的用户会主动收敛,
 // 不知道的只会在被封之后来发工单。
 func userSummary(c *gin.Context) {

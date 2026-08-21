@@ -57,6 +57,10 @@ func tables() []any {
 func (Mod) InstallHooks() {
 	InstallResolvers()
 	qyctl.QyLotteryEntryShown = func() bool { return effective().ShowEntry }
+	// 玩法显隐同理:前端要按它决定渲染哪几张大厅标签、以及"一个都不开时
+	// 整行导航不渲染"。不接管的话引导端点只会下发一个空表,而空表的口径是
+	// "全部可见" —— 运营关掉的玩法在前台照旧列着,只是列表恒为空。
+	qyctl.QyLotteryPlaysShown = func() map[string]bool { return effective().playVisibilityMap() }
 }
 
 // RegisterPublicRoutes 挂载**匿名可访问**的证据链端点。

@@ -16,6 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import {
+  qyApiBaseWithV1,
+  qyNormalizeApiBase,
+} from '@/features/qy/pages/api-address-picker/api-base-url'
 import { readSiteServerAddress } from '@/lib/channel-connection-info'
 
 /**
@@ -42,8 +46,12 @@ export function buildCCSwitchURL(
   apiAddress: string
 ): string {
   const siteAddress = readSiteServerAddress()
-  const base = apiAddress !== '' ? apiAddress : siteAddress
-  const endpoint = app === 'codex' ? `${base}/v1` : base
+  const base = qyNormalizeApiBase(apiAddress !== '' ? apiAddress : siteAddress)
+  // Codex 要的是完整的 `/v1` 端点，Claude/Gemini 要的是基址。
+  // 拼接走共用的那条规则（见 qyApiBaseWithV1）而不是 `${base}/v1`：运营把
+  // 线路配成 `https://a.com/v1` 时，裸拼会导出一个 `.../v1/v1` 的端点，
+  // 而这件事只有用户导进客户端、跑出 404 之后才会被发现。
+  const endpoint = app === 'codex' ? qyApiBaseWithV1(base) : base
   const params = new URLSearchParams()
   params.set('resource', 'provider')
   params.set('app', app)

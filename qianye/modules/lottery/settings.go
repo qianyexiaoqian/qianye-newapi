@@ -3,6 +3,7 @@ package lottery
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
@@ -25,7 +26,16 @@ const settingScope = "lottery"
 // 运营可改的键。白名单而非黑名单:让管理端往共享 KV 表里写任意键,
 // 等于把别的模块的配置面也交出去了。
 const (
-	keyShowEntry            = "show_entry"
+	keyShowEntry = "show_entry"
+	// 四个玩法各一个显示开关(见 play.go)。它们与 show_entry 是**串联**的:
+	// show_entry 关掉整块,这四个各关一种玩法。分成五个键而不是一个列表键,
+	// 是为了让每一项都能走 settingBounds 那套 0/1 区间校验与审计前后快照 ——
+	// 一个 "draw_rank,guess" 这样的列表字符串既没有区间可校验,
+	// 也会让审计里的 before/after 变成两串要人去 diff 的文本。
+	keyShowPlayDrawRank     = "show_play_draw_rank"
+	keyShowPlayDrawProb     = "show_play_draw_prob"
+	keyShowPlayDrawBall     = "show_play_draw_ball"
+	keyShowPlayGuess        = "show_play_guess"
 	keyMaxActiveActivities  = "max_active_activities"
 	keyDefaultGuessFeeBps   = "default_guess_fee_bps"
 	keyMaxGuessFeeBps       = "max_guess_fee_bps"
@@ -40,18 +50,51 @@ const (
 // 资金闸门的控制权交给一个 HTTP 接口。它们只能改 YAML 并重启,那是一次
 // 看得见、留得下痕迹的动作。
 var editableKeys = []string{
-	keyShowEntry, keyMaxActiveActivities, keyDefaultGuessFeeBps,
+	keyShowEntry,
+	keyShowPlayDrawRank, keyShowPlayDrawProb, keyShowPlayDrawBall, keyShowPlayGuess,
+	keyMaxActiveActivities, keyDefaultGuessFeeBps,
 	keyMaxGuessFeeBps, keyMaxTotalPrizeQuota, keyLargePrizeAlertQuota,
 }
 
 // opSettings 是 YAML 与运营覆盖合并后的生效配置。
 type opSettings struct {
-	ShowEntry            bool
+	ShowEntry bool
+	// 四个玩法开关**刻意没有 YAML 对应项**,基线写死为 true(见 baseSettings)。
+	//
+	// 理由是分工:YAML 承载启动级、涉及安全与资金的闸门(reveal_delay_seconds、
+	// max_stake_quota、以及关掉整块的 lottery.enabled),这四项是纯展示口径、
+	// 是运营的日常动作 —— "这一期只上竞猜"改一次要重启一次进程是荒唐的。
+	// 整块下线仍然只有 YAML 的 lottery.enabled 一条路,那道硬闸没有被稀释。
+	ShowPlayDrawRank     bool
+	ShowPlayDrawProb     bool
+	ShowPlayDrawBall     bool
+	ShowPlayGuess        bool
 	MaxActiveActivities  int
 	DefaultGuessFeeBps   int
 	MaxGuessFeeBps       int
 	MaxTotalPrizeQuota   int64
 	LargePrizeAlertQuota int64
+}
+
+// baseSettings 把一份 YAML 折成运营覆盖的基线。
+//
+// 单独成函数是因为它有两个消费方:effectiveCtx(生效值的起点)与配置接口的
+// yaml_defaults(告诉运营"清掉覆盖会回到哪里")。两处各写一份对象字面量,
+// 漂移的方向恰好是"界面上说默认全显示,实际默认全隐藏"。
+func baseSettings(c config.Lottery) opSettings {
+	return opSettings{
+		ShowEntry: c.EntryShown(),
+		// 零值口径:没配过 = 全部显示。见 play.go 文件头。
+		ShowPlayDrawRank:     true,
+		ShowPlayDrawProb:     true,
+		ShowPlayDrawBall:     true,
+		ShowPlayGuess:        true,
+		MaxActiveActivities:  c.MaxActiveActivities,
+		DefaultGuessFeeBps:   c.DefaultGuessFeeBps,
+		MaxGuessFeeBps:       c.MaxGuessFeeBps,
+		MaxTotalPrizeQuota:   c.MaxTotalPrizeQuota,
+		LargePrizeAlertQuota: c.LargePrizeAlertQuota,
+	}
 }
 
 const settingsCacheSeconds = 60
@@ -71,15 +114,7 @@ var (
 // 读不到覆盖值时退回上一份快照、再退回 YAML,而不是让整个功能停摆 ——
 // 少一个运营微调远比"活动页整页打不开"轻。
 func effectiveCtx(ctx context.Context) opSettings {
-	c := config.Get().Lottery
-	base := opSettings{
-		ShowEntry:            c.EntryShown(),
-		MaxActiveActivities:  c.MaxActiveActivities,
-		DefaultGuessFeeBps:   c.DefaultGuessFeeBps,
-		MaxGuessFeeBps:       c.MaxGuessFeeBps,
-		MaxTotalPrizeQuota:   c.MaxTotalPrizeQuota,
-		LargePrizeAlertQuota: c.LargePrizeAlertQuota,
-	}
+	base := baseSettings(config.Get().Lottery)
 
 	settingsMu.Lock()
 	if settingsCache != nil && common.GetTimestamp()-settingsLoaded < settingsCacheSeconds {
@@ -155,10 +190,23 @@ func loadOverrides(ctx context.Context) (map[string]string, error) {
 func mergeOverrides(base opSettings, rows map[string]string) opSettings {
 	c := config.Get().Lottery
 
-	if v, ok := rows[keyShowEntry]; ok {
-		if b, err := strconv.ParseBool(v); err == nil {
-			base.ShowEntry = b
-		}
+	if v, ok := parseBoolIn(rows, keyShowEntry); ok {
+		base.ShowEntry = v
+	}
+	// 玩法开关。读不懂的行(非法字面量、被人手改成 "yes")一律**丢弃并回落
+	// 基线 = 显示**,与本文件其余越界值的处理同向:一行读不懂的配置不该让一整种
+	// 玩法从站点上消失,那种消失没有任何一处会报错。
+	if v, ok := parseBoolIn(rows, keyShowPlayDrawRank); ok {
+		base.ShowPlayDrawRank = v
+	}
+	if v, ok := parseBoolIn(rows, keyShowPlayDrawProb); ok {
+		base.ShowPlayDrawProb = v
+	}
+	if v, ok := parseBoolIn(rows, keyShowPlayDrawBall); ok {
+		base.ShowPlayDrawBall = v
+	}
+	if v, ok := parseBoolIn(rows, keyShowPlayGuess); ok {
+		base.ShowPlayGuess = v
 	}
 	// 上界必须与 settingBounds() 同源取自 YAML。写死一个 1000 的后果不是"写入
 	// 时被拦住就行了":写入闸门只管**今后**的写入,升级之前已经落库的越界覆盖
@@ -185,6 +233,20 @@ func mergeOverrides(base opSettings, rows map[string]string) opSettings {
 		base.DefaultGuessFeeBps = base.MaxGuessFeeBps
 	}
 	return base
+}
+
+// parseBoolIn 取一个布尔覆盖。接口写进去的是 "0"/"1",但历史上也写过
+// "true"/"false",两种都要认 —— strconv.ParseBool 恰好都收。
+func parseBoolIn(rows map[string]string, key string) (bool, bool) {
+	raw, ok := rows[key]
+	if !ok {
+		return false, false
+	}
+	v, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return false, false
+	}
+	return v, true
 }
 
 func parseIntIn(rows map[string]string, key string, lo, hi int) (int, bool) {

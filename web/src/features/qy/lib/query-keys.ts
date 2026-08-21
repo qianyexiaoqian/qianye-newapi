@@ -85,6 +85,11 @@ export const qyKeys = {
 
   violationMyRecords: (params: unknown) =>
     [...qyKeys.all, 'violation', 'my-records', params] as const,
+  /**
+   * 违规汇总。**当前没有任何页面订阅它** —— 用户端违规页按项目方要求只留违规
+   * 类型，窗口违规次数 / 距离封号还剩余 / 累计扣费三块连同这个查询一起下线。
+   * 保留原因见 `pages/violations/types.ts` 的 `QyMyViolationSummary` 顶部。
+   */
   violationMySummary: () => [...qyKeys.all, 'violation', 'my-summary'] as const,
   /** 违规类型公示（只含 published 的类型 + 自己在每一类上的计数）。 */
   violationMyCategories: () =>

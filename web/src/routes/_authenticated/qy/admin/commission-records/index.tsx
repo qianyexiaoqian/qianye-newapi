@@ -16,27 +16,42 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import z from 'zod'
 
-import { QyAdminCommissionRecords } from '@/features/qy/pages/admin-commission-records'
+import { qyTabHash } from '@/features/qy/lib/pages'
 
 /**
- * `inviter_id` 是「从佣金余额下钻到这个人的逐笔计佣」那一跳的载体。
+ * 旧路由 —— 本页已被收进 `/qy/admin/settlement`（「结算台」）的选择夹
+ * （`QY_TAB_GROUPS`）。
  *
- * 走 URL 而不是路由 state：下钻之后运营会把这一屏发给别人（"你看 #412 这几笔"），
- * 而路由 state 复制出去就是一个不带筛选的空列表。`.catch('')` 让手改坏的地址
- * 退化成"不筛选"，而不是把整页打成错误边界。
+ * 保留成重定向而不是删掉：这个地址此前是侧栏「结算」组上的一行，运营的书签、
+ * 浏览器历史、内部文档与工单里贴出去的链接都还指着它。目标 hash 由
+ * `qyTabHash` 现算，与宿主页认标签用的是同一个函数 —— 不可能出现"跳过去了
+ * 但选中的是另一张"。
+ *
+ * ⚠️ 这一条与另外两条重定向不同：它必须**把 `?inviter_id=` 转发过去**。
+ * 「从佣金余额下钻到这个人的逐笔计佣」那一跳走的就是这个地址，而重定向
+ * 默认不带 search —— 不转发的话，从旧书签/旧链接进来的下钻会安静地退化成
+ * 一张不带筛选的全量表，没有任何报错。所以这条 stub 保留 `validateSearch`：
+ * 不校验的话 `beforeLoad` 拿到的 `search` 是未经解析的，参数一样丢。
+ *
+ * `replace`：旧地址不该留在历史栈里，否则用户按返回键会被立刻再弹回来。
  */
-const commissionRecordsSearchSchema = z.object({
+const legacySearchSchema = z.object({
   inviter_id: z.string().optional().catch(''),
 })
 
-// 叶子路由不写守卫：登录由 `_authenticated/route.tsx` 保证，扩展启用由
-// `qy/route.tsx` 保证，管理员由 `qy/admin/route.tsx` 保证，各一处、零重复。
 export const Route = createFileRoute(
   '/_authenticated/qy/admin/commission-records/'
 )({
-  validateSearch: commissionRecordsSearchSchema,
-  component: QyAdminCommissionRecords,
+  validateSearch: legacySearchSchema,
+  beforeLoad: ({ search }) => {
+    throw redirect({
+      to: '/qy/admin/settlement',
+      hash: qyTabHash('/qy/admin/commission-records'),
+      search,
+      replace: true,
+    })
+  },
 })

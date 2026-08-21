@@ -41,6 +41,7 @@ import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyUsdScaleNotice } from '../../components/qy-usd-scale-notice'
 import { qyErrorMessage } from '../../lib/api'
+import { qyTabTarget } from '../../lib/pages'
 import { qyKeys } from '../../lib/query-keys'
 import {
   qyFormatQuotaAsUsd,
@@ -103,7 +104,9 @@ export function QyAdminCommission() {
         <Button
           variant='outline'
           size='sm'
-          render={<Link to='/qy/admin/commission-records' />}
+          // 佣金审核已收进「结算台」的选择夹，直接 to 旧地址也到得了（重定向），
+          // 但那是先离开再被弹回来的一次白闪。走 qyTabTarget 直达宿主 + 标签。
+          render={<Link {...qyTabTarget('/qy/admin/commission-records')} />}
         >
           <ScrollText aria-hidden='true' />
           {t('qy_nav_a_commission_records')}
@@ -1426,7 +1429,10 @@ function DailySettleCard() {
   })
 
   return (
-    <Card data-card-hover='false'>
+    // 锚点 id：佣金审核那一屏撤掉了「立即结算」，取而代之的那段说明里有一条
+    // 「结算卡住时的手动补救在这里」的链接，落点就是这张卡。没有 id 的话那条
+    // 链接只能把人扔到设置页顶部，而这一页很长。
+    <Card data-card-hover='false' id='qy-daily-settle' className='scroll-mt-4'>
       <CardHeader>
         <CardTitle>{t('qy_cm_ds_title')}</CardTitle>
         <CardDescription>{t('qy_cm_ds_desc')}</CardDescription>

@@ -25,6 +25,15 @@ import (
 // 那正是本仓反复出现的"以为改了其实没改"。
 var QyLotteryEntryShown = func() bool { return config.Get().Lottery.EntryShown() }
 
+// QyLotteryPlaysShown 回答"哪几种玩法(抽奖-按名次 / 抽奖-概率 / 双色球 / 竞猜)
+// 当前对用户可见"。
+//
+// 默认返回空表而不是"四个都是 true":玩法的枚举住在 lottery 模块里,
+// 在本包再抄一份就是同一概念的第二份拷贝,而漂移的方向恰好是"后端加了第五种
+// 玩法、引导端点永远不下发它"。空表的口径由前端兜:**缺哪个键就当哪个可见**,
+// 与后端 mergeOverrides 的零值口径(没配过 = 全部显示)是同一句话。
+var QyLotteryPlaysShown = func() map[string]bool { return map[string]bool{} }
+
 // GetConfig 是前端的引导端点。
 //
 // 刻意不走 guard.RequireAPI,并且永远返回 200:扩展被禁用时前端需要拿到
@@ -70,6 +79,9 @@ func GetConfig(c *gin.Context) {
 		"lottery": gin.H{
 			"show_entry":   QyLotteryEntryShown(),
 			"proof_public": cfg.Lottery.ProofOpen(),
+			// 按玩法的显隐。全部为 false 时前端连那一行导航都不渲染,
+			// 但路由与接口照常可达 —— 与 show_entry=0 完全同一形状。
+			"plays": QyLotteryPlaysShown(),
 		},
 		"wallet": gin.H{
 			"show_transfer_entry":   cfg.Wallet.TransferEntry(),

@@ -547,7 +547,7 @@ func TestHideRemovesFromHallOnlyAndIsReversible(t *testing.T) {
 	r := retireRouter()
 
 	inHall := func() int64 {
-		q, err := hallQuery(ext, "", "")
+		q, err := hallQuery(ext, "", "", allPlaysShown())
 		require.NoError(t, err)
 		var n int64
 		require.NoError(t, q.Where("id = ?", act.Id).Count(&n).Error)
@@ -633,7 +633,7 @@ func TestHallQueryExcludesDraftAndHidden(t *testing.T) {
 		Update("hidden_at", common.GetTimestamp()).Error)
 	draft := seedActivity(t, ext, func(a *Activity) { a.Status = StatusDraft })
 
-	q, err := hallQuery(ext, "", "")
+	q, err := hallQuery(ext, "", "", allPlaysShown())
 	require.NoError(t, err)
 	rows := make([]Activity, 0, 4)
 	require.NoError(t, q.Find(&rows).Error)

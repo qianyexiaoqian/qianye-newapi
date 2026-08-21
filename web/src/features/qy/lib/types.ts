@@ -127,6 +127,30 @@ export type QyTransferOptions = {
 export type QyLotteryOptions = {
   show_entry: boolean
   proof_public: boolean
+  plays: QyLotPlays
+}
+
+/**
+ * 四种玩法各自的显示/隐藏（后端 `qianye/modules/lottery/play.go`）。
+ *
+ * ── 为什么是四个而不是两个 ──
+ * 库里只有两个 `kind`（draw / guess），但用户看到的是四种游戏：抽奖有三种定档
+ * 方式（按名次 / 按公示概率 / 双色球），竞猜一种。三者的规则、概率口径与卡面
+ * 含义互不相同 —— 双色球卡片上连「奖池」这个数的语义都换了。运营说「双色球
+ * 先不上」时，说的是这一层，落不到 `kind` 上。
+ *
+ * ── 零值 ──
+ * 后端不下发某个键时按**显示**处理，与后端 `mergeOverrides` 的口径逐字一致
+ * （没配过 = 全部显示）。这与 `show_entry` 缺省按「不显示」相反，是刻意的：
+ * `show_entry` 缺省隐藏最多是少一个入口，而玩法缺省隐藏会让一个从没动过配置
+ * 的站点在升级后整块娱乐功能静默消失 —— 本仓在「缺一段配置 = 整块不可见」上
+ * 已经栽过。多显示一格也不会变成断链：大厅列表由后端过滤，隐藏的玩法返回空。
+ */
+export type QyLotPlays = {
+  draw_rank: boolean
+  draw_prob: boolean
+  draw_ball: boolean
+  guess: boolean
 }
 
 /**
@@ -156,7 +180,9 @@ export type QyConfigPayload = {
   log_metrics?: Partial<QyLogMetricsOptions>
   withdraw_options?: Partial<QyWithdrawOptions>
   transfer_options?: Partial<QyTransferOptions>
-  lottery?: Partial<QyLotteryOptions>
+  lottery?: Partial<Omit<QyLotteryOptions, 'plays'>> & {
+    plays?: Partial<QyLotPlays>
+  }
 }
 
 // ───────────────────────────── 状态机 ─────────────────────────────

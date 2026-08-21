@@ -98,6 +98,9 @@ const SETTINGS_URLS = [
 
 /** 明确**留在根侧栏**的管理页。它们进了抽屉就是运营每天多点两下。 */
 const ROOT_ADMIN_URLS = [
+  // 「结算台」：日消费明细 / 佣金审核 / 提现审核三张标签的宿主。三张表都是
+  // 运营每天要过的流水，不是"改一次影响后续每一笔"的配置。
+  '/qy/admin/settlement',
   '/qy/admin/commission-records',
   // 用户佣金（一行一个用户）与它的两张标签（AFF 关系 / 佣金余额）同样是每天
   // 要开的流水/台账，不是"改一次影响后续每一笔"的配置，所以留根侧栏。
@@ -125,6 +128,12 @@ const ROOT_ADMIN_URLS = [
  * 把三页搬错宿主也照样全绿。
  */
 const HOSTED_URLS = [
+  // 「结算台」的三张标签（项目方原话：「把日消费明细/佣金审核，提醒审核，
+  // 这些管理页面弄成选择夹，放在一个页面上。」）。三页都没有被删，只是不再
+  // 各占侧栏一行；旧地址保留成重定向。
+  '/qy/admin/daily-consume',
+  '/qy/admin/commission-records',
+  '/qy/admin/withdrawals',
   '/qy/transfer',
   '/qy/transfer-logs',
   '/qy/pay-password',
@@ -224,7 +233,7 @@ describe('qy page table structure', () => {
 })
 
 describe('qy 选择夹（需求 2 / 3）', () => {
-  test('四个选择夹的成员逐项冻结', () => {
+  test('五个选择夹的成员逐项冻结', () => {
     assert.deepEqual(
       QY_TAB_GROUPS.map((group) => [group.host, [...group.pages]]),
       [
@@ -249,8 +258,20 @@ describe('qy 选择夹（需求 2 / 3）', () => {
           '/qy/lottery',
           ['/qy/lottery', '/qy/lottery-guess', '/qy/lottery-records'],
         ],
+        [
+          // 「结算台」。顺序 = 钱在系统里流动的顺序，也是运营对账时的追问
+          // 顺序：谁花了多少 → 给上线记了多少 → 把钱付出去。反向盯的是
+          // "把最常点的佣金审核挪到第一张"：那会让不带 hash 的旧书签
+          // （运营存的多半是这一条）落到一张它没在找的表上。
+          '/qy/admin/settlement',
+          [
+            '/qy/admin/daily-consume',
+            '/qy/admin/commission-records',
+            '/qy/admin/withdrawals',
+          ],
+        ],
       ],
-      '选择夹的成员或顺序变了：项目方点名要的是「发起划转/划转记录/支付密码」、「我的邀请概览/已邀请用户/佣金提现/佣金提现记录」、「用户总览/AFF 关系/佣金余额」与「抽奖/竞猜/我的参与」'
+      '选择夹的成员或顺序变了：项目方点名要的是「发起划转/划转记录/支付密码」、「我的邀请概览/已邀请用户/佣金提现/佣金提现记录」、「用户总览/AFF 关系/佣金余额」、「抽奖/竞猜/我的参与」与「日消费明细/佣金审核/提现审核」'
     )
   })
 
@@ -261,15 +282,18 @@ describe('qy 选择夹（需求 2 / 3）', () => {
    * 组里佣金相关有三行（计佣流水 / 佣金余额 / AFF 关系）。这条断言盯的是
    * 反向漂移：有人为了"方便"把余额或关系再放回侧栏，三行就回来了。
    */
-  test('侧栏上的佣金入口恰好两个：按用户看 + 按流水看', () => {
+  test('侧栏上的佣金入口恰好两个：按用户看 + 结算台', () => {
     const rows = QY_PAGES.filter(
       (page) =>
-        page.url.startsWith('/qy/admin/commission-records') &&
+        (page.url.startsWith('/qy/admin/commission-records') ||
+          page.url === '/qy/admin/settlement') &&
         !isQyPageHosted(page.url)
     ).map((page) => page.url)
     assert.deepEqual(rows.sort(), [
-      '/qy/admin/commission-records',
+      // 「按流水看」那一行本轮又降了一级：它现在是「结算台」的第二张标签，
+      // 侧栏上代表它的是宿主那一行。入口数仍然是二，不是三。
       '/qy/admin/commission-records/users',
+      '/qy/admin/settlement',
     ])
   })
 
@@ -285,7 +309,7 @@ describe('qy 选择夹（需求 2 / 3）', () => {
     assert.equal(group?.pages.length, 3)
   })
 
-  test('被收进选择夹的正好是这 10 页', () => {
+  test('被收进选择夹的正好是这 13 页', () => {
     assert.deepEqual(
       QY_PAGES.filter((page) => isQyPageHosted(page.url))
         .map((page) => page.url)
@@ -316,6 +340,48 @@ describe('qy 选择夹（需求 2 / 3）', () => {
         )
       }
     }
+  })
+
+  /**
+   * 宿主页的可见性**跟着标签走**，不只看它自己那一个功能开关。
+   *
+   * 选择夹里的标签可以挂不同的开关：「结算台」是 commission × commission ×
+   * withdraw。宿主自己标的是 commission —— 只按它判定的话，「只开提现、不开
+   * 返佣」这个完全合法的组合会让整行从侧栏消失，而组里那张 withdraw 标签
+   * **并没有被关掉**，它只是再也没有入口了。
+   *
+   * 这条断链连 `route-entry-guard` 都看不见：那条守卫按"页面表里有没有登记"
+   * 判定，而登记是齐的。所以它只能在这里被钉住。
+   */
+  test('宿主页在自己的开关关掉、而某张标签还开着时仍然可见', () => {
+    const commissionOff: QyFeatures = {
+      transfer: true,
+      commission: false,
+      withdraw: true,
+      availability: true,
+      lottery: true,
+      violation: true,
+      ticket: true,
+      group_matrix: true,
+      pay_password: true,
+    }
+    const urls = qyEntryPages(commissionOff, true).map((page) => page.url)
+    assert.ok(
+      urls.includes('/qy/admin/settlement'),
+      '返佣关掉时「结算台」整行消失了 —— 提现审核跟着一起没了入口，而提现功能明明开着'
+    )
+
+    // 反向：三张标签**全部**关掉时，宿主不该留下一行点进去空白的入口。
+    const allOff: QyFeatures = {
+      ...commissionOff,
+      withdraw: false,
+    }
+    assert.ok(
+      !qyEntryPages(allOff, true).some(
+        (page) => page.url === '/qy/admin/settlement'
+      ),
+      '一张标签都不剩了，「结算台」还留在侧栏上：点进去是一片空白'
+    )
   })
 
   test('qyEntryPages 把选择夹成员滤掉（侧栏与工作区索引页共用这一处判定）', () => {

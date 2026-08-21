@@ -257,6 +257,15 @@ export type QyDailySettleSnapshot = {
   day_offset_minutes: number
   next_run_after: number
   max_attempts: number
+  /**
+   * 「消费之后第几天到账」里的那个 N（后端 `payoutDayOffset = holding_days + 1`）。
+   *
+   * 由后端下发而不是前端拿 holding_days 现算：那个 +1 是"桶要等一整天结束才
+   * 封板"的直接后果，不是四舍五入，`holding_days: 0` 也是 T+1。前端复刻它就是
+   * 第三份口径（后端结算、用户端 policy、管理端），而这一处正是佣金审核那一屏
+   * 撤掉「立即结算」之后唯一回答"什么时候到账"的地方。
+   */
+  payout_day_offset: number
   /** 只有 `status=done` 才为真 —— 有人失败绝不报“今天跑过了”。 */
   ran_today: boolean
   current?: QyDailySettleRun

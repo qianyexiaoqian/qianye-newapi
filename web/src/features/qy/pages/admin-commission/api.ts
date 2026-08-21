@@ -201,12 +201,13 @@ export function qyRerunDailySettle() {
   )
 }
 
-/** 立即结算指定用户，不必等下一个周期。 */
-export function qySettleCommission(userId: number) {
-  return qyPost<{ settled: boolean; user_id: number }>(
-    `/admin/commission/settle?user_id=${userId}`
-  )
-}
+// 「立即结算指定用户」的前端封装（`POST /admin/commission/settle`）已删除。
+//
+// 项目方原话：「佣金审核的这个：立即结算 移除吧，全部由系统到时间自动结算。」
+// **后端接口原样保留** —— 它与「重跑今天这一轮」不是同一件事：前者按人补一笔，
+// 后者把今天那一行运行记录改回"还要再跑"。结算重试次数烧完之后，rerun 是整轮
+// 补救的唯一入口，而 settle 是"单个邀请人卡住"的兜底，两条都不能连坐删掉。
+// 这里删掉的只是**没有调用方的前端封装**：留着就是死代码。
 
 /**
  * 拉黑/解封一条邀请关系。只停止未来计佣，已发放的佣金要另走冲正。

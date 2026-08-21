@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next'
 
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { useQyConfig } from '../../hooks/use-qy-config'
+import { qyAnyLotPlayShown, qyLotDrawShown } from '../../lib/pages'
 import { QyPageTabs } from '../components/qy-page-tabs'
 import { QyLotteryGuessBody } from '../lottery-guess'
 import { QyLotteryRecordsBody } from '../lottery-records'
@@ -41,10 +42,26 @@ import { QyLotteryDrawBody } from './index'
  * 属于「抽奖」那张标签里的一类活动。给它单开一张条件渲染的标签，等于让标签数
  * 随后台配置浮动 —— 用户每次进来看到的导航都不一样，而侧栏那一行的语义也就
  * 固定不下来。玩法再多，标签恒为三张。
+ *
+ * ## 按玩法隐藏之后这一页长什么样
+ *
+ * 运营可以逐个关掉四种玩法（管理端「抽奖/竞猜配置」）。关掉的效果**只到这一层**：
+ *
+ *   · 抽奖那三种全关 → 「抽奖大厅」标签不渲染；竞猜关掉 → 「竞猜大厅」不渲染；
+ *   · 「我的参与」**永远在**。已参与的人必须还能查到自己那一票、还能领奖 ——
+ *     这是玩法隐藏与「功能下线」的分界线，也是这一整条改动里唯一不能让步的一条；
+ *   · 四种全关时侧栏那一行也没了（`nav.ts` 的 `qyEntrySwitches`），能到这里的
+ *     只有直达链接，顶部给一句中性说明。
+ *
+ * 少给一张标签是 `QyPageTabs` 支持的做法（`bodies` 里缺 url = 那张不渲染），
+ * 而不是在这里再写一份标签清单 —— 顺序的唯一真源仍然是 `QY_TAB_GROUPS`。
  */
 export function QyLotteryHub() {
   const { t } = useTranslation()
   const config = useQyConfig()
+  const plays = config.lottery.plays
+  const drawShown = qyLotDrawShown(plays)
+  const anyPlayShown = qyAnyLotPlayShown(plays)
   /*
     两张大厅的「进行中 / 已结束」分段与页码由宿主持有。
 
@@ -73,25 +90,40 @@ export function QyLotteryHub() {
               {t('qy_lot_entry_hidden_note')}
             </p>
           )}
+          {/* 一种玩法都不开时，两张大厅标签都不渲染，只剩「我的参与」。
+              这句话必须说出来 —— 否则用户看到的是一个只有一张标签的页面，
+              分不清"这一期没开"与"页面坏了"。 */}
+          {config.status === 'enabled' &&
+            config.lottery.show_entry &&
+            !anyPlayShown && (
+              <p className='text-muted-foreground rounded-lg border p-3 text-sm'>
+                {t('qy_lot_all_plays_hidden_note')}
+              </p>
+            )}
           <QyPageTabs
             host='/qy/lottery'
             bodies={{
-              '/qy/lottery': (
+              // 缺 url = 那张标签不渲染（见 QyPageTabs）。这里刻意用
+              // `undefined` 而不是渲染一个空壳：空壳会把「这一期不开抽奖」
+              // 显示成「抽奖一场都没有」，两者对用户是两回事。
+              '/qy/lottery': drawShown ? (
                 <QyLotteryDrawBody
                   page={drawPage}
                   scope={drawScope}
                   onPageChange={setDrawPage}
                   onScopeChange={setDrawScope}
                 />
-              ),
-              '/qy/lottery-guess': (
+              ) : undefined,
+              '/qy/lottery-guess': plays.guess ? (
                 <QyLotteryGuessBody
                   page={guessPage}
                   scope={guessScope}
                   onPageChange={setGuessPage}
                   onScopeChange={setGuessScope}
                 />
-              ),
+              ) : undefined,
+              // 「我的参与」不看任何玩法开关。已参与的人查票与领奖是这一整条
+              // 改动的硬约束，隐藏入口绝不能连带藏掉已经发生的事。
               '/qy/lottery-records': <QyLotteryRecordsBody />,
             }}
           />

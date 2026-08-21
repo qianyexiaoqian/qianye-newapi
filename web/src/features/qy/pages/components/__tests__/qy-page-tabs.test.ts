@@ -51,6 +51,7 @@ const HOST_SOURCES: Readonly<Record<string, string>> = {
     'admin-commission-users',
     'hub.tsx'
   ),
+  '/qy/admin/settlement': join(qyDir, 'pages', 'admin-settlement', 'hub.tsx'),
 }
 
 describe('选择夹的正文覆盖度', () => {

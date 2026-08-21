@@ -35,6 +35,7 @@ import {
   QY_SETTINGS_PAGES,
   isQyAdminPage,
   isQyPageVisible,
+  qyAnyLotPlayShown,
   qyEntryPages,
   type QyEntrySwitches,
   type QyNavGroupId,
@@ -100,8 +101,14 @@ function toNavLink(page: QyPageDef, t: TFunction): NavLink {
  * 单独一个函数而不是在两个调用点各写一遍对象字面量：漏掉一处的表现是
  * "侧栏藏了、`/qy` 索引页还留着一行"，正是本仓反复出现的断链形状。
  */
-function qyEntrySwitches(config: QyConfig): QyEntrySwitches {
-  return { lottery: config.lottery.show_entry }
+export function qyEntrySwitches(config: QyConfig): QyEntrySwitches {
+  return {
+    // 两道开关串联：站点级的"这一期要不要露出娱乐入口"，以及"还剩不剩玩法"。
+    // 四种玩法被逐个关光时那一行同样消失 —— 留一个点进去只有一张空大厅的入口，
+    // 与本仓一直在补的断链是同一种缺陷。
+    lottery:
+      config.lottery.show_entry && qyAnyLotPlayShown(config.lottery.plays),
+  }
 }
 
 /**

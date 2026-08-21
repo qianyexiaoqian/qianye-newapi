@@ -428,6 +428,12 @@ func finishDailyRun(day string, st drainStats, now int64) error {
 // 面板要能回答四个问题,一个都不能少:今天跑过了吗、跑了多久、处理了多少人、
 // 有没有中途失败。此前面板上只有 pending_inviters(积压深度),它在一日一结算
 // 之下几乎没有信息量 —— 一天里绝大部分时间它都是"有一堆人等着",那是正常的。
+//
+// payout_day_offset 是给**管理端佣金审核页**用的:那一页上的「立即结算」按钮
+// 已经撤掉(全部由系统按日自动结算),撤掉按钮就必须同屏回答"那什么时候到账"。
+// 它与用户侧 /commission/summary 里的 policy.payout_day_offset 同源
+// (都是 payoutDayOffset(holding_days)),不是第二份口径 —— 两处各算一遍的话,
+// 运营和用户会在同一天看到两个不同的 N。
 func dailySettleSnapshot(now int64) map[string]any {
 	day := dayKey(now)
 	out := map[string]any{
@@ -435,6 +441,7 @@ func dailySettleSnapshot(now int64) map[string]any {
 		"day_offset_minutes": int(dayOffsetSeconds() / 60),
 		"next_run_after":     nextDayStart(now),
 		"max_attempts":       settleRunMaxAttempts,
+		"payout_day_offset":  payoutDayOffset(effective().HoldingDays),
 		"ran_today":          false,
 	}
 	gdb := db.Get()
