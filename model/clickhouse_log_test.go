@@ -108,10 +108,12 @@ func TestBuildLogLikeConditionUsesStandardEscape(t *testing.T) {
 	})
 	common.SetLogDatabaseType(common.DatabaseTypeSQLite)
 
-	condition, pattern, err := buildLogLikeCondition("logs.model_name", "gpt_4%")
+	condition, pattern, err := buildLogLikeCondition("logs.model_name", "GPT_4%")
 
 	require.NoError(t, err)
-	assert.Equal(t, "logs.model_name LIKE ? ESCAPE '!'", condition)
+	// 列与模式一起折叠成小写:MySQL 的 ci 排序规则让 LIKE 大小写不敏感,
+	// PostgreSQL 与 SQLite 不会,不折叠的话同一次筛选在 PG 上返回空列表。
+	assert.Equal(t, "LOWER(logs.model_name) LIKE ? ESCAPE '!'", condition)
 	assert.Equal(t, "gpt!_4%", pattern)
 }
 
@@ -122,10 +124,10 @@ func TestBuildLogLikeConditionUsesClickHouseEscaping(t *testing.T) {
 	})
 	common.SetLogDatabaseType(common.DatabaseTypeClickHouse)
 
-	condition, pattern, err := buildLogLikeCondition("logs.model_name", `gpt_4\mini%`)
+	condition, pattern, err := buildLogLikeCondition("logs.model_name", `GPT_4\Mini%`)
 
 	require.NoError(t, err)
-	assert.Equal(t, "logs.model_name LIKE ?", condition)
+	assert.Equal(t, "LOWER(logs.model_name) LIKE ?", condition)
 	assert.Equal(t, `gpt\_4\\mini%`, pattern)
 }
 

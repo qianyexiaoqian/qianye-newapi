@@ -18,12 +18,27 @@ type Bucket struct {
 	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
 
 	// —— 维度三元组,组成唯一索引 ——
-	// utf8mb4 下 uk_qy_avail_dim = 8 + 64×4 + 128×4 = 776 字节,
+	// utf8mb4 下这条唯一索引 = 8 + 64×4 + 128×4 = 776 字节,
 	// 在 InnoDB DYNAMIC(3072 上限)下安全;模型名沿用上游 perf_metrics 的 128,
 	// 放宽到 191/255 会顶到老 COMPACT 格式的 767 字节上限。
-	BucketTs  int64  `json:"bucket_ts" gorm:"column:bucket_ts;not null;uniqueIndex:uk_qy_avail_dim,priority:1;index:idx_qy_avail_ts_group,priority:1"`
-	GroupName string `json:"group" gorm:"column:group_name;type:varchar(64);not null;uniqueIndex:uk_qy_avail_dim,priority:2;index:idx_qy_avail_ts_group,priority:2"`
-	ModelName string `json:"model_name" gorm:"column:model_name;type:varchar(128);not null;uniqueIndex:uk_qy_avail_dim,priority:3"`
+	//
+	// ★ 索引名一律写成 `composite:` 而不是硬编码一个名字,因为 HourBucket 匿名
+	// 内嵌本结构体、连索引标签一起继承:硬编码的名字会被两张表同时申领。
+	// MySQL 的索引名是**每表**独立的,两张表各建一份、相安无事;而 PostgreSQL
+	// 与 SQLite 的索引名是**schema/库级**唯一的 —— 第二张表的三条索引会被
+	// GORM 的 `CREATE [UNIQUE] INDEX IF NOT EXISTS` 静默吞掉,一条都不建出来,
+	// 而且每次启动都再徒劳地发一遍(空转 DDL)。后果不是"少了几条索引":
+	// qy_avail_bucket_hour 因此没有 (bucket_ts,group_name,model_name) 唯一索引,
+	// rollupHour 的 `ON CONFLICT (这三列) DO UPDATE` 在 PG 上恒报 42P10,
+	// 小时表永远为空,而 query.go 的 useHourTable() 规定跨度 > 48 小时一律读小时表。
+	//
+	// `composite:dim` 让 GORM 按 `idx_<表名>_dim` 派生名字(schema/index.go:118),
+	// 于是两张表各得一个互不相同的名字,三种方言下形状一致。
+	// 改回硬编码名字会被 TestExtensionIndexNamesAreSchemaUnique 与
+	// availability 的 rollup 单测(在 sqlite 上真的建两张表)当场打红。
+	BucketTs  int64  `json:"bucket_ts" gorm:"column:bucket_ts;not null;uniqueIndex:,composite:dim,priority:1;index:,composite:ts_group,priority:1"`
+	GroupName string `json:"group" gorm:"column:group_name;type:varchar(64);not null;uniqueIndex:,composite:dim,priority:2;index:,composite:ts_group,priority:2"`
+	ModelName string `json:"model_name" gorm:"column:model_name;type:varchar(128);not null;uniqueIndex:,composite:dim,priority:3"`
 
 	// —— 全部样本,含被口径排除的 ——
 	// 没有它就无法回答「我明明打了 1000 次,为什么只统计了 300 次」。
@@ -65,7 +80,9 @@ type Bucket struct {
 	SpeedCount int64 `json:"speed_count" gorm:"column:speed_count;not null;default:0"`
 
 	// UpdatedAt 手工赋值(禁用 autoUpdateTime,GORM 对 int64 的单位推断跨版本不稳定)。
-	UpdatedAt int64 `json:"updated_at" gorm:"column:updated_at;not null;default:0;index:idx_qy_avail_updated"`
+	// 索引名同样不硬编码(见上面维度三元组那一段):不带名字的单列 `index`
+	// 由 GORM 派生成 `idx_<表名>_updated_at`,两张表天然不撞。
+	UpdatedAt int64 `json:"updated_at" gorm:"column:updated_at;not null;default:0;index"`
 }
 
 func (Bucket) TableName() string { return bucketTable }
@@ -77,6 +94,9 @@ func (Bucket) TableName() string { return bucketTable }
 //
 // 用匿名内嵌复用 Bucket 的列定义:两张表的列必须逐一对齐,rollup 的
 // INSERT ... SELECT 才能靠同一份列清单生成,手抄第二份迟早会漏列。
+//
+// 内嵌把索引标签也一起继承过来,因此 Bucket 上那三条索引**必须**用
+// `composite:` 派生名字而不是硬编码 —— 理由与实测后果写在 Bucket.BucketTs 上面。
 type HourBucket struct {
 	Bucket
 }

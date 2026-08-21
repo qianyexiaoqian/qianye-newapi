@@ -2,7 +2,6 @@ package availability
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -28,21 +27,17 @@ func newRollupEnv(t *testing.T) *gorm.DB {
 	sqlDB, err := gdb.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1) // :memory: 每条连接是一个独立的库
-	require.NoError(t, gdb.AutoMigrate(&Bucket{}))
-
-	// 小时表不能再走一次 AutoMigrate:HourBucket 内嵌 Bucket 复用了同一份索引名
-	// 标签,而 sqlite 的索引名是**库级**唯一(MySQL 是表级,生产上不冲突)。
-	// 这里照抄 5 分钟表的建表语句改个表名,列定义仍然只有一份,
-	// 不会出现"测试里的小时表和生产不是同一张表"。
-	// 唯一索引是必需的:clause.OnConflict 的冲突目标要靠它才成立。
-	var ddl string
-	require.NoError(t, gdb.Raw(
-		"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", bucketTable).
-		Scan(&ddl).Error)
-	require.NotEmpty(t, ddl)
-	require.NoError(t, gdb.Exec(strings.Replace(ddl, bucketTable, hourTable, 1)).Error)
-	require.NoError(t, gdb.Exec(
-		"CREATE UNIQUE INDEX uk_hour_dim ON "+hourTable+" (bucket_ts, group_name, model_name)").Error)
+	// 两张表都走生产的 AutoMigrate,不许手工补建 —— 这本身就是判据。
+	//
+	// 原先这里只 AutoMigrate(&Bucket{}),小时表靠抄建表语句 + 手工
+	// `CREATE UNIQUE INDEX uk_hour_dim` 补出来,理由写的是"HourBucket 内嵌
+	// Bucket 复用了同一份索引名标签,而 sqlite 的索引名是库级唯一"。
+	// 那个规避把真缺陷藏了整整一轮:索引名在 PostgreSQL 上同样是 schema 级唯一,
+	// 生产的 PG 部署里小时表一条索引都没建出来,rollupHour 的 ON CONFLICT
+	// 恒报 42P10、小时表永远为空。现在索引名由 `composite:` 按表名派生,
+	// 两张表天然不撞,AutoMigrate 在 sqlite/MySQL/PostgreSQL 上都能把
+	// 小时表连同它的唯一索引一起建出来 —— 把名字改回硬编码,这一行当场变红。
+	require.NoError(t, gdb.AutoMigrate(&Bucket{}, &HourBucket{}))
 
 	prevHandle := qyDBHandle.Swap(gdb)
 	prevHealthy := qyDBHealthy.Swap(true)

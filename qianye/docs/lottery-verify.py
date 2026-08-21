@@ -602,6 +602,26 @@ def explain(p, entry_no):
 
 # ─────────────────────────── 主流程 ───────────────────────────
 
+def cancelled_before_commit(p):
+    """这一场是否在“承诺与冻结名单”之前就收场了。
+
+    发布前就被取消的活动从未做过承诺、从未冻结过名单，
+    commit_hash / roster_hash 合法地为空串。把它们无条件拿去与复算值比对，
+    得到的只能是一个必然的红叉 —— 而真实情况是平台什么都没承诺过、
+    也什么都没发生。本脚本的原则是“断了与被篡改了在验证结果上无法
+    区分，所以一律跳过，绝不给一个可能是假的绿勾”；反方向同理 ——
+    也绝不给一个假的红叉，那会把一场完全诚实的收场在公开页面上
+    渲染成“平台篡改了证据链”。
+
+    判据必须同时满足两条，缺一不可：
+      * 结局是取消 / 流局（REFUND_OUTCOMES）；
+      * locked_at 为空（从未封盘）。
+    一场封过盘的活动如果 commit_hash / roster_hash 空了，那就是承诺被
+    抹掉了，必须照旧报 FAIL。
+    """
+    return not p.get("locked_at") and p.get("outcome", "") in REFUND_OUTCOMES
+
+
 def main(path, explain_entry=None):
     p = load(path)
     algo = p["algo"]
@@ -648,6 +668,10 @@ def main(path, explain_entry=None):
     seed = p.get("seed", "")
     if not seed:
         print("  [SKIP] commit_hash —— 种子尚未揭示(活动还没到开奖时刻)")
+    elif not p.get("commit_hash") and cancelled_before_commit(p):
+        # 从未发布就被取消的活动根本没做过承诺，commit_hash 合法地为空串。
+        # 无条件复算再与空串比对必然不等，给出的是一个假的红叉。
+        print("  [SKIP] commit_hash —— 活动在发布前就被取消，从未做过承诺")
     else:
         ch = commit_hash_v2(p, seed) if algo == "lot-v2" else commit_hash_v1(p, seed)
         failures += not check(ch == p["commit_hash"], "commit_hash", ch)
@@ -679,9 +703,15 @@ def main(path, explain_entry=None):
     print("\n3. 有效名单在揭示种子之前就已冻结")
     R = sorted([e for e in entries if e["status"] == "success"], key=lambda e: e["entry_no"])
     rhash = roster_hash(algo, p, R)
-    roster_ok = rhash == p["roster_hash"] and len(R) == p["roster_count"]
-    failures += not check(rhash == p["roster_hash"], "roster_hash", rhash)
-    failures += not check(len(R) == p["roster_count"], "roster_count")
+    if not p.get("roster_hash") and cancelled_before_commit(p):
+        # 封盘前就被取消：名单从未被冻结，roster_hash 合法地为空串，
+        # 同样不能拿它去与一个复算值比对。
+        print("  [SKIP] roster_hash —— 活动在封盘前就被取消，名单从未被冻结")
+        roster_ok = True
+    else:
+        roster_ok = rhash == p["roster_hash"] and len(R) == p["roster_count"]
+        failures += not check(rhash == p["roster_hash"], "roster_hash", rhash)
+        failures += not check(len(R) == p["roster_count"], "roster_count")
     print("  关键:上面的 roster_hash 必须与你在封盘后、开奖前自行抓取的那一份一致。")
 
     if not seed:

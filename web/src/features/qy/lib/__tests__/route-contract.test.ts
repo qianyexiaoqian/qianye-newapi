@@ -122,6 +122,20 @@ function goRouteLiterals(): { file: string; fragment: string }[] {
   return out
 }
 
+/**
+ * 三个「不是空的」自检共用的下界。
+ *
+ * 它守的是**提取器自己被改坏**：三边（清单条数、前端调用点、Go 源码里的注册行）
+ * 此刻实测都是 239，一一对应。原来的判据写成 `> 150`，与真实值差 88 条（37%）
+ * —— 提取器可以静默丢掉三分之一的调用点（实测：walk 里跳过抽奖后台等五个目录
+ * 就掉到 159）而这条仍然全绿，那正是它当初被建出来要防的形状。
+ *
+ * 留 9 条余量而不是钉死 239：删掉一个后台页面是正常改动，不该逼人改守卫；
+ * 而任何一次「丢掉一整批」都远超这个余量。**真实条数明显涨上去之后要把这个
+ * 下界一起抬上来**，否则它会慢慢退化回今天这个 150。
+ */
+const MIN_COUNT = 230
+
 describe('qy 前后端路径对账', () => {
   const routes = loadQyRouteManifest(REPO)
   const scan = collectQyRequestPaths(SRC)
@@ -131,11 +145,11 @@ describe('qy 前后端路径对账', () => {
     // 下面每一条断言都会以「没有任何反例」的姿态变绿 —— 一个看起来最像
     // 「一切正常」的失效方式。
     assert.ok(
-      routes.length > 150,
+      routes.length >= MIN_COUNT,
       `后端路由清单只有 ${routes.length} 条，太少了`
     )
     assert.ok(
-      scan.sites.length > 150,
+      scan.sites.length >= MIN_COUNT,
       `只扫到 ${scan.sites.length} 处 qy 调用点，提取器多半被改坏了`
     )
   })
@@ -204,7 +218,7 @@ describe('qy 前后端路径对账', () => {
     // 上面那条对账会把新路径判成「后端没有」，报出来的却是前端的锅。
     const literals = goRouteLiterals()
     assert.ok(
-      literals.length > 150,
+      literals.length >= MIN_COUNT,
       `只在 Go 源码里找到 ${literals.length} 处路由注册`
     )
     const missing = literals.filter(

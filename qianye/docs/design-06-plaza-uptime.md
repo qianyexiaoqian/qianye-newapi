@@ -587,9 +587,14 @@ type QyAvailBucket struct {
 	Id       int64 `gorm:"primaryKey;autoIncrement" json:"id"`
 
 	// —— 维度（唯一约束三元组）——
-	BucketTs  int64  `gorm:"not null;uniqueIndex:uk_qy_avail_dim,priority:1;index:idx_qy_avail_ts_group,priority:1" json:"bucket_ts"`
-	GroupName string `gorm:"column:group_name;type:varchar(64);not null;uniqueIndex:uk_qy_avail_dim,priority:2;index:idx_qy_avail_ts_group,priority:2" json:"group"`
-	ModelName string `gorm:"type:varchar(128);not null;uniqueIndex:uk_qy_avail_dim,priority:3" json:"model_name"`
+	// 索引名一律用 `composite:` 派生（`idx_<表名>_dim`），不能硬编码：
+	// QyAvailBucketHour 匿名内嵌本结构体，会把索引名标签一起继承，而 PostgreSQL
+	// 与 SQLite 的索引名是 schema/库级唯一的 —— 硬编码会让小时表的三条索引被
+	// `CREATE INDEX IF NOT EXISTS` 静默吞掉（连唯一约束一起），rollup 的
+	// ON CONFLICT 恒报 42P10。判据：`TestExtensionIndexNamesAreSchemaUnique`。
+	BucketTs  int64  `gorm:"not null;uniqueIndex:,composite:dim,priority:1;index:,composite:ts_group,priority:1" json:"bucket_ts"`
+	GroupName string `gorm:"column:group_name;type:varchar(64);not null;uniqueIndex:,composite:dim,priority:2;index:,composite:ts_group,priority:2" json:"group"`
+	ModelName string `gorm:"type:varchar(128);not null;uniqueIndex:,composite:dim,priority:3" json:"model_name"`
 
 	// —— 核心计数（分子/分母）——
 	ReqTotal     int64 `gorm:"not null;default:0" json:"req_total"`     // 全部样本，含被排除的
@@ -619,7 +624,7 @@ type QyAvailBucket struct {
 
 	// —— 口径与运维 ——
 	DefinitionId string `gorm:"type:varchar(16);not null;default:''" json:"definition_id"` // 写入时的口径指纹
-	UpdatedAt    int64  `gorm:"not null;default:0;index:idx_qy_avail_updated" json:"updated_at"`
+	UpdatedAt    int64  `gorm:"not null;default:0;index" json:"updated_at"` // 名字由 GORM 按表名派生
 }
 
 func (QyAvailBucket) TableName() string { return "qy_avail_bucket" }
@@ -639,12 +644,15 @@ func (QyAvailBucket) TableName() string { return "qy_avail_bucket" }
 | `DefinitionId` | 口径变更后历史桶不重算，前端据此在图上标注变更点 |
 | `UpdatedAt` | rollup 任务的增量游标；同时是「这个桶是否还在被写」的判据 |
 
-**MySQL 索引长度核算**（utf8mb4，InnoDB DYNAMIC）：`uk_qy_avail_dim` = 8(bigint) + 64×4 + 128×4 = **776 字节** < 3072，安全；即便是老的 767 字节 COMPACT 格式也只差一点，因此 `ModelName` 用 `varchar(128)`（与上游 `perf_metrics.model_name` 一致）而非 191/255。
+**MySQL 索引长度核算**（utf8mb4，InnoDB DYNAMIC）：`idx_qy_avail_bucket_dim` = 8(bigint) + 64×4 + 128×4 = **776 字节** < 3072，安全；即便是老的 767 字节 COMPACT 格式也只差一点，因此 `ModelName` 用 `varchar(128)`（与上游 `perf_metrics.model_name` 一致）而非 191/255。
 
 **索引集合**
-- `uk_qy_avail_dim (bucket_ts, group_name, model_name)` UNIQUE — upsert 键
-- `idx_qy_avail_ts_group (bucket_ts, group_name)` — 主查询：`WHERE bucket_ts BETWEEN ? AND ? AND group_name IN (?)`，前缀完全命中
-- `idx_qy_avail_updated (updated_at)` — rollup 增量扫描
+- `idx_qy_avail_bucket_dim (bucket_ts, group_name, model_name)` UNIQUE — upsert 键
+- `idx_qy_avail_bucket_ts_group (bucket_ts, group_name)` — 主查询：`WHERE bucket_ts BETWEEN ? AND ? AND group_name IN (?)`，前缀完全命中
+- `idx_qy_avail_bucket_updated_at (updated_at)` — rollup 增量扫描
+
+> 小时表 `qy_avail_bucket_hour` 得到同形状的三条，名字是 `idx_qy_avail_bucket_hour_*`。
+> 两张表的索引名**必须**不同：PostgreSQL 与 SQLite 的索引名是 schema/库级唯一的。
 - **不建** `model_name` 单列索引：矩阵查询永远带时间范围，单列索引不会被选中，白白增加写放大
 
 #### 6.4.2 小时级 rollup 表 `qy_avail_bucket_hour`
@@ -955,7 +963,7 @@ query：`model`（必填）、`group`（必填）、`hours`/`start_ts`/`end_ts`�
    WHERE bucket_ts >= ? AND bucket_ts <= ? AND group_name IN (?)
    GROUP BY model_name, group_name
    ```
-   走 `idx_qy_avail_ts_group` 前缀。
+   走 `idx_qy_avail_bucket_ts_group` 前缀。
 6. **叠加本节点热桶**（未 flush 的部分）：`hotBuckets.Range` 内存合并，只在跨度 ≤6h 时做。
    > 多节点部署下这只补上**本节点**的最新 1 分钟，会造成节点间读数轻微不一致。可接受（≤1 分钟）；不接受的话把 `flush_interval_seconds` 调到 15 并关掉热桶合并（配置项 `merge_hot_buckets: true/false`）。
 7. 计算 `availability = success / counted * 100`（`counted == 0` → `nil`），套 `state` 六态，套 `min_samples_for_display`。

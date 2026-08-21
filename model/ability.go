@@ -121,6 +121,7 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 	if err != nil {
 		return nil, err
 	}
+	abilities = filterAbilitiesByExactGroupAndModel(abilities, group, model)
 	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
 	channel := Channel{}
 	if len(abilities) > 0 {
@@ -144,6 +145,40 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 	}
 	err = DB.First(&channel, "id = ?", channel.Id).Error
 	return &channel, err
+}
+
+// filterAbilitiesByExactGroupAndModel 把选路收敛回「分组名与模型名逐字相等」。
+//
+// 数据库那一层给不出这个保证:`WHERE group = ? AND model = ?` 在 MySQL 上按
+// 建库默认的 utf8mb4_0900_ai_ci 比,大小写**不**敏感;PostgreSQL 与 SQLite 按
+// 排序规则逐字节比,大小写敏感。同一份 abilities、同一个请求,MySQL 路由成功、
+// PostgreSQL 返回「无可用渠道」503 —— 实测(两台同二进制、同 mock 上游的对照
+// 实例)渠道配 `QY-CASE-MODEL`,客户端送 `qy-case-model`:MySQL 200 计费成功,
+// PG 503。迁库当天这会表现成一片"渠道挂了"。
+//
+// 收敛方向刻意选**严格**而不是"都改成不敏感",因为系统里除了这一句之外
+// 处处都已经是大小写敏感的:
+//
+//   - 内存缓存选路走 `group2model2channels[group][model]`,Go map,逐字节比 ——
+//     也就是说开了内存缓存的 MySQL 站点本来就已经是严格的,只有回落到数据库
+//     选路的那一档松;两条路径给出不同的路由结果本身就是缺陷。
+//   - 定价查的是 ratio_setting 的 Go map,同样逐字节比。MySQL 的宽松因此制造过
+//     一个"渠道找得到、价格找不到"的 400:模型名根本没被管理员配过价,却被
+//     ci 排序规则路由了出去。
+//   - 上游各家的模型 ID 本身就是大小写敏感的标识符。
+//
+// 于是三种库、两条选路路径在这一点上归一:配的是什么名字,就得用什么名字。
+func filterAbilitiesByExactGroupAndModel(abilities []Ability, group string, model string) []Ability {
+	if len(abilities) == 0 {
+		return abilities
+	}
+	exact := make([]Ability, 0, len(abilities))
+	for _, ability := range abilities {
+		if ability.Group == group && ability.Model == model {
+			exact = append(exact, ability)
+		}
+	}
+	return exact
 }
 
 // filterAbilitiesByRequestPathAndModel restricts candidates by request path and

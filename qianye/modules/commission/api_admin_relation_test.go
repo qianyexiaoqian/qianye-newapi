@@ -259,6 +259,48 @@ func TestAdminBindRelation_WritesAuthoritativeFieldAndSnapshot(t *testing.T) {
 	assert.Contains(t, logs[0].AfterSnap, `"inviter_id":31`)
 }
 
+// inviter_id 为 NULL 的账号必须能被绑上线。
+//
+// users.inviter_id 在三种受支持数据库上都是可空、无默认(MySQL
+// `bigint DEFAULT NULL`、PG `is_nullable=YES`),而 `NULL = 0` 在 SQL 里恒为
+// UNKNOWN。CAS 写成 `inviter_id = 0` 时,这类账号的 RowsAffected 恒为 0 →
+// errRelRaced → 409「邀请关系已被另一次操作改动,请刷新后重试」——
+// 把一个**永远重试不好**的确定性失败说成并发冲突。而 rebind / unbind
+// 又都要求 inviter_id != 0,三个写点全被挡在门外,只能 DBA 直接 UPDATE
+// 才能解。常规注册走 GORM Create 会显式写 0,所以 NULL 只来自导入、迁移、
+// 从旧库恢复,以及任何省略该列的外部 INSERT。
+//
+// 夹具里的 NULL 必须用裸 SQL 写进去:GORM 的 Create 会把零值当成 0 带进
+// INSERT,那样造不出这个形状,测试会因为错误的原因变绿。
+func TestAdminBindRelation_BindsAccountWithNullInviterColumn(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, commissionRateConfig("10", "5"))
+	useAdminAPI(t)
+	mainDB := useMainDB(t, &model.User{})
+
+	seedUser(t, mainDB, 41, "inviter", 0, 1000)
+	require.NoError(t, mainDB.Exec(
+		"INSERT INTO users (id, username, password, aff_code, created_at) VALUES (?, ?, ?, ?, ?)",
+		42, "null-invitee", "x", "aff42", 2000).Error)
+	var nullCount int64
+	require.NoError(t, mainDB.Model(&model.User{}).
+		Where("id = ? AND inviter_id IS NULL", 42).Count(&nullCount).Error)
+	require.EqualValues(t, 1, nullCount, "夹具没造出 NULL,下面的断言不能算数")
+
+	rec := callAdminHandler(t, http.MethodPost, "/api/qy/admin/commission/relations/bind",
+		bindBody(42, 41, "从旧库导入的账号补绑推广关系"), adminBindRelation)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, 41, inviterIdOf(t, mainDB, 42), "权威字段必须落到主库")
+
+	rel := relationRowOf(t, gdb, 42)
+	require.NotNil(t, rel)
+	assert.Equal(t, 41, rel.InviterId)
+
+	logs := relationAuditLogs(t, gdb, "commission.relation.bind")
+	require.Len(t, logs, 1)
+	assert.Equal(t, qymodel.ResultOK, logs[0].Result)
+}
+
 // TestAdminBindRelation_RejectsSelfInviteAndCycles 是防环的表驱动。
 //
 // 只挡 A↔B 两两互邀会漏掉 A→B→C→A —— 它同样是自刷,只是多拉了一个号。

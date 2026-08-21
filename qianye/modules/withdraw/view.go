@@ -4,6 +4,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/modules/commission"
 )
 
 // 对外视图。
@@ -72,6 +73,18 @@ type adminOrderView struct {
 	PayoutOperatorName string `json:"payout_operator_name"`
 	PayoutNote         string `json:"payout_note"`
 	ClientIp           string `json:"client_ip"`
+
+	// DebtBlocked / UnsettledAmount 是收款人当下的冲正欠账状态，实时读佣金余额行。
+	//
+	// 它们不是建单时的快照（RiskFlags 才是）：冲正欠账只在【提交提现】那一刻
+	// 拦一次，而冲正按设计只吃 available、吃不到已经冻住的 frozen。于是“先提现
+	// 冻住 → 下线退款触发冲正 → 管理员照常审批放款”是一条完整的、无告警的通路，
+	// 而 approve / mark-paid 正是这笔钱最后一次还能被拦回来的地方。信号在系统里
+	// 存在（佣金余额页有 debt_blocked 徽标与筛选），只是不在审核人正在看的那
+	// 张单上。
+	DebtBlocked bool `json:"debt_blocked"`
+	// UnsettledAmount 为负即挂着没收回来的冲正差额。与其他 decimal 一样下发 string。
+	UnsettledAmount string `json:"unsettled_amount"`
 
 	// SLA 字段让前端不必自己算截止时间,也就不会因为客户端时钟偏差而误标红。
 	//
@@ -166,6 +179,34 @@ func toAdminView(w *Withdrawal, events []Event) *adminOrderView {
 		})
 	}
 	return v
+}
+
+// fillDebtStatus 把收款人的冲正欠账状态填进管理端视图。
+//
+// 审核人就是在这一屏上决定要不要把钱发出去的，而欠账判据只在提交提现那
+// 一刻拦过一次 —— 详见 commission.LoadDebtStatuses。读不到时保守地留空：它是一个
+// 展示维度，不能把整个审核页卡掉（那一页还要用来驳回与排障），错误已由
+// db.MarkFailure 记下。
+func fillDebtStatus(views []*adminOrderView) {
+	if len(views) == 0 {
+		return
+	}
+	ids := make([]int, 0, len(views))
+	for _, v := range views {
+		ids = append(ids, v.UserId)
+	}
+	statuses, err := commission.LoadDebtStatuses(ids)
+	if err != nil {
+		return
+	}
+	for _, v := range views {
+		st, ok := statuses[v.UserId]
+		if !ok {
+			continue
+		}
+		v.DebtBlocked = st.Blocked
+		v.UnsettledAmount = st.Unsettled.String()
+	}
 }
 
 // SLA 种类。空串表示这张单当前不在任何一道时限里(终态)。

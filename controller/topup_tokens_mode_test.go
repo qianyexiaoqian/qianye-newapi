@@ -84,7 +84,43 @@ func TestStripeBoundsStayOrderedInTokensMode(t *testing.T) {
 	min, max := getStripeMinTopup(), getStripeMaxTopup()
 	require.Less(t, min, max,
 		"下界必须小于上界,否则 Stripe 充值在 TOKENS 模式下对任何金额都返回错误")
-	assert.Equal(t, int64(10000*500000), max, "上界与下界同口径:都跟随展示类型")
+	assert.Equal(t, getMaxTopup(), max,
+		"10000 个单位这条产品策略比结算侧能表示的额度还松,上界必须取小")
+}
+
+// Stripe 报的上界必须与另外三条通道是同一个物理约束、同一个数。
+//
+// 上界原先是硬编码的 10000 个单位，与 getMaxTopup()（结算侧 CreditQuota 能表示
+// 的真实上界，默认单价下是 4294）互不知情：落在 4295..10000 的输入被第二道闸以
+// 「充值额度超出系统可表示范围」拒掉 —— 这句话不指向任何用户能做的动作，而
+// epay/waffo/pancake 三条路对同一个约束报的是「充值数量不能大于 4294」。
+func TestStripeMaxTopupNeverExceedsTheCreditableCeiling(t *testing.T) {
+	cases := []struct {
+		name         string
+		displayType  string
+		quotaPerUnit float64
+		wantMax      int64
+	}{
+		{"USD 单价 500000:结算侧更紧", operation_setting.QuotaDisplayTypeUSD, 500000, 4294},
+		{"TOKENS 单价 500000:结算侧更紧", operation_setting.QuotaDisplayTypeTokens, 500000, 4294 * 500000},
+		{"USD 单价 1:10000 这条产品策略更紧", operation_setting.QuotaDisplayTypeUSD, 1, 10000},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withTopUpQuotaEnv(t, tc.displayType, tc.quotaPerUnit)
+			require.Equal(t, tc.wantMax, getStripeMaxTopup())
+
+			// 上界自己放行的那一笔必须真的能换算出额度（倍率 1 的分组）。
+			credited, err := (&model.TopUp{
+				PaymentProvider: model.PaymentProviderStripe,
+				Money:           stripeChargedMoneyForGroup(float64(getStripeMaxTopup()), "default"),
+			}).CreditQuota()
+			require.NoError(t, err, "上界自己放行的金额必须能换算成功")
+			assert.Greater(t, credited, 0)
+			assert.LessOrEqual(t, credited, common.MaxQuota-1)
+		})
+	}
 }
 
 // TOKENS 模式下报价端与落库端必须同口径。

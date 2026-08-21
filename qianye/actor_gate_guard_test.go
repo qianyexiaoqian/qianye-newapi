@@ -71,6 +71,13 @@ var actorGates = []actorGate{
 	{"POST /api/qy/admin/commission/balances/withdrawn", "qianye/modules/commission/api_admin_balance.go", "adminSetWithdrawn", "denyActorOverTarget"},
 	{"POST /api/qy/admin/commission/relations/bind", "qianye/modules/commission/api_admin_relation.go", "adminBindRelation", "denyActorOverTarget"},
 	{"POST /api/qy/admin/commission/relations/rebind", "qianye/modules/commission/api_admin_relation.go", "adminRebindRelation", "denyActorOverTarget"},
+	// 解绑与停/恢复计佣是同一资源的**相反方向**,受益人是关系上的邀请人而不是
+	// 报文里的某个 id —— 正因为报文里没有 inviter_id,这两条当初被整套闸门漏掉:
+	// role=10 曾能单方面清掉 root 的 users.inviter_id(断掉对方全部未来进项、
+	// 且自己无法复原,因为 bind/rebind 对 root 是 403),也曾能把上级基于风控
+	// 停掉的、落在自己名下的计佣重新解封。
+	{"POST /api/qy/admin/commission/relations/unbind", "qianye/modules/commission/api_admin_relation.go", "adminUnbindRelation", "denyActorOverTarget"},
+	{"POST /api/qy/admin/commission/relations/block", "qianye/modules/commission/api_admin.go", "adminBlockRelation", "denyActorOverTarget"},
 	{"POST /api/qy/admin/commission/settle", "qianye/modules/commission/api_admin.go", "adminSettle", "denyActorOverTarget"},
 	// 冲正是损害方向:一个 role=10 曾能把同级/root 的佣金冲成 0，再冲成负的
 	// unsettled 把对方挂上 debt_blocked，而受害者的恢复入口是接了判据的。

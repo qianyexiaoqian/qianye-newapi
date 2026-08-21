@@ -20,6 +20,7 @@ import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { Cancel01Icon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import * as React from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -64,6 +65,9 @@ function DialogContent({
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean
 }) {
+  // 关闭按钮只有图标，读屏用户唯一能听到的就是这行 sr-only 文案 —— 它必须
+  // 跟着界面语言走。'Close' 在 7 份 locales 里本来就有译文。
+  const { t } = useTranslation()
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -88,7 +92,7 @@ function DialogContent({
             }
           >
             <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
-            <span className='sr-only'>Close</span>
+            <span className='sr-only'>{t('Close')}</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Popup>

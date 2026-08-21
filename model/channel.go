@@ -407,8 +407,16 @@ func SearchChannels(keyword string, group string, model string, idSort bool, sor
 	baseQuery := DB.Model(&Channel{}).Omit("key")
 
 	// 构造WHERE子句
-	whereClause := "(id = ? OR name LIKE ? OR " + commonKeyCol + " = ? OR " + baseURLCol + " LIKE ?) AND " + modelsCol + " LIKE ?"
-	args := []any{common.String2Int(keyword), "%" + keyword + "%", keyword, "%" + keyword + "%", "%" + model + "%"}
+	//
+	// 三个 LIKE 都套 LOWER:MySQL 的 ci 排序规则让 LIKE 大小写不敏感,PostgreSQL
+	// 与 SQLite 不会 —— 同一次渠道检索在 PG 上返回 200 + 空列表,与「没有这个渠道」
+	// 不可分辨(实测 keyword=QY-PG-CH:MySQL 1 条 / PG 0 条)。`%kw%` 本来就用不上
+	// 索引,套 LOWER 不多花代价。
+	// 密钥列(commonKeyCol)刻意保持逐字相等:那是凭据比对,不该做任何折叠。
+	foldedKeyword := strings.ToLower(keyword)
+	foldedModel := strings.ToLower(model)
+	whereClause := "(id = ? OR LOWER(name) LIKE ? OR " + commonKeyCol + " = ? OR LOWER(" + baseURLCol + ") LIKE ?) AND LOWER(" + modelsCol + ") LIKE ?"
+	args := []any{common.String2Int(keyword), "%" + foldedKeyword + "%", keyword, "%" + foldedKeyword + "%", "%" + foldedModel + "%"}
 	baseQuery = ApplyChannelGroupFilter(baseQuery.Where(whereClause, args...), group)
 
 	// 执行查询
@@ -934,8 +942,16 @@ func SearchTags(keyword string, group string, model string, idSort bool) ([]*str
 	baseQuery := DB.Model(&Channel{}).Omit("key")
 
 	// 构造WHERE子句
-	whereClause := "(id = ? OR name LIKE ? OR " + commonKeyCol + " = ? OR " + baseURLCol + " LIKE ?) AND " + modelsCol + " LIKE ?"
-	args := []any{common.String2Int(keyword), "%" + keyword + "%", keyword, "%" + keyword + "%", "%" + model + "%"}
+	//
+	// 三个 LIKE 都套 LOWER:MySQL 的 ci 排序规则让 LIKE 大小写不敏感,PostgreSQL
+	// 与 SQLite 不会 —— 同一次渠道检索在 PG 上返回 200 + 空列表,与「没有这个渠道」
+	// 不可分辨(实测 keyword=QY-PG-CH:MySQL 1 条 / PG 0 条)。`%kw%` 本来就用不上
+	// 索引,套 LOWER 不多花代价。
+	// 密钥列(commonKeyCol)刻意保持逐字相等:那是凭据比对,不该做任何折叠。
+	foldedKeyword := strings.ToLower(keyword)
+	foldedModel := strings.ToLower(model)
+	whereClause := "(id = ? OR LOWER(name) LIKE ? OR " + commonKeyCol + " = ? OR LOWER(" + baseURLCol + ") LIKE ?) AND LOWER(" + modelsCol + ") LIKE ?"
+	args := []any{common.String2Int(keyword), "%" + foldedKeyword + "%", keyword, "%" + foldedKeyword + "%", "%" + foldedModel + "%"}
 	baseQuery = ApplyChannelGroupFilter(baseQuery.Where(whereClause, args...), group)
 
 	subQuery := baseQuery.

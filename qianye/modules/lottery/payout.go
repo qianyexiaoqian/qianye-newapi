@@ -327,7 +327,44 @@ func markPayoutPaid(tx *gorm.DB, payoutNo string) error {
 		// 别的路径已经收过尾。绝不在这里"补一次" —— 那正是重复加钱的形状。
 		return nil
 	}
-	return nil
+	return addPaidPayoutToActivityTotals(tx, payoutNo)
+}
+
+// addPaidPayoutToActivityTotals 把一笔**在收尾之后**才成功的出款补计进活动合计。
+//
+// 活动的 payout_quota / refund_quota 在 settling→finished 那一次 CAS 里被写成
+// "当时已 paid 的合计"。而 finishIfDone 刻意把 held 当作终态放行,held/failed
+// 之后仍可能被补偿任务或管理端「重试」推成 paid —— 那些钱是真的增发出去了
+// (主库 logs 里有账本行、资金单是 success),活动上的合计却再也不会跟上,
+// 且没有任何对账会复核它:runReconcile 只核名单与哈希链,auditFinishedChains
+// 连这一列都不 Select。
+//
+// 后果不是"少显示一点":held_quota 是实时 SUM,补发成功后它归零,于是同一笔钱
+// 从 payout_quota 与 held_quota 两个口子同时消失。管理端"本场收支"因此把一场
+// 净亏的活动显示成净赚,连符号都是反的,而列表页还会把它累加进总支出。
+//
+// 幂等由上面那次 CAS 保证:"paying/failed/held → paid"在一行出款上最多成功一次
+// (paid 是终态,没有任何路径把它推回去),所以这里的 +=  最多执行一次。
+// 条件里的 status = finished 让收尾**之前**就 paid 的那些笔不被重复计入 ——
+// 它们已经在收尾的聚合里了。
+func addPaidPayoutToActivityTotals(tx *gorm.DB, payoutNo string) error {
+	var p Payout
+	if err := tx.Where("payout_no = ?", payoutNo).Take(&p).Error; err != nil {
+		return err
+	}
+	if p.AmountQuota == 0 {
+		return nil
+	}
+	col := "payout_quota"
+	if p.Kind == PayoutRefund {
+		col = "refund_quota"
+	}
+	return tx.Model(&Activity{}).
+		Where("id = ? AND status = ?", p.ActId, StatusFinished).
+		UpdateColumns(map[string]any{
+			col:          gorm.Expr(col+" + ?", p.AmountQuota),
+			"updated_at": common.GetTimestamp(),
+		}).Error
 }
 
 // failPayout 处理 Execute 返回错误的三种结局。

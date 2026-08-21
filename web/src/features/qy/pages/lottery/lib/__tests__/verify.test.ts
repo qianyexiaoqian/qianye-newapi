@@ -240,6 +240,44 @@ describe('lot-v1 证据链验证（抽奖）', () => {
     assert.equal(statusOf(steps, 'result'), 'skipped')
   })
 
+  test('发布前就被取消的一场：承诺与名单标 skipped，而不是一个假的红叉', async () => {
+    // 从未发布就被取消：从未做过承诺、从未冻结过名单，两个哈希合法地为
+    // 空串，而种子仍会下发（结局已定、不会再抽）。无条件复算再与空串
+    // 比对必然不等 —— 一个完全诚实的收场会在公开页面上被渲染成两个红叉，
+    // 读起来就是“平台篡改了证据链”。
+    const proof = drawProof()
+    proof.status = 'finished'
+    proof.outcome = 'cancelled'
+    proof.commit_hash = ''
+    proof.roster_hash = ''
+    proof.chain_head = ''
+    proof.entries = []
+    proof.total = 0
+    proof.roster_count = 0
+    proof.winners = []
+    proof.payouts = []
+    proof.locked_at = 0
+    proof.revealed_at = 0
+    const steps = await verifyQyLotProof(proof)
+    assert.equal(statusOf(steps, 'commit'), 'skipped')
+    assert.equal(statusOf(steps, 'roster'), 'skipped')
+    assert.equal(statusOf(steps, 'result'), 'skipped')
+    // 规则与参数的承诺在建场时就已经落库，这两项照旧必须验。
+    assert.equal(statusOf(steps, 'rules'), 'ok')
+    assert.equal(statusOf(steps, 'spec'), 'ok')
+  })
+
+  test('封过盘的一场如果承诺空了，那就是被抹掉了，仍然报 fail', async () => {
+    const proof = drawProof()
+    proof.outcome = 'cancelled'
+    proof.commit_hash = ''
+    proof.roster_hash = ''
+    // locked_at 保留：这一场真的封过盘，那两个哈希本来就应该存在。
+    const steps = await verifyQyLotProof(proof)
+    assert.equal(statusOf(steps, 'commit'), 'fail')
+    assert.equal(statusOf(steps, 'roster'), 'fail')
+  })
+
   test('尚未揭示种子时，承诺与结果标 skipped 而不是 ok', async () => {
     const proof = drawProof()
     proof.seed = ''

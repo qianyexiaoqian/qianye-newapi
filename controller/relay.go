@@ -158,6 +158,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	// common.SetContextKey(c, constant.ContextKeyTokenCountMeta, meta)
 
 	if priceData.FreeModel {
+		// 免费模型跳过的是【预扣】，不是【余额闸】。免费模型照样会产生内置
+		// 工具调用附加费（与 ModelRatio / ModelPrice 完全解耦，web_search_preview
+		// 单次 5000 quota），而跳过 PreConsumeBilling 之后 relayInfo.Billing 为 nil，
+		// 结算会直接裸扣钱包 —— 一个已经欠费的账号因此能无上界地调用并
+		// 无上界地记账。这道闸把“欠费了就不许再调”补回来，但不预留任何额度。
+		if newAPIError = service.RejectOverdrawnFreeModelCall(c, relayInfo); newAPIError != nil {
+			return
+		}
 		logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", relayInfo.OriginModelName))
 	} else {
 		newAPIError = service.PreConsumeBilling(c, priceData.QuotaToPreConsume, relayInfo)

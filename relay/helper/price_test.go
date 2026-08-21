@@ -181,7 +181,15 @@ func TestModelPriceHelperTieredRejectsPreConsumeOverflow(t *testing.T) {
 	require.Equal(t, common.QuotaClampOverflow, clamp.Kind)
 }
 
-func TestModelPriceHelperRequestBillingRatiosOnlyApplyToFixedPrice(t *testing.T) {
+// 请求形状决定的计费倍率（图片张数 n、dall-e 的 size×quality）必须在**两条
+// 定价路径上都**生效。
+//
+// 它们原先整段写在 `if usePrice` 里，于是把图片模型按 ModelRatio 定价时
+// （开箱默认就是这条路：defaultModelRatio 里有 gpt-image-1、defaultModelPrice 里
+// 没有）n 在预扣与结算两侧都被丢掉；再叠上图片处理器在上游不回 usage 时把
+// TotalTokens 强设为 1，一次 n=128 的请求与 n=1 收同样的钱，而那点钱等于一个
+// token。本用例把两条路径各自的公式写成式子而不是魔数，写错一个因子就会变红。
+func TestModelPriceHelperRequestBillingRatiosApplyToBothPricingPaths(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	savedModelPrices := ratio_setting.ModelPrice2JSONString()
 	savedModelRatios := ratio_setting.ModelRatio2JSONString()
@@ -216,15 +224,17 @@ func TestModelPriceHelperRequestBillingRatiosOnlyApplyToFixedPrice(t *testing.T)
 			wantImageCount: true,
 		},
 		{
-			name:  "ratio price ignores request billing ratios",
+			name:  "ratio price also applies request billing ratios",
 			model: "ratio-image-price",
 			// 倍率路径的预扣额 =(prompt + max_tokens × CompletionRatio) × ModelRatio。
 			// 这一格没给 max_tokens,走 defaultPreConsumeMaxTokens 兜底
 			// (省略 max_tokens 时对输出侧一个 token 都不预留,一次请求就能把余额
 			// 扣成负数,见 pre_consume_estimate_test.go)。这里的判据是
 			// **BillingRatios 里的 n=3 不参与**,所以写成公式而不是一个魔数。
-			wantQuota:    (1000 + defaultPreConsumeMaxTokens) * 15,
-			wantUsePrice: false,
+			// 再乘 n(3) 与 size×quality(3)。
+			wantQuota:      (1000 + defaultPreConsumeMaxTokens) * 15 * 3 * 3,
+			wantUsePrice:   false,
+			wantImageCount: true,
 		},
 	}
 
@@ -248,6 +258,9 @@ func TestModelPriceHelperRequestBillingRatiosOnlyApplyToFixedPrice(t *testing.T)
 			require.Equal(t, tt.wantQuota, priceData.QuotaToPreConsume)
 			require.Equal(t, tt.wantUsePrice, priceData.UsePrice)
 			require.Equal(t, tt.wantImageCount, priceData.HasOtherRatio("n"))
+			// size×quality 在按次路径上是乘进 modelPrice 的,在按量路径上无处可放,
+			// 只能进 OtherRatios 才能同时到达预扣与结算两侧。
+			require.Equal(t, !tt.wantUsePrice, priceData.HasOtherRatio("image_size_quality"))
 			require.Equal(t, priceData.OtherRatios(), info.PriceData.OtherRatios())
 		})
 	}

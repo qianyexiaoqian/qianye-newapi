@@ -1062,11 +1062,26 @@ func handleAdminGetActivity(c *gin.Context) {
 			"refund_quota":       act.RefundQuota,
 			"platform_fee_quota": act.PlatformFeeQuota,
 			"held_quota":         held,
-			// 抽奖的净值可以是负数:平台出奖品是净增发,两边不守恒是正常的。
-			// held 也要扣掉:它是已经确定要发、只是还没发出去的义务。
-			"net_quota": act.PoolQuota + act.PlatformFeeQuota - act.PayoutQuota - act.RefundQuota - held,
+			"net_quota":          activityNetQuota(act, held),
 		},
 	})
+}
+
+// activityNetQuota 是「本场收支」的净值:收进来的参与费 − 发出去的奖 − 退回去的
+// 钱 − 还欠着没发出去的那部分。可以是负数 —— 平台出奖品是净增发,两边不守恒是
+// 正常的,所以前端带符号显示。
+//
+// platform_fee_quota **不进这个式子**。它是从 pool 里切出来的那一块,不是池子之外
+// 的第二笔收入:竞猜在 SplitPool 结尾断言 Σpay + fee == pool(commit.go),双色球的
+// fee = PoolQuota − ballPoolIn(lifecycle.go),两条路都是 pool 的真子集,而
+// income_quota 就是 pool。原先的式子把它又加了一遍 —— 竞猜恒有 pool = payout + fee,
+// 于是真实净值(恰等于 fee)被显示成 2×fee,误差 100%;亏损场则被少报一个 fee 的
+// 亏损,一场明确在亏的期次看起来没那么亏。rank/prob 的 fee 恒为 0,所以这个错误只在
+// 有手续费的玩法上显形,一直没被发现。管理端列表页(admin-lottery/index.tsx)算的
+// 一直是 pool − payout − refund,与这里修正后的口径一致;修之前同一场活动在列表页
+// 和详情页会显示两个不同的「净值」。
+func activityNetQuota(act *Activity, held int64) int64 {
+	return act.PoolQuota - act.PayoutQuota - act.RefundQuota - held
 }
 
 // handleAdminListEntries 返回参与明细。

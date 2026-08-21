@@ -92,6 +92,29 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 // A non-positive CompletionRatio contributes nothing (settlement charges
 // nothing for output in that case either); it is never allowed to shrink the
 // prompt-side reservation.
+//
+// ═════════════════ 拍过板的取舍:预扣是估算,结算无下限 ═════════════════
+//
+// **这个函数只负责"估得像不像",不负责"扣得住扣不住"。** 估不足的部分会在结算时
+// 无条件补收,而补收**允许把余额扣成负数** —— 这不是漏洞,是项目方两次拍过板的
+// 取舍。原话:
+//
+//	「我看很多 AI 平台都不会有上限的,高并发的情况下都会有透支的吧。
+//	  性能和准确,高并发环境下只能先考虑性能。」(2026-08-19)
+//
+// 更早的一次(2026-08-10)撤回过一整轮"把预扣改成同步条件原子写"的改动,
+// 因为那让有余额的用户被 403 误拒;上游 issue #5690 报过同一批问题,维护者关成
+// NOT_PLANNED,理由是「这是高并发下必须做的取舍」。
+//
+// 代价是明确的、已被量化的:8 路并发打一个只够 1 次的钱包 → 8/8 全过、余额 −140000;
+// 弃号跑掉的欠款是净损失。运营侧的兜底不是代码,是
+// GET /api/qy/admin/overdraft(谁欠、欠多少、合计多少)。
+//
+// **下一个想"修"它的人,先读 qianye/docs/decisions.md 的 D-01。**
+// 本仓已经有过一次"后来的人不知道这是拍过板的、又改了一遍"的教训
+// (预扣 TOCTOU + 批量队列,改完又整条撤回)。可以做的是让估算更准
+// (本函数)、让透支更可见(那个端点、admin_info.pre_consume_shortfall);
+// 不可以做的是在结算侧加下限、把补收改成会失败的操作、或者把批量更新队列关掉。
 func preConsumeTokenEstimate(promptTokens int, maxTokens int, completionRatio float64) float64 {
 	estimate := float64(common.Max(promptTokens, common.PreConsumedQuota))
 	// max_tokens 缺省时用兜底上限,不能按 0 处理:见 defaultPreConsumeMaxTokens。
@@ -196,16 +219,42 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		CacheCreation1hRatio: cacheCreationRatio1h,
 		QuotaToPreConsume:    preConsumedQuota,
 	}
+	// 请求形状决定的计费倍率（图片张数 n、dall-e 的 size×quality）与“按次还是
+	// 按量”无关：一次 n=10 的请求就是真的生了十张图。它们原先整段写在
+	// `if usePrice` 里，于是把图片模型按 ModelRatio（开箱默认就把 gpt-image-1
+	// 放在这条路上：defaultModelRatio 有它、defaultModelPrice 没有）定价时，n 在
+	// 预扣与结算两侧都被丢掉 —— 再叠上图片处理器在上游不回 usage 时把
+	// TotalTokens 强设为 1，一次 n=128 的请求与 n=1 收同样的钱，而那点钱等于
+	// 一个 token（实测：同一个 mock 上游、同样 128 张图，按次 16,000,000 vs
+	// 按倍率 3）。
+	//
+	// 结算侧本来就两条路都调 ApplyOtherRatios（service/text_quota.go:487/499），
+	// 真正的断点只是“n 从来没被放进去”。
+	for name, ratio := range meta.BillingRatios {
+		priceData.AddOtherRatio(name, ratio)
+	}
 	if usePrice {
-		for name, ratio := range meta.BillingRatios {
-			priceData.AddOtherRatio(name, ratio)
-		}
 		quotaToPreConsume := priceData.ApplyOtherRatiosToFloat(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 		quota, err := common.QuotaFromFloatStrict(quotaToPreConsume)
 		if err != nil {
 			return hosttypes.PriceData{}, err
 		}
 		priceData.QuotaToPreConsume = quota
+	} else {
+		// 按量路径上 size×quality 无处可放（它在按次路径上是乘进 modelPrice 的），
+		// 放进 OtherRatios 才能同时到达预扣与结算两侧。名字与 n 分开，否则图片
+		// 处理器事后按真实张数覆盖 n 时会把尺寸倍率一并抹掉。
+		if meta.ImagePriceRatio != 0 {
+			priceData.AddOtherRatio("image_size_quality", meta.ImagePriceRatio)
+		}
+		if len(priceData.OtherRatios()) > 0 {
+			quota, err := common.QuotaFromFloatStrict(
+				priceData.ApplyOtherRatiosToFloat(float64(priceData.QuotaToPreConsume)))
+			if err != nil {
+				return hosttypes.PriceData{}, err
+			}
+			priceData.QuotaToPreConsume = quota
+		}
 	}
 
 	if common.DebugEnabled {

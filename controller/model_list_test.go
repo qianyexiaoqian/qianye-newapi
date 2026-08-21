@@ -41,7 +41,12 @@ func setupModelListControllerTestDB(t *testing.T) *gorm.DB {
 
 	gin.SetMode(gin.TestMode)
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	// 这是一个进程级全局量，不还原就会泄漏给同包里后面跑的每一个测试：包里唯一
+	// 一处「Redis 关着」的假设会顺带遮住别的测试对缓存刷新协程的依赖，等到
+	// -shuffle=on 或按 -run 过滤单跑时才随机变红。
+	prevRedisEnabled := common.RedisEnabled
 	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = prevRedisEnabled })
 
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})

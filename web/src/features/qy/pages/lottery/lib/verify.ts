@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   QY_LOT_PPM_DEN,
+  isQyLotCancelledBeforeCommit,
   isQyLotVoided,
   qyLotOptions,
   qyLotTiers,
@@ -882,8 +883,13 @@ export async function verifyQyLotProof(
   }
 
   const revealed = proof.seed !== ''
+  const cancelledBeforeCommit = isQyLotCancelledBeforeCommit(proof)
   if (!revealed) {
     steps.push(step('commit', 'skipped'))
+  } else if (proof.commit_hash === '' && cancelledBeforeCommit) {
+    // 发布前就被取消：从未做过承诺，commit_hash 合法地为空串。
+    // 无条件复算再与空串比对必然不等，那是一个假的红叉。
+    steps.push(step('commit', 'skipped', `outcome=${proof.outcome}`))
   } else {
     try {
       const commit = await qyLotCommitHash(proof, rulesHash, specHash)
@@ -939,22 +945,28 @@ export async function verifyQyLotProof(
     .sort((a, b) => byteCompare(a.entry_no, b.entry_no))
 
   let rosterOk = false
-  try {
-    const hash = await qyLotRosterHash(
-      proof.act_no,
-      proof.commit_hash,
-      roster,
-      proof.algo
-    )
-    rosterOk =
-      hash === proof.roster_hash && roster.length === proof.roster_count
-    steps.push(
-      rosterOk
-        ? step('roster', 'ok', `${roster.length}`)
-        : step('roster', 'fail', `${hash} != ${proof.roster_hash}`)
-    )
-  } catch (error) {
-    steps.push(step('roster', 'fail', String(error)))
+  if (proof.roster_hash === '' && cancelledBeforeCommit) {
+    // 封盘前就被取消：名单从未被冻结，roster_hash 合法地为空串。
+    rosterOk = true
+    steps.push(step('roster', 'skipped', `outcome=${proof.outcome}`))
+  } else {
+    try {
+      const hash = await qyLotRosterHash(
+        proof.act_no,
+        proof.commit_hash,
+        roster,
+        proof.algo
+      )
+      rosterOk =
+        hash === proof.roster_hash && roster.length === proof.roster_count
+      steps.push(
+        rosterOk
+          ? step('roster', 'ok', `${roster.length}`)
+          : step('roster', 'fail', `${hash} != ${proof.roster_hash}`)
+      )
+    } catch (error) {
+      steps.push(step('roster', 'fail', String(error)))
+    }
   }
 
   // ④⑤ 重算结果。名单没对上就没有复算的意义 —— 那只会算出一个"当然不一样"。

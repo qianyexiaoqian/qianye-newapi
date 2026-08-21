@@ -29,6 +29,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { TitledCard } from '@/components/ui/titled-card'
 
+import { QyAmountText } from '../../components/qy-amount-text'
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
@@ -45,6 +46,7 @@ import {
 import { QyKeyValue } from '../ops/qy-ops-ui'
 import {
   getQyAdminHealth,
+  getQyOverdraft,
   getQyVersion,
   listQyLeases,
   reloadQyConfig,
@@ -147,6 +149,23 @@ export function QyAdminHealth() {
     refetchInterval: 30_000,
   })
 
+  /**
+   * 负余额（透支）总览。
+   *
+   * 本站**刻意接受**预扣/结算无下限（拍板与代价见 `qianye/docs/decisions.md`
+   * D-01）。接受不等于不管：这张卡就是那条取舍的运维面 —— 现在有多少账号
+   * 是负的、合计欠多少、最深的是谁。它只读，处置动作在上游用户管理页。
+   *
+   * 30 秒轮询与健康数据同频：欠款是会在几分钟内变化的量，一个手动刷新才更新
+   * 的数字会让人拿着上一次打开页面时的结论去做处置决定。
+   */
+  const overdraftQuery = useQuery({
+    queryKey: qyKeys.adminOverdraft(),
+    queryFn: getQyOverdraft,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+  })
+
   // 版本是编译期常量，进程不重启就不会变，所以既不轮询也不过期。
   // 刷新按钮仍然带上它：那是「部署到底生效没有」在同一页里的确认方式。
   const versionQuery = useQuery({
@@ -192,6 +211,7 @@ export function QyAdminHealth() {
             void healthQuery.refetch()
             void leasesQuery.refetch()
             void versionQuery.refetch()
+            void overdraftQuery.refetch()
           }}
         >
           <RefreshCw
@@ -237,6 +257,102 @@ export function QyAdminHealth() {
               <QyKeyValue label={t('qy_cfg_health_version_core')}>
                 {versionQuery.data.core}
               </QyKeyValue>
+            </TitledCard>
+          )}
+
+          {/* 透支总览刻意放在 QyPageBoundary **外面**，理由与上面版本卡那条
+              一模一样：后端 `/admin/overdraft` 不走 requireCore（只查主库
+              users），扩展库不可用时它仍然是 200，而 `/admin/health` 会 503，
+              boundary 随即把整个内容区换成错误态。放进去等于让"站上现在欠了
+              多少钱"跟着扩展库一起消失。
+
+              `overdraftQuery.data != null` 而不是渲染错误态：扩展整体被关掉时
+              这个请求会 404，此时下面的 boundary 已经在解释原因了。 */}
+          {overdraftQuery.data != null && (
+            <TitledCard
+              title={t('qy_cfg_overdraft_title')}
+              description={t('qy_cfg_overdraft_desc')}
+            >
+              <QyStatGrid
+                items={[
+                  {
+                    key: 'accounts',
+                    label: t('qy_cfg_overdraft_accounts'),
+                    value: (
+                      <span
+                        className={
+                          overdraftQuery.data.accounts > 0
+                            ? 'text-warning'
+                            : 'text-success'
+                        }
+                      >
+                        {formatQyCount(overdraftQuery.data.accounts)}
+                      </span>
+                    ),
+                    hint: t('qy_cfg_overdraft_accounts_hint'),
+                  },
+                  {
+                    key: 'owed',
+                    label: t('qy_cfg_overdraft_total'),
+                    // 合计欠额下发的就是正数（后端 Report.TotalOwed 恒 >= 0，
+                    // 取反只在那一处做过一次），所以这里**原样**渲染:再取一次
+                    // 反会在界面上写出一个负的欠款额，而它旁边的"欠得最深"
+                    // (deepest.quota，库里本来就是负的) 同符号同量级，两个数会被
+                    // 读成同一个。方向由标签"合计欠额"表达，颜色由 text-warning
+                    // 表达 —— 不借 QyAmountText 的负数红色语义。
+                    value: (
+                      <QyAmountText
+                        quota={overdraftQuery.data.total_owed}
+                        variant='hero'
+                        className={
+                          overdraftQuery.data.total_owed > 0
+                            ? 'text-warning'
+                            : undefined
+                        }
+                      />
+                    ),
+                    hint: t('qy_cfg_overdraft_total_hint'),
+                    emphasis: true,
+                  },
+                  {
+                    key: 'deepest',
+                    label: t('qy_cfg_overdraft_deepest'),
+                    value:
+                      overdraftQuery.data.deepest == null ? (
+                        QY_EMPTY_TEXT
+                      ) : (
+                        <QyAmountText
+                          quota={overdraftQuery.data.deepest.quota}
+                          variant='hero'
+                        />
+                      ),
+                    hint:
+                      overdraftQuery.data.deepest == null
+                        ? t('qy_cfg_overdraft_none')
+                        : `${overdraftQuery.data.deepest.username} (#${overdraftQuery.data.deepest.user_id})`,
+                  },
+                ]}
+              />
+              {overdraftQuery.data.top.length > 0 && (
+                <div className='mt-3'>
+                  {overdraftQuery.data.top.map((account) => (
+                    <QyKeyValue
+                      key={account.user_id}
+                      label={`${account.username} (#${account.user_id}) · ${account.group}`}
+                    >
+                      <QyAmountText quota={account.quota} />
+                    </QyKeyValue>
+                  ))}
+                  {overdraftQuery.data.truncated && (
+                    <p className='text-muted-foreground mt-2 text-xs'>
+                      {t('qy_cfg_overdraft_truncated', {
+                        shown: overdraftQuery.data.top.length,
+                        total: overdraftQuery.data.accounts,
+                      })}
+                    </p>
+                  )}
+                </div>
+              )}
             </TitledCard>
           )}
 

@@ -933,27 +933,6 @@ func finishIfDone(ctx context.Context, gdb *gorm.DB, act *Activity) {
 		}
 	}
 
-	type sums struct {
-		Kind  string
-		Total int64
-	}
-	var agg []sums
-	if err := gdb.WithContext(ctx).Model(&Payout{}).
-		Select("kind, COALESCE(SUM(amount_quota), 0) AS total").
-		Where("act_id = ? AND status = ?", act.Id, PayoutPaid).
-		Group("kind").Scan(&agg).Error; err != nil {
-		db.MarkFailure(err)
-		return
-	}
-	var payoutSum, refundSum int64
-	for _, a := range agg {
-		if a.Kind == PayoutRefund {
-			refundSum += a.Total
-		} else {
-			payoutSum += a.Total
-		}
-	}
-
 	// 双色球:本期没派出去的池子要还回系列,滚进下一期。
 	//
 	// 用**计划口径**(已登记的派奖计划总额)而不是"真的发出去了多少":一笔转人工
@@ -965,21 +944,52 @@ func finishIfDone(ctx context.Context, gdb *gorm.DB, act *Activity) {
 	}
 
 	now := common.GetTimestamp()
+	var payoutSum, refundSum int64
+	var finished bool
 	err = gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 先把状态推成 finished(这一步同时锁住活动行),再在**同一个事务里**聚合
+		// 已 paid 的合计。顺序反过来的话有一个窗口:一笔出款在聚合之后、状态改成
+		// finished 之前提交成功,聚合看不到它,而 markPayoutPaid 那边的补计条件
+		// (status = finished)当时也还不成立 —— 这笔钱两头都不记。
 		res := tx.Model(&Activity{}).
 			Where("id = ? AND status = ?", act.Id, StatusSettling).
 			Updates(map[string]any{
-				"status":       StatusFinished,
-				"payout_quota": payoutSum,
-				"refund_quota": refundSum,
-				"settled_at":   now,
-				"updated_at":   now,
+				"status":     StatusFinished,
+				"settled_at": now,
+				"updated_at": now,
 			})
 		if res.Error != nil {
 			return res.Error
 		}
 		if res.RowsAffected != 1 {
-			return nil
+			return nil // 别的节点抢先了
+		}
+		finished = true
+		type sums struct {
+			Kind  string
+			Total int64
+		}
+		var agg []sums
+		if err := tx.Model(&Payout{}).
+			Select("kind, COALESCE(SUM(amount_quota), 0) AS total").
+			Where("act_id = ? AND status = ?", act.Id, PayoutPaid).
+			Group("kind").Scan(&agg).Error; err != nil {
+			return err
+		}
+		payoutSum, refundSum = 0, 0
+		for _, a := range agg {
+			if a.Kind == PayoutRefund {
+				refundSum += a.Total
+			} else {
+				payoutSum += a.Total
+			}
+		}
+		if err := tx.Model(&Activity{}).Where("id = ?", act.Id).
+			UpdateColumns(map[string]any{
+				"payout_quota": payoutSum,
+				"refund_quota": refundSum,
+			}).Error; err != nil {
+			return err
 		}
 		// 幂等由上面那次 CAS 保证:settling → finished 在整个活动生命周期里
 		// 最多成功一次,系列池因此最多被结算一次。
@@ -997,6 +1007,10 @@ func finishIfDone(ctx context.Context, gdb *gorm.DB, act *Activity) {
 	if err != nil {
 		db.MarkFailure(err)
 		common.SysError(fmt.Sprintf("qianye/lottery: 活动 %s 收尾失败: %v", act.ActNo, err))
+		return
+	}
+	if !finished {
+		// 别的节点抢先收了尾。审计与合计都归它写,这里再补一条只会是一对 0。
 		return
 	}
 	writeSystemAudit("lottery.finish", act.ActNo, qymodel.ResultOK, "",

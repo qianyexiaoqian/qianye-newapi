@@ -746,3 +746,22 @@ export function isQyLotOpen(
 export function isQyLotVoided(outcome: QyLotOutcome): boolean {
   return outcome === 'cancelled' || outcome.startsWith('void_')
 }
+
+/**
+ * 这一场是否在"承诺与冻结名单"之前就收场了。
+ *
+ * 发布前就被取消的活动从未做过承诺、从未冻结过名单，`commit_hash` 与
+ * `roster_hash` 合法地为空串。把它们无条件拿去与复算值比对，得到的只能是一个
+ * 必然的红叉 —— 而真实情况是平台什么都没承诺过、也什么都没发生。验证器的原则
+ * 是"断了与被篡改了在结果上无法区分，所以一律跳过，绝不给一个可能是假的绿勾"；
+ * 反方向同理：也绝不给一个假的红叉，那会把一场完全诚实的收场在公开页面上渲染成
+ * "平台篡改了证据链"。
+ *
+ * 判据必须同时满足两条：结局是取消/流局，且 `locked_at` 为 0（从未封盘）。
+ * 一场封过盘的活动如果这两个哈希空了，那是承诺被抹掉了，必须照旧报 fail。
+ */
+export function isQyLotCancelledBeforeCommit(
+  proof: Pick<QyLotProof, 'outcome' | 'locked_at'>
+): boolean {
+  return proof.locked_at === 0 && isQyLotVoided(proof.outcome)
+}

@@ -72,6 +72,7 @@ func handleAdminList(c *gin.Context) {
 	for i := range rows {
 		items = append(items, toAdminView(&rows[i], nil))
 	}
+	fillDebtStatus(items)
 	respondOK(c, gin.H{"items": items, "total": total, "p": page, "page_size": size})
 }
 
@@ -153,7 +154,9 @@ func handleAdminGet(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	respondOK(c, toAdminView(w, events))
+	v := toAdminView(w, events)
+	fillDebtStatus([]*adminOrderView{v})
+	respondOK(c, v)
 }
 
 type reasonRequest struct {

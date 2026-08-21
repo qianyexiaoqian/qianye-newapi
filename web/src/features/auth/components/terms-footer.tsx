@@ -34,10 +34,13 @@ export function TermsFooter({
   status,
 }: TermsFooterProps) {
   const { t } = useTranslation()
+  // 这三段原本是硬编码英文，而同一段里的 t('and') 走了 i18n —— 中文界面上
+  // 因此出现"我已阅读并同意 用户协议。"紧跟一句英文协议行。登录/注册页是全站
+  // 唯一一个匿名用户必经的页面，6 个非英文语种全都看得见。
   const text =
     variant === 'sign-in'
-      ? 'By clicking sign in, you agree to our'
-      : 'By creating an account, you agree to our'
+      ? t('By clicking sign in, you agree to our')
+      : t('By creating an account, you agree to our')
 
   const hasUserAgreement = Boolean(status?.user_agreement_enabled)
   const hasPrivacyPolicy = Boolean(status?.privacy_policy_enabled)
@@ -47,11 +50,11 @@ export function TermsFooter({
   }
 
   const agreementLink = {
-    label: 'User Agreement',
+    label: t('User Agreement'),
     href: '/user-agreement',
   }
   const privacyLink = {
-    label: 'Privacy Policy',
+    label: t('Privacy Policy'),
     href: '/privacy-policy',
   }
 

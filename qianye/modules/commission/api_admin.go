@@ -1095,6 +1095,18 @@ func adminBlockRelation(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	// 受益人是**邀请人**,与 bind/rebind 同一条判据 —— 只是这条接口的报文里
+	// 没有 inviter_id,得先按关系解析出来。
+	//
+	// 两个方向都动的是别人的钱:blocked=false 是"恢复计佣",一个 role=10 管理员
+	// 可以用它把上级基于风控停掉的、落在**自己名下**的计佣重新打开,而且迟付
+	// 回捞(sweepLateTopups)会把停止窗口内的充值一并补算 —— 收益面比接口文案
+	// 承诺的"停止期间不补算"还大;blocked=true 则能把任意更高权限账号(实测含
+	// root)名下的进项静默停掉。这张表的 blocked 列只有 setRelationBlocked
+	// 一个写入口,闸门漏在这里就是彻底没有。
+	if denyActorOverTarget(c, "commission.relation.block", currentInviterId(ctx, req.InviteeId)) {
+		return
+	}
 	before := relationSnapshot(ctx, req.InviteeId)
 	inviterId, err := setRelationBlocked(ctx, req.InviteeId, req.Blocked, req.Reason)
 	if err != nil {

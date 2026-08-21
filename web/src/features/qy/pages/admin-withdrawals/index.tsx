@@ -202,6 +202,9 @@ export function QyAdminWithdrawals() {
           {row.risk_flags !== '' && (
             <Badge variant='outline'>{t('qy_wd_a_risk_badge')}</Badge>
           )}
+          {row.debt_blocked && (
+            <Badge variant='destructive'>{t('qy_wd_a_debt_badge')}</Badge>
+          )}
         </span>
       ),
     },

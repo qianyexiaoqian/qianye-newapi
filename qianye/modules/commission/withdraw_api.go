@@ -56,6 +56,62 @@ func Withdrawable(userId int) (int64, error) {
 	return bal.AvailableQuota, nil
 }
 
+// DebtStatus 是一个人当下的冲正欠账状态。
+type DebtStatus struct {
+	// Blocked 为真即“这个人账面上还倒欠平台钱”，新的提现申请会被拒。
+	Blocked bool
+	// Unsettled 是未结算余数；为负表示冲正金额超过了当时可回收的可用余额，
+	// 差额挂在这里等未来的佣金来吸收。
+	Unsettled decimal.Decimal
+}
+
+// LoadDebtStatuses 只读地批量返回一组人的欠账状态，供审核界面展示。
+//
+// 冲正欠账只在【提交提现】那一刻拦一次（FreezeForWithdraw），而冲正按设计只吃
+// available、吃不到已经冻住的 frozen。于是“先提现冻住 → 下线退款触发冲正 →
+// 管理员照常审批放款”是一条完整且无告警的通路，而 approve / mark-paid 才是这笔钱
+// 最后一次还能被拦回来的地方（驳回与标记失败都会把 frozen 退回 available，而退回后
+// 的 available 正是下一次结算能吃到的那一桶）。信号在系统里本来就存在（佣金余额页
+// 有 debt_blocked 徽标与筛选），只是不在审核人正在看的那张单上 —— 这个函数就是为了
+// 把它放到那张单上。
+//
+// 它不做任何拦截：设计文档 §10.6 把欠账判据写在“提现发起”那一步，改成在放款侧
+// 硬拦是另一个产品决策；当下要修的是“审核人看不见”。
+//
+// 余额行不存在（从没计过佣）的人不会出现在返回的 map 里，调用方拿到零值即可。
+// 批量而不是逐个查：审核列表一页几十张单，逐张查就是一个 N+1。
+func LoadDebtStatuses(userIds []int) (map[int]DebtStatus, error) {
+	out := make(map[int]DebtStatus, len(userIds))
+	ids := make([]int, 0, len(userIds))
+	seen := make(map[int]bool, len(userIds))
+	for _, id := range userIds {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	gdb := db.Get()
+	if gdb == nil {
+		return out, db.ErrNotReady
+	}
+	var rows []Balance
+	if err := gdb.Where("user_id IN ?", ids).Find(&rows).Error; err != nil {
+		db.MarkFailure(err)
+		return out, err
+	}
+	for i := range rows {
+		out[rows[i].UserId] = DebtStatus{
+			Blocked:   rows[i].DebtBlocked || rows[i].UnsettledAmount.IsNegative(),
+			Unsettled: rows[i].UnsettledAmount,
+		}
+	}
+	return out, nil
+}
+
 // WithdrawableFiat 返回可提现额度在账本上对应的法币值,供提现页做预览。
 //
 // 它与 QuoteWithdrawFiat 读的是同一列(available_fiat),差别只在于:预览是

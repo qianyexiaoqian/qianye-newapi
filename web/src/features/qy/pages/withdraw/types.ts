@@ -187,6 +187,17 @@ export type QyAdminWithdrawal = QyWithdrawal & {
    * 而这两件事在组织上往往根本不是同一个人。
    */
   sla_kind: string
+  /**
+   * 收款人当下是否挂着冲正欠账（实时读佣金余额，不是建单时的快照）。
+   *
+   * 欠账只在【提交提现】那一刻拦一次，而冲正按设计只吃 available、吃不到
+   * 已经冻住的 frozen。于是“先提现冻住 → 下线退款触发冲正 → 照常审批放款”
+   * 是一条无告警的通路，而审批与标记已发放正是这笔钱最后一次还能被拦回来
+   * 的地方。
+   */
+  debt_blocked: boolean
+  /** 未结算余数；为负表示冲正没收回来的差额。decimal 字符串。 */
+  unsettled_amount: string
 }
 
 export type QyWithdrawCreateRequest = {

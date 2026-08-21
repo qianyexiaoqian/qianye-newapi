@@ -91,7 +91,11 @@ func approve(c *gin.Context, id int64) (*adminOrderView, error) {
 	}
 	w.ReviewerId, w.ReviewerName, w.ReviewedAt = a.Id, a.Name, now
 	writeDecisionAudit(c, w, "withdraw.approve", qymodel.ActorAdmin, a, "", qymodel.ResultOK)
-	return toAdminView(w, nil), nil
+	v := toAdminView(w, nil)
+	// 决策接口的响应与详情接口共用同一份视图，欠账状态也必须一致：
+	// 否则审批完的那一屏会把已经存在的欠账标记“洗”成空。
+	fillDebtStatus([]*adminOrderView{v})
+	return v, nil
 }
 
 // reject 驳回申请,佣金退回可用池。理由必填 —— 需求明确要求用户能看到"为什么被拒"。
@@ -126,7 +130,11 @@ func reject(c *gin.Context, id int64, rawReason string) (*adminOrderView, error)
 	}
 	w.ReviewerId, w.ReviewerName, w.ReviewedAt, w.RejectReason = a.Id, a.Name, now, reason
 	writeDecisionAudit(c, w, "withdraw.reject", qymodel.ActorAdmin, a, reason, qymodel.ResultOK)
-	return toAdminView(w, nil), nil
+	v := toAdminView(w, nil)
+	// 决策接口的响应与详情接口共用同一份视图，欠账状态也必须一致：
+	// 否则审批完的那一屏会把已经存在的欠账标记“洗”成空。
+	fillDebtStatus([]*adminOrderView{v})
+	return v, nil
 }
 
 // payoutInput 是一次「标记已发放」的入参。
@@ -218,10 +226,20 @@ func markPayout(c *gin.Context, id int64, in payoutInput) (*adminOrderView, erro
 	if err != nil {
 		return nil, err
 	}
+	// applyTransition 只把 status / updated_at 写回内存对象，Updates 里的其余键一概
+	// 不回写，所以每个调用点都要自己补齐 —— 这里原先补了四个、漏了 payout_note，
+	// 于是 mark-paid 的**响应**里 payout_note 恒为空串而库里是对的。同一个
+	// adminOrderView 结构，读接口给真值、写接口给空串，按写接口响应记账或回显的
+	// 集成方会拿到一个假的空备注。
 	w.PaidAt, w.PayoutRef = paidAt, ref
 	w.PayoutOperatorId, w.PayoutOperatorName = a.Id, a.Name
+	w.PayoutNote = truncate(in.Note, 255)
 	writeDecisionAudit(c, w, "withdraw.payout", qymodel.ActorAdmin, a, ref, qymodel.ResultOK)
-	return toAdminView(w, nil), nil
+	v := toAdminView(w, nil)
+	// 决策接口的响应与详情接口共用同一份视图，欠账状态也必须一致：
+	// 否则审批完的那一屏会把已经存在的欠账标记“洗”成空。
+	fillDebtStatus([]*adminOrderView{v})
+	return v, nil
 }
 
 // checkPayoutConfirm 校验管理员复述的实发金额与单据金额一致。
@@ -286,7 +304,11 @@ func markFailed(c *gin.Context, id int64, rawReason string) (*adminOrderView, er
 	}
 	w.FailReason = reason
 	writeDecisionAudit(c, w, "withdraw.fail", qymodel.ActorAdmin, a, reason, qymodel.ResultOK)
-	return toAdminView(w, nil), nil
+	v := toAdminView(w, nil)
+	// 决策接口的响应与详情接口共用同一份视图，欠账状态也必须一致：
+	// 否则审批完的那一屏会把已经存在的欠账标记“洗”成空。
+	fillDebtStatus([]*adminOrderView{v})
+	return v, nil
 }
 
 // writeDecisionAudit 记录一次人工决策。

@@ -22,8 +22,13 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// updateOpenAIImageCount 把上游真正返回的张数覆盖到计费倍率上。
+//
+// 不再分“按次/按量”：张数是请求形状，与定价方式无关。原先这里一句
+// `!info.PriceData.UsePrice → return` 让按 ModelRatio 定价的图片模型完全丢掉 n，
+// 一次 n=128 与 n=1 收同样的钱。
 func updateOpenAIImageCount(info *relaycommon.RelayInfo, count int64) {
-	if info == nil || !info.PriceData.UsePrice || count <= 0 || count > int64(dto.MaxImageN) {
+	if info == nil || count <= 0 || count > int64(dto.MaxImageN) {
 		return
 	}
 	info.PriceData.AddOtherRatio("n", float64(count))

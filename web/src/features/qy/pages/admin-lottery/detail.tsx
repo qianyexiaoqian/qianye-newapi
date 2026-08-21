@@ -26,6 +26,8 @@ import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
@@ -121,11 +123,22 @@ export function QyAdminLotteryDetail() {
   // 「取消」和这两个按钮。运营因此不必在两个红按钮之间猜哪个会退钱。
   const isFinished = activity?.status === 'finished'
   const isHidden = (activity?.hidden_at ?? 0) > 0
-  const canSetResult =
+  // 录入开奖结果是这一页上**唯一**要超级管理员的动作
+  // （后端 `middleware.RootActionLotteryResultSet`）。其余按钮一个都不连坐：
+  // 发布、取消、下架、重新上架、删除、换封面 role=10 照旧。
+  //
+  // 结果该录的时候按钮**不能直接消失**：这一页除了它没有任何别的地方会说
+  // "这场活动卡在封盘、在等一个人来录结果"，按钮一消失，role=10 看到的就是
+  // 一场没有任何可做动作的活动，而他并不知道该去找谁。所以 role<100 时
+  // 渲染的是一句话，不是一个点了就吃 403 的按钮。
+  const resultDue =
     activity != null &&
     activity.kind === 'guess' &&
     activity.status === 'locked' &&
     winOptNo === 0
+  const isRoot =
+    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
+  const canSetResult = resultDue && isRoot
 
   const outcomeKey = activity == null ? null : qyLotOutcomeKey(activity.outcome)
   // 双色球不是一个新的 kind，而是活动行上的一列。判据只有这一处，
@@ -182,6 +195,11 @@ export function QyAdminLotteryDetail() {
           <Button size='sm' onClick={() => setResultOpen(true)}>
             {t('qy_lot_result_title')}
           </Button>
+        )}
+        {resultDue && !isRoot && (
+          <span className='text-muted-foreground self-center text-xs'>
+            {t('qy_lot_result_root_only')}
+          </span>
         )}
         {canCancel && (
           <Button
@@ -322,14 +340,16 @@ export function QyAdminLotteryDetail() {
                     // 发不出去"的钱，而收尾时的 payout_quota 只统计已到账的。
                     key: 'held',
                     label: t('qy_lot_a_stat_held'),
-                    value: formatQyQuotaLedger(view?.economics.held_quota ?? 0),
-                    emphasis: (view?.economics.held_quota ?? 0) > 0,
+                    value: formatQyQuotaLedger(
+                      view?.economics?.held_quota ?? 0
+                    ),
+                    emphasis: (view?.economics?.held_quota ?? 0) > 0,
                     hint: t('qy_lot_a_stat_held_hint'),
                   },
                   {
                     key: 'net',
                     label: t('qy_lot_a_net'),
-                    value: formatQyQuotaLedger(view?.economics.net_quota ?? 0),
+                    value: formatQyQuotaLedger(view?.economics?.net_quota ?? 0),
                     emphasis: true,
                     hint: t('qy_lot_a_net_hint'),
                   },

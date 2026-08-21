@@ -30,12 +30,15 @@ import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
 import { formatTimestampToDate } from '@/lib/format'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
 import { QyTimeline } from '../../../components/qy-timeline'
 import { isQyError, qyErrorMessage } from '../../../lib/api'
+import { formatQyQuotaLedger } from '../../../lib/format'
 import { qyKeys } from '../../../lib/query-keys'
 import { QyFiatText } from '../../components/qy-fiat-text'
 import { qyPayeeChannelKey } from '../../withdraw/lib/payee-spec'
@@ -87,6 +90,14 @@ export function ReviewDialog(props: ReviewDialogProps) {
   const refId = useId()
   const noteId = useId()
   const amountId = useId()
+
+  // 收款账号明文提到了超级管理员（后端 `middleware.RootActionWithdrawPayeeReveal`）。
+  // 四个人工决定**不连坐**：审核、驳回、标记已发放、发放失败 role=10 照旧。
+  // 按钮对 role<100 换成一句话而不是直接抹掉：掩码那一行原样还在，
+  // 没有这句话的话审核员只会看见一个只有掩码、没有任何出口的字段，
+  // 而正确的下一步（"打款这一步交给超管"）在界面上一个字都没有。
+  const isRoot =
+    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
 
   const [action, setAction] = useState<ReviewAction | null>(null)
   const [reason, setReason] = useState('')
@@ -208,6 +219,23 @@ export function ReviewDialog(props: ReviewDialogProps) {
               </AlertDescription>
             </Alert>
           )}
+          {withdrawal.debt_blocked && (
+            // 欠账只在【提交提现】那一刻拦一次，而冲正吃不到已经被冻住的额度。
+            // 审批与标记已发放是这笔钱最后一次还能被拦回来的地方，信号必须
+            // 出现在审核人正在看的这一屏上。
+            <Alert variant='destructive'>
+              <TriangleAlert />
+              <AlertTitle>{t('qy_wd_a_debt_title')}</AlertTitle>
+              <AlertDescription>
+                {t('qy_wd_a_debt_desc', {
+                  // 走额度件而不是裸串：unsettled_amount 是 decimal(30,10) 的
+                  // **额度**，裸渲染出来是 `-1370.0000000000`，而同一屏上别的
+                  // 钱都是 `$0.27` —— 它们是同一种钱。
+                  amount: formatQyQuotaLedger(withdrawal.unsettled_amount),
+                })}
+              </AlertDescription>
+            </Alert>
+          )}
           {withdrawal.risk_flags !== '' && (
             <Alert variant='destructive'>
               <TriangleAlert />
@@ -261,14 +289,20 @@ export function ReviewDialog(props: ReviewDialogProps) {
                         )}{' '}
                         · {withdrawal.payee_masked || '-'}
                       </span>
-                      <Button
-                        variant='outline'
-                        size='xs'
-                        onClick={() => props.onReveal(withdrawal.id)}
-                      >
-                        <Eye aria-hidden='true' />
-                        {t('qy_wd_a_reveal')}
-                      </Button>
+                      {isRoot ? (
+                        <Button
+                          variant='outline'
+                          size='xs'
+                          onClick={() => props.onReveal(withdrawal.id)}
+                        >
+                          <Eye aria-hidden='true' />
+                          {t('qy_wd_a_reveal')}
+                        </Button>
+                      ) : (
+                        <span className='text-muted-foreground text-xs'>
+                          {t('qy_wd_a_reveal_root_only')}
+                        </span>
+                      )}
                     </span>
                   }
                 />

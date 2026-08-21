@@ -540,8 +540,19 @@ func bindRelation(ctx context.Context, inviterId, inviteeId int, reason string) 
 
 	// CAS:只有当被邀请人**仍然**没有邀请人时才写。两个管理员同时给同一个人
 	// 绑不同的上线,没有这个条件会后到的那次静默覆盖先到的那次。
+	//
+	// `IS NULL` 那一支不能省:users.inviter_id 在三种受支持数据库上都是可空、
+	// 无默认(MySQL `bigint DEFAULT NULL`、PG `is_nullable=YES`),而 `NULL = 0`
+	// 在 SQL 里恒为 UNKNOWN。少了它,任何一个 inviter_id 为 NULL 的账号
+	// RowsAffected 恒为 0 → errRelRaced → 前端拿到 409「邀请关系已被另一次操作
+	// 改动,请刷新后重试」,而这是一个**永远重试不好**的确定性失败:rebind 与
+	// unbind 又都要求 inviter_id != 0,三个写点全被挡在门外,只能 DBA 直接
+	// UPDATE 才能解。常规注册走 GORM Create 会显式写 0,所以 NULL 只来自导入、
+	// 迁移、从旧库恢复,以及任何省略该列的外部 INSERT —— 列可空无默认,这个口子
+	// 并不窄。GORM 上层读到 NULL 会扫成 0,所以上面 `invitee.InviterId != 0`
+	// 那道「已绑定」闸门放行,失败点确实落在这次 CAS 上。
 	res := model.DB.WithContext(ctx).Model(&model.User{}).
-		Where("id = ? AND inviter_id = ?", inviteeId, 0).
+		Where("id = ? AND (inviter_id = ? OR inviter_id IS NULL)", inviteeId, 0).
 		Update("inviter_id", inviterId)
 	if res.Error != nil {
 		return "", "", res.Error
@@ -672,12 +683,18 @@ func adminRebindRelation(c *gin.Context) {
 	if denyActorOverTarget(c, "commission.relation.rebind", req.InviterId) {
 		return
 	}
+	ctx := c.Request.Context()
+	// **原**邀请人同样是受益人:换绑把他此后的进项整条转走,危害与解绑相同。
+	// 只判新邀请人是不够的 —— 实测 role=10 可以把 root 名下的下线改挂到一个
+	// role=1 傀儡名下:新邀请人那一格轻松过闸,而被拿走钱的是 root。
+	if denyActorOverTarget(c, "commission.relation.rebind", currentInviterId(ctx, req.InviteeId)) {
+		return
+	}
 	reason, ok := requireReason(c, req.Reason)
 	if !ok {
 		return
 	}
 
-	ctx := c.Request.Context()
 	before := relationSnapshot(ctx, req.InviteeId)
 	out, err := rebindRelation(ctx, req.InviterId, req.InviteeId)
 	if err != nil {
@@ -886,12 +903,20 @@ func adminUnbindRelation(c *gin.Context) {
 		badRequest(c, "qy_invalid_param", "必须指定被邀请人")
 		return
 	}
+	ctx := c.Request.Context()
+	// 受益人是**现任邀请人**:解绑清的是主库 users.inviter_id,而那一列正是
+	// 计佣唯一的回源判据(inviter.go 的 resolveInviter),清零即断掉对方此后
+	// 的全部佣金进项。bind/rebind 对同级或更高的目标是 403,唯独相反方向的
+	// 解绑没接闸门,于是 role=10 能单方面切断 root 的推广关系、而且自己
+	// 恢复不回去。闸门落在受益人上,与 bind/rebind 同一条判据。
+	if denyActorOverTarget(c, "commission.relation.unbind", currentInviterId(ctx, req.InviteeId)) {
+		return
+	}
 	reason, ok := requireReason(c, req.Reason)
 	if !ok {
 		return
 	}
 
-	ctx := c.Request.Context()
 	before := relationSnapshot(ctx, req.InviteeId)
 	keptQuota, inviterId, err := unbindRelation(ctx, req.InviteeId)
 	if err != nil {
@@ -996,6 +1021,38 @@ func markRelationUnbound(ctx context.Context, inviterId int, invitee model.User)
 }
 
 // ───────────────────────── 共用件 ─────────────────────────
+
+// currentInviterId 取这条关系此刻的**受益人**,给操作人闸门用。
+//
+// 口径与 setRelationBlocked / unbindRelation 逐字相同:主库 users.inviter_id
+// 是权威,为 0 时回落到扩展库快照(那是"已解绑但历史还在"的形状,对它解封
+// blocked=false 仍然有意义,所以那一档也必须过闸)。
+//
+// 解析不出来一律返回 0,而 0 在 denyActorOverTarget 里等于「目标不存在」——
+// 闸门放行,由调用点自己的 errRelUserMissing / errRelNotBound 回答。闸门抢答
+// 会让"查无此人"在同一条接口上出两种 code。一个解析不出的受益人也不可能是
+// 操作人自己(那一格 SelfDealing 先答完了),放过去是安全的。
+func currentInviterId(ctx context.Context, inviteeId int) int {
+	if inviteeId <= 0 {
+		return 0
+	}
+	if model.DB != nil {
+		var u model.User
+		if err := model.DB.WithContext(ctx).Model(&model.User{}).
+			Select("inviter_id").Where("id = ?", inviteeId).Take(&u).Error; err == nil &&
+			u.InviterId > 0 {
+			return u.InviterId
+		}
+	}
+	if gdb := db.Get(); gdb != nil {
+		var rows []InviteRelation
+		if err := gdb.WithContext(ctx).Where("invitee_id = ?", inviteeId).
+			Limit(1).Find(&rows).Error; err == nil && len(rows) > 0 {
+			return rows[0].InviterId
+		}
+	}
+	return 0
+}
 
 // requireReason 校验事由并返回去空白后的值。
 //

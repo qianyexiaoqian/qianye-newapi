@@ -212,8 +212,16 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 			TextTokens:  textOutTokens,
 			AudioTokens: audioOutTokens,
 		},
-		ModelName:  modelName,
-		UsePrice:   usePrice,
+		ModelName: modelName,
+		UsePrice:  usePrice,
+		// ModelPrice 必须给:calculateAudioQuota 的 UsePrice 分支算的是
+		// ModelPrice × QuotaPerUnit × GroupRatio。三个 QuotaInfo 字面量原先都漏了
+		// 这一位,于是按次定价的音频/实时模型无条件算出 0 ——
+		// 预扣了 $0.50、结算全额退回,一分钱收不到,而日志上还写着
+		// 「模型价格 0.50」。这条路在 /v1/chat/completions(compatible_handler,
+		// 只需 AudioTokens>0)、/v1/responses(gpt-4o-audio* 前缀,连 token 门都没有)
+		// 与实时会话收尾三处都可达。
+		ModelPrice: modelPrice,
 		ModelRatio: modelRatio,
 		GroupRatio: groupRatio,
 	}
@@ -353,8 +361,10 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 			TextTokens:  textOutTokens,
 			AudioTokens: audioOutTokens,
 		},
-		ModelName:  relayInfo.OriginModelName,
-		UsePrice:   usePrice,
+		ModelName: relayInfo.OriginModelName,
+		UsePrice:  usePrice,
+		// 与 PostWssConsumeQuota 同理:漏了 ModelPrice 就是按次定价恒收 0。
+		ModelPrice: modelPrice,
 		ModelRatio: modelRatio,
 		GroupRatio: groupRatio,
 	}

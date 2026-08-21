@@ -197,3 +197,156 @@ func TestAdminSettle_RefusesSelfTarget(t *testing.T) {
 		"被拒的手动结算不许落结算单 —— 落了就等于绕过成熟期把自己的佣金解冻了")
 	require.Len(t, deniedAuditsOf(t, gdb, "commission.settle.manual.actor_denied"), 1)
 }
+
+// ── 邀请关系上「受益人不在报文里」的那三条 ────────────────────────────────
+//
+// block / unbind / rebind 的受益人是**关系上的邀请人**,报文里只有 invitee_id。
+// 正因为闸门当初是按「报文里的 target 字段」逐个接的,这三条(以及 rebind 的
+// 原邀请人那一侧)被整套漏掉:实测 role=10 能把上级基于风控停掉的、落在自己
+// 名下的计佣解封回来,也能单方面清掉 root 名下下线的 users.inviter_id。
+//
+// 这里的判据一律是「受益人 = 关系上的邀请人」,由 currentInviterId 解析。
+
+// seedBoundPair 造一条真实关系:主库 users.inviter_id + 扩展库快照行。
+//
+// 两张表都要写:blocked 读的是快照,unbind 写的是主库,而闸门在两者之前
+// 就要能解析出受益人 —— 只写一张表会让某一条用例因为解析不到受益人而
+// "碰巧"通过,那种绿是假的。
+func seedBoundPair(t *testing.T, mainDB *gorm.DB, gdb *gorm.DB, inviterId, inviterRole, inviteeId int) {
+	t.Helper()
+	seedGateUser(t, mainDB, inviterId, inviterRole)
+	seedUser(t, mainDB, inviteeId, "downline"+strconv.Itoa(inviteeId), inviterId, 1000)
+	require.NoError(t, gdb.Create(&InviteRelation{
+		InviteeId: inviteeId, InviterId: inviterId,
+		MaskedName: "d***e", InviteeRef: "ref" + strconv.Itoa(inviteeId),
+		BoundAt: 1000, Blocked: true, BlockReason: "上级基于风控停掉的",
+		CreatedAt: 1000, UpdatedAt: 1000,
+	}).Error)
+}
+
+// TestAdminBlockRelation_RefusesActorOwnOrPeerInviter 钉住"自己给自己解封"。
+//
+// 变异验证:把 api_admin.go 里 adminBlockRelation 那三行 denyActorOverTarget
+// 删掉,两格都从 403 变 200 且 blocked 真的被改回 false。
+func TestAdminBlockRelation_RefusesActorOwnOrPeerInviter(t *testing.T) {
+	cases := []struct {
+		name        string
+		inviterId   int
+		inviterRole int
+		wantCode    string
+	}{
+		{"受益人就是操作人自己", gateActorId, common.RoleAdminUser, "qy_self_dealing"},
+		{"受益人是 root", 8842, common.RoleRootUser, "qy_target_not_manageable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gdb := newTestDB(t)
+			useConfig(t, commissionRateConfig("10", "5"))
+			useAdminAPI(t)
+			mainDB := useMainDB(t, &model.User{})
+			const invitee = 8841
+			seedBoundPair(t, mainDB, gdb, tc.inviterId, tc.inviterRole, invitee)
+
+			rec := callAdminHandler(t, http.MethodPost,
+				"/api/qy/admin/commission/relations/block",
+				blockBody(invitee, false, "复核后放行"), adminBlockRelation)
+
+			require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), tc.wantCode)
+			assert.True(t, blockedRelationOf(t, gdb, invitee),
+				"被拒的解封不许改到库 —— 改了就是把别人停掉的进项重新打开")
+			require.Len(t, deniedAuditsOf(t, gdb, "commission.relation.block.actor_denied"), 1,
+				"被拒的自营/越级尝试必须留痕")
+		})
+	}
+}
+
+// TestAdminBlockRelation_StillBlocksOrdinaryInviters 是对照组:把闸门写成
+// "一律拒绝"同样能让上面两格全绿,而那是把风控停佣这件事整个锁死。
+func TestAdminBlockRelation_StillBlocksOrdinaryInviters(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, commissionRateConfig("10", "5"))
+	useAdminAPI(t)
+	mainDB := useMainDB(t, &model.User{})
+	const invitee = 8851
+	seedBoundPair(t, mainDB, gdb, 8852, common.RoleCommonUser, invitee)
+
+	rec := callAdminHandler(t, http.MethodPost,
+		"/api/qy/admin/commission/relations/block",
+		blockBody(invitee, false, "核实为同一人的两台设备"), adminBlockRelation)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.False(t, blockedRelationOf(t, gdb, invitee), "普通推广人的停/恢复必须照常生效")
+	assert.Empty(t, deniedAuditsOf(t, gdb, "commission.relation.block.actor_denied"))
+}
+
+// TestAdminUnbindRelation_RefusesActorOwnOrPeerInviter 钉住"切断同级/更高账号
+// 的推广关系"。
+//
+// 这条的危害方向与解封相反却更硬:主库 users.inviter_id 是计佣唯一的回源判据
+// (inviter.go 的 resolveInviter),清零即断掉对方此后全部进项,而操作人自己
+// 复原不回来 —— bind/rebind 对同级或更高的目标本来就是 403。
+//
+// 变异验证:把 api_admin_relation.go 里 adminUnbindRelation 那三行
+// denyActorOverTarget 删掉,两格都从 403 变 200 且 inviter_id 真的被清零。
+func TestAdminUnbindRelation_RefusesActorOwnOrPeerInviter(t *testing.T) {
+	cases := []struct {
+		name        string
+		inviterId   int
+		inviterRole int
+		wantCode    string
+	}{
+		{"受益人就是操作人自己", gateActorId, common.RoleAdminUser, "qy_self_dealing"},
+		{"受益人是同级管理员", 8862, common.RoleAdminUser, "qy_target_not_manageable"},
+		{"受益人是 root", 8863, common.RoleRootUser, "qy_target_not_manageable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gdb := newTestDB(t)
+			useConfig(t, commissionRateConfig("10", "5"))
+			useAdminAPI(t)
+			mainDB := useMainDB(t, &model.User{})
+			const invitee = 8861
+			seedBoundPair(t, mainDB, gdb, tc.inviterId, tc.inviterRole, invitee)
+
+			rec := callAdminHandler(t, http.MethodPost,
+				"/api/qy/admin/commission/relations/unbind",
+				unbindBody(invitee, "解除关系"), adminUnbindRelation)
+
+			require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), tc.wantCode)
+			assert.Equal(t, tc.inviterId, inviterIdOf(t, mainDB, invitee),
+				"被拒的解绑不许动主库的 inviter_id —— 那一列清零就是断掉对方全部未来佣金")
+			require.Len(t, deniedAuditsOf(t, gdb, "commission.relation.unbind.actor_denied"), 1)
+		})
+	}
+}
+
+// TestAdminRebindRelation_RefusesTakingFromPeerInviter 守换绑的**原**邀请人那一侧。
+//
+// 只判新邀请人是不够的:把 root 名下的下线改挂到一个 role=1 傀儡名下时,新
+// 邀请人那一格轻松过闸,而被拿走进项的是 root。它与解绑是同一个危害,只是多
+// 绕了一个人。
+//
+// 变异验证:删掉 adminRebindRelation 里针对 currentInviterId 的那一次
+// denyActorOverTarget(保留原有的新邀请人那一次),本用例从 403 变 200 且
+// inviter_id 真的被改挂到傀儡账号上。
+func TestAdminRebindRelation_RefusesTakingFromPeerInviter(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, commissionRateConfig("10", "5"))
+	useAdminAPI(t)
+	mainDB := useMainDB(t, &model.User{})
+	const invitee, puppet = 8871, 8873
+	seedBoundPair(t, mainDB, gdb, 8872, common.RoleRootUser, invitee)
+	seedGateUser(t, mainDB, puppet, common.RoleCommonUser)
+
+	rec := callAdminHandler(t, http.MethodPost,
+		"/api/qy/admin/commission/relations/rebind",
+		rebindBody(invitee, puppet, "原推广人离职,关系移交"), adminRebindRelation)
+
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "qy_target_not_manageable")
+	assert.Equal(t, 8872, inviterIdOf(t, mainDB, invitee),
+		"被拒的换绑不许动主库的 inviter_id —— 动了就等于绕开解绑把 root 的进项转走")
+	require.Len(t, deniedAuditsOf(t, gdb, "commission.relation.rebind.actor_denied"), 1)
+}
