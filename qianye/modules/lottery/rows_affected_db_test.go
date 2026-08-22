@@ -259,9 +259,12 @@ func TestUpdateDraftStillRefusedAfterPublish(t *testing.T) {
 	require.NoError(t, ext.Model(&Activity{}).Where("act_no = ?", actNo).
 		Update("status", StatusPublished).Error)
 
-	code, _ = callJSON(t, r, http.MethodPut, "/admin/lottery/activities/"+actNo,
+	code, raw = callJSON(t, r, http.MethodPut, "/admin/lottery/activities/"+actNo,
 		strings.Replace(body, "草稿场", "改过的标题", 1))
 	assert.Equal(t, http.StatusConflict, code)
+	// 不是 qy_lot_status_conflict:那句话在说"刷新一下再试",而真相是
+	// "这件事从此不可能做到"。塌成前者的表现是运营反复刷新、反复重试。
+	assert.Equal(t, "qy_lot_update_not_draft", jsonString(t, raw, "code"))
 
 	var act Activity
 	require.NoError(t, ext.Where("act_no = ?", actNo).Take(&act).Error)

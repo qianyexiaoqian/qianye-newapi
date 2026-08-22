@@ -113,8 +113,13 @@ const (
 	// logsDailyConsumeIndex 是主表(按人聚合)依赖的覆盖索引名。
 	logsDailyConsumeIndex = "idx_qy_logs_daily_consume"
 
-	// logsUserDailyIndex 是按天下钻(按人等值 + 按天聚合)依赖的覆盖索引名。
+	// logsTokenDailyIndex 是按天下钻(按人等值 + 按天聚合)与密钥页「今日消耗」
+	// (按人等值 + 按令牌聚合)共用的覆盖索引名。
 	// 两条为什么不能合并、以及没有它时下钻有多慢,见 logs_index.go 的文件头。
+	logsTokenDailyIndex = "idx_qy_logs_token_daily"
+
+	// logsUserDailyIndex 是 logsTokenDailyIndex 的前身,列集合是它的前缀。
+	// 已退役,只在 retiredLogsIndexes 里作为「要删掉的历史索引名」出现。
 	logsUserDailyIndex = "idx_qy_logs_user_daily"
 )
 
@@ -291,7 +296,7 @@ type userDayAgg struct {
 // 上界的含义从"多少人"变成"多少格",导出的 CSV 也跟着换了一张表。
 //
 // 单人下钻的代价则是**有界的**:输出至多 maxDailyConsumeDays 行,而扫描量
-// 由 (user_id, type, created_at, quota) 这条索引收窄到这一个人在这段时间里的
+// 由 (user_id, type, created_at, token_id, quota) 这条索引收窄到这一个人在这段时间里的
 // 行。没有那条索引时优化器会改走 idx_user_id_id 并逐行回表,实测 6.5 秒
 // (见 logs_index.go 的文件头)—— 所以这条接口与那条索引是一起交付的。
 func aggregateUserDailyConsume(ctx context.Context, r dailyRange, userId int) ([]userDayAgg, error) {
@@ -786,7 +791,7 @@ func adminUserDailyConsume(c *gin.Context) {
 		},
 		// 这一条报的是**下钻自己那条**索引,不是主表那条:两条各建各的,
 		// 主表快不代表下钻快,反过来也一样。
-		"index_ready": logsIndexReady(logsUserDailyIndex),
+		"index_ready": logsIndexReady(logsTokenDailyIndex),
 	})
 }
 

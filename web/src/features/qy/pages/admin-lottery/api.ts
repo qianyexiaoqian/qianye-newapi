@@ -122,6 +122,30 @@ export function createQyLotActivity(
 }
 
 /**
+ * 改一份**草稿**。请求体与创建**完全相同**（后端 `activityInput` 是同一个结构）。
+ *
+ * ## 整体替换，不是 PATCH
+ *
+ * 后端 `draftUpdates` 一次写四十来列，奖档与选项两张从表整表删了重建。
+ * 少带一个字段不会"保持原样"，而是被写成零值 —— 所以调用方必须先用
+ * {@link qyLotDraftFromActivity} 把现有草稿整份读回表单，再整份提交。
+ *
+ * ## 只有 `draft` 能改
+ *
+ * 发布那一刻参与条件、奖档、选项、四个时刻与费率全部进了 `commit_hash`，
+ * 改任何一项都会让已经公开的承诺变成谎言。后端对非草稿回
+ * `qy_lot_update_not_draft`（**不是** `qy_lot_status_conflict`）：后者在说
+ * "刷新一下再试"，而真相是"这件事从此不可能做到"。唯一的例外是封面 ——
+ * 它不进任何哈希原像，走 {@link setQyLotActivityCover}，且不限状态。
+ */
+export function updateQyLotActivity(
+  actNo: string,
+  body: QyLotCreateInput
+): Promise<{ act_no: string }> {
+  return qyPut<{ act_no: string }>(actPath(actNo), body)
+}
+
+/**
  * 发布。**不可逆**：这一刻算出三个哈希写进活动行，此后条件 / 奖档 / 选项 /
  * 四个时刻 / 费率全部只读。
  *
@@ -182,10 +206,23 @@ export function unhideQyLotActivity(
  * 对账异常未处理 / 双色球系列结转未收口），任何一条不满足都会回 409 并附上
  * 精确的 `code`；`confirm_act_no` 必须与活动编号逐字相同 —— 二次确认在
  * **服务端**校验，只在前端弹一个"确定吗"挡不住脚本化的误调用。
+ *
+ * ## 草稿走的是同一条路，但确认强度不同
+ *
+ * 草稿从没对外公布过承诺、没有一个用户见过它、删掉它不损失任何一段证据链，
+ * 所以后端对 `draft` **不要求** `confirm_act_no`、也不强制 `reason`
+ * （填了照样进审计）。给一个零代价的动作套上和"抹掉一场发过钱的活动"同样的
+ * 仪式，只会训练运营对确认框整体失去敏感——而真正要读完的那一个就在同一排
+ * 按钮上。上面那六道换成三条正向断言：草稿上不许有参与明细、不许有出款、
+ * 不许有承诺痕迹（`commit_hash` / `published_at` / `issue_no`），
+ * 违反任何一条回 `qy_lot_delete_draft_dirty`。
  */
 export function deleteQyLotActivity(
   actNo: string,
-  body: { confirm_act_no: string; reason: string }
+  // 两个字段都可选，因为草稿那一档两个都不要求。已结束的场次少带任何一个都会被
+  // **服务端**回绝（`qy_lot_delete_confirm` / `qy_lot_bad_request`）——
+  // 类型放宽的是请求体的形状，不是那一档的确认强度。
+  body: { confirm_act_no?: string; reason?: string }
 ): Promise<unknown> {
   return qyDelete<unknown>(actPath(actNo), body)
 }

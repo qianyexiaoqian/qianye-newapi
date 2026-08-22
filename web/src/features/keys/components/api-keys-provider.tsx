@@ -16,14 +16,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import React, { useState, useCallback, useRef, useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import useDialogState from '@/hooks/use-dialog'
+import { getUserGroups } from '@/lib/api'
 
 import { fetchTokenKey, fetchTokenKeysBatch } from '../api'
 import { ERROR_MESSAGES } from '../constants'
+import {
+  buildApiKeyGroupOptions,
+  type ApiKeyGroupOptionData,
+} from '../lib/group-options'
+import { tokenTodayUsageQuery, type TokenTodayUsage } from '../lib/today-usage'
 import { type ApiKey, type ApiKeysDialogType } from '../types'
 
 type ApiKeysContextType = {
@@ -49,6 +56,30 @@ type ApiKeysContextType = {
   loadingKeys: Record<number, boolean>
   copiedKeyId: number | null
   markKeyCopied: (id: number) => void
+  /**
+   * 分组下拉的候选项。
+   *
+   * **与编辑抽屉同源**：两处都是 `buildApiKeyGroupOptions` 作用在
+   * `['user-groups']`（`GET /api/user/self/groups`）这一份数据上。同源不是巧合，
+   * 是必须的 —— 本仓的分组可选性同时受用户分组、分组矩阵、套餐解锁三处影响，
+   * 前端各算一遍必然漂移，而漂移的表现是「抽屉里选得到的分组、行内选不到」
+   * （或者更糟：行内选得到、一提交被写入侧拒绝）。
+   *
+   * 放在 provider 而不是各单元格自取，是因为列表里的单元格会被 flexRender
+   * 反复卸载重挂（见 api-keys-columns.tsx 里那段长注释）。在单元格里挂
+   * `useQuery` 会让这个 staleTime=0 的查询每次重挂都重新发一次请求。
+   */
+  groupOptions: ApiKeyGroupOptionData[]
+  groupOptionsLoading: boolean
+  /**
+   * 每一把密钥今天的消费额。整张表**一次**聚合，见 `lib/today-usage.ts`。
+   *
+   *   `undefined` —— 还在取 / 取失败：单元格显示未知，不能显示 0
+   *   `null`      —— 扩展未启用：整列不渲染
+   */
+  todayUsage: TokenTodayUsage | null | undefined
+  todayUsageLoading: boolean
+  todayUsageFailed: boolean
 }
 
 const ApiKeysContext = React.createContext<ApiKeysContextType | null>(null)
@@ -81,6 +112,20 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
   const triggerRefresh = useCallback(() => {
     setRefreshTrigger((prev) => prev + 1)
   }, [])
+
+  // 分组候选项：与编辑抽屉共用 `['user-groups']` 这一把 key，因此两处拿到的
+  // 永远是同一份数据（react-query 的同键去重），不存在"各查一次、各算一遍"。
+  const { data: groupsData, isPending: groupsPending } = useQuery({
+    queryKey: ['user-groups'],
+    queryFn: getUserGroups,
+    staleTime: 0,
+  })
+  const groupOptions = useMemo(
+    () => buildApiKeyGroupOptions(groupsData?.data),
+    [groupsData]
+  )
+
+  const todayUsageResult = useQuery(tokenTodayUsageQuery())
 
   const resolveRealKey = useCallback(
     async (id: number): Promise<string | null> => {
@@ -182,6 +227,11 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
         loadingKeys,
         copiedKeyId,
         markKeyCopied,
+        groupOptions,
+        groupOptionsLoading: groupsPending,
+        todayUsage: todayUsageResult.data,
+        todayUsageLoading: todayUsageResult.isPending,
+        todayUsageFailed: todayUsageResult.isError,
       }}
     >
       {children}

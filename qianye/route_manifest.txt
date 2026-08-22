@@ -124,6 +124,7 @@ GET /api/qy/ticket/:no
 GET /api/qy/ticket/config
 GET /api/qy/ticket/images/:ref
 GET /api/qy/ticket/list
+GET /api/qy/token-usage/today
 GET /api/qy/transfer/contacts
 GET /api/qy/transfer/limits
 GET /api/qy/transfer/records

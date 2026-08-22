@@ -51,7 +51,11 @@ import {
 } from '../../lottery/lib/ball'
 import { formatQyTs } from '../../ops/format'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
-import { createQyLotActivity, qyAdminLotSeriesQuery } from '../api'
+import {
+  createQyLotActivity,
+  qyAdminLotSeriesQuery,
+  updateQyLotActivity,
+} from '../api'
 import { qyLotFromLocalInput, qyLotToLocalInput } from '../lib/datetime'
 import {
   qyLotBreakEvenEntries,
@@ -75,7 +79,7 @@ const STEPS = ['basic', 'spec', 'rules', 'review'] as const
 type QyLotStep = (typeof STEPS)[number]
 
 /**
- * 创建活动向导。
+ * 活动向导 —— **建一份草稿，或改一份草稿**。
  *
  * ## 为什么是四步而不是一张长表
  *
@@ -89,29 +93,56 @@ type QyLotStep = (typeof STEPS)[number]
  * 这个向导只产出 `draft`。草稿期一切可改、种子已生成但没有承诺。真正不可逆的
  * 是详情页上的「发布」——两件事分开是刻意的：合成一步的话，"我先建个草稿看看"
  * 这个再正常不过的动作就会变成一次无法撤销的承诺。
+ *
+ * ## 为什么编辑与创建是同一个组件，而不是第二份表单
+ *
+ * 项目方原话：「草稿活动为什么改不了删不了。」`PUT /lottery/activities/:act_no`
+ * 一直都在，只是**从来没有前端调用方** —— 而它的请求体与创建**完全相同**
+ * （后端 `activityInput` 是同一个结构，`draftUpdates` 一次写四十来列、
+ * 奖档与选项两张从表整表删了重建）。
+ *
+ * 再写一份编辑表单意味着四十来个字段、二十来条跨步校验、三种玩法的归一化各存两份。
+ * 那两份必然漂移，而漂移的表现是：某个字段在创建时校验得住、在编辑时校验不住，
+ * 或者反过来在编辑时被静默清零 —— 而 PUT 是整体替换语义，被清零的那一列在
+ * 界面上没有任何一格提示过。所以这里只多一个 `edit` 入参：
+ * 初值从 {@link qyLotDraftFromActivity} 整份读回，提交打另一个端点，
+ * 中间那四步一个字节都不分叉。
  */
-export function QyLotCreateWizard(props: {
+export function QyLotActivityWizard(props: {
   open: boolean
   onOpenChange: (open: boolean) => void
   config: QyLotAdminConfig | undefined
+  /**
+   * 传了就是**改**这一份草稿，不传就是建新的。
+   *
+   * `draft` 由调用方从活动详情整份重建 —— 组件自己不拉那次请求，因为详情页
+   * 已经拉过一次，再拉一次会让"表单里的值"与"页面上显示的值"来自两份快照。
+   */
+  edit?: { actNo: string; draft: QyLotDraft }
 }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
   const defaultFee = props.config?.effective.default_guess_fee_bps ?? 500
-  const [draft, setDraft] = useState<QyLotDraft>(() =>
-    qyLotEmptyDraft(defaultFee)
+  const editing = props.edit
+  const [draft, setDraft] = useState<QyLotDraft>(
+    () => editing?.draft ?? qyLotEmptyDraft(defaultFee)
   )
   const [step, setStep] = useState<QyLotStep>('basic')
   const [confirmOpen, setConfirmOpen] = useState(false)
 
+  // 每次打开都重置。编辑时重置成**服务端此刻那一份**，而不是上次关掉时留在
+  // 组件里的那份：草稿可以被另一个管理员改过，拿一份陈旧的表单整体提交上去
+  // 等于把别人的改动无声地回滚掉（PUT 是整体替换）。
+  const editActNo = editing?.actNo
+  const editDraft = editing?.draft
   useEffect(() => {
     if (!props.open) return
-    setDraft(qyLotEmptyDraft(defaultFee))
+    setDraft(editDraft ?? qyLotEmptyDraft(defaultFee))
     setStep('basic')
     setConfirmOpen(false)
-  }, [props.open, defaultFee])
+  }, [props.open, defaultFee, editActNo, editDraft])
 
   const patch = (next: Partial<QyLotDraft>) => {
     setDraft((prev) => ({ ...prev, ...next }))
@@ -136,13 +167,18 @@ export function QyLotCreateWizard(props: {
   )
 
   const mutation = useMutation({
-    mutationFn: () => createQyLotActivity(qyLotDraftToInput(draft)),
+    mutationFn: () =>
+      editing == null
+        ? createQyLotActivity(qyLotDraftToInput(draft))
+        : updateQyLotActivity(editing.actNo, qyLotDraftToInput(draft)),
     onSuccess: async (data) => {
-      toast.success(t('qy_lot_created'))
+      toast.success(editing == null ? t('qy_lot_created') : t('qy_lot_updated'))
       setConfirmOpen(false)
       props.onOpenChange(false)
       await queryClient.invalidateQueries({ queryKey: qyKeys.all })
-      // 直接落到详情页：下一步（发布）在那里，而且那一步才是不可逆的。
+      // 建新的才跳详情页：下一步（发布）在那里，而且那一步才是不可逆的。
+      // 改草稿本来就是在详情页上点开的，跳一次只会把滚动位置丢掉。
+      if (editing != null) return
       await navigate({
         to: '/qy/admin/lottery/$actNo',
         params: { actNo: data.act_no },
@@ -161,7 +197,9 @@ export function QyLotCreateWizard(props: {
       <QyResponsiveDialog
         open={props.open}
         onOpenChange={props.onOpenChange}
-        title={t('qy_lot_create_title')}
+        title={
+          editing == null ? t('qy_lot_create_title') : t('qy_lot_edit_title')
+        }
         description={t(`qy_lot_step_${step}_desc`)}
         contentClassName='sm:max-w-3xl'
         footer={
@@ -180,7 +218,9 @@ export function QyLotCreateWizard(props: {
                 disabled={errors.length > 0 || mutation.isPending}
                 onClick={() => setConfirmOpen(true)}
               >
-                {t('qy_lot_create_submit')}
+                {editing == null
+                  ? t('qy_lot_create_submit')
+                  : t('qy_lot_edit_submit')}
               </Button>
             ) : (
               <Button
@@ -246,8 +286,16 @@ export function QyLotCreateWizard(props: {
       <QyConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title={t('qy_lot_create_confirm_title')}
-        description={t('qy_lot_create_confirm_desc')}
+        title={
+          editing == null
+            ? t('qy_lot_create_confirm_title')
+            : t('qy_lot_edit_confirm_title')
+        }
+        description={
+          editing == null
+            ? t('qy_lot_create_confirm_desc')
+            : t('qy_lot_edit_confirm_desc')
+        }
         isLoading={mutation.isPending}
         details={
           <div>
@@ -886,6 +934,40 @@ function SpecStep(props: {
         </p>
       </div>
 
+      {/*
+        单注上下限。`0 = 不限`。
+
+        没有这两格时提交体恒发 0，于是竞猜**配不出单注上限** —— 而没有上限时
+        一个大户可以在封盘前几秒压满获胜选项吃掉整个奖池，散户的期望收益归零；
+        没有下限则会有 1 单位的骚扰投注刷名单。两条代价都写在活动行的注释里，
+        界面上却一直没有入口。它同时是编辑流程的必需品：PUT 是整体替换，
+        一份用接口配过上限的草稿被界面改一次就会被静默清零。
+      */}
+      <div className='grid gap-3 sm:grid-cols-2'>
+        <div className='space-y-1'>
+          <Label htmlFor={`${id}-bet-min`}>{t('qy_lot_bet_min')}</Label>
+          <QyAmountInput
+            id={`${id}-bet-min`}
+            value={draft.bet_min_quota}
+            onChange={(quota) => props.onChange({ bet_min_quota: quota })}
+          />
+          <p className='text-muted-foreground text-xs'>
+            {t('qy_lot_bet_min_hint')}
+          </p>
+        </div>
+        <div className='space-y-1'>
+          <Label htmlFor={`${id}-bet-max`}>{t('qy_lot_bet_max')}</Label>
+          <QyAmountInput
+            id={`${id}-bet-max`}
+            value={draft.bet_max_quota}
+            onChange={(quota) => props.onChange({ bet_max_quota: quota })}
+          />
+          <p className='text-muted-foreground text-xs'>
+            {t('qy_lot_bet_max_hint')}
+          </p>
+        </div>
+      </div>
+
       <div className='space-y-1'>
         <Label htmlFor={`${id}-guess-min`}>
           {t('qy_lot_min_entries_field')}
@@ -1301,7 +1383,28 @@ function ReviewStep(props: {
             : t('qy_common_off')}
         </QyKeyValue>
         {draft.kind === 'guess' && (
-          <QyKeyValue label={t('qy_lot_fee_bps')}>{draft.fee_bps}</QyKeyValue>
+          <>
+            <QyKeyValue label={t('qy_lot_fee_bps')}>{draft.fee_bps}</QyKeyValue>
+            {/* 单注上下限**不进** commit 原像，但它们仍然属于这一屏：
+                发布之后没有任何接口能改它们（换封面那条只写两列封面），
+                而它们决定一个大户能不能在封盘前几秒压满获胜选项吃掉奖池。
+                后者正是不给它们开"发布后可改"入口的理由 —— 中途调上限
+                等于看到某人下注之后再把他挡在门外。 */}
+            <QyKeyValue label={t('qy_lot_bet_min')}>
+              {draft.bet_min_quota === 0 ? (
+                t('qy_lot_bet_unlimited')
+              ) : (
+                <QyAmountText quota={draft.bet_min_quota} />
+              )}
+            </QyKeyValue>
+            <QyKeyValue label={t('qy_lot_bet_max')}>
+              {draft.bet_max_quota === 0 ? (
+                t('qy_lot_bet_unlimited')
+              ) : (
+                <QyAmountText quota={draft.bet_max_quota} />
+              )}
+            </QyKeyValue>
+          </>
         )}
         <QyKeyValue label={t('qy_lot_min_entries_field')}>
           {draft.min_entries_to_hold}

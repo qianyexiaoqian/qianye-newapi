@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
 import type { CellContext, ColumnDef } from '@tanstack/react-table'
 import { useTranslation } from 'react-i18next'
 
@@ -28,23 +27,23 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { useMediaQuery } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
-import { getUserGroups } from '@/lib/api'
 import dayjs from '@/lib/dayjs'
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import { API_KEY_STATUSES } from '../constants'
 import type { ApiKey } from '../types'
-import { ApiKeyGroupCell } from './api-key-group-cell'
+import { ApiKeyGroupSwitchCell } from './api-key-group-switch-cell'
 import { ApiKeyTimestampCell } from './api-key-timestamp-cell'
+import { ApiKeyTodayUsageCell } from './api-key-today-usage-cell'
 import {
   ApiKeyCell,
   IpRestrictionsCell,
   ModelLimitsCell,
   UnlimitedQuotaBadge,
 } from './api-keys-cells'
+import { useApiKeys } from './api-keys-provider'
 import { DataTableRowActions } from './data-table-row-actions'
 
 function getQuotaProgressColor(percentage: number): string {
@@ -53,30 +52,15 @@ function getQuotaProgressColor(percentage: number): string {
   return '[&_[data-slot=progress-indicator]]:bg-emerald-500'
 }
 
-function useGroupRatios(): Record<string, number | string> {
-  const { data } = useQuery({
-    queryKey: ['user-groups'],
-    queryFn: getUserGroups,
-    staleTime: 0,
-    select: (res) => {
-      if (!res.success || !res.data) return {}
-      const ratios: Record<string, number | string> = {}
-      for (const [group, info] of Object.entries(res.data)) {
-        if (typeof info.ratio === 'number' || typeof info.ratio === 'string') {
-          ratios[group] = info.ratio
-        }
-      }
-      return ratios
-    },
-  })
-
-  return data ?? {}
-}
-
 export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
   const { t, i18n } = useTranslation()
-  const groupRatios = useGroupRatios()
-  const shouldReduceMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
+  /*
+    「今日消耗」列在**扩展未启用**时整列不渲染（`todayUsage === null`，见
+    lib/today-usage.ts）。密钥页是上游页面，它必须在扩展关掉时原样可用 ——
+    留一列永远显示「—」等于给上游页面挂一块它自己也解释不了的空白。
+    还在取数（undefined）时列要在，那一格显示骨架条。
+  */
+  const { todayUsage } = useApiKeys()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const justNowLabel = t('Just now')
   const staleAccessThreshold = dayjs(now).subtract(3, 'month').valueOf()
@@ -190,22 +174,26 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
       },
       size: 170,
     },
+    ...(todayUsage === null
+      ? []
+      : [
+          {
+            id: 'today_usage',
+            header: t("Today's Usage"),
+            // 同样是稳定引用：它订阅的是 provider 里那个 60 秒 staleTime 的查询。
+            cell: ApiKeyTodayUsageCell,
+            enableSorting: false,
+            size: 130,
+          } satisfies ColumnDef<ApiKey>,
+        ]),
     {
       accessorKey: 'group',
       header: t('Group'),
-      cell: ({ row }) => {
-        const apiKey = row.original
-        const group = row.getValue('group') as string
-        return (
-          <ApiKeyGroupCell
-            group={group}
-            ratio={groupRatios[group]}
-            crossGroupRetry={apiKey.cross_group_retry}
-            shouldReduceMotion={shouldReduceMotion}
-          />
-        )
-      },
-      size: 220,
+      // 稳定的模块级组件引用，不是内联箭头 —— 理由见文件末尾 ApiKeyRowActionsCell
+      // 上方那段注释。这一格有本地 state（正在飞的那次切换、已确认但列表还没
+      // 刷回来的新分组），内联箭头会让它每 30 秒被清空一次。
+      cell: ApiKeyGroupSwitchCell,
+      size: 230,
       meta: { mobileHidden: true },
     },
     {

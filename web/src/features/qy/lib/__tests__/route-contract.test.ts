@@ -192,13 +192,6 @@ const ORPHAN_EXEMPT: { route: string; why: string }[] = [
       '工单图片是 <img src> 直接指过去的，不经 axios —— 提取器只扫 axios 调用点，' +
       '所以它在这里必然是孤儿，而界面上一直看得见。',
   },
-  {
-    route: 'PUT /api/qy/admin/lottery/activities/:act_no',
-    why:
-      '【已知缺口，待拍板】草稿活动的编辑。当下草稿改不了也删不了' +
-      '（checkActivityDeletable 第一道就要求 status=finished），唯一处置是整场取消。' +
-      '补一个编辑表单是一次独立改造，不在本轮范围内。',
-  },
 ]
 
 const MIN_COUNT = 230
@@ -302,6 +295,39 @@ describe('qy 前后端路径对账', () => {
       [],
       '这些路由已经不在后端清单里了，豁免条目该一起删：' +
         stale
+          .map(
+            (line) => `
+    ${line}`
+          )
+          .join('')
+    )
+  })
+
+  /*
+   * 第三个方向：豁免清单里的路由必须**真的还是孤儿**。
+   *
+   * 上面那两条都放行"接线接好了、豁免条目还留着"这种情况，而那份 `why` 此后
+   * 就是一句假话。抽奖草稿编辑正是这么发生的：它的豁免理由写着「当下草稿改不了
+   * 也删不了……不在本轮范围内」，等编辑表单真的补上之后，那段文字仍然会留在
+   * 仓库里，被下一个人读成"这件事还没做"。
+   *
+   * 而豁免的全部价值就是那句 `why` 可信 —— 一份混着真孤儿与陈年假话的清单，
+   * 比没有清单更糟。
+   */
+  test('豁免清单里的路由必须真的还是孤儿', () => {
+    const used = new Set<string>()
+    for (const site of scan.sites) {
+      const hit = matchQyRoute(site, routes)
+      if (hit != null) used.add(`${hit.method} ${hit.path}`)
+    }
+    const wired = ORPHAN_EXEMPT.filter((e) => used.has(e.route)).map(
+      (e) => e.route
+    )
+    assert.deepEqual(
+      wired,
+      [],
+      '这些路由已经有前端调用点了，豁免条目连同它那句「为什么没有界面」一起删：' +
+        wired
           .map(
             (line) => `
     ${line}`

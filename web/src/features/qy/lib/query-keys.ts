@@ -76,6 +76,16 @@ export const qyKeys = {
   apiAddresses: () => [...qyKeys.all, 'api-addresses'] as const,
 
   /**
+   * 每一把 API 密钥今天的消费额。
+   *
+   * 与 `apiAddresses` 同一档：消费方是**上游**密钥列表的「今日消耗」列，不是某个
+   * qy 页面。挂在 `qy` 前缀下是因为它的日界来自扩展配置
+   * （`commission.day_offset_minutes`），管理员改完日界之后必须能被全量失效冲掉 ——
+   * 否则用户看到的还是按旧日界算出来的那一份。
+   */
+  tokenTodayUsage: () => [...qyKeys.all, 'token-usage', 'today'] as const,
+
+  /**
    * 受限账号公告（管理员配的那段申诉指引）。
    *
    * 只在受限账号上取数（见 `lib/restricted-notice.ts` 的 `enabled` 判据），

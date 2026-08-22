@@ -53,7 +53,7 @@ import {
   qyAdminLotConfigQuery,
   qyAdminLotTextPrizesQuery,
 } from './api'
-import { QyLotCreateWizard } from './components/lottery-create-wizard'
+import { QyLotActivityWizard } from './components/lottery-create-wizard'
 import { QyLotFulfillQueueTab } from './components/lottery-fulfill-queue-tab'
 import { QyLotSeriesPanel } from './components/lottery-series-panel'
 import type { QyLotAdminActivityBrief } from './types'
@@ -402,7 +402,7 @@ export function QyAdminLottery() {
         <QyLotSeriesPanel />
       </QyResponsiveDialog>
 
-      <QyLotCreateWizard
+      <QyLotActivityWizard
         open={createOpen}
         onOpenChange={setCreateOpen}
         config={configQuery.data}

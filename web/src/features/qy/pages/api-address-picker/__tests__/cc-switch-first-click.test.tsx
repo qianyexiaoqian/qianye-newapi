@@ -274,17 +274,23 @@ describe('CC Switch：第一次点就有反应', () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
+    // useApiKeysColumns 读 ApiKeysProvider（「今日消耗」列在扩展未启用时整列
+    // 不渲染，判据在 provider 的那个查询上），所以探针必须挂在 provider 里。
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <Probe />
+          <ApiKeysProvider>
+            <Probe />
+          </ApiKeysProvider>
         </QueryClientProvider>
       )
     })
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <Probe />
+          <ApiKeysProvider>
+            <Probe />
+          </ApiKeysProvider>
         </QueryClientProvider>
       )
     })

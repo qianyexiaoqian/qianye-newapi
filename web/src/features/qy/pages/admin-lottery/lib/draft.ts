@@ -21,14 +21,21 @@ import {
   qyLotBallUnreachableTiers,
   type QyLotBallPool,
 } from '../../lottery/lib/ball'
+import { parseQyLotRules } from '../../lottery/lib/rules'
 import {
   QY_LOT_EMPTY_RULES,
   type QyLotDrawMode,
   type QyLotKind,
+  type QyLotOption,
   type QyLotRules,
   type QyLotTier,
 } from '../../lottery/types'
-import type { QyLotCreateInput, QyLotSeries, QyLotYamlReadonly } from '../types'
+import type {
+  QyLotAdminActivity,
+  QyLotCreateInput,
+  QyLotSeries,
+  QyLotYamlReadonly,
+} from '../types'
 
 /**
  * 创建向导的草稿与校验。
@@ -84,6 +91,16 @@ export type QyLotDraft = {
   cover_url: string
   cover_ref: string
   stake_quota: number
+  /**
+   * 竞猜单注上下限，`0 = 不限`。抽奖恒为 0（后端只在 `kind='guess'` 那一支读它）。
+   *
+   * 它们此前不在草稿里、提交时恒发 0 —— 创建流程因此从来配不出单注上限，
+   * 而没有上限时一个大户可以在封盘前几秒压满获胜选项吃掉整个奖池，散户的
+   * 期望收益归零。同一个缺口在编辑流程上更糟：一份用接口建出来、配了上限的
+   * 草稿被界面改一次就会被静默清零，而界面上没有任何一格提示过这件事。
+   */
+  bet_min_quota: number
+  bet_max_quota: number
   open_at: number
   close_at: number
   draw_at: number
@@ -120,6 +137,8 @@ export function qyLotEmptyDraft(defaultFeeBps: number): QyLotDraft {
     cover_url: '',
     cover_ref: '',
     stake_quota: 0,
+    bet_min_quota: 0,
+    bet_max_quota: 0,
     open_at: now + hour,
     close_at: now + 25 * hour,
     draw_at: now + 26 * hour,
@@ -147,6 +166,88 @@ export function qyLotEmptyDraft(defaultFeeBps: number): QyLotDraft {
     ],
     options: [qyLotNewOption(), qyLotNewOption(), qyLotNewOption(true)],
     rules: { ...QY_LOT_EMPTY_RULES },
+  }
+}
+
+/**
+ * 已有草稿 → 表单草稿。**编辑流程的唯一入口。**
+ *
+ * ## 为什么必须从活动行 + 从表整份重建
+ *
+ * PUT 是**整体替换**语义（后端 `draftUpdates` 写四十来列、奖档与选项整表删了重建），
+ * 不是 PATCH。表单里少带回一个字段，提交时那一列就会被写成零值 —— 而界面上
+ * 没有任何一格显示过它，运营看不出自己刚刚把"每人限 2 次"改成了"不限"。
+ * 这条正是"草稿能改"这件事最容易做成半成品的地方。
+ *
+ * ## 三处刻意不还原成"运营当初填的那个值"
+ *
+ * 后端在落库前做过归一化，而**库里那一份才是生效值**。把它显示成运营的原始输入
+ * 是撒谎，所以这里一律照抄库值：
+ *
+ *   · `max_total_entries`：填 0 会被归一成系统硬上限（名单冻结必须有上界）。
+ *   · `allow_multi_win`：`draw_mode != 'rank'` 时后端强制为真。
+ *   · `fee_bps`：竞猜没填时取运营配置里的默认值。
+ *
+ * ## 频次那六格从活动行读，不从 `rules_text` 读
+ *
+ * 两处存的是同一份数据（后端把 `rules` 归一化之后既写进 `rules_text` 也写进
+ * 活动行的六列）。取活动行是因为它是**归一化之后**的那一份，而 `rules_text`
+ * 里的 `max_total_entries` 同样已经被归一化过 —— 两者一致，但活动行少一次
+ * JSON 解析，也不依赖解析成功。`rules_text` 解析失败时退回"全部不限"，
+ * 那只影响分组/余额那一批条件，不会把频次闸门一起丢掉。
+ */
+export function qyLotDraftFromActivity(
+  activity: QyLotAdminActivity,
+  prizes: QyLotTier[],
+  options: QyLotOption[]
+): QyLotDraft {
+  const rules = parseQyLotRules(activity.rules_text) ?? {
+    ...QY_LOT_EMPTY_RULES,
+  }
+  const drawMode: QyLotDrawMode =
+    activity.kind === 'guess' ? 'rank' : (activity.draw_mode ?? 'rank')
+  return {
+    kind: activity.kind,
+    draw_mode: drawMode === '' ? 'rank' : drawMode,
+    series_no: activity.series_no ?? '',
+    title: activity.title,
+    intro: activity.intro,
+    cover_url: activity.cover_url ?? '',
+    cover_ref: activity.cover_ref ?? '',
+    stake_quota: activity.stake_quota,
+    bet_min_quota: activity.bet_min_quota,
+    bet_max_quota: activity.bet_max_quota,
+    open_at: activity.open_at,
+    close_at: activity.close_at,
+    draw_at: activity.draw_at,
+    settle_deadline: activity.settle_deadline,
+    allow_multi_win: activity.allow_multi_win,
+    fee_bps: activity.fee_bps,
+    min_entries_to_hold: activity.min_entries_to_hold,
+    max_entries_per_user: activity.max_entries_per_user,
+    max_attempts_per_user: activity.max_attempts_per_user,
+    max_total_entries: activity.max_total_entries,
+    max_total_users: activity.max_total_users,
+    cooldown_seconds: activity.cooldown_seconds,
+    dedup_ip: activity.dedup_ip,
+    // 奖档整份带回来，包括表单上没有输入格的 `prize_type` / `text_desc`：
+    // 提交时 `qyLotDraftToInput` 原样透传它们，界面改不了的字段也就不会被
+    // 一次"只改了标题"的保存悄悄清空。
+    tiers: activity.kind === 'draw' ? prizes.map((tier) => ({ ...tier })) : [],
+    options:
+      activity.kind === 'guess'
+        ? options.map((option) => ({
+            id: crypto.randomUUID(),
+            label: option.label,
+            is_catch_all: option.is_catch_all,
+          }))
+        : [],
+    // 频次那六格在提交时由 `qyLotDraftToInput` 从草稿顶层覆盖回 `rules`，
+    // 所以这里放解析出来的原值即可，覆不覆盖结果相同。
+    rules: {
+      ...rules,
+      max_per_inviter: activity.max_per_inviter,
+    },
   }
 }
 
@@ -371,6 +472,16 @@ export function qyLotValidateDraft(
     if (draft.fee_bps < 0 || (maxFeeBps > 0 && draft.fee_bps > maxFeeBps)) {
       errors.push('qy_lot_v_fee_over_cap')
     }
+    // 单注上下限：后端 `applyBetBounds` 的三条判定各复现一次。
+    // `0 = 不限`，所以只有上限非零时才比大小。
+    if (draft.bet_min_quota < 0 || draft.bet_max_quota < 0) {
+      errors.push('qy_lot_v_bet_negative')
+    } else if (
+      draft.bet_max_quota > 0 &&
+      draft.bet_min_quota > draft.bet_max_quota
+    ) {
+      errors.push('qy_lot_v_bet_order')
+    }
   }
 
   // 「近 N 日消费」在日消费表回填完成之前会**全员误拒**。把它挡在配置阶段，
@@ -548,8 +659,11 @@ export function qyLotDraftToInput(draft: QyLotDraft): QyLotCreateInput {
     allow_multi_win: draft.allow_multi_win,
     fee_bps: draft.kind === 'guess' ? draft.fee_bps : 0,
     min_entries_to_hold: draft.min_entries_to_hold,
-    bet_min_quota: 0,
-    bet_max_quota: 0,
+    // 单注上下限只对竞猜有意义（后端 `applyBetBounds` 只在那一支被调用）。
+    // 抽奖恒发 0，与 `fee_bps` 同一条口径：发一个不会生效的值过去，
+    // 界面上就会显示"已设置"而实际一条都没生效。
+    bet_min_quota: draft.kind === 'guess' ? draft.bet_min_quota : 0,
+    bet_max_quota: draft.kind === 'guess' ? draft.bet_max_quota : 0,
     rules: {
       ...draft.rules,
       max_entries_per_user: draft.max_entries_per_user,

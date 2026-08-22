@@ -50,10 +50,14 @@ func mainDBConfig() config.Transfer {
 // 最新分组)都只有在真的读写一次 users 行时才能被证伪。
 func newMainDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	dsn := filepath.Join(t.TempDir(), "qy_main.db") + "?_pragma=busy_timeout(5000)"
+	dsn := filepath.Join(t.TempDir(), "qy_main.db") +
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)"
 	gdb, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: gormlogger.Discard})
 	require.NoError(t, err)
-	require.NoError(t, gdb.AutoMigrate(&model.User{}))
+	// user_subscriptions 必须一起建:门槛分档现在按**基准用户组**解析
+	// (model.QyBaseUserGroup 要读这张表),而那条读失败是**失败关闭**的 ——
+	// 少建这张表,每一个 create() 用例都会以 503 而不是它自己的断言失败。
+	require.NoError(t, gdb.AutoMigrate(&model.User{}, &model.UserSubscription{}))
 
 	// lockForUpdate 只在非 SQLite 上追加 FOR UPDATE。显式固定成 SQLite,
 	// 否则同一进程内别处设过库类型时这里会拼出 SQLite 不认识的语句。

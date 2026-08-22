@@ -842,14 +842,42 @@ func getUserGroupByIdTx(tx *gorm.DB, userId int) (string, error) {
 // (DetachUserGroupSubscriptionsTx)会把 prev 一并清空,链根随之作废 —— 那正是
 // 「管理员说了算」的意思。
 func userGroupBeforeUpgradeChainTx(tx *gorm.DB, userId int, fallback string) string {
-	var rows []UserSubscription
-	err := tx.Where("user_id = ? AND prev_user_group <> '' AND status IN (?, ?)",
-		userId, "active", SubscriptionStatusSuperseded).
-		Order("id asc").Limit(1).Find(&rows).Error
-	if err != nil || len(rows) == 0 {
+	root, err := standingUpgradeChainRootTx(tx, userId)
+	if err != nil || root == "" {
 		return fallback
 	}
-	return strings.TrimSpace(rows[0].PrevUserGroup)
+	return root
+}
+
+// standingUpgradeChainRootTx 返回「还站着的那条升组链」的链根分组,没有链时返回空串。
+//
+// 它是 userGroupBeforeUpgradeChainTx 的取值内核,单独抽出来是因为**读失败的方向
+// 在两个调用点上必须相反**:
+//
+//   - 到期回退(userGroupBeforeUpgradeChainTx)读不到链根时回落到"买之前那一刻",
+//     那是一个尽力而为的写入,读失败最多让这一行记的回退目标不理想;
+//   - 划转门槛(QyBaseUserGroup)读不到链根时**必须失败关闭** —— 回落到
+//     users.group 拿到的正是套餐给的那个付费组,而那恰恰是门槛要剥离掉的东西。
+//     两处共用一个吞掉 error 的函数,划转那一侧就会在主库抖动时静默按付费档放行。
+//
+// 空串有两种来源,对调用方等价("没有正在站着的升组链"):没有命中任何行;
+// 命中的那一行 prev_user_group 只有空白字符(WHERE 拦得住空串,拦不住一个空格)。
+func standingUpgradeChainRootTx(tx *gorm.DB, userId int) (string, error) {
+	if tx == nil || userId <= 0 {
+		return "", nil
+	}
+	var rows []UserSubscription
+	err := tx.Select("id", "prev_user_group").
+		Where("user_id = ? AND prev_user_group <> '' AND status IN (?, ?)",
+			userId, "active", SubscriptionStatusSuperseded).
+		Order("id asc").Limit(1).Find(&rows).Error
+	if err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", nil
+	}
+	return strings.TrimSpace(rows[0].PrevUserGroup), nil
 }
 
 // legacyPrevUserGroupTx 是给**升级之前**就落库的那些行准备的兜底。

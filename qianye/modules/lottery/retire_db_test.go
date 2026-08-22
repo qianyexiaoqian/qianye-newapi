@@ -150,11 +150,15 @@ func TestDeleteActivityGates(t *testing.T) {
 		want    *bizError
 	}{
 		{
-			name: "草稿不许删",
+			// 草稿本身是可以删的(TestDeleteDraftActivity),但**这一份**不行:
+			// 它身上挂着两条参与明细与两笔出款,而报名的原子 UPDATE 带着
+			// `status='published'` —— 一份收得到报名的草稿只可能来自直接改库。
+			// 这条钉的是"放开草稿"不等于"草稿一律放行"。
+			name: "被改成草稿、身上却挂着参与与出款的活动不许删",
 			arrange: func(t *testing.T, gdb *gorm.DB, act *Activity) {
 				require.NoError(t, gdb.Model(act).Update("status", StatusDraft).Error)
 			},
-			want: errDeleteNotFinished,
+			want: errDeleteDraftDirty(""),
 		},
 		{
 			name: "开放中不许删:用户投的钱会不知去向",

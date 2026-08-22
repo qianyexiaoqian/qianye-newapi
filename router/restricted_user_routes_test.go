@@ -173,6 +173,10 @@ var restrictedDeniedSessionRoutes = []string{
 	"GET /api/qy/availability/matrix",
 	"GET /api/qy/availability/series",
 	"GET /api/qy/session-stats",
+	// 密钥页的「今日消耗」。受限账号连 /api/token/ 整棵子树都到不了(见上面的
+	// 前缀清单),密钥页对他根本不渲染 —— 单独放开这一条只会泄漏他今天花了多少,
+	// 而他既看不到密钥、也发不出请求。
+	"GET /api/qy/token-usage/today",
 	"GET /api/user/models",
 	"GET /api/user/self/groups",
 	"GET /api/user/sessions",

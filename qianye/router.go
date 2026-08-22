@@ -78,6 +78,14 @@ func registerUserRoutes(g *gin.RouterGroup) {
 	// 这条路径对受限账号 403,而受限落地页上那块公告位会一直空着 ——
 	// 恰好是它要解决的那个问题的加强版。
 	g.GET("/restricted-notice", qyctl.UserRestrictedNotice)
+	// API 密钥页的「今日消耗」列。与 /session-stats 同一档:它读的是上游主库的
+	// logs,不属于任何业务模块 —— 每一个有令牌的账号都会用到它,与返佣、
+	// 划转、订阅开没开无关。
+	//
+	// 挂在扩展这一侧而不是上游 /api/token/* 的理由是**日界**:「今日」必须与
+	// 日消费明细同一个口径,而那个口径(commission.day_offset_minutes)住在
+	// 扩展配置里,上游 controller 拿不到也不该拿。
+	g.GET("/token-usage/today", qyctl.UserTokenTodayUsage)
 }
 
 // registerAdminRoutes 挂载管理端接口。

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/setting"
 
@@ -25,6 +27,65 @@ func CovertMjpActionToModelName(mjAction string) string {
 		modelName = "swap_face"
 	}
 	return modelName
+}
+
+// RefundMidjourneyQuota 把一次 Midjourney 计费**在账面上完整反转**：钱包额度、
+// 令牌额度、用户与渠道的累计用量，外加一条退款台账。
+//
+// 三处与改动前不同，都是漏项而不是口径调整（同步自上游 58d4e9bd3）：
+//   - 令牌额度以前从来不退。提交时预留扣了令牌一次，构图失败后只退了钱包，
+//     令牌那一份就此蒸发 —— 一把设了额度上限的 key 会随着失败次数被磨到 0。
+//   - 用量回减与退款记账都按 GetBillingChannelId()，即**当初真正扣钱的那个渠道**，
+//     而不是任务行上随重试漂移的 ChannelId。
+//   - 退成功后把 Quota 清零。这是幂等闩：轮询会反复看到同一条失败任务，
+//     不清零就会一轮退一次。
+//
+// 返回资金来源是否真的退成功；失败时保留 Quota，留给下一轮或人工对账。
+func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason string) bool {
+	quota := task.Quota
+	if quota == 0 {
+		return true
+	}
+
+	if err := model.IncreaseUserQuota(task.UserId, quota, false); err != nil {
+		logger.LogWarn(ctx, fmt.Sprintf("退还 Midjourney 用户额度失败 task %s: %s", task.MjId, err.Error()))
+		return false
+	}
+
+	if task.TokenId > 0 {
+		tokenKey := resolveTokenKey(ctx, task.TokenId, task.MjId)
+		if tokenKey != "" {
+			if err := model.IncreaseTokenQuota(task.TokenId, tokenKey, quota); err != nil {
+				logger.LogWarn(ctx, fmt.Sprintf("退还 Midjourney 令牌额度失败 task %s: %s", task.MjId, err.Error()))
+			}
+		}
+	}
+
+	billingChannelId := task.GetBillingChannelId()
+	// 回减提交时累计的用量；请求次数保持不变（退款不是一次新请求）。
+	// 缺这一步时 quota 退回去了而 used_quota 没减，「总额度」
+	// (quota + used_quota) 随构图失败次数单调虚增。
+	model.UpdateUserUsedQuota(task.UserId, -quota)
+	model.UpdateChannelUsedQuota(billingChannelId, -quota)
+	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
+		UserId:    task.UserId,
+		LogType:   model.LogTypeRefund,
+		Content:   "",
+		ChannelId: billingChannelId,
+		ModelName: CovertMjpActionToModelName(task.Action),
+		Quota:     quota,
+		TokenId:   task.TokenId,
+		Other: map[string]interface{}{
+			"task_id": task.MjId,
+			"reason":  reason,
+		},
+	})
+
+	task.Quota = 0
+	if err := task.UpdateBillingState(); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("Midjourney 退款成功但清除 quota 失败 task %s: %s", task.MjId, err.Error()))
+	}
+	return true
 }
 
 func GetMjRequestModel(relayMode int, midjRequest *dto.MidjourneyRequest) (string, *dto.MidjourneyResponse, bool) {

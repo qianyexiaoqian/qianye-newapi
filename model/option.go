@@ -220,6 +220,8 @@ func validateOptionValue(key string, value string) error {
 	switch key {
 	case operation_setting.ToolPriceOptionKey:
 		return operation_setting.ValidateToolPricesJSON(value)
+	case operation_setting.ChannelTestConcurrencyOptionKey:
+		return operation_setting.ValidateChannelTestConcurrency(value)
 	case "MaxTokenAutoGroups":
 		return setting.ValidateMaxTokenAutoGroups(value)
 	case "TokenDefaultGroups":

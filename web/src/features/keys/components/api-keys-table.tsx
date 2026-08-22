@@ -53,6 +53,8 @@ import {
   ERROR_MESSAGES,
 } from '../constants'
 import type { ApiKey } from '../types'
+import { ApiKeyGroupSwitchCell } from './api-key-group-switch-cell'
+import { ApiKeyTodayUsageCell } from './api-key-today-usage-cell'
 import { ApiKeyCell, UnlimitedQuotaBadge } from './api-keys-cells'
 import { useApiKeysColumns } from './api-keys-columns'
 import { useApiKeys } from './api-keys-provider'
@@ -101,6 +103,8 @@ function ApiKeysMobileList({
   isLoading: boolean
 }) {
   const { t } = useTranslation()
+  const { todayUsage } = useApiKeys()
+  const showTodayUsage = todayUsage !== null
   const rows = table.getRowModel().rows
 
   if (isLoading) return <ApiKeysMobileSkeleton />
@@ -178,6 +182,29 @@ function ApiKeysMobileList({
                   </span>
                 </span>
               )}
+            </div>
+
+            {/* 「今日消耗」与「分组快切」在手机卡片里也必须有。
+                卡片视图不过 flexRender，所以这里直接写 JSX —— 用的是与桌面表格
+                **同一个组件**，两处的口径不可能分家。桌面表格把分组列标成
+                mobileHidden 是上游的取舍（列太多），但项目方点名要的这两样
+                如果只在桌面有，手机用户就只剩编辑抽屉一条路。 */}
+            {showTodayUsage && (
+              <div className='flex items-center justify-between gap-2 text-xs'>
+                <span className='text-muted-foreground'>
+                  {t("Today's Usage")}
+                </span>
+                <ApiKeyTodayUsageCell row={row} />
+              </div>
+            )}
+
+            <div className='flex items-center justify-between gap-2 text-xs'>
+              <span className='text-muted-foreground shrink-0'>
+                {t('Group')}
+              </span>
+              <div className='flex min-w-0 justify-end'>
+                <ApiKeyGroupSwitchCell row={row} />
+              </div>
             </div>
           </div>
         )
