@@ -198,6 +198,14 @@ func adminDeleteModelGroup(c *gin.Context) {
 		// 三种拒绝都是**运营可以自己解决**的配置冲突,不是服务端故障,所以是 400。
 		// 错误码前缀让前端能把"要勾覆盖"与"去别的页面先处理"分开渲染。
 		if code, ok := modelGroupRejectCode(err); ok {
+			if code == "qy_modelgroup_unknown" {
+				// 目标不存在 ⇒ 404,与兄弟动词 DELETE .../user-groups/<不存在>
+				// 同一口径。此前这条路返回 200 + 一条 result=ok 的审计:
+				// 管理员打错一个名字会看到「删除成功」,而事故复盘读的那张表里
+				// 躺着一条与真实删除长得一样的记录。
+				notFound(c, code, err.Error())
+				return
+			}
 			badRequest(c, code, err.Error())
 			return
 		}
@@ -246,6 +254,9 @@ func modelGroupRejectCode(err error) (string, bool) {
 		"qy_modelgroup_blocked",
 		"qy_modelgroup_has_route",
 		"qy_modelgroup_orphan_tokens",
+		// 这一条不是配置冲突,是「目标不存在」。放进同一张表是因为映射方式
+		// 一样(前缀 + 正文),调用方另按 404 处理。
+		"qy_modelgroup_unknown",
 	} {
 		if strings.HasPrefix(err.Error(), code+":") {
 			return code, true

@@ -263,31 +263,6 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	if err != nil {
 		return &mjResp.Response
 	}
-	defer func() {
-		if mjResp.StatusCode == 200 && mjResp.Response.Code == 1 {
-			err := service.PostConsumeQuota(info, 0, priceData.Quota, true)
-			if err != nil {
-				common.SysLog("error consuming token remain quota: " + err.Error())
-			}
-			reservedQuota = 0
-
-			tokenName := c.GetString("token_name")
-			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, constant.MjActionSwapFace)
-			other := service.GenerateMjOtherInfo(info, priceData)
-			model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
-				ChannelId: info.ChannelId,
-				ModelName: modelName,
-				TokenName: tokenName,
-				Quota:     priceData.Quota,
-				Content:   logContent,
-				TokenId:   info.TokenId,
-				Group:     info.UsingGroup,
-				Other:     other,
-			})
-			model.UpdateUserUsedQuotaAndRequestCount(info.UserId, priceData.Quota)
-			model.UpdateChannelUsedQuota(info.ChannelId, priceData.Quota)
-		}
-	}()
 	midjResponse := &mjResp.Response
 	midjourneyTask := &model.Midjourney{
 		UserId:      info.UserId,
@@ -306,11 +281,45 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		Progress:    "0%",
 		FailReason:  "",
 		ChannelId:   c.GetInt("channel_id"),
-		Quota:       priceData.Quota,
+	}
+	// 账本身份写在任务行上，退款时才知道「这笔钱当初从哪儿扣的」。
+	// 三个字段一起表态，缺一个都会让后台轮询的退款落错地方（同步自上游 58d4e9bd3）。
+	billed := mjResp.StatusCode == http.StatusOK && midjResponse.Code == 1
+	if billed {
+		midjourneyTask.Quota = priceData.Quota
+		midjourneyTask.BillingChannelId = midjourneyTask.ChannelId
+		if !info.IsPlayground {
+			midjourneyTask.TokenId = info.TokenId
+		}
 	}
 	err = midjourneyTask.Insert()
 	if err != nil {
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, "insert_midjourney_task_failed")
+	}
+	// 结算必须发生在任务落库**之后**：落库失败时这一整段不跑，预留由上面那个
+	// defer 原样退回。改动前这是个 defer，落库失败照样记账，钱扣了却没有任何
+	// 一行任务指向它，退无可退。
+	if billed {
+		if err := service.PostConsumeQuota(info, 0, priceData.Quota, true); err != nil {
+			common.SysLog("error consuming token remain quota: " + err.Error())
+		}
+		reservedQuota = 0
+
+		tokenName := c.GetString("token_name")
+		logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, constant.MjActionSwapFace)
+		other := service.GenerateMjOtherInfo(info, priceData)
+		model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
+			ChannelId: midjourneyTask.GetBillingChannelId(),
+			ModelName: modelName,
+			TokenName: tokenName,
+			Quota:     midjourneyTask.Quota,
+			Content:   logContent,
+			TokenId:   midjourneyTask.TokenId,
+			Group:     info.UsingGroup,
+			Other:     other,
+		})
+		model.UpdateUserUsedQuotaAndRequestCount(info.UserId, midjourneyTask.Quota)
+		model.UpdateChannelUsedQuota(midjourneyTask.GetBillingChannelId(), midjourneyTask.Quota)
 	}
 	c.Writer.WriteHeader(mjResp.StatusCode)
 	respBody, err := json.Marshal(midjResponse)
@@ -586,8 +595,16 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 	// 任何没有走到「结算」的出口(上游报错、提交被拒、任务落库失败)都要把预留原样
-	// 退回。结算分支把 reservedQuota 清零;defer 是 LIFO,结算那个 defer 注册得更
-	// 晚所以先跑,这里看到的就是它的结论。
+	// 退回。
+	//
+	// 判据只有一个:reservedQuota 是不是还大于 0。结算那一段(见下面 `if billed`)
+	// 在任务落库成功之后把它置 0,而那一段是**内联块、不是 defer** —— 它在 return
+	// 之前同步跑完,所以这个 defer 读到的一定是它的结论。
+	//
+	// 这段注释此前写的是「defer 是 LIFO,结算那个 defer 注册得更晚所以先跑」。
+	// 那句话在结算从 defer 改成内联块之后就不成立了:这个函数里只剩这一个 defer。
+	// 逻辑一直是对的,但注释在资金路径上指着一个不存在的第二个 defer,而这一段
+	// 正是判断「钱退没退、会不会重复退」的入口。
 	defer func() {
 		if reservedQuota <= 0 {
 			return
@@ -607,33 +624,6 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		return &midjResponseWithStatus.Response
 	}
 	midjResponse := &midjResponseWithStatus.Response
-
-	defer func() {
-		if consumeQuota && midjResponseWithStatus.StatusCode == 200 {
-			// 额度在请求前已经原子预留过,这里只做余额提醒与统计:传 quota=0、
-			// preConsumedQuota=priceData.Quota,避免同一笔被扣两次。
-			err := service.PostConsumeQuota(relayInfo, 0, priceData.Quota, true)
-			if err != nil {
-				common.SysLog("error consuming token remain quota: " + err.Error())
-			}
-			reservedQuota = 0
-			tokenName := c.GetString("token_name")
-			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s，ID %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, midjRequest.Action, midjResponse.Result)
-			other := service.GenerateMjOtherInfo(relayInfo, priceData)
-			model.RecordConsumeLog(c, relayInfo.UserId, model.RecordConsumeLogParams{
-				ChannelId: relayInfo.ChannelId,
-				ModelName: modelName,
-				TokenName: tokenName,
-				Quota:     priceData.Quota,
-				Content:   logContent,
-				TokenId:   relayInfo.TokenId,
-				Group:     relayInfo.UsingGroup,
-				Other:     other,
-			})
-			model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, priceData.Quota)
-			model.UpdateChannelUsedQuota(relayInfo.ChannelId, priceData.Quota)
-		}
-	}()
 
 	// 文档：https://github.com/novicezk/midjourney-proxy/blob/main/docs/api.md
 	//1-提交成功
@@ -659,7 +649,6 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		Progress:    "0%",
 		FailReason:  "",
 		ChannelId:   c.GetInt("channel_id"),
-		Quota:       priceData.Quota,
 	}
 	if midjResponse.Code == 3 {
 		//无实例账号自动禁用渠道（No available account instance）
@@ -704,12 +693,50 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		midjourneyTask.Progress = "100%"
 		midjourneyTask.Status = "SUCCESS"
 	}
+	// 账本身份写在任务行上，退款时才知道「这笔钱当初从哪儿扣的」。
+	// 只有真收钱的那一次才写 Quota：改动前无论提交成没成功都写
+	// priceData.Quota，于是一条**从未计过费**的失败任务也带着金额进库，
+	// 后台轮询把它当成「构图失败」再退一次 —— 凭空多给一份额度。
+	billed := consumeQuota && midjResponseWithStatus.StatusCode == http.StatusOK
+	if billed {
+		midjourneyTask.Quota = priceData.Quota
+		midjourneyTask.BillingChannelId = midjourneyTask.ChannelId
+		if !relayInfo.IsPlayground {
+			midjourneyTask.TokenId = relayInfo.TokenId
+		}
+	}
 	err = midjourneyTask.Insert()
 	if err != nil {
 		return &dto.MidjourneyResponse{
 			Code:        4,
 			Description: "insert_midjourney_task_failed",
 		}
+	}
+	// 结算必须发生在任务落库**之后**：落库失败时这一整段不跑，预留由上面那个
+	// defer 原样退回。改动前这是个 defer，落库失败照样记账，钱扣了却没有任何
+	// 一行任务指向它，退无可退。
+	if billed {
+		// 额度在请求前已经原子预留过,这里只做余额提醒与统计:传 quota=0、
+		// preConsumedQuota=priceData.Quota,避免同一笔被扣两次。
+		if err := service.PostConsumeQuota(relayInfo, 0, priceData.Quota, true); err != nil {
+			common.SysLog("error consuming token remain quota: " + err.Error())
+		}
+		reservedQuota = 0
+		tokenName := c.GetString("token_name")
+		logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s，ID %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, midjRequest.Action, midjResponse.Result)
+		other := service.GenerateMjOtherInfo(relayInfo, priceData)
+		model.RecordConsumeLog(c, relayInfo.UserId, model.RecordConsumeLogParams{
+			ChannelId: midjourneyTask.GetBillingChannelId(),
+			ModelName: modelName,
+			TokenName: tokenName,
+			Quota:     midjourneyTask.Quota,
+			Content:   logContent,
+			TokenId:   midjourneyTask.TokenId,
+			Group:     relayInfo.UsingGroup,
+			Other:     other,
+		})
+		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, midjourneyTask.Quota)
+		model.UpdateChannelUsedQuota(midjourneyTask.GetBillingChannelId(), midjourneyTask.Quota)
 	}
 
 	if midjResponse.Code == 22 { //22-排队中，说明任务已存在

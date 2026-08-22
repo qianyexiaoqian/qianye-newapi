@@ -50,6 +50,38 @@ func internalError(c *gin.Context, err error) {
 	respondFail(c, http.StatusInternalServerError, "qy_internal_error", "处理失败,请稍后重试")
 }
 
+// errNoPendingBan 是「这个账号没有待解除的封禁」。
+//
+// 它必须与 internalError 分开:后者说的是「请稍后重试」,而重试**永远不会成功**
+// —— 这个账号本来就没有要解的东西。最常见的触发不是构造出来的:两个管理员同时
+// 点、封禁列表缓存陈旧(useQuery 不会自动失效,别人解封之后本地那一行还是
+// banned、按钮仍可点)、脚本重放。表现是运营对着一件永远不会成功的事反复重试,
+// 同时把一次正常点击伪装成服务端故障、污染 5xx 告警。
+//
+// 409 而不是 404:那个用户存在,只是他此刻的状态与这个动作不相容。
+var errNoPendingBan = errors.New("该用户没有待解除的违规封禁")
+
+// errBanStatusChurning 是「这一行正在被别的路径改写」。这一条**确实**该重试。
+var errBanStatusChurning = errors.New("该用户的封禁状态正在变化中,请稍后重试")
+
+// respondUnbanError 把解封失败翻译成调用方能据以行动的答复。
+//
+// 三档要求的下一步动作完全不同,所以必须是三个 code:
+//
+//	没有待解除的封禁   刷新列表,这件事已经做完了(或从来不需要做)。重试无用。
+//	状态正在变化       稍后重试,这一次是真的可以重试。
+//	其余               服务端故障。
+func respondUnbanError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, errNoPendingBan):
+		respondFail(c, http.StatusConflict, "qy_vio_no_pending_ban", errNoPendingBan.Error())
+	case errors.Is(err, errBanStatusChurning):
+		respondFail(c, http.StatusConflict, "qy_vio_ban_churning", errBanStatusChurning.Error())
+	default:
+		internalError(c, err)
+	}
+}
+
 // denyActorOverTarget 是「处置落在谁头上」的操作人闸门:操作人不许是被处置人
 // 本人,也不许是同级或更高权限的账号。判据在 guard.ActorMayActOn,与佣金、
 // 提现、支付密码三侧共用一份实现。

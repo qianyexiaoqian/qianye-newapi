@@ -49,7 +49,11 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 	ctx, cancel := guard.ColdContext(context.Background())
 	defer cancel()
 
-	// ── 门槛分档:这一笔按发起方**此刻的用户分组**那一档算 ──
+	// ── 门槛分档:这一笔按发起方的**基准用户组**那一档算 ──
+	//
+	// 基准用户组 = 剥掉套餐给的那一层之后的用户组,判据与四条边界见
+	// model.QyBaseUserGroup 与本包 basegroup.go。项目方口径:
+	// 「余额划转只针对用户组,套餐关他们什么事情?」
 	//
 	// 这次读必须排在 validateCreate 之前:单笔上下限本身就是可分档项,
 	// 拿全站兜底去做受理校验,等于让分档在最主要的那道闸门上完全不生效。
@@ -69,16 +73,22 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 		}
 		return nil, err
 	}
-	// 门槛按「此刻的 users.group」解析,而 users.group 是用户自己花钱就能改的
-	// (upgrade_group 套餐 + 余额支付)。当天额度用满之后换一档接着转,
-	// qy_transfer_user_state 里的计数一个都不重置、只是上限换了一档 ——
-	// 实测 0.01 美元换到 6000 倍日额度。transferForSenderDay 因此把
-	// 「今天的计数是在哪一档下累起来的」也算进来,今天剩下的时间按两档取严。
+	// 套餐给的那一层在这里被剥掉。读失败一律失败关闭,绝不回落 users.group ——
+	// 回落拿到的正是套餐给的那个付费组,等于把这道剥离静默关掉。
+	senderGroups, err := baseUserGroups(senderNow)
+	if err != nil {
+		return nil, err
+	}
+	// 基准用户组仍然会变(管理员手工改组、套餐到期落进一个更松的 downgrade_group、
+	// 历史行把付费组记成了链根)。当天额度用满之后换一档接着转,
+	// qy_transfer_user_state 里的计数一个都不重置、只是上限换了一档。
+	// transferForSenderDay 因此把「今天的计数是在哪一档下累起来的」也算进来,
+	// 今天剩下的时间按两档取严 —— 剥离与它是两道独立的闸门,不能互相顶替。
 	dayState, err := loadSenderDayState(fromUserId)
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := settings.transferForSenderDay(senderNow.Group, dayState, dayBucket(common.GetTimestamp()))
+	cfg, err := settings.transferForSenderDay(senderGroups, dayState, dayBucket(common.GetTimestamp()))
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +97,7 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 	if err != nil {
 		return nil, err
 	}
-	acc.FromGroup = senderNow.Group
+	acc.FromGroup = senderGroups[0]
 
 	// 分组规则在这里一次性读出并冻结,后面两处判定共用同一份快照。
 	//
@@ -113,9 +123,17 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 	// 配了「每天 1 笔」的 vip 汇集账号转钱,每一笔都按 default 那一档(全站 20)
 	// 放行,而这正是这道闸门存在的唯一理由(见 evaluateRisk)。
 	//
+	// 收款方这一侧同样按**基准用户组**解析,理由比发起方那一侧还硬:不剥离的话,
+	// 攻击者只要给汇集账号买一档 receiver_daily_max_in_count 最松的套餐,
+	// 这道闸门就等于不存在 —— 而它存在的唯一理由就是拦「一堆小号汇集到同一账号」。
+	//
 	// 这一档配坏时 fail-closed(503):拿一份不自洽的门槛去判一笔资金操作,
 	// 比让这一笔失败更糟。
-	receiverCfg, err := settings.transferFor(receiver.Group)
+	receiverGroups, err := baseUserGroups(receiver)
+	if err != nil {
+		return nil, err
+	}
+	receiverCfg, err := settings.transferForBase(receiverGroups)
 	if err != nil {
 		return nil, err
 	}
@@ -187,8 +205,34 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 		// 洗号形状,事后一行都查不到。
 		//
 		// 只在 order != nil 时写:资金单已经落库意味着这是一次被受理并被判定
-		// 失败的真实尝试,行数与资金单一一对应,不会因为参数校验失败被灌爆
-		// 仲裁表(那一类由请求台账 qy_request_audits 覆盖)。
+		// 失败的真实尝试,不会因为参数校验失败被灌爆仲裁表(那一类由请求台账
+		// qy_request_audits 覆盖)。
+		//
+		// ─────────── 幂等重放不写 ───────────
+		//
+		// ErrOrderFailed / ErrInProgress 是**同一个 client_request_id 的重放**
+		// 命中了原单,twophase.Execute 在这两种情况下返回的 order 是**原单**。
+		// 照常写审计的话,trace_no 用的是原单单号,于是:
+		//
+		//   ① 一笔失败单每被重试一次,仲裁表里就多一行 transfer.create/fail ——
+		//      实测同一个 key 连打 8 次落了 8 行,而资金单只有 1 张,
+		//      「行数与资金单一一对应」这句自辩当场不成立;
+		//   ② 更糟的是在飞重放:6 路并发同一个 key,4 路成交返回 ok、2 路撞上
+		//      ErrInProgress 写下 fail —— 同一个单号下同时躺着 result=ok 和
+		//      result=fail「划转被拒」,而这一笔真的成交了。按单号查证时,
+		//      仲裁表给出两条口径相反的记录。
+		//
+		// 而前端的重试就是沿用同一个 client_request_id(transfer-form.tsx 的
+		// requestId 只在打开弹窗与成功之后 renew),所以这不是攻击形态、是正常路径。
+		//
+		// 与 ErrIdemConflict 同一条口径:被拒绝的重放只进 SysError,不进仲裁表。
+		// 原始那一次尝试自己已经留下了一行,重放没有新增任何事实。
+		if errors.Is(execErr, twophase.ErrOrderFailed) || errors.Is(execErr, twophase.ErrInProgress) {
+			common.SysLog("qianye/transfer: 用户 " + strconv.Itoa(acc.FromUserId) +
+				" 重放了同一个 client_request_id,原单 " + orderNoOf(order) +
+				" 的结论原样返回,不重复写审计: " + execErr.Error())
+			return nil, execErr
+		}
 		if order != nil {
 			e := transferCreatedAudit(order, c.GetString("username"))
 			e.Result = qymodel.ResultFail
@@ -198,6 +242,21 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 		return nil, execErr
 	}
 
+	// 成功侧同样不给幂等重放写第二行。
+	//
+	// mainApplied 是精确判据:twophase.resolveExisting 命中一张 success/reversed
+	// 的单时"不再执行任何副作用",MainApply 根本不跑。也就是说 mainApplied==false
+	// 的这条路上,本次调用一分钱都没动、也没产生任何新事实,只是把原单的结论
+	// 复述一遍。照常写审计的话,同一个单号下会堆出 N 行长得一模一样的
+	// transfer.create/ok —— 实测同一个 key 打 4 次落了 4 行,而资金单只有 1 张。
+	//
+	// 与失败侧那条口径一致:仲裁表里一张资金单恰好一行。
+	if !mainApplied {
+		common.SysLog("qianye/transfer: 用户 " + strconv.Itoa(acc.FromUserId) +
+			" 重放了同一个 client_request_id,原单 " + orderNoOf(order) +
+			" 已成交,原样返回且不重复写审计")
+		return buildCreateResponse(order, detail, snap), nil
+	}
 	audit.Write(c, transferCreatedAudit(order, c.GetString("username")))
 	return buildCreateResponse(order, detail, snap), nil
 }
@@ -510,4 +569,12 @@ func truncate(s string, max int) string {
 		max--
 	}
 	return s[:max]
+}
+
+// orderNoOf 是 SysError 里那句单号的取值,order 可能为 nil。
+func orderNoOf(order *qymodel.FundOrder) string {
+	if order == nil {
+		return "(无)"
+	}
+	return order.OrderNo
 }

@@ -277,13 +277,22 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 
 	// record all the consume log even if quota is 0
 	if totalTokens == 0 {
-		// in this case, must be some error happened
-		// we cannot just return, because we may have to return the pre-consumed quota
-		quota = 0
+		// 「上游没返回计费信息就不收钱」这条兜底只对**按量**计费成立:那时没有
+		// token 数就确实算不出金额。按次计费的金额与 token 数严格无关(同一模型
+		// prompt=2 与 prompt=7702 收同一个数),拿 TotalTokens 当开关等于把一次
+		// 已经完成的调用整笔免单 —— 预扣了 ModelPrice、结算全额退回,一分钱收不到,
+		// 而日志上还写着「模型价格 X」。判据与 service/text_quota.go 里那段逐字同源,
+		// 文本路早就修了,音频/实时这两处一直原封不动。
+		if !usePrice {
+			quota = 0
+		}
 		logContent += "（可能是上游超时）"
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, "+
 			"tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, modelName, relayInfo.FinalPreConsumedQuota))
-	} else {
+	}
+	// totalTokens>0 时按原样记账;totalTokens==0 而按次定价时金额仍然是全额,
+	// 同样必须记 —— 否则这笔钱扣了却不进 used_quota 与请求计数。
+	if totalTokens > 0 || quota > 0 {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
@@ -402,8 +411,24 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		ModelRatio: modelRatio,
 		GroupRatio: groupRatio,
 	}
+	// 上游放在 completion_tokens **之外**的思考 token 也要计费。
+	//
+	// 这条口径在本仓是既定的:文本路走 reasoningTokensOutsideCompletion
+	// (service/text_quota.go)、阶梯路走 BuildTieredTokenParams,唯独音频这条路
+	// 一次都不调,直接拿 usage.CompletionTokens 去做归一化。实测同一次推理的
+	// 两种上报写法({p:100, c:1, reasoning:53, total:154} 与
+	// {p:100, c:54, reasoning:53, total:154})在文本路收同一个数,在音频路差 30%
+	// —— 少收的比例等于 reasoning ÷ completion,思考型语音模型上可以很大。
+	//
+	// 补进去的位置必须在 normalizeAudioTokenDetails **之前**:那个函数拿
+	// 「总数 − 音频」去兜底文本 token,而 reasoning 落在 completion 之外时,
+	// 它拿到的那个"总数"本身就是缺的那个数,兜底只能兜到 1。
+	//
+	// 判据本身只认一种确凿形状(三个数字互相印证),细节见
+	// reasoningTokensOutsideCompletion 的说明 —— 宁可继续少收,也不能靠猜多收。
+	completionTokens := usage.CompletionTokens + reasoningTokensOutsideCompletion(usage)
 	quotaInfo.InputDetails = normalizeAudioTokenDetails(usage.PromptTokens, quotaInfo.InputDetails)
-	quotaInfo.OutputDetails = normalizeAudioTokenDetails(usage.CompletionTokens, quotaInfo.OutputDetails)
+	quotaInfo.OutputDetails = normalizeAudioTokenDetails(completionTokens, quotaInfo.OutputDetails)
 
 	quota, clamp := calculateAudioQuota(quotaInfo)
 	noteQuotaClamp(relayInfo, clamp)
@@ -422,13 +447,20 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 
 	// record all the consume log even if quota is 0
 	if totalTokens == 0 {
-		// in this case, must be some error happened
-		// we cannot just return, because we may have to return the pre-consumed quota
-		quota = 0
+		// 判据与 PostWssConsumeQuota 里那段逐字同源:「上游没返回计费信息就不收钱」
+		// 只对按量计费成立。按次计费在这里被整笔免单过 —— 实测同一份 usage
+		// (prompt 100 / completion 50 / audio 明细齐全 / total_tokens 0)打到一个
+		// 按次定价的音频模型上,HTTP 200 拿到回答而扣 0;把 total_tokens 改回 150
+		// 就正常收 375000。上游把 token 明细报全了却漏报 total_tokens,是二手中转站
+		// 与自建 OpenAI 兼容服务里常见的形状。
+		if !usePrice {
+			quota = 0
+		}
 		logContent += "（可能是上游超时）"
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, "+
 			"tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, relayInfo.OriginModelName, relayInfo.FinalPreConsumedQuota))
-	} else {
+	}
+	if totalTokens > 0 || quota > 0 {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}

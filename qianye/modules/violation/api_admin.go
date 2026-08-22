@@ -417,12 +417,43 @@ func adminDeleteRule(c *gin.Context) {
 		badRequest(c, "非法的规则 id")
 		return
 	}
-	// 软删:历史记录的 rule_id 指向这里,硬删会让申诉复核失去规则上下文。
-	if err := db.Get().Where("id = ?", id).Delete(&Rule{}).Error; err != nil {
+	// 先读出整行再删。
+	//
+	// 两件事都要靠它:
+	//
+	//	① 目标不存在时必须 404,而不是 200 + 一条 result=ok 的审计。此前这里
+	//	   直接 Delete 且不看 RowsAffected —— 管理员打错一个 id 会得到"删除成功",
+	//	   而事故复盘时读的就是那张审计表,里面躺着一条"root 于某时删除了规则
+	//	   999999999"这种从未发生过的记录。同一资源的兄弟动词口径还是反的:
+	//	   PUT 同一个不存在的 id 回 404 qy_vio_not_found。
+	//	② before_snap 必须带着被删掉那一行的**内容**。afterRuleChange 收到的
+	//	   一直是 `&Rule{Id: id}`,于是真删、重复删、目标不存在三者的审计行
+	//	   逐字段相同(before 空、after 是一条只有 id 的全零规则),连规则名都
+	//	   没有 —— 这张表对"删掉的是什么"携带的信息量是零,而它是事后仲裁的
+	//	   唯一凭据。同一模块的 group_limit.delete 就是这么做的。
+	var row Rule
+	if err := db.Get().Where("id = ?", id).Take(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			notFound(c)
+			return
+		}
 		internalError(c, err)
 		return
 	}
-	afterRuleChange(c, "rules.delete", &Rule{Id: id}, "")
+	before := ruleSnapshot(&row)
+	// 软删:历史记录的 rule_id 指向这里,硬删会让申诉复核失去规则上下文。
+	res := db.Get().Where("id = ?", id).Delete(&Rule{})
+	if res.Error != nil {
+		internalError(c, res.Error)
+		return
+	}
+	if res.RowsAffected == 0 {
+		// 读出来到删之间被别人删掉了。这是一次没有发生的删除,不该留下
+		// 一条 result=ok 的记录。
+		notFound(c)
+		return
+	}
+	afterRuleChange(c, "rules.delete", &row, before)
 	respond(c, gin.H{})
 }
 
@@ -444,14 +475,26 @@ func afterRuleChange(c *gin.Context, action string, row *Rule, before string) {
 		ActorName:   c.GetString("username"),
 		TraceNo:     fmt.Sprintf("rule:%d", row.Id),
 		BeforeSnap:  before,
-		AfterSnap: common.MapToJsonStr(map[string]any{
-			"id": row.Id, "name": row.Name, "enabled": row.Enabled,
-			"phase": row.Phase, "action": row.Action, "fee_mode": row.FeeMode,
-			// mode 是本模块唯一决定"要不要真的扣钱/封号"的开关,
-			// 把它改成 enforce 是这一页最重的一个动作,必须在审计里看得见。
-			"mode": row.Mode, "source": row.Source, "builtin_key": row.BuiltinKey,
-			"pattern": truncate(row.Pattern, 1024),
-		}),
+		AfterSnap:   ruleSnapshot(row),
+	})
+}
+
+// ruleSnapshot 是规则行进审计快照的唯一口径,before 与 after 共用。
+//
+// 共用一个函数不是为了省行数:删除那一支的 before 与 after 必须能被并排读,
+// 两边各写一份字段清单,迟早有一边少一列 —— 而少的那一列恰恰是事后想查的。
+//
+// mode 是本模块唯一决定"要不要真的扣钱/封号"的开关,把它改成 enforce 是这一页
+// 最重的一个动作,必须在审计里看得见。
+func ruleSnapshot(row *Rule) string {
+	if row == nil {
+		return ""
+	}
+	return common.MapToJsonStr(map[string]any{
+		"id": row.Id, "name": row.Name, "enabled": row.Enabled,
+		"phase": row.Phase, "action": row.Action, "fee_mode": row.FeeMode,
+		"mode": row.Mode, "source": row.Source, "builtin_key": row.BuiltinKey,
+		"pattern": truncate(row.Pattern, 1024),
 	})
 }
 
@@ -1328,7 +1371,9 @@ func adminUnban(c *gin.Context) {
 	}
 
 	if err := unbanUser(c, userId, req.Note, req.ResetCounter, c.GetInt("id")); err != nil {
-		internalError(c, err)
+		// 「没有待解除的封禁」与「状态正在变化」不是服务端故障,也不该说
+		// 「请稍后重试」—— 前者重试永远不会成功。见 respondUnbanError。
+		respondUnbanError(c, err)
 		return
 	}
 	respond(c, gin.H{})
@@ -1394,7 +1439,9 @@ func claimUnban(gdb *gorm.DB, userId int, note string, operatorId int) (*Ban, er
 			Order("id desc").Take(&ban).Error
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, fmt.Errorf("该用户没有待解除的违规封禁")
+				// 哨兵错误而不是新造一个字符串:调用方要按它决定回 409 还是 500,
+				// 而按文案匹配的判据会在下一次改文案时静默失效。
+				return nil, errNoPendingBan
 			}
 			return nil, err
 		}
@@ -1414,7 +1461,7 @@ func claimUnban(gdb *gorm.DB, userId int, note string, operatorId int) (*Ban, er
 		}
 	}
 	// 连续三轮都被别的路径抢先改写。宁可让管理员重试,也不能猜一个状态往下走。
-	return nil, fmt.Errorf("该用户的封禁状态正在变化中,请稍后重试")
+	return nil, errBanStatusChurning
 }
 
 // ───────────────────────────── 申诉 ─────────────────────────────

@@ -112,6 +112,10 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_transfer_failed: 'qy_err_transfer_failed',
   // 分组限制（qianye/modules/transfer/grouprule.go）。两个 code 必须映射到
   // 两句不同的话：blocked 是「换谁都不行」，denied 是「换个收款人也许就行」。
+  // 基准用户组读不到时的失败关闭（qianye/modules/transfer/basegroup.go）。
+  // 划转门槛按剥掉套餐之后的用户组解析，那一步读不到就整笔拒绝 —— 这是
+  // 「宁少勿多」在读取失败方向上的落点，重试有意义，所以文案要说“稍后再试”。
+  qy_transfer_base_group_unavailable: 'qy_err_transfer_base_group',
   qy_transfer_group_blocked: 'qy_err_transfer_group_blocked',
   qy_transfer_group_denied: 'qy_err_transfer_group_denied',
   // 划转联系人（qianye/modules/transfer/contacts.go）。
@@ -375,6 +379,19 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_delete_evidence_broken: 'qy_lot_err_delete_evidence_broken',
   qy_lot_delete_confirm: 'qy_lot_err_delete_confirm',
   qy_lot_delete_audit_off: 'qy_lot_err_delete_audit_off',
+  // 草稿那一支换成三条正向断言（不许有参与明细 / 出款 / 承诺痕迹），共用一个
+  // code。它们在库结构正常时一条都不可能成立，所以它要求运营做的下一步只有
+  // 一个：去查这份草稿上为什么会有那些行，而不是重试。
+  qy_lot_delete_draft_dirty: 'qy_lot_err_delete_draft_dirty',
+  // 改草稿被拒。**不能塌进 qy_lot_status_conflict**：那句话是"刷新一下再试"，
+  // 而这里的真相是"发布之后这件事从此不可能做到"。塌进去的表现是运营反复
+  // 刷新、反复重试一件永远不会成功的事。
+  qy_lot_update_not_draft: 'qy_lot_err_update_not_draft',
+  qy_lot_cancel_draft: 'qy_lot_err_cancel_draft',
+  // 违规解封:409 走 kind='conflict',共享层不会透出后端原文,
+  // 不登记就会退化成通用的「操作冲突」—— 而这两档要求运营做的下一步完全相反。
+  qy_vio_no_pending_ban: 'qy_vio_err_no_pending_ban',
+  qy_vio_ban_churning: 'qy_vio_err_ban_churning',
   // 下架（「关闭」）。not_finished 与另外两个的处置完全不同：前者是"这一场还没
   // 结束，你要的其实是取消"，后两个只是刷新一下就好。
   qy_lot_hide_not_finished: 'qy_lot_err_hide_not_finished',

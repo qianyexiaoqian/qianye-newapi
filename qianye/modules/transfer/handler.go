@@ -270,24 +270,6 @@ func handleGetLimits(c *gin.Context) {
 		return
 	}
 
-	// 主库用户行必须在算门槛**之前**读:门槛已经可以按用户分组分档(见
-	// grouplimit.go),而这一页回显的必须是提交时真正会生效的那一档 ——
-	// 回显全站兜底会让 vip 看到一个「还能转 100 万」、提交时按自己那一档被拒。
-	//
-	// 读不到时(主库抖动)退回全站兜底并继续渲染:这一页的其余部分(剩余额度、
-	// 冷却)仍然有用,整页报错反而让用户什么都看不到。分档配置本身读不到时
-	// 不在这一支里 —— 那由 effectiveCtx 直接拒掉。
-	user, userErr := model.GetUserById(me, false)
-	cfg := settings.Transfer
-	if userErr == nil {
-		tiered, tierErr := settings.transferFor(user.Group)
-		if tierErr != nil {
-			respondErr(c, tierErr)
-			return
-		}
-		cfg = tiered
-	}
-
 	var state UserState
 	// 从未参与过划转的用户没有状态行,那不是错误,零值就是正确答案。
 	if err := db.Get().WithContext(ctx).Where("user_id = ?", me).First(&state).Error; err != nil &&
@@ -296,7 +278,34 @@ func handleGetLimits(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	rollDay(&state, dayBucket(now))
+	bucket := dayBucket(now)
+	rollDay(&state, bucket)
+
+	// 主库用户行必须在算门槛**之前**读:门槛已经可以按用户分组分档(见
+	// grouplimit.go),而这一页回显的必须是提交时真正会生效的那一档 ——
+	// 回显全站兜底会让 vip 看到一个「还能转 100 万」、提交时按自己那一档被拒。
+	//
+	// 分档按**基准用户组**解析、并且要过 transferForSenderDay 的当日取严,
+	// 两处都必须与 create() 逐字一致:少一处,这一页就会回显一个用户根本用不到的
+	// 上限,而"界面说能转、提交说不能"是用户唯一能看到的症状。
+	//
+	// 读不到时(主库抖动)退回全站兜底并继续渲染:这一页的其余部分(剩余额度、
+	// 冷却)仍然有用,整页报错反而让用户什么都看不到。基准用户组读不到时**只让
+	// 门槛这一段**退回全站兜底,余额与分组提示照常渲染 —— 回显宽一点只是显示
+	// 问题,资金路径那一侧仍然失败关闭(见 create)。
+	// 分档配置本身读不到不在这一支里 —— 那由 effectiveCtx 直接拒掉。
+	user, userErr := model.GetUserById(me, false)
+	cfg := settings.Transfer
+	if userErr == nil {
+		if baseGroups, baseErr := baseUserGroups(user); baseErr == nil {
+			tiered, tierErr := settings.transferForSenderDay(baseGroups, &state, bucket)
+			if tierErr != nil {
+				respondErr(c, tierErr)
+				return
+			}
+			cfg = tiered
+		}
+	}
 
 	resp := limitsResponse{
 		MinQuota:        cfg.MinQuota,

@@ -40,6 +40,14 @@ func badRequest(c *gin.Context, code, msg string) {
 	c.JSON(http.StatusBadRequest, gin.H{"success": false, "code": code, "message": msg})
 }
 
+// notFound 是「目标不存在」。与 badRequest 分开是因为调用方要做的事不同:
+// 400 是你填的东西不合法,404 是你指的那个东西不在这儿 —— 后者最要紧的
+// 后果是**不能返回 200**,否则管理员打错一个名字会看到删除成功,
+// 而事故复盘读的那张审计表里会躺着一条与真实删除长得一样的记录。
+func notFound(c *gin.Context, code, msg string) {
+	c.JSON(http.StatusNotFound, gin.H{"success": false, "code": code, "message": msg})
+}
+
 // requireDefaultResolve 是**写接口专用**的第二道准入:模块本身开着吗?
 //
 // guard.RequireAPI(FlagCore) 判的是"整个扩展开不开",与 group_namespace 这一段

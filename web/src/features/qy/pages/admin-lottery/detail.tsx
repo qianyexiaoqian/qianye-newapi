@@ -45,10 +45,16 @@ import {
 } from '../lottery/lib/display'
 import { QY_EMPTY_TEXT, formatQyTs } from '../ops/format'
 import { QyKeyValue } from '../ops/qy-ops-ui'
-import { qyAdminLotActivityQuery, unhideQyLotActivity } from './api'
+import {
+  qyAdminLotActivityQuery,
+  qyAdminLotConfigQuery,
+  unhideQyLotActivity,
+} from './api'
 import { QyLotCancelDialog } from './components/lottery-cancel-dialog'
 import { QyLotCoverDialog } from './components/lottery-cover-dialog'
+import { QyLotActivityWizard } from './components/lottery-create-wizard'
 import { QyLotDeleteDialog } from './components/lottery-delete-dialog'
+import { QyLotDraftDeleteDialog } from './components/lottery-draft-delete-dialog'
 import { QyLotEntriesTab } from './components/lottery-entries-tab'
 import { QyLotEventsTab } from './components/lottery-events-tab'
 import { QyLotFulfillQueueTab } from './components/lottery-fulfill-queue-tab'
@@ -56,6 +62,7 @@ import { QyLotGuessResultDialog } from './components/lottery-guess-result-dialog
 import { QyLotHideDialog } from './components/lottery-hide-dialog'
 import { QyLotPayoutsTab } from './components/lottery-payouts-tab'
 import { QyLotPublishDialog } from './components/lottery-publish-dialog'
+import { qyLotDraftFromActivity } from './lib/draft'
 
 /**
  * 活动详情（管理端）。
@@ -76,6 +83,8 @@ export function QyAdminLotteryDetail() {
     from: '/_authenticated/qy/admin/lottery/$actNo/',
   })
 
+  const [editOpen, setEditOpen] = useState(false)
+  const [draftDeleteOpen, setDraftDeleteOpen] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
   const [cancelOpen, setCancelOpen] = useState(false)
   const [coverOpen, setCoverOpen] = useState(false)
@@ -85,6 +94,12 @@ export function QyAdminLotteryDetail() {
 
   const queryClient = useQueryClient()
   const query = useQuery(qyAdminLotActivityQuery(actNo))
+  // 编辑向导要的运营参数（奖品总额上限、手续费上限、默认费率、只读 YAML）
+  // 与创建向导是同一份。只在真的要改草稿时才拉：它是一张冷路径的配置表。
+  const configQuery = useQuery({
+    ...qyAdminLotConfigQuery(),
+    enabled: editOpen,
+  })
   /*
     重新上架不配弹窗：它没有任何代价 —— 不动钱、不改状态机、只是把这一场放回
     活动大厅。给一个没有代价的动作套一层确认，只会训练运营对确认框整体失去
@@ -111,11 +126,36 @@ export function QyAdminLotteryDetail() {
     (prize) => prize.prize_type === 'text'
   )
 
-  const canPublish = activity?.status === 'draft'
-  // 取消在**终态之前**都允许：进行中要止损、封盘后发现条件写错了同样要止损。
-  // 已 finished 的场次不可再动 —— 那时钱已经发完了。
+  const isDraft = activity?.status === 'draft'
+  const canPublish = isDraft
+  /*
+    草稿的「编辑」与「删除」。
+
+    项目方原话：「草稿活动为什么改不了删不了，你弄一下，超级管理员拥有最高
+    权限的。」两条都不是权限问题：改草稿的 PUT 接口一直都在，只是**从来没有
+    前端调用方**；删草稿被 checkActivityDeletable 的第一道闸门挡着，而那六道
+    闸门回答的全是「这一场结束了，但它还欠着谁什么吗」—— 草稿一条都不适用。
+
+    唯一的处置路径此前是「整场取消」：它会把草稿推进 settling、写一条要对
+    参与者公示的取消理由、留下一场 outcome=cancelled 的空活动。对一份写错了
+    参与费、还没有任何人见过的草稿来说，那是个荒谬的仪式。
+  */
+  const canEditDraft = isDraft
+  /*
+    取消在**终态之前**都允许：进行中要止损、封盘后发现条件写错了同样要止损。
+    已 finished 的场次不可再动 —— 那时钱已经发完了。
+
+    草稿**除外**（后端同时也拒，见 errCancelDraft）。取消曾经是草稿唯一的处置
+    路径，现在「编辑草稿」「删除草稿」都有了，它留在草稿上只剩伤害：一份从没
+    对任何人公布过的活动被取消之后会变成 finished/cancelled，于是永久出现在
+    用户端大厅的「已结束」里、匿名证据链开始下发它的规则原文与**随机种子**
+    （而 commit_hash 恒为空串，第三方按它验一次必然 FAIL），而且它从此不再是
+    草稿、零仪式的草稿删除对它失效。换来的止损是零：草稿上不可能有参与、
+    不可能有扣款、没有任何要退的钱。
+  */
   const canCancel =
     activity != null &&
+    !isDraft &&
     activity.status !== 'finished' &&
     activity.outcome === ''
   // 「下架」与「删除」都只对已结束的场次开放，而且两者都**不动钱** ——
@@ -186,6 +226,11 @@ export function QyAdminLotteryDetail() {
             {t('qy_lot_cover_change')}
           </Button>
         )}
+        {canEditDraft && (
+          <Button size='sm' variant='outline' onClick={() => setEditOpen(true)}>
+            {t('qy_lot_edit_title')}
+          </Button>
+        )}
         {canPublish && (
           <Button size='sm' onClick={() => setPublishOpen(true)}>
             {t('qy_lot_publish_title')}
@@ -236,6 +281,19 @@ export function QyAdminLotteryDetail() {
             onClick={() => setDeleteOpen(true)}
           >
             {t('qy_lot_delete_title')}
+          </Button>
+        )}
+        {/* 草稿的删除**刻意不复用**上面那个按钮与那个弹窗：两者的代价差着一整条
+            证据链，而分辨它们的唯一依据就是弹窗里那几句话。共用一个入口意味着
+            要么给草稿套上"请原样敲一遍活动编号"，要么把已结束场次的四条代价
+            一起降级 —— 两个方向都错。 */}
+        {canEditDraft && (
+          <Button
+            size='sm'
+            variant='destructive'
+            onClick={() => setDraftDeleteOpen(true)}
+          >
+            {t('qy_lot_draft_delete_title')}
           </Button>
         )}
       </QySectionPageLayout.Actions>
@@ -556,6 +614,27 @@ export function QyAdminLotteryDetail() {
             activity={activity}
             open={deleteOpen}
             onOpenChange={setDeleteOpen}
+          />
+          <QyLotDraftDeleteDialog
+            activity={activity}
+            open={draftDeleteOpen}
+            onOpenChange={setDraftDeleteOpen}
+          />
+          {/* 编辑向导拿的是**这一页刚拉到的那份快照**整份重建的草稿，
+              而不是自己再拉一次：两次请求会让"表单里的值"与"页面上显示的值"
+              来自两个不同的时刻，而 PUT 是整体替换语义。 */}
+          <QyLotActivityWizard
+            open={editOpen}
+            onOpenChange={setEditOpen}
+            config={configQuery.data}
+            edit={{
+              actNo: activity.act_no,
+              draft: qyLotDraftFromActivity(
+                activity,
+                view?.prizes ?? [],
+                view?.options ?? []
+              ),
+            }}
           />
         </>
       )}

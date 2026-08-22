@@ -119,20 +119,20 @@ func TestTierOfTodayKeepsApplyingAfterAMidDayGroupChange(t *testing.T) {
 	)
 
 	t.Run("今天还没转出过:直接按新档,那是他买到的东西", func(t *testing.T) {
-		cfg, err := settings.transferForSenderDay("hi", &UserState{DayBucket: bucket}, bucket)
+		cfg, err := settings.transferForSenderDay([]string{"hi"}, &UserState{DayBucket: bucket}, bucket)
 		require.NoError(t, err)
 		assert.Zero(t, cfg.MaxPerTxQuota)
 		assert.Zero(t, cfg.DailyMaxCount)
 	})
 
 	t.Run("状态行还不存在:同上", func(t *testing.T) {
-		cfg, err := settings.transferForSenderDay("hi", nil, bucket)
+		cfg, err := settings.transferForSenderDay([]string{"hi"}, nil, bucket)
 		require.NoError(t, err)
 		assert.Zero(t, cfg.MaxPerTxQuota)
 	})
 
 	t.Run("今天在紧档下转过账、现在换到松档:今天继续按紧档取严", func(t *testing.T) {
-		cfg, err := settings.transferForSenderDay("hi", &UserState{
+		cfg, err := settings.transferForSenderDay([]string{"hi"}, &UserState{
 			DayBucket: bucket, DayOutGroup: "lo", DayOutCount: 2, DayOutQuota: 10_000,
 		}, bucket)
 		require.NoError(t, err)
@@ -143,7 +143,7 @@ func TestTierOfTodayKeepsApplyingAfterAMidDayGroupChange(t *testing.T) {
 	})
 
 	t.Run("方向反过来:今天在松档下转过账、现在掉进紧档 —— 立刻按紧档", func(t *testing.T) {
-		cfg, err := settings.transferForSenderDay("lo", &UserState{
+		cfg, err := settings.transferForSenderDay([]string{"lo"}, &UserState{
 			DayBucket: bucket, DayOutGroup: "hi", DayOutCount: 1,
 		}, bucket)
 		require.NoError(t, err)
@@ -152,7 +152,7 @@ func TestTierOfTodayKeepsApplyingAfterAMidDayGroupChange(t *testing.T) {
 	})
 
 	t.Run("跨日之后重新开始:昨天那一档不再压着他", func(t *testing.T) {
-		cfg, err := settings.transferForSenderDay("hi", &UserState{
+		cfg, err := settings.transferForSenderDay([]string{"hi"}, &UserState{
 			DayBucket: bucket - 1, DayOutGroup: "lo", DayOutCount: 2,
 		}, bucket)
 		require.NoError(t, err)
@@ -163,7 +163,7 @@ func TestTierOfTodayKeepsApplyingAfterAMidDayGroupChange(t *testing.T) {
 	t.Run("没换档:与 transferFor 逐位相同", func(t *testing.T) {
 		want, err := settings.transferFor("lo")
 		require.NoError(t, err)
-		got, err := settings.transferForSenderDay("lo", &UserState{
+		got, err := settings.transferForSenderDay([]string{"lo"}, &UserState{
 			DayBucket: bucket, DayOutGroup: "lo", DayOutCount: 1,
 		}, bucket)
 		require.NoError(t, err)

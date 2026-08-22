@@ -720,4 +720,16 @@ const (
 	// 于是扩展库单表的一次 UPDATE 就能变成主库净增发,而取消恰恰是"出事之后的
 	// 止损动作"。现在按资金单的金额出款,并在两者不等时留这条异常。
 	FlagRefundDrift = "refund_drift"
+	// FlagPayoutOrphan 是"一条出款指不到任何参与明细"。
+	//
+	// 代码里造不出这种行(四个 PlanPayouts 调用方的 EntryId 全部取自刚读出来的
+	// roster,开奖与竞猜结算在反查不到时硬回滚整事务;删活动时 payout 与 entry
+	// 同事务按 act_id 一起清),所以它只可能来自直接改库。而这套 commit-reveal
+	// 从一开始就声明:有数据库写权限的人能改掉任何东西,协议保证的是**不可抵赖地
+	// 被检出**。这条异常就是那个"被检出"。
+	//
+	// 它必须存在的理由:此前 fillProofOutcome 拿 map 零值兜底,于是这条出款会在
+	// 公开证据链里变成一位 entry_no='' 的中奖者,第三方按种子重算当场判 FAIL,
+	// 而平台这一侧没有任何一处告警 —— 恰恰是"平台确实有问题"的那一刻最安静。
+	FlagPayoutOrphan = "payout_orphan"
 )

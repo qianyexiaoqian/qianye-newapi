@@ -176,3 +176,117 @@ func TestSmokeTestVectorsCoverSkewAndEverySubCategory(t *testing.T) {
 		assert.Truef(t, dominant[name], "缺少「%s 远大于 P/C」的向量,减去这一项的表达式会漏网", name)
 	}
 }
+
+// TestSmokeTestCatchesNegativesHiddenInsideABranch 是这道闸门的第二次补齐。
+//
+// 上一次补的是**向量的失衡**(P/C 对比、子类顶到极值)。这一次补的是**分档**:
+// 运营写的表达式自己带阈值,而烟测原本的取值集合是固定的五个点
+// {0, 1, 1e3, 1e5, 1e6} —— 落在那五个点之外的每一个档,以及每一个靠
+// param()/header() 分出来的档,都不会被评估到一次。
+//
+// 两条实测落库过的表达式:
+//
+//	A（len 分档）"len <= 2000 ? std : (len <= 50000 ? mid : big)"
+//	  五个点全部落进 std 与 big,中间那一档一次都没跑到。落库之后:命中 mid
+//	  且 token 少时 raw 为负、被地板夹成 0 —— **静默零收入**,而同一个模型在
+//	  另外两档收费完全正常,从管理端根本看不出这个模型有一段是免费的;
+//	  预扣侧命中 mid 时则是 400「pre-consume quota cannot be negative」,
+//	  整条模型对那个 token 区间不可用。
+//
+//	B（param 分档）'param("stream") == true ? s : n'
+//	  烟测原本那两条请求体里根本没有 stream 字段,于是流式那一档从来不评估。
+//	  落库之后**任何流式客户端**打这个模型都 400 —— 这一档由客户端说了算。
+//
+// 「保存时校验非负」这条承诺,在分档表达式上原本只覆盖了运营碰巧写在那五个点
+// 附近的那些档。
+func TestSmokeTestCatchesNegativesHiddenInsideABranch(t *testing.T) {
+	cases := []struct {
+		name    string
+		expr    string
+		wantErr bool
+	}{
+		{
+			name:    "中间那一档为负(len 分档)",
+			expr:    `len <= 2000 ? tier("std", p*3 + c*15) : (len <= 50000 ? tier("mid", p*3 + c*15 - 20000) : tier("big", p*6 + c*30))`,
+			wantErr: true,
+		},
+		{
+			name:    "最高那一档为负",
+			expr:    `len <= 128000 ? tier("lo", p*3 + c*15) : tier("hi", p*3 + c*15 - 999999)`,
+			wantErr: true,
+		},
+		{
+			name:    "刚好越过阈值一格才为负",
+			expr:    `len < 4096 ? tier("small", p*3) : tier("big", p*3 - 100000)`,
+			wantErr: true,
+		},
+		{
+			// 一条**窄带**为负:两个阈值都是开区间,阈值点本身落在好的那一档上。
+			// 只在字面量上取一个点是踩不到它的 —— 必须在 v-1 / v+1 上也各取一次。
+			// 这种形状不是构造出来的:「某个 token 区间打折」写出来就长这样,
+			// 而它落库之后正好是那个区间里的请求静默零收入。
+			name:    "只有阈值旁边一格才为负的窄带",
+			expr:    `len > 2000 && len < 2100 ? tier("band", 0 - p) : tier("ok", p*3)`,
+			wantErr: true,
+		},
+		{
+			name:    "流式那一档为负(param 探针)",
+			expr:    `param("stream") == true ? tier("s", p*3 + c*15 - 50000) : tier("n", p*3 + c*15)`,
+			wantErr: true,
+		},
+		{
+			name:    "非流式那一档为负(反向,证明两侧都跑到)",
+			expr:    `param("stream") == true ? tier("s", p*3 + c*15) : tier("n", p*3 + c*15 - 50000)`,
+			wantErr: true,
+		},
+		{
+			name:    "按请求头分档,命中那一档为负",
+			expr:    `header("x-fast") != "" ? tier("fast", p*3 - 90000) : tier("std", p*3)`,
+			wantErr: true,
+		},
+		{
+			name:    "按 c 分档,中间档为负(不是只有 len 会分档)",
+			expr:    `c <= 512 ? tier("a", p*3 + c*15) : (c <= 8192 ? tier("b", p*3 + c*15 - 70000) : tier("c", p*6 + c*30))`,
+			wantErr: true,
+		},
+
+		// 正常的分档表达式一条都不许被误伤 —— 它们是这个功能存在的理由。
+		{
+			name: "三档全正:通过",
+			expr: `len <= 2000 ? tier("std", p*3 + c*15) : (len <= 50000 ? tier("mid", p*4 + c*20) : tier("big", p*6 + c*30))`,
+		},
+		{
+			name: "流式加价:通过",
+			expr: `param("stream") == true ? tier("s", p*3.3 + c*16.5) : tier("n", p*3 + c*15)`,
+		},
+		{
+			name: "请求头加价 + 常数起步价:通过",
+			expr: `header("anthropic-beta") != "" ? tier("fast", 500 + p*6) : tier("std", 500 + p*3)`,
+		},
+		{
+			name: "阈值上带小数:通过",
+			expr: `len <= 1024.5 ? tier("a", p*3) : tier("b", p*6)`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := SmokeTestExpr(tc.expr)
+			if tc.wantErr {
+				require.Error(t, err, "这条表达式有一整档是负的,不能落库")
+				return
+			}
+			require.NoError(t, err, "正常的分档定价被误伤了")
+		})
+	}
+}
+
+// TestBoundaryValuesIgnoreDigitsInsideIdentifiers 守阈值提取的一个具体坑。
+//
+// 变量名里有 cc1h / img_o,直接 `\d+` 会把 cc1h 里的 1 当成阈值。多提一个 1
+// 本身无害(只是多跑几条向量),但它说明这条正则没有对齐标识符边界 —— 那时
+// `p3` 这类将来可能出现的变量名会被拆出一个假阈值,而真正的阈值可能被吞掉。
+func TestBoundaryValuesIgnoreDigitsInsideIdentifiers(t *testing.T) {
+	got := exprBoundaryValues(`cc1h * 6 + img_o * 2 + tier("t", p * 3 - 20000)`)
+	assert.Equal(t, []float64{2, 3, 6, 20000}, got,
+		"cc1h 里的 1 不是阈值;而 6 / 2 / 3 / 20000 是真的字面量")
+}

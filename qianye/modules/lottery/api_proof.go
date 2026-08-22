@@ -3,6 +3,7 @@ package lottery
 import (
 	"context"
 	"net/http"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
@@ -418,7 +419,35 @@ func fillProofOutcome(ctx context.Context, gdb *gorm.DB, act *Activity, doc *pro
 	}
 
 	for _, p := range payouts {
-		e := byId[p.EntryId]
+		e, ok := byId[p.EntryId]
+		if !ok {
+			// 一条出款指不到任何参与明细。
+			//
+			// 代码里造不出这种行(四个 PlanPayouts 调用方的 EntryId 全部取自
+			// 刚读出来的 roster,开奖与竞猜结算两处在反查不到时硬回滚整事务;
+			// 删活动时 payout 与 entry 同事务按 act_id 一起清),所以它只可能
+			// 来自直接改库 —— 而这套 commit-reveal 从一开始就声明「有数据库写
+			// 权限的人能改掉任何东西,协议保证的是**不可抵赖地被检出**」。
+			//
+			// 此前这里走的是 `e := byId[p.EntryId]`,map 取不到就拿到 Entry 零值,
+			// 于是这条出款会在**公开证据链**里变成一位 entry_no='' / user_ref=''
+			// 的中奖者,照常带着金额和 tier。备份库实测:活动
+			// LT20260810-ab1f9f74c67f5452 的公开 proof 里就多了这么一位
+			// (amount=3333),第三方按种子重算只会得到 4 位,当场判 FAIL ——
+			// 而那正是"平台确实有问题"的时刻,却没有任何一处告警。
+			//
+			// 现在:落一条对账异常(管理端看得见、且它会挡住这一场被删掉),
+			// 并且**不把这条出款写进 winners** —— 一位空 entry_no 的中奖者在
+			// 公开文档里既证明不了什么,也无法被任何人核对。它仍然进 payouts
+			// (那是"平台实际付了哪些钱"的如实记账,不能瞒),但 entry_no 留空
+			// 本身就是它对不上账的证据。
+			raiseFlag(ctx, act.Id, FlagPayoutOrphan,
+				"出款 "+p.PayoutNo+" 指向的参与明细 id="+strconv.FormatInt(p.EntryId, 10)+" 不存在")
+			doc.Payouts = append(doc.Payouts, proofPayout{
+				Kind: p.Kind, Amount: p.AmountQuota, Status: p.Status,
+			})
+			continue
+		}
 		doc.Payouts = append(doc.Payouts, proofPayout{
 			EntryNo: e.EntryNo, Kind: p.Kind, Amount: p.AmountQuota, Status: p.Status,
 		})

@@ -135,6 +135,35 @@ var (
 var (
 	errStatusConflict = newBizError(http.StatusConflict, "qy_lot_status_conflict",
 		"活动状态已变化,请刷新后重试")
+	// errUpdateNotDraft 与 errStatusConflict 分开,理由与删除那八个 code 分开
+	// 是同一条:两句话要求运营做的下一步完全不同。「状态已变化」在说"刷新一下
+	// 再试",而这一条在说"这件事从此不可能做到了,封面之外一个字都改不了" ——
+	// 塌成前者的表现是运营反复刷新、反复重试一件永远不会成功的事。
+	errUpdateNotDraft = newBizError(http.StatusConflict, "qy_lot_update_not_draft",
+		"只有草稿能改:发布那一刻参与条件、奖档、选项、四个时刻与费率全部进了 commit_hash,"+
+			"改任何一项都会让已经公开的承诺变成谎言。唯一的例外是封面(它不进任何哈希原像),"+
+			"走「换封面」;要改别的只能整场取消后重开一场")
+	// errCancelDraft:草稿不能被「整场取消」。
+	//
+	// 取消原本是草稿唯一的处置路径(那时既不能改也不能删),现在两条都有了,
+	// 而它留在草稿上是纯粹的伤害:一份从没对外公布过的活动被 cancel 之后会
+	// status=finished / outcome=cancelled,于是
+	//
+	//   ① 永久出现在用户端大厅的「已结束」里 —— 大厅口径是 `status <> 'draft'`,
+	//      状态一旦离开 draft 就再没有第二道判据;
+	//   ② 匿名证据链端点开始下发它的 rules_text、spec_hash 与**随机种子**
+	//      (seedShouldBeRevealed 只看 settling/finished),而 commit_hash 恒为
+	//      空串 —— 产出一份"公开了种子、却从来没有过任何承诺"的记录,
+	//      自带的 lottery-verify.py 当场判 FAIL;
+	//   ③ 它从此不再是草稿,零仪式的草稿删除对它失效,运营被迫改走
+	//      「原样回填活动编号 + 必填理由 + 六道闸门」那一档。
+	//
+	// 而这三件事换来的是零 —— 草稿上不可能有任何参与、任何出款、任何要退的钱
+	// (报名的原子 UPDATE 带着 status='published'),取消对它没有任何止损作用。
+	errCancelDraft = newBizError(http.StatusConflict, "qy_lot_cancel_draft",
+		"草稿不用取消:它还没有对任何人公布过,没有参与、没有扣款、没有要退的钱。"+
+			"写错了直接「编辑草稿」,不想要了直接「删除草稿」。"+
+			"对草稿点取消只会把它变成一场公开的、已结束的空活动,并把它的随机种子公开出去")
 	errResultLocked = newBizError(http.StatusConflict, "qy_lot_result_locked",
 		"结果已录入且不可修改;录错只能整场作废并全额退款")
 	errPrizeCapExceeded = newBizError(http.StatusBadRequest, "qy_lot_prize_cap",

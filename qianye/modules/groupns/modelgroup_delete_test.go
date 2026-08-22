@@ -313,3 +313,49 @@ func TestProbeModelGroupImpactLabelsProvenance(t *testing.T) {
 		assert.Equal(t, want, impact.Sources, "模型分组 %q 的来源标注", name)
 	}
 }
+
+// TestDeleteModelGroupRefusesANameThatExistsNowhere 守「删一个不存在的名字不能算成功」。
+//
+// 此前对一个根本不存在的名字照常返回成功,而**兄弟动词的口径是反的**:
+// DELETE .../user-groups/<不存在> 回 400 qy_groupns_unknown(lookupUserGroup 有
+// 这道判据),DELETE .../model-groups/<不存在> 回 200。
+//
+// 两层代价:
+//   - 界面上:管理员打错一个名字得到的是「删除成功」,他会以为删掉了;
+//   - 台账上:qy_audit_logs 里留下一条 action=groupns.model_group.delete
+//     result=ok 的记录,而它描述的那件事从没发生过。事故复盘读的就是这张表。
+//
+// 判据取「登记行 + 四处 options + 路由 + 令牌 + 交叉倍率 + pin」的并集:只要它
+// 在任何一处露过面,这次删除就有可清理的东西,照常往下走 —— 那正是这个接口
+// 「清理残留」这个用途,不能被这道判据误伤。
+func TestDeleteModelGroupRefusesANameThatExistsNowhere(t *testing.T) {
+	gdb := newTestDB(t)
+	newMainTestDB(t)
+	nsConfig(t, true, "", "")
+	syncHotAsync(t)
+	useOptionSnapshot(t, `{"真实存在的分组":1}`, `{}`, `[]`, `{}`)
+	seedDeletableModelGroup(t, gdb, "真实存在的分组")
+
+	t.Run("哪儿都没有的名字:报错,而且什么都没删", func(t *testing.T) {
+		_, err := DeleteModelGroup(context.Background(), model.DB, gdb,
+			"qy-这个分组根本不存在", DeleteModelGroupOptions{}, 7)
+		require.Error(t, err, "对一个不存在的名字返回成功,管理员会以为自己删掉了")
+		assert.Contains(t, err.Error(), "qy_modelgroup_unknown")
+
+		// 别的分组一个字节没动 —— 这次调用不是"删错了对象",是"什么都没删"。
+		var still int64
+		require.NoError(t, gdb.Model(&ModelGroup{}).
+			Where("name = ?", "真实存在的分组").Count(&still).Error)
+		assert.EqualValues(t, 1, still)
+		assert.True(t, ratio_setting.ContainsGroupRatio("真实存在的分组"))
+	})
+
+	t.Run("只在 options 里有、没有登记行:照常删得掉(那正是清理残留这个用途)", func(t *testing.T) {
+		useOptionSnapshot(t, `{"只在倍率表里的残留":1}`, `{}`, `[]`, `{}`)
+		_, err := DeleteModelGroup(context.Background(), model.DB, gdb,
+			"只在倍率表里的残留", DeleteModelGroupOptions{}, 7)
+		require.NoError(t, err,
+			"没有登记行不等于不存在 —— 它还在分组倍率表里,而清掉这种残留正是这个接口的用途")
+		assert.False(t, ratio_setting.ContainsGroupRatio("只在倍率表里的残留"))
+	})
+}

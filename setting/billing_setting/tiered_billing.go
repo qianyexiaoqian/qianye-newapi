@@ -2,6 +2,10 @@ package billing_setting
 
 import (
 	"fmt"
+	"math"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -155,8 +159,106 @@ func smokeTestVectors() []billingexpr.TokenParams {
 	return vectors
 }
 
-func smokeTestExpr(exprStr string) error {
-	vectors := smokeTestVectors()
+// smokeTestVarSetters 把表达式里的每一个 token 变量映射到「怎么把它设成某个值」。
+//
+// 键名与 billingexpr 求值时的 env 逐字一致(见 pkg/billingexpr/run.go)。
+// 少一个键的表现是:那个变量上的分档边界永远不会被烟测踩到。
+var smokeTestVarSetters = map[string]func(*billingexpr.TokenParams, float64){
+	"p":     func(t *billingexpr.TokenParams, v float64) { t.P = v },
+	"c":     func(t *billingexpr.TokenParams, v float64) { t.C = v },
+	"len":   func(t *billingexpr.TokenParams, v float64) { t.Len = v },
+	"cr":    func(t *billingexpr.TokenParams, v float64) { t.CR = v },
+	"cc":    func(t *billingexpr.TokenParams, v float64) { t.CC = v },
+	"cc1h":  func(t *billingexpr.TokenParams, v float64) { t.CC1h = v },
+	"img":   func(t *billingexpr.TokenParams, v float64) { t.Img = v },
+	"img_o": func(t *billingexpr.TokenParams, v float64) { t.ImgO = v },
+	"ai":    func(t *billingexpr.TokenParams, v float64) { t.AI = v },
+	"ao":    func(t *billingexpr.TokenParams, v float64) { t.AO = v },
+}
+
+// exprNumberRe 抓表达式里的数字字面量。
+//
+// 前面那个分组是为了避开**标识符里的数字**:变量名里有 `cc1h`、`img_o`,
+// 直接 `\d+` 会把 `cc1h` 里的 1 当成一个阈值。Go 的 regexp 没有 lookbehind,
+// 所以用一个捕获组把前导字符吃掉。
+var exprNumberRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.])(\d+(?:\.\d+)?)`)
+
+// exprStringArgRe 抓 param("...") / header("...") 里的键名。
+var exprStringArgRe = regexp.MustCompile(`(param|header)\s*\(\s*"([^"]*)"`)
+
+// exprBoundaryValues 返回表达式里出现过的数字字面量,按升序去重。
+//
+// 分档表达式的阈值就写在这些字面量里(`len <= 2000 ? ... : ...`),而烟测原本的
+// 取值集合是固定的 {0, 1, 1e3, 1e5, 1e6} —— 落在这五个点之外的**每一个档**
+// 都不会被评估到一次。
+func exprBoundaryValues(exprStr string) []float64 {
+	seen := map[float64]bool{}
+	out := make([]float64, 0, 16)
+	for _, m := range exprNumberRe.FindAllStringSubmatch(exprStr, -1) {
+		v, err := strconv.ParseFloat(m[1], 64)
+		if err != nil || v < 0 || math.IsInf(v, 0) {
+			continue
+		}
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+		if len(out) >= 32 {
+			break
+		}
+	}
+	sort.Float64s(out)
+	return out
+}
+
+// smokeTestBoundaryVectors 在**每一个变量 × 每一个字面量**的边界上各取三点。
+//
+// 为什么必须按表达式取值而不是再加几个固定档:运营写的表达式自己带阈值,
+// 阈值是什么只有表达式知道。`len <= 2000 ? tier("std", p*3+c*15)
+// : (len <= 50000 ? tier("mid", p*3+c*15-20000) : ...)` 这一份在旧的五个点上
+// 全部落进 std 与 big,中间那一档一次都没被评估到 —— 于是它带着一个
+// 「token 少的时候静默零收入、token 中等的时候整条模型 400」的分支落了库。
+//
+// 基线取 {P:1, C:1, Len:1}:各档的常数项(那种 `- 20000` 的返现)在小 token 下
+// 最容易翻负,正是要抓的形状。
+func smokeTestBoundaryVectors(exprStr string) []billingexpr.TokenParams {
+	values := exprBoundaryValues(exprStr)
+	if len(values) == 0 {
+		return nil
+	}
+	used := billingexpr.UsedVars(exprStr)
+	base := billingexpr.TokenParams{P: 1, C: 1, Len: 1}
+	vectors := make([]billingexpr.TokenParams, 0, len(values)*len(smokeTestVarSetters)*3)
+	for name, set := range smokeTestVarSetters {
+		if len(used) > 0 && !used[name] {
+			continue
+		}
+		for _, v := range values {
+			for _, at := range []float64{v - 1, v, v + 1} {
+				if at < 0 {
+					continue
+				}
+				vec := base
+				set(&vec, at)
+				vectors = append(vectors, vec)
+			}
+		}
+	}
+	return vectors
+}
+
+// smokeTestRequests 组出烟测要跑的请求形状。
+//
+// 前两条是固定的(空请求 + 一条带 anthropic-beta / service_tier 的)。真正要紧的是
+// 后面那些:表达式可以用 `param("stream") == true ? ... : ...` 按**客户端传了什么**
+// 分档,而原先那两条请求体里根本没有 stream 字段 —— 于是那一档从来不会被评估到,
+// 而它落库之后是「任何流式客户端打这个模型都 400」。
+//
+// 做法是把表达式里出现过的每一个 param/header 键**一起**设成同一个探针值,
+// 逐个值跑一遍。组合爆炸没有意义:要抓的是"某个分支为负",而这些分支绝大多数
+// 只看一个键。
+func smokeTestRequests(exprStr string) []billingexpr.RequestInput {
 	requests := []billingexpr.RequestInput{
 		{},
 		{
@@ -166,6 +268,64 @@ func smokeTestExpr(exprStr string) error {
 			Body: []byte(`{"service_tier":"fast","stream_options":{"include_usage":true},"messages":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21]}`),
 		},
 	}
+
+	params := make([]string, 0, 8)
+	headers := make([]string, 0, 8)
+	seen := map[string]bool{}
+	for _, m := range exprStringArgRe.FindAllStringSubmatch(exprStr, -1) {
+		key := m[2]
+		if key == "" || seen[m[1]+":"+key] {
+			continue
+		}
+		seen[m[1]+":"+key] = true
+		if m[1] == "param" {
+			params = append(params, key)
+		} else {
+			headers = append(headers, key)
+		}
+		if len(params)+len(headers) >= 16 {
+			break
+		}
+	}
+	if len(params) == 0 && len(headers) == 0 {
+		return requests
+	}
+	sort.Strings(params)
+	sort.Strings(headers)
+
+	probes := []any{true, false, "on", float64(0), float64(1)}
+	for _, v := range exprBoundaryValues(exprStr) {
+		probes = append(probes, v)
+		if len(probes) >= 16 {
+			break
+		}
+	}
+
+	for _, probe := range probes {
+		body := make(map[string]any, len(params))
+		for _, key := range params {
+			body[key] = probe
+		}
+		encoded, err := common.Marshal(body)
+		if err != nil {
+			continue
+		}
+		hdr := make(map[string]string, len(headers))
+		for _, key := range headers {
+			hdr[key] = fmt.Sprint(probe)
+		}
+		requests = append(requests, billingexpr.RequestInput{Headers: hdr, Body: encoded})
+	}
+	// 头部命中与否本身就是一档:再补一条「这些头一个都没有」的形状。
+	if len(headers) > 0 && len(params) > 0 {
+		requests = append(requests, billingexpr.RequestInput{Body: []byte(`{}`)})
+	}
+	return requests
+}
+
+func smokeTestExpr(exprStr string) error {
+	vectors := append(smokeTestVectors(), smokeTestBoundaryVectors(exprStr)...)
+	requests := smokeTestRequests(exprStr)
 
 	for _, v := range vectors {
 		for _, request := range requests {

@@ -262,16 +262,18 @@ func strictestTransfer(a, b config.Transfer) config.Transfer {
 //   - 当天已经转过账的人换档 ⇒ 今天仍受旧档约束,明天自然日一到重新开始。
 //
 // 跨日由 rollDay 负责:bucket 一变,dayGroup 与三个计数一起清零。
-func (s opSettings) transferForSenderDay(userGroup string, st *UserState, bucket int32) (config.Transfer, error) {
-	cur, err := s.transferFor(userGroup)
+func (s opSettings) transferForSenderDay(userGroups []string, st *UserState, bucket int32) (config.Transfer, error) {
+	cur, err := s.transferForBase(userGroups)
 	if err != nil {
 		return config.Transfer{}, err
 	}
 	if st == nil || st.DayBucket != bucket || st.DayOutGroup == "" {
 		return cur, nil
 	}
-	if normalizeGroupName(st.DayOutGroup) == normalizeGroupName(userGroup) {
-		return cur, nil
+	for _, g := range userGroups {
+		if normalizeGroupName(st.DayOutGroup) == normalizeGroupName(g) {
+			return cur, nil
+		}
 	}
 	day, err := s.transferFor(st.DayOutGroup)
 	if err != nil {
@@ -280,6 +282,32 @@ func (s opSettings) transferForSenderDay(userGroup string, st *UserState, bucket
 		return cur, nil
 	}
 	return strictestTransfer(cur, day), nil
+}
+
+// transferForBase 把 baseUserGroups 给出的多个基准分组逐项取严成一份门槛。
+//
+// 清单里通常只有一个(users.group 本身),取严退化成 transferFor,行为一字不变。
+// 第二个只在「用户此刻坐的分组是某张已到期套餐的显式 downgrade_group 落点」时
+// 出现 —— 那时他既在落点那一档、也仍然要受买套餐之前那一档约束,两档取严。
+//
+// 任何一档解析失败都整体失败关闭:与 transferFor 同一条口径,宁可让这一档人的
+// 划转返回 503,也不能拿一份谁都没批准过的组合去放行资金操作。
+func (s opSettings) transferForBase(userGroups []string) (config.Transfer, error) {
+	if len(userGroups) == 0 {
+		return s.transferFor("")
+	}
+	out, err := s.transferFor(userGroups[0])
+	if err != nil {
+		return config.Transfer{}, err
+	}
+	for _, g := range userGroups[1:] {
+		next, err := s.transferFor(g)
+		if err != nil {
+			return config.Transfer{}, err
+		}
+		out = strictestTransfer(out, next)
+	}
+	return out, nil
 }
 
 // transferFor 返回某个用户分组**实际生效**的那份门槛,是资金路径唯一该用的入口。

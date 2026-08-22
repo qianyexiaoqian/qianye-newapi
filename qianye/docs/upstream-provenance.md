@@ -674,3 +674,318 @@ Creem 下单 + 结算侧原子闸），并新增了「钱包容量」这一整�
    见上文。若将来要拿，应该是「在我们的原子预留形状上重新实现一遍状态机」，
    而不是合并上游的 diff。
 3. **上游至今未修的 27 条**（本文档第一组）—— 不变，仍然是我们自己维护的补丁。
+
+---
+
+# 上游后续修复的同步记录（第二轮）
+
+**本节时间**：2026-08-22
+**分叉点**：`ccd535ef8`（2026-08-10）
+**同步时上游 HEAD**：`2d8e50bf3`（2026-08-21），分叉点之后共 **22 个提交**
+
+上一轮（2026-08-19）已经同步过其中 7 条（`f11641428` / `93d2df85f` / `7d09c6954` /
+`3dda1d50c` / `4442bb302` / `2a0ce3475` / `47ba9d2c6`）。本轮先逐条**核实**了这 7 条
+真的在树里（比对 blob 哈希 / 读代码），再处理剩下的 15 条。
+
+口径不变：**安全与资金 > 新平台/新渠道适配 > 相关 bugfix > 其余**。
+
+## 一、22 条逐条
+
+| SHA | 标题 | 我们有了吗 | 同步 | 理由 |
+|---|---|---|---|---|
+| `2d8e50bf3` | refactor(web): prevent credential autofill in usage log filters | 否 | **是** | 安全。日志筛选框原本用 `type=password` 遮挡分组/令牌名/用户名，浏览器与密码管理器会把它当成登录框：弹「保存密码」、把真凭据自动填进筛选框。改成 `[-webkit-text-security:disc]` + `autoComplete='off'`，遮挡效果不变而不再是凭据字段 |
+| `f11641428` | fix: settle Responses cached token usage | **是**（上一轮） | — | blob 与上游一致 |
+| `137d1171f` | feat(web): fade in streamed response words and harden playground editor | 否 | **是** | 里面带一条真缺陷：`CodeMirrorCodeView` 把 `onKeyDown` 算进 extensions memo 的依赖，而 playground 每次按键都重建这个闭包 → EditorView 每次按键被拆掉重建 → 光标回到文档开头，肉眼是「从右往左打字」。10 个源文件我们一个都没改过 |
+| `4add708eb` | feat: channel test | 否 | **是** | 渠道可用性巡检加并发上限（`monitor_setting.channel_test_concurrency`，默认 1 = 行为不变）。属于渠道面 |
+| `2b0efd848` | refactor: advanced custom channel route editor | 否 | **是** | 新渠道适配 + **一条安全修复**：`sanitizeAdvancedCustomRequestError` 把 query string 里的密钥从错误信息里抹掉（原本只抹 header 里的 key，放在 URL 参数里的密钥会原样回显给前端）。另外给 advanced-custom 渠道加了余额查询路由 |
+| `3dda1d50c` | fix(relaykit): preserve parameterless tools in Claude conversion | **是**（上一轮） | — | blob 与上游一致 |
+| `e2c7aa7b1` | test(web): standardize frontend tests on Vitest | 否 | **否** | 见第二节 |
+| `116255f07` | fix(oauth): align custom binding response fields in frontend | 否 | **是** | 真缺陷：前端 `CustomOAuthBinding` 写的是 `{provider_id: string, external_id}`，后端 `controller/custom_oauth.go` 返回的是 `{provider_id: number, provider_slug, provider_icon, provider_user_id}` —— 字段名对不上，自定义 OAuth 绑定列表在前端读不出来。属于认证面 |
+| `4442bb302` | fix(relay): stop injecting empty tools into Claude requests | **是**（被 `3dda1d50c` 覆盖） | — | blob 与上游一致 |
+| `e90a7c48e` | feat: add field passthrough controls for gateway channels | 否 | **是** | 字段透传开关扩到网关型渠道（58 / 59 / new-api）。这就是项目方说的「新平台的账号兼容」 |
+| `7d09c6954` | fix: prompt_cache_key openai chat -> openai responses | **是**（上一轮） | — | blob 与上游一致 |
+| `47ba9d2c6` | fix(topup): guard wallet quota during recharge | **是**（上一轮取并集） | — | `topUpQuotaMaxCurrent` / `ValidateTopUpQuotaCapacity` 都在 |
+| `bbf67df04` | bump electron 39.8.5→39.8.10 | 否 | **是** | 见第四节 |
+| `cf38105a9` | bump js-yaml 4.3.0→4.3.1 | 否 | **是** | 同上 |
+| `2a0ce3475` | fix(topup): reject uncreditable orders before payment | **是**（上一轮取并集） | — | `rejectInvalidTopUpQuota` / `getMaxTopup` 都在 |
+| `e5efc73cd` | bump tar 7.5.16→7.5.22 | — | **N/A** | **这是一个空提交**：`git diff e5efc73cd^ e5efc73cd` 无任何变更（PR 被 rebase 后 lockfile 已由别的提交带进去）。没有东西可同步 |
+| `53a8739ee` | bump fast-uri 3.1.4→3.1.5 | 否 | **是** | 见第四节 |
+| `f250f3b58` | bump dompurify 3.4.11→3.4.13 in /web | 否 | **是** | 上一轮列为待办的那条。XSS 消毒库，安全面。这次按待办里写的做法走：改 `package.json` + `bun.lock`，跑 `bun install` 真装上 3.4.13，再过全量闸门 |
+| `626058075` | bump builder-util-runtime / electron-builder | 否 | **是** | 见第四节 |
+| `93d2df85f` | fix(ali): 阿里图片模型映射后仍用原始模型名判协议 | **是**（上一轮） | — | blob 与上游一致 |
+| `15cfdedde` | fix(web): keep fetched model selection in sync with form | 否 | **是** | 渠道抽屉「获取模型」对话框的 `existingModelsOverride` 只在预览未保存模型时才传，其余情况下已选模型与表单脱节。渠道面小 bugfix，顺带把两个 prop 变成必须成对出现的判别联合 |
+| `58d4e9bd3` | fix(billing): 异步任务退款时同步减少 used_quota | **部分**（上一轮只取了会计不变式） | **补齐资金部分** | 见第三节 |
+
+## 二、`e2c7aa7b1`（迁移到 Vitest）——不同步，理由带数字
+
+上游把前端测试整体从 `node:test` 迁到 Vitest（jsdom + @testing-library/react）。
+我们当初自己写 `bun run test`，是因为 bun 的 `node:test` 垫片有
+`describe() inside another test()` 未实现分支（oven-sh/bun#5090），
+`bun test src` 一把跑会静默吞掉一千多条用例；分目录分进程跑才拿到真实结果。
+
+**收益**：垫片问题从根上没有了；与上游对齐，以后同步上游测试不用改写。
+
+**风险，按本仓实测的数字**：
+
+| 项 | 数字 | 说明 |
+|---|---|---|
+| 待迁移测试文件 | **176** | 上游那次只迁了 **33** 个（它当时全部的量）。剩下 143 个是我们自己写的或之后新增的 |
+| 其中我们自己的 | **127**（在 `src/features/qy/` 下） | 迁移收益为零、风险全在我们这边 |
+| 测试代码总行数 | **44 166** 行 | |
+| `describe`/`test` 声明 | **1 805** 处 | |
+| `assert.*` 断言点 | **3 166** 处，横跨 12 个不同 API | `equal` 1333 / `ok` 1187 / `deepEqual` 469 / `match` 101 / `notEqual` 49 / 其余 26 |
+| 手搭 happy-dom 的 React 用例 | **48** 个文件 | 每个都自己 `new Window()`、装全局、`createRoot` + `act`。上游那 33 个是改写成 `@testing-library/react` 的 —— 例如 `auto-group-order-editor.test.tsx` 一个文件就动了 447 行 |
+| 顶层 `await import()` 的文件 | **46** 个 | 这个写法是为了在装完 DOM 全局之后再加载被测模块，换成 Vitest 的 `setupFiles` 之后要全部拆掉 |
+| 真正依赖 bun 专有 API 的 | **2** 个文件 | `redemption-codes` 那两个动态 `import('bun:test')`。`import.meta.dirname` 那 2 处 Vitest 也支持 |
+
+**结论：不同步。**
+
+最后一行是关键，也是与预期相反的一条：我们的测试**几乎不绑 bun**（176 个文件里
+0 个静态 import `bun:test`，只有 2 个动态引用）。所以「我们的守卫依赖 bun API」
+这个担心基本不成立 —— 挡住迁移的不是 bun 绑定，是**体量**：3166 个断言点要换 API、
+48 个 React 用例要从手搭 happy-dom 改写成 testing-library（上游改写 33 个用了
+2171 行删除），还要新引 `jsdom` / `@testing-library/react` /
+`@testing-library/jest-dom` 三个依赖。
+
+而收益这一侧：垫片问题已经被 `web/scripts/run-tests.mjs` 挡住了 —— **注意这句话
+第一版写错了**，当时写的是「分进程方案解决了」，实际那个方案只把垫片 bug 缩小到
+「一个目录内部」：`src/features/keys` 一个进程跑 7 个文件，第一个文件之后的 5 个
+被静默吞掉（26 条断言从不执行），而闸门当时既不解析 `N errors` 也不看退出码，
+把它们折进 `8 fail` 之后恰好等于 KNOWN_FAILURES 里登记的 8，于是全绿。
+后来把「目录报了 errors 就逐文件重跑」补上去，基线才变成 1760 pass / 3 fail
+（只剩 `api-key-group-cell.test.tsx` 那 3 条真实的上游失败）。
+花 44166 行的改写风险去换一个已经有解的痛点，仍然不划算。
+「以后同步上游测试方便」这条收益也有限：本轮 22 个提交里带前端测试的只有
+`137d1171f` 一个，4 个文件、487 行 —— 改写成本远低于全量迁移。
+（第一版这里写的是「3 个文件、362 行」，漏数了
+`playground-message-editor.test.tsx` 的 125 行；那份后来补齐了，见下。）
+
+**代价记在这里**：`137d1171f` 之后上游新写的前端测试都是 Vitest 语法，
+每次同步都要人工改写。本轮改写了 3 个（`response-fade.test.ts` 190 行、
+`code-block-editor.test.tsx`、`playground-message-editor.test.tsx` 5 条），
+跳过了 1 个（`response-fade-render.test.tsx`，
+依赖 `@testing-library/react`，我们没装；它测的是 `[data-stream-fade]` 属性有没有
+落到 DOM 上，而同一批常量与分段逻辑已被 `response-fade.test.ts` 的 11 条覆盖）。
+
+改写 `code-block-editor.test.tsx` 时踩到一处，记在这里免得下一个人重蹈：
+上游那条同时改 `value` 和 `onKeyDown` 身份。在我们的 happy-dom 载体上，
+一旦 EditorView 真被重建，CodeMirror 会陷入布局测量空转 —— 变异验证时
+60s 跑不完、107s 后 OOM，那种「红」与真挂住无法区分。改成**只换 `onKeyDown` 身份、
+不动 `value`** 之后，变异是一条干净的 `strictEqual` 断言失败（约 14s）。
+
+## 三、`58d4e9bd3` 的资金部分——这次补上，但**不合上游的 diff**
+
+上一轮只取了会计不变式（退款时回减 `used_quota`），把 Midjourney 计费状态重构
+留作待办，理由是「与我们的原子预留重写方向冲突」。这次把**资金那部分**补上了，
+做法是待办里写的那条：**在我们的原子预留形状上重新实现，而不是合并上游的 diff。**
+
+上游 `service.PrepareMidjourneyTaskBilling` / `SettleMidjourneyTaskBilling`
+**没有拿**：它们内部调 `postConsumeQuotaWithResult(relayInfo, task.Quota, 0, true)`
+去真扣钱，而我们的钱在请求发出前就已经原子预留过了（`TryReserveUserQuota` /
+`TryReserveTokenQuota`），照搬会**扣两次**。
+
+逐字节取上游版本的（这两个文件我们从未改过，分叉点之后只被 `58d4e9bd3` 碰过）：
+
+- `model/midjourney.go` ← 新增 `TokenId` / `BillingChannelId` 两列，
+  `UpdateBillingState()`、`GetBillingChannelId()`
+- `model/user_update_test.go` ← 补上 `UpdateUserUsedQuota` 有符号增量的表驱动用例
+
+按我们的形状重写的：
+
+- `service/midjourney.go` 新增 `RefundMidjourneyQuota`，把一次计费在账面上**完整反转**。
+  相对改动前补了三个漏项：
+  1. **令牌额度以前从来不退**。提交时预留扣了令牌一次，构图失败只退钱包，
+     令牌那一份蒸发 —— 一把设了额度上限的 key 会随失败次数被磨到 0。
+  2. 用量回减与退款记账按 `GetBillingChannelId()`（当初真扣钱的那个渠道），
+     不是任务行上会随重试漂移的 `ChannelId`。
+  3. 退成功后把 `Quota` 清零，作为幂等闩 —— 轮询会反复看到同一条失败任务。
+- `relay/mjproxy_handler.go`（`RelaySwapFace` 与 `RelayMidjourneySubmit` 两条路径）：
+  - **只有真收钱的那一次才写 `task.Quota`**。改动前无论提交成没成功都写
+    `priceData.Quota`，于是一条**从未计过费**的失败任务也带着金额进库
+    （`GetAllUnFinishTasks` 只按 `progress != '100%'` 选，选得到它），
+    后台轮询把它当「构图失败」再退一次 —— 凭空多给一份额度。
+  - 结算从 `defer` 改成**任务落库成功之后的内联块**。改动前落库失败照样记账，
+    钱扣了却没有任何一行任务指向它，退无可退。这与上游这次的重排同向。
+  - 同时落 `TokenId`（非 playground）与 `BillingChannelId`。
+- `controller/midjourney.go` 的退款分支改调 `service.RefundMidjourneyQuota`。
+
+**零值**：两个新列默认 0。老数据 `BillingChannelId==0` → `GetBillingChannelId()`
+回落 `ChannelId`（与改动前逐字相同）；`TokenId==0` → 不退令牌（也与改动前相同）。
+没有回归，也不会对老行重复退。
+
+**迁移空转**：`gorm:"default:0"` 在 MySQL 8.0.28（3307）与 PostgreSQL（5433）上都
+实测过 —— 建表后第二次 `AutoMigrate` 发出的 DDL 条数是 **0**，两列在两种方言上
+都是 `bigint ... DEFAULT 0`。不会像 `default:false` 那样每次重启重发 `ALTER TABLE`。
+
+**回归**：`service/midjourney_refund_test.go`，三行表驱动分别锁住令牌回退、
+按 `billing_channel_id` 回减、老行回落 `channel_id`，外加幂等闩。
+六个变异全部 KILLED（见本轮变异清单）。
+
+## 四、依赖升级：electron 那几条到底用不用
+
+**用。** `electron/` 不是死代码：`.github/workflows/electron-build.yml` 会
+`cd electron` 装依赖并 `electron-builder` 打出 `electron/dist/*.exe` 当发布产物。
+所以 `bbf67df04`（electron 39.8.5→39.8.10）、`cf38105a9`（js-yaml）、
+`53a8739ee`（fast-uri）、`626058075`（builder-util-runtime + electron-builder）
+这 4 条都是我们发布链上真实存在的依赖，全部同步。
+
+`electron/package.json` 与 `electron/package-lock.json` 我们从未改过，
+分叉点之后只被这 4 条碰过，所以直接取 `upstream/main` 的版本 ==
+精确按顺序应用这 4 条。
+
+`f250f3b58` 的 **dompurify** 是另一回事：它在 `web/` 的运行时依赖里，
+`marked` 渲染出来的 HTML 靠它消毒，属于 XSS 防护面，优先级最高的那一类。
+上游那条只改了 `package.json`（它的 lockfile 由别的提交带）；我们这边
+`web/bun.lock` 是自己维护的，所以三处 pin 与 integrity 都按上游的
+`upstream/main:web/bun.lock` 对齐，再 `bun install` 真装（实测
+`+ dompurify@3.4.13`）。
+
+## 五、同步方式与哈希核对
+
+对**我们从未改过**的文件，先用 blob 哈希证明两件事，再逐字节取上游版本：
+
+1. `HEAD:<file>` == `ccd535ef8:<file>` —— 我们在这个文件上没有任何改动；
+2. `git log ccd535ef8..upstream/main -- <file>` 只列出目标那一个提交 ——
+   分叉点之后这个文件只被它碰过。
+
+两条都成立时，`git show <sha>:<file> > <file>` 等价于**精确应用那一个提交**，
+不夹带任何别的改动。本轮这样处理的文件（每个都单独核对过，全部只被一个提交碰过）：
+
+- ← `2b0efd848`：`common/json.go`、`controller/channel-billing.go`、
+  `controller/channel_upstream_update.go` + 测试、
+  `relay/channel/advancedcustom/adaptor.go` + 测试、
+  `relaykit/dto/channel_settings.go` + 测试、
+  `web/src/features/channels/` 下的 `types.ts`、`lib/advanced-custom.ts`、
+  `lib/channel-actions.ts`、`components/dialogs/advanced-custom-editor-dialog.tsx`、
+  `components/dialogs/balance-query-dialog.tsx`
+- ← `4add708eb`：`controller/channel_test_internal_test.go`、
+  `setting/operation_setting/monitor_setting.go` + 测试、
+  `web/src/features/system-settings/models/routing-reliability-section.tsx`、
+  `web/src/features/system-settings/models/section-registry.tsx`
+- ← `e90a7c48e`：`web/src/features/channels/constants.ts`
+- ← `15cfdedde`：`web/src/features/channels/components/dialogs/fetch-models-dialog.tsx`
+- ← `2d8e50bf3`：`web/src/features/usage-logs/components/logs-filter-toolbar.tsx`
+- ← `116255f07`：`web/src/lib/oauth.ts`、
+  `web/src/features/profile/components/tabs/account-bindings-tab.tsx`、
+  `web/src/features/system-settings/auth/custom-oauth/components/access-policy-templates.ts`（新文件）、
+  `.../provider-form-dialog.tsx`、
+  `web/src/features/users/components/dialogs/user-binding-dialog.tsx`
+- ← `137d1171f`：`web/src/components/ai-elements/` 下的 `code-block.tsx`、
+  `reasoning.tsx`、`response-fade.ts`（新文件）、`response-renderer-inline.tsx`、
+  `response-renderer.tsx`、`response-types.ts`、`response.tsx`，以及
+  `web/src/features/playground/components/message/playground-message-editor.tsx`
+- ← `58d4e9bd3`：`model/midjourney.go`、`model/user_update_test.go`
+- ← 4 条 electron bump：`electron/package.json`、`electron/package-lock.json`
+
+一处例外：`response-renderer-inline.tsx` 取上游版本后 `format:check` 报红
+（上游那份的多行函数签名在我们的 `printWidth: 80` 下应该并成一行），
+按本仓 oxfmt 配置重新格式化了一遍。这说明上游与我们的格式化器口径已经分叉，
+以后逐字节取文件之后都要顺手过一次 `format:check`。
+
+对**我们改过**的文件，一律走 `git merge-file`（三方合并，base = 目标提交的父提交），
+逐 hunk 落地，不整文件覆盖。除 `model/option.go` 外全部干净合并；
+`model/option.go` 冲突是因为我们早先把那条 if 链改写成了 `switch`，
+手工把上游新增的键改成了一条 `case`。
+
+`web/src/i18n/locales/*.json` 七个语种各做了三次三方合并
+（`2b0efd848` → `4add708eb` → `116255f07`），全部干净。
+
+## 六、format 脚本：从「原地剥离 + 加锁」换成「镜像」
+
+`web/scripts/format-with-protected-headers.mjs` 的旧实现在**工作树里原地**
+把 1600 个文件的版权头摘掉、跑 oxfmt、再贴回去，`--check` 还额外快照/还原整棵树。
+两个进程交错时：
+
+```
+A: 剥离(树上无头) ──────────────────────────▶ 还原(贴回)
+B:      快照(拍到的是无头的树) ── oxfmt ── 还原快照(把无头版写回去) ✗
+```
+
+实测一次抹掉 **446 个文件**的版权头，直接违反 AGENTS.md 的受保护标识条款。
+
+**先确认了剥离本身是必需的**，不能简化掉：`.oxfmtrc.json` 开着 `sortImports`，
+oxfmt 把版权头当成第一条 import 的前导注释。实测（相对 import 在前、外部包在后，
+排序必须把两条 import 换位）：
+
+```
+/* Copyright ... */                          import { z } from 'zod'
+import { a } from './a'      ──oxfmt──▶
+import { z } from 'zod'                      /* Copyright ... */
+                                             import { a } from './a'
+```
+
+**没有选文件锁，选了镜像**：把整棵树按「已剥离」的样子复制到系统临时目录，
+在镜像里跑一次 oxfmt，再把「版权头 + 格式化后的正文」与原文件逐一比对。
+
+不选锁的理由是锁挡不住两件同样真实的事：
+
+1. `--check` 仍然会写工作树。一个自称只读的闸门在跑的时候把版权头摘掉，
+   同时开着的 tsgo / bun test / 编辑器读到的就是无头版；Ctrl-C 或断电停在那个
+   窗口里，头就永久没了 —— 锁保护不了非它管辖的读者，也保护不了崩溃。
+2. 锁本身要处理陈旧锁（进程被 kill -9 后锁文件还在），而「锁陈旧了没有」
+   在跨平台上没有可靠判据。
+
+镜像之后：`--check` 一个字节都不写工作树；`--write` 只写内容真的变了的文件；
+两个并发实例各有独立镜像，写回的是同一份幂等结果；中途被杀最坏只留一个临时目录。
+代价是一次约 15MB / 1600 文件的复制（本机 `format:check` 从约 5s 到约 11s）。
+
+回归在 `web/src/lib/format-protected-headers.test.ts`，三条判据：
+`--check` 一个字节都不写工作树（mtime 判）、`--write` 只写真的变了的文件（mtime 判）、
+两个并发实例跑完版权头都还在。对着旧实现跑：前两条 5/5 确定性变红，
+第三条取决于交错，5 次里 3 次红 —— 所以主判据是前两条。
+
+## 七、同步进来的东西的测试覆盖
+
+上游自带测试的，一起拿了；变异验证过它们**真的在测**，不是摆设：
+
+| 变异 | 打在哪 | 结果 |
+|---|---|---|
+| `NormalizeChannelTestConcurrency` 去掉上界钳位 | `setting/operation_setting/monitor_setting.go` | KILLED（上游 `TestGetMonitorSettingNormalizesChannelTestConcurrency`）|
+| `ValidateChannelTestConcurrency` 恒返回 nil | 同上 | KILLED（上游 `TestValidateChannelTestConcurrency`）|
+| 工作池忽略配置的并发度（恒为 1）| `controller/channel-test.go` | KILLED，但形式是 `panic: test timed out`——上游那条用的是需要 N 个 worker 同时到位的栅栏，退化成 1 之后直接挂住。能挡回归，但不是一条干净的断言失败 |
+
+**发现一处上游测试的洞，补了自己的**：
+
+`sanitizeAdvancedCustomRequestError` 有两条独立的抹除路径（按渠道 key、按 URL 的
+query string）。上游随 `2b0efd848` 带来的
+`TestFetchAdvancedCustomModelsRedactsQueryKeyFromTransportErrors` 里，query 参数的值
+与 key 参数传的是**同一个字符串** —— 于是只靠 key 那条路径就能让断言通过。
+实测把 query 那个循环整段短路掉，上游那条测试**依然 PASS**（SURVIVED）。
+
+补了 `controller/channel_upstream_redaction_test.go`：query 里的密钥与 key 不同、
+且 key 为空，只有 query 那条路径真在跑时才可能变绿。三个变异全部 KILLED
+（短路 query 循环 / 去掉 `QueryEscape` 变体 / 去掉空值 guard——空 query 值会让
+`strings.ReplaceAll(s, "", x)` 在每个字符之间插 x，把整条消息毁掉）。
+上游那个文件保持逐字节不变，新测试单开一个文件，下次同步不会打架。
+
+**上游没带测试、我们自己补的**：
+
+| 补在哪 | 覆盖什么 | 变异 |
+|---|---|---|
+| `service/midjourney_refund_test.go` | `RefundMidjourneyQuota` 的五个账面元素 + 幂等闩，三行表分别锁令牌回退、按 `billing_channel_id` 回减、老行回落 `channel_id` | 6/6 KILLED：去掉令牌退款 / 用 `ChannelId` 代替 `GetBillingChannelId()` / 跳过 `used_quota` 回减 / 跳过渠道用量回减 / 不清零 `task.Quota` / `GetBillingChannelId()` 返回 0 不回落 |
+| `web/src/features/channels/lib/__tests__/field-passthrough.test.ts` | `e90a7c48e` 的渠道类型闸门，7 个开关 × 7 种渠道类型逐格钉死；另加「关掉的开关必须落成 false 而不是消失」 | 4/4 KILLED：退回 `type===1\|\|14\|\|57` 的旧闸 / 把 new-api 从 Claude 组里拿掉 / `claude_beta_query` 放宽到整个 Claude 组 / 关掉的开关改成省略 |
+| `web/src/components/ai-elements/__tests__/response-fade.test.ts` | 上游 vitest 版逐条改写成 node:test，判据一条不减 | 5/5 KILLED：不标 animated / 去掉 stagger 上限 / 忽略 hydration 抑制 / `stageRun` 提前提交 / `splitWords` 丢掉前导空白 |
+| `web/src/components/ai-elements/__tests__/code-block-editor.test.tsx` | CodeMirror EditorView 不因 `onKeyDown` 身份变化被重建 | KILLED：把 `onKeyDown` 放回 memo 依赖 → 一条 `strictEqual` 断言失败 |
+| `web/src/lib/format-protected-headers.test.ts` | format 脚本的三条判据 | 前两条 5/5 确定性 KILLED，第三条（真并发）5 次里 3 次 KILLED |
+
+**没有覆盖、如实记下的**：
+
+- `2d8e50bf3`（`autoComplete='off'` + `[-webkit-text-security:disc]`）与
+  `15cfdedde`（`existingModelsOverride` 的传递）都是纯 DOM 属性/prop 接线，
+  在本仓的手搭 happy-dom 载体上要拉起整个筛选栏 / 渠道抽屉才能断言，
+  成本远高于它们各自 3 行的改动量。
+- `116255f07` 的 `indexCustomOAuthBindings` 是纯函数，可测；但它的真实价值在
+  「前后端字段名对齐」，那条只能靠后端 `controller/custom_oauth.go` 的
+  DTO 与前端类型对读来保证，单测一个 `new Map()` 没有意义。
+
+## 八、这次**没有**同步、留作待办的
+
+1. **`e2c7aa7b1` 迁移到 Vitest** —— 见第二节，结论是不迁。代价是以后上游的前端
+   测试要人工改写。
+2. **`137d1171f` 的 `response-fade-render.test.tsx`** —— 依赖
+   `@testing-library/react`，本仓未安装。它测的 DOM 属性落点没有直接覆盖。
+   （同一提交里的 `playground-message-editor.test.tsx` 一开始也被跳过、而且
+   **没有记进这张表** —— 那是最坏的一种遗漏：`.tsx` 被逐字节取入、交互逻辑
+   整段换掉，而这里的沉默让下一个人以为它有覆盖。已补齐，5 条判据逐条照搬、
+   载体换成本仓的 happy-dom + createRoot。）
+3. **上游至今未修的 27 条**（本文档第一组）—— 不变，仍然是我们自己维护的补丁。

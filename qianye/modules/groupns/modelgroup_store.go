@@ -394,6 +394,26 @@ func DeleteModelGroup(ctx context.Context, mainDB, extDB *gorm.DB, name string,
 	}
 	res.Impact = impact
 
+	// 这个名字在任何一处都不存在 ⇒ 404,而不是 200 + 一条 result=ok 的审计。
+	//
+	// 此前这里对一个根本不存在的名字照常返回成功,而**兄弟动词的口径是反的**:
+	// DELETE .../user-groups/<不存在> 回 400 qy_groupns_unknown(lookupUserGroup
+	// 有这道判据),DELETE .../model-groups/<不存在> 回 200。两层代价:
+	// 界面上管理员打错一个名字得到的是"删除成功",他会以为删掉了;台账上
+	// 留下的是一条与真实删除在结果字段上完全一致的记录,而事故复盘读的就是它。
+	//
+	// 判据取「登记行 + 四处 options + 路由」的并集:只要它在任何一处露过面,
+	// 这次删除就有可清理的东西,照常往下走(那正是"清理残留"这个用途)。
+	if !impact.Registered && !impact.InGroupRatio && !impact.InUsableGroups &&
+		impact.AutoPosition == 0 && !impact.HasRoute && impact.AbilityRows == 0 &&
+		impact.EnabledChannels == 0 && impact.Tokens == 0 &&
+		len(impact.CrossRatioUserGroups) == 0 && len(impact.PinnedByUserGroups) == 0 {
+		return res, fmt.Errorf(
+			"qy_modelgroup_unknown: 模型分组 %q 既没有登记行,分组倍率表 / 全局可选清单 / "+
+				"auto 顺序 / 路由里也都没有它 —— 名字可能拼错了,或者它已经被删掉了。"+
+				"这一次什么都没有删", name)
+	}
+
 	if len(impact.Blockers) > 0 {
 		return res, fmt.Errorf("qy_modelgroup_blocked: %s", strings.Join(impact.Blockers, "\n"))
 	}

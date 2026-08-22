@@ -253,7 +253,9 @@ func handleUpdateActivity(c *gin.Context) {
 	if old.Status != StatusDraft {
 		writeAdminAudit(c, "lottery.activity.update", actNo, qymodel.ResultFail,
 			"活动已发布,内容已被承诺哈希冻结", snapText(activitySnapshot(old, nil)), "")
-		respondErr(c, errStatusConflict)
+		// 不是 errStatusConflict:后者在说"刷新一下再试",而这里的真相是
+		// "这件事从此不可能做到"。理由见 errUpdateNotDraft。
+		respondErr(c, errUpdateNotDraft)
 		return
 	}
 
@@ -641,12 +643,26 @@ func handleCancelActivity(c *gin.Context) {
 		return
 	}
 
+	// 草稿不走取消。理由写在 errCancelDraft 上:它对草稿没有任何止损作用
+	// (草稿上不可能有参与、出款或要退的钱),却会把一份从没公布过的活动推进
+	// 「已结束」的公开大厅、并把它的随机种子经匿名证据链下发出去,同时让本轮
+	// 新做的零仪式草稿删除对它失效。取消曾经是草稿唯一的处置路径,现在不是了。
+	if act.Status == StatusDraft {
+		writeAdminAudit(c, "lottery.activity.cancel", actNo, qymodel.ResultFail,
+			auditReason(errCancelDraft), snapText(activitySnapshot(act, nil)), "")
+		respondErr(c, errCancelDraft)
+		return
+	}
+
 	now := common.GetTimestamp()
 	err = gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 只有还没进入结算的活动能被取消。settling 之后已经有 payout 计划行,
 		// 再叠一层取消会让同一张票同时挂着派奖与退款两条计划。
+		//
+		// 名单里**没有 StatusDraft**:上面那道前置已经把草稿挡掉,这里再列一次
+		// 就等于留了一条"读出来是 published、加锁时已经被别人退回草稿"的旁路。
 		res := tx.Model(&Activity{}).
-			Where("id = ? AND status IN (?)", act.Id, []string{StatusDraft, StatusPublished, StatusLocked}).
+			Where("id = ? AND status IN (?)", act.Id, []string{StatusPublished, StatusLocked}).
 			Updates(map[string]any{
 				"status":        StatusSettling,
 				"outcome":       OutcomeCancelled,
@@ -1747,6 +1763,7 @@ func buildOptions(in []optionInput, cfg config.Lottery) ([]Option, []string, err
 	}
 	rows := make([]Option, 0, len(in))
 	seen := make(map[int]bool, len(in))
+	seenLabel := make(map[string]bool, len(in))
 	catchAll := 0
 	for _, o := range in {
 		label := strings.TrimSpace(o.Label)
@@ -1761,6 +1778,15 @@ func buildOptions(in []optionInput, cfg config.Lottery) ([]Option, []string, err
 		if err := rejectControlChars("选项文案", label); err != nil {
 			return nil, nil, err
 		}
+		// 文案不许重复。这不是洁癖:用户在界面上看到的**只有文案**,而投注落在
+		// opt_no 上。两个都叫「甲队赢」的选项意味着有一半人押中了正确的结果
+		// 却拿的是另一个编号,开奖时全额亏掉 —— 而他在界面上无从分辨自己点的是
+		// 哪一个。前端早有这条判定(qy_lot_v_option_dup),后端一直缺,于是任何
+		// 一次脚本化的创建/改草稿都能绕过它。
+		if seenLabel[label] {
+			return nil, nil, errBadRequest("选项文案不能重复:用户看到的只有文案,两个同名选项会让押对结果的人拿到另一个编号")
+		}
+		seenLabel[label] = true
 		if o.IsCatchAll {
 			catchAll++
 		}
