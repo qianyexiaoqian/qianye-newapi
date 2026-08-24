@@ -181,9 +181,16 @@ func pendingInvitersPage(limit int, cur inviterCursor) (ids []int, next inviterC
 	// 门槛取 minSettle 而不是 1:net 要 >= minSettle 才发得出去(见
 	// computeSettlement),按 >= 1 选人会让每个零头在 1..minSettle 之间的
 	// 邀请人每个周期都白跑一次加锁事务,而且永远发不出来。
+	// 第二路两种候选:
+	//   · 正余数达到 minSettle 的(等着被发出去);
+	//   · **负余数且账上还有可回收余额的**(欠账,等着被收回来)。
+	// 少了后半句,一个被冲正打成 debt_blocked 的推广人永远不会再被调度选中:
+	// 第一路要求 settled_amount <> gross_amount,而 absorbAccruals 已经把冲正行
+	// 写成 settled==gross,于是他从两路里同时消失。表现是提现被永久冻结而
+	// 没有任何告警会响 —— 三条恒等式在这个状态下全部成立。
 	var carry []inviterHead
 	q = `SELECT user_id AS id, last_settled_at AS ord_at FROM qy_commission_balance
-		WHERE unsettled_amount >= ? `
+		WHERE (unsettled_amount >= ? OR (unsettled_amount <= -1 AND available_quota > 0)) `
 	args = []any{carryFloor(effective().MinSettleQuota)}
 	if cur.HasB {
 		q += `AND (last_settled_at > ? OR (last_settled_at = ? AND user_id > ?)) `
@@ -415,7 +422,21 @@ func settleUser(inviterId int) (more bool, err error) {
 			if err != nil {
 				return err
 			}
-			if peek.UnsettledAmount.LessThan(decimal.NewFromInt(1)) {
+			// 负结转是**欠账**,它的钱要从 available_quota 里回收,而不是等
+			// 未来的新计佣行。
+			//
+			// 这一支原先与正余数共用 `LessThan(1)`,而**所有负数都满足它** ——
+			// 于是 debt_blocked 一旦置上,哪怕账上可用余额远超欠账,结算跑多少次
+			// 都清不掉:提现三处闸门(建单 / approve / mark-paid)全线冻结,
+			// 用户提不出自己账上确实存在的钱,平台也永远收不回那笔应收。
+			// 而 errDebtBlockedPayout 建议的"或驳回这张单"只是把 frozen 搬回
+			// available,欠账一位不动 —— 照着做的人会以为自己已经处理过了。
+			if peek.UnsettledAmount.IsNegative() {
+				if peek.AvailableQuota <= 0 {
+					// 账上一分可回收的都没有,这一轮确实做不了事。
+					return nil
+				}
+			} else if peek.UnsettledAmount.LessThan(decimal.NewFromInt(1)) {
 				return nil
 			}
 		}

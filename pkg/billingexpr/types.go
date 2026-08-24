@@ -10,6 +10,27 @@ import (
 type RequestInput struct {
 	Headers map[string]string
 	Body    []byte
+	// Clock overrides the wall-clock readings handed to hour()/minute()/
+	// weekday()/month()/day(). Production never sets it (nil == real clock);
+	// it exists so the save-time smoke test can evaluate a time-tiered
+	// expression at every clock reading instead of only at the one instant the
+	// operator happened to press save.
+	//
+	// The override deliberately ignores the timezone argument: the point is to
+	// ask "is this expression negative at ANY clock reading, in any zone", and
+	// over-approximating there can only reject more, never let a negative
+	// branch through.
+	Clock *ClockOverride
+}
+
+// ClockOverride is a fixed set of calendar readings. Ranges match the Go
+// stdlib: Hour 0-23, Minute 0-59, Weekday 0-6 (Sunday=0), Month 1-12, Day 1-31.
+type ClockOverride struct {
+	Hour    int
+	Minute  int
+	Weekday int
+	Month   int
+	Day     int
 }
 
 // TokenParams holds all token dimensions passed into an Expr evaluation.

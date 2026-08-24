@@ -277,9 +277,31 @@ func smokeTestBoundaryVectors(exprStr string) []billingexpr.TokenParams {
 // 分档,而原先那两条请求体里根本没有 stream 字段 —— 于是那一档从来不会被评估到,
 // 而它落库之后是「任何流式客户端打这个模型都 400」。
 //
-// 做法是把表达式里出现过的每一个 param/header 键**一起**设成同一个探针值,
-// 逐个值跑一遍。组合爆炸没有意义:要抓的是"某个分支为负",而这些分支绝大多数
-// 只看一个键。
+// 三件事必须同时做对,少一件就有一整族为负的分支能干净落库:
+//
+//  1. **请求体要按 gjson 路径搭成嵌套结构**。param() 读的是一条 JSON 路径
+//     (expr.md: "Reads a JSON path"),而探针原先造的是平坦顶层键
+//     body["metadata.tier"]。gjson 对 {"metadata.tier":"vip"} 取 metadata.tier
+//     返回"不存在" —— 于是
+//
+//     tier("a", p*3 + c*15 - (param("metadata.tier") == "vip" ? 20000 : 0))
+//
+//     这一档一次都评估不到。落库之后调用方只要在请求体里多写一个字段就把这次
+//     调用变成免费的:上游照常被调用、真实成本照付、用户余额一分不扣,而
+//     OpenAI 协议里的 metadata / user 完全由调用方填写。实测端到端两条除请求体
+//     多两个字段外完全相同的请求,一条扣 225、一条扣 0,两行日志的 other
+//     逐字节同形。
+//
+//  2. **要按"哪个键跟哪个词比"造组合**。把所有键设成同一个探针值时,
+//     param("user") == "vip" && param("channel") == "web" 这种两键与条件一次都
+//     命不中。exprKeyAssociations 从表达式文本里把 键→字面量 的配对抽出来,
+//     再让每个键各取各的值同时成立。全键 × 全探针的组合是指数的,而语法上
+//     那个配对已经写在脸上了。
+//
+//  3. **字符串字面量不能被数字阈值挤掉**。探针数组原先是 true/false/"on"/0/1
+//     后面接最多 16 个数字阈值,再把字符串字面量补到同一个 32 的坑里 ——
+//     档数一多(实测 16 档、19 个字面量就够),真正把关的那个词排在坑外,
+//     整条式子一鉴一放。现在数字与字符串各有各的预算。
 func smokeTestRequests(exprStr string) []billingexpr.RequestInput {
 	requests := []billingexpr.RequestInput{
 		{},
@@ -318,7 +340,7 @@ func smokeTestRequests(exprStr string) []billingexpr.RequestInput {
 	probes := []any{true, false, "on", float64(0), float64(1)}
 	for _, v := range exprBoundaryValues(exprStr) {
 		probes = append(probes, v)
-		if len(probes) >= 16 {
+		if len(probes) >= smokeTestNumericProbeCap {
 			break
 		}
 	}
@@ -339,17 +361,19 @@ func smokeTestRequests(exprStr string) []billingexpr.RequestInput {
 	// 这不是 has() 专属:`==`、`has(param("model"),"gpt")` 都是同一类形状,
 	// 所以抓的是**全部**字符串字面量,而不是某个函数的第二个参数。
 	// 顺带把 tier 名也抓进来了,那只是多几条无害的探针。
+	stringProbes := 0
 	for _, lit := range exprStringLiterals(exprStr) {
-		if len(probes) >= 32 {
+		if stringProbes >= smokeTestStringProbeCap {
 			break
 		}
+		stringProbes++
 		probes = append(probes, lit)
 	}
 
 	for _, probe := range probes {
-		body := make(map[string]any, len(params))
+		body := map[string]any{}
 		for _, key := range params {
-			body[key] = probe
+			setJSONPath(body, key, probe)
 		}
 		encoded, err := common.Marshal(body)
 		if err != nil {
@@ -361,6 +385,7 @@ func smokeTestRequests(exprStr string) []billingexpr.RequestInput {
 		}
 		requests = append(requests, billingexpr.RequestInput{Headers: hdr, Body: encoded})
 	}
+	requests = append(requests, smokeTestAssociationRequests(exprStr)...)
 	// 头部命中与否本身就是一档:再补一条「这些头一个都没有」的形状。
 	if len(headers) > 0 && len(params) > 0 {
 		requests = append(requests, billingexpr.RequestInput{Body: []byte(`{}`)})
@@ -368,22 +393,458 @@ func smokeTestRequests(exprStr string) []billingexpr.RequestInput {
 	return requests
 }
 
-func smokeTestExpr(exprStr string) error {
-	vectors := append(smokeTestVectors(), smokeTestBoundaryVectors(exprStr)...)
-	requests := smokeTestRequests(exprStr)
+const (
+	// 数字阈值与字符串字面量各自的探针预算。分开记的理由见 smokeTestRequests
+	// 第 3 条:合在一个坑里时字符串排在数字后面,档数一多就被整族挤出探针集。
+	smokeTestNumericProbeCap = 16
+	smokeTestStringProbeCap  = 32
+	// 一份表达式最多组出多少条"每个键各取各值"的组合请求。
+	smokeTestComboCap = 64
+)
 
-	for _, v := range vectors {
-		for _, request := range requests {
-			result, _, err := billingexpr.RunExprWithRequest(exprStr, v, request)
-			if err != nil {
-				return fmt.Errorf("vector %s: run failed: %w", describeVector(v), err)
+// exprAssocCmpRe 抓 `param("K") == "L"` / `header("K") >= 123` 这一族比较。
+var exprAssocCmpRe = regexp.MustCompile(
+	`(param|header)\s*\(\s*"([^"]*)"\s*\)\s*(?:==|!=|>=|<=|>|<)\s*(?:"([^"]*)"|(\d+(?:\.\d+)?)|(true|false))`)
+
+// exprAssocHasRe 抓 `has(param("K"), "L")`。
+var exprAssocHasRe = regexp.MustCompile(
+	`has\s*\(\s*(param|header)\s*\(\s*"([^"]*)"\s*\)\s*,\s*"([^"]*)"\s*\)`)
+
+type keyAssociation struct {
+	kind   string // param | header
+	key    string
+	values []any
+}
+
+// exprKeyAssociations 把「哪个键跟哪个字面量比」从表达式文本里抽出来。
+//
+// 这是"两个键各要一个不同的值"那一族与条件唯一便宜的解法:全键 × 全探针的
+// 组合是指数的,而语法上 `param("user") == "vip"` 已经把配对写在脸上了。
+func exprKeyAssociations(exprStr string) []keyAssociation {
+	order := make([]string, 0, 8)
+	byKey := make(map[string]*keyAssociation, 8)
+	add := func(kind, key string, value any) {
+		if key == "" || value == nil {
+			return
+		}
+		id := kind + ":" + key
+		assoc, ok := byKey[id]
+		if !ok {
+			assoc = &keyAssociation{kind: kind, key: key}
+			byKey[id] = assoc
+			order = append(order, id)
+		}
+		for _, existing := range assoc.values {
+			if existing == value {
+				return
 			}
-			if result < 0 {
-				return fmt.Errorf("vector %s: result %f < 0", describeVector(v), result)
+		}
+		if len(assoc.values) >= 4 {
+			return
+		}
+		assoc.values = append(assoc.values, value)
+	}
+
+	for _, m := range exprAssocCmpRe.FindAllStringSubmatch(exprStr, -1) {
+		switch {
+		case m[3] != "":
+			add(m[1], m[2], m[3])
+		case m[4] != "":
+			if v, err := strconv.ParseFloat(m[4], 64); err == nil {
+				add(m[1], m[2], v)
+			}
+		case m[5] != "":
+			add(m[1], m[2], m[5] == "true")
+		}
+	}
+	for _, m := range exprAssocHasRe.FindAllStringSubmatch(exprStr, -1) {
+		add(m[1], m[2], m[3])
+	}
+
+	out := make([]keyAssociation, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byKey[id])
+	}
+	return out
+}
+
+// smokeTestAssociationRequests 造出「每个键同时取到自己那个字面量」的请求。
+//
+// 组合数按 smokeTestComboCap 截断,截断时退化成"一个键取字面量、其余键缺席"
+// 的逐条形态 —— 那仍然比原先的全键同值强,而全键同值对与条件是零覆盖。
+func smokeTestAssociationRequests(exprStr string) []billingexpr.RequestInput {
+	assocs := exprKeyAssociations(exprStr)
+	if len(assocs) == 0 {
+		return nil
+	}
+
+	combos := 1
+	for _, assoc := range assocs {
+		combos *= len(assoc.values)
+		if combos > smokeTestComboCap {
+			break
+		}
+	}
+
+	out := make([]billingexpr.RequestInput, 0, smokeTestComboCap+len(assocs))
+	if combos <= smokeTestComboCap {
+		indices := make([]int, len(assocs))
+		for {
+			body := map[string]any{}
+			hdr := map[string]string{}
+			for i, assoc := range assocs {
+				value := assoc.values[indices[i]]
+				if assoc.kind == "param" {
+					setJSONPath(body, assoc.key, value)
+				} else {
+					hdr[assoc.key] = fmt.Sprint(value)
+				}
+			}
+			if encoded, err := common.Marshal(body); err == nil {
+				out = append(out, billingexpr.RequestInput{Headers: hdr, Body: encoded})
+			}
+			pos := len(assocs) - 1
+			for pos >= 0 {
+				indices[pos]++
+				if indices[pos] < len(assocs[pos].values) {
+					break
+				}
+				indices[pos] = 0
+				pos--
+			}
+			if pos < 0 {
+				break
+			}
+		}
+		return out
+	}
+
+	for _, assoc := range assocs {
+		for _, value := range assoc.values {
+			body := map[string]any{}
+			hdr := map[string]string{}
+			if assoc.kind == "param" {
+				setJSONPath(body, assoc.key, value)
+			} else {
+				hdr[assoc.key] = fmt.Sprint(value)
+			}
+			if encoded, err := common.Marshal(body); err == nil {
+				out = append(out, billingexpr.RequestInput{Headers: hdr, Body: encoded})
+			}
+		}
+	}
+	return out
+}
+
+// setJSONPath 按 gjson 的路径语义把一个值写进探针请求体。
+//
+// 只处理探针需要的那一小块语法:`.` 分段、`\.` 转义成字面点号、纯数字段当
+// 数组下标(`messages.0.role`)。写不进去(同一份体里既有 `a` 又有 `a.b`
+// 这种自相矛盾的路径)时静默跳过 —— 少一条探针远好过让整个烟测因为一份
+// 畸形表达式而崩掉。
+func setJSONPath(root map[string]any, path string, value any) {
+	segments := splitJSONPath(path)
+	if len(segments) == 0 {
+		return
+	}
+	setJSONSegments(root, segments, value)
+}
+
+// setJSONSegments 递归写入。数组下标那一支必须回写整个切片(切片是值类型,
+// 就地 append 改不到父容器里的那一份)。
+func setJSONSegments(container any, segments []string, value any) {
+	seg := segments[0]
+	rest := segments[1:]
+
+	switch node := container.(type) {
+	case map[string]any:
+		if len(rest) == 0 {
+			node[seg] = value
+			return
+		}
+		child, ok := node[seg]
+		if !ok {
+			child = newJSONChild(rest[0])
+		}
+		node[seg] = writeJSONChild(child, rest, value)
+	case *[]any:
+		idx, err := strconv.Atoi(seg)
+		if err != nil || idx < 0 || idx > 32 {
+			return
+		}
+		for len(*node) <= idx {
+			*node = append(*node, nil)
+		}
+		if len(rest) == 0 {
+			(*node)[idx] = value
+			return
+		}
+		child := (*node)[idx]
+		if child == nil {
+			child = newJSONChild(rest[0])
+		}
+		(*node)[idx] = writeJSONChild(child, rest, value)
+	}
+}
+
+func newJSONChild(nextSegment string) any {
+	if isAllDigits(nextSegment) {
+		return []any{}
+	}
+	return map[string]any{}
+}
+
+func writeJSONChild(child any, rest []string, value any) any {
+	switch typed := child.(type) {
+	case map[string]any:
+		setJSONSegments(typed, rest, value)
+		return typed
+	case []any:
+		slice := typed
+		setJSONSegments(&slice, rest, value)
+		return slice
+	default:
+		// 路径互相矛盾(先写了标量,又要往里面钻)。跳过而不是覆盖:
+		// 覆盖会让同一份探针里先写的那个键静默消失。
+		return child
+	}
+}
+
+func splitJSONPath(path string) []string {
+	segments := make([]string, 0, 4)
+	var cur strings.Builder
+	for i := 0; i < len(path); i++ {
+		switch {
+		case path[i] == '\\' && i+1 < len(path):
+			i++
+			cur.WriteByte(path[i])
+		case path[i] == '.':
+			segments = append(segments, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(path[i])
+		}
+	}
+	segments = append(segments, cur.String())
+	if len(segments) > 8 {
+		return nil
+	}
+	for _, seg := range segments {
+		if seg == "" {
+			return nil
+		}
+	}
+	return segments
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// smokeTestClockDims 是每一个时间函数的取值范围,与 Go 标准库一致。
+var smokeTestClockDims = []struct {
+	name   string
+	lo, hi int
+	set    func(*billingexpr.ClockOverride, int)
+}{
+	{"hour", 0, 23, func(c *billingexpr.ClockOverride, v int) { c.Hour = v }},
+	{"minute", 0, 59, func(c *billingexpr.ClockOverride, v int) { c.Minute = v }},
+	{"weekday", 0, 6, func(c *billingexpr.ClockOverride, v int) { c.Weekday = v }},
+	{"month", 1, 12, func(c *billingexpr.ClockOverride, v int) { c.Month = v }},
+	{"day", 1, 31, func(c *billingexpr.ClockOverride, v int) { c.Day = v }},
+}
+
+var exprTimeFuncRe = regexp.MustCompile(`\b(hour|minute|weekday|month|day)\s*\(`)
+
+// smokeTestClockCap 是时钟探针的硬上限。几个维度一起用上时全排列有六万多种,
+// 而烟测是管理端保存路径上的同步动作。
+const smokeTestClockCap = 64
+
+// smokeTestClocks 组出烟测要读到的"墙钟"。
+//
+// 不加这一维的表现是:`hour("UTC") == 2 ? tier("night", p*3 - 99999) : ...`
+// 这类"夜间打折"表达式只在**运营点保存那一秒**的钟点上被评估一次。实测把
+// N 从 0 试到 23,只有等于当时 UTC 小时的那一条被拦下,另外 23 条全部干净
+// 落库 —— 到了那个时段全站该模型静默零收入(或者整条模型 400,取决于那个
+// 常数减在哪一档),而管理端看不出任何异常。按时段分档是 expr.md 与前端
+// 预设组(Night discount / Weekend discount)双重推荐的写法,不是歪门邪道。
+//
+// 用到时间函数时返回的第一条是一个**固定**的基准时钟而不是 nil:一道会因为
+// 当前几点钟而给出不同结论的校验闸门,本身就是缺陷。
+func smokeTestClocks(exprStr string) []*billingexpr.ClockOverride {
+	used := map[string]bool{}
+	for _, m := range exprTimeFuncRe.FindAllStringSubmatch(exprStr, -1) {
+		used[m[1]] = true
+	}
+	if len(used) == 0 {
+		return []*billingexpr.ClockOverride{nil}
+	}
+
+	base := billingexpr.ClockOverride{Month: 1, Day: 1}
+	literals := exprBoundaryValues(exprStr)
+
+	type clockDim struct {
+		index      int
+		candidates []int
+	}
+	dims := make([]clockDim, 0, len(smokeTestClockDims))
+	for i, d := range smokeTestClockDims {
+		if !used[d.name] {
+			continue
+		}
+		all := make([]int, 0, d.hi-d.lo+1)
+		for v := d.lo; v <= d.hi; v++ {
+			all = append(all, v)
+		}
+		dims = append(dims, clockDim{index: i, candidates: all})
+	}
+
+	product := 1
+	for _, d := range dims {
+		product *= len(d.candidates)
+	}
+
+	out := []*billingexpr.ClockOverride{&base}
+	push := func(c billingexpr.ClockOverride) {
+		if len(out) >= smokeTestClockCap {
+			return
+		}
+		out = append(out, &c)
+	}
+
+	if product+1 <= smokeTestClockCap {
+		indices := make([]int, len(dims))
+		for {
+			c := base
+			for i, d := range dims {
+				smokeTestClockDims[d.index].set(&c, d.candidates[indices[i]])
+			}
+			push(c)
+			pos := len(dims) - 1
+			for pos >= 0 {
+				indices[pos]++
+				if indices[pos] < len(dims[pos].candidates) {
+					break
+				}
+				indices[pos] = 0
+				pos--
+			}
+			if pos < 0 {
+				break
+			}
+		}
+		return out
+	}
+
+	// 全排列放不下时:按表达式自己的数字字面量取点(阈值就写在里面),
+	// 逐维各扫一遍。交叉条件覆盖不到,那是硬上限下的取舍 —— 但单条件的
+	// "夜间/周末打折"是绝大多数,而它们在这里全被覆盖。
+	for _, d := range dims {
+		spec := smokeTestClockDims[d.index]
+		picked := map[int]bool{spec.lo: true, spec.hi: true}
+		for _, lit := range literals {
+			v := int(lit)
+			for _, at := range []int{v - 1, v, v + 1} {
+				if at >= spec.lo && at <= spec.hi {
+					picked[at] = true
+				}
+			}
+		}
+		values := make([]int, 0, len(picked))
+		for v := range picked {
+			values = append(values, v)
+		}
+		sort.Ints(values)
+		for _, v := range values {
+			c := base
+			spec.set(&c, v)
+			push(c)
+		}
+	}
+	return out
+}
+
+// smokeTestEvalBudget 是一次烟测最多跑多少遍表达式。
+//
+// 越过它之后,时钟与请求这两维只与**基础**向量集相乘(而不是与逐字面量展开的
+// 边界向量集相乘)。三族形状各自仍被覆盖,而最坏耗时保持在管理端点保存能
+// 接受的量级。
+const smokeTestEvalBudget = 300000
+
+func smokeTestExpr(exprStr string) error {
+	baseVectors := smokeTestVectors()
+	vectors := append(append([]billingexpr.TokenParams{}, baseVectors...),
+		smokeTestBoundaryVectors(exprStr)...)
+	requests := smokeTestRequests(exprStr)
+	clocks := smokeTestClocks(exprStr)
+
+	overBudget := len(vectors)*len(requests)*len(clocks) > smokeTestEvalBudget
+
+	for ci, clock := range clocks {
+		for ri, request := range requests {
+			request.Clock = clock
+			run := vectors
+			if overBudget && ci > 0 && ri > 0 {
+				run = baseVectors
+			}
+			for _, v := range run {
+				result, _, err := billingexpr.RunExprWithRequest(exprStr, v, request)
+				if err != nil {
+					return fmt.Errorf("vector %s%s: run failed: %w",
+						describeVector(v), describeEnv(request), err)
+				}
+				if result < 0 {
+					return fmt.Errorf("vector %s%s: result %f < 0",
+						describeVector(v), describeEnv(request), result)
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// describeEnv 把翻负的那一条请求与时钟一起写进错误里。
+//
+// 只报向量的话,"客户端自称 vip 时为负"与"凌晨两点为负"在管理端看到的是
+// 同一句 `{p=0, c=0, len=0}` —— 运营会去改 token 那一侧的系数,而问题根本
+// 不在那里。
+func describeEnv(request billingexpr.RequestInput) string {
+	parts := make([]string, 0, 3)
+	if len(request.Body) > 0 && string(request.Body) != "{}" {
+		body := string(request.Body)
+		if len(body) > 160 {
+			body = body[:160] + "…"
+		}
+		parts = append(parts, "body="+body)
+	}
+	if len(request.Headers) > 0 {
+		keys := make([]string, 0, len(request.Headers))
+		for k := range request.Headers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		pairs := make([]string, 0, len(keys))
+		for _, k := range keys {
+			pairs = append(pairs, k+"="+request.Headers[k])
+		}
+		parts = append(parts, "headers{"+strings.Join(pairs, ", ")+"}")
+	}
+	if c := request.Clock; c != nil {
+		parts = append(parts, fmt.Sprintf("clock{hour=%d, minute=%d, weekday=%d, month=%d, day=%d}",
+			c.Hour, c.Minute, c.Weekday, c.Month, c.Day))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + strings.Join(parts, " ")
 }
 
 // describeVector 把翻负的那一条向量原样写进错误里。只报 {p, c} 的话,

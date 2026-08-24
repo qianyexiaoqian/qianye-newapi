@@ -108,11 +108,11 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, params TokenP
 			}
 			return strings.Contains(fmt.Sprint(source), substr)
 		},
-		"hour":    func(tz string) int { return timeInZone(tz).Hour() },
-		"minute":  func(tz string) int { return timeInZone(tz).Minute() },
-		"weekday": func(tz string) int { return int(timeInZone(tz).Weekday()) },
-		"month":   func(tz string) int { return int(timeInZone(tz).Month()) },
-		"day":     func(tz string) int { return timeInZone(tz).Day() },
+		"hour":    func(tz string) int { return clockReading(request.Clock, tz, clockHour) },
+		"minute":  func(tz string) int { return clockReading(request.Clock, tz, clockMinute) },
+		"weekday": func(tz string) int { return clockReading(request.Clock, tz, clockWeekday) },
+		"month":   func(tz string) int { return clockReading(request.Clock, tz, clockMonth) },
+		"day":     func(tz string) int { return clockReading(request.Clock, tz, clockDay) },
 		"max":     math.Max,
 		"min":     math.Min,
 		"abs":     math.Abs,
@@ -129,6 +129,54 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, params TokenP
 		return 0, trace, fmt.Errorf("expr result is %T, want float64", out)
 	}
 	return f, trace, nil
+}
+
+type clockField int
+
+const (
+	clockHour clockField = iota
+	clockMinute
+	clockWeekday
+	clockMonth
+	clockDay
+)
+
+// clockReading returns one calendar reading, honouring an injected override.
+//
+// Only the save-time smoke test injects one. Without the seam the whole
+// hour()/weekday()/month()/day() family was evaluated exactly once — at the
+// wall clock of the instant the operator pressed save — so an expression that
+// goes negative at 02:00 saved at 14:00 passed validation and then produced a
+// silent zero-revenue window (or a hard 400 on every request) once that hour
+// arrived.
+func clockReading(override *ClockOverride, tz string, field clockField) int {
+	if override != nil {
+		switch field {
+		case clockHour:
+			return override.Hour
+		case clockMinute:
+			return override.Minute
+		case clockWeekday:
+			return override.Weekday
+		case clockMonth:
+			return override.Month
+		case clockDay:
+			return override.Day
+		}
+	}
+	now := timeInZone(tz)
+	switch field {
+	case clockHour:
+		return now.Hour()
+	case clockMinute:
+		return now.Minute()
+	case clockWeekday:
+		return int(now.Weekday())
+	case clockMonth:
+		return int(now.Month())
+	default:
+		return now.Day()
+	}
 }
 
 func timeInZone(tz string) time.Time {
