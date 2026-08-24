@@ -2,6 +2,7 @@ package lottery
 
 import (
 	"encoding/json" // 仅取 RawMessage 类型;编解码一律走 common.*
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,9 +24,38 @@ import (
 // 两份区间迟早漂移成"界面允许、后端 400",或者更糟的"界面拒绝、后端放行"。
 
 // settingBound 是一个可写键的取值区间(闭区间)。
+//
+// NoMax 为真时**没有上界**,Hi 无意义。它不是用一个哨兵值表示的:哨兵在这里
+// 会撞车 —— 0 是 large_prize_alert_quota 的一个合法取值(= 不要二次确认),
+// 而 math.MaxInt64 一旦下发到界面上就会被渲染成一串没人看得懂的钱。
 type settingBound struct {
-	Lo int64
-	Hi int64
+	Lo    int64
+	Hi    int64
+	NoMax bool
+}
+
+// contains 是这个区间**唯一**的判定点:写侧(handlePutConfig)与读侧
+// (mergeOverrides)都必须过它,否则升级之前落库的越界覆盖会继续被读出来生效,
+// 而配置页会同时显示一个写不进去、却正在生效的值。
+func (b settingBound) contains(v int64) bool {
+	if v < b.Lo {
+		return false
+	}
+	return b.NoMax || v <= b.Hi
+}
+
+// quotaCeilingBound 给"0 = 不限"的额度上限键算出可写区间。
+//
+// YAML 写了正数 = 站点自己立了一道硬顶,在线只能**调低**:允许在线写 0 等于
+// 允许一个 HTTP 接口把那道硬顶变成"不限",与本文件开头那句"上界必须取自 YAML"
+// 是同一条规则。
+// YAML 是 0(默认)= 本来就不限,在线怎么配都行 —— 配一个正数是运营给自己加闸门,
+// 那个方向是收紧,没有理由拦。
+func quotaCeilingBound(yamlCeiling int64) settingBound {
+	if yamlCeiling > 0 {
+		return settingBound{Lo: 1, Hi: yamlCeiling}
+	}
+	return settingBound{Lo: 0, NoMax: true}
 }
 
 // settingBounds 按当前 YAML 算出每个可写键的区间。
@@ -48,11 +78,18 @@ func settingBounds() map[string]settingBound {
 		// (每一场各吃一个 max_total_prize_quota,没有全站累计闸门),写死一个
 		// 1000 等于允许运营在线把敞口放大 50 倍,而 YAML 拦不住它 ——
 		// 这正是这个函数开头那句"上界必须取自 YAML 而不是写死"要防的事。
-		keyMaxActiveActivities:  {Lo: 1, Hi: int64(c.MaxActiveActivities)},
-		keyMaxGuessFeeBps:       {Lo: 0, Hi: int64(c.MaxGuessFeeBps)},
-		keyDefaultGuessFeeBps:   {Lo: 0, Hi: int64(c.MaxGuessFeeBps)},
-		keyMaxTotalPrizeQuota:   {Lo: 1, Hi: c.MaxTotalPrizeQuota},
-		keyLargePrizeAlertQuota: {Lo: 0, Hi: c.MaxTotalPrizeQuota},
+		keyMaxActiveActivities: {Lo: 1, Hi: int64(c.MaxActiveActivities)},
+		keyMaxGuessFeeBps:      {Lo: 0, Hi: int64(c.MaxGuessFeeBps)},
+		keyDefaultGuessFeeBps:  {Lo: 0, Hi: int64(c.MaxGuessFeeBps)},
+		// 单场奖品硬顶:0 = 不限,而且是默认。上面那段"上界必须取自 YAML"
+		// 对它仍然成立 —— YAML 写了正数就只能往低调,见 quotaCeilingBound。
+		keyMaxTotalPrizeQuota: quotaCeilingBound(c.MaxTotalPrizeQuota),
+		// 二次确认阈值**没有上界**,而且刻意不去夹进 max_total_prize_quota:
+		// 它不是一道会放大敞口的闸门,而是一道会不会响的铃 —— 配大了只是少响
+		// 几次,配到天上等价于配 0(完全不打扰),两者都不多发一分钱。
+		// "阈值高过硬顶 = 一道永远不响的铃"这条不一致由 handlePutConfig 的
+		// 跨字段校验单独回答,那里能同时看到两个字段这一次改成了什么。
+		keyLargePrizeAlertQuota: {Lo: 0, NoMax: true},
 	}
 }
 
@@ -98,6 +135,13 @@ func handleGetConfig(c *gin.Context) {
 
 	bounds := make(map[string]gin.H, len(editableKeys))
 	for key, b := range settingBounds() {
+		// 无上界的键**不下发 max**,而不是下发一个大得离谱的数:前端拿到
+		// max 就会照着渲染一行"范围 0 ~ 9223372036854775807",而那串字符按
+		// 金额刻度换算出来是一个没人看得懂的数 —— 比不写更糟。
+		if b.NoMax {
+			bounds[key] = gin.H{"min": b.Lo, "unlimited": true}
+			continue
+		}
 		bounds[key] = gin.H{"min": b.Lo, "max": b.Hi}
 	}
 
@@ -213,7 +257,7 @@ func handlePutConfig(c *gin.Context) {
 			putConfigFailed(c, before, "配置项 "+key+" 的取值不是整数")
 			return
 		}
-		if v < b.Lo || v > b.Hi {
+		if !b.contains(v) {
 			putConfigFailed(c, before, "配置项 "+key+" 的取值超出允许范围")
 			return
 		}
@@ -226,8 +270,15 @@ func handlePutConfig(c *gin.Context) {
 		putConfigFailed(c, before, "默认手续费不得超过手续费上限")
 		return
 	}
-	if candidate.LargePrizeAlertQuota > candidate.MaxTotalPrizeQuota {
-		putConfigFailed(c, before, "大额告警阈值不得超过奖品总额度上限")
+	// 阈值高过硬顶 = 一道**永远不会响**的二次确认:够到阈值之前活动就已经被硬顶
+	// 400 掉了。硬顶为 0(不限,默认)时这条不成立 —— 那时阈值多高都只是"少响
+	// 几次",一分钱都不会多发,所以不拦。文案里的两个数换算成站内余额:
+	// 运营手里只有那个刻度,一句"不得超过 50000000"对着界面上的 $100 对不上号。
+	if candidate.MaxTotalPrizeQuota > 0 &&
+		candidate.LargePrizeAlertQuota > candidate.MaxTotalPrizeQuota {
+		putConfigFailed(c, before, fmt.Sprintf(
+			"二次确认阈值 %s 不得超过单场奖品总额上限 %s —— 否则这道确认永远触发不了",
+			quotaText(candidate.LargePrizeAlertQuota), quotaText(candidate.MaxTotalPrizeQuota)))
 		return
 	}
 

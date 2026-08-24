@@ -41,11 +41,13 @@ import { QyStatGrid } from '../components/qy-stat-grid'
 import { QY_EMPTY_TEXT, formatQyDuration, formatQyTs } from '../ops/format'
 import { QyKeyValue } from '../ops/qy-ops-ui'
 import { qyLotActivityQuery, qyLotEligibilityQuery } from './api'
+import { QyLotBallResultCard } from './components/lottery-ball-result-card'
 import { QyLotCover } from './components/lottery-cover'
 import { QyLotEligibilityCard } from './components/lottery-eligibility-card'
 import { QyLotEntryDialog } from './components/lottery-entry-dialog'
 import { QyLotFairnessPanel } from './components/lottery-fairness-panel'
 import { QyLotFinePrint } from './components/lottery-fine-print'
+import { QyLotGuessBoard } from './components/lottery-guess-board'
 import { QyLotRosterCard } from './components/lottery-roster-card'
 import { QyLotRulesList } from './components/lottery-rules-list'
 import { QyLotSpecTable } from './components/lottery-spec-table'
@@ -55,6 +57,7 @@ import {
   qyLotCountdown,
   qyLotOutcomeKey,
 } from './lib/display'
+import { hasQyLotGuessBoard } from './lib/guess'
 import { useQyNowSeconds } from './lib/use-now'
 import { isQyLotOpen } from './types'
 
@@ -197,6 +200,18 @@ export function QyLotteryDetail() {
               />
 
               {/*
+                「本期开奖 · 我中了没有」排在两列网格**之前**，也就是统计格
+                下面的第一块。理由是项目方那句原话：「双色球我想要实现的就是你
+                买彩票一样，中不中。」——"中不中"是这一页要回答的第一个问题，
+                把它放进左列意味着它排在活动说明与奖级表后面，窄屏上要滚过
+                一屏半才看得到。
+
+                它在**已结束**状态下同样渲染（这一整块不看 status），开奖号、
+                我的号、命中情况因此不会随着活动结束而消失。
+              */}
+              {isBall && <QyLotBallResultCard activity={activity} />}
+
+              {/*
                 两列都要 `min-w-0`。窄屏下这张网格塌成一列，而一列网格的轨道是
                 **auto** —— 轨道里的项默认 `min-width: auto`，于是奖级表那 5 列
                 （档位 / 命中要求 / 奖金形态 / 预算份数 / 中奖概率）把整列撑到
@@ -230,8 +245,13 @@ export function QyLotteryDetail() {
                           : t('qy_lot_options_title')}
                       </CardTitle>
                       {activity.kind === 'guess' && (
+                        // 一句话把彩池的三件要害说完：钱从哪来、平台抽多少、
+                        // 什么情况下原样退回。改造前这里是两段分开的话
+                        // （手续费一段、全对/全错一段），加起来 48 个字却
+                        // **始终没有说出**「奖池 = 全部押注之和」——
+                        // 而那正是"赢家的钱来自输家"的全部内容。
                         <CardDescription>
-                          {t('qy_lot_fee_desc', {
+                          {t('qy_lot_guess_pool_desc', {
                             percent: (activity.fee_bps / 100).toFixed(2),
                           })}
                         </CardDescription>
@@ -248,38 +268,46 @@ export function QyLotteryDetail() {
                       )}
                     </CardHeader>
                     <CardContent className='space-y-3'>
-                      {/* 开奖号必须与奖级表同屏：用户点进来的第一件事是"开的是
-                          哪几个号"，让他去「我的参与」里点弹窗才看得到，等于把
-                          结果藏起来。这一串来自后端的 ball_result，而它可由
-                          why-result 弹窗用公开种子当场复算出同一组号。 */}
-                      {isBall && (activity.ball_result ?? '') !== '' && (
-                        <div className='rounded-lg border p-3'>
-                          <p className='text-muted-foreground text-xs'>
-                            {t('qy_lot_ball_result')}
-                          </p>
-                          <p className='mt-1 font-mono text-lg break-all tabular-nums'>
-                            {activity.ball_result}
-                          </p>
-                          {/* 「这串号怎么来的、能不能自己验」是信任问题而不是
-                              决策问题：想核对的人点开就是与改造前逐字相同的
-                              那段话，不想核对的人不必先读 88 个字才看到号码。 */}
-                          <QyLotFinePrint
-                            className='mt-1'
-                            label={t('qy_lot_ball_result_verify_label')}
-                          >
-                            <p>{t('qy_lot_ball_result_verify_note')}</p>
-                          </QyLotFinePrint>
-                        </div>
+                      {/*
+                        竞猜走盘口而不是表格。三列平铺的事实（选项 / 投注额 /
+                        人次）不解释任何事；分布条与实时赔率会自己讲清"钱从
+                        押错的人那里来、押的人越多每份越少"。
+                        拿不到 `bet_quota` 时（证据链端点不下发它）回落到原来
+                        那张表 —— 那时整块盘口都是未知数，画一排 0% 的条子是
+                        一个**错的**数，比没有数更糟。
+                      */}
+                      {activity.kind === 'guess' &&
+                      hasQyLotGuessBoard(activity.spec) ? (
+                        <QyLotGuessBoard
+                          spec={activity.spec}
+                          poolQuota={activity.pool_quota}
+                          feeBps={activity.fee_bps}
+                          stakeQuota={activity.stake_quota}
+                          winOptNo={activity.win_opt_no}
+                          /*
+                            结果一旦公布，盘口就必须从「押中约得」切到
+                            「已按此赔付 / 未中 / 原样退回」。判据取
+                            settling|finished 而不是 win_opt_no > 0：流局与
+                            取消那几种结局根本没有获胜选项，但它们同样已经
+                            有了结果（全额退回），此时再显示前瞻赔率一样是
+                            在写一个从未发生过的数。
+                          */
+                          resultAnnounced={
+                            activity.status === 'settling' ||
+                            activity.status === 'finished'
+                          }
+                        />
+                      ) : (
+                        <QyLotSpecTable
+                          kind={activity.kind}
+                          spec={activity.spec}
+                          winOptNo={activity.win_opt_no}
+                          ballPool={
+                            isBall ? qyLotBallPoolOf(activity) : undefined
+                          }
+                          poolOpenQuota={activity.pool_open_quota ?? 0}
+                        />
                       )}
-                      <QyLotSpecTable
-                        kind={activity.kind}
-                        spec={activity.spec}
-                        winOptNo={activity.win_opt_no}
-                        ballPool={
-                          isBall ? qyLotBallPoolOf(activity) : undefined
-                        }
-                        poolOpenQuota={activity.pool_open_quota ?? 0}
-                      />
                       {isBall && (
                         // 概率是本地算的这件事必须写出来。否则用户会默认它和别的
                         // 数字一样是平台报的，而"这个数不需要相信平台"正是双色球
@@ -294,13 +322,6 @@ export function QyLotteryDetail() {
                             {activity.series_no}
                           </span>
                         </QyKeyValue>
-                      )}
-                      {activity.kind === 'guess' && (
-                        // 「全部猜错怎么办」必须在下注之前就写清楚，否则事后
-                        // 无论怎么处理都会被指控临时改规则。
-                        <p className='text-muted-foreground text-xs'>
-                          {t('qy_lot_no_winner_note')}
-                        </p>
                       )}
                       {/* 结果依据只有竞猜录了结果之后才有。用 ?? '' 兜底而不是
                           直接 .trim()：老版本后端不下发这个字段，一次 undefined

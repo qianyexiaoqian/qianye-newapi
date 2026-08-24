@@ -28,8 +28,10 @@ import { Button } from '@/components/ui/button'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
 import { qyLotFullProofQuery, qyLotProofDownloadUrl } from '../api'
+import { qyLotBallFormatPick } from '../lib/ball'
 import { explainQyLotResult, type QyLotExplain } from '../lib/explain'
 import { QY_LOT_PPM_DEN } from '../types'
+import { QyLotBallNumbers } from './lottery-ball-numbers'
 import { QyLotFinePrint } from './lottery-fine-print'
 
 type WhyResultDialogProps = {
@@ -203,16 +205,31 @@ export function QyLotWhyResultDialog(props: WhyResultDialogProps) {
 
             {explain.mode === 'ball' && (
               <div className='space-y-3'>
+                {/* 两组号并排画成球，命中的高亮 —— 与详情页、我的参与、
+                    公开名单是同一个组件、同一条视觉规则。区别只在数据来源：
+                    这里的开奖号是**本地从公开种子重摇**出来的，一个数字都不
+                    来自后端，所以它同时是"平台报的那组号对不对"的检验点。 */}
                 <QyKeyValue label={t('qy_lot_ball_result')}>
-                  <span className='font-mono tabular-nums'>
-                    {explain.drawnReds.join(' ')} |{' '}
-                    {explain.drawnBlues.join(' ')}
-                  </span>
+                  <QyLotBallNumbers
+                    pick={qyLotBallFormatPick({
+                      blues: explain.drawnBlues,
+                      reds: explain.drawnReds,
+                    })}
+                    size='sm'
+                  />
                 </QyKeyValue>
                 <QyKeyValue label={t('qy_lot_ball_my_pick')}>
-                  <span className='font-mono tabular-nums'>
-                    {explain.myReds.join(' ')} | {explain.myBlues.join(' ')}
-                  </span>
+                  <QyLotBallNumbers
+                    hits={{
+                      blues: explain.matchedBlues,
+                      reds: explain.matchedReds,
+                    }}
+                    pick={qyLotBallFormatPick({
+                      blues: explain.myBlues,
+                      reds: explain.myReds,
+                    })}
+                    size='sm'
+                  />
                 </QyKeyValue>
                 <QyKeyValue label={t('qy_lot_why_ball_match')}>
                   {t('qy_lot_ball_match_value', {

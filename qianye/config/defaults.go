@@ -295,8 +295,10 @@ func applyDefaults(c *Config) {
 
 	lt := &c.Lottery
 	intDefault(&lt.MaxActiveActivities, 20)
-	int64Default(&lt.MaxStakeQuota, 5_000_000)
-	int64Default(&lt.MaxTotalPrizeQuota, 50_000_000)
+	// max_stake_quota / max_total_prize_quota 的缺省是 **0 = 不限制**,
+	// 所以这里不给它们补默认值 —— 补一个正数等于让"没写"变成一道站点没要求过的
+	// 硬顶,而那正是运营开一场活动被顶回来、却在配置文件里找不到自己写过什么的
+	// 由来。真正还在盯着"多写一个零"的是下面这条二次确认阈值。
 	int64Default(&lt.LargePrizeAlertQuota, 5_000_000)
 	int64Default(&lt.PayPasswordThresholdQuota, 100_000)
 	intDefault(&lt.EntryCloseGraceSeconds, 60)

@@ -476,6 +476,70 @@ export type QyLotActivityDetail = {
   ball_blue_pick?: number
   /** 本期开奖号 `03,09,12|05`。开奖前为空串。 */
   ball_result?: string
+  /**
+   * 我自己在这一场买的票（只有 `draw_mode='ball'` 下发；老后端不下发）。
+   *
+   * 它存在的唯一理由是让「我的号」与「开奖号」出现在**同一屏**上。改造前详情页
+   * 只有开奖号，我的号要去另一张标签页的弹窗里才看得到 —— 而"我中了没有"正是
+   * 这一页要回答的第一个问题。
+   */
+  my_tickets?: QyLotMyTicket[]
+}
+
+/**
+ * 详情页上「我买的那几张票」。
+ *
+ * 零值口径与后端 `myTicketView` 逐条对齐，不要在前端另立一套：
+ *
+ *  - `won_kind === ''` = **没有派奖行**。它等不等于"没中"，要看这一期开没开出
+ *    号码：`ball_result !== ''` 才说明真的开过奖。一场已取消的活动上写「未中奖」，
+ *    等于把退款说成了输钱。
+ *  - `won_tier === 0` 同上；奖级本身从 1 起。
+ */
+export type QyLotMyTicket = {
+  entry_no: string
+  seq: number
+  /** 归一化选号 `03,05,12|02`。 */
+  pick: string
+  status: QyLotEntryStatus
+  amount: number
+  won_kind: QyLotPayoutKind | ''
+  won_tier: number
+  won_amount: number
+}
+
+/**
+ * 双色球期次系列（`GET /lottery/series/:series_no`）。
+ *
+ * 详情页只读 `current` 那一段，用来回答「下一期什么时候」。后端把它定义为
+ * **本系列上还在 published/locked 的那一期**：正在卖的那一期就是它自己，
+ * 已开完之后它指向下一期；一期都没有时后端给一个空对象（`issue_no` 缺席），
+ * 那就是"本系列暂时没有下一期"——不是错误，也不该编一个时间出来。
+ */
+export type QyLotSeriesView = {
+  series_no: string
+  title: string
+  status: string
+  red_pool: number
+  red_pick: number
+  blue_pool: number
+  blue_pick: number
+  pool_quota: number
+  issue_seq: number
+  current?: {
+    act_no?: string
+    issue_no?: number
+    status?: QyLotStatus
+    close_at?: number
+    draw_at?: number
+    pool_open_quota?: number
+  }
+  last?: {
+    act_no?: string
+    issue_no?: number
+    ball_result?: string
+    revealed_at?: number
+  }
 }
 
 // ───────────────────────────── 我的参与 ─────────────────────────────
@@ -516,11 +580,25 @@ export type QyLotMyEntry = {
    */
   pick?: string
   /**
+   * 玩法与本期开奖号。**只有 `draw_mode='ball'` 下发**，老后端不下发。
+   *
+   * 这两个字段此前刻意不在这里，理由是"玩法与开奖号都从证据链里现算，列表行上
+   * 再放一份就多一个会漂移的取值"。方向对，代价却落在了这张表唯一要回答的那句
+   * 话上：**我中了没有**。少了开奖号，用户只能逐行点开「为什么是这个结果」，
+   * 而那个弹窗每次都要整份拉一次证据链再用 WebCrypto 复算 —— 一页 20 行就是
+   * 20 次下载与 20 次复算，实际结果是没有人会去点。
+   *
+   * 漂移由**位置**而不是由缺席来控制：这里的 `ball_result` 与详情页、证据链读的
+   * 是同一行活动记录（开奖那一刻写入、此后只读），没有第二个写入点；而
+   * 「为什么是这个结果」仍然一个数字都不信后端，照旧从公开种子当场重摇。
+   */
+  draw_mode?: QyLotDrawMode
+  ball_result?: string
+  /**
    * 中奖 / 赔付 / 退款 / 文本奖的结果；未中奖或尚未结算为 `null`。
    *
-   * 玩法（`draw_mode`）**刻意不在这里**：「为什么是这个结果」的每一个数字都
-   * 从证据链里现算，玩法自然也从那份文档里读。列表行上再放一份，就多了一个
-   * 会与证据链漂移的取值。
+   * `null` **不等于**"没中"：一场还没开奖、或已取消全额退款的活动上，这里同样
+   * 是 `null`。判"没中"要再加一条 `ball_result !== ''`（开过奖）。
    */
   won: {
     /** `text` = 文本奖：它没有金额，要点开才看得到内容。 */

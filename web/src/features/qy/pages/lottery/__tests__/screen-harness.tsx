@@ -337,12 +337,25 @@ export async function mountQyLotScreen(
     path: '/qy/admin/lottery',
     component: Screen,
   })
+  // 管理端活动详情读的是 `useParams({ from: '/_authenticated/qy/admin/lottery/$actNo/' })`。
+  // 缺这一层它取不到 `actNo`，整屏塌成空白 —— 而"空白"会让任何字数或
+  // "这一格显示了什么"的断言都轻松通过。
+  const adminDetailRoute = createRoute({
+    getParentRoute: () => authRoute,
+    path: '/qy/admin/lottery/$actNo/',
+    component: Screen,
+  })
   const router = createRouter({
     history: createMemoryHistory({
       initialEntries: [options.path ?? '/qy/lottery'],
     }),
     routeTree: rootRoute.addChildren([
-      authRoute.addChildren([hallRoute, detailRoute, adminRoute]),
+      authRoute.addChildren([
+        hallRoute,
+        detailRoute,
+        adminRoute,
+        adminDetailRoute,
+      ]),
     ]),
   })
 

@@ -172,6 +172,27 @@ type activityDetail struct {
 
 	Spec         []specItem `json:"spec"`
 	MyEntryCount int        `json:"my_entry_count"`
+	// MyTickets 是**我自己**在这一场买的票,只在 draw_mode=ball 下下发。
+	//
+	// # 为什么详情页必须拿到它
+	//
+	// 双色球唯一要回答的问题是「我中了没有」,而那句话的完整形式是
+	// **「我的号 ⟷ 开奖号」**。改造前这两半从来没有在同一屏出现过:详情页有
+	// 开奖号、没有我的号(公开名单那张表对 ball 的「选项」列恒显示 -);
+	// 「我的参与」有我的号、没有开奖号(myEntryView 不带 ball_result)。
+	// 唯一并排的地方是「为什么是这个结果」弹窗 —— 在另一张标签页的一个图标
+	// 按钮后面,而且要先整份拉证据链再用 WebCrypto 复算。项目方反馈的
+	// 「已开奖的抽奖为什么不显示双色球号码」就是这个形状。
+	//
+	// # 为什么不是复用 /lottery/my-entries
+	//
+	// 那条是**跨活动**的分页列表,详情页要的是"这一场我的全部票",按活动过滤
+	// 要么加一个只有一处调用方的查询参数、要么让前端翻页翻到为止。这里一次
+	// 点查,与 my_entry_count 同一次请求 —— 两个数出自同一个事务视图,不会
+	// 出现"卡片说我买了 3 张、下面只列出 2 张"。
+	//
+	// 非 ball 活动恒为空数组:pick 在那些模式下恒为空串,列出来一格内容都没有。
+	MyTickets []myTicketView `json:"my_tickets"`
 	// PayPasswordRequired 让前端知道要不要渲染支付密码输入框。判定用的是活动的
 	// 基准参与费,即**这一场最小的一笔扣款**;竞猜自选更大的金额时,真正的闸门
 	// 在 handleCreateEntry 里按本次金额重算(见那里的说明)。
@@ -187,6 +208,37 @@ type activityDetail struct {
 	// "界面上点得到、后端不认"是同一种缺陷,只是方向反了。
 	PlayOpen bool `json:"play_open"`
 }
+
+// myTicketView 是详情页上「我买的那几张票」。
+//
+// # 零值口径(先定义再用)
+//
+//   - Pick == ""      非双色球,或这张票根本没选号(不可能:acceptPick 拒绝空号)。
+//   - WonKind == ""   这张票**没有任何派奖行**。它是否等于"没中",取决于活动
+//     开没开出号码:ball_result != "" 才说明这一期真的开过奖
+//     (取消/流局的场次 reveal 从未执行,ball_result 恒为空串)。
+//     前端据此才敢写「未中奖」三个字 —— 在一场已取消的活动上写"未中奖",
+//     等于把退款说成了输钱。
+//   - WonTier == 0    同上,没有派奖行。奖级本身从 1 起。
+type myTicketView struct {
+	EntryNo string `json:"entry_no"`
+	Seq     int    `json:"seq"`
+	Pick    string `json:"pick"`
+	Status  string `json:"status"`
+	Amount  int64  `json:"amount"`
+	// WonKind / WonTier / WonAmount 与 myEntryView.Won 同一个来源(qy_lot_payout),
+	// 口径也完全一致:一张票最多一类出款,真出现两条时以派奖为准。
+	WonKind   string `json:"won_kind"`
+	WonTier   int    `json:"won_tier"`
+	WonAmount int64  `json:"won_amount"`
+}
+
+// myTicketsCap 是详情页最多列出多少张我自己的票。
+//
+// 每人参与上限的硬顶是 perUserCapHard(500),把 500 张票塞进一张详情页既没人
+// 读得完,也让这个响应体从"一屏"变成"一份报表"。超出的部分在「我的参与」里
+// 分页看得到,那才是留得住的那一份;这里只回答"我这几张中了没有"。
+const myTicketsCap = 50
 
 // hallPhase 是大厅一个分区的口径:它包含哪些状态、按什么排序。
 //
@@ -391,6 +443,7 @@ func handleGetActivity(c *gin.Context) {
 		BallBluePick:        act.BallBluePick,
 		BallResult:          act.BallResult,
 		Spec:                make([]specItem, 0, 8),
+		MyTickets:           make([]myTicketView, 0, 4),
 		PayPasswordRequired: PayPasswordRequired(act.StakeQuota),
 		PlayOpen:            effectiveCtx(ctx).playShown(playOf(act.Kind, act.DrawMode)),
 
@@ -441,7 +494,66 @@ func handleGetActivity(c *gin.Context) {
 		return
 	}
 	detail.MyEntryCount = int(mine)
+
+	// 双色球才列票:pick 在别的模式下恒为空串,列出来一格内容都没有。
+	// 未登录不会走到这里(整条路由挂在 UserAuth 之下),但 me <= 0 仍然显式挡一道 ——
+	// 一个 user_id = 0 的查询会把**别人的**票当成"我的"发出去。
+	if act.DrawMode == DrawModeBall && c.GetInt("id") > 0 {
+		tickets, err := loadMyBallTickets(ctx, gdb, act.Id, c.GetInt("id"))
+		if err != nil {
+			respondErr(c, err)
+			return
+		}
+		detail.MyTickets = tickets
+	}
 	respondOK(c, detail)
+}
+
+// loadMyBallTickets 取"这一场我自己的票"及其派奖结果。
+//
+// 两次点查而不是 JOIN:与 handleListMyEntries 同一条口径(两张表都在索引上,
+// 而两次点查比一次 JOIN 更容易在跨库三家上解释)。
+func loadMyBallTickets(ctx context.Context, gdb *gorm.DB, actId int64, userId int) ([]myTicketView, error) {
+	rows := make([]Entry, 0, 8)
+	if err := gdb.WithContext(ctx).
+		Where("act_id = ? AND user_id = ? AND status IN (?)",
+			actId, userId, []string{EntryPending, EntrySuccess}).
+		Order("seq asc").Limit(myTicketsCap).Find(&rows).Error; err != nil {
+		db.MarkFailure(err)
+		return nil, wrapInternal("查询我的选号", err)
+	}
+	out := make([]myTicketView, 0, len(rows))
+	if len(rows) == 0 {
+		return out, nil
+	}
+
+	payouts := make(map[int64]Payout, len(rows))
+	list := make([]Payout, 0, len(rows))
+	if err := gdb.WithContext(ctx).
+		Where("entry_id IN (?)", entryIds(rows)).Find(&list).Error; err != nil {
+		db.MarkFailure(err)
+		return nil, wrapInternal("查询我的出款", err)
+	}
+	for _, p := range list {
+		// 与 handleListMyEntries 逐字同一条:一张票最多一类出款,
+		// 真出现两条时以派奖为准展示。
+		if old, ok := payouts[p.EntryId]; ok && old.Kind != PayoutRefund {
+			continue
+		}
+		payouts[p.EntryId] = p
+	}
+
+	for _, e := range rows {
+		v := myTicketView{
+			EntryNo: e.EntryNo, Seq: e.Seq, Pick: e.Pick,
+			Status: e.Status, Amount: e.Amount,
+		}
+		if p, ok := payouts[e.Id]; ok {
+			v.WonKind, v.WonTier, v.WonAmount = p.Kind, p.Tier, p.AmountQuota
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 // handleGetEligibility 回答"我为什么不能参加"。
@@ -632,9 +744,28 @@ type myEntryView struct {
 	// 它必须在"我的参与"里长期看得见:选号是这张票唯一由用户决定的内容,
 	// 而事后争议的第一句话永远是"我买的明明是那一组"。回执弹窗关掉就没了,
 	// 这份列表才是留得住的那一份。
-	Pick      string   `json:"pick,omitempty"`
-	Won       *wonView `json:"won"`
-	CreatedAt int64    `json:"created_at"`
+	Pick string `json:"pick,omitempty"`
+	// DrawMode / BallResult 让这张表能把「我的号」与「开奖号」放在同一行上。
+	//
+	// # 这两个字段此前刻意不在这里,现在为什么必须在
+	//
+	// 原口径是「玩法与开奖号都从证据链里现算,列表行上再放一份就多一个会漂移
+	// 的取值」。方向是对的,代价却落在了唯一要紧的那句话上:这张表是用户查
+	// 「我中了没有」的地方,而改造前它只有我的号、没有开奖号 —— 想知道中没中,
+	// 得逐行点开「为什么是这个结果」,那里会整份拉一次证据链再用 WebCrypto 复算。
+	// 一页 20 行就是 20 次下载与 20 次复算,实际结果是没有人会去点。
+	//
+	// 漂移风险由**位置**而不是由缺席来控制:这里的 ball_result 与详情页、
+	// 证据链读的是同一行活动记录(qy_lot_activity.ball_result,开奖那一刻写入、
+	// 此后只读),不存在第二个写入点;而「为什么是这个结果」弹窗仍然一个数字
+	// 都不信后端 —— 它照旧从公开种子当场重摇。两条路算出不同的号,正是那个
+	// 弹窗要抓的东西,把号摆在列表上只会让它更容易被发现,而不是更难。
+	//
+	// 非双色球恒为空串,omitempty 让老前端与脚本客户端的响应体一个字节都不变。
+	DrawMode   string   `json:"draw_mode,omitempty"`
+	BallResult string   `json:"ball_result,omitempty"`
+	Won        *wonView `json:"won"`
+	CreatedAt  int64    `json:"created_at"`
 }
 
 // handleListMyEntries 返回"我的参与与派奖"。
@@ -706,6 +837,7 @@ func handleListMyEntries(c *gin.Context) {
 		}
 		if a, ok := acts[e.ActId]; ok {
 			v.ActNo, v.Title, v.Kind = a.ActNo, a.Title, a.Kind
+			v.DrawMode, v.BallResult = a.DrawMode, a.BallResult
 		}
 		if p, ok := payouts[e.Id]; ok {
 			v.Won = &wonView{Kind: p.Kind, Tier: p.Tier, Amount: p.AmountQuota, Status: p.Status}

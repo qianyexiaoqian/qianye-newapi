@@ -100,6 +100,15 @@ export type QyLotExplainBall = {
   drawnBlues: number[]
   myReds: number[]
   myBlues: number[]
+  /**
+   * 我的号里**具体是哪几个**被开出来了。
+   *
+   * 与 `matchRed` / `matchBlue` 是同一件事的两个投影：后者是个数（决定档位），
+   * 前者是具体的号（决定界面上哪几颗球高亮）。个数由这两个数组的长度得出，
+   * 所以两者不可能各说各话。
+   */
+  matchedReds: number[]
+  matchedBlues: number[]
   matchRed: number
   matchBlue: number
   /** 各档的命中要求，供用户逐条对照。 */
@@ -177,8 +186,10 @@ export async function explainQyLotResult(
       proof.ball_blue_pick ?? 0
     )
     const { reds, blues } = qyLotParsePick(mine.pick ?? '')
-    const matchRed = reds.filter((ball) => drawnReds.includes(ball)).length
-    const matchBlue = blues.filter((ball) => drawnBlues.includes(ball)).length
+    const matchedReds = reds.filter((ball) => drawnReds.includes(ball))
+    const matchedBlues = blues.filter((ball) => drawnBlues.includes(ball))
+    const matchRed = matchedReds.length
+    const matchBlue = matchedBlues.length
     const tierNeeds = tiers
       .map((tier) => ({
         tier: tier.tier,
@@ -194,6 +205,8 @@ export async function explainQyLotResult(
       drawnBlues,
       myReds: reds,
       myBlues: blues,
+      matchedReds,
+      matchedBlues,
       matchRed,
       matchBlue,
       tierNeeds,

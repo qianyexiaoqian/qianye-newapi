@@ -375,6 +375,15 @@ export function qyLotValidateDraft(
   // v1 没有免费场：`stake_quota` 必须 > 0。两阶段入口本身就要求金额 > 0，
   // 0 元要另开一条不动钱的路径 = 第二套状态机 + 第二套幂等 + 第二套补偿。
   if (draft.stake_quota <= 0) errors.push('qy_lot_v_stake_required')
+  // 站点自选的单笔扣款硬顶，**0 = 不限**（默认）。后端 `buildActivity` 有一份
+  // 对应判定，这里复现它只是为了别让运营走完四步才吃一个 400。
+  if (
+    yaml != null &&
+    yaml.max_stake_quota > 0 &&
+    draft.stake_quota > yaml.max_stake_quota
+  ) {
+    errors.push('qy_lot_v_stake_over_cap')
+  }
 
   if (
     draft.open_at <= 0 ||
@@ -481,6 +490,15 @@ export function qyLotValidateDraft(
       draft.bet_min_quota > draft.bet_max_quota
     ) {
       errors.push('qy_lot_v_bet_order')
+    }
+    // 单注上限同样受站点硬顶约束（0 = 不限）。它与 `stake_quota` 共用
+    // `max_stake_quota`：后端 `applyBetBounds` 与 `acceptAmount` 也是同一个值。
+    if (
+      yaml != null &&
+      yaml.max_stake_quota > 0 &&
+      draft.bet_max_quota > yaml.max_stake_quota
+    ) {
+      errors.push('qy_lot_v_bet_over_cap')
     }
   }
 
@@ -636,7 +654,17 @@ function validateBallDraft(
  * 规则还会进 `rules_hash` → `commit_hash`，公开的承诺文本里写的也是"不限"。
  * 那时连"我确实配过"都举证不出来。
  */
-export function qyLotDraftToInput(draft: QyLotDraft): QyLotCreateInput {
+export function qyLotDraftToInput(
+  draft: QyLotDraft,
+  /**
+   * 「我看清了这场活动最坏会发出多少站内余额」的回执。
+   *
+   * 默认 0 = **没确认**。调用方只有在运营真的勾过那个不可逆确认框之后才把
+   * {@link qyLotTotalPrizeQuota} 传进来 —— 无条件回填等于让这道确认自我满足，
+   * 那样它一行代码都没少写，却什么都没拦住。
+   */
+  confirmNetIssueQuota = 0
+): QyLotCreateInput {
   const isBall = draft.kind === 'draw' && draft.draw_mode === 'ball'
   return {
     kind: draft.kind,
@@ -697,5 +725,6 @@ export function qyLotDraftToInput(draft: QyLotDraft): QyLotCreateInput {
             is_catch_all: option.is_catch_all,
           }))
         : [],
+    confirm_net_issue_quota: confirmNetIssueQuota,
   }
 }

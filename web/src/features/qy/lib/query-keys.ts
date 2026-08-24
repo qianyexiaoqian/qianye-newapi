@@ -115,6 +115,9 @@ export const qyKeys = {
     [...qyKeys.all, 'lottery', 'eligibility', actNo] as const,
   lotteryMyEntries: (params: unknown) =>
     [...qyKeys.all, 'lottery', 'my-entries', params] as const,
+  /** 双色球期次系列。详情页用它回答「下一期什么时候」。 */
+  lotterySeries: (seriesNo: string) =>
+    [...qyKeys.all, 'lottery', 'series', seriesNo] as const,
   /** 证据链。匿名可访问，但缓存 key 仍挂在 qy 前缀下以便一起失效。 */
   lotteryProof: (actNo: string, params: unknown) =>
     [...qyKeys.all, 'lottery', 'proof', actNo, params] as const,

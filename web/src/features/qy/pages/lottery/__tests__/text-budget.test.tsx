@@ -162,6 +162,13 @@ async function mountDetail(
   })
 }
 
+/**
+ * 已结束的双色球，而且**我买过两张**（一张中、一张没中）。
+ *
+ * 带上 `my_tickets` 才是这一屏真实的样子：项目方投诉的正是这一屏
+ * （「已开奖的抽奖为什么不显示双色球号码」），而改造前它连我的号都没有。
+ * 用一个没有票的夹具来量字数，量的是一个用户永远看不到的版本。
+ */
 const FINISHED_BALL = qyLotDetailFixture({
   ...BALL,
   status: 'finished',
@@ -169,27 +176,60 @@ const FINISHED_BALL = qyLotDetailFixture({
   title: '第 12 期双色球',
   spec: BALL_SPEC,
   ball_result: '03,09,12,17,22,30|05',
+  my_entry_count: 2,
+  my_tickets: [
+    {
+      entry_no: 'LE-WIN',
+      seq: 1,
+      pick: '03,09,12,17,22,31|05',
+      status: 'success',
+      amount: 500000,
+      won_kind: 'prize',
+      won_tier: 2,
+      won_amount: 2_000_000,
+    },
+    {
+      entry_no: 'LE-MISS',
+      seq: 2,
+      pick: '01,02,04,05,06,07|01',
+      status: 'success',
+      amount: 500000,
+      won_kind: '',
+      won_tier: 0,
+      won_amount: 0,
+    },
+  ],
 })
 
 /** 平台自陈的证据边界。它由后端下发，所以在这里是一段独立的假数据。 */
 const PROOF_NOTICE = '本份证据不能证明种子是真随机的，也不能把标识还原成真人。'
 
+/*
+  公开名单一页真的渲染 20 行（lottery-roster-card 的 PAGE_SIZE），而真实的
+  `entry_no` 是 27 字、`user_ref` 是 32 字十六进制 —— 每行成本约 80 字。
+
+  夹具此前只有 1 条**玩具标识**的名单（E-1 / u-abc，3+6 字），于是
+  「活动详情 ≤1000 字」那道守卫只在"恰好一个人参加、而且标识短得不真实"
+  这种场次上成立：实测真实标识下第 2 个参与者就把它顶穿，满页 20 行是 2507 字。
+  换成真实规模之后这道守卫才真的在量东西 —— 它现在能过，靠的是名单表被折起来。
+*/
+const ROSTER_ENTRIES = Array.from({ length: 20 }, (_, i) => ({
+  entry_no: `LE20260824-${(i + 1).toString(16).padStart(16, '0')}`,
+  seq: i + 1,
+  user_ref: (i + 1).toString(16).padStart(32, '0'),
+  opt_no: 0,
+  amount: 500000,
+  status: 'confirmed',
+  pick: '01,02,03,04,05,06|07',
+}))
+
 const FINISHED_BALL_PROOF = {
   algo: 'lot-v2',
   act_no: 'LA-1',
-  entries: [
-    {
-      entry_no: 'E-1',
-      seq: 1,
-      user_ref: 'u-abc',
-      opt_no: 0,
-      amount: 500000,
-      status: 'confirmed',
-    },
-  ],
-  total: 1,
+  entries: ROSTER_ENTRIES,
+  total: ROSTER_ENTRIES.length,
   roster_hash: 'c'.repeat(64),
-  roster_count: 1,
+  roster_count: ROSTER_ENTRIES.length,
   seed: 'd'.repeat(64),
   commit_hash: 'a'.repeat(64),
   chain_head: 'e'.repeat(64),
@@ -296,12 +336,26 @@ describe('大厅首屏：先看到活动，不是先看到一段免责声明', (
 /* ── 活动详情 ─────────────────────────────────────────────────────── */
 
 describe('活动详情：决策的留在明面上，解释的折起来', () => {
-  test('已结束的双色球详情不超过 850 字', SLOW, async () => {
+  test('已结束的双色球详情不超过 1000 字', SLOW, async () => {
     const detail = await mountDetail(FINISHED_BALL, FINISHED_BALL_PROOF)
-    // 改造前 1548。这一屏是全站最长的一屏，也是"我中了没有"最难找的一屏。
+    /*
+      改造前 1548 → 精简到 750（那一版的夹具里没有"我的票"）→ 现在带上
+      「本期开奖 · 我中了没有」那张卡。
+
+      现在是 861（名单换成真实规模的 20 条之后仍然是这个数——它们被折起来了；
+      不折的话同一屏 2507 字）。
+
+      上限**有意从 850 抬到 1000**，抬的是这一块：两组号各七颗球（球本身就是
+      可见字符）、每张票的规范化串、命中几红几蓝、中了哪一档赔多少 /「未中奖」，
+      以及期次的结转与下一期。它们全部属于"用户不看就不知道自己中没中"的那一类
+      —— 而这一屏被投诉的原因恰恰是这句话答不出来，不是字太多。
+
+      抬上限最容易变成一张遮羞布，所以下面那条「决策必需的数字全都在明面上」
+      同步加了逐条断言：把新加的这些删掉能让字数变好看，但那条会当场红。
+    */
     assert.ok(
-      detail.chars <= 850,
-      `活动详情一屏 ${detail.chars} 字，超过 850：${detail.text}`
+      detail.chars <= 1000,
+      `活动详情一屏 ${detail.chars} 字，超过 1000：${detail.text}`
     )
   })
 
@@ -310,6 +364,15 @@ describe('活动详情：决策的留在明面上，解释的折起来', () => {
     const expected = [
       // 开奖号：点进来第一件事就是"开的是哪几个号"。
       '03,09,12,17,22,30|05',
+      // 我的号 —— 与开奖号在同一屏。少了它"我中了没有"就答不出来，
+      // 而那正是项目方投诉这一屏的原因。
+      '03,09,12,17,22,31|05',
+      '01,02,04,05,06,07|01',
+      // 命中了几红几蓝、中的是哪一档、这一档赔了多少。
+      '红球 5 个、蓝球 1 个',
+      '第 2 档',
+      // 没中也要**明说**，不能只是不显示。
+      zhKeys['qy_lot_ball_not_won'],
       // 每一档的命中门槛与中奖概率。
       '需红 6 蓝 1',
       '需红 6 蓝 0',
@@ -341,6 +404,35 @@ describe('活动详情：决策的留在明面上，解释的折起来', () => {
       assert.ok(
         !detail.text.includes(piece),
         `这一段本该默认收起，却出现在首屏：${piece.slice(0, 30)}`
+      )
+    }
+  })
+
+  test('公开名单默认折起来，点开之后 20 条一个不少', SLOW, async () => {
+    const detail = await mountDetail(FINISHED_BALL, FINISHED_BALL_PROOF)
+    const first = ROSTER_ENTRIES[0]!
+    const last = ROSTER_ENTRIES[ROSTER_ENTRIES.length - 1]!
+
+    // 折起来时那 20 行真的不在 DOM 里 —— 这就是详情页字数不再随参与人数
+    // 线性增长的原因。卡片标题与「共 N 条」仍在明面上，所以它没有"消失"。
+    assert.ok(
+      !detail.text.includes(first.entry_no),
+      '名单摊在首屏上了：真实标识下每行约 80 字，满页 20 行就是 2500 字'
+    )
+    assert.ok(
+      detail.text.includes(zhKeys['qy_lot_roster_title']),
+      '名单卡的标题不能跟着一起折掉，否则用户不知道有这么一份东西'
+    )
+
+    const opened = await detail.click(
+      `展开全场名单(共 ${ROSTER_ENTRIES.length} 条)`
+    )
+    assert.ok(opened, '找不到「展开全场名单」那颗折叠触发器')
+    const after = detail.read()
+    for (const row of [first, last]) {
+      assert.ok(
+        after.text.includes(row.entry_no) && after.text.includes(row.user_ref),
+        `展开之后名单里少了 ${row.entry_no} —— 折叠把它折没了`
       )
     }
   })
@@ -427,21 +519,31 @@ describe('参与弹窗：一句话说清多少钱、退不退', () => {
 /* ── 我的参与 ─────────────────────────────────────────────────────── */
 
 describe('我的参与：表底下的脚注折起来', () => {
+  /*
+    两行里必须有一张**双色球**票。
+
+    lottery-records 的「你的选号 / 本期开奖号」两列由 `hasPick`（pick 非空）
+    决定要不要渲染 —— 夹具此前两行都写 `pick: ''`，于是本轮新加的这两列被
+    夹具自己关掉了，220 这个数一个新内容都没约束到。守卫全绿，而真实用户
+    看到的是另一屏。
+  */
   const rows = [
     {
-      entry_no: 'E-1',
+      entry_no: 'LE20260824-69dbcf45d7d51875',
       act_no: 'LA-1',
-      title: '春季回馈抽奖',
+      title: '第 12 期双色球',
       kind: 'draw',
+      draw_mode: 'ball',
       amount: 500000,
       status: 'confirmed',
       created_at: NOW - 86400,
       chain_hash: 'b'.repeat(64),
-      pick: '',
+      pick: '03,09,12,17,22,31|05',
+      ball_result: '03,09,12,17,22,30|05',
       won: { kind: 'prize', amount: 1000000 },
     },
     {
-      entry_no: 'E-2',
+      entry_no: 'LE20260824-7f2a1c9e40b3d618',
       act_no: 'LA-3',
       title: '下个版本会不会涨价',
       kind: 'guess',
@@ -465,12 +567,22 @@ describe('我的参与：表底下的脚注折起来', () => {
     })
   }
 
-  test('两行记录的一屏不超过 220 字，脚注默认收起', SLOW, async () => {
+  test('两行记录的一屏不超过 320 字，脚注默认收起', SLOW, async () => {
     const screen = await mountRecords()
-    // 改造前 268，其中 85 字是压在一张两行的表底下的两条脚注 —— 比表本身还长。
+    /*
+      改造前 268，其中 85 字是压在一张两行的表底下的两条脚注 —— 比表本身还长；
+      折起来之后 183（那一版夹具两行都是 `pick: ''`，两列压根没渲染）。
+      换成真实的双色球票之后是 297。
+
+      上限**从 220 抬到 320**，抬的全是号码本身：两个表头 9 字，加上每一张
+      双色球票的球（14 颗 × 2 位）与规范化串。它们属于"用户不看就不知道自己
+      中没中"的那一类，而这一屏正是项目方投诉的落点。抬上限容易变成遮羞布，
+      所以下面一条同步钉死了这两列的内容 —— 把号码删掉能让字数好看，但那条
+      会当场红。
+    */
     assert.ok(
-      screen.chars <= 220,
-      `我的参与一屏 ${screen.chars} 字，超过 220：${screen.text}`
+      screen.chars <= 320,
+      `我的参与一屏 ${screen.chars} 字，超过 320：${screen.text}`
     )
     for (const key of [
       'qy_lot_records_chain_note',
@@ -479,6 +591,21 @@ describe('我的参与：表底下的脚注折起来', () => {
       assert.ok(
         !screen.text.includes(zhKeys[key]),
         `脚注 ${key} 又摊在表底下了`
+      )
+    }
+  })
+
+  test('双色球那一行的我的号与开奖号都在明面上', SLOW, async () => {
+    const screen = await mountRecords()
+    for (const piece of [
+      '03,09,12,17,22,31|05', // 我买的那一组（规范化串，进哈希链的那份字节）
+      '030912172230|05', // 本期开出的号（这一列只画球，球本身就是可见字符）
+      zhKeys['qy_lot_ball_my_pick'],
+      zhKeys['qy_lot_ball_result'],
+    ]) {
+      assert.ok(
+        screen.text.includes(piece),
+        `我的参与少了「${piece}」——这一屏就答不出"我中了没有"`
       )
     }
   })

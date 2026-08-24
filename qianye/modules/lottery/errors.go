@@ -132,6 +132,33 @@ var (
 
 // ─────────────────────────── 管理端 ───────────────────────────
 
+// 三个与"净增发"有关的错误码。抽出成常量而不是在构造点写字面量:前端按 code
+// 做 i18n(qy/api.ts 的 QY_ERROR_CODE 表),而带金额的那几条错误是在运行时
+// 拼出来的 —— 字符串散在构造器里,漂移的方向恰好是前端认不出其中一份。
+const (
+	codePrizeCap         = "qy_lot_prize_cap"
+	codeNetIssueConfirm  = "qy_lot_net_issue_confirm"
+	codeNetIssueOverflow = "qy_lot_net_issue_overflow"
+)
+
+// prizeCapExceeded 是带金额的那一份"超过单场硬顶"。
+func prizeCapExceeded(total, ceiling int64) *bizError {
+	return &bizError{
+		Status: http.StatusBadRequest,
+		Code:   codePrizeCap,
+		Msg: fmt.Sprintf("奖品总额 %s 超过本站设置的单场上限 %s。"+
+			"这道上限是站点自己配的(lottery.max_total_prize_quota),"+
+			"配成 0 即为不限制,届时超过阈值的活动改走二次确认",
+			quotaText(total), quotaText(ceiling)),
+	}
+}
+
+// errNetIssueOverflow 是**算术**护栏,不是业务上限:Σ(count × amount) 逼近
+// int64 上界时必须在这里停住,否则它会绕回负数,而一个负的总额会让后面每一道
+// 判定连同二次确认一起静默通过。见 caps.go 的 netIssueOverflowGuard。
+var errNetIssueOverflow = newBizError(http.StatusBadRequest, codeNetIssueOverflow,
+	"奖品总额大到了整数运算的边界,已拒绝 —— 请检查奖品数量与单档额度,这几乎一定是配错了")
+
 var (
 	errStatusConflict = newBizError(http.StatusConflict, "qy_lot_status_conflict",
 		"活动状态已变化,请刷新后重试")
@@ -166,8 +193,6 @@ var (
 			"对草稿点取消只会把它变成一场公开的、已结束的空活动,并把它的随机种子公开出去")
 	errResultLocked = newBizError(http.StatusConflict, "qy_lot_result_locked",
 		"结果已录入且不可修改;录错只能整场作废并全额退款")
-	errPrizeCapExceeded = newBizError(http.StatusBadRequest, "qy_lot_prize_cap",
-		"奖品总额度超过系统上限")
 	errActiveCapExceeded = newBizError(http.StatusConflict, "qy_lot_active_cap",
 		"同时进行中的活动数量已达上限")
 	errFlagNotFound = newBizError(http.StatusNotFound, "qy_lot_flag_not_found",

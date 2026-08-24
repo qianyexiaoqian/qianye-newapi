@@ -29,6 +29,7 @@ import type {
   QyLotMyEntry,
   QyLotMyPrize,
   QyLotProof,
+  QyLotSeriesView,
 } from './types'
 
 /** 大厅一页的条数。卡片比表格行高，一屏放不下更多。 */
@@ -75,6 +76,24 @@ export function qyLotActivityQuery(actNo: string) {
     // 倒计时与盘口在开放期一直在变，10 秒是"不至于误导"与"不刷爆接口"的折中。
     staleTime: 10_000,
     enabled: actNo !== '',
+  })
+}
+
+/**
+ * 双色球期次系列。
+ *
+ * 详情页只从这一份里取一件事：**下一期什么时候**。那是一个买过彩票的人一定会
+ * 问的问题，而它按定义不在"本期"的活动记录里 —— 下一期是系列上另一场活动。
+ *
+ * 后端刻意不下发任何概率数字（见 `lib/ball.ts` 顶部），这里也不例外。
+ */
+export function qyLotSeriesQuery(seriesNo: string, enabled: boolean) {
+  return queryOptions({
+    queryKey: qyKeys.lotterySeries(seriesNo),
+    queryFn: () =>
+      qyGet<QyLotSeriesView>(`/lottery/series/${encodeURIComponent(seriesNo)}`),
+    staleTime: 30_000,
+    enabled: enabled && seriesNo !== '',
   })
 }
 

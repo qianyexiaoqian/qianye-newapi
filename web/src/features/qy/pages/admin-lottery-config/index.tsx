@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import type { TFunction } from 'i18next'
 import { Eye, EyeOff, Info, ShieldAlert } from 'lucide-react'
 import { useEffect, useId, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -51,7 +52,15 @@ import {
   type QyUsdScale,
 } from '../../lib/quota-usd'
 import { qyAdminLotConfigQuery, updateQyLotConfig } from '../admin-lottery/api'
-import type { QyLotAdminConfig, QyLotEffective } from '../admin-lottery/types'
+import {
+  qyLotBoundContains,
+  qyLotIsUnlimitedZero,
+} from '../admin-lottery/lib/bounds'
+import type {
+  QyLotAdminConfig,
+  QyLotBound,
+  QyLotEffective,
+} from '../admin-lottery/types'
 import { QyKeyValue } from '../ops/qy-ops-ui'
 
 /** 布尔型开关。它在 `qy_settings` 里存的是 `0` / `1`，不是 `true` / `false`。 */
@@ -293,7 +302,7 @@ function EditableCard(props: { config: QyLotAdminConfig }) {
                   defaultValue: change.key,
                 })}
               >
-                {`${displayValue(change.key, change.from, scale)} → ${displayValue(change.key, change.to, scale)}`}
+                {`${displayValue(change.key, change.from, scale, t)} → ${displayValue(change.key, change.to, scale, t)}`}
               </QyKeyValue>
             ))}
           </div>
@@ -354,7 +363,7 @@ function PlayVisibilitySummary(props: { config: QyLotAdminConfig }) {
 function ConfigField(props: {
   fieldKey: string
   value: string
-  bound: { min: number; max: number } | null
+  bound: QyLotBound | null
   scale: QyUsdScale
   /** 该项已被运营覆盖时，YAML 里的原值（存储用的整数）；未覆盖为 `null`。 */
   overriddenFrom: number | null
@@ -374,7 +383,7 @@ function ConfigField(props: {
   const outOfRange =
     parsed != null &&
     props.bound != null &&
-    (parsed < props.bound.min || parsed > props.bound.max)
+    !qyLotBoundContains(props.bound, parsed)
   const invalid = parsed == null || outOfRange
   const label = t(`qy_lot_cfg_k_${props.fieldKey}`, {
     defaultValue: props.fieldKey,
@@ -444,11 +453,21 @@ function ConfigField(props: {
         {props.bound != null && (
           // 超出区间时把区间这一行标红：唯一的另一处线索是保存键下面那句带
           // **原始键名**的提示，而键名不是字段上方那个中文标签，运营对不上号。
+          //
+          // 无上界的键单独一句话。照着一个缺席的 `max` 渲染出来的是
+          // "范围 $0 ~ $NaN"，那比不写更糟 —— 运营会以为这一格坏了。
           <p className={outOfRange ? 'text-destructive' : undefined}>
-            {t('qy_common_amount_range', {
-              min: displayValue(props.fieldKey, props.bound.min, props.scale),
-              max: displayValue(props.fieldKey, props.bound.max, props.scale),
-            })}
+            {/* 区间两端走 boundText 而不是 displayValue：区间的下界 0 是一个
+                **边界**，不是一个取值 —— 把它渲染成「不限」会得到
+                「可填范围：不小于 不限」。 */}
+            {props.bound.max == null
+              ? t('qy_common_amount_min_only', {
+                  min: boundText(props.fieldKey, props.bound.min, props.scale),
+                })
+              : t('qy_common_amount_range', {
+                  min: boundText(props.fieldKey, props.bound.min, props.scale),
+                  max: boundText(props.fieldKey, props.bound.max, props.scale),
+                })}
           </p>
         )}
         {props.overriddenFrom != null && (
@@ -457,7 +476,8 @@ function ConfigField(props: {
               value: displayValue(
                 props.fieldKey,
                 props.overriddenFrom,
-                props.scale
+                props.scale,
+                t
               ),
             })}
           </p>
@@ -467,11 +487,27 @@ function ConfigField(props: {
   )
 }
 
-/** 把一个存储用的整数渲染成界面上该有的样子：金额字段带 `$`，其余按原数。 */
-function displayValue(key: string, value: number, scale: QyUsdScale): string {
+/** 区间端点的渲染：永远按数字，不做「0 = 不限」的语义替换。 */
+function boundText(key: string, value: number, scale: QyUsdScale): string {
   return isUsdField(key, scale)
     ? qyFormatQuotaAsUsd(value, scale)
     : String(value)
+}
+
+/** 把一个存储用的**取值**渲染成界面上该有的样子：金额字段带 `$`，其余按原数。 */
+function displayValue(
+  key: string,
+  value: number,
+  scale: QyUsdScale,
+  t: TFunction
+): string {
+  // 「0 = 不限制」的语义判定住在 lib/bounds.ts，不在这里就地写一个
+  // `value === 0 && key === …`：那种写法只有把整页源码翻出来才能验证，
+  // 而它管的恰恰是运营会不会把「不限」读成「一分都不许」。
+  if (qyLotIsUnlimitedZero(key, value)) {
+    return t('qy_common_unlimited')
+  }
+  return boundText(key, value, scale)
 }
 
 /** 草稿文本 → 存储用的整数，并按后端下发的区间卡一次。非法返回 `null`。 */
@@ -484,7 +520,7 @@ function parseDraft(
   const value = qyQuotaDraftValue(raw, scale, isUsdField(key, scale))
   if (value == null) return null
   const bound = config.bounds[key]
-  if (bound != null && (value < bound.min || value > bound.max)) return null
+  if (bound != null && !qyLotBoundContains(bound, value)) return null
   return value
 }
 
@@ -513,7 +549,8 @@ function YamlCard(props: { config: QyLotAdminConfig }) {
           {displayValue(
             'pay_password_threshold_quota',
             yaml.pay_password_threshold_quota,
-            scale
+            scale,
+            t
           )}
         </QyKeyValue>
         <QyKeyValue label={t('qy_lot_cfg_k_close_grace')}>
@@ -537,7 +574,7 @@ function YamlCard(props: { config: QyLotAdminConfig }) {
         {/* 单笔扣款上限必须看得见：它是"一次报名/投注最多能从主额度扣走多少"
             的硬闸门，而竞猜的单注上限没填时兜的就是它。 */}
         <QyKeyValue label={t('qy_lot_cfg_k_max_stake_quota')}>
-          {displayValue('max_stake_quota', yaml.max_stake_quota, scale)}
+          {displayValue('max_stake_quota', yaml.max_stake_quota, scale, t)}
         </QyKeyValue>
         <QyKeyValue label={t('qy_lot_cfg_k_spend_lookback')}>
           {yaml.spend_max_lookback_days}

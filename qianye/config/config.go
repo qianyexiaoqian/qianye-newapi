@@ -760,14 +760,38 @@ type Lottery struct {
 	// 取证的公正性不叫公正性。留这个开关只是为了应对被爬虫打爆时的应急关停。
 	ProofPublic *bool `yaml:"proof_public"`
 
-	MaxActiveActivities int   `yaml:"max_active_activities"`
-	MaxStakeQuota       int64 `yaml:"max_stake_quota"`
-	// MaxTotalPrizeQuota 是抽奖奖品总额度的硬闸门。
+	MaxActiveActivities int `yaml:"max_active_activities"`
+	// MaxStakeQuota 是单次参与费 / 单注的额度上限。
 	//
-	// 抽奖是"平台收参与费、平台出奖品",派奖对 users.quota 是**净增发**,
-	// 下游没有任何环节能拦住一个多写了零的奖品金额 —— 这里是唯一的闸门。
+	// **0 = 不限制**,而且是默认值。它不是"一分钱都不许",那种口径在这里没有
+	// 任何用处 —— 免费场由 stake_quota > 0 那条独立判定拦着,与本项无关。
+	// 配成正数才是站点自己给自己立的一道硬顶,此后在线只能调低。
+	//
+	// 放开它的理由:参与费是**用户自己付**的钱,配得离谱的后果是没人报名,
+	// 不构成资损。真正会造成资损的是奖品金额,而那一侧现在由
+	// LargePrizeAlertQuota 的二次确认盯着(见 qianye/modules/lottery/caps.go)。
+	// 一次扣款的绝对上界仍然是 int32(common.MaxQuota),那是数据库列宽,
+	// 不受本项影响。
+	MaxStakeQuota int64 `yaml:"max_stake_quota"`
+	// MaxTotalPrizeQuota 是单场奖品总额度 Σ(count × amount) 的硬顶。
+	//
+	// **0 = 不限制**,而且是默认值。
+	//
+	// 它曾经是"派奖是净增发"这件事的唯一防线,现在不是了 —— 一道硬拒绝拦不住
+	// 手滑,只能把手滑推迟到更大的数字上(调大上限,同一个零照样发得出去),
+	// 代价却是运营开一场活动要先去改配置。取而代之的是二次确认:超过
+	// large_prize_alert_quota 的活动必须回显精确金额才能建/改。
+	//
+	// 留着这一项是给"我确实想要一道谁都绕不过去的硬顶"的站点用的:配成正数
+	// 之后行为与从前完全一致(超了就 400),并且在线只能往低调。
 	MaxTotalPrizeQuota int64 `yaml:"max_total_prize_quota"`
-	// LargePrizeAlertQuota 只告警不阻断:运营确实可能办大活动。
+	// LargePrizeAlertQuota 是**二次确认阈值**,不再是"只写一行日志"。
+	//
+	// 奖品总额达到它(含相等)时,创建/修改活动必须在请求里回显那个精确金额,
+	// 否则拒绝。**0 = 连确认都不要**(完全不打扰)。
+	//
+	// 它是本模块现在唯一还在盯着"多写一个零"的东西,所以默认值保留 ——
+	// 缺省 500 万额度($10),一场手动测试的小活动碰不到它,一个多写的零一定碰到。
 	LargePrizeAlertQuota int64 `yaml:"large_prize_alert_quota"`
 	// PayPasswordThresholdQuota 是参与费触发支付密码的门槛。参与是不可逆消费,
 	// 盗号者能用"参与抽奖"把余额烧光而不留下划转/提现痕迹。

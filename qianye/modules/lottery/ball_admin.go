@@ -134,9 +134,13 @@ func checkBallTierInput(p prizeInput, s *Series, entriesCap int) error {
 	// 与概率制同一条:中签人数超过份数时按预算均分,人均不足 1 额度会有人分到 0,
 	// 而 PlanPayouts 会跳过 amount<=0 的计划 —— 一个真中了奖的人被静默漏发。
 	if p.AmountQuota*int64(p.Count) < int64(entriesCap) {
+		// 与概率制那一条逐字同口径(api_admin.go 的 resolveWinPpm):单份按站内
+		// 余额刻度、全场上限按张票。两处分叉的表现是同一条规则在两种玩法上
+		// 给出两句不一样的话,而运营会以为是两条不同的规则。
 		return errBadRequest(fmt.Sprintf(
-			"奖级 %d 的预算(数量 %d × 额度 %d)必须不小于全场参与上限 %d,"+
-				"否则超募时会有中奖者被摊薄到 0 额度而拿不到钱", p.Tier, p.Count, p.AmountQuota, entriesCap))
+			"奖级 %d 的预算(数量 %d × 单份 %s)必须不小于全场参与上限 %d 张票,"+
+				"否则超募时会有中奖者被摊薄到 0 额度而拿不到钱",
+			p.Tier, p.Count, quotaText(p.AmountQuota), entriesCap))
 	}
 	return nil
 }

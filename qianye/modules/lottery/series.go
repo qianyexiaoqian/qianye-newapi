@@ -2,6 +2,7 @@ package lottery
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -348,18 +349,30 @@ func buildSeries(ctx context.Context, in *seriesInput, createdBy int) (*Series, 
 	if in.PoolShareBps < 0 || in.PoolShareBps > 10000 {
 		return nil, errBadRequest("投注入池比例必须落在 [0, 10000]")
 	}
-	// 发行上限必须落在"一场普通抽奖已经被允许的额度"之内。这一条把整个系列
-	// (无论开多少期)的累计净增发夹进了一个已经存在的闸门,因此不需要新配置项。
-	set := effectiveCtx(ctx)
-	if in.IssueCapQuota <= 0 || in.IssueCapQuota > set.MaxTotalPrizeQuota {
-		return nil, errPrizeCapExceeded
+	// 发行上限必须为正:它是本系列累计注资的**唯一**封顶,fundSeriesPool 的
+	// 条件 UPDATE 只认它。0 在这里不是"不限",而是"这个系列一分钱都注不进去" ——
+	// 与 max_stake_quota / max_total_prize_quota 那三项的 0 语义相反,
+	// 因为它不是一道站点级的闸门,而是运营为这一个系列亲手写下的预算。
+	if in.IssueCapQuota <= 0 {
+		return nil, errBadRequest("发行上限必须大于 0 —— 它是本系列累计注资的唯一封顶")
 	}
+	// 站点自选的硬顶,0 = 不限(默认)。原先这里无条件夹进 max_total_prize_quota,
+	// 理由是"复用一个已经存在的闸门";那个闸门现在默认不设,复用也就落空了。
+	set := effectiveCtx(ctx)
+	if set.MaxTotalPrizeQuota > 0 && in.IssueCapQuota > set.MaxTotalPrizeQuota {
+		return nil, prizeCapExceeded(in.IssueCapQuota, set.MaxTotalPrizeQuota)
+	}
+	// 系列这一侧**不需要**二次确认:它的累计注资被下面那条 int32 夹死在
+	// common.MaxQuota 以内,而奖品档是 amount × count,count 才是让它变成
+	// 无上界的那个乘数。这里的手滑最多是一个 int32 上界的数,量级封顶。
 	// 再夹一次 int32:池子最终要过 twophase 的单笔 amount ≤ MaxQuota,而
 	// checkBallPoolCovers 对 open > MaxQuota 的处置是**拒绝发布新一期** ——
 	// 一个配得过大的 issue_cap 会让系列在注满之后永久开不出新期,且没有任何
 	// 接口能把池子降回来。拦在创建期,那是唯一还能改的时刻。
 	if in.IssueCapQuota > int64(common.MaxQuota) {
-		return nil, errPrizeCapExceeded
+		return nil, errBadRequest(fmt.Sprintf(
+			"发行上限不得超过系统上限 %s —— 越过它的系列在注满之后会永久开不出新一期,"+
+				"而没有任何接口能把池子降回来", quotaText(int64(common.MaxQuota))))
 	}
 	if in.SeedQuota < 0 || in.SeedQuota > in.IssueCapQuota {
 		return nil, errSeriesCap
@@ -468,7 +481,8 @@ func handleFundSeries(c *gin.Context) {
 // 它不是执行点(并发下仍以那条 UPDATE 为准),只是错误信息的来源。
 func checkFundable(s *Series, amount int64) error {
 	if amount <= 0 || amount > int64(common.MaxQuota) {
-		return errBadRequest("注资额度必须大于 0 且不超过系统上限")
+		return errBadRequest(fmt.Sprintf(
+			"注资额度必须大于 0 且不超过系统上限 %s", quotaText(int64(common.MaxQuota))))
 	}
 	if s.Status != SeriesOpen {
 		return errSeriesClosed

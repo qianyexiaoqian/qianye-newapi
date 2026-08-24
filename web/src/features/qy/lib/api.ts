@@ -341,6 +341,12 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_status_conflict: 'qy_lot_err_status_conflict',
   qy_lot_result_locked: 'qy_lot_err_result_locked',
   qy_lot_prize_cap: 'qy_lot_err_prize_cap',
+  // 净增发的两条。后端那两句话里带着**换算成站内余额之后的金额**，而这里的
+  // `t(known)` 不接受插值参数 —— 所以这两句刻意不复述金额，只说下一步是什么：
+  // 金额已经由创建向导的「本场最坏会发出 X」摆在同一屏上（NetIssueMeter），
+  // 在这里再写一个没有数字的"金额过大"只会让人去找那个数在哪。
+  qy_lot_net_issue_confirm: 'qy_lot_err_net_issue_confirm',
+  qy_lot_net_issue_overflow: 'qy_lot_err_net_issue_overflow',
   qy_lot_active_cap: 'qy_lot_err_active_cap',
   qy_lot_spend_not_ready: 'qy_lot_err_spend_not_ready',
   qy_lot_payout_not_found: 'qy_lot_err_payout_not_found',
@@ -354,6 +360,7 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_adjudicate_order_open: 'qy_lot_err_adjudicate_order_open',
   qy_lot_adjudicate_verdict: 'qy_lot_err_adjudicate_verdict',
   qy_lot_adjudicate_reason: 'qy_lot_err_adjudicate_reason',
+  // 只在后端**没给** message 时才用得上（见 QY_SERVER_MESSAGE_CODES）。
   qy_lot_bad_request: 'qy_lot_err_bad_request',
   // 卡片背景图。十一个 code 各自要求的下一步完全不同：换一张更小的 / 换一种
   // 格式 / 先保存或移除待用的那几张 / 地址写错了 / 两种来源只能二选一 /
@@ -483,6 +490,14 @@ export function isQyError(error: unknown): error is QyError {
  */
 export function qyErrorMessage(error: unknown, t: TFunction): string {
   if (!isQyError(error)) return t('qy_err_unknown')
+  if (
+    error.code != null &&
+    QY_SERVER_MESSAGE_CODES.has(error.code) &&
+    error.rawMessage != null &&
+    error.rawMessage !== ''
+  ) {
+    return error.rawMessage
+  }
   const known = error.code != null ? QY_ERROR_CODE_I18N[error.code] : undefined
   if (known != null) return t(known)
   if (error.kind === 'business') {
@@ -490,6 +505,26 @@ export function qyErrorMessage(error: unknown, t: TFunction): string {
   }
   return t(KIND_I18N_KEY[error.kind])
 }
+
+/**
+ * 「后端那句话就是答案」的 code。
+ *
+ * 绝大多数 code 表示的是一件确定的事（"这张单已经结过了"），前端有更好的说法，
+ * 所以白名单里那一份静态译文更有用。但有一类 code 是**一整族**判据共用的：
+ * `qy_lot_bad_request` 一个 code 背后是抽奖模块 96 处 `errBadRequest`，每一处都
+ * 精心写着是哪一格错了、上限是多少、换算成站内余额是多少钱。
+ *
+ * 这类 code 走 `t(known)` 会把那句话整段丢掉，运营在向导上只看到一句
+ * 「请求参数不合法」，然后去改别的字段。也别指望 kind 级文案兜底：400 归到
+ * `invalid`，那句「请求参数有误，请检查后重试」信息量完全相同。
+ *
+ * 代价是这句话是中文硬编码、不随语言切换 —— 但一句看得懂的中文比一句
+ * 翻译好了的废话有用，而且客户端校验（`qyLotValidateDraft`）已经把常见的
+ * 二十来条拦在提交之前，走到这里的本来就是漏网的那几条。
+ */
+export const QY_SERVER_MESSAGE_CODES: ReadonlySet<string> = new Set([
+  'qy_lot_bad_request',
+])
 
 // ───────────────────────────── 内部实现 ─────────────────────────────
 

@@ -43,6 +43,7 @@ import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyErrorMessage } from '../../../lib/api'
 import { qyArray } from '../../../lib/array'
+import { formatQyQuotaLedger } from '../../../lib/format'
 import { qyKeys } from '../../../lib/query-keys'
 import {
   isQyLotBallPoolValid,
@@ -166,11 +167,24 @@ export function QyLotActivityWizard(props: {
     series
   )
 
+  const totalPrize = qyLotTotalPrizeQuota(draft)
+  const breakEven = qyLotBreakEvenEntries(draft)
+  const alertQuota = props.config?.effective.large_prize_alert_quota ?? 0
+  // 阈值判据是 **>=**，与后端 `requireNetIssueConfirm` 逐字同源。一边 `>` 一边
+  // `>=` 的表现是恰好等于阈值的那一场在界面上不弹确认、提交后吃一个 400，
+  // 而那句 400 要求回填的正是界面刚刚决定不显示的那个数。
+  const needsNetIssueConfirm = alertQuota > 0 && totalPrize >= alertQuota
+
   const mutation = useMutation({
-    mutationFn: () =>
-      editing == null
-        ? createQyLotActivity(qyLotDraftToInput(draft))
-        : updateQyLotActivity(editing.actNo, qyLotDraftToInput(draft)),
+    // 回执只在运营真的勾过那个不可逆确认框之后才带上（走到 onConfirm 就意味着
+    // 勾过了）。无条件回填等于让这道确认自我满足 —— 一行代码都没少写，
+    // 却什么都没拦住。
+    mutationFn: () => {
+      const echo = needsNetIssueConfirm ? totalPrize : 0
+      return editing == null
+        ? createQyLotActivity(qyLotDraftToInput(draft, echo))
+        : updateQyLotActivity(editing.actNo, qyLotDraftToInput(draft, echo))
+    },
     onSuccess: async (data) => {
       toast.success(editing == null ? t('qy_lot_created') : t('qy_lot_updated'))
       setConfirmOpen(false)
@@ -188,9 +202,6 @@ export function QyLotActivityWizard(props: {
   })
 
   const index = STEPS.indexOf(step)
-  const totalPrize = qyLotTotalPrizeQuota(draft)
-  const breakEven = qyLotBreakEvenEntries(draft)
-  const alertQuota = props.config?.effective.large_prize_alert_quota ?? 0
 
   return (
     <>
@@ -265,7 +276,13 @@ export function QyLotActivityWizard(props: {
             />
           )}
           {step === 'spec' && (
-            <SpecStep draft={draft} onChange={patch} series={series} />
+            <SpecStep
+              draft={draft}
+              onChange={patch}
+              series={series}
+              alertQuota={alertQuota}
+              capQuota={props.config?.effective.max_total_prize_quota ?? 0}
+            />
           )}
           {step === 'rules' && (
             <QyLotRulesEditor draft={draft} onChange={patch} />
@@ -297,6 +314,13 @@ export function QyLotActivityWizard(props: {
             : t('qy_lot_edit_confirm_desc')
         }
         isLoading={mutation.isPending}
+        // 越过阈值就把这一屏升格成不可逆确认：强制勾选 + 把金额写在正文里。
+        // 它替换掉的是原来那道「Σ 超过上限就 400」的硬拒绝 —— 硬拒绝拦不住手滑
+        // （调大上限，同一个零照样发得出去），只能把「卡半天」推迟到更大的数字上。
+        irreversible={needsNetIssueConfirm}
+        irreversibleDesc={t('qy_lot_net_issue_confirm_desc', {
+          amount: formatQyQuotaLedger(totalPrize),
+        })}
         details={
           <div>
             <QyKeyValue label={t('qy_lot_play')}>
@@ -346,6 +370,8 @@ function BasicStep(props: {
   const play = qyLotPlayOf(draft)
   const isBall = play === 'ball'
   const openSeries = props.seriesList.filter((item) => item.status === 'open')
+  // 0 = 不限（默认）。判据与 lib/draft.ts 的 qy_lot_v_stake_over_cap 同一条。
+  const stakeCap = props.config?.yaml_readonly.max_stake_quota ?? 0
 
   return (
     <div className='space-y-3'>
@@ -510,6 +536,13 @@ function BasicStep(props: {
         <p className='text-muted-foreground text-xs'>
           {t('qy_lot_stake_hint')}
         </p>
+        {/* 站点自选的单笔硬顶（0 = 不限，默认）。就地说，而不是等运营走完四步
+            在复核屏才看到一行红字 —— 那时他已经把时间、条件、奖档全填完了。 */}
+        {stakeCap > 0 && draft.stake_quota > stakeCap && (
+          <p className='text-destructive text-xs'>
+            {t('qy_lot_v_stake_over_cap')}
+          </p>
+        )}
       </div>
 
       <div className='grid gap-3 sm:grid-cols-2'>
@@ -598,10 +631,60 @@ function TimeField(props: {
 
 // ───────────────────────────── 第二步 ─────────────────────────────
 
+/**
+ * 「这一屏填完，平台最坏会发出去多少」——**填的时候就摆在眼前**，
+ * 而不是等点保存被一句 400 顶回来。
+ *
+ * 这是本次改造的另一半。硬拒绝被拿掉之后，唯一还能挡住「多写一个零」的是
+ * 运营自己看见那个数：Σ(数量 × 额度) 随着每一次敲键实时重算，越过二次确认
+ * 阈值时**当场**说清「提交时会要求你确认」，而不是让他走完剩下两步再遇到。
+ *
+ * 三档措辞对应三种处境，不能塌成一句：
+ *   · 站点配了硬顶且已经超了 —— 这一场提交不了，得改数字或改配置；
+ *   · 越过二次确认阈值 —— 提交得了，但要多勾一次；
+ *   · 都没有 —— 只报一个数，不制造焦虑。
+ */
+function NetIssueMeter(props: {
+  draft: QyLotDraft
+  alertQuota: number
+  capQuota: number
+}) {
+  const { t } = useTranslation()
+  const total = qyLotTotalPrizeQuota(props.draft)
+  if (total <= 0) return null
+
+  const overCap = props.capQuota > 0 && total > props.capQuota
+  // >= 与后端 requireNetIssueConfirm 同源。
+  const needsConfirm = props.alertQuota > 0 && total >= props.alertQuota
+  const amount = formatQyQuotaLedger(total)
+
+  return (
+    <Alert variant={overCap ? 'destructive' : undefined}>
+      <TriangleAlert />
+      <AlertTitle>{t('qy_lot_net_issue_meter_title', { amount })}</AlertTitle>
+      <AlertDescription>
+        {overCap
+          ? t('qy_lot_net_issue_meter_over_cap', {
+              cap: formatQyQuotaLedger(props.capQuota),
+            })
+          : needsConfirm
+            ? t('qy_lot_net_issue_meter_needs_confirm', {
+                threshold: formatQyQuotaLedger(props.alertQuota),
+              })
+            : t('qy_lot_net_issue_meter_ok')}
+      </AlertDescription>
+    </Alert>
+  )
+}
+
 function SpecStep(props: {
   draft: QyLotDraft
   onChange: (patch: Partial<QyLotDraft>) => void
   series: QyLotSeries | undefined
+  /** 二次确认阈值（0 = 不打扰）。见 {@link NetIssueMeter}。 */
+  alertQuota: number
+  /** 站点自选的单场硬顶（0 = 不限）。 */
+  capQuota: number
 }) {
   const { draft } = props
   const { t } = useTranslation()
@@ -778,6 +861,12 @@ function SpecStep(props: {
           <Plus aria-hidden='true' />
           {t('qy_lot_add_tier')}
         </Button>
+
+        <NetIssueMeter
+          draft={draft}
+          alertQuota={props.alertQuota}
+          capQuota={props.capQuota}
+        />
 
         {/*
           「允许多次中奖」只对名次制是一个真开关。
@@ -1456,15 +1545,22 @@ function ReviewStep(props: {
           <p className='text-muted-foreground mt-2 text-xs'>
             {t('qy_lot_break_even_note', { count: props.breakEven })}
           </p>
-          {props.alertQuota > 0 && props.totalPrize > props.alertQuota && (
-            <Alert className='mt-2'>
-              <TriangleAlert />
-              <AlertTitle>{t('qy_lot_large_prize_title')}</AlertTitle>
-              <AlertDescription>
-                {t('qy_lot_large_prize_desc')}
-              </AlertDescription>
-            </Alert>
-          )}
+          {props.alertQuota > 0 &&
+            props.totalPrize >= props.alertQuota && (
+              // 判据是 **>=**，与后端 `requireNetIssueConfirm` 逐字同源。
+              // 而且这一句必须把**金额写出来**：原来那句只说"超过了阈值"，
+              // 而运营要判断的恰恰是"这个数是不是多了一个零"，不写出来就等于
+              // 让他自己去乘一遍。
+              <Alert className='mt-2'>
+                <TriangleAlert />
+                <AlertTitle>{t('qy_lot_large_prize_title')}</AlertTitle>
+                <AlertDescription>
+                  {t('qy_lot_large_prize_desc', {
+                    amount: formatQyQuotaLedger(props.totalPrize),
+                  })}
+                </AlertDescription>
+              </Alert>
+            )}
         </div>
       )}
 

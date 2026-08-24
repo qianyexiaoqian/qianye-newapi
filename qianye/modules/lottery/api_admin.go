@@ -96,6 +96,14 @@ type activityInput struct {
 	Rules   Rules         `json:"rules"`
 	Prizes  []prizeInput  `json:"prizes"`
 	Options []optionInput `json:"options"`
+
+	// ConfirmNetIssueQuota 是"我看清了这场活动最坏会发出多少站内余额"的回执。
+	//
+	// 只在奖品总额 Σ(count × amount) 达到 large_prize_alert_quota 时才被读;
+	// 阈值配成 0 时这个字段完全不参与判定。零值(没填)永远等于**未确认** ——
+	// 判据是"回显值恰等于总额",而一个越过阈值的总额必然是正数。
+	// 语义与判据都在 caps.go 的 requireNetIssueConfirm。
+	ConfirmNetIssueQuota int64 `json:"confirm_net_issue_quota"`
 }
 
 type activityWriteResult struct {
@@ -1450,9 +1458,19 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 		return nil, nil, nil, err
 	}
 	// 免费场在 v1 明确不做:twophase 的入口强制 0 < amount ≤ MaxQuota。
-	if in.StakeQuota <= 0 || in.StakeQuota > cfg.MaxStakeQuota ||
-		in.StakeQuota > int64(common.MaxQuota) {
-		return nil, nil, nil, errBadRequest(fmt.Sprintf("参与费必须落在 (0, %d]", cfg.MaxStakeQuota))
+	// 这两条都是正确性约束,不是额度闸门 —— 前者是"另开一条不动钱的路径"这件事
+	// 没做,后者是 quota 列的 int32 列宽。
+	if in.StakeQuota <= 0 || in.StakeQuota > int64(common.MaxQuota) {
+		return nil, nil, nil, errBadRequest(fmt.Sprintf(
+			"参与费必须大于 0 且不超过系统上限 %s", quotaText(int64(common.MaxQuota))))
+	}
+	// max_stake_quota 是**站点自选**的一道硬顶,0 = 不限(默认)。
+	// 参与费是用户自己付的钱,配得离谱的后果是没人报名,不构成资损,
+	// 所以这里不再默认拦人;要拦的站点把它配成正数即可。
+	if cfg.MaxStakeQuota > 0 && in.StakeQuota > cfg.MaxStakeQuota {
+		return nil, nil, nil, errBadRequest(fmt.Sprintf(
+			"参与费不得超过本站设置的 %s(lottery.max_stake_quota,配成 0 即不限制)",
+			quotaText(cfg.MaxStakeQuota)))
 	}
 
 	rules := in.Rules.Normalize()
@@ -1560,6 +1578,21 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 		return nil, nil, nil, err
 	}
 
+	// 二次确认放在**最后**,而且放在 prizes 的最终形态之上。
+	//
+	// 位置有两个理由:双色球的 applyBallSpec 会整体重算逐行(浮动奖的额度恒为
+	// 0),在它之前算总额会念出一个与最终落库不符的数字;而其余每一条参数错误
+	// 都该先说出来 —— 让运营先回填一遍金额、再被告知"奖档名称超长",
+	// 是把一次刻意动作变成一次无意义的往返。
+	//
+	// 竞猜没有奖档,总额恒为 0,threshold 再低也不会触发:竞猜是彩池制,
+	// 平台数学上不可能倒贴(commit.go 的 SplitPool 断言 Σpay + fee == pool)。
+	if err := requireNetIssueConfirm(
+		set.LargePrizeAlertQuota, prizeTotalRows(prizes), in.ConfirmNetIssueQuota,
+	); err != nil {
+		return nil, nil, nil, err
+	}
+
 	// spec_text 落库的就是参与哈希的那份字节。
 	act.SpecText = strings.Join(lines, SEP)
 	act.SpecHash = SpecHashFor(act.Algo, lines)
@@ -1581,11 +1614,16 @@ func normalizeDrawMode(in string) (string, error) {
 
 // buildPrizes 校验奖档并生成 spec 原像的逐行。
 //
-// Σ(amount × count) ≤ max_total_prize_quota 是**唯一**能拦住"奖品金额多写一个
-// 零"的闸门:抽奖是平台收参与费、平台出奖品,派奖对用户额度是净增发,
-// 下游没有任何环节会因为金额过大而失败。
+// 抽奖是平台收参与费、平台出奖品,派奖对用户额度是**净增发**,下游没有任何环节
+// 会因为金额过大而失败。盯着"奖品金额多写一个零"的现在是两样东西,分工不同:
+//
+//   - 算术护栏 netIssueOverflowGuard:恒生效,拦的是 int64 溢出,不是业务。
+//   - 二次确认(buildActivity 末尾的 requireNetIssueConfirm):默认那一道,
+//     不拒绝,但要求把金额回显一遍。
+//
+// Σ ≤ max_total_prize_quota 退化成"站点自选的硬顶",默认 0 = 不限。
 // 文本奖(prize_type=text)不占用任何额度,因此它**完全不参与**
-// Σ(count × amount) ≤ max_total_prize_quota 这道闸门 —— amount 恒为 0。
+// Σ(count × amount) 这条累加 —— amount 恒为 0。
 // 它的成本闸门是另一件事:最坏履行份数,由 worstCaseTextGrants 摆到发布按钮上面。
 func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activity) ([]Prize, []string, error) {
 	if len(in) == 0 || len(in) > cfg.MaxPrizeTiers {
@@ -1615,8 +1653,16 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activ
 		if err := rejectControlChars("奖档名称", name); err != nil {
 			return nil, nil, err
 		}
-		if p.Count <= 0 || p.Count > cfg.MaxTotalEntriesHard {
+		// 上下界必须分开报。合成一句"奖品数量必须大于 0"之后,运营填 60000 被
+		// 告知的是一句在字面上就是假的话,而真正的原因(上限 50000)一个字都没说;
+		// 这句假话还会原样写进 qy_audit_logs.reason,事后复盘同样分不出
+		// "填了 0" 与 "填了 60000",而这两件事的处置完全不同。
+		if p.Count <= 0 {
 			return nil, nil, errBadRequest("奖品数量必须大于 0")
+		}
+		if p.Count > cfg.MaxTotalEntriesHard {
+			return nil, nil, errBadRequest(fmt.Sprintf(
+				"奖品数量不得超过 %d 份(与全场参与上限同一个硬顶)", cfg.MaxTotalEntriesHard))
 		}
 
 		prizeType, textDesc, err := normalizePrizeType(p)
@@ -1634,16 +1680,26 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activ
 		// 所以浮动奖**完全不参与**这条累加,与文本奖同一个理由。
 		floatingBallTier := act.DrawMode == DrawModeBall && p.PoolShareBps > 0
 		if prizeType == PrizeTypeQuota && !floatingBallTier {
+			// 两条都是正确性约束:额度奖发 0 或负数没有意义,而 MaxQuota 是
+			// quota 列的 int32 列宽 —— 越过它的单档在派奖那一刻会溢出。
 			if p.AmountQuota <= 0 || p.AmountQuota > int64(common.MaxQuota) {
-				return nil, nil, errBadRequest("奖品额度必须大于 0 且不超过系统上限")
+				return nil, nil, errBadRequest(fmt.Sprintf(
+					"奖品额度必须大于 0 且不超过系统上限 %s", quotaText(int64(common.MaxQuota))))
 			}
-			// 先判单档再累加:两个各自合法的档相乘也可能溢出。
-			if p.AmountQuota > set.MaxTotalPrizeQuota/int64(p.Count) {
-				return nil, nil, errPrizeCapExceeded
+			// 算术护栏:先判单档再累加。两个各自合法的档相乘也可能把 int64 顶穿,
+			// 而一个绕回负数的总额会让下面每一道判定连同二次确认一起静默通过。
+			// 它**不是**业务上限(见 caps.go 的 netIssueOverflowGuard)。
+			if p.AmountQuota > netIssueOverflowGuard/int64(p.Count) {
+				return nil, nil, errNetIssueOverflow
 			}
 			total += p.AmountQuota * int64(p.Count)
-			if total > set.MaxTotalPrizeQuota {
-				return nil, nil, errPrizeCapExceeded
+			if total > netIssueOverflowGuard {
+				return nil, nil, errNetIssueOverflow
+			}
+			// 站点自选的单场硬顶。0 = 不限(默认),那一档由 buildActivity 末尾的
+			// 二次确认接手 —— 一道硬拒绝拦不住手滑,只能把手滑推迟到更大的数字上。
+			if set.MaxTotalPrizeQuota > 0 && total > set.MaxTotalPrizeQuota {
+				return nil, nil, prizeCapExceeded(total, set.MaxTotalPrizeQuota)
 			}
 		}
 		if floatingBallTier && p.AmountQuota != 0 {
@@ -1673,11 +1729,15 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activ
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Tier < rows[j].Tier })
 
 	if set.LargePrizeAlertQuota > 0 && total >= set.LargePrizeAlertQuota {
-		// 不阻断 —— 运营确实可能办大活动。但必须喊出来:这是净增发。
+		// 日志这一条留着,它与二次确认不重复:确认发生在请求里、只有当事人看得到,
+		// 而这一行是事后翻后端日志时"这场活动当时越过了阈值"的痕迹。
+		// 阈值判据用 >=,与 requireNetIssueConfirm 逐字同源 —— 两边一个用 >
+		// 一个用 >=,恰好等于阈值的那一场会"日志喊了但没要确认"或者反过来。
 		common.SysError(fmt.Sprintf(
-			"qianye/lottery: 正在创建奖品总额度 %d 的抽奖(告警阈值 %d,保本参与人数 %d)—— "+
+			"qianye/lottery: 正在创建奖品总额度 %s(%d)的抽奖(二次确认阈值 %s,保本参与人数 %d)—— "+
 				"抽奖派奖是对用户额度的净增发,请确认这不是多写了一个零",
-			total, set.LargePrizeAlertQuota, breakEven(total, act.StakeQuota)))
+			quotaText(total), total, quotaText(set.LargePrizeAlertQuota),
+			breakEven(total, act.StakeQuota)))
 	}
 
 	lines := make([]string, 0, len(rows))
@@ -1749,9 +1809,18 @@ func normalizeWinPpm(drawMode string, p prizeInput, prizeType string, entriesCap
 	// count 已被 MaxTotalEntriesHard 夹住、amount 已被 MaxQuota(int32)夹住,
 	// 乘积最多在 1e14 量级,int64 上不会溢出。
 	if prizeType == PrizeTypeQuota && p.AmountQuota*int64(p.Count) < int64(entriesCap) {
+		// 金额按站内余额刻度写:这句话要运营去调的就是"额度"那一格,
+		// 而他在界面上填的是 $,报错里给一个裸额度等于让他自己换算一遍。
+		// 左边是钱、右边是**票数**,两个刻度必须在句子里分清楚:
+		//   · 单份金额按站内余额刻度写(运营在界面上填的就是 $);
+		//   · entriesCap 是 rules.max_total_entries,单位是"张票",给它缀一个
+		//     "额度"会让人照着这句话往错的方向调参。
+		// 另注:quotaText 的返回值自己就以" 额度"结尾(logger.LogQuota),
+		// 所以格式串里不能再写一次"额度 %s",否则输出是"额度 ＄0.000010 额度"。
 		return 0, errBadRequest(fmt.Sprintf(
-			"概率制下本档预算(数量 %d × 额度 %d)必须不小于全场参与上限 %d,"+
-				"否则超募时会有中奖者被摊薄到 0 额度而拿不到钱", p.Count, p.AmountQuota, entriesCap))
+			"概率制下本档预算(数量 %d × 单份 %s)必须不小于全场参与上限 %d 张票,"+
+				"否则超募时会有中奖者被摊薄到 0 额度而拿不到钱",
+			p.Count, quotaText(p.AmountQuota), entriesCap))
 	}
 	return p.WinPpm, nil
 }
@@ -1830,8 +1899,20 @@ func applyBetBounds(act *Activity, in *activityInput, cfg config.Lottery) error 
 	if minQ < 0 || maxQ < 0 {
 		return errBadRequest("单注上下限不能为负")
 	}
-	if maxQ > 0 && maxQ > cfg.MaxStakeQuota {
-		return errBadRequest(fmt.Sprintf("单注上限不得超过 %d", cfg.MaxStakeQuota))
+	// int32 这一条是**新补的**,而且不是洁癖:acceptAmount 无条件拒绝
+	// amount > MaxQuota,所以一个填在它之上的单注上限是一句界面谎言 ——
+	// 页面上写着"单注最高 100 亿",实际到 21 亿就报"投注金额不符合本场规则",
+	// 而那句话不会告诉用户真正的上界是多少。max_stake_quota 放开(0 = 不限)
+	// 之后,原先顺带兜住这件事的那道闸门没有了,必须自己说清。
+	if maxQ > int64(common.MaxQuota) {
+		return errBadRequest(fmt.Sprintf(
+			"单注上限不得超过系统上限 %s", quotaText(int64(common.MaxQuota))))
+	}
+	// 站点自选的硬顶,0 = 不限(默认)。
+	if maxQ > 0 && cfg.MaxStakeQuota > 0 && maxQ > cfg.MaxStakeQuota {
+		return errBadRequest(fmt.Sprintf(
+			"单注上限不得超过本站设置的 %s(lottery.max_stake_quota,配成 0 即不限制)",
+			quotaText(cfg.MaxStakeQuota)))
 	}
 	if maxQ > 0 && minQ > maxQ {
 		return errBadRequest("单注下限不得大于上限")

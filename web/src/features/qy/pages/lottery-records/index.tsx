@@ -33,9 +33,11 @@ import { QyStatusBadge } from '../../components/qy-status-badge'
 import { qyArray } from '../../lib/array'
 import { QyPager } from '../components/qy-pager'
 import { qyLotMyEntriesQuery } from '../lottery/api'
+import { QyLotBallNumbers } from '../lottery/components/lottery-ball-numbers'
 import { QyLotFinePrint } from '../lottery/components/lottery-fine-print'
 import { QyLotMyTextPrizeDialog } from '../lottery/components/my-text-prize-dialog'
 import { QyLotWhyResultDialog } from '../lottery/components/why-result-dialog'
+import { qyLotBallHits, qyLotBallSafeParsePick } from '../lottery/lib/ball'
 import { qyLotEntryBadgeStatus } from '../lottery/lib/display'
 import type { QyLotMyEntry } from '../lottery/types'
 import { formatQyTs } from '../ops/format'
@@ -145,13 +147,43 @@ export function QyLotteryRecordsBody() {
               // 选号是这张票唯一由用户决定的内容，而事后争议的第一句话永远是
               // 「我买的明明是那一组」。回执弹窗关掉就没了，这份列表才是留得住
               // 的那一份，所以它必须长期可见而不是只在弹窗里出现一次。
+              //
+              // 球画出来、规范化串留在球下面：球是给人"一眼看出中没中"用的，
+              // 串是进哈希链的那份字节、用户拿它去比对证据链，两者缺一不可。
               ...(hasPick
                 ? [
                     {
                       id: 'pick',
                       header: t('qy_lot_ball_my_pick'),
-                      cellClassName: 'font-mono text-xs tabular-nums',
-                      cell: (row: QyLotMyEntry) => row.pick ?? '',
+                      cell: (row: QyLotMyEntry) => (
+                        <span className='inline-flex flex-col gap-0.5'>
+                          <QyLotBallNumbers
+                            hits={qyLotBallHits(
+                              qyLotBallSafeParsePick(row.pick ?? ''),
+                              qyLotBallSafeParsePick(row.ball_result ?? '')
+                            )}
+                            pick={row.pick ?? ''}
+                            size='sm'
+                          />
+                          <span className='text-muted-foreground font-mono text-[11px] break-all tabular-nums'>
+                            {row.pick ?? ''}
+                          </span>
+                        </span>
+                      ),
+                    },
+                    {
+                      // 开奖号必须与我的号在**同一行**上。改造前这张表只有我的号，
+                      // 想知道中没中得逐行点开「为什么是这个结果」，而那个弹窗
+                      // 每次都要整份拉一次证据链再本地复算 —— 一页 20 行没人会点。
+                      id: 'ball_result',
+                      header: t('qy_lot_ball_result'),
+                      cell: (row: QyLotMyEntry) => (
+                        <QyLotBallNumbers
+                          emptyText={t('qy_lot_ball_await_draw')}
+                          pick={row.ball_result ?? ''}
+                          size='sm'
+                        />
+                      ),
                     },
                   ]
                 : []),
@@ -167,8 +199,20 @@ export function QyLotteryRecordsBody() {
                 header: t('qy_lot_result'),
                 cell: (row: QyLotMyEntry) =>
                   row.won == null ? (
-                    <span className='text-muted-foreground'>
-                      {t('qy_lot_result_none')}
+                    // 「没中」与「还没开奖」是两个结论，写成同一个"未中奖 /
+                    // 未结算"就等于什么都没说 —— 而那句话在一场还没开奖的活动上
+                    // 甚至是**错的**（它先说了"未中奖"）。
+                    //
+                    // 双色球有一条干净的判据：这一期开出号码了没有。取消 / 流局
+                    // 的场次 reveal 从未执行，ball_result 恒为空串，那时写
+                    // 「未中奖」就是把退款说成输钱，所以回落到「待开奖」。
+                    // 其余玩法没有这个判据，仍用原来那个含糊但诚实的占位。
+                    <span className='text-muted-foreground text-xs'>
+                      {row.draw_mode !== 'ball'
+                        ? t('qy_lot_result_none')
+                        : (row.ball_result ?? '') === ''
+                          ? t('qy_lot_ball_await_draw')
+                          : t('qy_lot_ball_not_won')}
                     </span>
                   ) : (
                     <span className='inline-flex flex-wrap items-center gap-1.5'>

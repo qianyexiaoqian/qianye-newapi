@@ -181,12 +181,6 @@ const ORPHAN_EXEMPT: { route: string; why: string }[] = [
       'qianye/modules/commission/settle_rerun_boundary_test.go 守着它仍挂在管理端组上。',
   },
   {
-    route: 'GET /api/qy/lottery/series/:series_no',
-    why:
-      '双色球期次详情。前端的期次信息由活动详情一并下发（同一份 body 里就有 ' +
-      'ball_result / issue_no），这条是给脚本客户端的等价读口。',
-  },
-  {
     route: 'GET /api/qy/ticket/images/:ref',
     why:
       '工单图片是 <img src> 直接指过去的，不经 axios —— 提取器只扫 axios 调用点，' +

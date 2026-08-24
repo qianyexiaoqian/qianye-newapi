@@ -36,6 +36,8 @@ import { QyPageBoundary } from '../../../components/qy-page-boundary'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
 import { qyArray } from '../../../lib/array'
 import { QyPager } from '../../components/qy-pager'
+import { QyLotBallNumbers } from '../../lottery/components/lottery-ball-numbers'
+import { qyLotBallHits, qyLotBallSafeParsePick } from '../../lottery/lib/ball'
 import { qyLotEntryBadgeStatus } from '../../lottery/lib/display'
 import { QY_EMPTY_TEXT, formatQyTs } from '../../ops/format'
 import { QyFilterBar, QyFilterField } from '../../ops/qy-ops-ui'
@@ -52,7 +54,13 @@ const ALL = 'all'
  * 编辑动作**，这不是漏做 —— 名单只进不出是 grinding 防御的基石，也是哈希链
  * 成立的前提。要处置某个人只能整场取消。
  */
-export function QyLotEntriesTab(props: { actNo: string }) {
+export function QyLotEntriesTab(props: {
+  actNo: string
+  /** 本期开奖号；开奖前为空串。只用来给命中的号加高亮。 */
+  ballResult: string
+  /** `ball` 时把「选项」那一列换成「选号」。 */
+  drawMode: string
+}) {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState(ALL)
@@ -64,6 +72,7 @@ export function QyLotEntriesTab(props: { actNo: string }) {
   }
   const query = useQuery(qyAdminLotEntriesQuery(props.actNo, params))
   const items = qyArray(query.data?.items)
+  const drawn = qyLotBallSafeParsePick(props.ballResult)
 
   return (
     <div className='space-y-3'>
@@ -128,13 +137,33 @@ export function QyLotEntriesTab(props: { actNo: string }) {
                   />
                 ),
               },
-              {
-                id: 'opt_no',
-                header: t('qy_lot_option'),
-                cellClassName: 'tabular-nums',
-                cell: (row: QyLotAdminEntry) =>
-                  row.opt_no === 0 ? QY_EMPTY_TEXT : row.opt_no,
-              },
+              // 双色球换一列。`opt_no` 在这套玩法里恒为 0，于是这张表逐行显示
+              // 一个占位符，而**每一注买的号**（接口一直下发在 `pick` 上）一格
+              // 都没画出来 —— 运营处理"我明明买中了"这类申诉时，管理端居然是
+              // 全站唯一看不到号码的地方。
+              props.drawMode === 'ball'
+                ? {
+                    id: 'pick',
+                    // 管理端看的是别人的票，表头不能写「你的选号」。
+                    header: t('qy_lot_ball_pick_col'),
+                    cell: (row: QyLotAdminEntry) => (
+                      <QyLotBallNumbers
+                        hits={qyLotBallHits(
+                          qyLotBallSafeParsePick(row.pick ?? ''),
+                          drawn
+                        )}
+                        pick={row.pick ?? ''}
+                        size='sm'
+                      />
+                    ),
+                  }
+                : {
+                    id: 'opt_no',
+                    header: t('qy_lot_option'),
+                    cellClassName: 'tabular-nums',
+                    cell: (row: QyLotAdminEntry) =>
+                      row.opt_no === 0 ? QY_EMPTY_TEXT : row.opt_no,
+                  },
               {
                 id: 'amount',
                 header: t('qy_common_amount'),

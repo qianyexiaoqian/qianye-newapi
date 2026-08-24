@@ -44,12 +44,10 @@ import {
   qyLotBallPoolOf,
   type QyLotBallPick,
 } from '../lib/ball'
-import {
-  qyLotOptions,
-  type QyLotActivityDetail,
-  type QyLotEntryReceipt,
-} from '../types'
+import { qyLotGuessBoard } from '../lib/guess'
+import type { QyLotActivityDetail, QyLotEntryReceipt } from '../types'
 import { QyLotBallPicker } from './lottery-ball-picker'
+import { QyLotGuessLine } from './lottery-guess-board'
 
 /** 需要用户补输支付密码的两个 code。 */
 const PAY_PASSWORD_CODES = new Set(['qy_pay_pwd_required', 'qy_pay_pwd_wrong'])
@@ -130,7 +128,14 @@ export function QyLotEntryDialog(props: {
     },
   })
 
-  const guessOptions = qyLotOptions(activity.spec)
+  // 盘口按**这一注**算：用户在这一屏问的是"我押下去会怎样"，
+  // 而不是"某个抽象的一注会怎样"。
+  const guessRows = qyLotGuessBoard({
+    spec: activity.spec,
+    poolQuota: activity.pool_quota,
+    feeBps: activity.fee_bps,
+    stakeQuota: activity.stake_quota,
+  })
   const canSubmit =
     !mutation.isPending &&
     requestId !== '' &&
@@ -206,6 +211,13 @@ export function QyLotEntryDialog(props: {
                 />
               </QyKeyValue>
             )}
+            {activity.kind === 'guess' && (
+              // 竞猜同理，而且更要紧：这个数就是**全部押注之和**，
+              // 也就是"赢家分的是谁的钱"的答案。押下去之前必须看得到。
+              <QyKeyValue label={t('qy_lot_pool')}>
+                <QyAmountText quota={activity.pool_quota} variant='hero' />
+              </QyKeyValue>
+            )}
           </div>
 
           {isBall && (
@@ -222,56 +234,59 @@ export function QyLotEntryDialog(props: {
 
           {activity.kind === 'guess' && (
             <div className='space-y-2'>
+              {/*
+                标签从「选择你的答案」换成「押哪一项」。这不是修辞：一个写着
+                "答案"的单选组就是一道选择题，而这一步真正发生的事是把钱压进
+                一个池子。加上每一行的分布条与实时赔率，一屏之内不用再解释
+                "钱从哪来"。
+              */}
               <Label>{t('qy_lot_pick_option')}</Label>
               <RadioGroup
                 value={optNo === 0 ? '' : String(optNo)}
                 onValueChange={(value) => setOptNo(Number(value ?? 0))}
                 className='gap-2'
               >
-                {guessOptions.map((option) => (
+                {guessRows.map((row) => (
                   <label
-                    key={option.opt_no}
+                    key={row.opt_no}
                     className='hover:bg-muted/40 flex cursor-pointer items-start gap-3 rounded-lg border p-3'
                   >
                     <RadioGroupItem
-                      value={String(option.opt_no)}
+                      value={String(row.opt_no)}
                       className='mt-0.5'
                     />
-                    <span className='min-w-0 flex-1'>
-                      <span className='block text-sm break-words'>
-                        {option.label}
-                      </span>
-                      {option.is_catch_all && (
-                        <span className='text-muted-foreground block text-xs'>
-                          {t('qy_lot_option_catch_all')}
-                        </span>
-                      )}
-                      {option.bet_quota != null && (
-                        <span className='text-muted-foreground block text-xs tabular-nums'>
-                          {t('qy_lot_option_pool', {
-                            count: option.bet_count ?? 0,
-                          })}
-                        </span>
-                      )}
-                    </span>
+                    {/* 与详情页盘口共用同一个组件：两处各写一份的结果是
+                        "详情页 ×3.00、弹窗 ×2.85"这种最伤信任的不一致。 */}
+                    <div className='min-w-0 flex-1'>
+                      <QyLotGuessLine row={row} />
+                    </div>
                   </label>
                 ))}
               </RadioGroup>
             </div>
           )}
 
-          {/* 一次性把不可逆这件事说清楚。参与费是**立即从主额度扣走**的，
+          {/* 一次性把不可逆这件事说清楚。钱是**立即从主额度扣走**的，
               没有撤单、没有反悔，这条必须在按下确认之前看到。
 
               压成一句，并且**把金额写进这句话里**：改造前是一个标题加一段
               38 字的说明，两者说的是同一件事，而真正决定用户按不按这颗按钮的
-              是"多少钱、退不退"这两个具体的量。 */}
+              是"多少钱、退不退"这两个具体的量。
+
+              抽奖与竞猜必须说成两句话。抽奖那句「只有整场取消或流局时才全额
+              退款」对竞猜是**错的**：竞猜的钱不是参与费而是本金，它进了奖池，
+              押错时归了押中的人，而全场押中同一项或全场都押错时原样退回 ——
+              后两种既不是取消也不是流局。用同一句话盖住两类活动，等于在钱
+              真正动之前的最后一屏上给竞猜用户一个假的退款口径。 */}
           <Alert>
             <TriangleAlert />
             <AlertDescription>
-              {t('qy_lot_join_warn_line', {
-                amount: formatQyQuotaLedger(activity.stake_quota),
-              })}
+              {t(
+                activity.kind === 'guess'
+                  ? 'qy_lot_bet_warn_line'
+                  : 'qy_lot_join_warn_line',
+                { amount: formatQyQuotaLedger(activity.stake_quota) }
+              )}
             </AlertDescription>
           </Alert>
 

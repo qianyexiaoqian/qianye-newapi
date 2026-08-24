@@ -37,6 +37,7 @@ import { qyErrorMessage } from '../../lib/api'
 import { formatQyQuotaLedger } from '../../lib/format'
 import { qyKeys } from '../../lib/query-keys'
 import { QyStatGrid } from '../components/qy-stat-grid'
+import { QyLotBallNumbers } from '../lottery/components/lottery-ball-numbers'
 import { QyLotRulesList } from '../lottery/components/lottery-rules-list'
 import { QyLotSpecTable } from '../lottery/components/lottery-spec-table'
 import {
@@ -369,9 +370,22 @@ export function QyAdminLotteryDetail() {
                     <span className='text-muted-foreground text-xs'>
                       {t('qy_lot_ball_result')}
                     </span>
-                    <span className='font-mono text-sm'>
-                      {activity.ball_result || '-'}
-                    </span>
+                    {/* 管理端也画球：运营核对一条"我明明买中了"的申诉时，
+                        要拿开奖号与参与明细里那一注逐位比对，而两串定长文本
+                        并排是这一屏上最容易看错的动作。 */}
+                    {(activity.ball_result ?? '') === '' ? (
+                      <span className='text-muted-foreground text-sm'>-</span>
+                    ) : (
+                      <span className='flex flex-col gap-1'>
+                        <QyLotBallNumbers
+                          pick={activity.ball_result ?? ''}
+                          size='sm'
+                        />
+                        <span className='text-muted-foreground font-mono text-xs break-all'>
+                          {activity.ball_result}
+                        </span>
+                      </span>
+                    )}
                   </div>
                 </div>
               )}
@@ -561,7 +575,11 @@ export function QyAdminLotteryDetail() {
                 </TabsContent>
 
                 <TabsContent value='entries'>
-                  <QyLotEntriesTab actNo={actNo} />
+                  <QyLotEntriesTab
+                    actNo={actNo}
+                    ballResult={activity.ball_result ?? ''}
+                    drawMode={activity.draw_mode ?? ''}
+                  />
                 </TabsContent>
                 <TabsContent value='payouts'>
                   <QyLotPayoutsTab actNo={actNo} />
@@ -584,6 +602,10 @@ export function QyAdminLotteryDetail() {
         <>
           <QyLotPublishDialog
             activity={activity}
+            // 最坏净增发必须与发布按钮在同一屏。发布是整个模块最不可逆的一次
+            // 点击，而这一屏原来只复述参与费与四个时刻 —— 唯一会让平台亏钱的
+            // 那个数反而不在上面。
+            prizeTotalQuota={view?.economics?.prize_total_quota ?? 0}
             open={publishOpen}
             onOpenChange={setPublishOpen}
           />

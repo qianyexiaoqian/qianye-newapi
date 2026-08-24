@@ -350,14 +350,39 @@ func settleGuessResult(ctx context.Context, act *Activity, opt *Option, evidence
 			return wrapInternal("分配奖池", errors.New("份额指向了不存在的参与明细 "+s.EntryNo))
 		}
 		kind := PayoutWin
+		amount := s.Amount
 		if s.Refund {
+			// 退款金额以**资金单**为权威,与取消/流局那条路径同一道闸
+			// (refundAmountOf)。
+			//
+			// 这里原先直接发 roster 上的 amount。看起来它被"重算奖池 == 物化
+			// 计数"那条交叉核对护着,其实不然:那条只要求两个数**互相一致**,
+			// 同时把 qy_lot_entry.amount 与 qy_lot_activity.pool_quota 改成同一个
+			// 更大的数就照样通过,于是平台退出一笔从没收进来的钱。
+			//
+			// 更要紧的是它把已有的那道闸**挡在了门外**:全额退回的两种收场
+			// (全部猜错 / 全场押中同一项)都落在 isFullRefundOutcome 里,
+			// runSettle 随后会再跑一次 planFullRefund —— 而那一次是核对资金单的。
+			// 两条路径共用 uk(act_id, entry_id, kind),**先登记的那一条赢**,
+			// 也就是这里未经核对的这一条。等于给竞猜开了一个专用绕过口。
+			//
+			// 读不到资金单时**不登记**,与 planFullRefund 逐字同一个口径:
+			// 没有证据证明钱收过,就不能凭空发钱。此时 finishIfDone 的覆盖度
+			// 复核会拦住收尾,活动留在 settling 等人处理,而不是静默少退一笔。
+			capped, ok := refundAmountOf(ctx, gdb, act.Id, e)
+			if !ok {
+				continue
+			}
+			if capped < amount {
+				amount = capped
+			}
 			kind = PayoutRefund
-			refundSum += s.Amount
+			refundSum += amount
 		} else {
-			payoutSum += s.Amount
+			payoutSum += amount
 		}
 		plans = append(plans, PayoutPlan{
-			EntryId: e.Id, UserId: e.UserId, Kind: kind, Amount: s.Amount,
+			EntryId: e.Id, UserId: e.UserId, Kind: kind, Amount: amount,
 		})
 	}
 	// 出款顺序按 entry_no 升序,与 proof 里的顺序一致 —— 让"谁先到账"

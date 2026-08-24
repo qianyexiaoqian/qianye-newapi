@@ -114,6 +114,63 @@ export function qyLotBallFormatPick(pick: QyLotBallPick): string {
   return `${pad(pick.reds)}|${pad(pick.blues)}`
 }
 
+/**
+ * 规范化串 `03,05,12|02` → 选号。**解析不了就当没有号**，绝不抛。
+ *
+ * 与 `lib/verify.ts` 的 `qyLotParsePick` 是刻意分开的两个函数，因为它们服务的是
+ * 两件相反的事：
+ *
+ *  - 复算路径（verify / explain）必须**抛**。一个格式不对的 `pick` 意味着链的
+ *    原像推不出来，把它悄悄当成空号会让"验证通过"变成一句假话。
+ *  - 展示路径必须**不抛**。开奖号与选号在展示时会流过大厅卡片、详情页、
+ *    「我的参与」的每一行 —— 其中任何一处渲染期抛异常，塌掉的是整棵 React 树，
+ *    用户看到的是白屏而不是"这一格没有号"。而这两条串来自数据库里的历史行，
+ *    格式漂移（老算法、人工改库、截断）不是不可能。
+ *
+ * 返回 `null` 而不是 `{reds: [], blues: []}`：调用方要能把"没有号"与"号是空的"
+ * 分开——前者不该渲染任何一颗球，后者在这套玩法里根本不存在。
+ */
+export function qyLotBallSafeParsePick(pick: string): QyLotBallPick | null {
+  const text = pick.trim()
+  if (text === '' || !text.includes('|')) return null
+  const [redPart = '', bluePart = ''] = text.split('|')
+  const parse = (part: string): number[] | null => {
+    if (part === '') return []
+    const out: number[] = []
+    for (const cell of part.split(',')) {
+      if (!/^\d{1,2}$/.test(cell)) return null
+      out.push(Number.parseInt(cell, 10))
+    }
+    return out
+  }
+  const reds = parse(redPart)
+  const blues = parse(bluePart)
+  if (reds == null || blues == null) return null
+  if (reds.length === 0 && blues.length === 0) return null
+  return { reds, blues }
+}
+
+/**
+ * 我的号里哪几个被开出来了。
+ *
+ * 与后端 `MatchTier` 读的是同一件事的两个投影：那边只数**个数**（命中几红几蓝
+ * 决定档位），这里要的是**具体是哪几个**（决定界面上哪几颗球高亮）。个数由
+ * `hits.reds.length` 得出，所以两者不可能各说各话。
+ *
+ * 两边任何一边缺席（还没开奖 / 已取消 / 这一格根本不是双色球票）都返回空集合
+ * —— 一颗都不高亮，而不是全高亮。
+ */
+export function qyLotBallHits(
+  mine: QyLotBallPick | null,
+  drawn: QyLotBallPick | null
+): QyLotBallPick {
+  if (mine == null || drawn == null) return { blues: [], reds: [] }
+  return {
+    reds: mine.reds.filter((ball) => drawn.reds.includes(ball)),
+    blues: mine.blues.filter((ball) => drawn.blues.includes(ball)),
+  }
+}
+
 /** 选号是否已选满。按钮亮不亮只看这一条，真正的校验在后端。 */
 export function isQyLotBallPickComplete(
   pick: QyLotBallPick,

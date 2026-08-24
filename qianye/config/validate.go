@@ -189,12 +189,20 @@ func validateLottery(l *Lottery) error {
 		return fmt.Errorf("qianye: lottery.reveal_delay_seconds 必须大于 0 —— " +
 			"名单哈希必须先于种子公开,否则公正性无法被第三方举证")
 	}
-	if l.MaxTotalPrizeQuota <= 0 {
-		return fmt.Errorf("qianye: lottery.max_total_prize_quota 必须大于 0 —— " +
-			"抽奖派奖是对主库额度的净增发,这是唯一能拦住「奖品金额多写一个零」的闸门")
+	// 三个额度上限的 0 一律是"不限制",所以这里只拒负数。
+	// "派奖是净增发"这件事现在由 large_prize_alert_quota 的二次确认盯着,
+	// 而不是由一道谁都能调大的硬拒绝盯着(见 qianye/modules/lottery/caps.go)。
+	if l.MaxTotalPrizeQuota < 0 || l.MaxStakeQuota < 0 || l.LargePrizeAlertQuota < 0 {
+		return fmt.Errorf("qianye: lottery.max_total_prize_quota / max_stake_quota / " +
+			"large_prize_alert_quota 不能为负(0 = 不限制)")
 	}
-	if l.MaxStakeQuota <= 0 {
-		return fmt.Errorf("qianye: lottery.max_stake_quota 必须大于 0")
+	// 阈值高过硬顶 = 一道**永远不会触发**的二次确认:超过阈值的活动在够到阈值
+	// 之前就已经被硬顶 400 掉了。这不是洁癖,是一道装上去却不通电的闸门,
+	// 而它是本模块唯一还在盯着"多写一个零"的东西。
+	if l.MaxTotalPrizeQuota > 0 && l.LargePrizeAlertQuota > l.MaxTotalPrizeQuota {
+		return fmt.Errorf("qianye: lottery.large_prize_alert_quota(%d)不得超过 "+
+			"max_total_prize_quota(%d)—— 否则这道二次确认永远触发不了",
+			l.LargePrizeAlertQuota, l.MaxTotalPrizeQuota)
 	}
 	if l.MaxGuessFeeBps < 0 || l.MaxGuessFeeBps > maxBps {
 		return fmt.Errorf("qianye: lottery.max_guess_fee_bps 必须落在 [0, %d]", maxBps)

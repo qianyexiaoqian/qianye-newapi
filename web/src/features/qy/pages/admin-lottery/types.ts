@@ -285,6 +285,17 @@ export type QyLotCreateInput = {
   prizes: QyLotTier[]
   /** 竞猜选项。抽奖传空数组。`opt_no` 由前端按顺序编号。 */
   options: { opt_no: number; label: string; is_catch_all: boolean }[]
+  /**
+   * 「我看清了这场活动最坏会发出多少站内余额」的回执 = Σ(数量 × 额度)。
+   *
+   * 只在奖品总额**达到** `large_prize_alert_quota`（阈值 0 = 不要确认）时才被
+   * 后端读。判据是**回显值恰等于总额**，不是一个布尔 —— 布尔会被一个默认 true
+   * 的表单或一段抄来的 curl 永久按住，那样它第一次就退化成恒真。
+   *
+   * 不填（`undefined`）在后端等于 0，而 0 永远不等于一个越过阈值的正数总额，
+   * 所以漏传的结果是被拒绝而不是被放行。
+   */
+  confirm_net_issue_quota?: number
 }
 
 export type QyLotAdminEntry = {
@@ -294,6 +305,14 @@ export type QyLotAdminEntry = {
   username: string
   user_ref: string
   opt_no: number
+  /**
+   * 双色球选号（归一化 `03,05,12|02`）。非双色球为空串。
+   *
+   * 后端一直整行下发 `Entry`，这个字段从第一天起就在响应里 —— 只是管理端
+   * 一直没有渲染它，于是运营处理"我明明买中了"这类申诉时，管理端是全站唯一
+   * 看不到号码的地方。
+   */
+  pick?: string
   amount: number
   status: QyLotEntryStatus
   order_no: string
@@ -492,13 +511,34 @@ export type QyLotEffective = {
   default_guess_fee_bps: number
   /** 竞猜手续费上限。**防的是把 5% 手滑打成 50%**，不是防恶意。 */
   max_guess_fee_bps: number
-  /** 单场奖品总额上限。抽奖派奖是净增发，写错一个零就是直接资损。 */
+  /**
+   * 单场奖品总额上限。**0 = 不限制**，而且是默认值。
+   *
+   * 它不再是拦住「多写一个零」的那道闸门 —— 一道硬拒绝拦不住手滑，只能把手滑
+   * 推迟到更大的数字上。现在盯着它的是下面那条二次确认阈值。
+   */
   max_total_prize_quota: number
-  /** 超过它只告警不阻断 —— 运营确实可能办大活动。 */
+  /**
+   * 二次确认阈值。奖品总额**达到**它（含相等）时，创建/改活动必须回显精确金额
+   * 才能提交（`confirm_net_issue_quota`）。**0 = 连确认都不要**。
+   */
   large_prize_alert_quota: number
 }
 
-export type QyLotBound = { min: number; max: number }
+/**
+ * 一个可写键的取值区间。
+ *
+ * `unlimited` 为真时后端**不下发 `max`** —— 不是下发一个大得离谱的数：照着
+ * 那种数渲染出来的"范围 0 ~ 92233720368.55"比不写更让人以为自己看错了。
+ * 所以上界判定必须写成 `bound.max != null && value > bound.max`，
+ * 光写 `value > bound.max` 在 `max` 缺席时恒为 false，看起来"碰巧也对"，
+ * 但那是 `undefined` 比较的副产品而不是一条判据。
+ */
+export type QyLotBound = {
+  min: number
+  max?: number
+  unlimited?: boolean
+}
 
 /** YAML 只读段：改它要动配置文件并重载。 */
 export type QyLotYamlReadonly = {

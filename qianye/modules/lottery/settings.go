@@ -221,12 +221,17 @@ func mergeOverrides(base opSettings, rows map[string]string) opSettings {
 	if v, ok := parseIntIn(rows, keyDefaultGuessFeeBps, 0, base.MaxGuessFeeBps); ok {
 		base.DefaultGuessFeeBps = v
 	}
-	// 奖品上限只允许**调低**:YAML 里的值是安全上界,允许在线调高等于把
-	// "抽奖派奖是净增发"这道唯一的闸门交给一个 HTTP 接口。
-	if v, ok := parseInt64In(rows, keyMaxTotalPrizeQuota, 1, c.MaxTotalPrizeQuota); ok {
+	// 这两个键的区间**必须与写侧同源**,所以直接取 settingBounds() 而不是在这里
+	// 复述一遍 lo/hi:写侧闸门只管今后的写入,读侧若还写死一份旧区间,升级之前
+	// 落库的越界覆盖会继续被读出来生效,敞口一点没关(settings_bounds_test.go)。
+	//
+	// 奖品硬顶仍然只允许**调低**(quotaCeilingBound 在 YAML 为正时给 [1, yaml]);
+	// YAML 为 0 时它本来就不限,在线随便配。
+	bounds := settingBounds()
+	if v, ok := parseInt64Within(rows, keyMaxTotalPrizeQuota, bounds[keyMaxTotalPrizeQuota]); ok {
 		base.MaxTotalPrizeQuota = v
 	}
-	if v, ok := parseInt64In(rows, keyLargePrizeAlertQuota, 0, c.MaxTotalPrizeQuota); ok {
+	if v, ok := parseInt64Within(rows, keyLargePrizeAlertQuota, bounds[keyLargePrizeAlertQuota]); ok {
 		base.LargePrizeAlertQuota = v
 	}
 	if base.DefaultGuessFeeBps > base.MaxGuessFeeBps {
@@ -261,13 +266,15 @@ func parseIntIn(rows map[string]string, key string, lo, hi int) (int, bool) {
 	return v, true
 }
 
-func parseInt64In(rows map[string]string, key string, lo, hi int64) (int64, bool) {
+// parseInt64Within 取一个 int64 覆盖,判据是写侧那一份 settingBound ——
+// 区间只有一个定义点,读写两侧不可能各说各的。
+func parseInt64Within(rows map[string]string, key string, b settingBound) (int64, bool) {
 	raw, ok := rows[key]
 	if !ok {
 		return 0, false
 	}
-	v, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || v < lo || v > hi {
+	v, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || !b.contains(v) {
 		return 0, false
 	}
 	return v, true
