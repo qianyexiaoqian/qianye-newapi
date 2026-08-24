@@ -47,8 +47,10 @@ func handleAdminList(c *gin.Context) {
 		// 转义符显式写成 '/' 而不是沿用默认:SQLite 的 LIKE 压根没有默认转义符,
 		// 而 MySQL 的字符串字面量里 '\' 还要再转一次 —— 同一段 SQL 在三种数据库
 		// 上的含义会不一样。ESCAPE 子句三种库都支持。
-		like := "%" + strings.NewReplacer("/", "//", "%", "/%", "_", "/_").Replace(kw) + "%"
-		q = q.Where(`ticket_no LIKE ? ESCAPE '/' OR title LIKE ? ESCAPE '/'`, like, like)
+		// 走 httpq.SearchLike:转义之外还折叠大小写 —— PostgreSQL 的 LIKE
+		// 大小写敏感,客服照着单号里的字母搜时在 PG 上会得到"查无此单"。
+		expr, pattern := httpq.SearchLike(kw, httpq.MatchContains, "ticket_no", "title")
+		q = q.Where(expr, pattern, pattern)
 	}
 
 	var total int64
@@ -168,7 +170,7 @@ func handleAdminReply(c *gin.Context) {
 		AuthorName: adminName,
 		Body:       body,
 		Internal:   req.Internal,
-		IP:         c.ClientIP(),
+		IP:         common.ClientIP(c),
 	}, refs)
 	if err != nil {
 		respondErr(c, err)

@@ -46,17 +46,48 @@ import {
 import { QyKeyValue } from '../ops/qy-ops-ui'
 import {
   getQyAdminHealth,
+  getQyClientIP,
   getQyOverdraft,
   getQyVersion,
   listQyLeases,
   reloadQyConfig,
 } from './api'
 import type {
+  QyClientIPObservation,
+  QyClientIPResolution,
   QyGroupRatioHealth,
   QyLeaseListItem,
   QyModuleSection,
   QyModuleSectionState,
 } from './types'
+
+/**
+ * 一句话说清「这个 IP 是怎么来的」。
+ *
+ * 刻意把 reason 与 header 合成一句而不是各占一行：运维要的是结论
+ * （「从 nginx 的 X-Forwarded-For 链里剥出来的」），两个机器可读的枚举
+ * 分列两行需要人在脑子里再拼一次。
+ */
+function qyClientIPReasonText(
+  resolution: QyClientIPResolution,
+  t: TFunction
+): string {
+  const header = resolution.header ?? ''
+  switch (resolution.reason) {
+    case 'forwarded_chain':
+      return t('qy_cfg_clientip_rs_chain', { header })
+    case 'forwarded_chain_all_trusted':
+      return t('qy_cfg_clientip_rs_all_trusted', { header })
+    case 'forwarded_header':
+      return t('qy_cfg_clientip_rs_header', { header })
+    case 'trusted_peer_no_header':
+      return t('qy_cfg_clientip_rs_no_header')
+    case 'peer_unparsable':
+      return t('qy_cfg_clientip_rs_unparsable')
+    default:
+      return t('qy_cfg_clientip_rs_direct')
+  }
+}
 
 /** 需要处理的两种状态：模块编译进来了，但配置里没人对它做过决定。 */
 const QY_MODULE_STATES_NEEDING_ATTENTION: ReadonlySet<QyModuleSectionState> =
@@ -166,6 +197,23 @@ export function QyAdminHealth() {
     refetchInterval: 30_000,
   })
 
+  /**
+   * 客户端 IP 识别诊断。
+   *
+   * 每次打开都重取（staleTime 0）而不是缓存：这一页的 `request` 段说的是
+   * **这一条请求**被识别成了什么，缓存住等于把上一次访问的结论当成现在的
+   * 结论。而运维改完 `TRUSTED_PROXIES` 重启进程之后，第一件事就是回到这里
+   * 确认策略真的换了。
+   *
+   * 不轮询：策略是启动时定死的，只有观测台的计数会涨，而那个数涨不涨不影响
+   * 任何判断 —— 非零就是非零。
+   */
+  const clientIPQuery = useQuery({
+    queryKey: qyKeys.adminClientIP(),
+    queryFn: getQyClientIP,
+    staleTime: 0,
+  })
+
   // 版本是编译期常量，进程不重启就不会变，所以既不轮询也不过期。
   // 刷新按钮仍然带上它：那是「部署到底生效没有」在同一页里的确认方式。
   const versionQuery = useQuery({
@@ -212,6 +260,7 @@ export function QyAdminHealth() {
             void leasesQuery.refetch()
             void versionQuery.refetch()
             void overdraftQuery.refetch()
+            void clientIPQuery.refetch()
           }}
         >
           <RefreshCw
@@ -248,14 +297,21 @@ export function QyAdminHealth() {
               title={t('qy_cfg_health_version')}
               description={t('qy_cfg_health_version_desc')}
             >
-              <QyKeyValue label={t('qy_cfg_health_version_build')}>
-                {versionQuery.data.build}
+              {/* 顺序是刻意的:两个**版本号**在前(内核 / 二开,各说各的事),
+                  两个**定位用的提交**在后。曾经这里只有三行、而且把
+                  `<上游 tag>+qy.<轮次>` 合成的那一个值叫「上游内核版本」——
+                  那一栏于是既不是上游版本也不是我们的版本。 */}
+              <QyKeyValue label={t('qy_cfg_health_version_core')}>
+                {versionQuery.data.core}
+              </QyKeyValue>
+              <QyKeyValue label={t('qy_cfg_health_version_fork')}>
+                {versionQuery.data.fork}
               </QyKeyValue>
               <QyKeyValue label={t('qy_cfg_health_version_upstream')}>
                 {versionQuery.data.upstream}
               </QyKeyValue>
-              <QyKeyValue label={t('qy_cfg_health_version_core')}>
-                {versionQuery.data.core}
+              <QyKeyValue label={t('qy_cfg_health_version_build')}>
+                {versionQuery.data.build}
               </QyKeyValue>
             </TitledCard>
           )}
@@ -352,6 +408,162 @@ export function QyAdminHealth() {
                     </p>
                   )}
                 </div>
+              )}
+            </TitledCard>
+          )}
+
+          {/* 客户端 IP 识别。刻意放在 QyPageBoundary **外面**，理由与版本卡、
+              透支卡那两条一模一样：后端 `/admin/client-ip` 不走 requireCore
+              （只读进程内的取值策略与本次请求自身），扩展库不可用时它仍然
+              是 200。而令牌 allow_ips 与按 IP 的限流根本不依赖扩展库 ——
+              它们照样在按这个值放行/拒绝，这份诊断绝不该跟着扩展库一起消失。
+
+              这一页回答的不是「我的 IP 是什么」（台账里就有），而是
+              **「为什么是这个值」**：直连对端是谁、它落在哪一档受信网段里、
+              结论从哪个头取的、哪些头被丢掉了。少了这几项，运维只能在
+              TRUSTED_PROXIES 里试错，而每次试错都要重启进程。 */}
+          {clientIPQuery.data != null && (
+            <TitledCard
+              title={t('qy_cfg_clientip_title')}
+              description={t('qy_cfg_clientip_desc')}
+            >
+              {/* 观测台非空基本等同于确诊：站点前面确实有反代/CDN，但
+                  TRUSTED_PROXIES 没配到那个对端上。这条告警必须给出可以
+                  直接粘贴的值 —— 只说「配置有问题」等于把人推回去猜。 */}
+              {clientIPQuery.data.observations.length > 0 && (
+                <Alert variant='destructive' className='mb-3'>
+                  <TriangleAlert />
+                  <AlertTitle>{t('qy_cfg_clientip_obs_title')}</AlertTitle>
+                  <AlertDescription>
+                    {t('qy_cfg_clientip_obs_desc', {
+                      value: clientIPQuery.data.observations
+                        .map((o: QyClientIPObservation) => o.suggestion)
+                        .filter((v: string) => v !== '')
+                        .join(','),
+                    })}
+                  </AlertDescription>
+                </Alert>
+              )}
+              {clientIPQuery.data.policy.warning !== '' && (
+                <Alert variant='destructive' className='mb-3'>
+                  <TriangleAlert />
+                  <AlertTitle>{t('qy_cfg_clientip_warn_title')}</AlertTitle>
+                  <AlertDescription>
+                    {clientIPQuery.data.policy.warning}
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              <QyKeyValue label={t('qy_cfg_clientip_ip')}>
+                <span className='font-mono'>
+                  {clientIPQuery.data.request.ip === ''
+                    ? QY_EMPTY_TEXT
+                    : clientIPQuery.data.request.ip}
+                </span>
+              </QyKeyValue>
+              <QyKeyValue label={t('qy_cfg_clientip_peer')}>
+                <span className='font-mono'>
+                  {clientIPQuery.data.request.peer === ''
+                    ? QY_EMPTY_TEXT
+                    : clientIPQuery.data.request.peer}
+                </span>
+              </QyKeyValue>
+              <QyKeyValue label={t('qy_cfg_clientip_peer_trusted')}>
+                <StatusBadge
+                  label={
+                    clientIPQuery.data.request.peer_trusted
+                      ? t('qy_cfg_clientip_peer_trusted_yes', {
+                          source: clientIPQuery.data.request.trust_source ?? '',
+                        })
+                      : t('qy_cfg_clientip_peer_trusted_no')
+                  }
+                  variant={
+                    clientIPQuery.data.request.peer_trusted
+                      ? 'success'
+                      : 'neutral'
+                  }
+                  copyable={false}
+                />
+              </QyKeyValue>
+              <QyKeyValue label={t('qy_cfg_clientip_reason')}>
+                {qyClientIPReasonText(clientIPQuery.data.request, t)}
+              </QyKeyValue>
+              <QyKeyValue label={t('qy_cfg_clientip_strategy')}>
+                {t(`qy_cfg_clientip_st_${clientIPQuery.data.request.strategy}`)}
+                {clientIPQuery.data.policy.raw !== '' && (
+                  <span className='text-muted-foreground ml-2 font-mono text-xs'>
+                    TRUSTED_PROXIES={clientIPQuery.data.policy.raw}
+                  </span>
+                )}
+              </QyKeyValue>
+              {(clientIPQuery.data.request.chain ?? []).length > 0 && (
+                <QyKeyValue label={t('qy_cfg_clientip_chain')}>
+                  {/* 原文按序展示，不做归一化：排障时要看到反代**实际发过来**
+                      的字符串，归一化之后 `1.2.3.4:5678` 与 `::ffff:1.2.3.4`
+                      这类形态就看不见了，而它们恰恰是最容易出问题的那些。
+                      左端是客户端自己写的、谁都能编的前缀。 */}
+                  <span className='font-mono text-xs'>
+                    {(clientIPQuery.data.request.chain ?? []).join(' -> ')}
+                  </span>
+                </QyKeyValue>
+              )}
+              {(clientIPQuery.data.request.conflicts ?? []).length > 0 && (
+                <QyKeyValue label={t('qy_cfg_clientip_conflict')}>
+                  {/* 另一个受信请求头给出了不同的答案。最常见的成因是
+                      「只配了 X-Real-IP 的 Nginx」:那种 nginx 原样透传客户端
+                      自带的 X-Forwarded-For,而默认头顺序里 XFF 排在前面,
+                      于是客户端能顶掉反代诚实写下的值。修法是显式声明
+                      CLIENT_IP_HEADERS=X-Real-IP。 */}
+                  <span className='text-warning font-mono text-xs'>
+                    {(clientIPQuery.data.request.conflicts ?? [])
+                      .map((h) => `${h.header}: ${h.ip}`)
+                      .join(' | ')}
+                  </span>
+                </QyKeyValue>
+              )}
+              {(clientIPQuery.data.request.ignored_headers ?? []).length >
+                0 && (
+                <QyKeyValue label={t('qy_cfg_clientip_ignored')}>
+                  <span className='font-mono text-xs'>
+                    {(clientIPQuery.data.request.ignored_headers ?? [])
+                      .map((h) => `${h.name}: ${h.value}`)
+                      .join(' | ')}
+                  </span>
+                </QyKeyValue>
+              )}
+              {clientIPQuery.data.policy.sources.map((source) => (
+                <QyKeyValue
+                  key={source.name}
+                  label={t('qy_cfg_clientip_source', { name: source.name })}
+                >
+                  <span className='font-mono text-xs'>
+                    {source.headers.join(', ')} &lt;- {source.cidrs.join(', ')}
+                  </span>
+                </QyKeyValue>
+              ))}
+              {clientIPQuery.data.observations.map(
+                (observation: QyClientIPObservation) => (
+                  <QyKeyValue
+                    key={observation.peer}
+                    label={t('qy_cfg_clientip_obs_row', {
+                      peer: observation.peer,
+                    })}
+                  >
+                    <span className='font-mono text-xs'>
+                      {observation.suggestion} ·{' '}
+                      {formatQyCount(observation.count)} ·{' '}
+                      {observation.headers.join(', ')} ·{' '}
+                      {formatQyTs(observation.last_seen)}
+                    </span>
+                  </QyKeyValue>
+                )
+              )}
+              {clientIPQuery.data.observations_dropped > 0 && (
+                <p className='text-muted-foreground mt-2 text-xs'>
+                  {t('qy_cfg_clientip_obs_dropped', {
+                    n: clientIPQuery.data.observations_dropped,
+                  })}
+                </p>
               )}
             </TitledCard>
           )}

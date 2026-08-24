@@ -11,25 +11,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// tier_selfupgrade_test.go —— 「分档可以被用户自己买松」的两个缺口。
+// tier_selfupgrade_test.go —— 「分档可以被用户自己换松」的两个缺口。
 //
-// 背景:分档按此刻的 users.group 解析,而 users.group 是用户自己花钱就能改的 ——
-// 任何一个 upgrade_group 指向更松档、且允许余额支付的套餐(这正是用户组商品的
-// 设计用途)都能改它。实测:
+// 背景:分档按此刻的 users.group 解析(项目方拍板的简单规则),而 users.group 是
+// 用户自己花钱就能改的 —— 任何一个 upgrade_group 指向更松档、且允许余额支付的
+// 套餐(这正是用户组商品的设计用途)都能改它。实测过两条:
 //
-//	① 当天日额度/日笔数用满 → 花 0.01 美元买一个升组套餐 → 同一秒转 6000 万,
+//	① 当天日额度/日笔数用满 → 花 0.01 美元换一档 → 同一秒转 6000 万,
 //	   而 qy_transfer_user_state 里当天的计数一个都不重置,只是上限换了一档;
-//	② 注册 9 秒的新号被 new_account_freeze_hours=720 挡住 → 买同一个套餐 →
-//	   换进一个该项为 0 的档 → 立刻放行,users.created_at 一个字节没变。
+//	② 注册 9 秒的新号被 new_account_freeze_hours=720 挡住 → 换进一个该项为 0
+//	   的档 → 立刻放行,users.created_at 一个字节没变。
 //
-// 两处修法不同,因为两者卖的东西不同:
+// 「换档本身」在这条简单规则下是允许的(买高档得更宽的额度正是这个功能要卖的
+// 东西),所以两处堵的都不是换档,而是换档能顺带拿走的那点东西:
 //
-//	额度型门槛(单笔/日额度/日笔数/冷却/收款方入账笔数)分档放宽**就是**这个
-//	功能的产品形态,不该禁;要挡的是「当天用满之后再换档」,所以按
-//	「今天的计数是在哪一档下累起来的」取严。
+//	①  当天已经累起来的计数不会因为换档而重置 —— 于是按
+//	   「今天的计数是在哪一档下累起来的」(day_out_group)与当前档取严,
+//	   今天剩下的时间沿用旧档,明天自然日一到完全按新档。
 //
-//	新账号冻结期是一道反滥用身份闸门,它一旦能被分档放宽就等于能被一次购买
-//	抹掉,所以它只许分档收紧(tightenOnlyKeys)。
+//	②  新账号冻结期是一道反滥用身份闸门,它一旦能被分档放宽就等于能被一次
+//	   换组抹掉,所以它只许分档收紧(tightenOnlyKeys)—— 这一条约束的是
+//	   「一档能配成什么」,与「按哪一档算」无关。
 
 func TestNewAccountFreezeCanOnlyBeTightenedByATier(t *testing.T) {
 	global := tierGlobal() // NewAccountFreezeHours = 24
@@ -119,20 +121,20 @@ func TestTierOfTodayKeepsApplyingAfterAMidDayGroupChange(t *testing.T) {
 	)
 
 	t.Run("今天还没转出过:直接按新档,那是他买到的东西", func(t *testing.T) {
-		cfg, err := settings.transferForSenderDay([]string{"hi"}, &UserState{DayBucket: bucket}, bucket)
+		cfg, err := settings.transferForSenderDay("hi", &UserState{DayBucket: bucket}, bucket)
 		require.NoError(t, err)
 		assert.Zero(t, cfg.MaxPerTxQuota)
 		assert.Zero(t, cfg.DailyMaxCount)
 	})
 
 	t.Run("状态行还不存在:同上", func(t *testing.T) {
-		cfg, err := settings.transferForSenderDay([]string{"hi"}, nil, bucket)
+		cfg, err := settings.transferForSenderDay("hi", nil, bucket)
 		require.NoError(t, err)
 		assert.Zero(t, cfg.MaxPerTxQuota)
 	})
 
 	t.Run("今天在紧档下转过账、现在换到松档:今天继续按紧档取严", func(t *testing.T) {
-		cfg, err := settings.transferForSenderDay([]string{"hi"}, &UserState{
+		cfg, err := settings.transferForSenderDay("hi", &UserState{
 			DayBucket: bucket, DayOutGroup: "lo", DayOutCount: 2, DayOutQuota: 10_000,
 		}, bucket)
 		require.NoError(t, err)
@@ -143,7 +145,7 @@ func TestTierOfTodayKeepsApplyingAfterAMidDayGroupChange(t *testing.T) {
 	})
 
 	t.Run("方向反过来:今天在松档下转过账、现在掉进紧档 —— 立刻按紧档", func(t *testing.T) {
-		cfg, err := settings.transferForSenderDay([]string{"lo"}, &UserState{
+		cfg, err := settings.transferForSenderDay("lo", &UserState{
 			DayBucket: bucket, DayOutGroup: "hi", DayOutCount: 1,
 		}, bucket)
 		require.NoError(t, err)
@@ -152,7 +154,7 @@ func TestTierOfTodayKeepsApplyingAfterAMidDayGroupChange(t *testing.T) {
 	})
 
 	t.Run("跨日之后重新开始:昨天那一档不再压着他", func(t *testing.T) {
-		cfg, err := settings.transferForSenderDay([]string{"hi"}, &UserState{
+		cfg, err := settings.transferForSenderDay("hi", &UserState{
 			DayBucket: bucket - 1, DayOutGroup: "lo", DayOutCount: 2,
 		}, bucket)
 		require.NoError(t, err)
@@ -163,7 +165,7 @@ func TestTierOfTodayKeepsApplyingAfterAMidDayGroupChange(t *testing.T) {
 	t.Run("没换档:与 transferFor 逐位相同", func(t *testing.T) {
 		want, err := settings.transferFor("lo")
 		require.NoError(t, err)
-		got, err := settings.transferForSenderDay([]string{"lo"}, &UserState{
+		got, err := settings.transferForSenderDay("lo", &UserState{
 			DayBucket: bucket, DayOutGroup: "lo", DayOutCount: 1,
 		}, bucket)
 		require.NoError(t, err)
@@ -275,4 +277,62 @@ func TestCreateKeepsTodaysTierAfterASelfServeGroupUpgrade(t *testing.T) {
 	var st UserState
 	require.NoError(t, gdb.First(&st, "user_id = ?", 1).Error)
 	assert.Equal(t, "hi", st.DayOutGroup)
+}
+
+// 当日取严在「今天那一档自己配坏了」时必须**失败关闭**,不能悄悄放宽。
+//
+// 这条判据以前是反的:`transferForSenderDay` 在 `transferFor(DayOutGroup)` 报错时
+// 直接 `return cur, nil`,于是「今天在严档下转过账 → 换进松档 → 同一秒按松档
+// 接着转」这条路当场就通了 —— 而当日取严存在的唯一理由就是堵住它。
+//
+// 触发不需要有人去动那一档:管理端保存全局门槛时**不重新校验任何分档**
+// (adminPutTransferConfig 只对全局跑 ValidateTransfer,而 min_quota 就在可编辑
+// 键里),所以一次普通的「把全站最低划转金额调高」就会把日额度最小的那些紧档
+// 就地打成非法 —— 正好是当日取严要防的那一侧。
+//
+// 实测(走 create() 全链路 + 真实主库 quota):用户在 lo 档(日额度 100 万)
+// 转满被拒;管理端 PUT /transfer/config 把 min_quota 调高(HTTP 200,响应里对
+// 失效的分档零提示)之后,同一个人换到 hi 档立刻转走 4000 万 —— 日额度被放大
+// 80 倍,而 day_out_group 仍然写着 lo。
+func TestTierOfTodayFailsClosedWhenTodaysTierBecameInvalid(t *testing.T) {
+	const now int64 = 1_700_000_000
+	bucket := dayBucket(now)
+
+	// lo 档被"配坏":日额度 100 万,而最低划转额被调到 200 万 —— 这一档从此
+	// 「任何金额都不合法」,transferFor 会 fail-closed。
+	// hi 档正常且宽松(日额度 8000 万)。
+	settings := tierSettings(
+		GroupLimit{UserGroup: "lo", Enabled: true,
+			MinQuota: i64(2_000_000), DailyMaxQuota: i64(1_000_000)},
+		GroupLimit{UserGroup: "hi", Enabled: true,
+			DailyMaxQuota: i64(80_000_000)},
+	)
+
+	t.Run("前置条件:今天那一档确实已经非法", func(t *testing.T) {
+		_, err := settings.transferFor("lo")
+		require.Error(t, err, "这条用例的前提就是 lo 档已经配坏了")
+	})
+
+	t.Run("今天在 lo 档转过账、此刻在 hi 档:必须拒绝,不许按 hi 放行", func(t *testing.T) {
+		st := &UserState{DayBucket: bucket, DayOutGroup: "lo", DayOutQuota: 1_000_000, DayOutCount: 1}
+		cfg, err := settings.transferForSenderDay("hi", st, bucket)
+		require.Error(t, err,
+			"今天那一档判不出来时放行,等于把「换档就能接着转」这条路直接打开 —— "+
+				"而那正是当日取严存在的唯一理由")
+		assert.Equal(t, config.Transfer{}, cfg,
+			"报错时不许顺手回一份可用的门槛,调用方可能只看 cfg")
+	})
+
+	t.Run("对照:今天没转过账的人不受影响", func(t *testing.T) {
+		st := &UserState{DayBucket: bucket}
+		cfg, err := settings.transferForSenderDay("hi", st, bucket)
+		require.NoError(t, err, "DayOutGroup 为空时压根不该去读那一档")
+		assert.Equal(t, int64(80_000_000), cfg.DailyMaxQuota)
+	})
+
+	t.Run("对照:仍然站在坏档里的人本来就被 transferFor 拦着", func(t *testing.T) {
+		st := &UserState{DayBucket: bucket, DayOutGroup: "lo", DayOutQuota: 1_000_000, DayOutCount: 1}
+		_, err := settings.transferForSenderDay("lo", st, bucket)
+		require.Error(t, err, "当前档非法时,失败关闭是既有行为,不许因为这次改动而放宽")
+	})
 }

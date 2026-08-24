@@ -577,7 +577,21 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	if !summary.hasBillableUsage() {
 		extraContent = append(extraContent, "上游没有返回计费信息，无法扣费（可能是上游超时）")
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
-	} else {
+	}
+	// 判据是"有 token **或** 有金额",不是只看 token。
+	//
+	// 按次计价(UsePrice)时金额与 token 数无关:上面第 506 行那段刻意只在按量
+	// 计费下把 Quota 清零,按次计费不能因为 token 数为 0 就免单。于是存在
+	// 一条真实可达的路 —— 上游返回一份合法但**不带 usage** 的响应
+	// (/v1/responses 非流式就没有任何兜底,OaiResponsesHandler 对 Usage==nil
+	// 原样放行),或上游自报负 token 被 clampUpstreamTokenCount 夹成 0 ——
+	// 这一次 SettleBilling 照样扣了全额,而 users.used_quota、users.request_count
+	// 与 channels.used_quota 一个都不加。后果是用户面板上的"已用额度"与实际
+	// 扣掉的余额长期对不上、且不可事后自愈,渠道用量也永久少记。
+	//
+	// 下面的 SettleBilling 是**无条件**执行的,所以这两行必须与它同一个判据。
+	// 音频/实时两条路(service/quota.go)早就是这个写法,文本路是漏改的那一处。
+	if summary.hasBillableUsage() || summary.Quota > 0 {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}

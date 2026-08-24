@@ -10,7 +10,6 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
@@ -358,25 +357,42 @@ func appendFinalRequestFormat(relayInfo *relaycommon.RelayInfo, other map[string
 	}
 }
 
-func GenerateWssOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.RealtimeUsage, modelRatio, groupRatio, completionRatio, audioRatio, audioCompletionRatio, modelPrice, userGroupRatio float64) map[string]interface{} {
+// GenerateWssOtherInfo / GenerateAudioOtherInfo 的四项 token 明细必须收
+// **归一化之后**的值,也就是真正参与计费的那一份,而不是上游原样上报的那一份。
+//
+// 归一化有两处:normalizeAudioTokenDetails 在上游不报 text_tokens 时用
+// 「总数 − 音频」兜底文本 token(OpenAI 兼容渠道走 /v1/chat/completions 的主路
+// **一处都不补** text_tokens,所以这是默认形状而不是边角),
+// reasoningTokensOutsideCompletion 把落在 completion 之外的思考 token 补进输出。
+//
+// 原先这两个函数直接读 usage 原值,后果是**音频消费日志用它自己记的明细复算
+// 不出它自己记的金额**:实测 {p:100, c:1, audio_in:20, reasoning:53, total:154}
+// 在一个 ModelRatio2/CompletionRatio3/AudioRatio10 的模型上实收 884,而同一行
+// 日志里 text_input=0、text_output=0、audio_input=20、completion_tokens=1,
+// 照着代回去只得 400。用户在自己的日志里看到的是「输出 1 个 token 收 884」,
+// 而申诉、退款仲裁与对账脚本都答不出这 884 是怎么来的。
+//
+// 倍率文本路当初专门为这件事把 summary.CompletionTokens 改成了归一化值,
+// 音频/实时两条路是漏改的那两处。
+func GenerateWssOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, in, out TokenDetails, modelRatio, groupRatio, completionRatio, audioRatio, audioCompletionRatio, modelPrice, userGroupRatio float64) map[string]interface{} {
 	info := GenerateTextOtherInfo(ctx, relayInfo, modelRatio, groupRatio, completionRatio, 0, 0.0, modelPrice, userGroupRatio)
 	info["ws"] = true
-	info["audio_input"] = usage.InputTokenDetails.AudioTokens
-	info["audio_output"] = usage.OutputTokenDetails.AudioTokens
-	info["text_input"] = usage.InputTokenDetails.TextTokens
-	info["text_output"] = usage.OutputTokenDetails.TextTokens
+	info["audio_input"] = in.AudioTokens
+	info["audio_output"] = out.AudioTokens
+	info["text_input"] = in.TextTokens
+	info["text_output"] = out.TextTokens
 	info["audio_ratio"] = audioRatio
 	info["audio_completion_ratio"] = audioCompletionRatio
 	return info
 }
 
-func GenerateAudioOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, modelRatio, groupRatio, completionRatio, audioRatio, audioCompletionRatio, modelPrice, userGroupRatio float64) map[string]interface{} {
+func GenerateAudioOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, in, out TokenDetails, modelRatio, groupRatio, completionRatio, audioRatio, audioCompletionRatio, modelPrice, userGroupRatio float64) map[string]interface{} {
 	info := GenerateTextOtherInfo(ctx, relayInfo, modelRatio, groupRatio, completionRatio, 0, 0.0, modelPrice, userGroupRatio)
 	info["audio"] = true
-	info["audio_input"] = usage.PromptTokensDetails.AudioTokens
-	info["audio_output"] = usage.CompletionTokenDetails.AudioTokens
-	info["text_input"] = usage.PromptTokensDetails.TextTokens
-	info["text_output"] = usage.CompletionTokenDetails.TextTokens
+	info["audio_input"] = in.AudioTokens
+	info["audio_output"] = out.AudioTokens
+	info["text_input"] = in.TextTokens
+	info["text_output"] = out.TextTokens
 	info["audio_ratio"] = audioRatio
 	info["audio_completion_ratio"] = audioCompletionRatio
 	return info

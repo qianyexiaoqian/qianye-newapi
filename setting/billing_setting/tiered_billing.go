@@ -186,6 +186,28 @@ var exprNumberRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.])(\d+(?:\.\d+)?)`)
 // exprStringArgRe 抓 param("...") / header("...") 里的键名。
 var exprStringArgRe = regexp.MustCompile(`(param|header)\s*\(\s*"([^"]*)"`)
 
+// exprStringLitRe 抓表达式里**任意位置**的双引号字符串字面量。
+var exprStringLitRe = regexp.MustCompile(`"([^"]*)"`)
+
+// exprStringLiterals 返回表达式里出现过的字符串字面量,去重、保持出现顺序。
+//
+// 它们是烟测的探针值:按"客户端某字段等于/包含某个词"分档的表达式,只有把
+// 那个词本身喂进去才评估得到那一档。空串跳过(它不改变任何比较的结果,
+// 而 param() 取不到值时本来就是 nil)。
+func exprStringLiterals(exprStr string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, 8)
+	for _, m := range exprStringLitRe.FindAllStringSubmatch(exprStr, -1) {
+		lit := m[1]
+		if lit == "" || seen[lit] {
+			continue
+		}
+		seen[lit] = true
+		out = append(out, lit)
+	}
+	return out
+}
+
 // exprBoundaryValues 返回表达式里出现过的数字字面量,按升序去重。
 //
 // 分档表达式的阈值就写在这些字面量里(`len <= 2000 ? ... : ...`),而烟测原本的
@@ -299,6 +321,29 @@ func smokeTestRequests(exprStr string) []billingexpr.RequestInput {
 		if len(probes) >= 16 {
 			break
 		}
+	}
+	// 表达式里出现过的**字符串字面量**也必须当探针值喂进去。
+	//
+	// 原先的探针集合全是 true/false/"on"/0/1 加数字阈值,一个都命不中
+	// `has(param("user"), "vip")` 或 `param("user") == "vip"` 这种按"客户端某个
+	// 字段等于某个词"分档的写法。于是一条
+	//
+	//	tier("a", p * 3 + c * 15 - (has(param("user"), "vip") ? 20000 : 0))
+	//
+	// 能干净通过校验落库(实测保存返回 200),而线上对命中的请求算出负数,
+	// 再被结算侧的非负地板静默夹成 0:上游照常被调用、真实成本照付、用户余额
+	// 一分不扣,消费日志与正常计费请求逐字节相同(既不记 clamp 也不记喂进
+	// 表达式的变量值),唯一痕迹是后端 stderr 里一行 SysError。
+	// 而 OpenAI 协议里的 `user` 字段完全由调用方填写,谁都能自称 vip。
+	//
+	// 这不是 has() 专属:`==`、`has(param("model"),"gpt")` 都是同一类形状,
+	// 所以抓的是**全部**字符串字面量,而不是某个函数的第二个参数。
+	// 顺带把 tier 名也抓进来了,那只是多几条无害的探针。
+	for _, lit := range exprStringLiterals(exprStr) {
+		if len(probes) >= 32 {
+			break
+		}
+		probes = append(probes, lit)
 	}
 
 	for _, probe := range probes {

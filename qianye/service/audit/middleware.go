@@ -37,11 +37,23 @@ import (
 // sensitiveReads 是需要留痕的 GET 读取(键为 "METHOD 路由模板")。
 //
 // 默认不记 GET:列表与详情每天几千次,记下来只会把台账稀释到无法扫读。
-// 进这张表的判据只有一条 —— **这次读取本身泄露了受保护的明文**。
+// 进这张表的判据有两条:
+//
+//  1. **这次读取本身泄露了受保护的明文**;
+//  2. 或者它不是一次读取,而是一次**站点对外的行为**。
+//
+// 第二条是为 check-update 加的。它把本站的一次出站请求发给 github.com,而正是
+// "这是一次站点行为,不是一次数据读取"这句话把它提到了超级管理员。可是提档之后
+// 台账只留下**被拒**的越权尝试(RootActionGate 拒绝时写审计),成功的那一次
+// 一行都不写 —— 实测该路径下 401 有 4 行、403 有 28 行、200 有 **0** 行,
+// 而离线/内网部署事后最想追问的恰恰是"是谁、在什么时候替这台机器连了 github.com"。
+// gin 的访问日志有时间和 IP,但没有任何身份列,答不出"是谁"。
+// 这条路由天然稀少(手动点击 + 关键操作限流),不会稀释台账。
 var sensitiveReads = map[string]bool{
-	"GET /api/qy/admin/withdraw/:id/payee":  true, // 收款信息明文解密
-	"GET /api/qy/admin/withdraw/:id/proof":  true, // 打款凭证原图
-	"GET /api/qy/admin/withdraw/pii-audits": true, // 谁查过明文,这份名册本身也要留痕
+	"GET /api/qy/admin/withdraw/:id/payee":   true, // 收款信息明文解密
+	"GET /api/qy/admin/withdraw/:id/proof":   true, // 打款凭证原图
+	"GET /api/qy/admin/withdraw/pii-audits":  true, // 谁查过明文,这份名册本身也要留痕
+	"GET /api/qy/admin/version/check-update": true, // 站点替自己向 github.com 开一次出站连接
 }
 
 // credentialBodyRoutes 列出请求体**整体**由凭证构成的路由。
@@ -232,11 +244,11 @@ func buildRequestAudit(c *gin.Context, body string, latency time.Duration) *qymo
 	} else if row.ActorUserId > 0 {
 		row.AuthMethod = qymodel.AuthMethodSession
 	}
-	row.ActorType = actorType(row.ActorUserId, row.ActorRole, path)
+	row.ActorType = actorType(row.ActorUserId, row.ActorRole)
 	row.TargetUserId = targetUserId(c)
 
 	if config.Get().Audit.ShouldRecordIP() {
-		row.IP = Truncate(c.ClientIP(), 64)
+		row.IP = Truncate(common.ClientIP(c), 64)
 		row.UserAgent = Truncate(c.Request.UserAgent(), 256)
 	}
 	return row
@@ -247,11 +259,31 @@ func buildRequestAudit(c *gin.Context, body string, latency time.Duration) *qymo
 // 未认证请求(被 401 挡掉的)记 system 是错的 —— system 的含义是"补偿任务/
 // 结算任务干的",把匿名探测算进去会污染"这是人干的还是程序干的"这个判定。
 // 所以匿名一律留空:空值本身就是"不知道是谁",比一个错的分类诚实。
-func actorType(userId, role int, path string) string {
+//
+// # 分类只看**身份**,不看路径
+//
+// 这里曾经写成 `role >= RoleAdminUser || strings.HasPrefix(path, "/api/qy/admin/")`。
+// 那个 || 的右半边在**鉴权通过**的行上恒为冗余(/api/qy/admin 整组都挂着
+// AdminAuth,能走到 handler 的必然 role>=10),它唯一能改变结果的场合恰恰是
+// **被拒的越权探测** —— 一个 role=1 的普通账号挨个戳管理端接口留下的 403,
+// 在 actor_type 列上与真管理员的操作完全同色。
+//
+// 实测线上台账:actor_type='admin' 的行里有 810 行 actor_role=1,且这 810 行
+// 100% 是 401/403。后果是仲裁人按 actor_type='admin' 过滤会把普通用户的越权
+// 探测当成管理员操作读(过采),按 actor_type='user' 过滤则把这批行整体漏掉
+// (漏采);而筛选清单里没有 actor_role,这条歧义补偿不了。
+//
+// 本表的字段注释还写明"两张表的『操作者』必须是同一个概念",而 qy_audit_logs
+// 那一侧的 ActorAdmin 全部由 admin handler 用 c.GetInt("id") 手写,那里的
+// 操作者必然 role>=10 —— 按路径判会让两张表的同名列指两件事。
+//
+// "碰的是哪个面"由 path 列与 DeriveAction 的前缀(admin.violation.rules.update)
+// 完整回答,不需要 actor_type 再表达一遍。
+func actorType(userId, role int) string {
 	if userId <= 0 {
 		return ""
 	}
-	if role >= common.RoleAdminUser || strings.HasPrefix(path, "/api/qy/admin/") {
+	if role >= common.RoleAdminUser {
 		return qymodel.ActorAdmin
 	}
 	return qymodel.ActorUser

@@ -363,8 +363,12 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 		// 总额度/已用/剩余、模型限制,以及逐条调用日志 —— 后者还带着**合法调用方
 		// 的真实来源 IP**(等于把白名单里有哪些地址交出去)与账号登录名。
 		// IP 绑定是用户为「密钥泄漏后限制损失」而设的唯一自助手段,不能只覆盖 relay。
-		if allowIps := token.GetIpLimits(); len(allowIps) > 0 {
-			ip := net.ParseIP(c.ClientIP())
+		// 判据是"声明过白名单吗"而不是"解析出几条":声明了却一条都解析不出来
+		// (例如 allow_ips 填成 `, `)的含义是"没有任何来源被允许",
+		// 不是"所有来源都被允许"。见 Token.HasIpLimit。
+		if token.HasIpLimit() {
+			allowIps := token.GetIpLimits()
+			ip := net.ParseIP(common.ClientIP(c))
 			if ip == nil || !common.IsIpInCIDRList(ip, allowIps) {
 				c.JSON(http.StatusForbidden, gin.H{
 					"success": false,
@@ -502,9 +506,10 @@ func TokenAuth() func(c *gin.Context) {
 			return
 		}
 
-		allowIps := token.GetIpLimits()
-		if len(allowIps) > 0 {
-			clientIp := c.ClientIP()
+		// 同上:白名单一条都没有 = 谁都不许进,绝不是谁都可以进。
+		if token.HasIpLimit() {
+			allowIps := token.GetIpLimits()
+			clientIp := common.ClientIP(c)
 			logger.LogDebug(c, "Token has IP restrictions, checking client IP %s", clientIp)
 			ip := net.ParseIP(clientIp)
 			if ip == nil {

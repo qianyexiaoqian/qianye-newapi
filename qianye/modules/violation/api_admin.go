@@ -197,7 +197,10 @@ func adminListRules(c *gin.Context) {
 		q = q.Where("phase = ?", v)
 	}
 	if v := c.Query("keyword"); v != "" {
-		q = q.Where("name LIKE ?", "%"+v+"%")
+		// 原来是裸 LIKE:既不转义 % 与 _,也不折叠大小写。走 httpq.SearchLike
+		// 一次补齐两条(理由见该函数)。
+		expr, pattern := httpq.SearchLike(v, httpq.MatchContains, "name")
+		q = q.Where(expr, pattern)
 	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
@@ -1612,10 +1615,15 @@ func adminStats(c *gin.Context) {
 	}
 	since := common.GetTimestamp() - int64(hours)*3600
 
+	// 别名写成 bucket_key 而不是 `key`:反引号是 MySQL/SQLite 的标识符引号,
+	// PostgreSQL 不认,整条 SELECT 直接语法错误(42601)——与表里有没有数据无关,
+	// 于是 PG 部署上这一页恒 500,连"现在有没有规则在真实扣钱"都答不出来。
+	// key 本身还是 PG 的保留字,所以换一个不需要引号的列名,由 gorm 的 column
+	// 标签把它映回字段,json 契约(key)一个字不变。
 	type bucket struct {
-		Key      string `json:"key"`
-		Cnt      int64  `json:"cnt"`
-		FeeQuota int64  `json:"fee_quota"`
+		Key      string `gorm:"column:bucket_key" json:"key"`
+		Cnt      int64  `gorm:"column:cnt" json:"cnt"`
+		FeeQuota int64  `gorm:"column:fee_quota" json:"fee_quota"`
 	}
 	// 这两个桶走的是 db.Scan():GORM 在结果集一行都没有时**根本不会碰 dest**
 	// (finisher_api.go 先 rows.Next() 再 ScanRows),nil 切片序列化成 null
@@ -1625,14 +1633,14 @@ func adminStats(c *gin.Context) {
 	byModel := make([]bucket, 0, 50)
 	gdb := db.Get()
 	if err := gdb.Model(&Record{}).
-		Select("rule_name as `key`, COUNT(*) as cnt, COALESCE(SUM(fee_quota),0) as fee_quota").
+		Select("rule_name as bucket_key, COUNT(*) as cnt, COALESCE(SUM(fee_quota),0) as fee_quota").
 		Where("created_at >= ?", since).Group("rule_name").Order("cnt desc").Limit(50).
 		Scan(&byRule).Error; err != nil {
 		internalError(c, err)
 		return
 	}
 	if err := gdb.Model(&Record{}).
-		Select("model_name as `key`, COUNT(*) as cnt, COALESCE(SUM(fee_quota),0) as fee_quota").
+		Select("model_name as bucket_key, COUNT(*) as cnt, COALESCE(SUM(fee_quota),0) as fee_quota").
 		Where("created_at >= ?", since).Group("model_name").Order("cnt desc").Limit(50).
 		Scan(&byModel).Error; err != nil {
 		internalError(c, err)

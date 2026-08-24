@@ -2,6 +2,8 @@ package violation
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 
@@ -127,6 +129,39 @@ func validateAIChannel(ch *AIChannel) error {
 	ch.Name = strings.TrimSpace(ch.Name)
 	ch.BaseUrl = strings.TrimSpace(ch.BaseUrl)
 	ch.Model = strings.TrimSpace(ch.Model)
+	ch.Protocol = strings.TrimSpace(ch.Protocol)
+	ch.GuardControversial = strings.TrimSpace(ch.GuardControversial)
+
+	// 写入侧比运行期严格:拼错的协议名在这里当场 400,而运行期一律折回
+	// json_prompt。理由写在 aiProtocolValid 上 —— 保存那一刻还有人看得到
+	// 错误消息,而热路径上没有。
+	if !aiProtocolValid(ch.Protocol) {
+		return fmt.Errorf("审核协议只能是 %q(提示词 + JSON)或 %q(护栏模型安全标签),当前为 %q",
+			AIProtocolJSONPrompt, AIProtocolQwen3Guard, ch.Protocol)
+	}
+	if !guardControversialValid(ch.GuardControversial) {
+		return fmt.Errorf("「有争议」档的处理只能是 %q、%q 或 %q,当前为 %q",
+			GuardControversialSafe, GuardControversialSensitive,
+			GuardControversialUnsafe, ch.GuardControversial)
+	}
+	// 类别清单在写入侧就归一成"固定顺序、去重、只含九类之一"的规范形态:
+	// 前端传过来的顺序是复选框的点击顺序,而每次保存都写一个字节不同、含义
+	// 相同的值,会让审计差异页每一行都亮起来 —— 那样的差异没人会去读。
+	var err error
+	if ch.GuardCategories, err = canonicalGuardCategoryCSV(ch.GuardCategories, "启用的审核类别"); err != nil {
+		return err
+	}
+	if ch.GuardElevate, err = canonicalGuardCategoryCSV(ch.GuardElevate, "升级为拦截的敏感类别"); err != nil {
+		return err
+	}
+	// json_prompt 渠道上把这三格清空:留着一个被忽略的取值,下一个人照着
+	// 界面回显去查"为什么设了 unsafe 却没生效",而答案是这条路根本没有
+	// Controversial 这一档。
+	if normalizeAIProtocol(ch.Protocol) != AIProtocolQwen3Guard {
+		ch.GuardControversial = ""
+		ch.GuardCategories = ""
+		ch.GuardElevate = ""
+	}
 
 	if ch.Name == "" {
 		return fmt.Errorf("渠道名称不能为空")
@@ -142,6 +177,9 @@ func validateAIChannel(ch *AIChannel) error {
 	}
 	if utf8.RuneCountInString(ch.BaseUrl) > 256 {
 		return fmt.Errorf("地址过长(上限 256 字)")
+	}
+	if err := rejectCloudMetadataHost(ch.BaseUrl); err != nil {
+		return err
 	}
 	if ch.Model == "" {
 		return fmt.Errorf("模型名不能为空")
@@ -164,6 +202,42 @@ func validateAIChannel(ch *AIChannel) error {
 	}
 	if utf8.RuneCountInString(ch.Remark) > 512 {
 		return fmt.Errorf("备注过长(上限 512 字)")
+	}
+	return nil
+}
+
+// rejectCloudMetadataHost 拦掉指向云厂商元数据端点的地址。
+//
+// # 为什么只拦这一档,不拦整个内网
+//
+// 这个按钮本来就要能指向内网:护栏协议的出厂默认地址就是自建 Ollama
+// (http://localhost:11434/v1),局域网里的自建审核服务同样是被推荐的用法。
+// 一刀切禁掉私网会把这个功能的主要部署形态直接废掉。
+//
+// 但链路本地地址(169.254.0.0/16 与 IPv6 的 fe80::/10)不一样:那个网段上没有
+// 任何人会部署审核服务,它在云上唯一的用途就是实例元数据服务
+// (169.254.169.254)—— 而管理端的连通性试跑会把上游响应体**原样回显**
+// (raw_response,截断到 2000 码点),2000 码点足够带走一整份 IAM 凭据 JSON。
+// 也就是说这一档是"零合法用途 + 最高价值目标",拦它没有代价。
+//
+// 这不是一道完整的 SSRF 防线:DNS 重绑定、指向内网管理面的探测仍然做得到,
+// 那一面由"这是 role>=10 的受信管理员 + 关键操作限流 + 全程写审计"承担,
+// 与上游把渠道地址交给管理员是同一个信任假设。这里堵的是其中危害最不对称的
+// 那一格。
+func rejectCloudMetadataHost(rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("地址无法解析: %v", err)
+	}
+	host := u.Hostname()
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return fmt.Errorf("地址不能指向链路本地网段(%s)—— 那个网段上不会有审核服务,"+
+			"它在云上的唯一用途是实例元数据服务(169.254.169.254),"+
+			"而连通性试跑会把上游响应体原样回显", host)
 	}
 	return nil
 }
@@ -244,6 +318,12 @@ func buildAIRuntime(gdb *gorm.DB, needed bool, vocab aiVocabulary) (*aiRuntime, 
 		}
 		rt.Channels = append(rt.Channels, &aiChannelRT{
 			Id: row.Id, Name: row.Name, URL: url, Model: row.Model, APIKey: key,
+			// 协议在装配期归一一次。库里的脏值(空串、DBA 手工写错的取值)
+			// 在这里就折回 json_prompt,热路径不再判第二遍。
+			Protocol: normalizeAIProtocol(row.Protocol),
+			Guard:    guardPolicyFromChannel(row),
+			// 策略在装配期归一一次:热路径不再解析那两列 CSV,而每次审核都
+			// 重新 split 一遍一整轮快照都不会变的字符串,只是白烧 CPU。
 			TimeoutMs: row.TimeoutMs, Weight: weight,
 			PriceInPerM: row.PriceInPerM, PriceOutPerM: row.PriceOutPerM,
 		})

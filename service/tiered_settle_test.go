@@ -1021,3 +1021,81 @@ func BenchmarkRatioBilling_Parallel(b *testing.B) {
 		}
 	})
 }
+
+// TestBuildTieredTokenParams_Claude_CacheCreationWithoutSplit 钉住一条实测出来的
+// 漏收:Anthropic 语义下 cc 曾经被 ClaudeCacheCreation5mTokens 无条件覆盖,
+// 而那个字段只有上游额外返回 cache_creation.ephemeral_5m_input_tokens 拆分对象时
+// 才有值 —— AWS Bedrock 的 Claude 从来不报拆分,官方 API 也只在开了 1h beta 时才报。
+//
+// 覆盖之后 cc 恒为 0,而 Claude 的 input_tokens 本来就不含缓存写入(这批 token
+// 也不在 p 里),于是缓存写入在 tiered_expr 这条路上**整段免费**。活体实测:
+// 同一份 usage,只差一个拆分对象,金额 185000 vs 5185000,差 28 倍;
+// 而同一份 usage 走倍率路是照收的。
+//
+// 三个子用例覆盖上游可能给出的三种形态,期望值全部独立算出。
+func TestBuildTieredTokenParams_Claude_CacheCreationWithoutSplit(t *testing.T) {
+	const expr = `tier("f", p * 1000 + c * 5000 + cr * 100 + cc * 2000 + cc1h * 3000)`
+
+	mk := func(total, m5, h1 int) *dto.Usage {
+		return &dto.Usage{
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			UsageSemantic:    "anthropic",
+			PromptTokensDetails: dto.InputTokenDetails{
+				CachedTokens:         200,
+				CachedCreationTokens: total,
+				TextTokens:           100,
+			},
+			ClaudeCacheCreation5mTokens: m5,
+			ClaudeCacheCreation1hTokens: h1,
+		}
+	}
+
+	cases := []struct {
+		name  string
+		usage *dto.Usage
+		want  float64
+	}{
+		{
+			// 上游只报 cache_creation_input_tokens=5000,没有任何拆分。
+			// 余数 5000-0-0=5000 全部并进 cc。
+			// (100*1000 + 50*5000 + 200*100 + 5000*2000 + 0) / 1e6 * 500000 = 5185000
+			name:  "只有总量、没有拆分:余数必须并进 cc,不能白送",
+			usage: mk(5000, 0, 0),
+			want:  5185000,
+		},
+		{
+			// 上游报了 5m 拆分,总量与拆分一致 —— 与修复前行为相同,不许回归。
+			name:  "总量与 5m 拆分一致",
+			usage: mk(5000, 5000, 0),
+			want:  5185000,
+		},
+		{
+			// 总量 5000 = 5m 1000 + 1h 3000 + 余数 1000。
+			// (100*1000 + 50*5000 + 200*100 + 2000*2000 + 3000*3000)/1e6*500000 = 8585000
+			// (100*1000 + 50*5000 + 200*100 + 2000*2000 + 3000*3000)/1e6*500000 = 6685000
+			name:  "5m 与 1h 都报了,余数并进 cc",
+			usage: mk(5000, 1000, 3000),
+			want:  6685000,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tieredQuota(expr, tc.usage, true, 1.0)
+			if math.Abs(got-tc.want) > 0.01 {
+				t.Fatalf("quota = %f, want %f", got, tc.want)
+			}
+		})
+	}
+
+	// len 同源受害:分档条件读的是 p + cr + cc + cc1h,cc 归零会把 len 从 5300
+	// 压到 300,于是本该落进贵档的请求掉进便宜档。
+	t.Run("len 必须把缓存写入算进去,否则分档掉档", func(t *testing.T) {
+		const tiered = `len <= 1000 ? tier("cheap", p * 1) : tier("pricey", p * 1000)`
+		got := tieredQuota(tiered, mk(5000, 0, 0), true, 1.0)
+		// len = 100 + 200 + 5000 = 5300 > 1000 → pricey → 100*1000/1e6*500000 = 50000
+		if math.Abs(got-50000) > 0.01 {
+			t.Fatalf("quota = %f, want 50000(掉进 cheap 档说明 len 没把 cc 算进去)", got)
+		}
+	})
+}

@@ -193,17 +193,89 @@ export type QyModuleSectionState =
 /**
  * 与 `qianye/controller/version.go` 的 `AdminVersion` 响应对齐。
  *
- * 三个值都是构建期 ldflags 注入的编译期常量，进程不重启就不会变。
- * 未注入时后端返回 `"unknown"`（而不是伪造一个版本号），前端原样展示 ——
+ * 四个值都是编译期常量（ldflags 注入或 go:embed 编入），进程不重启就不会变。
+ * 未注入/未声明时后端返回 `"unknown"`（而不是伪造一个版本号），前端原样展示 ——
  * 排障时被假版本号误导，比看不到版本号更糟。
+ *
+ * **`core` 与 `fork` 是两个互不相干的版本号**，不要在界面上把它们拼起来：
+ * 一度有一版把二者合成 `v1.0.0-rc.25+qy.2` 塞进 `common.Version`，结果是
+ * 「当前版本」那一栏既不是上游版本也不是我们的版本，而且让上游那颗检查更新
+ * 按钮（它拿这个值跟 release 的 `tag_name` 做**相等比较**）永远报「有新版本」。
  */
 export type QyVersionInfo = {
-  /** 二开当前版本，`git describe --tags` 原样输出。 */
+  /**
+   * 二开当前构建的**提交**，`git describe --tags` 原样输出。构建期 ldflags 注入。
+   *
+   * 它不是版本号：这个值是从上游的 tag 算出来的，上游一打新 tag 它就整体跳变。
+   * 它回答的是「你这台机器跑的到底是哪个提交」。版本号看 {@link fork}。
+   */
   build: string
-  /** 最近一次同步到的上游 tag。 */
+  /**
+   * 同步基线的**精确提交**，取上游自己 `git describe --tags` 的输出，
+   * 例 `v1.0.0-rc.25-1-g2d8e50bf3`。
+   *
+   * 声明在 `qianye/version/baseline.txt`，由 go:embed 编进二进制，不走 ldflags：
+   * 本 fork 靠逐提交挑拣同步，挑拣不产生祖先关系，`git describe` 量的 tag 可达性
+   * 会沉默地落后一个 release。
+   *
+   * 与 {@link core} 的差别是「精确到提交」与「与上游逐字一致」之差。
+   */
   upstream: string
-  /** 上游自己的版本号（`common.Version`），未注入时是它的默认值 `v0.0.0`。 */
+  /**
+   * **内核版本**：上游 new-api 的版本号，逐字一致、不带任何后缀，
+   * 例 `v1.0.0-rc.25`。即运行期实际的 `common.Version`。
+   *
+   * 未经构建脚本注入时是上游默认值 `v0.0.0` —— 那正是「这个包没按流程出」的信号。
+   */
   core: string
+  /**
+   * **二开版本**：我们自己的版本号，恒为 `vMAJOR.MINOR.PATCH`，例 `v0.1.0`。
+   *
+   * 与 {@link core} 互不相干：同步一次上游不会让它进位，发一版二开也不会改内核
+   * 版本。检查更新（{@link QyUpdateCheck}）比的就是它。
+   */
+  fork: string
+}
+
+/**
+ * 二开检查更新的结论，与 `qianye/controller/update_check.go` 的
+ * `AdminCheckUpdate` 响应对齐。
+ *
+ * **成功也有五种结局**，因为「没查出新版本」的原因不止一个，而它们在界面上
+ * 必须说得不一样 —— 尤其是 `no_release`（仓库在、我们还没发过版）不能被说成
+ * 「已是最新」，也不能被说成「检查失败」。
+ */
+export type QyUpdateCheckStatus =
+  /** 远端版本比本机新。唯一需要人动手的一档。 */
+  | 'update_available'
+  /** 远端与本机相同。 */
+  | 'up_to_date'
+  /** 本机比远端新（改完还没发版）。不是错误，但也不是「已是最新」。 */
+  | 'ahead'
+  /** 仓库在，但一个 release 都没发过。该做的是去发版，不是去查网络。 */
+  | 'no_release'
+  /** 本机的二开版本号没声明/解析不了，有远端版本也判不出新旧。 */
+  | 'current_unknown'
+  /** 远端 tag 不在我们的版本方案里（例如手滑打了个日期式 tag）。 */
+  | 'latest_unparsable'
+
+export type QyUpdateCheck = {
+  status: QyUpdateCheckStatus
+  /** 本机的二开版本号，等于 {@link QyVersionInfo.fork}。 */
+  current: string
+  /** 远端最新 release 的 tag 原样（含 `qy-` 前缀）。`no_release` 时是空串。 */
+  latest: string
+  /** 远端 release 的标题。可能是空串。 */
+  release_name?: string
+  /**
+   * 给人点的 release 页面。**绝不是下载直链** —— 本站不自动下载、不自动更新，
+   * 这个链接是唯一的去处。
+   */
+  release_url: string
+  /** ISO8601，远端 release 的发布时间。`no_release` 时是空串。 */
+  published_at: string
+  /** 远端 release 被标记为预发布。 */
+  prerelease: boolean
 }
 
 export type QyTaskLease = {
@@ -254,4 +326,103 @@ export interface QyOverdraftReport {
   top: QyOverdraftAccount[]
   /** true 表示 `accounts > top.length`，清单被截断了。 */
   truncated: boolean
+}
+
+/**
+ * 客户端 IP 识别诊断（`GET /api/qy/admin/client-ip`），与
+ * `qianye/controller/client_ip.go` 的 `AdminClientIP` 响应对齐。
+ *
+ * 这一段回答的不是「我的 IP 是什么」——那个值台账里就有——而是
+ * **「为什么是这个值」**。客户端 IP 是四类判据的取值来源（令牌 allow_ips、
+ * 按 IP 的限流、审计台账、风控去重），而它配错的两种方向**都不会报错**：
+ * 配窄了全站 IP 变成反代地址，配宽了任何能打到端口的东西都能伪造来源 IP。
+ */
+export type QyClientIPDiagnostic = {
+  /** 打开这一页的这条请求自身的完整取值过程。管理员就是一个真实样本。 */
+  request: QyClientIPResolution
+  policy: QyClientIPPolicy
+  /** 内置 Cloudflare 网段快照的出处与取得日期。 */
+  cloudflare_source: string
+  /**
+   * 「直连对端不受信、却带着转发头」的观测台。
+   *
+   * **非空基本等同于确诊**：站点装在反代/CDN 后面，但 `TRUSTED_PROXIES`
+   * 没配到那个对端上。每一条都带着可以直接粘进 `TRUSTED_PROXIES` 的
+   * `suggestion`。
+   */
+  observations: QyClientIPObservation[]
+  /** 超过观测台容量上限（32 个对端）之后被丢弃的条数。 */
+  observations_dropped: number
+}
+
+export type QyClientIPResolution = {
+  /** 最终结论。令牌 allow_ips、限流桶、台账用的都是它。 */
+  ip: string
+  /** TCP 直连对端，已归一化。唯一不可伪造的事实。 */
+  peer: string
+  /** 对端是否落在某一档受信网段里。false 时转发头全部作废。 */
+  peer_trusted: boolean
+  /** 命中的受信来源名：explicit / private / loopback / cloudflare。 */
+  trust_source?: string
+  /** 结论是从哪个请求头取的。缺失表示结论就是 `peer`。 */
+  header?: string
+  /** 转发链原文（未归一化），从左到右。左端是客户端自己写的、谁都能编的前缀。 */
+  chain?: string[]
+  /** 因为对端不受信而被丢弃的转发头。 */
+  ignored_headers?: { name: string; value: string }[]
+  /**
+   * 排在结论之后、但同样有值且给出**不同答案**的受信请求头。
+   *
+   * 它是「只配了 X-Real-IP 的 Nginx」这种错配唯一的确诊信号:那种 nginx 会把
+   * 客户端自带的 X-Forwarded-For 原样透传,而默认头顺序里 XFF 排在
+   * X-Real-IP 前面 —— 于是客户端能顶掉反代诚实写下的值。
+   * 正确配置(显式声明 CLIENT_IP_HEADERS=X-Real-IP)下这一栏是空的。
+   */
+  conflicts?: { header: string; ip: string }[]
+  reason: QyClientIPReason
+  strategy: QyClientIPStrategy
+}
+
+export type QyClientIPReason =
+  /** 直连对端不是受信代理，转发头全部忽略。 */
+  | 'direct_peer'
+  /** RemoteAddr 解析不出 IP。 */
+  | 'peer_unparsable'
+  /** 从转发链上从右往左剥出来的地址。正常反代部署就是这一档。 */
+  | 'forwarded_chain'
+  /** 链上每一跳都落在受信网段里，取了最左端。受信网段配得过宽时会出现。 */
+  | 'forwarded_chain_all_trusted'
+  /** 从单值头（CF-Connecting-IP 等）取到。 */
+  | 'forwarded_header'
+  /** 对端受信，但一个可用的转发头都没带 —— 反代漏了 proxy_set_header。 */
+  | 'trusted_peer_no_header'
+
+export type QyClientIPStrategy =
+  /** 运维显式配了 TRUSTED_PROXIES。 */
+  | 'explicit'
+  /** 显式配了 TRUSTED_PROXIES=none。 */
+  | 'none'
+  /** 未配置，但只监听回环地址，于是自动信任回环对端。 */
+  | 'loopback_bind'
+  /** 未配置且监听在非回环地址上：谁都不信。 */
+  | 'fail_closed'
+
+export type QyClientIPPolicy = {
+  strategy: QyClientIPStrategy
+  /** 原始 TRUSTED_PROXIES 取值，原样回显。 */
+  raw: string
+  notice: string
+  /** 非空表示当前策略有已知代价（例如信任面覆盖了全部地址）。 */
+  warning: string
+  sources: { name: string; headers: string[]; cidrs: string[] }[]
+}
+
+export type QyClientIPObservation = {
+  peer: string
+  headers: string[]
+  count: number
+  first_seen: number
+  last_seen: number
+  /** 可以直接写进 TRUSTED_PROXIES 的值（/32 或 /128 单机地址）。 */
+  suggestion: string
 }

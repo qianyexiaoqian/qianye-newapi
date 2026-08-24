@@ -174,11 +174,18 @@ var aiHTTPClient = &http.Client{
 // 明文密钥在本结构体之外唯一的去向是 Authorization 头。它不进日志、
 // 不进审计、不进任何接口响应 —— 见 aireview_crypto.go 顶部的三条硬约束。
 type aiChannelRT struct {
-	Id           int64
-	Name         string
-	URL          string // 已经拼好的 /chat/completions 完整地址
-	Model        string
-	APIKey       string
+	Id     int64
+	Name   string
+	URL    string // 已经拼好的 /chat/completions 完整地址
+	Model  string
+	APIKey string
+	// Protocol 已经过 normalizeAIProtocol,恒是 json_prompt 或 qwen3guard。
+	// 装配期归一而不是调用期:调用期归一意味着每一次审核都要再判一遍一个
+	// 一整轮快照都不会变的值,而且给了"某处忘了归一"一个存在的机会。
+	Protocol string
+	// Guard 是护栏协议下的判定策略(Controversial 档 + 启用类别 + 升级类别),
+	// 已经过归一。json_prompt 渠道上它是零值且从不被读。见 guardPolicy。
+	Guard        guardPolicy
 	TimeoutMs    int
 	Weight       int
 	PriceInPerM  decimal.Decimal
@@ -257,7 +264,24 @@ type aiOutcome struct {
 	// retryable 只在 runAIReview 的循环里活着,不落库、不下发。
 	// 它回答的是"这一种失败换一个渠道再试有没有意义",见 aiStatusRetryable。
 	retryable bool
+
+	// rawSample 是上游响应体的原文,**只有管理端试跑会填**(captureRaw=true)。
+	//
+	// 它必须是未导出字段:这个结构体会被塞进 AIReview 行、也会被 gin.H 下发,
+	// 一个导出字段迟早会跟着某一次 `respond(c, out)` 溜出去,而它里面可能有
+	// 模型自由生成的、复述了用户原文的 reason。未导出 ⇒ 既不进 GORM 也不进
+	// JSON,唯一的读取点是 adminTestAIChannel —— 而那一次送审的是本仓写死的
+	// 一句良性文本,不含任何用户内容。
+	rawSample string
 }
+
+// aiRawSampleRunes 是试跑回显原始响应的长度上限。
+//
+// 2000 码点足够容下一次正常的 chat completions 响应(含 usage 与几行标签),
+// 也足够容下大多数上游错误页的头部 —— 而那正是这个回显要解决的问题。
+// 不设限的话,一个返回 HTML 错误页的网关能往管理端塞回 1MB(读取侧的
+// LimitReader 上界)。
+const aiRawSampleRunes = 2000
 
 // aiStatusRetryable 回答"上游回了这个状态码,换一个渠道再试有没有意义"。
 //
@@ -584,7 +608,8 @@ func runAIReview(ctx context.Context, rt *aiRuntime, sc *aiScopeRT, text string,
 			}
 			budget = aiAttemptBudget(remaining, len(channels)-i, ch.TimeoutMs)
 		}
-		res := callAIChannel(ctx, ch, prompt, body, budget, rt.Vocab)
+		// captureRaw=false:热路径绝不留响应原文,见 aiOutcome.rawSample。
+		res := callAIChannel(ctx, ch, prompt, body, budget, rt.Vocab, false)
 		chain.add(res)
 		if res.decided() {
 			res.LatencyMs = msSince(started)
@@ -625,6 +650,10 @@ type chatRequest struct {
 	// 非指针 + omitempty 会把它静默丢掉,换来一个每次结论都可能不同的审核员。
 	Temperature    *float64        `json:"temperature,omitempty"`
 	ResponseFormat *chatRespFormat `json:"response_format,omitempty"`
+	// Seed 只有护栏协议会设(见 guardSeed)。指针 + omitempty:json_prompt
+	// 那条路的请求体必须一个字节都不变,而多一个 "seed":0 会让某些严格的
+	// OpenAI 兼容实现直接 400。
+	Seed *int `json:"seed,omitempty"`
 }
 
 type chatMsg struct {
@@ -639,7 +668,24 @@ type chatRespFormat struct {
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			// Content 必须是 any,不能声明成 string。
+			//
+			// OpenAI 兼容响应里的 content 有两种真实形态:一个字符串,或者一个
+			// parts 数组([{"type":"text","text":"..."}])。参考实现
+			// (Wei-Shaw/sub2api 的 extractOpenAIContent)两种都认;本仓的
+			// relaykit 在**转发**方向上也认(Message.StringContent 带 []any 分支),
+			// 所以审核渠道指向本网关自身、或指向同类中转站时就会收到数组形态。
+			//
+			// 声明成 string 的后果有两条,而且都不响:
+			//   ① json.Unmarshal 整个响应体报错 → 该渠道**永远**给不出结论、
+			//      永远 bad_json、永远 fail-open;
+			//   ② 报错发生在记账那几行**之前**,于是响应体里明明带着 usage,
+			//      token 与花费却被整笔丢弃 —— cost_unknown = TotalTokens>0 && !Priced
+			//      在归零之后恒为 false,这一行被记成"花费 0 且确定",而管理端
+			//      低估告警的 SQL 前提是 total_tokens > 0,对它完全隐形。
+			//      实测:一条 usage 40/8 的数组形态响应,整条重试链打满三个渠道
+			//      (三次真实付费调用)之后 total_tokens=0 / cost=0 / 且不告警。
+			Content any `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
 	Usage struct {
@@ -647,6 +693,33 @@ type chatResponse struct {
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
 	} `json:"usage"`
+}
+
+// chatContentText 把 content 的两种形态折成一段文本。
+//
+// 数组形态按参考实现的口径拼接:逐个元素取 text 字段,忽略非文本片段
+// (图片等在审核响应里不该出现,出现了也不该参与判定)。
+// 认不出的形态返回空串,交给上层按"这个模型不肯按格式回答"处理 ——
+// 那一档已经有完整的 bad_json + 可重试 + 记账语义。
+func chatContentText(v any) string {
+	switch c := v.(type) {
+	case string:
+		return c
+	case []any:
+		var b strings.Builder
+		for _, item := range c {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if txt, ok := obj["text"].(string); ok {
+				b.WriteString(txt)
+			}
+		}
+		return b.String()
+	default:
+		return ""
+	}
 }
 
 // aiVerdictJSON 是我们要求模型吐出来的结构。
@@ -661,21 +734,63 @@ type aiVerdictJSON struct {
 	Reason     string  `json:"reason"`
 }
 
-// callAIChannel 向一个渠道发一次调用。任何失败都翻译成一个 Outcome,不抛 error。
+// aiVerdict 是**归一之后**的结论,两种协议在这里汇合。
 //
-// prompt 是**已经渲染好**的那一份(类型清单已经拼进去了),vocab 是拼它用的
-// 同一份闭集。两者必须同源:拿 A 的清单去问、用 B 的清单归一,结果是模型
-// 老老实实照着 A 回答,而我们把每一票都判成"清单外"。
-func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string, timeoutMs int, vocab aiVocabulary) *aiOutcome {
-	out := &aiOutcome{ChannelId: ch.Id, ChannelName: ch.Name, Model: ch.Model}
-	if timeoutMs < minAITimeoutMs {
-		timeoutMs = minAITimeoutMs
-	}
-	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutMs)*time.Millisecond)
-	defer cancel()
+// 它存在的理由是让 callAIChannel 的后半段(类型归一、置信度夹取、理由脱敏、
+// Outcome 赋值、告警)只写一遍。两条协议各自只负责"把回复读成这四个字段",
+// 而"读出来之后怎么记账"是协议无关的 —— 那一段一旦分叉,加第三种协议时
+// 就会有一份忘了做脱敏或忘了打未知类型告警。
+//
+// Category 是**模型给的原始类型名**(护栏协议下是映射后的候选 key),
+// 还没有过 vocab.resolveCategory —— 归一那一步在汇合之后统一做。
+type aiVerdict struct {
+	Violated   bool
+	Category   string
+	Confidence float64
+	Reason     string
+	// GuardUnknown 只有护栏协议会填:模型给出的、不在那九类里的类别名。
+	//
+	// 它**不参与判定**,只用来告警。单独一个字段而不是塞进 Reason 里再解析
+	// 出来:Reason 会被截断、会过脱敏,而告警要的是"这个部署到底吐了什么"。
+	// 判定不受影响,但静默丢弃不行 —— 表外的类别名是协议漂移(换了量化版、
+	// 换了微调版、渠道指向了另一个模型)最早也最便宜的一个信号。
+	GuardUnknown []string
+}
 
+// aiRequestPayload 组这一次调用的请求体。两种协议的差别**全部**在这里。
+//
+//	json_prompt  system=渲染好的提示词 + user=<content> 包裹的待审文本,
+//	             response_format=json_object,max_tokens=256。
+//	qwen3guard   **只有一条 user 消息,内容是待审文本原文**,没有系统提示词,
+//	             没有 response_format,max_tokens=64,seed=42。
+//
+// 这五个字段与参考实现(Wei-Shaw/sub2api 的 prompt_qwen3guard.go)逐字段一致。
+//
+// 护栏协议这三点减法都不是省事:
+//
+//   - 不发系统提示词 —— 安全指令是模型自己的 chat template 注入的,我们再塞
+//     一段进去等于往它的输入分布里掺训练时没见过的东西,判准会掉。
+//   - 不包 <content> 标签 —— 同理,那两行标签会被当成待分类内容的一部分。
+//     护栏模型是分类器不是指令跟随者,它本来就不会执行输入里的指令,
+//     所以那层标签换来的那点注入防护在这条路上收益接近零。
+//   - 不发 response_format —— 它要输出的是 `Safety: ...` 三行纯文本,
+//     强制 json_object 会让 vLLM/Ollama 的约束解码把它拧成一段 JSON,
+//     那时解析必然失败,而表现是"这个渠道永远 bad_json"。
+func aiRequestPayload(ch *aiChannelRT, prompt, body string) ([]byte, error) {
+	// 0 是有意义的取值(要的就是确定性输出),必须走指针,见 chatRequest。
 	temperature := 0.0
-	payload, err := common.Marshal(chatRequest{
+	if ch.Protocol == AIProtocolQwen3Guard {
+		seed := guardSeed
+		return common.Marshal(chatRequest{
+			Model:       ch.Model,
+			Messages:    []chatMsg{{Role: "user", Content: body}},
+			Stream:      false,
+			MaxTokens:   guardMaxTokens,
+			Temperature: &temperature,
+			Seed:        &seed,
+		})
+	}
+	return common.Marshal(chatRequest{
 		Model: ch.Model,
 		Messages: []chatMsg{
 			{Role: "system", Content: prompt},
@@ -691,6 +806,52 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 		Temperature:    &temperature,
 		ResponseFormat: &chatRespFormat{Type: "json_object"},
 	})
+}
+
+// aiInterpretContent 把模型回复读成 aiVerdict。协议分叉的另一半,与
+// aiRequestPayload 严格配对 —— 组请求用了 A 协议、读回复用了 B 协议,
+// 表现是这个渠道永远 bad_json,而 bad_json 是**付过钱**的失败。
+func aiInterpretContent(ch *aiChannelRT, content string, vocab aiVocabulary) (aiVerdict, error) {
+	if ch.Protocol == AIProtocolQwen3Guard {
+		labels, err := parseGuardVerdict(content)
+		if err != nil {
+			return aiVerdict{}, err
+		}
+		return labels.toVerdict(ch.Guard, vocab), nil
+	}
+	v, err := parseAIVerdict(content)
+	if err != nil {
+		return aiVerdict{}, err
+	}
+	return aiVerdict{
+		Violated:   v.Violation != nil && *v.Violation,
+		Category:   v.Category,
+		Confidence: v.Confidence,
+		Reason:     v.Reason,
+	}, nil
+}
+
+// callAIChannel 向一个渠道发一次调用。任何失败都翻译成一个 Outcome,不抛 error。
+//
+// prompt 是**已经渲染好**的那一份(类型清单已经拼进去了),vocab 是拼它用的
+// 同一份闭集。两者必须同源:拿 A 的清单去问、用 B 的清单归一,结果是模型
+// 老老实实照着 A 回答,而我们把每一票都判成"清单外"。
+// captureRaw 只有管理端试跑传 true。它把上游响应原文留在 out.rawSample 上,
+// 供那一个按钮回显 —— 协议对不上时(护栏模型尤其:官方没有给出 OpenAI 兼容
+// 端点上的字段级规格)没有原始响应就只能靠猜。
+//
+// 热路径一律传 false:那一段文本里含模型自由生成的 reason,而 reason 可能
+// 复述用户原文。落在一个未导出字段上、只有一个调用点会读,是这条数据能被
+// 允许存在的全部前提。
+func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string, timeoutMs int, vocab aiVocabulary, captureRaw bool) *aiOutcome {
+	out := &aiOutcome{ChannelId: ch.Id, ChannelName: ch.Name, Model: ch.Model}
+	if timeoutMs < minAITimeoutMs {
+		timeoutMs = minAITimeoutMs
+	}
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutMs)*time.Millisecond)
+	defer cancel()
+
+	payload, err := aiRequestPayload(ch, prompt, body)
 	if err != nil {
 		// 请求体序列化失败与渠道无关(每个渠道发的是同一段 JSON)。
 		// 不重试:换一个渠道会在同一行再失败一次。
@@ -742,6 +903,10 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 		out.retryable = true
 		return out
 	}
+	if captureRaw {
+		// 非 2xx 与解析失败恰恰是最需要看原文的两种,所以在分流**之前**就留下。
+		out.rawSample = clipRunes(string(raw), aiRawSampleRunes)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		out.Outcome = OutcomeUpstreamError
 		out.retryable = aiStatusRetryable(resp.StatusCode)
@@ -754,7 +919,36 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 	}
 
 	var parsed chatResponse
-	if err := common.Unmarshal(raw, &parsed); err != nil || len(parsed.Choices) == 0 {
+	envelopeErr := common.Unmarshal(raw, &parsed)
+	// 记账必须排在信封分流**之前**。
+	//
+	// 这一步以前排在 return 之后,于是"响应不是 OpenAI 兼容形态"那一档会把
+	// **已经解析出来的** usage 连同结构体一起丢掉。而那一档自己标了
+	// retryable=true —— 也就是承认这次调用已经完成、已经付过钱、值得换渠道 ——
+	// 却把用量记成 0。cost_unknown = TotalTokens>0 && !Priced 在归零之后恒为
+	// false,这一行于是被记成"花费 0 且确定",而 0 正是最没人会去核对的数字;
+	// 管理端那条低估告警的 SQL(total_tokens > 0 AND ...)对它完全隐形。
+	//
+	// 解析彻底失败时 parsed.Usage 本来就是零值,提前记账不会凭空造出用量。
+	out.PromptTokens = parsed.Usage.PromptTokens
+	out.CompletionTokens = parsed.Usage.CompletionTokens
+	out.TotalTokens = parsed.Usage.TotalTokens
+	if out.TotalTokens == 0 {
+		out.TotalTokens = out.PromptTokens + out.CompletionTokens
+	}
+	// Priced 的含义是"这一行的花费数字算得准",不是"这个渠道填了单价"。
+	//
+	// 一次没有 usage 的成功调用(自建的 OpenAI 兼容实现完全可能不回这个字段 ——
+	// Ollama 与 vLLM 都回,但 llama.cpp 的 server、各种一层薄包装的网关不一定)
+	// 算出来的 0 是**不知道**,不是"没花钱"。填了单价就把它标成准确值,
+	// 会让成本页把一整个渠道的花费显示成 0 —— 而 0 是最没人会去核对的数字。
+	//
+	// aiChainCost.applyTo 在多次尝试的链上做的是同一件事(anyTokens),这里
+	// 补的是单次调用路径(管理端试跑直接读 callAIChannel 的返回值)。
+	out.Priced = ch.priced() && out.TotalTokens > 0
+	out.CostUsd = aiCostUsd(ch, out.PromptTokens, out.CompletionTokens)
+
+	if envelopeErr != nil || len(parsed.Choices) == 0 {
 		// 响应不是 OpenAI 兼容形态。通常是地址指到了一个网关/错误页,
 		// 或者这个"OpenAI 兼容"实现其实不兼容 —— 都是这个渠道的问题,
 		// 换一个渠道(它跑的多半是另一个模型、另一个实现)值得试。
@@ -762,20 +956,11 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 		out.retryable = true
 		return out
 	}
-	// token 与花费即使在结论解析失败时也要记:那次调用照样是花了钱的,
-	// 只记成功的会让成本统计系统性偏低,而偏低的方向恰好最没人会去核对。
-	out.PromptTokens = parsed.Usage.PromptTokens
-	out.CompletionTokens = parsed.Usage.CompletionTokens
-	out.TotalTokens = parsed.Usage.TotalTokens
-	if out.TotalTokens == 0 {
-		out.TotalTokens = out.PromptTokens + out.CompletionTokens
-	}
-	out.Priced = ch.priced()
-	out.CostUsd = aiCostUsd(ch, out.PromptTokens, out.CompletionTokens)
 
-	verdict, err := parseAIVerdict(parsed.Choices[0].Message.Content)
+	verdict, err := aiInterpretContent(ch, chatContentText(parsed.Choices[0].Message.Content), vocab)
 	if err != nil {
-		// 这个模型不肯按格式回答。**这是唯一一种已经付过钱的可重试失败**
+		// 这个模型不肯按格式回答(护栏协议下:回复里没有 Safety 标签,通常
+		// 是渠道的协议选错了)。**这是唯一一种已经付过钱的可重试失败**
 		// (usage 就在上面几行刚记下来),所以它是重试上界真正防的那件事:
 		// 换一个渠道通常意味着换一个模型,值得试一次;而没有上界时,一个
 		// 配错了的站点会把每一次抽样变成 N 次付费调用。
@@ -783,7 +968,21 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 		out.retryable = true
 		return out
 	}
-	out.Violated = verdict.Violation != nil && *verdict.Violation
+	out.Violated = verdict.Violated
+	if len(verdict.GuardUnknown) > 0 {
+		// 护栏模型给了九类之外的类别名。判定照常成立(Safety 那一档才是结论),
+		// 但这是协议漂移唯一的早期信号 —— 换了量化版、换了微调版、或者这个
+		// 渠道其实指向了另一个模型。不打这条日志的话,它只会表现为"某一类的
+		// 计数莫名其妙地少了",而那要几周之后才有人发现。
+		//
+		// 计数器共用 aiUnknownCategoryHits:两条路上"模型回了我们不认识的类型"
+		// 是同一件事,指标页只需要一根柱子。
+		aiUnknownCategoryHits.Add(1)
+		common.SysError(fmt.Sprintf(
+			"qianye/violation: 护栏渠道 %d(%s)返回了 Qwen3Guard 九类之外的类别 %q —— "+
+				"请确认模型名与部署版本(本仓按 Wei-Shaw/sub2api 的实读协议解析)",
+			ch.Id, ch.Name, strings.Join(verdict.GuardUnknown, ",")))
+	}
 	res := vocab.resolveCategory(verdict.Category, out.Violated)
 	out.Category = res.Key
 	if res.Fallback {
@@ -792,11 +991,21 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 		out.RawCategory = clipRunes(res.Raw, 64)
 		out.CategoryUnknown = true
 		aiUnknownCategoryHits.Add(1)
+		// 两种协议的处置办法不同,所以告警的后半句必须分开写。
+		//
+		// json_prompt:类型清单是运行期发过去的,所以"改提示词把它引导回来"
+		// 是一条真办法。护栏模型的类别在训练时就钉死了,提示词改不动它 ——
+		// 对那条路说"补一段判定说明"是一句照着做也没用的话,而一条照着做没用
+		// 的告警会让人把这一类告警整体忽略掉。
+		fix := "请在违规类型页把它建成一个类型,或补一段「给 AI 的判定说明」把它引导到既有类型上"
+		if ch.Protocol == AIProtocolQwen3Guard {
+			fix = "护栏模型的类别在训练时就固定了,改提示词无效 —— " +
+				"要单独处置这一类,请在违规类型页新建一个标识为该值的类型"
+		}
 		common.SysError(fmt.Sprintf(
 			"qianye/violation: AI 审核渠道 %d(%s)判定违规但给出的类型 %q 不在类型清单里,"+
-				"已折进兜底类型 %q。若这个词反复出现,请在违规类型页把它建成一个类型,"+
-				"或补一段「给 AI 的判定说明」把它引导到既有类型上",
-			ch.Id, ch.Name, res.Raw, res.Key))
+				"已折进兜底类型 %q。若这个词反复出现,%s",
+			ch.Id, ch.Name, res.Raw, res.Key, fix))
 	}
 	out.Confidence = clampConfidence(verdict.Confidence)
 	// 理由可能复述用户原文,与 Record.MatchSnippet 同规格脱敏后才落库。

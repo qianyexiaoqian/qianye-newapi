@@ -433,8 +433,11 @@ func resolveKeywordUserIds(ctx context.Context, keyword string) ([]int, error) {
 	if id, err := strconv.Atoi(keyword); err == nil && id > 0 {
 		q = q.Where("id = ?", id)
 	} else {
-		like := "%" + keyword + "%"
-		q = q.Where("username LIKE ? OR display_name LIKE ? OR email LIKE ?", like, like, like)
+		// 子串匹配(运营从报表里认得出名字的一段),但必须走 httpq.SearchLike:
+		// 原来这里既不转义 % 与 _(输入一个 % 等价于不筛选、_ 变成任意单字符),
+		// 也不折叠大小写(PG 上大小写不一致就搜不到)。两条都是跨库/输入面的洞。
+		expr, pattern := httpq.SearchLike(keyword, httpq.MatchContains, "username", "display_name", "email")
+		q = q.Where(expr, pattern, pattern, pattern)
 	}
 	var ids []int
 	if err := q.Limit(maxDailyConsumeKeywordHits+1).Pluck("id", &ids).Error; err != nil {

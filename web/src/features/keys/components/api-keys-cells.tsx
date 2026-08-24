@@ -229,8 +229,14 @@ export function IpRestrictionsCell({ apiKey }: { apiKey: ApiKey }) {
     )
   }
 
+  // 分隔符与后端 Token.GetIpLimits 保持一致:换行**和逗号**。
+  //
+  // 只按换行切会让 `127.0.0.1,10.0.0.1` 在界面上显示成「1 条规则」,而后端
+  // 现在按两条生效 —— 界面与判定说的是两件事。同理 `, ` 这种只有标点的输入
+  // 会切出 0 条:那时后端的语义是「谁都不许进」(白名单里一个地址都没有),
+  // 所以这里显示 0 条规则是对的,绝不能回落到「不限制」。
   const ips = allowIps
-    .split('\n')
+    .split(/[\n,]/)
     .map((ip) => ip.trim())
     .filter(Boolean)
 

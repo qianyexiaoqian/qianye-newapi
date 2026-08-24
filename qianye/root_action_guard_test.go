@@ -90,6 +90,16 @@ var rootGateSites = []rootGateSite{
 		},
 	},
 	{
+		file: "qianye/router.go",
+		fn:   "registerAdminRoutes",
+		recv: "g",
+		routes: []rootGatedRoute{
+			{"GET", "/version/check-update", "RootActionUpdateCheck",
+				"全站唯一一条会让服务端自己向第三方(github.com)开出站连接的管理端路由;" +
+					"同一面上的 GET /version 不提档 —— 它只读编译进来的常量,而且是排障的第一个问题"},
+		},
+	},
+	{
 		file: "qianye/modules/usergroup/usergroup.go",
 		fn:   "RegisterAdminRoutes",
 		recv: "g",
@@ -114,6 +124,10 @@ var rootGateSites = []rootGateSite{
 		routes: []rootGatedRoute{
 			{"POST", "/lottery/activities/:act_no/guess-result", "RootActionLotteryResultSet",
 				"竞猜结果是链下事实,是全站唯一一处管理员说了算的开奖口"},
+			{"POST", "/lottery/activities/:act_no/payouts/:payout_no/adjudicate",
+				"RootActionLotteryPayoutAdjudicate",
+				"人工落账绕过全部自动判据(资金单终态 + 主库探针),其中一支会让主库再加一次钱;" +
+					"同一面上的「重试」不提档 —— 它只在探针明确说主库没动时才出手"},
 		},
 	},
 }
@@ -196,6 +210,11 @@ type parsedRoute struct {
 	method string
 	path   string
 	action string
+	// gateIdx / critIdx 是 RootActionGate 与 CriticalRateLimit 在这次注册调用的
+	// 参数列表里的下标,-1 表示没有。中间件按参数顺序执行,所以这两个下标的
+	// 大小关系就是"哪一道闸先跑"。
+	gateIdx int
+	critIdx int
 }
 
 // parseRouteGates 从 file 的 fn 里解析出全部路由注册,并识别每一条挂没挂
@@ -215,8 +234,10 @@ func parseRouteGates(t *testing.T, file, fn, recv string) []parsedRoute {
 	decl := findFuncDecl(parsed, fn)
 	require.NotNil(t, decl, file+" 里找不到 "+fn)
 
-	// 第一遍:收集 `x := middleware.RootActionGate(middleware.ActionY)` 的变量名。
+	// 第一遍:收集 `x := middleware.RootActionGate(middleware.ActionY)` 与
+	// `crit := middleware.CriticalRateLimit()` 的变量名 —— 两种都被真实代码用着。
 	gateVars := map[string]string{}
+	critVars := map[string]bool{}
 	ast.Inspect(decl, func(n ast.Node) bool {
 		assign, ok := n.(*ast.AssignStmt)
 		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
@@ -228,6 +249,9 @@ func parseRouteGates(t *testing.T, file, fn, recv string) []parsedRoute {
 		}
 		if action := rootGateAction(assign.Rhs[0]); action != "" {
 			gateVars[name.Name] = action
+		}
+		if isCriticalRateLimit(assign.Rhs[0], nil) {
+			critVars[name.Name] = true
 		}
 		return true
 	})
@@ -255,16 +279,22 @@ func parseRouteGates(t *testing.T, file, fn, recv string) []parsedRoute {
 		if err != nil {
 			return true
 		}
-		route := parsedRoute{method: sel.Sel.Name, path: path}
-		for _, arg := range call.Args[1:] {
+		route := parsedRoute{method: sel.Sel.Name, path: path, gateIdx: -1, critIdx: -1}
+		for i, arg := range call.Args[1:] {
+			if isCriticalRateLimit(arg, critVars) && route.critIdx < 0 {
+				route.critIdx = i
+				continue
+			}
+			if route.action != "" {
+				continue
+			}
 			if action := rootGateAction(arg); action != "" {
-				route.action = action
-				break
+				route.action, route.gateIdx = action, i
+				continue
 			}
 			if ident, ok := arg.(*ast.Ident); ok {
 				if action := gateVars[ident.Name]; action != "" {
-					route.action = action
-					break
+					route.action, route.gateIdx = action, i
 				}
 			}
 		}
@@ -330,4 +360,74 @@ func parseRootActionConstants(t *testing.T) []string {
 		}
 	}
 	return names
+}
+
+// isCriticalRateLimit 判断一个中间件实参是不是 middleware.CriticalRateLimit()。
+// 允许内联写法与先赋给变量再复用两种(真实代码里两种都有)。
+func isCriticalRateLimit(expr ast.Expr, vars map[string]bool) bool {
+	if ident, ok := expr.(*ast.Ident); ok {
+		return vars != nil && vars[ident.Name]
+	}
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	switch f := call.Fun.(type) {
+	case *ast.Ident:
+		return f.Name == "CriticalRateLimit"
+	case *ast.SelectorExpr:
+		return f.Sel.Name == "CriticalRateLimit"
+	}
+	return false
+}
+
+// TestRootGateRunsBeforeCriticalRateLimit 钉住这两道闸的**顺序**。
+//
+// # 为什么顺序是一条安全判据而不是风格
+//
+// CriticalRateLimit 的桶键是 mark + 客户端 IP + 路由(middleware/rate-limit.go),
+// **不含 user id、不含 role**。中间件按参数顺序执行,所以限流排在闸门前面时,
+// 一次被 403 拒掉的越权尝试同样会消耗掉那一格。
+//
+// 实测:role=10 从同一个源 IP 连打 21 次 PUT /api/qy/admin/user-group/config,
+// 得到 19 个 403 + 2 个 429;紧接着 role=100 从**同一个 IP** 打同一条路由,
+// 直接 429 —— 超管被自己的下级锁在门外 20 分钟(默认 20 次 / 1200 秒),
+// 而这批路由里包括提现收款人明文与打款凭证(线下打款唯一的取数口)、
+// 抽奖出款人工落账(唯一能让挂起资金单收尾的口)、竞猜开奖结果录入。
+// 装到任何反代后面时全体管理员共用同一个来源 IP,那一格就是全站唯一的一格。
+//
+// 反过来把闸门排在前面没有代价:被拒的尝试仍然逐条写审计
+// (middleware.RequireRootAction 里那条 RecordOperationAuditLog),
+// 只是不再消耗限流桶。qianye/router.go 的 check-update 一开始就是这么写的,
+// 本用例把其余 14 条对齐到同一口径。
+func TestRootGateRunsBeforeCriticalRateLimit(t *testing.T) {
+	// 全站"既挂闸门又挂关键操作限流"的路由条数。写死是为了让解析器认不出新写法
+	// 时这条守卫会**变红**而不是变成空转 —— 空转的守卫比没有守卫更坏。
+	// 分组命名空间 9 + 用户组默认分组 1 + 提现 PII 2 + 抽奖 2 + 检查更新 1 = 15。
+	// 兑换码铸码只挂闸门、不挂 crit(它另有 UserCriticalRateLimit,按账号计),
+	// 所以不在这 15 条里。
+	const wantChecked = 15
+	checked := 0
+	for _, site := range rootGateSites {
+		t.Run(site.file+"::"+site.fn, func(t *testing.T) {
+			routes := parseRouteGates(t, site.file, site.fn, site.recv)
+			for _, r := range routes {
+				if r.action == "" || r.critIdx < 0 {
+					continue
+				}
+				checked++
+				assert.Less(t, r.gateIdx, r.critIdx,
+					"%s %s:RootActionGate(%s) 必须排在 CriticalRateLimit 之前。"+
+						"限流桶按 客户端 IP + 路由 计、与身份无关,排在前面时被拒的越权尝试"+
+						"照样消耗它 —— 一个 role=10 连点就能把这条路由对同一来源 IP 上的"+
+						"所有人(含超管)锁死 20 分钟",
+					r.method, r.path, r.action)
+			}
+		})
+	}
+	assert.Equal(t, wantChecked, checked,
+		"实际检查到 %d 条『既挂闸门又挂关键操作限流』的路由,期望 %d 条。"+
+			"少了说明解析器认不出某处新写法(这条守卫会静默空转);"+
+			"多了说明新增了这类路由,请确认它的顺序也是闸门在前,再把这个数字改上来",
+		checked, wantChecked)
 }

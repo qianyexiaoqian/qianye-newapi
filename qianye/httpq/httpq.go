@@ -26,6 +26,7 @@ package httpq
 
 import (
 	"math"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -212,3 +213,61 @@ func parseDigits(s string, max int64) (int64, bool) {
 	}
 	return n, true
 }
+
+// SearchLike 把一段运营输入的关键词编译成一条**跨库口径一致**的 LIKE 条件。
+//
+// 返回的 expr 里每一个 %s 位置由调用方给出列名,pattern 是已经转义好的模式串。
+// 用法:
+//
+//	expr, pattern := httpq.SearchLike(kw, httpq.MatchPrefix, "username", "email")
+//	q = q.Where(expr, pattern, pattern)
+//
+// # 为什么必须折叠大小写
+//
+// 裸 `col LIKE ?` 在三种数据库上给出**三种**结果:MySQL 的 utf8mb4_*_ci 排序
+// 规则大小写不敏感,SQLite 的 LIKE 对 ASCII 天然不敏感,而 PostgreSQL 的 LIKE
+// **大小写敏感**。于是同一个关键词在 PG 部署上搜不到、在 MySQL 上搜得到,
+// 两边都返回 200。运营在返佣页搜 `QY-Alice` 得到"查无此人",而这一页上有
+// 余额调整、佣金冲正、绑定/解绑上下线的按钮 —— 搜不到的直接后果是他改去猜 id,
+// 或者认定账号不存在。上游 model/user.go 的 SearchUsers 早就写成
+// LOWER(col) LIKE ?,并且有 model/search_case_pg_test.go 专门盯着;
+// qianye 侧这几处是同一约定的漏改点。
+//
+// LOWER() 三种数据库都有,且对 ASCII 语义一致。代价是用不上 col 上的普通索引 ——
+// 与"同一个词在两种部署上给出不同答案"相比,这个代价必须付;真需要索引的站点
+// 可以自己建 LOWER(col) 的表达式索引(PG)或生成列索引(MySQL 8)。
+//
+// # 为什么转义符显式写成 '!'
+//
+// `%` 与 `_` 是 LIKE 的通配符。不转义的话运营输入的 `%` 会命中全表、
+// 单号里的 `_` 会当成"任意单字符"命中一批不相关的行,而他会以为"就这些"。
+// 默认转义符是反斜杠,但反斜杠在 MySQL 的 NO_BACKSLASH_ESCAPES 与
+// PostgreSQL 的 standard_conforming_strings 下含义不同,只有显式 ESCAPE
+// 才在三种数据库上一致。
+func SearchLike(keyword string, mode LikeMatch, cols ...string) (string, string) {
+	kw := strings.ToLower(strings.TrimSpace(keyword))
+	pattern := likeEscaper.Replace(kw) + "%"
+	if mode == MatchContains {
+		pattern = "%" + pattern
+	}
+	parts := make([]string, 0, len(cols))
+	for _, col := range cols {
+		parts = append(parts, "LOWER("+col+") LIKE ? ESCAPE '!'")
+	}
+	return strings.Join(parts, " OR "), pattern
+}
+
+// LikeMatch 选择前缀匹配还是子串匹配。
+//
+// 前缀是默认:`%kw%` 用不上索引,而运营是边打字边查的。子串留给"单号/标题里
+// 找一段"这种确实需要的场景。
+type LikeMatch int
+
+const (
+	// MatchPrefix 只匹配开头。
+	MatchPrefix LikeMatch = iota
+	// MatchContains 匹配任意位置。
+	MatchContains
+)
+
+var likeEscaper = strings.NewReplacer("!", "!!", "%", "!%", "_", "!_")

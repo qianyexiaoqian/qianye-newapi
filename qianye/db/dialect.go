@@ -5,6 +5,8 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"github.com/QuantumNous/new-api/qianye/dsn"
+
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -45,14 +47,15 @@ const (
 // PostgreSQL 认两种写法:URL 形式(postgres:// / postgresql://)与
 // libpq 关键字形式(host=... user=... dbname=...)。关键字形式必须认,
 // 因为 gorm.io/driver/postgres 的文档示例用的就是它。
-func DetectDialect(dsn string) Dialect {
-	s := strings.TrimSpace(dsn)
+func DetectDialect(rawDSN string) Dialect {
+	s := strings.TrimSpace(rawDSN)
 	lower := strings.ToLower(s)
 	switch {
 	case strings.HasPrefix(lower, "postgres://"), strings.HasPrefix(lower, "postgresql://"):
 		return DialectPostgres
-	case strings.HasPrefix(lower, "sqlite:"), strings.HasPrefix(lower, "file:"),
-		lower == "local", strings.HasPrefix(lower, "local "):
+	case dsn.IsSQLite(lower):
+		// 判据整体在 qianye/dsn:config.validateDatabase 是同一条判据的第二个
+		// 读者,而它 import 不了本包(会成环),所以那条判据只能住在叶子包里。
 		return DialectSQLite
 	case isLibpqKeywordDSN(lower):
 		return DialectPostgres
@@ -87,12 +90,12 @@ func isLibpqKeywordDSN(lower string) bool {
 // 导出是给迁移幂等性回归用的:那条判据必须走**生产同一条**建句柄路径,
 // 否则它验证的是一个裸 postgres.Open,而生产用的是带列信息归一化的装饰器,
 // 两者的 AutoMigrate 行为完全不同(见 pg_migrator.go)。
-func DialectorFor(dsn string) (gorm.Dialector, error) {
-	switch d := DetectDialect(dsn); d {
+func DialectorFor(rawDSN string) (gorm.Dialector, error) {
+	switch d := DetectDialect(rawDSN); d {
 	case DialectPostgres:
-		return normalizedPGDialector{postgres.Open(dsn)}, nil
+		return normalizedPGDialector{postgres.Open(rawDSN)}, nil
 	case DialectMySQL:
-		return mysql.Open(dsn), nil
+		return mysql.Open(rawDSN), nil
 	default:
 		return nil, fmt.Errorf("qianye: 扩展库不支持方言 %q(资金路径依赖行锁,SQLite 无法提供)", d)
 	}

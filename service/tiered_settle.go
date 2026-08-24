@@ -49,7 +49,26 @@ func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVa
 
 	if usage.UsageSemantic == "anthropic" {
 		cc1h = float64(usage.ClaudeCacheCreation1hTokens)
-		cc5m = float64(usage.ClaudeCacheCreation5mTokens)
+		// cc5m 曾经在这里被 ClaudeCacheCreation5mTokens **覆盖**,而那个字段只有在
+		// 上游额外返回 cache_creation.ephemeral_5m_input_tokens 这个拆分对象时才有值。
+		// 上游只报标准的 cache_creation_input_tokens 时(AWS Bedrock 的 Claude 就
+		// 从来不报拆分,官方 API 也只在开了 1h beta 时才报)覆盖后的 cc 恒为 0;
+		// 而 Claude 的 input_tokens 本来就**不含**缓存写入,这批 token 也不在 p 里。
+		// 结果是缓存写入(单价是输入价的 1.25 倍、prompt caching 场景下常常是账单
+		// 主项)在 tiered_expr 这条路上**整段免费**,同时 len 被低估、分档条件可能
+		// 掉到便宜档。倍率路径没有这个问题:它自己算了 remaining = 总量 − 5m − 1h。
+		//
+		// 表达式语言只有 cc(5m)与 cc1h 两个缓存写入变量,没有"其余"这一档,
+		// 所以把余数并进 cc —— 与 relaykit 的 NormalizeCacheCreationSplit 同口径,
+		// 也与倍率路径按 CacheCreationRatio 收 remaining 的结果一致。
+		if total := float64(usage.PromptTokensDetails.CacheCreationTokensTotal()); total > 0 {
+			cc5m = float64(usage.ClaudeCacheCreation5mTokens)
+			if remaining := total - cc5m - cc1h; remaining > 0 {
+				cc5m += remaining
+			}
+		} else {
+			cc5m = float64(usage.ClaudeCacheCreation5mTokens)
+		}
 	}
 
 	img := float64(usage.PromptTokensDetails.ImageTokens)

@@ -73,8 +73,13 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 改这一项会决定此后**所有**新用户能不能用模型 —— 写一次影响的是全部
 	// 未来账号,而不是某一个人,因此按关键操作限流并提到超级管理员。
 	// 读不连坐:role=10 必须能看见当前值,否则连"为什么新用户没模型"都查不了。
-	g.PUT("/user-group/config", middleware.CriticalRateLimit(),
-		middleware.RootActionGate(middleware.RootActionUserGroupDefaultWrite), adminPutConfig)
+	//
+	// 闸门排在限流**之前**:限流桶的键是 mark + 客户端 IP + 路由,与身份无关,
+	// 被拒的越权尝试同样消耗这一格。实测 role=10 连打 21 次 → 19 个 403 + 2 个 429,
+	// 紧接着超管从同一个 IP 打同一条路由直接 429 —— 下级把上级锁在门外 20 分钟。
+	g.PUT("/user-group/config",
+		middleware.RootActionGate(middleware.RootActionUserGroupDefaultWrite),
+		middleware.CriticalRateLimit(), adminPutConfig)
 }
 
 func init() { module.Register(Mod{}) }

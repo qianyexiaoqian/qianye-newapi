@@ -197,7 +197,20 @@ func loadTiers(ctx context.Context) ([]GroupLimit, error) {
 //
 // 判据是这一项到底在卖什么:额度型门槛(单笔上限、日额度、日笔数、冷却、
 // 收款方入账笔数)分档放宽就是这个功能的产品形态;而新账号冻结期是一道
-// **反滥用身份闸门**,它一旦可以被分档放宽,就等于可以被一次购买抹掉。
+// **反滥用身份闸门**,它一旦可以被分档放宽,就等于可以被一次换组抹掉。
+//
+// ═══════════ 已知边界:全局配成 0 时这一条退化成空操作 ═══════════
+//
+// 它保证的只是「分档不低于全局」。全局 new_account_freeze_hours 本身为 0 时,
+// 任何一档都能合法地配成 0 —— 于是「在紧档里被冻结期拦下 → 换到一个把该项
+// 配成 0 的分组 → 立刻放行」这条路仍然是通的,users.created_at 一个字节没变。
+// 备份库实测(全局 YAML new_account_freeze_hours: 0):注册 60 秒的号在
+// qy-t6-lo(该档 720 小时)被 qy_account_too_new 拒,换到 qy-t6-hi(该档 0)
+// 同一秒放行 4000。
+//
+// 这不是这一条规则写错了,而是它管不到那么远:要真正堵死这条路,全局兜底
+// 必须自己是一个非 0 的冻结期(那样任何一档都压不到它以下)。项目方要的
+// 简单规则不含"按分组冻结"的第二套判据,所以这里如实留着,不自行加码。
 var tightenOnlyKeys = map[string]bool{
 	keyNewAccountFreezeHours: true,
 }
@@ -246,68 +259,123 @@ func strictestTransfer(a, b config.Transfer) config.Transfer {
 
 // transferForSenderDay 返回发起方这一笔该用的门槛。
 //
-// # 为什么不能只看「此刻的 users.group」
+// # 档位只认此刻的 users.group
 //
-// 分档按当前分组解析,而 users.group 是**用户自己花钱就能改的**:任何一个
-// upgrade_group 指向更松档、且允许余额支付的套餐(这正是用户组商品的设计用途)
-// 都能让人在当天额度用满之后花几千 quota 换一档接着转 —— 而 qy_transfer_user_state
-// 里当天已经用掉的计数一个都不重置,只是上限换了一档。实测过 0.01 美元换到
-// 6000 倍日额度。
+// 项目方口径:「不是说不看套餐给的组,是以用户当前的用户组使用的对应配置或兜底,
+// 不要搞那么复杂。」于是分档解析就是一次 transferFor(users.group):命中就用那一档、
+// 没命中走全局兜底。上一轮那层「基准用户组剥离」(名下还站着升组链就取链根、
+// 到期落点再取严)已经整体拆掉。
 //
-// # 口径
+// # 唯一还在的时间维度:今天的计数是在哪一档下累起来的
 //
-// 今天的计数是在哪一档下累起来的(dayGroup),那一档就在今天剩下的时间里
-// 继续作数:实际门槛 = 严(当前档, 今天那一档)。于是
-//   - 当天还没转过账的人换档 ⇒ dayGroup 为空 ⇒ 直接按新档,那是他买到的东西;
-//   - 当天已经转过账的人换档 ⇒ 今天仍受旧档约束,明天自然日一到重新开始。
+// 换组不重置计数 —— qy_transfer_user_state 里当天已用的额度与笔数一个都不清,
+// 只是上限换了一档。因此「当天额度用满 → 换一档更松的 → 同一秒接着转」这条路
+// 单靠"按当前分组分档"是堵不住的。这一位(DayOutGroup)记下今天的计数是在
+// 哪一档下累起来的,那一档就在今天剩下的时间里继续作数:
 //
-// 跨日由 rollDay 负责:bucket 一变,dayGroup 与三个计数一起清零。
-func (s opSettings) transferForSenderDay(userGroups []string, st *UserState, bucket int32) (config.Transfer, error) {
-	cur, err := s.transferForBase(userGroups)
+//	实际门槛 = 严(当前档, 今天那一档)
+//
+// 于是
+//   - 当天还没转过账的人换档 ⇒ DayOutGroup 为空 ⇒ 直接按新档、完全生效;
+//   - 当天已经转过账的人换档 ⇒ 今天两档取严,明天自然日一到完全按新档。
+//
+// 收紧方向永远即时:掉进更严的一档,当场就按更严的算。
+//
+// 跨日由 rollDay 负责:bucket 一变,DayOutGroup 与三个计数一起清零。
+func (s opSettings) transferForSenderDay(userGroup string, st *UserState, bucket int32) (config.Transfer, error) {
+	cur, err := s.transferFor(userGroup)
 	if err != nil {
 		return config.Transfer{}, err
 	}
-	if st == nil || st.DayBucket != bucket || st.DayOutGroup == "" {
+	if st == nil || st.DayBucket != bucket || st.DayOutGroup == "" ||
+		normalizeGroupName(st.DayOutGroup) == normalizeGroupName(userGroup) {
 		return cur, nil
-	}
-	for _, g := range userGroups {
-		if normalizeGroupName(st.DayOutGroup) == normalizeGroupName(g) {
-			return cur, nil
-		}
 	}
 	day, err := s.transferFor(st.DayOutGroup)
 	if err != nil {
-		// 今天那一档本身配坏了:按当前档走,不把一次历史错配变成这个人今天
-		// 再也转不了账。放宽方向由 transferFor 自己的 fail-closed 兜住。
-		return cur, nil
+		// 今天那一档本身配坏了 —— 必须**失败关闭**,不能按当前档放行。
+		//
+		// 这里曾经是 `return cur, nil`,附注写着"放宽方向由 transferFor 自己的
+		// fail-closed 兜住"。那句话只覆盖**当前档**,覆盖不了今天那一档,而当日
+		// 取严存在的唯一理由正是后者:「今天在严档下转过账 → 换进松档 → 同一秒
+		// 按松档接着转」这条路当场就通了。
+		//
+		// 触发不需要有人去动那一档:管理端保存全局门槛时**不重新校验任何分档**
+		// (adminPutTransferConfig 只对全局跑 ValidateTransfer,而 min_quota 就在
+		// 可编辑键里),于是一次普通的「把全站最低划转金额调高」就会把日额度
+		// 最小的那些紧档就地打成非法 —— 正好是当日取严要防的那一侧。
+		//
+		// 实测:用户在 lo 档(日额度 100 万)转满 100 万被拒;管理端 PUT
+		// /transfer/config 把 min_quota 调高(HTTP 200,响应里对失效的分档零提示)
+		// 之后,同一个人换到 hi 档立刻转走 4000 万 —— 日额度被放大 80 倍,
+		// 而 day_out_group 仍然写着 lo。
+		//
+		// 失败关闭的代价是这个人今天转不了账,而他会立刻看到一个明确的 503;
+		// 放行的代价是一次静默的额度放大,没有任何人会看到。方向只能这么选。
+		return config.Transfer{}, err
 	}
 	return strictestTransfer(cur, day), nil
 }
 
-// transferForBase 把 baseUserGroups 给出的多个基准分组逐项取严成一份门槛。
+// mergeTier 把一档叠到全局门槛上,同时给出逐键的生效来源。
 //
-// 清单里通常只有一个(users.group 本身),取严退化成 transferFor,行为一字不变。
-// 第二个只在「用户此刻坐的分组是某张已到期套餐的显式 downgrade_group 落点」时
-// 出现 —— 那时他既在落点那一档、也仍然要受买套餐之前那一档约束,两档取严。
+// 判定端(transferFor)与管理端列表(buildGroupLimitRow)**必须共用它**:
+// 两份合并逻辑漂移的表现是「管理端显示这一档冻结期已经是 0、判定时还按全局的
+// 24 小时拒」,而运营在界面上看不到任何异常 —— 上一轮 tightenOnlyKeys 只写进了
+// transferFor,管理端列表就正是这个样子。
 //
-// 任何一档解析失败都整体失败关闭:与 transferFor 同一条口径,宁可让这一档人的
-// 划转返回 503,也不能拿一份谁都没批准过的组合去放行资金操作。
-func (s opSettings) transferForBase(userGroups []string) (config.Transfer, error) {
-	if len(userGroups) == 0 {
-		return s.transferFor("")
-	}
-	out, err := s.transferFor(userGroups[0])
-	if err != nil {
-		return config.Transfer{}, err
-	}
-	for _, g := range userGroups[1:] {
-		next, err := s.transferFor(g)
-		if err != nil {
-			return config.Transfer{}, err
+// sources[key] 说的是**这个生效值从哪来**,不是"运营填没填":一档想把
+// new_account_freeze_hours 放宽、被 tightenOnlyKeys 顶回全局时,生效值确实来自
+// 全局,来源就得写 global,否则界面等于替运营撒谎。
+func mergeTier(global config.Transfer, row GroupLimit) (config.Transfer, map[string]string) {
+	out := global
+	sources := make(map[string]string, len(tierableKeys))
+	for _, key := range tierableKeys {
+		sources[key] = tierSourceGlobal
+		v, has := row.override(key)
+		if !has {
+			continue
 		}
-		out = strictestTransfer(out, next)
+		if tightenOnlyKeys[key] {
+			// 反滥用闸门只许分档**收紧**,不许放宽。
+			//
+			// new_account_freeze_hours 的判据分成了两半:年龄取自 users.created_at
+			// (攻击者改不了),档位取自 users.group(用户自己花钱就能改)。于是一个
+			// 注册 9 秒的号只要进到一个该项更松的分组,就把一道 30 天的反套现闸门
+			// 抹掉了,而这道门存在的唯一理由正是「批量注册的小号是零成本套现的入口」
+			// (见 loadParties)。这一条与「按哪一档算」无关,它约束的是**一档能配成
+			// 什么**,因此不随基准组剥离一起拆。
+			//
+			// 其余六项是额度型门槛 —— 「买高档得更宽的额度」正是这个功能要卖的东西,
+			// 不在此列。
+			if g, _ := transferSettingValue(global, key); v < g {
+				continue
+			}
+		}
+		assignTransferSetting(&out, key, v)
+		sources[key] = tierSourceGroup
 	}
-	return out, nil
+	return out, sources
+}
+
+// tierOverridesInBounds 复查一档**落库之后**的覆盖值是否还在允许区间内。
+//
+// 写入侧已经按 settingBounds 挡过一次,这里再挡一次是因为 qy_transfer_group_limits
+// 是可以被人手工 UPDATE 的,而越界值里最危险的那一档是**负数**:
+// risk.go / validate.go 的守卫一律写成 `cfg.DailyMaxCount > 0`,一个 -1 会让
+// 那道闸门直接不成立 —— 越界的方向是**放宽**,不是拒绝。
+func tierOverridesInBounds(row GroupLimit) error {
+	for _, key := range tierableKeys {
+		v, has := row.override(key)
+		if !has {
+			continue
+		}
+		b := settingBounds[key]
+		if v < b.Lo || v > b.Hi {
+			return fmt.Errorf("%s 取值 %d 超出允许区间 [%d, %d]", key, v, b.Lo, b.Hi)
+		}
+	}
+	return nil
 }
 
 // transferFor 返回某个用户分组**实际生效**的那份门槛,是资金路径唯一该用的入口。
@@ -327,34 +395,17 @@ func (s opSettings) transferForBase(userGroups []string) (config.Transfer, error
 // 而一档配坏了只停这一档 —— 让一个分组的错配把全站划转掐掉,是运营最不该
 // 承担的连带风险。
 func (s opSettings) transferFor(userGroup string) (config.Transfer, error) {
-	out := s.Transfer
 	row, ok := s.Tiers[normalizeGroupName(userGroup)]
 	if !ok {
-		return out, nil
+		// 「这一档没配」= 走全局兜底。这是项目方要的那条简单规则里的另一半,
+		// 也是绝大多数用户走的那一支。
+		return s.Transfer, nil
 	}
-	for _, key := range tierableKeys {
-		v, has := row.override(key)
-		if !has {
-			continue
-		}
-		if tightenOnlyKeys[key] {
-			// 反滥用闸门只许分档**收紧**,不许放宽。
-			//
-			// new_account_freeze_hours 的判据分成了两半:年龄取自 users.created_at
-			// (攻击者改不了),档位取自 users.group(攻击者可以花 0.01 美元买一个
-			// 升组套餐改掉)。于是一个注册 9 秒的号买一次套餐就把一道 30 天的
-			// 反套现闸门抹掉了,而这道门存在的唯一理由正是「批量注册的小号是
-			// 零成本套现的入口」(见 loadParties)。
-			//
-			// 其余六项是额度型门槛 —— 「买高档得更宽的额度」正是这个功能要卖的
-			// 东西,不在此列。
-			global, _ := transferSettingValue(s.Transfer, key)
-			if v < global {
-				v = global
-			}
-		}
-		assignTransferSetting(&out, key, v)
+	if err := tierOverridesInBounds(row); err != nil {
+		warnThrottled("用户分组 " + row.UserGroup + " 的划转门槛分档有越界取值,已暂停该分组的划转: " + err.Error())
+		return config.Transfer{}, errGroupLimitInvalid
 	}
+	out, _ := mergeTier(s.Transfer, row)
 	if err := config.ValidateTransfer(&out); err != nil {
 		warnThrottled("用户分组 " + row.UserGroup + " 的划转门槛分档与当前全局门槛组合非法,已暂停该分组的划转: " + err.Error())
 		return config.Transfer{}, errGroupLimitInvalid

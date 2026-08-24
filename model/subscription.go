@@ -851,14 +851,22 @@ func userGroupBeforeUpgradeChainTx(tx *gorm.DB, userId int, fallback string) str
 
 // standingUpgradeChainRootTx 返回「还站着的那条升组链」的链根分组,没有链时返回空串。
 //
-// 它是 userGroupBeforeUpgradeChainTx 的取值内核,单独抽出来是因为**读失败的方向
-// 在两个调用点上必须相反**:
+// # 为什么它把 error 交出去,而唯一的调用方却把 error 吞掉
 //
-//   - 到期回退(userGroupBeforeUpgradeChainTx)读不到链根时回落到"买之前那一刻",
-//     那是一个尽力而为的写入,读失败最多让这一行记的回退目标不理想;
-//   - 划转门槛(QyBaseUserGroup)读不到链根时**必须失败关闭** —— 回落到
-//     users.group 拿到的正是套餐给的那个付费组,而那恰恰是门槛要剥离掉的东西。
-//     两处共用一个吞掉 error 的函数,划转那一侧就会在主库抖动时静默按付费档放行。
+// 它曾经有两个调用方,读失败的方向刚好相反,所以取值内核必须原样返回 error 让
+// 各自决定。第二个调用方(model.QyBaseUserGroup → 划转门槛的"剥离套餐所给分组")
+// 已经随本轮划转门槛简化一起删除:门槛现在只认此刻的 users.group,查不到就走
+// 兜底,不再需要"链根"这个概念。所以今天只剩到期回退这一个读者。
+//
+// 保留 error 而不是就地吞掉,是因为这两件事本来就该分开:
+//
+//   - 取值(本函数)只负责"读到了什么 / 为什么没读到";
+//   - 处置(userGroupBeforeUpgradeChainTx)决定读不到时回落到"买之前那一刻" ——
+//     那是一个尽力而为的写入,读失败最多让这一行记的回退目标不理想。
+//
+// 【注意】不要照着上面那段历史给这里再加一个"失败关闭"的调用方:划转门槛已经
+// 明确改成"按当前分组查配置、查不到走兜底"(见 qianye/modules/transfer/grouplimit.go),
+// 与这条链没有关系。
 //
 // 空串有两种来源,对调用方等价("没有正在站着的升组链"):没有命中任何行;
 // 命中的那一行 prev_user_group 只有空白字符(WHERE 拦得住空串,拦不住一个空格)。

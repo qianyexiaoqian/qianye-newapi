@@ -97,6 +97,28 @@ func registerAdminRoutes(g *gin.RouterGroup) {
 	// 版本端点刻意与 /health 分开:/health 走 requireCore,扩展库不可用时 503,
 	// 而那正是最需要先确认"跑的是哪个版本"的时刻。理由详见 AdminVersion 的注释。
 	g.GET("/version", qyctl.AdminVersion)
+	// 二开的检查更新。与 /version 分成两条,因为它们是**两件性质不同的事**:
+	// /version 读的是编译进二进制的常量,必然成功、零副作用、role=10 可读;
+	// 这一条会让服务端向 github.com 开一次出站连接,那是站点行为。
+	//
+	// 因此这一条:提到超管(RootActionUpdateCheck)、挂关键操作限流。
+	// 闸门排在限流之前:被拒的越权尝试不该消耗限流桶,否则一个 role=10
+	// 反复点就能把超管自己挡在门外(这条口径现由
+	// qianye/root_action_guard_test.go 的 TestRootGateRunsBeforeCriticalRateLimit
+	// 对全部 15 条这类路由统一钉住)。
+	//
+	// 这道限流挡的是**单个客户端的瞬时突发**,不是"把 GitHub 额度点光" ——
+	// 它的桶键是 mark + 客户端 IP + 路由,而那份额度按**服务端出站 IP** 计,
+	// 两者不是同一个量:单 IP 的稳态预算恰好 20 次/1200 秒 = 60 次/小时
+	// (100% 吃满、零余量),不同来源的管理员各占一桶、线性叠加。
+	// 真正对得上那份额度的闸在 handler 里(updateCheckBudget,进程级 30 次/小时)。
+	//
+	// 只查二开,不查上游内核:上游那颗按钮是上游自己的代码(浏览器直连
+	// Calcium-Ion/new-api),本仓不碰。
+	g.GET("/version/check-update",
+		middleware.RootActionGate(middleware.RootActionUpdateCheck),
+		middleware.CriticalRateLimit(),
+		qyctl.AdminCheckUpdate)
 	g.GET("/fund-orders", qyctl.AdminListFundOrders)
 	g.POST("/fund-orders/:order_no/reprobe", qyctl.AdminReprobeFundOrder)
 	// 人工裁决会直接改写资金状态,挂关键操作限流。
@@ -114,6 +136,15 @@ func registerAdminRoutes(g *gin.RouterGroup) {
 	// 没有对应的写端点是刻意的:白名单是代码里的显式清单,做成可配等于把
 	// 「新增接口默认对受限账号开放」这个失败模式请回来。
 	g.GET("/restricted-accounts", qyctl.AdminRestrictedAccountsOverview)
+	// 客户端 IP 识别诊断。与 /restricted-accounts 同一档:只读进程内的取值策略
+	// 与本次请求自身,既不碰扩展库也不碰主库,因此不走 requireCore ——
+	// 而「客户端 IP 被识别成了什么」恰恰是扩展库挂了时也必须答得出的问题
+	// (令牌 allow_ips 与限流不依赖扩展库,它们照样在按这个值放行/拒绝)。
+	//
+	// 只读、没有写端点:受信网段是环境变量,改它必须重启进程。做成可热改的
+	// 接口等于给「运行中的进程被远程放宽信任面」开一扇门,而这个信任面正是
+	// 令牌 IP 白名单的地基。
+	g.GET("/client-ip", qyctl.AdminClientIP)
 	// 负余额(透支)账号总览。与 /restricted-accounts 同一档:只读主库 users,
 	// 不碰扩展库,因此不走 requireCore。
 	//

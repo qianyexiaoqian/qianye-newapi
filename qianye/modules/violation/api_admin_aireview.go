@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/db"
@@ -42,13 +43,27 @@ type aiChannelUpsertReq struct {
 	//   ""    → 请求里显式传了空串 → 清除密钥
 	//   "sk-" → 换成新密钥
 	// 值类型会把前两者折成同一个空串,于是每次编辑都会静默清掉密钥。
-	ApiKey       *string `json:"api_key"`
-	TimeoutMs    int     `json:"timeout_ms"`
-	Weight       int     `json:"weight"`
-	Enabled      bool    `json:"enabled"`
-	PriceInPerM  string  `json:"price_in_per_m"`
-	PriceOutPerM string  `json:"price_out_per_m"`
-	Remark       string  `json:"remark"`
+	ApiKey *string `json:"api_key"`
+	// Protocol 空串 = json_prompt(提示词 + JSON),这是零值档也是出厂行为。
+	// 见 aireview_guard.go。
+	Protocol string `json:"protocol"`
+	// GuardControversial 只在 protocol = qwen3guard 时有意义,空串 = safe。
+	// 取值 safe / sensitive / unsafe,见 aireview_guard.go。
+	GuardControversial string `json:"guard_controversial"`
+	// GuardCategories 是启用的九类子集。**空数组 = 九类全启用**,不是"一个都不启用"
+	// —— 零值方向的完整理由写在 AIChannel.GuardCategories 上。
+	//
+	// 数组而不是逗号串:前端画的是九个复选框,让它自己拼一次 CSV 只会多一处
+	// 分隔符约定要两边对齐。落库时由 canonicalGuardCategoryCSV 归一。
+	GuardCategories []string `json:"guard_categories"`
+	// GuardElevate 是 sensitive 档下"命中即拦截"的敏感类别。空数组 = 参考实现的三类。
+	GuardElevate []string `json:"guard_elevate"`
+	TimeoutMs    int      `json:"timeout_ms"`
+	Weight       int      `json:"weight"`
+	Enabled      bool     `json:"enabled"`
+	PriceInPerM  string   `json:"price_in_per_m"`
+	PriceOutPerM string   `json:"price_out_per_m"`
+	Remark       string   `json:"remark"`
 }
 
 func (r *aiChannelUpsertReq) apply(dst *AIChannel) error {
@@ -63,6 +78,10 @@ func (r *aiChannelUpsertReq) apply(dst *AIChannel) error {
 	dst.Name = r.Name
 	dst.BaseUrl = r.BaseUrl
 	dst.Model = r.Model
+	dst.Protocol = r.Protocol
+	dst.GuardControversial = r.GuardControversial
+	dst.GuardCategories = strings.Join(r.GuardCategories, ",")
+	dst.GuardElevate = strings.Join(r.GuardElevate, ",")
 	dst.TimeoutMs = r.TimeoutMs
 	dst.Weight = r.Weight
 	dst.Enabled = r.Enabled
@@ -76,25 +95,55 @@ func (r *aiChannelUpsertReq) apply(dst *AIChannel) error {
 // 直接下发行结构体的话,今天加一列密文明天就会跟着出去,而 json:"-" 是很容易
 // 在下一次改动里被顺手删掉的一个 tag。这里逐字段列出来,加列不会自动泄漏。
 type aiChannelView struct {
-	Id           int64  `json:"id"`
-	Name         string `json:"name"`
-	BaseUrl      string `json:"base_url"`
-	Model        string `json:"model"`
-	HasKey       bool   `json:"has_key"`
-	KeyHint      string `json:"key_hint"`
-	TimeoutMs    int    `json:"timeout_ms"`
-	Weight       int    `json:"weight"`
-	Enabled      bool   `json:"enabled"`
-	PriceInPerM  string `json:"price_in_per_m"`
-	PriceOutPerM string `json:"price_out_per_m"`
-	Remark       string `json:"remark"`
-	UpdatedAt    int64  `json:"updated_at"`
+	Id      int64  `json:"id"`
+	Name    string `json:"name"`
+	BaseUrl string `json:"base_url"`
+	Model   string `json:"model"`
+	// Protocol 恒是归一后的取值(json_prompt / qwen3guard),**不下发空串**:
+	// 前端拿空串去填一个下拉框会得到"未选择",而库里的空串含义是明确的
+	// json_prompt。让界面显示"未选择"等于把一个确定的配置画成半配好的。
+	Protocol string `json:"protocol"`
+	// GuardControversial 在 json_prompt 渠道上恒为空串(写入侧已清空),
+	// 前端据此决定要不要画那一格。
+	GuardControversial string `json:"guard_controversial"`
+	// GuardCategories / GuardElevate 恒是数组(可能为空),**永不为 null**:
+	// 前端拿 null 去 .map 会白屏,而本仓已经为此栽过一次(nil_array_json_test.go)。
+	GuardCategories []string `json:"guard_categories"`
+	GuardElevate    []string `json:"guard_elevate"`
+	HasKey          bool     `json:"has_key"`
+	KeyHint         string   `json:"key_hint"`
+	TimeoutMs       int      `json:"timeout_ms"`
+	Weight          int      `json:"weight"`
+	Enabled         bool     `json:"enabled"`
+	PriceInPerM     string   `json:"price_in_per_m"`
+	PriceOutPerM    string   `json:"price_out_per_m"`
+	Remark          string   `json:"remark"`
+	UpdatedAt       int64    `json:"updated_at"`
+}
+
+// splitGuardCategoryCSV 把库里那一列读成接口要下发的数组。
+// 空串 → 空数组(不是 nil),理由见 aiChannelView.GuardCategories。
+func splitGuardCategoryCSV(csv string) []string {
+	out := make([]string, 0, len(guardAllCategories))
+	if strings.TrimSpace(csv) == "" {
+		return out
+	}
+	for _, part := range strings.Split(csv, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func toAIChannelView(ch AIChannel) aiChannelView {
 	return aiChannelView{
 		Id: ch.Id, Name: ch.Name, BaseUrl: ch.BaseUrl, Model: ch.Model,
-		HasKey: ch.HasKey(), KeyHint: ch.KeyHint,
+		Protocol:           normalizeAIProtocol(ch.Protocol),
+		GuardControversial: ch.GuardControversial,
+		GuardCategories:    splitGuardCategoryCSV(ch.GuardCategories),
+		GuardElevate:       splitGuardCategoryCSV(ch.GuardElevate),
+		HasKey:             ch.HasKey(), KeyHint: ch.KeyHint,
 		TimeoutMs: ch.TimeoutMs, Weight: ch.Weight, Enabled: ch.Enabled,
 		PriceInPerM: ch.PriceInPerM.String(), PriceOutPerM: ch.PriceOutPerM.String(),
 		Remark: ch.Remark, UpdatedAt: ch.UpdatedAt,
@@ -119,7 +168,39 @@ func adminListAIChannels(c *gin.Context) {
 		// key_configured 让界面能在密钥配置缺失时给出**能照着做的**提示,
 		// 而不是等运营点了保存才收到一个 400。
 		"key_configured": aiKeyConfigured(),
+		// guard_catalog 是护栏模型那 9 个固定类别与本站违规类型的对照表。
+		//
+		// 它必须由后端下发:前端硬编码一份的话,那一份与 guardCategoryKeys
+		// 是两份必须手工保持一致的事实,而漏改的表现是界面上写着会落到 A、
+		// 实际落到 B。名字与渠道上那一格(guard_categories = 启用子集)分开,
+		// 两者是不同层级的东西,同名会让人以为改一个能影响另一个。
+		"guard_catalog": aiGuardCategoryView(Snapshot().aiVocab),
+		// guard_elevate_default 是 sensitive 档留空时真正生效的那三类。
+		// 不下发它的话,界面上"留空 = 默认"是一句没人验证得了的话。
+		"guard_elevate_default": guardDefaultElevated,
 	})
+}
+
+// aiGuardCategoryView 把护栏模型的固定类别表 join 上本站的类型闭集。
+//
+// `present` 是这张表的全部价值:护栏模型的类别改不动(训练时钉死),所以
+// "本站有没有对应类型"决定了这一类的判定会落到一个真类型上还是落进兜底。
+// 只给映射不给这一位的话,界面会把一个必然落兜底的类别画得和落对了的一样,
+// 而两者的差别正是运营要不要去新建一个类型。
+func aiGuardCategoryView(v aiVocabulary) []gin.H {
+	rows := guardCategoryMappings(v)
+	out := make([]gin.H, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, gin.H{
+			// id 是复选框的 value(九类的 snake_case id),label 是官方展示名。
+			"id":      m.Id,
+			"label":   m.Label,
+			"guard":   m.Label,
+			"key":     m.Key,
+			"present": m.Present,
+		})
+	}
+	return out
 }
 
 func adminCreateAIChannel(c *gin.Context) {
@@ -191,18 +272,50 @@ func adminUpdateAIChannel(c *gin.Context) {
 	row.UpdatedBy = c.GetInt("id")
 
 	// ApiKey 为 nil = 表单没碰这一格 = 保持原密钥。见 aiChannelUpsertReq 的说明。
-	if req.ApiKey != nil {
+	//
+	// 但**改了地址就必须重填密钥**:密钥是发给那一个上游的凭据,换个地址之后
+	// 它对新地址既没有意义,也不该跟着过去。
+	//
+	// 这不是洁癖,是一条已经被实测走通的越权路径:密钥对 role=10 是刻意
+	// write-only 的(列表/详情/PUT 回显只给 key_hint,全站没有任何读回明文的口),
+	// 而"改地址 + 点连通性测试"这两步都是 role=10 权限 —— 把一个已有渠道的
+	// base_url 指到自己的机器上再点一次测试,出站请求就会带着
+	// `Authorization: Bearer <原密钥>` 打过来,一把本来读不到的密钥被完整取走。
+	// 实测:PUT 只改 base_url、不带 api_key 字段 → 200 且 key_hint 不变(密钥保留),
+	// 再 POST .../test → 攻击者的监听端逐字收到原密钥。
+	//
+	// 对照口径:上游侧把"改渠道"判为权限位、把"读渠道 key"判为
+	// RootAuth + SecureVerificationRequired(router/channel-router.go),
+	// qy 这一侧对同一类资产原先是 role=10 且无二次校验。
+	//
+	// 清空而不是拒绝保存:拒绝会让"换个地址继续用同一把 key"这件合法的事做不了,
+	// 而清空之后运营在同一个表单里重填一次即可,且他必须**知道**那把 key 是什么
+	// —— 那正是这条闸门要求的东西。
+	switch {
+	case req.ApiKey != nil:
 		if err := applyAIChannelKey(gdb, &row, *req.ApiKey); err != nil {
 			writeAIReviewAudit(c, "ai_channel_update", qymodel.ResultFail, &before, &row, err)
 			badRequest(c, err.Error())
 			return
 		}
+	case before.HasKey() && !sameAIChannelEndpoint(before.BaseUrl, row.BaseUrl):
+		if err := applyAIChannelKey(gdb, &row, ""); err != nil {
+			writeAIReviewAudit(c, "ai_channel_update", qymodel.ResultFail, &before, &row, err)
+			badRequest(c, err.Error())
+			return
+		}
+		common.SysLog(fmt.Sprintf(
+			"qianye/violation: AI 审核渠道 %d 的地址由 %q 改为 %q,已清空原密钥 —— "+
+				"密钥是发给原地址的凭据,不跟随地址迁移(操作人 %d)",
+			row.Id, before.BaseUrl, row.BaseUrl, c.GetInt("id")))
 	}
 	// Select 显式列出要写的列:Save/Updates 全字段写回会把上面刚算好的
 	// KeyCipher/KeyNonce 再覆盖一次(applyAIChannelKey 已经落过库了),
 	// 而 nil 密钥 + 全字段写回 = 静默清空密钥。
 	if err := gdb.Model(&AIChannel{}).Where("id = ?", row.Id).
-		Select("name", "base_url", "model", "timeout_ms", "weight", "enabled",
+		Select("name", "base_url", "model", "protocol", "guard_controversial",
+			"guard_categories", "guard_elevate",
+			"timeout_ms", "weight", "enabled",
 			"price_in_per_m", "price_out_per_m", "remark", "updated_at", "updated_by").
 		Updates(&row).Error; err != nil {
 		writeAIReviewAudit(c, "ai_channel_update", qymodel.ResultFail, &before, &row, err)
@@ -327,23 +440,26 @@ func adminTestAIChannel(c *gin.Context) {
 		respond(c, gin.H{"outcome": OutcomeNoChannel, "message": "渠道密钥无法解密:" + err.Error()})
 		return
 	}
+	protocol := normalizeAIProtocol(row.Protocol)
 	rt := &aiChannelRT{
 		Id: row.Id, Name: row.Name, URL: url, Model: row.Model, APIKey: key,
+		Protocol:  protocol,
+		Guard:     guardPolicyFromChannel(row),
 		TimeoutMs: row.TimeoutMs, Weight: 1,
 		PriceInPerM: row.PriceInPerM, PriceOutPerM: row.PriceOutPerM,
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 15000*1000000)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), aiTestHardCeilingMs*time.Millisecond)
 	defer cancel()
-	timeout := row.TimeoutMs
-	if timeout <= 0 {
-		timeout = maxPreTimeoutMs
-	}
+	timeout := aiTestTimeoutMs(protocol, row.TimeoutMs)
 	// 连通性测试必须用**线上同一份**提示词与类型清单:用一份精简版试通了、
 	// 线上那份因为类型清单太长被上游截断,是查不出来的。
+	// (护栏协议下这一份根本不会被发出去,见 aiRequestPayload —— 照样渲染,
+	// 是为了让这一段代码只有一条路径。)
 	vocab := Snapshot().aiVocab
 	out := callAIChannel(ctx, rt, renderAIPrompt(aiStoredPrompt(), vocab),
-		"今天天气不错,帮我写一封请假邮件。", timeout, vocab)
-	respond(c, gin.H{
+		aiTestProbeText, timeout, vocab, true)
+	body := gin.H{
+		"protocol": protocol,
 		"outcome":  out.Outcome,
 		"violated": out.Violated,
 		"category": out.Category,
@@ -351,11 +467,68 @@ func adminTestAIChannel(c *gin.Context) {
 		// 那说明提示词与类型表脱节,而它在正常流量里只会表现为"计数落在未分类"。
 		"raw_category": out.RawCategory,
 		"confidence":   out.Confidence.String(),
+		"reason":       out.Reason,
 		"latency_ms":   out.LatencyMs,
+		"timeout_ms":   timeout,
 		"tokens":       gin.H{"prompt": out.PromptTokens, "completion": out.CompletionTokens, "total": out.TotalTokens},
 		"cost_usd":     out.CostUsd.String(),
 		"priced":       out.Priced,
-	})
+		// raw_response 是上游**原样**回的那一段(截断到 aiRawSampleRunes)。
+		//
+		// 没有它,协议对不上时管理端只能看到一个 bad_json,而 bad_json 的三种
+		// 成因(地址指到了别的服务 / 协议选错了 / 这个部署的输出格式与官方
+		// 示例不同)在界面上长得完全一样。护栏模型这条路尤其需要:官方没有
+		// 给出 OpenAI 兼容端点上的字段级规格,真机对不上时唯一的办法就是
+		// 照着这一段调 aireview_guard.go 里的正则。
+		//
+		// 隐私上是干净的:这一次送审的是下面那句写死的良性文本,响应里不可能
+		// 有任何用户内容。热路径永远不填这一格(captureRaw=false)。
+		"raw_response": out.rawSample,
+	}
+	if out.Outcome == OutcomeTimeout && protocol == AIProtocolQwen3Guard {
+		// 本地部署的护栏模型**首次调用要先把权重加载进显存**,秒级甚至十几秒
+		// 都正常,而第二次通常在一百毫秒内。不说这一句的话,第一次试跑的超时
+		// 看起来与"地址填错了"完全一样,而正确的下一步是再点一次。
+		body["hint"] = "cold_start"
+	}
+	respond(c, body)
+}
+
+const (
+	// aiTestProbeText 是试跑用的那段良性文本。写死而不是让管理端传:
+	// 传进来的那一段会被原样发往第三方,而这个按钮是管理端可达的 —— 那就
+	// 成了一条"拿本站当代理往外发任意文本"的通道。
+	aiTestProbeText = "今天天气不错,帮我写一封请假邮件。"
+
+	// aiTestHardCeilingMs 是试跑这一次请求的硬上界。它同时兜住"渠道超时填了
+	// 30000 + 冷启动"这种组合不会把一个管理端请求挂满半分钟。
+	aiTestHardCeilingMs = 40000
+
+	// aiTestGuardColdStartMs 是护栏渠道试跑时的**下限**预算。
+	//
+	// 本地 Ollama 首次调用要加载模型,0.6B 在冷盘上十几秒是常态。而护栏渠道
+	// 的正常配置恰恰是一个很小的 timeout_ms(热态 100ms 就够),于是照搬
+	// 生产预算去试跑,第一次必然超时 —— 一个"配得完全正确的渠道,按一下
+	// 测试永远是红的"。
+	//
+	// 只放宽**试跑**,生产预算一个字节不动:两者回答的问题不同。试跑问的是
+	// "地址、模型名、协议对不对",生产问的是"这一次审核值不值得等"。
+	aiTestGuardColdStartMs = 30000
+)
+
+// aiTestTimeoutMs 算这一次试跑的预算。
+//
+// json_prompt 沿用原口径(渠道超时,没填则用转发前审核的硬上限):云端通用
+// 模型没有冷启动这回事,放宽只会让一个真的连不上的地址多挂几秒。
+func aiTestTimeoutMs(protocol string, channelTimeoutMs int) int {
+	timeout := channelTimeoutMs
+	if timeout <= 0 {
+		timeout = maxPreTimeoutMs
+	}
+	if protocol == AIProtocolQwen3Guard && timeout < aiTestGuardColdStartMs {
+		timeout = aiTestGuardColdStartMs
+	}
+	return timeout
 }
 
 // ───────────────────────────── 设置 ─────────────────────────────
@@ -699,6 +872,13 @@ func aiChannelAuditSnap(ch *AIChannel) map[string]any {
 	}
 	return map[string]any{
 		"id": ch.Id, "name": ch.Name, "base_url": ch.BaseUrl, "model": ch.Model,
+		// 协议必须进审计:它决定送出去的请求体长什么样(发不发提示词、
+		// 用户内容包不包 <content> 标签),也就是"这次改动改变了发往第三方的
+		// 内容形状"。只记 base_url 与 model 答不出这一点。
+		"protocol": normalizeAIProtocol(ch.Protocol), "guard_controversial": ch.GuardControversial,
+		// 启用类别与升级类别都决定"同一段内容会不会被判违规",所以两者的
+		// 变更必须能事后追到人 —— 与协议本身同一条理由。
+		"guard_categories": ch.GuardCategories, "guard_elevate": ch.GuardElevate,
 		"enabled": ch.Enabled, "weight": ch.Weight, "timeout_ms": ch.TimeoutMs,
 		// 密钥只留"有没有"与掩码。密文、nonce、明文一律不进审计。
 		"has_key": ch.HasKey(), "key_hint": ch.KeyHint,
@@ -754,4 +934,16 @@ func aiSettingAuditSnap(s AISetting) map[string]any {
 		"prompt_unknown_categories": report.Unknown,
 		"prompt_missing_categories": report.Missing,
 	}
+}
+
+// sameAIChannelEndpoint 判断两个 base_url 是不是同一个上游端点。
+//
+// 只做"去掉首尾空白与结尾斜杠 + 大小写不敏感"这点归一化,不做 URL 解析:
+// 判错的方向必须是"多清一次密钥"(运营重填一次)而不是"少清一次"
+// (密钥跟着地址走到攻击者的机器上)。任何更聪明的等价判断都会扩大后者。
+func sameAIChannelEndpoint(a, b string) bool {
+	norm := func(s string) string {
+		return strings.ToLower(strings.TrimRight(strings.TrimSpace(s), "/"))
+	}
+	return norm(a) == norm(b)
 }

@@ -29,12 +29,18 @@ import (
 // pendingInviters 的两路查询、settleUser 的事务、writeAccrual 的
 // ON CONFLICT 语义各自真跑一遍。
 //
-// 生产环境的扩展库固定是 MySQL,这里用 sqlite。因此本文件里的断言
-// 一律只依赖跨库通用语义(比较、SUM、DISTINCT、ORDER BY/LIMIT、
-// ON CONFLICT DO NOTHING 的 RowsAffected=0/1),不碰任何 MySQL 专有语法;
-// 唯一有差异的一处(ON DUPLICATE KEY UPDATE 命中时 MySQL 返回 2、
-// sqlite 返回 1)在 writeAccrual 的 Accumulate 分支上,本文件的测试刻意
-// 不覆盖那条分支,以免把 MySQL 的行为写死成 sqlite 的行为。
+// 扩展库受支持的部署方言是 MySQL 与 PostgreSQL(见 qianye/db.DialectorFor),
+// 这里用 sqlite 当测试方言。因此本文件里的断言一律只依赖跨库通用语义
+// (比较、SUM、DISTINCT、ORDER BY/LIMIT、ON CONFLICT DO NOTHING 的
+// RowsAffected=0/1),不碰任何 MySQL 专有语法。
+//
+// 曾经有一处差异被"刻意不覆盖":writeAccrual 的 Accumulate 分支用
+// ON CONFLICT DO UPDATE,而命中时 MySQL 的 RowsAffected 是 2、PostgreSQL 是
+// **1**(与新插入同值)、sqlite 是 1,于是 `== 1` 这条"是不是新建"的判据在
+// PG 上给出相反答案。不覆盖并不能让问题消失 —— 它只是让下一个开始消费那个
+// 返回值的人得不到任何提示。该分支现已改写成 DoNothing + 冲突时补一条
+// UPDATE(三家统一),并由 accrual_upsert_crossdb_test.go 在真 MySQL /
+// 真 PostgreSQL 上逐格覆盖。
 
 // qyDBHandle 指向 qianye/db 包里的连接句柄。
 //

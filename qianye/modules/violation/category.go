@@ -678,8 +678,13 @@ func categoryIdForBuiltin(gdb *gorm.DB, catKey string) int64 {
 // 这里改成两条可移植语句:
 //   - 先做一次**条件 UPDATE** 把过期窗口清零(WHERE window_start < 起点,原子);
 //   - 再做一次 GORM OnConflict 累加(MySQL 译成 ON DUPLICATE KEY UPDATE,
-//     SQLite/PostgreSQL 译成 ON CONFLICT DO UPDATE,赋值表达式里的裸列名
-//     在三种数据库上都指向"已存在的那一行")。
+//     SQLite/PostgreSQL 译成 ON CONFLICT DO UPDATE)。赋值表达式里的列引用
+//     **必须带表名限定**:PostgreSQL 上目标表与 excluded 伪表同名,裸列名
+//     会在**计划阶段**就报 `column reference "hit_count" is ambiguous`
+//     (SQLSTATE 42702),连第一次根本没有冲突的 INSERT 都失败,于是 PG 部署上
+//     这张计数表一行都写不进去、单类型封号线永久失效,而调用方只吞一条日志。
+//     MySQL 与 SQLite 接受裸列名,所以单测照绿 —— 这一条只能靠真 PG 抓。
+//     判据与 qianye/db.UpsertHead 的文档口径一致。
 //
 // 两条之间的竞态是良性的:另一个节点在中间插入或同样重置窗口,第二条语句照样
 // 把两次权重都加上去,结果与串行执行一致。用两条语句换来的是这条路径能在测试里
@@ -716,8 +721,8 @@ func bumpCategoryCounter(ctx context.Context, gdb *gorm.DB, userId int, cat Cate
 		if err := tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "user_id"}, {Name: "category_id"}},
 			DoUpdates: clause.Assignments(map[string]any{
-				"hit_count":   gorm.Expr("hit_count + ?", weight),
-				"total_count": gorm.Expr("total_count + ?", weight),
+				"hit_count":   gorm.Expr("qy_violation_cat_counter.hit_count + ?", weight),
+				"total_count": gorm.Expr("qy_violation_cat_counter.total_count + ?", weight),
 				"last_hit_at": now,
 				"updated_at":  now,
 			}),

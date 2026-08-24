@@ -299,19 +299,16 @@ func buildUserCommissionRows(ctx context.Context, c *gin.Context) ([]userCommiss
 	// 超长数字时 strconv.Atoi 会给出一个 int64 量级的 id 送进 WHERE,
 	// 而 httpq.Int 直接判定"这不是一个 id",回落到按名字搜。
 	//
-	// LIKE 用前缀而不是两侧通配:`%kw%` 走不了 users.username 的索引,而这张表
-	// 的搜索是运营边打字边查的。`_` 与 `%` 是 LIKE 的通配符,必须转义;转义字符
-	// 显式声明成 `!` 而不是用默认的反斜杠 —— 反斜杠在 MySQL 的
-	// NO_BACKSLASH_ESCAPES 与 PostgreSQL 的 standard_conforming_strings 下行为
-	// 不同,只有显式 ESCAPE 才在三种数据库上一致。
+	// 检索走 httpq.SearchLike:前缀匹配、转义 % 与 _、并且**折叠大小写**。
+	// 折叠是必须的 —— PostgreSQL 的 LIKE 大小写敏感,MySQL(ci 排序规则)与
+	// SQLite 不敏感,不折叠的话同一个关键词在 PG 部署上搜不到人而两边都返回 200,
+	// 而这一页上有余额调整、佣金冲正、绑定/解绑上下线的按钮。理由全文见该函数。
 	if kw := strings.TrimSpace(c.Query("keyword")); kw != "" {
-		pattern := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(kw) + "%"
+		expr, pattern := httpq.SearchLike(kw, httpq.MatchPrefix, "username", "email")
 		if id := httpq.Int(c, "keyword", 0); id > 0 {
-			q = q.Where("id = ? OR username LIKE ? ESCAPE '!' OR email LIKE ? ESCAPE '!'",
-				id, pattern, pattern)
+			q = q.Where("id = ? OR "+expr, id, pattern, pattern)
 		} else {
-			q = q.Where("username LIKE ? ESCAPE '!' OR email LIKE ? ESCAPE '!'",
-				pattern, pattern)
+			q = q.Where(expr, pattern, pattern)
 		}
 	}
 

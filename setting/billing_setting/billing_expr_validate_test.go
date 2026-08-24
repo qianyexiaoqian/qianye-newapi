@@ -290,3 +290,68 @@ func TestBoundaryValuesIgnoreDigitsInsideIdentifiers(t *testing.T) {
 	assert.Equal(t, []float64{2, 3, 6, 20000}, got,
 		"cc1h 里的 1 不是阈值;而 6 / 2 / 3 / 20000 是真的字面量")
 }
+
+// 烟测的探针取值集合曾经全是 true/false/"on"/0/1 加数字阈值,一个都命不中
+// "客户端某个字段等于/包含某个词" 这一类分档。于是一条按 `user` 字段打折的
+// 表达式能干净通过校验落库(实测 PUT /api/option/ 返回 200),线上对命中的
+// 请求算出负数,再被结算侧的非负地板静默夹成 0:
+//
+//	实测同一个模型,请求体里 "user":"alice" → 扣 1508;把 user 改成
+//	"vip-anyone" → 扣 **0**,HTTP 200,上游照常被调用,真实成本照付,
+//	而两条消费日志的 other 字段逐字节相同(不记 clamp、不记喂进表达式的
+//	变量值),唯一痕迹是后端 stderr 里一行 SysError。
+//
+// 而 OpenAI 协议里的 user 字段完全由调用方填写 —— 谁都能自称 vip。
+//
+// 这不是 has() 专属:== 与 has(param("model"),"gpt") 是同一类形状,所以下面
+// 几种写法必须**同时**被拦下。反方向同样重要:探针加宽之后不许把合法表达式
+// 一起拒掉,所以 mustAccept 那一组必须照旧通过。
+func TestSmokeTestCatchesNegativesGatedOnRequestStrings(t *testing.T) {
+	mustReject := []struct{ name, expr string }{
+		{
+			name: "has(param) 命中就减一笔钱",
+			expr: `tier("a", p * 3 + c * 15 - (has(param("user"), "vip") ? 20000 : 0))`,
+		},
+		{
+			name: "param 相等比较",
+			expr: `tier("a", p * 3 + c * 15 - (param("user") == "vip" ? 20000 : 0))`,
+		},
+		{
+			name: "has(header) 命中就减一笔钱",
+			expr: `tier("a", p * 3 + c * 15 - (has(header("x-my-tag"), "vip") ? 20000 : 0))`,
+		},
+		{
+			name: "按模型名子串打折",
+			expr: `tier("a", p * 3 + c * 15 - (has(param("model"), "gpt") ? 20000 : 0))`,
+		},
+		{
+			name: "对照:无条件负项(这一条以前就拦得住)",
+			expr: `tier("a", p * 3 - 20000)`,
+		},
+	}
+	for _, tc := range mustReject {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := smokeTestExpr(tc.expr); err == nil {
+				t.Fatalf("这条表达式会在线上算出负数并被静默夹成 0,烟测必须拦下它:%s", tc.expr)
+			}
+		})
+	}
+
+	mustAccept := []struct{ name, expr string }{
+		{
+			name: "命中就加一笔钱(加价是合法的)",
+			expr: `tier("a", p * 3 + c * 15 + (has(param("user"), "vip") ? 20000 : 0))`,
+		},
+		{
+			name: "折扣有下界,任何取值都非负",
+			expr: `tier("a", max(0.0, p * 3 - (has(param("user"), "vip") ? 20000 : 0)))`,
+		},
+	}
+	for _, tc := range mustAccept {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := smokeTestExpr(tc.expr); err != nil {
+				t.Fatalf("这条表达式任何取值下都非负,不该被拒:%s\n%v", tc.expr, err)
+			}
+		})
+	}
+}

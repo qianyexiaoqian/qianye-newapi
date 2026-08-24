@@ -60,11 +60,36 @@ func calcGross(baseQuota int64, rateUnits int) decimal.Decimal {
 //
 // 所以削减量必须作为**事实**落在行上(Accrual.CappedAmount),让
 //
-//	base_quota × rate_bps / 10000 == gross_amount + capped_amount
+//	base_quota × rate_bps / 10000 == gross_amount + capped_amount     (I3)
 //
 // 重新成为一条可以逐行验证的恒等式。同模块其他所有截断都留痕
 // (settle.go 的 int32 触顶写 Remark、topup_scan.go 的换算触顶打告警、
 // 日结的 Capped 写 Note),封顶此前是唯一一处静默截断。
+//
+// # I3 的适用范围:只有正额计佣行,不是全表
+//
+// 这一条**不是**无限定的逐行恒等式,它只在 hook.go 那两处经由 capGross 落库的
+// 行上成立,也就是 source_type ∈ {consume, topup, redemption}。另外两类来源
+// 按设计就不满足它,那不是缺陷:
+//
+//	manual(api_admin_adjust.go)—— 手工增减既没有下线也没有费率,rate_bps 落 0
+//	  而 gross 落管理员填的那个数。calcGross(base, 0) 恒为 0,I3 左边恒为 0 而
+//	  右边不是。这一路本来就不是"按比例算出来的钱",没有可复算的乘法。
+//
+//	clawback(clawback.go 的自动与人工两条)—— 三处各自把它打破:
+//	  ① base_quota 落负数(-refundQuota),而 calcGross 对 base<=0 直接返回 0,
+//	     所以用 calcGross 表达的 I3 在**每一条**冲正行上都不成立;
+//	  ② 原单被封顶削过时按实际比例等比冲正(clawbackAmountFor),
+//	     gross 刻意小于 base×rate —— 那正是"不多冲"的定义;
+//	  ③ 超额冲正被 netAccrued 的 remaining 削到恰好冲平,同样刻意小于 base×rate。
+//	  而 base_quota 在这一路是**幂等指纹**(冻结"管理员这一次填了多少"),
+//	  不是乘法的被乘数,拿它去复算从一开始就是误用。
+//
+// 也就是说:在 manual / clawback 行上"算出 I3 不成立"不构成任何异常信号。
+// 上一轮已经有人据此报过一次误报,所以这一段必须写死在这里,而不是靠人记得。
+// 账本体检(api_admin.go 的 ledgerCheck)因此刻意**不算 I3** —— 无限定地全表
+// 算它,报出来的"漂移"里绝大多数会是这两类正常行,那种数字比没有更糟。
+// 真要把 I3 做成体检项,过滤条件必须写成上面那三个 source_type,一个都不能多。
 func capGross(gross decimal.Decimal, maxPerOrder int64) (capped, shaved decimal.Decimal) {
 	if maxPerOrder <= 0 {
 		return gross, decimal.Zero
@@ -172,6 +197,10 @@ type accrualInput struct {
 	// 永远是非负数。它与 Gross 一起落库,使得
 	// base_quota × rate_bps / 10000 == gross_amount + capped_amount
 	// 在被削过的行上依然成立 —— 见 capGross 的说明。
+	//
+	// 这条恒等式只覆盖 source_type ∈ {consume, topup, redemption};manual 与
+	// clawback 按设计不满足它(逐条理由写在 capGross 的「I3 的适用范围」一节)。
+	// 那两路填 Capped 没有意义,也确实一处都没填。
 	Capped decimal.Decimal
 
 	// UsdRate 为零时取当前汇率。冲正必须显式传入原单的汇率,
@@ -255,35 +284,50 @@ func writeAccrualTx(gdb *gorm.DB, in accrualInput) (bool, error) {
 		UpdatedAt:    now,
 	}
 
-	conflict := clause.OnConflict{
+	// 两种模式都先走 DoNothing 的插入,再在冲突时补一条 UPDATE 累加。
+	//
+	// # 为什么累加不写成一条 ON CONFLICT DO UPDATE
+	//
+	// 因为那样就没法可移植地判断"这一次到底是新建还是幂等命中",而这个 bool
+	// 正是本函数的返回值。RowsAffected 的口径三家不一致:MySQL 的
+	// ON DUPLICATE KEY UPDATE 命中返回 **2**,PostgreSQL 的 ON CONFLICT
+	// DO UPDATE 命中返回 **1** —— 与新插入完全同值。于是 `== 1` 这条判据在
+	// PG 上会把一次冲突累加判成"新插入"。DoNothing 那一档三家统一(命中 0),
+	// 所以把两种模式都收敛到 DoNothing + 条件 UPDATE,inserted 在三种数据库
+	// 上都是精确的。
+	//
+	// 语义不变:插入成功时不需要累加(这一行就是第一笔);冲突时那条 UPDATE
+	// 自己是原子的,多节点同时 flush 同一个桶仍然不需要应用层锁。两条语句之间
+	// 没有中间态可以被观察到 —— 调用方要么看到还没有这一行,要么看到已经累加过。
+	res := gdb.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "idem_scope"}, {Name: "idem_key"}},
 		DoNothing: true,
-	}
-	if in.Accumulate {
-		// 日聚合桶:冲突即累加。这一步在数据库层原子完成,
-		// 多节点同时 flush 同一个桶也不需要任何应用层锁。
-		conflict = clause.OnConflict{
-			Columns: []clause.Column{{Name: "idem_scope"}, {Name: "idem_key"}},
-			DoUpdates: clause.Assignments(map[string]any{
-				"base_quota":   gorm.Expr("qy_commission_accrual.base_quota + ?", in.BaseQuota),
-				"gross_amount": gorm.Expr("qy_commission_accrual.gross_amount + ?", in.Gross),
-				// 削减量与基数、佣金同步累加:一天里可能有些增量触顶、有些没有,
-				// 只有把每一次削掉的量都累上去,那条恒等式才对整行成立。
-				"capped_amount": gorm.Expr("qy_commission_accrual.capped_amount + ?", in.Capped),
-				"updated_at":    now,
-			}),
-		}
-	}
-
-	res := gdb.Clauses(conflict).Create(&row)
+	}).Create(&row)
 	if res.Error != nil {
 		db.MarkFailure(res.Error)
 		accrualFailed.Add(1)
 		return false, res.Error
 	}
-	// RowsAffected 口径(MySQL):新插入 1,ON DUPLICATE KEY UPDATE 命中 2,
-	// DoNothing 命中 0。因此 == 1 在累加与非累加两种模式下都恰好是"新插入"。
 	inserted := res.RowsAffected == 1
+	if in.Accumulate && !inserted {
+		// 日聚合桶:冲突即累加。削减量与基数、佣金同步累加 —— 一天里可能有些
+		// 增量触顶、有些没有,只有把每一次削掉的量都累上去,那条恒等式才对整行成立。
+		upd := gdb.Model(&Accrual{}).
+			Where("idem_scope = ? AND idem_key = ?", row.IdemScope, row.IdemKey).
+			Updates(map[string]any{
+				// 这里是**普通 UPDATE**,没有 excluded 伪表,所以裸列名在三种
+				// 数据库上都无歧义(带表名限定反而是 SQLite 的风险面)。
+				"base_quota":    gorm.Expr("base_quota + ?", in.BaseQuota),
+				"gross_amount":  gorm.Expr("gross_amount + ?", in.Gross),
+				"capped_amount": gorm.Expr("capped_amount + ?", in.Capped),
+				"updated_at":    now,
+			})
+		if upd.Error != nil {
+			db.MarkFailure(upd.Error)
+			accrualFailed.Add(1)
+			return false, upd.Error
+		}
+	}
 	if in.Accumulate {
 		accrualAccumulated.Add(1)
 	} else if inserted {

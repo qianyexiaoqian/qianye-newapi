@@ -158,7 +158,30 @@ func pruneLookupLogs(ctx context.Context, gdb *gorm.DB) {
 		return
 	}
 	before := common.GetTimestamp() - int64(days)*86400
-	res := gdb.Where("created_at < ?", before).Limit(1000).Delete(&LookupLog{})
+
+	// 必须写成 SELECT 主键 + DELETE ... WHERE id IN,不能写成
+	// `Where(...).Limit(pruneLookupLogBatch).Delete(&LookupLog{})`。
+	//
+	// GORM 只有在方言把 "LIMIT" 列进 DeleteClauses 时才渲染 DELETE 上的 LIMIT,
+	// 而只有 MySQL 驱动这么做;postgres 驱动**静默丢掉** LIMIT,"按批清理"
+	// 退化成一条无界 DELETE 把过期段一次删光 —— 单个长事务、与删除量成正比的
+	// WAL 与死元组、随后一轮 autovacuum 突刺,而且 ctx(租约)取消在删除中途
+	// 不再有任何作用。不报错、不告警,唯一痕迹是日志里一个远超批量上界的数字。
+	// 扩展库支持 PostgreSQL(qianye/db.DialectorFor),所以这条路真的会走到。
+	// model/log.go 与 model/qy_export.go 为同一个坑各改写过一次,这是第三处。
+	//
+	// SELECT 上的 Limit 三种方言都支持,因此这个写法在哪个库上都真正按批执行。
+	var ids []int64
+	if err := gdb.WithContext(ctx).Model(&LookupLog{}).
+		Where("created_at < ?", before).
+		Order("id").Limit(pruneLookupLogBatch).Pluck("id", &ids).Error; err != nil {
+		db.MarkFailure(err)
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+	res := gdb.WithContext(ctx).Where("id IN ?", ids).Delete(&LookupLog{})
 	if res.Error != nil {
 		db.MarkFailure(res.Error)
 		return
@@ -167,3 +190,7 @@ func pruneLookupLogs(ctx context.Context, gdb *gorm.DB) {
 		common.SysLog(fmt.Sprintf("qianye/transfer: 已清理 %d 条过期的收款人解析日志", res.RowsAffected))
 	}
 }
+
+// pruneLookupLogBatch 是单轮清理的行数上界。它同时也是 IN 列表的长度,
+// 必须留在 PostgreSQL 的绑定参数上限(65535)之内。
+const pruneLookupLogBatch = 1000

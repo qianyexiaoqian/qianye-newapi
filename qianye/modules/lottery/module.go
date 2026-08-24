@@ -157,9 +157,22 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 其余全部照旧 role>=10:建活动、发布、封盘、取消、隐藏、删除、换封面、
 	// 履行/撤销/揭示文本奖、解决对账标记、期次注资与关闭、改运营参数。
 	// 项目方原话:「管理员可以开活动、参与等等,但不能设定或更改开奖结果。」
-	g.POST("/lottery/activities/:act_no/guess-result", crit,
-		middleware.RootActionGate(middleware.RootActionLotteryResultSet), handleSetGuessResult)
+	//
+	// 闸门排在 crit **之前**:限流桶按 客户端 IP + 路由 计,与身份无关,被拒的
+	// 越权尝试同样消耗它,于是一个 role=10 连点就能把这条路由对同一来源 IP 上的
+	// 所有人(含超管)锁死 20 分钟。闸门在前时被拒的尝试不消耗限流桶,仍写审计。
+	g.POST("/lottery/activities/:act_no/guess-result",
+		middleware.RootActionGate(middleware.RootActionLotteryResultSet),
+		crit, handleSetGuessResult)
 	g.POST("/lottery/activities/:act_no/payouts/:payout_no/retry", crit, handleRetryPayout)
+	// 人工落账是抽奖第二个被提到超级管理员的动作,理由见 middleware/root_action.go:
+	// 「重试」只在探针明确说"主库没动"时才出手,判据仍然是机器的;而这一个是
+	// 在自动判据互相矛盾(资金单说失败、主库探针说可能已生效)时**推翻机器的
+	// 结论**,其中一支会让主库对同一个人再加一次钱。没有它,那一笔永远挂在
+	// 「冻结中」,那一场活动因此永远过不了删除闸门②。
+	g.POST("/lottery/activities/:act_no/payouts/:payout_no/adjudicate",
+		middleware.RootActionGate(middleware.RootActionLotteryPayoutAdjudicate),
+		crit, handleAdjudicatePayout)
 	// 文本奖的履行 / 撤销 / 揭示。三个都写审计(成功与失败各一条)。
 	//
 	// 撤销只对 kind='text' 开放:额度奖的 paid 是资金终态,永远不可撤。

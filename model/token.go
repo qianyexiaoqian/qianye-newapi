@@ -81,9 +81,36 @@ func (token *Token) GetMaskedKey() string {
 	return MaskTokenKey(token.Key)
 }
 
+// HasIpLimit 回答"这把令牌**声明过** IP 白名单吗",与白名单里最后解析出几条无关。
+//
+// # 为什么这个问题必须与 GetIpLimits 分开
+//
+// 调用方原先的判据是 `len(GetIpLimits()) > 0`,也就是把"没声明"与"声明了但
+// 一条都解析不出来"当成同一件事,而这两件事的正确处置正好相反:前者是不限制,
+// 后者是**一条都不许通过**。白名单里一个地址都没有,含义就是"没有任何来源被
+// 允许",绝不是"所有来源都被允许"。
+//
+// 实测过的形状:allow_ips 填成 `, ` 时旧实现归约成空清单,于是一把**看起来
+// 已经绑死 IP** 的令牌实际不限制任何来源(库里那一列还是非空的,前端也照样
+// 显示成一条规则)。IP 绑定是密钥泄漏之后用户唯一的自助止损手段,静默失效
+// 是这条功能最不能接受的失败方向。
+func (token *Token) HasIpLimit() bool {
+	return token.AllowIps != nil && strings.TrimSpace(*token.AllowIps) != ""
+}
+
+// GetIpLimits 解析令牌的 IP 白名单。
+//
+// # 分隔符是换行**和逗号**
+//
+// 界面上的提示是"一行一个",但逗号分隔是所有人的第一直觉,而旧实现对逗号的
+// 处理是把它**删掉**而不是当分隔符。于是 `127.0.0.1,10.0.0.1` 被拼成
+// `127.0.0.110.0.0.1` 这一条垃圾条目,IsIpInCIDRList 对解析不出来的条目静默
+// continue、不记任何日志,表现是用户的 key 在 relay 与两个只读接口上一律 403,
+// 而后台没有任何一条日志说得清为什么。方向虽然是失败关闭(不放行),
+// 但它是一次**无法自查**的失效 —— 用户看到的是"我的 key 到处都用不了"。
+//
+// 两种分隔符一起认没有歧义:IPv4 / IPv6 / CIDR 的写法里都不含逗号。
 func (token *Token) GetIpLimits() []string {
-	// delete empty spaces
-	//split with \n
 	ipLimits := make([]string, 0)
 	if token.AllowIps == nil {
 		return ipLimits
@@ -92,11 +119,10 @@ func (token *Token) GetIpLimits() []string {
 	if cleanIps == "" {
 		return ipLimits
 	}
-	ips := strings.Split(cleanIps, "\n")
-	for _, ip := range ips {
-		ip = strings.TrimSpace(ip)
-		ip = strings.ReplaceAll(ip, ",", "")
-		if ip != "" {
+	for _, ip := range strings.FieldsFunc(cleanIps, func(r rune) bool {
+		return r == 0x0a || r == 0x0d || r == ','
+	}) {
+		if ip = strings.TrimSpace(ip); ip != "" {
 			ipLimits = append(ipLimits, ip)
 		}
 	}

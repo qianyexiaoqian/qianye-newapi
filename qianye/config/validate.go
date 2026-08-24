@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/dsn"
 
 	"github.com/shopspring/decimal"
 )
@@ -365,15 +366,25 @@ func validateDatabase(d *Database) error {
 		return fmt.Errorf("qianye: database.dsn 不能为空(扩展需要独立的 MySQL 或 PostgreSQL)")
 	}
 	lower := strings.ToLower(strings.TrimSpace(d.DSN))
-	for _, bad := range []string{"clickhouse://", "sqlite:", "file:"} {
-		if strings.HasPrefix(lower, bad) {
-			return fmt.Errorf("qianye: 扩展库只支持 MySQL 与 PostgreSQL,database.dsn 不能以 %q 开头 —— "+
-				"资金路径依赖 SELECT ... FOR UPDATE 的行锁,SQLite/ClickHouse 无法提供", bad)
-		}
+	if strings.HasPrefix(lower, "clickhouse://") {
+		return fmt.Errorf("qianye: 扩展库只支持 MySQL 与 PostgreSQL,database.dsn 不能以 %q 开头 —— "+
+			"资金路径依赖 SELECT ... FOR UPDATE 的行锁,ClickHouse 无法提供;"+
+			"它连唯一约束都没有,幂等键更无从谈起", "clickhouse://")
 	}
-	if lower == "local" || strings.HasPrefix(lower, "local ") {
-		return fmt.Errorf("qianye: 扩展库不支持 SQLite(database.dsn = local)—— " +
-			"资金路径依赖行锁,SQLite 上 LockForUpdate 会退化成空操作")
+	// SQLite 的判据整包在 qianye/dsn,与 db.DetectDialect 是**同一个函数**。
+	//
+	// 以前这里只匹配前缀(sqlite: / file: / local),于是最自然的一种写法
+	// —— 照抄上游 SQLITE_PATH 的 `./data/qy_ext.db` —— 三条都不匹配,又因为
+	// 含 '/' 通过了下面"不像 MySQL DSN(缺少库名)"那一关,最后落到 mysql
+	// 驱动手里。运维拿到的是 `default addr for network './data' unknown`:
+	// 里面没有 SQLite、没有行锁、没有"不支持",下面这段刻意写下的理由一个字
+	// 都没送到。判据提成叶子包之后,两个读者不可能再漂移。
+	if dsn.IsSQLite(lower) {
+		return fmt.Errorf("qianye: 扩展库不支持 SQLite(database.dsn = %q)—— "+
+			"这不是「没写适配」而是语义:资金路径(佣金账本、两阶段资金单、提现、抽奖出款)"+
+			"靠 SELECT ... FOR UPDATE 的行锁串行化读改写,SQLite 没有行锁,"+
+			"LockForUpdate 只能退化成空操作;多节点租约与迁移互斥又假定多个进程共享同一个库。"+
+			"请填 MySQL(user:pass@tcp(host:3306)/dbname)或 PostgreSQL(postgres://...)", d.DSN)
 	}
 	if isPostgresDSN(lower) {
 		return validatePostgresDatabase(d, lower)

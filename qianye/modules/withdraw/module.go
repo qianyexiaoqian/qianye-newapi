@@ -63,11 +63,15 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 而四个人工决定仍是 role>=10 —— 这是项目方明确要的形状:role=10 负责
 	// 审核与状态流转,出钱那一步收口到一个人。
 	payeePii := middleware.RootActionGate(middleware.RootActionWithdrawPayeeReveal)
-	g.GET("/withdraw/:id/payee", middleware.CriticalRateLimit(), payeePii, handleAdminRevealPayee)
+	// 三道闸门的**顺序**要紧:档位在最前。限流桶按 客户端 IP + 路由 计,与身份
+	// 无关,被拒的越权尝试同样消耗它 —— 而这两条路由是线下打款时唯一的取数口,
+	// 被一个 role=10 的重试脚本锁死 20 分钟等于打款停摆。闸门在前时被拒的尝试
+	// 一格桶都不消耗,却仍然逐条写审计。
+	g.GET("/withdraw/:id/payee", payeePii, middleware.CriticalRateLimit(), handleAdminRevealPayee)
 	// 凭证图片与收款账号同属 PII,因此走同一套口径:必填事由 + 写 qy_pii_audits
 	// + 关键操作限流 + 同一道档位。差别只在它没有"脱敏版"可看 —— 一张图要么
 	// 看得到要么看不到。
-	g.GET("/withdraw/:id/proof", middleware.CriticalRateLimit(), payeePii, handleAdminGetProof)
+	g.GET("/withdraw/:id/proof", payeePii, middleware.CriticalRateLimit(), handleAdminGetProof)
 
 	// 人工决策一律挂关键操作限流:它们要么改佣金账本,要么终结一张单。
 	//

@@ -113,3 +113,100 @@ func TestMiddleware_RecordsAdminReadsOnlyWhenTheyAreDenied(t *testing.T) {
 		})
 	}
 }
+
+// actor_type 必须只由**身份**决定,不能由路径决定。
+//
+// 曾经的判据是 `role >= RoleAdminUser || strings.HasPrefix(path, "/api/qy/admin/")`。
+// 那个 || 的右半边在鉴权通过的行上恒为冗余(/api/qy/admin 整组挂着 AdminAuth),
+// 它唯一能改变结果的场合恰恰是**被拒的越权探测**:一个 role=1 的普通账号挨个戳
+// 管理端接口留下的 403,在 actor_type 上与真管理员的操作完全同色。
+//
+// 实测线上台账:actor_type='admin' 的行里有 810 行 actor_role=1,且这 810 行
+// 100% 是 401/403。仲裁人按 actor_type='admin' 过滤会把它们当成管理员操作读,
+// 按 'user' 过滤则整体漏掉;而筛选清单里没有 actor_role,补偿不了。
+func TestMiddleware_ClassifiesActorByRoleNotByPath(t *testing.T) {
+	cases := []struct {
+		name     string
+		path     string
+		role     int
+		wantType string
+	}{
+		{
+			name:     "普通用户戳管理端被拒:是 user,不是 admin",
+			path:     "/api/qy/admin/violation/rules/:id",
+			role:     common.RoleCommonUser,
+			wantType: qymodel.ActorUser,
+		},
+		{
+			name:     "真管理员走管理端:admin",
+			path:     "/api/qy/admin/violation/rules/:id",
+			role:     common.RoleAdminUser,
+			wantType: qymodel.ActorAdmin,
+		},
+		{
+			name:     "管理员走用户面:仍然是 admin(身份决定,不是路径)",
+			path:     "/api/qy/withdraw/payees",
+			role:     common.RoleAdminUser,
+			wantType: qymodel.ActorAdmin,
+		},
+		{
+			name:     "普通用户走用户面:user",
+			path:     "/api/qy/withdraw/payees",
+			role:     common.RoleCommonUser,
+			wantType: qymodel.ActorUser,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			row := runThroughMiddleware(t, http.MethodPost, tc.path, tc.path,
+				strings.NewReader(`{}`), "application/json",
+				func(c *gin.Context) {
+					c.Set(common.DeniedActorIdKey, 7007)
+					c.Set(common.DeniedActorNameKey, "qy-classify-probe")
+					c.Set(common.DeniedActorRoleKey, tc.role)
+					c.Set(common.DeniedActorAccessTokenKey, true)
+					c.AbortWithStatus(http.StatusForbidden)
+				})
+			require.NotNil(t, row)
+			assert.Equal(t, tc.role, row.ActorRole)
+			assert.Equal(t, tc.wantType, row.ActorType,
+				"actor_type 必须只看 role。按路径判会让 role=%d 的越权探测"+
+					"在台账上与真管理员的操作同色", tc.role)
+		})
+	}
+}
+
+// 成功的 check-update 必须留痕。
+//
+// 这条路由被提到超级管理员的全部理由是「它是一次站点行为,不是一次数据读取」——
+// 它替本站向 github.com 开一次出站连接。可是提档之后台账只留下**被拒**的越权
+// 尝试(RootActionGate 拒绝时写审计),成功的那一次一行都不写:实测该路径下
+// 401 有 4 行、403 有 28 行、200 有 **0** 行。而离线/内网部署事后最想追问的
+// 恰恰是"是谁、在什么时候替这台机器连了 github.com";gin 的访问日志有时间和
+// IP,但没有任何身份列,答不出"是谁"。
+func TestMiddleware_RecordsSuccessfulUpdateChecks(t *testing.T) {
+	const route = "/api/qy/admin/version/check-update"
+	row := runThroughMiddleware(t, http.MethodGet, route, route, nil, "",
+		func(c *gin.Context) {
+			c.Set("id", 1)
+			c.Set("username", "root")
+			c.Set("role", common.RoleRootUser)
+			c.Status(http.StatusOK)
+		})
+	require.NotNil(t, row,
+		"成功的检查更新必须落一行 —— 只记被拒的尝试等于答不出『是谁替这台机器连了 github.com』")
+	assert.Equal(t, 200, row.StatusCode)
+	assert.True(t, row.Success)
+	assert.Equal(t, 1, row.ActorUserId)
+	assert.Equal(t, qymodel.ActorAdmin, row.ActorType)
+
+	// 反向:普通的管理端 GET 仍然不记,否则台账会被列表与详情稀释到无法扫读。
+	other := runThroughMiddleware(t, http.MethodGet,
+		"/api/qy/admin/violation/rules", "/api/qy/admin/violation/rules", nil, "",
+		func(c *gin.Context) {
+			c.Set("id", 1)
+			c.Set("role", common.RoleRootUser)
+			c.Status(http.StatusOK)
+		})
+	assert.Nil(t, other, "普通管理端 GET 成功时不记 —— 每天几千次,记下来只会把台账稀释掉")
+}
