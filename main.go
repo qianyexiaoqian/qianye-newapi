@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -188,6 +189,10 @@ func main() {
 			},
 		})
 	}))
+	// 客户端 IP 必须在最前面解析一次:限流、令牌 allow_ips、审计台账、风控指纹
+	// 与日志读的是同一份缓存结果(见 common/client_ip.go)。挂在恢复中间件之后、
+	// 其余全部中间件之前 —— 之后的每一个中间件都可能取这个值。
+	server.Use(middleware.ClientIPResolver())
 	// This will cause SSE not to work!!!
 	//server.Use(gzip.Gzip(gzip.DefaultCompression))
 	server.Use(middleware.RequestId())
@@ -211,8 +216,15 @@ func main() {
 		port = strconv.Itoa(*common.Port)
 	}
 
+	// BIND_ADDRESS 留空 = 监听全部接口,与历史行为逐字一致
+	// (net.JoinHostPort("", port) 就是 ":"+port)。
+	//
+	// 它同时是客户端 IP 自动档的判据:设成回环地址时,外部流量在 TCP 层就到不了
+	// 这个端口,能连上来的必然是同机进程,也就必然是本机反代 —— 这时未配置
+	// TRUSTED_PROXIES 也可以安全地信任回环对端的 X-Forwarded-For。
+	// 详见 common.BuildClientIPPolicy。
 	srv := &http.Server{
-		Addr:    ":" + port,
+		Addr:    net.JoinHostPort(strings.TrimSpace(os.Getenv("BIND_ADDRESS")), port),
 		Handler: server,
 	}
 

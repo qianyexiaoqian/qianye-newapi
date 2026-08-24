@@ -5350,7 +5350,7 @@
     "Today's Usage": "Расход за сегодня",
     "Today's usage is unavailable right now": "Расход за сегодня сейчас недоступен",
     "Today: {{start}} → {{end}}": "Сегодня: {{start}} → {{end}}",
-    "Day boundary {{zone}} — the same one the daily consumption report uses": "Граница суток {{zone}} — та же, что и в ежедневном отчёте о расходе",
+    "Server local time {{zone}} — the daily consumption report may use a different day boundary": "Локальное время сервера {{zone}} — в ежедневном отчёте о расходе граница суток может отличаться",
     "Switch group": "Сменить группу",
     "Failed to switch group": "Не удалось сменить группу",
     "Switched to group {{group}}": "Переключено на группу {{group}}",

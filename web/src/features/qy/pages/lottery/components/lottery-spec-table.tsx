@@ -36,6 +36,7 @@ import {
   type QyLotSpecItem,
   type QyLotTier,
 } from '../types'
+import { QyLotFinePrint } from './lottery-fine-print'
 
 /**
  * 奖档（抽奖）或选项盘口（竞猜）。
@@ -313,10 +314,15 @@ function BallTierTable(props: {
       />
       {/* 「奖金会被摊薄」这件事此前在整个买家侧一个字都没有出现过：大厅卡、
           购买弹窗、详情页、我的参与、为什么是这个结果，五处全无。它决定用户
-          愿不愿意花这笔钱，所以必须钉在表下面，而不是只留在管理端。 */}
-      <p className='text-muted-foreground text-xs leading-5'>
-        {t('qy_lot_ball_split_note')}
-      </p>
+          愿不愿意花这笔钱，所以必须钉在表下面，而不是只留在管理端。
+
+          结论那一句（「同档中签人数越多，每份越少」）就是折叠位的触发文字 ——
+          它永远可见；把这条规则推到浮动奖与固定奖两种形态上的完整推演在里面，
+          一字未删。此前这两部分挤成一段 128 个字的灰色小字，读它需要的耐心
+          远超它值得的：真正影响下注决定的只有前半句。 */}
+      <QyLotFinePrint label={t('qy_lot_ball_split_note')}>
+        <p>{t('qy_lot_ball_split_detail')}</p>
+      </QyLotFinePrint>
     </div>
   )
 }

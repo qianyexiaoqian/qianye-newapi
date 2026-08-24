@@ -107,6 +107,12 @@ var actorGates = []actorGate{
 	// 终态的接口。
 	{"POST /api/qy/admin/fund-orders/:order_no/resolve", "qianye/controller/admin.go", "AdminResolveFundOrder", "ActorMayActOnCtx"},
 
+	// ── 扩展侧:抽奖出款的人工落账 ──
+	// 上面那一条只收 Uncertain（系统自己说"我不知道"），而这一条推翻的是一个
+	// 已经给过的 failed 结论：一支把钱在账上宣布为已付清，另一支让主库对
+	// 同一个人再加一次钱。受益人在出款行上（payout.user_id），不在报文里。
+	{"POST /api/qy/admin/lottery/activities/:act_no/payouts/:payout_no/adjudicate", "qianye/modules/lottery/payout_adjudicate.go", "handleAdjudicatePayout", "ActorMayActOnCtx"},
+
 	// ── 扩展侧:违规处置 ──
 	{"POST /api/qy/admin/violation/records/:id/revoke", "qianye/modules/violation/api_admin.go", "adminRevokeRecord", "denyActorOverTarget"},
 	{"POST /api/qy/admin/violation/bans/:userId/unban", "qianye/modules/violation/api_admin.go", "adminUnban", "denyActorOverTarget"},

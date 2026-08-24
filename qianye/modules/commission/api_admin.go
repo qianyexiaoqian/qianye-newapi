@@ -1331,10 +1331,24 @@ const maxLedgerCheckUsers = 20000
 //
 // # 为什么必须由**服务端**报,而不是留给谁去写 SQL
 //
-// 本模块有两条恒等式,它们都不会自己喊疼:
+// 本模块有三条恒等式,它们都不会自己喊疼;这里体检的是**前两条**:
 //
 //	I1  Σ计佣行.settled_amount(status≠voided) == Σ结算单(granted−reclaimed) + 未结算余数
 //	I2  可提现 + 冻结 + 已提现 == 累计earned − 累计clawback
+//	I3  base_quota × rate_bps / 10000 == gross_amount + capped_amount(逐行)
+//
+// # I3 为什么不在这里
+//
+// 它不是一条全表恒等式:只有 source_type ∈ {consume, topup, redemption} 的
+// 正额计佣行满足它,manual(费率恒为 0)与 clawback(base_quota 是负数的幂等
+// 指纹,金额还会被等比冲正与 remaining 削减)按设计就不满足 —— 逐条理由写在
+// accrual.go 的 capGross 上。无限定地全表算 I3,报出来的"漂移行数"绝大多数会
+// 是这两类完全正常的行,那个数字比没有更糟:它会让真正的一条被淹掉,
+// 上一轮已经有人照着无限定的注释口径报过一次误报。
+//
+// 所以要么带着那三个 source_type 的过滤条件做,要么不做。这里选择不做:
+// I1/I2 覆盖的是"钱的总量对不对",而 I3 覆盖的是"这一行为什么是这个数",
+// 后者的读者是查某一笔账的人,他手上已经有 source_type,而全站计数对他没用。
 //
 // I2 每一行余额上都算好了(balanceView.LedgerDrift),运营在余额页一眼能看见。
 // **I1 此前站内任何地方都看不见** —— 它跨 qy_commission_accrual、

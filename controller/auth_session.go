@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -22,7 +23,7 @@ func RefreshAuth(c *gin.Context) {
 		writeAuthSessionError(c, service.ErrRefreshTokenInvalid)
 		return
 	}
-	bundle, user, err := service.RefreshLoginSession(rawRefreshToken, c.GetHeader("X-Auth-Session"), c.ClientIP(), c.Request.UserAgent())
+	bundle, user, err := service.RefreshLoginSession(rawRefreshToken, c.GetHeader("X-Auth-Session"), common.ClientIP(c), c.Request.UserAgent())
 	if err != nil {
 		if errors.Is(err, service.ErrRefreshTokenInvalid) || errors.Is(err, service.ErrLoginSessionRevoked) {
 			service.ClearRefreshCookie(c)

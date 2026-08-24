@@ -20,6 +20,8 @@ import { qyAppendGroupName } from '../../../lib/group-options'
 import type {
   QyAiChannel,
   QyAiChannelInput,
+  QyAiGuardControversial,
+  QyAiProtocol,
   QyAiScope,
   QyAiScopeInput,
   QyAiScopeSummaryRow,
@@ -531,6 +533,13 @@ export type QyAiChannelDraft = {
   name: string
   base_url: string
   model: string
+  protocol: QyAiProtocol
+  /** 只在 protocol === 'qwen3guard' 时会被提交,见 qyAiDraftToInput。 */
+  guard_controversial: QyAiGuardControversial
+  /** 启用的类别子集。**空数组 = 九类全启用**,见 QyAiChannel.guard_categories。 */
+  guard_categories: string[]
+  /** sensitive 档的升级清单。**空数组 = 参考实现的三类**。 */
+  guard_elevate: string[]
   /** null = 不动;'' = 清除;其它 = 换成这一把。 */
   apiKey: string | null
   timeout_ms: number
@@ -541,12 +550,71 @@ export type QyAiChannelDraft = {
   remark: string
 }
 
+/**
+ * 每一种协议的默认地址与模型名。
+ *
+ * 切协议时会把这两格换成对应的默认值(只在它们还停在**另一种协议的默认值**
+ * 上时换,见 qyAiApplyProtocol)。理由:两条路的地址形状差得很远
+ * (云端 `https://api.deepseek.com/v1` vs 本地 `http://localhost:11434/v1`),
+ * 而地址填错的表现是 404 → fail-open → 「审核开着但一次都没生效」。
+ */
+export const QY_AI_PROTOCOL_DEFAULTS: Record<
+  QyAiProtocol,
+  { base_url: string; model: string }
+> = {
+  json_prompt: {
+    base_url: 'https://api.deepseek.com/v1',
+    model: 'deepseek-v4-flash',
+  },
+  // Ollama 的 OpenAI 兼容端点。模型名取参考实现(Wei-Shaw/sub2api)的
+  // `DefaultGuardModel` —— **带 `sileader/` 命名空间**:Qwen3Guard 不在
+  // Ollama 官方库里,裸写 `qwen3guard:0.6b` 拉不到镜像,而拉不到的表现是
+  // 每次调用 404 → fail-open →「审核开着但一次都没生效」。
+  // (冒号是 tag 分隔符,不是拼错。)
+  qwen3guard: {
+    base_url: 'http://localhost:11434/v1',
+    model: 'sileader/qwen3guard:0.6b',
+  },
+}
+
+/**
+ * 切协议时顺手换掉地址与模型名 —— **但只在它们还是另一种协议的出厂默认值时**。
+ *
+ * 运营已经填过的地址一个字符都不能动:那是他刚敲进去的东西,被一次下拉框
+ * 切换悄悄改掉是最难察觉的一种数据丢失(保存之后才发现,而原值已经没了)。
+ */
+export function qyAiApplyProtocol(
+  draft: QyAiChannelDraft,
+  protocol: QyAiProtocol
+): QyAiChannelDraft {
+  const next: QyAiChannelDraft = { ...draft, protocol }
+  const from = QY_AI_PROTOCOL_DEFAULTS[draft.protocol]
+  const to = QY_AI_PROTOCOL_DEFAULTS[protocol]
+  if (draft.base_url.trim() === '' || draft.base_url === from.base_url) {
+    next.base_url = to.base_url
+  }
+  if (draft.model.trim() === '' || draft.model === from.model) {
+    next.model = to.model
+  }
+  return next
+}
+
 export function qyAiChannelToDraft(ch?: QyAiChannel): QyAiChannelDraft {
+  // 后端下发的 protocol 恒是归一后的取值;新建时从通用模型那一档起手 ——
+  // 那是这一列出现之前的唯一行为,新建表单不该悄悄换一个默认。
+  const protocol: QyAiProtocol = ch?.protocol ?? 'json_prompt'
+  const fallback = QY_AI_PROTOCOL_DEFAULTS[protocol]
   return {
     name: ch?.name ?? '',
-    base_url: ch?.base_url ?? 'https://api.deepseek.com/v1',
+    base_url: ch?.base_url ?? fallback.base_url,
     // 默认值只填地址与模型名,**密钥永远留空** —— 本仓不预置任何密钥。
-    model: ch?.model ?? 'deepseek-v4-flash',
+    model: ch?.model ?? fallback.model,
+    protocol,
+    guard_controversial: ch?.guard_controversial ?? '',
+    // `?? []` 而不是 `|| []`:后端保证这两个键恒是数组,但一个旧版本的
+    // 后端(或一次接口回滚)会让它们缺失,而 undefined.map 是白屏。
+    guard_categories: ch?.guard_categories ?? [],
+    guard_elevate: ch?.guard_elevate ?? [],
     apiKey: null,
     timeout_ms: ch?.timeout_ms ?? 0,
     weight: ch?.weight ?? 1,
@@ -555,6 +623,24 @@ export function qyAiChannelToDraft(ch?: QyAiChannel): QyAiChannelDraft {
     price_out_per_m: ch?.price_out_per_m ?? '0',
     remark: ch?.remark ?? '',
   }
+}
+
+/**
+ * 护栏两张类别清单的**显示**取值:空 = 一份默认清单,非空 = 就是它。
+ *
+ * 这两格是本页唯一"空不等于没有"的地方,而两处的默认各不相同
+ * (启用清单空 = 九类全启用;升级清单空 = 参考实现的三类)。把这条语义
+ * 收成一个函数,是因为复选框必须**照着默认勾上**:显示成"全不勾"会让运营
+ * 以为这个渠道什么都不审,而他一旦去点第一下,得到的又是"只启用这一项"。
+ *
+ * 它同时是"第一次取消勾选"那一步的展开点:传进来的 shown 已经是九项,
+ * 去掉一项就得到显式的八项,而不是从空清单变成"只有这一项"。
+ */
+export function qyAiGuardShownIds(
+  stored: string[],
+  whenEmpty: string[]
+): string[] {
+  return stored.length === 0 ? whenEmpty : stored
 }
 
 /**
@@ -570,6 +656,15 @@ export function qyAiDraftToInput(draft: QyAiChannelDraft): QyAiChannelInput {
     name: draft.name.trim(),
     base_url: draft.base_url.trim(),
     model: draft.model.trim(),
+    protocol: draft.protocol,
+    // 通用模型那条路没有 Controversial 这一档。**不提交它**而不是提交一个
+    // 被忽略的值:后端也会清空,但两边都清才不会出现"表单里还留着、
+    // 保存回来变空"的一帧。
+    guard_controversial:
+      draft.protocol === 'qwen3guard' ? draft.guard_controversial : '',
+    guard_categories:
+      draft.protocol === 'qwen3guard' ? draft.guard_categories : [],
+    guard_elevate: draft.protocol === 'qwen3guard' ? draft.guard_elevate : [],
     timeout_ms: draft.timeout_ms,
     weight: draft.weight,
     enabled: draft.enabled,

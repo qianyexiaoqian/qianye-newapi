@@ -82,6 +82,33 @@ const (
 	// 只有竞猜(guess)的结果是**链下事实**,必须由人录入 —— 那一处就是全站
 	// 唯一"管理员说了算"的开奖口。
 	RootActionLotteryResultSet RootOnlyAction = "lottery.result.set"
+
+	// RootActionLotteryPayoutAdjudicate 是「凭人工核对结论给一笔出款落账」。
+	//
+	// 它是抽奖第二个、也是最后一个被提档的动作,与开奖结果同一条理由的另一半:
+	// 那一个是"链下事实必须由人录入",这一个是"自动判定已经答不出来,必须由人
+	// 推翻它"。所有自动判据(资金单终态 + 主库 outbox 探针)在这一笔上要么互相
+	// 矛盾、要么全都说"判不出来",系统因此把它挂起;本动作是绕过全部自动判据的
+	// **最终裁决**,而其中一支(判定"确实没发放")会让主库对同一个人再加一次钱。
+	//
+	// 通用对账台的 /fund-orders/:order_no/resolve 留在 role=10,是因为它只收
+	// Uncertain —— 那是系统自己承认"我不知道"的状态,人只是替它把话说完。
+	// 这里推翻的是一个**已经给过的 failed 结论**,严格更危险,所以档位更高。
+	//
+	// 「重试」不提档:它只在探针明确说"主库没动"时才换代次,判据仍然是机器的。
+	RootActionLotteryPayoutAdjudicate RootOnlyAction = "lottery.payout.adjudicate"
+
+	// RootActionUpdateCheck 是「检查二开是否有新版本」。
+	//
+	// 它是这份清单里唯一一个不动钱也不动 PII 的动作,列进来的理由是另一条:
+	// 它是全站唯一一条会让**服务端自己**向第三方(github.com)开出站连接的
+	// 管理端路由。那是一次站点行为,不是一次数据读取 —— 离线/内网部署把
+	// "这台机器不主动连外网"当成部署前提,而这颗按钮能一次性推翻它。
+	//
+	// 提的仍然只是这一个动作:版本号的**显示**(GET /admin/version)留在
+	// role=10,而且刻意连 requireCore 都不走 —— 排障的第一个问题是"跑的是哪个
+	// 版本",它必须在任何降级下都答得出。被提档的只有"替本站发这一次请求"。
+	RootActionUpdateCheck RootOnlyAction = "update.check"
 )
 
 // RootActionRequiredCode 是被本闸门拒绝时的响应 code。
@@ -118,7 +145,7 @@ func RequireRootAction(c *gin.Context, action RootOnlyAction) bool {
 	// action="generic" 的 `METHOD /route`,既说不出被拒的是哪个动作,
 	// 也压根不覆盖 GET(收款人明文与凭证图片恰好都是 GET)。
 	operatorId := c.GetInt("id")
-	ip := c.ClientIP()
+	ip := common.ClientIP(c)
 	adminInfo := map[string]interface{}{
 		"admin_id":       operatorId,
 		"admin_username": c.GetString("username"),

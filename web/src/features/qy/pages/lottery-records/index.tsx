@@ -33,6 +33,7 @@ import { QyStatusBadge } from '../../components/qy-status-badge'
 import { qyArray } from '../../lib/array'
 import { QyPager } from '../components/qy-pager'
 import { qyLotMyEntriesQuery } from '../lottery/api'
+import { QyLotFinePrint } from '../lottery/components/lottery-fine-print'
 import { QyLotMyTextPrizeDialog } from '../lottery/components/my-text-prize-dialog'
 import { QyLotWhyResultDialog } from '../lottery/components/why-result-dialog'
 import { qyLotEntryBadgeStatus } from '../lottery/lib/display'
@@ -250,15 +251,20 @@ export function QyLotteryRecordsBody() {
             onPageChange={setPage}
             disabled={query.isFetching}
           />
-          <p className='text-muted-foreground text-xs'>
-            {t('qy_lot_records_chain_note')}
-          </p>
-          {/* 「已结束」的活动状态显示 finished 时，含义是**钱都清了**，
-                不是**奖品都履行完了**：文本奖靠管理端的待履行队列盯人，
-                没有 SLA。不写出来会有人拿 finished 当履行完毕的凭据。 */}
-          <p className='text-muted-foreground text-xs'>
-            {t('qy_lot_finished_means_funds_only')}
-          </p>
+          {/*
+            两条脚注合成一个折叠位。它们讲的都不是"这张表上写了什么"，而是
+            "这张表以外还有哪些约定" —— 链哈希与公开证据链应当逐字一致、
+            「已结束」指的是钱清了而不是奖品都发完了。两条加起来 85 个字，
+            压在一张两行的表底下，比表本身还长；而真正需要它们的时刻
+            （拿哈希去核对、追一份还没履行的文本奖）用户一定会主动来找。
+
+            「已结束≠奖品都发完」这一条另有一个不依赖阅读的落点：文本奖那一行的
+            按钮在未履行时直接写着「等履行」，点不出兑换码。
+          */}
+          <QyLotFinePrint label={t('qy_lot_records_notes_label')}>
+            <p>{t('qy_lot_records_chain_note')}</p>
+            <p>{t('qy_lot_finished_means_funds_only')}</p>
+          </QyLotFinePrint>
         </div>
       </QyPageBoundary>
 

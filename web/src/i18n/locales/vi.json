@@ -5350,7 +5350,7 @@
     "Today's Usage": "Tiêu thụ hôm nay",
     "Today's usage is unavailable right now": "Hiện chưa lấy được mức tiêu thụ hôm nay",
     "Today: {{start}} → {{end}}": "Hôm nay: {{start}} → {{end}}",
-    "Day boundary {{zone}} — the same one the daily consumption report uses": "Mốc ngày {{zone}} — cùng chuẩn với báo cáo tiêu thụ hằng ngày",
+    "Server local time {{zone}} — the daily consumption report may use a different day boundary": "Giờ địa phương của máy chủ {{zone}} — báo cáo tiêu thụ hằng ngày có thể dùng mốc ngày khác",
     "Switch group": "Đổi nhóm",
     "Failed to switch group": "Đổi nhóm thất bại",
     "Switched to group {{group}}": "Đã chuyển sang nhóm {{group}}",

@@ -5350,7 +5350,7 @@
     "Today's Usage": "Today's Usage",
     "Today's usage is unavailable right now": "Today's usage is unavailable right now",
     "Today: {{start}} → {{end}}": "Today: {{start}} → {{end}}",
-    "Day boundary {{zone}} — the same one the daily consumption report uses": "Day boundary {{zone}} — the same one the daily consumption report uses",
+    "Server local time {{zone}} — the daily consumption report may use a different day boundary": "Server local time {{zone}} — the daily consumption report may use a different day boundary",
     "Switch group": "Switch group",
     "Failed to switch group": "Failed to switch group",
     "Switched to group {{group}}": "Switched to group {{group}}",

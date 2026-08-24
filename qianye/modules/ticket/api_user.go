@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
@@ -179,7 +180,7 @@ func handleReply(c *gin.Context) {
 		AuthorId:   userId,
 		AuthorName: username,
 		Body:       body,
-		IP:         c.ClientIP(),
+		IP:         common.ClientIP(c),
 	}, refs)
 	if err != nil {
 		respondErr(c, err)

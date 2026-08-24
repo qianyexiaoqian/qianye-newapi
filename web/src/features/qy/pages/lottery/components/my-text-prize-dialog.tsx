@@ -20,13 +20,13 @@ import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { formatQyTs } from '../../ops/format'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
 import { qyLotMyPrizeQuery } from '../api'
+import { QyLotFinePrint } from './lottery-fine-print'
 
 /**
  * 「我中的文本奖」——只对中奖者本人展示。
@@ -107,14 +107,18 @@ export function QyLotMyTextPrizeDialog(props: {
             {/* 这条边界由后端随奖品下发（`notice`），前端只是原样显示。
                 写死在前端也能显示，但那样它就是一句可以被悄悄改掉的话术；
                 从后端来意味着它与发放这件事同源。拿不到时回落到本地文案，
-                而不是把整段"这串码没有承诺"的说明整体省掉。 */}
-            <Alert>
-              <AlertDescription>
+                而不是把整段"这串码没有承诺"的说明整体省掉。
+
+                折叠而不是删：这是一份 78 字的协议边界声明，压在一串刚拿到手的
+                兑换码上面，绝大多数人此刻只想复制那串码。触发文字直说里面是
+                什么（「这串内容没有进入承诺哈希」），要追究的人一点就展开。 */}
+            <QyLotFinePrint label={t('qy_lot_text_no_commit_label')}>
+              <p className='break-words whitespace-pre-wrap'>
                 {prize.notice === ''
                   ? t('qy_lot_text_no_commit_notice')
                   : prize.notice}
-              </AlertDescription>
-            </Alert>
+              </p>
+            </QyLotFinePrint>
           </div>
         )}
       </QyPageBoundary>

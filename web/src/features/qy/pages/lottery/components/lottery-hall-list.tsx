@@ -21,6 +21,7 @@ import { Link } from '@tanstack/react-router'
 import { Plus, Ticket } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ROLE } from '@/lib/roles'
@@ -110,18 +111,32 @@ export function QyLotHallList(props: QyLotHallState & { kind: QyLotKind }) {
 
   return (
     <div className='space-y-3'>
-      <Tabs
-        value={scope}
-        onValueChange={(value) => {
-          props.onScopeChange(value === 'ended' ? 'ended' : 'live')
-          props.onPageChange(1)
-        }}
-      >
-        <TabsList>
-          <TabsTrigger value='live'>{t('qy_lot_tab_open')}</TabsTrigger>
-          <TabsTrigger value='ended'>{t('qy_lot_tab_done')}</TabsTrigger>
-        </TabsList>
-      </Tabs>
+      {/*
+        分段栏与风险徽章同一行。徽章此前是两张标签各自顶上的一整块带边框横幅
+        （「参与费不退」五个字、「猜错会亏本金」六个字），把首屏最值钱的那条位置
+        用掉了 —— 而用户打开大厅要看的是奖池、参与费、还剩多久、多少人参加。
+        文案一字未改，只是从横幅缩成徽章，位置仍然挂在标签上而不是卡片上，
+        因此照样不会被翻页翻掉。
+      */}
+      <div className='flex flex-wrap items-center justify-between gap-2'>
+        <Tabs
+          value={scope}
+          onValueChange={(value) => {
+            props.onScopeChange(value === 'ended' ? 'ended' : 'live')
+            props.onPageChange(1)
+          }}
+        >
+          <TabsList>
+            <TabsTrigger value='live'>{t('qy_lot_tab_open')}</TabsTrigger>
+            <TabsTrigger value='ended'>{t('qy_lot_tab_done')}</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <Badge variant={props.kind === 'guess' ? 'destructive' : 'outline'}>
+          {props.kind === 'guess'
+            ? t('qy_lot_risk_badge_may_lose_principal')
+            : t('qy_lot_risk_badge_stake_lost')}
+        </Badge>
+      </div>
 
       {/* 列表刻意留在 `Tabs` 外面：两张标签的内容形状完全一样，差别只在
           请求参数。写成两个 `TabsContent` 就是同一段渲染的第二份拷贝，

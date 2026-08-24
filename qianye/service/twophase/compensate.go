@@ -648,3 +648,44 @@ func Interval() time.Duration {
 	}
 	return time.Duration(s) * time.Second
 }
+
+// AdjudicateFailedAsApplied 按人工核对的结论,把一张**已经判失败**的资金单改判为已生效。
+//
+// # 为什么它不能与 ResolveManually 合成一个入口
+//
+// ResolveManually 只从 Uncertain 出发。那是系统自己说"我不知道"的状态,人做的
+// 是替系统把那句话补完。本函数从 **Failed** 出发 —— 那是系统已经给过结论的终态,
+// 改写它等于推翻系统的判定。两者的危险程度不同,挂载点也必须不同:前者是通用
+// 对账台上的按钮,后者只能挂在"人真的去主库核对过流水"的那一处。
+//
+// # 存在的理由是一个真实的死角
+//
+// 资金单被判 Failed,而主库探针说的是"已生效"或"判不出来"(MainApplied /
+// MainUnknown)。此时:
+//
+//   - 补偿任务不扫 Failed(它只扫 UnsettledStatuses),reprobeUncertain 只扫 Uncertain;
+//   - 业务侧不敢换代次重开单,那是重复发钱;
+//   - 通用对账台的裁决口只收 Uncertain。
+//
+// 三条路全堵死,这一笔谁都动不了,永远挂在业务侧的挂起态上 —— 钱既没到用户
+// 账上,也没有任何人能宣布它到底算不算发过。
+//
+// # 收尾链路与补偿任务逐字相同
+//
+// 提交后收尾 + 业务 Resolver + CAS,只把 CAS 的来源状态换成 Failed。重复调用
+// 不会重复记账:账本行的一次性由 claimAfterCommit 的 CAS 保证,业务明细的
+// 一次性由各模块 Resolver 自己的 CAS 保证。
+//
+// 返回 false 表示 CAS 落空(单据已被别人推进),调用方按"状态已变化,请刷新"处理。
+// order 不是 Failed 时同样返回 false 而不是报错:调用方本来就该先自己判一次状态
+// 并给出精确文案,这里只是最后一道不许绕过的前提。
+func AdjudicateFailedAsApplied(ctx context.Context, order *qymodel.FundOrder, reason string) (bool, error) {
+	if db.Get() == nil {
+		return false, db.ErrNotReady
+	}
+	if order == nil || order.Status != qymodel.StatusFailed {
+		return false, nil
+	}
+	resolveApplied(ctx, order, []int8{qymodel.StatusFailed}, reason)
+	return order.Status == qymodel.StatusSuccess, nil
+}

@@ -255,6 +255,32 @@ export function retryQyLotPayout(
   )
 }
 
+/**
+ * 人工核对结论 → 落账。**超级管理员专属。**
+ *
+ * 用在「重试」按不动的那一档:出款冻结中、本代次资金单已判失败、而主库探针说
+ * 钱可能已经动过。三条自动链路都不碰这一笔(出款 worker 不扫 `held`、补偿任务
+ * 不扫 `failed`),而重试的换代次分支被探针挡死 —— 没有这个端点,那笔钱永久挂在
+ * 冻结中,那一场活动也因此永远删不掉。
+ *
+ * `verdict` 只有两个取值,而且它们的代价完全不同:
+ *
+ *   - `credited`     —— 核对确认钱已经到账。只把账做平,一分钱都不再动。
+ *   - `not_credited` —— 核对确认钱没到账。**换代次重排,主库会再加一次钱。**
+ *
+ * `reason` 必填(≤200 字),它是这笔钱事后唯一的解释。
+ */
+export function adjudicateQyLotPayout(
+  actNo: string,
+  payoutNo: string,
+  body: { verdict: 'credited' | 'not_credited'; reason: string }
+): Promise<unknown> {
+  return qyPost<unknown>(
+    `${actPath(actNo, '/payouts')}/${encodeURIComponent(payoutNo)}/adjudicate`,
+    body
+  )
+}
+
 export function qyAdminLotEntriesQuery(
   actNo: string,
   params: { p: number; page_size: number; status?: string; user_id?: number }

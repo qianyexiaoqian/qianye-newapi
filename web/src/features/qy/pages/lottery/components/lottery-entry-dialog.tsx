@@ -23,7 +23,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
@@ -33,6 +33,7 @@ import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyPayPasswordField } from '../../../components/qy-pay-password-field'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { isQyError, qyErrorMessage } from '../../../lib/api'
+import { formatQyQuotaLedger } from '../../../lib/format'
 import { qyTabTarget } from '../../../lib/pages'
 import { qyKeys } from '../../../lib/query-keys'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
@@ -260,11 +261,18 @@ export function QyLotEntryDialog(props: {
           )}
 
           {/* 一次性把不可逆这件事说清楚。参与费是**立即从主额度扣走**的，
-              没有撤单、没有反悔，这条必须在按下确认之前看到。 */}
+              没有撤单、没有反悔，这条必须在按下确认之前看到。
+
+              压成一句，并且**把金额写进这句话里**：改造前是一个标题加一段
+              38 字的说明，两者说的是同一件事，而真正决定用户按不按这颗按钮的
+              是"多少钱、退不退"这两个具体的量。 */}
           <Alert>
             <TriangleAlert />
-            <AlertTitle>{t('qy_lot_join_warn_title')}</AlertTitle>
-            <AlertDescription>{t('qy_lot_join_warn_desc')}</AlertDescription>
+            <AlertDescription>
+              {t('qy_lot_join_warn_line', {
+                amount: formatQyQuotaLedger(activity.stake_quota),
+              })}
+            </AlertDescription>
           </Alert>
 
           {needsPayPassword && (
@@ -280,10 +288,14 @@ export function QyLotEntryDialog(props: {
         <div className='space-y-3'>
           {/* 回执 = 用户手里的凭据。平台事后想动名单，必须同时改掉 N 个用户
               已经看到并可截图的 chain_hash —— 做不到。所以这一屏必须让人
-              一眼看懂"这串东西要留着"，并且能一键复制。 */}
+              一眼看懂"这串东西要留着"，并且能一键复制。
+
+              一句话说完："留好链哈希，「我的参与」里长期可查"。改造前是标题
+              加一段 60 字的说明，后半段讲的是哈希链为什么防得住篡改 ——
+              那是活动页「公正性验证」那一整块的主题，不该在一个刚扣完钱的
+              回执上再讲一遍。 */}
           <Alert>
-            <AlertTitle>{t('qy_lot_receipt_keep_title')}</AlertTitle>
-            <AlertDescription>{t('qy_lot_receipt_keep_desc')}</AlertDescription>
+            <AlertDescription>{t('qy_lot_receipt_keep_line')}</AlertDescription>
           </Alert>
           <div>
             <QyKeyValue label={t('qy_lot_entry_no')}>

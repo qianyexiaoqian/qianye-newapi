@@ -26,6 +26,7 @@ DELETE /api/qy/transfer/contacts/:id
 DELETE /api/qy/withdraw/payees/:ref
 GET /api/qy/admin/api-addresses
 GET /api/qy/admin/audit-logs
+GET /api/qy/admin/client-ip
 GET /api/qy/admin/commission/balances
 GET /api/qy/admin/commission/config
 GET /api/qy/admin/commission/daily-consume
@@ -75,6 +76,7 @@ GET /api/qy/admin/transfer/group-rules
 GET /api/qy/admin/transfer/records
 GET /api/qy/admin/user-group/config
 GET /api/qy/admin/version
+GET /api/qy/admin/version/check-update
 GET /api/qy/admin/violation/ai-review/channels
 GET /api/qy/admin/violation/ai-review/logs
 GET /api/qy/admin/violation/ai-review/scopes
@@ -165,6 +167,7 @@ POST /api/qy/admin/lottery/activities
 POST /api/qy/admin/lottery/activities/:act_no/cancel
 POST /api/qy/admin/lottery/activities/:act_no/guess-result
 POST /api/qy/admin/lottery/activities/:act_no/hide
+POST /api/qy/admin/lottery/activities/:act_no/payouts/:payout_no/adjudicate
 POST /api/qy/admin/lottery/activities/:act_no/payouts/:payout_no/retry
 POST /api/qy/admin/lottery/activities/:act_no/publish
 POST /api/qy/admin/lottery/activities/:act_no/unhide

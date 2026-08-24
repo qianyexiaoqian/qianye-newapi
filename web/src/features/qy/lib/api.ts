@@ -112,10 +112,6 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_transfer_failed: 'qy_err_transfer_failed',
   // 分组限制（qianye/modules/transfer/grouprule.go）。两个 code 必须映射到
   // 两句不同的话：blocked 是「换谁都不行」，denied 是「换个收款人也许就行」。
-  // 基准用户组读不到时的失败关闭（qianye/modules/transfer/basegroup.go）。
-  // 划转门槛按剥掉套餐之后的用户组解析，那一步读不到就整笔拒绝 —— 这是
-  // 「宁少勿多」在读取失败方向上的落点，重试有意义，所以文案要说“稍后再试”。
-  qy_transfer_base_group_unavailable: 'qy_err_transfer_base_group',
   qy_transfer_group_blocked: 'qy_err_transfer_group_blocked',
   qy_transfer_group_denied: 'qy_err_transfer_group_denied',
   // 划转联系人（qianye/modules/transfer/contacts.go）。
@@ -349,6 +345,15 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_spend_not_ready: 'qy_lot_err_spend_not_ready',
   qy_lot_payout_not_found: 'qy_lot_err_payout_not_found',
   qy_lot_payout_needs_manual: 'qy_lot_err_payout_needs_manual',
+  // 人工核对落账的六个拒绝理由。不登记会全塌成后端那句中文原文，
+  // 而它们要求运营做的下一步完全不同：改用「重试」 / 等补偿任务收敛 /
+  // 刷新后重试 / 把核对依据填完。
+  qy_lot_adjudicate_not_held: 'qy_lot_err_adjudicate_not_held',
+  qy_lot_adjudicate_no_order: 'qy_lot_err_adjudicate_no_order',
+  qy_lot_adjudicate_order_settled: 'qy_lot_err_adjudicate_order_settled',
+  qy_lot_adjudicate_order_open: 'qy_lot_err_adjudicate_order_open',
+  qy_lot_adjudicate_verdict: 'qy_lot_err_adjudicate_verdict',
+  qy_lot_adjudicate_reason: 'qy_lot_err_adjudicate_reason',
   qy_lot_bad_request: 'qy_lot_err_bad_request',
   // 卡片背景图。十一个 code 各自要求的下一步完全不同：换一张更小的 / 换一种
   // 格式 / 先保存或移除待用的那几张 / 地址写错了 / 两种来源只能二选一 /
@@ -406,6 +411,21 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_chops_bad_status: 'qy_err_chops_bad_status',
   qy_chops_nothing_to_reset: 'qy_err_chops_nothing_to_reset',
   qy_chops_invalid_param: 'qy_err_invalid',
+
+  // ── 二开检查更新（qianye/controller/update_check.go）──
+  //
+  // 这六个 code **必须全部登记**，而且必须映射到六句不同的话。后端把失败拆成
+  // 六档正是这个端点存在的理由（浏览器直连拿不到状态码，所有失败都塌成一个
+  // TypeError）；前端漏登记的话它们会按 HTTP 状态码归类 —— 五个 502 一起变成
+  // `qy_err_server`（"服务器出错了"），一个 429 变成 `qy_err_rate_limited`，
+  // 后端那一层拆分就白做了，而管理员要做的下一步四者完全不同：
+  // 查这台机器的出网 / 查仓库地址 / 等一小时 / 查出站 IP 是不是被封了。
+  qy_update_unreachable: 'qy_err_update_unreachable',
+  qy_update_rate_limited: 'qy_err_update_rate_limited',
+  qy_update_source_missing: 'qy_err_update_source_missing',
+  qy_update_forbidden: 'qy_err_update_forbidden',
+  qy_update_unexpected_status: 'qy_err_update_unexpected_status',
+  qy_update_bad_payload: 'qy_err_update_bad_payload',
 }
 
 /**

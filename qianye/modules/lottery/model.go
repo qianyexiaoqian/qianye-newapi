@@ -179,7 +179,7 @@ type Activity struct {
 	MaxPerInviter      int `json:"max_per_inviter" gorm:"not null;default:0"`
 	CooldownSeconds    int `json:"cooldown_seconds" gorm:"not null;default:0"`
 	// DedupIp 默认关闭。它会误伤家庭/公司/校园/运营商 NAT 共用出口的真实用户,
-	// 而 c.ClientIP() 在反代未正确配置 trusted proxies 时可被 X-Forwarded-For
+	// 而客户端 IP 在反代未正确配置 TRUSTED_PROXIES 时可被 X-Forwarded-For
 	// 伪造 —— 防御方向恰好反了。管理端表单必须写清这个代价。
 	DedupIp bool `json:"dedup_ip" gorm:"not null"`
 

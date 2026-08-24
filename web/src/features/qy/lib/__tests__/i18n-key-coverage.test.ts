@@ -137,6 +137,22 @@ const QY_DYNAMIC_KEYS = [
   'qy_lot_cfg_h_show_play_draw_ball',
   'qy_lot_cfg_k_show_play_guess',
   'qy_lot_cfg_h_show_play_guess',
+  // 护栏模型(qwen3guard)那九个**训练时钉死**的安全类别名。渠道表单画的是
+  // 九个复选框，取文案走
+  // ``t(`qy_ai_guard_cat_${c.id}`, { defaultValue: c.label })`` —— 字面量扫描器
+  // 看不见,而 defaultValue 是官方英文名,缺键会让中文界面上出现
+  // `Non-violent Illegal Acts` 这种**看起来像正常内容**的英文,连"这里少了
+  // 文案"这个信号都没有。清单对齐后端 `qianye/modules/violation/aireview_guard.go`
+  // 的 guardAllCategories,那份表由 Go 测试钉住。
+  'qy_ai_guard_cat_violent',
+  'qy_ai_guard_cat_non_violent_illegal_acts',
+  'qy_ai_guard_cat_sexual_content_or_sexual_acts',
+  'qy_ai_guard_cat_pii',
+  'qy_ai_guard_cat_suicide_and_self_harm',
+  'qy_ai_guard_cat_unethical_acts',
+  'qy_ai_guard_cat_politically_sensitive_topics',
+  'qy_ai_guard_cat_copyright_violation',
+  'qy_ai_guard_cat_jailbreak',
 ]
 
 /**

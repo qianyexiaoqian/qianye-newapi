@@ -516,7 +516,7 @@ func entryInputOf(c *gin.Context, actNo string, req entryRequest) EntryInput {
 		OptNo:           req.OptNo,
 		Amount:          req.Amount,
 		Pick:            req.Pick,
-		ClientIp:        c.ClientIP(),
+		ClientIp:        common.ClientIP(c),
 		UserAgent:       c.Request.UserAgent(),
 	}
 }

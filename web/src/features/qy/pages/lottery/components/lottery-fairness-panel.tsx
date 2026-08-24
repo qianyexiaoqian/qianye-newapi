@@ -40,7 +40,7 @@ import {
 
 import { QyTimeline } from '../../../components/qy-timeline'
 import type { QyTimelineItem } from '../../../lib/types'
-import { QY_EMPTY_TEXT, formatQyTs } from '../../ops/format'
+import { QY_EMPTY_TEXT } from '../../ops/format'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
 import { qyLotFullProofQuery, qyLotProofDownloadUrl } from '../api'
 import {
@@ -54,6 +54,7 @@ import {
   type QyLotActivityDetail,
   type QyLotProof,
 } from '../types'
+import { QyLotFinePrint } from './lottery-fine-print'
 
 const STEP_ICON = {
   ok: CircleCheck,
@@ -135,44 +136,55 @@ export function QyLotFairnessPanel(props: { activity: QyLotActivityDetail }) {
       </CardHeader>
       <CardContent className='space-y-4'>
         {!ready ? (
-          <p className='text-muted-foreground text-sm'>
-            {t('qy_lot_fairness_not_ready')}
-          </p>
+          <QyLotFinePrint label={t('qy_lot_fairness_not_ready')}>
+            <p>{t('qy_lot_fairness_not_ready_why')}</p>
+          </QyLotFinePrint>
         ) : (
           <>
             <QyTimeline items={buildTimeline(activity, proof, t)} />
 
-            <div>
-              <QyKeyValue label={t('qy_lot_commit_hash')}>
-                <span className='font-mono text-xs'>
-                  {activity.commit_hash === ''
-                    ? QY_EMPTY_TEXT
-                    : activity.commit_hash}
-                </span>
-              </QyKeyValue>
-              <QyKeyValue label={t('qy_lot_roster_hash')}>
-                <span className='font-mono text-xs'>
-                  {proof?.roster_hash === '' || proof == null
-                    ? QY_EMPTY_TEXT
-                    : proof.roster_hash}
-                </span>
-              </QyKeyValue>
-              <QyKeyValue label={t('qy_lot_roster_count')}>
-                {proof?.roster_count ?? QY_EMPTY_TEXT}
-              </QyKeyValue>
-              <QyKeyValue label={t('qy_lot_seed')}>
-                <span className='font-mono text-xs'>
-                  {proof == null || proof.seed === ''
-                    ? t('qy_lot_seed_sealed')
-                    : proof.seed}
-                </span>
-              </QyKeyValue>
-              <QyKeyValue label={t('qy_lot_chain_head')}>
-                <span className='font-mono text-xs'>
-                  {proof?.chain_head ?? QY_EMPTY_TEXT}
-                </span>
-              </QyKeyValue>
-            </div>
+            {/*
+              四串 64 位十六进制加一个计数，摊开就是 260 多个可见字符 —— 一整屏
+              里最长的一块，而它们对**读**这件事零价值：没有人靠肉眼比对哈希。
+              它们的价值在「可复制、可截图、可留存」，那三件事展开一次全都做得到。
+
+              所以默认折起来，触发文字直接说明里面有几项。不改成截断显示是刻意的：
+              截断之后的截图不再是一份可用的快照，而"在封盘与揭示之间抓一份平台
+              无法否认的名单快照"正是这套协议成立的唯一现场动作。
+            */}
+            <QyLotFinePrint label={t('qy_lot_evidence_digest')}>
+              <div>
+                <QyKeyValue label={t('qy_lot_commit_hash')}>
+                  <span className='font-mono text-xs'>
+                    {activity.commit_hash === ''
+                      ? QY_EMPTY_TEXT
+                      : activity.commit_hash}
+                  </span>
+                </QyKeyValue>
+                <QyKeyValue label={t('qy_lot_roster_hash')}>
+                  <span className='font-mono text-xs'>
+                    {proof?.roster_hash === '' || proof == null
+                      ? QY_EMPTY_TEXT
+                      : proof.roster_hash}
+                  </span>
+                </QyKeyValue>
+                <QyKeyValue label={t('qy_lot_roster_count')}>
+                  {proof?.roster_count ?? QY_EMPTY_TEXT}
+                </QyKeyValue>
+                <QyKeyValue label={t('qy_lot_seed')}>
+                  <span className='font-mono text-xs'>
+                    {proof == null || proof.seed === ''
+                      ? t('qy_lot_seed_sealed')
+                      : proof.seed}
+                  </span>
+                </QyKeyValue>
+                <QyKeyValue label={t('qy_lot_chain_head')}>
+                  <span className='font-mono text-xs'>
+                    {proof?.chain_head ?? QY_EMPTY_TEXT}
+                  </span>
+                </QyKeyValue>
+              </div>
+            </QyLotFinePrint>
 
             {/* 概率制的档位区间表。**这是概率制相对名次制必须额外公开的东西**：
                 名次制里"谁中"由票面排序决定、区间无从谈起；概率制里如果不把
@@ -206,16 +218,9 @@ export function QyLotFairnessPanel(props: { activity: QyLotActivityDetail }) {
               </div>
             )}
 
-            {/* 平台对"这份证据证不了什么"的自陈。它由后端随证据链下发，
-                原样列出而不是折叠起来：把边界写在证据里，比让用户自己去撞
-                要诚实，也比一段前端写死的免责声明更难被悄悄改掉。 */}
-            {proof != null && (proof.notice ?? '') !== '' && (
-              <p className='text-muted-foreground text-xs break-words whitespace-pre-wrap'>
-                {proof.notice}
-              </p>
-            )}
-
-            {/* 拿到的条目不完整时**必须说出来**，并且不给"验证通过"的假象。 */}
+            {/* 拿到的条目不完整时**必须说出来**，并且不给"验证通过"的假象。
+                这一条不折叠：它说的是"你现在看到的验证结果不可信"，属于
+                当场就要知道的事。 */}
             {proof != null && proof.entries.length !== proof.total && (
               <Alert>
                 <AlertTitle>{t('qy_lot_vf_partial_title')}</AlertTitle>
@@ -283,9 +288,23 @@ export function QyLotFairnessPanel(props: { activity: QyLotActivityDetail }) {
               </ul>
             )}
 
-            <p className='text-muted-foreground text-xs'>
-              {t('qy_lot_vf_local_note')}
-            </p>
+            {/*
+              「复算在本地跑」与「这份证据证不了什么」是同一个问题的两半：
+              前者说明这个绿勾凭什么值得信，后者说明它的边界在哪。两条都是
+              信任必需而非决策必需 —— 不读它们照样按得下那颗按钮 —— 所以
+              合成一个入口折起来，而不是在按钮下面各摆一段灰色小字。
+
+              `notice` 由后端随证据链下发，原样显示：把边界写在证据里比一段
+              前端写死的免责声明更难被悄悄改掉。折叠改的是位置，不是来源。
+            */}
+            <QyLotFinePrint label={t('qy_lot_vf_scope_label')}>
+              <p>{t('qy_lot_vf_local_note')}</p>
+              {proof != null && (proof.notice ?? '') !== '' && (
+                <p className='break-words whitespace-pre-wrap'>
+                  {proof.notice}
+                </p>
+              )}
+            </QyLotFinePrint>
           </>
         )}
       </CardContent>
@@ -326,6 +345,17 @@ function bandRows(proof: QyLotProof): {
  *
  * 未到达的节点保留灰色占位而不是不渲染：用户需要知道"后面还有几步"，
  * 尤其是"种子要到开奖才公布"这一步 —— 那正是整套协议成立的原因。
+ *
+ * ## 为什么四个节点都不再带说明行
+ *
+ * `QyTimeline` 每个节点自己就渲染标题 + 时刻，四条标题（承诺 / 冻结名单 /
+ * 揭示种子 / 结算完成）连起来已经把顺序讲完了，而顺序正是这条时间线要传达的
+ * 全部内容。挂在下面那四句 20 字上下的说明是**同一件事的第二遍**，四条加起来
+ * 60 多个字，在窄屏上把时间线撑成两屏高。协议本身的说明留在卡片头部那一句与
+ * 底部的「这份证据证明什么」折叠位里。
+ *
+ * 结算那一条此前更是把 `settled_at` **同时**写进 description 与 timestamp，
+ * 屏幕上一行里出现两个一模一样的时间戳 —— 那不是精简掉的信息，是重复。
  */
 function buildTimeline(
   activity: QyLotActivityDetail,
@@ -337,14 +367,12 @@ function buildTimeline(
     {
       key: 'commit',
       title: t('qy_lot_tl_commit'),
-      description: t('qy_lot_tl_commit_desc'),
       timestamp: activity.open_at,
       state: activity.commit_hash === '' ? 'pending' : 'done',
     },
     {
       key: 'freeze',
       title: t('qy_lot_tl_freeze'),
-      description: t('qy_lot_tl_freeze_desc'),
       // 显示**实际**封盘时刻而不是计划的 close_at：它与揭示时刻之间的那一段
       // 才是"任何人都能抓一份平台无法否认的名单快照"的窗口，而封盘任务落后时
       // 这两个值可以差很远。
@@ -354,14 +382,12 @@ function buildTimeline(
     {
       key: 'reveal',
       title: t('qy_lot_tl_reveal'),
-      description: t('qy_lot_tl_reveal_desc'),
       timestamp: proof?.revealed_at ?? activity.draw_at,
       state: revealed ? 'done' : 'pending',
     },
     {
       key: 'settle',
       title: t('qy_lot_tl_settle'),
-      description: formatQyTs(proof?.settled_at ?? 0),
       timestamp: proof?.settled_at ?? 0,
       state: activity.status === 'finished' ? 'done' : 'pending',
     },

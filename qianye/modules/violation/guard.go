@@ -399,7 +399,7 @@ func captureRecordCtx(c *gin.Context, info *relaycommon.RelayInfo) recordCtx {
 		ChannelId:   channelId,
 		RelayFormat: truncate(string(info.RelayFormat), 32),
 		RequestId:   requestId,
-		Ip:          truncate(c.ClientIP(), 64),
+		Ip:          truncate(common.ClientIP(c), 64),
 	}
 }
 

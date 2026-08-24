@@ -26,15 +26,25 @@ RUN go mod download
 COPY . .
 COPY --from=builder /build/web/dist ./web/dist
 # Fork version stamps. .dockerignore excludes .git, so `git describe` cannot run
-# inside the build; the values must be passed in:
-#   docker build --build-arg QY_BUILD_VERSION="$(git describe --tags --always --dirty)" \
-#                --build-arg QY_UPSTREAM_VERSION="$(git describe --tags --abbrev=0)" .
+# inside the build; the build commit must be passed in:
+#   docker build --build-arg QY_BUILD_VERSION="$(git describe --tags --always --dirty)" .
 # Left empty, qianye/version reports "unknown" rather than a fabricated tag.
-# The symbol paths must be the FULL module path — the linker silently drops a
+# The symbol path must be the FULL module path — the linker silently drops a
 # -X whose path does not match, with no error and a successful build.
+#
+# The fork version and the synced-upstream commit are NOT injected here: both
+# are declared in qianye/version/baseline.txt and compiled in via go:embed. The
+# core version comes from that same declaration (upstream_tag, verbatim) via
+# build.sh --print-core, which falls back to the VERSION file when upstream CI
+# has written one. Both readers of the declaration parse it identically (exact
+# key names, last occurrence wins).
+#
+# common.Version must stay byte-identical to the upstream release tag: the
+# upstream "check for updates" button compares it to a release tag_name with
+# string equality, so any fork suffix makes it report an update forever.
 ARG QY_BUILD_VERSION=
-ARG QY_UPSTREAM_VERSION=
-RUN go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=$(cat VERSION)' -X 'github.com/QuantumNous/new-api/qianye/version.Build=${QY_BUILD_VERSION}' -X 'github.com/QuantumNous/new-api/qianye/version.Upstream=${QY_UPSTREAM_VERSION}'" -o new-api
+RUN CORE_VERSION="$(sh qianye/scripts/build.sh --print-core)" \
+    && go build -ldflags "-s -w -X 'github.com/QuantumNous/new-api/common.Version=${CORE_VERSION}' -X 'github.com/QuantumNous/new-api/qianye/version.Build=${QY_BUILD_VERSION}'" -o new-api
 
 FROM debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a
 

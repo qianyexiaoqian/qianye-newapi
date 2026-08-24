@@ -16,8 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useTranslation } from 'react-i18next'
-
 import { QyLotHallList } from './components/lottery-hall-list'
 import type { QyLotHallState } from './components/lottery-hall-list'
 
@@ -27,18 +25,11 @@ import type { QyLotHallState } from './components/lottery-hall-list'
  * 只是正文：区段头与标签栏由宿主 `hub.tsx` 提供。它曾经是一个独立页面
  * （`QyLottery`），需求 2 之后降级 —— 标签页里再套一层区段头会得到两级标题。
  *
- * 顶部那句风险提示不是装饰：与竞猜合并进同一个菜单之后，两类活动在用户心里
- * 会糊成一件事，而「参与费不退」与「可能亏本金」是两种完全不同的代价。
- * 靠卡片配色暗示是不够的。
+ * 那句风险提示（「参与费不退」）没有消失，它挪进了 `QyLotHallList` 的分段栏，
+ * 与「进行中 / 已结束」同一行：与竞猜合并进同一个菜单之后，两类活动的代价
+ * 差一个量级，这句话必须在，但它此前独占一整块带边框的横幅 —— 五个字的内容
+ * 占掉了首屏第一屏最值钱的那条位置，把奖池与倒计时挤到了折叠线以下。
  */
 export function QyLotteryDrawBody(props: QyLotHallState) {
-  const { t } = useTranslation()
-  return (
-    <div className='space-y-3'>
-      <p className='text-muted-foreground rounded-lg border p-3 text-sm'>
-        {t('qy_lot_risk_badge_stake_lost')}
-      </p>
-      <QyLotHallList kind='draw' {...props} />
-    </div>
-  )
+  return <QyLotHallList kind='draw' {...props} />
 }

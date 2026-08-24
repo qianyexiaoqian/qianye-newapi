@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -12,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/modules/commission"
+	"github.com/QuantumNous/new-api/qianye/serverday"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/qianye/service/twophase"
 
@@ -267,7 +267,7 @@ func buildWithdrawal(c *gin.Context, user *model.User, acc acceptedRequest, cfg 
 		FrozenQuotaPerUnit: perUnit,
 		Remark:             acc.Remark,
 		HasProof:           acc.ProofRef != "",
-		ClientIp:           truncate(c.ClientIP(), 64),
+		ClientIp:           truncate(common.ClientIP(c), 64),
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -353,14 +353,18 @@ type dailyUsage struct {
 	Quota int64
 }
 
-func loadDailyUsage(tx *gorm.DB, userId int) (dailyUsage, error) {
+// loadDailyUsage 的「今日」= 服务器本地时区的自然日,起点由 qianye/serverday
+// 统一给出(同一份实现也供密钥页的「今日消耗」使用)。now 必须由调用方传进来,
+// 不能在这里再读一次钟:闸门里的冷却窗口用的是调用方那一个 now,两处各读一次
+// 会在午夜前后开出一条谁都注意不到的缝。
+func loadDailyUsage(tx *gorm.DB, userId int, now int64) (dailyUsage, error) {
 	var u dailyUsage
 	err := tx.Model(&Withdrawal{}).
 		Select("COUNT(*) AS submitted, "+
 			"COALESCE(SUM(CASE WHEN status <> ? THEN 1 ELSE 0 END), 0) AS active, "+
 			"COALESCE(SUM(CASE WHEN status <> ? THEN quota ELSE 0 END), 0) AS quota",
 			StatusCancelled, StatusCancelled).
-		Where("user_id = ? AND created_at >= ?", userId, dayStart()).
+		Where("user_id = ? AND created_at >= ?", userId, serverday.Start(now)).
 		Scan(&u).Error
 	return u, err
 }
@@ -383,7 +387,7 @@ func loadDailyUsage(tx *gorm.DB, userId int) (dailyUsage, error) {
 // 校验了、赋了默认值,却没有任何消费方。运维看着一份写满上限的 YAML,
 // 实际上一道闸门都没有关。
 func enforceCreateLimits(tx *gorm.DB, userId int, quota int64, cfg config.Withdraw, now int64) error {
-	usage, err := loadDailyUsage(tx, userId)
+	usage, err := loadDailyUsage(tx, userId, now)
 	if err != nil {
 		return err
 	}
@@ -425,15 +429,6 @@ func enforceCreateLimits(tx *gorm.DB, userId int, quota int64, cfg config.Withdr
 		}
 	}
 	return nil
-}
-
-// dayStart 返回服务器本地时区今日 0 点的 unix 秒。
-//
-// 用本地时区而不是 UTC:"今天最多提 3 次"是给运营和用户看的口径,
-// 跟着服务器所在地走才不会出现"晚上八点就换天了"的困惑。
-func dayStart() int64 {
-	now := time.Now()
-	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
 }
 
 func submitDetail(w *Withdrawal) string {

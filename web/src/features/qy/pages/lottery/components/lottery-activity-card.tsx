@@ -88,13 +88,15 @@ export function QyLotActivityCard(props: {
               {t('qy_lot_ball_issue_no', { no: activity.issue_no ?? 0 })}
             </Badge>
           )}
+          {/* 结局揭晓之后，状态与结局是同一件事：颜色与文字合进一枚徽章。
+              此前是两枚并排，一场取消的活动上写着「已取消 已取消(全额退款)」，
+              一场流局的活动上写着「已冲正 人数不足流局(全额退款)」——
+              后者更糟，两枚徽章像是在说两件事。 */}
           <QyStatusBadge
             status={qyLotActivityBadgeStatus(activity.status, activity.outcome)}
+            label={outcomeKey == null ? undefined : t(outcomeKey)}
             className='shrink-0'
           />
-          {outcomeKey != null && (
-            <Badge variant='secondary'>{t(outcomeKey)}</Badge>
-          )}
         </div>
         <h3 className='text-base font-medium break-words'>{activity.title}</h3>
       </CardHeader>
@@ -161,13 +163,18 @@ export function QyLotActivityCard(props: {
 
       <CardFooter className='flex items-center justify-between gap-2'>
         {/* "我参加过 N 次"必须在卡片上就能看到：允许多次参与的活动里，
-            用户最容易犯的错就是不记得自己已经买过几张而重复下单。 */}
-        <span className='text-muted-foreground text-xs'>
-          {activity.my_entry_count > 0
-            ? t('qy_lot_my_entry_count', { count: activity.my_entry_count })
-            : t('qy_lot_not_joined')}
-        </span>
+            用户最容易犯的错就是不记得自己已经买过几张而重复下单。
+
+            没参加过时**什么都不写**。「尚未参与」是一句零信息量的话 —— 大厅里
+            绝大多数卡片都是这个状态，于是每一张卡上都挂着同一个四字标签，
+            真正有内容的那几张（已参与 N 次）反而淹没在里面。 */}
+        {activity.my_entry_count > 0 && (
+          <span className='text-muted-foreground text-xs'>
+            {t('qy_lot_my_entry_count', { count: activity.my_entry_count })}
+          </span>
+        )}
         <Button
+          className='ms-auto'
           size='sm'
           variant='outline'
           render={

@@ -35,7 +35,7 @@ type actor struct {
 }
 
 func actorOf(c *gin.Context) actor {
-	return actor{Id: c.GetInt("id"), Name: c.GetString("username"), IP: c.ClientIP()}
+	return actor{Id: c.GetInt("id"), Name: c.GetString("username"), IP: common.ClientIP(c)}
 }
 
 // cancelByUser 撤销申请。只有 pending 单可撤销,佣金原路退回。

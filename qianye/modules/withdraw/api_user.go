@@ -34,7 +34,7 @@ func handleGetConfig(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	usage, err := loadDailyUsage(db.Get(), userId)
+	usage, err := loadDailyUsage(db.Get(), userId, common.GetTimestamp())
 	if err != nil {
 		db.MarkFailure(err)
 		respondErr(c, err)

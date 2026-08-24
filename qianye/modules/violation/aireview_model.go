@@ -95,6 +95,55 @@ type AIChannel struct {
 	BaseUrl string `json:"base_url" gorm:"type:varchar(256);not null;default:''"`
 	Model   string `json:"model" gorm:"type:varchar(128);not null;default:''"`
 
+	// Protocol 是这个渠道说哪一种"审核方言",取值见 aireview_guard.go:
+	//
+	//	""(零值)/ json_prompt  发提示词、要 JSON。**存量行与出厂行为**。
+	//	qwen3guard              不发提示词,解析 Safety/Categories 安全标签。
+	//
+	// # 零值必须落在 json_prompt 上
+	//
+	// AutoMigrate 给存量行 ADD COLUMN 时回填的是空串(gorm default:''),而空串
+	// 经 normalizeAIProtocol 归到 json_prompt —— 也就是这一列加入之前的唯一行为。
+	// 换成"零值 = qwen3guard"会让每一个已经在跑的站点在升级那一秒静默换掉
+	// 审核协议,而症状是全部渠道开始 bad_json、fail-open 放行,界面上一切正常。
+	//
+	// 它是**渠道级**而不是全局级:护栏模型与通用模型的长短互补(见
+	// aireview_guard.go 顶部的对照表),同一个站点两种都挂是预期用法,
+	// 一个全局开关会让这变得不可能。
+	Protocol string `json:"protocol" gorm:"type:varchar(24);not null;default:''"`
+
+	// GuardControversial 只在 Protocol = qwen3guard 时有意义:Qwen3Guard 比常见
+	// 护栏模型多一档 Controversial(有争议),这一格决定把它当违规还是不当。
+	//
+	// 取值 safe / sensitive / unsafe,零值(空串)= safe = **不当违规**。
+	// 方向与本模块一贯的取舍一致:新增能力不得替站点收紧处置。
+	// json_prompt 渠道上这一列恒被忽略,不做校验以外的处理。
+	GuardControversial string `json:"guard_controversial" gorm:"type:varchar(16);not null;default:''"`
+
+	// GuardCategories 是**启用的类别子集**,逗号分隔的九类 id(见 aireview_guard.go)。
+	//
+	// # 零值:空串 = 九类全启用
+	//
+	// 这是唯一正确的零值方向。存量行 ADD COLUMN 回填空串,而空串必须等于
+	// 这一列存在之前的行为 —— 那时没有任何过滤。反过来(空串 = 一个都不启用)
+	// 会让升级那一秒起所有护栏渠道的判定全部降档,而界面上一切正常。
+	//
+	// 停用一个类别**不等于**丢弃它:Unsafe 且解析出的类别全被停用时,判定仍然
+	// 成立,只是置信度从 0.95 降到 0.6(见 guardLabels.toVerdict)。静默吃掉一票
+	// Unsafe 在本模块一律不接受。
+	GuardCategories string `json:"guard_categories" gorm:"type:varchar(256);not null;default:''"`
+
+	// GuardElevate 是 GuardControversial = sensitive 档下"命中即升级成违规"的
+	// 类别,同样是逗号分隔的九类 id。
+	//
+	// # 零值:空串 = 参考实现的三类
+	//
+	// 空串回落到 jailbreak / pii / suicide_and_self_harm(Wei-Shaw/sub2api 的
+	// isElevatedControversial)。它不能是"空集合" —— sensitive 档配一个空的
+	// 升级清单等于把这一档变成 safe,而界面上它写着"命中敏感类别时拦截"。
+	// 想要"完全不升级"的运营应该选 safe 档,那一格的字面意思就是这个。
+	GuardElevate string `json:"guard_elevate" gorm:"type:varchar(256);not null;default:''"`
+
 	KeyNonce   qymodel.VarBinary `json:"-" gorm:"size:32"`
 	KeyCipher  qymodel.VarBinary `json:"-" gorm:"size:512"`
 	KeyVersion int               `json:"key_version" gorm:"not null;default:0"`

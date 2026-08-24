@@ -46,6 +46,7 @@ var auditWriteFuncs = map[string]bool{
 	"afterRuleBatch":         true, // violation:批量启停 / 批量作用分组的批次结局,成功与失败同一出口
 	"writeDeleteAudit":       true,
 	"writeAdminAudit":        true,
+	"writeAdjudicateAudit":   true, // lottery:出款人工落账,成功与失败同一出口(额外带受益人与金额)
 	"writeSystemAudit":       true,
 	"putConfigFailed":        true,
 	"writeTicketAudit":       true,
@@ -335,6 +336,10 @@ var auditRequired = []struct {
 			"谁在什么时候录了什么、依据是什么,必须永久可查"},
 	{"modules/lottery/api_admin.go", "handleRetryPayout", 2,
 		"重试出款直接决定一笔钱会不会再发一次;失败的那次同样要留痕"},
+	{"modules/lottery/payout_adjudicate.go", "handleAdjudicatePayout", 2,
+		"人工落账是绕过全部自动判据的最终裁决:一支把「平台还欠着」的钱在账上宣布为已付清," +
+			"另一支让主库对同一个人再加一次钱。审计里那条核对依据是这笔钱事后唯一的解释," +
+			"被判据拒绝的那次(自营、越级、与补偿任务撞车)同样必须留痕"},
 	{"modules/lottery/text_prize.go", "handleFulfillPrize", 2,
 		"文本奖是全模块唯一一处「钱之外还欠着东西」:兑换码一旦填进去,中奖者立刻能看到" +
 			"并可能当场用掉。谁在什么时候给谁发了什么档的奖,必须永久可查;" +

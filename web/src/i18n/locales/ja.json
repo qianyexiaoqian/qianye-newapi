@@ -5350,7 +5350,7 @@
     "Today's Usage": "本日の消費",
     "Today's usage is unavailable right now": "本日の消費は現在取得できません",
     "Today: {{start}} → {{end}}": "本日: {{start}} → {{end}}",
-    "Day boundary {{zone}} — the same one the daily consumption report uses": "日境界 {{zone}} — 日次消費レポートと同じ基準です",
+    "Server local time {{zone}} — the daily consumption report may use a different day boundary": "サーバーのローカル時刻 {{zone}} — 日次消費レポートの日境界とは異なる場合があります",
     "Switch group": "グループを切り替え",
     "Failed to switch group": "グループの切り替えに失敗しました",
     "Switched to group {{group}}": "グループ {{group}} に切り替えました",

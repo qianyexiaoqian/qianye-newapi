@@ -158,17 +158,11 @@ func adminListGroupLimits(c *gin.Context) {
 // 刻意**不复用 s.Tiers**:那份 map 已经丢掉了停用的行,而列表必须把它们显示
 // 出来。这里把这一行(不论启停)叠到全局上算一次,得到的就是「把它启用之后
 // 会变成什么样」—— 运营在按下那个开关之前需要看到的正是这个。
+// 合并走 mergeTier —— 与判定端 transferFor 同一段代码。自己再摊开写一遍
+// 就会漏掉 tightenOnlyKeys 那一支,表现是「列表说这一档冻结期是 0、用户提交时
+// 按全局的 24 小时被拒」,运营在界面上看不到任何异常。
 func buildGroupLimitRow(s opSettings, row GroupLimit) groupLimitRow {
-	merged := s.Transfer
-	sources := make(map[string]string, len(tierableKeys))
-	for _, key := range tierableKeys {
-		if v, has := row.override(key); has {
-			assignTransferSetting(&merged, key, v)
-			sources[key] = tierSourceGroup
-			continue
-		}
-		sources[key] = tierSourceGlobal
-	}
+	merged, sources := mergeTier(s.Transfer, row)
 	effective := make(map[string]int64, len(tierableKeys))
 	for _, key := range tierableKeys {
 		v, _ := transferSettingValue(merged, key)
@@ -178,7 +172,7 @@ func buildGroupLimitRow(s opSettings, row GroupLimit) groupLimitRow {
 		GroupLimit: row,
 		Effective:  effective,
 		Sources:    sources,
-		Valid:      config.ValidateTransfer(&merged) == nil,
+		Valid:      tierOverridesInBounds(row) == nil && config.ValidateTransfer(&merged) == nil,
 	}
 }
 

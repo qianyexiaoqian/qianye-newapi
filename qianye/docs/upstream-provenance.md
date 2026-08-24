@@ -989,3 +989,184 @@ query string）。上游随 `2b0efd848` 带来的
    整段换掉，而这里的沉默让下一个人以为它有覆盖。已补齐，5 条判据逐条照搬、
    载体换成本仓的 happy-dom + createRoot。）
 3. **上游至今未修的 27 条**（本文档第一组）—— 不变，仍然是我们自己维护的补丁。
+
+---
+
+# 内核版本号同步(第二轮的收尾)
+
+**本节时间**:2026-08-22
+**触发**:项目方「你把当前项目分分支的上游 newapi 内核版本号同步一下」。
+
+## 一、同步前的事实:版本号比代码落后整整一个 release
+
+`/api/status` 与 `X-New-Api-Version` 都在报 `v1.0.0-rc.24`,而树里同步到的上游
+其实是 **`2d8e50bf3`**,也就是 `v1.0.0-rc.25` 之后的第 1 个提交。
+
+差了一个 release,而且**谁都没报错**。病因是版本号的算法:
+
+```
+build.ps1 / build.sh:  upstream = git describe --tags --abbrev=0
+                       core     = VERSION 文件(0 字节)→ 回落到 upstream
+```
+
+`git describe` 量的是 **tag 可达性**。而本 fork 同步上游的方式是**逐提交挑拣**
+(取 blob / 三方合并 hunk),挑拣**不会**把上游的 tag 变成 HEAD 的祖先:
+
+| | |
+|---|---|
+| `git merge-base --is-ancestor v1.0.0-rc.25 HEAD` | **否** |
+| `git describe --tags --abbrev=0 HEAD` | `v1.0.0-rc.24` |
+| `git describe --tags upstream/main` | `v1.0.0-rc.25-1-g2d8e50bf3` |
+
+这两件事在 merge 工作流下碰巧一致,在挑拣工作流下必然分叉。`build.ps1` 原注释
+里写的前提是「Fork 自己不打 tag,因此 HEAD 够得着的最近 tag 必然来自上游」——
+tag 确实来自上游,但是**过期的那个**。前提写对了一半,结论因此是错的。
+
+更根本的一条:**「我们同步到哪一版」带人的判断**。本轮就故意不同步
+`e2c7aa7b1`(前端测试迁 Vitest,理由见上一节第二部分)。带判断的结论没有哪条
+git 命令算得出来,只能声明。
+
+## 二、同步到的上游版本,以及判据
+
+| | |
+|---|---|
+| 上游 `main` | `2d8e50bf3` |
+| 上游最近 release tag | **`v1.0.0-rc.25`**(轻量 tag,指向 `f116414284`,2026-08-18) |
+| 上游对该提交的自述 | `git describe --tags upstream/main` = `v1.0.0-rc.25-1-g2d8e50bf3` |
+| 上游 `VERSION` 文件 | **0 字节**(在 `v1.0.0-rc.25` 与 `2d8e50bf3` 两处都是),CI 构建时才由 tag 写入 —— 所以**权威是 tag,不是这个文件** |
+
+分叉点之后的 22 个提交,内容归属逐条核过(明细见上一节「一、22 条逐条」):
+7 条在上一轮已进树、13 条本轮进树、`e5efc73cd` 是空提交、`e2c7aa7b1` 故意不同步。
+本轮另抽 5 个文件用 blob 哈希与 `2d8e50bf3` 逐字节比对复核,全部 SAME:
+
+```
+web/src/features/usage-logs/components/logs-filter-toolbar.tsx
+web/src/features/channels/constants.ts
+web/src/lib/oauth.ts
+setting/operation_setting/monitor_setting.go
+relay/channel/advancedcustom/adaptor.go
+```
+
+结论:**内核 = 上游 v1.0.0-rc.25,基线落在 `2d8e50bf3`(rc.25 之后 1 个提交),
+唯一的缺口是前端测试框架的迁移,不涉及产品代码。**
+
+## 三、方案:声明,而不是推算 —— 而且是**两个**版本号
+
+新增 `qianye/version/baseline.txt` —— 全部「由人拍板的版本号」的**唯一事实来源**,
+三个键,分属两件互不相干的事:
+
+```
+# 内核版本(上游 new-api)
+upstream_tag=v1.0.0-rc.25
+upstream_describe=v1.0.0-rc.25-1-g2d8e50bf3
+
+# 二开版本(我们自己)
+qy_version=v0.1.0
+```
+
+Go 侧用 `go:embed` 编进二进制(文件被删或改名则**编译失败**,而不是悄悄退回
+`unknown`);`build.ps1` / `build.sh` 读同一个文件,三方解析口径一致(精确键名、
+同名键取最后一次)。`version.Upstream` 这个 ldflags 变量随之删除 —— 保留它就是
+保留第二个事实来源,而链接器的 `-X` 只能覆盖常量字面量初始化的变量,
+「注入优先、声明兜底」在实现上根本立不住,只会变成一个看起来可覆盖、
+实际永远覆盖不了的陷阱。
+
+### 被推翻的上一版:把两个版本号合成一个
+
+上一版取的口径是把二者拼成 `v1.0.0-rc.25+qy.2` 注入 `common.Version`,
+理由是「加号后是 semver build metadata,参与显示、不参与比较」。
+**这个方案是错的**,项目方明确纠正:要的是两个版本号并存,各说各的事。
+它错在三处,而且每一处都具体:
+
+1. 「系统维护 → 当前版本」那一栏于是**既不是上游版本,也不是我们的版本**。
+   想知道「内核是上游哪一版」的人得自己把后缀截掉。
+2. 上游那颗「检查更新」按钮拿这个值跟上游 release 的 `tag_name` 做的是
+   **字符串相等比较**(`web/src/features/system-settings/maintenance/update-checker-section.tsx`)。
+   带上 `+qy.2` 之后永远不相等,于是**永远弹「有新版本」**,哪怕跑的就是最新的。
+   上一版的分析说「已核实全仓没有任何语义化版本比较逻辑,`+` 不会打破谁」——
+   那句话漏看了这个相等比较,它就在同一个页面上。
+3. `/api/status` 的 `version` 与 `X-New-Api-Version` 是**上游既有契约**,
+   外部脚本按上游版本号的形状在读它。加后缀等于单方面改契约。
+
+现在的口径:
+
+- **内核版本 = `upstream_tag` 逐字**,不加任何后缀,注入 `common.Version`。
+  上面三条同时消失。
+- **二开版本 = `qy_version`**,自己一栏、自己一套编号、自己一颗检查更新按钮。
+  「这不是未改动的上游」这件事由那一栏负责说,不需要靠污染内核版本号来说。
+
+### 二开版本号的形式与递增规则
+
+恒为 `vMAJOR.MINOR.PATCH`,不带预发布段、不带 build metadata —— 因为它**必须能
+比大小**(检查更新要判断远端是不是更新),而预发布段与 build metadata 的比较
+规则是 semver 里最容易实现错的一段,我们不需要那份复杂度。
+
+| 位 | 什么时候进 |
+|---|---|
+| MAJOR | 二开自己的对外契约破坏性变更:`/api/qy` 删字段或改语义、`qianye-prod.yaml` 配置键不兼容、扩展库迁移不可回退 |
+| MINOR | 新增功能面(新模块、新页面、新接口),向后兼容 |
+| PATCH | 只修缺陷 |
+
+**人工递增,发版时改**,与 `upstream_tag` 各改各的;同步一次上游不会让它进位。
+不用 `git describe` 或 commit 数自动生成的三个理由:`git describe` 的输出是从
+**上游的 tag** 算出来的(上游一打 tag 它整体跳变,它描述的根本不是我们的版本);
+commit 数单调但没有语义,而且每次提交都变 —— 检查更新会在一个从未发布过的
+中间提交上报「有新版本」;两者都表达不了「这一版破坏了兼容性」。
+
+起始值取 `v0.1.0` 而不是 `v1.0.0`:0.x 是「还没做出稳定性承诺」的通行写法,
+而这个 fork 此刻确实没有。
+
+**发版流程**:改 `qy_version` → 提交 → 在 fork 仓库打 tag `qy-<版本>`(例
+`qy-v0.1.0`)→ 在该 tag 上建 GitHub Release。tag 带 `qy-` 前缀是因为上游的 tag
+全是 `v*`,一旦有人 `git push --tags` 把上游 tag 推进 fork,不带前缀的两套 tag
+会混在同一个命名空间里,检查更新会把上游的 release 当成我们的。
+
+## 四、四个问题各由谁回答
+
+| 问题 | 字段 | 值 | 谁能看到 |
+|---|---|---|---|
+| 内核是上游哪一版? | `/api/status` 的 `version`、`X-New-Api-Version`;`/api/qy/admin/version` 的 `core` | `v1.0.0-rc.25` | **任何人,无需鉴权**(上游既有契约) |
+| 二开是第几版? | `/api/qy/admin/version` 的 `fork` | `v0.1.0` | 管理员 |
+| 基线落在上游哪个提交? | 同上的 `upstream` | `v1.0.0-rc.25-1-g2d8e50bf3` | 管理员 |
+| 这个二进制是哪个提交编的? | 同上的 `build` | `v1.0.0-rc.24-109-g<sha>` | 管理员 |
+
+**二开版本刻意不进 `/api/status`**。`/api/status` 是匿名端点,往里加一个新字段
+等于新增一次对外披露:任何访客都能知道这台机器跑的是我们的哪一版,而唯一的
+消费方(「系统维护」页)本来就已经在调管理端的 `/api/qy/admin/version`。
+`version` 字段保持是内核版本 —— 它是上游契约,语义不动。
+
+`core` 报的是**运行期实际的 `common.Version`**,而不是由声明现算一遍:
+构建脚本正常走完时它等于 `upstream_tag`,漏了 ldflags 的二进制则会在这里露出
+上游默认值 `v0.0.0`。让这两种情况长得不一样,才能一眼看出「这个包是不是按流程出的」。
+
+## 五、检查更新:两颗按钮,各查各的
+
+「系统维护」页上现在有两颗检查更新:
+
+| | 更新源 | 谁发的请求 | 谁能点 |
+|---|---|---|---|
+| 内核(上游 new-api) | `Calcium-Ion/new-api` 的 release | 浏览器直连(上游既有代码,未改动) | 超管(整页就是超管页) |
+| 二开 | `qianyexiaoqian/qianye-newapi` 的 release | **服务端**(`GET /api/qy/admin/version/check-update`) | 超管(`RootActionUpdateCheck`) |
+
+二开这一颗为什么改成服务端发请求:**跨域 fetch 的失败全都塌成同一个
+`TypeError`**,浏览器拿不到状态码,于是「网络不通 / 被网关拦 / GitHub 限流」
+三件事在界面上完全不可区分 —— 而它们的下一步动作各不相同。服务端发请求换来
+完整的 HTTP 语义,失败因此拆成六个 code(见 `qianye/controller/update_check.go`)。
+
+更新源用 `/releases?per_page=1` 而不是 `/releases/latest`,是实测出来的:
+fork 目前一个 release 都没发过,`/releases/latest` 返回 **404**,与「仓库不存在」
+的 404 一模一样;而 `/releases` 列表在前一种情况下返回 **200 + `[]`**。
+仓库已核实是**公开**的(`GET /repos/qianyexiaoqian/qianye-newapi` → 200,
+`"private": false`),匿名 API 读得到,不需要配 token。
+
+**手动,不自动定时**;**绝不自动下载、绝不自动更新**,只给版本号与 release 链接。
+理由与代价写在 `update_check.go` 的文件注释里。
+
+## 六、下次同步 / 发版时要改什么
+
+- **同步上游**:改 `upstream_tag` 与 `upstream_describe`。
+- **发二开版本**:改 `qy_version`,并打 tag `qy-<版本>` + 建 Release。
+
+改完跑 `go test ./qianye/version/...`。形状不合法(tag 不是 `vX.Y.Z` 形态、
+`describe` 与 `tag` 指向不同 release、`qy_version` 不是 `vX.Y.Z` 或还停在
+`v0.0.0`、两个版本号取了同一个值)会直接红。

@@ -38,9 +38,18 @@ For commercial licensing, please contact support@quantumnous.com
  *
  * ── 「今日」是哪一段 ──
  *
- * 悬浮里写死区间与日界时区。本站另有一个「今天」（划转/提现的日限额）走服务器
- * 本地时区的午夜，两者可以差好几个小时；不写清楚的话用户没有任何办法把两个数
- * 对上，而两个数都是对的。
+ * 项目方口径：「以服务器的时间为准，即 0 点到 23 点 59 分 59 秒是今日的消耗。」
+ * 所以悬浮里必须写两件事，而且两件都不能省：
+ *
+ *   ① 实际区间 —— 按**服务器本地时区**渲染，不是浏览器时区。运营在上海打开
+ *      一台跑在 PST 的机器，服务器的「今日 0 点」在他浏览器里是 15:00；
+ *      照浏览器渲染的话，这行文案会把它自己要解释的那件事解释错。
+ *   ② 当前实际在用的时区 —— 容器里 TZ 常常没设、tzdata 常常没装，进程认的
+ *      「本地」就是 UTC，而运营以为是他自己所在地。不写出来就没人会发现。
+ *
+ * 本页的「今日」与**日消费明细**的「今日」不是同一段:后者走返佣的固定日界
+ * (commission.day_offset_minutes),演示机上两者差 7 小时。所以这里刻意不再
+ * 声称两处同源 —— 那句话在改成服务器本地自然日之后已经是假的。
  */
 import type { Row } from '@tanstack/react-table'
 import { useTranslation } from 'react-i18next'
@@ -51,10 +60,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import dayjs from '@/lib/dayjs'
 import { formatQuota } from '@/lib/format'
 
-import { formatDayOffsetLabel } from '../lib/today-usage'
+import { formatInServerZone, formatServerZoneLabel } from '../lib/today-usage'
 import type { ApiKey } from '../types'
 import { useApiKeys } from './api-keys-provider'
 
@@ -93,7 +101,8 @@ export function ApiKeyTodayUsageCell({ row }: { row: Row<ApiKey> }) {
 
   // 缺席 = 今天一次都没用过 = 0。与"合计恰好为 0"在界面上是同一件事。
   const quota = todayUsage.usage[row.original.id] ?? 0
-  const zone = formatDayOffsetLabel(todayUsage.dayOffsetMinutes)
+  const offset = todayUsage.utcOffsetMinutes
+  const zone = formatServerZoneLabel(todayUsage.timezone, offset)
 
   return (
     <Tooltip>
@@ -106,13 +115,16 @@ export function ApiKeyTodayUsageCell({ row }: { row: Row<ApiKey> }) {
         <div className='space-y-1 text-xs'>
           <div>
             {t('Today: {{start}} → {{end}}', {
-              start: dayjs.unix(todayUsage.dayStart).format('YYYY-MM-DD HH:mm'),
-              end: dayjs.unix(todayUsage.dayEnd).format('YYYY-MM-DD HH:mm'),
+              start: formatInServerZone(todayUsage.dayStart, offset),
+              // 右端点是半开区间的右端(次日 0 点),减一秒才是当天最后一秒。
+              // 直接写死 23:59:59 会在夏令时跳变日说谎:本地 23:00 直接跳到
+              // 次日 00:00 的那一天,最后一秒是 22:59:59。
+              end: formatInServerZone(todayUsage.dayEnd - 1, offset),
             })}
           </div>
           <div className='text-muted-foreground'>
             {t(
-              'Day boundary {{zone}} — the same one the daily consumption report uses',
+              'Server local time {{zone}} — the daily consumption report may use a different day boundary',
               { zone }
             )}
           </div>

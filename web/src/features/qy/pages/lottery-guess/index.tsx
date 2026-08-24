@@ -16,8 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useTranslation } from 'react-i18next'
-
 import { QyLotHallList } from '../lottery/components/lottery-hall-list'
 import type { QyLotHallState } from '../lottery/components/lottery-hall-list'
 
@@ -31,17 +29,12 @@ import type { QyLotHallState } from '../lottery/components/lottery-hall-list'
  * 差一个量级，而合并菜单之后它们在侧栏上已经是同一行 —— 如果在页面里还共用
  * 一张列表，用户就再也没有任何地方会被告知规则换了。
  *
- * 所以这张标签顶部那行红字是**结构性**的，不是提示语：它挂在标签上，
- * 而不是挂在某一张卡片上，因此不可能被翻页翻掉。
+ * 所以那句红字是**结构性**的，不是提示语：它挂在标签上，而不是挂在某一张卡片
+ * 上，因此不可能被翻页翻掉。现在它由 `QyLotHallList` 渲染在分段栏那一行 ——
+ * 位置没变（仍然随标签走），占的地方从一整块带边框的横幅缩成一枚徽章。
+ * 「奖池再分配」那半句解释挪进了活动详情的手续费与退款说明，那里才是用户
+ * 真正要下注的地方。
  */
 export function QyLotteryGuessBody(props: QyLotHallState) {
-  const { t } = useTranslation()
-  return (
-    <div className='space-y-3'>
-      <p className='text-destructive rounded-lg border p-3 text-sm'>
-        {t('qy_lot_risk_badge_may_lose_principal')}
-      </p>
-      <QyLotHallList kind='guess' {...props} />
-    </div>
-  )
+  return <QyLotHallList kind='guess' {...props} />
 }

@@ -183,6 +183,17 @@ export const qyKeys = {
   adminOverdraft: () => [...qyKeys.all, 'admin', 'overdraft'] as const,
 
   /**
+   * 客户端 IP 识别诊断（当前请求被识别成了什么、为什么）。
+   *
+   * 与 {@link qyKeys.adminHealth} 分开的理由与 {@link qyKeys.adminOverdraft}
+   * 相同：后端 `/admin/client-ip` 只读进程内的取值策略，扩展库挂掉时它仍然
+   * 是 200，而 `/admin/health` 会 503。共用一个 key 会让「客户端 IP 被识别
+   * 成了什么」跟着扩展库一起消失 —— 而令牌 allow_ips 与按 IP 的限流不依赖
+   * 扩展库，它们照样在按这个值放行/拒绝。
+   */
+  adminClientIP: () => [...qyKeys.all, 'admin', 'client-ip'] as const,
+
+  /**
    * 管理端查某个用户的支付密码状态。
    *
    * 逐用户一个 key。消费方是**上游**用户管理表格里的「重置支付密码」弹窗，

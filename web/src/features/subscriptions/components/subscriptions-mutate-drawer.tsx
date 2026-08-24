@@ -814,6 +814,19 @@ export function SubscriptionsMutateDrawer({
                   <FormDescription>
                     {t('qy_plan_downgrade_group_hint')}
                   </FormDescription>
+                  {/* 落点是**无闸门**的：填哪一档就落哪一档，后端不会拿它跟
+                      "购买前的原分组"比大小，也不会拒绝一个更宽的落点。那正是
+                      这个字段的字面语义（"到期一律改到这一组"），刻意不加限制
+                      —— 加了闸门就配不出"买过一次就永久留在 vip"这类玩法。
+
+                      代价是运营很容易在这里配出一个比购买前更宽的落点，而计费
+                      倍率与可用模型**完全跟着落点走**：到期之后那个人按新分组的
+                      倍率扣钱、按新分组的授权用模型，一直到有人手工改回去。
+                      这句话必须写在字段旁边，因为界面上没有任何别的地方会说它，
+                      而配错的表现是"没有任何报错、账单静默变了"。 */}
+                  <p className='text-warning text-xs leading-5'>
+                    {t('qy_plan_downgrade_group_scope_warn')}
+                  </p>
                   <FormMessage />
                 </FormItem>
               )}

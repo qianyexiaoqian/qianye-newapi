@@ -2,9 +2,11 @@ package withdraw
 
 import (
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
+	"github.com/QuantumNous/new-api/qianye/serverday"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -80,7 +82,7 @@ func TestEnforceCreateLimits(t *testing.T) {
 	// 又保留"不是刚刚发生"的语义(免得撞上冷却窗口)。
 	sameDayEarlier := func(back int64) int64 {
 		t.Helper()
-		floor := dayStart()
+		floor := serverday.Start(now)
 		if v := now - back; v >= floor {
 			return v
 		}
@@ -389,26 +391,75 @@ func TestLoadDailyUsage_CountsCancelledOnlyInSubmitted(t *testing.T) {
 	gdb := newTestDB(t)
 	now := common.GetTimestamp()
 
+	// now-60 在午夜后一分钟内跑会掉到昨天,三条断言集体失效 ——
+	// 与 TestEnforceCreateLimits 里那段同一条理由,这里也钉在今日之内。
+	earlierToday := now - 60
+	if floor := serverday.Start(now); earlierToday < floor {
+		earlierToday = floor + 1
+	}
 	seedWithdrawal(t, gdb, "WD-paid", func(w *Withdrawal) {
 		w.Status = StatusPaid
 		w.Quota = 300000
-		w.CreatedAt = now - 60
+		w.CreatedAt = earlierToday
 	})
 	seedWithdrawal(t, gdb, "WD-cancelled", func(w *Withdrawal) {
 		w.Status = StatusCancelled
 		w.Quota = 900000
-		w.CreatedAt = now - 60
+		w.CreatedAt = earlierToday
 	})
-	// 昨天的单不该被今天的限额看见。
+	// 昨天的单不该被今天的限额看见。「昨天」= 服务器本地自然日的前一秒。
 	seedWithdrawal(t, gdb, "WD-yesterday", func(w *Withdrawal) {
 		w.Status = StatusPaid
 		w.Quota = 700000
-		w.CreatedAt = dayStart() - 1
+		w.CreatedAt = serverday.Start(now) - 1
 	})
 
-	usage, err := loadDailyUsage(gdb, 1)
+	usage, err := loadDailyUsage(gdb, 1, now)
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, usage.Submitted)
 	assert.EqualValues(t, 1, usage.Active)
 	assert.EqualValues(t, 300000, usage.Quota)
+}
+
+// TestLoadDailyUsageWindowIsTheServerLocalNaturalDay 钉住提现日限额的「今天」
+// 到底是哪一段。
+//
+// 这条闸门管的是"一天最多提几次、最多提多少"。窗口挪一小时不会报错,只会让
+// 昨晚最后一小时的单占掉今天的额度(或者反过来白送一格)。而它现在与密钥页
+// 的「今日消耗」共用 qianye/serverday 那一份实现 —— 共用这件事本身也要有
+// 东西守着,否则哪天有人在这里重新写一遍 time.Date(...),两处会无声分家。
+//
+// 断言用的是**性质**而不是重算:窗口起点在服务器本地时区里必须正好是
+// 00:00:00,且前一秒必须属于前一个本地日期。返佣那个日界(演示机上是 UTC,
+// 而机器本地是 PST)在这里会是 17:00:00,直接红。
+func TestLoadDailyUsageWindowIsTheServerLocalNaturalDay(t *testing.T) {
+	gdb := newTestDB(t)
+	now := common.GetTimestamp()
+	floor := serverday.Start(now)
+
+	// 起点前一秒的单不能进,起点那一秒的单必须进。
+	seedWithdrawal(t, gdb, "WD-just-before", func(w *Withdrawal) {
+		w.Status = StatusPaid
+		w.Quota = 111
+		w.CreatedAt = floor - 1
+	})
+	seedWithdrawal(t, gdb, "WD-first-second", func(w *Withdrawal) {
+		w.Status = StatusPaid
+		w.Quota = 222
+		w.CreatedAt = floor
+	})
+
+	usage, err := loadDailyUsage(gdb, 1, now)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, usage.Active, "本地 0 点整那一笔必须算今天,前一秒那笔不算")
+	assert.EqualValues(t, 222, usage.Quota)
+
+	local := time.Unix(floor, 0).In(time.Local)
+	assert.Equal(t, "00:00:00", local.Format("15:04:05"),
+		"窗口起点必须是服务器本地时区的午夜,而不是 UTC 午夜或返佣日界")
+	assert.Equal(t, local.Format("2006-01-02"), time.Unix(now, 0).In(time.Local).Format("2006-01-02"),
+		"起点必须与此刻同属一个本地自然日")
+	assert.NotEqual(t, local.Format("2006-01-02"),
+		time.Unix(floor-1, 0).In(time.Local).Format("2006-01-02"),
+		"起点前一秒必须落回前一个本地自然日")
 }

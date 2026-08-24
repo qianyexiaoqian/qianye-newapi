@@ -27,6 +27,19 @@ type QyStatusBadgeProps = {
   status: QyStatus | null | undefined
   size?: 'lg' | 'md' | 'sm'
   className?: string
+  /**
+   * 覆盖徽章上的文字，**颜色仍由 `status` 决定**。
+   *
+   * 只有一种正当用法：同一枚徽章上，颜色与文字来自同一件事的两个字段。抽奖活动
+   * 的结局就是这样 —— 颜色由 `outcome` 决定（开出奖=绿、取消=中性、流局=紫），
+   * 而文字也该是那个结局（「人数不足流局(全额退款)」）。此前两者是两枚并排的
+   * 徽章，于是一场取消的活动上写着「已取消 已取消(全额退款)」，一场流局的活动
+   * 上写着「已冲正 人数不足流局(全额退款)」。
+   *
+   * **不要**用它把一个状态说成另一个状态。颜色与文字一旦各说各话，全站统一
+   * 徽章这件事就没有意义了。
+   */
+  label?: string
 }
 
 /**
@@ -42,7 +55,8 @@ export function QyStatusBadge(props: QyStatusBadgeProps) {
   const { t } = useTranslation()
   const style = getQyStatusStyle(props.status)
   const label =
-    style.labelKey === '' ? (props.status ?? '-') : t(style.labelKey)
+    props.label ??
+    (style.labelKey === '' ? (props.status ?? '-') : t(style.labelKey))
 
   return (
     <StatusBadge

@@ -3,22 +3,22 @@ package commission
 // token_usage_api.go —— 「这一把密钥今天花了多少」。
 //
 // 消费方是 API 密钥页的「今日消耗」列(qianye/controller/token_today_usage.go)。
-// 它住在本模块而不是 qianye/controller,理由只有一条:**日界与数据源**。
+// 它住在本模块而不是 qianye/controller,理由是**数据源**:它与日消费明细
+// 查的是同一张表、同一个 type 过滤,而且共用 logs_index.go 里那条覆盖索引的
+// 补建与退役逻辑 —— 那些全在本模块里。
 //
-// # 日界:与日消费明细共用同一个「一天」
+// # 日界:不在本模块,由调用方给
 //
-// 本模块的 dayline.go 是消费口径唯一的「一天」定义,受
-// commission.day_offset_minutes 管辖;日消费明细(api_daily_consume.go)、
-// 计佣分桶、日封顶全部走它。密钥页那一列显示的同样是**消费额**,
-// 所以它必须落在同一个日界上 —— 否则同一个用户的同一笔消费,
-// 在「今日消耗」里算今天、在日消费明细里算昨天,而两张页面都不会报错。
+// 早先这一列与日消费明细共用返佣的「消费日」(commission.day_offset_minutes),
+// 理由是"同一笔钱不该在两张页面上算进不同的天"。**项目方后来明确要求改成
+// 服务器本地时区的自然日**:「api 密钥的今日消耗以服务器的时间为准,即
+// 0 点到 23 点 59 分 59 秒是今日的消耗。」
 //
-// 本站还有另一个「今天」:划转/提现的日限额窗口走服务器本地时区的午夜
-// (qianye/modules/withdraw/create.go 的 dayStart)。那是**风控窗口**,
-// 不是消费统计,刻意不在这里统一 —— 挪动它等于挪动已经在跑的限额边界。
-// 两者当前在演示机上差 7 小时(day_offset_minutes=0 即 UTC,机器本地是 PST),
-// 因此接口必须把自己用的窗口(day_start/day_end/day_offset_minutes)一起下发,
-// 让界面能把「今日」到底是哪一段写给用户看。
+// 于是日界搬去了 qianye/serverday(与提现/划转的日限额窗口同一份实现),
+// 本函数只收 [startTs, endTs) 两个参数,对"这是哪一天"不再有任何主张。
+// 代价是明摆着的:演示机上 day_offset_minutes=0(UTC)而机器本地是 PST,
+// 密钥页的「今日」与日消费明细的「今日」差 7 小时,两个数都对、两边都不报错。
+// 所以那一列的界面上必须写清区间与时区 —— 见 qianye/controller/token_today_usage.go。
 //
 // # 数据源:主库 logs 的 type=2,不是 quota_data
 //
@@ -29,8 +29,8 @@ package commission
 //	   表现是「今日消耗」全站恒为 0,而不是报错;
 //	② 它每 DataExportInterval 分钟才落盘一次,刚发的请求在列里看不见;
 //	③ 它**只精确到小时**(LogQuotaData 里 createdAt -= createdAt%3600),
-//	   而 day_offset_minutes 的取值范围是 -720..840 **分钟**,
-//	   非整点日界根本无法用小时桶表达。
+//	   而日界不保证落在整点上:服务器本地时区可以是 UTC+05:30(Asia/Kolkata)
+//	   或 UTC+05:45(Asia/Kathmandu),小时桶根本表达不了。
 //
 // 所以口径与 api_daily_consume.go 完全一致:logs 的 type = LogTypeConsume。
 // 退款(LogTypeRefund=6)不计入 —— 日消费明细也不计,两处必须一致。
@@ -80,20 +80,6 @@ const (
 )
 
 var errTokenDayUsageTooManyRows = errors.New("今日使用过的密钥数量过多,无法汇总")
-
-// ConsumeDayStart 返回 ts 所在「消费日」的起点(unix 秒)。
-//
-// 导出它而不是让调用方自己算,是 dayline.go 那段文件注释的直接延伸:
-// 消费口径的「一天」只能有一处定义。第二处实现哪怕当天写得一模一样,
-// 也会在有人调 day_offset_minutes 的那一刻分家,而两边都不会报错。
-func ConsumeDayStart(ts int64) int64 { return dayStart(ts) }
-
-// ConsumeDayOffsetMinutes 返回消费日界相对 UTC 的偏移(分钟)。
-// 界面要用它把「今日」具体是哪一段写清楚,见本文件头。
-func ConsumeDayOffsetMinutes() int { return int(dayOffsetSeconds() / 60) }
-
-// ConsumeDaySeconds 是一整天的秒数,供调用方算出日界的右端点。
-const ConsumeDaySeconds = secondsPerDay
 
 // TokenDayUsageIndexReady 报告这条聚合依赖的覆盖索引在不在。
 // 只是个显示位,判据是查询自己的超时 —— 见 logs_index.go。

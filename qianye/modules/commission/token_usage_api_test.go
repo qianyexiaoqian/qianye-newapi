@@ -13,13 +13,15 @@ import (
 	"gorm.io/gorm"
 )
 
-// token_usage_api_test.go —— 密钥页「今日消耗」那一列的口径。
+// token_usage_api_test.go —— 密钥页「今日消耗」那一列的聚合。
 //
-// 这一列会被用户拿去对账,所以能出错的地方只有三处,而三处全是静默的:
+// 「今天是哪一段」已经不归本模块管了(改成服务器本地自然日之后搬去了
+// qianye/serverday,窗口由调用方传进来),所以这里守的是**给定窗口之后**
+// 剩下的那些事 —— 而它们全是静默的:
 //
-//	① 日界不走 dayline —— 数字看起来完全正常,只是把凌晨那几笔算到了昨天,
-//	   而日消费明细算今天。两张页面都不会报错。
-//	② 别人的行 / 非消费类型的行混进来 —— 同上,只是数字偏大。
+//	① 区间的开闭错一档 —— 数字看起来完全正常,只是把昨天最后一秒或明天
+//	   第一秒那笔算了进来;
+//	② 别人的行 / 非消费类型的行混进来 —— 同上,只是数字偏大;
 //	③ 超过行数上界之后**截断** —— 被截掉的密钥在界面上显示「今日 0」,
 //	   那是一个看起来完全正常的金额。
 
@@ -39,11 +41,12 @@ func seedTokenLog(t *testing.T, gdb *gorm.DB, userId, tokenId int, at int64, quo
 	}).Error)
 }
 
-// TestTokenDayUsageGroupsByTokenWithinTheConsumeDayline 是这一列的主用例。
+// TestTokenDayUsageGroupsByTokenWithinTheGivenWindow 是这一列的主用例。
 //
-// 口径固定成 UTC+8(day_offset_minutes: 480),于是"按 UTC 分天"与"按 dayline
-// 分天"会给出**不同的**答案:8/4 04:00(UTC+8)= 8/3 20:00 UTC。按 UTC 它属于
-// 昨天,按本站的消费日界它属于今天。
+// 窗口是显式传进来的一段 [start, end),这里用 UTC+8 的一整天当样本 ——
+// 挑一个**不与 UTC 自然日重合**的窗口是刻意的:8/4 04:00(UTC+8)= 8/3
+// 20:00 UTC,那一笔只有在真的按传入区间过滤时才会落在结果里。哪天有人把
+// 过滤条件写成"按数据库会话时区分天",这一行就会红。
 //
 // 期望(独立算出来的):
 //
@@ -56,7 +59,7 @@ func seedTokenLog(t *testing.T, gdb *gorm.DB, userId, tokenId int, at int64, quo
 //	令牌 76  次日 00:00(UTC+8)整点花了 900          → 不出现(右开区间)
 //
 // 变异验证见文件末尾那一段注释。
-func TestTokenDayUsageGroupsByTokenWithinTheConsumeDayline(t *testing.T) {
+func TestTokenDayUsageGroupsByTokenWithinTheGivenWindow(t *testing.T) {
 	cfg := &config.Config{Enabled: true}
 	cfg.Commission.Enabled = true
 	cfg.Commission.DayOffsetMinutes = 480 // UTC+8
@@ -66,7 +69,7 @@ func TestTokenDayUsageGroupsByTokenWithinTheConsumeDayline(t *testing.T) {
 	const me, other = 701, 702
 	const day = "20260804"
 	dayStartTs := dayTs(t, day, 0)
-	dayEndTs := dayStartTs + ConsumeDaySeconds
+	dayEndTs := dayStartTs + secondsPerDay
 
 	seedTokenLog(t, logDB, me, 71, dayTs(t, day, 4*3600), 1000, model.LogTypeConsume)
 	seedTokenLog(t, logDB, me, 71, dayTs(t, day, 10*3600), 500, model.LogTypeConsume)
@@ -82,8 +85,8 @@ func TestTokenDayUsageGroupsByTokenWithinTheConsumeDayline(t *testing.T) {
 	assert.Equal(t, map[int]int64{71: 1500, 72: 250}, got)
 
 	// 8/4 04:00(UTC+8)在 UTC 日历上是 8/3 —— 上面那 1000 就是靠它证明
-	// 窗口走的是 dayline 而不是 UTC 午夜。这一行钉住那个前提,否则哪天
-	// 有人把偏移改回 0,主断言会在完全不变的情况下失去它要证明的东西。
+	// 过滤真的用了传进来的区间,而不是 UTC 午夜。这一行钉住那个前提,
+	// 否则哪天有人把偏移改回 0,主断言会在完全不变的情况下失去它要证明的东西。
 	require.Equal(t, day, dayKey(dayTs(t, day, 4*3600)))
 	require.NotEqual(t, day, utcDayKeyForTest(dayTs(t, day, 4*3600)))
 }
@@ -106,7 +109,7 @@ func TestTokenDayUsageZeroSumTokenStaysInTheMap(t *testing.T) {
 	const me = 711
 	const day = "20260805"
 	start := dayTs(t, day, 0)
-	end := start + ConsumeDaySeconds
+	end := start + secondsPerDay
 
 	seedTokenLog(t, logDB, me, 81, dayTs(t, day, 3600), 0, model.LogTypeConsume)
 
@@ -145,7 +148,7 @@ func TestTokenDayUsageRefusesToTruncate(t *testing.T) {
 			const me = 721
 			const day = "20260806"
 			start := dayTs(t, day, 0)
-			end := start + ConsumeDaySeconds
+			end := start + secondsPerDay
 
 			rows := make([]*model.Log, 0, tc.tokens)
 			for i := 1; i <= tc.tokens; i++ {
@@ -166,34 +169,6 @@ func TestTokenDayUsageRefusesToTruncate(t *testing.T) {
 			assert.Len(t, got, tc.tokens)
 		})
 	}
-}
-
-// TestConsumeDayStartIsTheSameDayAsDailyConsumeReports 钉住导出的日界与
-// 日消费明细逐位同源。
-//
-// 密钥页那一列与日消费明细是同一个用户的同一笔钱。它们各自算一次「今天」,
-// 差一个小时的表现是:密钥页说今天花了 100,日消费明细里今天那一格是 0 ——
-// 而两边都不会报错。
-//
-// 变异验证:把 ConsumeDayStart 改成 `ts - ts%86400`(UTC 午夜,丢掉偏移)
-// → 在 UTC+8 下 8/4 04:00 的日键从 20260804 变成 20260803,两条断言全红。
-func TestConsumeDayStartIsTheSameDayAsDailyConsumeReports(t *testing.T) {
-	cfg := &config.Config{Enabled: true}
-	cfg.Commission.Enabled = true
-	cfg.Commission.DayOffsetMinutes = 480 // UTC+8
-	useConfig(t, cfg)
-
-	// 8/4 04:00(UTC+8)= 8/3 20:00 UTC:两种口径落在不同的自然日上。
-	now := dayTs(t, "20260804", 4*3600)
-
-	start := ConsumeDayStart(now)
-	// 日消费明细取"今天"那一格时走的正是 dayKey → dayKeyStart 这一条链。
-	wantStart, ok := dayKeyStart(dayKey(now))
-	require.True(t, ok)
-	assert.Equal(t, wantStart, start, "「今日消耗」的窗口起点必须等于日消费明细里今天那一格的起点")
-	assert.Equal(t, dayKey(now), dayKey(start), "窗口起点必须仍属于今天")
-	assert.Equal(t, 480, ConsumeDayOffsetMinutes(), "下发给界面的偏移必须是真正在用的那一个")
-	assert.EqualValues(t, 86400, ConsumeDaySeconds)
 }
 
 // TestDroppableRetiredLogsIndexes 守「先建后删」这条顺序。

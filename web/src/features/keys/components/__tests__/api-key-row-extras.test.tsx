@@ -155,9 +155,13 @@ api.defaults.adapter = async (config) => {
     return reply({
       success: true,
       data: {
-        day_start: 1787270400,
-        day_end: 1787356800,
-        day_offset_minutes: 0,
+        // 服务器本地自然日的一天(这里取 UTC-07:00 的 2026-08-22),
+        // 与真实端点的字段逐字一致 —— 换字段名时这一格必须一起改,
+        // 否则组件读到 undefined 只会静默显示成 UTC。
+        day_start: 1787382000,
+        day_end: 1787468400,
+        timezone: 'PDT',
+        utc_offset_minutes: -420,
         index_ready: true,
         usage: { '42': 250000 },
       },

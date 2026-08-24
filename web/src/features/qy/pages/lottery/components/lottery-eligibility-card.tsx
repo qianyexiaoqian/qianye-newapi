@@ -48,11 +48,14 @@ export function QyLotEligibilityCard(props: {
 
   const missing = qyArray(props.eligibility.missing)
   if (props.eligibility.eligible && missing.length === 0) {
+    // 符合条件时只留结论那一句。原来跟着的「这是按当前数据的预检结果，最终以
+    // 提交时的判定为准」是一句**不可执行**的免责声明：读到它的用户做不出任何
+    // 不同的动作，而它真正生效的那一刻（提交被拒）后端会返回一条具体的错误，
+    // 界面上弹的是那条错误而不是这句话。
     return (
       <Alert>
         <CircleCheck />
         <AlertTitle>{t('qy_lot_elig_ok_title')}</AlertTitle>
-        <AlertDescription>{t('qy_lot_elig_ok_desc')}</AlertDescription>
       </Alert>
     )
   }

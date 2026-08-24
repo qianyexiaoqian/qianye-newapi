@@ -5350,7 +5350,7 @@
     "Today's Usage": "今日消耗",
     "Today's usage is unavailable right now": "今日消耗暂时取不到",
     "Today: {{start}} → {{end}}": "今日:{{start}} → {{end}}",
-    "Day boundary {{zone}} — the same one the daily consumption report uses": "日界 {{zone}},与日消费明细同一个口径",
+    "Server local time {{zone}} — the daily consumption report may use a different day boundary": "服务器本地时间 {{zone}};日消费明细的日界可能与此不同",
     "Switch group": "切换分组",
     "Failed to switch group": "分组切换失败",
     "Switched to group {{group}}": "已切换到分组 {{group}}",

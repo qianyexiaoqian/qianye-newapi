@@ -46,7 +46,8 @@ func TestTokenAuthReadOnlyEnforcesTheTokenIpWhitelist(t *testing.T) {
 		Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true,
 	}).Error)
 
-	// 本进程内 c.ClientIP() 会信任回环代理头,与生产上「用户从别的 IP 打过来」等价。
+	// 直接改 RemoteAddr,不经转发头 —— common.ClientIP 在未装载策略时返回的
+	// 就是直连对端,与生产上「用户从别的 IP 打过来」等价。
 	prevProxies := os.Getenv("TRUSTED_PROXIES")
 	t.Cleanup(func() { _ = os.Setenv("TRUSTED_PROXIES", prevProxies) })
 

@@ -45,6 +45,7 @@ import { QyLotCover } from './components/lottery-cover'
 import { QyLotEligibilityCard } from './components/lottery-eligibility-card'
 import { QyLotEntryDialog } from './components/lottery-entry-dialog'
 import { QyLotFairnessPanel } from './components/lottery-fairness-panel'
+import { QyLotFinePrint } from './components/lottery-fine-print'
 import { QyLotRosterCard } from './components/lottery-roster-card'
 import { QyLotRulesList } from './components/lottery-rules-list'
 import { QyLotSpecTable } from './components/lottery-spec-table'
@@ -133,15 +134,15 @@ export function QyLotteryDetail() {
                     {t('qy_lot_ball_issue_no', { no: activity.issue_no ?? 0 })}
                   </Badge>
                 )}
+                {/* 结局揭晓之后，状态与结局是同一件事 —— 颜色与文字合进一枚
+                    徽章，见 `QyStatusBadge` 的 `label`。 */}
                 <QyStatusBadge
                   status={qyLotActivityBadgeStatus(
                     activity.status,
                     activity.outcome
                   )}
+                  label={outcomeKey == null ? undefined : t(outcomeKey)}
                 />
-                {outcomeKey != null && (
-                  <Badge variant='secondary'>{t(outcomeKey)}</Badge>
-                )}
                 <span className='text-muted-foreground font-mono text-xs'>
                   {activity.act_no}
                 </span>
@@ -195,8 +196,17 @@ export function QyLotteryDetail() {
                 ]}
               />
 
+              {/*
+                两列都要 `min-w-0`。窄屏下这张网格塌成一列，而一列网格的轨道是
+                **auto** —— 轨道里的项默认 `min-width: auto`，于是奖级表那 5 列
+                （档位 / 命中要求 / 奖金形态 / 预算份数 / 中奖概率）把整列撑到
+                660px 宽，`StaticDataTable` 自己那层 `overflow-x-auto` 因为父级
+                没有宽度约束而永远不触发。表现是 375px 下整块内容区跟着横向滚，
+                标题、状态、按钮全都要左右拖着看。实测 375px：加这两个类之前
+                列宽 692px，之后 327px，表格改在自己那层里滚。
+              */}
               <div className='grid gap-4 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] lg:items-start'>
-                <div className='space-y-4'>
+                <div className='min-w-0 space-y-4'>
                   {activity.intro.trim() !== '' && (
                     <Card data-card-hover='false'>
                       <CardHeader>
@@ -250,9 +260,15 @@ export function QyLotteryDetail() {
                           <p className='mt-1 font-mono text-lg break-all tabular-nums'>
                             {activity.ball_result}
                           </p>
-                          <p className='text-muted-foreground mt-1 text-xs'>
-                            {t('qy_lot_ball_result_verify_note')}
-                          </p>
+                          {/* 「这串号怎么来的、能不能自己验」是信任问题而不是
+                              决策问题：想核对的人点开就是与改造前逐字相同的
+                              那段话，不想核对的人不必先读 88 个字才看到号码。 */}
+                          <QyLotFinePrint
+                            className='mt-1'
+                            label={t('qy_lot_ball_result_verify_label')}
+                          >
+                            <p>{t('qy_lot_ball_result_verify_note')}</p>
+                          </QyLotFinePrint>
                         </div>
                       )}
                       <QyLotSpecTable
@@ -337,10 +353,12 @@ export function QyLotteryDetail() {
                       </div>
                       {activity.dedup_ip && (
                         // 去重的代价必须对用户明说：家庭/公司共用出口时会误伤，
-                        // 而被误伤的人完全无法自证。
-                        <p className='text-muted-foreground text-xs'>
-                          {t('qy_lot_dedup_ip_note')}
-                        </p>
+                        // 而被误伤的人完全无法自证。上面那一行「同 IP 只算一人
+                        // 已开启」已经把事实摆出来了，这段是它的后果说明 ——
+                        // 只有真的共用出口的人才需要读，所以折起来。
+                        <QyLotFinePrint label={t('qy_lot_dedup_ip_label')}>
+                          <p>{t('qy_lot_dedup_ip_note')}</p>
+                        </QyLotFinePrint>
                       )}
                     </CardContent>
                   </Card>
@@ -380,7 +398,7 @@ export function QyLotteryDetail() {
                   </div>
                 </div>
 
-                <div className='space-y-4'>
+                <div className='min-w-0 space-y-4'>
                   <QyLotFairnessPanel activity={activity} />
                   <QyLotRosterCard activity={activity} />
                 </div>

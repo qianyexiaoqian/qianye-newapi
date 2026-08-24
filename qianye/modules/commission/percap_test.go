@@ -144,7 +144,12 @@ func TestClawbackWithoutCapIsUnchanged(t *testing.T) {
 	assert.Equal(t, "-200", rows[0].GrossAmount.String(), "4000 × 5% = 200")
 }
 
-// assertAccrualRecomputable 是本模块对一条计佣行的可复算性判据。
+// assertAccrualRecomputable 是本模块对一条计佣行的可复算性判据(I3)。
+//
+// **只能用在正额计佣行上**:source_type ∈ {consume, topup, redemption}。
+// manual 的 rate_bps 恒为 0、clawback 的 base_quota 是负数的幂等指纹(而
+// calcGross 对 base<=0 返回 0),两者按设计都不满足这条式子 —— 把它们喂进来
+// 只会得到一条必然失败的假断言。逐条理由写在 accrual.go 的 capGross 上。
 func assertAccrualRecomputable(t *testing.T, row Accrual) {
 	t.Helper()
 	want := calcGross(row.BaseQuota, row.RateUnits)

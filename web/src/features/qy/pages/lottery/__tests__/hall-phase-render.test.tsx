@@ -166,6 +166,8 @@ function activity(over: Partial<QyLotActivityBrief>): QyLotActivityBrief {
 type Mounted = {
   /** 每一次 `/lottery/activities` 请求带的 query，按发出顺序。 */
   asked: Record<string, unknown>[]
+  /** 这一屏的根节点。断言颜色 / 属性时要用，不能只看文本。 */
+  container: HTMLElement
   /** 点真实的标签按钮 —— 见下面 `clickTab` 上的说明。 */
   clickTab: (label: string) => Promise<void>
   text: () => string
@@ -249,6 +251,7 @@ async function mountHall(
 
   return {
     asked,
+    container,
     text: () => container.textContent ?? '',
     /*
       切换必须走**真实的那颗按钮**，而不是直接调宿主的 setState。
@@ -395,17 +398,38 @@ describe('已结束的那一档要能看出结局', () => {
   test('全额退款的那几场不许挂成功色的徽章', async () => {
     const hall = await mountHall({ live: LIVE, ended: ENDED })
     await hall.clickTab(zhKeys['qy_lot_tab_done'])
-    const screen = hall.text()
 
-    // 六张卡里只有「已开奖」那一场是真的开出了奖。`qy_common_st_success`
-    // 在 zh.json 里是「成功」——它出现的次数就等于成功色徽章的张数。
-    const successLabel = zhKeys['qy_common_st_success']
-    const hits = screen.split(successLabel).length - 1
+    /*
+      断的是**颜色**，不是文字。
+
+      这一条原来数的是屏幕上出现了几次「成功」二字，拿文案当颜色的替身。文案精简
+      之后状态与结局合成了一枚徽章（一场取消的活动上不再写着「已取消 已取消
+      (全额退款)」），那枚徽章的文字换成了结局本身 —— 于是「成功」出现 0 次，
+      这条用例红了，而它声称守护的东西（绿色徽章只许出现在真的开出奖的那一场上）
+      一点没变。替身与本体脱钩，说明该断的从来就是本体。
+
+      `StatusBadge` 把 variant 落成 `textColorMap` 里的一个类，`success` →
+      `text-success`。它是本仓自己的组件、自己导出的映射表，不是第三方内部实现。
+    */
+    const badges = Array.from(
+      hall.container.querySelectorAll('[data-slot="status-badge"]')
+    )
+    assert.equal(badges.length, 6, '六张已结束的卡应当各挂一枚状态徽章')
+
+    const successBadges = badges.filter((node) =>
+      (node.getAttribute('class') ?? '').split(/\s+/).includes('text-success')
+    )
     assert.equal(
-      hits,
+      successBadges.length,
       1,
-      `${hits} 张卡挂着「${successLabel}」徽章：一场全额退款的活动挂绿色成功徽章，` +
+      `${successBadges.length} 张卡挂着成功色徽章：一场全额退款的活动挂绿色成功徽章，` +
         '是在告诉用户"一切正常"，而他刚发现钱退回来了'
+    )
+    // 绿的那一枚必须正是「已开奖」那一场，而不是碰巧只有一枚是绿的。
+    assert.equal(
+      (successBadges[0].textContent ?? '').trim(),
+      zhKeys['qy_lot_outcome_drawn'],
+      '成功色落在了错误的结局上'
     )
   })
 })
@@ -456,6 +480,15 @@ describe('草稿不出现在用户端', () => {
  * 的内部实现细节，换一版组件库就会假红 —— 换来的只是一条纯样式的保护。
  * 功能性的那一半由 M2b / M2c 两条覆盖：value 与三元只要有一处漂移，
  * 「点了已结束却还在看进行中」立刻变红。
+ *
+ * ── 2026-08 文案精简之后的复核 ──
+ *
+ * 「全额退款的那几场不许挂成功色的徽章」那一条改了判据：从数屏幕上出现几次
+ * 「成功」二字，改成数有几枚 `[data-slot="status-badge"]` 带着 `text-success`。
+ * 起因是状态与结局合成了一枚徽章（此前一场取消的活动上并排写着「已取消」与
+ * 「已取消(全额退款)」），「成功」二字于是一次都不出现，用例红了 —— 而它声称
+ * 守护的那件事一点没变。M3 / M4 两条变异在新判据下实测仍然 4 pass / 1 fail，
+ * 也就是说换掉的只是替身，抓力没丢。
  *
  * 另外记一条**方法论**上的教训：这些用例最初是直接调宿主的 setState 来换
  * 分段的，M2b 在那一版下 5 pass 全绿 —— 因为测试根本没经过 `onValueChange`。

@@ -49,11 +49,10 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 	ctx, cancel := guard.ColdContext(context.Background())
 	defer cancel()
 
-	// ── 门槛分档:这一笔按发起方的**基准用户组**那一档算 ──
+	// ── 门槛分档:这一笔按发起方**此刻的 users.group** 那一档算 ──
 	//
-	// 基准用户组 = 剥掉套餐给的那一层之后的用户组,判据与四条边界见
-	// model.QyBaseUserGroup 与本包 basegroup.go。项目方口径:
-	// 「余额划转只针对用户组,套餐关他们什么事情?」
+	// 项目方口径:「不是说不看套餐给的组,是以用户当前的用户组使用的对应配置
+	// 或兜底,不要搞那么复杂。」命中分档就用那一档,没命中走全局兜底。
 	//
 	// 这次读必须排在 validateCreate 之前:单笔上下限本身就是可分档项,
 	// 拿全站兜底去做受理校验,等于让分档在最主要的那道闸门上完全不生效。
@@ -73,22 +72,16 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 		}
 		return nil, err
 	}
-	// 套餐给的那一层在这里被剥掉。读失败一律失败关闭,绝不回落 users.group ——
-	// 回落拿到的正是套餐给的那个付费组,等于把这道剥离静默关掉。
-	senderGroups, err := baseUserGroups(senderNow)
-	if err != nil {
-		return nil, err
-	}
-	// 基准用户组仍然会变(管理员手工改组、套餐到期落进一个更松的 downgrade_group、
-	// 历史行把付费组记成了链根)。当天额度用满之后换一档接着转,
-	// qy_transfer_user_state 里的计数一个都不重置、只是上限换了一档。
-	// transferForSenderDay 因此把「今天的计数是在哪一档下累起来的」也算进来,
-	// 今天剩下的时间按两档取严 —— 剥离与它是两道独立的闸门,不能互相顶替。
+	// 分组会变,而且用户自己就能让它变(升组套餐 / 用户组商品 / 管理员改组)。
+	// 换组**不重置**当天已用的额度与笔数,只是上限换了一档 —— 于是「当天用满 →
+	// 换一档更松的 → 同一秒接着转」这条路必须由另一位来堵:
+	// qy_transfer_user_state.day_out_group 记着今天的计数是在哪一档下累起来的,
+	// transferForSenderDay 在今天剩下的时间里按两档取严。明天自然日一到完全按新档。
 	dayState, err := loadSenderDayState(fromUserId)
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := settings.transferForSenderDay(senderGroups, dayState, dayBucket(common.GetTimestamp()))
+	cfg, err := settings.transferForSenderDay(senderNow.Group, dayState, dayBucket(common.GetTimestamp()))
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +90,7 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 	if err != nil {
 		return nil, err
 	}
-	acc.FromGroup = senderGroups[0]
+	acc.FromGroup = normalizeGroupName(senderNow.Group)
 
 	// 分组规则在这里一次性读出并冻结,后面两处判定共用同一份快照。
 	//
@@ -123,17 +116,16 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 	// 配了「每天 1 笔」的 vip 汇集账号转钱,每一笔都按 default 那一档(全站 20)
 	// 放行,而这正是这道闸门存在的唯一理由(见 evaluateRisk)。
 	//
-	// 收款方这一侧同样按**基准用户组**解析,理由比发起方那一侧还硬:不剥离的话,
-	// 攻击者只要给汇集账号买一档 receiver_daily_max_in_count 最松的套餐,
-	// 这道闸门就等于不存在 —— 而它存在的唯一理由就是拦「一堆小号汇集到同一账号」。
+	// 收款方这一侧同样按**此刻的 users.group** 解析,与发起方同一条简单规则。
+	//
+	// 已知代价(项目方口径下的明知取舍):汇集账号自己换进一档
+	// receiver_daily_max_in_count 更松的分组,这道闸门就跟着松 —— 发起方那一侧
+	// 有 day_out_group 当日取严兜着,收款方这一侧**没有对应的一位**
+	// (qy_transfer_user_state 只记了 day_in_count,没记"今天是在哪一档下收的")。
 	//
 	// 这一档配坏时 fail-closed(503):拿一份不自洽的门槛去判一笔资金操作,
 	// 比让这一笔失败更糟。
-	receiverGroups, err := baseUserGroups(receiver)
-	if err != nil {
-		return nil, err
-	}
-	receiverCfg, err := settings.transferForBase(receiverGroups)
+	receiverCfg, err := settings.transferFor(receiver.Group)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +140,7 @@ func create(c *gin.Context, fromUserId int, req createRequest) (*createResponse,
 		FeeQuota:     acc.Fee,
 		Status:       statusPending,
 		Remark:       acc.Remark,
-		ClientIp:     truncate(c.ClientIP(), 64),
+		ClientIp:     truncate(common.ClientIP(c), 64),
 		UserAgent:    truncate(c.Request.UserAgent(), 255),
 		RiskHeld:     true,
 		CreatedAt:    now,

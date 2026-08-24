@@ -316,7 +316,10 @@ docker run --name new-api -d --restart always \
 | `SESSION_SECRET` | 鑑權簽章密鑰；所有節點必須保持一致                                           | - |
 | `SESSION_COOKIE_SECURE` | `false`/未設定時關閉 refresh/logout OriginGuard 以相容本機 HTTP 開發代理；`true` 時啟用 Secure Cookie 和嚴格 Origin 驗證 | `false` |
 | `SESSION_COOKIE_TRUSTED_URL` | Secure 模式必填：允許呼叫 refresh/logout 的精確 HTTPS Origin，多個值以英文逗號分隔；不是 relay CORS 白名單 | - |
-| `TRUSTED_PROXIES` | 未設定/留空時信任本機回送、RFC1918 和 IPv6 ULA 並輸出啟動警告；`none` 不信任任何代理；明確指定的代理 IP/CIDR 清單會完整取代預設值 | `127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7` |
+| `TRUSTED_PROXIES` | 只有直連對端本身是受信代理時才採信它帶來的轉發標頭，`X-Forwarded-For` 由右往左剝離。可填 IP/CIDR，也可用關鍵字 `none`、`loopback`、`private`、`cloudflare`（只有這一檔採信 `CF-Connecting-IP`）。未設定時：`BIND_ADDRESS` 為回送位址則自動信任回送對端，否則誰都不信並輸出啟動警告 | - |
+| `CLIENT_IP_HEADERS` | 受信對端可以用哪些請求標頭宣告用戶端 IP，依序嘗試；明確設定會完整取代預設值。廠商專屬標頭刻意不列入預設值——一般反向代理會原樣透傳用戶端帶來的任意標頭 | `X-Forwarded-For, X-Real-IP` |
+| `TRUSTED_PROXIES_CLOUDFLARE_FILE` | Cloudflare 網段清單檔案路徑（內容為 `curl https://www.cloudflare.com/ips-v4` 的原樣輸出），取代內建快照。清單中出現私網、回送或過寬前綴會讓服務無法啟動 | - |
+| `BIND_ADDRESS` | 監聽位址，留空即監聽全部介面。設成回送位址時，未設定 `TRUSTED_PROXIES` 也會自動信任回送對端 | - |
 | `USER_SESSION_ACTIVE_LIMIT` | 單一用戶最大活躍登入 Session 數 | `50` |
 | `USER_SESSION_ISSUANCE_LIMIT` | 單一用戶在簽發視窗內可建立的 Session 總數，包含已撤銷 Session | `100` |
 | `USER_SESSION_ISSUANCE_WINDOW_SECONDS` | Session 簽發計數視窗（秒）；高於 revoked 保留期時自動限制 | `86400` |

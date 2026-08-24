@@ -30,6 +30,7 @@ import { QyKeyValue } from '../../ops/qy-ops-ui'
 import { qyLotFullProofQuery, qyLotProofDownloadUrl } from '../api'
 import { explainQyLotResult, type QyLotExplain } from '../lib/explain'
 import { QY_LOT_PPM_DEN } from '../types'
+import { QyLotFinePrint } from './lottery-fine-print'
 
 type WhyResultDialogProps = {
   /** 打开哪一条参与记录的解释；`null` = 关闭。 */
@@ -191,10 +192,12 @@ export function QyLotWhyResultDialog(props: WhyResultDialogProps) {
                   </p>
                 )}
                 {/* 截断偏差不掩饰：2^64 个均匀值分进 10^6 个桶，桶大小最多
-                    相差 1，相对偏差 < 2^-44。写出来比让人自己发现要诚实。 */}
-                <p className='text-muted-foreground text-xs'>
-                  {t('qy_lot_roll_bias_notice')}
-                </p>
+                    相差 1，相对偏差 < 2^-44。写出来比让人自己发现要诚实 ——
+                    但会追究这个量级的人一定会点开，而对其余所有人它只是一行
+                    读不懂的公式挡在结论前面。 */}
+                <QyLotFinePrint label={t('qy_lot_roll_bias_label')}>
+                  <p>{t('qy_lot_roll_bias_notice')}</p>
+                </QyLotFinePrint>
               </div>
             )}
 
@@ -241,24 +244,32 @@ export function QyLotWhyResultDialog(props: WhyResultDialogProps) {
                   <p className='text-sm'>{t('qy_lot_ball_no_tier')}</p>
                 )}
                 {/* 档位是本地算得出来的，金额不是：浮动奖发多少取决于本期奖池与
-                    同档中签人数，那两个量不在这份证据链里。不假装能算。 */}
+                    同档中签人数，那两个量不在这份证据链里。不假装能算 ——
+                    但这句话压成一行就够了，原来那 69 个字里有一半在复述
+                    「浮动奖怎么分」，而那件事在奖级表下面已经讲过一次。 */}
                 <p className='text-muted-foreground text-xs'>
                   {t('qy_lot_ball_amount_not_local')}
                 </p>
               </div>
             )}
 
-            <div className='space-y-2 rounded-lg border p-3'>
-              <p className='text-muted-foreground text-xs'>
-                {t('qy_lot_why_verify_hint')}
-              </p>
+            {/*
+              「再验一遍」整块折起来。它由三样东西组成：一段 59 字的说明、
+              一条 50 多个字符的 python 命令、一颗下载按钮 —— 加起来是这个弹窗
+              里最长的一块，而弹窗要回答的问题只有一个：**我为什么是这个结果**。
+              上面那几行已经把它答完了（票面、摇号量、区间归属），这一块是给
+              少数要走到离线复算那一步的人准备的。
+
+              命令与下载都留在里面，一字未删：给一段"你可以自己验"的说明而不给
+              命令，等于没给。
+            */}
+            <QyLotFinePrint label={t('qy_lot_why_verify_label')}>
+              <p>{t('qy_lot_why_verify_hint')}</p>
               <div className='flex flex-wrap items-center gap-2'>
-                {/* 复制出来的是一条能直接粘进终端跑的命令。给用户一段"你可以
-                    自己验"的说明而不给命令，等于没给。 */}
                 <CopyButton
                   value={`python3 lottery-verify.py ${actNo}-proof.ndjson --explain ${entryNo}`}
                 />
-                <span className='font-mono text-xs break-all'>
+                <span className='font-mono break-all'>
                   {`python3 lottery-verify.py ${actNo}-proof.ndjson --explain ${entryNo}`}
                 </span>
               </div>
@@ -276,7 +287,7 @@ export function QyLotWhyResultDialog(props: WhyResultDialogProps) {
                 <Download aria-hidden='true' />
                 {t('qy_lot_download_proof')}
               </Button>
-            </div>
+            </QyLotFinePrint>
           </div>
         )}
       </div>

@@ -171,7 +171,7 @@ func fillFromContext(c *gin.Context, row *qymodel.AuditLog) {
 		return
 	}
 	if config.Get().Audit.ShouldRecordIP() {
-		row.IP = Truncate(c.ClientIP(), 64)
+		row.IP = Truncate(common.ClientIP(c), 64)
 		row.UserAgent = Truncate(c.Request.UserAgent(), 256)
 	}
 	row.RequestId = Truncate(c.GetString(common.RequestIdKey), 64)

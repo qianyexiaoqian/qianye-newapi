@@ -66,7 +66,7 @@ func create(c *gin.Context, userId int, username string, req createRequest) (*ti
 		MessageCount: 1,
 		LastReplyAt:  now,
 		LastReplyBy:  qymodel.ActorUser,
-		ClientIp:     truncate(c.ClientIP(), 64),
+		ClientIp:     truncate(common.ClientIP(c), 64),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}

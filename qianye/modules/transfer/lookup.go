@@ -184,7 +184,7 @@ func recordLookup(c *gin.Context, meId int, identifier, byType string, hit bool)
 		Identifier: truncate(identifier, maxIdentifierLen),
 		ByType:     byType,
 		Hit:        hit,
-		ClientIp:   truncate(c.ClientIP(), 64),
+		ClientIp:   truncate(common.ClientIP(c), 64),
 		CreatedAt:  common.GetTimestamp(),
 	}
 	if err := gdb.Create(row).Error; err != nil {

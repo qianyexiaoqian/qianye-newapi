@@ -106,10 +106,16 @@ type Accrual struct {
 	//
 	// 有了它,被削过的行才重新可复算:
 	//
-	//	base_quota × rate_bps / 10000 == gross_amount + capped_amount
+	//	base_quota × rate_bps / 10000 == gross_amount + capped_amount     (I3)
 	//
 	// 没有它的时候,"触顶少发"与"费率被人改错"在账面上完全同形,而封顶是同模块
 	// 唯一一处不留痕的截断(结算 int32 触顶写 Remark、充值换算触顶打告警)。
+	//
+	// **适用范围只有正额计佣行**:source_type ∈ {consume, topup, redemption}。
+	// manual 的 rate_bps 恒为 0、clawback 的 base_quota 是负数的幂等指纹且金额
+	// 可被等比冲正与 remaining 削减 —— 那两类按设计就不满足 I3,在它们上面算出
+	// "不成立"不是异常信号。逐条理由与"体检为什么不算它"写在 accrual.go 的
+	// capGross 上。
 	//
 	// 零值口径:0 = **这一行没有被封顶削减过**,不是"未知"。两类行会是 0——
 	// 从来没触顶的行(绝大多数),以及本次修复上线之前就已经被削过的存量行。

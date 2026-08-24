@@ -5350,7 +5350,7 @@
     "Today's Usage": "Consommation du jour",
     "Today's usage is unavailable right now": "La consommation du jour est indisponible pour le moment",
     "Today: {{start}} → {{end}}": "Aujourd'hui : {{start}} → {{end}}",
-    "Day boundary {{zone}} — the same one the daily consumption report uses": "Limite de journée {{zone}} — la même que celle du rapport de consommation quotidienne",
+    "Server local time {{zone}} — the daily consumption report may use a different day boundary": "Heure locale du serveur {{zone}} — le rapport de consommation quotidienne peut utiliser une autre limite de journée",
     "Switch group": "Changer de groupe",
     "Failed to switch group": "Échec du changement de groupe",
     "Switched to group {{group}}": "Basculé sur le groupe {{group}}",

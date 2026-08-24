@@ -33,6 +33,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { Checkbox } from '@/components/ui/checkbox'
 import { ComboboxInput } from '@/components/ui/combobox-input'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -92,13 +93,22 @@ import {
   qyAiScopeRowKind,
   qyAiScopeToDraft,
   qyAiSplitScopeList,
+  qyAiApplyProtocol,
+  qyAiGuardShownIds,
   type QyAiChannelDraft,
   type QyAiScopeChannelState,
   type QyAiScopeDraft,
   type QyAiScopeGroupBindingError,
   type QyAiScopeRowKind,
 } from './lib/ai-review'
-import type { QyAiChannel, QyAiScope, QyAiScopeSummaryRow } from './types'
+import type {
+  QyAiChannel,
+  QyAiChannelTestResult,
+  QyAiGuardCategory,
+  QyAiProtocol,
+  QyAiScope,
+  QyAiScopeSummaryRow,
+} from './types'
 
 /**
  * AI 内容审核。
@@ -1387,16 +1397,30 @@ function AiChannelsCard() {
     onError: (e) => toast.error(qyErrorMessage(e, t)),
   })
 
+  /**
+   * 试跑结果要**留在页面上**,不能只弹一个 toast。
+   *
+   * toast 几秒后就没了,而这个按钮真正要回答的问题(协议对不对、上游到底
+   * 回了什么)只有对着原始响应才答得出来 —— 尤其是护栏模型:官方没有给出
+   * OpenAI 兼容端点上的字段级规格,真机对不上时唯一的办法就是照着原文调。
+   */
+  const [probed, setProbed] = useState<null | {
+    id: number
+    result: QyAiChannelTestResult
+  }>(null)
+
   const probe = useMutation({
     mutationFn: (id: number) => testQyAiChannel(id),
-    onSuccess: (r) =>
+    onSuccess: (r, id) => {
+      setProbed({ id, result: r })
       toast.success(
         t('qy_ai_test_result', {
           outcome: r.outcome,
           latency: r.latency_ms,
           tokens: r.tokens.total,
         })
-      ),
+      )
+    },
     onError: (e) => toast.error(qyErrorMessage(e, t)),
   })
 
@@ -1426,15 +1450,23 @@ function AiChannelsCard() {
               {/* `items` 缺席时按空列表走(与设置卡同一条理由):这一页四张卡
                   共用路由那一层的错误边界,一份降级响应不该把整页打掉。 */}
               {(data.items ?? []).map((ch) => (
-                <ChannelRow
-                  key={ch.id}
-                  channel={ch}
-                  onEdit={() =>
-                    setEditing({ id: ch.id, draft: qyAiChannelToDraft(ch) })
-                  }
-                  onTest={() => probe.mutate(ch.id)}
-                  onDelete={() => remove.mutate(ch.id)}
-                />
+                <div key={ch.id} className='flex flex-col gap-2'>
+                  <ChannelRow
+                    channel={ch}
+                    testing={probe.isPending && probe.variables === ch.id}
+                    onEdit={() =>
+                      setEditing({ id: ch.id, draft: qyAiChannelToDraft(ch) })
+                    }
+                    onTest={() => probe.mutate(ch.id)}
+                    onDelete={() => remove.mutate(ch.id)}
+                  />
+                  {probed?.id === ch.id && (
+                    <ChannelTestPanel
+                      result={probed.result}
+                      onDismiss={() => setProbed(null)}
+                    />
+                  )}
+                </div>
               ))}
               {(data.items ?? []).length === 0 && (
                 <p className='text-muted-foreground text-sm'>
@@ -1457,6 +1489,8 @@ function AiChannelsCard() {
             {editing && (
               <ChannelForm
                 draft={editing.draft}
+                guardCatalog={data.guard_catalog ?? []}
+                elevateDefault={data.guard_elevate_default ?? []}
                 existingHint={
                   editing.id
                     ? data.items?.find((c) => c.id === editing.id)?.key_hint
@@ -1477,22 +1511,49 @@ function AiChannelsCard() {
 
 function ChannelRow({
   channel,
+  testing,
   onEdit,
   onTest,
   onDelete,
 }: {
   channel: QyAiChannel
+  testing: boolean
   onEdit: () => void
   onTest: () => void
   onDelete: () => void
 }) {
   const { t } = useTranslation()
+  const guard = channel.protocol === 'qwen3guard'
   return (
     <div className='flex flex-wrap items-center gap-2 rounded-md border p-3'>
       <span className='font-medium'>{channel.name}</span>
       <Badge variant={channel.enabled ? 'default' : 'outline'}>
         {channel.enabled ? t('qy_ai_on') : t('qy_ai_off')}
       </Badge>
+      {/* 协议摆在列表上,不能只藏在编辑弹窗里:两种渠道的请求体、成本、
+          类型体系完全不同,而它们在列表上原本长得一模一样。 */}
+      <Badge variant='outline'>
+        {guard ? t('qy_ai_proto_guard_short') : t('qy_ai_proto_json_short')}
+      </Badge>
+      {/* 收紧档改变的是"多少内容会被判违规",与启停同一个量级的事实。
+          宽松档是零值,不画 —— 每一行都挂一个「有争议: 放行」只是噪声。 */}
+      {guard && channel.guard_controversial === 'unsafe' && (
+        <Badge variant='outline'>{t('qy_ai_f_controversial_strict_tag')}</Badge>
+      )}
+      {guard && channel.guard_controversial === 'sensitive' && (
+        <Badge variant='outline'>
+          {t('qy_ai_f_controversial_sensitive_tag')}
+        </Badge>
+      )}
+      {/* 停用了类别的渠道必须在列表上看得出来:少勾一类等于那一类的判定
+          全部降档,而它在列表上原本与九类全开的渠道长得一模一样。 */}
+      {guard && (channel.guard_categories ?? []).length > 0 && (
+        <Badge variant='outline'>
+          {t('qy_ai_f_guard_cats_tag', {
+            n: (channel.guard_categories ?? []).length,
+          })}
+        </Badge>
+      )}
       <span className='text-muted-foreground text-xs'>{channel.base_url}</span>
       <span className='text-muted-foreground text-xs'>{channel.model}</span>
       {/* 密钥只显示掩码。接口本来就不下发明文,这里显示的是后端写入时算好的尾 4 位。 */}
@@ -1505,9 +1566,9 @@ function ChannelRow({
         {t('qy_ai_weight_label', { weight: channel.weight })}
       </span>
       <div className='ms-auto flex gap-2'>
-        <Button size='sm' variant='outline' onClick={onTest}>
+        <Button size='sm' variant='outline' disabled={testing} onClick={onTest}>
           <Zap className='size-4' />
-          {t('qy_ai_test')}
+          {testing ? t('qy_ai_testing') : t('qy_ai_test')}
         </Button>
         <Button size='sm' variant='outline' onClick={onEdit}>
           {t('qy_ai_edit')}
@@ -1520,8 +1581,169 @@ function ChannelRow({
   )
 }
 
+/**
+ * 试跑回执。**原始响应是这一块的主角**,不是那几个统计数字。
+ *
+ * 协议对不上时界面上只有一个 `bad_json`,而它的三种成因(地址指到了别的
+ * 服务 / 协议选错了 / 这个部署的输出格式与官方示例不同)长得完全一样 ——
+ * 只有对着上游原文才分得开。护栏模型尤其:官方没有给出 OpenAI 兼容端点上的
+ * 字段级规格,真机对不上时唯一的办法就是照着这一段调后端的正则。
+ */
+function ChannelTestPanel({
+  result,
+  onDismiss,
+}: {
+  result: QyAiChannelTestResult
+  onDismiss: () => void
+}) {
+  const { t } = useTranslation()
+  const ok = result.outcome === 'clean' || result.outcome === 'violation'
+  return (
+    <div className='ms-4 flex flex-col gap-2 rounded-md border border-dashed p-3'>
+      <div className='flex flex-wrap items-center gap-2'>
+        <Badge variant={ok ? 'default' : 'outline'}>{result.outcome}</Badge>
+        <span className='text-muted-foreground text-xs'>
+          {t('qy_ai_test_latency', {
+            latency: result.latency_ms,
+            budget: result.timeout_ms,
+          })}
+        </span>
+        <span className='text-muted-foreground text-xs'>
+          {t('qy_ai_test_tokens', {
+            prompt: result.tokens.prompt,
+            completion: result.tokens.completion,
+          })}
+        </span>
+        {ok && (
+          <span className='text-muted-foreground text-xs'>
+            {t('qy_ai_test_verdict', {
+              violated: result.violated
+                ? t('qy_ai_test_violated')
+                : t('qy_ai_test_clean'),
+              category: result.category || '-',
+              confidence: result.confidence,
+            })}
+          </span>
+        )}
+        <Button
+          size='sm'
+          variant='ghost'
+          className='ms-auto'
+          onClick={onDismiss}
+        >
+          {t('qy_ai_test_dismiss')}
+        </Button>
+      </div>
+
+      {/* 冷启动:护栏模型首次调用要把权重加载进显存,超时是预期的。
+          不说这一句的话,第一次试跑的超时看起来与"地址填错了"完全一样。 */}
+      {result.hint === 'cold_start' && (
+        <Alert>
+          <AlertTriangle className='size-4' />
+          <AlertTitle>{t('qy_ai_test_cold_start_title')}</AlertTitle>
+          <AlertDescription>{t('qy_ai_test_cold_start_desc')}</AlertDescription>
+        </Alert>
+      )}
+
+      {/* 模型回了一个本站类型表里没有的标识。护栏协议下这不是"提示词脱节",
+          而是"本站还没建这个类型" —— 两者的下一步完全不同,所以文案要分开。 */}
+      {result.raw_category && (
+        <Alert>
+          <AlertTriangle className='size-4' />
+          <AlertTitle>{t('qy_ai_test_raw_category_title')}</AlertTitle>
+          <AlertDescription>
+            {result.protocol === 'qwen3guard'
+              ? t('qy_ai_test_raw_category_guard', {
+                  raw: result.raw_category,
+                })
+              : t('qy_ai_test_raw_category_json', { raw: result.raw_category })}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {result.reason && (
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_ai_test_reason', { reason: result.reason })}
+        </p>
+      )}
+
+      <div className='flex flex-col gap-1'>
+        <Label className='text-xs'>{t('qy_ai_test_raw_response')}</Label>
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_ai_test_raw_response_hint')}
+        </p>
+        {/* overflow-x-auto:上游的错误页可能是一整行几百字符的 HTML,
+            让它把整页撑出横向滚动条是本仓明确禁止的。 */}
+        <pre className='bg-muted max-h-64 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap'>
+          {result.raw_response || t('qy_ai_test_raw_response_empty')}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 两条审核路线的对照卡。
+ *
+ * 项目方明确要求"界面上要能选、要说清区别"。只给一个下拉框是不够的:
+ * 两条路的**成本差一个数量级、类型体系完全不同**,而这两点在选之前看不出来,
+ * 选错之后也不会报错 —— 只会表现为"账单比预想的高"或"这一类的计数一直是 0"。
+ */
+function ProtocolExplainer({
+  protocol,
+  guardCatalog,
+}: {
+  protocol: QyAiProtocol
+  guardCatalog: QyAiGuardCategory[]
+}) {
+  const { t } = useTranslation()
+  if (protocol !== 'qwen3guard') {
+    return (
+      <p className='text-muted-foreground text-xs'>
+        {t('qy_ai_proto_json_desc')}
+      </p>
+    )
+  }
+  const missing = guardCatalog.filter((c) => !c.present)
+  return (
+    <div className='flex flex-col gap-2'>
+      <p className='text-muted-foreground text-xs'>
+        {t('qy_ai_proto_guard_desc')}
+      </p>
+      <div className='flex flex-col gap-1 rounded-md border p-2'>
+        <span className='text-xs font-medium'>
+          {t('qy_ai_proto_guard_map_title')}
+        </span>
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_ai_proto_guard_map_hint')}
+        </p>
+        <div className='flex flex-wrap gap-1'>
+          {guardCatalog.map((c) => (
+            <Badge
+              key={c.id}
+              variant={c.present ? 'outline' : 'destructive'}
+              title={c.key}
+            >
+              {c.label} → {c.key}
+            </Badge>
+          ))}
+        </div>
+        {missing.length > 0 && (
+          <p className='text-muted-foreground text-xs'>
+            {t('qy_ai_proto_guard_map_missing', {
+              keys: missing.map((c) => c.key).join(', '),
+            })}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function ChannelForm({
   draft,
+  guardCatalog,
+  elevateDefault,
   existingHint,
   onChange,
   onCancel,
@@ -1529,6 +1751,8 @@ function ChannelForm({
   saving,
 }: {
   draft: QyAiChannelDraft
+  guardCatalog: QyAiGuardCategory[]
+  elevateDefault: string[]
   existingHint?: string
   onChange: (d: QyAiChannelDraft) => void
   onCancel: () => void
@@ -1538,6 +1762,26 @@ function ChannelForm({
   const { t } = useTranslation()
   return (
     <div className='flex flex-col gap-3 rounded-md border p-3'>
+      <Field label={t('qy_ai_f_protocol')} hint={t('qy_ai_f_protocol_hint')}>
+        <Select
+          value={draft.protocol}
+          onValueChange={(v) =>
+            onChange(qyAiApplyProtocol(draft, v as QyAiProtocol))
+          }
+        >
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value='json_prompt'>{t('qy_ai_proto_json')}</SelectItem>
+            <SelectItem value='qwen3guard'>{t('qy_ai_proto_guard')}</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      <ProtocolExplainer
+        protocol={draft.protocol}
+        guardCatalog={guardCatalog}
+      />
       <div className='grid gap-3 sm:grid-cols-2'>
         <Field label={t('qy_ai_f_name')}>
           <Input
@@ -1551,12 +1795,52 @@ function ChannelForm({
             onChange={(e) => onChange({ ...draft, model: e.target.value })}
           />
         </Field>
-        <Field label={t('qy_ai_f_base_url')} hint={t('qy_ai_f_base_url_hint')}>
+        <Field
+          label={t('qy_ai_f_base_url')}
+          hint={
+            draft.protocol === 'qwen3guard'
+              ? t('qy_ai_f_base_url_hint_guard')
+              : t('qy_ai_f_base_url_hint')
+          }
+        >
           <Input
             value={draft.base_url}
             onChange={(e) => onChange({ ...draft, base_url: e.target.value })}
           />
         </Field>
+        {/* 只在护栏协议下画:通用模型那条路根本没有 Controversial 这一档,
+            画一个存不下去的输入框只会让人以为它生效了。 */}
+        {draft.protocol === 'qwen3guard' && (
+          <Field
+            label={t('qy_ai_f_controversial')}
+            hint={t('qy_ai_f_controversial_hint')}
+          >
+            <Select
+              value={draft.guard_controversial || 'safe'}
+              onValueChange={(v) =>
+                onChange({
+                  ...draft,
+                  guard_controversial: v as 'safe' | 'sensitive' | 'unsafe',
+                })
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='safe'>
+                  {t('qy_ai_f_controversial_safe')}
+                </SelectItem>
+                <SelectItem value='sensitive'>
+                  {t('qy_ai_f_controversial_sensitive')}
+                </SelectItem>
+                <SelectItem value='unsafe'>
+                  {t('qy_ai_f_controversial_unsafe')}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        )}
         {/* 密钥输入是**三态**:不碰 = 保持原值(占位符显示掩码),
             填空 = 清除,填新值 = 换新。见 lib/ai-review.ts。 */}
         <Field
@@ -1564,7 +1848,11 @@ function ChannelForm({
           hint={
             existingHint
               ? t('qy_ai_f_api_key_hint_existing', { hint: existingHint })
-              : t('qy_ai_f_api_key_hint_new')
+              : draft.protocol === 'qwen3guard'
+                ? // 本地 Ollama / vLLM 通常没有密钥。不说这一句的话,运营会
+                  // 以为这一格是必填,而后端从来不要求它。
+                  t('qy_ai_f_api_key_hint_local')
+                : t('qy_ai_f_api_key_hint_new')
           }
         >
           <Input
@@ -1584,7 +1872,14 @@ function ChannelForm({
             }
           />
         </Field>
-        <Field label={t('qy_ai_f_timeout')} hint={t('qy_ai_f_timeout_hint')}>
+        <Field
+          label={t('qy_ai_f_timeout')}
+          hint={
+            draft.protocol === 'qwen3guard'
+              ? t('qy_ai_f_timeout_hint_guard')
+              : t('qy_ai_f_timeout_hint')
+          }
+        >
           <Input
             type='number'
             value={draft.timeout_ms}
@@ -1610,6 +1905,14 @@ function ChannelForm({
           />
         </Field>
       </div>
+      {draft.protocol === 'qwen3guard' && (
+        <GuardCategoryPickers
+          draft={draft}
+          guardCatalog={guardCatalog}
+          elevateDefault={elevateDefault}
+          onChange={onChange}
+        />
+      )}
       <label className='flex items-center gap-2'>
         <Switch
           checked={draft.enabled}
@@ -1625,6 +1928,136 @@ function ChannelForm({
           {t('qy_ai_cancel')}
         </Button>
       </div>
+    </div>
+  )
+}
+
+/**
+ * 护栏渠道的两张类别清单:**启用哪几类**,以及 sensitive 档下**哪几类升级成拦截**。
+ *
+ * ═══════════ 为什么两张都是"空 = 默认",而默认各不相同 ═══════════
+ *
+ * 一格都不勾在两张表上是两个不同的意思,而这是本页最容易被误读的一处,
+ * 所以两处都把默认值**画出来**而不是只写在说明里:
+ *
+ *   启用类别   空 = 九类全启用。它必须是这个方向 —— 空是存量渠道的取值,
+ *              而"空 = 一个都不启用"会让升级那一秒起所有护栏渠道的判定
+ *              全部降档,界面上却一切正常。
+ *   升级类别   空 = 参考实现(sub2api)的三类,后端下发的 elevateDefault
+ *              就是那三个。想要"完全不升级"请把「有争议」改回放行档 ——
+ *              一张空的升级表配 sensitive 档,等价于放行档,而界面上它
+ *              写着"命中敏感类别时拦截",那是一句假话。
+ *
+ * 停用一个类别**不等于**把那一类的判定丢掉:后端在「Unsafe 且解析出的类别
+ * 全被停用」时仍然判违规,只把置信度从 0.95 降到 0.6,交给规则上的
+ * ai_min_confidence 决定要不要吃。这一句写在界面上,否则运营会以为取消勾选
+ * 等于让那一类彻底不生效。
+ */
+function GuardCategoryPickers({
+  draft,
+  guardCatalog,
+  elevateDefault,
+  onChange,
+}: {
+  draft: QyAiChannelDraft
+  guardCatalog: QyAiGuardCategory[]
+  elevateDefault: string[]
+  onChange: (d: QyAiChannelDraft) => void
+}) {
+  const { t } = useTranslation()
+  const toggle = (list: string[], id: string, on: boolean) =>
+    on ? [...list, id] : list.filter((x) => x !== id)
+  // 启用清单为空时九类全启用,所以复选框全部显示为勾上的 —— 显示"全不勾"
+  // 会让运营以为这个渠道什么都不审。取消其中一个时,把"全启用"这个隐式
+  // 状态展开成显式的八项,否则第一次取消会变成"只启用这一项"。
+  const allEnabled = draft.guard_categories.length === 0
+  const enabledIds = qyAiGuardShownIds(
+    draft.guard_categories,
+    guardCatalog.map((c) => c.id)
+  )
+  const elevateOn = draft.guard_controversial === 'sensitive'
+  const elevateEmpty = draft.guard_elevate.length === 0
+  const elevateIds = qyAiGuardShownIds(draft.guard_elevate, elevateDefault)
+  return (
+    <div className='flex flex-col gap-3 rounded-md border p-3'>
+      <div className='flex flex-col gap-1.5'>
+        <Label>{t('qy_ai_f_guard_cats')}</Label>
+        <p className='text-muted-foreground text-xs'>
+          {allEnabled
+            ? t('qy_ai_f_guard_cats_hint_all')
+            : t('qy_ai_f_guard_cats_hint_subset')}
+        </p>
+        <div className='grid gap-1 sm:grid-cols-3'>
+          {guardCatalog.map((c) => (
+            <Label
+              key={c.id}
+              htmlFor={`qy-ai-cat-${c.id}`}
+              className='flex items-center gap-2 text-sm font-normal'
+            >
+              <Checkbox
+                id={`qy-ai-cat-${c.id}`}
+                checked={enabledIds.includes(c.id)}
+                // 最后一格不许取消:空清单在后端的含义是「九类全启用」,
+                // 于是取消最后一个会跳回全启用 —— 一次点了却反向生效的操作。
+                // 要整个停掉这个渠道请用下面的启用开关。
+                disabled={enabledIds.length === 1 && enabledIds.includes(c.id)}
+                onCheckedChange={(checked) =>
+                  onChange({
+                    ...draft,
+                    guard_categories: toggle(
+                      enabledIds,
+                      c.id,
+                      checked === true
+                    ),
+                  })
+                }
+              />
+              <span className='min-w-0 truncate' title={c.key}>
+                {t(`qy_ai_guard_cat_${c.id}`, { defaultValue: c.label })}
+              </span>
+            </Label>
+          ))}
+        </div>
+      </div>
+      {elevateOn && (
+        <div className='flex flex-col gap-1.5'>
+          <Label>{t('qy_ai_f_guard_elevate')}</Label>
+          <p className='text-muted-foreground text-xs'>
+            {elevateEmpty
+              ? t('qy_ai_f_guard_elevate_hint_default')
+              : t('qy_ai_f_guard_elevate_hint')}
+          </p>
+          <div className='grid gap-1 sm:grid-cols-3'>
+            {guardCatalog.map((c) => (
+              <Label
+                key={c.id}
+                htmlFor={`qy-ai-elev-${c.id}`}
+                className='flex items-center gap-2 text-sm font-normal'
+              >
+                <Checkbox
+                  id={`qy-ai-elev-${c.id}`}
+                  checked={elevateIds.includes(c.id)}
+                  // 同上:空清单 = 参考实现的三类。想要「完全不升级」请把
+                  // 上面的「有争议」改回放行档 —— 一张空的升级表配 sensitive
+                  // 档等价于放行档,而那一格写着"命中敏感类别时拦截"。
+                  disabled={
+                    elevateIds.length === 1 && elevateIds.includes(c.id)
+                  }
+                  onCheckedChange={(checked) =>
+                    onChange({
+                      ...draft,
+                      guard_elevate: toggle(elevateIds, c.id, checked === true),
+                    })
+                  }
+                />
+                <span className='min-w-0 truncate'>
+                  {t(`qy_ai_guard_cat_${c.id}`, { defaultValue: c.label })}
+                </span>
+              </Label>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

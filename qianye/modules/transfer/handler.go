@@ -285,26 +285,24 @@ func handleGetLimits(c *gin.Context) {
 	// grouplimit.go),而这一页回显的必须是提交时真正会生效的那一档 ——
 	// 回显全站兜底会让 vip 看到一个「还能转 100 万」、提交时按自己那一档被拒。
 	//
-	// 分档按**基准用户组**解析、并且要过 transferForSenderDay 的当日取严,
-	// 两处都必须与 create() 逐字一致:少一处,这一页就会回显一个用户根本用不到的
-	// 上限,而"界面说能转、提交说不能"是用户唯一能看到的症状。
+	// 分档按**此刻的 users.group** 解析、并且要过 transferForSenderDay 的当日取严,
+	// 两处都必须与 create() 逐字一致 —— 这一页与 create() 调的是同一个
+	// transferForSenderDay,同一个入参口径。少一处,这一页就会回显一个用户根本
+	// 用不到的上限,而"界面说能转、提交说不能"是用户唯一能看到的症状。
 	//
-	// 读不到时(主库抖动)退回全站兜底并继续渲染:这一页的其余部分(剩余额度、
-	// 冷却)仍然有用,整页报错反而让用户什么都看不到。基准用户组读不到时**只让
-	// 门槛这一段**退回全站兜底,余额与分组提示照常渲染 —— 回显宽一点只是显示
-	// 问题,资金路径那一侧仍然失败关闭(见 create)。
+	// 主库用户行读不到时(主库抖动)退回全站兜底并继续渲染:这一页的其余部分
+	// (剩余额度、冷却)仍然有用,整页报错反而让用户什么都看不到 —— 回显宽一点
+	// 只是显示问题,资金路径那一侧仍然会用真正的那一档判(见 create)。
 	// 分档配置本身读不到不在这一支里 —— 那由 effectiveCtx 直接拒掉。
 	user, userErr := model.GetUserById(me, false)
 	cfg := settings.Transfer
 	if userErr == nil {
-		if baseGroups, baseErr := baseUserGroups(user); baseErr == nil {
-			tiered, tierErr := settings.transferForSenderDay(baseGroups, &state, bucket)
-			if tierErr != nil {
-				respondErr(c, tierErr)
-				return
-			}
-			cfg = tiered
+		tiered, tierErr := settings.transferForSenderDay(user.Group, &state, bucket)
+		if tierErr != nil {
+			respondErr(c, tierErr)
+			return
 		}
+		cfg = tiered
 	}
 
 	resp := limitsResponse{

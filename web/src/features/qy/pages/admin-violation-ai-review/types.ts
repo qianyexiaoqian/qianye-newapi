@@ -36,11 +36,62 @@ export type QyAiOutcome =
   | 'upstream_error'
   | 'no_channel'
 
+/**
+ * 一个审核渠道说哪一种「审核方言」。
+ *
+ * - `json_prompt` —— 通用大模型 + 提示词工程:发一段几百 token 的系统提示词
+ *   (判定口径 + 本站违规类型闭集),要求模型吐一个 JSON。**这是零值档,也是
+ *   这一列出现之前的唯一行为**,后端把空串与任何不认识的取值都折到它上面。
+ * - `qwen3guard` —— 护栏模型:阿里 Qwen3Guard 一类**专门为安全分类微调**的
+ *   小模型。不发提示词,它直接吐 `Safety: Unsafe` / `Categories: ...` 标签。
+ *
+ * 两条路并列,不互相取代 —— 代价、延迟、准确性、类型体系都不同,界面上必须
+ * 把差别说出来,不能只给一个下拉框。
+ */
+export type QyAiProtocol = 'json_prompt' | 'qwen3guard'
+
+/**
+ * Qwen3Guard 比常见护栏模型多一档 `Controversial`(有争议)。这一格决定把它
+ * 怎么接到本站的处置上。
+ *
+ * - `safe`(**空串 = 零值档**)—— 不当违规。新增能力不得替站点收紧处置。
+ * - `sensitive` —— **参考实现(Wei-Shaw/sub2api)的策略**:只有命中"敏感
+ *   类别"时才升级成违规。它把三类钉死在代码里(jailbreak / pii /
+ *   suicide_and_self_harm),本站把那份清单做成了可改的一格。
+ * - `unsafe` —— 一律当违规。
+ *
+ * 选了收紧档之后还有第二道旋钮 —— 规则上的 `ai_min_confidence`:
+ * Unsafe 与"升级后的 Controversial"记 0.95,普通 Controversial 记 0.6,
+ * 阈值填 0.8 就只吃前者。
+ *
+ * `json_prompt` 渠道上后端会把它清空:留着一个被忽略的取值,下一个人会照着
+ * 界面回显去查「为什么设了 unsafe 却没生效」。
+ */
+export type QyAiGuardControversial = '' | 'safe' | 'sensitive' | 'unsafe'
+
 export type QyAiChannel = {
   id: number
   name: string
   base_url: string
   model: string
+  /** 后端下发的恒是归一后的取值,**不会是空串**。 */
+  protocol: QyAiProtocol
+  /** `json_prompt` 渠道上恒为空串,界面据此决定要不要画那一格。 */
+  guard_controversial: QyAiGuardControversial
+  /**
+   * 启用的类别子集(九类的 snake_case id)。
+   *
+   * **空数组 = 九类全启用**,不是"一个都不启用" —— 这是零值档,也是这一格
+   * 存在之前的唯一行为。停用一个类别不等于丢弃它:后端在
+   * 「Unsafe 且解析出的类别全被停用」时仍然判违规,只把置信度降到 0.6。
+   */
+  guard_categories: string[]
+  /**
+   * `sensitive` 档下"命中即拦截"的敏感类别。**空数组 = 参考实现的三类**。
+   *
+   * 想要"完全不升级"请选 `safe` 档 —— 那一格的字面意思就是这个。
+   */
+  guard_elevate: string[]
   has_key: boolean
   key_hint: string
   timeout_ms: number
@@ -56,6 +107,10 @@ export type QyAiChannelInput = {
   name: string
   base_url: string
   model: string
+  protocol: QyAiProtocol
+  guard_controversial: QyAiGuardControversial
+  guard_categories: string[]
+  guard_elevate: string[]
   /** 省略 = 保持原密钥;空串 = 清除。绝不能把它做成必填。 */
   api_key?: string
   timeout_ms: number
@@ -66,10 +121,43 @@ export type QyAiChannelInput = {
   remark: string
 }
 
+/**
+ * 护栏模型那 9 个**固定**类别与本站违规类型的对照表。
+ *
+ * 它由后端下发而不是前端硬编码:硬编码的那一份与后端的映射是两份必须手工
+ * 保持一致的事实,而漏改的表现是界面上写着落到 A、实际落到 B。
+ */
+export type QyAiGuardCategory = {
+  /** 类别 id(snake_case),复选框的 value,也是运营可以拿来建类型的标识。 */
+  id: string
+  /** 官方展示名,例如 `Non-violent Illegal Acts`。 */
+  label: string
+  /** @deprecated 与 `label` 同值,留给旧调用点。 */
+  guard: string
+  /** 它会落到的本站违规类型标识。 */
+  key: string
+  /**
+   * 本站类型表里**有没有**这个标识。
+   *
+   * 这一位是整张表的价值所在:护栏模型的类别改不动(训练时钉死),所以
+   * `false` 意味着这一类的判定必然落进兜底「未分类」。运营想单独处置它,
+   * 只能去违规类型页新建一个这个标识的类型 —— 改提示词是没用的。
+   */
+  present: boolean
+}
+
 export type QyAiChannelList = {
   items: QyAiChannel[]
   /** 后端有没有配 violation.ai_review_key。没配就存不下密钥。 */
   key_configured: boolean
+  /**
+   * 护栏九类与本站类型的对照表。名字与渠道上那一格
+   * (`QyAiChannel.guard_categories` = 启用子集)分开 —— 两者是不同层级的
+   * 东西,同名会让人以为改一个能影响另一个。
+   */
+  guard_catalog: QyAiGuardCategory[]
+  /** `sensitive` 档留空时真正生效的那三类。不下发它,界面上"留空 = 默认"就是一句没人验证得了的话。 */
+  guard_elevate_default: string[]
 }
 
 /**
@@ -387,13 +475,32 @@ export type QyAiReviewLog = {
 }
 
 export type QyAiChannelTestResult = {
+  /** 这一次试跑走的是哪一种协议。与表单里选的不一致说明还没保存。 */
+  protocol: QyAiProtocol
   outcome: QyAiOutcome
   violated: boolean
   category: string
+  /** 模型给了一个本站类型表里没有的标识时,它的原值。 */
+  raw_category: string
   confidence: string
+  reason: string
   latency_ms: number
+  /** 这一次实际用的预算。护栏渠道试跑时会被抬到冷启动下限,与生产预算不同。 */
+  timeout_ms: number
   tokens: { prompt: number; completion: number; total: number }
   cost_usd: string
   priced: boolean
+  /**
+   * 上游**原样**回的那一段(截断到 2000 字)。
+   *
+   * 没有它,协议对不上时界面上只有一个 `bad_json`,而它的三种成因(地址指到了
+   * 别的服务 / 协议选错了 / 这个部署的输出格式与官方示例不同)长得完全一样。
+   * 护栏模型尤其需要:官方没有给出 OpenAI 兼容端点上的字段级规格。
+   *
+   * 隐私上是干净的:试跑送出去的是后端写死的一句良性文本,响应里不含用户内容。
+   */
+  raw_response: string
+  /** `cold_start` = 护栏渠道首次调用要加载模型,超时是预期的,再点一次即可。 */
+  hint?: string
   message?: string
 }

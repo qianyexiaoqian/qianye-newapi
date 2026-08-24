@@ -44,7 +44,10 @@ import { qyKeys } from '@/features/qy/lib/query-keys'
 type TokenTodayUsagePayload = {
   day_start: number
   day_end: number
-  day_offset_minutes: number
+  /** 服务器本地时区的缩写(`PDT` / `UTC` / `+08` …)。 */
+  timezone: string
+  /** 服务器本地时区在 day_start 那一刻相对 UTC 的偏移(分钟)。 */
+  utc_offset_minutes: number
   index_ready: boolean
   /** 键是令牌 id 的十进制字符串 —— JSON 对象的键只能是字符串。 */
   usage: Record<string, number>
@@ -54,8 +57,16 @@ export type TokenTodayUsage = {
   /** 「今天」这一段的半开区间 [dayStart, dayEnd),unix 秒。 */
   dayStart: number
   dayEnd: number
-  /** 日界相对 UTC 的偏移(分钟)。界面要用它把「今日」是哪一段写给用户看。 */
-  dayOffsetMinutes: number
+  /** 服务器本地时区的缩写。与 utcOffsetMinutes 一起显示才没有歧义。 */
+  timezone: string
+  /**
+   * 服务器本地时区相对 UTC 的偏移(分钟)。
+   *
+   * 界面**必须**用它来渲染区间,不能用浏览器本地时区:这一段是服务器那边的
+   * 0 点到 23:59:59,浏览器在别的时区时直接 format 会显示成 15:00 之类的钟点,
+   * 而那个数在服务器上没有任何意义。
+   */
+  utcOffsetMinutes: number
   /** 后端那条覆盖索引在不在。只是个诊断位,不参与任何显示判据。 */
   indexReady: boolean
   /** 令牌 id → 今日消费额(额度单位,与列表里的额度列同一单位)。 */
@@ -106,7 +117,10 @@ export function tokenTodayUsageQuery() {
         return {
           dayStart: data.day_start,
           dayEnd: data.day_end,
-          dayOffsetMinutes: data.day_offset_minutes,
+          timezone: typeof data.timezone === 'string' ? data.timezone : '',
+          utcOffsetMinutes: Number.isFinite(data.utc_offset_minutes)
+            ? data.utc_offset_minutes
+            : 0,
           indexReady: data.index_ready === true,
           usage: toNumericUsage(data.usage),
         }
@@ -121,16 +135,48 @@ export function tokenTodayUsageQuery() {
 }
 
 /**
- * 把日界偏移渲染成 `UTC+08:00` 这样的字符串。
- *
- * 界面上必须写清「今日」是哪一段:本站另有一个「今天」(划转/提现的日限额)
- * 走服务器本地时区午夜,两者可以差好几个小时。不写清楚的话用户没有任何办法
- * 把两个数对上,而两个数都是对的。
+ * 把偏移渲染成 `UTC+08:00` 这样的字符串。
  */
-export function formatDayOffsetLabel(minutes: number): string {
+export function formatUtcOffsetLabel(minutes: number): string {
   const sign = minutes < 0 ? '-' : '+'
   const abs = Math.abs(Math.trunc(minutes))
   const hh = String(Math.floor(abs / 60)).padStart(2, '0')
   const mm = String(abs % 60).padStart(2, '0')
   return `UTC${sign}${hh}:${mm}`
+}
+
+/**
+ * 把时区渲染成写给人看的一句:`PDT (UTC-07:00)`。
+ *
+ * 缩写单看是有歧义的(`CST` 既是中国标准时间也是美国中部标准时间),所以
+ * 永远跟偏移一起显示。而 tzdata 里没有字母缩写的时区拿到的是 `-03`、`+0530`
+ * 这样的数字形式 —— 那种情况下再拼一遍偏移就成了 `-03 (UTC-03:00)`,
+ * 只留偏移。
+ */
+export function formatServerZoneLabel(
+  timezone: string,
+  offsetMinutes: number
+): string {
+  const offset = formatUtcOffsetLabel(offsetMinutes)
+  if (!timezone || /^[+-]/.test(timezone)) return offset
+  return `${timezone} (${offset})`
+}
+
+/**
+ * 按**服务器本地时区**把 unix 秒渲染成 `YYYY-MM-DD HH:mm:ss`。
+ *
+ * 不走 dayjs 的本地格式化:那个用的是**浏览器**时区。运营在上海打开一台跑在
+ * PST 的机器,服务器的「今日 0 点」在他浏览器里是 15:00 —— 显示成 15:00 的话,
+ * 这一行文案就把它自己要解释的那件事解释错了。
+ *
+ * 做法是把偏移先加进时间戳再按 UTC 格式化:`toISOString()` 恒定输出 UTC,
+ * 于是加完偏移之后读出来的就是服务器那边的墙上时间。
+ */
+export function formatInServerZone(
+  unixSeconds: number,
+  offsetMinutes: number
+): string {
+  const shifted = new Date((unixSeconds + offsetMinutes * 60) * 1000)
+  if (Number.isNaN(shifted.getTime())) return ''
+  return shifted.toISOString().slice(0, 19).replace('T', ' ')
 }

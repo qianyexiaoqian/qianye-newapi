@@ -36,6 +36,7 @@ import { QyPager } from '../../components/qy-pager'
 import { qyLotProofQuery } from '../api'
 import { qyLotEntryBadgeStatus } from '../lib/display'
 import type { QyLotActivityDetail, QyLotProofEntry } from '../types'
+import { QyLotFinePrint } from './lottery-fine-print'
 
 const PAGE_SIZE = 20
 
@@ -80,9 +81,11 @@ export function QyLotRosterCard(props: { activity: QyLotActivityDetail }) {
       </CardHeader>
       <CardContent className='space-y-3'>
         {!ready ? (
-          <p className='text-muted-foreground text-sm'>
-            {t('qy_lot_roster_sealed')}
-          </p>
+          // 封盘前这张卡一条数据都没有，此前却顶着两段说明（卡片描述 24 字 +
+          // 这一句 24 字）。结论留在明面上，理由折起来。
+          <QyLotFinePrint label={t('qy_lot_roster_sealed')}>
+            <p>{t('qy_lot_roster_sealed_why')}</p>
+          </QyLotFinePrint>
         ) : (
           <>
             <StaticDataTable
@@ -141,10 +144,11 @@ export function QyLotRosterCard(props: { activity: QyLotActivityDetail }) {
             />
             {/* 链刻意不含 status —— 否则每次扣费失败都会破链。所以"这一条到底
                 成没成"由资金单交叉佐证，这句话必须写出来，不能让用户以为
-                哈希链保证了它。 */}
-            <p className='text-muted-foreground text-xs'>
-              {t('qy_lot_roster_status_note')}
-            </p>
+                哈希链保证了它。折叠而不是删：它只对"正在拿这张表核对哈希"的人
+                有意义，而那个人一定会点开这一层。 */}
+            <QyLotFinePrint label={t('qy_lot_roster_status_label')}>
+              <p>{t('qy_lot_roster_status_note')}</p>
+            </QyLotFinePrint>
           </>
         )}
       </CardContent>
