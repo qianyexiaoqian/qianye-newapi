@@ -35,7 +35,7 @@ import { qyArray } from '../../../lib/array'
 import { QyPager } from '../../components/qy-pager'
 import { qyLotProofQuery } from '../api'
 import { qyLotBallHits, qyLotBallSafeParsePick } from '../lib/ball'
-import { qyLotEntryBadgeStatus } from '../lib/display'
+import { qyLotEntryBadgeStatus, qyLotMaskRef } from '../lib/display'
 import type { QyLotActivityDetail, QyLotProofEntry } from '../types'
 import { QyLotBallNumbers } from './lottery-ball-numbers'
 import { QyLotFinePrint } from './lottery-fine-print'
@@ -56,10 +56,22 @@ const PAGE_SIZE = 20
  * `user_ref` 是每场活动独立加盐的稳定标识：同一个人在同一场里的多张票标同一个
  * `user_ref`（用户自己可以核对），但跨场无法关联，也无法反查回用户 ID。
  * 盐永不公开 —— 一旦公开，几万个 user_id 的空间可以被完整枚举反查。
+ *
+ * ## 默认展开 + 展示层打码
+ *
+ * 名单默认**展开**：一份要多点一下才看得到的公示名单，在"公示"这件事上等于
+ * 没有。同时两串长标识按 {@link qyLotMaskRef} 打码 —— 标识虽不是身份，却是
+ * 一条场内的关联线（谁晒过自己的报名回执，谁在这一场里的每一注就都被钉在
+ * 一起）。打的是**展示层**：接口下发的、本地复算读的、第三方从证据链端点拿到
+ * 的都仍然是原值，所以公正性验证一个字节都没受影响。要逐行比对哈希的人打开
+ * 「显示完整标识」即可。
  */
 export function QyLotRosterCard(props: { activity: QyLotActivityDetail }) {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
+  // 打码是**默认**，不是唯一形态。核对哈希是一次刻意动作，配一颗开关给它。
+  const [revealed, setRevealed] = useState(false)
+  const showRef = (value: string) => (revealed ? value : qyLotMaskRef(value))
 
   const ready =
     props.activity.status === 'locked' ||
@@ -95,19 +107,18 @@ export function QyLotRosterCard(props: { activity: QyLotActivityDetail }) {
           </QyLotFinePrint>
         ) : (
           /*
-            名单表折起来，标题、说明与「共 N 条」留在明面上。
+            名单表**默认展开**（项目方本轮明确要求：参与名单默认公开可见）。
 
-            这张表一页真的渲染 20 行，而真实的 entry_no（27 字）与 user_ref
-            （32 字）让每一行成本约 80 字 —— 实测同一屏 1 个参与者 975 字、
-            20 个参与者 2507 字，也就是说「活动详情 ≤1000 字」那道守卫此前
-            只在"恰好一个人参加"这种现实中不存在的场次上成立，第二个参与者
-            就把它顶穿了。
+            上一轮把它折起来的理由是字数：真实的 entry_no（27 字）与 user_ref
+            （32 字）让每行成本约 80 字，满页 20 行是 2507 字。那个理由现在由
+            打码接手 —— 两串各压到 11 位，每行成本降到 40 字上下，而"公示名单
+            要点一下才看得到"这件事本身比字数更糟。
 
-            折而不删：名单是**核对**用的，不是决策用的。要拿它比对哈希链的人
-            一定会点开这一层；不核对的人不该先滚过二十行十六进制才看到自己
-            那张票。公开证据链端点本身也一直在，折叠不改变任何可得性。
+            折叠位留着：要收起来的人点一下即可，而收起时 Base UI 的 Collapsible
+            不挂载面板，长名单不会一直压在页面上。
           */
           <QyLotFinePrint
+            defaultOpen
             label={t('qy_lot_roster_open_label', {
               count: query.data?.total ?? entries.length,
             })}
@@ -128,13 +139,15 @@ export function QyLotRosterCard(props: { activity: QyLotActivityDetail }) {
                   id: 'entry_no',
                   header: t('qy_lot_entry_no'),
                   cellClassName: 'font-mono text-xs',
-                  cell: (row: QyLotProofEntry) => row.entry_no,
+                  // 打码只发生在这里。`row.entry_no` 那份原值仍然完整地躺在
+                  // 查询结果里，本地复算与第三方复算读的都是它。
+                  cell: (row: QyLotProofEntry) => showRef(row.entry_no),
                 },
                 {
                   id: 'user_ref',
                   header: t('qy_lot_user_ref'),
                   cellClassName: 'font-mono text-xs',
-                  cell: (row: QyLotProofEntry) => row.user_ref,
+                  cell: (row: QyLotProofEntry) => showRef(row.user_ref),
                 },
                 // 双色球换一列：`opt_no` 在这套玩法里恒为 0，于是这一列
                 // 逐行显示 `-`，而**每一注买的号**（进哈希链、进名单原像的那份
@@ -191,6 +204,21 @@ export function QyLotRosterCard(props: { activity: QyLotActivityDetail }) {
                 成没成"由资金单交叉佐证，这句话必须写出来，不能让用户以为
                 哈希链保证了它。折叠而不是删：它只对"正在拿这张表核对哈希"的人
                 有意义，而那个人一定会点开这一层。 */}
+            {/* 打码是展示层的事，证据链里的原值一个字节都没动。要逐行比对
+                哈希的人打开这颗开关即可 —— 而那是一次刻意动作，不是默认。 */}
+            <button
+              type='button'
+              aria-pressed={revealed}
+              className='text-muted-foreground hover:text-foreground mt-2 text-xs underline'
+              onClick={() => setRevealed((prev) => !prev)}
+            >
+              {revealed
+                ? t('qy_lot_roster_mask_on')
+                : t('qy_lot_roster_reveal')}
+            </button>
+            <p className='text-muted-foreground mt-2 text-xs'>
+              {t('qy_lot_roster_mask_note')}
+            </p>
             <p className='text-muted-foreground mt-2 text-xs'>
               {t('qy_lot_roster_status_note')}
             </p>

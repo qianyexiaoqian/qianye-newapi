@@ -1562,6 +1562,11 @@ function ChannelRow({
           ? t('qy_ai_key_set', { hint: channel.key_hint })
           : t('qy_ai_key_none')}
       </span>
+      {/* 地址改过、而密钥还绑在旧地址上。这一行照样显示「已配置密钥」，
+          可它一次都不会被调用 —— 不标出来就是一次静默的风控缺口。 */}
+      {channel.key_bound_elsewhere && (
+        <Badge variant='destructive'>{t('qy_ai_key_rebind_needed')}</Badge>
+      )}
       <span className='text-muted-foreground text-xs'>
         {t('qy_ai_weight_label', { weight: channel.weight })}
       </span>

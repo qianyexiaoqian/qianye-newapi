@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/guard"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/twophase"
 
@@ -53,12 +54,33 @@ const idemScopeEntry = "lottery_entry"
 // 用户攒够条目之后静默失效 —— 而失效的是一道运营以为自己开着的闸门。
 const perUserCapHard = 500
 
-// maxClientRequestID 是 client_request_id 的长度上限。
+// maxClientRequestID 是**客户端可以携带的** client_request_id 长度上限。
 //
 // 超长直接 400 而不是静默哈希:静默哈希会让"两个不同的超长键"有极小概率
 // 撞成同一笔参与,而那是用户永远查不出原因的一次丢单。
 // 上限来自列宽反推:act_no(27) + ":"(1) + 64 = 92 ≤ qy_lot_entry.idem_key 的 96。
 const maxClientRequestID = 64
+
+// maxPicksPerRequest 是**一次提交最多买几注**(双色球)。
+//
+// 它不是运营旋钮,而是这条链路的时间预算:一次多注提交在服务端是 N 次串行的
+// twophase.Execute(每一注一张独立资金单、一次主库事务),整批跑在
+// guard.ColdContext 那 3 秒的预算里。配得再大只会让后半批在超时后被截断 ——
+// 而截断本身是安全的(前面每一注都已各自落定),但用户看到的是一次"只买成一半"。
+//
+// 每人上限仍由活动的 max_entries_per_user 说了算,这里只管单次提交的批量。
+const maxPicksPerRequest = 10
+
+// maxEntryRequestID 是 ChargeEntry 允许的 ClientRequestId 长度上限。
+//
+// 它比 maxClientRequestID 大 2:多注提交给第 i(i ≥ 1)注派生的幂等键是
+// `<客户端的 crid>#<i>`,i 至多两位十进制(maxPicksPerRequest = 10 → 最大是 9)。
+// 列宽仍然对得上:act_no(27) + ":"(1) + 64 + "#9"(2) = 94 ≤ 96。
+//
+// 两个常量分开是因为它们约束的是两件事:客户端传进来的那一份由 handler 挡在
+// 64(用户输入的边界),而 ChargeEntry 自己认的是列宽反推出来的那一份 ——
+// 合成一个数就必然要么拒掉一个合法的派生键、要么把用户输入的上界悄悄放宽。
+const maxEntryRequestID = maxClientRequestID + 2
 
 // EntryInput 是一次参与请求的全部输入。
 type EntryInput struct {
@@ -76,6 +98,15 @@ type EntryInput struct {
 	Pick      string
 	ClientIp  string
 	UserAgent string
+	// BatchIndex 是这一注在**同一次提交**里的下标,0 = 第一注(或单注提交)。
+	//
+	// 它只被冷却闸门读:一次买 N 注在服务端是 N 次串行的 ChargeEntry,相邻两注
+	// 之间只隔几毫秒,而 cooldown_seconds 判的是"距上一条参与多久"—— 不区分的话
+	// 任何配了冷却的活动都买不了第二注,而失败发生在第二注扣费之前、用户已经
+	// 看过总额了。冷却拦的是"在 close 前用脚本连发把名额吃光",一次提交是**一个
+	// 动作**,批内不再互相计时;下一次提交仍然要等,因为 lastAt 已经推到了本批
+	// 最后一注上。
+	BatchIndex int
 }
 
 // PayPasswordRequired 判断这一笔参与是否需要支付密码。
@@ -94,7 +125,7 @@ func PayPasswordRequired(stakeQuota int64) bool {
 // 事后举证"我确实在名单里、而且是在第 N 位"的全部凭据。
 func ChargeEntry(ctx context.Context, in EntryInput) (*Entry, error) {
 	crid := strings.TrimSpace(in.ClientRequestId)
-	if crid == "" || len(crid) > maxClientRequestID {
+	if crid == "" || len(crid) > maxEntryRequestID {
 		return nil, errBadRequestID
 	}
 	gdb := db.Get()
@@ -190,7 +221,7 @@ func ChargeEntry(ctx context.Context, in EntryInput) (*Entry, error) {
 	req := fundingFacts(act, entry)
 	req.LocalDetail = func(tx *gorm.DB, o *qymodel.FundOrder) error {
 		entry.OrderNo = o.OrderNo
-		return reserveEntry(tx, act, rules, entry)
+		return reserveEntry(tx, act, rules, entry, in.BatchIndex)
 	}
 	req.MainApply = func(tx *gorm.DB, o *qymodel.FundOrder) error {
 		return debitMainQuota(tx, rules, entry, &snap)
@@ -235,7 +266,19 @@ func ChargeEntry(ctx context.Context, in EntryInput) (*Entry, error) {
 		return nil, err
 	}
 
-	stored, err := reloadEntry(ctx, gdb, entry.EntryNo)
+	// 回读同样要切断调用方的取消链,理由与 settleGuard 逐字相同 —— 而且更硬:
+	// 走到这一行时钱已经扣了、票已经进了哈希链、收尾也已经确认过。此刻拿一个
+	// **已经过期**的调用方 ctx 去读,得到的是 context deadline exceeded,
+	// 而 ChargeEntry 把它当成"这一注失败"抛给调用方:多注提交的
+	// accepted / total_quota 会因此少报一笔真实扣款,回执里也没有这张票 ——
+	// 一张**已经买到手**的票被说成没买成。
+	//
+	// 预算耗尽在多注上不是罕见事:整批 N 注共用 guard.ColdContext 那一份预算,
+	// 而这一行排在每一注最长的那一段(主库事务 + 收尾)之后,落在这里的概率
+	// 比落在别处高。用户真的因此看到过 accepted=2 而余额少了 3 注的钱。
+	readCtx, cancelRead := guard.ColdContext(context.WithoutCancel(ctx))
+	defer cancelRead()
+	stored, err := reloadEntry(readCtx, gdb, entry.EntryNo)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +430,7 @@ func acceptAmount(act *Activity, in EntryInput) (int64, error) {
 // 第一条 UPDATE 同时承担四件事:活动状态复检、时间窗复检、全场序号分配,
 // 以及在活动行上取得 X 锁。之后的每一次 COUNT 都在这把锁的保护下,
 // 因此"两个并发请求同时读到旧计数、同时通过上限校验"在结构上不可能发生。
-func reserveEntry(tx *gorm.DB, act *Activity, rules Rules, e *Entry) error {
+func reserveEntry(tx *gorm.DB, act *Activity, rules Rules, e *Entry, batchIndex int) error {
 	now := common.GetTimestamp()
 	grace := int64(config.Get().Lottery.EntryCloseGraceSeconds)
 
@@ -416,7 +459,7 @@ func reserveEntry(tx *gorm.DB, act *Activity, rules Rules, e *Entry) error {
 	}
 	e.Seq = cur.EntrySeq
 
-	if err := checkCaps(tx, &cur, e); err != nil {
+	if err := checkCaps(tx, &cur, e, batchIndex); err != nil {
 		return err
 	}
 
@@ -462,7 +505,7 @@ func reserveEntry(tx *gorm.DB, act *Activity, rules Rules, e *Entry) error {
 // 全部用 COUNT 而不是物化计数表:条件是 status IN ('pending','success'),
 // **失败的条目自然停止计数,不需要任何回滚**。这正是不建计数表的最大收益 ——
 // 计数表必须写"失败时带非负保护地回退",而那段代码一旦写错,上限会永久失效。
-func checkCaps(tx *gorm.DB, cur *Activity, e *Entry) error {
+func checkCaps(tx *gorm.DB, cur *Activity, e *Entry, batchIndex int) error {
 	live := []string{EntryPending, EntrySuccess}
 
 	// 全场名额。pending_count 已经含本次,因此判定用 >。
@@ -538,7 +581,13 @@ func checkCaps(tx *gorm.DB, cur *Activity, e *Entry) error {
 		return errAttemptCap
 	}
 	// 冷却。次数上限防不住"在 close 前 1 秒用脚本连发把全场名额吃光"。
-	if cur.CooldownSeconds > 0 && lastAt > 0 &&
+	//
+	// batchIndex > 0 = 这一注是**同一次提交**里的第 2..N 注。批内不计时:
+	// 相邻两注只隔几毫秒,不豁免的话任何配了冷却的活动都买不了第二注,
+	// 而用户是在看过总额、按下确认之后才被顶回来的。豁免的边界很窄 ——
+	// 单次批量由 maxPicksPerRequest 封顶、每人总数仍受 max_entries_per_user
+	// 约束,而**下一次**提交照旧要等,因为 lastAt 已经推到本批最后一注上。
+	if batchIndex == 0 && cur.CooldownSeconds > 0 && lastAt > 0 &&
 		common.GetTimestamp()-lastAt < int64(cur.CooldownSeconds) {
 		return errCooldown
 	}

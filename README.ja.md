@@ -319,10 +319,10 @@ docker run --name new-api -d --restart always \
 | `SESSION_SECRET` | 認証署名シークレット。すべてのノードで同じ値が必要 | - |
 | `SESSION_COOKIE_SECURE` | `false`/未設定ではローカル HTTP 開発プロキシ向けに refresh/logout の OriginGuard を無効化し、`true` では Secure Cookie と厳格な Origin 検証を有効化 | `false` |
 | `SESSION_COOKIE_TRUSTED_URL` | Secure モードでは必須。refresh/logout を許可する完全一致の HTTPS Origin をカンマ区切りで指定。relay CORS 設定ではありません | - |
-| `TRUSTED_PROXIES` | 直接の接続元自身が信頼済みプロキシである場合にのみ転送ヘッダーを採用し、`X-Forwarded-For` は右から左へ剥がします。IP/CIDR のほか、キーワード `none`、`loopback`、`private`、`cloudflare`（`CF-Connecting-IP` を採用するのはこの区分だけ）が使えます。未設定の場合、`BIND_ADDRESS` がループバックならループバックを自動的に信頼し、そうでなければ何も信頼せず起動時に警告します | - |
+| `TRUSTED_PROXIES` | 直接の接続元自身が信頼済みプロキシである場合にのみ転送ヘッダーを採用し、`X-Forwarded-For` は右から左へ剥がします。IP/CIDR のほか、キーワード `none`、`loopback`、`private`、`cloudflare`（`CF-Connecting-IP` を採用するのはこの区分だけ）が使えます。未設定の場合は上流と同じ既定値（`127.0.0.0/8`、`::1`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`fc00::/7`）を使い、起動時に警告します | - |
 | `CLIENT_IP_HEADERS` | 信頼済みの接続元がクライアント IP を宣言できるヘッダーを順に試します。明示的な指定は既定値を完全に置き換えます。ベンダー固有ヘッダーを既定に含めないのは、通常のリバースプロキシがクライアントの任意ヘッダーをそのまま転送するためです | `X-Forwarded-For, X-Real-IP` |
 | `TRUSTED_PROXIES_CLOUDFLARE_FILE` | Cloudflare のレンジ一覧ファイル（`curl https://www.cloudflare.com/ips-v4` の生出力）へのパス。内蔵スナップショットを置き換えます。private/ループバック/広すぎるプレフィックスを含む一覧は起動を中止させます | - |
-| `BIND_ADDRESS` | 待ち受けアドレス。空ならすべてのインターフェイスで待ち受けます。ループバックを指定すると、`TRUSTED_PROXIES` 未設定でもループバックの接続元を信頼します | - |
+| `BIND_ADDRESS` | 待ち受けアドレス。空ならすべてのインターフェイスで待ち受けます | - |
 | `USER_SESSION_ACTIVE_LIMIT` | 1 ユーザーあたりの有効なログイン Session 上限 | `50` |
 | `USER_SESSION_ISSUANCE_LIMIT` | カウント期間内に作成できる Session 数の上限（取り消し済みを含む） | `100` |
 | `USER_SESSION_ISSUANCE_WINDOW_SECONDS` | Session 発行のカウント期間（秒）。取り消し済み Session の保持期間を超える場合は自動的に制限 | `86400` |

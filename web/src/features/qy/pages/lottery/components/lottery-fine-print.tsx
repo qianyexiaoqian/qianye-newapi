@@ -49,11 +49,20 @@ import { cn } from '@/lib/utils'
 export function QyLotFinePrint(props: {
   /** 触发器上的那一句。缺省是通用的「说明」。 */
   label?: string
+  /**
+   * 一开始就展开。
+   *
+   * 默认收起的口径只适用于「它为什么可信」那一类解释文字。**公开参与名单不属于
+   * 那一类** —— 项目方本轮明确要求它默认可见：一份要折一下才看得到的公示名单，
+   * 在"公示"这件事上等于没有。折叠位本身留着（要收起来的人点一下即可），
+   * 变的只是初值。
+   */
+  defaultOpen?: boolean
   children: ReactNode
   className?: string
 }) {
   const { t } = useTranslation()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(props.defaultOpen ?? false)
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className={props.className}>

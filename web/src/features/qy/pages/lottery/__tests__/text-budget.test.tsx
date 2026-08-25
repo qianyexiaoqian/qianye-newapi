@@ -51,15 +51,37 @@ import { after, describe, test } from 'node:test'
 
 import enKeys from '@/i18n/qy/en.json'
 
+import { qyLotMaskRef } from '../lib/display'
 import {
   cleanupQyLotScreens,
   mountQyLotScreen,
   qyLotBriefFixture,
   qyLotDetailFixture,
+  qyVisibleChars,
   zhKeys,
 } from './screen-harness'
 
 after(cleanupQyLotScreens)
+
+/**
+ * 公开名单那张卡。按标题定位，而不是按下标 —— 卡片顺序改一次，按下标写的
+ * 断言就会安静地量到另一张卡上。
+ */
+function rosterCardOf(root: HTMLElement, title: string): HTMLElement | null {
+  const cards = Array.from(
+    root.querySelectorAll<HTMLElement>('[data-slot="card"]')
+  )
+  return cards.find((card) => (card.textContent ?? '').includes(title)) ?? null
+}
+
+/** 一屏减去名单卡之后剩下的可见文字。 */
+function textOutsideRoster(root: HTMLElement, title: string): string {
+  const roster = rosterCardOf(root, title)
+  if (roster == null) return root.textContent ?? ''
+  const whole = root.textContent ?? ''
+  const inside = roster.textContent ?? ''
+  return whole.replace(inside, '')
+}
 
 /** React `act` 的异步等待让单个用例超过 bun 默认的 5 秒。 */
 const SLOW = { timeout: 120_000 }
@@ -336,26 +358,48 @@ describe('大厅首屏：先看到活动，不是先看到一段免责声明', (
 /* ── 活动详情 ─────────────────────────────────────────────────────── */
 
 describe('活动详情：决策的留在明面上，解释的折起来', () => {
-  test('已结束的双色球详情不超过 1000 字', SLOW, async () => {
+  test('活动详情除名单之外不超过 1000 字', SLOW, async () => {
     const detail = await mountDetail(FINISHED_BALL, FINISHED_BALL_PROOF)
     /*
-      改造前 1548 → 精简到 750（那一版的夹具里没有"我的票"）→ 现在带上
-      「本期开奖 · 我中了没有」那张卡。
+      改造前 1548 → 精简到 750（那一版的夹具里没有"我的票"）→ 加上
+      「本期开奖 · 我中了没有」那张卡之后 861。
 
-      现在是 861（名单换成真实规模的 20 条之后仍然是这个数——它们被折起来了；
-      不折的话同一屏 2507 字）。
+      ── 为什么现在量的是"除名单之外" ──
 
-      上限**有意从 850 抬到 1000**，抬的是这一块：两组号各七颗球（球本身就是
-      可见字符）、每张票的规范化串、命中几红几蓝、中了哪一档赔多少 /「未中奖」，
-      以及期次的结转与下一期。它们全部属于"用户不看就不知道自己中没中"的那一类
-      —— 而这一屏被投诉的原因恰恰是这句话答不出来，不是字太多。
+      项目方本轮要求**参与名单默认公开可见**（撤回上一轮的默认折叠）。名单一
+      展开，这一屏的字数就不再是一个常数：它随参与人数线性增长，20 行、200 行
+      是同一个页面的两个体量。继续拿一个总数去卡它，只有两个结局 —— 要么把
+      上限抬到一个不再约束任何东西的数字，要么反过来逼着把名单折回去。
 
-      抬上限最容易变成一张遮羞布，所以下面那条「决策必需的数字全都在明面上」
-      同步加了逐条断言：把新加的这些删掉能让字数变好看，但那条会当场红。
+      所以口径改成：**名单之外**的那一屏仍然守 1000 字（那正是"字太多了"投诉
+      的落点：解释性的段落），名单自己由下一条按"每行多少字"单独守。
     */
+    const withoutRoster = qyVisibleChars(
+      textOutsideRoster(detail.container, zhKeys['qy_lot_roster_title'])
+    )
     assert.ok(
-      detail.chars <= 1000,
-      `活动详情一屏 ${detail.chars} 字，超过 1000：${detail.text}`
+      withoutRoster <= 1000,
+      `活动详情（不含名单）${withoutRoster} 字，超过 1000：${detail.text}`
+    )
+  })
+
+  test('名单默认展开，而且每行的成本被打码压住', SLOW, async () => {
+    const detail = await mountDetail(FINISHED_BALL, FINISHED_BALL_PROOF)
+    const roster = rosterCardOf(detail.container, zhKeys['qy_lot_roster_title'])
+    assert.ok(roster != null, '找不到公开名单那张卡')
+
+    /*
+      20 行的名单卡整卡字数。
+
+      打码前每行成本约 80 字（entry_no 27 + user_ref 32 + 号码 + 金额 + 状态），
+      满页 20 行 2507 字；打码之后两串各压到 11 位，实测整卡 1200 字上下。
+      上限取 1500：把打码去掉（直接渲染原值）会让它当场越界，而这正是这条
+      要守的东西。
+    */
+    const rosterChars = qyVisibleChars(roster.textContent ?? '')
+    assert.ok(
+      rosterChars <= 1500,
+      `名单卡 ${rosterChars} 字，超过 1500 —— 打码是不是被去掉了？`
     )
   })
 
@@ -408,31 +452,41 @@ describe('活动详情：决策的留在明面上，解释的折起来', () => {
     }
   })
 
-  test('公开名单默认折起来，点开之后 20 条一个不少', SLOW, async () => {
+  test('公开名单默认展开、标识打码，点一下能看到完整原值', SLOW, async () => {
     const detail = await mountDetail(FINISHED_BALL, FINISHED_BALL_PROOF)
     const first = ROSTER_ENTRIES[0]!
     const last = ROSTER_ENTRIES[ROSTER_ENTRIES.length - 1]!
 
-    // 折起来时那 20 行真的不在 DOM 里 —— 这就是详情页字数不再随参与人数
-    // 线性增长的原因。卡片标题与「共 N 条」仍在明面上，所以它没有"消失"。
-    assert.ok(
-      !detail.text.includes(first.entry_no),
-      '名单摊在首屏上了：真实标识下每行约 80 字，满页 20 行就是 2500 字'
-    )
+    // 默认展开：一份要多点一下才看得到的公示名单，在"公示"这件事上等于没有。
     assert.ok(
       detail.text.includes(zhKeys['qy_lot_roster_title']),
-      '名单卡的标题不能跟着一起折掉，否则用户不知道有这么一份东西'
+      '名单卡的标题不见了'
     )
+    for (const row of [first, last]) {
+      assert.ok(
+        detail.text.includes(qyLotMaskRef(row.entry_no)),
+        `名单默认没有展开：找不到 ${row.entry_no} 那一行`
+      )
+      // 打码：完整原值不在屏幕上。标识不是身份，但它是一条**场内的关联线** ——
+      // 谁晒过自己的报名回执，谁在这一场里的每一注就都被钉在了一起。
+      assert.ok(
+        !detail.text.includes(row.entry_no),
+        `完整单号 ${row.entry_no} 直接摊在名单上了`
+      )
+      assert.ok(
+        !detail.text.includes(row.user_ref),
+        `完整参与者标识 ${row.user_ref} 直接摊在名单上了`
+      )
+    }
 
-    const opened = await detail.click(
-      `展开全场名单(共 ${ROSTER_ENTRIES.length} 条)`
-    )
-    assert.ok(opened, '找不到「展开全场名单」那颗折叠触发器')
+    // 打码是默认，不是唯一形态：要逐行比对哈希的人打开开关就能拿到原值。
+    const revealed = await detail.click(zhKeys['qy_lot_roster_reveal'])
+    assert.ok(revealed, '找不到「显示完整标识」那颗开关')
     const after = detail.read()
     for (const row of [first, last]) {
       assert.ok(
         after.text.includes(row.entry_no) && after.text.includes(row.user_ref),
-        `展开之后名单里少了 ${row.entry_no} —— 折叠把它折没了`
+        `打开开关之后 ${row.entry_no} 的原值仍然没有回来`
       )
     }
   })

@@ -170,7 +170,7 @@ func TestCheckCaps_RejectsGuessEntryThatWouldOverflowPool(t *testing.T) {
 		if err := tx.Where("id = ?", act.Id).Take(&cur).Error; err != nil {
 			return err
 		}
-		return checkCaps(tx, &cur, e)
+		return checkCaps(tx, &cur, e, 0)
 	})
 	require.ErrorIs(t, err, errCapReached)
 }

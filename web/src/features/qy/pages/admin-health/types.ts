@@ -402,10 +402,8 @@ export type QyClientIPStrategy =
   | 'explicit'
   /** 显式配了 TRUSTED_PROXIES=none。 */
   | 'none'
-  /** 未配置，但只监听回环地址，于是自动信任回环对端。 */
-  | 'loopback_bind'
-  /** 未配置且监听在非回环地址上：谁都不信。 */
-  | 'fail_closed'
+  /** 未配置：用上游那份默认（回环 + RFC1918 + fc00::/7），并打一条 WARNING。 */
+  | 'default_private'
 
 export type QyClientIPPolicy = {
   strategy: QyClientIPStrategy

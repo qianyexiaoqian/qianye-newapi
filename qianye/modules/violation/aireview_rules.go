@@ -303,6 +303,19 @@ func buildAIRuntime(gdb *gorm.DB, needed bool, vocab aiVocabulary) (*aiRuntime, 
 		if url == "" {
 			continue
 		}
+		// 密钥绑在它写入时的那个地址上,地址被改过之后整条跳过。
+		// 只堵试跑那一步是不够的:改完地址之后,下一条真实审核流量会把同一把
+		// 密钥送到同一个地方。完整理由与攻击链写在 AIChannel.KeyEndpoint 上。
+		//
+		// 跳过而不是"当成没有密钥去裸调":后者会把用户内容发给一个地址已经被
+		// 改过、而我们又无法鉴权的端点。
+		if row.KeyBoundElsewhere() {
+			common.SysError(fmt.Sprintf(
+				"qianye/violation: AI 审核渠道 %d(%s)的地址是 %q,而已存密钥是写给 %q 的,"+
+					"本轮跳过该渠道 —— 请在管理端重填一次密钥",
+				row.Id, row.Name, row.BaseUrl, row.KeyEndpoint))
+			continue
+		}
 		// 解密失败的渠道整条跳过,不是"当成没有密钥去裸调" —— 后者会把请求
 		// 连同用户内容发给一个我们已经无法鉴权的端点,并得到一串 401。
 		key, err := openAIKey(row.KeyNonce, row.KeyCipher, aiChannelAAD(row.Id), row.KeyVersion)

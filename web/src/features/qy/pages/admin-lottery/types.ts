@@ -553,6 +553,24 @@ export type QyLotYamlReadonly = {
   max_options: number
   /** 单笔扣款硬上限。它决定一次报名/投注最多能从主额度扣走多少。 */
   max_stake_quota: number
+  /**
+   * **全站额度换算的整数上界**（`common.MaxQuota`，恒等于 2147483647，按默认
+   * 刻度是 ＄4294.967294）。它写死在代码里，没有任何配置项能抬高它。
+   *
+   * 刻意不说它是"数据库那一列的宽度"：`users.quota` 在 MySQL / PostgreSQL 上
+   * 落地成 bigint、SQLite 的 INTEGER 也是 8 字节，运营一去查表就会发现每一列
+   * 都是 64 位的，然后连带不再相信整条解释。
+   *
+   * 它与 `max_stake_quota` / `max_total_prize_quota` 的区别是整段文案的分界线：
+   *   · 这一项 = 「填不了」。改任何配置、改任何开关都放不开它。
+   *   · 那两项 = 「本站不让」。去配置页改一个数，或者把活动的数字调小。
+   *
+   * 两者混成一句"不得超过系统上限"的表现是运营跑去配置页找一个根本不存在的
+   * 开关 —— 项目方那句「这是什么问题？」问的就是这件事。
+   *
+   * 可选：旧版本后端不下发它，此时界面只说策略上限，不编一个数出来。
+   */
+  system_max_quota?: number
   spend_max_lookback_days: number
   /**
    * 「近 N 日消费」这个条件从哪一天起才有数据（YYYYMMDD，0 = 尚未回填）。

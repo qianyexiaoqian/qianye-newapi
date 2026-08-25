@@ -57,8 +57,9 @@ func TestResolveClientIPDeploymentShapes(t *testing.T) {
 		wantReason      string
 	}{
 		{
-			// 直连,没有任何反代。客户端自己塞一个 XFF 想冒充别人。
-			// 未配置 TRUSTED_PROXIES 且监听在非回环地址上 → 谁都不信。
+			// 直连,没有任何反代,客户端自己塞一个 XFF 想冒充别人。
+			// 未配置 TRUSTED_PROXIES → 用上游默认(回环 + RFC1918 + fc00::/7),
+			// 公网对端不在里面,转发头一律作废。
 			name:       "direct exposure ignores a self-supplied X-Forwarded-For",
 			remoteAddr: "203.0.113.5:41234",
 			headers:    map[string][]string{"X-Forwarded-For": {"10.0.0.9"}},
@@ -66,27 +67,31 @@ func TestResolveClientIPDeploymentShapes(t *testing.T) {
 			wantReason: ClientIPReasonDirectPeer,
 		},
 		{
-			// 同机 nginx:应用只监听 127.0.0.1,外部流量在 TCP 层就到不了这个端口。
-			// 未配置 TRUSTED_PROXIES 也能自动认出这一档。
+			// 同机 nginx。未配置 TRUSTED_PROXIES 时上游默认就信任回环对端,
+			// 所以这一档开箱即用 —— 不需要 BIND_ADDRESS,也不需要任何配置。
 			// nginx 默认 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`。
-			name:        "same-host nginx on a loopback bind needs no configuration",
-			bindAddress: "127.0.0.1",
-			remoteAddr:  "127.0.0.1:52100",
-			headers:     map[string][]string{"X-Forwarded-For": {"203.0.113.5"}},
-			wantIP:      "203.0.113.5",
-			wantSource:  "loopback",
-			wantHeader:  "X-Forwarded-For",
-			wantReason:  ClientIPReasonForwardedChain,
-		},
-		{
-			// 同机 nginx,但应用监听 0.0.0.0(容器里的常态)。
-			// 这时回环并不能证明前面有反代 —— 同机任何进程都能连上来。
-			// 未配置就是 fail-closed。
-			name:       "loopback peer is not trusted when the process listens on every interface",
+			name:       "same-host nginx needs no configuration under the upstream default",
 			remoteAddr: "127.0.0.1:52100",
 			headers:    map[string][]string{"X-Forwarded-For": {"203.0.113.5"}},
-			wantIP:     "127.0.0.1",
-			wantReason: ClientIPReasonDirectPeer,
+			wantIP:     "203.0.113.5",
+			wantSource: "private",
+			wantHeader: "X-Forwarded-For",
+			wantReason: ClientIPReasonForwardedChain,
+		},
+		{
+			// **上游默认的代价,写出来而不是藏着。**
+			// 未配置时 RFC1918 一律受信,于是任何能从容器网桥 / K8s Pod 网段 /
+			// 同 VPC 主机打到这个端口的东西,都可以用一个 X-Forwarded-For 决定
+			// 自己在令牌 allow_ips 与限流桶里的取值。
+			// 这是上游选的取舍,本仓照抄:堵法是 TRUSTED_PROXIES=none 或写死网段,
+			// 而不是替部署者改掉默认。
+			name:       "the upstream default lets any RFC1918 peer choose its own client IP",
+			remoteAddr: "172.17.0.9:52100",
+			headers:    map[string][]string{"X-Forwarded-For": {"203.0.113.5"}},
+			wantIP:     "203.0.113.5",
+			wantSource: "private",
+			wantHeader: "X-Forwarded-For",
+			wantReason: ClientIPReasonForwardedChain,
 		},
 		{
 			// 标准 Nginx / Caddy / Traefik:客户端自带一段伪造前缀,反代把
@@ -474,12 +479,10 @@ func TestBuildClientIPPolicyRejectsInvalidConfiguration(t *testing.T) {
 
 // TestBuildClientIPPolicyStrategies 锁默认值的决策表。
 //
-// 这一张表就是「默认值方案」本身:显式配置最高优先级;未配置时只有一个
-// 自动档(监听地址是回环),其余一律 fail-closed。
-//
-// 刻意**没有**「对端是私网就采信一跳」这一档:那识别的是"对端在私网",
-// 而 Docker 桥接、K8s Pod 网段、同 VPC 主机全都满足,等于把上一轮实测出来的
-// 那个洞换个说法请回来。
+// 这一张表就是「默认值方案」本身,而它现在**逐条等于上游**:
+// 显式配置最高优先级;未配置就用上游那份私网默认并打 WARNING;
+// TRUSTED_PROXIES=none 才谁都不信。BIND_ADDRESS 不再参与这个判断 ——
+// 上游没有那一档,本仓也不再自己加。
 func TestBuildClientIPPolicyStrategies(t *testing.T) {
 	testCases := []struct {
 		name           string
@@ -490,44 +493,45 @@ func TestBuildClientIPPolicyStrategies(t *testing.T) {
 		wantWarning    bool
 	}{
 		{
-			name:         "unset on a wildcard bind fails closed",
-			wantStrategy: ClientIPStrategyFailClosed,
+			// 未配置 = 上游默认 + WARNING。这是本轮撤回的核心那一行。
+			name:         "unset falls back to the upstream private default and warns",
+			wantStrategy: ClientIPStrategyDefaultPrivate,
+			wantSources:  []string{"private"},
 			wantWarning:  true,
 		},
 		{
-			name:         "unset on a loopback bind trusts loopback",
+			// BIND_ADDRESS 是监听地址,不是信任判据 —— 上游从不读它。
+			// 这三条钉死「回环 bind 不再改变策略」,防止那个自动档被重新加回来。
+			name:         "a loopback BIND_ADDRESS no longer changes the strategy",
 			bindAddress:  "127.0.0.1",
-			wantStrategy: ClientIPStrategyLoopbackBind,
-			wantSources:  []string{"loopback"},
-		},
-		{
-			name:         "unset on an IPv6 loopback bind trusts loopback",
-			bindAddress:  "::1",
-			wantStrategy: ClientIPStrategyLoopbackBind,
-			wantSources:  []string{"loopback"},
-		},
-		{
-			name:         "unset on localhost bind trusts loopback",
-			bindAddress:  "localhost",
-			wantStrategy: ClientIPStrategyLoopbackBind,
-			wantSources:  []string{"loopback"},
-		},
-		{
-			name:         "unset on a routable bind fails closed",
-			bindAddress:  "10.0.0.5",
-			wantStrategy: ClientIPStrategyFailClosed,
+			wantStrategy: ClientIPStrategyDefaultPrivate,
+			wantSources:  []string{"private"},
 			wantWarning:  true,
 		},
 		{
-			// 显式配置压过自动档:运维写了什么就是什么,不做任何"聪明"的补充。
-			name:           "an explicit list wins over the loopback bind auto-detection",
+			name:         "an IPv6 loopback BIND_ADDRESS no longer changes the strategy",
+			bindAddress:  "::1",
+			wantStrategy: ClientIPStrategyDefaultPrivate,
+			wantSources:  []string{"private"},
+			wantWarning:  true,
+		},
+		{
+			name:         "a routable BIND_ADDRESS no longer changes the strategy",
+			bindAddress:  "10.0.0.5",
+			wantStrategy: ClientIPStrategyDefaultPrivate,
+			wantSources:  []string{"private"},
+			wantWarning:  true,
+		},
+		{
+			// 显式配置压过默认:运维写了什么就是什么,不做任何"聪明"的补充。
+			name:           "an explicit list replaces the default",
 			trustedProxies: "10.8.0.2/32",
 			bindAddress:    "127.0.0.1",
 			wantStrategy:   ClientIPStrategyExplicit,
 			wantSources:    []string{"explicit"},
 		},
 		{
-			name:           "none wins over the loopback bind auto-detection",
+			name:           "none replaces the default",
 			trustedProxies: "none",
 			bindAddress:    "127.0.0.1",
 			wantStrategy:   ClientIPStrategyNone,
@@ -566,6 +570,44 @@ func TestBuildClientIPPolicyStrategies(t *testing.T) {
 	}
 }
 
+// TestUnsetTrustedProxiesMatchesUpstreamDefaultsExactly 是本轮撤回的**判据**。
+//
+// 上游 middleware/trusted_proxies.go 在 TRUSTED_PROXIES 未配置时装的是
+// defaultTrustedProxyCIDRs = {127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12,
+// 192.168.0.0/16, fc00::/7},并打一条 WARNING。本仓前两轮把这一档改成了
+// 「谁都不信」——那是一次行为变更,现在撤回。
+//
+// 这条测试逐条比对那份清单(`::1` 写成等价的 `::1/128`,netip.Prefix 需要位数),
+// 并要求:未配置时必须有 WARNING、必须只有一档来源、且不因为 BIND_ADDRESS
+// 或 CLIENT_IP_HEADERS 而改变网段。
+func TestUnsetTrustedProxiesMatchesUpstreamDefaultsExactly(t *testing.T) {
+	// 逐字抄自上游 defaultTrustedProxyCIDRs,只把 `::1` 补成 `::1/128`。
+	upstreamDefaults := []string{
+		"127.0.0.0/8",
+		"::1/128",
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"fc00::/7",
+	}
+
+	for _, bindAddress := range []string{"", "127.0.0.1", "0.0.0.0", "10.0.0.5"} {
+		t.Run("BIND_ADDRESS="+bindAddress, func(t *testing.T) {
+			policy := buildPolicyForTest(t, "", "", bindAddress)
+
+			require.Len(t, policy.Sources, 1, "未配置时只有一档来源")
+			assert.Equal(t, "private", policy.Sources[0].Name)
+			assert.Equal(t, upstreamDefaults, policy.Sources[0].CIDRStrings(),
+				"未配置 TRUSTED_PROXIES 时信任的网段必须与上游 defaultTrustedProxyCIDRs 逐条相同")
+			assert.Equal(t, upstreamDefaults, policy.AllCIDRStrings(),
+				"交给 gin SetTrustedProxies 的那一份也必须是同一份")
+			assert.NotEmpty(t, policy.Warning,
+				"上游在这一档打的是 WARNING,本仓必须也打得出来 —— 那是这条默认唯一常驻的信号")
+			assert.Equal(t, []string{"X-Forwarded-For", "X-Real-IP"}, policy.Sources[0].Headers)
+		})
+	}
+}
+
 func nilIfEmpty(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -573,36 +615,41 @@ func nilIfEmpty(values []string) []string {
 	return values
 }
 
-// TestRecordClientIPObservationSuggestsTheExactCIDR 守 fail-closed 的配套诊断。
+// TestRecordClientIPObservationSuggestsTheExactCIDR 守那条**提示**。
 //
-// fail-closed 是安全的一侧,但它的代价落在「装在反代后面又从没配过」的站点上:
-// 一切照常 200,只是所有人的 IP 都成了反代的地址。观测台就是这一档的解药,
-// 它必须给出**可以直接粘贴**的值 —— 只说"配置有问题"等于把人推回去猜。
+// 未配置时用的是上游默认(回环 + RFC1918 + fc00::/7),它覆盖不到反代坐在
+// 公网地址上的部署(CDN 回源、独立 LB 主机):那种站点一切照常 200,只是所有人
+// 的 IP 都成了反代的地址。观测台就是这一档的解药,它必须给出**可以直接粘贴**
+// 的值 —— 只说"配置有问题"等于把人推回去猜。它只提示,不改变任何结论。
 func TestRecordClientIPObservationSuggestsTheExactCIDR(t *testing.T) {
 	ResetClientIPObservations()
 	t.Cleanup(ResetClientIPObservations)
 
 	policy := buildPolicyForTest(t, "", "", "")
 	for i := 0; i < 3; i++ {
-		RecordClientIPObservation(ResolveClientIP(policy, newClientIPRequest("172.18.0.5:41000",
+		RecordClientIPObservation(ResolveClientIP(policy, newClientIPRequest("198.51.100.5:41000",
 			map[string][]string{"X-Forwarded-For": {"203.0.113.5"}})))
 	}
-	RecordClientIPObservation(ResolveClientIP(policy, newClientIPRequest("[fd00::9]:41000",
+	RecordClientIPObservation(ResolveClientIP(policy, newClientIPRequest("[2001:db8::9]:41000",
 		map[string][]string{"X-Real-IP": {"203.0.113.6"}})))
 	// 没带转发头的直连请求不该进观测台:它不是"有反代却没配",它就是直连。
 	RecordClientIPObservation(ResolveClientIP(policy, newClientIPRequest("203.0.113.9:41000", nil)))
+	// 私网对端在上游默认下**是受信的**,它没有任何错配可报 —— 进了观测台
+	// 就是噪声,而噪声会让这张表失去它唯一的作用。
+	RecordClientIPObservation(ResolveClientIP(policy, newClientIPRequest("172.18.0.5:41000",
+		map[string][]string{"X-Forwarded-For": {"203.0.113.7"}})))
 
 	observations, dropped := ClientIPObservations()
 	require.Len(t, observations, 2)
 	assert.Zero(t, dropped)
 
-	assert.Equal(t, "172.18.0.5", observations[0].Peer)
+	assert.Equal(t, "198.51.100.5", observations[0].Peer)
 	assert.EqualValues(t, 3, observations[0].Count)
-	assert.Equal(t, "172.18.0.5/32", observations[0].Suggestion)
+	assert.Equal(t, "198.51.100.5/32", observations[0].Suggestion)
 	assert.Equal(t, []string{"X-Forwarded-For"}, observations[0].Headers)
 
-	assert.Equal(t, "fd00::9", observations[1].Peer)
-	assert.Equal(t, "fd00::9/128", observations[1].Suggestion)
+	assert.Equal(t, "2001:db8::9", observations[1].Peer)
+	assert.Equal(t, "2001:db8::9/128", observations[1].Suggestion)
 }
 
 // TestRecordClientIPObservationIsBounded 守观测台不会被构造流量撑爆内存。

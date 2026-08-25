@@ -83,7 +83,7 @@ func probActivityForTamper(t *testing.T, gdb *gorm.DB) *Activity {
 		}
 		cur := loadAct(t, gdb, act.Id)
 		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return reserveEntry(tx, cur, Rules{}, e)
+			return reserveEntry(tx, cur, Rules{}, e, 0)
 		}))
 		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
 			return markEntrySuccess(tx, e.EntryNo, nil)
@@ -248,7 +248,7 @@ func TestBallEntryIsRejectedBeforeThePoolCanOverflowInt32(t *testing.T) {
 	}
 	cur := loadAct(t, gdb, act.Id)
 	err := gdb.Transaction(func(tx *gorm.DB) error {
-		return reserveEntry(tx, cur, Rules{}, e)
+		return reserveEntry(tx, cur, Rules{}, e, 0)
 	})
 	require.ErrorIs(t, err, errCapReached,
 		"开局池已经贴着 int32 上限,再进一笔就会让系列永久开不出新一期")
@@ -263,7 +263,7 @@ func TestBallEntryIsRejectedBeforeThePoolCanOverflowInt32(t *testing.T) {
 	}
 	relaxed := loadAct(t, gdb, act.Id)
 	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-		return reserveEntry(tx, relaxed, Rules{}, ok)
+		return reserveEntry(tx, relaxed, Rules{}, ok, 0)
 	}))
 }
 

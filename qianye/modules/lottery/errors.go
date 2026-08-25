@@ -77,10 +77,13 @@ var (
 		"你上一次参与还在处理中,请稍候再试")
 	errIneligible = newBizError(http.StatusUnprocessableEntity, "qy_lot_ineligible",
 		"你还不满足本场的参与条件")
-	errBadOption    = newBizError(http.StatusBadRequest, "qy_lot_bad_option", "选项不存在")
-	errBadAmount    = newBizError(http.StatusBadRequest, "qy_lot_bad_amount", "投注金额不符合本场规则")
+	errBadOption = newBizError(http.StatusBadRequest, "qy_lot_bad_option", "选项不存在")
+	errBadAmount = newBizError(http.StatusBadRequest, "qy_lot_bad_amount", "投注金额不符合本场规则")
+	// errBadRequestID 同时承载长度与字符集两条:`#` 是多注提交派生幂等键的
+	// 分隔符(api_user.go 的 batchRequestId),客户端再用它就会与服务端派生出的
+	// 键撞进同一个键空间,拿回一张不属于这次提交的票。
 	errBadRequestID = newBizError(http.StatusBadRequest, "qy_lot_bad_request_id",
-		"请求标识非法(长度需在 1..64 之间)")
+		"请求标识非法(长度需在 1..64 之间,且不能含 # )")
 	// errBadPhase 让大厅分区的参数名漂移**变成一次可见的失败**。它替换的是一个
 	// 没有 default 分支的 switch:前端发 `status=open|done`、后端读 `phase`,
 	// 两张标签因此返回同一份列表,而没有任何一处报错、没有一条日志。

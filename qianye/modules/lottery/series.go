@@ -122,6 +122,23 @@ var (
 		"选号不合法:号码个数、取值范围或重复号有误")
 	errPickNotAllowed = newBizError(http.StatusBadRequest, "qy_lot_pick_not_allowed",
 		"本场活动不接受选号")
+	// errTooManyPicks 是"一次买太多注"。文案里必须带上那个数:一句
+	// "注数超出限制"会让用户去猜到底是几注,而下一个动作只能是二分试。
+	errTooManyPicks = newBizError(http.StatusBadRequest, "qy_lot_too_many_picks",
+		fmt.Sprintf("一次最多买 %d 注,请分几次提交", maxPicksPerRequest))
+	// errPickAndPicks 挡住"同时带 pick 与 picks"。
+	//
+	// 不做静默择一:两个字段说的是同一件事,而择一意味着有一半的请求买到的
+	// 不是它写的那组号 —— 这与 acceptPick 对"非双色球带号"一律拒绝是同一条口径。
+	errPickAndPicks = newBizError(http.StatusBadRequest, "qy_lot_pick_conflict",
+		"pick 与 picks 不能同时提交,多注请只用 picks")
+	// errBatchBudget 是多注提交被时间预算截断时的诚实回答。
+	//
+	// 它只可能出现在"前面几注已经买成"的响应里(accepted > 0),因此文案的
+	// 第一件事是让用户知道**没买成的那几注一分钱都没扣** —— 否则他会以为
+	// 自己被扣了全额却只拿到一半的票。
+	errBatchBudget = newBizError(http.StatusConflict, "qy_lot_batch_budget",
+		"本次提交在处理超时前只买成了前面几注,剩下的没有扣费,可以再提交一次")
 )
 
 // ─────────────────────────── 池子的三个原子动作 ───────────────────────────
@@ -370,9 +387,8 @@ func buildSeries(ctx context.Context, in *seriesInput, createdBy int) (*Series, 
 	// 一个配得过大的 issue_cap 会让系列在注满之后永久开不出新期,且没有任何
 	// 接口能把池子降回来。拦在创建期,那是唯一还能改的时刻。
 	if in.IssueCapQuota > int64(common.MaxQuota) {
-		return nil, errBadRequest(fmt.Sprintf(
-			"发行上限不得超过系统上限 %s —— 越过它的系列在注满之后会永久开不出新一期,"+
-				"而没有任何接口能把池子降回来", quotaText(int64(common.MaxQuota))))
+		return nil, errBadRequest(quotaColumnCeilingText("发行上限") +
+			"。越过它的系列在注满之后会永久开不出新一期,而且没有任何接口能把池子降回来")
 	}
 	if in.SeedQuota < 0 || in.SeedQuota > in.IssueCapQuota {
 		return nil, errSeriesCap
@@ -480,9 +496,11 @@ func handleFundSeries(c *gin.Context) {
 // 条件 UPDATE 自己只能回答"没生效",而"已关闭"与"超上限"对运营的处置完全不同。
 // 它不是执行点(并发下仍以那条 UPDATE 为准),只是错误信息的来源。
 func checkFundable(s *Series, amount int64) error {
-	if amount <= 0 || amount > int64(common.MaxQuota) {
-		return errBadRequest(fmt.Sprintf(
-			"注资额度必须大于 0 且不超过系统上限 %s", quotaText(int64(common.MaxQuota))))
+	if amount <= 0 {
+		return errBadRequest("注资额度必须大于 0")
+	}
+	if amount > int64(common.MaxQuota) {
+		return errBadRequest(quotaColumnCeilingText("注资额度"))
 	}
 	if s.Status != SeriesOpen {
 		return errSeriesClosed

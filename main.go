@@ -218,11 +218,6 @@ func main() {
 
 	// BIND_ADDRESS 留空 = 监听全部接口,与历史行为逐字一致
 	// (net.JoinHostPort("", port) 就是 ":"+port)。
-	//
-	// 它同时是客户端 IP 自动档的判据:设成回环地址时,外部流量在 TCP 层就到不了
-	// 这个端口,能连上来的必然是同机进程,也就必然是本机反代 —— 这时未配置
-	// TRUSTED_PROXIES 也可以安全地信任回环对端的 X-Forwarded-For。
-	// 详见 common.BuildClientIPPolicy。
 	srv := &http.Server{
 		Addr:    net.JoinHostPort(strings.TrimSpace(os.Getenv("BIND_ADDRESS")), port),
 		Handler: server,

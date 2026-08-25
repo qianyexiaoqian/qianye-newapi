@@ -101,6 +101,7 @@ describe('渠道密钥的三态', () => {
     guard_elevate: [],
     has_key: true,
     key_hint: '****a1b2',
+    key_bound_elsewhere: false,
     timeout_ms: 0,
     weight: 1,
     enabled: true,

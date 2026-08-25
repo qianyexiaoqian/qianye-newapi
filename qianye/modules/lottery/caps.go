@@ -23,6 +23,7 @@ import (
 	"math"
 	"net/http"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 )
 
@@ -67,6 +68,79 @@ import (
 func quotaText(q int64) string {
 	// int 在本项目支持的全部目标平台上都是 64 位;payout.go 的账本行同样这么转。
 	return logger.LogQuota(int(q))
+}
+
+// quotaColumnCeilingText 是「填不了」那一档的**统一**说法。
+//
+// # 那个 ＄4294.967294 到底是什么
+//
+// 它是 common.MaxQuota(math.MaxInt32 = 2147483647)按 common.QuotaPerUnit
+// (默认 500000)换算出来的刻度。MaxQuota 是**全站额度换算的整数上界**:
+// common/quota_math.go 里每一处 quota 转换、饱和、四舍五入都以它为界,
+// 所有计费与账本口径都按它立的。它写死在代码里,没有任何配置项能抬高它。
+//
+// 这里刻意**不**说它是"数据库那一列的物理宽度"。上一版是这么写的,而那句话
+// 经不起查:model/user.go 上的 `gorm:"type:int"` 在 MySQL 与 PostgreSQL 上
+// 落地成 bigint,SQLite 的 INTEGER 也是 8 字节 —— 运营一去查表就会发现每一列
+// 都是 64 位的,然后连带不再相信整条解释。给一个经不起查的理由比不给理由更糟。
+//
+// 它与站点自己配的那两道硬顶(max_stake_quota / max_total_prize_quota)
+// 在文案上必须分得开:
+//
+//   - 系统上界 = "填不了"。改任何配置、改任何开关都放不开它。
+//   - 策略上限 = "本站不让"。去配置页改一个数,或者把活动的数字调小。
+//
+// 混在一起说的表现是运营拿着一句"不得超过系统上限"跑去配置页找一个根本不
+// 存在的开关 —— 项目方那句「这是什么问题?」问的就是这件事。
+//
+// 句子的顺序也是刻意的:**先说填多少,再说为什么**。原先那几条报错整句都在
+// 解释后果,唯独没说该填什么,于是每一次都要"填 → 被拒 → 读一段 → 再填"。
+func quotaColumnCeilingText(field string) string {
+	return fmt.Sprintf("%s请填 %s 以内。这一档是全站额度换算的整数上界"+
+		"(common.MaxQuota,由代码写死),不是本站的策略上限 —— 改任何配置都放不开它",
+		field, quotaText(int64(common.MaxQuota)))
+}
+
+// tierBudgetFloor 是「这一档的单份至少要填多少」,由**其它字段推出来**。
+//
+// 判据是 count × amount ≥ entriesCap(超募时该档预算由全部中签者均分,
+// 人均不足 1 额度会有人分到 0,而 PlanPayouts 会跳过 amount<=0 的计划 ——
+// 一个真中了奖的人被静默漏发)。这条不等式只有三个量,给定其中两个,第三个
+// 就是**算出来的**,没有任何需要运营去猜的余地。
+//
+// 前端 lib/advice.ts 的 qyLotTierAmountFloor 是同一个式子的第二份实现,
+// 两边都用向上取整 —— 向下取整会得到一个"界面说 OK、后端拒绝"的推荐值,
+// 而那比不给推荐值更糟。
+func tierBudgetFloor(count, entriesCap int) int64 {
+	if count <= 0 || entriesCap <= 0 {
+		return 0
+	}
+	return (int64(entriesCap) + int64(count) - 1) / int64(count)
+}
+
+// tierCountFloor 是同一条不等式的另一个解:单份已经定死时,份数至少要几份。
+func tierCountFloor(amount int64, entriesCap int) int64 {
+	if amount <= 0 || entriesCap <= 0 {
+		return 0
+	}
+	return (int64(entriesCap) + amount - 1) / amount
+}
+
+// tierBudgetShort 是那条被项目方点名的报错(「一堆这种…很烦啊」)的新形态。
+//
+// 概率制与双色球共用它 —— 两处此前各写了一份几乎一样的格式串,而分叉的表现是
+// 同一条规则在两种玩法上说两句不一样的话,运营会以为是两条不同的规则。
+//
+// 三个刻度在句子里必须分得清:单份是**钱**(quotaText 自带" 额度"后缀)、
+// 份数是**份**、全场参与上限是**张票**。给票数缀一个"额度"会让人照着这句话
+// 往错的方向调参。
+func tierBudgetShort(tier, count int, amount int64, entriesCap int) *bizError {
+	return errBadRequest(fmt.Sprintf(
+		"奖级 %d 的单份请填 %s 以上,或者把数量改成 %d 份以上。"+
+			"判据是「数量 × 单份 ≥ 全场参与上限 %d 张票」,当前是 数量 %d × 单份 %s —— "+
+			"不满足时超募会有中奖者被摊薄到 0 而拿不到钱",
+		tier, quotaText(tierBudgetFloor(count, entriesCap)),
+		tierCountFloor(amount, entriesCap), entriesCap, count, quotaText(amount)))
 }
 
 // netIssueOverflowGuard 是 Σ(count × amount) 的**算术**护栏,不是业务上限。

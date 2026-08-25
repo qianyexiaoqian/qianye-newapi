@@ -263,14 +263,24 @@ func TestBallActivityFullJourney(t *testing.T) {
 		`{"client_request_id":"ball-e2e-1","pick":"12,3,5|2"}`)
 	require.Equalf(t, http.StatusOK, code, "报名失败: %s", body)
 
-	entryNo := jsonString(t, body, "data", "entry_no")
-	chainHash := jsonString(t, body, "data", "chain_hash")
-	prevHash := jsonString(t, body, "data", "prev_hash")
-	receiptCommit := jsonString(t, body, "data", "commit_hash")
-	receiptPick := jsonString(t, body, "data", "pick")
-	userRef := jsonString(t, body, "data", "user_ref")
+	// 单注提交走的也是多注那个信封:一注一个形状、多注另一个形状,会让前端
+	// 按自己发了什么去决定怎么解析,而"发了几注"与"收下了几注"恰恰是这条链路上
+	// 唯一会不一致的两个数。
+	batch := decodeEntryBatch(t, body)
+	require.Len(t, batch.Entries, 1)
+	assert.Equal(t, 1, batch.Requested)
+	assert.Equal(t, 1, batch.Accepted)
+	assert.EqualValues(t, 1000, batch.TotalQuota, "单注提交的总额就是一注的参与费")
+	assert.Empty(t, batch.FailedCode, "全部买成时不许留下一个失败码")
 
-	assert.Equal(t, "03,05,12|02", receiptPick, "回执上显示的必须是**进链的那一份**")
+	receipt := batch.Entries[0]
+	entryNo := receipt.EntryNo
+	chainHash := receipt.ChainHash
+	prevHash := receipt.PrevHash
+	receiptCommit := receipt.CommitHash
+	userRef := receipt.UserRef
+
+	assert.Equal(t, "03,05,12|02", receipt.Pick, "回执上显示的必须是**进链的那一份**")
 	assert.Equal(t, published.CommitHash, receiptCommit,
 		"回执必须带上承诺哈希 —— 用户拿它去比对公示页,这是整条证据链的锚")
 	assert.NotEmpty(t, userRef)

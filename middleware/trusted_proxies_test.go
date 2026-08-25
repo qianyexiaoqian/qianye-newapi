@@ -141,25 +141,17 @@ func TestConfigureTrustedProxiesRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
-// TestConfigureTrustedProxiesUnsetTrustsNoProxy 是这一批的 blocker 回归。
+// TestConfigureTrustedProxiesUnsetMatchesUpstreamDefaults 守本轮的撤回。
 //
-// 客户端 IP 不是日志字段,它是四处**安全判据**的取值来源:令牌的 allow_ips
-// (用户在密钥泄漏之后唯一的自助止损手段,middleware/auth.go 的 TokenAuth 与
-// TokenAuthReadOnly 都直接拿它比对)、全部按 IP 计的限流(桶键就是它)、
-// 审计与资金台账、以及风控去重。
+// 上游 new-api 未配置 TRUSTED_PROXIES 时装的是
+// {127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7}
+// 并打一条 WARNING;上游没有任何强制,也不拒绝启动。本仓前两轮把这一档改成了
+// 「谁都不信」——那是一次行为变更(装在反代后面、从没配过这个变量的部署会在
+// 升级那一秒看到全站客户端 IP 变成反代地址),现在撤回。
 //
-// 未配置时的旧默认是「信任回环 + 全部 RFC1918 + fc00::/7」。只要调用方的**直连
-// 对端**落在这些网段里(容器网段、K8s Pod 网段、同一 VPC 的其他主机、以及本机),
-// 它就能自带一个 X-Forwarded-For 把客户端 IP 指成任意值。备份库实测:
-// allow_ips=203.0.113.5/32 的令牌从 127.0.0.1 请求 /v1/models,不带 XFF 403、
-// 带上 `X-Forwarded-For: 203.0.113.5` 变 200;GlobalAPIRateLimit 用轮换的
-// 10.20.x.x 打 915 次一条 429 都没有。
-//
-// 问题不在于这条默认宽松,而在于它**默默地**把一个安全判据的取值交给了调用方,
-// 而部署者不知道自己需要做任何事。fail-closed 的表现相反且可见:反代后面的部署
-// 会立刻看到所有人的 IP 都是反代的 IP,而管理端
-// GET /api/qy/admin/client-ip 会直接给出该填哪个 CIDR。
-func TestConfigureTrustedProxiesUnsetTrustsNoProxy(t *testing.T) {
+// 这一层守的是**接线**:common 那边把默认改回来了,而这条要求 gin 引擎上
+// 真的跑着同一份默认。
+func TestConfigureTrustedProxiesUnsetMatchesUpstreamDefaults(t *testing.T) {
 	for _, value := range []string{"", " \t "} {
 		setTrustedProxiesEnv(t, value)
 		router := newClientIPRouter(t)
@@ -172,44 +164,42 @@ func TestConfigureTrustedProxiesUnsetTrustsNoProxy(t *testing.T) {
 			"192.168.10.2:12345",
 			"[fd12:3456::2]:12345",
 		} {
-			clientIP := requestClientIP(router, peer, "203.0.113.10")
-			assert.NotEqual(t, "203.0.113.10", clientIP,
-				"未配置 TRUSTED_PROXIES 时,来自 %s 的 X-Forwarded-For 绝不能变成客户端 IP —— "+
-					"那等于让任何能直连到本端口的东西自己决定令牌 IP 白名单与限流桶的取值", peer)
+			assert.Equal(t, "203.0.113.10", requestClientIP(router, peer, "203.0.113.10"),
+				"未配置 TRUSTED_PROXIES 时,来自 %s 的 X-Forwarded-For 必须与上游一样被采信", peer)
 		}
-		assert.Equal(t, "127.0.0.1",
-			requestClientIP(router, "127.0.0.1:12345", "203.0.113.10"))
-		assert.Equal(t, "10.20.30.40",
-			requestClientIP(router, "10.20.30.40:12345", "203.0.113.10"))
+		// 上游那份默认里没有公网地址,所以公网对端的转发头照样作废。
+		assert.Equal(t, "198.51.100.7",
+			requestClientIP(router, "198.51.100.7:12345", "203.0.113.10"))
 	}
 }
 
-// TestConfigureTrustedProxiesPrivateIsOptInOnly 守「旧行为仍然拿得到,但必须
-// 显式要」。
+// TestConfigureTrustedProxiesUnsetDoesNotRefuseToStart 守「只给提示,不做强制」。
 //
-// 反代确实在私网里、地址又不固定(容器编排)的部署需要一条一行的出路,否则
-// fail-closed 的代价就是逼他们去关掉别的东西。区别只在于:现在这是一个**写在
-// 部署配置里的决定**,而不是一条没人知道自己继承了的默认。
-func TestConfigureTrustedProxiesPrivateIsOptInOnly(t *testing.T) {
-	setTrustedProxiesEnv(t, "private")
-	optedIn := newClientIPRouter(t)
-	assert.Equal(t, "203.0.113.10",
-		requestClientIP(optedIn, "172.20.0.2:12345", "203.0.113.10"),
-		"显式选了 private,私网对端的 XFF 就该作数")
+// 项目方的判决:上游没有任何强制,我们也不加。未配置是**合法配置**,
+// 它必须能起得来,而代价由 policy.Warning(启动日志里那条 WARNING)表达。
+func TestConfigureTrustedProxiesUnsetDoesNotRefuseToStart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, value := range []string{"", " \t "} {
+		setTrustedProxiesEnv(t, value)
+		require.NoError(t, ConfigureTrustedProxies(gin.New()),
+			"未配置 TRUSTED_PROXIES 不是错误,不能让进程起不来")
+		t.Cleanup(func() { common.SetClientIPPolicy(nil) })
 
-	setTrustedProxiesEnv(t, "")
-	unset := newClientIPRouter(t)
-	assert.Equal(t, "172.20.0.2",
-		requestClientIP(unset, "172.20.0.2:12345", "203.0.113.10"),
-		"没选就没有 —— 这两条断言的差别就是这次改动的全部内容")
+		policy := common.ActiveClientIPPolicy()
+		require.NotNil(t, policy)
+		assert.Equal(t, common.ClientIPStrategyDefaultPrivate, policy.Strategy)
+		assert.NotEmpty(t, policy.Warning,
+			"上游在这一档打 WARNING,提示必须留着 —— 撤掉的是强制,不是提示")
+	}
 }
 
-// TestClientIPResolverFeedsTheObservationDesk 守 fail-closed 的配套诊断真的接上了。
+// TestClientIPResolverFeedsTheObservationDesk 守那条提示真的接上了。
 //
-// fail-closed 的代价落在「装在反代后面又从没配过」的站点上:一切照常 200,
-// 只是所有人的 IP 都成了反代的地址。观测台是这一档唯一的信号,而它必须由
-// **中间件**来喂 —— 挂在业务代码里的话,没调过 ClientIP 的路径就观测不到,
-// 那正是最需要被观测到的那些(静态资源、健康检查、被 401 挡掉的探测)。
+// 上游默认覆盖不到反代坐在公网地址上的部署(CDN 回源、独立 LB 主机):
+// 那种站点一切照常 200,只是所有人的 IP 都成了反代的地址。观测台是这一档
+// 唯一的信号,而它必须由**中间件**来喂 —— 挂在业务代码里的话,没调过 ClientIP
+// 的路径就观测不到,那正是最需要被观测到的那些(静态资源、健康检查、
+// 被 401 挡掉的探测)。它只提示,不改变任何结论。
 func TestClientIPResolverFeedsTheObservationDesk(t *testing.T) {
 	common.ResetClientIPObservations()
 	t.Cleanup(common.ResetClientIPObservations)
@@ -217,17 +207,19 @@ func TestClientIPResolverFeedsTheObservationDesk(t *testing.T) {
 	setTrustedProxiesEnv(t, "")
 	router := newClientIPRouter(t)
 
-	assert.Equal(t, "172.18.0.5", requestClientIP(router, "172.18.0.5:12345", "203.0.113.10"))
-	assert.Equal(t, "172.18.0.5", requestClientIP(router, "172.18.0.5:12346", "203.0.113.11"))
+	assert.Equal(t, "198.51.100.5", requestClientIP(router, "198.51.100.5:12345", "203.0.113.10"))
+	assert.Equal(t, "198.51.100.5", requestClientIP(router, "198.51.100.5:12346", "203.0.113.11"))
 	// 没带转发头的请求不该进观测台:它不是"有反代却没配",它就是直连。
 	assert.Equal(t, "198.51.100.4", requestClientIP(router, "198.51.100.4:12345", ""))
+	// 私网对端在上游默认下是受信的,它没有任何错配可报 —— 进了观测台就是噪声。
+	assert.Equal(t, "203.0.113.12", requestClientIP(router, "172.18.0.5:12345", "203.0.113.12"))
 
 	observations, dropped := common.ClientIPObservations()
 	require.Len(t, observations, 1)
 	assert.Zero(t, dropped)
-	assert.Equal(t, "172.18.0.5", observations[0].Peer)
+	assert.Equal(t, "198.51.100.5", observations[0].Peer)
 	assert.EqualValues(t, 2, observations[0].Count)
-	assert.Equal(t, "172.18.0.5/32", observations[0].Suggestion,
+	assert.Equal(t, "198.51.100.5/32", observations[0].Suggestion,
 		"诊断必须给出可以直接粘贴的值 —— 只说「配置有问题」等于把人推回去猜")
 }
 

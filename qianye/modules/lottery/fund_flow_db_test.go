@@ -89,7 +89,7 @@ func seedPendingEntry(t *testing.T, gdb *gorm.DB, act *Activity, userId int, amo
 		CreatedAt: common.GetTimestamp(),
 	}
 	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-		return reserveEntry(tx, act, Rules{}, e)
+		return reserveEntry(tx, act, Rules{}, e, 0)
 	}))
 	seedEntryFundOrder(t, gdb, e)
 	return e
@@ -130,7 +130,7 @@ func TestReserveEntry_ClosedWindowLeavesNoTrace(t *testing.T) {
 	act := seedActivity(t, gdb, func(a *Activity) { a.CloseAt = now - 1 })
 
 	e := &Entry{EntryNo: newEntryNo(), ActId: act.Id, UserId: 7, Amount: 1000, Status: EntryPending}
-	err := gdb.Transaction(func(tx *gorm.DB) error { return reserveEntry(tx, act, Rules{}, e) })
+	err := gdb.Transaction(func(tx *gorm.DB) error { return reserveEntry(tx, act, Rules{}, e, 0) })
 	require.ErrorIs(t, err, errClosingSoon)
 
 	after := loadAct(t, gdb, act.Id)
@@ -157,7 +157,7 @@ func TestReserveEntry_TotalEntryCapRejectsAndRollsBack(t *testing.T) {
 	seedPendingEntry(t, gdb, act, 2, 1000)
 
 	third := &Entry{EntryNo: newEntryNo(), ActId: act.Id, UserId: 3, Amount: 1000, Status: EntryPending}
-	err := gdb.Transaction(func(tx *gorm.DB) error { return reserveEntry(tx, act, Rules{}, third) })
+	err := gdb.Transaction(func(tx *gorm.DB) error { return reserveEntry(tx, act, Rules{}, third, 0) })
 	require.ErrorIs(t, err, errCapReached)
 
 	after := loadAct(t, gdb, act.Id)
@@ -176,7 +176,7 @@ func TestReserveEntry_RejectsWhileUserHasPendingEntry(t *testing.T) {
 	seedPendingEntry(t, gdb, act, 9, 1000)
 
 	second := &Entry{EntryNo: newEntryNo(), ActId: act.Id, UserId: 9, Amount: 1000, Status: EntryPending}
-	err := gdb.Transaction(func(tx *gorm.DB) error { return reserveEntry(tx, act, Rules{}, second) })
+	err := gdb.Transaction(func(tx *gorm.DB) error { return reserveEntry(tx, act, Rules{}, second, 0) })
 	assert.ErrorIs(t, err, errEntryInFlight)
 }
 
@@ -281,7 +281,7 @@ func TestMarkEntryFailed_RollsBackReservationButKeepsChain(t *testing.T) {
 		CreatedAt: common.GetTimestamp(),
 	}
 	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-		return reserveEntry(tx, act, Rules{}, e)
+		return reserveEntry(tx, act, Rules{}, e, 0)
 	}))
 
 	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {

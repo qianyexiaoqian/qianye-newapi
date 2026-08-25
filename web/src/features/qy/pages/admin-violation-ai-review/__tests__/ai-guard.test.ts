@@ -63,6 +63,7 @@ const guardChannel: QyAiChannel = {
   guard_elevate: [],
   has_key: false,
   key_hint: '',
+  key_bound_elsewhere: false,
   timeout_ms: 0,
   weight: 1,
   enabled: true,

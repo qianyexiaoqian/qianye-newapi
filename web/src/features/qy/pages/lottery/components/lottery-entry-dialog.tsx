@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Copy, TriangleAlert } from 'lucide-react'
+import { Copy, Plus, Shuffle, TriangleAlert, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -42,10 +42,11 @@ import {
   isQyLotBallPickComplete,
   qyLotBallFormatPick,
   qyLotBallPoolOf,
+  qyLotBallRandomPick,
   type QyLotBallPick,
 } from '../lib/ball'
 import { qyLotGuessBoard } from '../lib/guess'
-import type { QyLotActivityDetail, QyLotEntryReceipt } from '../types'
+import type { QyLotActivityDetail, QyLotEntryBatch } from '../types'
 import { QyLotBallPicker } from './lottery-ball-picker'
 import { QyLotGuessLine } from './lottery-guess-board'
 
@@ -57,9 +58,28 @@ const PAY_PASSWORD_CODES = new Set(['qy_pay_pwd_required', 'qy_pay_pwd_wrong'])
  *
  * ## 幂等键在这里生成，而且只生成一次
  *
- * `client_request_id` 是**每次点击**生成一次、重试沿用 —— 这是整条链路上唯一
- * 能把"同一次意图的两次请求"归并起来的东西。在 `mutationFn` 里生成会让每次重试
- * 都变成一次全新的参与（对允许多次参与的活动，那就是真的多扣了一笔钱）。
+ * `client_request_id` 是**每次打开弹窗**生成一次、重试沿用 —— 这是整条链路上
+ * 唯一能把"同一次意图的两次请求"归并起来的东西。在 `mutationFn` 里生成会让每次
+ * 重试都变成一次全新的参与（对允许多次参与的活动，那就是真的多扣了一笔钱）。
+ *
+ * 多注同理，而且更要紧：N 注的派生键是服务端按 `crid#i` 算出来的，所以整批
+ * 重放会逐注幂等命中。**这正是"买多注"放在一次请求里而不是让前端连打 N 次的
+ * 全部理由** —— 前端每一次点击都要自己造一个新 crid，一次超时重发就是真的
+ * 多扣一笔；何况这条路由挂着按账号的关键操作限流，连打 N 次会被自己打成 429。
+ *
+ * ## 一次买几注：屏幕上的那个数必须等于后端要扣的那个数
+ *
+ * 用户在按下确认之前唯一关心的量是"一共花多少"。所以这一屏把注数与总额并排
+ * 放在参与费上面，而不是让他自己拿单价乘注数 —— 而"注数"取的是**将要提交的
+ * 那一份**（已加入的几注 + 正在选且已选满的这一注），不是已加入的条数：
+ * 选满了却还没点"加入"的那一注会照常被买走，界面不认它就等于报少了钱。
+ *
+ * ## 机选是纯前端，而且不进公正性承诺链
+ *
+ * 服务端不区分自选与机选（`qianye/modules/lottery/entry.go` 的 `acceptPick`）。
+ * 机选只决定**用户想买哪一组号**，号码一旦提交就与自选走同一条路：进哈希链、
+ * 进名单原像、开奖时与开奖号比对。开奖号本身来自后端 commit-reveal 的
+ * `final_seed`，与这里的 `crypto.getRandomValues` 没有任何关系。
  *
  * ## 三种"没成功"必须说成三句话
  *
@@ -68,6 +88,10 @@ const PAY_PASSWORD_CODES = new Set(['qy_pay_pwd_required', 'qy_pay_pwd_wrong'])
  *   · `qy_lot_not_settled`   主库动了钱但扩展库还没回写 → **既不能说成功、
  *     也不能说失败**，只能说"稍后在记录里复核"。
  * 把它们混成一句"提交失败"，第三种会让用户以为没扣钱而重复提交。
+ *
+ * 多注还多出**第四种**：部分成交（HTTP 200，`accepted < requested`）。它不是
+ * 失败——前面几注真的买成了、后面几注一分钱没扣。回执屏必须把这件事说全，
+ * 否则用户会以为整批都没成而再提交一次。
  */
 export function QyLotEntryDialog(props: {
   activity: QyLotActivityDetail
@@ -82,10 +106,11 @@ export function QyLotEntryDialog(props: {
   const [requestId, setRequestId] = useState('')
   const [optNo, setOptNo] = useState(0)
   const [pick, setPick] = useState<QyLotBallPick>({ reds: [], blues: [] })
+  const [lines, setLines] = useState<QyLotBallPick[]>([])
   const [payPassword, setPayPassword] = useState('')
   const [needsPayPassword, setNeedsPayPassword] = useState(false)
   const [payPasswordBlocked, setPayPasswordBlocked] = useState(false)
-  const [receipt, setReceipt] = useState<QyLotEntryReceipt | null>(null)
+  const [batch, setBatch] = useState<QyLotEntryBatch | null>(null)
 
   const isBall = activity.draw_mode === 'ball'
   const ballPool = qyLotBallPoolOf(activity)
@@ -96,22 +121,41 @@ export function QyLotEntryDialog(props: {
     setRequestId(crypto.randomUUID())
     setOptNo(0)
     setPick({ reds: [], blues: [] })
+    setLines([])
     setPayPassword('')
     setNeedsPayPassword(false)
-    setReceipt(null)
+    setBatch(null)
   }, [props.open])
+
+  // 正在选的这一注只有**选满**才算数。没选满就静默丢掉是对的：它还不是一注号，
+  // 但界面必须说出来（下面的 pendingIncomplete 提示），否则用户会以为它也买了。
+  const pendingComplete = isBall && isQyLotBallPickComplete(pick, ballPool)
+  const submitLines = pendingComplete ? [...lines, pick] : lines
+  const count = isBall ? submitLines.length : 1
+  const totalQuota = activity.stake_quota * count
+
+  // 单次批量上限与"我在本场还能买几注"是两条独立的闸门，取更紧的那一条。
+  // `max_picks_per_request` 缺席（老后端）时退回 1 注 —— 一个不下发这个字段的
+  // 后端不认识 `picks`，多发几注只会被整批 400。
+  const perRequestCap = activity.max_picks_per_request ?? 1
+  const remaining = activity.my_entries_remaining
+  const seatCap =
+    remaining == null ? perRequestCap : Math.min(perRequestCap, remaining)
+  const openSlots = Math.max(0, seatCap - submitLines.length)
 
   const mutation = useMutation({
     mutationFn: () =>
       submitQyLotEntry(activity.act_no, {
         client_request_id: requestId,
         opt_no: activity.kind === 'guess' ? optNo : 0,
-        // 非双色球一律不带 pick：后端对带号的普通抽奖是**拒绝**而不是忽略。
-        pick: isBall ? qyLotBallFormatPick(pick) : undefined,
+        // 非双色球一律不带号：后端对带号的普通抽奖是**拒绝**而不是忽略。
+        // 双色球一律走 picks（哪怕只有一注），于是"一注"与"多注"在前端也只有
+        // 一条代码路径 —— 两条路径意味着其中一条迟早会漏掉一个字段。
+        picks: isBall ? submitLines.map(qyLotBallFormatPick) : undefined,
         pay_password: needsPayPassword ? payPassword : undefined,
       }),
     onSuccess: (data) => {
-      setReceipt(data)
+      setBatch(data)
       // 参与会同时改变余额、活动盘口、我的记录。qy 的 key 统一以 'qy' 开头
       // 正是为了这一刻能全量失效，而不是逐个猜哪些视图受影响。
       void queryClient.invalidateQueries({ queryKey: qyKeys.all })
@@ -140,19 +184,17 @@ export function QyLotEntryDialog(props: {
     !mutation.isPending &&
     requestId !== '' &&
     (activity.kind !== 'guess' || optNo > 0) &&
-    (!isBall || isQyLotBallPickComplete(pick, ballPool)) &&
+    (!isBall || (count > 0 && count <= seatCap)) &&
     (!needsPayPassword || (!payPasswordBlocked && payPassword.length > 0))
 
   return (
     <QyResponsiveDialog
       open={props.open}
       onOpenChange={props.onOpenChange}
-      title={
-        receipt == null ? t('qy_lot_join_title') : t('qy_lot_receipt_title')
-      }
-      description={receipt == null ? activity.title : t('qy_lot_receipt_desc')}
+      title={batch == null ? t('qy_lot_join_title') : t('qy_lot_receipt_title')}
+      description={batch == null ? activity.title : t('qy_lot_receipt_desc')}
       footer={
-        receipt == null ? (
+        batch == null ? (
           <>
             <Button
               type='button'
@@ -190,9 +232,21 @@ export function QyLotEntryDialog(props: {
         )
       }
     >
-      {receipt == null ? (
+      {batch == null ? (
         <div className='space-y-4'>
           <div>
+            {isBall && (
+              // 注数与总额排在参与费**上面**：这一屏要回答的第一个问题是
+              // "我一共花多少"，而单注参与费只是它的一个因子。
+              <>
+                <QyKeyValue label={t('qy_lot_ball_line_count')}>
+                  {t('qy_lot_ball_lines_n', { count })}
+                </QyKeyValue>
+                <QyKeyValue label={t('qy_lot_ball_total_due')}>
+                  <QyAmountText quota={totalQuota} variant='hero' />
+                </QyKeyValue>
+              </>
+            )}
             <QyKeyValue label={t('qy_lot_stake')}>
               <QyAmountText quota={activity.stake_quota} />
             </QyKeyValue>
@@ -221,14 +275,112 @@ export function QyLotEntryDialog(props: {
           </div>
 
           {isBall && (
-            <div className='space-y-2'>
-              <Label>{t('qy_lot_ball_pick_title')}</Label>
-              <QyLotBallPicker
-                pool={ballPool}
-                value={pick}
-                onChange={setPick}
-                disabled={mutation.isPending}
+            <div className='space-y-3'>
+              {/*
+                「你还能买几注」必须在按下确认**之前**出现。改造前每人上限只在
+                后端的活动行锁内判定，用户唯一知道自己超了的方式是提交完被顶
+                回来 —— 单注时那是一次白点击，多注时那是"我选了十注，凭什么
+                只买成三注"。这一行就是把那句话提到前面来。
+              */}
+              <QyLotSeatHint
+                remaining={remaining}
+                perRequestCap={perRequestCap}
               />
+
+              {lines.length > 0 && (
+                <div className='space-y-1.5'>
+                  <Label>{t('qy_lot_ball_lines_title')}</Label>
+                  <ul className='space-y-1.5'>
+                    {lines.map((line, index) => (
+                      <li
+                        // 号码可以重复（真实彩票允许买同号），所以 key 必须带上
+                        // 下标 —— 只用号码做 key 会让两注同号的行在删除时错位。
+                        key={`${qyLotBallFormatPick(line)}#${index}`}
+                        className='flex items-center gap-2 rounded-lg border px-3 py-2'
+                      >
+                        <span className='text-muted-foreground w-6 shrink-0 text-xs tabular-nums'>
+                          {index + 1}
+                        </span>
+                        <span className='min-w-0 flex-1 font-mono text-sm break-all tabular-nums'>
+                          {qyLotBallFormatPick(line)}
+                        </span>
+                        <Button
+                          type='button'
+                          variant='ghost'
+                          size='icon'
+                          disabled={mutation.isPending}
+                          aria-label={t('qy_lot_ball_line_remove', {
+                            index: index + 1,
+                          })}
+                          onClick={() =>
+                            setLines(lines.filter((_, i) => i !== index))
+                          }
+                        >
+                          <X aria-hidden='true' />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className='space-y-2'>
+                <Label>{t('qy_lot_ball_pick_title')}</Label>
+                <QyLotBallPicker
+                  pool={ballPool}
+                  value={pick}
+                  onChange={setPick}
+                  // 已加入的注数占满上限时锁住选号盘：留着它就等于让用户选完
+                  // 一注再被告知这一注不算，而这张票是要花钱的。
+                  disabled={mutation.isPending || lines.length >= seatCap}
+                />
+              </div>
+
+              <div className='flex flex-wrap gap-2'>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  // 「加入」只是把正在选的这一注挪进列表，注数不变，所以它
+                  // 不受剩余名额约束 —— 约束在选号盘那一侧。
+                  disabled={mutation.isPending || !pendingComplete}
+                  onClick={() => {
+                    setLines([...lines, pick])
+                    setPick({ reds: [], blues: [] })
+                  }}
+                >
+                  <Plus aria-hidden='true' />
+                  {t('qy_lot_ball_add_line')}
+                </Button>
+                <Button
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  disabled={mutation.isPending || openSlots <= 0}
+                  onClick={() =>
+                    setLines([
+                      ...lines,
+                      ...Array.from({ length: openSlots }, () =>
+                        qyLotBallRandomPick(ballPool)
+                      ),
+                    ])
+                  }
+                >
+                  <Shuffle aria-hidden='true' />
+                  {t('qy_lot_ball_fill_random', { count: openSlots })}
+                </Button>
+              </div>
+
+              {/*
+                选满了但没点「加入」的那一注**会被买走**（它算进 count 与总额），
+                所以这里只在"没选满"时提醒 —— 那一注不会被买，而用户以为会。
+              */}
+              {!pendingComplete &&
+                (pick.reds.length > 0 || pick.blues.length > 0) && (
+                  <p className='text-muted-foreground text-xs'>
+                    {t('qy_lot_ball_line_incomplete')}
+                  </p>
+                )}
             </div>
           )}
 
@@ -269,9 +421,8 @@ export function QyLotEntryDialog(props: {
           {/* 一次性把不可逆这件事说清楚。钱是**立即从主额度扣走**的，
               没有撤单、没有反悔，这条必须在按下确认之前看到。
 
-              压成一句，并且**把金额写进这句话里**：改造前是一个标题加一段
-              38 字的说明，两者说的是同一件事，而真正决定用户按不按这颗按钮的
-              是"多少钱、退不退"这两个具体的量。
+              金额写进这句话里，而且写的是**本次总额**而不是单注参与费：
+              真正决定用户按不按这颗按钮的是"这一下要花多少、退不退"。
 
               抽奖与竞猜必须说成两句话。抽奖那句「只有整场取消或流局时才全额
               退款」对竞猜是**错的**：竞猜的钱不是参与费而是本金，它进了奖池，
@@ -285,7 +436,14 @@ export function QyLotEntryDialog(props: {
                 activity.kind === 'guess'
                   ? 'qy_lot_bet_warn_line'
                   : 'qy_lot_join_warn_line',
-                { amount: formatQyQuotaLedger(activity.stake_quota) }
+                // 一注都还没选时用**单注**参与费：这句话是一条价格与退款口径，
+                // 而 "$0 立即扣除" 什么都没说。选了之后立刻换成本次总额 ——
+                // 决定按不按这颗按钮的始终是"这一下要花多少"。
+                {
+                  amount: formatQyQuotaLedger(
+                    count > 0 ? totalQuota : activity.stake_quota
+                  ),
+                }
               )}
             </AlertDescription>
           </Alert>
@@ -303,43 +461,79 @@ export function QyLotEntryDialog(props: {
         <div className='space-y-3'>
           {/* 回执 = 用户手里的凭据。平台事后想动名单，必须同时改掉 N 个用户
               已经看到并可截图的 chain_hash —— 做不到。所以这一屏必须让人
-              一眼看懂"这串东西要留着"，并且能一键复制。
-
-              一句话说完："留好链哈希，「我的参与」里长期可查"。改造前是标题
-              加一段 60 字的说明，后半段讲的是哈希链为什么防得住篡改 ——
-              那是活动页「公正性验证」那一整块的主题，不该在一个刚扣完钱的
-              回执上再讲一遍。 */}
+              一眼看懂"这串东西要留着"，并且能一键复制。 */}
           <Alert>
             <AlertDescription>{t('qy_lot_receipt_keep_line')}</AlertDescription>
           </Alert>
+
+          {/* 部分成交:HTTP 200 但只买成了前面几注。这**不是失败** ——
+              买成的那几注真的成交了，没买成的一分钱都没扣。不说清楚的话，
+              用户会以为整批都没成而再提交一次（而那一次是真会扣钱的）。 */}
+          {batch.accepted < batch.requested && (
+            <Alert variant='destructive'>
+              <TriangleAlert />
+              <AlertDescription>
+                {t('qy_lot_receipt_partial', {
+                  accepted: batch.accepted,
+                  requested: batch.requested,
+                })}
+                {batch.failed_message == null || batch.failed_message === ''
+                  ? null
+                  : ` ${batch.failed_message}`}
+              </AlertDescription>
+            </Alert>
+          )}
+
           <div>
-            <QyKeyValue label={t('qy_lot_entry_no')}>
-              <span className='font-mono text-xs'>{receipt.entry_no}</span>
+            <QyKeyValue label={t('qy_lot_ball_line_count')}>
+              {t('qy_lot_ball_lines_n', { count: batch.accepted })}
             </QyKeyValue>
-            <QyKeyValue label={t('qy_lot_seq')}>{receipt.seq}</QyKeyValue>
-            {/* 回执上显示的是后端**归一化之后**的那一串，不是提交时的输入：
-                进链的是归一化后的字节，两者不一致时用户拿手里的串去比对证据链
-                会得出"平台改了我的号"的错误结论。 */}
-            {(receipt.pick ?? '') !== '' && (
-              <QyKeyValue label={t('qy_lot_ball_my_pick')}>
-                <span className='font-mono text-xs tabular-nums'>
-                  {receipt.pick}
-                </span>
-              </QyKeyValue>
-            )}
+            <QyKeyValue label={t('qy_lot_receipt_total_charged')}>
+              {/* 总额取后端回的那个数，**绝不在前端拿单价乘注数**：部分成交时
+                  后者是错的，而错的方向是多报。 */}
+              <QyAmountText quota={batch.total_quota} variant='hero' />
+            </QyKeyValue>
             <QyKeyValue label={t('qy_lot_user_ref')}>
-              <span className='font-mono text-xs'>{receipt.user_ref}</span>
-            </QyKeyValue>
-            <QyKeyValue label={t('qy_common_amount')}>
-              <QyAmountText quota={receipt.amount} />
-            </QyKeyValue>
-            <QyKeyValue label={t('qy_lot_chain_hash')}>
-              <span className='font-mono text-xs'>{receipt.chain_hash}</span>
+              <span className='font-mono text-xs'>
+                {batch.entries[0]?.user_ref ?? ''}
+              </span>
             </QyKeyValue>
             <QyKeyValue label={t('qy_lot_commit_hash')}>
-              <span className='font-mono text-xs'>{receipt.commit_hash}</span>
+              <span className='font-mono text-xs'>
+                {batch.entries[0]?.commit_hash ?? ''}
+              </span>
             </QyKeyValue>
           </div>
+
+          {/* 逐注的凭据。user_ref 与 commit_hash 对整批是同一个（同一个人、
+              同一场活动），只印一次；而 entry_no / seq / pick / chain_hash
+              每一注各不相同 —— 那四样才是"这一张票"的凭据。 */}
+          <ul className='space-y-2'>
+            {batch.entries.map((entry) => (
+              <li key={entry.entry_no} className='rounded-lg border p-3'>
+                <div className='flex items-baseline gap-2'>
+                  <span className='text-muted-foreground shrink-0 text-xs tabular-nums'>
+                    #{entry.seq}
+                  </span>
+                  {(entry.pick ?? '') === '' ? null : (
+                    <span className='font-mono text-sm break-all tabular-nums'>
+                      {/* 显示的是后端**归一化之后**的那一串，不是提交时的输入：
+                          进链的是归一化后的字节，两者不一致时用户拿手里的串去
+                          比对证据链会得出"平台改了我的号"的错误结论。 */}
+                      {entry.pick}
+                    </span>
+                  )}
+                </div>
+                <p className='text-muted-foreground mt-1 font-mono text-xs break-all'>
+                  {entry.entry_no}
+                </p>
+                <p className='mt-1 font-mono text-xs break-all'>
+                  {entry.chain_hash}
+                </p>
+              </li>
+            ))}
+          </ul>
+
           <Button
             type='button'
             variant='outline'
@@ -347,14 +541,18 @@ export function QyLotEntryDialog(props: {
             onClick={() => {
               void copyToClipboard(
                 [
-                  `entry_no=${receipt.entry_no}`,
-                  `seq=${receipt.seq}`,
-                  `user_ref=${receipt.user_ref}`,
-                  ...((receipt.pick ?? '') === ''
-                    ? []
-                    : [`pick=${receipt.pick}`]),
-                  `chain_hash=${receipt.chain_hash}`,
-                  `commit_hash=${receipt.commit_hash}`,
+                  `user_ref=${batch.entries[0]?.user_ref ?? ''}`,
+                  `commit_hash=${batch.entries[0]?.commit_hash ?? ''}`,
+                  ...batch.entries.map((entry) =>
+                    [
+                      `seq=${entry.seq}`,
+                      `entry_no=${entry.entry_no}`,
+                      ...((entry.pick ?? '') === ''
+                        ? []
+                        : [`pick=${entry.pick}`]),
+                      `chain_hash=${entry.chain_hash}`,
+                    ].join(' ')
+                  ),
                 ].join('\n')
               )
             }}
@@ -365,5 +563,40 @@ export function QyLotEntryDialog(props: {
         </div>
       )}
     </QyResponsiveDialog>
+  )
+}
+
+/**
+ * 「你在本场还能买几注」。
+ *
+ * 三个取值分开说，合并任意两个都会说错话：`null` 是没有每人上限（不是"还能买
+ * 0 注"），`0` 是已经买满，正数才是真的还剩几注。
+ */
+function QyLotSeatHint(props: {
+  remaining?: number | null
+  perRequestCap: number
+}) {
+  const { t } = useTranslation()
+  // 单次只能买一注时这句话没有信息量（"一次最多买 1 注"），而这一屏的字数
+  // 预算是逐字算过的：一句零信息量的提示挤掉的是真正要被读到的那几个数。
+  const capHint =
+    props.perRequestCap > 1
+      ? t('qy_lot_ball_per_request_cap', { count: props.perRequestCap })
+      : ''
+  if (props.remaining == null) {
+    return capHint === '' ? null : (
+      <p className='text-muted-foreground text-xs'>{capHint}</p>
+    )
+  }
+  if (props.remaining <= 0) {
+    return (
+      <p className='text-destructive text-xs'>{t('qy_lot_ball_seats_full')}</p>
+    )
+  }
+  return (
+    <p className='text-muted-foreground text-xs'>
+      {t('qy_lot_ball_seats_left', { count: props.remaining })}
+      {capHint === '' ? null : ` · ${capHint}`}
+    </p>
   )
 }

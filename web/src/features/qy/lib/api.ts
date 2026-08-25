@@ -321,6 +321,12 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_bad_option: 'qy_lot_err_bad_option',
   qy_lot_bad_amount: 'qy_lot_err_bad_amount',
   qy_lot_bad_request_id: 'qy_lot_err_bad_request_id',
+  // 一次买多注的三条。前两条是请求形状错了（前端写错才会发生），第三条是
+  // **部分成交**：前面几注已经买成、后面几注被时间预算截断且一分钱没扣。
+  // 第三条若回落成泛化的"操作冲突"，用户会以为整批都失败了而再提交一次。
+  qy_lot_too_many_picks: 'qy_lot_err_too_many_picks',
+  qy_lot_pick_conflict: 'qy_lot_err_pick_conflict',
+  qy_lot_batch_budget: 'qy_lot_err_batch_budget',
   // 玩法被运营隐藏。文案必须自己说清"已参与的不受影响"—— 用户看到自己参加过的
   // 那一场突然不能再买，第一反应是自己那笔钱出事了，而这条错误在用户端与管理端
   // （发布被拦）共用同一句。

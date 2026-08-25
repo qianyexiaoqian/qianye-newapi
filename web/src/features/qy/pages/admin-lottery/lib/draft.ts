@@ -36,6 +36,7 @@ import type {
   QyLotSeries,
   QyLotYamlReadonly,
 } from '../types'
+import { qyLotEntriesCap, qyLotTierBudgetShort } from './advice'
 
 /**
  * 创建向导的草稿与校验。
@@ -433,13 +434,15 @@ export function qyLotValidateDraft(
       }
       // 均分制唯一的新失败态：预算摊到人均不足 1 额度时会有人分到 0，
       // 而那个人连 payout 行都不会有 —— 一个真中了奖的人被静默漏发。
-      const entriesCap =
-        draft.max_total_entries > 0
-          ? draft.max_total_entries
-          : (yaml?.max_total_entries_hard ?? 0)
+      //
+      // 判据走 `qyLotTierBudgetShort`，不在这里就地写一遍不等式：字段旁边的
+      // 实时提示与「按参与上限自动填」用的是同一个函数，三处分叉的表现就是
+      // "界面说 OK、后端拒绝"，而那会让人从此不信任何一个自动填。
+      const entriesCap = qyLotEntriesCap(draft, yaml?.max_total_entries_hard)
       if (
-        entriesCap > 0 &&
-        tiers.some((tier) => tier.amount_quota * tier.count < entriesCap)
+        tiers.some((tier) =>
+          qyLotTierBudgetShort(entriesCap, tier.count, tier.amount_quota)
+        )
       ) {
         errors.push('qy_lot_v_prob_budget_short')
       }
@@ -568,10 +571,7 @@ function validateBallDraft(
   // 本场理论上可能出现的最大有效票数。固定奖档的预算必须不小于它，否则超募时
   // 会有中奖者被摊薄到 0 额度 —— 而派奖计划会跳过 amount<=0 的行，那是一次
   // 静默漏发：用户真的中了，却什么都收不到，也没有任何报错。
-  const entriesCap =
-    draft.max_total_entries > 0
-      ? draft.max_total_entries
-      : (yaml?.max_total_entries_hard ?? 0)
+  const entriesCap = qyLotEntriesCap(draft, yaml?.max_total_entries_hard)
 
   let shareSum = 0
   for (const tier of draft.tiers) {
@@ -596,7 +596,7 @@ function validateBallDraft(
       errors.push('qy_lot_v_ball_fixed_amount')
       continue
     }
-    if (entriesCap > 0 && tier.amount_quota * tier.count < entriesCap) {
+    if (qyLotTierBudgetShort(entriesCap, tier.count, tier.amount_quota)) {
       errors.push('qy_lot_v_ball_budget_short')
     }
   }

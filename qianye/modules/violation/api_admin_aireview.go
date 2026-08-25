@@ -112,13 +112,18 @@ type aiChannelView struct {
 	GuardElevate    []string `json:"guard_elevate"`
 	HasKey          bool     `json:"has_key"`
 	KeyHint         string   `json:"key_hint"`
-	TimeoutMs       int      `json:"timeout_ms"`
-	Weight          int      `json:"weight"`
-	Enabled         bool     `json:"enabled"`
-	PriceInPerM     string   `json:"price_in_per_m"`
-	PriceOutPerM    string   `json:"price_out_per_m"`
-	Remark          string   `json:"remark"`
-	UpdatedAt       int64    `json:"updated_at"`
+	// KeyBoundElsewhere 为真 = 这个渠道的地址被改过,而已存密钥是写给旧地址的,
+	// 于是它既不会被送到新地址,渠道也不会参与审核。**必须下发**:不下发的话
+	// 界面上这一行看起来配得好好的(有密钥、启用中),而它实际上一次都不会被调用,
+	// 而 AI 审核失败的方向是放行。下发的是一个布尔,不泄漏那个旧地址之外的任何东西。
+	KeyBoundElsewhere bool   `json:"key_bound_elsewhere"`
+	TimeoutMs         int    `json:"timeout_ms"`
+	Weight            int    `json:"weight"`
+	Enabled           bool   `json:"enabled"`
+	PriceInPerM       string `json:"price_in_per_m"`
+	PriceOutPerM      string `json:"price_out_per_m"`
+	Remark            string `json:"remark"`
+	UpdatedAt         int64  `json:"updated_at"`
 }
 
 // splitGuardCategoryCSV 把库里那一列读成接口要下发的数组。
@@ -144,7 +149,8 @@ func toAIChannelView(ch AIChannel) aiChannelView {
 		GuardCategories:    splitGuardCategoryCSV(ch.GuardCategories),
 		GuardElevate:       splitGuardCategoryCSV(ch.GuardElevate),
 		HasKey:             ch.HasKey(), KeyHint: ch.KeyHint,
-		TimeoutMs: ch.TimeoutMs, Weight: ch.Weight, Enabled: ch.Enabled,
+		KeyBoundElsewhere: ch.KeyBoundElsewhere(),
+		TimeoutMs:         ch.TimeoutMs, Weight: ch.Weight, Enabled: ch.Enabled,
 		PriceInPerM: ch.PriceInPerM.String(), PriceOutPerM: ch.PriceOutPerM.String(),
 		Remark: ch.Remark, UpdatedAt: ch.UpdatedAt,
 	}
@@ -273,41 +279,29 @@ func adminUpdateAIChannel(c *gin.Context) {
 
 	// ApiKey 为 nil = 表单没碰这一格 = 保持原密钥。见 aiChannelUpsertReq 的说明。
 	//
-	// 但**改了地址就必须重填密钥**:密钥是发给那一个上游的凭据,换个地址之后
-	// 它对新地址既没有意义,也不该跟着过去。
+	// **改地址就只是改地址**:这里不因为 base_url 变了而动密钥的任何一列。
+	// 曾经有过一条「改地址即清空密钥」的规则,已撤回 —— 保存一个字段不该有副作用,
+	// 而清空是不可恢复的。
 	//
-	// 这不是洁癖,是一条已经被实测走通的越权路径:密钥对 role=10 是刻意
-	// write-only 的(列表/详情/PUT 回显只给 key_hint,全站没有任何读回明文的口),
-	// 而"改地址 + 点连通性测试"这两步都是 role=10 权限 —— 把一个已有渠道的
-	// base_url 指到自己的机器上再点一次测试,出站请求就会带着
-	// `Authorization: Bearer <原密钥>` 打过来,一把本来读不到的密钥被完整取走。
-	// 实测:PUT 只改 base_url、不带 api_key 字段 → 200 且 key_hint 不变(密钥保留),
-	// 再 POST .../test → 攻击者的监听端逐字收到原密钥。
-	//
-	// 对照口径:上游侧把"改渠道"判为权限位、把"读渠道 key"判为
-	// RootAuth + SecureVerificationRequired(router/channel-router.go),
-	// qy 这一侧对同一类资产原先是 role=10 且无二次校验。
-	//
-	// 清空而不是拒绝保存:拒绝会让"换个地址继续用同一把 key"这件合法的事做不了,
-	// 而清空之后运营在同一个表单里重填一次即可,且他必须**知道**那把 key 是什么
-	// —— 那正是这条闸门要求的东西。
-	switch {
-	case req.ApiKey != nil:
+	// 那条规则堵的越权路径没有放着不管,只是换了一层:密钥被绑在它写入时的那个
+	// 地址上(AIChannel.KeyEndpoint),地址与绑定不一致时这把密钥一律不出站。
+	// 于是"改地址 → 试跑"这条链的第一步照样成功,第二步拿不到密钥。
+	// 完整理由与攻击链写在 AIChannel.KeyEndpoint 上。
+	if req.ApiKey != nil {
 		if err := applyAIChannelKey(gdb, &row, *req.ApiKey); err != nil {
 			writeAIReviewAudit(c, "ai_channel_update", qymodel.ResultFail, &before, &row, err)
 			badRequest(c, err.Error())
 			return
 		}
-	case before.HasKey() && !sameAIChannelEndpoint(before.BaseUrl, row.BaseUrl):
-		if err := applyAIChannelKey(gdb, &row, ""); err != nil {
-			writeAIReviewAudit(c, "ai_channel_update", qymodel.ResultFail, &before, &row, err)
-			badRequest(c, err.Error())
-			return
-		}
+	}
+	if row.KeyBoundElsewhere() {
+		// 只在日志里说一句,不改变这次保存的结果:保存成功了,只是这把密钥
+		// 从现在起不会被送到新地址上。不说的话,运营会看到"渠道配得好好的、
+		// 审核却不走它",而 AI 审核失败的方向是放行。
 		common.SysLog(fmt.Sprintf(
-			"qianye/violation: AI 审核渠道 %d 的地址由 %q 改为 %q,已清空原密钥 —— "+
-				"密钥是发给原地址的凭据,不跟随地址迁移(操作人 %d)",
-			row.Id, before.BaseUrl, row.BaseUrl, c.GetInt("id")))
+			"qianye/violation: AI 审核渠道 %d 的地址由 %q 改为 %q,而已存密钥是写给 %q 的 —— "+
+				"该密钥不会被发往新地址,渠道将被跳过,请在表单里重填一次密钥(操作人 %d)",
+			row.Id, before.BaseUrl, row.BaseUrl, row.KeyEndpoint, c.GetInt("id")))
 	}
 	// Select 显式列出要写的列:Save/Updates 全字段写回会把上面刚算好的
 	// KeyCipher/KeyNonce 再覆盖一次(applyAIChannelKey 已经落过库了),
@@ -389,6 +383,9 @@ func applyAIChannelKey(gdb *gorm.DB, row *AIChannel, plain string) error {
 	plain = strings.TrimSpace(plain)
 	if plain == "" {
 		row.KeyNonce, row.KeyCipher, row.KeyVersion, row.KeyHint = nil, nil, 0, ""
+		// 绑定跟着密钥一起清:没有密钥就没有可绑的东西,留着一个陈旧的地址
+		// 只会在下一次写入前误导排障。
+		row.KeyEndpoint = ""
 	} else {
 		if !aiKeyConfigured() {
 			return fmt.Errorf("尚未配置 violation.ai_review_key,无法保存密钥 —— " +
@@ -402,12 +399,17 @@ func applyAIChannelKey(gdb *gorm.DB, row *AIChannel, plain string) error {
 		}
 		row.KeyNonce, row.KeyCipher, row.KeyVersion = nonce, cipher, version
 		row.KeyHint = maskAIKey(plain)
+		// 绑定记的是**此刻**这一行的地址。更新时 row 已经带着新 base_url,
+		// 所以"改地址的同时重填密钥"是一步到位的:运营明确表达了"这把密钥
+		// 就是给新地址的",而他能重填就说明他知道那把密钥。
+		row.KeyEndpoint = strings.TrimSpace(row.BaseUrl)
 	}
 	return gdb.Model(&AIChannel{}).Where("id = ?", row.Id).
-		Select("key_nonce", "key_cipher", "key_version", "key_hint").
+		Select("key_nonce", "key_cipher", "key_version", "key_hint", "key_endpoint").
 		Updates(map[string]any{
 			"key_nonce": row.KeyNonce, "key_cipher": row.KeyCipher,
 			"key_version": row.KeyVersion, "key_hint": row.KeyHint,
+			"key_endpoint": row.KeyEndpoint,
 		}).Error
 }
 
@@ -433,6 +435,17 @@ func adminTestAIChannel(c *gin.Context) {
 	url := chatCompletionsURL(row.BaseUrl)
 	if url == "" {
 		badRequest(c, "地址为空")
+		return
+	}
+	// 密钥绑在它写入时的那个地址上。地址被改过之后,这个按钮**不会**把已存密钥
+	// 送到新地址 —— 那正是"改地址 + 点试跑"那条越权路径的第二步。
+	// 完整理由与攻击链写在 AIChannel.KeyEndpoint 上。
+	if row.KeyBoundElsewhere() {
+		badRequest(c, fmt.Sprintf(
+			"这个渠道的密钥是写给 %q 的,而当前地址是 %q。已存密钥不会被发往新地址 —— "+
+				"密钥对本页是只写的,否则改一下地址再点试跑就能把它取走。"+
+				"请在编辑表单里重填一次密钥后再试。",
+			row.KeyEndpoint, row.BaseUrl))
 		return
 	}
 	key, err := openAIKey(row.KeyNonce, row.KeyCipher, aiChannelAAD(row.Id), row.KeyVersion)

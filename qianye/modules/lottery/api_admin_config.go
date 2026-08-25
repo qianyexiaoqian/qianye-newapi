@@ -167,7 +167,17 @@ func handleGetConfig(c *gin.Context) {
 			"max_prize_tiers":              cfg.MaxPrizeTiers,
 			"max_options":                  cfg.MaxOptions,
 			"max_stake_quota":              cfg.MaxStakeQuota,
-			"spend_max_lookback_days":      cfg.SpendMaxLookbackDays,
+			// system_max_quota 是**全站额度换算的整数上界**(common.MaxQuota,
+			// 由代码写死),不是 YAML 里的一项。放在这一段是因为它与这一段的其余键
+			// 共享同一个性质:管理员改不了。
+			//
+			// 下发它是为了让创建向导能把两种上限分开说 —— 系统上界是"填不了,
+			// 改任何配置都放不开",策略上限(max_stake_quota /
+			// max_total_prize_quota)是"本站不让,去改配置或者改数字"。
+			// 前端没有这个数时只能把两者混成一句"超过系统上限",而运营读完会
+			// 跑去配置页找一个根本不存在的开关。
+			"system_max_quota":        int64(common.MaxQuota),
+			"spend_max_lookback_days": cfg.SpendMaxLookbackDays,
 			// 封面上传的三项。前端据此决定"上传"按钮出不出现、accept 写什么、
 			// 以及在本地就把超限的文件拦下来 —— 让用户把 5 MiB 传完再看到 413,
 			// 是最贵的一种拒绝方式。accept 只是体验,真正的判定是服务端的魔数。

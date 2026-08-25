@@ -1,6 +1,8 @@
 package violation
 
 import (
+	"strings"
+
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 
 	"github.com/shopspring/decimal"
@@ -151,6 +153,40 @@ type AIChannel struct {
 	// 不在读取时现算:那需要先解密,而列表接口没有任何理由碰明文密钥。
 	KeyHint string `json:"key_hint" gorm:"type:varchar(32);not null;default:''"`
 
+	// KeyEndpoint 是**密钥最后一次写入时这个渠道的 base_url**。
+	//
+	// # 它挡的是什么
+	//
+	// 上游密钥对 role=10 是刻意 write-only 的:列表/详情/PUT 回显只给 key_hint,
+	// 全站没有任何读回明文的口。但改地址与试跑**都是 role=10 权限**,于是曾经
+	// 有一条两步走通的越权路径:把某个已配密钥的渠道的 base_url 指到自己的机器上
+	// 保存,再点一次连通性测试 —— 出站请求带着 `Authorization: Bearer <原密钥>`
+	// 打过来,一把他读不到的密钥被完整取走。热路径同形:改完地址之后,下一条
+	// 真实审核流量会把同一把密钥送到同一个地方。
+	//
+	// 曾经的堵法是「改地址就清空密钥」。那条被撤回了 —— 改地址就只是改地址,
+	// 保存不再动任何别的列。现在的堵法是把密钥**绑在它被写入时的那个地址上**:
+	// 地址与绑定不一致时,这把密钥一律不出站(热路径跳过该渠道,试跑直接拒绝),
+	// 直到有人在表单里重填一次密钥 —— 而重填的前提正是他**知道**那把密钥是什么。
+	//
+	// 攻击链因此断在第二步:第一步(改地址保存)照样成功,但它同时让绑定失配,
+	// 而攻击者没有任何办法把绑定改回来 —— 写绑定的唯一入口是写密钥。
+	//
+	// # 零值:空串
+	//
+	//	空串 + 没有密钥  正常的免鉴权渠道。没有密钥就没有可泄漏的东西,不设防。
+	//	空串 + 有密钥    这一列存在之前写入的历史行。按「无绑定」处理(照常出站),
+	//	                 也就是与这一列存在之前逐字节一致的行为 —— 升级不改变
+	//	                 任何一个现存渠道的可用性。启动时的 migrateAIChannelKeyEndpoint
+	//	                 会把这些行回填成它们当时的 base_url,回填之后闸门才生效。
+	//
+	// 空串**不能**当成"失配"来处理:那会让回填没跑到的部署在升级那一秒
+	// 全部审核渠道同时失效,而 AI 审核失败的方向是放行 —— 一次静默的风控关闭。
+	//
+	// 攻击者无法制造"空串 + 有密钥":写这一列的唯一地方是 applyAIChannelKey,
+	// 而它只在清空密钥时写空串;adminUpdateAIChannel 的 Select 白名单里没有这一列。
+	KeyEndpoint string `json:"-" gorm:"type:varchar(512);not null;default:''"`
+
 	// TimeoutMs 是这个渠道单次调用的超时。0 = 用当前时机的全局预算。
 	// 渠道级存在的理由:同一站点可能同时挂一个本地小模型(50ms)与一个云端
 	// 大模型(2s),用一个数字卡住两者,要么本地的白等、要么云端的必超时。
@@ -175,6 +211,17 @@ func (AIChannel) TableName() string { return "qy_violation_ai_channel" }
 
 // HasKey 供接口下发:界面据此显示"已配置密钥 / 未配置",而不是显示密钥本身。
 func (ch AIChannel) HasKey() bool { return len(ch.KeyCipher) > 0 }
+
+// KeyBoundElsewhere 回答「这把密钥是写给另一个地址的吗」。
+//
+// 为真时密钥一律不出站:热路径跳过该渠道,试跑直接拒绝。完整理由见 KeyEndpoint。
+// 空绑定(历史行)恒为假 —— 零值方向同样写在 KeyEndpoint 上。
+func (ch AIChannel) KeyBoundElsewhere() bool {
+	if !ch.HasKey() || strings.TrimSpace(ch.KeyEndpoint) == "" {
+		return false
+	}
+	return !sameAIChannelEndpoint(ch.KeyEndpoint, ch.BaseUrl)
+}
 
 // AISetting 是 AI 审核的全局设置,单行表(Id 恒为 1)。
 //

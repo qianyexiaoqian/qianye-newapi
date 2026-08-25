@@ -2,6 +2,8 @@ package lottery
 
 import (
 	"context"
+	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
@@ -172,6 +174,29 @@ type activityDetail struct {
 
 	Spec         []specItem `json:"spec"`
 	MyEntryCount int        `json:"my_entry_count"`
+	// MyEntriesRemaining 是"我在这一场还能买几注"。
+	//
+	// # 为什么是后端算而不是前端拿 max_entries_per_user 减 my_entry_count
+	//
+	// 那两个数已经在下发,前端确实减得出来 —— 但减法要选用哪一个计数口径,
+	// 而 checkCaps 数的是 status IN (success/excluded/refunded) 而不是这里的
+	// (pending/success)。两处口径本来就不同名同形,交给前端就等于把一条会漂移的
+	// 约定写进注释。这里与 my_entry_count 出自同一次查询,两个数不可能各说各话。
+	//
+	// # 零值口径
+	//
+	//   - nil(JSON null)= 本场没有每人上限,想买几注买几注(仍受
+	//     max_picks_per_request 的单次批量约束)。
+	//   - 0 = 已经买满,一注都不能再买。
+	//
+	// **它只是提示,绝不是放行依据**:真正的判定在活动行锁内(见 checkCaps),
+	// 拿它当凭据就等于给了一个刷新周期长的 TOCTOU 窗口。它存在的理由是让
+	// "你还能买 3 注"出现在按下确认**之前**,而不是提交了十注之后才被顶回来。
+	MyEntriesRemaining *int `json:"my_entries_remaining"`
+	// MaxPicksPerRequest 是一次提交最多几注(见 entry.go 的 maxPicksPerRequest)。
+	// 下发它是为了让选号盘的"再加一注"按钮在到顶时当场置灰 —— 前端写死一个
+	// 同名常量的下场,是后端调整之后界面上多出来的那一注恒被 400 顶回来。
+	MaxPicksPerRequest int `json:"max_picks_per_request"`
 	// MyTickets 是**我自己**在这一场买的票,只在 draw_mode=ball 下下发。
 	//
 	// # 为什么详情页必须拿到它
@@ -494,6 +519,17 @@ func handleGetActivity(c *gin.Context) {
 		return
 	}
 	detail.MyEntryCount = int(mine)
+	detail.MaxPicksPerRequest = maxPicksPerRequest
+	if act.MaxEntriesPerUser > 0 {
+		// 夹到 0:上限被在线调低之后 mine 可以大过它,而一个负的"还能买几注"
+		// 会在界面上显示成 "还能买 -2 注",并让任何 `remaining > 0` 的判断
+		// 照旧为假、`remaining >= n` 的判断在 n 也为负时反而为真。
+		remaining := act.MaxEntriesPerUser - int(mine)
+		if remaining < 0 {
+			remaining = 0
+		}
+		detail.MyEntriesRemaining = &remaining
+	}
 
 	// 双色球才列票:pick 在别的模式下恒为空串,列出来一格内容都没有。
 	// 未登录不会走到这里(整条路由挂在 UserAuth 之下),但 me <= 0 仍然显式挡一道 ——
@@ -609,8 +645,64 @@ type entryRequest struct {
 	// 机选是纯前端按钮(crypto.getRandomValues),服务端不区分自选与机选:
 	// 号码一旦进链两者的可验证性完全一样,而服务端多一条随机路径就多一处
 	// 要证明其公正的地方。
-	Pick        string `json:"pick"`
-	PayPassword string `json:"pay_password"`
+	Pick string `json:"pick"`
+	// Picks 是**一次买多注**的选号列表,每一项与 Pick 同格式。
+	//
+	// 只有双色球用得上它:一注就是一组号,N 注就是 N 组号、N × 单注参与费,
+	// 每一注各自进哈希链、各自与开奖号比对、各自定档 —— 与用户连点 N 次
+	// 完全同构,区别只在于这 N 次在服务端串行跑完、总额在按下确认之前就
+	// 已经写在屏幕上。
+	//
+	// 零值口径:缺席或空数组 = 单注提交,选号取 Pick(旧客户端与"只买一注"
+	// 走的都是这一条)。两个字段同时非空一律 400(errPickAndPicks),
+	// 绝不静默择一 —— 择一意味着有一半的请求买到的不是它写的那组号。
+	//
+	// 允许**重号**:同一次提交里两注号码完全相同照常受理,它们是两张独立的票,
+	// 中奖时各拿一份。真实彩票就是这么卖的,而拒绝重号会让"机选 5 注"在小号池
+	// 上有可观的概率整批被顶回来。
+	Picks       []string `json:"picks"`
+	PayPassword string   `json:"pay_password"`
+}
+
+// acceptPickList 定出这一次提交到底要买哪几注。
+//
+// 返回的每一项都是**尚未归一化**的原始输入:归一化在 acceptPick 里,而那是
+// 唯一一处能算出进链字节的地方,复制一份到这里就等于给自己留了一个会漂移的
+// 第二口径。这里只回答"几注、哪几组"。
+func acceptPickList(req entryRequest) ([]string, error) {
+	if len(req.Picks) == 0 {
+		// 单注:选号仍旧走 Pick。空串在非双色球上是合法的(不带号),
+		// 在双色球上会被 acceptPick 判成 errBadPickInput —— 判定点仍然只有一处。
+		return []string{req.Pick}, nil
+	}
+	if strings.TrimSpace(req.Pick) != "" {
+		return nil, errPickAndPicks
+	}
+	if len(req.Picks) > maxPicksPerRequest {
+		return nil, errTooManyPicks
+	}
+	return req.Picks, nil
+}
+
+// batchRequestId 派生第 i 注的幂等键。
+//
+// 第 0 注**原样沿用**客户端那一份:一次单注提交因此与改造前逐字节相同,
+// 旧客户端的重试照旧命中原单。第 i(i ≥ 1)注加 `#i` 后缀,于是"同一批的
+// 每一注各是一张独立资金单",而整批重放时每一张各自幂等命中、一分钱都不会
+// 重复扣 —— 这正是把批量放在服务端而不是让前端连打 N 次的理由:前端每一次
+// 点击都要自己造一个新 crid,重发就是真的多扣一笔。
+//
+// # 它成立的前提:客户端那一份不含 `#`
+//
+// 这个映射只有在 crid 不含 `#` 时才是单射。否则 (`X#1`, 0) 与 (`X`, 1) 派生出
+// 同一个键,后者会幂等命中前者那一次提交买下的票。前提由 handleCreateEntry
+// 在**派生之前**校验(与长度同一道闸),所以这里不再重复判 —— 判两次意味着
+// 两处口径,而这一处没有 error 可回。
+func batchRequestId(crid string, i int) string {
+	if i == 0 {
+		return crid
+	}
+	return crid + "#" + strconv.Itoa(i)
 }
 
 // entryInputOf 把请求体翻译成一次参与的输入。
@@ -655,7 +747,49 @@ type entryReceipt struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
+// entryReceiptBatch 是一次提交的回执,**单注与多注同一个形状**。
+//
+// # 为什么不是"一注时回单个对象、多注时回数组"
+//
+// 那样前端要按自己发了什么去决定怎么解析响应,而"我发了几注"与"服务端收下了
+// 几注"恰恰是这条链路上唯一会不一致的两个数(余额不足、撞上每人上限、时间预算
+// 用完都会让后半批停下)。一个恒定的形状让"买成了几注、一共扣了多少"必须被读出来,
+// 而不是被假设。
+//
+// # 零值口径
+//
+//   - Entries 恒非空。整批一注都没买成时走 respondErr,而不是回一个 200 空数组 ——
+//     一次什么都没发生的提交对用户来说就是失败。
+//   - FailedCode == "" 表示 Requested 注全部买成,此时 Accepted == Requested。
+//     非空时 Accepted < Requested,而**没买成的那几注一分钱都没扣**:每一注是
+//     一张独立资金单,停在哪一注,后面的就从来没有落过单。
+//   - TotalQuota 是 Σ Entries[].Amount,也就是这次真正扣掉的钱。它不是
+//     "单注 × Requested" —— 那个数在部分成交时是错的,而错的方向是多报。
+type entryReceiptBatch struct {
+	Entries []entryReceipt `json:"entries"`
+	// Requested 是提交的注数,Accepted 是买成的注数。
+	Requested int `json:"requested"`
+	Accepted  int `json:"accepted"`
+	// TotalQuota 是本次真正扣掉的总额,由每一注的回执逐笔累加而来。
+	TotalQuota int64 `json:"total_quota"`
+	// FailedCode / FailedMessage 是**后面那几注**停下的原因,原样取自那条业务错误。
+	FailedCode    string `json:"failed_code,omitempty"`
+	FailedMessage string `json:"failed_message,omitempty"`
+}
+
 // handleCreateEntry 是唯一会动钱的用户入口,已挂 CriticalRateLimit。
+//
+// # 一次买多注在这里是 N 次串行的 ChargeEntry,不是一张 N 倍金额的资金单
+//
+// 后者要把 twophase 的 RefId(指向**一条**参与明细)、markEntrySuccess 的
+// 状态 CAS、releaseEntryOnFailure 的回滚、补偿任务的 Resolver 全部改成
+// "一张单对多条明细",而那四处是本模块唯一保证"钱与名单对得上"的地方。
+// 串行 N 次则让每一注与改造前的单注参与**逐字节相同**:一张独立资金单、
+// 一条链环、一个 seq、一份可复算的回执,批量只是把 N 次点击搬到了服务端。
+//
+// 代价是它不是原子的:第 k 注余额不足时前 k-1 注已经成交。这不是缺陷,是彩票
+// 本来的样子(买到哪注算哪注),而响应里的 accepted / total_quota / failed_code
+// 三个数就是把这件事说清楚的全部手段。
 func handleCreateEntry(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagLottery) {
 		return
@@ -663,6 +797,26 @@ func handleCreateEntry(c *gin.Context) {
 	var req entryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondErr(c, errBadRequest("请求参数不合法"))
+		return
+	}
+	// 客户端携带的那一份挡在 64。ChargeEntry 自己认的上界比它大 2(要装下
+	// `#i` 后缀),所以这道校验必须在**派生之前**做一次,否则一个 66 字符的
+	// crid 会以单注身份合法通过、以多注身份把派生键顶到 68。
+	//
+	// `#` 同时被挡掉:它是**服务端派生位**的分隔符(见 batchRequestId),
+	// 客户端也用它就会撞进同一个键空间 —— 用 `X#1` 买一注、再用 `X` 买两注,
+	// 第二批的第 1 注派生出的正是 `X#1`,于是它幂等命中**上一次提交**的那张票,
+	// 回执里混进一张不属于这次提交的票、total_quota 也多报一注。
+	// 挡一个字符比给键空间做转义便宜得多:转义要么撑破 idem_key 的列宽,
+	// 要么改掉单注那一份的取值(那会让旧客户端的重试不再命中原单)。
+	crid := strings.TrimSpace(req.ClientRequestId)
+	if len(crid) > maxClientRequestID || strings.Contains(crid, "#") {
+		respondErr(c, errBadRequestID)
+		return
+	}
+	picks, err := acceptPickList(req)
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
 
@@ -686,7 +840,10 @@ func handleCreateEntry(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	if PayPasswordRequired(amount) {
+	// 多注时判的是**整批的总额**,不是单注。按单注判等于给出一条把余额烧光的
+	// 绕路:阈值 10 万、单注 2 万时,一次十注买走 20 万而一次密码都不问。
+	// amount ≤ MaxQuota(int32)且 len(picks) ≤ maxPicksPerRequest,乘积远在 int64 之内。
+	if PayPasswordRequired(amount * int64(len(picks))) {
 		// Require 不通过时已写好响应并 Abort。它没有任何可以表达豁免的入参 ——
 		// 想加豁免的人必须先改 paypass.Require 的签名,那是一次看得见的动作。
 		if !paypass.Require(c, c.GetInt("id"), req.PayPassword) {
@@ -694,24 +851,62 @@ func handleCreateEntry(c *gin.Context) {
 		}
 	}
 
-	entry, err := ChargeEntry(ctx, in)
-	if err != nil {
-		respondErr(c, err)
+	out := entryReceiptBatch{
+		Entries:   make([]entryReceipt, 0, len(picks)),
+		Requested: len(picks),
+	}
+	var stopped error
+	for i, pick := range picks {
+		// 预算在这里显式看一眼,而不是等 ChargeEntry 里的语句超时:后者会
+		// 冒出一条 500「处理失败,请稍后重试」,而此刻已经有几注成交了 ——
+		// 用户需要知道的是"买成了几注、剩下的没扣钱",不是一句内部错误。
+		if ctx.Err() != nil {
+			stopped = errBatchBudget
+			break
+		}
+		one := in
+		one.Pick = pick
+		one.BatchIndex = i
+		one.ClientRequestId = batchRequestId(in.ClientRequestId, i)
+		entry, err := ChargeEntry(ctx, one)
+		if err != nil {
+			stopped = err
+			break
+		}
+		out.Entries = append(out.Entries, entryReceipt{
+			EntryNo:    entry.EntryNo,
+			Seq:        entry.Seq,
+			ChainHash:  entry.ChainHash,
+			PrevHash:   entry.PrevHash,
+			CommitHash: act.CommitHash,
+			UserRef:    entry.UserRef,
+			Amount:     entry.Amount,
+			OptNo:      entry.OptNo,
+			Pick:       entry.Pick,
+			Status:     entry.Status,
+			CreatedAt:  entry.CreatedAt,
+		})
+		out.TotalQuota += entry.Amount
+	}
+	// 一注都没成交 = 这次提交什么都没发生,原样把那条错误报出去。多注不该
+	// 把"余额不足"降级成一个 200 —— 前端据 code 决定说哪句话,而这条路径上
+	// 单注与多注该说的是同一句。
+	if len(out.Entries) == 0 {
+		respondErr(c, stopped)
 		return
 	}
-	respondOK(c, entryReceipt{
-		EntryNo:    entry.EntryNo,
-		Seq:        entry.Seq,
-		ChainHash:  entry.ChainHash,
-		PrevHash:   entry.PrevHash,
-		CommitHash: act.CommitHash,
-		UserRef:    entry.UserRef,
-		Amount:     entry.Amount,
-		OptNo:      entry.OptNo,
-		Pick:       entry.Pick,
-		Status:     entry.Status,
-		CreatedAt:  entry.CreatedAt,
-	})
+	out.Accepted = len(out.Entries)
+	if stopped != nil {
+		if be, ok := AsBizError(stopped); ok {
+			out.FailedCode, out.FailedMessage = be.ErrCode(), be.Message()
+		} else {
+			// 非业务错误不回显原文(可能带 SQL 片段与表结构),但**必须**留下
+			// 一个码:accepted < requested 却说不出为什么,比说错更难查。
+			common.SysError("qianye/lottery: 多注提交中途失败: " + stopped.Error())
+			out.FailedCode, out.FailedMessage = "qy_internal_error", "处理失败,请稍后重试"
+		}
+	}
+	respondOK(c, out)
 }
 
 type wonView struct {

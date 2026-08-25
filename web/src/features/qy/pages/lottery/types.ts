@@ -439,6 +439,23 @@ export type QyLotActivityDetail = {
   bet_min_quota: number
   bet_max_quota: number
   max_entries_per_user: number
+  /**
+   * 我在这一场**还能买几注**。
+   *
+   * 三个取值必须分开读，合并任意两个都会说错话：
+   *
+   *  - `null` / `undefined` = 本场没有每人上限（老后端也走这一支），想买几注
+   *    买几注，仍受 `max_picks_per_request` 的单次批量约束；
+   *  - `0` = 已经买满，一注都不能再买；
+   *  - `n > 0` = 还能买 n 注。
+   *
+   * **只是提示，绝不是放行依据** —— 真正的判定在后端的活动行锁内。它存在的
+   * 理由是让"你还能买 3 注"出现在按下确认**之前**，而不是提交了十注之后才被
+   * 顶回来。
+   */
+  my_entries_remaining?: number | null
+  /** 一次提交最多几注（后端 `maxPicksPerRequest`）。老后端不下发时按 1 处理。 */
+  max_picks_per_request?: number
   cooldown_seconds: number
   dedup_ip: boolean
   /** 按活动的基准参与费判定是否要验支付密码；竞猜自选更大的金额时由后端按本次金额重算。 */
@@ -559,6 +576,32 @@ export type QyLotEntryReceipt = {
    * 时用户拿手里的串去比对证据链，会得出"平台改了我的号"的错误结论。
    */
   pick?: string
+}
+
+/**
+ * 一次提交的回执批。**单注与多注同一个形状。**
+ *
+ * ## 为什么必须读 `accepted` 而不是假设它等于自己发了几注
+ *
+ * 这条链路上唯一会不一致的两个数就是"我发了几注"与"服务端收下了几注"：余额
+ * 不足、撞上每人上限、时间预算用完都会让后半批停下。停下的那几注**一分钱都
+ * 没扣**（每一注是一张独立资金单），但界面若按 `picks.length` 去报"已购 N 注"，
+ * 用户会以为自己买到了根本不存在的票。
+ *
+ * `total_quota` 同理：它是 `Σ entries[].amount`，不是"单注 × 提交注数" ——
+ * 部分成交时后者是错的，而错的方向是多报。
+ */
+export type QyLotEntryBatch = {
+  entries: QyLotEntryReceipt[]
+  /** 提交的注数。 */
+  requested: number
+  /** 买成的注数。`accepted < requested` 时 `failed_code` 必非空。 */
+  accepted: number
+  /** 本次真正扣掉的总额。 */
+  total_quota: number
+  /** 后面那几注停下的原因；全部买成时为空。 */
+  failed_code?: string
+  failed_message?: string
 }
 
 export type QyLotMyEntry = {

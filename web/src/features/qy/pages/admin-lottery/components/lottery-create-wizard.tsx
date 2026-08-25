@@ -43,7 +43,7 @@ import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyErrorMessage } from '../../../lib/api'
 import { qyArray } from '../../../lib/array'
-import { formatQyQuotaLedger } from '../../../lib/format'
+import { formatQyQuotaBound, formatQyQuotaLedger } from '../../../lib/format'
 import { qyKeys } from '../../../lib/query-keys'
 import {
   isQyLotBallPoolValid,
@@ -57,6 +57,17 @@ import {
   qyAdminLotSeriesQuery,
   updateQyLotActivity,
 } from '../api'
+import {
+  QY_LOT_BET_MAX_MULTIPLE,
+  qyLotEntriesCap,
+  qyLotPoolShareHeadroom,
+  qyLotRecommendedBetMax,
+  qyLotRecommendedMinEntries,
+  qyLotTierAmountFloor,
+  qyLotTierBudgetShort,
+  qyLotTierCountFloor,
+  qyLotWinPpmHeadroom,
+} from '../lib/advice'
 import { qyLotFromLocalInput, qyLotToLocalInput } from '../lib/datetime'
 import {
   qyLotBreakEvenEntries,
@@ -72,8 +83,9 @@ import {
   type QyLotDraft,
   type QyLotPlay,
 } from '../lib/draft'
-import type { QyLotAdminConfig, QyLotSeries } from '../types'
+import type { QyLotAdminConfig, QyLotSeries, QyLotYamlReadonly } from '../types'
 import { QyLotCoverField } from './lottery-cover-field'
+import { QyLotFieldAdvice } from './lottery-field-advice'
 import { QyLotRulesEditor } from './lottery-rules-editor'
 
 const STEPS = ['basic', 'spec', 'rules', 'review'] as const
@@ -280,8 +292,10 @@ export function QyLotActivityWizard(props: {
               draft={draft}
               onChange={patch}
               series={series}
+              yaml={props.config?.yaml_readonly}
               alertQuota={alertQuota}
               capQuota={props.config?.effective.max_total_prize_quota ?? 0}
+              maxFeeBps={props.config?.effective.max_guess_fee_bps ?? 0}
             />
           )}
           {step === 'rules' && (
@@ -372,6 +386,8 @@ function BasicStep(props: {
   const openSeries = props.seriesList.filter((item) => item.status === 'open')
   // 0 = 不限（默认）。判据与 lib/draft.ts 的 qy_lot_v_stake_over_cap 同一条。
   const stakeCap = props.config?.yaml_readonly.max_stake_quota ?? 0
+  // 全站额度换算的整数上界。旧后端不下发它，此时不编一个数出来。
+  const systemMax = props.config?.yaml_readonly.system_max_quota ?? 0
 
   return (
     <div className='space-y-3'>
@@ -536,13 +552,36 @@ function BasicStep(props: {
         <p className='text-muted-foreground text-xs'>
           {t('qy_lot_stake_hint')}
         </p>
-        {/* 站点自选的单笔硬顶（0 = 不限，默认）。就地说，而不是等运营走完四步
-            在复核屏才看到一行红字 —— 那时他已经把时间、条件、奖档全填完了。 */}
-        {stakeCap > 0 && draft.stake_quota > stakeCap && (
-          <p className='text-destructive text-xs'>
-            {t('qy_lot_v_stake_over_cap')}
-          </p>
-        )}
+        {/*
+          两种上限**分两行**说。
+
+          系统上界是全站额度换算的整数上界（代码写死），改任何配置都放不开；策略上限
+          是站点自己在 `lottery.max_stake_quota` 里配的，0 = 不限（默认）。
+          合成一句"不得超过系统上限"之后，运营分不出是自己配错了还是系统不
+          支持，于是会跑去配置页找一个根本不存在的开关。
+
+          就地说，而不是等他走完四步在复核屏才看到一行红字 —— 那时时间、条件、
+          奖档全都已经填完了。
+        */}
+        <QyLotFieldAdvice
+          ranges={[
+            systemMax > 0
+              ? t('qy_lot_range_physical', {
+                  amount: formatQyQuotaBound(systemMax),
+                })
+              : '',
+            stakeCap > 0
+              ? t('qy_lot_range_policy_stake', {
+                  amount: formatQyQuotaBound(stakeCap),
+                })
+              : t('qy_lot_range_policy_stake_unlimited'),
+          ]}
+          problem={
+            stakeCap > 0 && draft.stake_quota > stakeCap
+              ? t('qy_lot_v_stake_over_cap')
+              : undefined
+          }
+        />
       </div>
 
       <div className='grid gap-3 sm:grid-cols-2'>
@@ -681,14 +720,39 @@ function SpecStep(props: {
   draft: QyLotDraft
   onChange: (patch: Partial<QyLotDraft>) => void
   series: QyLotSeries | undefined
+  /** 只读配置段。推荐值要靠它里面的硬上限算，前端不自己抄一份常量。 */
+  yaml: QyLotYamlReadonly | undefined
   /** 二次确认阈值（0 = 不打扰）。见 {@link NetIssueMeter}。 */
   alertQuota: number
   /** 站点自选的单场硬顶（0 = 不限）。 */
   capQuota: number
+  /** 竞猜手续费万分比的上界。 */
+  maxFeeBps: number
 }) {
   const { draft } = props
   const { t } = useTranslation()
   const id = useId()
+
+  // 本场理论上可能出现的最大有效票数。`max_total_entries` 填 0 时后端归一成
+  // 系统硬上限，所以推荐值也必须按硬上限算 —— 按 0 算会给出一个提交必被拒的
+  // 推荐值，而那比不给推荐值更糟。
+  const entriesCap = qyLotEntriesCap(draft, props.yaml?.max_total_entries_hard)
+  // 全站额度换算的整数上界。旧后端不下发它，此时不编一个数出来。
+  const systemMax = props.yaml?.system_max_quota ?? 0
+  // 只有概率制与双色球会摊薄（名次制按名次切片，发满 N 份就停），所以那条
+  // 「数量 × 单份 ≥ 全场参与上限」的判据只在这两支下成立。
+  const budgetApplies = draft.draw_mode === 'prob'
+  const minEntriesAdvice = qyLotRecommendedMinEntries(draft, entriesCap)
+  // 竞猜单注上限的推荐值必须夹在这一格**真正能填**的上界之内：系统上界与站点
+  // 自己配的 max_stake_quota 里更紧的那一个（任一为 0 = 那一道不设限）。不夹的
+  // 话，参与费大于「系统上界 ÷ 20」的场次点一下「自动填」就得到一个后端必拒的
+  // 值，而界面上一条红字都不会有。
+  const stakeCeiling = props.yaml?.max_stake_quota ?? 0
+  const betCeiling =
+    systemMax > 0 && stakeCeiling > 0
+      ? Math.min(systemMax, stakeCeiling)
+      : Math.max(systemMax, stakeCeiling)
+  const betMaxAdvice = qyLotRecommendedBetMax(draft.stake_quota, betCeiling)
 
   if (qyLotPlayOf(draft) === 'ball') {
     return (
@@ -696,6 +760,7 @@ function SpecStep(props: {
         draft={draft}
         onChange={props.onChange}
         series={props.series}
+        entriesCap={entriesCap}
       />
     )
   }
@@ -753,6 +818,63 @@ function SpecStep(props: {
                     })
                   }
                 />
+                {/*
+                  「固定奖级的预算必须不小于全场参与上限」这条被点名的报错，
+                  在这里变成一颗按钮：单份下限 = ⌈全场参与上限 ÷ 份数⌉，
+                  两个量表单上都有，从来就不需要运营去猜。判据与提交校验
+                  同源（`qyLotTierBudgetShort`），所以按下去必然合法。
+                */}
+                <QyLotFieldAdvice
+                  ranges={
+                    systemMax > 0
+                      ? [
+                          t('qy_lot_range_physical', {
+                            amount: formatQyQuotaBound(systemMax),
+                          }),
+                        ]
+                      : []
+                  }
+                  advice={
+                    budgetApplies &&
+                    qyLotTierAmountFloor(entriesCap, tier.count) > 0
+                      ? t('qy_lot_advice_tier_amount', {
+                          amount: formatQyQuotaBound(
+                            qyLotTierAmountFloor(entriesCap, tier.count)
+                          ),
+                          entries: entriesCap,
+                        })
+                      : undefined
+                  }
+                  onApply={
+                    budgetApplies &&
+                    qyLotTierAmountFloor(entriesCap, tier.count) > 0
+                      ? () =>
+                          props.onChange({
+                            tiers: draft.tiers.map((item, i) =>
+                              i === index
+                                ? {
+                                    ...item,
+                                    amount_quota: qyLotTierAmountFloor(
+                                      entriesCap,
+                                      item.count
+                                    ),
+                                  }
+                                : item
+                            ),
+                          })
+                      : undefined
+                  }
+                  problem={
+                    budgetApplies &&
+                    qyLotTierBudgetShort(
+                      entriesCap,
+                      tier.count,
+                      tier.amount_quota
+                    )
+                      ? t('qy_lot_v_prob_budget_short')
+                      : undefined
+                  }
+                />
               </div>
               <div className='space-y-1'>
                 <Label>{t('qy_lot_prize_count')}</Label>
@@ -772,6 +894,50 @@ function SpecStep(props: {
                       ),
                     })
                   }}
+                />
+                {/* 同一条不等式的另一个解：单份已经定死时，份数至少要几份。
+                    两颗按钮都给，运营改哪一格都行。 */}
+                <QyLotFieldAdvice
+                  ranges={
+                    props.yaml != null
+                      ? [
+                          t('qy_lot_range_count', {
+                            max: props.yaml.max_total_entries_hard,
+                          }),
+                        ]
+                      : []
+                  }
+                  advice={
+                    budgetApplies &&
+                    qyLotTierCountFloor(entriesCap, tier.amount_quota) > 0
+                      ? t('qy_lot_advice_tier_count', {
+                          shares: qyLotTierCountFloor(
+                            entriesCap,
+                            tier.amount_quota
+                          ),
+                          entries: entriesCap,
+                        })
+                      : undefined
+                  }
+                  onApply={
+                    budgetApplies &&
+                    qyLotTierCountFloor(entriesCap, tier.amount_quota) > 0
+                      ? () =>
+                          props.onChange({
+                            tiers: draft.tiers.map((item, i) =>
+                              i === index
+                                ? {
+                                    ...item,
+                                    count: qyLotTierCountFloor(
+                                      entriesCap,
+                                      item.amount_quota
+                                    ),
+                                  }
+                                : item
+                            ),
+                          })
+                      : undefined
+                  }
                 />
               </div>
             </div>
@@ -809,6 +975,21 @@ function SpecStep(props: {
                     percent: ((tier.win_ppm ?? 0) / 10000).toFixed(4),
                   })}
                 </p>
+                {/* 这一格能填多大完全由其余各档决定（Σ ≤ 100%），所以"还剩多少"
+                    就是它的推荐上界 —— 不必等 Σ 越过 100% 再被后端拒。 */}
+                <QyLotFieldAdvice
+                  ranges={[
+                    t('qy_lot_range_win_ppm', {
+                      max: qyLotWinPpmHeadroom(draft, tier.tier),
+                    }),
+                  ]}
+                  problem={
+                    (tier.win_ppm ?? 0) <= 0 ||
+                    (tier.win_ppm ?? 0) > qyLotWinPpmHeadroom(draft, tier.tier)
+                      ? t('qy_lot_v_win_ppm_range')
+                      : undefined
+                  }
+                />
               </div>
             )}
           </div>
@@ -924,6 +1105,23 @@ function SpecStep(props: {
           <p className='text-muted-foreground text-xs'>
             {t('qy_lot_min_entries_hint_field')}
           </p>
+          {/* 推荐值 = 保本参与人数 ⌈奖品总额 ÷ 参与费⌉。两个量表单上都有，
+              所以这一格同样不需要猜 —— 而它的默认 0 意味着"亏多少都照开"，
+              那不是一个人选出来的取值，是没人告诉他该填什么。 */}
+          <QyLotFieldAdvice
+            ranges={[t('qy_lot_range_min_entries')]}
+            advice={
+              minEntriesAdvice > 0
+                ? t('qy_lot_advice_min_entries', { count: minEntriesAdvice })
+                : undefined
+            }
+            onApply={
+              minEntriesAdvice > 0
+                ? () =>
+                    props.onChange({ min_entries_to_hold: minEntriesAdvice })
+                : undefined
+            }
+          />
         </div>
       </div>
     )
@@ -1021,6 +1219,18 @@ function SpecStep(props: {
             percent: (draft.fee_bps / 100).toFixed(2),
           })}
         </p>
+        <QyLotFieldAdvice
+          ranges={
+            props.maxFeeBps > 0
+              ? [t('qy_lot_range_fee_bps', { max: props.maxFeeBps })]
+              : []
+          }
+          problem={
+            props.maxFeeBps > 0 && draft.fee_bps > props.maxFeeBps
+              ? t('qy_lot_v_fee_over_cap')
+              : undefined
+          }
+        />
       </div>
 
       {/*
@@ -1043,6 +1253,21 @@ function SpecStep(props: {
           <p className='text-muted-foreground text-xs'>
             {t('qy_lot_bet_min_hint')}
           </p>
+          <QyLotFieldAdvice
+            ranges={[t('qy_lot_range_bet_min')]}
+            advice={
+              draft.stake_quota > 0
+                ? t('qy_lot_advice_bet_min', {
+                    amount: formatQyQuotaBound(draft.stake_quota),
+                  })
+                : undefined
+            }
+            onApply={
+              draft.stake_quota > 0
+                ? () => props.onChange({ bet_min_quota: draft.stake_quota })
+                : undefined
+            }
+          />
         </div>
         <div className='space-y-1'>
           <Label htmlFor={`${id}-bet-max`}>{t('qy_lot_bet_max')}</Label>
@@ -1054,6 +1279,40 @@ function SpecStep(props: {
           <p className='text-muted-foreground text-xs'>
             {t('qy_lot_bet_max_hint')}
           </p>
+          {/*
+            上一轮留下的那条建议在这里落地：**给一个非零推荐值**，而不是只加
+            一句提醒。理由写在 `lib/advice.ts` 的 qyLotRecommendedBetMax 上 ——
+            `0 = 不限` 是后端 wire 语义（改不得），但"没填"与"我确实要不限"
+            在表单上是同一个 0，而两者的代价差一个量级。
+
+            填 0 时那一行是**提示**而不是红字：不限是一个合法取值，把它渲染成
+            错误会让人学会无视红字。
+          */}
+          <QyLotFieldAdvice
+            ranges={[
+              t('qy_lot_range_bet_max'),
+              draft.bet_max_quota === 0 ? t('qy_lot_bet_max_zero_note') : '',
+            ]}
+            advice={
+              betMaxAdvice > 0
+                ? t('qy_lot_advice_bet_max', {
+                    amount: formatQyQuotaBound(betMaxAdvice),
+                    multiple: QY_LOT_BET_MAX_MULTIPLE,
+                  })
+                : undefined
+            }
+            onApply={
+              betMaxAdvice > 0
+                ? () => props.onChange({ bet_max_quota: betMaxAdvice })
+                : undefined
+            }
+            problem={
+              draft.bet_max_quota > 0 &&
+              draft.bet_min_quota > draft.bet_max_quota
+                ? t('qy_lot_v_bet_order')
+                : undefined
+            }
+          />
         </div>
       </div>
 
@@ -1075,6 +1334,9 @@ function SpecStep(props: {
         <p className='text-muted-foreground text-xs'>
           {t('qy_lot_min_entries_guess_hint')}
         </p>
+        {/* 竞猜是彩池再分配，平台数学上不可能倒贴，所以这里没有"保本人数"
+            可推 —— 不编一个推荐值出来，只说清区间与 0 的含义。 */}
+        <QyLotFieldAdvice ranges={[t('qy_lot_range_min_entries')]} />
       </div>
     </div>
   )
@@ -1104,6 +1366,8 @@ function BallSpecStep(props: {
   draft: QyLotDraft
   onChange: (patch: Partial<QyLotDraft>) => void
   series: QyLotSeries | undefined
+  /** 本场理论最大有效票数。固定奖档的单份下限由它与份数解出来。 */
+  entriesCap: number
 }) {
   const { draft, series } = props
   const { t } = useTranslation()
@@ -1276,6 +1540,20 @@ function BallSpecStep(props: {
                     percent: ((tier.pool_share_bps ?? 0) / 100).toFixed(2),
                   })}
                 </p>
+                {/* Σ 占池比例 ≤ 100%，所以"还剩多少"就是这一格的上界。 */}
+                <QyLotFieldAdvice
+                  ranges={[
+                    t('qy_lot_range_pool_share', {
+                      max: qyLotPoolShareHeadroom(draft, tier.tier),
+                    }),
+                  ]}
+                  problem={
+                    (tier.pool_share_bps ?? 0) >
+                    qyLotPoolShareHeadroom(draft, tier.tier)
+                      ? t('qy_lot_v_ball_share_sum')
+                      : undefined
+                  }
+                />
               </div>
             ) : (
               <div className='grid gap-2 sm:grid-cols-2'>
@@ -1287,6 +1565,40 @@ function BallSpecStep(props: {
                       patchTier(index, { amount_quota: quota })
                     }
                   />
+                  {/* 被点名的那条报错在双色球这一支同样变成一颗按钮。判据与
+                      概率制**逐字同源**（后端也共用一个构造器）。 */}
+                  <QyLotFieldAdvice
+                    advice={
+                      qyLotTierAmountFloor(props.entriesCap, tier.count) > 0
+                        ? t('qy_lot_advice_tier_amount', {
+                            amount: formatQyQuotaBound(
+                              qyLotTierAmountFloor(props.entriesCap, tier.count)
+                            ),
+                            entries: props.entriesCap,
+                          })
+                        : undefined
+                    }
+                    onApply={
+                      qyLotTierAmountFloor(props.entriesCap, tier.count) > 0
+                        ? () =>
+                            patchTier(index, {
+                              amount_quota: qyLotTierAmountFloor(
+                                props.entriesCap,
+                                tier.count
+                              ),
+                            })
+                        : undefined
+                    }
+                    problem={
+                      qyLotTierBudgetShort(
+                        props.entriesCap,
+                        tier.count,
+                        tier.amount_quota
+                      )
+                        ? t('qy_lot_v_ball_budget_short')
+                        : undefined
+                    }
+                  />
                 </div>
                 <div className='space-y-1'>
                   <Label>{t('qy_lot_count_is_budget')}</Label>
@@ -1295,6 +1607,32 @@ function BallSpecStep(props: {
                     value={String(tier.count)}
                     onChange={(event) =>
                       patchTier(index, { count: digitsOf(event.target.value) })
+                    }
+                  />
+                  <QyLotFieldAdvice
+                    advice={
+                      qyLotTierCountFloor(props.entriesCap, tier.amount_quota) >
+                      0
+                        ? t('qy_lot_advice_tier_count', {
+                            shares: qyLotTierCountFloor(
+                              props.entriesCap,
+                              tier.amount_quota
+                            ),
+                            entries: props.entriesCap,
+                          })
+                        : undefined
+                    }
+                    onApply={
+                      qyLotTierCountFloor(props.entriesCap, tier.amount_quota) >
+                      0
+                        ? () =>
+                            patchTier(index, {
+                              count: qyLotTierCountFloor(
+                                props.entriesCap,
+                                tier.amount_quota
+                              ),
+                            })
+                        : undefined
                     }
                   />
                 </div>

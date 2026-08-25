@@ -3,6 +3,7 @@ package violation
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
@@ -479,5 +480,88 @@ func runAILegacySampleRateMigration() {
 	if _, err := dropLegacyAISampleRateColumn(ctx, gdb); err != nil {
 		common.SysError("qianye/violation: 删除历史列 " + AISetting{}.TableName() + "." +
 			legacyAISampleRateColumn + " 失败(该列已无任何读写点,保留它不影响任何判定): " + err.Error())
+	}
+}
+
+// ─────────────────── AI 渠道密钥的地址绑定回填 ───────────────────
+
+// migrateAIChannelKeyEndpoint 给已有密钥、但还没有绑定地址的渠道回填 key_endpoint。
+//
+// # 为什么必须回填
+//
+// key_endpoint 的零值(空串)按「无绑定」处理,也就是与这一列存在之前逐字节
+// 一致的行为:密钥照常出站。这是唯一安全的零值方向 —— 把空串当成"失配"会让
+// 升级那一秒全部存量渠道同时失效,而 AI 审核失败的方向是放行,那就是一次
+// **静默的风控关闭**。
+//
+// 代价是:回填之前,那条「改地址 → 试跑取走密钥」的越权路径对存量行仍然是通的。
+// 所以这次回填不是可选的收尾,它就是闸门本身对存量数据生效的那一步。
+//
+// 回填值是**当前的 base_url**,这是唯一有根据的取值:回填这一刻,那把密钥正在
+// 被发往这个地址,库里也没有任何别的地方记着它当初是写给谁的。
+//
+// # 幂等与多节点
+//
+// 判据是「有密钥且 key_endpoint 为空」,回填之后不再命中。重复执行不改变任何
+// 已有取值,因此不需要 lease。渠道表是个位数量级的行,直接读全表在 Go 里筛,
+// 免得为了一句 WHERE 去写 VARBINARY 的跨库比较(SQLite / MySQL / PostgreSQL
+// 对空 BLOB 的比较写法各不相同)。
+func migrateAIChannelKeyEndpoint(ctx context.Context, gdb *gorm.DB) (int64, error) {
+	if gdb == nil {
+		return 0, db.ErrNotReady
+	}
+	var rows []AIChannel
+	if err := gdb.WithContext(ctx).Order("id asc").Find(&rows).Error; err != nil {
+		db.MarkFailure(err)
+		return 0, err
+	}
+	var filled int64
+	for _, row := range rows {
+		if !row.HasKey() || strings.TrimSpace(row.KeyEndpoint) != "" {
+			continue
+		}
+		endpoint := strings.TrimSpace(row.BaseUrl)
+		if endpoint == "" {
+			// 地址为空的渠道本来就调不出去(chatCompletionsURL 返回空串,
+			// 装配期直接跳过)。回填一个空串等于什么都没做,跳过它,
+			// 好让"回填了几行"这个数字说的是真话。
+			continue
+		}
+		res := gdb.WithContext(ctx).Model(&AIChannel{}).
+			Where("id = ? AND key_endpoint = ?", row.Id, "").
+			Update("key_endpoint", endpoint)
+		if res.Error != nil {
+			db.MarkFailure(res.Error)
+			return filled, res.Error
+		}
+		filled += res.RowsAffected
+	}
+	return filled, nil
+}
+
+// runAIChannelKeyEndpointBackfill 是启动期调用点,失败只告警不阻断。
+//
+// 阻断启动没有意义:回填不到的行按「无绑定」处理,也就是这一列存在之前的行为,
+// 没有任何渠道会因此失效。让主程序起不来才是真的事故(与 runRuleModeMigration
+// 同口径)。但它必须喊出来 —— 没回填上就等于那条越权路径对这些行还开着。
+func runAIChannelKeyEndpointBackfill() {
+	gdb := db.Get()
+	if gdb == nil {
+		return
+	}
+	filled, err := migrateAIChannelKeyEndpoint(context.Background(), gdb)
+	if err != nil {
+		common.SysError("qianye/violation: AI 审核渠道密钥的地址绑定回填失败 —— " +
+			"未回填的渠道按「无绑定」处理(与这一列存在之前的行为一致)," +
+			"但「改地址后用已存密钥试跑」这条路对它们仍然是通的,请重启或手工重填一次密钥: " + err.Error())
+		return
+	}
+	if filled > 0 {
+		common.SysError(common.MapToJsonStr(map[string]any{
+			"msg": "qianye/violation: 已把存量 AI 审核渠道的密钥绑定到它们当前的地址;" +
+				"此后改了地址而不重填密钥的渠道会被跳过,而不是把密钥发往新地址",
+			"rows":  filled,
+			"table": AIChannel{}.TableName(),
+		}))
 	}
 }

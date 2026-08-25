@@ -64,6 +64,27 @@ export function QyAmountInput(props: QyAmountInputProps) {
     props.value > 0 ? String(qyQuotaToDisplayAmount(props.value)) : ''
   )
 
+  // 但**外面**改了 value 时必须回灌。
+  //
+  // 这一段原本没有，于是每一颗「自动填」按钮按下去都像没反应：数值确实进了
+  // 草稿（下面那行换算读数会变、红字会消失），唯独输入框还是空的，运营的下一个
+  // 动作是往那个空框里手打一遍。提交成功后 `reset({quota: 0})` 的表单同理 ——
+  // 框里留着上一笔的旧数字，而实际要提交的是 0。
+  //
+  // 判据是「props.value 变了，而且不是本地这次输入造成的」：用户敲到一半的
+  // "1." / "0.0" 解析回去仍然等于 props.value，所以不会被回灌打断；真正由外部
+  // 写入的新值解析不回去，才重置文本。用渲染期比较而不是 useEffect —— 后者会
+  // 先渲染一帧旧文本再闪一下。
+  const [lastValue, setLastValue] = useState(props.value)
+  if (props.value !== lastValue) {
+    setLastValue(props.value)
+    if (parseQyQuota(Number(text)) !== props.value) {
+      setText(
+        props.value > 0 ? String(qyQuotaToDisplayAmount(props.value)) : ''
+      )
+    }
+  }
+
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
     const next = event.target.value
     setText(next)

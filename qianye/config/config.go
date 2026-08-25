@@ -770,8 +770,8 @@ type Lottery struct {
 	// 放开它的理由:参与费是**用户自己付**的钱,配得离谱的后果是没人报名,
 	// 不构成资损。真正会造成资损的是奖品金额,而那一侧现在由
 	// LargePrizeAlertQuota 的二次确认盯着(见 qianye/modules/lottery/caps.go)。
-	// 一次扣款的绝对上界仍然是 int32(common.MaxQuota),那是数据库列宽,
-	// 不受本项影响。
+	// 一次扣款的绝对上界仍然是 int32(common.MaxQuota),那是全站额度换算的
+	// 整数上界(代码写死,不是任何一列的宽度),不受本项影响。
 	MaxStakeQuota int64 `yaml:"max_stake_quota"`
 	// MaxTotalPrizeQuota 是单场奖品总额度 Σ(count × amount) 的硬顶。
 	//

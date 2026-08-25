@@ -78,6 +78,11 @@ func (Mod) InstallHooks() {
 	// 详见 migrateAISampleRateToScope。
 	runAILegacySampleRateMigration()
 
+	// AI 渠道密钥的地址绑定回填。**必须排在下面那次预热之前**:预热会读渠道表
+	// 并按绑定决定跳不跳过某个渠道,回填晚了的话升级后的第一个刷新周期里
+	// 那些存量渠道全都还是"无绑定"。详见 migrateAIChannelKeyEndpoint。
+	runAIChannelKeyEndpointBackfill()
+
 	// 存量的"没绑分组"策略巡检。只读、只打日志,排在迁移之后是为了让上面刚建出来
 	// 的那一条也被数进去 —— 它正是这份清单最典型的一员。
 	//

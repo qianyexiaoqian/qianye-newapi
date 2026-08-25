@@ -1135,6 +1135,25 @@ func auditFinishedChains(ctx context.Context, gdb *gorm.DB) {
 // checkMaterializedInvariants 复核一场活动的物化奖池/计数与哈希链的两个 O(1)
 // 不变量。**只告警不自愈** —— 一个会自己改数的对账任务,在数据真的被篡改时
 // 会顺手把证据也抹平。
+//
+// # 为什么最后要把计数器再读一遍
+//
+// act 这一行是**上游批量读**进内存的(runReconcile 与 auditFinishedChains 都是
+// 先一条 Find 取回整批,再逐场对账),而下面几条聚合是各自独立的语句、各拿各的
+// 读视图。活动还在收报名时,这中间落定的每一条参与都会让三条不变量同时"漂移",
+// 漂移量恰好等于这期间新落的条目数 —— 那不是篡改,是读偏斜。演示库里就抓到过
+// 一次:同一秒落了 9 条参与,于是 pool_mismatch / count_drift / chain_drift 三条
+// 一起亮,而活动跑完之后同一行完全自洽。
+//
+// 三条 code 是本模块**唯一**的事后篡改出口(qy_lot_flag 没有别的写入方),而且
+// 落表之后不会自愈、只能人工关闭,还会一直卡住这场活动的删除。假阳会把真阳淹掉,
+// 这正是本函数注释开头那句"不能把证据抹平"要防的事。
+//
+// 判据很便宜:这三个计数器只会被 reserveEntry(entry_seq / chain_head)与
+// markEntrySuccess(active_count / pool_quota)推大,而这两处都与条目写入同事务。
+// 所以"读完聚合再读一次计数器,四个值一个不差"就等价于"这段窗口里没有任何
+// 条目落定",聚合与快照因此可比。不一致就整场跳过这一轮 —— 篡改是持久的,
+// 下一轮(或活动收尾之后的任何一轮)照样查得出来;读偏斜不是。
 func checkMaterializedInvariants(ctx context.Context, gdb *gorm.DB, act *Activity) {
 	var agg struct {
 		Cnt   int64
@@ -1146,14 +1165,6 @@ func checkMaterializedInvariants(ctx context.Context, gdb *gorm.DB, act *Activit
 		Scan(&agg).Error; err != nil {
 		db.MarkFailure(err)
 		return
-	}
-	if agg.Total != act.PoolQuota {
-		raiseFlag(ctx, act.Id, FlagPoolMismatch, fmt.Sprintf(
-			"重算奖池 %d 与物化 %d 不一致", agg.Total, act.PoolQuota))
-	}
-	if agg.Cnt != int64(act.ActiveCount) {
-		raiseFlag(ctx, act.Id, FlagCountDrift, fmt.Sprintf(
-			"重算有效条目 %d 与物化 %d 不一致", agg.Cnt, act.ActiveCount))
 	}
 
 	// 哈希链的完整性。roster_hash 只覆盖 success 条目,失败/被排除的条目**不在
@@ -1172,11 +1183,9 @@ func checkMaterializedInvariants(ctx context.Context, gdb *gorm.DB, act *Activit
 		db.MarkFailure(err)
 		return
 	}
-	if chainAgg.Cnt != int64(act.EntrySeq) || chainAgg.MaxSeq != act.EntrySeq {
-		raiseFlag(ctx, act.Id, FlagChainDrift, fmt.Sprintf(
-			"条目数 %d / 最大序号 %d 与已分配序号 %d 对不上",
-			chainAgg.Cnt, chainAgg.MaxSeq, act.EntrySeq))
-	} else if act.EntrySeq > 0 {
+	chainCountsAgree := chainAgg.Cnt == int64(act.EntrySeq) && chainAgg.MaxSeq == act.EntrySeq
+	tailHash := ""
+	if chainCountsAgree && act.EntrySeq > 0 {
 		var tail Entry
 		err := gdb.WithContext(ctx).Select("chain_hash").
 			Where("act_id = ? AND seq = ?", act.Id, act.EntrySeq).Take(&tail).Error
@@ -1184,10 +1193,36 @@ func checkMaterializedInvariants(ctx context.Context, gdb *gorm.DB, act *Activit
 			db.MarkFailure(err)
 			return
 		}
-		if tail.ChainHash != act.ChainHead {
-			raiseFlag(ctx, act.Id, FlagChainDrift, fmt.Sprintf(
-				"链尾 %s 与最后一条的 chain_hash %s 对不上", act.ChainHead, tail.ChainHash))
-		}
+		tailHash = tail.ChainHash
+	}
+
+	var now Activity
+	if err := gdb.WithContext(ctx).Model(&Activity{}).
+		Select("entry_seq, chain_head, pool_quota, active_count").
+		Where("id = ?", act.Id).Take(&now).Error; err != nil {
+		db.MarkFailure(err)
+		return
+	}
+	if now.EntrySeq != act.EntrySeq || now.ActiveCount != act.ActiveCount ||
+		now.PoolQuota != act.PoolQuota || now.ChainHead != act.ChainHead {
+		return
+	}
+
+	if agg.Total != act.PoolQuota {
+		raiseFlag(ctx, act.Id, FlagPoolMismatch, fmt.Sprintf(
+			"重算奖池 %d 与物化 %d 不一致", agg.Total, act.PoolQuota))
+	}
+	if agg.Cnt != int64(act.ActiveCount) {
+		raiseFlag(ctx, act.Id, FlagCountDrift, fmt.Sprintf(
+			"重算有效条目 %d 与物化 %d 不一致", agg.Cnt, act.ActiveCount))
+	}
+	if !chainCountsAgree {
+		raiseFlag(ctx, act.Id, FlagChainDrift, fmt.Sprintf(
+			"条目数 %d / 最大序号 %d 与已分配序号 %d 对不上",
+			chainAgg.Cnt, chainAgg.MaxSeq, act.EntrySeq))
+	} else if act.EntrySeq > 0 && tailHash != act.ChainHead {
+		raiseFlag(ctx, act.Id, FlagChainDrift, fmt.Sprintf(
+			"链尾 %s 与最后一条的 chain_hash %s 对不上", act.ChainHead, tailHash))
 	}
 }
 

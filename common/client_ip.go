@@ -94,11 +94,10 @@ const (
 	ClientIPStrategyExplicit = "explicit"
 	// ClientIPStrategyNone 显式配了 TRUSTED_PROXIES=none。
 	ClientIPStrategyNone = "none"
-	// ClientIPStrategyLoopbackBind 未配置,但进程只监听回环地址 ——
-	// 外部流量在 TCP 层就不可能直连进来,回环对端必然是同机的反代。
-	ClientIPStrategyLoopbackBind = "loopback_bind"
-	// ClientIPStrategyFailClosed 未配置且监听在非回环地址上:谁都不信。
-	ClientIPStrategyFailClosed = "fail_closed"
+	// ClientIPStrategyDefaultPrivate 未配置 TRUSTED_PROXIES,用上游的默认
+	// 网段(回环 + RFC1918 + fc00::/7),并按上游的口径打一条 WARNING。
+	// 这一档等价于显式写 `TRUSTED_PROXIES=private`,只是没人写过。
+	ClientIPStrategyDefaultPrivate = "default_private"
 )
 
 // ClientIPIgnoredHeader 是一条**被忽略**的转发头,只用于诊断。
@@ -250,7 +249,9 @@ var defaultClientIPHeaders = []string{"X-Forwarded-For", "X-Real-IP"}
 // 比 XFF 链更不容易出错,所以排在前面。
 var cloudflareClientIPHeaders = []string{"CF-Connecting-IP", "X-Forwarded-For"}
 
-// privateTrustedProxyPrefixes 是 `private` 这一档。与改默认之前的旧默认逐字相同。
+// privateTrustedProxyPrefixes 是 `private` 这一档,同时是**未配置时的默认**
+// (ClientIPStrategyDefaultPrivate)。与上游 defaultTrustedProxyCIDRs 逐条相同,
+// 只把 `::1` 写成等价的 `::1/128`(netip.Prefix 需要位数,Contains 语义一致)。
 //
 // 刻意**不含** 100.64.0.0/10(CGNAT)与 169.254.0.0/16 / fe80::/10(链路本地):
 // 前者被部分云厂商的 CNI 与部分 ISP 同时使用,后者是链路作用域。把它们放进
@@ -626,9 +627,10 @@ func ClientIPForAccessLog(param gin.LogFormatterParams) string {
 
 // ClientIPForwardObservation 是一个**不受信**却带着转发头的直连对端。
 //
-// 它是 fail-closed 默认的配套物:谁都不信是安全的一侧,但它的代价是
-// 「装在反代后面又没配」的站点会静默地把所有人算成反代自己。这张表把那件事
-// 变成可见的、带着**可直接粘贴的 CIDR** 的诊断结论,而不是让运维去猜。
+// 它是诊断,不是判据:结论一个字都不会因为这张表而改变。
+// 「反代在公网地址上(CDN 回源、独立 LB 主机)、而 TRUSTED_PROXIES 没配」的站点
+// 会静默地把所有人算成反代自己 —— 默认的私网网段覆盖不到那种对端。这张表把
+// 那件事变成可见的、带着**可直接粘贴的 CIDR** 的诊断结论,而不是让运维去猜。
 type ClientIPForwardObservation struct {
 	Peer      string   `json:"peer"`
 	Headers   []string `json:"headers"`
@@ -688,7 +690,7 @@ func RecordClientIPObservation(res ClientIPResolution) {
 // suggestTrustedProxyCIDR 把一个观测到的对端变成可以直接粘贴的 TRUSTED_PROXIES 值。
 //
 // 给的是 /32(或 /128)单机地址,不是它所在的网段:建议一个网段等于替运维
-// 决定「这一整段里的东西都可信」,而那正是旧默认犯的错。地址不固定的部署
+// 决定「这一整段里的东西都可信」,而那是运维自己才做得了的判断。地址不固定的部署
 // 自己往上放宽,那是一次显式的决定。
 func suggestTrustedProxyCIDR(peer string) string {
 	addr, err := netip.ParseAddr(peer)
@@ -736,20 +738,22 @@ func ResetClientIPObservations() {
 // 优先级:
 //
 //  1. 显式的 TRUSTED_PROXIES —— 永远最高优先级,不做任何"聪明"的补充。
-//  2. 未配置 + 只监听回环(BIND_ADDRESS=127.0.0.1 / ::1)—— 自动信任回环。
-//     这一档的判据是**监听地址**,不是对端地址:进程只绑在回环上时,外部流量
-//     在 TCP 层就到不了这个端口,能连上来的必然是同机进程,也就必然是本机反代。
-//     这是唯一一个不需要运维知情也成立的自动档。
-//  3. 其余一律 fail-closed(谁都不信),并输出带着具体改法的启动告警。
+//  2. 未配置 —— 用**上游那份默认**:回环 + RFC1918 + fc00::/7,并打一条
+//     WARNING。见下。
 //
-// 刻意**不**做的自动档:「对端是私网地址就采信一跳」。它听起来像是在识别反代,
-// 实际识别的是"对端在私网",而 Docker 桥接、K8s Pod 网段、同 VPC 主机、
-// docker-proxy 全都满足这个条件 —— 任何能从这些网段打到端口的东西都能伪造
-// 客户端 IP,而那正是上一轮实测出来的洞(allow_ips 令牌加一个头从 403 变 200;
-// 轮换 XFF 打 915 次 0 条 429)。它与「默认信任私网」是同一条默认换了个说法。
+// # 未配置时的默认与上游逐条一致
 //
-// 那一档的兼容问题改用**自动诊断**而不是自动信任来解决:见
-// RecordClientIPObservation —— 观测台会告诉运维该把哪个 CIDR 填进去。
+// 上游 new-api 的 middleware/trusted_proxies.go 在未配置时装的是
+// {127.0.0.0/8, ::1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, fc00::/7}
+// 并打一条 WARNING;TRUSTED_PROXIES=none 才谁都不信。**上游没有任何强制**:
+// 不拒绝启动,也不因为"看起来装在反代后面"而报错。
+//
+// 这一档曾经被本仓改成 fail-closed(谁都不信),理由是「私网对端能自带
+// X-Forwarded-For 伪造客户端 IP」。那条观察本身没错,但它是**上游的默认取舍**,
+// 不是本仓可以替部署者改掉的东西:改掉它的代价是每一个装在反代后面、从没配过
+// 这个变量的部署在升级那一秒全站客户端 IP 变成反代地址。
+// 现在回到上游默认,风险改由**一条 WARNING + 一个诊断页**表达 —— 也就是上游
+// 自己选的那条路,加上一份能照着抄的诊断。
 func BuildClientIPPolicy() (*ClientIPPolicy, error) {
 	raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES"))
 	headers, err := parseClientIPHeaders(os.Getenv("CLIENT_IP_HEADERS"))
@@ -758,29 +762,22 @@ func BuildClientIPPolicy() (*ClientIPPolicy, error) {
 	}
 
 	if raw == "" {
-		if bindAddressIsLoopbackOnly(os.Getenv("BIND_ADDRESS")) {
-			source, err := newTrustSource("loopback", loopbackTrustedProxyPrefixes, headers)
-			if err != nil {
-				return nil, err
-			}
-			return &ClientIPPolicy{
-				Strategy: ClientIPStrategyLoopbackBind,
-				Sources:  []ClientIPTrustSource{source},
-				Raw:      raw,
-				Notice: "TRUSTED_PROXIES is unset and BIND_ADDRESS is a loopback address, " +
-					"so nothing outside this host can open a connection: loopback peers are " +
-					"trusted as reverse proxies and their X-Forwarded-For is honoured.",
-			}, nil
+		source, err := newTrustSource("private", privateTrustedProxyPrefixes, headers)
+		if err != nil {
+			return nil, err
 		}
 		return &ClientIPPolicy{
-			Strategy: ClientIPStrategyFailClosed,
+			Strategy: ClientIPStrategyDefaultPrivate,
+			Sources:  []ClientIPTrustSource{source},
 			Raw:      raw,
-			Notice:   "client IP is the direct TCP peer address; every forwarding header is ignored",
-			Warning: "TRUSTED_PROXIES is unset and this process listens on a non-loopback address, " +
-				"so no proxy is trusted. If this app sits behind a reverse proxy, CDN or load balancer, " +
-				"token IP allowlists and per-IP rate limits will see the proxy address for every client. " +
-				"Set TRUSTED_PROXIES to the proxy IP/CIDR (see GET /api/qy/admin/client-ip for the exact " +
-				"value observed on live traffic), or TRUSTED_PROXIES=none to confirm there is no proxy.",
+			Notice: "TRUSTED_PROXIES is unset: loopback, RFC 1918 and IPv6 ULA peers are trusted " +
+				"as reverse proxies for compatibility, and their forwarding headers are honoured.",
+			Warning: "TRUSTED_PROXIES is unset or blank; trusting loopback, RFC 1918, and IPv6 ULA " +
+				"proxy addresses for compatibility. Anything that can reach this port from those " +
+				"ranges can therefore pick its own client IP through X-Forwarded-For, which is what " +
+				"token IP allowlists and per-IP rate limits are compared against. " +
+				"Set TRUSTED_PROXIES to the proxy IP/CIDR (see GET /api/qy/admin/client-ip for the " +
+				"exact value observed on live traffic), or TRUSTED_PROXIES=none to trust no proxies.",
 		}, nil
 	}
 
@@ -953,23 +950,4 @@ func isHTTPHeaderToken(name string) bool {
 		}
 	}
 	return true
-}
-
-// bindAddressIsLoopbackOnly 判断 BIND_ADDRESS 是否只监听回环。
-//
-// 空值表示监听全部接口(main.go 的 `net.JoinHostPort("", port)`),那不是回环独占。
-func bindAddressIsLoopbackOnly(raw string) bool {
-	host := strings.TrimSpace(raw)
-	if host == "" {
-		return false
-	}
-	host = strings.Trim(host, "[]")
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return false
-	}
-	return addr.Unmap().IsLoopback()
 }

@@ -37,6 +37,7 @@ import { QyPageBoundary } from '../../../components/qy-page-boundary'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { qyErrorMessage } from '../../../lib/api'
 import { qyArray } from '../../../lib/array'
+import { formatQyQuotaBound } from '../../../lib/format'
 import { qyKeys } from '../../../lib/query-keys'
 import {
   QY_LOT_BALL_MAX,
@@ -48,9 +49,11 @@ import {
   closeQyLotSeries,
   createQyLotSeries,
   fundQyLotSeries,
+  qyAdminLotConfigQuery,
   qyAdminLotSeriesQuery,
 } from '../api'
 import type { QyLotSeries, QyLotSeriesInput } from '../types'
+import { QyLotFieldAdvice } from './lottery-field-advice'
 
 const PAGE_SIZE = 50
 
@@ -234,6 +237,15 @@ function SeriesCreateDialog(props: {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<QyLotSeriesInput>(EMPTY_SERIES)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  // 两种上限的数都从这里来：系统上界（全站额度换算的整数上界）与策略上限
+  // （站点自己配的 max_total_prize_quota）。前端不自己抄一份常量 ——
+  // 抄一份的表现是后端某天改了口径而界面还在教人填旧的那个数。
+  const configQuery = useQuery({
+    ...qyAdminLotConfigQuery(),
+    enabled: props.open,
+  })
+  const systemMax = configQuery.data?.yaml_readonly.system_max_quota ?? 0
+  const policyCap = configQuery.data?.effective.max_total_prize_quota ?? 0
 
   const pool = {
     redPool: form.red_pool,
@@ -277,6 +289,14 @@ function SeriesCreateDialog(props: {
   if (form.title.trim() === '') errors.push('qy_lot_v_ball_series_title')
   if (!poolValid) errors.push('qy_lot_v_ball_pool_invalid')
   if (form.issue_cap_quota <= 0) errors.push('qy_lot_v_ball_cap_required')
+  // 两道上限都要在**提交之前**拦住，而且分开报。少了这两条，字段旁边的提示
+  // 说"超了"而按钮照样能点，运营点下去吃一个 400 —— 那正是这一轮要消灭的
+  // "界面说 OK、后端拒绝"。
+  else if (systemMax > 0 && form.issue_cap_quota > systemMax) {
+    errors.push('qy_lot_v_ball_cap_over_physical')
+  } else if (policyCap > 0 && form.issue_cap_quota > policyCap) {
+    errors.push('qy_lot_v_ball_cap_over_policy')
+  }
   if (form.seed_quota < 0 || form.seed_quota > form.issue_cap_quota) {
     errors.push('qy_lot_v_ball_seed_over_cap')
   }
@@ -388,6 +408,36 @@ function SeriesCreateDialog(props: {
             <p className='text-muted-foreground text-xs'>
               {t('qy_lot_ball_issue_cap_hint')}
             </p>
+            {/*
+              项目方原话：「发行上限不得超过系统上限 ＄4294.967294 额度 —— 越过
+              它的系列在注满之后会永久开不出新一期，而没有任何接口能把池子降
+              回来。**这是什么问题？**」
+
+              那个数是**全站额度换算的整数上界**（common.MaxQuota，代码写死），不是
+              任何人配出来的运营策略 —— 所以它与站点自己配的 max_total_prize_quota
+              分两行说，而且在填的时候就说，不等提交被拒之后才解释一遍。
+            */}
+            <QyLotFieldAdvice
+              ranges={[
+                systemMax > 0
+                  ? t('qy_lot_range_physical', {
+                      amount: formatQyQuotaBound(systemMax),
+                    })
+                  : '',
+                policyCap > 0
+                  ? t('qy_lot_range_policy_issue_cap', {
+                      amount: formatQyQuotaBound(policyCap),
+                    })
+                  : t('qy_lot_range_policy_issue_cap_unlimited'),
+              ]}
+              problem={
+                systemMax > 0 && form.issue_cap_quota > systemMax
+                  ? t('qy_lot_v_ball_cap_over_physical')
+                  : policyCap > 0 && form.issue_cap_quota > policyCap
+                    ? t('qy_lot_v_ball_cap_over_policy')
+                    : undefined
+              }
+            />
           </div>
 
           <div className='space-y-1'>

@@ -25,7 +25,7 @@ import type {
   QyLotActivityBrief,
   QyLotActivityDetail,
   QyLotEligibility,
-  QyLotEntryReceipt,
+  QyLotEntryBatch,
   QyLotMyEntry,
   QyLotMyPrize,
   QyLotProof,
@@ -130,21 +130,39 @@ export type QyLotEntryInput = {
    * 服务端不区分——号码一旦进链两者的可验证性一模一样。
    */
   pick?: string
+  /**
+   * 一次买多注的选号列表（双色球）。每一项与 `pick` 同格式。
+   *
+   * N 注 = N × 单注参与费，每一注各自进哈希链、各自与开奖号比对、各自定档 ——
+   * 与用户连点 N 次完全同构，区别只在于这 N 次在服务端串行跑完、总额在按下
+   * 确认之前就已经写在屏幕上。上限由详情页的 `max_picks_per_request` 下发。
+   *
+   * **与 `pick` 互斥**：两者同时非空时后端 400（`qy_lot_pick_conflict`），
+   * 不做静默择一 —— 择一意味着有一半的请求买到的不是它写的那组号。
+   *
+   * 允许重号：同一次提交里两注号码完全相同是两张独立的票，中奖时各拿一份。
+   */
+  picks?: string[]
   pay_password?: string
 }
 
 /**
  * 报名 / 投注。
  *
- * 返回的是**报名回执**：`entry_no` + `chain_hash` + `seq`。用户手里的这份副本
- * 是平台自己签发的，事后动名单必须同时改掉 N 个用户已经看到过的值 ——
- * 所以前端必须把它落到"我的参与记录"里长期可见，而不是弹一个 toast 就没了。
+ * 返回的是**回执批**：单注与多注同一个形状。这条链路上唯一会不一致的两个数
+ * 就是"我发了几注"与"服务端收下了几注"（余额不足、撞上每人上限、时间预算用完
+ * 都会让后半批停下），一个恒定的形状让 `accepted` / `total_quota` 必须被读出来，
+ * 而不是被假设。
+ *
+ * 每一份回执 `entry_no` + `chain_hash` + `seq` 都是平台自己签发的副本，事后动
+ * 名单必须同时改掉 N 个用户已经看到过的值 —— 所以前端必须把它落到"我的参与
+ * 记录"里长期可见，而不是弹一个 toast 就没了。
  */
 export function submitQyLotEntry(
   actNo: string,
   body: QyLotEntryInput
-): Promise<QyLotEntryReceipt> {
-  return qyPost<QyLotEntryReceipt>(
+): Promise<QyLotEntryBatch> {
+  return qyPost<QyLotEntryBatch>(
     `/lottery/activities/${encodeURIComponent(actNo)}/entries`,
     body
   )

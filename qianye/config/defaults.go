@@ -295,11 +295,16 @@ func applyDefaults(c *Config) {
 
 	lt := &c.Lottery
 	intDefault(&lt.MaxActiveActivities, 20)
-	// max_stake_quota / max_total_prize_quota 的缺省是 **0 = 不限制**,
-	// 所以这里不给它们补默认值 —— 补一个正数等于让"没写"变成一道站点没要求过的
-	// 硬顶,而那正是运营开一场活动被顶回来、却在配置文件里找不到自己写过什么的
-	// 由来。真正还在盯着"多写一个零"的是下面这条二次确认阈值。
-	int64Default(&lt.LargePrizeAlertQuota, 5_000_000)
+	// max_stake_quota / max_total_prize_quota / large_prize_alert_quota
+	// 三项的缺省都是 **0 = 不限制 / 不打扰**,所以这里一项都不补默认值。
+	//
+	// 前两项补一个正数等于让"没写"变成一道站点没要求过的硬顶,而那正是运营开
+	// 一场活动被顶回来、却在配置文件里找不到自己写过什么的由来。
+	//
+	// 第三项(二次确认阈值)此前补 5_000_000($10),于是任何一场稍大的活动都要
+	// 多勾一次确认框 —— 项目方原话「不要给那么多提示了」。机制原样留着:
+	// 配一个正数就恢复成"够到它就要回显金额",判据仍在 caps.go 的
+	// requireNetIssueConfirm,一个字节没动。默认改成不打扰,而不是把闸门拆掉。
 	int64Default(&lt.PayPasswordThresholdQuota, 100_000)
 	intDefault(&lt.EntryCloseGraceSeconds, 60)
 	intDefault(&lt.RevealDelaySeconds, 60)

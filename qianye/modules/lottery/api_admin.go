@@ -1459,10 +1459,14 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 	}
 	// 免费场在 v1 明确不做:twophase 的入口强制 0 < amount ≤ MaxQuota。
 	// 这两条都是正确性约束,不是额度闸门 —— 前者是"另开一条不动钱的路径"这件事
-	// 没做,后者是 quota 列的 int32 列宽。
-	if in.StakeQuota <= 0 || in.StakeQuota > int64(common.MaxQuota) {
-		return nil, nil, nil, errBadRequest(fmt.Sprintf(
-			"参与费必须大于 0 且不超过系统上限 %s", quotaText(int64(common.MaxQuota))))
+	// 没做,后者是全站额度换算的整数上界(common.MaxQuota)。
+	// 上下界分开报:一句合成的"必须大于 0 且不超过系统上限"回给填了天文数字的人
+	// 是一句字面上就是假的话,而事后复盘也分不出"填了 0"与"填了 100 亿"。
+	if in.StakeQuota <= 0 {
+		return nil, nil, nil, errBadRequest("参与费必须大于 0 —— v1 没有免费场")
+	}
+	if in.StakeQuota > int64(common.MaxQuota) {
+		return nil, nil, nil, errBadRequest(quotaColumnCeilingText("参与费"))
 	}
 	// max_stake_quota 是**站点自选**的一道硬顶,0 = 不限(默认)。
 	// 参与费是用户自己付的钱,配得离谱的后果是没人报名,不构成资损,
@@ -1681,10 +1685,15 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activ
 		floatingBallTier := act.DrawMode == DrawModeBall && p.PoolShareBps > 0
 		if prizeType == PrizeTypeQuota && !floatingBallTier {
 			// 两条都是正确性约束:额度奖发 0 或负数没有意义,而 MaxQuota 是
-			// quota 列的 int32 列宽 —— 越过它的单档在派奖那一刻会溢出。
-			if p.AmountQuota <= 0 || p.AmountQuota > int64(common.MaxQuota) {
+			// 全站额度换算的整数上界 —— 越过它的单档在派奖那一刻会溢出。
+			if p.AmountQuota <= 0 {
 				return nil, nil, errBadRequest(fmt.Sprintf(
-					"奖品额度必须大于 0 且不超过系统上限 %s", quotaText(int64(common.MaxQuota))))
+					"奖级 %d 的单份额度必须大于 0 —— 额度奖发 0 没有意义,"+
+						"要发实物/兑换码请把奖品类型改成 text", p.Tier))
+			}
+			if p.AmountQuota > int64(common.MaxQuota) {
+				return nil, nil, errBadRequest(quotaColumnCeilingText(
+					fmt.Sprintf("奖级 %d 的单份额度", p.Tier)))
 			}
 			// 算术护栏:先判单档再累加。两个各自合法的档相乘也可能把 int64 顶穿,
 			// 而一个绕回负数的总额会让下面每一道判定连同二次确认一起静默通过。
@@ -1809,18 +1818,11 @@ func normalizeWinPpm(drawMode string, p prizeInput, prizeType string, entriesCap
 	// count 已被 MaxTotalEntriesHard 夹住、amount 已被 MaxQuota(int32)夹住,
 	// 乘积最多在 1e14 量级,int64 上不会溢出。
 	if prizeType == PrizeTypeQuota && p.AmountQuota*int64(p.Count) < int64(entriesCap) {
-		// 金额按站内余额刻度写:这句话要运营去调的就是"额度"那一格,
-		// 而他在界面上填的是 $,报错里给一个裸额度等于让他自己换算一遍。
-		// 左边是钱、右边是**票数**,两个刻度必须在句子里分清楚:
-		//   · 单份金额按站内余额刻度写(运营在界面上填的就是 $);
-		//   · entriesCap 是 rules.max_total_entries,单位是"张票",给它缀一个
-		//     "额度"会让人照着这句话往错的方向调参。
-		// 另注:quotaText 的返回值自己就以" 额度"结尾(logger.LogQuota),
-		// 所以格式串里不能再写一次"额度 %s",否则输出是"额度 ＄0.000010 额度"。
-		return 0, errBadRequest(fmt.Sprintf(
-			"概率制下本档预算(数量 %d × 单份 %s)必须不小于全场参与上限 %d 张票,"+
-				"否则超募时会有中奖者被摊薄到 0 额度而拿不到钱",
-			p.Count, quotaText(p.AmountQuota), entriesCap))
+		// 与双色球那一支共用同一条 tierBudgetShort:两处各写一份格式串的表现是
+		// 同一条规则在两种玩法上说两句不一样的话,而运营会以为是两条不同的规则。
+		// 那条报错的新形态**先给出该填多少**(单份下限与份数下限都是由其余两个
+		// 量算出来的),再解释判据 —— 项目方点名烦的正是"整句都在解释后果"。
+		return 0, tierBudgetShort(p.Tier, p.Count, p.AmountQuota, entriesCap)
 	}
 	return p.WinPpm, nil
 }
@@ -1905,8 +1907,7 @@ func applyBetBounds(act *Activity, in *activityInput, cfg config.Lottery) error 
 	// 而那句话不会告诉用户真正的上界是多少。max_stake_quota 放开(0 = 不限)
 	// 之后,原先顺带兜住这件事的那道闸门没有了,必须自己说清。
 	if maxQ > int64(common.MaxQuota) {
-		return errBadRequest(fmt.Sprintf(
-			"单注上限不得超过系统上限 %s", quotaText(int64(common.MaxQuota))))
+		return errBadRequest(quotaColumnCeilingText("单注上限"))
 	}
 	// 站点自选的硬顶,0 = 不限(默认)。
 	if maxQ > 0 && cfg.MaxStakeQuota > 0 && maxQ > cfg.MaxStakeQuota {

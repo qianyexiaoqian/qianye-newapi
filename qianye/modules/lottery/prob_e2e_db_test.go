@@ -101,7 +101,7 @@ func TestProbDrawIsReproducibleFromTheProofEndpoint(t *testing.T) {
 		}
 		cur := loadAct(t, gdb, act.Id)
 		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return reserveEntry(tx, cur, Rules{}, e)
+			return reserveEntry(tx, cur, Rules{}, e, 0)
 		}))
 		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
 			return markEntrySuccess(tx, e.EntryNo, nil)
@@ -333,7 +333,7 @@ func TestProbLosersAreIndependentlyReproducible(t *testing.T) {
 		}
 		cur := loadAct(t, gdb, act.Id)
 		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return reserveEntry(tx, cur, Rules{}, e)
+			return reserveEntry(tx, cur, Rules{}, e, 0)
 		}))
 		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
 			return markEntrySuccess(tx, e.EntryNo, nil)

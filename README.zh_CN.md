@@ -317,10 +317,10 @@ docker run --name new-api -d --restart always \
 | `SESSION_SECRET` | 鉴权签名密钥；所有节点必须保持一致                                           | - |
 | `SESSION_COOKIE_SECURE` | `false`/未配置时关闭 refresh/logout OriginGuard 以兼容本地 HTTP 开发代理；`true` 时启用 Secure Cookie 和严格 Origin 校验 | `false` |
 | `SESSION_COOKIE_TRUSTED_URL` | Secure 模式必填：允许调用 refresh/logout 的精确 HTTPS Origin，多个用英文逗号分隔；不是 relay CORS 白名单 | - |
-| `TRUSTED_PROXIES` | 只有直连对端本身是受信代理时才采信它带来的转发头，`X-Forwarded-For` 从右往左剥离。可填 IP/CIDR，也可用关键字 `none`、`loopback`、`private`、`cloudflare`（只有这一档采信 `CF-Connecting-IP`）。未配置时：`BIND_ADDRESS` 为回环地址则自动信任回环对端，否则谁都不信并输出启动告警 | - |
+| `TRUSTED_PROXIES` | 只有直连对端本身是受信代理时才采信它带来的转发头，`X-Forwarded-For` 从右往左剥离。可填 IP/CIDR，也可用关键字 `none`、`loopback`、`private`、`cloudflare`（只有这一档采信 `CF-Connecting-IP`）。未配置时用上游那份默认：`127.0.0.0/8`、`::1`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`fc00::/7`，并输出一条启动告警 | - |
 | `CLIENT_IP_HEADERS` | 受信对端可以用哪些请求头声明客户端 IP，按序尝试；显式配置完全替代默认值。厂商专有头刻意不进默认值——普通反代会原样透传客户端带来的任意请求头 | `X-Forwarded-For, X-Real-IP` |
 | `TRUSTED_PROXIES_CLOUDFLARE_FILE` | Cloudflare 网段清单文件路径（内容为 `curl https://www.cloudflare.com/ips-v4` 的原样输出），替代内置快照。清单里出现私网、回环或过宽前缀会让服务起不来 | - |
-| `BIND_ADDRESS` | 监听地址，留空即监听全部接口。设成回环地址时，未配置 `TRUSTED_PROXIES` 也会自动信任回环对端 | - |
+| `BIND_ADDRESS` | 监听地址，留空即监听全部接口 | - |
 | `USER_SESSION_ACTIVE_LIMIT` | 单用户最大活跃登录 Session 数 | `50` |
 | `USER_SESSION_ISSUANCE_LIMIT` | 单用户在签发窗口内可创建的 Session 总数，包含已撤销 Session | `100` |
 | `USER_SESSION_ISSUANCE_WINDOW_SECONDS` | Session 签发计数窗口（秒）；高于 revoked 保留期时自动钳制 | `86400` |

@@ -120,8 +120,8 @@ func TestLotteryQuotaCeilingsDefaultToUnlimited(t *testing.T) {
 		"参与费上限默认不限 —— 参与费是用户自己付的钱,配得离谱只会没人报名")
 	assert.EqualValues(t, 0, c.Lottery.MaxTotalPrizeQuota,
 		"奖品硬顶默认不限 —— 拦手滑的是二次确认,不是这道硬拒绝")
-	assert.EqualValues(t, 5_000_000, c.Lottery.LargePrizeAlertQuota,
-		"二次确认阈值必须仍然有默认值,它是唯一还在盯着「多写一个零」的东西")
+	assert.EqualValues(t, 0, c.Lottery.LargePrizeAlertQuota,
+		"二次确认阈值默认 0 = 完全不打扰;机制留着,想开的站点配一个正数即可")
 
 	// 这份默认组合必须能通过校验,否则"什么都不写就能起来"这条承诺是假的。
 	c.Lottery.Enabled = true

@@ -94,6 +94,17 @@ export type QyAiChannel = {
   guard_elevate: string[]
   has_key: boolean
   key_hint: string
+  /**
+   * 地址被改过，而已存密钥是写给旧地址的。
+   *
+   * 密钥绑在它写入时的那个 `base_url` 上：不一致时它既不会被发往新地址，
+   * 这个渠道也不会参与审核（后端装配期直接跳过）。挡的是「改地址 + 点试跑」
+   * 那条把只写密钥取走的路。修法只有一个：在编辑表单里重填一次密钥。
+   *
+   * 必须画出来 —— 否则这一行看起来配得好好的（有密钥、启用中），
+   * 而它一次都不会被调用，且 AI 审核失败的方向是放行。
+   */
+  key_bound_elsewhere: boolean
   timeout_ms: number
   weight: number
   enabled: boolean

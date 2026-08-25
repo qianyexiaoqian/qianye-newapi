@@ -423,11 +423,10 @@ describe('买了超过 50 张票：界面必须自己说清列表被截断', () 
 describe('公开名单：每一注买的号', () => {
   test('双色球把「选项」那一列换成选号，并高亮命中', SLOW, async () => {
     const screen = await mountDetail(ballDetail())
-    // 名单表默认折起来（一页 20 行、每行约 80 字，摊在首屏会把详情页从
-    // 900 多字推到 2500 字）。要看它就得先点开，这一步本身也是断言：
-    // 折叠没有把名单折没，只是不再默认占住首屏。
-    const opened = await screen.click('展开全场名单(共 2 条)')
-    assert.ok(opened, '找不到「展开全场名单」那颗折叠触发器')
+    // 名单表**默认展开**（项目方本轮要求：参与名单默认公开可见）。上一轮把它
+    // 折起来的理由是字数，那个理由现在由展示层打码接手 —— 详见
+    // `lottery-roster-card.tsx` 与 `lib/__tests__/roster-mask.test.ts`。
+    // 所以这里不再需要先点一下：直接就能读到号码那一列。
     const roster = Array.from(
       screen.container.querySelectorAll('[data-slot="card"]')
     ).find((node) =>

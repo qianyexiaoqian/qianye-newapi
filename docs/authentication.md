@@ -149,8 +149,8 @@ SESSION_COOKIE_TRUSTED_URL=https://panel.example.com,https://admin.example.com
 
 | 部署形态 | 代理实际发什么 | 配置 |
 | --- | --- | --- |
-| 直连，没有反代 | 客户端可能自带伪造的 XFF | `TRUSTED_PROXIES=none`（或不配）。转发头一律忽略 |
-| 同机 Nginx / Caddy，应用监听回环 | `X-Forwarded-For: $proxy_add_x_forwarded_for` | 设 `BIND_ADDRESS=127.0.0.1` 即可，`TRUSTED_PROXIES` 不配也自动信任回环 |
+| 直连，没有反代 | 客户端可能自带伪造的 XFF | `TRUSTED_PROXIES=none`。**不配不等于这一档**：不配用的是上游默认，回环与私网对端的转发头照样作数 |
+| 同机 Nginx / Caddy | `X-Forwarded-For: $proxy_add_x_forwarded_for` | 不配即可（上游默认已含回环）。想收窄就写 `TRUSTED_PROXIES=loopback` |
 | Nginx / Caddy / Traefik，地址固定 | 同上，客户端前缀在左、真实客户端在最右 | `TRUSTED_PROXIES=<反代自身 IP>/32` |
 | Docker Compose / K8s，多层转发 | ingress、sidecar 逐跳追加 | `TRUSTED_PROXIES=<Pod/网桥网段>`（如 `10.42.0.0/16,10.43.0.0/16`）。地址完全不固定时 `private` |
 | Cloudflare 直接回源 | `CF-Connecting-IP`（边缘覆盖写，恒为单个地址）+ XFF | `TRUSTED_PROXIES=cloudflare` |
@@ -158,10 +158,10 @@ SESSION_COOKIE_TRUSTED_URL=https://panel.example.com,https://admin.example.com
 | Akamai / Fastly / 其它 CDN | `True-Client-IP` / `Fastly-Client-IP` | `TRUSTED_PROXIES=<CDN 回源网段>` 加 `CLIENT_IP_HEADERS=True-Client-IP,X-Forwarded-For` |
 | 阿里 / 腾讯 SLB 七层、AWS ALB | 标准 XFF，真实客户端在最右 | `TRUSTED_PROXIES=<LB 网段>`。ALB 的 `X-Forwarded-For` 语义与 Nginx 一致 |
 | AWS NLB / HAProxy TCP 模式 | 只有 PROXY protocol，没有 HTTP 头 | **不支持**：本进程不解析 PROXY protocol。让 LB 走七层（ALB/CLB HTTP 监听器），或在前面加一层 Nginx（`proxy_protocol` + `proxy_set_header X-Forwarded-For`），再按 Nginx 那一行配 |
-| 只配了 `X-Real-IP` 的 Nginx | `proxy_set_header X-Real-IP $remote_addr`（覆盖写），**不配 XFF** | `TRUSTED_PROXIES=<nginx IP>/32` 加 **`CLIENT_IP_HEADERS=X-Real-IP`**。这一行的 `CLIENT_IP_HEADERS` 不是可选项，理由见下方「为什么只配 X-Real-IP 时必须显式声明」 |
+| 只配了 `X-Real-IP` 的 Nginx | `proxy_set_header X-Real-IP $remote_addr`（覆盖写），**不配 XFF** | `TRUSTED_PROXIES=<nginx IP>/32` 加 `CLIENT_IP_HEADERS=X-Real-IP`。不加这一项的代价见下方「只配 X-Real-IP 时会发生什么」 |
 | RFC 7239 `Forwarded` | `Forwarded: for=1.2.3.4;proto=https` | `CLIENT_IP_HEADERS=Forwarded`，同样按链从右往左剥离 |
 
-#### 为什么只配 `X-Real-IP` 时必须显式声明 `CLIENT_IP_HEADERS`
+#### 只配 `X-Real-IP` 时会发生什么
 
 因为**普通 Nginx 默认把客户端带来的任意请求头原样透传给上游**——要删掉某个头
 必须显式写 `proxy_set_header X-Forwarded-For "";`。而本进程的默认请求头顺序是
@@ -181,13 +181,16 @@ SESSION_COOKIE_TRUSTED_URL=https://panel.example.com,https://admin.example.com
 都没有；不带头的对照组第 361 次就 429（默认 360 次 / 180 秒）。受影响的是令牌
 IP 白名单、按 IP 的限流、审计台账里的来源 IP、抽奖同 IP 去重与 Turnstile 校验。
 
-**显式写上 `CLIENT_IP_HEADERS=X-Real-IP` 之后，XFF 根本不进判据**，这条路就断了。
+写上 `CLIENT_IP_HEADERS=X-Real-IP` 之后，XFF 根本不进判据，这条路就断了。
 标准 Nginx（`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`）不受影响：
 反代追加的那一段恒在最右，从右往左剥离依然正确。
 
-配错时有确诊信号：`GET /api/qy/admin/client-ip` 的 `request.conflicts` 会列出
-「另一个受信请求头给出了不同的答案」——例如 `X-Real-IP` 说 `198.51.100.7`
-而结论用的是 XFF 里的 `203.0.113.5`。正确配置下这一栏是空的。
+这一栏是**提示**，不是强制：`GET /api/qy/admin/client-ip` 的 `request.conflicts`
+（管理端卡片上的「请求头结论冲突」）会列出「另一个受信请求头给出了不同的答案」
+——例如 `X-Real-IP` 说 `198.51.100.7`，而结论用的是 XFF 里的 `203.0.113.5`。
+如果你装在反代后面而这里出现了冲突，说明反代写的头与客户端带来的头指向两个人，
+上面那条路对你是通的；两个头都由反代写、且写的是同一个人时这一栏是空的。
+结论一个字都不会因为这一栏而改变，也不会有任何请求因此被拒。
 
 地址形态一律归一化后再使用：`1.2.3.4:56789`（Azure App Service 与部分云 LB 的写法）会去掉端口；`[2001:db8::1]:443` 去括号去端口；`::ffff:203.0.113.5` 折回 `203.0.113.5`；`fe80::1%eth0` 去掉 zone；IPv6 统一小写压缩形式。**这不是显示层的事**：不归一化的话同一个客户端会落进两个限流桶、在台账里显示成两个来源，而这不需要攻击者做任何事就会自然发生。
 
@@ -221,17 +224,18 @@ IP 白名单、按 IP 的限流、审计台账里的来源 IP、抽奖同 IP 去
 
 **刻意不做启动时联网拉取。** 那会把一条安全判据的取值接到一次启动期网络请求上：拉取失败变成新的启动失败模式（或者更糟，静默退回空列表）；拉取成功但内容被篡改（DNS 投毒、企业中间人 CA、透明代理）会把信任面**扩大**到攻击者自己的地址，而且每次重启都重新赌一遍。Cloudflare 的网段是年级别稳定的，为此换来一条常驻的 TOFU 通道不划算。
 
-### 默认值与自动探测
+### 未配置时的默认
 
-优先级：
+优先级只有两档：
 
 1. **显式的 `TRUSTED_PROXIES` 永远最高**，不做任何"聪明"的补充。
-2. 未配置 + `BIND_ADDRESS` 是回环地址（`127.0.0.1` / `::1` / `localhost`）→ 自动信任回环对端。判据是**监听地址**而不是对端地址：进程只绑在回环上时，外部流量在 TCP 层就到不了这个端口，能连上来的必然是同机进程，也就必然是本机反代。这是唯一一个不需要运维知情也成立的自动档。
-3. 其余一律 fail-closed（谁都不信），并输出带着具体改法的启动告警。
+2. 未配置 → 用**上游那份默认**：`127.0.0.0/8`、`::1`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`fc00::/7`（等价于 `private`），并在启动日志里打一条 WARNING。
 
-**刻意不做**"对端是私网地址就采信一跳"这一档。它听起来像是在识别反代，实际识别的是"对端在私网"，而 Docker 桥接网段、K8s Pod 网段、同 VPC 主机、`docker-proxy` 全都满足这个条件——任何能从这些网段打到端口的东西都能伪造客户端 IP。实测：`allow_ips=203.0.113.5/32` 的令牌从本机加一个 `X-Forwarded-For: 203.0.113.5` 请求 `/v1/models`，从 403 变 200；全局限流用轮换的 `10.20.x.x` 打 915 次一条 429 都没有。它与"默认信任私网"是同一条默认换了个说法。
+这一档与上游 `middleware/trusted_proxies.go` 的 `defaultTrustedProxyCIDRs` 逐条相同，也与上游一样**不做任何强制**：不拒绝启动，不因为"看起来装在反代后面"而报错。`BIND_ADDRESS` 不参与这个判断。
 
-fail-closed 的代价（装在反代后面又从没配过的站点，所有人的 IP 都成了反代的地址）改用**自动诊断**而不是自动信任来解决：进程会记下"直连对端不受信、却带着转发头"的那些对端，并在管理端给出可以直接粘贴的 CIDR。
+代价写清楚，不糊过去：这些网段里任何能打到本端口的东西（容器网桥、K8s Pod 网段、同 VPC 主机、本机上的任意进程）都可以用一个 `X-Forwarded-For` 决定自己在令牌 `allow_ips` 与限流桶里的取值。实测：`allow_ips=203.0.113.5/32` 的令牌从本机加一个 `X-Forwarded-For: 203.0.113.5` 请求 `/v1/models`，从 403 变 200；全局限流用轮换的 `10.20.x.x` 打 915 次一条 429 都没有。不接受这一点的部署显式写 `TRUSTED_PROXIES=none`，或把反代自身的地址逐条写出来——那是一次显式的决定，而不是一条替所有人改掉的默认。
+
+默认覆盖不到的是反代坐在**公网地址**上的部署（CDN 回源、独立 LB 主机）：那种站点所有人的 IP 都会变成反代的地址。进程会记下"直连对端不受信、却带着转发头"的那些对端，并在管理端给出可以直接粘贴的 CIDR。那是提示，不改变任何结论。
 
 ### 排查：`GET /api/qy/admin/client-ip`
 
@@ -239,7 +243,7 @@ fail-closed 的代价（装在反代后面又从没配过的站点，所有人�
 
 - `request`：这一条请求的完整取值过程——直连对端、对端落在哪一档受信来源、结论从哪个请求头取的、转发链原文、因为对端不受信而被丢掉的头。
 - `policy`：当前策略档、原始 `TRUSTED_PROXIES` 取值、每一档受信来源的网段与请求头列表。
-- `observations`：直连对端不受信却带着转发头的那些对端，带次数、首末次时间，以及**可以直接粘进 `TRUSTED_PROXIES` 的 `suggestion`**（`/32` 或 `/128` 单机地址；建议网段等于替运维决定"这一整段里的东西都可信"，那正是旧默认犯的错）。
+- `observations`：直连对端不受信却带着转发头的那些对端，带次数、首末次时间，以及**可以直接粘进 `TRUSTED_PROXIES` 的 `suggestion`**（`/32` 或 `/128` 单机地址；建议网段等于替运维决定"这一整段里的东西都可信"，而那是运维自己才做得了的判断）。
 
 同一条信息在启动时也会打一行日志（策略档 + 受信网段 + 代价）。这条配置的失败模式全是沉默的，启动日志与这张卡片是它仅有的两个常驻信号。
 
@@ -282,7 +286,7 @@ Proof 同时绑定用户、登录会话、用户鉴权版本、会话版本和 s
 - 数据库迁移会为 Session 签发计数和分批清理新增索引；已有 `user_sessions` 很大时应为首次启动预留维护窗口。
 - `user_sessions.previous_refresh_hash` 会从定长 `char(64)` 迁移为 `varchar(64)`。应用会兼容读取历史定长字段留下的空格填充；迁移后的目标结构必须保持幂等，连续启动不应反复执行列类型变更。
 - 仅 master 节点定时清理过期登录会话、超过配置保留期的 revoked 会话和已过保留期的 AuthFlow。
-- **升级注意**：`TRUSTED_PROXIES` 未配置时的默认已从「信任回环和常见私网代理」改为「谁都不信」（`BIND_ADDRESS` 为回环地址时自动信任回环对端）。装在反向代理后面、且从没显式配置过这个变量的部署，升级后会看到所有客户端的 IP 都变成反代的地址 —— 令牌 `allow_ips` 会开始挡人、按 IP 的限流会把所有人算成一个人。修法：打开管理端「配置健康 → 客户端 IP 识别」，观测台会直接给出该填的 CIDR；地址完全不固定时设成 `private` 恢复旧行为。
+- `TRUSTED_PROXIES` 未配置时的默认**与上游一致**：信任回环、RFC1918 与 `fc00::/7`，并在启动日志里打一条 WARNING。本仓曾短暂把这一档改成「谁都不信」，已撤回——那是一次行为变更，而上游从未做过这个强制。装在反代后面、从没配过这个变量的部署不需要为此做任何事。
 - 客户端 IP 的取法已收敛到 `common.ClientIP(c)` 一处，`X-Forwarded-For` 支持多值请求头、带端口条目与 IPv4-mapped 归一化。归一化会让**已有的按 IP 限流桶键与台账值**在 `::ffff:` 形态上发生一次性变化（折回点分十进制），滚动升级期间同一个客户端可能短暂占用两个限流桶。
 - Redis 限流从近似滑动窗口改为原子固定窗口，存在明确的边界双倍突发语义。
 - 用户级模型成功请求限流的 UTC 时间戳在滚动升级期间存在一个窗口的混合格式过渡，期间可能临时误放行或误拒绝。

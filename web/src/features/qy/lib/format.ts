@@ -67,6 +67,44 @@ export function formatQyQuotaLedger(amount: QyQuotaAmount): string {
   })
 }
 
+/**
+ * 边界值展示：**照着它填必须能通过**。
+ *
+ * `formatQyQuotaLedger` 最多印 4 位小数（≥1 时只有 2 位），那对账本上的读数
+ * 是对的，对一个"上限/下限"却是错的：
+ *
+ * - 上限 2147483647 quota 印成 `$4,294.97`，而照着填回去是 2147485000 quota
+ *   —— 比真上限**多 1353**，界面自己念出来的那个数提交就被后端 400。
+ * - 下限 16667 quota 印成 `$0.0333`，照着填回去是 16650 quota —— 比真下限
+ *   **少 17**，于是界面自己给的推荐值当场撞上界面自己的红字。
+ *
+ * 两者是同一个根因：判据按 quota 整数走（1 quota = $0.000002），而展示按 4 位
+ * 小数走。所以这里按**能不能原样填回去**决定小数位数：取最少的位数 d，使得
+ * `parseQyQuota(round(amount, d)) === quota`。
+ *
+ * 只给"运营会照着填的那个数"用。账本金额仍旧走 {@link formatQyQuotaLedger} ——
+ * 那里多印几位小数只是噪声。
+ */
+export function formatQyQuotaBound(quota: number): string {
+  const value = qyQuotaValue(quota)
+  if (value == null) return formatQyQuotaLedger(quota)
+  const amount = qyQuotaToDisplayAmount(value)
+  // 8 位足够覆盖任何 quotaPerUnit：默认刻度下 1 quota = $0.000002（6 位）。
+  // 找不到（自定义汇率把它推到 8 位之外）就退回最宽的那一档，宁可多印几位。
+  let digits = 8
+  for (let d = 0; d <= 8; d++) {
+    if (parseQyQuota(Number(amount.toFixed(d))) === value) {
+      digits = d
+      break
+    }
+  }
+  return formatQuotaWithCurrency(value, {
+    digitsLarge: digits,
+    digitsSmall: digits,
+    abbreviate: false,
+  })
+}
+
 /** 概览展示：允许缩写（1.2K），用于统计卡片与图表轴。 */
 export function formatQyQuotaHero(amount: QyQuotaAmount): string {
   return formatQuotaWithCurrency(qyQuotaValue(amount), {

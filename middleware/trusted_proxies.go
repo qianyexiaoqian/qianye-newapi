@@ -67,8 +67,7 @@ func logClientIPPolicy(policy *common.ClientIPPolicy) {
 //
 // 它同时是「装在反代后面但没配 TRUSTED_PROXIES」的观测点:对端不受信却带着
 // 转发头的请求会被记进观测台,管理端 GET /api/qy/admin/client-ip 会把该填哪个
-// CIDR 直接给出来。fail-closed 是安全的一侧,但它必须配一个能自己说清楚
-// "你需要做什么"的诊断,否则代价就是运维在 allow_ips 里瞎试。
+// CIDR 直接给出来。这是提示,不是判据 —— 结论一个字都不会因为观测台而改变。
 func ClientIPResolver() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		common.RecordClientIPObservation(common.ClientIPResolutionOf(c))

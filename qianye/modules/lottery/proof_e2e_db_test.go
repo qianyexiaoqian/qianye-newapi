@@ -186,7 +186,7 @@ func TestProofEndpoint_WinnersAreIndependentlyReproducible(t *testing.T) {
 		// 自己把自己饿死(线上的 reserveEntry 也是拿调用方读好的活动进来的)。
 		cur := loadAct(t, gdb, act.Id)
 		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return reserveEntry(tx, cur, Rules{}, e)
+			return reserveEntry(tx, cur, Rules{}, e, 0)
 		}))
 		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
 			return markEntrySuccess(tx, e.EntryNo, nil)
@@ -199,7 +199,7 @@ func TestProofEndpoint_WinnersAreIndependentlyReproducible(t *testing.T) {
 	}
 	curForFail := loadAct(t, gdb, act.Id)
 	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-		return reserveEntry(tx, curForFail, Rules{}, failed)
+		return reserveEntry(tx, curForFail, Rules{}, failed, 0)
 	}))
 	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
 		return markEntryFailed(tx, failed.EntryNo, "qy_lot_insufficient_quota")
