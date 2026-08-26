@@ -107,7 +107,7 @@ func postTopUpJSON(t *testing.T, handler gin.HandlerFunc, userId int, path strin
 // getMaxTopup 的分子必须是 MaxQuota-1，不是 MaxQuota。
 //
 // common/quota_math.go 的 saturateQuota 在 value >= MaxQuota 时就报错，所以可表示
-// 的最大额度是 MaxQuota-1。用 MaxQuota 做分子时 QuotaPerUnit==1 会算出 2147483647
+// 的最大额度是 MaxQuota-1。用 MaxQuota 做分子时 QuotaPerUnit==1 会算出 MaxQuota
 // —— 这个数恰好换算失败，也就是上界自己放行了一个必然在结算侧回滚的值：钱进网关、
 // 额度零到账、订单永久 pending。这正是这条上界要挡的那个后果。
 func TestGetMaxTopupNeverAllowsAnUncreditableAmount(t *testing.T) {
@@ -117,8 +117,11 @@ func TestGetMaxTopupNeverAllowsAnUncreditableAmount(t *testing.T) {
 		quotaPerUnit float64
 		wantMax      int64
 	}{
-		{"USD 单价 500000", operation_setting.QuotaDisplayTypeUSD, 500000, 4294},
-		{"TOKENS 单价 500000", operation_setting.QuotaDisplayTypeTokens, 500000, 4294 * 500000},
+		// 期望值一律由 common.MaxQuota 算出来。抄一个 4294 进来的代价在这次
+		// 抬高上界时刚刚兑现过:上界一动,这条用例断言的就不再是"闸门开在
+		// 可换算的最后一格",而是"闸门开在某个远低于它的旧数字上"。
+		{"USD 单价 500000", operation_setting.QuotaDisplayTypeUSD, 500000, int64((common.MaxQuota - 1) / 500000)},
+		{"TOKENS 单价 500000", operation_setting.QuotaDisplayTypeTokens, 500000, int64((common.MaxQuota-1)/500000) * 500000},
 		{"USD 单价 1（旧实现在这里差一）", operation_setting.QuotaDisplayTypeUSD, 1, int64(common.MaxQuota - 1)},
 		{"USD 单价 3（不整除）", operation_setting.QuotaDisplayTypeUSD, 3, int64((common.MaxQuota - 1) / 3)},
 	}
@@ -220,25 +223,31 @@ func TestTopUpRejectsOrderThatWouldOverflowTheWallet(t *testing.T) {
 // Stripe 的到账额度按 Money（已乘分组倍率）换算，所以上界必须落在 Money 上。
 // 只看 req.Amount 的话，倍率 > 1 的分组在 10000 这道闸之内也能把换算顶穿。
 func TestStripeRequestAmountAccountsForTopUpGroupRatio(t *testing.T) {
-	withTopUpQuotaEnv(t, operation_setting.QuotaDisplayTypeUSD, 500000)
+	// 单价取 1e9 而不是默认的 500000:common.MaxQuota 抬高之后,默认单价下
+	// 可换算的下单量远超 Stripe 那 10000 个单位的产品上限,先触发的会是产品
+	// 闸门,这条用例就测不到"上界必须落在乘过倍率的 Money 上"了。
+	withTopUpQuotaEnv(t, operation_setting.QuotaDisplayTypeUSD, 1e9)
 	insertTopUpQuotaTestUser(t, 44, 0)
 
 	prevRatio := common.TopupGroupRatio2JSONString()
 	require.NoError(t, common.UpdateTopupGroupRatioByJSONString(`{"default":2}`))
 	t.Cleanup(func() { require.NoError(t, common.UpdateTopupGroupRatioByJSONString(prevRatio)) })
 
-	// 倍率 2 之下，2147 还落在域内（2147*2*500000 = 2,147,000,000），2148 顶穿。
-	require.Equal(t, float64(2147*2), stripeChargedMoneyForGroup(2147, "default"))
+	// 闸门那一格由 common.MaxQuota 算出来:倍率 2、单价 500000 时,可换算的最大
+	// 下单量是 (MaxQuota-1)/(2*500000)。它 +1 就顶穿。
+	const stripeRatioTestDivisor = 2 * 1_000_000_000
+	atLimit := int64((common.MaxQuota - 1) / stripeRatioTestDivisor)
+	require.Equal(t, float64(atLimit*2), stripeChargedMoneyForGroup(float64(atLimit), "default"))
 
 	adaptor := &StripeAdaptor{}
 
 	ok := postTopUpJSON(t, func(c *gin.Context) {
-		adaptor.RequestAmount(c, &StripePayRequest{Amount: 2147})
+		adaptor.RequestAmount(c, &StripePayRequest{Amount: atLimit})
 	}, 44, "/api/user/stripe/amount", `{}`)
 	assert.Contains(t, ok.Body.String(), `"message":"success"`)
 
 	rejected := postTopUpJSON(t, func(c *gin.Context) {
-		adaptor.RequestAmount(c, &StripePayRequest{Amount: 2148})
+		adaptor.RequestAmount(c, &StripePayRequest{Amount: atLimit + 1})
 	}, 44, "/api/user/stripe/amount", `{}`)
 	assert.JSONEq(t,
 		`{"message":"error","data":"充值额度超出系统可表示范围"}`,
@@ -315,14 +324,17 @@ func TestCreemRequestPayValidatesProductQuotaAgainstWalletCapacity(t *testing.T)
 func TestTokensModeTopUpPassesTheStoredAmountToTheCeilingCheck(t *testing.T) {
 	const quotaPerUnit = 500000
 
+	// 闸门上沿是"可换算的最后一个单位数",由 common.MaxQuota 算出来。
+	unitsAtLimit := int64((common.MaxQuota - 1) / quotaPerUnit)
+
 	cases := []struct {
 		name     string
 		tokens   int64
 		wantPass bool
 	}{
 		{"正常一笔（4 个单位）", 4 * quotaPerUnit, true},
-		{"闸门上沿", 4294 * quotaPerUnit, true},
-		{"闸门上沿再加一个单位", 4295 * quotaPerUnit, false},
+		{"闸门上沿", unitsAtLimit * quotaPerUnit, true},
+		{"闸门上沿再加一个单位", (unitsAtLimit + 1) * quotaPerUnit, false},
 	}
 
 	for _, tc := range cases {
@@ -340,7 +352,7 @@ func TestTokensModeTopUpPassesTheStoredAmountToTheCeilingCheck(t *testing.T) {
 				return
 			}
 			assert.JSONEq(t,
-				fmt.Sprintf(`{"message":"error","data":"充值数量不能大于 %d"}`, int64(4294*quotaPerUnit)),
+				fmt.Sprintf(`{"message":"error","data":"充值数量不能大于 %d"}`, unitsAtLimit*quotaPerUnit),
 				recorder.Body.String())
 		})
 	}

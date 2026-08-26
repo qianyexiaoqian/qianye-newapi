@@ -2,6 +2,7 @@ package lottery
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/modules/paypass"
 
 	"github.com/gin-gonic/gin"
@@ -192,10 +194,35 @@ type activityDetail struct {
 	// **它只是提示,绝不是放行依据**:真正的判定在活动行锁内(见 checkCaps),
 	// 拿它当凭据就等于给了一个刷新周期长的 TOCTOU 窗口。它存在的理由是让
 	// "你还能买 3 注"出现在按下确认**之前**,而不是提交了十注之后才被顶回来。
+	//
+	// 它同时夹住**两道**每人闸门:max_entries_per_user 与 max_attempts_per_user。
+	// 只报前者会让第二道在提交时突然冒出来,而这一行存在的全部理由就是不让
+	// 任何一道闸门在按下确认之后才第一次露面。尝试上限数的是"含失败的全部条目",
+	// 与 checkCaps 的 attempts 同一个方向。
 	MyEntriesRemaining *int `json:"my_entries_remaining"`
-	// MaxPicksPerRequest 是一次提交最多几注(见 entry.go 的 maxPicksPerRequest)。
+	// TotalEntriesRemaining 是"这一场**全场**还剩几个名额"。
+	//
+	// # 为什么必须与每人上限分开下发
+	//
+	// 它们会在完全不同的时刻绑住同一次提交:每人上限只跟自己有关、刷新一次就
+	// 不再变;全场名额是所有人共用的,可能在用户选号的这一分钟里被别人买光。
+	// 合成一个数会让"你还能买 3 注"在两种原因下说同一句话,而用户能做的事
+	// 恰好相反 —— 前者是"我买够了",后者是"手快有手慢无"。
+	//
+	// # 零值口径(与 MyEntriesRemaining 对齐)
+	//
+	//   - nil(JSON null)= 本场没有全场上限。存量活动才可能是这一档:
+	//     buildActivity 会把没填的 max_total_entries 回填成硬上限,
+	//     所以新建的活动一定是个正数。
+	//   - 0 = 全场已满,一注都买不进去了。
+	//
+	// 同样**只是提示**:权威判定在活动行锁内(checkCaps 用的是活动行上的
+	// active_count + pending_count,与这里读的是同一对计数器)。
+	TotalEntriesRemaining *int `json:"total_entries_remaining"`
+	// MaxPicksPerRequest 是这一场一次提交最多几注(picksCapOf,活动级可配)。
 	// 下发它是为了让选号盘的"再加一注"按钮在到顶时当场置灰 —— 前端写死一个
-	// 同名常量的下场,是后端调整之后界面上多出来的那一注恒被 400 顶回来。
+	// 同名常量的下场,是后端调整之后界面上多出来的那一注恒被 400 顶回来;
+	// 而这个数**每一场都可能不一样**,写死等于在别的场次上一定是错的。
 	MaxPicksPerRequest int `json:"max_picks_per_request"`
 	// MyTickets 是**我自己**在这一场买的票,只在 draw_mode=ball 下下发。
 	//
@@ -302,24 +329,34 @@ var hallPhases = map[string]hallPhase{
 }
 
 // hallQuery 按大厅口径拼出活动查询:草稿与已下架永不下发、按玩法过滤、
-// 按分区过滤并定序。
+// 按选择夹(lane)与分区(phase)过滤并定序。
+//
+// lane 是用户端大厅那三张选择夹(抽奖 / 竞猜 / 双色球,见 play.go),空串 =
+// 不限。它**不是** kind:`lane=draw` 恰好排除双色球。
 //
 // 抽成一个吃 *gorm.DB 的函数是为了让这段口径**能被真的跑一遍数据库测到**:
 // handler 走的是 db.Get() 那个只连 MySQL 的全局句柄,在测试里起不来,而
 // "两张标签返回同一份列表"恰恰只在这段拼装里看得见 —— 上一版正是在这里
 // 静默失效了一整个版本。
-func hallQuery(gdb *gorm.DB, kind, phase string, set opSettings) (*gorm.DB, error) {
+func hallQuery(gdb *gorm.DB, lane, phase string, set opSettings) (*gorm.DB, error) {
+	// 未登记的选择夹一律 400,与 phase 同一条纪律:静默忽略会让 `lane=Ball`
+	// 这种大小写笔误退回"三张标签拿同一份列表",而全链路没有任何一处报错 ——
+	// 那正是上一版 phase 参数漂移能活过一整个版本的形状。
+	if lane != "" {
+		if _, ok := hallLanes[lane]; !ok {
+			return nil, errBadLane
+		}
+	}
 	// hidden_at > 0 是管理员的「下架」。它与草稿并列写在这一行,而不是散在
 	// handler 里:大厅口径只有这一个执行点,加在别处迟早会有一条分支漏掉。
 	q := gdb.Model(&Activity{}).Where("status <> ? AND hidden_at = ?", StatusDraft, 0)
-	// 被隐藏的玩法同样不下发。它必须在**这里**而不是 handler 里过滤:
-	// 前端只会按 kind 分两张标签,而"只隐藏双色球"落不到任何一个 kind 上,
-	// 交给前端过滤等于把已经发出去的活动数据当成可以藏住的东西。
-	if clause, args := playFilterClause(set); clause != "" {
+	// 玩法隐藏与选择夹归属**在同一句 WHERE 里**一起落到 SQL 上。
+	//
+	// 两者都不能交给前端做:"只隐藏双色球"落不到任何一个 kind 上,而按选择夹
+	// 分页更是必须在数据库里分 —— 前端过滤会让「双色球」那张标签的第 1 页
+	// 只剩零星几条(整页被过滤掉的那些不会被补上),分页总数也是错的。
+	if clause, args := playFilterClause(set, lane); clause != "" {
 		q = q.Where(clause, args...)
-	}
-	if kind != "" {
-		q = q.Where("kind = ?", kind)
 	}
 	// 空串 = 不分区(全部非草稿)。未登记的取值一律 400,**绝不静默忽略**:
 	// 上一版前端发的是 `status=open|done`、这里读的却是 `phase`,于是"进行中"
@@ -361,7 +398,7 @@ func handleListActivities(c *gin.Context) {
 		return
 	}
 	q, err := hallQuery(gdb.WithContext(c.Request.Context()),
-		c.Query("kind"), c.Query("phase"), effectiveCtx(c.Request.Context()))
+		c.Query("lane"), c.Query("phase"), effectiveCtx(c.Request.Context()))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -519,16 +556,50 @@ func handleGetActivity(c *gin.Context) {
 		return
 	}
 	detail.MyEntryCount = int(mine)
-	detail.MaxPicksPerRequest = maxPicksPerRequest
-	if act.MaxEntriesPerUser > 0 {
-		// 夹到 0:上限被在线调低之后 mine 可以大过它,而一个负的"还能买几注"
-		// 会在界面上显示成 "还能买 -2 注",并让任何 `remaining > 0` 的判断
-		// 照旧为假、`remaining >= n` 的判断在 n 也为负时反而为真。
-		remaining := act.MaxEntriesPerUser - int(mine)
-		if remaining < 0 {
-			remaining = 0
+	detail.MaxPicksPerRequest = picksCapOf(act)
+
+	// 尝试上限是**第二道**每人闸门,而且是唯一一道会把失败条目也算进去的。
+	// 它多打一次 COUNT 而不是复用上面那一次:两次数的是不同的集合,合成一次
+	// 查询要么少判一道闸门,要么把 my_entry_count 的口径改掉(那是回执与
+	// "我的参与"共用的数)。只有配了这道闸门才去数 —— 绝大多数活动不配。
+	var attempts int64
+	if act.MaxAttemptsPerUser > 0 {
+		if err := gdb.WithContext(ctx).Model(&Entry{}).
+			Where("act_id = ? AND user_id = ?", act.Id, c.GetInt("id")).
+			Count(&attempts).Error; err != nil {
+			db.MarkFailure(err)
+			respondErr(c, wrapInternal("统计我的尝试次数", err))
+			return
 		}
+	}
+	// 夹到 0:上限被在线调低之后计数可以大过它,而一个负的"还能买几注"会在
+	// 界面上显示成 "还能买 -2 注",并让任何 `remaining > 0` 的判断照旧为假、
+	// `remaining >= n` 的判断在 n 也为负时反而为真。
+	clampRemaining := func(cap int, used int64) int {
+		if remaining := cap - int(used); remaining > 0 {
+			return remaining
+		}
+		return 0
+	}
+	if act.MaxEntriesPerUser > 0 {
+		remaining := clampRemaining(act.MaxEntriesPerUser, mine)
 		detail.MyEntriesRemaining = &remaining
+	}
+	if act.MaxAttemptsPerUser > 0 {
+		// 两道闸门取更紧的那一条:提交时它们是**并列**判定的(checkCaps 里
+		// 一个 return errUserCap、一个 return errAttemptCap),报宽的那个数
+		// 等于把另一道留到按下确认之后才说。
+		remaining := clampRemaining(act.MaxAttemptsPerUser, attempts)
+		if detail.MyEntriesRemaining == nil || remaining < *detail.MyEntriesRemaining {
+			detail.MyEntriesRemaining = &remaining
+		}
+	}
+	if act.MaxTotalEntries > 0 {
+		// 与 checkCaps 读的是同一对计数器,判据也同一条:那里用
+		// `active_count + pending_count > max_total_entries` 拒绝(pending 已含
+		// 本次),所以**下一注之前**还剩的名额正是 max - active - pending。
+		remaining := clampRemaining(act.MaxTotalEntries, int64(act.ActiveCount+act.PendingCount))
+		detail.TotalEntriesRemaining = &remaining
 	}
 
 	// 双色球才列票:pick 在别的模式下恒为空串,列出来一格内容都没有。
@@ -669,17 +740,25 @@ type entryRequest struct {
 // 返回的每一项都是**尚未归一化**的原始输入:归一化在 acceptPick 里,而那是
 // 唯一一处能算出进链字节的地方,复制一份到这里就等于给自己留了一个会漂移的
 // 第二口径。这里只回答"几注、哪几组"。
-func acceptPickList(req entryRequest) ([]string, error) {
+//
+// cap 由调用方从**这一场活动**上取(picksCapOf),不再是一个包级常量:同一个
+// 站点上一场配 10、另一场配 999 是正常的,而一个写死的上界会在其中一场上说谎。
+func acceptPickList(cap int, req entryRequest) ([]string, error) {
 	if len(req.Picks) == 0 {
 		// 单注:选号仍旧走 Pick。空串在非双色球上是合法的(不带号),
 		// 在双色球上会被 acceptPick 判成 errBadPickInput —— 判定点仍然只有一处。
+		//
+		// 注意这一支**不看 cap**:cap 最小是 1(picksCapOf 把 0 读成默认 10,
+		// 负数同理),所以单注提交在任何配置下都过得去。把它也拿去比一次的话,
+		// 一个被改库改成 0 的活动会连单注都买不了,而那正是"零值 = 没配过"
+		// 这条口径要防的事。
 		return []string{req.Pick}, nil
 	}
 	if strings.TrimSpace(req.Pick) != "" {
 		return nil, errPickAndPicks
 	}
-	if len(req.Picks) > maxPicksPerRequest {
-		return nil, errTooManyPicks
+	if len(req.Picks) > cap {
+		return nil, tooManyPicks(cap)
 	}
 	return req.Picks, nil
 }
@@ -799,9 +878,9 @@ func handleCreateEntry(c *gin.Context) {
 		respondErr(c, errBadRequest("请求参数不合法"))
 		return
 	}
-	// 客户端携带的那一份挡在 64。ChargeEntry 自己认的上界比它大 2(要装下
-	// `#i` 后缀),所以这道校验必须在**派生之前**做一次,否则一个 66 字符的
-	// crid 会以单注身份合法通过、以多注身份把派生键顶到 68。
+	// 客户端携带的那一份挡在 64。ChargeEntry 自己认的上界比它大 4(要装下
+	// 最长 `#998` 的后缀),所以这道校验必须在**派生之前**做一次,否则一个
+	// 66 字符的 crid 会以单注身份合法通过、以多注身份把派生键顶到 70。
 	//
 	// `#` 同时被挡掉:它是**服务端派生位**的分隔符(见 batchRequestId),
 	// 客户端也用它就会撞进同一个键空间 —— 用 `X#1` 买一注、再用 `X` 买两注,
@@ -809,12 +888,48 @@ func handleCreateEntry(c *gin.Context) {
 	// 回执里混进一张不属于这次提交的票、total_quota 也多报一注。
 	// 挡一个字符比给键空间做转义便宜得多:转义要么撑破 idem_key 的列宽,
 	// 要么改掉单注那一份的取值(那会让旧客户端的重试不再命中原单)。
+	//
+	// 规范化的结果必须**往下传**,不能只用来做校验。此前这里 TrimSpace 之后
+	// 只拿 crid 判长度与 `#`,派生键却用的是 req.ClientRequestId 的**原值**:
+	// 于是一个尾部带空格的 crid,第 0 注 TrimSpace 之后幂等命中原单,
+	// 第 1..N 注派生出 `"x #1"` 这种全新的键 —— 同一次提交多一个尾空格就是
+	// 真的再扣一遍 N-1 注的钱(真 MySQL 上实测过)。
+	//
+	// 同时做大小写折叠与字符集收紧,理由见 qymodel.NormalizeIdemClientKey:
+	// 抽奖这条路此前只挡长度与 `#`,连非 ASCII 都放行,而 MySQL 的默认排序
+	// 规则重音不敏感 —— 'café' 与 'cafe' 在库里是同一个键。
 	crid := strings.TrimSpace(req.ClientRequestId)
-	if len(crid) > maxClientRequestID || strings.Contains(crid, "#") {
+	if len(crid) > maxClientRequestID {
 		respondErr(c, errBadRequestID)
 		return
 	}
-	picks, err := acceptPickList(req)
+	if crid != "" {
+		folded, ok := qymodel.NormalizeIdemClientKey(crid)
+		if !ok {
+			// `#` 落在字符集之外,所以这一条同时把它挡掉了(它是服务端派生位
+			// 的分隔符,客户端也用就会撞进同一个键空间)。
+			respondErr(c, errBadRequestID)
+			return
+		}
+		crid = folded
+	}
+	req.ClientRequestId = crid
+	// 活动**先取**,注数上限后判:单次批量上限现在是每一场各配的
+	// (max_picks_per_request,见 picksCapOf),不取活动就没有可比的那个数。
+	// 顺序换过来的可见差别只有一处:一个打向不存在活动的超量请求现在回 404
+	// 而不是 400 —— 那本来就是更准的答案。
+	//
+	// 这一段仍旧用冷路径预算:它只是几次点查。真正与注数成正比的那一段预算
+	// 在下面单独取(entryBatchContext)。
+	loadCtx, cancelLoad := guard.ColdContext(context.Background())
+	defer cancelLoad()
+
+	act, err := loadActivityByNo(loadCtx, c.Param("act_no"))
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	picks, err := acceptPickList(picksCapOf(act), req)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -822,15 +937,6 @@ func handleCreateEntry(c *gin.Context) {
 
 	// 验密闸门的位置有讲究:必须在解析请求体**之后**(密码随体来),
 	// 且在 ChargeEntry **之前**(那里面就开始落单、扣钱了)。
-	// 阈值判定读的是活动的参与费,所以要先把活动取出来。
-	ctx, cancel := guard.ColdContext(context.Background())
-	defer cancel()
-
-	act, err := loadActivityByNo(ctx, c.Param("act_no"))
-	if err != nil {
-		respondErr(c, err)
-		return
-	}
 	in := entryInputOf(c, act.ActNo, req)
 	// 阈值判定必须用**本次真正要扣的金额**,不是活动的基准参与费:竞猜的投注额
 	// 由用户自选,按 stake_quota 判定等于让一个基准费 1000、上限 500 万的盘口
@@ -842,7 +948,8 @@ func handleCreateEntry(c *gin.Context) {
 	}
 	// 多注时判的是**整批的总额**,不是单注。按单注判等于给出一条把余额烧光的
 	// 绕路:阈值 10 万、单注 2 万时,一次十注买走 20 万而一次密码都不问。
-	// amount ≤ MaxQuota(int32)且 len(picks) ≤ maxPicksPerRequest,乘积远在 int64 之内。
+	// amount ≤ MaxQuota(int32)且 len(picks) ≤ maxPicksPerRequestHard(999),
+	// 乘积上界约 2.1e12,远在 int64 之内。
 	if PayPasswordRequired(amount * int64(len(picks))) {
 		// Require 不通过时已写好响应并 Abort。它没有任何可以表达豁免的入参 ——
 		// 想加豁免的人必须先改 paypass.Require 的签名,那是一次看得见的动作。
@@ -850,6 +957,12 @@ func handleCreateEntry(c *gin.Context) {
 			return
 		}
 	}
+
+	// 预算按注数给。一批 N 注是 N 次串行的 twophase.Execute,拿一次冷路径操作的
+	// 3 秒去装 N 次,999 注会在第 86 注上下被截断 —— 也就是"活动可配到 999"
+	// 在预算这一侧根本不成立。理由与上界见 entryBatchContext。
+	ctx, cancel := entryBatchContext(context.Background(), len(picks))
+	defer cancel()
 
 	out := entryReceiptBatch{
 		Entries:   make([]entryReceipt, 0, len(picks)),
@@ -888,25 +1001,87 @@ func handleCreateEntry(c *gin.Context) {
 		})
 		out.TotalQuota += entry.Amount
 	}
+	budgetGone := ctx.Err() != nil
+	if stopped != nil {
+		if _, ok := AsBizError(stopped); !ok {
+			// 非业务错误不回显原文(可能带 SQL 片段与表结构),但**必须**在
+			// 服务端留下全文:accepted < requested 却说不出为什么,比说错更难查。
+			common.SysError(fmt.Sprintf(
+				"qianye/lottery: 多注提交停在第 %d/%d 注(整批预算已用完=%t): %v",
+				len(out.Entries)+1, out.Requested, budgetGone, stopped))
+		}
+	}
 	// 一注都没成交 = 这次提交什么都没发生,原样把那条错误报出去。多注不该
 	// 把"余额不足"降级成一个 200 —— 前端据 code 决定说哪句话,而这条路径上
 	// 单注与多注该说的是同一句。
+	//
+	// **预算在第一注上就用完时走的也是这里。** 那一支必须与"买成了几注之后被
+	// 截断"说同一句话:两者对用户是同一件事(一分钱没扣,再提交一次即可),
+	// 而不加这道翻译的话它会变成一句 500「处理失败,请稍后重试」——
+	// 用户读完的下一个动作是去查自己有没有被扣钱。
 	if len(out.Entries) == 0 {
-		respondErr(c, stopped)
+		respondErr(c, batchStopError(stopped, budgetGone))
 		return
 	}
 	out.Accepted = len(out.Entries)
 	if stopped != nil {
-		if be, ok := AsBizError(stopped); ok {
-			out.FailedCode, out.FailedMessage = be.ErrCode(), be.Message()
-		} else {
-			// 非业务错误不回显原文(可能带 SQL 片段与表结构),但**必须**留下
-			// 一个码:accepted < requested 却说不出为什么,比说错更难查。
-			common.SysError("qianye/lottery: 多注提交中途失败: " + stopped.Error())
-			out.FailedCode, out.FailedMessage = "qy_internal_error", "处理失败,请稍后重试"
-		}
+		out.FailedCode, out.FailedMessage = batchStopReason(stopped, budgetGone)
 	}
 	respondOK(c, out)
+}
+
+// batchStopReason 把"整批停在这里"翻译成回执上的 (code, message)。
+//
+// # 为什么单拎出来
+//
+// 它是这条链路上唯一一处"把一个内部错误翻译成用户读得懂的一句话"的判定,而它
+// 的三个分支在真实运行里**出现的概率极不均匀**:业务错误(余额不足、撞上限)
+// 天天有,预算耗尽要压着截止时刻才出现,内部错误几乎不出现。挂在 handler 里
+// 只能靠"恰好把预算跑干"的端到端用例去碰,而那条路径落在哪一支取决于截止时刻
+// 落在两条语句之间还是一条语句中间 —— 也就是说它测不确定。单拎出来之后
+// 三个分支各有一行确定的用例(见 ball_picks_cap_db_test.go)。
+//
+// # budgetGone 是**本批的截止时刻**,不是错误文本
+//
+// 循环顶上那次 ctx.Err() 只在"上一注跑完之后才跨过截止时刻"时命中;预算在
+// ChargeEntry **内部**某条语句上到期时,冒出来的是驱动自己包装的一个错误
+// (各家包装方式还不一样,有的原样返回 context.DeadlineExceeded、有的换成
+// 自己的字符串)。靠错误文本判断的结果是:同一件事在两条路径上被说成两句话,
+// 其中一句是「处理失败,请稍后重试」—— 而用户此刻最需要知道的恰恰是
+// "买成的那几注真的买成了、没买成的一分钱都没扣"。
+func batchStopReason(stopped error, budgetGone bool) (code, message string) {
+	if be, ok := AsBizError(batchStopError(stopped, budgetGone)); ok {
+		return be.ErrCode(), be.Message()
+	}
+	// 非业务错误的原文可能带 SQL 片段与表结构,一律不回显;全文由调用方写进
+	// 服务端日志。**但必须留下一个码**:accepted < requested 却说不出为什么,
+	// 比说错更难查。
+	return "qy_internal_error", "处理失败,请稍后重试"
+}
+
+// batchStopError 把"整批停在这里"归一成**一条业务错误**(归一不了就原样带出)。
+//
+// 两个调用方共用它,而它们是同一件事的两种落点:
+//
+//	accepted == 0  —— 这次提交什么都没发生,原样 respondErr;
+//	accepted > 0   —— 200 + 信封,把码填进 failed_code。
+//
+// 共用一处是硬要求。分开写的表现是:预算在**第一注**上就用完时报一句 500
+// 「处理失败,请稍后重试」,而在第五注上用完时报「只买成了前面几注,剩下的没有
+// 扣费」—— 对用户是同一件事(一分钱没扣、再提交一次即可),却被说成了两句话,
+// 其中一句会让他去查自己有没有被扣钱。
+//
+// 业务错误最优先:它自己就是最准的那句话,哪怕此刻预算也恰好用完了
+// (余额不足就是余额不足,不该被改口成"超时了" —— 那会让用户去重试一次
+// 必然再失败的提交)。
+func batchStopError(stopped error, budgetGone bool) error {
+	if _, ok := AsBizError(stopped); ok {
+		return stopped
+	}
+	if budgetGone {
+		return errBatchBudget
+	}
+	return stopped
 }
 
 type wonView struct {

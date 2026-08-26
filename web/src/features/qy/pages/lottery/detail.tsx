@@ -96,9 +96,13 @@ export function QyLotteryDetail() {
       </QySectionPageLayout.Title>
       <QySectionPageLayout.Actions>
         {/*
-          回程要带上标签的 hash，否则竞猜用户永远落回第一张标签（抽奖）——
-          他刚才看的那一场不在那张列表里（kind='draw' 是写死的），
-          得再点一次「竞猜」并重新翻页。
+          回程要带上标签的 hash，否则竞猜/双色球用户永远落回第一张标签
+          （抽奖）—— 他刚才看的那一场不在那张列表里（那张标签发的是
+          `lane='draw'`，它排除双色球），得再点一次并重新翻页。
+
+          判据与后端的 `hallLanes` 是同一套：竞猜看 `kind`，双色球看
+          `draw_mode`，其余归抽奖。三张夹恰好把活动分完，所以这里不需要
+          "找不到就回落"的第四支。
         */}
         <Button
           size='sm'
@@ -106,7 +110,11 @@ export function QyLotteryDetail() {
           render={
             <Link
               {...qyTabTarget(
-                activity?.kind === 'guess' ? '/qy/lottery-guess' : '/qy/lottery'
+                activity?.kind === 'guess'
+                  ? '/qy/lottery-guess'
+                  : activity?.draw_mode === 'ball'
+                    ? '/qy/lottery-ball'
+                    : '/qy/lottery'
               )}
             />
           }

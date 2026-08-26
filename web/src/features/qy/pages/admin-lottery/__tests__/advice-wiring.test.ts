@@ -70,20 +70,35 @@ describe('自动填写进去的就是算出来的那个数', () => {
     assert.ok(wizard.includes('qyLotRecommendedMinEntries('))
   })
 
-  test('竞猜单注上限填的是推荐倍数算出来的数，而且夹过上界', () => {
-    assert.ok(
-      /bet_max_quota:\s*betMaxAdvice/.test(wizard),
-      '单注上限的自动填没有接到 qyLotRecommendedBetMax 的结果'
+  test('竞猜单注上限**没有**自动填 —— 这一格是运营决策，不是解出来的唯一解', () => {
+    // 上一版这里是「单注额 × 20」，理由写着"一个大户最多顶 20 个普通参与者"。
+    // 那句话是假的：`bet_max_quota` 约束的是一笔投注，而每人参与上限填 0 就是
+    // 不限，同一个人开 20 笔顶格投注就是 400 个普通参与者的量。
+    // 后端 applyBetBounds 对这一格也没有任何可解的不等式（只有三条"不得超过"），
+    // 所以任何推荐值都只能是一个凭空选的常数。
+    //
+    // 按源码守"没有自动填"这件事，是因为它没有别的信号：一个被重新加回来的
+    // 推荐值在类型、运行期、快照上全都是合法的。
+    // 全文只许有**一处**往 bet_max_quota 里写值，就是这一格输入框自己的
+    // onChange。多出来的那一处必然是某种"替运营填一个数"，而这一格没有任何
+    // 算得出来的数可填。
+    assert.deepEqual(
+      wizard.match(/bet_max_quota:\s*\S+/g),
+      ['bet_max_quota: quota'],
+      '单注上限又被接上了自动填 —— 先去 lib/advice.ts 读那一段为什么不能有'
     )
-    // 推荐值必须**带着上界**算出来。不传上界时，参与费大于「上界 ÷ 20」的场次
-    // 点一下按钮就得到一个后端必拒的值，而界面上一条红字都不会有。
     assert.ok(
-      /qyLotRecommendedBetMax\(draft\.stake_quota,\s*betCeiling\)/.test(wizard),
-      '单注上限的推荐值没有夹在系统上界 / max_stake_quota 之内'
+      !wizard.includes('RecommendedBetMax') &&
+        !wizard.includes('BET_MAX_MULTIPLE') &&
+        !wizard.includes('qy_lot_advice_bet_max'),
+      '推荐倍数被重新引进了向导'
     )
+    // 拿掉推荐值不等于拿掉说明：范围与后果两行必须还在，否则这一格退回到
+    // "一个没有任何提示的 0"，而 0 = 不限。
     assert.ok(
-      wizard.includes('max_stake_quota'),
-      '上界没有把站点自己配的那一道算进去'
+      wizard.includes("t('qy_lot_range_bet_max')") &&
+        wizard.includes("t('qy_lot_bet_max_zero_note')"),
+      '单注上限的范围/零值提示被一并删掉了'
     )
   })
 

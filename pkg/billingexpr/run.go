@@ -128,6 +128,29 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, params TokenP
 	if !ok {
 		return 0, trace, fmt.Errorf("expr result is %T, want float64", out)
 	}
+	// 非有限结果必须在这里就变成错误,不能当成一个"很大的数"往下走。
+	//
+	// 表达式语言里有除法,也接受任意大的字面量,所以 `1 / (cr - 4096)` 与
+	// `p * 1e308 * 10` 都能算出 ±Inf,`0/0` 与 `Inf-Inf` 能算出 NaN。这两类值
+	// 沿计费链往下走会各自变成一次事故,而且两次都不报错:
+	//
+	//   - 结算侧 common.QuotaRoundChecked(+Inf) 把它**饱和**成 common.MaxQuota,
+	//     于是一次请求扣掉整个额度上界(默认刻度下 ＄17,592,186),用户余额被
+	//     扣穿,日志里是一条正常的 200;
+	//   - 带工具附加费那一支走 decimal.NewFromFloat(±Inf),shopspring/decimal
+	//     对非有限值直接 **panic**。panic 发生在响应体已经写给客户端之后、
+	//     结算之前:客户端拿到完整回答,而这一笔既不结算、不记消费日志、也不退
+	//     预扣 —— 钱少了一截,账本上查无此单。
+	//
+	// 放在 runProgram 而不是各调用点,是因为这里是全部三条入口(RunExpr /
+	// RunExprByHash / 带 request 的两个变体)唯一的汇合处,漏一个调用点就等于
+	// 漏一条计费路径。返回错误之后两侧都恰好 fail-closed:预扣侧
+	// modelPriceHelperTiered 把它变成 400(不中继、不扣费),结算侧
+	// TryTieredSettle 回落到已预扣的那个诚实数额并让 result=nil,于是带附加费
+	// 那一支也走不进 decimal.NewFromFloat。
+	if math.IsInf(f, 0) || math.IsNaN(f) {
+		return 0, trace, fmt.Errorf("expr result is not a finite number (%v)", f)
+	}
 	return f, trace, nil
 }
 

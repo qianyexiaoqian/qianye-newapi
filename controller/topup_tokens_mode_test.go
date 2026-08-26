@@ -84,16 +84,28 @@ func TestStripeBoundsStayOrderedInTokensMode(t *testing.T) {
 	min, max := getStripeMinTopup(), getStripeMaxTopup()
 	require.Less(t, min, max,
 		"下界必须小于上界,否则 Stripe 充值在 TOKENS 模式下对任何金额都返回错误")
-	assert.Equal(t, getMaxTopup(), max,
-		"10000 个单位这条产品策略比结算侧能表示的额度还松,上界必须取小")
+	// 上界是两道闸的**较小者**:10000 个单位这条产品策略,与结算侧能表示的额度。
+	// 断言取小本身,而不是断言当下哪一道更紧 —— 后者随 common.MaxQuota 而变,
+	// 而"取小"是这段代码要守的不变量。
+	creditable := getMaxTopup()
+	productCap := int64(10000 * int(common.QuotaPerUnit))
+	want := productCap
+	if creditable < want {
+		want = creditable
+	}
+	assert.Equal(t, want, max, "上界必须是产品策略与结算侧容量的较小者")
 }
 
 // Stripe 报的上界必须与另外三条通道是同一个物理约束、同一个数。
 //
 // 上界原先是硬编码的 10000 个单位，与 getMaxTopup()（结算侧 CreditQuota 能表示
-// 的真实上界，默认单价下是 4294）互不知情：落在 4295..10000 的输入被第二道闸以
-// 「充值额度超出系统可表示范围」拒掉 —— 这句话不指向任何用户能做的动作，而
-// epay/waffo/pancake 三条路对同一个约束报的是「充值数量不能大于 4294」。
+// 的真实上界）互不知情：落在两者之间的输入被第二道闸以「充值额度超出系统可表示
+// 范围」拒掉 —— 这句话不指向任何用户能做的动作，而 epay/waffo/pancake 三条路对
+// 同一个约束报的是「充值数量不能大于 N」。
+//
+// 两个方向都要覆盖:common.MaxQuota 抬高之后,默认单价下更紧的那一道换成了
+// 产品策略;把 QuotaPerUnit 调大才能重新让结算侧更紧。用例按**哪一道更紧**
+// 分组,期望值一律由 common.MaxQuota 算出来。
 func TestStripeMaxTopupNeverExceedsTheCreditableCeiling(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -101,8 +113,11 @@ func TestStripeMaxTopupNeverExceedsTheCreditableCeiling(t *testing.T) {
 		quotaPerUnit float64
 		wantMax      int64
 	}{
-		{"USD 单价 500000:结算侧更紧", operation_setting.QuotaDisplayTypeUSD, 500000, 4294},
-		{"TOKENS 单价 500000:结算侧更紧", operation_setting.QuotaDisplayTypeTokens, 500000, 4294 * 500000},
+		{"USD 单价 1e9:结算侧更紧", operation_setting.QuotaDisplayTypeUSD, 1e9,
+			int64(common.MaxQuota-1) / 1_000_000_000},
+		{"TOKENS 单价 1e9:结算侧更紧", operation_setting.QuotaDisplayTypeTokens, 1e9,
+			int64(common.MaxQuota-1) / 1_000_000_000 * 1_000_000_000},
+		{"USD 单价 500000:10000 这条产品策略更紧", operation_setting.QuotaDisplayTypeUSD, 500000, 10000},
 		{"USD 单价 1:10000 这条产品策略更紧", operation_setting.QuotaDisplayTypeUSD, 1, 10000},
 	}
 

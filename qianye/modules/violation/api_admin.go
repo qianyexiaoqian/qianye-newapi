@@ -1286,7 +1286,7 @@ func applyRefundOnMainDB(tx *gorm.DB, rec *Record, amount int64) error {
 
 // creditWallet 把额度加回钱包。
 func creditWallet(tx *gorm.DB, userId int, amount int64) error {
-	// 加款前的上限校验:users.quota 是 int32,加爆会翻成负数,
+	// 加款前的上限校验:余额必须留出 amount 的余量,加爆会翻成负数,
 	// 那等于把误判赔偿变成账号清零。
 	res := tx.Model(&model.User{}).
 		Where("id = ? AND quota <= ?", userId, int64(common.MaxQuota)-amount).

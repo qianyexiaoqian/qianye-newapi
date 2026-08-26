@@ -51,7 +51,8 @@ type Withdrawal struct {
 	Status string `json:"status" gorm:"type:varchar(16);not null;index:idx_qy_wd_status,priority:1;index:idx_qy_wd_updated,priority:1"`
 
 	// Quota 是从佣金余额扣走的额度,也是 quota 方式下写进主库 users.quota 的值。
-	// 用 int64 承载,跨库前由 twophase 强制校验不超过 common.MaxQuota。
+	// 用 int64 承载,跨库前由 twophase 强制校验不超过 common.MaxQuota
+	// (全站额度换算的算术上界,不是列宽)。
 	Quota int64 `json:"quota" gorm:"not null;default:0"`
 
 	// ── 法币侧(method=fiat),全部在申请时冻结 ──────────────────────────

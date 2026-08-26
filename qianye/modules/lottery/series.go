@@ -2,7 +2,6 @@ package lottery
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -118,14 +117,19 @@ var (
 		"该期次系列正在被另一次操作修改,请刷新后重试")
 	errSeriesPoolShort = newBizError(http.StatusBadRequest, "qy_lot_series_pool_short",
 		"奖级表的最坏支出超过本期开局池子,请先注资或调低奖级")
+	// errSeriesPoolCeiling 与 errSeriesPoolShort 是**相反**的两件事,必须分开报。
+	//
+	// pool_short 说的是"池子不够大",处置是注资;这一条说的是"池子已经太大",
+	// 而注资只会让它更糟。合成一个码的代价实测过:一个滚存已经越过上界的系列
+	// 发布下一期时报 pool_short,文案写着「请先注资或调低奖级」—— 运营照做,
+	// 池子再涨一截,而任何奖级配置都救不了(判据 open > MaxQuota 是无条件的)。
+	errSeriesPoolCeiling = newBizError(http.StatusBadRequest, "qy_lot_series_pool_ceiling",
+		"本系列的滚存池已达额度上界,不能再注资 —— 再注资会让这个系列永久开不出新一期。"+
+			"请先开出几期把池子发下去,或关闭本系列")
 	errBadPickInput = newBizError(http.StatusBadRequest, "qy_lot_bad_pick",
 		"选号不合法:号码个数、取值范围或重复号有误")
 	errPickNotAllowed = newBizError(http.StatusBadRequest, "qy_lot_pick_not_allowed",
 		"本场活动不接受选号")
-	// errTooManyPicks 是"一次买太多注"。文案里必须带上那个数:一句
-	// "注数超出限制"会让用户去猜到底是几注,而下一个动作只能是二分试。
-	errTooManyPicks = newBizError(http.StatusBadRequest, "qy_lot_too_many_picks",
-		fmt.Sprintf("一次最多买 %d 注,请分几次提交", maxPicksPerRequest))
 	// errPickAndPicks 挡住"同时带 pick 与 picks"。
 	//
 	// 不做静默择一:两个字段说的是同一件事,而择一意味着有一半的请求买到的
@@ -150,9 +154,12 @@ var (
 // 唯一需要防的场景。
 func fundSeriesPool(tx *gorm.DB, seriesId, amount int64) error {
 	now := common.GetTimestamp()
+	// 滚存上界与发行上限一样必须写进**同一条**条件 UPDATE:先 SELECT 再判断
+	// (checkFundable)只负责给出精确的错误文案,两个管理员同时注资时各自读到
+	// 的都是旧值,只有这条语句里的条件才是执行点。
 	res := tx.Model(&Series{}).
-		Where("id = ? AND status = ? AND seed_total_quota + ? <= issue_cap_quota",
-			seriesId, SeriesOpen, amount).
+		Where("id = ? AND status = ? AND seed_total_quota + ? <= issue_cap_quota AND pool_quota + ? <= ?",
+			seriesId, SeriesOpen, amount, amount, int64(common.MaxQuota)).
 		Updates(map[string]any{
 			"seed_total_quota":   gorm.Expr("seed_total_quota + ?", amount),
 			"pool_quota":         gorm.Expr("pool_quota + ?", amount),
@@ -382,7 +389,7 @@ func buildSeries(ctx context.Context, in *seriesInput, createdBy int) (*Series, 
 	// 系列这一侧**不需要**二次确认:它的累计注资被下面那条 int32 夹死在
 	// common.MaxQuota 以内,而奖品档是 amount × count,count 才是让它变成
 	// 无上界的那个乘数。这里的手滑最多是一个 int32 上界的数,量级封顶。
-	// 再夹一次 int32:池子最终要过 twophase 的单笔 amount ≤ MaxQuota,而
+	// 再夹一次额度上界:池子最终要过 twophase 的单笔 amount ≤ MaxQuota,而
 	// checkBallPoolCovers 对 open > MaxQuota 的处置是**拒绝发布新一期** ——
 	// 一个配得过大的 issue_cap 会让系列在注满之后永久开不出新期,且没有任何
 	// 接口能把池子降回来。拦在创建期,那是唯一还能改的时刻。
@@ -507,6 +514,20 @@ func checkFundable(s *Series, amount int64) error {
 	}
 	if s.SeedTotalQuota+amount > s.IssueCapQuota {
 		return errSeriesCap
+	}
+	// 发行上限管的是**平台注资**,管不住滚存。
+	//
+	// pool_quota 除了注资还会从 settleSeriesPool 收回用户投注的入池部分
+	// (carry = open − committed),所以它可以在 seed_total 远低于 issue_cap
+	// 的情况下越过 common.MaxQuota。越过之后这个系列**永久开不出新一期**:
+	// checkBallPoolCovers 的 `open > MaxQuota` 是无条件的,任何奖级配置都救不了;
+	// 而唯一还能按的按钮(关闭系列)会把整池作废 —— 其中包含真实的用户投注。
+	// 实测复现过:issue_cap 顶格 + 一注真实投注滚存之后再注资一次,
+	// pool_quota = MaxQuota + 1,此后第 2 期发布恒定 400,没有任何接口能把池子降回来。
+	//
+	// 所以闸门必须落在**注资**这一刻 —— 那是这条链上唯一还能改的时刻。
+	if s.PoolQuota+amount > int64(common.MaxQuota) {
+		return errSeriesPoolCeiling
 	}
 	return nil
 }

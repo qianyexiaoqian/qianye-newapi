@@ -72,17 +72,23 @@ func quotaText(q int64) string {
 
 // quotaColumnCeilingText 是「填不了」那一档的**统一**说法。
 //
-// # 那个 ＄4294.967294 到底是什么
+// # 那个"系统上界"到底是什么
 //
-// 它是 common.MaxQuota(math.MaxInt32 = 2147483647)按 common.QuotaPerUnit
-// (默认 500000)换算出来的刻度。MaxQuota 是**全站额度换算的整数上界**:
-// common/quota_math.go 里每一处 quota 转换、饱和、四舍五入都以它为界,
-// 所有计费与账本口径都按它立的。它写死在代码里,没有任何配置项能抬高它。
+// 它是 common.MaxQuota 按 common.QuotaPerUnit(默认 500000)换算出来的刻度。
+// MaxQuota 是**全站额度换算的整数上界**:common/quota_math.go 里每一处 quota
+// 转换、饱和、四舍五入都以它为界,所有计费与账本口径都按它立的。它写死在
+// 代码里,没有任何配置项能抬高它。
 //
-// 这里刻意**不**说它是"数据库那一列的物理宽度"。上一版是这么写的,而那句话
+// 这里刻意**不**说它是"数据库那一列的物理宽度"。有一版是这么写的,而那句话
 // 经不起查:model/user.go 上的 `gorm:"type:int"` 在 MySQL 与 PostgreSQL 上
 // 落地成 bigint,SQLite 的 INTEGER 也是 8 字节 —— 运营一去查表就会发现每一列
 // 都是 64 位的,然后连带不再相信整条解释。给一个经不起查的理由比不给理由更糟。
+//
+// 项目方后来那句「不要几千 USD 太少了…余额都能设定几个亿了」问的正是这件事:
+// 那个 ＄4294.967294 是 math.MaxInt32 的刻度,而它当时的**理由**(列宽)是假的。
+// MaxQuota 已按真实约束重新推导 —— float64 / JS 的精确整数区间,与资金路径上
+// 最大的那个未经就地检查的乘数,两者取小 —— 现在是 2^43,默认刻度下
+// ＄17,592,186.04。文案里的数字一律现算(quotaText),这里一个都不写死。
 //
 // 它与站点自己配的那两道硬顶(max_stake_quota / max_total_prize_quota)
 // 在文案上必须分得开:
@@ -146,10 +152,13 @@ func tierBudgetShort(tier, count int, amount int64, entriesCap int) *bizError {
 // netIssueOverflowGuard 是 Σ(count × amount) 的**算术**护栏,不是业务上限。
 //
 // max_total_prize_quota 变成"默认不限"之后,这条累加就没有任何配置项夹着了:
-// count 的上界是 max_total_entries_hard、amount 的上界是 int32,两者都能被
-// YAML 配得离谱。int64 一旦绕回负数,后面每一道 `total > x` 的判定会**全部
-// 通过**,而一个负的总额还会让二次确认的回显判定变成"回显 0 即可" ——
+// count 的上界是 max_total_entries_hard、amount 的上界是 common.MaxQuota,
+// 两者都能被 YAML 配得离谱。int64 一旦绕回负数,后面每一道 `total > x` 的判定
+// 会**全部通过**,而一个负的总额还会让二次确认的回显判定变成"回显 0 即可" ——
 // 溢出在这里不是崩溃,是静默放行。
+//
+// 它与 MaxQuota 的推导是两道**互不替代**的防线:那边保证单个 amount 乘上
+// 名单规模不溢出,这边保证 Σ(count × amount) 这条**累加**不溢出。
 //
 // 取 int64 上界的 1/1024:约 9.0e15 额度,按默认刻度是一百八十亿美元,
 // 任何真实活动都够不着,而它离溢出还留着三个数量级的余量。

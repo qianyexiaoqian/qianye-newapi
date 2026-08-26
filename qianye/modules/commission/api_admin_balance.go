@@ -61,7 +61,7 @@ var (
 	// 结果是"改成了一个更坏的值"。
 	errWithdrawnOverEarned = errors.New("已提现额度不能超过历史累计已结算净额(该余额行已存在账本漂移)")
 	// errWithdrawnOverflow 守回退方向:调小已提现会把额度还回可提现,
-	// 而这些额度最终要流向主库的 int32 额度列。
+	// 而这些额度最终要流向主库的额度列,受 common.MaxQuota 约束。
 	errWithdrawnOverflow = errors.New("回退后的可提现额度会超过单账户额度上限")
 )
 

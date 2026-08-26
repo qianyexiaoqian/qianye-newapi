@@ -198,8 +198,8 @@ func getMinTopup() int64 {
 //
 // 分子是 MaxQuota-1 而不是 MaxQuota（同步自上游 47ba9d2c6 的 getMaxTopUpAmount）：
 // common/quota_math.go 的 saturateQuota 在 value >= MaxQuota 时就报错，所以可表示
-// 的最大额度是 MaxQuota-1。用 MaxQuota 做分子在 QuotaPerUnit==1 时会算出 2147483647，
-// 而这个数恰好换算失败 —— 上界自己放行了一个必然结算回滚的值。
+// 的最大额度是 MaxQuota-1。用 MaxQuota 做分子在 QuotaPerUnit==1 时会算出 MaxQuota
+// 本身，而这个数恰好换算失败 —— 上界自己放行了一个必然结算回滚的值。
 func getMaxTopup() int64 {
 	if common.QuotaPerUnit <= 0 {
 		return int64(common.MaxQuota - 1)
@@ -249,7 +249,7 @@ func topUpStoredAmount(amount int64) int64 {
 }
 
 // rejectInsufficientWalletCapacity 走 model.TopUp.CreditQuota —— 与结算侧**同一个
-// 函数** —— 把订单换算成到账额度，再校验它落在 int32 域内且钱包装得下。
+// 函数** —— 把订单换算成到账额度，再校验它落在 common.MaxQuota 之内且钱包装得下。
 //
 // 上游把这一步写成了 controller.getStripeCreditedQuota，与 model.Recharge 里的换算
 // 各写一份；这里改用 CreditQuota 是为了让「下单校验用的价」和「结算真正加的额度」

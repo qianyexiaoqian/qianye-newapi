@@ -147,6 +147,10 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 换封面**不限活动状态**:它不进任何哈希原像,因此是 publish 之后仍然
 	// 可写的极少数字段之一(理由见 api_admin_cover.go)。
 	g.PUT("/lottery/activities/:act_no/cover", crit, handleSetActivityCover)
+	// 「一次最多下多少注」同样不限活动状态,理由与封面同一条:它不进任何哈希
+	// 原像,也不改变任何人最终能拿到几张票 —— 它只决定同样这些票要分几次请求
+	// 买完(理由见 api_admin_picks.go)。奖档、时刻、参与条件永远不在此列。
+	g.PUT("/lottery/activities/:act_no/picks-cap", crit, handleSetPicksCap)
 	// 设定开奖结果是本模块**唯一**提到超级管理员的动作。
 	//
 	// 抽奖(draw)与双色球的结果来自建活动时就落库的 commit-reveal 随机源,

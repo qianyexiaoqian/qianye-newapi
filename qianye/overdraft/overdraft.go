@@ -78,7 +78,7 @@ type Report struct {
 	Accounts int64 `json:"accounts"`
 	// TotalOwed 是合计欠额,**恒 >= 0**(= -SUM(quota))。
 	//
-	// 用 int64 而不是 int:quota 列是 int32,单个账号欠额有上界,但全站合计没有。
+	// 用 int64 而不是 int:单个账号欠额被 common.MaxQuota 夹住,但全站合计没有上界。
 	TotalOwed int64 `json:"total_owed"`
 	// Deepest 是欠得最深的那个账号;没有负余额账号时为 nil。
 	//

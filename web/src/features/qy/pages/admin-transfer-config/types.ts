@@ -23,8 +23,9 @@ For commercial licensing, please contact support@quantumnous.com
  * 行键与 PUT 请求体的字段名，改一个字就写不进去。
  *
  * 取值全部是**整数**（划转没有百分比字段，`fee_bps` 本身就是万分比整数），
- * 因此这里可以安全地用 `number`：最大的 `min_quota` 上界是主库额度上限
- * 2147483647，远在 `Number.MAX_SAFE_INTEGER` 之内。
+ * 因此这里可以安全地用 `number`：最大的 `min_quota` 上界是全站额度上界
+ * `common.MaxQuota`（2^43），而那个数正是**按 `Number.MAX_SAFE_INTEGER`
+ * (2^53-1) 选的**——额度以 JSON 数字下发，越过它前端读到的就不是后端写下的数。
  */
 export type QyTransferEffective = {
   min_quota: number

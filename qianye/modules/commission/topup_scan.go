@@ -301,7 +301,7 @@ func topUpBaseQuota(t *model.TopUp) (int64, decimal.Decimal) {
 
 // quotaFromDecimal 把换算结果转成整数额度。
 //
-// 走 common 的饱和转换而不是裸 IntPart():主库额度列是 int32,
+// 走 common 的饱和转换而不是裸 IntPart():额度受 common.MaxQuota 约束,
 // 一个被篡改的订单金额不能变成负数额度,更不能成为负数佣金。
 func quotaFromDecimal(d decimal.Decimal) int64 {
 	v, clamp := common.QuotaFromDecimalChecked(d.Floor())

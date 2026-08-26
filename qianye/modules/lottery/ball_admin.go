@@ -220,9 +220,14 @@ func checkBallPoolCovers(tx *gorm.DB, act *Activity) error {
 		return errSeriesPoolShort
 	}
 	// 池子本身也必须落在单笔出款的容量之内:浮动奖独中时那一笔要过 twophase 的
-	// amount ≤ MaxQuota(int32)。越界时活动会永远收不了尾,拦在发布期。
+	// amount ≤ common.MaxQuota。越界时活动会永远收不了尾,拦在发布期。
+	//
+	// 报 errSeriesPoolCeiling 而不是 errSeriesPoolShort:两者的处置**相反**。
+	// pool_short 的文案是「请先注资或调低奖级」,而这一条越注资越糟,
+	// 奖级也救不了它(这个判据无条件)。合成一个码的实测后果是运营照着文案
+	// 反复注资,把一个已经开不出新期的系列推得更深。
 	if open > int64(common.MaxQuota) {
-		return errSeriesPoolShort
+		return errSeriesPoolCeiling
 	}
 	return nil
 }

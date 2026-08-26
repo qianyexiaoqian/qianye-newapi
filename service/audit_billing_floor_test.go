@@ -207,8 +207,16 @@ func TestViolationFeeQuotaSaturatesInsteadOfWrappingOrVanishing(t *testing.T) {
 		{name: "zero amount charges nothing", amount: 0, groupRatio: 1, want: 0},
 		{name: "negative amount charges nothing", amount: -1, groupRatio: 1, want: 0},
 		{name: "zero group ratio charges nothing", amount: 100, groupRatio: 0, want: 0},
-		// 以下四档在旧实现下分别是 5e11 / 5e18 / 53255926290448384 / 0。
-		{name: "1e6 saturates instead of writing 5e11", amount: 1e6, groupRatio: 1, want: common.MaxQuota},
+		// 以下几档在旧实现下分别是 5e11 / 5e18 / 53255926290448384 / 0。
+		// 5e11 现在落在 common.MaxQuota(2^43)以内,所以它的正确结果就是 5e11
+		// 本身 —— 这一档要钉的是"不再回绕成垃圾值",不是"一定被夹住"。
+		{name: "1e6 is representable and passes through", amount: 1e6, groupRatio: 1, want: 500_000_000_000},
+		// 上界两侧各一格:QuotaPerUnit=500000 时最后一个可表示的 amount 是
+		// (MaxQuota-1)/500000 = 17592186,再多一美元就必须饱和。
+		{name: "one unit below the bound passes through", amount: float64((common.MaxQuota - 1) / 500_000),
+			groupRatio: 1, want: (common.MaxQuota - 1) / 500_000 * 500_000},
+		{name: "one unit above the bound saturates", amount: float64((common.MaxQuota-1)/500_000 + 1),
+			groupRatio: 1, want: common.MaxQuota},
 		{name: "1e13 saturates", amount: 1e13, groupRatio: 1, want: common.MaxQuota},
 		{name: "3.7e13 saturates instead of wrapping to garbage", amount: 3.7e13, groupRatio: 1, want: common.MaxQuota},
 		{name: "1.9e13 saturates instead of vanishing to zero", amount: 1.9e13, groupRatio: 1, want: common.MaxQuota},
@@ -220,7 +228,7 @@ func TestViolationFeeQuotaSaturatesInsteadOfWrappingOrVanishing(t *testing.T) {
 			got := calcViolationFeeQuota(tc.amount, tc.groupRatio)
 			assert.Equal(t, tc.want, got)
 			assert.GreaterOrEqual(t, got, 0, "a fine must never be negative")
-			assert.LessOrEqual(t, got, common.MaxQuota, "a fine must never exceed the int32 quota bound")
+			assert.LessOrEqual(t, got, common.MaxQuota, "a fine must never exceed common.MaxQuota")
 		})
 	}
 }

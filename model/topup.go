@@ -64,14 +64,15 @@ var (
 	// errors.Is 分辨，只能靠字符串比对。同步自上游 47ba9d2c6。
 	ErrInvalidTopUpQuota = errors.New("invalid top-up quota")
 	// ErrTopUpQuotaLimitExceeded 到账额度本身合法，但加到收款人现有余额上会
-	// 越过 int32 额度域。
+	// 越过 common.MaxQuota。
 	ErrTopUpQuotaLimitExceeded = errors.New("top-up quota limit exceeded")
 )
 
 // topUpQuotaMaxCurrent 返回「收到这笔 creditedQuota 之前，钱包余额最多能是多少」。
 //
-// 额度列是 int32，可表示的最大值是 common.MaxQuota-1（common.QuotaFromDecimalStrict
-// 在 value >= MaxQuota 时报错，见 common/quota_math.go 的 saturateQuota）。
+// 全站可表示的最大额度是 common.MaxQuota-1（common.QuotaFromDecimalStrict 在
+// value >= MaxQuota 时报错，见 common/quota_math.go 的 saturateQuota）。那是一条
+// 算术上界，不是列宽：三个方言上 users.quota 都是 64 位列。
 func topUpQuotaMaxCurrent(creditedQuota int) (int, error) {
 	if creditedQuota <= 0 || creditedQuota >= common.MaxQuota {
 		return 0, ErrInvalidTopUpQuota

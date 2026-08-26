@@ -51,10 +51,12 @@ func TestGetMaxTopupMatchesSettlementCeiling(t *testing.T) {
 		quotaPerUnit float64
 		want         int64
 	}{
-		{"USD 展示按单位数", operation_setting.QuotaDisplayTypeUSD, 500000, 4294},
-		{"CNY 展示同口径", operation_setting.QuotaDisplayTypeCNY, 500000, 4294},
-		{"TOKENS 展示按 tokens", operation_setting.QuotaDisplayTypeTokens, 500000, 4294 * 500000},
-		{"额度单位更小时上界更高", operation_setting.QuotaDisplayTypeUSD, 1000, 2147483},
+		// 与 TestGetMaxTopupNeverAllowsAnUncreditableAmount 同一条理由:期望值
+		// 由 common.MaxQuota 算出来,不抄常量。
+		{"USD 展示按单位数", operation_setting.QuotaDisplayTypeUSD, 500000, int64((common.MaxQuota - 1) / 500000)},
+		{"CNY 展示同口径", operation_setting.QuotaDisplayTypeCNY, 500000, int64((common.MaxQuota - 1) / 500000)},
+		{"TOKENS 展示按 tokens", operation_setting.QuotaDisplayTypeTokens, 500000, int64((common.MaxQuota-1)/500000) * 500000},
+		{"额度单位更小时上界更高", operation_setting.QuotaDisplayTypeUSD, 1000, int64((common.MaxQuota - 1) / 1000)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			useQuotaDisplayType(t, tc.displayType, tc.quotaPerUnit)
@@ -230,17 +232,20 @@ func TestUpdateRedemptionWritesManageAudit(t *testing.T) {
 func TestRequestEpayRejectsAmountsAboveSettlementCeiling(t *testing.T) {
 	useQuotaDisplayType(t, operation_setting.QuotaDisplayTypeUSD, 500000)
 
+	// 上界与越界那一格都由 common.MaxQuota 算出来,不抄常量。
+	atLimit := int64((common.MaxQuota - 1) / 500000)
+
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/user/pay",
-		strings.NewReader(`{"amount":4295,"payment_method":"alipay"}`))
+		strings.NewReader(fmt.Sprintf(`{"amount":%d,"payment_method":"alipay"}`, atLimit+1)))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("id", 4242)
 
 	RequestEpay(c)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "充值数量不能大于 4294",
+	assert.Contains(t, rec.Body.String(), fmt.Sprintf("充值数量不能大于 %d", atLimit),
 		"上界必须在下单这一步就挡住,再往后任何一步都救不回来")
 }

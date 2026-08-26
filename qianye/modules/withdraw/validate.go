@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
 )
 
 // 收款渠道。
@@ -156,6 +157,17 @@ func acceptCreate(req createRequest, cfg config.Withdraw) (acceptedRequest, erro
 	if len(idem) < 8 || len(idem) > 64 {
 		return acceptedRequest{}, errIdemKeyRequired
 	}
+	// 字符集收紧 + 大小写折叠,理由见 qymodel.NormalizeIdemClientKey:
+	// 这一段是客户端可控的,而它进的是唯一索引。MySQL 的库默认排序规则
+	// 大小写不敏感、还重音不敏感,PostgreSQL / SQLite 按字节比较 ——
+	// 不折叠的话,同一个人先后用 "wd-a" 与 "WD-A" 提两张全新申请,
+	// MySQL 上第二张被当成重放返回第一张的单据,PostgreSQL 上冻结两次佣金。
+	// 折叠之后三方言一律按 MySQL(生产方言)的语义走,行为不变。
+	folded, ok := qymodel.NormalizeIdemClientKey(idem)
+	if !ok {
+		return acceptedRequest{}, errIdemKeyRequired
+	}
+	idem = folded
 
 	method := strings.TrimSpace(req.Method)
 	if !cfg.HasWithdrawMethod(method) {
@@ -165,7 +177,8 @@ func acceptCreate(req createRequest, cfg config.Withdraw) (acceptedRequest, erro
 	if req.Quota <= 0 || req.Quota > int64(common.MaxQuota) {
 		return acceptedRequest{}, errAmountOutOfRange
 	}
-	// 单笔上限必须在这里拦。只靠 common.MaxQuota 的话,上界就是主库 int32 容量:
+	// 单笔上限必须在这里拦。只靠 common.MaxQuota 的话,上界就是全站额度换算的
+	// 算术上界:
 	// 一个长期累积的邀请人可以一次申请 20 亿额度,把整个佣金池冻在一张单上。
 	// 申请即冻结不构成超发,但它会让运营在一张单面前直接失去处置空间。
 	if cfg.MaxQuotaPerOrder > 0 && req.Quota > cfg.MaxQuotaPerOrder {

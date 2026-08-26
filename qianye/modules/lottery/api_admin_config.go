@@ -164,9 +164,18 @@ func handleGetConfig(c *gin.Context) {
 			"reveal_delay_seconds":         cfg.RevealDelaySeconds,
 			"payout_max_attempts":          cfg.PayoutMaxAttempts,
 			"max_total_entries_hard":       cfg.MaxTotalEntriesHard,
-			"max_prize_tiers":              cfg.MaxPrizeTiers,
-			"max_options":                  cfg.MaxOptions,
-			"max_stake_quota":              cfg.MaxStakeQuota,
+			// 「一次最多下多少注」那一格的三个常量。创建向导要拿它们渲染
+			// 默认值、上界,以及**这一格真正的代价**:N 注在服务端是 N 次串行
+			// 扣费,估时 = N × entry_batch_ms_per_pick,而整批被
+			// entry_batch_max_ms 截断。前端写死一份同名常量的下场,是后端调整
+			// 之后界面上继续印着一个不再成立的秒数。
+			"max_picks_per_request_default": defaultPicksPerRequest,
+			"max_picks_per_request_hard":    maxPicksPerRequestHard,
+			"entry_batch_max_ms":            cfg.EntryBatchMaxMs,
+			"entry_batch_ms_per_pick":       measuredMsPerPick,
+			"max_prize_tiers":               cfg.MaxPrizeTiers,
+			"max_options":                   cfg.MaxOptions,
+			"max_stake_quota":               cfg.MaxStakeQuota,
 			// system_max_quota 是**全站额度换算的整数上界**(common.MaxQuota,
 			// 由代码写死),不是 YAML 里的一项。放在这一段是因为它与这一段的其余键
 			// 共享同一个性质:管理员改不了。

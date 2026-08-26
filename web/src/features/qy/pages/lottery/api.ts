@@ -49,10 +49,24 @@ export const QY_LOT_PAGE_SIZE = 12
  */
 export type QyLotHallPhase = 'ended' | 'live'
 
+/**
+ * 大厅的三张选择夹。**参数名与取值必须与后端 `hallLanes` 逐字一致**。
+ *
+ * ── 为什么参数名是 `lane` 而不是 `kind` ──
+ * 取值与 `kind` 长得一样（`draw` / `guess`），语义却不同：`lane='draw'` 恰好
+ * **排除**双色球，而 `kind='draw'` 包含它。两个同名不同义的参数并存，迟早有人
+ * 按 `kind` 的直觉去读 `lane` 的值，而那次误读在界面上的表现是「双色球标签里
+ * 长出了普通抽奖」—— 接口 200、列表非空、没有任何一处报错。
+ *
+ * 后端对未登记的取值一律 400（`qy_lot_bad_lane`），与 `phase` 同一条纪律。
+ */
+export type QyLotHallLane = 'ball' | 'draw' | 'guess'
+
 export type QyLotActivityListParams = {
   p: number
   page_size: number
-  kind?: string
+  /** `draw` = 按名次/按公示概率，`ball` = 双色球，`guess` = 竞猜。 */
+  lane?: QyLotHallLane
   /** `live` = 进行中（published/locked/settling），`ended` = 已结束。 */
   phase?: QyLotHallPhase
 }

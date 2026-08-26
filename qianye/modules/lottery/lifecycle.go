@@ -1112,7 +1112,8 @@ var chainAuditCursor int64
 func auditFinishedChains(ctx context.Context, gdb *gorm.DB) {
 	var rows []Activity
 	err := gdb.WithContext(ctx).
-		Select("id, act_no, entry_seq, chain_head, pool_quota, active_count").
+		Select("id, act_no, status, entry_seq, chain_head, pool_quota, active_count, "+
+			"algo, commit_hash, roster_hash, roster_count, payout_quota, refund_quota").
 		Where("status = ? AND id > ?", StatusFinished, chainAuditCursor).
 		Order("id asc").Limit(batchPerRound * 10).Find(&rows).Error
 	if err != nil {
@@ -1129,6 +1130,11 @@ func auditFinishedChains(ctx context.Context, gdb *gorm.DB) {
 			return
 		}
 		checkMaterializedInvariants(ctx, gdb, &rows[i])
+		// 名单承诺与收支三口径在活动结束之后同样要复核 —— 那正是历史公正
+		// 查询的全部内容,而 checkMaterializedInvariants 刻意只查三个 O(1) 量,
+		// 覆盖不到"总额守恒的中间改动"与"活动行上的钱说谎"。
+		checkRosterIntegrity(ctx, gdb, &rows[i])
+		checkPayoutTotals(ctx, gdb, &rows[i])
 	}
 }
 
@@ -1226,8 +1232,76 @@ func checkMaterializedInvariants(ctx context.Context, gdb *gorm.DB, act *Activit
 	}
 }
 
+// checkRosterIntegrity 复核已公开的名单承诺。
+//
+// 名单一经公开就不该再变,重算比对是它被事后改动的**唯一**自动检出手段。
+// 单独拆出来是因为它必须在两条扫描路径上各跑一次:runReconcile 只扫
+// published/locked/settling,而 auditFinishedChains 此前只调
+// checkMaterializedInvariants —— 后者刻意不重推整条链,只校验三个 O(1) 量
+// (条目数==entry_seq、max(seq)==entry_seq、链尾==chain_head)。于是对一场
+// **已结束**活动改动中间某条参与的 amount/user_ref/opt_no/pick:只要总额守恒,
+// 奖池与计数不动、条目数与 max(seq) 不动、链尾(存的是活动行上那个串)不动,
+// 平台侧零告警;而任何第三方按公开 proof 复算 roster_hash 都会得到 FAIL。
+// 受控实验证过:守恒篡改之后 5 分钟 5 轮对账一条 flag 都没有,而同一时刻
+// 匿名 proof 端点公布的数据算出来的名单哈希已经对不上。
+func checkRosterIntegrity(ctx context.Context, gdb *gorm.DB, act *Activity) {
+	if act.RosterHash == "" {
+		return
+	}
+	roster, err := loadRoster(ctx, gdb, act.Id)
+	if err != nil {
+		return
+	}
+	hash, count := RosterHashFor(act.Algo, act.ActNo, act.CommitHash, rosterLines(roster))
+	if hash != act.RosterHash || count != act.RosterCount {
+		raiseFlag(ctx, act.Id, FlagRosterDrift, fmt.Sprintf(
+			"重算名单 %s(%d) 与已公开 %s(%d) 不一致",
+			hash, count, act.RosterHash, act.RosterCount))
+	}
+}
+
+// checkPayoutTotals 复核活动行上的收支三口径与出款表是否对得上。
+//
+// payout_quota / refund_quota 是管理端「本场收支」直读的两列(net_quota 由它们
+// 算出),而此前没有任何一条对账不变量覆盖它们 —— 见 FlagTotalsDrift。
+// 只在 finished / settling 上跑:收尾前出款还在陆续落定,比对必然漂移。
+func checkPayoutTotals(ctx context.Context, gdb *gorm.DB, act *Activity) {
+	if act.Status != StatusFinished && act.Status != StatusSettling {
+		return
+	}
+	var rows []struct {
+		Kind  string
+		Total int64
+	}
+	if err := gdb.WithContext(ctx).Model(&Payout{}).
+		Select("kind, COALESCE(SUM(amount_quota), 0) AS total").
+		Where("act_id = ? AND status = ?", act.Id, PayoutPaid).
+		Group("kind").Scan(&rows).Error; err != nil {
+		db.MarkFailure(err)
+		return
+	}
+	var prize, refund int64
+	for _, r := range rows {
+		switch r.Kind {
+		case PayoutPrize, PayoutWin:
+			prize += r.Total
+		case PayoutRefund:
+			refund += r.Total
+		}
+	}
+	if prize != act.PayoutQuota {
+		raiseFlag(ctx, act.Id, FlagTotalsDrift, fmt.Sprintf(
+			"重算已付奖金 %d 与活动行上的 payout_quota %d 不一致", prize, act.PayoutQuota))
+	}
+	if refund != act.RefundQuota {
+		raiseFlag(ctx, act.Id, FlagTotalsDrift, fmt.Sprintf(
+			"重算已付退款 %d 与活动行上的 refund_quota %d 不一致", refund, act.RefundQuota))
+	}
+}
+
 func reconcileActivity(ctx context.Context, gdb *gorm.DB, act *Activity) {
 	checkMaterializedInvariants(ctx, gdb, act)
+	checkPayoutTotals(ctx, gdb, act)
 
 	// 奖档表一经发布就不该再变 —— 开奖前那道拒绝(checkSpecIntegrity)只在
 	// locked → settling 那一瞬间跑过一次,而改动可以发生在它之后:改 amount_quota
@@ -1245,19 +1319,7 @@ func reconcileActivity(ctx context.Context, gdb *gorm.DB, act *Activity) {
 		}
 	}
 
-	// 名单一经公开就不该再变。重算比对是它被事后改动的唯一自动检出手段。
-	if act.RosterHash != "" {
-		roster, err := loadRoster(ctx, gdb, act.Id)
-		if err != nil {
-			return
-		}
-		hash, count := RosterHashFor(act.Algo, act.ActNo, act.CommitHash, rosterLines(roster))
-		if hash != act.RosterHash || count != act.RosterCount {
-			raiseFlag(ctx, act.Id, FlagRosterDrift, fmt.Sprintf(
-				"重算名单 %s(%d) 与已公开 %s(%d) 不一致",
-				hash, count, act.RosterHash, act.RosterCount))
-		}
-	}
+	checkRosterIntegrity(ctx, gdb, act)
 
 	// 卡住的出款。held 单独计数:它已经转人工,但必须持续可见 ——
 	// 只在转人工那一刻告警一次,红点会在管理员下次打开页面前就被日志滚走。

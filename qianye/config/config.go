@@ -770,7 +770,7 @@ type Lottery struct {
 	// 放开它的理由:参与费是**用户自己付**的钱,配得离谱的后果是没人报名,
 	// 不构成资损。真正会造成资损的是奖品金额,而那一侧现在由
 	// LargePrizeAlertQuota 的二次确认盯着(见 qianye/modules/lottery/caps.go)。
-	// 一次扣款的绝对上界仍然是 int32(common.MaxQuota),那是全站额度换算的
+	// 一次扣款的绝对上界仍然是 common.MaxQuota,那是全站额度换算的
 	// 整数上界(代码写死,不是任何一列的宽度),不受本项影响。
 	MaxStakeQuota int64 `yaml:"max_stake_quota"`
 	// MaxTotalPrizeQuota 是单场奖品总额度 Σ(count × amount) 的硬顶。
@@ -797,6 +797,26 @@ type Lottery struct {
 	// 盗号者能用"参与抽奖"把余额烧光而不留下划转/提现痕迹。
 	PayPasswordThresholdQuota int64 `yaml:"pay_password_threshold_quota"`
 
+	// ── 文本奖兑换码的静态加密(与 withdraw.pii_key 三件套**同规格**)──
+	//
+	// qy_lot_payout.secret_cipher 存的是管理员为中奖者填进去的实际兑换码。
+	// 它此前是**明文直存**(key_version 恒 0、nonce 恒 NULL),而同一个扩展库
+	// 里性质相同的两处 —— qy_withdrawal_payee_accounts(收款账号)与
+	// qy_violation_ai_channel(渠道密钥)—— 都是真密文。也就是说列名叫
+	// cipher,内容任何拿到库备份/只读账号的人都能直接读走。
+	//
+	// PrizeSecretKey 为空时保持明文(key_version=0),这是**刻意的**向后兼容:
+	// 强制要求它会让每一个现存部署在升级那一刻 FATAL 退出,而那是破坏性变更。
+	// 空值会在自检里报一条告警,配上之后**新写入**的码即刻加密,历史的 v0 行
+	// 仍然读得出来(openPrizeSecret 按行上的版本号选路径)。
+	//
+	// 轮换步骤与 withdraw 逐字相同:把当前 key 连同它的 version 搬进
+	// prize_secret_keys_retired,再填新的 key 与更大的 version。少了搬运那一步,
+	// 已履行的兑换码会全部变成不可读。
+	PrizeSecretKey         string         `yaml:"prize_secret_key"`
+	PrizeSecretKeyVersion  int            `yaml:"prize_secret_key_version"`
+	PrizeSecretKeysRetired map[int]string `yaml:"prize_secret_keys_retired"`
+
 	// EntryCloseGraceSeconds 是封盘前停止受理新报名的提前量,给两阶段的
 	// pending 单留出收敛窗口,让"封盘时还有未决参与"降到近零。
 	EntryCloseGraceSeconds int `yaml:"entry_close_grace_seconds"`
@@ -814,9 +834,22 @@ type Lottery struct {
 
 	// MaxTotalEntriesHard 是名单规模上界:冻结要在单个事务里流式算完。
 	MaxTotalEntriesHard int `yaml:"max_total_entries_hard"`
-	MaxPrizeTiers       int `yaml:"max_prize_tiers"`
-	MaxOptions          int `yaml:"max_options"`
-	DefaultGuessFeeBps  int `yaml:"default_guess_fee_bps"`
+	// EntryBatchMaxMs 是**一次多注提交**整批的时间预算上界(毫秒)。
+	//
+	// 双色球一次买 N 注在服务端是 N 次串行的扣费(每一注一张独立资金单、一条
+	// 链环、一份可复算回执),所以耗时与 N 成正比:本机实测 999 注约 36 秒。
+	// 预算按 N 线性给,但必须封顶 —— 一个不封顶的预算就是一个不封顶的 HTTP
+	// 请求,而请求在反向代理的读超时那一刻被切断时,服务端仍在逐注扣钱,
+	// 用户拿到的是 504 而钱已经扣了。
+	//
+	// 默认 45000,刻意留在常见反代默认读超时(60 秒)之下。**这一项要按部署方
+	// 自己的反代读超时配**:反代更严格时把它调小,后半批会被安全截断
+	// (前面每一注都已落定、后面的一分钱没扣,回执里的 accepted / failed_code
+	// 把这件事说清楚),而不是变成一次"扣了钱没有回执"。
+	EntryBatchMaxMs    int `yaml:"entry_batch_max_ms"`
+	MaxPrizeTiers      int `yaml:"max_prize_tiers"`
+	MaxOptions         int `yaml:"max_options"`
+	DefaultGuessFeeBps int `yaml:"default_guess_fee_bps"`
 	// MaxGuessFeeBps 防运营把 5% 手滑打成 50%。
 	MaxGuessFeeBps int `yaml:"max_guess_fee_bps"`
 
@@ -864,6 +897,27 @@ func (l Lottery) CoverOn() bool { return boolOr(l.CoverEnabled, true) }
 // 它搬到 config 包里供校验器引用 —— config 是被 imagestore 依赖的一方,
 // 不能反向 import。
 const MaxLotteryCoverBytes = 8 << 20
+
+// MaxLotteryEntriesHard 是 lottery.max_total_entries_hard 的硬上界,而且它是
+// **common.MaxQuota 那条推导的一个输入**,不只是一条运维护栏。
+//
+// 名单规模是全站唯一一个乘在额度上却没有就地溢出检查的整数:
+// api_admin.go 的 estimate 会算 `hit * p.AmountQuota`,其中 hit ≤ 全场参与上限
+// ≤ 本常量,而 AmountQuota ≤ common.MaxQuota。那条乘法落在 int64 上,没有
+// 任何 Checked 变体接住它 —— 于是「额度上界 × 名单上界 ≤ MaxInt64」必须由
+// 这两个常量**共同**保证,少了任何一边都不成立。
+//
+// common/quota_math.go 取 MaxQuota = 2^43,正好比 MaxInt64 / 2^19 = 2^44 低一档,
+// 于是最坏乘积落在 2^62(MaxInt64 的一半)而不是压线。那里的编译期断言引用的
+// common.MaxQuotaWorstMultiplier 就是本常量的镜像,两边由
+// TestQuotaWorstMultiplierMirrorsLotteryEntriesHardCap 逐值钉在一起,谁先漂移谁先红。
+// (在此之前那句话是假的:镜像常量当时未导出,没有任何测试叫得出它的名字,
+// 而 TestLotteryEntriesHardCapMatchesQuotaBound 断言的是**乘积** ≤ 2^62 ——
+// 那是另一条命题。单独把镜像砍半在当时能编译、能全绿,而它会把编译期断言
+// 放宽一倍,足以让 MaxQuota 被抬到 2^44,那里最坏乘积就是 int64 回绕。)
+//
+// 2^19 ≈ 52.4 万,是默认值 50000 的十倍:没有任何现存配置会被它拦下。
+const MaxLotteryEntriesHard = 1 << 19
 
 // ───────────────────────────── 布尔取值辅助 ─────────────────────────────
 //

@@ -153,6 +153,17 @@ const QY_DYNAMIC_KEYS = [
   'qy_ai_guard_cat_politically_sensitive_topics',
   'qy_ai_guard_cat_copyright_violation',
   'qy_ai_guard_cat_jailbreak',
+  // 三张大厅选择夹（抽奖 / 竞猜 / 双色球）空态那句话。大厅列表写的是
+  // `t(QY_LOT_EMPTY_DESC_KEY[props.lane])`（按 lane 查表），字面量扫描器
+  // 看不见。清单对齐 `pages/lottery/components/lottery-hall-list.tsx` 里那张
+  // `Record<QyLotHallLane, string>`，而它的键由类型系统钉死为恰好三个。
+  //
+  // 空态是这一屏唯一还在说话的地方：缺键时它渲染成裸键 `qy_lot_empty_ball_desc`，
+  // 而这一屏只在"这一夹一场活动都没有"时才出现 —— 平时点不到，正是最容易漏译
+  // 又最难被发现的那一类。
+  'qy_lot_empty_draw_desc',
+  'qy_lot_empty_ball_desc',
+  'qy_lot_empty_guess_desc',
 ]
 
 /**

@@ -97,6 +97,13 @@ type activityInput struct {
 	Prizes  []prizeInput  `json:"prizes"`
 	Options []optionInput `json:"options"`
 
+	// MaxPicksPerRequest 是"一次提交最多买几注"(只有双色球用得上)。
+	//
+	// 它刻意不在 Rules 里 —— 那一整块进 rules_hash 进而进 commit_hash、发布后
+	// 冻结,而这一格不影响任何人最终能拿到几张票、也不影响开奖,理由写在
+	// Activity.MaxPicksPerRequest 上。零值 = 没配过 = 默认 10,不是"不限"。
+	MaxPicksPerRequest int `json:"max_picks_per_request"`
+
 	// ConfirmNetIssueQuota 是"我看清了这场活动最坏会发出多少站内余额"的回执。
 	//
 	// 只在奖品总额 Σ(count × amount) 达到 large_prize_alert_quota 时才被读;
@@ -1495,6 +1502,9 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 		// 而不是"不限制"。
 		rules.MaxTotalEntries = cfg.MaxTotalEntriesHard
 	}
+	if err := checkPicksPerRequest(in.MaxPicksPerRequest); err != nil {
+		return nil, nil, nil, err
+	}
 	rulesText, err := rules.CanonicalText()
 	if err != nil {
 		return nil, nil, nil, wrapInternal("序列化参与条件", err)
@@ -1526,6 +1536,10 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 		MaxPerInviter:      rules.MaxPerInviter,
 		CooldownSeconds:    rules.CooldownSeconds,
 		DedupIp:            rules.DedupIp,
+		// 原样落库,**不在这里回填默认 10**:0 的意思是"没配过",而回填会让
+		// 这一列再也分不出"运营明确要 10"与"运营没碰过这一格"。默认在读的时候
+		// 由 picksCapOf 给,只有一处。
+		MaxPicksPerRequest: in.MaxPicksPerRequest,
 		CreatedBy:          createdBy,
 		CreatedAt:          common.GetTimestamp(),
 		UpdatedAt:          common.GetTimestamp(),
@@ -2062,6 +2076,10 @@ func draftUpdates(a *Activity) map[string]any {
 		"max_per_inviter":       a.MaxPerInviter,
 		"cooldown_seconds":      a.CooldownSeconds,
 		"dedup_ip":              a.DedupIp,
+		// 单次批量上限。它不进任何哈希原像,所以草稿期改它与发布后改它是同一件事
+		// (后者走 handleSetPicksCap),但草稿保存这条路也必须写它 —— 漏掉的表现是
+		// 「在创建向导里填了 200,保存后再打开还是 10」。
+		"max_picks_per_request": a.MaxPicksPerRequest,
 		"updated_at":            common.GetTimestamp(),
 
 		// 定档方式与双色球的号池绑定也要能在草稿期改。池子那三个数**不在这里**:

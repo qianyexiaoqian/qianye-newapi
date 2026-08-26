@@ -2,6 +2,7 @@ package controller
 
 import (
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -14,8 +15,8 @@ import (
 // 兑换码面值必须有上界，而且上下界要在建码与改码两侧同时成立。
 //
 // quota 是 Go int（64 位），库里 redemptions.quota 与 users.quota 都是 bigint，
-// 而全站的额度语义上界是 common.MaxQuota（= math.MaxInt32）：所有计费换算、
-// 日志/令牌列、饱和判据都按 int32 立的。没有这道闸时一个 role=10 管理员可以铸出
+// 而全站的额度语义上界是 common.MaxQuota —— 那是一条**算术**上界（见
+// common/quota_math.go 的推导），不是列宽。没有这道闸时一个 role=10 管理员可以铸出
 // 面额 MaxInt64 的码，兑换后 users.quota 直接等于 9223372036854775807 ——
 // 之后任意一次 Go 侧的 `user.Quota += x`（aff_transfer 实测）都会静默回绕成约
 // -9.2e18 的负余额，接口仍返回 success。
@@ -46,7 +47,11 @@ func TestRedemptionQuotaIsBoundedOnBothWriteSides(t *testing.T) {
 			CreatedTime: common.GetTimestamp(), ProductType: model.RedemptionProductQuota,
 		})
 
-		rec := callUpdateRedemption(t, "", `{"id":990302,"name":"qy-bound2","quota":2147483647,"expired_time":0}`)
+		// 面值直接由 common.MaxQuota 拼出来:写死一个数就等于把这条闸门的
+		// 边界抄成常量,MaxQuota 改一次这个"恰好等于上界"的用例就变成了
+		// "上界以内的随便一个数",而它本来要证的正是边界本身可用。
+		rec := callUpdateRedemption(t, "", `{"id":990302,"name":"qy-bound2","quota":`+
+			strconv.Itoa(common.MaxQuota)+`,"expired_time":0}`)
 		require.Equal(t, http.StatusOK, rec.Code)
 		require.Contains(t, rec.Body.String(), `"success":true`, "上界本身必须可用,否则这是一道错位的闸")
 

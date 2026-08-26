@@ -329,7 +329,7 @@ func loadParties(acc acceptedRequest, cfg config.Transfer, rules groupRuleSet) (
 //   - 两行按 user id 升序加锁,否则 A→B 与 B→A 并发会在主库形成死锁环
 //   - 扣款必须带 WHERE quota >= ? 并检查 RowsAffected;主库可能是 SQLite,
 //     那里 lockForUpdate 是空操作,CAS 条件是唯一的正确性保障
-//   - 加款必须带上限条件:users.quota 是 int32,上游全无溢出校验
+//   - 加款必须带上限条件:common.MaxQuota 是额度换算的算术上界,上游全无溢出校验
 //   - 绝不调用 user.Update()/IncrementUserAuthVersionWithTx —— 那会吊销双方会话
 func applyQuotaTransfer(tx *gorm.DB, acc acceptedRequest, cfg config.Transfer, rules groupRuleSet, snap *quotaSnapshot) error {
 	first, second := acc.FromUserId, acc.ToUserId

@@ -232,6 +232,7 @@ PUT /api/qy/admin/group-namespace/user-groups/:name
 PUT /api/qy/admin/group-namespace/user-groups/:name/default
 PUT /api/qy/admin/lottery/activities/:act_no
 PUT /api/qy/admin/lottery/activities/:act_no/cover
+PUT /api/qy/admin/lottery/activities/:act_no/picks-cap
 PUT /api/qy/admin/lottery/config
 PUT /api/qy/admin/restricted-notice
 PUT /api/qy/admin/subscription/plans/:plan_id/entitlement

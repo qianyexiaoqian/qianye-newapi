@@ -339,7 +339,7 @@ func validateFreezeArgs(tx *gorm.DB, userId int, quota int64, refNo string) erro
 	if userId <= 0 || refNo == "" {
 		return ErrInvalidAmount
 	}
-	// 上界校验必不可少:这笔额度最终会流向主库的 int32 额度列,
+	// 上界校验必不可少:这笔额度最终会流向主库的额度列(上界 common.MaxQuota),
 	// 越界值在那里会静默溢出成负数。
 	if quota <= 0 || quota > int64(common.MaxQuota) {
 		return ErrInvalidAmount

@@ -101,7 +101,7 @@ const (
 type settingBound struct{ Lo, Hi int64 }
 
 var settingBounds = map[string]settingBound{
-	// 金额类一律夹在主库额度上限内:users.quota 是 int32,
+	// 金额类一律夹在 common.MaxQuota 这条额度换算上界内,
 	// 一个超过 MaxQuota 的门槛不是"更宽松",是"永远无法满足"。
 	keyMinQuota:      {0, int64(common.MaxQuota)},
 	keyMaxPerTxQuota: {0, int64(common.MaxQuota)},

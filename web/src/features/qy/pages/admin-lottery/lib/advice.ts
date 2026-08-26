@@ -137,38 +137,54 @@ export function qyLotPoolShareHeadroom(
 }
 
 /**
- * 竞猜单注上限的推荐值 = 单注额 × {@link QY_LOT_BET_MAX_MULTIPLE}。
+ * 竞猜单注上限：**本文件刻意不给它推荐值**，理由与其余每一格给推荐值的理由
+ * 是同一条。
  *
- * ## 为什么给一个非零默认值，而不是只加一句提醒
+ * 上一版这里有一个 `qyLotRecommendedBetMax = 单注额 × 20`，文案写着
+ * 「一个大户最多顶 20 个按单注额下注的普通参与者」。它被整个删掉，
+ * 因为那句话经不起查，而且它错的方向恰好是最坏的那一个。
  *
- * `0 = 不限` 是后端的 wire 语义，改不得（改了会让所有已经配过 0 的活动换一个
- * 意思）。但"没填"与"我确实要不限"在表单上是同一个 0，而两者的代价差一个
- * 量级：没有上限时一个大户可以在封盘前几秒压满获胜选项吃掉整个奖池，散户的
- * 期望收益归零。让默认落在**安全的一侧**，想要不限的人手动清成 0 —— 那是一次
- * 刻意动作，而刻意动作正是这一格该有的成本。
+ * ## 一、那句话是假的：`bet_max_quota` 约束的是**一笔**投注，不是一个人
  *
- * 倍数选 20 的理由是可以说出口的一句话：一个大户最多顶 20 个按单注额下注的
- * 普通参与者。它不是一条数学定理，所以界面上写的是"推荐值"而不是"必须"，
- * 而且这一格从头到尾都可以改。
+ * 后端 `acceptAmount`（qianye/modules/lottery/entry.go）在**每一次报名请求**
+ * 上比对 `BetMaxQuota`。一个人能报几次由 `max_entries_per_user` 决定，而 0 在
+ * 那一格就是"不限"（`checkEligibility` 里那句 `MaxEntriesPerUser > 0 &&` 是
+ * 唯一的判定，后端默认值也是 0；向导给新草稿预填 1，但那一格可以被清空）。
+ * 一旦它是 0，同一个人开 20 笔顶格投注就是 400 个普通参与者的量，
+ * 单注上限一格都没拦住。
+ *
+ * 真正能给"一个人最多押多少"封顶的是**两格的乘积**：
+ * `bet_max_quota × max_entries_per_user`。这句话写进了
+ * `qy_lot_bet_max_hint`，因为它是这一格唯一需要运营知道、而界面此前没说的事。
+ *
+ * 一个假的安全承诺比没有承诺更糟：读到"最多顶 20 个"的人会认为大户问题已经
+ * 解决，于是**不去设**那个真正管用的每人次数上限。
+ *
+ * ## 二、就算它是真的，20 也没有出处
+ *
+ * 本文件开头写着这些函数的存在理由：判据只有三个量、给定其中两个第三个就是
+ * **算出来的**。`qyLotTierAmountFloor`、`qyLotTierCountFloor`、
+ * `qyLotWinPpmHeadroom`、`qyLotPoolShareHeadroom`、`qyLotRecommendedMinEntries`
+ * 每一个都对应后端一条真实的不等式，喂回那条判据必然为假。
+ *
+ * `applyBetBounds` 对 `bet_max_quota` 只有三条判定：≤ `common.MaxQuota`、
+ * ≤ `lottery.max_stake_quota`、≥ `bet_min_quota`。**没有任何不等式可解**，
+ * 于是"推荐值"只能是一个凭空选的常数。
+ *
+ * 而它想控制的那个量本来就算不出来：竞猜按彩池分账，中奖者拿
+ * `净池 × 自己的注额 ÷ 获胜方总注额`。一笔大注造成的伤害是**它占获胜方的
+ * 比例**，取决于这一场到底来了多少人、怎么分边——两个在建活动那一刻谁都
+ * 不知道的数。以单注额为尺度的倍数与那个比例没有固定关系：同样 20 倍，
+ * 在一场 1000 人的活动里微不足道，在一场 5 个人的活动里就是全场。
+ *
+ * 按本文件的口径，这一格属于「运营决策」而不是「解出来的唯一解」，
+ * 因此只给范围与后果（`qy_lot_range_bet_max` / `qy_lot_bet_max_hint` /
+ * `qy_lot_bet_max_zero_note`），不给自动填。
+ *
+ * "填 0 = 不限，而没填也是 0"这个真实的坑由**那条零值提示**兜着，不需要
+ * 一个编出来的默认值来兜——提示要求人看一眼再决定，编出来的默认值则替他
+ * 决定了，而且是按一个假理由决定的。
  */
-export const QY_LOT_BET_MAX_MULTIPLE = 20
-
-/**
- * @param ceilingQuota 这一格的硬上界（系统上界与站点 `max_stake_quota` 里更紧的
- *   那一个；0 = 拿不到，此时不夹）。**必须传**：单注额 × 20 越过系统上界的场次
- *   （参与费 > 系统上界 ÷ 20）会算出一个后端必拒的推荐值，而一个"界面说可以、
- *   提交被拒"的推荐值比不给推荐值更糟 —— 那正是本文件开头写的存在理由。
- *   夹到上界之后倍数说不满 20，但它仍然是这一格能填的最大值，而且提交必过。
- */
-export function qyLotRecommendedBetMax(
-  stakeQuota: number,
-  ceilingQuota: number
-): number {
-  if (stakeQuota <= 0) return 0
-  const advised = stakeQuota * QY_LOT_BET_MAX_MULTIPLE
-  if (ceilingQuota > 0 && advised > ceilingQuota) return ceilingQuota
-  return advised
-}
 
 /**
  * 最低成场人数的推荐值 = 保本参与人数。

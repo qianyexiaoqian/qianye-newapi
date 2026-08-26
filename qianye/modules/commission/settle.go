@@ -188,9 +188,26 @@ func pendingInvitersPage(limit int, cur inviterCursor) (ids []int, next inviterC
 	// 第一路要求 settled_amount <> gross_amount,而 absorbAccruals 已经把冲正行
 	// 写成 settled==gross,于是他从两路里同时消失。表现是提现被永久冻结而
 	// 没有任何告警会响 —— 三条恒等式在这个状态下全部成立。
+	// 负余数这一支的判据是 `< 0`,**不是** `<= -1`。
+	//
+	// `<= -1` 把 (-1, 0) 区间的欠账整段漏在调度之外,而那个区间不是理论边角:
+	// computeSettlement 的 reclaim 被 available 钳住时,carry 恰好等于
+	// -(欠账 - available),欠账超出可回收余额的部分只要小于 1 个额度单位就落
+	// 在里面;而自动冲正额 = calcGross(refundQuota, rateUnits) 天然带小数。
+	// 随后任何一条把额度退回 available 的动作(驳回/取消/标记发放失败的
+	// UnfreezeForWithdraw、管理员调低已提现)都会构成「欠账 + available>0」。
+	//
+	// 落进这个区间的人从**两路里同时消失**:第一路要求 settled_amount <>
+	// gross_amount,而 absorbAccruals 已经把冲正行写成 settled==gross。
+	// 于是 debt_blocked 永久为真、Withdrawable 恒返 0 —— 用户提不出账上确实
+	// 存在的可提现额度,平台也永远收不回那笔应收,而 I1/I2 两条恒等式在这个
+	// 状态下**全部成立**,余额页、总表、健康面板一致显示正常。
+	//
+	// 判据与 settleUser 的 carry-only 预筛(peek.UnsettledAmount.IsNegative())
+	// 就此同口径 —— 那两半原本自相矛盾:预筛受理任何负数,SQL 只捞 <= -1。
 	var carry []inviterHead
 	q = `SELECT user_id AS id, last_settled_at AS ord_at FROM qy_commission_balance
-		WHERE (unsettled_amount >= ? OR (unsettled_amount <= -1 AND available_quota > 0)) `
+		WHERE (unsettled_amount >= ? OR (unsettled_amount < 0 AND available_quota > 0)) `
 	args = []any{carryFloor(effective().MinSettleQuota)}
 	if cur.HasB {
 		q += `AND (last_settled_at > ? OR (last_settled_at = ? AND user_id > ?)) `

@@ -21,7 +21,12 @@ func TestTopUpCreditQuotaIsFailClosedAtTheSettlementCeiling(t *testing.T) {
 	common.QuotaPerUnit = 500000
 	t.Cleanup(func() { common.QuotaPerUnit = prevQPU })
 
-	// MaxQuota/QuotaPerUnit = 2147483647/500000 = 4294.96…,边界恰在 4294/4295 之间。
+	// 边界那一格由 common.MaxQuota 算出来:CreditQuota 里的换算是
+	// Amount(或 Money) × QuotaPerUnit,而 QuotaFromDecimalStrict 在
+	// >= MaxQuota 时报错,所以最后一个可结算的单位数是 (MaxQuota-1)/QuotaPerUnit。
+	const qpu = 500000
+	unitsAtLimit := int64((common.MaxQuota - 1) / qpu)
+	quotaAtLimit := int(unitsAtLimit * qpu)
 	for _, tc := range []struct {
 		name    string
 		topUp   TopUp
@@ -30,32 +35,32 @@ func TestTopUpCreditQuotaIsFailClosedAtTheSettlementCeiling(t *testing.T) {
 	}{
 		{
 			name:  "易支付按 Amount × QuotaPerUnit",
-			topUp: TopUp{PaymentProvider: PaymentProviderEpay, Amount: 4294},
-			want:  2147000000,
+			topUp: TopUp{PaymentProvider: PaymentProviderEpay, Amount: unitsAtLimit},
+			want:  quotaAtLimit,
 		},
 		{
 			name:    "易支付越过上限即失败,不能悄悄截断",
-			topUp:   TopUp{PaymentProvider: PaymentProviderEpay, Amount: 4295},
+			topUp:   TopUp{PaymentProvider: PaymentProviderEpay, Amount: unitsAtLimit + 1},
 			wantErr: true,
 		},
 		{
 			name:  "waffo 与易支付同口径",
-			topUp: TopUp{PaymentProvider: PaymentProviderWaffo, Amount: 4294},
-			want:  2147000000,
+			topUp: TopUp{PaymentProvider: PaymentProviderWaffo, Amount: unitsAtLimit},
+			want:  quotaAtLimit,
 		},
 		{
 			name:    "waffo 越过上限即失败",
-			topUp:   TopUp{PaymentProvider: PaymentProviderWaffo, Amount: 4295},
+			topUp:   TopUp{PaymentProvider: PaymentProviderWaffo, Amount: unitsAtLimit + 1},
 			wantErr: true,
 		},
 		{
 			name:  "stripe 按 Money × QuotaPerUnit(Money 已含分组倍率)",
-			topUp: TopUp{PaymentProvider: PaymentProviderStripe, Money: 4294, Amount: 1},
-			want:  2147000000,
+			topUp: TopUp{PaymentProvider: PaymentProviderStripe, Money: float64(unitsAtLimit), Amount: 1},
+			want:  quotaAtLimit,
 		},
 		{
 			name:    "stripe 的上限落在 Money 上,不是 Amount",
-			topUp:   TopUp{PaymentProvider: PaymentProviderStripe, Money: 4295, Amount: 1},
+			topUp:   TopUp{PaymentProvider: PaymentProviderStripe, Money: float64(unitsAtLimit + 1), Amount: 1},
 			wantErr: true,
 		},
 		{

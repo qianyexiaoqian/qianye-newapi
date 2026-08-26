@@ -101,7 +101,7 @@ func computeFee(cr *compiledRule, info *relaycommon.RelayInfo) feeResult {
 	if cfg.MaxFeeQuota > 0 && want > cfg.MaxFeeQuota {
 		want = cfg.MaxFeeQuota
 	}
-	// 跨库写主库前的硬约束:users.quota 是 int32。
+	// 跨库写主库前的硬约束:单笔金额必须落在 common.MaxQuota 之内。
 	if want > int64(common.MaxQuota) {
 		want = int64(common.MaxQuota)
 	}

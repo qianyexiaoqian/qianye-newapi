@@ -435,7 +435,7 @@ func intOverride(dst *int, raw string) {
 
 // quotaOverride 应用一条运营覆盖的**额度**门槛。
 //
-// 上界是 common.MaxQuota(主库 users.quota / 日志额度列都是 int32)。
+// 上界是 common.MaxQuota —— 全站额度换算的算术上界,见 common/quota_math.go。
 // 越界一律丢弃并告警,不钳到边界 —— 与 rateOverride 同一条理由:
 // qy_settings 是可以被人手工 UPDATE 的,钳到边界会静默生效一个谁都没批准的值,
 // 而丢弃只是回落到 YAML 默认,损失有界且日志里说得清。

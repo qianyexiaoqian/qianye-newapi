@@ -12,7 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// 金额跨库校验是防资损的第一道闸:扩展库用 int64,主库 users.quota 是 int32。
+// 金额跨库校验是防资损的第一道闸:扩展库用 int64 承载聚合与中间量,
+// 而单笔金额必须落在 common.MaxQuota 这条全站额度换算上界之内。
 // 越界必须显式拒绝,绝不能静默截断成负数或小额。
 func TestValidateAmount(t *testing.T) {
 	cases := []struct {
@@ -24,9 +25,9 @@ func TestValidateAmount(t *testing.T) {
 		{"负金额", -1, true},
 		{"最小正数", 1, false},
 		{"正常金额", 500000, false},
-		{"int32 上限", int64(common.MaxQuota), false},
-		{"超出 int32 一位", int64(common.MaxQuota) + 1, true},
-		{"远超上限", 1 << 40, true},
+		{"额度上界", int64(common.MaxQuota), false},
+		{"超出上界一位", int64(common.MaxQuota) + 1, true},
+		{"远超上限", int64(common.MaxQuota) * 1024, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

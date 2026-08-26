@@ -117,7 +117,7 @@ func UpdateGroupGroupRatioByJSONString(jsonStr string) error {
 }
 
 // MaxGroupRatio 是分组倍率的上界。上游对倍率本身没有上界,但它会被直接乘进
-// 每一笔账单:一次手滑把倍率填成 1e18,配合大 token 数就会把中间结果推过 int32,
+// 每一笔账单:一次手滑把倍率填成 1e18,配合大 token 数就会把中间结果推过额度上界,
 // 而饱和之后的账单没有任何意义(见 AGENTS.md 的计费安全不变量)。
 // 取值与 qianye/modules/groupmatrix 的 maxGroupRatio 一致 —— 两个写入口对同一张表
 // 用两套界限,等于其中一套形同虚设。

@@ -78,8 +78,11 @@ func (s *textQuotaSummary) hasBillableUsage() bool {
 
 // maxUpstreamTokenCount 是单个上游自报 token 分量的上界。
 //
-// 取 MaxInt32 的理由:额度列本身就是 32 位,common/quota_math.go 的饱和转换最终
-// 也停在这里,所以更大的 token 数在金额上没有任何新含义,只会把中间量推进溢出区。
+// 取 MaxInt32 的理由**不是**列宽 —— 额度列在三种方言上都是 64 位,
+// common.MaxQuota 是一条算术上界(2^43,见 common/quota_math.go)而不是列宽。
+// 这里取一个比它更小的数,是因为 token 数只是金额的一个因子:单个分量超过
+// 2^31 之后,乘上任何正系数都必然被 MaxQuota 饱和,在金额上没有任何新含义,
+// 却会把 prompt+completion 这类中间量推进 int64 的溢出区(见下)。
 // 现实里没有任何一次请求接近这个量级,所以这道夹取对真实流量是恒等的。
 const maxUpstreamTokenCount = math.MaxInt32
 
@@ -286,8 +289,9 @@ func composeTieredTextQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaS
 	}
 
 	// Saturate the final sum, not just the surcharge: tieredQuota can be near
-	// MaxQuota and adding the surcharge could push the total past the int32
-	// quota policy bound (persisted quota columns are 32-bit).
+	// MaxQuota and adding the surcharge could push the total past the quota
+	// policy bound (common.MaxQuota, an arithmetic bound -- see
+	// common/quota_math.go -- not a column width).
 	total, clamp := common.QuotaFromDecimalChecked(
 		decimal.NewFromInt(int64(tieredQuota)).Add(summary.ToolCallSurchargeQuota),
 	)

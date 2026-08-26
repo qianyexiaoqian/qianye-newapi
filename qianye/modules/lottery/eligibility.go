@@ -143,6 +143,16 @@ func (r Rules) Normalize() Rules {
 	// 又不至于让链被无限膨胀。
 	if r.MaxEntriesPerUser > 0 && r.MaxAttemptsPerUser == 0 {
 		r.MaxAttemptsPerUser = r.MaxEntriesPerUser + 3
+		// 派生值不许把一个**合法的**填写变成非法。
+		//
+		// buildActivity 在 Normalize 之后才拿 MaxAttemptsPerUser 去比 perUserCapHard,
+		// 于是运营填 498/499/500(都 ≤ 500、都合法)会被派生出的 501/502/503
+		// 顶回来,而报错文案念的正是「不得超过 500」—— 照着它填 500 会被反复拒绝,
+		// 真实可用上界其实是 497,而没有任何一处说得出这个数。
+		// 夹住而不是拒绝:+3 只是"留点余地"的便利,便利不该改变可填区间。
+		if r.MaxAttemptsPerUser > perUserCapHard {
+			r.MaxAttemptsPerUser = perUserCapHard
+		}
 	}
 	if r.MaxAttemptsPerUser > 0 && r.MaxEntriesPerUser > 0 && r.MaxAttemptsPerUser < r.MaxEntriesPerUser {
 		r.MaxAttemptsPerUser = r.MaxEntriesPerUser

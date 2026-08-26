@@ -1,9 +1,12 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/QuantumNous/new-api/common"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -209,18 +212,37 @@ withdraw:
 	assert.Contains(t, err.Error(), "32 字节")
 }
 
-// 额度上限不得超过主库 users.quota 的 int32 容量,否则跨库写入必然溢出。
-func TestValidate_QuotaCapBoundedByInt32(t *testing.T) {
-	_, _, err := parseFile(writeTemp(t, `
+// 额度上限类字段不得超过 common.MaxQuota。
+//
+// 那不是列宽(users.quota 在三个方言上都是 64 位),而是全站额度换算的**算术**
+// 上界:超过它的门槛过不了 common/quota_math.go 的换算,于是不是"更严格",
+// 而是永远无法被满足。
+//
+// 越界那一格由 common.MaxQuota 算出来 —— 写死一个 9999999999 的代价刚刚兑现
+// 过一次:MaxQuota 从 2^31-1 抬到 2^43 之后,那个数变成了一个**合法**值,
+// 这条用例于是安静地不再测任何东西。
+func TestValidate_QuotaCapAboveTheQuotaBoundIsRejected(t *testing.T) {
+	_, _, err := parseFile(writeTemp(t, fmt.Sprintf(`
 enabled: true
 database:
   dsn: "u:p@tcp(h:3306)/d"
 transfer:
   enabled: true
-  max_per_tx_quota: 9999999999
-`))
+  max_per_tx_quota: %d
+`, int64(common.MaxQuota)+1)))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "超过主库额度上限")
+	assert.Contains(t, err.Error(), "超过全站额度上界")
+
+	// 上界本身必须放行,否则这是一道错位的闸。
+	_, _, err = parseFile(writeTemp(t, fmt.Sprintf(`
+enabled: true
+database:
+  dsn: "u:p@tcp(h:3306)/d"
+transfer:
+  enabled: true
+  max_per_tx_quota: %d
+`, int64(common.MaxQuota))))
+	require.NoError(t, err)
 }
 
 func TestValidate_BpsRange(t *testing.T) {

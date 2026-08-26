@@ -3,8 +3,10 @@ package commission
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	_ "unsafe" // //go:linkname 需要
@@ -196,26 +198,26 @@ func TestAdminHealth_ExposesDegradeCounters(t *testing.T) {
 // 额度门槛不许越过主库额度上限 —— 越过之后佣金会**永远不再落账**。
 //
 // 具体形状:结算金额 net 在 computeSettlement 里已被 common.QuotaFromDecimalChecked
-// 夹在 int32 内,而 min_settle_quota 若能填到 int32 之外,`net < minSettle` 就恒成立,
+// 夹在 common.MaxQuota 内,而 min_settle_quota 若能填到它之外,`net < minSettle` 就恒成立,
 // net 恒为 0。全站所有邀请人的佣金从此不落账:不报错、不告警、没有日志,
 // 未结算额一路累加。这不是"更严格的门槛",是一个永远无法被满足的门槛。
 //
 // 改成按 USD 录入之后触发它只需要敲 5 位数,所以它不再是"几乎不可能的手滑"。
 // 划转与抽奖两页早就被后端下发的 bounds 堵住了,只有佣金页没有。
-func TestAdminPutConfig_RejectsQuotaThresholdAboveInt32(t *testing.T) {
+func TestAdminPutConfig_RejectsQuotaThresholdAboveTheQuotaBound(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, commissionRateConfig("10", "5"))
 	useAdminAPI(t)
 
 	rec := callAdminHandler(t, http.MethodPut, "/api/qy/admin/commission/config",
-		`{"min_settle_quota":5000000000}`, adminPutConfig)
+		fmt.Sprintf(`{"min_settle_quota":%d}`, int64(common.MaxQuota)+1), adminPutConfig)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 	assert.Empty(t, settingRows(t, gdb), "被拒的请求不该留下任何一个键")
 
 	// 边界本身必须放行 —— 上界写成 `>=` 会让一个合法的极值配置被拒。
 	rec = callAdminHandler(t, http.MethodPut, "/api/qy/admin/commission/config",
-		`{"min_settle_quota":2147483647}`, adminPutConfig)
+		fmt.Sprintf(`{"min_settle_quota":%d}`, common.MaxQuota), adminPutConfig)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
 
@@ -224,15 +226,15 @@ func TestAdminPutConfig_RejectsQuotaThresholdAboveInt32(t *testing.T) {
 // 写入侧的 400 只挡住管理端这一条路:qy_settings 是可以被人手工 UPDATE 的,
 // 历史数据也不会因为今天加了校验就消失。回落到 YAML 默认值是有界的损失,
 // 而照单全收换来的是"全站佣金永远不再落账"。
-func TestQuotaOverride_DropsValuesAboveInt32(t *testing.T) {
+func TestQuotaOverride_DropsValuesAboveTheQuotaBound(t *testing.T) {
 	s := opSettings{MinSettleQuota: 1000, DailyCapQuota: 2000}
 	applyOverrides(&s, map[string]string{
-		"min_settle_quota":            "5000000000",
-		"max_daily_quota_per_inviter": "2147483647",
+		"min_settle_quota":            strconv.FormatInt(int64(common.MaxQuota)+1, 10),
+		"max_daily_quota_per_inviter": strconv.Itoa(common.MaxQuota),
 	})
 	assert.EqualValues(t, 1000, s.MinSettleQuota,
 		"越界的门槛必须回落到默认值,而不是生效")
-	assert.EqualValues(t, 2147483647, s.DailyCapQuota, "边界值必须照常生效")
+	assert.EqualValues(t, common.MaxQuota, s.DailyCapQuota, "边界值必须照常生效")
 }
 
 // ───────────────── 账本体检:那条站内此前看不见的恒等式 ─────────────────

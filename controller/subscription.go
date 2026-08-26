@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -185,15 +186,49 @@ type AdminUpsertSubscriptionPlanRequest struct {
 	Plan model.SubscriptionPlan `json:"plan"`
 }
 
+// planEnabledOverride 用一次二次解码回答「请求里到底有没有写 enabled」。
+//
+// 必须能分辨"没写"与"写了 false":SubscriptionPlan.Enabled 是普通 bool,
+// 两者解出来都是 false。此前这件事由列默认值 `gorm:"default:true"` 兼着做,
+// 而 GORM 对带默认值的字段在 Create 时**跳过零值** —— 于是"没写"与
+// "明确写了 false"一起变成 true,管理端那个上架开关在**新建**时是个摆设。
+// 判据挪到这里之后:没写 = 上架(与改造前的默认一致),写了 false = 停售落库。
+type planEnabledOverride struct {
+	Plan struct {
+		Enabled *bool `json:"enabled"`
+	} `json:"plan"`
+}
+
+// planEnabledFromBody 返回请求体里显式给出的 enabled;没给时返回 nil。
+func planEnabledFromBody(raw []byte) *bool {
+	var probe planEnabledOverride
+	if len(raw) == 0 || common.Unmarshal(raw, &probe) != nil {
+		return nil
+	}
+	return probe.Plan.Enabled
+}
+
 func AdminCreateSubscriptionPlan(c *gin.Context) {
 	if !requirePaymentCompliance(c) {
 		return
 	}
 
-	var req AdminUpsertSubscriptionPlanRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	raw, readErr := io.ReadAll(c.Request.Body)
+	if readErr != nil {
 		common.ApiErrorMsg(c, "参数错误")
 		return
+	}
+	var req AdminUpsertSubscriptionPlanRequest
+	if err := common.Unmarshal(raw, &req); err != nil {
+		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+	// 上架开关的默认值判据在这里,不在列默认值上(见 planEnabledFromBody 与
+	// model.SubscriptionPlan.Enabled 的注释):没写 = 上架,写了 false = 停售落库。
+	if enabled := planEnabledFromBody(raw); enabled != nil {
+		req.Plan.Enabled = *enabled
+	} else {
+		req.Plan.Enabled = true
 	}
 	req.Plan.Id = 0
 	if strings.TrimSpace(req.Plan.Title) == "" {

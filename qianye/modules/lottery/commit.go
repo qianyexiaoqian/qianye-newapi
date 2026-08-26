@@ -759,7 +759,7 @@ func quotaTruncate(d decimal.Decimal) int64 {
 // all / winners 都必须已按 EntryNo 字节序升序。
 func SplitPool(pool int64, feeBps int, all, winners []RosterLine) (int64, []Share, error) {
 	// 池子必须落在单笔出款的容量之内。越界时**整个分配失败**而不是发一笔被
-	// 静默钳到 int32 上界的钱:quotaTruncate 里的饱和会把超出的部分吞掉,
+	// 静默钳到 common.MaxQuota 的钱:quotaTruncate 里的饱和会把超出的部分吞掉,
 	// 而残差归最后一笔的写法又会把吞掉的量全部推给那一个人 —— 两者叠加的结果
 	// 是"守恒式在计算层成立、在出款层完全落不了地",而且与第三方复算不一致。
 	// 报名路径已经挡住了池子越界(见 checkCaps),这里是第二道。

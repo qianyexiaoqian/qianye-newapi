@@ -125,9 +125,10 @@ func AddRedemption(c *gin.Context) {
 			return
 		}
 		// 上界与下界同样是硬性的。quota 是 Go int(64 位),库里 redemptions.quota 与
-		// users.quota 都是 bigint,而全站的额度语义上界是 common.MaxQuota
-		// (= math.MaxInt32,见 common/quota_math.go):所有计费换算、日志/令牌列、
-		// 饱和判据都按 int32 立的。没有这道闸时,一个 role=10 管理员可以铸出面额
+		// users.quota 都是 bigint,而全站的额度语义上界是 common.MaxQuota ——
+		// 那是一条**算术**上界(乘法与 float64 换算的余量,见 common/quota_math.go
+		// 的推导),不是列宽。所有计费换算、日志/令牌列、饱和判据都按它立的。
+		// 没有这道闸时,一个 role=10 管理员可以铸出面额
 		// MaxInt64 的码,兑换后 users.quota 直接等于 9223372036854775807 —— 之后
 		// 任意一次 `user.Quota += x` 都会在 Go 侧静默回绕成约 -9.2e18 的负余额
 		// (aff_transfer 那条路已实测),而这一切既不报错也不留痕。

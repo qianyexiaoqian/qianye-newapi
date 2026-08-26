@@ -587,7 +587,7 @@ func (user *User) TransferAffQuotaToQuota(quota int) error {
 	// 也不会像 gorm.Expr("quota + ?") 那样把溢出交给数据库报错。一个被顶到
 	// math.MaxInt64 附近的钱包（历史上可由无上界的兑换码面额造出来），下一次
 	// 划转就会静默回绕成约 -9.2e18 的负余额，接口仍返回 success。
-	// 走 QuotaAddChecked：饱和到 int32 区间并留一条 SysError。
+	// 走 QuotaAddChecked：饱和到 [MinQuota, MaxQuota] 并留一条 SysError。
 	user.AffQuota -= quota
 	newQuota, clamp := common.QuotaAddChecked(user.Quota, quota)
 	if clamp != nil {

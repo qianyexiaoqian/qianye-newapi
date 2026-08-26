@@ -53,7 +53,8 @@ func QyCacheApplyUserQuotaDelta(userId int, d int64) error { return cacheIncrUse
 全部落**独立 MySQL**（`qianye/db.DB`），`AutoMigrate` 必须 gate `common.IsMasterNode`（照抄 `model/main.go:197-199`）。
 
 金额精度总原则：
-- **quota 域**用 `decimal(30,10)`。理由：`quota` 上限 `MaxInt32≈2.1e9`（10 位整数），比例最小到 0.0001（万分之一），10 位小数足够无损承载 `base_quota × rate`；累计余数远不会超 `10^20`。
+- **quota 域**用 `decimal(30,10)`。理由：`quota` 上限是 `common.MaxQuota = 2^43 ≈ 8.8e12`（13 位整数，**不是列宽** —— 额度列在三种方言上都是 64 位，推导见 `common/quota_math.go`），比例最小到 0.0001（万分之一），10 位小数足够无损承载 `base_quota × rate`；`decimal(30,10)` 留了 20 位整数位，累计余数远不会超 `10^20`。
+  > 2026-08-26 更正：此处原先按 `MaxInt32≈2.1e9`（10 位整数）论证。上界抬高 4096 倍之后结论不变（13 位仍在 20 位之内），但论证过程失效，故重写。
 - **法币域**用 `decimal(18,6)`，并**在计佣时刻冻结 `operation_setting.USDExchangeRate`**（D1 硬性要求；该变量在 `setting/operation_setting/payment_setting_old.go:18`，管理员可通过 `model/option.go:424` 随时热改）。
 
 ### 1.1 `qy_commission_accrual` — 计佣明细（用户所说的"佣金流水"）
@@ -340,7 +341,7 @@ carry1  = total - grant                                        // ★ 余数回�
 floored := total.Floor()                                   // decimal.Floor，精确
 grantInt, clamp := common.QuotaFromDecimalChecked(floored)  // 整数已 floor，Round(0) 为恒等；仅做 int32 饱和
 if clamp != nil {
-	// 记 audit（clamp.AuditMap()）+ 告警：单次结算触顶 MaxInt32，需人工介入
+	// 记 audit（clamp.AuditMap()）+ 告警：单次结算触顶 common.MaxQuota，需人工介入
 }
 ```
 
@@ -936,9 +937,9 @@ rate_bps / usd_rate = ★ 复制原单的值，不用当前值
 | `rate_bps == 0` | 不生成 accrual 行（避免全 0 行污染） |
 | `base_quota < rate.min_base_quota` | 跳过 |
 | 佣金 < 1 quota | **不丢弃**，全精度进 `unsettled_amount`（§2 的全部意义） |
-| 单次结算 grant 超 `MaxInt32` | `common.QuotaFromDecimalChecked` 饱和 + `clamp.AuditMap()` 落 `qy_commission_settlement.remark` + 管理端告警。余下部分留在 `unsettled`，下轮继续发 |
+| 单次结算 grant 超 `common.MaxQuota` | `common.QuotaFromDecimalChecked` 饱和 + `clamp.AuditMap()` 落 `qy_commission_settlement.remark` + 管理端告警。余下部分留在 `unsettled`，下轮继续发 |
 | `available_quota` 累计溢出 int64 | 不可能（int64 上限 9.2e18 ≈ $1.8e13） |
-| **提现进主库时 `users.quota + amount > MaxInt32`** | 提现模块必须校验（`increaseUserQuota` 无上限检查，`model/user.go:1249`）。本模块在 U1 返回 `available_quota`，提现模块负责 clamp |
+| **提现进主库时 `users.quota + amount > common.MaxQuota`** | 提现模块必须校验（`increaseUserQuota` 无上限检查，`model/user.go:1249`）。本模块在 U1 返回 `available_quota`，提现模块负责 clamp |
 | `unsettled_amount` 为负（欠账） | `debt_blocked=true`，禁止提现；未来佣金自动抵扣 |
 | 新库不可用 | 热路径 fail-open（丢事件+计数）；非热路径 API 返 503 |
 | MySQL 严格模式下 decimal 溢出 | `decimal(30,10)` 上限 `10^20`，业务上不可达；仍在写入前 `Abs().GreaterThan(1e19)` 时告警拒写 |

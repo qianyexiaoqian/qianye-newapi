@@ -367,7 +367,8 @@ func (s *BillingSession) requirePartialReserveBacked(c *gin.Context) *types.NewA
 		}
 	}
 	s.tokenConsumed = 0
-	// 额度列是 32 位;走 quota_math 的饱和转换而不是裸 int(),越界会被夹住并留痕。
+	// 额度有算术上界(common.MaxQuota,不是列宽);走 quota_math 的饱和转换而不是
+	// 裸 int(),越界会被夹住并留痕。
 	rejectErr := fmt.Errorf("预扣费额度失败, 套餐余额仅够 %s, 钱包剩余额度 %s 不足以补足差额 %s",
 		logger.FormatQuota(common.QuotaFromFloat(float64(sub.preConsumed))),
 		logger.FormatQuota(userQuota),

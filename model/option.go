@@ -264,6 +264,12 @@ func validateOptionValue(key string, value string) error {
 		// 函数此前一个调用者都没有:坏表达式可以直接落库、重启不自愈,而
 		// controller/ratio_sync.go 还会把远端站点推来的表达式原样写进这个键。
 		return billing_setting.ValidateBillingExprJSON(value)
+	case billing_setting.BillingModeOptionKey:
+		// billing_expr 的兄弟键。此前它一条 case 都没有,于是任意字符串都能
+		// 当计费模式,而且把模型标成 tiered_expr 却不给表达式这件事没有任何
+		// 一处会说话 —— 定价页在表达式为空时干脆不下发 billing_mode,把它显示
+		// 成普通倍率模型,而 relay 侧每一次请求都 400。
+		return billing_setting.ValidateBillingModeJSON(value)
 	}
 	return nil
 }

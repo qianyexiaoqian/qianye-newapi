@@ -56,6 +56,10 @@ const goApiUser = readFileSync(
   join(repoRoot, 'qianye', 'modules', 'lottery', 'api_user.go'),
   'utf8'
 )
+const goPlay = readFileSync(
+  join(repoRoot, 'qianye', 'modules', 'lottery', 'play.go'),
+  'utf8'
+)
 const lotteryDir = join(dirname(fileURLToPath(import.meta.url)), '..')
 const tsApi = readFileSync(join(lotteryDir, 'api.ts'), 'utf8')
 const hallList = readFileSync(
@@ -119,6 +123,78 @@ describe('大厅分区：前后端说的是同一套词', () => {
     assert.ok(
       !/switch c\.Query\("phase"\)/.test(goApiUser),
       '分区又回到了没有 default 分支的 switch'
+    )
+  })
+})
+
+/** 前端这一头声明的选择夹取值。从 `QyLotHallLane` 那一行里抠出来。 */
+function tsLaneValues(): string[] {
+  const line = /export type QyLotHallLane = ([^\n]+)/.exec(tsApi)
+  assert.ok(
+    line,
+    'api.ts 里找不到 QyLotHallLane —— 选择夹取值不再是一个封闭集合'
+  )
+  return Array.from(line[1].matchAll(/'([a-z_]+)'/g), (m) => m[1]).sort()
+}
+
+/** 后端这一头登记的选择夹键。从 `hallLanes` 那个 map 字面量里抠出来。 */
+function goLaneKeys(): string[] {
+  const block = /var hallLanes = map\[string\]\[\]string\{([\s\S]*?)\n\}/.exec(
+    goPlay
+  )
+  assert.ok(block, 'play.go 里找不到 hallLanes')
+  return Array.from(block[1].matchAll(/^\tLane\w+:\s+\{/gm), (m) =>
+    /Lane(\w+)/.exec(m[0])?.[1].toLowerCase()
+  ).filter((v): v is string => v != null)
+}
+
+/*
+ * 大厅**选择夹**这根线的两头。
+ *
+ * 与上面的 phase 是同一类缺陷、更危险一档：lane 的取值与 `kind` 长得一样
+ * （`draw` / `guess`），语义却不同 —— `lane='draw'` 排除双色球，`kind='draw'`
+ * 包含它。所以"顺手把参数名写回 kind"在两侧各自都编译得过、类型都对，
+ * 而后果是双色球那张标签里长出普通抽奖、抽奖那张里混进双色球。
+ *
+ * 这条测试去读**真正的 Go 源码**，把两侧的字面量对起来。
+ */
+describe('大厅选择夹：前后端说的是同一套词', () => {
+  test('取值集合逐字相同', () => {
+    // 期望值在这里写死一份，而不是只比 ts === go：两侧被同一次"顺手重命名"
+    // 一起改掉时，只比彼此的断言会一起变绿。
+    assert.deepEqual(goLaneKeys().sort(), ['ball', 'draw', 'guess'])
+    assert.deepEqual(tsLaneValues(), ['ball', 'draw', 'guess'])
+  })
+
+  test('参数名是 `lane`，而且大厅真的按这个名字发出去', () => {
+    assert.ok(
+      goApiUser.includes('c.Query("lane")'),
+      '后端不再读 `lane` —— 前端发的那个名字会被静默忽略，三张标签又变成同一份列表'
+    )
+    assert.match(
+      hallList,
+      /\n\s*lane: props\.lane,/,
+      '大厅没有把选择夹作为 `lane` 发出去'
+    )
+    assert.ok(
+      !/\n\s*kind: props\.(kind|lane),/.test(hallList),
+      '大厅又发起了 `kind`：后端那个词包含双色球，而这三张标签要的是排除它的那一套'
+    )
+  })
+
+  test('未登记的取值会被后端拒绝，而不是静默返回全量', () => {
+    assert.ok(
+      goApiUser.includes('errBadLane'),
+      'hallQuery 不再对未知选择夹报错：一次 `lane=Ball` 的笔误会让三张标签拿回同一份列表'
+    )
+  })
+
+  test('双色球归属只有一处实现：前端不做第二次过滤', () => {
+    // 分夹必须落在 SQL 上：前端拿到一页再滤，会让「双色球」那一页只剩零星
+    // 几条（整页被滤掉的不会补上），而分页总数还是按未过滤算的。
+    assert.ok(
+      !/draw_mode\s*===\s*'ball'/.test(hallList),
+      '大厅列表里出现了按 draw_mode 的前端过滤 —— 分夹的唯一执行点是后端的 WHERE'
     )
   })
 })

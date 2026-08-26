@@ -36,5 +36,5 @@ import type { QyLotHallState } from '../lottery/components/lottery-hall-list'
  * 真正要下注的地方。
  */
 export function QyLotteryGuessBody(props: QyLotHallState) {
-  return <QyLotHallList kind='guess' {...props} />
+  return <QyLotHallList lane='guess' {...props} />
 }

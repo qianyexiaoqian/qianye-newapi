@@ -19,7 +19,7 @@
 //     WHERE quota >= ?,也不检查 RowsAffected,会把余额扣成负数;且在
 //     BatchUpdateEnabled 下只进内存批量队列,钱什么时候落库不可确定。
 //   - 禁止 model.IncreaseUserQuota:同上,且无溢出校验。加款一律带上限条件
-//     `WHERE id=? AND quota <= (MaxQuota - amount)` —— users.quota 是 int32
+//     `WHERE id=? AND quota <= (MaxQuota - amount)` —— MaxQuota 是额度换算的算术上界
 //     且上游全无溢出校验。
 //   - 禁止 tx.Save(&User{})(全字段覆盖冲掉并发变更)、禁止 user.Update() 与
 //     IncrementUserAuthVersion(会吊销用户全部会话)。
@@ -182,6 +182,29 @@ type Activity struct {
 	// 而客户端 IP 在反代未正确配置 TRUSTED_PROXIES 时可被 X-Forwarded-For
 	// 伪造 —— 防御方向恰好反了。管理端表单必须写清这个代价。
 	DedupIp bool `json:"dedup_ip" gorm:"not null"`
+
+	// MaxPicksPerRequest 是"一次提交最多买几注"(只有双色球用得上)。
+	//
+	// # 它刻意**不在** Rules 里,因此不进 rules_hash、不进 commit_hash
+	//
+	// Rules 里那几道闸门(每人上限、全场上限、冷却、IP 去重)决定的是**谁能拿到
+	// 多少张票**,改一个数就改了每个人的中奖概率,所以它们进承诺、发布后冻结。
+	// 这一格决定的只是"同样这些票要分几次请求买完":上限 10 与上限 999 之下,
+	// 一个用户最终能持有的票数**完全相同**(那个数由 max_entries_per_user 说了算),
+	// 拿到的票也逐字节相同。它不是对参与者的任何一项承诺,只是一条吞吐旋钮 ——
+	// 与封面同一类,因此发布后可改(见 api_admin_picks.go)。
+	//
+	// # 零值语义:0 = 没配过,取默认 10
+	//
+	// 这里**不跟**本模块既有的两条 0 口径,理由是这一格没有"关掉"这个状态:
+	//   · 站点级额度上限 0 = 不限 —— 那一格真的可以没有上界;这一格有硬顶 999,
+	//     "不限"只会是 999 的另一种写法,于是一次迁移会把每一场存量活动从 10 悄悄
+	//     抬到 999,而没有任何人做过这个决定。
+	//   · 系列累计发行上限 0 = 一分钱都注不进去 —— 那一格的 0 是运营手填的;
+	//     这一格的 0 是 AutoMigrate 给存量行填的,把它读成"一注都不能买"等于
+	//     一次加列把全站已发布的双色球全部变成不可参与。
+	// 判定只有一处(picksCapOf),取值范围由 buildActivity 挡在 0..999。
+	MaxPicksPerRequest int `json:"max_picks_per_request" gorm:"not null;default:0"`
 
 	// EntrySeq 是已分配的最大序号(含失败条目),哈希链顺序的唯一权威。
 	// ChainHead 是最后一条 entry 的 chain_hash,即下一条的 prev。
@@ -732,4 +755,17 @@ const (
 	// 公开证据链里变成一位 entry_no='' 的中奖者,第三方按种子重算当场判 FAIL,
 	// 而平台这一侧没有任何一处告警 —— 恰恰是"平台确实有问题"的那一刻最安静。
 	FlagPayoutOrphan = "payout_orphan"
+	// FlagTotalsDrift 是"活动行上的收支三口径与出款表对不上"。
+	//
+	// platform_fee_quota / payout_quota / refund_quota 是管理端「本场收支」
+	// 直读的三列,而此前**没有任何对账不变量覆盖它们**:
+	// checkMaterializedInvariants 只查奖池/计数/链,reconcileActivity 另加
+	// spec/roster/held,没有一处把 payout_quota 与 Σ(已付出的奖金) 比对。
+	// 于是这三列可以永久说谎而零告警 —— 库里就有一场 payout_quota 记 27505
+	// 而实付 137005(差 109500 是两笔收尾之后才补发的 held),管理端把一场
+	// 净亏 107005 的活动显示成净赚 2495,连符号都是反的。
+	//
+	// 真值始终在 qy_lot_payout / qy_fund_orders / 主库账本里,所以这条异常
+	// 不动钱,只是让"展示口径与账目对不上"这件事不再无人看守。
+	FlagTotalsDrift = "totals_drift"
 )

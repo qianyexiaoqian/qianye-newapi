@@ -464,7 +464,27 @@ func migrateClickHouseLogDB() error {
 	if err := LOG_DB.Exec(clickHouseLogCreateTableSQL(ttlDays)).Error; err != nil {
 		return err
 	}
+	if err := widenClickHouseLogQuotaColumns(); err != nil {
+		return err
+	}
 	return syncClickHouseLogTTL(ttlDays)
+}
+
+// widenClickHouseLogQuotaColumns 把存量表里的三列额度/用量加宽到 Int64。
+//
+// 建表语句是 CREATE TABLE **IF NOT EXISTS**,所以改 DDL 只对新部署生效;
+// 存量 ClickHouse 部署会永远停在 Int32,而那正是静默回绕的那一档
+// (见 clickHouseLogCreateTableSQL 的说明)。
+//
+// MODIFY COLUMN 在 ClickHouse 上对"扩宽整型"是元数据级操作,已有数据原样保留;
+// 列已经是 Int64 时它是空操作,所以这段是幂等的、可以每次启动都跑。
+func widenClickHouseLogQuotaColumns() error {
+	for _, col := range []string{"quota", "prompt_tokens", "completion_tokens"} {
+		if err := LOG_DB.Exec("ALTER TABLE logs MODIFY COLUMN " + col + " Int64").Error; err != nil {
+			return fmt.Errorf("widen clickhouse logs.%s to Int64: %w", col, err)
+		}
+	}
+	return nil
 }
 
 func clickHouseLogTTLDays() int {
@@ -490,6 +510,26 @@ func clickHouseLogTTLClause(ttlDays int) string {
 	return "\nTTL " + expression
 }
 
+// clickHouseLogCreateTableSQL 建日志表。
+//
+// # quota / prompt_tokens / completion_tokens 为什么必须是 Int64
+//
+// ClickHouse 是 LOG_SQL_DSN 支持的**第四种**方言(chooseDB 里 isClickHouseDSN
+// 走 clickhouse.Open),而它的 logs 表不是 AutoMigrate 建的,是这段手写 DDL。
+// 这三列此前是 Int32 —— 恰好等于 common.MaxQuota 的旧值 math.MaxInt32,
+// 于是「额度上界 == 列宽」在这条路上是**真的**,而在 sqlite/mysql/postgres 上
+// 是假的(那三家都是 64 位)。MaxQuota 抬到 2^43 之后,这一列比它窄 4096 倍。
+//
+// 越界不会报错,会**静默回绕**:gorm.io/driver/clickhouse 走
+// clickhouse-go 的 batch.Append,Int32 列的 AppendRow 落到 reflect.Convert
+// 分支,int64→int32 是截断语义且不返回 error。实测同一条链路:
+// 2147483648 存成 -2147483648(一次扣费变成一笔等额退款)、
+// 8796093022208(新 MaxQuota)存成 0。model/log.go 的 createLog 只在 err != nil
+// 时打日志,于是整行照常落库、无错误、无 SysLog、无 clamp 标记 —— 连那一句
+// 后端日志都没有。而 MaxQuota 恰恰是饱和之后的取值,也就是"额度溢出被夹住"
+// 这个异常事件在 ClickHouse 日志里正好变成零消费。
+//
+// 加宽是安全的:Int32 → Int64 在 ClickHouse 里是受支持的扩宽,已有数据原样保留。
 func clickHouseLogCreateTableSQL(ttlDays int) string {
 	return fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS logs (
@@ -501,9 +541,9 @@ CREATE TABLE IF NOT EXISTS logs (
 	username String DEFAULT '',
 	token_name String DEFAULT '',
 	model_name String DEFAULT '',
-	quota Int32 DEFAULT 0,
-	prompt_tokens Int32 DEFAULT 0,
-	completion_tokens Int32 DEFAULT 0,
+	quota Int64 DEFAULT 0,
+	prompt_tokens Int64 DEFAULT 0,
+	completion_tokens Int64 DEFAULT 0,
 	use_time Int32 DEFAULT 0,
 	is_stream UInt8 DEFAULT 0,
 	channel_id Int32 DEFAULT 0,

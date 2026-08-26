@@ -20,7 +20,11 @@ import { QyLotHallList } from './components/lottery-hall-list'
 import type { QyLotHallState } from './components/lottery-hall-list'
 
 /**
- * 抽奖大厅（选择夹的第一张标签）。
+ * 抽奖大厅（选择夹的第一张标签，按名次 / 按公示概率两种玩法）。
+ *
+ * 双色球本轮搬去了自己那张标签（`pages/lottery-ball`）：它的 `kind` 仍然是
+ * `draw`，所以 `lane='draw'` 这个取值**刻意与 `kind` 不同义** —— 它排除
+ * 双色球。这一条只在后端的 WHERE 里有一处实现，前端不再做二次过滤。
  *
  * 只是正文：区段头与标签栏由宿主 `hub.tsx` 提供。它曾经是一个独立页面
  * （`QyLottery`），需求 2 之后降级 —— 标签页里再套一层区段头会得到两级标题。
@@ -31,5 +35,5 @@ import type { QyLotHallState } from './components/lottery-hall-list'
  * 占掉了首屏第一屏最值钱的那条位置，把奖池与倒计时挤到了折叠线以下。
  */
 export function QyLotteryDrawBody(props: QyLotHallState) {
-  return <QyLotHallList kind='draw' {...props} />
+  return <QyLotHallList lane='draw' {...props} />
 }

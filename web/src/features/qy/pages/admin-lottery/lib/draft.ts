@@ -55,6 +55,18 @@ import { qyLotEntriesCap, qyLotTierBudgetShort } from './advice'
  * `yaml_readonly` / `bounds`，前端不自己抄一份常量。
  */
 
+/**
+ * 「一次最多下多少注」的硬顶，**只在后端没下发时用**。
+ *
+ * 权威值走 `yaml_readonly.max_picks_per_request_hard`。留一个本地常量不是抄一份
+ * 区间，而是为了让本轮之前的后端（它根本不下发这个字段）也有一个确定的行为：
+ * 没有它，`undefined` 会让上界比较恒为假，界面上就变成"随便填多少都通过"。
+ */
+export const QY_LOT_PICKS_HARD_CAP = 999
+
+/** 同上，「没配过」时后端按几注走。 */
+export const QY_LOT_PICKS_DEFAULT_CAP = 10
+
 export type QyLotOptionDraft = {
   /**
    * 仅存在于表单期的行标识。
@@ -115,6 +127,24 @@ export type QyLotDraft = {
   max_total_users: number
   cooldown_seconds: number
   dedup_ip: boolean
+  /**
+   * 一次提交最多买几注（只有双色球用得上）。
+   *
+   * ## 零值在这一格是"没配过"，不是"不限"
+   *
+   * 这一整页别的数字上限都是 `0 = 不限`，唯独这一格不是 —— 它有一个死的硬顶
+   * （999），"不限"只会是 999 的另一种写法。所以 `0` 的含义是"没配过，按后端的
+   * 默认 10 走"，界面上必须把这句话直接印在输入框旁边，否则运营会照着同一页
+   * 其余几格的经验把它读成"不限"。
+   *
+   * ## 它不进承诺，发布后还能改
+   *
+   * 与这一页其余每一格都不同：那些进 `rules_text` → `rules_hash` →
+   * `commit_hash`，发布即冻结；这一格不进任何哈希原像，因为它不改变任何人最终
+   * 能拿到几张票（那个数由 `max_entries_per_user` 说了算），只决定同样这些票
+   * 要分几次请求买完。
+   */
+  max_picks_per_request: number
   tiers: QyLotTier[]
   options: QyLotOptionDraft[]
   rules: QyLotRules
@@ -153,6 +183,9 @@ export function qyLotEmptyDraft(defaultFeeBps: number): QyLotDraft {
     max_total_users: 0,
     cooldown_seconds: 0,
     dedup_ip: false,
+    // 0 = 没配过，后端按默认 10 走。刻意不写成 10：填 10 与不填在**行为上**
+    // 一样，但在库里是两个值，而"运营明确要 10"与"运营没碰过这一格"应当分得开。
+    max_picks_per_request: 0,
     tiers: [
       {
         tier: 1,
@@ -230,6 +263,7 @@ export function qyLotDraftFromActivity(
     max_total_entries: activity.max_total_entries,
     max_total_users: activity.max_total_users,
     cooldown_seconds: activity.cooldown_seconds,
+    max_picks_per_request: activity.max_picks_per_request ?? 0,
     dedup_ip: activity.dedup_ip,
     // 奖档整份带回来，包括表单上没有输入格的 `prize_type` / `text_desc`：
     // 提交时 `qyLotDraftToInput` 原样透传它们，界面改不了的字段也就不会被
@@ -536,6 +570,16 @@ export function qyLotValidateDraft(
   ) {
     errors.push('qy_lot_v_total_entries_hard')
   }
+  // 硬顶由后端下发（`max_picks_per_request_hard`）。老后端不下发时退回 999 ——
+  // 这一格是本轮新增的，一个不认识它的后端会把任何正数一起忽略掉，所以前端
+  // 拦在硬顶上不会造成"界面允许、后端拒绝"。
+  if (
+    draft.max_picks_per_request < 0 ||
+    draft.max_picks_per_request >
+      (yaml?.max_picks_per_request_hard ?? QY_LOT_PICKS_HARD_CAP)
+  ) {
+    errors.push('qy_lot_v_picks_per_request')
+  }
 
   return errors
 }
@@ -701,6 +745,14 @@ export function qyLotDraftToInput(
       cooldown_seconds: draft.cooldown_seconds,
       dedup_ip: draft.dedup_ip,
     },
+    // **不在 rules 里**：rules 整块进 rules_hash 进而进 commit_hash，而这一格
+    // 不进任何哈希原像（理由见 QyLotDraft 上的说明）。放错位置的后果不是
+    // 报错，是它跟着被冻结、发布后再也改不了。
+    //
+    // 非双色球恒发 0：后端只在 `picks` 那条路上读它，而只有双色球有 `picks`。
+    // 发一个不会生效的值过去，界面上就会显示"已设置"而实际一条都没生效 ——
+    // 与 `fee_bps` / 单注上下限同一条口径。
+    max_picks_per_request: isBall ? draft.max_picks_per_request : 0,
     // 奖档按玩法归一化，与后端强制的那组恒等式逐条对齐：
     //   · rank / ball：win_ppm 必须为 0（后端对填了它的请求直接 400）
     //   · rank / prob：红蓝命中数与占池比例必须为 0（后端静默忽略它们，

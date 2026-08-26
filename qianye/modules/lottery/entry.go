@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -61,26 +62,105 @@ const perUserCapHard = 500
 // 上限来自列宽反推:act_no(27) + ":"(1) + 64 = 92 ≤ qy_lot_entry.idem_key 的 96。
 const maxClientRequestID = 64
 
-// maxPicksPerRequest 是**一次提交最多买几注**(双色球)。
+// defaultPicksPerRequest 是**没配过的活动**一次提交最多买几注(双色球)。
 //
-// 它不是运营旋钮,而是这条链路的时间预算:一次多注提交在服务端是 N 次串行的
-// twophase.Execute(每一注一张独立资金单、一次主库事务),整批跑在
-// guard.ColdContext 那 3 秒的预算里。配得再大只会让后半批在超时后被截断 ——
-// 而截断本身是安全的(前面每一注都已各自落定),但用户看到的是一次"只买成一半"。
+// 它就是改造前那个写死的 10。留成默认值而不是删掉,是因为 max_picks_per_request
+// 这一列对全部存量活动都是 0,而 0 在这里的意思是"没配过"(见 picksCapOf)——
+// 于是迁移之后每一场老活动的行为与迁移之前逐字节相同。
+const defaultPicksPerRequest = 10
+
+// maxPicksPerRequestHard 是这一格能配到的最大值,由项目方直接给定(999)。
 //
-// 每人上限仍由活动的 max_entries_per_user 说了算,这里只管单次提交的批量。
-const maxPicksPerRequest = 10
+// 它必须有限而且不大:一次 N 注提交在服务端是 N 次串行的 twophase.Execute
+// (每一注一张独立资金单、一次主库事务、一条链环),而那正是"每一注各自可复算"
+// 的实现方式,不能为了快而合并。本机实测(MySQL 8.0 / 127.0.0.1:3307,
+// 见 ball_batch_budget_test.go 的注释)999 注需要 36 秒、每注均值 36 毫秒,
+// 其中只有 2.5 毫秒是批内可复用的只读准备 —— 也就是说这条链路没有便宜的加速余地,
+// 999 就是能在一次 HTTP 请求里做完的量级的上沿。
+const maxPicksPerRequestHard = 999
+
+// picksCapOf 回答"这一场一次提交最多买几注"。**全模块唯一口径。**
+//
+// 上界在读的时候再夹一次,不是多余:硬顶是常量而列是数据,一行由更宽松的
+// 旧代码(或直接改库)写进来的 5000 会让下面的时间预算算出一个荒唐的截止时刻。
+// 夹在这里意味着无论那一列是什么,受理端永远认同一个上界。
+func picksCapOf(act *Activity) int {
+	n := act.MaxPicksPerRequest
+	if n <= 0 {
+		return defaultPicksPerRequest
+	}
+	if n > maxPicksPerRequestHard {
+		return maxPicksPerRequestHard
+	}
+	return n
+}
+
+// measuredMsPerPick 是一注在**实测**里的平均耗时(毫秒)。
+//
+// 本机 MySQL 8.0(127.0.0.1:3307)999 注串行:总 36.07 秒、每注均值 36.1 毫秒、
+// 最慢一注 95 毫秒,而且**不随批次增长**(第 0-99 注 34.3ms,第 900-999 注
+// 34.4ms)。其中批内可复用的只读准备加起来只有 2.4 毫秒/注
+// (loadActivityByNo 0.79 + LoadSubject 0.81 + loadSalts 0.77),
+// 也就是说 94% 的时间在那四次真正的事务往返上 —— 而那四次往返正是"每一注
+// 各自独立可复算"的实现方式,不能为了快合并掉。
+//
+// 它只用来**说人话**:管理端把 N × 它印在这一格旁边,让运营在填 999 之前就
+// 知道这是一次三十几秒的请求。真正的截止时刻走 batchPerPickBudgetMs。
+const measuredMsPerPick = 36
+
+// batchPerPickBudgetMs 是每一注在总预算里分到的毫秒数。
+//
+// 取实测均值(measuredMsPerPick)的约三倍。给足倍数是因为预算耗尽的表现是
+// **后半批被截断**,而截断虽然安全(前面每一注都已各自落定、后面的一分钱没扣),
+// 用户看到的仍然是一次"只买成一半"。
+const batchPerPickBudgetMs = 100
+
+// entryBatchContext 给一次 N 注提交定一个与 N 成正比的截止时刻。
+//
+// # 为什么不能沿用 guard.ColdContext
+//
+// 那是**一次**冷路径操作的预算(默认 3 秒)。一批 N 注是 N 次操作,拿一次的预算
+// 去装 N 次,后果是 999 注在第 86 注左右被截断 —— 也就是这一格根本配不到 999,
+// 配了也只是让用户每次都收到一份"买成了 86 注"的回执。
+//
+// # 为什么仍然要有上界
+//
+// 一个不封顶的预算 = 一个不封顶的 HTTP 请求。请求在反向代理的读超时那一刻被切断时
+// 用户看到的是 504,而服务端此刻仍在逐注扣钱 —— 那是这条链路上最糟的形状:
+// 钱扣了、回执没送到。上界由 lottery.entry_batch_max_ms 给,默认 45 秒,
+// 刻意留在常见反代默认读超时(60 秒)之下;部署方的反代更严格时把它调小。
+func entryBatchContext(parent context.Context, picks int) (context.Context, context.CancelFunc) {
+	base := config.Get().Runtime.ColdPathTimeoutMs
+	if base <= 0 {
+		base = 3000
+	}
+	if picks < 1 {
+		picks = 1
+	}
+	budget := int64(base) + int64(picks)*batchPerPickBudgetMs
+	if max := int64(config.Get().Lottery.EntryBatchMaxMs); max > 0 && budget > max {
+		budget = max
+	}
+	// 下界兜住一个被配得比冷路径预算还小的 entry_batch_max_ms:单注提交在
+	// 改造前后必须逐字节相同,它拿到的预算不能比 guard.ColdContext 少。
+	if budget < int64(base) {
+		budget = int64(base)
+	}
+	return context.WithTimeout(parent, time.Duration(budget)*time.Millisecond)
+}
 
 // maxEntryRequestID 是 ChargeEntry 允许的 ClientRequestId 长度上限。
 //
-// 它比 maxClientRequestID 大 2:多注提交给第 i(i ≥ 1)注派生的幂等键是
-// `<客户端的 crid>#<i>`,i 至多两位十进制(maxPicksPerRequest = 10 → 最大是 9)。
-// 列宽仍然对得上:act_no(27) + ":"(1) + 64 + "#9"(2) = 94 ≤ 96。
+// 它比 maxClientRequestID 大 4:多注提交给第 i(i ≥ 1)注派生的幂等键是
+// `<客户端的 crid>#<i>`,i 至多三位十进制(maxPicksPerRequestHard = 999 →
+// 最大下标是 998,后缀 `#998` 占 4 字节)。
+// 列宽仍然对得上,而且是**刚好**对上:act_no(27) + ":"(1) + 64 + "#998"(4)
+// = 96 = qy_lot_entry.idem_key 的列宽。再抬高硬顶必须先加宽这一列。
 //
 // 两个常量分开是因为它们约束的是两件事:客户端传进来的那一份由 handler 挡在
 // 64(用户输入的边界),而 ChargeEntry 自己认的是列宽反推出来的那一份 ——
 // 合成一个数就必然要么拒掉一个合法的派生键、要么把用户输入的上界悄悄放宽。
-const maxEntryRequestID = maxClientRequestID + 2
+const maxEntryRequestID = maxClientRequestID + 4
 
 // EntryInput 是一次参与请求的全部输入。
 type EntryInput struct {
@@ -126,6 +206,16 @@ func PayPasswordRequired(stakeQuota int64) bool {
 func ChargeEntry(ctx context.Context, in EntryInput) (*Entry, error) {
 	crid := strings.TrimSpace(in.ClientRequestId)
 	if crid == "" || len(crid) > maxEntryRequestID {
+		return nil, errBadRequestID
+	}
+	// 幂等键必须落在三方言比较一致的字符集里。
+	//
+	// 判据放在这里而不是只放在 handler:ChargeEntry 是本模块唯一的扣费入口,
+	// handler 只是它的一个调用方。放过一个大写字母或一个重音字母,
+	// MySQL 的默认排序规则(0900_ai_ci)就会把它和另一个键判成同一个,
+	// 而 PostgreSQL / SQLite 不会 —— 同一份代码在两种方言上给出相反的
+	// 扣钱结果。`#` 在允许集里,它是服务端派生多注键的分隔符(batchRequestId)。
+	if !qymodel.IsCollationNeutralIdemKey(crid) {
 		return nil, errBadRequestID
 	}
 	gdb := db.Get()
@@ -520,7 +610,7 @@ func checkCaps(tx *gorm.DB, cur *Activity, e *Entry, batchIndex int) error {
 		return errCapReached
 	}
 	// 双色球受同一条限制,而且理由更硬:它的参与费**有一部分要进期次奖池**
-	// (pool_share_bps),没派出去的部分在收尾时滚存回系列。系列池一旦越过 int32,
+	// (pool_share_bps),没派出去的部分在收尾时滚存回系列。系列池一旦越过 common.MaxQuota,
 	// checkBallPoolCovers 的 `open > MaxQuota` 分支会让这个系列**永久开不出新一期**,
 	// 而且没有任何接口能把池子降下来(handleCloseSeries 只会把整池作废)。
 	// 判据用"本期真正可派发的池子",与 ballPoolOpen / settleSeriesPool 同一个式子:
@@ -854,11 +944,33 @@ func releaseEntryOnFailure(ctx context.Context, order *qymodel.FundOrder, e *Ent
 	if gdb == nil {
 		return
 	}
-	if err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	// 回滚必须切断调用方的取消链,理由与 settleGuard / twophase.settleContext
+	// 逐字相同,而且更硬 —— 这是全链路上唯一一处收尾还沿用调用方 ctx 的地方,
+	// 而它恰好在**预算已经耗尽**的那一支上被调用:
+	//
+	// 整批多注共用一份按注数给的预算(entryBatchContext)。预算在 ChargeEntry
+	// 内部到期时,twophase 用自己的 settleContext 把资金单置成 failed(它切过
+	// 取消链,写得进去),回到这里 ctx 却已经过期,第一条语句就
+	// context deadline exceeded。于是 qy_lot_entry 留下一条 status=pending 的
+	// 孤儿票:回执说 accepted=N,库里是 N+1 行;而 checkCaps 见到本人任何
+	// pending 条目一律返回 errEntryInFlight,这个用户在**这一场**就整场 409 ——
+	// 恰恰是那句 failed_message「剩下的没有扣费,可以再提交一次」指的那次重提。
+	// 而且没有任何自动出口:Compensate 只扫 pending/in_doubt 的资金单,
+	// 这一支的资金单终态是 failed,扫不到;只有封盘时的 excludePendingEntries
+	// 才会把它刷掉。仓库自带的 TestEntryBatchTruncatesSafelyWhenBudgetRunsOut
+	// 因此有约 25% 的概率是红的(断言原文:库里的票数必须等于回执里的 accepted)。
+	releaseCtx, cancel := guard.ColdContext(context.WithoutCancel(ctx))
+	defer cancel()
+	if err := gdb.WithContext(releaseCtx).Transaction(func(tx *gorm.DB) error {
 		return markEntryFailed(tx, e.EntryNo, code)
 	}); err != nil {
 		db.MarkFailure(err)
 		common.SysError("qianye/lottery: 回滚参与预占失败,交对账任务: " + err.Error())
+		// 回滚失败会留下一条 pending 孤儿票,而它会让这个用户在这一场上整场
+		// 被 errEntryInFlight 拒绝。落一条红点:此前这里只有一句后端日志,
+		// 运营侧连信号都没有。
+		raiseFlag(ctx, e.ActId, FlagEntryStuck,
+			"参与预占回滚失败,该用户在本场的后续参与会被判为「上一次还在处理中」: "+e.EntryNo)
 	}
 }
 

@@ -379,7 +379,8 @@ func ballTierAmounts(t BallTier, hits []RosterLine, poolOpen int64) ([]int64, er
 		if t.PoolShareBps > 10000 {
 			return nil, ErrPoolNotConserved
 		}
-		// poolOpen ≤ MaxQuota(int32 量级),乘 10000 之后仍远在 int64 之内。
+		// poolOpen ≤ common.MaxQuota(2^43),乘 10000 之后是 2^43×10^4 ≈ 8.8e16,
+		// 仍在 int64 之内(那正是 MaxQuota 推导里留的那道余量)。
 		return ballSplitEven(t.Tier, poolOpen*int64(t.PoolShareBps)/10000, hits)
 	}
 	if len(hits) <= t.Count {

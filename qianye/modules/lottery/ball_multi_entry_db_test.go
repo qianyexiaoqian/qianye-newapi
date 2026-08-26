@@ -17,6 +17,7 @@ package lottery
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -228,7 +229,8 @@ func TestBallMultiEntryBuysEveryLine(t *testing.T) {
 	detail := activityDetailOf(t, r, act.ActNo)
 	assert.Equal(t, len(picks), detail.MyEntryCount)
 	require.Len(t, detail.MyTickets, len(picks), "详情页要能逐注看到自己的号")
-	assert.Equal(t, maxPicksPerRequest, detail.MaxPicksPerRequest)
+	assert.Equal(t, defaultPicksPerRequest, detail.MaxPicksPerRequest,
+		"没配过的活动下发的是默认 10,不是 0 也不是硬顶")
 	assert.Nil(t, detail.MyEntriesRemaining,
 		"本场没有每人上限,「还能买几注」必须是 null 而不是 0 —— 0 的意思是买满了")
 	for i, ticket := range detail.MyTickets {
@@ -608,64 +610,103 @@ func joinSep(lines []string) string {
 // 它是一个纯函数,但它决定了会被扣几笔钱 —— 而三条判据里有两条(同时带
 // pick 与 picks、超过单次上限)在改造前根本不存在,静默择一或静默截断的后果
 // 都是用户买到的不是他写的那几组号。
+//
+// 单次上限现在是**活动级**的,所以每一条用例都要显式给出这一场的 cap:
+// 一个写死 10 的判定在配了 999 的活动上会把用户合法的第 11 注顶回来,
+// 而在配了 1 的活动上会放过第 2 注。
 func TestAcceptPickList(t *testing.T) {
-	tooMany := make([]string, maxPicksPerRequest+1)
-	for i := range tooMany {
-		tooMany[i] = "01,02,03|01"
-	}
-	atCap := make([]string, maxPicksPerRequest)
-	for i := range atCap {
-		atCap[i] = "04,05,06|02"
+	picks := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = "01,02,03|01"
+		}
+		return out
 	}
 
 	cases := []struct {
-		name string
-		req  entryRequest
-		want []string
-		err  error
+		name     string
+		cap      int
+		req      entryRequest
+		want     []string
+		wantCode string
 	}{
 		{
 			// 旧客户端与"只买一注"走的都是这一条:picks 缺席时选号仍取 pick。
 			name: "缺 picks 时回落到单注",
+			cap:  defaultPicksPerRequest,
 			req:  entryRequest{Pick: "01,02,03|01"},
 			want: []string{"01,02,03|01"},
 		},
 		{
 			// 空数组与缺席在 wire 上不可区分(Go 里都是 len == 0),按同一条处理。
 			name: "空 picks 等同缺席",
+			cap:  defaultPicksPerRequest,
 			req:  entryRequest{Picks: []string{}, Pick: "07,08,09|03"},
 			want: []string{"07,08,09|03"},
 		},
 		{
 			// 非双色球不带号:空串照样是"一注",由 acceptPick 决定它合不合法。
 			name: "非双色球的空号仍是一注",
+			cap:  defaultPicksPerRequest,
 			req:  entryRequest{},
 			want: []string{""},
 		},
 		{
 			name: "多注原样带出,重号不合并",
+			cap:  defaultPicksPerRequest,
 			req:  entryRequest{Picks: []string{"01,02,03|01", "01,02,03|01"}},
 			want: []string{"01,02,03|01", "01,02,03|01"},
 		},
 		{
-			name: "恰好到单次上限",
-			req:  entryRequest{Picks: atCap},
-			want: atCap,
+			name: "恰好到默认上限",
+			cap:  defaultPicksPerRequest,
+			req:  entryRequest{Picks: picks(defaultPicksPerRequest)},
+			want: picks(defaultPicksPerRequest),
 		},
 		{
-			name: "超过单次上限",
-			req:  entryRequest{Picks: tooMany},
-			err:  errTooManyPicks,
+			name:     "超过默认上限",
+			cap:      defaultPicksPerRequest,
+			req:      entryRequest{Picks: picks(defaultPicksPerRequest + 1)},
+			wantCode: "qy_lot_too_many_picks",
 		},
 		{
-			name: "pick 与 picks 同时提交",
-			req:  entryRequest{Pick: "01,02,03|01", Picks: []string{"04,05,06|02"}},
-			err:  errPickAndPicks,
+			// 活动配到硬顶时第 999 注必须过 —— 这正是本轮要交付的那个数。
+			name: "配到硬顶时 999 注通过",
+			cap:  maxPicksPerRequestHard,
+			req:  entryRequest{Picks: picks(maxPicksPerRequestHard)},
+			want: picks(maxPicksPerRequestHard),
+		},
+		{
+			name:     "配到硬顶时第 1000 注仍被拒",
+			cap:      maxPicksPerRequestHard,
+			req:      entryRequest{Picks: picks(maxPicksPerRequestHard + 1)},
+			wantCode: "qy_lot_too_many_picks",
+		},
+		{
+			// 配 1 = "一次只能买一注",是一个合法的运营取值。此时 picks 里
+			// 放两注必须被拒,而不是静默只买第一注。
+			name:     "配 1 时第 2 注被拒",
+			cap:      1,
+			req:      entryRequest{Picks: picks(2)},
+			wantCode: "qy_lot_too_many_picks",
+		},
+		{
+			name: "配 1 时单注照常受理",
+			cap:  1,
+			req:  entryRequest{Picks: picks(1)},
+			want: picks(1),
+		},
+		{
+			name:     "pick 与 picks 同时提交",
+			cap:      defaultPicksPerRequest,
+			req:      entryRequest{Pick: "01,02,03|01", Picks: []string{"04,05,06|02"}},
+			wantCode: "qy_lot_pick_conflict",
 		},
 		{
 			// 只有空白的 pick 不算"同时提交":一个把输入框清空的前端会发
 			// `"pick":""`,拒绝它等于让多注在那些客户端上恒不可用。
 			name: "空白的 pick 不算冲突",
+			cap:  defaultPicksPerRequest,
 			req:  entryRequest{Pick: "   ", Picks: []string{"04,05,06|02"}},
 			want: []string{"04,05,06|02"},
 		},
@@ -673,9 +714,17 @@ func TestAcceptPickList(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := acceptPickList(tc.req)
-			if tc.err != nil {
-				require.ErrorIs(t, err, tc.err)
+			got, err := acceptPickList(tc.cap, tc.req)
+			if tc.wantCode != "" {
+				be, ok := AsBizError(err)
+				require.Truef(t, ok, "期望一条业务错误,拿到 %v", err)
+				assert.Equal(t, tc.wantCode, be.ErrCode())
+				if tc.wantCode == "qy_lot_too_many_picks" {
+					// 报错必须念出**这一场**的那个数。一条恒说 10 的文案在配了
+					// 999 的活动上就是假话,而用户的下一个动作只能是二分试。
+					assert.Containsf(t, be.Message(), strconv.Itoa(tc.cap),
+						"「一次最多买 N 注」里的 N 必须是这一场的上限 %d", tc.cap)
+				}
 				return
 			}
 			require.NoError(t, err)
@@ -701,10 +750,10 @@ func TestBatchRequestIdFitsIdemKeyColumn(t *testing.T) {
 	assert.Equal(t, longest, batchRequestId(longest, 0),
 		"第 0 注必须原样沿用客户端那一份 —— 单注提交要与改造前逐字节相同")
 
-	seen := make(map[string]bool, maxPicksPerRequest)
+	seen := make(map[string]bool, maxPicksPerRequestHard)
 	actNo := newActNo()
 	require.Len(t, actNo, 27, "列宽反推的余量是按 act_no 27 位算的")
-	for i := 0; i < maxPicksPerRequest; i++ {
+	for i := 0; i < maxPicksPerRequestHard; i++ {
 		crid := batchRequestId(longest, i)
 		require.LessOrEqualf(t, len(crid), maxEntryRequestID,
 			"第 %d 注的派生键越过了 ChargeEntry 的上界", i)

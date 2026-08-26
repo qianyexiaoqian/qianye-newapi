@@ -58,10 +58,8 @@ import {
   updateQyLotActivity,
 } from '../api'
 import {
-  QY_LOT_BET_MAX_MULTIPLE,
   qyLotEntriesCap,
   qyLotPoolShareHeadroom,
-  qyLotRecommendedBetMax,
   qyLotRecommendedMinEntries,
   qyLotTierAmountFloor,
   qyLotTierBudgetShort,
@@ -299,7 +297,11 @@ export function QyLotActivityWizard(props: {
             />
           )}
           {step === 'rules' && (
-            <QyLotRulesEditor draft={draft} onChange={patch} />
+            <QyLotRulesEditor
+              draft={draft}
+              onChange={patch}
+              yaml={props.config?.yaml_readonly}
+            />
           )}
           {step === 'review' && (
             <ReviewStep
@@ -743,16 +745,6 @@ function SpecStep(props: {
   // 「数量 × 单份 ≥ 全场参与上限」的判据只在这两支下成立。
   const budgetApplies = draft.draw_mode === 'prob'
   const minEntriesAdvice = qyLotRecommendedMinEntries(draft, entriesCap)
-  // 竞猜单注上限的推荐值必须夹在这一格**真正能填**的上界之内：系统上界与站点
-  // 自己配的 max_stake_quota 里更紧的那一个（任一为 0 = 那一道不设限）。不夹的
-  // 话，参与费大于「系统上界 ÷ 20」的场次点一下「自动填」就得到一个后端必拒的
-  // 值，而界面上一条红字都不会有。
-  const stakeCeiling = props.yaml?.max_stake_quota ?? 0
-  const betCeiling =
-    systemMax > 0 && stakeCeiling > 0
-      ? Math.min(systemMax, stakeCeiling)
-      : Math.max(systemMax, stakeCeiling)
-  const betMaxAdvice = qyLotRecommendedBetMax(draft.stake_quota, betCeiling)
 
   if (qyLotPlayOf(draft) === 'ball') {
     return (
@@ -1280,32 +1272,20 @@ function SpecStep(props: {
             {t('qy_lot_bet_max_hint')}
           </p>
           {/*
-            上一轮留下的那条建议在这里落地：**给一个非零推荐值**，而不是只加
-            一句提醒。理由写在 `lib/advice.ts` 的 qyLotRecommendedBetMax 上 ——
-            `0 = 不限` 是后端 wire 语义（改不得），但"没填"与"我确实要不限"
-            在表单上是同一个 0，而两者的代价差一个量级。
+            这一格**刻意没有自动填**，理由逐条写在 `lib/advice.ts` 上：
+            后端 applyBetBounds 对它没有任何可解的不等式，而上一版那个
+            「单注额 × 20」的推荐值连它自己的理由都是假的 —— 上限约束的是
+            一笔投注，不是一个人，而每人报名次数默认不限。
 
-            填 0 时那一行是**提示**而不是红字：不限是一个合法取值，把它渲染成
-            错误会让人学会无视红字。
+            剩下的是范围与后果：`0 = 不限` 是后端 wire 语义（改不得），
+            填 0 时多给一行提示。那一行是**提示**而不是红字：不限是一个合法
+            取值，把它渲染成错误会让人学会无视红字。
           */}
           <QyLotFieldAdvice
             ranges={[
               t('qy_lot_range_bet_max'),
               draft.bet_max_quota === 0 ? t('qy_lot_bet_max_zero_note') : '',
             ]}
-            advice={
-              betMaxAdvice > 0
-                ? t('qy_lot_advice_bet_max', {
-                    amount: formatQyQuotaBound(betMaxAdvice),
-                    multiple: QY_LOT_BET_MAX_MULTIPLE,
-                  })
-                : undefined
-            }
-            onApply={
-              betMaxAdvice > 0
-                ? () => props.onChange({ bet_max_quota: betMaxAdvice })
-                : undefined
-            }
             problem={
               draft.bet_max_quota > 0 &&
               draft.bet_min_quota > draft.bet_max_quota

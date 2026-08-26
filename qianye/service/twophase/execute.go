@@ -34,7 +34,7 @@ import (
 const maxErrBytes = 512
 
 var (
-	// ErrAmountOutOfRange 表示金额超出主库 users.quota 的 int32 容量。
+	// ErrAmountOutOfRange 表示金额超出 common.MaxQuota 这条全站额度换算上界。
 	// 绝不静默截断:那会让用户凭空少钱或多钱。
 	ErrAmountOutOfRange = errors.New("qianye: 金额超出允许范围")
 	// ErrInProgress 表示同一幂等键的单据正在处理中。
@@ -594,9 +594,10 @@ func transitionReason(appliedNow bool) string {
 	return "主库侧此前已生效,本次跳过资金变更"
 }
 
-// validateAmount 校验金额落在主库 users.quota 的 int32 容量内。
+// validateAmount 校验金额落在 common.MaxQuota 这条全站额度换算上界之内。
 //
-// 扩展库用 int64 承载聚合与中间量,但主库的额度列是 int32。
+// 扩展库用 int64 承载聚合与中间量,而 common.MaxQuota 是**算术**上界而非列宽
+// (额度列在 SQLite/MySQL/PostgreSQL 上都是 64 位,见 common/quota_math.go)。
 // 跨库前必须显式拒绝越界值,绝不能让它静默溢出成负数。
 func validateAmount(amount int64) error {
 	if amount <= 0 {

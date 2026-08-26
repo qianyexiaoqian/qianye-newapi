@@ -203,7 +203,7 @@ func settleSubscriptionDelta(userId int, userGroup, modelGroup string, subscript
 			"subscription %d (user %d, group %s, model group %s) already used its write-off allowance this reset period; charging the %d shortfall to the wallet instead",
 			subscriptionId, userId, userGroup, modelGroup, shortfall))
 	}
-	// 额度列是 32 位;这里走 quota_math 的饱和转换而不是裸 int(),
+	// 额度有算术上界(common.MaxQuota,不是列宽);这里走 quota_math 的饱和转换而不是裸 int(),
 	// 越界会被夹住并留下 SysError,而不是静默回绕成一笔负扣款(= 凭空发钱)。
 	if err := model.DecreaseUserQuota(userId, common.QuotaFromFloat(float64(shortfall)), false); err != nil {
 		return split, err

@@ -235,7 +235,7 @@ func (ViolationRecord) TableName() string { return "qy_violation_record" }
 
 **金额精度**
 - `decimal(18,8)` 承载美元金额(项目 `ViolationDeductionAmount` 默认 0.05,倍率类配置常见 6~8 位小数)。
-- `fee_quota` 用 `bigint` 而非 `int`:虽然 `common.MaxQuota = math.MaxInt32`,但归档字段用 bigint 可以在 clamp 发生时把**原始未截断值**如实记下来,便于事后核查。
+- `fee_quota` 用 `bigint` 而非 `int`:归档字段用 bigint 可以在 clamp 发生时把**原始未截断值**如实记下来,便于事后核查。(2026-08-26 更正:原先写 `common.MaxQuota = math.MaxInt32`,现为 2^43,而且它从来就是一条算术上界而不是列宽。)
 - 所有 `float64 → quota` 转换**必须**走 `common.QuotaFromDecimalChecked`,clamp 写进 `QuotaClamp` 字段(AGENTS.md 强制)。禁止照抄 `service/violation_fee.go:91-99` 的 `decimal...Round(0).IntPart()` —— 那段本身违反 AGENTS.md。
 
 ### 1.4 上下文归档表 `qy_violation_payload`
@@ -929,7 +929,7 @@ case "ban_only":
 
 **记录 `fee_quota_want` 与 `fee_quota` 两个字段**就是为了让这个偏差在管理端可见可审计。
 
-**溢出**:全部经 `common.QuotaFromDecimalChecked`,`MaxQuota = math.MaxInt32`。clamp 发生时:
+**溢出**:全部经 `common.QuotaFromDecimalChecked`,上界是 `common.MaxQuota`(2^43,算术上界而非列宽)。clamp 发生时:
 - `record.QuotaClamp` 落 `clamp.AuditMap()` JSON;
 - `logs.other.admin_info.quota_saturation` 同步落一份(AGENTS.md 额度饱和审计要求);
 - 管理端 `/stats` 单独统计 clamp 次数并高亮告警(clamp 几乎必然意味着规则配置错误)。

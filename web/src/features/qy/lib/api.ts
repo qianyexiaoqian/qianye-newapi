@@ -321,6 +321,12 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_bad_option: 'qy_lot_err_bad_option',
   qy_lot_bad_amount: 'qy_lot_err_bad_amount',
   qy_lot_bad_request_id: 'qy_lot_err_bad_request_id',
+  // 期次池的两条**方向相反**的错误,必须各说各的。
+  // pool_short 是「池子不够大」,处置是注资;pool_ceiling 是「池子已经太大」,
+  // 而注资只会让它更糟(奖级配置也救不了,那条判据是无条件的)。
+  // 不登记的话两条都回落成泛化的「参数不合法」,运营既看不出方向也看不出处置。
+  qy_lot_series_pool_short: 'qy_lot_err_series_pool_short',
+  qy_lot_series_pool_ceiling: 'qy_lot_err_series_pool_ceiling',
   // 一次买多注的三条。前两条是请求形状错了（前端写错才会发生），第三条是
   // **部分成交**：前面几注已经买成、后面几注被时间预算截断且一分钱没扣。
   // 第三条若回落成泛化的"操作冲突"，用户会以为整批都失败了而再提交一次。

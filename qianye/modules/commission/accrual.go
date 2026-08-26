@@ -29,7 +29,7 @@ var rateUnitsDivisor = decimal.NewFromInt(config.RatePercentScale * 100)
 
 // calcGross 计算一笔佣金的精确金额,永不截断。
 //
-// 这是本模块存在的核心理由。quota 是 int32,单次对话常见 10~500,
+// 这是本模块存在的核心理由。quota 是整数额度,单次对话常见 10~500,
 // 5% 的佣金是 0.5~25。用 int(float64(base)*rate) 会把 0.5 直接变成 0,
 // 一天几千次请求全部归零,用户看到"用了一天没佣金"而钱被平台吞掉。
 //

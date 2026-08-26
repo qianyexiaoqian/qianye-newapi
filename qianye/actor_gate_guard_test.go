@@ -113,6 +113,11 @@ var actorGates = []actorGate{
 	// 同一个人再加一次钱。受益人在出款行上（payout.user_id），不在报文里。
 	{"POST /api/qy/admin/lottery/activities/:act_no/payouts/:payout_no/adjudicate", "qianye/modules/lottery/payout_adjudicate.go", "handleAdjudicatePayout", "ActorMayActOnCtx"},
 
+	// ── 扩展侧:孤儿令牌修复 ──
+	// 它改的是 tk.UserId 名下那条令牌的分组:置空之后 UsingGroup 回落到
+	// users.group,可用模型范围与倍率随之改变。受益人在令牌行上,不在报文里。
+	{"POST /api/qy/admin/group-matrix/repair-token", "qianye/modules/groupmatrix/api_admin.go", "adminRepairToken", "ActorMayActOnCtx"},
+
 	// ── 扩展侧:违规处置 ──
 	{"POST /api/qy/admin/violation/records/:id/revoke", "qianye/modules/violation/api_admin.go", "adminRevokeRecord", "denyActorOverTarget"},
 	{"POST /api/qy/admin/violation/bans/:userId/unban", "qianye/modules/violation/api_admin.go", "adminUnban", "denyActorOverTarget"},
@@ -189,26 +194,96 @@ func findFuncDecl(file *ast.File, name string) *ast.FuncDecl {
 	return nil
 }
 
-// callsFunc 回答 fn 的函数体里有没有调用名为 name 的函数。
+// callsFunc 回答 fn 的函数体里有没有**用上**名为 name 的函数的返回值。
+//
 // 选择器表达式只比最后一段:guard.ActorMayActOnCtx 与 ActorMayActOnCtx 是同一件事。
+//
+// # 为什么不能只看"调用过"
+//
+// 这一族闸门(denyActorOverTarget / adminTargetActable / requireManageableUser)
+// 只写响应、**从不 c.Abort()**,判定结果全靠返回值交给调用方 return。于是
+// 「调了但忽略返回值」既骗得过"调用过"这条判据,又让特权动作照常执行:
+//
+//	_ = denyActorOverTarget(c, "bans.unban", userId)   // 闸门在,但不拦人
+//
+// 表现是调用方看到 403(先写的那份响应赢),而封禁**已经解除**。这正是本文件
+// 开头那句"真正的失败模式不是判据写错了,而是下一个人加接口时忘了接"的
+// 同一族里最像已经接好的那一种忘 —— 实测过:同一次变异下守卫与整包都是绿的。
+//
+// 所以判据升级成"返回值必须落在一个能改变控制流的位置上":出现在 if/for 的
+// 条件里、被 return 出去、或被赋给一个**具名**变量(空白标识符 `_` 不算)。
 func callsFunc(fn *ast.FuncDecl, name string) bool {
-	found := false
-	ast.Inspect(fn, func(n ast.Node) bool {
+	isGateCall := func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
-			return true
+			return false
 		}
 		switch f := call.Fun.(type) {
 		case *ast.Ident:
-			if f.Name == name {
+			return f.Name == name
+		case *ast.SelectorExpr:
+			return f.Sel.Name == name
+		}
+		return false
+	}
+	containsGateCall := func(n ast.Node) bool {
+		if n == nil {
+			return false
+		}
+		found := false
+		ast.Inspect(n, func(inner ast.Node) bool {
+			if isGateCall(inner) {
 				found = true
 			}
-		case *ast.SelectorExpr:
-			if f.Sel.Name == name {
-				found = true
+			return !found
+		})
+		return found
+	}
+
+	used := false
+	ast.Inspect(fn, func(n ast.Node) bool {
+		if used {
+			return false
+		}
+		switch stmt := n.(type) {
+		case *ast.IfStmt:
+			// `if gate(...) { return }` 与 `if err := gate(...); err != nil`
+			if containsGateCall(stmt.Cond) || containsGateCall(stmt.Init) {
+				used = true
+			}
+		case *ast.ForStmt:
+			if containsGateCall(stmt.Cond) {
+				used = true
+			}
+		case *ast.SwitchStmt:
+			if containsGateCall(stmt.Tag) || containsGateCall(stmt.Init) {
+				used = true
+			}
+		case *ast.ReturnStmt:
+			for _, res := range stmt.Results {
+				if containsGateCall(res) {
+					used = true
+				}
+			}
+		case *ast.AssignStmt:
+			rhsHasGate := false
+			for _, rhs := range stmt.Rhs {
+				if containsGateCall(rhs) {
+					rhsHasGate = true
+				}
+			}
+			if !rhsHasGate {
+				return true
+			}
+			// 全部落进空白标识符 = 显式丢弃判定结果,不算"接上了"。
+			for _, lhs := range stmt.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok && ident.Name == "_" {
+					continue
+				}
+				used = true
 			}
 		}
 		return true
 	})
-	return found
+	return used
 }

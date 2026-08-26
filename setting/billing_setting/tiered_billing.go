@@ -85,6 +85,60 @@ func SmokeTestExpr(exprStr string) error {
 // "billing_setting", so each field lands under "<prefix>.<json tag>").
 const BillingExprOptionKey = "billing_setting." + BillingExprField
 
+// BillingModeOptionKey is the options-table key that holds the per-model
+// billing-mode map. It is the sibling of BillingExprOptionKey and the two are
+// only meaningful together.
+const BillingModeOptionKey = "billing_setting." + BillingModeField
+
+// ValidateBillingModeJSON is the pre-persist gate for the billing_mode option.
+//
+// 这个键此前在 model/option.go 的 validateOptionValue 里**一条 case 都没有**,
+// 而它的兄弟键 billing_expr 有。于是两件事都放行:
+//
+//  1. 任意字符串都能当计费模式。`{"gpt-4o":"totally-bogus-mode"}` 干净落库
+//     (实测 HTTP 200)。它今天恰好无害(非 tiered_expr 一律回落倍率),
+//     但那是巧合而不是判据 —— 下一个新增的模式一旦被拼错就静默走错分支。
+//  2. 把一个模型标成 tiered_expr 却不给表达式。此后该模型**每一次**请求都
+//     400「is configured as tiered_expr but has no billing expression」,
+//     重启不自愈;而 model/pricing.go 在表达式为空时**不下发** billing_mode,
+//     定价页把它显示成一个普通倍率模型 —— 界面说正常、线上 100% 失败。
+//
+// 第 1 条在这里直接拒。第 2 条**刻意只告警不拒**:两个键各写各的(管理端是
+// 逐键串行 PUT),任何一种保存顺序下都必然存在一个中间状态使某一侧暂时孤立,
+// 拒绝会让"新增一个阶梯模型"这个正常操作在第一发 PUT 上就失败。所以判据留在
+// relay 侧(fail-closed:400,不中继不扣费),这里负责把它**说出来**,让运维
+// 不必等到用户报障才知道。
+func ValidateBillingModeJSON(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	var modes map[string]string
+	if err := common.UnmarshalJsonStr(value, &modes); err != nil {
+		return fmt.Errorf("billing_mode 不是合法的 JSON 对象: %w", err)
+	}
+	orphans := make([]string, 0, 4)
+	for modelName, mode := range modes {
+		switch strings.TrimSpace(mode) {
+		case BillingModeRatio:
+		case BillingModeTieredExpr:
+			if expr, ok := GetBillingExpr(modelName); !ok || strings.TrimSpace(expr) == "" {
+				orphans = append(orphans, modelName)
+			}
+		default:
+			return fmt.Errorf("模型 %s 的计费模式 %q 不是合法取值(只能是 %s 或 %s)",
+				modelName, mode, BillingModeRatio, BillingModeTieredExpr)
+		}
+	}
+	if len(orphans) > 0 {
+		sort.Strings(orphans)
+		common.SysError(fmt.Sprintf(
+			"billing_mode: 下列模型被标成 %s 但 billing_expr 里没有可用的表达式,它们的每一次请求都会 400,请补上表达式或把模式改回 %s: %s",
+			BillingModeTieredExpr, BillingModeRatio, strings.Join(orphans, ", ")))
+	}
+	return nil
+}
+
 // ValidateBillingExprJSON is the pre-persist gate for the billing_expr option.
 //
 // It runs the documented save-time validation (compile + non-negative smoke
@@ -110,6 +164,25 @@ func ValidateBillingExprJSON(value string) error {
 		if err := smokeTestExpr(exprStr); err != nil {
 			return fmt.Errorf("模型 %s 的计费表达式校验未通过: %w", modelName, err)
 		}
+	}
+	// 反向的孤立同样要说出来:删掉某个模型的表达式时,billing_mode 里那条
+	// tiered_expr 不会跟着走,而那正是"每一次请求都 400"的另一半来路。
+	// 与 ValidateBillingModeJSON 同理,只告警不拒 —— 拒了就没有任何一种保存
+	// 顺序能同时通过两道闸。
+	orphans := make([]string, 0, 4)
+	for modelName, mode := range billingSetting.BillingMode {
+		if strings.TrimSpace(mode) != BillingModeTieredExpr {
+			continue
+		}
+		if strings.TrimSpace(exprs[modelName]) == "" {
+			orphans = append(orphans, modelName)
+		}
+	}
+	if len(orphans) > 0 {
+		sort.Strings(orphans)
+		common.SysError(fmt.Sprintf(
+			"billing_expr: 下列模型在 billing_mode 里仍是 %s,但这次保存之后它们没有可用的表达式,每一次请求都会 400: %s",
+			BillingModeTieredExpr, strings.Join(orphans, ", ")))
 	}
 	return nil
 }
@@ -181,7 +254,18 @@ var smokeTestVarSetters = map[string]func(*billingexpr.TokenParams, float64){
 // 前面那个分组是为了避开**标识符里的数字**:变量名里有 `cc1h`、`img_o`,
 // 直接 `\d+` 会把 `cc1h` 里的 1 当成一个阈值。Go 的 regexp 没有 lookbehind,
 // 所以用一个捕获组把前导字符吃掉。
-var exprNumberRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.])(\d+(?:\.\d+)?)`)
+//
+// 三个数字形状必须全收,因为**管理端的可视化编辑器三个都放行**
+// (web/src/features/pricing/lib/billing-expr.ts 的 NUMERIC_LITERAL_REGEX
+// 是 `-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?`,并把那段文本原样拼进表达式):
+//   - 十进制      2000
+//   - 科学计数法  2e3 / 1.23e8 / 1E8 / 1.5e+3
+//   - 无整数位    .5
+//
+// 少收任何一种,那一档的阈值就取不到,smokeTestBoundaryVectors 永远踩不到
+// 它,于是**同一条规则换个写法就能绕过非负烟测**:`c <= 2000 ? … : … - 50000`
+// 被拒,`c <= 2e3 ? … : … - 50000` 干净落库,而后者在 c=2001 时结算为负。
+var exprNumberRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_.])(\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)`)
 
 // exprStringArgRe 抓 param("...") / header("...") 里的键名。
 var exprStringArgRe = regexp.MustCompile(`(param|header)\s*\(\s*"([^"]*)"`)
@@ -218,7 +302,7 @@ func exprBoundaryValues(exprStr string) []float64 {
 	out := make([]float64, 0, 16)
 	for _, m := range exprNumberRe.FindAllStringSubmatch(exprStr, -1) {
 		v, err := strconv.ParseFloat(m[1], 64)
-		if err != nil || v < 0 || math.IsInf(v, 0) {
+		if err != nil || v < 0 || math.IsInf(v, 0) || math.IsNaN(v) {
 			continue
 		}
 		if seen[v] {

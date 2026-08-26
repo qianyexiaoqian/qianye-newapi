@@ -192,7 +192,7 @@ func TestHallQueryDropsHiddenPlays(t *testing.T) {
 	cases := []struct {
 		name string
 		set  opSettings
-		kind string
+		lane string
 		want []string
 	}{
 		{
@@ -242,19 +242,63 @@ func TestHallQueryDropsHiddenPlays(t *testing.T) {
 			want: []string{},
 		},
 		{
-			// 玩法过滤与 kind 参数是"且",不是互相覆盖。
-			name: "kind=draw 与只开竞猜同时成立时为空",
+			// 玩法过滤与选择夹是"且",不是互相覆盖。
+			name: "lane=draw 与只开竞猜同时成立时为空",
 			set:  opSettings{ShowPlayGuess: true},
-			kind: KindDraw,
+			lane: LaneDraw,
 			want: []string{},
 		},
 		{
-			name: "kind=draw 叠加只关双色球",
+			name: "lane=draw 叠加只关双色球",
 			set: opSettings{
 				ShowPlayDrawRank: true, ShowPlayDrawProb: true, ShowPlayGuess: true,
 			},
-			kind: KindDraw,
+			lane: LaneDraw,
 			want: []string{"P-rank", "P-legacy", "P-prob"},
+		},
+		{
+			// 三张选择夹的分工:玩法全开时,每一夹只拿自己那一份,
+			// 并集恰好是全部五行、交集为空。这是"玩法归类不串"的正面断言。
+			name: "lane=draw:双色球不在抽奖夹里",
+			set:  allPlaysShown(),
+			lane: LaneDraw,
+			want: []string{"P-rank", "P-legacy", "P-prob"},
+		},
+		{
+			name: "lane=ball:只有双色球",
+			set:  allPlaysShown(),
+			lane: LaneBall,
+			want: []string{"P-ball"},
+		},
+		{
+			name: "lane=guess:只有竞猜",
+			set:  allPlaysShown(),
+			lane: LaneGuess,
+			want: []string{"P-guess"},
+		},
+		{
+			// 关掉双色球之后,双色球那张夹给的是**空**,而不是退回整张抽奖列表。
+			// 少一层"且"就会变成后者 —— 用户点开「双色球」看到的是普通抽奖。
+			name: "lane=ball 而双色球被关:空,不是回落成抽奖",
+			set: opSettings{
+				ShowPlayDrawRank: true, ShowPlayDrawProb: true, ShowPlayGuess: true,
+			},
+			lane: LaneBall,
+			want: []string{},
+		},
+		{
+			// 抽奖夹底下两种玩法只剩一种时,夹子照常出内容(只是少一类)。
+			name: "lane=draw 只开概率",
+			set:  opSettings{ShowPlayDrawProb: true, ShowPlayDrawBall: true},
+			lane: LaneDraw,
+			want: []string{"P-prob"},
+		},
+		{
+			// 抽奖夹底下两种玩法都关:这张夹为空,而双色球那张不受影响。
+			name: "lane=draw 两种玩法都关:空",
+			set:  opSettings{ShowPlayDrawBall: true, ShowPlayGuess: true},
+			lane: LaneDraw,
+			want: []string{},
 		},
 	}
 
@@ -274,7 +318,7 @@ func TestHallQueryDropsHiddenPlays(t *testing.T) {
 			retired.HiddenAt = 42
 			require.NoError(t, gdb.Create(retired).Error)
 
-			q, err := hallQuery(gdb, tc.kind, "", tc.set)
+			q, err := hallQuery(gdb, tc.lane, "", tc.set)
 			require.NoError(t, err)
 			got := actNos(t, q)
 			sort.Strings(got)
@@ -455,7 +499,8 @@ func TestHallFilterHasASingleCallSite(t *testing.T) {
 	assert.Equal(t, map[string]bool{"hallQuery": true}, callers)
 }
 
-// 编译期钉死 hallQuery 的签名:玩法配置必须由调用方显式传进来。
+// 编译期钉死 hallQuery 的签名(lane, phase, opSettings):玩法配置必须由调用方
+// 显式传进来。
 //
 // 若哪天有人把它改回自己去读 effective(),测试里就再也无法构造"只开竞猜"
 // 这种状态,上面那一整张表会退化成只测默认值 —— 而且不会有任何一处变红。

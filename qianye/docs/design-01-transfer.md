@@ -16,7 +16,7 @@
 
 | 项 | 决定 | 理由 |
 |---|---|---|
-| 划转金额存储类型 | `int`（MySQL `INT`，有符号 32 位） | 与主库 `users.quota`（`model/user.go:95` `type:int`）**逐位对齐**。若新库用 BIGINT 存了一个 > `MaxInt32` 的值，主库根本无法应用，等于制造一条永远无法结算的脏单。用 INT 让"不可应用的金额"在**插入新库时就失败**，而不是在主库事务里失败 |
+| 划转金额存储类型 | `int64`（三方言一律 64 位） | 2026-08-26 更正：原先写"与主库 `users.quota` 逐位对齐、后者是 32 位"。那个前提是假的 —— `gorm:"type:int"` 选中的是 GORM 的通用 `schema.Int` 种类，方言仍按 64 位 Go int 定型，实测三方言建出来的都是 64 位（见 `model.TestQuotaColumnsAre64BitOnEveryDialect`）。真正的闸门是 `twophase.validateAmount` 的 `amount ≤ common.MaxQuota`，那是一条**算术**上界而不是列宽 |
 | 累计/聚合类型 | `bigint`（`int64`） | `day_out_quota` / `lifetime_out_quota` 是多笔求和，必然超 int32 |
 | 计算过程 | 一律 `decimal.Decimal` 或 `int64`，落库前经 `common.QuotaFromDecimalChecked` / 显式 `> common.MaxQuota` 判断 | AGENTS.md 强制；且 `QuotaFromDecimal` 会 clamp 而非报错，**必须用 `Checked` 变体拿到 `*QuotaClamp` 并当错误处理**，划转场景绝不允许静默截断 |
 | 手续费 | 独立列 `fee_quota int`，默认 0 | 用户当前没要手续费，但列先建好，未来开启不需要 DDL |

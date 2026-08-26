@@ -320,6 +320,190 @@ describe('双色球买多注：按下确认之前那一屏', () => {
     )
   })
 
+  test('全场只剩几个名额时说的是全场，不是"你还能买几注"', SLOW, async () => {
+    /*
+      两条闸门的下一个动作完全相反：每人上限是"我买够了，再提交多少次都没用"，
+      全场名额是"手快有手慢无，而且它可能在我选号的这一分钟里被别人买光"。
+      说成同一句话，用户读完会做错事。
+    */
+    const screen = await mountBallDetail({
+      max_entries_per_user: 0,
+      max_picks_per_request: 999,
+      my_entries_remaining: null,
+      total_entries_remaining: 3,
+    })
+    assert.ok(await screen.click(zhKeys['qy_lot_join_title']))
+
+    const dialog = readQyLotDialog()
+    assert.ok(
+      dialog.includes(
+        zhKeys['qy_lot_ball_total_left'].replace('{{count}}', '3')
+      ),
+      `「本场还剩 3 个名额」没有出现在按下确认之前：${dialog}`
+    )
+    assert.ok(
+      !dialog.includes(
+        zhKeys['qy_lot_ball_seats_left'].replace('{{count}}', '3')
+      ),
+      '全场名额被说成了"你在本场还能买 3 注" —— 那是另一条闸门的话'
+    )
+    assert.equal(
+      dialogButtonDisabled(fillLabel(3)),
+      false,
+      '补满按钮必须按全场剩余的 3 注给，而不是按单次批量的 999 注'
+    )
+  })
+
+  test('全场满了说的是"名额已满"，与"你买够了"分开', SLOW, async () => {
+    const screen = await mountBallDetail({
+      max_entries_per_user: 0,
+      max_picks_per_request: 999,
+      my_entries_remaining: null,
+      total_entries_remaining: 0,
+    })
+    assert.ok(await screen.click(zhKeys['qy_lot_join_title']))
+
+    const dialog = readQyLotDialog()
+    assert.ok(
+      dialog.includes(zhKeys['qy_lot_ball_total_full']),
+      `全场满了没说"本场名额已满"：${dialog}`
+    )
+    assert.ok(
+      !dialog.includes(zhKeys['qy_lot_ball_seats_full']),
+      '全场满被说成了"你在本场的注数已达上限" —— 用户会跑去问客服自己为什么被限了'
+    )
+  })
+
+  test('配到 999 注时补满 999 注，总额跟着变', SLOW, async () => {
+    // 项目方要的那个数。它必须**真的**渲染得出来：注数、合计、以及"这要跑多久"。
+    const screen = await mountBallDetail({
+      max_entries_per_user: 0,
+      max_picks_per_request: 999,
+      my_entries_remaining: null,
+      total_entries_remaining: null,
+    })
+    assert.ok(await screen.click(zhKeys['qy_lot_join_title']))
+    assert.ok(await screen.click(fillLabel(999)), '「机选补满 999 注」点不到')
+
+    const dialog = readQyLotDialog()
+    assert.ok(
+      dialog.includes(
+        zhKeys['qy_lot_ball_lines_n'].replace('{{count}}', '999')
+      ),
+      `补满之后注数没显示成 999 注：${dialog}`
+    )
+    // 期望的总额在这里独立乘出来：999 × 1000。
+    const total = formatQyQuotaLedger(STAKE * 999)
+    assert.ok(
+      dialog.includes(total),
+      `合计没显示成 ${total}（999 注 × 单注 ${STAKE}）：${dialog}`
+    )
+    assert.equal(
+      dialogButtonDisabled(fillLabel(0)),
+      true,
+      '补到 999 注之后「机选补满」还点得下去 —— 第 1000 注后端一定拒'
+    )
+  })
+
+  test('999 行不一次画完，而且给得出"全部清空"', SLOW, async () => {
+    /*
+      999 个 `<li>` 连同 999 颗删除按钮塞进一个对话框，结果是滚动条变成一根
+      头发丝、真正要看的"合计多少钱"被推到屏幕外。而清空 999 注如果只能逐行删，
+      唯一的现实办法是关掉弹窗 —— 那会连同 client_request_id 一起重置。
+    */
+    const screen = await mountBallDetail({
+      max_entries_per_user: 0,
+      max_picks_per_request: 999,
+      my_entries_remaining: null,
+      total_entries_remaining: null,
+    })
+    assert.ok(await screen.click(zhKeys['qy_lot_join_title']))
+    assert.ok(await screen.click(fillLabel(999)))
+
+    const rows = document.body.querySelectorAll('[role="dialog"] ul li').length
+    assert.ok(
+      rows > 0 && rows <= 40,
+      `默认就把 999 行全画出来了（画了 ${rows} 行）—— 折叠是这一格能配到 999 的前提`
+    )
+    const dialog = readQyLotDialog()
+    assert.ok(
+      dialog.includes(
+        zhKeys['qy_lot_ball_lines_expand'].replace(
+          '{{count}}',
+          String(999 - rows)
+        )
+      ),
+      `没有「展开其余 ${999 - rows} 注」：${dialog}`
+    )
+
+    assert.ok(
+      await screen.click(zhKeys['qy_lot_ball_lines_clear']),
+      '「全部清空」点不到'
+    )
+    const cleared = readQyLotDialog()
+    assert.ok(
+      cleared.includes(zhKeys['qy_lot_ball_lines_n'].replace('{{count}}', '0')),
+      `清空之后注数没回到 0 注：${cleared}`
+    )
+    assert.ok(
+      cleared.includes(formatQyQuotaLedger(0)),
+      `清空之后合计没回到 0：${cleared}`
+    )
+  })
+
+  test('大批量要先说清"这要跑多久"，小批量不占这一行', SLOW, async () => {
+    /*
+      N 注在服务端是 N 次串行扣费，999 注就是三十几秒。不说的话，一个转了半分钟
+      的按钮与一个卡死的页面在屏幕上长得一模一样，而用户下一步会做的事是刷新
+      或者再点一次 —— 后者被幂等键挡住，前者会让他以为钱白扣了。
+
+      门槛在 5 秒:低于它没人会觉得慢，而多一行字要挤掉别的字。
+    */
+    const screen = await mountBallDetail({
+      max_entries_per_user: 0,
+      max_picks_per_request: 999,
+      my_entries_remaining: null,
+      total_entries_remaining: null,
+    })
+    assert.ok(await screen.click(zhKeys['qy_lot_join_title']))
+
+    // 10 注 = 0.36 秒 → 向上取整 1 秒，低于门槛，不该出现这一行。
+    assert.ok(await screen.click(fillLabel(999)))
+    const dialog = readQyLotDialog()
+    // 999 × 36ms = 35.964s → 36 秒。这个数在这里独立算出。
+    assert.ok(
+      dialog.includes('36'),
+      `999 注没说清预计耗时（应当是 36 秒）：${dialog}`
+    )
+    assert.ok(
+      dialog.includes(
+        zhKeys['qy_lot_ball_batch_time_hint']
+          .replace('{{count}}', '999')
+          .replace('{{seconds}}', '36')
+      ),
+      `预计耗时那一行的文案对不上：${dialog}`
+    )
+  })
+
+  test('小批量不写"这要跑多久"', SLOW, async () => {
+    const screen = await mountBallDetail({
+      max_entries_per_user: 0,
+      max_picks_per_request: 10,
+      my_entries_remaining: null,
+      total_entries_remaining: null,
+    })
+    assert.ok(await screen.click(zhKeys['qy_lot_join_title']))
+    assert.ok(await screen.click(fillLabel(10)))
+    assert.ok(
+      !readQyLotDialog().includes(
+        zhKeys['qy_lot_ball_batch_time_hint']
+          .replace('{{count}}', '10')
+          .replace('{{seconds}}', '1')
+      ),
+      '10 注只要一秒，这一行没有信息量，不该挤掉别的字'
+    )
+  })
+
   test('单次只能买一注时不写"一次最多买 1 注"', SLOW, async () => {
     // 一句零信息量的提示挤掉的是真正要被读到的那几个数 —— 这一屏的字数预算
     // 是逐字算过的（见 text-budget.test.tsx）。
@@ -341,30 +525,32 @@ describe('双色球买多注：按下确认之前那一屏', () => {
 /*
  * ── 变异实验 ────────────────────────────────────────────────────────
  *
- * 全部改在 `components/lottery-entry-dialog.tsx` 上，改完跑
- * `bun test src/features/qy/pages/lottery/__tests__/ball-multi-line.test.tsx`。
+ * 改完跑 `bun run test`（不要 `bun test src`，理由见 scripts/run-tests.mjs）。
+ * 基线：2000 pass / 3 fail（那 3 条是 upstream 自带的 keys 用例）。
  *
- * ① `totalQuota = activity.stake_quota * count` → `activity.stake_quota`
- *    （退回改造前"总是按一注算"）。
- *    → KILLED，3 fail：合计停在 $10，而 5 注应当是 $50。
+ * 本轮实跑的四条:
  *
- * ② `seatCap = remaining == null ? perRequestCap : Math.min(...)` → `perRequestCap`
- *    （忽略本场剩余名额）。
- *    → KILLED，2 fail：「机选补满 2 注」渲染成了 10 注，买满那一场也放行了。
+ * ① `lib/seats.ts` 删掉整段 `totalRemaining` 判定（退回只看每人上限）。
+ *    → KILLED：1995 pass / 8 fail（+5）。全场那两条用例、`seats.test.ts` 的
+ *      三行表格同时红。
  *
- * ③ `perRequestCap = activity.max_picks_per_request ?? 1` 的兜底 → `?? 10`。
- *    → KILLED，1 fail：老后端那条用例按 10 注渲染了补满按钮。
+ * ② `QyLotSeatHint` 里两处 `binding === 'total'` 三元一律取 per_user 分支
+ *    （把"本场名额已满"说成"你在本场的注数已达上限"）。
+ *    → KILLED：1998 pass / 5 fail（+2）。全场那两条用例的第二条断言 ——
+ *      它们钉的正是"这两句话不许互相顶替"。
  *
- * ④ `QyLotSeatHint` 里 `props.remaining <= 0` → `< 0`
- *    （把"买满"说成"还能买 0 注"）。
- *    → KILLED，1 fail：买满那条用例两条断言同时失败。
+ * ③ `QyLotPickedLines` 的 `PREVIEW = 20` → `Infinity`（999 行一次画完）。
+ *    → KILLED：1999 pass / 4 fail（+1）。折叠那条用例数出 999 行。
  *
- * ⑤ `submitLines = pendingComplete ? [...lines, pick] : lines` → `lines`
- *    （选满但没点「加入」的那一注不算进注数，而它照样会被买走）。
- *    → KILLED，1 fail：机选之后注数停在 0 注、合计停在 $0。
+ * ④ `batchSeconds >= 5` → `>= 0`（小批量也印"这要跑多久"）。
+ *    → KILLED：1998 pass / 5 fail（+2）。「小批量不写这要跑多久」那条，
+ *      外加 `text-budget.test.tsx` 那条 260 字预算 —— 两处一起红才说明
+ *      这一行真的挤占了屏幕。
  *
- * ⑥ `QyLotSeatHint` 里 `props.perRequestCap > 1` → `> 0`
- *    （把零信息量的"一次最多买 1 注"放回去）。
- *    → KILLED，1 fail：最后一条用例。它同时是 `text-budget.test.tsx` 那条
- *      260 字预算的守卫 —— 两处一起红才说明这一行真的被读到了。
+ * 上一轮已跑过、本轮未重跑的（改动没有碰到它们守的那几行）:
+ *   `totalQuota = stake * count` → `stake`；
+ *   `submitLines` 不含"选满但没加入"的那一注；
+ *   `perRequestCap` 兜底 `?? 1` → `?? 10`；
+ *   `seats.perRequestCap > 1` → `> 0`。
+ *   前三条现在由 `lib/__tests__/seats.test.ts` 直接钉住（见那里的变异记录）。
  */

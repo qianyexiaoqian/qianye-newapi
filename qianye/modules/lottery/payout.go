@@ -201,7 +201,8 @@ func drivePayout(ctx context.Context, gdb *gorm.DB, p *Payout) {
 //
 // 硬性约束(违反即资损):绝不 IncreaseUserQuota(无事务、无溢出校验,
 // 且在批量模式下钱什么时候到账不可确定);加款必须带 headroom 上限 ——
-// users.quota 是 int32 且上游全无溢出校验。
+// 余额受 common.MaxQuota 约束(那是全站额度换算的算术上界,不是列宽),
+// 而上游全无溢出校验。
 func creditMainQuota(tx *gorm.DB, p *Payout) error {
 	headroom := int64(common.MaxQuota) - p.AmountQuota
 

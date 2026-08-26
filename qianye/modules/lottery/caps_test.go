@@ -210,7 +210,7 @@ func TestBuildPrizesKeepsTheCorrectnessConstraints(t *testing.T) {
 		},
 		{
 			// int32 是 quota 列的列宽,不是运营闸门。放开总额不等于放开列宽。
-			name: "单档额度越过 int32", act: act,
+			name: "单档额度越过额度上界", act: act,
 			in: []prizeInput{
 				{Tier: 1, Name: "一等奖", AmountQuota: int64(common.MaxQuota) + 1, Count: 1},
 			},
@@ -424,15 +424,16 @@ func TestApplyBetBounds(t *testing.T) {
 		assert.EqualValues(t, common.MaxQuota, act.BetMaxQuota)
 	})
 
-	t.Run("越过 int32 仍然拒绝", func(t *testing.T) {
+	t.Run("越过额度上界仍然拒绝", func(t *testing.T) {
 		// acceptAmount 无条件拒绝 amount > MaxQuota,所以一个填在它之上的
-		// 单注上限是一句界面谎言:页面写着能压这么多,实际到 21 亿就报
+		// 单注上限是一句界面谎言:页面写着能压这么多,实际到上界就报
 		// "投注金额不符合本场规则",而那句话不会说真正的上界是多少。
 		err := applyBetBounds(&Activity{}, &activityInput{
 			BetMaxQuota: int64(common.MaxQuota) + 1,
 		}, config.Lottery{MaxStakeQuota: 0})
 		require.Error(t, err)
-		assert.Contains(t, err.(*bizError).Message(), "＄4294.967294 额度")
+		// 报错里必须念出**当前**的上界刻度,而不是一个抄下来的旧数字。
+		assert.Contains(t, err.(*bizError).Message(), quotaText(int64(common.MaxQuota)))
 	})
 
 	t.Run("站点配了硬顶就仍然拦", func(t *testing.T) {

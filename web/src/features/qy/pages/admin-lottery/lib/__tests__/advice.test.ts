@@ -25,10 +25,8 @@ import zhKeys from '@/i18n/qy/zh.json'
 import { formatQyQuotaBound, parseQyQuota } from '../../../../lib/format'
 import type { QyLotYamlReadonly } from '../../types'
 import {
-  QY_LOT_BET_MAX_MULTIPLE,
   qyLotEntriesCap,
   qyLotPoolShareHeadroom,
-  qyLotRecommendedBetMax,
   qyLotRecommendedMinEntries,
   qyLotTierAmountFloor,
   qyLotTierBudgetShort,
@@ -294,25 +292,35 @@ describe('最低成场人数的推荐值 = 保本参与人数', () => {
   })
 })
 
-describe('竞猜单注上限：给一个非零推荐值，而不是只加一句提醒', () => {
-  test('推荐值 = 单注额 × 倍数，且倍数写在文案里', () => {
-    assert.equal(
-      qyLotRecommendedBetMax(500_000, 0),
-      500_000 * QY_LOT_BET_MAX_MULTIPLE
-    )
-    // 单注额还没填时不编一个数出来。
-    assert.equal(qyLotRecommendedBetMax(0, 0), 0)
-    // 倍数必须出现在提示文案里：一个说不出理由的推荐值等于一个魔数。
+describe('竞猜单注上限：只给范围与后果，不给推荐值', () => {
+  /**
+   * 上一版这里有 `qyLotRecommendedBetMax = 单注额 × 20`，文案写着
+   * 「一个大户最多顶 20 个按单注额下注的普通参与者」。整块删掉的理由有两条，
+   * 逐条钉在下面：
+   *
+   *   ① 那句话是假的。`bet_max_quota` 约束一笔投注，`max_entries_per_user`
+   *      填 0 就是不限，两格的**乘积**才是一个人的总上限。
+   *   ② 就算它是真的，20 也没有出处 —— 后端 applyBetBounds 对这一格只有三条
+   *      "不得超过"，没有任何可解的不等式。
+   */
+  test('文案把"这一格管的是一笔投注"说出来，并指名那个配对字段', () => {
+    const zh = zhKeys as Record<string, string>
+    const en = enKeys as Record<string, string>
+
+    // 指路必须指到**界面上真实存在的那个标签**上。这条断言的价值全在这里：
+    // 提示里硬写死了另一个字段的名字，那个字段一改名，指路就成了死链，
+    // 而死链在类型、运行期、快照上全都是合法的。
     assert.ok(
-      zhKeys.qy_lot_advice_bet_max.includes('{{multiple}}'),
-      '推荐倍数没有出现在中文文案里'
+      zh.qy_lot_bet_max_hint!.includes(zh.qy_lot_rule_f_max_entries!),
+      '中文提示没有指到「每人参与上限」那一格，或者那一格已经改名'
     )
     assert.ok(
-      (enKeys as Record<string, string>).qy_lot_advice_bet_max!.includes(
-        '{{multiple}}'
-      ),
-      '推荐倍数没有出现在英文文案里'
+      en.qy_lot_bet_max_hint!.includes(en.qy_lot_rule_f_max_entries!),
+      '英文提示没有指到 Entries per person 那一格，或者那一格已经改名'
     )
+    // 推荐值那条键必须真的没了 —— 留着它等于留着那句假话的载体。
+    assert.equal(zh.qy_lot_advice_bet_max, undefined)
+    assert.equal(en.qy_lot_advice_bet_max, undefined)
   })
 
   test('填 0 仍然合法：0 = 不限是后端的 wire 语义，改不得', () => {
@@ -356,7 +364,7 @@ describe('推荐值与区间的文案两份语言包里都有', () => {
     'qy_lot_advice_bet_min',
     'qy_lot_range_bet_max',
     'qy_lot_bet_max_zero_note',
-    'qy_lot_advice_bet_max',
+    'qy_lot_bet_max_hint',
     'qy_lot_v_ball_cap_over_physical',
     'qy_lot_v_ball_cap_over_policy',
   ]
@@ -429,21 +437,6 @@ describe('念给运营听的那个数，照着填回去必须仍然合法', () =
 })
 
 describe('推荐值不许算出一个提交必被拒的数', () => {
-  test('竞猜单注上限：夹在这一格真正能填的上界之内', () => {
-    const ceiling = YAML.system_max_quota!
-    // 参与费 > 上界 ÷ 20 时，单注额 × 20 会越过上界，后端 applyBetBounds 直接拒。
-    const bigStake = 150_000_000
-    assert.ok(bigStake * QY_LOT_BET_MAX_MULTIPLE > ceiling)
-    assert.equal(qyLotRecommendedBetMax(bigStake, ceiling), ceiling)
-    // 夹完之后仍然 ≥ 单注额，也就是仍然是一个可用的上限（不会反过来小于下限）。
-    assert.ok(qyLotRecommendedBetMax(bigStake, ceiling) >= bigStake)
-    // 够不着上界时倍数照旧是 20 —— 夹持不许改变正常场次的推荐值。
-    assert.equal(
-      qyLotRecommendedBetMax(500_000, ceiling),
-      500_000 * QY_LOT_BET_MAX_MULTIPLE
-    )
-  })
-
   test('最低成场人数：保本人数够不到全场票数上界时不给推荐值', () => {
     // 参与费 $0.02、奖品总额 $2000：保本要 100000 人，而全场最多只能有
     // 50000 张票。填进去 = 一键造出一场必然流局的活动，而 min_entries_to_hold

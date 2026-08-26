@@ -1434,7 +1434,7 @@ func WriteTx(tx *gorm.DB, e Entry) error
 | 场景 | 处理 |
 |---|---|
 | 余额不足 | 主库 `WHERE quota >= ?` + `RowsAffected==0` → 事务回滚 → 单置 `Failed`。**禁止**用 `DecreaseUserQuota`（它无余额校验、会扣成负数、且 `db=false` 时可能进批量队列） |
-| 接收方 quota 溢出 | 事务内校验 `receiver.Quota > common.MaxQuota - amount` → 拒绝。`users.quota` 是 int32（`common.MaxQuota = MaxInt32` ≈ $4294.97），上游全无此校验 |
+| 接收方 quota 溢出 | 事务内校验 `receiver.Quota > common.MaxQuota - amount` → 拒绝。`common.MaxQuota` 是**算术**上界（2^43 ≈ $17,592,186，推导见 `common/quota_math.go`），**不是列宽** —— 额度列在 SQLite/MySQL/PostgreSQL 上都是 64 位。上游全无此校验 |
 | 新库 int64 金额跨库到主库 int32 | 跨库前统一 `if amt <= 0 \|\| amt > int64(common.MaxQuota) { return ErrAmountOutOfRange }`，绝不静默截断 |
 | 金额计算 | **一律** `common.QuotaFromDecimal` / `QuotaFromFloat` / `QuotaRound`（AGENTS.md 强制），禁止 `int(float64(x)*r)`、`int(d.IntPart())`。佣金比例用 `shopspring/decimal` 全程精确，只在最终落 quota 时转换；`*Checked` 变体产出的 `*common.QuotaClamp` 通过 `service.QyAttachQuotaSaturation` 写进日志 `other.admin_info.quota_saturation` |
 | 小额佣金截断归零 | 佣金按 `decimal(24,8)` 累计到 `qy_commission_balances.pending_amount`，达 `min_settle_quota` 才结算成整数 quota（GAPS §10） |

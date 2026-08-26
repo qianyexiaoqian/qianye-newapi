@@ -62,6 +62,7 @@ import { QyLotFulfillQueueTab } from './components/lottery-fulfill-queue-tab'
 import { QyLotGuessResultDialog } from './components/lottery-guess-result-dialog'
 import { QyLotHideDialog } from './components/lottery-hide-dialog'
 import { QyLotPayoutsTab } from './components/lottery-payouts-tab'
+import { QyLotPicksCapDialog } from './components/lottery-picks-cap-dialog'
 import { QyLotPublishDialog } from './components/lottery-publish-dialog'
 import { qyLotDraftFromActivity } from './lib/draft'
 
@@ -89,6 +90,7 @@ export function QyAdminLotteryDetail() {
   const [publishOpen, setPublishOpen] = useState(false)
   const [cancelOpen, setCancelOpen] = useState(false)
   const [coverOpen, setCoverOpen] = useState(false)
+  const [picksCapOpen, setPicksCapOpen] = useState(false)
   const [hideOpen, setHideOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [resultOpen, setResultOpen] = useState(false)
@@ -225,6 +227,21 @@ export function QyAdminLotteryDetail() {
             onClick={() => setCoverOpen(true)}
           >
             {t('qy_lot_cover_change')}
+          </Button>
+        )}
+        {/* 「一次最多下多少注」同样**不限状态**，理由与换封面同一条:它不进任何
+            哈希原像，也不改变任何人最终能拿到几张票。而"10 注太少了"这件事恰恰
+            是活动开起来之后才发现的 —— 没有这个入口，唯一的补救会变成
+            "取消这一期、全额退款、重开一期"。
+
+            只对双色球渲染:别的玩法一次就是一注/一票，那一格对它们没有意义。 */}
+        {activity != null && activity.draw_mode === 'ball' && (
+          <Button
+            size='sm'
+            variant='outline'
+            onClick={() => setPicksCapOpen(true)}
+          >
+            {t('qy_lot_picks_cap_change')}
           </Button>
         )}
         {canEditDraft && (
@@ -615,6 +632,12 @@ export function QyAdminLotteryDetail() {
             actNo={activity.act_no}
             coverUrl={activity.cover_url ?? ''}
             coverRef={activity.cover_ref ?? ''}
+          />
+          <QyLotPicksCapDialog
+            open={picksCapOpen}
+            onOpenChange={setPicksCapOpen}
+            actNo={activity.act_no}
+            maxPicksPerRequest={activity.max_picks_per_request ?? 0}
           />
           <QyLotCancelDialog
             activity={activity}

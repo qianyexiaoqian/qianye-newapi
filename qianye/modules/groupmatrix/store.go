@@ -356,7 +356,7 @@ func normalizeCells(cells []Cell) ([]Cell, error) {
 }
 
 // maxGroupRatio 是倍率上界。上游对倍率本身没有上界,但它会被直接乘进每一笔账单:
-// 一次手滑把倍率填成 1e18,配合大 token 数就会把中间结果推过 int32,
+// 一次手滑把倍率填成 1e18,配合大 token 数就会把中间结果推过额度上界,
 // 而饱和之后的账单没有任何意义(见 AGENTS.md 计费安全不变量)。
 const maxGroupRatio = 1000000
 

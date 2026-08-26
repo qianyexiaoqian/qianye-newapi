@@ -89,6 +89,12 @@ var (
 	// 两张标签因此返回同一份列表,而没有任何一处报错、没有一条日志。
 	errBadPhase = newBizError(http.StatusBadRequest, "qy_lot_bad_phase",
 		"大厅分区参数非法(只接受 live / ended)")
+	// errBadLane 与 errBadPhase 同源同形:大厅那三张选择夹(抽奖 / 竞猜 /
+	// 双色球)也是一个封闭集合,拼错一个字必须当场炸,而不是退回"三张标签
+	// 拿同一份列表"。取值与 kind 长得像却不同义(lane=draw 排除双色球),
+	// 正因如此更需要一道会响的闸门。
+	errBadLane = newBizError(http.StatusBadRequest, "qy_lot_bad_lane",
+		"大厅选择夹参数非法(只接受 draw / ball / guess)")
 	// errPlayHidden 是"这一类玩法当前不对外开放"。
 	//
 	// 409 而不是 404:活动确实存在、详情页照常打得开、已参与的人照常能查票

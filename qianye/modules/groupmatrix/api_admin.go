@@ -1758,6 +1758,30 @@ type repairTokenReq struct {
 // 「置空」是唯一既安全又不猜用户意图的修复:令牌分组为空时 UsingGroup 恒等于
 // users.group(middleware/auth.go 保证),立即恢复可用且不改变该用户的可用范围。
 // 「改成某个指定分组」需要替用户做选择,风险更高,不做。
+// tokenRepairReason 复用孤儿清单的判据回答"这条令牌今天到底能不能用"。
+//
+// 判据必须与 buildOrphanReport 同源:换第二份的结果是"修复出口"与"孤儿清单"
+// 各说各话 —— 前端只从清单样本里取 token_id,而服务端零校验,于是清单说它
+// 正常、接口照样把它清空。
+//
+// 两条**分别**对应清单里的两个桶:
+//   - 分组已不在分组倍率表里(deprecated):请求会被上游拒绝「分组已被弃用」;
+//   - 分组不在属主可选清单里(orphan):请求会被上游拒绝「无权访问」。
+func tokenRepairReason(tk model.Token) (string, bool) {
+	if !ratio_setting.ContainsGroupRatio(tk.Group) {
+		return "(该分组已不在分组倍率表里)", true
+	}
+	var owner model.User
+	if err := model.DB.Select("`group`").Where("id = ?", tk.UserId).Take(&owner).Error; err != nil {
+		// 属主查不到本身就是异常态,按"可修"处理:这条令牌无论如何都用不了。
+		return "(属主账号已不存在)", true
+	}
+	if _, ok := service.GetUserUsableGroups(owner.Group)[tk.Group]; !ok {
+		return "(该分组不在属主 " + owner.Group + " 的可选清单里)", true
+	}
+	return "(它在属主 " + owner.Group + " 的可选清单里,且分组倍率表里有它)", false
+}
+
 func adminRepairToken(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagGroupMatrix) {
 		return
@@ -1782,6 +1806,33 @@ func adminRepairToken(c *gin.Context) {
 	}
 	if tk.Group == "" {
 		badRequest(c, "该令牌的分组本来就是空的,无需修复")
+		return
+	}
+	// 这条接口的文档第一句写的是「把一条**孤儿**令牌的分组置空」,而此前
+	// 它唯一的前置条件就是 `tk.Group != ""` —— 没有任何一处判断这条令牌到底
+	// 是不是孤儿。于是 role=10 可以把任意用户(含 role=100)一条分组完全正常
+	// 的令牌的分组清掉:令牌分组为空时 UsingGroup 回落到 users.group,
+	// 可用模型范围与倍率随之改变。实测过一次:一条 /orphans 明确没有收录的
+	// 干净令牌,同样 200 且被清空。
+	//
+	// 判据与 buildOrphanReport 同源(service.GetUserUsableGroups + 分组倍率表),
+	// 那是"这条令牌今天到底能不能用"的唯一定义;换第二份判据的结果是
+	// 修复出口与孤儿清单各说各话。
+	if reason, orphan := tokenRepairReason(tk); !orphan {
+		badRequest(c, "这条令牌的分组是可用的,不属于孤儿,不予修复"+reason)
+		return
+	}
+	// 越权判据。这是一个作用在**别人账号**上的特权写动作(改的是 tk.UserId
+	// 的令牌),而受益人只存在于令牌行里、不在报文里 —— 与佣金手工调账、
+	// 提现人工裁决、抽奖出款落账是同一种形状,那几处早就接了这条判据。
+	if err := guard.ActorMayActOnCtx(c, tk.UserId); err != nil {
+		audit.Write(c, audit.Entry{
+			Category: auditCategoryGroupMatrix, Action: auditActionTokenRepair,
+			ActorType: qymodel.ActorAdmin, ActorUserId: c.GetInt("id"), ActorName: c.GetString("username"),
+			TargetUserId: tk.UserId, Result: qymodel.ResultFail,
+			Reason: "操作人判据拒绝: " + err.Error(),
+		})
+		forbidden(c, err.Error())
 		return
 	}
 	oldGroup := tk.Group
@@ -1915,6 +1966,12 @@ func badRequest(c *gin.Context, msg string) {
 
 func notFound(c *gin.Context, msg string) {
 	respondFail(c, http.StatusNotFound, "qy_gm_not_found", msg)
+}
+
+// forbidden 是"这件事你不能对这个账号做"。与 400/409 分开:那两条说的是
+// 请求本身,这一条说的是操作人与目标账号之间的关系(自营 / 同级互操作)。
+func forbidden(c *gin.Context, msg string) {
+	respondFail(c, http.StatusForbidden, "qy_gm_forbidden", msg)
 }
 
 // conflict 是"你看的和现在的不是同一份数据"。它与 400 分开:

@@ -42,6 +42,51 @@ const (
 // Plays 是全部玩法。顺序即管理端字段顺序与引导端点的下发顺序。
 var Plays = []string{PlayDrawRank, PlayDrawProb, PlayDrawBall, PlayGuess}
 
+// ── 大厅的三张选择夹(lane)──
+//
+// 项目方原话:「把双色球和竞猜分开选择夹,抽奖-竞猜-双色球。」
+//
+// 选择夹是玩法的**分组**,不是第五种玩法,也不是 kind 的别名:
+//
+//	· LaneDraw  = 按名次 + 按公示概率(两种定档方式,规则同源、卡面同形);
+//	· LaneBall  = 双色球(自己选号,奖池与"奖品总额"完全不是一回事);
+//	· LaneGuess = 竞猜(奖池再分配,猜错会亏本金)。
+//
+// 取值与 kind 长得像但**不是** kind:`lane=draw` 恰好排除双色球,而
+// `kind=draw` 包含它。所以大厅列表接口读的参数名是 `lane` 而不是 `kind` ——
+// 同名不同义的两个参数并存,迟早有人按 kind 的直觉去读 lane 的值。
+const (
+	LaneDraw  = "draw"
+	LaneBall  = "ball"
+	LaneGuess = "guess"
+)
+
+// hallLanes 是选择夹 → 它底下的玩法。**必须是 Plays 的一个划分**
+// (每个玩法恰好归属一张选择夹),由 TestHallLanesPartitionEveryPlay 守住:
+// 漏掉一个玩法 = 那类活动在三张选择夹里一张都进不去,而大厅不会报错,
+// 只是永远空着。
+var hallLanes = map[string][]string{
+	LaneDraw:  {PlayDrawRank, PlayDrawProb},
+	LaneBall:  {PlayDrawBall},
+	LaneGuess: {PlayGuess},
+}
+
+// laneCovers 回答"这个玩法归不归这张选择夹管"。
+//
+// 空 lane = 不限选择夹(大厅全量),此时恒为真 —— 管理端与不带参数的旧调用
+// 仍然拿到"当前可见的全部玩法",而不是空列表。
+func laneCovers(lane, play string) bool {
+	if lane == "" {
+		return true
+	}
+	for _, p := range hallLanes[lane] {
+		if p == play {
+			return true
+		}
+	}
+	return false
+}
+
 // playOf 把一行活动归到它的玩法。
 //
 // draw_mode 为空串的存量抽奖行归到 rank:normalizeDrawMode 把空串当 rank 收下,
@@ -120,35 +165,43 @@ func (s opSettings) playVisibilityMap() map[string]bool {
 	return out
 }
 
-// playFilterClause 把"哪些玩法当前可见"翻译成大厅查询的 WHERE 片段。
+// playFilterClause 把"哪些玩法当前可见"×"这张选择夹底下有哪些玩法"翻译成
+// 大厅查询的 WHERE 片段。
 //
 // **恒返回一个非空片段**。全部隐藏时给的是一个恒假条件而不是"不加条件":
 // 后者的表现正是"开关关掉了但列表照旧",而那种失败没有任何一处会报错。
+// 同一条也适用于选择夹:`lane=ball` 而双色球被关掉时这里给恒假,而不是
+// 悄悄退回整张抽奖列表 —— 那会让"关掉双色球"变成"双色球标签里长出别的活动"。
+//
+// 玩法开关与选择夹归属是**且**:两者各自都能把一行挡掉,谁也不覆盖谁。
+// 这里读的是 opSettings 的字段而不是 playShown() —— 那个方法的读取点由
+// play_visibility_db_test.go 的白名单钉死,大厅过滤走的是这一条独立的路径。
 //
 // 括号自己写全,不依赖 GORM 对含 OR 的裸表达式的自动加括号 —— 那条规则只在
 // 同一个 Where 里有多个表达式时才触发,而这段与 status/hidden_at 的条件恰好
 // 就是分开写的。少一层括号 = 已下架与草稿活动跟着 OR 一起漏出来。
 //
 // kind / draw_mode 在三种数据库里都不是保留字,不需要引号包装。
-func playFilterClause(s opSettings) (string, []any) {
+func playFilterClause(s opSettings, lane string) (string, []any) {
 	modes := make([]string, 0, 4)
-	if s.ShowPlayDrawRank {
+	if s.ShowPlayDrawRank && laneCovers(lane, PlayDrawRank) {
 		// 空串是存量抽奖行的 draw_mode,语义等同 rank(见 playOf)。
 		modes = append(modes, DrawModeRank, "")
 	}
-	if s.ShowPlayDrawProb {
+	if s.ShowPlayDrawProb && laneCovers(lane, PlayDrawProb) {
 		modes = append(modes, DrawModeProb)
 	}
-	if s.ShowPlayDrawBall {
+	if s.ShowPlayDrawBall && laneCovers(lane, PlayDrawBall) {
 		modes = append(modes, DrawModeBall)
 	}
+	guessShown := s.ShowPlayGuess && laneCovers(lane, PlayGuess)
 	switch {
-	case len(modes) > 0 && s.ShowPlayGuess:
+	case len(modes) > 0 && guessShown:
 		return "((kind = ? AND draw_mode IN ?) OR kind = ?)",
 			[]any{KindDraw, modes, KindGuess}
 	case len(modes) > 0:
 		return "(kind = ? AND draw_mode IN ?)", []any{KindDraw, modes}
-	case s.ShowPlayGuess:
+	case guessShown:
 		return "(kind = ?)", []any{KindGuess}
 	default:
 		return "1 = 0", nil

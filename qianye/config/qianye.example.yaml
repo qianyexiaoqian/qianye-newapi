@@ -669,6 +669,17 @@ lottery:
   # 参与是不可逆消费:盗号者能用「参与抽奖」把余额烧光而不留下划转/提现痕迹。
   pay_password_threshold_quota: 100000   # 参与费超过它就要验支付密码
 
+  # 文本奖兑换码的静态加密(与 withdraw.pii_key 三件套同规格)。
+  # qy_lot_payout.secret_cipher 存的是发给中奖者的**实际兑换码**。
+  # 留空 = 明文直存(向后兼容,自检面板会把它标出来):任何拿到库备份或
+  # 只读账号的人都能直接读走,而在线侧的脱敏与审计对他们完全无效。
+  # 生成:openssl rand -base64 32
+  # 轮换:把当前 key 连同 version 搬进 prize_secret_keys_retired,再填新的
+  #       key 与更大的 version。少了搬运那一步,已履行的兑换码会全部读不出来。
+  prize_secret_key: ""
+  prize_secret_key_version: 1
+  prize_secret_keys_retired: {}
+
   entry_close_grace_seconds: 60      # 封盘前多久停止受理(给两阶段的未决单留收敛窗口)
   # ⚠️ 不允许为 0。名单哈希必须先于种子公开,中间要留出足够时间让任何人抓到
   # 一份平台无法否认的快照;为 0 等于整个协议退化成「平台自己说它没改」。
@@ -681,6 +692,13 @@ lottery:
   excluded_manual_after_seconds: 900 # 参与单卡在不可判定态多久之后转人工
 
   max_total_entries_hard: 50000      # 单场名单规模上界(冻结要在单事务里流式算完)
+  # 一次多注提交(双色球一次买 N 注)整批的时间预算上界,毫秒。
+  # N 注在服务端是 N 次串行扣费,每一注一张独立资金单、一条链环、一份可复算回执,
+  # 所以耗时与 N 成正比:满配 999 注实测约 36 秒(MySQL 8.0,本机回环)。
+  # **按你自己反向代理的读超时来配**:配得比反代大时,请求会在反代那一刻被切成
+  # 504,而服务端仍在逐注扣钱。配小的代价只是后半批被安全截断(前面每一注都已
+  # 落定、后面的一分钱没扣,回执里的 accepted / failed_code 会说清楚)。
+  entry_batch_max_ms: 45000
   max_prize_tiers: 10
   max_options: 12
   default_guess_fee_bps: 500         # 竞猜手续费默认 5%

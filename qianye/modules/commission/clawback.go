@@ -78,45 +78,68 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 		}
 	}
 
-	remaining, err := netAccrued(gdb, inviteeId, origin.InviterId)
-	if err != nil {
-		return err
-	}
-	// 冲正上限是"这个下线给这个邀请人一共挣过多少净佣金"。
-	// 超额冲正会让邀请人为别人名下的计佣买单。净额为零时这一对要么
-	// 从未产生过佣金、要么已经被冲平,两种情况都无事可做。
-	if remaining.LessThanOrEqual(decimal.Zero) {
-		return nil
-	}
+	// 「读上限 → 写负额行」必须落在**同一把锁**里。
+	//
+	// 改动前这两步之间没有事务、没有行锁:同一个下线的多笔任务退款由
+	// onTaskBillingLog 投进 guard.HotAsync,由 runtime.hot_hook_workers 个
+	// worker 并行执行,两笔各自读到同一个 remaining、各写一条 -remaining 的
+	// 冲正行,总冲正额可以是净计佣额的两倍。幂等唯一索引拦不住 —— 两笔的
+	// idemKey 各带各的 task_id。实测:计佣 500、两个 worker 同时冲正,
+	// 落 2 行 -500,净额 -500(生产默认 2 worker、连投 8 笔时稳定复现)。
+	// 超额部分进 unsettled 负结转 → debt_blocked → 提现冻结,而 I1/I2 两条
+	// 恒等式照样成立,对账发现不了。
+	//
+	// 锁的是**邀请人的余额行**,与 api_admin_adjust.go 的手工冲正同一把:
+	// 那一处早就把「取余额行锁 → 幂等判定 → 上下界校验 → 落账目行」四件事
+	// 收进同一个事务并写明了理由,自动冲正这条路只是没跟上。同一把锁也让
+	// 人工冲正与自动冲正之间不再有间隙。
+	inserted := false
+	err = gdb.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockBalance(tx, origin.InviterId); err != nil {
+			return err
+		}
+		remaining, err := netAccrued(tx, inviteeId, origin.InviterId)
+		if err != nil {
+			return err
+		}
+		// 冲正上限是"这个下线给这个邀请人一共挣过多少净佣金"。
+		// 超额冲正会让邀请人为别人名下的计佣买单。净额为零时这一对要么
+		// 从未产生过佣金、要么已经被冲平,两种情况都无事可做。
+		if remaining.LessThanOrEqual(decimal.Zero) {
+			return nil
+		}
 
-	amount := clawbackAmountFor(refundQuota, origin)
-	if amount.GreaterThan(remaining) {
-		amount = remaining
-	}
-	if amount.IsZero() {
-		return nil
-	}
+		amount := clawbackAmountFor(refundQuota, origin)
+		if amount.GreaterThan(remaining) {
+			amount = remaining
+		}
+		if amount.IsZero() {
+			return nil
+		}
 
-	inserted, err := writeAccrual(ctx, accrualInput{
-		SourceType: SourceClawback,
-		IdemKey:    idemKey,
-		SourceRef:  sourceRef,
-		InviterId:  origin.InviterId,
-		InviteeId:  inviteeId,
-		BaseQuota:  -refundQuota,
-		// 冲正原样复制**被退款那笔消费**冻结的费率与分组,绝不用当前值:
-		// 原单按 8% 发出去、退款时按现行的 5% 冲回来,差额就永久留在邀请人账上。
-		// 这与复制 UsdRate 是同一个道理。
-		RateUnits: origin.RateUnits,
-		RateGroup: origin.RateGroup,
-		Gross:     amount.Neg(),
-		UsdRate:   origin.UsdRate,
-		// 冲正立即成熟:让它陪着原单等成熟期,等于给"充值→拿佣金→退款"
-		// 留出一个可以先提现走人的窗口。
-		MatureAt:     0,
-		Status:       StatusAccrued,
-		RefAccrualId: origin.Id,
-		Remark:       truncate(reason, 255),
+		var werr error
+		inserted, werr = writeAccrualTx(tx, accrualInput{
+			SourceType: SourceClawback,
+			IdemKey:    idemKey,
+			SourceRef:  sourceRef,
+			InviterId:  origin.InviterId,
+			InviteeId:  inviteeId,
+			BaseQuota:  -refundQuota,
+			// 冲正原样复制**被退款那笔消费**冻结的费率与分组,绝不用当前值:
+			// 原单按 8% 发出去、退款时按现行的 5% 冲回来,差额就永久留在邀请人账上。
+			// 这与复制 UsdRate 是同一个道理。
+			RateUnits: origin.RateUnits,
+			RateGroup: origin.RateGroup,
+			Gross:     amount.Neg(),
+			UsdRate:   origin.UsdRate,
+			// 冲正立即成熟:让它陪着原单等成熟期,等于给"充值→拿佣金→退款"
+			// 留出一个可以先提现走人的窗口。
+			MatureAt:     0,
+			Status:       StatusAccrued,
+			RefAccrualId: origin.Id,
+			Remark:       truncate(reason, 255),
+		})
+		return werr
 	})
 	if err != nil {
 		return err
@@ -268,37 +291,49 @@ func manualClawback(ctx context.Context, accrualId int64, quota int64, idemSuffi
 		return nil, err
 	}
 
-	amount := decimal.NewFromInt(quota)
-	remaining, err := netAccrued(gdb, origin.InviteeId, origin.InviterId)
-	if err != nil {
-		return nil, err
-	}
-	if remaining.LessThanOrEqual(decimal.Zero) {
-		return nil, ErrNothingToClawback
-	}
-	if amount.GreaterThan(remaining) {
-		amount = remaining
-	}
+	// 与自动冲正同理:「读上限 → 写负额行」之间不许有间隙,否则两次并发的
+	// 人工冲正(或一次人工 + 一次自动)各读到同一个 remaining,总冲正额可以
+	// 是净计佣额的两倍。锁的是邀请人的余额行,与 api_admin_adjust.go 的
+	// 手工增减、与 clawback() 的自动冲正是**同一把**。
+	inserted := false
+	err = gdb.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockBalance(tx, origin.InviterId); err != nil {
+			return err
+		}
+		amount := decimal.NewFromInt(quota)
+		remaining, err := netAccrued(tx, origin.InviteeId, origin.InviterId)
+		if err != nil {
+			return err
+		}
+		if remaining.LessThanOrEqual(decimal.Zero) {
+			return ErrNothingToClawback
+		}
+		if amount.GreaterThan(remaining) {
+			amount = remaining
+		}
 
-	inserted, err := writeAccrual(ctx, accrualInput{
-		SourceType: SourceClawback,
-		IdemKey:    key,
-		SourceRef:  origin.AccrualNo,
-		InviterId:  origin.InviterId,
-		InviteeId:  origin.InviteeId,
-		// BaseQuota 冻结"管理员这一次填了多少",充当幂等指纹的金额分量。
-		// 不能拿 Gross 反推:Gross 已被 remaining 削过,同一个请求在不同
-		// 时刻会落出不同的值,拿它比对会把合法重试误判成冲突。
-		// 取负号与自动冲正路径(clawback)保持同一符号约定。
-		BaseQuota:    -quota,
-		RateUnits:    origin.RateUnits,
-		RateGroup:    origin.RateGroup,
-		Gross:        amount.Neg(),
-		UsdRate:      origin.UsdRate,
-		MatureAt:     0,
-		Status:       StatusAccrued,
-		RefAccrualId: origin.Id,
-		Remark:       truncate(reason, 255),
+		var werr error
+		inserted, werr = writeAccrualTx(tx, accrualInput{
+			SourceType: SourceClawback,
+			IdemKey:    key,
+			SourceRef:  origin.AccrualNo,
+			InviterId:  origin.InviterId,
+			InviteeId:  origin.InviteeId,
+			// BaseQuota 冻结"管理员这一次填了多少",充当幂等指纹的金额分量。
+			// 不能拿 Gross 反推:Gross 已被 remaining 削过,同一个请求在不同
+			// 时刻会落出不同的值,拿它比对会把合法重试误判成冲突。
+			// 取负号与自动冲正路径(clawback)保持同一符号约定。
+			BaseQuota:    -quota,
+			RateUnits:    origin.RateUnits,
+			RateGroup:    origin.RateGroup,
+			Gross:        amount.Neg(),
+			UsdRate:      origin.UsdRate,
+			MatureAt:     0,
+			Status:       StatusAccrued,
+			RefAccrualId: origin.Id,
+			Remark:       truncate(reason, 255),
+		})
+		return werr
 	})
 	if err != nil {
 		return nil, err

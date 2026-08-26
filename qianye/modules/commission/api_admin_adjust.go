@@ -57,7 +57,7 @@ var (
 	// errAdjustOverReclaimable 是最常撞到的一条:要减的比这个人最终会拿到的还多。
 	errAdjustOverReclaimable = errors.New("扣减额度超过可回收上限(可提现 + 未结算余数 + 待结算佣金)")
 	// errAdjustOverflow 守另一个方向:加完之后的可提现会超过单账户额度上限,
-	// 而这些额度最终要流向主库的 int32 额度列。
+	// 而这些额度最终要流向主库的额度列,受 common.MaxQuota 约束。
 	errAdjustOverflow = errors.New("增加后的可提现佣金会超过单账户额度上限")
 	// errAdjustUserMissing 挡住手滑打错 user_id 凭空建出一行余额。
 	errAdjustUserMissing = errors.New("该用户不存在(或已被删除)")

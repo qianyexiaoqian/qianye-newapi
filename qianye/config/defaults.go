@@ -314,6 +314,9 @@ func applyDefaults(c *Config) {
 	intDefault(&lt.PayoutMaxAttempts, 8)
 	intDefault(&lt.ExcludedManualAfterSeconds, 900)
 	intDefault(&lt.MaxTotalEntriesHard, 50000)
+	// 45 秒:双色球满配 999 注一次提交在本机实测约 36 秒,而常见反代的默认读
+	// 超时是 60 秒。留在两者之间,让健康的机器跑得完、慢的机器被安全截断。
+	intDefault(&lt.EntryBatchMaxMs, 45_000)
 	intDefault(&lt.MaxPrizeTiers, 10)
 	intDefault(&lt.MaxOptions, 12)
 	intDefault(&lt.DefaultGuessFeeBps, 500)

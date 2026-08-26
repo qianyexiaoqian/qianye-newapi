@@ -196,6 +196,24 @@ func validateLottery(l *Lottery) error {
 		return fmt.Errorf("qianye: lottery.max_total_prize_quota / max_stake_quota / " +
 			"large_prize_alert_quota 不能为负(0 = 不限制)")
 	}
+	// 上界与其余额度类字段同源。这四项此前只判了负数(pay_password_threshold_quota
+	// 连负数都不判),于是一份把 max_stake_quota 配成 MaxInt64 的 YAML 能干净启动,
+	// 再由 entry.go 的 `amount > MaxQuota` 在每一次参与上报错;
+	// pay_password_threshold_quota 越界则表现为支付密码**永不触发**,那是安全弱化
+	// 而不是报错,更不该等到出事才发现。0 仍然是"不限制/不启用",所以只卡上界。
+	for _, item := range []struct {
+		name  string
+		value int64
+	}{
+		{name: "lottery.max_stake_quota", value: l.MaxStakeQuota},
+		{name: "lottery.max_total_prize_quota", value: l.MaxTotalPrizeQuota},
+		{name: "lottery.large_prize_alert_quota", value: l.LargePrizeAlertQuota},
+		{name: "lottery.pay_password_threshold_quota", value: l.PayPasswordThresholdQuota},
+	} {
+		if err := checkQuotaCap(item.name, item.value); err != nil {
+			return err
+		}
+	}
 	// 阈值高过硬顶 = 一道**永远不会触发**的二次确认:超过阈值的活动在够到阈值
 	// 之前就已经被硬顶 400 掉了。这不是洁癖,是一道装上去却不通电的闸门,
 	// 而它是本模块唯一还在盯着"多写一个零"的东西。
@@ -203,6 +221,25 @@ func validateLottery(l *Lottery) error {
 		return fmt.Errorf("qianye: lottery.large_prize_alert_quota(%d)不得超过 "+
 			"max_total_prize_quota(%d)—— 否则这道二次确认永远触发不了",
 			l.LargePrizeAlertQuota, l.MaxTotalPrizeQuota)
+	}
+	// 兑换码密钥的形状必须在启动时就查:配错的表现是**已履行的文本奖全部读不出来**,
+	// 而那要等到管理员点开某一条 reveal 才会发现。为空是合法的(明文直存,
+	// 向后兼容,自检面板会把它标出来)。
+	if raw := strings.TrimSpace(l.PrizeSecretKey); raw != "" {
+		if key, err := base64.StdEncoding.DecodeString(raw); err != nil || len(key) != 32 {
+			return fmt.Errorf("qianye: lottery.prize_secret_key 必须是 base64 编码的 32 字节密钥")
+		}
+	}
+	if l.PrizeSecretKeyVersion < 0 {
+		return fmt.Errorf("qianye: lottery.prize_secret_key_version 不得为负")
+	}
+	for version, raw := range l.PrizeSecretKeysRetired {
+		if version <= 0 {
+			return fmt.Errorf("qianye: lottery.prize_secret_keys_retired 的版本号必须大于 0,收到 %d", version)
+		}
+		if key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw)); err != nil || len(key) != 32 {
+			return fmt.Errorf("qianye: lottery.prize_secret_keys_retired[%d] 必须是 base64 编码的 32 字节密钥", version)
+		}
 	}
 	if l.MaxGuessFeeBps < 0 || l.MaxGuessFeeBps > maxBps {
 		return fmt.Errorf("qianye: lottery.max_guess_fee_bps 必须落在 [0, %d]", maxBps)
@@ -214,6 +251,24 @@ func validateLottery(l *Lottery) error {
 	if l.MaxTotalEntriesHard <= 0 {
 		return fmt.Errorf("qianye: lottery.max_total_entries_hard 必须大于 0 —— " +
 			"名单冻结要在单个事务里流式算完,没有上界就没有可预期的封盘耗时")
+	}
+	// 上界不是运维口味,是算术:名单规模是全站唯一一个乘在额度上却没有就地
+	// 溢出检查的整数(estimate 里的 `hit * AmountQuota`),common.MaxQuota 的
+	// 推导直接引用它。配得比它大,那条乘法就能在 int64 上绕回负数 —— 表现是
+	// 预估支出变成负数,于是二次确认与告警阈值一起静默通过。
+	if l.MaxTotalEntriesHard > MaxLotteryEntriesHard {
+		return fmt.Errorf("qianye: lottery.max_total_entries_hard(%d)不得超过 %d —— "+
+			"它与 common.MaxQuota 共同保证「单份额度 × 名单规模」不溢出 int64,"+
+			"抬高它等于把抽奖预估支出的溢出防线拆掉", l.MaxTotalEntriesHard, MaxLotteryEntriesHard)
+	}
+	// 多注提交的整批预算。下界 1 秒:比它还小的值等于把这条路径关掉(连单注
+	// 都跑不完);上界 300 秒纯粹是"任何反代都不会等这么久"的常识线,配到那里
+	// 意味着用户会先拿到 504 而服务端还在扣钱。
+	if l.EntryBatchMaxMs < 1000 || l.EntryBatchMaxMs > 300_000 {
+		return fmt.Errorf("qianye: lottery.entry_batch_max_ms 必须在 1000..300000 之间,收到 %d —— "+
+			"它是一次多注提交整批的时间预算上界,要按部署方自己的反向代理读超时来配:"+
+			"配得比反代还大时,请求会在反代那一刻被切成 504,而服务端仍在逐注扣钱",
+			l.EntryBatchMaxMs)
 	}
 	if l.MaxPrizeTiers <= 0 || l.MaxOptions < 2 {
 		return fmt.Errorf("qianye: lottery.max_prize_tiers 必须大于 0,max_options 必须不小于 2")
@@ -585,6 +640,17 @@ func ValidateTransfer(t *Transfer) error {
 	if err := checkQuotaCap("transfer.min_quota", t.MinQuota); err != nil {
 		return err
 	}
+	// 额度类 YAML 字段一律走同一道上界。此前只有 6 个键走它,而 config.go 里
+	// `yaml:"*quota*"` 的额度键有 14 个 —— 漏掉的那 8 个各自被下游的就地守卫
+	// 接住(所以没有活的溢出),但那意味着一份把 fee_min_quota 配成 MaxInt64 的
+	// YAML 能干净启动,然后**每一次划转**都在 computeFee 里报错。
+	// 上界应该在启动那一刻就说话,而不是等第一笔资金操作。
+	if err := checkQuotaCap("transfer.daily_max_quota", t.DailyMaxQuota); err != nil {
+		return err
+	}
+	if err := checkQuotaCap("transfer.fee_min_quota", t.FeeMinQuota); err != nil {
+		return err
+	}
 	if err := checkQuotaCap("transfer.max_per_tx_quota", t.MaxPerTxQuota); err != nil {
 		return err
 	}
@@ -633,6 +699,9 @@ func validateCommission(cm *Commission) error {
 	}
 	if cm.Levels != 1 {
 		return fmt.Errorf("qianye: commission.levels 当前仅支持 1 级,收到 %d", cm.Levels)
+	}
+	if err := checkQuotaCap("commission.min_settle_quota", cm.MinSettleQuota); err != nil {
+		return err
 	}
 	if err := checkQuotaCap("commission.max_per_order_quota", cm.MaxPerOrderQuota); err != nil {
 		return err
@@ -735,6 +804,9 @@ func validateWithdraw(w *Withdraw) error {
 		return err
 	}
 	if err := checkQuotaCap("withdraw.min_quota", w.MinQuota); err != nil {
+		return err
+	}
+	if err := checkQuotaCap("withdraw.daily_max_quota", w.DailyMaxQuota); err != nil {
 		return err
 	}
 	if err := checkQuotaCap("withdraw.max_quota_per_order", w.MaxQuotaPerOrder); err != nil {
@@ -925,14 +997,17 @@ func checkRatePair(kind, percent string, deprecatedBps *int) error {
 	return nil
 }
 
-// checkQuotaCap 校验额度上限类字段不超过主库 users.quota 的 int32 容量。
-// 超过则跨库写入时必然溢出,必须在配置阶段就拒绝。
+// checkQuotaCap 校验额度上限类字段不超过 common.MaxQuota。
+//
+// 那不是列宽(users.quota 在三个方言上都是 64 位列),而是全站额度换算的**算术**
+// 上界:超过它的门槛过不了 common/quota_math.go 的换算,于是不是"更严格",
+// 而是**永远无法被满足** —— 必须在配置阶段就拒绝。
 func checkQuotaCap(name string, v int64) error {
 	if v < 0 {
 		return fmt.Errorf("qianye: %s 不得为负数,收到 %d", name, v)
 	}
 	if v > int64(common.MaxQuota) {
-		return fmt.Errorf("qianye: %s(%d)超过主库额度上限 %d(users.quota 是 int32)",
+		return fmt.Errorf("qianye: %s(%d)超过全站额度上界 %d(common.MaxQuota,由代码写死)",
 			name, v, common.MaxQuota)
 	}
 	return nil

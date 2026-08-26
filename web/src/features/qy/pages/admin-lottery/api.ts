@@ -114,6 +114,26 @@ export function setQyLotActivityCover(
   )
 }
 
+/**
+ * 改一场活动的「一次最多下多少注」。
+ *
+ * **不限活动状态**，理由与换封面同一条:它不进 commit / rules / spec 三个哈希
+ * 原像的任何一个,也不改变任何人最终能拿到几张票(那个数由 `max_entries_per_user`
+ * 说了算)—— 它只决定同样这些票要分几次请求买完。奖档、时刻、参与条件永远
+ * 不在此列(它们只能在 `draft` 阶段改)。
+ *
+ * `max_picks_per_request` 传 0 = 清掉这一格,回到后端默认的 10 注。
+ */
+export function setQyLotActivityPicksCap(
+  actNo: string,
+  maxPicksPerRequest: number
+): Promise<{ max_picks_per_request: number; effective: number }> {
+  return qyPut<{ max_picks_per_request: number; effective: number }>(
+    actPath(actNo, '/picks-cap'),
+    { max_picks_per_request: maxPicksPerRequest }
+  )
+}
+
 /** 创建。落地即 `draft`，种子在这一刻由服务端生成 —— 请求体里没有它。 */
 export function createQyLotActivity(
   body: QyLotCreateInput

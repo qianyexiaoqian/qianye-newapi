@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
+	"math"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -38,10 +39,64 @@ func GetRandomString(length int) string {
 
 func MapToJsonStr(m map[string]interface{}) string {
 	bytes, err := json.Marshal(m)
-	if err != nil {
-		return ""
+	if err == nil {
+		return string(bytes)
 	}
-	return string(bytes)
+	// 一个编不出来的值不许把整张 map 抹掉。
+	//
+	// 这个函数的主要调用方是 model.RecordConsumeLog / RecordTaskBillingLog 的
+	// `other` 列 —— 计费上下文(model_ratio / group_ratio / cache_ratio /
+	// use_channel)与钳制审计标记都住在那里。encoding/json 遇到 ±Inf / NaN
+	// 会对**整张 map** 返回 UnsupportedValueError,原先直接 return "" 于是
+	// 让整条日志的计费上下文一起消失,而这类日志恰恰是异常请求的那一条,
+	// 最需要看的就是它。落库侧 createLog 又不检查空串,所以静默无声。
+	//
+	// 退而求其次:把非有限浮点换成它的字符串形式再编一次。仍然失败(别的
+	// 不可编码类型)才返回空串,与原行为一致。
+	if sanitized, changed := sanitizeJSONValue(m); changed {
+		if bytes, err = json.Marshal(sanitized); err == nil {
+			return string(bytes)
+		}
+	}
+	return ""
+}
+
+// sanitizeJSONValue 递归地把 ±Inf / NaN 换成字符串,返回是否真的改过。
+func sanitizeJSONValue(v interface{}) (interface{}, bool) {
+	switch val := v.(type) {
+	case float64:
+		if math.IsInf(val, 0) || math.IsNaN(val) {
+			return strconv.FormatFloat(val, 'g', -1, 64), true
+		}
+	case float32:
+		f := float64(val)
+		if math.IsInf(f, 0) || math.IsNaN(f) {
+			return strconv.FormatFloat(f, 'g', -1, 32), true
+		}
+	case map[string]interface{}:
+		changed := false
+		out := make(map[string]interface{}, len(val))
+		for k, item := range val {
+			fixed, itemChanged := sanitizeJSONValue(item)
+			out[k] = fixed
+			changed = changed || itemChanged
+		}
+		if changed {
+			return out, true
+		}
+	case []interface{}:
+		changed := false
+		out := make([]interface{}, len(val))
+		for i, item := range val {
+			fixed, itemChanged := sanitizeJSONValue(item)
+			out[i] = fixed
+			changed = changed || itemChanged
+		}
+		if changed {
+			return out, true
+		}
+	}
+	return v, false
 }
 
 func StrToMap(str string) (map[string]interface{}, error) {

@@ -38,7 +38,7 @@ type FundOrder struct {
 	PeerUserId int `json:"peer_user_id" gorm:"not null;default:0;index"`
 
 	// AmountQuota 用 int64 承载,但跨库写入主库前必须校验不超过 common.MaxQuota
-	// (users.quota 是 int32)。绝不静默截断。
+	// (全站额度换算的算术上界,不是列宽)。绝不静默截断。
 	AmountQuota int64 `json:"amount_quota" gorm:"not null"`
 	// FeeQuota 即使当前配置为 0 也要落库,否则日后改了费率,历史单将无法解释。
 	FeeQuota int64 `json:"fee_quota" gorm:"not null;default:0"`

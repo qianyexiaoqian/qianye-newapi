@@ -245,7 +245,7 @@ func TestTopUpBaseQuotaByProvider(t *testing.T) {
 func TestQuotaFromDecimalNeverNegative(t *testing.T) {
 	assert.EqualValues(t, 0, quotaFromDecimal(decimal.NewFromInt(-100)))
 	assert.EqualValues(t, 10, quotaFromDecimal(decimal.RequireFromString("10.9")))
-	assert.EqualValues(t, common.MaxQuota, quotaFromDecimal(decimal.NewFromInt(9_000_000_000)))
+	assert.EqualValues(t, common.MaxQuota, quotaFromDecimal(decimal.NewFromInt(int64(common.MaxQuota)+1)))
 }
 
 // TestExcludedTopUp 锁定充值口径。

@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
 
 	"github.com/shopspring/decimal"
 )
@@ -80,7 +81,7 @@ func validateCreate(fromUserId int, req createRequest, cfg config.Transfer) (acc
 		return out, err
 	}
 	// 用 int64 中间量相加后再与 MaxQuota 比较,绝不在 int 上直接相加:
-	// 主库 users.quota 是 int32,溢出会把扣款变成加款。
+	// 中间量在 int64 上相加后再与 common.MaxQuota 比,溢出会把扣款变成加款。
 	total := req.Amount + fee
 	if total > int64(common.MaxQuota) {
 		return out, errAmountOutOfRange
@@ -139,14 +140,20 @@ func buildIdemKey(userId int, clientRequestId string) (string, error) {
 	if len(id) > maxClientRequestIdLen {
 		return "", errInvalidParam
 	}
-	for _, r := range id {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-		default:
-			return "", errInvalidParam
-		}
+	// 字符集校验与**大小写折叠**在同一处完成(qymodel.NormalizeIdemClientKey)。
+	//
+	// 折叠是必需的,不是洁癖:幂等键"相不相等"最终由列的排序规则说了算,
+	// 而 MySQL 的库默认排序规则(8.0 utf8mb4_0900_ai_ci / 5.7 general_ci)
+	// 大小写不敏感,PostgreSQL 与 SQLite 按字节比较。不折叠的话,先发
+	// client_request_id="tr-a" 再发 "TR-A"(两笔全新划转)在 MySQL 上第二笔
+	// 被静默吞掉、在 PostgreSQL 上正常扣两次 —— 同一份代码在两种官方支持的
+	// 方言上给出相反的资金结果。折叠之后三方言一律按 MySQL 的语义走,
+	// 也就是生产那一支的行为一个字节不变。
+	folded, ok := qymodel.NormalizeIdemClientKey(id)
+	if !ok {
+		return "", errInvalidParam
 	}
-	return strconv.Itoa(userId) + ":" + id, nil
+	return strconv.Itoa(userId) + ":" + folded, nil
 }
 
 // sanitizeRemark 过滤控制字符并按 rune 截断。

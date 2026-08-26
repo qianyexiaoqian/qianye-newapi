@@ -139,10 +139,10 @@ func TestComputeSettlementDailyCap(t *testing.T) {
 	assert.Equal(t, "100.7", exhausted.CarryAfter.String())
 }
 
-// TestComputeSettlementSaturates 确认单轮结算触顶 int32 时不会回绕成负数,
-// 且未发完的部分仍然留在余数里。
+// TestComputeSettlementSaturates 确认单轮结算触顶 common.MaxQuota 时不会回绕成
+// 负数,且未发完的部分仍然留在余数里。
 func TestComputeSettlementSaturates(t *testing.T) {
-	huge := decimal.NewFromInt(3_000_000_000)
+	huge := decimal.NewFromInt(int64(common.MaxQuota) + 1_000_000)
 	out := computeSettlement(decimal.Zero, huge, 0, 1, -1)
 	require.NotNil(t, out.Clamp, "触顶必须被记录下来供审计")
 	assert.EqualValues(t, common.MaxQuota, out.NetQuota)

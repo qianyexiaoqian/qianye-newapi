@@ -46,6 +46,11 @@ import {
   type QyLotBallPick,
 } from '../lib/ball'
 import { qyLotGuessBoard } from '../lib/guess'
+import {
+  qyLotBatchSeconds,
+  qyLotSeatCap,
+  type QyLotSeatCap,
+} from '../lib/seats'
 import type { QyLotActivityDetail, QyLotEntryBatch } from '../types'
 import { QyLotBallPicker } from './lottery-ball-picker'
 import { QyLotGuessLine } from './lottery-guess-board'
@@ -134,14 +139,14 @@ export function QyLotEntryDialog(props: {
   const count = isBall ? submitLines.length : 1
   const totalQuota = activity.stake_quota * count
 
-  // 单次批量上限与"我在本场还能买几注"是两条独立的闸门，取更紧的那一条。
-  // `max_picks_per_request` 缺席（老后端）时退回 1 注 —— 一个不下发这个字段的
-  // 后端不认识 `picks`，多发几注只会被整批 400。
-  const perRequestCap = activity.max_picks_per_request ?? 1
-  const remaining = activity.my_entries_remaining
-  const seatCap =
-    remaining == null ? perRequestCap : Math.min(perRequestCap, remaining)
+  // 三条闸门（单次批量 / 每人上限 / 全场名额）取更紧的那一条，**并且记住是哪一条**
+  // —— 用户读完要做的下一个动作按闸门不同完全相反，口径与理由见 lib/seats.ts。
+  const seats = qyLotSeatCap(activity)
+  const seatCap = seats.cap
   const openSlots = Math.max(0, seatCap - submitLines.length)
+  // 这一批要在服务端串行跑多久。N 注 = N 次独立扣费，999 注就是三十几秒 ——
+  // 一个转了半分钟的按钮与一个卡死的页面在屏幕上长得一模一样，所以必须先说。
+  const batchSeconds = qyLotBatchSeconds(count)
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -208,7 +213,13 @@ export function QyLotEntryDialog(props: {
               disabled={!canSubmit}
               onClick={() => mutation.mutate()}
             >
-              {t('qy_lot_join_confirm')}
+              {/*
+                提交中要换一句话，而且要带上注数：999 注是一次三十几秒的请求，
+                一颗写着「确认参与」的灰按钮什么都没说，用户会以为页面卡住了。
+              */}
+              {mutation.isPending && isBall && count > 1
+                ? t('qy_lot_ball_submitting_n', { count })
+                : t('qy_lot_join_confirm')}
             </Button>
           </>
         ) : (
@@ -282,46 +293,17 @@ export function QyLotEntryDialog(props: {
                 回来 —— 单注时那是一次白点击，多注时那是"我选了十注，凭什么
                 只买成三注"。这一行就是把那句话提到前面来。
               */}
-              <QyLotSeatHint
-                remaining={remaining}
-                perRequestCap={perRequestCap}
-              />
+              <QyLotSeatHint seats={seats} />
 
               {lines.length > 0 && (
-                <div className='space-y-1.5'>
-                  <Label>{t('qy_lot_ball_lines_title')}</Label>
-                  <ul className='space-y-1.5'>
-                    {lines.map((line, index) => (
-                      <li
-                        // 号码可以重复（真实彩票允许买同号），所以 key 必须带上
-                        // 下标 —— 只用号码做 key 会让两注同号的行在删除时错位。
-                        key={`${qyLotBallFormatPick(line)}#${index}`}
-                        className='flex items-center gap-2 rounded-lg border px-3 py-2'
-                      >
-                        <span className='text-muted-foreground w-6 shrink-0 text-xs tabular-nums'>
-                          {index + 1}
-                        </span>
-                        <span className='min-w-0 flex-1 font-mono text-sm break-all tabular-nums'>
-                          {qyLotBallFormatPick(line)}
-                        </span>
-                        <Button
-                          type='button'
-                          variant='ghost'
-                          size='icon'
-                          disabled={mutation.isPending}
-                          aria-label={t('qy_lot_ball_line_remove', {
-                            index: index + 1,
-                          })}
-                          onClick={() =>
-                            setLines(lines.filter((_, i) => i !== index))
-                          }
-                        >
-                          <X aria-hidden='true' />
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                <QyLotPickedLines
+                  lines={lines}
+                  disabled={mutation.isPending}
+                  onRemove={(index) =>
+                    setLines(lines.filter((_, i) => i !== index))
+                  }
+                  onClear={() => setLines([])}
+                />
               )}
 
               <div className='space-y-2'>
@@ -381,6 +363,24 @@ export function QyLotEntryDialog(props: {
                     {t('qy_lot_ball_line_incomplete')}
                   </p>
                 )}
+
+              {/*
+                大批量要先把时间代价说出来。N 注在服务端是 N 次**串行**扣费
+                （每一注一张独立资金单、一条链环、一份可复算回执 —— 那正是每一注
+                各自可复算的实现方式，不能为了快合并掉），所以 999 注就是三十几秒。
+                不说的话，一个转了半分钟的按钮与一个卡死的页面在屏幕上长得一模一样，
+                而用户下一步会做的事是刷新或者再点一次。
+
+                门槛定在 5 秒：低于它没人会觉得慢，而多一行字要挤掉别的字。
+              */}
+              {batchSeconds >= 5 && (
+                <p className='text-muted-foreground text-xs'>
+                  {t('qy_lot_ball_batch_time_hint', {
+                    count,
+                    seconds: batchSeconds,
+                  })}
+                </p>
+              )}
             </div>
           )}
 
@@ -567,36 +567,152 @@ export function QyLotEntryDialog(props: {
 }
 
 /**
- * 「你在本场还能买几注」。
+ * 「你这一次还能买几注」，以及**是哪一条闸门定的**。
  *
- * 三个取值分开说，合并任意两个都会说错话：`null` 是没有每人上限（不是"还能买
- * 0 注"），`0` 是已经买满，正数才是真的还剩几注。
+ * 三条闸门在屏幕上必须说成三句不同的话，因为用户能做的事完全不同：
+ *
+ *  - 单次批量到顶 → 再提交一次就能接着买；
+ *  - 每人上限到顶 → 这一场你买够了，再提交多少次都没用；
+ *  - 全场名额到顶 → 手快有手慢无，而且它可能在你选号的这一分钟里被别人买光。
+ *
+ * 说成同一句"还能买 N 注"，用户读完会做出错的下一个动作。判定口径在 lib/seats.ts。
  */
-function QyLotSeatHint(props: {
-  remaining?: number | null
-  perRequestCap: number
-}) {
+function QyLotSeatHint(props: { seats: QyLotSeatCap }) {
   const { t } = useTranslation()
+  const { seats } = props
   // 单次只能买一注时这句话没有信息量（"一次最多买 1 注"），而这一屏的字数
   // 预算是逐字算过的：一句零信息量的提示挤掉的是真正要被读到的那几个数。
   const capHint =
-    props.perRequestCap > 1
-      ? t('qy_lot_ball_per_request_cap', { count: props.perRequestCap })
+    seats.perRequestCap > 1
+      ? t('qy_lot_ball_per_request_cap', { count: seats.perRequestCap })
       : ''
-  if (props.remaining == null) {
+
+  if (seats.cap <= 0) {
+    return (
+      <p className='text-destructive text-xs'>
+        {t(
+          seats.binding === 'total'
+            ? 'qy_lot_ball_total_full'
+            : 'qy_lot_ball_seats_full'
+        )}
+      </p>
+    )
+  }
+  // 绑在单次批量上时没有别的话可说 —— 那一句就是 capHint 本身。
+  if (seats.binding === 'per_request' || seats.binding === 'none') {
     return capHint === '' ? null : (
       <p className='text-muted-foreground text-xs'>{capHint}</p>
     )
   }
-  if (props.remaining <= 0) {
-    return (
-      <p className='text-destructive text-xs'>{t('qy_lot_ball_seats_full')}</p>
-    )
-  }
   return (
     <p className='text-muted-foreground text-xs'>
-      {t('qy_lot_ball_seats_left', { count: props.remaining })}
+      {t(
+        seats.binding === 'total'
+          ? 'qy_lot_ball_total_left'
+          : 'qy_lot_ball_seats_left',
+        { count: seats.cap }
+      )}
       {capHint === '' ? null : ` · ${capHint}`}
     </p>
+  )
+}
+
+/**
+ * 已加入的那几注。
+ *
+ * ## 为什么默认只画前 20 行
+ *
+ * 这一格现在能装到 999 行。999 个 `<li>` 连同 999 颗删除按钮塞进一个对话框，
+ * 结果是滚动条变成一根头发丝、真正要看的"合计多少钱"被推到屏幕外，而用户在
+ * 这一屏要回答的问题从来不是"逐行核对 999 组号"——那件事在回执与「我的参与」
+ * 里做。所以默认折叠到前 20 行 + 一颗「展开全部」，展开之后套一个固定高度的
+ * 滚动区，屏幕上的其余内容位置不变。
+ *
+ * 不引虚拟滚动库：展开态最多 999 个结构极简的节点，而引一个新依赖要为它的
+ * 键盘可达性、屏幕阅读器行为与打包体积各付一次账。
+ */
+function QyLotPickedLines(props: {
+  lines: QyLotBallPick[]
+  disabled: boolean
+  onRemove: (index: number) => void
+  onClear: () => void
+}) {
+  const { t } = useTranslation()
+  const [expanded, setExpanded] = useState(false)
+  const PREVIEW = 20
+  const shown = expanded ? props.lines : props.lines.slice(0, PREVIEW)
+  const hidden = props.lines.length - shown.length
+
+  return (
+    <div className='space-y-1.5'>
+      <div className='flex items-center justify-between gap-2'>
+        <Label>{t('qy_lot_ball_lines_title')}</Label>
+        {/*
+          「全部清空」在 999 注上不是便利，是必需：靠逐行删除清掉 999 注要点
+          999 次，而用户想重来一遍的唯一办法本来是关掉弹窗 —— 那会连同
+          client_request_id 一起重置，也就是把已经生成的幂等键丢掉。
+        */}
+        <Button
+          type='button'
+          variant='ghost'
+          size='sm'
+          disabled={props.disabled}
+          onClick={props.onClear}
+        >
+          {t('qy_lot_ball_lines_clear')}
+        </Button>
+      </div>
+      <ul
+        className={
+          expanded ? 'max-h-64 space-y-1.5 overflow-y-auto pr-1' : 'space-y-1.5'
+        }
+      >
+        {shown.map((line, index) => (
+          <li
+            // 号码可以重复（真实彩票允许买同号），所以 key 必须带上
+            // 下标 —— 只用号码做 key 会让两注同号的行在删除时错位。
+            key={`${qyLotBallFormatPick(line)}#${index}`}
+            className='flex items-center gap-2 rounded-lg border px-3 py-2'
+          >
+            <span className='text-muted-foreground w-10 shrink-0 text-xs tabular-nums'>
+              {index + 1}
+            </span>
+            <span className='min-w-0 flex-1 font-mono text-sm break-all tabular-nums'>
+              {qyLotBallFormatPick(line)}
+            </span>
+            <Button
+              type='button'
+              variant='ghost'
+              size='icon'
+              disabled={props.disabled}
+              aria-label={t('qy_lot_ball_line_remove', { index: index + 1 })}
+              onClick={() => props.onRemove(index)}
+            >
+              <X aria-hidden='true' />
+            </Button>
+          </li>
+        ))}
+      </ul>
+      {hidden > 0 && (
+        <Button
+          type='button'
+          variant='ghost'
+          size='sm'
+          onClick={() => setExpanded(true)}
+        >
+          {t('qy_lot_ball_lines_expand', { count: hidden })}
+        </Button>
+      )}
+      {expanded && props.lines.length > PREVIEW && (
+        <Button
+          type='button'
+          variant='ghost'
+          size='sm'
+          onClick={() => setExpanded(false)}
+        >
+          {t('qy_lot_ball_lines_collapse')}
+        </Button>
+      )}
+    </div>
   )
 }

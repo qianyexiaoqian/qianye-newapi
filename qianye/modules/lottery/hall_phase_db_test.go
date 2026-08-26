@@ -131,12 +131,12 @@ func TestHallPhaseNeverLeaksDraft(t *testing.T) {
 	require.NoError(t, gdb.Create(guessDraft).Error)
 
 	for _, phase := range []string{"", "live", "ended"} {
-		for _, kind := range []string{"", KindDraw, KindGuess} {
-			q, err := hallQuery(gdb, kind, phase, allPlaysShown())
+		for _, lane := range []string{"", LaneDraw, LaneBall, LaneGuess} {
+			q, err := hallQuery(gdb, lane, phase, allPlaysShown())
 			require.NoError(t, err)
 			for _, no := range actNos(t, q) {
 				assert.NotContains(t, no, "draft",
-					"phase=%q kind=%q 把草稿下发给了用户", phase, kind)
+					"phase=%q lane=%q 把草稿下发给了用户", phase, lane)
 			}
 		}
 	}

@@ -26,6 +26,7 @@ func lotteryBaseline() Lottery {
 		MaxGuessFeeBps: 2000, DefaultGuessFeeBps: 500,
 		MaxTotalEntriesHard: 50000, MaxPrizeTiers: 10, MaxOptions: 12,
 		PayoutMaxAttempts: 8, CoverMaxBytes: 1 << 20,
+		EntryBatchMaxMs:      45_000,
 		SpendMaxLookbackDays: 90, SpendScanBatch: 100, SpendRetentionDays: 120,
 	}
 }

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -424,7 +426,7 @@ func TestAdminPutConfigRejectsValuesOutsideBounds(t *testing.T) {
 
 	cases := map[string]string{
 		"负数":         `{"cooldown_seconds":-1}`,
-		"超过主库额度上限":   `{"max_per_tx_quota":2147483648}`,
+		"超过全站额度上界":   fmt.Sprintf(`{"max_per_tx_quota":%d}`, int64(common.MaxQuota)+1),
 		"费率超过 100%":  `{"fee_bps":10001}`,
 		"支付密码阈值为 0":  `{"pay_pwd_max_attempts":0}`,
 		"锁定时长为 0":    `{"pay_pwd_lock_minutes":0}`,
@@ -533,13 +535,13 @@ func TestStaleSnapshotStopsBeingServedAfterTheGraceWindow(t *testing.T) {
 // TestOutOfRangeOverrideIsDroppedNotClamped 守"手工改坏的值只丢弃,不钳到边界"。
 //
 // qy_settings 是可以被人直接 UPDATE 的。一个被写坏的超大单笔上限若被钳成
-// MaxQuota,就会静默地把单笔上限放开到主库额度上限;丢弃只是回落到 YAML 的
+// MaxQuota,就会静默地把单笔上限放开到全站额度上界;丢弃只是回落到 YAML 的
 // 5000 万,损失有界且可解释。
 func TestOutOfRangeOverrideIsDroppedNotClamped(t *testing.T) {
 	gdb := newSettingsTestDB(t)
 	useSettingsConfig(t, baseConfig())
 
-	putSetting(t, gdb, keyMaxPerTxQuota, "2147483648") // MaxQuota + 1
+	putSetting(t, gdb, keyMaxPerTxQuota, strconv.FormatInt(int64(common.MaxQuota)+1, 10))
 	putSetting(t, gdb, keyDailyMaxCount, "not-a-number")
 	putSetting(t, gdb, keyCooldownSecs, "30") // 合法值必须照常生效
 

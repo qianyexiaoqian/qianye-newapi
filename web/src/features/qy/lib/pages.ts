@@ -201,12 +201,25 @@ export const QY_TAB_GROUPS: readonly QyTabGroupDef[] = [
   },
   {
     // 需求 2（抽奖轮）原话：「抽奖竞猜和我的参与放到一个页面，不要单独写一个
-    // 菜单」。三张标签逐字对应那句话，**标签数固定为三**：后续新增玩法
-    // （双色球）走活动行上的 `draw_mode` 而不是新标签，导航维度不随数据维度
-    // 增长 —— 一个会随配置变多变少的标签栏，用户每次进来看到的东西都不一样。
+    // 菜单」；本轮追加：「把双色球和竞猜分开选择夹，抽奖-竞猜-双色球。」
+    //
+    // 顺序逐字照抄那句话（抽奖 → 竞猜 → 双色球），「我的参与」压在最后 ——
+    // 它不是一个玩法，是查票与领奖的地方。
+    //
+    // ── 双色球为什么从「抽奖」里拆出来 ──
+    // 它的 `kind` 确实还是 `draw`，但用户要在它上面做的事完全不同：选号、
+    // 看开奖号、对红蓝球。它和按名次/按公示概率共用一张列表时，用户翻三页
+    // 也不一定翻到一场双色球，而卡面上那个「奖池」在两类活动上根本不是同一
+    // 个数。标签数因此**固定为四**：玩法再多也走 `draw_mode` 并入这三夹之一，
+    // 导航维度不随数据维度增长。
     host: '/qy/lottery',
     titleKey: 'qy_nav_lottery_hub',
-    pages: ['/qy/lottery', '/qy/lottery-guess', '/qy/lottery-records'],
+    pages: [
+      '/qy/lottery',
+      '/qy/lottery-guess',
+      '/qy/lottery-ball',
+      '/qy/lottery-records',
+    ],
   },
   {
     // 项目方原话：「把日消费明细/佣金审核，提醒审核，这些管理页面弄成选择夹，
@@ -291,14 +304,20 @@ export type QyEntrySwitches = {
 }
 
 /**
- * 「抽奖」那一档还剩不剩玩法（按名次 / 按公示概率 / 双色球）。
+ * 「抽奖」那张标签还剩不剩玩法（按名次 / 按公示概率）。
  *
- * 三种定档方式共用一张大厅标签 —— 它们的 `kind` 都是 `draw`，双色球是活动行上
- * 的 `draw_mode` 而不是第四张标签（见 `pages/lottery/hub.tsx`）。所以决定那张
- * 标签渲不渲染的是「三种里还有没有一种开着」，而不是任何单独一个开关。
+ * ── 为什么没有第五个开关 ──
+ * 标签是三张（抽奖 / 竞猜 / 双色球），玩法是四种，抽奖那张底下压着两种。
+ * 再给标签自己加一个可见性开关，就会出现「标签开着但底下两种玩法都关」
+ * 这种自相矛盾的状态：用户点进去看到一张永远空的列表，而运营在配置页上
+ * 看到的是"抽奖已开启"。所以标签的可见性**由它底下至少一个玩法可见决定**，
+ * 开关仍然只有那四个。
+ *
+ * 双色球与竞猜各自只压着一种玩法，因此它们的标签可见性就是那一个开关本身，
+ * 不需要各写一个派生函数。
  */
 export function qyLotDrawShown(plays: QyLotPlays): boolean {
-  return plays.draw_rank || plays.draw_prob || plays.draw_ball
+  return plays.draw_rank || plays.draw_prob
 }
 
 /**
@@ -309,7 +328,7 @@ export function qyLotDrawShown(plays: QyLotPlays): boolean {
  * 藏掉的只是入口，不是数据，更不是钱。
  */
 export function qyAnyLotPlayShown(plays: QyLotPlays): boolean {
-  return qyLotDrawShown(plays) || plays.guess
+  return qyLotDrawShown(plays) || plays.draw_ball || plays.guess
 }
 
 export type QyPageDef = {
@@ -447,11 +466,11 @@ export const QY_PAGES: readonly QyPageDef[] = [
     codeKey: 'qy_sg_code_violations',
   },
   // 抽奖落在「推广」组：它和邀请返佣一样是拉新与促活的手段，用户的心智
-  // 也在同一处（"平台给我的东西在哪"）。三行都挂 `entry: 'lottery'`——
+  // 也在同一处（"平台给我的东西在哪"）。四行都挂 `entry: 'lottery'`——
   // 站点在系统设置里关掉展示时，整组消失，而不是留下点进去空空如也的页面。
   //
-  // 侧栏上只剩**一行**（组名「抽奖竞猜」= QY_TAB_GROUPS.titleKey），后两行
-  // 是选择夹成员：它们不写 group / icon，否则侧栏会多出两行点了就被重定向
+  // 侧栏上只剩**一行**（组名「抽奖竞猜」= QY_TAB_GROUPS.titleKey），后三行
+  // 是选择夹成员：它们不写 group / icon，否则侧栏会多出三行点了就被重定向
   // 甩走的入口（`pages-table.test.ts` 双向断言）。
   {
     url: '/qy/lottery',
@@ -471,6 +490,19 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'lottery',
     entry: 'lottery',
     codeKey: 'qy_sg_code_lottery_guess',
+  },
+  {
+    // 项目方原话：「把双色球和竞猜分开选择夹，抽奖-竞猜-双色球。」
+    //
+    // 双色球在数据上仍然是 `kind='draw'` 的一个 `draw_mode`，但在**用户要做的
+    // 事**上它自成一类：这一页要选号、要看开奖号、要对红蓝球，而按名次/按公示
+    // 概率两种只是"报名然后等结果"。它此前混在抽奖列表里，翻三页也未必翻到
+    // 一场，卡面上的「奖池」在两类活动上还不是同一个数。
+    url: '/qy/lottery-ball',
+    titleKey: 'qy_nav_lottery_ball',
+    feature: 'lottery',
+    entry: 'lottery',
+    codeKey: 'qy_sg_code_lottery_ball',
   },
   {
     url: '/qy/lottery-records',

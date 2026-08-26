@@ -30,16 +30,26 @@ For commercial licensing, please contact support@quantumnous.com
  *
  * # 为什么不能是 Number.MAX_SAFE_INTEGER
  *
- * 结算金额本身在后端已经被 `common.QuotaFromDecimalChecked` 夹在 int32 内，
- * 所以一个超过它的门槛不是"更宽松"，是**永远无法被满足**。最坏的一个具体形状：
- * 把「最小结算额度」填成 5000000000（按 USD 录入之后只要敲 5 位数），
+ * 结算金额本身在后端已经被 `common.QuotaFromDecimalChecked` 夹在 `common.MaxQuota`
+ * 内，所以一个超过它的门槛不是"更宽松"，是**永远无法被满足**。最坏的一个具体
+ * 形状：把「最小结算额度」填成一个越界的数（按 USD 录入之后只要多敲几个零），
  * `net < minSettle` 从此恒成立，net 恒为 0 —— 全站所有邀请人的佣金永远不再落账，
  * 不报错、不告警、没有日志，未结算额一路累加。
  *
  * 划转与抽奖两页的这条路早就被后端下发的 bounds 堵住了，只有佣金页没有；
  * 本轮把上界补在两边：这里（界面立刻标红）与后端校验/读取回落（真正说了算的）。
+ *
+ * # 这个数是怎么来的
+ *
+ * 它必须与后端 `common.MaxQuota`（`common/quota_math.go`）逐字一致。那**不是**
+ * 数据库那一列的宽度 —— 三个方言上额度列都是 64 位；它是全站额度换算的**算术**
+ * 上界：float64 / `Number.MAX_SAFE_INTEGER` 的精确整数区间，与资金路径上最大的
+ * 那个未经就地检查的乘数，两者取小。2^43 落在 `Number.MAX_SAFE_INTEGER`（2^53-1）
+ * 之内十个二进制位，所以这一侧照常是精确整数运算。
+ *
+ * 后端改了这个数,这里必须跟着改 —— `fields-max-quota.test.ts` 会因为对不上而红。
  */
-export const QY_MAX_QUOTA = 2147483647
+export const QY_MAX_QUOTA = 8_796_093_022_208
 
 /**
  * 法币折算比例的上界，与后端 `maxFiatRateValue` 逐字一致。

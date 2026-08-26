@@ -106,6 +106,15 @@ export type QyLotAdminActivity = {
   max_per_inviter: number
   cooldown_seconds: number
   dedup_ip: boolean
+  /**
+   * 一次提交最多买几注（只有双色球用得上）。`0` = 没配过，生效值是后端的默认 10。
+   *
+   * 它不进任何哈希原像，因此是**发布之后仍然改得动**的极少数活动字段之一
+   * （与封面同一类，走 `PUT /lottery/activities/:act_no/picks-cap`）。
+   *
+   * 可选：本轮之前建的活动行里没有这一列的值，读到 `undefined` 按 0 处理。
+   */
+  max_picks_per_request?: number
   bet_min_quota: number
   bet_max_quota: number
 
@@ -281,6 +290,16 @@ export type QyLotCreateInput = {
   bet_min_quota: number
   bet_max_quota: number
   rules: QyLotRules
+  /**
+   * 一次提交最多买几注（只有双色球读它）。
+   *
+   * **刻意不在 `rules` 里**：`rules` 整块进 `rules_hash` 进而进 `commit_hash`，
+   * 发布即冻结；这一格不进任何哈希原像，因为它不改变任何人最终能拿到几张票，
+   * 只决定同样这些票要分几次请求买完。
+   *
+   * `0` = 没配过，后端按默认 10 走；上限 999。
+   */
+  max_picks_per_request?: number
   /** 抽奖奖档。竞猜传空数组。后端字段名是 `prizes`。 */
   prizes: QyLotTier[]
   /** 竞猜选项。抽奖传空数组。`opt_no` 由前端按顺序编号。 */
@@ -549,13 +568,32 @@ export type QyLotYamlReadonly = {
   reveal_delay_seconds: number
   payout_max_attempts: number
   max_total_entries_hard: number
+  /**
+   * 「一次最多下多少注」这一格的默认值与硬顶（后端 `defaultPicksPerRequest` /
+   * `maxPicksPerRequestHard`）。
+   *
+   * 可选：本轮之前的后端不下发它们，此时界面退回同名的前端常量。
+   */
+  max_picks_per_request_default?: number
+  max_picks_per_request_hard?: number
+  /**
+   * 一次多注提交整批的时间预算上界（毫秒）与**实测**每注耗时（毫秒）。
+   *
+   * 它们一起回答"配 999 注意味着什么":估时 = N × `entry_batch_ms_per_pick`，
+   * 而超过 `entry_batch_max_ms` 的那部分会被安全截断（前面每一注都已落定、
+   * 后面的一分钱没扣）。前端写死一份同名常量的下场，是后端调整之后界面上
+   * 继续印着一个不再成立的秒数。
+   */
+  entry_batch_max_ms?: number
+  entry_batch_ms_per_pick?: number
   max_prize_tiers: number
   max_options: number
   /** 单笔扣款硬上限。它决定一次报名/投注最多能从主额度扣走多少。 */
   max_stake_quota: number
   /**
-   * **全站额度换算的整数上界**（`common.MaxQuota`，恒等于 2147483647，按默认
-   * 刻度是 ＄4294.967294）。它写死在代码里，没有任何配置项能抬高它。
+   * **全站额度换算的整数上界**（`common.MaxQuota`，当前是 2^43 =
+   * 8796093022208，按默认刻度是 ＄17,592,186.04）。它写死在代码里，没有任何
+   * 配置项能抬高它 —— 所以界面上永远读后端下发的这个字段，绝不抄一份常量。
    *
    * 刻意不说它是"数据库那一列的宽度"：`users.quota` 在 MySQL / PostgreSQL 上
    * 落地成 bigint、SQLite 的 INTEGER 也是 8 字节，运营一去查表就会发现每一列

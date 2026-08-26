@@ -454,7 +454,24 @@ export type QyLotActivityDetail = {
    * 顶回来。
    */
   my_entries_remaining?: number | null
-  /** 一次提交最多几注（后端 `maxPicksPerRequest`）。老后端不下发时按 1 处理。 */
+  /**
+   * 这一场**全场**还剩几个名额。
+   *
+   * 与 `my_entries_remaining` 分开读，合并会说错话：每人上限只跟自己有关、刷新
+   * 一次就不再变；全场名额是所有人共用的，可能在用户选号的这一分钟里被别人买光。
+   * 用户能做的事恰好相反 —— 前者是"我买够了"，后者是"手快有手慢无"。
+   *
+   *  - `null` / `undefined` = 本场没有全场上限（老后端也走这一支）；
+   *  - `0` = 全场已满，一注都买不进去；
+   *  - `n > 0` = 还剩 n 个名额。
+   */
+  total_entries_remaining?: number | null
+  /**
+   * 这一场一次提交最多几注（后端 `picksCapOf`，**活动级可配**，默认 10、上限 999）。
+   *
+   * 每一场都可能不一样，前端写死一份同名常量等于在别的场次上一定说错。
+   * 老后端不下发时按 1 处理：一个不下发这个字段的后端根本不认识 `picks`。
+   */
   max_picks_per_request?: number
   cooldown_seconds: number
   dedup_ip: boolean

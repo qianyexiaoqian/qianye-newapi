@@ -2,6 +2,7 @@ package common
 
 import (
 	"math"
+	"strconv"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -93,7 +94,7 @@ func TestQuotaFromFloatStrictReturnsTypedClampError(t *testing.T) {
 	assert.ErrorContains(t, err, "QuotaFromFloat")
 	assert.ErrorContains(t, err, "overflow")
 	assert.ErrorContains(t, err, "original=")
-	assert.ErrorContains(t, err, "clamped=2147483647")
+	assert.ErrorContains(t, err, "clamped="+strconv.Itoa(MaxQuota))
 }
 
 // TestQuotaRoundChecked verifies the rounding entry point reports clamps the

@@ -196,7 +196,21 @@ type SubscriptionPlan struct {
 	DurationValue int    `json:"duration_value" gorm:"type:int;not null;default:1"`
 	CustomSeconds int64  `json:"custom_seconds" gorm:"type:bigint;not null;default:0"`
 
-	Enabled   bool `json:"enabled" gorm:"default:true"`
+	// Enabled 刻意**不写** gorm:"default:true"。两条理由,第二条更硬:
+	//
+	//  1. AGENTS.md 明令:MySQL 与 PostgreSQL 对布尔默认值的归一化不同,
+	//     AutoMigrate 会因此每次重启都发一条 ALTER TABLE。
+	//  2. 带默认值的字段在 GORM 的 Create 里会**跳过零值** —— 于是管理端
+	//     「新建套餐时把上架开关关掉」这个 UI 上做得到的操作被静默吞掉:
+	//     AdminCreateSubscriptionPlan 是全站唯一一条裸 struct Create 的写入口
+	//     (改套餐走 updates map、上下架走 Update 单列,两条都安全),
+	//     enabled=false 整列不发,库默认把它写回 1,套餐落库即上架。
+	//     实测:POST /api/subscription/admin/plans 带 enabled:false → 200,
+	//     库里 enabled=1,而四个支付网关的 !plan.Enabled 闸门全部放行。
+	//
+	// 「没填就上架」这条业务默认改由 BeforeCreate 承担(见下),那是 AGENTS.md
+	// 指定的落点:请求/模型规范化、钩子、构造函数,而不是列默认值。
+	Enabled   bool `json:"enabled"`
 	SortOrder int  `json:"sort_order" gorm:"type:int;default:0"`
 
 	// SaleStartAt / SaleEndAt 是**发售时间窗**:这个套餐在哪一段时间里可以被买。

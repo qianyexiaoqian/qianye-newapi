@@ -2,10 +2,16 @@ package lottery
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
@@ -66,32 +72,155 @@ const (
 
 // sealPrizeSecret 封装中奖者的实际兑换码。
 //
-// **本轮 keyVersion 恒为 0,含义是明文直存。** 启用 AES-256-GCM 需要一个新的
-// YAML 配置键(密钥与密钥版本),而配置那几个文件当前是并行工作流的未提交修改。
-// 列结构在本轮一次到位,加密因此是后续一次 backfill 而不是一次表结构迁移 ——
-// 这是一处**明确记账的欠债**,不是遗漏。
+// # 为什么这一列必须是真密文
 //
-// aad 预留给启用加密之后绑定 payout_no:密文若被搬到另一条记录上,GCM 校验会
-// 直接失败,而不是安静地解出一份属于别人的兑换码。
+// 它存的是管理员为中奖者填进去的**实际兑换码**,而同一个扩展库里性质相同的
+// 两处 —— qy_withdrawal_payee_accounts(收款账号)与 qy_violation_ai_channel
+// (渠道密钥)—— 都是 AES-256-GCM 真密文。此前这一列是明文直存
+// (key_version 恒 0、nonce 恒 NULL),于是列名叫 cipher、内容任何拿到库备份、
+// 只读报表账号或离线 dump 的人都能直接读走,而在线侧那一整套控制
+// (json:"-" 不下发、列表只回 maskSecret、reveal 强制事由 + 双写审计)
+// 一条都拦不住他们。
+//
+// # 未配置密钥时仍然是明文,这是刻意的
+//
+// lottery.prize_secret_key 为空 → 走 keyVersion=0 的明文分支。强制要求它会让
+// 每一个现存部署在升级那一刻 FATAL 退出,而那是破坏性变更;自检里会为此报一条
+// 告警。配上之后**新写入**的码即刻加密,历史的 v0 行仍然读得出来。
+//
+// aad 绑定 payout_no:密文若被搬到另一条记录上,GCM 校验会直接失败,
+// 而不是安静地解出一份属于别人的兑换码。
 //
 // 本函数与 openPrizeSecret 是**包内唯一**允许触碰 Secret* 三列的地方,
 // 由 secret_guard_test.go 的 AST 断言守住。
 func sealPrizeSecret(plain, aad string) (nonce, cipher []byte, keyVersion int, err error) {
-	_ = aad
-	return nil, []byte(plain), 0, nil
+	key, version, ok, err := activePrizeSecretKey()
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	if !ok {
+		// 未配置密钥:明文直存,与改造前逐字节相同。
+		return nil, []byte(plain), 0, nil
+	}
+	nonce, ciphertext, err := sealAESGCM(key, []byte(plain), aad)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	return nonce, ciphertext, version, nil
 }
 
 // openPrizeSecret 取回中奖者的实际兑换码。
+//
+// keyVersion 是那一列存在的全部理由:按**行上记录的版本**选密钥,
+// 而不是一律用当前密钥。轮换 prize_secret_key 时若少了这一层,
+// 已履行的兑换码会全部变成不可读。
 func openPrizeSecret(nonce, cipher []byte, aad string, keyVersion int) (string, error) {
-	_ = nonce
-	_ = aad
-	if keyVersion != 0 {
-		// 将来启用加密之后,这里按版本取密钥解密。现在读到一个非 0 的版本
-		// 只可能是数据来自更新的代码,**绝不猜**:回一个明确的错误,
-		// 而不是把密文的字节当明文展示给管理员。
+	if keyVersion <= 0 {
+		// 历史行(以及未配置密钥时写下的行)是明文。nonce 必须为空 ——
+		// 有 nonce 却标 v0 说明数据被改过,不猜。
+		if len(nonce) != 0 {
+			return "", errPrizeSecretUnreadable
+		}
+		return string(cipher), nil
+	}
+	key, err := prizeSecretKeyForVersion(keyVersion)
+	if err != nil {
+		return "", err
+	}
+	plain, err := openAESGCM(key, nonce, cipher, aad)
+	if err != nil {
 		return "", errPrizeSecretUnreadable
 	}
-	return string(cipher), nil
+	return string(plain), nil
+}
+
+// activePrizeSecretKey 返回当前启用的密钥与版本;ok=false 表示没配,走明文。
+//
+// 密钥与版本取自**同一份**配置快照:config.Get() 每次返回当前快照指针,
+// 两次分开取恰好落在热更新两侧时,会把 v1 的密文标成 v2 —— 那一行从此
+// 永远解不开,而且没有任何迹象(与 withdraw.activePIIKey 同一条理由)。
+func activePrizeSecretKey() ([]byte, int, bool, error) {
+	l := config.Get().Lottery
+	raw := strings.TrimSpace(l.PrizeSecretKey)
+	if raw == "" {
+		return nil, 0, false, nil
+	}
+	key, err := decodePrizeSecretKey(raw)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return key, activePrizeSecretKeyVersion(l), true, nil
+}
+
+func activePrizeSecretKeyVersion(l config.Lottery) int {
+	if l.PrizeSecretKeyVersion <= 0 {
+		return 1
+	}
+	return l.PrizeSecretKeyVersion
+}
+
+// prizeSecretKeyForVersion 按密文行上的版本号选密钥。
+func prizeSecretKeyForVersion(version int) ([]byte, error) {
+	l := config.Get().Lottery
+	if version == activePrizeSecretKeyVersion(l) {
+		if strings.TrimSpace(l.PrizeSecretKey) == "" {
+			common.SysError(fmt.Sprintf(
+				"qianye/lottery: 有 key_version=%d 的兑换码密文,但 lottery.prize_secret_key 未配置", version))
+			return nil, errPrizeSecretUnreadable
+		}
+		return decodePrizeSecretKey(l.PrizeSecretKey)
+	}
+	raw, ok := l.PrizeSecretKeysRetired[version]
+	if !ok {
+		// 轮换时忘了把旧钥搬进 prize_secret_keys_retired,是最典型的一种运维
+		// 事故:表现是"全部已履行的兑换码突然都看不到了"。错误必须直指配置。
+		common.SysError(fmt.Sprintf(
+			"qianye/lottery: 兑换码使用的密钥版本 %d 未在 lottery.prize_secret_keys_retired 中登记,"+
+				"该行无法解密(轮换 prize_secret_key 时必须把旧密钥连同版本号一并保留)", version))
+		return nil, errPrizeSecretUnreadable
+	}
+	return decodePrizeSecretKey(raw)
+}
+
+// decodePrizeSecretKey 解出 32 字节的 AES-256 密钥。规格与 withdraw.pii_key 相同。
+func decodePrizeSecretKey(raw string) ([]byte, error) {
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("qianye/lottery: prize_secret_key 必须是 base64 编码的 32 字节密钥")
+	}
+	return key, nil
+}
+
+func sealAESGCM(key, plain []byte, aad string) (nonce, ciphertext []byte, err error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, err
+	}
+	nonce = make([]byte, gcm.NonceSize())
+	// 必须是 crypto/rand:GCM 在同一密钥下 nonce 重用会直接泄漏明文异或值。
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, nil, err
+	}
+	return nonce, gcm.Seal(nil, nonce, plain, []byte(aad)), nil
+}
+
+func openAESGCM(key, nonce, ciphertext []byte, aad string) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	if len(nonce) != gcm.NonceSize() || len(ciphertext) == 0 {
+		return nil, errPrizeSecretUnreadable
+	}
+	return gcm.Open(nil, nonce, ciphertext, []byte(aad))
 }
 
 // archivePrizeSecret 把一份**即将被顶替**的兑换码整体搬进只增不改的履历。

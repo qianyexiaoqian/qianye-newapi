@@ -31,10 +31,30 @@ import (
 
 func init() {
 	groupns.RegisterResidue(groupns.ResidueHandler{
-		Module: "transfer",
-		Probe:  probeResidue,
-		Sweep:  sweepResidue,
+		Module:      "transfer",
+		Probe:       probeResidue,
+		Sweep:       sweepResidue,
+		AfterCommit: afterResidueCommit,
 	})
+}
+
+// afterResidueCommit 在扩展库事务提交之后让门槛分档的进程内缓存失效。
+//
+// 这一处此前**完全没有**:sweepResidue 改写/删除 qy_transfer_group_limits
+// (日额度、单笔上限、新账号冻结期 —— 一整套资金闸门)之后既不刷本进程缓存,
+// 也不推版本号。而那一档住在 opSettings.Tiers 的 60 秒 TTL 缓存里,
+// **跨节点收敛的唯一触发点**是 invalidateSettings() 里的 bumpSettingsVersion(),
+// 不调它别的节点连版本号变化都看不到。
+//
+// 后果实测过,不是推演:在跑着的演示站上给一个分组配 daily_max_quota=1000000,
+// 4,000,000 的划转被正确拒绝;改名之后同一秒再发,门槛已退化成全站兜底
+// 200,000,000(放大 200 倍),4,000,000 **转账成功、钱真的动了**。
+// 另一组:一档配了 720 小时反套现冻结期,改名之后一个注册 7 秒的新号
+// 立刻把 4,000,000 转了出去。窗口 ≤60 秒(本节点等 TTL,别的节点也等 TTL,
+// 且没有任何版本号推送)。
+func afterResidueCommit(from, to string, rename bool) {
+	_, _, _ = from, to, rename
+	invalidateSettings()
 }
 
 func probeResidue(gdb *gorm.DB, userGroup string) ([]groupns.Residue, error) {

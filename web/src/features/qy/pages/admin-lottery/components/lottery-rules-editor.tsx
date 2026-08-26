@@ -23,8 +23,15 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 
+import { qyLotBatchSeconds } from '../../lottery/lib/seats'
 import type { QyLotRules } from '../../lottery/types'
-import type { QyLotDraft } from '../lib/draft'
+import {
+  QY_LOT_PICKS_DEFAULT_CAP,
+  QY_LOT_PICKS_HARD_CAP,
+  qyLotPlayOf,
+  type QyLotDraft,
+} from '../lib/draft'
+import type { QyLotYamlReadonly } from '../types'
 
 /**
  * 参与条件编辑（向导第三步）。
@@ -46,9 +53,15 @@ import type { QyLotDraft } from '../lib/draft'
 export function QyLotRulesEditor(props: {
   draft: QyLotDraft
   onChange: (patch: Partial<QyLotDraft>) => void
+  /** 后端下发的只读常量。缺席（老后端）时下面那两个数退回本地默认。 */
+  yaml?: QyLotYamlReadonly
 }) {
   const { draft } = props
   const { t } = useTranslation()
+  const defaultCap =
+    props.yaml?.max_picks_per_request_default ?? QY_LOT_PICKS_DEFAULT_CAP
+  const hardCap =
+    props.yaml?.max_picks_per_request_hard ?? QY_LOT_PICKS_HARD_CAP
 
   const patchRules = (patch: Partial<QyLotRules>) => {
     props.onChange({ rules: { ...draft.rules, ...patch } })
@@ -217,6 +230,55 @@ export function QyLotRulesEditor(props: {
           onChange={(checked) => props.onChange({ dedup_ip: checked })}
         />
       </section>
+
+      {/*
+        单独成一段，**不塞进上面那个网格**。两条理由，任何一条单独成立：
+
+          · 上面每一格的 `0` 都是"不限"，而这一格的 `0` 是"没配过，按默认 10 走"
+            —— 混排等于让运营照着邻格的经验读错这一格；
+          · 上面每一格都进 `rules_hash` → `commit_hash`、发布即冻结，而这一格
+            不进任何哈希原像、发布后还能改。这是本页唯一一格是这样的。
+
+        只对双色球渲染：别的玩法一次就是一注，给它们一格"一次最多几注"
+        会让人以为普通抽奖也能一次买多张。
+      */}
+      {qyLotPlayOf(draft) === 'ball' && (
+        <section className='space-y-3'>
+          <h4 className='text-sm font-medium'>
+            {t('qy_lot_rules_batch_title')}
+          </h4>
+          <p className='text-muted-foreground rounded-lg border p-3 text-xs'>
+            {t('qy_lot_rules_batch_note')}
+          </p>
+          <NumberField
+            label={t('qy_lot_rule_f_picks_per_request')}
+            hint={t('qy_lot_rule_f_picks_per_request_hint', {
+              fallback: defaultCap,
+              max: hardCap,
+            })}
+            value={draft.max_picks_per_request}
+            onChange={(value) =>
+              props.onChange({ max_picks_per_request: value })
+            }
+          />
+          {/*
+            999 注不是一个免费的数字：它是一次三十几秒的请求。这句话必须在
+            **填之前**出现，而不是等第一场活动上线之后从用户投诉里知道。
+            秒数按后端下发的实测均值算，前端不自己编一个。
+          */}
+          {draft.max_picks_per_request > 1 && (
+            <p className='text-muted-foreground text-xs'>
+              {t('qy_lot_rule_f_picks_cost_hint', {
+                count: draft.max_picks_per_request,
+                seconds: qyLotBatchSeconds(
+                  draft.max_picks_per_request,
+                  props.yaml?.entry_batch_ms_per_pick
+                ),
+              })}
+            </p>
+          )}
+        </section>
+      )}
     </div>
   )
 }

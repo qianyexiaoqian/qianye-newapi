@@ -136,16 +136,23 @@ func TestBudgetFloorsReturnZeroWhenTheOtherFieldIsNotFilledYet(t *testing.T) {
 	assert.Zero(t, tierCountFloor(-1, 100))
 }
 
-// ＄4294.967294 到底是什么:**全站额度换算的整数上界**,不是运营策略。
+// 界面上那个"系统上界"到底是什么:**全站额度换算的整数上界**,不是运营策略。
 //
-// 项目方原话:「发行上限不得超过系统上限 ＄4294.967294 额度 …… 这是什么问题?」
-// 这条测试把那个数钉住:它就是 common.MaxQuota = int32 上界,而 common/quota_math.go
-// 里每一处 quota 转换与饱和都以它为界。哪天有人把 MaxQuota 改成别的数,
-// 这里会连同界面文案一起红。
-func TestSystemQuotaCeilingIsTheInt32ConversionBound(t *testing.T) {
-	assert.EqualValues(t, math.MaxInt32, common.MaxQuota,
-		"额度换算的整数上界就是 int32 上界,这不是策略而是代码写死的口径")
-	assert.EqualValues(t, 2_147_483_647, common.MaxQuota)
+// 项目方原话先是「发行上限不得超过系统上限 ＄4294.967294 额度 …… 这是什么问题?」,
+// 后来是「不要几千 USD 太少了 …… 余额都能设定几个亿了」。两句问的是同一件事,
+// 而当时那个数的**理由**(额度列是 int32)经不起查:三个方言上那些列都是 64 位
+// (model.TestQuotaColumnsAre64BitOnEveryDialect)。上界已按真实约束重定为 2^43。
+//
+// 这条测试盯的是"抽奖这一侧读的就是那个上界本身",而不是任何一个抄下来的数:
+// 上界本身的推导由 common 与 qianye/config 的测试各自守着。
+func TestSystemQuotaCeilingTracksTheConversionBound(t *testing.T) {
+	assert.Greater(t, common.MaxQuota, math.MaxInt32,
+		"上界必须已经抬过 —— 项目方点名的正是它太小")
+	// 界面上那句"填不了"必须念出**当前**上界的刻度。抄一份常量的下场,是后端
+	// 抬高之后界面还在一个早就合法的数字上标红,而运营找不到任何配置能放开它。
+	assert.Contains(t, quotaColumnCeilingText("发行上限"), quotaText(int64(common.MaxQuota)))
+	assert.NotContains(t, quotaColumnCeilingText("发行上限"), "4294.967294",
+		"旧的 int32 刻度不得再出现在任何一句面向运营的文案里")
 }
 
 // 系统上界与策略上限必须在文案上分得开。

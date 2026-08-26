@@ -221,7 +221,7 @@ async function mountHall(
     return (
       <QueryClientProvider client={queryClient}>
         <QyLotHallList
-          kind='draw'
+          lane='draw'
           page={page}
           scope={scope}
           onPageChange={setPage}
