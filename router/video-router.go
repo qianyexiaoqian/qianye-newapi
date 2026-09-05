@@ -11,6 +11,9 @@ func SetVideoRouter(router *gin.Engine) {
 	videoSharedRouter := router.Group("/v1")
 	videoSharedRouter.Use(middleware.RouteTag("relay"))
 	videoSharedRouter.Use(middleware.TokenAuth())
+	// 「API 密钥」页那一列的实时计数。紧跟 TokenAuth、排在限流之前,
+	// 理由见 middleware/qy_token_live_export.go。
+	videoSharedRouter.Use(middleware.QyTokenLiveStats())
 	videoSharedRouter.Use(middleware.SystemPerformanceCheck())
 	videoSharedRouter.POST(
 		"/video/generations",

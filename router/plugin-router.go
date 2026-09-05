@@ -122,6 +122,10 @@ func productionPluginRouteHandlers(generation *jsplugin.RoutingGeneration, bindi
 	return []gin.HandlerFunc{
 		pinRoute,
 		middleware.TokenAuth(),
+		// 厂商原生路由(kling / jimeng / suno / doubao)rc.33 之前挂在
+		// video-router / relay-router 上,当时就带着这一列;搬到插件路由之后
+		// 同样要带,否则视频与任务流量在「API 密钥」页上整段消失。
+		middleware.QyTokenLiveStats(),
 		middleware.SystemPerformanceCheck(),
 		middleware.ModelRequestRateLimit(),
 		middleware.PrepareTaskPluginRoute(),

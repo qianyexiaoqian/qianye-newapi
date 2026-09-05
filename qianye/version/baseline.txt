@@ -41,7 +41,7 @@
 # 构建脚本把它注入 common.Version,于是 /api/status 的 version、
 # X-New-Api-Version 响应头、以及「系统维护 → 当前版本」三处与上游完全同义。
 # 不加任何后缀 —— 加了就不再是「和上游一样」。
-upstream_tag=v1.0.0-rc.25
+upstream_tag=v1.0.0-rc.33
 
 # 同步基线的精确提交,取上游自己 `git describe --tags` 的原样输出。
 # 之所以另存一份而不是只留 tag:基线常常落在两个 tag 之间(这里就是 rc.25
@@ -49,7 +49,12 @@ upstream_tag=v1.0.0-rc.25
 #
 # 它**不**进 common.Version:那一栏必须与上游逐字一致。这个更细的值只出现在
 # 管理端 /api/qy/admin/version 的 upstream 字段与「二开版本」卡片的副标题里。
-upstream_describe=v1.0.0-rc.25-1-g2d8e50bf3
+#
+# 【2026-09-05 起同步方式变了】rc.25 → rc.33 这一轮走的是**真 merge**
+# (`git merge v1.0.0-rc.33`),不是逐提交挑拣,所以上游 tag 现在是 HEAD 的祖先,
+# describe 与 tag 这一轮恰好相等。这个文件仍然是事实来源:下一轮若又回到挑拣,
+# 或者停在两个 tag 之间,两者就会再次分叉,而分叉时 git 不会报错。
+upstream_describe=v1.0.0-rc.33
 
 # ───────────────────────────── 二开版本(我们自己) ─────────────────────────
 
@@ -167,4 +172,26 @@ upstream_describe=v1.0.0-rc.25-1-g2d8e50bf3
 #           【升级注意】lottery 存量数据不迁移(未上线,无存量);打开 stardust 前先按
 #           runbook 把 QuotaForInviter / QuotaForInvitee 置 0、展示模式切 CUSTOM/星辉/1。
 
-qy_version=v2.0.0
+#   v2.1.0  **MAJOR**。推广佣金也改记「星屑」(design-15 §D-16,decisions D-16):
+#           - 配置键不兼容:commission.min_settle_quota / max_per_order_quota /
+#             min_credit_quota 改名为 *_stardust,**单位从额度变成星屑**。旧键留
+#             Deprecated 占位吸收(严格解析下删掉会让存量部署升级即启动失败),
+#             加载时告警并置 nil,**不做值迁移** —— 照搬旧数字等于把门槛放大
+#             quota_per_unit 倍(默认 50 万),后果是佣金从此永远不入账而三条恒等式
+#             全部正常。必须按星屑重新填写这三行;
+#           - 新增启动期校验:commission.enabled=true 要求 stardust.enabled=true;
+#           - /api/qy 改语义:佣金用户端与管理端全部金额字段的单位从额度变成星屑,
+#             并改名(available_quota → available、credited_quota → credited、
+#             total_earned_quota → total_earned、pending_mature_quota → pending_mature、
+#             granted_quota → granted、delta_quota → delta …);
+#           - /api/qy 删字段:balance.frozen_quota(在途)、credit.fund_order_no
+#             与 credit 的 pending / failed / held 三态 —— 入账不再跨库,那一整层
+#             (两阶段资金单 KindCommissionCredit / 探针 / 人工裁决 / 对账循环 /
+#             qy_commission_freeze 表)整体退役;credit 新增 amount 与 ledger_no;
+#           - 新增 /admin/commission/health 的 rate_overlap 段:佣金三档与
+#             stardust.invite_* 三档打的是同一笔基数,两边同时为正会给同一个上线
+#             落两笔星屑。代码不替运营做选择,只把重叠标出来。
+#           【升级注意】六张 qy_commission_* 表必须先 DROP 再让 AutoMigrate 重建:
+#           列名与单位都变了,旧行按新单位读会差 quota_per_unit 倍。见 retired_tables.md。
+
+qy_version=v2.1.0
