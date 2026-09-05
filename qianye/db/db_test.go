@@ -122,14 +122,14 @@ func TestRegisterOpProbeFiresOnRealStatements(t *testing.T) {
 	t.Run("带探针 ctx 的查询被记到", func(t *testing.T) {
 		ctx, touched := WithOpProbe(context.Background())
 		var rows []map[string]any
-		dry.WithContext(ctx).Table("qy_commission_accrual").Where("inviter_id = ?", 1).Find(&rows)
+		dry.WithContext(ctx).Table("qy_sd_invite_accrual").Where("inviter_id = ?", 1).Find(&rows)
 		assert.True(t, touched())
 	})
 
 	t.Run("没有探针的 ctx 不受影响", func(t *testing.T) {
 		var rows []map[string]any
 		assert.NotPanics(t, func() {
-			dry.WithContext(context.Background()).Table("qy_commission_accrual").Find(&rows)
+			dry.WithContext(context.Background()).Table("qy_sd_invite_accrual").Find(&rows)
 		})
 	})
 }

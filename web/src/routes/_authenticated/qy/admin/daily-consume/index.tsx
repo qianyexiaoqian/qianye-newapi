@@ -21,8 +21,8 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 import { qyTabHash } from '@/features/qy/lib/pages'
 
 /**
- * 旧路由 —— 本页已被收进 `/qy/admin/settlement`（「结算台」）的选择夹
- * （`QY_TAB_GROUPS`）。
+ * 旧路由 —— 本页是 `/qy/admin/invite`（「邀请管理」）选择夹里的第二张标签
+ * （`QY_TAB_GROUPS`；D-14 之前它挂在已删除的「结算台」下）。
  *
  * 保留成重定向而不是删掉：这个地址此前是侧栏「结算」组上的一行，运营的书签、
  * 浏览器历史、内部文档与工单里贴出去的链接都还指着它。目标 hash 由
@@ -35,7 +35,7 @@ export const Route = createFileRoute('/_authenticated/qy/admin/daily-consume/')(
   {
     beforeLoad: () => {
       throw redirect({
-        to: '/qy/admin/settlement',
+        to: '/qy/admin/invite',
         hash: qyTabHash('/qy/admin/daily-consume'),
         replace: true,
       })

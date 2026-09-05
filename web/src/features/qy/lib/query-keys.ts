@@ -40,18 +40,24 @@ export const qyKeys = {
     [...qyKeys.all, 'transfer', 'preview', params] as const,
   transferContacts: () => [...qyKeys.all, 'transfer', 'contacts'] as const,
 
+  // ── 邀请返星屑（用户端，D-14；取代此前的 commission / withdraw 两组）──
+  inviteSummary: () => [...qyKeys.all, 'invite', 'summary'] as const,
+  inviteInvitees: (params: unknown) =>
+    [...qyKeys.all, 'invite', 'invitees', params] as const,
+  /** 我的星屑流水里邀请类那五种 kind 的行（按 kind 筛，参数进 key）。 */
+  inviteRecords: (params: unknown) =>
+    [...qyKeys.all, 'invite', 'records', params] as const,
+  /** 我名下的下线在某一天的消费返基数与计提（一天一份）。 */
+  inviteInviteeDaily: (day: string) =>
+    [...qyKeys.all, 'invite', 'invitee-daily', day] as const,
+
+  // ── 星辉佣金（用户端，D-15；与上面的邀请返星屑并行）──
   commissionSummary: () => [...qyKeys.all, 'commission', 'summary'] as const,
-  commissionInvitees: (params: unknown) =>
-    [...qyKeys.all, 'commission', 'invitees', params] as const,
   commissionRecords: (params: unknown) =>
     [...qyKeys.all, 'commission', 'records', params] as const,
-
-  withdrawConfig: () => [...qyKeys.all, 'withdraw', 'config'] as const,
-  withdrawRecords: (params: unknown) =>
-    [...qyKeys.all, 'withdraw', 'records', params] as const,
-  withdrawRecord: (id: number | string) =>
-    [...qyKeys.all, 'withdraw', 'record', id] as const,
-  withdrawPayees: () => [...qyKeys.all, 'withdraw', 'payees'] as const,
+  /** 自动入账记录（佣金余额到期批量记入星辉的那几笔）。 */
+  commissionCredits: (params: unknown) =>
+    [...qyKeys.all, 'commission', 'credits', params] as const,
 
   /** 支付密码状态（是否已设置 / 是否锁定 / 剩余次数）。 */
   payPassword: () => [...qyKeys.all, 'pay-password'] as const,
@@ -67,23 +73,36 @@ export const qyKeys = {
     [...qyKeys.all, 'subscription', 'entitlements'] as const,
 
   /**
-   * 用户可选的 API 地址（只含已启用的）。
+   * 用户可选的 API 地址（只含已启用的），按**展示位置**分键：
+   * picker = 密钥列表「复制链接信息 / CC Switch」，console = 控制台「API信息」
+   * 卡片。位置过滤在服务端（`?surface=`），两个位置拿到的是不同子集，
+   * 混用一个键会让先到的那份冒充另一个位置的清单。
    *
-   * 消费方是**上游**密钥列表上的「复制链接信息」，不是某个 qy 页面。它仍然挂在
-   * `qy` 前缀下：管理员改完地址簿后一次 `invalidateQueries({ queryKey: qyKeys.all })`
-   * 必须能把它一起冲掉，否则用户会拿到一份已经被删掉的地址。
+   * 它仍然挂在 `qy` 前缀下：管理员改完地址簿后一次
+   * `invalidateQueries({ queryKey: qyKeys.all })` 必须能把两份一起冲掉，
+   * 否则用户会拿到一份已经被删掉的地址。
    */
-  apiAddresses: () => [...qyKeys.all, 'api-addresses'] as const,
+  apiAddresses: (surface: 'picker' | 'console') =>
+    [...qyKeys.all, 'api-addresses', surface] as const,
 
   /**
    * 每一把 API 密钥今天的消费额。
    *
    * 与 `apiAddresses` 同一档：消费方是**上游**密钥列表的「今日消耗」列，不是某个
    * qy 页面。挂在 `qy` 前缀下是因为它的日界来自扩展配置
-   * （`commission.day_offset_minutes`），管理员改完日界之后必须能被全量失效冲掉 ——
+   * （`invite.day_offset_minutes`），管理员改完日界之后必须能被全量失效冲掉 ——
    * 否则用户看到的还是按旧日界算出来的那一份。
    */
   tokenTodayUsage: () => [...qyKeys.all, 'token-usage', 'today'] as const,
+
+  /**
+   * 每一把 API 密钥此刻的在途请求数与近 1 分钟请求数。
+   *
+   * 与 `tokenTodayUsage` 分成两把 key，因为它们的**新鲜度**差两个数量级：
+   * 今日消耗一分钟内不会变，这一份 5 秒就该重看一眼。共用一把 key 的话，
+   * 任何一处失效都会把另一边那次昂贵的聚合也一起冲掉。
+   */
+  tokenLiveStats: () => [...qyKeys.all, 'token-usage', 'live'] as const,
 
   /**
    * 受限账号公告（管理员配的那段申诉指引）。
@@ -129,6 +148,32 @@ export const qyKeys = {
    */
   lotteryMyPrize: (payoutNo: string) =>
     [...qyKeys.all, 'lottery', 'my-prize', payoutNo] as const,
+
+  // ── 星屑转盘（用户端；`kind='draw', draw_mode='wheel'`，不进大厅 lane）──
+  wheelActivities: (params: unknown) =>
+    [...qyKeys.all, 'wheel', 'activities', params] as const,
+  /** 我在这一场的转动记录（逐次 seq / ppm / 中的档）。 */
+  wheelMySpins: (actNo: string, params: unknown) =>
+    [...qyKeys.all, 'wheel', 'my-spins', actNo, params] as const,
+
+  // ── 星屑（用户端）──
+  /** 余额 + 昨日结算 + 下次结算时刻，一次请求。 */
+  stardustMe: () => [...qyKeys.all, 'stardust', 'me'] as const,
+  stardustLedger: (params: unknown) =>
+    [...qyKeys.all, 'stardust', 'ledger', params] as const,
+  /** 日桶（消费返的逐日计提，含 held 的那几天）。 */
+  stardustAccruals: (params: unknown) =>
+    [...qyKeys.all, 'stardust', 'accruals', params] as const,
+
+  // ── 商城（用户端）──
+  mallProducts: (params: unknown) =>
+    [...qyKeys.all, 'mall', 'products', params] as const,
+  mallProduct: (productNo: string) =>
+    [...qyKeys.all, 'mall', 'product', productNo] as const,
+  mallOrders: (params: unknown) =>
+    [...qyKeys.all, 'mall', 'orders', params] as const,
+  mallOrder: (orderNo: string) =>
+    [...qyKeys.all, 'mall', 'order', orderNo] as const,
 
   // ── 工单(用户端)──
   ticketConfig: () => [...qyKeys.all, 'ticket', 'config'] as const,
@@ -206,6 +251,28 @@ export const qyKeys = {
   adminPayPassword: (userId: number) =>
     [...qyKeys.all, 'admin', 'pay-password', userId] as const,
 
+  // ── 邀请（管理端，D-14；此前挂在 `admin/commission` 下的那几条搬家）──
+  /** 邀请关系列表（绑定中 / 已解绑两个 scope 共用，scope 在 params 里）。 */
+  adminInviteRelations: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'invite', 'relations', params] as const,
+  /** 日消费明细：一行一个用户在某个日期区间内的消费额（数据源是主库 logs）。 */
+  adminDailyConsume: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'invite', 'daily-consume', params] as const,
+  /** 日消费明细的按天下钻：一行一天，只查一个人（点开主表某一行才发）。 */
+  adminDailyConsumeByDay: (params: unknown) =>
+    [
+      ...qyKeys.all,
+      'admin',
+      'invite',
+      'daily-consume',
+      'by-day',
+      params,
+    ] as const,
+  /** 下线消费返的日结明细（`qy_sd_invite_accrual`），按日 × 邀请人筛。 */
+  adminInviteAccruals: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'invite', 'accruals', params] as const,
+
+  // ── 星辉佣金（管理端，D-15）──
   adminCommissionConfig: () =>
     [...qyKeys.all, 'admin', 'commission', 'config'] as const,
   adminCommissionRecords: (params: unknown) =>
@@ -214,38 +281,12 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'commission', 'health'] as const,
   adminCommissionBalances: (params: unknown) =>
     [...qyKeys.all, 'admin', 'commission', 'balances', params] as const,
-  /** AFF 关系列表（绑定中 / 已解绑两个 scope 共用，scope 在 params 里）。 */
-  adminCommissionRelations: (params: unknown) =>
-    [...qyKeys.all, 'admin', 'commission', 'relations', params] as const,
-  /** 日消费明细：一行一个用户在某个日期区间内的消费额（数据源是主库 logs）。 */
-  adminDailyConsume: (params: unknown) =>
-    [...qyKeys.all, 'admin', 'commission', 'daily-consume', params] as const,
-  /** 日消费明细的按天下钻：一行一天，只查一个人（点开主表某一行才发）。 */
-  adminDailyConsumeByDay: (params: unknown) =>
-    [
-      ...qyKeys.all,
-      'admin',
-      'commission',
-      'daily-consume',
-      'by-day',
-      params,
-    ] as const,
-  /** 我名下的下线在某个日期区间内的计佣基数（用户端，口径是计佣表）。 */
-  inviteeDaily: (params: unknown) =>
-    [...qyKeys.all, 'commission', 'invitee-daily', params] as const,
-  /** 「用户佣金」列表：一行一个用户（余额 + 上下线 + 关系状态）。 */
+  /** 「佣金用户」列表：一行一个用户（余额 + 上下线 + 关系状态）。 */
   adminCommissionUsers: (params: unknown) =>
     [...qyKeys.all, 'admin', 'commission', 'users', params] as const,
-  /** 某个用户的下线列表（权威口径来自主库 users.inviter_id）。 */
-  adminCommissionUserDownlines: (params: unknown) =>
-    [
-      ...qyKeys.all,
-      'admin',
-      'commission',
-      'users',
-      'downlines',
-      params,
-    ] as const,
+  /** 自动入账记录（全站，按用户 / 状态筛）。 */
+  adminCommissionCredits: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'commission', 'credits', params] as const,
 
   adminTransferRecords: (params: unknown) =>
     [...qyKeys.all, 'admin', 'transfer', 'records', params] as const,
@@ -263,15 +304,7 @@ export const qyKeys = {
   adminTransferGroupLimits: () =>
     [...qyKeys.all, 'admin', 'transfer', 'group-limits'] as const,
 
-  adminWithdrawals: (params: unknown) =>
-    [...qyKeys.all, 'admin', 'withdraw', 'list', params] as const,
-  adminWithdrawal: (id: number | string) =>
-    [...qyKeys.all, 'admin', 'withdraw', 'detail', id] as const,
-  adminWithdrawStats: () =>
-    [...qyKeys.all, 'admin', 'withdraw', 'stats'] as const,
-  adminWithdrawPiiAudits: (params: unknown) =>
-    [...qyKeys.all, 'admin', 'withdraw', 'pii-audits', params] as const,
-
+  // 提现审核 / 收款人明文那几条 key 已随提现模块整体删除（D-14）。
   adminViolationRules: (params: unknown) =>
     [...qyKeys.all, 'admin', 'violation', 'rules', params] as const,
   /** 内置防护规则包的目录（代码里的模板 + 本站点的导入状态）。 */
@@ -312,6 +345,9 @@ export const qyKeys = {
   // 其中一个,那张表就会一半是新的一半是旧的。
   adminViolationAiScopes: () =>
     [...qyKeys.all, 'admin', 'violation', 'ai-review', 'scopes'] as const,
+  // cyber 会话屏蔽设置。与 AI 审核是两套东西,独立一个 key。
+  adminViolationCyberSettings: () =>
+    [...qyKeys.all, 'admin', 'violation', 'cyber-session', 'settings'] as const,
   // 成本统计带天数：改了回看窗口就必须重算,否则运营看到的还是上一档的数字,
   // 而那个数字正是"这个月花了多少"的答案。
   adminViolationAiStats: (days: number) =>
@@ -364,6 +400,59 @@ export const qyKeys = {
    */
   adminLotterySeries: (params: unknown) =>
     [...qyKeys.all, 'admin', 'lottery', 'series', params] as const,
+
+  // ── 星屑（管理端）──
+  adminStardustConfig: () =>
+    [...qyKeys.all, 'admin', 'stardust', 'config'] as const,
+  /** 按用户分组的费率覆盖（消费返 / 邀请返）。 */
+  adminStardustGroupRates: () =>
+    [...qyKeys.all, 'admin', 'stardust', 'group-rates'] as const,
+  /**
+   * 单个套餐的一次性返星屑。按 planId 分键，理由同 {@link qyKeys.adminPlanEntitlement}：
+   * 保存 A 套餐不该把屏幕上其余套餐的面板一起 refetch。
+   */
+  adminStardustPlanReward: (planId: number) =>
+    [...qyKeys.all, 'admin', 'stardust', 'plan-rewards', planId] as const,
+  adminStardustBalances: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'stardust', 'balances', params] as const,
+  adminStardustLedger: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'stardust', 'ledger', params] as const,
+  adminStardustAccruals: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'stardust', 'accruals', params] as const,
+  /** 账本恒等式对账 + 暂缓桶积龄。 */
+  adminStardustLedgerCheck: () =>
+    [...qyKeys.all, 'admin', 'stardust', 'ledger-check'] as const,
+  /**
+   * 结算调度状态（上一跑 / 下次结算时刻 / 目标日）。
+   *
+   * 与 {@link qyKeys.adminStardustLedgerCheck} 分开：体检要扫全表余额与流水，
+   * 而这一份只读一行运行记录 —— 重跑一天之后两份都要失效，但刷新调度状态
+   * 不该顺手把整张体检重跑一遍。
+   */
+  adminStardustSettleStatus: () =>
+    [...qyKeys.all, 'admin', 'stardust', 'settle-status'] as const,
+  /**
+   * 套餐清单（上游 `/api/subscription/admin/plans`），给「套餐返还」编辑器的
+   * 下拉用。挂在 qy 前缀下是为了与其余星屑配置一起被全量失效冲掉；它不是
+   * qy 的接口，所以不进 `route-contract.test.ts` 的对账。
+   */
+  adminStardustPlanList: () =>
+    [...qyKeys.all, 'admin', 'stardust', 'plan-list'] as const,
+
+  // ── 商城（管理端）──
+  adminMallProducts: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'mall', 'products', params] as const,
+  adminMallOrders: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'mall', 'orders', params] as const,
+  /**
+   * 套餐商品表单里「选哪个套餐」的候选清单（上游 `/api/subscription/admin/plans`）。
+   *
+   * 数据是上游的，key 仍挂在 qy 前缀下：这份清单只在商城管理页被消费，
+   * 而运营在上游改完套餐再回到这里时，一次 `invalidateQueries({ queryKey: qyKeys.all })`
+   * 必须能把它一起冲掉 —— 否则下拉里还是改名之前的那份。
+   */
+  adminMallPlanOptions: () =>
+    [...qyKeys.all, 'admin', 'mall', 'plan-options'] as const,
 
   /** API 地址簿（管理端，含已停用的行）。 */
   adminApiAddresses: () => [...qyKeys.all, 'admin', 'api-addresses'] as const,

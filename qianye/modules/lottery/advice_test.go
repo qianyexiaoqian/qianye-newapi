@@ -136,7 +136,7 @@ func TestBudgetFloorsReturnZeroWhenTheOtherFieldIsNotFilledYet(t *testing.T) {
 	assert.Zero(t, tierCountFloor(-1, 100))
 }
 
-// 界面上那个"系统上界"到底是什么:**全站额度换算的整数上界**,不是运营策略。
+// 界面上那个"系统上界"到底是什么:星屑与额度共用的**算术上界**,不是运营策略。
 //
 // 项目方原话先是「发行上限不得超过系统上限 ＄4294.967294 额度 …… 这是什么问题?」,
 // 后来是「不要几千 USD 太少了 …… 余额都能设定几个亿了」。两句问的是同一件事,
@@ -148,11 +148,13 @@ func TestBudgetFloorsReturnZeroWhenTheOtherFieldIsNotFilledYet(t *testing.T) {
 func TestSystemQuotaCeilingTracksTheConversionBound(t *testing.T) {
 	assert.Greater(t, common.MaxQuota, math.MaxInt32,
 		"上界必须已经抬过 —— 项目方点名的正是它太小")
-	// 界面上那句"填不了"必须念出**当前**上界的刻度。抄一份常量的下场,是后端
+	// 界面上那句"填不了"必须念出**当前**上界的数。抄一份常量的下场,是后端
 	// 抬高之后界面还在一个早就合法的数字上标红,而运营找不到任何配置能放开它。
-	assert.Contains(t, quotaColumnCeilingText("发行上限"), quotaText(int64(common.MaxQuota)))
-	assert.NotContains(t, quotaColumnCeilingText("发行上限"), "4294.967294",
+	assert.Contains(t, stardustCeilingText("发行上限"), stardustText(int64(common.MaxQuota)))
+	assert.NotContains(t, stardustCeilingText("发行上限"), "4294.967294",
 		"旧的 int32 刻度不得再出现在任何一句面向运营的文案里")
+	assert.NotContains(t, stardustCeilingText("发行上限"), "＄",
+		"星屑没有美元刻度,系统上界那一句也不该借额度的换算")
 }
 
 // 系统上界与策略上限必须在文案上分得开。
@@ -164,10 +166,10 @@ func TestSystemQuotaCeilingTracksTheConversionBound(t *testing.T) {
 // 而 users.quota 在 MySQL / PostgreSQL 上落地成 bigint、SQLite 的 INTEGER 也是
 // 8 字节 —— 运营一去查表就会发现每一列都是 64 位的,然后连带不再相信整条解释。
 func TestSystemCeilingAndSiteCeilingDoNotReadTheSame(t *testing.T) {
-	physical := quotaColumnCeilingText("发行上限")
+	physical := stardustCeilingText("发行上限")
 	policy := prizeCapExceeded(2_000_000, 1_000_000).Error()
 
-	assert.Contains(t, physical, quotaText(int64(common.MaxQuota)),
+	assert.Contains(t, physical, stardustText(int64(common.MaxQuota)),
 		"系统上界必须把那个数写出来,否则运营还是不知道能填多少")
 	assert.Contains(t, physical, "common.MaxQuota")
 	assert.Contains(t, physical, "改任何配置都放不开它")
@@ -175,11 +177,11 @@ func TestSystemCeilingAndSiteCeilingDoNotReadTheSame(t *testing.T) {
 		"额度列在 MySQL/PostgreSQL/SQLite 上都不是 32 位,这个理由经不起查")
 	assert.NotContains(t, physical, "数据库",
 		"同上:别再把这个上界的理由推给任何一张表或任何一列")
-	assert.NotContains(t, physical, "lottery.max_total_prize_quota",
+	assert.NotContains(t, physical, "lottery.max_total_prize_stardust",
 		"系统上界不该指向任何配置项 —— 那会把人送去改一个改不动的东西")
 
 	assert.Contains(t, policy, "本站设置的单场上限")
-	assert.Contains(t, policy, "lottery.max_total_prize_quota",
+	assert.Contains(t, policy, "lottery.max_total_prize_stardust",
 		"策略上限必须点名是哪一项配置,否则运营找不到该去哪里改")
 	assert.NotContains(t, policy, "common.MaxQuota")
 }
@@ -195,7 +197,7 @@ func TestBudgetShortMessageLeadsWithTheValueToFill(t *testing.T) {
 	require.True(t, found, "报错里必须仍然解释判据,实际:%s", msg)
 
 	// ceil(100/4) = 25、ceil(100/5) = 20:两个解都要给,运营改哪一格都行。
-	assert.Contains(t, head, quotaText(25), "单份下限没出现在句子前半段")
+	assert.Contains(t, head, stardustText(25), "单份下限没出现在句子前半段")
 	assert.Contains(t, head, "20 份以上", "份数下限没出现在句子前半段")
 	assert.Contains(t, head, "奖级 3", "没说是哪一档")
 	assert.NotContains(t, head, "摊薄",

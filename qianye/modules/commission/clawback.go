@@ -7,6 +7,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/modules/invite"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -53,28 +55,26 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 		// 一条消费计佣行都取不到(消费行还没落库、或全部被作废)。此时宁可按
 		// **当前的消费费率**冲正 —— 口径至少是对的,只是时点偏新;借用一条
 		// 充值行的费率则连方向都是随机的。
-		e, _, err := resolveInviter(ctx, inviteeId)
+		match, err := invite.InviteeEligible(ctx, inviteeId)
 		if err != nil {
 			return err
 		}
-		if e.InviterId == 0 || e.InviterId == inviteeId {
+		if match.InviterId == 0 {
 			return nil
 		}
 		s := effectiveCtx(ctx)
-		// 费率与法币比例都按**当刻的上线分组**解析,走与计佣写入侧同一个入口:
-		// 这一路本来就是"没有原单可复制,只能按当前口径",那就该是当前的
-		// **完整**口径。分开取(或让 writeAccrual 去拿全站充值汇率)会让配了
-		// 分组档的上线在这条路上按另一套口径冲正,而他的原单是按分组档发出去的
-		// —— 差额永久留在 available_fiat 上。
+		// 费率按**当刻的上线分组**解析,走与计佣写入侧同一个入口:这一路本来就是
+		// "没有原单可复制,只能按当前口径",那就该是当前的**完整**口径。
 		//
 		// RefAccrualId 留 0:确实没有可指向的原单,随便挂一行会让管理端
 		// "这笔被冲了多少"的溯源指向一笔无关的账。
-		p := resolveInviterPricing(ctx, e.InviterId, SourceConsume, s)
+		rate := resolveInviterPricing(ctx, match.InviterId, SourceConsume, s)
 		origin = &Accrual{
-			InviterId: e.InviterId,
-			RateUnits: p.Rate.Units,
-			RateGroup: p.Rate.Group,
-			UsdRate:   p.Fiat.Rate,
+			InviterId: match.InviterId,
+			RateUnits: rate.Units,
+			RateGroup: rate.Group,
+			// 同理:没有原单可复制,刻度也只能取当刻的。
+			QuotaPerUnit: stardust.QuotaPerUnit(),
 		}
 	}
 
@@ -86,7 +86,7 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 	// 冲正行,总冲正额可以是净计佣额的两倍。幂等唯一索引拦不住 —— 两笔的
 	// idemKey 各带各的 task_id。实测:计佣 500、两个 worker 同时冲正,
 	// 落 2 行 -500,净额 -500(生产默认 2 worker、连投 8 笔时稳定复现)。
-	// 超额部分进 unsettled 负结转 → debt_blocked → 提现冻结,而 I1/I2 两条
+	// 超额部分进 unsettled 负结转 → debt_blocked → 入账暂停,而 I1/I2 两条
 	// 恒等式照样成立,对账发现不了。
 	//
 	// 锁的是**邀请人的余额行**,与 api_admin_adjust.go 的手工冲正同一把:
@@ -127,13 +127,12 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 			BaseQuota:  -refundQuota,
 			// 冲正原样复制**被退款那笔消费**冻结的费率与分组,绝不用当前值:
 			// 原单按 8% 发出去、退款时按现行的 5% 冲回来,差额就永久留在邀请人账上。
-			// 这与复制 UsdRate 是同一个道理。
-			RateUnits: origin.RateUnits,
-			RateGroup: origin.RateGroup,
-			Gross:     amount.Neg(),
-			UsdRate:   origin.UsdRate,
+			RateUnits:    origin.RateUnits,
+			RateGroup:    origin.RateGroup,
+			QuotaPerUnit: origin.QuotaPerUnit,
+			Gross:        amount.Neg(),
 			// 冲正立即成熟:让它陪着原单等成熟期,等于给"充值→拿佣金→退款"
-			// 留出一个可以先提现走人的窗口。
+			// 留出一个可以先入账走人的窗口。
 			MatureAt:     0,
 			Status:       StatusAccrued,
 			RefAccrualId: origin.Id,
@@ -154,7 +153,7 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 
 // clawbackAmountFor 算一笔退款应当冲回多少佣金。
 //
-// 一般情况就是"按原单冻结的费率重算"。但原单可能被单笔封顶(max_per_order_quota)
+// 一般情况就是"按原单冻结的费率重算"。但原单可能被单笔封顶(max_per_order_stardust)
 // 削过:那一行 gross_amount < base_quota × rate_bps / 10000,按费率重算会冲掉
 // 比当初实际发出去的更多 —— 上线为一笔只挣到 100 的消费被冲掉 500,方向是
 // 平台凭空多收回,而且冲正行自己也是一条 base×rate ≠ gross 的不自洽行。
@@ -165,10 +164,15 @@ func clawback(ctx context.Context, inviteeId int, refundQuota int64, idemKey, so
 //
 //	amount = 按费率重算 × gross / (gross + capped)
 //
-// 没被削过时 capped 为 0,这个式子逐位退化成 calcGross(refundQuota, rate),
+// 没被削过时 capped 为 0,这个式子逐位退化成 calcGross(refundQuota, rate, qpu),
 // 与改动前完全一致。
+//
+// 刻度与费率同理,取**原单冻结的那一个**而不是当前的 stardust.quota_per_unit:
+// 运营中途改过刻度时,按新刻度重算会把一笔按旧刻度发出去的佣金冲成另一个数,
+// 差额永久留在邀请人账上。原单刻度为 0(D-16 之前的历史行)时按 0 处理 ——
+// calcGross 会返回 0,即"这一行冲不动",宁可不冲也不能凭当前刻度乱冲。
 func clawbackAmountFor(refundQuota int64, origin *Accrual) decimal.Decimal {
-	full := calcGross(refundQuota, origin.RateUnits)
+	full := calcGross(refundQuota, origin.RateUnits, origin.QuotaPerUnit)
 	if !origin.CappedAmount.IsPositive() {
 		return full
 	}
@@ -232,7 +236,7 @@ func consumeOriginForRefund(gdb *gorm.DB, inviteeId int, day string) (*Accrual, 
 //   - 手工调整(api_admin_adjust.go 写 InviteeId: 0):按 invitee_id=0 汇总等于
 //     "全站所有手工调整之和",上限彻底失去意义。实测中一个只入账过 1000 的账号
 //     被冲正了 30 万,unsettled_amount 变成 -299000 且 debt_blocked 置位 ——
-//     佣金侧的 available+frozen+withdrawn == earned-clawback 恒等式照样成立,
+//     佣金侧的 available+frozen+credited == earned-clawback 恒等式照样成立,
 //     超额部分全进了负数结转,对账发现不了。
 func netAccrued(gdb *gorm.DB, inviteeId, inviterId int) (decimal.Decimal, error) {
 	var raw string
@@ -256,7 +260,7 @@ func netAccrued(gdb *gorm.DB, inviteeId, inviterId int) (decimal.Decimal, error)
 // 事后判定为刷单)本来就无法用费率反推。
 func manualClawback(ctx context.Context, accrualId int64, quota int64, idemSuffix, reason string) (*Accrual, error) {
 	if quota <= 0 || quota > int64(common.MaxQuota) {
-		return nil, errors.New("commission: 冲正额度必须大于 0 且不超过单笔上限")
+		return nil, errors.New("commission: 冲正星屑数必须大于 0 且不超过单笔上限")
 	}
 	gdb := db.Get()
 	if gdb == nil {
@@ -327,7 +331,6 @@ func manualClawback(ctx context.Context, accrualId int64, quota int64, idemSuffi
 			RateUnits:    origin.RateUnits,
 			RateGroup:    origin.RateGroup,
 			Gross:        amount.Neg(),
-			UsdRate:      origin.UsdRate,
 			MatureAt:     0,
 			Status:       StatusAccrued,
 			RefAccrualId: origin.Id,

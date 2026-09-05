@@ -105,4 +105,66 @@ upstream_describe=v1.0.0-rc.25-1-g2d8e50bf3
 #           (`hit * p.AmountQuota` 是资金路径上最大的一处裸 int64 乘法),
 #           抬高任何一边都会把那条防线拆掉,所以两边都必须有硬顶。
 
-qy_version=v0.2.0
+#   v1.0.0  **MAJOR**。lottery.prize_secret_key 由「可留空」变成「必填」:开着
+#           娱乐功能却没配这把钥匙的部署,升级之后**拒绝启动**(FATAL,不是降级)。
+#           这一条正中 MAJOR 的第二项触发器 ——「qianye-prod.yaml 的配置键不兼容」:
+#           一份在 v0.2.0 上能干净启动的 YAML,在 v1.0.0 上起不来。
+#
+#           为什么值得进 MAJOR 而不是继续兼容:留空的语义是**明文直存**。
+#           qy_lot_payout.secret_cipher 存的是发给中奖者的实际兑换码,与提现的
+#           收款账号、AI 渠道的 api_key 同级,而后两者从第一天起就是密文。
+#           列名叫 cipher、内容却是明文,意味着库备份 / 只读报表账号 / 离线 dump
+#           三条路上兑换码全部裸奔,而在线侧那一整套控制(不下发、只回掩码、
+#           reveal 强制事由 + 双写审计)对它们一条都不起作用。
+#           一次一次性的运维动作(生成 32 字节随机数)换掉一个默认不安全的形状。
+#
+#           【升级步骤】lottery.enabled 为 true 的部署,升级前先在 YAML 里填上
+#             prize_secret_key: "<openssl rand -base64 32 的输出>"
+#           不想现在处理就把 lottery.enabled 置 false,功能整块关闭即可正常启动。
+#           启动失败时的报错会点名这个键并给出上面两条出路。
+#
+#           【不丢数据】升级前已履行的兑换码不会失效:它们以 key_version=0 记在
+#           行上,读路径照旧(openPrizeSecret 按行上的版本号选路径),并由启动后
+#           的一次性回填就地转成密文(qianye/modules/lottery/prize_secret_backfill.go,
+#           先封装再解回来逐字节比对通过才写库,CAS 恒为 version=0,只前进不后退)。
+#
+#           **为什么是 v1.0.0 而不是 v0.3.0**:上面的递增规则没有为 0.x 写例外,
+#           破坏性变更就进 MAJOR。0.x 的「还没做出稳定性承诺」是对**用法**说的,
+#           不是一个把破坏性变更藏进 MINOR 的许可 —— 那样运维在版本号上永远看不到
+#           「这一版会让我起不来」。
+#
+#           【同一版里的另外两件事,都不单独构成 MAJOR】
+#
+#           ① 分组限流的口径从**模型分组**纠正回**用户分组**。
+#           上游那段代码是「令牌分组优先、用户分组兜底」,在上游成立是因为
+#           users.group 同时兼作模型分组;本 fork 把两者拆开之后,它塌成了
+#           「模型分组优先」,而页面文案写的一直是 "for a specific user group"。
+#           表现:运营在限流页填的用户分组名永远查不到,那一行静默失效;
+#           auto 令牌更是全站共用 ModelRequestRateLimitGroup["auto"] 一个桶。
+#           不进 MAJOR 的判据:**升级前配好的键仍然生效**(查不到用户分组时
+#           回落到原来那个键再查一次),没有任何一份现存配置会因为升级而失效。
+#
+#           ② 新增「按用户分组的在途并发上限」(option 键
+#           ModelRequestConcurrencyGroup,默认空 = 全站不限)。纯新增功能面,
+#           不写这个键时行为与升级前逐位一致。**它按节点计数**,多节点部署下
+#           配 N 的实际效果是「每节点 N」,这句话在配置页的提示文案里写死。
+#
+#           同批还有一条**收紧**但不单独构成 MAJOR 的校验:
+#           lottery.prize_secret_keys_retired 不再允许包含当前启用的版本号
+#           (withdraw.pii_keys_retired 早有这道检查)。它拦的是一次做了一半的轮换:
+#           旧钥搬进了退役表却忘了抬 prize_secret_key_version,于是同一个版本号下
+#           新密文用新钥、历史密文用旧钥,后者永久不可读且没有任何迹象。
+
+#   v2.0.0  **MAJOR**。娱乐与邀请返利整体换成独立积分「星屑」(design-15,D-11):
+#           - /api/qy 删接口:lottery 出款人工仲裁端点(payouts/:payout_no/adjudicate)整条删除
+#             (星屑同库单事务,没有"主库到底动没动"可裁);
+#           - /api/qy 改语义:lottery 全部 *_quota 金额字段的单位从额度变成星屑整数;
+#           - 配置键不兼容:lottery.max_stake_quota / max_total_prize_quota /
+#             large_prize_alert_quota / pay_password_threshold_quota 改名为 *_stardust,
+#             excluded_manual_after_seconds 删除;新增 stardust: 与 mall: 两段。
+#           三条 MAJOR 触发项占了两条。项目方原话「当前版本未上线,一切都可以更改」,
+#           所以不做兼容层:旧键会让启动直接报解析错误,而不是静默忽略。
+#           【升级注意】lottery 存量数据不迁移(未上线,无存量);打开 stardust 前先按
+#           runbook 把 QuotaForInviter / QuotaForInvitee 置 0、展示模式切 CUSTOM/星辉/1。
+
+qy_version=v2.0.0

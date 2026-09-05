@@ -26,7 +26,7 @@ import { QY_INDEX_PAGES, QY_PAGES } from './pages'
  *     字面量表**，与侧边栏怎么排列完全无关（见 `lib/page-order.ts` 开头对
  *     "为什么解耦"的说明）。加页面时往那张表末尾追加一行即可；
  *   - 页面代号：参考稿登机牌语言里的大写英文戳记，装饰性字形，但必须**贴合该页
- *     的实际功能**（提现 →「WITHDRAW · REQUEST」），所以只能一页一条地写。
+ *     的实际功能**（推广 →「REFERRAL · OVERVIEW」），所以只能一页一条地写。
  *     走 i18n（`src/i18n/qy/{en,zh}.json`）而不是硬编码，以便站点自行调整；
  *     en/zh 两份内容相同——它本来就是拉丁装饰字形，不是被翻译的对象。
  *
@@ -51,7 +51,7 @@ export type QyPageMeta = {
  *
  * 取**最长前缀**而不是精确相等：详情页/子标签页（`/qy/admin/violations/123`）
  * 应当继承所属功能页的编号，而不是掉进"未登记"分支。尾部斜杠先去掉，
- * 否则 `/qy/withdraw/` 会匹配不上。
+ * 否则 `/qy/affiliate/` 会匹配不上。
  */
 export function qyPageMeta(pathname: string): QyPageMeta {
   const path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname

@@ -26,6 +26,25 @@ export type QyApiAddress = {
   name: string
   remark: string
   url: string
+  /**
+   * 逗号分隔的适用**用户分组**；空串 = 所有分组可见。
+   *
+   * 不绑定的地址就是「默认兜底线路」：没配专属线路的分组看到的恰好是这批。
+   * 归一化（折叠大小写、去重、上限）全在后端 `normalizeUserGroups`，前端只做
+   * 逗号拆/拼。
+   */
+  user_groups: string
+  /**
+   * 逗号分隔的**展示位置**（console = 控制台「API信息」卡片、picker =
+   * 复制链接信息 / CC Switch）；空串 = 所有位置可见。过滤在服务端
+   * （`?surface=`），白名单在后端 `normalizeSurfaces`。
+   */
+  surfaces: string
+  /**
+   * 控制台「API信息」卡片圆点颜色；空串 = 前端默认色。白名单在后端
+   * `normalizeColor`（14 色调色板，与本页弹窗的选项同一份清单）。
+   */
+  color: string
   sort_order: number
   enabled: boolean
   created_at: number
@@ -48,5 +67,11 @@ export type QyApiAddressUpsert = {
   name: string
   remark: string
   url: string
+  /** 逗号分隔；空串 = 所有分组可见。与 remark 一样是整行提交，缺省即清空。 */
+  user_groups: string
+  /** 逗号分隔的展示位置；空串 = 所有位置可见。整行提交，缺省即清空。 */
+  surfaces: string
+  /** 空串 = 前端默认色。整行提交，缺省即清空。 */
+  color: string
   enabled?: boolean
 }

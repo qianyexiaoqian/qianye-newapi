@@ -17,16 +17,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * 佣金余额总览 DTO。对应 `qianye/modules/commission/api_admin_balance.go`。
+ * 佣金余额总览 DTO。对应 `qianye/modules/commission/api_admin_balance.go`
+ * （D-15 从 git HEAD 恢复：`withdrawn_quota` 改名 `credited_quota`，`available_fiat`
+ * 随法币折算一起删除）。
  *
  * ── 四个额度列的关系 ──
  * 它们不是四个独立的数字，受同一条恒等式约束：
  *
- *   可提现 + 冻结中 + 已提现 = 累计已结算 − 累计冲正
+ *   可用 + 入账中 + 已入账 = 累计已结算 − 累计冲正
  *
  * `derived_available_quota` 与 `ledger_drift` 由**后端**算好下发，前端一个字都
- * 不重算：这条恒等式在后端已经被结算 / 冲正 / 提现三条路径各实现了一遍，
+ * 不重算：这条恒等式在后端已经被结算 / 冲正 / 自动入账三条路径各实现了一遍，
  * 让前端再实现第四遍就是在等它漂移。
+ *
+ * 所有额度都以整数记账、按站内展示单位印（`QyAmountText`）—— 这张表上没有法币。
  */
 export type QyCommissionBalance = {
   user_id: number
@@ -35,21 +39,24 @@ export type QyCommissionBalance = {
   /** 假值表示主库里查不到这个 id（账号已删，或这一次主库读失败）。 */
   user_resolved: boolean
 
+  /** 已成熟、等自动入账攒够门槛的部分。 */
   available_quota: number
+  /** 已被在途入账单占用（入账行 pending、资金单未落定）的部分。 */
   frozen_quota: number
-  withdrawn_quota: number
+  /** 累计已自动记入星辉的部分。D-14 之前叫 `withdrawn_quota`。 */
+  credited_quota: number
   total_earned_quota: number
   total_clawback_quota: number
 
-  /** 已结算 − 已冲正 − 冻结中 − 已提现，即恒等式给出的可提现。 */
+  /** 已结算 − 已冲正 − 入账中 − 已入账，即恒等式给出的可用。 */
   derived_available_quota: number
-  /** 实际可提现 − 派生可提现。非 0 = 账本漂移，改钱之前必须先查清楚。 */
+  /** 实际可用 − 派生可用。非 0 = 账本漂移，改钱之前必须先查清楚。 */
   ledger_drift: number
 
   /** decimal(30,10) 字符串，转 number 会丢位。 */
   unsettled_amount: string
-  available_fiat: string
 
+  /** 冲正欠账。为真时自动入账跳过这个人，直到后续佣金把欠账抵完。 */
   debt_blocked: boolean
   invitee_count: number
   last_settled_at: number
@@ -59,7 +66,7 @@ export type QyCommissionBalance = {
 /** 列表页的合计，跟着当前筛选条件走。 */
 export type QyCommissionBalanceTotals = {
   available_quota: number
-  withdrawn_quota: number
+  credited_quota: number
 }
 
 export type QyCommissionBalancePage = {
@@ -68,14 +75,6 @@ export type QyCommissionBalancePage = {
   p: number
   page_size: number
   totals: QyCommissionBalanceTotals
-}
-
-/** 迁移编辑的返回：`delta_quota` 是**实际**划转额，重复提交时是 0。 */
-export type QySetWithdrawnResult = {
-  user_id: number
-  delta_quota: number
-  before: QyCommissionBalance
-  after: QyCommissionBalance
 }
 
 /**
@@ -95,13 +94,32 @@ export type QyAdjustCommissionResult = {
   after: QyCommissionBalance
 }
 
-/** 列表排序口径，与后端 `balanceSortOrders` 的键逐字一致。 */
+/**
+ * 列表排序口径，与后端 `balanceSortOrders` 的键逐字一致。
+ *
+ * `credited` 顶替了此前的 `withdrawn`（列改名，排序键跟着改）—— Z1 若沿用
+ * 旧键名，这里要跟着改回去，否则"选了没反应"。
+ */
 export const QY_BALANCE_SORTS = [
   'available',
-  'withdrawn',
+  'credited',
   'earned',
   'updated',
   'user',
 ] as const
 
 export type QyBalanceSort = (typeof QY_BALANCE_SORTS)[number]
+
+/**
+ * 排序项 → 文案键。走查表而不是模板串：`available` 那一项的旧文案写着「可提现」，
+ * 星辉口径下它是「可用（待入账）」，而旧键留在主包里不能改，只能换键。
+ */
+export const QY_BALANCE_SORT_LABEL_KEY: Readonly<
+  Record<QyBalanceSort, string>
+> = {
+  available: 'qy_cb_sort_available_xh',
+  credited: 'qy_cb_sort_credited',
+  earned: 'qy_cb_sort_earned',
+  updated: 'qy_cb_sort_updated',
+  user: 'qy_cb_sort_user',
+}

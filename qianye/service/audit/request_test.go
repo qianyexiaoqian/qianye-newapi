@@ -55,7 +55,7 @@ func TestFlushRequestBatch_PersistsRows(t *testing.T) {
 	batch := []*qymodel.RequestAudit{
 		{Action: "transfer.create", Method: "POST", Path: "/api/qy/transfer",
 			StatusCode: 200, Success: true, ActorUserId: 7, CreatedAt: 1},
-		{Action: "withdraw.payees.delete", Method: "DELETE", Path: "/api/qy/withdraw/payees/:ref",
+		{Action: "transfer.contacts.delete", Method: "DELETE", Path: "/api/qy/transfer/contacts/:id",
 			StatusCode: 403, Success: false, ActorUserId: 9, CreatedAt: 2},
 	}
 	writtenBefore := requestWritten.Load()

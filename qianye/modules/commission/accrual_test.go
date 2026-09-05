@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 
 	"github.com/shopspring/decimal"
@@ -18,25 +16,40 @@ import (
 
 func TestCalcGrossKeepsFullPrecision(t *testing.T) {
 	// units 是内部整数费率(百分比 × 100):500 = 5%,1025 = 10.25%。
+	// qpu 是刻度(1 星屑 = 多少额度);gross 的单位是**星屑**。
 	cases := []struct {
 		base  int64
 		units int
+		qpu   int64
 		want  string
 	}{
-		{10, 500, "0.5"},   // 裸 int 转换会变成 0
-		{1, 500, "0.05"},   // 裸 int 转换会变成 0
-		{3, 333, "0.0999"}, // 3.33% 这种带小数的比例也不能丢
-		{200, 500, "10"},
-		{1_000_000, 1000, "100000"},
-		{10000, 1025, "1025"}, // 两位小数的百分比必须精确
-		{1, 1, "0.0001"},      // 0.01% 是最小可配的非零费率
-		{0, 500, "0"},
-		{100, 0, "0"},
-		{-100, 500, "0"}, // 负基数由冲正路径显式构造,正向计佣拒绝
+		// qpu = 1 这一组只验"比例那一半"的精度,与改成星屑之前逐位一致。
+		{10, 500, 1, "0.5"},   // 裸 int 转换会变成 0
+		{1, 500, 1, "0.05"},   // 裸 int 转换会变成 0
+		{3, 333, 1, "0.0999"}, // 3.33% 这种带小数的比例也不能丢
+		{200, 500, 1, "10"},
+		{1_000_000, 1000, 1, "100000"},
+		{10000, 1025, 1, "1025"}, // 两位小数的百分比必须精确
+		{1, 1, 1, "0.0001"},      // 0.01% 是最小可配的非零费率
+		{0, 500, 1, "0"},
+		{100, 0, 1, "0"},
+		{-100, 500, 1, "0"}, // 负基数由冲正路径显式构造,正向计佣拒绝
+
+		// 默认刻度(1 星屑 = 500000 额度 = $1)下的真实量级。这几行是本模块
+		// 存在的理由:一次对话的佣金落在 1e-5 星屑,任何一步提前取整都归零。
+		{500_000, 1000, 500_000, "0.1"}, // 下线花掉 1 星屑等值,按 10% 返 0.1
+		{5_000_000, 1000, 500_000, "1"}, // 花掉 10 星屑等值,按 10% 恰好返 1
+		{100, 500, 500_000, "0.00001"},  // 一次对话按 5%:0.00001 星屑,不能变成 0
+		{1, 1, 500_000, "0.0000000002"}, // 最小可配费率 × 最小基数,仍然不是 0
+
+		// 刻度读不到时一律 0:当 1 用意味着把额度数当星屑发,默认刻度下是
+		// 50 万倍的超发,那比"这一笔不计佣"严重得多。
+		{500_000, 1000, 0, "0"},
+		{500_000, 1000, -1, "0"},
 	}
 	for _, tc := range cases {
-		got := calcGross(tc.base, tc.units)
-		assert.Equal(t, tc.want, got.String(), "base=%d units=%d", tc.base, tc.units)
+		got := calcGross(tc.base, tc.units, tc.qpu)
+		assert.Equal(t, tc.want, got.String(), "base=%d units=%d qpu=%d", tc.base, tc.units, tc.qpu)
 	}
 }
 
@@ -61,7 +74,7 @@ func TestCapGross(t *testing.T) {
 		assert.Equal(t, tc.want, got.String(), tc.name)
 		assert.Equal(t, tc.shaved, shaved.String(), tc.name+" 的削减量")
 		// 恒等式:封顶后的金额 + 削减量 == 原始金额。落库之后它就是
-		// gross_amount + capped_amount == base_quota × rate_bps / 10000。
+		// gross_amount + capped_amount == base_quota × rate_bps / 10000 / quota_per_unit。
 		assert.True(t, got.Add(shaved).Equal(tc.gross), tc.name+" 削减量必须补得平")
 	}
 }
@@ -85,45 +98,36 @@ func TestNormalizeIdemKeyIsInjective(t *testing.T) {
 
 func TestIdemKeyShapes(t *testing.T) {
 	vip := rateDecision{Units: 500, Group: "vip"}
-	fx := fiatDecision{Rate: decimal.NewFromFloat(7.3), Layer: fiatLayerGroup, Group: "vip"}
-	assert.Equal(t, "consume:7:20260730:vip:500:7.3:h7:u3", consumeIdemKey(3, 7, "20260730", vip, fx, 7))
+	assert.Equal(t, "consume:7:20260730:vip:500:h7:u3", consumeIdemKey(3, 7, "20260730", vip, 7))
 
 	// 费率或分组一变就必须换一行:日聚合桶是"边增长边结算"的,把新费率
 	// 算出的 gross 累加进一行标着旧费率的记录里,那一行从此
 	// base × rate ≠ gross,永远对不平也没法向用户解释。
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
-		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 800, Group: "vip"}, fx, 7))
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
-		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "default"}, fx, 7))
-	// 法币折算比例同理:usd_rate 不参与 gross 的算术,但结算按它的加权平均
-	// 折算 available_fiat —— 一行标着 7.3 却有一半 gross 是在比例改成 7.5
-	// 之后挣的,那半笔钱就永久按旧比例入账,而账面上看不出这里调过价。
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
-		consumeIdemKey(3, 7, "20260730", vip,
-			fiatDecision{Rate: decimal.NewFromFloat(7.5), Layer: fiatLayerGroup, Group: "vip"}, 7))
-	// Matched / Layer / Group 只用于日志与管理端解释,不参与算钱,
-	// 更不该影响幂等键 —— 同一个比例走哪一层落到账上是同一笔钱。
-	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
-		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "vip", Matched: true},
-			fiatDecision{Rate: decimal.NewFromFloat(7.3), Layer: fiatLayerDefault}, 7))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7),
+		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 800, Group: "vip"}, 7))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7),
+		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "default"}, 7))
+	// Matched 只用于日志与管理端解释,不参与算钱,更不该影响幂等键。
+	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, 7),
+		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "vip", Matched: true}, 7))
 
 	// 上线换了就必须换一行。ON CONFLICT 的 DoUpdates 只累加金额、不改
 	// inviter_id,上线不在键里的话,换绑当天下线后续的消费会撞上旧上线那一行,
 	// 钱被原子累加进去而 inviter_id 保持旧值 —— 结结实实发给了前一个上线,
 	// 而三条恒等式全部成立,没有任何降级计数器会响。
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
-		consumeIdemKey(4, 7, "20260730", vip, fx, 7))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7),
+		consumeIdemKey(4, 7, "20260730", vip, 7))
 
 	// 成熟期变了也必须换一行。日聚合桶的 ON CONFLICT 只累加金额、**不改
 	// mature_at**:成熟期不在键里的话,运营中午把 holding_days 从 7 改成 0,
 	// 当天已经建过桶的下线在那之后的消费会累加进一行标着旧成熟期的记录里,
 	// 那部分钱按旧策略再压 7 天,而界面按新配置写着 T+1。
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, fx, 7),
-		consumeIdemKey(3, 7, "20260730", vip, fx, 0))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7),
+		consumeIdemKey(3, 7, "20260730", vip, 0))
 	// 负的成熟期与 0 必须落同一个键:bucketMatureAt 把负数钳到 0,键里不钳的话
 	// 同一个成熟时刻会分裂成两个桶。
-	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, fx, 0),
-		consumeIdemKey(3, 7, "20260730", vip, fx, -1))
+	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, 0),
+		consumeIdemKey(3, 7, "20260730", vip, -1))
 
 	assert.Equal(t, "topup:TX-1", topupIdemKey(" TX-1 "))
 	assert.Equal(t, "redemption:99", redemptionIdemKey(99))
@@ -189,71 +193,4 @@ func TestAmountSaneRejectsAbsurdValues(t *testing.T) {
 	assert.True(t, amountSane(decimal.NewFromInt(-1000)))
 	assert.False(t, amountSane(decimal.New(1, 20)))
 	assert.False(t, amountSane(decimal.New(-1, 20)))
-}
-
-// TestTopUpBaseQuotaByProvider 锁定各支付渠道的额度换算口径。
-//
-// 统一按 Amount × QuotaPerUnit 会算错:creem 的 Amount 本身就是额度,
-// stripe 与订阅付费单要按 Money 换算。算错基数 = 返错佣金。
-func TestTopUpBaseQuotaByProvider(t *testing.T) {
-	original := common.QuotaPerUnit
-	common.QuotaPerUnit = 500000
-	defer func() { common.QuotaPerUnit = original }()
-
-	cases := []struct {
-		name      string
-		topUp     model.TopUp
-		wantQuota int64
-		wantMoney string
-	}{
-		{
-			name:      "creem 的 Amount 本身就是额度",
-			topUp:     model.TopUp{PaymentProvider: model.PaymentProviderCreem, Amount: 1_500_000, Money: 3},
-			wantQuota: 1_500_000,
-			wantMoney: "3",
-		},
-		{
-			name:      "stripe 按 Money 换算",
-			topUp:     model.TopUp{PaymentProvider: model.PaymentProviderStripe, Amount: 0, Money: 10},
-			wantQuota: 5_000_000,
-			wantMoney: "10",
-		},
-		{
-			name:      "订阅付费单的 provider 为空,同样按 Money 换算",
-			topUp:     model.TopUp{PaymentProvider: "", Amount: 0, Money: 2.5},
-			wantQuota: 1_250_000,
-			wantMoney: "2.5",
-		},
-		{
-			name:      "epay 按 Amount 换算",
-			topUp:     model.TopUp{PaymentProvider: model.PaymentProviderEpay, Amount: 4, Money: 29.2},
-			wantQuota: 2_000_000,
-			wantMoney: "29.2",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			quota, money := topUpBaseQuota(&tc.topUp)
-			assert.Equal(t, tc.wantQuota, quota)
-			assert.Equal(t, tc.wantMoney, money.String())
-		})
-	}
-}
-
-// TestQuotaFromDecimalNeverNegative 确认被篡改/异常的订单金额不会变成
-// 负数基数 —— 负基数会算出负佣金,那是一笔凭空的欠账。
-func TestQuotaFromDecimalNeverNegative(t *testing.T) {
-	assert.EqualValues(t, 0, quotaFromDecimal(decimal.NewFromInt(-100)))
-	assert.EqualValues(t, 10, quotaFromDecimal(decimal.RequireFromString("10.9")))
-	assert.EqualValues(t, common.MaxQuota, quotaFromDecimal(decimal.NewFromInt(int64(common.MaxQuota)+1)))
-}
-
-// TestExcludedTopUp 锁定充值口径。
-func TestExcludedTopUp(t *testing.T) {
-	// 用余额支付的订单必须硬排除:那笔余额充值进来时已经返过一次佣金。
-	assert.True(t, excludedTopUp(&model.TopUp{PaymentProvider: model.PaymentProviderBalance}))
-	assert.True(t, excludedTopUp(&model.TopUp{PaymentMethod: model.PaymentMethodBalance}))
-	// 默认宽松:真实支付渠道一律返佣。
-	assert.False(t, excludedTopUp(&model.TopUp{PaymentProvider: model.PaymentProviderEpay}))
-	assert.False(t, excludedTopUp(&model.TopUp{PaymentProvider: model.PaymentProviderStripe}))
 }

@@ -15,7 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
 // prob_e2e_db_test.go —— 一整场**概率制 + 混合奖档**的抽奖走完全流程,
@@ -31,11 +30,14 @@ import (
 func TestProbDrawIsReproducibleFromTheProofEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	gdb := newPayoutEnv(t, config.Lottery{
-		Enabled:                true,
+		Enabled: true,
+		// 本用例往一条文本奖上塞哨兵串,再断言它没出现在匿名证据链里。
+		// 强制加密之后没有密钥就写不进去,而这里要的正是"真密文也照样不泄漏"。
+		PrizeSecretKey:         newPrizeKey(t),
 		PayoutMaxAttempts:      8,
 		EntryCloseGraceSeconds: 0,
 		RevealDelaySeconds:     0,
-		MaxStakeQuota:          5_000_000,
+		MaxStakeStardust:       5_000_000,
 	})
 
 	now := common.GetTimestamp()
@@ -94,18 +96,9 @@ func TestProbDrawIsReproducibleFromTheProofEndpoint(t *testing.T) {
 	salts, err := loadSalts(context.Background(), gdb, act.Id)
 	require.NoError(t, err)
 	for uid := 201; uid < 221; uid++ {
-		e := &Entry{
-			EntryNo: newEntryNo(), ActId: act.Id, IdemKey: buildIdemKey(act.ActNo, newEntryNo()),
+		seedTicket(t, gdb, act, &Entry{
 			UserId: uid, UserRef: UserRef(salts.RefSalt, uid), Amount: act.StakeQuota,
-			Status: EntryPending, OrderNo: "LE-" + newEntryNo(), CreatedAt: common.GetTimestamp(),
-		}
-		cur := loadAct(t, gdb, act.Id)
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return reserveEntry(tx, cur, Rules{}, e, 0)
-		}))
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return markEntrySuccess(tx, e.EntryNo, nil)
-		}))
+		})
 	}
 
 	// ── 封盘 → 开奖 ──
@@ -174,7 +167,7 @@ func TestProbDrawIsReproducibleFromTheProofEndpoint(t *testing.T) {
 	require.True(t, envelope.Success)
 	doc := &envelope.Data
 
-	require.NotEmpty(t, doc.Seed, "开奖之后种子必须公开,否则没人能复算")
+	require.NotEmpty(t, doc.RevealedSeed, "开奖之后种子必须公开,否则没人能复算")
 	require.Equal(t, DrawModeProb, doc.DrawMode, "定档方式必须下发,否则验证者不知道该用哪把尺子")
 	require.Len(t, doc.Entries, int(doc.Total))
 
@@ -225,7 +218,7 @@ func TestProbDrawIsReproducibleFromTheProofEndpoint(t *testing.T) {
 			AmountQuota: s.AmountQuota, Count: s.Count, WinPpm: s.WinPpm, TextDesc: s.TextDesc,
 		})
 	}
-	final := FinalSeed(doc.ActNo, doc.Seed, doc.RosterHash, doc.RosterCount, doc.Algo)
+	final := FinalSeed(doc.ActNo, doc.RevealedSeed, doc.RosterHash, doc.RosterCount, doc.Algo)
 	assert.Equal(t, independentProbWinners(final, doc.ActNo, roster, spec), system,
 		"独立复算的中奖名单必须与系统公布的逐位一致(含金额与档位)")
 
@@ -271,7 +264,7 @@ func TestProbLosersAreIndependentlyReproducible(t *testing.T) {
 		PayoutMaxAttempts:      8,
 		EntryCloseGraceSeconds: 0,
 		RevealDelaySeconds:     0,
-		MaxStakeQuota:          5_000_000,
+		MaxStakeStardust:       5_000_000,
 	})
 
 	now := common.GetTimestamp()
@@ -326,18 +319,9 @@ func TestProbLosersAreIndependentlyReproducible(t *testing.T) {
 	salts, err := loadSalts(context.Background(), gdb, act.Id)
 	require.NoError(t, err)
 	for uid := 401; uid < 441; uid++ {
-		e := &Entry{
-			EntryNo: newEntryNo(), ActId: act.Id, IdemKey: buildIdemKey(act.ActNo, newEntryNo()),
+		seedTicket(t, gdb, act, &Entry{
 			UserId: uid, UserRef: UserRef(salts.RefSalt, uid), Amount: act.StakeQuota,
-			Status: EntryPending, OrderNo: "LE-" + newEntryNo(), CreatedAt: common.GetTimestamp(),
-		}
-		cur := loadAct(t, gdb, act.Id)
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return reserveEntry(tx, cur, Rules{}, e, 0)
-		}))
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return markEntrySuccess(tx, e.EntryNo, nil)
-		}))
+		})
 	}
 
 	require.NoError(t, gdb.Model(&Activity{}).Where("id = ?", act.Id).
@@ -389,7 +373,7 @@ func TestProbLosersAreIndependentlyReproducible(t *testing.T) {
 		won[w.EntryNo] = true
 	}
 
-	final := FinalSeed(doc.ActNo, doc.Seed, doc.RosterHash, doc.RosterCount, doc.Algo)
+	final := FinalSeed(doc.ActNo, doc.RevealedSeed, doc.RosterHash, doc.RosterCount, doc.Algo)
 	require.Equal(t, independentProbWinners(final, doc.ActNo, roster, spec), system,
 		"独立复算的中奖名单必须与系统公布的逐位一致")
 

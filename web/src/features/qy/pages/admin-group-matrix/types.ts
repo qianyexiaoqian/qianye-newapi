@@ -162,6 +162,21 @@ export type QyGmUserGroup = {
    * 而一条隐式规则不写在界面上就等于没有规则。
    */
   self_inserted: boolean
+  /**
+   * **只属于这一行**的待办（充值倍率 0、清单引用已消失的模型分组、
+   * 空分组令牌解析不到池子、范围不含自己…）。界面画成行上的图标 + 悬停详情，
+   * 不进顶部横幅 —— 分组一多，长清单没人读。后端恒下发数组（非 null）。
+   *
+   * 每条带一个 {@link QyGmRowWarning.code}：界面据此**按类型选不同图标**
+   * （一行可以并排多个），而不是所有问题共用一个 ⚠。
+   */
+  warnings: QyGmRowWarning[]
+}
+
+/** 行级待办的一条。`code` 决定用哪个图标（见 `components/row-warnings.tsx`）。 */
+export type QyGmRowWarning = {
+  code: string
+  text: string
 }
 
 /** 矩阵的一列。 */
@@ -363,7 +378,10 @@ export type QyGmMatrixResponse = {
    */
   base_ratio_hash: string
   snapshot: QyGmSnapshotInfo
-  /** 保存前应当被看见、但**不拦截**的问题（大小写近似、授权了空池子…）。 */
+  /**
+   * 保存前应当被看见、但**不拦截**、且**跨行才成立**的问题（大小写近似）。
+   * 只属于某一档的问题在 {@link QyGmUserGroup.warnings} 上，画成行上的 ⚠。
+   */
   warnings: string[]
   /**
    * 当前口径本身，由接口下发而**不是前端写死**。

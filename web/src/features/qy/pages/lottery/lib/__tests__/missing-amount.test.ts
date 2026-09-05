@@ -58,13 +58,13 @@ function setCurrency(patch: Partial<CurrencyConfig>) {
 after(() => setCurrency({}))
 
 describe('qyLotMissingValues 把额度口径的缺失项换算成站内余额', () => {
-  test('货币展示下四条额度条件都不再露出原始 quota', () => {
+  test('货币展示下三条额度条件都不再露出原始 quota', () => {
     setCurrency({ quotaDisplayType: 'USD', quotaPerUnit: QUOTA_PER_UNIT })
 
     // 5000000 / 500000 = 10 USD、2500000 / 500000 = 5 USD。
     // |v| >= 1 走 digitsLarge = 2，而末尾零由 Intl 的 minimumFractionDigits: 0
     // 吃掉，所以是 `$10` 而不是 `$10.00`。
-    for (const code of ['balance', 'stake', 'used_quota', 'recent_spend']) {
+    for (const code of ['balance', 'used_quota', 'recent_spend']) {
       const got = qyLotMissingValues({ code, need: 5000000, have: 2500000 })
       assert.equal(got.need, '$10', `${code} 的 need 未走额度换算`)
       assert.equal(got.have, '$5', `${code} 的 have 未走额度换算`)
@@ -73,6 +73,24 @@ describe('qyLotMissingValues 把额度口径的缺失项换算成站内余额', 
         `${code} 的文案里仍然出现了原始 quota`
       )
     }
+  })
+
+  /**
+   * 参与费从**星屑**余额里扣（design-15 §5），所以 `stake` 那一条绝不能走额度
+   * 换算：把 5000 星屑印成 `$0.01` 会让用户跑去钱包充值，而那笔钱买不到星屑。
+   * 它按整数千分位渲染，单位名由文案的 `{{unit}}` 补，与站点的货币展示设置无关。
+   */
+  test('参与费那一条按整数星屑渲染，不受货币展示设置影响', () => {
+    setCurrency({ quotaDisplayType: 'USD', quotaPerUnit: QUOTA_PER_UNIT })
+    assert.deepEqual(
+      qyLotMissingValues({ code: 'stake', need: 5000000, have: 2500000 }),
+      { need: '5,000,000', have: '2,500,000' }
+    )
+    setCurrency({ quotaDisplayType: 'TOKENS', quotaPerUnit: QUOTA_PER_UNIT })
+    assert.deepEqual(
+      qyLotMissingValues({ code: 'stake', need: 5000, have: 0 }),
+      { need: '5,000', have: '0' }
+    )
   })
 
   test('不足 1 美元的额度走 4 位小数，不会被舍成 0', () => {

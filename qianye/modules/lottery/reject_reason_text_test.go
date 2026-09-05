@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,7 +37,7 @@ import (
 
 func TestPrizeCountRejectionNamesTheRealBound(t *testing.T) {
 	cfg, act := prizeEnv()
-	noCeiling := opSettings{MaxTotalPrizeQuota: 0}
+	noCeiling := opSettings{MaxTotalPrizeStardust: 0}
 
 	_, _, err := buildPrizes([]prizeInput{
 		{Tier: 1, Name: "一等奖", AmountQuota: 1000, Count: 0},
@@ -55,29 +57,29 @@ func TestPrizeCountRejectionNamesTheRealBound(t *testing.T) {
 
 // 同一句话里不许出现两种刻度。
 //
-// 左边是钱(运营在界面上填的是 $),右边 entriesCap 是 rules.max_total_entries,
-// 单位是**张票**。给它缀一个"额度"会让人照着往错的方向调参;而 quotaText 的
-// 返回值本身已经以" 额度"结尾,格式串里再写一次就输出"额度 ＄0.000010 额度"。
+// 左边是星屑(运营在界面上填的是整数),右边 entriesCap 是 rules.max_total_entries,
+// 单位是**张票**。给票数缀一个单位名会让人照着往错的方向调参;而 stardustText 的
+// 返回值本身已经带着单位名,格式串里再写一次就输出"星屑 5 星屑"。
 func TestProbBudgetRejectionKeepsMoneyAndTicketsApart(t *testing.T) {
 	cfg, _ := prizeEnv()
 	prob := &Activity{DrawMode: DrawModeProb, Algo: AlgoV2, MaxTotalEntries: 10}
 
 	_, _, err := buildPrizes([]prizeInput{
 		{Tier: 1, Name: "一等奖", AmountQuota: 5, Count: 1, WinPpm: 1000},
-	}, cfg, opSettings{MaxTotalPrizeQuota: 0}, prob)
+	}, cfg, opSettings{MaxTotalPrizeStardust: 0}, prob)
 	require.Error(t, err)
 	msg := err.Error()
 
-	assert.Contains(t, msg, quotaText(5), "单份必须按站内余额刻度写")
+	unit := stardust.UnitName()
+	assert.Contains(t, msg, stardustText(5), "单份必须按星屑整数 + 单位名写")
 	assert.Contains(t, msg, "全场参与上限 10 张票",
-		"全场参与上限的单位是张票，不是额度")
-	assert.NotContains(t, msg, "上限 10 额度")
-	// 全句里"额度"只该出现两次:quotaText 自带的那一次后缀,以及句尾
-	// "摊薄到 0 额度"。改动前是四次 —— 格式串自己写了一次"额度 %s"
-	// (于是输出「额度 ＄0.000010 额度」),票数后面又缀了一次。
-	assert.Equal(t, 2, strings.Count(msg, "额度"), "实际文案：%s", msg)
-	assert.NotContains(t, msg, "额度 ＄",
-		"quotaText 的返回值已经以“额度”结尾，格式串里不能再写一次")
+		"全场参与上限的单位是张票,不是星屑")
+	assert.NotContains(t, msg, "上限 10 "+unit)
+	// 全句里单位名只该出现两次:单份下限与当前单份各带一次。票数后面不许缀,
+	// 格式串里也不许自己再写一次。
+	assert.Equal(t, 2, strings.Count(msg, unit), "实际文案:%s", msg)
+	assert.NotContains(t, msg, "额度", "星屑不是额度,拒绝文案里不该混进额度的刻度")
+	assert.NotContains(t, msg, "＄", "星屑没有美元刻度")
 }
 
 // 双色球那一条同规则的报错必须与概率制逐字同口径 ——
@@ -89,7 +91,7 @@ func TestBallBudgetRejectionMatchesProbWording(t *testing.T) {
 	}, series, 10)
 	require.Error(t, err)
 	msg := err.Error()
-	assert.Contains(t, msg, quotaText(5))
+	assert.Contains(t, msg, stardustText(5))
 	assert.Contains(t, msg, "全场参与上限 10 张票")
 	assert.Contains(t, msg, "数量 1 × 单份")
 }

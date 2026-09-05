@@ -47,7 +47,7 @@ describe('QY_MAX_QUOTA 与后端 common.MaxQuota 同步', () => {
       'common/quota_math.go 里找不到 `MaxQuota = 1 << N` 形态的声明 —— ' +
         '后端改了写法就必须同步改这条断言,而不是把它删掉'
     )
-    const backend = 2 ** Number(match![1])
+    const backend = 2 ** Number(match?.[1] ?? '')
     assert.equal(
       QY_MAX_QUOTA,
       backend,

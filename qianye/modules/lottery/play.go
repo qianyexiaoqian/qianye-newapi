@@ -4,12 +4,13 @@ package lottery
 //
 // # 玩法不是 kind
 //
-// 库里只有两个 kind(draw / guess),但用户看到的是四种游戏:抽奖有三种定档方式
-// (rank 按名次、prob 按公示概率、ball 双色球),竞猜一种。三种定档方式在规则、
-// 概率口径与卡面含义上互不相同 —— 双色球的卡片上连"奖池"这个数的语义都换了。
+// 库里只有两个 kind(draw / guess),但用户看到的是五种游戏:抽奖有四种定档方式
+// (rank 按名次、prob 按公示概率、ball 双色球、wheel 星屑转盘),竞猜一种。四种
+// 定档方式在规则、概率口径与卡面含义上互不相同 —— 双色球的卡片上连"奖池"这个数
+// 的语义都换了,转盘则根本不进大厅(它是即时开奖,独立页面自己拉列表)。
 // 运营说"这一期只上竞猜"或"双色球先不上"时,说的是这一层,不是 kind。
 //
-// 所以玩法 = (kind, draw_mode) 的合并投影,四个取值,住在这一个函数里。
+// 所以玩法 = (kind, draw_mode) 的合并投影,五个取值,住在这一个函数里。
 // 判定点只此一处:大厅过滤、新参与闸门、发布闸门、引导端点四个消费方都读它,
 // 各写一份 switch 的后果是其中一处漏掉 ball,而漏掉的方向恰好是"关了还看得见"。
 //
@@ -29,7 +30,7 @@ package lottery
 //
 // # 零值:没配过 = 全部显示
 //
-// qy_settings 里没有这几行时,四个玩法**全部可见**。反过来(缺一段配置就整块
+// qy_settings 里没有这几行时,五个玩法**全部可见**。反过来(缺一段配置就整块
 // 不可见)是本仓栽过的形状:升级到带这个开关的版本时,库里一行都还没有,
 // 默认隐藏会让整个娱乐功能在没人动过任何配置的情况下静默消失。
 const (
@@ -37,10 +38,14 @@ const (
 	PlayDrawProb = "draw_prob"
 	PlayDrawBall = "draw_ball"
 	PlayGuess    = "guess"
+	// PlayWheel 是星屑转盘。键名不带 draw_ 前缀:引导端点的 lottery.plays 与
+	// 前端路由 /qy/wheel 都按 "wheel" 认它(契约 §6),它在用户眼里是一种独立的
+	// 游戏而不是"抽奖的一个分区"。
+	PlayWheel = "wheel"
 )
 
 // Plays 是全部玩法。顺序即管理端字段顺序与引导端点的下发顺序。
-var Plays = []string{PlayDrawRank, PlayDrawProb, PlayDrawBall, PlayGuess}
+var Plays = []string{PlayDrawRank, PlayDrawProb, PlayDrawBall, PlayGuess, PlayWheel}
 
 // ── 大厅的三张选择夹(lane)──
 //
@@ -61,10 +66,15 @@ const (
 	LaneGuess = "guess"
 )
 
-// hallLanes 是选择夹 → 它底下的玩法。**必须是 Plays 的一个划分**
-// (每个玩法恰好归属一张选择夹),由 TestHallLanesPartitionEveryPlay 守住:
-// 漏掉一个玩法 = 那类活动在三张选择夹里一张都进不去,而大厅不会报错,
+// hallLanes 是选择夹 → 它底下的玩法。**必须是 Plays 去掉 PlayWheel 之后的一个
+// 划分**(每个批次玩法恰好归属一张选择夹),由 TestHallLanesPartitionEveryPlay
+// 守住:漏掉一个玩法 = 那类活动在三张选择夹里一张都进不去,而大厅不会报错,
 // 只是永远空着。
+//
+// 转盘**刻意不在任何一张夹里,也不在不带 lane 的大厅全量里**:它是即时开奖的
+// 独立页面(/qy/wheel),自己带 draw_mode=wheel 拉列表(playFilterClause 的
+// wheelOnly 分支)。让它混进大厅,卡片上"奖池 / 截止 / 开奖"三个数的语义
+// 全都对不上 —— 与双色球被单独拎出来是同一个理由,只是转盘连夹都不配。
 var hallLanes = map[string][]string{
 	LaneDraw:  {PlayDrawRank, PlayDrawProb},
 	LaneBall:  {PlayDrawBall},
@@ -93,9 +103,10 @@ func laneCovers(lane, play string) bool {
 // 所以库里确实存在这种行。少了这一条,老活动会在"按名次"开着的时候从大厅消失,
 // 而且没有任何一处报错 —— 正是本仓反复出现的静默死路。
 //
-// 未登记的 draw_mode 同样归到 rank(而不是一个"未知"档):日后有人加了第四种
+// 未登记的 draw_mode 同样归到 rank(而不是一个"未知"档):日后有人加了第五种
 // 定档方式却忘了在这里登记,后果是它跟着 rank 的开关走(可能多显示一格),
-// 而不是永久不可见。
+// 而不是永久不可见。wheel 必须**显式**登记:靠默认分支把它归到 rank,
+// 关掉"按名次"就会连转盘一起停止受理,而打开时它又会漏进抽奖夹。
 func playOf(kind, drawMode string) string {
 	if kind == KindGuess {
 		return PlayGuess
@@ -105,6 +116,8 @@ func playOf(kind, drawMode string) string {
 		return PlayDrawProb
 	case DrawModeBall:
 		return PlayDrawBall
+	case DrawModeWheel:
+		return PlayWheel
 	default:
 		return PlayDrawRank
 	}
@@ -121,6 +134,8 @@ func playSettingKey(play string) string {
 		return keyShowPlayDrawBall
 	case PlayGuess:
 		return keyShowPlayGuess
+	case PlayWheel:
+		return keyShowPlayWheel
 	}
 	return ""
 }
@@ -139,13 +154,15 @@ func (s opSettings) playShown(play string) bool {
 		return s.ShowPlayDrawBall
 	case PlayGuess:
 		return s.ShowPlayGuess
+	case PlayWheel:
+		return s.ShowPlayWheel
 	}
 	return false
 }
 
 // anyPlayShown 回答"整个娱乐入口还要不要渲染"。
 //
-// 四个玩法全关时前端不再渲染那一行导航(与 show_entry=0 完全同一形状:
+// 五个玩法全关时前端不再渲染那一行导航(与 show_entry=0 完全同一形状:
 // 路由与接口照常可达,直达链接进去只剩「我的参与」)。
 func (s opSettings) anyPlayShown() bool {
 	for _, p := range Plays {
@@ -181,8 +198,19 @@ func (s opSettings) playVisibilityMap() map[string]bool {
 // 同一个 Where 里有多个表达式时才触发,而这段与 status/hidden_at 的条件恰好
 // 就是分开写的。少一层括号 = 已下架与草稿活动跟着 OR 一起漏出来。
 //
+// wheelOnly 是转盘页那条列表(?draw_mode=wheel)的口径:只有转盘、且只在
+// 转盘开关打开时。它与 lane 互斥(转盘不属于任何一张夹),由 hallQuery 挡住。
+// 反过来,wheelOnly 为假时 modes 里**永远不含 DrawModeWheel** —— 大厅全量与
+// 三张夹都拿不到转盘,这是"转盘不进大厅"在 SQL 上的唯一执行点。
+//
 // kind / draw_mode 在三种数据库里都不是保留字,不需要引号包装。
-func playFilterClause(s opSettings, lane string) (string, []any) {
+func playFilterClause(s opSettings, lane string, wheelOnly bool) (string, []any) {
+	if wheelOnly {
+		if s.ShowPlayWheel {
+			return "(kind = ? AND draw_mode = ?)", []any{KindDraw, DrawModeWheel}
+		}
+		return "1 = 0", nil
+	}
 	modes := make([]string, 0, 4)
 	if s.ShowPlayDrawRank && laneCovers(lane, PlayDrawRank) {
 		// 空串是存量抽奖行的 draw_mode,语义等同 rank(见 playOf)。

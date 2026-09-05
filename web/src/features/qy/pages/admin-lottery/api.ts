@@ -33,6 +33,8 @@ import type {
   QyLotCoverUpload,
   QyLotCreateInput,
   QyLotPrizeSecret,
+  QyLotScheduleInput,
+  QyLotScheduleResult,
   QyLotSeries,
   QyLotSeriesInput,
 } from './types'
@@ -134,6 +136,48 @@ export function setQyLotActivityPicksCap(
   )
 }
 
+/**
+ * 改一场活动的标题与说明（`PUT …/basics`）。
+ *
+ * 草稿 / 进行中 / 已封盘都可以改：标题与说明**不进任何哈希原像**（commit / rules /
+ * spec 三个都不含它们），改它们不动结果推导、不动任何一项承诺；改动本身写一条
+ * 事件行（`basics_changed`，前后快照都在）对参与者可见。结算或结束之后 409
+ * `qy_lot_basics_locked` —— 那时名字已经随证据链公示过了。
+ *
+ * 校验与创建时同一口径：标题必填且 ≤60 字、说明 ≤2000 字。**草稿仍走编辑向导**
+ * （那里整份都能改），这条只给发布之后改错别字用。
+ */
+export function updateQyLotBasics(
+  actNo: string,
+  body: { title: string; intro: string }
+): Promise<{ act_no: string; title: string; intro: string }> {
+  return qyPut<{ act_no: string; title: string; intro: string }>(
+    actPath(actNo, '/basics'),
+    body
+  )
+}
+
+/**
+ * 改一场**已发布转盘**的排期（开始 / 结束）。
+ *
+ * 转盘是唯一一种发布后还能改时刻的玩法：它没有"封盘冻结名单再摇号"这一步，
+ * 每一转当场开出（票面 = HMAC(seed, act_no ‖ seq ‖ client_seed)，里面没有时刻），
+ * 所以 `open_at / close_at / draw_at` 不进它的承诺原像 —— 排期只决定"什么时候
+ * 收转"，像抽卡卡池的上下架时间。批次玩法（rank / prob / ball / guess）的四个
+ * 时刻仍然在发布那一刻冻结，打这条接口一律 409 `qy_lot_schedule_not_wheel`。
+ *
+ * `draw_at` 不由前端给：后端按「结束 + reveal_delay_seconds」重新派生。
+ * 「立即开始」= 同一接口 `open_at = now`；「提前结束」走既有的 cancel（提前封盘），
+ * 这条接口刻意不接受早于现在的 `close_at`。只对 `published` 开放，封盘之后 409
+ * `qy_lot_wheel_schedule_locked`。
+ */
+export function updateQyLotSchedule(
+  actNo: string,
+  body: QyLotScheduleInput
+): Promise<QyLotScheduleResult> {
+  return qyPut<QyLotScheduleResult>(actPath(actNo, '/schedule'), body)
+}
+
 /** 创建。落地即 `draft`，种子在这一刻由服务端生成 —— 请求体里没有它。 */
 export function createQyLotActivity(
   body: QyLotCreateInput
@@ -179,15 +223,32 @@ export function publishQyLotActivity(
 }
 
 /**
- * 取消整场。必然全额退款、必然公示、必然写审计。
+ * 「取消」的回执。
+ *
+ * 批次玩法：`status='settling'`、`outcome='cancelled'`，随后全额退款。
+ * 转盘（design-15 §12.1）：有转动 → **提前封盘**，`status='locked'`、`outcome=''`、
+ * `early_locked=true`，已转出去的结果一个都不动；一转都没有 → 正常 cancelled；
+ * 已封盘再点 → 409 `qy_lot_wheel_no_cancel`。
+ */
+export type QyLotCancelResult = {
+  act_no: string
+  status: string
+  outcome: string
+  early_locked?: boolean
+}
+
+/**
+ * 取消整场。必然公示、必然写审计；批次玩法必然全额退款。
  *
  * 这是管理员在开奖这件事上**唯一**能做的动作：他只能「不开」，不能「挑一个开」。
+ * 对转盘它退化成"不再收新转"（提前封盘）：本金已在每一转当场花掉、奖已当场
+ * 到账，没有任何可以退的东西。
  */
 export function cancelQyLotActivity(
   actNo: string,
   body: { reason: string }
-): Promise<unknown> {
-  return qyPost<unknown>(actPath(actNo, '/cancel'), body)
+): Promise<QyLotCancelResult> {
+  return qyPost<QyLotCancelResult>(actPath(actNo, '/cancel'), body)
 }
 
 /**
@@ -272,32 +333,6 @@ export function retryQyLotPayout(
 ): Promise<unknown> {
   return qyPost<unknown>(
     `${actPath(actNo, '/payouts')}/${encodeURIComponent(payoutNo)}/retry`
-  )
-}
-
-/**
- * 人工核对结论 → 落账。**超级管理员专属。**
- *
- * 用在「重试」按不动的那一档:出款冻结中、本代次资金单已判失败、而主库探针说
- * 钱可能已经动过。三条自动链路都不碰这一笔(出款 worker 不扫 `held`、补偿任务
- * 不扫 `failed`),而重试的换代次分支被探针挡死 —— 没有这个端点,那笔钱永久挂在
- * 冻结中,那一场活动也因此永远删不掉。
- *
- * `verdict` 只有两个取值,而且它们的代价完全不同:
- *
- *   - `credited`     —— 核对确认钱已经到账。只把账做平,一分钱都不再动。
- *   - `not_credited` —— 核对确认钱没到账。**换代次重排,主库会再加一次钱。**
- *
- * `reason` 必填(≤200 字),它是这笔钱事后唯一的解释。
- */
-export function adjudicateQyLotPayout(
-  actNo: string,
-  payoutNo: string,
-  body: { verdict: 'credited' | 'not_credited'; reason: string }
-): Promise<unknown> {
-  return qyPost<unknown>(
-    `${actPath(actNo, '/payouts')}/${encodeURIComponent(payoutNo)}/adjudicate`,
-    body
   )
 }
 

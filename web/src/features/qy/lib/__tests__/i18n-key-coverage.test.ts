@@ -83,6 +83,7 @@ const QY_DYNAMIC_KEYS = [
   // `_text` 曾经落在这条清单与扫描器的**交集盲区**里：它既不是字面量、也没登记
   // 在这里，于是其余 50 个键补进语言包之后测试会全绿，而文本奖那一行仍然渲染成
   // 英文单词 `text`（t() 带了 defaultValue: kind，所以连裸键都看不到）。
+  'qy_lot_payout_kind_product',
   'qy_lot_payout_kind_prize',
   'qy_lot_payout_kind_win',
   'qy_lot_payout_kind_refund',
@@ -124,6 +125,14 @@ const QY_DYNAMIC_KEYS = [
   'qy_lot_play_draw_prob',
   'qy_lot_play_draw_ball',
   'qy_lot_play_guess',
+  // 第五种玩法：星屑转盘（design-15）。同一张 PLAY_SWITCHES 表，同样扫不到。
+  'qy_lot_play_wheel',
+  // 转盘一转的三种结局 → 结果屏那句标题。走 `pages/wheel/lib/spin.ts` 的
+  // QY_WHEEL_OUTCOME_I18N 查表再 `t(key, { name })`，字面量扫描器看不见。
+  // 「摇中了但已发完」尤其不能漏：它只在库存刚好耗尽的那一转出现，平时点不到。
+  'qy_lot_wheel_result_won',
+  'qy_lot_wheel_result_exhausted',
+  'qy_lot_wheel_result_none',
   // 玩法开关在配置页上的字段名与说明。那一页的字段整个由后端下发的
   // `editable_keys` 驱动，取文案走
   // ``t(`qy_lot_cfg_k_${key}`, { defaultValue: key })`` —— 缺键不会渲染成裸键，
@@ -137,6 +146,8 @@ const QY_DYNAMIC_KEYS = [
   'qy_lot_cfg_h_show_play_draw_ball',
   'qy_lot_cfg_k_show_play_guess',
   'qy_lot_cfg_h_show_play_guess',
+  'qy_lot_cfg_k_show_play_wheel',
+  'qy_lot_cfg_h_show_play_wheel',
   // 护栏模型(qwen3guard)那九个**训练时钉死**的安全类别名。渠道表单画的是
   // 九个复选框，取文案走
   // ``t(`qy_ai_guard_cat_${c.id}`, { defaultValue: c.label })`` —— 字面量扫描器
@@ -164,6 +175,135 @@ const QY_DYNAMIC_KEYS = [
   'qy_lot_empty_draw_desc',
   'qy_lot_empty_ball_desc',
   'qy_lot_empty_guess_desc',
+  // 星屑商城（design-15 §6）。这几组全都走模板字符串或查表：
+  //   · 商品形态 `t(qyMallKindKey(kind))`，对齐后端 `mall/model.go` 的三个 Kind；
+  //   · 卡片上"为什么现在不能买" `t(\`qy_ml_block_${block}\`)`，对齐
+  //     `pages/mall/lib/product.ts` 的 QyMallBuyBlock 五个取值；
+  //   · 订单状态徽章文案（`lib/order.ts` 的 STATUS_VIEW 查表）与时间线的下一步；
+  //   · 事件动作 `t(qyMallEventKey(action))`，对齐后端 `mall/order.go` 的九个 Action；
+  //   · 套餐预览四种结论 `t(\`qy_ml_preview_${action}\`)`（后端 `mall/plan.go`）；
+  //   · 套餐时长单位 `t(\`qy_ml_duration_${unit}\`)`（上游 subscription_plans）；
+  //   · 下单弹窗按 kind 切的三句警示与三句回执（`t(warnKey)` / `t(nextKey)`）；
+  //   · 管理端建商品时三种形态的说明、裁决的两个 verdict 与各自后果。
+  // 后三组尤其藏得深：它们只在"钱真正要动"的那一屏出现，缺键时渲染成裸键
+  // 而没有人会在提交前多看一眼那行小字。
+  'qy_ml_kind_plan',
+  'qy_ml_kind_code',
+  'qy_ml_kind_physical',
+  'qy_ml_block_ended',
+  'qy_ml_block_limit',
+  'qy_ml_block_sold_out',
+  'qy_ml_block_unavailable',
+  'qy_ml_block_upcoming',
+  'qy_ml_st_paid',
+  'qy_ml_st_paid_physical',
+  'qy_ml_st_shipped',
+  'qy_ml_st_done',
+  'qy_ml_st_cancelled',
+  'qy_ml_st_failed',
+  'qy_ml_st_held',
+  'qy_ml_st_revoked',
+  'qy_ml_tl_next_ship',
+  'qy_ml_tl_next_done',
+  'qy_ml_tl_next_plan',
+  'qy_ml_tl_next_held',
+  'qy_ml_ev_pay',
+  'qy_ml_ev_issue_code',
+  'qy_ml_ev_ship',
+  'qy_ml_ev_done',
+  'qy_ml_ev_cancel',
+  'qy_ml_ev_fail',
+  'qy_ml_ev_hold',
+  'qy_ml_ev_revoke_code',
+  'qy_ml_ev_adjudicate',
+  'qy_ml_preview_new',
+  'qy_ml_preview_extend',
+  'qy_ml_preview_supersede',
+  'qy_ml_preview_reject',
+  'qy_ml_duration_year',
+  'qy_ml_duration_month',
+  'qy_ml_duration_day',
+  'qy_ml_duration_hour',
+  'qy_ml_duration_custom',
+  'qy_ml_order_warn_code',
+  'qy_ml_order_warn_physical',
+  'qy_ml_order_warn_plan',
+  'qy_ml_receipt_code_next',
+  'qy_ml_receipt_physical_next',
+  'qy_ml_receipt_plan_next',
+  'qy_mladm_kind_desc_code',
+  'qy_mladm_kind_desc_physical',
+  'qy_mladm_kind_desc_plan',
+  'qy_mladm_verdict_applied',
+  'qy_mladm_verdict_applied_desc',
+  'qy_mladm_verdict_not_applied',
+  'qy_mladm_verdict_not_applied_desc',
+  // 抽奖的商品奖落成商城订单之后多出来的几组（task-D）：
+  //   · 订单来源 `t(\`qy_ml_source_${source}\`)`（列表筛选），对齐后端
+  //     `mall/model.go` 的两个 Source；
+  //   · 奖品单专属的两个状态文案（STATUS_VIEW 之外按 source / address_missing
+  //     派生）与时间线的两个"下一步"；
+  //   · 中奖结果屏按商品形态切的三句"接下来"（PRODUCT_WON_NOTE 查表）；
+  //   · 事件流的 `basics_changed`（`t(\`qy_lot_event_${action}\`)`）。
+  'qy_ml_source_lottery',
+  'qy_ml_source_mall',
+  'qy_ml_st_address_missing',
+  'qy_ml_st_code_pending',
+  'qy_ml_tl_next_address',
+  'qy_ml_tl_next_code',
+  'qy_lot_wheel_won_product_plan_note',
+  'qy_lot_wheel_won_product_code_note',
+  'qy_lot_wheel_won_product_physical_note',
+  'qy_lot_wheel_won_product_note',
+  'qy_lot_event_basics_changed',
+  // 邀请返星屑（D-14）。下线消费返是第十三种 kind，走 `t(qySdKindKey(kind))`；
+  // 星屑配置页的字段名与说明由后端 `editable_keys` 驱动、模板字符串取文案；
+  // 停止 / 恢复计返留空事由时落的默认事由是 `t(cond ? 'a' : 'b')`，三者字面量
+  // 扫描器都看不见。新键在 `pending-invite.{en,zh}.json` 片段里，主编排合并进
+  // 主包之前本条对它们是红的（预期）。
+  'qy_sd_kind_invite_consume',
+  'qy_sdadm_cfg_k_invite_consume_bps',
+  'qy_sdadm_cfg_h_invite_consume_bps',
+  'qy_inv_a_block_default_reason',
+  'qy_inv_a_unblock_default_reason',
+  // 下线日消费的排序键随后端字段改名（commission_base_quota → invite_base_quota），
+  // 走 `t(\`qy_dc_sort_${key}\`)`。
+  'qy_dc_sort_invite_base_quota',
+  // 星辉佣金（D-15）。这几组全走查表或模板串，字面量扫描器看不见：
+  //   · 自动入账单的四种状态 → 徽章（`commission-records/lib/credit-status.ts`）；
+  //   · 佣金用户 / 余额对账的排序项（`QY_*_SORT_LABEL_KEY` 查表）；
+  //   · 佣金用户的三个筛选开关（`t(\`qy_cu_filter_${flag}\`)`）；
+  //   · 资金单 kind 的新成员 `commission_credit`（`t(\`qy_cfg_fund_kind_${kind}\`)`）；
+  //   · 计佣行的来源与状态（`t(\`qy_aff_src_${…}\`)` / `t(\`qy_aff_st_${…}\`)`）。
+  // 新键在 `pending-commission.{en,zh}.json` 片段里，主编排合并进主包之前本条对
+  // 它们是红的（预期）。
+  'qy_aff_credit_st_pending',
+  'qy_aff_credit_st_done',
+  'qy_aff_credit_st_failed',
+  'qy_aff_credit_st_held',
+  'qy_cb_sort_available_xh',
+  'qy_cb_sort_credited',
+  'qy_cb_sort_earned',
+  'qy_cb_sort_updated',
+  'qy_cb_sort_user',
+  'qy_cu_sort_available_xh',
+  'qy_cu_sort_earned',
+  'qy_cu_sort_updated',
+  'qy_cu_sort_user',
+  'qy_cu_sort_invitees',
+  'qy_cu_filter_has_invitees',
+  'qy_cu_filter_has_balance',
+  'qy_cu_filter_blocked',
+  'qy_cfg_fund_kind_commission_credit',
+  'qy_aff_src_topup',
+  'qy_aff_src_redemption',
+  'qy_aff_src_consume',
+  'qy_aff_src_clawback',
+  'qy_aff_src_manual',
+  'qy_aff_st_accrued',
+  'qy_aff_st_settled',
+  'qy_aff_st_risk_hold',
+  'qy_aff_st_voided',
 ]
 
 /**

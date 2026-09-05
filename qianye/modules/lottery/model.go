@@ -15,19 +15,20 @@
 //
 // # 资金铁律(违反即资损,配 fund_guard_test.go 的 AST 断言)
 //
-//   - 禁止 model.DecreaseUserQuota:它直接 UPDATE quota = quota - ?,既无
-//     WHERE quota >= ?,也不检查 RowsAffected,会把余额扣成负数;且在
-//     BatchUpdateEnabled 下只进内存批量队列,钱什么时候落库不可确定。
-//   - 禁止 model.IncreaseUserQuota:同上,且无溢出校验。加款一律带上限条件
-//     `WHERE id=? AND quota <= (MaxQuota - amount)` —— MaxQuota 是额度换算的算术上界
-//     且上游全无溢出校验。
-//   - 禁止 tx.Save(&User{})(全字段覆盖冲掉并发变更)、禁止 user.Update() 与
-//     IncrementUserAuthVersion(会吊销用户全部会话)。
-//   - 扣款一律:model.QyLockForUpdate 取行锁 → 锁内复检 status/group →
-//     `UPDATE users SET quota=quota-? WHERE id=? AND quota>=?` 并断言
-//     RowsAffected==1。SQLite 下行锁是空操作,CAS 条件才是唯一正确性保障。
-//   - 金额一律 int64 + shopspring/decimal;转换只用 common.QuotaFromDecimal /
-//     QuotaFromFloat / QuotaRound,禁止裸 int() 与 float64。
+// 参与费与派奖全部走扩展库的星屑账本(qianye/modules/stardust),**不碰主库
+// users.quota**,也不再有跨库两阶段。铁律因此只剩一条方向与几条禁令:
+//
+//   - 动账**只经 stardust.Credit / stardust.Debit**。禁止在本包里对 qy_sd_balance
+//     发任何 UPDATE、禁止自己对它加锁、禁止往 qy_sd_ledger 插行 —— 余额行上的每个
+//     数字都是流水的派生量,绕过账本的一次写入会让 stardust 的 I0/I1 当场失效。
+//   - Credit / Debit 返回任何非 nil error 时必须让整个扩展库事务回滚,包括
+//     ErrInsufficient。吞掉它继续提交会留下一行幂等流水而余额未动,下一次重试
+//     被判成"重放"——一笔既没扣成也永远扣不成的账(stardust/doc.go)。
+//   - 锁序:同一事务里活动行锁先于余额行锁(reserveEntry → Debit;活动合计的
+//     UPDATE → Credit)。
+//   - 禁止 import qianye/service/twophase、禁止 model.DecreaseUserQuota /
+//     IncreaseUserQuota / QyRecordLedgerLog / QyLockForUpdate:主库不是本模块的账。
+//   - 金额一律 int64 星屑整数;上界与额度共用 common.MaxQuota。
 //   - ctx 一律 guard.ColdContext(context.Background()),不用
 //     c.Request.Context() —— 客户端断连不该中断已在动钱的操作。
 //
@@ -35,8 +36,8 @@
 //
 // activity / seed / prize / option / entry / payout / event 七张表显式排除在
 // 所有 Prune 之外,StartTasks 里不注册任何针对它们的清理任务。
-// qy_fund_orders 与全局审计的保留期不归本模块管,因此证据链绝不能依赖它们 ——
-// 一切必须在本模块的表里自洽。
+// qy_sd_ledger 是 stardust 的证据表,同样永不随活动删除;删除活动**不删**流水行,
+// 事后仍能按 act_no 把一场活动的进出归拢出来。
 package lottery
 
 import qymodel "github.com/QuantumNous/new-api/qianye/model"
@@ -84,9 +85,10 @@ type Activity struct {
 	// 那几百 KB 的字符串一起读出来、序列化、压缩、发出去。
 	CoverRef string `json:"cover_ref" gorm:"type:varchar(64);not null;default:''"`
 
-	// StakeQuota 强制 > 0。免费场在 v1 明确不做:twophase 的入口校验强制
-	// 0 < amount ≤ MaxQuota,0 元要另开一条不动钱的路径 = 第二套状态机 +
-	// 第二套幂等 + 第二套补偿,而需求原文就是"用户花费多少余额参与抽奖"。
+	// StakeQuota 强制 > 0,单位是星屑整数(列名沿用 *_quota:它进承诺哈希原像,
+	// 也是前端契约,只是数值现在就是星屑)。免费场在 v1 明确不做:stardust.Debit
+	// 的入口校验强制 0 < amount ≤ MaxQuota,0 元要另开一条不动钱的路径 = 第二套
+	// 状态机 + 第二套幂等,而需求原文就是"用户花费多少参与抽奖"。
 	StakeQuota int64 `json:"stake_quota" gorm:"not null;default:0"`
 	// BetMinQuota / BetMaxQuota 是竞猜单注上下限,0 = 不限。
 	// 不设上限时一个大户可以在封盘前几秒压满获胜选项吃掉奖池,散户期望收益归零;
@@ -113,7 +115,7 @@ type Activity struct {
 	Algo       string `json:"algo" gorm:"type:varchar(24);not null;default:''"`
 
 	// DrawMode 是抽奖的定档方式:rank(按名次抽 N 个)/ prob(按公示概率摇号)
-	// / ball(双色球)。竞猜恒为空串。
+	// / ball(双色球)/ wheel(星屑转盘,即时开奖 + 期次承诺揭示)。竞猜恒为空串。
 	//
 	// **刻意不新增 kind**:runReveal 按 kind='draw' 扫、runVoidExpired 按
 	// kind='guess' 扫、entry.go 在两个 kind 上分支、资格与扣费完全不看 kind ——
@@ -206,22 +208,25 @@ type Activity struct {
 	// 判定只有一处(picksCapOf),取值范围由 buildActivity 挡在 0..999。
 	MaxPicksPerRequest int `json:"max_picks_per_request" gorm:"not null;default:0"`
 
-	// EntrySeq 是已分配的最大序号(含失败条目),哈希链顺序的唯一权威。
-	// ChainHead 是最后一条 entry 的 chain_hash,即下一条的 prev。
+	// EntrySeq 是已分配的最大序号,哈希链顺序的唯一权威。单事务之下失败的尝试
+	// 整笔回滚、不占序号,所以 seq 从 1 起连续无缺口,且每一个 seq 都对应一张
+	// 真扣了星屑的票。ChainHead 是最后一条 entry 的 chain_hash,即下一条的 prev。
 	// 两者与全场计数同在这一行:一把活动行锁全解决,不需要额外的计数表。
 	EntrySeq  int    `json:"entry_seq" gorm:"not null;default:0"`
 	ChainHead string `json:"chain_head" gorm:"type:varchar(64);not null;default:''"`
 
-	ActiveCount  int   `json:"active_count" gorm:"not null;default:0"`
-	PendingCount int   `json:"pending_count" gorm:"not null;default:0"`
-	PoolQuota    int64 `json:"pool_quota" gorm:"not null;default:0"`
+	// ActiveCount 是有效票数,PoolQuota 是参与费合计(星屑)。两者在 reserveEntry
+	// 的那条条件 UPDATE 里与序号一起累加,票落库失败时随事务一起回滚 ——
+	// 没有 pending 阶段,也就没有任何需要"回退计数"的代码。
+	ActiveCount int   `json:"active_count" gorm:"not null;default:0"`
+	PoolQuota   int64 `json:"pool_quota" gorm:"not null;default:0"`
 
 	// RosterHash / RosterCount 在封盘时落库并**先于种子公开**。
 	// 这个先后顺序是整个协议的关键。
 	RosterHash  string `json:"roster_hash" gorm:"type:varchar(64);not null;default:''"`
 	RosterCount int    `json:"roster_count" gorm:"not null;default:0"`
 
-	// 结算三口径,管理端"本场收支"直读。
+	// 结算三口径(星屑),管理端"本场收支"直读。
 	PlatformFeeQuota int64 `json:"platform_fee_quota" gorm:"not null;default:0"`
 	PayoutQuota      int64 `json:"payout_quota" gorm:"not null;default:0"`
 	RefundQuota      int64 `json:"refund_quota" gorm:"not null;default:0"`
@@ -269,6 +274,10 @@ const (
 	KindGuess = "guess"
 )
 
+// CurrencyStardust 是本模块唯一的币种:参与费、奖池、派奖、退款全部是星屑整数。
+// 它随活动 DTO 与证据链下发,让前端与验证者不必猜 *_quota 字段的单位。
+const CurrencyStardust = "stardust"
+
 // 活动状态。单向线性,没有回退边。
 const (
 	StatusDraft     = "draft"
@@ -305,17 +314,36 @@ const (
 // 一张票的名次取决于其他所有票),prob 是"每张票各摇一次、按公示概率定档"
 // (作用域是单张票,结果完全不依赖别人)。共用同一个随机源与同一份票面推导,
 // 区别只在读票面的那把尺子。
+//
+// wheel 是第四种,而且是唯一**即时开奖**的一种:每一次转动在活动行锁内当场
+// 摇号、当场扣库存、当场派奖(wheel.go),批次玩法的"封盘 → 冻结名单 → 揭示
+// 种子 → 统一摇号"对它只剩"揭示种子"这一步(lifecycle.go 的 revealWheel)。
+// 它的票面不混名单哈希,所以能读到种子的人可以挑自己的下一转 —— 项目方接受
+// 这一档(decisions.md D-13),协议只保证"按公示公式算的、可逐转复算"。
 const (
-	DrawModeRank = "rank"
-	DrawModeProb = "prob"
-	DrawModeBall = "ball"
+	DrawModeRank  = "rank"
+	DrawModeProb  = "prob"
+	DrawModeBall  = "ball"
+	DrawModeWheel = "wheel"
 )
 
 // 奖品类型。单选,不允许一档既给额度又给文本 —— 混合会让派奖在同一行里分叉,
 // 要两者就配两档。
+//
+// none 是转盘专用的「谢谢参与」档:**不是运营填的**,由 buildPrizes 在末尾派生
+// (win_ppm = PpmDen − Σ其余档),count / amount 恒 0、没有库存、不落 payout 行。
+// 它必须是 spec 原像里的一行:摇号轴由此在结构上没有留空区间,验证者按同一张
+// 表落档,不需要猜"落在全部区间之外"该算什么。
+//
+// product 是引用一件商城商品(套餐 / 兑换码 / 实物)的奖档:count 是份数、amount 恒 0、
+// product_no 指向 qy_ml_product.product_no。中奖即在同一个扩展库事务里生成一张
+// 0 元商城订单(mall.GrantPrizeTx),履行走商城既有的码 / 发货 / 发订阅三条路。
+// 转盘与批次抽奖(rank / prob)允许它;双色球与竞猜不允许。
 const (
-	PrizeTypeQuota = "quota"
-	PrizeTypeText  = "text"
+	PrizeTypeQuota   = "quota"
+	PrizeTypeText    = "text"
+	PrizeTypeNone    = "none"
+	PrizeTypeProduct = "product"
 )
 
 // NoWinnerPolicy 是"全部猜错"的口径,写死为全额退回、手续费一分不收。
@@ -334,8 +362,10 @@ const NoWinnerPolicy = "refund_all"
 // model 的先例在本仓已经存在,而 json:"-" 只挡 JSON 这一条路。
 // 没被 SELECT 出来的东西才泄不了。
 //
-// 硬规则:全字段 json:"-";包内只有 loadSeedForReveal 与 newSeed 两个函数
-// 触碰 Seed 字段;审计快照一律显式挑字段构造,绝不整行序列化;禁止 %+v 打印。
+// 硬规则:全字段 json:"-";包内只有三处触碰 Seed 字段 —— 创建点 handleCreateActivity
+// (唯一的非空复合字面量)、冷路径读点 loadSeedForReveal(发布 / 开奖 / 证据链 /
+// 删除审计)、热路径读点 loadSeedForSpin(转盘的每一次转动,只在转动事务内);
+// 审计快照一律显式挑字段构造,绝不整行序列化;禁止 %+v 打印。
 // 由 seed_guard_test.go 的 AST 断言守住。永不清理。
 type Seed struct {
 	ActId int64 `json:"-" gorm:"primaryKey;autoIncrement:false"`
@@ -368,12 +398,23 @@ type Prize struct {
 	Name        string `json:"name" gorm:"type:varchar(80);not null;default:''"`
 	AmountQuota int64  `json:"amount_quota" gorm:"not null;default:0"`
 	// Count 在 rank 模式下是硬名额;在 prob 模式下是**本档预算的份数**
-	// (预算 = Count × AmountQuota),超募时该预算由全部中签者均分。
+	// (预算 = Count × AmountQuota),超募时该预算由全部中签者均分;在 wheel
+	// 模式下是**发布时的硬库存**(每人拿定额,永远不摊薄)。
 	// 语义随模式变化是刻意的:唯有如此,公示的中奖概率才在任何人数下都为真。
 	Count int `json:"count" gorm:"not null;default:0"`
+	// StockLeft 是转盘的在线剩余份数:发布时 = Count,每一次摇中真实档就在转动
+	// 事务里条件递减一次(stock_left > 0)。它是奖档行上**唯一在线可变**的列,
+	// 刻意**不进** prizeSpecLineOf 原像 —— 进了原像,每一转都会改掉承诺。
+	// 非转盘活动恒为 0。
+	StockLeft int `json:"stock_left" gorm:"not null;default:0"`
 
-	// PrizeType 是 quota 或 text。空串按 quota 处理(存量行)。
+	// PrizeType 是 quota / text / none / product。空串按 quota 处理(存量行);none 只出现在
+	// 转盘派生的「谢谢参与」行上。
 	PrizeType string `json:"prize_type" gorm:"type:varchar(8);not null;default:''"`
+	// ProductNo 只对 product 档有值:商城商品号。它进 spec 原像(PrizeSpecLineV2 的
+	// 第 11 位)—— 公示的奖档要能对上是哪一件商品,发布后换一件就开不了奖。
+	// 商品名 / 种类不在这里快照:展示时按商品号去商城读(mall.ProductBriefs)。
+	ProductNo string `json:"product_no" gorm:"type:varchar(32);not null;default:''"`
 	// WinPpm 是本档的中奖概率(百万分比)。rank 模式下恒为 0。
 	// 它进 spec 原像 → spec_hash → commit_hash,发布之后改一个数字就开不了奖。
 	WinPpm int `json:"win_ppm" gorm:"not null;default:0"`
@@ -393,8 +434,13 @@ type Prize struct {
 
 // Type 返回归一化后的奖品类型:空串(存量行)按额度处理。
 func (p Prize) Type() string {
-	if p.PrizeType == PrizeTypeText {
+	switch p.PrizeType {
+	case PrizeTypeText:
 		return PrizeTypeText
+	case PrizeTypeNone:
+		return PrizeTypeNone
+	case PrizeTypeProduct:
+		return PrizeTypeProduct
 	}
 	return PrizeTypeQuota
 }
@@ -425,6 +471,9 @@ func (Option) TableName() string { return "qy_lot_option" }
 // Entry 是参与/投注明细。**只进不出**:没有用户退出、没有管理员删单,
 // 取消只能整场。这是 grinding 防御的基石 —— 每次试探都要真扣一笔费用
 // 并在公开名单里永久留一条记录。永不清理。
+//
+// 库里的每一行都是一张**已经扣了星屑**的票:票与流水在同一个扩展库事务里落库,
+// 任何一步失败整笔回滚。没有 pending / failed / excluded 这些中间态。
 type Entry struct {
 	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
 	// EntryNo 是用户手里的凭据、票号,也是公开名单的排序键。crypto/rand 生成,
@@ -433,8 +482,14 @@ type Entry struct {
 
 	ActId   int64  `json:"act_id" gorm:"not null;uniqueIndex:uk_qy_lot_entry_idem,priority:1;uniqueIndex:uk_qy_lot_entry_seq,priority:1;index:idx_qy_lot_entry_scan,priority:1;index:idx_qy_lot_entry_user,priority:1;index:idx_qy_lot_entry_inv,priority:1;index:idx_qy_lot_entry_ip,priority:1"`
 	IdemKey string `json:"-" gorm:"type:varchar(96);not null;default:'';uniqueIndex:uk_qy_lot_entry_idem,priority:2"`
-	// Seq 是活动内单调序号,**含失败条目**。uk(act_id, seq) 由数据库强制链的
-	// 顺序完整 —— 失败条目永久留在链上占一个 seq,删除即破链。
+	// Fingerprint 是这张票的**用户请求要素**摘要(entryFingerprint:用户、金额、
+	// 活动、选项、号码;不含 entry_no)。唯一索引只保证"同一个键不会被重复执行",
+	// 保证不了"重放的是同一个请求":换个选项复用同一个 client_request_id,
+	// 幂等命中会返回原票"成功",而实际投的仍是旧选项。指纹就是用来堵这个洞的,
+	// 不一致一律 409。
+	Fingerprint string `json:"-" gorm:"type:varchar(64);not null;default:''"`
+	// Seq 是活动内单调序号。uk(act_id, seq) 由数据库强制链的顺序完整;
+	// 失败的尝试整笔回滚不占序号,所以 seq 连续无缺口。
 	Seq int `json:"seq" gorm:"not null;default:0;uniqueIndex:uk_qy_lot_entry_seq,priority:2"`
 
 	UserId int `json:"user_id" gorm:"not null;index:idx_qy_lot_entry_user,priority:2;index:idx_qy_lot_entry_my,priority:1"`
@@ -447,7 +502,8 @@ type Entry struct {
 
 	OptionId int64 `json:"option_id" gorm:"not null;default:0"`
 	OptNo    int   `json:"opt_no" gorm:"not null;default:0"`
-	Amount   int64 `json:"amount" gorm:"not null;default:0"`
+	// Amount 是这张票扣掉的星屑数,进链原像与名单原像。
+	Amount int64 `json:"amount" gorm:"not null;default:0"`
 
 	// Pick 是双色球的选号(规范化格式,如 "03,05,12|08")。非 ball 活动恒为空串。
 	//
@@ -455,8 +511,26 @@ type Entry struct {
 	// 改成中奖号,而链尾、条目计数、名单重算三道校验会照常全部通过。
 	Pick string `json:"pick" gorm:"type:varchar(64);not null;default:''"`
 
+	// ── 转盘(draw_mode=wheel)的一次转动。非转盘活动四列恒为零值 ──
+	//
+	// ClientSeed 是用户自选的分量,进票面原像 HMAC(seed, act_no ‖ seq ‖ client_seed)
+	// 与链原像(WheelPick 编码);≤ 64 字节、仅 [0-9a-zA-Z_-],空串按空分量。
+	// 它刻意**不写进 Pick**:Pick 是 64 宽,而链原像里的编码串还要带上档位、
+	// 摇号量与耗尽档,装不下;验证者按 WheelPick 从这四列复算同一串。
+	ClientSeed string `json:"client_seed" gorm:"type:varchar(64);not null;default:''"`
+	// ResultTier 是这一转落定的奖档,0 = 未中(落在 none 档,或摇中的档已发完)。
+	ResultTier int `json:"result_tier" gorm:"not null;default:0"`
+	// Ppm 是摇号量 RollPpm(ticket) ∈ [0, 999999],"我为什么没中"里唯一需要的数字。
+	Ppm int64 `json:"ppm" gorm:"not null;default:0"`
+	// ExhaustedTier > 0 表示摇中了这一档、但它的库存已经发完,结果落到未中。
+	// 单独一列而不是并进 ResultTier:公示"库存耗尽落空"是真的,这一位就是证据。
+	ExhaustedTier int `json:"exhausted_tier" gorm:"not null;default:0"`
+
+	// Status 恒为 success(EntrySuccess)。列保留是因为它进证据链契约(验证脚本
+	// 按 status 过滤名单),而不是因为还有第二种取值。
 	Status string `json:"status" gorm:"type:varchar(12);not null;index:idx_qy_lot_entry_scan,priority:2;index:idx_qy_lot_entry_user,priority:3"`
-	// OrderNo 是 twophase 资金单号,跨库对账锚点。
+	// OrderNo 是扣款那一行流水的 qy_sd_ledger.ledger_no —— 退款金额的权威锚点
+	// (refundAmountOf),也是用户在星屑账本页对上这张票的凭据。
 	OrderNo string `json:"order_no" gorm:"type:varchar(64);not null;default:''"`
 
 	PrevHash  string `json:"prev_hash" gorm:"type:varchar(64);not null;default:''"`
@@ -467,6 +541,8 @@ type Entry struct {
 	// 不下发给任何非管理员接口。
 	EligibilitySnapshot string `json:"-" gorm:"type:text"`
 
+	// QuotaBefore / QuotaAfter 是扣款前后的星屑余额快照(取自 stardust.Debit 的收据),
+	// 只用于回执与管理端查账。列名沿用,数值是星屑。
 	QuotaBefore int64 `json:"quota_before" gorm:"not null;default:0"`
 	QuotaAfter  int64 `json:"quota_after" gorm:"not null;default:0"`
 
@@ -475,37 +551,25 @@ type Entry struct {
 	IpHash string `json:"-" gorm:"type:varchar(64);not null;default:'';index:idx_qy_lot_entry_ip,priority:2"`
 	UaHash string `json:"-" gorm:"type:varchar(64);not null;default:''"`
 
-	FailCode string `json:"fail_code" gorm:"type:varchar(48);not null;default:''"`
-
 	CreatedAt int64 `json:"created_at" gorm:"not null;default:0;index:idx_qy_lot_entry_my,priority:2"`
 	SettledAt int64 `json:"settled_at" gorm:"not null;default:0"`
 }
 
 func (Entry) TableName() string { return "qy_lot_entry" }
 
-// 参与状态。
-//
-// excluded 是"封盘时仍未决"的条目:它既不算进有效名单,也不能立刻登记退款 ——
-// 那笔资金单可能最终判定为 Failed(主库根本没扣钱),退一笔从没收过的钱
-// 会在资金表里留下一条假的成功记录。退款由资金单的终态驱动,见 lifecycle.go。
-const (
-	EntryPending  = "pending"
-	EntrySuccess  = "success"
-	EntryFailed   = "failed"
-	EntryExcluded = "excluded"
-	EntryRefunded = "refunded"
-)
+// EntrySuccess 是参与明细唯一的状态:票只在扣款事务提交之后才存在。
+const EntrySuccess = "success"
 
 // ─────────────────────────── 出款 ───────────────────────────
 
 // Payout 是派奖/赔付/退款的逐笔可重入状态机。
 //
 // 开奖只落计划(planned),一分钱不动。真正动钱由 worker 逐笔驱动,
-// 每一笔都是独立的两阶段资金单 —— 绝不在开奖 handler 里循环 Execute。
+// 每一笔都是独立的一个扩展库事务(stardust.Credit)—— 绝不在开奖 handler 里循环入账。
 // 永不清理。
 type Payout struct {
 	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
-	// PayoutNo 由 crypto/rand 生成,同时是 twophase 的 IdemKey。
+	// PayoutNo 由 crypto/rand 生成,同时是账本上的幂等键(lotpay:<payout_no>)。
 	// 出款由服务端发起,幂等键必须是服务端生成的 —— 与报名的取舍方向相反,
 	// 因为"谁在重试"不同。
 	PayoutNo string `json:"payout_no" gorm:"type:varchar(32);not null;uniqueIndex:uk_qy_lot_payout_no"`
@@ -517,21 +581,18 @@ type Payout struct {
 	EntryId int64  `json:"entry_id" gorm:"not null;uniqueIndex:uk_qy_lot_payout_slot,priority:2"`
 	Kind    string `json:"kind" gorm:"type:varchar(12);not null;uniqueIndex:uk_qy_lot_payout_slot,priority:3"`
 
-	UserId      int   `json:"user_id" gorm:"not null;index:idx_qy_lot_payout_user,priority:1"`
-	Tier        int   `json:"tier" gorm:"not null;default:0"`
-	DrawPos     int   `json:"draw_pos" gorm:"not null;default:0"`
+	UserId  int `json:"user_id" gorm:"not null;index:idx_qy_lot_payout_user,priority:1"`
+	Tier    int `json:"tier" gorm:"not null;default:0"`
+	DrawPos int `json:"draw_pos" gorm:"not null;default:0"`
+	// AmountQuota 是这一笔要发的星屑数(列名沿用)。
 	AmountQuota int64 `json:"amount_quota" gorm:"not null;default:0"`
 
-	Status  string `json:"status" gorm:"type:varchar(12);not null;index:idx_qy_lot_payout_drive,priority:1"`
+	Status string `json:"status" gorm:"type:varchar(12);not null;index:idx_qy_lot_payout_drive,priority:1"`
+	// OrderNo 是入账那一行流水的 qy_sd_ledger.ledger_no,paid 之后才有。
 	OrderNo string `json:"order_no" gorm:"type:varchar(64);not null;default:''"`
-
-	// Epoch 是这一笔的**资金单代次**,与 payout_no 一起组成 twophase 的幂等键。
-	//
-	// 没有它,一笔出款的资金单一旦被判 Failed 就永久失效:重入 Execute 必然幂等
-	// 命中原单并返回 ErrOrderFailed,自动重试与管理端「重试」按钮都只是空转,
-	// 用户赢来的钱再也发不出去。代次只在**主库探针确认没生效**时才 +1 ——
-	// 那是唯一能保证"重开一张单不会重复发钱"的前提。
-	Epoch int `json:"epoch" gorm:"not null;default:0"`
+	// MallOrderNo 只对 kind='product' 有值:中奖生成的那张商城订单(qy_ml_order.order_no)。
+	// 用户从「我的参与」点过去看码 / 填地址 / 看订阅,靠的就是它。
+	MallOrderNo string `json:"mall_order_no" gorm:"type:varchar(32);not null;default:''"`
 
 	Attempts      int    `json:"attempts" gorm:"not null;default:0"`
 	NextAttemptAt int64  `json:"next_attempt_at" gorm:"not null;default:0;index:idx_qy_lot_payout_drive,priority:2"`
@@ -571,20 +632,24 @@ type Payout struct {
 
 func (Payout) TableName() string { return "qy_lot_payout" }
 
-// 出款类型。三者对主库做的是同一件事(加额度),因此共用一个资金 Kind。
+// 出款类型。派奖与赔付在账本上都是 lot_prize,退款是 lot_refund。
 const (
 	PayoutPrize  = "prize"  // 抽奖派奖
 	PayoutWin    = "win"    // 竞猜赔付
-	PayoutRefund = "refund" // 取消 / 流局 / 全错 / 未决排除的退款
-	// PayoutText 是文本奖的中奖位。它**不动钱、不进跨库资金链路**,
+	PayoutRefund = "refund" // 取消 / 流局 / 全错的退款
+	// PayoutText 是文本奖的中奖位。它**不动钱、不进账本**,
 	// 一落库就是终态(granted),等管理员手工履行。
 	PayoutText = "text"
+	// PayoutProduct 是商品奖的中奖位。同样不动账本;它的"履行"是在扩展库里生成一张
+	// 商城订单:转盘在转动事务里当场做,批次抽奖落 planned 交给出款 worker
+	// (driveProductPayout)做,做完落 granted 并把商城单号写进 mall_order_no。
+	PayoutProduct = "product"
 )
 
 // 出款状态。
 //
-// held 是"我不知道 / 我不能自动决定,交给人"的出口:重试耗尽、收款人已封禁、
-// 资金单不可判定都落在这里。绝不自动放弃、绝不自动改判。
+// held 是"我不能自动决定,交给人"的出口,只来自重试耗尽(与到账即溢出);
+// 处置是管理端「重试」。绝不自动放弃、绝不自动改判。
 const (
 	PayoutPlanned = "planned"
 	PayoutPaying  = "paying"
@@ -593,8 +658,8 @@ const (
 	PayoutHeld    = "held"
 	// PayoutGranted 是文本奖落库那一刻就到达的终态。
 	//
-	// 它**刻意不在** DrivePayouts 与 finishIfDone 的扫描集合里:文本奖不动钱、
-	// 不跨库,没有任何东西需要驱动。履行与否由 FulfilledAt 三列单独表达 ——
+	// 它**刻意不在** DrivePayouts 与 finishIfDone 的扫描集合里:文本奖不动钱,
+	// 没有任何东西需要驱动。履行与否由 FulfilledAt 三列单独表达 ——
 	// Status 的语义严格保持"资金终态",绝不让它兼职表达"人做完了没有"。
 	PayoutGranted = "granted"
 )
@@ -720,8 +785,6 @@ const (
 	FlagRosterDrift  = "roster_drift"
 	FlagChainDrift   = "chain_drift"
 	FlagPayoutStuck  = "payout_stuck"
-	FlagOrphanOrder  = "orphan_order"
-	FlagEntryStuck   = "entry_stuck"
 	FlagRevealRefuse = "reveal_refused"
 	// FlagTextGrantMissing 是真事故:有人中了文本奖,但库里没有那一行。
 	FlagTextGrantMissing = "text_grant_missing"
@@ -735,13 +798,16 @@ const (
 	// win_ppm 就等于点名挑中奖者,改一个 amount_quota 就绕过了净增发闸门,
 	// 而这两件事原本只有用户自己下载证据链跑脚本才会发现。
 	FlagSpecDrift = "spec_drift"
-	// FlagRefundDrift 是"退款金额与那笔参与的资金单对不上"。
+	// FlagPrizeCodeShort:商品奖(兑换码)中奖时商城库存已空,订单停在 paid 等运营补码。
+	// 不丢中奖,但必须有人看见 —— 补码后由上传接口顺手补齐。
+	FlagPrizeCodeShort = "prize_code_short"
+	// FlagRefundDrift 是"退款金额与那笔参与的账本流水对不上"。
 	//
-	// 退款按 qy_lot_entry.amount 出款,而这笔钱**真实**收了多少写在
-	// qy_fund_orders.amount_quota 上(entry.order_no 就是锚点)。开奖侧对同一份
-	// 证据是核过的(roster_hash 对不上就停手挂起),取消/流局侧原先一次都不核 ——
-	// 于是扩展库单表的一次 UPDATE 就能变成主库净增发,而取消恰恰是"出事之后的
-	// 止损动作"。现在按资金单的金额出款,并在两者不等时留这条异常。
+	// 退款若按 qy_lot_entry.amount 出款,这笔钱**真实**收了多少却写在
+	// qy_sd_ledger.amount 上(entry.order_no = ledger_no 就是锚点)。开奖侧对同一份
+	// 证据是核过的(roster_hash 对不上就停手挂起),取消/流局侧不核的话 ——
+	// 业务表的一次 UPDATE 就能变成账本上的净增发,而取消恰恰是"出事之后的
+	// 止损动作"。现在按流水的金额出款,并在两者不等时留这条异常。
 	FlagRefundDrift = "refund_drift"
 	// FlagPayoutOrphan 是"一条出款指不到任何参与明细"。
 	//
@@ -765,7 +831,7 @@ const (
 	// 而实付 137005(差 109500 是两笔收尾之后才补发的 held),管理端把一场
 	// 净亏 107005 的活动显示成净赚 2495,连符号都是反的。
 	//
-	// 真值始终在 qy_lot_payout / qy_fund_orders / 主库账本里,所以这条异常
+	// 真值始终在 qy_lot_payout / qy_sd_ledger 里,所以这条异常
 	// 不动钱,只是让"展示口径与账目对不上"这件事不再无人看守。
 	FlagTotalsDrift = "totals_drift"
 )

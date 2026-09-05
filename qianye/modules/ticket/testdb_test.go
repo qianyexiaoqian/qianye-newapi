@@ -21,7 +21,7 @@ import (
 // 本模块的业务函数一律走 db.Get() 自取句柄(与生产代码一致),所以测试必须
 // 真的把测试库接上去,而不是把 *gorm.DB 传进被测函数 —— 后者测的是一条
 // 生产代码里不存在的调用形态。链接到 db 包的私有句柄是本仓既有做法
-// (见 modules/withdraw/pagination_handler_test.go)。
+// (见 modules/invite/testdb_test.go)。
 
 //go:linkname qyDBHandle github.com/QuantumNous/new-api/qianye/db.handle
 var qyDBHandle atomic.Pointer[gorm.DB]

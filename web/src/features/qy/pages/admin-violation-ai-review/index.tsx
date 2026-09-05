@@ -18,7 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, KeyRound, Plus, Trash2, Zap } from 'lucide-react'
+import {
+  AlertTriangle,
+  ChevronRight,
+  KeyRound,
+  Plus,
+  Trash2,
+  Zap,
+} from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -34,6 +41,11 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
 import { ComboboxInput } from '@/components/ui/combobox-input'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -46,6 +58,7 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { cn } from '@/lib/utils'
 
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QyResponsiveDialog } from '../../components/qy-responsive-dialog'
@@ -67,9 +80,11 @@ import {
   qyAiScopesQuery,
   qyAiSettingsQuery,
   qyAiStatsQuery,
+  qyCyberSettingsQuery,
   testQyAiChannel,
   updateQyAiChannel,
   updateQyAiSetting,
+  updateQyCyberSetting,
   upsertQyAiScope,
 } from './api'
 import {
@@ -77,7 +92,6 @@ import {
   qyAiBpsToPercentText,
   qyAiChannelToDraft,
   qyAiDraftToInput,
-  QY_AI_CATEGORY_PLACEHOLDER,
   qyAiPromptCategoryIssues,
   qyAiRenderPrompt,
   qyAiPromptForEditor,
@@ -158,6 +172,9 @@ export function QyAdminViolationAiReview() {
           <AiScopeCard />
           <AiChannelsCard />
           <AiCostCard />
+          {/* cyber 会话屏蔽:与 AI 审核是两套东西(那个判内容,这个认上游拒绝码
+              并拉黑整条会话)。放在最后,作为一块独立的附加防护。 */}
+          <CyberBlockCard />
         </div>
       </QySectionPageLayout.Content>
     </QySectionPageLayout>
@@ -301,16 +318,6 @@ function AiSettingCard() {
               <span className='text-sm font-medium'>{t('qy_ai_enabled')}</span>
             </label>
 
-            {/* 抽样率这一格以前在这里,现在没有了。
-                留一句指路而不是直接删干净:运营的肌肉记忆是"来这一页改抽样率",
-                一个字都不说会让人以为功能坏了或者被降级了。 */}
-            <Alert>
-              <AlertTitle>{t('qy_ai_sample_rate_moved_title')}</AlertTitle>
-              <AlertDescription>
-                {t('qy_ai_sample_rate_moved_desc')}
-              </AlertDescription>
-            </Alert>
-
             <div className='grid gap-4 sm:grid-cols-2'>
               <div className='flex flex-col gap-1.5'>
                 <Label>{t('qy_ai_pre_timeout')}</Label>
@@ -410,11 +417,7 @@ function AiSettingCard() {
                   {t('qy_ai_prompt_preview_title')}
                 </summary>
                 <p className='text-muted-foreground mt-2 text-xs'>
-                  {t('qy_ai_prompt_preview_desc', {
-                    // 占位符本身也从常量来,不在文案里再抄一遍字面量 ——
-                    // 抄的那一份会在后端改占位符的第二天开始教人写错。
-                    placeholder: QY_AI_CATEGORY_PLACEHOLDER,
-                  })}
+                  {t('qy_ai_prompt_preview_desc')}
                 </p>
                 <pre className='bg-muted mt-2 max-h-72 overflow-auto rounded p-2 text-xs whitespace-pre-wrap'>
                   {renderedPrompt}
@@ -431,7 +434,6 @@ function AiSettingCard() {
                   <AlertDescription>
                     {t('qy_ai_prompt_cat_unknown_desc', {
                       names: promptIssues.unknown.join(', '),
-                      known: categories.join(', '),
                     })}
                   </AlertDescription>
                 </Alert>
@@ -441,9 +443,7 @@ function AiSettingCard() {
                   <AlertTriangle className='size-4' />
                   <AlertTitle>{t('qy_ai_prompt_cat_missing_title')}</AlertTitle>
                   <AlertDescription>
-                    {t('qy_ai_prompt_cat_missing_desc', {
-                      names: promptIssues.missing.join(', '),
-                    })}
+                    {t('qy_ai_prompt_cat_missing_desc')}
                   </AlertDescription>
                 </Alert>
               )}
@@ -471,6 +471,338 @@ function AiSettingCard() {
             </Alert>
 
             <div>
+              <Button disabled={save.isPending} onClick={() => save.mutate()}>
+                {t('qy_ai_save')}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+    </QyPageBoundary>
+  )
+}
+
+// ───────────────────────────── cyber 会话屏蔽 ─────────────────────────────
+
+/**
+ * cyber 会话自动屏蔽。
+ *
+ * ## 它和上面的 AI 审核不是一回事
+ *
+ * AI 审核判**请求内容**违不违规;这里认的是**上游的拒绝码**(如 OpenAI Codex
+ * 后端的 cyber_policy)。上游拒绝一次之后,把**这条会话**在本地拉黑,该会话
+ * 后续任何请求(哪怕正常内容)进网关即 403「请开启新会话」,不再打上游 ——
+ * 命中过的会话不能继续无限重试探测。
+ *
+ * ## 三个开关的层次
+ *
+ * · YAML `violation.enabled` 是基础设施级总闸,关着时本功能一律不生效;
+ * · 这里的启用开关是运营的日常开关;
+ * · 作用分组决定"哪些模型分组的流量"受屏蔽(空 = 全部),与 AI 审核作用域
+ *   同口径,比的是请求实际使用的分组。
+ */
+function CyberBlockCard() {
+  const { t } = useTranslation()
+  const qc = useQueryClient()
+  const query = useQuery(qyCyberSettingsQuery())
+  const groupQuery = useQuery(qyGroupOptionsQuery())
+  const categoryQuery = useQuery(qyAdminViolationCategoriesQuery())
+  const categories = (categoryQuery.data?.items ?? []).map((row) => ({
+    id: row.category.id,
+    name: row.category.name,
+  }))
+  const [draft, setDraft] = useState<null | {
+    enabled: boolean
+    group_scope: string
+    group_scope_mode: 'include' | 'exclude'
+    ttl_seconds: number
+    trigger_codes: string
+    count_toward_ban: boolean
+    category_id: number
+  }>(null)
+
+  const data = query.data
+  const current =
+    draft ??
+    (data?.setting
+      ? {
+          enabled: data.setting.enabled,
+          group_scope: data.setting.group_scope,
+          group_scope_mode: data.setting.group_scope_mode,
+          ttl_seconds: data.setting.ttl_seconds,
+          trigger_codes: data.setting.trigger_codes,
+          count_toward_ban: data.setting.count_toward_ban,
+          category_id: data.setting.category_id,
+        }
+      : null)
+
+  const save = useMutation({
+    mutationFn: () => {
+      if (!current) throw new Error('no draft')
+      return updateQyCyberSetting({
+        enabled: current.enabled,
+        group_scope: current.group_scope,
+        group_scope_mode: current.group_scope_mode,
+        ttl_seconds: current.ttl_seconds,
+        trigger_codes: current.trigger_codes,
+        count_toward_ban: current.count_toward_ban,
+        category_id: current.category_id,
+      })
+    },
+    onSuccess: () => {
+      toast.success(t('qy_ai_cyber_saved'))
+      setDraft(null)
+      void qc.invalidateQueries({
+        queryKey: qyKeys.adminViolationCyberSettings(),
+      })
+    },
+    onError: (e) => toast.error(qyErrorMessage(e, t)),
+  })
+
+  const groupOptions = groupQuery.data?.options ?? []
+  const groupEntries = current ? qyAiSplitScopeList(current.group_scope) : []
+  const unknownGroups =
+    groupOptions.length === 0
+      ? []
+      : qyUnknownGroupNames(
+          [...new Set(groupEntries.map(qyNormalizeGroupName))],
+          groupOptions
+        )
+  const groupBadges = groupEntries.map((name, index) => ({
+    key: `${name}#${index}`,
+    name,
+    unknown: unknownGroups.includes(qyNormalizeGroupName(name)),
+  }))
+
+  const eff = data?.effective
+
+  return (
+    <QyPageBoundary query={query}>
+      {data && current && eff ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('qy_ai_cyber_title')}</CardTitle>
+            <CardDescription>{t('qy_ai_cyber_desc')}</CardDescription>
+          </CardHeader>
+          <CardContent className='flex flex-col gap-4'>
+            {/* 开了设置、但 YAML 基础设施总闸关着 —— 表单显示"开"、实际不生效。
+                这是这一档唯一会"配了不生效且没有信号"的状态,必须说出来。 */}
+            {current.enabled && !eff.module_on && (
+              <Alert>
+                <AlertTriangle className='size-4' />
+                <AlertTitle>{t('qy_ai_cyber_module_off_title')}</AlertTitle>
+                <AlertDescription>
+                  {t('qy_ai_cyber_module_off_desc')}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            <label className='flex items-center gap-2'>
+              <Switch
+                checked={current.enabled}
+                onCheckedChange={(v) => setDraft({ ...current, enabled: v })}
+              />
+              <span className='text-sm font-medium'>
+                {t('qy_ai_cyber_enabled')}
+              </span>
+            </label>
+
+            <div className='flex flex-col gap-1.5'>
+              <Label>{t('qy_ai_cyber_groups_label')}</Label>
+              <p className='text-muted-foreground text-xs'>
+                {t('qy_ai_cyber_groups_hint')}
+              </p>
+              <ComboboxInput
+                options={groupOptions.map((option) => ({
+                  value: option.name,
+                  label: qyGroupOptionLabel(
+                    option,
+                    groupQuery.data?.probe_ok === true,
+                    t
+                  ),
+                }))}
+                value=''
+                onValueChange={(picked) =>
+                  setDraft({
+                    ...current,
+                    group_scope: qyAiAppendScopeGroup(
+                      current.group_scope,
+                      picked
+                    ),
+                  })
+                }
+                emptyText='qy_trg_group_picker_empty'
+                placeholder={t('qy_ai_scope_group_pick')}
+              />
+              {/* 下拉给"现在有哪些分组",文本框给"站点已不认的历史分组仍要能配"。
+                  留空 = 全部模型分组(与 AI 审核作用域不同,这里空是允许的)。 */}
+              <Input
+                placeholder='default,vip'
+                value={current.group_scope}
+                onChange={(e) =>
+                  setDraft({ ...current, group_scope: e.target.value })
+                }
+              />
+              {groupBadges.length > 0 && (
+                <div className='flex flex-wrap gap-1'>
+                  {groupBadges.map((badge) => (
+                    <Badge
+                      key={badge.key}
+                      variant={badge.unknown ? 'warning' : 'secondary'}
+                      className='font-normal'
+                      title={
+                        badge.unknown
+                          ? t('qy_ai_scope_group_unknown_hint')
+                          : undefined
+                      }
+                    >
+                      {badge.name}
+                      {badge.unknown && (
+                        <span className='sr-only'>
+                          {' '}
+                          {t('qy_ai_scope_group_unknown_hint')}
+                        </span>
+                      )}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+              {groupBadges.length === 0 && (
+                <p className='text-muted-foreground text-xs'>
+                  {t('qy_ai_cyber_groups_all')}
+                </p>
+              )}
+              <div className='flex gap-2'>
+                {(['include', 'exclude'] as const).map((m) => (
+                  <Button
+                    key={m}
+                    size='sm'
+                    variant={
+                      current.group_scope_mode === m ? 'default' : 'outline'
+                    }
+                    onClick={() =>
+                      setDraft({ ...current, group_scope_mode: m })
+                    }
+                  >
+                    {t(`qy_ai_scope_mode_${m}` as never)}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            <div className='flex flex-col gap-1.5'>
+              <Label>{t('qy_ai_cyber_ttl_label')}</Label>
+              <div className='flex items-center gap-2'>
+                <Input
+                  type='number'
+                  min={0}
+                  className='max-w-40'
+                  value={current.ttl_seconds}
+                  onChange={(e) =>
+                    setDraft({
+                      ...current,
+                      ttl_seconds: Number(e.target.value) || 0,
+                    })
+                  }
+                />
+                <span className='text-muted-foreground text-sm'>
+                  {t('qy_ai_cyber_seconds')}
+                </span>
+              </div>
+              <p className='text-muted-foreground text-xs'>
+                {t('qy_ai_cyber_ttl_hint', { def: eff.default_ttl })}
+              </p>
+            </div>
+
+            {/*
+              触发过滤规则,**可编辑 + 可还原默认**。new-api 不像 sub2api 自持号池,
+              我们唯一的信号是上游透传回来的错误 —— 标准 {"error":{"code":"cyber_policy"}}
+              下匹配是准的,但不同渠道可能包成别的形状,所以把这份判据交给运营。
+            */}
+            <div className='flex flex-col gap-1.5'>
+              <div className='flex items-center justify-between gap-2'>
+                <Label>{t('qy_ai_cyber_triggers_label')}</Label>
+                <Button
+                  type='button'
+                  size='sm'
+                  variant='outline'
+                  disabled={
+                    current.trigger_codes === data.default_trigger_codes
+                  }
+                  onClick={() =>
+                    setDraft({
+                      ...current,
+                      trigger_codes: data.default_trigger_codes,
+                    })
+                  }
+                >
+                  {t('qy_ai_cyber_triggers_restore')}
+                </Button>
+              </div>
+              <Textarea
+                className='font-mono text-xs'
+                rows={3}
+                placeholder={data.default_trigger_codes}
+                value={current.trigger_codes}
+                onChange={(e) =>
+                  setDraft({ ...current, trigger_codes: e.target.value })
+                }
+              />
+              <p className='text-muted-foreground text-xs'>
+                {t('qy_ai_cyber_triggers_hint')}
+              </p>
+            </div>
+
+            {/* 计入自动封号计数 + 计数类型绑定。开了之后每次拉黑落一条违规记录,
+                推进该用户的计数,达「处置策略」阈值即自动受限/封号。 */}
+            <div className='flex flex-col gap-2'>
+              <label className='flex items-center gap-2'>
+                <Switch
+                  checked={current.count_toward_ban}
+                  onCheckedChange={(v) =>
+                    setDraft({ ...current, count_toward_ban: v })
+                  }
+                />
+                <span className='text-sm font-medium'>
+                  {t('qy_ai_cyber_count_ban')}
+                </span>
+              </label>
+              <p className='text-muted-foreground text-xs'>
+                {t('qy_ai_cyber_count_ban_hint')}
+              </p>
+              {current.count_toward_ban && (
+                <div className='flex flex-col gap-1.5'>
+                  <Label>{t('qy_ai_cyber_category')}</Label>
+                  <Select
+                    value={String(current.category_id)}
+                    onValueChange={(v) =>
+                      setDraft({ ...current, category_id: Number(v) || 0 })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue
+                        placeholder={t('qy_ai_cyber_category_none')}
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value='0'>
+                        {t('qy_ai_cyber_category_none')}
+                      </SelectItem>
+                      {categories.map((cat) => (
+                        <SelectItem key={cat.id} value={String(cat.id)}>
+                          {cat.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className='text-muted-foreground text-xs'>
+                    {t('qy_ai_cyber_category_hint')}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className='flex justify-end'>
               <Button disabled={save.isPending} onClick={() => save.mutate()}>
                 {t('qy_ai_save')}
               </Button>
@@ -590,12 +922,17 @@ function AiScopeCard() {
   // 渠道清单同理按可选读。它只是 join 用的辅助,拉不到时每一格会退回
   // 「指定的渠道查不到」的告警态 —— 那比把一条已经停止工作的策略画成正常的好。
   const channels = data?.channels ?? []
-  const channelName = (id: number) =>
-    channels.find((c) => c.id === id)?.name ?? ''
+  // 清单没拉到时退回显示 id:显示一个空格会让人以为这一档没指定,
+  // 而它其实指定了 —— 那是两种完全不同的处置。
+  const channelNames = (ids: number[]) =>
+    (ids ?? []).map((id) => channels.find((c) => c.id === id)?.name || `#${id}`)
   const rowState = (row: QyAiScopeSummaryRow) => {
-    const channel = qyAiScopeChannelState(row.channel_id, channels)
+    const channel = qyAiScopeChannelState(row.channel_ids, channels)
     return {
       channel,
+      // partial 不算失效:清单里还剩至少一个能发,这一档照常审核。
+      // 报"渠道不可用"会把人引去修一个没有停摆的东西。
+      channelBroken: channel === 'disabled' || channel === 'missing',
       kind: qyAiScopeRowKind(row, {
         channelBroken: channel === 'disabled' || channel === 'missing',
       }),
@@ -654,7 +991,7 @@ function AiScopeCard() {
                       row={row}
                       kind={rowState(row).kind}
                       categoryName={categoryName(row.category_id)}
-                      channelName={channelName(row.channel_id)}
+                      channelNames={channelNames(row.channel_ids)}
                       channelState={rowState(row).channel}
                       toggling={toggle.isPending}
                       onToggle={() => {
@@ -704,7 +1041,7 @@ function ScopeRow({
   row,
   kind,
   categoryName,
-  channelName,
+  channelNames,
   channelState,
   toggling,
   onToggle,
@@ -715,8 +1052,8 @@ function ScopeRow({
   kind: QyAiScopeRowKind
   /** 违规类型清单里 join 出来的名字。空串 = 没指定，或者清单没拉到。 */
   categoryName: string
-  /** 渠道清单里 join 出来的名字。空串 = 没指定,或者这个 id 已经不存在。 */
-  channelName: string
+  /** 渠道清单里 join 出来的名字,顺序与 `row.channel_ids` 一致(轮询按它转)。 */
+  channelNames: string[]
   channelState: QyAiScopeChannelState
   toggling: boolean
   onToggle: () => void
@@ -777,32 +1114,48 @@ function ScopeRow({
           {t(`qy_ai_scope_prompt_${row.prompt_source}` as never)}
         </Badge>
       </td>
-      {/* 「送到哪」。留空那一档写的是"按权重随机",不是"默认渠道" ——
+      {/* 「送到哪」。留空那一档写的是"全部启用渠道",不是"默认渠道" ——
           渠道表上没有 priority,两个渠道各 50% 时"默认渠道"这句话就是假的。
-          指定的渠道被停用或删掉时这一档不再审核任何内容,而它与一条正常策略
-          长得一模一样,所以那两种状态必须是警示色 + 一句话。 */}
+          指定的渠道全都被停用或删掉时这一档不再审核任何内容,而它与一条正常
+          策略长得一模一样,所以那两种状态必须是警示色 + 一句话。
+          只坏了一部分是另一回事:这一档没停摆,但实际在扛的比运营选的少。 */}
       <td className='py-1.5 pe-2 text-xs'>
-        <Badge
-          variant={
-            channelState === 'default'
-              ? 'outline'
-              : channelState === 'ok'
-                ? 'secondary'
-                : 'warning'
-          }
-          className='font-normal'
-        >
-          {channelState === 'default'
-            ? t('qy_ai_scope_channel_default')
-            : channelName || `#${row.channel_id}`}
-        </Badge>
-        {/* 「指定了 A」与「指定了 A,但 A 不行时会发给别人」是两种不同的数据
-            流向,而它们在这一格里只差这一个 badge。不画的话,运营看着
-            「审核渠道: 内部自建」得到的是一个已经不成立的预期。 */}
-        {row.channel_failover && (
-          <Badge variant='outline' className='ms-1 font-normal'>
-            {t('qy_ai_scope_channel_failover_on')}
-          </Badge>
+        <div className='flex flex-wrap items-center gap-1'>
+          {channelState === 'default' ? (
+            <Badge variant='outline' className='font-normal'>
+              {t('qy_ai_scope_channel_default')}
+            </Badge>
+          ) : (
+            channelNames.map((name, i) => (
+              <Badge
+                key={row.channel_ids[i]}
+                variant={channelState === 'ok' ? 'secondary' : 'warning'}
+                className='font-normal'
+              >
+                {name}
+              </Badge>
+            ))
+          )}
+          {/* 分发方式只在**真的有两个以上**渠道时才画:一个渠道时轮询与随机
+              是同一件事,而多一个 badge 会让人以为自己配了点什么。 */}
+          {(row.channel_ids ?? []).length > 1 && (
+            <Badge variant='outline' className='font-normal'>
+              {t(`qy_ai_scope_mode_${row.channel_mode}` as never)}
+            </Badge>
+          )}
+          {/* 「指定了 A」与「指定了 A,但 A 不行时会发给别人」是两种不同的数据
+              流向,而它们在这一格里只差这一个 badge。不画的话,运营看着
+              「审核渠道: 内部自建」得到的是一个已经不成立的预期。 */}
+          {row.channel_failover && (
+            <Badge variant='outline' className='font-normal'>
+              {t('qy_ai_scope_channel_failover_on')}
+            </Badge>
+          )}
+        </div>
+        {channelState === 'partial' && (
+          <div className='text-warning mt-1'>
+            {t('qy_ai_scope_channel_partial')}
+          </div>
         )}
         {channelBroken && (
           <div className='text-warning mt-1'>
@@ -944,7 +1297,7 @@ function ScopeForm({
   const fakeSep =
     qyAiScopeHasFakeSeparator(draft.group_scope) ||
     qyAiScopeHasFakeSeparator(draft.model_scope)
-  const channelState = qyAiScopeChannelState(draft.channel_id, channels)
+  const channelState = qyAiScopeChannelState(draft.channel_ids, channels)
 
   /**
    * 分组候选清单。**复用**违规规则页与划转分组规则页共用的那一份
@@ -1090,14 +1443,6 @@ function ScopeForm({
                 {t('qy_ai_scope_group_empty')}
               </p>
             )}
-            {/* 软告警，不是错误：不禁用提交。 */}
-            {unknownGroups.length > 0 && (
-              <p className='text-warning text-xs'>
-                {t('qy_ai_scope_group_unknown', {
-                  groups: unknownGroups.join('、'),
-                })}
-              </p>
-            )}
             {/* 这一条是错误,不是告警:保存键同时是灰的。它必须说清"为什么必填",
                 否则运营的第一反应是"以前留空就行,现在坏了"。 */}
             {bindingError === 'empty' && (
@@ -1203,58 +1548,112 @@ function ScopeForm({
             </p>
           )}
         </Field>
-        {/* 「送到哪个审核渠道」。
-            留空 = **按权重在全部启用渠道里随机**,不是"某一个默认渠道" ——
+        {/* 「送到哪几个审核渠道」。
+            留空 = **在全部启用渠道之间分发**,不是"某一个默认渠道" ——
             渠道表上没有 priority,两个渠道各配 50% 权重时"默认渠道"这句话
             就是假的,而运营会按那句话去理解自己的数据流向。
-            指定之后它被停用或删除时,这一档**不再审核任何内容**(每次都是
-            「无可用渠道」+ 放行),运行期绝不回落到随机池:回落会把用户内容
-            发去运营明确没有选的端点,而那往往正是指定渠道的全部理由。 */}
+            指定之后这一档只发给清单里的那几个;它们**全部**被停用或删除时,
+            这一档不再审核任何内容(每次都是「无可用渠道」+ 放行),运行期绝不
+            回落到其余渠道:回落会把用户内容发去运营明确没有选的端点,
+            而那往往正是指定渠道的全部理由。 */}
         <Field
           label={t('qy_ai_scope_f_channel')}
           hint={t('qy_ai_scope_f_channel_hint')}
         >
-          <Select
-            value={String(draft.channel_id)}
-            onValueChange={(v) =>
-              onChange({ ...draft, channel_id: Number(v) || 0 })
-            }
-          >
-            <SelectTrigger>
-              <SelectValue placeholder={t('qy_ai_scope_channel_default')} />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value='0'>
-                {t('qy_ai_scope_channel_default')}
-              </SelectItem>
+          {channels.length === 0 ? (
+            /* 一个渠道都没有时说出来,而不是画一个空框:空框看起来像
+               "这一格不用填",而它其实是"这个站点还没配审核渠道"。 */
+            <p className='text-muted-foreground text-xs'>
+              {t('qy_ai_scope_channel_none')}
+            </p>
+          ) : (
+            <div className='grid gap-1.5 sm:grid-cols-2'>
               {channels.map((ch) => (
-                <SelectItem key={ch.id} value={String(ch.id)}>
+                <Label
+                  key={ch.id}
+                  htmlFor={`qy-ai-scope-ch-${ch.id}`}
+                  className='flex items-center gap-2 text-sm font-normal'
+                >
+                  <Checkbox
+                    id={`qy-ai-scope-ch-${ch.id}`}
+                    checked={draft.channel_ids.includes(ch.id)}
+                    onCheckedChange={(checked) =>
+                      onChange({
+                        ...draft,
+                        // 勾选顺序就是轮询顺序:后勾的排在后面。
+                        channel_ids:
+                          checked === true
+                            ? [...draft.channel_ids, ch.id]
+                            : draft.channel_ids.filter((id) => id !== ch.id),
+                      })
+                    }
+                  />
                   {/* 停用的渠道照样列出来:一条已经指向停用渠道的策略必须能
-                      在下拉里看见自己当前选的是谁,否则那一格会显示成空的,
+                      在这里看见自己当前选的是谁,否则那一格会显示成空的,
                       而空的看起来像"没指定"—— 两者的线上行为完全相反。
-                      选中它保存会被后端 400 挡下,那是对的。 */}
-                  {ch.enabled
-                    ? ch.name
-                    : t('qy_ai_scope_channel_option_disabled', {
-                        name: ch.name,
-                      })}
-                </SelectItem>
+                      勾着它保存会被后端 400 挡下,那是对的。 */}
+                  <span className='min-w-0 truncate' title={ch.model}>
+                    {ch.enabled
+                      ? ch.name
+                      : t('qy_ai_scope_channel_option_disabled', {
+                          name: ch.name,
+                        })}
+                  </span>
+                </Label>
               ))}
-            </SelectContent>
-          </Select>
+            </div>
+          )}
+          {channelState === 'partial' && (
+            <p className='text-warning text-xs'>
+              {t('qy_ai_scope_channel_partial')}
+            </p>
+          )}
           {(channelState === 'disabled' || channelState === 'missing') && (
             <p className='text-warning text-xs'>
               {t(`qy_ai_scope_channel_${channelState}` as never)}
             </p>
           )}
-          {/* 故障转移。**只在指定了渠道时出现** —— 没指定时本来就走加权随机池,
-              那时摆一个"失败后退到随机池"的开关是在问一个没有含义的问题。
+          {/* 分发方式。**只在勾了两个以上时出现** —— 一个渠道时轮询与加权随机
+              是同一件事,那时摆一个单选是在问一个没有答案的问题。 */}
+          {draft.channel_ids.length > 1 && (
+            <div className='mt-2 flex flex-col gap-1.5'>
+              <Label className='text-sm'>{t('qy_ai_scope_f_dispatch')}</Label>
+              <Select
+                value={draft.channel_mode}
+                onValueChange={(v) =>
+                  onChange({
+                    ...draft,
+                    channel_mode:
+                      v === 'round_robin' ? 'round_robin' : 'weighted',
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='weighted'>
+                    {t('qy_ai_scope_mode_weighted')}
+                  </SelectItem>
+                  <SelectItem value='round_robin'>
+                    {t('qy_ai_scope_mode_round_robin')}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className='text-muted-foreground text-xs'>
+                {t(`qy_ai_scope_mode_${draft.channel_mode}_hint` as never)}
+              </p>
+            </div>
+          )}
+          {/* 故障转移。**只在指定了渠道时出现** —— 没指定时本来就在全部启用
+              渠道之间分发,那时摆一个"失败后退到随机池"的开关是在问一个没有
+              含义的问题。
 
               默认关,而且这里刻意用一整段说清打开之后会发生什么:它把
-              「只发给这一个」变成「这一个不行就发给池子里的任何一个」,
-              也就是把用户内容的出境目的地从一个变成一组。指定渠道这一格的
+              「只发给这几个」变成「它们不行就发给池子里的任何一个」,
+              也就是把用户内容的出境目的地从一组变成全部。指定渠道这一格的
               原始理由往往正是数据流向约束,所以这一步必须是运营自己按下的。 */}
-          {draft.channel_id > 0 && (
+          {draft.channel_ids.length > 0 && (
             <label className='mt-2 flex items-start gap-2'>
               <Switch
                 checked={draft.channel_failover}
@@ -1313,9 +1712,7 @@ function ScopeForm({
           onChange={(e) => onChange({ ...draft, prompt: e.target.value })}
         />
         <p className='text-muted-foreground text-xs'>
-          {t('qy_ai_scope_f_prompt_hint', {
-            placeholder: QY_AI_CATEGORY_PLACEHOLDER,
-          })}
+          {t('qy_ai_scope_f_prompt_hint')}
         </p>
         {/* 留空时把继承来的那一段摆出来：不摆的话，"什么都不填"到底意味着
             什么完全不可见 —— 而它可能是内置默认，也可能是本站改过的全局那一份。 */}
@@ -1370,6 +1767,13 @@ function AiChannelsCard() {
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: qyKeys.adminViolationAiChannels() })
     void qc.invalidateQueries({ queryKey: qyKeys.adminViolationAiSettings() })
+    // 作用域那张卡也要跟着失效:它的渠道下拉用的是**作用域接口**里下发的
+    // 那一份清单(那份清单同时带着 enabled,是"指定的渠道被停用了"唯一的
+    // 判据来源)。少了这一行,新建一个渠道之后作用域表单里根本选不到它 ——
+    // 两张卡在同一页上同时挂着,作用域那个 query 不会重新挂载,而
+    // refetchOnWindowFocus 是关的,于是那份清单会一直停在进页面那一刻,
+    // 直到整页刷新。症状是"我明明加了护栏渠道,这里为什么选不到"。
+    void qc.invalidateQueries({ queryKey: qyKeys.adminViolationAiScopes() })
   }
 
   const save = useMutation({
@@ -1486,22 +1890,22 @@ function AiChannelsCard() {
               </Button>
             </div>
 
-            {editing && (
-              <ChannelForm
-                draft={editing.draft}
-                guardCatalog={data.guard_catalog ?? []}
-                elevateDefault={data.guard_elevate_default ?? []}
-                existingHint={
-                  editing.id
-                    ? data.items?.find((c) => c.id === editing.id)?.key_hint
-                    : undefined
-                }
-                onChange={(d) => setEditing({ ...editing, draft: d })}
-                onCancel={() => setEditing(null)}
-                onSave={() => save.mutate()}
-                saving={save.isPending}
-              />
-            )}
+            <ChannelFormDialog
+              editing={editing}
+              guardCatalog={data.guard_catalog ?? []}
+              elevateDefault={data.guard_elevate_default ?? []}
+              existingHint={
+                editing?.id
+                  ? data.items?.find((c) => c.id === editing.id)?.key_hint
+                  : undefined
+              }
+              onChange={(d) =>
+                setEditing((cur) => (cur ? { ...cur, draft: d } : cur))
+              }
+              onClose={() => setEditing(null)}
+              onSave={() => save.mutate()}
+              saving={save.isPending}
+            />
           </CardContent>
         </Card>
       ) : null}
@@ -1702,6 +2106,8 @@ function ProtocolExplainer({
   guardCatalog: QyAiGuardCategory[]
 }) {
   const { t } = useTranslation()
+  // hook 要在提前 return 之前无条件调用。
+  const [mapOpen, setMapOpen] = useState(false)
   if (protocol !== 'qwen3guard') {
     return (
       <p className='text-muted-foreground text-xs'>
@@ -1715,33 +2121,128 @@ function ProtocolExplainer({
       <p className='text-muted-foreground text-xs'>
         {t('qy_ai_proto_guard_desc')}
       </p>
-      <div className='flex flex-col gap-1 rounded-md border p-2'>
-        <span className='text-xs font-medium'>
-          {t('qy_ai_proto_guard_map_title')}
-        </span>
-        <p className='text-muted-foreground text-xs'>
-          {t('qy_ai_proto_guard_map_hint')}
-        </p>
-        <div className='flex flex-wrap gap-1'>
-          {guardCatalog.map((c) => (
-            <Badge
-              key={c.id}
-              variant={c.present ? 'outline' : 'destructive'}
-              title={c.key}
-            >
-              {c.label} → {c.key}
-            </Badge>
-          ))}
-        </div>
-        {missing.length > 0 && (
-          <p className='text-muted-foreground text-xs'>
-            {t('qy_ai_proto_guard_map_missing', {
-              keys: missing.map((c) => c.key).join(', '),
-            })}
-          </p>
-        )}
-      </div>
+      {/* 对照表**默认不铺开**。项目方原话:「你写的这一堆在前端页面干嘛,
+          还觉得页面不够乱吗?」—— 九行 `类别 → 标识` 里真正需要运营动手的
+          只有对不上的那几条(它们的判定会折进兜底「未分类」),其余八九行是
+          一份"一切正常"的清单,而正常状态一行字就说完了。完整对照收进
+          折叠位,想核对的人点一下就有,不再占着表单最显眼的位置。
+
+          `guardCatalog` 为空(接口回滚 / 旧后端)时两句都不说:此时
+          `missing` 也是空,照着 `missing.length === 0` 去说"九类都对得上"
+          是一句凭空捏造的结论。 */}
+      {guardCatalog.length > 0 && (
+        <>
+          {missing.length === 0 ? (
+            <p className='text-muted-foreground text-xs'>
+              {t('qy_ai_proto_guard_map_ok')}
+            </p>
+          ) : (
+            <p className='text-destructive text-xs'>
+              {t('qy_ai_proto_guard_map_missing', {
+                keys: missing.map((c) => c.key).join(', '),
+              })}
+            </p>
+          )}
+          <Collapsible open={mapOpen} onOpenChange={setMapOpen}>
+            <CollapsibleTrigger className='text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs'>
+              <ChevronRight
+                aria-hidden='true'
+                className={cn(
+                  'size-3 transition-transform',
+                  mapOpen && 'rotate-90'
+                )}
+              />
+              {t('qy_ai_proto_guard_map_title')}
+            </CollapsibleTrigger>
+            <CollapsibleContent className='mt-1.5 flex flex-col gap-1.5'>
+              <p className='text-muted-foreground text-xs'>
+                {t('qy_ai_proto_guard_map_hint')}
+              </p>
+              <div className='flex flex-wrap gap-1'>
+                {guardCatalog.map((c) => (
+                  <Badge
+                    key={c.id}
+                    variant={c.present ? 'outline' : 'destructive'}
+                    title={c.key}
+                  >
+                    {c.label} → {c.key}
+                  </Badge>
+                ))}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        </>
+      )}
     </div>
+  )
+}
+
+/**
+ * 新建 / 编辑一条审核渠道的弹窗。
+ *
+ * `editing` 为 null = 关着 —— 与同页的 `ScopeFormDialog` 同一个形状:一个
+ * 可空草稿,而不是 `open` + `draft` 两个状态(两个状态必然出现"开着但草稿
+ * 是空"的第三种组合,而那一帧会在表单里读到 undefined)。
+ *
+ * 外壳用 `QyResponsiveDialog`(桌面居中 / 移动侧出 / 头尾固定、正文自己滚)。
+ * 改造前这张表单是**内联**画在渠道卡正文里的:十来格字段加两组九选复选框
+ * 直接把整张渠道列表挤到屏幕外,而「保存 / 取消」落在最底下 —— 编辑一条
+ * 已有渠道时,人要先滚过所有字段才够得着保存键,也看不见自己在改哪一条。
+ */
+function ChannelFormDialog({
+  editing,
+  guardCatalog,
+  elevateDefault,
+  existingHint,
+  onChange,
+  onClose,
+  onSave,
+  saving,
+}: {
+  editing: { id?: number; draft: QyAiChannelDraft } | null
+  guardCatalog: QyAiGuardCategory[]
+  elevateDefault: string[]
+  existingHint?: string
+  onChange: (d: QyAiChannelDraft) => void
+  onClose: () => void
+  onSave: () => void
+  saving: boolean
+}) {
+  const { t } = useTranslation()
+  return (
+    <QyResponsiveDialog
+      open={editing !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
+      title={
+        editing?.id
+          ? t('qy_ai_channel_edit_title')
+          : t('qy_ai_channel_create_title')
+      }
+      // 十格字段加两组九选复选框,窄窗口里复选框会被压成一列。
+      contentClassName='sm:max-w-3xl'
+      footer={
+        <>
+          <Button variant='outline' onClick={onClose}>
+            {t('qy_ai_cancel')}
+          </Button>
+          <Button disabled={saving || editing === null} onClick={onSave}>
+            {t('qy_ai_save')}
+          </Button>
+        </>
+      }
+    >
+      {editing && (
+        <ChannelForm
+          draft={editing.draft}
+          guardCatalog={guardCatalog}
+          elevateDefault={elevateDefault}
+          existingHint={existingHint}
+          onChange={onChange}
+        />
+      )}
+    </QyResponsiveDialog>
   )
 }
 
@@ -1751,22 +2252,18 @@ function ChannelForm({
   elevateDefault,
   existingHint,
   onChange,
-  onCancel,
-  onSave,
-  saving,
 }: {
   draft: QyAiChannelDraft
   guardCatalog: QyAiGuardCategory[]
   elevateDefault: string[]
   existingHint?: string
   onChange: (d: QyAiChannelDraft) => void
-  onCancel: () => void
-  onSave: () => void
-  saving: boolean
 }) {
   const { t } = useTranslation()
+  // 外框、内边距与「保存 / 取消」都归 ChannelFormDialog 管:按钮必须留在
+  // 弹窗的 footer 上,跟着正文滚出屏幕的保存键等于没有保存键。
   return (
-    <div className='flex flex-col gap-3 rounded-md border p-3'>
+    <div className='flex flex-col gap-3'>
       <Field label={t('qy_ai_f_protocol')} hint={t('qy_ai_f_protocol_hint')}>
         <Select
           value={draft.protocol}
@@ -1783,10 +2280,19 @@ function ChannelForm({
           </SelectContent>
         </Select>
       </Field>
-      <ProtocolExplainer
-        protocol={draft.protocol}
-        guardCatalog={guardCatalog}
-      />
+      {/* 「这两个我该选哪个」在下拉框里答不出来。最要紧的一句是**它根本不是
+          二选一**:后端按权重在所有启用渠道之间分流(aireview_guard.go),
+          同一个站点两种渠道都配上是预期用法 —— 便宜的护栏模型接住标准安全
+          类目,通用模型去管护栏模型判不出来的本站特有违规。 */}
+      <div className='bg-muted/40 flex flex-col gap-2 rounded-md p-2.5'>
+        <ProtocolExplainer
+          protocol={draft.protocol}
+          guardCatalog={guardCatalog}
+        />
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_ai_proto_choose_hint')}
+        </p>
+      </div>
       <div className='grid gap-3 sm:grid-cols-2'>
         <Field label={t('qy_ai_f_name')}>
           <Input
@@ -1810,6 +2316,11 @@ function ChannelForm({
         >
           <Input
             value={draft.base_url}
+            placeholder={
+              draft.protocol === 'qwen3guard'
+                ? 'http://localhost:11434/v1'
+                : undefined
+            }
             onChange={(e) => onChange({ ...draft, base_url: e.target.value })}
           />
         </Field>
@@ -1893,7 +2404,7 @@ function ChannelForm({
             }
           />
         </Field>
-        <Field label={t('qy_ai_f_price_in')} hint={t('qy_ai_f_price_hint')}>
+        <Field label={t('qy_ai_f_price_in')}>
           <Input
             value={draft.price_in_per_m}
             onChange={(e) =>
@@ -1901,7 +2412,7 @@ function ChannelForm({
             }
           />
         </Field>
-        <Field label={t('qy_ai_f_price_out')} hint={t('qy_ai_f_price_hint')}>
+        <Field label={t('qy_ai_f_price_out')}>
           <Input
             value={draft.price_out_per_m}
             onChange={(e) =>
@@ -1909,6 +2420,10 @@ function ChannelForm({
             }
           />
         </Field>
+        {/* 两个价格框共用一行说明:同一句话逐字挂两遍只是噪声。 */}
+        <p className='text-muted-foreground text-xs sm:col-span-2'>
+          {t('qy_ai_f_price_hint')}
+        </p>
       </div>
       {draft.protocol === 'qwen3guard' && (
         <GuardCategoryPickers
@@ -1925,14 +2440,6 @@ function ChannelForm({
         />
         <span className='text-sm'>{t('qy_ai_f_enabled')}</span>
       </label>
-      <div className='flex gap-2'>
-        <Button size='sm' disabled={saving} onClick={onSave}>
-          {t('qy_ai_save')}
-        </Button>
-        <Button size='sm' variant='outline' onClick={onCancel}>
-          {t('qy_ai_cancel')}
-        </Button>
-      </div>
     </div>
   )
 }

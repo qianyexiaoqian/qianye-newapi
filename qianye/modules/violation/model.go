@@ -27,6 +27,7 @@ const (
 	PhasePrompt       = "prompt"        // 转发上游之前(能力 B)
 	PhaseUpstreamErr  = "upstream_err"  // 上游返回错误之后(能力 A)
 	PhaseRejectReason = "reject_reason" // 上游软违规信号 ContextKeyAdminRejectReason
+	PhaseCyberBlock   = "cyber_block"   // cyber 会话屏蔽命中(独立机制,非规则)
 )
 
 // 匹配方式。

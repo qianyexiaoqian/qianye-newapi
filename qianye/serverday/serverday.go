@@ -8,13 +8,13 @@ import "time"
 //
 // 消费方目前两处,此前各写各的:
 //
-//	qianye/modules/withdraw/create.go   提现/划转的日限额窗口(本实现的原始出处)
-//	qianye/controller/token_today_usage.go   密钥页「今日消耗」那一列
+//	qianye/modules/invite/token_usage_api.go   密钥页「今日消耗」的聚合(原始出处是 D-14 前的提现日限额窗口)
+//	qianye/controller/token_today_usage.go     密钥页「今日消耗」那一列
 //
-// # 这与返佣的「消费日」不是同一个东西,而且刻意不统一
+// # 这与星屑的「消费日」不是同一个东西,而且刻意不统一
 //
-// qianye/modules/commission/dayline.go 那一个受 commission.day_offset_minutes
-// 管辖,是一个**写死在配置里的固定偏移**:计佣挂在 relay 上、结算由租约选主,
+// qianye/modules/invite/dayline.go 那一个受 invite.day_offset_minutes
+// 管辖,是一个**写死在配置里的固定偏移**:日桶挂在 logs 聚合上、结算由租约选主,
 // 两者会落在不同节点上,只有固定偏移才能保证同一笔消费不进两个桶。
 // 本文件这一个跟着机器所在地走,面向的是运营与用户对「今天」的直觉。
 //

@@ -136,16 +136,13 @@ function config(overrides: {
     available: true,
     features: {
       transfer: overrides.transfer ?? true,
-      commission: true,
-      withdraw: true,
+      invite: true,
       availability: true,
       lottery: true,
       violation: true,
     },
     wallet: {
       show_transfer_entry: overrides.walletEntry ?? true,
-      show_commission_entry: true,
-      show_withdraw_entry: true,
     },
   } as unknown as QyConfig
 }

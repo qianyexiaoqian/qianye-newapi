@@ -42,6 +42,7 @@ import { QyTimeline } from '../../../components/qy-timeline'
 import type { QyTimelineItem } from '../../../lib/types'
 import { QY_EMPTY_TEXT } from '../../ops/format'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
+import { QyWheelProofSection } from '../../wheel/components/wheel-proof-section'
 import { qyLotFullProofQuery, qyLotProofDownloadUrl } from '../api'
 import {
   qyLotBands,
@@ -216,6 +217,12 @@ export function QyLotFairnessPanel(props: { activity: QyLotActivityDetail }) {
                   {t('qy_lot_no_winner_possible')}
                 </p>
               </div>
+            )}
+
+            {/* 转盘：奖档与库存终态、逐转记录、本地库存重放，以及两条只对转盘
+                成立的「不保证」。批次玩法没有"库存"这回事，这一段只对 wheel 出现。 */}
+            {proof != null && proof.draw_mode === 'wheel' && (
+              <QyWheelProofSection proof={proof} />
             )}
 
             {/* 拿到的条目不完整时**必须说出来**，并且不给"验证通过"的假象。

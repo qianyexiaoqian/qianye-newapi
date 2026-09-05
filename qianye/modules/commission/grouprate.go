@@ -22,11 +22,8 @@ package commission
 //     分组的加权混合,界面上根本写不出"你走哪一档",只能写一句全局默认值 ——
 //     而那个数字对配了分组档的站点是**错的**。
 //
-//  3. **与法币折算比例同源。** fiatrate.go 的三层比例一直按上线分组解析
-//     (available_fiat 是上线的钱)。两档取不同人的分组时,同一次计佣里
-//     "费率按 A 的分组、折算按 B 的分组",没有任何人能一眼说出这笔钱是怎么来的。
-//     现在两者取的是**同一个人在同一时刻**的分组,由 resolveInviterPricing
-//     一处解析、pricing_single_resolver_guard_test.go 钉死。
+//  3. **只有一个解析入口。** 上线的分组由 resolveInviterPricing 一处解析,
+//     pricing_single_resolver_guard_test.go 钉死 —— 没有第二个地方能决定"取谁的分组"。
 //
 // # 放弃的那条理由,以及它换来的风险
 //
@@ -38,19 +35,19 @@ package commission
 // 返佣比例立刻整体上浮。控制手段有三个,都已在库里:
 //
 //   - 分组费率表是运营显式配的,不配就全站一个默认值,没有自助空间;
-//   - MaxPerOrderQuota / DailyCapQuota 封住单笔与单日上限;
+//   - MaxPerOrderStardust / DailyCapStardust 封住单笔与单日上限;
 //   - 高档位分组本身要花钱买,且换组会立刻反映到他自己的**计价倍率**上。
 //
 // # 冻结
 //
-// 命中的费率在计佣当刻写进 accrual 行(RateUnits/RateGroup)。理由与提现
-// 冻结汇率完全一致:事后改费率不能让历史佣金变得无法解释。日聚合行更进一步 ——
+// 命中的费率在计佣当刻写进 accrual 行(RateUnits/RateGroup):事后改费率不能
+// 让历史佣金变得无法解释。日聚合行更进一步 ——
 // 费率与分组一起进幂等键,分组或费率变了就落新的一行,避免一行里混着两套费率
 // (base × rate ≠ gross,那种行永远对不平)。
 //
 // # 未配置的分组
 //
-// 回落到全局默认费率(YAML 的 *_rate_percent,可被运营覆盖)。禁用某条规则
+// 回落到全局默认费率(YAML 的 *_rate_bps,可被运营覆盖)。禁用某条规则
 // 等价于回落,不等于零费率 —— 想给某个分组零费率请显式填 0。
 //
 // # 三档比例
@@ -68,6 +65,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/groupname"
+	"github.com/QuantumNous/new-api/qianye/modules/invite"
 
 	"gorm.io/gorm/clause"
 )
@@ -90,8 +88,7 @@ type GroupRate struct {
 	// auto_migrate=false 的部署根本不会执行的 ALTER。
 	GroupName string `json:"group_name" gorm:"type:varchar(64);not null;uniqueIndex:uk_qy_cgr_group"`
 
-	// TopupRateUnits / ConsumeRateUnits 与 Accrual.RateUnits 同单位:
-	// 百分比 × 100。对外一律经 config.FormatRatePercent 换回百分比。
+	// TopupRateUnits / ConsumeRateUnits 与 Accrual.RateUnits 同单位:万分比。对外一律经 config.FormatRatePercent 换回百分比。
 	TopupRateUnits   int `json:"topup_rate_units" gorm:"not null;default:0"`
 	ConsumeRateUnits int `json:"consume_rate_units" gorm:"not null;default:0"`
 
@@ -213,7 +210,7 @@ func groupRates(ctx context.Context) map[string]GroupRate {
 // 新费率,就是那 60 秒里每一笔佣金都按旧档永久发错(见 cachesync.go)。
 func invalidateGroupRates() {
 	invalidateGroupRatesLocal()
-	publishInvalidation(cacheKindGroupRate, 0)
+	invite.PublishInvalidation(cacheKindGroupRate, 0)
 }
 
 // invalidateGroupRatesLocal 只清本进程。重放远端流水时用它,否则两个节点
@@ -276,9 +273,8 @@ type rateDecision struct {
 // 未配置或被禁用的分组回落全局默认费率。分组名为空按 default 分组判定
 // (见 billingGroup),因此 "" 也可能命中一条规则 —— 那正是它应该走的那一条。
 //
-// **不要直接调用它。** 计佣路径一律走 resolveInviterPricing,那里同时解析费率
-// 与法币比例、并保证两者取自同一个人同一时刻的分组;直接调用等于把"取谁的
-// 分组"这个决定重新散到各个调用点上,而那正是本轮在消灭的形状。
+// **不要直接调用它。** 计佣路径一律走 resolveInviterPricing,那里解析上线的分组;
+// 直接调用等于把"取谁的分组"这个决定重新散到各个调用点上。
 // 由 pricing_single_resolver_guard_test.go 钉住。
 func resolveRate(ctx context.Context, group, source string, s opSettings) rateDecision {
 	g := billingGroup(group)

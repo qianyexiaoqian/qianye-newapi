@@ -24,14 +24,6 @@ import (
 //  2. 换成百分比之后小额佣金依然零损耗(与 TestSmallConsumeCommissionIsNeverLost
 //     同规格的数值走查)。
 
-// commissionRateConfig 返回一份带全局默认费率的配置。
-func commissionRateConfig(topupPercent, consumePercent string) *config.Config {
-	c := commissionConfig(1)
-	c.Commission.TopupRatePercent = topupPercent
-	c.Commission.ConsumeRatePercent = consumePercent
-	return c
-}
-
 // seedGroupRate 写一条分组费率规则(百分比入参,内部换算成整数)。
 func seedGroupRate(t *testing.T, gdb *gorm.DB, group, topup, consume string, enabled bool) {
 	t.Helper()
@@ -147,11 +139,11 @@ func TestAccrueConsumeFreezesGroupRate(t *testing.T) {
 	seedGroupRate(t, gdb, "wholesale", "3", "1.5", true)
 
 	// 上线 42 在 vip;上线 43 没有分组规则,必须回落全局默认。
-	cacheUser(42, 0, "vip")
-	cacheUser(43, 0, "default")
+	cacheUser(t, 42, 0, "vip")
+	cacheUser(t, 43, 0, "default")
 	// 两个下线**都**在 wholesale。费率按上线取,所以下线在哪一档完全不影响结果。
-	cacheUser(900, 42, "wholesale")
-	cacheUser(901, 43, "wholesale")
+	cacheUser(t, 900, 42, "wholesale")
+	cacheUser(t, 901, 43, "wholesale")
 
 	at := common.GetTimestamp()
 	require.NoError(t, accrueConsume(context.Background(),
@@ -181,8 +173,8 @@ func TestAccrueConsumeSplitsRowWhenRateChanges(t *testing.T) {
 	seedGroupRate(t, gdb, "vip", "12", "8", true)
 
 	at := common.GetTimestamp()
-	cacheUser(42, 0, "vip")
-	cacheUser(900, 42, "default")
+	cacheUser(t, 42, 0, "vip")
+	cacheUser(t, 900, 42, "default")
 	require.NoError(t, accrueConsume(context.Background(),
 		consumeEvent{InviteeId: 900, Quota: 10000, At: at}))
 
@@ -195,7 +187,7 @@ func TestAccrueConsumeSplitsRowWhenRateChanges(t *testing.T) {
 	require.NoError(t, gdb.Where("invitee_id = ?", 900).Order("id asc").Find(&rows).Error)
 	require.Len(t, rows, 2, "费率变了必须落新的一行,不能并进旧桶")
 	for _, r := range rows {
-		want := calcGross(r.BaseQuota, r.RateUnits)
+		want := calcGross(r.BaseQuota, r.RateUnits, r.QuotaPerUnit)
 		assert.Equal(t, want.String(), r.GrossAmount.String(),
 			"每一行都必须自洽:base × rate 必须等于 gross(accrual_no=%s)", r.AccrualNo)
 	}
@@ -212,8 +204,8 @@ func TestAccrueOneShotFreezesGroupRate(t *testing.T) {
 	useConfig(t, commissionRateConfig("10", "5"))
 	seedGroupRate(t, gdb, "vip", "12.5", "8", true)
 
-	cacheUser(42, 0, "vip")
-	cacheUser(900, 42, "default")
+	cacheUser(t, 42, 0, "vip")
+	cacheUser(t, 900, 42, "default")
 	require.NoError(t, accrueOneShot(context.Background(), 900, 10000,
 		decimal.Zero, SourceTopup, topupIdemKey("TX-1"), "TX-1"))
 
@@ -402,25 +394,6 @@ func TestSettingsPercentOverride(t *testing.T) {
 		assert.Equal(t, "8.25", effective().ConsumeRatePercent())
 	})
 
-	// 升级之后运营还没重新保存过配置时,库里只有 1.x 的万分比键。
-	// 不读它就等于"升级即掉费率",而且是静默的。
-	t.Run("回落读取 1.x 的万分比键", func(t *testing.T) {
-		gdb := newTestDB(t)
-		useConfig(t, commissionRateConfig("10", "5"))
-
-		setSettingOverride(t, gdb, legacyKeyConsumeRateBps, "825")
-		assert.Equal(t, 825, effective().ConsumeRateUnits)
-	})
-
-	t.Run("百分比键优先于旧键", func(t *testing.T) {
-		gdb := newTestDB(t)
-		useConfig(t, commissionRateConfig("10", "5"))
-
-		setSettingOverride(t, gdb, legacyKeyConsumeRateBps, "100")
-		setSettingOverride(t, gdb, keyConsumeRatePercent, "8")
-		assert.Equal(t, 800, effective().ConsumeRateUnits)
-	})
-
 	// qy_settings 是可以被人手工 UPDATE 的。被写坏的值必须整条丢弃回落
 	// YAML 默认,而不是钳到 100% —— 后者会静默地按全额返佣。
 	t.Run("越界与非法值一律丢弃", func(t *testing.T) {
@@ -434,14 +407,6 @@ func TestSettingsPercentOverride(t *testing.T) {
 		assert.Equal(t, 500, effective().ConsumeRateUnits)
 
 		setSettingOverride(t, gdb, keyConsumeRatePercent, "-1")
-		assert.Equal(t, 500, effective().ConsumeRateUnits)
-	})
-
-	t.Run("旧键越界同样丢弃", func(t *testing.T) {
-		gdb := newTestDB(t)
-		useConfig(t, commissionRateConfig("10", "5"))
-
-		setSettingOverride(t, gdb, legacyKeyConsumeRateBps, "99999")
 		assert.Equal(t, 500, effective().ConsumeRateUnits)
 	})
 }
@@ -477,13 +442,13 @@ func TestPercentRatesKeepSmallCommissionIntact(t *testing.T) {
 			// 第一路:日聚合成一行,末尾一次结算。
 			bucket := decimal.Zero
 			for i := 0; i < calls; i++ {
-				bucket = bucket.Add(calcGross(perCall, units))
+				bucket = bucket.Add(calcGross(perCall, units, 1))
 			}
 			require.Equal(t, tc.wantTotal, bucket.String(),
 				"全精度累计的总额不对,说明费率换算或计佣算术有偏差")
 
 			out := computeSettlement(decimal.Zero, bucket, 0, 1, -1)
-			assert.Equal(t, tc.wantTotal, strconv.FormatInt(out.NetQuota, 10),
+			assert.Equal(t, tc.wantTotal, strconv.FormatInt(out.Net, 10),
 				"日聚合后一次结算必须一分不差")
 			assert.True(t, out.CarryAfter.IsZero())
 
@@ -492,8 +457,8 @@ func TestPercentRatesKeepSmallCommissionIntact(t *testing.T) {
 			carry := decimal.Zero
 			var granted int64
 			for i := 0; i < calls; i++ {
-				r := computeSettlement(carry, calcGross(perCall, units), granted, 1, -1)
-				granted += r.NetQuota
+				r := computeSettlement(carry, calcGross(perCall, units, 1), granted, 1, -1)
+				granted += r.Net
 				carry = r.CarryAfter
 				require.False(t, carry.IsNegative(), "第 %d 轮余数不应为负", i)
 			}

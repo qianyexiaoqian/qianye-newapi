@@ -29,11 +29,12 @@ import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyPayPasswordField } from '../../../components/qy-pay-password-field'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
+import { QySdAmount } from '../../../components/qy-sd-amount'
+import { useStardustName } from '../../../hooks/use-stardust-name'
 import { isQyError, qyErrorMessage } from '../../../lib/api'
-import { formatQyQuotaLedger } from '../../../lib/format'
+import { formatSdWithUnit } from '../../../lib/format-sd'
 import { qyTabTarget } from '../../../lib/pages'
 import { qyKeys } from '../../../lib/query-keys'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
@@ -86,13 +87,13 @@ const PAY_PASSWORD_CODES = new Set(['qy_pay_pwd_required', 'qy_pay_pwd_wrong'])
  * 进名单原像、开奖时与开奖号比对。开奖号本身来自后端 commit-reveal 的
  * `final_seed`，与这里的 `crypto.getRandomValues` 没有任何关系。
  *
- * ## 三种"没成功"必须说成三句话
+ * ## 两种"没成功"必须说成两句话
  *
- *   · `qy_lot_in_progress`  上一次还没落定 → 别再点，去记录里看；
- *   · `qy_lot_idem_conflict` 换了选项却复用了请求号 → 关掉重开；
- *   · `qy_lot_not_settled`   主库动了钱但扩展库还没回写 → **既不能说成功、
- *     也不能说失败**，只能说"稍后在记录里复核"。
- * 把它们混成一句"提交失败"，第三种会让用户以为没扣钱而重复提交。
+ *   · `qy_lot_idem_conflict`        换了选项却复用了请求号 → 关掉重开;
+ *   · `qy_lot_insufficient_quota`   星屑不足 → 整笔回滚,一注都没买成,去赚星屑。
+ * 报名自 v2.0.0 起是扩展库里的**一个事务**(扣星屑 + 落票 + 推链同生共死),
+ * 没有"主库动了钱但扩展库没回写"的中间态,也没有"上一次还没落定"的等待态;
+ * 同一个请求号原样重放会回到**原票**(`replayed: true`),不会再扣一次。
  *
  * 多注还多出**第四种**：部分成交（HTTP 200，`accepted < requested`）。它不是
  * 失败——前面几注真的买成了、后面几注一分钱没扣。回执屏必须把这件事说全，
@@ -105,6 +106,7 @@ export function QyLotEntryDialog(props: {
 }) {
   const { activity } = props
   const { t } = useTranslation()
+  const unit = useStardustName()
   const queryClient = useQueryClient()
   const { copyToClipboard } = useCopyToClipboard()
 
@@ -254,13 +256,29 @@ export function QyLotEntryDialog(props: {
                   {t('qy_lot_ball_lines_n', { count })}
                 </QyKeyValue>
                 <QyKeyValue label={t('qy_lot_ball_total_due')}>
-                  <QyAmountText quota={totalQuota} variant='hero' />
+                  <QySdAmount amount={totalQuota} variant='hero' />
                 </QyKeyValue>
               </>
             )}
             <QyKeyValue label={t('qy_lot_stake')}>
-              <QyAmountText quota={activity.stake_quota} />
+              <QySdAmount amount={activity.stake_quota} />
             </QyKeyValue>
+            {/* 当前星屑余额（登录用户才下发）。它必须与参与费并排：钱从这里扣，
+                而"够不够"是按下确认之前用户最想知道的事。不够时当场说，而不是
+                让他提交后吃一个 qy_sd_insufficient —— 放行与否仍以后端为准。 */}
+            {activity.stardust_balance != null && (
+              <QyKeyValue label={t('qy_sd_balance_current', { unit })}>
+                <span className='inline-flex flex-wrap items-center gap-2'>
+                  <QySdAmount amount={activity.stardust_balance} />
+                  {activity.stardust_balance <
+                    (count > 0 ? totalQuota : activity.stake_quota) && (
+                    <span className='text-destructive text-xs'>
+                      {t('qy_sd_balance_short')}
+                    </span>
+                  )}
+                </span>
+              </QyKeyValue>
+            )}
             <QyKeyValue label={t('qy_lot_kind')}>
               {isBall
                 ? t('qy_lot_mode_ball')
@@ -270,8 +288,8 @@ export function QyLotEntryDialog(props: {
               // 奖池必须与参与费并排：双色球的「能赢多少」全在这个数上，
               // 而它随本期投注实时变大，参与之前看到的就是当下那一份。
               <QyKeyValue label={t('qy_lot_ball_pool_open')}>
-                <QyAmountText
-                  quota={activity.pool_open_quota ?? 0}
+                <QySdAmount
+                  amount={activity.pool_open_quota ?? 0}
                   variant='hero'
                 />
               </QyKeyValue>
@@ -280,7 +298,7 @@ export function QyLotEntryDialog(props: {
               // 竞猜同理，而且更要紧：这个数就是**全部押注之和**，
               // 也就是"赢家分的是谁的钱"的答案。押下去之前必须看得到。
               <QyKeyValue label={t('qy_lot_pool')}>
-                <QyAmountText quota={activity.pool_quota} variant='hero' />
+                <QySdAmount amount={activity.pool_quota} variant='hero' />
               </QyKeyValue>
             )}
           </div>
@@ -418,7 +436,7 @@ export function QyLotEntryDialog(props: {
             </div>
           )}
 
-          {/* 一次性把不可逆这件事说清楚。钱是**立即从主额度扣走**的，
+          {/* 一次性把不可逆这件事说清楚。钱是**立即从星屑余额扣走**的，
               没有撤单、没有反悔，这条必须在按下确认之前看到。
 
               金额写进这句话里，而且写的是**本次总额**而不是单注参与费：
@@ -440,8 +458,9 @@ export function QyLotEntryDialog(props: {
                 // 而 "$0 立即扣除" 什么都没说。选了之后立刻换成本次总额 ——
                 // 决定按不按这颗按钮的始终是"这一下要花多少"。
                 {
-                  amount: formatQyQuotaLedger(
-                    count > 0 ? totalQuota : activity.stake_quota
+                  amount: formatSdWithUnit(
+                    count > 0 ? totalQuota : activity.stake_quota,
+                    unit
                   ),
                 }
               )}
@@ -491,7 +510,7 @@ export function QyLotEntryDialog(props: {
             <QyKeyValue label={t('qy_lot_receipt_total_charged')}>
               {/* 总额取后端回的那个数，**绝不在前端拿单价乘注数**：部分成交时
                   后者是错的，而错的方向是多报。 */}
-              <QyAmountText quota={batch.total_quota} variant='hero' />
+              <QySdAmount amount={batch.total_quota} variant='hero' />
             </QyKeyValue>
             <QyKeyValue label={t('qy_lot_user_ref')}>
               <span className='font-mono text-xs'>
@@ -642,6 +661,16 @@ function QyLotPickedLines(props: {
   const PREVIEW = 20
   const shown = expanded ? props.lines : props.lines.slice(0, PREVIEW)
   const hidden = props.lines.length - shown.length
+  // 号码可以重复（真实彩票允许买同号），所以 key 不能只用号码：两注同号的行在
+  // 删除时会错位。用「同号的第几次出现」而不是下标做区分 —— 删掉中间一注时，
+  // 后面那几注的 key 跟着号码走，不会整体前移一格。
+  const rows = shown.map((line, position) => {
+    const text = qyLotBallFormatPick(line)
+    const nth = shown
+      .slice(0, position)
+      .filter((item) => qyLotBallFormatPick(item) === text).length
+    return { text, key: `${text}#${nth}`, position }
+  })
 
   return (
     <div className='space-y-1.5'>
@@ -667,26 +696,26 @@ function QyLotPickedLines(props: {
           expanded ? 'max-h-64 space-y-1.5 overflow-y-auto pr-1' : 'space-y-1.5'
         }
       >
-        {shown.map((line, index) => (
+        {rows.map((row) => (
           <li
-            // 号码可以重复（真实彩票允许买同号），所以 key 必须带上
-            // 下标 —— 只用号码做 key 会让两注同号的行在删除时错位。
-            key={`${qyLotBallFormatPick(line)}#${index}`}
+            key={row.key}
             className='flex items-center gap-2 rounded-lg border px-3 py-2'
           >
             <span className='text-muted-foreground w-10 shrink-0 text-xs tabular-nums'>
-              {index + 1}
+              {row.position + 1}
             </span>
             <span className='min-w-0 flex-1 font-mono text-sm break-all tabular-nums'>
-              {qyLotBallFormatPick(line)}
+              {row.text}
             </span>
             <Button
               type='button'
               variant='ghost'
               size='icon'
               disabled={props.disabled}
-              aria-label={t('qy_lot_ball_line_remove', { index: index + 1 })}
-              onClick={() => props.onRemove(index)}
+              aria-label={t('qy_lot_ball_line_remove', {
+                index: row.position + 1,
+              })}
+              onClick={() => props.onRemove(row.position)}
             >
               <X aria-hidden='true' />
             </Button>

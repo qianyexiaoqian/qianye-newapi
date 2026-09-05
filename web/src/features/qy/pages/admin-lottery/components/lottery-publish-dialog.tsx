@@ -20,10 +20,11 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
+import { QySdAmount } from '../../../components/qy-sd-amount'
+import { useStardustName } from '../../../hooks/use-stardust-name'
 import { qyErrorMessage } from '../../../lib/api'
-import { formatQyQuotaLedger } from '../../../lib/format'
+import { formatSdWithUnit } from '../../../lib/format-sd'
 import { qyKeys } from '../../../lib/query-keys'
 import { formatQyTs } from '../../ops/format'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
@@ -58,6 +59,7 @@ export function QyLotPublishDialog(props: {
 }) {
   const { activity } = props
   const { t } = useTranslation()
+  const unit = useStardustName()
   const queryClient = useQueryClient()
 
   const mutation = useMutation({
@@ -80,7 +82,7 @@ export function QyLotPublishDialog(props: {
       irreversibleDesc={
         props.prizeTotalQuota > 0
           ? t('qy_lot_publish_net_issue_note', {
-              amount: formatQyQuotaLedger(props.prizeTotalQuota),
+              amount: formatSdWithUnit(props.prizeTotalQuota, unit),
             })
           : undefined
       }
@@ -90,22 +92,30 @@ export function QyLotPublishDialog(props: {
         <div>
           <QyKeyValue label={t('qy_lot_activity')}>{activity.title}</QyKeyValue>
           <QyKeyValue label={t('qy_lot_stake')}>
-            <QyAmountText quota={activity.stake_quota} />
+            <QySdAmount amount={activity.stake_quota} />
           </QyKeyValue>
           {props.prizeTotalQuota > 0 && (
             <QyKeyValue label={t('qy_lot_worst_net_issue')}>
-              <QyAmountText quota={props.prizeTotalQuota} />
+              <QySdAmount amount={props.prizeTotalQuota} />
             </QyKeyValue>
           )}
           <QyKeyValue label={t('qy_lot_open_at')}>
             {formatQyTs(activity.open_at)}
           </QyKeyValue>
-          <QyKeyValue label={t('qy_lot_close_at')}>
+          <QyKeyValue
+            label={
+              activity.draw_mode === 'wheel'
+                ? t('qy_lot_wheel_end_at')
+                : t('qy_lot_close_at')
+            }
+          >
             {formatQyTs(activity.close_at)}
           </QyKeyValue>
-          <QyKeyValue label={t('qy_lot_draw_at')}>
-            {formatQyTs(activity.draw_at)}
-          </QyKeyValue>
+          {activity.draw_mode !== 'wheel' && (
+            <QyKeyValue label={t('qy_lot_draw_at')}>
+              {formatQyTs(activity.draw_at)}
+            </QyKeyValue>
+          )}
           <QyKeyValue label={t('qy_lot_allow_multi_win')}>
             {activity.allow_multi_win ? t('qy_common_on') : t('qy_common_off')}
           </QyKeyValue>

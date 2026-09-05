@@ -45,6 +45,38 @@ type Address struct {
 	// 复制出来是 a.com"这种对不上。
 	URL string `json:"url" gorm:"column:url;type:varchar(512);not null;default:''"`
 
+	// UserGroups 限定这条地址对哪些**用户分组**可见:逗号分隔、已经过
+	// groupname.Normalize 归一的分组名(见 normalizeUserGroups);空串 = 所有
+	// 分组可见。
+	//
+	// 空=全部沿用全仓口径(violation 的 GroupScope、lottery 的 AllowGroups、
+	// transfer 的规则表同款),它同时就是「默认地址兜底」的实现:不绑分组的行
+	// 对每个分组都可见,某个分组一条专属线路都没配时,看到的恰好就是这批;
+	// 升级前的存量行经 AutoMigrate 补列后也是空串,行为与从前逐字节一致。
+	//
+	// 列名刻意叫 user_groups 而不是 groups:一来 GROUPS 在 MySQL 8 是保留字,
+	// 二来本仓把「用户分组/模型分组」拆成了两个命名空间(见 groupns),这里
+	// 限定的是前者,名字必须把这件事说死。
+	UserGroups string `json:"user_groups" gorm:"type:varchar(1024);not null;default:''"`
+
+	// Surfaces 限定这条地址在哪些**展示位置**可见:逗号分隔的位置名
+	// (见 validate.go 的 allowedSurfaces:console = 控制台「API信息」卡片,
+	// picker = 密钥页「复制链接信息 / CC Switch」);空串 = 所有位置可见。
+	//
+	// 空=全部与 UserGroups 同一套口径,存量行经 AutoMigrate 补列后也是空串,
+	// 行为与从前逐字节一致。过滤发生在**服务端**(handleUserList 的 surface
+	// 参数),而不是让每个前端消费方自己过滤 —— 后者是同一条规则的 N 份拷贝,
+	// 新增消费方忘了过滤时没有任何东西会红。
+	Surfaces string `json:"surfaces" gorm:"type:varchar(64);not null;default:''"`
+
+	// Color 是控制台「API信息」卡片上这条线路的圆点颜色,取值限于前端调色板的
+	// 14 个名字(见 validate.go 的 allowedColors);空串 = 前端默认色。
+	//
+	// 它是上游「API信息」设置(console_setting.api_info)并入本表时带来的唯一
+	// 增量字段:那张表的 route/description/顺序在本表本来就有对应物
+	// (name/remark/sort_order)。并表决策见 qianye/docs/decisions.md。
+	Color string `json:"color" gorm:"type:varchar(16);not null;default:''"`
+
 	// SortOrder 是展示顺序,小的在前。相同则按 Id 升序 —— 排序键必须是全序,
 	// 否则同 SortOrder 的两行在不同数据库/不同执行计划下顺序会变,
 	// 而"第一条"正是前端在只有一条时直接采用的那一条。
@@ -75,4 +107,5 @@ type userView struct {
 	Name   string `json:"name"`
 	Remark string `json:"remark"`
 	URL    string `json:"url"`
+	Color  string `json:"color"`
 }

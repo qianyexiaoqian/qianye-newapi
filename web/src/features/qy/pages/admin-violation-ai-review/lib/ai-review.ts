@@ -20,6 +20,7 @@ import { qyAppendGroupName } from '../../../lib/group-options'
 import type {
   QyAiChannel,
   QyAiChannelInput,
+  QyAiChannelMode,
   QyAiGuardControversial,
   QyAiProtocol,
   QyAiScope,
@@ -250,13 +251,18 @@ export type QyAiScopeDraft = {
   prompt: string
   /** 命中一律记为哪个违规类型。0 = 不指定(按规则自己绑的记)。 */
   category_id: number
-  /** 送到哪个审核渠道。0 = 不指定(按权重在全部启用渠道里随机)。 */
-  channel_id: number
+  /** 送到哪几个审核渠道。空 = 不指定(在全部启用渠道之间分发)。 */
+  channel_ids: number[]
   /**
-   * 指定的渠道不可用时,退到加权随机池。只在 `channel_id > 0` 时有意义。
+   * 这几个渠道之间怎么分发。草稿里**永远是归一之后的值**(不会是空串):
+   * 表单上那两个单选必须有一个是选中的,而一个"第三种状态"会让它们都不亮。
+   */
+  channel_mode: QyAiChannelMode
+  /**
+   * 指定的渠道都不可用时,退到加权随机池。只在清单非空时有意义。
    *
-   * 默认关:打开它把「只发给这一个」变成「这一个不行就发给池子里的任何一个」,
-   * 也就是把用户内容的出境目的地从一个变成一组。
+   * 默认关:打开它把「只发给这几个」变成「它们不行就发给池子里的任何一个」,
+   * 也就是把用户内容的出境目的地从一组变成全部。
    */
   channel_failover: boolean
   remark: string
@@ -277,7 +283,11 @@ export function qyAiScopeToDraft(s?: QyAiScope): QyAiScopeDraft {
     asyncPercent: qyAiBpsToPercentText(s?.async_sample_rate_bps ?? 0),
     prompt: s?.prompt ?? '',
     category_id: s?.category_id ?? 0,
-    channel_id: s?.channel_id ?? 0,
+    channel_ids: [...(s?.channel_ids ?? [])],
+    // 空串折成 weighted:那是库里的零值,也是这一格存在之前的唯一行为。
+    // 草稿里留一个空串会让表单上那两个单选一个都不亮。
+    channel_mode:
+      s?.channel_mode === 'round_robin' ? 'round_robin' : 'weighted',
     // 新建默认**关**,与后端出厂值一致。默认开会让每一条新建的指定渠道策略
     // 都自带一个运营没按过的"允许发给别人"。
     channel_failover: s?.channel_failover ?? false,
@@ -304,11 +314,15 @@ export function qyAiScopeDraftToInput(draft: QyAiScopeDraft): QyAiScopeInput {
     // 「继承 / 已自定义」标记在保存前就与真正入库的东西一致。
     prompt: draft.prompt.trim() === '' ? '' : draft.prompt,
     category_id: draft.category_id > 0 ? draft.category_id : 0,
-    channel_id: draft.channel_id > 0 ? draft.channel_id : 0,
-    // 没指定渠道时一并归零。后端 validateAIScope 也会归一次(它才是权威,
-    // 别的客户端绕不过去);这里归是为了让保存前后列表上那一格是同一个东西 ——
-    // 把"不指定"存成"按权重随机 · 故障转移: 开"会让人以为自己配了点什么。
-    channel_failover: draft.channel_id > 0 && draft.channel_failover,
+    // 去重保序 + 丢掉非正数。后端 validateAIScope 也会归一次(它才是权威,
+    // 别的客户端绕不过去);这里归是为了让"我明明只勾了两个"与请求体一致 ——
+    // 重复 id 在轮询下会让那台机器拿到双倍的量,而界面上完全看不出来。
+    channel_ids: [...new Set(draft.channel_ids.filter((id) => id > 0))],
+    channel_mode: draft.channel_mode,
+    // 没指定渠道时一并归零,同上理由:把"不指定"存成
+    // "全部启用渠道 · 故障转移: 开"会让人以为自己配了点什么。
+    channel_failover:
+      draft.channel_ids.some((id) => id > 0) && draft.channel_failover,
     remark: draft.remark.trim(),
   }
 }
@@ -346,22 +360,30 @@ export function qyAiScopeGroupBindingError(
   return null
 }
 
-/** 一条策略的「送到哪个渠道」这一格在界面上的定性。 */
+/** 一条策略的「送到哪几个渠道」这一格在界面上的定性。 */
 export type QyAiScopeChannelState =
-  /** 没指定:按权重在全部启用渠道里随机。 */
+  /** 没指定:在全部启用渠道之间分发。 */
   | 'default'
-  /** 指定了,而且那个渠道还在、还开着。 */
+  /** 指定了,而且清单里每一个都还在、还开着。 */
   | 'ok'
-  /** 指定了,但那个渠道被停用了 —— 这一档每次都会走「无可用渠道」并直接放行。 */
+  /**
+   * 清单里**有一部分**用不了,但还剩至少一个能发。
+   *
+   * 这一档没有停止工作 —— 指定一组而不是一个的收益正是这里 —— 但实际参与
+   * 分发的比运营选的少,而"三台只剩一台在扛"与"三台都健康"是两种要处置的
+   * 状态。它是提示,不是失效。
+   */
+  | 'partial'
+  /** 指定的渠道**全都**被停用了 —— 这一档每次都会走「无可用渠道」并直接放行。 */
   | 'disabled'
-  /** 指定了,但清单里根本没有这个 id(被删了,或者清单没拉到)。 */
+  /** 指定的渠道里至少有一个在清单里根本找不到(被删了,或者清单没拉到),且无一可用。 */
   | 'missing'
 
 /**
  * 这一档的渠道现在是什么状态。
  *
  * 存在的唯一理由是那两种**零症状**的失效:指定的渠道被停用、或者被删掉。
- * 两种情况下这一档都不再审核任何内容(运行期绝不回落到随机池 —— 回落会把
+ * 全都用不了时这一档不再审核任何内容(运行期绝不回落到全部渠道 —— 回落会把
  * 用户内容发去运营明确没有选的端点),而列表上它与一条正常策略长得完全一样。
  *
  * 渠道清单为空时一律回 `missing` 而不是 `ok`:清单拉不到与渠道真被删掉在
@@ -369,13 +391,25 @@ export type QyAiScopeChannelState =
  * 会把一条已经停止工作的策略画成正常的。
  */
 export function qyAiScopeChannelState(
-  channelId: number,
+  channelIds: number[],
   channels: { id: number; enabled: boolean }[]
 ): QyAiScopeChannelState {
-  if (channelId <= 0) return 'default'
-  const hit = channels.find((c) => c.id === channelId)
-  if (!hit) return 'missing'
-  return hit.enabled ? 'ok' : 'disabled'
+  // `?? []`:后端已经保证下发 `[]`(见 AIChannelIds.MarshalJSON),这一层兜的是
+  // 老版本后端与被裁剪过的响应 —— 这一页四张卡共用路由那一层的错误边界,
+  // 一次 `null.filter` 会把整页换成错误态,而它最常发生在"一档都没指定渠道"
+  // 这种最普通的配置上。
+  const wanted = (channelIds ?? []).filter((id) => id > 0)
+  if (wanted.length === 0) return 'default'
+  const usable = wanted.filter(
+    (id) => channels.find((c) => c.id === id)?.enabled === true
+  )
+  if (usable.length === wanted.length) return 'ok'
+  if (usable.length > 0) return 'partial'
+  // 一个都用不了。两种成因要分开报:"被停用"是一次点得回来的动作,
+  // "查不到"要么是被删了、要么是清单没拉到 —— 处置人不同。
+  // 混着时按 missing 报(偏保守的那一侧)。
+  const allFound = wanted.every((id) => channels.some((c) => c.id === id))
+  return allFound ? 'disabled' : 'missing'
 }
 
 /**
@@ -417,7 +451,7 @@ export type QyAiScopeRowKind =
   /** 两个时机都是 0 —— 免审名单,这是有意义的配置,不是"没配"。 */
   | 'exempt'
   /**
-   * 指定的审核渠道已停用或已删除,**而且这一档没开故障转移**:抽样照跑,
+   * 指定的审核渠道**全都**已停用或已删除,而且这一档没开故障转移:抽样照跑,
    * 但每一次都是「无可用渠道」+ 放行。这一档实际上不再审核任何内容,
    * 而它在列表上与正常策略长得一模一样。
    *

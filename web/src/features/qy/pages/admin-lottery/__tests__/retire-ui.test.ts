@@ -156,16 +156,15 @@ describe('入口只对已结束的场次出现', () => {
   })
 })
 
-describe('六道硬闸门的拒绝文案前端都有', () => {
+describe('五道硬闸门的拒绝文案前端都有', () => {
   test('后端每个 code 都登记了映射，并且两种语言都有文案', () => {
-    // 没登记的 code 会回落成按 HTTP 状态码归类的泛化文案 —— 而这八个全是 409/400，
+    // 没登记的 code 会回落成按 HTTP 状态码归类的泛化文案 —— 而这七个全是 409/400，
     // 塌成一句「操作冲突」之后，运营看不出该等出款落定、该去发兑换码、还是该先
     // 关闭双色球系列。这正是这一整层存在的理由。
     for (const code of [
       'qy_lot_delete_not_finished',
       'qy_lot_delete_funds_open',
       'qy_lot_delete_text_pending',
-      'qy_lot_delete_entry_open',
       'qy_lot_delete_flag_open',
       'qy_lot_delete_series_live',
       'qy_lot_delete_evidence_broken',

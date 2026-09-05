@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 
+import { useStardustName } from '../../../hooks/use-stardust-name'
 import { qyArray } from '../../../lib/array'
 import { qyLotMissingKey, qyLotMissingValues } from '../lib/display'
 import type { QyLotEligibility, QyLotMissing } from '../types'
@@ -43,6 +44,7 @@ export function QyLotEligibilityCard(props: {
   isLoading: boolean
 }) {
   const { t } = useTranslation()
+  const unit = useStardustName()
 
   if (props.isLoading || props.eligibility == null) return null
 
@@ -67,7 +69,7 @@ export function QyLotEligibilityCard(props: {
       <AlertDescription>
         <ul className='mt-1 space-y-1'>
           {missing.map((item) => (
-            <li key={item.code}>{describe(item, t)}</li>
+            <li key={item.code}>{describe(item, t, unit)}</li>
           ))}
         </ul>
       </AlertDescription>
@@ -79,16 +81,20 @@ export function QyLotEligibilityCard(props: {
  * 一条缺失项的措辞。
  *
  * `need` / `have` 的单位由 `qyLotMissingValues` 判定：额度口径的先换算成站内
- * 余额（与钱包页、日志页同一格式），天数与次数原样透传。未登记的 code 回落成
- * 一句通用文案 + 原始 code，用户至少能把它贴给客服，而不是对着一行空白。
+ * 余额（与钱包页、日志页同一格式），参与费那一条按整数星屑，天数与次数原样
+ * 透传。星屑的单位名以 `unit` 插进文案（`{{unit}}`），别的文案多收一个用不上的
+ * 参数无害。未登记的 code 回落成一句通用文案 + 原始 code，用户至少能把它贴给
+ * 客服，而不是对着一行空白。
  */
 function describe(
   missing: QyLotMissing,
-  t: (key: string, options?: Record<string, unknown>) => string
+  t: (key: string, options?: Record<string, unknown>) => string,
+  unit: string
 ): string {
   const key = qyLotMissingKey(missing)
   return t(key, {
     defaultValue: t('qy_lot_miss_unknown', { code: missing.code }),
+    unit,
     ...qyLotMissingValues(missing),
   })
 }

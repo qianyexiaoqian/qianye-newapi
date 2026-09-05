@@ -22,6 +22,7 @@ import {
   isQyLotVoided,
   qyLotOptions,
   qyLotTiers,
+  type QyLotPrizeType,
   type QyLotProof,
   type QyLotProofEntry,
   type QyLotProofWinner,
@@ -163,9 +164,10 @@ export function qyLotRulesHash(rulesText: string): Promise<string> {
 export function qyLotSpecLines(proof: QyLotProof): string[] {
   if (proof.kind === 'draw') {
     if (proof.algo === ALGO_V2) {
-      // v2 的奖档行有十个字段，**恒等式位也必须写出来**：quota 档的
-      // `text_desc` 是空串、rank 模式的 `win_ppm` 是 0、非双色球的三列是 0。
-      // 少一个占位就等于允许管理员在不动哈希的前提下把一档额度奖改成文本奖。
+      // v2 的奖档行有十一个字段，**恒等式位也必须写出来**：quota 档的
+      // `text_desc` 是空串、rank 模式的 `win_ppm` 是 0、非双色球的三列是 0、
+      // 非商品奖的 `product_no` 是空串。少一个占位就等于允许管理员在不动哈希的
+      // 前提下把一档额度奖改成文本奖、或把一档商品奖换成另一件商品。
       return qyLotTiers(proof.spec).map((tier) =>
         [
           dec(tier.tier),
@@ -178,6 +180,7 @@ export function qyLotSpecLines(proof: QyLotProof): string[] {
           dec(tier.red_match ?? 0),
           dec(tier.blue_match ?? 0),
           dec(tier.pool_share_bps ?? 0),
+          tier.product_no ?? '',
         ].join(SEP)
       )
     }
@@ -208,12 +211,20 @@ export function qyLotSpecHash(lines: string[], algo = ALGO): Promise<string> {
  * 覆盖的不只是种子：参与条件、奖档集合、四个时刻、算法版本，以及每一个会影响
  * 结果的布尔与数值。漏掉任何一项，管理员都能在不碰种子的前提下把结果算成他想要
  * 的样子，而验证者只会看到"对不上"却举证不出是哪一边改的。
+ *
+ * **转盘（`draw_mode='wheel'`）整段省略 open_at / close_at / draw_at 三个分量**
+ * （不是填空串，分量数直接少三个）。转盘的票面 = HMAC(seed, act_no ‖ seq ‖
+ * client_seed)，里面没有时刻；排期只决定"什么时候收转"，像抽卡卡池的上下架时间，
+ * 运营可以在发布后延期、提前收转、立即开始（改动写在事件流的 `schedule_changed`
+ * 里）。把它们钉进承诺换不来任何公平性。`draw_mode` 分量在前，两种原像形状
+ * 不可能互相重放。
  */
 export function qyLotCommitHash(
   proof: QyLotProof,
   rulesHash: string,
   specHash: string
 ): Promise<string> {
+  const wheel = proof.algo === ALGO_V2 && proof.draw_mode === 'wheel'
   const head = [
     proof.algo === ALGO_V2 ? 'qylot-commit-v2' : 'qylot-commit-v1',
     proof.act_no,
@@ -222,9 +233,9 @@ export function qyLotCommitHash(
     rulesHash,
     specHash,
     dec(proof.stake_quota),
-    dec(proof.open_at),
-    dec(proof.close_at),
-    dec(proof.draw_at),
+    ...(wheel
+      ? []
+      : [dec(proof.open_at), dec(proof.close_at), dec(proof.draw_at)]),
     dec(proof.settle_deadline),
     bool(proof.allow_multi_win),
     dec(proof.fee_bps),
@@ -416,6 +427,254 @@ export function qyLotBandOf(
   return bands.find((band) => roll >= band.loPpm && roll < band.hiPpm) ?? null
 }
 
+// ─────────────────────────── 转盘（draw_mode='wheel'） ───────────────────────────
+
+/**
+ * 转盘证据链里的一次转动（契约 §6）。与 `entries` 同一页、同一顺序，一转对一条。
+ *
+ * `chain` 就是那一条的 `chain_hash`；`tier` 0 = 未中（落到「谢谢参与」，或摇中的
+ * 档已发完 —— 后者 `exhausted_tier` 记下摇中的是哪一档）。
+ */
+export type QyLotProofSpin = {
+  seq: number
+  user_ref: string
+  client_seed: string
+  ppm: number
+  tier: number
+  exhausted_tier: number
+  chain: string
+}
+
+/** 转盘证据链里的一档奖：与 `spec` 同源，但多带揭示后的在线库存终态。 */
+export type QyLotProofTier = {
+  tier: number
+  name: string
+  prize_type: QyLotPrizeType
+  amount_quota: number
+  count: number
+  win_ppm: number
+  text_desc: string
+  /** 商品奖引用的商城商品号；其余类型为空串。 */
+  product_no?: string
+  stock_left: number
+}
+
+/**
+ * 带转盘字段的证据链。两个字段只对 `draw_mode='wheel'` 下发，其余玩法省略；
+ * 老的 `QyLotProof` 值可以原样传给 {@link verifyQyLotProof}。
+ */
+export type QyLotWheelProof = QyLotProof & {
+  spins?: QyLotProofSpin[]
+  tiers?: QyLotProofTier[]
+}
+
+/**
+ * 转盘票面：`HMAC(seed, "qylot-wheel-v2" ‖ act_no ‖ dec(seq) ‖ client_seed)`。
+ *
+ * ## 与批次玩法的票面差在哪
+ *
+ * 密钥是**种子本身**（不是混了名单哈希的 `final_seed`），原像里没有 `user_ref`、
+ * 也没有任何服务端当场生成的量 —— 后者一旦进原像，服务端就能"多摇几次挑一个"。
+ * 域前缀与批次票面不同，两种密钥下的原像因此互不可重放。
+ *
+ * ## 这意味着什么（诚实说明）
+ *
+ * 即时开奖没有名单可冻结，能读到种子的人可以对自己的下一转离线挑 `client_seed`。
+ * 协议保证的是"服务端按公示公式算了每一转、可被逐转复算"，不保证"任何人都无法预知"。
+ * 规则页对转盘因此只声称前者。
+ */
+export async function qyLotWheelTicket(
+  seedHex: string,
+  actNo: string,
+  seq: number,
+  clientSeed: string
+): Promise<string> {
+  if (seedHex === '') throw new Error('seed not revealed')
+  return await hmacSha256Hex(
+    seedHex,
+    ['qylot-wheel-v2', actNo, dec(seq), clientSeed].join(SEP)
+  )
+}
+
+/**
+ * 一转的结果在 lot-v2 链原像 `pick` 分量里的编码：`w|tier|ppm|exhausted_tier|client_seed`。
+ *
+ * 转盘没有改动任何既有原像，只是把"这一转的结果"塞进了本来给双色球选号用的那一位。
+ * `client_seed` 的字符集不含 `|`，编码因此是单射的；四个量少一个进链，平台就能事后
+ * 把某一转改成另一档而链照常通过。
+ */
+export function qyLotWheelPick(
+  spin: Pick<QyLotProofSpin, 'client_seed' | 'exhausted_tier' | 'ppm' | 'tier'>
+): string {
+  return [
+    'w',
+    dec(spin.tier),
+    dec(spin.ppm),
+    dec(spin.exhausted_tier),
+    spin.client_seed,
+  ].join('|')
+}
+
+/** 复算出的一转。 */
+export type QyLotWheelReplayRow = {
+  seq: number
+  ppm: number
+  tier: number
+  exhausted_tier: number
+}
+
+/**
+ * 按 seq 顺序逐转复算并重放库存。
+ *
+ * 落到「谢谢参与」不动库存；落到真实档而库存已为 0 → 结果落空、记 `exhausted_tier`。
+ * 与生产实现逐字同一口径 —— 验的正是"库存耗尽落空是真的"。`stock` 是重放到最后
+ * 各真实档的剩余，揭示后它必须等于文档公布的 `stock_left`。
+ *
+ * 各档概率（含 none）必须恰好铺满 100%：留空区间意味着摇号轴上有一段"落在全部
+ * 区间之外"，而转盘的协议里没有这个结果，服务端派生 none 行正是为了消掉它。
+ */
+export async function qyLotReplayWheel(
+  seedHex: string,
+  actNo: string,
+  tiers: QyLotTier[],
+  spins: Pick<QyLotProofSpin, 'client_seed' | 'seq'>[]
+): Promise<{ rows: QyLotWheelReplayRow[]; stock: Map<number, number> }> {
+  const bands = qyLotBands(tiers)
+  const last = bands.at(-1)
+  if (last == null || last.hiPpm !== QY_LOT_PPM_DEN) {
+    throw new Error(
+      `wheel bands cover ${last?.hiPpm ?? 0}, expected ${QY_LOT_PPM_DEN}`
+    )
+  }
+  const byTier = new Map(tiers.map((tier) => [tier.tier, tier]))
+  const stock = new Map<number, number>()
+  for (const tier of tiers) {
+    if (tier.prize_type !== 'none') stock.set(tier.tier, tier.count)
+  }
+  const rows: QyLotWheelReplayRow[] = []
+  for (const spin of [...spins].sort((a, b) => a.seq - b.seq)) {
+    const ppm = qyLotRollPpm(
+      await qyLotWheelTicket(seedHex, actNo, spin.seq, spin.client_seed)
+    )
+    const band = qyLotBandOf(bands, ppm)
+    if (band == null) {
+      throw new Error(`seq ${spin.seq}: roll ${ppm} outside every band`)
+    }
+    let tier = 0
+    let exhausted = 0
+    if (byTier.get(band.tier)?.prize_type !== 'none') {
+      const left = stock.get(band.tier) ?? 0
+      if (left > 0) {
+        stock.set(band.tier, left - 1)
+        tier = band.tier
+      } else {
+        exhausted = band.tier
+      }
+    }
+    rows.push({ seq: spin.seq, ppm, tier, exhausted_tier: exhausted })
+  }
+  return { rows, stock }
+}
+
+/**
+ * 复算转盘的每一转，并与平台公布的比对。
+ *
+ * ## 验得了什么
+ *
+ * 1. 每一转的摇号量、落档与耗尽档 —— `(seed, act_no, seq, client_seed)` 的纯函数，
+ *    加上按 seq 顺序重放出来的库存；改任何一转的结果、删任何一转、跳任何一个
+ *    序号，这里都会红（链那一步同样会红：结果编码在链原像里）。
+ * 2. 库存终态 —— 重放到最后各档剩余必须等于公布的 `stock_left`。
+ * 3. 已派奖的转 = 复算中奖的转 —— 多一笔就是凭空发钱，少一笔就是没发。
+ *
+ * ## 验不了什么（不用绿勾盖过去）
+ *
+ * `user_ref` 与真人的对应关系（盐永不公开，它也不是随机量的输入）；并发转动时
+ * 谁拿到 seq N 与 N+1（由服务端串行化决定）；以及"内部人不可能中奖"（见
+ * {@link qyLotWheelTicket}）。这三条写在文档的 `notice` 里，不写在这里的绿勾上。
+ */
+async function verifyWheelResult(
+  proof: QyLotWheelProof,
+  entries: QyLotProofEntry[]
+): Promise<QyLotVerifyStep> {
+  const spins = proof.spins ?? []
+  if (spins.length !== entries.length) {
+    return step(
+      'result',
+      'fail',
+      `spins ${spins.length} != entries ${entries.length}`
+    )
+  }
+  const spinBySeq = new Map(spins.map((spin) => [spin.seq, spin]))
+  const tiers = qyLotTiers(proof.spec)
+  if (!tiers.some((tier) => tier.prize_type === 'none')) {
+    return step('result', 'fail', 'no derived none tier in spec')
+  }
+  const { rows, stock } = await qyLotReplayWheel(
+    proof.seed,
+    proof.act_no,
+    tiers,
+    spins
+  )
+  for (const entry of entries) {
+    const spin = spinBySeq.get(entry.seq)
+    const mine = rows.find((row) => row.seq === entry.seq)
+    if (spin == null || mine == null) {
+      return step('result', 'fail', `spin missing at seq ${entry.seq}`)
+    }
+    if (spin.user_ref !== entry.user_ref || spin.chain !== entry.chain_hash) {
+      return step(
+        'result',
+        'fail',
+        `spin ${entry.seq} does not match its entry`
+      )
+    }
+    if (
+      spin.ppm !== mine.ppm ||
+      spin.tier !== mine.tier ||
+      spin.exhausted_tier !== mine.exhausted_tier
+    ) {
+      return step(
+        'result',
+        'fail',
+        `seq ${entry.seq}: mine ${mine.ppm}/${mine.tier}/${mine.exhausted_tier} theirs ${spin.ppm}/${spin.tier}/${spin.exhausted_tier}`
+      )
+    }
+  }
+  for (const tier of proof.tiers ?? []) {
+    const left = stock.get(tier.tier)
+    if (left != null && left !== tier.stock_left) {
+      return step(
+        'result',
+        'fail',
+        `tier ${tier.tier} stock ${left} != ${tier.stock_left}`
+      )
+    }
+  }
+  // 已派奖的转与复算中奖的转一一对应。none / 耗尽不落 payout 行。
+  const won = new Set(
+    entries
+      .filter((entry) => (spinBySeq.get(entry.seq)?.tier ?? 0) > 0)
+      .map((entry) => entry.entry_no)
+  )
+  const paid = proof.payouts.filter(
+    (payout) =>
+      (payout.kind === 'prize' ||
+        payout.kind === 'text' ||
+        payout.kind === 'product') &&
+      (payout.status === 'paid' || payout.status === 'granted')
+  )
+  const paidSet = new Set(paid.map((payout) => payout.entry_no))
+  if (
+    paid.length !== won.size ||
+    paidSet.size !== won.size ||
+    [...won].some((entryNo) => !paidSet.has(entryNo))
+  ) {
+    return step('result', 'fail', `paid ${paid.length} != won ${won.size}`)
+  }
+  return step('result', 'ok', `${rows.length} spins · stock replayed`)
+}
+
 /**
  * 双色球摇号：对号池里的每一个球号算一次 HMAC，按 `(哈希, 号码)` 升序取前 k。
  *
@@ -595,8 +854,10 @@ export async function qyLotPickWinnersProb(
   for (const tier of [...tiers].sort((a, b) => a.tier - b.tier)) {
     const hit = byTier.get(tier.tier) ?? []
     if (hit.length === 0) continue
+    // 文本奖与商品奖没有金额、也无从摊薄（一件商品劈不开）。
     const diluted =
       tier.prize_type !== 'text' &&
+      tier.prize_type !== 'product' &&
       tier.amount_quota > 0 &&
       hit.length > tier.count
     const budget = BigInt(tier.count) * BigInt(tier.amount_quota)
@@ -849,9 +1110,14 @@ function qyLotFormatPick(reds: number[], blues: number[]): string {
  * 半路 return 会让用户以为"后面的没问题"。
  */
 export async function verifyQyLotProof(
-  proof: QyLotProof
+  proof: QyLotWheelProof
 ): Promise<QyLotVerifyStep[]> {
   const steps: QyLotVerifyStep[] = []
+  const wheel = proof.kind === 'draw' && proof.draw_mode === 'wheel'
+  // 转盘的链环带着那一转的结果（WheelPick 编码）：推链要先按 seq 找到那一转。
+  const spinBySeq = new Map(
+    (wheel ? (proof.spins ?? []) : []).map((spin) => [spin.seq, spin])
+  )
 
   if (!isKnownAlgo(proof.algo)) {
     return STEP_KEYS.map((key) => step(key, 'fail', `algo=${proof.algo}`))
@@ -925,7 +1191,17 @@ export async function verifyQyLotProof(
       if (entry.prev_hash !== chain) {
         throw new Error(`prev_hash mismatch at seq ${entry.seq}`)
       }
-      chain = await qyLotChainNext(chain, proof.act_no, entry, proof.algo)
+      let link: Parameters<typeof qyLotChainNext>[2] = entry
+      if (wheel) {
+        const spin = spinBySeq.get(entry.seq)
+        if (spin == null) {
+          throw new Error(
+            `spin missing at seq ${entry.seq}, chain cannot advance`
+          )
+        }
+        link = { ...entry, pick: qyLotWheelPick(spin) }
+      }
+      chain = await qyLotChainNext(chain, proof.act_no, link, proof.algo)
       if (chain !== entry.chain_hash) {
         throw new Error(`chain_hash mismatch at seq ${entry.seq}`)
       }
@@ -987,6 +1263,15 @@ export async function verifyQyLotProof(
     // 的唯一材料，但判断本身要人来做）。
     if (isQyLotVoided(proof.outcome)) {
       steps.push(step('result', 'skipped', `outcome=${proof.outcome}`))
+      return steps
+    }
+    // 转盘：逐转复算 + 库存重放。它没有 final_seed，也没有批次中奖名单可比。
+    if (wheel) {
+      try {
+        steps.push(await verifyWheelResult(proof, entries))
+      } catch (error) {
+        steps.push(step('result', 'fail', String(error)))
+      }
       return steps
     }
     // 双色球：复算**开奖号**与**中奖名单的档位**，但不复算金额。

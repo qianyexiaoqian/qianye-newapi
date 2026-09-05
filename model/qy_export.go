@@ -192,13 +192,13 @@ func QyRecordLedgerLog(userId int, logType int, content string, orderNo string, 
 // 失败只记日志,绝不影响主流程。
 
 var (
-	// QyOnConsumeLog 在 RecordConsumeLog 入口触发,用于消费返佣。
+	// QyOnConsumeLog 在 RecordConsumeLog 入口触发。扩展当前没有消费方(星屑按日整日重算 logs),槽位保留。
 	//
 	// 必须挂在 common.LogConsumeEnabled 早退判断之前,否则关闭了消费日志的部署
-	// 将完全收不到返佣事件。
+	// 将完全收不到消费事件。
 	QyOnConsumeLog = func(c *gin.Context, userId int, params RecordConsumeLogParams) {}
 
-	// QyOnRedeemSuccess 在兑换码成功兑换后触发,用于充值返佣。
+	// QyOnRedeemSuccess 在兑换码成功兑换后触发,由 invite 模块占槽并转发给星屑的兑换码返。
 	QyOnRedeemSuccess = func(userId int, redemptionId int, quota int) {}
 )
 

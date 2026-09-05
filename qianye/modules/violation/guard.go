@@ -52,13 +52,14 @@ func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.Toke
 		return nil
 	}
 	cfg := config.Get().Violation
-	if !cfg.Enabled || !cfg.PrecheckEnabled {
+	if !cfg.Enabled {
 		return nil
 	}
 	// 热路径绝不能因为本模块 panic:relay 是主业务,风控是附加物。
 	defer recoverHot("pre_relay_guard")
 
-	// 自己审自己的断路器,必须在**任何检测之前**短路整条 PreRelayGuard。
+	// 自己审自己的断路器,必须在**任何检测之前**短路整条 PreRelayGuard —— cyber
+	// 屏蔽也不例外(自审请求的会话身份是我们自己的,不该被拉黑判定卷进来)。
 	//
 	// 它一度只写在 aiPreReview 内部,也就是排在 scanPrompt 之后。后果不是递归
 	// (AI 那一层确实停得住),而是:审核渠道的 base_url 误填成本站自己时
@@ -75,6 +76,19 @@ func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.Toke
 
 	maybeRefresh()
 	snap := Snapshot()
+
+	// cyber 会话屏蔽:**独立于 precheck_enabled**,只受它自己的管理端开关
+	// (snap.cyber,由 DB 设置装配)约束。转发前判定这条会话此刻是否已被拉黑。
+	if snap.cyber != nil {
+		if err := cyberSessionPrecheck(c, info, snap.cyber); err != nil {
+			return err
+		}
+	}
+
+	if !cfg.PrecheckEnabled {
+		return nil
+	}
+
 	// hasPrompt 只覆盖转发前那一桶。转发后(异步)AI 审核的调度点也在这里
 	// (见 aireview_hook.go 顶部),所以它单独把住 aiOn 这一半 ——
 	// 漏掉的话,只配了转发后审核的站点会在这一行静默返回,而界面上功能是开着的。
@@ -141,7 +155,18 @@ func PostRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, apiErr *types.N
 		return
 	}
 	cfg := config.Get().Violation
-	if !cfg.Enabled || !cfg.PostChargeEnabled {
+	if !cfg.Enabled {
+		return
+	}
+
+	// cyber 会话屏蔽的**写侧**:命中 cyber_policy 就拉黑本会话。独立于
+	// post_charge_enabled —— 那个开关管的是"违规扣不扣费",与拉黑无关。
+	// 幂等(cyberMark 是覆盖写),放在 ctxKeyPostDone 闸之前多跑一次也无害。
+	if snap := Snapshot(); snap.cyber != nil {
+		maybeBlockCyberSession(c, info, apiErr, snap.cyber)
+	}
+
+	if !cfg.PostChargeEnabled {
 		return
 	}
 	if common.GetContextKeyBool(c, ctxKeyPostDone) {
@@ -499,9 +524,13 @@ func chargeable(info *relaycommon.RelayInfo) bool {
 
 // promptText 取参与匹配的 prompt 文本。
 //
-// meta.CombineText 可能为空:relay.go 在"敏感词检测关闭 且 CountToken=false"时
-// 走的是 fastTokenCountMetaForPricing,它不构建 CombineText。不补这一步,
-// 全部 prompt 规则会在这种部署下静默失效且没有任何报错 —— 最危险的失败模式。
+// meta.CombineText 可能为空:relay.go 在 CountToken=false 时走的是
+// fastTokenCountMetaForPricing,它不构建 CombineText。不补这一步,全部 prompt
+// 规则会在这种部署下静默失效且没有任何报错 —— 最危险的失败模式。
+//
+// 上游自带的敏感词过滤已整体移除(见 docs/decisions.md D-16),此前"敏感词检测
+// 默认开着"顺带保证了 CombineText 恒被构建;现在只剩 CountToken 一个条件,
+// 这一步的重建路径因此比以前更常走到。
 func promptText(meta *types.TokenCountMeta, info *relaycommon.RelayInfo) string {
 	if meta != nil && meta.CombineText != "" {
 		return meta.CombineText

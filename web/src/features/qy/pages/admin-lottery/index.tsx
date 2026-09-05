@@ -33,13 +33,14 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
-import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QyResponsiveDialog } from '../../components/qy-responsive-dialog'
+import { QySdAmount } from '../../components/qy-sd-amount'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
+import { useStardustName } from '../../hooks/use-stardust-name'
 import { qyArray } from '../../lib/array'
-import { formatQyQuotaLedger } from '../../lib/format'
+import { formatSdWithUnit } from '../../lib/format-sd'
 import { QyPager } from '../components/qy-pager'
 import { QyStatGrid } from '../components/qy-stat-grid'
 import {
@@ -62,6 +63,22 @@ const PAGE_SIZE = 20
 const ALL = 'all'
 
 /**
+ * 列表「类型」那一列的文字。双色球与转盘的 kind 都是 draw，只靠 kind 运营在
+ * 列表上分不出来 —— 而双色球那一行的 pool_quota（本期投注额）与它真正的奖池
+ * 不是一回事，转盘那一行根本没有"奖池"这回事，分不出来就会照着错的数判断收支。
+ */
+function adminPlayLabel(
+  row: Pick<QyLotAdminActivityBrief, 'draw_mode' | 'issue_no' | 'kind'>,
+  t: (key: string, values?: Record<string, unknown>) => string
+): string {
+  if (row.draw_mode === 'ball') {
+    return `${t('qy_lot_mode_ball')} · ${t('qy_lot_ball_issue_no', { no: row.issue_no ?? 0 })}`
+  }
+  if (row.draw_mode === 'wheel') return t('qy_lot_play_wheel')
+  return t(`qy_lot_kind_${row.kind}`)
+}
+
+/**
  * 抽奖 / 竞猜活动管理。
  *
  * 列表页只负责两件事：**这场赚了还是亏了**，以及**有没有需要人处理的异常**。
@@ -70,6 +87,7 @@ const ALL = 'all'
  */
 export function QyAdminLottery() {
   const { t } = useTranslation()
+  const unit = useStardustName()
   const [kind, setKind] = useState(ALL)
   const [status, setStatus] = useState(ALL)
   const [page, setPage] = useState(1)
@@ -142,18 +160,18 @@ export function QyAdminLottery() {
               {
                 key: 'pool',
                 label: t('qy_lot_a_stat_pool'),
-                value: formatQyQuotaLedger(totals.pool),
+                value: formatSdWithUnit(totals.pool, unit),
                 hint: t('qy_lot_a_stat_page_scope'),
               },
               {
                 key: 'payout',
                 label: t('qy_lot_a_stat_payout'),
-                value: formatQyQuotaLedger(totals.payout),
+                value: formatSdWithUnit(totals.payout, unit),
               },
               {
                 key: 'fee',
                 label: t('qy_lot_a_stat_fee'),
-                value: formatQyQuotaLedger(totals.fee),
+                value: formatSdWithUnit(totals.fee, unit),
                 hint: t('qy_lot_a_stat_fee_hint'),
               },
               {
@@ -280,9 +298,7 @@ export function QyAdminLottery() {
                     id: 'kind',
                     header: t('qy_lot_kind'),
                     cell: (row: QyLotAdminActivityBrief) =>
-                      row.draw_mode === 'ball'
-                        ? `${t('qy_lot_mode_ball')} · ${t('qy_lot_ball_issue_no', { no: row.issue_no ?? 0 })}`
-                        : t(`qy_lot_kind_${row.kind}`),
+                      adminPlayLabel(row, t),
                   },
                   {
                     id: 'status',
@@ -322,14 +338,14 @@ export function QyAdminLottery() {
                     id: 'pool',
                     header: t('qy_lot_pool'),
                     cell: (row: QyLotAdminActivityBrief) => (
-                      <QyAmountText quota={row.pool_quota} />
+                      <QySdAmount amount={row.pool_quota} />
                     ),
                   },
                   {
                     id: 'payout',
                     header: t('qy_lot_a_stat_payout'),
                     cell: (row: QyLotAdminActivityBrief) => (
-                      <QyAmountText quota={row.payout_quota} />
+                      <QySdAmount amount={row.payout_quota} />
                     ),
                   },
                   {
@@ -339,8 +355,8 @@ export function QyAdminLottery() {
                       // 净值 = 收进来的参与费 − 发出去的奖 − 退回去的钱。
                       // 抽奖里它经常是负数，那是正常的（平台出奖品），
                       // 所以必须带符号显示而不是取绝对值。
-                      <QyAmountText
-                        quota={
+                      <QySdAmount
+                        amount={
                           row.pool_quota - row.payout_quota - row.refund_quota
                         }
                         signed

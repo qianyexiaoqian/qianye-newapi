@@ -59,7 +59,7 @@ type Props = {
 export function QyApiAddressPickerDialog(props: Props) {
   const { t } = useTranslation()
   const open = props.pendingKey != null
-  const query = useQuery({ ...qyApiAddressesQuery(), enabled: open })
+  const query = useQuery({ ...qyApiAddressesQuery('picker'), enabled: open })
   const options = qyResolveAddressOptions(query.data, t('qy_aa_site_default'))
   const [picked, setPicked] = useState('')
   const value = picked !== '' ? picked : (options[0]?.url ?? '')

@@ -19,12 +19,21 @@ For commercial licensing, please contact support@quantumnous.com
 import type { TFunction } from 'i18next'
 import { Blocks } from 'lucide-react'
 
-import type { NavCollapsible, NavGroup } from '@/components/layout/types'
+import type {
+  NavCollapsible,
+  NavGroup,
+  NavItem,
+} from '@/components/layout/types'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { getQyConfigSnapshot } from './lib/config-query'
-import { QY_SETTINGS_PAGES, isQyPageVisible } from './lib/pages'
+import {
+  QY_SETTINGS_PAGES,
+  QY_SETTINGS_SECTION_PATHS,
+  type QyPageDef,
+  isQyPageVisible,
+} from './lib/pages'
 import type { QyFeatures } from './lib/types'
 
 /**
@@ -43,19 +52,28 @@ import type { QyFeatures } from './lib/types'
  * 进去时侧栏不该换成设置抽屉。两条清单同源（`QY_SETTINGS_PAGES`），
  * 所以"菜单里有、pattern 里没有"这种半接上的状态构造不出来。
  *
- * ── 为什么是一个独立的折叠项，而不是散进上游那 7 组 ──
- * 散进去要动上游 7 个 `section-registry` 中的若干个，而且上游那些组的成员
- * 都是同一页面内的 `?section=` 锚点，qy 的是**另一个路由**。混在一起之后，
- * 用户点前 3 项停在原页、点第 4 项整页跳走，同一组里两种行为。单独一组还能
- * 让"这是扩展带来的"这件事一眼可见。
+ * ── 为什么默认是一个独立的折叠项，而不是散进上游那 7 组 ──
+ * 散进去意味着上游那些组里混进**另一个路由**：上游成员都是同一页面内的
+ * `?section=` / 路径锚点，点了停在原页，qy 的点了整页跳走，同一组里两种行为。
+ * 单独一组还能让"这是扩展带来的"这件事一眼可见。
+ *
+ * ── 那为什么仍然留了例外 ──
+ * 项目方 2026-09-05：「API 地址这个页面菜单，从扩展设置移动到模型与路由下面。」
+ * 归属比行为一致更重要时，页面在表里写一行 `settingsSection`
+ * （{@link QY_SETTINGS_SECTION_PATHS}），本函数就把它挂到那个折叠项末尾。
+ * 认的是上游那一组子项的 url 前缀，不是翻译后的标题 —— 标题随语言变，url 不变。
+ * 认不出来（上游改了路径 / 删了那一组）时**落回「扩展设置」**：入口错位是小事，
+ * 入口消失是本仓反复出现的那件大事。
  */
 
 /**
- * 纯函数版：往上游抽屉的第一组末尾追加一个「扩展设置」折叠项。
+ * 纯函数版：往上游抽屉的第一组末尾追加一个「扩展设置」折叠项，
+ * 并把写了 `settingsSection` 的页面挂进上游对应的折叠项（如 API 地址 → 模型与路由）。
  *
  * 追加而不是插到某个位置：上游那 7 组的顺序是它自己的编排，qy 挤进中间
  * 只会在上游调整顺序时错位。一个都不可见时**整组不生成** —— 留一个只剩标题
  * 的折叠项，标题本身就是信息泄漏（与 `nav.ts` 里对空分组的处理同一条规则）。
+ * 全部页面都挂进了上游折叠项时同理不生成这一项。
  *
  * 成员可见性与根侧栏共用 `isQyPageVisible`（角色 × 功能开关）；这里额外要求
  * 管理员，因为整组页面都是 `/qy/admin/*`。
@@ -77,27 +95,45 @@ export function mergeQySystemSettingsNavGroups(
   if (!(role >= ROLE.SUPER_ADMIN)) return baseGroups
   const isAdmin = true
 
-  const items = QY_SETTINGS_PAGES.filter((page) =>
+  const visible = QY_SETTINGS_PAGES.filter((page) =>
     isQyPageVisible(page, features, isAdmin)
-  ).map((page) => ({
-    // 子项不带图标：上游那 7 组的子项也都不带，混着给会让缩进看起来是坏的。
-    title: t(page.titleKey),
-    url: page.url,
-  }))
-  if (items.length === 0) return baseGroups
+  )
+  if (visible.length === 0) return baseGroups
 
   const target = baseGroups[0]
   if (target == null) return baseGroups
 
+  // 子项不带图标：上游那 7 组的子项也都不带，混着给会让缩进看起来是坏的。
+  const navItem = (page: QyPageDef) => ({
+    title: t(page.titleKey),
+    url: page.url,
+  })
+
+  // 先把写了 `settingsSection` 的那几页挂到上游对应的折叠项末尾。
+  const attached = new Set<string>()
+  const items = target.items.map((item): NavItem => {
+    if (item.items == null) return item
+    const children = item.items
+    const mine = visible.filter((page) => {
+      if (page.settingsSection == null) return false
+      const basePath = QY_SETTINGS_SECTION_PATHS[page.settingsSection]
+      return children.some((child) => String(child.url).startsWith(basePath))
+    })
+    if (mine.length === 0) return item
+    for (const page of mine) attached.add(page.url)
+    return { ...item, items: [...children, ...mine.map(navItem)] }
+  })
+
+  // 剩下的（以及没能挂上去的那些 —— fail-open）仍旧收在「扩展设置」里。
+  const own = visible.filter((page) => !attached.has(page.url))
+  if (own.length === 0) return [{ ...target, items }, ...baseGroups.slice(1)]
+
   const qyItem: NavCollapsible = {
     title: t('qy_nav_group_settings'),
     icon: Blocks,
-    items,
+    items: own.map(navItem),
   }
-  return [
-    { ...target, items: [...target.items, qyItem] },
-    ...baseGroups.slice(1),
-  ]
+  return [{ ...target, items: [...items, qyItem] }, ...baseGroups.slice(1)]
 }
 
 /**
@@ -170,9 +206,9 @@ export function withQyBillingSectionNavItems<T extends { url: string }>(
  * 上游原本是 `/^\/system-settings(\/|$)/`。这里把 qy 那几个配置页并进同一个
  * pattern —— 它们现在是这个抽屉的成员，进去之后侧栏当然要保持是抽屉。
  *
- * `(\/|$)` 是必须的：没有它，`/qy/admin/commission` 这一条会顺带匹配
- * `/qy/admin/commission-records`（佣金审核），而后者是留在根侧栏上的流水页，
- * 从根侧栏点进去侧栏却换成设置抽屉，等于把人甩出当前上下文。
+ * `(\/|$)` 是必须的：没有它，`/qy/admin/stardust-config` 这类前缀会顺带匹配
+ * 任何以它开头的新路由，而流水页是留在根侧栏上的，从根侧栏点进去侧栏却换成
+ * 设置抽屉，等于把人甩出当前上下文。
  */
 export const QY_SYSTEM_SETTINGS_PATH_PATTERN = new RegExp(
   `^\\/(system-settings|qy\\/admin\\/(${QY_SETTINGS_PAGES.map((page) =>

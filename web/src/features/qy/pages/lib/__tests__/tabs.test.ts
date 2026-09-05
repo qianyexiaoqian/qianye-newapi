@@ -28,7 +28,7 @@ import { qyResolveTab } from '@/features/qy/pages/lib/tabs'
  * 这里守的是**回落**：hash 认不出来时必须落到一张真实存在且可见的标签，
  * 而不是渲染空白。会走到这条分支的现实场景有三个，一个比一个常见：
  *   · 用户手改地址栏 / 老书签指向已经改名的页面；
- *   · 站点把 `features.withdraw` 关了，而分享出去的链接正指向提现那一张；
+ *   · 站点把某张标签的功能开关关了，而分享出去的链接正指向那一张；
  *   · 从入口卡跳进来时 hash 拼错（那是断链，但用户看到的应该是第一张标签）。
  */
 
@@ -55,7 +55,7 @@ describe('qyResolveTab', () => {
   })
 
   test('指向已被功能开关关掉的标签时落到第一张可见标签', () => {
-    // features.withdraw 关掉之后，宿主页交进来的可见列表里没有提现两张。
+    // 宿主页交进来的可见列表里没有那一张（例如旧书签指向已下线的提现标签）。
     const visible = ['/qy/affiliate', '/qy/invitees']
     assert.equal(qyResolveTab('qy-withdraw', visible), '/qy/affiliate')
   })

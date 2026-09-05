@@ -110,7 +110,10 @@ func adminMigrateUserGroup(c *gin.Context) {
 		internalError(c, db.ErrNotReady)
 		return
 	}
-	name := strings.TrimSpace(c.Param("name"))
+	name, ok := groupNamePathParam(c)
+	if !ok {
+		return
+	}
 	// 与影响面和删除同一道判据:**不要求有登记行**。只在 users.group 里的历史
 	// 遗留分组同样要能把人挪走 —— 它们正是最需要被清空的那一类。
 	before, registered, err := lookupUserGroup(c, gdb, name)

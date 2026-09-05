@@ -69,7 +69,7 @@ func newPicksCapEnv(t *testing.T) *gorm.DB {
 	ext := newPayoutEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8,
 		EntryCloseGraceSeconds: 0, RevealDelaySeconds: 0,
-		MaxStakeQuota: 5_000_000, MaxTotalPrizeQuota: 5_000_000,
+		MaxStakeStardust: 5_000_000, MaxTotalPrizeStardust: 5_000_000,
 		MaxActiveActivities: 16, MaxPrizeTiers: 8, MaxOptions: 8,
 		MaxTotalEntriesHard: 50_000,
 		// 整批预算必须显式给:零值会让 entryBatchContext 只剩冷路径那一份,
@@ -83,14 +83,16 @@ func newPicksCapEnv(t *testing.T) *gorm.DB {
 // newFileBackedEnv 与 newPayoutEnv + newBallMainDB 做同样的事,只把两个库换成
 // 落盘的 SQLite 文件 —— 唯一的差别就是"连接掉了库还在"。
 //
-// 只有真的会把连接跑坏的用例需要它(见 TestEntryBatchTruncatesSafelyWhenBudgetRunsOut),
-// 所以不去改那两个共用夹具:整套 ball 家族都在用它们,换成落盘会让每一条用例
-// 多出一次磁盘 IO。
-func newFileBackedEnv(t *testing.T, lot config.Lottery, quota int) (ext, main *gorm.DB) {
+// 只有真的会把连接跑坏、或者要并发打的用例需要它(见
+// TestEntryBatchTruncatesSafelyWhenBudgetRunsOut),所以不去改那两个共用夹具:
+// 整套 ball 家族都在用它们,换成落盘会让每一条用例多出一次磁盘 IO。
+// 买家的 startStardust 星屑同样经账本种进扩展库。
+func newFileBackedEnv(t *testing.T, lot config.Lottery, startStardust int) *gorm.DB {
 	t.Helper()
 	dir := t.TempDir()
 	open := func(name string) *gorm.DB {
-		gdb, err := gorm.Open(sqlite.Open(filepath.Join(dir, name)), &gorm.Config{
+		gdb, err := gorm.Open(sqlite.Open(filepath.Join(dir, name)+
+			"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"), &gorm.Config{
 			Logger: gormlogger.Discard,
 		})
 		require.NoError(t, err)
@@ -100,15 +102,15 @@ func newFileBackedEnv(t *testing.T, lot config.Lottery, quota int) (ext, main *g
 		return gdb
 	}
 
-	ext = open("ext.db")
-	require.NoError(t, ext.AutoMigrate(tables()...))
-	require.NoError(t, ext.AutoMigrate(&qymodel.FundOrder{}, &qymodel.AuditLog{}))
+	ext := open("ext.db")
+	require.NoError(t, ext.AutoMigrate(extTables()...))
+	require.NoError(t, ext.AutoMigrate(&qymodel.AuditLog{}))
 
-	main = open("main.db")
-	require.NoError(t, main.AutoMigrate(&model.User{}, &model.Log{}, &model.QyFundOutbox{}))
+	main := open("main.db")
+	require.NoError(t, main.AutoMigrate(&model.User{}))
 	require.NoError(t, main.Create(&model.User{
 		Id: ballE2EUserId, Username: "ball-buyer", Password: "x",
-		AffCode: "affbudget", Group: "default", Quota: quota,
+		AffCode: "affbudget", Group: "default", Quota: startStardust,
 		Status: common.UserStatusEnabled,
 	}).Error)
 
@@ -123,13 +125,7 @@ func newFileBackedEnv(t *testing.T, lot config.Lottery, quota int) (ext, main *g
 
 	prevHandle := qyDBHandle.Swap(ext)
 	prevHealthy := qyDBHealthy.Swap(true)
-	outboxOn := true
-	prevCfg := qyConfig.Swap(&config.Config{
-		Enabled: true, Lottery: lot,
-		TwoPhase: config.TwoPhase{
-			MainOutboxEnabled: &outboxOn, OutboxRetentionDays: 30, BatchSize: 200,
-		},
-	})
+	prevCfg := qyConfig.Swap(&config.Config{Enabled: true, Lottery: lot})
 	t.Cleanup(func() {
 		qyDBHandle.Store(prevHandle)
 		qyDBHealthy.Store(prevHealthy)
@@ -140,7 +136,8 @@ func newFileBackedEnv(t *testing.T, lot config.Lottery, quota int) (ext, main *g
 		common.OptionMap = prevOptions
 	})
 	invalidateSettings()
-	return ext, main
+	seedStardust(t, ext, ballE2EUserId, int64(startStardust))
+	return ext
 }
 
 // picksOf 拼 n 注号(号池 12 选 3 + 4 选 1 有 880 种组合,
@@ -164,7 +161,7 @@ func picksOf(n int) []string {
 // 不可参与。所以三件事要一起断言:详情页说 10、第 10 注买得到、第 11 注被拒。
 func TestPicksCapZeroMeansDefaultNotUnlimitedNotZero(t *testing.T) {
 	ext := newPicksCapEnv(t)
-	main := newBallMainDB(t, 1_000_000)
+	newBallMainDB(t, 1_000_000)
 	r := picksCapRouter()
 
 	act := seedBallActivity(t, ext, nil)
@@ -183,9 +180,8 @@ func TestPicksCapZeroMeansDefaultNotUnlimitedNotZero(t *testing.T) {
 	assert.Equal(t, defaultPicksPerRequest, batch.Accepted)
 	assert.EqualValues(t, int64(defaultPicksPerRequest)*act.StakeQuota, batch.TotalQuota)
 
-	var buyer model.User
-	require.NoError(t, main.Where("id = ?", ballE2EUserId).Take(&buyer).Error)
-	assert.EqualValues(t, 1_000_000-int64(defaultPicksPerRequest)*act.StakeQuota, buyer.Quota)
+	afterTen := userStardust(t, ext)
+	assert.EqualValues(t, 1_000_000-int64(defaultPicksPerRequest)*act.StakeQuota, afterTen)
 
 	// 第 11 注被拒:0 不是"不限"。
 	code, body = callJSON(t, r, http.MethodPost,
@@ -194,13 +190,12 @@ func TestPicksCapZeroMeansDefaultNotUnlimitedNotZero(t *testing.T) {
 	require.Equalf(t, http.StatusBadRequest, code, "没配过的活动第 11 注必须被拒: %s", body)
 	assert.Equal(t, "qy_lot_too_many_picks", errorCode(t, body))
 
-	quotaAfter := userQuota(t, main)
-	assert.EqualValues(t, buyer.Quota, quotaAfter, "整批被拒时一分钱都不许扣")
+	assert.EqualValues(t, afterTen, userStardust(t, ext), "整批被拒时一分钱都不许扣")
 }
 
 // ─────────────────────────── 配到 999 ───────────────────────────
 
-// 配到硬顶就真的能一次买 999 注:钱、票、链、资金单、幂等键各自数一遍。
+// 配到硬顶就真的能一次买 999 注:钱、票、链、流水、幂等键各自数一遍。
 //
 // 它同时证伪四件"看起来不会错"的事:
 //   - 派生幂等键 `#998` 装不进 idem_key(96)—— 装不下时 MySQL 会静默截断,
@@ -214,7 +209,7 @@ func TestPicksCapNineNinetyNineBuysEveryLine(t *testing.T) {
 	}
 	ext := newPicksCapEnv(t)
 	const startQuota = 5_000_000
-	main := newBallMainDB(t, startQuota)
+	newBallMainDB(t, startQuota)
 	r := picksCapRouter()
 
 	act := seedBallActivity(t, ext, func(a *Activity) {
@@ -248,10 +243,8 @@ func TestPicksCapNineNinetyNineBuysEveryLine(t *testing.T) {
 	require.Len(t, batch.Entries, maxPicksPerRequestHard)
 
 	// 钱:独立算出的期望 == 实测。
-	var buyer model.User
-	require.NoError(t, main.Where("id = ?", ballE2EUserId).Take(&buyer).Error)
-	assert.EqualValues(t, startQuota-wantTotal, buyer.Quota,
-		"主库余额必须正好少了 999 × 单注参与费")
+	assert.EqualValues(t, startQuota-wantTotal, userStardust(t, ext),
+		"星屑余额必须正好少了 999 × 单注参与费")
 
 	// 票:999 张独立的票、999 个互不相同的幂等键、一条连得上的链。
 	var rows []Entry
@@ -272,11 +265,8 @@ func TestPicksCapNineNinetyNineBuysEveryLine(t *testing.T) {
 			"第 %d 注没有接在第 %d 注后面", i+1, i)
 	}
 
-	var orders int64
-	require.NoError(t, ext.Model(&qymodel.FundOrder{}).
-		Where("idem_scope = ?", idemScopeEntry).Count(&orders).Error)
-	assert.EqualValues(t, maxPicksPerRequestHard, orders,
-		"一注一张资金单 —— 合成一张 999 倍金额的单会让 RefId 指不回具体哪条明细")
+	assert.Len(t, ledgerRowsOf(t, ext, ballE2EUserId, act.ActNo), maxPicksPerRequestHard,
+		"一注一行流水 —— 合成一行 999 倍金额会让退款指不回具体哪张票")
 
 	// 整批重放:一分钱都不许再扣,而且拿回的必须是原来那 999 张票。
 	code, body = callJSON(t, r, http.MethodPost,
@@ -289,7 +279,7 @@ func TestPicksCapNineNinetyNineBuysEveryLine(t *testing.T) {
 		require.Equalf(t, batch.Entries[i].EntryNo, replay.Entries[i].EntryNo,
 			"第 %d 注的重放拿回了一张新票", i+1)
 	}
-	assert.EqualValues(t, startQuota-wantTotal, userQuota(t, main),
+	assert.EqualValues(t, startQuota-wantTotal, userStardust(t, ext),
 		"整批重放之后余额必须一个字节都没动")
 
 	var afterReplay int64
@@ -300,7 +290,7 @@ func TestPicksCapNineNinetyNineBuysEveryLine(t *testing.T) {
 // 配到硬顶之后第 1000 注仍然被拒,而且报错里念的是这一场的那个数。
 func TestPicksCapRejectsBeyondHardCapAtEntry(t *testing.T) {
 	ext := newPicksCapEnv(t)
-	main := newBallMainDB(t, 5_000_000)
+	newBallMainDB(t, 5_000_000)
 	r := picksCapRouter()
 	act := seedBallActivity(t, ext, func(a *Activity) {
 		a.MaxPicksPerRequest = maxPicksPerRequestHard
@@ -313,7 +303,7 @@ func TestPicksCapRejectsBeyondHardCapAtEntry(t *testing.T) {
 	assert.Equal(t, "qy_lot_too_many_picks", errorCode(t, body))
 	assert.Contains(t, string(body), strconv.Itoa(maxPicksPerRequestHard),
 		"报错里必须念出这一场的上限 —— 一句「注数超出限制」只能让用户去二分试")
-	assert.EqualValues(t, 5_000_000, userQuota(t, main), "整批被拒时一分钱都不许扣")
+	assert.EqualValues(t, 5_000_000, userStardust(t, ext), "整批被拒时一分钱都不许扣")
 }
 
 // 库里被写进一个越过硬顶的值时,受理端仍然只认硬顶。
@@ -323,7 +313,7 @@ func TestPicksCapRejectsBeyondHardCapAtEntry(t *testing.T) {
 // 受理端永远认同一个上界。
 func TestPicksCapClampsOverwideColumnValueOnRead(t *testing.T) {
 	ext := newPicksCapEnv(t)
-	main := newBallMainDB(t, 5_000_000)
+	newBallMainDB(t, 5_000_000)
 	r := picksCapRouter()
 	act := seedBallActivity(t, ext, nil)
 	require.NoError(t, ext.Model(&Activity{}).Where("id = ?", act.Id).
@@ -338,7 +328,7 @@ func TestPicksCapClampsOverwideColumnValueOnRead(t *testing.T) {
 		entryBody(t, "clamp-1", picksOf(maxPicksPerRequestHard+1)))
 	require.Equalf(t, http.StatusBadRequest, code, "库里写了 5000 也不许放行 1000 注: %s", body)
 	assert.Equal(t, "qy_lot_too_many_picks", errorCode(t, body))
-	assert.EqualValues(t, 5_000_000, userQuota(t, main))
+	assert.EqualValues(t, 5_000_000, userStardust(t, ext))
 }
 
 // ─────────────────────────── 发布之后改值 ───────────────────────────
@@ -351,7 +341,7 @@ func TestPicksCapClampsOverwideColumnValueOnRead(t *testing.T) {
 // 变成了"发布后能改承诺",那是整套公正性协议的反面。
 func TestPicksCapEditableAfterPublishAndDoesNotTouchCommit(t *testing.T) {
 	ext := newPicksCapEnv(t)
-	main := newBallMainDB(t, 5_000_000)
+	newBallMainDB(t, 5_000_000)
 	r := picksCapRouter()
 
 	act := seedBallActivity(t, ext, func(a *Activity) {
@@ -385,7 +375,7 @@ func TestPicksCapEditableAfterPublishAndDoesNotTouchCommit(t *testing.T) {
 		"/lottery/activities/"+act.ActNo+"/entries", entryBody(t, "pub-2", picksOf(11)))
 	require.Equalf(t, http.StatusOK, code, "改完之后 11 注应当买得到: %s", body)
 	assert.Equal(t, 11, decodeEntryBatch(t, body).Accepted)
-	assert.EqualValues(t, 5_000_000-11*act.StakeQuota, userQuota(t, main))
+	assert.EqualValues(t, 5_000_000-11*act.StakeQuota, userStardust(t, ext))
 
 	// 审计:before/after 两份快照都要说得出原始值与生效值。
 	var logs []qymodel.AuditLog
@@ -452,19 +442,18 @@ func TestPicksCapSetterBoundsAndAudit(t *testing.T) {
 // 本模块对"同一次意图的多次请求"有**两道**重叠的防线,而且它们在并发与串行
 // 两种时序下各自生效:
 //
-//	· 并发那一段:后到的那次撞上 checkCaps 里的 errEntryInFlight(本人还有未结算
-//	  的参与时一律拒绝)—— 那是**资金正确性条件**,余额与名单的差额必须能归因
-//	  到具体哪一笔;
-//	· 串行那一段:先到的那次已经落定,后到的靠派生幂等键逐注命中原单。
+//	· 并发那一段:同一注的两路事务在活动行锁上排队,晚到的那一路在账本的幂等行
+//	  (或票的唯一键)上撞回 errEntryReplayRace,整笔回滚后按原样重放拿回原票;
+//	· 串行那一段:先到的那次已经落定,后到的在事务前就按派生幂等键逐注命中原单。
 //
 // 所以这条用例分两段打:先并发一轮,再**串行**重放一次。少了第二段,一个把
-// 派生幂等键改成每次都不同的改动照样能通过 —— 因为并发那一段是 in-flight 挡的。
+// 派生幂等键改成每次都不同的改动照样能通过 —— 因为并发那一段是撞键挡的。
 func TestPicksCapConcurrentSameBatchChargesOnce(t *testing.T) {
 	const startQuota = 1_000_000
-	ext, main := newFileBackedEnv(t, config.Lottery{
+	ext := newFileBackedEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8,
 		EntryCloseGraceSeconds: 0, RevealDelaySeconds: 0,
-		MaxStakeQuota: 5_000_000, MaxTotalEntriesHard: 50_000,
+		MaxStakeStardust: 5_000_000, MaxTotalEntriesHard: 50_000,
 		EntryBatchMaxMs: 60_000,
 	}, startQuota)
 	r := picksCapRouter()
@@ -497,30 +486,28 @@ func TestPicksCapConcurrentSameBatchChargesOnce(t *testing.T) {
 	}
 	wg.Wait()
 
-	// 每一条都必须拿到一个**明确**的回答。并发下允许出现 409(上一次还没落定),
+	// 每一条都必须拿到一个**明确**的回答。并发下允许出现 409,
 	// 但绝不允许 500 —— 那意味着这条路径在并发下没有想清楚自己该说什么。
 	for i, code := range codes {
 		assert.Lessf(t, code, 500, "第 %d 条并发提交回了 %d", i+1, code)
 	}
-	assert.EqualValues(t, startQuota-lines*act.StakeQuota, userQuota(t, main),
+	assert.EqualValues(t, startQuota-lines*act.StakeQuota, userStardust(t, ext),
 		"并发重发之后余额只许少一份")
 
 	// ── 第二段:串行重放 ──
 	//
-	// 此刻先到的那一批已经全部落定,in-flight 那道防线不再生效 —— 挡住这一次的
+	// 此刻先到的那一批已经全部落定,撞键那道防线不再生效 —— 挡住这一次的
 	// 只可能是派生幂等键。它是"整批重放一分钱都不多扣"这条主张的唯一支点。
 	require.Equal(t, http.StatusOK, post(), "串行重放必须拿回原来那一批")
-	assert.EqualValues(t, startQuota-lines*act.StakeQuota, userQuota(t, main),
+	assert.EqualValues(t, startQuota-lines*act.StakeQuota, userStardust(t, ext),
 		"串行重放之后余额仍然只许少一份 —— 派生幂等键必须逐注命中原单")
 
 	var rows int64
 	require.NoError(t, ext.Model(&Entry{}).Where("act_id = ?", act.Id).Count(&rows).Error)
 	assert.EqualValues(t, lines, rows, "票也只许有一份")
 
-	var orders int64
-	require.NoError(t, ext.Model(&qymodel.FundOrder{}).
-		Where("idem_scope = ?", idemScopeEntry).Count(&orders).Error)
-	assert.EqualValues(t, lines, orders, "资金单同样只许有一份")
+	assert.Len(t, ledgerRowsOf(t, ext, ballE2EUserId, act.ActNo), lines,
+		"账本上同样只许有一份 —— 每一注恰好一行扣款流水")
 }
 
 // ─────────────────────────── 提前提示 ───────────────────────────
@@ -580,13 +567,12 @@ func TestPicksCapDetailReportsEveryRemainingBeforeSubmit(t *testing.T) {
 		act := seedBallActivity(t, ext, func(a *Activity) {
 			a.MaxPicksPerRequest = maxPicksPerRequestHard
 			a.MaxTotalEntries = 100
-			a.ActiveCount = 93
-			a.PendingCount = 4
+			a.ActiveCount = 97
 		})
 		detail := activityDetailOf(t, r, act.ActNo)
 		require.NotNil(t, detail.TotalEntriesRemaining)
 		assert.Equal(t, 3, *detail.TotalEntriesRemaining,
-			"判据与 checkCaps 同一条:max - active - pending")
+			"判据与 checkCaps 同一条:max - active")
 	})
 
 	t.Run("全场已满时是 0 而不是负数", func(t *testing.T) {
@@ -609,7 +595,7 @@ func TestPicksCapDetailReportsEveryRemainingBeforeSubmit(t *testing.T) {
 func TestPicksCapHintMatchesWhatActuallyGetsBought(t *testing.T) {
 	ext := newPicksCapEnv(t)
 	const startQuota = 1_000_000
-	main := newBallMainDB(t, startQuota)
+	newBallMainDB(t, startQuota)
 	r := picksCapRouter()
 
 	act := seedBallActivity(t, ext, func(a *Activity) {
@@ -632,7 +618,7 @@ func TestPicksCapHintMatchesWhatActuallyGetsBought(t *testing.T) {
 		"界面上说还能买 %d 注,就必须恰好买成 %d 注", hinted, hinted)
 	assert.Equal(t, "qy_lot_user_cap", batch.FailedCode)
 	assert.EqualValues(t, int64(hinted)*act.StakeQuota, batch.TotalQuota)
-	assert.EqualValues(t, startQuota-int64(hinted)*act.StakeQuota, userQuota(t, main),
+	assert.EqualValues(t, startQuota-int64(hinted)*act.StakeQuota, userStardust(t, ext),
 		"没买成的那 16 注一分钱都不许扣")
 
 	after := activityDetailOf(t, r, act.ActNo)
@@ -644,7 +630,7 @@ func TestPicksCapHintMatchesWhatActuallyGetsBought(t *testing.T) {
 func TestPicksCapPartialFillAtTotalCap(t *testing.T) {
 	ext := newPicksCapEnv(t)
 	const startQuota = 1_000_000
-	main := newBallMainDB(t, startQuota)
+	newBallMainDB(t, startQuota)
 	r := picksCapRouter()
 
 	act := seedBallActivity(t, ext, func(a *Activity) {
@@ -664,7 +650,7 @@ func TestPicksCapPartialFillAtTotalCap(t *testing.T) {
 	assert.Equal(t, "qy_lot_cap_reached", batch.FailedCode,
 		"停在哪一注、为什么停必须说得出来,而且不能与每人上限混成同一个码")
 	assert.EqualValues(t, 6*act.StakeQuota, batch.TotalQuota)
-	assert.EqualValues(t, startQuota-6*act.StakeQuota, userQuota(t, main))
+	assert.EqualValues(t, startQuota-6*act.StakeQuota, userStardust(t, ext))
 
 	after := activityDetailOf(t, r, act.ActNo)
 	require.NotNil(t, after.TotalEntriesRemaining)
@@ -809,10 +795,10 @@ func TestEntryBatchTruncatesSafelyWhenBudgetRunsOut(t *testing.T) {
 	// 后面每一句断言都会报 "no such table"。这不是被测代码的问题,是夹具的问题,
 	// 而它恰恰只在"真的把预算跑干"的用例上暴露出来。
 	const startQuota = 5_000_000
-	ext, main := newFileBackedEnv(t, config.Lottery{
+	ext := newFileBackedEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8,
 		EntryCloseGraceSeconds: 0, RevealDelaySeconds: 0,
-		MaxStakeQuota: 5_000_000, MaxTotalEntriesHard: 50_000,
+		MaxStakeStardust: 5_000_000, MaxTotalEntriesHard: 50_000,
 		// 1 秒:落盘 SQLite 上够跑几十到几百注,绝不够跑 999 注。
 		EntryBatchMaxMs: 1000,
 	}, startQuota)
@@ -848,30 +834,20 @@ func TestEntryBatchTruncatesSafelyWhenBudgetRunsOut(t *testing.T) {
 	}
 
 	// 钱与票必须对得上 accepted,一笔不多一笔不少 —— 两种落点下都要成立。
-	assert.EqualValues(t, startQuota-int64(accepted)*act.StakeQuota, userQuota(t, main),
+	assert.EqualValues(t, startQuota-int64(accepted)*act.StakeQuota, userStardust(t, ext),
 		"余额必须正好等于 accepted × 单注参与费")
 	var success int64
 	require.NoError(t, ext.Model(&Entry{}).
-		Where("act_id = ? AND status = ?", act.Id, EntrySuccess).Count(&success).Error)
+		Where("act_id = ?", act.Id).Count(&success).Error)
 	assert.EqualValues(t, accepted, success, "买成的票数必须等于回执里的 accepted")
 
-	// 截止时刻落在 ChargeEntry **内部**时,那一注的预占行已经写下了 —— 它必须被
-	// 回滚成 failed,**绝不能留在 pending**。
-	//
-	// 留 pending 的后果不是多一行脏数据:checkCaps 见到本人任何 pending 条目一律
-	// 返回 errEntryInFlight,于是这个用户在**这一场**就整场 409 —— 恰恰是回执里
-	// 那句「剩下的没有扣费,可以再提交一次」指的那次重提。而且没有任何自动出口:
-	// Compensate 只扫 pending/in_doubt 的**资金单**,这一支的资金单终态是 failed,
-	// 扫不到;只有封盘时的 excludePendingEntries 才会把它刷掉。
-	//
-	// 原先这里断言的是「全部行数 == accepted」,那条判据在这一支上本来就不成立
-	// (被正确回滚的 failed 行同样占一行),于是它以约四分之一的概率无故变红,
-	// 把真正的缺陷淹在噪声里。换成下面这两条之后判据既确定又更强。
-	var stuck int64
-	require.NoError(t, ext.Model(&Entry{}).
-		Where("act_id = ? AND status = ?", act.Id, EntryPending).Count(&stuck).Error)
-	assert.EqualValues(t, 0, stuck,
-		"预算耗尽不许留下 pending 预占 —— 那会让这个用户在本场的每一次重试都被判成「上一次还在处理中」")
+	// 截止时刻落在参与事务**内部**时,那一注整笔回滚 —— 票、流水、序号一个都不留。
+	// 票与扣款同一个事务,不存在"预占行留在中间态"的形状;而账本上若多出一行
+	// 没有票与之对应的扣款,就是一笔用户永远看不到的钱。
+	ledger := ledgerRowsOf(t, ext, ballE2EUserId, act.ActNo)
+	assert.Len(t, ledger, accepted, "流水行数必须等于买成的注数 —— 被截断的那一注不许留下扣款")
+	assert.Equal(t, accepted, loadAct(t, ext, act.Id).EntrySeq,
+		"被截断的那一注不许占序号,否则链上会出现一个无主的空洞")
 }
 
 // 「整批停在这里」的三种原因各说一句话,而且**互不覆盖**。
@@ -947,7 +923,7 @@ func TestBatchStopReason(t *testing.T) {
 // 判据在 acceptPick:非双色球带号一律**拒绝**而不是忽略。
 func TestPicksBatchStaysBallOnly(t *testing.T) {
 	ext := newPicksCapEnv(t)
-	main := newBallMainDB(t, 1_000_000)
+	newBallMainDB(t, 1_000_000)
 	r := picksCapRouter()
 
 	act := seedActivity(t, ext, func(a *Activity) {
@@ -965,14 +941,14 @@ func TestPicksBatchStaysBallOnly(t *testing.T) {
 		CreatedAt: common.GetTimestamp(),
 	}).Error)
 
-	before := userQuota(t, main)
+	before := userStardust(t, ext)
 	code, body := callJSON(t, r, http.MethodPost,
 		"/lottery/activities/"+act.ActNo+"/entries",
 		entryBody(t, "rank-1", []string{"01,02,03|01", "04,05,06|02"}))
 	require.Equalf(t, http.StatusBadRequest, code,
 		"普通抽奖带号必须被**拒绝**而不是忽略 —— 忽略意味着用户以为自己选了号: %s", body)
 	assert.Equal(t, "qy_lot_pick_not_allowed", errorCode(t, body))
-	assert.Equal(t, before, userQuota(t, main), "被拒的提交不许扣钱")
+	assert.Equal(t, before, userStardust(t, ext), "被拒的提交不许扣钱")
 
 	// 不带号的单注照常受理,证明上面那条拒绝不是因为活动本身参与不了。
 	code, body = callJSON(t, r, http.MethodPost,

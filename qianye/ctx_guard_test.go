@@ -73,17 +73,10 @@ var ctxDebtWhitelist = map[string]string{
 	"modules/availability/flush.go:runRollup": "gdb 传进 rollupStart/rollupHour 后裸发 SELECT/INSERT;归属 availability",
 	"modules/availability/flush.go:runCleanup": "gdb 传进 deleteBefore 后裸发分批 DELETE(它只检查 ctx.Err());" +
 		"归属 availability",
-	"modules/commission/settle.go:repairStrandedAccruals": "自愈 UPDATE 未接 ctx;归属 commission",
-	"modules/commission/topup_scan.go:runTopupScan": "model.DB 扫 top_ups 未接 ctx,而它的 ctx 来自 " +
-		"lease.go 的 context.WithCancel(Background),本来就没有 deadline;归属 commission",
 	"modules/transfer/reconcile.go:reconcile": "gdb 传进 syncStuckOrders/pruneLookupLogs 后裸发语句;归属 transfer",
 	"modules/violation/guard.go:persist": "gdb 传进 maybeAutoBan → markBan 后裸发收尾 UPDATE。" +
 		"这一处正是应当改成 context.WithoutCancel + 独立预算的形状;归属 violation(本轮只改 rules.go)",
 	"modules/violation/tasks.go:runBanCompensate": "封禁补偿的三条语句未接 ctx;归属 violation",
-	// withdraw 的自动到账链路(credit.go 的补偿收尾、reconcile.go 的 resumeApproved)
-	// 已随「提现只做佣金扣除、由管理员手动发放」整条删除,两条豁免一并去掉。
-	// 剩下的 reconcile 仍是把 gdb 传进 pruneExpiredPii 后裸发语句的形状。
-	"modules/withdraw/reconcile.go:reconcile": "gdb 传进 pruneExpiredPii 后裸发语句;归属 withdraw",
 }
 
 // ctxParamWhitelist 列出"确实不需要 ctx"的回调。

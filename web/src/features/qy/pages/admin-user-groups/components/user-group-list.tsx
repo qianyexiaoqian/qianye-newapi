@@ -25,6 +25,7 @@ import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { QyGmRowWarningIconsInline } from '../../admin-group-matrix/components/row-warnings'
 import { QyGmScopeStateBadges } from '../../admin-group-matrix/components/scope-state-badges'
 import type { QyGmUserGroup } from '../../admin-group-matrix/types'
 import { formatQyCount } from '../../ops/format'
@@ -130,6 +131,12 @@ export function QyUgUserGroupList(props: QyUgUserGroupListProps) {
                   <span className='min-w-0 truncate text-xs font-medium'>
                     {group.name}
                   </span>
+                  {/*
+                    行级配置警告,按类型多枚图标,与「用户分组」整合页同一份数据
+                    (row.warnings)。这里在 <button> 里,用原生 title 版
+                    (不能嵌 Tooltip 触发器:交互元素套交互元素)。
+                  */}
+                  <QyGmRowWarningIconsInline warnings={group.warnings} />
                   <QyGmScopeStateBadges
                     userGroup={group}
                     grantedCount={props.grantedCounts.get(group.name) ?? 0}

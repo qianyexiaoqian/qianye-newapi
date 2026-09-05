@@ -219,3 +219,56 @@ shadow 已经整体下线(`hook.go`:现在只有「有 scope 行 = 清单立即�
 ```sql
 DROP TABLE qy_group_write_denies;
 ```
+
+## D-14 / D-15:提现整体退场;佣金账本按「星辉」口径恢复
+
+- **退役时间**:2026-09-05(D-14,见 `decisions.md`);**D-15 同日**把佣金账本恢复。
+- **观察期**:**无**。项目方原话「不需要兼顾旧的,全部改造;当前没有上线」—— 演示库里的数据是测试夹具,
+  不导出、不迁移。
+- **D-15 之后仍在用的**:六张 `qy_commission_accrual / balance / settlement / freeze / settle_run / group_rate`
+  **回到** `modules/commission` 的 `Tables()`,由 AutoMigrate 重建(列有变化:`balance.withdrawn_quota` 改名
+  `credited_quota`、法币列全部删除;**不迁旧数据**,演示库里的旧行请先 DROP 再让 AutoMigrate 建新表),
+  外加新表 `qy_commission_credit`(自动入账记录)。它们**不在**下面的退役清单里。
+- **仍然退役的**:法币折算档、改名重建的失效流水、提现五张表与收款明文查看名册。邀请关系表
+  `qy_invite_relation` 归 `modules/invite`,跨节点失效流水改名为 `qy_invite_cache_invalidation`
+  (由 AutoMigrate 新建,旧的 `qy_commission_cache_invalidation` 一起退役)。
+
+| 表名                               | 退役时行数 | 说明                                         |
+| ---------------------------------- | ---------- | -------------------------------------------- |
+| `qy_commission_fiat_rate`          | 演示库,未统计 | 分组法币折算比例(D-15 的星辉口径没有法币)    |
+| `qy_commission_cache_invalidation` | 同上       | 跨节点失效流水(改名重建)                     |
+| `qy_withdrawals`                   | 同上       | 提现申请                                     |
+| `qy_withdrawal_events`             | 同上       | 提现状态流转                                 |
+| `qy_withdrawal_payees`             | 同上       | 收款人(含 PII 密文)                          |
+| `qy_withdrawal_payee_accounts`     | 同上       | 收款账号密文                                 |
+| `qy_withdrawal_proofs`             | 同上       | 打款凭证(磁盘文件一并清理)                   |
+| `qy_pii_audits`                    | 同上       | 收款明文查看名册                             |
+
+**手工 DROP**(SQLite / MySQL / PostgreSQL 通用;没有外键,顺序无关):
+
+```sql
+DROP TABLE qy_commission_fiat_rate;
+DROP TABLE qy_commission_cache_invalidation;
+DROP TABLE qy_withdrawals;
+DROP TABLE qy_withdrawal_events;
+DROP TABLE qy_withdrawal_payees;
+DROP TABLE qy_withdrawal_payee_accounts;
+DROP TABLE qy_withdrawal_proofs;
+DROP TABLE qy_pii_audits;
+```
+
+### 配置段
+
+`commission:` / `withdraw:` 两段同 `group_pricing:`:`Config` 上保留 `CommissionDeprecated` /
+`WithdrawDeprecated` 两个 `map[string]any` 占位,加载时由 `adoptRetiredCommission` 各发一条
+`SysError` 并整段忽略。它们**不是开关**。日界与邀请人缓存改配 `invite.day_offset_minutes` /
+`invite.inviter_cache_seconds`,下线消费返改配 `stardust.invite_consume_bps`。
+
+### 代码侧留了什么
+
+- `qianye/model/fund_order.go` 的 `commission_settle` / `commission_reverse` / `withdraw_*` 四个资金单 kind 常量保留(历史行仍带这些值);D-15 新增活的 `commission_credit`(自动入账)。
+- `qianye/modules/invite` 是 commission 瘦身后的剩余:邀请关系(绑定 / 换绑 / 解绑 / 拉黑 / 互邀自动拉黑)、
+  邀请人缓存与跨节点失效、日界 `dayline`、`AfterRedeemSuccess` 转发槽、`ExcludedTopUp` / `TopUpBaseQuota`、
+  下线日消费报表(只读 logs)。
+
+---

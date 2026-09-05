@@ -449,7 +449,7 @@ func TestReservationRoundTrip(t *testing.T) {
 	assert.Equal(t, 3, receiver.DayInCount)
 	assert.Equal(t, int64(1500), receiver.LifetimeInQuota)
 
-	undoReservation(&sender, &receiver, 1000, 1050, true, now)
+	undoReservation(&sender, &receiver, 1000, 1050, true, true, now)
 	assert.Equal(t, beforeSender.DayOutQuota, sender.DayOutQuota)
 	assert.Equal(t, beforeSender.DayOutCount, sender.DayOutCount)
 	assert.Equal(t, beforeSender.LifetimeOutQuota, sender.LifetimeOutQuota)
@@ -466,7 +466,7 @@ func TestUndoReservationAcrossDayBoundary(t *testing.T) {
 	sender := UserState{UserId: 1, DayOutQuota: 0, DayOutCount: 0, LifetimeOutQuota: 1050, PendingCount: 1}
 	receiver := UserState{UserId: 2, DayInCount: 0, LifetimeInQuota: 1000}
 
-	undoReservation(&sender, &receiver, 1000, 1050, false, 1_700_000_000)
+	undoReservation(&sender, &receiver, 1000, 1050, false, false, 1_700_000_000)
 	assert.Equal(t, int64(0), sender.DayOutQuota)
 	assert.Equal(t, 0, sender.DayOutCount)
 	assert.Equal(t, int64(0), sender.LifetimeOutQuota)
@@ -480,7 +480,7 @@ func TestUndoReservationAcrossDayBoundary(t *testing.T) {
 func TestUndoReservationNeverGoesNegative(t *testing.T) {
 	sender := UserState{UserId: 1}
 	receiver := UserState{UserId: 2}
-	undoReservation(&sender, &receiver, 1000, 1050, true, 1_700_000_000)
+	undoReservation(&sender, &receiver, 1000, 1050, true, true, 1_700_000_000)
 
 	assert.Equal(t, int64(0), sender.DayOutQuota)
 	assert.Equal(t, 0, sender.DayOutCount)

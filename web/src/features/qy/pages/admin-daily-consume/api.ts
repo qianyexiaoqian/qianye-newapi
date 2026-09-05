@@ -43,7 +43,7 @@ export type QyDailyConsumeExportFilters = {
   /**
    * 一个框同时搜用户名 / id / 邮箱。
    *
-   * 与「用户佣金」那一页同一个理由：运营手上只有“某个人的某一个标识”，
+   * 运营手上只有“某个人的某一个标识”，
    * 逼他先分类就会得到一个与“这个人真的没消费”长得一样的空列表。
    * 纯数字优先按 id 精确匹配由后端做。
    */
@@ -76,10 +76,11 @@ function dailyConsumeQuery(
 }
 
 /**
- * 日消费明细。对应 `GET /api/qy/admin/commission/daily-consume`。
+ * 日消费明细。对应 `GET /api/qy/admin/invite/daily-consume`（D-14 从 commission
+ * 搬家，只读报表、形状照旧）。
  *
- * 数据源是主库 `logs`（type=2），**不是**计佣表 —— 0% 分组、没有邀请关系、
- * 违规扣费、渠道测试这四类用户在计佣表里一行都没有，只读计佣表的报表会让
+ * 数据源是主库 `logs`（type=2），**不是**日结表 —— 0% 分组、没有邀请关系、
+ * 违规扣费、渠道测试这四类用户在日结表里一行都没有，只读日结表的报表会让
  * 他们凭空消失，而这张表恰恰是给“谁在花钱”用的。
  */
 export function qyAdminDailyConsumeQuery(filters: QyDailyConsumeFilters) {
@@ -87,7 +88,7 @@ export function qyAdminDailyConsumeQuery(filters: QyDailyConsumeFilters) {
   return queryOptions({
     queryKey: qyKeys.adminDailyConsume(query),
     queryFn: () =>
-      qyGet<QyDailyConsumePage>('/admin/commission/daily-consume', query),
+      qyGet<QyDailyConsumePage>('/admin/invite/daily-consume', query),
   })
 }
 
@@ -111,7 +112,7 @@ export async function exportQyDailyConsume(
   const query = dailyConsumeQuery(filters)
   try {
     const res = await api.get(
-      `${QY_API_PREFIX}/admin/commission/daily-consume/export`,
+      `${QY_API_PREFIX}/admin/invite/daily-consume/export`,
       {
         skipErrorHandler: true,
         skipBusinessError: true,
@@ -128,7 +129,7 @@ export async function exportQyDailyConsume(
 }
 
 /**
- * 按天下钻。对应 `GET /api/qy/admin/commission/daily-consume/by-day`。
+ * 按天下钻。对应 `GET /api/qy/admin/invite/daily-consume/by-day`。
  *
  * 为什么是单独一条接口、而不是给主表加一个天维度：主表一行 = 一个人，
  * 行数不随天数膨胀，20000 行的上界才守得住“多少人”这个语义；把天加进
@@ -150,7 +151,7 @@ export function qyAdminDailyConsumeByDayQuery(params: {
     queryKey: qyKeys.adminDailyConsumeByDay(query),
     queryFn: () =>
       qyGet<QyDailyConsumeByDayPage>(
-        '/admin/commission/daily-consume/by-day',
+        '/admin/invite/daily-consume/by-day',
         query
       ),
   })

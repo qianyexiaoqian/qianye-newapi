@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { Link, useSearch } from '@tanstack/react-router'
-import { Link2, ScrollText, Settings2, Users, Wallet } from 'lucide-react'
+import { ScrollText, Settings2, Users } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -35,17 +35,18 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { qyArray } from '../../lib/array'
 import { qyDaylineLabel, qyFormatAtDayline } from '../../lib/dayline'
 import { qyTabTarget } from '../../lib/pages'
 import {
   qyAdminAccrualsQuery,
   qyAdminCommissionHealthQuery,
 } from '../admin-commission/api'
+import type { QyAdminAccrual } from '../admin-commission/types'
 import {
   BlockRelationDialog,
   type QyBlockRelationTarget,
-} from '../admin-commission/components/block-relation-dialog'
-import type { QyAdminAccrual } from '../admin-commission/types'
+} from '../admin-invite/components/block-relation-dialog'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 import { ClawbackDialog } from './components/clawback-dialog'
@@ -63,22 +64,20 @@ const SOURCE_OPTIONS = [
 ] as const
 
 /**
- * 佣金审核。
+ * 佣金审核（D-15 恢复；账本记的是星辉，界面按站内展示单位印）。
  *
- * 三个动作的语义边界必须分清，否则会误伤：
+ * 两个动作的语义边界必须分清，否则会误伤：
  *   - **冲正**：写一条负额计佣行并扣减余额，是"把已经发出去的钱要回来"；
- *   - **拉黑关系**：只停止未来计佣，**不回收已发放的佣金**。
+ *   - **停止计佣**：只停止未来计佣，**不回收已发放的佣金**。它复用「邀请管理」
+ *     那一个确认框（`admin-invite/components/block-relation-dialog`）：停 / 恢复
+ *     邀请关系是 invite 模块的事，佣金与星屑两条线共用同一条关系、同一个开关。
  *
- * ── 「立即结算」已经移除 ──
+ * ── 「立即结算」不回来 ──
  * 项目方原话：「佣金审核的这个：立即结算 移除吧，全部由系统到时间自动结算。」
- * 那个按钮此前挂在每一行上，按人触发一次结算。移除的只是**这个按钮**，后端
- * `POST /api/qy/admin/commission/settle` 原样保留（理由见下方那段说明与
- * `qianye/modules/commission/module.go`）。
- *
- * 撤掉按钮就必须同屏回答"那什么时候到账" —— 否则运营点不到、也不知道要等
- * 多久，只会来问人。所以正文第一段是自动结算的时点，数据来自
- * `GET /admin/commission/health` 的 `daily_settle`（日界、下一轮开跑时刻、
- * T+N），前端一个数都不自己算。
+ * 撤掉按钮就必须同屏回答"那什么时候到账"，所以正文第一段是自动结算的时点，
+ * 数据来自 `GET /admin/commission/health` 的 `daily_settle`（日界、下一轮开跑
+ * 时刻、T+N），前端一个数都不自己算。结算之后到星辉那一跳由自动入账任务完成，
+ * 逐笔在「佣金用户 → 入账记录」里看。
  *
  * ── 为什么是 Body 而不是整页 ──
  * 本页已被收进「结算台」的选择夹（`QY_TAB_GROUPS`），是第二张标签。区段头
@@ -88,15 +87,11 @@ const SOURCE_OPTIONS = [
 export function QyAdminCommissionRecordsBody() {
   const { t } = useTranslation()
 
-  // 从佣金余额那张表下钻进来时,URL 上带着 `?inviter_id=412`。只拿它做**初值**、
-  // 之后由输入框自己接管:双向同步会让每敲一个字符就压一条历史记录,而运营改完
-  // 筛选按返回键期望回到上一个页面,不是回到"少打一个字"的那一帧。
+  // 从佣金用户那张表下钻进来时,URL 上带着 `?inviter_id=412`。只拿它做**初值**、
+  // 之后由输入框自己接管:双向同步会让每敲一个字符就压一条历史记录。
   //
-  // `strict: false` 而不是绑死宿主页的路由 id：这一页现在是**一张标签**，
-  // 渲染它的是宿主页那条路由（`/qy/admin/settlement`），而它自己那条路由只剩
-  // 重定向。写死 `from` 会让"这块正文将来挂到哪个宿主上"变成它的编译期依赖 ——
-  // 上一次搬家就是这么断的：`from` 还指着旧路由，而旧路由已经不渲染任何东西，
-  // 运行期直接抛 "Could not find an active match"。
+  // `strict: false` 而不是绑死宿主页的路由 id：这一页是**一张标签**，渲染它的是
+  // 宿主页那条路由（`/qy/admin/settlement`），而它自己那条路由只剩重定向。
   const search = useSearch({ strict: false })
 
   const [page, setPage] = useState(1)
@@ -119,10 +114,9 @@ export function QyAdminCommissionRecordsBody() {
       inviter_id: inviterId.trim(),
     })
   )
-  const items = query.data?.items ?? []
+  const items = qyArray(query.data?.items)
 
-  // 自动结算的时点。它与「立即结算」按钮是**同一次改动的两面**：撤掉手动入口
-  // 就必须把"系统什么时候替你做这件事"写在同一屏上。
+  // 自动结算的时点。撤掉手动入口就必须把"系统什么时候替你做这件事"写在同一屏上。
   const settleSnapshot = useQuery(qyAdminCommissionHealthQuery()).data
     ?.daily_settle
 
@@ -215,13 +209,8 @@ export function QyAdminCommissionRecordsBody() {
         <div className='flex justify-end gap-1'>
           {/* 「停止计佣」只在这一行**真的挂在一条邀请关系上**时才渲染。
               手工调整落下的计佣行（`source_type = manual`）的 `invitee_id` 是 0：
-              它不是任何人邀请任何人产生的，后端 `adminBlockRelation` 对
-              `invitee_id <= 0` 直接 400。此前这里无条件渲染，于是那些行上有一个
-              点了必然报错的按钮 —— 而报出来的还是一句让人以为扣了钱的话。
-
-              按钮的方向由 `relation_blocked` 决定，与用户佣金页那一处完全一致。
-              此前这里写死 `blocked: true`，于是本页只能停、不能恢复 ——
-              项目方看的正是这一页，"停止计佣没法恢复"这个结论对它成立。 */}
+              它不是任何人邀请任何人产生的，后端对 `invitee_id <= 0` 直接 400。
+              按钮的方向由 `relation_blocked` 决定：本页既能停、也能恢复。 */}
           {row.invitee_id > 0 ? (
             <Button
               variant='ghost'
@@ -268,9 +257,6 @@ export function QyAdminCommissionRecordsBody() {
             ? t('qy_cm_auto_settle_plain')
             : t('qy_cm_auto_settle', {
                 // 日界标签与「下一轮开跑」的时刻必须用**同一个偏移**渲染。
-                // 后者原先走 formatTimestampToDate(浏览器本地时区),于是在
-                // UTC-7 的机器上同一句话里「日界 UTC+0」配着「17:00」,
-                // 而且日期比日界日期还早一天。瞬间是对的,口径不自洽。
                 dayline: qyDaylineLabel(settleSnapshot.day_offset_minutes),
                 days: settleSnapshot.payout_day_offset,
                 next: qyFormatAtDayline(
@@ -291,49 +277,25 @@ export function QyAdminCommissionRecordsBody() {
             {t('qy_cm_ds_title')}
           </Link>
         </p>
+        {/* 结算之后到星辉那一跳由自动入账任务完成：这句话回答的是"已结算的钱
+            去哪了"，与上面"什么时候结算"是两个问题。 */}
+        <p>{t('qy_cm_auto_credit_note')}</p>
       </div>
 
-      {/* 佣金余额与 AFF 关系现在是「用户佣金」的两张标签（侧栏上那一行）。
-          这几个按钮不是重复：侧栏回答"从零开始去哪找"，这里回答"我正看着这
-          一笔，另外那几张表怎么开"。删掉它们运营就得绕回侧栏重新找一遍。
+      {/* 佣金用户是隔壁那张标签，佣金配置在系统设置抽屉里。这几个按钮不是重复：
+          侧栏回答"从零开始去哪找"，这里回答"我正看着这一笔，另外那几张表怎么开"。
 
           它们**跟着正文走、不进宿主页的 Actions 槽**：那个槽是三张标签共用的，
-          而这四个入口只对佣金审核这一屏成立 —— 放上去的话，运营在「日消费
-          明细」标签上也会看到一排通往佣金表的按钮。
-
-          跳转一律走 `qyTabTarget`：直接 `to='/qy/admin/commission-records/
-          balances'` 也到得了（旧路由会重定向），但那是**先离开再被弹回来**，
-          用户看到的是一次白闪，而且选中的标签由重定向那一跳决定。 */}
+          而这两个入口只对佣金审核这一屏成立。跳转走 `qyTabTarget`：直接 to 旧地址
+          也到得了（旧路由会重定向），但那是**先离开再被弹回来**的一次白闪。 */}
       <div className='flex flex-wrap gap-2'>
         <Button
           variant='outline'
           size='sm'
-          render={
-            <Link {...qyTabTarget('/qy/admin/commission-records/users')} />
-          }
+          render={<Link {...qyTabTarget('/qy/admin/commission-users')} />}
         >
           <Users aria-hidden='true' />
-          {t('qy_cu_title')}
-        </Button>
-        <Button
-          variant='outline'
-          size='sm'
-          render={
-            <Link {...qyTabTarget('/qy/admin/commission-records/relations')} />
-          }
-        >
-          <Link2 aria-hidden='true' />
-          {t('qy_rel_title')}
-        </Button>
-        <Button
-          variant='outline'
-          size='sm'
-          render={
-            <Link {...qyTabTarget('/qy/admin/commission-records/balances')} />
-          }
-        >
-          <Wallet aria-hidden='true' />
-          {t('qy_cb_title')}
+          {t('qy_nav_a_commission_users')}
         </Button>
         <Button
           variant='outline'
@@ -427,8 +389,8 @@ export function QyAdminCommissionRecordsBody() {
         onClose={() => setClawbackTarget(null)}
       />
 
-      {/* 停止 / 恢复计佣共用同一个弹窗：方向由行上的当前状态决定，
-          「停止计佣」与「解绑」的区别写在里面。 */}
+      {/* 停止 / 恢复计佣共用邀请管理那一个弹窗：方向由行上的当前状态决定，
+          「停止计返」与「解绑」的区别写在里面。 */}
       <BlockRelationDialog
         target={blockTarget}
         onClose={() => setBlockTarget(null)}

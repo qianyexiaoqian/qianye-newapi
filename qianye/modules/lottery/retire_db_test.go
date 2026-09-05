@@ -4,17 +4,19 @@ package lottery
 //
 // # 为什么这一组必须真的跑一遍数据库
 //
-// 删除的正确性全部住在 WHERE 条件与行数上:六道闸门是六条 COUNT、清除范围是
+// 删除的正确性全部住在 WHERE 条件与行数上:五道闸门是五条 COUNT、清除范围是
 // 十一条 DELETE 的**并集**、审计是事务里第一条写语句。mock 掉 GORM 等于把被测
 // 对象换成测试自己写的假设,而这里假设一次错的代价是一场还欠着钱的活动被抹掉、
 // 或者删完之后库里留下一堆用户还能查到的孤儿行。
 //
 // # 这里锁住的五条
 //
-//  1. 六道闸门逐条生效(表驱动,每一条都单独造出触发条件);
+//  1. 五道闸门逐条生效(表驱动,每一条都单独造出触发条件);
 //  2. 删完之后十一张表全部归零 —— 尤其是挂在 payout_no 上而不是 act_id 上的
 //     qy_lot_prize_secret_hist,它是最容易漏的那一张(漏了就是一堆无主的兑换码明文);
-//  3. 审计行**删完还在**,且带着 commit_hash / seed / roster_hash 与全部资金口径;
+//     而星屑流水(qy_sd_ledger)**一行都不动**,删完仍能按 act_no 归拢;
+//  3. 审计行**删完还在**,且带着 commit_hash / seed / roster_hash 与全部资金口径
+//     (含账本侧按 act_no 算出的三个合计);
 //  4. 审计关闭时拒绝删除(删完之后审计是唯一的遗物);
 //  5. 下架只遮住大厅、可逆、且**不动任何人的钱** —— 这是它与 cancel 的全部区别。
 
@@ -22,12 +24,12 @@ import (
 	"context"
 	"net/http"
 	"reflect"
-	"strconv"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -57,7 +59,7 @@ func newRetireEnv(t *testing.T) *gorm.DB {
 	t.Helper()
 	ext := newPayoutEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8,
-		MaxStakeQuota: 5_000_000, MaxTotalPrizeQuota: 5_000_000,
+		MaxStakeStardust: 5_000_000, MaxTotalPrizeStardust: 5_000_000,
 		MaxActiveActivities: 16, MaxPrizeTiers: 8, MaxOptions: 8,
 		MaxTotalEntriesHard: 1_000,
 	})
@@ -106,20 +108,26 @@ func seedFinishedActivity(t *testing.T, gdb *gorm.DB) *Activity {
 
 	for i := 0; i < 2; i++ {
 		entryNo := newEntryNo()
+		// 参与费的流水直接经账本写下(活动已结束,走不了参与事务):删除活动之后
+		// 这些行必须原样还在,而删除证据里的三个账本合计就是从它们算出来的。
+		ledgerNo := seedLedgerRow(t, gdb, act, 700+i, stardust.KindLotStake, 1000, entryNo)
 		require.NoError(t, gdb.Create(&Entry{
 			EntryNo: entryNo, ActId: act.Id, IdemKey: buildIdemKey(act.ActNo, entryNo),
 			Seq: i + 1, UserId: 700 + i,
 			UserRef: "ref", Amount: 1000, Status: EntrySuccess,
-			OrderNo: "TR-" + strconv.Itoa(i), CreatedAt: now,
+			OrderNo: ledgerNo, CreatedAt: now,
 		}).Error)
 	}
-	// 一笔已到账的额度奖 + 一笔已履行的文本奖:两个允许删除的终态各一。
-	seedPayout(t, gdb, act.Id, func(p *Payout) {
+	// 一笔已到账的星屑奖 + 一笔已履行的文本奖:两个允许删除的终态各一。
+	paid := seedPayout(t, gdb, act.Id, func(p *Payout) {
 		p.EntryId = 1
+		p.UserId = 700
 		p.Status = PayoutPaid
 		p.AmountQuota = 1500
 		p.SettledAt = now
 	})
+	require.NoError(t, gdb.Model(&Payout{}).Where("id = ?", paid.Id).
+		Update("order_no", seedLedgerRow(t, gdb, act, 700, stardust.KindLotPrize, 1500, paid.PayoutNo)).Error)
 	textPayout := seedPayout(t, gdb, act.Id, func(p *Payout) {
 		p.EntryId = 2
 		p.Kind = PayoutText
@@ -140,9 +148,42 @@ func deleteBody(actNo string) string {
 	return `{"confirm_act_no":"` + actNo + `","reason":"项目方要求清理历史记录"}`
 }
 
+// seedLedgerRow 直接经账本给一场活动写一行 lot_stake / lot_prize 流水,返回 ledger_no。
+//
+// 扣款那一行先经 manual 入账补足余额:Debit 的条件 UPDATE 不接受透支,
+// 而账本上的 act_no 冗余正是删除活动之后归拢流水的唯一线索。
+func seedLedgerRow(t *testing.T, gdb *gorm.DB, act *Activity, userId int, kind stardust.Kind, amount int64, refNo string) string {
+	t.Helper()
+	var ledgerNo string
+	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
+		post := stardust.Posting{
+			UserId: userId, Kind: kind, Amount: amount,
+			IdemScope: "test_seed", IdemKey: refNo, RefNo: refNo, ActNo: act.ActNo,
+		}
+		if kind == stardust.KindLotStake {
+			if _, err := stardust.Credit(tx, stardust.Posting{
+				UserId: userId, Kind: stardust.KindManual, Amount: amount,
+				IdemScope: "test_seed", IdemKey: "fund:" + refNo,
+			}); err != nil {
+				return err
+			}
+			res, err := stardust.Debit(tx, post)
+			ledgerNo = res.LedgerNo
+			return err
+		}
+		res, err := stardust.Credit(tx, post)
+		ledgerNo = res.LedgerNo
+		return err
+	}))
+	return ledgerNo
+}
+
 // ─────────────────────────── 闸门 ───────────────────────────
 
-// 六道硬闸门逐条生效。每一格只在"账全清的已结束活动"上改一处。
+// 五道硬闸门逐条生效。每一格只在"账全清的已结束活动"上改一处。
+//
+// 没有"参与明细未结清"这一格:票只在扣款事务提交之后才存在,库里不可能有
+// "钱还没归位"的参与 —— 那一道闸门在结构上不再有判据。
 func TestDeleteActivityGates(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -208,26 +249,6 @@ func TestDeleteActivityGates(t *testing.T) {
 				})
 			},
 			want: errDeleteTextPending,
-		},
-		{
-			name: "还有在途参与不许删",
-			arrange: func(t *testing.T, gdb *gorm.DB, act *Activity) {
-				require.NoError(t, gdb.Create(&Entry{
-					EntryNo: newEntryNo(), ActId: act.Id, Seq: 9, UserId: 777,
-					Amount: 1000, Status: EntryPending, CreatedAt: common.GetTimestamp(),
-				}).Error)
-			},
-			want: errDeleteEntryOpen,
-		},
-		{
-			name: "封盘后才落定的参与还没收敛不许删",
-			arrange: func(t *testing.T, gdb *gorm.DB, act *Activity) {
-				require.NoError(t, gdb.Create(&Entry{
-					EntryNo: newEntryNo(), ActId: act.Id, Seq: 10, UserId: 778,
-					Amount: 1000, Status: EntryExcluded, CreatedAt: common.GetTimestamp(),
-				}).Error)
-			},
-			want: errDeleteEntryOpen,
 		},
 		{
 			name: "对账异常没处理完不许删",
@@ -375,6 +396,7 @@ func TestDeleteActivityPurgesEveryTableAndLeavesAudit(t *testing.T) {
 	act := seedFinishedActivity(t, ext)
 	// 同一个库里再放一场无关的活动:删除必须**只**动目标那一场。
 	other := seedFinishedActivity(t, ext)
+	balanceBefore := map[int]int64{700: stardustOf(t, ext, 700), 701: stardustOf(t, ext, 701)}
 
 	code, body := callJSON(t, retireRouter(), http.MethodDelete,
 		"/admin/lottery/activities/"+act.ActNo, deleteBody(act.ActNo))
@@ -425,9 +447,33 @@ func TestDeleteActivityPurgesEveryTableAndLeavesAudit(t *testing.T) {
 		act.ActNo, "c0mm1t", "5eedhex", "r0ster", "cha1nhead", "rul3s", "5pec",
 		`"entry_success":2`, `"distinct_users":2`, `"bet_total_quota":2000`,
 		`"payout_quota":1500`, `"platform_fee_quota":100`, `"paid_total_quota":1500`,
+		// 账本侧按 act_no 归拢出的三个数:它们来自永不随活动删除的 qy_sd_ledger,
+		// 是删完之后唯一还能被独立复核的那一半。
+		`"currency":"stardust"`, `"ledger_stake_total":2000`, `"ledger_prize_total":1500`,
+		`"ledger_refund_total":0`,
 	} {
 		assert.Containsf(t, row.BeforeSnap, want,
 			"审计正文缺了 %s —— 删完之后它是唯一还能复盘这一场的东西", want)
+	}
+
+	// 流水永不随活动删除:活动行没了,按 act_no 仍能把这一场的进出归拢出来。
+	var ledger []stardust.Ledger
+	require.NoError(t, ext.Where("act_no = ?", act.ActNo).Order("id asc").Find(&ledger).Error)
+	require.Len(t, ledger, 3, "两笔参与费扣款 + 一笔派奖,删除活动之后一行都不许少")
+	var stake, prize int64
+	for _, l := range ledger {
+		switch stardust.Kind(l.Kind) {
+		case stardust.KindLotStake:
+			stake -= l.Amount
+		case stardust.KindLotPrize:
+			prize += l.Amount
+		}
+	}
+	assert.EqualValues(t, 2000, stake)
+	assert.EqualValues(t, 1500, prize)
+	for userId, before := range balanceBefore {
+		assert.EqualValuesf(t, before, stardustOf(t, ext, userId),
+			"删除活动一个字节都不动任何人的余额(用户 %d)", userId)
 	}
 }
 
@@ -551,7 +597,7 @@ func TestHideRemovesFromHallOnlyAndIsReversible(t *testing.T) {
 	r := retireRouter()
 
 	inHall := func() int64 {
-		q, err := hallQuery(ext, "", "", allPlaysShown())
+		q, err := hallQuery(ext, "", "", "", allPlaysShown())
 		require.NoError(t, err)
 		var n int64
 		require.NoError(t, q.Where("id = ?", act.Id).Count(&n).Error)
@@ -637,7 +683,7 @@ func TestHallQueryExcludesDraftAndHidden(t *testing.T) {
 		Update("hidden_at", common.GetTimestamp()).Error)
 	draft := seedActivity(t, ext, func(a *Activity) { a.Status = StatusDraft })
 
-	q, err := hallQuery(ext, "", "", allPlaysShown())
+	q, err := hallQuery(ext, "", "", "", allPlaysShown())
 	require.NoError(t, err)
 	rows := make([]Activity, 0, 4)
 	require.NoError(t, q.Find(&rows).Error)

@@ -231,8 +231,8 @@ func markUncertain(ctx context.Context, order *qymodel.FundOrder, reason string)
 	order.Status = qymodel.StatusUncertain
 	// 这是需要人介入的异常,必须显式告警而不只是写库。
 	common.SysError(fmt.Sprintf(
-		"qianye: 资金单 %s 已转入人工裁决(用户 %d,金额 %d): %s",
-		order.OrderNo, order.UserId, order.AmountQuota, reason))
+		"qianye: 资金单 %s 已转入人工裁决(用户 %d,金额 %d %s): %s",
+		order.OrderNo, order.UserId, order.AmountQuota, amountUnit(order.Kind), reason))
 	audit.Write(nil, audit.Entry{
 		TraceNo:      order.OrderNo,
 		Category:     qymodel.AuditCategoryFund,
@@ -361,11 +361,28 @@ const backlogAlarmIntervalSeconds = 3600
 const backlogAlarmKey = "twophase.backlog_alarm_at"
 
 // BacklogSnapshot 是一次积压告警的内容。
+//
+// 金额按单位分成两栏:AmountQuota 是额度类资金单的合计,AmountStardust 是
+// mall_plan(星屑兑换套餐)的合计 —— 那一 Kind 的 amount_quota 装的是星屑数
+// (见 qymodel.KindMallPlan),与额度混加会得出一个谁都解释不了的数。
 type BacklogSnapshot struct {
-	Count       int64
-	AmountQuota int64
-	OldestNo    string
-	OldestAge   int64
+	Count          int64
+	AmountQuota    int64
+	AmountStardust int64
+	OldestNo       string
+	OldestAge      int64
+}
+
+// amountUnit 回答"这一 Kind 的资金单金额是什么单位"。
+//
+// 只有 mall_plan 是星屑,其余全部是额度。三处告警文案(转人工、COMMIT 断连、
+// 积压合计)都从这里取单位,而不是各自写死"额度":值班看到「金额 500 额度」去
+// 主库查 users.quota 的变动,而那笔单动的其实是订阅表 —— 方向性的误导。
+func amountUnit(kind string) string {
+	if kind == qymodel.KindMallPlan {
+		return "星屑"
+	}
+	return "额度"
 }
 
 // alarmOnBacklog 周期性地把"有多少钱正卡在人工队列里"喊出来。
@@ -402,10 +419,24 @@ func alarmOnBacklog(ctx context.Context) *BacklogSnapshot {
 	}
 
 	snap := &BacklogSnapshot{Count: count}
+	// 按 kind 分组求和再按单位归拢:mall_plan 的 amount_quota 是星屑数,
+	// 与额度类资金单混加出来的"合计"既不是额度也不是星屑。
+	sums := make([]struct {
+		Kind  string
+		Total int64
+	}, 0, 4)
 	if err := gdb.WithContext(ctx).Model(&qymodel.FundOrder{}).
+		Select("kind, COALESCE(SUM(amount_quota), 0) AS total").
 		Where("status = ?", qymodel.StatusUncertain).
-		Select("COALESCE(SUM(amount_quota), 0)").Scan(&snap.AmountQuota).Error; err != nil {
+		Group("kind").Scan(&sums).Error; err != nil {
 		db.MarkFailure(err)
+	}
+	for _, s := range sums {
+		if s.Kind == qymodel.KindMallPlan {
+			snap.AmountStardust += s.Total
+			continue
+		}
+		snap.AmountQuota += s.Total
 	}
 	var oldest qymodel.FundOrder
 	if err := gdb.WithContext(ctx).Where("status = ?", qymodel.StatusUncertain).
@@ -414,8 +445,8 @@ func alarmOnBacklog(ctx context.Context) *BacklogSnapshot {
 		snap.OldestAge = now - oldest.CreatedAt
 	}
 	common.SysError(fmt.Sprintf(
-		"qianye: 资金对账台积压 %d 笔待人工裁决的资金单,合计 %d 额度,最久的一笔是 %s(%d 秒)",
-		snap.Count, snap.AmountQuota, snap.OldestNo, snap.OldestAge))
+		"qianye: 资金对账台积压 %d 笔待人工裁决的资金单,合计 %d 额度 + %d 星屑,最久的一笔是 %s(%d 秒)",
+		snap.Count, snap.AmountQuota, snap.AmountStardust, snap.OldestNo, snap.OldestAge))
 	return snap
 }
 

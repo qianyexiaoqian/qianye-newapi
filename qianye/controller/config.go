@@ -34,6 +34,19 @@ var QyLotteryEntryShown = func() bool { return config.Get().Lottery.EntryShown()
 // 与后端 mergeOverrides 的零值口径(没配过 = 全部显示)是同一句话。
 var QyLotteryPlaysShown = func() map[string]bool { return map[string]bool{} }
 
+// QyStardustSection 回答星屑的展示参数:单位名与入口开关。
+//
+// 默认只读 YAML;stardust 模块注册时把它换成"YAML + qy_settings 运营覆盖"的合并
+// 结果 —— 单位名是运营在管理端改的,本端点若只读 YAML,改了名前台照旧显示旧名。
+// 匿名可访问,因此这里只有名字与开关,没有比例、没有余额。
+var QyStardustSection = func() map[string]any {
+	s := config.Get().Stardust
+	return map[string]any{"show_entry": s.EntryShown(), "name": s.Name}
+}
+
+// QyMallEntryShown 回答"前端要不要渲染商城入口"。同 QyLotteryEntryShown 的理由。
+var QyMallEntryShown = func() bool { return config.Get().Mall.EntryShown() }
+
 // GetConfig 是前端的引导端点。
 //
 // 刻意不走 guard.RequireAPI,并且永远返回 200:扩展被禁用时前端需要拿到
@@ -56,8 +69,8 @@ func GetConfig(c *gin.Context) {
 		"available": db.Available(),
 		"features": gin.H{
 			"transfer":     cfg.Transfer.Enabled,
+			"invite":       cfg.Invite.Enabled,
 			"commission":   cfg.Commission.Enabled,
-			"withdraw":     cfg.Withdraw.Enabled,
 			"availability": cfg.Availability.Enabled,
 			"violation":    cfg.Violation.Enabled,
 			"lottery":      cfg.Lottery.Enabled,
@@ -67,12 +80,21 @@ func GetConfig(c *gin.Context) {
 			// 出现一条指向 404 的链接和一句不成立的断言(「下面这些规则整体
 			// 不再生效」),而实际上一条都没被接管、规则全部照常生效。
 			"group_matrix": cfg.GroupMatrix.Enabled,
-			// pay_password 没有自己的配置字段:支付密码是划转/提现/抽奖的第二因子,
+			// pay_password 没有自己的配置字段:支付密码是划转/抽奖/商城的第二因子,
 			// 只要其中任意一条路径开着,设置/修改/找回的入口就必须出现。
 			// 前端此前把这一页标成 feature:'transfer',于是关掉划转 = 侧栏里
-			// 连点都点不到,而提现照旧要求验密 —— 佣金就此被困在账上。
+			// 连点都点不到,而抽奖照旧要求验密。
 			// 表达式只此一处(guard.featureOn),前端与后端不许各写一份。
 			"pay_password": guard.FeatureConfigured(guard.FlagPayPassword),
+			"stardust":     cfg.Stardust.Enabled,
+			// 商城只认星屑,所以这里下发的是"配置上真的能用"(mall ∧ stardust),
+			// 表达式只此一处(guard.featureOn),前端不许再拼一份。
+			"mall": guard.FeatureConfigured(guard.FlagMall),
+		},
+		// 星屑的展示参数:单位名(运营可改,随 qy_settings)与入口开关。
+		"stardust": QyStardustSection(),
+		"mall": gin.H{
+			"show_entry": QyMallEntryShown(),
 		},
 		// 娱乐功能的展示开关。show_entry 关掉之后接口仍然可用:已参与的用户
 		// 必须还能查自己的记录与已结束活动的证据链,那正是"历史公正查询"。
@@ -85,18 +107,13 @@ func GetConfig(c *gin.Context) {
 		},
 		"wallet": gin.H{
 			"show_transfer_entry":   cfg.Wallet.TransferEntry(),
+			"show_invite_entry":     cfg.Wallet.InviteEntry(),
 			"show_commission_entry": cfg.Wallet.CommissionEntry(),
-			"show_withdraw_entry":   cfg.Wallet.WithdrawEntry(),
 		},
 		"log_metrics": gin.H{
 			"show_reasoning_effort": cfg.LogMetrics.ReasoningColumn(),
 			"show_cache_ratio":      cfg.LogMetrics.CacheRatioColumn(),
 			"enable_filter":         cfg.LogMetrics.EnableFilter,
-		},
-		"withdraw_options": gin.H{
-			"methods":          cfg.Withdraw.Methods,
-			"fiat_currency":    cfg.Withdraw.FiatCurrency,
-			"remark_max_runes": cfg.Withdraw.RemarkMaxRunes,
 		},
 		"transfer_options": gin.H{
 			"min_quota":        cfg.Transfer.MinQuota,

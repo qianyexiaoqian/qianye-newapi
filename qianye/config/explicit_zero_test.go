@@ -30,11 +30,11 @@ var zeroExemptions = map[string]string{
 	"two_phase.max_probe_attempts":          "0 让第一次退避就把资金单转人工裁决",
 	"two_phase.manual_review_after_seconds": "0 让存活超过一秒的 pending 单被判 failed,主库随后提交即两库分叉",
 
-	"commission.levels":           "当前只支持恰好 1 级,0 会被当成多级返佣拒绝",
-	"commission.min_settle_quota": "必须 > 0,否则佣金按 decimal 累计后会被截断归零",
+	"invite.inviter_cache_seconds": "validateInvite 要求 > 0,为 0 会让每一条消费日志都回主库解析一次上线",
 
-	"withdraw.remark_max_runes": "必须在 1..2000,0 不是「不限制」而是「一个字都不许填」",
-	"withdraw.proof_max_bytes":  "必须在 1..8MiB,凭证要整张读进内存,0 等于把堆交给上传者",
+	"commission.levels":           "validateCommission 只接受 1:0 级佣金没有任何含义,而静默降级会让运营以为多级在发",
+	"commission.min_settle_quota": "validateCommission 要求 > 0:佣金按 decimal 累计,门槛为 0 会让每一个零头都白跑一次加锁事务",
+	"commission.min_credit_quota": "validateCommission 要求 > 0:它是自动入账的起点,也是单张资金单的下限",
 
 	"availability.bucket_seconds":         "必须是 3600 的因数,0 会让小时级汇总跨桶错位",
 	"availability.flush_interval_seconds": "validateAvailability 要求 > 0",
@@ -53,7 +53,7 @@ var zeroExemptions = map[string]string{
 // 而不是某几个字段:反射遍历 Config 里全部带 yaml tag 的 int/int64 字段,
 // 生成一份把它们统统显式写成 0 的 YAML,加载后逐个断言仍是 0。
 //
-// 缺陷原型是 commission.holding_days: 0 被静默补成 7(佣金要多等 8 天才结算,
+// 缺陷原型是(已删除的)commission.holding_days: 0 被静默补成 7(佣金要多等 8 天才结算,
 // 而配置文件上仍写着 0)。单点测试挡不住这类问题 —— 十几个字段里漏接一个,
 // 没有任何东西会发现。以后任何人新增一个数值配置项并给它接默认值,
 // 只要判据接错就会在这里红。
@@ -109,8 +109,7 @@ func TestUnsetNumberStillGetsDefault(t *testing.T) {
 	c, _, err := parseFile(writeTemp(t, minimalValid))
 	require.NoError(t, err)
 
-	assert.Equal(t, 7, c.Commission.HoldingDays)
-	assert.Equal(t, 60, c.Withdraw.CooldownSecs)
+	assert.Equal(t, 300, c.Invite.InviterCacheSecs)
 	assert.Equal(t, int64(500000), c.Transfer.MinQuota)
 	assert.Equal(t, 30, c.TwoPhase.OutboxRetentionDays)
 
@@ -183,7 +182,7 @@ func baseType(rt reflect.Type) reflect.Type {
 // allZeroYAML 生成一份把 fields 里全部数值字段显式写成 0 的配置文本,
 // 豁免字段整键省略(从而取默认值);alsoZero 里的路径反过来强行写回 0。
 //
-// 每一段的 enabled 都打开:validateWithdraw / validateAvailability /
+// 每一段的 enabled 都打开:validateInvite / validateAvailability /
 // validateViolation 都以 `if !Enabled { return nil }`
 // 开头,只写顶层 enabled 的话九个校验器里有几个一进门就返回,那几段配置
 // 根本没被校验过,而豁免清单会因此显得比实际短。
@@ -201,13 +200,10 @@ func allZeroYAML(t *testing.T, fields map[string]int64, alsoZero ...string) stri
 	setYAMLPath(tree, "enabled", true)
 	setYAMLPath(tree, "database.dsn", "u:p@tcp(127.0.0.1:3306)/qy")
 	for _, section := range []string{
-		"transfer", "commission", "withdraw", "availability", "violation",
+		"transfer", "invite", "availability", "violation",
 	} {
 		setYAMLPath(tree, section+".enabled", true)
 	}
-	// 只留 quota 一种提现方式:带上 fiat 就要求 pii_key / digest_key 两把真钥匙,
-	// 而本测试断的是数值字段,不该被密钥格式校验拖着走。
-	setYAMLPath(tree, "withdraw.methods", []string{WithdrawMethodQuota})
 
 	raw, err := yaml.Marshal(tree)
 	require.NoError(t, err)

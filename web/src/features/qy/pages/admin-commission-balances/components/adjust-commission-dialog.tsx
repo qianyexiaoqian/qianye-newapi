@@ -65,15 +65,14 @@ type AdjustCommissionDialogProps = {
 /**
  * 手工增减佣金。
  *
- * ── 它做的事和「登记已提现」完全不同 ──
- * 登记已提现只是**搬运**（可提现 → 已提现，恒等式两侧不变）；这里是真的
- * 凭空加钱 / 扣钱。所以它落成一条 `manual` 计佣行，由既有的结算流程吸收进余额，
+ * ── 它是真的凭空加钱 / 扣钱 ──
+ * 所以它落成一条 `manual` 计佣行，由既有的结算流程吸收进余额，
  * 而不是把某个数字改掉 —— 直接改余额列会让 Σ计佣 与 Σ结算 当场对不上，
  * 而且没有任何一行流水能解释差额。
  *
  * ── 扣减的上限 ──
- * 「可提现 + 未结算余数 + 已成熟待结算佣金」。超过这个数不是"扣得更多"，
- * 而是给这个人记一笔**欠账**，欠账会冻结他的提现。所以这里在提交之前就把
+ * 「可用 + 未结算余数 + 已成熟待结算佣金」。超过这个数不是"扣得更多"，
+ * 而是给这个人记一笔**欠账**，欠账会暂停他的自动入账。所以这里在提交之前就把
  * 上限摆出来。上限由后端在持锁的事务里重算，前端这个数字只是**指引**：
  * 它来自列表页的快照，可能已经过时，真正的判据永远在后端。
  *
@@ -158,19 +157,21 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
       {balance != null && (
         <div className='space-y-4'>
           <Alert>
-            <AlertDescription>{t('qy_adj_ledger_note')}</AlertDescription>
+            <AlertDescription>{t('qy_adj_ledger_note_xh')}</AlertDescription>
           </Alert>
 
           <dl className='divide-border divide-y text-sm'>
             <div className='flex justify-between gap-3 py-1.5 first:pt-0'>
-              <dt className='text-muted-foreground'>{t('qy_cb_available')}</dt>
+              <dt className='text-muted-foreground'>
+                {t('qy_cb_available_xh')}
+              </dt>
               <dd>
                 <QyAmountText quota={balance.available_quota} />
               </dd>
             </div>
             <div className='flex justify-between gap-3 py-1.5 last:pb-0'>
               <dt className='text-muted-foreground'>{t('qy_adj_unsettled')}</dt>
-              {/* 未结算余数与上面的可提现是**同一个单位**（都是站内额度，
+              {/* 未结算余数与上面的可用是**同一个单位**（都是站内额度，
                   只是这一个还没满 1 整数、由后端以 decimal 字符串下发）。
                   一个印 `$0.27`、一个印 `0.4700000000`，看的人会以为它们
                   是两种钱，而调整上限恰恰是这两个数加起来。 */}
@@ -210,15 +211,15 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
             />
             <p className='text-muted-foreground text-xs'>
               {direction === 'sub'
-                ? t('qy_adj_amount_hint_sub', { ceiling: ceilingText })
-                : t('qy_adj_amount_hint_add')}
+                ? t('qy_adj_amount_hint_sub_xh', { ceiling: ceilingText })
+                : t('qy_adj_amount_hint_add_xh')}
             </p>
           </div>
 
           {overCeiling && (
             <Alert variant='destructive'>
               <AlertDescription>
-                {t('qy_adj_over_ceiling', { ceiling: ceilingText })}
+                {t('qy_adj_over_ceiling_xh', { ceiling: ceilingText })}
               </AlertDescription>
             </Alert>
           )}

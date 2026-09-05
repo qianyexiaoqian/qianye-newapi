@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/modules/paypass"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 	"github.com/QuantumNous/new-api/qianye/modules/violation"
 
 	"gorm.io/gorm"
@@ -31,11 +32,17 @@ import (
 // 一个开奖前调整名单的合法外衣;③ 用户已付费,事后没收资格是最容易引发纠纷
 // 且最没法自证的做法。
 //
-// 代价:一个报名后被封禁的用户仍可能中奖 —— 他的账号状态问题在 payout 阶段
-// 单独处理(转 held 交人工),而不是在名单里做手脚。
+// 代价:一个报名后被封禁的用户仍可能中奖 —— 星屑不可流出,派奖照发进一本他
+// 暂时花不掉的账,而不是在名单里做手脚。
 //
-// 唯一例外是扣费瞬间主库行锁内复检**三项且只有三项**:users.status、
-// users.group、余额是否够扣。它们是**扣钱的前提**而不是**资格的前提**。
+// # 扣钱的前提落在哪
+//
+// 参与费扣的是扩展库里的星屑(stardust.Debit),不再锁主库行。"够不够扣"由
+// Debit 的条件 UPDATE 承担;users.status / users.group / min_quota 三项**没有**
+// 锁内复检的落点 —— 主库行锁不在这条链路上了。接受 LoadSubject(锁外最新读)
+// 到 Debit 之间的窗口:那几秒里被封禁、被降组、余额被消费掉的人可能多买到一张票,
+// 而票的钱是他自己的星屑,平台没有损失;资格用报名那一刻的值本来就是本文件的口径。
+// 管理端对 min_quota 的说明因此是"受理时刻持有",不是"报名瞬间持有"。
 //
 // # fail-closed
 //
@@ -50,12 +57,12 @@ type Rules struct {
 	DenyGroups  []string `json:"deny_groups"`
 
 	MinAccountAgeDays int `json:"min_account_age_days"`
-	// MinQuota 是"当前余额不低于 N"。它与参与费是两件事:
-	// 余额刚好够扣的人可以参加一个不设余额门槛的活动。
+	// MinQuota 是"当前站内余额(users.quota,额度口径)不低于 N"。它是账号质量信号,
+	// 与参与费是两件事:参与费是星屑,余额门槛是额度,两个刻度互不换算。
 	MinQuota int64 `json:"min_quota"`
-	// MinUsedQuota 读 users.used_quota(全时段累计,不可切窗)。
+	// MinUsedQuota 读 users.used_quota(额度口径,全时段累计,不可切窗)。
 	MinUsedQuota int64 `json:"min_used_quota"`
-	// RecentSpendDays / RecentSpendQuota 是"近 N 日内消费满 M"。
+	// RecentSpendDays / RecentSpendQuota 是"近 N 日内消费满 M"(额度口径)。
 	// 数据源是 qy_lot_spend_daily,报名路径禁止任何对 logs 的查询。
 	RecentSpendDays  int   `json:"recent_spend_days"`
 	RecentSpendQuota int64 `json:"recent_spend_quota"`
@@ -85,8 +92,9 @@ type Rules struct {
 
 	// 频次与规模闸门。它们同样进承诺 —— 事后改上限等于改规则。
 	MaxEntriesPerUser int `json:"max_entries_per_user"`
-	// MaxAttemptsPerUser 把**失败尝试**也计入名额,防止用"必然余额不足"的
-	// 报名膨胀哈希链与 proof 体积(失败条目永久留在链上占一个 seq)。
+	// MaxAttemptsPerUser 曾经把**失败尝试**也计入名额。单事务之下失败的尝试整笔
+	// 回滚、不在链上留痕,它能数到的只有成功的票,与 MaxEntriesPerUser 是同一个
+	// 集合。字段保留是因为它进 rules_hash;运营把它配得比参与上限更紧时它仍生效。
 	MaxAttemptsPerUser int `json:"max_attempts_per_user"`
 	MaxTotalEntries    int `json:"max_total_entries"`
 	// MaxTotalUsers 与 MaxTotalEntries 分开:允许多次参与时,
@@ -158,7 +166,8 @@ func (r Rules) Normalize() Rules {
 		r.MaxAttemptsPerUser = r.MaxEntriesPerUser
 	}
 
-	// 恒真:被封禁的账号在主库行锁内根本扣不了费。
+	// 恒真。它由 Evaluate 的 MissDisabled 执行(LoadSubject 读到的最新 users.status),
+	// 没有扣费瞬间的锁内复检:扣的是扩展库里的星屑,主库行锁不在这条链路上。
 	r.ExcludeCurrentlyDisabled = true
 	return r
 }
@@ -229,13 +238,18 @@ func ParseRules(text string) (Rules, error) {
 
 // Subject 是判定所需的全部用户属性,由 LoadSubject 一次性装载。
 type Subject struct {
-	Status    int    `json:"status"`
-	Role      int    `json:"role"`
-	Group     string `json:"group"`
-	Quota     int64  `json:"quota"`
-	UsedQuota int64  `json:"used_quota"`
-	CreatedAt int64  `json:"created_at"`
-	InviterId int    `json:"inviter_id"`
+	Status int    `json:"status"`
+	Role   int    `json:"role"`
+	Group  string `json:"group"`
+	// Quota / UsedQuota 是主库的额度口径,只服务 min_quota / min_used_quota 两条
+	// 账号质量门槛;参与费比的是 Stardust。
+	Quota     int64 `json:"quota"`
+	UsedQuota int64 `json:"used_quota"`
+	// Stardust 是 qy_sd_balance.available(星屑),"够不够扣这一笔"比的是它。
+	// 没有余额行视为 0。
+	Stardust  int64 `json:"stardust"`
+	CreatedAt int64 `json:"created_at"`
+	InviterId int   `json:"inviter_id"`
 
 	HasEmail    bool  `json:"has_email"`
 	HasOAuth    bool  `json:"has_oauth"`
@@ -248,9 +262,9 @@ type Subject struct {
 
 	// IsCreator 是活动创建者标记。
 	//
-	// 契约里的 Subject 没有这一项,这里补上是刻意的偏离:创建者禁参与是**硬规则**,
-	// 放在 Evaluate 之外意味着每个调用点都要记得再判一次,而漏判的后果是
-	// "创建者中了自己办的奖"—— 那是这套系统最不能出的事。
+	// 契约里的 Subject 没有这一项,这里补上是刻意的偏离:创建者禁参与(仅竞猜,
+	// 见 Evaluate 的硬规则)放在 Evaluate 之外意味着每个调用点都要记得再判一次,
+	// 而漏判的后果是"定答案的人下场对赌"—— 那是这套系统最不能出的事。
 	IsCreator bool `json:"is_creator"`
 	// Username 只用于写进参与明细的快照,不参与任何判定。
 	Username string `json:"username"`
@@ -286,22 +300,33 @@ const (
 // Evaluate 是纯函数:输入一份已装载的 Subject,输出未满足的条件清单。
 // 空切片 = 通过。
 //
-// stakeQuota 单独传入而不是塞进 Rules:它是活动的资金要素,不是参与条件,
-// 而"余额够不够扣这一笔"必须与"余额门槛"分成两条,否则用户看到的提示会是
-// 一个他改不了的数字。
-func Evaluate(r Rules, s *Subject, stakeQuota int64, now int64) []Missing {
+// stakeQuota(星屑)单独传入而不是塞进 Rules:它是活动的资金要素,不是参与条件,
+// 而"星屑够不够扣这一笔"必须与"余额门槛"(额度)分成两条 —— 两者刻度不同,
+// 合成一条提示会是一个用户改不了、也看不懂的数字。
+//
+// play 是活动的玩法(playOf 的产出),只被"管理员/创建者禁参与"这一条硬规则
+// 消费 —— 判定按玩法分野的理由写在那条硬规则上。
+func Evaluate(r Rules, s *Subject, stakeQuota int64, now int64, play string) []Missing {
 	out := make([]Missing, 0, 8)
 
-	// ── 硬规则:不可配置 ──
+	// ── 硬规则:不可配置,但按玩法分野(2026-08-29/30 项目方拍板,见 D-10)──
 	//
-	// 掌握数据库读权限的人能提前看到种子,这是 commit-reveal 的固有弱点,
-	// 只能用"他们不能下场"来堵。而且一个管理员中奖的抽奖,无论多干净的协议
-	// 都会被质疑。
-	if s.Role >= common.RoleAdminUser {
-		out = append(out, Missing{Code: MissAdmin, Need: false, Have: true})
-	}
-	if s.IsCreator {
-		out = append(out, Missing{Code: MissCreator, Need: false, Have: true})
+	// 竞猜:结果是管理员按外部事实**手工录入**的(handleSetGuessResult),
+	// 让能定答案的人下场对赌,任何密码学都拦不住"先买后判"。
+	// 管理员与活动创建者一律禁止参与,这条没得商量。
+	//
+	// 三种抽奖(rank / prob / ball)全部豁免:开奖结果由
+	// FinalSeed(seed, roster_hash) 推导,封盘冻结名单之前没人算得出结果;
+	// 票号(entry_no)由服务端 crypto/rand 在提交那一刻生成并进名单原像,
+	// 连持有种子的人也无法预先构造一张"会中"的票。随机性对全场一视同仁,
+	// 管理员(含创建者)可以照常参与。代价是观感风险,对冲是规则页原样公示。
+	if play == PlayGuess {
+		if s.Role >= common.RoleAdminUser {
+			out = append(out, Missing{Code: MissAdmin, Need: false, Have: true})
+		}
+		if s.IsCreator {
+			out = append(out, Missing{Code: MissCreator, Need: false, Have: true})
+		}
 	}
 	if s.Status != common.UserStatusEnabled {
 		out = append(out, Missing{Code: MissDisabled, Need: common.UserStatusEnabled, Have: s.Status})
@@ -322,11 +347,14 @@ func Evaluate(r Rules, s *Subject, stakeQuota int64, now int64) []Missing {
 	}
 
 	// ── 余额与消费 ──
+	//
+	// balance / used_quota / recent_spend 三项比的是主库额度(账号质量信号),
+	// stake 比的是星屑余额:need / have 的单位随 code 不同,前端按 code 取单位。
 	if r.MinQuota > 0 && s.Quota < r.MinQuota {
 		out = append(out, Missing{Code: MissBalance, Need: r.MinQuota, Have: s.Quota})
 	}
-	if stakeQuota > 0 && s.Quota < stakeQuota {
-		out = append(out, Missing{Code: MissStake, Need: stakeQuota, Have: s.Quota})
+	if stakeQuota > 0 && s.Stardust < stakeQuota {
+		out = append(out, Missing{Code: MissStake, Need: stakeQuota, Have: s.Stardust})
 	}
 	if r.MinUsedQuota > 0 && s.UsedQuota < r.MinUsedQuota {
 		out = append(out, Missing{Code: MissUsedQuota, Need: r.MinUsedQuota, Have: s.UsedQuota})
@@ -359,11 +387,10 @@ func Evaluate(r Rules, s *Subject, stakeQuota int64, now int64) []Missing {
 	return out
 }
 
-// GroupAllowed 判断分组是否被允许。供主库行锁内复检复用。
+// GroupAllowed 判断分组是否被允许。
 //
-// **本函数不读任何配置**:规则由调用方以快照形式传入。锁内重新读配置会让
-// 运营在受理与落账之间保存一次就出现"受理放行、锁内拒绝",而用户提交那一刻
-// 看到的规则确实是允许的。
+// **本函数不读任何配置**:规则由调用方以快照形式传入 —— 规则是"提交那一刻的
+// 约定",中途被收紧不该让一笔已经在受理的请求拿到与用户所见不同的结论。
 func GroupAllowed(r Rules, group string) bool {
 	for _, g := range r.DenyGroups {
 		if g == group {
@@ -414,14 +441,15 @@ var ErrSubjectUnavailable = errors.New("qianye/lottery: 资格校验暂时不可
 //
 //	L1 主库一次主键读 —— status/role/group/quota/used_quota/created_at/
 //	   inviter_id/email/各 OAuth 标识 **8 项合并成一次读**,绝不每个条件各查一次
-//	L2 扩展库索引点查 —— 违规记录 EXISTS(LIMIT 1,不用 COUNT(*))、
-//	   滚动窗口计数(主键 O(1))、自动封禁史
+//	L2 扩展库索引点查 —— 星屑余额(主键)、违规记录 EXISTS(LIMIT 1,不用
+//	   COUNT(*))、滚动窗口计数(主键 O(1))、自动封禁史
 //	L3 扩展库主键范围扫描 —— 近 N 日消费,最多 90 行,索引覆盖
 //
 // **报名路径禁止任何对 logs 的查询**(由 no_logs_query_test.go 的 AST 断言守住)。
 //
 // 任何一步失败一律返回 error,绝不返回部分结果 —— 部分结果会让调用方在
-// "这一项没查到"和"这一项不满足"之间做出错误的乐观推断。
+// "这一项没查到"和"这一项不满足"之间做出错误的乐观推断。星屑余额读失败同样
+// fail-closed:读不到就拒绝,绝不按 0 或按"够"猜。
 func LoadSubject(ctx context.Context, userId int, r Rules, creatorId int) (*Subject, error) {
 	var u model.User
 	if err := model.DB.WithContext(ctx).
@@ -453,6 +481,12 @@ func LoadSubject(ctx context.Context, userId int, r Rules, creatorId int) (*Subj
 		return nil, fmt.Errorf("%w: 扩展库不可用", ErrSubjectUnavailable)
 	}
 	gdb = gdb.WithContext(ctx)
+
+	available, err := stardustAvailable(ctx, gdb, userId)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSubjectUnavailable, err)
+	}
+	s.Stardust = available
 
 	if r.RequirePayPassword {
 		var cnt int64
@@ -517,6 +551,23 @@ func LoadSubject(ctx context.Context, userId int, r Rules, creatorId int) (*Subj
 		s.RecentSpend = spend
 	}
 	return s, nil
+}
+
+// stardustAvailable 读一个用户当前可用的星屑。没有余额行视为 0(从没获得过星屑
+// 的人本来就是 0,LockBalance 才会补种那一行);读失败原样返回,由调用方 fail-closed。
+//
+// 只读不锁:它服务的是资格预判与详情页展示,权威判定在 stardust.Debit 的条件 UPDATE。
+func stardustAvailable(ctx context.Context, gdb *gorm.DB, userId int) (int64, error) {
+	var bal stardust.Balance
+	err := gdb.WithContext(ctx).Select("available").Where("user_id = ?", userId).Take(&bal).Error
+	if err == nil {
+		return bal.Available, nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	db.MarkFailure(err)
+	return 0, err
 }
 
 // describeSubjectForAudit 挑出可以进审计快照的字段。

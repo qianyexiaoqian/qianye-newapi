@@ -7,7 +7,7 @@ package config
 // 本扩展已经四次出现同一个失败模式:配置项定义了、applyDefaults 给了默认值、
 // validate 校验了、示例 YAML 里写得明明白白 —— 但没有任何代码读它。
 //
-//	C1  withdraw 的四项风控限额     定义齐全,create 流程一个都没查
+//	C1  (已删除的)提现模块四项风控限额  定义齐全,create 流程一个都没查
 //	C2  violation 的两个熔断阈值     定义齐全,breaker 用的是硬编码
 //	OLD-1 transfer.lookup_log_retain_days  清理任务用包内常量 30
 //	OLD-2 group_visibility.filter_group_api 访问器零调用点
@@ -125,79 +125,37 @@ var fieldConsumers = map[string]consumer{
 	"transfer.receiver_daily_max_in_count": {"qianye/modules/transfer/risk.go", "单账号每日可接收的笔数上限;可被 qy_settings 在线覆盖"},
 	"transfer.lookup_log_retain_days":      {"qianye/modules/transfer/reconcile.go", "收款人解析日志的保留天数,pruneLookupLogs 的扫描下界"},
 
-	// ─────────────────────────── commission ───────────────────────────
-	"commission.enabled":              {"qianye/guard/guard.go", "featureOn(FlagCommission)"},
-	"commission.topup_rate_percent":   {"qianye/modules/commission/settings.go", "充值返佣百分比(全局默认),在此换算成内部整数费率并可被运营覆盖"},
-	"commission.consume_rate_percent": {"qianye/modules/commission/settings.go", "消费返佣百分比(全局默认),同上"},
-	"commission.redemption_rate_percent": {"qianye/modules/commission/settings.go",
-		"兑换码返佣百分比(全局默认)。留空 = 没单独配 = 跟随充值档(升级前行为),\"0\" 是显式 0%"},
-	"commission.topup_rate_bps": {"qianye/config/defaults.go",
-		"⚠ 已废弃:仅作兼容,加载时由 adoptDeprecatedRates 换算进 topup_rate_percent 并告警;与新字段矛盾时启动失败"},
-	"commission.consume_rate_bps": {"qianye/config/defaults.go",
-		"⚠ 已废弃:同 topup_rate_bps,请改用 consume_rate_percent"},
+	// ─────────────────────────── invite ───────────────────────────
+	"invite.enabled": {"qianye/guard/guard.go",
+		"featureOn(FlagInvite):关掉后不建关系、不发任何邀请返(InviteeEligible 一律不合格)、推广页 404"},
+	"invite.day_offset_minutes": {"qianye/modules/invite/dayline.go",
+		"「一天」相对 UTC 的偏移(分钟)。星屑消费返 / 下线消费返的日桶、日结的日界与下线日消费报表都由它决定"},
+	"invite.inviter_cache_seconds": {"qianye/modules/invite/inviter.go", "users.inviter_id 与上线分组的进程内缓存时长"},
+
+	// ─────────────────────────── commission(D-16:佣金以星屑结算)───────────────────────────
+	"commission.enabled":          {"qianye/guard/guard.go", "featureOn(FlagCommission):关掉后不计佣、不结算、不自动入账,佣金接口一律 qy_feature_off"},
+	"commission.topup_rate_bps":   {"qianye/modules/commission/settings.go", "充值计佣万分比(全局默认),可被运营在 qy_settings 以百分比覆盖"},
+	"commission.consume_rate_bps": {"qianye/modules/commission/settings.go", "消费计佣万分比(全局默认),同上"},
+	"commission.redemption_rate_bps": {"qianye/modules/commission/settings.go",
+		"兑换码计佣万分比(全局默认)。不写 = 没单独配 = 跟随充值档,0 是显式 0%"},
 	"commission.levels": {"qianye/config/validate.go",
 		"只被校验器消费:当前仅支持 1 级,填 2 会直接启动失败 —— 静默降级成一级会让运营以为二级佣金在发"},
-	"commission.min_settle_quota":    {"qianye/modules/commission/settle.go", "低于此额度不结算"},
-	"commission.max_per_order_quota": {"qianye/modules/commission/hook.go", "单笔返佣上限"},
-	"commission.holding_days":        {"qianye/modules/commission/hook.go", "佣金冻结期"},
-	"commission.day_offset_minutes": {"qianye/modules/commission/dayline.go",
-		"返佣「一天」相对 UTC 的偏移(分钟)。同时决定 bucket_date 分桶、mature_at、日封顶窗口与一日一结算的日界"},
+	"commission.min_settle_stardust":    {"qianye/modules/commission/settle.go", "低于这么多星屑不结算(零头留在余数里)"},
+	"commission.max_per_order_stardust": {"qianye/modules/commission/consume.go", "单次计佣的星屑上限,也是单次自动入账的上限"},
+	"commission.holding_days":           {"qianye/modules/commission/consume.go", "佣金持有期:结算行到期才进可用余额"},
 	"commission.settle_interval_seconds": {"qianye/modules/commission/module.go",
 		"结算调度的心跳周期(一日一结算之后它只决定日界过后多久开始跑,不再是结算周期)"},
-	"commission.inviter_cache_seconds":         {"qianye/modules/commission/inviter.go", "users.inviter_id 的缓存时长"},
-	"commission.topup_scan_interval_seconds":   {"qianye/modules/commission/module.go", "充值扫描任务周期"},
-	"commission.topup_scan_lookback_hours":     {"qianye/modules/commission/topup_scan.go", "充值扫描的回扫窗口"},
-	"commission.exclude_redemption_and_manual": {"qianye/modules/commission/topup_scan.go", "兑换码与管理员补单是否不返佣"},
-	"commission.exclude_subscription_consume":  {"qianye/modules/commission/hook.go", "订阅消费是否不返佣"},
-	"commission.refund_clawback":               {"qianye/modules/commission/hook.go", "退款时是否追回已发佣金"},
-
-	// ─────────────────────────── withdraw ───────────────────────────
-	"withdraw.enabled":         {"qianye/guard/guard.go", "featureOn(FlagWithdraw)"},
-	"withdraw.methods":         {"qianye/modules/withdraw/validate.go", "允许的提现方式,不在表内即拒绝"},
-	"withdraw.min_quota":       {"qianye/modules/withdraw/validate.go", "最低提现额度"},
-	"withdraw.min_fiat_amount": {"qianye/modules/withdraw/create.go", "法币方式的最低金额"},
-	// 币种的消费点在**佣金侧**:提现单的币种取自 qy_commission_balance.fiat_currency,
-	// 而那一列是结算时按当时的这个配置冻上去的。提现模块自己不再读它 ——
-	// 读当前配置等于让运营改一次标签就把全部历史金额换成另一种钱。
-	"withdraw.fiat_currency": {"qianye/modules/commission/settle.go",
-		"法币币种,结算时冻进佣金余额行;提现单原样沿用那一列"},
-	"withdraw.fiat_fee_bps":      {"qianye/modules/withdraw/create.go", "法币打款手续费率"},
-	"withdraw.daily_max_count":   {"qianye/modules/withdraw/create.go", "每日提现笔数上限"},
-	"withdraw.payee_account_max": {"qianye/modules/withdraw/payee.go", "每人可保存的收款方式数量"},
-	"withdraw.review_sla_hours":  {"qianye/modules/withdraw/view.go", "审核时限,用于展示与超时标记"},
-	"withdraw.payout_sla_hours": {"qianye/modules/withdraw/view.go",
-		"发放时限:审核通过后多久没标记已发放算积压。用于队列角标与后台积压告警"},
-	// 随「审核通过自动到账」一并下线。消费点指向 defaults.go 而不是删掉登记:
-	// 自检面板必须能回答"我 YAML 里还写着这一行,它现在起什么作用"。
-	"withdraw.auto_credit_on_approve": {"qianye/config/defaults.go",
-		"⚠ 已下线:提现只做佣金扣除,金额一律由管理员手动发放。自动到账的跨库链路已整条删除," +
-			"加载时由 adoptRetiredRateFreeze 告警并忽略"},
-	"withdraw.remark_max_runes":    {"qianye/modules/withdraw/validate.go", "用户备注字数上限"},
-	"withdraw.pii_key":             {"qianye/modules/withdraw/crypto.go", "收款信息 AES-GCM 主密钥"},
-	"withdraw.pii_key_version":     {"qianye/modules/withdraw/crypto.go", "新密文写入时记录的密钥版本"},
-	"withdraw.pii_keys_retired":    {"qianye/modules/withdraw/crypto.go", "历史密钥,解密轮换前写入的密文"},
-	"withdraw.digest_key":          {"qianye/modules/withdraw/crypto.go", "跨账户风控指纹的独立密钥"},
-	"withdraw.cooldown_seconds":    {"qianye/modules/withdraw/create.go", "两次申请之间的最小间隔"},
-	"withdraw.max_pending_orders":  {"qianye/modules/withdraw/create.go", "同时存在的未终态单数量上限"},
-	"withdraw.max_quota_per_order": {"qianye/modules/withdraw/validate.go", "单笔提现上限"},
-	"withdraw.daily_max_quota":     {"qianye/modules/withdraw/create.go", "单日提现总额上限"},
-	"withdraw.pii_retention_days":  {"qianye/modules/withdraw/payee.go", "收款信息密文的保留天数"},
-	// 这两个键随「提现侧独立汇率」一并下线。消费点指向 defaults.go 而不是删掉登记:
-	// 自检面板必须能回答"我 YAML 里还写着这一行,它现在起什么作用",
-	// 而答案是"什么作用都没有,只会在启动时喊一声"。(同 group_matrix 那两个键)
-	"withdraw.rate_freeze_mode": {"qianye/config/defaults.go",
-		"⚠ 已下线:提现单的法币金额现在恒等于冻结时从佣金账本削走的那个数,提现侧没有自己的汇率。" +
-			"加载时由 adoptRetiredRateFreeze 告警并忽略"},
-	"withdraw.rate_freeze_fixed": {"qianye/config/defaults.go",
-		"⚠ 已下线:理由同上。此前它会让单据金额与账本金额差出一个倍数"},
-	"withdraw.proof_enabled": {"qianye/modules/withdraw/proof.go",
-		"是否允许给法币提现附一张凭证图片(经 ProofOn(),已并入「法币方式已开放」这一前提);" +
-			"关掉后上传接口直接拒绝,已存在的图片仍可下载直到被清理"},
-	"withdraw.proof_max_bytes": {"qianye/modules/withdraw/proof.go",
-		"单张凭证的字节上限,在读第一个字节之前就作为 http.MaxBytesReader 的参数生效"},
+	"commission.credit_interval_seconds": {"qianye/modules/commission/module.go", "自动入账任务(commission.credit)的周期"},
+	"commission.min_credit_stardust": {"qianye/modules/commission/autocredit.go",
+		"可用余额攒够多少星屑才自动入账进 qy_sd_balance(默认 1);可被 qy_settings 在线覆盖"},
+	"commission.exclude_redemption_and_manual": {"qianye/modules/commission/consume.go", "兑换码与管理员补单是否不计佣"},
+	"commission.exclude_subscription_consume":  {"qianye/modules/commission/consume.go", "订阅消费是否不计佣"},
+	"commission.refund_clawback":               {"qianye/modules/commission/consume.go", "退款时是否追回已发佣金"},
 
 	// ─────────────────────────── wallet ───────────────────────────
-	"wallet.show_transfer_entry": {"qianye/controller/config.go", "下发给前端,决定钱包页是否渲染划转入口"},
+	"wallet.show_transfer_entry":   {"qianye/controller/config.go", "下发给前端,决定钱包页是否渲染划转入口"},
+	"wallet.show_invite_entry":     {"qianye/controller/config.go", "下发给前端,决定钱包页是否渲染「我的推广」入口"},
+	"wallet.show_commission_entry": {"qianye/controller/config.go", "下发给前端,决定钱包页是否渲染推广佣金入口"},
 	// ─────────────────────────── ticket ───────────────────────────
 	"ticket.enabled":                 {"qianye/guard/guard.go", "featureOn(FlagTicket)"},
 	"ticket.title_max_runes":         {"qianye/modules/ticket/validate.go", "工单标题字数上限"},
@@ -216,8 +174,6 @@ var fieldConsumers = map[string]consumer{
 	"ticket.image_retention_days":  {"qianye/modules/ticket/tasks.go", "工单关闭后图片的保留天数,从关闭时刻起算"},
 	"ticket.image_user_quota_bytes": {"qianye/modules/ticket/attachment.go",
 		"单人磁盘总量闸:未绑定上传数在图片提交后归零,只有这一条约束已经落进工单里的字节"},
-	"wallet.show_commission_entry": {"qianye/controller/config.go", "下发给前端,决定钱包页是否渲染佣金入口"},
-	"wallet.show_withdraw_entry":   {"qianye/controller/config.go", "下发给前端,决定钱包页是否渲染提现入口"},
 
 	// ─────────────────────────── log_metrics ───────────────────────────
 	"log_metrics.show_reasoning_effort": {"qianye/modules/logmetrics/logmetrics.go", "是否采集并下发推理强度列"},
@@ -280,6 +236,12 @@ var fieldConsumers = map[string]consumer{
 		"⚠ 已下线:「模型按分组单独定价」整个模块已删除。本段被 adoptRetiredGroupPricing " +
 			"整段忽略并告警,里面写什么都不生效。分组级价格改由「用户分组 × 模型分组」倍率矩阵表达"},
 
+	// ──────────────────── withdraw(D-14 已下线)────────────────────
+	//
+	// 同 group_pricing:这一段只剩 map 占位,唯一消费方是 adoptRetiredWithdraw 那句告警。
+	"withdraw": {"qianye/config/defaults.go",
+		"⚠ 已下线:提现模块随 D-14 整体删除,D-15 之后佣金以星辉自动入账。本段被 adoptRetiredWithdraw 整段忽略并告警"},
+
 	// ─────────────────────────── group_matrix ───────────────────────────
 	"group_matrix.enabled": {"qianye/modules/groupmatrix/snapshot.go",
 		"L1 kill switch:关掉后 QyResolveUsableGroups 恒等返回上游那张 map," +
@@ -341,16 +303,16 @@ var fieldConsumers = map[string]consumer{
 		"证据链端点是否匿名可访问。默认开 —— 需要账号才能取证的公正性不叫公正性"},
 	"lottery.max_active_activities": {"qianye/modules/lottery/settings.go",
 		"同时处于 published/locked/settling 的活动数上限"},
-	"lottery.max_stake_quota": {"qianye/modules/lottery/api_admin.go",
+	"lottery.max_stake_stardust": {"qianye/modules/lottery/api_admin.go",
 		"单次参与费/单注上限,创建时判定"},
-	"lottery.max_total_prize_quota": {"qianye/modules/lottery/settings.go",
+	"lottery.max_total_prize_stardust": {"qianye/modules/lottery/settings.go",
 		"单场奖品总额度硬上限。抽奖派奖是净增发,这是唯一能拦住「多写一个零」的闸门"},
-	"lottery.large_prize_alert_quota": {"qianye/modules/lottery/settings.go",
+	"lottery.large_prize_alert_stardust": {"qianye/modules/lottery/settings.go",
 		"大额活动告警阈值,只告警不阻断"},
-	"lottery.pay_password_threshold_quota": {"qianye/modules/lottery/entry.go",
+	"lottery.pay_password_threshold_stardust": {"qianye/modules/lottery/entry.go",
 		"参与费超过它就要验支付密码 —— 参与是不可逆消费,盗号者能用它把余额烧光"},
 	"lottery.prize_secret_key": {"qianye/modules/lottery/text_prize.go",
-		"文本奖兑换码的 AES-GCM 主密钥。为空则明文直存(向后兼容,自检会报警告)"},
+		"文本奖兑换码的 AES-GCM 主密钥。开着抽奖就必填,留空直接拒绝启动"},
 	"lottery.prize_secret_key_version": {"qianye/modules/lottery/text_prize.go",
 		"新密文写入时记录的密钥版本"},
 	"lottery.prize_secret_keys_retired": {"qianye/modules/lottery/text_prize.go",
@@ -366,8 +328,6 @@ var fieldConsumers = map[string]consumer{
 	"lottery.payout_interval_seconds": {"qianye/modules/lottery/module.go", "派奖/赔付/退款 worker 周期"},
 	"lottery.payout_max_attempts": {"qianye/modules/lottery/payout.go",
 		"单笔出款重试上限,耗尽转人工(绝不自动放弃)"},
-	"lottery.excluded_manual_after_seconds": {"qianye/modules/lottery/lifecycle.go",
-		"参与单卡在不可判定态多久之后转人工"},
 	"lottery.max_total_entries_hard": {"qianye/modules/lottery/api_admin.go",
 		"单场名单规模上界(名单冻结要在单事务里流式算完)"},
 	"lottery.entry_batch_max_ms": {"qianye/modules/lottery/entry.go",
@@ -389,6 +349,56 @@ var fieldConsumers = map[string]consumer{
 		"「近 N 日消费」允许的最大回看天数"},
 	"lottery.spend_retention_days": {"qianye/modules/lottery/spend.go",
 		"消费日桶保留期。它是本模块唯一允许被清理的表(可从 logs 重建的派生数据)"},
+	// ── 星屑(stardust)──
+	"stardust.enabled": {"qianye/guard/guard.go",
+		"featureOn(FlagStardust):关掉后账本只读不写,娱乐 / 商城 / 邀请返全部随之 404"},
+	"stardust.show_entry": {"qianye/modules/stardust/settings.go",
+		"前端是否渲染星屑入口(qy_settings 可覆盖)。与 enabled 分开:关掉入口后已有余额的用户仍要能查流水"},
+	"stardust.name": {"qianye/modules/stardust/settings.go",
+		"单位名基线(qy_settings 可覆盖),用户端与管理端一切金额组件都用它"},
+	"stardust.quota_per_unit": {"qianye/modules/stardust/ledger.go",
+		"刻度:1 星屑 = 多少额度。0 = common.QuotaPerUnit;冻结进每行日桶,上线后改它会让新旧桶口径不一"},
+	"stardust.consume_bps": {"qianye/modules/stardust/settings.go",
+		"消费返默认比例(万分比),按用户分组的覆盖在 qy_sd_group_rate"},
+	"stardust.exclude_subscription_consume": {"qianye/modules/stardust/settle.go",
+		"日结聚合 SQL 排除 billing_source=subscription 的消费行(订阅额度出资的消费不返)"},
+	"stardust.settle_delay_minutes": {"qianye/modules/stardust/settle.go",
+		"日界之后多久开始结算昨日,也是 rerun 的封口判据;兜日志库复制 / 摄入延迟"},
+	"stardust.settle_interval_seconds": {"qianye/modules/stardust/settle.go",
+		"日结调度心跳(lease stardust.settle)"},
+	"stardust.held_alert_days": {"qianye/modules/stardust/ledger_check.go",
+		"暂缓桶(透支 / 注销 / 封禁账号)的积龄告警阈值,0 = 不告警"},
+	"stardust.invite_topup_bps": {"qianye/modules/stardust/settings.go",
+		"下线充值给邀请人的比例(万分比),0 = 关;受支付合规门约束"},
+	"stardust.invite_consume_bps": {"qianye/modules/stardust/settings.go",
+		"下线当日消费给邀请人的比例(万分比),按邀请人分组取档,日结时一并结给邀请人;0 = 关;受支付合规门约束"},
+	"stardust.invite_redeem_bps": {"qianye/modules/stardust/hooks.go",
+		"下线用余额兑换码时给邀请人的比例;只受 invite.enabled 影响"},
+	"stardust.invite_register_stardust": {"qianye/modules/stardust/hooks.go",
+		"被邀请人注册时给邀请人的固定星屑,0 = 关"},
+	"stardust.exclude_manual_topup": {"qianye/modules/stardust/topup_scan.go",
+		"管理员补单不给邀请人返(ExcludedTopUp 的第二参数)"},
+	"stardust.topup_scan_interval_seconds": {"qianye/modules/stardust/topup_scan.go",
+		"充值扫描周期;游标存在 qy_kv,首启不补历史"},
+	"stardust.max_manual_adjust": {"qianye/modules/stardust/api_admin_adjust.go",
+		"管理员单次手调的绝对值上限(星屑),拦「多写一个零」"},
+	// ── 星屑商城(mall)──
+	"mall.enabled": {"qianye/guard/guard.go",
+		"featureOn(FlagMall):要求 stardust.enabled 同时为真;关掉后货架与订单接口 404"},
+	"mall.show_entry": {"qianye/modules/mall/settings.go",
+		"前端是否渲染商城入口。与 enabled 分开:关掉入口后已下单的用户仍要能看单、揭示码"},
+	"mall.secret_key": {"qianye/modules/mall/secret.go",
+		"AES-256-GCM 主密钥,加密兑换码库存与收货地址;开着商城就必填,留空直接拒绝启动"},
+	"mall.secret_key_version": {"qianye/modules/mall/secret.go",
+		"新密文写入时记录的密钥版本"},
+	"mall.secret_keys_retired": {"qianye/modules/mall/secret.go",
+		"历史密钥,解密轮换前写入的码与地址"},
+	"mall.address_retention_days": {"qianye/modules/mall/reconcile.go",
+		"实物订单完结后收货地址密文保留天数(下限 30),到期由 mall.prune 置空"},
+	"mall.max_products":    {"qianye/modules/mall/api_admin.go", "货架商品数量上限"},
+	"mall.code_upload_max": {"qianye/modules/mall/codes.go", "一次批量上传兑换码的条数上限"},
+	"mall.pending_grace_seconds": {"qianye/modules/mall/reconcile.go",
+		"套餐订单在 paid / held 停留多久后由对账任务按资金单终态收敛"},
 }
 
 // leafField 是展开后的一个配置项。

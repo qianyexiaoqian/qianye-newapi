@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"math"
 	"reflect"
 	"testing"
@@ -28,7 +29,7 @@ import (
 //
 // 刻意不复用 lotteryBaseline():那是一份手写的字段清单,新增一个必填项就要
 // 同步一次,而本文件要证的与那些字段无关。补默认值得到的基线按定义必须合法,
-// 新增必填项时它自己会跟上。
+// 新增必填项时它自己会跟上 —— **密钥类的必填项除外**,见下。
 func defaultLotteryConfig(t *testing.T) Lottery {
 	t.Helper()
 	var c Config
@@ -38,6 +39,10 @@ func defaultLotteryConfig(t *testing.T) Lottery {
 	applyDefaults(&c)
 	clearUnsetNumbers(reflect.ValueOf(&c).Elem())
 	c.Lottery.Enabled = true
+	// 兑换码密钥是唯一一个 applyDefaults **不可能**补上的必填项:硬编码一个
+	// 常量等于全站共用一把钥匙(等于没加密),每次启动随机生成则重启之后全部
+	// 历史密文不可读。所以它只能由运维填,测试基线也只能在这里手动补一把。
+	c.Lottery.PrizeSecretKey = base64.StdEncoding.EncodeToString(make([]byte, 32))
 	require.NoError(t, validateLottery(&c.Lottery),
 		"补过默认值的抽奖配置必须合法,否则下面每一条断言测的都是别的东西")
 	return c.Lottery

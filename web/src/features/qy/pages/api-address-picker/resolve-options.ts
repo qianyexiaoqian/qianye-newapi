@@ -39,5 +39,13 @@ export function qyResolveAddressOptions(
   siteLabel: string
 ): QyApiAddressOption[] {
   if (list != null && list.length > 0) return list
-  return [{ id: 0, name: siteLabel, remark: '', url: readSiteServerAddress() }]
+  return [
+    {
+      id: 0,
+      name: siteLabel,
+      remark: '',
+      url: readSiteServerAddress(),
+      color: '',
+    },
+  ]
 }

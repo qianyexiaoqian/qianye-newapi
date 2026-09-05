@@ -35,7 +35,7 @@ func internalError(c *gin.Context, err error) {
 // listPaging 是佣金相关列表接口的分页口径:?p= / ?page_size=,默认 20、上限 100。
 //
 // 页长上限挡的是"管理端一次拉全表把内存打满";页码上限(httpq.MaxPage)挡的是
-// 深翻页 —— 这份拷贝原本只有前者,而 /commission/records 是用户端接口。
+// 深翻页 —— /commission/records 是用户端接口。
 var listPaging = httpq.Spec{}
 
 // denyActorOverTarget 是本模块动钱接口的操作人闸门:操作人不许是受益人,

@@ -2,8 +2,8 @@ package lottery
 
 // cancel_roster_db_test.go —— 整场取消必须与封盘一样冻结名单快照。
 //
-// 缺陷原型:handleCancelActivity 从 published 直接跳到 settling,补做了封盘的
-// pending→excluded 清扫,却漏了封盘的第三件事 —— 写 roster_hash / roster_count。
+// 缺陷原型:handleCancelActivity 从 published 直接跳到 settling,却漏了封盘的
+// 另一件事 —— 写 roster_hash / roster_count。
 // 于是活动行上的名单快照永远是空串,而证据链下发的条目仍然完整:任何第三方
 // (含本仓自带的 qianye/docs/lottery-verify.py)按公开条目重算出的都是一个
 // 非空哈希,第 3 步当场 FAIL 并中止,连"本应中奖名单"那段用来判断
@@ -56,7 +56,7 @@ func TestCancelFreezesRosterLikeLock(t *testing.T) {
 			ext := newPayoutEnv(t, config.Lottery{
 				Enabled: true, PayoutMaxAttempts: 8,
 				EntryCloseGraceSeconds: 0, RevealDelaySeconds: 60,
-				MaxStakeQuota: 5_000_000, MaxTotalPrizeQuota: 5_000_000,
+				MaxStakeStardust: 5_000_000, MaxTotalPrizeStardust: 5_000_000,
 				MaxActiveActivities: 16, MaxPrizeTiers: 8, MaxOptions: 8,
 				MaxTotalEntriesHard: 1_000,
 			})

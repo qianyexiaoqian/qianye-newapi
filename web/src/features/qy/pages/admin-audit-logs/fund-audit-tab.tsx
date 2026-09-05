@@ -54,8 +54,10 @@ const COLUMN_COUNT = 8
 const CATEGORIES = [
   'fund',
   'transfer',
-  'commission',
-  'withdraw',
+  'invite',
+  'stardust',
+  'mall',
+  'lottery',
   'violation',
   'config',
   'admin',
@@ -99,7 +101,7 @@ export function QyFundAuditTab() {
       category: category === QY_AUDIT_ALL ? undefined : category,
       result: result === QY_AUDIT_ALL ? undefined : result,
       actor_type: actorType === QY_AUDIT_ALL ? undefined : actorType,
-      // 后端按前缀匹配，因此 `withdraw.` 会命中整个提现子树。
+      // 后端按前缀匹配，因此 `lottery.` 会命中整个抽奖子树。
       action: qyAuditTrimmed(action),
       trace_no: qyAuditTrimmed(traceNo),
       ip: qyAuditTrimmed(ip),
@@ -167,8 +169,8 @@ export function QyFundAuditTab() {
             }}
             // 前缀匹配，因此 placeholder 直接给出前缀写法：
             // 之前这里写的是完整动作名，而后端做的是精确匹配 ——
-            // 管理员照着「像前缀」的样子输 `withdraw.` 只会得到空列表。
-            placeholder='withdraw.'
+            // 管理员照着「像前缀」的样子输 `lottery.` 只会得到空列表。
+            placeholder='lottery.'
           />
         </QyFilterField>
         <p className='text-muted-foreground w-full text-xs'>

@@ -2,7 +2,7 @@ package model
 
 // qy_subscription_export.go —— 「订阅套餐全站总名额」的 hook 声明。
 //
-// 与 qy_export.go / qy_commission_export.go / qy_usergroup_export.go 一样是纯新增
+// 与 qy_export.go / qy_invite_export.go / qy_usergroup_export.go 一样是纯新增
 // 文件,合并上游时冲突为 0。单独成文件是为了让并行开发的各个扩展模块各写各的,
 // 不去争同一个文件。
 //
@@ -76,6 +76,23 @@ import "gorm.io/gorm"
 var QyGateSubscriptionSeat = func(tx *gorm.DB, plan *SubscriptionPlan, userId int, source string, err error) error {
 	return err
 }
+
+// QyOnUserSubscriptionInvalidated 在**单条**用户订阅被作废(cancelled)或硬删除、
+// 且事务已提交之后触发,让扩展失效与该用户绑定的 per-user 缓存。
+//
+// # 为什么必须有这个 hook
+//
+// planentitlement 的「套餐解锁模型分组」有一层 per-user 缓存(userId → 活跃套餐),
+// 新鲜期默认 60 秒。它只在建订阅(名额闸门)、删**套餐**、改 entitlement 三处失效 ——
+// **唯独漏了「管理员作废/硬删单条订阅」**。而作废单条订阅正是风控/退款的执行路径:
+// 不失效的话,被作废的用户在本节点仍能持有该套餐解锁的模型分组最长一个新鲜期
+// (异步刷新持续失败可拉到 user_max_stale,默认 300 秒)。本站有 GroupRatio=0 的
+// 免费分组,那段窗口就是零成本白嫖 —— 一个越权访问窗口。
+//
+// 只传 userId:实现方(planentitlement.InvalidateUser)只需要它,且这是纯内存
+// 缓存删除,不做任何 I/O、不会 panic,恒等默认实现使扩展未安装时逐位无变化。
+// 调用时机在事务提交之后(与 refreshSubscriptionUserGroupCache 同一处),userId>0。
+var QyOnUserSubscriptionInvalidated = func(userId int) {}
 
 // QyDowngradeUserGroupForSubscriptionTx 把一条订阅失效之后的用户分组回落暴露给扩展。
 //

@@ -40,16 +40,16 @@ const FROZEN_ORDER = [
   '/qy/transfer',
   '/qy/transfer-logs',
   '/qy/pay-password',
-  '/qy/withdraw',
-  '/qy/withdrawals',
+  // `/qy/withdraw`、`/qy/withdrawals`、`/qy/admin/commission`、
+  // `/qy/admin/commission-records`、`/qy/admin/withdrawals` 曾在这里各占一号。
+  // D-14 把佣金账本与提现模块整体删除，编号表按维护规则 2 删行，后面的页面
+  // 各前移。快照跟着改是**正确的**：这条测试防的是"为了好看重新排序"，
+  // 不是"页面下线"。
   '/qy/violations',
   '/qy/availability',
-  '/qy/admin/commission',
-  '/qy/admin/commission-records',
   '/qy/admin/transfer-records',
   '/qy/admin/transfer-group-rules',
   '/qy/admin/transfer-config',
-  '/qy/admin/withdrawals',
   '/qy/admin/violation-rules',
   '/qy/admin/violations',
   // `/qy/admin/user-group` 曾是这里的第 18 项。那一页整页只有一个下拉，已经降级
@@ -62,7 +62,7 @@ const FROZEN_ORDER = [
 ]
 
 describe('qy page order', () => {
-  test('keeps the first 23 slots byte-identical to the pre-reshuffle numbering', () => {
+  test('keeps the first 15 slots byte-identical to the pre-reshuffle numbering', () => {
     FROZEN_ORDER.forEach((url, index) => {
       assert.equal(
         QY_PAGE_URL_ORDER[index],
@@ -98,13 +98,20 @@ describe('qy page order', () => {
 
   test('numbers every registered page and gives 00 to the two index pages', () => {
     assert.equal(qyPageMeta('/qy/affiliate').no, '01')
-    assert.equal(qyPageMeta('/qy/availability').no, '09')
-    // 20 而不是 21：`/qy/admin/user-group` 下线后本页前移一号。
-    assert.equal(qyPageMeta('/qy/admin/health').no, '20')
+    // 07 而不是 09：提现两页（D-14）删行后本页前移两号。
+    assert.equal(qyPageMeta('/qy/availability').no, '07')
+    // 15：`/qy/admin/user-group` 下线前移一号，D-14 再删五行。
+    assert.equal(qyPageMeta('/qy/admin/health').no, '15')
     // 索引页是分组入口而不是功能页，不占编号。
     assert.equal(qyPageMeta('/qy').no, '00')
     assert.equal(qyPageMeta('/qy/admin').no, '00')
     // 详情页继承所属功能页的编号（最长前缀），不掉进未登记分支。
-    assert.equal(qyPageMeta('/qy/admin/violations/123').no, '17')
+    assert.equal(qyPageMeta('/qy/admin/violations/123').no, '12')
+    // D-14 新增的三页追加在末尾，各有自己的号；标签页继承自己那一行而不是宿主。
+    assert.notEqual(qyPageMeta('/qy/admin/invite-accruals').no, '00')
+    assert.notEqual(
+      qyPageMeta('/qy/admin/invite-accruals').no,
+      qyPageMeta('/qy/admin/invite').no
+    )
   })
 })

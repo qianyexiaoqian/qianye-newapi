@@ -27,53 +27,55 @@ const settingScope = "lottery"
 // 等于把别的模块的配置面也交出去了。
 const (
 	keyShowEntry = "show_entry"
-	// 四个玩法各一个显示开关(见 play.go)。它们与 show_entry 是**串联**的:
-	// show_entry 关掉整块,这四个各关一种玩法。分成五个键而不是一个列表键,
+	// 五个玩法各一个显示开关(见 play.go)。它们与 show_entry 是**串联**的:
+	// show_entry 关掉整块,这五个各关一种玩法。分成六个键而不是一个列表键,
 	// 是为了让每一项都能走 settingBounds 那套 0/1 区间校验与审计前后快照 ——
 	// 一个 "draw_rank,guess" 这样的列表字符串既没有区间可校验,
 	// 也会让审计里的 before/after 变成两串要人去 diff 的文本。
-	keyShowPlayDrawRank     = "show_play_draw_rank"
-	keyShowPlayDrawProb     = "show_play_draw_prob"
-	keyShowPlayDrawBall     = "show_play_draw_ball"
-	keyShowPlayGuess        = "show_play_guess"
-	keyMaxActiveActivities  = "max_active_activities"
-	keyDefaultGuessFeeBps   = "default_guess_fee_bps"
-	keyMaxGuessFeeBps       = "max_guess_fee_bps"
-	keyMaxTotalPrizeQuota   = "max_total_prize_quota"
-	keyLargePrizeAlertQuota = "large_prize_alert_quota"
+	keyShowPlayDrawRank        = "show_play_draw_rank"
+	keyShowPlayDrawProb        = "show_play_draw_prob"
+	keyShowPlayDrawBall        = "show_play_draw_ball"
+	keyShowPlayGuess           = "show_play_guess"
+	keyShowPlayWheel           = "show_play_wheel"
+	keyMaxActiveActivities     = "max_active_activities"
+	keyDefaultGuessFeeBps      = "default_guess_fee_bps"
+	keyMaxGuessFeeBps          = "max_guess_fee_bps"
+	keyMaxTotalPrizeStardust   = "max_total_prize_stardust"
+	keyLargePrizeAlertStardust = "large_prize_alert_stardust"
 )
 
 // editableKeys 限定管理端可写的键。
 //
-// 刻意**不含** reveal_delay_seconds 与 max_stake_quota:前者是承诺-揭示协议的
+// 刻意**不含** reveal_delay_seconds 与 max_stake_stardust:前者是承诺-揭示协议的
 // 安全间隔,后者决定单笔扣款上限 —— 这两项能被在线改写,等于把整套公正性与
 // 资金闸门的控制权交给一个 HTTP 接口。它们只能改 YAML 并重启,那是一次
 // 看得见、留得下痕迹的动作。
 var editableKeys = []string{
 	keyShowEntry,
-	keyShowPlayDrawRank, keyShowPlayDrawProb, keyShowPlayDrawBall, keyShowPlayGuess,
+	keyShowPlayDrawRank, keyShowPlayDrawProb, keyShowPlayDrawBall, keyShowPlayGuess, keyShowPlayWheel,
 	keyMaxActiveActivities, keyDefaultGuessFeeBps,
-	keyMaxGuessFeeBps, keyMaxTotalPrizeQuota, keyLargePrizeAlertQuota,
+	keyMaxGuessFeeBps, keyMaxTotalPrizeStardust, keyLargePrizeAlertStardust,
 }
 
 // opSettings 是 YAML 与运营覆盖合并后的生效配置。
 type opSettings struct {
 	ShowEntry bool
-	// 四个玩法开关**刻意没有 YAML 对应项**,基线写死为 true(见 baseSettings)。
+	// 五个玩法开关**刻意没有 YAML 对应项**,基线写死为 true(见 baseSettings)。
 	//
 	// 理由是分工:YAML 承载启动级、涉及安全与资金的闸门(reveal_delay_seconds、
-	// max_stake_quota、以及关掉整块的 lottery.enabled),这四项是纯展示口径、
+	// max_stake_stardust、以及关掉整块的 lottery.enabled),这四项是纯展示口径、
 	// 是运营的日常动作 —— "这一期只上竞猜"改一次要重启一次进程是荒唐的。
 	// 整块下线仍然只有 YAML 的 lottery.enabled 一条路,那道硬闸没有被稀释。
-	ShowPlayDrawRank     bool
-	ShowPlayDrawProb     bool
-	ShowPlayDrawBall     bool
-	ShowPlayGuess        bool
-	MaxActiveActivities  int
-	DefaultGuessFeeBps   int
-	MaxGuessFeeBps       int
-	MaxTotalPrizeQuota   int64
-	LargePrizeAlertQuota int64
+	ShowPlayDrawRank        bool
+	ShowPlayDrawProb        bool
+	ShowPlayDrawBall        bool
+	ShowPlayGuess           bool
+	ShowPlayWheel           bool
+	MaxActiveActivities     int
+	DefaultGuessFeeBps      int
+	MaxGuessFeeBps          int
+	MaxTotalPrizeStardust   int64
+	LargePrizeAlertStardust int64
 }
 
 // baseSettings 把一份 YAML 折成运营覆盖的基线。
@@ -85,15 +87,16 @@ func baseSettings(c config.Lottery) opSettings {
 	return opSettings{
 		ShowEntry: c.EntryShown(),
 		// 零值口径:没配过 = 全部显示。见 play.go 文件头。
-		ShowPlayDrawRank:     true,
-		ShowPlayDrawProb:     true,
-		ShowPlayDrawBall:     true,
-		ShowPlayGuess:        true,
-		MaxActiveActivities:  c.MaxActiveActivities,
-		DefaultGuessFeeBps:   c.DefaultGuessFeeBps,
-		MaxGuessFeeBps:       c.MaxGuessFeeBps,
-		MaxTotalPrizeQuota:   c.MaxTotalPrizeQuota,
-		LargePrizeAlertQuota: c.LargePrizeAlertQuota,
+		ShowPlayDrawRank:        true,
+		ShowPlayDrawProb:        true,
+		ShowPlayDrawBall:        true,
+		ShowPlayGuess:           true,
+		ShowPlayWheel:           true,
+		MaxActiveActivities:     c.MaxActiveActivities,
+		DefaultGuessFeeBps:      c.DefaultGuessFeeBps,
+		MaxGuessFeeBps:          c.MaxGuessFeeBps,
+		MaxTotalPrizeStardust:   c.MaxTotalPrizeStardust,
+		LargePrizeAlertStardust: c.LargePrizeAlertStardust,
 	}
 }
 
@@ -208,6 +211,9 @@ func mergeOverrides(base opSettings, rows map[string]string) opSettings {
 	if v, ok := parseBoolIn(rows, keyShowPlayGuess); ok {
 		base.ShowPlayGuess = v
 	}
+	if v, ok := parseBoolIn(rows, keyShowPlayWheel); ok {
+		base.ShowPlayWheel = v
+	}
 	// 上界必须与 settingBounds() 同源取自 YAML。写死一个 1000 的后果不是"写入
 	// 时被拦住就行了":写入闸门只管**今后**的写入,升级之前已经落库的越界覆盖
 	// (旧上界允许到 1000)会继续被这里读出来并生效,敞口一点没关,而配置页会
@@ -228,11 +234,11 @@ func mergeOverrides(base opSettings, rows map[string]string) opSettings {
 	// 奖品硬顶仍然只允许**调低**(quotaCeilingBound 在 YAML 为正时给 [1, yaml]);
 	// YAML 为 0 时它本来就不限,在线随便配。
 	bounds := settingBounds()
-	if v, ok := parseInt64Within(rows, keyMaxTotalPrizeQuota, bounds[keyMaxTotalPrizeQuota]); ok {
-		base.MaxTotalPrizeQuota = v
+	if v, ok := parseInt64Within(rows, keyMaxTotalPrizeStardust, bounds[keyMaxTotalPrizeStardust]); ok {
+		base.MaxTotalPrizeStardust = v
 	}
-	if v, ok := parseInt64Within(rows, keyLargePrizeAlertQuota, bounds[keyLargePrizeAlertQuota]); ok {
-		base.LargePrizeAlertQuota = v
+	if v, ok := parseInt64Within(rows, keyLargePrizeAlertStardust, bounds[keyLargePrizeAlertStardust]); ok {
+		base.LargePrizeAlertStardust = v
 	}
 	if base.DefaultGuessFeeBps > base.MaxGuessFeeBps {
 		base.DefaultGuessFeeBps = base.MaxGuessFeeBps

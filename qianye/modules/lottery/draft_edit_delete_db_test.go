@@ -67,7 +67,7 @@ func newDraftEnv(t *testing.T) *gorm.DB {
 	ext := newPayoutEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8,
 		EntryCloseGraceSeconds: 0, RevealDelaySeconds: 0,
-		MaxStakeQuota: 5_000_000, MaxTotalPrizeQuota: 5_000_000,
+		MaxStakeStardust: 5_000_000, MaxTotalPrizeStardust: 5_000_000,
 		MaxActiveActivities: 16, MaxPrizeTiers: 8, MaxOptions: 8,
 		MaxTotalEntriesHard: 1_000,
 		// 竞猜手续费的上下界要显式给:零值等于"费率只能是 0",
@@ -550,14 +550,18 @@ func TestDeleteDraftRefusesDirtyDraft(t *testing.T) {
 			},
 		},
 		{
-			// 已结束那一支的 ④ 只数 pending/excluded,草稿这一支**一条都不许有**:
-			// 一份收得到报名的草稿本身就是异常,它是哪个终态无关紧要。
-			name: "草稿上挂着一条已经结清的参与",
+			// 已结束那一支不看参与明细(票只在扣款提交之后才存在),草稿这一支
+			// **一条都不许有**:一份收得到报名的草稿本身就是异常,哪怕那张票已经
+			// 派过奖也无关紧要。
+			name: "草稿上挂着一条已经派过奖的参与",
 			arrange: func(t *testing.T, gdb *gorm.DB, act *Activity) {
-				require.NoError(t, gdb.Create(&Entry{
+				e := &Entry{
 					EntryNo: newEntryNo(), ActId: act.Id, Seq: 1, UserId: 702,
-					Amount: 1000, Status: EntryRefunded, CreatedAt: common.GetTimestamp(),
-				}).Error)
+					Amount: 1000, Status: EntrySuccess, CreatedAt: common.GetTimestamp(),
+				}
+				require.NoError(t, gdb.Create(e).Error)
+				require.NoError(t, gdb.Model(&Activity{}).Where("id = ?", act.Id).
+					Update("entry_seq", 1).Error)
 			},
 		},
 		{

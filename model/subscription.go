@@ -1080,12 +1080,27 @@ func applyUserGroupPurchaseRulesTx(tx *gorm.DB, userId int, plan *SubscriptionPl
 		return nil, err
 	}
 
+	sameGroupPaidExists := false
 	for i := range actives {
 		existing := &actives[i]
 		if strings.TrimSpace(existing.UpgradeGroup) != target {
 			continue
 		}
 		// ── 同一个用户组 ──
+		//
+		// 带额度的订阅不能靠改 end_time 来“续期”:那会把它买过、还没用完的余额
+		// 寿命白送出去(永久档更狠 —— end_time 被写成 0,剩余余额从此永不过期,
+		// 一件几块钱的纯商品就能顶掉一张贵套餐的到期日)。它已经是 target 组、
+		// 权益与新买的纯商品一致,所以两者**并存**:这张继续按原到期日出资它自己
+		// 的余额,新买的纯商品另落一行管自己的时长。跳过它继续找同组纯商品;若同组
+		// 只有带额度订阅,循环结束后交回 (nil,nil) 让调用方走正常新建。
+		//
+		// 这与下面跨组顶替分支对 `!existing.NoQuota` 的处置同源(那里也是“带额度
+		// 的只让位、不动 status/end_time”),同组续期分支此前漏了同一条判据。
+		if !existing.NoQuota {
+			sameGroupPaidExists = true
+			continue
+		}
 		if existing.EndTime == 0 {
 			if !isPaidSubscriptionSource(source) {
 				return nil, errors.New("你已经永久拥有该用户组,无需重复购买")
@@ -1130,6 +1145,13 @@ func applyUserGroupPurchaseRulesTx(tx *gorm.DB, userId int, plan *SubscriptionPl
 		}
 		existing.EndTime = newEnd
 		return existing, nil
+	}
+
+	if sameGroupPaidExists {
+		// 同组只有带额度订阅在并存:它原样不动,新买的纯商品走下面正常的新建
+		// 路径另落一行(见上面的判据说明)。此时不顶替异组 —— 与“找到同组纯商品
+		// 即续期、不顶异组”是同一条口径。
+		return nil, nil
 	}
 
 	// ── 走到这里说明没有同组的,那么所有异组的都要被顶掉 ──
@@ -1455,6 +1477,8 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	var logMoney float64
 	var logPaymentMethod string
 	var upgradeGroup string
+	var grant QySubscriptionGrant
+	startedAt := common.GetTimestamp()
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var order SubscriptionOrder
 		if err := lockForUpdate(tx).Where(refCol+" = ?", tradeNo).First(&order).Error; err != nil {
@@ -1498,6 +1522,7 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		if err != nil {
 			return err
 		}
+		grant = qySubscriptionGrant(subscription, plan, SubscriptionSourceOrder, order.TradeNo, 0, order.Money, startedAt)
 		if subscription.PrevUserGroup != "" {
 			upgradeGroup = strings.TrimSpace(subscription.UpgradeGroup)
 		}
@@ -1530,6 +1555,9 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	if logUserId > 0 {
 		msg := fmt.Sprintf("订阅购买成功，套餐: %s，支付金额: %.2f，支付方式: %s", logPlanTitle, logMoney, logPaymentMethod)
 		RecordLog(logUserId, LogTypeTopup, msg)
+	}
+	if grant.UserId > 0 {
+		QyOnSubscriptionGranted(grant)
 	}
 	return nil
 }
@@ -1665,6 +1693,8 @@ func AdminBindSubscription(userId int, planId int, sourceNote string) (string, e
 		return "", err
 	}
 	groupChanged := false
+	var grant QySubscriptionGrant
+	startedAt := common.GetTimestamp()
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		// 与 CompleteSubscriptionOrder 一致：先锁用户行，再做购买次数检查。
 		var userRow User
@@ -1674,11 +1704,15 @@ func AdminBindSubscription(userId int, planId int, sourceNote string) (string, e
 		subscription, err := CreateUserSubscriptionFromPlanTx(tx, userId, plan, "admin")
 		if err == nil {
 			groupChanged = subscription.PrevUserGroup != ""
+			grant = qySubscriptionGrant(subscription, plan, "admin", "", 0, 0, startedAt)
 		}
 		return err
 	})
 	if err != nil {
 		return "", err
+	}
+	if grant.UserId > 0 {
+		QyOnSubscriptionGranted(grant)
 	}
 	if groupChanged {
 		refreshSubscriptionUserGroupCache(userId, "admin subscription creation")
@@ -1710,6 +1744,8 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 	var logMoney float64
 	var chargedQuota int
 	var upgradeGroup string
+	var grant QySubscriptionGrant
+	startedAt := common.GetTimestamp()
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		plan, err := getSubscriptionPlanByIdTx(tx, planId)
 		if err != nil {
@@ -1772,6 +1808,7 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 		if err := tx.Create(order).Error; err != nil {
 			return err
 		}
+		grant = qySubscriptionGrant(subscription, plan, PaymentMethodBalance, tradeNo, 0, plan.PriceAmount, startedAt)
 
 		logPlanTitle = plan.Title
 		logMoney = plan.PriceAmount
@@ -1795,6 +1832,9 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 	}
 	msg := fmt.Sprintf("使用余额购买订阅成功，套餐: %s，支付金额: %.2f，扣除额度: %d", logPlanTitle, logMoney, chargedQuota)
 	RecordLog(userId, LogTypeTopup, msg)
+	if grant.UserId > 0 {
+		QyOnSubscriptionGranted(grant)
+	}
 	return nil
 }
 
@@ -1926,6 +1966,11 @@ func AdminInvalidateUserSubscription(userSubscriptionId int) (string, error) {
 	if cacheGroup != "" && userId > 0 {
 		refreshSubscriptionUserGroupCache(userId, "admin subscription update")
 	}
+	// 订阅已作废,失效该用户的套餐解锁 per-user 缓存,否则他在本节点仍持有
+	// 该套餐解锁的模型分组最长一个新鲜期(见 QyOnUserSubscriptionInvalidated)。
+	if userId > 0 {
+		QyOnUserSubscriptionInvalidated(userId)
+	}
 	if downgradeGroup != "" {
 		return fmt.Sprintf("用户分组将回退到 %s", downgradeGroup), nil
 	}
@@ -1966,6 +2011,11 @@ func AdminDeleteUserSubscription(userSubscriptionId int) (string, error) {
 	}
 	if cacheGroup != "" && userId > 0 {
 		refreshSubscriptionUserGroupCache(userId, "admin subscription deletion")
+	}
+	// 订阅已硬删除,失效该用户的套餐解锁 per-user 缓存(硬删连 end_time 哨兵都不留,
+	// 靠 ExpiresAt 自愈的可能性为零,更必须显式失效)。见 QyOnUserSubscriptionInvalidated。
+	if userId > 0 {
+		QyOnUserSubscriptionInvalidated(userId)
 	}
 	if downgradeGroup != "" {
 		return fmt.Sprintf("用户分组将回退到 %s", downgradeGroup), nil

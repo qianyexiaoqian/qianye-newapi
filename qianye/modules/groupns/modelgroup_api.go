@@ -59,7 +59,10 @@ func adminUpdateModelGroup(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
 	}
-	name := strings.TrimSpace(c.Param("name"))
+	name, ok := groupNamePathParam(c)
+	if !ok {
+		return
+	}
 	if name == "" {
 		badRequest(c, "qy_invalid_param", "缺少模型分组名")
 		return
@@ -156,7 +159,10 @@ func adminModelGroupImpact(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
 	}
-	name := strings.TrimSpace(c.Param("name"))
+	name, ok := groupNamePathParam(c)
+	if !ok {
+		return
+	}
 	if name == "" {
 		badRequest(c, "qy_invalid_param", "缺少模型分组名")
 		return
@@ -178,7 +184,10 @@ func adminDeleteModelGroup(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
 	}
-	name := strings.TrimSpace(c.Param("name"))
+	name, ok := groupNamePathParam(c)
+	if !ok {
+		return
+	}
 	if name == "" {
 		badRequest(c, "qy_invalid_param", "缺少模型分组名")
 		return

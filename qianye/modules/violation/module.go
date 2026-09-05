@@ -38,6 +38,7 @@ func (Mod) Tables() []any {
 		&AISetting{},
 		&AIScope{},
 		&AIReview{},
+		&CyberSetting{},
 	}
 }
 
@@ -83,6 +84,12 @@ func (Mod) InstallHooks() {
 	// 那些存量渠道全都还是"无绑定"。详见 migrateAIChannelKeyEndpoint。
 	runAIChannelKeyEndpointBackfill()
 
+	// AI 作用域的「指定渠道」从单个 id 搬进渠道清单。**必须排在下面那次预热
+	// 之前**:两列的零值指向相反的行为(空清单 = 在全部启用渠道之间分发),
+	// 搬晚了的话升级后的第一个刷新周期里,那些原本"只发给自建端点"的档会把
+	// 用户内容发往池子里的每一个渠道。详见 migrateAIScopeChannelIds。
+	runAIScopeChannelListMigration()
+
 	// 存量的"没绑分组"策略巡检。只读、只打日志,排在迁移之后是为了让上面刚建出来
 	// 的那一条也被数进去 —— 它正是这份清单最典型的一员。
 	//
@@ -113,6 +120,10 @@ func (Mod) InstallHooks() {
 		// 但没有它管理端会看到一张空表单,分不清"还没配"与"默认值是多少"。
 		if err := ensureAISetting(context.Background(), gdb); err != nil {
 			common.SysError("qianye/violation: AI 审核设置行补建失败(AI 审核将保持关闭): " + err.Error())
+		}
+		// cyber 会话屏蔽设置行同理:出厂关闭 + 空作用域 + 默认 TTL,零行为变化。
+		if err := ensureCyberSetting(context.Background(), gdb); err != nil {
+			common.SysError("qianye/violation: cyber 会话屏蔽设置行补建失败(将保持关闭): " + err.Error())
 		}
 	}
 
@@ -206,6 +217,11 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 没有它的话,这个按钮就是一个可以被反复点的、代替我们花钱的出站放大器。
 	g.POST("/violation/ai-review/channels/:id/test", crit, adminTestAIChannel)
 	g.PUT("/violation/ai-review/settings", crit, adminPutAISetting)
+
+	// ── cyber 会话屏蔽 ──
+	// 与 AI 审核设置同级:读不限流,写挂关键操作限流(它决定要不要对客户端 403)。
+	g.GET("/violation/cyber-session/settings", adminGetCyberSetting)
+	g.PUT("/violation/cyber-session/settings", crit, adminPutCyberSetting)
 	// 作用域策略的增改与删除。新建与编辑共用一个入口(请求体带 id 即为编辑),
 	// 与违规类型同形。改一条策略同时改变"谁的内容被发往第三方"与"花多少钱",
 	// 所以与渠道、设置同级挂关键操作限流。

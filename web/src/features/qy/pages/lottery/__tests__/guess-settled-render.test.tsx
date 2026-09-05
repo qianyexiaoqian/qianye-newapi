@@ -37,7 +37,7 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { after, describe, test } from 'node:test'
 
-import { formatQyQuotaLedger } from '../../../lib/format'
+import { formatSd } from '../../../lib/format-sd'
 import {
   cleanupQyLotScreens,
   mountQyLotScreen,
@@ -147,15 +147,15 @@ describe('结算完的竞猜：盘口写的是已经发出去的钱', () => {
       '结算之后还在写「押中约得」——那个问题已经不成立了'
     )
     assert.ok(
-      screen.text.includes(formatQyQuotaLedger(SETTLED_PAYOUT)),
-      `实付赔付 ${formatQyQuotaLedger(SETTLED_PAYOUT)} 不在屏幕上：${screen.text}`
+      screen.text.includes(formatSd(SETTLED_PAYOUT)),
+      `实付赔付 ${formatSd(SETTLED_PAYOUT)} 不在屏幕上：${screen.text}`
     )
     assert.ok(
       screen.text.includes('×2.85'),
       `倍数必须是已经发生的 ×2.85：${screen.text}`
     )
     assert.ok(
-      !screen.text.includes(formatQyQuotaLedger(FORWARD_PAYOUT)) &&
+      !screen.text.includes(formatSd(FORWARD_PAYOUT)) &&
         !screen.text.includes('×2.22'),
       '前瞻赔率还印在结算完的盘口上：中奖者看到的数比到账少 22%'
     )
@@ -216,7 +216,7 @@ describe('结算完的竞猜：盘口写的是已经发出去的钱', () => {
         `开放期必须是「押中约得」：${screen.text}`
       )
       assert.ok(
-        screen.text.includes(formatQyQuotaLedger(FORWARD_PAYOUT)),
+        screen.text.includes(formatSd(FORWARD_PAYOUT)),
         `开放期的前瞻赔率算错了：${screen.text}`
       )
       for (const key of ['qy_lot_guess_paid', 'qy_lot_guess_lost'] as const) {

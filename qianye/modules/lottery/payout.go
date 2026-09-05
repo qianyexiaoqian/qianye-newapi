@@ -6,36 +6,51 @@ import (
 	"fmt"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/logger"
-	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/modules/mall"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
-	"github.com/QuantumNous/new-api/qianye/service/twophase"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-// payout.go —— 派奖/赔付/退款的逐笔驱动,以及全模块统一的收尾判定 settleGuard。
+// payout.go —— 派奖/赔付/退款的逐笔驱动。
 //
 // # 开奖不动钱
 //
 // 开奖只往 qy_lot_payout 批量插 planned 行(单个扩展库事务 + 唯一键 +
-// ON CONFLICT DO NOTHING),**绝不在开奖 handler 里循环 Execute**:
-// 那会让一次开奖变成 N 次跨库往返,任何一次失败都留下一个没人收拾的中间态。
+// ON CONFLICT DO NOTHING),**绝不在开奖 handler 里循环入账**:
+// 那会让一次开奖变成 N 次往返,任何一次失败都留下一个没人收拾的中间态。
+//
+// # 每一笔一个扩展库事务
+//
+// 钱现在只在扩展库:worker 逐笔 CAS 认领(planned/failed → paying),然后在
+// **一个**扩展库事务里做三件事 —— 出款行 paying→paid 的 CAS、活动合计的补计
+// (A)、stardust.Credit(U)。任何一步失败整笔回滚,出款行退回 failed 退避重试,
+// 预算耗尽转 held 交人。没有主库、没有 outbox、没有代次:失败的尝试一个字节
+// 都不留在账本上,所以重试永远是安全的重来,不是"重开一张单"。
 //
 // # 幂等键由服务端生成
 //
-// 与报名相反:出款由服务端发起,"谁在重试"是 worker 自己,因此 IdemKey 用
-// payout_no + 代次。重入 Execute 必然命中本代次的原单,这正是 worker 敢扫
-// paying 行的依据;而代次只在**主库探针确认没生效**之后才 +1,
-// 那是"重开一张单不会重复发钱"的唯一前提。
+// 与报名相反:出款由服务端发起,"谁在重试"是 worker 自己,因此账本上的幂等键是
+// `lotpay:<payout_no>`。两个节点同时认领同一笔时,晚到的那一路在 CAS 上落空,
+// 一步都不会走到 Credit;万一走到,DoNothing 的幂等行也会让它记不上第二笔。
+//
+// # 锁序(design-15 §3.3)
+//
+// 持有余额行锁的事务不得再去锁活动行。所以事务里活动合计的 UPDATE 排在
+// Credit **之前**(活动 → 余额),与报名那一侧(reserveEntry → Debit)同一个方向,
+// 反向顺序在结构上不可能出现。
 
-// idemScopePayout 与 qy_fund_orders 的 (idem_scope, idem_key) 唯一索引配套。
-const idemScopePayout = "lottery_payout"
+// idemScopePayout 是出款在 qy_sd_ledger 上的幂等作用域。
+const idemScopePayout = "lot_payout"
+
+// refTypePayout 是出款流水的关联单据类型(qy_sd_ledger.ref_type)。
+const refTypePayout = "lot_payout"
 
 // PayoutPlan 是一条待落库的出款计划。
 type PayoutPlan struct {
@@ -54,12 +69,13 @@ type PayoutPlan struct {
 // + 这个唯一键 —— 三道里任何一道单独都不够(lease 会易主、CAS 会被并发的
 // 人工操作抢走)。
 //
-// 金额为 0 的计划直接跳过:twophase 的入口要求 amount > 0,而 0 元出款在账面上
-// 也不表达任何事实。这只可能出现在奖池分配的截断残差为 0 时,守恒式仍然成立。
+// 金额为 0 的计划直接跳过:stardust.Credit 的入口要求 amount > 0,而 0 星屑的
+// 出款在账面上也不表达任何事实。这只可能出现在奖池分配的截断残差为 0 时,
+// 守恒式仍然成立。
 //
 // # 文本奖是这条规则唯一的例外
 //
-// kind='text' 的金额恒为 0(它发的是一段兑换文本,不是额度),按上面那条规则
+// kind='text' 的金额恒为 0(它发的是一段兑换文本,不是星屑),按上面那条规则
 // 会被**整批丢掉且不报错** —— 中奖者永远看不到自己的奖品,而系统零告警。
 // 所以跳过条件必须显式排除它。
 //
@@ -68,13 +84,16 @@ type PayoutPlan struct {
 //	DrivePayouts 扫的是 status IN (planned, paying, failed),finishIfDone 的
 //	未终态集合也是同样三个。落成 planned 意味着文本奖**默认会被出款 worker
 //	捡走**,只能靠在那两处各补一个 kind 过滤来挡,漏一处就是一笔文本奖被当成
-//	资金单驱动。granted 则是默认安全:它天然不在任何一个已有的扫描集合里,
+//	星屑驱动。granted 则是默认安全:它天然不在任何一个已有的扫描集合里,
 //	那两处一行都不用改。安全性来自结构,而不是来自某个人记得写了 if。
 func PlanPayouts(tx *gorm.DB, actId int64, plans []PayoutPlan) error {
 	rows := make([]Payout, 0, len(plans))
 	now := common.GetTimestamp()
 	for _, p := range plans {
-		if p.Kind != PayoutText && p.Amount <= 0 {
+		// 商品奖(kind='product')与文本奖一样金额恒为 0,同样必须显式排除在
+		// "amount<=0 跳过"之外;但它落 planned 而不是 granted:它的履行(生成商城
+		// 订单)由出款 worker 做,做完才 granted。
+		if p.Kind != PayoutText && p.Kind != PayoutProduct && p.Amount <= 0 {
 			continue
 		}
 		status := PayoutPlanned
@@ -104,10 +123,10 @@ func PlanPayouts(tx *gorm.DB, actId int64, plans []PayoutPlan) error {
 //
 // # 为什么扫 paying
 //
-// worker 先把行 CAS 成 paying 再调 Execute。进程若在这两步之间崩溃,只扫
+// worker 先把行 CAS 成 paying 再开事务。进程若在这两步之间崩溃,只扫
 // planned/failed 的设计会让那一行**永久卡在 paying 且再也不会被扫到** ——
-// 一笔中奖派奖永久丢失,还不会告警。因为 IdemKey = payout_no,重入 Execute
-// 必然命中原单,扫 paying 是安全的。
+// 一笔中奖派奖永久丢失,还不会告警。事务里 paying→paid 的 CAS 与账本的幂等键
+// 让重入是安全的,扫 paying 因此也是安全的。
 func DrivePayouts(ctx context.Context) {
 	cfg := config.Get().Lottery
 	if !cfg.Enabled {
@@ -158,109 +177,150 @@ func drivePayout(ctx context.Context, gdb *gorm.DB, p *Payout) {
 	}
 	p.Attempts++
 
-	req := twophase.Request{
-		Kind:        qymodel.KindLotteryPayout,
-		IdemScope:   idemScopePayout,
-		IdemKey:     payoutIdemKey(p),
-		UserId:      p.UserId,
-		AmountQuota: p.AmountQuota,
-		RefType:     "lottery_payout",
-		RefId:       p.PayoutNo,
-		LocalDetail: func(tx *gorm.DB, o *qymodel.FundOrder) error {
-			return tx.Model(&Payout{}).Where("id = ?", p.Id).
-				Update("order_no", o.OrderNo).Error
-		},
-		MainApply: func(tx *gorm.DB, o *qymodel.FundOrder) error {
-			return creditMainQuota(tx, p)
-		},
-		AfterCommit: func(o *qymodel.FundOrder) {
-			afterCredit(p, o.OrderNo)
-		},
-		LocalCommit: func(tx *gorm.DB, o *qymodel.FundOrder) error {
-			return markPayoutPaid(tx, p.PayoutNo)
-		},
-	}
-	// 幂等键是服务端生成的 payout_no + 代次,正常路径下不可能换参重放;但资金单
-	// 一旦被人手工改过,没有指纹就只能默默按原单返回。代价是一次 sha256。
-	req.Fingerprint = req.Digest(p.Kind)
-
-	order, err := twophase.Execute(ctx, req)
-	if err != nil {
-		failPayout(ctx, gdb, p, order, err)
+	if p.Kind == PayoutProduct {
+		driveProductPayout(ctx, gdb, p)
 		return
 	}
-	if err := settleGuard(ctx, order, func(tx *gorm.DB) error {
-		return markPayoutPaid(tx, p.PayoutNo)
-	}); err != nil {
-		// 尚未落定:保持 paying 不动,交 twophase 补偿任务 + 下一轮 worker。
-		common.SysError(fmt.Sprintf("qianye/lottery: 出款 %s 尚未落定: %v", p.PayoutNo, err))
-	}
-}
 
-// creditMainQuota 在主库事务内给用户加额度。
-//
-// 硬性约束(违反即资损):绝不 IncreaseUserQuota(无事务、无溢出校验,
-// 且在批量模式下钱什么时候到账不可确定);加款必须带 headroom 上限 ——
-// 余额受 common.MaxQuota 约束(那是全站额度换算的算术上界,不是列宽),
-// 而上游全无溢出校验。
-func creditMainQuota(tx *gorm.DB, p *Payout) error {
-	headroom := int64(common.MaxQuota) - p.AmountQuota
-
-	var u model.User
-	// First 自带软删除过滤。绝不 Unscoped:给已注销账号加额度等于把钱转进一个
-	// 再也取不出来的账户。
-	if err := model.QyLockForUpdate(tx).Where("id = ?", p.UserId).First(&u).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return errUserUnavailable
+	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 先推终态:paying→paid 的 CAS 落空说明别的路径已经收过尾,一步都不许再走 ——
+		// 那正是重复加钱的形状。它同时是下面两条写入的幂等锚点。
+		moved, err := markPayoutPaid(tx, p.PayoutNo)
+		if err != nil {
+			return err
 		}
-		return err
-	}
-	// 锁内复检:报名到派奖之间可能隔了几天,用户可能已被封禁。
-	// 这里返回错误会让这一笔转 held 交人工 —— 钱是他赢的,不能因为账号状态
-	// 自动没收,也不能给一个注销账号打钱。做成"配置项"是实现不了的选项。
-	if u.Status != common.UserStatusEnabled {
-		return errUserUnavailable
-	}
-	if int64(u.Quota) > headroom {
-		return errQuotaOverflow
-	}
-
-	res := tx.Model(&model.User{}).
-		Where("id = ? AND quota <= ?", p.UserId, headroom).
-		Update("quota", gorm.Expr("quota + ?", p.AmountQuota))
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected != 1 {
-		return errQuotaOverflow
-	}
-	return nil
-}
-
-// afterCredit 处理主库提交之后的收尾。钱已经到账,任何失败都不能回滚。
-func afterCredit(p *Payout, orderNo string) {
-	if err := model.InvalidateUserCache(p.UserId); err != nil {
-		common.SysError("qianye/lottery: 失效用户缓存失败(额度已入账): " + err.Error())
-	}
-	// 退款用 **LogTypeRefund**,派奖与赔付用 **LogTypeSystem**。
-	//
-	// 退款绝不能用 LogTypeConsume:那会让用户的"本月消费"凭空变小 ——
-	// 与 violation.refundFee 的口径一致。派奖也不能用 LogTypeTopup:
-	// 那会污染充值统计与按充值返佣的口径。
-	logType := model.LogTypeSystem
-	if p.Kind == PayoutRefund {
-		logType = model.LogTypeRefund
-	}
-	model.QyRecordLedgerLog(p.UserId, logType,
-		ledgerLogContent(payoutLabel(p.Kind), p.AmountQuota, p.PayoutNo), orderNo,
-		map[string]any{
-			"qy_module":        "lottery",
-			"qy_lot_payout_no": p.PayoutNo,
-			"qy_lot_kind":      p.Kind,
-			"qy_quota":         p.AmountQuota,
+		if !moved {
+			return nil
+		}
+		// A:活动合计(活动行锁)必须排在 U:入账(余额行锁)之前,见文件头的锁序。
+		if err := addPaidPayoutToActivityTotals(tx, p); err != nil {
+			return err
+		}
+		kind := stardust.KindLotPrize
+		if p.Kind == PayoutRefund {
+			kind = stardust.KindLotRefund
+		}
+		res, err := stardust.Credit(tx, stardust.Posting{
+			UserId:    p.UserId,
+			Kind:      kind,
+			Amount:    p.AmountQuota,
+			IdemScope: idemScopePayout,
+			IdemKey:   payoutIdemKey(p.PayoutNo),
+			RefType:   refTypePayout,
+			RefNo:     p.PayoutNo,
+			ActNo:     actNoOf(tx, p.ActId),
+			Remark:    payoutLabel(p.Kind),
 		})
+		if err != nil {
+			return err
+		}
+		return tx.Model(&Payout{}).Where("id = ?", p.Id).
+			Update("order_no", res.LedgerNo).Error
+	})
+	if err != nil {
+		failPayout(ctx, gdb, p, err)
+	}
 }
 
+// driveProductPayout 履行一笔商品奖:在**一个**扩展库事务里做 paying→granted 的 CAS
+// 与 mall.GrantPrizeTx(生成 0 元商城订单),把商城单号写回 mall_order_no。
+//
+// 调用方已经把行 CAS 成 paying。幂等由两道保证:这里的 CAS 只认 paying,
+// 商城那一侧的幂等键是 lotprize:<payout_no> —— 重入命中原单、不重复建单。
+// 任何一步失败整笔回滚,退回 failed 退避重试,预算耗尽转 held 交人(failPayout)。
+//
+// 事务提交之后的两件事:兑换码库存不足时挂旗告警(订单停在 paid,补码后由商城的
+// 上传接口补齐);套餐奖立即发订阅(mall.FulfillPrizePlan,失败由 mall.reconcile 兜)。
+func driveProductPayout(ctx context.Context, gdb *gorm.DB, p *Payout) {
+	var grant *mall.GrantResult
+	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var act Activity
+		if err := tx.Select("id, act_no").Where("id = ?", p.ActId).Take(&act).Error; err != nil {
+			return err
+		}
+		var prize Prize
+		if err := tx.Select("product_no, prize_type").Where("act_id = ? AND tier = ?", p.ActId, p.Tier).
+			Take(&prize).Error; err != nil {
+			return err
+		}
+		if prize.Type() != PrizeTypeProduct || prize.ProductNo == "" {
+			return fmt.Errorf("qianye/lottery: 出款 %s 指向的奖档 %d 不是商品奖", p.PayoutNo, p.Tier)
+		}
+		g, err := mall.GrantPrizeTx(tx, mall.GrantPrizeInput{
+			UserId: p.UserId, ProductNo: prize.ProductNo,
+			RefType: refTypePayout, RefNo: p.PayoutNo, ActNo: act.ActNo,
+		})
+		if err != nil {
+			return err
+		}
+		res := tx.Model(&Payout{}).
+			Where("id = ? AND status = ?", p.Id, PayoutPaying).
+			Updates(map[string]any{
+				"status":        PayoutGranted,
+				"mall_order_no": g.Order.OrderNo,
+				"settled_at":    common.GetTimestamp(),
+				"last_error":    "",
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 1 {
+			// 别的路径已经收过尾:整笔回滚,商城那一侧的建单随之消失(幂等键会让下一次
+			// 重入命中它自己的原单,而不是这一次的)。
+			return errStatusConflict
+		}
+		grant = g
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, errStatusConflict) {
+			return
+		}
+		failPayout(ctx, gdb, p, err)
+		return
+	}
+	p.Status, p.MallOrderNo = PayoutGranted, grant.Order.OrderNo
+	afterProductGrant(ctx, p.ActId, p.PayoutNo, grant)
+}
+
+// afterProductGrant 是商品奖在扩展库事务提交之后的两步:码不够时挂旗告警,
+// 套餐奖立即发订阅。转盘(spinWheel)与批次派奖(driveProductPayout)共用。
+func afterProductGrant(ctx context.Context, actId int64, payoutNo string, g *mall.GrantResult) {
+	if g == nil || g.Order == nil {
+		return
+	}
+	if g.AwaitingCode {
+		detail := "出款 " + payoutNo + " 的兑换码商品 " + g.Order.ProductNo + " 库存不足,商城订单 " +
+			g.Order.OrderNo + " 停在 paid 等待补码(上传兑换码后自动发放)"
+		if raiseFlag(ctx, actId, FlagPrizeCodeShort, detail) {
+			common.SysError("qianye/lottery: " + detail)
+		}
+	}
+	if g.NeedsPlanFulfill {
+		// 主库那一步用一份新的冷预算:调用方的 ctx 可能已经被派奖事务用掉大半,
+		// 而发订阅失败也不是灾难 —— mall.reconcile 会再发,订单在那之前停在 paid。
+		fctx, cancel := guard.ColdContext(context.WithoutCancel(ctx))
+		defer cancel()
+		if err := mall.FulfillPrizePlan(fctx, g.Order.OrderNo); err != nil {
+			common.SysError("qianye/lottery: 出款 " + payoutNo + " 的套餐奖立即发放失败,交由商城对账补发: " + err.Error())
+		}
+	}
+}
+
+// actNoOf 读出出款所属活动的编号,冗余进流水的 act_no 列。
+//
+// 活动删除之后流水永不删,此后只有 act_no 还能把一场活动的流水归拢到一起
+// (ref_no 里的出款号已经 JOIN 不回活动了)。读不到活动时留空串,不阻断出款:
+// 一个归拢用的冗余字段不该让一笔已经确定要发的钱发不出去。
+func actNoOf(tx *gorm.DB, actId int64) string {
+	var act Activity
+	if err := tx.Select("act_no").Where("id = ?", actId).Take(&act).Error; err != nil {
+		return ""
+	}
+	return act.ActNo
+}
+
+// payoutLabel 是出款在账本流水 remark 与日志里的名字。
 func payoutLabel(kind string) string {
 	switch kind {
 	case PayoutPrize:
@@ -272,87 +332,52 @@ func payoutLabel(kind string) string {
 	}
 }
 
-// ledgerLogContent 拼一条账本日志的正文:「动作 + 金额 + 单号」。
+// payoutIdemKey 是一笔出款在账本上的幂等键。
 //
-// 扣费与派奖共用同一个拼法。用户在"日志"页看到的是这两行挨在一起 ——
-// 一行写 ＄0.002、另一行写 1000,他会以为那不是同一种数。
-//
-// 金额走 logger.LogQuota,与签到(controller/checkin.go)、余额划转
-// (qianye/modules/transfer)同一口径,尊重站点的额度展示设置:
-// USD/CNY/自定义币种下是「＄0.002000 额度」,TOKENS 下回落成「1000 点额度」。
-// 也就是说"关掉货币展示"的站点仍然看得到原始整数,只是多了「点」这个单位。
-//
-// **换算只影响展示。**落库的金额列、进承诺哈希的 dec(amount)、以及
-// other["qy_quota"] 全部仍是 quota 整数 —— 对账与前端计算读的是它们,
-// 绝不回过头来解析这句话。
-func ledgerLogContent(action string, quota int64, no string) string {
-	return fmt.Sprintf("%s %s [%s]", action, logger.LogQuota(int(quota)), no)
+// 出款号本身由 crypto/rand 生成、不可枚举;加 `lotpay:` 前缀是让账本上的键一眼
+// 看得出来源 —— 读日志的人不必先去查这个键属于哪张表。
+func payoutIdemKey(payoutNo string) string {
+	return "lotpay:" + payoutNo
 }
 
-// payoutIdemKey 是这一笔当前代次的幂等键。
+// markPayoutPaid 把出款推进终态,返回这一次是不是真的推动了它。
 //
-// 代次 0 不带后缀:第一次出款的键就是 payout_no 本身,读日志的人不必先去
-// 理解代次机制才能把一行日志和一张资金单对上。
-func payoutIdemKey(p *Payout) string {
-	if p.Epoch <= 0 {
-		return p.PayoutNo
-	}
-	return p.PayoutNo + "#" + deci(p.Epoch)
-}
-
-// markPayoutPaid 把出款推进终态。
-//
-// LocalCommit、post-Execute 补做、补偿 Resolver、管理端重试四处共用同一个函数。
-// 幂等锚点是"已经出手过的三种状态 → paid"的 CAS。
-//
-// 允许的来源是 paying / failed / held,**唯独不含 planned**:planned 是一笔
-// 从未执行过的出款,把它直接推成已到账等于系统认为钱给过了而用户永远收不到。
-// 而 held 必须在列:一笔在不可判定期间被转人工的出款,随后可能被补偿任务确认
-// 主库已生效 —— 那时钱已经到账,只认 paying 的 CAS 会让这一行永远停在 held,
-// 红点永远不消。放宽到这三种不会重复发钱:钱动没动由资金单与主库 outbox 决定,
-// 这个函数只写业务行的状态。
-func markPayoutPaid(tx *gorm.DB, payoutNo string) error {
-	now := common.GetTimestamp()
+// 幂等锚点是 paying → paid 的 CAS。只认 paying:planned 是一笔从未执行过的出款,
+// 把它直接推成已到账等于系统认为钱给过了而用户永远收不到;failed / held 要先经
+// 认领(drivePayout 的 CAS)或管理端「重试」回到队列,再由 worker 逐笔驱动。
+// 返回 false 表示别的路径已经收过尾,调用方**一步都不许再走** —— 那正是
+// 重复加钱的形状。
+func markPayoutPaid(tx *gorm.DB, payoutNo string) (bool, error) {
 	res := tx.Model(&Payout{}).
-		Where("payout_no = ? AND status IN ?", payoutNo,
-			[]string{PayoutPaying, PayoutFailed, PayoutHeld}).
+		Where("payout_no = ? AND status = ?", payoutNo, PayoutPaying).
 		Updates(map[string]any{
 			"status":     PayoutPaid,
-			"settled_at": now,
+			"settled_at": common.GetTimestamp(),
 			"last_error": "",
 		})
 	if res.Error != nil {
-		return res.Error
+		return false, res.Error
 	}
-	if res.RowsAffected == 0 {
-		// 别的路径已经收过尾。绝不在这里"补一次" —— 那正是重复加钱的形状。
-		return nil
-	}
-	return addPaidPayoutToActivityTotals(tx, payoutNo)
+	return res.RowsAffected == 1, nil
 }
 
 // addPaidPayoutToActivityTotals 把一笔**在收尾之后**才成功的出款补计进活动合计。
 //
 // 活动的 payout_quota / refund_quota 在 settling→finished 那一次 CAS 里被写成
 // "当时已 paid 的合计"。而 finishIfDone 刻意把 held 当作终态放行,held/failed
-// 之后仍可能被补偿任务或管理端「重试」推成 paid —— 那些钱是真的增发出去了
-// (主库 logs 里有账本行、资金单是 success),活动上的合计却再也不会跟上,
-// 且没有任何对账会复核它:runReconcile 只核名单与哈希链,auditFinishedChains
-// 连这一列都不 Select。
+// 之后仍可能被管理端「重试」推成 paid —— 那些星屑是真的发出去了(账本上有
+// 流水行),活动上的合计却再也不会跟上,且没有任何对账会复核它:runReconcile
+// 只核名单与哈希链,auditFinishedChains 连这一列都不 Select。
 //
 // 后果不是"少显示一点":held_quota 是实时 SUM,补发成功后它归零,于是同一笔钱
 // 从 payout_quota 与 held_quota 两个口子同时消失。管理端"本场收支"因此把一场
 // 净亏的活动显示成净赚,连符号都是反的,而列表页还会把它累加进总支出。
 //
-// 幂等由上面那次 CAS 保证:"paying/failed/held → paid"在一行出款上最多成功一次
-// (paid 是终态,没有任何路径把它推回去),所以这里的 +=  最多执行一次。
+// 幂等由调用方那次 paying→paid 的 CAS 保证:它在一行出款上最多成功一次
+// (paid 是终态,没有任何路径把它推回去),所以这里的 += 最多执行一次。
 // 条件里的 status = finished 让收尾**之前**就 paid 的那些笔不被重复计入 ——
 // 它们已经在收尾的聚合里了。
-func addPaidPayoutToActivityTotals(tx *gorm.DB, payoutNo string) error {
-	var p Payout
-	if err := tx.Where("payout_no = ?", payoutNo).Take(&p).Error; err != nil {
-		return err
-	}
+func addPaidPayoutToActivityTotals(tx *gorm.DB, p *Payout) error {
 	if p.AmountQuota == 0 {
 		return nil
 	}
@@ -368,53 +393,24 @@ func addPaidPayoutToActivityTotals(tx *gorm.DB, payoutNo string) error {
 		}).Error
 }
 
-// failPayout 处理 Execute 返回错误的三种结局。
+// failPayout 处理出款事务失败的两种结局。
 //
-//   - Failed 且探针复核确实未生效 → **换一个代次**退避重试;次数耗尽转 held。
-//   - Failed 但探针说已生效 → 两者矛盾,直接 held,绝不重试(会重复加钱)。
-//   - pending / in_doubt / uncertain → **保持 paying 不动**,交 twophase 补偿任务;
-//     重试预算耗尽后转 held,绝不让它停在一个再也不会被扫到的 paying 上。
-//     in_doubt 就是"主库 COMMIT 已发出、结局不明"那一档 —— 抽奖双发的根因正是
-//     它以前被写成 Failed,于是第一条分支拿着一个歧义值去换代次重发。
-//
-// 第一种结局必须换代次:资金单一旦是 Failed,重入 Execute 只会幂等命中原单并
-// 返回 ErrOrderFailed —— 沿用同一个幂等键的"重试"是纯粹的空转,自动重试与
-// 管理端按钮都发不出这笔钱。换代次是安全的,前提正是探针刚刚确认过主库没动。
-func failPayout(ctx context.Context, gdb *gorm.DB, p *Payout, order *qymodel.FundOrder, cause error) {
+//   - 预算未耗尽 → 退回 failed,指数退避后重试。事务整体回滚,账本上一个字节
+//     都没留下,重试就是干净的重来。
+//   - 预算耗尽 → 转 held 交人(holdPayout)。到账后余额会超出系统上界
+//     (stardust.ErrOverflow)也走这条:那不是重试能解决的,用户得先把星屑花掉一些。
+func failPayout(ctx context.Context, gdb *gorm.DB, p *Payout, cause error) {
 	msg := audit.Truncate(cause.Error(), 512)
-	maxAttempts := config.Get().Lottery.PayoutMaxAttempts
-
-	if order == nil || order.Status != qymodel.StatusFailed {
-		// 不可判定:钱可能已经动了,绝不换代次重开单。保持 paying 让补偿任务
-		// 与下一轮 worker 接手;预算耗尽就转人工 —— 没有这个出口,这一行会在
-		// attempts 打满之后同时掉出 worker 的扫描范围与 held 的红点范围,
-		// 变成一笔谁都不知道的丢单。
-		if p.Attempts >= maxAttempts {
-			holdPayout(ctx, gdb, p, "结果长期不可判定,重试预算已耗尽: "+msg)
-			return
-		}
-		if err := gdb.WithContext(ctx).Model(&Payout{}).Where("id = ?", p.Id).
-			Update("last_error", msg).Error; err != nil {
-			db.MarkFailure(err)
-		}
-		common.SysError(fmt.Sprintf(
-			"qianye/lottery: 出款 %s 结果不可判定,保持 paying 交补偿任务: %s", p.PayoutNo, msg))
+	if errors.Is(cause, stardust.ErrOverflow) {
+		holdPayout(ctx, gdb, p, "到账后余额会超出系统上界,需用户先消耗一部分"+stardust.UnitName()+": "+msg)
 		return
 	}
-
-	// 换代次 = 换幂等键 = 重新对主库加一次钱。只有探针明确说"主库没动"才允许,
-	// 探针关掉 / 探针报错 / 探针行缺失都必须走人工:那三种"查不到"里都可能藏着
-	// 一笔已经加过的钱,再发一次是无声超发。
-	if twophase.ProbeMainSide(order) != twophase.MainNotApplied {
-		holdPayout(ctx, gdb, p, "资金单被判失败但主库是否已生效无法排除,需人工核对")
-		return
-	}
-	if p.Attempts >= maxAttempts {
+	if p.Attempts >= config.Get().Lottery.PayoutMaxAttempts {
 		holdPayout(ctx, gdb, p, "重试次数已耗尽: "+msg)
 		return
 	}
 
-	// 指数退避,上界 300 秒。防止一条坏单反复打爆主库。
+	// 指数退避,上界 300 秒。防止一条坏单反复打爆扩展库。
 	delay := int64(1) << uint(minInt(p.Attempts, 8))
 	if delay > 300 {
 		delay = 300
@@ -423,7 +419,6 @@ func failPayout(ctx context.Context, gdb *gorm.DB, p *Payout, order *qymodel.Fun
 		Where("id = ? AND status = ?", p.Id, PayoutPaying).
 		Updates(map[string]any{
 			"status":          PayoutFailed,
-			"epoch":           gorm.Expr("epoch + 1"),
 			"next_attempt_at": common.GetTimestamp() + delay,
 			"last_error":      msg,
 		}).Error; err != nil {
@@ -435,6 +430,7 @@ func failPayout(ctx context.Context, gdb *gorm.DB, p *Payout, order *qymodel.Fun
 //
 // 资金系统必须有"我不知道 / 我不能自动决定,交给人"这个合法出口。
 // 自动判失败会让一笔用户赢来的钱凭空消失;自动重试则可能重复加钱。
+// held 的唯一来源是重试耗尽(与到账即溢出),处置是管理端「重试」(RetryPayout)。
 func holdPayout(ctx context.Context, gdb *gorm.DB, p *Payout, reason string) {
 	res := gdb.WithContext(ctx).Model(&Payout{}).
 		Where("id = ? AND status <> ?", p.Id, PayoutPaid).
@@ -450,8 +446,8 @@ func holdPayout(ctx context.Context, gdb *gorm.DB, p *Payout, reason string) {
 		return
 	}
 	common.SysError(fmt.Sprintf(
-		"qianye/lottery: 出款 %s 已转人工(用户 %d,额度 %d): %s",
-		p.PayoutNo, p.UserId, p.AmountQuota, reason))
+		"qianye/lottery: 出款 %s 已转人工(用户 %d,%d %s): %s",
+		p.PayoutNo, p.UserId, p.AmountQuota, stardust.UnitName(), reason))
 	raiseFlag(ctx, p.ActId, FlagPayoutStuck, p.PayoutNo+": "+reason)
 	audit.Write(nil, audit.Entry{
 		TraceNo:      p.PayoutNo,
@@ -467,18 +463,11 @@ func holdPayout(ctx context.Context, gdb *gorm.DB, p *Payout, reason string) {
 
 // RetryPayout 是管理端"重试"按钮的落点。
 //
-// 只把 held/failed 推回 planned 并清零退避,**绝不新建 payout 行** ——
+// 只把 held/failed 推回 planned 并清零退避与次数,**绝不新建 payout 行** ——
 // 新建一行就是绕过 uk(act_id, entry_id, kind) 重复发钱。
 //
-// 但"推回 planned"本身不足以让钱发出去:本代次的资金单若已是 Failed,重入
-// Execute 只会再拿到 ErrOrderFailed。所以这里先把本代次的资金单读出来,按它的
-// 终态决定唯一安全的动作:
-//
-//	不存在        → 什么都没发生过,原样重排即可
-//	Success       → 钱其实已经到账,直接收尾,绝不再发一次
-//	Failed + 探针说没生效 → 换代次重开单(与自动重试同一条判据)
-//	Failed + 探针说已生效 → 拒绝,这是需要人核对的矛盾现场
-//	pending/uncertain     → 拒绝,交补偿任务;此刻重开单就是赌一把
+// "推回 planned"就足以让钱发出去:失败的尝试整笔回滚、账本上没有残行,
+// 下一轮 worker 认领之后是一次干净的重来。paid 不能重试:那是资金终态。
 func RetryPayout(ctx context.Context, payoutNo string) error {
 	gdb := db.Get()
 	if gdb == nil {
@@ -496,36 +485,10 @@ func RetryPayout(ctx context.Context, payoutNo string) error {
 		return errStatusConflict
 	}
 
-	nextEpoch := p.Epoch
-	var order qymodel.FundOrder
-	err := gdb.WithContext(ctx).
-		Where("idem_scope = ? AND idem_key = ?", idemScopePayout, payoutIdemKey(&p)).
-		Take(&order).Error
-	switch {
-	case errors.Is(err, gorm.ErrRecordNotFound):
-		// 没有单据,本代次一步都没走出去,原样重排。
-	case err != nil:
-		db.MarkFailure(err)
-		return wrapInternal("重试出款", err)
-	case order.Status == qymodel.StatusSuccess:
-		return gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			return markPayoutPaid(tx, payoutNo)
-		})
-	case order.Status == qymodel.StatusFailed:
-		// 与 failPayout 同一条判据:只有"确定没动"才换代次重开单。
-		if twophase.ProbeMainSide(&order) != twophase.MainNotApplied {
-			return errPayoutNeedsManual
-		}
-		nextEpoch = p.Epoch + 1
-	default:
-		return errPayoutNeedsManual
-	}
-
 	res := gdb.WithContext(ctx).Model(&Payout{}).
 		Where("payout_no = ? AND status = ?", payoutNo, p.Status).
 		Updates(map[string]any{
 			"status":          PayoutPlanned,
-			"epoch":           nextEpoch,
 			"attempts":        0,
 			"next_attempt_at": 0,
 		})
@@ -535,105 +498,6 @@ func RetryPayout(ctx context.Context, payoutNo string) error {
 	}
 	if res.RowsAffected == 0 {
 		return errStatusConflict
-	}
-	return nil
-}
-
-// resolvePayoutAfterCompensation 是补偿任务确认主库已生效后的收尾回调。
-// 必须幂等:同一张单可能被补偿多次,幂等由 markPayoutPaid 的 CAS 保证。
-func resolvePayoutAfterCompensation(ctx context.Context, order *qymodel.FundOrder) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	gdb := db.Get()
-	if gdb == nil {
-		return db.ErrNotReady
-	}
-	return gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return markPayoutPaid(tx, order.RefId)
-	})
-}
-
-// postCreditFromOrder 是"主库已确认加钱生效"之后必须补做的账本行。
-//
-// afterCredit 只在业务线程里跑;commit 断连与扩展库回写失败这两条路径上它一次都不会跑,
-// 于是用户账上凭空多出一笔奖金,而账单里没有任何一行说明它从哪来 —— 用户第一反应
-// 是系统出错,客服也查不出。这里从资金单重建:出款号是 RefId。
-//
-// 需要 Payout 行是因为账本条目的类型与文案取决于 p.Kind(派奖/赔付/退款),
-// 而那一位不在资金单上(三种出款共用一个 Kind,见 qymodel.KindLotteryPayout)。
-func postCreditFromOrder(ctx context.Context, order *qymodel.FundOrder) error {
-	gdb := db.Get()
-	if gdb == nil {
-		return db.ErrNotReady
-	}
-	var p Payout
-	if err := gdb.WithContext(ctx).Where("payout_no = ?", order.RefId).Take(&p).Error; err != nil {
-		return err
-	}
-	logType := model.LogTypeSystem
-	if p.Kind == PayoutRefund {
-		logType = model.LogTypeRefund
-	}
-	model.QyRecordLedgerLog(order.UserId, logType,
-		ledgerLogContent(payoutLabel(p.Kind), order.AmountQuota, p.PayoutNo), order.OrderNo,
-		map[string]any{
-			"qy_module":        "lottery",
-			"qy_lot_payout_no": p.PayoutNo,
-			"qy_lot_kind":      p.Kind,
-			"qy_quota":         order.AmountQuota,
-		})
-	return nil
-}
-
-// InstallResolvers 注册两个补偿回调与两个提交后收尾回调。由模块的 InstallHooks 调用。
-//
-// 缺了 Resolver,补偿任务会把资金单推成 success 而业务侧永远停在中间态 ——
-// 这在本仓的 violation 上真实发生过一次。
-// 缺了 PostCommit,主库那一侧的钱动了却没有账本行,用户在"日志"页看不到任何凭据。
-func InstallResolvers() {
-	twophase.RegisterResolver(qymodel.KindLotteryEntry, resolveEntryAfterCompensation)
-	twophase.RegisterResolver(qymodel.KindLotteryPayout, resolvePayoutAfterCompensation)
-	twophase.RegisterPostCommit(qymodel.KindLotteryEntry, postDebitFromOrder)
-	twophase.RegisterPostCommit(qymodel.KindLotteryPayout, postCreditFromOrder)
-}
-
-// ─────────────────────────── 共用收尾判定 ───────────────────────────
-
-// settleGuard 是全模块统一的收尾姿势。**每一个 twophase.Execute 的调用点都必须走它。**
-//
-// # 为什么 err == nil 不够
-//
-// twophase.Execute 在三条路径上返回 nil 而业务侧并未落定:
-//
-//	B  主库已扣款、扩展库回写失败 —— execute.go 的阶段四只 SysError 然后
-//	   return order, nil。这条最危险也最容易被漏掉。
-//	D  幂等命中原单 Success —— LocalDetail / MainApply / LocalCommit 全部不执行。
-//	E  markSuccess 的 CAS 落空且对方推成 Success —— LocalCommit 不执行。
-//
-// D 与 E 下业务副作用由**别人**做过或将要做;B 下没有任何人做过。三者无法在
-// 调用点区分,所以统一做法是:确认单据已是 Success,再用与 LocalCommit
-// **同一个幂等函数**补做一次,然后回读确认。
-//
-// 宁可让用户看到"尚未落定,请稍后复核",也绝不对外声称一笔并不存在的扣费或派奖。
-func settleGuard(ctx context.Context, order *qymodel.FundOrder, apply func(tx *gorm.DB) error) error {
-	if order == nil || order.Status != qymodel.StatusSuccess {
-		return errNotSettled
-	}
-	gdb := db.Get()
-	if gdb == nil {
-		return db.ErrNotReady
-	}
-	// 收尾走独立预算并切断调用方的取消链:主库那一侧已经定局,一次客户端超时
-	// 不该把收尾也打掉(与 twophase.settleContext 同形)。
-	settleCtx, cancel := guard.ColdContext(context.WithoutCancel(ctx))
-	defer cancel()
-
-	if err := gdb.WithContext(settleCtx).Transaction(apply); err != nil {
-		db.MarkFailure(err)
-		common.SysError(fmt.Sprintf(
-			"qianye/lottery: 单号 %s 主库已生效但扩展库收尾失败,交补偿任务: %v", order.OrderNo, err))
-		return errNotSettled
 	}
 	return nil
 }

@@ -22,7 +22,7 @@ import { describe, test } from 'node:test'
 import enKeys from '@/i18n/qy/en.json'
 import zhKeys from '@/i18n/qy/zh.json'
 
-import { formatQyQuotaBound, parseQyQuota } from '../../../../lib/format'
+import { formatSdWithUnit } from '../../../../lib/format-sd'
 import type { QyLotYamlReadonly } from '../../types'
 import {
   qyLotEntriesCap,
@@ -54,15 +54,15 @@ import { qyLotEmptyDraft, qyLotValidateDraft, type QyLotDraft } from '../draft'
 const YAML: QyLotYamlReadonly = {
   enabled: true,
   proof_public: true,
-  pay_password_threshold_quota: 100_000,
+  pay_password_threshold_stardust: 100_000,
   entry_close_grace_seconds: 60,
   reveal_delay_seconds: 60,
   payout_max_attempts: 8,
   max_total_entries_hard: 50_000,
   max_prize_tiers: 10,
   max_options: 12,
-  max_stake_quota: 0,
-  system_max_quota: 2_147_483_647,
+  max_stake_stardust: 0,
+  system_max_stardust: 2_147_483_647,
   spend_max_lookback_days: 30,
   spend_ready_from: 20_260_101,
 }
@@ -246,8 +246,8 @@ describe('剩余额度类的推荐上界', () => {
   test('中奖概率：这一格能填多大由其余各档决定', () => {
     const draft = probDraft({
       tiers: [
-        { ...tiersOf(1000, 1)[0]!, tier: 1, win_ppm: 300_000 },
-        { ...tiersOf(1000, 1)[0]!, tier: 2, win_ppm: 200_000 },
+        { ...tiersOf(1000, 1)[0], tier: 1, win_ppm: 300_000 },
+        { ...tiersOf(1000, 1)[0], tier: 2, win_ppm: 200_000 },
       ],
     })
     // 算自己那一档的余量时必须**排除自己**，否则填过的值会把自己的余量吃掉，
@@ -262,8 +262,8 @@ describe('剩余额度类的推荐上界', () => {
     const draft = probDraft({
       draw_mode: 'ball',
       tiers: [
-        { ...tiersOf(0, 1)[0]!, tier: 1, pool_share_bps: 5000 },
-        { ...tiersOf(0, 1)[0]!, tier: 2, pool_share_bps: 3000 },
+        { ...tiersOf(0, 1)[0], tier: 1, pool_share_bps: 5000 },
+        { ...tiersOf(0, 1)[0], tier: 2, pool_share_bps: 3000 },
       ],
     })
     assert.equal(qyLotPoolShareHeadroom(draft, 1), 7000)
@@ -311,11 +311,15 @@ describe('竞猜单注上限：只给范围与后果，不给推荐值', () => {
     // 提示里硬写死了另一个字段的名字，那个字段一改名，指路就成了死链，
     // 而死链在类型、运行期、快照上全都是合法的。
     assert.ok(
-      zh.qy_lot_bet_max_hint!.includes(zh.qy_lot_rule_f_max_entries!),
+      (zh.qy_lot_bet_max_hint ?? '').includes(
+        zh.qy_lot_rule_f_max_entries ?? ''
+      ),
       '中文提示没有指到「每人参与上限」那一格，或者那一格已经改名'
     )
     assert.ok(
-      en.qy_lot_bet_max_hint!.includes(en.qy_lot_rule_f_max_entries!),
+      (en.qy_lot_bet_max_hint ?? '').includes(
+        en.qy_lot_rule_f_max_entries ?? ''
+      ),
       '英文提示没有指到 Entries per person 那一格，或者那一格已经改名'
     )
     // 推荐值那条键必须真的没了 —— 留着它等于留着那句假话的载体。
@@ -380,46 +384,49 @@ describe('推荐值与区间的文案两份语言包里都有', () => {
     const zh = zhKeys as Record<string, string>
     // 前者说"改任何配置都放不开"，后者必须点名是哪一项配置 —— 混成一句的
     // 表现是运营跑去配置页找一个根本不存在的开关。
-    assert.ok(zh.qy_lot_range_physical!.includes('改任何配置都放不开'))
-    assert.ok(!zh.qy_lot_range_physical!.includes('lottery.max_'))
+    assert.ok((zh.qy_lot_range_physical ?? '').includes('改任何配置都放不开'))
+    assert.ok(!(zh.qy_lot_range_physical ?? '').includes('lottery.max_'))
     // 理由也必须经得起查：额度列在 MySQL / PostgreSQL 上是 bigint、SQLite 的
     // INTEGER 也是 8 字节，说它是"数据库列的宽度"会让运营一查表就不再相信
     // 整条解释。它是全站额度换算的整数上界，写死在代码里。
-    assert.ok(!zh.qy_lot_range_physical!.includes('数据库'))
-    assert.ok(!zh.qy_lot_v_ball_cap_over_physical!.includes('数据库'))
-    assert.ok(zh.qy_lot_range_policy_stake!.includes('lottery.max_stake_quota'))
+    assert.ok(!(zh.qy_lot_range_physical ?? '').includes('数据库'))
+    assert.ok(!(zh.qy_lot_v_ball_cap_over_physical ?? '').includes('数据库'))
     assert.ok(
-      zh.qy_lot_range_policy_issue_cap!.includes(
-        'lottery.max_total_prize_quota'
+      (zh.qy_lot_range_policy_stake ?? '').includes(
+        'lottery.max_stake_stardust'
+      )
+    )
+    assert.ok(
+      (zh.qy_lot_range_policy_issue_cap ?? '').includes(
+        'lottery.max_total_prize_stardust'
       )
     )
   })
 })
 
 describe('念给运营听的那个数，照着填回去必须仍然合法', () => {
-  /** 模拟"照着界面上那行字手打一遍"：只留下数字与小数点。 */
+  /**
+   * 模拟"照着界面上那行字手打一遍"：只留下数字。星屑输入框本来就只收数字
+   * （`QySdInput` 把小数点与负号都吃掉），所以这里的口径与它一致。
+   *
+   * 额度时代这一节守的是 4 位小数的舍入（$0.0333 填回去比推荐值少 17）；
+   * 星屑是整数，那类误差从根上不存在 —— 但"念出来的数 = 填回去的数"这条契约
+   * 仍然要钉住：千分位逗号、单位名都不许把数字改了。
+   */
   function retype(shown: string): number {
-    return parseQyQuota(Number(shown.replaceAll(/[^\d.]/g, '')))
+    return Number(shown.replaceAll(/\D/g, ''))
   }
 
-  test('上限：界面念出来的那个数，填回去不许越过上限', () => {
-    const ceiling = YAML.system_max_quota!
-    // 账本口径最多印 2 位小数，$4,294.97 填回去是 2147485000 —— 比真上限多
-    // 1353 额度，于是"照着界面写的那个数填"必然吃一个后端 400。
-    assert.ok(
-      retype(formatQyQuotaBound(ceiling)) <= ceiling,
-      `界面念出来的上限 ${formatQyQuotaBound(ceiling)} 填回去越过了 ${ceiling}`
-    )
-    assert.equal(retype(formatQyQuotaBound(ceiling)), ceiling)
+  test('上限：界面念出来的那个数，填回去正好等于上限', () => {
+    const ceiling = YAML.system_max_stardust ?? 0
+    assert.equal(retype(formatSdWithUnit(ceiling, '星屑')), ceiling)
   })
 
   test('下限：推荐值念出来的那个数，填回去不许还是"预算太小"', () => {
-    // ⌈50000 / count⌉ 不是 50 额度的整数倍时，4 位小数会把它抹到下限之下：
-    // count=3 → 16667 印成 $0.0333 → 填回去 16650 → 16650 × 3 < 50000。
     const cap = 50_000
     for (const count of [1, 2, 3, 7, 9, 12, 14, 20]) {
       const floor = qyLotTierAmountFloor(cap, count)
-      const retyped = retype(formatQyQuotaBound(floor))
+      const retyped = retype(formatSdWithUnit(floor, '星屑'))
       assert.equal(retyped, floor, `份数 ${count}：推荐值印出来填不回去`)
       assert.equal(
         qyLotTierBudgetShort(cap, count, retyped),
@@ -427,12 +434,6 @@ describe('念给运营听的那个数，照着填回去必须仍然合法', () =
         `份数 ${count}：照着推荐值手打一遍，界面自己的红字又亮了`
       )
     }
-  })
-
-  test('整数金额仍旧短着印，不许平白拖出一串零', () => {
-    // 边界值展示只在**需要**的时候加小数位。$10 印成 $10.000000 是纯噪声。
-    assert.equal(formatQyQuotaBound(5_000_000), formatQyQuotaBound(5_000_000))
-    assert.ok(!formatQyQuotaBound(5_000_000).includes('.'))
   })
 })
 

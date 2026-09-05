@@ -25,32 +25,35 @@ import { QyPageTabs } from '../components/qy-page-tabs'
 import { QyLotteryBallBody } from '../lottery-ball'
 import { QyLotteryGuessBody } from '../lottery-guess'
 import { QyLotteryRecordsBody } from '../lottery-records'
+import { QyWheelBody } from '../wheel'
 import { QyLotteryDrawBody } from './index'
 import { useQyLotHallCursor } from './lib/use-hall-cursor'
 
 /**
  * 「抽奖竞猜」选择夹。
  *
- * 项目方原话（本轮）：「把双色球和竞猜分开选择夹，抽奖-竞猜-双色球。
- * （每个入口都可以单独被隐藏或显示）」上一轮那句是：「抽奖竞猜和我的参与放到
- * 一个页面，不要单独写一个菜单。」四张标签逐字对应这两句话，顺序与可见性来自
- * `lib/pages.ts` 的 `QY_TAB_GROUPS` —— 本文件只提供正文。顺序若在两处各写一份，
- * 迟早出现"侧栏说有四张、页面上只有三张"，而 `__tests__/qy-page-tabs.test.ts`
- * 正是按源码扫这一条覆盖度。
+ * 项目方原话（2026-09-05）：「星屑转盘的页面移动到抽奖竞猜里面去。」上一轮
+ * 那句是：「把双色球和竞猜分开选择夹，抽奖-竞猜-双色球。（每个入口都可以单独
+ * 被隐藏或显示）」再上一轮：「抽奖竞猜和我的参与放到一个页面，不要单独写一个
+ * 菜单。」五张标签逐字对应这三句话，顺序与可见性来自 `lib/pages.ts` 的
+ * `QY_TAB_GROUPS` —— 本文件只提供正文。顺序若在两处各写一份，迟早出现"侧栏说
+ * 有五张、页面上只有四张"，而 `__tests__/qy-page-tabs.test.ts` 正是按源码扫
+ * 这一条覆盖度。
  *
  * ## 分区是两级：外层分玩法，内层分进行中 / 已结束
  *
  * 外层标签分的是"我今天想玩哪一种"，每张标签内部的分段栏分的是"还能不能参加"。
- * 两者不是同一维度，拍平成并列的六张标签会让标签栏随玩法数量翻倍。分段栏由
- * `QyLotHallList` 渲染，位置与状态见 `lib/use-hall-cursor.ts`。
+ * 两者不是同一维度，拍平成并列的八张标签会让标签栏随玩法数量翻倍。分段栏由
+ * `QyLotHallList`（转盘那张由 `QyWheelList`）渲染，位置与状态见
+ * `lib/use-hall-cursor.ts`。
  *
- * ## 三个入口各自的显隐，与既有的四个玩法开关怎么合并
+ * ## 四个入口各自的显隐，与既有的五个玩法开关怎么合并
  *
- * **不新增第五个开关。** 开关仍然是运营在「抽奖/竞猜配置」里的那四个玩法
- * （按名次 / 按公示概率 / 双色球 / 竞猜），标签的可见性**由它底下至少一个玩法
- * 可见决定**：
+ * **不新增第六个开关。** 开关仍然是运营在「抽奖/竞猜配置」里的那五个玩法
+ * （按名次 / 按公示概率 / 双色球 / 竞猜 / 转盘），标签的可见性**由它底下至少
+ * 一个玩法可见决定**：
  *
- *   · 「双色球」「竞猜」各自只压着一种玩法 → 标签可见性就是那一个开关；
+ *   · 「双色球」「竞猜」「转盘」各自只压着一种玩法 → 标签可见性就是那一个开关；
  *   · 「抽奖」底下压着按名次与按公示概率两种 → 两种都关掉时这张标签才消失
  *     （`qyLotDrawShown`）。
  *
@@ -65,7 +68,7 @@ import { useQyLotHallCursor } from './lib/use-hall-cursor'
  * 改动里唯一不能让步的一条。所以那一行 `bodies` 是无条件的，`lottery-play-
  * visibility.test.ts` 按源码盯着它不许长出 `?` 或 `&&`。
  *
- * 四种玩法全关时侧栏那一行也没了（`nav.ts` 的 `qyEntrySwitches`），能到这里的
+ * 五种玩法全关时侧栏那一行也没了（`nav.ts` 的 `qyEntrySwitches`），能到这里的
  * 只有直达链接，顶部给一句中性说明 —— 而「我的参与」照旧在。
  *
  * 少给一张标签是 `QyPageTabs` 支持的做法（`bodies` 里缺 url = 那张不渲染），
@@ -78,12 +81,13 @@ export function QyLotteryHub() {
   const drawShown = qyLotDrawShown(plays)
   const anyPlayShown = qyAnyLotPlayShown(plays)
   /*
-    三张大厅标签各持一份「翻到哪儿了」，由宿主持有（宿主不随标签卸载）。
-    必须各持一份：三批活动共用一个页码只会互相把对方翻走。
+    四张玩法标签各持一份「翻到哪儿了」，由宿主持有（宿主不随标签卸载）。
+    必须各持一份：四批活动共用一个页码只会互相把对方翻走。
   */
   const draw = useQyLotHallCursor()
   const guess = useQyLotHallCursor()
   const ball = useQyLotHallCursor()
+  const wheel = useQyLotHallCursor()
 
   return (
     <QySectionPageLayout>
@@ -100,7 +104,7 @@ export function QyLotteryHub() {
               {t('qy_lot_entry_hidden_note')}
             </p>
           )}
-          {/* 一种玩法都不开时，三张大厅标签都不渲染，只剩「我的参与」。
+          {/* 一种玩法都不开时，四张玩法标签都不渲染，只剩「我的参与」。
               这句话必须说出来 —— 否则用户看到的是一个只有一张标签的页面，
               分不清"这一期没开"与"页面坏了"。 */}
           {config.status === 'enabled' &&
@@ -126,6 +130,9 @@ export function QyLotteryHub() {
               '/qy/lottery-ball': plays.draw_ball ? (
                 <QyLotteryBallBody {...ball} />
               ) : undefined,
+              // 转盘（项目方 2026-09-05：「星屑转盘的页面移动到抽奖竞猜里面去」）。
+              // 同样只压着一个玩法开关；正文自己按 draw_mode=wheel 取数，不发 lane。
+              '/qy/wheel': plays.wheel ? <QyWheelBody {...wheel} /> : undefined,
               // 「我的参与」不看任何玩法开关。已参与的人查票与领奖是这一整条
               // 改动的硬约束，隐藏入口绝不能连带藏掉已经发生的事。
               '/qy/lottery-records': <QyLotteryRecordsBody />,

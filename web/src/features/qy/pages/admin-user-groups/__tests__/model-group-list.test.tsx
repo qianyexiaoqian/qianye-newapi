@@ -203,6 +203,7 @@ function userGroup(patch: Partial<QyGmUserGroup>): QyGmUserGroup {
     scope_note: '',
     self_excluded: false,
     self_inserted: false,
+    warnings: [],
     ...patch,
   }
 }

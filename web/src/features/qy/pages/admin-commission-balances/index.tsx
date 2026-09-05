@@ -34,40 +34,36 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { qyArray } from '../../lib/array'
 import { formatQyQuotaLedger } from '../../lib/format'
 import { qyTabTarget } from '../../lib/pages'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 import { qyAdminBalancesQuery } from './api'
 import { AdjustCommissionDialog } from './components/adjust-commission-dialog'
-import { SetWithdrawnDialog } from './components/set-withdrawn-dialog'
 import {
   QY_BALANCE_SORTS,
+  QY_BALANCE_SORT_LABEL_KEY,
   type QyBalanceSort,
   type QyCommissionBalance,
 } from './types'
 
 /**
- * 佣金余额总览 + 已提现额度迁移编辑。
+ * 佣金余额对账（D-15 恢复；「登记已提现」不回来）。
  *
  * ── 为什么第一屏就是一条公式 ──
  * 这张表的四个额度列受同一条恒等式约束：
  *
- *   可提现 + 冻结中 + 已提现 = 累计已结算 − 累计冲正
+ *   可用 + 入账中 + 已入账 = 累计已结算 − 累计冲正
  *
- * 运营在这个页面上最常问的两个问题——"他明明有佣金为什么提不了""这个人的
- * 可提现为什么少了"——答案全在这条式子里。只给一个"可提现"数字，这两个问题
- * 永远要靠翻代码回答，所以公式与逐列拆解必须同屏。
+ * 运营在这个页面上最常问的两个问题——"他明明有佣金为什么还没进星辉""这个人的
+ * 可用为什么少了"——答案全在这条式子里：钱要么还在入账中（资金单未落定），
+ * 要么已经计入已入账。只给一个"可用"数字，这两个问题永远要靠翻代码回答。
  *
- * `derived_available_quota` / `ledger_drift` 由后端算好下发，本页一个字都不重算：
- * 这条恒等式在后端已经被结算 / 冲正 / 提现三条路径各实现了一遍，
- * 前端再实现第四遍就是在等它漂移。
+ * `derived_available_quota` / `ledger_drift` 由后端算好下发，本页一个字都不重算。
  *
  * ── 为什么是 Body 而不是整页 ──
- * 本页已被收进「用户佣金」的选择夹（`QY_TAB_GROUPS`），侧栏上不再有独立的
- * 一行。区段头（`GATE NN` + 大标题）由宿主页 `admin-commission-users/
- * hub.tsx` 出，这里只提供正文 —— 标签里再套一层区段头会得到两级标题。
- * 旧地址 `/qy/admin/commission-records/balances` 保留成重定向。
+ * 本页是「佣金用户」标签下的一个次级标签（余额对账），区段头由宿主页出。
  */
 export function QyAdminCommissionBalancesBody() {
   const { t } = useTranslation()
@@ -76,7 +72,6 @@ export function QyAdminCommissionBalancesBody() {
   const [sort, setSort] = useState<QyBalanceSort>('available')
   const [userId, setUserId] = useState('')
   const [username, setUsername] = useState('')
-  const [target, setTarget] = useState<QyCommissionBalance | null>(null)
   const [adjustTarget, setAdjustTarget] = useState<QyCommissionBalance | null>(
     null
   )
@@ -90,7 +85,7 @@ export function QyAdminCommissionBalancesBody() {
       username: username.trim(),
     })
   )
-  const items = query.data?.items ?? []
+  const items = qyArray(query.data?.items)
   const totals = query.data?.totals
 
   const columns: StaticDataTableColumn<QyCommissionBalance>[] = [
@@ -122,21 +117,21 @@ export function QyAdminCommissionBalancesBody() {
     },
     {
       id: 'frozen',
-      header: t('qy_cb_frozen'),
+      header: t('qy_cb_frozen_xh'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactMutedNumericCell,
       cell: (row) => <QyAmountText quota={row.frozen_quota} />,
     },
     {
-      id: 'withdrawn',
-      header: t('qy_cb_withdrawn'),
+      id: 'credited',
+      header: t('qy_cb_credited'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => <QyAmountText quota={row.withdrawn_quota} />,
+      cell: (row) => <QyAmountText quota={row.credited_quota} />,
     },
     {
       id: 'available',
-      header: t('qy_cb_available'),
+      header: t('qy_cb_available_xh'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
       cell: (row) => <QyAmountText quota={row.available_quota} />,
@@ -172,12 +167,8 @@ export function QyAdminCommissionBalancesBody() {
       cell: (row) => (
         <div className='flex justify-end gap-1'>
           {/* 下钻:这一行的四个额度是聚合值,"他这 137 额度是怎么来的"只有逐笔
-              计佣答得了。带着 inviter_id 跳过去,佣金审核页会用它做筛选初值 ——
-              这一跳此前不存在,运营只能记住用户 ID、自己走去佣金审核再手打一遍。
-
-              目标走 `qyTabTarget`:佣金审核已经是「结算台」的第二张标签,
-              直接 to 旧地址也到得了(重定向会把 inviter_id 转发过去),但那是
-              **先离开再被弹回来**,用户看到的是一次白闪。 */}
+              计佣答得了。带着 inviter_id 跳过去,佣金审核页会用它做筛选初值。
+              目标走 `qyTabTarget`:佣金审核是「结算台」的第二张标签。 */}
           <Button
             variant='ghost'
             size='sm'
@@ -190,18 +181,12 @@ export function QyAdminCommissionBalancesBody() {
           >
             {t('qy_cb_accruals')}
           </Button>
-          {/* 两个动作的语义完全不同,不能合成一个按钮:
-              「登记已提现」只是把额度从可提现搬到已提现(恒等式两侧不变);
-              「手工增减」是真的凭空加钱/扣钱,会落一条 manual 计佣行。 */}
           <Button
             variant='ghost'
             size='sm'
             onClick={() => setAdjustTarget(row)}
           >
             {t('qy_adj_action')}
-          </Button>
-          <Button variant='ghost' size='sm' onClick={() => setTarget(row)}>
-            {t('qy_cb_set')}
           </Button>
         </div>
       ),
@@ -213,8 +198,8 @@ export function QyAdminCommissionBalancesBody() {
   return (
     <div className='space-y-3'>
       <div className='bg-muted/40 text-muted-foreground rounded-md border p-3 text-xs'>
-        <p className='text-foreground font-medium'>{t('qy_cb_formula')}</p>
-        <p className='mt-1'>{t('qy_cb_formula_hint')}</p>
+        <p className='text-foreground font-medium'>{t('qy_cb_formula_xh')}</p>
+        <p className='mt-1'>{t('qy_cb_formula_hint_xh')}</p>
       </div>
 
       <div className='flex flex-wrap items-center gap-2'>
@@ -248,7 +233,7 @@ export function QyAdminCommissionBalancesBody() {
         >
           {QY_BALANCE_SORTS.map((value) => (
             <NativeSelectOption key={value} value={value}>
-              {t(`qy_cb_sort_${value}`)}
+              {t(QY_BALANCE_SORT_LABEL_KEY[value])}
             </NativeSelectOption>
           ))}
         </NativeSelect>
@@ -256,9 +241,9 @@ export function QyAdminCommissionBalancesBody() {
 
       {totals != null && (
         <p className='text-muted-foreground text-xs'>
-          {t('qy_cb_totals', {
+          {t('qy_cb_totals_xh', {
             available: formatQyQuotaLedger(totals.available_quota),
-            withdrawn: formatQyQuotaLedger(totals.withdrawn_quota),
+            credited: formatQyQuotaLedger(totals.credited_quota),
           })}
         </p>
       )}
@@ -287,7 +272,6 @@ export function QyAdminCommissionBalancesBody() {
         />
       </QyPageBoundary>
 
-      <SetWithdrawnDialog balance={target} onClose={() => setTarget(null)} />
       <AdjustCommissionDialog
         balance={adjustTarget}
         onClose={() => setAdjustTarget(null)}

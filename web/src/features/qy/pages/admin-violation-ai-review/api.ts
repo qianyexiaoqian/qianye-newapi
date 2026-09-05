@@ -30,6 +30,8 @@ import type {
   QyAiSettingResponse,
   QyAiSettingSaveResult,
   QyAiStats,
+  QyCyberSetting,
+  QyCyberSettingResponse,
 } from './types'
 
 export function qyAiChannelsQuery() {
@@ -108,4 +110,21 @@ export function upsertQyAiScope(body: QyAiScopeInput) {
 
 export function deleteQyAiScope(id: number) {
   return qyDelete<unknown>(`/admin/violation/ai-review/scopes/${id}`)
+}
+
+// ── cyber 会话屏蔽 ──
+
+export function qyCyberSettingsQuery() {
+  return {
+    queryKey: qyKeys.adminViolationCyberSettings(),
+    queryFn: () =>
+      qyGet<QyCyberSettingResponse>('/admin/violation/cyber-session/settings'),
+  }
+}
+
+export function updateQyCyberSetting(body: Omit<QyCyberSetting, 'id'>) {
+  return qyPut<QyCyberSettingResponse>(
+    '/admin/violation/cyber-session/settings',
+    body
+  )
 }

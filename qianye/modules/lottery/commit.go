@@ -25,10 +25,12 @@ import (
 // (allow_multi_win / no_winner_policy / min_entries_to_hold / fee_bps)。
 // 漏掉任何一项,管理员都能在不碰种子的前提下算出想要的结果,
 // 而验证者只会看到"对不上"却举证不出是哪一边改的。
+// 唯一的例外是转盘的排期:它不影响任何一张票的推导,所以不进原像
+// (理由见 CommitHashV2)。
 //
 // # 编码约定(改一个字节就是不兼容变更,必须升 algo 版本号)
 //
-//   - SEP = 0x1F(单元分隔符),与 twophase.Digest 同口径。它不会出现在业务串里,
+//   - SEP = 0x1F(单元分隔符)。它不会出现在业务串里,
 //     避免 "a|b" 与 "a"+"|b" 撞出同一个哈希。
 //   - dec(n) = 十进制无前导零。
 //   - 规范化 JSON = 键按字节序升序、无空白(由 encoding/json 对 map 的排序保证)。
@@ -63,6 +65,11 @@ const (
 	// CommitHashV2 的 SeriesSnapshot 分量与 PrizeSpecLineV2 的 red_match /
 	// blue_match),摇号算法本身由双色球那一路实现。
 	domainBall = "qylot-ball-v2"
+	// domainWheel 是转盘票面的域前缀(WheelTicket)。它与 domainTicket 分开:
+	// 批次玩法的票面密钥是 final_seed(混了名单哈希),转盘的密钥是**种子本身**,
+	// 同一个前缀会让两种密钥下的原像互相可重放。协议版本仍是 lot-v2 —— 转盘
+	// 没有改动任何既有原像,只是往链原像的 pick 分量里放了一段自己的编码(WheelPick)。
+	domainWheel = "qylot-wheel-v2"
 )
 
 // sha256Hex 把若干分量按 SEP 拼接后取 SHA-256 十六进制。
@@ -149,6 +156,9 @@ type PrizeSpec struct {
 	RedMatch     int
 	BlueMatch    int
 	PoolShareBps int
+	// ProductNo 是商品奖引用的商城商品号(其余类型恒为空串,仍占一个分量位)。
+	// 公示的奖档必须能对上是哪一件商品:换一件商品与改一个金额是同一件事。
+	ProductNo string
 }
 
 // PrizeSpecLineV2 是抽奖奖档在 lot-v2 的 spec 原像里的一行。
@@ -163,6 +173,7 @@ func PrizeSpecLineV2(p PrizeSpec) string {
 		deci(p.Tier), p.Name, p.PrizeType,
 		dec(p.AmountQuota), deci(p.Count), deci(p.WinPpm), p.TextDesc,
 		deci(p.RedMatch), deci(p.BlueMatch), deci(p.PoolShareBps),
+		p.ProductNo,
 	}, SEP)
 }
 
@@ -224,11 +235,25 @@ type SeriesSnapshot struct {
 // (见 PrizeSpecLineV2)。概率表事后被改一个数字,revealActivity 那道完整原像
 // 校验会**直接拒绝开奖**,而不是"以种子为准"继续 —— 这正是"公示的概率为真"
 // 这条主张的执行点,而且它是现成代码,一行都不用新写。
+//
+// # 转盘(draw_mode=wheel)的原像**不含排期**
+//
+// open_at / close_at / draw_at 三个分量对转盘整段省略(不是填空串:分量数直接
+// 少三个)。批次玩法把时刻钉进承诺,是因为它们的结果由
+// 封盘那一刻冻结的名单决定 —— 谁能挑封盘时刻,谁就能挑名单。转盘没有这一步:
+// 票面 = HMAC(seed, act_no ‖ seq ‖ client_seed)(WheelTicket),每一转当场开出、
+// 当场派奖,排期改成什么都不会改变任何一张已经开出的票,也不会改变下一张票的
+// 推导。排期对转盘只是"什么时候收转",像抽卡卡池的上下架时间;项目方 2026-09-04
+// 原话「转盘应像游戏抽卡卡池一样:开始时间、结束时间就可以了」,而运营确实需要
+// 在发布之后延期、提前收转、立即开始(api_admin_schedule.go)。把它们钉进承诺
+// 换来的不是公平性,只是"改一次排期就得取消重开一场"。settle_deadline 对转盘
+// 恒为 0,照旧占位。协议版本仍是 lot-v2:draw_mode 分量在前,两种原像形状
+// 不可能互相重放;而 D-11 之下没有任何存量转盘要兼容。
 func CommitHashV2(a *Activity, s *SeriesSnapshot, seedHex string) string {
 	if s == nil {
 		s = &SeriesSnapshot{}
 	}
-	return sha256Hex(
+	parts := []string{
 		domainCommitV2,
 		a.ActNo,
 		a.Kind,
@@ -236,9 +261,11 @@ func CommitHashV2(a *Activity, s *SeriesSnapshot, seedHex string) string {
 		a.RulesHash,
 		a.SpecHash,
 		dec(a.StakeQuota),
-		dec(a.OpenAt),
-		dec(a.CloseAt),
-		dec(a.DrawAt),
+	}
+	if a.DrawMode != DrawModeWheel {
+		parts = append(parts, dec(a.OpenAt), dec(a.CloseAt), dec(a.DrawAt))
+	}
+	parts = append(parts,
 		dec(a.SettleDeadline),
 		boolStr(a.AllowMultiWin),
 		deci(a.FeeBps),
@@ -257,6 +284,7 @@ func CommitHashV2(a *Activity, s *SeriesSnapshot, seedHex string) string {
 		deci(s.BallBluePick),
 		seedHex,
 	)
+	return sha256Hex(parts...)
 }
 
 // CommitHashFor 按活动自己的算法版本分派承诺哈希。
@@ -381,6 +409,39 @@ func UserRef(refSalt string, userId int) string {
 	return full[:32]
 }
 
+// ─────────────────────────── 转盘(draw_mode=wheel)───────────────────────────
+
+// WheelTicket 算出转盘一次转动的票面:HMAC(seed, domainWheel ‖ act_no ‖ dec(seq) ‖ client_seed)。
+//
+// 原像里**没有 user_ref**(ref_salt 永不公开,验证者与用户本人都无法核验那一分量;
+// 身份绑定由链环承担),也**没有任何服务端当场生成的量**:即时开奖里若原像含服务端
+// 随机数,服务端就能"多摇几次挑一个"。seq 在活动行锁内单调、连续无缺口,验证者
+// 必须显式检查这一点,否则服务端可跳号挑结果。
+//
+// 密钥是种子的**字节**(hex 解码),与 Ticket 对 final_seed 的取法一致;解不开一律
+// 报错而不是回落成把文本当密钥 —— 回落会**静默**算出另一套结果,而 verify.py 与
+// verify.ts 在同一输入上是抛错的,三方必须给同一个结论。
+func WheelTicket(seedHex, actNo string, seq int, clientSeed string) (string, error) {
+	key, err := hex.DecodeString(seedHex)
+	if err != nil || len(key) == 0 {
+		return "", errors.New("qianye/lottery: 转盘种子不是合法的十六进制")
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(strings.Join([]string{domainWheel, actNo, deci(seq), clientSeed}, SEP)))
+	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+// WheelPick 是转盘一次转动在 lot-v2 链原像 pick 分量里的编码:
+// "w|<result_tier>|<ppm>|<exhausted_tier>|<client_seed>"。
+//
+// 复用 ChainNextV2 的 pick 位而不是升协议版本:转盘没有改动任何既有原像,
+// 它只是把"这一转的结果"塞进了本来给双色球选号用的那个分量。client_seed 的字符集
+// 不含 "|",编码因此是单射的。验证者按同一编码从 spins 复算每一环;这四个量少一个
+// 进链,平台就能在事后把某一转的结果改成另一档而链照常通过。
+func WheelPick(resultTier int, ppm int64, exhaustedTier int, clientSeed string) string {
+	return strings.Join([]string{"w", deci(resultTier), dec(ppm), deci(exhaustedTier), clientSeed}, "|")
+}
+
 // ─────────────────────────── 抽取算法 ───────────────────────────
 
 // Tier 是一个奖档在抽取时的形态。
@@ -395,8 +456,8 @@ type Tier struct {
 	WinPpm int `json:"win_ppm,omitempty"`
 }
 
-// isText 判断这一档发的是文本奖而不是额度。
-func (t Tier) isText() bool { return t.PrizeType == PrizeTypeText }
+// isText 判断这一档发的不是星屑(文本奖或商品奖):两者都没有金额、都不摊薄。
+func (t Tier) isText() bool { return t.PrizeType == PrizeTypeText || t.PrizeType == PrizeTypeProduct }
 
 // Winner 是一个中奖位。
 type Winner struct {
@@ -405,7 +466,7 @@ type Winner struct {
 	EntryNo string `json:"entry_no"`
 	UserRef string `json:"user_ref"`
 	Amount  int64  `json:"amount"`
-	// PrizeType 决定这一位走哪条派奖腿:quota 走 twophase 的资金链路,
+	// PrizeType 决定这一位走哪条派奖腿:quota 落 planned 交给出款 worker 入账星屑,
 	// text 只落一行 granted 记录、等管理员手工履行。
 	PrizeType string `json:"prize_type,omitempty"`
 	// RollPpm 是概率制下这张票的摇号结果,rank 模式下无意义(恒 0)。
@@ -613,7 +674,7 @@ func Bands(tiers []Tier) ([]Band, error) {
 //
 // 两种做法的最坏支出都恒为 Σ(count × amount),与 rank 模式一模一样 ——
 // 概率模式因此**不引入任何新的发行风险**,创建期那道
-// Σ(count×amount) ≤ MaxTotalPrizeQuota 的校验一个字都不用改。
+// Σ(count×amount) ≤ MaxTotalPrizeStardust 的校验一个字都不用改。
 //
 // # 文本奖档不摊薄
 //
@@ -674,8 +735,8 @@ func PickWinnersProb(finalSeed, actNo string, roster []RosterLine, tiers []Tier)
 // 验证脚本里已经有一份现成的实现。
 func prizeShares(b Band, w int) ([]int64, error) {
 	out := make([]int64, w)
-	if b.PrizeType == PrizeTypeText {
-		// 文本奖没有金额,也无从摊薄。
+	if b.PrizeType == PrizeTypeText || b.PrizeType == PrizeTypeProduct {
+		// 文本奖与商品奖没有金额,也无从摊薄(一件商品劈不开)。
 		return out, nil
 	}
 	if w <= b.Count {

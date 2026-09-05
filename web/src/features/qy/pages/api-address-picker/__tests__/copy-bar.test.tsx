@@ -26,7 +26,7 @@ For commercial licensing, please contact support@quantumnous.com
  *    两个按钮都接 `base` 时，页面看起来完全正常，只有粘贴出来才发现
  *    「带 V1 复制」没带 V1。
  *
- * 2. **多条线路时选哪条就复制哪条**。地址簿本来就允许配多条（上限 30），
+ * 2. **多条线路时选哪条就复制哪条**。地址簿本来就允许配多条（上限 100），
  *    下拉换了一条而复制出来还是第一条，是这个控件唯一一个"错了却看不出来"
  *    的环节：输入框里显示的地址会跟着变，剪贴板里的却没有。
  *
@@ -41,7 +41,10 @@ import { Window } from 'happy-dom'
 
 import qyEn from '@/i18n/qy/en.json'
 
-const domWindow = new Window({ width: 1280, height: 900 })
+// 375 = 移动档（useIsMobile 的断点是 768）。这个文件测的是**移动形态**的
+// 复制条 —— 下拉 + 输入框 + 两个按钮，也就是改版前的原形态；桌面的卡片
+// 形态在 copy-bar-desktop.test.tsx 里单独测。
+const domWindow = new Window({ width: 375, height: 800 })
 const domGlobals = [
   'window',
   'document',
@@ -138,7 +141,7 @@ async function mount(addresses: AddressOption[]) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  queryClient.setQueryData(qyKeys.apiAddresses(), addresses)
+  queryClient.setQueryData(qyKeys.apiAddresses('picker'), addresses)
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)

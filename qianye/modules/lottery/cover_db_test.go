@@ -42,12 +42,15 @@ import (
 // "文件到底删没删",只写库行的话 Remove 的返回值永远是"文件本就不存在")。
 func newCoverEnv(t *testing.T, extraLotteryYAML string) *gorm.DB {
 	t.Helper()
+	// prize_secret_key 是开着抽奖时的必填项(文本奖兑换码不允许明文落库),
+	// 缺了它 config.Load() 直接失败 —— 与封面无关,但这份 YAML 要能加载。
 	yaml := `
 enabled: true
 database:
   dsn: "u:p@tcp(127.0.0.1:3306)/qy"
 lottery:
   enabled: true
+  prize_secret_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 ` + extraLotteryYAML
 	p := filepath.Join(t.TempDir(), "qianye.yaml")
 	require.NoError(t, os.WriteFile(p, []byte(yaml), 0o600))

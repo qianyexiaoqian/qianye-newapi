@@ -31,8 +31,6 @@ type QyGmStatusBannersProps = {
   partial: QyGmSavePartial | null
   /** 打开这一页时的哈希 vs 服务端最新哈希对不上 = 别处改过倍率。 */
   ratioDrift: boolean
-  /** 权威清单里不含用户分组自己的那些行。 */
-  selfExcluded: string[]
   /** 两个轴上仅大小写不同的名字。 */
   caseNearMiss: { left: string; right: string }[]
   /** 后端下发的、保存前应当被看见但**不拦截**的问题。 */
@@ -157,20 +155,10 @@ export function QyGmStatusBanners(props: QyGmStatusBannersProps) {
       )}
 
       {/*
-        范围里不含用户分组自己：这推翻了上游存在多年的不变量（`service/group.go`
-        在差分算完之后无条件把 userGroup 补回去）。项目方明确要它能被推翻，
-        所以是警告不是拦截。
+        「范围里不含用户分组自己」曾经是这里的一条横幅。项目方点名把它收到**用户
+        分组那一行**的 ⚠ 图标里（后端已把它并进 `row.warnings`），不再单开横幅 ——
+        它本就是每一档自己的问题，横幅里一次列十几个名字反而看不出该去改哪一行。
       */}
-      {props.selfExcluded.length > 0 && (
-        <Alert>
-          <TriangleAlert />
-          <AlertTitle>{t('qy_group_matrix_conflict_self_excluded')}</AlertTitle>
-          <AlertDescription>
-            {props.selfExcluded.join('、')}
-            <span className='block'>{t('qy_group_matrix_self_edge_hint')}</span>
-          </AlertDescription>
-        </Alert>
-      )}
 
       {/*
         大小写近似：**只说，不折叠**。倍率侧是精确 map 查找且我们无权改，

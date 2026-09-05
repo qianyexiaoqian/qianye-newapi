@@ -32,14 +32,16 @@ type Flag string
 const (
 	FlagCore         Flag = "core"
 	FlagTransfer     Flag = "transfer"
+	FlagInvite       Flag = "invite"
 	FlagCommission   Flag = "commission"
-	FlagWithdraw     Flag = "withdraw"
 	FlagLogMetrics   Flag = "log_metrics"
 	FlagAvailability Flag = "availability"
 	FlagViolation    Flag = "violation"
 	FlagGroupMatrix  Flag = "group_matrix"
 	FlagLottery      Flag = "lottery"
 	FlagTicket       Flag = "ticket"
+	FlagStardust     Flag = "stardust"
+	FlagMall         Flag = "mall"
 
 	// FlagPayPassword 是支付密码自身的可用性,它不属于任何一个模块。
 	//
@@ -95,10 +97,10 @@ func featureOn(f Flag) bool {
 		return true
 	case FlagTransfer:
 		return c.Transfer.Enabled
+	case FlagInvite:
+		return c.Invite.Enabled
 	case FlagCommission:
 		return c.Commission.Enabled
-	case FlagWithdraw:
-		return c.Withdraw.Enabled
 	case FlagLogMetrics:
 		return c.LogMetrics.ReasoningColumn() || c.LogMetrics.CacheRatioColumn()
 	case FlagAvailability:
@@ -111,12 +113,17 @@ func featureOn(f Flag) bool {
 		return c.Lottery.Enabled
 	case FlagTicket:
 		return c.Ticket.Enabled
+	case FlagStardust:
+		return c.Stardust.Enabled
+	case FlagMall:
+		// 商城只认星屑,星屑没开商城就没有任何可花的东西。
+		return c.Mall.Enabled && c.Stardust.Enabled
 	case FlagPayPassword:
-		// 三条会要求验密的路径,任意一条开着,支付密码就必须可设、可改、可找回。
+		// 四条会要求验密的路径,任意一条开着,支付密码就必须可设、可改、可找回。
 		// 与 withdraw/api_user.go 的 paypass.Require、transfer/handler.go 的
-		// paypass.Require、lottery/api_user.go 的 PayPasswordRequired 一一对应:
-		// 谁接了验密,谁就要出现在这里。
-		return c.Transfer.Enabled || c.Withdraw.Enabled || c.Lottery.Enabled
+		// paypass.Require、lottery/api_user.go 的 PayPasswordRequired、
+		// mall 的下单与码揭示一一对应:谁接了验密,谁就要出现在这里。
+		return c.Transfer.Enabled || c.Lottery.Enabled || c.Mall.Enabled
 	default:
 		return false
 	}

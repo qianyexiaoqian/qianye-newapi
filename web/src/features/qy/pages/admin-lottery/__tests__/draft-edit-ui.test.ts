@@ -129,7 +129,6 @@ function draftActivity(): QyLotAdminActivity {
     bet_max_quota: 9_000,
     entry_seq: 0,
     active_count: 0,
-    pending_count: 0,
     pool_quota: 0,
     platform_fee_quota: 0,
     payout_quota: 0,
@@ -228,7 +227,9 @@ describe('草稿必须整份读得回表单', () => {
     assert.equal(input.prizes.length, 1)
     assert.equal(input.prizes[0].prize_type, 'text')
     assert.equal(input.prizes[0].text_desc, '请在 8 月 31 日前联系客服领取')
-    assert.equal(input.prizes[0].amount_quota, 5000)
+    // 文本奖的金额按形态归一化成 0：后端对"文本奖却带金额"直接 400，而那一格在
+    // 表单上对文本奖是隐藏的，运营改不了它。
+    assert.equal(input.prizes[0].amount_quota, 0)
     assert.equal(input.prizes[0].count, 2)
     assert.deepEqual(input.options, [])
   })

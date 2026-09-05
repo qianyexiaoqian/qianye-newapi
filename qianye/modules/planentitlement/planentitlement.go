@@ -101,6 +101,12 @@ func (Mod) InstallHooks() {
 	model.QySubscriptionCandidateUsable = CandidateUsable
 	MarkBalanceScopeEnforced()
 
+	// 管理员作废/硬删单条订阅后失效该用户的解锁缓存。上游那两条路径此前不清本层
+	// 缓存(建订阅/删套餐/改 entitlement 三处才清),导致被作废的用户在本节点仍
+	// 持有解锁的模型分组最长一个新鲜期 —— 风控/退款场景的越权窗口。无条件注入:
+	// InvalidateUser 是纯内存删除,未启用时调它也无害(与其它 hook 同口径)。
+	model.QyOnUserSubscriptionInvalidated = InvalidateUser
+
 	// 矩阵页的两个接缝。它们是**冷路径只读**的,与上面两个热路径 hook 无关,
 	// 但必须同时注入:少注入一个,矩阵页就会把"经套餐可达"的格子显示成不可达,
 	// 而运营正是在那张页面上改倍率的(见 seams.go 的说明)。

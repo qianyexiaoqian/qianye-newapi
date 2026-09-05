@@ -46,26 +46,30 @@ const t = ((key: string) => key) as unknown as TFunction
 
 const ALL_ON: QyFeatures = {
   transfer: true,
+  invite: true,
   commission: true,
-  withdraw: true,
   availability: true,
   lottery: true,
   violation: true,
   ticket: true,
   group_matrix: true,
   pay_password: true,
+  stardust: true,
+  mall: true,
 }
 
 const ALL_OFF: QyFeatures = {
   transfer: false,
+  invite: false,
   commission: false,
-  withdraw: false,
   availability: false,
   lottery: false,
   violation: false,
   ticket: false,
   group_matrix: false,
   pay_password: false,
+  stardust: false,
+  mall: false,
 }
 
 /** 上游根导航的最小复刻，只保留本测试用到的锚点。 */
@@ -126,9 +130,12 @@ describe('qy nav merge — admin, all features on', () => {
         'general',
         'personal',
         'qy-growth',
+        // 娱乐(design-15 + 合并拍板):与「推广」同锚点,按 QY_NAV_GROUPS 的声明顺序排在它后面。
+        'qy-fun',
         'admin',
         'qy-settlement',
         'qy-risk',
+        'qy-fun-ops',
         // role=10 打不开系统设置抽屉（那条路由要 role=100），所以抽屉里那一组
         // 页面在这一档退到根侧栏末尾的一个同名折叠项里。role=100 不会有这一组
         // —— 由下面的「超级管理员」一节与 route-entry-guard 一起钉住。
@@ -152,7 +159,7 @@ describe('qy nav merge — admin, all features on', () => {
     assert.deepEqual(urlsOf(merged, 'personal'), ['/wallet', '/profile'])
   })
 
-  test('收进选择夹的 6 个页面在整棵导航里一次都不出现', () => {
+  test('收进选择夹的 8 个页面在整棵导航里一次都不出现', () => {
     const all = new Set(
       merged.flatMap((group) =>
         group.items.flatMap((item) => [
@@ -166,8 +173,10 @@ describe('qy nav merge — admin, all features on', () => {
       '/qy/transfer-logs',
       '/qy/pay-password',
       '/qy/invitees',
-      '/qy/withdraw',
-      '/qy/withdrawals',
+      '/qy/commission-records',
+      '/qy/invite-records',
+      '/qy/admin/commission-records',
+      '/qy/admin/commission-users',
     ]) {
       assert.ok(
         !all.has(url),
@@ -214,6 +223,7 @@ describe('qy nav merge — admin, all features on', () => {
       )
     )
     for (const url of [
+      '/qy/admin/stardust-config',
       '/qy/admin/commission',
       '/qy/admin/transfer-config',
       '/qy/admin/transfer-group-rules',
@@ -230,31 +240,37 @@ describe('qy nav merge — admin, all features on', () => {
   })
 
   test('三个新分组的内容与规模', () => {
-    // 抽奖只剩一行：竞猜与我的参与已经是 `/qy/lottery` 上的标签了（需求 2）。
+    // 抽奖竞猜那一行已并入「娱乐」组(项目方 2026-09-04:星屑板块与娱乐板块合并),
+    // 「推广」剩下的都是与钱包无关的行。
     assert.deepEqual(urlsOf(merged, 'qy-growth'), [
       '/qy/affiliate',
       '/qy/tickets',
       '/qy/violations',
+    ])
+    // 「娱乐」= 抽奖竞猜选择夹 / 星屑选择夹 / 星屑商城选择夹,顺序 = 页面表声明顺序。
+    // 星屑转盘不再单独占一行:项目方 2026-09-05「星屑转盘的页面移动到抽奖竞猜
+    // 里面去」,它现在是抽奖竞猜选择夹的一张标签。
+    assert.deepEqual(urlsOf(merged, 'qy-fun'), [
       '/qy/lottery',
+      '/qy/stardust',
+      '/qy/mall',
+    ])
+    // 「娱乐运营」= 抽奖活动 / 星屑账本 / 商城管理;抽奖活动因此离开「结算」。
+    assert.deepEqual(urlsOf(merged, 'qy-fun-ops'), [
+      '/qy/admin/lottery',
+      '/qy/admin/stardust',
+      '/qy/admin/mall',
     ])
     assert.deepEqual(urlsOf(merged, 'qy-settlement'), [
-      // 「结算台」一行 = 日消费明细 / 佣金审核 / 提现审核三张标签。
-      // 项目方原话：「把日消费明细/佣金审核，提醒审核，这些管理页面弄成
-      // 选择夹，放在一个页面上。」这一行取代了此前那三行平级入口，
-      // 「结算」组因此从 7 行收成 5 行。
-      //
-      // 三页都**没有被删**：它们各自仍是一个页面（有 GATE 编号、有旧路由
-      // 重定向），只是不再各占一行。反向盯的是"为了方便又把某一页放回侧栏"
-      // —— 那样运营会有两个入口读同一张表，而其中一个点进去就被甩走。
+      // 「邀请管理」一行 = 邀请关系 / 下线日消费 / 日结明细三张标签（D-14）；
+      // 「结算台」一行 = 日消费明细 / 佣金审核 / 佣金用户三张标签（D-15 恢复）。
+      // 「用户佣金」**不**再单独占一行：它是结算台的第三张标签。反向盯的是
+      // "为了方便又把日消费明细 / 佣金用户放回侧栏" —— 那样运营会有两个入口
+      // 读同一张表，而其中一个点进去就被甩走。
+      '/qy/admin/invite',
       '/qy/admin/settlement',
-      // 佣金入口收敛：此前这里有三行（计佣流水 / 佣金余额 / AFF 关系），
-      // 而项目方要的是「一个用户佣金列表」、不要第四个割裂的页面。余额与关系
-      // 变成了「用户佣金」的第二、三张标签，计佣流水（佣金审核）本轮又收进了
-      // 「结算台」，于是按人看的那一行是这里唯一剩下的佣金入口。
-      '/qy/admin/commission-records/users',
       '/qy/admin/transfer-records',
       '/qy/admin/fund-orders',
-      '/qy/admin/lottery',
     ])
     assert.deepEqual(urlsOf(merged, 'qy-risk'), [
       '/qy/admin/violations',
@@ -284,7 +300,7 @@ describe('qy nav merge — 普通用户', () => {
   const merged = mergeQyNavGroups(baseGroups(), ALL_ON, ROLE.USER, t)
 
   test('管理专属分组整组不生成，而不是留一个空标题', () => {
-    for (const id of ['qy-settlement', 'qy-risk']) {
+    for (const id of ['qy-settlement', 'qy-risk', 'qy-fun-ops']) {
       const group = merged.find((g) => g.id === id)
       assert.equal(
         group,
@@ -344,18 +360,37 @@ describe('qy nav merge — 普通用户', () => {
       '/qy/affiliate',
       '/qy/tickets',
       '/qy/violations',
+    ])
+    assert.deepEqual(urlsOf(merged, 'qy-fun'), [
       '/qy/lottery',
+      '/qy/stardust',
+      '/qy/mall',
     ])
   })
 
   test('展示开关关掉：抽奖那一行从侧栏消失，同组其余项不受影响', () => {
+    // 转盘是抽奖竞猜选择夹的一张标签，它的开关也要一起关：只关 `lottery`
+    // 而转盘还开着时，宿主那一行按"任一标签可见即可见"仍然保留（下一条）。
     const off = mergeQyNavGroups(baseGroups(), ALL_ON, ROLE.USER, t, {
       lottery: false,
+      wheel: false,
+      stardust: true,
+      mall: true,
     })
-    assert.deepEqual(urlsOf(off, 'qy-growth'), [
-      '/qy/affiliate',
-      '/qy/tickets',
-      '/qy/violations',
+    assert.deepEqual(urlsOf(off, 'qy-fun'), ['/qy/stardust', '/qy/mall'])
+  })
+
+  test('只开转盘：抽奖竞猜那一行仍在（转盘是它的一张标签，不是独立一行）', () => {
+    const wheelOnly = mergeQyNavGroups(baseGroups(), ALL_ON, ROLE.USER, t, {
+      lottery: false,
+      wheel: true,
+      stardust: true,
+      mall: true,
+    })
+    assert.deepEqual(urlsOf(wheelOnly, 'qy-fun'), [
+      '/qy/lottery',
+      '/qy/stardust',
+      '/qy/mall',
     ])
   })
 })
@@ -389,8 +424,8 @@ describe('qy nav merge — 边界', () => {
     const hub = growth?.items.find((item) => item.url === '/qy/affiliate')
     assert.equal(
       hub?.title,
-      'qy_nav_commission_hub',
-      '侧栏用「推广概览」给整组命名，会让另外三张标签看起来像是藏起来的'
+      'qy_nav_invite_hub',
+      '侧栏用「概览」给整组命名，会让另外两张标签看起来像是藏起来的'
     )
   })
 
@@ -404,7 +439,8 @@ describe('qy nav merge — 边界', () => {
       ids.includes('qy-settlement') && ids.includes('qy-risk'),
       '上游分组改名就把结算/风控整组丢了 —— 热路径必须 fail-open'
     )
-    assert.deepEqual(ids.slice(-2), ['qy-settlement', 'qy-risk'])
+    // 锚定在 admin 之后的三组（结算 / 风控 / 娱乐运营）一起退到末尾，顺序不变。
+    assert.deepEqual(ids.slice(-3), ['qy-settlement', 'qy-risk', 'qy-fun-ops'])
   })
 
   test('锚点在上游消失时 fail-open 追加到组尾，而不是把入口吞掉', () => {

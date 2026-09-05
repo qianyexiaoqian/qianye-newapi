@@ -30,6 +30,7 @@ import { QyPageBoundary } from '../../../components/qy-page-boundary'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { QyGmDiffBar } from '../../admin-group-matrix/components/diff-bar'
 import { QyGmPreviewBody } from '../../admin-group-matrix/components/preview-dialog'
+import { qyGmGroupRowWarnings } from '../../admin-group-matrix/components/row-warnings'
 import { QyGmStatusBanners } from '../../admin-group-matrix/components/status-banners'
 import { useQyGmEditor } from '../../admin-group-matrix/lib/use-editor'
 import type { QyGmUserGroup } from '../../admin-group-matrix/types'
@@ -136,12 +137,38 @@ function QyUgGroupDialogBody(props: {
         <div className='space-y-3'>
           <QyUgBasicsSection row={row} onSaved={props.onSaved} />
 
+          {/* 这一档自己的待办:按类型图标 + 文字。弹窗里空间够,直接把图标和
+              全文并排列出来(不只给图标),编辑时一眼看全该改什么。 */}
+          {row.warnings.length > 0 && (
+            <div className='space-y-1.5 rounded-lg border p-3'>
+              {qyGmGroupRowWarnings(row.warnings).map(
+                ({ code, meta, texts }) => (
+                  <div key={code} className='flex items-start gap-2 text-xs'>
+                    <meta.Icon
+                      aria-hidden='true'
+                      className={`mt-0.5 h-4 w-4 shrink-0 ${meta.className}`}
+                    />
+                    <div className='space-y-0.5'>
+                      <div className='font-medium'>{meta.label}</div>
+                      {texts.map((text) => (
+                        <div key={text} className='text-muted-foreground'>
+                          {text}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          )}
+
           <QyGmStatusBanners
             snapshot={data.snapshot}
             partial={editor.partial}
             ratioDrift={editor.ratioDrift}
-            selfExcluded={editor.selfExcluded}
             caseNearMiss={editor.caseNearMiss}
+            // 顶层 warnings 只剩**跨行**问题(大小写近似);这一行自己的待办在
+            // 上面那块按类型图标里,不再塞进这条横幅。
             warnings={data.warnings}
             emptyScopeGroups={editor.emptyScopeGroups}
             onReload={editor.reload}

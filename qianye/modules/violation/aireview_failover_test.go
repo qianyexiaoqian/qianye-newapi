@@ -82,31 +82,31 @@ func TestPickAIChannelsFailoverChain(t *testing.T) {
 	}{
 		{
 			name:  "没指定渠道:按权重随机排,取到上界为止",
-			scope: &aiScopeRT{ChannelId: 0}, wantLen: maxAIAttempts,
+			scope: &aiScopeRT{}, wantLen: maxAIAttempts,
 			why: "权重是运营表达主备的唯一方式;恒定顺序会让备用渠道永远不被验证",
 		},
 		{
 			name:  "指定了 + 转移关着:只有它一个,链长恒为 1",
-			scope: &aiScopeRT{ChannelId: 1}, wantLen: 1, wantFirst: "指定的",
+			scope: &aiScopeRT{ChannelIds: []int64{1}}, wantLen: 1, wantFirst: "指定的",
 			why: "这是出厂行为,升级上来的站点必须逐字节不变 —— " +
 				"指定渠道往往表达的是数据流向约束,默认回落等于把它悄悄关掉",
 		},
 		{
 			name:  "指定了 + 转移开着:它排第一,后面从其余渠道里补位",
-			scope: &aiScopeRT{ChannelId: 1, ChannelFailover: true},
+			scope: &aiScopeRT{ChannelIds: []int64{1}, ChannelFailover: true},
 			// 指定的那个占一格,池子补到上界。
 			wantLen: maxAIAttempts, wantFirst: "指定的",
 			why: "「指定」的含义仍然是优先它,而不是与池子平起平坐地随机",
 		},
 		{
 			name:  "指定的渠道不在快照里 + 转移关着:一个都不返回",
-			scope: &aiScopeRT{ChannelId: 404}, wantLen: 0,
+			scope: &aiScopeRT{ChannelIds: []int64{404}}, wantLen: 0,
 			why: "回落会把用户内容发去一个运营明确没有选的端点 —— " +
 				"而「只能发给这一个」往往正是指定它的全部理由",
 		},
 		{
 			name:    "指定的渠道不在快照里 + 转移开着:整条链都是池子",
-			scope:   &aiScopeRT{ChannelId: 404, ChannelFailover: true},
+			scope:   &aiScopeRT{ChannelIds: []int64{404}, ChannelFailover: true},
 			wantLen: maxAIAttempts,
 			why: "开关的字面意思就是「这一档可以用别的渠道」," +
 				"而「已经被停掉」与「刚刚开始超时」对这一档的用户是同一件事",
@@ -141,7 +141,7 @@ func TestPickAIChannelsFailoverChain(t *testing.T) {
 		// 刚刚失败的那个端点上,而链长是有上界的 —— 浪费掉的就是少一次机会。
 		// 摇 64 次:这一条是概率性的,单次通过说明不了任何事。
 		for i := 0; i < 64; i++ {
-			got := pickAIChannels(rt, &aiScopeRT{ChannelId: 1, ChannelFailover: true})
+			got := pickAIChannels(rt, &aiScopeRT{ChannelIds: []int64{1}, ChannelFailover: true})
 			require.Len(t, got, maxAIAttempts)
 			for _, ch := range got[1:] {
 				assert.NotEqual(t, int64(1), ch.Id, "第 %d 次:指定的渠道被重复排进了链", i)
@@ -151,7 +151,7 @@ func TestPickAIChannelsFailoverChain(t *testing.T) {
 
 	t.Run("池子只有指定的那一个时,链长就是 1", func(t *testing.T) {
 		only := rtWith(chRT(1, "唯一", "https://a.invalid/v1", 1))
-		got := pickAIChannels(only, &aiScopeRT{ChannelId: 1, ChannelFailover: true})
+		got := pickAIChannels(only, &aiScopeRT{ChannelIds: []int64{1}, ChannelFailover: true})
 		require.Len(t, got, 1, "开了转移也变不出第二个渠道来")
 		assert.Equal(t, int64(1), got[0].Id)
 	})
@@ -211,7 +211,7 @@ func TestAIReviewFailoverEndToEnd(t *testing.T) {
 				chRT(2, "池子里的", other.URL, 1),
 			)
 			out := runAIReview(context.Background(), rt,
-				&aiScopeRT{ChannelId: 1, ChannelFailover: tc.failover}, "内容", 2000)
+				&aiScopeRT{ChannelIds: []int64{1}, ChannelFailover: tc.failover}, "内容", 2000)
 
 			require.NotNil(t, out)
 			assert.Equal(t, tc.wantOutcome, out.Outcome, tc.why)
@@ -288,7 +288,7 @@ func TestFailoverExhaustedStillFailsOpen(t *testing.T) {
 			handler: func(w http.ResponseWriter, _ string) {
 				w.WriteHeader(http.StatusServiceUnavailable)
 			},
-			scope:       &aiScopeRT{ChannelId: 1, ChannelFailover: true},
+			scope:       &aiScopeRT{ChannelIds: []int64{1}, ChannelFailover: true},
 			wantOutcome: OutcomeUpstreamError,
 		},
 	}
@@ -480,7 +480,7 @@ func TestChainCostCountsEveryAttempt(t *testing.T) {
 	// 指定 + 转移:链的顺序因此是确定的(先坏后好),花费的期望值才算得死。
 	rt := rtWith(chRT(1, "话多的", badJSON.URL, 1), chRT(2, "听话的", good.URL, 1))
 	out := runAIReview(context.Background(), rt,
-		&aiScopeRT{ChannelId: 1, ChannelFailover: true}, "内容", 3000)
+		&aiScopeRT{ChannelIds: []int64{1}, ChannelFailover: true}, "内容", 3000)
 
 	require.NotNil(t, out)
 	require.Equal(t, OutcomeClean, out.Outcome)
@@ -499,7 +499,7 @@ func TestChainCostCountsEveryAttempt(t *testing.T) {
 		rt.Channels[0].PriceOutPerM = decimal.Zero
 
 		out := runAIReview(context.Background(), rt,
-			&aiScopeRT{ChannelId: 1, ChannelFailover: true}, "内容", 3000)
+			&aiScopeRT{ChannelIds: []int64{1}, ChannelFailover: true}, "内容", 3000)
 		require.NotNil(t, out)
 		require.Equal(t, OutcomeClean, out.Outcome)
 		assert.Equal(t, 2000, out.TotalTokens, "token 照记 —— 那两次调用确实发生了")
@@ -628,7 +628,7 @@ func TestFailoverWorstCaseLatencyStaysInBudget(t *testing.T) {
 	t.Run("指定 + 转移,链更长了也不放大预算", func(t *testing.T) {
 		started := time.Now()
 		out := runAIReview(context.Background(), rt,
-			&aiScopeRT{ChannelId: 1, ChannelFailover: true}, "内容", budgetMs)
+			&aiScopeRT{ChannelIds: []int64{1}, ChannelFailover: true}, "内容", budgetMs)
 		elapsed := time.Since(started)
 
 		require.NotNil(t, out)
@@ -648,7 +648,7 @@ func TestFailoverWorstCaseLatencyStaysInBudget(t *testing.T) {
 			ch.TimeoutMs = chTimeoutMs
 		}
 		out := runAIReview(context.Background(), rt,
-			&aiScopeRT{ChannelId: 1, ChannelFailover: true}, "内容", 1200)
+			&aiScopeRT{ChannelIds: []int64{1}, ChannelFailover: true}, "内容", 1200)
 
 		require.NotNil(t, out)
 		assert.Equal(t, OutcomeClean, out.Outcome,
@@ -670,40 +670,41 @@ func TestBuildAIScopesCarriesChannelFailover(t *testing.T) {
 	require.NoError(t, gdb.Create(&AIScope{
 		Id: 1, Name: "自助注册", Enabled: true, Priority: 10,
 		GroupScope: "selfserve", GroupScopeMode: GroupScopeInclude,
-		AsyncSampleRateBps: 5000, ChannelId: 3, ChannelFailover: true,
+		AsyncSampleRateBps: 5000, ChannelIds: AIChannelIds{3}, ChannelFailover: true,
 	}).Error)
 	scopes, err := buildAIScopes(gdb)
 	require.NoError(t, err)
 	require.Len(t, scopes, 1)
-	assert.Equal(t, int64(3), scopes[0].ChannelId)
+	assert.Equal(t, []int64{3}, scopes[0].ChannelIds)
 	assert.True(t, scopes[0].ChannelFailover)
 }
 
 // TestValidateAIScopeChannelFailoverNeedsAChannel 钉住"没指定渠道时这一位归零"。
 //
-// 归零而不是报错:没指定渠道时本来就走加权随机池,这一位开着与关着的**运行期
+// 归零而不是报错:没指定渠道时本来就走全部启用渠道,这一位开着与关着的**运行期
 // 行为逐字节相同**,归零改的只是显示形态。留着一个悬空的 true,列表上会出现
-// 「按权重随机 · 故障转移: 开」这种自相矛盾的一格,而运营会据此以为自己配了
+// 「全部启用渠道 · 故障转移: 开」这种自相矛盾的一格,而运营会据此以为自己配了
 // 点什么。报错则更糟:表单上这一格在"不指定"时是隐藏的,一次「把指定渠道改回
 // 不指定」的正常保存会莫名其妙 400。
 func TestValidateAIScopeChannelFailoverNeedsAChannel(t *testing.T) {
 	tests := []struct {
 		name         string
-		channelId    int64
+		channels     AIChannelIds
 		failover     bool
 		wantFailover bool
 	}{
-		{"指定了渠道 + 开转移:原样留着", 7, true, true},
-		{"指定了渠道 + 不开转移:原样留着", 7, false, false},
-		{"没指定渠道 + 开转移:归零(它没有任何含义)", 0, true, false},
-		{"没指定渠道 + 不开转移:本来就是零", 0, false, false},
+		{"指定了渠道 + 开转移:原样留着", AIChannelIds{7}, true, true},
+		{"指定了渠道 + 不开转移:原样留着", AIChannelIds{7}, false, false},
+		{"指定了两个 + 开转移:原样留着", AIChannelIds{7, 8}, true, true},
+		{"没指定渠道 + 开转移:归零(它没有任何含义)", nil, true, false},
+		{"没指定渠道 + 不开转移:本来就是零", nil, false, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			row := AIScope{
 				Name: "自助注册", GroupScope: "selfserve",
 				GroupScopeMode: GroupScopeInclude, AsyncSampleRateBps: 1000,
-				ChannelId: tc.channelId, ChannelFailover: tc.failover,
+				ChannelIds: tc.channels, ChannelFailover: tc.failover,
 			}
 			require.NoError(t, validateAIScope(&row))
 			assert.Equal(t, tc.wantFailover, row.ChannelFailover)
@@ -719,19 +720,19 @@ func TestValidateAIScopeChannelFailoverNeedsAChannel(t *testing.T) {
 func TestSummarizeAIScopesShowsFailover(t *testing.T) {
 	rows := []AIScope{
 		{Id: 1, Name: "指定+转移", Enabled: true, GroupScope: "a",
-			GroupScopeMode: GroupScopeInclude, ChannelId: 5, ChannelFailover: true},
+			GroupScopeMode: GroupScopeInclude, ChannelIds: AIChannelIds{5}, ChannelFailover: true},
 		{Id: 2, Name: "指定不转移", Enabled: true, GroupScope: "b",
-			GroupScopeMode: GroupScopeInclude, ChannelId: 5},
-		// 存量里可能躺着这一行:channel_id=0 而 channel_failover=1
+			GroupScopeMode: GroupScopeInclude, ChannelIds: AIChannelIds{5}},
+		// 存量里可能躺着这一行:清单为空而 channel_failover=1
 		// (这一列刚加、写入闸之前存下来的)。照原样下发会让列表画出一个
 		// 不存在的状态,所以汇总要与 validateAIScope 的归一同口径。
 		{Id: 3, Name: "没指定却开着", Enabled: true, GroupScope: "c",
-			GroupScopeMode: GroupScopeInclude, ChannelId: 0, ChannelFailover: true},
+			GroupScopeMode: GroupScopeInclude, ChannelFailover: true},
 	}
 	got := summarizeAIScopes(rows)
 	require.Len(t, got, 3)
 	assert.True(t, got[0].ChannelFailover)
 	assert.False(t, got[1].ChannelFailover)
 	assert.False(t, got[2].ChannelFailover,
-		"没指定渠道时恒假 —— 「按权重随机 · 故障转移: 开」不是一个存在的状态")
+		"没指定渠道时恒假 —— 「全部启用渠道 · 故障转移: 开」不是一个存在的状态")
 }

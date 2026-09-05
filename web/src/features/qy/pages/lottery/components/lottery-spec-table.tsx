@@ -21,7 +21,9 @@ import { useTranslation } from 'react-i18next'
 import { StaticDataTable } from '@/components/data-table'
 import { Badge } from '@/components/ui/badge'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
+import { QySdAmount } from '../../../components/qy-sd-amount'
+import { QyMallKindBadge } from '../../mall/components/mall-kind-badge'
+import { QyWheelTierTable } from '../../wheel/components/wheel-tier-table'
 import {
   isQyLotBallPoolValid,
   qyLotBallTierOdds,
@@ -29,6 +31,7 @@ import {
 } from '../lib/ball'
 import {
   QY_LOT_PPM_DEN,
+  isQyLotProductPrize,
   isQyLotTextPrize,
   qyLotOptions,
   qyLotTiers,
@@ -60,8 +63,17 @@ export function QyLotSpecTable(props: {
   ballPool?: QyLotBallPool
   /** 本期可派发的池子。浮动奖档的金额由它现算，缺省时只显示占池比例。 */
   poolOpenQuota?: number
+  /**
+   * 转盘（`draw_mode='wheel'`）：换成转盘那套列（奖品 / 概率 / 剩余 ÷ 初始），
+   * 派生的「谢谢参与」行与真实档并列印出来。
+   */
+  wheel?: boolean
 }) {
   const { t } = useTranslation()
+
+  if (props.kind === 'draw' && props.wheel === true) {
+    return <QyWheelTierTable spec={props.spec} />
+  }
 
   if (props.kind === 'draw' && props.ballPool != null) {
     return (
@@ -98,6 +110,11 @@ export function QyLotSpecTable(props: {
                 {isQyLotTextPrize(row) && (
                   <Badge variant='outline'>{t('qy_lot_prize_type_text')}</Badge>
                 )}
+                {isQyLotProductPrize(row) && (
+                  <Badge variant='outline'>
+                    {t('qy_lot_prize_type_product')}
+                  </Badge>
+                )}
               </span>
             ),
           },
@@ -106,14 +123,27 @@ export function QyLotSpecTable(props: {
             header: t('qy_lot_prize_amount'),
             // 文本奖的 `amount_quota` 恒为 0。摆一个 0 出来会让人以为这一档
             // 是空的 —— 它的价值全在那段公开说明里，所以直接把说明显示在这。
-            cell: (row: QyLotTier) =>
-              isQyLotTextPrize(row) ? (
-                <span className='text-sm break-words whitespace-pre-wrap'>
-                  {row.text_desc}
-                </span>
-              ) : (
-                <QyAmountText quota={row.amount_quota} />
-              ),
+            // 商品奖同理：这一格印的是"哪件商品、什么形态"（商城摘要，不进承诺）。
+            cell: (row: QyLotTier) => {
+              if (isQyLotTextPrize(row)) {
+                return (
+                  <span className='text-sm break-words whitespace-pre-wrap'>
+                    {row.text_desc}
+                  </span>
+                )
+              }
+              if (isQyLotProductPrize(row)) {
+                return (
+                  <span className='inline-flex flex-wrap items-center gap-1.5 text-sm'>
+                    <QyMallKindBadge kind={row.product_kind ?? ''} />
+                    <span className='break-words'>
+                      {row.product_title || row.product_no}
+                    </span>
+                  </span>
+                )
+              }
+              return <QySdAmount amount={row.amount_quota} />
+            },
           },
           ...(hasPpm
             ? [
@@ -173,7 +203,7 @@ export function QyLotSpecTable(props: {
                 id: 'bet_quota',
                 header: t('qy_lot_option_bet_quota'),
                 cell: (row: QyLotOption) => (
-                  <QyAmountText quota={row.bet_quota ?? 0} />
+                  <QySdAmount amount={row.bet_quota ?? 0} />
                 ),
               },
               {
@@ -261,8 +291,8 @@ function BallTierTable(props: {
                         <span className='text-muted-foreground text-xs'>
                           {t('qy_lot_ball_tier_budget_label')}
                         </span>
-                        <QyAmountText
-                          quota={Math.floor(
+                        <QySdAmount
+                          amount={Math.floor(
                             (props.poolOpenQuota * (row.pool_share_bps ?? 0)) /
                               10000
                           )}
@@ -277,7 +307,7 @@ function BallTierTable(props: {
               ) : (
                 <span className='inline-flex flex-wrap items-center gap-1.5'>
                   <Badge variant='outline'>{t('qy_lot_ball_fixed')}</Badge>
-                  <QyAmountText quota={row.amount_quota} />
+                  <QySdAmount amount={row.amount_quota} />
                 </span>
               ),
           },

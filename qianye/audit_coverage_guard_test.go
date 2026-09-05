@@ -32,7 +32,7 @@ import (
 
 // auditWriteFuncs 是"真的会往审计表写一行"的函数名。
 //
-// 只认函数名不认包名:模块内的 writePayeeAudit / writeConfigUpdateAudit /
+// 只认函数名不认包名:模块内的 writeRelationAudit / writeConfigUpdateAudit /
 // writeRuleFailure 是本地封装,它们最终都落到 audit.Write。
 var auditWriteFuncs = map[string]bool{
 	"Write":                  true, // audit.Write
@@ -40,22 +40,19 @@ var auditWriteFuncs = map[string]bool{
 	"WriteConfigUpdate":      true, // audit.WriteConfigUpdate
 	"writeConfigUpdateAudit": true,
 	"writeGroupLimitAudit":   true, // transfer:按用户分组的门槛分档,成功与失败同一出口
-	"writePayeeAudit":        true,
 	"writeRuleFailure":       true,
 	"afterRuleChange":        true, // violation:版本号 +1 + 重载 + 审计,三件一起做
 	"afterRuleBatch":         true, // violation:批量启停 / 批量作用分组的批次结局,成功与失败同一出口
 	"writeDeleteAudit":       true,
 	"writeAdminAudit":        true,
-	"writeAdjudicateAudit":   true, // lottery:出款人工落账,成功与失败同一出口(额外带受益人与金额)
 	"writeSystemAudit":       true,
 	"putConfigFailed":        true,
 	"writeTicketAudit":       true,
 	"writeMatrixFailure":     true, // groupmatrix:矩阵写入失败(含 409)的补写
 	"writeBatchAudit":        true, // channelops:批次结局 + 失败明细,成功与失败同一出口
 	"writeScopeFailure":      true, // groupmatrix:接管变更失败的补写
-	"writeRelationAudit":     true, // commission:AFF 关系绑定/解绑,成功与失败同一出口
-	"writeAdjustAudit":       true, // commission:手工增减佣金,成功与失败同一出口
-	"writeFiatRateAudit":     true, // commission:分组法币折算比例写入/删除,同一出口
+	"writeRelationAudit":     true, // invite:AFF 关系绑定/解绑/拉黑,成功与失败同一出口
+	"writeAdjustAudit":       true, // stardust:手调星屑,成功与失败同一出口
 	"writeBanPolicyAudit":    true, // violation:处置策略档写入/删除,成功与失败同一出口
 	"writeCategoryAudit":     true, // violation:违规类型写入/归档,成功与失败同一出口
 	"writeAIReviewAudit":     true, // violation:AI 审核渠道写入/删除,成功与失败同一出口
@@ -66,7 +63,7 @@ var auditWriteFuncs = map[string]bool{
 	"recordManageAudit":      true, // controller/:管理端资源写接口的统一审计出口(兑换码/渠道/系统设置)
 
 	"writeRestrictedNoticeAudit":   true, // qianye/controller:受限账号公告写入,成功与失败同一出口
-	"writeDailyConsumeExportAudit": true, // commission:日消费明细导出,成功与失败同一出口
+	"writeDailyConsumeExportAudit": true, // invite:下线日消费明细导出,成功与失败同一出口
 }
 
 // auditRequired 列出必须留痕的资金路径,值是该函数体内审计写入的**最少**次数。
@@ -80,14 +77,6 @@ var auditRequired = []struct {
 	want int
 	why  string
 }{
-	{"modules/withdraw/api_user.go", "handleCreatePayee", 2,
-		"收款账号=钱最终打到哪里,改收款人是提现欺诈第一步;成功与失败都要留痕"},
-	{"modules/withdraw/api_user.go", "handleDeletePayee", 2,
-		"删除收款账号同上;删掉的是哪一张卡由 before 快照回答"},
-	{"modules/withdraw/api_user.go", "handleUploadProof", 1,
-		"打款凭证是线下法币争议里唯一的物证,伪造凭证是这条链路最常见的攻击"},
-	{"modules/withdraw/create.go", "create", 2,
-		"被风控闸门挡下的提现申请必须留痕,否则封号前的连续尝试查不到"},
 	{"modules/transfer/service.go", "create", 2,
 		"被风控拒绝的划转必须留痕,否则「连续撞日限额+换收款人」这种洗号形状零痕迹"},
 	{"modules/violation/api_admin.go", "adminReviewAppeal", 1,
@@ -213,62 +202,50 @@ var auditRequired = []struct {
 		"删掉一条策略之后,原本被它覆盖的分组会**落回兜底抽样率** —— 可能从 0 变成在审、" +
 			"也可能从 50% 变成 1%,而界面上只是少了一行。删的是什么只剩 before 快照能回答;" +
 			"删库失败同样要留痕,那时库里到底还在不在是不确定的"},
-	{"modules/commission/api_admin.go", "adminSettle", 1,
-		"手动结算把冻结佣金变成可提现余额,是真的动钱;谁按的按钮必须可查"},
-	{"modules/commission/api_admin.go", "adminClawback", 2,
-		"人工冲正直接把上线的佣金扣回去。成功要留痕是显然的;失败同样要 —— " +
-			"一次把某一对净额冲满之后,同一个 client_request_id 的合法重试会拿到" +
-			"「没有可冲正的佣金」,而这条与事实相反的提示此前在审计表里一点痕迹都没有," +
-			"「有人在这一刻试图冲正」根本查不到"},
-	{"modules/commission/api_admin.go", "adminRerunDailySettle", 1,
-		"一日一结算之下,重跑今天这一轮是当天那一跑挂掉之后唯一的整轮补救入口。" +
-			"它不直接动钱,但它决定当天剩下那批人今天还能不能拿到钱,而且只会在" +
-			"出过故障的那一天被按下 —— 事后复盘必须看得见是谁按的"},
-	{"modules/commission/api_admin.go", "adminInvalidateCache", 1,
-		"缓存失效是「改完费率立刻生效」这条动作链的最后一步"},
-	{"modules/commission/api_admin.go", "adminBlockRelation", 2,
-		"拉黑一条邀请关系 = 从这一刻起这个人的消费不再给上线分成,是一次没有任何" +
-			"用户可见症状的资金决定。这条埋点还兜着一个刚修掉的形状:快照表是懒建的" +
-			"(线上 377 条真实关系 / 11 行快照),旧实现对缺行的关系 Updates 影响 0 行" +
-			"却照样回 200 —— 运营以为自刷被止住,佣金却一分不少地继续发。" +
-			"失败那条同样要留痕:「有人正在试图拉黑一个不存在的账号」正是最需要查到的形状"},
+	// ── 星辉佣金(commission,D-15):费率、分组档、冲正、手动结算、手工增减 ──
 	{"modules/commission/api_admin.go", "adminPutConfig", 2,
-		"费率变更成功与失败都要留痕"},
-	{"modules/commission/api_admin.go", "adminPutFiatRate", 1,
-		"分组法币折算比例决定平台按什么价把佣金结给推广者。它比费率更隐蔽:" +
-			"不改变任何一个额度数字,只改变那些额度值多少钱 —— 界面上的额度余额" +
-			"一动不动,提现单上的金额却变了。而且它是逐笔冻结的,改完之后新旧两批" +
-			"佣金按两个比例入账,「这个人的 available_fiat 为什么是这个数」事后" +
-			"只能靠这条埋点的前后快照回答"},
-	{"modules/commission/api_admin.go", "adminDeleteFiatRate", 1,
-		"删掉分组档之后该分组回落兜底档,可能从 9 变成 7.3 —— 而界面上只是少了一行。" +
-			"删的是什么只剩 before 快照能回答"},
-	{"modules/commission/api_admin_relation.go", "adminBindRelation", 2,
+		"费率与门槛直接决定平台要付出去多少额度;事务回滚那次同样要留痕 —— 「有人在这一刻试图把 3% 改成 8%」"},
+	{"modules/commission/api_admin.go", "adminPutGroupRate", 1,
+		"分组费率只影响一部分用户,不看审计根本查不出是谁改的"},
+	{"modules/commission/api_admin.go", "adminDeleteGroupRate", 1,
+		"删掉分组档让那一档回落全局费率,before 快照是事后唯一能回答「原来是多少」的东西"},
+	{"modules/commission/api_admin.go", "adminClawback", 2,
+		"人工冲正是直接改钱的动作,「有人在这一刻试过、被拒了」与「成功了」同样需要留痕"},
+	{"modules/commission/api_admin.go", "adminSettle", 1,
+		"手动结算把成熟佣金提前变成可用余额、随即自动入账;定时结算走 system 身份,手动这一路必须能查到是谁按的"},
+	{"modules/commission/api_admin.go", "adminRerunDailySettle", 1,
+		"重跑决定当天剩下那批人今天还能不能拿到钱,只在出过故障的日子被按下"},
+	{"modules/commission/api_admin_adjust.go", "adminAdjustCommission", 2,
+		"手工增减佣金是凭空造出会自动入账成主库额度的东西;被上限、自益、越级判据拒绝的那次同样必须留痕"},
+	{"modules/invite/api_admin.go", "adminInvalidateCache", 1,
+		"缓存失效是「换绑 / 拉黑立刻在别的节点生效」这条动作链的最后一步"},
+	{"modules/invite/api_admin.go", "adminBlockRelation", 2,
+		"拉黑一条邀请关系 = 从这一刻起这个人的消费不再给上线返星屑,是一次没有任何" +
+			"用户可见症状的资金决定。这条埋点还兜着一个修掉过的形状:快照表是懒建的," +
+			"旧实现对缺行的关系 Updates 影响 0 行却照样回 200 —— 运营以为自刷被止住," +
+			"返还却一分不少地继续发。失败那条同样要留痕:「有人正在试图拉黑一个不存在的账号」" +
+			"正是最需要查到的形状"},
+	{"modules/invite/api_admin_relation.go", "adminBindRelation", 2,
 		"手工绑定 AFF 关系改的是主库 users.inviter_id —— 从这一刻起,这个人此后所有的" +
-			"消费与充值都会给另一个账号分成。它同时会把快照上的拉黑标记清掉。" +
+			"消费与充值都会给另一个账号返星屑。它同时会把快照上的拉黑标记清掉。" +
 			"before/after 快照(跨两个库拼出来)是事后唯一能回答「原来绑的是谁、" +
 			"当时拉黑了没有」的东西;被防环/已绑定闸门拒绝的那次同样要留痕 —— " +
 			"「有人正在试图给一个已经有上线的账号改指向」正是最需要查到的形状"},
-	{"modules/commission/api_admin_relation.go", "adminRebindRelation", 2,
+	{"modules/invite/api_admin_relation.go", "adminRebindRelation", 2,
 		"换绑把 users.inviter_id 从一个人挪到另一个人 —— 从这一刻起,这个账号此后所有的" +
-			"消费与充值都改给新上线分成,而老上线名下已经产生的佣金全部保留。" +
+			"消费与充值都改给新上线返,而老上线名下已经发出的星屑全部保留。" +
 			"这两句话合起来才是这次操作的全貌,而它们只存在于这条埋点的正文里" +
-			"(响应里的 kept_commission_quota 是它的量化形式);before/after 快照跨两个库拼出来," +
+			"(响应里的 kept_stardust 是它的量化形式);before/after 快照跨两个库拼出来," +
 			"是事后唯一能回答「原来绑的是谁」的东西 —— 主库那一格已经被覆盖了。" +
 			"被防环/自邀请/同人闸门拒绝的那次同样要留痕",
 	},
-	{"modules/commission/api_admin_relation.go", "adminUnbindRelation", 2,
+	{"modules/invite/api_admin_relation.go", "adminUnbindRelation", 2,
 		"解绑之后主库的 inviter_id 就被清零了,「他曾经是谁的下线」在主库里一个字都不剩。" +
-			"这条埋点的正文里写死了「已产生的佣金全部保留、不再产生新的」这条语义与" +
-			"保留下来的金额,是事后解释「这个人的佣金为什么停在这个数」的唯一材料;" +
+			"这条埋点的正文里写死了「已发出的星屑全部保留、不再产生新的」这条语义与" +
+			"保留下来的数量,是事后解释「这个人的邀请返为什么停在这个数」的唯一材料;" +
 			"重复解绑被拒的那次同样要留痕"},
-	{"modules/commission/api_admin_adjust.go", "adminAdjustCommission", 2,
-		"手工增减佣金是纯粹的凭空加钱/扣钱,没有任何业务单据触发它。" +
-			"它落成一条 manual 计佣行(账目可追溯),但「为什么要加这 5000」只存在于" +
-			"这条埋点的事由里;越过可回收上限被 400 挡下的那次同样要留痕 —— " +
-			"运营看到 400 会换个数再试,没有这条就分不清哪一次真的生效了"},
-	{"modules/commission/api_daily_consume.go", "adminExportDailyConsume", 3,
-		"日消费明细导出是这个模块里泄漏面最大的**读**操作:一次请求把一个区间内" +
+	{"modules/invite/api_daily_consume.go", "adminExportDailyConsume", 3,
+		"下线日消费明细导出是这个模块里泄漏面最大的**读**操作:一次请求把一个区间内" +
 			"全站每个人花了多少、属于哪个分组、上线是谁整表带走。它不改钱,所以不在" +
 			"上面那些资金路径里,但事后追查数据外流时这里正好是个盲区 —— " +
 			"「谁在什么时候导走了哪个区间、多少行」只存在于这条埋点里。" +
@@ -344,10 +321,20 @@ var auditRequired = []struct {
 			"谁在什么时候录了什么、依据是什么,必须永久可查"},
 	{"modules/lottery/api_admin.go", "handleRetryPayout", 2,
 		"重试出款直接决定一笔钱会不会再发一次;失败的那次同样要留痕"},
-	{"modules/lottery/payout_adjudicate.go", "handleAdjudicatePayout", 2,
-		"人工落账是绕过全部自动判据的最终裁决:一支把「平台还欠着」的钱在账上宣布为已付清," +
-			"另一支让主库对同一个人再加一次钱。审计里那条核对依据是这笔钱事后唯一的解释," +
-			"被判据拒绝的那次(自营、越级、与补偿任务撞车)同样必须留痕"},
+	{"modules/lottery/api_admin_schedule.go", "handleSetWheelSchedule", 2,
+		"转盘排期是第三个发布后仍可写的活动字段(不进承诺原像):改一次就改变收转窗口," +
+			"before/after 各带三个时刻;被拒(非转盘 / 非 published / 时刻不合法 / CAS 落空)同样留痕"},
+	{"modules/lottery/api_admin_basics.go", "handleSetActivityBasics", 2,
+		"标题与说明不进承诺原像,发布后仍可改:用户在卡片上看到的名字被谁在什么时候改成了什么," +
+			"before/after 是事后唯一的答案;被拒(已结算 / 已结束 / 空标题)同样留痕"},
+	// 转盘:转动本身与报名同口径不写审计(每转一行会把台账淹掉),留痕的是两个
+	// 只在异常或关键转移时才走到的分支。
+	{"modules/lottery/wheel.go", "noteSpecDrift", 1,
+		"锁内奖档完整性复算与承诺不符时拒绝转动并挂旗:「有人在活动进行中改了奖档」" +
+			"是转盘最需要事后能查到的形状;与 raiseFlag 同去重,所以下界是 1"},
+	{"modules/lottery/lifecycle.go", "revealWheel", 1,
+		"转盘的揭示不抽签、不派奖,只做承诺哈希 / 名单 / 奖档三重校验后公开种子;" +
+			"公开种子是对外承诺的兑现时刻,成功那条必须留痕(失败走 suspendReveal 的既有埋点)"},
 	{"modules/lottery/text_prize.go", "handleFulfillPrize", 2,
 		"文本奖是全模块唯一一处「钱之外还欠着东西」:兑换码一旦填进去,中奖者立刻能看到" +
 			"并可能当场用掉。谁在什么时候给谁发了什么档的奖,必须永久可查;" +
@@ -456,6 +443,55 @@ var auditRequired = []struct {
 		"列表行内的快速上下架与 violation 的规则快速启停同形:下架方向完全无症状," +
 			"套餐只是从售卖页消失,与「从来没建过」无法区分。谁在什么时候把哪个套餐" +
 			"下架了,只剩这条埋点能回答;写失败同样留痕"},
+	// ── 星屑(stardust):规则写入与手调 ──
+	{"modules/stardust/api_admin_config.go", "handlePutConfig", 2,
+		"消费返比例、邀请返比例与手调上限决定平台会发出去多少星屑;越界被拒的那次同样要留痕"},
+	{"modules/stardust/api_admin_rates.go", "handlePutGroupRate", 2,
+		"按用户分组的消费返档位:改一档等于改一整档人的次日发放;写失败同样留痕"},
+	{"modules/stardust/api_admin_rates.go", "handleDeleteGroupRate", 2,
+		"删档位让那一档回落到全局比例,before 是事后唯一能回答「原来是多少」的东西"},
+	{"modules/stardust/api_admin_rates.go", "handlePutPlanReward", 2,
+		"套餐返在买套餐那一刻一次性发给买家与上线,配错一个 bps 就是每单多发;写失败同样留痕"},
+	{"modules/stardust/api_admin_rates.go", "handleDeletePlanReward", 2,
+		"删附表让该套餐回落到默认口径(按售价 1:1),before 快照是唯一能回答「原来配的什么」的东西"},
+	{"modules/stardust/api_admin_adjust.go", "handleAdminAdjust", 2,
+		"手调是凭空造出可经商城变现的东西,与铸码同档;被上限、自益、越级判据拒绝的那次同样必须留痕"},
+	{"modules/stardust/api_admin_settle.go", "handleAdminSettleRerun", 2,
+		"重跑决定那一天欠着的星屑发不发,只在出过故障的日子被按下;成功失败各一条"},
+	// ── 星屑商城(mall)──
+	// 用户侧三条:下单扣星屑、揭示码明文(等同现金)、取消退星屑,成功失败各一条。
+	{"modules/mall/api_user.go", "handleCreateOrder", 2,
+		"下单是星屑变成套餐 / 卡密 / 实物的那一刻;被限购、售罄、余额不足拒掉的那次同样要留痕"},
+	{"modules/mall/api_user.go", "handleRevealCode", 2,
+		"揭示兑换码明文与提现页揭示收款账号同一档:「谁在什么时候看了哪一张」只有这条能回答"},
+	{"modules/mall/api_user.go", "handleCancelOrder", 2,
+		"取消退星屑并把库存放回去;对不可取消状态的尝试被拒同样要留痕"},
+	{"modules/mall/api_user.go", "handleSetOrderAddress", 2,
+		"实物奖品单的收货地址由中奖者事后补填一次:谁在什么时候给哪一单填了地址(密文,审计不带明文)," +
+			"以及非奖品单 / 已有地址被拒的那次,都要留痕"},
+	// 管理侧:商品与码是货架,发货 / 判失败 / 撤码 / 裁决是对一笔已付订单的人工决定。
+	// 数字是各函数体内审计写入的下界:参数错 / 取单失败 / 判据拒绝 / 写失败 / 成功各占一条。
+	{"modules/mall/api_admin.go", "handleAdminCreateProduct", 3,
+		"上架决定用多少星屑能换到什么;被 max_products、套餐商品要求 outbox 挡下的那次同样留痕"},
+	{"modules/mall/api_admin.go", "handleAdminUpdateProduct", 4,
+		"改价、改限购、改上下架都是在改「一份星屑值多少」,before/after 是事后唯一的答案"},
+	{"modules/mall/api_admin.go", "handleAdminDeleteProduct", 3,
+		"删除后行消失,before 快照是唯一能回答「删的是哪一件、还剩多少库存」的东西"},
+	{"modules/mall/api_admin.go", "handleAdminUploadCodes", 4,
+		"批量上传兑换码明文是往密文库存里塞可变现的东西;被本站码判重拒掉的那次是最需要留痕的形状"},
+	{"modules/mall/api_admin.go", "handleAdminShipOrder", 3,
+		"发货是实物订单唯一的履行动作,谁在什么时候发了哪一单(以及是否一步完结)必须可查"},
+	{"modules/mall/api_admin.go", "handleAdminFailOrder", 4,
+		"判失败会全额退星屑,是管理员单方面改变一笔订单结局的动作;被状态机拒绝的那次同样是信号"},
+	{"modules/mall/api_admin.go", "handleAdminRevokeCode", 4,
+		"撤码让一张已售出的码作废,明文可能已经被用户看到;这条埋点是「到底发没发出去」的唯一材料"},
+	{"modules/mall/api_admin.go", "handleAdminRevealAddress", 4,
+		"收货地址与联系方式是 PII,与提现收款人明文同一档:「谁在什么时候看了哪一单」必须可查"},
+	{"modules/mall/api_admin.go", "handleAdminAdjudicate", 5,
+		"套餐订单的人工裁决绕过资金单终态与主库探针:一支把订阅在账上宣布为已给,另一支退星屑;" +
+			"审计里那条核对依据是这笔单事后唯一的解释,被判据拒绝的那次同样必须留痕"},
+	{"modules/mall/api_admin.go", "loadAdminMoneyTarget", 5,
+		"三个人工决定的单一取单入口:取不到单、自营、越级、状态不对各留一条,与提现 loadDecidableWithdrawal 同形"},
 }
 
 func TestFundPathsKeepTheirAuditWrites(t *testing.T) {

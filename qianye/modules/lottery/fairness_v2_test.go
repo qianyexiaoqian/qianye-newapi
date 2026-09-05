@@ -111,8 +111,10 @@ func TestV2PreimageGoldenVector(t *testing.T) {
 	require.Equal(t, 1, n)
 	assert.Equal(t, "b4439e64e877f0918474698be5ec943d60fee5c51c96725a290eef1cf2b7e6dc", rh)
 
+	// 第 11 位(product_no)加入后重算的值:与 lottery-verify.py 的 spec_lines_v2
+	// 逐位核对过(空串占位,SEP 之后以空分量结尾)。
 	assert.Equal(t,
-		"d820e4b0b060b7552b329ad79cdec0b3cde99c9eed733c0f26fe5efbd72d4c6a",
+		"700689a951d6f273c23ba129b4a3b0487adcde59cd761c0838769663fff14828",
 		SpecHashV2([]string{PrizeSpecLineV2(PrizeSpec{
 			Tier: 1, Name: "头奖", PrizeType: PrizeTypeQuota,
 			AmountQuota: 5000, Count: 1, WinPpm: 1000,

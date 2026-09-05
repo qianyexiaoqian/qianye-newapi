@@ -215,10 +215,9 @@ async function mountDetail(
  * 在不在页面上"，不是"它在不在该在的地方"。
  */
 function drawCardOf(container: HTMLElement): HTMLElement {
-  const card = Array.from(
-    container.querySelectorAll('[data-slot="card"]')
-  ).find((node) =>
-    (node.textContent ?? '').includes(zhKeys['qy_lot_ball_draw_title'])
+  const card = [...container.querySelectorAll('[data-slot="card"]')].find(
+    (node) =>
+      (node.textContent ?? '').includes(zhKeys['qy_lot_ball_draw_title'])
   )
   assert.ok(card != null, '找不到「本期开奖」那张卡')
   return card as HTMLElement
@@ -232,7 +231,7 @@ function drawCardOf(container: HTMLElement): HTMLElement {
  * **真的会读出来**的那一份，断言它就是断言用户拿到的信息。
  */
 function hitNumbersIn(node: HTMLElement): string[] {
-  return Array.from(node.querySelectorAll('[aria-label]'))
+  return [...node.querySelectorAll('[aria-label]')]
     .filter((item) => (item.getAttribute('aria-label') ?? '').includes('命中'))
     .map((item) => (item.textContent ?? '').trim())
 }
@@ -241,7 +240,7 @@ describe('活动详情：开奖号与我的号在同一屏，命中的高亮', (
   test('开奖号、我的号、规范化串三者都在明面上', SLOW, async () => {
     const screen = await mountDetail(ballDetail())
     const card = drawCardOf(screen.container)
-    const text = (card.textContent ?? '').replace(/\s+/g, ' ')
+    const text = (card.textContent ?? '').replaceAll(/\s+/g, ' ')
 
     // 进哈希链的那份字节必须留着 —— 用户拿它去比对证据链。
     assert.ok(text.includes(DRAWN), `开奖号的规范化串不在卡上：${text}`)
@@ -249,7 +248,7 @@ describe('活动详情：开奖号与我的号在同一屏，命中的高亮', (
       assert.ok(text.includes(pick), `我的号 ${pick} 不在卡上：${text}`)
     }
     // 球也要真的画出来：七颗号各自是一个节点，而不是一行文本。
-    const balls = Array.from(card.querySelectorAll('span')).filter((node) =>
+    const balls = [...card.querySelectorAll('span')].filter((node) =>
       /^\d{2}$/.test((node.textContent ?? '').trim())
     )
     assert.ok(
@@ -270,14 +269,14 @@ describe('活动详情：开奖号与我的号在同一屏，命中的高亮', (
 
   test('中了哪一档、赔多少，以及没中的那一张写着「未中奖」', SLOW, async () => {
     const screen = await mountDetail(ballDetail())
-    const text = (drawCardOf(screen.container).textContent ?? '').replace(
+    const text = (drawCardOf(screen.container).textContent ?? '').replaceAll(
       /\s+/g,
       ' '
     )
     // 档位 + 档名 + 金额：三样缺一样，用户就得自己去奖级表上查。
     assert.ok(text.includes('第 2 档'), `没写中了哪一档：${text}`)
     assert.ok(text.includes('二等奖'), `没写档名：${text}`)
-    assert.ok(text.includes('$0.1217'), `没写这一档赔了多少：${text}`)
+    assert.ok(text.includes('+60,840 星屑'), `没写这一档赔了多少：${text}`)
     // 命中几红几蓝。
     assert.ok(text.includes('红球 2 个、蓝球 0 个'), `没写命中数：${text}`)
     assert.ok(
@@ -302,7 +301,7 @@ describe('活动详情：开奖号与我的号在同一屏，命中的高亮', (
       })
     )
     const card = drawCardOf(screen.container)
-    const text = (card.textContent ?? '').replace(/\s+/g, ' ')
+    const text = (card.textContent ?? '').replaceAll(/\s+/g, ' ')
     assert.ok(
       text.includes(zhKeys['qy_lot_ball_await_draw']),
       `没写「待开奖」：${text}`
@@ -318,7 +317,7 @@ describe('活动详情：开奖号与我的号在同一屏，命中的高亮', (
     const screen = await mountDetail(
       ballDetail({ ball_result: '', outcome: 'cancelled', status: 'finished' })
     )
-    const text = (drawCardOf(screen.container).textContent ?? '').replace(
+    const text = (drawCardOf(screen.container).textContent ?? '').replaceAll(
       /\s+/g,
       ' '
     )
@@ -342,7 +341,7 @@ describe('活动详情：开奖号与我的号在同一屏，命中的高亮', (
     })
     // 期号在顶部徽章上。
     assert.ok(screen.text.includes('第 3 期'), '期号不在页面上')
-    const text = (drawCardOf(screen.container).textContent ?? '').replace(
+    const text = (drawCardOf(screen.container).textContent ?? '').replaceAll(
       /\s+/g,
       ' '
     )
@@ -350,7 +349,7 @@ describe('活动详情：开奖号与我的号在同一屏，命中的高亮', (
       text.includes(zhKeys['qy_lot_ball_carry_in']),
       `没写上一期结转了多少：${text}`
     )
-    assert.ok(text.includes('$0.08'), `结转金额没渲染：${text}`)
+    assert.ok(text.includes('40,000 星屑'), `结转金额没渲染：${text}`)
     assert.ok(text.includes('下一期'), `没写下一期什么时候：${text}`)
     assert.ok(text.includes('第 4 期'), `下一期的期号没渲染：${text}`)
   })
@@ -393,7 +392,7 @@ describe('买了超过 50 张票：界面必须自己说清列表被截断', () 
     // 互相打架，全屏没有一句话说明列表被截断 —— 用户第一反应是有 10 张票丢了。
     const screen = await mountDetail(ballDetail({ my_entry_count: 60 }))
     const card = drawCardOf(screen.container)
-    const text = (card.textContent ?? '').replace(/\s+/g, ' ')
+    const text = (card.textContent ?? '').replaceAll(/\s+/g, ' ')
 
     assert.ok(text.includes('我的号（60 注）'), `标题写的不是真实注数：${text}`)
     assert.ok(
@@ -408,7 +407,7 @@ describe('买了超过 50 张票：界面必须自己说清列表被截断', () 
 
   test('没有截断时不许凭空多出一句提示', SLOW, async () => {
     const screen = await mountDetail(ballDetail())
-    const text = (drawCardOf(screen.container).textContent ?? '').replace(
+    const text = (drawCardOf(screen.container).textContent ?? '').replaceAll(
       /\s+/g,
       ' '
     )
@@ -427,13 +426,13 @@ describe('公开名单：每一注买的号', () => {
     // 折起来的理由是字数，那个理由现在由展示层打码接手 —— 详见
     // `lottery-roster-card.tsx` 与 `lib/__tests__/roster-mask.test.ts`。
     // 所以这里不再需要先点一下：直接就能读到号码那一列。
-    const roster = Array.from(
-      screen.container.querySelectorAll('[data-slot="card"]')
-    ).find((node) =>
+    const roster = [
+      ...screen.container.querySelectorAll('[data-slot="card"]'),
+    ].find((node) =>
       (node.textContent ?? '').includes(zhKeys['qy_lot_roster_title'])
     )
     assert.ok(roster != null, '找不到公开名单那张卡')
-    const text = (roster.textContent ?? '').replace(/\s+/g, ' ')
+    const text = (roster.textContent ?? '').replaceAll(/\s+/g, ' ')
 
     assert.ok(
       text.includes(zhKeys['qy_lot_ball_pick_col']),

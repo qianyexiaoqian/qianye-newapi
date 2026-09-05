@@ -343,21 +343,32 @@ func adminDeleteAIChannel(c *gin.Context) {
 	// 要么换一个渠道,两种都是一次显式的、有审计的动作。
 	//
 	// 不做成"删除时自动把那几档改回不指定":那等于替运营决定"发给谁都行",
-	// 而指定渠道的理由往往正是"只能发给这一个"。
-	var pinned []AIScope
-	if err := gdb.Where("channel_id = ?", id).Order("id asc").Limit(10).Find(&pinned).Error; err != nil {
+	// 而指定渠道的理由往往正是"只能发给这几个"。
+	//
+	// 引用检查在 Go 里筛而不是写一句 WHERE:清单列是 CSV,而 CSV 的包含匹配
+	// 在三家数据库上写法各异(`FIND_IN_SET` 是 MySQL 专有,LIKE '%,3,%' 会把
+	// 13 当成 3),而本仓的跨库约束是硬的。策略表是个位数量级的行,读回来筛
+	// 既准确又省一整套方言分支 —— 与 migrateAIChannelKeyEndpoint 同一条理由。
+	var scopes []AIScope
+	if err := gdb.Order("id asc").Limit(maxAIScopes * 4).Find(&scopes).Error; err != nil {
 		internalError(c, err)
 		return
 	}
-	if len(pinned) > 0 {
-		names := make([]string, 0, len(pinned))
-		for _, s := range pinned {
-			names = append(names, s.Name)
+	names := make([]string, 0, 4)
+	for _, sc := range scopes {
+		for _, cid := range sc.ChannelIds {
+			if cid == id {
+				names = append(names, sc.Name)
+				break
+			}
 		}
+	}
+	if len(names) > 0 {
 		err := fmt.Errorf("渠道「%s」还被 %d 条 AI 审核作用域策略指定着(%s)—— "+
-			"删掉它会让这几档每次都走「无可用渠道」并直接放行(不会回落到其它渠道)。"+
-			"请先把这些策略的审核渠道改成「不指定」或换一个渠道",
-			row.Name, len(pinned), strings.Join(names, "、"))
+			"删掉它会让这几档少一个可用渠道,清单里只有它的那几档从此每次都走"+
+			"「无可用渠道」并直接放行(不会回落到其它渠道)。"+
+			"请先把它从这些策略的渠道清单里去掉",
+			row.Name, len(names), strings.Join(names, "、"))
 		writeAIReviewAudit(c, "ai_channel_delete", qymodel.ResultFail, &row, nil, err)
 		badRequest(c, err.Error())
 		return

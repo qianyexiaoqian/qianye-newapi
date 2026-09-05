@@ -18,14 +18,18 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   ClipboardList,
+  Coins,
   Gauge,
   HeartPulse,
+  Landmark,
   LifeBuoy,
   Megaphone,
-  ReceiptText,
   Repeat,
   ScrollText,
   ShieldAlert,
+  ShoppingBag,
+  Sparkles,
+  Store,
   Ticket,
   TriangleAlert,
   Users,
@@ -73,6 +77,8 @@ export type QyNavGroupId =
   | 'qy-growth'
   | 'qy-settlement'
   | 'qy-risk'
+  | 'qy-fun'
+  | 'qy-fun-ops'
   | typeof QY_SETTINGS_GROUP
 
 /**
@@ -83,6 +89,27 @@ export type QyNavGroupId =
  * 审核与记录类留在根侧栏 —— 后者是日常运营每天要开的，埋进抽屉里反而难找。
  */
 export const QY_SETTINGS_GROUP = 'system-settings'
+
+/**
+ * 抽屉里的**二级落点**：并进上游哪一个折叠项。
+ *
+ * 缺省是扩展自己那一项「扩展设置」（{@link mergeQySystemSettingsNavGroups}）。
+ * 少数几页语义上明显属于上游某一组，写在这里之后就直接挂到那一组下面 ——
+ * 项目方 2026-09-05：「API 地址这个页面菜单，从扩展设置移动到模型与路由下面。」
+ * 同日：「违规规则 / AI 内容审核，移动到安全与限制下。」后者顺带接管了上游自带
+ * 敏感词过滤留下的位置（那一组里的「敏感词」section 已随该功能一起删除）。
+ *
+ * 值是上游 section registry 的 `basePath`（`features/system-settings` 下各组的
+ * `section-registry`），**不是翻译后的标题**：标题随语言变，url 不变。认 url 还
+ * 顺带保证了"上游把这一组删了 / 改名了"时不会静默失联 —— 那时匹配不上，本页按
+ * fail-open 落回「扩展设置」，入口仍然在（见 {@link mergeQySystemSettingsNavGroups}）。
+ */
+export const QY_SETTINGS_SECTION_PATHS = {
+  models: '/system-settings/models',
+  security: '/system-settings/security',
+} as const
+
+export type QySettingsSectionId = keyof typeof QY_SETTINGS_SECTION_PATHS
 
 /** 新增分组的定义。上游分组不在此列 —— 它们由上游自己声明。 */
 export type QyNavGroupDef = {
@@ -121,6 +148,22 @@ export const QY_NAV_GROUPS: readonly QyNavGroupDef[] = [
     titleKey: 'qy_nav_group_risk',
     afterGroup: 'admin',
   },
+  // ── 娱乐(design-15 + 项目方 2026-09-04 拍板「星屑板块与娱乐板块合并」)──
+  // 用户侧一组:抽奖竞猜选择夹(含星屑转盘)/ 星屑 / 星屑商城 —— 都是同一枚货币
+  // 的进出口,拆成两组只会让用户在两个地方各找一遍。抽奖竞猜因此从「推广」
+  // 挪到这里;「推广」剩下的是邀请、工单、违规这些与钱包无关的行。
+  // 管理侧同理:抽奖活动、星屑账本、商城管理并成「娱乐运营」;抽奖派奖自
+  // v2.0.0 起只动星屑账本,不再与佣金结算、提现同一类账,所以离开「结算」。
+  {
+    id: 'qy-fun',
+    titleKey: 'qy_nav_group_fun',
+    afterGroup: 'personal',
+  },
+  {
+    id: 'qy-fun-ops',
+    titleKey: 'qy_nav_group_fun_ops',
+    afterGroup: 'admin',
+  },
 ]
 
 // ─────────────────────────── 选项卡组 ───────────────────────────
@@ -134,7 +177,7 @@ export const QY_NAV_GROUPS: readonly QyNavGroupDef[] = [
  * 标签）。三处各写一份清单就是本仓反复出现的「同一概念的第 N 份拷贝」，
  * 迟早出现"侧栏删了但页面还在旧位置"这类断链。所以清单只此一张。
  *
- * `pages[0]` 允许等于 `host` 本身：推广佣金的第一张标签就是宿主页
+ * `pages[0]` 允许等于 `host` 本身：我的推广的第一张标签就是宿主页
  * `/qy/affiliate` 自己（它仍然要有侧栏入口，所以它不算"被收进去"）。
  *
  * 宿主是**上游页面**时（`/wallet`），标签状态只能走 URL hash：上游钱包路由
@@ -148,7 +191,7 @@ export type QyTabGroupDef = {
    * 选项卡组自己的名字。
    *
    * 宿主页是 qy 页面时（`/qy/affiliate`），它同时也是**侧栏那一行的标题** ——
-   * 侧栏上写「推广佣金」而第一张标签写「推广概览」，是刻意的：前者命名的是
+   * 侧栏上写「我的推广」而第一张标签写「概览」，是刻意的：前者命名的是
    * 整组，后者命名的是组里的一张表。
    */
   titleKey: string
@@ -164,39 +207,21 @@ export const QY_TAB_GROUPS: readonly QyTabGroupDef[] = [
     pages: ['/qy/transfer', '/qy/transfer-logs', '/qy/pay-password'],
   },
   {
-    // 需求 3：提现移进推广板块，选择夹含概览 / 已邀请用户 / 提现 / 提现记录。
+    // 「我的推广」（D-15）：概览 / 下线 / 佣金明细 / 返星屑明细。
+    //
+    // D-14 曾把这里收成三张（佣金账本与提现整体删除，收益只有星屑）；D-15 把
+    // 佣金账本请回来，记的是**星辉**（站内余额的展示名），到期自动入账、没有
+    // 申请与审核。于是两条线并行：概览上半讲星辉佣金（待结算 / 可用待入账 /
+    // 已入账、下次入账时间、费率），下半讲星屑返的五种来源；「佣金明细」是佣金
+    // 账本的逐笔 + 自动入账记录，「返星屑明细」是星屑流水里邀请类那五种 kind。
+    // 「提现」两张标签**不**回来 —— 这一页上从此没有提现这件事。
     host: '/qy/affiliate',
-    titleKey: 'qy_nav_commission_hub',
-    pages: ['/qy/affiliate', '/qy/invitees', '/qy/withdraw', '/qy/withdrawals'],
-  },
-  {
-    // 项目方原话：「我需要的是新增一个用户佣金列表，我可以查看/编辑用户的佣金，
-    // 以及查看拉了多少用户，以及编辑/移除/添加这个用户的佣金绑定关系。」
-    //
-    // ── 为什么是选择夹而不是第四张平级的表 ──
-    // 在此之前佣金管理在侧栏上是**三个平级入口**（计佣流水 / 佣金余额 /
-    // AFF 关系），而它们回答的其实是同一件事的三个切面。再加一张「用户佣金」
-    // 就是第四个割裂的入口，项目方点名不要。
-    //
-    // 收敛的判据是**主键**：一行是一个用户，还是一笔账？
-    //   · 「用户佣金」「AFF 关系」「佣金余额」的主键都跟着**人**走
-    //     （一个用户 / 一对邀请关系 / 一个用户的余额），收进这一个宿主；
-    //   · 「计佣流水」的主键是一笔计佣（`accrual_no`），它是账本本身，
-    //     留在自己那一行。
-    // 于是侧栏从三行收成两行：一个「按用户看」、一个「按流水看」。
-    //
-    // 三张标签**都不是**彼此的重复：
-    //   · 用户总览 = 运营台（这个人的上下线、余额、行内改佣金与改绑定）；
-    //   · AFF 关系 = 按关系看（跨用户列全部关系，含已解绑的历史，
-    //     那部分在主库里已经一个字都不剩，只有快照表答得了）；
-    //   · 佣金余额 = 对账台（四列额度的恒等式、`ledger_drift`、
-    //     以及「已提现」额度的迁移登记）。
-    host: '/qy/admin/commission-records/users',
-    titleKey: 'qy_nav_commission_users_hub',
+    titleKey: 'qy_nav_invite_hub',
     pages: [
-      '/qy/admin/commission-records/users',
-      '/qy/admin/commission-records/relations',
-      '/qy/admin/commission-records/balances',
+      '/qy/affiliate',
+      '/qy/invitees',
+      '/qy/commission-records',
+      '/qy/invite-records',
     ],
   },
   {
@@ -210,42 +235,78 @@ export const QY_TAB_GROUPS: readonly QyTabGroupDef[] = [
     // 它的 `kind` 确实还是 `draw`，但用户要在它上面做的事完全不同：选号、
     // 看开奖号、对红蓝球。它和按名次/按公示概率共用一张列表时，用户翻三页
     // 也不一定翻到一场双色球，而卡面上那个「奖池」在两类活动上根本不是同一
-    // 个数。标签数因此**固定为四**：玩法再多也走 `draw_mode` 并入这三夹之一，
-    // 导航维度不随数据维度增长。
+    // 个数。
+    //
+    // ── 转盘（2026-09-05）──
+    // 项目方原话：「星屑转盘的页面移动到抽奖竞猜里面去。」它此前是侧栏上
+    // 独立的一行（design-15 §7.5 的理由是即时开奖、卡面三个数与批次玩法对
+    // 不上）；现在按项目方要求并成第四张标签，排在双色球之后、「我的参与」
+    // 之前 —— 它仍然是一种玩法，而「我的参与」不是。正文照旧自己按
+    // `draw_mode=wheel` 拉列表，不发 `lane`。
+    //
+    // 标签数因此**固定为五**（四种玩法 + 我的参与）：`draw_mode` 再长出新的
+    // 定档方式时并入这四夹之一，导航维度不随数据维度增长。
     host: '/qy/lottery',
     titleKey: 'qy_nav_lottery_hub',
     pages: [
       '/qy/lottery',
       '/qy/lottery-guess',
       '/qy/lottery-ball',
+      '/qy/wheel',
       '/qy/lottery-records',
     ],
   },
   {
-    // 项目方原话：「把日消费明细/佣金审核，提醒审核，这些管理页面弄成选择夹，
-    // 放在一个页面上。」
+    // 「邀请管理」（D-14）：邀请关系 / 下线日消费 / 日结明细。
     //
-    // 「提醒审核」站内并不存在 —— 侧栏「结算」组底下与前两页并列的第三页是
-    // **提现审核**（`/qy/admin/withdrawals`），全站也没有任何叫「提醒」的页面
-    // 或接口。按上下文取提现审核。
+    // 它取代了「结算台」（日消费明细 / 佣金审核 / 提现审核）与「用户佣金」
+    // （用户总览 / AFF 关系 / 佣金余额）两个选择夹：佣金审核、提现审核、佣金余额、
+    // 用户佣金四张表连同它们的账本一起删除，剩下的三张表回答的仍是同一件事的
+    // 三个切面 —— 谁邀请了谁（主库 users.inviter_id）、下线昨天花了多少（主库
+    // logs 的聚合）、按邀请人分组档算出来该返多少星屑（qy_sd_invite_accrual）。
+    // 宿主 = 第一张（与 /qy/affiliate 同形），旧的 daily-consume 地址仍是重定向。
+    host: '/qy/admin/invite',
+    titleKey: 'qy_nav_a_invite_hub',
+    pages: [
+      '/qy/admin/invite',
+      '/qy/admin/daily-consume',
+      '/qy/admin/invite-accruals',
+    ],
+  },
+  {
+    // 「结算台」（D-15 恢复）：日消费明细 / 佣金审核 / 佣金用户。
     //
-    // 三张标签的顺序 = 钱在系统里流动的顺序，也是运营对账时的追问顺序：
-    // 消费（谁花了多少）→ 计佣（这笔消费给上线记了多少）→ 提现（把钱付出去）。
-    // 所以第一张是日消费明细，而不是被点名最多的佣金审核。
+    // 三张标签是钱在系统里流动的顺序，也是运营对账时的追问顺序：谁花了多少
+    // （主库 logs）→ 这笔消费给上线记了多少星辉（计佣账本）→ 每个人账上还挂着
+    // 多少、已经自动入账了多少（余额 + 入账记录）。D-14 之前的第三张是「提现审核」，
+    // 它随提现模块永久删除，位置换成此前「用户佣金」那一行的正文 —— 侧栏因此
+    // 只多回一行，而不是两行。
     //
-    // ── 为什么宿主是一个新页面，而不是让三页中的某一页当宿主 ──
-    // 复用（例如让 `/qy/admin/commission-records` 当宿主）会造出一个**名不副实
-    // 的地址**：书签栏里写着 commission-records，打开却停在日消费明细那张表；
-    // 而且三张标签在 URL 上不再平等 —— 两页重定向、一页不用。新开
-    // `/qy/admin/settlement` 之后三条旧地址一视同仁地重定向，地址本身也说得出
-    // 这一页是什么。代价是页面表多一行、GATE 编号多一个。
+    // 第一张标签就是宿主自己（与 /qy/affiliate 同形）：它直接嵌现有的日消费明细
+    // 组件（`admin-daily-consume`），而 `/qy/admin/daily-consume` 那个 url 仍然是
+    // 「邀请管理」的标签 —— 同一份正文在两个宿主上各有一张标签，url 只登记一次，
+    // 否则 `qyTabTarget` 对同一个 url 会有两个答案。
     host: '/qy/admin/settlement',
     titleKey: 'qy_nav_a_settlement',
     pages: [
-      '/qy/admin/daily-consume',
+      '/qy/admin/settlement',
       '/qy/admin/commission-records',
-      '/qy/admin/withdrawals',
+      '/qy/admin/commission-users',
     ],
+  },
+  {
+    // 星屑：余额 / 流水 / 待结算三张标签，宿主 = 第一张（与 `/qy/affiliate` 同形）。
+    // 三张表回答的是同一件事的三个切面 —— 我有多少、怎么来的、明天会到多少 ——
+    // 拆成三行侧栏入口只会让用户在三个地方各找一遍。
+    host: '/qy/stardust',
+    titleKey: 'qy_nav_stardust_hub',
+    pages: ['/qy/stardust', '/qy/stardust-ledger', '/qy/stardust-accruals'],
+  },
+  {
+    // 商城：商品 / 我的订单。订单页不占侧栏一行，理由同上。
+    host: '/qy/mall',
+    titleKey: 'qy_nav_mall_hub',
+    pages: ['/qy/mall', '/qy/mall-orders'],
   },
 ]
 
@@ -275,7 +336,7 @@ export function qyTabHash(url: string): string {
  *
  * 收进选择夹之后，`navigate({ to: '/qy/transfer-logs' })` 仍然能到 —— 旧路由
  * 会重定向 —— 但那是**先离开宿主页再被弹回来**：整个钱包页会卸载重挂一次，
- * 用户看到的是一次白闪。发起划转成功后跳去划转记录、提交提现后跳去提现记录，
+ * 用户看到的是一次白闪。发起划转成功后跳去划转记录、从星屑余额跳去待结算，
  * 都是这种"跳到自己隔壁那张标签"的场景。
  *
  * 所以动作完成后的跳转一律走这个函数，直接落到宿主页 + 对应 hash。
@@ -301,20 +362,31 @@ export function qyTabTarget(url: string): { to: string; hash?: string } {
  */
 export type QyEntrySwitches = {
   lottery: boolean
+  /**
+   * 转盘那张标签的开关：`show_entry × plays.wheel`。
+   *
+   * 转盘并入抽奖竞猜的选择夹之后它不再对应侧栏上的一行，但仍然要单独存在：
+   * 宿主那一行的可见性走"任一标签可见即可见"（{@link isQyPageVisible}），
+   * 而转盘标签自己那道门就是这一格 —— 没有它，「只开转盘」的站点会因为
+   * `lottery` 一格为假而整行消失，转盘明明开着却没有入口。
+   */
+  wheel: boolean
+  stardust: boolean
+  mall: boolean
 }
 
 /**
  * 「抽奖」那张标签还剩不剩玩法（按名次 / 按公示概率）。
  *
- * ── 为什么没有第五个开关 ──
- * 标签是三张（抽奖 / 竞猜 / 双色球），玩法是四种，抽奖那张底下压着两种。
- * 再给标签自己加一个可见性开关，就会出现「标签开着但底下两种玩法都关」
- * 这种自相矛盾的状态：用户点进去看到一张永远空的列表，而运营在配置页上
- * 看到的是"抽奖已开启"。所以标签的可见性**由它底下至少一个玩法可见决定**，
- * 开关仍然只有那四个。
+ * ── 为什么没有第六个开关 ──
+ * 玩法标签是四张（抽奖 / 竞猜 / 双色球 / 转盘），玩法是五种，抽奖那张底下
+ * 压着两种。再给标签自己加一个可见性开关，就会出现「标签开着但底下两种玩法
+ * 都关」这种自相矛盾的状态：用户点进去看到一张永远空的列表，而运营在配置页
+ * 上看到的是"抽奖已开启"。所以标签的可见性**由它底下至少一个玩法可见决定**，
+ * 开关仍然只有那五个。
  *
- * 双色球与竞猜各自只压着一种玩法，因此它们的标签可见性就是那一个开关本身，
- * 不需要各写一个派生函数。
+ * 双色球、竞猜、转盘各自只压着一种玩法，因此它们的标签可见性就是那一个开关
+ * 本身，不需要各写一个派生函数。
  */
 export function qyLotDrawShown(plays: QyLotPlays): boolean {
   return plays.draw_rank || plays.draw_prob
@@ -326,9 +398,13 @@ export function qyLotDrawShown(plays: QyLotPlays): boolean {
  * 与 `show_entry=0` **完全同一形状**：路由与接口照常可达，直达链接进去仍然
  * 只剩「我的参与」那张标签 —— 已参与的人必须还能查到自己那一票、还能领奖。
  * 藏掉的只是入口，不是数据，更不是钱。
+ *
+ * 转盘也算在内：项目方 2026-09-05 把它并成了这个选择夹的一张标签，所以
+ * "只开转盘"的站点必须保留这一行入口 —— 点进去是一张转盘标签加「我的参与」，
+ * 而不是一个空大厅。
  */
 export function qyAnyLotPlayShown(plays: QyLotPlays): boolean {
-  return qyLotDrawShown(plays) || plays.draw_ball || plays.guess
+  return qyLotDrawShown(plays) || plays.draw_ball || plays.guess || plays.wheel
 }
 
 export type QyPageDef = {
@@ -350,6 +426,15 @@ export type QyPageDef = {
    * 入口了）。`__tests__/pages-table.test.ts` 双向断言。
    */
   group?: QyNavGroupId
+  /**
+   * 抽屉里挂在上游哪个折叠项下（见 {@link QY_SETTINGS_SECTION_PATHS}）。
+   *
+   * 只在 `group === QY_SETTINGS_GROUP` 时有意义；缺省 = 扩展自己那一项
+   * 「扩展设置」。role<100 的管理员打不开抽屉，那一档由根侧栏的兜底折叠项接住
+   * （`nav.ts` 的 withQySettingsFallback），本字段对它不生效 —— 根侧栏上根本
+   * 没有「模型与路由」「安全与限制」这些组。
+   */
+  settingsSection?: QySettingsSectionId
   /**
    * 插到该 url 之后（仅对上游分组有意义）。缺省 = 追加到组尾。
    * 锚点在上游改名/消失时不会吞掉本项，合并函数会兜底追加到组尾。
@@ -408,21 +493,21 @@ export const QY_PAGES: readonly QyPageDef[] = [
   {
     url: '/qy/pay-password',
     titleKey: 'qy_nav_pay_password',
-    // 不是 'transfer'：支付密码是划转/提现/抽奖共用的第二因子，后端
-    // `guard.FlagPayPassword` 下发的就是这三者的并集。标成 'transfer' 时，
-    // 「只开提现、不开站内互转」这个完全合法的组合会让这一页从侧栏消失，
-    // 而提现仍然要求验密 —— 用户没有任何地方能把密码设上。
+    // 不是 'transfer'：支付密码是划转/抽奖共用的第二因子，后端
+    // `guard.FlagPayPassword` 下发的就是两者的并集。标成 'transfer' 时，
+    // 「只开抽奖、不开站内互转」这个完全合法的组合会让这一页从侧栏消失，
+    // 而抽奖报名仍然要求验密 —— 用户没有任何地方能把密码设上。
     feature: 'pay_password',
     codeKey: 'qy_sg_code_pay_password',
   },
 
   // ── 新组「推广」──
   {
-    // 选项卡组的宿主：侧栏那一行写组名「推广佣金」（QY_TAB_GROUPS.titleKey），
-    // 组内第一张标签才写本行的 `titleKey`（推广概览）。
+    // 选项卡组的宿主：侧栏那一行写组名「我的推广」（QY_TAB_GROUPS.titleKey），
+    // 组内第一张标签才写本行的 `titleKey`（概览）。
     url: '/qy/affiliate',
     titleKey: 'qy_nav_affiliate',
-    feature: 'commission',
+    feature: 'invite',
     group: 'qy-growth',
     icon: Megaphone,
     codeKey: 'qy_sg_code_affiliate',
@@ -430,20 +515,25 @@ export const QY_PAGES: readonly QyPageDef[] = [
   {
     url: '/qy/invitees',
     titleKey: 'qy_nav_invitees',
-    feature: 'commission',
+    feature: 'invite',
     codeKey: 'qy_sg_code_invitees',
   },
   {
-    url: '/qy/withdraw',
-    titleKey: 'qy_nav_withdraw',
-    feature: 'withdraw',
-    codeKey: 'qy_sg_code_withdraw',
+    // 佣金明细（D-15）：星辉佣金账本的逐笔计佣 + 自动入账记录。选择夹成员，
+    // 不写 group / icon。挂 `commission` 而不是 `invite`：佣金关掉、邀请返星屑
+    // 照开的站点上，这一张标签要消失，而宿主那一行由其余标签撑着。
+    url: '/qy/commission-records',
+    titleKey: 'qy_nav_commission_records',
+    feature: 'commission',
+    codeKey: 'qy_sg_code_commission_records',
   },
   {
-    url: '/qy/withdrawals',
-    titleKey: 'qy_nav_withdrawals',
-    feature: 'withdraw',
-    codeKey: 'qy_sg_code_withdrawals',
+    // 返星屑明细：我的星屑流水里 kind ∈ 邀请类五种的那些行。它是选择夹成员，
+    // 不写 group / icon；旧地址不存在，路由文件只做重定向到宿主 + hash。
+    url: '/qy/invite-records',
+    titleKey: 'qy_nav_invite_records',
+    feature: 'invite',
+    codeKey: 'qy_sg_code_invite_records',
   },
   {
     // 工单落在「推广」组是权宜：它不是推广，但它是**用户主动发起的自助事务**，
@@ -469,15 +559,16 @@ export const QY_PAGES: readonly QyPageDef[] = [
   // 也在同一处（"平台给我的东西在哪"）。四行都挂 `entry: 'lottery'`——
   // 站点在系统设置里关掉展示时，整组消失，而不是留下点进去空空如也的页面。
   //
-  // 侧栏上只剩**一行**（组名「抽奖竞猜」= QY_TAB_GROUPS.titleKey），后三行
-  // 是选择夹成员：它们不写 group / icon，否则侧栏会多出三行点了就被重定向
-  // 甩走的入口（`pages-table.test.ts` 双向断言）。
+  // 侧栏上只剩**一行**（组名「抽奖竞猜」= QY_TAB_GROUPS.titleKey），后四行
+  // （竞猜 / 双色球 / 我的参与，以及下面的转盘）是选择夹成员：它们不写
+  // group / icon，否则侧栏会多出几行点了就被重定向甩走的入口
+  // （`pages-table.test.ts` 双向断言）。
   {
     url: '/qy/lottery',
     titleKey: 'qy_nav_lottery',
     feature: 'lottery',
     entry: 'lottery',
-    group: 'qy-growth',
+    group: 'qy-fun',
     icon: Ticket,
     codeKey: 'qy_sg_code_lottery',
   },
@@ -512,6 +603,62 @@ export const QY_PAGES: readonly QyPageDef[] = [
     codeKey: 'qy_sg_code_lottery_records',
   },
 
+  // 转盘是 lottery 的第五种玩法（`draw_mode='wheel'`）。项目方 2026-09-05：
+  // 「星屑转盘的页面移动到抽奖竞猜里面去。」—— 它是上面那个选择夹的第四张
+  // 标签，因此**不写 group / icon**（侧栏不再单独占一行，旧地址只做重定向）。
+  // `entry: 'wheel'` 保留：那张标签仍由 `show_entry × plays.wheel` 决定渲不
+  // 渲染；关掉它只藏这一张标签，宿主那一行由其余标签撑着。
+  {
+    url: '/qy/wheel',
+    titleKey: 'qy_nav_wheel',
+    feature: 'lottery',
+    entry: 'wheel',
+    codeKey: 'qy_sg_code_wheel',
+  },
+
+  // ── 星屑(design-15 §11;与抽奖竞猜同在「娱乐」组)──
+  // 侧栏两行:星屑(宿主,组名 = QY_TAB_GROUPS.titleKey)/ 商城(宿主)。
+  // 流水、待结算、我的订单是选择夹成员，不写 group / icon。
+  {
+    url: '/qy/stardust',
+    titleKey: 'qy_nav_stardust',
+    feature: 'stardust',
+    entry: 'stardust',
+    group: 'qy-fun',
+    icon: Sparkles,
+    codeKey: 'qy_sg_code_stardust',
+  },
+  {
+    url: '/qy/stardust-ledger',
+    titleKey: 'qy_nav_stardust_ledger',
+    feature: 'stardust',
+    entry: 'stardust',
+    codeKey: 'qy_sg_code_stardust_ledger',
+  },
+  {
+    url: '/qy/stardust-accruals',
+    titleKey: 'qy_nav_stardust_accruals',
+    feature: 'stardust',
+    entry: 'stardust',
+    codeKey: 'qy_sg_code_stardust_accruals',
+  },
+  {
+    url: '/qy/mall',
+    titleKey: 'qy_nav_mall',
+    feature: 'mall',
+    entry: 'mall',
+    group: 'qy-fun',
+    icon: ShoppingBag,
+    codeKey: 'qy_sg_code_mall',
+  },
+  {
+    url: '/qy/mall-orders',
+    titleKey: 'qy_nav_mall_orders',
+    feature: 'mall',
+    entry: 'mall',
+    codeKey: 'qy_sg_code_mall_orders',
+  },
+
   // ── 上游 admin：各自紧跟语义最近的上游管理项 ──
   {
     url: '/qy/admin/health',
@@ -522,91 +669,62 @@ export const QY_PAGES: readonly QyPageDef[] = [
     codeKey: 'qy_sg_code_a_health',
   },
 
-  // ── 新组「结算」：钱怎么流动，管理员视角 ──
-  // 「结算台」选择夹的宿主：日消费明细 / 佣金审核 / 提现审核三张标签。
+  // ── 新组「资金与推广」（id 仍是 qy-settlement）：钱怎么流动，管理员视角 ──
+  // 「邀请管理」选择夹的宿主：邀请关系 / 下线日消费 / 日结明细三张标签。
   // 侧栏上这一行写的是组名（`QY_TAB_GROUPS.titleKey`），组里每张标签才写各自
-  // 页面的 `titleKey`。这一行取代了此前那三行平级入口。
+  // 页面的 `titleKey`。它取代了此前的「结算台」与「用户佣金」两行（D-14：佣金
+  // 审核 / 提现审核 / 佣金余额 / 用户佣金四张表连同账本一起删除）。
+  {
+    url: '/qy/admin/invite',
+    titleKey: 'qy_nav_a_invite',
+    feature: 'invite',
+    group: 'qy-settlement',
+    icon: Users,
+    codeKey: 'qy_sg_code_a_invite',
+  },
+  // 以下两页已被收进「邀请管理」的选择夹，因此**不写 group / icon**：
+  // 它们没有独立的侧栏入口，路由文件只做重定向。
   //
-  // `feature: 'commission'` 只是它自己的门；组里的提现审核挂的是 `withdraw`，
-  // 而 {@link isQyPageVisible} 对宿主页额外走"任一标签可见即可见"那一条 ——
-  // 否则「只开提现、不开返佣」这个合法组合会让提现审核连同宿主一起从侧栏
-  // 消失，站内再也到不了。
+  // 日消费明细。项目方原话：「可以查询昨日使用记录哪个用户消费了多少」。
+  // 它同时也是日结明细答不了的那一半问题（0% 分组、没有上线、被罚过款的
+  // 用户在日结表里一行都没有），所以两者必须同屏，否则运营会以为日结明细
+  // 就是全部的消费。
+  {
+    url: '/qy/admin/daily-consume',
+    titleKey: 'qy_dc_title',
+    feature: 'invite',
+    codeKey: 'qy_sg_code_a_daily_consume',
+  },
+  {
+    url: '/qy/admin/invite-accruals',
+    titleKey: 'qy_nav_a_invite_accruals',
+    feature: 'invite',
+    codeKey: 'qy_sg_code_a_invite_accruals',
+  },
+  // 「结算台」选择夹的宿主（D-15 恢复）：日消费明细 / 佣金审核 / 佣金用户。
+  // 侧栏上这一行写组名「结算台」，宿主自己那张标签写「日消费明细」。
+  // 挂 `commission`：佣金账本关掉时整行消失（两张佣金标签跟着关，第一张嵌的是
+  // 邀请管理里也有的日消费明细，那边照旧可达）。
   {
     url: '/qy/admin/settlement',
-    titleKey: 'qy_nav_a_settlement',
+    titleKey: 'qy_dc_title',
     feature: 'commission',
     group: 'qy-settlement',
-    icon: ReceiptText,
+    icon: Landmark,
     codeKey: 'qy_sg_code_a_settlement',
   },
-  // 以下三页已被收进「结算台」的选择夹，因此**不写 group / icon**：
-  // 它们没有独立的侧栏入口了，旧路由只做重定向。
+  // 以下两页已被收进「结算台」的选择夹，因此**不写 group / icon**。
   {
     url: '/qy/admin/commission-records',
     titleKey: 'qy_nav_a_commission_records',
     feature: 'commission',
     codeKey: 'qy_sg_code_a_commission_records',
   },
-  // 「用户佣金」——**一行 = 一个用户**。项目方原话：「我需要的是新增一个用户
-  // 佣金列表，我可以查看/编辑用户的佣金，以及查看拉了多少用户，以及编辑/移除/
-  // 添加这个用户的佣金绑定关系。」
-  //
-  // 它同时是佣金管理选择夹的宿主（见 `QY_TAB_GROUPS`）：侧栏那一行写的是**组名**
-  // 「用户佣金」，组里第一张标签才写本行的 `titleKey`（用户总览）。
-  //
-  // 这一行取代了此前「佣金余额」与「AFF 关系」各自占的那两行 —— 它们没有被删，
-  // 而是变成了本组的第二、三张标签。侧栏因此从三个佣金入口收成两个：
-  // 「用户佣金」（按用户看）与「计佣流水」（按流水看）。
   {
-    url: '/qy/admin/commission-records/users',
-    titleKey: 'qy_cu_title',
+    url: '/qy/admin/commission-users',
+    titleKey: 'qy_nav_a_commission_users',
     feature: 'commission',
-    group: 'qy-settlement',
-    icon: Users,
     codeKey: 'qy_sg_code_a_commission_users',
-  },
-  // 这两页的路由与组件从一开始就在，但**本表里一行都没有** —— 也就是说站内
-  // 唯一到得了它们的方式是佣金审核页右上角那两个按钮，或者手敲 URL。项目方的
-  // 原话是「UI前端怎么没看见有佣金管理的入口和UI」：他没看错，侧栏上确实一个
-  // 入口都没有。这是本仓第四次出现"页面写完了但没登记入口"，`__tests__/
-  // route-entry-guard.test.ts` 是这次补上的机器判据（路由 ↔ 入口双向比对）。
-  //
-  // 本轮它们从「结算」组的一级项**降级成选择夹成员**（用户佣金的第二、三张
-  // 标签），因此不再写 group / icon —— 写了侧栏会多出两行点进去就被重定向
-  // 甩走的入口（`pages-table.test.ts` 双向断言）。入口没有变少，只是从"三行
-  // 平级"变成"一行 + 两张标签"。
-  //
-  // titleKey 仍然复用页面自己的标题键（`qy_cb_title` / `qy_rel_title`）：标签上
-  // 那个词与页面大标题必须是同一个，复用等于让它们**由构造保证**一致。
-  {
-    url: '/qy/admin/commission-records/relations',
-    titleKey: 'qy_rel_title',
-    feature: 'commission',
-    codeKey: 'qy_sg_code_a_commission_relations',
-  },
-  {
-    url: '/qy/admin/commission-records/balances',
-    titleKey: 'qy_cb_title',
-    feature: 'commission',
-    codeKey: 'qy_sg_code_a_commission_balances',
-  },
-  // 日消费明细。项目方原话：「可以查询昨日使用记录哪个用户消费了多少」。
-  //
-  // 它是「结算台」的第一张标签：运营看这张表的动机与看佣金流水是同一个 ——
-  // 对账。它同时也是佣金那几页答不了的那一半问题（0% 分组、没有上线、被罚过款的
-  // 用户在计佣表里一行都没有），所以两者必须同屏，否则运营会以为佣金流水就是
-  // 全部的消费。
-  {
-    url: '/qy/admin/daily-consume',
-    titleKey: 'qy_dc_title',
-    feature: 'commission',
-    codeKey: 'qy_sg_code_a_daily_consume',
-  },
-  {
-    url: '/qy/admin/withdrawals',
-    titleKey: 'qy_nav_a_withdrawals',
-    feature: 'withdraw',
-    codeKey: 'qy_sg_code_a_withdrawals',
   },
   {
     url: '/qy/admin/transfer-records',
@@ -624,12 +742,12 @@ export const QY_PAGES: readonly QyPageDef[] = [
     codeKey: 'qy_sg_code_a_fund_orders',
   },
   // 抽奖活动管理落在「结算」组而不是「风控」：这一页每天要看的是本场收入 /
-  // 奖品支出 / 待派奖笔数，与佣金结算、提现审核是同一类账，不是风控处置。
+  // 奖品支出 / 待派奖笔数，与划转流水、资金对账是同一类账，不是风控处置。
   {
     url: '/qy/admin/lottery',
     titleKey: 'qy_nav_a_lottery',
     feature: 'lottery',
-    group: 'qy-settlement',
+    group: 'qy-fun-ops',
     icon: Ticket,
     codeKey: 'qy_sg_code_a_lottery',
   },
@@ -661,12 +779,34 @@ export const QY_PAGES: readonly QyPageDef[] = [
     codeKey: 'qy_sg_code_a_audit_logs',
   },
 
+  // ── 「娱乐运营」的后两行:账本与商城,每天要开的台账(第一行是上面的抽奖活动)──
+  // 星屑账本（余额 / 流水 / 日桶 / 手调）与商城管理（商品 / 订单 / 码库存）
+  // 都是流水页，留根侧栏；星屑配置是"改一次影响后续每一笔"，进抽屉。
+  {
+    url: '/qy/admin/stardust',
+    titleKey: 'qy_nav_a_stardust',
+    feature: 'stardust',
+    group: 'qy-fun-ops',
+    icon: Coins,
+    codeKey: 'qy_sg_code_a_stardust',
+  },
+  {
+    url: '/qy/admin/mall',
+    titleKey: 'qy_nav_a_mall',
+    feature: 'mall',
+    group: 'qy-fun-ops',
+    icon: Store,
+    codeKey: 'qy_sg_code_a_mall',
+  },
+
   // ── 并进上游「系统设置」抽屉（需求 8）──
-  // 全是"改一次影响后续每一笔"的配置项：佣金比例、划转额度与分组限制、
+  // 全是"改一次影响后续每一笔"的配置项：划转额度与分组限制、
   // 分组定价、新用户默认分组、违规判定规则。它们与上游的费率/风控设置同类，
-  // 打开频率也一样低。审核与流水页（佣金审核 / 提现审核 / 划转流水 / 资金对账 /
+  // 打开频率也一样低。审核与流水页（邀请管理 / 划转流水 / 资金对账 /
   // 违规记录 / 审计留存）刻意**留在根侧栏**：那些是每天要开的，埋进抽屉里更难找。
   // 顺序 = 抽屉里那一组的显示顺序。
+  // 「佣金配置」（/qy/admin/commission）随 D-15 回来：费率 / 分组档 / 持有期 /
+  // 自动入账参数。星屑侧的邀请返比例仍在「星屑配置」那一页，两页管的是两本账。
   {
     url: '/qy/admin/commission',
     titleKey: 'qy_nav_a_commission',
@@ -716,15 +856,21 @@ export const QY_PAGES: readonly QyPageDef[] = [
   // 够不着的原地渲染」躲开了同一个坑，这里没有照做是因为项目方点名要删的就是
   // 这个页面本身。要恢复那条能力，正确的做法是把新家的准入下调到 role>=10，
   // 而不是把这一页再建回来。
+  //
+  // 抽屉里挂在上游「安全与限制」下面（项目方 2026-09-05 拍板：「把这 2 个菜单，
+  // 移动到安全与限制下」）。同一次拍板还删掉了上游自带的敏感词过滤 —— 那一组里
+  // 原来的「敏感词」section 与本页管的是同一件事（什么内容不许过），两套词表并存
+  // 只会让运营改了一处以为改完了。词表能力整体由本页承担，见 docs/decisions.md D-16。
   {
     url: '/qy/admin/violation-rules',
     titleKey: 'qy_nav_a_violation_rules',
     feature: 'violation',
     codeKey: 'qy_sg_code_a_violation_rules',
     group: QY_SETTINGS_GROUP,
+    settingsSection: 'security',
   },
   // AI 内容审核。它与违规规则是同一档配置(改一次影响之后每一笔),
-  // 所以并排放在抽屉里而不是根侧栏。
+  // 所以并排挂在「安全与限制」下面而不是根侧栏。
   //
   // 单独一页而不是塞进违规规则页的一个折叠区:这一页管的是**送不送审、送到哪、
   // 花了多少**(渠道、密钥、抽样率、成本),而规则页管的是**什么算违规、命中之后
@@ -736,6 +882,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
     feature: 'violation',
     codeKey: 'qy_sg_code_a_violation_ai_review',
     group: QY_SETTINGS_GROUP,
+    settingsSection: 'security',
   },
   // 违规类型。与「违规判定规则」紧挨着，因为两者是同一件事的两层：类型定"几次
   // 会被处置"，规则定"什么算一次"，而规则表单里的类型下拉取值就来自这一页。
@@ -759,16 +906,30 @@ export const QY_PAGES: readonly QyPageDef[] = [
     codeKey: 'qy_sg_code_a_lottery_config',
     group: QY_SETTINGS_GROUP,
   },
+  // 星屑配置：货币名、消费返 / 邀请返的费率、分组费率、套餐返。改一次影响之后
+  // 每一笔结算，与抽奖配置同一档，所以并排进抽屉。
+  {
+    url: '/qy/admin/stardust-config',
+    titleKey: 'qy_nav_a_stardust_config',
+    feature: 'stardust',
+    codeKey: 'qy_sg_code_a_stardust_config',
+    group: QY_SETTINGS_GROUP,
+  },
   // 可选 API 地址簿。改一次影响之后每一个用户复制出来的连接信息，与费率、
   // 门槛同类，属于抽屉里那批配置而不是每天要看的流水。
   // 不挂 `feature`：它没有 YAML 开关（见 `qianye/modules/apiaddr` 的说明），
   // 扩展开着就有 —— 而且它的"关掉"就是一条地址都不配，那时用户侧自动回落
   // 到站点地址，与本功能上线之前完全一致。
+  //
+  // 抽屉里挂在上游「模型与路由」下面（项目方 2026-09-05 拍板）：这一页配的是
+  // 用户拿去请求模型的那些 base url，与那一组里的全局模型配置、路由可靠性是
+  // 同一件事的两端，比跟抽奖设置、星屑设置并排更好找。
   {
     url: '/qy/admin/api-address',
     titleKey: 'qy_nav_a_api_address',
     codeKey: 'qy_sg_code_a_api_address',
     group: QY_SETTINGS_GROUP,
+    settingsSection: 'models',
   },
   // 受限账号。项目方原话：「受限制账号，在系统设置里面单独进行配置。」
   //
@@ -836,13 +997,12 @@ export function isQyPageVisible(
 
   // 宿主页还有第二条路：**任何一张标签可见，宿主就必须可见**。
   //
-  // 选择夹里的各张标签挂的功能开关不一定相同（结算台是 commission ×
-  // commission × withdraw，推广佣金是 commission × commission × withdraw ×
-  // withdraw）。只按宿主自己那一个开关判定的话，「只开提现、不开返佣」这个
-  // 完全合法的组合会让宿主整行从侧栏消失，而组里那张 withdraw 标签**并没有
-  // 被关掉** —— 它只是再也没有入口了。那正是本仓反复出现的断链形状，而且
-  // 这一次连 `route-entry-guard` 都看不见：那条守卫按"页面表里有没有登记"
-  // 判定，登记是齐的。
+  // 选择夹里的各张标签挂的功能开关不一定相同（钱包那一组是 transfer ×
+  // transfer × pay_password）。只按宿主自己那一个开关判定的话，「只开抽奖、
+  // 不开划转」这个完全合法的组合会让宿主整行从侧栏消失，而组里那张
+  // pay_password 标签**并没有被关掉** —— 它只是再也没有入口了。那正是本仓
+  // 反复出现的断链形状，而且这一次连 `route-entry-guard` 都看不见：那条守卫
+  // 按"页面表里有没有登记"判定，登记是齐的。
   //
   // 判定走 `qyPageGatesPass` 而不是递归调用自己：宿主页往往也是组里的第一张
   // 标签（`/qy/affiliate`），递归会原地打转。

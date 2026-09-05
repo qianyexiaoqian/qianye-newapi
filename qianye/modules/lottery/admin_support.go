@@ -59,20 +59,15 @@ func errBadRequest(msg string) *bizError {
 
 var (
 	errPayoutNotFound = newBizError(http.StatusNotFound, "qy_lot_payout_not_found", "该出款记录不存在")
-	// errPayoutNeedsManual 是"这一笔不能自动重试"的诚实回答:资金单还没落定,
-	// 或者它被判失败而主库探针说钱其实动了。两种情况下重开一张单都可能重复发钱,
-	// 只能由人核对主库流水之后决定。
-	errPayoutNeedsManual = newBizError(http.StatusConflict, "qy_lot_payout_needs_manual",
-		"该笔出款的资金单尚未落定或与主库探针矛盾,不能自动重试,请先人工核对主库流水")
-	errProofNotReady = newBizError(http.StatusConflict, "qy_lot_proof_not_ready",
+	errProofNotReady  = newBizError(http.StatusConflict, "qy_lot_proof_not_ready",
 		"该活动尚未封盘,证据链要等名单冻结之后才能生成")
 	errProofDisabled = newBizError(http.StatusNotFound, "qy_lot_proof_disabled", "证据链端点已关闭")
 
-	// errNotTextPrize 刻意不是 404:履行/撤销/揭示三个接口对**额度奖**必须明确
-	// 拒绝,因为额度奖的 paid 是资金终态、永远不可撤。回 404 会让人以为只是
+	// errNotTextPrize 刻意不是 404:履行/撤销/揭示三个接口对**星屑奖**必须明确
+	// 拒绝,因为星屑奖的 paid 是资金终态、永远不可撤。回 404 会让人以为只是
 	// 单号打错了,然后去找一个"正确"的单号再试一次。
 	errNotTextPrize = newBizError(http.StatusForbidden, "qy_lot_not_text_prize",
-		"该笔不是文本奖:额度奖由出款链路自动到账,不能人工履行或撤销")
+		"该笔不是文本奖:星屑奖由出款链路自动到账,不能人工履行或撤销")
 	errPrizeAlreadyFulfilled = newBizError(http.StatusConflict, "qy_lot_prize_fulfilled",
 		"该文本奖已经履行过了;要更正内容请先撤销,撤销会留下不可删除的履历")
 	errPrizeNotFulfilled = newBizError(http.StatusConflict, "qy_lot_prize_not_fulfilled",
@@ -81,6 +76,14 @@ var (
 	// 当明文展示 —— 那会让管理员把一串乱码发给中奖者。
 	errPrizeSecretUnreadable = newBizError(http.StatusInternalServerError, "qy_lot_prize_unreadable",
 		"该文本奖的内容无法读取,请联系运维核对密钥版本")
+	// errPrizeSecretKeyMissing 与上面那条分开:那一条是"这一行读不出来"
+	// (密钥版本对不上/密文被改过),这一条是"这台机器根本没配密钥"。
+	// 前者要运维去核对轮换,后者要运维去补一行配置,给同一句话会让人查错方向。
+	//
+	// 正常运行走不到它:启动校验已经拒绝了空密钥。它兜的是热更新把密钥抹掉
+	// 的那一瞬 —— 那时正确的行为是拒绝写入,而不是静默回落成明文。
+	errPrizeSecretKeyMissing = newBizError(http.StatusInternalServerError, "qy_lot_prize_key_missing",
+		"服务端未配置文本奖加密密钥(lottery.prize_secret_key),兑换码不允许明文落库,请先补配置")
 )
 
 // loadActivityAny 按活动号读取活动,**不限状态**。
@@ -103,15 +106,17 @@ func loadActivityAny(ctx context.Context, gdb *gorm.DB, actNo string) (*Activity
 	return &a, nil
 }
 
-// loadSeedForReveal 是包内**唯一**读取种子原文的函数。
+// loadSeedForReveal 是包内的**冷路径**种子读点(热路径那一个是 wheel.go 的
+// loadSeedForSpin,只在转盘的转动事务里读)。
 //
-// 它只有四个合法调用点:发布时算 commit_hash、开奖时算 final_seed、
-// 揭示后把种子放进证据链,以及**彻底删除一场活动之前**把种子写进审计
-// (buildDeleteEvidence)—— 那一份审计是删完之后唯一还能证明
-// "当初公布的 commit_hash 确实是这个种子算出来的"的东西,而对一场已结束的
-// 活动来说种子本来就已经在 proof 里公开过。别处一律用 loadSalts 那个只取盐的投影 ——
-// 把这条约束做成"只有一个函数能读"而不是"大家记得别读",
-// 是因为泄漏一次就永久毁掉这场活动的公正性,而没有任何测试会因此变红。
+// 它的生产调用点有四个:发布时算 commit_hash(handlePublishActivity)、开奖时算
+// final_seed(revealActivity)、揭示后把种子放进证据链(buildProof),以及**彻底删除
+// 一场活动之前**把种子写进审计(buildDeleteEvidence)—— 那一份审计是删完之后唯一
+// 还能证明"当初公布的 commit_hash 确实是这个种子算出来的"的东西,而对一场已结束的
+// 活动来说种子本来就已经在 proof 里公开过。第五个调用点 computeCommit 是**测试专用
+// 的包装**(生产代码没有调用方)。别处一律用 loadSalts 那个只取盐的投影 ——
+// 把这条约束做成"只有两个函数能读"而不是"大家记得别读",是因为泄漏一次就永久
+// 毁掉这场活动的公正性,而没有任何测试会因此变红;seed_guard_test.go 钉住这一点。
 //
 // 调用方必须自己保证时机正确(揭示前绝不下发)。
 func loadSeedForReveal(ctx context.Context, gdb *gorm.DB, actId int64) (string, error) {
@@ -297,8 +302,8 @@ func auditReason(err error) string {
 // settleGuessResult 把竞猜结果钉死并落下出款计划。
 //
 // **单个扩展库事务,一分钱不动**:这里只往 qy_lot_payout 写 planned 行,
-// 真正的出款由 worker 逐笔驱动。绝不在这里循环 twophase.Execute ——
-// 那会让一次结算变成 N 次跨库调用,任何一次中途失败都留下一半发一半没发的场面。
+// 真正的出款由 worker 逐笔驱动。绝不在这里循环入账 ——
+// 那会让一次结算变成 N 次往返,任何一次中途失败都留下一半发一半没发的场面。
 //
 // 分配算法与守恒断言在 SplitPool 里(纯函数,可被第三方复算)。
 // 断言不成立就整个事务回滚 + 告警 + 落异常,绝不发出一笔对不上账的钱。
@@ -352,7 +357,7 @@ func settleGuessResult(ctx context.Context, act *Activity, opt *Option, evidence
 		kind := PayoutWin
 		amount := s.Amount
 		if s.Refund {
-			// 退款金额以**资金单**为权威,与取消/流局那条路径同一道闸
+			// 退款金额以**账本流水**为权威,与取消/流局那条路径同一道闸
 			// (refundAmountOf)。
 			//
 			// 这里原先直接发 roster 上的 amount。看起来它被"重算奖池 == 物化
@@ -362,11 +367,11 @@ func settleGuessResult(ctx context.Context, act *Activity, opt *Option, evidence
 			//
 			// 更要紧的是它把已有的那道闸**挡在了门外**:全额退回的两种收场
 			// (全部猜错 / 全场押中同一项)都落在 isFullRefundOutcome 里,
-			// runSettle 随后会再跑一次 planFullRefund —— 而那一次是核对资金单的。
+			// runSettle 随后会再跑一次 planFullRefund —— 而那一次是核对流水的。
 			// 两条路径共用 uk(act_id, entry_id, kind),**先登记的那一条赢**,
 			// 也就是这里未经核对的这一条。等于给竞猜开了一个专用绕过口。
 			//
-			// 读不到资金单时**不登记**,与 planFullRefund 逐字同一个口径:
+			// 读不到流水时**不登记**,与 planFullRefund 逐字同一个口径:
 			// 没有证据证明钱收过,就不能凭空发钱。此时 finishIfDone 的覆盖度
 			// 复核会拦住收尾,活动留在 settling 等人处理,而不是静默少退一笔。
 			capped, ok := refundAmountOf(ctx, gdb, act.Id, e)

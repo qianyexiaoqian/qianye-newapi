@@ -62,7 +62,8 @@ func TestAdminListReturnsEmptyArrayOnEmptyDB(t *testing.T) {
 	assert.Equal(t, "[]", string(raw))
 }
 
-// 用户侧只下发已启用的地址,而且只下发白名单里的四个字段。
+// 用户侧只下发已启用的地址,而且只下发白名单里的五个字段
+// (id/name/remark/url/color)。
 //
 // # 为什么要断言"字段不在里面"
 //
@@ -80,7 +81,7 @@ func TestUserListHidesDisabledRowsAndInternalFields(t *testing.T) {
 	require.NoError(t, common.Unmarshal(data["items"], &items))
 	require.Len(t, items, 1, "已停用的地址不该出现在用户侧")
 
-	for _, hidden := range []string{"enabled", "created_by", "updated_by", "sort_order"} {
+	for _, hidden := range []string{"enabled", "created_by", "updated_by", "sort_order", "user_groups", "surfaces"} {
 		_, present := items[0][hidden]
 		assert.False(t, present, "用户侧不该下发 %q", hidden)
 	}

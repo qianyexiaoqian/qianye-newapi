@@ -97,6 +97,42 @@ const MISS_EXEMPT: { file: string; line?: number; why: string }[] = [
       'path 求不出，于是它落在「求出来了但对不上」这一档而不是上面那一档 —— ' +
       '归一出来的 /api/qy 与 /api/:param 是两个不存在的路径，本来就不该有人注册。',
   },
+  // 星屑三个 api.ts（用户端 / 配置管理端 / 账本管理端）、商城两个 api.ts 与
+  // 转盘 api.ts 的豁免已随后端路由落地（清单里有 /api/qy/stardust/*、
+  // /api/qy/admin/stardust/*、/api/qy/mall/*、/api/qy/admin/mall/* 与
+  // /api/qy/lottery/activities/:act_no/spins{,/me}）一起删除，它们回到正常对账。
+  //
+  // 星辉佣金（D-15）四个 api.ts 的豁免已随 `qianye/modules/commission` 落地、清单
+  // 重新生成（/api/qy/commission/* 与 /api/qy/admin/commission/* 都在清单里）而删除，
+  // 它们回到正常对账。
+]
+
+/**
+ * 「Go 源码里已经注册、清单还没重新生成」的显式待定清单（design-15 实施期）。
+ *
+ * 星屑 / 商城 / 转盘的后端与前端并行实现：Go 侧的路由注册行已经进了源码，但
+ * `qianye/route_manifest.txt` 要等后端整体能编译、跑过
+ * `QY_ROUTE_MANIFEST_UPDATE=1 go test ./qianye/ -run TestQyRouteManifestIsCurrent`
+ * 才会重新生成。这段时间「路由清单没有过期」那条兜底必然红，而它报的不是前端的锅。
+ *
+ * 所以按 **目录 × 路径形状** 登记成待定（两个条件都要满足，别的目录里出现同名
+ * 片段照样判红），**后端路由落地（清单重新生成）后移除**：下面那条「待定清单不许
+ * 过期」会在清单里出现同名路由的那一刻判红，提醒把对应条目连同上面 MISS_EXEMPT
+ * 里那六条 api.ts 一起删掉，让这批路径回到正常对账。
+ */
+const MANIFEST_PENDING: {
+  /** 只豁免这个目录（相对仓库根）下的注册行。 */
+  dir: string
+  /** 注册行里的路径片段形状。 */
+  fragment: RegExp
+  /** 清单里一旦出现含这一段的路径，就说明后端已落地，本条必须删。 */
+  landed: string
+  why: string
+}[] = [
+  // 星屑（qianye/modules/stardust）、商城（qianye/modules/mall）与转盘
+  // （qianye/modules/lottery 的 /spins 两条）的待定条目已随清单重新生成而删除：
+  // 全部路由都在清单里，前端六个 api.ts 已回到正常对账。
+  // 星辉佣金（D-15，qianye/modules/commission）的待定条目已随清单重新生成而删除。
 ]
 
 /** Go 源码里的路由注册行 —— 只取字面量路径片段，用作清单过期的廉价兜底。 */
@@ -170,21 +206,34 @@ const ORPHAN_EXEMPT: { route: string; why: string }[] = [
     why: '日志指标的探针端点，供外部监控轮询，不进管理界面。',
   },
   {
-    route: 'POST /api/qy/admin/commission/cache/invalidate',
-    why: '多节点缓存的手动收敛口，正常路径由版本号自动完成；留给排障。',
+    route: 'POST /api/qy/admin/invite/cache/invalidate',
+    why: '邀请人缓存的跨节点强制失效，排障时 curl 的东西；关系写接口本来就会自动失效缓存。',
   },
   {
-    route: 'POST /api/qy/admin/commission/settle',
-    why:
-      '「某一个邀请人卡住」的按人兜底。界面入口本轮**有意删除**（见结算台那一段）：' +
-      '整轮补救走「结算调度 → 重跑今天这一轮」，按人兜底保留为 curl 通路。' +
-      'qianye/modules/commission/settle_rerun_boundary_test.go 守着它仍挂在管理端组上。',
+    route: 'GET /api/qy/admin/invite/health',
+    why: '邀请模块的体检输出，由 /admin/health 汇总页与排障 curl 消费，不单独进界面。',
   },
   {
     route: 'GET /api/qy/ticket/images/:ref',
     why:
       '工单图片是 <img src> 直接指过去的，不经 axios —— 提取器只扫 axios 调用点，' +
       '所以它在这里必然是孤儿，而界面上一直看得见。',
+  },
+  {
+    route: 'GET /api/qy/mall/covers/:ref',
+    why:
+      '商品封面同工单图片：后端把 cover_ref 解析成这条路径放进商品视图的 `cover_url`，' +
+      '前端 `pages/mall/components/mall-cover.tsx` 直接 <img src> 指过去，不经 axios。' +
+      '匿名端点，只回已绑到商品上的那些图。',
+  },
+  // 抽奖出款「人工核对落账」（POST …/payouts/:payout_no/adjudicate）的豁免已随
+  // 后端删掉那条路由并重新生成清单而一起删除（design-15 §6）。
+  {
+    // 星辉佣金（D-15）。项目方原话：「佣金审核的这个：立即结算 移除吧，全部由
+    // 系统到时间自动结算。」界面入口刻意不给；接口保留是"某一个邀请人卡住"时
+    // 的兜底，与「重跑今天这一轮」（有按钮，`settle/rerun`）不是同一件事。
+    route: 'POST /api/qy/admin/commission/settle',
+    why: '项目方点名移除「立即结算」的界面入口；后端接口保留作单人兜底，只留给 curl。',
   },
 ]
 
@@ -372,15 +421,38 @@ describe('qy 前后端路径对账', () => {
       literals.length >= MIN_COUNT,
       `只在 Go 源码里找到 ${literals.length} 处路由注册`
     )
-    const missing = literals.filter(
-      ({ fragment }) =>
-        fragment !== '' && !routes.some((r) => r.path.includes(fragment))
-    )
+    const missing = literals.filter(({ file, fragment }) => {
+      if (fragment === '') return false
+      if (routes.some((r) => r.path.includes(fragment))) return false
+      // 实施期待定：目录与片段形状都对得上才放行（见 MANIFEST_PENDING）。
+      const normalized = file.replaceAll('\\', '/')
+      return !MANIFEST_PENDING.some(
+        (e) => normalized.includes(`/${e.dir}/`) && e.fragment.test(fragment)
+      )
+    })
     assert.deepEqual(
       missing.map((x) => `${x.file}  ${x.fragment}`),
       [],
       'Go 源码里注册了这些路径，清单里却没有 —— 重新生成：\n' +
         '    QY_ROUTE_MANIFEST_UPDATE=1 go test ./qianye/ -run TestQyRouteManifestIsCurrent -count=1'
     )
+  })
+
+  /**
+   * 与「孤儿豁免清单不许过期」同一条纪律：待定条目的全部价值是那句 `why` 可信。
+   * 清单重新生成、里面出现了同名路由之后，条目留着就是把兜底对这批目录永久关掉。
+   */
+  test('待生成清单的待定条目不许过期', () => {
+    const landed = MANIFEST_PENDING.filter((e) =>
+      routes.some((r) => r.path.includes(e.landed))
+    ).map((e) => `${e.dir}  ${e.landed}`)
+    assert.deepEqual(
+      landed,
+      [],
+      `这些后端路由已经进了清单，MANIFEST_PENDING 里的条目连同 MISS_EXEMPT 里对应的 api.ts 豁免一起删掉：\n  ${landed.join('\n  ')}`
+    )
+    for (const e of MANIFEST_PENDING) {
+      assert.ok(e.why.length > 10, `待定 ${e.dir} 没有写理由`)
+    }
   })
 })

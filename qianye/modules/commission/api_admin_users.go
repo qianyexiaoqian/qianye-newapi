@@ -52,7 +52,7 @@ package commission
 //	        上那个金额,与换绑/解绑响应里的 kept_commission_quota 同一份实现)。
 //
 // 筛选、排序、分页、合计在 ④ 的结果上于内存中完成。这不是偷懒,是唯一可行的
-// 做法:项目方要的排序里有「谁拉的人最多」与「可提现最多」,前者的数在主库、
+// 做法:项目方要的排序里有「谁拉的人最多」与「可用余额最多」,前者的数在主库、
 // 后者的数在扩展库,任何一条 SQL 都排不动它们两个。在数据库里排 = 只能排一半,
 // 而"只排了一半的排序"比不提供排序更糟 —— 它看起来是对的。
 //
@@ -65,9 +65,9 @@ package commission
 // # 这张表不碰钱
 //
 // 本文件只有一条 GET。所有写动作(手工增减、绑定/换绑/解绑、拉黑)都复用既有
-// 接口,一行代码都不重复 —— 手工增减的幂等键、下界校验、三条恒等式、审计,
-// 全部只有 api_admin_adjust.go 那一份实现。下钻(逐笔计佣、结算、提现、下线列表)
-// 同理复用 /commission/records 与 /commission/relations。
+// 接口(关系类在 /admin/invite/*),一行代码都不重复 —— 手工增减的幂等键、下界校验、三条恒等式、审计,
+// 全部只有 api_admin_adjust.go 那一份实现。下钻(逐笔计佣、入账记录、下线列表)
+// 同理复用 /commission/records、/commission/credits 与 /admin/invite/relations。
 
 import (
 	"context"
@@ -81,6 +81,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
+	"github.com/QuantumNous/new-api/qianye/modules/invite"
 
 	"github.com/gin-gonic/gin"
 )
@@ -95,8 +96,8 @@ const maxCandidateUsers = 20000
 // userCommissionView 是一行"一个人的全部佣金事务"。
 //
 // 内嵌 balanceView 而不是把那十几个字段抄一遍:同一个数在两张表上必须是同一个
-// 名字、同一套算法。派生可提现与账本漂移尤其如此 —— 那条恒等式在后端已经被
-// 结算/冲正/提现三条路径各实现了一遍,再抄第四遍就是在等它漂移。
+// 名字、同一套算法。派生可用余额与账本漂移尤其如此 —— 那条恒等式在后端已经被
+// 结算/冲正/自动入账三条路径各实现了一遍,再抄第四遍就是在等它漂移。
 type userCommissionView struct {
 	balanceView
 
@@ -117,19 +118,19 @@ type userCommissionView struct {
 	// InviterBlocked 说的是"**他作为下线**的这条关系被拉黑了",即他的消费不再
 	// 给上线计佣。它不是"这个人被封号了"。
 	InviterBlocked bool `json:"inviter_blocked"`
-	// InviterCommissionQuota 是**当前这个上线从这个人身上**已经挣到的佣金额度,
+	// InviterCommission 是**当前这个上线从这个人身上**已经挣到的佣金额度,
 	// 也就是"把这条关系换掉或解掉之后,会留在原邀请人名下的那笔钱"。
 	//
-	// 它与 TotalEarnedQuota 是两个方向完全相反的数,绝不能互相顶替:前者是
+	// 它与 TotalEarned 是两个方向完全相反的数,绝不能互相顶替:前者是
 	// 别人从**他**身上挣的,后者是**他**从自己所有下线身上挣的。管理关系的确认框
 	// 要回答的是"改了之后那笔钱怎么办",答案只能是前者。渲染成后者的后果实测过:
-	// 397 号的 total_earned_quota 是 0(他自己没有下线),而他上线 391 从他身上
+	// 397 号的 total_earned 是 0(他自己没有下线),而他上线 391 从他身上
 	// 已经挣到 13517 —— 确认框会写"保留 0",点完的成功提示写"保留 13517"。
 	//
 	// 与换绑/解绑响应里的 kept_commission_quota 共用同一份实现
 	// (pairCommissionQuotas),因此两处不可能算出不同的数。
 	// 没有上线(InviterId = 0)时恒为 0:那时没有任何既有关系可言。
-	InviterCommissionQuota int64 `json:"inviter_commission_quota"`
+	InviterCommission int64 `json:"inviter_commission"`
 
 	// ── 下线 ──
 	// BlockedInviteeCount 是他名下已被拉黑、不再产生新佣金的下线条数。
@@ -143,13 +144,13 @@ type userCommissionView struct {
 // userCommissionSorters 是排序白名单。
 //
 // 全部作用在**内存里已经 join 好的行**上,所以主库列与扩展库列可以混排 ——
-// 「谁拉的人最多」(主库)与「可提现最多」(扩展库)在同一个下拉里。
+// 「谁拉的人最多」(主库)与「可用余额最多」(扩展库)在同一个下拉里。
 //
 // 每一个都以 user_id 做最终的次级键:比较值相同的行必须有稳定顺序,
 // 否则翻页会漏行也会重复行,而这一页正是"逐个核对谁挣了多少"的地方。
 var userCommissionSorters = map[string]func(a, b userCommissionView) bool{
-	"available": func(a, b userCommissionView) bool { return a.AvailableQuota > b.AvailableQuota },
-	"earned":    func(a, b userCommissionView) bool { return a.TotalEarnedQuota > b.TotalEarnedQuota },
+	"available": func(a, b userCommissionView) bool { return a.Available > b.Available },
+	"earned":    func(a, b userCommissionView) bool { return a.TotalEarned > b.TotalEarned },
 	"updated":   func(a, b userCommissionView) bool { return a.UpdatedAt > b.UpdatedAt },
 	"user":      func(a, b userCommissionView) bool { return false },
 	"invitees":  func(a, b userCommissionView) bool { return a.InviteeCount > b.InviteeCount },
@@ -179,21 +180,21 @@ func adminListUserCommissions(c *gin.Context) {
 		return
 	}
 
-	// 合计跟着当前筛选走。运营问的是"命中这批条件的人一共挂着多少可提现、
-	// 已经提走了多少、一共拉了多少人",逐页心算是不可行的。
+	// 合计跟着当前筛选走。运营问的是"命中这批条件的人一共挂着多少可用、
+	// 已经入账了多少、一共拉了多少人",逐页心算是不可行的。
 	totals := gin.H{
-		"user_count": len(rows), "available_quota": int64(0),
-		"withdrawn_quota": int64(0), "invitee_count": 0,
+		"user_count": len(rows), "available": int64(0),
+		"credited": int64(0), "invitee_count": 0,
 	}
-	var availableSum, withdrawnSum int64
+	var availableSum, creditedSum int64
 	inviteeSum := 0
 	for _, r := range rows {
-		availableSum += r.AvailableQuota
-		withdrawnSum += r.WithdrawnQuota
+		availableSum += r.Available
+		creditedSum += r.Credited
 		inviteeSum += r.InviteeCount
 	}
-	totals["available_quota"] = availableSum
-	totals["withdrawn_quota"] = withdrawnSum
+	totals["available"] = availableSum
+	totals["credited"] = creditedSum
 	totals["invitee_count"] = inviteeSum
 
 	less, ok := userCommissionSorters[c.Query("sort")]
@@ -259,7 +260,7 @@ func buildUserCommissionRows(ctx context.Context, c *gin.Context) ([]userCommiss
 
 	// ③ 被拉黑的关系。两个方向都要:按 invitee 回答"他自己被拉黑没有",
 	// 按 inviter 回答"他名下有几条被拉黑"。
-	var blockedRels []InviteRelation
+	var blockedRels []invite.InviteRelation
 	if err := gdb.WithContext(ctx).Select("invitee_id", "inviter_id").
 		Where("blocked = ?", true).Find(&blockedRels).Error; err != nil {
 		db.MarkFailure(err)
@@ -341,7 +342,7 @@ func buildUserCommissionRows(ctx context.Context, c *gin.Context) ([]userCommiss
 		if !hasRow {
 			// 没有余额行时给一个全零的形状,而不是让前端去分辨 null。
 			// 走 newBalanceView 而不是手搭 balanceView{}:那几个字符串字段
-			// (unsettled_amount / available_fiat)手搭出来是**空串**而不是 "0",
+			// (unsettled_amount)手搭出来是**空串**而不是 "0",
 			// 于是"有余额"筛选里 `unsettled_amount == "0"` 恒不成立,一个佣金账
 			// 都没有的人会被当成"账上有钱"筛出来。
 			bv = newBalanceView(Balance{UserId: u.Id})
@@ -372,11 +373,10 @@ func buildUserCommissionRows(ctx context.Context, c *gin.Context) ([]userCommiss
 		if hasInvitees && row.InviteeCount == 0 {
 			continue
 		}
-		// "有余额"刻意不含已提现:那笔钱已经走了。按"有余额"筛出一个实际可动
-		// 余额为 0 的人,运营会对着他研究半天。未结算余数算在内 —— 它是欠账或
-		// 待发的零头,两者都需要人看一眼。
-		if hasBalance && row.AvailableQuota == 0 && row.FrozenQuota == 0 &&
-			row.UnsettledAmount == "0" {
+		// "有余额"刻意不含已入账:那笔钱已经发成星屑、进了对方的星屑余额。按
+		// "有余额"筛出一个实际可动余额为 0 的人,运营会对着他研究半天。未结算余数
+		// 算在内 —— 它是欠账或待发的零头,两者都需要人看一眼。
+		if hasBalance && row.Available == 0 && row.UnsettledAmount == "0" {
 			continue
 		}
 		// "被拉黑"筛的是**这一行自己**那条上线关系被拉黑,与列上的
@@ -429,8 +429,8 @@ func attachInviterNames(ctx context.Context, rows []userCommissionView) error {
 // attachInviterCommission 给**本页**补上"当前上线从这个人身上挣到了多少"。
 //
 // 这是管理关系那个确认框唯一该念的金额:改掉/解掉这条关系之后,留在原邀请人
-// 名下的就是这笔钱。它跟 total_earned_quota 是反方向的两个数,见
-// userCommissionView.InviterCommissionQuota 上的说明。
+// 名下的就是这笔钱。它跟 total_earned 是反方向的两个数,见
+// userCommissionView.InviterCommission 上的说明。
 //
 // 与 attachInviterNames 一样放在分页之后,而且刻意用同一份 pairCommissionQuotas
 // —— 换绑/解绑响应里的 kept_commission_quota 走的就是它,两处永远算得出同一个数。
@@ -449,15 +449,15 @@ func attachInviterCommission(ctx context.Context, rows []userCommissionView) {
 	}
 	quotas := pairCommissionQuotas(ctx, pairs)
 	for i := range rows {
-		rows[i].InviterCommissionQuota = quotas[[2]int{rows[i].InviterId, rows[i].UserId}]
+		rows[i].InviterCommission = quotas[[2]int{rows[i].InviterId, rows[i].UserId}]
 	}
 }
 
 // registerUserCommissionRoutes 挂载以用户为中心的佣金总表。
 //
 // 只读,挂搜索限流(它一次要跨两个库做五次查询并在内存里 join)。写动作与全部
-// 下钻查询都不在本文件里:它们复用 relations/* 、balances/adjust 、records 与
-// withdrawals,那些路由各自已经挂了该挂的限流。
+// 下钻查询都不在本文件里:它们复用 invite 的 relations/*、balances/adjust、records 与
+// credits,那些路由各自已经挂了该挂的限流。
 func registerUserCommissionRoutes(g *gin.RouterGroup) {
 	g.GET("/commission/users", middleware.SearchRateLimit(), adminListUserCommissions)
 }

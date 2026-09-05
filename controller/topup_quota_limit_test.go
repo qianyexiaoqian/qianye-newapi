@@ -36,7 +36,7 @@ func withTopUpQuotaEnv(t *testing.T, displayType string, quotaPerUnit float64) {
 	// 协程（common.RedisEnabled 默认为 true），它抢到第二条连接就会把这条空库
 	// 连接留在池里，之后任何查询都可能被它服务 —— users 表凭空消失，断言随机
 	// 落到「获取用户分组失败」。锁成单连接是唯一可靠的修法。
-	// 同仓 qianye/modules/commission/testdb_test.go:130 的 useMainDB 同因同法。
+	// 同仓 qianye/modules/invite/testdb_test.go 的 useMainDB 同因同法。
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)

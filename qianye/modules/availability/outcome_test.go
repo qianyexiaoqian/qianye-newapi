@@ -124,9 +124,11 @@ func TestClassify(t *testing.T) {
 			want: OutcomeClientError,
 		},
 		{
-			name: "敏感词拦截算用户请求问题,不算违规扣费",
+			// 上游把 prompt 判为不安全时返回 prompt_blocked。它是"请求内容有问题",
+			// 与我们自己的违规扣费(violation_fee.*)不是一回事,不能记成违规。
+			name: "上游拦下 prompt 算用户请求问题,不算违规扣费",
 			in: classifyInput{Err: types.NewErrorWithStatusCode(
-				errors.New("sensitive"), types.ErrorCodeSensitiveWordsDetected, 400)},
+				errors.New("blocked"), types.ErrorCodePromptBlocked, 400)},
 			want: OutcomeClientError,
 		},
 		{

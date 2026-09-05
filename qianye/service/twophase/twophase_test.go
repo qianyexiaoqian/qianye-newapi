@@ -46,6 +46,7 @@ func TestValidateAmount(t *testing.T) {
 func TestNewOrderNo_Format(t *testing.T) {
 	cases := map[string]string{
 		qymodel.KindTransfer:         "TR",
+		qymodel.KindCommissionCredit: "CC",
 		qymodel.KindCommissionSettle: "CM",
 		qymodel.KindCommissionRevers: "RV",
 		qymodel.KindWithdrawQuota:    "WD",

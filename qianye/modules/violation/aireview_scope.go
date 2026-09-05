@@ -1,10 +1,15 @@
 package violation
 
 import (
+	"database/sql/driver"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"unicode/utf8"
+
+	"github.com/QuantumNous/new-api/common"
 
 	"gorm.io/gorm"
 )
@@ -136,26 +141,34 @@ type AIScope struct {
 	// 因此升级上来的站点什么都不用做。
 	CategoryId int64 `json:"category_id" gorm:"not null;default:0"`
 
-	// ChannelId 是「这一档送到哪个审核渠道」。0 = 不指定,走默认选取。
+	// ChannelIds 是「这一档送到哪些审核渠道」。空 = 不指定,走默认选取。
 	//
-	// # 「默认」到底是谁:加权随机,不是"第一个"
+	// 库里是一列逗号分隔的 id,接口上是一个数字数组(见 AIChannelIds)。
+	// **顺序有意义**:轮询按这个顺序转;加权随机忽略它。
 	//
-	// 留空时 pickAIChannels 在**全部启用中的渠道**里按 AIChannel.Weight 做加权
-	// 随机,最多试 maxAIAttempts 个。渠道表上没有 priority 这种东西 ——
-	// 权重就是运营表达"主用哪个、备用哪个"的唯一方式。所以留空的准确含义是
-	// 「按权重随机分流」,不是「用某一个固定渠道」,界面上必须这么写:
-	// 把它说成"默认渠道"会让人以为存在一个确定的答案,而两个渠道各 50% 时
-	// 那句话就是假的。
+	// # 「默认」到底是谁:全部启用渠道,按 ChannelMode 分发
 	//
-	// # 为什么需要指定
+	// 留空时 pickAIChannels 在**全部启用中的渠道**之间分发,最多试 maxAIAttempts
+	// 个。渠道表上没有 priority 这种东西 —— 权重就是运营表达"主用哪个、备用哪个"
+	// 的唯一方式。所以留空的准确含义是「在全部启用渠道之间分发」,不是「用某一个
+	// 固定渠道」,界面上必须这么写:把它说成"默认渠道"会让人以为存在一个确定的
+	// 答案,而两个渠道各 50% 权重时那句话就是假的。
+	//
+	// # 为什么要能指定,而且是**一组**而不是一个
 	//
 	// 作用域已经能表达"只盯自助注册分组",但送到哪里仍然是全站一份加权随机。
 	// 而运营给不同分组开审核的**约束**本来就不同:内部对接分组的内容可能只
-	// 允许发给自建的那个端点,自助注册分组用便宜的小模型就够。混在一个随机
+	// 允许发给自建的那两个端点,自助注册分组用便宜的小模型就够。混在一个随机
 	// 池里时,前者会以某个概率把内容发给云端厂商 —— 一次没人授权、也没有任何
 	// 症状的数据出境。
 	//
-	// # 指定的渠道停用/删除时:这一档不审核,**绝不回落到默认池**
+	// 这一列一度只能填**一个** id。那让"只发给我自己机房里的这两台"表达不了:
+	// 要么退回全站随机池(把云端厂商一起放进来),要么把全部流量压在一台上,
+	// 而护栏模型(qwen3guard 那一类小模型)恰恰是最常被横向扩到两三台的那种。
+	// 一组 id 同时表达了约束(只有这几个)与分发(它们之间怎么轮),
+	// 而这正是运营在这一格里要说的两件事。
+	//
+	// # 指定的渠道**全部**停用/删除时:这一档不审核,绝不回落到默认池
 	//
 	// (以下描述的是 ChannelFailover 关着时的行为,也就是出厂行为。)
 	//
@@ -168,15 +181,41 @@ type AIScope struct {
 	// 它不是无声的 —— 成本页按 outcome 分组,一档指定的渠道被停掉之后
 	// no_channel 会立刻长出来;管理端作用域列表也会把这一行标红。
 	//
-	// 写入侧另有一道闸:upsert 时渠道必须存在**且启用**,删除渠道时若还有
-	// 策略指着它则直接拒绝(见 api_admin_aiscope.go / adminDeleteAIChannel)。
-	// 两道闸的方向一致 —— 让"这一档不再审核"永远是一次显式动作的结果。
-	ChannelId int64 `json:"channel_id" gorm:"not null;default:0"`
-
-	// ChannelFailover 是「指定的渠道不可用时,退到加权随机池」。
+	// 清单里**部分**渠道不可用时不算失效:剩下的照常轮,这正是指定一组而不是
+	// 一个的收益。界面仍然会把那一格标出来(几个里坏了几个),因为"三台只剩
+	// 一台在扛"与"三台都健康"是两种要处置的状态。
 	//
-	// 只在 ChannelId > 0 时有意义(没指定时本来就走池子),validateAIScope
-	// 会在 ChannelId 归零时把它一并归零 —— 留一个悬空的"开着的开关"会让
+	// 写入侧另有一道闸:upsert 时每一个渠道都必须存在**且启用**,删除渠道时
+	// 若还有策略指着它则直接拒绝(见 api_admin_aiscope.go / adminDeleteAIChannel)。
+	// 两道闸的方向一致 —— 让"这一档不再审核"永远是一次显式动作的结果。
+	ChannelIds AIChannelIds `json:"channel_ids" gorm:"column:channel_ids;type:varchar(256);not null;default:''"`
+
+	// ChannelMode 是这一档在多个渠道之间怎么分发。
+	//
+	//	""(零值)/ weighted   按 AIChannel.Weight 加权随机。**存量行与出厂行为**。
+	//	round_robin           按 ChannelIds 的顺序轮流,每次请求换一个起点。
+	//
+	// # 零值必须落在加权随机上
+	//
+	// AutoMigrate 给存量行 ADD COLUMN 时回填空串,而空串经 normalizeAIChannelMode
+	// 归到 weighted —— 也就是这一列加入之前的唯一行为。反过来会让每一个已经在跑
+	// 的站点在升级那一秒静默换掉分发方式,而界面上一切正常。
+	//
+	// # 两者的差别不是口味问题
+	//
+	//	加权随机  权重就是配额:两台 8:1 的机器按 8:1 分。适合规格不一样的池子。
+	//	轮询      每台一次,不看权重。适合几台**同规格**的护栏机 —— 那时随机的
+	//	          方差会让某一台在某一分钟里连吃几倍的量,而小模型机的并发很浅。
+	//
+	// 轮询游标是**进程内**的(见 aiScopeRRCursor):多节点部署时每个节点各转
+	// 各的,合起来仍然是均分,但任何单个节点上的顺序都不代表全局顺序。
+	// 这一点必须写在这里 —— 拿它当"严格依次"的人会在多节点上看到重复。
+	ChannelMode string `json:"channel_mode" gorm:"type:varchar(16);not null;default:''"`
+
+	// ChannelFailover 是「指定的渠道都不可用时,退到加权随机池」。
+	//
+	// 只在指定了渠道时有意义(没指定时本来就走池子),validateAIScope
+	// 会在清单清空时把它一并归零 —— 留一个悬空的"开着的开关"会让
 	// 列表上出现"按权重随机 · 故障转移开"这种自相矛盾的一格。
 	//
 	// # 为什么是开关,而不是直接改成"总是能退"
@@ -188,14 +227,17 @@ type AIScope struct {
 	//
 	// 所以出厂 false:升级上来的站点行为逐字节不变。打开它是一次显式动作,
 	// 进审计,而且作用域列表那一格会写着"故障转移: 开" —— 因为运营看到
-	// "我指定了 A"时的预期是只有 A,这个预期不能在他不知情时变成假的。
+	// "我指定了这几个"时的预期是只有这几个,这个预期不能在他不知情时变成假的。
 	//
 	// # 打开之后退到哪、退几次
 	//
-	// 指定的那个排第一,后面按权重从**其余**启用渠道里随机补位,整条链
-	// 最多 maxAIAttempts 个渠道,全部挤在**同一份**时间预算里
+	// 指定的那些按 ChannelMode 排在前面,后面按权重从**其余**启用渠道里随机
+	// 补位,整条链最多 maxAIAttempts 个渠道,全部挤在**同一份**时间预算里
 	// (见 pickAIChannels 与 aiAttemptBudget)。指定的渠道已经被停用/删除时
 	// 同样退到池子:开关的字面意思就是"这一档可以用别的渠道"。
+	//
+	// 补位那一段**恒是加权随机**,不跟 ChannelMode 走:它是应急路径,要的是
+	// 尽快找到一个还活着的渠道,而不是在一组运营没有选过的端点之间均分负载。
 	ChannelFailover bool `json:"channel_failover" gorm:"not null"`
 
 	Remark    string `json:"remark" gorm:"type:varchar(512);not null;default:''"`
@@ -205,6 +247,109 @@ type AIScope struct {
 }
 
 func (AIScope) TableName() string { return "qy_violation_ai_scope" }
+
+// AI 审核渠道的分发方式,落在 AIScope.ChannelMode 上。
+const (
+	// AIChannelModeWeighted 按 AIChannel.Weight 加权随机。零值(空串)归到这里。
+	AIChannelModeWeighted = "weighted"
+	// AIChannelModeRoundRobin 按 AIScope.ChannelIds 的顺序轮流。
+	AIChannelModeRoundRobin = "round_robin"
+)
+
+// normalizeAIChannelMode 把库里的取值折成两档之一。
+//
+// 空串、空白、以及任何脏值一律折到加权随机 —— 那是这一列存在之前的唯一行为。
+// 折在装配期与写入期各一次:热路径不再判第二遍,而写入期那一次让脏值在
+// 保存那一刻就被拒(见 validateAIScope),不是等到某一次审核才悄悄换个语义。
+func normalizeAIChannelMode(mode string) string {
+	if strings.TrimSpace(mode) == AIChannelModeRoundRobin {
+		return AIChannelModeRoundRobin
+	}
+	return AIChannelModeWeighted
+}
+
+// maxAIScopeChannels 是一档能指定的渠道数上限。
+//
+// 它不是热路径的闸(一次审核最多只试 maxAIAttempts 个),而是列宽与可读性的闸:
+// varchar(256) 装得下 8 个任意长度的 id,而一张列出 20 个渠道的策略在界面上
+// 已经没人读得出"这一档到底发给谁"—— 那正是这一格存在的全部理由。
+const maxAIScopeChannels = 8
+
+// AIChannelIds 是渠道 id 列表列:库里一列逗号分隔的文本,接口上一个数字数组。
+//
+// # 为什么不是一张关联表
+//
+// 它是**有序**的(轮询按这个顺序转)、**短**的(上限 maxAIScopeChannels)、
+// 而且只会被整组读写。唯一一处按渠道反查策略的地方是删除渠道时的引用检查,
+// 而那一次本来就要扫全表:CSV 的包含匹配在三家数据库上写法各异(而本仓的
+// 跨库约束是硬的),策略表又是个位数量级的行,在 Go 里筛既准确又省一套方言
+// 分支。一张关联表换来的只有一个用不上的索引和一套级联删除。
+//
+// # 为什么库里是 CSV 而不是 JSON 列
+//
+// JSON 列在三家数据库上的类型名与查询语法各不相同,而这一列的全部用法就是
+// "整个读出来、整个写回去"。varchar 在三家上逐字相同。
+type AIChannelIds []int64
+
+// Value 落库形态:逗号分隔,空列表写空串(不是 NULL —— 列上有 not null)。
+func (ids AIChannelIds) Value() (driver.Value, error) {
+	if len(ids) == 0 {
+		return "", nil
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, strconv.FormatInt(id, 10))
+	}
+	return strings.Join(parts, ","), nil
+}
+
+// MarshalJSON 让空清单下发成 `[]` 而不是 `null`。
+//
+// # 为什么这一条必须在类型上,不能靠每个调用点自己兜
+//
+// nil 切片序列化出来是 `null`,而界面拿到它之后要做的第一件事是
+// `channel_ids.filter(...)` —— 那是一次 TypeError,而这一页是整棵树共用一个
+// 错误边界的,于是「这一档没指定渠道」的正常配置会把**整页**打成白屏。
+// 与本模块 nil_array_json_test.go 盯的是同一个缺陷形状。
+//
+// 兜在调用点上要兜三处(策略回显、汇总表、快照回显),而漏掉的那一处只在
+// "恰好没有任何一档指定渠道"时才炸 —— 也就是每一个刚开始配这一页的站点。
+func (ids AIChannelIds) MarshalJSON() ([]byte, error) {
+	if ids == nil {
+		return []byte("[]"), nil
+	}
+	return common.Marshal([]int64(ids))
+}
+
+// Scan 读回来。**脏值一律跳过,不报错**:一个解析不了的 id 让整行读失败,
+// 表现是这一页整体 500 —— 而这一列坏掉的正确后果是"这一档指定的渠道少了一个",
+// 那已经会被界面标红。报错会把一格坏数据放大成整张表打不开。
+func (ids *AIChannelIds) Scan(src any) error {
+	*ids = nil
+	var raw string
+	switch v := src.(type) {
+	case nil:
+		return nil
+	case string:
+		raw = v
+	case []byte:
+		raw = string(v)
+	default:
+		return fmt.Errorf("qy_violation_ai_scope.channel_ids: 无法解析的列类型 %T", src)
+	}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || id <= 0 {
+			continue
+		}
+		*ids = append(*ids, id)
+	}
+	return nil
+}
 
 // maxAIScopes 是启用中的策略条数上限。
 //
@@ -225,10 +370,14 @@ type aiScopeRT struct {
 	Prompt string
 	// CategoryId 0 = 不指定,命中仍按规则自己绑的类型记。见 resolveCategoryOverride。
 	CategoryId int64
-	// ChannelId 0 = 不指定,按权重在全部启用渠道里随机。见 pickAIChannels。
-	ChannelId int64
-	// ChannelFailover 为真时,指定的渠道失败后退到加权随机池补位。
-	// 只在 ChannelId > 0 时有意义,见 AIScope.ChannelFailover。
+	// ChannelIds 空 = 不指定,在全部启用渠道之间分发。见 pickAIChannels。
+	ChannelIds []int64
+	// ChannelMode 已经过 normalizeAIChannelMode,恒是 weighted 或 round_robin。
+	// 装配期归一而不是调用期:调用期归一意味着每一次审核都要再判一遍一个
+	// 一整轮快照都不会变的值,而且给了"某处忘了归一"一个存在的机会。
+	ChannelMode string
+	// ChannelFailover 为真时,指定的渠道都不可用后退到加权随机池补位。
+	// 只在 ChannelIds 非空时有意义,见 AIScope.ChannelFailover。
 	ChannelFailover bool
 }
 
@@ -244,6 +393,37 @@ type aiScopeRT struct {
 //     没有计数器时,"先抽中再丢弃"与"先判作用域再抽样"在外部完全同形,
 //     而两者对抽样率含义的破坏是彻底的(10% 会变成"作用域内的某个未知比例")。
 var aiSampleRolls atomic.Int64
+
+// aiScopeRRCursor 是轮询游标,按作用域 id 存(0 号位留给"不指定渠道"的那一档)。
+//
+// # 为什么不放在 aiScopeRT 上
+//
+// 快照每一次重载都会重建那个结构体,游标会跟着归零 —— 于是"改一次配置 =
+// 轮询从头再来"。在一个每天改几次配置的站点上,那等于清单里的第一个渠道
+// 永远拿到最多的量,而这一格的字面承诺是"轮流"。放在包级 map 上让它活过
+// 重载,与"策略行还是同一条"这件事对齐。
+//
+// 泄漏是有界的:key 只来自策略表主键,而启用中的策略不超过 maxAIScopes。
+// 删掉一条策略会留下一个再也不会被读到的计数器(几十字节),不清理 ——
+// 清理需要在删除路径上再记住一件事,而那条路径漏掉时的表现(游标被别的
+// 新策略复用)比多占几十字节糟得多。
+var aiScopeRRCursor sync.Map // int64 -> *atomic.Uint64
+
+// aiRoundRobinStart 取这一次轮询的起点下标,并把游标推进一格。
+//
+// n <= 1 时恒为 0 且**不推进**:只有一个渠道时"轮"没有意义,而白推进会让
+// 后来加进来的第二个渠道从一个随机相位开始 —— 一个解释不清的现象。
+func aiRoundRobinStart(key int64, n int) int {
+	if n <= 1 {
+		return 0
+	}
+	v, _ := aiScopeRRCursor.LoadOrStore(key, new(atomic.Uint64))
+	cur, ok := v.(*atomic.Uint64)
+	if !ok {
+		return 0
+	}
+	return int((cur.Add(1) - 1) % uint64(n))
+}
 
 // scopeFor 解析本次请求落在哪一档:第一条匹配的策略,以及它的两个抽样率。
 //
@@ -322,7 +502,11 @@ func buildAIScopes(gdb *gorm.DB) ([]*aiScopeRT, error) {
 			AsyncBps:     clampInt(row.AsyncSampleRateBps, 0, 10000),
 			Prompt:       row.Prompt,
 			CategoryId:   row.CategoryId,
-			ChannelId:    row.ChannelId,
+			// 库里那一列是 CSV,读回来已经是 []int64(见 AIChannelIds.Scan)。
+			// 这里拷成普通切片:运行期不需要 Scanner/Valuer,而带着列类型跑
+			// 会让"快照上的这个字段能不能直接落库"变成一个要想一下的问题。
+			ChannelIds:  append([]int64(nil), row.ChannelIds...),
+			ChannelMode: normalizeAIChannelMode(row.ChannelMode),
 			// 漏掉这一位的表现是"开关在界面上是开的、线上从不转移" ——
 			// 一次故障时它看起来只是"审核又放行了",没有任何地方指向这里。
 			ChannelFailover: row.ChannelFailover,
@@ -441,22 +625,52 @@ func validateAIScope(s *AIScope) error {
 	if s.CategoryId < 0 {
 		return fmt.Errorf("违规类型 id 非法(%d);不指定请留 0", s.CategoryId)
 	}
-	// 渠道 id 同理:负数永远解析不到任何渠道,而它的表现是这一档从此每次都走
-	// no_channel —— 一个只在成本页上看得出来的静默失效。渠道**存不存在、启没启用**
-	// 不在这里挡(这个函数是纯校验、手上没有库句柄),那道闸在 adminUpsertAIScope。
-	if s.ChannelId < 0 {
-		return fmt.Errorf("审核渠道 id 非法(%d);不指定(按权重随机)请留 0", s.ChannelId)
+	// 渠道清单的归一与校验。**去重保序**:同一个 id 写两遍在加权随机下只是
+	// 一次多余的比较,但在轮询下它会让那个渠道拿到双倍的量 —— 一个界面上
+	// 完全看不出来的偏斜。渠道**存不存在、启没启用**不在这里挡(这个函数是
+	// 纯校验、手上没有库句柄),那道闸在 adminUpsertAIScope。
+	ids := make(AIChannelIds, 0, len(s.ChannelIds))
+	seen := make(map[int64]bool, len(s.ChannelIds))
+	for _, id := range s.ChannelIds {
+		// 非正数是纯粹的脏数据:它永远解析不到任何渠道,而它的表现是这一档
+		// 每次都少一个可用渠道 —— 一个只在成本页上看得出来的静默失效。
+		if id <= 0 {
+			return fmt.Errorf("审核渠道 id 非法(%d);不指定(在全部启用渠道之间分发)请留空", id)
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) > maxAIScopeChannels {
+		return fmt.Errorf("一档最多指定 %d 个审核渠道(这次给了 %d 个)—— "+
+			"一次审核最多只会试 %d 个,再长的清单只是让界面上答不出「这一档到底发给谁」",
+			maxAIScopeChannels, len(ids), maxAIAttempts)
+	}
+	s.ChannelIds = ids
+	// 分发方式:脏值在保存这一刻就拒,不留到某一次审核时才悄悄折成加权随机。
+	// weighted 折成空串是为了让"零值 = 加权随机"只有一种写法 —— 两种写法
+	// 意思相同、字节不同,会让审计 diff 上出现一次没有任何含义的变更。
+	switch strings.TrimSpace(s.ChannelMode) {
+	case "", AIChannelModeWeighted:
+		s.ChannelMode = ""
+	case AIChannelModeRoundRobin:
+		s.ChannelMode = AIChannelModeRoundRobin
+	default:
+		return fmt.Errorf("渠道分发方式取值非法: %q(只能是 %q 或 %q)",
+			s.ChannelMode, AIChannelModeWeighted, AIChannelModeRoundRobin)
 	}
 	// 没指定渠道时,故障转移这一位归零而不是报错。
 	//
-	// 它不是"悄悄改写运营的配置":没指定渠道时本来就走加权随机池,这一位开着
+	// 它不是"悄悄改写运营的配置":没指定渠道时本来就走全部启用渠道,这一位开着
 	// 与关着的运行期行为**逐字节相同**,归零改的只是它的显示形态。留着一个
-	// 悬空的 true,列表上会出现「按权重随机 · 故障转移: 开」这种自相矛盾的一格,
+	// 悬空的 true,列表上会出现「全部启用渠道 · 故障转移: 开」这种自相矛盾的一格,
 	// 而运营会据此以为自己配了点什么。
 	//
 	// 报错是更糟的那个选择:表单上这一格在"不指定"时是隐藏的,报错会让一次
 	// 「把指定渠道改回不指定」的正常保存莫名其妙地 400。
-	if s.ChannelId == 0 {
+	if len(s.ChannelIds) == 0 {
 		s.ChannelFailover = false
 	}
 	return nil
@@ -516,12 +730,18 @@ type aiScopeSummaryRow struct {
 	// 只下发 id,类型名由界面用**已有的**违规类型清单接口去 join ——
 	// 在这里再拼一份名字就是第二份会漂移的事实。
 	CategoryId int64 `json:"category_id"`
-	// ChannelId 是这一档指定的审核渠道,0 = 不指定(按权重随机)。
+	// ChannelIds 是这一档指定的审核渠道,空 = 不指定(在全部启用渠道之间分发)。
 	// 与 CategoryId 同样只下发 id,名字由界面用**已有的**渠道列表接口去 join ——
 	// 那张表上还有"启用中没有",而"指定的渠道被停用了"正是这一格最要紧的一种
 	// 状态,只有 join 之后才看得出来。
-	ChannelId int64 `json:"channel_id"`
-	// ChannelFailover 是「指定的渠道不可用时退到加权随机池」。ChannelId 为 0 时恒假。
+	ChannelIds []int64 `json:"channel_ids"`
+	// ChannelMode 是这一档在渠道之间怎么分发,恒是 weighted 或 round_robin。
+	//
+	// 这里下发的是**归一之后**的值而不是库里那一列的原文:汇总表回答的是
+	// "这一档实际会怎么跑",而空串在那个问题下没有答案 —— 界面拿到空串只能
+	// 再折一次,而两处各折一次就是两份迟早会分家的口径。
+	ChannelMode string `json:"channel_mode"`
+	// ChannelFailover 是「指定的渠道都不可用时退到加权随机池」。清单为空时恒假。
 	//
 	// 必须出现在列表上,不能只藏在编辑表单里:它改变的是**用户内容会被发到
 	// 哪些第三方端点**。运营看到「审核渠道: 内部自建」时的默认理解是"只有它",
@@ -565,11 +785,14 @@ func summarizeAIScopes(rows []AIScope) []aiScopeSummaryRow {
 			PreBps:         r.PreSampleRateBps, AsyncBps: r.AsyncSampleRateBps,
 			PromptSource: aiScopePromptSource(r.Prompt),
 			CategoryId:   r.CategoryId,
-			ChannelId:    r.ChannelId,
+			// 空清单要下发成 `[]` 而不是 `null`,理由与 AIChannelIds.MarshalJSON
+			// 同一条:界面拿到 null 之后第一件事就是 filter,那是一次白屏。
+			ChannelIds:  append(make([]int64, 0, len(r.ChannelIds)), r.ChannelIds...),
+			ChannelMode: normalizeAIChannelMode(r.ChannelMode),
 			// 没指定渠道时恒假,与 validateAIScope 的归一同口径:存量里可能躺着
-			// 一行 channel_id=0 而 channel_failover=1(这一列刚加,写入闸之前存的),
+			// 一行清单为空而 channel_failover=1(这一列刚加,写入闸之前存的),
 			// 照原样下发会让列表画出一个不存在的状态。
-			ChannelFailover: r.ChannelId > 0 && r.ChannelFailover,
+			ChannelFailover: len(r.ChannelIds) > 0 && r.ChannelFailover,
 			GroupUnbound:    aiScopeGroupUnbound(r.GroupScope, r.GroupScopeMode),
 			Shadowed:        r.Enabled && covered,
 		})

@@ -2,11 +2,9 @@ package commission
 
 import (
 	"context"
-	"strconv"
 	"sync"
 	"testing"
 
-	"github.com/QuantumNous/new-api/common"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 
 	"github.com/stretchr/testify/assert"
@@ -53,21 +51,6 @@ func probeDuringQuery(t *testing.T, gdb *gorm.DB, table string, tryLock func() b
 	return p
 }
 
-// seedBlockedRelation 拉黑一条邀请关系并让缓存立即失效。
-func seedBlockedRelation(t *testing.T, gdb *gorm.DB, inviteeId int) {
-	t.Helper()
-	now := common.GetTimestamp()
-	require.NoError(t, gdb.Create(&InviteRelation{
-		InviteeId:  inviteeId,
-		InviterId:  42,
-		InviteeRef: "ref-" + strconv.Itoa(inviteeId),
-		Blocked:    true,
-		CreatedAt:  now,
-		UpdatedAt:  now,
-	}).Error)
-	invalidateBlocked()
-}
-
 // resetDegrade 清掉一个降级计数器,避免测试之间互相渗漏。
 func resetDegrade(d *degradeRecord) {
 	d.mu.Lock()
@@ -91,21 +74,6 @@ func TestEffectiveQueriesOutsideSettingsLock(t *testing.T) {
 	assert.False(t, probe.busy,
 		"查 qy_settings 期间 settingsMu 被占着:一条慢 SELECT 会把结算 worker、"+
 			"用户端推广页和健康面板全部串在这把锁上")
-}
-
-// TestRefSaltQueriesOutsideItsLock 是同一条性质在 refSalt 上的版本。
-//
-// refSalt 一个进程只查一次库,持锁查库因此更隐蔽 —— 但首次调用撞上慢查询时,
-// 所有计佣写入协程会一起钉死在 saltOnce 上。
-func TestRefSaltQueriesOutsideItsLock(t *testing.T) {
-	gdb := newTestDB(t)
-	useConfig(t, commissionRateConfig("10", "5"))
-
-	probe := probeDuringQuery(t, gdb, "qy_settings", saltOnce.TryLock, saltOnce.Unlock)
-
-	require.NotEmpty(t, refSalt(), "前提:盐生成成功,确实走了查库那条路")
-	require.True(t, probe.fired, "前提:探针挂上了")
-	assert.False(t, probe.busy, "查库/首次生成盐期间 saltOnce 必须是空闲的")
 }
 
 // TestLoadOverridesHonorsContext 锁定"运营配置查询接调用方预算"。
@@ -209,37 +177,6 @@ func TestGroupRateInvalidationSurvivesInFlightLoad(t *testing.T) {
 	require.Equal(t, 825, groupRates(ctx)["vip"].ConsumeRateUnits, "前提:本次读到的是在途旧快照")
 	assert.Equal(t, 100, groupRates(ctx)["vip"].ConsumeRateUnits,
 		"运营已经把 vip 改成 1% 并失效了缓存,在途快照不得把 8.25% 按回去再冻进账本")
-}
-
-// TestBlockedInviteesQueriesOutsideItsLock 是同一条性质在拉黑集合上的版本。
-func TestBlockedInviteesQueriesOutsideItsLock(t *testing.T) {
-	gdb := newTestDB(t)
-	seedBlockedRelation(t, gdb, 901)
-
-	probe := probeDuringQuery(t, gdb, "qy_invite_relation", blockedMu.TryLock, blockedMu.Unlock)
-
-	invalidateBlocked()
-	require.True(t, blockedInvitees(context.Background())[901], "前提:本次确实回库读了一遍")
-	require.True(t, probe.fired, "前提:探针挂上了")
-	assert.False(t, probe.busy,
-		"查拉黑集合期间 blockedMu 被占着:计佣写入协程会全部串在这把锁上")
-}
-
-// TestBlockedInvalidationSurvivesInFlightLoad 是 blockedInvitees 的代次校验。
-//
-// 管理员拉黑一个正在刷单的下线之后,在途的旧快照把"没人被拉黑"写回缓存,
-// 接下来 60 秒仍然照常给他计佣 —— 而拉黑本来就是为了立刻止血。
-func TestBlockedInvalidationSurvivesInFlightLoad(t *testing.T) {
-	gdb := newTestDB(t)
-
-	invalidateDuringQuery(t, gdb, "qy_invite_relation", func() {
-		seedBlockedRelation(t, gdb, 901) // 内含 invalidateBlocked
-	})
-
-	ctx := context.Background()
-	require.False(t, blockedInvitees(ctx)[901], "前提:本次读到的是在途旧快照(还没有人被拉黑)")
-	assert.True(t, blockedInvitees(ctx)[901],
-		"管理员已经拉黑并失效了缓存,在途快照不得把空集合按回去")
 }
 
 // TestGroupRatesNotesDegradeWhenQueryFails 是 M14 的驱动式回归。

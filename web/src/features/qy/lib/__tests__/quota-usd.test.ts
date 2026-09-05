@@ -264,11 +264,12 @@ const qyDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
  * 给这个没有信号的失败装一个信号。
  */
 describe('金额配置页接线', () => {
-  const pages = [
-    'admin-transfer-config/index.tsx',
-    'admin-commission/index.tsx',
-    'admin-lottery-config/index.tsx',
-  ]
+  // 抽奖配置页不在这里：它的金额键（`*_stardust`）自 design-15 起按**整数星屑**
+  // 录入，不经过 USD 换算，往返只是 `String()` ↔ 只留数字的解析，没有这一对
+  // 函数要接。把它留在清单里会逼着那一页为了过守卫再接回一套用不上的换算。
+  // 佣金设置页（admin-commission）已随佣金账本整体删除（D-14）：邀请返的比例
+  // 全是万分比整数，不经过 USD 换算，没有这一对函数要接。
+  const pages = ['admin-transfer-config/index.tsx']
 
   for (const page of pages) {
     test(`${page} 同时用到 qyQuotaDraftText 与 qyQuotaDraftValue`, () => {

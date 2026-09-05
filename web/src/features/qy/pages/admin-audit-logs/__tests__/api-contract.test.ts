@@ -23,7 +23,7 @@ import { afterEach, describe, test } from 'node:test'
 import { api } from '@/lib/api'
 
 import { qyKeys } from '../../../lib/query-keys'
-import { listQyAuditLogs, listQyPiiAudits, listQyRequestAudits } from '../api'
+import { listQyAuditLogs, listQyRequestAudits } from '../api'
 import { qyAuditTrimmed } from '../shared'
 
 /**
@@ -31,7 +31,8 @@ import { qyAuditTrimmed } from '../shared'
  *
  * 这一页要防的缺陷全是**断链**形状:
  *
- *  - `qy_pii_audits` 的接口在、query key 在,却没有任何页面消费它 ——
+ *  - (历史)`qy_pii_audits` 曾有接口与 query key 却没有页面消费它;提现模块随 D-14 删除后,
+ *    那张明文访问台账整体不复存在 ——
  *    向用户承诺「谁看过你的银行卡都有记录」,而平台自己调不出这份记录。
  *  - 请求台账是新表,前端漏了任何一环(路由写错、参数名写错)都不会报错,
  *    只会让那个 tab 永远是空的,而空列表看起来与「这段时间没有请求」一样。
@@ -136,28 +137,6 @@ describe('audit centre API wiring', () => {
     assert.equal(calls[0].params.request_id, 'req-1')
   })
 
-  test('PII access log finally has a consumer, and it hits the existing route', async () => {
-    const calls = captureRequest(emptyPage)
-
-    await listQyPiiAudits({
-      p: 1,
-      page_size: 20,
-      admin_id: 3,
-      target_user_id: 8,
-    })
-
-    assert.equal(calls.length, 1)
-    // 路由挂在 withdraw 模块下,不是 /admin/pii-audits —— 写错这一行
-    // 就会 404,而页面只会显示「暂无明文访问记录」。
-    assert.equal(calls[0].url, '/api/qy/admin/withdraw/pii-audits')
-    assert.deepEqual(calls[0].params, {
-      p: 1,
-      page_size: 20,
-      admin_id: 3,
-      target_user_id: 8,
-    })
-  })
-
   test('空筛选不发给后端:空串会被当成「等于空字符串」而不是「不筛选」', () => {
     assert.equal(qyAuditTrimmed(''), undefined)
     assert.equal(qyAuditTrimmed('   '), undefined)
@@ -167,7 +146,6 @@ describe('audit centre API wiring', () => {
   test('两张台账的 query key 都在 qy 前缀下,资金操作能整片失效它们', () => {
     assert.equal(qyKeys.adminAuditLogs({})[0], 'qy')
     assert.equal(qyKeys.adminRequestAudits({})[0], 'qy')
-    assert.equal(qyKeys.adminWithdrawPiiAudits({})[0], 'qy')
     // 两张表必须是不同的缓存条目。共用一个 key 时,切 tab 会拿到上一张表的
     // 数据并按本表的列渲染 —— 满屏 undefined,而不是一个看得出来的错误。
     assert.notDeepEqual(
@@ -180,14 +158,10 @@ describe('audit centre API wiring', () => {
 describe('audit centre page wiring', () => {
   const page = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8')
 
-  test('三个 tab 都被页面挂上了', () => {
+  test('两个 tab 都被页面挂上了', () => {
     // 组件写好了却没被 index 引用,是本仓反复出现的断链形状之一:
     // 文件在、导出在、typecheck 全过,而用户永远看不到那个 tab。
-    for (const tab of [
-      'QyFundAuditTab',
-      'QyRequestAuditTab',
-      'QyPiiAuditTab',
-    ]) {
+    for (const tab of ['QyFundAuditTab', 'QyRequestAuditTab']) {
       assert.ok(page.includes(`<${tab} />`), `${tab} 没有被 index.tsx 渲染`)
     }
   })

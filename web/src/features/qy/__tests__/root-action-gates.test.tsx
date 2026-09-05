@@ -17,21 +17,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /*
- * 四处超级管理员闸门在**真实 DOM** 里的形状。
+ * 两处超级管理员闸门在**真实 DOM** 里的形状。
  *
  * # 守什么
  *
- * 后端把四个动作提到了超管（`middleware.RootActionRedemptionCreate` /
- * `RootActionLotteryResultSet` / `RootActionWithdrawPayeeReveal` /
- * `RootActionLotteryPayoutAdjudicate`），前端跟着各挂了一处
- * `role === ROLE.SUPER_ADMIN`。这几行有两种坏法，而它们在
- * typecheck 与源码 grep 上完全不可见：
+ * 后端把两个动作提到了超管（`middleware.RootActionRedemptionCreate` /
+ * `RootActionLotteryResultSet`；抽奖出款的「人工落账」已随派奖改走星屑而整个
+ * 删除，提现收款人明文 `RootActionWithdrawPayeeReveal` 已随提现模块整体删除
+ * （D-14）），前端跟着各挂了一处 `role === ROLE.SUPER_ADMIN`。这几行有两种坏法，
+ * 而它们在 typecheck 与源码 grep 上完全不可见：
  *
  *   1. **判据反了**（`===` 写成 `!==`）：role=10 看得见按钮、点了吃 403，
- *      role=100 反而被告知"你不能做"。实测把三处同时反转跑全量前端测试，
+ *      role=100 反而被告知"你不能做"。实测把几处同时反转跑全量前端测试，
  *      1580 pass / 8 fail / exit 0，与基线逐字相同 —— 整套测试对它是瞎的。
  *   2. **只藏按钮、不给出口**：role=10 看到的是一个没有任何可做动作的页面，
- *      而"该去找谁"一个字都没有。三处的设计口径都是"按钮换成一句话"，
+ *      而"该去找谁"一个字都没有。两处的设计口径都是"按钮换成一句话"，
  *      不是 disabled、也不是直接抹掉。
  *
  * 所以每一格都断言两件事：该角色**能不能看到那个按钮**，以及**看不到时那句
@@ -56,7 +56,6 @@ import { describe, test } from 'node:test'
 import { Window } from 'happy-dom'
 
 import type { QyLotAdminActivityView } from '../pages/admin-lottery/types'
-import type { QyAdminWithdrawal } from '../pages/withdraw/types'
 
 const domWindow = new Window({ height: 900, width: 1280 })
 const domGlobals = [
@@ -133,29 +132,18 @@ const { RedemptionsProvider } =
   await import('@/features/redemption-codes/components/redemptions-provider')
 const { RedemptionsPrimaryButtons } =
   await import('@/features/redemption-codes/components/redemptions-primary-buttons')
-const { ReviewDialog } =
-  await import('../pages/admin-withdrawals/components/review-dialog')
 const { QyAdminLotteryDetail } = await import('../pages/admin-lottery/detail')
-const { QyLotPayoutsTab } =
-  await import('../pages/admin-lottery/components/lottery-payouts-tab')
-const { qyAdminLotActivityQuery, qyAdminLotPayoutsQuery } =
-  await import('../pages/admin-lottery/api')
-const { normalizeQyConfig, qyConfigQueryOptions } =
-  await import('../lib/config-query')
-const { qyAdminWithdrawalQuery } =
-  await import('../pages/admin-withdrawals/api')
+const { qyAdminLotActivityQuery } = await import('../pages/admin-lottery/api')
 
 const reactTestGlobals = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
 }
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
-/** 三处闸门各自那句解释的键。缺翻译时 i18next 会原样回落成它。 */
+/** 两处闸门各自那句解释的键。缺翻译时 i18next 会原样回落成它。 */
 const REDEMPTION_HINT_KEY =
   'Only the super administrator can create redemption codes'
 const LOTTERY_HINT_KEY = 'qy_lot_result_root_only'
-const WITHDRAW_HINT_KEY = 'qy_wd_a_reveal_root_only'
-const ADJUDICATE_HINT_KEY = 'qy_lot_adjudicate_root_only'
 
 /**
  * 一次挂载之后从真实 DOM 上抄下来的快照。
@@ -269,97 +257,6 @@ describe('兑换码创建（redemption.create）', () => {
       hint,
       REDEMPTION_HINT_KEY,
       '中文界面上渲染的是英文键名本身 —— 这个上游风格键没有补进 locales'
-    )
-  })
-})
-
-describe('提现收款人明文（withdraw.payee.reveal）', () => {
-  const withdrawal = {
-    id: 1,
-    withdraw_no: 'WD-PROBE-1',
-    method: 'fiat',
-    status: 'pending',
-    quota: 500000,
-    currency: 'CNY',
-    frozen_quota_per_unit: '500000',
-    frozen_fx_rate: '7.2',
-    gross_amount: '7.20',
-    fee_amount: '0.20',
-    net_amount: '7.00',
-    fee_bps: 0,
-    payee_channel: 'bank',
-    payee_masked: '622*********1234',
-    remark: '',
-    has_proof: false,
-    reviewed_at: 0,
-    reject_reason: '',
-    paid_at: 0,
-    payout_ref: '',
-    fail_reason: '',
-    created_at: 1787000000,
-    updated_at: 1787000000,
-    events: [],
-    user_id: 9,
-    username: 'probe',
-    risk_flags: '',
-    reviewer_id: 0,
-    reviewer_name: '',
-    payout_operator_id: 0,
-    payout_operator_name: '',
-    payout_note: '',
-    client_ip: '127.0.0.1',
-    sla_deadline: 0,
-    sla_breached: false,
-    sla_kind: '',
-    debt_blocked: false,
-    unsettled_amount: '0',
-  } as QyAdminWithdrawal
-
-  const render = async () => {
-    useFakeApi({ '/admin/withdraw/1': withdrawal })
-    const queryClient = newQueryClient()
-    // 预置缓存而不是等请求回来：首帧就带着单据渲染。靠"多冲几轮 act"等异步
-    // 数据到位会随机少冲一轮，那时读到的是加载态，断言随机变红。
-    queryClient.setQueryData(qyAdminWithdrawalQuery(1).queryKey, withdrawal)
-    return mount(
-      <QueryClientProvider client={queryClient}>
-        <ReviewDialog withdrawalId={1} onClose={() => {}} onReveal={() => {}} />
-      </QueryClientProvider>
-    )
-  }
-
-  test('role=100 有「查看明文」按钮', async () => {
-    setRole(ROLE.SUPER_ADMIN)
-    const view = await render()
-    assert.ok(
-      view.text.includes('622*********1234'),
-      '单据没渲染出来，下面的断言就不能算数'
-    )
-    assert.ok(
-      view.buttons.some((label) => label === i18next.t('qy_wd_a_reveal')),
-      `超管应当看到「查看明文」：${view.buttons.join(' | ')}`
-    )
-    assert.ok(!view.text.includes(i18next.t(WITHDRAW_HINT_KEY)))
-  })
-
-  test('role=10 没有「查看明文」，掩码与解释都还在', async () => {
-    setRole(ROLE.ADMIN)
-    const view = await render()
-    assert.ok(
-      !view.buttons.some((label) => label === i18next.t('qy_wd_a_reveal')),
-      `普通管理员不该看到「查看明文」：${view.buttons.join(' | ')}`
-    )
-    assert.ok(
-      view.text.includes('622*********1234'),
-      '掩码必须原样留着 —— 藏掉的是明文，不是这一行'
-    )
-    const hint = i18next.t(WITHDRAW_HINT_KEY)
-    assert.notEqual(hint, WITHDRAW_HINT_KEY, '这句解释在 qy 语言包里不存在')
-    assert.ok(view.text.includes(hint), '没渲染出「打款这一步交给超管」那句话')
-    // 四个人工决定不连坐：闸门只收窄看明文这一件事。
-    assert.ok(
-      view.buttons.some((label) => label === i18next.t('qy_common_approve')),
-      `审核按钮被连坐藏掉了：${view.buttons.join(' | ')}`
     )
   })
 })
@@ -496,137 +393,6 @@ describe('抽奖开奖结果录入（lottery.result.set）', () => {
         (label) => label === i18next.t('qy_lot_cancel_title')
       ),
       `取消按钮被连坐藏掉了：${snapshot.buttons.join(' | ')}`
-    )
-  })
-})
-
-describe('抽奖出款人工落账（lottery.payout.adjudicate）', () => {
-  const actNo = 'LT-PROBE-0002'
-  const params = { p: 1, page_size: 20, status: undefined }
-  // 一笔冻结中的出款 + 一笔已到账的。后者在这里不是装饰：
-  // 它让"只对 held 渲染落账按钮"这一半也能被断言到 —— 只放一行 held 的话，
-  // 把判据写成"每一行都渲染"也照样全绿。
-  const page = {
-    items: [
-      {
-        payout_no: 'LP-PROBE-HELD',
-        entry_no: 'LE-1',
-        user_id: 9,
-        username: 'pr***be',
-        kind: 'prize',
-        tier: 1,
-        draw_pos: 1,
-        amount_quota: 500,
-        status: 'held',
-        order_no: 'FO-1',
-        attempts: 8,
-        next_attempt_at: 0,
-        last_error: '资金单被判失败但主库是否已生效无法排除',
-        created_at: 1787000000,
-        settled_at: 0,
-      },
-      {
-        payout_no: 'LP-PROBE-PAID',
-        entry_no: 'LE-2',
-        user_id: 10,
-        username: 'ok***er',
-        kind: 'prize',
-        tier: 2,
-        draw_pos: 2,
-        amount_quota: 100,
-        status: 'paid',
-        order_no: 'FO-2',
-        attempts: 1,
-        next_attempt_at: 0,
-        last_error: '',
-        created_at: 1787000000,
-        settled_at: 1787000100,
-      },
-    ],
-    total: 2,
-  }
-
-  const render = async () => {
-    useFakeApi({ [`/admin/lottery/activities/${actNo}/payouts`]: page })
-    const queryClient = newQueryClient()
-    queryClient.setQueryData(
-      qyAdminLotPayoutsQuery(actNo, params).queryKey,
-      page
-    )
-    // QyPageBoundary 先问扩展配置：不预置它的话整个内容区会被
-    // "本站未启用该功能"的空态盖住，一个按钮都不会渲染 ——
-    // 两格都会"通过"它们的隐藏断言，而那是假绿。
-    queryClient.setQueryData(
-      qyConfigQueryOptions().queryKey,
-      normalizeQyConfig({
-        enabled: true,
-        available: true,
-        features: { lottery: true },
-      } as never)
-    )
-    // 列表里的单号是一个 <Link>，没有路由器就当场报错 ——
-    // 那会让这两格变成“渲染失败”而不是“闸门坐标不对”。
-    const rootRoute = createRootRoute({ component: Outlet })
-    const tabRoute = createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/qy/admin/lottery/probe/',
-      component: () => <QyLotPayoutsTab actNo={actNo} />,
-    })
-    const router = createRouter({
-      routeTree: rootRoute.addChildren([tabRoute]),
-      history: createMemoryHistory({
-        initialEntries: ['/qy/admin/lottery/probe/'],
-      }),
-    })
-    return mount(
-      <QueryClientProvider client={queryClient}>
-        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-        <RouterProvider router={router as any} />
-      </QueryClientProvider>
-    )
-  }
-
-  test('role=100 在冻结中那一行上有落账按钮，已到账那一行没有', async () => {
-    setRole(ROLE.SUPER_ADMIN)
-    const snapshot = await render()
-    assert.ok(
-      snapshot.text.includes('LP-PROBE-HELD') === false
-        ? snapshot.text.includes('pr***be')
-        : true,
-      `出款列表没渲染出来，下面的断言就不能算数：${snapshot.text}`
-    )
-    const label = i18next.t('qy_lot_adjudicate_title')
-    assert.notEqual(
-      label,
-      'qy_lot_adjudicate_title',
-      '这个按钮名在 qy 语言包里不存在'
-    )
-    assert.equal(
-      snapshot.labels.filter((name) => name === label).length,
-      1,
-      `落账按钮只该出现在冻结中的那一行上：${snapshot.labels.join(' | ')}`
-    )
-    assert.ok(!snapshot.text.includes(i18next.t(ADJUDICATE_HINT_KEY)))
-  })
-
-  test('role=10 没有落账按钮，但被告知该找谁；「重试」不连坐', async () => {
-    setRole(ROLE.ADMIN)
-    const snapshot = await render()
-    const label = i18next.t('qy_lot_adjudicate_title')
-    assert.ok(
-      !snapshot.labels.includes(label),
-      `普通管理员不该看到落账按钮 —— 点了就是 403：${snapshot.labels.join(' | ')}`
-    )
-    const hint = i18next.t(ADJUDICATE_HINT_KEY)
-    assert.notEqual(hint, ADJUDICATE_HINT_KEY, '这句解释在 qy 语言包里不存在')
-    assert.ok(
-      snapshot.text.includes(hint),
-      '按钮消失了却没有任何解释：role=10 会看到一页卡住且没有出口的出款'
-    )
-    // 「重试」不提档：它的判据仍然是机器的（探针说主库没动才出手）。
-    assert.ok(
-      snapshot.labels.includes(i18next.t('qy_lot_retry_title')),
-      `重试按钮被连坐藏掉了：${snapshot.labels.join(' | ')}`
     )
   })
 })

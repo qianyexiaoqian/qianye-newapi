@@ -175,10 +175,12 @@ function BallGroup(props: {
               disabled={props.disabled || (full && !active)}
               aria-pressed={active}
               onClick={() => props.onToggle(ball)}
+              // 按下缩一点、选中弹一下（`.qy-fx-press` / `.qy-fx-pop`，CSS 驱动，
+              // 缩减动效下静止）：一颗球被选中这件事要能被手感确认，不只靠颜色。
               className={cn(
-                'size-9 rounded-full border text-sm font-medium tabular-nums transition-colors',
+                'qy-fx-press size-9 rounded-full border text-sm font-medium tabular-nums',
                 'disabled:cursor-not-allowed disabled:opacity-40',
-                active ? activeClass : 'hover:bg-muted'
+                active ? cn('qy-fx-pop', activeClass) : 'hover:bg-muted'
               )}
             >
               {String(ball).padStart(2, '0')}

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { describe, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -41,7 +41,7 @@ import zh from '@/i18n/qy/zh.json'
  *
  * ## 两侧的数据从哪来
  *
- *   后端：直接读 `qianye/modules/commission/api_daily_consume.go` 里
+ *   后端：直接读 `qianye/modules/invite/api_daily_consume.go` 里
  *         `dailyConsumeSorts` 那张 map 的键。读源码而不是维护第二份清单 ——
  *         第二份清单会以与被测代码完全相同的方式漂移。
  *   前端：`index.tsx` 里的 `SORT_OPTIONS`。
@@ -61,10 +61,17 @@ const repoRoot = join(
 
 /** 从 Go 源码里抠出 `dailyConsumeSorts` 那张 map 的键。 */
 function backendSortKeys(): string[] {
-  const source = readFileSync(
-    join(repoRoot, 'qianye', 'modules', 'commission', 'api_daily_consume.go'),
-    'utf8'
+  // D-14：模块从 commission 重命名为 invite。后端 Y1 并行实施期间两个目录可能
+  // 只存在其一，先找新家、再找旧家；集成完成后把旧家那一支删掉。
+  const candidates = ['invite', 'commission'].map((mod) =>
+    join(repoRoot, 'qianye', 'modules', mod, 'api_daily_consume.go')
   )
+  const file = candidates.find((path) => existsSync(path))
+  assert.ok(
+    file != null,
+    '后端的 api_daily_consume.go 在 invite / commission 下都找不到'
+  )
+  const source = readFileSync(file, 'utf8')
   const start = source.indexOf('var dailyConsumeSorts')
   assert.ok(start >= 0, '后端的 dailyConsumeSorts 改名了，本测试要跟着改')
   const end = source.indexOf('\n}', start)
@@ -106,6 +113,8 @@ describe('qy 日消费明细排序契约', () => {
   })
 
   test('每个排序键都有对应的中英文案', () => {
+    // `invite_base_quota` 那一句在 D-14 的片段文件里；主编排合并进主包之后把这两行
+    // 叠加删掉、改回只读主包。
     const enKeys = en as Record<string, string>
     const zhKeys = zh as Record<string, string>
     for (const key of frontendSortKeys()) {

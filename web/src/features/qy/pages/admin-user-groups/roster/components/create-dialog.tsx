@@ -16,10 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Info } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -112,15 +110,11 @@ export function QyUgrCreateDialog(props: {
         </div>
 
         {/*
-          「建好了但还不能用」必须在按下按钮**之前**就说清楚,而不是等运营把
-          人挪进去之后自己去撞 403 / 503。后端还会在返回值里带一份现算的
-          `warnings`(它读得到授权与 abilities 的现值),两者是同一件事的
-          事前提醒与事后确认。
+          「建好了但还不能用」曾在这里再放一个 90 字的 Alert。它与弹窗描述、
+          创建后的 toast、以及表格行上的 ⚠ 详情是同一件事的四种说法 ——
+          项目方点名移除重复。现在事前提醒并进 qy_ugr_create_desc 一句话,
+          事后确认由 toast + 行上 ⚠ 承载。
         */}
-        <Alert>
-          <Info className='h-4 w-4' />
-          <AlertDescription>{t('qy_ugr_create_empty_warn')}</AlertDescription>
-        </Alert>
       </div>
     </QyResponsiveDialog>
   )

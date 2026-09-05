@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Gavel, RotateCw } from 'lucide-react'
+import { RotateCw } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -32,13 +32,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { ROLE } from '@/lib/roles'
-import { useAuthStore } from '@/stores/auth-store'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
 import { QyMaskedUser } from '../../../components/qy-masked-user'
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
+import { QySdAmount } from '../../../components/qy-sd-amount'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
 import { qyErrorMessage } from '../../../lib/api'
 import { qyArray } from '../../../lib/array'
@@ -49,7 +47,6 @@ import { QY_EMPTY_TEXT, formatQyTs } from '../../ops/format'
 import { QyFilterBar, QyFilterField, QyKeyValue } from '../../ops/qy-ops-ui'
 import { qyAdminLotPayoutsQuery, retryQyLotPayout } from '../api'
 import type { QyLotAdminPayout } from '../types'
-import { QyLotPayoutAdjudicateDialog } from './lottery-payout-adjudicate-dialog'
 
 const PAGE_SIZE = 20
 const ALL = 'all'
@@ -62,7 +59,7 @@ const RETRYABLE = new Set(['held', 'failed'])
  *
  * ## `held` 是这一页真正的工作项
  *
- * 它表示自动重试次数已经耗尽 —— 通常是收款账号被封禁或注销（给这类账号加额度
+ * 它表示自动重试次数已经耗尽 —— 通常是收款账号被封禁或注销（给这类账号加星屑
  * 在后端是走不通的）。**系统不会自动放弃、也不会自动改判**：钱是用户赢的，
  * 不能因为账号状态就悄悄没收。所以这一行会一直挂在这里等人处理。
  *
@@ -72,15 +69,11 @@ const RETRYABLE = new Set(['held', 'failed'])
  * 幂等键就是 `payout_no`，重入必然命中原来那张资金单 —— 这也是为什么这个按钮
  * 可以放心地让人多点几次。
  *
- * ## 「重试」按不动的那一档走「人工落账」
+ * ## 这一页不再有「人工落账」
  *
- * 重试只在主库探针明确说“钱没动”时才能换代次出手。探针说“可能已生效”而
- * 资金单又已判失败时，它会 409 —— 而那一笔同时也不在任何后台任务的扫描范围里。
- * 没有人工落账的话，那笔钱永久挂在冻结中，而这一场活动也永远过不了删除闸门。
- *
- * 它是超级管理员专属（后端 `middleware.RootActionLotteryPayoutAdjudicate`）。
- * role=10 看到的不是一个点了吃 403 的按钮，也不是一片空白，而是一句“该去找谁”
- * —— 与录入开奖结果那一处（detail.tsx）同一条口径。
+ * 派奖改走星屑之后，出款是扩展库**单库**事务：钱要么记上了、要么没记，不再存在
+ * "主库动没动钱不知道"的那一档，于是那个只对超管开放、要人先去主库核对再选一个
+ * 结论的端点连同它的弹窗一起删除了。`held` 的处置只剩「重试」。
  */
 export function QyLotPayoutsTab(props: { actNo: string }) {
   const { t } = useTranslation()
@@ -88,11 +81,6 @@ export function QyLotPayoutsTab(props: { actNo: string }) {
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState(ALL)
   const [target, setTarget] = useState<QyLotAdminPayout | null>(null)
-  const [adjudicating, setAdjudicating] = useState<QyLotAdminPayout | null>(
-    null
-  )
-  const isRoot =
-    useAuthStore((state) => state.auth.user?.role) === ROLE.SUPER_ADMIN
 
   const params = {
     p: page,
@@ -101,9 +89,6 @@ export function QyLotPayoutsTab(props: { actNo: string }) {
   }
   const query = useQuery(qyAdminLotPayoutsQuery(props.actNo, params))
   const items = qyArray(query.data?.items)
-  // 冻结中的那几笔才是这一页真正的工作项。role=10 看得见它们、但落不了账，
-  // 所以必须有一句话告诉他该找谁 —— 只藏按钮不给出口，屏幕上与“没事可做”同形。
-  const heldCount = items.filter((row) => row.status === 'held').length
 
   const retry = useMutation({
     mutationFn: (payoutNo: string) => retryQyLotPayout(props.actNo, payoutNo),
@@ -140,12 +125,6 @@ export function QyLotPayoutsTab(props: { actNo: string }) {
           </Select>
         </QyFilterField>
       </QyFilterBar>
-
-      {heldCount > 0 && !isRoot && (
-        <p className='text-warning text-xs leading-5'>
-          {t('qy_lot_adjudicate_root_only')}
-        </p>
-      )}
 
       <QyPageBoundary
         query={query}
@@ -187,7 +166,7 @@ export function QyLotPayoutsTab(props: { actNo: string }) {
                 id: 'amount',
                 header: t('qy_common_amount'),
                 cell: (row: QyLotAdminPayout) => (
-                  <QyAmountText quota={row.amount_quota} />
+                  <QySdAmount amount={row.amount_quota} />
                 ),
               },
               {
@@ -219,6 +198,21 @@ export function QyLotPayoutsTab(props: { actNo: string }) {
                   ),
               },
               {
+                id: 'mall_order_no',
+                header: t('qy_lot_payout_mall_order'),
+                cell: (row: QyLotAdminPayout) =>
+                  (row.mall_order_no ?? '') === '' ? (
+                    QY_EMPTY_TEXT
+                  ) : (
+                    <Link
+                      to='/qy/admin/mall'
+                      className='font-mono text-xs hover:underline'
+                    >
+                      {row.mall_order_no}
+                    </Link>
+                  ),
+              },
+              {
                 id: 'last_error',
                 header: t('qy_lot_last_error'),
                 cell: (row: QyLotAdminPayout) =>
@@ -236,32 +230,16 @@ export function QyLotPayoutsTab(props: { actNo: string }) {
                 id: 'actions',
                 header: t('qy_common_actions'),
                 cell: (row: QyLotAdminPayout) => (
-                  <div className='flex items-center gap-1'>
-                    <Button
-                      type='button'
-                      variant='ghost'
-                      size='icon-sm'
-                      aria-label={t('qy_lot_retry_title')}
-                      disabled={!RETRYABLE.has(row.status)}
-                      onClick={() => setTarget(row)}
-                    >
-                      <RotateCw aria-hidden='true' />
-                    </Button>
-                    {/* 人工落账只对 held 开放（后端同样只收 held），并且只对超管
-                        渲染。不用 disabled：一个灰掉的按钮说不出“为什么不行”，
-                        而表头上方那句话才是给 role=10 的出口。 */}
-                    {isRoot && row.status === 'held' && (
-                      <Button
-                        type='button'
-                        variant='ghost'
-                        size='icon-sm'
-                        aria-label={t('qy_lot_adjudicate_title')}
-                        onClick={() => setAdjudicating(row)}
-                      >
-                        <Gavel aria-hidden='true' />
-                      </Button>
-                    )}
-                  </div>
+                  <Button
+                    type='button'
+                    variant='ghost'
+                    size='icon-sm'
+                    aria-label={t('qy_lot_retry_title')}
+                    disabled={!RETRYABLE.has(row.status)}
+                    onClick={() => setTarget(row)}
+                  >
+                    <RotateCw aria-hidden='true' />
+                  </Button>
                 ),
               },
             ]}
@@ -291,7 +269,7 @@ export function QyLotPayoutsTab(props: { actNo: string }) {
                 <span className='font-mono text-xs'>{target.payout_no}</span>
               </QyKeyValue>
               <QyKeyValue label={t('qy_common_amount')}>
-                <QyAmountText quota={target.amount_quota} />
+                <QySdAmount amount={target.amount_quota} />
               </QyKeyValue>
               <QyKeyValue label={t('qy_lot_last_error')}>
                 {target.last_error === '' ? QY_EMPTY_TEXT : target.last_error}
@@ -302,12 +280,6 @@ export function QyLotPayoutsTab(props: { actNo: string }) {
         onConfirm={() => {
           if (target != null) retry.mutate(target.payout_no)
         }}
-      />
-
-      <QyLotPayoutAdjudicateDialog
-        actNo={props.actNo}
-        payout={adjudicating}
-        onClose={() => setAdjudicating(null)}
       />
     </div>
   )

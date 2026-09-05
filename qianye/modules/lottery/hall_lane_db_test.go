@@ -17,9 +17,15 @@ import (
 // 就在用户端彻底消失 —— 接口 200、列表非空(别的活动还在)、没有任何一处报错。
 // 所以下面第一条测的是**划分**(每个玩法恰好归属一张夹),而不是逐条归类。
 
-// TestHallLanesPartitionEveryPlay 三张选择夹恰好把四种玩法分完。
+// TestHallLanesPartitionEveryPlay 三张选择夹恰好把四种**批次**玩法分完;转盘一张都不进。
 //
 // 期望值手写,不从 Plays / hallLanes 互相回读 —— 那等于用被测数据证明被测数据。
+//
+// 转盘为什么是划分之外的那一个:它是即时开奖,卡面上"奖池 / 截止 / 开奖"三个数
+// 的语义与批次玩法全都对不上,项目方把它做成独立页面(/qy/wheel),自己带
+// draw_mode=wheel 拉列表。让它落进任何一张夹,用户点开「抽奖」看到的就是一张
+// 会自己转的卡片。所以这里的断言是"恰好 0 张",而不是把它从 Plays 里摘掉 ——
+// 它仍然是一种玩法(有自己的显示开关),只是不进大厅。
 func TestHallLanesPartitionEveryPlay(t *testing.T) {
 	assert.Equal(t, map[string][]string{
 		LaneDraw:  {PlayDrawRank, PlayDrawProb},
@@ -27,8 +33,8 @@ func TestHallLanesPartitionEveryPlay(t *testing.T) {
 		LaneGuess: {PlayGuess},
 	}, hallLanes)
 
-	// 每个玩法恰好被一张夹覆盖:少一张 = 那类活动永远进不了大厅,
-	// 多一张 = 同一场活动在两张标签里各出现一次。
+	// 每个批次玩法恰好被一张夹覆盖:少一张 = 那类活动永远进不了大厅,
+	// 多一张 = 同一场活动在两张标签里各出现一次。转盘恰好 0 张。
 	for _, play := range Plays {
 		lanes := make([]string, 0, 1)
 		for _, lane := range []string{LaneDraw, LaneBall, LaneGuess} {
@@ -36,13 +42,21 @@ func TestHallLanesPartitionEveryPlay(t *testing.T) {
 				lanes = append(lanes, lane)
 			}
 		}
-		assert.Lenf(t, lanes, 1,
-			"玩法 %s 落在 %v 张选择夹里(应恰好 1 张)", play, lanes)
+		want := 1
+		if play == PlayWheel {
+			want = 0
+		}
+		assert.Lenf(t, lanes, want,
+			"玩法 %s 落在 %v 张选择夹里(应恰好 %d 张)", play, lanes, want)
 	}
 
-	// 空 lane = 不限。管理端与不带参数的旧调用靠它拿全量,
+	// 空 lane = 不限选择夹。管理端与不带参数的旧调用靠它拿全量,
 	// 若它退化成"什么都不覆盖",大厅会在没有任何报错的情况下整体空掉。
+	// 转盘被挡在 playFilterClause(它从不把 wheel 放进 modes),不在这一层。
 	for _, play := range Plays {
+		if play == PlayWheel {
+			continue
+		}
 		assert.Truef(t, laneCovers("", play), "空 lane 该覆盖 %s", play)
 	}
 }
@@ -57,7 +71,7 @@ func TestHallQueryRejectsUnknownLane(t *testing.T) {
 	for _, bad := range []string{
 		"rank", "prob", "Ball", "DRAW", "all", "draw_ball", "lottery",
 	} {
-		q, err := hallQuery(gdb, bad, "", allPlaysShown())
+		q, err := hallQuery(gdb, bad, "", "", allPlaysShown())
 		assert.Nilf(t, q, "lane=%q 不该拼出查询", bad)
 		require.ErrorIsf(t, err, errBadLane, "lane=%q 被静默忽略了", bad)
 	}
@@ -76,6 +90,8 @@ func TestHallLanesCoverEveryActivityExactlyOnce(t *testing.T) {
 		playAct("L-prob", KindDraw, DrawModeProb),
 		playAct("L-ball", KindDraw, DrawModeBall),
 		playAct("L-guess", KindGuess, ""),
+		// 转盘在三张夹的并集之外 —— 它只从 draw_mode=wheel 那条列表出去。
+		playAct("L-wheel", KindDraw, DrawModeWheel),
 	}
 	for _, a := range seed {
 		require.NoError(t, gdb.Create(a).Error)
@@ -83,7 +99,7 @@ func TestHallLanesCoverEveryActivityExactlyOnce(t *testing.T) {
 
 	seen := map[string]int{}
 	for _, lane := range []string{LaneDraw, LaneBall, LaneGuess} {
-		q, err := hallQuery(gdb, lane, "", allPlaysShown())
+		q, err := hallQuery(gdb, lane, "", "", allPlaysShown())
 		require.NoError(t, err)
 		for _, no := range actNos(t, q) {
 			seen[no]++
@@ -96,8 +112,13 @@ func TestHallLanesCoverEveryActivityExactlyOnce(t *testing.T) {
 		got = append(got, no)
 	}
 	sort.Strings(got)
-	// 期望值手写:五行分别是四种玩法 + 存量空 draw_mode。
+	// 期望值手写:五行分别是四种批次玩法 + 存量空 draw_mode;转盘刻意不在其中。
 	assert.Equal(t,
 		[]string{"L-ball", "L-guess", "L-legacy", "L-prob", "L-rank"}, got,
 		"有活动掉在三张选择夹的夹缝里 —— 它在用户端彻底不可见,而接口照常 200")
+
+	// 转盘的那一份从独立列表出去,而且只有它。
+	q, err := hallQuery(gdb, "", "", DrawModeWheel, allPlaysShown())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"L-wheel"}, actNos(t, q))
 }

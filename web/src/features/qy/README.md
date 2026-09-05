@@ -69,6 +69,8 @@ if (!enabled || !features.transfer) return null
 | `QyStatusBadge`   | `components/qy-status-badge`   | 统一状态色板，`uncertain` 用告警色      |
 | `QyAmountText`    | `components/qy-amount-text`    | 站内额度展示（ledger / hero 两种口径）  |
 | `QyAmountInput`   | `components/qy-amount-input`   | 额度输入，自动回显换算后的整数 quota    |
+| `QySdAmount`      | `components/qy-sd-amount`      | **星屑**展示：整数 + 千分位 + 单位名    |
+| `QySdInput`       | `components/qy-sd-input`       | 星屑输入：整数、无小数负数、右侧单位名  |
 | `QyMaskedUser`    | `components/qy-masked-user`    | 脱敏用户展示（脱敏由后端完成）          |
 | `QyConfirmDialog` | `components/qy-confirm-dialog` | 二次确认，`irreversible` 强制勾选       |
 | `QyTimeline`      | `components/qy-timeline`       | 单据状态时间线                          |
@@ -78,7 +80,8 @@ if (!enabled || !features.transfer) return null
 
 - **i18n**：键名 `qy_<domain>_<name>`，全小写下划线，**禁止点号**
   （i18next 默认 `keySeparator: '.'`，带点的键会被当成嵌套路径查不到）。
-  domain 白名单：`nav common err tr aff wd cm vio avl cfg log plan`。
+  domain 白名单:`nav common err tr aff inv vio avl cfg log plan lot sd sdadm ml mladm wh`
+  （`sd` = 星屑、`ml` = 商城、`wh` = 转盘）。
   传 `count` 的键不要自带 `_one` / `_other` 后缀。
 - **禁止运行 `bun run i18n:sync`**：它只扫 `src/i18n/locales`，跑了只会给上游
   7 个大 JSON 制造噪声 diff。
@@ -86,6 +89,12 @@ if (!enabled || !features.transfer) return null
   禁止 `parseFloat` 后再运算，更禁止用 `formatCurrencyFromUSD` /
   `formatQuotaWithCurrency` 渲染 —— 那是按冻结汇率产生的绝对值，会双重换算。
   站内额度才走 `lib/format.ts`。
+- **星屑**（design-15）是第三种单位：整数积分，不是额度。抽奖 / 商城 / 星屑
+  账本上凡是钱（lottery 的 `*_quota` 字段**名不变、单位是星屑**）一律走
+  `QySdAmount` / `QySdInput` / `lib/format-sd.ts`，**绝不**走 `QyAmountText`
+  或 `formatQyQuota*`。仍是额度的只剩参与条件的三条门槛
+  （`min_quota` / `min_used_quota` / `recent_spend_quota`）。单位名从
+  `useStardustName()` 取（运营可改），不要硬编码「星屑」。
 - **前端永不本地加减余额**，提交后无条件 invalidate 重取。
 - 审核类接口的请求体必须携带 `version`（乐观锁），409 时提示
   `qy_err_conflict` 并刷新列表。

@@ -92,6 +92,8 @@ var restrictedAnonymousRoutes = []string{
 	// 管理员挑到一半的上传与被删活动的封面一律取不到;ref 是 128 位随机十六进制,
 	// 不存在枚举路径。挂在登录之后的话,大厅首屏并排十几张图对未登录访客全是破图。
 	"GET /api/qy/lottery/covers/:ref",
+	// 商城封面:与抽奖封面同一档匿名,同样只回已绑定到某件商品的那些。
+	"GET /api/qy/mall/covers/:ref",
 	// mj 出图:注册在 TokenAuth 之前
 	"GET /mj/image/:id",
 	"GET /:mode/mj/image/:id",
@@ -177,6 +179,9 @@ var restrictedDeniedSessionRoutes = []string{
 	// 前缀清单),密钥页对他根本不渲染 —— 单独放开这一条只会泄漏他今天花了多少,
 	// 而他既看不到密钥、也发不出请求。
 	"GET /api/qy/token-usage/today",
+	// 同一页的「当前并发 / 近 1 分钟」。与上一条同理,而且更彻底:受限账号的
+	// 令牌在 TokenAuth 上一律 403,他名下每一把 key 的这两个数**必然**都是 0。
+	"GET /api/qy/token-usage/live",
 	"GET /api/user/models",
 	"GET /api/user/self/groups",
 	"GET /api/user/sessions",
@@ -193,13 +198,18 @@ var restrictedDeniedSessionRoutes = []string{
 	"GET /api/oauth/:provider",
 	// 会话链上的 relay:playground 走 UserAuth,最容易被当成普通管理台接口漏进白名单
 	"POST /pg/chat/completions",
-	// 钱:划转 / 提现 / 佣金
+	// 钱:划转 / 邀请返(星屑)
 	// invitee-daily 与 invitees 同一类:受限账号不该继续看自己名下的推广收益,
 	// 更不该看下线的活跃度 —— 它是"我的推广"那一屏的组成部分,而整屏对受限账号关闭。
-	"GET /api/qy/commission/invitee-daily",
-	"GET /api/qy/commission/invitees",
-	"GET /api/qy/commission/records",
+	"GET /api/qy/invite/invitee-daily",
+	"GET /api/qy/invite/invitees",
+	"GET /api/qy/invite/records",
+	"GET /api/qy/invite/summary",
+	// 星辉佣金(D-15):看板、计佣流水、自动入账记录都是"我的推广"那一屏的组成部分,
+	// 受限账号连同整屏一起关闭。
 	"GET /api/qy/commission/summary",
+	"GET /api/qy/commission/records",
+	"GET /api/qy/commission/credits",
 	"GET /api/qy/transfer/contacts",
 	"GET /api/qy/transfer/limits",
 	"GET /api/qy/transfer/records",
@@ -208,16 +218,6 @@ var restrictedDeniedSessionRoutes = []string{
 	"POST /api/qy/transfer/preview",
 	"PUT /api/qy/transfer/contacts/:id",
 	"DELETE /api/qy/transfer/contacts/:id",
-	"GET /api/qy/withdraw/:id",
-	"GET /api/qy/withdraw/:id/proof",
-	"GET /api/qy/withdraw/config",
-	"GET /api/qy/withdraw/payees",
-	"GET /api/qy/withdraw/records",
-	"POST /api/qy/withdraw",
-	"POST /api/qy/withdraw/:id/cancel",
-	"POST /api/qy/withdraw/payees",
-	"POST /api/qy/withdraw/proofs",
-	"DELETE /api/qy/withdraw/payees/:ref",
 	"POST /api/user/aff_transfer",
 	"GET /api/user/aff",
 	// 充值 / 兑换 / 签到
@@ -245,6 +245,22 @@ var restrictedDeniedSessionRoutes = []string{
 	"GET /api/qy/lottery/my/prizes/:payout_no",
 	"GET /api/qy/lottery/series/:series_no",
 	"POST /api/qy/lottery/activities/:act_no/entries",
+	// 星屑转盘:一次转动与我的转动记录,与报名同档
+	"POST /api/qy/lottery/activities/:act_no/spins",
+	"GET /api/qy/lottery/activities/:act_no/spins/me",
+	// 星屑:余额、流水、日桶都是本人只读,受限账号一律不给看(与佣金同档)
+	"GET /api/qy/stardust/me",
+	"GET /api/qy/stardust/ledger",
+	"GET /api/qy/stardust/accruals",
+	// 星屑商城:看货架、下单、看单、揭示码、取消
+	"GET /api/qy/mall/products",
+	"GET /api/qy/mall/products/:no",
+	"POST /api/qy/mall/orders",
+	"GET /api/qy/mall/orders",
+	"GET /api/qy/mall/orders/:no",
+	"GET /api/qy/mall/orders/:no/code",
+	"POST /api/qy/mall/orders/:no/cancel",
+	"POST /api/qy/mall/orders/:no/address",
 	// 订阅
 	"GET /api/subscription/plans",
 	// 下单前的后果预览。与 /plans 同一档:只读、只回答"我买这个会发生什么",

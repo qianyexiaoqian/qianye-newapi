@@ -200,12 +200,18 @@ describe('受限账号：原位置不留孤儿', () => {
       !navUrls.some((url) => url.endsWith(`/${MOVED_SECTION_ID}`)),
       '菜单里还留着「受限账号公告」—— 一个点进去只告诉你去别处的常驻菜单项是纯噪声'
     )
-    // 只滤掉这一项，别的 section 一个都不许跟着消失。上一版这条过滤写在共享的
-    // registry 工具里时，很容易连累另外 6 个设置页。
-    assert.equal(
-      navUrls.length,
-      CONTENT_SECTION_IDS.length - 1,
-      '内容管理的菜单项数量对不上：除了「受限账号公告」这一项，别的 section 不该被滤掉'
+    // 只滤掉「已搬家」的那些 section，别的一个都不许跟着消失。上一版这条过滤
+    // 写在共享的 registry 工具里时，很容易连累另外 6 个设置页。判据从
+    // 「数量恰好差 1」改成「被滤掉的恰好是路牌那几个」：api-info（「API信息」
+    // 并入 qy 地址簿，decisions.md D-09）成为第二块路牌之后，数量差的写法在
+    // 这里红得毫无信息量，还得靠人肉对照才知道少的是谁。
+    const filteredIds = (CONTENT_SECTION_IDS as readonly string[]).filter(
+      (id) => !navUrls.some((url) => url.endsWith(`/${id}`))
+    )
+    assert.deepEqual(
+      [...filteredIds].sort(),
+      ['api-info', MOVED_SECTION_ID].sort(),
+      '内容管理菜单里被滤掉的 section 对不上：只有已搬家的路牌可以不出现在菜单里'
     )
   })
 })

@@ -22,7 +22,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyFundAuditTab } from './fund-audit-tab'
-import { QyPiiAuditTab } from './pii-audit-tab'
 import { QyRequestAuditTab } from './request-audit-tab'
 
 /**
@@ -33,11 +32,9 @@ import { QyRequestAuditTab } from './request-audit-tab'
  *     每一行都要能被逐字辩论。
  *  2. **请求台账**（`qy_request_audits`）—— 记「调用」。谁在什么时候调了哪个
  *     写接口、成没成功。由中间件兜底，新接口天然有痕，一天几千行。
- *  3. **明文访问**（`qy_pii_audits`）—— 记「谁看了谁的收款信息」。合规专用，
- *     强制事由、保留期更长。
  *
- * 三者刻意不合表：合并会让资金台账被几千行低价值读取稀释，也会让合规导出
- * 连带带出大量无关记录。放在同一个页面则是因为排查一件事往往要横跨三张表 ——
+ * 两者刻意不合表：合并会让资金台账被几千行低价值读取稀释，也会让合规导出
+ * 连带带出大量无关记录。放在同一个页面则是因为排查一件事往往要横跨两张表 ——
  * 用 request_id 把「他调了哪个接口」和「那次调用改了多少钱」串起来。
  */
 export function QyAdminAuditLogs() {
@@ -55,7 +52,6 @@ export function QyAdminAuditLogs() {
             <TabsTrigger value='request'>
               {t('qy_cfg_audit_tab_request')}
             </TabsTrigger>
-            <TabsTrigger value='pii'>{t('qy_cfg_audit_tab_pii')}</TabsTrigger>
           </TabsList>
 
           {/* 三个 tab 各自持有筛选状态与查询。切回来时状态还在，
@@ -66,9 +62,6 @@ export function QyAdminAuditLogs() {
           </TabsContent>
           <TabsContent value='request'>
             <QyRequestAuditTab />
-          </TabsContent>
-          <TabsContent value='pii'>
-            <QyPiiAuditTab />
           </TabsContent>
         </Tabs>
       </QySectionPageLayout.Content>

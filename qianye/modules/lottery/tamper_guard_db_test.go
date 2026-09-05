@@ -24,7 +24,7 @@ import (
 
 // probActivityForTamper 造一场发布完毕、名单已冻结、等着开奖的概率制活动。
 //
-// 走的是真实路径:computeCommit 生成承诺、reserveEntry 落条目、runLock 封盘。
+// 走的是真实路径:computeCommit 生成承诺、参与事务落票并扣星屑、runLock 封盘。
 // 只有"改奖档"那一步是测试自己动的手 —— 那正是要抓的攻击。
 func probActivityForTamper(t *testing.T, gdb *gorm.DB) *Activity {
 	t.Helper()
@@ -76,18 +76,9 @@ func probActivityForTamper(t *testing.T, gdb *gorm.DB) *Activity {
 	salts, err := loadSalts(context.Background(), gdb, act.Id)
 	require.NoError(t, err)
 	for uid := 301; uid < 311; uid++ {
-		e := &Entry{
-			EntryNo: newEntryNo(), ActId: act.Id, IdemKey: buildIdemKey(act.ActNo, newEntryNo()),
+		seedTicket(t, gdb, act, &Entry{
 			UserId: uid, UserRef: UserRef(salts.RefSalt, uid), Amount: act.StakeQuota,
-			Status: EntryPending, OrderNo: "LE-" + newEntryNo(), CreatedAt: common.GetTimestamp(),
-		}
-		cur := loadAct(t, gdb, act.Id)
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return reserveEntry(tx, cur, Rules{}, e, 0)
-		}))
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return markEntrySuccess(tx, e.EntryNo, nil)
-		}))
+		})
 	}
 
 	require.NoError(t, gdb.Model(&Activity{}).Where("id = ?", act.Id).
@@ -128,8 +119,8 @@ func TestRevealRefusesWhenWinOddsWereChangedAfterPublish(t *testing.T) {
 
 // 奖金额被事后改大 → 同样拒绝开奖。
 //
-// 发布期那道 Σ(count × amount) ≤ max_total_prize_quota 是**唯一**能拦住
-// "奖品金额多写一个零"的闸门,而抽奖派奖是对用户额度的净增发。
+// 发布期那道 Σ(count × amount) ≤ max_total_prize_stardust 是**唯一**能拦住
+// "奖品金额多写一个零"的闸门,而抽奖派奖是对用户星屑的净增发。
 func TestRevealRefusesWhenPrizeAmountWasChangedAfterPublish(t *testing.T) {
 	gdb := textEnv(t)
 	act := probActivityForTamper(t, gdb)
@@ -180,7 +171,7 @@ func TestReconcileFlagsSpecDrift(t *testing.T) {
 // verify.py 的 pool_share_bps 分支、前端的占池列全部成了永不执行的死路径。
 func TestFloatingBallTierIsStructurallyCreatable(t *testing.T) {
 	cfg := config.Lottery{MaxPrizeTiers: 8, MaxTotalEntriesHard: 10000}
-	set := opSettings{MaxTotalPrizeQuota: 1_000_000}
+	set := opSettings{MaxTotalPrizeStardust: 1_000_000}
 	act := &Activity{DrawMode: DrawModeBall, Algo: AlgoV2, MaxTotalEntries: 1000}
 
 	rows, lines, err := buildPrizes([]prizeInput{
@@ -244,14 +235,15 @@ func TestBallEntryIsRejectedBeforeThePoolCanOverflowInt32(t *testing.T) {
 	e := &Entry{
 		EntryNo: newEntryNo(), ActId: act.Id, IdemKey: buildIdemKey(act.ActNo, newEntryNo()),
 		UserId: 1, UserRef: "r", Amount: 1000,
-		Status: EntryPending, CreatedAt: common.GetTimestamp(),
+		Status: EntrySuccess, CreatedAt: common.GetTimestamp(),
 	}
 	cur := loadAct(t, gdb, act.Id)
 	err := gdb.Transaction(func(tx *gorm.DB) error {
-		return reserveEntry(tx, cur, Rules{}, e, 0)
+		_, err := reserveEntry(tx, cur, Rules{}, e, 0)
+		return err
 	})
 	require.ErrorIs(t, err, errCapReached,
-		"开局池已经贴着 int32 上限,再进一笔就会让系列永久开不出新一期")
+		"开局池已经贴着算术上界,再进一笔就会让系列永久开不出新一期")
 
 	// 池子离上限还远时照常放行 —— 否则这条闸门就是把双色球整个关掉。
 	require.NoError(t, gdb.Model(&Activity{}).Where("id = ?", act.Id).
@@ -259,11 +251,12 @@ func TestBallEntryIsRejectedBeforeThePoolCanOverflowInt32(t *testing.T) {
 	ok := &Entry{
 		EntryNo: newEntryNo(), ActId: act.Id, IdemKey: buildIdemKey(act.ActNo, newEntryNo()),
 		UserId: 2, UserRef: "r2", Amount: 1000,
-		Status: EntryPending, CreatedAt: common.GetTimestamp(),
+		Status: EntrySuccess, CreatedAt: common.GetTimestamp(),
 	}
 	relaxed := loadAct(t, gdb, act.Id)
 	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-		return reserveEntry(tx, relaxed, Rules{}, ok, 0)
+		_, err := reserveEntry(tx, relaxed, Rules{}, ok, 0)
+		return err
 	}))
 }
 
@@ -324,6 +317,7 @@ func TestTextPrizeAuditAdvancesPastTheFirstBatch(t *testing.T) {
 // 那恰恰是撤销这个功能自己承诺要保住的东西。
 func TestRefulfillArchivesTheSupersededCiphertext(t *testing.T) {
 	gdb := textEnv(t)
+	withPrizeKeyOnCurrentConfig(t)
 	act := seedActivity(t, gdb, nil)
 	p := seedPayout(t, gdb, act.Id, func(p *Payout) {
 		p.Kind = PayoutText
@@ -359,9 +353,10 @@ func TestRefulfillArchivesTheSupersededCiphertext(t *testing.T) {
 	assert.Empty(t, hist[0].Note)
 	assert.EqualValues(t, 7, hist[0].SupersededBy)
 
-	// 当前行上是第二串,两者互不覆盖。
-	after, err := openPrizeSecret(reloadPayout(t, gdb, p.PayoutNo).SecretNonce,
-		reloadPayout(t, gdb, p.PayoutNo).SecretCipher, p.PayoutNo, 0)
+	// 当前行上是第二串,两者互不覆盖。版本号取行上记录的那个 —— 写死 0 只在
+	// "兑换码明文直存"的年代成立,强制加密之后那样读回来的是一串密文字节。
+	row := reloadPayout(t, gdb, p.PayoutNo)
+	after, err := openPrizeSecret(row.SecretNonce, row.SecretCipher, p.PayoutNo, row.SecretKeyVersion)
 	require.NoError(t, err)
 	assert.Equal(t, "CDK-BBBB-2222", after)
 }

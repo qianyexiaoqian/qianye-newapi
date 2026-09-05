@@ -51,13 +51,25 @@ type aiScopeUpsertReq struct {
 	// 指向已归档类型的配置在界面上看起来完全正常,而线上每次命中都会退回
 	// 规则自己那一档并打一条告警(见 resolveCategoryOverride)。
 	CategoryId int64 `json:"category_id"`
-	// ChannelId 0 = 不指定,按权重在全部启用渠道里随机。写入闸会确认它指向一个
-	// **存在且启用**的渠道:指向一个停用渠道的策略在界面上与正常的完全一样,
-	// 而线上它每一次都走 no_channel(绝不回落到随机池,见 AIScope.ChannelId)。
+	// ChannelIds 是这一档指定的审核渠道。空数组 = 不指定(在全部启用渠道之间
+	// 分发)。写入闸会确认每一个都指向一个**存在且启用**的渠道:指向停用渠道的
+	// 策略在界面上与正常的完全一样,而线上它少一个可用渠道 —— 全都停用时这一档
+	// 每一次都走 no_channel(绝不回落到全部渠道,见 AIScope.ChannelIds)。
+	//
+	// **指针**:nil(字段缺席)与 `[]`(显式清空)必须分得开。缺席只可能来自
+	// 一个这一列存在之前的旧页面,而把它当成"清空"会把一条「只发给自建端点」
+	// 静默改成「发给全部启用渠道」—— 一次没人按下过的数据出境扩大。缺席时的
+	// 处置见 apply。
+	ChannelIds *[]int64 `json:"channel_ids"`
+	// ChannelId 是这一列还只能填一个 id 时的入参,只为**旧页面**保留。
+	// 新客户端一律发 channel_ids;两者都给时以 channel_ids 为准。
 	ChannelId int64 `json:"channel_id"`
-	// ChannelFailover 是「指定的渠道不可用时退到加权随机池」。默认 false ——
+	// ChannelMode 是渠道之间的分发方式:"" / weighted = 加权随机,round_robin = 轮询。
+	// 旧页面不带这个字段,于是落到空串 = 加权随机 = 它当时的唯一行为。
+	ChannelMode string `json:"channel_mode"`
+	// ChannelFailover 是「指定的渠道都不可用时退到加权随机池」。默认 false ——
 	// 老客户端不带这个字段时,这一档的行为与这一列存在之前逐字节相同。
-	// ChannelId 为 0 时由 validateAIScope 归零(那时它没有任何含义)。
+	// 清单为空时由 validateAIScope 归零(那时它没有任何含义)。
 	ChannelFailover bool   `json:"channel_failover"`
 	Remark          string `json:"remark"`
 }
@@ -73,7 +85,26 @@ func (r *aiScopeUpsertReq) apply(dst *AIScope) error {
 	dst.AsyncSampleRateBps = r.AsyncSampleRateBps
 	dst.Prompt = r.Prompt
 	dst.CategoryId = r.CategoryId
-	dst.ChannelId = r.ChannelId
+	// 渠道清单的三种来源,顺序固定。
+	//
+	// 最后那一档是**拒绝**而不是"当成清空":一次不带清单的提交,配上一条已经
+	// 指定了渠道的策略,只可能来自一个这一列存在之前的页面。把它当成清空会把
+	// 「只发给自建的那两个端点」改成「发给全部启用渠道」,而提交者根本不知道
+	// 自己改了这件事 —— 用户内容的出境目的地在一次改抽样率的保存里悄悄变宽。
+	// 想真的清空的新页面发的是 `[]`,与缺席分得开。
+	switch {
+	case r.ChannelIds != nil:
+		dst.ChannelIds = AIChannelIds(*r.ChannelIds)
+	case r.ChannelId > 0:
+		dst.ChannelIds = AIChannelIds{r.ChannelId}
+	case len(dst.ChannelIds) > 0:
+		return fmt.Errorf("这次提交没有带审核渠道清单,而这一档现在指定着 %d 个渠道 —— "+
+			"保存下去会把它改成「在全部启用渠道之间分发」,也就是把用户内容发往你没有选过的端点。"+
+			"这通常是页面开得太久(清单是新加的一格),请刷新后重试", len(dst.ChannelIds))
+	default:
+		dst.ChannelIds = nil
+	}
+	dst.ChannelMode = r.ChannelMode
 	dst.ChannelFailover = r.ChannelFailover
 	dst.Remark = r.Remark
 	return validateAIScope(dst)
@@ -133,7 +164,10 @@ func adminListAIScopes(c *gin.Context) {
 				"category_id":   s.CategoryId,
 				// 指定渠道同样是"存下来要等一次重载才进快照"的东西,而它不一致
 				// 时的表现(还在往上一个端点发用户内容)完全无声。
-				"channel_id": s.ChannelId,
+				"channel_ids": s.ChannelIds,
+				// 分发方式同理:改成轮询之后要等一次重载才真的轮,中间这段时间
+				// 界面写着"轮询",线上还在按权重随机 —— 一个只能靠统计看出来的差别。
+				"channel_mode": s.ChannelMode,
 				// 故障转移这一位同理,而且它的不一致更难察觉:关掉之后要等一次
 				// 重载才真的停,中间这段时间界面写着"关",线上仍然在往池子里退。
 				"channel_failover": s.ChannelFailover,
@@ -148,7 +182,7 @@ func adminListAIScopes(c *gin.Context) {
 		"summary":    summarizeAIScopes(rows),
 		"max_scopes": maxAIScopes,
 		"ai_enabled": setting.Enabled,
-		// channels 让界面把 channel_id join 成名字,并把"指定的渠道已停用/
+		// channels 让界面把 channel_ids join 成名字,并把"指定的渠道已停用/
 		// 已删除"这两种静默失效当场标出来。
 		"channels":         channelRows,
 		"effective_active": snap.ai != nil,
@@ -222,37 +256,50 @@ func adminUpsertAIScope(c *gin.Context) {
 			return
 		}
 	}
-	// 指定的审核渠道必须**存在且启用**(同样只在启用中的档上要求,理由见上)。
+	// 指定的审核渠道必须**逐个存在且启用**(同样只在启用中的档上要求,理由见上)。
 	//
-	// 线上指向停用渠道的表现是每一次都走 no_channel —— 这一档从此不审核,
-	// 没有 4xx、没有界面提示,只有成本页上 no_channel 那一格悄悄长起来。
-	// 绝不在运行期回落到随机池:那会把用户内容发给运营明确没有选的端点,
-	// 而"只能发给这一个"往往正是指定渠道的全部理由(见 AIScope.ChannelId)。
-	if row.Enabled && row.ChannelId > 0 {
-		var ch AIChannel
-		if err := gdb.Where("id = ?", row.ChannelId).Take(&ch).Error; err != nil {
-			err = fmt.Errorf("指定的审核渠道(id=%d)不存在 —— "+
-				"请在审核渠道卡片里确认它还在,或把这一格改回「不指定(按权重随机)」", row.ChannelId)
-			writeAIScopeAudit(c, aiScopeAction(req.Id), qymodel.ResultFail, before, &row, err)
-			badRequest(c, err.Error())
-			return
-		}
-		if !ch.Enabled {
-			// 后果分两种说,因为它们真的不同 —— 而"说错的那一半"正是运营用来
+	// 线上指向停用渠道的表现是这一档少一个可用渠道,全都停用时每一次都走
+	// no_channel —— 这一档从此不审核,没有 4xx、没有界面提示,只有成本页上
+	// no_channel 那一格悄悄长起来。绝不在运行期回落到全部渠道:那会把用户内容
+	// 发给运营明确没有选的端点,而"只能发给这几个"往往正是指定它们的全部理由
+	// (见 AIScope.ChannelIds)。
+	//
+	// 逐个拦而不是"只要还剩一个能用就放行":一条清单里躺着一个已经停用的 id,
+	// 在界面上与三个全健康的清单长得一模一样,而它意味着这一档的实际分发面
+	// 比运营以为的窄(轮询时更明显:说好三台轮,实际只有两台在扛)。
+	if row.Enabled {
+		for _, id := range row.ChannelIds {
+			var ch AIChannel
+			if err := gdb.Where("id = ?", id).Take(&ch).Error; err != nil {
+				err = fmt.Errorf("指定的审核渠道(id=%d)不存在 —— "+
+					"请在审核渠道卡片里确认它还在,或把它从这一档的渠道清单里去掉", id)
+				writeAIScopeAudit(c, aiScopeAction(req.Id), qymodel.ResultFail, before, &row, err)
+				badRequest(c, err.Error())
+				return
+			}
+			if ch.Enabled {
+				continue
+			}
+			// 后果分三种说,因为它们真的不同 —— 而"说错的那一份"正是运营用来
 			// 判断这条报错要不要认真对待的依据。
 			//
-			// 开着故障转移时这一档并没有停止工作(它会退到池子),所以拦它的
-			// 理由不是"你会失去审核",而是"你指定的那个端点已经不在链上了":
-			// 指定渠道表达的往往是数据流向约束,而现在生效的是池子。
-			// 那种状态可以存在(存量、渠道临时停用),但不该由一次保存**新建**
-			// 出来 —— 否则勾一下故障转移就成了绕开这道闸的办法。
+			// 清单里还有别的渠道时,这一档并没有停止工作,拦它的理由是"你以为
+			// 在轮三台,实际只有两台"。开着故障转移时同理,只是补位来自池子:
+			// 指定渠道表达的往往是数据流向约束,而现在生效的是池子。那种状态
+			// 可以存在(存量、渠道临时停用),但不该由一次保存**新建**出来 ——
+			// 否则多勾一个渠道、或者勾一下故障转移,就成了绕开这道闸的办法。
 			outcome := "这一档会每次都走「无可用渠道」并直接放行(不会回落到其它渠道)"
-			if row.ChannelFailover {
+			switch {
+			case len(row.ChannelIds) > 1:
+				outcome = fmt.Sprintf("这一档还指定了另外 %d 个渠道,于是它不会停摆,"+
+					"但实际参与分发的比你选的少一个 —— 轮询时那几台要多扛一份",
+					len(row.ChannelIds)-1)
+			case row.ChannelFailover:
 				outcome = "这一档开着故障转移,于是每一次审核都会直接落到加权随机池上 —— " +
-					"你指定的这个端点一次都不会被用到,而「只能发给这一个」往往正是指定它的理由"
+					"你指定的这个端点一次都不会被用到,而「只能发给这几个」往往正是指定它的理由"
 			}
 			err := fmt.Errorf("指定的审核渠道「%s」当前是停用状态 —— 停用的渠道不会进快照,%s。"+
-				"请先启用该渠道,或把这一格改回「不指定(按权重随机)」", ch.Name, outcome)
+				"请先启用该渠道,或把它从这一档的渠道清单里去掉", ch.Name, outcome)
 			writeAIScopeAudit(c, aiScopeAction(req.Id), qymodel.ResultFail, before, &row, err)
 			badRequest(c, err.Error())
 			return
@@ -387,11 +434,14 @@ func aiScopeAuditSnap(s *AIScope) map[string]any {
 		"prompt_fingerprint": aiPromptFingerprint(s.Prompt),
 		// 类型绑定改了谁的计数往哪一类走,而计数是封号判据。必须留痕。
 		"category_id": s.CategoryId,
-		// 指定渠道决定这一档的用户内容被发到**哪个第三方端点**。改它是本页
+		// 指定渠道决定这一档的用户内容被发到**哪些第三方端点**。改它是本页
 		// 唯一一个能改变数据出境目的地的动作,必须留痕。
-		"channel_id": s.ChannelId,
-		// 打开故障转移把"只发给这一个"变成"这一个不行就发给池子里的任何一个",
-		// 也就是把出境目的地从一个变成一组。它与上面那一格是同一类事实,
+		"channel_ids": []int64(s.ChannelIds),
+		// 分发方式改的是这几个端点各自分到多少内容。它不改变出境面,但改变
+		// "哪一台在扛" —— 一次事故复盘里那是第一个要问的问题。
+		"channel_mode": normalizeAIChannelMode(s.ChannelMode),
+		// 打开故障转移把"只发给这几个"变成"它们不行就发给池子里的任何一个",
+		// 也就是把出境目的地从一组变成全部。它与上面那一格是同一类事实,
 		// 而且更容易被顺手打开(它是一个开关,不是一次选择),必须留痕。
 		"channel_failover": s.ChannelFailover,
 		"remark":           s.Remark,

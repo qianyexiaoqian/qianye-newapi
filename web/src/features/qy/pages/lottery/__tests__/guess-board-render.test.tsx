@@ -39,7 +39,7 @@ import { after, describe, test } from 'node:test'
 
 import enKeys from '@/i18n/qy/en.json'
 
-import { formatQyQuotaLedger } from '../../../lib/format'
+import { formatSd } from '../../../lib/format-sd'
 import {
   cleanupQyLotScreens,
   mountQyLotScreen,
@@ -55,41 +55,42 @@ const NOW = Math.floor(Date.now() / 1000)
 
 /*
  * 这一场的数字是**挑过**的，为的是让期望赔率落在一个整齐的金额上，
- * 断言里就不会出现"看起来差不多"的容差比较。站内口径 500000 quota = $1。
+ * 断言里就不会出现"看起来差不多"的容差比较。金额全是**整数星屑**（design-15），
+ * 所以刻度选得让两边的赔付都不经过截断。
  *
- *   已有押注   会涨 $2（1_000_000） · 不会涨 $7（3_500_000） → 奖池 $9
- *   单注       $1（500_000）
+ *   已有押注   会涨 800 · 不会涨 2_800 → 奖池 3_600
+ *   单注       400
  *   手续费     10%（fee_bps = 1000）
  *
  * 押「会涨」这一注之后：
- *   pool   = 4_500_000 + 500_000 = 5_000_000
- *   fee    = trunc(5_000_000 × 1000 / 10000) = 500_000
- *   net    = 4_500_000
- *   winSum = 1_000_000 + 500_000 = 1_500_000
- *   pay    = trunc(4_500_000 × 500_000 / 1_500_000) = 1_500_000  → $3.00 · ×3.00
+ *   pool   = 3_600 + 400 = 4_000
+ *   fee    = trunc(4_000 × 1000 / 10000) = 400
+ *   net    = 3_600
+ *   winSum = 800 + 400 = 1_200
+ *   pay    = trunc(3_600 × 400 / 1_200) = 1_200  → ×3.00
  *
  * 押「不会涨」：
- *   winSum = 3_500_000 + 500_000 = 4_000_000
- *   pay    = trunc(4_500_000 × 500_000 / 4_000_000) = 562_500     → ×1.13
+ *   winSum = 2_800 + 400 = 3_200
+ *   pay    = trunc(3_600 × 400 / 3_200) = 450    → ×1.13（1.125 四舍五入）
  *
- * 占池：会涨 1_000_000 / 4_500_000 = 22.2%，不会涨 3_500_000 / 4_500_000 = 77.8%。
+ * 占池：会涨 800 / 3_600 = 22.2%，不会涨 2_800 / 3_600 = 77.8%。
  */
-const THIN_PAYOUT = 1_500_000
-const CROWDED_PAYOUT = 562_500
+const THIN_PAYOUT = 1_200
+const CROWDED_PAYOUT = 450
 
 const GUESS_SPEC = [
   {
     opt_no: 1,
     label: '会涨',
     is_catch_all: false,
-    bet_quota: 1_000_000,
+    bet_quota: 800,
     bet_count: 2,
   },
   {
     opt_no: 2,
     label: '不会涨',
     is_catch_all: true,
-    bet_quota: 3_500_000,
+    bet_quota: 2_800,
     bet_count: 7,
   },
 ]
@@ -101,8 +102,8 @@ const OPEN_GUESS = qyLotDetailFixture({
   open_at: NOW - 3600,
   close_at: NOW + 3600,
   draw_at: NOW + 7200,
-  stake_quota: 500_000,
-  pool_quota: 4_500_000,
+  stake_quota: 400,
+  pool_quota: 3_600,
   fee_bps: 1000,
   active_count: 9,
   min_entries_to_hold: 0,
@@ -142,7 +143,7 @@ const EMPTY_PROOF = {
  */
 function readQyLotDialog(): string {
   const dialog = document.body.querySelector('[role="dialog"]')
-  return (dialog?.textContent ?? '').replace(/\s+/g, ' ')
+  return (dialog?.textContent ?? '').replaceAll(/\s+/g, ' ')
 }
 
 async function mountGuessDetail(activity: unknown) {
@@ -178,8 +179,8 @@ describe('竞猜详情：一屏之内看得出这是彩池而不是选择题', (
 
   test('赔率等于按后端口径独立算出的那个数', SLOW, async () => {
     const screen = await mountGuessDetail(OPEN_GUESS)
-    const thin = formatQyQuotaLedger(THIN_PAYOUT)
-    const crowded = formatQyQuotaLedger(CROWDED_PAYOUT)
+    const thin = formatSd(THIN_PAYOUT)
+    const crowded = formatSd(CROWDED_PAYOUT)
     assert.ok(
       screen.text.includes(thin),
       `押「会涨」应当约得 ${thin}（pool 5000000 − fee 500000，按 winSum 1500000 分）` +
@@ -270,20 +271,22 @@ describe('押注弹窗：钱动之前的最后一屏也要有分布与赔率', (
     const after = screen.read()
     const dialogChars = after.chars - before
     // 弹窗净增的都是数字：奖池一行、两行占比 + 赔率、一句口径说明。
+    // 上限从 160 抬到 180：金额改印星屑之后每个数后面都跟着单位名（" 星屑"，
+    // 3 字），弹窗里有 7 个金额，那 21 字是刻意加上去的单位、不是说明文字。
     assert.ok(
-      dialogChars <= 160,
-      `押注弹窗净增 ${dialogChars} 字，超过 160：${after.text}`
+      dialogChars <= 180,
+      `押注弹窗净增 ${dialogChars} 字，超过 180：${after.text}`
     )
 
     const dialog = readQyLotDialog()
     assert.notEqual(dialog, '', '弹窗没有渲染出来')
     for (const [why, piece] of [
-      ['奖池就是"赢家分的是谁的钱"的答案', formatQyQuotaLedger(4_500_000)],
-      ['人少那一边的赔率', formatQyQuotaLedger(THIN_PAYOUT)],
+      ['奖池就是"赢家分的是谁的钱"的答案', formatSd(3_600)],
+      ['人少那一边的赔率', formatSd(THIN_PAYOUT)],
       ['人多那一边的占比', '77.8%'],
       [
         '押错的钱归了押中的人 + 全对/全错原样退回',
-        zhKeys['qy_lot_bet_warn_line'].replace('{{amount}}', '$1'),
+        zhKeys['qy_lot_bet_warn_line'].replace('{{amount}}', '400 星屑'),
       ],
     ] as const) {
       assert.ok(dialog.includes(piece), `弹窗里少了${why}：${piece}`)
@@ -300,7 +303,7 @@ describe('押注弹窗：钱动之前的最后一屏也要有分布与赔率', (
     assert.ok(await screen.click(zhKeys['qy_lot_join_title']))
     assert.ok(
       !readQyLotDialog().includes(
-        zhKeys['qy_lot_join_warn_line'].replace('{{amount}}', '$1')
+        zhKeys['qy_lot_join_warn_line'].replace('{{amount}}', '400 星屑')
       ),
       '竞猜弹窗上挂着抽奖那句「只有整场取消或流局时才全额退款」'
     )

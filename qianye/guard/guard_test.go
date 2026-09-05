@@ -127,7 +127,7 @@ func TestHotRunOnlyMarksSuccessWhenDBWasTouched(t *testing.T) {
 	t.Run("业务错误不计入熔断", func(t *testing.T) {
 		db.MarkSuccess()
 		hotRun("commission.consume", func(ctx context.Context) error {
-			return errors.New("Duplicate entry '1' for key 'uk_qy_commission_idem'")
+			return errors.New("Duplicate entry '1' for key 'uk_qy_sdl_idem'")
 		})
 		assert.EqualValues(t, 0, failStreakNow(t), "幂等冲突是正常现象,不能打开熔断")
 	})

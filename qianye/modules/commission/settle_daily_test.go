@@ -174,7 +174,6 @@ func TestDrainSettleEmptiesTheWholeQueue(t *testing.T) {
 		rows = append(rows, Balance{
 			UserId:          i,
 			UnsettledAmount: decimal.NewFromInt(4000),
-			AvailableFiat:   decimal.Zero,
 			CreatedAt:       now,
 			UpdatedAt:       now,
 		})
@@ -191,7 +190,7 @@ func TestDrainSettleEmptiesTheWholeQueue(t *testing.T) {
 
 	var unpaid int64
 	require.NoError(t, gdb.Model(&Balance{}).
-		Where("available_quota <> ?", 4000).Count(&unpaid).Error)
+		Where("available <> ?", 4000).Count(&unpaid).Error)
 	assert.EqualValues(t, 0, unpaid, "有 %d 个人的 4000 没发出去", unpaid)
 
 	var leftover int64
@@ -234,7 +233,7 @@ func TestDrainSettleContinuesPastAFailedInviter(t *testing.T) {
 	for _, id := range []int{2, 3} {
 		bal := balanceOf(t, gdb, id)
 		require.NotNil(t, bal)
-		assert.EqualValues(t, 4000, bal.AvailableQuota, "邀请人 %d 当天没拿到钱", id)
+		assert.EqualValues(t, 4000, bal.Available, "邀请人 %d 当天没拿到钱", id)
 	}
 
 	// 有人失败 → 这一天标成 partial → 当天还会重试。
@@ -290,7 +289,7 @@ func TestDailyRunRestartDoesNotDoublePay(t *testing.T) {
 
 	first := balanceOf(t, gdb, 42)
 	require.NotNil(t, first)
-	require.EqualValues(t, 5000, first.AvailableQuota, "第一次运行就没发对,后面的断言没有意义")
+	require.EqualValues(t, 5000, first.Available, "第一次运行就没发对,后面的断言没有意义")
 
 	var absorbed []Accrual
 	require.NoError(t, gdb.Where("inviter_id = ?", 42).Find(&absorbed).Error)
@@ -303,7 +302,6 @@ func TestDailyRunRestartDoesNotDoublePay(t *testing.T) {
 	// 只会看到一句"Should be true",看不到那笔钱真的被发了第二次。
 	assert.True(t, absorbed[0].SettledAmount.Equal(absorbed[0].GrossAmount),
 		"吸收没有落库 = 重跑会把同一笔再发一次")
-	firstFiat := first.AvailableFiat.String()
 	require.Equal(t, settleRunDone, runRow(t, gdb, day).Status)
 
 	var settlementsAfterFirst int64
@@ -322,9 +320,8 @@ func TestDailyRunRestartDoesNotDoublePay(t *testing.T) {
 
 	after := balanceOf(t, gdb, 42)
 	require.NotNil(t, after)
-	assert.EqualValues(t, 5000, after.AvailableQuota, "重跑把同一笔佣金又发了一次")
-	assert.EqualValues(t, 5000, after.TotalEarnedQuota)
-	assert.Equal(t, firstFiat, after.AvailableFiat.String(), "法币余额被重复累加")
+	assert.EqualValues(t, 5000, after.Available, "重跑把同一笔佣金又发了一次")
+	assert.EqualValues(t, 5000, after.TotalEarned)
 	assert.True(t, after.UnsettledAmount.IsZero())
 
 	var settlements int64
@@ -363,7 +360,7 @@ func TestManualSettleIgnoresDailyRunState(t *testing.T) {
 
 	bal := balanceOf(t, gdb, 77)
 	require.NotNil(t, bal)
-	assert.EqualValues(t, 3000, bal.AvailableQuota, "今天跑过了就不许手动结算 = 运营最需要它时它不可用")
+	assert.EqualValues(t, 3000, bal.Available, "今天跑过了就不许手动结算 = 运营最需要它时它不可用")
 
 	// 手动结算不该动今天那一行运行记录:它记的是自动调度跑了什么。
 	row := runRow(t, gdb, day)

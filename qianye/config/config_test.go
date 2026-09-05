@@ -36,7 +36,7 @@ func TestParseFile_AppliesDefaults(t *testing.T) {
 	assert.Equal(t, 100, c.Database.MaxOpenConns)
 	assert.Equal(t, "warn", c.Database.LogLevel)
 	assert.Equal(t, 60, c.Runtime.LeaseTTLSeconds)
-	assert.Equal(t, 200, c.Withdraw.RemarkMaxRunes)
+	assert.Equal(t, 300, c.Invite.InviterCacheSecs)
 
 	// 三个"默认为 true"的开关在未显式配置时必须为 true。
 	assert.True(t, c.Database.ShouldAutoMigrate())
@@ -65,9 +65,9 @@ func TestParseFile_RejectsUnknownField(t *testing.T) {
 enabled: true
 database:
   dsn: "u:p@tcp(127.0.0.1:3306)/qy"
-commission:
+invite:
   enabled: true
-  refund_clawbackk: true
+  day_offset_minutess: 480
 `))
 	require.Error(t, err)
 }
@@ -170,48 +170,6 @@ runtime:
 	assert.Contains(t, err.Error(), "lease_renew_seconds")
 }
 
-// 启用法币提现却没配密钥必须报错:收款信息是个人敏感信息,不允许明文落库。
-func TestValidate_FiatWithdrawRequiresKeys(t *testing.T) {
-	base := `
-enabled: true
-database:
-  dsn: "u:p@tcp(h:3306)/d"
-withdraw:
-  enabled: true
-  methods: ["quota", "fiat"]
-`
-	_, _, err := parseFile(writeTemp(t, base))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pii_key")
-
-	// 只用站内额度兑换则不需要密钥。
-	_, _, err = parseFile(writeTemp(t, `
-enabled: true
-database:
-  dsn: "u:p@tcp(h:3306)/d"
-withdraw:
-  enabled: true
-  methods: ["quota"]
-`))
-	require.NoError(t, err)
-}
-
-func TestValidate_PIIKeyMustBe32Bytes(t *testing.T) {
-	// 16 字节的 base64,长度不足。
-	_, _, err := parseFile(writeTemp(t, `
-enabled: true
-database:
-  dsn: "u:p@tcp(h:3306)/d"
-withdraw:
-  enabled: true
-  methods: ["fiat"]
-  pii_key: "MDEyMzQ1Njc4OWFiY2RlZg=="
-  digest_key: "whatever"
-`))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "32 字节")
-}
-
 // 额度上限类字段不得超过 common.MaxQuota。
 //
 // 那不是列宽(users.quota 在三个方言上都是 64 位),而是全站额度换算的**算术**
@@ -250,27 +208,27 @@ func TestValidate_BpsRange(t *testing.T) {
 enabled: true
 database:
   dsn: "u:p@tcp(h:3306)/d"
-commission:
+stardust:
   enabled: true
-  topup_rate_bps: 20000
+  invite_consume_bps: 20000000
 `))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "topup_rate_bps")
+	assert.Contains(t, err.Error(), "invite_consume_bps")
 }
 
-// 多级返佣尚未实现,必须直接报错而不是静默降级成一级 ——
-// 静默降级会让运营以为二级佣金在发,实际没发。
-func TestValidate_RejectsMultiLevelCommission(t *testing.T) {
+// 日界偏移必须落在真实时区的范围里:一个 -1500 分钟的偏移不会报错,只会让每一天的
+// 日桶与报表都错一整天,而且没有任何用户可见症状。
+func TestValidate_InviteDayOffsetRange(t *testing.T) {
 	_, _, err := parseFile(writeTemp(t, `
 enabled: true
 database:
   dsn: "u:p@tcp(h:3306)/d"
-commission:
+invite:
   enabled: true
-  levels: 2
+  day_offset_minutes: -1500
 `))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "仅支持 1 级")
+	assert.Contains(t, err.Error(), "day_offset_minutes")
 }
 
 func TestValidate_ViolationPolicy(t *testing.T) {
@@ -316,8 +274,8 @@ func TestValidate_SkippedWhenDisabled(t *testing.T) {
 enabled: false
 database:
   dsn: ""
-commission:
-  levels: 99
+invite:
+  day_offset_minutes: 99999
 `))
 	require.NoError(t, err)
 	assert.False(t, c.Enabled)
@@ -355,10 +313,4 @@ func TestLoad_NoConfigDisablesExtensionWithoutError(t *testing.T) {
 	require.NoError(t, Load())
 	assert.False(t, Enabled())
 	assert.NotNil(t, Get(), "Get 永不返回 nil")
-}
-
-func TestHasWithdrawMethod(t *testing.T) {
-	w := Withdraw{Methods: []string{WithdrawMethodQuota}}
-	assert.True(t, w.HasWithdrawMethod(WithdrawMethodQuota))
-	assert.False(t, w.HasWithdrawMethod(WithdrawMethodFiat))
 }

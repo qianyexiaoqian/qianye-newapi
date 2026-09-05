@@ -167,12 +167,19 @@ describe('后端下发的字段必须真的有消费方', () => {
     )
   })
 
-  test('矩阵表头与行头都会给未定义分组打标', () => {
+  test('结论列表给未定义分组打标，且结论来自后端算好的 to_groups', () => {
     const card = read('components/group-matrix-card.tsx')
-    const marks = card.match(/qy_trg_unknown_group_hint/g) ?? []
     assert.ok(
-      marks.length >= 4,
-      `表头与行头各需要「可见标记 + 读屏文字」两处，实际只有 ${marks.length} 处`
+      card.includes('qy_trg_unknown_group_hint'),
+      '结论列表里的分组名必须给未定义分组打黄标（title 提示）'
+    )
+    assert.ok(
+      card.includes('sr-only'),
+      '黄标只有颜色没有读屏文字，读屏用户拿到的是一串一模一样的名字'
+    )
+    assert.ok(
+      card.includes('to_groups'),
+      '结论必须来自后端逐格算出的 to_groups；前端自己从规则推会与判定分家'
     )
   })
 })

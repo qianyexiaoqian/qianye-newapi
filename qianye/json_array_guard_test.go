@@ -15,7 +15,7 @@ import (
 // # 缺陷原样
 //
 // 提现审核页整页白屏,报 `Cannot read properties of null (reading 'find')`。
-// 根因在 modules/withdraw/api_admin.go 的队列角标接口:
+// 根因在(D-14 前的)提现模块的队列角标接口:
 //
 //	var rows []bucket                       // nil 切片
 //	...Group("status").Scan(&rows)          // 库里没有 pending/approved/paying 单据

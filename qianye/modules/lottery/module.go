@@ -8,8 +8,8 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	qyctl "github.com/QuantumNous/new-api/qianye/controller"
 	"github.com/QuantumNous/new-api/qianye/module"
+	"github.com/QuantumNous/new-api/qianye/modules/mall"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
-	"github.com/QuantumNous/new-api/qianye/service/twophase"
 
 	"github.com/gin-gonic/gin"
 )
@@ -47,20 +47,22 @@ func tables() []any {
 	}
 }
 
-// InstallHooks 注册补偿回调与引导端点的展示开关。
+// InstallHooks 接管引导端点的展示开关。
 //
-// 补偿回调让 twophase 知道"确认主库已生效之后找谁收尾"。缺了它的后果在本仓的
-// violation 上真实发生过:补偿任务把资金单推成 success,业务侧永远停在中间态。
+// 本模块不再注册任何跨库补偿回调:参与费与派奖全部在扩展库的星屑账本里单事务
+// 落定(entry.go / payout.go),没有资金单要收尾。
 //
 // 展示开关必须接管:管理端「在前端显示娱乐入口」写的是 qy_settings,而引导端点
 // 默认只读 YAML —— 不接管就会出现"运营关掉了入口,前台照旧显示"。
 func (Mod) InstallHooks() {
-	InstallResolvers()
 	qyctl.QyLotteryEntryShown = func() bool { return effective().ShowEntry }
 	// 玩法显隐同理:前端要按它决定渲染哪几张大厅标签、以及"一个都不开时
 	// 整行导航不渲染"。不接管的话引导端点只会下发一个空表,而空表的口径是
 	// "全部可见" —— 运营关掉的玩法在前台照旧列着,只是列表恒为空。
 	qyctl.QyLotteryPlaysShown = func() map[string]bool { return effective().playVisibilityMap() }
+	// 商城删商品前问一句"还挂在进行中的奖档上吗":依赖方向是 lottery → mall,
+	// 所以只能由这里把判定赋给 mall 暴露的变量。
+	mall.ProductReferenced = productReferenced
 }
 
 // RegisterPublicRoutes 挂载**匿名可访问**的证据链端点。
@@ -93,14 +95,21 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 	// 代理池":同一账号换出口 IP 就换了桶,实测同一 token 打满 20 次转 429 后,
 	// 只加一个 X-Forwarded-For 就继续 200,参与费照扣。活动 Rules 的
 	// max_entries_per_user / max_attempts_per_user / cooldown_seconds 默认全为 0
-	// (= 无上限),而 lottery.pay_password_threshold_quota 默认 100000,单笔低于
-	// 它连支付密码都不触发 —— 于是这是全站唯一一条"会动钱且无任何账号级节流"
-	// 的用户路径,余额可以沿它被烧光。
+	// (= 无上限),而 lottery.pay_password_threshold_stardust 默认 20 星屑,整批低于
+	// 它连支付密码都不触发 —— 于是这是全站唯一一条"会动星屑且无任何账号级节流"
+	// 的用户路径,星屑可以沿它被烧光。
 	// 划转/提现/兑换码都有账号桶(见 router/api-router.go 的 /topup),抽奖漏了。
 	g.POST("/lottery/activities/:act_no/entries",
 		middleware.CriticalRateLimit(),
 		middleware.UserCriticalRateLimit("lottery_entry"),
 		handleCreateEntry)
+	// 转盘的一次转动:与报名同一档的两把桶(按 IP 的关键操作限流 + 按账号的桶),
+	// 理由与上面那条逐字相同 —— 它同样会动星屑,而转盘的参与费默认远低于验密阈值。
+	g.POST("/lottery/activities/:act_no/spins",
+		middleware.CriticalRateLimit(),
+		middleware.UserCriticalRateLimit("lottery_spin"),
+		handleSpin)
+	g.GET("/lottery/activities/:act_no/spins/me", handleListMySpins)
 	g.GET("/lottery/my-entries", handleListMyEntries)
 	// 文本奖**逐条**拉取,刻意不做批量列表:一个列表接口返回全部正文,
 	// 意味着一次越权 bug 就是全量泄漏。payout_no 由 crypto/rand 生成,不可枚举。
@@ -113,6 +122,7 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 // RegisterAdminRoutes 挂载管理端接口。传入的组已挂 AdminAuth(自带上游操作审计)。
 //
 // 注意这里**没有**"提前截止"与"立即开奖"两个端点,理由见 api_admin.go 顶部。
+// 唯一的例外是转盘的排期(schedule):它不进承诺原像,见 api_admin_schedule.go。
 func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/lottery/activities", handleAdminListActivities)
 	g.GET("/lottery/activities/:act_no", handleAdminGetActivity)
@@ -151,6 +161,12 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	// 原像,也不改变任何人最终能拿到几张票 —— 它只决定同样这些票要分几次请求
 	// 买完(理由见 api_admin_picks.go)。奖档、时刻、参与条件永远不在此列。
 	g.PUT("/lottery/activities/:act_no/picks-cap", crit, handleSetPicksCap)
+	// 转盘的排期(开始 / 结束)是第三个"发布后仍可写"的字段:转盘没有冻结名单这一步,
+	// 每一转当场开出,open_at / close_at / draw_at 不进它的承诺原像 —— 排期只是
+	// "什么时候收转",像抽卡卡池的上下架时间。「立即开始」= 同一接口 open_at=now;
+	// 「提前结束」沿用 cancel(提前封盘)。只对 published 的转盘开放,写事件行 + 审计。
+	g.PUT("/lottery/activities/:act_no/schedule", crit, handleSetWheelSchedule)
+	g.PUT("/lottery/activities/:act_no/basics", crit, handleSetActivityBasics)
 	// 设定开奖结果是本模块**唯一**提到超级管理员的动作。
 	//
 	// 抽奖(draw)与双色球的结果来自建活动时就落库的 commit-reveal 随机源,
@@ -168,15 +184,10 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.POST("/lottery/activities/:act_no/guess-result",
 		middleware.RootActionGate(middleware.RootActionLotteryResultSet),
 		crit, handleSetGuessResult)
+	// 「重试」是转人工(held)出款的**唯一**处置:失败的尝试整笔回滚、账本上没有
+	// 残行,重排 planned 就是一次干净的重来。没有人工仲裁端点 —— 那是给跨库两阶段
+	// "机器判不出主库到底动没动"准备的出口,单库单事务里不存在这一档。
 	g.POST("/lottery/activities/:act_no/payouts/:payout_no/retry", crit, handleRetryPayout)
-	// 人工落账是抽奖第二个被提到超级管理员的动作,理由见 middleware/root_action.go:
-	// 「重试」只在探针明确说"主库没动"时才出手,判据仍然是机器的;而这一个是
-	// 在自动判据互相矛盾(资金单说失败、主库探针说可能已生效)时**推翻机器的
-	// 结论**,其中一支会让主库对同一个人再加一次钱。没有它,那一笔永远挂在
-	// 「冻结中」,那一场活动因此永远过不了删除闸门②。
-	g.POST("/lottery/activities/:act_no/payouts/:payout_no/adjudicate",
-		middleware.RootActionGate(middleware.RootActionLotteryPayoutAdjudicate),
-		crit, handleAdjudicatePayout)
 	// 文本奖的履行 / 撤销 / 揭示。三个都写审计(成功与失败各一条)。
 	//
 	// 撤销只对 kind='text' 开放:额度奖的 paid 是资金终态,永远不可撤。
@@ -201,8 +212,8 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 // StartTasks 启动后台任务。
 //
 // 全部走 lease.Run 而非裸 goroutine:common.IsMasterNode 只是一个环境变量,
-// 多节点都配成 master 时出款 worker 会双跑 —— 而重入 Execute 虽然幂等,
-// 双跑仍会让同一批行反复撞 CAS,把日志刷满并掩盖真正的异常。
+// 多节点都配成 master 时出款 worker 会双跑 —— 而账本的幂等键虽然挡得住重复
+// 入账,双跑仍会让同一批行反复撞 CAS,把日志刷满并掩盖真正的异常。
 //
 // **本模块不注册任何针对七张证据表的清理任务**(activity/seed/prize/option/
 // entry/payout/event)。可清理的只有消费日桶与已解决的异常标记。
@@ -229,14 +240,11 @@ func (Mod) StartTasks() {
 	lease.Run("lottery.payout", seconds(cfg.PayoutIntervalSeconds, 10), DrivePayouts)
 	lease.Run("lottery.settle", seconds(cfg.PayoutIntervalSeconds, 10), runSettle)
 
-	// 对账跑得比补偿任务还快没有意义,只会空扫:它收拾的正是补偿任务推完
-	// 终态之后的尾巴。它只告警不自愈 —— 一个会自己改数的对账任务,
-	// 在数据真被篡改时会顺手把证据也抹平。
-	reconcileEvery := 2 * twophase.Interval()
-	if reconcileEvery < time.Minute {
-		reconcileEvery = time.Minute
-	}
-	lease.Run("lottery.reconcile", reconcileEvery, runReconcile)
+	// 对账只告警不自愈 —— 一个会自己改数的对账任务,在数据真被篡改时会顺手把
+	// 证据也抹平。一分钟一轮:它核的是名单、链、奖档与活动行上的合计,这些量在
+	// 一分钟里的漂移只可能来自篡改或读偏斜,而后者由 checkMaterializedInvariants
+	// 自己识别并跳过;跑得更勤只是多几次空扫。
+	lease.Run("lottery.reconcile", reconcileInterval, runReconcile)
 	lease.Run("lottery.spend_scan", seconds(cfg.SpendScanIntervalSeconds, 60), func(ctx context.Context) {
 		runSpendScan(ctx)
 	})
@@ -253,6 +261,10 @@ func (Mod) StartTasks() {
 	// (第二次报"文件不存在"并把整批标记跳过)。
 	lease.Run("lottery.cover_prune", time.Hour, pruneCovers)
 }
+
+// reconcileInterval 是对账任务的节拍。用代码常量而不是配置键:它不是站点要调的
+// 参数,而是"篡改多久之内一定会被看见"这条运营纪律的上界。
+const reconcileInterval = time.Minute
 
 func seconds(v, fallback int) time.Duration {
 	if v <= 0 {

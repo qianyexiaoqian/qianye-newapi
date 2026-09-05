@@ -314,7 +314,16 @@ func (s opSettings) transferForSenderDay(userGroup string, st *UserState, bucket
 		// 放行的代价是一次静默的额度放大,没有任何人会看到。方向只能这么选。
 		return config.Transfer{}, err
 	}
-	return strictestTransfer(cur, day), nil
+	// 逐项取严可能把两份各自自洽的门槛拼成不自洽的一份:min_quota 取两者更大、
+	// max_per_tx_quota 取两者更小,一大一小凑到一起就可能 min_quota > max_per_tx_quota。
+	// 与 transferFor / effectiveCtx 一致,对合并结果再校验一次并失败关闭 —— 否则这份
+	// 不自洽门槛会冒充正常门槛下发,用户在每一个金额上撞 400「金额超范围」,而不是一个
+	// 能解释的 503,运营侧零告警。combined 仍原样返回,便于上层诊断(调用方一律先判 err)。
+	combined := strictestTransfer(cur, day)
+	if err := config.ValidateTransfer(&combined); err != nil {
+		return combined, errGroupLimitInvalid
+	}
+	return combined, nil
 }
 
 // mergeTier 把一档叠到全局门槛上,同时给出逐键的生效来源。

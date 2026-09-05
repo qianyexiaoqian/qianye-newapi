@@ -28,10 +28,8 @@ export const QY_PAGE_SIZE = 20
 
 /**
  * 备注 / 说明的默认字符上限。
- *
- * 真实上限来自 `/api/qy/config` 的 `withdraw_options.remark_max_runes`
- * 与 `/withdraw/config`；这里只是接口未返回时的兜底，与后端 `checkRunes`
- * 的 `max <= 0 → 200` 分支保持一致。
+ * 提现模块随 D-14 删除后没有接口再下发这个上限;它是各处备注 / 事由输入框的
+ * 兜底,与后端 `checkRunes` 的 `max <= 0 → 200` 分支保持一致。
  */
 export const QY_REMARK_MAX_RUNES = 200
 

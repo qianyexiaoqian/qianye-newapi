@@ -9,7 +9,7 @@ package commission
 //	Σ(accrual.gross_amount)                = Σ(accrual.settled_amount) + 尚未被吸收的增量
 //	Σ(accrual.settled_amount)              = Σ(settlement.granted − settlement.reclaimed) + balance.unsettled_amount
 //	balance.total_earned − total_clawback  = Σ(settlement.granted − settlement.reclaimed)
-//	                                       = balance.available + frozen + withdrawn
+//	                                       = balance.available + frozen + credited
 //
 // 直接 UPDATE 余额列(或者反过来,直接 DELETE 一条计佣行)会当场打破其中一条,
 // 而没有任何一行流水能解释差额 —— 上一轮实测里"直接删计佣行导致 Σaccrual 与
@@ -26,15 +26,15 @@ package commission
 //
 // # 下界:减到负数必须被拒,而不是悄悄变成欠账
 //
-// computeSettlement 本身是安全的:回收额被夹在可提现余额内,超出部分记成负余数
+// computeSettlement 本身是安全的:回收额被夹在可用余额内,超出部分记成负余数
 // (欠账)。也就是说即使不做任何校验,余额也不会变成负数。但"运营点了减 5000,
-// 系统悄悄给这个人记了一笔 3000 的欠账"不是可接受的结果 —— 欠账会冻结提现,
+// 系统悄悄给这个人记了一笔 3000 的欠账"不是可接受的结果 —— 欠账会暂停自动入账,
 // 而运营完全不知道自己制造了它。所以这里显式算出**可回收上限**并在越界时 400:
 //
-//	可回收上限 = 可提现额度 + 未结算余数 + 尚未被结算吸收的应发佣金
+//	可回收上限 = 可用额度 + 未结算余数 + 尚未被结算吸收的应发佣金
 //
-// 这三项恰好是"这个人最终会拿到手的钱";已冻结(提现审核中)与已提现的部分
-// 不在其中 —— 那些钱要收回必须走提现模块或冲正,不是这个接口能碰的。
+// 这三项恰好是"这个人最终会拿到手的钱";在途(入账中)与已入账的部分
+// 不在其中 —— 已入账的钱在主库额度里,要收回只能走冲正,不是这个接口能碰的。
 
 import (
 	"context"
@@ -55,10 +55,10 @@ import (
 
 var (
 	// errAdjustOverReclaimable 是最常撞到的一条:要减的比这个人最终会拿到的还多。
-	errAdjustOverReclaimable = errors.New("扣减额度超过可回收上限(可提现 + 未结算余数 + 待结算佣金)")
-	// errAdjustOverflow 守另一个方向:加完之后的可提现会超过单账户额度上限,
+	errAdjustOverReclaimable = errors.New("扣减星屑超过可回收上限(可用 + 未结算余数 + 待结算佣金)")
+	// errAdjustOverflow 守另一个方向:加完之后的可用余额会超过单账户额度上限,
 	// 而这些额度最终要流向主库的额度列,受 common.MaxQuota 约束。
-	errAdjustOverflow = errors.New("增加后的可提现佣金会超过单账户额度上限")
+	errAdjustOverflow = errors.New("增加后的可用佣金会超过单账户星屑上限")
 	// errAdjustUserMissing 挡住手滑打错 user_id 凭空建出一行余额。
 	errAdjustUserMissing = errors.New("该用户不存在(或已被删除)")
 	// errAdjustSelfDealing 挡住"给自己记一笔佣金"。见 guard/fund_actor.go:
@@ -112,7 +112,7 @@ func adminAdjustCommission(c *gin.Context) {
 		UserId int `json:"user_id"`
 		// 指针:0 必须被当成"填了个没有意义的值"而不是"根本没填",
 		// 两者要给出不同的提示。
-		DeltaQuota      *int64 `json:"delta_quota"`
+		Delta           *int64 `json:"delta"`
 		Reason          string `json:"reason"`
 		ClientRequestId string `json:"client_request_id"`
 	}
@@ -124,17 +124,17 @@ func adminAdjustCommission(c *gin.Context) {
 		badRequest(c, "qy_invalid_param", "必须指定 user_id")
 		return
 	}
-	if req.DeltaQuota == nil {
-		badRequest(c, "qy_invalid_param", "必须给出调整额度")
+	if req.Delta == nil {
+		badRequest(c, "qy_invalid_param", "必须给出调整星屑数")
 		return
 	}
-	delta := *req.DeltaQuota
+	delta := *req.Delta
 	if delta == 0 {
-		badRequest(c, "qy_invalid_param", "调整额度不能为 0")
+		badRequest(c, "qy_invalid_param", "调整星屑数不能为 0")
 		return
 	}
 	if delta > int64(common.MaxQuota) || delta < -int64(common.MaxQuota) {
-		badRequest(c, "qy_invalid_param", "单次调整额度必须在正负额度上限之内")
+		badRequest(c, "qy_invalid_param", "单次调整的星屑数必须在正负上限之内")
 		return
 	}
 	reason, ok := requireReason(c, req.Reason)
@@ -189,7 +189,7 @@ func adminAdjustCommission(c *gin.Context) {
 
 	respond(c, gin.H{
 		"user_id":             req.UserId,
-		"delta_quota":         applied,
+		"delta":               applied,
 		"created":             out.Created,
 		"accrual_no":          out.AccrualNo,
 		"reclaimable_ceiling": out.Ceiling,
@@ -213,8 +213,8 @@ func adjustAuditReason(created bool, delta int64, reason string) string {
 
 // applyManualAdjust 在一个事务里完成:取余额行锁 → 幂等判定 → 上下界校验 → 落账目行。
 //
-// 四件事必须在同一把锁下:锁外做校验时,结算任务或提现冻结可以在校验与写入之间
-// 把可提现搬走,那时这条负额行落下去就会变成一笔谁都没批准的欠账。
+// 四件事必须在同一把锁下:锁外做校验时,结算任务或自动入账可以在校验与写入之间
+// 把可用余额搬走,那时这条负额行落下去就会变成一笔谁都没批准的欠账。
 func applyManualAdjust(ctx context.Context, in manualAdjustInput) (*adjustOutcome, error) {
 	if err := requireAdjustableTarget(ctx, in); err != nil {
 		return nil, err
@@ -228,21 +228,6 @@ func applyManualAdjust(ctx context.Context, in manualAdjustInput) (*adjustOutcom
 	// 是各自的随机串,撞上的概率不高但没有任何理由留着这个可能。
 	idemKey := SourceManual + ":" + itoa(in.OperatorId) + ":" + in.ClientId
 	out := &adjustOutcome{}
-
-	// 法币折算比例按**被调整的这个人**(他就是这条 manual 行的 inviter)的
-	// 分组解析,与自动计佣同口径 —— 走同一个入口 resolveInviterPricing,
-	// 不在这里另写一次"取谁的分组"。不解析的话 writeAccrualTx 会取全站充值
-	// 汇率,于是同一个人的自动佣金按分组档折算、手工补的那一笔按另一个比例
-	// 折算,available_fiat 里从此混着两种价 —— 而手工调整正是事后最需要说得
-	// 清的一笔。
-	//
-	// 这条路只取 Fiat:manual 行不写 rate_units/rate_group(金额由运营直接
-	// 给出,不是 base × rate 算出来的),所以 source 传什么都不影响结果,
-	// 如实传 SourceManual。
-	//
-	// 刻意在开事务之前解析:它要读主库 users.group,而事务里握着
-	// qy_commission_balance 的行锁,跨库读绝不能发生在锁内。
-	fiat := resolveInviterPricing(ctx, in.UserId, SourceManual, effectiveCtx(ctx)).Fiat
 
 	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		bal, err := lockBalance(tx, in.UserId)
@@ -295,7 +280,6 @@ func applyManualAdjust(ctx context.Context, in manualAdjustInput) (*adjustOutcom
 			// 与 manualClawback 同一手法。
 			BaseQuota: in.Delta,
 			Gross:     decimal.NewFromInt(in.Delta),
-			UsdRate:   fiat.Rate,
 			// 立即成熟:手工调整不是从下线消费里分出来的钱,没有任何理由陪着
 			// 成熟期等 —— 那只会让运营以为接口没生效。
 			MatureAt: 0,
@@ -330,16 +314,16 @@ func applyManualAdjust(ctx context.Context, in manualAdjustInput) (*adjustOutcom
 
 // reclaimableCeiling 返回"这次最多能扣掉多少而不制造欠账",即手工扣减的上限。
 //
-//	可提现额度 + 未结算余数 + **已成熟**且尚未被结算吸收的应发佣金
+//	可用额度 + 未结算余数 + **已成熟**且尚未被结算吸收的应发佣金
 //
 // 三项刻意都是"紧接着这一次结算就能被抵掉的钱":手工调整落账后立刻会跑一次
 // settleUser,而那一批捞的正是 mature_at <= now 的行 —— 我们这条负额行(mature_at=0)
 // 与那些已成熟的正额行会在**同一批**里相加,所以它们能互相抵消。
 //
 // **未成熟**的应发佣金不能算进来,哪怕它金额很大:它进不了这一批,
-// computeSettlement 只能把回收额夹在可提现内、把超出部分记成负余数 ——
-// 也就是一笔运营根本不知道自己制造了的欠账,而欠账会冻结这个人的提现。
-// 已冻结(提现审核中)与已提现的部分同理不算:那些钱要收回必须走提现模块或冲正。
+// computeSettlement 只能把回收额夹在可用余额内、把超出部分记成负余数 ——
+// 也就是一笔运营根本不知道自己制造了的欠账,而欠账会暂停这个人的自动入账。
+// 在途(入账中)与已入账的部分同理不算:已入账的钱要收回只能走冲正。
 //
 // 已知的窄缝:settleUser 单轮最多吸收 settleAccrualBatch 行,某个邀请人同时挂着
 // 上千条已成熟未结算的行时,我们这条(id 最大)可能落在批外,于是本轮抵不掉。
@@ -355,7 +339,7 @@ func reclaimableCeiling(tx *gorm.DB, bal *Balance) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	total := decimal.NewFromInt(bal.AvailableQuota).
+	total := decimal.NewFromInt(bal.Available).
 		Add(bal.UnsettledAmount).
 		Add(all.Sub(unmatured)).
 		Floor()
@@ -374,7 +358,7 @@ func reclaimableCeiling(tx *gorm.DB, bal *Balance) (int64, error) {
 //  1. 目标账号真的存在吗 —— 不问的话,把 user_id 打错一位就会在
 //     qy_commission_balance 里凭空建出一行余额(lockBalance 不存在即建),
 //     而那一行永远不会有人来认领;
-//  2. 操作人是不是就是受益人 —— 这是"自铸佣金 → 自己发起提现 → 自己批准"
+//  2. 操作人是不是就是受益人 —— 这是"自铸佣金 → 自动入账进自己的星屑"
 //     那条链的起点(见 guard/fund_actor.go);
 //  3. 受益人是不是同级或更高权限的账号 —— 与上游 canManageTargetRole 对齐,
 //     堵掉两个管理员互相记账的闭环。
@@ -382,8 +366,8 @@ func reclaimableCeiling(tx *gorm.DB, bal *Balance) (int64, error) {
 // 自营与越级都在**开事务之前**判掉:它们与余额、幂等键都无关,越早拒绝,
 // qy_commission_balance 上那把行锁被握住的时间越短。
 func requireAdjustableTarget(ctx context.Context, in manualAdjustInput) error {
-	// 判据与角色回查都在 guard.ActorMayActOn —— 本模块另外四条动钱接口
-	// (已提现迁移、绑定/换绑邀请关系、手动结算)走的是同一个函数。这里只
+	// 判据与角色回查都在 guard.ActorMayActOn —— 本模块另外两条动钱接口
+	// (手动结算、人工冲正)走的是同一个函数。这里只
 	// 把哨兵错误翻回本模块的错误码表,因为 adjustErrCodes 已经是这三种情形
 	// 对外的 code 契约,换成 guard 的哨兵会改掉前端认的字符串。
 	switch err := guard.ActorMayActOn(ctx, in.OperatorId, in.OperatorRole, in.UserId); {
@@ -402,7 +386,7 @@ func requireAdjustableTarget(ctx context.Context, in manualAdjustInput) error {
 
 // writeAdjustAudit 落一条手工调整审计,成功与失败共用。
 //
-// 快照走 balanceView:它带着派生可提现与漂移量,那正是判断"这次调整有没有
+// 快照走 balanceView:它带着派生可用与漂移量,那正是判断"这次调整有没有
 // 把账本改坏"要看的两个数。TraceNo 挂账目单号,审计与账本行互相指得回去。
 func writeAdjustAudit(c *gin.Context, userId int, delta int64, result, reason string,
 	before, after Balance, accrualNo string) {

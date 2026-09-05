@@ -33,7 +33,7 @@ import (
 //
 // # 缺陷长什么样
 //
-// 冲正金额大于当时的 available_quota 时,吃不下的那部分挂成负的
+// 冲正金额大于当时的 available 时,吃不下的那部分挂成负的
 // unsettled_amount 并置 debt_blocked。此后:
 //
 //   - 第一路选人要求 `settled_amount <> gross_amount`,而 absorbAccruals 已经把
@@ -77,15 +77,15 @@ func TestSettleUserReclaimsDebtFromAvailableWithoutNewAccruals(t *testing.T) {
 
 	// 场景与实测复现逐字一致:结算出 available=25000 → 冻结 20000 提现 →
 	// 冲正 10000 只吃到 5000 → unsettled=-5000 / debt_blocked=1 →
-	// 管理员按提示驳回提现 → frozen 20000 回到 available。
+	// 账上还有 20000 可用(还没自动入账),欠账 5000 必须从这里收回来。
 	seedDebtBalance(t, gdb, 9970003, "-5000", 20000, 0)
 	require.NoError(t, gdb.Model(&Balance{}).Where("user_id = ?", 9970003).
 		Updates(map[string]any{
 			"debt_blocked": true,
 			// 原始形态:结算发出去 25000,冲正已经吃掉 5000,余额 20000。
 			// 种子数据自己就必须满足 I2,否则下面那条断言是被夹具弄脏的。
-			"total_earned_quota":   25000,
-			"total_clawback_quota": 5000,
+			"total_earned":   25000,
+			"total_clawback": 5000,
 		}).Error)
 
 	more, err := settleUser(9970003)
@@ -94,44 +94,44 @@ func TestSettleUserReclaimsDebtFromAvailableWithoutNewAccruals(t *testing.T) {
 
 	var after Balance
 	require.NoError(t, gdb.Where("user_id = ?", 9970003).Take(&after).Error)
-	assert.EqualValues(t, 15000, after.AvailableQuota,
+	assert.EqualValues(t, 15000, after.Available,
 		"账上那 20000 里必须被回收掉 5000")
 	assert.Equal(t, "0", after.UnsettledAmount.String(), "欠账必须清零")
-	assert.False(t, after.DebtBlocked, "欠账清掉之后提现闸门必须自己松开")
+	assert.False(t, after.DebtBlocked, "欠账清掉之后自动入账的闸门必须自己松开")
 
-	// 恒等式:回收之后 available + frozen + withdrawn 仍等于 earned − clawback。
+	// 恒等式:回收之后 available + credited 仍等于 earned − clawback。
 	assert.EqualValues(t,
-		after.TotalEarnedQuota-after.TotalClawbackQuota,
-		after.AvailableQuota+after.FrozenQuota+after.WithdrawnQuota,
+		after.TotalEarned-after.TotalClawback,
+		after.Available+after.Credited,
 		"I2 必须在回收之后仍然成立")
 
-	// 反面:账上没钱可收时不能凭空把欠账抹掉,也不能把余额做成负数。
+	// 反面:可用余额是 0(那 20000 早已自动入账、发成星屑花掉了)。此时不能凭空
+	// 把欠账抹掉,也不能把余额做成负数 —— 已入账的钱收不回来,只能等未来的佣金抵扣。
 	seedDebtBalance(t, gdb, 9970004, "-5000", 0, 20000)
 	_, err = settleUser(9970004)
 	require.NoError(t, err)
 	var broke Balance
 	require.NoError(t, gdb.Where("user_id = ?", 9970004).Take(&broke).Error)
-	assert.EqualValues(t, 0, broke.AvailableQuota)
+	assert.EqualValues(t, 0, broke.Available)
 	assert.Equal(t, "-5000", broke.UnsettledAmount.String(),
 		"没有可回收余额时欠账必须原样留着，等未来的佣金抵扣")
 }
 
-// seedDebtBalance 造一行"欠账 + 指定可用/冻结余额"的佣金余额。
+// seedDebtBalance 造一行"欠账 + 指定可用/已入账余额"的佣金余额。
 //
-// 恒等式 I2(available + frozen + withdrawn == earned − clawback)必须在种子
-// 数据上就成立,否则测试断言的那条恒等式是被夹具自己弄脏的。
-func seedDebtBalance(t *testing.T, gdb *gorm.DB, userId int, unsettled string, available, frozen int64) {
+// 恒等式 I2(available + credited == earned − clawback)必须在种子数据上就成立,
+// 否则测试断言的那条恒等式是被夹具自己弄脏的。
+func seedDebtBalance(t *testing.T, gdb *gorm.DB, userId int, unsettled string, available, credited int64) {
 	t.Helper()
 	now := common.GetTimestamp()
 	require.NoError(t, gdb.Create(&Balance{
-		UserId:           userId,
-		UnsettledAmount:  decimal.RequireFromString(unsettled),
-		AvailableQuota:   available,
-		FrozenQuota:      frozen,
-		TotalEarnedQuota: available + frozen,
-		AvailableFiat:    decimal.Zero,
-		LastSettledAt:    now - 3600,
-		CreatedAt:        now - 7200,
-		UpdatedAt:        now - 3600,
+		UserId:          userId,
+		UnsettledAmount: decimal.RequireFromString(unsettled),
+		Available:       available,
+		Credited:        credited,
+		TotalEarned:     available + credited,
+		LastSettledAt:   now - 3600,
+		CreatedAt:       now - 7200,
+		UpdatedAt:       now - 3600,
 	}).Error)
 }

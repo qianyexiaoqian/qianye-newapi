@@ -30,6 +30,11 @@ import {
   buildApiKeyGroupOptions,
   type ApiKeyGroupOptionData,
 } from '../lib/group-options'
+import {
+  tokenLiveStatsQuery,
+  useTokenLiveAutoRefresh,
+  type TokenLiveStats,
+} from '../lib/live-stats'
 import { tokenTodayUsageQuery, type TokenTodayUsage } from '../lib/today-usage'
 import { type ApiKey, type ApiKeysDialogType } from '../types'
 
@@ -80,6 +85,23 @@ type ApiKeysContextType = {
   todayUsage: TokenTodayUsage | null | undefined
   todayUsageLoading: boolean
   todayUsageFailed: boolean
+  /**
+   * 每一把密钥此刻的在途请求数与近 1 分钟请求数。整张表**一次**取回，
+   * 见 `lib/live-stats.ts`。三态与 `todayUsage` 逐字一致：
+   *
+   *   `undefined` —— 还在取 / 取失败：单元格显示未知，不能显示 0
+   *   `null`      —— 扩展未启用：整列不渲染
+   */
+  liveStats: TokenLiveStats | null | undefined
+  liveStatsLoading: boolean
+  liveStatsFailed: boolean
+  /** 这一份数是哪一刻取到的（unix 毫秒）。关掉自动刷新之后由悬浮提示写出来。 */
+  liveStatsUpdatedAt: number
+  liveStatsRefetching: boolean
+  refetchLiveStats: () => void
+  /** 「每 5 秒自动刷新」这颗开关。关掉之后只能手动刷。 */
+  liveAutoRefresh: boolean
+  setLiveAutoRefresh: (value: boolean) => void
 }
 
 const ApiKeysContext = React.createContext<ApiKeysContextType | null>(null)
@@ -126,6 +148,15 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
   )
 
   const todayUsageResult = useQuery(tokenTodayUsageQuery())
+
+  // 自动刷新的开关直接进 queryOptions：关掉时 `refetchInterval` 变成 false，
+  // 轮询立刻停 —— 不是"继续轮询但不渲染"，那样省不下任何一次请求。
+  const [liveAutoRefresh, setLiveAutoRefresh] = useTokenLiveAutoRefresh()
+  const liveStatsResult = useQuery(tokenLiveStatsQuery(liveAutoRefresh))
+  const refetchLiveStats = liveStatsResult.refetch
+  const handleRefetchLiveStats = useCallback(() => {
+    void refetchLiveStats()
+  }, [refetchLiveStats])
 
   const resolveRealKey = useCallback(
     async (id: number): Promise<string | null> => {
@@ -232,6 +263,14 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
         todayUsage: todayUsageResult.data,
         todayUsageLoading: todayUsageResult.isPending,
         todayUsageFailed: todayUsageResult.isError,
+        liveStats: liveStatsResult.data,
+        liveStatsLoading: liveStatsResult.isPending,
+        liveStatsFailed: liveStatsResult.isError,
+        liveStatsUpdatedAt: liveStatsResult.dataUpdatedAt,
+        liveStatsRefetching: liveStatsResult.isFetching,
+        refetchLiveStats: handleRefetchLiveStats,
+        liveAutoRefresh,
+        setLiveAutoRefresh,
       }}
     >
       {children}

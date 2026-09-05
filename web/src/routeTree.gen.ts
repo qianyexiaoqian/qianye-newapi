@@ -59,18 +59,24 @@ import { Route as PricingModelIdIndexRouteImport } from './routes/pricing/$model
 import { Route as AuthenticatedQyAdminIndexRouteImport } from './routes/_authenticated/qy/admin/index'
 import { Route as AuthenticatedQyAffiliateIndexRouteImport } from './routes/_authenticated/qy/affiliate/index'
 import { Route as AuthenticatedQyAvailabilityIndexRouteImport } from './routes/_authenticated/qy/availability/index'
+import { Route as AuthenticatedQyCommissionRecordsIndexRouteImport } from './routes/_authenticated/qy/commission-records/index'
+import { Route as AuthenticatedQyInviteRecordsIndexRouteImport } from './routes/_authenticated/qy/invite-records/index'
 import { Route as AuthenticatedQyInviteesIndexRouteImport } from './routes/_authenticated/qy/invitees/index'
 import { Route as AuthenticatedQyLotteryBallIndexRouteImport } from './routes/_authenticated/qy/lottery-ball/index'
 import { Route as AuthenticatedQyLotteryGuessIndexRouteImport } from './routes/_authenticated/qy/lottery-guess/index'
 import { Route as AuthenticatedQyLotteryRecordsIndexRouteImport } from './routes/_authenticated/qy/lottery-records/index'
 import { Route as AuthenticatedQyLotteryIndexRouteImport } from './routes/_authenticated/qy/lottery/index'
+import { Route as AuthenticatedQyMallOrdersIndexRouteImport } from './routes/_authenticated/qy/mall-orders/index'
+import { Route as AuthenticatedQyMallIndexRouteImport } from './routes/_authenticated/qy/mall/index'
 import { Route as AuthenticatedQyPayPasswordIndexRouteImport } from './routes/_authenticated/qy/pay-password/index'
+import { Route as AuthenticatedQyStardustAccrualsIndexRouteImport } from './routes/_authenticated/qy/stardust-accruals/index'
+import { Route as AuthenticatedQyStardustLedgerIndexRouteImport } from './routes/_authenticated/qy/stardust-ledger/index'
+import { Route as AuthenticatedQyStardustIndexRouteImport } from './routes/_authenticated/qy/stardust/index'
 import { Route as AuthenticatedQyTicketsIndexRouteImport } from './routes/_authenticated/qy/tickets/index'
 import { Route as AuthenticatedQyTransferLogsIndexRouteImport } from './routes/_authenticated/qy/transfer-logs/index'
 import { Route as AuthenticatedQyTransferIndexRouteImport } from './routes/_authenticated/qy/transfer/index'
 import { Route as AuthenticatedQyViolationsIndexRouteImport } from './routes/_authenticated/qy/violations/index'
-import { Route as AuthenticatedQyWithdrawIndexRouteImport } from './routes/_authenticated/qy/withdraw/index'
-import { Route as AuthenticatedQyWithdrawalsIndexRouteImport } from './routes/_authenticated/qy/withdrawals/index'
+import { Route as AuthenticatedQyWheelIndexRouteImport } from './routes/_authenticated/qy/wheel/index'
 import { Route as AuthenticatedSystemSettingsAuthIndexRouteImport } from './routes/_authenticated/system-settings/auth/index'
 import { Route as AuthenticatedSystemSettingsAuthSectionRouteImport } from './routes/_authenticated/system-settings/auth/$section'
 import { Route as AuthenticatedSystemSettingsBillingIndexRouteImport } from './routes/_authenticated/system-settings/billing/index'
@@ -88,15 +94,21 @@ import { Route as AuthenticatedSystemSettingsSiteSectionRouteImport } from './ro
 import { Route as AuthenticatedQyAdminApiAddressIndexRouteImport } from './routes/_authenticated/qy/admin/api-address/index'
 import { Route as AuthenticatedQyAdminAuditLogsIndexRouteImport } from './routes/_authenticated/qy/admin/audit-logs/index'
 import { Route as AuthenticatedQyAdminCommissionRecordsIndexRouteImport } from './routes/_authenticated/qy/admin/commission-records/index'
+import { Route as AuthenticatedQyAdminCommissionUsersIndexRouteImport } from './routes/_authenticated/qy/admin/commission-users/index'
 import { Route as AuthenticatedQyAdminCommissionIndexRouteImport } from './routes/_authenticated/qy/admin/commission/index'
 import { Route as AuthenticatedQyAdminDailyConsumeIndexRouteImport } from './routes/_authenticated/qy/admin/daily-consume/index'
 import { Route as AuthenticatedQyAdminFundOrdersIndexRouteImport } from './routes/_authenticated/qy/admin/fund-orders/index'
 import { Route as AuthenticatedQyAdminGroupMatrixIndexRouteImport } from './routes/_authenticated/qy/admin/group-matrix/index'
 import { Route as AuthenticatedQyAdminHealthIndexRouteImport } from './routes/_authenticated/qy/admin/health/index'
+import { Route as AuthenticatedQyAdminInviteAccrualsIndexRouteImport } from './routes/_authenticated/qy/admin/invite-accruals/index'
+import { Route as AuthenticatedQyAdminInviteIndexRouteImport } from './routes/_authenticated/qy/admin/invite/index'
 import { Route as AuthenticatedQyAdminLotteryConfigIndexRouteImport } from './routes/_authenticated/qy/admin/lottery-config/index'
 import { Route as AuthenticatedQyAdminLotteryIndexRouteImport } from './routes/_authenticated/qy/admin/lottery/index'
+import { Route as AuthenticatedQyAdminMallIndexRouteImport } from './routes/_authenticated/qy/admin/mall/index'
 import { Route as AuthenticatedQyAdminRestrictedAccountsIndexRouteImport } from './routes/_authenticated/qy/admin/restricted-accounts/index'
 import { Route as AuthenticatedQyAdminSettlementIndexRouteImport } from './routes/_authenticated/qy/admin/settlement/index'
+import { Route as AuthenticatedQyAdminStardustConfigIndexRouteImport } from './routes/_authenticated/qy/admin/stardust-config/index'
+import { Route as AuthenticatedQyAdminStardustIndexRouteImport } from './routes/_authenticated/qy/admin/stardust/index'
 import { Route as AuthenticatedQyAdminTicketsIndexRouteImport } from './routes/_authenticated/qy/admin/tickets/index'
 import { Route as AuthenticatedQyAdminTransferConfigIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-config/index'
 import { Route as AuthenticatedQyAdminTransferGroupRulesIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-group-rules/index'
@@ -105,11 +117,7 @@ import { Route as AuthenticatedQyAdminViolationAiReviewIndexRouteImport } from '
 import { Route as AuthenticatedQyAdminViolationCategoriesIndexRouteImport } from './routes/_authenticated/qy/admin/violation-categories/index'
 import { Route as AuthenticatedQyAdminViolationRulesIndexRouteImport } from './routes/_authenticated/qy/admin/violation-rules/index'
 import { Route as AuthenticatedQyAdminViolationsIndexRouteImport } from './routes/_authenticated/qy/admin/violations/index'
-import { Route as AuthenticatedQyAdminWithdrawalsIndexRouteImport } from './routes/_authenticated/qy/admin/withdrawals/index'
 import { Route as AuthenticatedQyLotteryActNoIndexRouteImport } from './routes/_authenticated/qy/lottery/$actNo/index'
-import { Route as AuthenticatedQyAdminCommissionRecordsBalancesIndexRouteImport } from './routes/_authenticated/qy/admin/commission-records/balances/index'
-import { Route as AuthenticatedQyAdminCommissionRecordsRelationsIndexRouteImport } from './routes/_authenticated/qy/admin/commission-records/relations/index'
-import { Route as AuthenticatedQyAdminCommissionRecordsUsersIndexRouteImport } from './routes/_authenticated/qy/admin/commission-records/users/index'
 import { Route as AuthenticatedQyAdminLotteryActNoIndexRouteImport } from './routes/_authenticated/qy/admin/lottery/$actNo/index'
 
 const IndexRoute = IndexRouteImport.update({
@@ -380,6 +388,18 @@ const AuthenticatedQyAvailabilityIndexRoute =
     path: '/availability/',
     getParentRoute: () => AuthenticatedQyRouteRoute,
   } as any)
+const AuthenticatedQyCommissionRecordsIndexRoute =
+  AuthenticatedQyCommissionRecordsIndexRouteImport.update({
+    id: '/commission-records/',
+    path: '/commission-records/',
+    getParentRoute: () => AuthenticatedQyRouteRoute,
+  } as any)
+const AuthenticatedQyInviteRecordsIndexRoute =
+  AuthenticatedQyInviteRecordsIndexRouteImport.update({
+    id: '/invite-records/',
+    path: '/invite-records/',
+    getParentRoute: () => AuthenticatedQyRouteRoute,
+  } as any)
 const AuthenticatedQyInviteesIndexRoute =
   AuthenticatedQyInviteesIndexRouteImport.update({
     id: '/invitees/',
@@ -410,10 +430,40 @@ const AuthenticatedQyLotteryIndexRoute =
     path: '/lottery/',
     getParentRoute: () => AuthenticatedQyRouteRoute,
   } as any)
+const AuthenticatedQyMallOrdersIndexRoute =
+  AuthenticatedQyMallOrdersIndexRouteImport.update({
+    id: '/mall-orders/',
+    path: '/mall-orders/',
+    getParentRoute: () => AuthenticatedQyRouteRoute,
+  } as any)
+const AuthenticatedQyMallIndexRoute =
+  AuthenticatedQyMallIndexRouteImport.update({
+    id: '/mall/',
+    path: '/mall/',
+    getParentRoute: () => AuthenticatedQyRouteRoute,
+  } as any)
 const AuthenticatedQyPayPasswordIndexRoute =
   AuthenticatedQyPayPasswordIndexRouteImport.update({
     id: '/pay-password/',
     path: '/pay-password/',
+    getParentRoute: () => AuthenticatedQyRouteRoute,
+  } as any)
+const AuthenticatedQyStardustAccrualsIndexRoute =
+  AuthenticatedQyStardustAccrualsIndexRouteImport.update({
+    id: '/stardust-accruals/',
+    path: '/stardust-accruals/',
+    getParentRoute: () => AuthenticatedQyRouteRoute,
+  } as any)
+const AuthenticatedQyStardustLedgerIndexRoute =
+  AuthenticatedQyStardustLedgerIndexRouteImport.update({
+    id: '/stardust-ledger/',
+    path: '/stardust-ledger/',
+    getParentRoute: () => AuthenticatedQyRouteRoute,
+  } as any)
+const AuthenticatedQyStardustIndexRoute =
+  AuthenticatedQyStardustIndexRouteImport.update({
+    id: '/stardust/',
+    path: '/stardust/',
     getParentRoute: () => AuthenticatedQyRouteRoute,
   } as any)
 const AuthenticatedQyTicketsIndexRoute =
@@ -440,16 +490,10 @@ const AuthenticatedQyViolationsIndexRoute =
     path: '/violations/',
     getParentRoute: () => AuthenticatedQyRouteRoute,
   } as any)
-const AuthenticatedQyWithdrawIndexRoute =
-  AuthenticatedQyWithdrawIndexRouteImport.update({
-    id: '/withdraw/',
-    path: '/withdraw/',
-    getParentRoute: () => AuthenticatedQyRouteRoute,
-  } as any)
-const AuthenticatedQyWithdrawalsIndexRoute =
-  AuthenticatedQyWithdrawalsIndexRouteImport.update({
-    id: '/withdrawals/',
-    path: '/withdrawals/',
+const AuthenticatedQyWheelIndexRoute =
+  AuthenticatedQyWheelIndexRouteImport.update({
+    id: '/wheel/',
+    path: '/wheel/',
     getParentRoute: () => AuthenticatedQyRouteRoute,
   } as any)
 const AuthenticatedSystemSettingsAuthIndexRoute =
@@ -554,6 +598,12 @@ const AuthenticatedQyAdminCommissionRecordsIndexRoute =
     path: '/commission-records/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
+const AuthenticatedQyAdminCommissionUsersIndexRoute =
+  AuthenticatedQyAdminCommissionUsersIndexRouteImport.update({
+    id: '/commission-users/',
+    path: '/commission-users/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
 const AuthenticatedQyAdminCommissionIndexRoute =
   AuthenticatedQyAdminCommissionIndexRouteImport.update({
     id: '/commission/',
@@ -584,6 +634,18 @@ const AuthenticatedQyAdminHealthIndexRoute =
     path: '/health/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
+const AuthenticatedQyAdminInviteAccrualsIndexRoute =
+  AuthenticatedQyAdminInviteAccrualsIndexRouteImport.update({
+    id: '/invite-accruals/',
+    path: '/invite-accruals/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
+const AuthenticatedQyAdminInviteIndexRoute =
+  AuthenticatedQyAdminInviteIndexRouteImport.update({
+    id: '/invite/',
+    path: '/invite/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
 const AuthenticatedQyAdminLotteryConfigIndexRoute =
   AuthenticatedQyAdminLotteryConfigIndexRouteImport.update({
     id: '/lottery-config/',
@@ -596,6 +658,12 @@ const AuthenticatedQyAdminLotteryIndexRoute =
     path: '/lottery/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
+const AuthenticatedQyAdminMallIndexRoute =
+  AuthenticatedQyAdminMallIndexRouteImport.update({
+    id: '/mall/',
+    path: '/mall/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
 const AuthenticatedQyAdminRestrictedAccountsIndexRoute =
   AuthenticatedQyAdminRestrictedAccountsIndexRouteImport.update({
     id: '/restricted-accounts/',
@@ -606,6 +674,18 @@ const AuthenticatedQyAdminSettlementIndexRoute =
   AuthenticatedQyAdminSettlementIndexRouteImport.update({
     id: '/settlement/',
     path: '/settlement/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
+const AuthenticatedQyAdminStardustConfigIndexRoute =
+  AuthenticatedQyAdminStardustConfigIndexRouteImport.update({
+    id: '/stardust-config/',
+    path: '/stardust-config/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
+const AuthenticatedQyAdminStardustIndexRoute =
+  AuthenticatedQyAdminStardustIndexRouteImport.update({
+    id: '/stardust/',
+    path: '/stardust/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
 const AuthenticatedQyAdminTicketsIndexRoute =
@@ -656,35 +736,11 @@ const AuthenticatedQyAdminViolationsIndexRoute =
     path: '/violations/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
-const AuthenticatedQyAdminWithdrawalsIndexRoute =
-  AuthenticatedQyAdminWithdrawalsIndexRouteImport.update({
-    id: '/withdrawals/',
-    path: '/withdrawals/',
-    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
-  } as any)
 const AuthenticatedQyLotteryActNoIndexRoute =
   AuthenticatedQyLotteryActNoIndexRouteImport.update({
     id: '/lottery/$actNo/',
     path: '/lottery/$actNo/',
     getParentRoute: () => AuthenticatedQyRouteRoute,
-  } as any)
-const AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute =
-  AuthenticatedQyAdminCommissionRecordsBalancesIndexRouteImport.update({
-    id: '/commission-records/balances/',
-    path: '/commission-records/balances/',
-    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
-  } as any)
-const AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute =
-  AuthenticatedQyAdminCommissionRecordsRelationsIndexRouteImport.update({
-    id: '/commission-records/relations/',
-    path: '/commission-records/relations/',
-    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
-  } as any)
-const AuthenticatedQyAdminCommissionRecordsUsersIndexRoute =
-  AuthenticatedQyAdminCommissionRecordsUsersIndexRouteImport.update({
-    id: '/commission-records/users/',
-    path: '/commission-records/users/',
-    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
 const AuthenticatedQyAdminLotteryActNoIndexRoute =
   AuthenticatedQyAdminLotteryActNoIndexRouteImport.update({
@@ -749,18 +805,24 @@ export interface FileRoutesByFullPath {
   '/qy/admin/': typeof AuthenticatedQyAdminIndexRoute
   '/qy/affiliate/': typeof AuthenticatedQyAffiliateIndexRoute
   '/qy/availability/': typeof AuthenticatedQyAvailabilityIndexRoute
+  '/qy/commission-records/': typeof AuthenticatedQyCommissionRecordsIndexRoute
+  '/qy/invite-records/': typeof AuthenticatedQyInviteRecordsIndexRoute
   '/qy/invitees/': typeof AuthenticatedQyInviteesIndexRoute
   '/qy/lottery-ball/': typeof AuthenticatedQyLotteryBallIndexRoute
   '/qy/lottery-guess/': typeof AuthenticatedQyLotteryGuessIndexRoute
   '/qy/lottery-records/': typeof AuthenticatedQyLotteryRecordsIndexRoute
   '/qy/lottery/': typeof AuthenticatedQyLotteryIndexRoute
+  '/qy/mall-orders/': typeof AuthenticatedQyMallOrdersIndexRoute
+  '/qy/mall/': typeof AuthenticatedQyMallIndexRoute
   '/qy/pay-password/': typeof AuthenticatedQyPayPasswordIndexRoute
+  '/qy/stardust-accruals/': typeof AuthenticatedQyStardustAccrualsIndexRoute
+  '/qy/stardust-ledger/': typeof AuthenticatedQyStardustLedgerIndexRoute
+  '/qy/stardust/': typeof AuthenticatedQyStardustIndexRoute
   '/qy/tickets/': typeof AuthenticatedQyTicketsIndexRoute
   '/qy/transfer-logs/': typeof AuthenticatedQyTransferLogsIndexRoute
   '/qy/transfer/': typeof AuthenticatedQyTransferIndexRoute
   '/qy/violations/': typeof AuthenticatedQyViolationsIndexRoute
-  '/qy/withdraw/': typeof AuthenticatedQyWithdrawIndexRoute
-  '/qy/withdrawals/': typeof AuthenticatedQyWithdrawalsIndexRoute
+  '/qy/wheel/': typeof AuthenticatedQyWheelIndexRoute
   '/system-settings/auth/': typeof AuthenticatedSystemSettingsAuthIndexRoute
   '/system-settings/billing/': typeof AuthenticatedSystemSettingsBillingIndexRoute
   '/system-settings/content/': typeof AuthenticatedSystemSettingsContentIndexRoute
@@ -771,15 +833,21 @@ export interface FileRoutesByFullPath {
   '/qy/admin/api-address/': typeof AuthenticatedQyAdminApiAddressIndexRoute
   '/qy/admin/audit-logs/': typeof AuthenticatedQyAdminAuditLogsIndexRoute
   '/qy/admin/commission-records/': typeof AuthenticatedQyAdminCommissionRecordsIndexRoute
+  '/qy/admin/commission-users/': typeof AuthenticatedQyAdminCommissionUsersIndexRoute
   '/qy/admin/commission/': typeof AuthenticatedQyAdminCommissionIndexRoute
   '/qy/admin/daily-consume/': typeof AuthenticatedQyAdminDailyConsumeIndexRoute
   '/qy/admin/fund-orders/': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/qy/admin/group-matrix/': typeof AuthenticatedQyAdminGroupMatrixIndexRoute
   '/qy/admin/health/': typeof AuthenticatedQyAdminHealthIndexRoute
+  '/qy/admin/invite-accruals/': typeof AuthenticatedQyAdminInviteAccrualsIndexRoute
+  '/qy/admin/invite/': typeof AuthenticatedQyAdminInviteIndexRoute
   '/qy/admin/lottery-config/': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/qy/admin/lottery/': typeof AuthenticatedQyAdminLotteryIndexRoute
+  '/qy/admin/mall/': typeof AuthenticatedQyAdminMallIndexRoute
   '/qy/admin/restricted-accounts/': typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
   '/qy/admin/settlement/': typeof AuthenticatedQyAdminSettlementIndexRoute
+  '/qy/admin/stardust-config/': typeof AuthenticatedQyAdminStardustConfigIndexRoute
+  '/qy/admin/stardust/': typeof AuthenticatedQyAdminStardustIndexRoute
   '/qy/admin/tickets/': typeof AuthenticatedQyAdminTicketsIndexRoute
   '/qy/admin/transfer-config/': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
@@ -788,11 +856,7 @@ export interface FileRoutesByFullPath {
   '/qy/admin/violation-categories/': typeof AuthenticatedQyAdminViolationCategoriesIndexRoute
   '/qy/admin/violation-rules/': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/qy/admin/violations/': typeof AuthenticatedQyAdminViolationsIndexRoute
-  '/qy/admin/withdrawals/': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
   '/qy/lottery/$actNo/': typeof AuthenticatedQyLotteryActNoIndexRoute
-  '/qy/admin/commission-records/balances/': typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
-  '/qy/admin/commission-records/relations/': typeof AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute
-  '/qy/admin/commission-records/users/': typeof AuthenticatedQyAdminCommissionRecordsUsersIndexRoute
   '/qy/admin/lottery/$actNo/': typeof AuthenticatedQyAdminLotteryActNoIndexRoute
 }
 export interface FileRoutesByTo {
@@ -848,18 +912,24 @@ export interface FileRoutesByTo {
   '/qy/admin': typeof AuthenticatedQyAdminIndexRoute
   '/qy/affiliate': typeof AuthenticatedQyAffiliateIndexRoute
   '/qy/availability': typeof AuthenticatedQyAvailabilityIndexRoute
+  '/qy/commission-records': typeof AuthenticatedQyCommissionRecordsIndexRoute
+  '/qy/invite-records': typeof AuthenticatedQyInviteRecordsIndexRoute
   '/qy/invitees': typeof AuthenticatedQyInviteesIndexRoute
   '/qy/lottery-ball': typeof AuthenticatedQyLotteryBallIndexRoute
   '/qy/lottery-guess': typeof AuthenticatedQyLotteryGuessIndexRoute
   '/qy/lottery-records': typeof AuthenticatedQyLotteryRecordsIndexRoute
   '/qy/lottery': typeof AuthenticatedQyLotteryIndexRoute
+  '/qy/mall-orders': typeof AuthenticatedQyMallOrdersIndexRoute
+  '/qy/mall': typeof AuthenticatedQyMallIndexRoute
   '/qy/pay-password': typeof AuthenticatedQyPayPasswordIndexRoute
+  '/qy/stardust-accruals': typeof AuthenticatedQyStardustAccrualsIndexRoute
+  '/qy/stardust-ledger': typeof AuthenticatedQyStardustLedgerIndexRoute
+  '/qy/stardust': typeof AuthenticatedQyStardustIndexRoute
   '/qy/tickets': typeof AuthenticatedQyTicketsIndexRoute
   '/qy/transfer-logs': typeof AuthenticatedQyTransferLogsIndexRoute
   '/qy/transfer': typeof AuthenticatedQyTransferIndexRoute
   '/qy/violations': typeof AuthenticatedQyViolationsIndexRoute
-  '/qy/withdraw': typeof AuthenticatedQyWithdrawIndexRoute
-  '/qy/withdrawals': typeof AuthenticatedQyWithdrawalsIndexRoute
+  '/qy/wheel': typeof AuthenticatedQyWheelIndexRoute
   '/system-settings/auth': typeof AuthenticatedSystemSettingsAuthIndexRoute
   '/system-settings/billing': typeof AuthenticatedSystemSettingsBillingIndexRoute
   '/system-settings/content': typeof AuthenticatedSystemSettingsContentIndexRoute
@@ -870,15 +940,21 @@ export interface FileRoutesByTo {
   '/qy/admin/api-address': typeof AuthenticatedQyAdminApiAddressIndexRoute
   '/qy/admin/audit-logs': typeof AuthenticatedQyAdminAuditLogsIndexRoute
   '/qy/admin/commission-records': typeof AuthenticatedQyAdminCommissionRecordsIndexRoute
+  '/qy/admin/commission-users': typeof AuthenticatedQyAdminCommissionUsersIndexRoute
   '/qy/admin/commission': typeof AuthenticatedQyAdminCommissionIndexRoute
   '/qy/admin/daily-consume': typeof AuthenticatedQyAdminDailyConsumeIndexRoute
   '/qy/admin/fund-orders': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/qy/admin/group-matrix': typeof AuthenticatedQyAdminGroupMatrixIndexRoute
   '/qy/admin/health': typeof AuthenticatedQyAdminHealthIndexRoute
+  '/qy/admin/invite-accruals': typeof AuthenticatedQyAdminInviteAccrualsIndexRoute
+  '/qy/admin/invite': typeof AuthenticatedQyAdminInviteIndexRoute
   '/qy/admin/lottery-config': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/qy/admin/lottery': typeof AuthenticatedQyAdminLotteryIndexRoute
+  '/qy/admin/mall': typeof AuthenticatedQyAdminMallIndexRoute
   '/qy/admin/restricted-accounts': typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
   '/qy/admin/settlement': typeof AuthenticatedQyAdminSettlementIndexRoute
+  '/qy/admin/stardust-config': typeof AuthenticatedQyAdminStardustConfigIndexRoute
+  '/qy/admin/stardust': typeof AuthenticatedQyAdminStardustIndexRoute
   '/qy/admin/tickets': typeof AuthenticatedQyAdminTicketsIndexRoute
   '/qy/admin/transfer-config': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/qy/admin/transfer-group-rules': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
@@ -887,11 +963,7 @@ export interface FileRoutesByTo {
   '/qy/admin/violation-categories': typeof AuthenticatedQyAdminViolationCategoriesIndexRoute
   '/qy/admin/violation-rules': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/qy/admin/violations': typeof AuthenticatedQyAdminViolationsIndexRoute
-  '/qy/admin/withdrawals': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
   '/qy/lottery/$actNo': typeof AuthenticatedQyLotteryActNoIndexRoute
-  '/qy/admin/commission-records/balances': typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
-  '/qy/admin/commission-records/relations': typeof AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute
-  '/qy/admin/commission-records/users': typeof AuthenticatedQyAdminCommissionRecordsUsersIndexRoute
   '/qy/admin/lottery/$actNo': typeof AuthenticatedQyAdminLotteryActNoIndexRoute
 }
 export interface FileRoutesById {
@@ -953,18 +1025,24 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/': typeof AuthenticatedQyAdminIndexRoute
   '/_authenticated/qy/affiliate/': typeof AuthenticatedQyAffiliateIndexRoute
   '/_authenticated/qy/availability/': typeof AuthenticatedQyAvailabilityIndexRoute
+  '/_authenticated/qy/commission-records/': typeof AuthenticatedQyCommissionRecordsIndexRoute
+  '/_authenticated/qy/invite-records/': typeof AuthenticatedQyInviteRecordsIndexRoute
   '/_authenticated/qy/invitees/': typeof AuthenticatedQyInviteesIndexRoute
   '/_authenticated/qy/lottery-ball/': typeof AuthenticatedQyLotteryBallIndexRoute
   '/_authenticated/qy/lottery-guess/': typeof AuthenticatedQyLotteryGuessIndexRoute
   '/_authenticated/qy/lottery-records/': typeof AuthenticatedQyLotteryRecordsIndexRoute
   '/_authenticated/qy/lottery/': typeof AuthenticatedQyLotteryIndexRoute
+  '/_authenticated/qy/mall-orders/': typeof AuthenticatedQyMallOrdersIndexRoute
+  '/_authenticated/qy/mall/': typeof AuthenticatedQyMallIndexRoute
   '/_authenticated/qy/pay-password/': typeof AuthenticatedQyPayPasswordIndexRoute
+  '/_authenticated/qy/stardust-accruals/': typeof AuthenticatedQyStardustAccrualsIndexRoute
+  '/_authenticated/qy/stardust-ledger/': typeof AuthenticatedQyStardustLedgerIndexRoute
+  '/_authenticated/qy/stardust/': typeof AuthenticatedQyStardustIndexRoute
   '/_authenticated/qy/tickets/': typeof AuthenticatedQyTicketsIndexRoute
   '/_authenticated/qy/transfer-logs/': typeof AuthenticatedQyTransferLogsIndexRoute
   '/_authenticated/qy/transfer/': typeof AuthenticatedQyTransferIndexRoute
   '/_authenticated/qy/violations/': typeof AuthenticatedQyViolationsIndexRoute
-  '/_authenticated/qy/withdraw/': typeof AuthenticatedQyWithdrawIndexRoute
-  '/_authenticated/qy/withdrawals/': typeof AuthenticatedQyWithdrawalsIndexRoute
+  '/_authenticated/qy/wheel/': typeof AuthenticatedQyWheelIndexRoute
   '/_authenticated/system-settings/auth/': typeof AuthenticatedSystemSettingsAuthIndexRoute
   '/_authenticated/system-settings/billing/': typeof AuthenticatedSystemSettingsBillingIndexRoute
   '/_authenticated/system-settings/content/': typeof AuthenticatedSystemSettingsContentIndexRoute
@@ -975,15 +1053,21 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/api-address/': typeof AuthenticatedQyAdminApiAddressIndexRoute
   '/_authenticated/qy/admin/audit-logs/': typeof AuthenticatedQyAdminAuditLogsIndexRoute
   '/_authenticated/qy/admin/commission-records/': typeof AuthenticatedQyAdminCommissionRecordsIndexRoute
+  '/_authenticated/qy/admin/commission-users/': typeof AuthenticatedQyAdminCommissionUsersIndexRoute
   '/_authenticated/qy/admin/commission/': typeof AuthenticatedQyAdminCommissionIndexRoute
   '/_authenticated/qy/admin/daily-consume/': typeof AuthenticatedQyAdminDailyConsumeIndexRoute
   '/_authenticated/qy/admin/fund-orders/': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/_authenticated/qy/admin/group-matrix/': typeof AuthenticatedQyAdminGroupMatrixIndexRoute
   '/_authenticated/qy/admin/health/': typeof AuthenticatedQyAdminHealthIndexRoute
+  '/_authenticated/qy/admin/invite-accruals/': typeof AuthenticatedQyAdminInviteAccrualsIndexRoute
+  '/_authenticated/qy/admin/invite/': typeof AuthenticatedQyAdminInviteIndexRoute
   '/_authenticated/qy/admin/lottery-config/': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/_authenticated/qy/admin/lottery/': typeof AuthenticatedQyAdminLotteryIndexRoute
+  '/_authenticated/qy/admin/mall/': typeof AuthenticatedQyAdminMallIndexRoute
   '/_authenticated/qy/admin/restricted-accounts/': typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
   '/_authenticated/qy/admin/settlement/': typeof AuthenticatedQyAdminSettlementIndexRoute
+  '/_authenticated/qy/admin/stardust-config/': typeof AuthenticatedQyAdminStardustConfigIndexRoute
+  '/_authenticated/qy/admin/stardust/': typeof AuthenticatedQyAdminStardustIndexRoute
   '/_authenticated/qy/admin/tickets/': typeof AuthenticatedQyAdminTicketsIndexRoute
   '/_authenticated/qy/admin/transfer-config/': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/_authenticated/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
@@ -992,11 +1076,7 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/violation-categories/': typeof AuthenticatedQyAdminViolationCategoriesIndexRoute
   '/_authenticated/qy/admin/violation-rules/': typeof AuthenticatedQyAdminViolationRulesIndexRoute
   '/_authenticated/qy/admin/violations/': typeof AuthenticatedQyAdminViolationsIndexRoute
-  '/_authenticated/qy/admin/withdrawals/': typeof AuthenticatedQyAdminWithdrawalsIndexRoute
   '/_authenticated/qy/lottery/$actNo/': typeof AuthenticatedQyLotteryActNoIndexRoute
-  '/_authenticated/qy/admin/commission-records/balances/': typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
-  '/_authenticated/qy/admin/commission-records/relations/': typeof AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute
-  '/_authenticated/qy/admin/commission-records/users/': typeof AuthenticatedQyAdminCommissionRecordsUsersIndexRoute
   '/_authenticated/qy/admin/lottery/$actNo/': typeof AuthenticatedQyAdminLotteryActNoIndexRoute
 }
 export interface FileRouteTypes {
@@ -1057,18 +1137,24 @@ export interface FileRouteTypes {
     | '/qy/admin/'
     | '/qy/affiliate/'
     | '/qy/availability/'
+    | '/qy/commission-records/'
+    | '/qy/invite-records/'
     | '/qy/invitees/'
     | '/qy/lottery-ball/'
     | '/qy/lottery-guess/'
     | '/qy/lottery-records/'
     | '/qy/lottery/'
+    | '/qy/mall-orders/'
+    | '/qy/mall/'
     | '/qy/pay-password/'
+    | '/qy/stardust-accruals/'
+    | '/qy/stardust-ledger/'
+    | '/qy/stardust/'
     | '/qy/tickets/'
     | '/qy/transfer-logs/'
     | '/qy/transfer/'
     | '/qy/violations/'
-    | '/qy/withdraw/'
-    | '/qy/withdrawals/'
+    | '/qy/wheel/'
     | '/system-settings/auth/'
     | '/system-settings/billing/'
     | '/system-settings/content/'
@@ -1079,15 +1165,21 @@ export interface FileRouteTypes {
     | '/qy/admin/api-address/'
     | '/qy/admin/audit-logs/'
     | '/qy/admin/commission-records/'
+    | '/qy/admin/commission-users/'
     | '/qy/admin/commission/'
     | '/qy/admin/daily-consume/'
     | '/qy/admin/fund-orders/'
     | '/qy/admin/group-matrix/'
     | '/qy/admin/health/'
+    | '/qy/admin/invite-accruals/'
+    | '/qy/admin/invite/'
     | '/qy/admin/lottery-config/'
     | '/qy/admin/lottery/'
+    | '/qy/admin/mall/'
     | '/qy/admin/restricted-accounts/'
     | '/qy/admin/settlement/'
+    | '/qy/admin/stardust-config/'
+    | '/qy/admin/stardust/'
     | '/qy/admin/tickets/'
     | '/qy/admin/transfer-config/'
     | '/qy/admin/transfer-group-rules/'
@@ -1096,11 +1188,7 @@ export interface FileRouteTypes {
     | '/qy/admin/violation-categories/'
     | '/qy/admin/violation-rules/'
     | '/qy/admin/violations/'
-    | '/qy/admin/withdrawals/'
     | '/qy/lottery/$actNo/'
-    | '/qy/admin/commission-records/balances/'
-    | '/qy/admin/commission-records/relations/'
-    | '/qy/admin/commission-records/users/'
     | '/qy/admin/lottery/$actNo/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -1156,18 +1244,24 @@ export interface FileRouteTypes {
     | '/qy/admin'
     | '/qy/affiliate'
     | '/qy/availability'
+    | '/qy/commission-records'
+    | '/qy/invite-records'
     | '/qy/invitees'
     | '/qy/lottery-ball'
     | '/qy/lottery-guess'
     | '/qy/lottery-records'
     | '/qy/lottery'
+    | '/qy/mall-orders'
+    | '/qy/mall'
     | '/qy/pay-password'
+    | '/qy/stardust-accruals'
+    | '/qy/stardust-ledger'
+    | '/qy/stardust'
     | '/qy/tickets'
     | '/qy/transfer-logs'
     | '/qy/transfer'
     | '/qy/violations'
-    | '/qy/withdraw'
-    | '/qy/withdrawals'
+    | '/qy/wheel'
     | '/system-settings/auth'
     | '/system-settings/billing'
     | '/system-settings/content'
@@ -1178,15 +1272,21 @@ export interface FileRouteTypes {
     | '/qy/admin/api-address'
     | '/qy/admin/audit-logs'
     | '/qy/admin/commission-records'
+    | '/qy/admin/commission-users'
     | '/qy/admin/commission'
     | '/qy/admin/daily-consume'
     | '/qy/admin/fund-orders'
     | '/qy/admin/group-matrix'
     | '/qy/admin/health'
+    | '/qy/admin/invite-accruals'
+    | '/qy/admin/invite'
     | '/qy/admin/lottery-config'
     | '/qy/admin/lottery'
+    | '/qy/admin/mall'
     | '/qy/admin/restricted-accounts'
     | '/qy/admin/settlement'
+    | '/qy/admin/stardust-config'
+    | '/qy/admin/stardust'
     | '/qy/admin/tickets'
     | '/qy/admin/transfer-config'
     | '/qy/admin/transfer-group-rules'
@@ -1195,11 +1295,7 @@ export interface FileRouteTypes {
     | '/qy/admin/violation-categories'
     | '/qy/admin/violation-rules'
     | '/qy/admin/violations'
-    | '/qy/admin/withdrawals'
     | '/qy/lottery/$actNo'
-    | '/qy/admin/commission-records/balances'
-    | '/qy/admin/commission-records/relations'
-    | '/qy/admin/commission-records/users'
     | '/qy/admin/lottery/$actNo'
   id:
     | '__root__'
@@ -1260,18 +1356,24 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/'
     | '/_authenticated/qy/affiliate/'
     | '/_authenticated/qy/availability/'
+    | '/_authenticated/qy/commission-records/'
+    | '/_authenticated/qy/invite-records/'
     | '/_authenticated/qy/invitees/'
     | '/_authenticated/qy/lottery-ball/'
     | '/_authenticated/qy/lottery-guess/'
     | '/_authenticated/qy/lottery-records/'
     | '/_authenticated/qy/lottery/'
+    | '/_authenticated/qy/mall-orders/'
+    | '/_authenticated/qy/mall/'
     | '/_authenticated/qy/pay-password/'
+    | '/_authenticated/qy/stardust-accruals/'
+    | '/_authenticated/qy/stardust-ledger/'
+    | '/_authenticated/qy/stardust/'
     | '/_authenticated/qy/tickets/'
     | '/_authenticated/qy/transfer-logs/'
     | '/_authenticated/qy/transfer/'
     | '/_authenticated/qy/violations/'
-    | '/_authenticated/qy/withdraw/'
-    | '/_authenticated/qy/withdrawals/'
+    | '/_authenticated/qy/wheel/'
     | '/_authenticated/system-settings/auth/'
     | '/_authenticated/system-settings/billing/'
     | '/_authenticated/system-settings/content/'
@@ -1282,15 +1384,21 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/api-address/'
     | '/_authenticated/qy/admin/audit-logs/'
     | '/_authenticated/qy/admin/commission-records/'
+    | '/_authenticated/qy/admin/commission-users/'
     | '/_authenticated/qy/admin/commission/'
     | '/_authenticated/qy/admin/daily-consume/'
     | '/_authenticated/qy/admin/fund-orders/'
     | '/_authenticated/qy/admin/group-matrix/'
     | '/_authenticated/qy/admin/health/'
+    | '/_authenticated/qy/admin/invite-accruals/'
+    | '/_authenticated/qy/admin/invite/'
     | '/_authenticated/qy/admin/lottery-config/'
     | '/_authenticated/qy/admin/lottery/'
+    | '/_authenticated/qy/admin/mall/'
     | '/_authenticated/qy/admin/restricted-accounts/'
     | '/_authenticated/qy/admin/settlement/'
+    | '/_authenticated/qy/admin/stardust-config/'
+    | '/_authenticated/qy/admin/stardust/'
     | '/_authenticated/qy/admin/tickets/'
     | '/_authenticated/qy/admin/transfer-config/'
     | '/_authenticated/qy/admin/transfer-group-rules/'
@@ -1299,11 +1407,7 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/violation-categories/'
     | '/_authenticated/qy/admin/violation-rules/'
     | '/_authenticated/qy/admin/violations/'
-    | '/_authenticated/qy/admin/withdrawals/'
     | '/_authenticated/qy/lottery/$actNo/'
-    | '/_authenticated/qy/admin/commission-records/balances/'
-    | '/_authenticated/qy/admin/commission-records/relations/'
-    | '/_authenticated/qy/admin/commission-records/users/'
     | '/_authenticated/qy/admin/lottery/$actNo/'
   fileRoutesById: FileRoutesById
 }
@@ -1678,6 +1782,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAvailabilityIndexRouteImport
       parentRoute: typeof AuthenticatedQyRouteRoute
     }
+    '/_authenticated/qy/commission-records/': {
+      id: '/_authenticated/qy/commission-records/'
+      path: '/commission-records'
+      fullPath: '/qy/commission-records/'
+      preLoaderRoute: typeof AuthenticatedQyCommissionRecordsIndexRouteImport
+      parentRoute: typeof AuthenticatedQyRouteRoute
+    }
+    '/_authenticated/qy/invite-records/': {
+      id: '/_authenticated/qy/invite-records/'
+      path: '/invite-records'
+      fullPath: '/qy/invite-records/'
+      preLoaderRoute: typeof AuthenticatedQyInviteRecordsIndexRouteImport
+      parentRoute: typeof AuthenticatedQyRouteRoute
+    }
     '/_authenticated/qy/invitees/': {
       id: '/_authenticated/qy/invitees/'
       path: '/invitees'
@@ -1713,11 +1831,46 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyLotteryIndexRouteImport
       parentRoute: typeof AuthenticatedQyRouteRoute
     }
+    '/_authenticated/qy/mall-orders/': {
+      id: '/_authenticated/qy/mall-orders/'
+      path: '/mall-orders'
+      fullPath: '/qy/mall-orders/'
+      preLoaderRoute: typeof AuthenticatedQyMallOrdersIndexRouteImport
+      parentRoute: typeof AuthenticatedQyRouteRoute
+    }
+    '/_authenticated/qy/mall/': {
+      id: '/_authenticated/qy/mall/'
+      path: '/mall'
+      fullPath: '/qy/mall/'
+      preLoaderRoute: typeof AuthenticatedQyMallIndexRouteImport
+      parentRoute: typeof AuthenticatedQyRouteRoute
+    }
     '/_authenticated/qy/pay-password/': {
       id: '/_authenticated/qy/pay-password/'
       path: '/pay-password'
       fullPath: '/qy/pay-password/'
       preLoaderRoute: typeof AuthenticatedQyPayPasswordIndexRouteImport
+      parentRoute: typeof AuthenticatedQyRouteRoute
+    }
+    '/_authenticated/qy/stardust-accruals/': {
+      id: '/_authenticated/qy/stardust-accruals/'
+      path: '/stardust-accruals'
+      fullPath: '/qy/stardust-accruals/'
+      preLoaderRoute: typeof AuthenticatedQyStardustAccrualsIndexRouteImport
+      parentRoute: typeof AuthenticatedQyRouteRoute
+    }
+    '/_authenticated/qy/stardust-ledger/': {
+      id: '/_authenticated/qy/stardust-ledger/'
+      path: '/stardust-ledger'
+      fullPath: '/qy/stardust-ledger/'
+      preLoaderRoute: typeof AuthenticatedQyStardustLedgerIndexRouteImport
+      parentRoute: typeof AuthenticatedQyRouteRoute
+    }
+    '/_authenticated/qy/stardust/': {
+      id: '/_authenticated/qy/stardust/'
+      path: '/stardust'
+      fullPath: '/qy/stardust/'
+      preLoaderRoute: typeof AuthenticatedQyStardustIndexRouteImport
       parentRoute: typeof AuthenticatedQyRouteRoute
     }
     '/_authenticated/qy/tickets/': {
@@ -1748,18 +1901,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyViolationsIndexRouteImport
       parentRoute: typeof AuthenticatedQyRouteRoute
     }
-    '/_authenticated/qy/withdraw/': {
-      id: '/_authenticated/qy/withdraw/'
-      path: '/withdraw'
-      fullPath: '/qy/withdraw/'
-      preLoaderRoute: typeof AuthenticatedQyWithdrawIndexRouteImport
-      parentRoute: typeof AuthenticatedQyRouteRoute
-    }
-    '/_authenticated/qy/withdrawals/': {
-      id: '/_authenticated/qy/withdrawals/'
-      path: '/withdrawals'
-      fullPath: '/qy/withdrawals/'
-      preLoaderRoute: typeof AuthenticatedQyWithdrawalsIndexRouteImport
+    '/_authenticated/qy/wheel/': {
+      id: '/_authenticated/qy/wheel/'
+      path: '/wheel'
+      fullPath: '/qy/wheel/'
+      preLoaderRoute: typeof AuthenticatedQyWheelIndexRouteImport
       parentRoute: typeof AuthenticatedQyRouteRoute
     }
     '/_authenticated/system-settings/auth/': {
@@ -1881,6 +2027,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminCommissionRecordsIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
+    '/_authenticated/qy/admin/commission-users/': {
+      id: '/_authenticated/qy/admin/commission-users/'
+      path: '/commission-users'
+      fullPath: '/qy/admin/commission-users/'
+      preLoaderRoute: typeof AuthenticatedQyAdminCommissionUsersIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
     '/_authenticated/qy/admin/commission/': {
       id: '/_authenticated/qy/admin/commission/'
       path: '/commission'
@@ -1916,6 +2069,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminHealthIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
+    '/_authenticated/qy/admin/invite-accruals/': {
+      id: '/_authenticated/qy/admin/invite-accruals/'
+      path: '/invite-accruals'
+      fullPath: '/qy/admin/invite-accruals/'
+      preLoaderRoute: typeof AuthenticatedQyAdminInviteAccrualsIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
+    '/_authenticated/qy/admin/invite/': {
+      id: '/_authenticated/qy/admin/invite/'
+      path: '/invite'
+      fullPath: '/qy/admin/invite/'
+      preLoaderRoute: typeof AuthenticatedQyAdminInviteIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
     '/_authenticated/qy/admin/lottery-config/': {
       id: '/_authenticated/qy/admin/lottery-config/'
       path: '/lottery-config'
@@ -1930,6 +2097,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminLotteryIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
+    '/_authenticated/qy/admin/mall/': {
+      id: '/_authenticated/qy/admin/mall/'
+      path: '/mall'
+      fullPath: '/qy/admin/mall/'
+      preLoaderRoute: typeof AuthenticatedQyAdminMallIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
     '/_authenticated/qy/admin/restricted-accounts/': {
       id: '/_authenticated/qy/admin/restricted-accounts/'
       path: '/restricted-accounts'
@@ -1942,6 +2116,20 @@ declare module '@tanstack/react-router' {
       path: '/settlement'
       fullPath: '/qy/admin/settlement/'
       preLoaderRoute: typeof AuthenticatedQyAdminSettlementIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
+    '/_authenticated/qy/admin/stardust-config/': {
+      id: '/_authenticated/qy/admin/stardust-config/'
+      path: '/stardust-config'
+      fullPath: '/qy/admin/stardust-config/'
+      preLoaderRoute: typeof AuthenticatedQyAdminStardustConfigIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
+    '/_authenticated/qy/admin/stardust/': {
+      id: '/_authenticated/qy/admin/stardust/'
+      path: '/stardust'
+      fullPath: '/qy/admin/stardust/'
+      preLoaderRoute: typeof AuthenticatedQyAdminStardustIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
     '/_authenticated/qy/admin/tickets/': {
@@ -2000,40 +2188,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminViolationsIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
-    '/_authenticated/qy/admin/withdrawals/': {
-      id: '/_authenticated/qy/admin/withdrawals/'
-      path: '/withdrawals'
-      fullPath: '/qy/admin/withdrawals/'
-      preLoaderRoute: typeof AuthenticatedQyAdminWithdrawalsIndexRouteImport
-      parentRoute: typeof AuthenticatedQyAdminRouteRoute
-    }
     '/_authenticated/qy/lottery/$actNo/': {
       id: '/_authenticated/qy/lottery/$actNo/'
       path: '/lottery/$actNo'
       fullPath: '/qy/lottery/$actNo/'
       preLoaderRoute: typeof AuthenticatedQyLotteryActNoIndexRouteImport
       parentRoute: typeof AuthenticatedQyRouteRoute
-    }
-    '/_authenticated/qy/admin/commission-records/balances/': {
-      id: '/_authenticated/qy/admin/commission-records/balances/'
-      path: '/commission-records/balances'
-      fullPath: '/qy/admin/commission-records/balances/'
-      preLoaderRoute: typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRouteImport
-      parentRoute: typeof AuthenticatedQyAdminRouteRoute
-    }
-    '/_authenticated/qy/admin/commission-records/relations/': {
-      id: '/_authenticated/qy/admin/commission-records/relations/'
-      path: '/commission-records/relations'
-      fullPath: '/qy/admin/commission-records/relations/'
-      preLoaderRoute: typeof AuthenticatedQyAdminCommissionRecordsRelationsIndexRouteImport
-      parentRoute: typeof AuthenticatedQyAdminRouteRoute
-    }
-    '/_authenticated/qy/admin/commission-records/users/': {
-      id: '/_authenticated/qy/admin/commission-records/users/'
-      path: '/commission-records/users'
-      fullPath: '/qy/admin/commission-records/users/'
-      preLoaderRoute: typeof AuthenticatedQyAdminCommissionRecordsUsersIndexRouteImport
-      parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
     '/_authenticated/qy/admin/lottery/$actNo/': {
       id: '/_authenticated/qy/admin/lottery/$actNo/'
@@ -2076,15 +2236,21 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminApiAddressIndexRoute: typeof AuthenticatedQyAdminApiAddressIndexRoute
   AuthenticatedQyAdminAuditLogsIndexRoute: typeof AuthenticatedQyAdminAuditLogsIndexRoute
   AuthenticatedQyAdminCommissionRecordsIndexRoute: typeof AuthenticatedQyAdminCommissionRecordsIndexRoute
+  AuthenticatedQyAdminCommissionUsersIndexRoute: typeof AuthenticatedQyAdminCommissionUsersIndexRoute
   AuthenticatedQyAdminCommissionIndexRoute: typeof AuthenticatedQyAdminCommissionIndexRoute
   AuthenticatedQyAdminDailyConsumeIndexRoute: typeof AuthenticatedQyAdminDailyConsumeIndexRoute
   AuthenticatedQyAdminFundOrdersIndexRoute: typeof AuthenticatedQyAdminFundOrdersIndexRoute
   AuthenticatedQyAdminGroupMatrixIndexRoute: typeof AuthenticatedQyAdminGroupMatrixIndexRoute
   AuthenticatedQyAdminHealthIndexRoute: typeof AuthenticatedQyAdminHealthIndexRoute
+  AuthenticatedQyAdminInviteAccrualsIndexRoute: typeof AuthenticatedQyAdminInviteAccrualsIndexRoute
+  AuthenticatedQyAdminInviteIndexRoute: typeof AuthenticatedQyAdminInviteIndexRoute
   AuthenticatedQyAdminLotteryConfigIndexRoute: typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   AuthenticatedQyAdminLotteryIndexRoute: typeof AuthenticatedQyAdminLotteryIndexRoute
+  AuthenticatedQyAdminMallIndexRoute: typeof AuthenticatedQyAdminMallIndexRoute
   AuthenticatedQyAdminRestrictedAccountsIndexRoute: typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
   AuthenticatedQyAdminSettlementIndexRoute: typeof AuthenticatedQyAdminSettlementIndexRoute
+  AuthenticatedQyAdminStardustConfigIndexRoute: typeof AuthenticatedQyAdminStardustConfigIndexRoute
+  AuthenticatedQyAdminStardustIndexRoute: typeof AuthenticatedQyAdminStardustIndexRoute
   AuthenticatedQyAdminTicketsIndexRoute: typeof AuthenticatedQyAdminTicketsIndexRoute
   AuthenticatedQyAdminTransferConfigIndexRoute: typeof AuthenticatedQyAdminTransferConfigIndexRoute
   AuthenticatedQyAdminTransferGroupRulesIndexRoute: typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
@@ -2093,10 +2259,6 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminViolationCategoriesIndexRoute: typeof AuthenticatedQyAdminViolationCategoriesIndexRoute
   AuthenticatedQyAdminViolationRulesIndexRoute: typeof AuthenticatedQyAdminViolationRulesIndexRoute
   AuthenticatedQyAdminViolationsIndexRoute: typeof AuthenticatedQyAdminViolationsIndexRoute
-  AuthenticatedQyAdminWithdrawalsIndexRoute: typeof AuthenticatedQyAdminWithdrawalsIndexRoute
-  AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute: typeof AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute
-  AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute: typeof AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute
-  AuthenticatedQyAdminCommissionRecordsUsersIndexRoute: typeof AuthenticatedQyAdminCommissionRecordsUsersIndexRoute
   AuthenticatedQyAdminLotteryActNoIndexRoute: typeof AuthenticatedQyAdminLotteryActNoIndexRoute
 }
 
@@ -2109,6 +2271,8 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
       AuthenticatedQyAdminAuditLogsIndexRoute,
     AuthenticatedQyAdminCommissionRecordsIndexRoute:
       AuthenticatedQyAdminCommissionRecordsIndexRoute,
+    AuthenticatedQyAdminCommissionUsersIndexRoute:
+      AuthenticatedQyAdminCommissionUsersIndexRoute,
     AuthenticatedQyAdminCommissionIndexRoute:
       AuthenticatedQyAdminCommissionIndexRoute,
     AuthenticatedQyAdminDailyConsumeIndexRoute:
@@ -2118,14 +2282,22 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
     AuthenticatedQyAdminGroupMatrixIndexRoute:
       AuthenticatedQyAdminGroupMatrixIndexRoute,
     AuthenticatedQyAdminHealthIndexRoute: AuthenticatedQyAdminHealthIndexRoute,
+    AuthenticatedQyAdminInviteAccrualsIndexRoute:
+      AuthenticatedQyAdminInviteAccrualsIndexRoute,
+    AuthenticatedQyAdminInviteIndexRoute: AuthenticatedQyAdminInviteIndexRoute,
     AuthenticatedQyAdminLotteryConfigIndexRoute:
       AuthenticatedQyAdminLotteryConfigIndexRoute,
     AuthenticatedQyAdminLotteryIndexRoute:
       AuthenticatedQyAdminLotteryIndexRoute,
+    AuthenticatedQyAdminMallIndexRoute: AuthenticatedQyAdminMallIndexRoute,
     AuthenticatedQyAdminRestrictedAccountsIndexRoute:
       AuthenticatedQyAdminRestrictedAccountsIndexRoute,
     AuthenticatedQyAdminSettlementIndexRoute:
       AuthenticatedQyAdminSettlementIndexRoute,
+    AuthenticatedQyAdminStardustConfigIndexRoute:
+      AuthenticatedQyAdminStardustConfigIndexRoute,
+    AuthenticatedQyAdminStardustIndexRoute:
+      AuthenticatedQyAdminStardustIndexRoute,
     AuthenticatedQyAdminTicketsIndexRoute:
       AuthenticatedQyAdminTicketsIndexRoute,
     AuthenticatedQyAdminTransferConfigIndexRoute:
@@ -2142,14 +2314,6 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
       AuthenticatedQyAdminViolationRulesIndexRoute,
     AuthenticatedQyAdminViolationsIndexRoute:
       AuthenticatedQyAdminViolationsIndexRoute,
-    AuthenticatedQyAdminWithdrawalsIndexRoute:
-      AuthenticatedQyAdminWithdrawalsIndexRoute,
-    AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute:
-      AuthenticatedQyAdminCommissionRecordsBalancesIndexRoute,
-    AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute:
-      AuthenticatedQyAdminCommissionRecordsRelationsIndexRoute,
-    AuthenticatedQyAdminCommissionRecordsUsersIndexRoute:
-      AuthenticatedQyAdminCommissionRecordsUsersIndexRoute,
     AuthenticatedQyAdminLotteryActNoIndexRoute:
       AuthenticatedQyAdminLotteryActNoIndexRoute,
   }
@@ -2164,18 +2328,24 @@ interface AuthenticatedQyRouteRouteChildren {
   AuthenticatedQyIndexRoute: typeof AuthenticatedQyIndexRoute
   AuthenticatedQyAffiliateIndexRoute: typeof AuthenticatedQyAffiliateIndexRoute
   AuthenticatedQyAvailabilityIndexRoute: typeof AuthenticatedQyAvailabilityIndexRoute
+  AuthenticatedQyCommissionRecordsIndexRoute: typeof AuthenticatedQyCommissionRecordsIndexRoute
+  AuthenticatedQyInviteRecordsIndexRoute: typeof AuthenticatedQyInviteRecordsIndexRoute
   AuthenticatedQyInviteesIndexRoute: typeof AuthenticatedQyInviteesIndexRoute
   AuthenticatedQyLotteryBallIndexRoute: typeof AuthenticatedQyLotteryBallIndexRoute
   AuthenticatedQyLotteryGuessIndexRoute: typeof AuthenticatedQyLotteryGuessIndexRoute
   AuthenticatedQyLotteryRecordsIndexRoute: typeof AuthenticatedQyLotteryRecordsIndexRoute
   AuthenticatedQyLotteryIndexRoute: typeof AuthenticatedQyLotteryIndexRoute
+  AuthenticatedQyMallOrdersIndexRoute: typeof AuthenticatedQyMallOrdersIndexRoute
+  AuthenticatedQyMallIndexRoute: typeof AuthenticatedQyMallIndexRoute
   AuthenticatedQyPayPasswordIndexRoute: typeof AuthenticatedQyPayPasswordIndexRoute
+  AuthenticatedQyStardustAccrualsIndexRoute: typeof AuthenticatedQyStardustAccrualsIndexRoute
+  AuthenticatedQyStardustLedgerIndexRoute: typeof AuthenticatedQyStardustLedgerIndexRoute
+  AuthenticatedQyStardustIndexRoute: typeof AuthenticatedQyStardustIndexRoute
   AuthenticatedQyTicketsIndexRoute: typeof AuthenticatedQyTicketsIndexRoute
   AuthenticatedQyTransferLogsIndexRoute: typeof AuthenticatedQyTransferLogsIndexRoute
   AuthenticatedQyTransferIndexRoute: typeof AuthenticatedQyTransferIndexRoute
   AuthenticatedQyViolationsIndexRoute: typeof AuthenticatedQyViolationsIndexRoute
-  AuthenticatedQyWithdrawIndexRoute: typeof AuthenticatedQyWithdrawIndexRoute
-  AuthenticatedQyWithdrawalsIndexRoute: typeof AuthenticatedQyWithdrawalsIndexRoute
+  AuthenticatedQyWheelIndexRoute: typeof AuthenticatedQyWheelIndexRoute
   AuthenticatedQyLotteryActNoIndexRoute: typeof AuthenticatedQyLotteryActNoIndexRoute
 }
 
@@ -2184,19 +2354,29 @@ const AuthenticatedQyRouteRouteChildren: AuthenticatedQyRouteRouteChildren = {
   AuthenticatedQyIndexRoute: AuthenticatedQyIndexRoute,
   AuthenticatedQyAffiliateIndexRoute: AuthenticatedQyAffiliateIndexRoute,
   AuthenticatedQyAvailabilityIndexRoute: AuthenticatedQyAvailabilityIndexRoute,
+  AuthenticatedQyCommissionRecordsIndexRoute:
+    AuthenticatedQyCommissionRecordsIndexRoute,
+  AuthenticatedQyInviteRecordsIndexRoute:
+    AuthenticatedQyInviteRecordsIndexRoute,
   AuthenticatedQyInviteesIndexRoute: AuthenticatedQyInviteesIndexRoute,
   AuthenticatedQyLotteryBallIndexRoute: AuthenticatedQyLotteryBallIndexRoute,
   AuthenticatedQyLotteryGuessIndexRoute: AuthenticatedQyLotteryGuessIndexRoute,
   AuthenticatedQyLotteryRecordsIndexRoute:
     AuthenticatedQyLotteryRecordsIndexRoute,
   AuthenticatedQyLotteryIndexRoute: AuthenticatedQyLotteryIndexRoute,
+  AuthenticatedQyMallOrdersIndexRoute: AuthenticatedQyMallOrdersIndexRoute,
+  AuthenticatedQyMallIndexRoute: AuthenticatedQyMallIndexRoute,
   AuthenticatedQyPayPasswordIndexRoute: AuthenticatedQyPayPasswordIndexRoute,
+  AuthenticatedQyStardustAccrualsIndexRoute:
+    AuthenticatedQyStardustAccrualsIndexRoute,
+  AuthenticatedQyStardustLedgerIndexRoute:
+    AuthenticatedQyStardustLedgerIndexRoute,
+  AuthenticatedQyStardustIndexRoute: AuthenticatedQyStardustIndexRoute,
   AuthenticatedQyTicketsIndexRoute: AuthenticatedQyTicketsIndexRoute,
   AuthenticatedQyTransferLogsIndexRoute: AuthenticatedQyTransferLogsIndexRoute,
   AuthenticatedQyTransferIndexRoute: AuthenticatedQyTransferIndexRoute,
   AuthenticatedQyViolationsIndexRoute: AuthenticatedQyViolationsIndexRoute,
-  AuthenticatedQyWithdrawIndexRoute: AuthenticatedQyWithdrawIndexRoute,
-  AuthenticatedQyWithdrawalsIndexRoute: AuthenticatedQyWithdrawalsIndexRoute,
+  AuthenticatedQyWheelIndexRoute: AuthenticatedQyWheelIndexRoute,
   AuthenticatedQyLotteryActNoIndexRoute: AuthenticatedQyLotteryActNoIndexRoute,
 }
 

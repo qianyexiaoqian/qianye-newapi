@@ -23,7 +23,7 @@ import (
 func textEnv(t *testing.T) *gorm.DB {
 	t.Helper()
 	return newPayoutEnv(t, config.Lottery{
-		Enabled: true, PayoutMaxAttempts: 8, MaxStakeQuota: 5_000_000,
+		Enabled: true, PayoutMaxAttempts: 8, MaxStakeStardust: 5_000_000,
 	})
 }
 
@@ -39,8 +39,8 @@ func TestPlanPayoutsKeepsZeroAmountTextPrizes(t *testing.T) {
 		{EntryId: 1, UserId: 11, Kind: PayoutPrize, Tier: 1, DrawPos: 0, Amount: 5000},
 		{EntryId: 2, UserId: 12, Kind: PayoutText, Tier: 2, DrawPos: 1, Amount: 0},
 		{EntryId: 3, UserId: 13, Kind: PayoutText, Tier: 2, DrawPos: 2, Amount: 0},
-		// 额度腿上金额为 0 的计划仍然必须被跳过:twophase 的入口要求 amount > 0,
-		// 而 0 元出款在账面上也不表达任何事实。
+		// 星屑腿上金额为 0 的计划仍然必须被跳过:stardust.Credit 的入口要求 amount > 0,
+		// 而 0 星屑的出款在账面上也不表达任何事实。
 		{EntryId: 4, UserId: 14, Kind: PayoutPrize, Tier: 3, DrawPos: 3, Amount: 0},
 	}
 	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
@@ -172,6 +172,7 @@ func TestTextPrizeAuditReachesFinishedActivities(t *testing.T) {
 // 覆盖会让用户先看到 A 再看到 B,而争议时没人说得清他到底用掉了哪一个。
 func TestFulfillIsIdempotentAndUnfulfillKeepsTheCiphertext(t *testing.T) {
 	gdb := textEnv(t)
+	withPrizeKeyOnCurrentConfig(t)
 	act := seedActivity(t, gdb, nil)
 	p := seedPayout(t, gdb, act.Id, func(p *Payout) {
 		p.Kind = PayoutText

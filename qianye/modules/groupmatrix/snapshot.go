@@ -376,6 +376,39 @@ func migrateShadowScopesToEnforce() {
 	if gdb == nil {
 		return
 	}
+	// 先纠正 allow_auto 的 artifact,再把 shadow 迁成 enforce —— 顺序不能反(见下)。
+	//
+	// allow_auto=false 有两种来路,必须区分:
+	//   - **shadow 行**:它当初由 defaultAllowAuto 从「上游全局白名单里有没有 auto 键」
+	//     推出来,而那份白名单在本站是空的,于是每一档都被自动禁掉了 auto。这是一个
+	//     推导出来的 artifact,不是运营的选择,可以安全地抬成允许。
+	//   - **enforce 行**:升级后 defaultAllowAuto 恒为 true,一行的 allow_auto=false 只
+	//     可能是运营在编辑弹窗里显式关掉的决定 —— 绝不能碰。
+	//
+	// 因此抬升只作用于**仍是 shadow 的行**:下面把它们迁成 enforce 之后,`mode='shadow'`
+	// 这个条件就再也不命中,这段纠正于是天然只发生一次(在还有 shadow 行的那次启动),
+	// 此后运营任意开关 allow_auto 都不会被启动流程改回去。早先这里的条件是裸
+	// `allow_auto=false`、没有任何一次性判据,于是**每次主节点启动**都会把运营刚亲手
+	// 关掉的那一档重新打开(那次翻转还不进审计,运营下次打开页面看到开关自己开了)。
+	//
+	// auto 不放宽任何权限:令牌的 auto 候选仍会被这一档的可选清单过滤一遍。
+	autoRes := gdb.Model(&Scope{}).Where("mode = ? AND allow_auto = ?", ModeShadow, false).
+		Updates(map[string]any{"allow_auto": true})
+	if autoRes.Error != nil {
+		// 只记日志、不 return:下面的 mode 迁移与它相互独立,一个失败不该拖累另一个。
+		common.SysError("qianye/groupmatrix: allow_auto 迁移失败: " + autoRes.Error.Error())
+	} else if autoRes.RowsAffected > 0 {
+		common.SysLog(fmt.Sprintf(
+			"qianye/groupmatrix: 已为 %d 档用户分组打开「允许 auto」—— "+
+				"此前它是由一份空的全局白名单推导出来的,并非运营的选择;"+
+				"用户从此可以自定义令牌的分组顺序并按序故障转移",
+			autoRes.RowsAffected))
+	}
+
+	// shadow 的语义是「清单已配、但一个字节都不生效」。它下线之后读取侧不再判 mode,
+	// 那些行从这次升级起自动开始生效;留着 mode='shadow' 这个值不改,库里就会有一批
+	// "写着影子、实际在生效"的行,查库会得到与线上相反的结论。迁移只改 mode 一个字段,
+	// grants 一条都不动 —— 那份清单本来就是运营亲手勾的。
 	res := gdb.Model(&Scope{}).Where("mode = ?", ModeShadow).
 		Updates(map[string]any{"mode": ModeEnforce})
 	if res.Error != nil {
@@ -390,26 +423,5 @@ func migrateShadowScopesToEnforce() {
 			"qianye/groupmatrix: 已把 %d 档用户分组的可用范围由「影子」改为立即生效 —— "+
 				"这些档此前配好了清单但一个字节都没生效,现在它们的模型分组清单开始起作用",
 			res.RowsAffected))
-	}
-
-	// 存量行的 allow_auto 一并抬成允许。
-	//
-	// 它当初是由 defaultAllowAuto 从**上游全局白名单里有没有 auto 键**推出来的,
-	// 而那份白名单在本站是空的 —— 于是每一档都被自动禁掉了 auto,运营从来没做过
-	// 这个决定。它是一个推导出来的artifact,不是一次选择,所以可以安全地纠正。
-	//
-	// auto 不放宽任何权限:令牌的 auto 候选仍会被这一档的可选清单过滤一遍。
-	autoRes := gdb.Model(&Scope{}).Where("allow_auto = ?", false).
-		Updates(map[string]any{"allow_auto": true})
-	if autoRes.Error != nil {
-		common.SysError("qianye/groupmatrix: allow_auto 迁移失败: " + autoRes.Error.Error())
-		return
-	}
-	if autoRes.RowsAffected > 0 {
-		common.SysLog(fmt.Sprintf(
-			"qianye/groupmatrix: 已为 %d 档用户分组打开「允许 auto」—— "+
-				"此前它是由一份空的全局白名单推导出来的,并非运营的选择;"+
-				"用户从此可以自定义令牌的分组顺序并按序故障转移",
-			autoRes.RowsAffected))
 	}
 }

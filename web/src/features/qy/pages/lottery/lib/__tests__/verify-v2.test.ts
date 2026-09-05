@@ -114,7 +114,10 @@ const GOLDEN = {
   chainV2: '5e76c953c17ae56f6600e969f0ff270ba5cb7e66c2a20b66fe6ba5bfc856ca94',
   rosterV1: 'b29263411c1db24c8c60232381edee8813102e056cf905764a6c60407c4708b5',
   rosterV2: 'ab61d2c6d74a6fb26c301070dd90e4cab91f498a448e8b369b7b05a3ec90e854',
-  specV2: '1525b902818f8ba684354676b458624e8a6ff0427669b6620b5f21fe354bbc74',
+  // 第 11 位（product_no，非商品奖为空串）加入后的值；由独立的 Python 一行
+  // `sha256(SEP.join(['qylot-spec-v2', line]))` 算出，Go 侧 fairness_v2_test 的
+  // 「头奖」向量同一套编码。
+  specV2: '504dda5e514e35898c7441ebaecbf20caa7def8e97205b1c10b568ea0b7fd77b',
   /** 与 Go、与 lottery-verify.py 的 ball_draw 三方逐位一致（本轮补验）。 */
   ballRed: [2, 4, 7, 9],
   ballBlue: [2, 5, 11],
@@ -150,11 +153,12 @@ describe('lot-v2 跨实现黄金向量', () => {
   })
 
   /**
-   * 十个字段的顺序与恒等式位（quota 档的 `text_desc` 是空串、非 ball 的三列
-   * 是 0）在这一个哈希里全部被钉死。少写一个占位就等于允许管理员在不动
-   * 承诺的前提下把一档额度奖改成文本奖。
+   * 十一个字段的顺序与恒等式位（quota 档的 `text_desc` 是空串、非 ball 的三列
+   * 是 0、非商品奖的 `product_no` 是空串）在这一个哈希里全部被钉死。少写一个
+   * 占位就等于允许管理员在不动承诺的前提下把一档额度奖改成文本奖、或把一档
+   * 商品奖换成另一件商品。
    */
-  test('奖档行的十个字段顺序与 Go / Python 逐位一致', async () => {
+  test('奖档行的十一个字段顺序与 Go / Python 逐位一致', async () => {
     // 刻意用字面量拼原像而不是调 `qyLotSpecLines`：那个函数正是被测对象之一，
     // 拿它生成原像等于把"字段顺序对不对"这个问题整个绕过去。
     const line = [
@@ -168,6 +172,7 @@ describe('lot-v2 跨实现黄金向量', () => {
       '0',
       '0',
       '0',
+      '',
     ].join('')
     assert.equal(await qyLotSpecHash([line], 'lot-v2'), GOLDEN.specV2)
   })
@@ -288,7 +293,7 @@ describe('lot-v2 概率制派奖', () => {
    * 与竞猜奖池的口径逐字节相同）。
    *
    * 守恒式必须**精确**成立：多一个单位就是净增发超过了发布时校验过的上限，
-   * 而那道上限（`Σ count × amount ≤ MaxTotalPrizeQuota`）正是概率模式不引入
+   * 而那道上限（`Σ count × amount ≤ MaxTotalPrizeStardust`）正是概率模式不引入
    * 任何新发行风险的全部理由。
    */
   test('超募：预算均分，逐笔截断 + 残差归 entry_no 最大者，总额精确守恒', async () => {

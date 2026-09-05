@@ -50,31 +50,27 @@ const (
 	ballE2EUserId  = 9002
 )
 
-// newBallMainDB 建一个主库并接到 model.DB —— 报名要真的扣额度,
-// 而"扣钱"这一步正是 twophase 两库协议唯一会出事的地方。
-func newBallMainDB(t *testing.T, quota int) *gorm.DB {
+// newBallMainDB 建一个主库并接到 model.DB,并给买家种下 startStardust 星屑。
+//
+// 主库只剩资格判定要读的 users 行(LoadSubject:status / role / group / quota …),
+// 参与费不再碰它 —— 钱在扩展库的星屑账本里,所以种子余额经 seedStardust 落到
+// **当前已接上的扩展库**(qyDBHandle),调用方必须先建好扩展库环境。
+// users.quota 同样填成这个数:它只是 min_quota 那类账号质量门槛的输入。
+func newBallMainDB(t *testing.T, startStardust int) *gorm.DB {
 	t.Helper()
 	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: gormlogger.Discard})
 	require.NoError(t, err)
 	sqlDB, err := gdb.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	// 探针表跟着一起建:main_outbox_enabled 默认就是 true,线上每一笔跨库资金
-	// 操作都会先在这张表上认领单号。少了它,测试跑的是一条线上根本不存在的
-	// "没有探针"的分支 —— 而"没有探针"恰恰是资金判定里最危险的那一支。
-	require.NoError(t, gdb.AutoMigrate(&model.User{}, &model.Log{}, &model.QyFundOutbox{}))
+	require.NoError(t, gdb.AutoMigrate(&model.User{}))
 
 	prevType := common.MainDatabaseType()
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
-	prevDB := model.DB
+	prevDB, prevLogDB := model.DB, model.LOG_DB
 	prevMem, prevRedis := common.MemoryCacheEnabled, common.RedisEnabled
 	prevOptions := common.OptionMap
-	prevLogDB := model.LOG_DB
-	model.DB = gdb
-	// 账本日志走日志库句柄。不接上它,提交后处理里的 QyRecordLedgerLog 会对一个
-	// nil 句柄取值 —— twophase 的 AfterCommit 会把 panic 拦下来只记一行日志,
-	// 于是用例照常"通过",而线上每一笔参与都少一条账本流水。
-	model.LOG_DB = gdb
+	model.DB, model.LOG_DB = gdb, gdb
 	common.OptionMap = map[string]string{}
 	common.MemoryCacheEnabled = false
 	common.RedisEnabled = false
@@ -88,9 +84,18 @@ func newBallMainDB(t *testing.T, quota int) *gorm.DB {
 
 	require.NoError(t, gdb.Create(&model.User{
 		Id: ballE2EUserId, Username: "ball-buyer", Password: "x",
-		AffCode: "affball", Group: "default", Quota: quota, Status: common.UserStatusEnabled,
+		AffCode: "affball", Group: "default", Quota: startStardust, Status: common.UserStatusEnabled,
 	}).Error)
+	ext := qyDBHandle.Load()
+	require.NotNil(t, ext, "先建扩展库环境(newPayoutEnv)再建主库:种子星屑要落进扩展库")
+	seedStardust(t, ext, ballE2EUserId, int64(startStardust))
 	return gdb
+}
+
+// userStardust 读买家此刻可用的星屑。期望值一律独立算出来,不从响应里抄。
+func userStardust(t *testing.T, ext *gorm.DB) int64 {
+	t.Helper()
+	return stardustOf(t, ext, ballE2EUserId)
 }
 
 // ballE2ERouter 把真实路由挂起来,并按角色注入用户 id。
@@ -144,7 +149,7 @@ func jsonString(t *testing.T, body []byte, path ...string) string {
 
 func TestBallActivityFullJourney(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	// 闸门显式给足:MaxTotalPrizeQuota 是"派奖对 users.quota 是净增发"的唯一
+	// 闸门显式给足:MaxTotalPrizeStardust 是"派奖对 users.quota 是净增发"的唯一
 	// 硬闸门,零值等于把系列注资全部判成超限。RevealDelaySeconds 归零是为了
 	// 让 close_at → draw_at 的最小间隔不挡住这条只跑到报名为止的旅程。
 	ext := newPayoutEnv(t, config.Lottery{
@@ -152,14 +157,14 @@ func TestBallActivityFullJourney(t *testing.T) {
 		PayoutMaxAttempts:      8,
 		EntryCloseGraceSeconds: 0,
 		RevealDelaySeconds:     0,
-		MaxStakeQuota:          5_000_000,
-		MaxTotalPrizeQuota:     5_000_000,
+		MaxStakeStardust:       5_000_000,
+		MaxTotalPrizeStardust:  5_000_000,
 		MaxActiveActivities:    16,
 		MaxPrizeTiers:          8,
 		MaxTotalEntriesHard:    1_000,
 	})
 	require.NoError(t, ext.AutoMigrate(&qymodel.AuditLog{}))
-	main := newBallMainDB(t, 100_000)
+	newBallMainDB(t, 100_000)
 	r := ballE2ERouter()
 
 	now := common.GetTimestamp()
@@ -285,10 +290,9 @@ func TestBallActivityFullJourney(t *testing.T) {
 		"回执必须带上承诺哈希 —— 用户拿它去比对公示页,这是整条证据链的锚")
 	assert.NotEmpty(t, userRef)
 
-	// 钱真的扣了。
-	var buyer model.User
-	require.NoError(t, main.Where("id = ?", ballE2EUserId).Take(&buyer).Error)
-	assert.Equal(t, 100_000-1000, buyer.Quota, "参与费必须真的从主库扣掉")
+	// 钱真的扣了 —— 扣的是扩展库里的星屑。
+	assert.EqualValues(t, 100_000-1000, userStardust(t, ext), "参与费必须真的从星屑账本扣掉")
+	assert.Equal(t, CurrencyStardust, card.Currency, "卡片必须说明 *_quota 字段的单位是星屑")
 
 	// ── 6. 证据链完整性:逐字节复算 ───────────────────────────────
 	var entry Entry
@@ -338,16 +342,17 @@ func TestBallActivityFullJourney(t *testing.T) {
 			"事后争议的第一句话永远是「我买的明明是那一组」")
 	assert.Equal(t, entry.ChainHash, mine.Data.Items[0].ChainHash)
 
-	// ── 8. 账本流水必须真的落下来 ─────────────────────────────────
+	// ── 8. 账本流水必须真的落下来,而且与票互相指认 ───────────────
 	//
-	// 它写在 twophase 的 AfterCommit 里,而那一段的 panic 会被拦下来只记一行
-	// 日志 —— 少写一条流水不会让任何请求失败,只会让事后对账时这笔钱"凭空消失"。
-	var ledger []model.Log
-	require.NoError(t, main.Where("user_id = ?", ballE2EUserId).Find(&ledger).Error)
+	// 票与流水在同一个扩展库事务里写下:少一行流水不会让任何请求失败,只会让
+	// 事后对账时这笔钱"凭空消失",退款侧也就失去了唯一的权威金额来源。
+	ledger := ledgerRowsOf(t, ext, ballE2EUserId, actNo)
 	require.Len(t, ledger, 1, "每一笔参与必须留下一条账本流水")
-	assert.Equal(t, model.LogTypeSystem, ledger[0].Type,
-		"参与费不能记成 consume:那会让『累计消费满 N 才能参加』被抽奖本身刷高,是一个自举漏洞")
-	assert.Contains(t, ledger[0].Content, entryNo)
+	assert.EqualValues(t, -1000, ledger[0].Amount)
+	assert.Equal(t, entryNo, ledger[0].RefNo, "流水指向票号")
+	assert.Equal(t, ledger[0].LedgerNo, entry.OrderNo, "票指向流水号")
+	assert.EqualValues(t, 100_000, ledger[0].BalanceAfter+1000,
+		"流水上的余额快照必须与扣款前的余额自洽")
 
 	// ── 9. 封盘之前拿不到证据链,这是**对的** ─────────────────────
 	//

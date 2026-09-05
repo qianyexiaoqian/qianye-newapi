@@ -109,8 +109,8 @@ func TestMiddleware_StoresRouteTemplateNotActualURL(t *testing.T) {
 // 401/403 必须留痕:被认证挡掉的写请求正是越权探测的形状。
 // 中间件挂在认证之后就会把这一整类漏掉,而它恰恰是这张表最有价值的一部分。
 func TestMiddleware_RecordsRequestsRejectedByAuth(t *testing.T) {
-	row := runThroughMiddleware(t, http.MethodPost, "/api/qy/admin/withdraw/:id/approve",
-		"/api/qy/admin/withdraw/12/approve", strings.NewReader(`{}`), "application/json",
+	row := runThroughMiddleware(t, http.MethodPost, "/api/qy/admin/invite/relations/block",
+		"/api/qy/admin/invite/relations/block", strings.NewReader(`{}`), "application/json",
 		func(c *gin.Context) { c.AbortWithStatus(http.StatusUnauthorized) })
 
 	require.NotNil(t, row)
@@ -170,11 +170,10 @@ func TestShouldRecord_WriteMethodsAndSensitiveReadsOnly(t *testing.T) {
 		{"POST", "/api/qy/transfer", true},
 		{"PUT", "/api/qy/admin/transfer/config", true},
 		{"PATCH", "/api/qy/admin/violation/mode", true},
-		{"DELETE", "/api/qy/withdraw/payees/:ref", true},
-		{"GET", "/api/qy/admin/withdraw/:id/payee", true},  // 解密收款明文
-		{"GET", "/api/qy/admin/withdraw/:id/proof", true},  // 打款凭证原图
-		{"GET", "/api/qy/admin/withdraw/pii-audits", true}, // 谁查过明文
-		{"GET", "/api/qy/withdraw/records", false},
+		{"DELETE", "/api/qy/transfer/contacts/:id", true},
+		{"GET", "/api/qy/admin/mall/orders/:no/address", true}, // 解密收货地址明文
+		{"GET", "/api/qy/admin/version/check-update", true},    // 站点替自己向 github.com 开出站连接
+		{"GET", "/api/qy/invite/records", false},
 		{"GET", "/api/qy/admin/audit-logs", false},
 		{"GET", "/api/qy/config", false},
 		{"HEAD", "/api/qy/config", false},
@@ -191,10 +190,10 @@ func TestShouldRecord_WriteMethodsAndSensitiveReadsOnly(t *testing.T) {
 func TestDeriveAction_IsStableAndIdFree(t *testing.T) {
 	cases := []struct{ method, path, want string }{
 		{"POST", "/api/qy/transfer", "transfer.create"},
-		{"POST", "/api/qy/admin/withdraw/:id/approve", "admin.withdraw.approve.create"},
-		{"DELETE", "/api/qy/withdraw/payees/:ref", "withdraw.payees.delete"},
+		{"POST", "/api/qy/admin/invite/relations/bind", "admin.invite.relations.bind.create"},
+		{"DELETE", "/api/qy/transfer/contacts/:id", "transfer.contacts.delete"},
 		{"PUT", "/api/qy/admin/transfer/group-rules/:id", "admin.transfer.group_rules.update"},
-		{"GET", "/api/qy/admin/withdraw/:id/payee", "admin.withdraw.payee.read"},
+		{"GET", "/api/qy/admin/mall/orders/:no/address", "admin.mall.orders.address.read"},
 		{"POST", "/api/qy/pay-password/recover/code", "pay_password.recover.code.create"},
 	}
 	for _, tc := range cases {

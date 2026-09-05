@@ -1,45 +1,11 @@
 package config
 
 import (
-	"fmt"
 	"math"
 	"reflect"
-	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 )
-
-// 返佣比例的默认值,单位是百分比。
-const (
-	defaultTopupRatePercent   = "10"
-	defaultConsumeRatePercent = "5"
-)
-
-// adoptDeprecatedRates 把已废弃的 commission.*_rate_bps 换算进新的 *_rate_percent。
-//
-// 为什么保留而不是直接删:本包是严格解析(KnownFields(true)),删掉字段会让
-// 每一个还写着 topup_rate_bps 的部署在升级二进制的那一刻启动失败 ——
-// 一个纯改名的动作不该造成停机。
-//
-// 只在新字段为空时才采纳旧值;两者都写了并且互相矛盾,由 checkRatePair 拒绝启动。
-// 告警走 SysError 而不是 SysLog:淹没在 info 里的迁移提示等于没写。
-func adoptDeprecatedRates(cm *Commission) {
-	adopt := func(oldKey, newKey string, bps *int, percent *string) {
-		if bps == nil {
-			return
-		}
-		common.SysError(fmt.Sprintf(
-			"qianye: commission.%s 已废弃,请改名为 %s 并直接填百分比(%d 等价于 %s)",
-			oldKey, newKey, *bps, bpsToPercent(*bps)))
-		if *percent == "" {
-			*percent = bpsToPercent(*bps)
-		}
-	}
-	adopt("topup_rate_bps", "topup_rate_percent",
-		cm.TopupRateBpsDeprecated, &cm.TopupRatePercent)
-	adopt("consume_rate_bps", "consume_rate_percent",
-		cm.ConsumeRateBpsDeprecated, &cm.ConsumeRatePercent)
-}
 
 // adoptRetiredGroupPricing 处置已下线的 group_pricing 配置段。
 //
@@ -63,6 +29,55 @@ func adoptRetiredGroupPricing(c *Config) {
 		"分组级价格改由「用户分组 × 模型分组」倍率矩阵表达(管理端「用户分组」页)," +
 		"确认无误后可以把这一段从 YAML 里删掉")
 	c.GroupPricingDeprecated = nil
+}
+
+// adoptRetiredWithdraw 处置 D-14 删掉的 withdraw 段。
+//
+// 提现模块已整体删除;D-15 之后佣金以星辉自动入账,没有任何提现。这一段里的
+// 任何值都不再参与任何一笔发放。
+func adoptRetiredWithdraw(c *Config) {
+	if c.WithdrawDeprecated != nil {
+		common.SysError("qianye: 配置里仍有 withdraw 段,但提现模块已随 D-14 删除 —— " +
+			"该段被整段忽略,确认后可删掉这一段")
+		c.WithdrawDeprecated = nil
+	}
+}
+
+// adoptRenamedCommissionQuotaKeys 处置 D-16 改名的三个佣金门槛键。
+//
+// 佣金账本的记账单位从额度整数变成星屑,三个门槛跟着改名:
+//
+//	min_settle_quota    → min_settle_stardust
+//	max_per_order_quota → max_per_order_stardust
+//	min_credit_quota    → min_credit_stardust
+//
+// **刻意不搬值**。旧值是额度(min_credit_quota: 500000 = 1 星辉),新键要的是星屑
+// (1)。照数字搬等于把门槛放大 quota_per_unit 倍(默认 50 万),后果是佣金结算
+// 与自动入账从此永远不触发,而配置文件、健康面板、账本三条恒等式**全部正常** ——
+// 这正是最难被发现的那一类故障。宁可让运维看见告警、显式改写三行。
+//
+// 告警走 SysError:这三个键曾经决定平台每天发多少钱出去,现在一个字节都不生效。
+func adoptRenamedCommissionQuotaKeys(cm *Commission) {
+	for _, k := range []struct {
+		old  string
+		new  string
+		seen bool
+	}{
+		{"min_settle_quota", "min_settle_stardust", cm.MinSettleQuotaDeprecated != nil},
+		{"max_per_order_quota", "max_per_order_stardust", cm.MaxPerOrderQuotaDeprecated != nil},
+		{"min_credit_quota", "min_credit_stardust", cm.MinCreditQuotaDeprecated != nil},
+	} {
+		if !k.seen {
+			continue
+		}
+		common.SysError("qianye: commission." + k.old + " 已废弃并被忽略 —— " +
+			"D-16 之后佣金以星屑记账,该门槛改名为 commission." + k.new +
+			"。**不要照搬旧数字**:旧值的单位是额度,新键的单位是星屑," +
+			"两者相差 stardust.quota_per_unit 倍(默认 50 万)。请按星屑重新填写")
+	}
+	cm.MinSettleQuotaDeprecated = nil
+	cm.MaxPerOrderQuotaDeprecated = nil
+	cm.MinCreditQuotaDeprecated = nil
 }
 
 // adoptRetiredNewGroupDeny 处置已下线的「新分组默认全遮断」两个键。
@@ -89,58 +104,6 @@ func adoptRetiredNewGroupDeny(gm *GroupMatrix) {
 			"「新分组对账」后台任务已随「新分组默认全遮断」一并下线,该键不再有任何效果")
 		gm.NewGroupScanIntervalSecondsDeprecated = nil
 	}
-}
-
-// adoptRetiredRateFreeze 处置已下线的提现侧独立汇率两个键。
-//
-// 它们曾经决定提现单的金额按哪个汇率开(充值页汇率或一个写死的固定值),
-// 与佣金账本 available_fiat 的三层折算比例互不相干 —— 那正是"用户在推广页
-// 看到 850、单据只开 100"这个错价缺陷的根源。单据金额现已恒等于冻结时从账本
-// 削走的那个数,这两个键一个字节都不再参与算钱。
-//
-// 同样不能直接删字段:KnownFields(true) 下,任何仍写着它们的部署会在升级
-// 二进制的那一刻启动失败。保留 Deprecated 占位吸收,在这里喊一声并置 nil ——
-// 置 nil 是刻意的,断掉后来者把它重新当成汇率源读回去的可能。
-//
-// 告警走 SysError:这两个键曾经改变的是**打款金额**,运维必须看见它们失效了。
-func adoptRetiredRateFreeze(w *Withdraw) {
-	if w.RateFreezeModeDeprecated != nil {
-		common.SysError("qianye: withdraw.rate_freeze_mode 已废弃并被忽略 —— " +
-			"提现单的法币金额现在恒等于冻结时从佣金账本 available_fiat 削走的那个数," +
-			"提现侧不再有自己的汇率。要让某个分组按更高的价结汇,请在管理端佣金页配" +
-			"「法币折算档」(分组档 / 兜底档),它在计佣当刻就冻进账本")
-		w.RateFreezeModeDeprecated = nil
-	}
-	if w.RateFreezeFixedDeprecated != nil {
-		common.SysError("qianye: withdraw.rate_freeze_fixed 已废弃并被忽略 —— " +
-			"理由同 rate_freeze_mode。这个固定汇率此前会让单据金额与账本金额差出一个倍数")
-		w.RateFreezeFixedDeprecated = nil
-	}
-	if w.AutoCreditOnApproveDeprecated != nil {
-		common.SysError("qianye: withdraw.auto_credit_on_approve 已废弃并被忽略 —— " +
-			"提现现在只做佣金扣除,金额一律由管理员手动发放(站内额度或线下打款)," +
-			"审核通过后单据进入「待发放」队列,管理端点「标记已发放」才核销佣金。" +
-			"自动到账那条跨库链路已整条下线,这个开关的 true/false 都不再对应任何行为")
-		w.AutoCreditOnApproveDeprecated = nil
-	}
-}
-
-// bpsToPercent 把万分比整数换算成百分比字符串,只做整数除法与取余,
-// 不经过 float64 —— 这条路径最终会喂给费率解析,精度不能在这里丢。
-//
-// 非法(负数)输入原样带过去:换算不是校验的地方,checkRatePair 会点名报错。
-func bpsToPercent(bps int) string {
-	if bps < 0 {
-		return strconv.Itoa(bps)
-	}
-	whole, frac := bps/RatePercentScale, bps%RatePercentScale
-	if frac == 0 {
-		return strconv.Itoa(whole)
-	}
-	if frac%10 == 0 {
-		return fmt.Sprintf("%d.%d", whole, frac/10)
-	}
-	return fmt.Sprintf("%d.%02d", whole, frac)
 }
 
 // applyDefaults 把 YAML 里没有出现的键补成默认值。
@@ -197,39 +160,23 @@ func applyDefaults(c *Config) {
 	intDefault(&tr.ReceiverDailyMaxInCount, 50)
 	intDefault(&tr.LookupLogRetainDays, 30)
 
+	intDefault(&c.Invite.InviterCacheSecs, 300)
+
 	cm := &c.Commission
-	adoptDeprecatedRates(cm)
-	strDefault(&cm.TopupRatePercent, defaultTopupRatePercent)
-	strDefault(&cm.ConsumeRatePercent, defaultConsumeRatePercent)
+	intDefault(&cm.TopupRateBps, 1000)
+	intDefault(&cm.ConsumeRateBps, 500)
 	intDefault(&cm.Levels, 1)
-	int64Default(&cm.MinSettleQuota, 1000)
-	int64Default(&cm.MaxPerOrderQuota, 50000000)
+	// 三个门槛的单位都是星屑(D-16)。1 星屑是账本的最小刻度,所以「至少凑够 1 星屑
+	// 才发」就是最宽松也最自然的门槛 —— 再小没有意义,floor 已经把零头留在余数里。
+	int64Default(&cm.MinSettleStardust, 1)
+	// 单次计佣封顶 100 星屑。默认刻度下 1 星屑 = $1,与改名前的 50000000 额度
+	// (= $100)等值 —— 这是唯一一个按等值换算而不是按数字搬的默认值。
+	int64Default(&cm.MaxPerOrderStardust, 100)
 	intDefault(&cm.HoldingDays, 7)
 	intDefault(&cm.SettleIntervalSecs, 300)
-	intDefault(&cm.InviterCacheSecs, 300)
-	intDefault(&cm.TopupScanIntervalSec, 60)
-	intDefault(&cm.TopupScanLookbackHours, 72)
-
-	w := &c.Withdraw
-	adoptRetiredRateFreeze(w)
-	if len(w.Methods) == 0 {
-		w.Methods = []string{WithdrawMethodQuota, WithdrawMethodFiat}
-	}
-	int64Default(&w.MinQuota, 500000)
-	strDefault(&w.MinFiatAmount, "100")
-	strDefault(&w.FiatCurrency, "CNY")
-	intDefault(&w.DailyMaxCount, 3)
-	intDefault(&w.PayeeAccountMax, 3)
-	intDefault(&w.ReviewSLAHours, 72)
-	intDefault(&w.PayoutSLAHours, 72)
-	intDefault(&w.RemarkMaxRunes, 200)
-	intDefault(&w.PIIKeyVersion, 1)
-	intDefault(&w.CooldownSecs, 60)
-	intDefault(&w.MaxPendingOrders, 3)
-	int64Default(&w.MaxQuotaPerOrder, 500000000)
-	int64Default(&w.DailyMaxQuota, 1000000000)
-	intDefault(&w.PIIRetentionDays, 180)
-	int64Default(&w.ProofMaxBytes, 2<<20)
+	intDefault(&cm.CreditIntervalSecs, 300)
+	// 不足 1 星屑的零头留在可用余额里,不为它写一行入账。
+	int64Default(&cm.MinCreditStardust, 1)
 
 	tk := &c.Ticket
 	intDefault(&tk.TitleMaxRunes, 100)
@@ -268,6 +215,8 @@ func applyDefaults(c *Config) {
 	intDefault(&v.AIReviewKeyVersion, 1)
 
 	adoptRetiredGroupPricing(c)
+	adoptRetiredWithdraw(c)
+	adoptRenamedCommissionQuotaKeys(&c.Commission)
 
 	gm := &c.GroupMatrix
 	intDefault(&gm.CacheSeconds, 30)
@@ -295,7 +244,7 @@ func applyDefaults(c *Config) {
 
 	lt := &c.Lottery
 	intDefault(&lt.MaxActiveActivities, 20)
-	// max_stake_quota / max_total_prize_quota / large_prize_alert_quota
+	// max_stake_stardust / max_total_prize_stardust / large_prize_alert_stardust
 	// 三项的缺省都是 **0 = 不限制 / 不打扰**,所以这里一项都不补默认值。
 	//
 	// 前两项补一个正数等于让"没写"变成一道站点没要求过的硬顶,而那正是运营开
@@ -305,14 +254,16 @@ func applyDefaults(c *Config) {
 	// 多勾一次确认框 —— 项目方原话「不要给那么多提示了」。机制原样留着:
 	// 配一个正数就恢复成"够到它就要回显金额",判据仍在 caps.go 的
 	// requireNetIssueConfirm,一个字节没动。默认改成不打扰,而不是把闸门拆掉。
-	int64Default(&lt.PayPasswordThresholdQuota, 100_000)
+	// 支付密码阈值的单位是星屑(1 星屑默认 = $1 等值,见 stardust.quota_per_unit):
+	// 20 星屑 ≈ $20。它曾经是 100_000 额度($0.2),换成星屑刻度之后同一个数字
+	// 会变成十万美元等值 —— 一道永远不响的闸门。D-12 保留验密,阈值按新刻度重定。
+	int64Default(&lt.PayPasswordThresholdStardust, 20)
 	intDefault(&lt.EntryCloseGraceSeconds, 60)
 	intDefault(&lt.RevealDelaySeconds, 60)
 	intDefault(&lt.LockScanIntervalSeconds, 15)
 	intDefault(&lt.RevealScanIntervalSeconds, 15)
 	intDefault(&lt.PayoutIntervalSeconds, 10)
 	intDefault(&lt.PayoutMaxAttempts, 8)
-	intDefault(&lt.ExcludedManualAfterSeconds, 900)
 	intDefault(&lt.MaxTotalEntriesHard, 50000)
 	// 45 秒:双色球满配 999 注一次提交在本机实测约 36 秒,而常见反代的默认读
 	// 超时是 60 秒。留在两者之间,让健康的机器跑得完、慢的机器被安全截断。
@@ -327,6 +278,23 @@ func applyDefaults(c *Config) {
 	intDefault(&lt.SpendGapGuardSeconds, 60)
 	intDefault(&lt.SpendMaxLookbackDays, 90)
 	intDefault(&lt.SpendRetentionDays, 120)
+
+	sd := &c.Stardust
+	strDefault(&sd.Name, "星屑")
+	// quota_per_unit 的 0 是"取 common.QuotaPerUnit",刻意不在这里补:那个值来自
+	// 主库 options 表且可在运行期改,补成启动时的快照会让两者悄悄分叉。
+	intDefault(&sd.ConsumeBps, 10_000)
+	intDefault(&sd.SettleDelayMinutes, 30)
+	intDefault(&sd.SettleIntervalSeconds, 300)
+	intDefault(&sd.HeldAlertDays, 7)
+	intDefault(&sd.TopupScanIntervalSeconds, 60)
+	int64Default(&sd.MaxManualAdjust, 100_000)
+
+	ml := &c.Mall
+	intDefault(&ml.AddressRetentionDays, 90)
+	intDefault(&ml.MaxProducts, 200)
+	intDefault(&ml.CodeUploadMax, 500)
+	intDefault(&ml.PendingGraceSeconds, 60)
 
 	// 走到这里仍是哨兵的字段,是"文件里没写、也没有默认值"的那一批
 	// (transfer.fee_bps、audit.retention_days、violation.auto_ban_threshold……)。

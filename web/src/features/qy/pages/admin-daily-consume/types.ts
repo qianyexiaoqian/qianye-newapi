@@ -28,17 +28,17 @@ export type QyDailyConsumeRow = {
   /**
    * 区间内**真实扣掉**的额度，口径是主库 `logs` 的 `type=2`。
    *
-   * 它与下面的 `commission_base_quota` 不是同一个数，而且**天然更大** ——
+   * 它与下面的 `invite_base_quota` 不是同一个数，而且**天然更大** ——
    * 差在哪一列由 `uncounted_quota` 回答，原因由页面上那段说明回答。
    */
   consume_quota: number
-  /** 同一区间进了计佣表的基数。0 且 `has_commission` 为 false = 一行计佣都没有。 */
-  commission_base_quota: number
-  /** `consume_quota − commission_base_quota`，即“消费了但没计佣”的那部分。 */
+  /** 同一区间进了日结表（`qy_sd_invite_accrual`）的基数。0 且 `has_invite_accrual` 为 false = 一行都没有。 */
+  invite_base_quota: number
+  /** `consume_quota − invite_base_quota`，即“消费了但没计返”的那部分。 */
   uncounted_quota: number
-  /** 计佣金额，`decimal(30,10)` 字符串。 */
-  commission_gross: string
-  has_commission: boolean
+  /** 计提的星屑，`decimal(30,10)` 字符串。 */
+  invite_gross: string
+  has_invite_accrual: boolean
   inviter_id: number
   inviter_username: string
   /**
@@ -63,7 +63,7 @@ export type QyDailyConsumeSummary = {
   user_count: number
   request_count: number
   consume_quota: number
-  commission_base_quota: number
+  invite_base_quota: number
   uncounted_quota: number
 }
 
@@ -83,9 +83,9 @@ export type QyDailyConsumePage = {
    */
   index_ready: boolean
   /**
-   * “计佣表里有、logs 里没有”的下线数。
+   * “日结表里有、logs 里没有”的下线数。
    *
-   * 正常恒为 0。不为 0 的唯一合理解释是日志保留期把那段消费清掉了，而计佣行
+   * 正常恒为 0。不为 0 的唯一合理解释是日志保留期把那段消费清掉了，而日结行
    * 是永久账本 —— 那时消费额一侧天然缺一块，必须让运营看见这个数字。
    */
   accrual_users_without_logs: number
@@ -93,8 +93,8 @@ export type QyDailyConsumePage = {
 
 /** 排序键。与后端 `dailyConsumeSorts` 的键集合一致。 */
 export type QyDailyConsumeSort =
-  | 'commission_base_quota'
   | 'consume_quota'
+  | 'invite_base_quota'
   | 'request_count'
   | 'uncounted_quota'
   | 'user_id'
@@ -107,16 +107,16 @@ export type QyDailyConsumeSort =
  * “这天没花钱”与“这天没查出来”看成同一件事，而这恰恰是他点开下钻要区分的。
  */
 export type QyDailyConsumeByDayRow = {
-  /** yyyymmdd。日界由后端的 `commission.day_offset_minutes` 决定，前端不自己算。 */
+  /** yyyymmdd。日界由后端的 `invite.day_offset_minutes` 决定，前端不自己算。 */
   date: string
   /** 该天日界的 unix 秒。排序与画图用它，不要拿 `date` 去 parse。 */
   day_start: number
   request_count: number
   consume_quota: number
-  commission_base_quota: number
+  invite_base_quota: number
   uncounted_quota: number
   /** decimal 字符串。 */
-  commission_gross: string
+  invite_gross: string
 }
 
 export type QyDailyConsumeByDayPage = {
@@ -126,9 +126,9 @@ export type QyDailyConsumeByDayPage = {
   summary: {
     request_count: number
     consume_quota: number
-    commission_base_quota: number
+    invite_base_quota: number
     uncounted_quota: number
-    commission_gross: string
+    invite_gross: string
   }
   /**
    * 下钻**自己那条**覆盖索引在不在（`idx_qy_logs_user_daily`），

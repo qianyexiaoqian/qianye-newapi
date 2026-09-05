@@ -16,25 +16,41 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQuery } from '@tanstack/react-query'
 import { Route } from 'lucide-react'
 import { useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { IconBadge } from '@/components/ui/icon-badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useApiInfo } from '@/features/dashboard/hooks/use-status-data'
 import {
   testUrlLatency,
   getDefaultPingStatus,
 } from '@/features/dashboard/lib/api-info'
 import type { PingStatusMap, ApiInfoItem } from '@/features/dashboard/types'
+import { qyApiAddressesQuery } from '@/features/qy/pages/api-address-picker/api'
 
 import { PanelWrapper } from '../ui/panel-wrapper'
 import { ApiInfoItemComponent } from './api-info-item'
 
+/**
+ * 数据源是 qy「API 地址簿」的用户侧清单（`/api/qy/api-addresses`），不再是
+ * `/api/status` 里那份对所有访客一视同仁的 `api_info`：地址簿按登录用户的
+ * **用户分组**过滤（每行可绑「适用分组」，不绑 = 全员可见兜底），于是这张卡
+ * 和密钥页「复制链接信息」看到的是同一批线路。字段映射：route←name、
+ * description←remark、color 原样（空串由 getBgColorClass 兜底成默认色）。
+ * 「API信息」设置并入地址簿的决策见 qianye/docs/decisions.md。
+ */
 export function ApiInfoPanel() {
   const { t } = useTranslation()
-  const { items: list, loading } = useApiInfo()
+  const addressesQuery = useQuery(qyApiAddressesQuery('console'))
+  const loading = addressesQuery.isLoading
+  const list: ApiInfoItem[] = (addressesQuery.data ?? []).map((item) => ({
+    url: item.url,
+    route: item.name,
+    description: item.remark,
+    color: item.color ?? '',
+  }))
   const [pingStatus, setPingStatus] = useState<PingStatusMap>({})
 
   const handleTest = useCallback(async (url: string) => {

@@ -35,7 +35,12 @@ import (
 // 分成两块是刻意的:YAML 段(总闸、收款人解析口径、保留期)涉及安全与启动行为,
 // 只能改文件后重载;门槛类运营参数才允许在这里改(裁决 5)。
 func adminGetTransferConfig(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagTransfer) {
+	// FlagCore 而不是 FlagTransfer,与其余 7 个管理端端点一致:划转被临时关停时,
+	// "先把门槛配好再打开功能"这个顺序恰恰最需要它可达。而且支付密码的锁定策略两个键
+	// (pay_pwd_max_attempts / pay_pwd_lock_minutes)复用 scope="transfer" 就住在这一页、
+	// 本页是它们唯一的写入侧,支付密码又服务提现/抽奖(不止划转);挂 FlagTransfer 会让
+	// "只开提现不开划转"这个合法组合下的爆破锁定策略永远改不了。
+	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
 	}
 	ctx := c.Request.Context()
@@ -92,7 +97,9 @@ func boundsView() map[string]gin.H {
 // 每一次改动都必须写审计:门槛直接决定"一个账号一天能转走多少",
 // "谁在什么时候把日额度从 2 亿改成 20 亿"事后必须能查到人。
 func adminPutTransferConfig(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagTransfer) {
+	// FlagCore:理由同 adminGetTransferConfig —— 这是 pay_pwd_* 锁定策略的唯一写入端点,
+	// 不能随划转关停一起 404,否则"只开提现不开划转"的站点永远配不了支付密码锁定阈值。
+	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
 	}
 	// 用 RawMessage 而不是 map[string]int64:前端发字符串最安全,但工具、

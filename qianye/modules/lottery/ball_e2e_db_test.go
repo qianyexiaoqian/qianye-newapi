@@ -18,7 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
 // ball_e2e_db_test.go —— 一整期双色球走完流程,然后从零复算开奖号与中奖档位。
@@ -49,7 +48,7 @@ func recomputeBallFromProof(t *testing.T, doc *proofDocument) (string, map[strin
 
 	// ── final_seed:与 proof_e2e 那份逐字相同的推导 ──
 	sum := sha256.Sum256([]byte(strings.Join([]string{
-		"qylot-final-v1", doc.ActNo, doc.Seed, doc.RosterHash,
+		"qylot-final-v1", doc.ActNo, doc.RevealedSeed, doc.RosterHash,
 		strconv.Itoa(doc.RosterCount), doc.Algo,
 	}, sep)))
 	key := sum[:]
@@ -152,7 +151,7 @@ func TestBallRound_ResultAndTiersAreIndependentlyReproducible(t *testing.T) {
 		PayoutMaxAttempts:      8,
 		EntryCloseGraceSeconds: 0,
 		RevealDelaySeconds:     0,
-		MaxStakeQuota:          5_000_000,
+		MaxStakeStardust:       5_000_000,
 	})
 
 	// 号池取 12 选 3 / 4 选 1:小到可以在这条测试里人工穷举,大到四个奖级
@@ -248,18 +247,10 @@ func TestBallRound_ResultAndTiersAreIndependentlyReproducible(t *testing.T) {
 	entryNos := make(map[string]string, len(picks)) // pick → entry_no
 	for _, p := range picks {
 		e := &Entry{
-			EntryNo: newEntryNo(), ActId: act.Id, IdemKey: buildIdemKey(act.ActNo, newEntryNo()),
 			UserId: p.userId, UserRef: UserRef(salts.RefSalt, p.userId),
 			Amount: act.StakeQuota, Pick: p.pick,
-			Status: EntryPending, OrderNo: "LE-" + newEntryNo(), CreatedAt: common.GetTimestamp(),
 		}
-		cur := loadAct(t, gdb, act.Id)
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return reserveEntry(tx, cur, Rules{}, e, 0)
-		}))
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return markEntrySuccess(tx, e.EntryNo, nil)
-		}))
+		seedTicket(t, gdb, act, e)
 		entryNos[p.pick] = e.EntryNo
 	}
 
@@ -296,7 +287,7 @@ func TestBallRound_ResultAndTiersAreIndependentlyReproducible(t *testing.T) {
 	doc := &envelope.Data
 
 	// 证据链必须自洽:验证者拿到这一份 JSON 就能离线复算,不需要再访问本站。
-	require.NotEmpty(t, doc.Seed, "开奖之后种子必须公开,否则没人能复算")
+	require.NotEmpty(t, doc.RevealedSeed, "开奖之后种子必须公开,否则没人能复算")
 	require.Equal(t, DrawModeBall, doc.DrawMode)
 	require.Equal(t, redPool, doc.BallRedPool, "号池不下发,第三方连摇都摇不了")
 	require.Equal(t, redPick, doc.BallRedPick)
@@ -334,7 +325,7 @@ func TestBallRound_ResultAndTiersAreIndependentlyReproducible(t *testing.T) {
 	// 上面那一份是"第三方视角",这一份是"本模块自己算的",两者都必须等于
 	// 落库的那个串。少了这一条,一次 BallResultText 的格式漂移会同时骗过
 	// 复算(它自己也 pad 两位)与落库值。
-	final := FinalSeed(drawn.ActNo, doc.Seed, drawn.RosterHash, drawn.RosterCount, drawn.Algo)
+	final := FinalSeed(drawn.ActNo, doc.RevealedSeed, drawn.RosterHash, drawn.RosterCount, drawn.Algo)
 	reds := BallDraw(final, drawn.ActNo, "red", redPool, redPick)
 	blues := BallDraw(final, drawn.ActNo, "blue", bluePool, bluePick)
 	assert.Equal(t, doc.BallResult, BallResultText(reds, blues))
@@ -365,7 +356,7 @@ func TestBallRound_ResultAndTiersAreIndependentlyReproducible(t *testing.T) {
 	// 把三方复算所需的全部原料打出来:任何人可以拿这几行去 lottery-verify.py
 	// 或浏览器控制台重跑一遍。测试自己不打这些数字的话,"三方一致"只能靠信任。
 	t.Logf("act_no=%s algo=%s draw_mode=%s", doc.ActNo, doc.Algo, doc.DrawMode)
-	t.Logf("seed=%s roster_hash=%s roster_count=%d", doc.Seed, doc.RosterHash, doc.RosterCount)
+	t.Logf("seed=%s roster_hash=%s roster_count=%d", doc.RevealedSeed, doc.RosterHash, doc.RosterCount)
 	t.Logf("final_seed=%s", final)
 	t.Logf("pool=红%d选%d 蓝%d选%d", redPool, redPick, bluePool, bluePick)
 	t.Logf("ball_result(平台公布)=%s", doc.BallResult)

@@ -339,6 +339,8 @@ func UpdateOption(c *gin.Context) {
 		}
 	case "ModelRequestRateLimitGroup":
 		err = setting.CheckModelRequestRateLimitGroup(option.Value.(string))
+	case "ModelRequestConcurrencyGroup":
+		err = setting.CheckModelRequestConcurrencyGroup(option.Value.(string))
 		if err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,

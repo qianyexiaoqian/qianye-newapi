@@ -98,13 +98,13 @@ export function useQyApiAddressPicker(
   const { onPick } = options
 
   const prefetch = useCallback(() => {
-    void queryClient.prefetchQuery(qyApiAddressesQuery())
+    void queryClient.prefetchQuery(qyApiAddressesQuery('picker'))
   }, [queryClient])
 
   const pick = useCallback(
     (realKey: string) => {
       const cached = queryClient.getQueryData<QyApiAddressOption[]>(
-        qyKeys.apiAddresses()
+        qyKeys.apiAddresses('picker')
       )
       // 缓存还没到（预热在途，或用户用键盘直接唤起了菜单项）：交给窗口，
       // 它自己会显示加载态。绝不在这里 await —— 见上面对用户手势的说明。

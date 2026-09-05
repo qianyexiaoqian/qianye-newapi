@@ -139,18 +139,18 @@ func TestPickAIChannelsHonoursScopeChannel(t *testing.T) {
 	}{
 		{
 			name:  "留空:按权重随机,最多试 maxAIAttempts 个",
-			scope: &aiScopeRT{ChannelId: 0}, wantAny: true,
+			scope: &aiScopeRT{}, wantAny: true,
 			why: "权重是运营表达主备的唯一方式;恒定顺序会让备用渠道永远不被验证",
 		},
 		{
 			name:  "指定备用渠道 + 转移关着:只用它,不带第二次尝试",
-			scope: &aiScopeRT{ChannelId: 2}, wantNames: []string{"备用"},
+			scope: &aiScopeRT{ChannelIds: []int64{2}}, wantNames: []string{"备用"},
 			why: "指定的字面意思就是只发给它 —— 要它在失败后退到池子," +
 				"得显式打开这一档的故障转移开关(默认关)",
 		},
 		{
 			name:  "指定的渠道已停用/已删除:一个都不返回,绝不回落到随机池",
-			scope: &aiScopeRT{ChannelId: 404}, wantNames: []string{},
+			scope: &aiScopeRT{ChannelIds: []int64{404}}, wantNames: []string{},
 			why: "回落会把用户内容发去一个运营明确没有选的端点 —— " +
 				"而「只能发给这一个」往往正是指定渠道的全部理由",
 		},
@@ -195,7 +195,7 @@ func TestAIReviewPinnedChannelDownYieldsNoChannel(t *testing.T) {
 	rt := rtForServer(srv.URL, 2000) // 夹具里那个渠道的 id 是 1
 
 	t.Run("指定一个不在快照里的渠道 → no_channel,一次调用都不发", func(t *testing.T) {
-		out := runAIReview(context.Background(), rt, &aiScopeRT{ChannelId: 77}, "内容", 1000)
+		out := runAIReview(context.Background(), rt, &aiScopeRT{ChannelIds: []int64{77}}, "内容", 1000)
 		require.NotNil(t, out)
 		assert.Equal(t, OutcomeNoChannel, out.Outcome,
 			"指定的渠道不可用时必须是「无可用渠道」,绝不是悄悄换一个发出去")
@@ -205,7 +205,7 @@ func TestAIReviewPinnedChannelDownYieldsNoChannel(t *testing.T) {
 	})
 
 	t.Run("指定快照里那个渠道 → 正常送审", func(t *testing.T) {
-		out := runAIReview(context.Background(), rt, &aiScopeRT{ChannelId: 1}, "内容", 2000)
+		out := runAIReview(context.Background(), rt, &aiScopeRT{ChannelIds: []int64{1}}, "内容", 2000)
 		require.NotNil(t, out)
 		assert.Equal(t, OutcomeViolation, out.Outcome)
 		assert.Equal(t, int64(1), srv.calls.Load())
@@ -213,53 +213,94 @@ func TestAIReviewPinnedChannelDownYieldsNoChannel(t *testing.T) {
 	})
 }
 
-// TestValidateAIScopeChannelId 是渠道那一格的纯校验闸。
+// TestValidateAIScopeChannelIds 是渠道那一格的纯校验闸。
 //
 // 渠道**存不存在、启没启用**由 adminUpsertAIScope 挡(那里才有库句柄);
-// 这里只挡纯粹的脏数据 —— 负数 id 永远解析不到任何渠道,而它的表现是这一档
-// 从此每次都走 no_channel,只有成本页上看得出来。
-func TestValidateAIScopeChannelId(t *testing.T) {
+// 这里只挡三样纯粹靠一行清单就能判的东西:非正数 id(永远解析不到任何渠道,
+// 表现是这一档少一个可用渠道,只有成本页上看得出来)、重复 id(轮询下让那台
+// 机器拿双倍的量,界面上完全看不出来)、以及超长清单。
+func TestValidateAIScopeChannelIds(t *testing.T) {
 	tests := []struct {
-		name      string
-		channelId int64
-		wantErr   bool
+		name     string
+		channels AIChannelIds
+		wantErr  bool
+		want     AIChannelIds
 	}{
-		{"不指定(0)是合法的,含义是按权重随机", 0, false},
-		{"指定一个正数 id 合法(存不存在由写入闸查库确认)", 12, false},
-		{"负数 id 非法", -1, true},
+		{"不指定(空)合法,含义是在全部启用渠道之间分发", nil, false, AIChannelIds{}},
+		{"一个正数 id 合法(存不存在由写入闸查库确认)", AIChannelIds{12}, false, AIChannelIds{12}},
+		{"多个 id 合法,顺序原样留着(轮询按它转)", AIChannelIds{3, 1, 2}, false, AIChannelIds{3, 1, 2}},
+		{"重复 id 去掉,保留第一次出现的位置", AIChannelIds{3, 1, 3}, false, AIChannelIds{3, 1}},
+		{"负数 id 非法", AIChannelIds{-1}, true, nil},
+		{"0 非法(它是「不指定」的写法,不是一个渠道)", AIChannelIds{1, 0}, true, nil},
+		{"超过上限非法", AIChannelIds{1, 2, 3, 4, 5, 6, 7, 8, 9}, true, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			row := AIScope{Name: "自助注册", GroupScope: "selfserve",
 				GroupScopeMode: GroupScopeInclude, AsyncSampleRateBps: 1000,
-				ChannelId: tc.channelId}
+				ChannelIds: tc.channels}
 			err := validateAIScope(&row)
 			if tc.wantErr {
 				assert.Error(t, err)
 				return
 			}
-			assert.NoError(t, err)
-			assert.Equal(t, tc.channelId, row.ChannelId)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, row.ChannelIds)
 		})
 	}
 }
 
-// TestBuildAIScopesCarriesChannelId 钉住这一列真的进了快照。
+// TestValidateAIScopeChannelMode 钉住分发方式的取值与零值方向。
 //
-// 少了这一步,库里配得好好的、汇总表上也显示得好好的,而热路径读到的是 0 ——
-// 于是这一档静默地回到了加权随机,内容被发去运营没选的端点。
+// 零值必须落在加权随机上:AutoMigrate 给存量行回填的就是空串,而空串折成轮询
+// 会让每一个已经在跑的站点在升级那一秒静默换掉分发方式,界面上一切正常。
+func TestValidateAIScopeChannelMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		wantErr bool
+		want    string
+	}{
+		{"空串合法,存回空串(= 加权随机,存量行的零值)", "", false, ""},
+		{"weighted 折成空串:同一个含义只留一种写法", AIChannelModeWeighted, false, ""},
+		{"round_robin 原样留着", AIChannelModeRoundRobin, false, AIChannelModeRoundRobin},
+		{"脏值在保存这一刻就拒,不留到某次审核才悄悄折回随机", "roundrobin", true, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			row := AIScope{Name: "自助注册", GroupScope: "selfserve",
+				GroupScopeMode: GroupScopeInclude, AsyncSampleRateBps: 1000,
+				ChannelIds: AIChannelIds{1, 2}, ChannelMode: tc.mode}
+			err := validateAIScope(&row)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, row.ChannelMode)
+		})
+	}
+}
+
+// TestBuildAIScopesCarriesChannelIds 钉住这两列真的进了快照。
+//
+// 少了这一步,库里配得好好的、汇总表上也显示得好好的,而热路径读到的是空清单 ——
+// 于是这一档静默地回到了"全部启用渠道",内容被发去运营没选的端点。
 // 这正是本模块反复出现的"保存成功、界面正常、线上不是那么回事"。
-func TestBuildAIScopesCarriesChannelId(t *testing.T) {
+func TestBuildAIScopesCarriesChannelIds(t *testing.T) {
 	gdb := newAIWiringDB(t)
 	require.NoError(t, gdb.Create(&AIScope{
 		Id: 1, Name: "自助注册", Enabled: true, Priority: 10,
 		GroupScope: "selfserve", GroupScopeMode: GroupScopeInclude,
-		AsyncSampleRateBps: 5000, ChannelId: 3,
+		AsyncSampleRateBps: 5000, ChannelIds: AIChannelIds{3, 5},
+		ChannelMode: AIChannelModeRoundRobin,
 	}).Error)
 	scopes, err := buildAIScopes(gdb)
 	require.NoError(t, err)
 	require.Len(t, scopes, 1)
-	assert.Equal(t, int64(3), scopes[0].ChannelId)
+	assert.Equal(t, []int64{3, 5}, scopes[0].ChannelIds,
+		"顺序也要一字不差:轮询按它转")
+	assert.Equal(t, AIChannelModeRoundRobin, scopes[0].ChannelMode)
 }
 
 // ─────────────── 三、存量全局抽样率的迁移 ───────────────

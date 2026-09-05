@@ -17,12 +17,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
+import { ExternalLink } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
+import { Button } from '@/components/ui/button'
 
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
+import { qyMallOrderLink } from '../../mall/lib/order-focus'
 import { formatQyTs } from '../../ops/format'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
 import { qyLotMyPrizeQuery } from '../api'
@@ -62,7 +66,11 @@ export function QyLotMyTextPrizeDialog(props: {
       onOpenChange={(open) => {
         if (!open) props.onClose()
       }}
-      title={t('qy_lot_text_prize_title')}
+      title={
+        prize?.prize_type === 'product'
+          ? t('qy_lot_product_prize_title')
+          : t('qy_lot_text_prize_title')
+      }
       description={prize?.title}
     >
       <QyPageBoundary query={query}>
@@ -72,37 +80,84 @@ export function QyLotMyTextPrizeDialog(props: {
               <QyKeyValue label={t('qy_lot_tier')}>
                 {t('qy_lot_tier_no', { no: prize.tier })} {prize.name}
               </QyKeyValue>
-              <QyKeyValue label={t('qy_lot_text_desc')}>
-                <span className='break-words whitespace-pre-wrap'>
-                  {prize.text_desc}
-                </span>
-              </QyKeyValue>
+              {prize.prize_type === 'product' ? (
+                <>
+                  <QyKeyValue label={t('qy_lot_prize_type_field')}>
+                    {t('qy_lot_prize_type_product')}
+                  </QyKeyValue>
+                  {(prize.product_no ?? '') !== '' && (
+                    <QyKeyValue label={t('qy_mladm_product_no')}>
+                      <span className='font-mono text-xs break-all'>
+                        {prize.product_no}
+                      </span>
+                    </QyKeyValue>
+                  )}
+                  {(prize.mall_order_no ?? '') !== '' && (
+                    <QyKeyValue label={t('qy_common_order_no')}>
+                      <span className='font-mono text-xs break-all'>
+                        {prize.mall_order_no}
+                      </span>
+                    </QyKeyValue>
+                  )}
+                </>
+              ) : (
+                <QyKeyValue label={t('qy_lot_text_desc')}>
+                  <span className='break-words whitespace-pre-wrap'>
+                    {prize.text_desc}
+                  </span>
+                </QyKeyValue>
+              )}
             </div>
 
-            {prize.status === 'fulfilled' && prize.secret != null ? (
+            {/* 商品奖没有 secret：开奖那一刻就已落成一张 0 星屑的商城订单
+                （status=granted），码 / 物流 / 订阅的进度全在那张单上。这里只做
+                一件事 —— 把人送到那一单。 */}
+            {prize.prize_type === 'product' && (
               <div className='space-y-2 rounded-lg border p-3'>
-                <div className='flex flex-wrap items-center gap-2'>
-                  <span className='font-mono text-sm break-all'>
-                    {prize.secret}
-                  </span>
-                  <CopyButton value={prize.secret} />
-                </div>
-                {(prize.note ?? '') !== '' && (
-                  <p className='text-muted-foreground text-xs break-words'>
-                    {prize.note}
-                  </p>
-                )}
-                <p className='text-muted-foreground text-xs'>
-                  {t('qy_lot_fulfilled')} · {formatQyTs(prize.fulfilled_at)}
+                <p className='text-muted-foreground text-sm'>
+                  {t('qy_lot_product_prize_granted')}
                 </p>
+                {(prize.mall_order_no ?? '') !== '' && (
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    render={
+                      <Link {...qyMallOrderLink(prize.mall_order_no ?? '')} />
+                    }
+                  >
+                    <ExternalLink aria-hidden='true' />
+                    {t('qy_lot_product_view_order_btn')}
+                  </Button>
+                )}
               </div>
-            ) : (
-              // 未履行时给的是"还没轮到"，不是一个空框：空框会让用户以为
-              // 奖品是空的，然后跑去开工单。
-              <p className='text-muted-foreground rounded-lg border p-3 text-sm'>
-                {t('qy_lot_text_pending')}
-              </p>
             )}
+
+            {prize.prize_type !== 'product' &&
+              (prize.status === 'fulfilled' && prize.secret != null ? (
+                <div className='space-y-2 rounded-lg border p-3'>
+                  <div className='flex flex-wrap items-center gap-2'>
+                    <span className='font-mono text-sm break-all'>
+                      {prize.secret}
+                    </span>
+                    <CopyButton value={prize.secret} />
+                  </div>
+                  {(prize.note ?? '') !== '' && (
+                    <p className='text-muted-foreground text-xs break-words'>
+                      {prize.note}
+                    </p>
+                  )}
+                  <p className='text-muted-foreground text-xs'>
+                    {t('qy_lot_fulfilled')} · {formatQyTs(prize.fulfilled_at)}
+                  </p>
+                </div>
+              ) : (
+                // 未履行时给的是"还没轮到"，不是一个空框：空框会让用户以为
+                // 奖品是空的，然后跑去开工单。
+                <p className='text-muted-foreground rounded-lg border p-3 text-sm'>
+                  {t('qy_lot_text_pending')}
+                </p>
+              ))}
 
             {/* 这条边界由后端随奖品下发（`notice`），前端只是原样显示。
                 写死在前端也能显示，但那样它就是一句可以被悄悄改掉的话术；

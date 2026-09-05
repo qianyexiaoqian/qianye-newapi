@@ -44,7 +44,7 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { after, describe, test } from 'node:test'
 
-import { formatQyQuotaLedger } from '../../../lib/format'
+import { formatSd } from '../../../lib/format-sd'
 import {
   cleanupQyLotScreens,
   mountQyLotScreen,
@@ -104,14 +104,14 @@ const EMPTY_PROOF = { entries: [], winners: [] }
 
 function readQyLotDialog(): string {
   const dialog = document.body.querySelector('[role="dialog"]')
-  return (dialog?.textContent ?? '').replace(/\s+/g, ' ')
+  return (dialog?.textContent ?? '').replaceAll(/\s+/g, ' ')
 }
 
 /** 弹窗里那颗按可见文字精确匹配的按钮此刻是不是禁用的。 */
 function dialogButtonDisabled(label: string): boolean | null {
-  const node = Array.from(
-    document.body.querySelectorAll('button,[role="button"]')
-  ).find((item) => (item.textContent ?? '').trim() === label)
+  const node = [
+    ...document.body.querySelectorAll('button,[role="button"]'),
+  ].find((item) => (item.textContent ?? '').trim() === label)
   if (node == null) return null
   return (
     node.hasAttribute('disabled') ||
@@ -165,7 +165,7 @@ describe('双色球买多注：按下确认之前那一屏', () => {
     )
     // 期望的总额在这里独立乘出来。后端那一侧的实扣由 Go 用例真打余额核对，
     // 两处算出同一个数才叫"屏幕上的钱等于要扣的钱"。
-    const total = formatQyQuotaLedger(STAKE * 5)
+    const total = formatSd(STAKE * 5)
     assert.ok(
       dialog.includes(total),
       `合计没显示成 ${total}（5 注 × 单注 ${STAKE}）：${dialog}`
@@ -203,7 +203,7 @@ describe('双色球买多注：按下确认之前那一屏', () => {
       `选满一注之后注数没变成 1 注：${pending}`
     )
     assert.ok(
-      pending.includes(formatQyQuotaLedger(STAKE)),
+      pending.includes(formatSd(STAKE)),
       `合计没显示成一注的钱：${pending}`
     )
 
@@ -221,10 +221,7 @@ describe('双色球买多注：按下确认之前那一屏', () => {
       two.includes(zhKeys['qy_lot_ball_lines_n'].replace('{{count}}', '2')),
       `加入一注再机选一注之后注数没变成 2 注：${two}`
     )
-    assert.ok(
-      two.includes(formatQyQuotaLedger(STAKE * 2)),
-      `合计没显示成两注的钱：${two}`
-    )
+    assert.ok(two.includes(formatSd(STAKE * 2)), `合计没显示成两注的钱：${two}`)
   })
 
   test('单次批量上限与本场剩余名额取更紧的那一条', SLOW, async () => {
@@ -256,7 +253,7 @@ describe('双色球买多注：按下确认之前那一屏', () => {
       `补满之后注数没显示成 2 注：${after}`
     )
     assert.ok(
-      after.includes(formatQyQuotaLedger(STAKE * 2)),
+      after.includes(formatSd(STAKE * 2)),
       `合计没显示成 2 注的钱：${after}`
     )
   })
@@ -393,7 +390,7 @@ describe('双色球买多注：按下确认之前那一屏', () => {
       `补满之后注数没显示成 999 注：${dialog}`
     )
     // 期望的总额在这里独立乘出来：999 × 1000。
-    const total = formatQyQuotaLedger(STAKE * 999)
+    const total = formatSd(STAKE * 999)
     assert.ok(
       dialog.includes(total),
       `合计没显示成 ${total}（999 注 × 单注 ${STAKE}）：${dialog}`
@@ -445,10 +442,7 @@ describe('双色球买多注：按下确认之前那一屏', () => {
       cleared.includes(zhKeys['qy_lot_ball_lines_n'].replace('{{count}}', '0')),
       `清空之后注数没回到 0 注：${cleared}`
     )
-    assert.ok(
-      cleared.includes(formatQyQuotaLedger(0)),
-      `清空之后合计没回到 0：${cleared}`
-    )
+    assert.ok(cleared.includes(formatSd(0)), `清空之后合计没回到 0：${cleared}`)
   })
 
   test('大批量要先说清"这要跑多久"，小批量不占这一行', SLOW, async () => {

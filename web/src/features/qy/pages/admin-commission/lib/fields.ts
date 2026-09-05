@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * 可编辑的运营参数元数据。
+ * 可编辑的运营参数元数据（D-15 从 git HEAD 恢复，删掉法币折算那一档）。
  *
  * key 必须与后端 `commission/settings.go` 的常量逐字一致：它同时是
  * `qy_settings.k` 与 PUT 请求体的字段名。后端还有一份 `editableKeys` 白名单，
@@ -25,8 +25,7 @@ For commercial licensing, please contact support@quantumnous.com
  * 接口返回的 `editable_keys` 决定** —— 后端收窄白名单时前端自动跟随。
  */
 /**
- * 额度门槛的上界 = 主库额度列的上界（`users.quota` 是 int32，
- * 后端 `common.MaxQuota` 就是这个数）。
+ * 额度门槛的上界 = 后端 `common.MaxQuota`（`common/quota_math.go`）。
  *
  * # 为什么不能是 Number.MAX_SAFE_INTEGER
  *
@@ -34,47 +33,17 @@ For commercial licensing, please contact support@quantumnous.com
  * 内，所以一个超过它的门槛不是"更宽松"，是**永远无法被满足**。最坏的一个具体
  * 形状：把「最小结算额度」填成一个越界的数（按 USD 录入之后只要多敲几个零），
  * `net < minSettle` 从此恒成立，net 恒为 0 —— 全站所有邀请人的佣金永远不再落账，
- * 不报错、不告警、没有日志，未结算额一路累加。
- *
- * 划转与抽奖两页的这条路早就被后端下发的 bounds 堵住了，只有佣金页没有；
- * 本轮把上界补在两边：这里（界面立刻标红）与后端校验/读取回落（真正说了算的）。
- *
- * # 这个数是怎么来的
- *
- * 它必须与后端 `common.MaxQuota`（`common/quota_math.go`）逐字一致。那**不是**
- * 数据库那一列的宽度 —— 三个方言上额度列都是 64 位；它是全站额度换算的**算术**
- * 上界：float64 / `Number.MAX_SAFE_INTEGER` 的精确整数区间，与资金路径上最大的
- * 那个未经就地检查的乘数，两者取小。2^43 落在 `Number.MAX_SAFE_INTEGER`（2^53-1）
- * 之内十个二进制位，所以这一侧照常是精确整数运算。
+ * 不报错、不告警、没有日志，未结算额一路累加。自动入账的门槛同理。
  *
  * 后端改了这个数,这里必须跟着改 —— `fields-max-quota.test.ts` 会因为对不上而红。
  */
 export const QY_MAX_QUOTA = 8_796_093_022_208
 
-/**
- * 法币折算比例的上界，与后端 `maxFiatRateValue` 逐字一致。
- *
- * 一百万足以覆盖任何真实币种（越南盾、印尼盾在两万五量级），同时把手滑
- * 多敲几个零的后果限制成"一个一眼能看出来的离谱数字"。
- */
-export const QY_MAX_FIAT_RATE = 1000000
-
-/** 法币折算比例的最大小数位，与后端存储列 `decimal(18,8)` 一致。 */
-export const QY_FIAT_RATE_DECIMALS = 8
-
 export type QyCommissionFieldMeta = {
   labelKey: string
   hintKey: string
-  /**
-   * `percent` 百分比（最多两位小数）；`quota` 站内额度；`plain` 纯计数；
-   * `fiat_rate` 法币折算比例。
-   *
-   * `fiat_rate` 必须与 `percent` 分开：它是一个**乘数**（`7.3` = 一美元折
-   * 7.3 元），区间是 `(0, 1000000]`、最多 8 位小数，而且 0 是非法值不是
-   * "免费"。当成百分比渲染的话，输入框旁边会多一个 `%`，运营填 7.3
-   * 就以为自己配的是 7.3% —— 差两个数量级的资金参数。
-   */
-  unit: 'percent' | 'plain' | 'quota' | 'fiat_rate'
+  /** `percent` 百分比（最多两位小数）；`quota` 站内额度；`plain` 纯计数。 */
+  unit: 'percent' | 'plain' | 'quota'
   min: number
   max: number
   /** 0 是否表示"不限"。是的话要在输入框旁提示，否则运营会以为填 0 等于关掉。 */
@@ -103,15 +72,6 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     min: 0,
     max: 100,
   },
-  fiat_rate_default: {
-    labelKey: 'qy_cm_f_fiat_rate_default',
-    hintKey: 'qy_cm_f_fiat_rate_default_hint',
-    unit: 'fiat_rate',
-    // 下界写 0 只是元数据上的形式：真正的判定在 qyIsValidFiatRate 里，
-    // 那里 0 是**非法**的（0 不是"免费"，见 fields 顶部的说明）。
-    min: 0,
-    max: QY_MAX_FIAT_RATE,
-  },
   min_settle_quota: {
     labelKey: 'qy_cm_f_min_settle',
     hintKey: 'qy_cm_f_min_settle_hint',
@@ -122,7 +82,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
   },
   max_per_order_quota: {
     labelKey: 'qy_cm_f_max_per_order',
-    hintKey: 'qy_cm_f_unlimited_hint',
+    hintKey: 'qy_cm_f_max_per_order_hint_xh',
     unit: 'quota',
     min: 0,
     max: QY_MAX_QUOTA,
@@ -130,10 +90,28 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
   },
   holding_days: {
     labelKey: 'qy_cm_f_holding_days',
-    hintKey: 'qy_cm_f_holding_days_hint',
+    hintKey: 'qy_cm_f_holding_days_hint_xh',
     unit: 'plain',
     min: 0,
     max: 365,
+  },
+  // ── 自动入账（D-15 新增）──
+  // 门槛是额度：可用余额攒到它才会被下一轮记入星辉；与 min_settle_quota 是两道门。
+  min_credit_quota: {
+    labelKey: 'qy_cm_f_min_credit',
+    hintKey: 'qy_cm_f_min_credit_hint',
+    unit: 'quota',
+    min: 1,
+    max: QY_MAX_QUOTA,
+  },
+  // 入账任务的心跳周期（秒）。它不是"多久到账一次"的承诺：每一轮只处理够门槛的
+  // 余额行，调小它只是让够门槛的人早几分钟看到星辉。
+  credit_interval_seconds: {
+    labelKey: 'qy_cm_f_credit_interval',
+    hintKey: 'qy_cm_f_credit_interval_hint',
+    unit: 'plain',
+    min: 30,
+    max: 86400,
   },
   max_daily_quota_per_inviter: {
     labelKey: 'qy_cm_f_daily_cap',
@@ -193,50 +171,6 @@ export function qyIsValidPercent(raw: string): boolean {
  */
 export function qyIsValidNullablePercent(raw: string): boolean {
   return raw.trim() === '' || qyIsValidPercent(raw)
-}
-
-/**
- * 校验一个**法币折算比例**输入。区间 `(0, 1000000]`，最多 8 位小数。
- *
- * 与 `qyIsValidPercent` 分成两个函数而不是加参数，理由与可空百分比那一对
- * 完全相同：调用点必须一眼看出这里的 0 和空到底算不算数。
- *
- * # 0 与空都是非法
- *
- * `0` 不是"免费/不折算"：它会让后端 `applyFiat` 一分法币都不加而额度照加，
- * `available_fiat` 与 `available_quota` 从此永久漂移，提现按前者折算会给
- * 用户 0 元，而他的站内佣金余额明明是正的。想停掉某个分组的佣金，
- * 既有的杠杆是把返佣费率设成 0%（两侧都停在 0，账是平的）。
- *
- * 空串同理不是"清掉这一档"：兜底档不可清空（清空之后没配分组档的用户会
- * 悄悄退回充值页汇率，而界面上还写着兜底档）。后端两处都直接 400，
- * 前端这里先标红，免得运营点了保存才知道。
- */
-export function qyIsValidFiatRate(raw: string): boolean {
-  const s = raw.trim()
-  // 与后端 parseFiatRate 逐条对齐：正则先卡形状与小数位（不用 Number()
-  // 判小数位，`Number('0.000000001')` 之后就再也看不出原始写了几位了）。
-  if (!new RegExp(`^\\d+(\\.\\d{1,${QY_FIAT_RATE_DECIMALS}})?$`).test(s)) {
-    return false
-  }
-  const value = Number(s)
-  return Number.isFinite(value) && value > 0 && value <= QY_MAX_FIAT_RATE
-}
-
-/**
- * 规范化一个法币折算比例，与后端 `decimal.Decimal.String()` 的输出形状对齐
- * （`"7.30"` → `"7.3"`、`"007"` → `"7"`）。非法输入原样返回。
- *
- * 全程字符串运算，**绝不经过 `Number()`**：`String(Number('0.00000001'))`
- * 会得到 `'1e-8'`，那既提交不上去，也会让"改了没改"的比较永远判成改了。
- */
-export function qyNormalizeFiatRate(raw: string): string {
-  const s = raw.trim()
-  if (!qyIsValidFiatRate(s)) return s
-  const [rawInt, rawFrac = ''] = s.split('.')
-  const int = rawInt.replace(/^0+(?=\d)/, '')
-  const frac = rawFrac.replace(/0+$/, '')
-  return frac === '' ? int : `${int}.${frac}`
 }
 
 /** 去掉尾随零，与后端 `FormatRatePercent` 的输出形状对齐（"10.250" → "10.25"）。 */

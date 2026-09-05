@@ -21,13 +21,14 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 import { qyTabHash } from '@/features/qy/lib/pages'
 
 /**
- * 旧路由 —— 本页已被收进 `/qy/affiliate` 的选择夹（`QY_TAB_GROUPS`）。
+ * 「下线」—— 本页是 `/qy/affiliate` 选择夹里的一张标签（`QY_TAB_GROUPS`），
+ * 没有独立入口。
  *
- * 保留成重定向而不是删掉：用户的书签、历史记录、以及扩展里其它页面里可能
- * 还留着的 `Link to='/qy/invitees'` 都要落到实处。目标 hash 由 `qyTabHash` 现算，
- * 与宿主页认标签用的是同一个函数 —— 不可能出现"跳过去了但选中的是另一张"。
+ * 它仍然需要一个真实路由：url 已登记进 `QY_PAGES` 与 GATE 编号表，手敲地址要
+ * 落到宿主页的对应标签而不是 404。目标 hash 由 `qyTabHash` 现算，与宿主页认
+ * 标签用的是同一个函数 —— 不可能出现"跳过去了但选中的是另一张"。
  *
- * `replace`：旧地址不该留在历史栈里，否则用户按返回键会被立刻再弹回来。
+ * `replace`：这个地址不该留在历史栈里，否则用户按返回键会被立刻再弹回来。
  */
 export const Route = createFileRoute('/_authenticated/qy/invitees/')({
   beforeLoad: () => {

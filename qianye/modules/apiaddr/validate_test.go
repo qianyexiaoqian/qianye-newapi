@@ -1,6 +1,7 @@
 package apiaddr
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -58,6 +59,69 @@ func TestNormalizeURLAcceptsOnlyPlainHTTPEndpoints(t *testing.T) {
 	}
 }
 
+// 颜色是白名单:写入侧折叠大小写与空白,不在调色板里的值直接拒收 ——
+// 这个值会被前端原样拿去查样式表,也会进审计快照。空 = 用前端默认色,
+// 也是存量行补列后的值。
+func TestNormalizeColorAcceptsOnlyPaletteNames(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+		err  error
+	}{
+		{"空", "", "", nil},
+		{"全空白", "  ", "", nil},
+		{"调色板原样", "orange", "orange", nil},
+		{"折叠大小写", " Blue ", "blue", nil},
+		{"不在调色板", "magenta", "", errColorInvalid},
+		{"自由串", "bg-red-500", "", errColorInvalid},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeColor(tc.in)
+			if tc.err != nil {
+				require.ErrorIs(t, err, tc.err)
+				assert.Empty(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// 展示位置是白名单:折叠大小写与空白、去重,不认识的位置名直接拒收 ——
+// 写错的位置名不会报错,只会让这条地址在过滤时去错地方,而那查不出来。
+// 空 = 所有位置可见,与 UserGroups 的空名单同一套口径。
+func TestNormalizeSurfacesAcceptsOnlyKnownSurfaces(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+		err  error
+	}{
+		{"空", "", "", nil},
+		{"全空白", "  ", "", nil},
+		{"单个位置", "picker", "picker", nil},
+		{"折叠大小写与空白", " Console , PICKER ", "console,picker", nil},
+		{"去重", "picker,picker", "picker", nil},
+		{"空 token 跳过", "console,,", "console", nil},
+		{"未知位置", "sidebar", "", errSurfaceInvalid},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeSurfaces(tc.in)
+			if tc.err != nil {
+				require.ErrorIs(t, err, tc.err)
+				assert.Empty(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 // 名称与备注的边界:名称必填、两者都按 rune 计长。
 //
 // 按 rune 而不是 byte 是必须的:32 个中文名在 byte 口径下是 96,直接被判超长,
@@ -82,6 +146,81 @@ func TestNormalizeNameAndRemarkCountRunesNotBytes(t *testing.T) {
 
 	_, err = normalizeRemark(strings.Repeat("注", maxRemarkRune+1))
 	require.ErrorIs(t, err, errRemarkTooLong)
+}
+
+// 「适用分组」写入侧的归一化:折叠大小写与空白、跳过空 token、去重,
+// 以及三道上限与两类非法字符。
+//
+// 折叠必须与判定侧(visibleToUserGroup)同口径 —— 存了 "VIP" 而判定拿 "vip"
+// 来比,这条地址就对谁都不可见,管理端却看着配得明明白白。这张表就是两侧
+// 口径的对账单。
+func TestNormalizeUserGroupsFoldsDedupesAndBounds(t *testing.T) {
+	tooMany := make([]string, maxUserGroupEntries+1)
+	for i := range tooMany {
+		tooMany[i] = "g" + strconv.Itoa(i)
+	}
+	// 20 条 × 60 rune ≈ 1219 rune:条数没超但总长超 —— 两道上限必须各自成立。
+	tooLong := make([]string, 20)
+	for i := range tooLong {
+		tooLong[i] = strings.Repeat("a", 58) + "-" + strconv.Itoa(i)
+	}
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+		err  error
+	}{
+		{"空串 = 所有分组", "   ", "", nil},
+		{"单个原样", "vip", "vip", nil},
+		{"折叠大小写与空白", " VIP , svip ", "vip,svip", nil},
+		{"空 token 跳过", "vip,,svip,", "vip,svip", nil},
+		{"折叠后去重", "vip,VIP", "vip", nil},
+		{"中文分组放行", "内测用户", "内测用户", nil},
+
+		{"内部空白拒收", "vip 2", "", errGroupInvalid},
+		{"分号拒收", "vip;svip", "", errGroupInvalid},
+		{"单名超长", strings.Repeat("组", maxUserGroupRunes+1), "", errGroupTooLong},
+		{"条数超限", strings.Join(tooMany, ","), "", errGroupsTooMany},
+		{"总长超限", strings.Join(tooLong, ","), "", errGroupsTooLong},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeUserGroups(tc.in)
+			if tc.err != nil {
+				require.ErrorIs(t, err, tc.err)
+				assert.Empty(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// 判定侧的可见性口径:空名单对谁都可见(默认兜底线路),用户分组走 Effective
+// —— 历史行的空分组在业务上就是 default 用户,漏掉这一折叠,挂在 default 上的
+// 专属线路对这批账号恰好不生效。
+func TestVisibleToUserGroupMatchesEffectiveGroup(t *testing.T) {
+	cases := []struct {
+		name       string
+		userGroups string
+		userGroup  string
+		want       bool
+	}{
+		{"空名单对谁都可见", "", "vip", true},
+		{"命中", "vip,svip", "vip", true},
+		{"未命中", "vip,svip", "default", false},
+		{"用户分组折叠后命中", "vip", " VIP ", true},
+		{"历史空分组按 default 算", "default", "", true},
+		{"历史空分组不在名单则不可见", "vip", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, visibleToUserGroup(tc.userGroups, tc.userGroup))
+		})
+	}
 }
 
 // 重排入参的自身合法性:空、超上限、重复 id、非正 id 一律拒。

@@ -96,6 +96,7 @@ function userGroup(
     scope_note: '',
     self_excluded: false,
     self_inserted: false,
+    warnings: [],
   }
 }
 

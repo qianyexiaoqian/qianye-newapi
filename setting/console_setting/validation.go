@@ -24,6 +24,10 @@ var (
 	slugRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 )
 
+// 公告条数上限。前端 announcements-section.tsx 的 MAX_ANNOUNCEMENTS 与它同值,
+// 改这里必须一起改那边,否则前端的"到顶自动删最旧"闸门与后端拒绝线错位。
+const maxAnnouncementEntries = 500
+
 func parseJSONArray(jsonStr string, typeName string) ([]map[string]interface{}, error) {
 	var list []map[string]interface{}
 	if err := common.UnmarshalJsonStr(jsonStr, &list); err != nil {
@@ -149,8 +153,11 @@ func validateAnnouncements(announcementsStr string) error {
 	if err != nil {
 		return err
 	}
-	if len(list) > 100 {
-		return fmt.Errorf("系统公告数量不能超过100个")
+	// 上限从 100 放开到 500:options.value 没有列宽(MySQL 默认 longtext),
+	// 500 条 × 500 字也只有百 KB 量级。不设成无穷大是因为整表会塞进公开的
+	// console-info 载荷,每个访客都整包下载 —— 上限挡的是载荷,不是磁盘。
+	if len(list) > maxAnnouncementEntries {
+		return fmt.Errorf("系统公告数量不能超过%d个", maxAnnouncementEntries)
 	}
 	validTypes := map[string]bool{
 		"default": true, "ongoing": true, "success": true, "warning": true, "error": true,
@@ -178,12 +185,17 @@ func validateAnnouncements(announcementsStr string) error {
 				}
 			}
 		}
+		// 报错必须带内容开头:整表校验的序号是**存储序**,管理端列表按发布日期
+		// 排序显示,两个序对不上 —— 只报「第 N 个」时,运营刚加了一条短公告、
+		// 被存量里另一条超长的旧公告挡下来,会以为是"我这条没超也报错"。
 		if exceedsMaxCharacters(content, 500) {
-			return fmt.Errorf("第%d个公告的内容长度不能超过500字符", i+1)
+			return fmt.Errorf("第%d个公告(内容开头:%s…)的内容长度超过500字符",
+				i+1, string([]rune(content)[:12]))
 		}
 		if extra, exists := ann["extra"]; exists {
 			if extraStr, ok := extra.(string); ok && exceedsMaxCharacters(extraStr, 100) {
-				return fmt.Errorf("第%d个公告的说明长度不能超过100字符", i+1)
+				return fmt.Errorf("第%d个公告(内容开头:%s…)的说明长度超过100字符",
+					i+1, string([]rune(content)[:min(12, len([]rune(content)))]))
 			}
 		}
 	}

@@ -25,7 +25,7 @@ import (
 //	upstream_error  上游 5xx、连接失败、空响应、渠道密钥失效等       ✓     ✗    —
 //	internal_error  本平台内部错误(序列化、SQL、relay 构造失败)    ✓     ✗    —
 //	rate_limit      429                                        可配   ✗    count_rate_limited
-//	client_error    用户 4xx(参数非法、敏感词、模型不存在)         可配   ✗    count_client_errors
+//	client_error    用户 4xx(参数非法、内容被拦、模型不存在)       可配   ✗    count_client_errors
 //	quota_error     额度不足 / 预扣失败                          ✗     ✗    硬排除
 //	violation       违规拦截(violation_fee.*)                   ✗     ✗    硬排除
 //	client_gone     客户端主动断开                               ✗     ✗    硬排除
@@ -161,7 +161,6 @@ func isQuotaCode(code types.ErrorCode) bool {
 }
 
 // isViolationCode 与违规模块的口径保持一致:只认 violation_fee.* 前缀。
-// 敏感词拦截(sensitive_words_detected)归 client_error —— 那是请求内容问题。
 func isViolationCode(code types.ErrorCode) bool {
 	return strings.HasPrefix(string(code), "violation_fee.")
 }
@@ -214,7 +213,6 @@ func isClientCode(code types.ErrorCode) bool {
 		types.ErrorCodeReadRequestBodyFailed,
 		types.ErrorCodeConvertRequestFailed,
 		types.ErrorCodeCountTokenFailed,
-		types.ErrorCodeSensitiveWordsDetected,
 		types.ErrorCodeAccessDenied,
 		types.ErrorCodePromptBlocked,
 		types.ErrorCodeModelNotFound:

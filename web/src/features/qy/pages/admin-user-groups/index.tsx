@@ -151,7 +151,6 @@ export function QyAdminUserGroups() {
               snapshot={data.snapshot}
               partial={editor.partial}
               ratioDrift={editor.ratioDrift}
-              selfExcluded={editor.selfExcluded}
               caseNearMiss={editor.caseNearMiss}
               warnings={data.warnings}
               emptyScopeGroups={editor.emptyScopeGroups}

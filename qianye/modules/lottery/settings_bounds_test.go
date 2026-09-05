@@ -18,7 +18,7 @@ import (
 // (overridesAllApplied 比的是 snapshot 与 overrides,两边都是 500)。
 //
 // max_active_activities 是全站累计净增发的唯一乘数:每一场活动各吃一个
-// max_total_prize_quota,没有全站累计闸门。写死 1000 等于允许在线把敞口放大 50 倍。
+// max_total_prize_stardust,没有全站累计闸门。写死 1000 等于允许在线把敞口放大 50 倍。
 
 // withLotteryConfig 装一份 YAML 基线,测完还原。
 func withLotteryConfig(t *testing.T, lot config.Lottery) {
@@ -52,9 +52,9 @@ func TestMergeOverridesClampsMaxActiveActivitiesToTheYamlCeiling(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			withLotteryConfig(t, config.Lottery{
-				MaxActiveActivities: yamlCeiling,
-				MaxGuessFeeBps:      500,
-				MaxTotalPrizeQuota:  50_000_000,
+				MaxActiveActivities:   yamlCeiling,
+				MaxGuessFeeBps:        500,
+				MaxTotalPrizeStardust: 50_000_000,
 			})
 			base := opSettings{MaxActiveActivities: yamlCeiling}
 
@@ -72,9 +72,9 @@ func TestMergeOverridesClampsMaxActiveActivitiesToTheYamlCeiling(t *testing.T) {
 func TestReadAndWriteSidesAgreeOnTheActiveActivityCeiling(t *testing.T) {
 	const yamlCeiling = 7
 	withLotteryConfig(t, config.Lottery{
-		MaxActiveActivities: yamlCeiling,
-		MaxGuessFeeBps:      500,
-		MaxTotalPrizeQuota:  50_000_000,
+		MaxActiveActivities:   yamlCeiling,
+		MaxGuessFeeBps:        500,
+		MaxTotalPrizeStardust: 50_000_000,
 	})
 
 	bound, ok := settingBounds()[keyMaxActiveActivities]

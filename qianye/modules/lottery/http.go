@@ -8,7 +8,6 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
-	"github.com/QuantumNous/new-api/qianye/service/twophase"
 
 	"github.com/gin-gonic/gin"
 )
@@ -48,14 +47,6 @@ func respondErr(c *gin.Context, err error) {
 	}
 
 	switch {
-	case errors.Is(err, twophase.ErrInProgress):
-		respondErr(c, errInProgress)
-	case errors.Is(err, twophase.ErrOrderFailed):
-		respondErr(c, errNotSettled)
-	case errors.Is(err, twophase.ErrIdemConflict):
-		respondErr(c, errIdemConflict)
-	case errors.Is(err, twophase.ErrAmountOutOfRange):
-		respondErr(c, errBadAmount)
 	case errors.Is(err, ErrSubjectUnavailable):
 		// fail-closed:风控条件的数据源读不到时一律拒绝,绝不回落成"不限制"。
 		// 用 503 而不是 500,前端据此提示"稍后重试"而不是"出错了"。

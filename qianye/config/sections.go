@@ -45,6 +45,8 @@ package config
 // qianye/modules_test.go 守 modules.go 的 blank import 完全一样。
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"reflect"
 	"sort"
@@ -101,6 +103,24 @@ type ModuleGate struct {
 	// 各算各的:段里写了 enabled 却漏了 precheck_enabled,前者 declared、后者
 	// missing_key,后者照样告警。
 	Extra []GateSwitch
+	// SecretKeys 登记同一段内**必填、且不可能有默认值**的密钥项。
+	//
+	// 它只影响修复片段:整段缺失时,片段里要连这几行一起给出,并且给的是一把
+	// 当场生成的随机密钥,粘回去就能直接启动。
+	//
+	// 为什么不能靠 applyDefaults 补:密钥的默认值只有两种写法,一种是全站共用
+	// 一个硬编码常量(等于没加密),另一种是每次启动随机生成(重启之后全部历史
+	// 密文变成不可读)。两种都比不加密更糟,所以这类键**只能**由运维填,
+	// 而"修复指引给出的片段粘回去必须能启动"这条不变量就要靠这里补上。
+	SecretKeys []GateSecret
+}
+
+// GateSecret 是段内必填的密钥项。
+type GateSecret struct {
+	// Key 是段内的 yaml 键名。
+	Key string
+	// Note 跟在生成值后面作为同行注释,说明这一行是什么、可以怎么自己换一把。
+	Note string
 }
 
 // GateSwitch 是段内的二级开关。字段语义与 ModuleGate 的同名字段逐字一致。
@@ -123,12 +143,12 @@ var moduleGates = []ModuleGate{
 		Effect: "全部划转接口返回 qy_feature_off,钱包页不渲染划转入口,用户只会觉得「功能没上线」",
 	},
 	{
-		Module: "commission", Section: "commission", Key: "enabled",
-		Effect: "消费与充值都不再计提佣金,邀请页恒为 0 —— 这段时间产生的佣金没有任何补算路径",
+		Module: "invite", Section: "invite", Key: "enabled",
+		Effect: "不再建立任何邀请关系,星屑的下线消费返 / 充值返 / 兑换码返 / 注册奖全部停发,推广页 404 —— 这段时间的邀请返没有任何补算路径",
 	},
 	{
-		Module: "withdraw", Section: "withdraw", Key: "enabled",
-		Effect: "提现接口一律 qy_feature_off,已冻结的佣金取不出来,而佣金仍在继续冻结",
+		Module: "commission", Section: "commission", Key: "enabled",
+		Effect: "消费与充值都不再计提星辉佣金,佣金页恒为 0、已有可用余额也不再自动入账 —— 这段时间产生的佣金没有任何补算路径",
 	},
 	{
 		Module: "ticket", Section: "ticket", Key: "enabled",
@@ -195,6 +215,29 @@ var moduleGates = []ModuleGate{
 	{
 		Module: "lottery", Section: "lottery", Key: "enabled",
 		Effect: "引导端点下发 features.lottery=false,前端整个娱乐入口不渲染,用户端与创建接口 404",
+		// 开着抽奖就必须有这把钥匙,否则启动校验直接拒绝(文本奖兑换码不允许
+		// 明文落库)。不写进片段的话,照着"修复指引"粘一段 enabled: true 回去,
+		// 下次启动网关起不来 —— 那正是这套告警自己要避免的形状。
+		SecretKeys: []GateSecret{{
+			Key:  "prize_secret_key",
+			Note: "文本奖兑换码的加密密钥,这里是随机生成的一把,可直接用;要自己换用 `openssl rand -base64 32`",
+		}},
+	},
+
+	{
+		Module: "stardust", Section: "stardust", Key: "enabled",
+		// 关掉之后**只关入口不关账**:星屑的记账函数不看这个开关,在途的星屑活动照扣照派,
+		// 用户暂时看不见自己的账;消费返日结、充值 / 兑换码 / 注册 / 套餐返全部停止且没有补算路径。
+		Effect: "引导端点下发 features.stardust=false,星屑入口与商城入口不渲染,用户端与管理端接口 404;" +
+			"消费返 / 邀请返 / 套餐返全部停止且没有补算路径;在途的星屑活动仍在往一本用户看不见的账里扣与派",
+	},
+	{
+		Module: "mall", Section: "mall", Key: "enabled",
+		Effect: "商城接口一律 qy_feature_off,已下单的实物 / 套餐订单不再推进(发货、对账都停),用户只会觉得「功能没上线」",
+		SecretKeys: []GateSecret{{
+			Key:  "secret_key",
+			Note: "兑换码库存与收货地址的加密密钥,这里是随机生成的一把,可直接用;要自己换用 `openssl rand -base64 32`",
+		}},
 	},
 
 	// ── 有配置段,但缺失不会造成静默失效 ────────────────────────────────
@@ -346,6 +389,17 @@ func describeGate(c *Config, g ModuleGate) ModuleSection {
 func sectionFixSnippet(g ModuleGate) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s:\n  %s: true", g.Section, g.Key)
+	for _, s := range g.SecretKeys {
+		// 熵源出问题时给一个**明显不能用**的占位值,而不是悄悄少一行:
+		// 少一行的表现是"照着粘完仍然起不来",而运维会以为片段是完整的,
+		// 于是去别处找原因;一个尖括号占位值一眼就能看出还差什么。
+		raw := make([]byte, 32)
+		value := "<在这里填 openssl rand -base64 32 的输出>"
+		if _, err := rand.Read(raw); err == nil {
+			value = base64.StdEncoding.EncodeToString(raw)
+		}
+		fmt.Fprintf(&b, "\n  %s: %q  # %s", s.Key, value, s.Note)
+	}
 	names := make([]string, 0, len(g.Extra))
 	for _, s := range g.Extra {
 		if !s.DefaultOn {

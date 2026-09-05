@@ -26,7 +26,7 @@ import (
 // settingBound 是一个可写键的取值区间(闭区间)。
 //
 // NoMax 为真时**没有上界**,Hi 无意义。它不是用一个哨兵值表示的:哨兵在这里
-// 会撞车 —— 0 是 large_prize_alert_quota 的一个合法取值(= 不要二次确认),
+// 会撞车 —— 0 是 large_prize_alert_stardust 的一个合法取值(= 不要二次确认),
 // 而 math.MaxInt64 一旦下发到界面上就会被渲染成一串没人看得懂的钱。
 type settingBound struct {
 	Lo    int64
@@ -60,22 +60,23 @@ func quotaCeilingBound(yamlCeiling int64) settingBound {
 
 // settingBounds 按当前 YAML 算出每个可写键的区间。
 //
-// 上界必须取自 YAML 而不是写死:max_guess_fee_bps 与 max_total_prize_quota
+// 上界必须取自 YAML 而不是写死:max_guess_fee_bps 与 max_total_prize_stardust
 // 的硬上界就是配置文件里的那两个值,允许在线调到它们之上等于让"防止把 5%
 // 手滑打成 50%"和"抽奖派奖是净增发"这两道闸门自己可以被手滑掉。
 func settingBounds() map[string]settingBound {
 	c := config.Get().Lottery
 	return map[string]settingBound{
 		keyShowEntry: {Lo: 0, Hi: 1},
-		// 四个玩法开关同样是 0/1。它们**没有 YAML 上界**可取:玩法显隐是纯展示
+		// 五个玩法开关同样是 0/1。它们**没有 YAML 上界**可取:玩法显隐是纯展示
 		// 口径,关掉一种玩法既不放大任何资金敞口、也不放宽任何闸门 ——
 		// 唯一的硬闸仍然是 YAML 的 lottery.enabled(关掉整块)。
 		keyShowPlayDrawRank: {Lo: 0, Hi: 1},
 		keyShowPlayDrawProb: {Lo: 0, Hi: 1},
 		keyShowPlayDrawBall: {Lo: 0, Hi: 1},
 		keyShowPlayGuess:    {Lo: 0, Hi: 1},
+		keyShowPlayWheel:    {Lo: 0, Hi: 1},
 		// 上界同样取自 YAML。并发进行中的活动数是全站累计净增发的唯一乘数
-		// (每一场各吃一个 max_total_prize_quota,没有全站累计闸门),写死一个
+		// (每一场各吃一个 max_total_prize_stardust,没有全站累计闸门),写死一个
 		// 1000 等于允许运营在线把敞口放大 50 倍,而 YAML 拦不住它 ——
 		// 这正是这个函数开头那句"上界必须取自 YAML 而不是写死"要防的事。
 		keyMaxActiveActivities: {Lo: 1, Hi: int64(c.MaxActiveActivities)},
@@ -83,13 +84,13 @@ func settingBounds() map[string]settingBound {
 		keyDefaultGuessFeeBps:  {Lo: 0, Hi: int64(c.MaxGuessFeeBps)},
 		// 单场奖品硬顶:0 = 不限,而且是默认。上面那段"上界必须取自 YAML"
 		// 对它仍然成立 —— YAML 写了正数就只能往低调,见 quotaCeilingBound。
-		keyMaxTotalPrizeQuota: quotaCeilingBound(c.MaxTotalPrizeQuota),
-		// 二次确认阈值**没有上界**,而且刻意不去夹进 max_total_prize_quota:
+		keyMaxTotalPrizeStardust: quotaCeilingBound(c.MaxTotalPrizeStardust),
+		// 二次确认阈值**没有上界**,而且刻意不去夹进 max_total_prize_stardust:
 		// 它不是一道会放大敞口的闸门,而是一道会不会响的铃 —— 配大了只是少响
 		// 几次,配到天上等价于配 0(完全不打扰),两者都不多发一分钱。
 		// "阈值高过硬顶 = 一道永远不响的铃"这条不一致由 handlePutConfig 的
 		// 跨字段校验单独回答,那里能同时看到两个字段这一次改成了什么。
-		keyLargePrizeAlertQuota: {Lo: 0, NoMax: true},
+		keyLargePrizeAlertStardust: {Lo: 0, NoMax: true},
 	}
 }
 
@@ -99,16 +100,17 @@ func settingBounds() map[string]settingBound {
 // 对齐;结构体的 json tag 与这份键名清单是两处声明,漂移一次就是一格空白输入框。
 func settingsSnapshot(s opSettings) map[string]int64 {
 	return map[string]int64{
-		keyShowEntry:            boolToInt64(s.ShowEntry),
-		keyShowPlayDrawRank:     boolToInt64(s.ShowPlayDrawRank),
-		keyShowPlayDrawProb:     boolToInt64(s.ShowPlayDrawProb),
-		keyShowPlayDrawBall:     boolToInt64(s.ShowPlayDrawBall),
-		keyShowPlayGuess:        boolToInt64(s.ShowPlayGuess),
-		keyMaxActiveActivities:  int64(s.MaxActiveActivities),
-		keyDefaultGuessFeeBps:   int64(s.DefaultGuessFeeBps),
-		keyMaxGuessFeeBps:       int64(s.MaxGuessFeeBps),
-		keyMaxTotalPrizeQuota:   s.MaxTotalPrizeQuota,
-		keyLargePrizeAlertQuota: s.LargePrizeAlertQuota,
+		keyShowEntry:               boolToInt64(s.ShowEntry),
+		keyShowPlayDrawRank:        boolToInt64(s.ShowPlayDrawRank),
+		keyShowPlayDrawProb:        boolToInt64(s.ShowPlayDrawProb),
+		keyShowPlayDrawBall:        boolToInt64(s.ShowPlayDrawBall),
+		keyShowPlayGuess:           boolToInt64(s.ShowPlayGuess),
+		keyShowPlayWheel:           boolToInt64(s.ShowPlayWheel),
+		keyMaxActiveActivities:     int64(s.MaxActiveActivities),
+		keyDefaultGuessFeeBps:      int64(s.DefaultGuessFeeBps),
+		keyMaxGuessFeeBps:          int64(s.MaxGuessFeeBps),
+		keyMaxTotalPrizeStardust:   s.MaxTotalPrizeStardust,
+		keyLargePrizeAlertStardust: s.LargePrizeAlertStardust,
 	}
 }
 
@@ -157,13 +159,13 @@ func handleGetConfig(c *gin.Context) {
 		// YAML 段:安全闸门与结构性参数,只能改文件后重载 ——
 		// 那是一次看得见、留得下痕迹的动作。
 		"yaml_readonly": gin.H{
-			"enabled":                      cfg.Enabled,
-			"proof_public":                 cfg.ProofOpen(),
-			"pay_password_threshold_quota": cfg.PayPasswordThresholdQuota,
-			"entry_close_grace_seconds":    cfg.EntryCloseGraceSeconds,
-			"reveal_delay_seconds":         cfg.RevealDelaySeconds,
-			"payout_max_attempts":          cfg.PayoutMaxAttempts,
-			"max_total_entries_hard":       cfg.MaxTotalEntriesHard,
+			"enabled":                         cfg.Enabled,
+			"proof_public":                    cfg.ProofOpen(),
+			"pay_password_threshold_stardust": cfg.PayPasswordThresholdStardust,
+			"entry_close_grace_seconds":       cfg.EntryCloseGraceSeconds,
+			"reveal_delay_seconds":            cfg.RevealDelaySeconds,
+			"payout_max_attempts":             cfg.PayoutMaxAttempts,
+			"max_total_entries_hard":          cfg.MaxTotalEntriesHard,
 			// 「一次最多下多少注」那一格的三个常量。创建向导要拿它们渲染
 			// 默认值、上界,以及**这一格真正的代价**:N 注在服务端是 N 次串行
 			// 扣费,估时 = N × entry_batch_ms_per_pick,而整批被
@@ -175,17 +177,17 @@ func handleGetConfig(c *gin.Context) {
 			"entry_batch_ms_per_pick":       measuredMsPerPick,
 			"max_prize_tiers":               cfg.MaxPrizeTiers,
 			"max_options":                   cfg.MaxOptions,
-			"max_stake_quota":               cfg.MaxStakeQuota,
-			// system_max_quota 是**全站额度换算的整数上界**(common.MaxQuota,
-			// 由代码写死),不是 YAML 里的一项。放在这一段是因为它与这一段的其余键
-			// 共享同一个性质:管理员改不了。
+			"max_stake_stardust":            cfg.MaxStakeStardust,
+			// system_max_stardust 是星屑数值的**系统上界**(common.MaxQuota,与额度
+			// 共用同一条算术上界,由代码写死),不是 YAML 里的一项。放在这一段是
+			// 因为它与这一段的其余键共享同一个性质:管理员改不了。
 			//
 			// 下发它是为了让创建向导能把两种上限分开说 —— 系统上界是"填不了,
-			// 改任何配置都放不开",策略上限(max_stake_quota /
-			// max_total_prize_quota)是"本站不让,去改配置或者改数字"。
+			// 改任何配置都放不开",策略上限(max_stake_stardust /
+			// max_total_prize_stardust)是"本站不让,去改配置或者改数字"。
 			// 前端没有这个数时只能把两者混成一句"超过系统上限",而运营读完会
 			// 跑去配置页找一个根本不存在的开关。
-			"system_max_quota":        int64(common.MaxQuota),
+			"system_max_stardust":     int64(common.MaxQuota),
 			"spend_max_lookback_days": cfg.SpendMaxLookbackDays,
 			// 封面上传的三项。前端据此决定"上传"按钮出不出现、accept 写什么、
 			// 以及在本地就把超限的文件拦下来 —— 让用户把 5 MiB 传完再看到 413,
@@ -199,7 +201,7 @@ func handleGetConfig(c *gin.Context) {
 			"spend_ready_from": SpendReadyFrom(),
 		},
 		// 基线值。运营需要知道"清掉覆盖之后会回到哪里",否则删除覆盖这个动作
-		// 等于闭眼跳。绝大多数键的基线来自 YAML;四个玩法开关没有 YAML 对应项,
+		// 等于闭眼跳。绝大多数键的基线来自 YAML;五个玩法开关没有 YAML 对应项,
 		// 基线恒为 1(全部显示)——键名沿用 yaml_defaults 是为了不动前端契约。
 		"yaml_defaults": settingsSnapshot(baseSettings(cfg)),
 	})
@@ -293,11 +295,11 @@ func handlePutConfig(c *gin.Context) {
 	// 400 掉了。硬顶为 0(不限,默认)时这条不成立 —— 那时阈值多高都只是"少响
 	// 几次",一分钱都不会多发,所以不拦。文案里的两个数换算成站内余额:
 	// 运营手里只有那个刻度,一句"不得超过 50000000"对着界面上的 $100 对不上号。
-	if candidate.MaxTotalPrizeQuota > 0 &&
-		candidate.LargePrizeAlertQuota > candidate.MaxTotalPrizeQuota {
+	if candidate.MaxTotalPrizeStardust > 0 &&
+		candidate.LargePrizeAlertStardust > candidate.MaxTotalPrizeStardust {
 		putConfigFailed(c, before, fmt.Sprintf(
 			"二次确认阈值 %s 不得超过单场奖品总额上限 %s —— 否则这道确认永远触发不了",
-			quotaText(candidate.LargePrizeAlertQuota), quotaText(candidate.MaxTotalPrizeQuota)))
+			stardustText(candidate.LargePrizeAlertStardust), stardustText(candidate.MaxTotalPrizeStardust)))
 		return
 	}
 
@@ -348,16 +350,18 @@ func assignSetting(s *opSettings, key string, v int64) {
 		s.ShowPlayDrawBall = v != 0
 	case keyShowPlayGuess:
 		s.ShowPlayGuess = v != 0
+	case keyShowPlayWheel:
+		s.ShowPlayWheel = v != 0
 	case keyMaxActiveActivities:
 		s.MaxActiveActivities = int(v)
 	case keyDefaultGuessFeeBps:
 		s.DefaultGuessFeeBps = int(v)
 	case keyMaxGuessFeeBps:
 		s.MaxGuessFeeBps = int(v)
-	case keyMaxTotalPrizeQuota:
-		s.MaxTotalPrizeQuota = v
-	case keyLargePrizeAlertQuota:
-		s.LargePrizeAlertQuota = v
+	case keyMaxTotalPrizeStardust:
+		s.MaxTotalPrizeStardust = v
+	case keyLargePrizeAlertStardust:
+		s.LargePrizeAlertStardust = v
 	}
 }
 

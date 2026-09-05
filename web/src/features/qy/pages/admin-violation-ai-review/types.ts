@@ -51,6 +51,20 @@ export type QyAiOutcome =
 export type QyAiProtocol = 'json_prompt' | 'qwen3guard'
 
 /**
+ * 一档作用域策略在它指定的那几个渠道之间怎么分发。
+ *
+ * - `weighted` —— 按渠道权重加权随机。**零值档**:库里那一列是空串时就是它,
+ *   也是这一格存在之前的唯一行为。权重是运营表达"主用哪个、备用哪个"的方式。
+ * - `round_robin` —— 按清单顺序轮流,每次请求换一个起点,不看权重。
+ *   几台**同规格**的护栏机上它比随机更稳:随机的方差会让某一台在某一分钟里
+ *   连吃几倍的量,而小模型机的并发很浅。
+ *
+ * 轮询游标在后端是**进程内**的:多节点部署时每个节点各转各的,合起来仍然是
+ * 均分,但任何单个节点上的顺序都不代表全局顺序。
+ */
+export type QyAiChannelMode = 'weighted' | 'round_robin'
+
+/**
  * Qwen3Guard 比常见护栏模型多一档 `Controversial`(有争议)。这一格决定把它
  * 怎么接到本站的处置上。
  *
@@ -222,6 +236,47 @@ export type QyAiCategoryDetail = {
   is_fallback: boolean
 }
 
+/**
+ * cyber 会话屏蔽设置 —— 与 AI 审核是两套东西:AI 审核判**内容**,这里认
+ * **上游的拒绝码**(如 cyber_policy),命中一次就把整条会话在本地拉黑。
+ */
+export type QyCyberSetting = {
+  id: number
+  enabled: boolean
+  /**
+   * 受屏蔽的**模型分组**名单(逗号/换行分隔)。空 = 全部模型分组。
+   * 与 AI 审核作用域同口径:比的是请求实际使用的分组(UsingGroup)。
+   */
+  group_scope: string
+  group_scope_mode: 'include' | 'exclude'
+  /** 拉黑存活时长(秒),到期自动解封。0 = 用默认值(1 小时)。 */
+  ttl_seconds: number
+  /**
+   * **触发过滤规则**:哪些上游拒绝算 cyber 命中。一行一条(也认逗号)，
+   * 子串匹配、大小写不敏感，同时比对上游错误码与错误正文。
+   * 空 = 运行期回落默认（不会变成"谁都不拦"）。
+   */
+  trigger_codes: string
+  /** 命中是否**计入自动封号计数**（推进账号总量线与类型线，达阈值自动处置）。 */
+  count_toward_ban: boolean
+  /** 计数类型绑定：命中计到哪个违规类型上。0 = 不指定，落「未分类」兜底。 */
+  category_id: number
+}
+
+export type QyCyberSettingResponse = {
+  setting: QyCyberSetting
+  /** 「还原默认过滤内容」按钮要填回的出厂触发过滤规则。 */
+  default_trigger_codes: string
+  effective: {
+    /** 快照里**真正生效**吗。开了设置但 YAML violation 总开关关着时为 false。 */
+    active: boolean
+    /** YAML violation.enabled —— 基础设施级总闸,关着时本功能一律不生效。 */
+    module_on: boolean
+    default_ttl: number
+    max_ttl: number
+  }
+}
+
 export type QyAiSettingResponse = {
   setting: QyAiSetting
   default_prompt: string
@@ -309,13 +364,21 @@ export type QyAiScope = {
    *
    * 上面这段描述的是 `channel_failover` 关着时的行为,也就是出厂行为。
    */
-  channel_id: number
+  channel_ids: number[]
   /**
-   * 「指定的渠道不可用时,退到加权随机池」。只在 `channel_id > 0` 时有意义
-   * (没指定时本来就走池子),后端会在 `channel_id` 为 0 时把它一并归零。
+   * 这几个渠道之间怎么分发。空串 = `weighted`(存量行的零值)。
    *
-   * **默认关**:打开它把「只发给这一个」变成「这一个不行就发给池子里的任何
-   * 一个」,也就是把用户内容的出境目的地从一个变成一组。那不该由一次升级
+   * 库里那一列可能是空串,而汇总表 (`summary`) 下发的是**归一之后**的值 ——
+   * 两处形态不同是刻意的:这里是策略行的回显(表单要能区分"没存过"),
+   * 那里回答的是"这一档实际会怎么跑"。
+   */
+  channel_mode: QyAiChannelMode | ''
+  /**
+   * 「指定的渠道都不可用时,退到加权随机池」。只在清单非空时有意义
+   * (没指定时本来就走全部启用渠道),后端会在清单为空时把它一并归零。
+   *
+   * **默认关**:打开它把「只发给这几个」变成「它们不行就发给池子里的任何
+   * 一个」,也就是把用户内容的出境目的地从一组变成全部。那不该由一次升级
    * 替站点决定 —— 存量配置的行为因此逐字节不变。
    */
   channel_failover: boolean
@@ -367,15 +430,20 @@ export type QyAiScopeSummaryRow = {
   /** 这一档指定的「命中一律记为」类型 id,0 = 不指定。类型名去违规类型清单里 join。 */
   category_id: number
   /**
-   * 这一档指定的审核渠道 id,0 = 不指定(按权重随机)。
+   * 这一档指定的审核渠道,空 = 不指定(在全部启用渠道之间分发)。
    *
    * 同样只给 id,名字去 `channels` 里 join —— 那张表上还有 `enabled`,
    * 而「指定的渠道被停用了」正是这一格最要紧的一种状态,只有 join 之后
    * 才看得出来。
    */
-  channel_id: number
+  channel_ids: number[]
   /**
-   * 「指定的渠道不可用时退到加权随机池」。`channel_id` 为 0 时恒为 `false`。
+   * 这几个渠道之间怎么分发。汇总表给的是**归一之后**的值(不会是空串):
+   * 这张表回答的是"这一档实际会怎么跑",而空串在那个问题下没有答案。
+   */
+  channel_mode: QyAiChannelMode
+  /**
+   * 「指定的渠道都不可用时退到加权随机池」。清单为空时恒为 `false`。
    *
    * 必须出现在列表上,不能只藏在编辑弹窗里:它改变的是**用户内容会被发到
    * 哪些第三方端点**。运营看到「审核渠道: 内部自建」时的默认理解是"只有它",
@@ -408,7 +476,7 @@ export type QyAiScopeList = {
   max_scopes: number
   ai_enabled: boolean
   /**
-   * 渠道清单,只够 join 用的四样。它让界面把 `channel_id` 变成名字,
+   * 渠道清单,只够 join 用的四样。它让界面把 `channel_ids` 变成名字,
    * 并把「指定的渠道已停用 / 已删除」这两种静默失效当场标出来。
    */
   channels: { id: number; name: string; enabled: boolean; model: string }[]
@@ -422,7 +490,9 @@ export type QyAiScopeList = {
     /** 提示词原文不下发,只给档位 —— 它已经在表单里了。 */
     prompt_source: QyAiScopePromptSource
     category_id: number
-    channel_id: number
+    channel_ids: number[]
+    /** 快照里那一档的分发方式(已归一)。与表单里的不一致说明还没重载到。 */
+    channel_mode: QyAiChannelMode
     /**
      * 快照里那一位。与表单里的不一致说明还没重载到 —— 而它的不一致最难察觉:
      * 关掉之后要等一次重载才真的停,中间这段时间界面写着"关",

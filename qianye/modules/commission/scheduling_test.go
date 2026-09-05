@@ -3,9 +3,6 @@ package commission
 import (
 	"testing"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
-
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -90,14 +87,14 @@ func TestCarryFloorMatchesPayoutCondition(t *testing.T) {
 
 			// 恰好等于门槛的余数必须发得出去(delta=0 的 carry-only 结算)。
 			out := computeSettlement(decimal.NewFromInt(floor), decimal.Zero, 0, tc.minSettle, -1)
-			assert.Equal(t, floor, out.NetQuota, "选中却发不出来 = 白跑一次加锁事务")
-			assert.True(t, settleNeeded(out.NetQuota, false))
+			assert.Equal(t, floor, out.Net, "选中却发不出来 = 白跑一次加锁事务")
+			assert.True(t, settleNeeded(out.Net, false))
 
 			// 差一个额度就发不出去,因此也不该被选中。
 			below := computeSettlement(decimal.NewFromInt(floor-1), decimal.Zero, 0, tc.minSettle, -1)
 			if floor > 1 {
-				assert.EqualValues(t, 0, below.NetQuota)
-				assert.False(t, settleNeeded(below.NetQuota, false))
+				assert.EqualValues(t, 0, below.Net)
+				assert.False(t, settleNeeded(below.Net, false))
 			}
 		})
 	}
@@ -114,18 +111,18 @@ func TestSettleNeededFlushesCarryWithoutNewAccruals(t *testing.T) {
 	const minSettle = int64(1)
 
 	first := computeSettlement(decimal.Zero, decimal.NewFromInt(5000), 0, minSettle, dailyCap)
-	require.EqualValues(t, 1000, first.NetQuota)
+	require.EqualValues(t, 1000, first.Net)
 	require.Equal(t, "4000", first.CarryAfter.String())
 	require.EqualValues(t, 4000, first.Clipped)
 
 	// 后续每一轮都没有新增量,只有 carry。必须逐轮发满日封顶直到发完。
 	carry := first.CarryAfter
-	granted := first.NetQuota
+	granted := first.Net
 	for round := 0; round < 4; round++ {
 		out := computeSettlement(carry, decimal.Zero, granted, minSettle, dailyCap)
-		require.True(t, settleNeeded(out.NetQuota, false),
+		require.True(t, settleNeeded(out.Net, false),
 			"第 %d 轮 carry-only 结算被跳过 = 这笔佣金永远发不出去", round)
-		granted += out.NetQuota
+		granted += out.Net
 		carry = out.CarryAfter
 	}
 	assert.EqualValues(t, 5000, granted, "被日封顶削掉的部分必须一分不少地补发完")
@@ -156,53 +153,4 @@ func TestSettleNeededSkipsEmptyRounds(t *testing.T) {
 			assert.Equal(t, tc.want, settleNeeded(tc.net, tc.clamped))
 		})
 	}
-}
-
-// TestBatchRateNeverZeroOnCarryOnlyRound 确认 carry-only 结算不会把法币余额落下。
-//
-// delta 为零时本批没有加权汇率可算。若退回 decimal.Zero,applyFiat 会一分
-// 法币都不加而额度照加,AvailableFiat 与 AvailableQuota 就此永久漂移,
-// 提现模块按 AvailableFiat 折算会少给用户钱。
-func TestBatchRateNeverZeroOnCarryOnlyRound(t *testing.T) {
-	// 全站充值汇率刻意设成一个**不等于** fallback 的值。carry-only 轮以前
-	// 无条件现取它,现在必须优先用调用方给的那个数(邀请人上一笔冻结的比例,
-	// 见 lastFrozenFiatRate)—— 把 batchRate 改回 currentUsdRate() 就会读出 99,
-	// 断言立刻红。
-	original := operation_setting.USDExchangeRate
-	operation_setting.USDExchangeRate = 99
-	defer func() { operation_setting.USDExchangeRate = original }()
-
-	fallback := decimal.NewFromFloat(7.3)
-
-	t.Run("有增量时用本批加权均值", func(t *testing.T) {
-		// 30 @ 6.0 + 10 @ 10.0 → (180 + 100) / 40 = 7
-		weightedSum := decimal.NewFromInt(30).Mul(decimal.NewFromInt(6)).
-			Add(decimal.NewFromInt(10).Mul(decimal.NewFromInt(10)))
-		assert.Equal(t, "7",
-			batchRate(weightedSum, decimal.NewFromInt(40), fallback).String(),
-			"有增量时兜底比例不该插手")
-	})
-
-	t.Run("carry-only 轮退回调用方给的兜底比例而不是零", func(t *testing.T) {
-		rate := batchRate(decimal.Zero, decimal.Zero, fallback)
-		require.False(t, rate.IsZero(), "汇率留零 = 发了额度却不加法币,两边永久漂移")
-		assert.Equal(t, "7.3", rate.String())
-
-		// 折算链路端到端确认:1000000 额度 / 500000 每单位 = 2 美元 × 7.3。
-		originalQPU := common.QuotaPerUnit
-		common.QuotaPerUnit = 500000
-		defer func() { common.QuotaPerUnit = originalQPU }()
-		bal := &Balance{AvailableQuota: 0, AvailableFiat: decimal.Zero}
-		delta, after := applyFiat(bal, 1_000_000, rate)
-		assert.Equal(t, "14.6", delta.String())
-		assert.Equal(t, "14.6", after.String())
-	})
-
-	t.Run("兜底比例本身不可用时才退到全站汇率", func(t *testing.T) {
-		// 这个邀请人一条计佣行都没有(管理端对陌生 user_id 调 settleOne),
-		// lastFrozenFiatRate 返回零值。此时只剩全站汇率可用 —— 但绝不能
-		// 直接拿那个零值去折算,那正是"额度照加、法币不加"的入口。
-		assert.Equal(t, "99", batchRate(decimal.Zero, decimal.Zero, decimal.Zero).String())
-		assert.Equal(t, "99", batchRate(decimal.Zero, decimal.Zero, decimal.NewFromInt(-1)).String())
-	})
 }

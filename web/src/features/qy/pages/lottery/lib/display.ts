@@ -17,8 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { formatQyQuotaLedger } from '../../../lib/format'
+import { formatSd } from '../../../lib/format-sd'
 import type { QyStatus } from '../../../lib/types'
 import type {
+  QyLotDrawMode,
   QyLotEntryStatus,
   QyLotMissing,
   QyLotOutcome,
@@ -140,7 +142,7 @@ export function qyLotMissingKey(missing: QyLotMissing): string {
  * `need` / `have` 是站内额度的那几条缺失项。
  *
  * 后端把这两个数一律按 `int64` 下发，单位是什么只有条件本身知道：
- * `account_age` 是天、`violation_hits` 是次，而这四条是 quota。把 quota 原样
+ * `account_age` 是天、`violation_hits` 是次，而这三条是 quota。把 quota 原样
  * 渲染出来，用户看到的是「余额未达门槛（需 5000000，当前 4999998）」—— 一串
  * 他在钱包页从来没见过的大整数，既算不出还差多少、也不知道要充多少。
  *
@@ -149,30 +151,58 @@ export function qyLotMissingKey(missing: QyLotMissing): string {
  */
 const QUOTA_VALUED_MISSING: ReadonlySet<string> = new Set([
   'balance',
-  'stake',
   'used_quota',
   'recent_spend',
 ])
 
 /**
+ * `need` / `have` 是**星屑**的那一条：参与费从星屑余额里扣（design-15 §5），
+ * 所以它绝不能走额度换算 —— 把 500 星屑印成 `$0.001` 会让用户去钱包页充值，
+ * 而钱包里那笔钱压根买不到星屑。单位名由文案通过 `{{unit}}` 补。
+ */
+const STARDUST_VALUED_MISSING: ReadonlySet<string> = new Set(['stake'])
+
+/**
  * 一条缺失项交给 i18n 插值的 `need` / `have`。
  *
- * quota 口径的走站内额度格式化，其余（天数、次数）原样透传 —— 单位由文案自己
- * 补。`null` / `undefined` 回落成空串而不是 `0`：「需 0」是一句会误导人的假话。
- * 非数字（后端理论上可以塞 bool / string）也原样透传：那时不存在可换算的额度，
- * 硬塞进格式化函数只会得到一个 `-`，比原文更没信息。
+ * quota 口径的走站内额度格式化，星屑口径的走整数千分位，其余（天数、次数）
+ * 原样透传 —— 单位由文案自己补。`null` / `undefined` 回落成空串而不是 `0`：
+ * 「需 0」是一句会误导人的假话。非数字（后端理论上可以塞 bool / string）也
+ * 原样透传：那时不存在可换算的额度，硬塞进格式化函数只会得到一个 `-`。
  */
 export function qyLotMissingValues(missing: QyLotMissing): {
   need: QyLotMissing['need']
   have: QyLotMissing['have']
 } {
   const quota = QUOTA_VALUED_MISSING.has(missing.code)
+  const stardust = STARDUST_VALUED_MISSING.has(missing.code)
   const render = (value: QyLotMissing['need']) => {
     if (value == null) return ''
-    if (!quota || typeof value !== 'number') return value
-    return formatQyQuotaLedger(value)
+    if (typeof value !== 'number') return value
+    if (stardust) return formatSd(value)
+    if (quota) return formatQyQuotaLedger(value)
+    return value
   }
   return { need: render(missing.need), have: render(missing.have) }
+}
+
+/**
+ * 「我的参与」里一张**没有结果**的票该说哪句话。
+ *
+ * 「没中」与「还没开奖」是两个结论，写成同一个"未中奖 / 未结算"就等于什么都
+ * 没说 —— 而那句话在一场还没开奖的活动上甚至是**错的**（它先说了"未中奖"）。
+ *
+ * 双色球有一条干净的判据：这一期开出号码了没有。取消 / 流局的场次 reveal 从未
+ * 执行，`ball_result` 恒为空串，那时写「未中奖」就是把退款说成输钱，所以回落到
+ * 「待开奖」。其余玩法没有这个判据，仍用原来那个含糊但诚实的占位。
+ */
+export function qyLotNoResultKey(row: {
+  draw_mode?: QyLotDrawMode
+  ball_result?: string
+}): string {
+  if (row.draw_mode !== 'ball') return 'qy_lot_result_none'
+  if ((row.ball_result ?? '') === '') return 'qy_lot_ball_await_draw'
+  return 'qy_lot_ball_not_won'
 }
 
 /**
@@ -181,23 +211,33 @@ export function qyLotMissingValues(missing: QyLotMissing): {
  * 返回 `null` 表示没有倒计时可显示（已封盘、已结束）。把"倒计到哪一刻"这件事
  * 收在这里，是因为大厅卡片与详情页头必须显示同一个数字：一处倒计到 `close_at`、
  * 另一处倒计到 `draw_at`，用户会以为自己看错了。
+ *
+ * `fraction` 是这一段窗口的**剩余比例**（1 = 刚开始、0 = 到点），给倒计时环画弧用；
+ * 窗口没有可比的起点（「距开始」那一档没有"从何时起算"）或长度为零时给 `null`，
+ * 环画满而不是画空 —— 空环读起来像"已经到点了"。
  */
 export function qyLotCountdown(
   activity: { open_at: number; close_at: number; draw_at: number },
   status: QyLotStatus,
   nowSeconds: number
-): { labelKey: string; seconds: number } | null {
+): { labelKey: string; seconds: number; fraction: number | null } | null {
   if (status === 'published') {
     if (nowSeconds < activity.open_at) {
       return {
         labelKey: 'qy_lot_countdown_open',
         seconds: activity.open_at - nowSeconds,
+        fraction: null,
       }
     }
     if (nowSeconds < activity.close_at) {
       return {
         labelKey: 'qy_lot_countdown_close',
         seconds: activity.close_at - nowSeconds,
+        fraction: qyLotWindowRemaining(
+          activity.open_at,
+          activity.close_at,
+          nowSeconds
+        ),
       }
     }
   }
@@ -205,9 +245,25 @@ export function qyLotCountdown(
     return {
       labelKey: 'qy_lot_countdown_draw',
       seconds: activity.draw_at - nowSeconds,
+      fraction: qyLotWindowRemaining(
+        activity.close_at,
+        activity.draw_at,
+        nowSeconds
+      ),
     }
   }
   return null
+}
+
+/** `[from, to]` 这段窗口此刻还剩几成。窗口非法（to ≤ from）给 `null`。 */
+function qyLotWindowRemaining(
+  from: number,
+  to: number,
+  nowSeconds: number
+): number | null {
+  const length = to - from
+  if (length <= 0) return null
+  return Math.min(1, Math.max(0, (to - nowSeconds) / length))
 }
 
 /**

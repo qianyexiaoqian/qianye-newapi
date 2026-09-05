@@ -21,6 +21,7 @@ import { queryOptions } from '@tanstack/react-query'
 import { qyGet, qyPost } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import type { QyPage } from '../../lib/types'
+import type { QyLotWheelProof } from './lib/verify'
 import type {
   QyLotActivityBrief,
   QyLotActivityDetail,
@@ -265,17 +266,22 @@ const PROOF_MAX_PAGE_SIZE = 1000
  *
  * 逐页请求之间活动已经封盘、条目不会再变，所以拼接是安全的；万一 total 在
  * 翻页途中变了（只可能是有人在改库），拼出来的那一份会在链校验那一步露出来。
+ *
+ * 转盘的 `spins[]` 与 `entries` 同页同序（design-15 §12.1），一转对一条，
+ * 所以要**一起**拼：只拼条目不拼转动，链那一步会在第 201 转上以"spin missing"
+ * 报红，而真实情况只是前端少拼了一半。
  */
 export function qyLotFullProofQuery(actNo: string, enabled: boolean) {
   return queryOptions({
     queryKey: qyKeys.lotteryProof(actNo, { full: 1 }),
-    queryFn: async (): Promise<QyLotProof> => {
+    queryFn: async (): Promise<QyLotWheelProof> => {
       const base = `/lottery/public/${encodeURIComponent(actNo)}/proof`
-      const first = await qyGet<QyLotProof>(base, {
+      const first = await qyGet<QyLotWheelProof>(base, {
         p: 1,
         page_size: PROOF_MAX_PAGE_SIZE,
       })
       const entries = [...first.entries]
+      const spins = first.spins == null ? undefined : [...first.spins]
       // 上界防的是"服务端 total 与实际条目对不上"时的死循环：翻到没有新数据
       // 就停,拿到多少算多少,由 verify 那一步如实标"不完整"。
       for (
@@ -283,14 +289,17 @@ export function qyLotFullProofQuery(actNo: string, enabled: boolean) {
         entries.length < first.total && page <= 200;
         page += 1
       ) {
-        const next = await qyGet<QyLotProof>(base, {
+        const next = await qyGet<QyLotWheelProof>(base, {
           p: page,
           page_size: PROOF_MAX_PAGE_SIZE,
         })
         if (next.entries.length === 0) break
         entries.push(...next.entries)
+        if (spins != null && next.spins != null) spins.push(...next.spins)
       }
-      return { ...first, entries }
+      return spins == null
+        ? { ...first, entries }
+        : { ...first, entries, spins }
     },
     // 揭示之后证据链就不再变了，缓存久一点没有任何风险。
     staleTime: 60_000,

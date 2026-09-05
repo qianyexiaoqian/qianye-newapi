@@ -69,34 +69,16 @@ const (
 	// 读不提档:role=10 必须能看见当前值,否则他连"为什么新用户没模型"都查不了。
 	RootActionUserGroupDefaultWrite RootOnlyAction = "user_group.default.write"
 
-	// RootActionWithdrawPayeeReveal 是提现收款人明文与打款凭证图片。
-	// 两者同属 PII 且同属一次线下打款的证据面,因此同一档。
-	// 提档**不取代**二次校验,理由见本文件顶部。
-	RootActionWithdrawPayeeReveal RootOnlyAction = "withdraw.payee.reveal"
-
 	// RootActionLotteryResultSet 是设定/更改开奖结果。
 	//
 	// 抽奖只有这**一个**动作被提档:开活动、发布、封盘、取消、隐藏、删除、
-	// 换封面、履行奖品、解决对账标记、参与、查看,role=10 全部照旧。
+	// 换封面、履行奖品、重试出款、解决对账标记、参与、查看,role=10 全部照旧。
+	// 派奖走扩展库星屑账本的单事务,没有"机器判不出主库动没动"的那一档,
+	// 也就没有人工仲裁这个动作。
 	// 抽奖(draw)与双色球的结果来自 commit-reveal 随机源,管理员无从influence;
 	// 只有竞猜(guess)的结果是**链下事实**,必须由人录入 —— 那一处就是全站
 	// 唯一"管理员说了算"的开奖口。
 	RootActionLotteryResultSet RootOnlyAction = "lottery.result.set"
-
-	// RootActionLotteryPayoutAdjudicate 是「凭人工核对结论给一笔出款落账」。
-	//
-	// 它是抽奖第二个、也是最后一个被提档的动作,与开奖结果同一条理由的另一半:
-	// 那一个是"链下事实必须由人录入",这一个是"自动判定已经答不出来,必须由人
-	// 推翻它"。所有自动判据(资金单终态 + 主库 outbox 探针)在这一笔上要么互相
-	// 矛盾、要么全都说"判不出来",系统因此把它挂起;本动作是绕过全部自动判据的
-	// **最终裁决**,而其中一支(判定"确实没发放")会让主库对同一个人再加一次钱。
-	//
-	// 通用对账台的 /fund-orders/:order_no/resolve 留在 role=10,是因为它只收
-	// Uncertain —— 那是系统自己承认"我不知道"的状态,人只是替它把话说完。
-	// 这里推翻的是一个**已经给过的 failed 结论**,严格更危险,所以档位更高。
-	//
-	// 「重试」不提档:它只在探针明确说"主库没动"时才换代次,判据仍然是机器的。
-	RootActionLotteryPayoutAdjudicate RootOnlyAction = "lottery.payout.adjudicate"
 
 	// RootActionUpdateCheck 是「检查二开是否有新版本」。
 	//
@@ -109,6 +91,16 @@ const (
 	// role=10,而且刻意连 requireCore 都不走 —— 排障的第一个问题是"跑的是哪个
 	// 版本",它必须在任何降级下都答得出。被提档的只有"替本站发这一次请求"。
 	RootActionUpdateCheck RootOnlyAction = "update.check"
+
+	// RootActionStardustAdjust 是「管理员手调某人的星屑」。星屑能经商城换成套餐、
+	// 卡密与实物,手调是凭空造出可变现的东西 —— 与抽奖人工落账同档,只许超管。
+	RootActionStardustAdjust RootOnlyAction = "stardust.adjust"
+
+	// RootActionMallAdjudicate 是「凭人工核对结论给一笔套餐订单落定」:资金单 Failed
+	// 但探针说不清主库到底动没动的那一档。它是全站唯一一处人工推翻资金单结论的
+	// 动作(抽奖派奖自 v2.0.0 起只动扩展库星屑账本,没有这一档),两支各有后果:
+	// 判 applied 是把订阅在账上宣布为已给,判 not_applied 是退星屑。
+	RootActionMallAdjudicate RootOnlyAction = "mall.order.adjudicate"
 )
 
 // RootActionRequiredCode 是被本闸门拒绝时的响应 code。

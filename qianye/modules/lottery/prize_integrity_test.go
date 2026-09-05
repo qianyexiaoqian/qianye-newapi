@@ -10,7 +10,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
 // prize_integrity_test.go —— 三条与"发出去多少钱、发给谁"直接相关的契约:
@@ -78,7 +77,7 @@ func TestRankTextPrizeReachesPayoutTable(t *testing.T) {
 		PayoutMaxAttempts:      8,
 		EntryCloseGraceSeconds: 0,
 		RevealDelaySeconds:     0,
-		MaxStakeQuota:          5_000_000,
+		MaxStakeStardust:       5_000_000,
 	})
 
 	now := common.GetTimestamp()
@@ -128,18 +127,9 @@ func TestRankTextPrizeReachesPayoutTable(t *testing.T) {
 	salts, err := loadSalts(ctx, gdb, act.Id)
 	require.NoError(t, err)
 	for uid := 301; uid < 306; uid++ {
-		e := &Entry{
-			EntryNo: newEntryNo(), ActId: act.Id, IdemKey: buildIdemKey(act.ActNo, newEntryNo()),
+		seedTicket(t, gdb, act, &Entry{
 			UserId: uid, UserRef: UserRef(salts.RefSalt, uid), Amount: act.StakeQuota,
-			Status: EntryPending, OrderNo: "LE-" + newEntryNo(), CreatedAt: common.GetTimestamp(),
-		}
-		cur := loadAct(t, gdb, act.Id)
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return reserveEntry(tx, cur, Rules{}, e, 0)
-		}))
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return markEntrySuccess(tx, e.EntryNo, nil)
-		}))
+		})
 	}
 
 	require.NoError(t, gdb.Model(&Activity{}).Where("id = ?", act.Id).
@@ -236,7 +226,7 @@ func TestSpecPreimageRejectsSeparatorInjection(t *testing.T) {
 	injected := Prize{
 		Tier: 1,
 		Name: strings.Join([]string{
-			"奖", PrizeTypeQuota, "1000", "1", "0", "", "0", "0", "0", "2", "二等奖",
+			"奖", PrizeTypeQuota, "1000", "1", "0", "", "0", "0", "0", "", "2", "二等奖",
 		}, SEP),
 		AmountQuota: 5000, Count: 1, PrizeType: PrizeTypeQuota,
 	}
@@ -244,7 +234,7 @@ func TestSpecPreimageRejectsSeparatorInjection(t *testing.T) {
 		"两张结构不同的奖档表拼出了同一份 spec 原像 —— 这正是必须在入口拒绝控制字符的理由")
 
 	cfg := config.Lottery{MaxPrizeTiers: 8, MaxTotalEntriesHard: 10000}
-	set := opSettings{MaxTotalPrizeQuota: 50_000_000}
+	set := opSettings{MaxTotalPrizeStardust: 50_000_000}
 	act := &Activity{DrawMode: DrawModeRank, Algo: AlgoV2, MaxTotalEntries: 100}
 
 	t.Run("奖档名称", func(t *testing.T) {

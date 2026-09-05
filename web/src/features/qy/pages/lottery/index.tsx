@@ -16,8 +16,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { QyLotHallList } from './components/lottery-hall-list'
-import type { QyLotHallState } from './components/lottery-hall-list'
+import {
+  QyLotHallList,
+  type QyLotHallState,
+} from './components/lottery-hall-list'
 
 /**
  * 抽奖大厅（选择夹的第一张标签，按名次 / 按公示概率两种玩法）。

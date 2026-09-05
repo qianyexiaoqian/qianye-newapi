@@ -30,14 +30,15 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 
-import { QyAmountInput } from '../../../components/qy-amount-input'
-import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
+import { QySdAmount } from '../../../components/qy-sd-amount'
+import { QySdInput } from '../../../components/qy-sd-input'
+import { useStardustName } from '../../../hooks/use-stardust-name'
 import { qyErrorMessage } from '../../../lib/api'
 import { qyArray } from '../../../lib/array'
-import { formatQyQuotaBound } from '../../../lib/format'
+import { formatSdWithUnit } from '../../../lib/format-sd'
 import { qyKeys } from '../../../lib/query-keys'
 import {
   QY_LOT_BALL_MAX,
@@ -150,7 +151,7 @@ export function QyLotSeriesPanel() {
                 id: 'current',
                 header: t('qy_lot_ball_series_pool'),
                 cell: (row: QyLotSeries) => (
-                  <QyAmountText quota={row.pool_quota} />
+                  <QySdAmount amount={row.pool_quota} />
                 ),
               },
               {
@@ -159,7 +160,7 @@ export function QyLotSeriesPanel() {
                 id: 'headroom',
                 header: t('qy_lot_ball_headroom'),
                 cell: (row: QyLotSeries) => (
-                  <QyAmountText quota={row.headroom_quota} />
+                  <QySdAmount amount={row.headroom_quota} />
                 ),
               },
               {
@@ -233,19 +234,20 @@ function SeriesCreateDialog(props: {
   onOpenChange: (open: boolean) => void
 }) {
   const { t } = useTranslation()
+  const unit = useStardustName()
   const id = useId()
   const queryClient = useQueryClient()
   const [form, setForm] = useState<QyLotSeriesInput>(EMPTY_SERIES)
   const [confirmOpen, setConfirmOpen] = useState(false)
   // 两种上限的数都从这里来：系统上界（全站额度换算的整数上界）与策略上限
-  // （站点自己配的 max_total_prize_quota）。前端不自己抄一份常量 ——
+  // （站点自己配的 max_total_prize_stardust）。前端不自己抄一份常量 ——
   // 抄一份的表现是后端某天改了口径而界面还在教人填旧的那个数。
   const configQuery = useQuery({
     ...qyAdminLotConfigQuery(),
     enabled: props.open,
   })
-  const systemMax = configQuery.data?.yaml_readonly.system_max_quota ?? 0
-  const policyCap = configQuery.data?.effective.max_total_prize_quota ?? 0
+  const systemMax = configQuery.data?.yaml_readonly.system_max_stardust ?? 0
+  const policyCap = configQuery.data?.effective.max_total_prize_stardust ?? 0
 
   const pool = {
     redPool: form.red_pool,
@@ -302,6 +304,13 @@ function SeriesCreateDialog(props: {
   }
   if (form.pool_share_bps < 0 || form.pool_share_bps > 10_000) {
     errors.push('qy_lot_v_ball_share_range')
+  }
+  // 字段旁边那行红字与上面 errors 的两条判据**同一口径**：先判系统上界、再判策略上限。
+  let issueCapProblem: string | undefined
+  if (systemMax > 0 && form.issue_cap_quota > systemMax) {
+    issueCapProblem = t('qy_lot_v_ball_cap_over_physical')
+  } else if (policyCap > 0 && form.issue_cap_quota > policyCap) {
+    issueCapProblem = t('qy_lot_v_ball_cap_over_policy')
   }
 
   return (
@@ -398,7 +407,7 @@ function SeriesCreateDialog(props: {
 
           <div className='space-y-1'>
             <Label htmlFor={`${id}-cap`}>{t('qy_lot_ball_issue_cap')}</Label>
-            <QyAmountInput
+            <QySdInput
               id={`${id}-cap`}
               value={form.issue_cap_quota}
               onChange={(quota) => patch({ issue_cap_quota: quota })}
@@ -417,38 +426,32 @@ function SeriesCreateDialog(props: {
               写的是"额度列在数据库里是 32 位"——而三个方言上那些列都是 64 位，
               整条理由是假的。上界已按真实约束（float64 / JS 精确整数区间，以及
               资金路径上最大的那个未经检查的乘数）重定为 2^43，默认刻度下是
-              ＄17,592,186.04。这里一个字都不抄：数从 system_max_quota 下发。
+              ＄17,592,186.04。这里一个字都不抄：数从 system_max_stardust 下发。
 
               那个数是**全站额度换算的整数上界**（common.MaxQuota，代码写死），不是
-              任何人配出来的运营策略 —— 所以它与站点自己配的 max_total_prize_quota
+              任何人配出来的运营策略 —— 所以它与站点自己配的 max_total_prize_stardust
               分两行说，而且在填的时候就说，不等提交被拒之后才解释一遍。
             */}
             <QyLotFieldAdvice
               ranges={[
                 systemMax > 0
                   ? t('qy_lot_range_physical', {
-                      amount: formatQyQuotaBound(systemMax),
+                      amount: formatSdWithUnit(systemMax, unit),
                     })
                   : '',
                 policyCap > 0
                   ? t('qy_lot_range_policy_issue_cap', {
-                      amount: formatQyQuotaBound(policyCap),
+                      amount: formatSdWithUnit(policyCap, unit),
                     })
                   : t('qy_lot_range_policy_issue_cap_unlimited'),
               ]}
-              problem={
-                systemMax > 0 && form.issue_cap_quota > systemMax
-                  ? t('qy_lot_v_ball_cap_over_physical')
-                  : policyCap > 0 && form.issue_cap_quota > policyCap
-                    ? t('qy_lot_v_ball_cap_over_policy')
-                    : undefined
-              }
+              problem={issueCapProblem}
             />
           </div>
 
           <div className='space-y-1'>
             <Label htmlFor={`${id}-seed`}>{t('qy_lot_ball_seed_quota')}</Label>
-            <QyAmountInput
+            <QySdInput
               id={`${id}-seed`}
               value={form.seed_quota}
               onChange={(quota) => patch({ seed_quota: quota })}
@@ -492,10 +495,10 @@ function SeriesCreateDialog(props: {
               })}
             </QyKeyValue>
             <QyKeyValue label={t('qy_lot_ball_issue_cap')}>
-              <QyAmountText quota={form.issue_cap_quota} />
+              <QySdAmount amount={form.issue_cap_quota} />
             </QyKeyValue>
             <QyKeyValue label={t('qy_lot_ball_seed_quota')}>
-              <QyAmountText quota={form.seed_quota} />
+              <QySdAmount amount={form.seed_quota} />
             </QyKeyValue>
           </div>
         }
@@ -550,11 +553,11 @@ function SeriesFundDialog(props: {
             {series?.title ?? ''}
           </QyKeyValue>
           <QyKeyValue label={t('qy_lot_ball_headroom')}>
-            <QyAmountText quota={series?.headroom_quota ?? 0} />
+            <QySdAmount amount={series?.headroom_quota ?? 0} />
           </QyKeyValue>
           <div className='space-y-1'>
             <Label htmlFor={`${id}-amount`}>{t('qy_common_amount')}</Label>
-            <QyAmountInput
+            <QySdInput
               id={`${id}-amount`}
               value={amount}
               onChange={setAmount}
@@ -625,7 +628,7 @@ function SeriesCloseDialog(props: {
             {series?.title ?? ''}
           </QyKeyValue>
           <QyKeyValue label={t('qy_lot_ball_forfeited_pool')}>
-            <QyAmountText quota={series?.pool_quota ?? 0} />
+            <QySdAmount amount={series?.pool_quota ?? 0} />
           </QyKeyValue>
           <div className='space-y-1'>
             <Label htmlFor={`${id}-reason`}>{t('qy_common_reason')}</Label>

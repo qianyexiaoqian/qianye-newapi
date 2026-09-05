@@ -5,18 +5,17 @@ import (
 	"fmt"
 	"math"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// caps_test.go —— 额度闸门放开之后必须仍然成立的那几条。
+// caps_test.go —— 星屑闸门放开之后必须仍然成立的那几条。
 //
 // 这一组盯的是本次改造的**两个方向**,少一个方向就是假绿:
 //
@@ -111,32 +110,28 @@ func TestRequireNetIssueConfirm(t *testing.T) {
 	}
 }
 
-// 拒绝文案里的金额必须是**站内余额刻度**,不是裸额度。
+// 拒绝文案里的数字必须是**星屑整数 + 单位名**,不许再借额度的美元换算。
 //
-// "不得超过 5000000" 对着界面上的 $10 是对不上号的 —— 项目方那句
-// "怎么在抽奖设置这里不能超过 100 站点余额"的困惑就是从这里来的。
-func TestNetIssueConfirmMessageUsesSiteBalanceScale(t *testing.T) {
-	require.Equal(t, 500000.0, common.QuotaPerUnit,
-		"下面的期望值按 500000 quota = 1 USD 手算,单位变了必须重算")
-	withQuotaDisplay(t, operation_setting.QuotaDisplayTypeUSD, "", 0)
-
-	// 5000 万额度 = $100,500 万额度 = $10。两个数都独立手算。
+// 星屑没有汇率:文案里的每一个数就是库里的那个数。借 logger.LogQuota 渲染会把
+// 1000 星屑印成 ＄0.002,运营对着界面上的 1000 找不到这个数。
+func TestNetIssueConfirmMessageUsesTheStardustScale(t *testing.T) {
 	err := netIssueConfirmRequired(50_000_000, 5_000_000)
 
-	assert.Contains(t, err.Message(), "＄100.000000 额度", "总额要按站内余额刻度写出来")
-	assert.Contains(t, err.Message(), "＄10.000000 额度", "阈值同样按站内余额刻度")
-	// 回填值仍然是**存储用的整数**:运营要照抄进 confirm_net_issue_quota,
-	// 那个字段认的是额度不是美元。两个刻度必须同屏出现,不能二选一。
-	assert.Contains(t, err.Message(), "50000000", "要回填的整数必须原样给出")
+	assert.Contains(t, err.Message(), "50000000 "+stardust.UnitName(), "总额按星屑整数写出来")
+	assert.Contains(t, err.Message(), "5000000 "+stardust.UnitName(), "阈值同样按星屑整数")
+	assert.NotContains(t, err.Message(), "＄", "星屑没有美元刻度")
+	assert.NotContains(t, err.Message(), "额度", "星屑不是额度,文案里不该混进额度的刻度")
+	assert.Contains(t, err.Message(), "回填成 50000000", "要回填的整数必须原样给出")
+	// 净增发的后果必须按星屑说:发出去的能在商城换商品,而不是"没有回收路径"。
+	assert.Contains(t, err.Message(), "商城")
 }
 
-// TOKENS 口径下同一条文案换一种写法,而不是硬编码一个美元符号。
-func TestQuotaTextFollowsTheSiteDisplaySetting(t *testing.T) {
-	withQuotaDisplay(t, operation_setting.QuotaDisplayTypeTokens, "", 0)
-	assert.Equal(t, "50000000 点额度", quotaText(50_000_000))
-
-	withQuotaDisplay(t, operation_setting.QuotaDisplayTypeUSD, "", 0)
-	assert.Equal(t, "＄100.000000 额度", quotaText(50_000_000))
+// 文案刻度只有一处口径:整数 + 当前生效的单位名。
+func TestStardustTextIsPlainIntegerWithUnitName(t *testing.T) {
+	for _, n := range []int64{1, 20, 1000, 50_000_000} {
+		assert.Equal(t, fmt.Sprintf("%d %s", n, stardust.UnitName()), stardustText(n))
+	}
+	assert.NotEmpty(t, stardust.UnitName(), "单位名有 YAML 基线兜底,不可能为空")
 }
 
 // ─────────────── 2. 放开的那些:超大值现在能过 ───────────────
@@ -150,11 +145,11 @@ func prizeEnv() (config.Lottery, *Activity) {
 func TestBuildPrizesAcceptsHugeTotalsWhenNoCeilingIsConfigured(t *testing.T) {
 	cfg, act := prizeEnv()
 
-	// 5 亿额度 = $1000,是旧默认硬顶(5000 万 = $100)的十倍。
+	// 5 亿星屑,是旧默认硬顶(5000 万)的十倍。
 	// 这一条就是"奖品总额上限,你不要限制了"的可执行形式。
 	rows, _, err := buildPrizes([]prizeInput{
 		{Tier: 1, Name: "一等奖", AmountQuota: 100_000_000, Count: 5},
-	}, cfg, opSettings{MaxTotalPrizeQuota: 0}, act)
+	}, cfg, opSettings{MaxTotalPrizeStardust: 0}, act)
 
 	require.NoError(t, err, "上限配成 0 之后超大奖品总额必须能建出来")
 	assert.EqualValues(t, 500_000_000, prizeTotalRows(rows))
@@ -163,10 +158,8 @@ func TestBuildPrizesAcceptsHugeTotalsWhenNoCeilingIsConfigured(t *testing.T) {
 // 站点**自己**配了硬顶时,行为与从前完全一致 —— 这一档不能被顺手删掉,
 // 否则"我确实想要一道谁都绕不过去的硬顶"的站点就没有任何办法了。
 func TestBuildPrizesStillEnforcesASelfConfiguredCeiling(t *testing.T) {
-	require.Equal(t, 500000.0, common.QuotaPerUnit)
-	withQuotaDisplay(t, operation_setting.QuotaDisplayTypeUSD, "", 0)
 	cfg, act := prizeEnv()
-	set := opSettings{MaxTotalPrizeQuota: 1_000_000}
+	set := opSettings{MaxTotalPrizeStardust: 1_000_000}
 
 	// 恰好等于硬顶:必须放行。闭区间的边界写反是这类闸门最常见的错法。
 	_, _, err := buildPrizes([]prizeInput{
@@ -174,7 +167,7 @@ func TestBuildPrizesStillEnforcesASelfConfiguredCeiling(t *testing.T) {
 	}, cfg, set, act)
 	require.NoError(t, err, "恰好等于硬顶必须放行")
 
-	// 超出一个额度:拒绝,而且文案里的两个数都是站内余额刻度。
+	// 超出一个星屑:拒绝,而且文案里的两个数都是星屑整数、点名是哪一项配置。
 	_, _, err = buildPrizes([]prizeInput{
 		{Tier: 1, Name: "一等奖", AmountQuota: 500_001, Count: 2},
 	}, cfg, set, act)
@@ -182,8 +175,9 @@ func TestBuildPrizesStillEnforcesASelfConfiguredCeiling(t *testing.T) {
 	be, ok := AsBizError(err)
 	require.True(t, ok)
 	assert.Equal(t, codePrizeCap, be.ErrCode())
-	assert.Contains(t, be.Message(), "＄2.000004 额度", "总额按站内余额刻度")
-	assert.Contains(t, be.Message(), "＄2.000000 额度", "硬顶按站内余额刻度")
+	assert.Contains(t, be.Message(), stardustText(1_000_002), "总额按星屑整数")
+	assert.Contains(t, be.Message(), stardustText(1_000_000), "硬顶按星屑整数")
+	assert.Contains(t, be.Message(), "lottery.max_total_prize_stardust")
 }
 
 // ─────────────── 3. 保留的那些:一条都不许消失 ───────────────
@@ -191,7 +185,7 @@ func TestBuildPrizesStillEnforcesASelfConfiguredCeiling(t *testing.T) {
 func TestBuildPrizesKeepsTheCorrectnessConstraints(t *testing.T) {
 	cfg, act := prizeEnv()
 	prob := &Activity{DrawMode: DrawModeProb, Algo: AlgoV2, MaxTotalEntries: 100}
-	noCeiling := opSettings{MaxTotalPrizeQuota: 0}
+	noCeiling := opSettings{MaxTotalPrizeStardust: 0}
 
 	cases := []struct {
 		name string
@@ -199,18 +193,18 @@ func TestBuildPrizesKeepsTheCorrectnessConstraints(t *testing.T) {
 		in   []prizeInput
 	}{
 		{
-			// 额度奖发 0 没有意义,而且 PlanPayouts 会**静默跳过** amount<=0
+			// 星屑奖发 0 没有意义,而且 PlanPayouts 会**静默跳过** amount<=0
 			// 的计划 —— 一个真中了奖的人连 payout 行都不会有。
-			name: "奖品额度为 0", act: act,
+			name: "奖品星屑为 0", act: act,
 			in: []prizeInput{{Tier: 1, Name: "一等奖", AmountQuota: 0, Count: 1}},
 		},
 		{
-			name: "奖品额度为负", act: act,
+			name: "奖品星屑为负", act: act,
 			in: []prizeInput{{Tier: 1, Name: "一等奖", AmountQuota: -1, Count: 1}},
 		},
 		{
-			// int32 是 quota 列的列宽,不是运营闸门。放开总额不等于放开列宽。
-			name: "单档额度越过额度上界", act: act,
+			// common.MaxQuota 是星屑与额度共用的算术上界,不是运营闸门。放开总额不等于放开它。
+			name: "单档星屑越过算术上界", act: act,
 			in: []prizeInput{
 				{Tier: 1, Name: "一等奖", AmountQuota: int64(common.MaxQuota) + 1, Count: 1},
 			},
@@ -270,7 +264,7 @@ func TestBuildPrizesRefusesToOverflowInt64(t *testing.T) {
 			name: "单档乘积恰好绕回 0", amount: 1 << 30, count: 1 << 34,
 		},
 		{
-			// 2.1e9 × 2.1e9 ≈ 4.6e18:仍在 int64 之内,只是越过了护栏。
+			// 2^43 × 2^31 = 2^74:早已越过 int64,乘之前那次除法判定必须拦住它。
 			name: "单档不溢出但越过护栏", amount: int64(common.MaxQuota), count: math.MaxInt32,
 		},
 	}
@@ -283,7 +277,7 @@ func TestBuildPrizesRefusesToOverflowInt64(t *testing.T) {
 
 			_, _, err := buildPrizes([]prizeInput{
 				{Tier: 1, Name: "一等奖", AmountQuota: tc.amount, Count: tc.count},
-			}, cfg, opSettings{MaxTotalPrizeQuota: 0}, act)
+			}, cfg, opSettings{MaxTotalPrizeStardust: 0}, act)
 
 			require.Error(t, err)
 			be, ok := AsBizError(err)
@@ -308,7 +302,7 @@ func TestBuildPrizesRefusesOverflowAccumulatedAcrossTiers(t *testing.T) {
 	_, _, err := buildPrizes([]prizeInput{
 		{Tier: 1, Name: "一等奖", AmountQuota: amount, Count: count},
 		{Tier: 2, Name: "二等奖", AmountQuota: amount, Count: count},
-	}, cfg, opSettings{MaxTotalPrizeQuota: 0}, act)
+	}, cfg, opSettings{MaxTotalPrizeStardust: 0}, act)
 
 	require.Error(t, err)
 	be, ok := AsBizError(err)
@@ -325,14 +319,14 @@ func hugePrizeInput(confirm int64) *activityInput {
 		Kind:     KindDraw,
 		DrawMode: DrawModeRank,
 		Title:    "qy-超大活动",
-		// 旧闸门是 500 万($10)。
+		// 旧闸门是 500 万。
 		StakeQuota:     50_000_000,
 		OpenAt:         now + 600,
 		CloseAt:        now + 7200,
 		DrawAt:         now + 14400,
 		SettleDeadline: now + 21600,
 		Prizes: []prizeInput{
-			// 5 亿额度 = $1000,旧默认硬顶的十倍。
+			// 5 亿星屑,旧默认硬顶的十倍。
 			{Tier: 1, Name: "一等奖", AmountQuota: 100_000_000, Count: 5},
 		},
 		ConfirmNetIssueQuota: confirm,
@@ -342,15 +336,15 @@ func hugePrizeInput(confirm int64) *activityInput {
 // 默认配置(三个上限缺省)下,一场超大活动只差一次回显就能建出来。
 func TestBuildActivityWithDefaultConfigOnlyNeedsTheEchoedAmount(t *testing.T) {
 	withoutSettingsCache(t)
-	// defaults.go 只给 large_prize_alert_quota 补默认值,另外两项缺省为 0。
+	// defaults.go 只给 large_prize_alert_stardust 补默认值,另外两项缺省为 0。
 	// 这里用 ApplyDefaults 之后的真实形态,而不是手写一份"我以为的默认"。
 	lot := config.Lottery{
 		Enabled: true, MaxPrizeTiers: 10, MaxOptions: 12,
 		MaxTotalEntriesHard: 50000, RevealDelaySeconds: 60,
 		EntryCloseGraceSeconds: 60, SpendMaxLookbackDays: 90,
-		LargePrizeAlertQuota: 5_000_000,
+		LargePrizeAlertStardust: 5_000_000,
 		// 三项额度上限一律 0 = 不限。
-		MaxStakeQuota: 0, MaxTotalPrizeQuota: 0,
+		MaxStakeStardust: 0, MaxTotalPrizeStardust: 0,
 	}
 	withLotteryConfig(t, lot)
 
@@ -365,7 +359,7 @@ func TestBuildActivityWithDefaultConfigOnlyNeedsTheEchoedAmount(t *testing.T) {
 	// 回显之后放行 —— 一次也不用去改配置文件。
 	act, prizes, _, err := buildActivity(context.Background(), hugePrizeInput(500_000_000), 1)
 	require.NoError(t, err, "回显金额之后必须放行,否则等于把硬拒绝换了个名字")
-	assert.EqualValues(t, 50_000_000, act.StakeQuota, "参与费不再被 max_stake_quota 夹")
+	assert.EqualValues(t, 50_000_000, act.StakeQuota, "参与费不再被 max_stake_stardust 夹")
 	assert.EqualValues(t, 500_000_000, prizeTotalRows(prizes))
 }
 
@@ -376,7 +370,7 @@ func TestBuildActivityAsksNothingWhenTheThresholdIsZero(t *testing.T) {
 		Enabled: true, MaxPrizeTiers: 10, MaxOptions: 12,
 		MaxTotalEntriesHard: 50000, RevealDelaySeconds: 60,
 		EntryCloseGraceSeconds: 60, SpendMaxLookbackDays: 90,
-		LargePrizeAlertQuota: 0, MaxStakeQuota: 0, MaxTotalPrizeQuota: 0,
+		LargePrizeAlertStardust: 0, MaxStakeStardust: 0, MaxTotalPrizeStardust: 0,
 	})
 
 	_, _, _, err := buildActivity(context.Background(), hugePrizeInput(0), 1)
@@ -394,7 +388,7 @@ func TestBuildActivityNeverAsksForGuess(t *testing.T) {
 		MaxTotalEntriesHard: 50000, RevealDelaySeconds: 60,
 		EntryCloseGraceSeconds: 60, SpendMaxLookbackDays: 90,
 		MaxGuessFeeBps: 2000, DefaultGuessFeeBps: 500,
-		LargePrizeAlertQuota: 1, MaxStakeQuota: 0, MaxTotalPrizeQuota: 0,
+		LargePrizeAlertStardust: 1, MaxStakeStardust: 0, MaxTotalPrizeStardust: 0,
 	})
 
 	now := common.GetTimestamp()
@@ -413,41 +407,40 @@ func TestBuildActivityNeverAsksForGuess(t *testing.T) {
 // ─────────────── 5. 单注上限:界面不许撒谎 ───────────────
 
 func TestApplyBetBounds(t *testing.T) {
-	require.Equal(t, 500000.0, common.QuotaPerUnit)
-	withQuotaDisplay(t, operation_setting.QuotaDisplayTypeUSD, "", 0)
-
-	t.Run("上限不限时,int32 以内的大额单注放行", func(t *testing.T) {
+	t.Run("上限不限时,算术上界以内的大额单注放行", func(t *testing.T) {
 		act := &Activity{}
 		require.NoError(t, applyBetBounds(act, &activityInput{
 			BetMaxQuota: int64(common.MaxQuota),
-		}, config.Lottery{MaxStakeQuota: 0}))
+		}, config.Lottery{MaxStakeStardust: 0}))
 		assert.EqualValues(t, common.MaxQuota, act.BetMaxQuota)
 	})
 
-	t.Run("越过额度上界仍然拒绝", func(t *testing.T) {
+	t.Run("越过算术上界仍然拒绝", func(t *testing.T) {
 		// acceptAmount 无条件拒绝 amount > MaxQuota,所以一个填在它之上的
 		// 单注上限是一句界面谎言:页面写着能压这么多,实际到上界就报
 		// "投注金额不符合本场规则",而那句话不会说真正的上界是多少。
 		err := applyBetBounds(&Activity{}, &activityInput{
 			BetMaxQuota: int64(common.MaxQuota) + 1,
-		}, config.Lottery{MaxStakeQuota: 0})
+		}, config.Lottery{MaxStakeStardust: 0})
 		require.Error(t, err)
-		// 报错里必须念出**当前**的上界刻度,而不是一个抄下来的旧数字。
-		assert.Contains(t, err.(*bizError).Message(), quotaText(int64(common.MaxQuota)))
+		// 报错里必须念出**当前**的上界,而不是一个抄下来的旧数字。
+		assert.Contains(t, err.(*bizError).Message(), stardustText(int64(common.MaxQuota)))
 	})
 
 	t.Run("站点配了硬顶就仍然拦", func(t *testing.T) {
 		err := applyBetBounds(&Activity{}, &activityInput{BetMaxQuota: 5_000_001},
-			config.Lottery{MaxStakeQuota: 5_000_000})
+			config.Lottery{MaxStakeStardust: 5_000_000})
 		require.Error(t, err)
-		assert.Contains(t, err.(*bizError).Message(), "＄10.000000 额度",
-			"文案里的数字必须是站内余额刻度")
+		assert.Contains(t, err.(*bizError).Message(), stardustText(5_000_000),
+			"文案里的数字必须是星屑整数 + 单位名")
+		assert.Contains(t, err.(*bizError).Message(), "lottery.max_stake_stardust",
+			"策略上限必须点名是哪一项配置")
 	})
 
 	t.Run("下限大于上限仍然拒绝", func(t *testing.T) {
 		require.Error(t, applyBetBounds(&Activity{},
 			&activityInput{BetMinQuota: 100, BetMaxQuota: 10},
-			config.Lottery{MaxStakeQuota: 0}))
+			config.Lottery{MaxStakeStardust: 0}))
 	})
 }
 
@@ -486,52 +479,52 @@ func TestPrizeCeilingReadAndWriteSidesAgree(t *testing.T) {
 		const ceiling = 50_000_000
 		withLotteryConfig(t, config.Lottery{
 			MaxActiveActivities: 20, MaxGuessFeeBps: 2000,
-			MaxTotalPrizeQuota: ceiling,
+			MaxTotalPrizeStardust: ceiling,
 		})
-		base := opSettings{MaxTotalPrizeQuota: ceiling}
+		base := opSettings{MaxTotalPrizeStardust: ceiling}
 
 		accepted := mergeOverrides(base, map[string]string{
-			keyMaxTotalPrizeQuota: strconv.Itoa(ceiling / 2),
+			keyMaxTotalPrizeStardust: strconv.Itoa(ceiling / 2),
 		})
-		assert.EqualValues(t, ceiling/2, accepted.MaxTotalPrizeQuota, "调低要收")
+		assert.EqualValues(t, ceiling/2, accepted.MaxTotalPrizeStardust, "调低要收")
 
 		rejected := mergeOverrides(base, map[string]string{
-			keyMaxTotalPrizeQuota: strconv.Itoa(ceiling + 1),
+			keyMaxTotalPrizeStardust: strconv.Itoa(ceiling + 1),
 		})
-		assert.EqualValues(t, ceiling, rejected.MaxTotalPrizeQuota,
+		assert.EqualValues(t, ceiling, rejected.MaxTotalPrizeStardust,
 			"写侧拒绝的值读侧却采纳了 —— 存量越界覆盖会一直生效")
 
 		// 在线把硬顶抹成"不限"是写侧明确拒绝的,读侧必须同样拒绝。
 		unlimited := mergeOverrides(base, map[string]string{
-			keyMaxTotalPrizeQuota: "0",
+			keyMaxTotalPrizeStardust: "0",
 		})
-		assert.EqualValues(t, ceiling, unlimited.MaxTotalPrizeQuota,
+		assert.EqualValues(t, ceiling, unlimited.MaxTotalPrizeStardust,
 			"库里被人手写了 0,读侧不能把它当成「不限」采纳")
 	})
 
 	t.Run("YAML 不限:在线怎么配都行", func(t *testing.T) {
 		withLotteryConfig(t, config.Lottery{
-			MaxActiveActivities: 20, MaxGuessFeeBps: 2000, MaxTotalPrizeQuota: 0,
+			MaxActiveActivities: 20, MaxGuessFeeBps: 2000, MaxTotalPrizeStardust: 0,
 		})
-		base := opSettings{MaxTotalPrizeQuota: 0}
+		base := opSettings{MaxTotalPrizeStardust: 0}
 
 		// 配一个正数 = 运营给自己加闸门,方向是收紧,没有理由拦。
 		tightened := mergeOverrides(base, map[string]string{
-			keyMaxTotalPrizeQuota: "12345",
+			keyMaxTotalPrizeStardust: "12345",
 		})
-		assert.EqualValues(t, 12345, tightened.MaxTotalPrizeQuota)
+		assert.EqualValues(t, 12345, tightened.MaxTotalPrizeStardust)
 
 		// 配一个天文数字也收:上界本来就不存在。
 		huge := mergeOverrides(base, map[string]string{
-			keyMaxTotalPrizeQuota: strconv.FormatInt(math.MaxInt64, 10),
+			keyMaxTotalPrizeStardust: strconv.FormatInt(math.MaxInt64, 10),
 		})
-		assert.EqualValues(t, int64(math.MaxInt64), huge.MaxTotalPrizeQuota)
+		assert.EqualValues(t, int64(math.MaxInt64), huge.MaxTotalPrizeStardust)
 
 		// 负数仍然丢弃回落。
 		negative := mergeOverrides(base, map[string]string{
-			keyMaxTotalPrizeQuota: "-1",
+			keyMaxTotalPrizeStardust: "-1",
 		})
-		assert.EqualValues(t, 0, negative.MaxTotalPrizeQuota)
+		assert.EqualValues(t, 0, negative.MaxTotalPrizeStardust)
 	})
 }
 
@@ -539,23 +532,22 @@ func TestPrizeCeilingReadAndWriteSidesAgree(t *testing.T) {
 func TestAlertThresholdIsNotClampedByThePrizeCeiling(t *testing.T) {
 	withLotteryConfig(t, config.Lottery{
 		MaxActiveActivities: 20, MaxGuessFeeBps: 2000,
-		MaxTotalPrizeQuota: 1_000_000, LargePrizeAlertQuota: 500_000,
+		MaxTotalPrizeStardust: 1_000_000, LargePrizeAlertStardust: 500_000,
 	})
-	base := opSettings{MaxTotalPrizeQuota: 1_000_000, LargePrizeAlertQuota: 500_000}
+	base := opSettings{MaxTotalPrizeStardust: 1_000_000, LargePrizeAlertStardust: 500_000}
 
 	got := mergeOverrides(base, map[string]string{
-		keyLargePrizeAlertQuota: "9000000",
+		keyLargePrizeAlertStardust: "9000000",
 	})
-	assert.EqualValues(t, 9_000_000, got.LargePrizeAlertQuota,
+	assert.EqualValues(t, 9_000_000, got.LargePrizeAlertStardust,
 		"阈值配高只是少响几次,一分钱都不会多发,不该被夹")
 }
 
-// 一条把上面几个数字串起来的自检:文案里出现的金额必须能被独立算出来。
-func TestQuotaTextIsSelfConsistentWithQuotaPerUnit(t *testing.T) {
-	withQuotaDisplay(t, operation_setting.QuotaDisplayTypeUSD, "", 0)
-	for _, quota := range []int64{1, 500_000, 5_000_000, 50_000_000} {
-		want := fmt.Sprintf("＄%.6f 额度", float64(quota)/common.QuotaPerUnit)
-		assert.Equal(t, want, quotaText(quota))
-		assert.True(t, strings.HasPrefix(quotaText(quota), "＄"))
-	}
+// 系统上界那一句与策略上限那一句必须能同屏分清:一句念的是算术上界,
+// 另一句念的是配置项;两句都用同一个星屑刻度。
+func TestSystemCeilingTextNamesTheArithmeticBoundOnly(t *testing.T) {
+	msg := stardustCeilingText("单注上限")
+	assert.Contains(t, msg, "单注上限请填 "+stardustText(int64(common.MaxQuota))+" 以内")
+	assert.Contains(t, msg, "common.MaxQuota")
+	assert.NotContains(t, msg, "lottery.", "系统上界不该指向任何配置项")
 }

@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/QuantumNous/new-api/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -21,8 +20,8 @@ import (
 // 也就是"半幂等":重放只对第一注生效。这条用例把钱钉死。
 func TestEntryIdemKeyIgnoresSurroundingWhitespace(t *testing.T) {
 	ext := newPicksCapEnv(t)
-	const startQuota = 5_000_000
-	main := newBallMainDB(t, startQuota)
+	const startStardust = 5_000_000
+	newBallMainDB(t, startStardust)
 	r := picksCapRouter()
 
 	act := seedBallActivity(t, ext, func(a *Activity) {
@@ -40,8 +39,8 @@ func TestEntryIdemKeyIgnoresSurroundingWhitespace(t *testing.T) {
 	require.Equal(t, 3, first.Accepted)
 	require.Equal(t, wantTotal, first.TotalQuota)
 
-	quotaAfterFirst := userQuotaOf(t, main)
-	require.EqualValues(t, int64(startQuota)-wantTotal, quotaAfterFirst)
+	afterFirst := userStardust(t, ext)
+	require.EqualValues(t, int64(startStardust)-wantTotal, afterFirst)
 
 	// 同一个 crid,只多一个尾空格 —— 必须是重放,不许再扣一分钱。
 	code, body = callJSON(t, r, http.MethodPost,
@@ -49,13 +48,14 @@ func TestEntryIdemKeyIgnoresSurroundingWhitespace(t *testing.T) {
 	require.Equalf(t, http.StatusOK, code, "%s", body)
 	replay := decodeEntryBatch(t, body)
 	assert.Equal(t, 3, replay.Accepted)
-	assert.Equal(t, quotaAfterFirst, userQuotaOf(t, main),
+	assert.Equal(t, afterFirst, userStardust(t, ext),
 		"尾空格不许把第 1..N 注变成一次全新购买")
 	for i := range replay.Entries {
 		assert.Equal(t, first.Entries[i].EntryNo, replay.Entries[i].EntryNo,
 			"重放必须拿回原来那几张票")
 	}
 	assert.EqualValues(t, 3, entryRowsOf(t, ext, act.Id))
+	assert.Len(t, ledgerRowsOf(t, ext, ballE2EUserId, act.ActNo), 3, "账本上同样只有三行")
 }
 
 // 只差大小写的 crid 在三方言上必须给出同一个答案。
@@ -66,8 +66,8 @@ func TestEntryIdemKeyIgnoresSurroundingWhitespace(t *testing.T) {
 // 折叠之后两侧都按 MySQL(生产方言)的语义走,也就是"当成重放"。
 func TestEntryIdemKeyFoldsCaseOnEveryDialect(t *testing.T) {
 	ext := newPicksCapEnv(t)
-	const startQuota = 5_000_000
-	main := newBallMainDB(t, startQuota)
+	const startStardust = 5_000_000
+	newBallMainDB(t, startStardust)
 	r := picksCapRouter()
 
 	act := seedBallActivity(t, ext, func(a *Activity) {
@@ -81,15 +81,15 @@ func TestEntryIdemKeyFoldsCaseOnEveryDialect(t *testing.T) {
 		"/lottery/activities/"+act.ActNo+"/entries", entryBody(t, "case-key-a", picks))
 	require.Equalf(t, http.StatusOK, code, "%s", body)
 	first := decodeEntryBatch(t, body)
-	after := userQuotaOf(t, main)
-	require.EqualValues(t, int64(startQuota)-want, after)
+	after := userStardust(t, ext)
+	require.EqualValues(t, int64(startStardust)-want, after)
 
 	code, body = callJSON(t, r, http.MethodPost,
 		"/lottery/activities/"+act.ActNo+"/entries", entryBody(t, "CASE-KEY-A", picks))
 	require.Equalf(t, http.StatusOK, code, "%s", body)
 	again := decodeEntryBatch(t, body)
 	assert.Equal(t, first.Entries[0].EntryNo, again.Entries[0].EntryNo)
-	assert.Equal(t, after, userQuotaOf(t, main), "大写变体不许再扣一次")
+	assert.Equal(t, after, userStardust(t, ext), "大写变体不许再扣一次")
 	assert.EqualValues(t, 2, entryRowsOf(t, ext, act.Id))
 }
 
@@ -99,8 +99,8 @@ func TestEntryIdemKeyFoldsCaseOnEveryDialect(t *testing.T) {
 // 同一个键,而 PostgreSQL 不会。唯一的办法是不让它们进来。
 func TestEntryIdemKeyRejectsNonASCII(t *testing.T) {
 	ext := newPicksCapEnv(t)
-	const startQuota = 5_000_000
-	main := newBallMainDB(t, startQuota)
+	const startStardust = 5_000_000
+	newBallMainDB(t, startStardust)
 	r := picksCapRouter()
 
 	act := seedBallActivity(t, ext, func(a *Activity) {
@@ -112,15 +112,8 @@ func TestEntryIdemKeyRejectsNonASCII(t *testing.T) {
 			"/lottery/activities/"+act.ActNo+"/entries", entryBody(t, crid, picksOf(1)))
 		assert.Equalf(t, http.StatusBadRequest, code, "crid=%q body=%s", crid, body)
 	}
-	assert.EqualValues(t, startQuota, userQuotaOf(t, main), "被拒的请求不许扣钱")
+	assert.EqualValues(t, startStardust, userStardust(t, ext), "被拒的请求不许扣钱")
 	assert.EqualValues(t, 0, entryRowsOf(t, ext, act.Id))
-}
-
-func userQuotaOf(t *testing.T, main *gorm.DB) int64 {
-	t.Helper()
-	var u model.User
-	require.NoError(t, main.First(&u, ballE2EUserId).Error)
-	return int64(u.Quota)
 }
 
 func entryRowsOf(t *testing.T, ext *gorm.DB, actId int64) int64 {

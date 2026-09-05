@@ -91,7 +91,7 @@ func TestAdminListAuditLogs_ActionMatchesByPrefix(t *testing.T) {
 		"transfer.create", "site_theme.update",
 	} {
 		require.NoError(t, gdb.Create(&qymodel.AuditLog{
-			Category: qymodel.AuditCategoryWithdraw, Action: action,
+			Category: qymodel.AuditCategoryInvite, Action: action,
 			ActorType: qymodel.ActorAdmin, Result: qymodel.ResultOK, CreatedAt: 1,
 		}).Error)
 	}

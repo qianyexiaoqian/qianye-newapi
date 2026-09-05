@@ -45,6 +45,17 @@ import { useQyAfterMoneyChange } from '../../../hooks/use-qy-after-money-change'
  * 两者都显示邀请链接，但账本不是同一个：推荐计划卡上的三个数字来自主库
  * `users.aff_*`（上游返佣），而本页统计网格来自 qy 自己的佣金账本。刻意不合并，
  * 也刻意不互相取数 —— 把两个账本的数字混在一张卡里，对账时谁也说不清。
+ *
+ * ── 什么时候渲染：只在还有存量 `aff_quota` 时 ──
+ * 本站的邀请返利是**星屑**（design-15 D-11 / D-14），上游这条 `aff_quota` 通道
+ * 只剩「把注册奖那一刻发下来的存量划进余额」这一个用途（D-G ③：运维把
+ * `QuotaForInviter` / `QuotaForInvitee` 置 0 之后它不再产生新钱）。所以余额为 0
+ * 的账号不该在「我的推广」顶部看到一张**星辉**口径的「邀请返利」卡：邀请返在
+ * 这一站是星屑，两种口径并排出现，用户只会以为自己有两笔各自独立的邀请奖励。
+ *
+ * 这道门必须开在宿主这一侧：上游卡片自己的 `hasRewards` 只控制「转入余额」
+ * 按钮，三个数字是无条件渲染的（design-15 §D-G ③ 写"上游推广卡本来就只在
+ * `aff_quota>0` 时显示"是读错了那一行，已就地订正）。上游文件仍然一行不改。
  */
 export function QyReferralProgramCard() {
   const [user, setUser] = useState<UserWalletData | null>(null)
@@ -88,6 +99,10 @@ export function QyReferralProgramCard() {
     await afterMoneyChange()
     return true
   }
+
+  // 取数未完成时 `user` 是 null，按 0 处理：宁可让有存量的人晚一帧看到卡片，
+  // 也不要让没有存量的人先闪一张星辉口径的邀请返利卡再消失。
+  if ((user?.aff_quota ?? 0) <= 0) return null
 
   return (
     <>

@@ -83,7 +83,6 @@ func TestWriteAccrualInsertedFlagIsExactOnEveryDialect(t *testing.T) {
 					SourceType: "consume", InviterId: 901, InviteeId: 902,
 					BaseQuota: 1000, Gross: decimal.NewFromInt(50),
 					RateUnits: 500, RateGroup: "default",
-					UsdRate:    decimal.NewFromInt(7),
 					Accumulate: accumulate,
 				}
 			}

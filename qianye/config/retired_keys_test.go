@@ -17,8 +17,8 @@ import (
 // 不是功能不生效,是网关根本不起来,而且错误信息只说"unknown field"。
 //
 // 正确做法是保留一个去语义化的 Deprecated 占位吸收它,加载时告警并置 nil。
-// 本仓已有三处:commission.*_rate_bps、group_pricing 整段、以及本轮的
-// group_matrix.new_group_default_deny / new_group_scan_interval_seconds。
+// 本仓已有几处:group_pricing 整段、group_matrix.new_group_default_deny /
+// new_group_scan_interval_seconds,以及 D-14 删掉的 withdraw 整段。
 //
 // 这条测试把"存量 YAML 仍能起来"钉成断言。没有它,下一个下线功能的人会重犯 ——
 // 而这类错误在开发机上永远复现不了(开发机的 YAML 是新写的)。
@@ -47,10 +47,10 @@ group_pricing:
   rule_cache_seconds: 30
   一个我们从来没定义过的键: 123
 
-# 1.x 的万分比费率字段。
-commission:
-  enabled: false
-  topup_rate_bps: 1000
+# D-14 之前的提现整段。
+withdraw:
+  enabled: true
+  methods: ["quota"]
 `))
 	require.NoError(t, err,
 		"仍写着已下线键的 YAML 必须能加载 —— 本包是 KnownFields(true) 严格解析,"+
@@ -63,6 +63,7 @@ commission:
 	assert.Nil(t, c.GroupMatrix.NewGroupScanIntervalSecondsDeprecated)
 	assert.Nil(t, c.GroupPricingDeprecated,
 		"group_pricing 整段必须被吸收并置 nil")
+	assert.Nil(t, c.WithdrawDeprecated, "withdraw 整段必须被吸收并置 nil")
 
 	// map[string]any 占位吸收了一个我们从来没定义过的键而没有报错 ——
 	// 这正是它相对"保留原结构体"的价值:某个部署自己加过的键也不会炸。

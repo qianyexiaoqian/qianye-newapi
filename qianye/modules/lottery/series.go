@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
@@ -29,11 +30,11 @@ import (
 //
 // # 平台的累计损失上界(这是本文件存在的主要理由)
 //
-// 单期闸门 max_total_prize_quota 拦不住滚存:管理员每期注资到上限、连开 N 期
+// 单期闸门 max_total_prize_stardust 拦不住滚存:管理员每期注资到上限、连开 N 期
 // 无人中奖,池子滚到 N 倍,某一期一次性发出去 —— 而每一期看起来都守住了。
 //
 // 解法是把上限**冻结在系列行上**:创建系列时管理员填 issue_cap_quota,
-// 校验它 ≤ 当时生效的 max_total_prize_quota;此后每一次注资都走条件 UPDATE
+// 校验它 ≤ 当时生效的 max_total_prize_stardust;此后每一次注资都走条件 UPDATE
 //
 //	WHERE id = ? AND seed_total_quota + ? <= issue_cap_quota
 //
@@ -45,12 +46,12 @@ import (
 //	pool_carry 恒 ≥ 0
 //	每期净增发 = paid(n) − stake_total(n) ≤ pool_open(n) − stake_total(n)
 //	跨全部期次累加,滚存项两两抵消
-//	⇒ Σ净增发 ≤ Σ pool_seed(n) ≤ issue_cap_quota ≤ max_total_prize_quota
+//	⇒ Σ净增发 ≤ Σ pool_seed(n) ≤ issue_cap_quota ≤ max_total_prize_stardust
 //
 // 即:一整个系列、无论开多少期、无论运气多差,平台的累计净增发不超过管理员
 // 显式注资的总和,而这个总和不超过一场**普通抽奖**已经被允许的额度。
 // 这比现状严格更紧 —— 今天管理员可以并发办 max_active_activities 场活动,
-// 每场各吃一个 max_total_prize_quota。
+// 每场各吃一个 max_total_prize_stardust。
 //
 // **零新增 YAML 键**:上面这条论证不需要任何新配置项。
 
@@ -124,7 +125,7 @@ var (
 	// 发布下一期时报 pool_short,文案写着「请先注资或调低奖级」—— 运营照做,
 	// 池子再涨一截,而任何奖级配置都救不了(判据 open > MaxQuota 是无条件的)。
 	errSeriesPoolCeiling = newBizError(http.StatusBadRequest, "qy_lot_series_pool_ceiling",
-		"本系列的滚存池已达额度上界,不能再注资 —— 再注资会让这个系列永久开不出新一期。"+
+		"本系列的滚存池已达系统上界,不能再注资 —— 再注资会让这个系列永久开不出新一期。"+
 			"请先开出几期把池子发下去,或关闭本系列")
 	errBadPickInput = newBizError(http.StatusBadRequest, "qy_lot_bad_pick",
 		"选号不合法:号码个数、取值范围或重复号有误")
@@ -375,26 +376,26 @@ func buildSeries(ctx context.Context, in *seriesInput, createdBy int) (*Series, 
 	}
 	// 发行上限必须为正:它是本系列累计注资的**唯一**封顶,fundSeriesPool 的
 	// 条件 UPDATE 只认它。0 在这里不是"不限",而是"这个系列一分钱都注不进去" ——
-	// 与 max_stake_quota / max_total_prize_quota 那三项的 0 语义相反,
+	// 与 max_stake_stardust / max_total_prize_stardust 那三项的 0 语义相反,
 	// 因为它不是一道站点级的闸门,而是运营为这一个系列亲手写下的预算。
 	if in.IssueCapQuota <= 0 {
 		return nil, errBadRequest("发行上限必须大于 0 —— 它是本系列累计注资的唯一封顶")
 	}
-	// 站点自选的硬顶,0 = 不限(默认)。原先这里无条件夹进 max_total_prize_quota,
+	// 站点自选的硬顶,0 = 不限(默认)。原先这里无条件夹进 max_total_prize_stardust,
 	// 理由是"复用一个已经存在的闸门";那个闸门现在默认不设,复用也就落空了。
 	set := effectiveCtx(ctx)
-	if set.MaxTotalPrizeQuota > 0 && in.IssueCapQuota > set.MaxTotalPrizeQuota {
-		return nil, prizeCapExceeded(in.IssueCapQuota, set.MaxTotalPrizeQuota)
+	if set.MaxTotalPrizeStardust > 0 && in.IssueCapQuota > set.MaxTotalPrizeStardust {
+		return nil, prizeCapExceeded(in.IssueCapQuota, set.MaxTotalPrizeStardust)
 	}
 	// 系列这一侧**不需要**二次确认:它的累计注资被下面那条 int32 夹死在
 	// common.MaxQuota 以内,而奖品档是 amount × count,count 才是让它变成
 	// 无上界的那个乘数。这里的手滑最多是一个 int32 上界的数,量级封顶。
-	// 再夹一次额度上界:池子最终要过 twophase 的单笔 amount ≤ MaxQuota,而
+	// 再夹一次算术上界:池子最终要过 stardust.Credit 的单笔 amount ≤ MaxQuota,而
 	// checkBallPoolCovers 对 open > MaxQuota 的处置是**拒绝发布新一期** ——
 	// 一个配得过大的 issue_cap 会让系列在注满之后永久开不出新期,且没有任何
 	// 接口能把池子降回来。拦在创建期,那是唯一还能改的时刻。
 	if in.IssueCapQuota > int64(common.MaxQuota) {
-		return nil, errBadRequest(quotaColumnCeilingText("发行上限") +
+		return nil, errBadRequest(stardustCeilingText("发行上限") +
 			"。越过它的系列在注满之后会永久开不出新一期,而且没有任何接口能把池子降回来")
 	}
 	if in.SeedQuota < 0 || in.SeedQuota > in.IssueCapQuota {
@@ -504,10 +505,10 @@ func handleFundSeries(c *gin.Context) {
 // 它不是执行点(并发下仍以那条 UPDATE 为准),只是错误信息的来源。
 func checkFundable(s *Series, amount int64) error {
 	if amount <= 0 {
-		return errBadRequest("注资额度必须大于 0")
+		return errBadRequest("注资的" + stardust.UnitName() + "数必须大于 0")
 	}
 	if amount > int64(common.MaxQuota) {
-		return errBadRequest(quotaColumnCeilingText("注资额度"))
+		return errBadRequest(stardustCeilingText("注资的" + stardust.UnitName() + "数"))
 	}
 	if s.Status != SeriesOpen {
 		return errSeriesClosed

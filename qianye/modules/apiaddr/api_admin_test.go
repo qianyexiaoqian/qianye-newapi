@@ -1,9 +1,12 @@
 package apiaddr
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"testing"
+
+	"github.com/QuantumNous/new-api/common"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -151,6 +154,40 @@ func TestAdminUpdateRejectsDuplicateURL(t *testing.T) {
 	require.NoError(t, gdb.Where("id = ?", second.Id).Take(&unchanged).Error)
 	assert.Equal(t, "https://b.example.com", unchanged.URL)
 	assert.Equal(t, "https://a.example.com", mustURL(t, gdb, first.Id))
+}
+
+// 颜色走完整链路:新建折叠大小写入库、编辑改写(列清单里漏掉 color 的表现是
+// 保存后颜色悄悄回到旧值)、用户侧照常下发、非法值被拒。它是「API信息」设置
+// 并入本表后控制台卡片圆点的数据源,链路断在任何一环卡片都会退回默认色。
+func TestColorRoundTripsThroughCreateUpdateAndUserList(t *testing.T) {
+	gdb := newTestDB(t)
+
+	res := call(t, http.MethodPost, "/api/qy/admin/api-addresses",
+		`{"name":"主线路","url":"https://api.example.com","color":" Orange "}`, nil, adminCreate)
+	require.Equal(t, http.StatusOK, res.Code, "body=%s", res.Body.String())
+
+	var row Address
+	require.NoError(t, gdb.Take(&row).Error)
+	assert.Equal(t, "orange", row.Color, "写入侧必须折叠大小写与空白")
+
+	res = call(t, http.MethodPut, "/api/qy/admin/api-addresses/"+strconv.Itoa(row.Id),
+		`{"name":"主线路","url":"https://api.example.com","color":"teal","surfaces":" Picker "}`,
+		idParams(strconv.Itoa(row.Id)), adminUpdate)
+	require.Equal(t, http.StatusOK, res.Code, "body=%s", res.Body.String())
+	require.NoError(t, gdb.Take(&row).Error)
+	assert.Equal(t, "teal", row.Color, "编辑的显式列清单里漏掉 color 就会停在这里")
+	assert.Equal(t, "picker", row.Surfaces, "surfaces 同样走显式列清单,漏掉就停在这里")
+
+	data := rawDataOf(t, "/api/qy/api-addresses", handleUserList)
+	var items []map[string]json.RawMessage
+	require.NoError(t, common.Unmarshal(data["items"], &items))
+	require.Len(t, items, 1)
+	assert.Equal(t, `"teal"`, string(items[0]["color"]))
+
+	res = call(t, http.MethodPost, "/api/qy/admin/api-addresses",
+		`{"name":"坏颜色","url":"https://bad.example.com","color":"magenta"}`, nil, adminCreate)
+	assert.Equal(t, http.StatusBadRequest, res.Code)
+	assert.Equal(t, errColorInvalid.Code, codeOf(t, res))
 }
 
 // 改回自己原来的 URL 不算重复 —— 否则"只想改个备注"会被自己挡住。

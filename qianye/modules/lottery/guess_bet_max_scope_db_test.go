@@ -32,7 +32,7 @@ func TestGuessBetMaxCapsOneBetNotOnePerson(t *testing.T) {
 		startQuota = 500_000
 	)
 
-	_, main, r := guessE2EEnv(t, startQuota)
+	ext, r := guessE2EEnv(t, startQuota)
 	now := common.GetTimestamp()
 
 	// 每人参与上限刻意留空 —— 0 是后端的默认值,也是"运营没填"的样子。
@@ -69,12 +69,12 @@ func TestGuessBetMaxCapsOneBetNotOnePerson(t *testing.T) {
 	assert.NotEqualf(t, http.StatusOK, code, "单注上限没有拦住超额的一笔: %s", body)
 
 	// ② 同一个人连开三笔顶格投注,三笔全过 —— 上限对"一个人"毫无约束。
-	before := quotaOf(t, main, guessE2EUserA)
+	before := stardustOf(t, ext, guessE2EUserA)
 	for i := 1; i <= 3; i++ {
 		code, body = bet(guessE2EUserA, betMax, "qy-t4-whale-"+strconv.Itoa(i))
 		require.Equalf(t, http.StatusOK, code, "第 %d 笔顶格投注被拒: %s", i, body)
 	}
-	after := quotaOf(t, main, guessE2EUserA)
+	after := stardustOf(t, ext, guessE2EUserA)
 
 	// 独立算出的期望:3 × 20000 = 60000,也就是 60 个按单注额(1000)下注的
 	// 普通参与者。被删掉的那句文案说的是"最多顶 20 个"。

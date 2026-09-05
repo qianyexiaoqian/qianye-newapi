@@ -49,6 +49,7 @@ import { Button } from '@/components/ui/button'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { fetchTokenKey, getApiKeys } from '@/features/keys/api'
 import type { ApiKey } from '@/features/keys/types'
+import { qyApiAddressesQuery } from '@/features/qy/pages/api-address-picker/api'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { getUserModels } from '@/lib/api'
 import { MOTION_TRANSITION } from '@/lib/motion'
@@ -56,10 +57,7 @@ import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
-import {
-  useApiInfo,
-  useDashboardContentVisibility,
-} from '../../hooks/use-status-data'
+import { useDashboardContentVisibility } from '../../hooks/use-status-data'
 import { AnnouncementsPanel } from './announcements-panel'
 import { ApiInfoPanel } from './api-info-panel'
 import { FAQPanel } from './faq-panel'
@@ -458,9 +456,18 @@ function CompactQuickAction(props: { action: QuickAction }) {
 export function OverviewDashboard() {
   const { t } = useTranslation()
   const user = useAuthStore((state) => state.auth.user)
-  const { items: apiInfoItems } = useApiInfo()
+  // 线路清单来自 qy「API 地址簿」的用户侧接口（按用户分组过滤，与
+  // ApiInfoPanel、密钥页「复制链接信息」同一份缓存），不再读 `/api/status`
+  // 的 `api_info`。卡片显隐随之改判「这个用户到底看得到几条」——
+  // status 里那颗 `api_info_enabled` 开关的设置面板已并入地址簿
+  //（见 section-registry 的路牌），一条都看不到时整块卡片不再占位。
+  const apiAddressesQuery = useQuery(qyApiAddressesQuery('console'))
+  // useMemo 而不是裸 `?? []`：后者在 data 还没落地的每一次渲染都造一个新数组,
+  // 下游 requestExample/heroSignals 两个 useMemo 会跟着每次重算。
+  const apiAddressesData = apiAddressesQuery.data
+  const apiInfoItems = useMemo(() => apiAddressesData ?? [], [apiAddressesData])
+  const showApiInfoPanel = apiInfoItems.length > 0
   const {
-    apiInfo: showApiInfoPanel,
     announcements: showAnnouncementsPanel,
     faq: showFAQPanel,
     uptimeKuma: showUptimePanel,

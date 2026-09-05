@@ -6,7 +6,7 @@ import (
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/qianye/modules/commission"
+	"github.com/QuantumNous/new-api/qianye/modules/invite"
 	"github.com/QuantumNous/new-api/qianye/serverday"
 
 	"github.com/gin-gonic/gin"
@@ -21,7 +21,7 @@ import (
 // 密钥页一页 20 行。逐行去查一次聚合,就是打开一次页面往主库上打 20 条
 // GROUP BY —— 而 logs 是本站最大的表(备份库 447 万行)。所以这条接口按
 // user_id **一次**聚合出该用户今天用过的全部令牌,页面拿 map 查表。
-// 聚合与它依赖的覆盖索引见 commission.TokenDayUsage 的文件头。
+// 聚合与它依赖的覆盖索引见 invite.TokenDayUsage 的文件头。
 //
 // ─────────────── 「今日」是哪一段 ───────────────
 //
@@ -29,7 +29,7 @@ import (
 // 59 秒是今日的消耗。」所以日界走**服务器本地时区的自然日**,实现在
 // qianye/serverday —— 与提现/划转的日限额窗口是同一份代码,不是第二份。
 //
-// 这与返佣的「消费日」(commission.day_offset_minutes)**不是**同一段时间:
+// 这与星屑的「消费日」(invite.day_offset_minutes)**不是**同一段时间:
 // 后者是配置里写死的固定偏移,日消费明细、计佣分桶、日封顶都走它。演示机上
 // day_offset_minutes=0(UTC)而机器本地是 PST,两者差 7 小时 —— 也就是说
 // 本页的「今日」与日消费明细的「今日」会对不上,而两个数都是对的、两边都
@@ -58,10 +58,10 @@ func UserTokenTodayUsage(c *gin.Context) {
 	dayStart, dayEnd := serverday.Range(common.GetTimestamp())
 	zoneName, zoneOffsetMinutes := serverday.Zone(dayStart)
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), commission.TokenDayUsageTimeout())
+	ctx, cancel := context.WithTimeout(c.Request.Context(), invite.TokenDayUsageTimeout())
 	defer cancel()
 
-	usage, err := commission.TokenDayUsage(ctx, userId, dayStart, dayEnd)
+	usage, err := invite.TokenDayUsage(ctx, userId, dayStart, dayEnd)
 	if err != nil {
 		common.SysError("qianye: 密钥今日消耗聚合失败: " + err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -95,7 +95,7 @@ func UserTokenTodayUsage(c *gin.Context) {
 			"utc_offset_minutes": zoneOffsetMinutes,
 			// index_ready 让「这一列今天为什么转圈」有一个可以直接看的答案。
 			// 它只是显示位,判据是查询自己的超时 —— 见 logs_index.go。
-			"index_ready": commission.TokenDayUsageIndexReady(),
+			"index_ready": invite.TokenDayUsageIndexReady(),
 			"usage":       out,
 		},
 	})

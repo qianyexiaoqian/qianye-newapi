@@ -15,7 +15,7 @@
 
 | # | 决策 | 选择 |
 |---|---|---|
-| D1 | 佣金提现形态 | 站内额度兑换 + 线下法币打款,用户自选 |
+| D1 | 佣金提现形态 | ~~站内额度兑换 + 线下法币打款,用户自选~~ **D-14 作废**:邀请收益全部是星屑,没有提现 |
 | D2 | "隐藏分组" | 修复无权分组泄漏(白名单交集裁剪),不新建可见性体系 |
 | D3 | 改动预算 | ≤10 个后端文件 / ≤40 行;钱包页直接改原文件不 fork |
 | D4 | 返佣口径 | 宽松(默认全返)+ 三个风控 YAML 开关;违规扣费硬排除 |
@@ -43,9 +43,10 @@
 | [design-04-wallet-ui.md](design-04-wallet-ui.md) | 需求 3:钱包页选项卡、套餐详情截断、订阅弹窗 |
 | [design-01-transfer.md](design-01-transfer.md) | 需求 1:用户余额划转 |
 | [design-05-logs.md](design-05-logs.md) | 需求 4:使用日志推理强度/缓存百分比两列 |
-| [design-02-commission.md](design-02-commission.md) | 需求 2a:佣金账本与返佣触发 |
-| [design-03-withdraw.md](design-03-withdraw.md) | 需求 2b:提现申请、审核、历史 |
+| [design-02-commission.md](design-02-commission.md) | 需求 2a:佣金账本与返佣触发 —— **现行(星辉口径,无提现)**:D-15 把账本 / 结算 / 余额按「星辉」恢复并加自动入账(`modules/commission`,见 `decisions.md` D-15);邀请关系与日界在 `modules/invite`,与星屑邀请奖励(design-15 §4.3 / §4.7)并行 |
+| ~~[design-03-withdraw.md](design-03-withdraw.md)~~ | 需求 2b:提现申请、审核、历史 —— **已被 D-14 取代,模块已删除**(没有现金推广收益,也就没有提现) |
 | [design-07-violation.md](design-07-violation.md) | 需求 7:违规检测 |
+| [design-15-stardust.md](design-15-stardust.md) | **现行口径,v2.0.0 已实施**(D-11/12/13):星屑独立货币、星屑商城、星屑转盘;娱乐活动从 users.quota 整体切到扩展库账本,不保留旧路径;实施偏差见 §12.1 |
 
 ### UI 主题
 

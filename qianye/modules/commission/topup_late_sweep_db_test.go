@@ -63,16 +63,14 @@ func TestSweepLateTopupsRecoversOrdersTheCursorPassed(t *testing.T) {
 		gdb := newTestDB(t)
 		mdb := useMainDB(t, &model.TopUp{})
 		useConfig(t, commissionConfig(0))
+		withCompliance(t, true)
 		useMoneyGlobals(t, 7.3, 500000)
 		setSettingOverride(t, gdb, keyTopupRatePercent, "10")
 		require.Positive(t, effective().TopupRateUnits, "前提:充值返佣费率非零")
 
 		now := common.GetTimestamp()
-		getInviterCache().Set(900, inviterEntry{
-			InviterId:      42,
-			InviteeName:    "u900",
-			InviteeCreated: now - 30*86400,
-		})
+		cacheUser(t, 42, 0, "default")
+		cacheUser(t, 900, 42, "default")
 
 		seedKV(t, gdb, topupCursorKey, 100)
 		seedKV(t, gdb, topupSweepKey, now-3600)
@@ -100,8 +98,11 @@ func TestSweepLateTopupsRecoversOrdersTheCursorPassed(t *testing.T) {
 		assert.EqualValues(t, 900, row.InviteeId)
 		assert.EqualValues(t, 25_000_000, row.BaseQuota)
 		assert.EqualValues(t, 1000, row.RateUnits)
-		// 独立算式:25,000,000 × 10% = 2,500,000
-		assert.Equal(t, "2500000", row.GrossAmount.String())
+		// 刻度必须冻结进行:没有它,复算只能拿当刻的 stardust.quota_per_unit,
+		// 运营改一次刻度所有历史行就再也复算不出来。
+		assert.EqualValues(t, 500_000, row.QuotaPerUnit)
+		// 独立算式(单位是星屑):25,000,000 额度 × 10% / 500,000 = 5
+		assert.Equal(t, "5", row.GrossAmount.String())
 		assert.EqualValues(t, 1, topupLateSwept.Load()-sweptBefore)
 	})
 
@@ -109,13 +110,13 @@ func TestSweepLateTopupsRecoversOrdersTheCursorPassed(t *testing.T) {
 		gdb := newTestDB(t)
 		mdb := useMainDB(t, &model.TopUp{})
 		useConfig(t, commissionConfig(0))
+		withCompliance(t, true)
 		useMoneyGlobals(t, 7.3, 500000)
 		setSettingOverride(t, gdb, keyTopupRatePercent, "10")
 
 		now := common.GetTimestamp()
-		getInviterCache().Set(900, inviterEntry{
-			InviterId: 42, InviteeName: "u900", InviteeCreated: now - 30*86400,
-		})
+		cacheUser(t, 42, 0, "default")
+		cacheUser(t, 900, 42, "default")
 		seedKV(t, gdb, topupCursorKey, 100)
 		seedKV(t, gdb, topupSweepKey, now-3600)
 		seedTopUpAt(t, mdb, 101, 900, 25_000_000, common.TopUpStatusSuccess, now-73*3600, now-30)
@@ -134,13 +135,13 @@ func TestSweepLateTopupsRecoversOrdersTheCursorPassed(t *testing.T) {
 		gdb := newTestDB(t)
 		mdb := useMainDB(t, &model.TopUp{})
 		useConfig(t, commissionConfig(0))
+		withCompliance(t, true)
 		useMoneyGlobals(t, 7.3, 500000)
 		setSettingOverride(t, gdb, keyTopupRatePercent, "10")
 
 		now := common.GetTimestamp()
-		getInviterCache().Set(900, inviterEntry{
-			InviterId: 42, InviteeName: "u900", InviteeCreated: now - 30*86400,
-		})
+		cacheUser(t, 42, 0, "default")
+		cacheUser(t, 900, 42, "default")
 		// 游标已经在 101 之上:前向扫描够不着它,能不能被翻出来完全取决于回收面。
 		seedKV(t, gdb, topupCursorKey, 105)
 		seedKV(t, gdb, topupSweepKey, now-3600)
@@ -151,54 +152,5 @@ func TestSweepLateTopupsRecoversOrdersTheCursorPassed(t *testing.T) {
 		runTopupScan(context.Background())
 		assert.Nil(t, accrualByIdem(t, gdb, topupIdemKey("T101")),
 			"回收面只包含水位线之后完成的订单")
-	})
-}
-
-// 管理员补单必须留下 complete_source 这个真判据,风控开关才有东西可认。
-//
-// 旧判据 payment_method == "manual" 全仓无人写入:开关打开之后
-// 「管理员补单不返佣」这半边从来没生效过,而运营读到的配置注释说的是两边都堵上了。
-func TestExcludedTopUpRecognizesAdminCompletedOrders(t *testing.T) {
-	cfg := commissionConfig(0)
-	cfg.Commission.ExcludeRedemptionAndManual = true
-	useConfig(t, cfg)
-
-	for _, tc := range []struct {
-		name string
-		row  model.TopUp
-		want bool
-	}{
-		{
-			name: "管理员补单被排除",
-			row:  model.TopUp{PaymentMethod: "alipay", PaymentProvider: model.PaymentProviderEpay, CompleteSource: model.TopUpCompleteSourceAdmin},
-			want: true,
-		},
-		{
-			name: "同样长相的真实付款照常计佣",
-			row:  model.TopUp{PaymentMethod: "alipay", PaymentProvider: model.PaymentProviderEpay},
-			want: false,
-		},
-		{
-			name: "支付方式被命名成 manual 的真实付款不能被误杀",
-			row:  model.TopUp{PaymentMethod: "manual", PaymentProvider: model.PaymentProviderEpay},
-			want: false,
-		},
-		{
-			name: "余额支付永远排除,与开关无关",
-			row:  model.TopUp{PaymentMethod: model.PaymentMethodBalance, PaymentProvider: model.PaymentProviderBalance},
-			want: true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, excludedTopUp(&tc.row))
-		})
-	}
-
-	t.Run("开关关闭时管理员补单照常计佣", func(t *testing.T) {
-		useConfig(t, commissionConfig(0))
-		assert.False(t, excludedTopUp(&model.TopUp{
-			PaymentMethod:  "alipay",
-			CompleteSource: model.TopUpCompleteSourceAdmin,
-		}))
 	})
 }

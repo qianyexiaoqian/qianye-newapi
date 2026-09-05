@@ -65,14 +65,11 @@ const STATUS_UNCERTAIN = 4
 /** `qymodel.StatusInDoubt`：主库 COMMIT 已发出、结局不明，系统正在自动复判。 */
 const STATUS_IN_DOUBT = 6
 
-const KIND_OPTIONS = [
-  'transfer',
-  'commission_settle',
-  'commission_reverse',
-  'withdraw_quota',
-  'withdraw_fiat',
-  'violation_fee',
-]
+// 两种提现的 kind 已随 D-14 变成"历史 kind"（不再有 Resolver），筛选下拉不再列
+// 它们；`commission_credit` 是 D-15 的佣金自动入账（单号前缀 CC）—— 它走的正是
+// 本页要裁决的两阶段路径，held 的入账单在这里收敛。库里若残留旧行，表格按原样
+// 字符串渲染。
+const KIND_OPTIONS = ['transfer', 'violation_fee', 'commission_credit']
 
 /**
  * 对账台。

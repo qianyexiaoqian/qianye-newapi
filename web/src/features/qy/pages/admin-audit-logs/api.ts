@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { qyGet } from '../../lib/api'
 import type { QyPage } from '../../lib/types'
-import type { QyAuditLog, QyPiiAudit, QyRequestAudit } from './types'
+import type { QyAuditLog, QyRequestAudit } from './types'
 
 export type QyAuditLogParams = {
   p: number
@@ -74,24 +74,4 @@ export function listQyRequestAudits(
   params: QyRequestAuditParams
 ): Promise<QyPage<QyRequestAudit>> {
   return qyGet<QyPage<QyRequestAudit>>('/admin/request-audits', params)
-}
-
-export type QyPiiAuditParams = {
-  p: number
-  page_size: number
-  admin_id?: number
-  target_user_id?: number
-}
-
-/**
- * 明文访问记录。
- *
- * 接口挂在 withdraw 模块下（`GET /admin/withdraw/pii-audits`），
- * 但它回答的是一个纯合规问题「谁看过谁的收款信息」，因此在界面上
- * 与另外两张审计表并列，而不是藏进提现管理页。
- */
-export function listQyPiiAudits(
-  params: QyPiiAuditParams
-): Promise<QyPage<QyPiiAudit>> {
-  return qyGet<QyPage<QyPiiAudit>>('/admin/withdraw/pii-audits', params)
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
@@ -30,8 +29,8 @@ const (
 // 单独抽成纯函数是刻意的:发多少、留多少余数、欠账怎么记,这些是本模块
 // 唯一会直接导致资损的逻辑,必须能在没有数据库的情况下做数值走查。
 type settleOutcome struct {
-	// NetQuota 正数为发放,负数为回收。
-	NetQuota int64
+	// Net 正数为发放,负数为回收。
+	Net int64
 	// CarryAfter 是回写的余数。它承载所有不足 1 额度的零头,永不丢弃;
 	// 为负表示欠账(冲正金额超过了可回收余额)。
 	CarryAfter decimal.Decimal
@@ -67,7 +66,7 @@ func computeSettlement(carry, delta decimal.Decimal, available, minSettle, daily
 			net = 0
 		}
 	case net < 0:
-		// 只从未提现的可用余额里回收。佣金一旦提现进平台余额可能已被消费,
+		// 只从尚未入账的可用余额里回收。佣金一旦自动入账进主库余额可能已被消费,
 		// 倒扣主库会让用户余额意外变负;超出部分记欠账,由未来佣金抵扣。
 		reclaim := -net
 		if reclaim > available {
@@ -80,7 +79,7 @@ func computeSettlement(carry, delta decimal.Decimal, available, minSettle, daily
 	}
 
 	return settleOutcome{
-		NetQuota:   net,
+		Net:        net,
 		CarryAfter: total.Sub(decimal.NewFromInt(net)),
 		Clipped:    clipped,
 		Clamp:      clamp,
@@ -186,7 +185,7 @@ func pendingInvitersPage(limit int, cur inviterCursor) (ids []int, next inviterC
 	//   · **负余数且账上还有可回收余额的**(欠账,等着被收回来)。
 	// 少了后半句,一个被冲正打成 debt_blocked 的推广人永远不会再被调度选中:
 	// 第一路要求 settled_amount <> gross_amount,而 absorbAccruals 已经把冲正行
-	// 写成 settled==gross,于是他从两路里同时消失。表现是提现被永久冻结而
+	// 写成 settled==gross,于是他从两路里同时消失。表现是自动入账被永久暂停而
 	// 没有任何告警会响 —— 三条恒等式在这个状态下全部成立。
 	// 负余数这一支的判据是 `< 0`,**不是** `<= -1`。
 	//
@@ -194,21 +193,21 @@ func pendingInvitersPage(limit int, cur inviterCursor) (ids []int, next inviterC
 	// computeSettlement 的 reclaim 被 available 钳住时,carry 恰好等于
 	// -(欠账 - available),欠账超出可回收余额的部分只要小于 1 个额度单位就落
 	// 在里面;而自动冲正额 = calcGross(refundQuota, rateUnits) 天然带小数。
-	// 随后任何一条把额度退回 available 的动作(驳回/取消/标记发放失败的
-	// UnfreezeForWithdraw、管理员调低已提现)都会构成「欠账 + available>0」。
+	// 随后任何一条把额度退回 available 的动作(自动入账失败退回)都会构成
+	// 「欠账 + available>0」。
 	//
 	// 落进这个区间的人从**两路里同时消失**:第一路要求 settled_amount <>
 	// gross_amount,而 absorbAccruals 已经把冲正行写成 settled==gross。
-	// 于是 debt_blocked 永久为真、Withdrawable 恒返 0 —— 用户提不出账上确实
-	// 存在的可提现额度,平台也永远收不回那笔应收,而 I1/I2 两条恒等式在这个
+	// 于是 debt_blocked 永久为真、自动入账永久暂停 —— 用户拿不到账上确实
+	// 存在的可用额度,平台也永远收不回那笔应收,而 I1/I2 两条恒等式在这个
 	// 状态下**全部成立**,余额页、总表、健康面板一致显示正常。
 	//
 	// 判据与 settleUser 的 carry-only 预筛(peek.UnsettledAmount.IsNegative())
 	// 就此同口径 —— 那两半原本自相矛盾:预筛受理任何负数,SQL 只捞 <= -1。
 	var carry []inviterHead
 	q = `SELECT user_id AS id, last_settled_at AS ord_at FROM qy_commission_balance
-		WHERE (unsettled_amount >= ? OR (unsettled_amount < 0 AND available_quota > 0)) `
-	args = []any{carryFloor(effective().MinSettleQuota)}
+		WHERE (unsettled_amount >= ? OR (unsettled_amount < 0 AND available > 0)) `
+	args = []any{carryFloor(effective().MinSettleStardust)}
 	if cur.HasB {
 		q += `AND (last_settled_at > ? OR (last_settled_at = ? AND user_id > ?)) `
 		args = append(args, cur.SettledAt, cur.SettledAt, cur.UserId)
@@ -307,49 +306,6 @@ func mergeInviterIds(a, b []int, limit int) (merged []int, takenA, takenB int) {
 	return merged, takenA, takenB
 }
 
-// batchRate 返回本批发放该用哪个冻结比例折算法币。
-//
-// delta 为零意味着本批没有任何计佣增量(carry-only 结算,或正负增量恰好抵消),
-// 加权平均无从算起。这里绝不能退回 0:applyFiat 会因此一分法币都不加,
-// 而额度照加,AvailableFiat 与 AvailableQuota 就此永久漂移,提现模块按
-// AvailableFiat 折算会少给用户钱。
-//
-// fallback 由调用方给出(lastFrozenFiatRate:这个邀请人最近一条计佣行冻结的
-// 比例),零值时才退回全站充值汇率。
-//
-// 在法币折算比例可以按分组分档之后(fiatrate.go),现取全站充值汇率已经不成立:
-// 配了分组档的邀请人,他名下每一笔佣金都是按分组档冻结入账的,而 carry 只是
-// 那批佣金被日封顶/结算门槛削下来的零头 —— 按全站汇率折算会让零头与本金
-// 分属两个价。沿用他上一笔的冻结比例既落在正确的量级上,又不需要跨库去读
-// users.group(settleUser 在事务里握着 qy_commission_balance 的行锁)。
-func batchRate(weightedSum, delta, fallback decimal.Decimal) decimal.Decimal {
-	if delta.IsZero() {
-		if fiatRateSane(fallback) {
-			return fallback
-		}
-		return currentUsdRate()
-	}
-	return weightedSum.Div(delta)
-}
-
-// lastFrozenFiatRate 取这个邀请人最近一条计佣行冻结的法币折算比例。
-//
-// 只在 carry-only 轮次用得上。取"最近一条"而不是当刻重新解析分组档,是因为
-// carry 是**过去**那批佣金的零头:重新解析等于把一次调价追溯到一笔早就挣到
-// 的钱上,而逐笔冻结的全部意义就是不让这种事发生。
-//
-// 一条计佣行都没有(管理端对一个陌生 user_id 调 settleOne)或者读失败时返回
-// 零值,由 batchRate 兜到全站充值汇率 —— 与本档出现之前的行为一致。
-func lastFrozenFiatRate(tx *gorm.DB, inviterId int) decimal.Decimal {
-	var rows []Accrual
-	err := tx.Select("usd_rate").Where("inviter_id = ?", inviterId).
-		Order("id desc").Limit(1).Find(&rows).Error
-	if err != nil || len(rows) == 0 {
-		return decimal.Zero
-	}
-	return rows[0].UsdRate
-}
-
 // settleNeeded 判断本轮是否真的要落一张结算单。
 //
 // 判据只有"这一轮有没有钱动过":net != 0 才落单。
@@ -386,7 +342,7 @@ func repairStrandedAccruals(ctx context.Context) {
 	now := common.GetTimestamp()
 	// 只回看最近几天:迟到事件在秒级内就会出现,把范围限死才不会让这条
 	// 自愈语句随着历史行数无限变慢。
-	res := gdb.Model(&Accrual{}).
+	res := gdb.WithContext(ctx).Model(&Accrual{}).
 		Where("status = ? AND settled_amount <> gross_amount AND updated_at >= ?",
 			StatusSettled, now-7*86400).
 		Updates(map[string]any{"status": StatusAccrued, "updated_at": now})
@@ -400,7 +356,8 @@ func repairStrandedAccruals(ctx context.Context) {
 }
 
 // settleUser 结算单个邀请人。整个过程只发生在扩展库,不跨库、不动主库额度 ——
-// 这是本模块最重要的安全属性:返佣入账永远不需要两阶段提交。
+// 结算只把成熟的计佣变成**可用余额**;真正加进主库额度(星辉)的是 autocredit.go
+// 的两阶段资金单,那是另一步、另一把锁序里的另一件事。
 // 返回值 more 表示"这一次只吸收到了取批上界,同一个人名下还有已成熟的计佣行"。
 // 调用方必须继续调,否则剩下的行要等下一次运行才发得出去 —— 一日一结算之下
 // 那就是整整一天(见 settleUserDrain)。
@@ -439,17 +396,15 @@ func settleUser(inviterId int) (more bool, err error) {
 			if err != nil {
 				return err
 			}
-			// 负结转是**欠账**,它的钱要从 available_quota 里回收,而不是等
+			// 负结转是**欠账**,它的钱要从 available 里回收,而不是等
 			// 未来的新计佣行。
 			//
 			// 这一支原先与正余数共用 `LessThan(1)`,而**所有负数都满足它** ——
 			// 于是 debt_blocked 一旦置上,哪怕账上可用余额远超欠账,结算跑多少次
-			// 都清不掉:提现三处闸门(建单 / approve / mark-paid)全线冻结,
-			// 用户提不出自己账上确实存在的钱,平台也永远收不回那笔应收。
-			// 而 errDebtBlockedPayout 建议的"或驳回这张单"只是把 frozen 搬回
-			// available,欠账一位不动 —— 照着做的人会以为自己已经处理过了。
+			// 都清不掉:自动入账被永久暂停,用户拿不到自己账上确实存在的钱,
+			// 平台也永远收不回那笔应收。
 			if peek.UnsettledAmount.IsNegative() {
-				if peek.AvailableQuota <= 0 {
+				if peek.Available <= 0 {
 					// 账上一分可回收的都没有,这一轮确实做不了事。
 					return nil
 				}
@@ -459,38 +414,28 @@ func settleUser(inviterId int) (more bool, err error) {
 		}
 
 		delta := decimal.Zero
-		weightedSum := decimal.Zero
 		for _, r := range rows {
-			d := r.GrossAmount.Sub(r.SettledAmount)
-			delta = delta.Add(d)
-			weightedSum = weightedSum.Add(d.Mul(r.UsdRate))
+			delta = delta.Add(r.GrossAmount.Sub(r.SettledAmount))
 		}
-		// carry-only 轮次没有增量可加权,退回这个邀请人上一笔冻结的比例。
-		// 只在真的需要时才发这条查询:有增量的轮次(绝大多数)一行都不读。
-		fallbackRate := decimal.Zero
-		if delta.IsZero() {
-			fallbackRate = lastFrozenFiatRate(tx, inviterId)
-		}
-		weighted := batchRate(weightedSum, delta, fallbackRate)
 
 		bal, err := lockBalance(tx, inviterId)
 		if err != nil {
 			return err
 		}
 		s := effective()
-		win, err := resolveCapWindow(tx, bal, s.DailyCapQuota, now)
+		win, err := resolveCapWindow(tx, bal, s.DailyCapStardust, now)
 		if err != nil {
 			return err
 		}
-		out := computeSettlement(bal.UnsettledAmount, delta, bal.AvailableQuota,
-			s.MinSettleQuota, win.remaining(s.DailyCapQuota))
+		out := computeSettlement(bal.UnsettledAmount, delta, bal.Available,
+			s.MinSettleStardust, win.remaining(s.DailyCapStardust))
 		if out.Clamp != nil {
 			// 单轮结算触顶 int32 是绝不该发生的事,必须留痕并告警;
 			// 未发完的部分仍在 CarryAfter 里,下轮继续。
 			clampNote = out.Clamp.Error()
 			warnf("邀请人 %d 结算金额触顶: %s", inviterId, clampNote)
 		}
-		needRow := settleNeeded(out.NetQuota, out.Clamp != nil)
+		needRow := settleNeeded(out.Net, out.Clamp != nil)
 		if !needRow && len(rows) == 0 {
 			// 本轮什么都没发生:没有计佣行要吸收,余数也一分没动
 			// (delta 与 net 同为零 ⇒ CarryAfter 恒等于 CarryBefore)。
@@ -498,45 +443,30 @@ func settleUser(inviterId int) (more bool, err error) {
 			return nil
 		}
 
-		fiatDelta, newFiat := applyFiat(bal, out.NetQuota, weighted)
-		// 币种与金额必须一起冻结,否则 available_fiat 是一个不知道自己是什么钱的数。
-		// 这一列在被补上之前一直是空串(全站零处赋值),用户端只好拿**当前**全局
-		// 配置去顶替 —— 那正是"逐笔冻结汇率"这条设计在币种维度上的缺口:
-		// 运营改一次 withdraw.fiat_currency,全部历史余额的币种标签会跟着一起变。
-		fiatCurrency := config.Get().Withdraw.FiatCurrency
-		if bal.FiatCurrency != "" && bal.FiatCurrency != fiatCurrency {
-			// 换币种不会重算存量,新旧两种钱会叠在同一个数里。这里只能留痕:
-			// 拒绝结算等于把佣金全站冻住,静默改写更糟。
-			warnf("邀请人 %d 的法币余额币种由 %s 变为 %s,存量 %s 未按新币种重算",
-				inviterId, bal.FiatCurrency, fiatCurrency, bal.AvailableFiat.String())
-		}
-
 		// settlementId 为 0 表示"本轮没有落结算单",此时这批计佣行照常被吸收:
 		// 钱进了余数,吸收与否决定的只是下一轮会不会把它们再读一遍。
 		var settlementId int64
 		if needRow {
 			settlement := Settlement{
-				SettleNo:        newSerialNo("CS"),
-				UserId:          inviterId,
-				AccrualCount:    len(rows),
-				DeltaAmount:     delta,
-				CarryBefore:     bal.UnsettledAmount,
-				CarryAfter:      out.CarryAfter,
-				UsdRateWeighted: weighted,
-				FiatDelta:       fiatDelta,
-				Remark:          truncate(clampNote, 255),
-				CreatedAt:       now,
+				SettleNo:     newSerialNo("CS"),
+				UserId:       inviterId,
+				AccrualCount: len(rows),
+				DeltaAmount:  delta,
+				CarryBefore:  bal.UnsettledAmount,
+				CarryAfter:   out.CarryAfter,
+				Remark:       truncate(clampNote, 255),
+				CreatedAt:    now,
 			}
-			if out.NetQuota >= 0 {
-				settlement.GrantedQuota = out.NetQuota
+			if out.Net >= 0 {
+				settlement.Granted = out.Net
 			} else {
-				settlement.ReclaimedQuota = -out.NetQuota
+				settlement.Reclaimed = -out.Net
 			}
 			if err := tx.Create(&settlement).Error; err != nil {
 				return err
 			}
 			settlementId = settlement.Id
-			granted, reclaimed = settlement.GrantedQuota, settlement.ReclaimedQuota
+			granted, reclaimed = settlement.Granted, settlement.Reclaimed
 		}
 
 		if err := absorbAccruals(tx, rows, settlementId, now); err != nil {
@@ -547,33 +477,31 @@ func settleUser(inviterId int) (more bool, err error) {
 		// 当天的封顶额度 —— 封顶限的是"一天最多发出去多少",不是净额,
 		// 否则一次冲正就能换回一份新的发放余量。
 		capGrantedAfter := win.Granted
-		if out.NetQuota > 0 {
-			capGrantedAfter += out.NetQuota
+		if out.Net > 0 {
+			capGrantedAfter += out.Net
 		}
 		updates := map[string]any{
 			"daily_cap_window_start": win.Start,
 			"daily_cap_granted":      capGrantedAfter,
 			"unsettled_amount":       out.CarryAfter,
-			"available_fiat":         newFiat,
-			"fiat_currency":          fiatCurrency,
 			"debt_blocked":           out.CarryAfter.IsNegative(),
 			"last_settled_at":        now,
 			"updated_at":             now,
 		}
 		switch {
-		case out.NetQuota > 0:
-			updates["available_quota"] = bal.AvailableQuota + out.NetQuota
-			updates["total_earned_quota"] = bal.TotalEarnedQuota + out.NetQuota
-		case out.NetQuota < 0:
-			updates["available_quota"] = bal.AvailableQuota + out.NetQuota
-			updates["total_clawback_quota"] = bal.TotalClawbackQuota - out.NetQuota
+		case out.Net > 0:
+			updates["available"] = bal.Available + out.Net
+			updates["total_earned"] = bal.TotalEarned + out.Net
+		case out.Net < 0:
+			updates["available"] = bal.Available + out.Net
+			updates["total_clawback"] = bal.TotalClawback - out.Net
 		}
 		if err := tx.Model(&Balance{}).Where("user_id = ?", inviterId).Updates(updates).Error; err != nil {
 			return err
 		}
 
 		if out.CarryAfter.IsNegative() {
-			warnf("邀请人 %d 产生欠账 %s,提现已冻结,后续佣金将优先抵扣",
+			warnf("邀请人 %d 产生欠账 %s,自动入账已暂停,后续佣金将优先抵扣",
 				inviterId, out.CarryAfter.String())
 		}
 		return nil
@@ -631,8 +559,8 @@ func settleUserDrain(inviterId int) (drained bool, err error) {
 
 // lockBalance 取得余额行的排他锁,不存在则先建。
 //
-// 这是本模块与提现模块共同约定的唯一加锁点:双方都必须先锁住这一行,
-// 否则"结算加额度"和"提现冻结额度"会互相覆盖。
+// 这是结算、冲正、手工调整与自动入账共同约定的唯一加锁点:各方都必须先锁住
+// 这一行,否则"结算加可用"和"入账搬走可用"会互相覆盖。
 func lockBalance(tx *gorm.DB, userId int) (*Balance, error) {
 	now := common.GetTimestamp()
 	seed := Balance{UserId: userId, CreatedAt: now, UpdatedAt: now}
@@ -692,7 +620,7 @@ func resolveCapWindow(tx *gorm.DB, bal *Balance, cap int64, now int64) (capWindo
 		var used int64
 		if err := tx.Model(&Settlement{}).
 			Where("user_id = ? AND created_at >= ?", bal.UserId, w.Start).
-			Select("COALESCE(SUM(granted_quota), 0)").Scan(&used).Error; err != nil {
+			Select("COALESCE(SUM(granted), 0)").Scan(&used).Error; err != nil {
 			return capWindow{}, err
 		}
 		w.Granted = used
@@ -735,35 +663,6 @@ func absorbAccruals(tx *gorm.DB, rows []Accrual, settlementId int64, now int64) 
 		}
 	}
 	return nil
-}
-
-// applyFiat 维护按冻结汇率折算的法币余额。
-//
-// 发放时按本批的加权汇率增加;回收时按比例缩减,这样剩余法币金额对应的
-// 平均汇率保持不变 —— 绝不允许用当前汇率反算,那会让历史对账全错。
-func applyFiat(bal *Balance, net int64, weightedRate decimal.Decimal) (delta, after decimal.Decimal) {
-	qpu := decimal.NewFromFloat(common.QuotaPerUnit)
-	switch {
-	case net > 0:
-		if qpu.IsZero() {
-			return decimal.Zero, bal.AvailableFiat
-		}
-		delta = decimal.NewFromInt(net).Div(qpu).Mul(weightedRate).Round(6)
-		return delta, bal.AvailableFiat.Add(delta)
-	case net < 0:
-		oldAvail := bal.AvailableQuota
-		newAvail := oldAvail + net
-		if oldAvail <= 0 || newAvail <= 0 {
-			return bal.AvailableFiat.Neg(), decimal.Zero
-		}
-		after = bal.AvailableFiat.
-			Mul(decimal.NewFromInt(newAvail)).
-			Div(decimal.NewFromInt(oldAvail)).
-			Round(6)
-		return after.Sub(bal.AvailableFiat), after
-	default:
-		return decimal.Zero, bal.AvailableFiat
-	}
 }
 
 // settleOne 供管理端"立即结算"接口复用。

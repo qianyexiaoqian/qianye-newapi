@@ -1,6 +1,7 @@
 package lottery
 
 import (
+	"context"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -15,10 +16,10 @@ import (
 //
 // 收敛前这条不成立:payout_quota / refund_quota 在 settling→finished 那一次 CAS
 // 里被写成"当时已 paid 的合计"就再也不动了,而 finishIfDone 刻意把 held 当终态
-// 放行 —— 一笔转人工的出款随后被补偿任务或管理端「重试」推成 paid,钱真的增发
-// 出去了(主库有账本行、资金单是 success),活动上的数却停在收尾那一刻。
-// held_quota 是实时 SUM,补发成功后归零,于是同一笔钱从两个口子同时消失,
-// 管理端「本场收支」把一场净亏的活动显示成净赚,连符号都是反的。
+// 放行 —— 一笔转人工的出款随后被管理端「重试」推成 paid,星屑真的增发出去了
+// (账本上有流水行),活动上的数却停在收尾那一刻。held_quota 是实时 SUM,
+// 补发成功后归零,于是同一笔钱从两个口子同时消失,管理端「本场收支」把一场
+// 净亏的活动显示成净赚,连符号都是反的。
 
 // reloadActivity 读回活动行。
 func reloadActivity(t *testing.T, gdb *gorm.DB, id int64) *Activity {
@@ -28,8 +29,8 @@ func reloadActivity(t *testing.T, gdb *gorm.DB, id int64) *Activity {
 	return &a
 }
 
-// 收尾之后才成功的出款必须补计进活动合计。
-func TestMarkPayoutPaidKeepsFinishedActivityTotalsCurrent(t *testing.T) {
+// 收尾之后才成功的出款(held → 重试 → worker 入账)必须补计进活动合计,且只计一次。
+func TestRetriedPayoutKeepsFinishedActivityTotalsCurrent(t *testing.T) {
 	cases := []struct {
 		name       string
 		kind       string
@@ -55,30 +56,33 @@ func TestMarkPayoutPaidKeepsFinishedActivityTotalsCurrent(t *testing.T) {
 				p.Kind = tc.kind
 				p.AmountQuota = tc.amount
 				p.Status = PayoutHeld
+				p.Attempts = 8
 			})
 
-			require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-				return markPayoutPaid(tx, p.PayoutNo)
-			}))
+			require.NoError(t, RetryPayout(context.Background(), p.PayoutNo))
+			DrivePayouts(context.Background())
+			require.Equal(t, PayoutPaid, reloadPayout(t, gdb, p.PayoutNo).Status)
+			assert.Equal(t, tc.amount, stardustOf(t, gdb, p.UserId), "补发的钱必须真的到账")
 
 			after := reloadActivity(t, gdb, act.Id)
 			assert.Equal(t, tc.wantPayout, after.PayoutQuota)
 			assert.Equal(t, tc.wantRefund, after.RefundQuota)
 
-			// 同一笔被补偿任务、worker、管理端重复收尾时不许再加一次:
-			// CAS 只可能成功一次,paid 是终态。
-			require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-				return markPayoutPaid(tx, p.PayoutNo)
-			}))
+			// 同一笔被 worker 重复扫到时不许再加一次:paying→paid 的 CAS 只可能
+			// 成功一次,paid 是终态;账本的幂等键也让第二次入账记不上。
+			for i := 0; i < 2; i++ {
+				DrivePayouts(context.Background())
+			}
 			again := reloadActivity(t, gdb, act.Id)
 			assert.Equal(t, tc.wantPayout, again.PayoutQuota, "重复收尾不许重复计入")
 			assert.Equal(t, tc.wantRefund, again.RefundQuota, "重复收尾不许重复计入")
+			assert.Equal(t, tc.amount, stardustOf(t, gdb, p.UserId), "重复扫到不许重复入账")
 		})
 	}
 }
 
 // 收尾**之前**成功的出款不许在这里被计一遍:它们随后会进收尾那次聚合。
-func TestMarkPayoutPaidDoesNotDoubleCountBeforeFinish(t *testing.T) {
+func TestPayoutBeforeFinishDoesNotDoubleCountTotals(t *testing.T) {
 	gdb := newPayoutEnv(t, config.Lottery{Enabled: true, PayoutMaxAttempts: 8})
 	act := seedActivity(t, gdb, func(a *Activity) {
 		a.Status = StatusSettling
@@ -90,14 +94,13 @@ func TestMarkPayoutPaidDoesNotDoubleCountBeforeFinish(t *testing.T) {
 		p.Status = PayoutPaying
 	})
 
-	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-		return markPayoutPaid(tx, p.PayoutNo)
-	}))
+	DrivePayouts(context.Background())
 
 	after := reloadActivity(t, gdb, act.Id)
 	assert.Equal(t, int64(137005), after.PayoutQuota,
 		"活动还没收尾,合计由收尾那次聚合负责,这里加就会加两遍")
 	assert.Equal(t, PayoutPaid, reloadPayout(t, gdb, p.PayoutNo).Status)
+	assert.EqualValues(t, 109000, stardustOf(t, gdb, p.UserId))
 }
 
 // 「本场收支」的净值不许把手续费算两遍。
@@ -119,7 +122,7 @@ func TestActivityNetQuotaCountsPlatformFeeOnce(t *testing.T) {
 			want: 1875,
 		},
 		{
-			// 双色球:fee = pool − ballPoolIn，同样是 pool 的一部分。
+			// 双色球:fee = pool − ballPoolIn,同样是 pool 的一部分。
 			name: "双色球:亏损场不许被少报亏损",
 			act:  Activity{PoolQuota: 30000, PayoutQuota: 137005, PlatformFeeQuota: 12000},
 			want: -107005,

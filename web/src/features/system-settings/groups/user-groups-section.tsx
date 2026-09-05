@@ -18,7 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Info, Plus, SlidersHorizontal, Trash2, UsersRound } from 'lucide-react'
+import {
+  Info,
+  Plus,
+  SlidersHorizontal,
+  Trash2,
+  TriangleAlert,
+  UsersRound,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -30,6 +37,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { qyKeys } from '@/features/qy/lib/query-keys'
 import { qyGmMatrixQuery } from '@/features/qy/pages/admin-group-matrix/api'
+import { QyGmRowWarningIcons } from '@/features/qy/pages/admin-group-matrix/components/row-warnings'
 import { QyGmStatusBanners } from '@/features/qy/pages/admin-group-matrix/components/status-banners'
 import type { QyGmUserGroup } from '@/features/qy/pages/admin-group-matrix/types'
 import { QyUgGroupDialog } from '@/features/qy/pages/admin-user-groups/components/user-group-dialog'
@@ -200,22 +208,21 @@ export function UserGroupsSection(props: {
 
       · `snapshot.loaded === false` —— 权威清单一条都没生效，全站按上游白名单
         放行。这一页照旧把清单画得像在生效，不说出来就是一次没有任何信号的故障。
-      · `warnings` —— 后端现算的待办，其中一条以「【需要处理】」开头，明说某一档的
-        清单里有已从倍率表消失的模型分组（那正是「可用模型分组」那一列看起来
-        不对劲时的真实原因）。
+      · `warnings` —— 跨行才成立的问题（大小写近似）。只属于某一档的问题不再
+        进横幅：后端把它们挂在 `row.warnings` 上，这一页画成行上的 ⚠ 图标 +
+        悬停详情 —— 分组一多，长清单没人读，项目方点名精简成图标。
 
     早先它们只能在点开某一档的编辑弹窗之后才看得到，而运营没有理由去点。
   */
   const banner = useMemo(() => {
-    const selfExcluded: string[] = []
     const emptyScopeGroups: string[] = []
+    const rowWarningGroups: string[] = []
     for (const row of rows) {
-      if (row.self_excluded && row.scope_state !== 'unset') {
-        selfExcluded.push(row.name)
-      }
+      // 「范围不含自己」不再单列:后端已把它并进 row.warnings,由行上的 ⚠ 承载。
       if (row.scope_state === 'empty') emptyScopeGroups.push(row.name)
+      if (row.warnings.length > 0) rowWarningGroups.push(row.name)
     }
-    return { emptyScopeGroups, selfExcluded }
+    return { emptyScopeGroups, rowWarningGroups }
   }, [rows])
 
   const refreshRoster = useCallback(async () => {
@@ -237,11 +244,17 @@ export function UserGroupsSection(props: {
   const createMutation = useMutation({
     mutationFn: () => qyUgrCreate(createDraft),
     onSuccess: async (result) => {
-      toast.success(t('qy_ugr_created', { name: result.name }))
-      // 「建好了但还不能用」是服务端现算的。逐条常驻地弹出来：折进一句「请注意
-      // 配置」的话，运营下一步照样会把人挪进来，然后拿到一批 403。
-      for (const warning of result.warnings) {
-        toast.warning(warning, { duration: Number.POSITIVE_INFINITY })
+      /*
+        「建好了但还不能用」曾经逐条弹**永久 toast**。它与创建弹窗里的提示、
+        以及表格行上的 ⚠ 详情说的是同一批话 —— 项目方点名这份重复要移除。
+        现在只弹一句带下一步的提醒；具体清单由行上的 ⚠ 图标常驻承载。
+      */
+      if (result.warnings.length > 0) {
+        toast.warning(t('qy_ugr_created_next_steps', { name: result.name }), {
+          duration: 10000,
+        })
+      } else {
+        toast.success(t('qy_ugr_created', { name: result.name }))
       }
       setCreating(false)
       setCreateDraft(QY_UGR_EMPTY_DRAFT)
@@ -398,7 +411,6 @@ export function UserGroupsSection(props: {
           // 这一页不做保存，也不持有 base_ratio_hash：那两条状态属于配置弹窗。
           partial={null}
           ratioDrift={false}
-          selfExcluded={banner.selfExcluded}
           // 大小写近似项由后端的 warnings 逐条给出（含"为什么不折叠"），
           // 这里再画一遍只会把同一件事说两次。
           caseNearMiss={[]}
@@ -453,6 +465,22 @@ export function UserGroupsSection(props: {
         </Button>
       </div>
 
+      {/*
+        行级问题只留一句合计 —— 具体每一条在对应行的 ⚠ 图标里。
+        这一句必须存在：图标只有被看到才起作用，而滚动到表格中段的人
+        看不见顶部有没有横幅。
+      */}
+      {banner.rowWarningGroups.length > 0 && (
+        <Alert>
+          <TriangleAlert />
+          <AlertDescription>
+            {t('qy_ug_row_warnings_summary', {
+              count: banner.rowWarningGroups.length,
+            })}
+          </AlertDescription>
+        </Alert>
+      )}
+
       <StaticDataTable
         data={[...rows]}
         getRowKey={(row) => row.name}
@@ -465,8 +493,11 @@ export function UserGroupsSection(props: {
             className: 'min-w-40',
             cell: (row) => (
               <div className='min-w-0'>
-                <div className='text-sm font-medium break-words'>
-                  {row.name}
+                <div className='flex min-w-0 items-center gap-1.5'>
+                  <span className='text-sm font-medium break-words'>
+                    {row.name}
+                  </span>
+                  <QyGmRowWarningIcons warnings={row.warnings} />
                 </div>
                 <div className='mt-1 flex flex-wrap gap-1'>
                   {!row.registered && (

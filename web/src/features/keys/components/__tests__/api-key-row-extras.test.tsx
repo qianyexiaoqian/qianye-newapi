@@ -105,6 +105,10 @@ const { TooltipProvider } = await import('@/components/ui/tooltip')
 const { ApiKeysProvider } = await import('../api-keys-provider')
 const { ApiKeyGroupSwitchCell } = await import('../api-key-group-switch-cell')
 const { ApiKeyTodayUsageCell } = await import('../api-key-today-usage-cell')
+const { ApiKeyLiveStatsCell, ApiKeyLiveStatsHeader } =
+  await import('../api-key-live-stats-cell')
+const { tokenLiveStatsQuery, TOKEN_LIVE_REFRESH_MS } =
+  await import('../../lib/live-stats')
 const { useApiKeysColumns } = await import('../api-keys-columns')
 
 const reactTestGlobals = globalThis as typeof globalThis & {
@@ -122,6 +126,8 @@ let nextPutResponse: { success: boolean; message?: string; group?: string } = {
 }
 /** 「今日消耗」端点这一轮是正常返回还是 503。 */
 let todayUsageMode: 'fail' | 'ok' = 'ok'
+/** 「当前并发 / 近 1 分钟」端点这一轮是正常返回还是 503。 */
+let liveStatsMode: 'fail' | 'ok' = 'ok'
 
 /*
  * 用 axios adapter 打桩而不是 mock 掉 `../api` 模块：这条用例要证明的第一件事
@@ -164,6 +170,25 @@ api.defaults.adapter = async (config) => {
         utc_offset_minutes: -420,
         index_ready: true,
         usage: { '42': 250000 },
+      },
+    })
+  }
+  if (url.startsWith('/api/qy/token-usage/live')) {
+    if (liveStatsMode === 'fail') {
+      throw {
+        response: {
+          status: 503,
+          data: { success: false, code: 'qy_unavailable' },
+        },
+      }
+    }
+    return reply({
+      success: true,
+      data: {
+        // 窗口长度由后端下发（qianye/controller/token_live_stats.go）。
+        // 字段名换了这一格就会静默读到 undefined，所以这里必须逐字对上。
+        window_seconds: 60,
+        stats: { '42': { in_flight: 2, requests: 37 } },
       },
     })
   }
@@ -500,9 +525,89 @@ describe('今日消耗', () => {
   })
 })
 
+describe('当前并发 / 近 1 分钟', () => {
+  test('没人在用的密钥显示 0 / 0，不是 —', async () => {
+    liveStatsMode = 'ok'
+    const container = await mount(
+      <ApiKeyLiveStatsCell
+        row={{ original: { ...API_KEY, id: 99 } } as never}
+      />
+    )
+    assert.equal(
+      container.textContent?.replaceAll(/\s+/g, ''),
+      '0/0',
+      '缺席 = 此刻没在跑、近 60 秒也没请求 = 0；画成 "—" 会让"没查到"和' +
+        '"确实没人用"变成同一个样子'
+    )
+  })
+
+  test('有流量时左边是在途、右边是近 1 分钟', async () => {
+    liveStatsMode = 'ok'
+    const container = await mount(<ApiKeyLiveStatsCell row={row} />)
+    assert.equal(
+      container.textContent?.replaceAll(/\s+/g, ''),
+      '2/37',
+      '两个数挤在一格里唯一会出的错就是被读反：左边 in_flight、右边 requests'
+    )
+  })
+
+  test('取不到时显示 —，绝不显示 0', async () => {
+    liveStatsMode = 'fail'
+    const container = await mount(<ApiKeyLiveStatsCell row={row} />)
+    const text = container.textContent?.trim() ?? ''
+    assert.equal(
+      text,
+      '—',
+      `取不到时画成 0，等于告诉用户"你的 key 现在没人用" —— 而那正是他打开` +
+        `这一列最想确认的那件事。实际显示 ${JSON.stringify(text)}`
+    )
+  })
+
+  test('关掉自动刷新就真的不再轮询，而不是继续轮询只是不显示', async () => {
+    assert.equal(
+      tokenLiveStatsQuery(true).refetchInterval,
+      TOKEN_LIVE_REFRESH_MS,
+      '默认必须是五秒一次（项目方口径）'
+    )
+    assert.equal(
+      tokenLiveStatsQuery(false).refetchInterval,
+      false,
+      '关掉之后 refetchInterval 必须是 false —— 只是不渲染的话，' +
+        '用户按下的"不刷新"一次请求都没省下来'
+    )
+  })
+
+  test('表头那颗开关记住用户的选择', async () => {
+    liveStatsMode = 'ok'
+    localStorage.removeItem('api_keys_live_stats_auto_refresh')
+    const container = await mount(<ApiKeyLiveStatsHeader />)
+
+    const pause = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Pause auto-refresh"]'
+    )
+    assert.ok(pause, '默认应当是开着的：表头上要有一颗"暂停"')
+    await act(async () => pause.click())
+
+    assert.equal(
+      localStorage.getItem('api_keys_live_stats_auto_refresh'),
+      'off',
+      '选择必须落到 localStorage：会去关它的人不会因为切了一次页面就改主意'
+    )
+    assert.ok(
+      container.querySelector('button[aria-label="Resume auto-refresh"]'),
+      '关掉之后按钮要变成"继续"，否则界面上看不出这个数已经停住了'
+    )
+    assert.ok(
+      container.querySelector('button[aria-label="Refresh now"]'),
+      '停住之后必须留一条手动取数的路，否则想看一眼就只能重新开轮询'
+    )
+    localStorage.removeItem('api_keys_live_stats_auto_refresh')
+  })
+})
+
 describe('两格的 cell 必须是稳定的组件引用', () => {
   test('同一个 now 下重复渲染，group 与 today_usage 的 cell 不变', async () => {
-    const seen: { group: unknown; today: unknown }[] = []
+    const seen: { group: unknown; today: unknown; live: unknown }[] = []
     function Probe() {
       const columns = useApiKeysColumns(1_700_000_000_000)
       /*
@@ -516,12 +621,15 @@ describe('两格的 cell 必须是稳定的组件引用', () => {
         (column) => 'accessorKey' in column && column.accessorKey === 'group'
       )
       const today = columns.find((column) => column.id === 'today_usage')
+      const live = columns.find((column) => column.id === 'live_stats')
       assert.ok(group?.cell, '分组列不见了，这条守卫没有被守的东西')
       assert.ok(today?.cell, '今日消耗列不见了，这条守卫没有被守的东西')
-      seen.push({ group: group.cell, today: today.cell })
+      assert.ok(live?.cell, '并发列不见了，这条守卫没有被守的东西')
+      seen.push({ group: group.cell, today: today.cell, live: live.cell })
       return null
     }
     todayUsageMode = 'ok'
+    liveStatsMode = 'ok'
     await mount(<Probe />)
     await act(async () => {
       mounted?.root.render(
@@ -550,6 +658,12 @@ describe('两格的 cell 必须是稳定的组件引用', () => {
       seen[0]?.today,
       seen.at(-1)?.today,
       '今日消耗格写成了内联箭头：每 30 秒会把每一行的查询订阅卸载重挂一次'
+    )
+    assert.equal(
+      seen[0]?.live,
+      seen.at(-1)?.live,
+      '并发格写成了内联箭头：它订阅的是每 5 秒刷新一次的查询，' +
+        '重挂一次就等于多发一次请求'
     )
   })
 })

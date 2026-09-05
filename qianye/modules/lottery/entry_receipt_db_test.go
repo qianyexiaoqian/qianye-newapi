@@ -3,12 +3,12 @@ package lottery
 // entry_receipt_db_test.go —— 「买到手的票必须出现在回执里」这条契约。
 //
 // 一次买多注把两个新数摆进了响应:accepted(收下几注)与 total_quota(这次扣了
-// 多少钱)。这两个数一旦与主库余额对不上,用户看到的就是"我付了三注的钱,
+// 多少钱)。这两个数一旦与星屑余额对不上,用户看到的就是"我付了三注的钱,
 // 界面说只买成两注",而客服照着 failed_code 会按"没扣钱"处置一笔已扣的钱。
 //
 // 这里的两条用例各钉住一条把它们说错的路径:
 //
-//	调用方预算在钱动完之后失效  —— 回执不许因此丢掉一张已经成交的票
+//	调用方预算在事务中途失效    —— 钱与票要么都在、要么都不在,回执必须与之一致
 //	客户端自选的 crid 撞进派生位 —— 回执不许因此混进上一次提交买的票
 
 import (
@@ -18,7 +18,6 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 
 	"github.com/gin-gonic/gin"
@@ -27,8 +26,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// receiptEnv 造一套"真扣钱"的环境:扩展库 + 主库 + 一场已发布的双色球。
-func receiptEnv(t *testing.T, startQuota int) (*gorm.DB, *gorm.DB, *Activity) {
+// receiptEnv 造一套"真扣钱"的环境:扩展库(含星屑账本)+ 主库 + 一场已发布的双色球。
+func receiptEnv(t *testing.T, startStardust int) (*gorm.DB, *Activity) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	ext := newPayoutEnv(t, config.Lottery{
@@ -36,52 +35,49 @@ func receiptEnv(t *testing.T, startQuota int) (*gorm.DB, *gorm.DB, *Activity) {
 		PayoutMaxAttempts:      8,
 		EntryCloseGraceSeconds: 0,
 		RevealDelaySeconds:     0,
-		MaxStakeQuota:          5_000_000,
-		MaxTotalPrizeQuota:     5_000_000,
+		MaxStakeStardust:       5_000_000,
+		MaxTotalPrizeStardust:  5_000_000,
 		MaxActiveActivities:    16,
 		MaxPrizeTiers:          8,
 		MaxTotalEntriesHard:    1_000,
 	})
-	main := newBallMainDB(t, startQuota)
-	return ext, main, seedBallActivity(t, ext, nil)
+	newBallMainDB(t, startStardust)
+	return ext, seedBallActivity(t, ext, nil)
 }
 
-// buyerQuota 读主库余额。期望值一律独立算出来,不从响应里抄。
-func buyerQuota(t *testing.T, main *gorm.DB) int {
-	t.Helper()
-	var u model.User
-	require.NoError(t, main.Where("id = ?", ballE2EUserId).Take(&u).Error)
-	return u.Quota
-}
-
-// 调用方预算在**钱已经动过之后**耗尽时,回执必须照样拿得到。
+// 调用方预算在参与事务**中途**失效时,钱与票必须同生共死,回执必须如实。
 //
-// ChargeEntry 的最后一步是回读那条参与明细(entry_no + seq + chain_hash 是用户
-// 事后举证的全部凭据)。它原本用的是调用方那个会过期的 ctx,而它排在整条链路
-// 最长的一段(主库事务 + 收尾)之后 —— 预算落在这里时,一张**已经买到手**的票
-// 会被当成"这一注处理失败"抛出去:多注提交的 accepted / total_quota 因此少报
-// 一笔真实扣款,而 failed_code 说的是"处理失败,请稍后重试"。
+// 参与是一个扩展库事务:扣星屑、落票、推链要么全部提交、要么全部回滚。这条用例
+// 在票的 INSERT 之后(扣款已经写进事务、还没提交)掐掉调用方的预算,然后只断言
+// 一件事:**库里的钱与票一致,ChargeEntry 的回答与库里一致** —— 提交成功就必须
+// 拿到回执且余额少一注,提交失败就必须一分钱没扣、一张票没有。两种落点都合法,
+// 唯一不合法的形状是"钱扣了、票没有"或"报了失败、钱却扣了"。
 //
-// 演示库上实测到过三次,失败原文逐字是「回读参与明细: context deadline exceeded」。
+// 不靠计时去撞窗口(计时用例本仓明令禁止),而是在扩展库的 CREATE 回调上挂钩子:
+// 第一条打在 qy_lot_entry 上的 INSERT 就是那张票。
 //
-// 这里不靠计时去撞那个窗口(计时用例本仓明令禁止),而是在扩展库的 UPDATE
-// 回调上挂一颗钩子:第一条打在 qy_lot_entry 上的 UPDATE 就是 markEntrySuccess,
-// 它跑在主库扣款提交**之后**,且自己走的是 WithoutCancel 的收尾 ctx。在那一刻
-// 掐掉调用方的预算,窗口就被确定性地打开了。
-func TestEntryReceiptSurvivesACallerBudgetThatDiesAfterTheMoneyMoved(t *testing.T) {
-	const startQuota = 100_000
-	ext, main, act := receiptEnv(t, startQuota)
+// 必须用落盘的 SQLite:预算中途失效时 database/sql 会把那条连接判成坏连接并关掉,
+// 而 `:memory:` 库的生命周期就是那条连接的生命周期 —— 下一次取连接拿到的是一个空库。
+func TestEntryReceiptAgreesWithTheLedgerWhenTheCallerBudgetDiesMidTransaction(t *testing.T) {
+	const startStardust = 100_000
+	gin.SetMode(gin.TestMode)
+	ext := newFileBackedEnv(t, config.Lottery{
+		Enabled: true, PayoutMaxAttempts: 8,
+		EntryCloseGraceSeconds: 0, RevealDelaySeconds: 0,
+		MaxStakeStardust: 5_000_000, MaxTotalEntriesHard: 1_000,
+	}, startStardust)
+	act := seedBallActivity(t, ext, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	const hook = "qy_test_kill_caller_budget"
-	require.NoError(t, ext.Callback().Update().After("gorm:update").
+	require.NoError(t, ext.Callback().Create().After("gorm:create").
 		Register(hook, func(tx *gorm.DB) {
 			if tx.Statement != nil && tx.Statement.Table == (Entry{}).TableName() {
 				cancel()
 			}
 		}))
-	t.Cleanup(func() { _ = ext.Callback().Update().Remove(hook) })
+	t.Cleanup(func() { _ = ext.Callback().Create().Remove(hook) })
 
 	entry, err := ChargeEntry(ctx, EntryInput{
 		ActNo:           act.ActNo,
@@ -93,21 +89,29 @@ func TestEntryReceiptSurvivesACallerBudgetThatDiesAfterTheMoneyMoved(t *testing.
 	})
 	require.Error(t, ctx.Err(),
 		"钩子没被触发,这条用例什么都没验到 —— 先修用例再看结论")
-	require.NoError(t, err,
-		"钱已经扣了、票已经进链,回执必须照样拿得到;报成失败等于把一张买到手的票说没买成")
-	require.NotNil(t, entry)
-	assert.Equal(t, EntrySuccess, entry.Status)
-	assert.NotEmpty(t, entry.EntryNo, "entry_no 是用户事后举证的凭据,不能是空的")
-	assert.NotEmpty(t, entry.ChainHash)
-	assert.EqualValues(t, 1, entry.Seq)
 
-	// 钱确实动了 —— 也就是说上面那句 NoError 不是因为这一注根本没成交。
-	assert.EqualValues(t, startQuota-int(act.StakeQuota), buyerQuota(t, main),
-		"主库余额必须正好少一注参与费")
+	var tickets []Entry
+	require.NoError(t, ext.Where("act_id = ?", act.Id).Find(&tickets).Error)
+	ledger := ledgerRowsOf(t, ext, ballE2EUserId, act.ActNo)
+	balance := userStardust(t, ext)
 
-	var stored Entry
-	require.NoError(t, ext.Where("entry_no = ?", entry.EntryNo).Take(&stored).Error)
-	assert.Equal(t, EntrySuccess, stored.Status, "库里那张票也必须是成交状态")
+	if err == nil {
+		require.NotNil(t, entry)
+		assert.Equal(t, EntrySuccess, entry.Status)
+		assert.NotEmpty(t, entry.EntryNo, "entry_no 是用户事后举证的凭据,不能是空的")
+		assert.NotEmpty(t, entry.ChainHash)
+		assert.EqualValues(t, 1, entry.Seq)
+		require.Len(t, tickets, 1, "回执说成交了,库里就必须有这张票")
+		require.Len(t, ledger, 1, "票在,扣款流水就必须在")
+		assert.Equal(t, ledger[0].LedgerNo, entry.OrderNo)
+		assert.EqualValues(t, startStardust-act.StakeQuota, balance, "星屑余额必须正好少一注参与费")
+		return
+	}
+	// 事务在提交前被掐断:整笔回滚,一分钱没扣、一张票没有、序号没占。
+	assert.Empty(t, tickets, "报了失败就不许留下票 —— 那会是一张用户不知道自己买过的票")
+	assert.Empty(t, ledger, "报了失败就不许扣钱 —— 那是一笔用户永远看不到的扣款")
+	assert.EqualValues(t, startStardust, balance)
+	assert.Zero(t, loadAct(t, ext, act.Id).EntrySeq, "回滚的尝试不许占序号")
 }
 
 // 客户端自选的 client_request_id 不许撞进服务端的派生位。
@@ -121,8 +125,8 @@ func TestEntryReceiptSurvivesACallerBudgetThatDiesAfterTheMoneyMoved(t *testing.
 // 给键空间做转义便宜得多:转义要么撑破 idem_key 的列宽,要么改掉单注那一份的
 // 取值,而后者会让旧客户端的重试不再命中原单。
 func TestClientRequestIdCannotReachTheDerivedBatchKeyspace(t *testing.T) {
-	const startQuota = 100_000
-	ext, main, act := receiptEnv(t, startQuota)
+	const startStardust = 100_000
+	ext, act := receiptEnv(t, startStardust)
 	r := ballE2ERouter()
 	path := "/lottery/activities/" + act.ActNo + "/entries"
 
@@ -135,7 +139,7 @@ func TestClientRequestIdCannotReachTheDerivedBatchKeyspace(t *testing.T) {
 	var landed int64
 	require.NoError(t, ext.Model(&Entry{}).Where("act_id = ?", act.Id).Count(&landed).Error)
 	assert.Zero(t, landed, "被拒的提交不许落下任何一张票")
-	assert.Equal(t, startQuota, buyerQuota(t, main), "被拒的提交不许扣一分钱")
+	assert.EqualValues(t, startStardust, userStardust(t, ext), "被拒的提交不许扣一分钱")
 
 	// 同一个用户随后用 `col` 买两注:这两注都必须是**这一次**买的。
 	code, body = callJSON(t, r, http.MethodPost, path,
@@ -148,7 +152,7 @@ func TestClientRequestIdCannotReachTheDerivedBatchKeyspace(t *testing.T) {
 	assert.Equal(t, 1, batch.Entries[0].Seq)
 	assert.Equal(t, 2, batch.Entries[1].Seq,
 		"两份回执必须是本次新买的两张票,不能有一张来自上一次提交")
-	assert.EqualValues(t, startQuota-int(2*act.StakeQuota), buyerQuota(t, main),
+	assert.EqualValues(t, startStardust-2*act.StakeQuota, userStardust(t, ext),
 		"扣的钱必须与回执上写的总额逐字相等")
 }
 

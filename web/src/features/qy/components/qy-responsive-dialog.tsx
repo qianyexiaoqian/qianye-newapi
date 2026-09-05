@@ -67,6 +67,16 @@ export type QyResponsiveDialogProps = {
    * 跨出 `<form>` 提交（HTML 原生的 form 属性），不需要把 form 包到外面。
    */
   footer?: ReactNode
+  /**
+   * 为 false 时,点弹窗外面的空白与按 Esc **都不关闭**,只有标题栏的 × 与
+   * 底部按钮能关。默认 true(与 Base UI 一致)。
+   *
+   * 给长表单用的:建活动向导有四步、几十个字段,项目方原话「经常性因为误触
+   * 旁边空白导致窗口关闭,丢失很多编辑的信息」。判据是关闭事件的 reason
+   * (`outside-press` / `escape-key`),而不是整体禁掉 onOpenChange —— 关闭按钮
+   * 与程序性关闭(提交成功后)照常走。
+   */
+  dismissible?: boolean
   children: ReactNode
   /**
    * 桌面端窗口宽度上限，例如 `sm:max-w-xl`，缺省 `sm:max-w-2xl`。
@@ -125,11 +135,23 @@ export type QyResponsiveDialogProps = {
  * 按桌面渲染。对本组件无影响：浮层只在用户点击后才 `open`，那时 effect 早已跑过。
  */
 export function QyResponsiveDialog(props: QyResponsiveDialogProps) {
+  const dismissible = props.dismissible !== false
+  // 只拦「误触」的两种关闭理由;其余(× 按钮、程序性关闭)原样放行。
+  const handleOpenChange = (open: boolean, details?: { reason?: string }) => {
+    if (
+      !open &&
+      !dismissible &&
+      (details?.reason === 'outside-press' || details?.reason === 'escape-key')
+    ) {
+      return
+    }
+    props.onOpenChange(open)
+  }
   const isMobile = useIsMobile()
 
   if (isMobile) {
     return (
-      <Sheet open={props.open} onOpenChange={props.onOpenChange}>
+      <Sheet open={props.open} onOpenChange={handleOpenChange}>
         <SheetContent side='left' className={props.sheetClassName}>
           <SheetHeader className={QY_DIALOG_STATIC_CLASS}>
             {/* pr-8 给右上角的关闭按钮让位，标题不会压在它下面。 */}
@@ -160,7 +182,7 @@ export function QyResponsiveDialog(props: QyResponsiveDialogProps) {
   }
 
   return (
-    <DialogRoot open={props.open} onOpenChange={props.onOpenChange}>
+    <DialogRoot open={props.open} onOpenChange={handleOpenChange}>
       <DialogContent
         className={cn(
           'flex max-h-[calc(100dvh-2rem)] w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl',

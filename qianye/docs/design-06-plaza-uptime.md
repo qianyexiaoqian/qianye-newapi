@@ -526,7 +526,7 @@ func OnRelaySample(info *relaycommon.RelayInfo, success bool, outputTokens int64
 | `timeout` | `LastError` 的 code ∈ `{channel:response_time_exceeded}`，或 `errors.Is(err, context.DeadlineExceeded)`，或 `EndReason == timeout` | ✅ | ❌ |
 | `rate_limit` | `LastError.StatusCode == 429` | ✅（可关） | ❌ |
 | `upstream_error` | `LastError.StatusCode >= 500`，或 code ∈ `{do_request_failed, bad_response*, empty_response, read_response_body_failed, aws_invoke_error, channel:invalid_key, channel:no_available_key, ...}`，或 `types.IsChannelError(err) == true` | ✅ | ❌ |
-| `client_error` | `LastError.StatusCode ∈ [400,499]` 且 code ∈ `{invalid_request, bad_request_body, convert_request_failed, count_token_failed, sensitive_words_detected, access_denied, prompt_blocked, model_not_found}` | ❌ **排除**（可开） | ❌ |
+| `client_error` | `LastError.StatusCode ∈ [400,499]` 且 code ∈ `{invalid_request, bad_request_body, convert_request_failed, count_token_failed, access_denied, prompt_blocked, model_not_found}` | ❌ **排除**（可开） | ❌ |
 | `quota_error` | code ∈ `{insufficient_user_quota, pre_consume_token_quota_failed}` | ❌ **硬排除** | ❌ |
 | `violation` | `service.IsViolationFeeCode(code)` 语义（违规拦截，`ErrorCodeViolationFeeGrokCSAM` 及前缀 `violation_fee.`） | ❌ **硬排除** | ❌ |
 | `internal_error` | 其余（`gen_relay_info_failed`、`json_marshal_failed`、`query_data_error`、`update_data_error` …） | ✅ | ❌ |

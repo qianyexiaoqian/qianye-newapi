@@ -50,10 +50,9 @@ import (
 // gin 的访问日志有时间和 IP,但没有任何身份列,答不出"是谁"。
 // 这条路由天然稀少(手动点击 + 关键操作限流),不会稀释台账。
 var sensitiveReads = map[string]bool{
-	"GET /api/qy/admin/withdraw/:id/payee":   true, // 收款信息明文解密
-	"GET /api/qy/admin/withdraw/:id/proof":   true, // 打款凭证原图
-	"GET /api/qy/admin/withdraw/pii-audits":  true, // 谁查过明文,这份名册本身也要留痕
-	"GET /api/qy/admin/version/check-update": true, // 站点替自己向 github.com 开一次出站连接
+	"GET /api/qy/admin/version/check-update":    true, // 站点替自己向 github.com 开一次出站连接
+	"GET /api/qy/admin/mall/orders/:no/address": true, // 收货地址与联系方式明文解密(商城实物单)
+	"GET /api/qy/mall/orders/:no/code":          true, // 用户本人揭示已购兑换码明文(过验密),码等同现金
 }
 
 // credentialBodyRoutes 列出请求体**整体**由凭证构成的路由。
@@ -66,8 +65,8 @@ var credentialBodyRoutes = map[string]bool{
 	"POST /api/qy/pay-password":                      true,
 	"PUT /api/qy/pay-password":                       true,
 	"POST /api/qy/pay-password/recover/reset":        true,
-	"POST /api/qy/withdraw/payees":                   true,
 	"POST /api/qy/admin/pay-password/:user_id/reset": true,
+	"POST /api/qy/admin/mall/products/:no/codes":     true, // 批量上传兑换码明文,body 整体是凭证
 }
 
 // targetUserParams 是"这次操作针对哪个用户"的路径参数名。
@@ -350,7 +349,7 @@ func redactParams(c *gin.Context) string {
 
 // DeriveAction 由 method + 路由模板推导稳定的动作名。
 //
-//	POST /api/qy/admin/withdraw/:id/approve → admin.withdraw.approve.create
+//	POST /api/qy/admin/invite/relations/bind → admin.invite.relations.bind.create
 //
 // 动词一律后缀,即使读起来别扭(approve.create)。理由是可预测性:
 // 只要规则里出现"某些情况下不加动词",这条规则就会在下一个接口上被重新解释,

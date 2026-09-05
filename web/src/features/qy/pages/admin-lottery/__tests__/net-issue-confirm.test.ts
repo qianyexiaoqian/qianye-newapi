@@ -40,7 +40,7 @@ import type { QyLotYamlReadonly } from '../types'
  *
  * ## 放开的那些
  *
- * `max_stake_quota` / `max_total_prize_quota` 的 **0 = 不限制**，而且是默认值。
+ * `max_stake_stardust` / `max_total_prize_stardust` 的 **0 = 不限制**，而且是默认值。
  * 界面若还照着一个不存在的上限标红，运营看到的仍然是「填不进去」，
  * 后端改了等于没改。
  *
@@ -88,7 +88,7 @@ const yaml = {
   spend_ready_from: 20240101,
   spend_max_lookback_days: 90,
   // 0 = 不限，这是新的默认值。
-  max_stake_quota: 0,
+  max_stake_stardust: 0,
 } as QyLotYamlReadonly
 
 describe('净增发的二次确认（界面侧）', () => {
@@ -133,12 +133,12 @@ describe('净增发的二次确认（界面侧）', () => {
       !qyLotValidateDraft(draft, yaml, 0, 2000).includes(
         'qy_lot_v_stake_over_cap'
       ),
-      'max_stake_quota=0 时大额参与费必须能填'
+      'max_stake_stardust=0 时大额参与费必须能填'
     )
     assert.ok(
       qyLotValidateDraft(
         draft,
-        { ...yaml, max_stake_quota: 5_000_000 },
+        { ...yaml, max_stake_stardust: 5_000_000 },
         0,
         2000
       ).includes('qy_lot_v_stake_over_cap'),
@@ -166,7 +166,7 @@ describe('净增发的二次确认（界面侧）', () => {
     assert.ok(
       qyLotValidateDraft(
         guess,
-        { ...yaml, max_stake_quota: 5_000_000 },
+        { ...yaml, max_stake_stardust: 5_000_000 },
         0,
         2000
       ).includes('qy_lot_v_bet_over_cap')
@@ -272,17 +272,20 @@ describe('配置页上的「0 = 不限」', () => {
     // 一行写着「单场奖品总额上限 $0」的只读文字，任何人读到的都是
     // "一分钱都不许发"，而真实语义恰好相反 —— 这与项目方那句
     // 「怎么在抽奖设置这里不能超过 100 站点余额」是同一种误读，方向相反。
-    assert.equal(qyLotIsUnlimitedZero('max_stake_quota', 0), true)
-    assert.equal(qyLotIsUnlimitedZero('max_total_prize_quota', 0), true)
+    assert.equal(qyLotIsUnlimitedZero('max_stake_stardust', 0), true)
+    assert.equal(qyLotIsUnlimitedZero('max_total_prize_stardust', 0), true)
 
     // 同样以 `_quota` 结尾、但 0 的意思完全不同的两个：按后缀猜就会把它们
     // 一起说成「不限」，而 pay_password 的 0 是「任何金额都不验支付密码」，
     // 阈值的 0 是「连确认都不要」。
-    assert.equal(qyLotIsUnlimitedZero('pay_password_threshold_quota', 0), false)
-    assert.equal(qyLotIsUnlimitedZero('large_prize_alert_quota', 0), false)
+    assert.equal(
+      qyLotIsUnlimitedZero('pay_password_threshold_stardust', 0),
+      false
+    )
+    assert.equal(qyLotIsUnlimitedZero('large_prize_alert_stardust', 0), false)
 
     // 非零取值一律按金额渲染。
-    assert.equal(qyLotIsUnlimitedZero('max_total_prize_quota', 1), false)
+    assert.equal(qyLotIsUnlimitedZero('max_total_prize_stardust', 1), false)
   })
 
   test('区间端点不走取值渲染', () => {

@@ -77,10 +77,6 @@ describe('渲染大小写敏感串的 Label', () => {
       file: 'features/qy/pages/api-address-picker/picker-dialog.tsx',
       what: 'API 线路的 URL —— 路径段区分大小写，照着大写版本手填就是 404',
     },
-    {
-      file: 'features/qy/pages/withdraw/components/payee-section.tsx',
-      what: '脱敏后的收款账号(邮箱 / 卡号) —— 大写之后用户对不上自己填过的那个',
-    },
   ]
 
   for (const c of cases) {

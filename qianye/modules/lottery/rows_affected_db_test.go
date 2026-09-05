@@ -191,7 +191,7 @@ func TestUpdateDraftIsIdempotent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ext := newPayoutEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8,
-		MaxStakeQuota: 5_000_000, MaxTotalPrizeQuota: 5_000_000,
+		MaxStakeStardust: 5_000_000, MaxTotalPrizeStardust: 5_000_000,
 		MaxActiveActivities: 16, MaxPrizeTiers: 8, MaxOptions: 8,
 		MaxTotalEntriesHard: 1_000,
 	})
@@ -232,7 +232,7 @@ func TestUpdateDraftStillRefusedAfterPublish(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ext := newPayoutEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8,
-		MaxStakeQuota: 5_000_000, MaxTotalPrizeQuota: 5_000_000,
+		MaxStakeStardust: 5_000_000, MaxTotalPrizeStardust: 5_000_000,
 		MaxActiveActivities: 16, MaxPrizeTiers: 8, MaxOptions: 8,
 		MaxTotalEntriesHard: 1_000,
 	})

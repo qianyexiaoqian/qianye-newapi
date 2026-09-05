@@ -15,7 +15,7 @@ import (
 //
 // # 这是一条资金口径,不是风格洁癖
 //
-// 本仓所有 char(N) 列的合法取值里都包含空串:qy_commission_accrual.bucket_date
+// 本仓所有 char(N) 列的合法取值里都包含空串:qy_sd_accrual.bucket_date
 // (充值来源不填消费日桶)、各处 sha256 / payee_digest(未上传凭证、收款信息
 // 已过保留期被清空)。定长 CHAR 遇到空串时:
 //

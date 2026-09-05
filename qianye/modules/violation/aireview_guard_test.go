@@ -748,7 +748,7 @@ func TestGuardBadFormatFailsOverAndBillsWholeChain(t *testing.T) {
 	}
 	// 指定第一个 + 打开故障转移,链的形状才是确定的(否则加权随机会让
 	// 断言的调用次数飘)。
-	sc := &aiScopeRT{ChannelId: 1, ChannelFailover: true}
+	sc := &aiScopeRT{ChannelIds: []int64{1}, ChannelFailover: true}
 
 	out := runAIReview(context.Background(), rt, sc, "待审文本", 5000)
 

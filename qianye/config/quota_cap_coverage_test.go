@@ -28,7 +28,7 @@ var quotaCapExempt = map[string]string{
 // 有 14 个。漏掉的 8 个各自被下游的就地守卫接住(所以没有活的溢出),
 // 但那意味着一份把 transfer.fee_min_quota 配成 MaxInt64 的 YAML 能干净启动,
 // 然后**每一次划转**都在 computeFee 里报错;而
-// lottery.pay_password_threshold_quota 越界的表现是支付密码**永不触发** ——
+// lottery.pay_password_threshold_stardust 越界的表现是支付密码**永不触发** ——
 // 那是安全弱化,连报错都没有。
 //
 // 判据用 AST 数 checkQuotaCap 的字面量参数,不靠人去数注释:清单一旦过期,

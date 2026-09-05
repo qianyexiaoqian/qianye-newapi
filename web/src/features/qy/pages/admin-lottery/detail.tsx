@@ -23,18 +23,21 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { QyAmountText } from '../../components/qy-amount-text'
+import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySdAmount } from '../../components/qy-sd-amount'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
+import { useStardustName } from '../../hooks/use-stardust-name'
 import { qyErrorMessage } from '../../lib/api'
-import { formatQyQuotaLedger } from '../../lib/format'
+import { formatSdWithUnit } from '../../lib/format-sd'
 import { qyKeys } from '../../lib/query-keys'
 import { QyStatGrid } from '../components/qy-stat-grid'
 import { QyLotBallNumbers } from '../lottery/components/lottery-ball-numbers'
@@ -44,13 +47,16 @@ import {
   qyLotActivityBadgeStatus,
   qyLotOutcomeKey,
 } from '../lottery/lib/display'
+import { qyMallKindKey } from '../mall/lib/product'
 import { QY_EMPTY_TEXT, formatQyTs } from '../ops/format'
 import { QyKeyValue } from '../ops/qy-ops-ui'
 import {
   qyAdminLotActivityQuery,
   qyAdminLotConfigQuery,
   unhideQyLotActivity,
+  updateQyLotSchedule,
 } from './api'
+import { QyLotBasicsDialog } from './components/lottery-basics-dialog'
 import { QyLotCancelDialog } from './components/lottery-cancel-dialog'
 import { QyLotCoverDialog } from './components/lottery-cover-dialog'
 import { QyLotActivityWizard } from './components/lottery-create-wizard'
@@ -64,6 +70,7 @@ import { QyLotHideDialog } from './components/lottery-hide-dialog'
 import { QyLotPayoutsTab } from './components/lottery-payouts-tab'
 import { QyLotPicksCapDialog } from './components/lottery-picks-cap-dialog'
 import { QyLotPublishDialog } from './components/lottery-publish-dialog'
+import { QyLotScheduleDialog } from './components/lottery-schedule-dialog'
 import { qyLotDraftFromActivity } from './lib/draft'
 
 /**
@@ -78,19 +85,27 @@ import { qyLotDraftFromActivity } from './lib/draft'
  *
  * 唯一的例外是竞猜结果录入 —— 那是链下事实，没有任何算法能替代人，所以它被
  * 做成"一次性、强制附证据、写完不可改"。
+ *
+ * **转盘另算**：它没有"封盘冻结名单再摇号"这一步，每一转当场开出，排期不进它的
+ * 承诺原像 —— 所以已发布的转盘多两颗按钮：「改排期」（开始 / 结束）与「立即开始」
+ * （同一接口，open_at = now）；「提前结束」就是它的「取消」（提前封盘）。
  */
 export function QyAdminLotteryDetail() {
   const { t } = useTranslation()
+  const unit = useStardustName()
   const { actNo } = useParams({
     from: '/_authenticated/qy/admin/lottery/$actNo/',
   })
 
   const [editOpen, setEditOpen] = useState(false)
+  const [basicsOpen, setBasicsOpen] = useState(false)
   const [draftDeleteOpen, setDraftDeleteOpen] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
   const [cancelOpen, setCancelOpen] = useState(false)
   const [coverOpen, setCoverOpen] = useState(false)
   const [picksCapOpen, setPicksCapOpen] = useState(false)
+  const [scheduleOpen, setScheduleOpen] = useState(false)
+  const [startNowOpen, setStartNowOpen] = useState(false)
   const [hideOpen, setHideOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [resultOpen, setResultOpen] = useState(false)
@@ -116,6 +131,24 @@ export function QyAdminLotteryDetail() {
     },
     onError: (error) => toast.error(qyErrorMessage(error, t)),
   })
+  /*
+    「立即开始」= 改排期接口的 open_at = now。结束时间原样回传（后端整体替换两格），
+    draw_at 由后端重新派生。只对还没到开始时间的已发布转盘渲染：已经开放的转盘
+    按下去什么都不会变。
+  */
+  const startNow = useMutation({
+    mutationFn: (input: { actNo: string; closeAt: number }) =>
+      updateQyLotSchedule(input.actNo, {
+        open_at: Math.floor(Date.now() / 1000),
+        close_at: input.closeAt,
+      }),
+    onSuccess: async () => {
+      toast.success(t('qy_lot_schedule_start_now_done'))
+      setStartNowOpen(false)
+      await queryClient.invalidateQueries({ queryKey: qyKeys.all })
+    },
+    onError: (error) => toast.error(qyErrorMessage(error, t)),
+  })
   const view = query.data
   const activity = view?.activity
   // 对外稳定的获胜编号在选项行上（`is_winner`），不在活动行上：活动行只有
@@ -127,6 +160,11 @@ export function QyAdminLotteryDetail() {
   // `undefined` —— 这里的 `=== 'text'` 因此天然对历史活动为假，不需要额外分支。
   const hasTextPrize = (view?.prizes ?? []).some(
     (prize) => prize.prize_type === 'text'
+  )
+  // 商品奖档：奖档表只有商品号，名称 / 形态 / 余量由后端按商品号从商城现读
+  // （`products`），这里单独列一段 —— 奖档表本身是用户端共用的组件。
+  const productPrizes = (view?.prizes ?? []).filter(
+    (prize) => prize.prize_type === 'product'
   )
 
   const isDraft = activity?.status === 'draft'
@@ -185,8 +223,30 @@ export function QyAdminLotteryDetail() {
 
   const outcomeKey = activity == null ? null : qyLotOutcomeKey(activity.outcome)
   // 双色球不是一个新的 kind，而是活动行上的一列。判据只有这一处，
-  // 与列表页那一列（index.tsx）用同一个字段。
+  // 与列表页那一列（index.tsx）用同一个字段。转盘同理。
   const isBall = activity?.draw_mode === 'ball'
+  const isWheel = activity?.draw_mode === 'wheel'
+  /*
+    转盘的排期在发布之后仍可写（它不进承诺原像，理由见 lottery-schedule-dialog.tsx），
+    但只到封盘为止：到点 / 提前结束 / 库存耗尽之后名单已冻结、只等揭示，排期对它
+    没有意义了。判据与后端那条 `WHERE status='published'` 同一口径。
+  */
+  const canEditSchedule = isWheel && activity?.status === 'published'
+  /*
+    「改名称」只给发布之后、封盘为止的活动（published / locked）：标题与说明不进
+    任何哈希原像，改它们不动承诺；结算 / 结束后名字已随证据链公示，后端 409。
+    **草稿不在此列** —— 草稿有整份可改的编辑向导，同一件事不开两条路。
+  */
+  const canEditBasics =
+    activity?.status === 'published' || activity?.status === 'locked'
+  const canStartNow =
+    canEditSchedule && (activity?.open_at ?? 0) > Math.floor(Date.now() / 1000)
+  let playLabel = t(`qy_lot_kind_${activity?.kind ?? 'draw'}`)
+  if (isBall) {
+    playLabel = `${t('qy_lot_mode_ball')} · ${t('qy_lot_ball_issue_no', { no: activity?.issue_no ?? 0 })}`
+  } else if (isWheel) {
+    playLabel = t('qy_lot_play_wheel')
+  }
 
   return (
     <QySectionPageLayout>
@@ -244,6 +304,29 @@ export function QyAdminLotteryDetail() {
             {t('qy_lot_picks_cap_change')}
           </Button>
         )}
+        {canEditBasics && (
+          <Button
+            size='sm'
+            variant='outline'
+            onClick={() => setBasicsOpen(true)}
+          >
+            {t('qy_lot_basics_change')}
+          </Button>
+        )}
+        {canEditSchedule && (
+          <Button
+            size='sm'
+            variant='outline'
+            onClick={() => setScheduleOpen(true)}
+          >
+            {t('qy_lot_schedule_change')}
+          </Button>
+        )}
+        {canStartNow && (
+          <Button size='sm' onClick={() => setStartNowOpen(true)}>
+            {t('qy_lot_schedule_start_now')}
+          </Button>
+        )}
         {canEditDraft && (
           <Button size='sm' variant='outline' onClick={() => setEditOpen(true)}>
             {t('qy_lot_edit_title')}
@@ -270,7 +353,11 @@ export function QyAdminLotteryDetail() {
             variant='destructive'
             onClick={() => setCancelOpen(true)}
           >
-            {t('qy_lot_cancel_title')}
+            {/* 转盘的「取消」是提前封盘（不再收新转、已转的结果不动），
+                与批次玩法的"整场取消并全额退款"是两件事，按钮上就要分开说。 */}
+            {isWheel
+              ? t('qy_lot_wheel_cancel_title')
+              : t('qy_lot_cancel_title')}
           </Button>
         )}
         {isFinished &&
@@ -319,16 +406,22 @@ export function QyAdminLotteryDetail() {
         <QyPageBoundary query={query}>
           {activity != null && (
             <div className='space-y-4'>
+              {/* 草稿只有管理员看得见。项目方原话:「创建活动后怎么开启界面未看到」——
+                  「开启」就是右上角的「发布活动」,但草稿态下没有任何一句话说出这一步,
+                  于是建完之后不知道下一步在哪。 */}
+              {isDraft && (
+                <Alert>
+                  <AlertDescription>
+                    {t('qy_lot_draft_publish_hint')}
+                  </AlertDescription>
+                </Alert>
+              )}
               {/* 双色球的 kind 也是 'draw'，只渲染 qy_lot_kind_${kind} 的话
                   这一屏恒写「抽奖」—— 而列表页那一列（index.tsx）已经写着
                   「双色球 · 第 N 期」。同一个人在两屏上会对同一场活动得出两个
                   不同的玩法结论，这是最没道理的一种不一致。 */}
               <div className='flex flex-wrap items-center gap-2'>
-                <Badge variant='outline'>
-                  {isBall
-                    ? `${t('qy_lot_mode_ball')} · ${t('qy_lot_ball_issue_no', { no: activity.issue_no ?? 0 })}`
-                    : t(`qy_lot_kind_${activity.kind}`)}
-                </Badge>
+                <Badge variant='outline'>{playLabel}</Badge>
                 <QyStatusBadge
                   status={qyLotActivityBadgeStatus(
                     activity.status,
@@ -380,7 +473,7 @@ export function QyAdminLotteryDetail() {
                       {t('qy_lot_ball_pool_open')}
                     </span>
                     <span className='text-sm tabular-nums'>
-                      {formatQyQuotaLedger(activity.pool_open_quota ?? 0)}
+                      {formatSdWithUnit(activity.pool_open_quota ?? 0, unit)}
                     </span>
                   </div>
                   <div className='flex flex-col gap-0.5'>
@@ -412,25 +505,26 @@ export function QyAdminLotteryDetail() {
                   {
                     key: 'pool',
                     label: t('qy_lot_a_stat_pool'),
-                    value: formatQyQuotaLedger(activity.pool_quota),
+                    value: formatSdWithUnit(activity.pool_quota, unit),
                   },
                   {
                     key: 'payout',
                     label: t('qy_lot_a_stat_payout'),
-                    value: formatQyQuotaLedger(activity.payout_quota),
+                    value: formatSdWithUnit(activity.payout_quota, unit),
                   },
                   {
                     key: 'refund',
                     label: t('qy_lot_a_stat_refund'),
-                    value: formatQyQuotaLedger(activity.refund_quota),
+                    value: formatSdWithUnit(activity.refund_quota, unit),
                   },
                   {
                     // 转人工的那部分必须单独摆出来：它是"平台还欠着、只是
                     // 发不出去"的钱，而收尾时的 payout_quota 只统计已到账的。
                     key: 'held',
                     label: t('qy_lot_a_stat_held'),
-                    value: formatQyQuotaLedger(
-                      view?.economics?.held_quota ?? 0
+                    value: formatSdWithUnit(
+                      view?.economics?.held_quota ?? 0,
+                      unit
                     ),
                     emphasis: (view?.economics?.held_quota ?? 0) > 0,
                     hint: t('qy_lot_a_stat_held_hint'),
@@ -438,7 +532,10 @@ export function QyAdminLotteryDetail() {
                   {
                     key: 'net',
                     label: t('qy_lot_a_net'),
-                    value: formatQyQuotaLedger(view?.economics?.net_quota ?? 0),
+                    value: formatSdWithUnit(
+                      view?.economics?.net_quota ?? 0,
+                      unit
+                    ),
                     emphasis: true,
                     hint: t('qy_lot_a_net_hint'),
                   },
@@ -524,12 +621,20 @@ export function QyAdminLotteryDetail() {
                       <QyKeyValue label={t('qy_lot_open_at')}>
                         {formatQyTs(activity.open_at)}
                       </QyKeyValue>
-                      <QyKeyValue label={t('qy_lot_close_at')}>
+                      <QyKeyValue
+                        label={
+                          isWheel
+                            ? t('qy_lot_wheel_end_at')
+                            : t('qy_lot_close_at')
+                        }
+                      >
                         {formatQyTs(activity.close_at)}
                       </QyKeyValue>
-                      <QyKeyValue label={t('qy_lot_draw_at')}>
-                        {formatQyTs(activity.draw_at)}
-                      </QyKeyValue>
+                      {!isWheel && (
+                        <QyKeyValue label={t('qy_lot_draw_at')}>
+                          {formatQyTs(activity.draw_at)}
+                        </QyKeyValue>
+                      )}
                       <QyKeyValue label={t('qy_lot_revealed_at')}>
                         {activity.revealed_at === 0
                           ? QY_EMPTY_TEXT
@@ -543,12 +648,11 @@ export function QyAdminLotteryDetail() {
                       <QyKeyValue label={t('qy_lot_a_counts')}>
                         {t('qy_lot_a_counts_value', {
                           active: activity.active_count,
-                          pending: activity.pending_count,
                           seq: activity.entry_seq,
                         })}
                       </QyKeyValue>
                       <QyKeyValue label={t('qy_lot_a_stat_fee')}>
-                        <QyAmountText quota={activity.platform_fee_quota} />
+                        <QySdAmount amount={activity.platform_fee_quota} />
                       </QyKeyValue>
                       {activity.cancel_reason !== '' && (
                         <QyKeyValue label={t('qy_lot_cancel_reason')}>
@@ -568,11 +672,47 @@ export function QyAdminLotteryDetail() {
                           ? t('qy_lot_prizes_title')
                           : t('qy_lot_options_title')}
                       </h4>
+                      {/* 转盘那一套列带在线库存（`stock_left`）：运营在进行中就要
+                          看得见"哪一档快发完了"，而它是唯一一列随每一转变化的数。 */}
                       <QyLotSpecTable
                         kind={activity.kind}
                         spec={spec}
                         winOptNo={winOptNo}
+                        wheel={isWheel}
                       />
+                      {productPrizes.length > 0 && (
+                        <div className='space-y-1 text-sm'>
+                          <p className='font-medium'>
+                            {t('qy_lot_a_product_tiers_title')}
+                          </p>
+                          <ul className='space-y-1'>
+                            {productPrizes.map((prize) => {
+                              const brief =
+                                view?.products?.[prize.product_no ?? '']
+                              return (
+                                <li key={prize.tier}>
+                                  {brief == null
+                                    ? t('qy_lot_a_product_unknown', {
+                                        tier: prize.tier,
+                                        no: prize.product_no ?? '',
+                                      })
+                                    : t('qy_lot_a_product_row', {
+                                        tier: prize.tier,
+                                        title: brief.title,
+                                        kind: t(qyMallKindKey(brief.kind)),
+                                        remaining:
+                                          brief.remaining < 0
+                                            ? t(
+                                                'qy_lot_product_stock_unlimited'
+                                              )
+                                            : brief.remaining,
+                                      })}
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        </div>
+                      )}
                       {activity.result_evidence !== '' && (
                         <QyKeyValue label={t('qy_lot_result_evidence')}>
                           <span className='break-all'>
@@ -586,7 +726,11 @@ export function QyAdminLotteryDetail() {
                       <h4 className='text-sm font-medium'>
                         {t('qy_lot_rules_title')}
                       </h4>
-                      <QyLotRulesList rulesText={activity.rules_text} />
+                      <QyLotRulesList
+                        rulesText={activity.rules_text}
+                        kind={activity.kind}
+                        drawMode={activity.draw_mode}
+                      />
                     </div>
                   </div>
                 </TabsContent>
@@ -638,6 +782,32 @@ export function QyAdminLotteryDetail() {
             onOpenChange={setPicksCapOpen}
             actNo={activity.act_no}
             maxPicksPerRequest={activity.max_picks_per_request ?? 0}
+          />
+          <QyLotScheduleDialog
+            activity={activity}
+            open={scheduleOpen}
+            onOpenChange={setScheduleOpen}
+          />
+          <QyLotBasicsDialog
+            activity={activity}
+            open={basicsOpen}
+            onOpenChange={setBasicsOpen}
+          />
+          <QyConfirmDialog
+            open={startNowOpen}
+            onOpenChange={setStartNowOpen}
+            title={t('qy_lot_schedule_start_now')}
+            description={t('qy_lot_schedule_start_now_desc', {
+              closeAt: formatQyTs(activity.close_at),
+            })}
+            confirmText={t('qy_lot_schedule_start_now_confirm')}
+            isLoading={startNow.isPending}
+            onConfirm={() =>
+              startNow.mutate({
+                actNo: activity.act_no,
+                closeAt: activity.close_at,
+              })
+            }
           />
           <QyLotCancelDialog
             activity={activity}

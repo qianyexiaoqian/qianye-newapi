@@ -875,16 +875,19 @@ func disableUserForViolation(userId int, ban *qymodel.ViolationBan) error {
 `controller/relay.go:131-137`:
 
 ```go
-if needSensitiveCheck || needCountToken {
+if constant.CountToken {
     meta = request.GetTokenCountMeta()          // CombineText 已构建
 } else {
     meta = fastTokenCountMetaForPricing(request) // ★ CombineText 为空字符串
 }
 ```
 
-若部署方关闭了 `CheckSensitiveEnabled` 且 `CountToken=false`,我们拿到的 `meta.CombineText == ""`,所有 prompt 规则静默失效,**没有任何报错**。
+若部署方 `CountToken=false`,我们拿到的 `meta.CombineText == ""`,所有 prompt 规则静默失效,**没有任何报错**。
 
-处理:`cfg.ForceBuildCombineText`(默认 `true`)。为空且存在 prompt 规则时自行调 `relayInfo.Request.GetTokenCountMeta()`。代价是一次 `strings.Join`(与开启敏感词检测的部署等同)。管理端 `/health` 暴露 `combine_text_rebuilt_ratio` 指标,让运维知道自己在付这笔钱。
+> D-16 之后这条路更常走到:上游自带的敏感词过滤已整体删除,而它的开关默认是开的,
+> 此前顺带保证了 `CombineText` 恒被构建。现在只剩 `CountToken` 一个条件。
+
+处理:`cfg.ForceBuildCombineText`(默认 `true`)。为空且存在 prompt 规则时自行调 `relayInfo.Request.GetTokenCountMeta()`。代价是一次 `strings.Join`(与上游删掉的敏感词检测开启时等同)。管理端 `/health` 暴露 `combine_text_rebuilt_ratio` 指标,让运维知道自己在付这笔钱。
 
 ### 6.2 竞态清单
 
@@ -1075,7 +1078,7 @@ retention_gc 任务(需持有 qy_task_lease 'violation:retention_gc',间隔 cfg.
 | 新库同步访问 | **0 次** | 热路径只读内存快照;所有写走异步队列 |
 | 主库同步访问 | 仅命中且扣费时 | 与现有 `ChargeViolationFeeIfNeeded` 同量级 |
 
-`CombineText` 重建(§6.1)是唯一的大额外开销(与开启敏感词检测等价)。指标暴露在 `/health`。
+`CombineText` 重建(§6.1)是唯一的大额外开销(与上游删掉的敏感词检测开启时等价)。指标暴露在 `/health`。
 
 ### 8.2 异步队列
 

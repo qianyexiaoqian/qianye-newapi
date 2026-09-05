@@ -67,7 +67,7 @@ import type { QyConfig, QyFeatures } from './lib/types'
  *
  * ── 为什么删掉 drill-in ──
  * 原来的 `QY_WORKSPACE_VIEW` 用 `pathPattern: /^\/qy(\/|$)/` 匹配所有 `/qy/*`。
- * 页面拆开之后，用户在 Personal 里点「申请提现」落到 `/qy/withdraw`，侧栏会
+ * 页面拆开之后，用户在 Personal 里点「支付密码」落到 `/qy/pay-password`，侧栏会
  * 立刻整体切回 qy 那一坨 —— 重排的效果被 drill-in 原样吞掉，项目方的抱怨
  * 一字不差地回来。把 pattern 收窄到 `/^\/qy(\/admin)?$/` 也不行：那样只有两个
  * 索引页会换侧栏，而它们已经不在导航里，等于为一个无人经过的路径保留一套
@@ -83,8 +83,8 @@ type QyInsertion = { item: NavItem; after?: string }
  * 页面 → 侧栏项。
  *
  * 页面若是某个选项卡组的宿主（`/qy/affiliate`），侧栏那一行显示的是**组名**
- * 「推广佣金」而不是第一张标签的名字「推广概览」：那一行点进去得到的是四张
- * 标签，用第一张的名字给整组命名会让另外三张看起来像是藏起来的。
+ * 「我的推广」而不是第一张标签的名字「概览」：那一行点进去得到的是三张
+ * 标签，用第一张的名字给整组命名会让另外两张看起来像是藏起来的。
  */
 function toNavLink(page: QyPageDef, t: TFunction): NavLink {
   const hosted = QY_TAB_GROUPS.find((group) => group.host === page.url)
@@ -104,10 +104,15 @@ function toNavLink(page: QyPageDef, t: TFunction): NavLink {
 export function qyEntrySwitches(config: QyConfig): QyEntrySwitches {
   return {
     // 两道开关串联：站点级的"这一期要不要露出娱乐入口"，以及"还剩不剩玩法"。
-    // 四种玩法被逐个关光时那一行同样消失 —— 留一个点进去只有一张空大厅的入口，
+    // 五种玩法被逐个关光时那一行同样消失 —— 留一个点进去只有一张空大厅的入口，
     // 与本仓一直在补的断链是同一种缺陷。
     lottery:
       config.lottery.show_entry && qyAnyLotPlayShown(config.lottery.plays),
+    // 转盘那张标签自己的门：同一个站点级开关，玩法开关只看 `wheel`。
+    // 它已并入抽奖竞猜的选择夹（项目方 2026-09-05），不再对应侧栏一行。
+    wheel: config.lottery.show_entry && config.lottery.plays.wheel,
+    stardust: config.stardust.show_entry,
+    mall: config.mall.show_entry,
   }
 }
 
@@ -188,7 +193,7 @@ function withQyItems(group: NavGroup, insertions: QyInsertion[]): NavGroup {
  * 上游 `use-sidebar-config.ts` 的 `URL_TO_CONFIG_MAP` 没有 `/qy/*` 的条目，
  * 所以 qy 项对该过滤器恒为可见。结论是**刻意**的：`sidebar_modules` 是上游
  * 模块的显隐开关，qy 的开关是 YAML `features` × 角色。把 qy 项挂到上游开关下
- * 会出现"管理员关掉钱包展示，顺手把提现申请也关了"这种越权联动。代价是
+ * 会出现"管理员关掉钱包展示，顺手把邀请页也关了"这种越权联动。代价是
  * 管理员关掉整段 personal 时，Personal 组里上游项消失而 qy 项还在 ——
  * 接受，那一组的标题仍然成立。
  */
@@ -249,8 +254,8 @@ export function mergeQyNavGroups(
  * - 抽屉本体的路由 `routes/_authenticated/system-settings/route.tsx` 要求
  *   `role === SUPER_ADMIN(100)`，否则直接 `redirect('/403')`。
  *
- * 于是 role=10 的管理员：侧栏看得见「系统设置」→ 点进去 403 → 那 8 个 qy 页面
- * （违规规则、违规类型、AI 内容审核、佣金设置、划转设置与分组规则、抽奖设置、
+ * 于是 role=10 的管理员：侧栏看得见「系统设置」→ 点进去 403 → 那几个 qy 页面
+ * （违规规则、违规类型、AI 内容审核、划转设置与分组规则、抽奖设置、星屑设置、
  * API 地址）**在界面上完全不存在**，只能手敲 URL —— 而后端 `requireQyAdmin`
  * 明明只要求 role>=10，页面本身是给他们用的。
  *

@@ -18,13 +18,14 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { queryOptions } from '@tanstack/react-query'
 
-import { qyGet, qyPost } from '../../lib/api'
+import { qyGet } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
+import { QY_COMMISSION_CREDIT_STATUSES } from '../affiliate/types'
 import type {
+  QyAdminCommissionCreditPage,
   QyCommissionUserFilter,
   QyCommissionUserPage,
   QyCommissionUserSort,
-  QyRebindRelationResult,
 } from './types'
 
 export type QyCommissionUserFilters = {
@@ -35,10 +36,8 @@ export type QyCommissionUserFilters = {
    * 一个输入框同时搜用户名 / id / 邮箱。
    *
    * 刻意**不拆成三个框**：运营手上拿到的是"某个人"的某一个标识，他事先并不
-   * 知道那串东西算用户名还是邮箱。三个框会强迫他先给自己手上的字符串分类，
-   * 分错了就得到一个空列表 —— 而空列表在这张表上与"这个人真的没有佣金"
-   * 长得一模一样。归一由后端做（纯数字优先按 id 精确匹配，同时仍 OR 上
-   * 用户名/邮箱的前缀匹配）。
+   * 知道那串东西算用户名还是邮箱。归一由后端做（纯数字优先按 id 精确匹配，
+   * 同时仍 OR 上用户名/邮箱的前缀匹配）。
    */
   keyword?: string
   /** 行内筛选开关。只把为真的那些拼进 query，省得 URL 里全是 `=false`。 */
@@ -46,7 +45,7 @@ export type QyCommissionUserFilters = {
 }
 
 /**
- * 「用户佣金」列表。**一行 = 一个用户**。
+ * 「佣金用户」列表。**一行 = 一个用户**。
  *
  * 对应 `GET /api/qy/admin/commission/users`。后端跨主库（人与邀请关系）与扩展库
  * （钱）聚合，查询次数与页长无关；本页一个字都不重算。
@@ -69,28 +68,45 @@ export function qyAdminCommissionUsersQuery(filters: QyCommissionUserFilters) {
   })
 }
 
-/**
- * 换绑：把这个用户的上线从旧的改成新的。
- *
- * ── 为什么必须是后端的一个端点，而不是前端"先解绑再绑" ──
- * 后者是两次请求：第二次失败时这个人会停在**没有上线**的中间态，而运营看到的
- * 只是一句"操作失败"，他会以为什么都没变。后端 `adminRebindRelation` 在一个
- * 事务里改权威字段 + 更新快照，要么全成要么全不成。
- *
- * 语义与解绑一致：**已产生的佣金全部留在旧上线名下**（返回的
- * `kept_commission_quota` 就是那个数），只是从此不再产生新的。
- * 也**不补发**上游的邀请奖励（`aff_quota`）—— 那笔额度是注册时发的。
- *
- * 换成他现在这个上线会被后端 400（`qy_rel_same_inviter`）而不是当空操作放行：
- * 空操作会写一条"换绑成功"的审计，而实际上什么都没发生。
- */
-export function qyRebindAffRelation(input: {
-  invitee_id: number
-  inviter_id: number
-  reason: string
-}) {
-  return qyPost<QyRebindRelationResult>(
-    '/admin/commission/relations/rebind',
-    input
-  )
+export type QyAdminCommissionCreditFilters = {
+  p: number
+  page_size: number
+  user_id?: string
+  /** 留空 = 全部状态。取值只认 {@link QY_COMMISSION_CREDIT_STATUSES}，别的当空处理。 */
+  status?: string
 }
+
+/**
+ * 全站自动入账记录（`GET /admin/commission/credits`）。
+ *
+ * 运营在这张表上要盯的只有 `held`：那是资金单结局不明、等人裁决的单子，裁决
+ * 在「资金对账」页按 `fund_order_no` 做，这里只负责把它们捞出来。
+ */
+export function qyAdminCommissionCreditsQuery(
+  filters: QyAdminCommissionCreditFilters
+) {
+  const query: Record<string, unknown> = {
+    p: filters.p,
+    page_size: filters.page_size,
+  }
+  if (filters.user_id != null && filters.user_id !== '') {
+    query.user_id = filters.user_id
+  }
+  if (
+    filters.status != null &&
+    (QY_COMMISSION_CREDIT_STATUSES as readonly string[]).includes(
+      filters.status
+    )
+  ) {
+    query.status = filters.status
+  }
+
+  return queryOptions({
+    queryKey: qyKeys.adminCommissionCredits(query),
+    queryFn: () =>
+      qyGet<QyAdminCommissionCreditPage>('/admin/commission/credits', query),
+  })
+}
+
+// 换绑（`relations/rebind`）与本目录此前的 `ManageRelationDialog` 不回来：邀请关系
+// 的绑定 / 换绑 / 解绑 / 停止计返在 D-14 起归 invite 模块，界面在「邀请管理」。

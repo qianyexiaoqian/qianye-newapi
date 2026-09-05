@@ -31,6 +31,7 @@ import (
 //	      且每个参与者在报名成功那一刻就已持有自己那一环(chain_hash)。
 //	保证:承诺覆盖随机源、参与条件、奖档/选项、四个时刻与每一个影响结果的开关 ——
 //	      管理员无法在不碰种子的前提下算出想要的结果而不被发现。
+//	      (转盘的排期除外:它不影响任何一张票的推导,见 CommitHashV2。)
 //
 //	不保证:物理不可篡改。有数据库写权限的人能同时改掉种子与承诺哈希;
 //	      他改不掉的是**已经分发给 N 个用户的报名回执**、独立表里的发布审计、
@@ -56,12 +57,49 @@ type proofEntry struct {
 	Status    string `json:"status"`
 	PrevHash  string `json:"prev_hash"`
 	ChainHash string `json:"chain_hash"`
-	// OrderNo 让非 success 的条目可以被交叉复核:链刻意不含 status,
-	// "这一条到底成没成"由资金单与用户自己的额度流水佐证。
+	// OrderNo 是这张票扣款那一行流水的 ledger_no(qy_sd_ledger)。它是每人私有的
+	// 账本记录号,持有它进不了别人的账本;下发是为了让持票人能在自己的星屑账本里
+	// 对上这一笔,退款侧也按它取权威金额(refundAmountOf)。
 	OrderNo string `json:"order_no"`
 	// Pick 是双色球的选号。它进 lot-v2 的链与名单原像,因此**必须**下发 ——
 	// 少了它验证者连 chain_hash 都推不出来。
 	Pick string `json:"pick,omitempty"`
+	// Spin 只在 NDJSON 流里、只对转盘出现:一行一转,把这一转的摇号结果随条目
+	// 一起带下去,验证脚本据此重建 spins。分页的 JSON 版走文档级的 spins 数组,
+	// 这里恒为 nil —— 两处都带会让同一份数据在同一个文件里出现两遍。
+	Spin *proofSpin `json:"spin,omitempty"`
+}
+
+// proofSpin 是转盘证据链里的一次转动。字段名与验证脚本逐字一致(契约 §6)。
+//
+// 验证者从种子逐条重算:ticket = HMAC(seed, "qylot-wheel-v2" ‖ act_no ‖ seq ‖ client_seed)
+// → ppm → 按公示奖档(含 none)落档 → 按 seq 顺序重放库存递减(跳过 none)得到
+// tier / exhausted_tier,再用 WheelPick 编码把 chain 逐环推出来。seq 必须从 1 起
+// 连续无缺口 —— 否则服务端可以跳号挑结果。
+type proofSpin struct {
+	Seq           int    `json:"seq"`
+	UserRef       string `json:"user_ref"`
+	ClientSeed    string `json:"client_seed"`
+	Ppm           int64  `json:"ppm"`
+	Tier          int    `json:"tier"`
+	ExhaustedTier int    `json:"exhausted_tier"`
+	Chain         string `json:"chain"`
+}
+
+// proofTier 是转盘证据链里的一档奖:与 spec 同源,但多带在线库存。
+//
+// 单独一张表而不是往 proofSpecItem 上加列:spec 是 spec_hash 的原像形状,
+// 一个字段都不该多;stock_left 不进任何原像,揭示后它就是重放库存递减的终态。
+type proofTier struct {
+	Tier        int    `json:"tier"`
+	Name        string `json:"name"`
+	PrizeType   string `json:"prize_type"`
+	AmountQuota int64  `json:"amount_quota"`
+	Count       int    `json:"count"`
+	WinPpm      int    `json:"win_ppm"`
+	TextDesc    string `json:"text_desc"`
+	ProductNo   string `json:"product_no"`
+	StockLeft   int    `json:"stock_left"`
 }
 
 type proofWinner struct {
@@ -109,6 +147,8 @@ type proofSpecItem struct {
 	RedMatch     int    `json:"red_match,omitempty"`
 	BlueMatch    int    `json:"blue_match,omitempty"`
 	PoolShareBps int    `json:"pool_share_bps,omitempty"`
+	// ProductNo 是第 11 个分量:商品奖引用的商城商品号(其余类型为空串,仍占位)。
+	ProductNo string `json:"product_no,omitempty"`
 }
 
 type proofDocument struct {
@@ -118,6 +158,10 @@ type proofDocument struct {
 	Status  string `json:"status"`
 	Outcome string `json:"outcome"`
 	Title   string `json:"title"`
+	// Currency 恒为 "stardust"。下面每一个 *_quota / amount 都是星屑整数 ——
+	// 字段名不改(它们进哈希原像,改名就是一次协议版本抬升),单位由这一位说明,
+	// 免得离线验证者按额度刻度去印一个错的美元数。它**不进任何原像**。
+	Currency string `json:"currency"`
 
 	// ── 承诺原像的每一个分量 ──
 	RulesText        string          `json:"rules_text"`
@@ -157,9 +201,11 @@ type proofDocument struct {
 	BallResult string `json:"ball_result"`
 
 	CommitHash string `json:"commit_hash"`
-	// Seed 在揭示之前是空串。空串不是"没有种子",是"还不该给你" ——
+	// RevealedSeed 在揭示之前是空串。空串不是"没有种子",是"还不该给你" ——
 	// 验证脚本据此知道现在只能验到第 3 步(名单已冻结),验不了第 5 步(名单)。
-	Seed string `json:"seed"`
+	// Go 字段名刻意不叫 Seed:seed_guard_test.go 用纯名字匹配把 `.Seed` 选择器
+	// 钉在两个读点里,而 JSON 键必须仍叫 seed(验证脚本逐字认它)。
+	RevealedSeed string `json:"seed"`
 
 	// ── 冻结名单 ──
 	ChainHead   string `json:"chain_head"`
@@ -189,6 +235,13 @@ type proofDocument struct {
 	Page     int          `json:"p"`
 	PageSize int          `json:"page_size"`
 
+	// ── 转盘(draw_mode=wheel)──
+	//
+	// Spins 与 Entries 同一页、同一顺序(按 seq 升序),一转对一条;Tiers 是奖档表
+	// 连同派生的 none 行与在线库存。其余玩法两者都省略。
+	Spins []proofSpin `json:"spins,omitempty"`
+	Tiers []proofTier `json:"tiers,omitempty"`
+
 	// Notice 是给人看的边界说明。放进 JSON 而不是只写在页面上:
 	// 离线拿到 proof 文件的人也必须读到它。
 	Notice string `json:"notice"`
@@ -211,6 +264,19 @@ const proofNotice = "commit-reveal 保证的是「篡改会被不可抵赖地检
 	"本期可派发的池子 = pool_open_quota + floor(pool_quota × pool_share_bps / 10000)," +
 	"其中 pool_open_quota(本期注资 + 上期滚存)在发布时就已进承诺、事后不可改;" +
 	"没有派出去的部分滚进下一期,而系列一旦被关闭,滚存余额作废。"
+
+// proofNoticeWheel 是转盘追加的边界说明。只声称"可复算",不声称"不可预知":
+// 转盘的票面不混名单哈希,能读到种子的人可以挑自己的下一转(decisions.md D-13)。
+const proofNoticeWheel = "转盘(draw_mode=wheel):每一转的结果 = HMAC(seed, act_no ‖ seq ‖ client_seed) 缩放到 [0,1000000) 后按公示奖档落档," +
+	"再按 seq 顺序重放各档库存递减(摇中已发完的档落空并记 exhausted_tier)。seq 必须从 1 起连续无缺口。" +
+	"揭示种子后任何人都能逐转复算,这是本协议对转盘的全部保证。" +
+	"转盘的 open_at / close_at / draw_at **不进承诺原像**:票面里没有时刻,排期只决定「什么时候收转」," +
+	"运营可以在发布后延期、提前收转或立即开始,改动全部写在事件流里(schedule_changed);复算承诺时请跳过这三个分量。" +
+	"两条**不保证**:① user_ref 与真人的对应关系不可被外部证明(盐永不公开,它也不是随机量的输入;用户可用自己的回执" +
+	"自查同一活动内自己的 user_ref 是否一致);② 并发转动时哪个请求拿到 seq N 与 N+1 由服务端串行化决定," +
+	"理论上存在一次二选一的重排空间 —— 批次玩法靠 FinalSeed(seed, roster_hash) 消除了它,转盘做不到。" +
+	"同理,能读到种子的人可以对自己的下一转离线挑选 client_seed;协议保证的是「服务端按公示公式算了票、不可抵赖地被检出」," +
+	"不保证内部人不可能中奖。"
 
 // handleGetProof 返回一场活动的完整证据链。**匿名可访问。**
 func handleGetProof(c *gin.Context) {
@@ -266,6 +332,7 @@ func buildProof(ctx context.Context, gdb *gorm.DB, act *Activity, c *gin.Context
 	doc := &proofDocument{
 		Algo: act.Algo, ActNo: act.ActNo, Kind: act.Kind,
 		Status: act.Status, Outcome: act.Outcome, Title: act.Title,
+		Currency:  CurrencyStardust,
 		RulesText: act.RulesText, RulesHash: act.RulesHash, SpecHash: act.SpecHash,
 		StakeQuota: act.StakeQuota,
 		OpenAt:     act.OpenAt, CloseAt: act.CloseAt, DrawAt: act.DrawAt,
@@ -291,13 +358,18 @@ func buildProof(ctx context.Context, gdb *gorm.DB, act *Activity, c *gin.Context
 		Page:    page, PageSize: size,
 		Notice: proofNotice,
 	}
+	if act.DrawMode == DrawModeWheel {
+		doc.Notice = proofNotice + proofNoticeWheel
+		doc.Spins = make([]proofSpin, 0, size)
+		doc.Tiers = make([]proofTier, 0, 8)
+	}
 
 	if seedShouldBeRevealed(act) {
 		seed, err := loadSeedForReveal(ctx, gdb, act.Id)
 		if err != nil {
 			return nil, err
 		}
-		doc.Seed = seed
+		doc.RevealedSeed = seed
 	}
 
 	if err := fillProofSpec(ctx, gdb, act, doc); err != nil {
@@ -321,6 +393,9 @@ func buildProof(ctx context.Context, gdb *gorm.DB, act *Activity, c *gin.Context
 	}
 	for _, e := range rows {
 		doc.Entries = append(doc.Entries, toProofEntry(e))
+		if act.DrawMode == DrawModeWheel {
+			doc.Spins = append(doc.Spins, toProofSpin(e))
+		}
 	}
 
 	if err := fillProofOutcome(ctx, gdb, act, doc); err != nil {
@@ -352,6 +427,13 @@ func toProofEntry(e Entry) proofEntry {
 	}
 }
 
+func toProofSpin(e Entry) proofSpin {
+	return proofSpin{
+		Seq: e.Seq, UserRef: e.UserRef, ClientSeed: e.ClientSeed, Ppm: e.Ppm,
+		Tier: e.ResultTier, ExhaustedTier: e.ExhaustedTier, Chain: e.ChainHash,
+	}
+}
+
 func fillProofSpec(ctx context.Context, gdb *gorm.DB, act *Activity, doc *proofDocument) error {
 	if act.Kind == KindDraw {
 		prizes := make([]Prize, 0, 8)
@@ -365,7 +447,15 @@ func fillProofSpec(ctx context.Context, gdb *gorm.DB, act *Activity, doc *proofD
 				Tier: p.Tier, Name: p.Name, AmountQuota: p.AmountQuota, Count: p.Count,
 				PrizeType: p.Type(), WinPpm: p.WinPpm, TextDesc: p.TextDesc,
 				RedMatch: p.RedMatch, BlueMatch: p.BlueMatch, PoolShareBps: p.PoolShareBps,
+				ProductNo: p.ProductNo,
 			})
+			if act.DrawMode == DrawModeWheel {
+				doc.Tiers = append(doc.Tiers, proofTier{
+					Tier: p.Tier, Name: p.Name, PrizeType: p.Type(), AmountQuota: p.AmountQuota,
+					Count: p.Count, WinPpm: p.WinPpm, TextDesc: p.TextDesc, ProductNo: p.ProductNo,
+					StockLeft: p.StockLeft,
+				})
+			}
 		}
 		return nil
 	}
@@ -451,13 +541,16 @@ func fillProofOutcome(ctx context.Context, gdb *gorm.DB, act *Activity, doc *pro
 		doc.Payouts = append(doc.Payouts, proofPayout{
 			EntryNo: e.EntryNo, Kind: p.Kind, Amount: p.AmountQuota, Status: p.Status,
 		})
-		// 文本奖同样是中奖位,必须进 winners —— 否则一场混合奖档活动的
+		// 文本奖与商品奖同样是中奖位,必须进 winners —— 否则一场混合奖档活动的
 		// 复算名单会比公布的名单多出几位,验证脚本报 FAIL,而真实情况是
-		// 平台完全诚实。它的 amount 恒为 0,prize_type 告诉验证者别去比金额。
-		if p.Kind == PayoutPrize || p.Kind == PayoutText {
+		// 平台完全诚实。它们的 amount 恒为 0,prize_type 告诉验证者别去比金额。
+		if p.Kind == PayoutPrize || p.Kind == PayoutText || p.Kind == PayoutProduct {
 			prizeType := PrizeTypeQuota
-			if p.Kind == PayoutText {
+			switch p.Kind {
+			case PayoutText:
 				prizeType = PrizeTypeText
+			case PayoutProduct:
+				prizeType = PrizeTypeProduct
 			}
 			doc.Winners = append(doc.Winners, proofWinner{
 				Pos: p.DrawPos, Tier: p.Tier, EntryNo: e.EntryNo,
@@ -491,6 +584,10 @@ func streamProof(c *gin.Context, gdb *gorm.DB, act *Activity, doc *proofDocument
 	header.Entries = make([]proofEntry, 0)
 	header.Page = 0
 	header.PageSize = 0
+	// 转盘的每一转随条目行一起流下去(proofEntry.Spin),头里不再带那一页。
+	if act.DrawMode == DrawModeWheel {
+		header.Spins = make([]proofSpin, 0)
+	}
 	line, err := common.Marshal(header)
 	if err != nil {
 		c.Writer.WriteString(`{"error":"encode_failed"}` + "\n")
@@ -518,7 +615,12 @@ func streamProof(c *gin.Context, gdb *gorm.DB, act *Activity, doc *proofDocument
 			return
 		}
 		for _, e := range rows {
-			line, mErr := common.Marshal(toProofEntry(e))
+			item := toProofEntry(e)
+			if act.DrawMode == DrawModeWheel {
+				spin := toProofSpin(e)
+				item.Spin = &spin
+			}
+			line, mErr := common.Marshal(item)
 			if mErr != nil {
 				c.Writer.WriteString(`{"error":"encode_failed"}` + "\n")
 				return

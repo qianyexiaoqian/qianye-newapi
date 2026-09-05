@@ -43,9 +43,17 @@ const (
 // 改备注"会顺手把它停用。指针让这两件事可分辨 —— 新建时 nil 记作启用
 // (建一条立刻不能用的地址没有意义),编辑时 nil 记作保持原样。
 type upsertReq struct {
-	Name    string `json:"name"`
-	Remark  string `json:"remark"`
-	URL     string `json:"url"`
+	Name   string `json:"name"`
+	Remark string `json:"remark"`
+	URL    string `json:"url"`
+	// UserGroups 与 remark 同一套缺省语义:这是一次整行提交,缺省 = 空串 =
+	// 所有分组可见。不做 *string 的"缺省保持原样":编辑弹窗永远回填并整行
+	// 提交,而两种缺省语义并存时,谁也记不住哪个字段是哪种。
+	UserGroups string `json:"user_groups"`
+	// Surfaces 同上:整行提交,缺省 = 空串 = 所有展示位置可见。
+	Surfaces string `json:"surfaces"`
+	// Color 同上:整行提交,缺省 = 空串 = 前端默认色。
+	Color   string `json:"color"`
 	Enabled *bool  `json:"enabled"`
 }
 
@@ -63,7 +71,22 @@ func (r *upsertReq) applyTo(dst *Address, creating bool) error {
 	if err != nil {
 		return err
 	}
+	userGroups, err := normalizeUserGroups(r.UserGroups)
+	if err != nil {
+		return err
+	}
+	surfaces, err := normalizeSurfaces(r.Surfaces)
+	if err != nil {
+		return err
+	}
+	color, err := normalizeColor(r.Color)
+	if err != nil {
+		return err
+	}
 	dst.Name, dst.Remark, dst.URL = name, remark, addrURL
+	dst.UserGroups = userGroups
+	dst.Surfaces = surfaces
+	dst.Color = color
 	switch {
 	case r.Enabled != nil:
 		dst.Enabled = *r.Enabled
@@ -78,18 +101,23 @@ func (r *upsertReq) applyTo(dst *Address, creating bool) error {
 // 刻意不直接序列化 Address:白名单让"新增字段默认不进审计",而不是反过来 ——
 // 审计快照会被原样存库并展示,一个将来加进 Address 的敏感字段会静静地流进去。
 type auditSnapshot struct {
-	Id        int    `json:"id"`
-	Name      string `json:"name"`
-	Remark    string `json:"remark"`
-	URL       string `json:"url"`
-	SortOrder int    `json:"sort_order"`
-	Enabled   bool   `json:"enabled"`
+	Id         int    `json:"id"`
+	Name       string `json:"name"`
+	Remark     string `json:"remark"`
+	URL        string `json:"url"`
+	UserGroups string `json:"user_groups"`
+	Surfaces   string `json:"surfaces"`
+	Color      string `json:"color"`
+	SortOrder  int    `json:"sort_order"`
+	Enabled    bool   `json:"enabled"`
 }
 
 func snapshotOf(a Address) auditSnapshot {
 	return auditSnapshot{
 		Id: a.Id, Name: a.Name, Remark: a.Remark,
-		URL: a.URL, SortOrder: a.SortOrder, Enabled: a.Enabled,
+		URL: a.URL, UserGroups: a.UserGroups,
+		Surfaces: a.Surfaces, Color: a.Color,
+		SortOrder: a.SortOrder, Enabled: a.Enabled,
 	}
 }
 
@@ -380,6 +408,8 @@ func updateAddress(ctx context.Context, gdb *gorm.DB, id int, req *upsertReq, ac
 	res := gdb.WithContext(ctx).Model(&Address{}).Where("id = ?", id).
 		Updates(map[string]any{
 			"name": after.Name, "remark": after.Remark, "url": after.URL,
+			"user_groups": after.UserGroups, "surfaces": after.Surfaces,
+			"color":   after.Color,
 			"enabled": after.Enabled, "updated_at": after.UpdatedAt,
 			"updated_by": after.UpdatedBy,
 		})

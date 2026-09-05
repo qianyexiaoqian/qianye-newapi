@@ -4,15 +4,15 @@ package lottery
 //
 // 这一组用例回答的是同一个问题的六个面:
 //
-//	N 注真的是 N 张独立的票吗          —— 序号、链环、资金单、账本流水各 N 份
-//	N 注真的只扣 N × 单注吗            —— 真打主库余额,前后差自己算一遍
+//	N 注真的是 N 张独立的票吗          —— 序号、链环、账本流水各 N 份
+//	N 注真的只扣 N × 单注吗            —— 真打星屑余额,前后差自己算一遍
 //	整批重放会不会重复扣费             —— 同一个 crid 再发一次,余额一个字节都不许动
 //	撞上每人上限时前面几注怎么办       —— 买成的算数,没买成的一分钱不扣,并说清停在哪
 //	配了冷却的活动还买不买得了多注     —— 批内不互相计时,下一次提交照旧要等
 //	每一注是不是各自与开奖号比对       —— 同一次提交里的四注开出三种不同结果
 //
 // 走的全是真实 HTTP handler:多注是一条**接缝**功能(请求体 → 派生幂等键 →
-// N 次 twophase → 一个信封),而接缝断掉时每一个纯函数都还是绿的。
+// N 次扩展库事务 → 一个信封),而接缝断掉时每一个纯函数都还是绿的。
 
 import (
 	"context"
@@ -21,10 +21,10 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/modules/paypass"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -119,7 +119,7 @@ func entryBody(t *testing.T, crid string, picks []string) string {
 // TestBallMultiEntryBuysEveryLine 是这条功能的主用例。
 //
 // 它同时钉住三件在改造前根本不存在的事实:一次提交能买 N 注、这 N 注是 N 张
-// 各自独立的票(各有序号、链环、资金单、账本流水)、以及整批重放一分钱都不会
+// 各自独立的票(各有序号、链环、账本流水)、以及整批重放一分钱都不会
 // 再扣。第三件是把批量放在服务端而不是让前端连打 N 次的**全部理由** ——
 // 前端每一次点击都要自己造一个新 crid,重发就是真的多扣一笔。
 func TestBallMultiEntryBuysEveryLine(t *testing.T) {
@@ -129,15 +129,15 @@ func TestBallMultiEntryBuysEveryLine(t *testing.T) {
 		PayoutMaxAttempts:      8,
 		EntryCloseGraceSeconds: 0,
 		RevealDelaySeconds:     0,
-		MaxStakeQuota:          5_000_000,
-		MaxTotalPrizeQuota:     5_000_000,
+		MaxStakeStardust:       5_000_000,
+		MaxTotalPrizeStardust:  5_000_000,
 		MaxActiveActivities:    16,
 		MaxPrizeTiers:          8,
 		MaxTotalEntriesHard:    1_000,
 	})
 	require.NoError(t, ext.AutoMigrate(&qymodel.AuditLog{}))
 	const startQuota = 100_000
-	main := newBallMainDB(t, startQuota)
+	newBallMainDB(t, startQuota)
 	r := ballE2ERouter()
 
 	act := seedBallActivity(t, ext, nil)
@@ -186,34 +186,28 @@ func TestBallMultiEntryBuysEveryLine(t *testing.T) {
 	}
 
 	// ── 钱:独立算出的期望 == 实测 ──
-	var buyer model.User
-	require.NoError(t, main.Where("id = ?", ballE2EUserId).Take(&buyer).Error)
-	assert.EqualValues(t, startQuota-wantTotal, buyer.Quota,
-		"主库余额必须正好少了 N × 单注参与费")
+	assert.EqualValues(t, startQuota-wantTotal, userStardust(t, ext),
+		"星屑余额必须正好少了 N × 单注参与费")
 
-	// 五张独立的票、五张独立的资金单、五条独立的账本流水。
+	// 五张独立的票、五条独立的账本流水,而且票与流水互相指认。
 	var rows []Entry
 	require.NoError(t, ext.Where("act_id = ?", act.Id).Order("seq asc").Find(&rows).Error)
 	require.Len(t, rows, len(picks))
 	idemKeys := make(map[string]bool, len(rows))
+	ledger := ledgerRowsOf(t, ext, ballE2EUserId, act.ActNo)
+	require.Len(t, ledger, len(picks), "每一注都要留下自己那条账本流水 —— 合成一行 N 倍金额会让退款指不回具体哪张票")
 	for i, e := range rows {
 		assert.Equal(t, EntrySuccess, e.Status)
 		assert.Equal(t, picks[i], e.Pick)
-		assert.NotEmpty(t, e.OrderNo)
+		assert.Equal(t, ledger[i].LedgerNo, e.OrderNo, "第 %d 注必须指向自己那一行流水", i+1)
+		assert.Equal(t, e.EntryNo, ledger[i].RefNo, "第 %d 行流水必须指向自己那张票", i+1)
+		assert.Equal(t, string(stardust.KindLotStake), ledger[i].Kind)
+		assert.EqualValues(t, -act.StakeQuota, ledger[i].Amount)
 		assert.LessOrEqualf(t, len(e.IdemKey), 96,
 			"派生幂等键 %q 越过了 qy_lot_entry.idem_key 的列宽", e.IdemKey)
 		require.Falsef(t, idemKeys[e.IdemKey], "第 %d 注复用了幂等键 %q", i+1, e.IdemKey)
 		idemKeys[e.IdemKey] = true
 	}
-
-	var orders []qymodel.FundOrder
-	require.NoError(t, ext.Where("idem_scope = ?", idemScopeEntry).Find(&orders).Error)
-	assert.Len(t, orders, len(picks),
-		"一注一张资金单 —— 合成一张 N 倍金额的单会让 RefId 指不回具体哪条明细")
-
-	var ledger []model.Log
-	require.NoError(t, main.Where("user_id = ?", ballE2EUserId).Find(&ledger).Error)
-	assert.Len(t, ledger, len(picks), "每一注都要留下自己那条账本流水")
 
 	// ── 两处展示:「我的参与」与详情页各自看得到这 N 注 ──
 	code, body = callJSON(t, r, http.MethodGet, "/lottery/my/entries", "")
@@ -249,13 +243,14 @@ func TestBallMultiEntryBuysEveryLine(t *testing.T) {
 			"重放必须拿回**原来那张票**,而不是新开一张")
 	}
 
-	require.NoError(t, main.Where("id = ?", ballE2EUserId).Take(&buyer).Error)
-	assert.EqualValues(t, startQuota-wantTotal, buyer.Quota,
+	assert.EqualValues(t, startQuota-wantTotal, userStardust(t, ext),
 		"重放之后余额必须一个字节都没动 —— 这是把批量放在服务端的全部理由")
 
 	var afterReplay int64
 	require.NoError(t, ext.Model(&Entry{}).Where("act_id = ?", act.Id).Count(&afterReplay).Error)
 	assert.EqualValues(t, len(picks), afterReplay, "重放不许多出一张票")
+	assert.Len(t, ledgerRowsOf(t, ext, ballE2EUserId, act.ActNo), len(picks),
+		"重放不许在账本上多出一行 —— 幂等键与票同一个,流水与票一一对应")
 }
 
 // TestBallMultiEntryStopsAtPerUserCap 钉住"撞上每人上限"的三件事:
@@ -269,11 +264,11 @@ func TestBallMultiEntryStopsAtPerUserCap(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ext := newPayoutEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8, EntryCloseGraceSeconds: 0,
-		RevealDelaySeconds: 0, MaxStakeQuota: 5_000_000,
+		RevealDelaySeconds: 0, MaxStakeStardust: 5_000_000,
 	})
 	require.NoError(t, ext.AutoMigrate(&qymodel.AuditLog{}))
 	const startQuota = 100_000
-	main := newBallMainDB(t, startQuota)
+	newBallMainDB(t, startQuota)
 	r := ballE2ERouter()
 
 	act := seedBallActivity(t, ext, func(a *Activity) { a.MaxEntriesPerUser = 3 })
@@ -300,9 +295,7 @@ func TestBallMultiEntryStopsAtPerUserCap(t *testing.T) {
 		"停在哪一注、为什么停,必须说得出来 —— 说不出来的部分成交比失败更难查")
 	assert.NotEmpty(t, batch.FailedMessage)
 
-	var buyer model.User
-	require.NoError(t, main.Where("id = ?", ballE2EUserId).Take(&buyer).Error)
-	assert.EqualValues(t, startQuota-3*act.StakeQuota, buyer.Quota,
+	assert.EqualValues(t, startQuota-3*act.StakeQuota, userStardust(t, ext),
 		"没买成的那两注一分钱都不许扣")
 
 	after := activityDetailOf(t, r, act.ActNo)
@@ -319,10 +312,10 @@ func TestBallMultiEntryCooldownCountsOneSubmissionOnce(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ext := newPayoutEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8, EntryCloseGraceSeconds: 0,
-		RevealDelaySeconds: 0, MaxStakeQuota: 5_000_000,
+		RevealDelaySeconds: 0, MaxStakeStardust: 5_000_000,
 	})
 	require.NoError(t, ext.AutoMigrate(&qymodel.AuditLog{}))
-	main := newBallMainDB(t, 100_000)
+	newBallMainDB(t, 100_000)
 	r := ballE2ERouter()
 
 	act := seedBallActivity(t, ext, func(a *Activity) { a.CooldownSeconds = 600 })
@@ -335,9 +328,7 @@ func TestBallMultiEntryCooldownCountsOneSubmissionOnce(t *testing.T) {
 	assert.Equal(t, 3, batch.Accepted, "同一次提交是一个动作,批内不再互相计时")
 	assert.Empty(t, batch.FailedCode)
 
-	var buyer model.User
-	require.NoError(t, main.Where("id = ?", ballE2EUserId).Take(&buyer).Error)
-	assert.EqualValues(t, 100_000-3*act.StakeQuota, buyer.Quota)
+	assert.EqualValues(t, 100_000-3*act.StakeQuota, userStardust(t, ext))
 
 	// 换一个 crid 再来一注:这是**下一次**提交,冷却照旧要等。
 	code, body = callJSON(t, r, http.MethodPost,
@@ -345,8 +336,7 @@ func TestBallMultiEntryCooldownCountsOneSubmissionOnce(t *testing.T) {
 	require.Equalf(t, http.StatusConflict, code, "下一次提交必须仍然被冷却拦住: %s", body)
 	assert.Equal(t, "qy_lot_cooldown", errorCode(t, body))
 
-	require.NoError(t, main.Where("id = ?", ballE2EUserId).Take(&buyer).Error)
-	assert.EqualValues(t, 100_000-3*act.StakeQuota, buyer.Quota,
+	assert.EqualValues(t, 100_000-3*act.StakeQuota, userStardust(t, ext),
 		"被冷却拦下的那一注不许扣钱")
 }
 
@@ -360,11 +350,11 @@ func TestBallMultiEntryPayPasswordJudgesTotal(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ext := newPayoutEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8, EntryCloseGraceSeconds: 0,
-		RevealDelaySeconds: 0, MaxStakeQuota: 5_000_000,
-		PayPasswordThresholdQuota: 2500,
+		RevealDelaySeconds: 0, MaxStakeStardust: 5_000_000,
+		PayPasswordThresholdStardust: 2500,
 	})
 	require.NoError(t, ext.AutoMigrate(&qymodel.AuditLog{}, &paypass.PayPassword{}))
-	main := newBallMainDB(t, 100_000)
+	newBallMainDB(t, 100_000)
 	r := ballE2ERouter()
 
 	act := seedBallActivity(t, ext, nil)
@@ -377,22 +367,15 @@ func TestBallMultiEntryPayPasswordJudgesTotal(t *testing.T) {
 
 	// 三注:总额越过阈值,必须验密。用户没设过支付密码,于是被引导去设置 ——
 	// 关键是它**没有扣钱**,而不是具体哪一个码。
-	quotaBefore := userQuota(t, main)
+	before := userStardust(t, ext)
 	code, body = callJSON(t, r, http.MethodPost,
 		"/lottery/activities/"+act.ActNo+"/entries",
 		entryBody(t, "pw-2", []string{"04,05,06|02", "07,08,09|03", "10,11,12|04"}))
 	require.NotEqualf(t, http.StatusOK, code,
-		"三注总额越过阈值却一次密码都没问 —— 这是一条把余额烧光的绕路: %s", body)
+		"三注总额越过阈值却一次密码都没问 —— 这是一条把星屑烧光的绕路: %s", body)
 	assert.Contains(t, []string{"qy_pay_pwd_not_set", "qy_pay_pwd_required"},
 		errorCode(t, body))
-	assert.Equal(t, quotaBefore, userQuota(t, main), "验密没过的提交不许扣钱")
-}
-
-func userQuota(t *testing.T, main *gorm.DB) int {
-	t.Helper()
-	var u model.User
-	require.NoError(t, main.Where("id = ?", ballE2EUserId).Take(&u).Error)
-	return u.Quota
+	assert.Equal(t, before, userStardust(t, ext), "验密没过的提交不许扣钱")
 }
 
 // TestBallMultiEntryRequestIdBoundary 钉住 client_request_id 的两条边界。
@@ -405,7 +388,7 @@ func TestBallMultiEntryRequestIdBoundary(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ext := newPayoutEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8, EntryCloseGraceSeconds: 0,
-		RevealDelaySeconds: 0, MaxStakeQuota: 5_000_000,
+		RevealDelaySeconds: 0, MaxStakeStardust: 5_000_000,
 	})
 	require.NoError(t, ext.AutoMigrate(&qymodel.AuditLog{}))
 	newBallMainDB(t, 100_000)
@@ -449,7 +432,7 @@ func TestBallMultiEntryDrawsEachLineIndependently(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ext := newPayoutEnv(t, config.Lottery{
 		Enabled: true, PayoutMaxAttempts: 8, EntryCloseGraceSeconds: 0,
-		RevealDelaySeconds: 0, MaxStakeQuota: 5_000_000,
+		RevealDelaySeconds: 0, MaxStakeStardust: 5_000_000,
 	})
 	require.NoError(t, ext.AutoMigrate(&qymodel.AuditLog{}))
 	newBallMainDB(t, 100_000)

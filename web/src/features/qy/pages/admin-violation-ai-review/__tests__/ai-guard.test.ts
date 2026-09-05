@@ -242,18 +242,19 @@ describe('文案', () => {
   })
 
   test('两条路线的说明必须真的说出差别,不能只是换个名字', () => {
+    // 项目方后来点名这些提示太啰嗦,两段各压成「一句优点 + 一句代价」——
+    // 但压短不等于压没:差别本身(类别固定 / 每次带说明书更贵)必须还在。
     const zhKeys = zh as Record<string, string>
     for (const key of ['qy_ai_proto_json_desc', 'qy_ai_proto_guard_desc']) {
       assert.ok(
-        zhKeys[key].length > 60,
-        `${key} 太短 —— 项目方要求界面上「要说清区别」,` +
-          '而成本与类型体系的差别一句话说不完'
+        zhKeys[key].length > 20,
+        `${key} 太短 —— 一句优点加一句代价总要说完`
       )
     }
     // 护栏那一段必须点出它最要紧的限制:类别是固定的,提示词改不动。
     assert.match(zhKeys.qy_ai_proto_guard_desc, /固定/)
-    // 通用那一段必须点出它最要紧的代价:提示词每次都要付钱。
-    assert.match(zhKeys.qy_ai_proto_json_desc, /token/)
+    // 通用那一段必须点出它最要紧的代价:每次都带着完整说明书,更贵。
+    assert.match(zhKeys.qy_ai_proto_json_desc, /更贵/)
   })
 })
 

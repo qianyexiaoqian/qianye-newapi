@@ -228,9 +228,19 @@ func scheduleUserRefresh(userId int) {
 
 // loadActivePlanIds 回主库读一次并写回缓存。
 //
-// 判据必须与 model.PreConsumeUserSubscription 的候选查询**逐字相同**
-// (status='active' AND end_time > now):解锁看得见、扣费却取不到这条订阅,
-// 或者反过来,都会变成说不清的工单。上游那条候选查询就是这两个条件。
+// 判据分两层,别把它们混成一个:
+//
+//	解锁集合(PlanIds)  status='active' AND end_time > now。这是「这个人此刻持有
+//	                    哪些套餐」,no_quota 纯商品套餐也算 —— 它可能就是拿来解锁
+//	                    模型分组、按量走钱包付的「解锁包」,不该被排除在访问权之外。
+//	出资集合(Funded)   在上面的基础上再排掉 no_quota。上游
+//	                    model.PreConsumeUserSubscription 的候选查询带 `no_quota = false`
+//	                    (纯商品不参与出资),而 no_quota 的 AmountTotal 恒为 0、
+//	                    「0 == 不限量」这条口径会把它误判成「有无限余额」→ funded=true,
+//	                    于是 groupns 钱包出资闸门 `!funded` 恒假,运营在别的套餐上设的
+//	                    allow_wallet_overflow=0 被一张无关纯商品架空(钱包为 0 倍率
+//	                    分组无限出资)。funded 的语义是「有套餐能用自己的余额付这一笔」,
+//	                    对一张上游永不出资的订阅报 true 是契约错误,故在此排除。
 //
 // singleflight 防击穿:同一个用户的并发请求(多条流式连接是常态)只打一次主库。
 func loadActivePlanIds(ctx context.Context, userId int) ([]int, error) {
@@ -250,9 +260,10 @@ func loadActivePlanIds(ctx context.Context, userId int) ([]int, error) {
 			AmountUsed          int64 `gorm:"column:amount_used"`
 			NextResetTime       int64 `gorm:"column:next_reset_time"`
 			AllowWalletOverflow bool  `gorm:"column:allow_wallet_overflow"`
+			NoQuota             bool  `gorm:"column:no_quota"`
 		}, 0, 4)
 		err := model.DB.WithContext(ctx).Model(&model.UserSubscription{}).
-			Select("plan_id", "end_time", "amount_total", "amount_used", "next_reset_time", "allow_wallet_overflow").
+			Select("plan_id", "end_time", "amount_total", "amount_used", "next_reset_time", "allow_wallet_overflow", "no_quota").
 			Where("user_id = ? AND status = ? AND "+model.SubscriptionActiveEndTimeSQL, userId, statusActive, common.GetTimestamp()).
 			Order("end_time asc, id asc").
 			Find(&rows).Error
@@ -279,8 +290,13 @@ func loadActivePlanIds(ctx context.Context, userId int) ([]int, error) {
 			// 而 funded=false 是钱包出资闸门唯一会拒绝的那一档的必要条件(还要叠上
 			// 「用户分组不含它」与「allow_wallet_overflow=0」),判错就是一次误拒。
 			// 窗口 = 后台任务的 ≤1min 抖动 + per-user 缓存;IsMasterNode 误配时窗口无上界。
+			//
+			// no_quota 纯商品必须先挡在最前面:它永不用自己的余额出资(上游候选查询直接
+			// `no_quota = false` 排除),而它的 AmountTotal 恒为 0,「0 == 不限量」会把它
+			// 误判成有无限余额 → funded=true → groupns 钱包出资闸门的 `!funded` 恒假,
+			// 运营在别的套餐上设的 allow_wallet_overflow=0 被架空(见函数头注释)。
 			resetDue := row.NextResetTime > 0 && row.NextResetTime <= nowTs
-			if row.AmountTotal <= 0 || row.AmountUsed < row.AmountTotal || resetDue {
+			if !row.NoQuota && (row.AmountTotal <= 0 || row.AmountUsed < row.AmountTotal || resetDue) {
 				funded = append(funded, row.PlanId)
 			}
 			if expiresAt == 0 || row.EndTime < expiresAt {
@@ -325,6 +341,7 @@ func resetCaches() {
 	current.Store(nil)
 	loadedAt.Store(0)
 	nextRefreshAt.Store(0)
+	snapshotEpoch.Store(0)
 	refreshFails.Store(0)
 	staleWarns.Store(0)
 	droppedWarns.Store(0)

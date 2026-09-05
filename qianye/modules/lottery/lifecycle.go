@@ -2,6 +2,7 @@ package lottery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,7 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
-	"github.com/QuantumNous/new-api/qianye/service/twophase"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 
 	"gorm.io/gorm"
 )
@@ -28,6 +29,11 @@ import (
 // 管理员剩下的唯一动作是整场取消,而取消必然全额退款、必然公示、必然写审计:
 // 他只能"不开",不能"挑一个开"。
 //
+// 转盘(draw_mode=wheel)是例外:它没有冻结名单这一步,每一转当场开出,排期不进
+// 承诺原像,运营可以在发布后改 open_at / close_at(api_admin_schedule.go)。这里的
+// runLock 读的是活动行**此刻**的 close_at,改完自然按新时间封盘;封盘之后照旧只等
+// 揭示,排期不能再动。
+//
 // 与此配套的一条铁律:**绝不允许把开奖时才知道的量(区块哈希、开奖时的
 // 时间戳、最后一笔投注)混进随机源** —— 那正是把选时攻击重新引进来的经典错误。
 
@@ -39,13 +45,15 @@ const batchPerRound = 20
 
 // runLock 到点封盘。
 //
-// 封盘那一刻做三件事,而且必须在同一个事务里:
+// 封盘那一刻做两件事,而且必须在同一个事务里:
 //  1. 状态 CAS published → locked
-//  2. 仍是 pending 的参与标成 excluded(它们的钱去哪由资金单的终态决定)
-//  3. 按 entry_no 字节序算出 roster_hash 并**立即落库公开**
+//  2. 按 entry_no 字节序算出 roster_hash 并**立即落库公开**
 //
-// 第 3 步先于种子公开是整个协议的关键:任何人在 close_at 到 draw_at 之间
+// 第 2 步先于种子公开是整个协议的关键:任何人在 close_at 到 draw_at 之间
 // 抓一份 proof,就持有了一份平台无法否认的名单快照。
+//
+// 没有"在途参与"要清扫:票与扣款在同一个扩展库事务里落库,封盘时库里的每一张票
+// 都是已经扣了星屑的成交票。
 func runLock(ctx context.Context) {
 	gdb := db.Get()
 	if gdb == nil {
@@ -75,100 +83,87 @@ func runLock(ctx context.Context) {
 
 // lockActivity 封盘。
 //
-// 名单**必须在事务内、且在 pending→excluded 清扫之后**才读:
-// 在事务外先算 roster_hash,读完到事务开始之间任何一笔在途参与落定成 success,
-// 就会得到一条既不在冻结名单里、也没被标 excluded 的条目 —— 到了开奖时刻,
-// revealActivity 重算的名单与已公开的快照对不上,活动被自己的防篡改校验
-// 永久拒绝开奖,全场的钱既不派也不退。清扫的 UPDATE 会在那些 pending 行上取锁,
-// 并发的 markEntrySuccess 要么排在它前面(那就进名单)、要么排在它后面
-// (那就撞上 excluded 而不生效),没有第三种可能。
+// 名单**必须在事务内、且在状态 CAS 之后**才读:那条 CAS 在活动行上取得了锁,
+// 而报名的 reserveEntry 第一条语句也要在活动行上取锁并复检 status='published' ——
+// 并发的报名要么排在 CAS 前面(那就进名单)、要么排在后面(那就被 errClosingSoon
+// 顶回去、整笔回滚),没有第三种可能。在事务外先算 roster_hash 则会得到一条
+// 既不在冻结名单里、又真实存在的票,到了开奖时刻名单与已公开的快照对不上,
+// 活动被自己的防篡改校验永久拒绝开奖。
 func lockActivity(ctx context.Context, gdb *gorm.DB, act *Activity) error {
 	now := common.GetTimestamp()
 
 	return gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		res := tx.Model(&Activity{}).
-			Where("id = ? AND status = ?", act.Id, StatusPublished).
-			Updates(map[string]any{
-				"status":     StatusLocked,
-				"locked_at":  now,
-				"updated_at": now,
-			})
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected != 1 {
-			// 别的节点抢先了(或活动刚被取消)。不是错误。
-			return nil
-		}
-
-		excluded, err := excludePendingEntries(tx, act.Id, now)
-		if err != nil {
-			return err
-		}
-
-		roster, err := loadRoster(ctx, tx, act.Id)
-		if err != nil {
-			return err
-		}
-		hash, count := RosterHashFor(act.Algo, act.ActNo, act.CommitHash, rosterLines(roster))
-
-		// 参与人数不足即流局全退。这是平台侧唯一的止损阀,且对用户完全公平。
-		shortfall := act.MinEntriesToHold > 0 && count < act.MinEntriesToHold
-		to := StatusLocked
-		frozen := map[string]any{
-			"roster_hash":  hash,
-			"roster_count": count,
-			"updated_at":   now,
-		}
-		if shortfall {
-			// 直接跳过揭示进入结算:名单都不够,抽出来的名次没有意义,
-			// 而种子一旦公开就再也不能用于同一场活动。
-			to = StatusSettling
-			frozen["status"] = StatusSettling
-			frozen["outcome"] = OutcomeVoidMinEntries
-		}
-		if err := tx.Model(&Activity{}).Where("id = ?", act.Id).Updates(frozen).Error; err != nil {
-			return err
-		}
-
-		return writeActivityEvent(tx, act.Id, StatusPublished, to, ActionLock,
-			qymodel.ActorSystem, 0, map[string]any{
-				"roster_hash":  hash,
-				"roster_count": count,
-				"excluded":     excluded,
-				"shortfall":    shortfall,
-			})
+		_, err := lockActivityTx(ctx, tx, act, now, qymodel.ActorSystem, 0, nil)
+		return err
 	})
 }
 
-// excludePendingEntries 把仍未落定的参与标成 excluded 并一次性回落 pending_count。
+// lockActivityTx 是封盘的事务体:CAS published→locked + locked_at、冻结名单、
+// 人数不足流局、事件。**必须在调用方的事务内执行。**
 //
-// **这里不登记退款**:那笔资金单可能最终判定为 Failed(主库根本没扣钱),
-// 退一笔从没收过的钱会在资金表里留下一条假的成功记录。真正的去向由
-// convergeExcluded 按资金单的终态决定。
+// 单独成函数是因为它有三个调用方,而它们必须逐字节同一段:到点封盘(runLock)、
+// 转盘库存耗尽时在转动事务内当场封盘(spinTx)、管理端对转盘的「提前封盘」
+// (cancelWheel)。三处各抄一份,漂移的方向恰好是其中一处忘了冻结名单 ——
+// 那一场会在开奖时被自己的防篡改校验永久拒绝。
 //
-// 封盘与"整场取消"两条路径共用它。取消若跳过这一步,在途的 pending 条目就
-// 永远没人收敛:convergeExcluded 只处理 excluded,而 finishIfDone 把 pending
-// 计入未结算 —— 活动会永久停在 settling,连带永久占用一个并发活动名额。
-func excludePendingEntries(tx *gorm.DB, actId, now int64) (int64, error) {
-	ex := tx.Model(&Entry{}).
-		Where("act_id = ? AND status = ?", actId, EntryPending).
-		Updates(map[string]any{"status": EntryExcluded, "settled_at": now})
-	if ex.Error != nil {
-		return 0, ex.Error
+// 返回 locked=false 表示 CAS 落空(别的节点抢先了,或活动刚被取消),不是错误。
+// extra 里的键并进封盘事件的 detail(提前封盘的原因、库存耗尽的标记)。
+//
+// 转盘**跳过**人数不足流局:它没有"批次"可流,本金逐转当场花掉、奖当场到账,
+// 写 OutcomeVoidMinEntries 会把它推进全额退款那条路 —— 那是双付。它的
+// MinEntriesToHold 在创建期已被钉死为 0,这里再按 draw_mode 挡一次是结构性的:
+// 一次直接改库把它改成正数,不该能把一场转盘变成"全退"。
+func lockActivityTx(ctx context.Context, tx *gorm.DB, act *Activity, now int64,
+	actorType string, actorUserId int, extra map[string]any) (bool, error) {
+	res := tx.Model(&Activity{}).
+		Where("id = ? AND status = ?", act.Id, StatusPublished).
+		Updates(map[string]any{
+			"status":     StatusLocked,
+			"locked_at":  now,
+			"updated_at": now,
+		})
+	if res.Error != nil {
+		return false, res.Error
 	}
-	if ex.RowsAffected == 0 {
-		return 0, nil
+	if res.RowsAffected != 1 {
+		return false, nil
 	}
-	// pending_count 在这里一次性回落。convergeExcluded 之后不再动它,
-	// 否则同一条参与会被扣两次计数。
-	err := tx.Model(&Activity{}).Where("id = ?", actId).
-		Update("pending_count", gorm.Expr("CASE WHEN pending_count >= ? THEN pending_count - ? ELSE 0 END",
-			ex.RowsAffected, ex.RowsAffected)).Error
+
+	roster, err := loadRoster(ctx, tx, act.Id)
 	if err != nil {
-		return 0, err
+		return false, err
 	}
-	return ex.RowsAffected, nil
+	hash, count := RosterHashFor(act.Algo, act.ActNo, act.CommitHash, rosterLines(roster))
+
+	// 参与人数不足即流局全退。这是平台侧唯一的止损阀,且对用户完全公平。
+	shortfall := act.DrawMode != DrawModeWheel && act.MinEntriesToHold > 0 && count < act.MinEntriesToHold
+	to := StatusLocked
+	frozen := map[string]any{
+		"roster_hash":  hash,
+		"roster_count": count,
+		"updated_at":   now,
+	}
+	if shortfall {
+		// 直接跳过揭示进入结算:名单都不够,抽出来的名次没有意义,
+		// 而种子一旦公开就再也不能用于同一场活动。
+		to = StatusSettling
+		frozen["status"] = StatusSettling
+		frozen["outcome"] = OutcomeVoidMinEntries
+	}
+	if err := tx.Model(&Activity{}).Where("id = ?", act.Id).Updates(frozen).Error; err != nil {
+		return false, err
+	}
+
+	detail := map[string]any{
+		"roster_hash":  hash,
+		"roster_count": count,
+		"shortfall":    shortfall,
+	}
+	for k, v := range extra {
+		detail[k] = v
+	}
+	return true, writeActivityEvent(tx, act.Id, StatusPublished, to, ActionLock,
+		actorType, actorUserId, detail)
 }
 
 // ─────────────────────────── 揭示与开奖 ───────────────────────────
@@ -207,8 +202,7 @@ func runReveal(ctx context.Context) {
 // revealActivity 执行一次开奖。**单个扩展库事务,一分钱不动。**
 //
 // 出款只落 planned 计划行,真正动钱由 worker 逐笔驱动 —— 绝不在这里循环
-// twophase.Execute,那会让一次开奖变成 N 次跨库往返,任何一次中途失败
-// 都留下一半发一半没发的场面。
+// 入账,那会让一次开奖变成 N 次往返,任何一次中途失败都留下一半发一半没发的场面。
 //
 // 重复触发被三重挡住:lease 单节点 + 状态 CAS + uk(act_id, entry_id, kind)。
 func revealActivity(ctx context.Context, gdb *gorm.DB, act *Activity) error {
@@ -274,11 +268,17 @@ func revealActivity(ctx context.Context, gdb *gorm.DB, act *Activity) error {
 	// 不是"奖档表没被改"。封盘之后 roster_hash 已公开、final_seed 对持有种子的
 	// 人已可算,此刻改一行 win_ppm 就等于点名挑中奖者(每张票的 r 已确定,把区间
 	// 挪到覆盖目标票即可),改 amount_quota 则绕过发布期
-	// Σ(count×amount) ≤ max_total_prize_quota 那道净增发闸门。
+	// Σ(count×amount) ≤ max_total_prize_stardust 那道净增发闸门。
 	// 两者原本都只有"用户自己下载证据链跑脚本"才能发现。
 	if err := checkSpecIntegrity(act, prizes); err != nil {
 		suspendReveal(ctx, act, err.Error())
 		return wrapInternal("开奖", errCommitMismatch)
+	}
+	// 转盘到这里只剩"揭示":结果早在每一转的事务里当场开出并派了奖。
+	// 上面三道校验(承诺、名单、奖档)对它照常有效 —— 名单承诺在封盘时公开过,
+	// 奖档的每一转都核过一次,揭示前再核一次是把这一场的证据链钉死。
+	if act.DrawMode == DrawModeWheel {
+		return revealWheel(ctx, gdb, act, count)
 	}
 	tiers := make([]Tier, 0, len(prizes))
 	for _, p := range prizes {
@@ -309,15 +309,20 @@ func revealActivity(ctx context.Context, gdb *gorm.DB, act *Activity) error {
 		if e == nil {
 			return wrapInternal("开奖", fmt.Errorf("中奖位指向了不存在的参与明细 %s", w.EntryNo))
 		}
-		// 两条派奖腿在这里分开,而且**只在这里**分开:额度奖落 planned 交给
-		// twophase 的资金链路,文本奖落 granted(终态)等人工履行。
+		// 两条派奖腿在这里分开,而且**只在这里**分开:星屑奖落 planned 交给
+		// 出款 worker 逐笔入账,文本奖落 granted(终态)等人工履行。
 		// 两者共用同一个 uk(act_id, entry_id, kind) 与同一次 ON CONFLICT DO NOTHING,
 		// 因此"开奖跑两遍"在计划层整体撞键,不需要任何额外的协调。
+		// 商品奖是第三条腿:落 planned 交给出款 worker 在扩展库里生成商城订单
+		// (driveProductPayout),做完落 granted。它不动账本、不进 text_grant_count。
 		kind := PayoutPrize
-		if w.PrizeType == PrizeTypeText {
+		switch w.PrizeType {
+		case PrizeTypeText:
 			kind = PayoutText
 			textGrants++
-		} else {
+		case PrizeTypeProduct:
+			kind = PayoutProduct
+		default:
 			payoutSum += w.Amount
 		}
 		plans = append(plans, PayoutPlan{
@@ -417,8 +422,87 @@ func pickWinnersByMode(act *Activity, final string, lines []RosterLine, tiers []
 	case DrawModeBall:
 		reds, blues := ballResultOf(act, final)
 		return PickWinnersBall(reds, blues, lines, ballTiersOf(prizes), ballPoolOpen(act))
+	case DrawModeWheel:
+		// 转盘没有批次抽签:每一转在转动事务里当场落定,revealActivity 在走到这里
+		// 之前已经分派给 revealWheel。真走到这里就是分派漏了,而"再抽一批"会给
+		// 已经当场派过奖的人再登记一遍派奖计划 —— 双付。
+		return nil, fmt.Errorf("转盘(draw_mode=wheel)没有批次抽签,不该走到 pickWinnersByMode")
 	}
 	return nil, fmt.Errorf("未知的定档方式 %q", act.DrawMode)
+}
+
+// revealWheel 是转盘的揭示:**不抽签、不登记派奖计划、不核额度预算**。
+//
+// 结果在每一转的事务里已经当场落定并派过奖(wheel.go 的 spinTx),这里只做
+// CAS locked→settling + outcome=drawn + 公开种子,并把活动行上逐转累加的两个
+// 合计与出款表复核一遍:payout_quota 以 SUM(已付派奖) 覆盖为权威(与 finishIfDone
+// 同一口径),text_grant_count 必须与 granted 行数相等 —— 不等就是有行被删掉了,
+// 挂起等人,绝不在一个对不上账的现场上公开种子。
+//
+// 之后 runSettle → finishIfDone 无需为它改一行:open payouts 恒为 0(逐转直接
+// paid / granted),outcome 不在全额退款的那几种里。
+func revealWheel(ctx context.Context, gdb *gorm.DB, act *Activity, spins int) error {
+	var paid int64
+	if err := gdb.WithContext(ctx).Model(&Payout{}).
+		Select("COALESCE(SUM(amount_quota), 0)").
+		Where("act_id = ? AND kind = ? AND status = ?", act.Id, PayoutPrize, PayoutPaid).
+		Scan(&paid).Error; err != nil {
+		db.MarkFailure(err)
+		return wrapInternal("复核转盘派奖合计", err)
+	}
+	var granted int64
+	if err := gdb.WithContext(ctx).Model(&Payout{}).
+		Where("act_id = ? AND kind = ?", act.Id, PayoutText).
+		Count(&granted).Error; err != nil {
+		db.MarkFailure(err)
+		return wrapInternal("复核转盘文本奖", err)
+	}
+	if granted != int64(act.TextGrantCount) {
+		suspendReveal(ctx, act, fmt.Sprintf(
+			"文本奖登记 %d 位与逐转累加的 %d 位不一致 —— 有中奖位被删掉或计数被改过", granted, act.TextGrantCount))
+		return wrapInternal("揭示转盘", errors.New("文本奖计数与出款表不一致"))
+	}
+
+	now := common.GetTimestamp()
+	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&Activity{}).
+			Where("id = ? AND status = ? AND outcome = ?", act.Id, StatusLocked, OutcomeNone).
+			Updates(map[string]any{
+				"status":           StatusSettling,
+				"outcome":          OutcomeDrawn,
+				"revealed_at":      now,
+				"payout_quota":     paid,
+				"text_grant_count": granted,
+				"updated_at":       now,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 1 {
+			return nil // 别的节点抢先了
+		}
+		if err := tx.Model(&Seed{}).Where("act_id = ?", act.Id).
+			Update("revealed_at", now).Error; err != nil {
+			return err
+		}
+		return writeActivityEvent(tx, act.Id, StatusLocked, StatusSettling, ActionReveal,
+			qymodel.ActorSystem, 0, map[string]any{
+				"roster_hash":  act.RosterHash,
+				"draw_mode":    act.DrawMode,
+				"spins":        spins,
+				"payout_quota": paid,
+				"text_grants":  granted,
+			})
+	})
+	if err != nil {
+		db.MarkFailure(err)
+		return wrapInternal("揭示转盘", err)
+	}
+	writeSystemAudit("lottery.reveal", act.ActNo, qymodel.ResultOK, "",
+		snapText(map[string]any{
+			"draw_mode": act.DrawMode, "spins": spins, "payout_quota": paid, "text_grants": granted,
+		}))
+	return nil
 }
 
 // ballResultOf 摇出本期的开奖号。
@@ -474,7 +558,7 @@ func ballCarryOf(act *Activity, committed int64) int64 {
 // checkQuotaBudget 断言一场 rank/prob 抽奖的额度支出不超过奖档表自己的预算
 // Σ(count × amount)。
 //
-// 那个量正是创建期 Σ(count×amount) ≤ max_total_prize_quota 校验的对象,也是
+// 那个量正是创建期 Σ(count×amount) ≤ max_total_prize_stardust 校验的对象,也是
 // 创建响应里回给运营的 worst_case_net_issue —— 运营是照着它决定"这场活动
 // 平台最多亏多少"的。文本奖不参与:它的 amount 恒为 0,发的是兑换码不是额度。
 func checkQuotaBudget(tiers []Tier, payoutSum int64) error {
@@ -597,7 +681,7 @@ func runVoidExpired(ctx context.Context) {
 
 // ─────────────────────────── 结算收尾 ───────────────────────────
 
-// runSettle 推进 settling 态的活动:登记退款计划 → 收敛未决条目 → 判定完成。
+// runSettle 推进 settling 态的活动:登记退款计划 → 判定完成。
 //
 // 真正的出款由 DrivePayouts 单独驱动。两者分开是因为出款的节奏(每 10 秒)
 // 与活动收尾的节奏不同,而且出款失败不该阻塞别的活动收尾。
@@ -628,7 +712,6 @@ func runSettle(ctx context.Context) {
 				continue
 			}
 		}
-		convergeExcluded(ctx, gdb, act)
 		finishIfDone(ctx, gdb, act)
 	}
 }
@@ -652,23 +735,7 @@ func isFullRefundOutcome(outcome string) bool {
 // 幂等靠 uk(act_id, entry_id, kind):重复跑只会整体撞键,不会产生双份退款。
 // 竞猜的"全部猜错"在 settleGuessResult 里已经登记过一次,这里再跑一遍
 // 同样撞键返回 —— 两条路径共用同一个唯一键,不需要额外的协调。
-// refundAmountOf 返回一条参与**真正应该退**多少额度。
-//
-// 权威金额是资金单 qy_fund_orders.amount_quota（entry.order_no 是锚点，与
-// entry 同库同事务可读），而不是 qy_lot_entry.amount：后者是一张业务表上的
-// 普通列，一次 UPDATE 就能改，而 planFullRefund / refundExcluded 原先拿它直接
-// 出款、既不与资金单交叉核对也不校验已公开的 roster_hash —— 同一处篡改在开奖
-// 路径被 revealActivity 明确拒绝（roster_drift → 停手挂起），在取消/流局路径
-// 却原样变成主库真金。实测把一条 2500 的参与改成 900000，管理员一按取消就退出
-// 900000 到主库，活动行上 refund_quota 与 pool_quota 当场自相矛盾也没人拦。
-//
-// 两者不等时按**较小值**退并落一条 refund_drift：
-//   - 取较小值保证任何方向的篡改都不会变成净增发；
-//   - 仍然退钱而不是整场停手，是因为退款正是"出事之后的止损动作"，
-//     四种流局 outcome 与取消共用它，停手会把所有人的本金一起冻住。
-//
-// 资金单读不到（order_no 为空、或那张单不在）时返回 (0, false)：
-// 没有证据证明钱收过，就不能凭空发钱。
+
 // noteRefundDrift 把一次退款金额异常记进 qy_lot_flag。
 //
 // 走调用方手上那个句柄而不是 raiseFlag 的全局 db.Get():退款计划是在一个
@@ -680,25 +747,51 @@ func noteRefundDrift(ctx context.Context, gdb *gorm.DB, actId int64, detail stri
 	}
 }
 
+// refundAmountOf 返回一条参与**真正应该退**多少星屑。
+//
+// 权威金额是账本流水 qy_sd_ledger.amount(entry.order_no 就是那一行的 ledger_no,
+// 与票同库同事务写下),而不是 qy_lot_entry.amount:后者是一张业务表上的普通列,
+// 一次 UPDATE 就能改,而退款若拿它直接出款、既不与流水交叉核对也不校验已公开的
+// roster_hash —— 同一处篡改在开奖路径被 revealActivity 明确拒绝(roster_drift →
+// 停手挂起),在取消/流局路径却原样变成账本上的净增发。实测把一条 2500 的参与
+// 改成 900000,管理员一按取消就退出 900000。
+//
+// 流水行的 amount 带符号(lot_stake 行是负数),比较与取值一律用 **|amount|**。
+// 两者不等时按**较小值**退并落一条 refund_drift:
+//   - 取较小值保证任何方向的篡改都不会变成净增发;
+//   - 仍然退钱而不是整场停手,是因为退款正是"出事之后的止损动作",
+//     四种流局 outcome 与取消共用它,停手会把所有人的本金一起冻住。
+//
+// 流水读不到(order_no 为空、那一行不在、或它根本不是这个人的一笔扣款)时返回
+// (0, false):没有证据证明钱收过,就不能凭空发钱。
 func refundAmountOf(ctx context.Context, gdb *gorm.DB, actId int64, e *Entry) (int64, bool) {
 	if e.OrderNo == "" {
 		noteRefundDrift(ctx, gdb, actId,
-			"参与 "+e.EntryNo+" 没有资金单号,无法证明扣过款,已跳过退款")
+			"参与 "+e.EntryNo+" 没有账本流水号,无法证明扣过款,已跳过退款")
 		return 0, false
 	}
-	var order qymodel.FundOrder
-	if err := gdb.WithContext(ctx).Where("order_no = ?", e.OrderNo).Take(&order).Error; err != nil {
+	var row stardust.Ledger
+	if err := gdb.WithContext(ctx).Where("ledger_no = ?", e.OrderNo).Take(&row).Error; err != nil {
 		noteRefundDrift(ctx, gdb, actId,
-			"参与 "+e.EntryNo+" 的资金单 "+e.OrderNo+" 读不到,已跳过退款")
+			"参与 "+e.EntryNo+" 的账本流水 "+e.OrderNo+" 读不到,已跳过退款")
 		return 0, false
+	}
+	if row.Kind != string(stardust.KindLotStake) || row.UserId != e.UserId {
+		noteRefundDrift(ctx, gdb, actId,
+			"参与 "+e.EntryNo+" 指向的账本流水 "+e.OrderNo+" 不是这个用户的一笔参与费扣款,已跳过退款")
+		return 0, false
+	}
+	charged := row.Amount
+	if charged < 0 {
+		charged = -charged
 	}
 	amount := e.Amount
-	if order.AmountQuota != e.Amount {
+	if charged != e.Amount {
 		noteRefundDrift(ctx, gdb, actId,
-			"参与 "+e.EntryNo+" 的明细金额与资金单不一致: entry="+strconv.FormatInt(e.Amount, 10)+
-				" order("+e.OrderNo+")="+strconv.FormatInt(order.AmountQuota, 10)+",按较小值退款")
-		if order.AmountQuota < amount {
-			amount = order.AmountQuota
+			"参与 "+e.EntryNo+" 的明细金额与账本流水不一致: entry="+strconv.FormatInt(e.Amount, 10)+
+				" ledger("+e.OrderNo+")="+strconv.FormatInt(charged, 10)+",按较小值退款")
+		if charged < amount {
+			amount = charged
 		}
 	}
 	if amount <= 0 {
@@ -708,6 +801,12 @@ func refundAmountOf(ctx context.Context, gdb *gorm.DB, actId int64, e *Entry) (i
 }
 
 func planFullRefund(ctx context.Context, gdb *gorm.DB, act *Activity) error {
+	// 转盘在结构上没有"退本金"这回事:本金在每一转的事务里当场花掉、奖当场到账,
+	// 再退一遍本金就是双付。它能走到 settling 的全退 outcome 只有"一转都没有"的
+	// 作废(cancelWheel),名单本来就是空的;这里直接返回是第二道结构性的挡板。
+	if act.DrawMode == DrawModeWheel {
+		return nil
+	}
 	roster, err := loadRoster(ctx, gdb, act.Id)
 	if err != nil {
 		return err
@@ -742,116 +841,6 @@ func planFullRefund(ctx context.Context, gdb *gorm.DB, act *Activity) error {
 	})
 }
 
-// convergeExcluded 收敛封盘时未决的参与。
-//
-// **退款由资金单的终态驱动,永不投机性地登记。** 四种情况:
-//
-//	Success                  → 钱确实收了但没参加,登记退款
-//	Failed + 探针说主库没动    → 什么都没发生,标 failed
-//	Failed + 探针说主库动过    → 钱真的扣了,照样登记退款,并落一条 flag
-//	其余(含探针判不出来)      → 不动,下一轮再看;超时落 flag 转人工
-//
-// Failed 必须再探一次针,不能直接判 failed:commit 断连那一支现在落 in_doubt
-// (归入下面的 default 分支),但 Failed 仍可能来自存量单、补偿任务或人工裁决,
-// 那几条来自另一套判据。同一个包的 releaseEntryOnFailure
-// 正是为这件事才调 ProbeMainSide 的。这里闭眼判 failed 的后果是用户的参与费被
-// 静默吞掉:convergeExcluded 跑完活动就 finished,runSettle 不再扫,
-// 模块内没有任何补登退款的接口,Failed 单也不接受人工裁决。
-//
-// 曾经的做法是封盘时就给 pending 条目登记退款,再在"确认没扣钱"时把那笔
-// 退款标成 paid 且金额记 0 —— 那是在资金表里写一条假的成功记录,
-// 事后对账会被它误导。
-func convergeExcluded(ctx context.Context, gdb *gorm.DB, act *Activity) {
-	var rows []Entry
-	if err := gdb.WithContext(ctx).
-		Where("act_id = ? AND status = ?", act.Id, EntryExcluded).
-		Order("id asc").Limit(500).Find(&rows).Error; err != nil {
-		db.MarkFailure(err)
-		return
-	}
-	if len(rows) == 0 {
-		return
-	}
-	manualAfter := int64(config.Get().Lottery.ExcludedManualAfterSeconds)
-	now := common.GetTimestamp()
-
-	for i := range rows {
-		if ctx.Err() != nil {
-			return
-		}
-		e := &rows[i]
-		var order qymodel.FundOrder
-		if err := gdb.WithContext(ctx).Where("order_no = ?", e.OrderNo).
-			Take(&order).Error; err != nil {
-			// 没有资金单说明这条压根没进跨库链路,直接判失败。
-			markExcludedFailed(ctx, gdb, e.Id)
-			continue
-		}
-
-		switch order.Status {
-		case qymodel.StatusSuccess:
-			refundExcluded(ctx, gdb, act.Id, e)
-		case qymodel.StatusFailed:
-			switch twophase.ProbeMainSide(&order) {
-			case twophase.MainNotApplied:
-				markExcludedFailed(ctx, gdb, e.Id)
-			case twophase.MainApplied:
-				// 资金单说失败、主库说钱已经扣了 —— 两者矛盾,但钱确实不在用户账上,
-				// 必须退。同时落红点:这是一张需要人复核的资金单,不能只靠退款掩过去。
-				raiseFlag(ctx, act.Id, FlagEntryStuck,
-					"参与 "+e.EntryNo+" 的资金单被判失败但主库探针显示已扣款,已按退款收敛: "+e.OrderNo)
-				refundExcluded(ctx, gdb, act.Id, e)
-			default:
-				// 判不出来:钱可能已经动了,不猜。留在 excluded 等下一轮探针,
-				// 活动也因此不会收尾 —— 这正是想要的:没人被静默吞掉。
-				if manualAfter > 0 && now-e.CreatedAt > manualAfter {
-					raiseFlag(ctx, act.Id, FlagEntryStuck,
-						"参与 "+e.EntryNo+" 的资金单被判失败但主库是否已扣款无法判定: "+e.OrderNo)
-				}
-			}
-		default:
-			// pending / uncertain:钱可能已经动了,不猜。
-			if manualAfter > 0 && now-e.CreatedAt > manualAfter {
-				raiseFlag(ctx, act.Id, FlagEntryStuck,
-					"参与 "+e.EntryNo+" 的资金单长期不可判定: "+e.OrderNo)
-			}
-		}
-	}
-}
-
-// refundExcluded 给一条被排除的参与登记全额退款。
-//
-// 计数不在这里动:pending_count 已经由 excludePendingEntries 一次性回落过,
-// 再动一次就是同一条参与被扣两遍。
-func refundExcluded(ctx context.Context, gdb *gorm.DB, actId int64, e *Entry) {
-	amount, ok := refundAmountOf(ctx, gdb, actId, e)
-	if !ok {
-		return
-	}
-	plans := []PayoutPlan{{
-		EntryId: e.Id, UserId: e.UserId, Kind: PayoutRefund, Amount: amount,
-	}}
-	if err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := PlanPayouts(tx, actId, plans); err != nil {
-			return err
-		}
-		return tx.Model(&Entry{}).
-			Where("id = ? AND status = ?", e.Id, EntryExcluded).
-			Update("status", EntryRefunded).Error
-	}); err != nil {
-		db.MarkFailure(err)
-	}
-}
-
-// markExcludedFailed 把一条确认没有动过钱的被排除参与判失败。
-func markExcludedFailed(ctx context.Context, gdb *gorm.DB, entryId int64) {
-	if err := gdb.WithContext(ctx).Model(&Entry{}).
-		Where("id = ? AND status = ?", entryId, EntryExcluded).
-		Update("status", EntryFailed).Error; err != nil {
-		db.MarkFailure(err)
-	}
-}
-
 // finishIfDone 在全部出款到终态后把活动推进 finished。
 //
 // 终态是 paid 与 held 两种。held 也算终态是刻意的:它已经转人工,不该继续
@@ -869,27 +858,17 @@ func finishIfDone(ctx context.Context, gdb *gorm.DB, act *Activity) {
 	if open > 0 {
 		return
 	}
-	var unsettled int64
-	if err := gdb.WithContext(ctx).Model(&Entry{}).
-		Where("act_id = ? AND status IN ?", act.Id, []string{EntryPending, EntryExcluded}).
-		Count(&unsettled).Error; err != nil {
-		db.MarkFailure(err)
-		return
-	}
-	if unsettled > 0 {
-		return
-	}
 
 	// 全额退款的四种收场必须逐条核对覆盖:planFullRefund 是先读名单再登记计划,
-	// 而一笔在途参与可能恰好在读完之后才落定成 success。那一条不会出现在这一轮的
-	// 退款计划里,却也不再是 pending/excluded —— 上面两道判定都放行,活动被推成
-	// finished,而 runSettle 再也不扫 finished,那个人的参与费永久退不回来。
-	// 退款与"success + refunded"条目是一一对应的(uk(act_id, entry_id, kind)),
-	// 数量对不上就说明还有人没被覆盖,这一轮不收尾,下一轮 planFullRefund 会补上。
+	// 而一张票可能恰好在读完之后才落库(取消从 published 直接跳到 settling,
+	// 与最后一笔报名的事务只差一个锁的先后)。那一条不会出现在这一轮的退款计划里,
+	// 活动若被推成 finished,runSettle 再也不扫 finished,那个人的参与费永久退不回来。
+	// 退款与票是一一对应的(uk(act_id, entry_id, kind)),数量对不上就说明还有人
+	// 没被覆盖,这一轮不收尾,下一轮 planFullRefund 会补上。
 	if isFullRefundOutcome(act.Outcome) {
 		var owed, planned int64
 		if err := gdb.WithContext(ctx).Model(&Entry{}).
-			Where("act_id = ? AND status IN ?", act.Id, []string{EntrySuccess, EntryRefunded}).
+			Where("act_id = ? AND status = ?", act.Id, EntrySuccess).
 			Count(&owed).Error; err != nil {
 			db.MarkFailure(err)
 			return
@@ -1155,8 +1134,8 @@ func auditFinishedChains(ctx context.Context, gdb *gorm.DB) {
 // 落表之后不会自愈、只能人工关闭,还会一直卡住这场活动的删除。假阳会把真阳淹掉,
 // 这正是本函数注释开头那句"不能把证据抹平"要防的事。
 //
-// 判据很便宜:这三个计数器只会被 reserveEntry(entry_seq / chain_head)与
-// markEntrySuccess(active_count / pool_quota)推大,而这两处都与条目写入同事务。
+// 判据很便宜:这三个计数器只会被报名事务(reserveEntry 推 entry_seq /
+// active_count / pool_quota,落票后写 chain_head)推大,而它与条目写入同事务。
 // 所以"读完聚合再读一次计数器,四个值一个不差"就等价于"这段窗口里没有任何
 // 条目落定",聚合与快照因此可比。不一致就整场跳过这一轮 —— 篡改是持久的,
 // 下一轮(或活动收尾之后的任何一轮)照样查得出来;读偏斜不是。

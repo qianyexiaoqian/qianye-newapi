@@ -1,6 +1,7 @@
 package groupmatrix
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -115,7 +116,8 @@ type userGroupRow struct {
 	// 而清单里完全可能引用一个已从倍率表消失的模型分组。早先这一列是在列轴循环
 	// 内侧回填的,于是那种行被画成「一个都没有」—— 运营读到的是"这一档人一个池子
 	// 都用不了",真实原因却是"授权指向了已消失的模型分组",两者的处置完全相反。
-	// 现在直接从来源 map 算,并由 matrixWarnings 给出那条【需要处理】的告警。
+	// 现在直接从来源 map 算,并由 matrixWarnings 在该行的 Warnings 里给出
+	// 那条【需要处理】的告警。
 	ModelGroups []string `json:"model_groups"`
 
 	UserCount int64 `json:"user_count"`
@@ -168,7 +170,31 @@ type userGroupRow struct {
 	// 所以不删、但必须**可见**:一条隐式规则不写在界面上,就等于没有规则。
 	// 要让某一档人连自己都不能选,唯一受支持的做法是给它设一份不含自己的可用清单。
 	SelfInserted bool `json:"self_inserted"`
+
+	// Warnings 是**只属于这一行**的待办(充值倍率 0、清单引用已消失的模型分组、
+	// 空分组令牌解析不到池子、范围不含自己…)。前端画成行上的图标 + 悬停详情,
+	// 不再进 matrixView.Warnings 那张长清单 —— 分组一多,长清单没人读。
+	//
+	// 每条带一个 **Code**:前端据此**按类型选不同图标**(一行可以并排多个),
+	// 而不是所有问题共用一个 ⚠。恒非 nil:JSON null 会让前端对着它调 .map 白屏。
+	Warnings []rowWarning `json:"warnings"`
 }
+
+// rowWarning 是行级待办的一条。Code 决定前端用哪个图标,Text 是悬停详情。
+type rowWarning struct {
+	Code string `json:"code"`
+	Text string `json:"text"`
+}
+
+// 行级待办的类型码。前端 row-warnings.tsx 的图标表按这些码取图标,
+// 两侧改一处必须同步改另一处。
+const (
+	WarnSelfExcluded      = "self_excluded"          // 设了范围但没包含自己
+	WarnTopupZero         = "topup_zero"             // 充值倍率非正
+	WarnEmptyTokenNoRoute = "empty_token_no_route"   // 空分组令牌解析不到渠道池
+	WarnDeprecatedGroup   = "deprecated_model_group" // 清单引用了已从倍率表消失的模型分组
+	WarnGrantNoChannel    = "grant_no_channel"       // 授权的模型分组没有启用渠道
+)
 
 // 行头三态。前端按它渲染,不自己推。
 const (
@@ -370,8 +396,10 @@ type matrixView struct {
 	Cells         []cellView      `json:"cells"`
 	BaseRatioHash string          `json:"base_ratio_hash"`
 	Snapshot      gin.H           `json:"snapshot"`
-	Warnings      []string        `json:"warnings"`
-	Partial       *savePartial    `json:"partial,omitempty"`
+	// Warnings 只装**跨行才成立**的问题(大小写近似)。只属于某一档的问题在
+	// userGroupRow.Warnings 上,由前端画成行上的 ⚠ 图标 —— 见 matrixWarnings。
+	Warnings []string     `json:"warnings"`
+	Partial  *savePartial `json:"partial,omitempty"`
 
 	// SupportsGrantNote 恒为 true:本版本认 set_note / clear_note 两个动作。
 	//
@@ -545,6 +573,14 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 		}
 	}
 
+	// 行级警告的判据数据:同名渠道池集合与空分组令牌分布,各一条冷路径查询。
+	// context.Background() 与 groupns 侧建组警告同口径 —— 这里拿不到请求上下文
+	// (buildMatrixView 也被保存后的强制回读复用)。
+	routedPools := groupns.RoutedModelGroupNames(context.Background())
+	emptyTokens, _ := groupns.EmptyGroupTokenCounts(context.Background(), model.DB, true)
+	globalWarnings, rowWarnings := matrixWarnings(userGroups, modelGroups, grants,
+		topupRatios, userRegistry, routedPools, emptyTokens)
+
 	policy := scopePolicy{
 		UnsetMeansAll:        true,
 		SubscriptionUnlockOn: PlanUnlockEnabled(),
@@ -602,6 +638,20 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 				row.ScopeState = ScopeStateSet
 			}
 			policy.ScopedGroups++
+		}
+		row.Warnings = rowWarnings[ug]
+		if row.Warnings == nil {
+			row.Warnings = make([]rowWarning, 0)
+		}
+		// 「范围不含自己」收到这一档自己的行上(项目方点名:真报错放到用户分组
+		// 名称旁提示即可,不再单开横幅)。它只在设过范围时可能为真,与 SelfExcluded
+		// 同一个谓词。放在最前:它是"有意还是手滑"的问题,比倍率/令牌那些更该先看。
+		if row.SelfExcluded {
+			row.Warnings = append([]rowWarning{{
+				Code: WarnSelfExcluded,
+				Text: "设了可用范围但没把自己包含进去 —— 空分组令牌仍按属主分组正常路由," +
+					"只是没法把令牌显式指定到与自己同名的模型分组。有意的话可忽略。",
+			}}, row.Warnings...)
 		}
 		rows = append(rows, row)
 	}
@@ -703,7 +753,7 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 	return &matrixView{
 		UserGroups: rows, ModelGroups: modelGroups, Cells: cells,
 		BaseRatioHash: baseHash, Snapshot: snapInfo,
-		Warnings:          matrixWarnings(userGroups, modelGroups, grants, topupRatios),
+		Warnings:          globalWarnings,
 		ScopePolicy:       policy,
 		SupportsGrantNote: true,
 	}, nil
@@ -1011,9 +1061,19 @@ func groupsWithEnabledAbilities() map[string]bool {
 }
 
 // matrixWarnings 列出保存前应当被看见、但**不拦截**的问题。
+//
+// 返回两份:global 是**跨行才成立**的问题(大小写近似),进页面顶部的横幅;
+// perGroup 是只属于某一档用户分组的问题,由前端画成该行上的 ⚠ 图标 + 悬停详情。
+// 早先全部塞进一张长清单 —— 分组一多横幅变成一堵墙,项目方点名改成行上图标。
 func matrixWarnings(userGroups []string, modelGroups []modelGroupRow,
-	grants map[string]map[string]struct{}, topupRatios map[string]float64) []string {
-	warns := make([]string, 0)
+	grants map[string]map[string]struct{}, topupRatios map[string]float64,
+	registry map[string]groupns.UserGroup, routedPools map[string]bool,
+	emptyTokens map[string]int64) (global []string, perGroup map[string][]rowWarning) {
+	global = make([]string, 0)
+	perGroup = map[string][]rowWarning{}
+	add := func(ug, code, text string) {
+		perGroup[ug] = append(perGroup[ug], rowWarning{Code: code, Text: text})
+	}
 
 	// 存量充值倍率 0。写侧本轮起拒绝它,但库里可能已经有 ——
 	// 它既不免费也不按 0 收,支付路径会把它抬回 1(见 effectiveTopupRatio)。
@@ -1023,46 +1083,88 @@ func matrixWarnings(userGroups []string, modelGroups []modelGroupRow,
 		if !ok || v > 0 {
 			continue
 		}
-		warns = append(warns, fmt.Sprintf(
-			"【需要处理】用户分组 %q 的充值倍率是 %s,而支付路径会把非正的充值倍率抬回 1 收款 —— "+
-				"它既不是免费也不是打折。请在这一档的编辑弹窗里改成一个大于 0 的数,或清空它(清空 = 按 1 收款)",
-			ug, ratioText(v)))
+		add(ug, WarnTopupZero, fmt.Sprintf(
+			"充值倍率配的是 %s,但支付路径会把非正值按 1 收款 —— 它既不免费也不打折。"+
+				"请在编辑弹窗改成大于 0 的数,或清空(= 按 1 收款)", ratioText(v)))
 	}
 
-	// 大小写近似项。**刻意不折叠**:倍率侧 GetGroupGroupRatio 是精确 map 查找、
-	// 在 3 条计费路径里、我们无权改。折叠成员资格而不折叠倍率会造出
-	// 「users.group=VIP 命中 vip 的清单拿到访问权,倍率却回落兜底」——
-	// 管理端显示 0.3、实际按 1.0 扣、零告警。让人看见并自己决定,不替他折叠。
-	byLower := map[string][]string{}
+	// 空分组令牌解析不到渠道池。
+	//
+	// 机制:没选分组的令牌直接拿**用户分组名**当渠道分组去查 abilities(inherit),
+	// 或按登记表上的默认模型分组解析(pin)。两条路都可能断:inherit 断在
+	// 「没有同名渠道池」,pin 断在「配的那个分组已没有启用渠道」。
+	// 只在**此刻真的有空分组令牌**时才说:用户分组与模型分组分开命名之后,
+	// 「没有同名池子」对多数行恒真,不加计数闸会把整张表点亮成一片 ⚠。
 	for _, ug := range userGroups {
-		byLower[strings.ToLower(ug)] = append(byLower[strings.ToLower(ug)], "用户分组 "+ug)
+		cnt := emptyTokens[ug]
+		if cnt == 0 {
+			continue
+		}
+		reg, registered := registry[ug]
+		switch {
+		case registered && reg.DefaultMode == groupns.DefaultModeDeny:
+			// 显式 deny 是运营自己的决定:这些令牌会拿到一句明确的 403,不是事故。
+		case registered && reg.DefaultMode == groupns.DefaultModePin:
+			if !routedPools[reg.DefaultModelGroup] {
+				add(ug, WarnEmptyTokenNoRoute, fmt.Sprintf(
+					"配的默认模型分组 %q 已没有启用中的渠道,这一档的 %d 个空分组令牌请求会失败。"+
+						"请换一个有渠道的分组", reg.DefaultModelGroup, cnt))
+			}
+		default:
+			if !routedPools[ug] {
+				add(ug, WarnEmptyTokenNoRoute, fmt.Sprintf(
+					"有 %d 个空分组令牌(建令牌时没选分组):它们会拿用户分组名当渠道分组找池子,"+
+						"而 %q 名下没有渠道,请求会 503。在编辑弹窗配一个「默认模型分组」即可", cnt, ug))
+			}
+		}
+	}
+
+	// 大小写近似项。**只在拼写真的不同**(仅大小写有别,如 VIP / vip)时才报。
+	//
+	// ⚠ 两个轴上出现**完全同名**的项(用户分组 default 与模型分组 default)是本分支
+	// 的**常态** —— 用户分组与模型分组共用同一个命名空间,几十个分组两侧同名很正常,
+	// 页首图例已经解释过。早先这里按「轴前缀 + 名字」去重,于是同名跨轴被当成两个
+	// 不同项、每一对都报一句,把这条横幅刷成一屏(项目方点名的那一屏)。现在按
+	// **真实拼写**去重:同名跨轴折成一个拼写 = 不报;只有 VIP / vip 这种真·大小写
+	// 分歧才报,且全部折进**一句**。
+	//
+	// 不折叠成员资格的理由仍然成立(倍率侧 GetGroupGroupRatio 精确查找、我们无权改),
+	// 所以这仍然只是"说出来让人自己决定",不替他改。
+	byLower := map[string]map[string]struct{}{}
+	note := func(name string) {
+		lo := strings.ToLower(name)
+		if byLower[lo] == nil {
+			byLower[lo] = map[string]struct{}{}
+		}
+		byLower[lo][name] = struct{}{}
+	}
+	for _, ug := range userGroups {
+		note(ug)
 	}
 	for _, mg := range modelGroups {
-		byLower[strings.ToLower(mg.Name)] = append(byLower[strings.ToLower(mg.Name)], "模型分组 "+mg.Name)
+		note(mg.Name)
 	}
-	for _, names := range byLower {
-		if len(names) < 2 {
+	nearMiss := make([]string, 0)
+	for _, spellings := range byLower {
+		if len(spellings) < 2 {
+			// 只有一个拼写:要么这个名字只在一处出现,要么同名跨轴 —— 都不是分歧。
 			continue
 		}
-		distinct := map[string]struct{}{}
-		for _, n := range names {
-			distinct[n] = struct{}{}
-		}
-		if len(distinct) < 2 {
-			continue
-		}
-		sorted := make([]string, 0, len(distinct))
-		for n := range distinct {
+		sorted := make([]string, 0, len(spellings))
+		for n := range spellings {
 			sorted = append(sorted, n)
 		}
 		sort.Strings(sorted)
-		warns = append(warns, fmt.Sprintf(
-			"存在仅大小写不同的分组名:%s。系统按**精确匹配**处理,它们是不同的分组 —— "+
-				"不折叠是刻意的:倍率侧是精确查找且不可改,折叠成员资格会造出「界面 0.3、实际 1.0」",
-			strings.Join(sorted, " / ")))
+		nearMiss = append(nearMiss, strings.Join(sorted, " / "))
+	}
+	if len(nearMiss) > 0 {
+		sort.Strings(nearMiss)
+		global = append(global, fmt.Sprintf(
+			"存在仅大小写不同的分组名(系统精确匹配,视为不同分组):%s",
+			strings.Join(nearMiss, "；")))
 	}
 
-	// 授权了一个没有任何启用渠道的模型分组:选它等于什么都没给。
+	// 授权指向的问题,归到对应用户分组的行上。
 	hasChannels := map[string]bool{}
 	for _, mg := range modelGroups {
 		hasChannels[mg.Name] = mg.HasChannels
@@ -1073,28 +1175,39 @@ func matrixWarnings(userGroups []string, modelGroups []modelGroupRow,
 			//
 			// 这一条比"没有渠道"严重一档,而且是本页唯一能发现「运营删了一个仍被
 			// 引用的模型分组」的机制 —— 上游删除时不做任何引用检查。
-			// 后果不是少给权限:快照编译期会把它剔除,而矩阵页上那一格看起来是通的,
-			// 用户实际会被上游用「分组已被弃用」挡掉。写在前面单独成句,不与渠道警告合并。
+			// 后果不是少给权限:快照编译期会把它剔除,那一格看起来是通的,
+			// 用户实际会被上游用「分组已被弃用」挡掉。
 			if !ratio_setting.ContainsGroupRatio(mg) {
 				hint := ""
 				if near := groupratio.NearMiss(mg); near != "" {
-					hint = fmt.Sprintf(",倍率表里有一个仅大小写不同的 %q(分组倍率按精确匹配,二者是两个分组)", near)
+					hint = fmt.Sprintf(",倍率表里有一个仅大小写不同的 %q", near)
 				}
-				warns = append(warns, fmt.Sprintf(
-					"【需要处理】用户分组 %q 的清单里有一个已从分组倍率表消失的模型分组 %q%s —— "+
-						"该项已被快照剔除,「用户分组」页上那一格看起来是通的,用户实际会被上游的"+
-						"「分组已被弃用」挡掉。请把它从清单里撤掉,或把这个模型分组加回「模型分组定价」的分组表",
-					ug, mg, hint))
+				add(ug, WarnDeprecatedGroup, fmt.Sprintf(
+					"【需要处理】可用清单里的模型分组 %q 已从分组倍率表消失%s:那一格看起来是通的,"+
+						"用户实际会被「分组已被弃用」挡掉。把它从清单撤掉,或在「模型分组定价」加回",
+					mg, hint))
 				continue
 			}
 			if !hasChannels[mg] {
-				warns = append(warns, fmt.Sprintf(
-					"用户分组 %q 被授权的模型分组 %q 当前没有任何启用中的渠道,选它等于寸步难行", ug, mg))
+				add(ug, WarnGrantNoChannel, fmt.Sprintf(
+					"被授权的模型分组 %q 下没有任何启用中的渠道,选它必然 503", mg))
 			}
 		}
 	}
-	sort.Strings(warns)
-	return warns
+
+	sort.Strings(global)
+	// 行内多条时按 (Code, Text) 字典序稳定输出:grants 是 map,迭代顺序每次都不同,
+	// 不排的话同一行的图标与悬停详情每次刷新换一个顺序。
+	for ug := range perGroup {
+		ws := perGroup[ug]
+		sort.Slice(ws, func(i, j int) bool {
+			if ws[i].Code != ws[j].Code {
+				return ws[i].Code < ws[j].Code
+			}
+			return ws[i].Text < ws[j].Text
+		})
+	}
+	return global, perGroup
 }
 
 // ─────────────────────────── PUT /group-matrix ───────────────────────────
@@ -1772,9 +1885,22 @@ func tokenRepairReason(tk model.Token) (string, bool) {
 		return "(该分组已不在分组倍率表里)", true
 	}
 	var owner model.User
-	if err := model.DB.Select("`group`").Where("id = ?", tk.UserId).Take(&owner).Error; err != nil {
-		// 属主查不到本身就是异常态,按"可修"处理:这条令牌无论如何都用不了。
-		return "(属主账号已不存在)", true
+	// 按主键取整行,**不单独 Select group 列**:group 是保留字,手写它的方言引号
+	// (原先写死的反引号只对 MySQL/SQLite 成立,PostgreSQL 上不是标识符引号,会让这条
+	// 回查在 PG 上每次都语法出错)得不偿失 —— 这是修复接口的冷路径,只用 owner.Group,
+	// 让 GORM 查整行既跨方言安全、又不依赖 commonGroupCol 是否已初始化。
+	if err := model.DB.Where("id = ?", tk.UserId).Take(&owner).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 属主账号确实不存在:这条令牌无论如何都用不了,按"可修"处理
+			// (由既有 TestTokenRepairReasonTreatsMissingOwnerAsRepairable 钉住)。
+			return "(属主账号已不存在)", true
+		}
+		// 其它数据库错误(连接等)不能读成"可修复" —— 那会让一条特权写动作在判据
+		// 算不出来时默认放行(原先对任何 err 都返回可修复,叠加上面 PG 的语法错误,
+		// 会让整道「只修孤儿」闸门在 PG 部署上对每一条健康令牌都放行)。判据不可用时
+		// 拒绝修复,并记日志。
+		common.SysError("qianye/groupmatrix: 回查令牌属主分组失败,判据不可用,拒绝修复: " + err.Error())
+		return "(属主分组查询失败,判据暂不可用,未予修复)", false
 	}
 	if _, ok := service.GetUserUsableGroups(owner.Group)[tk.Group]; !ok {
 		return "(该分组不在属主 " + owner.Group + " 的可选清单里)", true

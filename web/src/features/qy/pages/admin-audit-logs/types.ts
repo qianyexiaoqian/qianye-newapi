@@ -103,19 +103,3 @@ export type QyRequestAudit = {
  * 保留期比资金审计更长，因此后端也把它单独放在 `qy_pii_audits`。
  * 后端刻意不下发 `user_agent`（模型上是 `json:"-"`）。
  */
-export type QyPiiAudit = {
-  id: number
-  /** 被访问的资源类型：`payee` 收款信息 / `proof` 打款凭证。 */
-  resource: string
-  resource_id: number
-  target_user_id: number
-  admin_id: number
-  admin_name: string
-  action: string
-  /** 本次真正解密出来的字段名，逗号分隔。 */
-  fields: string
-  /** 强制填写的访问事由 —— 没有事由就无法区分「正常核对」与「顺手看看」。 */
-  reason: string
-  ip: string
-  created_at: number
-}

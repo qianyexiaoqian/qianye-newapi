@@ -1,5 +1,7 @@
 package planentitlement
 
+import "unicode/utf8"
+
 // 余额使用范围。**行不存在 ≡ ScopeUniversal**(= 上游今天的行为),
 // 因此升级零变化、回退只需删行。默认值在 newPolicy 里给,不走 GORM default tag。
 const (
@@ -108,9 +110,17 @@ func newPolicy(planId int, scope, note string, operatorId int, now int64) *PlanB
 	}
 }
 
+// truncate 把字符串截到至多 max 字节,并**退回到最近的完整 rune 边界**。
+//
+// 不能裸 s[:max]:扩展库固定 MySQL(utf8mb4),切出半个多字节字符会被
+// "Incorrect string value" 整条拒掉,管理员看到的是指错方向的 500。退回到 rune
+// 边界后结果恒为合法 UTF-8;字节数 ≤ max ⇒ 字符数 ≤ max,也放得进 varchar(255)。
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
 	}
 	return s[:max]
 }

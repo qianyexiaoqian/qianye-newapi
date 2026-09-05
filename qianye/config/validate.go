@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/dsn"
@@ -16,18 +17,6 @@ const (
 	RecipientLookupID      = "id"
 	RecipientLookupIDEmail = "id_or_email"
 
-	WithdrawMethodQuota = "quota"
-	WithdrawMethodFiat  = "fiat"
-
-	// GlobalRateFiatCurrency 是「佣金法币折算回落到全站充值汇率」这一层
-	// **唯一可能产出的币种**。
-	//
-	// 汇率取自 operation_setting.USDExchangeRate,而上游对这个变量的定义是死的:
-	// controller/billing.go 与 logger/logger.go 都按 `cny := usd * USDExchangeRate`
-	// 用它,quota_display_type = CNY 那一支也是同一条式子。所以走到那一层时,
-	// 折出来的只能是人民币,不是"某种法币"。
-	GlobalRateFiatCurrency = "CNY"
-
 	InsufficientClamp    = "clamp"
 	InsufficientNegative = "negative"
 	InsufficientBan      = "ban"
@@ -38,59 +27,33 @@ const (
 	LogLevelInfo   = "info"
 )
 
-// maxBps 是万分比的上限(100%)。仍被 transfer / withdraw / violation 使用。
+// maxBps 是万分比的上限(100%)。被 transfer / commission / violation 使用。
 const maxBps = 10000
 
-// maxPreviewLogDays 是影响面预览回看日志的硬上界,理由与 reconcile 的
-// maxReconcileDays 相同:一次超长回看会在日志库上跑出一条没有上界的聚合查询。
-const maxPreviewLogDays = 31
-
-// MinAuditRetentionDays 是 audit.retention_days 允许的最小**非零**取值。
-//
-// # 下限的依据
-//
-// qy_audit_logs 是这套资金系统事后仲裁的唯一凭据(见 qianye/model/audit_log.go):
-// 划转、佣金、提现、违规扣费的每一次判定都只在这里留痕。删掉一行,就再也无法回答
-// "这笔钱当时为什么这么算、谁批的"。下限由两条外部时限中更长的那条决定:
-//
-//   - 资金纠纷与拒付:各卡组织与支付渠道的拒付(chargeback)受理窗口普遍延伸到
-//     180 天,争议一旦进入仲裁还要再往后拖数周;
-//   - 税务与审计留存:按**年**计,一个完整会计年度是可用的最小粒度。
-//
-// 取二者上界并进到一个完整年度 = 365 天。低于它的取值不是"省点磁盘",
-// 是把仲裁凭据删在争议窗口还没关上的时候。
-//
-// # 为什么是拒绝启动而不是静默夹到下限
-//
-// 静默夹取会让运维以为自己配的是 7 天、实际跑的是 365 天 —— 那正是本扩展反复
-// 栽跟头的"以为改了其实没改"。配置写错就该在启动那一刻炸,而不是留一个
-// 与运维认知不符的实际行为。
-const MinAuditRetentionDays = 365
-
-// 返佣比例的对外单位是**百分比**,内部单位是"百分比 × 100"的整数。
+// 计佣比例的对外单位是**百分比**,内部单位是万分比整数(百分比 × 100)。
 //
 // 为什么是两套单位:百分比给人看(运营说的是"返 10.25%",不是"返 1025 个万分之一"),
 // 整数给机器算(资金参数不允许出现浮点误差)。两位小数的精度需求恰好落在
-// ×100 上,换算全程只做整数与 decimal 运算。
+// ×100 上,换算全程只做整数与 decimal 运算。YAML 里直接写万分比整数
+// (commission.*_rate_bps),管理端与 qy_settings 走百分比字符串,两者同尺度。
 const (
 	// RatePercentScale 是百分比 → 内部整数的倍率。两位小数 ⇒ 100。
 	RatePercentScale = 100
-	// MaxRatePercent 是费率上限:返佣不可能超过收入本身。
+	// MaxRatePercent 是费率上限:计佣不可能超过收入本身。
 	MaxRatePercent = 100
-	// MaxRateUnits 是内部整数的上限(100% × 100)。
+	// MaxRateUnits 是内部整数的上限(100% × 100),与 maxBps 同值。
 	MaxRateUnits = MaxRatePercent * RatePercentScale
 )
 
-// RatePercentUnits 把对外的百分比字符串换算成内部整数(百分比 × 100)。
+// RatePercentUnits 把对外的百分比字符串换算成内部整数(百分比 × 100 = 万分比)。
 //
 // 全程走 decimal,一次都不经过 float64:10.25 在二进制浮点里不可精确表示,
-// 而这个数字决定平台要为每一笔消费付出多少钱。
+// 而这个数字决定平台要为每一笔消费付出多少。
 //
 // 超过两位小数一律拒绝,不做四舍五入。静默把 10.005 变成 10.01 是一次
 // 没有人签字的加薪 —— 资金参数宁可让人重新填一遍,也不能替他猜。
 //
-// 返回的 error 不带字段名,由调用方补上("commission.topup_rate_percent " + err),
-// 这样同一段换算能服务 YAML、管理端接口和分组费率三处。
+// 返回的 error 不带字段名,由调用方补上,这样同一段换算能服务管理端接口和分组费率。
 func RatePercentUnits(raw string) (int, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -121,6 +84,32 @@ func FormatRatePercent(units int) string {
 		Div(decimal.NewFromInt(RatePercentScale)).String()
 }
 
+// maxPreviewLogDays 是影响面预览回看日志的硬上界,理由与 reconcile 的
+// maxReconcileDays 相同:一次超长回看会在日志库上跑出一条没有上界的聚合查询。
+const maxPreviewLogDays = 31
+
+// MinAuditRetentionDays 是 audit.retention_days 允许的最小**非零**取值。
+//
+// # 下限的依据
+//
+// qy_audit_logs 是这套资金系统事后仲裁的唯一凭据(见 qianye/model/audit_log.go):
+// 划转、佣金、提现、违规扣费的每一次判定都只在这里留痕。删掉一行,就再也无法回答
+// "这笔钱当时为什么这么算、谁批的"。下限由两条外部时限中更长的那条决定:
+//
+//   - 资金纠纷与拒付:各卡组织与支付渠道的拒付(chargeback)受理窗口普遍延伸到
+//     180 天,争议一旦进入仲裁还要再往后拖数周;
+//   - 税务与审计留存:按**年**计,一个完整会计年度是可用的最小粒度。
+//
+// 取二者上界并进到一个完整年度 = 365 天。低于它的取值不是"省点磁盘",
+// 是把仲裁凭据删在争议窗口还没关上的时候。
+//
+// # 为什么是拒绝启动而不是静默夹到下限
+//
+// 静默夹取会让运维以为自己配的是 7 天、实际跑的是 365 天 —— 那正是本扩展反复
+// 栽跟头的"以为改了其实没改"。配置写错就该在启动那一刻炸,而不是留一个
+// 与运维认知不符的实际行为。
+const MinAuditRetentionDays = 365
+
 // validate 在加载后校验配置自洽性。
 //
 // 校验失败一律返回 error 让主程序 FatalLog:配置写错就该在启动时炸,
@@ -146,10 +135,10 @@ func validate(c *Config) error {
 	if err := ValidateTransfer(&c.Transfer); err != nil {
 		return err
 	}
-	if err := validateCommission(&c.Commission); err != nil {
+	if err := validateInvite(&c.Invite); err != nil {
 		return err
 	}
-	if err := validateWithdraw(&c.Withdraw); err != nil {
+	if err := validateCommission(&c.Commission, c.Stardust.Enabled); err != nil {
 		return err
 	}
 	if err := validateTicket(&c.Ticket); err != nil {
@@ -170,7 +159,120 @@ func validate(c *Config) error {
 	if err := validatePlanEntitlement(&c.PlanEntitlement); err != nil {
 		return err
 	}
-	return validateLottery(&c.Lottery)
+	if err := validateLottery(&c.Lottery); err != nil {
+		return err
+	}
+	if err := validateStardust(&c.Stardust); err != nil {
+		return err
+	}
+	return validateMall(&c.Mall)
+}
+
+// maxStardustBps 是消费返 / 邀请返比例的上界:1000:1(每 1 美元等值返 1000 星屑)。
+// 再往上没有任何合理用途,而一个多写的零在这里是"全站消费返十倍"。
+const maxStardustBps = 10_000_000
+
+// validateStardust 校验星屑的运行参数。
+//
+// 星屑不是钱,但它能经商城换成套餐 / 卡密 / 实物,所以比例与手调上限的越界
+// 一律拒绝启动,而不是夹住。
+func validateStardust(s *Stardust) error {
+	if !s.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(s.Name) == "" {
+		return fmt.Errorf("qianye: stardust.name 不能为空白")
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(s.Name)) > 16 {
+		return fmt.Errorf("qianye: stardust.name 不能超过 16 个字符")
+	}
+	// 刻度是额度数,与其余额度类字段同源:越界等于一道永不触发的换算。
+	if err := checkQuotaCap("stardust.quota_per_unit", s.QuotaPerUnit); err != nil {
+		return err
+	}
+	for _, item := range []struct {
+		name  string
+		value int
+	}{
+		{"stardust.consume_bps", s.ConsumeBps},
+		{"stardust.invite_topup_bps", s.InviteTopupBps},
+		{"stardust.invite_redeem_bps", s.InviteRedeemBps},
+		{"stardust.invite_consume_bps", s.InviteConsumeBps},
+	} {
+		if item.value < 0 || item.value > maxStardustBps {
+			return fmt.Errorf("qianye: %s 必须落在 [0, %d](万分比;10000 = 每 1 美元等值 1 星屑),收到 %d",
+				item.name, maxStardustBps, item.value)
+		}
+	}
+	// 两个星屑数量的上界与额度类字段同一条算术上界(星屑面值比额度小五个数量级,
+	// 沿用 common.MaxQuota 不需要重做推导);名字不含 quota 不代表不受它约束。
+	if err := checkQuotaCap("stardust.invite_register_stardust", s.InviteRegisterStardust); err != nil {
+		return err
+	}
+	if err := checkQuotaCap("stardust.max_manual_adjust", s.MaxManualAdjust); err != nil {
+		return err
+	}
+	if s.SettleDelayMinutes < 0 || s.SettleDelayMinutes > 12*60 {
+		return fmt.Errorf("qianye: stardust.settle_delay_minutes 必须落在 [0, 720],收到 %d", s.SettleDelayMinutes)
+	}
+	if s.SettleIntervalSeconds <= 0 {
+		return fmt.Errorf("qianye: stardust.settle_interval_seconds 必须大于 0")
+	}
+	if s.HeldAlertDays < 0 {
+		return fmt.Errorf("qianye: stardust.held_alert_days 不能为负(0 = 不告警)")
+	}
+	if s.TopupScanIntervalSeconds <= 0 {
+		return fmt.Errorf("qianye: stardust.topup_scan_interval_seconds 必须大于 0")
+	}
+	return nil
+}
+
+// validateMall 校验星屑商城的运行参数。
+//
+// secret_key 与 lottery.prize_secret_key 同一档纪律:开着商城就必须有这把钥匙,
+// 预存的兑换码库存与收货地址不允许明文落库。
+func validateMall(m *Mall) error {
+	if !m.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(m.SecretKey) == "" {
+		return fmt.Errorf("qianye: mall.secret_key 不能为空 —— " +
+			"商城库存里存的是发给用户的**实际兑换码**与实物订单的收货地址,不允许明文落库。\n" +
+			"    用 `openssl rand -base64 32` 生成一串填进去,再重启;\n" +
+			"    暂时不想用商城就把 mall.enabled 置 false。")
+	}
+	if err := checkAESKey("mall.secret_key", m.SecretKey); err != nil {
+		return err
+	}
+	if m.SecretKeyVersion < 0 {
+		return fmt.Errorf("qianye: mall.secret_key_version 不得为负")
+	}
+	for version, raw := range m.SecretKeysRetired {
+		if version <= 0 {
+			return fmt.Errorf("qianye: mall.secret_keys_retired 的版本号必须大于 0,收到 %d", version)
+		}
+		if version == m.ActiveSecretKeyVersion() {
+			return fmt.Errorf("qianye: mall.secret_keys_retired 不得包含当前启用的版本 %d"+
+				"(轮换时旧钥搬进退役表的同时必须把 secret_key_version 抬到更大的数)", version)
+		}
+		if err := checkAESKey(fmt.Sprintf("mall.secret_keys_retired[%d]", version), raw); err != nil {
+			return err
+		}
+	}
+	if m.AddressRetentionDays < 30 {
+		return fmt.Errorf("qianye: mall.address_retention_days 不得小于 30(收货地址在发货争议期内必须可查),收到 %d",
+			m.AddressRetentionDays)
+	}
+	if m.MaxProducts <= 0 || m.MaxProducts > 10_000 {
+		return fmt.Errorf("qianye: mall.max_products 必须落在 [1, 10000],收到 %d", m.MaxProducts)
+	}
+	if m.CodeUploadMax <= 0 || m.CodeUploadMax > 5_000 {
+		return fmt.Errorf("qianye: mall.code_upload_max 必须落在 [1, 5000],收到 %d", m.CodeUploadMax)
+	}
+	if m.PendingGraceSeconds <= 0 {
+		return fmt.Errorf("qianye: mall.pending_grace_seconds 必须大于 0")
+	}
+	return nil
 }
 
 // validateLottery 校验娱乐功能的运行参数。
@@ -190,25 +292,25 @@ func validateLottery(l *Lottery) error {
 			"名单哈希必须先于种子公开,否则公正性无法被第三方举证")
 	}
 	// 三个额度上限的 0 一律是"不限制",所以这里只拒负数。
-	// "派奖是净增发"这件事现在由 large_prize_alert_quota 的二次确认盯着,
+	// "派奖是净增发"这件事现在由 large_prize_alert_stardust 的二次确认盯着,
 	// 而不是由一道谁都能调大的硬拒绝盯着(见 qianye/modules/lottery/caps.go)。
-	if l.MaxTotalPrizeQuota < 0 || l.MaxStakeQuota < 0 || l.LargePrizeAlertQuota < 0 {
-		return fmt.Errorf("qianye: lottery.max_total_prize_quota / max_stake_quota / " +
-			"large_prize_alert_quota 不能为负(0 = 不限制)")
+	if l.MaxTotalPrizeStardust < 0 || l.MaxStakeStardust < 0 || l.LargePrizeAlertStardust < 0 {
+		return fmt.Errorf("qianye: lottery.max_total_prize_stardust / max_stake_stardust / " +
+			"large_prize_alert_stardust 不能为负(0 = 不限制)")
 	}
-	// 上界与其余额度类字段同源。这四项此前只判了负数(pay_password_threshold_quota
-	// 连负数都不判),于是一份把 max_stake_quota 配成 MaxInt64 的 YAML 能干净启动,
+	// 上界与其余额度类字段同源。这四项此前只判了负数(pay_password_threshold_stardust
+	// 连负数都不判),于是一份把 max_stake_stardust 配成 MaxInt64 的 YAML 能干净启动,
 	// 再由 entry.go 的 `amount > MaxQuota` 在每一次参与上报错;
-	// pay_password_threshold_quota 越界则表现为支付密码**永不触发**,那是安全弱化
+	// pay_password_threshold_stardust 越界则表现为支付密码**永不触发**,那是安全弱化
 	// 而不是报错,更不该等到出事才发现。0 仍然是"不限制/不启用",所以只卡上界。
 	for _, item := range []struct {
 		name  string
 		value int64
 	}{
-		{name: "lottery.max_stake_quota", value: l.MaxStakeQuota},
-		{name: "lottery.max_total_prize_quota", value: l.MaxTotalPrizeQuota},
-		{name: "lottery.large_prize_alert_quota", value: l.LargePrizeAlertQuota},
-		{name: "lottery.pay_password_threshold_quota", value: l.PayPasswordThresholdQuota},
+		{name: "lottery.max_stake_stardust", value: l.MaxStakeStardust},
+		{name: "lottery.max_total_prize_stardust", value: l.MaxTotalPrizeStardust},
+		{name: "lottery.large_prize_alert_stardust", value: l.LargePrizeAlertStardust},
+		{name: "lottery.pay_password_threshold_stardust", value: l.PayPasswordThresholdStardust},
 	} {
 		if err := checkQuotaCap(item.name, item.value); err != nil {
 			return err
@@ -217,18 +319,32 @@ func validateLottery(l *Lottery) error {
 	// 阈值高过硬顶 = 一道**永远不会触发**的二次确认:超过阈值的活动在够到阈值
 	// 之前就已经被硬顶 400 掉了。这不是洁癖,是一道装上去却不通电的闸门,
 	// 而它是本模块唯一还在盯着"多写一个零"的东西。
-	if l.MaxTotalPrizeQuota > 0 && l.LargePrizeAlertQuota > l.MaxTotalPrizeQuota {
-		return fmt.Errorf("qianye: lottery.large_prize_alert_quota(%d)不得超过 "+
-			"max_total_prize_quota(%d)—— 否则这道二次确认永远触发不了",
-			l.LargePrizeAlertQuota, l.MaxTotalPrizeQuota)
+	if l.MaxTotalPrizeStardust > 0 && l.LargePrizeAlertStardust > l.MaxTotalPrizeStardust {
+		return fmt.Errorf("qianye: lottery.large_prize_alert_stardust(%d)不得超过 "+
+			"max_total_prize_stardust(%d)—— 否则这道二次确认永远触发不了",
+			l.LargePrizeAlertStardust, l.MaxTotalPrizeStardust)
 	}
-	// 兑换码密钥的形状必须在启动时就查:配错的表现是**已履行的文本奖全部读不出来**,
-	// 而那要等到管理员点开某一条 reveal 才会发现。为空是合法的(明文直存,
-	// 向后兼容,自检面板会把它标出来)。
-	if raw := strings.TrimSpace(l.PrizeSecretKey); raw != "" {
-		if key, err := base64.StdEncoding.DecodeString(raw); err != nil || len(key) != 32 {
-			return fmt.Errorf("qianye: lottery.prize_secret_key 必须是 base64 编码的 32 字节密钥")
-		}
+	// 兑换码密钥是**必填**,与 violation.ai_review_key 同一档纪律(见 config.go 的
+	// PrizeSecretKey 注释)。qy_lot_payout.secret_cipher 存的是发给中奖者的实际
+	// 兑换码,和收款账号、渠道 api_key 同级:允许它明文落库,等于让任何拿到库
+	// 备份、只读报表账号或离线 dump 的人直接读走 —— 而在线侧那一整套控制
+	// (json:"-" 不下发、列表只回掩码、reveal 强制事由 + 双写审计)对他们
+	// 一条都不起作用。
+	//
+	// 这一条会让"开着抽奖却没配密钥"的部署 FATAL 退出,是本 fork 记为 MAJOR 的
+	// 那处破坏性变更(qianye/version/baseline.txt v1.0.0)。因此错误文案必须
+	// 直接给出两条出路,而不是只说"不能为空"。
+	//
+	// 形状同样在启动时就查:配错的表现是**已履行的文本奖全部读不出来**,
+	// 而那要等到管理员点开某一条 reveal 才会发现。
+	if strings.TrimSpace(l.PrizeSecretKey) == "" {
+		return fmt.Errorf("qianye: lottery.prize_secret_key 不能为空 —— " +
+			"文本奖存的是发给中奖者的**实际兑换码**,与提现的收款账号同级,不允许明文落库。\n" +
+			"    用 `openssl rand -base64 32` 生成一串填进去,再重启;\n" +
+			"    暂时不想用娱乐功能就把 lottery.enabled 置 false。")
+	}
+	if err := checkAESKey("lottery.prize_secret_key", l.PrizeSecretKey); err != nil {
+		return err
 	}
 	if l.PrizeSecretKeyVersion < 0 {
 		return fmt.Errorf("qianye: lottery.prize_secret_key_version 不得为负")
@@ -237,8 +353,19 @@ func validateLottery(l *Lottery) error {
 		if version <= 0 {
 			return fmt.Errorf("qianye: lottery.prize_secret_keys_retired 的版本号必须大于 0,收到 %d", version)
 		}
-		if key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw)); err != nil || len(key) != 32 {
-			return fmt.Errorf("qianye: lottery.prize_secret_keys_retired[%d] 必须是 base64 编码的 32 字节密钥", version)
+		// 退役表里出现当前版本号 = 一次做了一半的轮换:运维把旧钥搬了进来,
+		// 却忘了给新钥抬版本号。此时新密文按 v_n 写入用的是新钥,而库里已有的
+		// v_n 行是旧钥封的 —— 后者从此永远解不开,并且没有任何迹象
+		// (prizeSecretKeyForVersion 先命中当前版本,退役表里的旧钥根本轮不到)。
+		// violation.ai_review_keys_retired 同样有这道检查。
+		if version == l.ActivePrizeSecretKeyVersion() {
+			return fmt.Errorf("qianye: lottery.prize_secret_keys_retired 不得包含当前启用的版本 %d"+
+				"(当前密钥只在 prize_secret_key 里配一份;两处并存意味着新密文用一把钥匙、"+
+				"而同版本的历史密文用另一把 —— 后者会永久不可读。轮换时旧钥搬进退役表的同时"+
+				"必须把 prize_secret_key_version 抬到更大的数)", version)
+		}
+		if err := checkAESKey(fmt.Sprintf("lottery.prize_secret_keys_retired[%d]", version), raw); err != nil {
+			return err
 		}
 	}
 	if l.MaxGuessFeeBps < 0 || l.MaxGuessFeeBps > maxBps {
@@ -655,7 +782,7 @@ func ValidateTransfer(t *Transfer) error {
 		return err
 	}
 	// MaxPerTxQuota == 0 表示不设单笔上限(validate.go 的 `cfg.MaxPerTxQuota > 0` 守卫),
-	// 此时 min > max 是空谈。与 withdraw.max_quota_per_order 同口径:少了这个前置,
+	// 此时 min > max 是空谈。少了这个前置,
 	// "只关掉单笔上限"这个合法意图会撞上一条本不适用的跨字段规则,直接起不来。
 	if t.MaxPerTxQuota > 0 && t.MinQuota > t.MaxPerTxQuota {
 		return fmt.Errorf("qianye: transfer.min_quota(%d) 不得大于 max_per_tx_quota(%d)",
@@ -679,162 +806,75 @@ func ValidateTransfer(t *Transfer) error {
 	return nil
 }
 
-func validateCommission(cm *Commission) error {
-	if err := checkRatePair(
-		"topup", cm.TopupRatePercent, cm.TopupRateBpsDeprecated); err != nil {
-		return err
-	}
-	if err := checkRatePair(
-		"consume", cm.ConsumeRatePercent, cm.ConsumeRateBpsDeprecated); err != nil {
-		return err
-	}
-	// 兑换码档刻意**不**走 checkRatePair:那里空串是错误(充值/消费两档必须
-	// 有值),而这里空串是唯一能表达"没单独配兑换码档,跟随充值档"的写法。
-	// 填了就必须是合法百分比 —— 写错的费率宁可开不起来,也不能带着一个
-	// 谁都没批准的数字给兑换码发钱。
-	if s := strings.TrimSpace(cm.RedemptionRatePercent); s != "" {
-		if _, err := RatePercentUnits(s); err != nil {
-			return fmt.Errorf("qianye: commission.redemption_rate_percent %w", err)
-		}
-	}
-	if cm.Levels != 1 {
-		return fmt.Errorf("qianye: commission.levels 当前仅支持 1 级,收到 %d", cm.Levels)
-	}
-	if err := checkQuotaCap("commission.min_settle_quota", cm.MinSettleQuota); err != nil {
-		return err
-	}
-	if err := checkQuotaCap("commission.max_per_order_quota", cm.MaxPerOrderQuota); err != nil {
-		return err
-	}
-	if cm.MinSettleQuota <= 0 {
-		return fmt.Errorf("qianye: commission.min_settle_quota 必须大于 0" +
-			"(佣金按 decimal 累计,达到该值才结算为整数 quota,否则小额佣金会被截断归零)")
-	}
+func validateInvite(iv *Invite) error {
 	// 日界偏移必须落在真实时区的范围里(UTC-12 .. UTC+14)。
-	// 越界的值不会报错、不会崩,只会让 bucket_date 与结算日界一起漂到一个
+	// 越界的值不会报错、不会崩,只会让星屑的日桶与日结日界一起漂到一个
 	// 不存在的时区上 —— 那是一次全站日聚合重新分桶,而没有任何东西会喊。
-	if cm.DayOffsetMinutes < -720 || cm.DayOffsetMinutes > 840 {
-		return fmt.Errorf("qianye: commission.day_offset_minutes 必须落在 -720..840"+
-			"(UTC-12 .. UTC+14),收到 %d", cm.DayOffsetMinutes)
+	// 不看 enabled:日界还被下线日消费报表与星屑日结用着,邀请关着它照样生效。
+	if iv.DayOffsetMinutes < -720 || iv.DayOffsetMinutes > 840 {
+		return fmt.Errorf("qianye: invite.day_offset_minutes 必须落在 -720..840"+
+			"(UTC-12 .. UTC+14),收到 %d", iv.DayOffsetMinutes)
+	}
+	if iv.InviterCacheSecs <= 0 {
+		return fmt.Errorf("qianye: invite.inviter_cache_seconds 必须大于 0,收到 %d", iv.InviterCacheSecs)
 	}
 	return nil
 }
 
-func validateWithdraw(w *Withdraw) error {
-	// 法币口径的自洽性必须在 enabled 之前提醒。
-	//
-	// 币种是 fiat_currency 这串自由文本,而金额来自佣金账本的 available_fiat ——
-	// 后者按三层折算比例累加:分组档 -> 兜底档 -> 全站充值汇率。最后一层是
-	// USD -> CNY(见 GlobalRateFiatCurrency),所以只要站点没配任何分组档/兜底档,
-	// 标成 CNY 以外的币种就是一次**静默的汇率错标**:数字看起来完全正常,
-	// 只有线下按单据币种打款的人会发现付错了。
-	//
-	// 为什么是告警,而不是像以前那样直接让站点起不来:配没配折算档写在扩展库的
-	// qy_commission_fiat_rate / qy_settings 里,运营在管理端随时可增删,配置加载
-	// 这一刻根本读不到。以前这条闸门之所以能是硬的,是因为当时提现单的金额由
-	// withdraw.rate_freeze_mode 自己那套汇率算出来,币种与那套汇率一一对应 ——
-	// 而那套独立计价正是"账面 850、单据 100"这个错价缺陷的根源,已经删除。
-	// 运行期真正看得见"走了哪一层 + 标的什么币种"的地方是计佣路径,
-	// commission.resolveFiatRate 在回落到全站汇率且币种不是 CNY 时按降级上报。
-	//
-	// 放在 enabled 之前,是因为佣金模块的 available_fiat 与用户端佣金页的
-	// 「折合法币」不看 withdraw.enabled:提现关掉了,那个数字照样在页面上。
-	if !strings.EqualFold(strings.TrimSpace(w.FiatCurrency), GlobalRateFiatCurrency) {
-		common.SysError(fmt.Sprintf("qianye: withdraw.fiat_currency = %q 不是 %s。\n"+
-			"    只有当每一个会拿到佣金的分组都配了法币折算档(或配了兜底档)时它才成立;\n"+
-			"    没配的那部分回落到全站充值汇率 USDExchangeRate(USD -> %s),\n"+
-			"    此时账本里攒的是人民币、标签写的却是 %s,线下打款的人会照着标签付错钱。",
-			w.FiatCurrency, GlobalRateFiatCurrency, GlobalRateFiatCurrency, w.FiatCurrency))
+// validateCommission 校验佣金段。
+//
+// 比例与门槛一律越界即拒绝启动,不夹住:这些数字决定平台要付出去多少额度,
+// 而一个被夹到边界的值与一个有人批准的值在账本上长得一模一样。
+func validateCommission(cm *Commission, stardustEnabled bool) error {
+	if err := checkBps("commission.topup_rate_bps", cm.TopupRateBps); err != nil {
+		return err
 	}
-	if !w.Enabled {
-		return nil
+	if err := checkBps("commission.consume_rate_bps", cm.ConsumeRateBps); err != nil {
+		return err
 	}
-	if len(w.Methods) == 0 {
-		return fmt.Errorf("qianye: withdraw.methods 不能为空")
-	}
-	for _, m := range w.Methods {
-		if m != WithdrawMethodQuota && m != WithdrawMethodFiat {
-			return fmt.Errorf("qianye: withdraw.methods 含非法取值 %q(可选 quota|fiat)", m)
-		}
-	}
-	// 收款信息属 PII,没有密钥就绝不允许开启法币提现 —— 明文落库不可接受。
-	//
-	// 这两条错误会让 config.Load() 失败 → main.go FatalLog → 【站点起不来】。
-	// 因此文案必须直接给出补救动作:运维往 methods 里加一个 "fiat" 就重启,
-	// 只看到"密钥不能为空"是猜不出还要生成两把、且必须是两把不同的钥匙的。
-	if w.HasWithdrawMethod(WithdrawMethodFiat) {
-		if err := checkAESKey("withdraw.pii_key", w.PIIKey); err != nil {
-			return fmt.Errorf("%w\n"+
-				"    withdraw.methods 里有 \"fiat\" 时,pii_key 与 digest_key 两项都是必填前置条件。\n"+
-				"    分别用 `openssl rand -base64 32` 生成两串【互不相同】的随机值填进去,再重启。", err)
-		}
-		if strings.TrimSpace(w.DigestKey) == "" {
-			return fmt.Errorf("qianye: withdraw.digest_key 不能为空" +
-				"(用于收款账号的风控指纹,必须独立于 pii_key 且不随其轮换)。\n" +
-				"    用 `openssl rand -base64 32` 另生成一串,不要与 pii_key 填同一个值 ——" +
-				"合成一把之后,pii_key 一轮换历史指纹就全部失效。")
-		}
-		if strings.TrimSpace(w.DigestKey) == strings.TrimSpace(w.PIIKey) {
-			return fmt.Errorf("qianye: withdraw.digest_key 不得与 pii_key 相同" +
-				"(pii_key 可轮换、digest_key 永不轮换,共用一个值意味着轮换那天" +
-				"跨账户风控指纹会全部作废,而那正是提现场景最有价值的风控信号)")
-		}
-	}
-	if w.PIIKeyVersion < 0 {
-		return fmt.Errorf("qianye: withdraw.pii_key_version 不能为负数,收到 %d", w.PIIKeyVersion)
-	}
-	// 历史密钥在这里就必须校验格式:等到解密某一行时才发现密钥是坏的,那一刻
-	// 队列里已经有一批打不了款的单据,而错误信息只会说"无法解密"。
-	for version, key := range w.PIIKeysRetired {
-		if version <= 0 {
-			return fmt.Errorf("qianye: withdraw.pii_keys_retired 的版本号必须大于 0,收到 %d", version)
-		}
-		if version == w.PIIKeyVersion {
-			return fmt.Errorf("qianye: withdraw.pii_keys_retired 不得包含当前启用的版本 %d"+
-				"(当前密钥只在 pii_key 里配一份,两处不一致会让新密文用一把钥匙、解密用另一把)", version)
-		}
-		if err := checkAESKey(fmt.Sprintf("withdraw.pii_keys_retired[%d]", version), key); err != nil {
+	// 兑换码档可空(nil = 跟随充值档);填了就必须合法。
+	if cm.RedemptionRateBps != nil {
+		if err := checkBps("commission.redemption_rate_bps", *cm.RedemptionRateBps); err != nil {
 			return err
 		}
 	}
-	if err := checkDecimal("withdraw.min_fiat_amount", w.MinFiatAmount); err != nil {
+	if cm.Levels != 1 {
+		return fmt.Errorf("qianye: commission.levels 当前仅支持 1 级,收到 %d"+
+			"(多级分销正是要规避的「拉人头」形状)", cm.Levels)
+	}
+	if err := checkQuotaCap("commission.min_settle_stardust", cm.MinSettleStardust); err != nil {
 		return err
 	}
-	if err := checkBps("withdraw.fiat_fee_bps", w.FiatFeeBps); err != nil {
+	if err := checkQuotaCap("commission.max_per_order_stardust", cm.MaxPerOrderStardust); err != nil {
 		return err
 	}
-	if err := checkQuotaCap("withdraw.min_quota", w.MinQuota); err != nil {
+	if err := checkQuotaCap("commission.min_credit_stardust", cm.MinCreditStardust); err != nil {
 		return err
 	}
-	if err := checkQuotaCap("withdraw.daily_max_quota", w.DailyMaxQuota); err != nil {
-		return err
+	if cm.MinSettleStardust <= 0 {
+		return fmt.Errorf("qianye: commission.min_settle_stardust 必须大于 0" +
+			"(佣金按 decimal 全精度累计,达到该值才结算为整数星屑,否则小额佣金会被截断归零)")
 	}
-	if err := checkQuotaCap("withdraw.max_quota_per_order", w.MaxQuotaPerOrder); err != nil {
-		return err
+	if cm.MinCreditStardust <= 0 {
+		return fmt.Errorf("qianye: commission.min_credit_stardust 必须大于 0" +
+			"(它是自动入账的起点,也是单次入账的下限)")
 	}
-	if w.MaxQuotaPerOrder > 0 && w.MinQuota > w.MaxQuotaPerOrder {
-		return fmt.Errorf("qianye: withdraw.min_quota(%d) 不得大于 max_quota_per_order(%d)",
-			w.MinQuota, w.MaxQuotaPerOrder)
+	// 佣金以星屑记账,而星屑账本(qy_sd_ledger)在 stardust 关掉时根本不存在 ——
+	// 计佣照跑、结算照跑,到自动入账那一步每一轮都失败,账本停在"可用"再也出不去。
+	// 这是启动期就能判死的配置错误,不该等到第一个人攒够门槛才暴露。
+	if cm.Enabled && !stardustEnabled {
+		return fmt.Errorf("qianye: commission.enabled=true 需要 stardust.enabled=true" +
+			"(D-16 之后佣金以星屑结算、自动入账进 qy_sd_balance;星屑关着时佣金无处可发)")
 	}
-	if w.RemarkMaxRunes <= 0 || w.RemarkMaxRunes > 2000 {
-		return fmt.Errorf("qianye: withdraw.remark_max_runes 必须在 1..2000 之间,收到 %d", w.RemarkMaxRunes)
+	// 持有期为负会让整天的佣金在**这一天刚开始**时就成熟,防套利延迟反向生效。
+	if cm.HoldingDays < 0 {
+		return fmt.Errorf("qianye: commission.holding_days 不能为负(0 = 当天结束即可结算),收到 %d", cm.HoldingDays)
 	}
-	// 凭证图片要整张读进内存才能校验魔数,上限必须有硬顶。
-	// 校验放在 fiat 之外:proof_max_bytes 配成 0 或天文数字都是配置错误,
-	// 不该等到某个站点某天打开 fiat 才第一次暴露出来。
-	if w.ProofMaxBytes <= 0 || w.ProofMaxBytes > MaxWithdrawProofBytes {
-		return fmt.Errorf("qianye: withdraw.proof_max_bytes 必须在 1..%d 字节之间,收到 %d"+
-			"(凭证需整张读进内存做魔数校验,不设硬顶等于把堆交给上传者)",
-			MaxWithdrawProofBytes, w.ProofMaxBytes)
-	}
+	// settle_interval_seconds / credit_interval_seconds 是节奏参数:0 由 module.go 回落成 300,
+	// 与其余"周期"类字段同一口径,不在这里拒绝。
 	return nil
 }
 
-// validateTicket 校验工单系统的防滥用参数。
-//
-// 只校验"0 会把功能变成另一种东西"的那几项。语义是"0 = 不限制"的
-// (max_open_per_user / daily_max_count / cooldown_seconds / auto_close_days)
-// 一律不在此列 —— 对它们报错等于禁止运维关掉一道闸。
 func validateTicket(t *Ticket) error {
 	if !t.Enabled {
 		return nil
@@ -957,42 +997,6 @@ func validateViolation(v *Violation) error {
 func checkBps(name string, v int) error {
 	if v < 0 || v > maxBps {
 		return fmt.Errorf("qianye: %s 必须在 0..%d 之间(万分比,5%% = 500),收到 %d", name, maxBps, v)
-	}
-	return nil
-}
-
-// checkRatePair 校验一对"新百分比字段 + 已废弃万分比字段"。
-//
-// 三步的顺序本身是有意义的:
-//
-//  1. 先按**旧字段自己的口径**校验。运维写的是 topup_rate_bps: 20000,
-//     错误信息就必须点名 topup_rate_bps,而不是它换算之后的百分比 ——
-//     否则报出来的字段名在配置文件里根本搜不到。
-//  2. 再校验新字段本身(格式、范围、小数位)。
-//  3. 最后比对两者。新旧字段同时存在且互相矛盾时直接拒绝启动:
-//     替运维挑一个生效值,正是本项目反复吃过亏的"以为改了其实没改"。
-//
-// 数值上 units 与 bps 恰好同尺度(百分比 × 100 = 万分之一),所以第 3 步
-// 可以直接比较,不需要再换算一次。
-func checkRatePair(kind, percent string, deprecatedBps *int) error {
-	percentKey := "commission." + kind + "_rate_percent"
-	bpsKey := "commission." + kind + "_rate_bps"
-
-	if deprecatedBps != nil {
-		if err := checkBps(bpsKey, *deprecatedBps); err != nil {
-			return err
-		}
-	}
-	units, err := RatePercentUnits(percent)
-	if err != nil {
-		return fmt.Errorf("qianye: %s %w", percentKey, err)
-	}
-	if deprecatedBps != nil && *deprecatedBps != units {
-		return fmt.Errorf(
-			"qianye: %s(%s)与已废弃的 %s(%d)同时存在且互相矛盾 —— "+
-				"请删掉 %s,只保留百分比写法(%d bps 等于 %s)",
-			percentKey, strings.TrimSpace(percent), bpsKey, *deprecatedBps,
-			bpsKey, *deprecatedBps, FormatRatePercent(*deprecatedBps))
 	}
 	return nil
 }

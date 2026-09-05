@@ -17,23 +17,25 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /*
- * 娱乐大厅拆成三张选择夹（抽奖 / 竞猜 / 双色球）之后的整页行为。
+ * 娱乐大厅拆成四张玩法选择夹（抽奖 / 竞猜 / 双色球 / 星屑转盘）之后的整页行为。
  *
  * 项目方原话：「把双色球和竞猜分开选择夹，抽奖-竞猜-双色球。
- * （每个入口都可以单独被隐藏或显示）」
+ * （每个入口都可以单独被隐藏或显示）」；2026-09-05 追加：「星屑转盘的页面移动
+ * 到抽奖竞猜里面去。」
  *
  * # 这里守的四件事，每一件都只在"真的挂起来"时才看得见
  *
- *  1. **玩法归类不串**。三张标签发的是三个不同的 `lane`，而 `lane` 的取值与
+ *  1. **玩法归类不串**。三张大厅标签发的是三个不同的 `lane`，而 `lane` 的取值与
  *     `kind` 长得一样却不同义（`lane='draw'` 排除双色球）。写回 `kind` 在两侧
  *     都编译得过、类型都对，后果是双色球标签里长出普通抽奖 —— 只有"发出去的
- *     那个请求"能说明问题，所以这里数请求、也读屏幕。
+ *     那个请求"能说明问题，所以这里数请求、也读屏幕。转盘那张不发 `lane`、
+ *     发 `draw_mode=wheel`（两者同给是 400）—— 同样只有请求能说明问题。
  *  2. **不可见的标签一个请求都不发**。只要有人给 `QyPageTabs` 加上
- *     `keepMounted`（Base UI 支持，而且"切回来不闪"看起来像个改进），四张标签
- *     会同时挂载 —— 一进页面就是三份大厅查询 + 一份我的参与。界面上没有任何
+ *     `keepMounted`（Base UI 支持，而且"切回来不闪"看起来像个改进），五张标签
+ *     会同时挂载 —— 一进页面就是四份列表查询 + 一份我的参与。界面上没有任何
  *     症状，只有服务器知道。
- *  3. **隐藏组合**。四个玩法开关 × 三张标签的合并口径：抽奖那张底下压着两种
- *     玩法，两种都关掉时它才消失；双色球与竞猜各自只压一种。反向的错法是
+ *  3. **隐藏组合**。五个玩法开关 × 四张标签的合并口径：抽奖那张底下压着两种
+ *     玩法，两种都关掉时它才消失；双色球、竞猜、转盘各自只压一种。反向的错法是
  *     "标签开着、底下两种玩法都关"——一张永远空的列表，而运营看到的是"已开启"。
  *  4. **已参与的人不受影响**。这是这一整条改动里唯一不能让步的一条：任何隐藏
  *     组合下，「我的参与」都必须还在、还能查到自己那一票、还能把文本奖领出来。
@@ -143,10 +145,11 @@ const reactTestGlobals = globalThis as typeof globalThis & {
 }
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
-/** 四张标签的中文标题。手写，不从 QY_PAGES 回读。 */
+/** 五张标签的中文标题。手写，不从 QY_PAGES 回读。 */
 const TAB_DRAW = '抽奖'
 const TAB_GUESS = '竞猜'
 const TAB_BALL = '双色球'
+const TAB_WHEEL = '星屑转盘'
 const TAB_RECORDS = '我的参与'
 
 const ALL_ON: QyLotPlays = {
@@ -154,23 +157,60 @@ const ALL_ON: QyLotPlays = {
   draw_prob: true,
   draw_rank: true,
   guess: true,
+  wheel: true,
 }
 
 /**
- * 三个 lane 各一场活动，标题互不相同。
+ * 三个 lane 与转盘各一场活动，标题互不相同。
  *
- * 桩**只按 `lane` 分流**：前端要是把参数名写错（或写回 `kind`），三张标签会
- * 一起落到 undefined 那一支上，屏幕上出现的东西立刻不对。
+ * 桩**只按 `lane` 分流**（转盘按 `draw_mode=wheel`）：前端要是把参数名写错
+ * （或写回 `kind`），几张标签会一起落到 undefined 那一支上，屏幕上出现的东西
+ * 立刻不对。
  */
 const BY_LANE: Record<string, { act_no: string; title: string }> = {
   ball: { act_no: 'H-ball', title: '第 7 期双色球' },
   draw: { act_no: 'H-draw', title: '一场普通抽奖' },
   guess: { act_no: 'H-guess', title: '一场竞猜' },
+  wheel: { act_no: 'H-wheel', title: '一场星屑转盘' },
 }
 
 function activityFor(lane: string) {
   const base = BY_LANE[lane]
   if (base == null) return []
+  if (lane === 'wheel') {
+    // 转盘卡片要画"各档剩余 / 初始"，读的是 `tiers`；其余字段与大厅卡同形。
+    return [
+      {
+        act_no: base.act_no,
+        active_count: 0,
+        close_at: 4_102_444_800,
+        currency: 'stardust',
+        draw_at: 4_102_444_801,
+        draw_mode: 'wheel',
+        kind: 'draw',
+        my_entry_count: 0,
+        open_at: 0,
+        outcome: '',
+        pool_quota: 0,
+        prize_total_quota: 500,
+        stake_quota: 100,
+        status: 'published',
+        tiers: [
+          {
+            amount_quota: 500,
+            count: 2,
+            name: '头奖',
+            prize_type: 'quota',
+            stock_left: 1,
+            tier: 1,
+            win_ppm: 300_000,
+          },
+          { name: '谢谢参与', prize_type: 'none', tier: 2, win_ppm: 700_000 },
+        ],
+        title: base.title,
+      },
+    ]
+  }
   return [
     {
       act_no: base.act_no,
@@ -248,7 +288,9 @@ api.defaults.adapter = async (config) => {
   if (url.startsWith(QY_API_PREFIX)) sent.push({ params, url })
   let data: unknown = {}
   if (url.includes('/lottery/activities')) {
-    const items = activityFor(String(params.lane ?? ''))
+    const items = activityFor(
+      params.draw_mode === 'wheel' ? 'wheel' : String(params.lane ?? '')
+    )
     data = { items, p: 1, page_size: 12, total: items.length }
   } else if (url.includes('/lottery/my-entries')) {
     data = { items: [MY_ENTRY], p: 1, page_size: 20, total: 1 }
@@ -264,11 +306,18 @@ api.defaults.adapter = async (config) => {
   }
 }
 
-/** 大厅列表请求带的 lane，按发出顺序。 */
+/**
+ * 列表请求带的 lane，按发出顺序。转盘那张不发 lane、发 `draw_mode=wheel`，
+ * 记成 `'wheel'`；两者同给（后端 400）记成 `'lane+wheel'`，好让断言当场红。
+ */
 function hallCalls(): string[] {
   return sent
     .filter((row) => row.url.includes('/lottery/activities'))
-    .map((row) => String(row.params.lane ?? '(none)'))
+    .map((row) => {
+      const wheel = row.params.draw_mode === 'wheel'
+      if (row.params.lane == null) return wheel ? 'wheel' : '(none)'
+      return wheel ? 'lane+wheel' : String(row.params.lane)
+    })
 }
 
 function calls(fragment: string): number {
@@ -382,13 +431,19 @@ async function mountHub(
   }
 }
 
-describe('娱乐大厅的四张标签', () => {
-  test('标签栏就是「抽奖-竞猜-双色球-我的参与」，顺序逐字对应项目方那句话', async () => {
+describe('娱乐大厅的五张标签', () => {
+  test('标签栏就是「抽奖-竞猜-双色球-星屑转盘-我的参与」，顺序逐字对应项目方那两句话', async () => {
     const hub = await mountHub(ALL_ON)
-    assert.deepEqual(hub.labels(), [TAB_DRAW, TAB_GUESS, TAB_BALL, TAB_RECORDS])
+    assert.deepEqual(hub.labels(), [
+      TAB_DRAW,
+      TAB_GUESS,
+      TAB_BALL,
+      TAB_WHEEL,
+      TAB_RECORDS,
+    ])
   })
 
-  test('一进页面只有第一张标签取数，另外三张一条请求都没发', async () => {
+  test('一进页面只有第一张标签取数，另外四张一条请求都没发', async () => {
     const hub = await mountHub(ALL_ON)
 
     assert.deepEqual(
@@ -451,6 +506,25 @@ describe('娱乐大厅的四张标签', () => {
     assert.ok(hub.text().includes('一场竞猜'))
   })
 
+  test('切到转盘：只发 draw_mode=wheel、不带 lane，屏幕只剩那一场转盘', async () => {
+    const hub = await mountHub(ALL_ON)
+    sent = []
+
+    await hub.click(TAB_WHEEL)
+
+    assert.deepEqual(
+      hallCalls(),
+      ['wheel'],
+      '转盘标签发的必须是 draw_mode=wheel 且不带 lane：两者同给是 400，只发 lane 会拿到普通抽奖'
+    )
+    // `/qy/wheel` 直达时重定向到的正是这个 hash（routes/_authenticated/qy/wheel）。
+    assert.equal(hub.router.state.location.hash, qyTabHash('/qy/wheel'))
+    const screen = hub.text()
+    assert.ok(screen.includes('一场星屑转盘'), '转盘那一场没渲染出来')
+    assert.ok(!screen.includes('一场普通抽奖'), '「转盘」标签里混进了普通抽奖')
+    assert.ok(!screen.includes('第 7 期双色球'), '「转盘」标签里混进了双色球')
+  })
+
   test('带 hash 打开（刷新 / 转发链接）直接落在那张标签上', async () => {
     const hub = await mountHub(ALL_ON, {
       hash: '#' + qyTabHash('/qy/lottery-ball'),
@@ -483,9 +557,9 @@ describe('娱乐大厅的四张标签', () => {
 /**
  * 隐藏组合矩阵。
  *
- * 四个玩法开关 → 三张标签。抽奖那张底下压着两种玩法，所以"抽奖底下两个玩法
- * 都关"必须单列一行：那正是"标签的可见性由它底下至少一个玩法可见决定"这条
- * 口径唯一会出错的地方。
+ * 五个玩法开关 → 四张玩法标签。抽奖那张底下压着两种玩法，所以"抽奖底下两个
+ * 玩法都关"必须单列一行：那正是"标签的可见性由它底下至少一个玩法可见决定"
+ * 这条口径唯一会出错的地方。转盘并入之后多两行：只关转盘、只留转盘。
  */
 const HIDDEN_CASES: {
   firstLane: string | null
@@ -495,33 +569,39 @@ const HIDDEN_CASES: {
 }[] = [
   {
     firstLane: 'draw',
-    name: '四个玩法全开：三张大厅都在',
+    name: '五个玩法全开：四张玩法标签都在',
     plays: ALL_ON,
-    tabs: [TAB_DRAW, TAB_GUESS, TAB_BALL, TAB_RECORDS],
+    tabs: [TAB_DRAW, TAB_GUESS, TAB_BALL, TAB_WHEEL, TAB_RECORDS],
   },
   {
     firstLane: 'draw',
-    name: '只关双色球：那张标签消失，另外两张不受影响',
+    name: '只关双色球：那张标签消失，另外三张不受影响',
     plays: { ...ALL_ON, draw_ball: false },
-    tabs: [TAB_DRAW, TAB_GUESS, TAB_RECORDS],
+    tabs: [TAB_DRAW, TAB_GUESS, TAB_WHEEL, TAB_RECORDS],
   },
   {
     firstLane: 'draw',
     name: '只关竞猜',
     plays: { ...ALL_ON, guess: false },
-    tabs: [TAB_DRAW, TAB_BALL, TAB_RECORDS],
+    tabs: [TAB_DRAW, TAB_BALL, TAB_WHEEL, TAB_RECORDS],
+  },
+  {
+    firstLane: 'draw',
+    name: '只关转盘：那张标签消失，三张大厅与「我的参与」不受影响',
+    plays: { ...ALL_ON, wheel: false },
+    tabs: [TAB_DRAW, TAB_GUESS, TAB_BALL, TAB_RECORDS],
   },
   {
     firstLane: 'guess',
-    name: '抽奖底下两个玩法都关：抽奖标签消失，双色球与竞猜还在',
+    name: '抽奖底下两个玩法都关：抽奖标签消失，双色球、竞猜、转盘还在',
     plays: { ...ALL_ON, draw_prob: false, draw_rank: false },
-    tabs: [TAB_GUESS, TAB_BALL, TAB_RECORDS],
+    tabs: [TAB_GUESS, TAB_BALL, TAB_WHEEL, TAB_RECORDS],
   },
   {
     firstLane: 'draw',
     name: '抽奖底下只关掉一种：那张标签仍然在',
     plays: { ...ALL_ON, draw_rank: false },
-    tabs: [TAB_DRAW, TAB_GUESS, TAB_BALL, TAB_RECORDS],
+    tabs: [TAB_DRAW, TAB_GUESS, TAB_BALL, TAB_WHEEL, TAB_RECORDS],
   },
   {
     firstLane: 'ball',
@@ -531,17 +611,33 @@ const HIDDEN_CASES: {
       draw_prob: false,
       draw_rank: false,
       guess: false,
+      wheel: false,
     },
     tabs: [TAB_BALL, TAB_RECORDS],
   },
   {
-    firstLane: null,
-    name: '四个全关：三张大厅都不渲染，只剩「我的参与」',
+    // 转盘是这个选择夹的一张标签，只留它时整页就是转盘 + 我的参与，
+    // 而不是"没有大厅可看"。
+    firstLane: 'wheel',
+    name: '只留转盘',
     plays: {
       draw_ball: false,
       draw_prob: false,
       draw_rank: false,
       guess: false,
+      wheel: true,
+    },
+    tabs: [TAB_WHEEL, TAB_RECORDS],
+  },
+  {
+    firstLane: null,
+    name: '五个全关：四张玩法标签都不渲染，只剩「我的参与」',
+    plays: {
+      draw_ball: false,
+      draw_prob: false,
+      draw_rank: false,
+      guess: false,
+      wheel: false,
     },
     tabs: [TAB_RECORDS],
   },
@@ -580,7 +676,7 @@ describe('每个入口单独隐藏', () => {
  * 「我的参与」也跟着按标签过滤掉，等于把已经收了钱的活动连同用户的凭据一起
  * 藏起来，而界面上不会有任何一处报错 —— 用户只会看到一个少了一张标签的页面。
  *
- * 用例覆盖到"四个玩法全关"这一档：那时三张大厅标签一张都不渲染，而这张必须在。
+ * 用例覆盖到"五个玩法全关"这一档：那时四张玩法标签一张都不渲染，而这张必须在。
  * 那张票买的还是双色球（`draw_mode='ball'`），所以"双色球被关掉"这一档同时也
  * 在问：藏掉一个玩法会不会把那个玩法的历史票据一起藏走。
  */

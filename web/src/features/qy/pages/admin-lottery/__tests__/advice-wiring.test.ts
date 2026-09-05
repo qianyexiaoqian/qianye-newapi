@@ -159,8 +159,8 @@ describe('系列的发行上限：两道上限分开、而且都在提交之前�
         `${name} 的系统上界还在用账本口径印，照着填会被后端拒`
       )
       assert.ok(
-        text.includes('formatQyQuotaBound('),
-        `${name} 没有用边界值展示`
+        text.includes('formatSdWithUnit('),
+        `${name} 没有用星屑口径展示`
       )
     }
     // 推荐值同理，只是方向相反：印矮了会让照着填的人撞上界面自己的红字。
@@ -172,7 +172,7 @@ describe('系列的发行上限：两道上限分开、而且都在提交之前�
 
   test('物理上限的那个数来自后端下发，不是前端写死的常量', () => {
     assert.ok(
-      seriesPanel.includes('yaml_readonly.system_max_quota'),
+      seriesPanel.includes('yaml_readonly.system_max_stardust'),
       '系列面板没有读后端下发的物理上限'
     )
     // 2147483647 / 4294967294 一旦被抄进前端，后端某天改了口径而界面还在

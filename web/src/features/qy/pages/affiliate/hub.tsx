@@ -19,32 +19,31 @@ For commercial licensing, please contact support@quantumnous.com
 import { useTranslation } from 'react-i18next'
 
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
+import { QyCommissionRecordsBody } from '../commission-records'
 import { QyPageTabs } from '../components/qy-page-tabs'
+import { QyInviteRecordsBody } from '../invite-records'
 import { QyInviteesBody } from '../invitees'
-import { QyWithdrawBody } from '../withdraw'
-import { QyWithdrawalsBody } from '../withdrawals'
 import { QyAffiliateOverviewBody } from './index'
 
 /**
- * 「推广佣金」选择夹（需求 3）。
+ * 「我的推广」选择夹（D-15）：概览 / 下线 / 佣金明细 / 返星屑明细。
  *
- * 项目方原话：「提现申请移动到推广板块下面。推广佣金：选择夹，我的邀请概览、
- * 已邀请用户、佣金提现、佣金提现记录。」
+ * D-14 曾把这里收成三张（佣金账本与提现整体删除）；D-15 把佣金账本请回来，
+ * 记的是星辉、到期自动入账。第三张标签因此是佣金账本的逐笔与自动入账记录，
+ * 第四张仍是星屑流水里邀请类那五种 kind 的行。「提现」两张标签**不**回来。
  *
  * 四张标签的顺序与可见性来自 `lib/pages.ts` 的 `QY_TAB_GROUPS`，本文件只提供
- * 正文 —— 顺序若在两处各写一份，迟早出现"侧栏说有四张、页面上只有三张"。
- *
- * 提现相关的两张标签受 `features.withdraw` 控制（由 `QyPageTabs` 统一按
- * `isQyPageVisible` 过滤）：提现功能关掉时选择夹自动缩成两张，而不是留下两张
- * 点进去报 503 的空标签。
+ * 正文（`__tests__/qy-page-tabs.test.ts` 按源码扫这一条覆盖度）。佣金明细挂
+ * `features.commission`：佣金关掉时那一张自动消失，其余三张照旧。
+ * `QyPageTabs` 不 keepMounted：四张标签各打各的请求，只有当前这一张会取数。
  */
-export function QyCommissionHub() {
+export function QyInviteHub() {
   const { t } = useTranslation()
 
   return (
     <QySectionPageLayout>
       <QySectionPageLayout.Title>
-        {t('qy_nav_commission_hub')}
+        {t('qy_nav_invite_hub')}
       </QySectionPageLayout.Title>
       <QySectionPageLayout.Content>
         <QyPageTabs
@@ -52,8 +51,8 @@ export function QyCommissionHub() {
           bodies={{
             '/qy/affiliate': <QyAffiliateOverviewBody />,
             '/qy/invitees': <QyInviteesBody />,
-            '/qy/withdraw': <QyWithdrawBody />,
-            '/qy/withdrawals': <QyWithdrawalsBody />,
+            '/qy/commission-records': <QyCommissionRecordsBody />,
+            '/qy/invite-records': <QyInviteRecordsBody />,
           }}
         />
       </QySectionPageLayout.Content>

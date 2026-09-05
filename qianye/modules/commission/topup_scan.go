@@ -9,8 +9,9 @@ import (
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/modules/invite"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
-	"github.com/shopspring/decimal"
 	"gorm.io/gorm/clause"
 )
 
@@ -24,6 +25,11 @@ const topupSweepKey = "commission.topup_sweep_high_water"
 const (
 	topupScanBatch      = 500
 	topupScanMaxBatches = 20 // 单轮最多处理 10000 行,避免一次持锁太久
+	// topupScanIntervalSec / topupScanLookbackHours 固化在代码里:前者是扫描节奏,
+	// 后者是「窗口外的 pending 不再守候」的窗口,两者都不是运营口味,
+	// 与星屑侧的充值扫描同一取值。
+	topupScanIntervalSec   = 60
+	topupScanLookbackHours = 72
 	// topupSweepGrace 是迟付回收水位线的安全余量(秒)。
 	//
 	// 水位线永远停在"本轮开始时刻减去这个余量",宁可重扫也不越过:一笔订单可能
@@ -33,6 +39,9 @@ const (
 )
 
 // runTopupScan 扫描主库 top_ups 并为已成功的订单计佣。它由两趟组成。
+//
+// 充值订单是否该计佣、基数怎么算,两条口径都在 invite(ExcludedTopUp /
+// TopUpBaseQuota):它们绑死在支付渠道的字段语义上,星屑侧的充值返用的是同一份。
 //
 // 【前向低水位游标】top_ups 没有 updated_at 列,订单又先以 pending 插入、
 // 之后才转 success,所以任何"只往前走的 id 游标"都会漏单 —— 订单 100 还
@@ -65,7 +74,7 @@ func runTopupScan(ctx context.Context) {
 			return
 		}
 		var rows []model.TopUp
-		err := model.DB.Where("id > ?", low).Order("id asc").Limit(topupScanBatch).Find(&rows).Error
+		err := model.DB.WithContext(ctx).Where("id > ?", low).Order("id asc").Limit(topupScanBatch).Find(&rows).Error
 		if err != nil {
 			warnf("扫描 top_ups 失败: %v", err)
 			return
@@ -219,11 +228,7 @@ func sweepLateTopups(ctx context.Context, low int64) {
 }
 
 func lookbackStart() int64 {
-	hours := config.Get().Commission.TopupScanLookbackHours
-	if hours <= 0 {
-		hours = 72
-	}
-	return common.GetTimestamp() - int64(hours)*3600
+	return common.GetTimestamp() - int64(topupScanLookbackHours)*3600
 }
 
 // accrueTopUp 为一笔成功的充值订单计佣。幂等键是 trade_no,
@@ -233,85 +238,20 @@ func lookbackStart() int64 {
 // "口径排除"与"基数为零"不是失败,返回 nil,游标照常越过。
 func accrueTopUp(ctx context.Context, t *model.TopUp) error {
 	topupScanned.Add(1)
-	if excludedTopUp(t) {
+	// 充值计佣受支付合规门约束,与星屑侧的下线充值返同一道闸:合规条款没确认,
+	// 站点就不该为任何一笔付款分成。
+	if !operation_setting.IsPaymentComplianceConfirmed() {
 		return nil
 	}
-	baseQuota, money := topUpBaseQuota(t)
+	if invite.ExcludedTopUp(t, config.Get().Commission.ExcludeRedemptionAndManual) {
+		return nil
+	}
+	baseQuota, money := invite.TopUpBaseQuota(t)
 	if baseQuota <= 0 {
 		return nil
 	}
 	return accrueOneShot(ctx, t.UserId, baseQuota, money, SourceTopup,
 		topupIdemKey(t.TradeNo), t.TradeNo)
-}
-
-// excludedTopUp 判断这笔充值是否不该返佣。
-func excludedTopUp(t *model.TopUp) bool {
-	// 用余额支付产生的订单不能再返佣:那笔余额在充值进来时已经返过一次,
-	// 再返一次等于同一笔钱付两遍佣金。
-	if t.PaymentProvider == model.PaymentProviderBalance || t.PaymentMethod == model.PaymentMethodBalance {
-		return true
-	}
-	// 管理员补单认 complete_source。
-	//
-	// 旧判据是 payment_method == "manual",而全仓没有任何一条路径会把它写成
-	// 这个值:ManualCompleteTopUp 原样保留用户下单时选的支付方式,只把 "admin"
-	// 传给日志的 provider 形参,那个值不落 top_ups 表。于是"管理员补单不返佣"
-	// 这半个开关从来没生效过 —— 运营在配置注释里读到的是两条都堵上了,
-	// 实际上"让小号建单再补单"这条凭空造佣金的路一直开着。
-	// 反过来它还是个活着的误判:支付方式的 type 由管理端自由填写,
-	// 一旦有人把某个易支付通道命名成 manual,真实付款会被整批误杀。
-	if config.Get().Commission.ExcludeRedemptionAndManual && t.CompleteSource == model.TopUpCompleteSourceAdmin {
-		return true
-	}
-	return false
-}
-
-// topUpBaseQuota 按支付渠道推算到账额度。
-//
-// 各条充值路径的换算方式并不一致,统一按 Amount × QuotaPerUnit 会算错:
-//   - creem:Amount 本身就是额度,不再乘;
-//   - stripe 与订阅付费单(payment_provider 为空、Amount=0):按 Money 换算;
-//   - 其余(epay/waffo/...):Amount × QuotaPerUnit。
-func topUpBaseQuota(t *model.TopUp) (int64, decimal.Decimal) {
-	money := decimal.NewFromFloat(t.Money)
-	qpu := decimal.NewFromFloat(common.QuotaPerUnit)
-	switch t.PaymentProvider {
-	case model.PaymentProviderCreem:
-		return t.Amount, money
-	case model.PaymentProviderStripe:
-		return quotaFromDecimal(money.Mul(qpu)), money
-	case "":
-		// 空 provider 有两种来源,判据必须落在 **Amount** 上而不是 provider:
-		//   - 订阅付费单(upsertSubscriptionTopUpTx 硬编码 Amount=0)→ 按 Money;
-		//   - **payment_provider 列存在之前的历史 epay 订单**(Amount>0)→ 与
-		//     model.TopUp.CreditQuota 的 default 分支一样按 Amount × QuotaPerUnit。
-		//
-		// 原先把两者合并进 stripe 那一支(注释里写的前提是"Amount=0",代码却没查),
-		// 于是历史折扣订单(amount=10 / money=8)的计佣基数按 Money 算,与实际到账
-		// 额度差一个折扣率;开启过 operation_setting.Price ≠ 1 的站点差得更多。
-		// 这批老单仍可被管理员补单激活,补完就会被迟付回收捞进来按错口径计佣。
-		if t.Amount > 0 {
-			return quotaFromDecimal(decimal.NewFromInt(t.Amount).Mul(qpu)), money
-		}
-		return quotaFromDecimal(money.Mul(qpu)), money
-	default:
-		return quotaFromDecimal(decimal.NewFromInt(t.Amount).Mul(qpu)), money
-	}
-}
-
-// quotaFromDecimal 把换算结果转成整数额度。
-//
-// 走 common 的饱和转换而不是裸 IntPart():额度受 common.MaxQuota 约束,
-// 一个被篡改的订单金额不能变成负数额度,更不能成为负数佣金。
-func quotaFromDecimal(d decimal.Decimal) int64 {
-	v, clamp := common.QuotaFromDecimalChecked(d.Floor())
-	if clamp != nil {
-		warnf("充值基数换算触顶: %s", clamp.Error())
-	}
-	if v < 0 {
-		return 0
-	}
-	return int64(v)
 }
 
 // ───────────────────────── 游标读写 ─────────────────────────

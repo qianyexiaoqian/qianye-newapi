@@ -45,13 +45,10 @@ const HOST_SOURCES: Readonly<Record<string, string>> = {
   '/wallet': join(qyDir, 'pages', 'wallet-transfer', 'index.tsx'),
   '/qy/affiliate': join(qyDir, 'pages', 'affiliate', 'hub.tsx'),
   '/qy/lottery': join(qyDir, 'pages', 'lottery', 'hub.tsx'),
-  '/qy/admin/commission-records/users': join(
-    qyDir,
-    'pages',
-    'admin-commission-users',
-    'hub.tsx'
-  ),
+  '/qy/admin/invite': join(qyDir, 'pages', 'admin-invite', 'hub.tsx'),
   '/qy/admin/settlement': join(qyDir, 'pages', 'admin-settlement', 'hub.tsx'),
+  '/qy/stardust': join(qyDir, 'pages', 'stardust', 'hub.tsx'),
+  '/qy/mall': join(qyDir, 'pages', 'mall', 'hub.tsx'),
 }
 
 describe('选择夹的正文覆盖度', () => {

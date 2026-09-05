@@ -30,6 +30,7 @@ import {
   QY_TAB_GROUPS,
   isQyAdminPage,
   isQyPageHosted,
+  isQyPageVisible,
   qyEntryPages,
   qyTabHash,
   qyTabTarget,
@@ -57,8 +58,8 @@ const sidebarDataSource = readFileSync(
   'utf8'
 )
 
-const enKeys = en as Record<string, string>
-const zhKeys = zh as Record<string, string>
+const enKeys: Record<string, string> = en as Record<string, string>
+const zhKeys: Record<string, string> = zh as Record<string, string>
 
 /**
  * 并进上游「系统设置」抽屉的 6 页（需求 8）。
@@ -68,6 +69,8 @@ const zhKeys = zh as Record<string, string>
  * 改了会影响后续每一笔的进抽屉，审核/记录留在根侧栏。
  */
 const SETTINGS_URLS = [
+  // 佣金配置（D-15 恢复）：费率 / 分组档 / 持有期 / 自动入账参数。改一次影响之后
+  // 每一笔计佣与入账，与抽屉里那批配置同类；星屑侧的邀请返比例仍在星屑配置页。
   '/qy/admin/commission',
   '/qy/admin/transfer-config',
   '/qy/admin/transfer-group-rules',
@@ -94,23 +97,26 @@ const SETTINGS_URLS = [
   // 改一次影响之后**每一个**被限制的账号的首屏；另外两块（计数、可达面清单）
   // 是只读现状，不是每天要过的流水。
   '/qy/admin/restricted-accounts',
+  // 星屑配置（design-15）：货币名、消费返 / 邀请返费率、分组覆盖、套餐返。
+  // 改一次影响之后每一笔结算，与抽奖配置同一档。
+  '/qy/admin/stardust-config',
 ]
 
 /** 明确**留在根侧栏**的管理页。它们进了抽屉就是运营每天多点两下。 */
 const ROOT_ADMIN_URLS = [
-  // 「结算台」：日消费明细 / 佣金审核 / 提现审核三张标签的宿主。三张表都是
-  // 运营每天要过的流水，不是"改一次影响后续每一笔"的配置。
-  '/qy/admin/settlement',
-  '/qy/admin/commission-records',
-  // 用户佣金（一行一个用户）与它的两张标签（AFF 关系 / 佣金余额）同样是每天
-  // 要开的流水/台账，不是"改一次影响后续每一笔"的配置，所以留根侧栏。
-  '/qy/admin/commission-records/users',
-  '/qy/admin/commission-records/balances',
-  '/qy/admin/commission-records/relations',
+  // 「邀请管理」：邀请关系 / 下线日消费 / 日结明细三张标签的宿主（D-14 之前是
+  // 「结算台」与「用户佣金」两行）。三张表都是运营每天要过的流水 / 台账，
+  // 不是"改一次影响后续每一笔"的配置。
+  '/qy/admin/invite',
   // 日消费明细是运营每天要开的报表（"昨天谁消费了多少"），不是"改一次影响
   // 后续每一笔"的配置，所以留根侧栏。
   '/qy/admin/daily-consume',
-  '/qy/admin/withdrawals',
+  '/qy/admin/invite-accruals',
+  // 「结算台」（D-15 恢复）：日消费明细 / 佣金审核 / 佣金用户三张标签的宿主与
+  // 两个成员。全是每天要过的流水与台账。
+  '/qy/admin/settlement',
+  '/qy/admin/commission-records',
+  '/qy/admin/commission-users',
   '/qy/admin/transfer-records',
   '/qy/admin/fund-orders',
   '/qy/admin/violations',
@@ -119,6 +125,10 @@ const ROOT_ADMIN_URLS = [
   '/qy/admin/lottery',
   // 工单审核台是每天要开的流水页，不是"改一次影响后续每一笔"的配置。
   '/qy/admin/tickets',
+  // 星屑账本（余额 / 流水 / 日桶 / 手调）与商城管理（商品 / 订单 / 码库存）
+  // 都是每天要开的台账，留根侧栏（新组「星屑运营」）。
+  '/qy/admin/stardust',
+  '/qy/admin/mall',
 ]
 
 /**
@@ -128,29 +138,36 @@ const ROOT_ADMIN_URLS = [
  * 把三页搬错宿主也照样全绿。
  */
 const HOSTED_URLS = [
-  // 「结算台」的三张标签（项目方原话：「把日消费明细/佣金审核，提醒审核，
-  // 这些管理页面弄成选择夹，放在一个页面上。」）。三页都没有被删，只是不再
-  // 各占侧栏一行；旧地址保留成重定向。
+  // 「邀请管理」的后两张标签（D-14）：下线日消费 / 日结明细。旧的
+  // daily-consume 地址保留成重定向。
   '/qy/admin/daily-consume',
+  '/qy/admin/invite-accruals',
+  // 「结算台」的后两张标签（D-15）：佣金审核 / 佣金用户。第一张是宿主自己。
   '/qy/admin/commission-records',
-  '/qy/admin/withdrawals',
+  '/qy/admin/commission-users',
   '/qy/transfer',
   '/qy/transfer-logs',
   '/qy/pay-password',
+  // 「我的推广」的后三张标签：下线 / 佣金明细（D-15）/ 返星屑明细。提现两张
+  // 随提现模块永久删除，不回来。
   '/qy/invitees',
-  '/qy/withdraw',
-  '/qy/withdrawals',
+  '/qy/commission-records',
+  '/qy/invite-records',
   // 需求 2（抽奖轮）：竞猜与我的参与收进 `/qy/lottery` 的选择夹，侧栏只剩一行。
   // 本轮追加双色球（项目方原话：「把双色球和竞猜分开选择夹，抽奖-竞猜-双色球」）：
   // 它同样是选择夹成员，侧栏仍然只有一行。
   '/qy/lottery-guess',
   '/qy/lottery-ball',
   '/qy/lottery-records',
-  // 佣金收敛：AFF 关系与佣金余额收进 `/qy/admin/commission-records/users`
-  // 的选择夹。侧栏上的三个佣金入口因此收成两个 —— 「用户佣金」（按用户看）
-  // 与「计佣流水」（按流水看）。两页都没有被删，只是不再各占一行。
-  '/qy/admin/commission-records/relations',
-  '/qy/admin/commission-records/balances',
+  // 转盘（项目方 2026-09-05：「星屑转盘的页面移动到抽奖竞猜里面去」）：
+  // 它此前在「娱乐」组独占一行，现在是同一个选择夹的第四张标签，侧栏仍然只有
+  // 一行；旧地址保留成重定向。
+  '/qy/wheel',
+  // 星屑（design-15）：流水与待结算收进 `/qy/stardust`，我的订单收进 `/qy/mall`。
+  // 三张表各自回答同一件事的一个切面，拆成三行侧栏入口只会让人在三处各找一遍。
+  '/qy/stardust-ledger',
+  '/qy/stardust-accruals',
+  '/qy/mall-orders',
 ]
 
 describe('qy page table structure', () => {
@@ -167,6 +184,12 @@ describe('qy page table structure', () => {
       assert.ok(
         page.group != null,
         `${page.url} 没有落点：它既不在选择夹里，也不属于任何分组，等于整个前端到不了`
+      )
+      // 二级落点只在抽屉里有意义：根侧栏上没有「模型与路由」这一组，
+      // 标在别处就是一行永远不生效的死数据。
+      assert.ok(
+        page.settingsSection == null || page.group === QY_SETTINGS_GROUP,
+        `${page.url} 不在系统设置抽屉里，settingsSection=${page.settingsSection} 不会生效`
       )
     }
   })
@@ -236,97 +259,109 @@ describe('qy page table structure', () => {
 })
 
 describe('qy 选择夹（需求 2 / 3）', () => {
-  test('五个选择夹的成员逐项冻结', () => {
+  test('七个选择夹的成员逐项冻结', () => {
     assert.deepEqual(
       QY_TAB_GROUPS.map((group) => [group.host, [...group.pages]]),
       [
         ['/wallet', ['/qy/transfer', '/qy/transfer-logs', '/qy/pay-password']],
         [
+          // 「我的推广」（D-15）：概览 / 下线 / 佣金明细 / 返星屑明细。提现两张标签
+          // 随提现模块整体删除、不回来；佣金明细是星辉账本的逐笔与自动入账记录。
           '/qy/affiliate',
-          ['/qy/affiliate', '/qy/invitees', '/qy/withdraw', '/qy/withdrawals'],
-        ],
-        [
-          // 佣金管理三张表收进同一个宿主。判据是**主键**：这三张表的一行分别是
-          // 一个用户 / 一对邀请关系 / 一个用户的余额，主键都跟着人走；
-          // 「计佣流水」的一行是一笔计佣（`accrual_no`），它是账本本身，
-          // 所以留在自己那一行、不进这个选择夹。
-          '/qy/admin/commission-records/users',
           [
-            '/qy/admin/commission-records/users',
-            '/qy/admin/commission-records/relations',
-            '/qy/admin/commission-records/balances',
+            '/qy/affiliate',
+            '/qy/invitees',
+            '/qy/commission-records',
+            '/qy/invite-records',
           ],
         ],
         [
           // 项目方原话：「把双色球和竞猜分开选择夹，抽奖-竞猜-双色球。」
-          // 顺序逐字照抄那句话，「我的参与」压在最后 —— 它不是一种玩法，
-          // 是查票与领奖的地方。把双色球排到竞猜前面（"两种抽奖挨着"看起来
-          // 更整齐）就与项目方点名的顺序不符了。
+          // 顺序逐字照抄那句话；2026-09-05 追加「星屑转盘的页面移动到抽奖竞猜
+          // 里面去」，转盘接在双色球之后（它仍是一种玩法），「我的参与」压在
+          // 最后 —— 它不是一种玩法，是查票与领奖的地方。把双色球排到竞猜前面
+          // （"两种抽奖挨着"看起来更整齐）就与项目方点名的顺序不符了。
           '/qy/lottery',
           [
             '/qy/lottery',
             '/qy/lottery-guess',
             '/qy/lottery-ball',
+            '/qy/wheel',
             '/qy/lottery-records',
           ],
         ],
         [
-          // 「结算台」。顺序 = 钱在系统里流动的顺序，也是运营对账时的追问
-          // 顺序：谁花了多少 → 给上线记了多少 → 把钱付出去。反向盯的是
-          // "把最常点的佣金审核挪到第一张"：那会让不带 hash 的旧书签
-          // （运营存的多半是这一条）落到一张它没在找的表上。
-          '/qy/admin/settlement',
+          // 「邀请管理」（D-14）。顺序 = 运营对账时的追问顺序：谁邀请了谁 →
+          // 下线昨天花了多少 → 按邀请人分组档该返多少。它取代了「结算台」与
+          // 「用户佣金」两个选择夹。
+          '/qy/admin/invite',
           [
+            '/qy/admin/invite',
             '/qy/admin/daily-consume',
-            '/qy/admin/commission-records',
-            '/qy/admin/withdrawals',
+            '/qy/admin/invite-accruals',
           ],
         ],
+        [
+          // 「结算台」（D-15 恢复）：日消费明细（宿主自己）/ 佣金审核 / 佣金用户。
+          // 顺序 = 钱流动的顺序：谁花了多少 → 记了多少 → 进星辉多少。
+          '/qy/admin/settlement',
+          [
+            '/qy/admin/settlement',
+            '/qy/admin/commission-records',
+            '/qy/admin/commission-users',
+          ],
+        ],
+        [
+          // 星屑：余额 / 流水 / 待结算，宿主 = 第一张（与 /qy/affiliate 同形）。
+          '/qy/stardust',
+          ['/qy/stardust', '/qy/stardust-ledger', '/qy/stardust-accruals'],
+        ],
+        [
+          // 商城：商品 / 我的订单。
+          '/qy/mall',
+          ['/qy/mall', '/qy/mall-orders'],
+        ],
       ],
-      '选择夹的成员或顺序变了：项目方点名要的是「发起划转/划转记录/支付密码」、「我的邀请概览/已邀请用户/佣金提现/佣金提现记录」、「用户总览/AFF 关系/佣金余额」、「抽奖/竞猜/双色球/我的参与」与「日消费明细/佣金审核/提现审核」'
+      '选择夹的成员或顺序变了：项目方点名要的是「发起划转/划转记录/支付密码」、D-15 的「概览/下线/佣金明细/返星屑明细」与「日消费明细/佣金审核/佣金用户」、D-14 的「邀请关系/下线日消费/日结明细」、「抽奖/竞猜/双色球/星屑转盘/我的参与」，以及 design-15 的「余额/流水/待结算」与「商品/我的订单」'
     )
   })
 
   /**
-   * 佣金管理的入口数**收敛到二**。
+   * 邀请管理的入口数**恰好一**（D-14）。
    *
-   * 项目方要的是「一个用户佣金列表」，不是第四个割裂的页面；此前侧栏「结算」
-   * 组里佣金相关有三行（计佣流水 / 佣金余额 / AFF 关系）。这条断言盯的是
-   * 反向漂移：有人为了"方便"把余额或关系再放回侧栏，三行就回来了。
+   * 此前侧栏「结算」组里佣金相关有两行（结算台 / 用户佣金），更早是三行。
+   * 佣金账本删除之后只剩「邀请管理」一个宿主；这条断言盯的是反向漂移：
+   * 有人为了"方便"把日消费明细或日结明细再放回侧栏，第二行就回来了。
    */
-  test('侧栏上的佣金入口恰好两个：按用户看 + 结算台', () => {
+  test('侧栏上的邀请入口恰好一个：邀请管理宿主', () => {
     const rows = QY_PAGES.filter(
       (page) =>
-        (page.url.startsWith('/qy/admin/commission-records') ||
-          page.url === '/qy/admin/settlement') &&
+        (page.url.startsWith('/qy/admin/invite') ||
+          page.url === '/qy/admin/daily-consume') &&
         !isQyPageHosted(page.url)
     ).map((page) => page.url)
-    assert.deepEqual(rows.sort(), [
-      // 「按流水看」那一行本轮又降了一级：它现在是「结算台」的第二张标签，
-      // 侧栏上代表它的是宿主那一行。入口数仍然是二，不是三。
-      '/qy/admin/commission-records/users',
-      '/qy/admin/settlement',
-    ])
+    assert.deepEqual(rows, ['/qy/admin/invite'])
   })
 
   /**
-   * 标签数**固定为四**：三张大厅（抽奖 / 竞猜 / 双色球）+ 我的参与。
+   * 标签数**固定为五**：四张玩法（抽奖 / 竞猜 / 双色球 / 星屑转盘）+ 我的参与。
    *
-   * 项目方点名要的就是这三个入口，双色球本轮从抽奖那张里拆出来。这一条反向
-   * 盯的是"再来一种玩法就再加一张标签"：`draw_mode` 日后再长出第四种定档
-   * 方式时，它要并进这三张夹之一（`hallLanes` 是玩法的一个划分），而不是
-   * 占一个新的导航位 —— 标签数随后台配置浮动的话，用户每次进来看到的标签栏
-   * 都不一样，而侧栏那一行的语义也就没法固定。
+   * 四变五的唯一理由是项目方 2026-09-05 的原话：「星屑转盘的页面移动到抽奖
+   * 竞猜里面去。」—— 转盘此前在侧栏独占一行，现在是这个选择夹的一张标签。
+   * 这一条反向盯的仍然是"再来一种玩法就再加一张标签"：`draw_mode` 日后再
+   * 长出新的定档方式时，它要并进这四张夹之一（`hallLanes` 是玩法的一个划分），
+   * 而不是占一个新的导航位 —— 标签数随后台配置浮动的话，用户每次进来看到的
+   * 标签栏都不一样，而侧栏那一行的语义也就没法固定。
    *
    * 断言的是**数字**而不是"等于 QY_TAB_GROUPS 里那一行的长度"：后者等于用
    * 被测数据证明被测数据，加一张标签也照样绿。
    */
-  test('抽奖选择夹恰好四张标签', () => {
+  test('抽奖选择夹恰好五张标签', () => {
     const group = QY_TAB_GROUPS.find((item) => item.host === '/qy/lottery')
-    assert.equal(group?.pages.length, 4)
+    assert.equal(group?.pages.length, 5)
   })
 
-  test('被收进选择夹的正好是这 14 页', () => {
+  test('被收进选择夹的正好是这 17 页', () => {
     assert.deepEqual(
       QY_PAGES.filter((page) => isQyPageHosted(page.url))
         .map((page) => page.url)
@@ -344,7 +379,7 @@ describe('qy 选择夹（需求 2 / 3）', () => {
       )
     }
     const affiliate = QY_PAGES.find((page) => page.url === '/qy/affiliate')
-    assert.ok(affiliate?.group != null, '推广佣金的宿主页丢了侧栏落点')
+    assert.ok(affiliate?.group != null, '我的推广的宿主页丢了侧栏落点')
   })
 
   test('每个标签都在页面表里登记过（否则宿主页会渲染一张没有标题的空标签）', () => {
@@ -360,58 +395,59 @@ describe('qy 选择夹（需求 2 / 3）', () => {
   })
 
   /**
-   * 宿主页的可见性**跟着标签走**，不只看它自己那一个功能开关。
+   * 宿主页的可见性**跟着标签走**：标签全关时宿主整行消失，不留一行点进去
+   * 空白的入口。
    *
-   * 选择夹里的标签可以挂不同的开关：「结算台」是 commission × commission ×
-   * withdraw。宿主自己标的是 commission —— 只按它判定的话，「只开提现、不开
-   * 返佣」这个完全合法的组合会让整行从侧栏消失，而组里那张 withdraw 标签
-   * **并没有被关掉**，它只是再也没有入口了。
-   *
-   * 这条断链连 `route-entry-guard` 都看不见：那条守卫按"页面表里有没有登记"
-   * 判定，而登记是齐的。所以它只能在这里被钉住。
+   * D-14 之前这条还用「只开提现、不开返佣」的结算台守过反方向（宿主自己的开关
+   * 关掉、某张标签还开着 → 宿主仍然可见）；提现删除后每个 qy 宿主的标签都挂
+   * 同一个功能开关，那条分支只剩展示开关一种异构 —— 由下面「只开转盘」那条
+   * 覆盖，两条合起来才把 `isQyPageVisible` 里"任一标签可见即可见"钉死。
    */
-  test('宿主页在自己的开关关掉、而某张标签还开着时仍然可见', () => {
-    const commissionOff: QyFeatures = {
+  test('三张标签全关时「我的推广」整行消失', () => {
+    const inviteOff: QyFeatures = {
       transfer: true,
+      invite: false,
       commission: false,
-      withdraw: true,
       availability: true,
       lottery: true,
       violation: true,
       ticket: true,
       group_matrix: true,
       pay_password: true,
+      stardust: true,
+      mall: true,
     }
-    const urls = qyEntryPages(commissionOff, true).map((page) => page.url)
+    const host = QY_PAGES.find((page) => page.url === '/qy/affiliate')
+    assert.ok(host != null)
+    assert.equal(isQyPageVisible(host, inviteOff, false), false)
     assert.ok(
-      urls.includes('/qy/admin/settlement'),
-      '返佣关掉时「结算台」整行消失了 —— 提现审核跟着一起没了入口，而提现功能明明开着'
-    )
-
-    // 反向：三张标签**全部**关掉时，宿主不该留下一行点进去空白的入口。
-    const allOff: QyFeatures = {
-      ...commissionOff,
-      withdraw: false,
-    }
-    assert.ok(
-      !qyEntryPages(allOff, true).some(
-        (page) => page.url === '/qy/admin/settlement'
+      !qyEntryPages(inviteOff, false).some(
+        (page) => page.url === '/qy/affiliate'
       ),
-      '一张标签都不剩了，「结算台」还留在侧栏上：点进去是一片空白'
+      '三张标签全关了，「我的推广」还留在侧栏上：点进去是一片空白'
     )
+    // 开关打开时宿主与它的两张标签一起回来（标签本身不占侧栏一行）。
+    const on = { ...inviteOff, invite: true }
+    const urls = qyEntryPages(on, false).map((page) => page.url)
+    assert.ok(urls.includes('/qy/affiliate'))
+    assert.ok(!urls.includes('/qy/invitees'))
+    assert.ok(!urls.includes('/qy/commission-records'))
+    assert.ok(!urls.includes('/qy/invite-records'))
   })
 
   test('qyEntryPages 把选择夹成员滤掉（侧栏与工作区索引页共用这一处判定）', () => {
     const all: QyFeatures = {
       transfer: true,
+      invite: true,
       commission: true,
-      withdraw: true,
       availability: true,
       lottery: true,
       violation: true,
       ticket: true,
       group_matrix: true,
       pay_password: true,
+      stardust: true,
+      mall: true,
     }
     const urls = qyEntryPages(all, true).map((page) => page.url)
     for (const url of HOSTED_URLS) {
@@ -436,28 +472,86 @@ describe('qy 选择夹（需求 2 / 3）', () => {
   test('展示开关关掉时用户侧入口消失，管理端入口不受影响', () => {
     const all: QyFeatures = {
       transfer: true,
+      invite: true,
       commission: true,
-      withdraw: true,
       availability: true,
       lottery: true,
       violation: true,
       ticket: true,
       group_matrix: true,
       pay_password: true,
+      stardust: true,
+      mall: true,
     }
-    const off = qyEntryPages(all, true, { lottery: false }).map(
-      (page) => page.url
-    )
+    const off = qyEntryPages(all, true, {
+      lottery: false,
+      wheel: false,
+      stardust: false,
+      mall: false,
+    }).map((page) => page.url)
     assert.ok(!off.includes('/qy/lottery'), '用户侧大厅仍留在导航里')
     assert.ok(!off.includes('/qy/lottery-records'), '我的记录仍留在导航里')
     assert.ok(
       off.includes('/qy/admin/lottery'),
       '管理端入口被一起藏掉了：关掉之后就再也没有地方能把它打开'
     )
+    // 星屑 / 商城两个开关同一形状：用户侧消失、管理端不受影响。
+    // （转盘不在这里：它已是抽奖竞猜选择夹的一张标签，本来就不是独立入口，
+    // 写在这条清单里是恒真的空转。它的开关由下面那条"宿主跟着标签走"覆盖。）
+    for (const url of ['/qy/stardust', '/qy/mall']) {
+      assert.ok(!off.includes(url), `${url} 的展示开关关掉后仍留在导航里`)
+    }
+    for (const url of ['/qy/admin/stardust', '/qy/admin/mall']) {
+      assert.ok(off.includes(url), `${url} 被用户侧的展示开关一起藏掉了`)
+    }
 
     // 不传展示开关时一律按"显示"处理：配置还在取数的那一帧不该把菜单先抹掉。
     const unknown = qyEntryPages(all, true).map((page) => page.url)
     assert.ok(unknown.includes('/qy/lottery'))
+  })
+
+  /**
+   * 转盘并入选择夹之后，宿主那一行的可见性要跟着转盘标签走（与「结算台」
+   * 跟着提现审核走是同一条规则）。
+   *
+   * 反向盯的是"把 `wheel` 一格从 QyEntrySwitches 里删掉、只留 `lottery`"：
+   * 那样"只开转盘"的站点会因为 `lottery` 为假而整行消失，转盘明明开着却
+   * 没有任何入口 —— 正是并入之前那条注释警告过的形状，换了个方向再出现。
+   */
+  test('只开转盘时抽奖竞猜那一行仍然可见；转盘也关掉时才消失', () => {
+    const all: QyFeatures = {
+      transfer: true,
+      invite: true,
+      commission: true,
+      availability: true,
+      lottery: true,
+      violation: true,
+      ticket: true,
+      group_matrix: true,
+      pay_password: true,
+      stardust: true,
+      mall: true,
+    }
+    const wheelOnly = qyEntryPages(all, true, {
+      lottery: false,
+      wheel: true,
+      stardust: true,
+      mall: true,
+    }).map((page) => page.url)
+    assert.ok(
+      wheelOnly.includes('/qy/lottery'),
+      '只开转盘时抽奖竞猜那一行消失了 —— 转盘标签开着却没有入口'
+    )
+    const none = qyEntryPages(all, true, {
+      lottery: false,
+      wheel: false,
+      stardust: true,
+      mall: true,
+    }).map((page) => page.url)
+    assert.ok(
+      !none.includes('/qy/lottery'),
+      '五种玩法全关时抽奖竞猜那一行还在：点进去只剩「我的参与」'
+    )
   })
 
   test('qyTabTarget 直接落到宿主页 + 对应标签，而不是先跳旧路由再被弹回来', () => {
@@ -465,9 +559,9 @@ describe('qy 选择夹（需求 2 / 3）', () => {
       to: '/wallet',
       hash: 'qy-transfer-logs',
     })
-    assert.deepEqual(qyTabTarget('/qy/withdrawals'), {
+    assert.deepEqual(qyTabTarget('/qy/invite-records'), {
       to: '/qy/affiliate',
-      hash: 'qy-withdrawals',
+      hash: 'qy-invite-records',
     })
     // 宿主页自己也是组里的一张标签，所以它也会被指到自己 + hash。
     assert.deepEqual(qyTabTarget('/qy/affiliate'), {

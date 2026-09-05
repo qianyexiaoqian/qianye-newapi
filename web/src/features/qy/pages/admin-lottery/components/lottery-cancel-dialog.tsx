@@ -42,6 +42,14 @@ import type { QyLotAdminActivity } from '../types'
  *
  * 理由是必填的，且会写进事件流与审计：一次没有理由的取消，在事后无法与
  * "结果不合心意所以不开了"区分开。
+ *
+ * ## 转盘：「取消」= 提前封盘
+ *
+ * 转盘的本金在每一转当场花掉、奖当场到账，没有任何可以退的东西；写
+ * `outcome=cancelled` 会把它推进全额退款那条路 —— 那是双付。所以后端对转盘只做
+ * `published → locked`（不再收新转，已转的结果一个都不动，揭示照常），一转都没有
+ * 的场次才真的作废；已封盘再点是 409。弹窗上的每一句都要换：告诉运营"退款"的
+ * 那几句对转盘全是假的。
  */
 export function QyLotCancelDialog(props: {
   activity: QyLotAdminActivity
@@ -52,6 +60,7 @@ export function QyLotCancelDialog(props: {
   const queryClient = useQueryClient()
   const reasonId = useId()
   const [reason, setReason] = useState('')
+  const isWheel = props.activity.draw_mode === 'wheel'
 
   useEffect(() => {
     if (props.open) setReason('')
@@ -60,8 +69,14 @@ export function QyLotCancelDialog(props: {
   const mutation = useMutation({
     mutationFn: () =>
       cancelQyLotActivity(props.activity.act_no, { reason: reason.trim() }),
-    onSuccess: async () => {
-      toast.success(t('qy_lot_cancelled'))
+    onSuccess: async (data) => {
+      // 回执说了算：转盘上一转都没有时后端走的是真正的作废，那一句就不能说
+      // "已提前封盘"。
+      toast.success(
+        data.early_locked === true
+          ? t('qy_lot_wheel_early_locked')
+          : t('qy_lot_cancelled')
+      )
       props.onOpenChange(false)
       await queryClient.invalidateQueries({ queryKey: qyKeys.all })
     },
@@ -72,7 +87,9 @@ export function QyLotCancelDialog(props: {
     <QyResponsiveDialog
       open={props.open}
       onOpenChange={props.onOpenChange}
-      title={t('qy_lot_cancel_title')}
+      title={
+        isWheel ? t('qy_lot_wheel_cancel_title') : t('qy_lot_cancel_title')
+      }
       description={props.activity.title}
       footer={
         <>
@@ -89,15 +106,25 @@ export function QyLotCancelDialog(props: {
             disabled={reason.trim() === '' || mutation.isPending}
             onClick={() => mutation.mutate()}
           >
-            {t('qy_lot_cancel_confirm')}
+            {isWheel
+              ? t('qy_lot_wheel_cancel_confirm')
+              : t('qy_lot_cancel_confirm')}
           </Button>
         </>
       }
     >
       <div className='space-y-3'>
         <Alert variant='destructive'>
-          <AlertTitle>{t('qy_lot_cancel_warn_title')}</AlertTitle>
-          <AlertDescription>{t('qy_lot_cancel_warn_desc')}</AlertDescription>
+          <AlertTitle>
+            {isWheel
+              ? t('qy_lot_wheel_cancel_warn_title')
+              : t('qy_lot_cancel_warn_title')}
+          </AlertTitle>
+          <AlertDescription>
+            {isWheel
+              ? t('qy_lot_wheel_cancel_warn_desc')
+              : t('qy_lot_cancel_warn_desc')}
+          </AlertDescription>
         </Alert>
         <div className='space-y-1'>
           <Label htmlFor={reasonId}>{t('qy_common_reason')}</Label>

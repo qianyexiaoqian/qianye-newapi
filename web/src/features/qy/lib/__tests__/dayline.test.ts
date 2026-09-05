@@ -25,9 +25,7 @@ For commercial licensing, please contact support@quantumnous.com
  * 还早一天，读者只能自己换算才知道 17:00 就是 UTC 零点。
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { describe, test } from 'node:test'
-import { fileURLToPath } from 'node:url'
 
 import { qyDaylineLabel, qyFormatAtDayline } from '../dayline'
 
@@ -96,49 +94,5 @@ describe('下一轮开跑的时刻', () => {
   })
 })
 
-/*
- * 接线：结算说明那一句必须用 dayline 这一套渲染，不能退回本地时区。
- *
- * 纯函数写对了、调用点没接上是本仓的头号形状。这里逐字扫那一段：
- * 两个数出自同一个偏移，且 next 不再走 formatTimestampToDate。
- */
-describe('佣金审核那一段结算说明的接线', () => {
-  test('日界与下一轮开跑用同一个偏移渲染', () => {
-    const src = readFileSync(
-      fileURLToPath(
-        new URL(
-          '../../pages/admin-commission-records/index.tsx',
-          import.meta.url
-        )
-      ),
-      'utf-8'
-    )
-    const at = src.indexOf("t('qy_cm_auto_settle'")
-    assert.ok(at >= 0, '自动结算那一段整块不见了')
-    // 窗口只取这一次 t() 调用本身,到「手动补救」那一段为止 ——
-    // 放宽到定长会把下面表格列里合法的 formatTimestampToDate 一起圈进来。
-    const end = src.indexOf('qy_cm_auto_settle_fallback', at)
-    assert.ok(end > at, '「手动补救仍然在」那一段不见了')
-    // 注释里会提到 formatTimestampToDate(那正是这段改动的说明),
-    // 逐行剔掉注释再判,否则守卫会被自己的注释绊倒。
-    const block = src
-      .slice(at, end)
-      .split(String.fromCharCode(10))
-      .filter((line) => !line.trim().startsWith('//'))
-      .join(String.fromCharCode(10))
-
-    assert.ok(
-      block.includes('qyDaylineLabel(settleSnapshot.day_offset_minutes)'),
-      '日界标签必须由 qyDaylineLabel 出，不要再手拼一次 UTC±N'
-    )
-    assert.ok(
-      block.includes('qyFormatAtDayline('),
-      '「下一轮最早 … 开跑」必须按日界那个偏移渲染'
-    )
-    assert.ok(
-      !block.includes('formatTimestampToDate('),
-      '这一句里不许再出现 formatTimestampToDate —— 它按浏览器本地时区渲染，' +
-        '会让同一句话里的两个数落在两套时区系里'
-    )
-  })
-})
+// 「佣金审核那一段结算说明」的接线走查已随佣金审核页整体删除（D-14）：
+// 星屑日结的调度状态由 admin-stardust 那一页渲染，它自己的测试守着 dayline 的接线。

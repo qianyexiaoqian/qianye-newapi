@@ -83,9 +83,15 @@ func registerUserRoutes(g *gin.RouterGroup) {
 	// 划转、订阅开没开无关。
 	//
 	// 挂在扩展这一侧而不是上游 /api/token/* 的理由是**日界**:「今日」必须与
-	// 日消费明细同一个口径,而那个口径(commission.day_offset_minutes)住在
+	// 日消费明细同一个口径,而那个口径(invite.day_offset_minutes)住在
 	// 扩展配置里,上游 controller 拿不到也不该拿。
 	g.GET("/token-usage/today", qyctl.UserTokenTodayUsage)
+	// 同一页的「当前并发 / 近 1 分钟」那一列。与上一条分成两条,因为它们是
+	// **两件性质不同的事**:今日消耗要在最大的一张表上做聚合,贵、且一分钟内
+	// 不会变;这一条只读进程内存,便宜、但每 5 秒就该重新看一眼。合成一条的话,
+	// 要么把那次聚合按 5 秒的节奏打到主库上,要么让并发数跟着一分钟才动一次 ——
+	// 两个数各自的用处都会没了。
+	g.GET("/token-usage/live", qyctl.UserTokenLiveStats)
 }
 
 // registerAdminRoutes 挂载管理端接口。

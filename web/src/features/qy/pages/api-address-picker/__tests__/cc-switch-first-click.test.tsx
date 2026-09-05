@@ -189,7 +189,7 @@ async function mount() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  queryClient.setQueryData(qyKeys.apiAddresses(), LINES)
+  queryClient.setQueryData(qyKeys.apiAddresses('picker'), LINES)
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)

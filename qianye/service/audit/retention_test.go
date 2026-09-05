@@ -84,8 +84,8 @@ func seedAges(t *testing.T, gdb *gorm.DB, now int64, agesInDays ...int64) {
 	rows := make([]qymodel.AuditLog, 0, len(agesInDays))
 	for _, age := range agesInDays {
 		rows = append(rows, qymodel.AuditLog{
-			TraceNo: fmt.Sprintf("T%d", age), Category: qymodel.AuditCategoryWithdraw,
-			Action: "withdraw.approve", ActorType: qymodel.ActorAdmin,
+			TraceNo: fmt.Sprintf("T%d", age), Category: qymodel.AuditCategoryInvite,
+			Action: "invite.relation.bind", ActorType: qymodel.ActorAdmin,
 			Result: qymodel.ResultOK, CreatedAt: now - age*day,
 		})
 	}

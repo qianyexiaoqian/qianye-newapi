@@ -66,6 +66,33 @@ const isValidJSON = (value: string | undefined) => {
   }
 }
 
+/**
+ * 并发表的形状:{"分组名": 正整数}。0 合法,表示这一档不限并发。
+ *
+ * 与 RPM 表分开校验而不是复用 isValidJSON:两张表的值形状根本不同
+ * (那边是二元组),共用一个校验器只能靠"两种都放过",而那等于不校验。
+ */
+function isValidConcurrencyJSON(value: string | undefined): boolean {
+  if (!value || value.trim() === '') return true
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return false
+    }
+    for (const limit of Object.values(parsed as Record<string, unknown>)) {
+      if (typeof limit !== 'number' || !Number.isInteger(limit)) return false
+      if (limit < 0 || limit > 2147483647) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 const createRateLimitSchema = (t: (key: string) => string) =>
   z.object({
     ModelRequestRateLimitEnabled: z.boolean(),
@@ -76,6 +103,12 @@ const createRateLimitSchema = (t: (key: string) => string) =>
       .string()
       .optional()
       .refine(isValidJSON, {
+        message: t('Invalid JSON format or values out of allowed range'),
+      }),
+    ModelRequestConcurrencyGroup: z
+      .string()
+      .optional()
+      .refine(isValidConcurrencyJSON, {
         message: t('Invalid JSON format or values out of allowed range'),
       }),
   })
@@ -169,9 +202,6 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
                       </span>
                     </div>
                   </FormControl>
-                  <FormDescription>
-                    {t('Time window for rate limiting')}
-                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -231,9 +261,6 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
                       </span>
                     </div>
                   </FormControl>
-                  <FormDescription>
-                    {t('Only successful requests')}
-                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -246,7 +273,19 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
             render={({ field }) => (
               <FormItem>
                 <div className='flex items-center justify-between'>
-                  <FormLabel>{t('Group-based rate limits')}</FormLabel>
+                  <div className='space-y-1'>
+                    <FormLabel>{t('Group-based rate limits')}</FormLabel>
+                    {/*
+                      本分支把用户分组与模型分组拆开了,而这两张表的键是**用户分组**
+                      (middleware/qy_rate_limit_export.go 的 QyRateLimitGroup)。
+                      这句口径必须常驻在标题下,不能只藏在弹窗里。
+                    */}
+                    <p className='text-muted-foreground text-xs'>
+                      {t(
+                        'Limits apply to the user group (users.group), not the model group on the key.'
+                      )}
+                    </p>
+                  </div>
                   <Button
                     type='button'
                     variant='outline'
@@ -271,6 +310,15 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
                     <RateLimitVisualEditor
                       value={field.value || ''}
                       onChange={field.onChange}
+                      concurrencyValue={
+                        form.watch('ModelRequestConcurrencyGroup') || ''
+                      }
+                      onConcurrencyChange={(next) =>
+                        form.setValue('ModelRequestConcurrencyGroup', next, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        })
+                      }
                     />
                   ) : (
                     <JsonCodeEditor
@@ -288,16 +336,13 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
                 </FormControl>
                 {!useVisualEditor && (
                   <FormDescription>
+                    {/* 形状与示例已经在编辑器的 placeholder 里,这里只留
+                        placeholder 说不了的两件事:取值范围与覆盖关系。 */}
                     <div className='space-y-1 text-xs'>
-                      <p className='font-semibold'>{t('Format:')}</p>
                       <ul className='list-inside list-disc space-y-0.5 pl-2'>
                         <li>
                           {t('JSON object:')}{' '}
-                          {`{"groupName": [maxRequests, maxSuccess]}`}
-                        </li>
-                        <li>
-                          {t('Example:')}{' '}
-                          {`{"default": [200, 100], "vip": [0, 1000]}`}
+                          {`{"userGroup": [maxRequests, maxSuccess]}`}
                         </li>
                         <li>
                           {t(
@@ -317,6 +362,50 @@ export function RateLimitSection({ defaultValues }: RateLimitSectionProps) {
               </FormItem>
             )}
           />
+
+          {/* 并发表在可视化模式下已经并进上面那张表里编辑了,这里只服务 JSON 模式。 */}
+          {!useVisualEditor && (
+            <FormField
+              control={form.control}
+              name='ModelRequestConcurrencyGroup'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Group-based concurrency limits')}</FormLabel>
+                  <FormControl>
+                    <JsonCodeEditor
+                      value={field.value || ''}
+                      onChange={field.onChange}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      textareaRef={field.ref}
+                      placeholder={`{
+  "default": 8,
+  "vip": 64
+}`}
+                      aria-invalid={Boolean(
+                        form.formState.errors.ModelRequestConcurrencyGroup
+                      )}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    <div className='space-y-1 text-xs'>
+                      <ul className='list-inside list-disc space-y-0.5 pl-2'>
+                        <li>
+                          {t('JSON object:')} {`{"userGroup": maxConcurrent}`}
+                        </li>
+                        <li>
+                          {t(
+                            'How many requests from this group may run at the same time. 0 = unlimited. Counted per node.'
+                          )}
+                        </li>
+                      </ul>
+                    </div>
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
         </SettingsForm>
       </Form>
     </SettingsSection>

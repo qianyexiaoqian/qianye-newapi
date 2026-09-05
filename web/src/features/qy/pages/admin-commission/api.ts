@@ -17,22 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { queryOptions } from '@tanstack/react-query'
-import type { TFunction } from 'i18next'
 
-import {
-  isQyError,
-  qyDelete,
-  qyErrorMessage,
-  qyGet,
-  qyPost,
-  qyPut,
-} from '../../lib/api'
+import { qyDelete, qyGet, qyPost, qyPut } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
 import type { QyPage } from '../../lib/types'
 import type {
   QyAdminAccrual,
   QyCommissionAdminConfig,
-  QyCommissionFiatRate,
+  QyCommissionCreditSnapshot,
   QyCommissionGroupRate,
   QyDailySettleSnapshot,
 } from './types'
@@ -53,15 +45,13 @@ export function qyAdminCommissionConfigQuery() {
  *
  * 取值一律用**字符串**发送：返佣比例支持两位小数，而 JSON number 到了
  * JS 这一侧就是二进制浮点，10.25 有可能被序列化成 10.249999999999998。
- * 字符串把运营填的那个数字原样交给后端的 decimal 解析。
+ * 字符串把运营填的那个数字原样交给后端的 decimal 解析。可空的百分比键用
+ * 空串表达"取消这一档"。
  *
- * `null` 是法币折算兜底档专用的"清掉这条覆盖，回落全站充值汇率"。它与空串
- * **不能**互换：空串在那一档是误操作（后端 400），因为兜底档的零值/空值
- * 全都是资损形状。可空的百分比键反过来——它们用空串表达"取消这一档"。
- *
- * 调用方成功后重新 GET 一次即可，别去适配响应体。
+ * 请求体里**没有任何法币键**：D-15 之后佣金只记星辉、自动入账，
+ * `fiat_rate_default` 那一档连同它的清空动作一起删除。
  */
-export function qyUpdateCommissionConfig(patch: Record<string, string | null>) {
+export function qyUpdateCommissionConfig(patch: Record<string, string>) {
   return qyPut<unknown>('/admin/commission/config', patch)
 }
 
@@ -77,41 +67,14 @@ export function qyUpsertCommissionGroupRate(input: {
   topup_rate_percent: string
   consume_rate_percent: string
   /**
-   * 兑换码档。**必须显式传 `null` 才表示"本组不单独配"** —— 后端把字段缺失
-   * 与 `null` 当成同一件事，但这个接口是**整行 upsert**，把它漏掉就等于
-   * 每次保存都在悄悄取消这一档。传 `'0'` 是显式 0%，两者不能互相顶替。
+   * 兑换码档。**必须显式传 `null` 才表示"本组不单独配"** —— 这个接口是**整行
+   * upsert**，把它漏掉就等于每次保存都在悄悄取消这一档。传 `'0'` 是显式 0%。
    */
   redemption_rate_percent: string | null
   enabled: boolean
   remark: string
 }) {
   return qyPut<QyCommissionGroupRate>('/admin/commission/group-rates', input)
-}
-
-/**
- * 新增或覆盖一条分组**法币折算比例**（按分组名 upsert）。
- *
- * 口径是**邀请人（上线）的分组**，与分组费率相反。比例是十进制字符串
- * （`'7.3'`），必须大于 0 —— 后端把 `0` 当非法输入拒掉，它既不是"免费"
- * 也不是"没配"：0 会让额度照加而法币不加，两侧从此永久漂移。
- *
- * 改动**只对此后的计佣与结算生效**：比例在计佣当刻冻结进账本行，
- * 已经算出来的法币余额是绝对值，不会被重算。
- */
-export function qyUpsertCommissionFiatRate(input: {
-  group_name: string
-  rate: string
-  enabled: boolean
-  remark: string
-}) {
-  return qyPut<QyCommissionFiatRate>('/admin/commission/fiat-rates', input)
-}
-
-/** 删除一条分组法币折算比例。该分组随即回落兜底档，不是变成 0。 */
-export function qyDeleteCommissionFiatRate(groupName: string) {
-  return qyDelete<{ group_name: string; deleted: boolean }>(
-    `/admin/commission/fiat-rates?group_name=${encodeURIComponent(groupName)}`
-  )
 }
 
 /** 删除一条分组费率规则。该分组随即回落到全局默认费率，不是变成零费率。 */
@@ -173,18 +136,20 @@ export function qyClawbackAccrual(input: {
 }
 
 /**
- * 结算调度快照。只取 `daily_settle` 那一段。
+ * 结算 / 入账调度快照。
  *
- * 一日一结算之后，「今天这一跑成了没有」是运营唯一需要盯的那个数：跑挂了
- * 当天剩下所有人的佣金都要等到明天，而这件事在用户端与其它页面上没有任何症状。
+ * `daily_settle`：一日一结算之后，「今天这一跑成了没有」是运营唯一需要盯的那个数。
+ * `credit`：自动入账任务的状态（D-15）—— held 的单数非 0 就该去资金对账页。
+ * 后端若暂时不下发 `credit`，界面按"取不到"处理，不编数。
  */
 export function qyAdminCommissionHealthQuery() {
   return queryOptions({
     queryKey: qyKeys.adminCommissionHealth(),
     queryFn: () =>
-      qyGet<{ daily_settle: QyDailySettleSnapshot }>(
-        '/admin/commission/health'
-      ),
+      qyGet<{
+        daily_settle: QyDailySettleSnapshot
+        credit?: QyCommissionCreditSnapshot
+      }>('/admin/commission/health'),
   })
 }
 
@@ -201,48 +166,10 @@ export function qyRerunDailySettle() {
   )
 }
 
-// 「立即结算指定用户」的前端封装（`POST /admin/commission/settle`）已删除。
+// 「立即结算指定用户」的前端封装（`POST /admin/commission/settle`）不回来。
 //
 // 项目方原话：「佣金审核的这个：立即结算 移除吧，全部由系统到时间自动结算。」
 // **后端接口原样保留** —— 它与「重跑今天这一轮」不是同一件事：前者按人补一笔，
-// 后者把今天那一行运行记录改回"还要再跑"。结算重试次数烧完之后，rerun 是整轮
-// 补救的唯一入口，而 settle 是"单个邀请人卡住"的兜底，两条都不能连坐删掉。
-// 这里删掉的只是**没有调用方的前端封装**：留着就是死代码。
-
-/**
- * 拉黑/解封一条邀请关系。只停止未来计佣，已发放的佣金要另走冲正。
- *
- * 响应里的 `inviter_id` 是后端回显的这条关系的邀请人 —— 拉黑之后运营最需要
- * 知道的是"我刚刚断掉的是谁的进项"。
- */
-export function qyBlockInviteRelation(input: {
-  invitee_id: number
-  blocked: boolean
-  reason: string
-}) {
-  return qyPost<{ invitee_id: number; inviter_id: number; blocked: boolean }>(
-    '/admin/commission/relations/block',
-    input
-  )
-}
-
-/**
- * 拉黑失败时该显示的**唯一一句**话。
- *
- * 后端现在按情形给出独立的 code，所以这里只剩一件事要做：把**通用**的
- * `qyErrorMessage` 用上，让 `qy_rel_no_relation` / `qy_rel_user_not_found` /
- * `qy_rel_not_bound` 各出各的那一句。
- *
- * 保留这个函数而不是让调用点直接用 `qyErrorMessage`，是因为 `network` 这一档
- * 需要**显式**保留："请求可能已经生效" 在拉黑上是准确的（后端可能已经写完
- * 快照行才断的连），而它在参数错误那一档是有害的 —— 项目方看到的正是这两句
- * 同屏，读起来像"我刚才那一下也许扣了这个人的钱"。把这条分档写在这里，
- * 等于把"哪一档才配说可能已经生效"钉死在一个地方。
- */
-export function qyBlockRelationErrorMessage(
-  error: unknown,
-  t: TFunction
-): string {
-  if (isQyError(error) && error.kind === 'network') return t('qy_err_network')
-  return qyErrorMessage(error, t)
-}
+// 后者把今天那一行运行记录改回"还要再跑"。这里删掉的只是没有调用方的前端封装。
+//
+// 停止 / 恢复计返（`relations/block`）归 invite 模块：封装在 `admin-invite/api.ts`。

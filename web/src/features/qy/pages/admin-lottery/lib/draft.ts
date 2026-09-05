@@ -39,6 +39,54 @@ import type {
 import { qyLotEntriesCap, qyLotTierBudgetShort } from './advice'
 
 /**
+ * 奖档在向导里的**三选一**形态：星屑 / 文本（人工填码）/ 商城商品（套餐、兑换码、
+ * 实物）。后端 `prize_type` 缺省等价于 `quota`，这里把缺省折成显式值，让表单上的
+ * 单选框与提交体一一对应。
+ */
+export type QyLotPrizeForm = 'product' | 'quota' | 'text'
+
+export function qyLotTierPrizeForm(tier: {
+  prize_type?: string
+}): QyLotPrizeForm {
+  if (tier.prize_type === 'text') return 'text'
+  if (tier.prize_type === 'product') return 'product'
+  return 'quota'
+}
+
+/**
+ * 商品奖能引用的商城商品，在向导里只需要这几格：名称 / 形态 / 此刻还能发几件。
+ * `remaining` = 兑换码的未用码数、实物 / 套餐的 stock − sold；`-1` 不限。
+ * 它是 `QyMallAdminProduct` 的投影（`qyLotProductChoiceOf`），不直接依赖那个类型，
+ * 让校验函数在测试里只需要一张小表。
+ */
+export type QyLotProductChoice = {
+  product_no: string
+  kind: string
+  title: string
+  remaining: number
+}
+
+/** 管理端商品行 → 向导要的那几格。 */
+export function qyLotProductChoiceOf(p: {
+  product_no: string
+  kind: string
+  title: string
+  stock: number
+  sold: number
+  code_stock?: { unused: number }
+}): QyLotProductChoice {
+  let remaining = -1
+  if (p.kind === 'code') remaining = p.code_stock?.unused ?? 0
+  else if (p.stock >= 0) remaining = Math.max(0, p.stock - p.sold)
+  return {
+    product_no: p.product_no,
+    kind: p.kind,
+    title: p.title,
+    remaining,
+  }
+}
+
+/**
  * 创建向导的草稿与校验。
  *
  * ## 为什么校验放在这里而不是散在四个步骤里
@@ -268,7 +316,16 @@ export function qyLotDraftFromActivity(
     // 奖档整份带回来，包括表单上没有输入格的 `prize_type` / `text_desc`：
     // 提交时 `qyLotDraftToInput` 原样透传它们，界面改不了的字段也就不会被
     // 一次"只改了标题"的保存悄悄清空。
-    tiers: activity.kind === 'draw' ? prizes.map((tier) => ({ ...tier })) : [],
+    //
+    // 转盘派生的「谢谢参与」行（`prize_type='none'`）**不进表单**：它的每一个
+    // 分量都是其余各档算出来的，运营没有任何可填的余地；后端收到也会丢掉重算
+    // （`buildPrizes`），带回表单只会多出一行既不能改也不能删的假奖档。
+    tiers:
+      activity.kind === 'draw'
+        ? prizes
+            .filter((tier) => tier.prize_type !== 'none')
+            .map((tier) => ({ ...tier }))
+        : [],
     options:
       activity.kind === 'guess'
         ? options.map((option) => ({
@@ -302,12 +359,19 @@ export function qyLotDraftFromActivity(
  * `types.ts` 上的说明）。所以这里只是一个**纯展示投影** —— 三个一级选项在提交
  * 时仍然落回 (kind, draw_mode) 那两个字段。
  */
-export type QyLotPlay = 'ball' | 'draw' | 'guess'
+export type QyLotPlay = 'ball' | 'draw' | 'guess' | 'wheel'
 
 /** 草稿 → 它此刻属于哪个玩法。竞猜没有 `draw_mode` 这回事，先判 kind。 */
 export function qyLotPlayOf(draft: QyLotDraft): QyLotPlay {
   if (draft.kind === 'guess') return 'guess'
-  return draft.draw_mode === 'ball' ? 'ball' : 'draw'
+  if (draft.draw_mode === 'ball') return 'ball'
+  if (draft.draw_mode === 'wheel') return 'wheel'
+  return 'draw'
+}
+
+/** 这种玩法的 `draw_mode` 是不是"批次抽奖之外"的一种（各有自己的一级卡片）。 */
+function isStandalonePlayMode(drawMode: QyLotDrawMode): boolean {
+  return drawMode === 'ball' || drawMode === 'wheel'
 }
 
 /**
@@ -320,6 +384,9 @@ export function qyLotPlayOf(draft: QyLotDraft): QyLotPlay {
  *     而那个字段此刻在界面上已经不可见，运营看不出请求为什么失败。
  *   · 切到双色球：`draw_mode` 置 `ball`，`series_no` 留着（同一个系列反复开期
  *     是常态，清掉只会让人每次重选）。
+ *   · 切到转盘：`draw_mode` 置 `wheel`、`min_entries_to_hold` 归 0 —— 转盘没有
+ *     "人数不足流局"（本金逐转当场花掉，流局全退是双付），后端对非 0 直接 400，
+ *     而那一格在转盘的表单上已经不显示。
  */
 export function qyLotDraftForPlay(
   draft: QyLotDraft,
@@ -331,22 +398,48 @@ export function qyLotDraftForPlay(
   if (play === 'ball') {
     return { ...draft, kind: 'draw', draw_mode: 'ball' }
   }
+  if (play === 'wheel') {
+    return {
+      ...draft,
+      kind: 'draw',
+      draw_mode: 'wheel',
+      series_no: '',
+      min_entries_to_hold: 0,
+    }
+  }
   return {
     ...draft,
     kind: 'draw',
-    // 从双色球切回普通抽奖时 `draw_mode` 必须换掉，否则表单显示的是「抽奖」
-    // 而提交的是一场双色球。已经是 rank/prob 的就别动 —— 那是运营自己选的。
-    draw_mode: draft.draw_mode === 'ball' ? 'rank' : draft.draw_mode,
+    // 从双色球 / 转盘切回普通抽奖时 `draw_mode` 必须换掉，否则表单显示的是
+    // 「抽奖」而提交的是一场双色球或转盘。已经是 rank/prob 的就别动 ——
+    // 那是运营自己选的。
+    draw_mode: isStandalonePlayMode(draft.draw_mode) ? 'rank' : draft.draw_mode,
     series_no: '',
   }
 }
 
-/** 概率制：全部奖档的中奖概率之和（ppm）。剩下的那一段就是未中奖区间。 */
+/** 概率制 / 转盘：全部奖档的中奖概率之和（ppm）。剩下的那一段就是未中奖区间。 */
 export function qyLotTotalWinPpm(draft: QyLotDraft): number {
   return draft.tiers.reduce(
     (sum, tier) => sum + Math.max(0, tier.win_ppm ?? 0),
     0
   )
+}
+
+/**
+ * 转盘派生的「谢谢参与」档的概率（ppm）= 1e6 − Σ真实档。
+ *
+ * 它由服务端在发布时派生并进 spec 原像，运营填不了；表单上把它实时算出来摆着，
+ * 是为了让"各档 + 谢谢参与恰好铺满 100%"这件事在按下保存之前就看得见。
+ * Σ 已经超过 100% 时返回 0（那一份草稿由 `qyLotValidateDraft` 拒绝）。
+ */
+export function qyLotWheelNonePpm(draft: QyLotDraft): number {
+  return Math.max(0, 1_000_000 - qyLotTotalWinPpm(draft))
+}
+
+/** 这一档在这种定档方式下要填中奖概率吗（概率制与转盘）。 */
+export function qyLotUsesWinPpm(drawMode: QyLotDrawMode): boolean {
+  return drawMode === 'prob' || drawMode === 'wheel'
 }
 
 /**
@@ -395,7 +488,13 @@ export function qyLotValidateDraft(
   maxPrizeQuota: number,
   maxFeeBps: number,
   /** 双色球选中的那个系列（号池与入池比例都在它上面）。其余玩法传 undefined。 */
-  series?: QyLotSeries
+  series?: QyLotSeries,
+  /**
+   * 商城商品表（按商品号索引），只用来核商品奖的份数不超过余量。拿不到（列表
+   * 还在加载、或商品不在前 100 件里）时跳过这条 —— 后端发布期会再核一次
+   * （`qy_lot_prize_product_short`），前端的职责只是别让人走完四步才吃 400。
+   */
+  products?: ReadonlyMap<string, QyLotProductChoice>
 ): string[] {
   const errors: string[] = []
 
@@ -414,25 +513,31 @@ export function qyLotValidateDraft(
   // 对应判定，这里复现它只是为了别让运营走完四步才吃一个 400。
   if (
     yaml != null &&
-    yaml.max_stake_quota > 0 &&
-    draft.stake_quota > yaml.max_stake_quota
+    yaml.max_stake_stardust > 0 &&
+    draft.stake_quota > yaml.max_stake_stardust
   ) {
     errors.push('qy_lot_v_stake_over_cap')
   }
 
-  if (
-    draft.open_at <= 0 ||
-    draft.close_at <= draft.open_at ||
-    draft.draw_at < draft.close_at
-  ) {
+  // 转盘只有「开始 / 结束」两个时刻(像抽卡卡池):开奖时刻由后端按结束时间
+  // 派生,结算截止对它没有意义,所以后面三条只对批次玩法成立。
+  const wheelDraft = draft.kind === 'draw' && draft.draw_mode === 'wheel'
+  if (draft.open_at <= 0 || draft.close_at <= draft.open_at) {
+    errors.push('qy_lot_v_time_order')
+  } else if (!wheelDraft && draft.draw_at < draft.close_at) {
     errors.push('qy_lot_v_time_order')
   }
-  if (draft.settle_deadline > 0 && draft.settle_deadline < draft.draw_at) {
+  if (
+    !wheelDraft &&
+    draft.settle_deadline > 0 &&
+    draft.settle_deadline < draft.draw_at
+  ) {
     errors.push('qy_lot_v_deadline_order')
   }
   // 封盘与开奖之间必须留出强制间隔：名单哈希在封盘时公开、种子在开奖时公布，
   // 中间这段时间才是任何人都能抓一份快照的窗口。它是协议成立的前提，不是留白。
   if (
+    !wheelDraft &&
     yaml != null &&
     draft.draw_at - draft.close_at < yaml.reveal_delay_seconds
   ) {
@@ -448,14 +553,62 @@ export function qyLotValidateDraft(
     }
     if (isBall) {
       errors.push(...validateBallDraft(draft, yaml, series))
-    } else if (
-      tiers.some((tier) => tier.amount_quota <= 0 || tier.count <= 0)
-    ) {
-      errors.push('qy_lot_v_tier_amount')
+      // 双色球的奖级由命中数与池子份额定档，一件商品既劈不开也没有"占池比例"。
+      if (tiers.some((tier) => qyLotTierPrizeForm(tier) === 'product')) {
+        errors.push('qy_lot_v_ball_no_product')
+      }
+    } else {
+      // 三种形态各守各的：星屑奖要金额；文本奖要领取说明；商品奖要选商品且份数
+      // 不超过余量。份数对三者都必须 ≥ 1。
+      if (tiers.some((tier) => tier.count <= 0)) {
+        errors.push('qy_lot_v_tier_amount')
+      }
+      if (
+        tiers.some(
+          (tier) =>
+            qyLotTierPrizeForm(tier) === 'quota' && tier.amount_quota <= 0
+        )
+      ) {
+        errors.push('qy_lot_v_tier_amount')
+      }
+      if (
+        tiers.some(
+          (tier) =>
+            qyLotTierPrizeForm(tier) === 'text' &&
+            (tier.text_desc ?? '').trim() === ''
+        )
+      ) {
+        errors.push('qy_lot_v_text_desc_required')
+      }
+      const productTiers = tiers.filter(
+        (tier) => qyLotTierPrizeForm(tier) === 'product'
+      )
+      if (productTiers.some((tier) => (tier.product_no ?? '') === '')) {
+        errors.push('qy_lot_v_product_required')
+      }
+      if (products != null) {
+        // 同一件商品被多档引用时按 Σcount 核，与后端 `checkPrizeProducts` 同口径。
+        const need = new Map<string, number>()
+        for (const tier of productTiers) {
+          const no = tier.product_no ?? ''
+          if (no === '') continue
+          need.set(no, (need.get(no) ?? 0) + Math.max(0, tier.count))
+        }
+        if (
+          [...need].some(([no, count]) => {
+            const p = products.get(no)
+            return p != null && p.remaining >= 0 && count > p.remaining
+          })
+        ) {
+          errors.push('qy_lot_v_product_stock_short')
+        }
+      }
     }
     // 概率制的三条硬约束，后端 `normalizeWinPpm` / `Bands` 各有一条对应判定。
     // 少了它们，运营会走完四步、在复核屏看到全绿，然后吃一个 400。
-    if (draft.draw_mode === 'prob') {
+    // 前两条转盘同样要守（后端 `normalizeWinPpm` 的 wheel 分支只认概率）；
+    // 第三条"预算够摊"只属于均分制，转盘是硬库存、永远不摊薄。
+    if (qyLotUsesWinPpm(draft.draw_mode)) {
       if (
         tiers.some(
           (tier) => (tier.win_ppm ?? 0) <= 0 || (tier.win_ppm ?? 0) > 1_000_000
@@ -466,6 +619,8 @@ export function qyLotValidateDraft(
       if (qyLotTotalWinPpm(draft) > 1_000_000) {
         errors.push('qy_lot_v_win_ppm_sum')
       }
+    }
+    if (draft.draw_mode === 'prob') {
       // 均分制唯一的新失败态：预算摊到人均不足 1 额度时会有人分到 0，
       // 而那个人连 payout 行都不会有 —— 一个真中了奖的人被静默漏发。
       //
@@ -529,11 +684,11 @@ export function qyLotValidateDraft(
       errors.push('qy_lot_v_bet_order')
     }
     // 单注上限同样受站点硬顶约束（0 = 不限）。它与 `stake_quota` 共用
-    // `max_stake_quota`：后端 `applyBetBounds` 与 `acceptAmount` 也是同一个值。
+    // `max_stake_stardust`：后端 `applyBetBounds` 与 `acceptAmount` 也是同一个值。
     if (
       yaml != null &&
-      yaml.max_stake_quota > 0 &&
-      draft.bet_max_quota > yaml.max_stake_quota
+      yaml.max_stake_stardust > 0 &&
+      draft.bet_max_quota > yaml.max_stake_stardust
     ) {
       errors.push('qy_lot_v_bet_over_cap')
     }
@@ -710,6 +865,7 @@ export function qyLotDraftToInput(
   confirmNetIssueQuota = 0
 ): QyLotCreateInput {
   const isBall = draft.kind === 'draw' && draft.draw_mode === 'ball'
+  const isWheel = draft.kind === 'draw' && draft.draw_mode === 'wheel'
   return {
     kind: draft.kind,
     // 竞猜没有定档方式这回事，恒发 rank：后端 `normalizeDrawMode` 只在
@@ -726,11 +882,14 @@ export function qyLotDraftToInput(
     stake_quota: draft.stake_quota,
     open_at: draft.open_at,
     close_at: draft.close_at,
-    draw_at: draft.draw_at,
-    settle_deadline: draft.settle_deadline,
+    // 转盘恒发 0:开奖时刻由后端按「结束时间 + 强制间隔」派生,结算截止对它无意义。
+    draw_at: isWheel ? 0 : draft.draw_at,
+    settle_deadline: isWheel ? 0 : draft.settle_deadline,
     allow_multi_win: draft.allow_multi_win,
     fee_bps: draft.kind === 'guess' ? draft.fee_bps : 0,
-    min_entries_to_hold: draft.min_entries_to_hold,
+    // 转盘恒发 0：它没有"人数不足流局"，后端对非 0 直接 400（这一格进承诺
+    // 原像，所以在创建期就钉死）。表单上那一格对转盘也不显示。
+    min_entries_to_hold: isWheel ? 0 : draft.min_entries_to_hold,
     // 单注上下限只对竞猜有意义（后端 `applyBetBounds` 只在那一支被调用）。
     // 抽奖恒发 0，与 `fee_bps` 同一条口径：发一个不会生效的值过去，
     // 界面上就会显示"已设置"而实际一条都没生效。
@@ -755,19 +914,36 @@ export function qyLotDraftToInput(
     max_picks_per_request: isBall ? draft.max_picks_per_request : 0,
     // 奖档按玩法归一化，与后端强制的那组恒等式逐条对齐：
     //   · rank / ball：win_ppm 必须为 0（后端对填了它的请求直接 400）
-    //   · rank / prob：红蓝命中数与占池比例必须为 0（后端静默忽略它们，
+    //   · prob / wheel：win_ppm 原样发（后端要求 ∈ (0, 1e6]）
+    //   · rank / prob / wheel：红蓝命中数与占池比例必须为 0（后端静默忽略它们，
     //     于是一个从双色球切回普通抽奖的运营会以为占池比例还在生效）
+    //   · 派生的「谢谢参与」行（prize_type='none'）一律不发：它由服务端按
+    //     1e6 − Σ 派生，请求里手填是 400
     // 归一化放在提交这一刻而不是切换玩法时：草稿里留着上次填的值，
     // 运营切回去还能看到自己填过什么。
+    //   · 三种形态互斥：文本奖 / 商品奖的金额恒发 0，商品奖不带领取说明、
+    //     非商品奖不带商品号（后端对"星屑奖却带 product_no"直接 400）。
+    //     草稿里留着上次填的值，运营切回去还能看到。
     prizes:
       draft.kind === 'draw'
-        ? draft.tiers.map((tier) => ({
-            ...tier,
-            win_ppm: draft.draw_mode === 'prob' ? (tier.win_ppm ?? 0) : 0,
-            red_match: isBall ? (tier.red_match ?? 0) : 0,
-            blue_match: isBall ? (tier.blue_match ?? 0) : 0,
-            pool_share_bps: isBall ? (tier.pool_share_bps ?? 0) : 0,
-          }))
+        ? draft.tiers
+            .filter((tier) => tier.prize_type !== 'none')
+            .map((tier) => {
+              const form = qyLotTierPrizeForm(tier)
+              return {
+                ...tier,
+                prize_type: form,
+                amount_quota: form === 'quota' ? tier.amount_quota : 0,
+                text_desc: form === 'text' ? (tier.text_desc ?? '') : '',
+                product_no: form === 'product' ? (tier.product_no ?? '') : '',
+                win_ppm: qyLotUsesWinPpm(draft.draw_mode)
+                  ? (tier.win_ppm ?? 0)
+                  : 0,
+                red_match: isBall ? (tier.red_match ?? 0) : 0,
+                blue_match: isBall ? (tier.blue_match ?? 0) : 0,
+                pool_share_bps: isBall ? (tier.pool_share_bps ?? 0) : 0,
+              }
+            })
         : [],
     options:
       draft.kind === 'guess'

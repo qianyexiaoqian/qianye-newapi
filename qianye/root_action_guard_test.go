@@ -109,25 +109,34 @@ var rootGateSites = []rootGateSite{
 		},
 	},
 	{
-		file: "qianye/modules/withdraw/module.go",
-		fn:   "RegisterAdminRoutes",
-		recv: "g",
-		routes: []rootGatedRoute{
-			{"GET", "/withdraw/:id/payee", "RootActionWithdrawPayeeReveal", "收款账号明文"},
-			{"GET", "/withdraw/:id/proof", "RootActionWithdrawPayeeReveal", "打款凭证图片,与收款账号同属 PII"},
-		},
-	},
-	{
 		file: "qianye/modules/lottery/module.go",
 		fn:   "RegisterAdminRoutes",
 		recv: "g",
 		routes: []rootGatedRoute{
 			{"POST", "/lottery/activities/:act_no/guess-result", "RootActionLotteryResultSet",
 				"竞猜结果是链下事实,是全站唯一一处管理员说了算的开奖口"},
-			{"POST", "/lottery/activities/:act_no/payouts/:payout_no/adjudicate",
-				"RootActionLotteryPayoutAdjudicate",
-				"人工落账绕过全部自动判据(资金单终态 + 主库探针),其中一支会让主库再加一次钱;" +
-					"同一面上的「重试」不提档 —— 它只在探针明确说主库没动时才出手"},
+			// 出款人工裁决(RootActionLotteryPayoutAdjudicate)随 v2.0.0 一起删除:派奖只动
+			// 扩展库星屑账本、单事务,不再有「机器判不出主库动没动」那一档,也就没有人工落账。
+		},
+	},
+	{
+		file: "qianye/modules/stardust/api_admin_adjust.go",
+		fn:   "installAdjustRoutes",
+		recv: "g",
+		routes: []rootGatedRoute{
+			{"POST", "/stardust/adjust", "RootActionStardustAdjust",
+				"手调星屑是凭空造出可经商城变现(套餐、卡密、实物)的东西,与铸码同一档;" +
+					"同一面上的比例、套餐返、重跑日结都不提档 —— 它们改的是规则,不是某个人的余额"},
+		},
+	},
+	{
+		file: "qianye/modules/mall/module.go",
+		fn:   "RegisterAdminRoutes",
+		recv: "g",
+		routes: []rootGatedRoute{
+			{"POST", "/mall/orders/:no/adjudicate", "RootActionMallAdjudicate",
+				"套餐订单的人工裁决绕过资金单终态与主库探针:一支把订阅在账上宣布为已给,另一支退星屑;" +
+					"同一面上的发货、判失败、撤码不提档 —— 它们只在扩展库内动,判据机器说得清"},
 		},
 	},
 }
@@ -399,14 +408,14 @@ func isCriticalRateLimit(expr ast.Expr, vars map[string]bool) bool {
 // 反过来把闸门排在前面没有代价:被拒的尝试仍然逐条写审计
 // (middleware.RequireRootAction 里那条 RecordOperationAuditLog),
 // 只是不再消耗限流桶。qianye/router.go 的 check-update 一开始就是这么写的,
-// 本用例把其余 14 条对齐到同一口径。
+// 本用例把其余 15 条对齐到同一口径。
 func TestRootGateRunsBeforeCriticalRateLimit(t *testing.T) {
 	// 全站"既挂闸门又挂关键操作限流"的路由条数。写死是为了让解析器认不出新写法
 	// 时这条守卫会**变红**而不是变成空转 —— 空转的守卫比没有守卫更坏。
-	// 分组命名空间 9 + 用户组默认分组 1 + 提现 PII 2 + 抽奖 2 + 检查更新 1 = 15。
+	// 分组命名空间 9 + 用户组默认分组 1 + 提现 PII 2 + 抽奖 1 + 检查更新 1 + 星屑手调 1 + 商城裁决 1 = 16。
 	// 兑换码铸码只挂闸门、不挂 crit(它另有 UserCriticalRateLimit,按账号计),
-	// 所以不在这 15 条里。
-	const wantChecked = 15
+	// 所以不在这 16 条里。
+	const wantChecked = 14
 	checked := 0
 	for _, site := range rootGateSites {
 		t.Run(site.file+"::"+site.fn, func(t *testing.T) {

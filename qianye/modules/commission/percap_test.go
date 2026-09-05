@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// percap_test.go —— 单笔封顶(commission.max_per_order_quota)必须留痕。
+// percap_test.go —— 单笔封顶(commission.max_per_order_stardust)必须留痕。
 //
 // 被审计出来的形态:封顶命中时 gross 被静默削掉,而 base_quota 照常累加。
 // 那一行从此 base_quota × rate_bps / 10000 ≠ gross_amount,并且没有任何
@@ -23,7 +23,7 @@ import (
 // capConfig 给出一份带单笔封顶的配置(全局默认 充值 10% / 消费 5%)。
 func capConfig(maxPerOrder int64) *config.Config {
 	c := commissionRateConfig("10", "5")
-	c.Commission.MaxPerOrderQuota = maxPerOrder
+	c.Commission.MaxPerOrderStardust = maxPerOrder
 	return c
 }
 
@@ -36,8 +36,8 @@ func TestCappedAccrualStaysRecomputable(t *testing.T) {
 	t.Run("消费日聚合:两笔各被削一次,削减量必须一起累加", func(t *testing.T) {
 		gdb := newTestDB(t)
 		useConfig(t, capConfig(100))
-		cacheUser(42, 0, "default")
-		cacheUser(900, 42, "default")
+		cacheUser(t, 42, 0, "default")
+		cacheUser(t, 900, 42, "default")
 
 		ctx := context.Background()
 		// 10000 × 5% = 500,上限 100 ⇒ 每笔削掉 400。
@@ -57,8 +57,8 @@ func TestCappedAccrualStaysRecomputable(t *testing.T) {
 	t.Run("兑换码一单一行:连'一天混了两段增量'这个借口都没有", func(t *testing.T) {
 		gdb := newTestDB(t)
 		useConfig(t, capConfig(100))
-		cacheUser(42, 0, "default")
-		cacheUser(900, 42, "default")
+		cacheUser(t, 42, 0, "default")
+		cacheUser(t, 900, 42, "default")
 
 		// 400000 × 10%(充值档)= 40000,上限 100 ⇒ 削掉 39900。
 		require.NoError(t, accrueOneShot(context.Background(), 900, 400000, decimal.Zero,
@@ -73,8 +73,8 @@ func TestCappedAccrualStaysRecomputable(t *testing.T) {
 	t.Run("没触顶的行 capped 必须是 0,不能虚记", func(t *testing.T) {
 		gdb := newTestDB(t)
 		useConfig(t, capConfig(1000000))
-		cacheUser(42, 0, "default")
-		cacheUser(900, 42, "default")
+		cacheUser(t, 42, 0, "default")
+		cacheUser(t, 900, 42, "default")
 
 		require.NoError(t, accrueConsume(context.Background(),
 			consumeEvent{InviteeId: 900, Quota: 10000, At: common.GetTimestamp()}))
@@ -88,15 +88,15 @@ func TestCappedAccrualStaysRecomputable(t *testing.T) {
 
 // TestClawbackReversesWhatWasActuallyAccrued 守住封顶的第二个资金后果。
 //
-// 冲正此前按 calcGross(refundQuota, origin.RateUnits) 重算,完全不看原单
+// 冲正此前按 calcGross(refundQuota, origin.RateUnits, origin.QuotaPerUnit) 重算,完全不看原单
 // 实际计到了多少。原单被削到 100 之后,退掉同一笔消费会按 500 冲正 ——
 // 上线为一笔只挣到 100 的事件被扣掉 5 倍,而 netAccrued 只在净额见底时
 // 才截住,截不住中间那一大段。
 func TestClawbackReversesWhatWasActuallyAccrued(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, capConfig(100))
-	cacheUser(42, 0, "default")
-	cacheUser(900, 42, "default")
+	cacheUser(t, 42, 0, "default")
+	cacheUser(t, 900, 42, "default")
 
 	ctx := context.Background()
 	// 三笔消费:每笔理论 500、实际各计 100,净计佣 300。
@@ -129,8 +129,8 @@ func TestClawbackReversesWhatWasActuallyAccrued(t *testing.T) {
 func TestClawbackWithoutCapIsUnchanged(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, capConfig(0)) // 0 = 不限制
-	cacheUser(42, 0, "default")
-	cacheUser(900, 42, "default")
+	cacheUser(t, 42, 0, "default")
+	cacheUser(t, 900, 42, "default")
 
 	ctx := context.Background()
 	require.NoError(t, accrueConsume(ctx,
@@ -152,7 +152,7 @@ func TestClawbackWithoutCapIsUnchanged(t *testing.T) {
 // 只会得到一条必然失败的假断言。逐条理由写在 accrual.go 的 capGross 上。
 func assertAccrualRecomputable(t *testing.T, row Accrual) {
 	t.Helper()
-	want := calcGross(row.BaseQuota, row.RateUnits)
+	want := calcGross(row.BaseQuota, row.RateUnits, row.QuotaPerUnit)
 	got := row.GrossAmount.Add(row.CappedAmount)
 	assert.True(t, want.Equal(got),
 		"base(%d) × rate(%d) 应为 %s,而 gross(%s) + capped(%s) = %s",

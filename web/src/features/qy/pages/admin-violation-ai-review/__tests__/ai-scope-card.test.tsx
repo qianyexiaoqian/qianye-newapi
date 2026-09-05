@@ -134,7 +134,8 @@ const scopes: QyAiScopeList = {
       pre_sample_rate_bps: 0,
       async_sample_rate_bps: 5000,
       category_id: 12,
-      channel_id: 3,
+      channel_ids: [3],
+      channel_mode: '',
       prompt: '',
       remark: '',
       created_at: 0,
@@ -154,7 +155,8 @@ const scopes: QyAiScopeList = {
       async_sample_rate_bps: 5000,
       prompt_source: 'custom',
       category_id: 12,
-      channel_id: 3,
+      channel_ids: [3],
+      channel_mode: 'weighted',
       channel_failover: false,
       group_unbound: false,
       shadowed: false,
@@ -213,7 +215,11 @@ const settings = {
   },
 }
 
-async function mountPage(payload: unknown, settingPayload: unknown = settings) {
+async function mountPage(
+  payload: unknown,
+  settingPayload: unknown = settings,
+  channelPayload: unknown = { items: [], key_configured: true }
+) {
   for (const entry of roots.splice(0)) {
     entry.root.unmount()
     entry.container.remove()
@@ -227,7 +233,7 @@ async function mountPage(payload: unknown, settingPayload: unknown = settings) {
   })
   queryClient.setQueryData(qyKeys.adminViolationAiScopes(), payload)
   queryClient.setQueryData(qyKeys.adminViolationAiSettings(), settingPayload)
-  queryClient.setQueryData(qyKeys.adminViolationAiChannels(), { items: [] })
+  queryClient.setQueryData(qyKeys.adminViolationAiChannels(), channelPayload)
   queryClient.setQueryData(qyKeys.adminViolationAiStats(7), {
     total_calls: 0,
     total_tokens: 0,
@@ -620,6 +626,207 @@ describe('AI 审核作用域卡', () => {
     assert.ok(
       (dialog.textContent ?? '').includes(dict.qy_ai_scope_group_required),
       '没有说明为什么必填 —— 运营的第一反应会是"以前留空就行,现在坏了"'
+    )
+  })
+})
+
+/*
+ * 「我明明加了护栏渠道,作用域这一格为什么选不到它」。
+ *
+ * 这一页由几张卡拼成,而作用域那张卡的渠道清单来自**作用域接口**下发的
+ * `channels`(那份清单同时带着 enabled,是"指定的渠道被停用了"唯一的判据
+ * 来源)。渠道卡的增删改只让渠道那份缓存失效时,两张卡就此分家:
+ *
+ *   两张卡同时挂在一棵树上 → 作用域那个 query 不会重新挂载
+ *   refetchOnWindowFocus 是关的 → 也不会因为切窗口回来而重取
+ *   ⇒ 那份清单停在进页面那一刻,直到整页刷新
+ *
+ * 症状正是项目方遇到的那一句:新加的护栏渠道在作用域表单里根本选不到,
+ * 而渠道卡上它明明就在那儿。没有任何报错。
+ */
+describe('渠道卡的写动作要让作用域那份清单一起失效', () => {
+  test('删掉一个渠道之后,作用域那份缓存被判为陈旧', async () => {
+    const { api } = await import('@/lib/api')
+    const prevAdapter = api.defaults.adapter
+    // 走真实的 mutation 链路(axios → 信封解包 → onSuccess),只把出站那一步
+    // 换掉。桩在 onError 上是没有意义的:失效只发生在成功之后。
+    const seen: string[] = []
+    api.defaults.adapter = async (config) => {
+      seen.push(`${config.method ?? 'get'} ${config.url ?? ''}`)
+      return {
+        config,
+        data: { success: true, message: '', data: { deleted: true } },
+        headers: {},
+        status: 200,
+        statusText: 'OK',
+      }
+    }
+    try {
+      const container = await mountPage(scopes, settings, {
+        key_configured: true,
+        items: [
+          {
+            id: 3,
+            name: '自建审核端点',
+            base_url: 'https://a.invalid/v1',
+            model: 'm',
+            protocol: 'json_prompt',
+            guard_controversial: '',
+            guard_categories: [],
+            guard_elevate: [],
+            has_key: false,
+            key_hint: '',
+            key_bound_elsewhere: false,
+            key_version: 0,
+            timeout_ms: 0,
+            weight: 1,
+            enabled: true,
+            price_in_per_m: '0',
+            price_out_per_m: '0',
+            remark: '',
+            created_at: 0,
+            updated_at: 0,
+          },
+        ],
+      })
+
+      // 取**最内层**那个既写着渠道名、又带着试跑按钮的 div:外层容器同样
+      // 满足这两条,而它的最后一个按钮是成本卡上的「近 30 天」。
+      const row = [...container.querySelectorAll('div')]
+        .filter(
+          (d) =>
+            (d.textContent ?? '').includes('自建审核端点') &&
+            [...d.querySelectorAll('button')].some((b) =>
+              (b.textContent ?? '').includes(dict.qy_ai_test)
+            )
+        )
+        .sort(
+          (a, b) =>
+            a.querySelectorAll('*').length - b.querySelectorAll('*').length
+        )[0]
+      assert.ok(row, '渠道卡里找不到那一行')
+      // 删除是那一组按钮里最后一个(只有图标,没有文字)。
+      const buttons = [...row.querySelectorAll('button')]
+      const remove = buttons.at(-1)
+      assert.ok(remove, '渠道行里没有删除按钮')
+
+      // 断言落在「那份清单被重新拉了一次」上,而不是 `isInvalidated`:
+      // 这一页上作用域那个 query 有活着的观察者,失效会立刻触发重取,
+      // 重取成功之后那个布尔又变回 false —— 一个只在几毫秒里为真的值。
+      const scopesFetches = () =>
+        seen.filter((line) => line.includes('/violation/ai-review/scopes'))
+          .length
+      const before = scopesFetches()
+
+      await act(async () => {
+        remove.dispatchEvent(new Event('click', { bubbles: true }))
+      })
+      await act(async () => {})
+
+      assert.ok(
+        scopesFetches() > before,
+        '删掉渠道之后作用域那份清单没有被重新拉 —— ' +
+          '它带着渠道下拉用的那份名单,不重取的话新加的渠道在作用域表单里会一直选不到'
+      )
+    } finally {
+      api.defaults.adapter = prevAdapter
+    }
+  })
+})
+
+/*
+ * 渠道那一格是**多选 + 分发方式**,不是单选。
+ *
+ * 单选表达不了"只发给我机房里的这两台":要么退回全部启用渠道(把云端厂商
+ * 一起放进来),要么把全部流量压在一台上 —— 而护栏模型恰恰是最常被横向扩到
+ * 两三台的那种。分发方式只在勾了两个以上时才有意义,所以它必须跟着勾选出现,
+ * 而不是常驻:一个渠道时"轮询 / 随机"是同一件事,常驻会让人以为自己配了点什么。
+ */
+describe('作用域表单里的渠道多选', () => {
+  const twoChannels: QyAiScopeList = {
+    ...scopes,
+    channels: [
+      { id: 3, name: '自建审核端点', enabled: true, model: 'm' },
+      { id: 24, name: '护栏模型·云南', enabled: true, model: 'qwen3guard' },
+    ],
+  }
+
+  async function openForm(payload: QyAiScopeList) {
+    const container = await mountPage(payload)
+    const addButton = [...container.querySelectorAll('button')].find((b) =>
+      (b.textContent ?? '').includes(dict.qy_ai_scope_add)
+    )
+    assert.ok(addButton, '找不到「新增作用域策略」按钮')
+    await act(async () => {
+      addButton.dispatchEvent(new Event('click', { bubbles: true }))
+    })
+    const dialog = document.body.querySelector('[role="dialog"]')
+    assert.ok(dialog, '点了新增却没有开出弹窗')
+    return dialog
+  }
+
+  test('每一个渠道都列成一格可勾的,护栏渠道也在里面', async () => {
+    const dialog = await openForm(twoChannels)
+    const text = dialog.textContent ?? ''
+    assert.ok(text.includes('自建审核端点'), '第一个渠道没有出现在表单里')
+    assert.ok(
+      text.includes('护栏模型·云南'),
+      '护栏渠道选不到 —— 这一格能表达的数据流向约束就少了一半'
+    )
+    for (const id of [3, 24]) {
+      assert.ok(
+        dialog.querySelector(
+          `label[for="qy-ai-scope-ch-${id}"] [role="checkbox"]`
+        ),
+        `渠道 ${id} 没有渲染成一个可勾的复选框`
+      )
+    }
+  })
+
+  test('分发方式跟着"勾了两个以上"出现,不常驻', async () => {
+    // 按 <label> 的整段文本比,不用 includes:渠道那一格的说明里就写着
+    // 「勾两个以上时下面会多出「分发方式」」,子串判据会被那句话骗过去。
+    const hasDispatchLabel = (root: Element) =>
+      [...root.querySelectorAll('label')].some(
+        (l) => (l.textContent ?? '').trim() === dict.qy_ai_scope_f_dispatch
+      )
+
+    const dialog = await openForm(twoChannels)
+    assert.ok(
+      !hasDispatchLabel(dialog),
+      '一个都没勾就摆出分发方式 —— 那时它没有任何含义'
+    )
+
+    for (const id of [3, 24]) {
+      // 可点的是 label 里那个 role=checkbox 的元素;同名 id 落在 Base UI
+      // 藏起来的原生 input 上,点它什么都不会发生。
+      const box = dialog.querySelector(
+        `label[for="qy-ai-scope-ch-${id}"] [role="checkbox"]`
+      )
+      assert.ok(box, `找不到渠道 ${id} 的复选框`)
+      await act(async () => {
+        box.dispatchEvent(new Event('click', { bubbles: true }))
+      })
+    }
+    await act(async () => {})
+
+    const after = document.body.querySelector('[role="dialog"]')
+    assert.ok(after, '弹窗不见了')
+    const text = after.textContent ?? ''
+    assert.ok(
+      hasDispatchLabel(after),
+      `勾了两个渠道之后没有出现分发方式:${text.slice(0, 200)}`
+    )
+    // 出厂档是加权随机,它那一句说明必须跟着出来 —— 两种分发方式的差别
+    // (权重按比例 vs 每台一次)是这一格唯一要交代的事。
+    assert.ok(
+      text.includes(dict.qy_ai_scope_mode_weighted_hint),
+      '分发方式没有说清默认档到底怎么分'
+    )
+    // 故障转移同样只在指定了渠道之后才有含义,它必须一起出现。
+    assert.ok(
+      text.includes(dict.qy_ai_scope_f_failover),
+      '勾了渠道之后没有出现故障转移开关'
     )
   })
 })

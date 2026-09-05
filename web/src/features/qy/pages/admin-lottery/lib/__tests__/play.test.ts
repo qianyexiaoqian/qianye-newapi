@@ -41,7 +41,7 @@ import {
  *     而对应的号池表单不显示。
  */
 
-const PLAYS: QyLotPlay[] = ['ball', 'draw', 'guess']
+const PLAYS: QyLotPlay[] = ['ball', 'draw', 'guess', 'wheel']
 
 function draftFor(play: QyLotPlay): QyLotDraft {
   return qyLotDraftForPlay(qyLotEmptyDraft(500), play)
@@ -74,8 +74,8 @@ describe('qyLotDraftForPlay', () => {
     }
   })
 
-  test('任意一次切换都不会留下 ball 与非双色球并存的草稿', () => {
-    // 九种切换全走一遍：这是运营在第一步里真的会做的事（点一遍看看有什么）。
+  test('任意一次切换都不会留下 ball / wheel 与别的玩法并存的草稿', () => {
+    // 十六种切换全走一遍：这是运营在第一步里真的会做的事（点一遍看看有什么）。
     for (const from of PLAYS) {
       for (const to of PLAYS) {
         const next = qyLotDraftForPlay(draftFor(from), to)
@@ -83,6 +83,9 @@ describe('qyLotDraftForPlay', () => {
         if (to !== 'ball') {
           assert.notEqual(next.draw_mode, 'ball', `${from} → ${to} 残留 ball`)
           assert.equal(next.series_no, '', `${from} → ${to} 残留期次`)
+        }
+        if (to !== 'wheel') {
+          assert.notEqual(next.draw_mode, 'wheel', `${from} → ${to} 残留 wheel`)
         }
       }
     }

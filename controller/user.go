@@ -775,8 +775,8 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 	if groupChanged {
-		// 返佣模块按 user_id 缓存账号分组,而那个分组决定这个人作为**推广人**
-		// 时的返佣费率与法币折算比例(qianye/modules/commission/grouprate.go)。
+		// 邀请模块按 user_id 缓存账号分组,而那个分组决定这个人作为**推广人**
+		// 时的星屑档位(qianye/modules/stardust/settings.go 的分组档)。
 		//
 		// 这一句不能只写在 model.User.Edit 里:本处理器为了把"摘订阅"与改组
 		// 放进同一个事务,直接调的是 EditWithTx,整个绕过了 Edit —— 也就是说

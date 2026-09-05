@@ -109,7 +109,7 @@ func TestAIReviewStatsCountsUnderstatedCostChains(t *testing.T) {
 	rt.Channels[0].PriceOutPerM = decimal.Zero
 	// 指定 + 转移:链的顺序因此是确定的(先坏后好),期望值才算得死。
 	out := runAIReview(context.Background(), rt,
-		&aiScopeRT{ChannelId: 1, ChannelFailover: true}, "内容", 3000)
+		&aiScopeRT{ChannelIds: []int64{1}, ChannelFailover: true}, "内容", 3000)
 
 	require.NotNil(t, out)
 	require.Equal(t, OutcomeClean, out.Outcome)

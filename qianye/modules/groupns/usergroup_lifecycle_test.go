@@ -465,8 +465,8 @@ func TestCreateUserGroupWarnsThatItCannotBeUsedYet(t *testing.T) {
 	require.Equalf(t, http.StatusOK, res.Code, "新建应当成功: %s", res.Body.String())
 
 	body := res.Body.String()
-	assert.Contains(t, body, "一个模型分组都选不到")
-	assert.Contains(t, body, "空分组令牌")
+	assert.Contains(t, body, "还没有可用的模型分组")
+	assert.Contains(t, body, "默认模型分组")
 
 	var row UserGroup
 	require.NoError(t, gdb.Where("name = ?", "内测档").Take(&row).Error)

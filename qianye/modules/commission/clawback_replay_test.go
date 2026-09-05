@@ -2,9 +2,6 @@ package commission
 
 import (
 	"context"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -57,51 +54,4 @@ func TestManualClawbackReplayAfterTheNetIsZeroed(t *testing.T) {
 	// 全新的键在净额已经归零时仍然该说"没有可冲正的佣金"。
 	_, err = manualClawback(ctx, origin.Id, 7, "op:req-new", "刷单")
 	assert.ErrorIs(t, err, ErrNothingToClawback)
-}
-
-// TestAdminInvalidateCacheClearsEveryCache 钉住"失效缓存"这个按钮不许漏掉任何一把。
-//
-// 这是一条源码级契约而不是行为断言,因为漏掉一把的症状恰恰是**没有症状**:
-// 运营改完配置、按了按钮、看到成功提示,而新值要等最长 settingsCacheSeconds
-// 才真正生效,这期间发出去的佣金按旧值冻结进账本,按本模块"逐笔冻结、不追溯"
-// 的语义永不重算。分组费率(D4)已经这样漏过一次,法币折算比例作为新增的第五把
-// 又漏了一次 —— 同一形状两次,必须由守卫兜住而不是靠记性。
-func TestAdminInvalidateCacheClearsEveryCache(t *testing.T) {
-	// 本包的测试脚手架 resetCommissionCaches 是这份名单的另一个抄本;
-	// 两处必须一致,新增一把缓存时两边都得改。
-	want := []string{
-		"invalidateInviter", "invalidateSettings", "invalidateBlocked",
-		"invalidateGroupRates", "invalidateFiatRates",
-	}
-
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "api_admin.go", nil, 0)
-	require.NoError(t, err)
-
-	var fn *ast.FuncDecl
-	ast.Inspect(file, func(n ast.Node) bool {
-		d, ok := n.(*ast.FuncDecl)
-		if ok && d.Recv == nil && d.Name.Name == "adminInvalidateCache" {
-			fn = d
-		}
-		return fn == nil
-	})
-	require.NotNil(t, fn, "adminInvalidateCache 改名了就把这张表一起改")
-
-	called := map[string]bool{}
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if id, ok := call.Fun.(*ast.Ident); ok {
-			called[id.Name] = true
-		}
-		return true
-	})
-	for _, name := range want {
-		assert.Truef(t, called[name],
-			"adminInvalidateCache 没有调用 %s —— 运营按了按钮看到成功提示,"+
-				"而这一把缓存里的旧值还要继续算钱最长一分钟", name)
-	}
 }

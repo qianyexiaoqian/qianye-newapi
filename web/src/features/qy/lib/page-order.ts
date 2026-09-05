@@ -42,16 +42,11 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   '/qy/transfer',
   '/qy/transfer-logs',
   '/qy/pay-password',
-  '/qy/withdraw',
-  '/qy/withdrawals',
   '/qy/violations',
   '/qy/availability',
-  '/qy/admin/commission',
-  '/qy/admin/commission-records',
   '/qy/admin/transfer-records',
   '/qy/admin/transfer-group-rules',
   '/qy/admin/transfer-config',
-  '/qy/admin/withdrawals',
   '/qy/admin/violation-rules',
   '/qy/admin/violations',
   // `/qy/admin/user-group` 曾占本表的第 18 号。它整页只有一个下拉，已经降级成
@@ -79,12 +74,11 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   // 按本表的维护规则**追加到末尾取下一个空号**，不与 `/qy/lottery`、
   // `/qy/lottery-records` 排在一起 —— 那两页的编号是用户已经记下的。
   '/qy/lottery-guess',
-  // 佣金余额与 AFF 关系此前**没有**登记进本表：它们靠 `page-meta.ts` 的最长前缀
-  // 规则继承了 `/qy/admin/commission-records` 的编号（11 号）。现在它们是侧栏上
-  // 各自独立的一行，就该有自己的号 —— 按维护规则 1 追加到末尾取空号，既有编号
-  // 一个都不动。
-  '/qy/admin/commission-records/balances',
-  '/qy/admin/commission-records/relations',
+  // D-14（2026-09-05）：佣金重构成星屑版本，`/qy/withdraw`、`/qy/withdrawals`、
+  // `/qy/admin/commission`、`/qy/admin/commission-records`（含 users / balances /
+  // relations 三张标签）、`/qy/admin/withdrawals`、`/qy/admin/settlement` 九行
+  // 按维护规则 2 **删行**。它们之后的每一页都前移，这是删行不可避免的代价，
+  // 规则 2 已经把它说成可接受（历史编号本就随页面消失）；重排既有编号仍然禁止。
   // 违规类型（需求：类型可增删改、规则绑到类型、类型计次触发处置、用户端公示）。
   // 按本表的维护规则**追加到末尾取下一个空号**，绝不插到
   // `/qy/admin/violation-rules` 后面 —— 那会让它之后的每一页集体错位。
@@ -93,27 +87,44 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   // 同样**追加到末尾取下一个空号**,不与 violation-rules / violation-categories
   // 排在一起 —— 那两页的编号已经发出去了,重排会让用户记下的 GATE 指向别处。
   '/qy/admin/violation-ai-review',
-  // 用户佣金（一行 = 一个用户）。它是佣金管理选择夹的宿主，另外两张标签
-  // （AFF 关系 / 佣金余额）的编号原地不动 —— 被收进选择夹不改变"它们各自
-  // 是一个页面"这件事，`page-meta.ts` 仍然按最长前缀把它们认出来。
-  // 按维护规则 1 追加到末尾取空号，既有编号一个都不动。
-  '/qy/admin/commission-records/users',
   // 受限账号（系统设置里单独的一段）。按维护规则 1 追加到末尾取空号，
   // 既有编号一个都不动 —— 尤其不能插到同属设置抽屉的那几页中间。
   '/qy/admin/restricted-accounts',
   // 日消费明细（项目方原话：「可以查询昨日使用记录哪个用户消费了多少」）。
-  // 按维护规则 1 追加到末尾取空号，既有编号一个都不动 —— 尤其不能插到
-  // `/qy/admin/commission-records` 后面，那会让它之后的每一页集体错位。
+  // 按维护规则 1 追加到末尾取空号，既有编号一个都不动。它现在是「邀请管理」
+  // 选择夹的第二张标签，编号原地不动。
   '/qy/admin/daily-consume',
-  // 结算台（项目方原话：「把日消费明细/佣金审核，提醒审核，这些管理页面弄成
-  // 选择夹，放在一个页面上。」）。它是新建的宿主页，日消费明细 / 佣金审核 /
-  // 提现审核变成它的三张标签 —— 那三行**不删**：被收进选择夹不改变"它们各自
-  // 是一个页面"这件事，它们的 GATE 编号原地不动，`page-meta.ts` 仍按最长前缀
-  // 把标签认出来。按维护规则 1 追加到末尾取空号。
-  '/qy/admin/settlement',
   // 双色球（项目方原话：「把双色球和竞猜分开选择夹，抽奖-竞猜-双色球。」）。
   // 它从抽奖大厅里拆成选择夹的第三张标签 —— 是一个新页面，因此要有自己的号。
   // 按维护规则 1 **追加到末尾取空号**：绝不插到 `/qy/lottery-guess` 后面，
   // 那会让它之后的每一页集体错位，而那些编号已经发出去了。
   '/qy/lottery-ball',
+  // 星屑 / 商城 / 转盘（design-15）。九页按维护规则 1 **追加到末尾取空号**，
+  // 用户页在前、管理页在后；宿主与它的选择夹成员各占一号（被收进选择夹不改变
+  // "它们各自是一个页面"这件事，`page-meta.ts` 按最长前缀把标签认出来）。
+  '/qy/stardust',
+  '/qy/stardust-ledger',
+  '/qy/stardust-accruals',
+  '/qy/mall',
+  '/qy/mall-orders',
+  '/qy/wheel',
+  '/qy/admin/stardust-config',
+  '/qy/admin/stardust',
+  '/qy/admin/mall',
+  // 邀请返星屑（D-14）。三页按维护规则 1 **追加到末尾取空号**：
+  // 「我的推广」的第三张标签（返星屑明细）、「邀请管理」宿主、它的第三张标签
+  // （日结明细）。宿主与选择夹成员各占一号（被收进选择夹不改变"它们各自是
+  // 一个页面"这件事，`page-meta.ts` 按最长前缀把标签认出来）。
+  '/qy/invite-records',
+  '/qy/admin/invite',
+  '/qy/admin/invite-accruals',
+  // 星辉佣金（D-15）。五页按维护规则 1 **追加到末尾取空号**，用户页在前、管理页在后：
+  // 「我的推广」的第三张标签（佣金明细）、「结算台」宿主与它的两张标签（佣金审核 /
+  // 佣金用户）、系统设置抽屉里的佣金配置。D-14 删掉的那几个号**不**收回 ——
+  // 规则 2 只允许删行，不允许把空出来的号再发给别人。
+  '/qy/commission-records',
+  '/qy/admin/settlement',
+  '/qy/admin/commission-records',
+  '/qy/admin/commission-users',
+  '/qy/admin/commission',
 ]

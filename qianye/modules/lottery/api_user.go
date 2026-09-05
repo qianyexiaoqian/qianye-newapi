@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/modules/mall"
 	"github.com/QuantumNous/new-api/qianye/modules/paypass"
 
 	"github.com/gin-gonic/gin"
@@ -43,10 +44,14 @@ type activityBrief struct {
 	CoverUrl string `json:"cover_url"`
 	CoverRef string `json:"cover_ref"`
 
-	StakeQuota int64 `json:"stake_quota"`
-	OpenAt     int64 `json:"open_at"`
-	CloseAt    int64 `json:"close_at"`
-	DrawAt     int64 `json:"draw_at"`
+	// Currency 恒为 "stardust":stake_quota / pool_quota / prize_total_quota 这几个
+	// *_quota 字段名进承诺哈希原像、也是前端契约,名字不改,数值全部是星屑整数。
+	// 显式下发币种,让前端与验证者不必猜这些数的单位。
+	Currency   string `json:"currency"`
+	StakeQuota int64  `json:"stake_quota"`
+	OpenAt     int64  `json:"open_at"`
+	CloseAt    int64  `json:"close_at"`
+	DrawAt     int64  `json:"draw_at"`
 
 	ActiveCount int   `json:"active_count"`
 	PoolQuota   int64 `json:"pool_quota"`
@@ -77,6 +82,11 @@ type activityBrief struct {
 	BallBluePool  int    `json:"ball_blue_pool"`
 	BallBluePick  int    `json:"ball_blue_pick"`
 	BallResult    string `json:"ball_result"`
+
+	// Tiers 只对转盘(draw_mode=wheel)下发:转盘页的卡片要摆"各档剩余 / 初始"
+	// (stock_left / count),而那是随每一转变化的数,prize_total_quota 一个数装
+	// 不下。其余玩法恒省略 —— 它们的卡面不需要逐档,列表也不该为它们多查一遍。
+	Tiers []specItem `json:"tiers,omitempty"`
 }
 
 type specItem struct {
@@ -95,6 +105,11 @@ type specItem struct {
 	PrizeType string `json:"prize_type,omitempty"`
 	WinPpm    int    `json:"win_ppm,omitempty"`
 	TextDesc  string `json:"text_desc,omitempty"`
+	// ProductNo 是商品奖引用的商城商品号(进承诺);ProductTitle / ProductKind 是
+	// 展示用的摘要,按商品号从商城现读(不进承诺,商品改名后这里跟着变)。
+	ProductNo    string `json:"product_no,omitempty"`
+	ProductTitle string `json:"product_title,omitempty"`
+	ProductKind  string `json:"product_kind,omitempty"`
 
 	OptNo      int    `json:"opt_no,omitempty"`
 	Label      string `json:"label,omitempty"`
@@ -108,6 +123,48 @@ type specItem struct {
 	RedMatch     int `json:"red_match,omitempty"`
 	BlueMatch    int `json:"blue_match,omitempty"`
 	PoolShareBps int `json:"pool_share_bps,omitempty"`
+
+	// StockLeft 是转盘各档的在线剩余份数(count 是初始份数,进承诺;这一格实时
+	// 变化,不进)。只对转盘下发,而且 0 也要发 —— "发完了"正是用户最想知道的
+	// 那一格,所以用指针而不是 omitempty 的整数。
+	StockLeft *int `json:"stock_left,omitempty"`
+}
+
+// wheelSpecItem 把一档奖档投影成转盘页要的形状(带在线库存)。
+func wheelSpecItem(p Prize) specItem {
+	left := p.StockLeft
+	return specItem{
+		Tier: p.Tier, Name: p.Name, AmountQuota: p.AmountQuota, Count: p.Count,
+		PrizeType: p.Type(), WinPpm: p.WinPpm, TextDesc: p.TextDesc, ProductNo: p.ProductNo,
+		StockLeft: &left,
+	}
+}
+
+// fillProductBriefs 给一批奖档行补上商品名与种类(只对商品奖;一次批量读商城)。
+// 读失败只记日志不挡响应:商品名是展示层的补充,奖档本身已经完整。
+func fillProductBriefs(ctx context.Context, items []specItem) {
+	nos := make([]string, 0, 2)
+	seen := make(map[string]bool, 2)
+	for i := range items {
+		no := items[i].ProductNo
+		if items[i].PrizeType == PrizeTypeProduct && no != "" && !seen[no] {
+			seen[no] = true
+			nos = append(nos, no)
+		}
+	}
+	if len(nos) == 0 {
+		return
+	}
+	briefs, err := mall.ProductBriefs(ctx, nos)
+	if err != nil {
+		common.SysError("qianye/lottery: 读取奖档商品摘要失败: " + err.Error())
+		return
+	}
+	for i := range items {
+		if b, ok := briefs[items[i].ProductNo]; ok && items[i].PrizeType == PrizeTypeProduct {
+			items[i].ProductTitle, items[i].ProductKind = b.Title, b.Kind
+		}
+	}
 }
 
 type activityDetail struct {
@@ -120,6 +177,13 @@ type activityDetail struct {
 	// 详情页也给封面:从大厅点进来时,头图不接上会让人怀疑自己点错了活动。
 	CoverUrl string `json:"cover_url"`
 	CoverRef string `json:"cover_ref"`
+
+	// Currency 恒为 "stardust",口径见 activityBrief.Currency。
+	Currency string `json:"currency"`
+	// StardustBalance 是当前登录用户此刻可用的星屑(qy_sd_balance.available,
+	// 没有余额行视为 0)。详情页拿它在参与按钮旁边直接说"你还有多少",而不是
+	// 让用户提交之后才被「星屑不足」顶回来。它只是展示,权威判定在 stardust.Debit。
+	StardustBalance int64 `json:"stardust_balance"`
 
 	StakeQuota     int64 `json:"stake_quota"`
 	BetMinQuota    int64 `json:"bet_min_quota"`
@@ -180,10 +244,10 @@ type activityDetail struct {
 	//
 	// # 为什么是后端算而不是前端拿 max_entries_per_user 减 my_entry_count
 	//
-	// 那两个数已经在下发,前端确实减得出来 —— 但减法要选用哪一个计数口径,
-	// 而 checkCaps 数的是 status IN (success/excluded/refunded) 而不是这里的
-	// (pending/success)。两处口径本来就不同名同形,交给前端就等于把一条会漂移的
-	// 约定写进注释。这里与 my_entry_count 出自同一次查询,两个数不可能各说各话。
+	// 那两个数已经在下发,前端确实减得出来 —— 但减法要选用哪一个计数口径
+	// (checkCaps 在活动行锁内一次读回本人的全部票,这里是一条 COUNT),交给
+	// 前端就等于把一条会漂移的约定写进注释。这里与 my_entry_count 出自同一次
+	// 查询,两个数不可能各说各话。
 	//
 	// # 零值口径
 	//
@@ -197,8 +261,8 @@ type activityDetail struct {
 	//
 	// 它同时夹住**两道**每人闸门:max_entries_per_user 与 max_attempts_per_user。
 	// 只报前者会让第二道在提交时突然冒出来,而这一行存在的全部理由就是不让
-	// 任何一道闸门在按下确认之后才第一次露面。尝试上限数的是"含失败的全部条目",
-	// 与 checkCaps 的 attempts 同一个方向。
+	// 任何一道闸门在按下确认之后才第一次露面。单事务之下失败的尝试整笔回滚、
+	// 不留任何行,两道闸门数的是同一个集合(本人已成交的票),只是上限可以不同。
 	MyEntriesRemaining *int `json:"my_entries_remaining"`
 	// TotalEntriesRemaining 是"这一场**全场**还剩几个名额"。
 	//
@@ -217,7 +281,7 @@ type activityDetail struct {
 	//   - 0 = 全场已满,一注都买不进去了。
 	//
 	// 同样**只是提示**:权威判定在活动行锁内(checkCaps 用的是活动行上的
-	// active_count + pending_count,与这里读的是同一对计数器)。
+	// active_count,与这里读的是同一个计数器)。
 	TotalEntriesRemaining *int `json:"total_entries_remaining"`
 	// MaxPicksPerRequest 是这一场一次提交最多几注(picksCapOf,活动级可配)。
 	// 下发它是为了让选号盘的"再加一注"按钮在到顶时当场置灰 —— 前端写死一个
@@ -249,9 +313,9 @@ type activityDetail struct {
 	// 基准参与费,即**这一场最小的一笔扣款**;竞猜自选更大的金额时,真正的闸门
 	// 在 handleCreateEntry 里按本次金额重算(见那里的说明)。
 	PayPasswordRequired bool `json:"pay_password_required"`
-	// PayPasswordThresholdQuota 是阈值本身,让前端能在投注额输入框旁边直接说
+	// PayPasswordThresholdStardust 是阈值本身,让前端能在投注额输入框旁边直接说
 	// "超过多少要验密码",而不是等提交失败之后才弹出一格。
-	PayPasswordThresholdQuota int64 `json:"pay_password_threshold_quota"`
+	PayPasswordThresholdStardust int64 `json:"pay_password_threshold_stardust"`
 	// PlayOpen 表示这一场所属的玩法当前是否还受理新参与(见 play.go)。
 	//
 	// 玩法被隐藏之后详情页**仍然可达** —— 已参与的人必须还能查到自己那一票、
@@ -334,11 +398,15 @@ var hallPhases = map[string]hallPhase{
 // lane 是用户端大厅那三张选择夹(抽奖 / 竞猜 / 双色球,见 play.go),空串 =
 // 不限。它**不是** kind:`lane=draw` 恰好排除双色球。
 //
+// drawMode 是转盘页那条列表的过滤(契约 §6:`?draw_mode=wheel&phase=live|ended`)。
+// 只认 wheel,并且与 lane 互斥 —— 转盘不属于任何一张夹,两个参数一起给没有
+// 一种解释是对的。空串 = 大厅口径(永远不含转盘,见 playFilterClause)。
+//
 // 抽成一个吃 *gorm.DB 的函数是为了让这段口径**能被真的跑一遍数据库测到**:
 // handler 走的是 db.Get() 那个只连 MySQL 的全局句柄,在测试里起不来,而
 // "两张标签返回同一份列表"恰恰只在这段拼装里看得见 —— 上一版正是在这里
 // 静默失效了一整个版本。
-func hallQuery(gdb *gorm.DB, lane, phase string, set opSettings) (*gorm.DB, error) {
+func hallQuery(gdb *gorm.DB, lane, phase, drawMode string, set opSettings) (*gorm.DB, error) {
 	// 未登记的选择夹一律 400,与 phase 同一条纪律:静默忽略会让 `lane=Ball`
 	// 这种大小写笔误退回"三张标签拿同一份列表",而全链路没有任何一处报错 ——
 	// 那正是上一版 phase 参数漂移能活过一整个版本的形状。
@@ -346,6 +414,17 @@ func hallQuery(gdb *gorm.DB, lane, phase string, set opSettings) (*gorm.DB, erro
 		if _, ok := hallLanes[lane]; !ok {
 			return nil, errBadLane
 		}
+	}
+	wheelOnly := false
+	switch drawMode {
+	case "":
+	case DrawModeWheel:
+		if lane != "" {
+			return nil, errBadDrawModeFilter
+		}
+		wheelOnly = true
+	default:
+		return nil, errBadDrawModeFilter
 	}
 	// hidden_at > 0 是管理员的「下架」。它与草稿并列写在这一行,而不是散在
 	// handler 里:大厅口径只有这一个执行点,加在别处迟早会有一条分支漏掉。
@@ -355,7 +434,7 @@ func hallQuery(gdb *gorm.DB, lane, phase string, set opSettings) (*gorm.DB, erro
 	// 两者都不能交给前端做:"只隐藏双色球"落不到任何一个 kind 上,而按选择夹
 	// 分页更是必须在数据库里分 —— 前端过滤会让「双色球」那张标签的第 1 页
 	// 只剩零星几条(整页被过滤掉的那些不会被补上),分页总数也是错的。
-	if clause, args := playFilterClause(set, lane); clause != "" {
+	if clause, args := playFilterClause(set, lane, wheelOnly); clause != "" {
 		q = q.Where(clause, args...)
 	}
 	// 空串 = 不分区(全部非草稿)。未登记的取值一律 400,**绝不静默忽略**:
@@ -398,7 +477,7 @@ func handleListActivities(c *gin.Context) {
 		return
 	}
 	q, err := hallQuery(gdb.WithContext(c.Request.Context()),
-		c.Query("lane"), c.Query("phase"), effectiveCtx(c.Request.Context()))
+		c.Query("lane"), c.Query("phase"), c.Query("draw_mode"), effectiveCtx(c.Request.Context()))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -428,12 +507,18 @@ func handleListActivities(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	wheelTiers, err := wheelTiersByAct(c.Request.Context(), rows)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
 	items := make([]activityBrief, 0, len(rows))
 	for i := range rows {
 		a := rows[i]
 		items = append(items, activityBrief{
 			ActNo: a.ActNo, Kind: a.Kind, Status: a.Status, Outcome: a.Outcome,
 			Title: a.Title, CoverUrl: a.CoverUrl, CoverRef: a.CoverRef,
+			Currency:   CurrencyStardust,
 			StakeQuota: a.StakeQuota,
 			OpenAt:     a.OpenAt, CloseAt: a.CloseAt, DrawAt: a.DrawAt,
 			ActiveCount: a.ActiveCount, PoolQuota: a.PoolQuota,
@@ -448,9 +533,48 @@ func handleListActivities(c *gin.Context) {
 			BallBluePool:    a.BallBluePool,
 			BallBluePick:    a.BallBluePick,
 			BallResult:      a.BallResult,
+			Tiers:           wheelTiers[a.Id],
 		})
 	}
 	respondOK(c, gin.H{"items": items, "total": total, "p": page, "page_size": size})
+}
+
+// wheelTiersByAct 一次查出这一页里全部转盘的奖档(含在线库存)。
+//
+// 只查转盘那几行:其余玩法的卡面不需要逐档,而这一页恰恰是大厅首屏。
+// 没有转盘时一次都不查。
+func wheelTiersByAct(ctx context.Context, rows []Activity) (map[int64][]specItem, error) {
+	out := make(map[int64][]specItem, 4)
+	ids := make([]int64, 0, 4)
+	for _, a := range rows {
+		if a.DrawMode == DrawModeWheel {
+			ids = append(ids, a.Id)
+		}
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	gdb := db.Get()
+	if gdb == nil {
+		return nil, db.ErrNotReady
+	}
+	prizes := make([]Prize, 0, len(ids)*4)
+	if err := gdb.WithContext(ctx).Where("act_id IN (?)", ids).
+		Order("act_id asc, tier asc").Find(&prizes).Error; err != nil {
+		db.MarkFailure(err)
+		return nil, wrapInternal("查询转盘奖档", err)
+	}
+	for _, id := range ids {
+		out[id] = make([]specItem, 0, 4)
+	}
+	for _, p := range prizes {
+		out[p.ActId] = append(out[p.ActId], wheelSpecItem(p))
+	}
+	// 商品名 / 种类按活动逐组补(一页最多十几场,商品奖是少数)。
+	for id := range out {
+		fillProductBriefs(ctx, out[id])
+	}
+	return out, nil
 }
 
 // handleGetActivity 返回活动详情。
@@ -478,6 +602,7 @@ func handleGetActivity(c *gin.Context) {
 		ActNo: act.ActNo, Kind: act.Kind, Status: act.Status, Outcome: act.Outcome,
 		Title: act.Title, Intro: act.Intro,
 		CoverUrl: act.CoverUrl, CoverRef: act.CoverRef,
+		Currency:   CurrencyStardust,
 		StakeQuota: act.StakeQuota, BetMinQuota: act.BetMinQuota, BetMaxQuota: act.BetMaxQuota,
 		OpenAt: act.OpenAt, CloseAt: act.CloseAt, DrawAt: act.DrawAt,
 		SettleDeadline: act.SettleDeadline,
@@ -509,7 +634,7 @@ func handleGetActivity(c *gin.Context) {
 		PayPasswordRequired: PayPasswordRequired(act.StakeQuota),
 		PlayOpen:            effectiveCtx(ctx).playShown(playOf(act.Kind, act.DrawMode)),
 
-		PayPasswordThresholdQuota: config.Get().Lottery.PayPasswordThresholdQuota,
+		PayPasswordThresholdStardust: config.Get().Lottery.PayPasswordThresholdStardust,
 	}
 
 	if act.Kind == KindDraw {
@@ -521,12 +646,17 @@ func handleGetActivity(c *gin.Context) {
 			return
 		}
 		for _, p := range prizes {
+			if act.DrawMode == DrawModeWheel {
+				detail.Spec = append(detail.Spec, wheelSpecItem(p))
+				continue
+			}
 			detail.Spec = append(detail.Spec, specItem{
 				Tier: p.Tier, Name: p.Name, AmountQuota: p.AmountQuota, Count: p.Count,
-				PrizeType: p.Type(), WinPpm: p.WinPpm, TextDesc: p.TextDesc,
+				PrizeType: p.Type(), WinPpm: p.WinPpm, TextDesc: p.TextDesc, ProductNo: p.ProductNo,
 				RedMatch: p.RedMatch, BlueMatch: p.BlueMatch, PoolShareBps: p.PoolShareBps,
 			})
 		}
+		fillProductBriefs(ctx, detail.Spec)
 	} else {
 		options := make([]Option, 0, 8)
 		if err := gdb.WithContext(ctx).Where("act_id = ?", act.Id).
@@ -546,10 +676,21 @@ func handleGetActivity(c *gin.Context) {
 		}
 	}
 
+	// 余额只在登录时读(整条路由挂在 UserAuth 之下,me <= 0 只可能出现在测试里)。
+	// 读失败与下面统计参与一样整页报错:详情页上一个错的"你还有多少"比没有更糟。
+	if me := c.GetInt("id"); me > 0 {
+		available, err := stardustAvailable(ctx, gdb, me)
+		if err != nil {
+			respondErr(c, wrapInternal("读取星屑余额", err))
+			return
+		}
+		detail.StardustBalance = available
+	}
+
 	var mine int64
 	if err := gdb.WithContext(ctx).Model(&Entry{}).
-		Where("act_id = ? AND user_id = ? AND status IN (?)",
-			act.Id, c.GetInt("id"), []string{EntryPending, EntrySuccess}).
+		Where("act_id = ? AND user_id = ? AND status = ?",
+			act.Id, c.GetInt("id"), EntrySuccess).
 		Count(&mine).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, wrapInternal("统计我的参与", err))
@@ -558,20 +699,10 @@ func handleGetActivity(c *gin.Context) {
 	detail.MyEntryCount = int(mine)
 	detail.MaxPicksPerRequest = picksCapOf(act)
 
-	// 尝试上限是**第二道**每人闸门,而且是唯一一道会把失败条目也算进去的。
-	// 它多打一次 COUNT 而不是复用上面那一次:两次数的是不同的集合,合成一次
-	// 查询要么少判一道闸门,要么把 my_entry_count 的口径改掉(那是回执与
-	// "我的参与"共用的数)。只有配了这道闸门才去数 —— 绝大多数活动不配。
-	var attempts int64
-	if act.MaxAttemptsPerUser > 0 {
-		if err := gdb.WithContext(ctx).Model(&Entry{}).
-			Where("act_id = ? AND user_id = ?", act.Id, c.GetInt("id")).
-			Count(&attempts).Error; err != nil {
-			db.MarkFailure(err)
-			respondErr(c, wrapInternal("统计我的尝试次数", err))
-			return
-		}
-	}
+	// 尝试上限是**第二道**每人闸门。单事务之下失败的尝试整笔回滚、不留任何行,
+	// 它与参与上限数的是同一个集合(本人已成交的票),所以直接复用上面那一次
+	// COUNT —— 两道闸门只是上限可以配得不一样(见 checkCaps)。
+	attempts := mine
 	// 夹到 0:上限被在线调低之后计数可以大过它,而一个负的"还能买几注"会在
 	// 界面上显示成 "还能买 -2 注",并让任何 `remaining > 0` 的判断照旧为假、
 	// `remaining >= n` 的判断在 n 也为负时反而为真。
@@ -595,10 +726,10 @@ func handleGetActivity(c *gin.Context) {
 		}
 	}
 	if act.MaxTotalEntries > 0 {
-		// 与 checkCaps 读的是同一对计数器,判据也同一条:那里用
-		// `active_count + pending_count > max_total_entries` 拒绝(pending 已含
-		// 本次),所以**下一注之前**还剩的名额正是 max - active - pending。
-		remaining := clampRemaining(act.MaxTotalEntries, int64(act.ActiveCount+act.PendingCount))
+		// 与 checkCaps 读的是同一个计数器,判据也同一条:那里用
+		// `active_count > max_total_entries` 拒绝(active_count 已含本次),
+		// 所以**下一注之前**还剩的名额正是 max - active。
+		remaining := clampRemaining(act.MaxTotalEntries, int64(act.ActiveCount))
 		detail.TotalEntriesRemaining = &remaining
 	}
 
@@ -623,8 +754,8 @@ func handleGetActivity(c *gin.Context) {
 func loadMyBallTickets(ctx context.Context, gdb *gorm.DB, actId int64, userId int) ([]myTicketView, error) {
 	rows := make([]Entry, 0, 8)
 	if err := gdb.WithContext(ctx).
-		Where("act_id = ? AND user_id = ? AND status IN (?)",
-			actId, userId, []string{EntryPending, EntrySuccess}).
+		Where("act_id = ? AND user_id = ? AND status = ?",
+			actId, userId, EntrySuccess).
 		Order("seq asc").Limit(myTicketsCap).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		return nil, wrapInternal("查询我的选号", err)
@@ -698,7 +829,7 @@ func handleGetEligibility(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	missing := Evaluate(rules, subject, act.StakeQuota, common.GetTimestamp())
+	missing := Evaluate(rules, subject, act.StakeQuota, common.GetTimestamp(), playOf(act.Kind, act.DrawMode))
 	respondOK(c, gin.H{"eligible": len(missing) == 0, "missing": missing})
 }
 
@@ -858,15 +989,14 @@ type entryReceiptBatch struct {
 
 // handleCreateEntry 是唯一会动钱的用户入口,已挂 CriticalRateLimit。
 //
-// # 一次买多注在这里是 N 次串行的 ChargeEntry,不是一张 N 倍金额的资金单
+// # 一次买多注在这里是 N 次串行的 ChargeEntry,不是一笔 N 倍金额的扣款
 //
-// 后者要把 twophase 的 RefId(指向**一条**参与明细)、markEntrySuccess 的
-// 状态 CAS、releaseEntryOnFailure 的回滚、补偿任务的 Resolver 全部改成
-// "一张单对多条明细",而那四处是本模块唯一保证"钱与名单对得上"的地方。
-// 串行 N 次则让每一注与改造前的单注参与**逐字节相同**:一张独立资金单、
+// 后者要让一行账本流水对应多条参与明细,而"一票一笔扣款、票与流水同一个事务"
+// 正是本模块保证"钱与名单对得上"的全部依据(refundAmountOf 按票上的 ledger_no
+// 取权威金额)。串行 N 次则让每一注与单注参与**逐字节相同**:一行流水、
 // 一条链环、一个 seq、一份可复算的回执,批量只是把 N 次点击搬到了服务端。
 //
-// 代价是它不是原子的:第 k 注余额不足时前 k-1 注已经成交。这不是缺陷,是彩票
+// 代价是它不是原子的:第 k 注星屑不足时前 k-1 注已经成交。这不是缺陷,是彩票
 // 本来的样子(买到哪注算哪注),而响应里的 accepted / total_quota / failed_code
 // 三个数就是把这件事说清楚的全部手段。
 func handleCreateEntry(c *gin.Context) {
@@ -958,7 +1088,7 @@ func handleCreateEntry(c *gin.Context) {
 		}
 	}
 
-	// 预算按注数给。一批 N 注是 N 次串行的 twophase.Execute,拿一次冷路径操作的
+	// 预算按注数给。一批 N 注是 N 次串行的扩展库事务,拿一次冷路径操作的
 	// 3 秒去装 N 次,999 注会在第 86 注上下被截断 —— 也就是"活动可配到 999"
 	// 在预算这一侧根本不成立。理由与上界见 entryBatchContext。
 	ctx, cancel := entryBatchContext(context.Background(), len(picks))
@@ -1089,13 +1219,18 @@ type wonView struct {
 	Tier   int    `json:"tier"`
 	Amount int64  `json:"amount"`
 	Status string `json:"status"`
-	// PayoutNo 只在文本奖上下发。它是"我的参与"跳去看奖品内容的唯一入口 ——
+	// PayoutNo 只在文本奖与商品奖上下发。它是"我的参与"跳去看奖品内容的唯一入口 ——
 	// 内容本身走 /lottery/my/prizes/:payout_no 逐条拉,**不在列表里返回**:
 	// 一个列表接口返回全部正文,意味着一次越权 bug 就是全量泄漏。
 	PayoutNo string `json:"payout_no,omitempty"`
 	// Fulfilled 让列表能直接显示"待管理员履行 / 可查看",
 	// 而不必为每一行各打一次详情接口。
 	Fulfilled bool `json:"fulfilled,omitempty"`
+	// PrizeType / ProductNo / MallOrderNo 只在商品奖上下发:中的是哪件商品、对应哪张
+	// 商城订单(看码 / 填地址 / 看订阅都在那张单上)。
+	PrizeType   string `json:"prize_type,omitempty"`
+	ProductNo   string `json:"product_no,omitempty"`
+	MallOrderNo string `json:"mall_order_no,omitempty"`
 }
 
 type myEntryView struct {
@@ -1198,6 +1333,21 @@ func handleListMyEntries(c *gin.Context) {
 		}
 	}
 
+	// 商品奖那几行要带商品号:按 (act_id, tier) 从奖档表反查,一次读完这一页涉及的活动。
+	productNos := make(map[[2]int64]string, 4)
+	if ids := actIdsOfEntries(rows); len(ids) > 0 {
+		prizes := make([]Prize, 0, 8)
+		if err := gdb.WithContext(ctx).Select("act_id, tier, product_no").
+			Where("act_id IN (?) AND prize_type = ?", ids, PrizeTypeProduct).Find(&prizes).Error; err != nil {
+			db.MarkFailure(err)
+			respondErr(c, wrapInternal("查询商品奖档", err))
+			return
+		}
+		for _, p := range prizes {
+			productNos[[2]int64{p.ActId, int64(p.Tier)}] = p.ProductNo
+		}
+	}
+
 	items := make([]myEntryView, 0, len(rows))
 	for _, e := range rows {
 		v := myEntryView{
@@ -1211,8 +1361,13 @@ func handleListMyEntries(c *gin.Context) {
 		}
 		if p, ok := payouts[e.Id]; ok {
 			v.Won = &wonView{Kind: p.Kind, Tier: p.Tier, Amount: p.AmountQuota, Status: p.Status}
-			if p.Kind == PayoutText {
+			switch p.Kind {
+			case PayoutText:
 				v.Won.PayoutNo, v.Won.Fulfilled = p.PayoutNo, p.FulfilledAt > 0
+			case PayoutProduct:
+				v.Won.PayoutNo, v.Won.PrizeType = p.PayoutNo, PrizeTypeProduct
+				v.Won.ProductNo = productNos[[2]int64{p.ActId, int64(p.Tier)}]
+				v.Won.MallOrderNo = p.MallOrderNo
 			}
 		}
 		items = append(items, v)
@@ -1269,8 +1424,8 @@ func myEntryCounts(ctx context.Context, userId int, ids []int64) (map[int64]int,
 	}, 0, len(ids))
 	err := gdb.WithContext(ctx).Model(&Entry{}).
 		Select("act_id, COUNT(*) AS cnt").
-		Where("user_id = ? AND act_id IN (?) AND status IN (?)",
-			userId, ids, []string{EntryPending, EntrySuccess}).
+		Where("user_id = ? AND act_id IN (?) AND status = ?",
+			userId, ids, EntrySuccess).
 		Group("act_id").Scan(&rows).Error
 	if err != nil {
 		db.MarkFailure(err)
@@ -1301,7 +1456,7 @@ func prizeTotalsByAct(ctx context.Context, ids []int64) (map[int64]int64, error)
 		Where("act_id IN (?)", ids).Group("act_id").Scan(&rows).Error
 	if err != nil {
 		db.MarkFailure(err)
-		return nil, wrapInternal("统计奖品总额度", err)
+		return nil, wrapInternal("统计奖品总额", err)
 	}
 	for _, r := range rows {
 		out[r.ActId] = r.Total

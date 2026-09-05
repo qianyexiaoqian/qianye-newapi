@@ -75,18 +75,19 @@ const (
 // # 为什么这一列必须是真密文
 //
 // 它存的是管理员为中奖者填进去的**实际兑换码**,而同一个扩展库里性质相同的
-// 两处 —— qy_withdrawal_payee_accounts(收款账号)与 qy_violation_ai_channel
-// (渠道密钥)—— 都是 AES-256-GCM 真密文。此前这一列是明文直存
+// 另一处 —— qy_violation_ai_channel(渠道密钥)—— 是 AES-256-GCM 真密文。此前这一列是明文直存
 // (key_version 恒 0、nonce 恒 NULL),于是列名叫 cipher、内容任何拿到库备份、
 // 只读报表账号或离线 dump 的人都能直接读走,而在线侧那一整套控制
 // (json:"-" 不下发、列表只回 maskSecret、reveal 强制事由 + 双写审计)
 // 一条都拦不住他们。
 //
-// # 未配置密钥时仍然是明文,这是刻意的
+// # 没有密钥就写不进去,不再回落明文
 //
-// lottery.prize_secret_key 为空 → 走 keyVersion=0 的明文分支。强制要求它会让
-// 每一个现存部署在升级那一刻 FATAL 退出,而那是破坏性变更;自检里会为此报一条
-// 告警。配上之后**新写入**的码即刻加密,历史的 v0 行仍然读得出来。
+// lottery.prize_secret_key 是必填项:配置校验在启动时就拦住空值(见
+// qianye/config/validate.go 的 validateLottery),所以正常运行时走不到这里的
+// 错误分支。留着它是因为热更新配置与单测都能构造出"密钥没了"的快照,而那一刻
+// 正确的行为是**拒绝写入**并让管理员看到一条指向配置的报错 —— 静默回落成明文
+// 是这类字段最常见的泄漏路径:功能照常 200,库里那一列从此是明文,没人会发现。
 //
 // aad 绑定 payout_no:密文若被搬到另一条记录上,GCM 校验会直接失败,
 // 而不是安静地解出一份属于别人的兑换码。
@@ -94,13 +95,9 @@ const (
 // 本函数与 openPrizeSecret 是**包内唯一**允许触碰 Secret* 三列的地方,
 // 由 secret_guard_test.go 的 AST 断言守住。
 func sealPrizeSecret(plain, aad string) (nonce, cipher []byte, keyVersion int, err error) {
-	key, version, ok, err := activePrizeSecretKey()
+	key, version, err := activePrizeSecretKey()
 	if err != nil {
 		return nil, nil, 0, err
-	}
-	if !ok {
-		// 未配置密钥:明文直存,与改造前逐字节相同。
-		return nil, []byte(plain), 0, nil
 	}
 	nonce, ciphertext, err := sealAESGCM(key, []byte(plain), aad)
 	if err != nil {
@@ -114,14 +111,14 @@ func sealPrizeSecret(plain, aad string) (nonce, cipher []byte, keyVersion int, e
 // keyVersion 是那一列存在的全部理由:按**行上记录的版本**选密钥,
 // 而不是一律用当前密钥。轮换 prize_secret_key 时若少了这一层,
 // 已履行的兑换码会全部变成不可读。
+//
+// key_version 从来只由 sealPrizeSecret 写,而它没有密钥就拒绝写入,所以库里
+// 不存在 v0(明文)行,也没有任何回填任务(D-11:不保留旧数据)。一行标着 v0
+// 的密文只可能来自直接改库 —— 按"读不出来"处理,绝不把 cipher 列当明文吐给
+// 管理员:那会让一串被人塞进去的乱码看起来像一个兑换码。
 func openPrizeSecret(nonce, cipher []byte, aad string, keyVersion int) (string, error) {
 	if keyVersion <= 0 {
-		// 历史行(以及未配置密钥时写下的行)是明文。nonce 必须为空 ——
-		// 有 nonce 却标 v0 说明数据被改过,不猜。
-		if len(nonce) != 0 {
-			return "", errPrizeSecretUnreadable
-		}
-		return string(cipher), nil
+		return "", errPrizeSecretUnreadable
 	}
 	key, err := prizeSecretKeyForVersion(keyVersion)
 	if err != nil {
@@ -134,35 +131,29 @@ func openPrizeSecret(nonce, cipher []byte, aad string, keyVersion int) (string, 
 	return string(plain), nil
 }
 
-// activePrizeSecretKey 返回当前启用的密钥与版本;ok=false 表示没配,走明文。
+// activePrizeSecretKey 返回当前启用的密钥与版本。密钥缺失是硬错误。
 //
 // 密钥与版本取自**同一份**配置快照:config.Get() 每次返回当前快照指针,
 // 两次分开取恰好落在热更新两侧时,会把 v1 的密文标成 v2 —— 那一行从此
 // 永远解不开,而且没有任何迹象(与 withdraw.activePIIKey 同一条理由)。
-func activePrizeSecretKey() ([]byte, int, bool, error) {
+func activePrizeSecretKey() ([]byte, int, error) {
 	l := config.Get().Lottery
-	raw := strings.TrimSpace(l.PrizeSecretKey)
-	if raw == "" {
-		return nil, 0, false, nil
+	if strings.TrimSpace(l.PrizeSecretKey) == "" {
+		common.SysError("qianye/lottery: lottery.prize_secret_key 未配置,拒绝写入兑换码 —— " +
+			"这一列不允许明文落库,请生成密钥后重启(openssl rand -base64 32)")
+		return nil, 0, errPrizeSecretKeyMissing
 	}
-	key, err := decodePrizeSecretKey(raw)
+	key, err := decodePrizeSecretKey(l.PrizeSecretKey)
 	if err != nil {
-		return nil, 0, false, err
+		return nil, 0, err
 	}
-	return key, activePrizeSecretKeyVersion(l), true, nil
-}
-
-func activePrizeSecretKeyVersion(l config.Lottery) int {
-	if l.PrizeSecretKeyVersion <= 0 {
-		return 1
-	}
-	return l.PrizeSecretKeyVersion
+	return key, l.ActivePrizeSecretKeyVersion(), nil
 }
 
 // prizeSecretKeyForVersion 按密文行上的版本号选密钥。
 func prizeSecretKeyForVersion(version int) ([]byte, error) {
 	l := config.Get().Lottery
-	if version == activePrizeSecretKeyVersion(l) {
+	if version == l.ActivePrizeSecretKeyVersion() {
 		if strings.TrimSpace(l.PrizeSecretKey) == "" {
 			common.SysError(fmt.Sprintf(
 				"qianye/lottery: 有 key_version=%d 的兑换码密文,但 lottery.prize_secret_key 未配置", version))
@@ -320,9 +311,14 @@ type myPrizeView struct {
 	Title    string `json:"title"`
 	Tier     int    `json:"tier"`
 	Name     string `json:"name"`
+	// PrizeType 是 text 或 product。商品奖只带 product_no / mall_order_no:内容(码 /
+	// 物流 / 订阅)全在那张商城订单上,走商城自己的接口(含验密揭示码)。
+	PrizeType   string `json:"prize_type"`
+	ProductNo   string `json:"product_no,omitempty"`
+	MallOrderNo string `json:"mall_order_no,omitempty"`
 	// TextDesc 是公示层的履行说明,发布时就已进承诺。
 	TextDesc string `json:"text_desc"`
-	// Status 是 pending(等管理员履行)或 fulfilled。
+	// Status 是 pending(等管理员履行)或 fulfilled;商品奖恒为 granted(去商城订单看进度)。
 	Status      string `json:"status"`
 	FulfilledAt int64  `json:"fulfilled_at"`
 	// Secret 只在已履行时非空。
@@ -331,6 +327,9 @@ type myPrizeView struct {
 	// Notice 是那条诚实边界:这串码没有承诺。
 	Notice string `json:"notice"`
 }
+
+const productPrizeNotice = "本奖品对应的商城商品与份数在活动发布时就已进入承诺哈希,事后不可更改;" +
+	"兑换码 / 发货 / 订阅的进度请到「我的订单」里查看对应的商城订单。"
 
 const textPrizeNotice = "本奖品的公开说明与份数在活动发布时就已进入承诺哈希,事后不可更改;" +
 	"但你拿到的这串具体内容是开奖之后由管理员填入的,**它没有进入承诺**," +
@@ -353,7 +352,7 @@ func handleGetMyPrize(c *gin.Context) {
 
 	var p Payout
 	err := gdb.WithContext(ctx).
-		Where("payout_no = ? AND kind = ?", c.Param("payout_no"), PayoutText).
+		Where("payout_no = ? AND kind IN ?", c.Param("payout_no"), []string{PayoutText, PayoutProduct}).
 		Take(&p).Error
 	if err != nil {
 		// 不区分"不存在"与"不是你的":两者回同一个 404,否则这个接口就成了
@@ -367,7 +366,7 @@ func handleGetMyPrize(c *gin.Context) {
 	}
 
 	view := myPrizeView{
-		PayoutNo: p.PayoutNo, Tier: p.Tier, Status: "pending",
+		PayoutNo: p.PayoutNo, Tier: p.Tier, Status: "pending", PrizeType: PrizeTypeText,
 		FulfilledAt: p.FulfilledAt, Notice: textPrizeNotice,
 	}
 	var act Activity
@@ -376,9 +375,16 @@ func handleGetMyPrize(c *gin.Context) {
 		view.ActNo, view.Title = act.ActNo, act.Title
 	}
 	var prize Prize
-	if err := gdb.WithContext(ctx).Select("name, text_desc").
+	if err := gdb.WithContext(ctx).Select("name, text_desc, product_no").
 		Where("act_id = ? AND tier = ?", p.ActId, p.Tier).Take(&prize).Error; err == nil {
 		view.Name, view.TextDesc = prize.Name, prize.TextDesc
+	}
+	if p.Kind == PayoutProduct {
+		// 商品奖没有"管理员填码"这一步,也没有那条诚实边界:它的内容就是那张商城订单。
+		view.PrizeType, view.ProductNo, view.MallOrderNo = PrizeTypeProduct, prize.ProductNo, p.MallOrderNo
+		view.Status, view.Notice = PayoutGranted, productPrizeNotice
+		respondOK(c, view)
+		return
 	}
 
 	if p.FulfilledAt > 0 {

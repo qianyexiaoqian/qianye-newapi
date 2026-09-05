@@ -42,7 +42,7 @@ import (
 //
 // 这一格决定的只是"同样这些票要分几次请求买完"。上限 10 与上限 999 之下,
 // 一个用户最终能持有的票数完全相同(那个数由 max_entries_per_user 说了算),
-// 每一张票的号码、序号、链环、资金单也逐字节相同 —— 它对参与者不构成任何一项
+// 每一张票的号码、序号、链环、流水也逐字节相同 —— 它对参与者不构成任何一项
 // 承诺,只是一条吞吐旋钮。把它塞进 commit_hash 的代价是实打实的:一场正在进行
 // 的活动里运营发现 10 注太少,唯一的补救会变成"取消这一期、全额退款、重开一期"。
 //
@@ -59,7 +59,7 @@ func checkPicksPerRequest(n int) error {
 		return errBadRequest(fmt.Sprintf(
 			"「一次最多下多少注」请填 0 到 %d 之间的整数(填 0 = 不配置,按默认 %d 注)—— "+
 				"上限 %d 是这条链路的物理量级:一次 N 注在服务端是 N 次串行扣费,"+
-				"每一注一张独立资金单、一条链环、一份可复算回执,满配实测约 %d 秒",
+				"每一注一行星屑流水、一条链环、一份可复算回执,满配实测约 %d 秒",
 			maxPicksPerRequestHard, defaultPicksPerRequest, maxPicksPerRequestHard,
 			(maxPicksPerRequestHard*measuredMsPerPick+999)/1000))
 	}

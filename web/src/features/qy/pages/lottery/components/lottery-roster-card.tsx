@@ -29,7 +29,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
+import { QySdAmount } from '../../../components/qy-sd-amount'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
 import { qyArray } from '../../../lib/array'
 import { QyPager } from '../../components/qy-pager'
@@ -181,7 +181,7 @@ export function QyLotRosterCard(props: { activity: QyLotActivityDetail }) {
                   id: 'amount',
                   header: t('qy_common_amount'),
                   cell: (row: QyLotProofEntry) => (
-                    <QyAmountText quota={row.amount} />
+                    <QySdAmount amount={row.amount} />
                   ),
                 },
                 {

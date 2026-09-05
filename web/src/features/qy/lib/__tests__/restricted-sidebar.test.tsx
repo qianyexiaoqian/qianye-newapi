@@ -88,8 +88,8 @@ const ENABLED_CONFIG = {
   available: true,
   features: {
     transfer: true,
+    invite: true,
     commission: true,
-    withdraw: true,
     availability: true,
     violation: true,
     lottery: true,

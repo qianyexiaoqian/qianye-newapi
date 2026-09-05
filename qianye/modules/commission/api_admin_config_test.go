@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"sync/atomic"
 	"testing"
 	_ "unsafe" // //go:linkname 需要
 
@@ -28,12 +27,6 @@ import (
 // 三条测试一律从 HTTP 处理器进,不直接调 writeSetting:F3 的缺陷不在
 // writeSetting 里 —— 那个函数单独看没有任何问题,问题在**调用它的那个循环
 // 没有事务、失败分支没有审计**。只测写入函数的话,把事务整段删掉测试照样全绿。
-
-// qyDBHealthy 是熔断的健康标志。guard.RequireAPI 要求它为 true,
-// 而它只有真的 db.Init 过才会被置上。
-//
-//go:linkname qyDBHealthy github.com/QuantumNous/new-api/qianye/db.healthy
-var qyDBHealthy atomic.Bool
 
 // useAdminAPI 把扩展置成"库健康",让 guard.RequireAPI 放行到处理器本体。
 func useAdminAPI(t *testing.T) {
@@ -198,7 +191,7 @@ func TestAdminHealth_ExposesDegradeCounters(t *testing.T) {
 // 额度门槛不许越过主库额度上限 —— 越过之后佣金会**永远不再落账**。
 //
 // 具体形状:结算金额 net 在 computeSettlement 里已被 common.QuotaFromDecimalChecked
-// 夹在 common.MaxQuota 内,而 min_settle_quota 若能填到它之外,`net < minSettle` 就恒成立,
+// 夹在 common.MaxQuota 内,而 min_settle_stardust 若能填到它之外,`net < minSettle` 就恒成立,
 // net 恒为 0。全站所有邀请人的佣金从此不落账:不报错、不告警、没有日志,
 // 未结算额一路累加。这不是"更严格的门槛",是一个永远无法被满足的门槛。
 //
@@ -210,14 +203,14 @@ func TestAdminPutConfig_RejectsQuotaThresholdAboveTheQuotaBound(t *testing.T) {
 	useAdminAPI(t)
 
 	rec := callAdminHandler(t, http.MethodPut, "/api/qy/admin/commission/config",
-		fmt.Sprintf(`{"min_settle_quota":%d}`, int64(common.MaxQuota)+1), adminPutConfig)
+		fmt.Sprintf(`{"min_settle_stardust":%d}`, int64(common.MaxQuota)+1), adminPutConfig)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 	assert.Empty(t, settingRows(t, gdb), "被拒的请求不该留下任何一个键")
 
 	// 边界本身必须放行 —— 上界写成 `>=` 会让一个合法的极值配置被拒。
 	rec = callAdminHandler(t, http.MethodPut, "/api/qy/admin/commission/config",
-		fmt.Sprintf(`{"min_settle_quota":%d}`, common.MaxQuota), adminPutConfig)
+		fmt.Sprintf(`{"min_settle_stardust":%d}`, common.MaxQuota), adminPutConfig)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
 
@@ -227,14 +220,14 @@ func TestAdminPutConfig_RejectsQuotaThresholdAboveTheQuotaBound(t *testing.T) {
 // 历史数据也不会因为今天加了校验就消失。回落到 YAML 默认值是有界的损失,
 // 而照单全收换来的是"全站佣金永远不再落账"。
 func TestQuotaOverride_DropsValuesAboveTheQuotaBound(t *testing.T) {
-	s := opSettings{MinSettleQuota: 1000, DailyCapQuota: 2000}
+	s := opSettings{MinSettleStardust: 1000, DailyCapStardust: 2000}
 	applyOverrides(&s, map[string]string{
-		"min_settle_quota":            strconv.FormatInt(int64(common.MaxQuota)+1, 10),
-		"max_daily_quota_per_inviter": strconv.Itoa(common.MaxQuota),
+		"min_settle_stardust":            strconv.FormatInt(int64(common.MaxQuota)+1, 10),
+		"max_daily_stardust_per_inviter": strconv.Itoa(common.MaxQuota),
 	})
-	assert.EqualValues(t, 1000, s.MinSettleQuota,
+	assert.EqualValues(t, 1000, s.MinSettleStardust,
 		"越界的门槛必须回落到默认值,而不是生效")
-	assert.EqualValues(t, common.MaxQuota, s.DailyCapQuota, "边界值必须照常生效")
+	assert.EqualValues(t, common.MaxQuota, s.DailyCapStardust, "边界值必须照常生效")
 }
 
 // ───────────────── 账本体检:那条站内此前看不见的恒等式 ─────────────────
@@ -293,9 +286,9 @@ func TestAdminHealth_ReportsLedgerIdentityDrift(t *testing.T) {
 	now := common.GetTimestamp()
 	// 干净的一行:结算掉 500,结算单发了 500,余数 0 —— I1 与 I2 都成立。
 	require.NoError(t, gdb.Create(&Balance{
-		UserId: 701, AvailableQuota: 500, TotalEarnedQuota: 500,
-		UnsettledAmount: decimal.Zero, AvailableFiat: decimal.Zero,
-		CreatedAt: now, UpdatedAt: now,
+		UserId: 701, Available: 500, TotalEarned: 500,
+		UnsettledAmount: decimal.Zero,
+		CreatedAt:       now, UpdatedAt: now,
 	}).Error)
 	seedAccrual(t, gdb, 1, func(a *Accrual) {
 		a.InviterId, a.InviteeId = 701, 801
@@ -303,18 +296,17 @@ func TestAdminHealth_ReportsLedgerIdentityDrift(t *testing.T) {
 		a.Status = StatusSettled
 	})
 	require.NoError(t, gdb.Create(&Settlement{
-		SettleNo: "S-CLEAN", UserId: 701, GrantedQuota: 500,
+		SettleNo: "S-CLEAN", UserId: 701, Granted: 500,
 		DeltaAmount: decimal.NewFromInt(500), CarryBefore: decimal.Zero,
-		CarryAfter: decimal.Zero, UsdRateWeighted: decimal.Zero,
-		FiatDelta: decimal.Zero, CreatedAt: now,
+		CarryAfter: decimal.Zero, CreatedAt: now,
 	}).Error)
 
 	// 坏的一行:计佣行说结算掉了 500.5,结算单只发了 500,余数记的是 0.1 ——
 	// 少了 0.4。而四列额度自洽,I2 = 0(正是 1622 的形状)。
 	require.NoError(t, gdb.Create(&Balance{
-		UserId: 700, AvailableQuota: 500, TotalEarnedQuota: 500,
-		UnsettledAmount: decimal.RequireFromString("0.1"), AvailableFiat: decimal.Zero,
-		CreatedAt: now, UpdatedAt: now,
+		UserId: 700, Available: 500, TotalEarned: 500,
+		UnsettledAmount: decimal.RequireFromString("0.1"),
+		CreatedAt:       now, UpdatedAt: now,
 	}).Error)
 	seedAccrual(t, gdb, 2, func(a *Accrual) {
 		a.InviterId, a.InviteeId = 700, 802
@@ -323,10 +315,9 @@ func TestAdminHealth_ReportsLedgerIdentityDrift(t *testing.T) {
 		a.Status = StatusSettled
 	})
 	require.NoError(t, gdb.Create(&Settlement{
-		SettleNo: "S-DRIFT", UserId: 700, GrantedQuota: 500,
+		SettleNo: "S-DRIFT", UserId: 700, Granted: 500,
 		DeltaAmount: decimal.NewFromInt(500), CarryBefore: decimal.Zero,
-		CarryAfter: decimal.Zero, UsdRateWeighted: decimal.Zero,
-		FiatDelta: decimal.Zero, CreatedAt: now,
+		CarryAfter: decimal.Zero, CreatedAt: now,
 	}).Error)
 
 	lc := healthLedgerCheck(t)
@@ -385,7 +376,7 @@ func TestAdminSettleAcceptsUserIdFromQueryOrBody(t *testing.T) {
 				return
 			}
 			require.Len(t, rows, 1, "接口回了 200 但没有任何一张结算单落库")
-			assert.EqualValues(t, 4000, rows[0].GrantedQuota)
+			assert.EqualValues(t, 4000, rows[0].Granted)
 			assert.Empty(t, settlementsOf(t, gdb, 7),
 				"请求体里的 user_id 盖掉了查询串 —— 结算落到了另一个人头上")
 		})

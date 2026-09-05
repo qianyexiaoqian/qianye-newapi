@@ -168,7 +168,7 @@ export function qyLotPoolShareHeadroom(
  * 每一个都对应后端一条真实的不等式，喂回那条判据必然为假。
  *
  * `applyBetBounds` 对 `bet_max_quota` 只有三条判定：≤ `common.MaxQuota`、
- * ≤ `lottery.max_stake_quota`、≥ `bet_min_quota`。**没有任何不等式可解**，
+ * ≤ `lottery.max_stake_stardust`、≥ `bet_min_quota`。**没有任何不等式可解**，
  * 于是"推荐值"只能是一个凭空选的常数。
  *
  * 而它想控制的那个量本来就算不出来：竞猜按彩池分账，中奖者拿
@@ -194,13 +194,15 @@ export function qyLotPoolShareHeadroom(
  * 该填什么。保本人数正好是 ⌈奖品总额 ÷ 参与费⌉，两个量表单上都有。
  *
  * 双色球不适用：浮动奖档的额度恒为 0，奖品总额算出来是一个只发几百额度的
- * 假数，而它的支出由期次池兜底。
+ * 假数，而它的支出由期次池兜底。转盘也不适用：它根本没有"人数不足流局"
+ * （本金逐转当场花掉、奖当场到账），这一格对转盘强制为 0。
  */
 export function qyLotRecommendedMinEntries(
   draft: QyLotDraft,
   entriesCap: number
 ): number {
-  if (draft.kind !== 'draw' || draft.draw_mode === 'ball') return 0
+  if (draft.kind !== 'draw') return 0
+  if (draft.draw_mode === 'ball' || draft.draw_mode === 'wheel') return 0
   const total = draft.tiers.reduce(
     (sum, tier) =>
       sum + Math.max(0, tier.amount_quota) * Math.max(0, tier.count),

@@ -5,6 +5,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/modules/invite"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
 
 	"gorm.io/gorm"
@@ -46,7 +47,7 @@ import (
 // 两份事实,而它们本来就是同一次运行的两个侧面。
 type SettleRun struct {
 	Id int64 `json:"id" gorm:"primaryKey;autoIncrement"`
-	// RunDate 是结算日界口径下的"今天"(见 dayline.go),不是 UTC 自然日,
+	// RunDate 是结算日界口径下的"今天"(见 invite/dayline.go),不是 UTC 自然日,
 	// 也不是服务器本地日 —— 它必须与 bucket_date 同源。
 	RunDate string `json:"run_date" gorm:"type:varchar(8);not null;uniqueIndex:uk_qy_csr_date"`
 	Status  string `json:"status" gorm:"type:varchar(16);not null;default:''"`
@@ -65,8 +66,8 @@ type SettleRun struct {
 	Processed int `json:"processed" gorm:"not null;default:0"`
 	Failed    int `json:"failed" gorm:"not null;default:0"`
 
-	GrantedQuota   int64 `json:"granted_quota" gorm:"not null;default:0"`
-	ReclaimedQuota int64 `json:"reclaimed_quota" gorm:"not null;default:0"`
+	Granted   int64 `json:"granted" gorm:"not null;default:0"`
+	Reclaimed int64 `json:"reclaimed" gorm:"not null;default:0"`
 
 	Remark    string `json:"remark" gorm:"type:varchar(255);not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"not null;default:0"`
@@ -152,7 +153,7 @@ func claimDailyRun(day string, now int64) (bool, error) {
 
 	// ⓪ 一行"写在本结算日开始之前"的记录是假的,必须重置后重跑。
 	//
-	// run_date 来自 dayKey(now),而 dayKey 受 commission.day_offset_minutes 管辖。
+	// run_date 来自 dayKey(now),而 dayKey 受 invite.day_offset_minutes 管辖。
 	// 把偏移**往前调**会让进程在今天就为未来某个 run_date 建行并跑完;偏移改回去
 	// 之后,那一天真正到来时下面三条路径全部落空(status 已经是 done),**那一整天
 	// 的结算被永久跳过**,而面板还照常显示 ran_today=true。实测走过一遍:
@@ -410,16 +411,16 @@ func finishDailyRun(day string, st drainStats, now int64) error {
 	return gdb.Model(&SettleRun{}).
 		Where("run_date = ? AND holder = ? AND status = ?", day, lease.Holder(), settleRunRunning).
 		Updates(map[string]any{
-			"status":          status,
-			"finished_at":     now,
-			"heartbeat_at":    now,
-			"rounds":          st.Rounds,
-			"processed":       st.Processed,
-			"failed":          st.Failed,
-			"granted_quota":   st.Granted,
-			"reclaimed_quota": st.Reclaimed,
-			"remark":          truncate(st.Note, 255),
-			"updated_at":      now,
+			"status":       status,
+			"finished_at":  now,
+			"heartbeat_at": now,
+			"rounds":       st.Rounds,
+			"processed":    st.Processed,
+			"failed":       st.Failed,
+			"granted":      st.Granted,
+			"reclaimed":    st.Reclaimed,
+			"remark":       truncate(st.Note, 255),
+			"updated_at":   now,
 		}).Error
 }
 
@@ -438,7 +439,7 @@ func dailySettleSnapshot(now int64) map[string]any {
 	day := dayKey(now)
 	out := map[string]any{
 		"today":              day,
-		"day_offset_minutes": int(dayOffsetSeconds() / 60),
+		"day_offset_minutes": invite.DayOffsetMinutes(),
 		"next_run_after":     nextDayStart(now),
 		"max_attempts":       settleRunMaxAttempts,
 		"payout_day_offset":  payoutDayOffset(effective().HoldingDays),
@@ -485,19 +486,19 @@ func runView(r SettleRun, now int64) map[string]any {
 		elapsed = 0
 	}
 	return map[string]any{
-		"run_date":        r.RunDate,
-		"status":          r.Status,
-		"holder":          r.Holder,
-		"attempts":        r.Attempts,
-		"started_at":      r.StartedAt,
-		"finished_at":     r.FinishedAt,
-		"heartbeat_at":    r.HeartbeatAt,
-		"duration_sec":    elapsed,
-		"rounds":          r.Rounds,
-		"processed":       r.Processed,
-		"failed":          r.Failed,
-		"granted_quota":   r.GrantedQuota,
-		"reclaimed_quota": r.ReclaimedQuota,
-		"remark":          r.Remark,
+		"run_date":     r.RunDate,
+		"status":       r.Status,
+		"holder":       r.Holder,
+		"attempts":     r.Attempts,
+		"started_at":   r.StartedAt,
+		"finished_at":  r.FinishedAt,
+		"heartbeat_at": r.HeartbeatAt,
+		"duration_sec": elapsed,
+		"rounds":       r.Rounds,
+		"processed":    r.Processed,
+		"failed":       r.Failed,
+		"granted":      r.Granted,
+		"reclaimed":    r.Reclaimed,
+		"remark":       r.Remark,
 	}
 }

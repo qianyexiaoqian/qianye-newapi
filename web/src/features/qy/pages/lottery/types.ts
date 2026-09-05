@@ -43,7 +43,13 @@ export type QyLotKind = 'draw' | 'guess'
  *
  * 老活动不下发这个字段，因此**必须容忍 `undefined`**：一律按 `rank` 处理。
  */
-export type QyLotDrawMode = '' | 'ball' | 'prob' | 'rank' | (string & {})
+export type QyLotDrawMode =
+  | ''
+  | 'ball'
+  | 'prob'
+  | 'rank'
+  | 'wheel'
+  | (string & {})
 
 /**
  * 奖品形态。`quota` = 额度（走资金链路），`text` = 一段文本（兑换码 / CDK /
@@ -51,7 +57,13 @@ export type QyLotDrawMode = '' | 'ball' | 'prob' | 'rank' | (string & {})
  *
  * 单选，不允许一档既给额度又给文本 —— 那会让派奖在同一行里分叉。要两者请配两档。
  */
-export type QyLotPrizeType = '' | 'quota' | 'text' | (string & {})
+export type QyLotPrizeType =
+  | ''
+  | 'none'
+  | 'product'
+  | 'quota'
+  | 'text'
+  | (string & {})
 
 /** 概率的分母。`win_ppm` 是百万分比，1_000_000 = 必中。 */
 export const QY_LOT_PPM_DEN = 1_000_000
@@ -118,6 +130,7 @@ export type QyLotPayoutStatus =
  */
 export type QyLotPayoutKind =
   | 'prize'
+  | 'product'
   | 'refund'
   | 'text'
   | 'win'
@@ -159,6 +172,19 @@ export type QyLotTier = {
   blue_match?: number
   /** 双色球：本档从奖池里分走的万分比（浮动奖）。 */
   pool_share_bps?: number
+  /**
+   * 商品奖（`prize_type='product'`）引用的商城商品号。它进 `spec_hash` 原像
+   * （第 11 位）；`product_title` / `product_kind` 是展示用的摘要，按商品号从
+   * 商城现读，不进承诺。
+   */
+  product_no?: string
+  product_title?: string
+  product_kind?: string
+  /**
+   * 转盘：本档在线剩余份数（`count` 是初始份数，进承诺；这一格是实时的，不进）。
+   * 只有 `draw_mode='wheel'` 下发。摇中却已发完的档会被顺延（`exhausted_tier`）。
+   */
+  stock_left?: number
 }
 
 /**
@@ -197,6 +223,10 @@ export type QyLotSpecItem = {
   red_match?: number
   blue_match?: number
   pool_share_bps?: number
+  product_no?: string
+  product_title?: string
+  product_kind?: string
+  stock_left?: number
   opt_no?: number
   label?: string
   is_catch_all?: boolean
@@ -223,6 +253,12 @@ export function qyLotTiers(spec: QyLotSpecItem[] | undefined): QyLotTier[] {
       red_match: item.red_match ?? 0,
       blue_match: item.blue_match ?? 0,
       pool_share_bps: item.pool_share_bps ?? 0,
+      // 第 11 位：商品奖的商城商品号，非商品奖恒为空串（同样是恒等式取值）。
+      product_no: item.product_no ?? '',
+      product_title: item.product_title,
+      product_kind: item.product_kind,
+      // 不进原像，所以不补零：老后端与非转盘活动就是没有它。
+      stock_left: item.stock_left,
     }))
     .sort((a, b) => a.tier - b.tier)
 }
@@ -230,6 +266,16 @@ export function qyLotTiers(spec: QyLotSpecItem[] | undefined): QyLotTier[] {
 /** 该档是不是文本奖。缺省（`lot-v1`）一律是额度奖。 */
 export function isQyLotTextPrize(tier: Pick<QyLotTier, 'prize_type'>): boolean {
   return tier.prize_type === 'text'
+}
+
+/**
+ * 该档是不是商城商品奖。它与文本奖一样 `amount_quota` 恒为 0，但兑现路径完全
+ * 不同：中奖那一刻就生成一张 0 星屑的商城订单，码 / 发货 / 订阅全在那张单上。
+ */
+export function isQyLotProductPrize(
+  tier: Pick<QyLotTier, 'prize_type'>
+): boolean {
+  return tier.prize_type === 'product'
 }
 
 /** 从扁平 spec 里取出竞猜选项，按 opt_no 升序。 */
@@ -373,13 +419,18 @@ export type QyLotActivityBrief = {
    */
   cover_url?: string
   cover_ref?: string
+  /**
+   * 币种常量（design-15）。所有 `*_quota` 字段**字段名不变、单位全是整数星屑**：
+   * 字段名进承诺哈希原像，改名等于换协议。老后端不下发时同样按星屑处理。
+   */
+  currency?: 'stardust'
   stake_quota: number
   open_at: number
   close_at: number
   draw_at: number
   active_count: number
   pool_quota: number
-  /** 抽奖没有奖池概念（平台出奖品），这里给的是奖品总额度 —— 对用户而言那才是"能赢多少"。 */
+  /** 抽奖没有奖池概念（平台出奖品），这里给的是奖品总额 —— 对用户而言那才是"能赢多少"。 */
   prize_total_quota: number
   my_entry_count: number
 
@@ -401,6 +452,15 @@ export type QyLotActivityBrief = {
   ball_blue_pick?: number
   /** 本期开奖号，规范化格式 `03,09,12|05`。开奖前为空串。 */
   ball_result?: string
+
+  /**
+   * 转盘（`draw_mode='wheel'`）的奖档，**只对转盘下发**（design-15 §12.1）。
+   *
+   * 转盘卡片要画"各档剩余 / 初始"（`stock_left` / `count`），那是随每一转变化的
+   * 数，`prize_total_quota` 一个数装不下；而为每张卡再打一次详情是不可接受的。
+   * 形状与详情页的 `spec` 同一套（`QyLotSpecItem`），含派生的「谢谢参与」行。
+   */
+  tiers?: QyLotSpecItem[]
 }
 
 export type QyLotActivityDetail = {
@@ -415,6 +475,13 @@ export type QyLotActivityDetail = {
   /** 封面。口径与 {@link QyLotActivityBrief} 上那两个字段完全一致。 */
   cover_url?: string
   cover_ref?: string
+  /** 币种常量，见 {@link QyLotActivityBrief.currency}。 */
+  currency?: 'stardust'
+  /**
+   * 当前用户的星屑余额（登录用户才下发；匿名 / 老后端为 `undefined`）。
+   * 报名弹窗把它与参与费并排，让"够不够"在按下确认之前就看得见。
+   */
+  stardust_balance?: number
   stake_quota: number
   open_at: number
   close_at: number
@@ -477,8 +544,8 @@ export type QyLotActivityDetail = {
   dedup_ip: boolean
   /** 按活动的基准参与费判定是否要验支付密码；竞猜自选更大的金额时由后端按本次金额重算。 */
   pay_password_required: boolean
-  /** 阈值本身，0 = 关闭。让投注额输入框旁边能直接写清"超过多少要验密码"。 */
-  pay_password_threshold_quota: number
+  /** 阈值本身（整数星屑），0 = 关闭。让投注额输入框旁边能直接写清"超过多少要验密码"。 */
+  pay_password_threshold_stardust: number
   /**
    * 这一场所属的玩法当前是否还受理新参与（后端 `play.go` 的玩法开关）。
    *
@@ -673,6 +740,13 @@ export type QyLotMyEntry = {
     payout_no?: string
     /** 文本奖是否已由管理员履行。未履行时点开看到的是"等履行"而不是空白。 */
     fulfilled?: boolean
+    /**
+     * 商品奖（`kind='product'`）专属：中的是哪件商品、生成了哪张商城订单。
+     * 码 / 发货 / 订阅的进度都在那张单上，这里只给"去看那张单"的钥匙。
+     */
+    prize_type?: QyLotPrizeType
+    product_no?: string
+    mall_order_no?: string
   } | null
   created_at: number
 }
@@ -700,10 +774,20 @@ export type QyLotMyPrize = {
   tier: number
   /** 奖档名（公开，进 `spec_hash`）。 */
   name: string
+  /**
+   * `text` 或 `product`。商品奖**没有 `secret`**：内容（码 / 物流 / 订阅）全在
+   * `mall_order_no` 那张商城订单上，走商城自己的接口（含验密揭示码）。
+   */
+  prize_type?: QyLotPrizeType
+  product_no?: string
+  mall_order_no?: string
   /** 公开的履行说明（进 `spec_hash`）。 */
   text_desc: string
-  /** `pending` = 管理员还没履行；`fulfilled` = 已填入内容。 */
-  status: 'fulfilled' | 'pending' | (string & {})
+  /**
+   * `pending` = 管理员还没履行；`fulfilled` = 已填入内容；
+   * `granted` = 商品奖，开奖那一刻就已落到商城订单上（去那张单看进度）。
+   */
+  status: 'fulfilled' | 'granted' | 'pending' | (string & {})
   /** 实际的兑换码 / CDK。**只有 `fulfilled` 时才有值**。 */
   secret?: string
   /** 管理员填的备注（领取方式、有效期之类）。 */

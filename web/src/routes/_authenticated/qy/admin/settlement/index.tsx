@@ -40,7 +40,7 @@ const settlementSearchSchema = z.object({
   inviter_id: z.string().optional().catch(''),
 })
 
-// 「结算台」选择夹的宿主：日消费明细 / 佣金审核 / 提现审核三张标签，
+// 「结算台」选择夹的宿主（D-15 恢复）：日消费明细 / 佣金审核 / 佣金用户三张标签，
 // 选中哪一张由 URL hash 决定（见 features/qy/pages/lib/tabs.ts）。
 //
 // ⚠️ 侧栏入口在 `lib/pages.ts`（「结算 → 结算台」）。本仓已经五次栽在

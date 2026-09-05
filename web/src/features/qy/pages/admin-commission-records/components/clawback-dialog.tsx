@@ -45,7 +45,7 @@ type ClawbackDialogProps = {
  * 冲正会写一条负额计佣行并直接扣减邀请人的佣金余额，因此：
  *   - **理由必填**（后端 `qy_reason_required`）：没有理由的扣款事后无法复盘；
  *   - 带 `client_request_id`，重试不会扣两遍；
- *   - 扣减额度**不能超过原始计佣额**，超出部分会变成欠账并冻结对方提现，
+ *   - 扣减额度**不能超过原始计佣额**，超出部分会变成欠账并暂停对方的自动入账，
  *     所以输入框上界直接钉在 `base_quota` 对应的佣金上。
  */
 export function ClawbackDialog(props: ClawbackDialogProps) {
@@ -121,7 +121,7 @@ export function ClawbackDialog(props: ClawbackDialogProps) {
               onChange={(event) => setQuota(event.target.value)}
             />
             <p className='text-muted-foreground text-xs'>
-              {t('qy_cm_clawback_quota_hint')}
+              {t('qy_cm_clawback_quota_hint_xh')}
             </p>
           </div>
 

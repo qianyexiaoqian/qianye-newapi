@@ -3,14 +3,14 @@ package lottery
 // guess_pool_e2e_db_test.go —— 真打一场竞猜,核对「平台净流入 == 手续费」。
 //
 // 项目方的原话是「竞猜怎么感觉就像选择题一样?这不是给人送钱吗?」。
-// SplitPool 的纯函数守恒式(fund_flow_db_test.go)只能证明**分配**对得上,
-// 证明不了"平台到底进出了多少真钱":那要看主库 users.quota 的前后差。
-// 两者中间隔着报名扣款、结算落计划、出款 worker 加钱三段跨库路径,
+// SplitPool 的纯函数守恒式(entry_tx_db_test.go)只能证明**分配**对得上,
+// 证明不了"平台到底进出了多少真钱":那要看每个人星屑余额的前后差。
+// 两者中间隔着报名扣款、结算落计划、出款 worker 入账三段路径,
 // 任何一段多发一笔,纯函数照样全绿。
 //
 // 所以这里从建活动一路跑到出款完成,唯一的判据是:
 //
-//	Σ(全部参与者的主库额度前后差) == -fee
+//	Σ(全部参与者的星屑余额前后差) == -fee
 //
 // 也就是**用户侧净流出恰好等于活动行上记的 platform_fee_quota**,
 // 平台一分钱都没有垫付。fee=0 的公益场里这个数是 0(不是负数)。
@@ -48,15 +48,18 @@ const (
 // 而 ballE2ERouter 那种"路由上写死一个 id"的写法只能跑单人。
 var guessE2EActor int
 
-// newGuessMainDB 建主库并接到 model.DB,给三个下注人各发一笔起始额度。
-func newGuessMainDB(t *testing.T, quota int) *gorm.DB {
+// newGuessMainDB 建主库并接到 model.DB,给三个下注人各种下一笔起始星屑。
+//
+// 主库只剩资格判定要读的 users 行;钱在扩展库的星屑账本里,种子经 seedStardust
+// 落到当前已接上的扩展库(调用方必须先建好它)。
+func newGuessMainDB(t *testing.T, startStardust int) *gorm.DB {
 	t.Helper()
 	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: gormlogger.Discard})
 	require.NoError(t, err)
 	sqlDB, err := gdb.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, gdb.AutoMigrate(&model.User{}, &model.Log{}, &model.QyFundOutbox{}))
+	require.NoError(t, gdb.AutoMigrate(&model.User{}))
 
 	prevType := common.MainDatabaseType()
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
@@ -75,12 +78,15 @@ func newGuessMainDB(t *testing.T, quota int) *gorm.DB {
 		_ = sqlDB.Close()
 	})
 
+	ext := qyDBHandle.Load()
+	require.NotNil(t, ext, "先建扩展库环境(newPayoutEnv)再建主库:种子星屑要落进扩展库")
 	for i, id := range guessE2EBettors() {
 		require.NoError(t, gdb.Create(&model.User{
 			Id: id, Username: "qy-guess-" + strconv.Itoa(i), Password: "x",
 			AffCode: "affg" + strconv.Itoa(i), Group: "default",
-			Quota: quota, Status: common.UserStatusEnabled,
+			Quota: startStardust, Status: common.UserStatusEnabled,
 		}).Error)
+		seedStardust(t, ext, id, int64(startStardust))
 	}
 	return gdb
 }
@@ -108,7 +114,7 @@ func guessE2ERouter() *gin.Engine {
 }
 
 // guessE2EEnv 拉起一场竞猜要用到的全部环境,返回扩展库句柄与路由。
-func guessE2EEnv(t *testing.T, startQuota int) (*gorm.DB, *gorm.DB, *gin.Engine) {
+func guessE2EEnv(t *testing.T, startStardust int) (*gorm.DB, *gin.Engine) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	ext := newPayoutEnv(t, config.Lottery{
@@ -116,8 +122,8 @@ func guessE2EEnv(t *testing.T, startQuota int) (*gorm.DB, *gorm.DB, *gin.Engine)
 		PayoutMaxAttempts:      8,
 		EntryCloseGraceSeconds: 0,
 		RevealDelaySeconds:     0,
-		MaxStakeQuota:          5_000_000,
-		MaxTotalPrizeQuota:     5_000_000,
+		MaxStakeStardust:       5_000_000,
+		MaxTotalPrizeStardust:  5_000_000,
 		MaxActiveActivities:    16,
 		MaxPrizeTiers:          8,
 		MaxOptions:             8,
@@ -132,8 +138,8 @@ func guessE2EEnv(t *testing.T, startQuota int) (*gorm.DB, *gorm.DB, *gin.Engine)
 	// 运营覆盖是带 60 秒缓存的进程级单例,上一条用例留下的快照会串味。
 	invalidateSettings()
 	t.Cleanup(invalidateSettings)
-	main := newGuessMainDB(t, startQuota)
-	return ext, main, guessE2ERouter()
+	newGuessMainDB(t, startStardust)
+	return ext, guessE2ERouter()
 }
 
 func guessCall(t *testing.T, r *gin.Engine, method, path, body string) (int, []byte) {
@@ -185,13 +191,6 @@ func placeBet(t *testing.T, r *gin.Engine, actNo string, userId, optNo int, amou
 	require.Equalf(t, http.StatusOK, code, "用户 %d 下注失败: %s", userId, resp)
 }
 
-func quotaOf(t *testing.T, main *gorm.DB, userId int) int64 {
-	t.Helper()
-	var u model.User
-	require.NoError(t, main.Where("id = ?", userId).Take(&u).Error)
-	return int64(u.Quota)
-}
-
 // settleGuess 封盘 → 录结果 → 把出款全部驱动到终态。
 func settleGuess(t *testing.T, ext *gorm.DB, r *gin.Engine, actNo string, winOptNo int) *Activity {
 	t.Helper()
@@ -232,7 +231,7 @@ func settleGuess(t *testing.T, ext *gorm.DB, r *gin.Engine, actNo string, winOpt
 //	Σ = 1850 − 1000 − 1000         → −150 == −fee
 func TestGuessThreeBettorsOneWinner_PlatformNetInflowIsExactlyFee(t *testing.T) {
 	const start = 100_000
-	ext, main, r := guessE2EEnv(t, start)
+	ext, r := guessE2EEnv(t, start)
 	actNo := createGuess(t, r, 500, 1000)
 
 	placeBet(t, r, actNo, guessE2EUserA, 1, 0)
@@ -241,8 +240,8 @@ func TestGuessThreeBettorsOneWinner_PlatformNetInflowIsExactlyFee(t *testing.T) 
 
 	// 下注即扣款:池子还没结算时,三个人一共少了 3000。
 	for _, id := range guessE2EBettors() {
-		assert.EqualValues(t, start-1000, quotaOf(t, main, id),
-			"用户 %d 的下注没有真的从主库扣走", id)
+		assert.EqualValues(t, start-1000, stardustOf(t, ext, id),
+			"用户 %d 的下注没有真的从星屑账本扣走", id)
 	}
 
 	act := settleGuess(t, ext, r, actNo, 1)
@@ -251,19 +250,19 @@ func TestGuessThreeBettorsOneWinner_PlatformNetInflowIsExactlyFee(t *testing.T) 
 	assert.EqualValues(t, 150, act.PlatformFeeQuota, "fee = 3000 × 5%")
 	assert.Equal(t, OutcomeDrawn, act.Outcome)
 
-	assert.EqualValues(t, start+1850, quotaOf(t, main, guessE2EUserA),
+	assert.EqualValues(t, start+1850, stardustOf(t, ext, guessE2EUserA),
 		"唯一的赢家应当拿走 net=2850,净赚 1850 —— 这笔钱来自 B 与 C,不是平台发的")
-	assert.EqualValues(t, start-1000, quotaOf(t, main, guessE2EUserB))
-	assert.EqualValues(t, start-1000, quotaOf(t, main, guessE2EUserC))
+	assert.EqualValues(t, start-1000, stardustOf(t, ext, guessE2EUserB))
+	assert.EqualValues(t, start-1000, stardustOf(t, ext, guessE2EUserC))
 
 	var delta int64
 	for _, id := range guessE2EBettors() {
-		delta += quotaOf(t, main, id) - start
+		delta += stardustOf(t, ext, id) - start
 	}
 	assert.EqualValues(t, -150, delta,
 		"用户侧净流出必须恰好等于手续费 —— 大于它是平台多抽,小于它是平台倒贴")
 	assert.EqualValues(t, act.PlatformFeeQuota, -delta,
-		"活动行上记的手续费必须与主库真金的净流入逐单位一致")
+		"活动行上记的手续费必须与账本上的净流入逐单位一致")
 }
 
 // 手续费为 0 的公益场:平台净流入是 0,**不是负数**。
@@ -272,7 +271,7 @@ func TestGuessThreeBettorsOneWinner_PlatformNetInflowIsExactlyFee(t *testing.T) 
 // 逐笔截断的残差在这里全部要落到最后一名赢家头上。
 func TestGuessZeroFee_PlatformNeitherGainsNorPays(t *testing.T) {
 	const start = 100_000
-	ext, main, r := guessE2EEnv(t, start)
+	ext, r := guessE2EEnv(t, start)
 	actNo := createGuess(t, r, 0, 1000)
 
 	// 两个赢家 + 一个输家:net=3000 按 1000:1000 分,各 1500。
@@ -283,24 +282,24 @@ func TestGuessZeroFee_PlatformNeitherGainsNorPays(t *testing.T) {
 	act := settleGuess(t, ext, r, actNo, 1)
 	assert.EqualValues(t, 0, act.PlatformFeeQuota)
 
-	assert.EqualValues(t, start+500, quotaOf(t, main, guessE2EUserA))
-	assert.EqualValues(t, start+500, quotaOf(t, main, guessE2EUserB))
-	assert.EqualValues(t, start-1000, quotaOf(t, main, guessE2EUserC))
+	assert.EqualValues(t, start+500, stardustOf(t, ext, guessE2EUserA))
+	assert.EqualValues(t, start+500, stardustOf(t, ext, guessE2EUserB))
+	assert.EqualValues(t, start-1000, stardustOf(t, ext, guessE2EUserC))
 
 	var delta int64
 	for _, id := range guessE2EBettors() {
-		delta += quotaOf(t, main, id) - start
+		delta += stardustOf(t, ext, id) - start
 	}
-	assert.Zero(t, delta, "零费率场平台既不抽水也不垫付,用户侧总额度必须原地不动")
+	assert.Zero(t, delta, "零费率场平台既不抽水也不垫付,用户侧总星屑必须原地不动")
 }
 
 // 全场都押中同一个选项:原样退回,平台一分钱不收、也一分钱不垫。
 //
 // 这是界面上必须在**下注之前**说清的那一条(qy_lot_no_winner_note),
-// 而它在资金上的表现是"三个人的额度全部回到起点"。
+// 而它在资金上的表现是"三个人的星屑全部回到起点"。
 func TestGuessEverybodyRight_RefundsPrincipalAndTakesNoFee(t *testing.T) {
 	const start = 100_000
-	ext, main, r := guessE2EEnv(t, start)
+	ext, r := guessE2EEnv(t, start)
 	actNo := createGuess(t, r, 500, 1000)
 
 	placeBet(t, r, actNo, guessE2EUserA, 1, 0)
@@ -313,7 +312,7 @@ func TestGuessEverybodyRight_RefundsPrincipalAndTakesNoFee(t *testing.T) {
 	assert.EqualValues(t, 0, act.PlatformFeeQuota, "没有发生任何再分配,收费没有对价")
 
 	for _, id := range guessE2EBettors() {
-		assert.EqualValues(t, start, quotaOf(t, main, id),
+		assert.EqualValues(t, start, stardustOf(t, ext, id),
 			"用户 %d 的本金没有原样退回", id)
 	}
 }
@@ -321,7 +320,7 @@ func TestGuessEverybodyRight_RefundsPrincipalAndTakesNoFee(t *testing.T) {
 // 没有人押中:同样全额退款、零手续费。
 func TestGuessNobodyRight_RefundsPrincipalAndTakesNoFee(t *testing.T) {
 	const start = 100_000
-	ext, main, r := guessE2EEnv(t, start)
+	ext, r := guessE2EEnv(t, start)
 	actNo := createGuess(t, r, 500, 1000)
 
 	placeBet(t, r, actNo, guessE2EUserA, 1, 0)
@@ -333,7 +332,7 @@ func TestGuessNobodyRight_RefundsPrincipalAndTakesNoFee(t *testing.T) {
 	assert.EqualValues(t, 0, act.PlatformFeeQuota)
 
 	for _, id := range guessE2EBettors() {
-		assert.EqualValues(t, start, quotaOf(t, main, id),
+		assert.EqualValues(t, start, stardustOf(t, ext, id),
 			"用户 %d 的本金没有原样退回", id)
 	}
 }
@@ -344,7 +343,7 @@ func TestGuessNobodyRight_RefundsPrincipalAndTakesNoFee(t *testing.T) {
 // 那条分支,他会付 5% 买回自己那一注,而那 5% 是平台凭空拿走的。
 func TestGuessSoleBettor_GetsPrincipalBackWithoutFee(t *testing.T) {
 	const start = 100_000
-	ext, main, r := guessE2EEnv(t, start)
+	ext, r := guessE2EEnv(t, start)
 	actNo := createGuess(t, r, 500, 1000)
 
 	placeBet(t, r, actNo, guessE2EUserA, 1, 0)
@@ -352,7 +351,7 @@ func TestGuessSoleBettor_GetsPrincipalBackWithoutFee(t *testing.T) {
 	act := settleGuess(t, ext, r, actNo, 1)
 	assert.EqualValues(t, 1000, act.PoolQuota)
 	assert.EqualValues(t, 0, act.PlatformFeeQuota)
-	assert.EqualValues(t, start, quotaOf(t, main, guessE2EUserA),
+	assert.EqualValues(t, start, stardustOf(t, ext, guessE2EUserA),
 		"全场唯一一注押中了自己,拿回的必须是整整 1000")
 }
 
@@ -361,7 +360,7 @@ func TestGuessSoleBettor_GetsPrincipalBackWithoutFee(t *testing.T) {
 // buildActivity 的 KindGuess 分支根本不调 buildPrizes,所以带 prizes 的请求
 // 只会被静默忽略。这条断言把"忽略"钉成事实:库里一行奖档都不许有。
 func TestGuessCannotCarryPrizes_NoNetIssuancePathExists(t *testing.T) {
-	ext, _, r := guessE2EEnv(t, 100_000)
+	ext, r := guessE2EEnv(t, 100_000)
 	now := common.GetTimestamp()
 	create := `{
 		"kind":"guess","title":"带着奖品的竞猜","stake_quota":1000,"fee_bps":500,
@@ -410,7 +409,7 @@ func jsonNumber(t *testing.T, body []byte, path ...string) float64 {
 // 上界写在 max_guess_fee_bps 里(这里 2000 = 20%);负数是"平台倒贴给赢家"的
 // 唯一入口,必须在请求校验就被挡住,而不是等 SplitPool 把它钳成 0。
 func TestGuessFeeBpsOutOfRangeIsRejected(t *testing.T) {
-	_, _, r := guessE2EEnv(t, 100_000)
+	_, r := guessE2EEnv(t, 100_000)
 	now := common.GetTimestamp()
 	for _, tc := range []struct {
 		name   string
@@ -439,7 +438,7 @@ func TestGuessFeeBpsOutOfRangeIsRejected(t *testing.T) {
 // # 这一条挡的是什么
 //
 // 「全部猜错」与「全场押中同一项」两种收场都落在 isFullRefundOutcome 里,
-// runSettle 随后会再跑一次 planFullRefund —— 而那一次是**核对资金单**的
+// runSettle 随后会再跑一次 planFullRefund —— 而那一次是**核对账本流水**的
 // (refundAmountOf,两者不等按较小值退并落 refund_drift)。可是
 // settleGuessResult 先登记过一批退款计划,两条路径共用
 // uk(act_id, entry_id, kind),**先登记的那一条赢**。
@@ -448,11 +447,11 @@ func TestGuessFeeBpsOutOfRangeIsRejected(t *testing.T) {
 // 同时改大(「重算奖池 == 物化计数」那条交叉核对只要求两个数互相一致,
 // 一起改就照样通过),平台就会退出一笔从没收进来的钱。
 //
-// 这里真的做那次篡改,并核对:退款按资金单封顶、主库额度不多一分、
+// 这里真的做那次篡改,并核对:退款按流水封顶、星屑余额不多一分、
 // 库里留下一条 refund_drift。
-func TestGuessFullRefundIsCappedByFundOrder(t *testing.T) {
+func TestGuessFullRefundIsCappedByLedger(t *testing.T) {
 	const start = 100_000
-	ext, main, r := guessE2EEnv(t, start)
+	ext, r := guessE2EEnv(t, start)
 	actNo := createGuess(t, r, 500, 1000)
 
 	// 三个人押同一项 → 全场押中,走全额退回。
@@ -490,7 +489,7 @@ func TestGuessFullRefundIsCappedByFundOrder(t *testing.T) {
 		DrivePayouts(context.Background())
 	}
 
-	// 退款按资金单封顶:被改过的那一条仍然只退 1000。
+	// 退款按账本流水封顶:被改过的那一条仍然只退 1000。
 	var plan Payout
 	require.NoError(t, ext.Where("act_id = ? AND entry_id = ? AND kind = ?",
 		act.Id, victim.Id, PayoutRefund).Take(&plan).Error)
@@ -498,8 +497,8 @@ func TestGuessFullRefundIsCappedByFundOrder(t *testing.T) {
 		"退款金额跟着被篡改的 entry.amount 走了 —— 平台退出了一笔从没收进来的钱")
 
 	for _, id := range guessE2EBettors() {
-		assert.EqualValues(t, start, quotaOf(t, main, id),
-			"用户 %d 的额度不该因为一次篡改而变多", id)
+		assert.EqualValues(t, start, stardustOf(t, ext, id),
+			"用户 %d 的星屑不该因为一次篡改而变多", id)
 	}
 
 	var flags int64

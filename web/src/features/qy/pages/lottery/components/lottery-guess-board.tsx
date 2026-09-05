@@ -20,7 +20,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
+import { QySdAmount } from '../../../components/qy-sd-amount'
 import { qyLotGuessBoard, type QyLotGuessRow } from '../lib/guess'
 import type { QyLotSpecItem } from '../types'
 
@@ -118,7 +118,7 @@ export function QyLotGuessLine(props: {
             <span className='text-foreground font-medium'>
               {(row.share * 100).toFixed(1)}%
             </span>
-            <QyAmountText quota={row.bet_quota ?? 0} />
+            <QySdAmount amount={row.bet_quota ?? 0} />
             <span aria-hidden='true'>·</span>
             <span>{t('qy_lot_guess_bets', { count: row.bet_count ?? 0 })}</span>
           </span>
@@ -200,7 +200,7 @@ function QyLotGuessOdds(props: { row: QyLotGuessRow }) {
       <span>
         {outcome === 'won' ? t('qy_lot_guess_paid') : t('qy_lot_guess_pays')}
       </span>
-      <QyAmountText quota={quote.payoutQuota} className='text-foreground' />
+      <QySdAmount amount={quote.payoutQuota} className='text-foreground' />
       <span className='tabular-nums'>×{quote.multiple.toFixed(2)}</span>
     </p>
   )

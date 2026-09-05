@@ -188,6 +188,13 @@ func taskBillingOther(task *model.Task) map[string]interface{} {
 		other["is_model_mapped"] = true
 		other["upstream_model_name"] = props.UpstreamModelName
 	}
+	// 订阅出资的任务:补写与 relay 侧(log_info_generate.go)同名的 billing_source。
+	// 佣金 hook 的订阅排除口径只认这个键 —— 不写的话 exclude_subscription_consume
+	// 对任务补扣/退款完全失效,订阅消费会被重复返佣。这里是唯一的写入点,补扣差额
+	// (settleTaskQuotaDelta)与整单退款(RefundTaskQuota)都经 taskBillingOther,自动都带上。
+	if taskIsSubscription(task) {
+		other["billing_source"] = BillingSourceSubscription
+	}
 	return other
 }
 

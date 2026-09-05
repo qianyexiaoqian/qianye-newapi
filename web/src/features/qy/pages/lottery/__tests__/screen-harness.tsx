@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+/* oxlint-disable react/only-export-components -- 测试夹具：同时导出 fixture 函数与挂载器，不参与 Fast Refresh */
 /**
  * 抽奖竞猜用户端「一屏到底有多少字」的测量夹具。
  *
@@ -81,10 +82,9 @@ const {
   createRouter,
 } = await import('@tanstack/react-router')
 
-const zhKeys = (await import('@/i18n/qy/zh.json')).default as Record<
-  string,
-  string
->
+const zhKeys = {
+  ...((await import('@/i18n/qy/zh.json')).default as Record<string, string>),
+}
 
 await i18next.use(initReactI18next).init({
   interpolation: { escapeValue: false },
@@ -127,13 +127,13 @@ export function qyLotBriefFixture(
     status: 'published',
     outcome: '',
     title: '春季回馈抽奖',
-    stake_quota: 500000,
+    stake_quota: 500,
     open_at: 1_700_000_000,
     close_at: 1_700_600_000,
     draw_at: 1_700_700_000,
     active_count: 128,
-    pool_quota: 8_000_000,
-    prize_total_quota: 8_000_000,
+    pool_quota: 8_000,
+    prize_total_quota: 8_000,
     my_entry_count: 0,
     draw_mode: 'rank',
     series_no: '',
@@ -160,14 +160,14 @@ export function qyLotDetailFixture(
       {
         tier: 1,
         name: '一等奖',
-        amount_quota: 5_000_000,
+        amount_quota: 5_000,
         count: 1,
         win_ppm: 0,
       },
       {
         tier: 2,
         name: '二等奖',
-        amount_quota: 1_000_000,
+        amount_quota: 1_000,
         count: 5,
         win_ppm: 0,
       },
@@ -210,7 +210,7 @@ export type QyLotScreen = {
 
 /** 空白折叠后的可见字符数。缩进与换行不是"字"。 */
 export function qyVisibleChars(raw: string): number {
-  return [...raw.replace(/\s+/g, ' ').trim()].length
+  return [...raw.replaceAll(/\s+/g, ' ').trim()].length
 }
 
 type MountOptions = {
@@ -234,6 +234,10 @@ type MountOptions = {
 export async function mountQyLotScreen(
   options: MountOptions
 ): Promise<QyLotScreen> {
+  // 同一进程里别的测试文件会用只含 zh.json 的资源重新 init 这个单例,把片段
+  // (pending-visual.zh.json)冲掉;挂载前把本夹具的语言包再并回去,与生产侧
+  // registerQyResources 同一条路径(deep + overwrite),文件顺序不再影响结果。
+  i18next.addResourceBundle('zh', 'translation', zhKeys, true, true)
   // 一次只留一屏在 DOM 里。上一屏不拆掉，`document.body.textContent` 会把它的字
   // 一起算进来 —— 那正是"字数统计"这件事最容易骗自己的地方。
   for (const entry of mounted) {
@@ -370,7 +374,7 @@ export async function mountQyLotScreen(
   // 弹窗走 portal 挂到 body，所以文本一律从 body 上读。
   const read = () => {
     const text = document.body.textContent ?? ''
-    return { chars: qyVisibleChars(text), text: text.replace(/\s+/g, ' ') }
+    return { chars: qyVisibleChars(text), text: text.replaceAll(/\s+/g, ' ') }
   }
 
   return {
@@ -384,9 +388,9 @@ export async function mountQyLotScreen(
     },
     read,
     click: async (label) => {
-      const node = Array.from(
-        document.body.querySelectorAll('button,[role="button"]')
-      ).find((item) => (item.textContent ?? '').trim() === label)
+      const node = [
+        ...document.body.querySelectorAll('button,[role="button"]'),
+      ].find((item) => (item.textContent ?? '').trim() === label)
       if (node == null) return false
       await act(async () => {
         node.dispatchEvent(new MouseEvent('click', { bubbles: true }))

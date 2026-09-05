@@ -522,8 +522,8 @@ func settleAfterMainFailure(ctx context.Context, gdb *gorm.DB, order *qymodel.Fu
 		// 主库 COMMIT 断连是资金系统里最需要被人看见的一类事件:钱可能已经动了。
 		// 补偿任务随后会自动收敛,但在它收敛之前必须先在日志里留一条。
 		common.SysError(fmt.Sprintf(
-			"qianye: 单号 %s 的主库事务在 COMMIT 阶段断连,结局不明(用户 %d,金额 %d),已置 in_doubt 交补偿任务复判: %s",
-			order.OrderNo, order.UserId, order.AmountQuota, msg))
+			"qianye: 单号 %s 的主库事务在 COMMIT 阶段断连,结局不明(用户 %d,金额 %d %s),已置 in_doubt 交补偿任务复判: %s",
+			order.OrderNo, order.UserId, order.AmountQuota, amountUnit(order.Kind), msg))
 	}
 }
 

@@ -2,7 +2,7 @@ package commission
 
 // daily_cap_window_test.go —— 日封顶的窗口不得随 day_offset_minutes 平移。
 //
-// 被守的缺陷:「今日已发」曾经是 `SUM(granted_quota) WHERE created_at >=
+// 被守的缺陷:「今日已发」曾经是 `SUM(granted) WHERE created_at >=
 // dayStart(now)`,而 dayStart 的日界完全由 commission.day_offset_minutes 决定。
 // 那个值不进幂等键、不进结算行、不参与任何身份 —— 改一次配置重启(或灰度期间
 // 两个节点取值不同),窗口起点就整体平移,已发的结算行整批掉出窗口,SUM 读到 0,
@@ -27,7 +27,7 @@ import (
 func useDayOffset(t *testing.T, minutes int) {
 	t.Helper()
 	cfg := commissionConfig(1)
-	cfg.Commission.DayOffsetMinutes = minutes
+	cfg.Invite.DayOffsetMinutes = minutes
 	useConfig(t, cfg)
 }
 
@@ -42,7 +42,7 @@ func offsetMovingBoundaryInto(t *testing.T, now, after int64) int {
 	defer qyConfig.Store(prev)
 	cfg := commissionConfig(1)
 	for off := -720; off <= 840; off++ {
-		cfg.Commission.DayOffsetMinutes = off
+		cfg.Invite.DayOffsetMinutes = off
 		qyConfig.Store(cfg)
 		if b := dayStart(now); b > after && b <= now {
 			return off
@@ -62,7 +62,7 @@ func TestResolveCapWindow(t *testing.T) {
 		// daily_cap_window_start = 0 是本列上线前的余额行。不补的话,
 		// 升级当天每个人的封顶都白白多出一份。
 		require.NoError(t, gdb.Create(&Settlement{
-			SettleNo: "CS-CAPW-1", UserId: 8801, GrantedQuota: 700,
+			SettleNo: "CS-CAPW-1", UserId: 8801, Granted: 700,
 			CreatedAt: today + 60,
 		}).Error)
 		bal := &Balance{UserId: 8801}
@@ -123,8 +123,8 @@ func TestDailyCapSurvivesADayBoundaryShift(t *testing.T) {
 	useMainDB(t, &model.User{})
 	useDayOffset(t, 0)
 	useMoneyGlobals(t, 7.3, 500000)
-	setSettingOverride(t, gdb, keyDailyCapQuota, "1000")
-	require.EqualValues(t, 1000, effective().DailyCapQuota, "前提:日封顶已生效")
+	setSettingOverride(t, gdb, keyDailyCapStardust, "1000")
+	require.EqualValues(t, 1000, effective().DailyCapStardust, "前提:日封顶已生效")
 
 	seedAccrual(t, gdb, 1, func(a *Accrual) {
 		a.InviterId = 8810
@@ -134,10 +134,10 @@ func TestDailyCapSurvivesADayBoundaryShift(t *testing.T) {
 
 	rows := settlementsOf(t, gdb, 8810)
 	require.Len(t, rows, 1)
-	require.EqualValues(t, 1000, rows[0].GrantedQuota)
+	require.EqualValues(t, 1000, rows[0].Granted)
 	bal := balanceOf(t, gdb, 8810)
 	require.NotNil(t, bal)
-	require.EqualValues(t, 1000, bal.AvailableQuota)
+	require.EqualValues(t, 1000, bal.Available)
 	require.EqualValues(t, 1000, bal.DailyCapGranted, "窗口状态必须落在余额行上")
 	require.NotZero(t, bal.DailyCapWindowStart)
 
@@ -150,8 +150,8 @@ func TestDailyCapSurvivesADayBoundaryShift(t *testing.T) {
 		UpdateColumn("daily_cap_window_start", now-7200).Error)
 	off := offsetMovingBoundaryInto(t, now, now-7200)
 	useDayOffset(t, off)
-	setSettingOverride(t, gdb, keyDailyCapQuota, "1000")
-	require.EqualValues(t, 1000, effective().DailyCapQuota)
+	setSettingOverride(t, gdb, keyDailyCapStardust, "1000")
+	require.EqualValues(t, 1000, effective().DailyCapStardust)
 	require.Greater(t, dayStart(now), now-7200,
 		"前提:新日界确实落在那张结算单之后(旧口径此刻会 SUM 到 0)")
 
@@ -161,7 +161,7 @@ func TestDailyCapSurvivesADayBoundaryShift(t *testing.T) {
 	assert.Len(t, rows, 1, "同一天、同一个人,第二份封顶不许被发出来")
 	bal = balanceOf(t, gdb, 8810)
 	require.NotNil(t, bal)
-	assert.EqualValues(t, 1000, bal.AvailableQuota, "可提现余额一分都不该再涨")
+	assert.EqualValues(t, 1000, bal.Available, "可提现余额一分都不该再涨")
 	assert.Equal(t, "3000", bal.UnsettledAmount.String(), "被削掉的钱仍在余数里")
 }
 
@@ -172,14 +172,14 @@ func TestDailyCapReopensAfterAFullDay(t *testing.T) {
 	useMainDB(t, &model.User{})
 	useDayOffset(t, 0)
 	useMoneyGlobals(t, 7.3, 500000)
-	setSettingOverride(t, gdb, keyDailyCapQuota, "1000")
+	setSettingOverride(t, gdb, keyDailyCapStardust, "1000")
 
 	seedAccrual(t, gdb, 1, func(a *Accrual) {
 		a.InviterId = 8820
 		a.GrossAmount = decimal.NewFromInt(4000)
 	})
 	settleUserOnce(t, 8820)
-	require.EqualValues(t, 1000, balanceOf(t, gdb, 8820).AvailableQuota)
+	require.EqualValues(t, 1000, balanceOf(t, gdb, 8820).Available)
 
 	// 把窗口起点挪回昨天:等价于"过了一整天"。
 	now := common.GetTimestamp()
@@ -189,7 +189,7 @@ func TestDailyCapReopensAfterAFullDay(t *testing.T) {
 	settleUserOnce(t, 8820)
 	bal := balanceOf(t, gdb, 8820)
 	require.NotNil(t, bal)
-	assert.EqualValues(t, 2000, bal.AvailableQuota, "新的一天必须重新给一份封顶")
+	assert.EqualValues(t, 2000, bal.Available, "新的一天必须重新给一份封顶")
 	assert.EqualValues(t, 1000, bal.DailyCapGranted, "新窗口里只发了这一份")
 }
 
@@ -200,7 +200,7 @@ func TestDailyCapGrantedIgnoresClawback(t *testing.T) {
 	useMainDB(t, &model.User{})
 	useDayOffset(t, 0)
 	useMoneyGlobals(t, 7.3, 500000)
-	setSettingOverride(t, gdb, keyDailyCapQuota, "1000")
+	setSettingOverride(t, gdb, keyDailyCapStardust, "1000")
 
 	seedAccrual(t, gdb, 1, func(a *Accrual) {
 		a.InviterId = 8830
@@ -218,7 +218,7 @@ func TestDailyCapGrantedIgnoresClawback(t *testing.T) {
 
 	bal := balanceOf(t, gdb, 8830)
 	require.NotNil(t, bal)
-	assert.EqualValues(t, 600, bal.AvailableQuota)
+	assert.EqualValues(t, 600, bal.Available)
 	assert.EqualValues(t, 1000, bal.DailyCapGranted,
 		"回收不该把当天的封顶额度退回来")
 }

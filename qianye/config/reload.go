@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -35,8 +36,18 @@ func Reload() error {
 	fresh.Runtime.LeaseTTLSeconds = old.Runtime.LeaseTTLSeconds
 	// 已启动的扩展不允许通过热载被整体关停:那会让正在处理的资金操作
 	// 突然失去后端支撑。要停用请重启进程。
-	if old.Enabled {
+	if old.Enabled && !fresh.Enabled {
+		// 这条路径上 parseFile 的 validate 因 enabled: false 直接放行了 ——
+		// 把开关翻回 true 之后必须补跑一遍校验,否则整份配置(额度上界、
+		// 密钥形状、reveal 间隔、支付密码阈值……)会以未经任何检查的状态
+		// 一直生效到下次重启。
 		fresh.Enabled = true
+		if err := validate(fresh); err != nil {
+			return fmt.Errorf("qianye: 热载不允许 enabled: true -> false(停用请重启进程),"+
+				"而按 enabled: true 复核这份配置未通过校验,保持原配置不变: %w", err)
+		}
+		common.SysError("qianye: 配置文件把 enabled 改成了 false,但热载不允许整体关停," +
+			"其余改动已按 enabled: true 校验并生效 —— 要停用请重启进程")
 	}
 
 	current.Store(fresh)

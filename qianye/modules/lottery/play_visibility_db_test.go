@@ -30,7 +30,7 @@ import (
 
 // allPlaysShown 是"没有任何隐藏"的基线,等于零值口径。
 //
-// 刻意不从 baseSettings 回读:那是被测代码。这里手写四个 true,
+// 刻意不从 baseSettings 回读:那是被测代码。这里手写五个 true,
 // 于是把默认值从"显示"改成"隐藏"时,依赖它的大厅分区用例会立刻变红。
 func allPlaysShown() opSettings {
 	return opSettings{
@@ -38,6 +38,7 @@ func allPlaysShown() opSettings {
 		ShowPlayDrawProb: true,
 		ShowPlayDrawBall: true,
 		ShowPlayGuess:    true,
+		ShowPlayWheel:    true,
 	}
 }
 
@@ -56,6 +57,9 @@ func TestPlayOfClassifiesEveryActivityShape(t *testing.T) {
 		{name: "存量行的空 draw_mode 也是按名次", kind: KindDraw, drawMode: "", want: PlayDrawRank},
 		{name: "概率", kind: KindDraw, drawMode: DrawModeProb, want: PlayDrawProb},
 		{name: "双色球", kind: KindDraw, drawMode: DrawModeBall, want: PlayDrawBall},
+		// 转盘必须显式归到自己的玩法:落进默认分支会跟着"按名次"的开关走,
+		// 关掉按名次就连转盘一起停止受理,而打开时它又会漏进抽奖夹。
+		{name: "转盘", kind: KindDraw, drawMode: DrawModeWheel, want: PlayWheel},
 		{name: "竞猜", kind: KindGuess, drawMode: "", want: PlayGuess},
 		{
 			// 竞猜行上不该有 draw_mode,但真出现了也必须归到竞猜:
@@ -87,11 +91,11 @@ func TestPlayVisibilityDefaultsToShownAndFollowsOverrides(t *testing.T) {
 		want map[string]bool
 	}{
 		{
-			name: "一行都没配:四种玩法全部显示",
+			name: "一行都没配:五种玩法全部显示",
 			rows: map[string]string{},
 			want: map[string]bool{
 				PlayDrawRank: true, PlayDrawProb: true,
-				PlayDrawBall: true, PlayGuess: true,
+				PlayDrawBall: true, PlayGuess: true, PlayWheel: true,
 			},
 		},
 		{
@@ -101,18 +105,27 @@ func TestPlayVisibilityDefaultsToShownAndFollowsOverrides(t *testing.T) {
 				keyShowPlayDrawProb: "0",
 				keyShowPlayDrawBall: "0",
 				keyShowPlayGuess:    "1",
+				keyShowPlayWheel:    "0",
 			},
 			want: map[string]bool{
 				PlayDrawRank: false, PlayDrawProb: false,
-				PlayDrawBall: false, PlayGuess: true,
+				PlayDrawBall: false, PlayGuess: true, PlayWheel: false,
 			},
 		},
 		{
-			name: "只关双色球:其余三种不受影响",
+			name: "只关双色球:其余四种不受影响",
 			rows: map[string]string{keyShowPlayDrawBall: "0"},
 			want: map[string]bool{
 				PlayDrawRank: true, PlayDrawProb: true,
-				PlayDrawBall: false, PlayGuess: true,
+				PlayDrawBall: false, PlayGuess: true, PlayWheel: true,
+			},
+		},
+		{
+			name: "只关转盘:其余四种不受影响",
+			rows: map[string]string{keyShowPlayWheel: "0"},
+			want: map[string]bool{
+				PlayDrawRank: true, PlayDrawProb: true,
+				PlayDrawBall: true, PlayGuess: true, PlayWheel: false,
 			},
 		},
 		{
@@ -120,7 +133,7 @@ func TestPlayVisibilityDefaultsToShownAndFollowsOverrides(t *testing.T) {
 			rows: map[string]string{keyShowPlayGuess: "false"},
 			want: map[string]bool{
 				PlayDrawRank: true, PlayDrawProb: true,
-				PlayDrawBall: true, PlayGuess: false,
+				PlayDrawBall: true, PlayGuess: false, PlayWheel: true,
 			},
 		},
 		{
@@ -130,18 +143,18 @@ func TestPlayVisibilityDefaultsToShownAndFollowsOverrides(t *testing.T) {
 			rows: map[string]string{keyShowPlayDrawProb: "maybe"},
 			want: map[string]bool{
 				PlayDrawRank: true, PlayDrawProb: true,
-				PlayDrawBall: true, PlayGuess: true,
+				PlayDrawBall: true, PlayGuess: true, PlayWheel: true,
 			},
 		},
 		{
-			name: "四个全关",
+			name: "五个全关",
 			rows: map[string]string{
 				keyShowPlayDrawRank: "0", keyShowPlayDrawProb: "0",
-				keyShowPlayDrawBall: "0", keyShowPlayGuess: "0",
+				keyShowPlayDrawBall: "0", keyShowPlayGuess: "0", keyShowPlayWheel: "0",
 			},
 			want: map[string]bool{
 				PlayDrawRank: false, PlayDrawProb: false,
-				PlayDrawBall: false, PlayGuess: false,
+				PlayDrawBall: false, PlayGuess: false, PlayWheel: false,
 			},
 		},
 	}
@@ -149,7 +162,7 @@ func TestPlayVisibilityDefaultsToShownAndFollowsOverrides(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			withLotteryConfig(t, config.Lottery{
-				MaxActiveActivities: 10, MaxGuessFeeBps: 500, MaxTotalPrizeQuota: 50_000_000,
+				MaxActiveActivities: 10, MaxGuessFeeBps: 500, MaxTotalPrizeStardust: 50_000_000,
 			})
 			got := mergeOverrides(baseSettings(config.Get().Lottery), tc.rows)
 
@@ -178,8 +191,10 @@ func playAct(actNo, kind, drawMode string) *Activity {
 
 // TestHallQueryDropsHiddenPlays 是这一整条改动的正面:开关必须真的落到 WHERE 上。
 //
-// 五行覆盖全部四种玩法 + 存量空 draw_mode,另加草稿与已下架各一行(证明原有
-// 口径没被新条件用 OR 挤开)。期望活动号在用例里手写。
+// 五行覆盖四种批次玩法 + 存量空 draw_mode,另加草稿与已下架各一行(证明原有
+// 口径没被新条件用 OR 挤开),再加一行**转盘**:它在每一个大厅用例的期望里都
+// 不出现 —— 转盘开关开着也不出现 —— 因为转盘不进大厅,只从 draw_mode=wheel
+// 那条独立列表出去(TestHallQueryServesWheelOnlyByDrawMode)。期望活动号在用例里手写。
 func TestHallQueryDropsHiddenPlays(t *testing.T) {
 	seed := []*Activity{
 		playAct("P-rank", KindDraw, DrawModeRank),
@@ -187,6 +202,7 @@ func TestHallQueryDropsHiddenPlays(t *testing.T) {
 		playAct("P-prob", KindDraw, DrawModeProb),
 		playAct("P-ball", KindDraw, DrawModeBall),
 		playAct("P-guess", KindGuess, ""),
+		playAct("P-wheel", KindDraw, DrawModeWheel),
 	}
 
 	cases := []struct {
@@ -196,7 +212,7 @@ func TestHallQueryDropsHiddenPlays(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "四个都开:全部下发",
+			name: "五个都开:全部下发 —— 转盘除外,它不进大厅",
 			set:  allPlaysShown(),
 			want: []string{"P-rank", "P-legacy", "P-prob", "P-ball", "P-guess"},
 		},
@@ -237,8 +253,14 @@ func TestHallQueryDropsHiddenPlays(t *testing.T) {
 			want: []string{"P-ball"},
 		},
 		{
-			name: "四个全关:大厅为空,而不是回落成全量",
+			name: "五个全关:大厅为空,而不是回落成全量",
 			set:  opSettings{},
+			want: []string{},
+		},
+		{
+			// 只开转盘:大厅仍然为空。转盘的开关只管 draw_mode=wheel 那条列表。
+			name: "只开转盘:大厅为空",
+			set:  opSettings{ShowPlayWheel: true},
 			want: []string{},
 		},
 		{
@@ -318,7 +340,7 @@ func TestHallQueryDropsHiddenPlays(t *testing.T) {
 			retired.HiddenAt = 42
 			require.NoError(t, gdb.Create(retired).Error)
 
-			q, err := hallQuery(gdb, tc.lane, "", tc.set)
+			q, err := hallQuery(gdb, tc.lane, "", "", tc.set)
 			require.NoError(t, err)
 			got := actNos(t, q)
 			sort.Strings(got)
@@ -329,13 +351,50 @@ func TestHallQueryDropsHiddenPlays(t *testing.T) {
 	}
 }
 
+// TestHallQueryServesWheelOnlyByDrawMode 是转盘那条独立列表(?draw_mode=wheel)的口径:
+// 只有转盘、且只在转盘开关打开时;与 lane 互斥;未登记的 draw_mode 一律 400。
+func TestHallQueryServesWheelOnlyByDrawMode(t *testing.T) {
+	gdb := newHallTestDB(t)
+	for _, a := range []*Activity{
+		playAct("W-rank", KindDraw, DrawModeRank),
+		playAct("W-ball", KindDraw, DrawModeBall),
+		playAct("W-guess", KindGuess, ""),
+		playAct("W-wheel", KindDraw, DrawModeWheel),
+	} {
+		require.NoError(t, gdb.Create(a).Error)
+	}
+	hidden := playAct("W-wheel-hidden", KindDraw, DrawModeWheel)
+	hidden.HiddenAt = 42
+	require.NoError(t, gdb.Create(hidden).Error)
+
+	q, err := hallQuery(gdb, "", "", DrawModeWheel, allPlaysShown())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"W-wheel"}, actNos(t, q), "draw_mode=wheel 只拿转盘,且已下架的不下发")
+
+	// 转盘开关关掉:这条列表给空,而不是退回整张大厅。
+	q, err = hallQuery(gdb, "", "", DrawModeWheel, opSettings{
+		ShowPlayDrawRank: true, ShowPlayDrawProb: true, ShowPlayDrawBall: true, ShowPlayGuess: true,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, actNos(t, q))
+
+	// 与 lane 互斥;未登记的取值 400。静默忽略会让转盘页拿回一张大厅列表。
+	for _, bad := range []struct{ lane, mode string }{
+		{LaneDraw, DrawModeWheel}, {"", DrawModeProb}, {"", "Wheel"}, {"", "all"},
+	} {
+		q, err := hallQuery(gdb, bad.lane, "", bad.mode, allPlaysShown())
+		assert.Nilf(t, q, "lane=%q draw_mode=%q 不该拼出查询", bad.lane, bad.mode)
+		require.ErrorIsf(t, err, errBadDrawModeFilter, "lane=%q draw_mode=%q 被静默忽略了", bad.lane, bad.mode)
+	}
+}
+
 // TestEveryPlayHasAWritableSettingKey 守住"新增一种玩法就得有一个开关"。
 //
 // 管理端那一页整个由 editable_keys + bounds 驱动:少一个键,界面上就少一个
 // 开关,而后端的 PUT 会以"包含不可在线修改的配置项"400 —— 两边同时哑掉。
 func TestEveryPlayHasAWritableSettingKey(t *testing.T) {
 	withLotteryConfig(t, config.Lottery{
-		MaxActiveActivities: 10, MaxGuessFeeBps: 500, MaxTotalPrizeQuota: 50_000_000,
+		MaxActiveActivities: 10, MaxGuessFeeBps: 500, MaxTotalPrizeStardust: 50_000_000,
 	})
 	editable := make(map[string]bool, len(editableKeys))
 	for _, k := range editableKeys {
@@ -344,7 +403,7 @@ func TestEveryPlayHasAWritableSettingKey(t *testing.T) {
 	bounds := settingBounds()
 	snapshot := settingsSnapshot(allPlaysShown())
 
-	require.Len(t, Plays, 4, "玩法枚举变了,本测试的期望值要跟着重写")
+	require.Len(t, Plays, 5, "玩法枚举变了,本测试的期望值要跟着重写")
 	for _, play := range Plays {
 		key := playSettingKey(play)
 		require.NotEmptyf(t, key, "玩法 %s 没有登记 qy_settings 键名", play)
@@ -406,8 +465,11 @@ var playSwitchReaders = map[string]bool{
 	"playVisibilityMap": true,
 	// 详情页要据此置灰"参与"按钮并说明原因(页面本身照常可达)。
 	"handleGetActivity": true,
-	// 新参与的唯一执行点。
+	// 新参与的唯一执行点(批次玩法)。
 	"ChargeEntry": true,
+	// 转盘新转动的唯一执行点:转盘的参与不经 ChargeEntry(它必须带着摇号结果进链),
+	// 玩法开关在它自己的入口读一次,口径与 ChargeEntry 逐字相同(只挡新参与)。
+	"handleSpin": true,
 	// 发布的唯一执行点。草稿不拦,发布才拦。
 	"handlePublishActivity": true,
 }
@@ -504,4 +566,4 @@ func TestHallFilterHasASingleCallSite(t *testing.T) {
 //
 // 若哪天有人把它改回自己去读 effective(),测试里就再也无法构造"只开竞猜"
 // 这种状态,上面那一整张表会退化成只测默认值 —— 而且不会有任何一处变红。
-var _ func(*gorm.DB, string, string, opSettings) (*gorm.DB, error) = hallQuery
+var _ func(*gorm.DB, string, string, string, opSettings) (*gorm.DB, error) = hallQuery

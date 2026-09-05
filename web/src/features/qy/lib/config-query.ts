@@ -42,29 +42,25 @@ export const QY_DISABLED_CONFIG: QyConfig = {
   available: false,
   features: {
     transfer: false,
+    invite: false,
     commission: false,
-    withdraw: false,
     availability: false,
     violation: false,
     lottery: false,
     ticket: false,
     group_matrix: false,
     pay_password: false,
+    stardust: false,
+    mall: false,
   },
   wallet: {
     show_transfer_entry: false,
     show_commission_entry: false,
-    show_withdraw_entry: false,
   },
   log_metrics: {
     show_reasoning_effort: false,
     show_cache_ratio: false,
     enable_filter: false,
-  },
-  withdraw_options: {
-    methods: [],
-    fiat_currency: '',
-    remark_max_runes: 0,
   },
   transfer_options: {
     min_quota: 0,
@@ -82,7 +78,17 @@ export const QY_DISABLED_CONFIG: QyConfig = {
       draw_prob: false,
       draw_ball: false,
       guess: false,
+      wheel: false,
     },
+  },
+  // 扩展整体关掉时星屑与商城同样零痕迹。`name` 留空串：单位名的回落词在
+  // `useStardustName()` 里由 i18n 给，这里不能写死一种语言的「星屑」。
+  stardust: {
+    show_entry: false,
+    name: '',
+  },
+  mall: {
+    show_entry: false,
   },
 }
 
@@ -111,10 +117,11 @@ export function normalizeQyConfig(
   const features = raw.features ?? {}
   const wallet = raw.wallet ?? {}
   const logMetrics = raw.log_metrics ?? {}
-  const withdraw = raw.withdraw_options ?? {}
   const transfer = raw.transfer_options ?? {}
   const lottery = raw.lottery ?? {}
   const plays = lottery.plays ?? {}
+  const stardust = raw.stardust ?? {}
+  const mall = raw.mall ?? {}
   const enabled = bool(raw.enabled)
 
   return {
@@ -123,33 +130,25 @@ export function normalizeQyConfig(
     available: enabled && bool(raw.available),
     features: {
       transfer: bool(features.transfer),
+      invite: bool(features.invite),
       commission: bool(features.commission),
-      withdraw: bool(features.withdraw),
       availability: bool(features.availability),
       violation: bool(features.violation),
       lottery: bool(features.lottery),
       ticket: bool(features.ticket),
       group_matrix: bool(features.group_matrix),
       pay_password: bool(features.pay_password),
+      stardust: bool(features.stardust),
+      mall: bool(features.mall),
     },
     wallet: {
       show_transfer_entry: bool(wallet.show_transfer_entry),
       show_commission_entry: bool(wallet.show_commission_entry),
-      show_withdraw_entry: bool(wallet.show_withdraw_entry),
     },
     log_metrics: {
       show_reasoning_effort: bool(logMetrics.show_reasoning_effort),
       show_cache_ratio: bool(logMetrics.show_cache_ratio),
       enable_filter: bool(logMetrics.enable_filter),
-    },
-    withdraw_options: {
-      methods: Array.isArray(withdraw.methods)
-        ? withdraw.methods.filter(
-            (m): m is 'fiat' | 'quota' => m === 'quota' || m === 'fiat'
-          )
-        : [],
-      fiat_currency: str(withdraw.fiat_currency),
-      remark_max_runes: num(withdraw.remark_max_runes),
     },
     transfer_options: {
       min_quota: num(transfer.min_quota),
@@ -173,7 +172,18 @@ export function normalizeQyConfig(
         draw_prob: bool(plays.draw_prob, enabled),
         draw_ball: bool(plays.draw_ball, enabled),
         guess: bool(plays.guess, enabled),
+        wheel: bool(plays.wheel, enabled),
       },
+    },
+    // 星屑与商城的 `show_entry` 缺键**按显示**处理（与玩法开关同一条理由：
+    // 一个没动过配置的站点升级后不该静默少掉一整块），但同样跟着 `enabled` 走。
+    // `name` 只做去空白，不在这里补默认词 —— 见 types.ts 的 QyStardustOptions。
+    stardust: {
+      show_entry: bool(stardust.show_entry, enabled),
+      name: str(stardust.name).trim(),
+    },
+    mall: {
+      show_entry: bool(mall.show_entry, enabled),
     },
   }
 }

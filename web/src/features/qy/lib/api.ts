@@ -136,66 +136,13 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_pay_pwd_mail_unavailable: 'qy_pp_err_mail_unavailable',
   qy_pay_pwd_user_not_found: 'qy_pp_err_user_not_found',
 
-  // ── 提现（qianye/modules/withdraw/errors.go）──
-  qy_wd_method_not_allowed: 'qy_err_wd_method_not_allowed',
-  qy_wd_amount_too_small: 'qy_err_wd_amount_too_small',
-  qy_wd_amount_out_of_range: 'qy_err_wd_amount_range',
-  qy_wd_remark_too_long: 'qy_err_wd_remark_too_long',
-  qy_wd_payee_required: 'qy_err_wd_payee_required',
-  qy_wd_payee_invalid: 'qy_err_wd_payee_invalid',
-  qy_wd_payee_not_found: 'qy_err_wd_payee_not_found',
-  qy_wd_payee_limit: 'qy_err_wd_payee_limit',
-  qy_wd_reason_required: 'qy_err_wd_reason_required',
-  // 安全验证（middleware/secure_verification.go）。这四个 code 是上游大写格式，
-  // 不带 qy_ 前缀 —— 提现收款明文接口把它们透传给了 qy 信封的解析层，
-  // 不登记就会塌成一句"权限不足"，而正确的下一步是"重新验证一次身份"。
-  SECURITY_PROOF_REQUIRED: 'qy_err_security_proof',
-  SECURITY_PROOF_INVALID: 'qy_err_security_proof',
-  SECURITY_PROOF_EXPIRED: 'qy_err_security_proof',
-  SECURITY_PROOF_SCOPE_MISMATCH: 'qy_err_security_proof',
-  SECURITY_PROOF_METHOD_MISMATCH: 'qy_err_security_proof',
-  // 档位闸门（middleware/root_action.go）。同样是上游大写格式、不带 qy_ 前缀。
+  // 档位闸门（middleware/root_action.go）。上游大写格式、不带 qy_ 前缀。
   // 不登记就会塌成 qy_err_forbidden（"你没有执行该操作的权限"）——
   // 那句话与"这条路由你整条都到不了"一模一样，而这里唯一有用的下一步是
   // "这个页面你还能用，只有这一个动作要找超级管理员"。两者在界面上必须可分。
   ROOT_ACTION_REQUIRED: 'qy_err_root_action_required',
-  qy_wd_payout_ref_required: 'qy_err_wd_payout_ref_required',
-  qy_wd_payout_amount_required: 'qy_err_wd_payout_amount_required',
-  qy_wd_payout_amount_mismatch: 'qy_err_wd_payout_amount_mismatch',
-  qy_wd_user_unavailable: 'qy_err_wd_user_unavailable',
-  qy_wd_insufficient_commission: 'qy_err_wd_insufficient',
-  qy_wd_debt_blocked: 'qy_err_wd_debt_blocked',
-  qy_wd_daily_count_reached: 'qy_err_wd_daily_count',
-  qy_wd_fiat_below_min: 'qy_err_wd_fiat_below_min',
-  qy_wd_fee_eats_all: 'qy_err_wd_fee_eats_all',
-  qy_wd_fiat_unavailable: 'qy_err_wd_fiat_unavailable',
-  qy_wd_not_found: 'qy_err_wd_not_found',
-  qy_wd_status_conflict: 'qy_err_wd_status_conflict',
-  // 本轮新加的两道越权闸门。不登记就会塌成一句 qy_err_forbidden：
-  // 403 在 kindFromStatus 里被归成 'forbidden'，而 qyErrorMessage 只在
-  // kind === 'business' 时才回落后端原始 message —— 后端精心写的
-  // 「请由另一位管理员处理」/「请由更高权限的管理员处理」这两句**唯一**告诉
-  // 管理员下一步该怎么办的话，一个字都到不了界面，而且与任何其它 403 不可区分。
-  // 提现四个人工决定共用同一条渲染路径，列表页又没有任何预先标记，
-  // 审核员只能挨个点、挨个吃通用报错。
-  qy_wd_self_review: 'qy_err_wd_self_review',
-  qy_wd_peer_review: 'qy_err_wd_peer_review',
-  qy_wd_illegal_transition: 'qy_err_wd_illegal_transition',
-  qy_wd_in_progress: 'qy_err_in_progress',
-  qy_wd_pii_key_unavailable: 'qy_err_wd_pii_unavailable',
-  qy_wd_rate_unavailable: 'qy_err_wd_rate_unavailable',
-  qy_wd_payee_undecryptable: 'qy_err_wd_payee_undecryptable',
-  // 凭证图片（qianye/modules/withdraw/proof.go）。后端把它拆成八个 code 正是因为
-  // 用户能做的下一步完全不同：换一张图 / 压缩一下 / 先把已传的用掉 / 找管理员，
-  // 前端合并成一句"上传失败"会让人反复重试同一张必然失败的图。
-  qy_wd_proof_disabled: 'qy_err_wd_proof_disabled',
-  qy_wd_proof_required: 'qy_err_wd_proof_required',
-  qy_wd_proof_too_large: 'qy_err_wd_proof_too_large',
-  qy_wd_proof_type: 'qy_err_wd_proof_type',
-  qy_wd_proof_not_found: 'qy_err_wd_proof_not_found',
-  qy_wd_proof_pending_limit: 'qy_err_wd_proof_pending_limit',
-  qy_wd_proof_purged: 'qy_err_wd_proof_purged',
-  qy_wd_proof_store_failed: 'qy_err_wd_proof_store_failed',
+  // 提现模块（`qy_wd_*`）与它透传的安全验证码（`SECURITY_PROOF_*`）已随
+  // D-14 整体删除：星屑不可提现，没有任何一条路由会再回这些 code。
 
   // ── 工单（qianye/modules/ticket/errors.go）──
   // 四道防滥用闸门必须映射到四句不同的话：它们要求用户做的下一步完全不同 ——
@@ -232,12 +179,18 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
 
   // ── API 地址簿（qianye/modules/apiaddr/errors.go）──
   //
-  // 不登记的话这 13 个 code 会按 HTTP 状态码归类：409 → `qy_err_conflict`
+  // 不登记的话这 18 个 code 会按 HTTP 状态码归类：409 → `qy_err_conflict`
   //（"该申请已被其他人处理"，与地址簿毫不相干）、400 → "请求参数不合法"。
   // 管理员既不知道是重复、还是少了 scheme，也不知道该改哪里。
   qy_apiaddr_name_required: 'qy_err_aa_name_required',
   qy_apiaddr_name_too_long: 'qy_err_aa_name_too_long',
   qy_apiaddr_remark_too_long: 'qy_err_aa_remark_too_long',
+  qy_apiaddr_group_too_long: 'qy_err_aa_group_too_long',
+  qy_apiaddr_group_invalid: 'qy_err_aa_group_invalid',
+  qy_apiaddr_groups_too_many: 'qy_err_aa_groups_too_many',
+  qy_apiaddr_groups_too_long: 'qy_err_aa_groups_too_long',
+  qy_apiaddr_color_invalid: 'qy_err_aa_color_invalid',
+  qy_apiaddr_surface_invalid: 'qy_err_aa_surface_invalid',
   qy_apiaddr_url_required: 'qy_err_aa_url_required',
   qy_apiaddr_url_too_long: 'qy_err_aa_url_too_long',
   qy_apiaddr_url_scheme: 'qy_err_aa_url_scheme',
@@ -251,45 +204,111 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   // 会让管理员以为自己什么都不用做。
   qy_apiaddr_order_stale: 'qy_err_aa_order_stale',
 
-  // ── 返佣管理端（qianye/modules/commission/api_admin.go）──
+  // ── 星辉佣金管理端（qianye/modules/commission，D-15 从 git HEAD 恢复）──
+  // 冲正与手工增减那几组 code 随账本一起回来。`qy_withdrawn_*`（已提现额度迁移）
+  // **不**回来：`balances/withdrawn` 端点没有恢复，那一列现在叫「已入账」且只由
+  // 自动入账任务写。
   qy_reason_required: 'qy_err_cm_reason_required',
   qy_clawback_failed: 'qy_err_cm_clawback_failed',
-  // 已提现额度迁移编辑（qianye/modules/commission/api_admin_balance.go）。
-  // 三个 code 必须映射到三句不同的话：over_available 是「这个数填大了」，
-  // over_earned 是「这行账本本来就是坏的」，overflow 是「回退幅度越界」。
-  qy_withdrawn_over_available: 'qy_err_cb_over_available',
-  qy_withdrawn_over_earned: 'qy_err_cb_over_earned',
-  qy_withdrawn_overflow: 'qy_err_cb_overflow',
-  // AFF 关系绑定/解绑（qianye/modules/commission/api_admin_relation.go）。
-  // 六个 code 要求管理员做的下一步完全不同：改一个人 / 先解绑 / 这条绑定本身
+  // 手工增减佣金（api_admin_adjust.go）。over_reclaimable 是「这个数填大了，减不了
+  // 这么多」，overflow 是「加得太多」；同一个弹窗改了金额又提交撞的是下面商城那段
+  // 共用的 `qy_idem_key_conflict`。
+  qy_adj_over_reclaimable: 'qy_err_adj_over_reclaimable',
+  qy_adj_overflow: 'qy_err_adj_overflow',
+  qy_adj_user_not_found: 'qy_err_adj_user_not_found',
+
+  // ── 邀请关系管理端（qianye/modules/invite/api_admin_relation.go，D-14 前在
+  //    commission 模块下）──
+  //
+  // 七个关系 code 要求管理员做的下一步完全不同：改一个人 / 先解绑 / 这条绑定本身
   // 不该做 / 刷新重来。合并成一句"参数有误"只会让人对着同一个必然失败的
-  // 请求反复重试。
+  // 请求反复重试。契约写的是 `qy_inv_*` 前缀"照抄改前缀"，而这一组在后端源码里
+  // 本来就叫 `qy_rel_*`（不带 cm）；两套都登记，后端落哪一套界面都认得。
   qy_rel_self_invite: 'qy_err_rel_self_invite',
   qy_rel_user_not_found: 'qy_err_rel_user_not_found',
   qy_rel_already_bound: 'qy_err_rel_already_bound',
   qy_rel_cycle: 'qy_err_rel_cycle',
   qy_rel_not_bound: 'qy_err_rel_not_bound',
   qy_rel_conflict: 'qy_err_rel_conflict',
-  // 换绑专属：换成他现在这个上线。回 400 而不是当空操作回成功，见
-  // `adminRebindRelation` 的说明。
+  // 换绑专属：换成他现在这个上线。回 400 而不是当空操作回成功。
   qy_rel_same_inviter: 'qy_err_rel_same_inviter',
-  // 「这一行不挂在任何邀请关系上」。项目方今天撞到的就是它：手工调整产生的
-  // 计佣行 invitee_id = 0（那笔钱不是从谁的消费里分出来的），对着它点「拉黑」
-  // 必然失败。此前后端与「报文格式错」共用 qy_invalid_param，运营看到的是
-  // "请求参数有误"，于是会怀疑自己填错了、再点一次。
-  //
-  // 复用 `qy_cm_block_no_relation` 这句已有的文案而不是新造一个键：它本来就是
-  // 为这一档写的（"没有任何数据被改动"那半句尤其要留着），此前挂在一个按 kind
-  // 分档的本地函数上，现在后端给了独立 code，它终于能挂到 code 上。
-  qy_rel_no_relation: 'qy_cm_block_no_relation',
-  // 手工增减佣金（qianye/modules/commission/api_admin_adjust.go）。
-  // over_reclaimable 是「这个数填大了，减不了这么多」，overflow 是「加得太多」，
-  // idem_key_conflict 是「同一个弹窗改了金额又提交」—— 后者尤其不能说成
-  // "操作冲突"：账本上执行的是上一次的金额，管理员必须知道这件事。
-  qy_adj_over_reclaimable: 'qy_err_adj_over_reclaimable',
-  qy_adj_overflow: 'qy_err_adj_overflow',
-  qy_adj_user_not_found: 'qy_err_adj_user_not_found',
-  qy_idem_key_conflict: 'qy_err_adj_idem_conflict',
+  // 「这一行不挂在任何邀请关系上」：对着没有邀请人的账号点「停止计返」。
+  qy_rel_no_relation: 'qy_inv_err_no_relation',
+  qy_inv_self_invite: 'qy_err_rel_self_invite',
+  qy_inv_user_not_found: 'qy_err_rel_user_not_found',
+  qy_inv_already_bound: 'qy_err_rel_already_bound',
+  qy_inv_cycle: 'qy_err_rel_cycle',
+  qy_inv_not_bound: 'qy_err_rel_not_bound',
+  qy_inv_conflict: 'qy_err_rel_conflict',
+  qy_inv_same_inviter: 'qy_err_rel_same_inviter',
+  qy_inv_no_relation: 'qy_inv_err_no_relation',
+  // 邀请返被合规门挡住（邀请人未确认支付合规声明时不发任何邀请返）。
+  qy_inv_compliance_required: 'qy_err_sd_compliance_required',
+  // 同一个请求号换了参数再提交。星屑手调、商城下单、转盘转动都复用这个 code，
+  // 文案是不提「金额」的通用说法 ——
+  // 「账本上执行的是上一次那份参数」这层意思仍然要保留，那是它与"操作冲突"
+  // 的全部区别。
+  qy_idem_key_conflict: 'qy_err_idem_key_conflict',
+
+  // ── 星屑（qianye/modules/stardust）──
+  // 五个 code 要求做的下一步完全不同：去赚 / 去合规页勾确认 / 换个在册的分组名 /
+  // 改来源清单 / 把数填小。不登记的话 400 全塌成"请求参数不合法"。
+  qy_sd_insufficient: 'qy_err_sd_insufficient',
+  qy_sd_compliance_required: 'qy_err_sd_compliance_required',
+  qy_sd_group_unknown: 'qy_err_sd_group_unknown',
+  qy_sd_bad_source: 'qy_err_sd_bad_source',
+  qy_sd_adjust_too_large: 'qy_err_sd_adjust_too_large',
+  // 手调的目标用户查不到（400）：user_id 打错了一位，或账号已被硬删除。
+  // 塌成"请求参数不合法"会让管理员去改金额与事由重试。
+  // （手调还会回 `qy_sd_overflow` 与操作人判据的 `qy_self_dealing` /
+  // `qy_target_not_manageable`，它们登记在下面商城那一段，两个模块共用。）
+  qy_sd_user_not_found: 'qy_err_sd_user_not_found',
+
+  // ── 商城（qianye/modules/mall）──
+  qy_ml_sold_out: 'qy_err_ml_sold_out',
+  qy_ml_limit: 'qy_err_ml_limit',
+  qy_ml_off_sale: 'qy_err_ml_off_sale',
+  // 套餐商品下单前预览过的动作（新开 / 续期 / 顶替）在这一刻变了：
+  // 必须让用户重看一遍再下单，不能说成一句"操作冲突"。
+  qy_ml_plan_state_changed: 'qy_err_ml_plan_state_changed',
+  qy_ml_plan_needs_outbox: 'qy_err_ml_plan_needs_outbox',
+  qy_ml_address_required: 'qy_err_ml_address_required',
+  qy_ml_has_open_orders: 'qy_err_ml_has_open_orders',
+  qy_ml_bad_status: 'qy_err_ml_bad_status',
+  // 契约 §7 之外、后端 `qianye/modules/mall/errors.go` 实际会回的那几条。
+  // not_found 是 404：不登记会被 kindFromStatus 当成「扩展未启用」静默隐藏，
+  // 而它的真相是"这件商品 / 这张单已经不存在了"。
+  qy_ml_not_found: 'qy_err_ml_not_found',
+  // 一整族参数校验共用一个 code（标题超长 / 售价越界 / 售期倒挂 / 套餐不存在 …），
+  // 后端那句话才是答案 —— 见下面 QY_SERVER_MESSAGE_CODES；静态回落用通用的
+  // 「请求参数不合法」，它本来就是"后端没给 message"时唯一诚实的说法。
+  qy_ml_bad_request: 'qy_err_invalid',
+  // 收货地址已过保留期被清除（410）：不是权限问题，也不是"再试一次"能解决的。
+  qy_ml_address_pruned: 'qy_err_ml_address_pruned',
+  // 抽奖所得的实物奖品单补填地址（`POST /mall/orders/:no/address`）。三条各自的
+  // 下一步不同：这张单不是奖品单（地址在下单时就填过了）/ 已经填过一次（改地址
+  // 走工单）/ 管理端对没填地址的单点了发货（先等中奖者填）。不登记就塌成
+  // 「权限不足」「操作冲突」，而这三句里没有一句在说"再试一次"。
+  qy_ml_not_prize_order: 'qy_err_ml_not_prize_order',
+  qy_ml_address_exists: 'qy_err_ml_address_exists',
+  qy_ml_address_missing: 'qy_err_ml_address_missing',
+  qy_ml_max_products: 'qy_err_ml_max_products',
+  // 退款会把余额顶过系统上界：处置是"先花掉一部分"，与"星屑不足"方向相反。
+  qy_sd_overflow: 'qy_err_sd_overflow',
+  // 商品封面。七个 code 各自要求的下一步不同，与抽奖封面同一套理由。
+  qy_ml_cover_required: 'qy_err_ml_cover_required',
+  qy_ml_cover_too_large: 'qy_err_ml_cover_too_large',
+  qy_ml_cover_type: 'qy_err_ml_cover_type',
+  qy_ml_cover_not_found: 'qy_err_ml_cover_not_found',
+  qy_ml_cover_purged: 'qy_err_ml_cover_purged',
+  qy_ml_cover_pending_limit: 'qy_err_ml_cover_pending_limit',
+  qy_ml_cover_store_failed: 'qy_err_ml_cover_store_failed',
+  // 操作人判据的三个方向（403 / 404）。不登记就塌成一句「权限不足」，而这三条
+  // 各自的下一步是：换一位管理员 / 找更高权限的人 / 先确认账号去向。
+  // 星屑手调（qianye/modules/stardust）回的也是前两条，这里的文案刻意不提"订单"。
+  qy_self_dealing: 'qy_err_self_dealing',
+  qy_target_not_manageable: 'qy_err_target_not_manageable',
+  qy_target_missing: 'qy_err_target_missing',
 
   // ── 订阅套餐（qianye/modules/subscription）──
   // 不登记的话这四个 code 会被按 HTTP 状态码归类：409 → `qy_err_conflict`
@@ -316,7 +335,6 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_cooldown: 'qy_lot_err_cooldown',
   qy_lot_inviter_cap: 'qy_lot_err_inviter_cap',
   qy_lot_ip_cap: 'qy_lot_err_ip_cap',
-  qy_lot_entry_in_flight: 'qy_lot_err_entry_in_flight',
   qy_lot_ineligible: 'qy_lot_err_ineligible',
   qy_lot_bad_option: 'qy_lot_err_bad_option',
   qy_lot_bad_amount: 'qy_lot_err_bad_amount',
@@ -340,14 +358,9 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   // 三个幂等 / 落定出口必须说成三句话：in_progress 是"上一次还没落定，别再点"，
   // idem_conflict 是"换了参数还用同一个请求号，刷新重来"，not_settled 是
   // "钱可能已经动了，既不能说成功也不能说失败，去记录里复核"。
-  qy_lot_in_progress: 'qy_err_in_progress',
   qy_lot_idem_conflict: 'qy_lot_err_idem_conflict',
-  qy_lot_not_settled: 'qy_lot_err_not_settled',
   // 扣费成功但已错过封盘：费用会自动退回。绝不能显示成泛化的"操作冲突"。
-  qy_lot_entry_excluded: 'qy_lot_err_entry_excluded',
   qy_lot_insufficient_quota: 'qy_lot_err_insufficient_quota',
-  qy_lot_user_unavailable: 'qy_lot_err_user_unavailable',
-  qy_lot_quota_overflow: 'qy_lot_err_quota_overflow',
   qy_lot_eligibility_unavailable: 'qy_lot_err_eligibility_unavailable',
   // 管理端。
   qy_lot_status_conflict: 'qy_lot_err_status_conflict',
@@ -362,16 +375,27 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_active_cap: 'qy_lot_err_active_cap',
   qy_lot_spend_not_ready: 'qy_lot_err_spend_not_ready',
   qy_lot_payout_not_found: 'qy_lot_err_payout_not_found',
-  qy_lot_payout_needs_manual: 'qy_lot_err_payout_needs_manual',
-  // 人工核对落账的六个拒绝理由。不登记会全塌成后端那句中文原文，
-  // 而它们要求运营做的下一步完全不同：改用「重试」 / 等补偿任务收敛 /
-  // 刷新后重试 / 把核对依据填完。
-  qy_lot_adjudicate_not_held: 'qy_lot_err_adjudicate_not_held',
-  qy_lot_adjudicate_no_order: 'qy_lot_err_adjudicate_no_order',
-  qy_lot_adjudicate_order_settled: 'qy_lot_err_adjudicate_order_settled',
-  qy_lot_adjudicate_order_open: 'qy_lot_err_adjudicate_order_open',
-  qy_lot_adjudicate_verdict: 'qy_lot_err_adjudicate_verdict',
-  qy_lot_adjudicate_reason: 'qy_lot_err_adjudicate_reason',
+  // 「人工核对落账」的六个 code 已随端点一起删除（派奖改走星屑，扩展库单库事务，
+  // 不再有"主库动没动钱不知道"的那一档）。
+  //
+  // 转盘（`draw_mode='wheel'`）。五条各说各的：关了 / 奖档在你转动的这一瞬被改了
+  // （刷新重来）/ 客户端种子格式不对 / 列表过滤参数写错了（前端写错才会发生）/
+  // 管理端对已封盘且有人转过的转盘点了「取消」（它只等揭示，什么都做不了）。
+  // 最后一条尤其不能塌成"操作冲突"：那句话是"刷新一下再试"，而这里的真相是
+  // "这件事从此不可能做到"。
+  qy_lot_wheel_closed: 'qy_lot_err_wheel_closed',
+  qy_lot_spec_drift: 'qy_lot_err_spec_drift',
+  qy_lot_bad_client_seed: 'qy_lot_err_bad_client_seed',
+  qy_lot_bad_draw_mode: 'qy_lot_err_bad_draw_mode',
+  qy_lot_wheel_no_cancel: 'qy_lot_err_wheel_no_cancel',
+  // 转盘改排期（`PUT …/schedule`）。两条都是"这件事从此做不到"，不是"刷新再试"：
+  // 批次玩法的时刻进承诺原像、发布后永远不可改；转盘一旦封盘（到点 / 提前结束 /
+  // 库存耗尽）名单已冻结、只等揭示，排期对它没有意义了。
+  qy_lot_schedule_not_wheel: 'qy_lot_err_schedule_not_wheel',
+  qy_lot_wheel_schedule_locked: 'qy_lot_err_wheel_schedule_locked',
+  // 改标题 / 说明（`PUT …/basics`）：已结算或已结束的活动名字已随证据链公示，
+  // 从此不可改 —— 不是"刷新再试"。
+  qy_lot_basics_locked: 'qy_lot_err_basics_locked',
   // 只在后端**没给** message 时才用得上（见 QY_SERVER_MESSAGE_CODES）。
   qy_lot_bad_request: 'qy_lot_err_bad_request',
   // 卡片背景图。十一个 code 各自要求的下一步完全不同：换一张更小的 / 换一种
@@ -390,14 +414,13 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_lot_cover_raced: 'qy_lot_err_cover_raced',
   qy_lot_proof_not_ready: 'qy_lot_err_proof_not_ready',
   qy_lot_proof_disabled: 'qy_lot_err_proof_disabled',
-  // 「彻底删除」的六道硬闸门 + 两道前置。八个 code 全都是 409/400，不登记就会
+  // 「彻底删除」的五道硬闸门 + 两道前置。七个 code 全都是 409/400，不登记就会
   // 塌成一句"操作冲突"，而它们要求运营做的下一步完全不同：等出款落定 / 先去
   // 发那串兑换码 / 先处理对账异常 / 先关闭双色球系列再从最新一期往前删 /
   // 把编号原样敲一遍 / 去把审计打开。塌成一句话的后果是运营反复点同一个按钮。
   qy_lot_delete_not_finished: 'qy_lot_err_delete_not_finished',
   qy_lot_delete_funds_open: 'qy_lot_err_delete_funds_open',
   qy_lot_delete_text_pending: 'qy_lot_err_delete_text_pending',
-  qy_lot_delete_entry_open: 'qy_lot_err_delete_entry_open',
   qy_lot_delete_flag_open: 'qy_lot_err_delete_flag_open',
   qy_lot_delete_series_live: 'qy_lot_err_delete_series_live',
   qy_lot_delete_evidence_broken: 'qy_lot_err_delete_evidence_broken',
@@ -536,6 +559,10 @@ export function qyErrorMessage(error: unknown, t: TFunction): string {
  */
 export const QY_SERVER_MESSAGE_CODES: ReadonlySet<string> = new Set([
   'qy_lot_bad_request',
+  // 商城的同一族判据（`qianye/modules/mall/errors.go` 的 errBadRequest）：
+  // 「标题必填且不超过 128 个字符」「plan_id 对应的套餐不存在」这类话只有后端
+  // 说得出，前端替换成「请求参数不合法」会让运营去改别的字段。
+  'qy_ml_bad_request',
 ])
 
 // ───────────────────────────── 内部实现 ─────────────────────────────

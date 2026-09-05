@@ -439,19 +439,23 @@ func TestSummarizeAIScopesCarriesPromptAndCategory(t *testing.T) {
 	rows := []AIScope{
 		{Id: 1, Name: "继承全局", Enabled: true, Priority: 10, GroupScope: "vip"},
 		{Id: 2, Name: "自己的提示词", Enabled: true, Priority: 20, GroupScope: "selfserve",
-			Prompt: "本档判定说明", CategoryId: 12, ChannelId: 7},
+			Prompt: "本档判定说明", CategoryId: 12, ChannelIds: AIChannelIds{7, 9},
+			ChannelMode: AIChannelModeRoundRobin},
 	}
 	got := summarizeAIScopes(rows)
 	require.Len(t, got, 2)
 
 	assert.Equal(t, aiScopePromptInherit, got[0].PromptSource)
 	assert.Zero(t, got[0].CategoryId)
-	assert.Zero(t, got[0].ChannelId, "没指定渠道 = 0(按权重随机)")
+	assert.Empty(t, got[0].ChannelIds, "没指定渠道 = 空(在全部启用渠道之间分发)")
+	assert.Equal(t, AIChannelModeWeighted, got[0].ChannelMode,
+		"汇总表下发的是归一之后的值:空串在「这一档实际会怎么跑」这个问题下没有答案")
 
 	assert.Equal(t, aiPromptSourceCustom, got[1].PromptSource)
 	assert.Equal(t, int64(12), got[1].CategoryId)
-	assert.Equal(t, int64(7), got[1].ChannelId,
-		"指定渠道决定这一档的用户内容被发去哪个第三方端点,它必须出现在汇总表上")
+	assert.Equal(t, []int64{7, 9}, got[1].ChannelIds,
+		"指定渠道决定这一档的用户内容被发去哪些第三方端点,它必须出现在汇总表上")
+	assert.Equal(t, AIChannelModeRoundRobin, got[1].ChannelMode)
 }
 
 // TestBuildAIScopesCarriesPromptAndCategory 钉住这两列真的进了快照。

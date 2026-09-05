@@ -11,6 +11,8 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+
+	"gorm.io/gorm"
 )
 
 // Snapshot 是「套餐 → 解锁的模型分组 + 余额使用范围」的只读内存视图,也就是
@@ -47,6 +49,12 @@ var (
 	refreshFails  atomic.Int64
 	staleWarns    atomic.Int64
 	droppedWarns  atomic.Int64
+	// snapshotEpoch 是「配置代次」,每次管理端写入(InvalidateAndReload)自增一次。
+	// 与 seats.go 的 cacheEpoch 同形、同因:reloadCtx 把两条 SELECT 挪进事务之后,
+	// 「读完、还没写回 current」之间仍有一个窗口 —— 一次在途的旧回源会把管理员刚
+	// 刷进去的新快照静默盖掉(丢失更新),此后一个 cache_seconds 全按旧配置放行。
+	// 代次让写回方能发现「我这份在途结果所对应的配置已经被改过了」并丢弃它。
+	snapshotEpoch atomic.Uint64
 )
 
 // hotAsync 是异步刷新的派发口。抽成变量只为让测试能同步执行它 ——
@@ -284,8 +292,12 @@ func reload() error {
 
 // InvalidateAndReload 让本节点立刻用上新绑定,不等下一个刷新周期。
 // 其它节点靠周期刷新感知(最多晚 cache_seconds)。
+//
+// 先自增代次再回源:宣告「配置已变」,让任何在途的旧回源在写回时发现代次已变、
+// 放弃它那份陈旧结果(见 reloadCtx 尾部),从而堵住「旧回源盖掉管理端新写入」。
 func InvalidateAndReload() error {
 	nextRefreshAt.Store(0)
+	snapshotEpoch.Add(1)
 	return reload()
 }
 
@@ -296,6 +308,19 @@ func InvalidateAndReload() error {
 // 整表读而不是增量:这两张表的行数是「配过解锁的套餐数 × 每个套餐的分组数」,
 // 数量级是几十到几百。为它引入一张版本表与增量比对,换来的 IO 节省可以忽略,
 // 而"版本号没自增所以新绑定没生效"是一类全新的、静默的失败。
+//
+// # 两条 SELECT 必须在同一个事务里(消撕裂)
+//
+// 分两条独立 SELECT 时,一次管理端写入(writePlanEntitlement 是「删 grants +
+// 插 grants + upsert policy」的单事务)若恰好提交在两条 SELECT 之间,回源会读到
+// 「旧 grants + 新 policy」——合成出库里从未存在过的状态(如 Bind 为空但
+// Scope=restricted),该套餐余额对任何分组都出不了资(死钱)。扩展库固定 MySQL,
+// 其默认隔离级别 REPEATABLE READ 让同一事务内两条读看到一致快照,撕裂消失;
+// SQLite 本身即可串行化,同样安全。
+//
+// # 写回前校验代次(消丢失更新)
+//
+// 见 snapshotEpoch:一次在途的旧回源不得盖掉管理端刚发布的新快照。
 func reloadCtx(ctx context.Context) error {
 	gdb := db.Get()
 	if gdb == nil {
@@ -304,21 +329,30 @@ func reloadCtx(ctx context.Context) error {
 	}
 	gdb = gdb.WithContext(ctx)
 
+	// 记下本次回源开工时的代次;若回源期间管理端又写了一次(自增代次并触发它
+	// 自己的回源),本次这份就已陈旧,写回时丢弃。
+	epoch := snapshotEpoch.Load()
+
 	grants := make([]PlanGrant, 0, 64)
-	if err := gdb.Order("plan_id asc, sort_order asc, id asc").Find(&grants).Error; err != nil {
-		refreshFails.Add(1)
-		db.MarkFailure(err)
-		return err
-	}
 	policies := make([]PlanBalancePolicy, 0, 16)
-	if err := gdb.Order("plan_id asc").Find(&policies).Error; err != nil {
+	if err := gdb.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Order("plan_id asc, sort_order asc, id asc").Find(&grants).Error; err != nil {
+			return err
+		}
+		return tx.Order("plan_id asc").Find(&policies).Error
+	}); err != nil {
 		refreshFails.Add(1)
 		db.MarkFailure(err)
 		return err
 	}
 	db.MarkSuccess()
 
-	current.Store(buildSnapshot(grants, policies))
+	snap := buildSnapshot(grants, policies)
+	// 在途期间配置又变过 ⇒ 本次结果可能已陈旧,放弃写回,让那次写入自己的回源生效。
+	if snapshotEpoch.Load() != epoch {
+		return nil
+	}
+	current.Store(snap)
 	loadedAt.Store(common.GetTimestamp())
 	return nil
 }

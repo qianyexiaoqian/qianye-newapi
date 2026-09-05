@@ -151,7 +151,10 @@ func adminUserGroupImpact(c *gin.Context) {
 		internalError(c, db.ErrNotReady)
 		return
 	}
-	name := strings.TrimSpace(c.Param("name"))
+	name, ok := groupNamePathParam(c)
+	if !ok {
+		return
+	}
 	if name == "" {
 		badRequest(c, "qy_invalid_param", "缺少用户分组名")
 		return
@@ -377,18 +380,21 @@ func adminCreateUserGroup(c *gin.Context) {
 }
 
 // newUserGroupWarnings 给出"建好了但还不能用"的具体清单。
+//
+// 文案口径:说清机制(空分组令牌拿**用户分组名**当渠道分组找池子)并直接给动作
+// (配默认模型分组)。早先那句「没有同名的渠道池子」被项目方点名看不懂 ——
+// 它读起来像在让人去建一个同名渠道池,而正确动作是配默认模型分组。
 func newUserGroupWarnings(name string) []string {
 	out := make([]string, 0, 2)
 	usable := service.GetUserUsableGroups(name)
 	if len(usable) == 0 {
 		out = append(out, fmt.Sprintf(
-			"用户分组 %q 当前一个模型分组都选不到 —— 把用户挪进来之后他们的全部令牌会立刻 403。"+
-				"请先在「用户分组 × 模型分组」里给它授权", name))
+			"分组 %q 还没有可用的模型分组:先在「编辑」里给它授权,再挪人,否则这批人的令牌会 403", name))
 	}
 	if routed, err := HasRoute(context.Background(), model.DB, name); err == nil && !routed {
 		out = append(out, fmt.Sprintf(
-			"用户分组 %q 没有同名的渠道池子,因此这一档人的**空分组令牌**(没有指定令牌分组的那些)"+
-				"会 503。请为它配一个默认模型分组", name))
+			"还没给分组 %q 配「默认模型分组」:没选分组的令牌会直接拿用户分组名当渠道分组找池子,"+
+				"而这个名字下没有渠道,请求会 503。在「编辑」里配一个默认模型分组即可", name))
 	}
 	return out
 }
@@ -451,7 +457,10 @@ func adminUpdateUserGroup(c *gin.Context) {
 		internalError(c, db.ErrNotReady)
 		return
 	}
-	name := strings.TrimSpace(c.Param("name"))
+	name, ok := groupNamePathParam(c)
+	if !ok {
+		return
+	}
 	before, backfilled, err := takeOrRegisterUserGroup(c, gdb, name)
 	if err != nil {
 		badRequest(c, "qy_groupns_unknown", err.Error())
@@ -745,7 +754,10 @@ func adminRenameUserGroup(c *gin.Context) {
 		internalError(c, db.ErrNotReady)
 		return
 	}
-	from := strings.TrimSpace(c.Param("name"))
+	from, ok := groupNamePathParam(c)
+	if !ok {
+		return
+	}
 	var before UserGroup
 	if err := gdb.WithContext(c).Where("name = ?", from).Take(&before).Error; err != nil {
 		badRequest(c, "qy_groupns_unknown", "用户分组 "+from+" 还没有登记")
@@ -861,7 +873,10 @@ func adminDeleteUserGroup(c *gin.Context) {
 		internalError(c, db.ErrNotReady)
 		return
 	}
-	name := strings.TrimSpace(c.Param("name"))
+	name, ok := groupNamePathParam(c)
+	if !ok {
+		return
+	}
 	// 与影响面接口同一道判据:**不要求有登记行**。
 	// 只在 users.group 里的历史遗留分组同样要能删(而且要能带迁移地删)——
 	// 它们正是最需要被清掉的那一类。rewriteUserGroup 的第三阶段对一条不存在的

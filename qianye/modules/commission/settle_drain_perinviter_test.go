@@ -36,7 +36,6 @@ func seedMaturedConsumeRows(t *testing.T, gdb *gorm.DB, inviterId, n int, gross 
 			RateUnits:     500,
 			GrossAmount:   decimal.RequireFromString(gross),
 			SettledAmount: decimal.Zero,
-			UsdRate:       decimal.NewFromInt(7),
 			Status:        StatusAccrued,
 			MatureAt:      now - 3600,
 			BucketDate:    dayKey(now),
@@ -81,7 +80,7 @@ func TestSettleUserDrainAbsorbsPastTheBatchCap(t *testing.T) {
 
 	bal := balanceOf(t, gdb, inviter)
 	require.NotNil(t, bal)
-	assert.EqualValues(t, rows, bal.AvailableQuota,
+	assert.EqualValues(t, rows, bal.Available,
 		"每行 gross 1,%d 行就该发满 %d", rows, rows)
 	assert.Equal(t, "0", bal.UnsettledAmount.String())
 }

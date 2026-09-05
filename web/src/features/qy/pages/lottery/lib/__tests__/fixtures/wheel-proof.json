@@ -1,0 +1,253 @@
+{
+  "algo": "lot-v2",
+  "act_no": "LT20260905-75988a8e8a96b08e",
+  "kind": "draw",
+  "status": "finished",
+  "outcome": "drawn",
+  "title": "星屑转盘",
+  "currency": "stardust",
+  "rules_text": "{\"allow_groups\":[],\"cooldown_seconds\":0,\"dedup_ip\":false,\"deny_groups\":[],\"exclude_currently_disabled\":true,\"exclude_ever_auto_banned\":false,\"exclude_violation\":false,\"max_attempts_per_user\":0,\"max_entries_per_user\":0,\"max_per_inviter\":0,\"max_total_entries\":1000,\"max_total_users\":0,\"max_violation_hits\":0,\"min_account_age_days\":0,\"min_quota\":0,\"min_used_quota\":0,\"recent_spend_days\":0,\"recent_spend_quota\":0,\"require_email\":false,\"require_oauth\":false,\"require_pay_password\":false}",
+  "rules_hash": "9b1e02298ef4649c75565c9e44fe30a7dfa98d3ebc75c33d4d208d68c97f7d56",
+  "spec": [
+    {
+      "tier": 1,
+      "name": "头奖",
+      "amount_quota": 500,
+      "count": 2,
+      "prize_type": "quota",
+      "win_ppm": 300000
+    },
+    {
+      "tier": 2,
+      "name": "兑换码",
+      "count": 1,
+      "prize_type": "text",
+      "win_ppm": 200000,
+      "text_desc": "联系客服领取"
+    },
+    { "tier": 3, "name": "谢谢参与", "prize_type": "none", "win_ppm": 500000 }
+  ],
+  "spec_hash": "a2e37b903536767833f9e553491e7993ee58d71f30982b4338c6e7969ac3244b",
+  "stake_quota": 100,
+  "open_at": 1788590800,
+  "close_at": 1788594460,
+  "draw_at": 1788594461,
+  "settle_deadline": 0,
+  "allow_multi_win": true,
+  "fee_bps": 0,
+  "no_winner_policy": "refund_all",
+  "min_entries_to_hold": 0,
+  "draw_mode": "wheel",
+  "series_no": "",
+  "issue_no": 0,
+  "pool_seed_quota": 0,
+  "pool_carry_quota": 0,
+  "pool_open_quota": 0,
+  "pool_share_bps": 0,
+  "ball_red_pool": 0,
+  "ball_red_pick": 0,
+  "ball_blue_pool": 0,
+  "ball_blue_pick": 0,
+  "ball_result": "",
+  "commit_hash": "7a08c3ef0ee725b0f4a1def91888deb02de26c53b213def835d61a815a69cb94",
+  "seed": "5583f155d23527fbd99949fc44bb5a41dde61c3a59de74a187b0dbb5985113c1",
+  "chain_head": "f65f34c486693a5b0e33c34be3064cf4c172d37ac920666fdb1deb8e9c0aaa12",
+  "roster_hash": "6df294c16d6eacc615e712b3d7378cb606e761a71d395674a562fcc1f27ff8d9",
+  "roster_count": 5,
+  "pool_quota": 500,
+  "win_opt_no": 0,
+  "result_evidence": "",
+  "fee_quota": 0,
+  "winners": [
+    {
+      "pos": 1,
+      "tier": 1,
+      "entry_no": "LE20260905-659e708d381b07d8",
+      "user_ref": "7a12e9001942d20a9b32c40d46331c26",
+      "amount": 500,
+      "prize_type": "quota"
+    },
+    {
+      "pos": 2,
+      "tier": 2,
+      "entry_no": "LE20260905-a52782e80981503f",
+      "user_ref": "88bfd0ac634a155de547f8e7fac5c8ac",
+      "amount": 0,
+      "prize_type": "text"
+    },
+    {
+      "pos": 5,
+      "tier": 1,
+      "entry_no": "LE20260905-38156a8f33b9c111",
+      "user_ref": "6cf89b15769a8221e61c2695c9a37e61",
+      "amount": 500,
+      "prize_type": "quota"
+    }
+  ],
+  "payouts": [
+    {
+      "entry_no": "LE20260905-659e708d381b07d8",
+      "kind": "prize",
+      "amount": 500,
+      "status": "paid"
+    },
+    {
+      "entry_no": "LE20260905-a52782e80981503f",
+      "kind": "text",
+      "amount": 0,
+      "status": "granted"
+    },
+    {
+      "entry_no": "LE20260905-38156a8f33b9c111",
+      "kind": "prize",
+      "amount": 500,
+      "status": "paid"
+    }
+  ],
+  "locked_at": 1788590860,
+  "revealed_at": 1788590860,
+  "settled_at": 1788590860,
+  "entries": [
+    {
+      "seq": 1,
+      "entry_no": "LE20260905-659e708d381b07d8",
+      "user_ref": "7a12e9001942d20a9b32c40d46331c26",
+      "opt_no": 0,
+      "amount": 100,
+      "status": "success",
+      "prev_hash": "7a08c3ef0ee725b0f4a1def91888deb02de26c53b213def835d61a815a69cb94",
+      "chain_hash": "9b3b67390dba428b7d297bc8392ff7c80d731a59c1adff27b513c6bd86504d99",
+      "order_no": "SD20260905T064740-9-027427e3f6"
+    },
+    {
+      "seq": 2,
+      "entry_no": "LE20260905-a52782e80981503f",
+      "user_ref": "88bfd0ac634a155de547f8e7fac5c8ac",
+      "opt_no": 0,
+      "amount": 100,
+      "status": "success",
+      "prev_hash": "9b3b67390dba428b7d297bc8392ff7c80d731a59c1adff27b513c6bd86504d99",
+      "chain_hash": "436e4de883acd9db07567bec5a408551e0ef53d8fecf93efaea162b9ca1d8d8c",
+      "order_no": "SD20260905T064740-b-f3a725018c"
+    },
+    {
+      "seq": 3,
+      "entry_no": "LE20260905-3b9aea22ac2cf09e",
+      "user_ref": "88bfd0ac634a155de547f8e7fac5c8ac",
+      "opt_no": 0,
+      "amount": 100,
+      "status": "success",
+      "prev_hash": "436e4de883acd9db07567bec5a408551e0ef53d8fecf93efaea162b9ca1d8d8c",
+      "chain_hash": "f377dd49c18c67c0bbbf92660bfe52d56c3d23c2a2991f863f6b6ab864770eae",
+      "order_no": "SD20260905T064740-c-dfe3618e17"
+    },
+    {
+      "seq": 4,
+      "entry_no": "LE20260905-7e26525d98f9405c",
+      "user_ref": "516cb6b405e31b67e21370d484b06378",
+      "opt_no": 0,
+      "amount": 100,
+      "status": "success",
+      "prev_hash": "f377dd49c18c67c0bbbf92660bfe52d56c3d23c2a2991f863f6b6ab864770eae",
+      "chain_hash": "881c106e4716b85a618b012da1800af972867e2a2287d44485c3d6887227f465",
+      "order_no": "SD20260905T064740-d-a0cc631d31"
+    },
+    {
+      "seq": 5,
+      "entry_no": "LE20260905-38156a8f33b9c111",
+      "user_ref": "6cf89b15769a8221e61c2695c9a37e61",
+      "opt_no": 0,
+      "amount": 100,
+      "status": "success",
+      "prev_hash": "881c106e4716b85a618b012da1800af972867e2a2287d44485c3d6887227f465",
+      "chain_hash": "f65f34c486693a5b0e33c34be3064cf4c172d37ac920666fdb1deb8e9c0aaa12",
+      "order_no": "SD20260905T064740-e-50a05c8160"
+    }
+  ],
+  "total": 5,
+  "p": 1,
+  "page_size": 1000,
+  "spins": [
+    {
+      "seq": 1,
+      "user_ref": "7a12e9001942d20a9b32c40d46331c26",
+      "client_seed": "cs0",
+      "ppm": 256761,
+      "tier": 1,
+      "exhausted_tier": 0,
+      "chain": "9b3b67390dba428b7d297bc8392ff7c80d731a59c1adff27b513c6bd86504d99"
+    },
+    {
+      "seq": 2,
+      "user_ref": "88bfd0ac634a155de547f8e7fac5c8ac",
+      "client_seed": "cs1",
+      "ppm": 431137,
+      "tier": 2,
+      "exhausted_tier": 0,
+      "chain": "436e4de883acd9db07567bec5a408551e0ef53d8fecf93efaea162b9ca1d8d8c"
+    },
+    {
+      "seq": 3,
+      "user_ref": "88bfd0ac634a155de547f8e7fac5c8ac",
+      "client_seed": "cs1",
+      "ppm": 696166,
+      "tier": 0,
+      "exhausted_tier": 0,
+      "chain": "f377dd49c18c67c0bbbf92660bfe52d56c3d23c2a2991f863f6b6ab864770eae"
+    },
+    {
+      "seq": 4,
+      "user_ref": "516cb6b405e31b67e21370d484b06378",
+      "client_seed": "cs2",
+      "ppm": 340125,
+      "tier": 0,
+      "exhausted_tier": 2,
+      "chain": "881c106e4716b85a618b012da1800af972867e2a2287d44485c3d6887227f465"
+    },
+    {
+      "seq": 5,
+      "user_ref": "6cf89b15769a8221e61c2695c9a37e61",
+      "client_seed": "cs1",
+      "ppm": 74047,
+      "tier": 1,
+      "exhausted_tier": 0,
+      "chain": "f65f34c486693a5b0e33c34be3064cf4c172d37ac920666fdb1deb8e9c0aaa12"
+    }
+  ],
+  "tiers": [
+    {
+      "tier": 1,
+      "name": "头奖",
+      "prize_type": "quota",
+      "amount_quota": 500,
+      "count": 2,
+      "win_ppm": 300000,
+      "text_desc": "",
+      "product_no": "",
+      "stock_left": 0
+    },
+    {
+      "tier": 2,
+      "name": "兑换码",
+      "prize_type": "text",
+      "amount_quota": 0,
+      "count": 1,
+      "win_ppm": 200000,
+      "text_desc": "联系客服领取",
+      "product_no": "",
+      "stock_left": 0
+    },
+    {
+      "tier": 3,
+      "name": "谢谢参与",
+      "prize_type": "none",
+      "amount_quota": 0,
+      "count": 0,
+      "win_ppm": 500000,
+      "text_desc": "",
+      "product_no": "",
+      "stock_left": 0
+    }
+  ],
+  "notice": "commit-reveal 保证的是「篡改会被不可抵赖地检出」,不是「物理不可篡改」。请把你在开奖前抓到的 roster_hash、以及你自己报名时收到的 chain_hash,与本文件中的对应值逐一核对。概率制(draw_mode=prob):每张票的摇号结果只依赖 final_seed、act_no 与自己的 entry_no,落选者与中奖者用的是同一组公开输入、走的是同一段复算 —— 「我为什么没中」因此是可以自己算出来的,而不是平台的一面之词。摇号量取票面前 64 位缩放到 [0,1000000),相对偏差小于 2^-44,这一点不掩饰。文本奖:奖品的名称、公开说明与份数在发布时就已进入承诺哈希、事后不可更改;但中奖者收到的那串**具体内容**是开奖之后由管理员填入的,**它没有任何承诺**,因为在承诺那一刻它还不存在。本文件因此只公布 fulfilled 这个布尔,不公布内容、也不公布内容的哈希。双色球(draw_mode=ball):开奖号**不进承诺**,它由公开的种子摇出来 —— 请自己按 ball_red_pool / ball_red_pick 重摇一遍再与 ball_result 比对,这一步才是「界面上那几颗球是产生结果的原因、而不是事后编的动画」的检验点。本期可派发的池子 = pool_open_quota + floor(pool_quota × pool_share_bps / 10000),其中 pool_open_quota(本期注资 + 上期滚存)在发布时就已进承诺、事后不可改;没有派出去的部分滚进下一期,而系列一旦被关闭,滚存余额作废。转盘(draw_mode=wheel):每一转的结果 = HMAC(seed, act_no ‖ seq ‖ client_seed) 缩放到 [0,1000000) 后按公示奖档落档,再按 seq 顺序重放各档库存递减(摇中已发完的档落空并记 exhausted_tier)。seq 必须从 1 起连续无缺口。揭示种子后任何人都能逐转复算,这是本协议对转盘的全部保证。转盘的 open_at / close_at / draw_at **不进承诺原像**:票面里没有时刻,排期只决定「什么时候收转」,运营可以在发布后延期、提前收转或立即开始,改动全部写在事件流里(schedule_changed);复算承诺时请跳过这三个分量。两条**不保证**:① user_ref 与真人的对应关系不可被外部证明(盐永不公开,它也不是随机量的输入;用户可用自己的回执自查同一活动内自己的 user_ref 是否一致);② 并发转动时哪个请求拿到 seq N 与 N+1 由服务端串行化决定,理论上存在一次二选一的重排空间 —— 批次玩法靠 FinalSeed(seed, roster_hash) 消除了它,转盘做不到。同理,能读到种子的人可以对自己的下一转离线挑选 client_seed;协议保证的是「服务端按公示公式算了票、不可抵赖地被检出」,不保证内部人不可能中奖。"
+}

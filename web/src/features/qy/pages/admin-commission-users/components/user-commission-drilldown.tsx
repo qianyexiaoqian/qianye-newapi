@@ -27,16 +27,18 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
-import { QyStatusBadge } from '../../../components/qy-status-badge'
-import { qyAdminRelationsQuery } from '../../admin-commission-relations/api'
-import { UnbindRelationDialog } from '../../admin-commission-relations/components/unbind-relation-dialog'
-import type { QyAffRelation } from '../../admin-commission-relations/types'
+import { QySdAmount } from '../../../components/qy-sd-amount'
+import { qyArray } from '../../../lib/array'
 import { qyAdminAccrualsQuery } from '../../admin-commission/api'
+import { qyAdminRelationsQuery } from '../../admin-invite/api'
 import {
   BlockRelationDialog,
   type QyBlockRelationTarget,
-} from '../../admin-commission/components/block-relation-dialog'
-import { qyAdminWithdrawalsQuery } from '../../admin-withdrawals/api'
+} from '../../admin-invite/components/block-relation-dialog'
+import { UnbindRelationDialog } from '../../admin-invite/components/unbind-relation-dialog'
+import type { QyInviteRelation } from '../../admin-invite/types'
+import { qyCommissionCreditBadge } from '../../commission-records/lib/credit-status'
+import { qyAdminCommissionCreditsQuery } from '../api'
 import type { QyCommissionUser } from '../types'
 
 /** 下钻里每张标签只拉一页：这是"看一眼这个人"的浮层，不是完整的流水页。 */
@@ -53,34 +55,34 @@ type UserCommissionDrilldownProps = {
  * ── 四张标签，四个不同的问题 ──
  *   · 计佣：这些钱**是怎么来的**（逐笔，含手工调整那一类）；
  *   · 结算：其中哪些已经落进余额（`status = settled` 的那一批）；
- *   · 提现：他把钱**取走了多少**、有没有卡在审核里；
- *   · 下线：他**拉了谁**，以及在这里直接停掉/解除某一条关系。
+ *   · 入账：余额里哪些已经**记进星辉**了、有没有卡在 held；
+ *   · 下线：他**拉了谁**，以及在这里直接停掉 / 解除某一条关系。
  *
  * ── 全部复用既有接口 ──
- * 四张标签分别打 `/admin/commission/records`（两次，筛选不同）、
- * `/admin/withdraw`、`/admin/commission/relations`。写动作（停止计佣 /
- * 解绑）复用 `relations/block` 与 `relations/unbind` —— 本浮层里**没有一行
+ * 前三张打 `/admin/commission/records`（两次，筛选不同）与 `/admin/commission/
+ * credits`；下线走 invite 模块的 `/admin/invite/relations`（`scope=bound` 由
+ * 后端从**主库** `users.inviter_id` 分页出，与列表页上那个下线数同源）。
+ * 写动作（停止计返 / 解绑）复用「邀请管理」的两个弹窗 —— 本浮层里**没有一行
  * 资金逻辑**，上限校验、幂等、审计全部只有后端那一份实现。
  *
- * 「结算」这一档刻意用「已结算的计佣行」而不是结算单据：站内目前没有暴露
- * 结算单（`qy_commission_settlement`）的管理端接口，与其编一个不存在的端点，
- * 不如如实用已有数据回答同一个问题，并把口径写在标签的说明里。
+ * D-14 之前的第三张是「提现」；提现模块永久删除，位置换成自动入账记录。
  *
- * 标签**不预挂载**：四张一起挂等于一打开浮层就同时打四个接口，而运营多数
- * 时候只看其中一张。
+ * 标签**不预挂载**：四张一起挂等于一打开浮层就同时打四个接口。
  */
 export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
   const { t } = useTranslation()
   const user = props.user
 
   const [tab, setTab] = useState('accruals')
-  const [unbindTarget, setUnbindTarget] = useState<QyAffRelation | null>(null)
+  const [unbindTarget, setUnbindTarget] = useState<QyInviteRelation | null>(
+    null
+  )
   const [blockTarget, setBlockTarget] = useState<QyBlockRelationTarget | null>(
     null
   )
 
-  // 换一个人必须回到第一张标签：停在「提现」上会让运营以为自己看的还是上一个
-  // 人的单子 —— 两个人的提现列表长得一模一样，只有金额不同。
+  // 换一个人必须回到第一张标签：停在「入账」上会让运营以为自己看的还是上一个
+  // 人的单子 —— 两个人的入账列表长得一模一样，只有金额不同。
   useEffect(() => {
     setTab('accruals')
     setUnbindTarget(null)
@@ -107,17 +109,14 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
     }),
     enabled: enabled && tab === 'settled',
   })
-  const withdrawals = useQuery({
-    ...qyAdminWithdrawalsQuery({
+  const credits = useQuery({
+    ...qyAdminCommissionCreditsQuery({
       p: 1,
       page_size: DRILL_PAGE_SIZE,
       user_id: String(userId),
     }),
-    enabled: enabled && tab === 'withdrawals',
+    enabled: enabled && tab === 'credits',
   })
-  // 下线用 AFF 关系列表的 `scope=bound`：那一档由后端从**主库**
-  // `users.inviter_id` 分页出（权威口径），与列表页上那个下线数是同一个来源，
-  // 两者永远对得上。走扩展库快照的话会少绝大多数人 —— 快照是懒建的。
   const invitees = useQuery({
     ...qyAdminRelationsQuery({
       p: 1,
@@ -136,6 +135,11 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
       : `#${user.user_id}`
   }
 
+  const accrualRows = qyArray(accruals.data?.items)
+  const settledRows = qyArray(settled.data?.items)
+  const creditRows = qyArray(credits.data?.items)
+  const inviteeRows = qyArray(invitees.data?.items)
+
   return (
     <>
       <QyResponsiveDialog
@@ -152,7 +156,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
             <dl className='grid grid-cols-2 gap-x-4 text-sm sm:grid-cols-4'>
               <div className='flex flex-col py-1'>
                 <dt className='text-muted-foreground text-xs'>
-                  {t('qy_cb_available')}
+                  {t('qy_cb_available_xh')}
                 </dt>
                 <dd>
                   <QyAmountText quota={user.available_quota} />
@@ -160,7 +164,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
               </div>
               <div className='flex flex-col py-1'>
                 <dt className='text-muted-foreground text-xs'>
-                  {t('qy_cb_frozen')}
+                  {t('qy_cb_frozen_xh')}
                 </dt>
                 <dd>
                   <QyAmountText quota={user.frozen_quota} />
@@ -168,10 +172,10 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
               </div>
               <div className='flex flex-col py-1'>
                 <dt className='text-muted-foreground text-xs'>
-                  {t('qy_cb_withdrawn')}
+                  {t('qy_cb_credited')}
                 </dt>
                 <dd>
-                  <QyAmountText quota={user.withdrawn_quota} />
+                  <QyAmountText quota={user.credited_quota} />
                 </dd>
               </div>
               <div className='flex flex-col py-1'>
@@ -196,8 +200,8 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                 <TabsTrigger value='settled' className='px-3'>
                   {t('qy_cu_tab_settled')}
                 </TabsTrigger>
-                <TabsTrigger value='withdrawals' className='px-3'>
-                  {t('qy_cu_tab_withdrawals')}
+                <TabsTrigger value='credits' className='px-3'>
+                  {t('qy_cu_tab_credits')}
                 </TabsTrigger>
                 <TabsTrigger value='invitees' className='px-3'>
                   {t('qy_cu_tab_invitees')}
@@ -206,7 +210,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
 
               <TabsContent value='accruals'>
                 <ul className='divide-border divide-y text-sm'>
-                  {(accruals.data?.items ?? []).map((row) => (
+                  {accrualRows.map((row) => (
                     <li
                       key={row.accrual_no}
                       className='flex items-center justify-between gap-3 py-1.5'
@@ -226,7 +230,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                     </li>
                   ))}
                 </ul>
-                {(accruals.data?.items ?? []).length === 0 && (
+                {accrualRows.length === 0 && (
                   <p className='text-muted-foreground text-sm'>
                     {t('qy_cu_drill_empty')}
                   </p>
@@ -238,7 +242,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                   {t('qy_cu_settled_hint')}
                 </p>
                 <ul className='divide-border divide-y text-sm'>
-                  {(settled.data?.items ?? []).map((row) => (
+                  {settledRows.map((row) => (
                     <li
                       key={row.accrual_no}
                       className='flex items-center justify-between gap-3 py-1.5'
@@ -251,32 +255,39 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                     </li>
                   ))}
                 </ul>
-                {(settled.data?.items ?? []).length === 0 && (
+                {settledRows.length === 0 && (
                   <p className='text-muted-foreground text-sm'>
                     {t('qy_cu_drill_empty')}
                   </p>
                 )}
               </TabsContent>
 
-              <TabsContent value='withdrawals'>
+              <TabsContent value='credits'>
                 <ul className='divide-border divide-y text-sm'>
-                  {(withdrawals.data?.items ?? []).map((row) => (
-                    <li
-                      key={row.withdraw_no}
-                      className='flex items-center justify-between gap-3 py-1.5'
-                    >
-                      <span className='flex flex-col gap-1'>
-                        <QyStatusBadge status={row.status} />
-                        <span className='text-muted-foreground text-xs'>
-                          {formatTimestampToDate(row.created_at)} ·{' '}
-                          {row.withdraw_no}
+                  {creditRows.map((row) => {
+                    const badge = qyCommissionCreditBadge(row.status)
+                    return (
+                      <li
+                        key={row.credit_no}
+                        className='flex items-center justify-between gap-3 py-1.5'
+                      >
+                        <span className='flex flex-col gap-1'>
+                          <span>
+                            <Badge variant={badge.variant}>
+                              {t(badge.labelKey, { defaultValue: row.status })}
+                            </Badge>
+                          </span>
+                          <span className='text-muted-foreground text-xs'>
+                            {formatTimestampToDate(row.created_at)} ·{' '}
+                            {row.credit_no}
+                          </span>
                         </span>
-                      </span>
-                      <QyAmountText quota={row.quota} />
-                    </li>
-                  ))}
+                        <QyAmountText quota={row.quota} />
+                      </li>
+                    )
+                  })}
                 </ul>
-                {(withdrawals.data?.items ?? []).length === 0 && (
+                {creditRows.length === 0 && (
                   <p className='text-muted-foreground text-sm'>
                     {t('qy_cu_drill_empty')}
                   </p>
@@ -285,7 +296,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
 
               <TabsContent value='invitees'>
                 <ul className='divide-border divide-y text-sm'>
-                  {(invitees.data?.items ?? []).map((row) => (
+                  {inviteeRows.map((row) => (
                     <li
                       key={`${row.inviter_id}-${row.invitee_id}`}
                       className='flex items-center justify-between gap-3 py-1.5'
@@ -301,15 +312,14 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                             </Badge>
                           )}
                         </span>
+                        {/* 关系行上的累计是**星屑**（invite 模块记的那本账），
+                            与本浮层其余三张标签的星辉不是同一种单位，各印各的。 */}
                         <span className='text-muted-foreground text-xs'>
                           #{row.invitee_id} ·{' '}
-                          <QyAmountText quota={row.total_commission_quota} />
+                          <QySdAmount amount={row.total_stardust} />
                         </span>
                       </span>
                       <span className='flex shrink-0 gap-1'>
-                        {/* 与佣金审核页共用同一个确认框：方向由行上的当前状态
-                            决定，「停止计佣」与「解绑」的区别写在里面 ——
-                            这两个按钮在这里就是挨着的。 */}
                         <Button
                           variant='ghost'
                           size='sm'
@@ -333,7 +343,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                     </li>
                   ))}
                 </ul>
-                {(invitees.data?.items ?? []).length === 0 && (
+                {inviteeRows.length === 0 && (
                   <p className='text-muted-foreground text-sm'>
                     {t('qy_cu_drill_empty')}
                   </p>
@@ -344,9 +354,9 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
         )}
       </QyResponsiveDialog>
 
-      {/* 解绑复用 AFF 关系页那一个弹窗：它把"历史佣金全部保留、从此不再产生
-          新的"这句话写在按钮上方，而那正是运营点解绑时唯一真正关心的事。
-          在这里另写一份说明就是同一句话的第二份拷贝。 */}
+      {/* 解绑与停止 / 恢复都复用「邀请管理」的弹窗：它们把"已发的星屑 / 佣金全部
+          保留、从此不再产生新的"这句话写在按钮上方，在这里另写一份就是同一句话
+          的第二份拷贝。 */}
       <UnbindRelationDialog
         relation={unbindTarget}
         onClose={() => setUnbindTarget(null)}

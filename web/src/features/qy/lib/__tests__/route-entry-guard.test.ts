@@ -42,14 +42,16 @@ const t = ((key: string) => key) as unknown as TFunction
 
 const ALL_ON: QyFeatures = {
   transfer: true,
+  invite: true,
   commission: true,
-  withdraw: true,
   availability: true,
   lottery: true,
   violation: true,
   ticket: true,
   group_matrix: true,
   pay_password: true,
+  stardust: true,
+  mall: true,
 }
 
 /** 上游根导航的最小复刻，锚点与 nav-merge.test.ts 同源。 */
@@ -104,18 +106,48 @@ function sidebarUrls(role: number): Set<string> {
   return urls
 }
 
-/** 系统设置抽屉里那一组的全部 url（抽屉只对 role=100 打得开）。 */
+/**
+ * 系统设置抽屉里 **qy 那些页面**的全部 url（抽屉只对 role=100 打得开）。
+ *
+ * 上游折叠项要给全（「模型与路由」「安全与限制」，子项 url 是真的
+ * `/system-settings/{models,security}/*`）：写了 `settingsSection` 的页面就挂在
+ * 它下面，base 给成空的话本守卫只会走 fail-open 那条路，真实落点一个字节都没验到。
+ * 收集时只留 `/qy/` —— 上游自己的 section url 不是本文件要守的东西，
+ * 混进来会让"role<100 时抽屉里一个 qy 项都没有"那条断言恒假。
+ */
 function settingsDrawerUrls(role: number): Set<string> {
   const urls = new Set<string>()
   const walk = (items: readonly NavItem[]) => {
     for (const item of items) {
-      if (typeof item.url === 'string') urls.add(item.url)
+      if (typeof item.url === 'string' && item.url.startsWith('/qy/')) {
+        urls.add(item.url)
+      }
       const children = (item as { items?: readonly NavItem[] }).items
       if (children != null) walk(children)
     }
   }
   for (const group of mergeQySystemSettingsNavGroups(
-    [{ id: 'settings', title: 'Settings', items: [] }],
+    [
+      {
+        id: 'settings',
+        title: 'Settings',
+        items: [
+          {
+            title: 'Models & Routing',
+            items: [{ title: 'Global', url: '/system-settings/models/global' }],
+          },
+          {
+            title: 'Security & Limits',
+            items: [
+              {
+                title: 'Rate Limit',
+                url: '/system-settings/security/rate-limit',
+              },
+            ],
+          },
+        ],
+      },
+    ],
     ALL_ON,
     role,
     t
@@ -238,7 +270,7 @@ describe('qy 路由 ↔ 导航入口', () => {
       routeUrls.length >= 20,
       `只扫到 ${routeUrls.length} 条路由，扫描器多半坏了 —— 下面所有断言都会变成空转`
     )
-    for (const url of ['/qy/affiliate', '/qy/admin/commission-records']) {
+    for (const url of ['/qy/affiliate', '/qy/admin/invite']) {
       assert.ok(routeUrls.includes(url), `扫描器漏了 ${url}`)
     }
     // 形状排除必须真的生效，否则布局路由与详情页会以孤儿身份刷屏。
@@ -441,42 +473,40 @@ describe('qy 路由 ↔ 导航入口', () => {
   })
 
   /**
-   * 佣金管理的按人入口，源码级钉死。
+   * 邀请管理的入口，源码级钉死（D-14）。
    *
    * 上面那条通用守卫已经能拦住"再删一次"，这一条另外钉的是**落点**：
    * 项目方要的是从侧栏点得到，进了设置抽屉或被收进某张标签都不算数
    * （抽屉在 `/system-settings` 下要求 role=100，普通管理员够不着）。
    *
-   * 本轮的形状与上一轮相反：上一轮是"两页写完了但侧栏一行都没有"，这一轮是
-   * 把那两行**收进一个宿主**（项目方原话是不要再造第四个割裂的页面）。所以
-   * 这里既钉宿主必须在侧栏一级项上，也钉那两页必须仍然是它的标签 —— 少了
+   * 既钉宿主必须在侧栏一级项上，也钉那两页必须仍然是它的标签 —— 少了
    * 后半句，把两页悄悄删掉照样全绿。
    */
-  test('用户佣金是「结算」组的一级项，另外两张表是它的标签', () => {
-    const hubUrl = '/qy/admin/commission-records/users'
+  test('邀请管理是「资金与推广」组的一级项，另外两张表是它的标签', () => {
+    const hubUrl = '/qy/admin/invite'
     const hub = QY_PAGES.find((item) => item.url === hubUrl)
     assert.ok(hub != null, `${hubUrl} 又从页面表里消失了`)
     assert.equal(
       hub.group,
       'qy-settlement',
-      `${hubUrl} 不在「结算」组的一级项上，侧栏里点不到`
+      `${hubUrl} 不在「资金与推广」组的一级项上，侧栏里点不到`
     )
     assert.ok(hub.icon != null, `${hubUrl} 缺图标，整行会与上游项左对齐错位`)
     assert.equal(isQyPageHosted(hubUrl), false, '宿主页自己被收进了选择夹')
     assert.ok(
       sidebarUrls(ROLE.ADMIN).has(hubUrl),
-      'role=10 的管理员在侧栏上看不到用户佣金'
+      'role=10 的管理员在侧栏上看不到邀请管理'
     )
 
     const group = QY_TAB_GROUPS.find((item) => item.host === hubUrl)
     assert.ok(group != null, `${hubUrl} 不再是任何选择夹的宿主`)
     for (const url of [
-      '/qy/admin/commission-records/relations',
-      '/qy/admin/commission-records/balances',
+      '/qy/admin/daily-consume',
+      '/qy/admin/invite-accruals',
     ]) {
       assert.ok(
         group.pages.includes(url),
-        `${url} 从用户佣金的选择夹里掉出去了 —— 它此前是侧栏上的一行，现在既不是标签也不是一级项，等于整页没了入口`
+        `${url} 从邀请管理的选择夹里掉出去了 —— 它既不是标签也不是一级项，等于整页没了入口`
       )
       assert.equal(
         isQyPageHosted(url),
@@ -484,38 +514,5 @@ describe('qy 路由 ↔ 导航入口', () => {
         `${url} 不再被判成选择夹成员，侧栏会多出一行点了就被重定向甩走的入口`
       )
     }
-  })
-
-  /**
-   * 佣金审核页上那几个按钮不许跟着入口一起删。
-   *
-   * 侧栏入口与页内跳转解决的是两件事：侧栏回答"从零开始去哪找"，页内按钮
-   * 回答"我正在看这一笔，另外那几张表怎么开"。两者都在，运营才不用记路径。
-   */
-  test('佣金审核页仍然直连另外三张表', () => {
-    const source = readFileSync(
-      join(
-        srcDir,
-        'features',
-        'qy',
-        'pages',
-        'admin-commission-records',
-        'index.tsx'
-      ),
-      'utf8'
-    )
-    for (const url of [
-      '/qy/admin/commission-records/users',
-      '/qy/admin/commission-records/balances',
-      '/qy/admin/commission-records/relations',
-    ]) {
-      assert.ok(source.includes(url), `佣金审核页丢了指向 ${url} 的按钮`)
-    }
-    // 跳转走 qyTabTarget 而不是硬写旧 url：后者到得了，但是**先离开宿主页再被
-    // 弹回来**，用户看到一次白闪，而且选中哪张标签由重定向那一跳决定。
-    assert.ok(
-      source.includes('qyTabTarget('),
-      '页内跳转绕开了 qyTabTarget，会经过一次旧路由重定向'
-    )
   })
 })

@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
@@ -69,8 +70,10 @@ import (
 //
 // # 删除**不碰**的东西
 //
-//	qy_fund_orders(跨库资金单)与主库 logs:它们是这笔钱真实发生过的账,
-//	不归本模块管(见 model.go 顶部),删掉活动不等于这笔钱没发生过。
+//	qy_sd_ledger(星屑流水):它是这笔星屑真实进出过的账,归 stardust 模块管、
+//	永不随活动删除(见 model.go 顶部)。删掉活动不等于这笔钱没发生过 ——
+//	流水行上冗余的 act_no 让事后仍能把一场活动的进出归拢出来,
+//	buildDeleteEvidence 也正是按它把三个合计写进审计的。
 //	qy_lot_series 上的 seed_total_quota / paid_total_quota:那是累计发行上限的
 //	计数器,调小它等于凭空还回一截 headroom —— 永远只增不减。
 //	qy_lot_spend_daily:它按用户聚合、与活动无关。
@@ -85,8 +88,6 @@ var (
 		"本场还有未落定的出款(计划中/发放中/失败/转人工),删除会让这笔平台还欠着的钱失去唯一的收款依据")
 	errDeleteTextPending = newBizError(http.StatusConflict, "qy_lot_delete_text_pending",
 		"本场还有未履行的文本奖:删除会让中奖者手里那一档凭据凭空消失")
-	errDeleteEntryOpen = newBizError(http.StatusConflict, "qy_lot_delete_entry_open",
-		"本场还有未结算的参与明细,删除会让这些用户的扣费失去归属")
 	errDeleteFlagOpen = newBizError(http.StatusConflict, "qy_lot_delete_flag_open",
 		"本场还有未处理的对账异常:异常指向的正是这些即将被删掉的行,请先处理完再删")
 	errDeleteSeriesLive = newBizError(http.StatusConflict, "qy_lot_delete_series_live",
@@ -133,9 +134,9 @@ func errDeleteDraftDirty(what string) *bizError {
 //
 // # 两套闸门,不是一套
 //
-// 下面那六道全部在回答同一个问题:「这一场结束了,但它还欠着谁什么吗」。
-// 草稿一个都不适用 —— 它没有参与者、没有资金单、没有对外公布过任何承诺,
-// 而这六道里有两道(⑤对账异常、⑥双色球结转)在草稿上**恒为真**,于是
+// 下面那五道全部在回答同一个问题:「这一场结束了,但它还欠着谁什么吗」。
+// 草稿一个都不适用 —— 它没有参与者、没有一行流水、没有对外公布过任何承诺,
+// 而这五道里有两道(⑤对账异常、⑥双色球结转)在草稿上**恒为真**,于是
 // 「草稿删不掉」不是一条设计取舍,是这两道闸门被套用在了它们从没打算覆盖的
 // 状态上:
 //
@@ -149,7 +150,11 @@ func errDeleteDraftDirty(what string) *bizError {
 //	  errDeleteSeriesLive。
 //
 // 所以草稿走 checkDraftDeletable:它换成三条**正向**断言(没有参与、没有出款、
-// 没有承诺痕迹),而不是把六道逐条放宽 —— 放宽出来的那一份必然与本体漂移。
+// 没有承诺痕迹),而不是把五道逐条放宽 —— 放宽出来的那一份必然与本体漂移。
+//
+// 编号保留 ①②③⑤⑥:④ 曾经是"参与明细必须全部结清"(pending / excluded),
+// 单事务之下票只在扣款提交之后才存在,没有任何"钱还没归位"的参与,这一道
+// 在结构上不再有判据。编号不重排是为了让审计与旧文案里的引用继续指得对。
 func checkActivityDeletable(ctx context.Context, gdb *gorm.DB, act *Activity) error {
 	if act.Status == StatusDraft {
 		return checkDraftDeletable(ctx, gdb, act)
@@ -161,7 +166,7 @@ func checkActivityDeletable(ctx context.Context, gdb *gorm.DB, act *Activity) er
 		return errDeleteNotFinished
 	}
 
-	// ② 资金必须全部落定。终态只有两个:paid(额度真的到账了)与
+	// ② 资金必须全部落定。终态只有两个:paid(星屑真的到账了)与
 	// granted(文本奖的中奖位已登记)。held 尤其要拦 —— finishIfDone 只把
 	// planned/paying/failed 当作"未完成",held 是被当作终态放行的,
 	// 于是一场 finished 的活动完全可能还挂着一笔"平台欠着、只是发不出去"的钱。
@@ -188,19 +193,6 @@ func checkActivityDeletable(ctx context.Context, gdb *gorm.DB, act *Activity) er
 	}
 	if n > 0 {
 		return errDeleteTextPending
-	}
-
-	// ④ 参与明细必须全部结清。pending 是扣费还在途,excluded 是封盘后才落定、
-	// 退款由资金单终态驱动 —— 两者都代表"这个人的钱还没归位"。
-	err = gdb.WithContext(ctx).Model(&Entry{}).
-		Where("act_id = ? AND status IN ?", act.Id, []string{EntryPending, EntryExcluded}).
-		Count(&n).Error
-	if err != nil {
-		db.MarkFailure(err)
-		return wrapInternal("统计未结算参与", err)
-	}
-	if n > 0 {
-		return errDeleteEntryOpen
 	}
 
 	// ⑤ 未解决的对账异常。raiseFlag 落下的每一条都在说"这一场的某个数对不上",
@@ -541,7 +533,10 @@ func purgeActivityRows(tx *gorm.DB, act *Activity) error {
 // 删完之后这份快照是唯一的遗物,所以它必须同时装下三类东西:
 //
 //	身份与规模:act_no / 标题 / 玩法 / 参与人数 / 投注总额;
-//	资金口径:  派奖总额 / 退款总额 / 平台抽成 / 已付合计;
+//	资金口径:  派奖总额 / 退款总额 / 平台抽成 / 已付合计,以及账本侧按 act_no
+//	           归拢出的 Σlot_stake / Σlot_prize / Σlot_refund 三个数 —— 它们来自
+//	           qy_sd_ledger,那张表永不随活动删除,所以这三个数是事后仍能
+//	           独立复核的那一半;活动行与出款表上的合计是即将被删掉的那一半;
 //	证据链指纹:algo / commit_hash / rules_hash / spec_hash / roster_hash /
 //	           chain_head / **seed**。
 //
@@ -604,6 +599,32 @@ func buildDeleteEvidence(ctx context.Context, gdb *gorm.DB, act *Activity) (map[
 		return nil, wrapInternal("统计事件流", err)
 	}
 
+	// 账本侧的三个合计按 act_no 归拢,不按票号 JOIN:活动删掉之后 ref_no 里的
+	// 票号与出款号就再也 JOIN 不回任何东西,只有 act_no 还能把这一场的流水找齐。
+	// lot_stake 行的 amount 是负数,取绝对值写进证据,让三个数与活动行上的
+	// pool / payout / refund 三列同一个符号、能直接对读。
+	ledgerTotals := make([]struct {
+		Kind  string
+		Total int64
+	}, 0, 3)
+	if err := gdb.Model(&stardust.Ledger{}).
+		Select("kind, COALESCE(SUM(amount), 0) AS total").
+		Where("act_no = ?", act.ActNo).Group("kind").Scan(&ledgerTotals).Error; err != nil {
+		db.MarkFailure(err)
+		return nil, wrapInternal("统计账本流水", err)
+	}
+	var ledgerStake, ledgerPrize, ledgerRefund int64
+	for _, row := range ledgerTotals {
+		switch stardust.Kind(row.Kind) {
+		case stardust.KindLotStake:
+			ledgerStake = -row.Total
+		case stardust.KindLotPrize:
+			ledgerPrize = row.Total
+		case stardust.KindLotRefund:
+			ledgerRefund = row.Total
+		}
+	}
+
 	// 刻意不放 intro / rules_text / spec_text:审计快照有 SnapshotMaxBytes
 	// (默认 4096 字节)的截断,而截断是从尾巴切的 —— 塞一段几 KB 的规则正文
 	// 进去,会把后面那些真正不可再生的哈希整段切掉。规则文本的哈希在,
@@ -640,6 +661,12 @@ func buildDeleteEvidence(ctx context.Context, gdb *gorm.DB, act *Activity) (map[
 		"platform_fee_quota": act.PlatformFeeQuota,
 		"paid_total_quota":   paidTotal,
 		"text_grant_count":   act.TextGrantCount,
+		// 账本侧的三个数留在证据里的理由见函数头:流水永不随活动删除,
+		// 它们是删完之后唯一还能被独立复核的那一半。
+		"currency":            CurrencyStardust,
+		"ledger_stake_total":  ledgerStake,
+		"ledger_prize_total":  ledgerPrize,
+		"ledger_refund_total": ledgerRefund,
 
 		"series_no":        act.SeriesNo,
 		"issue_no":         act.IssueNo,

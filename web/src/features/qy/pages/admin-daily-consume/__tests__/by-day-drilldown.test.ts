@@ -46,7 +46,7 @@ const INDEX = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8')
 describe('按天下钻', () => {
   test('走自己那条路由,不是往主表那条上塞参数', () => {
     assert.ok(
-      API.includes("'/admin/commission/daily-consume/by-day'"),
+      API.includes("'/admin/invite/daily-consume/by-day'"),
       '下钻必须是独立路由:塞进主表那条会让 20000 行的上界从"多少人"变成"多少格"'
     )
     assert.ok(

@@ -450,32 +450,45 @@ func sampleAI(bps int) bool {
 //
 // ═══════════════════ 三条链,由这一档自己选 ═══════════════════
 //
-//	没指定渠道             按权重在全部启用渠道里随机、不放回,取到上限为止。
-//	指定了 + 转移开关关着   只有它一个。指定的字面意思,也是这一列的出厂行为。
-//	指定了 + 转移开关开着   它排第一,后面按权重从**其余**渠道里随机补位。
+//	没指定渠道             在**全部启用渠道**之间按 ChannelMode 分发,取到上限为止。
+//	指定了 + 转移开关关着   只有清单里的那几个,按 ChannelMode 排序。指定的字面意思,
+//	                       也是这一列的出厂行为。
+//	指定了 + 转移开关开着   清单里的排在前面,后面按权重从**其余**渠道里随机补位。
 //
-// 加权随机而不是"永远打第一个":权重是运营表达"主用哪个、备用哪个"的方式,
-// 而恒定顺序会让备用渠道永远不被验证 —— 等到主渠道真挂了那天,才发现备用
-// 渠道的密钥三个月前就过期了。
+// ═══════════════════ 两种分发方式,以及为什么补位不跟着走 ═══════════════════
+//
+//	weighted(零值)  按 AIChannel.Weight 加权随机、不放回。权重是运营表达
+//	                 "主用哪个、备用哪个"的方式,而恒定顺序会让备用渠道永远不被
+//	                 验证 —— 等到主渠道真挂了那天,才发现备用渠道的密钥三个月前
+//	                 就过期了。
+//	round_robin      按清单顺序轮流,每次请求换一个起点(游标见 aiRoundRobinStart)。
+//	                 几台同规格的护栏机上它比随机更稳:随机的方差会让某一台在
+//	                 某一分钟里连吃几倍的量,而小模型机的并发很浅。
+//
+// **补位那一段恒是加权随机**,不跟 ChannelMode 走。它是应急路径,要的是尽快
+// 找到一个还活着的渠道;在一组运营根本没有选过的端点之间"均分负载"没有意义,
+// 而按权重先试那个最能扛的显然更可能一次成功。
 //
 // ═══════════════════ 为什么故障转移必须是开关,不能默认打开 ═══════════════════
 //
 // 指定渠道这一列的**原始理由**是数据流向:内部对接分组的内容只允许发给自建
-// 的那个端点。默认打开转移等于把存量配置里的每一条"只发给 A"静默改写成
-// "A 不行就发给任何人"—— 一次没人按下过、也没有任何症状的数据出境扩大。
+// 的那几个端点。默认打开转移等于把存量配置里的每一条"只发给这几个"静默改写成
+// "它们不行就发给任何人"—— 一次没人按下过、也没有任何症状的数据出境扩大。
 //
 // 所以开关默认关(AIScope.ChannelFailover 出厂 false),存量行为逐字节不变;
 // 打开它是一次显式动作,会写审计,而且列表上那一格会写着"故障转移: 开"。
-// 界面上必须能看出这两种链的区别 —— 运营看到"我指定了 A"时的预期是只有 A,
-// 不能让这个预期在他不知情的时候变成假的。
+// 界面上必须能看出这两种链的区别 —— 运营看到"我指定了这几个"时的预期是只有
+// 这几个,不能让这个预期在他不知情的时候变成假的。
 //
 // ═══════════════════ 指定的渠道压根不在快照里时 ═══════════════════
 //
-// 停用、删除、这一轮密钥解不开 —— 三者对这一档是同一件事。
+// 停用、删除、这一轮密钥解不开 —— 三者对这一档是同一件事。清单里只要还剩
+// 一个可用的,这一档照常工作(这正是指定一组而不是一个的收益);**全部**都不
+// 可用时:
 //
 //	转移开关关着  返回空 ⇒ OutcomeNoChannel ⇒ 不审核、放行、明细留痕。
 //	              绝不悄悄换一个:那会把内容发去运营明确没有选的端点,
-//	              而"只能发给这一个"往往正是指定它的全部理由。
+//	              而"只能发给这几个"往往正是指定它们的全部理由。
 //	转移开关开着  退到池子。开关的字面意思就是"这一档可以用别的渠道",
 //	              而"已经被停掉"与"刚刚开始超时"对这一档的用户是同一件事。
 //	              配置侧的信号不会因此丢失:作用域列表仍然会把这一格标红
@@ -484,35 +497,72 @@ func pickAIChannels(rt *aiRuntime, sc *aiScopeRT) []*aiChannelRT {
 	if rt == nil || len(rt.Channels) == 0 {
 		return nil
 	}
-	out := make([]*aiChannelRT, 0, maxAIAttempts)
-	var pinnedId int64
-	if sc != nil && sc.ChannelId > 0 {
-		pinned := rt.channelById(sc.ChannelId)
-		if !sc.ChannelFailover {
-			if pinned == nil {
-				return nil
-			}
-			return []*aiChannelRT{pinned}
-		}
-		if pinned != nil {
-			out = append(out, pinned)
-			pinnedId = pinned.Id
-		}
+	mode, rrKey, failover := AIChannelModeWeighted, int64(0), false
+	var wanted []int64
+	if sc != nil {
+		mode, rrKey, wanted, failover = sc.ChannelMode, sc.Id, sc.ChannelIds, sc.ChannelFailover
+	}
+	// 没指定:全部启用渠道之间分发,一条链走完。
+	if len(wanted) == 0 {
+		return orderAIChannels(rt.Channels, mode, rrKey, maxAIAttempts)
 	}
 
-	// 权重合计在这里现算而不是读快照上的一个字段:指定的那个渠道要从池子里
-	// 摘出去,一个预先算好的合计在那一刻就是错的,而错的表现是加权随机偏向
-	// 某一个渠道 —— 一种没有任何症状、只能靠统计才看得出来的偏差。
-	pool := make([]*aiChannelRT, 0, len(rt.Channels))
-	total := int64(0)
-	for _, ch := range rt.Channels {
-		if ch.Id == pinnedId {
+	pinned := make(map[int64]bool, len(wanted))
+	chosen := make([]*aiChannelRT, 0, len(wanted))
+	for _, id := range wanted {
+		// 重复 id 在写入侧已经去掉,这一层兜的是绕过接口写进来的脏数据:
+		// 轮询下一个重复的 id 会让那台机器拿到双倍的量,而界面上看不出来。
+		if pinned[id] {
 			continue
 		}
-		pool = append(pool, ch)
+		pinned[id] = true
+		if ch := rt.channelById(id); ch != nil {
+			chosen = append(chosen, ch)
+		}
+	}
+	out := orderAIChannels(chosen, mode, rrKey, maxAIAttempts)
+	if !failover {
+		// 可能是空的(清单里的渠道全都不可用)⇒ OutcomeNoChannel。
+		return out
+	}
+	if len(out) >= maxAIAttempts {
+		return out
+	}
+	rest := make([]*aiChannelRT, 0, len(rt.Channels))
+	for _, ch := range rt.Channels {
+		if !pinned[ch.Id] {
+			rest = append(rest, ch)
+		}
+	}
+	return append(out, orderAIChannels(rest, AIChannelModeWeighted, rrKey, maxAIAttempts-len(out))...)
+}
+
+// orderAIChannels 把一组渠道排成本次要尝试的顺序,最多 limit 个。
+//
+// 权重合计在这里现算而不是读快照上的一个字段:指定的那几个渠道要从池子里
+// 摘出去,一个预先算好的合计在那一刻就是错的,而错的表现是加权随机偏向
+// 某一个渠道 —— 一种没有任何症状、只能靠统计才看得出来的偏差。
+func orderAIChannels(chans []*aiChannelRT, mode string, rrKey int64, limit int) []*aiChannelRT {
+	if limit > len(chans) {
+		limit = len(chans)
+	}
+	if limit <= 0 {
+		return nil
+	}
+	out := make([]*aiChannelRT, 0, limit)
+	if normalizeAIChannelMode(mode) == AIChannelModeRoundRobin {
+		start := aiRoundRobinStart(rrKey, len(chans))
+		for i := 0; i < limit; i++ {
+			out = append(out, chans[(start+i)%len(chans)])
+		}
+		return out
+	}
+	pool := append([]*aiChannelRT(nil), chans...)
+	total := int64(0)
+	for _, ch := range pool {
 		total += int64(ch.Weight)
 	}
-	for len(out) < maxAIAttempts && len(pool) > 0 {
+	for len(out) < limit && len(pool) > 0 {
 		idx := 0
 		if total > 0 && len(pool) > 1 {
 			n, err := rand.Int(rand.Reader, big.NewInt(total))

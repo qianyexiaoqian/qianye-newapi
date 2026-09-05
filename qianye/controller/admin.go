@@ -50,6 +50,19 @@ var retiredTables = []gin.H{
 		"retired_by": "同上(规则版本快照)",
 		"note":       "未 DROP:观察期内保留以便回读。数据未迁移。",
 	},
+
+	// D-14:提现整体退场;D-15 把佣金账本按「星辉」口径恢复,六张 qy_commission_* 表回到
+	// modules/commission 的 Tables() 由 AutoMigrate 重建(不迁旧数据)。仍退役的是法币折算档、
+	// 改名重建的失效流水,以及提现的五张表 + 收款明文查看名册。这批表没有观察期,
+	// 只等运维手工 DROP(语句见 retired_tables.md)。
+	{"table": "qy_commission_fiat_rate", "retired_by": "同上(分组法币折算比例)", "note": "未 DROP:等运维手工执行。"},
+	{"table": "qy_commission_cache_invalidation", "retired_by": "同上(跨节点失效流水;改名成 qy_invite_cache_invalidation 重建)", "note": "未 DROP:等运维手工执行。"},
+	{"table": "qy_withdrawals", "retired_by": "D-14:提现(withdraw)整模块删除,没有现金推广收益也就没有提现", "note": "未 DROP:等运维手工执行。数据不迁移。"},
+	{"table": "qy_withdrawal_events", "retired_by": "同上(提现状态流转)", "note": "未 DROP:等运维手工执行。"},
+	{"table": "qy_withdrawal_payees", "retired_by": "同上(收款人)", "note": "未 DROP:等运维手工执行。含 PII 密文,DROP 前不必导出。"},
+	{"table": "qy_withdrawal_payee_accounts", "retired_by": "同上(收款账号密文)", "note": "未 DROP:等运维手工执行。含 PII 密文,DROP 前不必导出。"},
+	{"table": "qy_withdrawal_proofs", "retired_by": "同上(打款凭证)", "note": "未 DROP:等运维手工执行。磁盘上的凭证文件一并清理。"},
+	{"table": "qy_pii_audits", "retired_by": "同上(收款明文查看名册)", "note": "未 DROP:等运维手工执行。"},
 }
 
 // AdminHealth 返回扩展的运行状态,是排障的第一入口。

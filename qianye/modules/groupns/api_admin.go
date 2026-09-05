@@ -15,6 +15,7 @@ package groupns
 // 两份草稿 + 两道闸门,而写入跨两个库不原子。
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -76,6 +77,30 @@ func internalError(c *gin.Context, err error) {
 	c.JSON(http.StatusInternalServerError, gin.H{
 		"success": false, "code": "qy_internal_error", "message": "处理失败,请稍后重试",
 	})
+}
+
+// groupNamePathParam 从路径取分组名,**不做归一化**;带首尾空白时写 400 并返回 ok=false。
+//
+// 空串按合法返回(ok=true),交给各 handler 自己的「缺少分组名」分支处理 —— 这里只拦
+// 带空白的,不改变空串的既有行为。
+//
+// 为什么不 TrimSpace:分组名在存储层(qy_user_groups.name / abilities.group)与计费侧
+// 都是**精确匹配**,而路径里带首尾空白的名字只有一种来路 —— 渠道分组逗号串被
+// model.AddAbilities 原样 Split 出来的产物(渠道写成 "池A, 池B",abilities 里落一个键
+// " 池B",回填把它登记成一个独立分组)。对它 TrimSpace 会把针对这一行的删/改/迁/查
+// 静默打到 trim 后的**另一行**上:接口回 200、options 里正牌那个键当场消失、审计还记成
+// 被误伤的那一方。所以这里把「带首尾空白」当成一个显式拒绝理由,而不是替它归一化。
+func groupNamePathParam(c *gin.Context) (string, bool) {
+	name := c.Param("name")
+	if name != strings.TrimSpace(name) {
+		badRequest(c, "qy_groupns_invalid_name", fmt.Sprintf(
+			"分组名 %q 的首尾有空白字符,无法作为操作目标。它通常是渠道分组写成 "+
+				"\"池A, 池B\" 这种逗号加空格的形式、被拆进 abilities 后登记出来的产物 —— "+
+				"要清理它请先到渠道页把逗号后的空格去掉,而不是在这里对它删/改/迁"+
+				"(那会因为名字被归一化而落到另一个分组上)。", name))
+		return "", false
+	}
+	return name, true
 }
 
 // UserGroupRow 是 A 页的一行。
@@ -149,7 +174,7 @@ func adminListUserGroups(c *gin.Context) {
 	}
 	userCounts := countByGroup(c, "users")
 	emptyTokens, _ := EmptyGroupTokenCounts(c, model.DB, true)
-	routed := routedModelGroupNames(c)
+	routed := RoutedModelGroupNames(c)
 
 	out := make([]UserGroupRow, 0, len(rows))
 	for _, row := range rows {
@@ -329,7 +354,10 @@ func adminSetDefaultModelGroup(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) || !requireDefaultResolve(c) {
 		return
 	}
-	name := strings.TrimSpace(c.Param("name"))
+	name, ok := groupNamePathParam(c)
+	if !ok {
+		return
+	}
 	if name == "" {
 		badRequest(c, "qy_invalid_param", "缺少用户分组名")
 		return
@@ -479,8 +507,8 @@ func registeredUserGroupNames(c *gin.Context) map[string]bool {
 	return out
 }
 
-// routedModelGroupNames 是 legacy_dual 两侧共用的判据:**abilities 里有 enabled 行**
-// 的分组名。
+// RoutedModelGroupNames 是 legacy_dual 两侧共用的判据:**abilities 里有 enabled 行**
+// 的分组名。groupmatrix 的行级警告(空分组令牌解析不到池子)也用它,所以导出。
 //
 // 刻意不是"登记表里有这个模型分组"。上游设计要求每个用户分组在 options.GroupRatio 里
 // 都有一个兜底倍率(否则那一档人的请求按 fail-open 的 1.0 计费),而回填把 GroupRatio
@@ -489,7 +517,7 @@ func registeredUserGroupNames(c *gin.Context) map[string]bool {
 //
 // 真正的重名是「这个名字既是一档人、又是一个真的能路由的渠道池子」,也就是
 // "改一次名字会同时动到人和路由"的那个集合。与 store.go 的 observeGroups 同源。
-func routedModelGroupNames(c *gin.Context) map[string]bool {
+func RoutedModelGroupNames(ctx context.Context) map[string]bool {
 	out := map[string]bool{}
 	if model.DB == nil {
 		return out
@@ -498,7 +526,7 @@ func routedModelGroupNames(c *gin.Context) map[string]bool {
 	var rows []struct {
 		Grp string `gorm:"column:grp"`
 	}
-	if err := model.DB.WithContext(c).
+	if err := model.DB.WithContext(ctx).
 		Raw("SELECT DISTINCT "+col+" AS grp FROM abilities WHERE enabled = ?", true).
 		Scan(&rows).Error; err != nil {
 		return out

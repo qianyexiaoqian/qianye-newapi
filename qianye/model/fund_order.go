@@ -43,8 +43,7 @@ type FundOrder struct {
 	// FeeQuota 即使当前配置为 0 也要落库,否则日后改了费率,历史单将无法解释。
 	FeeQuota int64 `json:"fee_quota" gorm:"not null;default:0"`
 
-	// RefType / RefId 用于溯源:topup:<trade_no>、log:<id>、withdraw:<id>。
-	// 佣金冲正靠它找回原单。
+	// RefType / RefId 用于溯源:transfer:<id>、mall_order:<order_no>、commission_credit:<credit_no>。
 	RefType string `json:"ref_type" gorm:"type:varchar(32);not null;default:''"`
 	RefId   string `json:"ref_id" gorm:"type:varchar(64);not null;default:'';index:idx_qy_fund_ref"`
 
@@ -150,20 +149,39 @@ func IsTerminal(s int8) bool {
 
 // 业务类型。两字母代码用于生成单号前缀。
 const (
-	KindTransfer         = "transfer"
+	KindTransfer = "transfer"
+	// KindCommissionCredit 是 D-15 的「佣金自动入账」走两阶段时的资金单:扩展库扣
+	// available(转 frozen)→ 主库 IncreaseUserQuota(佣金那时记的是「星辉」= 主库额度)
+	// → 扩展库 frozen 转 credited。单号前缀 CC。
+	//
+	// 自 D-16 起佣金改记**星屑**,佣金账本与星屑账本同在扩展库,一次入账就是一个本地
+	// 事务,**不再产生这种单**,也没有 Resolver 注册它;常量保留只为让历史单据在资金单页
+	// 与方向 / 单位判定里仍能被读出来,不是兼容路径(与下面 KindLotteryEntry 同一处置)。
+	KindCommissionCredit = "commission_credit"
+	// KindCommissionSettle / KindCommissionRevers / KindWithdrawQuota / KindWithdrawFiat 是
+	// D-14 之前佣金结算 / 冲正与提现兑现走两阶段时的四种资金单。结算与冲正现在只在扩展库
+	// 单事务里完成(D-15 恢复的账本不再为它们开资金单),提现模块已整体删除,
+	// **不再产生这四种单**,也没有 Resolver 注册它们;常量保留只为让历史单据在资金单页
+	// 与方向 / 单位判定里仍能被读出来,不是兼容路径。
 	KindCommissionSettle = "commission_settle"
 	KindCommissionRevers = "commission_reverse"
 	KindWithdrawQuota    = "withdraw_quota"
 	KindWithdrawFiat     = "withdraw_fiat"
 	KindViolationFee     = "violation_fee"
-	// KindLotteryEntry 是抽奖/竞猜的参与扣费(主库减额度)。
-	KindLotteryEntry = "lottery_entry"
-	// KindLotteryPayout 是抽奖派奖、竞猜赔付与退款(主库加额度)。
-	//
-	// 三种出款只用一个 Kind:它们对主库做的是同一件事(加额度),补偿任务按 Kind
-	// 路由 Resolver,再分成三个只会让同一个 Resolver 被注册三遍。
-	// 具体是派奖、赔付还是退款由 qy_lot_payout.kind 承载。
+	// KindLotteryEntry / KindLotteryPayout 是 v2.0.0 之前抽奖走两阶段时的两种资金单
+	// (参与扣主库额度 / 派奖·赔付·退款加主库额度)。自 v2.0.0 起抽奖只动扩展库
+	// 星屑账本、单事务,**不再产生这两种单**,也没有 Resolver 注册它们;常量保留
+	// 只为让历史单据在资金单页与方向 / 单位判定里仍能被读出来,不是兼容路径。
+	KindLotteryEntry  = "lottery_entry"
 	KindLotteryPayout = "lottery_payout"
+	// KindMallPlan 是星屑商城用星屑兑换套餐:扩展库扣星屑 → 主库发订阅 → 扩展库标完成。
+	//
+	// **单位例外**:这一 Kind 的 FundOrder.AmountQuota / qy_fund_outbox.amount /
+	// 审计 AmountQuota 装的是**星屑数**,不是额度 —— 主库那一侧动的是 user_subscriptions
+	// 与 subscription_orders,不是 users.quota,资金单上唯一有意义的金额就是用户付了
+	// 多少星屑。twophase 的告警文案按 Kind 带单位(amountUnit),积压告警按 kind 分组求和,
+	// 对账台前端按 row.kind === 'mall_plan' 切星屑展示。
+	KindMallPlan = "mall_plan"
 )
 
 // KindCode 返回单号中使用的两字母类型码。
@@ -171,6 +189,8 @@ func KindCode(kind string) string {
 	switch kind {
 	case KindTransfer:
 		return "TR"
+	case KindCommissionCredit:
+		return "CC"
 	case KindCommissionSettle:
 		return "CM"
 	case KindCommissionRevers:
@@ -183,6 +203,8 @@ func KindCode(kind string) string {
 		return "LE"
 	case KindLotteryPayout:
 		return "LP"
+	case KindMallPlan:
+		return "MP"
 	default:
 		return "XX"
 	}

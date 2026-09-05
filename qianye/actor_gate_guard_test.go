@@ -25,11 +25,8 @@ import (
 //	POST /api/subscription/admin/bind          免费发一份付费套餐
 //	POST /api/subscription/admin/users/:id/subscriptions        同上,目标走路径参数
 //	POST /api/subscription/admin/users/:id/subscriptions/reset  已用量清零 = 再送一轮
-//	POST /api/qy/admin/commission/balances/withdrawn 已提现调低 → 可提现凭空回满
-//	POST /api/qy/admin/commission/relations/bind    把自己设成某人的邀请人
-//	POST /api/qy/admin/commission/relations/rebind  同上,且不留"本来没有邀请人"的痕迹
-//	POST /api/qy/admin/commission/settle            绕过成熟期先解冻自己那一份
-//	POST /api/qy/admin/withdraw/:id/*               同级互批(自审自批之外的另一半)
+//	POST /api/qy/admin/invite/relations/bind        把自己设成某人的邀请人
+//	POST /api/qy/admin/invite/relations/rebind      同上,且不留"本来没有邀请人"的痕迹
 //	POST /api/qy/admin/pay-password/:user_id/*      拆掉划转的第二因子
 //	POST /api/qy/admin/violation/records/:id/revoke 撤自己的违规记录并退款
 //	POST /api/qy/admin/violation/bans/:userId/unban 给自己解封
@@ -78,25 +75,24 @@ var actorGates = []actorGate{
 	{"POST /api/subscription/admin/user_subscriptions/:id/invalidate", "controller/subscription.go", "AdminInvalidateUserSubscription", "requireManageableUser"},
 	{"DELETE /api/subscription/admin/user_subscriptions/:id", "controller/subscription.go", "AdminDeleteUserSubscription", "requireManageableUser"},
 
-	// ── 扩展侧:佣金 ──
-	{"POST /api/qy/admin/commission/balances/adjust", "qianye/modules/commission/api_admin_adjust.go", "requireAdjustableTarget", "ActorMayActOn"},
-	{"POST /api/qy/admin/commission/balances/withdrawn", "qianye/modules/commission/api_admin_balance.go", "adminSetWithdrawn", "denyActorOverTarget"},
-	{"POST /api/qy/admin/commission/relations/bind", "qianye/modules/commission/api_admin_relation.go", "adminBindRelation", "denyActorOverTarget"},
-	{"POST /api/qy/admin/commission/relations/rebind", "qianye/modules/commission/api_admin_relation.go", "adminRebindRelation", "denyActorOverTarget"},
-	// 解绑与停/恢复计佣是同一资源的**相反方向**,受益人是关系上的邀请人而不是
+	// ── 扩展侧:邀请关系(D-14 之后从 commission 搬进 invite,判据原样保留)──
+	{"POST /api/qy/admin/invite/relations/bind", "qianye/modules/invite/api_admin_relation.go", "adminBindRelation", "denyActorOverTarget"},
+	{"POST /api/qy/admin/invite/relations/rebind", "qianye/modules/invite/api_admin_relation.go", "adminRebindRelation", "denyActorOverTarget"},
+	// 解绑与停/恢复邀请返是同一资源的**相反方向**,受益人是关系上的邀请人而不是
 	// 报文里的某个 id —— 正因为报文里没有 inviter_id,这两条当初被整套闸门漏掉:
 	// role=10 曾能单方面清掉 root 的 users.inviter_id(断掉对方全部未来进项、
 	// 且自己无法复原,因为 bind/rebind 对 root 是 403),也曾能把上级基于风控
-	// 停掉的、落在自己名下的计佣重新解封。
-	{"POST /api/qy/admin/commission/relations/unbind", "qianye/modules/commission/api_admin_relation.go", "adminUnbindRelation", "denyActorOverTarget"},
-	{"POST /api/qy/admin/commission/relations/block", "qianye/modules/commission/api_admin.go", "adminBlockRelation", "denyActorOverTarget"},
-	{"POST /api/qy/admin/commission/settle", "qianye/modules/commission/api_admin.go", "adminSettle", "denyActorOverTarget"},
-	// 冲正是损害方向:一个 role=10 曾能把同级/root 的佣金冲成 0，再冲成负的
-	// unsettled 把对方挂上 debt_blocked，而受害者的恢复入口是接了判据的。
-	{"POST /api/qy/admin/commission/clawback", "qianye/modules/commission/api_admin.go", "adminClawback", "denyActorOverTarget"},
+	// 停掉的、落在自己名下的邀请返重新解封。
+	{"POST /api/qy/admin/invite/relations/unbind", "qianye/modules/invite/api_admin_relation.go", "adminUnbindRelation", "denyActorOverTarget"},
+	{"POST /api/qy/admin/invite/relations/block", "qianye/modules/invite/api_admin.go", "adminBlockRelation", "denyActorOverTarget"},
 
-	// ── 扩展侧:提现(六个人工决定的单一取单入口)──
-	{"POST /api/qy/admin/withdraw/:id/*", "qianye/modules/withdraw/review.go", "loadDecidableWithdrawal", "ActorMayActOnCtx"},
+	// ── 扩展侧:星辉佣金(D-15 恢复,判据与 D-14 之前一致)──
+	// 手工增减在 requireAdjustableTarget 里直接走 guard.ActorMayActOn(错误码表是本模块
+	// 自己的 qy_adj_*);冲正与手动结算走本模块的薄包装 denyActorOverTarget。
+	// 三条都是"受益人在报文或原单上"的形状:自益是自铸 → 自动入账进自己额度那条链的第一环。
+	{"POST /api/qy/admin/commission/balances/adjust", "qianye/modules/commission/api_admin_adjust.go", "requireAdjustableTarget", "ActorMayActOn"},
+	{"POST /api/qy/admin/commission/clawback", "qianye/modules/commission/api_admin.go", "adminClawback", "denyActorOverTarget"},
+	{"POST /api/qy/admin/commission/settle", "qianye/modules/commission/api_admin.go", "adminSettle", "denyActorOverTarget"},
 
 	// ── 扩展侧:支付密码(两个写动作的公共骨架)──
 	{"POST /api/qy/admin/pay-password/:user_id/{reset,unlock}", "qianye/modules/paypass/api_admin.go", "adminMutate", "adminTargetActable"},
@@ -107,11 +103,15 @@ var actorGates = []actorGate{
 	// 终态的接口。
 	{"POST /api/qy/admin/fund-orders/:order_no/resolve", "qianye/controller/admin.go", "AdminResolveFundOrder", "ActorMayActOnCtx"},
 
-	// ── 扩展侧:抽奖出款的人工落账 ──
-	// 上面那一条只收 Uncertain（系统自己说"我不知道"），而这一条推翻的是一个
-	// 已经给过的 failed 结论：一支把钱在账上宣布为已付清，另一支让主库对
-	// 同一个人再加一次钱。受益人在出款行上（payout.user_id），不在报文里。
-	{"POST /api/qy/admin/lottery/activities/:act_no/payouts/:payout_no/adjudicate", "qianye/modules/lottery/payout_adjudicate.go", "handleAdjudicatePayout", "ActorMayActOnCtx"},
+	// ── 扩展侧:星屑手调 ──
+	// 凭空造出可经商城变现的东西,受益人在报文里(user_id);root 闸门之外还要过
+	// actor 判据 —— 超管也不能给自己手调(自益),也不能越过更高档的目标。
+	{"POST /api/qy/admin/stardust/adjust", "qianye/modules/stardust/api_admin_adjust.go", "handleAdminAdjust", "ActorMayActOnCtx"},
+
+	// ── 扩展侧:商城订单的三个人工决定(单一取单入口)──
+	// 判失败会退星屑、撤码会让一张已售的码作废、裁决会推翻资金单结论;
+	// 受益人在订单行上(order.user_id),不在报文里 —— 与提现 loadDecidableWithdrawal 同形。
+	{"POST /api/qy/admin/mall/orders/:no/{fail,revoke-code,adjudicate}", "qianye/modules/mall/api_admin.go", "loadAdminMoneyTarget", "ActorMayActOnCtx"},
 
 	// ── 扩展侧:孤儿令牌修复 ──
 	// 它改的是 tk.UserId 名下那条令牌的分组:置空之后 UsingGroup 回落到

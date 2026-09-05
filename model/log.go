@@ -342,7 +342,7 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 // 渠道可用性测试写出的消费日志既不是真实消费,也不该进返佣。
 //
 // ChannelTestLogOtherKey 是**判据**:other[ChannelTestLogOtherKey] == true 由
-// controller/channel-test.go 在写日志时打上,qianye/modules/commission 的硬排除
+// controller/channel-test.go 在写日志时打上,qianye/modules/stardust 的日结硬排除
 // 认这一个键。与 other["violation_fee"] 同形 —— 排除项靠显式标记,不靠文案。
 //
 // ChannelTestTokenName 是这条日志的 token_name 文案,同时被保留为兜底判据

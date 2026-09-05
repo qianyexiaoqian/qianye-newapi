@@ -68,32 +68,50 @@ func aiScopeCtx(t *testing.T, method, target, body string) (*gin.Context, *httpt
 	return c, rec
 }
 
+// jsonIntList 把渠道 id 清单拼成请求体里的那个数组。
+//
+// 手写字面量在这张表里会变成十几处各写一遍的 `[1,2]`,而这一格的三种形态
+// (缺席 / `[]` / 有值)在接口上语义完全不同 —— 拼错一处的表现是那条用例
+// 悄悄换了一种断言。
+func jsonIntList(ids []int64) string {
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, strconv.FormatInt(id, 10))
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
 // TestUpsertAIScopeRejectsUnusableChannel 是上游那道闸。
 func TestUpsertAIScopeRejectsUnusableChannel(t *testing.T) {
 	tests := []struct {
 		name       string
-		channelId  int64
+		channelIds []int64
 		wantStatus int
 		wantMsg    string
 		why        string
 	}{
 		{
-			name: "不指定(0):放行,含义是按权重随机", channelId: 0,
+			name: "不指定(空清单):放行,含义是在全部启用渠道之间分发", channelIds: []int64{},
 			wantStatus: http.StatusOK,
 			why:        "留空是默认取值,它不该需要任何渠道存在",
 		},
 		{
-			name: "指定一个启用中的渠道:放行", channelId: 1,
+			name: "指定一个启用中的渠道:放行", channelIds: []int64{1},
 			wantStatus: http.StatusOK,
 		},
 		{
-			name: "指定一个停用的渠道:400", channelId: 2,
-			wantStatus: http.StatusBadRequest, wantMsg: "停用",
-			why: "停用的渠道不进快照,这一档会每次都走「无可用渠道」并直接放行 —— " +
-				"而界面上它与正常配置长得一模一样",
+			name: "指定两个启用中的渠道:放行", channelIds: []int64{1, 3},
+			wantStatus: http.StatusOK,
+			why:        "一组渠道正是这一格存在的理由:约束发给谁 + 它们之间怎么轮",
 		},
 		{
-			name: "指定一个不存在的渠道:400", channelId: 999,
+			name: "清单里混进一个停用的渠道:400", channelIds: []int64{1, 2},
+			wantStatus: http.StatusBadRequest, wantMsg: "停用",
+			why: "停用的渠道不进快照,这一档实际参与分发的比运营选的少一个 —— " +
+				"而界面上它与全都健康的清单长得一模一样",
+		},
+		{
+			name: "指定一个不存在的渠道:400", channelIds: []int64{999},
 			wantStatus: http.StatusBadRequest, wantMsg: "不存在",
 			why: "同上,而且这一种连名字都 join 不出来",
 		},
@@ -110,11 +128,15 @@ func TestUpsertAIScopeRejectsUnusableChannel(t *testing.T) {
 				Id: 2, Name: "停用的", BaseUrl: "https://b.invalid/v1", Model: "m",
 				Weight: 1, Enabled: false, CreatedAt: now, UpdatedAt: now,
 			}).Error)
+			require.NoError(t, gdb.Create(&AIChannel{
+				Id: 3, Name: "第二个启用中", BaseUrl: "https://c.invalid/v1", Model: "m",
+				Weight: 1, Enabled: true, CreatedAt: now, UpdatedAt: now,
+			}).Error)
 
 			body := `{"name":"自助注册","enabled":true,"priority":100,` +
 				`"group_scope":"selfserve","group_scope_mode":"include",` +
 				`"pre_sample_rate_bps":0,"async_sample_rate_bps":1000,` +
-				`"channel_id":` + strconv.FormatInt(tc.channelId, 10) + `}`
+				`"channel_ids":` + jsonIntList(tc.channelIds) + `}`
 			c, rec := aiScopeCtx(t, http.MethodPut, "/violation/ai-review/scopes", body)
 			adminUpsertAIScope(c)
 
@@ -129,8 +151,11 @@ func TestUpsertAIScopeRejectsUnusableChannel(t *testing.T) {
 				assert.EqualValues(t, 1, n)
 				var row AIScope
 				require.NoError(t, gdb.Take(&row).Error)
-				assert.Equal(t, tc.channelId, row.ChannelId,
-					"指定的渠道必须真的落库 —— 落不下去等于静默回到加权随机")
+				// 空清单读回来是 nil(CSV 空串没有元素),与 `[]int64{}` 在
+				// 语义上是同一件事 —— 逐元素比,别把一次序列化往返的形态差
+				// 当成行为差。
+				assert.ElementsMatch(t, tc.channelIds, []int64(row.ChannelIds),
+					"指定的渠道必须真的落库 —— 落不下去等于静默回到「全部启用渠道」")
 				return
 			}
 			assert.EqualValues(t, 0, n, "被闸挡下的策略一行都不该落库")
@@ -158,7 +183,8 @@ func TestDeleteAIChannelBlockedWhilePinned(t *testing.T) {
 	require.NoError(t, gdb.Create(&AIScope{
 		Id: 5, Name: "内部对接", Enabled: true, Priority: 100,
 		GroupScope: "internal", GroupScopeMode: GroupScopeInclude,
-		AsyncSampleRateBps: 1000, ChannelId: 1, CreatedAt: now, UpdatedAt: now,
+		AsyncSampleRateBps: 1000, ChannelIds: AIChannelIds{4, 1},
+		CreatedAt: now, UpdatedAt: now,
 	}).Error)
 
 	del := func(t *testing.T) *httptest.ResponseRecorder {
@@ -179,9 +205,9 @@ func TestDeleteAIChannelBlockedWhilePinned(t *testing.T) {
 	require.NoError(t, gdb.Model(&AIChannel{}).Count(&n).Error)
 	assert.EqualValues(t, 1, n, "被挡下的删除一行都不该落")
 
-	t.Run("那几档改回不指定之后就删得掉了", func(t *testing.T) {
+	t.Run("把它从那几档的清单里去掉之后就删得掉了", func(t *testing.T) {
 		require.NoError(t, gdb.Model(&AIScope{}).Where("id = ?", 5).
-			Update("channel_id", 0).Error)
+			Update("channel_ids", "4").Error)
 		rec := del(t)
 		assert.Equal(t, http.StatusOK, rec.Code)
 		var n int64
@@ -215,7 +241,7 @@ func TestDisablingAScopeIsNeverBlockedByItsBrokenReferences(t *testing.T) {
 	tests := []struct {
 		name       string
 		enabled    bool
-		channelId  int64
+		channelIds []int64
 		categoryId int64
 		wantStatus int
 		wantMsg    string
@@ -223,7 +249,7 @@ func TestDisablingAScopeIsNeverBlockedByItsBrokenReferences(t *testing.T) {
 	}{
 		{
 			name:    "停用一档指着「已停用渠道」的策略:放行",
-			enabled: false, channelId: 2,
+			enabled: false, channelIds: []int64{2},
 			wantStatus: http.StatusOK,
 			why: "这正是界面提示管理员去做的止损动作 —— " +
 				"挡住它等于让那一档既不审核、又关不掉",
@@ -237,13 +263,13 @@ func TestDisablingAScopeIsNeverBlockedByItsBrokenReferences(t *testing.T) {
 		},
 		{
 			name:    "停用时顺手改名 / 调抽样率:一并放行",
-			enabled: false, channelId: 2,
+			enabled: false, channelIds: []int64{2},
 			wantStatus: http.StatusOK,
 			why:        "被闸拦住的不只是那一格,是整条策略的任何一次保存",
 		},
 		{
 			name:    "把它重新启用起来:照样 400",
-			enabled: true, channelId: 2,
+			enabled: true, channelIds: []int64{2},
 			wantStatus: http.StatusBadRequest, wantMsg: "停用",
 			why: "闸没有被拆掉,只是挪到了它真正开始生效的那一刻 —— " +
 				"启用一档指向坏渠道的策略仍然是静默失效",
@@ -268,7 +294,7 @@ func TestDisablingAScopeIsNeverBlockedByItsBrokenReferences(t *testing.T) {
 				Id: 5, Name: "内部对接", Enabled: true, Priority: 100,
 				GroupScope: "internal", GroupScopeMode: GroupScopeInclude,
 				AsyncSampleRateBps: 1000,
-				ChannelId:          tc.channelId, CategoryId: tc.categoryId,
+				ChannelIds:         AIChannelIds(tc.channelIds), CategoryId: tc.categoryId,
 				CreatedAt: now, UpdatedAt: now,
 			}).Error)
 
@@ -276,7 +302,7 @@ func TestDisablingAScopeIsNeverBlockedByItsBrokenReferences(t *testing.T) {
 				strconv.FormatBool(tc.enabled) + `,"priority":100,` +
 				`"group_scope":"internal","group_scope_mode":"include",` +
 				`"pre_sample_rate_bps":0,"async_sample_rate_bps":1000,` +
-				`"channel_id":` + strconv.FormatInt(tc.channelId, 10) + `,` +
+				`"channel_ids":` + jsonIntList(tc.channelIds) + `,` +
 				`"category_id":` + strconv.FormatInt(tc.categoryId, 10) + `}`
 			c, rec := aiScopeCtx(t, http.MethodPut, "/violation/ai-review/scopes", body)
 			adminUpsertAIScope(c)
@@ -293,7 +319,7 @@ func TestDisablingAScopeIsNeverBlockedByItsBrokenReferences(t *testing.T) {
 			if tc.wantStatus == http.StatusOK {
 				assert.False(t, row.Enabled,
 					"止损动作必须真的落库 —— 回 200 而那一档还开着是更坏的一种失败")
-				assert.Equal(t, tc.channelId, row.ChannelId,
+				assert.ElementsMatch(t, tc.channelIds, []int64(row.ChannelIds),
 					"关掉它不该顺手改写那一格:指定渠道是运营的显式选择,"+
 						"「发给谁都行」得由他自己按")
 				return

@@ -84,6 +84,7 @@ await i18next.use(initReactI18next).init({
 })
 
 const { QyLotCover } = await import('../components/lottery-cover')
+const { qyLotArtName } = await import('../lib/cover-art')
 
 const reactTestGlobals = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT?: boolean
@@ -137,17 +138,38 @@ describe('活动卡片的背景图', () => {
     )
   })
 
-  test('没配封面时出兜底图案，且一个 img 都不出', async () => {
+  test('没配封面时先出主题插画；插画取不到就退到玩法图标，绝不出 src="" 的 img', async () => {
+    // happy-dom 会真的去取 /qy/art/draw.jpg（取不到 → error），所以这里看到的
+    // 是插画失败之后的终态：图标在、没有空 src 的 img。插画的选择逻辑是纯函数，
+    // 下一条直接测它。
     const container = await mount({ kind: 'draw' })
-    assert.equal(
-      container.querySelector('img'),
-      null,
-      'src="" 的 img 会立刻请求当前页面并画出破图 —— 那正是这条需求要避免的'
-    )
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    for (const img of container.querySelectorAll('img')) {
+      assert.notEqual(
+        img.getAttribute('src'),
+        '',
+        'src="" 的 img 会立刻请求当前页面并画出破图 —— 那正是这条需求要避免的'
+      )
+    }
     assert.ok(
       container.querySelector('svg') != null,
       '兜底必须画点什么：一块纯色空白与"图还在加载"长得一模一样，用户会一直等'
     )
+  })
+
+  test('兜底插画按玩法选：双色球 / 竞猜 / 转盘 / 其余抽奖各一张', () => {
+    assert.equal(qyLotArtName({ kind: 'draw', draw_mode: 'ball' }), 'ball')
+    assert.equal(qyLotArtName({ kind: 'guess' }), 'guess')
+    assert.equal(qyLotArtName({ kind: 'draw', draw_mode: 'wheel' }), 'wheel')
+    assert.equal(qyLotArtName({ kind: 'draw', draw_mode: 'prob' }), 'draw')
+    // 组件里就是拿它拼 /qy/art/<name>.jpg 的：源码钉住这一条，否则纯函数测了也白测。
+    const source = readFileSync(
+      join(lotteryDir, 'components', 'lottery-cover.tsx'),
+      'utf8'
+    )
+    assert.ok(source.includes('src={`/qy/art/${qyLotArtName(activity)}.jpg`}'))
   })
 
   test('封面加载失败时退回兜底图案', async () => {
@@ -161,11 +183,10 @@ describe('活动卡片的背景图', () => {
       img.dispatchEvent(new Event('error', { bubbles: false }))
     })
     assert.equal(
-      container.querySelector('img'),
-      null,
+      container.querySelector('img')?.getAttribute('src'),
+      '/qy/art/draw.jpg',
       '外链会在某天 404 / 被防盗链拦掉，没有这条退路，大厅第一屏就是一排破图'
     )
-    assert.ok(container.querySelector('svg') != null)
   })
 })
 

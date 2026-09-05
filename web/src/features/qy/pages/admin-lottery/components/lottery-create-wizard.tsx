@@ -25,6 +25,7 @@ import { toast } from 'sonner'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -37,23 +38,27 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 
-import { QyAmountInput } from '../../../components/qy-amount-input'
-import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
+import { QySdAmount } from '../../../components/qy-sd-amount'
+import { QySdInput } from '../../../components/qy-sd-input'
+import { useStardustName } from '../../../hooks/use-stardust-name'
 import { qyErrorMessage } from '../../../lib/api'
 import { qyArray } from '../../../lib/array'
-import { formatQyQuotaBound, formatQyQuotaLedger } from '../../../lib/format'
+import { formatSdWithUnit } from '../../../lib/format-sd'
 import { qyKeys } from '../../../lib/query-keys'
+import { qyAdminMallProductsQuery } from '../../admin-mall/api'
 import {
   isQyLotBallPoolValid,
   qyLotBallTierOdds,
   type QyLotBallPool,
 } from '../../lottery/lib/ball'
+import { qyMallKindKey } from '../../mall/lib/product'
 import { formatQyTs } from '../../ops/format'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
 import {
   createQyLotActivity,
+  publishQyLotActivity,
   qyAdminLotSeriesQuery,
   updateQyLotActivity,
 } from '../api'
@@ -75,11 +80,16 @@ import {
   qyLotEmptyDraft,
   qyLotNewOption,
   qyLotPlayOf,
+  qyLotProductChoiceOf,
+  qyLotTierPrizeForm,
   qyLotTotalPrizeQuota,
   qyLotTotalWinPpm,
+  qyLotUsesWinPpm,
   qyLotValidateDraft,
+  qyLotWheelNonePpm,
   type QyLotDraft,
   type QyLotPlay,
+  type QyLotProductChoice,
 } from '../lib/draft'
 import type { QyLotAdminConfig, QyLotSeries, QyLotYamlReadonly } from '../types'
 import { QyLotCoverField } from './lottery-cover-field'
@@ -132,6 +142,7 @@ export function QyLotActivityWizard(props: {
   edit?: { actNo: string; draft: QyLotDraft }
 }) {
   const { t } = useTranslation()
+  const unit = useStardustName()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -142,6 +153,10 @@ export function QyLotActivityWizard(props: {
   )
   const [step, setStep] = useState<QyLotStep>('basic')
   const [confirmOpen, setConfirmOpen] = useState(false)
+  // 「创建后立即发布」:项目方原话「开启时间填写很早之前,为何不能立即开启活动」——
+  // 草稿要再点一次发布才对用户可见,这一步在向导里就能勾掉。默认不勾:发布不可逆。
+  const [publishNow, setPublishNow] = useState(false)
+  const publishNowId = useId()
 
   // 每次打开都重置。编辑时重置成**服务端此刻那一份**，而不是上次关掉时留在
   // 组件里的那份：草稿可以被另一个管理员改过，拿一份陈旧的表单整体提交上去
@@ -153,6 +168,7 @@ export function QyLotActivityWizard(props: {
     setDraft(editDraft ?? qyLotEmptyDraft(defaultFee))
     setStep('basic')
     setConfirmOpen(false)
+    setPublishNow(false)
   }, [props.open, defaultFee, editActNo, editDraft])
 
   const patch = (next: Partial<QyLotDraft>) => {
@@ -169,17 +185,34 @@ export function QyLotActivityWizard(props: {
   const seriesList = qyArray(seriesQuery.data?.items)
   const series = seriesList.find((item) => item.series_no === draft.series_no)
 
+  // 商城商品只在配普通抽奖 / 转盘的奖档时才拉（双色球与竞猜没有商品奖）。
+  // 只要上架的：奖档引用一件下架商品在发布期会被后端拒绝，下拉里根本不该有它。
+  // 页长顶到上限 100：管理端商品表就这一页，不做分页选择器 —— 更多商品时
+  // 运营在商城里下架旧的即可。
+  const wantsProducts = props.open && draft.kind === 'draw' && !isBall
+  const productsQuery = useQuery({
+    ...qyAdminMallProductsQuery({ page: 1, page_size: 100, enabled: true }),
+    enabled: wantsProducts,
+  })
+  const products = new Map<string, QyLotProductChoice>(
+    qyArray(productsQuery.data?.items).map((item) => [
+      item.product_no,
+      qyLotProductChoiceOf(item),
+    ])
+  )
+
   const errors = qyLotValidateDraft(
     draft,
     props.config?.yaml_readonly,
-    props.config?.effective.max_total_prize_quota ?? 0,
+    props.config?.effective.max_total_prize_stardust ?? 0,
     props.config?.effective.max_guess_fee_bps ?? 0,
-    series
+    series,
+    products
   )
 
   const totalPrize = qyLotTotalPrizeQuota(draft)
   const breakEven = qyLotBreakEvenEntries(draft)
-  const alertQuota = props.config?.effective.large_prize_alert_quota ?? 0
+  const alertQuota = props.config?.effective.large_prize_alert_stardust ?? 0
   // 阈值判据是 **>=**，与后端 `requireNetIssueConfirm` 逐字同源。一边 `>` 一边
   // `>=` 的表现是恰好等于阈值的那一场在界面上不弹确认、提交后吃一个 400，
   // 而那句 400 要求回填的正是界面刚刚决定不显示的那个数。
@@ -199,6 +232,18 @@ export function QyLotActivityWizard(props: {
       toast.success(editing == null ? t('qy_lot_created') : t('qy_lot_updated'))
       setConfirmOpen(false)
       props.onOpenChange(false)
+      // 勾了「创建后立即发布」就接着发布。失败不吞:草稿已经在了,提示原因并
+      // 照常跳到详情页,那里的「发布活动」能再来一次(含大额确认回显)。
+      if (editing == null && publishNow) {
+        try {
+          await publishQyLotActivity(data.act_no)
+          toast.success(t('qy_lot_published'))
+        } catch (error) {
+          toast.error(
+            t('qy_lot_publish_now_failed', { reason: qyErrorMessage(error, t) })
+          )
+        }
+      }
       await queryClient.invalidateQueries({ queryKey: qyKeys.all })
       // 建新的才跳详情页：下一步（发布）在那里，而且那一步才是不可逆的。
       // 改草稿本来就是在详情页上点开的，跳一次只会把滚动位置丢掉。
@@ -218,6 +263,8 @@ export function QyLotActivityWizard(props: {
       <QyResponsiveDialog
         open={props.open}
         onOpenChange={props.onOpenChange}
+        // 四步几十个字段,误触空白或 Esc 不能把它们一笔勾销;只有 × 与「取消」能关。
+        dismissible={false}
         title={
           editing == null ? t('qy_lot_create_title') : t('qy_lot_edit_title')
         }
@@ -292,8 +339,10 @@ export function QyLotActivityWizard(props: {
               series={series}
               yaml={props.config?.yaml_readonly}
               alertQuota={alertQuota}
-              capQuota={props.config?.effective.max_total_prize_quota ?? 0}
+              capQuota={props.config?.effective.max_total_prize_stardust ?? 0}
               maxFeeBps={props.config?.effective.max_guess_fee_bps ?? 0}
+              products={products}
+              productsLoading={wantsProducts && productsQuery.isLoading}
             />
           )}
           {step === 'rules' && (
@@ -311,6 +360,7 @@ export function QyLotActivityWizard(props: {
               breakEven={breakEven}
               alertQuota={alertQuota}
               series={series}
+              products={products}
             />
           )}
         </div>
@@ -335,22 +385,22 @@ export function QyLotActivityWizard(props: {
         // （调大上限，同一个零照样发得出去），只能把「卡半天」推迟到更大的数字上。
         irreversible={needsNetIssueConfirm}
         irreversibleDesc={t('qy_lot_net_issue_confirm_desc', {
-          amount: formatQyQuotaLedger(totalPrize),
+          amount: formatSdWithUnit(totalPrize, unit),
         })}
         details={
           <div>
             <QyKeyValue label={t('qy_lot_play')}>
-              {isBall ? t('qy_lot_mode_ball') : t(`qy_lot_kind_${draft.kind}`)}
+              {playLabel(draft, t)}
             </QyKeyValue>
             <QyKeyValue label={t('qy_lot_stake')}>
-              <QyAmountText quota={draft.stake_quota} />
+              <QySdAmount amount={draft.stake_quota} />
             </QyKeyValue>
             {/* 双色球不摆"奖品总额 / 保本人数"：浮动奖档的额度恒为 0，那两个
                 数会把一个由期次池兜底的玩法说成一个只发几百额度的小活动。 */}
             {draft.kind === 'draw' && !isBall && (
               <>
                 <QyKeyValue label={t('qy_lot_total_prize')}>
-                  <QyAmountText quota={totalPrize} />
+                  <QySdAmount amount={totalPrize} />
                 </QyKeyValue>
                 <QyKeyValue label={t('qy_lot_break_even')}>
                   {breakEven}
@@ -359,8 +409,21 @@ export function QyLotActivityWizard(props: {
             )}
             {isBall && series != null && (
               <QyKeyValue label={t('qy_lot_ball_series_pool')}>
-                <QyAmountText quota={series.pool_quota} />
+                <QySdAmount amount={series.pool_quota} />
               </QyKeyValue>
+            )}
+            {editing == null && (
+              <Label
+                htmlFor={publishNowId}
+                className='mt-3 flex items-start gap-2 text-sm font-normal'
+              >
+                <Checkbox
+                  id={publishNowId}
+                  checked={publishNow}
+                  onCheckedChange={(checked) => setPublishNow(checked === true)}
+                />
+                <span>{t('qy_lot_publish_now')}</span>
+              </Label>
             )}
           </div>
         }
@@ -368,6 +431,17 @@ export function QyLotActivityWizard(props: {
       />
     </>
   )
+}
+
+/**
+ * 复核屏与确认框上「玩法」那一格的文字。双色球与转盘的 `kind` 都是 `draw`，
+ * 照 kind 印会在"看清楚即将被永久冻结的东西"那一屏上写着「抽奖」。
+ */
+function playLabel(draft: QyLotDraft, t: (key: string) => string): string {
+  const play = qyLotPlayOf(draft)
+  if (play === 'ball') return t('qy_lot_mode_ball')
+  if (play === 'wheel') return t('qy_lot_play_wheel')
+  return t(`qy_lot_kind_${draft.kind}`)
 }
 
 // ───────────────────────────── 第一步 ─────────────────────────────
@@ -382,14 +456,16 @@ function BasicStep(props: {
 }) {
   const { draft } = props
   const { t } = useTranslation()
+  const unit = useStardustName()
   const id = useId()
   const play = qyLotPlayOf(draft)
   const isBall = play === 'ball'
+  const isWheel = play === 'wheel'
   const openSeries = props.seriesList.filter((item) => item.status === 'open')
   // 0 = 不限（默认）。判据与 lib/draft.ts 的 qy_lot_v_stake_over_cap 同一条。
-  const stakeCap = props.config?.yaml_readonly.max_stake_quota ?? 0
+  const stakeCap = props.config?.yaml_readonly.max_stake_stardust ?? 0
   // 全站额度换算的整数上界。旧后端不下发它，此时不编一个数出来。
-  const systemMax = props.config?.yaml_readonly.system_max_quota ?? 0
+  const systemMax = props.config?.yaml_readonly.system_max_stardust ?? 0
 
   return (
     <div className='space-y-3'>
@@ -410,7 +486,7 @@ function BasicStep(props: {
       */}
       <div className='space-y-1'>
         <Label>{t('qy_lot_play')}</Label>
-        <div className='grid gap-2 sm:grid-cols-3'>
+        <div className='grid gap-2 sm:grid-cols-2 lg:grid-cols-4'>
           <PlayOption
             active={play === 'draw'}
             title={t('qy_lot_kind_draw')}
@@ -428,6 +504,15 @@ function BasicStep(props: {
             title={t('qy_lot_mode_ball')}
             desc={t('qy_lot_mode_ball_hint')}
             onSelect={() => props.onSelectPlay('ball')}
+          />
+          {/* 第四张：星屑转盘（design-15 §7）。即时开奖 + 硬库存，`draw_mode='wheel'`。
+              与双色球同一个理由做成一级卡片而不是二级下拉：它对运营不是"抽奖的
+              一个参数"——每一转当场开奖、当场派奖、发完即止，没有封盘摇号这回事。 */}
+          <PlayOption
+            active={play === 'wheel'}
+            title={t('qy_lot_play_wheel')}
+            desc={t('qy_lot_wheel_play_hint')}
+            onSelect={() => props.onSelectPlay('wheel')}
           />
         </div>
       </div>
@@ -546,7 +631,7 @@ function BasicStep(props: {
 
       <div className='space-y-1'>
         <Label htmlFor={`${id}-stake`}>{t('qy_lot_stake')}</Label>
-        <QyAmountInput
+        <QySdInput
           id={`${id}-stake`}
           value={draft.stake_quota}
           onChange={(quota) => props.onChange({ stake_quota: quota })}
@@ -558,7 +643,7 @@ function BasicStep(props: {
           两种上限**分两行**说。
 
           系统上界是全站额度换算的整数上界（代码写死），改任何配置都放不开；策略上限
-          是站点自己在 `lottery.max_stake_quota` 里配的，0 = 不限（默认）。
+          是站点自己在 `lottery.max_stake_stardust` 里配的，0 = 不限（默认）。
           合成一句"不得超过系统上限"之后，运营分不出是自己配错了还是系统不
           支持，于是会跑去配置页找一个根本不存在的开关。
 
@@ -569,12 +654,12 @@ function BasicStep(props: {
           ranges={[
             systemMax > 0
               ? t('qy_lot_range_physical', {
-                  amount: formatQyQuotaBound(systemMax),
+                  amount: formatSdWithUnit(systemMax, unit),
                 })
               : '',
             stakeCap > 0
               ? t('qy_lot_range_policy_stake', {
-                  amount: formatQyQuotaBound(stakeCap),
+                  amount: formatSdWithUnit(stakeCap, unit),
                 })
               : t('qy_lot_range_policy_stake_unlimited'),
           ]}
@@ -592,23 +677,31 @@ function BasicStep(props: {
           value={draft.open_at}
           onChange={(value) => props.onChange({ open_at: value })}
         />
+        {/* 转盘像抽卡卡池:只有「开始 / 结束」两个时刻(项目方 2026-09-04)。结束后不能再转,
+            种子由后端在结束后过一个强制间隔自动公开,复算入口就在活动页 —— 开奖时刻与
+            结算截止对它没有意义,表单上不出现,提交时发 0 由后端派生。 */}
         <TimeField
-          label={t('qy_lot_close_at')}
+          label={isWheel ? t('qy_lot_wheel_end_at') : t('qy_lot_close_at')}
+          hint={isWheel ? t('qy_lot_wheel_end_at_hint') : undefined}
           value={draft.close_at}
           onChange={(value) => props.onChange({ close_at: value })}
         />
-        <TimeField
-          label={t('qy_lot_draw_at')}
-          hint={t('qy_lot_draw_at_hint')}
-          value={draft.draw_at}
-          onChange={(value) => props.onChange({ draw_at: value })}
-        />
-        <TimeField
-          label={t('qy_lot_settle_deadline')}
-          hint={t('qy_lot_settle_deadline_hint')}
-          value={draft.settle_deadline}
-          onChange={(value) => props.onChange({ settle_deadline: value })}
-        />
+        {!isWheel && (
+          <>
+            <TimeField
+              label={t('qy_lot_draw_at')}
+              hint={t('qy_lot_draw_at_hint')}
+              value={draft.draw_at}
+              onChange={(value) => props.onChange({ draw_at: value })}
+            />
+            <TimeField
+              label={t('qy_lot_settle_deadline')}
+              hint={t('qy_lot_settle_deadline_hint')}
+              value={draft.settle_deadline}
+              onChange={(value) => props.onChange({ settle_deadline: value })}
+            />
+          </>
+        )}
       </div>
     </div>
   )
@@ -691,29 +784,32 @@ function NetIssueMeter(props: {
   capQuota: number
 }) {
   const { t } = useTranslation()
+  const unit = useStardustName()
   const total = qyLotTotalPrizeQuota(props.draft)
   if (total <= 0) return null
 
   const overCap = props.capQuota > 0 && total > props.capQuota
   // >= 与后端 requireNetIssueConfirm 同源。
   const needsConfirm = props.alertQuota > 0 && total >= props.alertQuota
-  const amount = formatQyQuotaLedger(total)
+  const amount = formatSdWithUnit(total, unit)
+
+  // 三档措辞对应三种处境（见上），按严重程度先判硬顶、再判阈值。
+  let description = t('qy_lot_net_issue_meter_ok')
+  if (overCap) {
+    description = t('qy_lot_net_issue_meter_over_cap', {
+      cap: formatSdWithUnit(props.capQuota, unit),
+    })
+  } else if (needsConfirm) {
+    description = t('qy_lot_net_issue_meter_needs_confirm', {
+      threshold: formatSdWithUnit(props.alertQuota, unit),
+    })
+  }
 
   return (
     <Alert variant={overCap ? 'destructive' : undefined}>
       <TriangleAlert />
       <AlertTitle>{t('qy_lot_net_issue_meter_title', { amount })}</AlertTitle>
-      <AlertDescription>
-        {overCap
-          ? t('qy_lot_net_issue_meter_over_cap', {
-              cap: formatQyQuotaLedger(props.capQuota),
-            })
-          : needsConfirm
-            ? t('qy_lot_net_issue_meter_needs_confirm', {
-                threshold: formatQyQuotaLedger(props.alertQuota),
-              })
-            : t('qy_lot_net_issue_meter_ok')}
-      </AlertDescription>
+      <AlertDescription>{description}</AlertDescription>
     </Alert>
   )
 }
@@ -730,20 +826,43 @@ function SpecStep(props: {
   capQuota: number
   /** 竞猜手续费万分比的上界。 */
   maxFeeBps: number
+  /** 可作为商品奖的商城商品（按商品号索引）；拉取中 / 拉不到时为空表。 */
+  products: ReadonlyMap<string, QyLotProductChoice>
+  productsLoading: boolean
 }) {
   const { draft } = props
   const { t } = useTranslation()
+  const unit = useStardustName()
   const id = useId()
+  const patchTier = (index: number, next: Partial<QyLotDraft['tiers'][0]>) => {
+    props.onChange({
+      tiers: draft.tiers.map((item, i) =>
+        i === index ? { ...item, ...next } : item
+      ),
+    })
+  }
+  // 商品奖那一格的文案："名称 · 形态 · 余量"，让运营在下拉里就看得见够不够发。
+  const productLabel = (p: QyLotProductChoice) =>
+    t('qy_lot_product_option', {
+      title: p.title,
+      kind: t(qyMallKindKey(p.kind)),
+      stock:
+        p.remaining < 0
+          ? t('qy_lot_product_stock_unlimited')
+          : t('qy_lot_product_stock_left', { count: p.remaining }),
+    })
 
   // 本场理论上可能出现的最大有效票数。`max_total_entries` 填 0 时后端归一成
   // 系统硬上限，所以推荐值也必须按硬上限算 —— 按 0 算会给出一个提交必被拒的
   // 推荐值，而那比不给推荐值更糟。
   const entriesCap = qyLotEntriesCap(draft, props.yaml?.max_total_entries_hard)
   // 全站额度换算的整数上界。旧后端不下发它，此时不编一个数出来。
-  const systemMax = props.yaml?.system_max_quota ?? 0
+  const systemMax = props.yaml?.system_max_stardust ?? 0
   // 只有概率制与双色球会摊薄（名次制按名次切片，发满 N 份就停），所以那条
-  // 「数量 × 单份 ≥ 全场参与上限」的判据只在这两支下成立。
+  // 「数量 × 单份 ≥ 全场参与上限」的判据只在这两支下成立。转盘是硬库存：
+  // 每人拿定额、发完即止、永远不摊薄，那条判据对它没有意义。
   const budgetApplies = draft.draw_mode === 'prob'
+  const isWheel = draft.draw_mode === 'wheel'
   const minEntriesAdvice = qyLotRecommendedMinEntries(draft, entriesCap)
 
   if (qyLotPlayOf(draft) === 'ball') {
@@ -798,9 +917,187 @@ function SpecStep(props: {
                   }
                 />
               </div>
+              {/*
+                奖品形态三选一（项目方 2026-09-04：「转盘不要局限于星屑，增加一些
+                套餐、兑换码、实物的东西进去」）。文本奖此前只能靠脚本带 prize_type
+                进来，表单上没有这一格 —— 与「找不到双色球」是同一种缺陷。
+              */}
+              <div className='space-y-1'>
+                <Label htmlFor={`${id}-ptype-${tier.tier}`}>
+                  {t('qy_lot_prize_type_field')}
+                </Label>
+                <Select
+                  value={qyLotTierPrizeForm(tier)}
+                  onValueChange={(value) =>
+                    patchTier(index, {
+                      prize_type: (value ??
+                        'quota') as QyLotDraft['tiers'][0]['prize_type'],
+                    })
+                  }
+                >
+                  <SelectTrigger id={`${id}-ptype-${tier.tier}`}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value='quota'>
+                      {t('qy_lot_prize_type_quota', { unit })}
+                    </SelectItem>
+                    <SelectItem value='text'>
+                      {t('qy_lot_prize_type_text')}
+                    </SelectItem>
+                    <SelectItem value='product'>
+                      {t('qy_lot_prize_type_product')}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className='space-y-1'>
+                {/* 转盘的 `count` 是**初始库存**：发布时 stock_left = count，每摇中
+                    一次减一、减到 0 这一档就发完，全部发完当场封盘。它进承诺原像。 */}
+                <Label>
+                  {isWheel
+                    ? t('qy_lot_wheel_stock_field')
+                    : t('qy_lot_prize_count')}
+                </Label>
+                <Input
+                  inputMode='numeric'
+                  value={String(tier.count)}
+                  onChange={(event) => {
+                    const digits = event.target.value.replaceAll(/\D/g, '')
+                    patchTier(index, {
+                      count: digits === '' ? 0 : Number(digits),
+                    })
+                  }}
+                />
+                {/* 商品奖的份数不得超过商品此刻的余量（后端发布期同一条判据）；
+                    其余形态照旧给"单份已定死时至少要几份"的推荐。 */}
+                {qyLotTierPrizeForm(tier) === 'product' ? (
+                  (() => {
+                    const chosen = props.products.get(tier.product_no ?? '')
+                    return (
+                      <QyLotFieldAdvice
+                        ranges={
+                          chosen != null && chosen.remaining >= 0
+                            ? [
+                                t('qy_lot_product_stock_left', {
+                                  count: chosen.remaining,
+                                }),
+                              ]
+                            : []
+                        }
+                        problem={
+                          chosen != null &&
+                          chosen.remaining >= 0 &&
+                          tier.count > chosen.remaining
+                            ? t('qy_lot_v_product_stock_short')
+                            : undefined
+                        }
+                      />
+                    )
+                  })()
+                ) : (
+                  <QyLotFieldAdvice
+                    ranges={
+                      props.yaml != null
+                        ? [
+                            t('qy_lot_range_count', {
+                              max: props.yaml.max_total_entries_hard,
+                            }),
+                          ]
+                        : []
+                    }
+                    advice={
+                      budgetApplies &&
+                      qyLotTierPrizeForm(tier) === 'quota' &&
+                      qyLotTierCountFloor(entriesCap, tier.amount_quota) > 0
+                        ? t('qy_lot_advice_tier_count', {
+                            shares: qyLotTierCountFloor(
+                              entriesCap,
+                              tier.amount_quota
+                            ),
+                            entries: entriesCap,
+                          })
+                        : undefined
+                    }
+                    onApply={
+                      budgetApplies &&
+                      qyLotTierPrizeForm(tier) === 'quota' &&
+                      qyLotTierCountFloor(entriesCap, tier.amount_quota) > 0
+                        ? () =>
+                            patchTier(index, {
+                              count: qyLotTierCountFloor(
+                                entriesCap,
+                                tier.amount_quota
+                              ),
+                            })
+                        : undefined
+                    }
+                  />
+                )}
+              </div>
+            </div>
+
+            {/* 第二行按形态切：星屑奖填单份金额；文本奖填公开的领取说明；
+                商品奖选一件商城商品。 */}
+            {qyLotTierPrizeForm(tier) === 'text' && (
+              <div className='space-y-1'>
+                <Label htmlFor={`${id}-tdesc-${tier.tier}`}>
+                  {t('qy_lot_text_desc')}
+                </Label>
+                <Textarea
+                  id={`${id}-tdesc-${tier.tier}`}
+                  rows={2}
+                  maxLength={500}
+                  value={tier.text_desc ?? ''}
+                  onChange={(event) =>
+                    patchTier(index, { text_desc: event.target.value })
+                  }
+                />
+                {/* 领取说明明文进承诺、公开给所有人；兑换码本身在开奖后由管理员
+                    逐份填入，绝不能写在这里。 */}
+                <p className='text-muted-foreground text-xs'>
+                  {t('qy_lot_text_desc_public_hint')}
+                </p>
+              </div>
+            )}
+            {qyLotTierPrizeForm(tier) === 'product' && (
+              <div className='space-y-1'>
+                <Label htmlFor={`${id}-product-${tier.tier}`}>
+                  {t('qy_lot_product_field')}
+                </Label>
+                <Select
+                  value={tier.product_no ?? ''}
+                  onValueChange={(value) =>
+                    patchTier(index, { product_no: value ?? '' })
+                  }
+                >
+                  <SelectTrigger id={`${id}-product-${tier.tier}`}>
+                    <SelectValue
+                      placeholder={t('qy_lot_product_placeholder')}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[...props.products.values()].map((p) => (
+                      <SelectItem key={p.product_no} value={p.product_no}>
+                        {productLabel(p)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {!props.productsLoading && props.products.size === 0 && (
+                  <p className='text-destructive text-xs'>
+                    {t('qy_lot_product_empty')}
+                  </p>
+                )}
+                <p className='text-muted-foreground text-xs'>
+                  {t('qy_lot_product_hint')}
+                </p>
+              </div>
+            )}
+            {qyLotTierPrizeForm(tier) === 'quota' && (
               <div className='space-y-1'>
                 <Label>{t('qy_lot_prize_amount')}</Label>
-                <QyAmountInput
+                <QySdInput
                   value={tier.amount_quota}
                   onChange={(quota) =>
                     props.onChange({
@@ -821,7 +1118,7 @@ function SpecStep(props: {
                     systemMax > 0
                       ? [
                           t('qy_lot_range_physical', {
-                            amount: formatQyQuotaBound(systemMax),
+                            amount: formatSdWithUnit(systemMax, unit),
                           }),
                         ]
                       : []
@@ -830,8 +1127,9 @@ function SpecStep(props: {
                     budgetApplies &&
                     qyLotTierAmountFloor(entriesCap, tier.count) > 0
                       ? t('qy_lot_advice_tier_amount', {
-                          amount: formatQyQuotaBound(
-                            qyLotTierAmountFloor(entriesCap, tier.count)
+                          amount: formatSdWithUnit(
+                            qyLotTierAmountFloor(entriesCap, tier.count),
+                            unit
                           ),
                           entries: entriesCap,
                         })
@@ -868,81 +1166,17 @@ function SpecStep(props: {
                   }
                 />
               </div>
-              <div className='space-y-1'>
-                <Label>{t('qy_lot_prize_count')}</Label>
-                <Input
-                  inputMode='numeric'
-                  value={String(tier.count)}
-                  onChange={(event) => {
-                    const digits = event.target.value.replaceAll(/\D/g, '')
-                    props.onChange({
-                      tiers: draft.tiers.map((item, i) =>
-                        i === index
-                          ? {
-                              ...item,
-                              count: digits === '' ? 0 : Number(digits),
-                            }
-                          : item
-                      ),
-                    })
-                  }}
-                />
-                {/* 同一条不等式的另一个解：单份已经定死时，份数至少要几份。
-                    两颗按钮都给，运营改哪一格都行。 */}
-                <QyLotFieldAdvice
-                  ranges={
-                    props.yaml != null
-                      ? [
-                          t('qy_lot_range_count', {
-                            max: props.yaml.max_total_entries_hard,
-                          }),
-                        ]
-                      : []
-                  }
-                  advice={
-                    budgetApplies &&
-                    qyLotTierCountFloor(entriesCap, tier.amount_quota) > 0
-                      ? t('qy_lot_advice_tier_count', {
-                          shares: qyLotTierCountFloor(
-                            entriesCap,
-                            tier.amount_quota
-                          ),
-                          entries: entriesCap,
-                        })
-                      : undefined
-                  }
-                  onApply={
-                    budgetApplies &&
-                    qyLotTierCountFloor(entriesCap, tier.amount_quota) > 0
-                      ? () =>
-                          props.onChange({
-                            tiers: draft.tiers.map((item, i) =>
-                              i === index
-                                ? {
-                                    ...item,
-                                    count: qyLotTierCountFloor(
-                                      entriesCap,
-                                      item.amount_quota
-                                    ),
-                                  }
-                                : item
-                            ),
-                          })
-                      : undefined
-                  }
-                />
-              </div>
-            </div>
+            )}
 
             {/*
-              概率制的每档中奖概率。
+              概率制与转盘的每档中奖概率。
 
               没有这一格，「概率制」在界面上就是一条死路：向导四步全绿、复核屏
-              全绿、点确认必定吃一个 400（后端对 prob 强制 `win_ppm ∈ (0, 1e6]`），
+              全绿、点确认必定吃一个 400（后端对 prob / wheel 强制 `win_ppm ∈ (0, 1e6]`），
               而界面上没有任何一格可以用来修正它。这与项目方两次反馈的「找不到
               双色球」是同一种缺陷 —— 选得到、填得完、走不通。
             */}
-            {draft.draw_mode === 'prob' && (
+            {qyLotUsesWinPpm(draft.draw_mode) && (
               <div className='space-y-1'>
                 <Label>{t('qy_lot_win_ppm_field')}</Label>
                 <Input
@@ -1008,6 +1242,39 @@ function SpecStep(props: {
           </div>
         )}
 
+        {/*
+          转盘：「谢谢参与」不是运营填的奖档，而是服务端按 1e6 − Σ真实档在末尾
+          派生的一行，它进 spec 原像，于是各档与它**恰好**铺满 100%（design-15 §7.1）。
+          这里把派生值实时算出来摆着：运营看得见"落空的概率是多少"，也看得见
+          Σ 越过 100% 时这一场提交不了（派生值不可能为负）。
+        */}
+        {isWheel && (
+          <div className='rounded-lg border p-3 text-sm'>
+            <p>
+              {t('qy_lot_wheel_ppm_sum', {
+                percent: (qyLotTotalWinPpm(draft) / 10000).toFixed(4),
+              })}
+            </p>
+            <p className='mt-1'>
+              {t('qy_lot_wheel_none_ppm', {
+                percent: (qyLotWheelNonePpm(draft) / 10000).toFixed(4),
+                ppm: qyLotWheelNonePpm(draft),
+              })}
+            </p>
+            <p
+              className={
+                qyLotTotalWinPpm(draft) > 1_000_000
+                  ? 'text-destructive mt-1 text-xs'
+                  : 'text-muted-foreground mt-1 text-xs'
+              }
+            >
+              {qyLotTotalWinPpm(draft) > 1_000_000
+                ? t('qy_lot_v_win_ppm_sum')
+                : t('qy_lot_wheel_ppm_sum_hint')}
+            </p>
+          </div>
+        )}
+
         <Button
           type='button'
           variant='outline'
@@ -1050,11 +1317,15 @@ function SpecStep(props: {
           **承诺原像**里都是 true。复核屏那一格的标题是「即将被永久冻结」，
           在那里显示一个假值比不显示更糟。双色球分支早就是这么处理的。
         */}
-        {draft.draw_mode === 'prob' ? (
+        {draft.draw_mode === 'prob' || isWheel ? (
           <div className='rounded-lg border p-3'>
             <Label>{t('qy_lot_allow_multi_win')}</Label>
+            {/* 转盘与概率制同一条：后端对 draw_mode != rank 无条件置真（每一转
+                独立摇号，按人去重会让公示的概率不再为真），这个字段仍进承诺原像。 */}
             <p className='text-muted-foreground mt-1 text-xs'>
-              {t('qy_lot_allow_multi_win_forced')}
+              {isWheel
+                ? t('qy_lot_wheel_allow_multi_win_forced')
+                : t('qy_lot_allow_multi_win_forced')}
             </p>
           </div>
         ) : (
@@ -1077,44 +1348,53 @@ function SpecStep(props: {
           </div>
         )}
 
-        <div className='space-y-1'>
-          <Label htmlFor={`${id}-min-entries`}>
-            {t('qy_lot_min_entries_field')}
-          </Label>
-          <Input
-            id={`${id}-min-entries`}
-            inputMode='numeric'
-            value={String(draft.min_entries_to_hold)}
-            onChange={(event) => {
-              const digits = event.target.value.replaceAll(/\D/g, '')
-              props.onChange({
-                min_entries_to_hold: digits === '' ? 0 : Number(digits),
-              })
-            }}
-          />
-          {/* 平台侧唯一的止损阀，而且对用户完全公平：不足即流局、全额退款。
-              没有它就会出现"3 个人参加、平台净亏一个一等奖"。 */}
+        {/* 转盘没有"最低成场人数"：每一转当场开奖、当场派奖，没有流局全退这一说
+            （本金已花、奖已到账，再退一遍是双付）。这一格对转盘不显示、提交恒发 0，
+            后端对非 0 直接 400。 */}
+        {isWheel ? (
           <p className='text-muted-foreground text-xs'>
-            {t('qy_lot_min_entries_hint_field')}
+            {t('qy_lot_wheel_no_min_entries_note')}
           </p>
-          {/* 推荐值 = 保本参与人数 ⌈奖品总额 ÷ 参与费⌉。两个量表单上都有，
-              所以这一格同样不需要猜 —— 而它的默认 0 意味着"亏多少都照开"，
-              那不是一个人选出来的取值，是没人告诉他该填什么。 */}
-          <QyLotFieldAdvice
-            ranges={[t('qy_lot_range_min_entries')]}
-            advice={
-              minEntriesAdvice > 0
-                ? t('qy_lot_advice_min_entries', { count: minEntriesAdvice })
-                : undefined
-            }
-            onApply={
-              minEntriesAdvice > 0
-                ? () =>
-                    props.onChange({ min_entries_to_hold: minEntriesAdvice })
-                : undefined
-            }
-          />
-        </div>
+        ) : (
+          <div className='space-y-1'>
+            <Label htmlFor={`${id}-min-entries`}>
+              {t('qy_lot_min_entries_field')}
+            </Label>
+            <Input
+              id={`${id}-min-entries`}
+              inputMode='numeric'
+              value={String(draft.min_entries_to_hold)}
+              onChange={(event) => {
+                const digits = event.target.value.replaceAll(/\D/g, '')
+                props.onChange({
+                  min_entries_to_hold: digits === '' ? 0 : Number(digits),
+                })
+              }}
+            />
+            {/* 平台侧唯一的止损阀，而且对用户完全公平：不足即流局、全额退款。
+                没有它就会出现"3 个人参加、平台净亏一个一等奖"。 */}
+            <p className='text-muted-foreground text-xs'>
+              {t('qy_lot_min_entries_hint_field')}
+            </p>
+            {/* 推荐值 = 保本参与人数 ⌈奖品总额 ÷ 参与费⌉。两个量表单上都有，
+                所以这一格同样不需要猜 —— 而它的默认 0 意味着"亏多少都照开"，
+                那不是一个人选出来的取值，是没人告诉他该填什么。 */}
+            <QyLotFieldAdvice
+              ranges={[t('qy_lot_range_min_entries')]}
+              advice={
+                minEntriesAdvice > 0
+                  ? t('qy_lot_advice_min_entries', { count: minEntriesAdvice })
+                  : undefined
+              }
+              onApply={
+                minEntriesAdvice > 0
+                  ? () =>
+                      props.onChange({ min_entries_to_hold: minEntriesAdvice })
+                  : undefined
+              }
+            />
+          </div>
+        )}
       </div>
     )
   }
@@ -1237,7 +1517,7 @@ function SpecStep(props: {
       <div className='grid gap-3 sm:grid-cols-2'>
         <div className='space-y-1'>
           <Label htmlFor={`${id}-bet-min`}>{t('qy_lot_bet_min')}</Label>
-          <QyAmountInput
+          <QySdInput
             id={`${id}-bet-min`}
             value={draft.bet_min_quota}
             onChange={(quota) => props.onChange({ bet_min_quota: quota })}
@@ -1250,7 +1530,7 @@ function SpecStep(props: {
             advice={
               draft.stake_quota > 0
                 ? t('qy_lot_advice_bet_min', {
-                    amount: formatQyQuotaBound(draft.stake_quota),
+                    amount: formatSdWithUnit(draft.stake_quota, unit),
                   })
                 : undefined
             }
@@ -1263,7 +1543,7 @@ function SpecStep(props: {
         </div>
         <div className='space-y-1'>
           <Label htmlFor={`${id}-bet-max`}>{t('qy_lot_bet_max')}</Label>
-          <QyAmountInput
+          <QySdInput
             id={`${id}-bet-max`}
             value={draft.bet_max_quota}
             onChange={(quota) => props.onChange({ bet_max_quota: quota })}
@@ -1351,6 +1631,7 @@ function BallSpecStep(props: {
 }) {
   const { draft, series } = props
   const { t } = useTranslation()
+  const unit = useStardustName()
   const id = useId()
 
   const pool: QyLotBallPool = {
@@ -1400,7 +1681,7 @@ function BallSpecStep(props: {
             被原子取走并冻结进承诺，所以这里显示的是**预计值** —— 期间若有人
             再注资，实际开局池只会更大。 */}
         <QyKeyValue label={t('qy_lot_ball_series_pool')}>
-          <QyAmountText quota={series.pool_quota} />
+          <QySdAmount amount={series.pool_quota} />
         </QyKeyValue>
         <QyKeyValue label={t('qy_lot_ball_share_bps')}>
           {t('qy_lot_ball_pool_share', {
@@ -1408,7 +1689,7 @@ function BallSpecStep(props: {
           })}
         </QyKeyValue>
         <QyKeyValue label={t('qy_lot_ball_headroom')}>
-          <QyAmountText quota={series.headroom_quota} />
+          <QySdAmount amount={series.headroom_quota} />
         </QyKeyValue>
       </div>
 
@@ -1539,7 +1820,7 @@ function BallSpecStep(props: {
               <div className='grid gap-2 sm:grid-cols-2'>
                 <div className='space-y-1'>
                   <Label>{t('qy_lot_prize_amount')}</Label>
-                  <QyAmountInput
+                  <QySdInput
                     value={tier.amount_quota}
                     onChange={(quota) =>
                       patchTier(index, { amount_quota: quota })
@@ -1551,8 +1832,12 @@ function BallSpecStep(props: {
                     advice={
                       qyLotTierAmountFloor(props.entriesCap, tier.count) > 0
                         ? t('qy_lot_advice_tier_amount', {
-                            amount: formatQyQuotaBound(
-                              qyLotTierAmountFloor(props.entriesCap, tier.count)
+                            amount: formatSdWithUnit(
+                              qyLotTierAmountFloor(
+                                props.entriesCap,
+                                tier.count
+                              ),
+                              unit
                             ),
                             entries: props.entriesCap,
                           })
@@ -1708,10 +1993,18 @@ function ReviewStep(props: {
   breakEven: number
   alertQuota: number
   series: QyLotSeries | undefined
+  products: ReadonlyMap<string, QyLotProductChoice>
 }) {
   const { draft } = props
   const { t } = useTranslation()
-  const isBall = qyLotPlayOf(draft) === 'ball'
+  const unit = useStardustName()
+  const play = qyLotPlayOf(draft)
+  const isBall = play === 'ball'
+  const isWheel = play === 'wheel'
+  const productTiers =
+    draft.kind === 'draw'
+      ? draft.tiers.filter((tier) => qyLotTierPrizeForm(tier) === 'product')
+      : []
 
   return (
     <div className='space-y-3'>
@@ -1735,16 +2028,22 @@ function ReviewStep(props: {
         <p className='mb-2 text-sm font-medium'>
           {t('qy_lot_review_frozen_title')}
         </p>
-        {/* 双色球的 `kind` 也是 `draw`，照 kind 印会在最后一屏上写着「抽奖」，
+        {/* 双色球与转盘的 `kind` 也是 `draw`，照 kind 印会在最后一屏上写着「抽奖」，
             而这一屏的全部意义是"看清楚即将被永久冻结的东西"。 */}
-        <QyKeyValue label={t('qy_lot_play')}>
-          {isBall ? t('qy_lot_mode_ball') : t(`qy_lot_kind_${draft.kind}`)}
-        </QyKeyValue>
-        {draft.kind === 'draw' && !isBall && (
+        <QyKeyValue label={t('qy_lot_play')}>{playLabel(draft, t)}</QyKeyValue>
+        {draft.kind === 'draw' && !isBall && !isWheel && (
           <QyKeyValue label={t('qy_lot_draw_mode')}>
             {draft.draw_mode === 'prob'
               ? t('qy_lot_mode_prob')
               : t('qy_lot_mode_rank')}
+          </QyKeyValue>
+        )}
+        {/* 派生的「谢谢参与」概率进 spec 原像，它与各档一起被永久冻结。 */}
+        {isWheel && (
+          <QyKeyValue label={t('qy_lot_wheel_none_ppm_label')}>
+            {t('qy_lot_wheel_none_ppm_value', {
+              percent: (qyLotWheelNonePpm(draft) / 10000).toFixed(4),
+            })}
           </QyKeyValue>
         )}
         {isBall && props.series != null && (
@@ -1763,25 +2062,32 @@ function ReviewStep(props: {
               })}
             </QyKeyValue>
             <QyKeyValue label={t('qy_lot_ball_series_pool')}>
-              <QyAmountText quota={props.series.pool_quota} />
+              <QySdAmount amount={props.series.pool_quota} />
             </QyKeyValue>
           </>
         )}
         <QyKeyValue label={t('qy_lot_stake')}>
-          <QyAmountText quota={draft.stake_quota} />
+          <QySdAmount amount={draft.stake_quota} />
         </QyKeyValue>
         <QyKeyValue label={t('qy_lot_open_at')}>
           {formatQyTs(draft.open_at)}
         </QyKeyValue>
-        <QyKeyValue label={t('qy_lot_close_at')}>
+        {/* 转盘只有「开始 / 结束」:开奖时刻由后端按结束时间派生,结算截止对它无意义。 */}
+        <QyKeyValue
+          label={isWheel ? t('qy_lot_wheel_end_at') : t('qy_lot_close_at')}
+        >
           {formatQyTs(draft.close_at)}
         </QyKeyValue>
-        <QyKeyValue label={t('qy_lot_draw_at')}>
-          {formatQyTs(draft.draw_at)}
-        </QyKeyValue>
-        <QyKeyValue label={t('qy_lot_settle_deadline')}>
-          {formatQyTs(draft.settle_deadline)}
-        </QyKeyValue>
+        {!isWheel && (
+          <>
+            <QyKeyValue label={t('qy_lot_draw_at')}>
+              {formatQyTs(draft.draw_at)}
+            </QyKeyValue>
+            <QyKeyValue label={t('qy_lot_settle_deadline')}>
+              {formatQyTs(draft.settle_deadline)}
+            </QyKeyValue>
+          </>
+        )}
         {/* 显示的必须是**生效值**而不是草稿值：这一屏的标题是「即将被永久
             冻结」，而 rank 之外的两个玩法由后端强制置真并写进承诺原像。 */}
         <QyKeyValue label={t('qy_lot_allow_multi_win')}>
@@ -1801,21 +2107,25 @@ function ReviewStep(props: {
               {draft.bet_min_quota === 0 ? (
                 t('qy_lot_bet_unlimited')
               ) : (
-                <QyAmountText quota={draft.bet_min_quota} />
+                <QySdAmount amount={draft.bet_min_quota} />
               )}
             </QyKeyValue>
             <QyKeyValue label={t('qy_lot_bet_max')}>
               {draft.bet_max_quota === 0 ? (
                 t('qy_lot_bet_unlimited')
               ) : (
-                <QyAmountText quota={draft.bet_max_quota} />
+                <QySdAmount amount={draft.bet_max_quota} />
               )}
             </QyKeyValue>
           </>
         )}
-        <QyKeyValue label={t('qy_lot_min_entries_field')}>
-          {draft.min_entries_to_hold}
-        </QyKeyValue>
+        {/* 转盘没有这一格（恒为 0，后端强制）：印一个 0 出来只会让人以为
+            "没配"，而它其实是"不存在这回事"。 */}
+        {!isWheel && (
+          <QyKeyValue label={t('qy_lot_min_entries_field')}>
+            {draft.min_entries_to_hold}
+          </QyKeyValue>
+        )}
       </div>
 
       {isBall && (
@@ -1829,7 +2139,7 @@ function ReviewStep(props: {
               硬约束在发布期由 checkBallPoolCovers 守：
               固定支出 + 开局池×Σ占比 ≤ 开局池。 */}
           <QyKeyValue label={t('qy_lot_ball_fixed_total')}>
-            <QyAmountText quota={props.totalPrize} />
+            <QySdAmount amount={props.totalPrize} />
           </QyKeyValue>
           <QyKeyValue label={t('qy_lot_ball_share_total')}>
             {t('qy_lot_ball_pool_share', {
@@ -1855,7 +2165,7 @@ function ReviewStep(props: {
           {/* 抽奖是「平台收参与费、平台出奖品」，两边不守恒是正常的：
               派奖是对用户额度的**净增发**，本仓不存在平台账户。 */}
           <QyKeyValue label={t('qy_lot_total_prize')}>
-            <QyAmountText quota={props.totalPrize} />
+            <QySdAmount amount={props.totalPrize} />
           </QyKeyValue>
           <QyKeyValue label={t('qy_lot_break_even')}>
             {props.breakEven === 0 ? '-' : props.breakEven}
@@ -1874,11 +2184,41 @@ function ReviewStep(props: {
                 <AlertTitle>{t('qy_lot_large_prize_title')}</AlertTitle>
                 <AlertDescription>
                   {t('qy_lot_large_prize_desc', {
-                    amount: formatQyQuotaLedger(props.totalPrize),
+                    amount: formatSdWithUnit(props.totalPrize, unit),
                   })}
                 </AlertDescription>
               </Alert>
             )}
+        </div>
+      )}
+
+      {/* 商品奖：把"第几档 → 哪件商品（什么形态）× 几份"逐行印出来。商品号进
+          承诺原像，发布后换一件商品就开不了奖 —— 所以它属于"即将被永久冻结"
+          这一屏，而不是随手看看的摘要。 */}
+      {productTiers.length > 0 && (
+        <div className='rounded-lg border p-3'>
+          <p className='mb-2 text-sm font-medium'>
+            {t('qy_lot_review_product_tiers')}
+          </p>
+          <ul className='space-y-1 text-sm'>
+            {productTiers.map((tier) => {
+              const chosen = props.products.get(tier.product_no ?? '')
+              return (
+                <li key={tier.tier}>
+                  {t('qy_lot_review_product_row', {
+                    tier: tier.tier,
+                    name: tier.name,
+                    title: chosen?.title ?? tier.product_no ?? '',
+                    kind: chosen == null ? '' : t(qyMallKindKey(chosen.kind)),
+                    count: tier.count,
+                  })}
+                </li>
+              )
+            })}
+          </ul>
+          <p className='text-muted-foreground mt-2 text-xs'>
+            {t('qy_lot_product_hint')}
+          </p>
         </div>
       )}
 

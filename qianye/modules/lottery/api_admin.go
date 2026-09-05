@@ -16,6 +16,8 @@ import (
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
+	"github.com/QuantumNous/new-api/qianye/modules/mall"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
@@ -34,6 +36,9 @@ import (
 // 就能在看到某个人报名之后立刻关门。给他这两个按钮等于把选时攻击重新引进来。
 // 管理员剩下的唯一动作是整场取消,而取消必然全额退款、必然公示、必然写审计:
 // 他只能"不开",不能"挑一个开"。
+//
+// **转盘是例外**(api_admin_schedule.go):它没有冻结名单这一步,每一转当场开出,
+// 排期不进承诺原像,发布后可以改开始 / 结束、立即开始;「取消」对它 = 提前封盘。
 
 // ─────────────────────────── 请求体 ───────────────────────────
 
@@ -44,10 +49,12 @@ type prizeInput struct {
 	Count       int    `json:"count"`
 	// PrizeType 为空按 quota 处理,让存量前端与脚本不必改。
 	PrizeType string `json:"prize_type"`
-	// WinPpm 只在 draw_mode=prob 下有意义。
+	// WinPpm 只在 draw_mode=prob / wheel 下有意义。
 	WinPpm int `json:"win_ppm"`
 	// TextDesc 是**会公开展示**的履行说明,绝不能写兑换码。
 	TextDesc string `json:"text_desc"`
+	// ProductNo 只在 prize_type=product 下必填:商城商品号(套餐 / 兑换码 / 实物)。
+	ProductNo string `json:"product_no"`
 
 	// RedMatch / BlueMatch / PoolShareBps 只在 draw_mode=ball 下有意义:
 	// 前两个是这一奖级要求的最少命中数,后者 > 0 时本级是浮动奖(占池比例),
@@ -106,7 +113,7 @@ type activityInput struct {
 
 	// ConfirmNetIssueQuota 是"我看清了这场活动最坏会发出多少站内余额"的回执。
 	//
-	// 只在奖品总额 Σ(count × amount) 达到 large_prize_alert_quota 时才被读;
+	// 只在奖品总额 Σ(count × amount) 达到 large_prize_alert_stardust 时才被读;
 	// 阈值配成 0 时这个字段完全不参与判定。零值(没填)永远等于**未确认** ——
 	// 判据是"回显值恰等于总额",而一个越过阈值的总额必然是正数。
 	// 语义与判据都在 caps.go 的 requireNetIssueConfirm。
@@ -432,6 +439,21 @@ func handlePublishActivity(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	// 商品奖引用的商品此刻必须存在、上架、库存够 Σcount(发布期闸门,理由见 checkPrizeProducts)。
+	if act.Kind == KindDraw {
+		prizes := make([]Prize, 0, 8)
+		if err := gdb.WithContext(ctx).Where("act_id = ?", act.Id).Find(&prizes).Error; err != nil {
+			db.MarkFailure(err)
+			respondErr(c, wrapInternal("查询奖档", err))
+			return
+		}
+		if err := checkPrizeProducts(ctx, prizes); err != nil {
+			writeAdminAudit(c, "lottery.activity.publish", actNo, qymodel.ResultFail, auditReason(err),
+				snapText(activitySnapshot(act, nil)), "")
+			respondErr(c, err)
+			return
+		}
+	}
 
 	// 种子在事务外读一次:双色球要在事务内(取走系列池、定下期号之后)才算得出
 	// 承诺哈希,而承诺的每一个分量都必须与最终落库的那一份逐字节一致。
@@ -507,6 +529,15 @@ func handlePublishActivity(c *gin.Context) {
 		if res.RowsAffected != 1 {
 			return errStatusConflict
 		}
+		// 转盘的在线库存在发布这一刻 = 承诺里的 count。buildPrizes 落草稿时已经写过
+		// 一遍,这里再整体重置一次:草稿期这一列没有任何业务读它,一次直接改库把它
+		// 改小之后,发布出去的转盘会从第一转起就"库存耗尽落空",而承诺照常通过。
+		if snapshot.Kind == KindDraw && snapshot.DrawMode == DrawModeWheel {
+			if err := tx.Model(&Prize{}).Where("act_id = ?", act.Id).
+				Update("stock_left", gorm.Expr("count")).Error; err != nil {
+				return err
+			}
+		}
 		if err := writeActivityEvent(tx, act.Id, StatusDraft, StatusPublished, ActionPublish,
 			qymodel.ActorAdmin, c.GetInt("id"), after); err != nil {
 			return err
@@ -547,7 +578,9 @@ func handlePublishActivity(c *gin.Context) {
 	})
 }
 
-// computeCommit 算出承诺哈希。
+// computeCommit 算出承诺哈希。**测试专用的包装**:生产代码里没有调用方,发布走的
+// 是 handlePublishActivity 自己那一段(双色球要在事务内取走系列池之后才算得出)。
+// 留着它是因为一批 _db_test 用它当"发布"的替身。
 //
 // 哈希的是**落库的那份字节**(rules_text / spec_text),不重新序列化 ——
 // Go struct 的序列化顺序与第三方不一致,重序列化一次就会让所有外部验证者
@@ -586,16 +619,21 @@ func publishAlgo(act *Activity) string {
 func checkAlgoPublishable(act *Activity) error {
 	switch publishAlgo(act) {
 	case AlgoV1:
+		// v1 的链原像没有 pick 分量,而转盘把每一转的结果编码进那一位(WheelPick);
+		// 一场 v1 转盘的链谁都验不了。新草稿恒为 v2,这里只是把门关死。
+		if act.Kind == KindDraw && act.DrawMode == DrawModeWheel {
+			return errBadRequest("转盘只能以 lot-v2 发布")
+		}
 		return nil
 	case AlgoV2:
 		if act.Kind == KindDraw {
-			// 白名单而不是黑名单:rank / prob / ball 三个分支在
-			// qianye/docs/lottery-verify.py 里都有对应的复算实现,并各有一组
-			// 黄金向量。再加一种玩法时,**先补验证脚本再放开这里** ——
+			// 白名单而不是黑名单:rank / prob / ball / wheel 四个分支在
+			// qianye/docs/lottery-verify.py 与 web 的 verify.ts 里都有对应的复算实现,
+			// 并各有一组黄金向量。再加一种玩法时,**先补验证脚本再放开这里** ——
 			// 默认放行的写法会让某一天新加的玩法在没人注意的情况下发出去,
 			// 而它的证据链没有任何人能验。
 			switch act.DrawMode {
-			case "", DrawModeRank, DrawModeProb, DrawModeBall:
+			case "", DrawModeRank, DrawModeProb, DrawModeBall, DrawModeWheel:
 			default:
 				return errBadRequest("该定档方式尚未开放发布:离线验证脚本的对应分支还没有合入")
 			}
@@ -621,9 +659,9 @@ type cancelRequest struct {
 // 这是管理员唯一能改变活动结局的动作,而它必然全额退款、必然公示、必然写审计:
 // 他只能"不开",不能"挑一个开"。
 //
-// 取消不直接登记退款:退款由参与单的**资金单终态**驱动(见 lifecycle.go)。
-// 在这里投机性地登记退款,会在资金单最终判定为 Failed(主库根本没扣钱)时
-// 退一笔从没收过的钱。
+// 取消不直接登记退款:活动推进 settling 之后由 runSettle 的 planFullRefund 按
+// 每张票的账本流水(refundAmountOf)逐笔登记,再由出款 worker 入账。让退款只有
+// 那一条路径,是为了让"退多少"永远只有一个权威来源。
 func handleCancelActivity(c *gin.Context) {
 	// 用 FlagCore 而不是 FlagLottery:功能被临时关停时,管理员仍然必须能把
 	// 进行中的活动收尾并退款 —— 那正是最需要取消的时刻。
@@ -669,10 +707,36 @@ func handleCancelActivity(c *gin.Context) {
 		return
 	}
 
+	// 转盘的「取消」是另一回事:本金已在每一转当场花掉、奖已当场到账,没有任何
+	// 可以退的东西,写 OutcomeCancelled 会把它推进全额退款那条路 —— 那是双付。
+	// 所以它只能做「提前封盘」;真正作废只允许一转都没有的场次(见 cancelWheel)。
+	if act.DrawMode == DrawModeWheel {
+		out, err := cancelWheel(ctx, gdb, act, reason, c.GetInt("id"))
+		if err != nil {
+			if _, ok := AsBizError(err); !ok {
+				db.MarkFailure(err)
+				err = wrapInternal("取消转盘", err)
+			}
+			writeAdminAudit(c, "lottery.activity.cancel", actNo, qymodel.ResultFail, auditReason(err),
+				snapText(activitySnapshot(act, nil)), "")
+			respondErr(c, err)
+			return
+		}
+		writeAdminAudit(c, "lottery.activity.cancel", actNo, qymodel.ResultOK, reason,
+			snapText(activitySnapshot(act, nil)), snapText(out))
+		respondOK(c, out)
+		return
+	}
+
 	now := common.GetTimestamp()
 	err = gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 只有还没进入结算的活动能被取消。settling 之后已经有 payout 计划行,
 		// 再叠一层取消会让同一张票同时挂着派奖与退款两条计划。
+		//
+		// 封盘(locked)之后仍可取消是刻意保留的运营能力:管理员需要在开奖前撤场。
+		// 这确实给持有种子读权限的人留了一个"算出不利就撤场重开"的重摇口,但取消端点
+		// 挂在 AdminAuth 之后、普通用户够不到,而能读种子(qy_lot_seed)本就是数据库
+		// 级权限 —— 与整套 commit-reveal 一样,能到那一层的人不在本协议的防御范围内。
 		//
 		// 名单里**没有 StatusDraft**:上面那道前置已经把草稿挡掉,这里再列一次
 		// 就等于留了一条"读出来是 published、加锁时已经被别人退回草稿"的旁路。
@@ -690,16 +754,12 @@ func handleCancelActivity(c *gin.Context) {
 		if res.RowsAffected != 1 {
 			return errStatusConflict
 		}
-		// 取消可以从 published 直接跳到 settling,于是它绕过了封盘 ——
-		// 而封盘是**唯一**把在途参与标成 excluded 的地方。不在这里补一次同样的
-		// 清扫,那些 pending 条目就永远没人收敛:convergeExcluded 只看 excluded,
-		// finishIfDone 又把 pending 计入未结算,活动会永久停在 settling。
-		if _, err := excludePendingEntries(tx, act.Id, now); err != nil {
-			return err
-		}
-		// 封盘同样是**唯一**冻结名单快照的地方,取消绕过它的后果与上面那条对称:
-		// roster_hash 留空,而任何第三方按公开条目重算出来的都是一个非空哈希 ——
-		// 于是每一场被取消的活动在自家验证脚本第 3 步就判 FAIL。
+		// 取消可以从 published 直接跳到 settling,于是它绕过了封盘 —— 而封盘是
+		// **唯一**冻结名单快照的地方。不在这里补一次同样的冻结,roster_hash 就会
+		// 留空,而任何第三方按公开条目重算出来的都是一个非空哈希 —— 于是每一场
+		// 被取消的活动在自家验证脚本第 3 步就判 FAIL。没有"在途参与"要清扫:
+		// 票与扣款同一个事务落库,上面那条状态 CAS 一过,晚到的报名会在
+		// reserveEntry 的 status='published' 复检上整笔回滚。
 		hash, count, err := freezeRosterOnCancel(ctx, tx, act, now)
 		if err != nil {
 			return err
@@ -736,8 +796,9 @@ func handleCancelActivity(c *gin.Context) {
 // 一个参与者都没有的场次同样会 FAIL:空名单的哈希是 H(域, act_no, commit, "0", "")
 // 而不是空串。
 //
-// 与封盘同一条纪律:必须在 pending→excluded 清扫**之后**、同一个事务内读名单。
-// 已经封过盘的活动(roster_hash 非空)绝不覆盖 —— 那份快照可能早已被人抓走。
+// 与封盘同一条纪律:必须在状态 CAS **之后**、同一个事务内读名单(理由见
+// lockActivity)。已经封过盘的活动(roster_hash 非空)绝不覆盖 ——
+// 那份快照可能早已被人抓走。
 // 草稿没有承诺哈希,名单原像无从谈起,跳过。
 func freezeRosterOnCancel(ctx context.Context, tx *gorm.DB, act *Activity, now int64) (string, int, error) {
 	// 判据取事务内回读的那一行,不是进 handler 时读到的那一份:上面那次状态 CAS
@@ -763,6 +824,79 @@ func freezeRosterOnCancel(ctx context.Context, tx *gorm.DB, act *Activity, now i
 		return "", 0, err
 	}
 	return hash, count, nil
+}
+
+// cancelWheel 是转盘的「取消」:published → locked 的**提前封盘**,与到点封盘走
+// 同一段事务体(lockActivityTx:CAS + locked_at + roster_hash/roster_count + 事件)。
+// 它也是运营侧「提前结束」的唯一入口 —— 改排期(api_admin_schedule.go)刻意不接受
+// 早于 now 的 close_at,免得同一件事有两条路。close_at / draw_at 不动(封盘之后
+// 排期已无意义),揭示时刻因此自然落在 max(draw_at, locked_at + reveal_delay)——
+// runReveal 按 draw_at 扫、revealActivity 再按 locked_at 补足间隔,两条既有判据
+// 合起来就是这个式子。
+//
+// 真正作废只允许**一转都没有**的场次(published 且 active_count=0,或 locked 且
+// roster_count=0):那时没有本金要退、没有奖已发,cancelled 只是让它从大厅收场;
+// runSettle 的 planFullRefund 对转盘直接返回,名单本来也是空的。
+// 已封盘且有转动的转盘什么都做不了 —— 它只等揭示,揭示不动钱。
+func cancelWheel(ctx context.Context, gdb *gorm.DB, act *Activity, reason string, adminId int) (map[string]any, error) {
+	now := common.GetTimestamp()
+	out := map[string]any{"act_no": act.ActNo}
+	err := gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		status, err := lockActivityStatus(tx, act.Id)
+		if err != nil {
+			return err
+		}
+		if status != StatusPublished && status != StatusLocked {
+			return errStatusConflict
+		}
+		// 锁内回读:计数与名单承诺都要用持锁之后的那一份。
+		var cur Activity
+		if err := tx.Where("id = ?", act.Id).Take(&cur).Error; err != nil {
+			return err
+		}
+		if cur.ActiveCount == 0 && cur.RosterCount == 0 {
+			res := tx.Model(&Activity{}).
+				Where("id = ? AND status = ?", act.Id, status).
+				Updates(map[string]any{
+					"status":        StatusSettling,
+					"outcome":       OutcomeCancelled,
+					"cancel_reason": audit.Truncate(reason, 255),
+					"updated_at":    now,
+				})
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected != 1 {
+				return errStatusConflict
+			}
+			hash, count, err := freezeRosterOnCancel(ctx, tx, act, now)
+			if err != nil {
+				return err
+			}
+			out["status"], out["outcome"] = StatusSettling, OutcomeCancelled
+			return writeActivityEvent(tx, act.Id, status, StatusSettling, ActionCancel,
+				qymodel.ActorAdmin, adminId, map[string]any{
+					"reason": reason, "roster_hash": hash, "roster_count": count,
+				})
+		}
+		if status != StatusPublished {
+			return errWheelNoCancel
+		}
+		locked, err := lockActivityTx(ctx, tx, &cur, now, qymodel.ActorAdmin, adminId,
+			map[string]any{"reason": reason, "early": true})
+		if err != nil {
+			return err
+		}
+		if !locked {
+			return errStatusConflict
+		}
+		out["status"], out["outcome"], out["early_locked"] = StatusLocked, OutcomeNone, true
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ─────────────────────────── 竞猜结果 ───────────────────────────
@@ -917,10 +1051,9 @@ func handleRetryPayout(c *gin.Context) {
 		return
 	}
 
-	// 回读真实终态,绝不假定是 planned。RetryPayout 有一条分支(payout.go 里
-	// "该幂等键的资金单已经是 success")只调 markPayoutPaid 就返回 —— 那一笔
-	// 的真实终态是 paid,从未回到 planned。写死 planned 会在审计表里留下一次
-	// 从未发生的状态迁移,排障时让人以为一笔已到账的钱正在排队重发。
+	// 回读真实终态,绝不假定是 planned:RetryPayout 与本 handler 之间隔着一次
+	// 扩展库往返,worker 完全可能已经把这一笔认领走了。写死 planned 会在审计表里
+	// 留下一次从未发生的状态迁移。
 	after := Payout{Status: PayoutPlanned}
 	if err := db.Get().WithContext(ctx).Where("payout_no = ?", payoutNo).Take(&after).Error; err != nil {
 		db.MarkFailure(err)
@@ -1097,10 +1230,19 @@ func handleAdminGetActivity(c *gin.Context) {
 		return
 	}
 
+	// 商品奖的商品名 / 种类 / 余量:按商品号去商城读一次,前端不必再拉整份商品表。
+	// 读失败不挡详情(那是展示层的补充),products 为空即可。
+	products, err := prizeProductBriefs(ctx, prizes)
+	if err != nil {
+		common.SysError("qianye/lottery: 读取奖档商品摘要失败: " + err.Error())
+		products = map[string]mall.ProductBrief{}
+	}
+
 	total := prizeTotalRows(prizes)
 	respondOK(c, gin.H{
 		"activity": act,
 		"prizes":   prizes,
+		"products": products,
 		"options":  options,
 		"economics": gin.H{
 			"prize_total_quota":  total,
@@ -1113,6 +1255,22 @@ func handleAdminGetActivity(c *gin.Context) {
 			"net_quota":          activityNetQuota(act, held),
 		},
 	})
+}
+
+// prizeProductBriefs 取一批奖档里商品奖引用的商品摘要(没有商品奖时不打商城)。
+func prizeProductBriefs(ctx context.Context, prizes []Prize) (map[string]mall.ProductBrief, error) {
+	nos := make([]string, 0, 2)
+	seen := make(map[string]bool, 2)
+	for _, p := range prizes {
+		if p.Type() == PrizeTypeProduct && p.ProductNo != "" && !seen[p.ProductNo] {
+			seen[p.ProductNo] = true
+			nos = append(nos, p.ProductNo)
+		}
+	}
+	if len(nos) == 0 {
+		return map[string]mall.ProductBrief{}, nil
+	}
+	return mall.ProductBriefs(ctx, nos)
 }
 
 // activityNetQuota 是「本场收支」的净值:收进来的参与费 − 发出去的奖 − 退回去的
@@ -1464,24 +1622,24 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// 免费场在 v1 明确不做:twophase 的入口强制 0 < amount ≤ MaxQuota。
-	// 这两条都是正确性约束,不是额度闸门 —— 前者是"另开一条不动钱的路径"这件事
-	// 没做,后者是全站额度换算的整数上界(common.MaxQuota)。
+	// 免费场在 v1 明确不做:stardust.Debit 的入口强制 0 < amount ≤ MaxQuota。
+	// 这两条都是正确性约束,不是运营闸门 —— 前者是"另开一条不动钱的路径"这件事
+	// 没做,后者是星屑与额度共用的算术上界(common.MaxQuota)。
 	// 上下界分开报:一句合成的"必须大于 0 且不超过系统上限"回给填了天文数字的人
 	// 是一句字面上就是假的话,而事后复盘也分不出"填了 0"与"填了 100 亿"。
 	if in.StakeQuota <= 0 {
 		return nil, nil, nil, errBadRequest("参与费必须大于 0 —— v1 没有免费场")
 	}
 	if in.StakeQuota > int64(common.MaxQuota) {
-		return nil, nil, nil, errBadRequest(quotaColumnCeilingText("参与费"))
+		return nil, nil, nil, errBadRequest(stardustCeilingText("参与费"))
 	}
-	// max_stake_quota 是**站点自选**的一道硬顶,0 = 不限(默认)。
+	// max_stake_stardust 是**站点自选**的一道硬顶,0 = 不限(默认)。
 	// 参与费是用户自己付的钱,配得离谱的后果是没人报名,不构成资损,
 	// 所以这里不再默认拦人;要拦的站点把它配成正数即可。
-	if cfg.MaxStakeQuota > 0 && in.StakeQuota > cfg.MaxStakeQuota {
+	if cfg.MaxStakeStardust > 0 && in.StakeQuota > cfg.MaxStakeStardust {
 		return nil, nil, nil, errBadRequest(fmt.Sprintf(
-			"参与费不得超过本站设置的 %s(lottery.max_stake_quota,配成 0 即不限制)",
-			quotaText(cfg.MaxStakeQuota)))
+			"参与费不得超过本站设置的 %s(lottery.max_stake_stardust,配成 0 即不限制)",
+			stardustText(cfg.MaxStakeStardust)))
 	}
 
 	rules := in.Rules.Normalize()
@@ -1547,6 +1705,13 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 	if act.MinEntriesToHold < 0 {
 		return nil, nil, nil, errBadRequest("最低成场人数不能为负")
 	}
+	// 转盘只有「开始 / 结束」两个时刻(项目方 2026-09-04:像抽卡卡池一样,结束后不能再转,
+	// 验证入口就在活动页)。draw_at 不由运营填:结束后过一个强制间隔自动揭示种子;
+	// settle_deadline 对转盘没有意义(0 已被 validateSchedule 放行)。填了 draw_at 照旧按
+	// 通用规则校验 —— 派生只补空,不改运营明确给的值。
+	if in.DrawMode == DrawModeWheel && act.DrawAt == 0 {
+		act.DrawAt = act.CloseAt + int64(cfg.RevealDelaySeconds)
+	}
 	if err := validateSchedule(act, common.GetTimestamp()); err != nil {
 		return nil, nil, nil, err
 	}
@@ -1560,6 +1725,12 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 	case KindDraw:
 		if act.DrawMode, err = normalizeDrawMode(in.DrawMode); err != nil {
 			return nil, nil, nil, err
+		}
+		// 转盘没有"人数不足流局":本金逐转当场花掉、奖当场到账,流局全退在它身上
+		// 是双付。这一格进承诺原像,所以在创建期就钉死为 0,而不是封盘时静默跳过
+		// 一个运营以为自己开着的阀。
+		if act.DrawMode == DrawModeWheel && act.MinEntriesToHold != 0 {
+			return nil, nil, nil, errBadRequest("转盘没有最低成场人数(每一转当场开奖、当场派奖,没有流局全退这一说),请填 0")
 		}
 		// 抽奖没有手续费这回事(platform_fee_quota 只由双色球的入池比例写)。
 		// 与 normalizeWinPpm 对 rank/ball 填 win_ppm 的处理同一个口径:
@@ -1606,7 +1777,7 @@ func buildActivity(ctx context.Context, in *activityInput, createdBy int) (*Acti
 	// 竞猜没有奖档,总额恒为 0,threshold 再低也不会触发:竞猜是彩池制,
 	// 平台数学上不可能倒贴(commit.go 的 SplitPool 断言 Σpay + fee == pool)。
 	if err := requireNetIssueConfirm(
-		set.LargePrizeAlertQuota, prizeTotalRows(prizes), in.ConfirmNetIssueQuota,
+		set.LargePrizeAlertStardust, prizeTotalRows(prizes), in.ConfirmNetIssueQuota,
 	); err != nil {
 		return nil, nil, nil, err
 	}
@@ -1626,8 +1797,10 @@ func normalizeDrawMode(in string) (string, error) {
 		return DrawModeProb, nil
 	case DrawModeBall:
 		return DrawModeBall, nil
+	case DrawModeWheel:
+		return DrawModeWheel, nil
 	}
-	return "", errBadRequest("定档方式只能是 rank、prob 或 ball")
+	return "", errBadRequest("定档方式只能是 rank、prob、ball 或 wheel")
 }
 
 // buildPrizes 校验奖档并生成 spec 原像的逐行。
@@ -1639,7 +1812,7 @@ func normalizeDrawMode(in string) (string, error) {
 //   - 二次确认(buildActivity 末尾的 requireNetIssueConfirm):默认那一道,
 //     不拒绝,但要求把金额回显一遍。
 //
-// Σ ≤ max_total_prize_quota 退化成"站点自选的硬顶",默认 0 = 不限。
+// Σ ≤ max_total_prize_stardust 退化成"站点自选的硬顶",默认 0 = 不限。
 // 文本奖(prize_type=text)不占用任何额度,因此它**完全不参与**
 // Σ(count × amount) 这条累加 —— amount 恒为 0。
 // 它的成本闸门是另一件事:最坏履行份数,由 worstCaseTextGrants 摆到发布按钮上面。
@@ -1654,7 +1827,24 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activ
 		entriesCap = cfg.MaxTotalEntriesHard
 	}
 
-	rows := make([]Prize, 0, len(in))
+	// 转盘:请求里若带着派生的「谢谢参与」行(管理端把详情原样回填再提交),直接
+	// 丢掉再重算 —— 它的每一个分量都是其余各档算出来的,运营没有任何可填的余地,
+	// 而"照单收下"会让一个陈旧的回显值顶掉正确的派生值。非转盘活动的 none 行
+	// 由 normalizePrizeType 拒绝。
+	if act.DrawMode == DrawModeWheel {
+		real := make([]prizeInput, 0, len(in))
+		for _, p := range in {
+			if strings.TrimSpace(p.PrizeType) != PrizeTypeNone {
+				real = append(real, p)
+			}
+		}
+		in = real
+		if len(in) == 0 {
+			return nil, nil, errBadRequest("转盘至少要有一档真实奖品")
+		}
+	}
+
+	rows := make([]Prize, 0, len(in)+1)
 	seen := make(map[int]bool, len(in))
 	var total int64
 	var ppmSum int64
@@ -1683,7 +1873,7 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activ
 				"奖品数量不得超过 %d 份(与全场参与上限同一个硬顶)", cfg.MaxTotalEntriesHard))
 		}
 
-		prizeType, textDesc, err := normalizePrizeType(p)
+		prizeType, textDesc, productNo, err := normalizePrizeType(p, act.DrawMode)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1692,22 +1882,22 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activ
 		// 因此这里必须先认出它,否则下面那条 `amount > 0` 会把
 		// 「一等奖 = 池子的 X%」这个双色球的核心玩法在结构上创建不出来。
 		//
-		// 它的支出上界不由 max_total_prize_quota 管,而由期次池封顶:
+		// 它的支出上界不由 max_total_prize_stardust 管,而由期次池封顶:
 		// checkBallPoolCovers 在发布期证明 fixed + open×Σshare/10000 ≤ open。
 		// 把一个恒为 0 的额度累加进 Σ(amount×count) 只会让那道闸门形同虚设地通过,
 		// 所以浮动奖**完全不参与**这条累加,与文本奖同一个理由。
 		floatingBallTier := act.DrawMode == DrawModeBall && p.PoolShareBps > 0
 		if prizeType == PrizeTypeQuota && !floatingBallTier {
-			// 两条都是正确性约束:额度奖发 0 或负数没有意义,而 MaxQuota 是
-			// 全站额度换算的整数上界 —— 越过它的单档在派奖那一刻会溢出。
+			// 两条都是正确性约束:星屑奖发 0 或负数没有意义,而 MaxQuota 是
+			// 星屑与额度共用的算术上界 —— 越过它的单档在派奖那一刻会被账本拒收。
 			if p.AmountQuota <= 0 {
 				return nil, nil, errBadRequest(fmt.Sprintf(
-					"奖级 %d 的单份额度必须大于 0 —— 额度奖发 0 没有意义,"+
-						"要发实物/兑换码请把奖品类型改成 text", p.Tier))
+					"奖级 %d 的单份%s必须大于 0 —— 星屑奖发 0 没有意义,"+
+						"要发实物/兑换码请把奖品类型改成 text", p.Tier, stardust.UnitName()))
 			}
 			if p.AmountQuota > int64(common.MaxQuota) {
-				return nil, nil, errBadRequest(quotaColumnCeilingText(
-					fmt.Sprintf("奖级 %d 的单份额度", p.Tier)))
+				return nil, nil, errBadRequest(stardustCeilingText(
+					fmt.Sprintf("奖级 %d 的单份%s", p.Tier, stardust.UnitName())))
 			}
 			// 算术护栏:先判单档再累加。两个各自合法的档相乘也可能把 int64 顶穿,
 			// 而一个绕回负数的总额会让下面每一道判定连同二次确认一起静默通过。
@@ -1721,14 +1911,14 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activ
 			}
 			// 站点自选的单场硬顶。0 = 不限(默认),那一档由 buildActivity 末尾的
 			// 二次确认接手 —— 一道硬拒绝拦不住手滑,只能把手滑推迟到更大的数字上。
-			if set.MaxTotalPrizeQuota > 0 && total > set.MaxTotalPrizeQuota {
-				return nil, nil, prizeCapExceeded(total, set.MaxTotalPrizeQuota)
+			if set.MaxTotalPrizeStardust > 0 && total > set.MaxTotalPrizeStardust {
+				return nil, nil, prizeCapExceeded(total, set.MaxTotalPrizeStardust)
 			}
 		}
 		if floatingBallTier && p.AmountQuota != 0 {
 			// 与 checkBallTierInput 同一条规则,在这里也说一遍:走到 applyBallSpec
 			// 之前就拒绝,报错信息才指得准是哪一档。
-			return nil, nil, errBadRequest(fmt.Sprintf("奖级 %d 是浮动奖(占池比例 > 0),额度必须为 0", p.Tier))
+			return nil, nil, errBadRequest(fmt.Sprintf("奖级 %d 是浮动奖(占池比例 > 0),单份%s必须为 0", p.Tier, stardust.UnitName()))
 		}
 
 		winPpm, err := normalizeWinPpm(act.DrawMode, p, prizeType, entriesCap)
@@ -1746,20 +1936,40 @@ func buildPrizes(in []prizeInput, cfg config.Lottery, set opSettings, act *Activ
 
 		rows = append(rows, Prize{
 			Tier: p.Tier, Name: name, AmountQuota: p.AmountQuota, Count: p.Count,
-			PrizeType: prizeType, WinPpm: winPpm, TextDesc: textDesc,
+			PrizeType: prizeType, WinPpm: winPpm, TextDesc: textDesc, ProductNo: productNo,
+			// 转盘的在线库存从发布时的 count 起算;发布事务会再整体重置一次。
+			// 非转盘活动恒为 0 —— 这一列对它们没有任何含义。
+			StockLeft: wheelStockOf(act.DrawMode, p.Count),
 		})
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Tier < rows[j].Tier })
 
-	if set.LargePrizeAlertQuota > 0 && total >= set.LargePrizeAlertQuota {
+	if act.DrawMode == DrawModeWheel {
+		// 「谢谢参与」行在末尾派生:win_ppm = PpmDen − Σ其余档,允许为 0(全中转盘)。
+		// 它进 spec 原像,于是摇号轴 [0, PpmDen) 被各档**恰好**铺满 —— Bands 的
+		// "留空区间"在结构上不可能出现,验证者不必猜"落在全部区间之外"该算什么。
+		none := Prize{
+			Tier: rows[len(rows)-1].Tier + 1, Name: wheelNoneName,
+			PrizeType: PrizeTypeNone, WinPpm: int(PpmDen - ppmSum),
+		}
+		rows = append(rows, none)
+		ppmSum += int64(none.WinPpm)
+		if ppmSum != PpmDen {
+			// 上面那条 `ppmSum > PpmDen` 的拒绝已经把这里堵死;留一道断言是因为
+			// 它守的是**协议**(转盘的摇号轴必须铺满),不是一次输入校验。
+			return nil, nil, wrapInternal("派生谢谢参与档", fmt.Errorf("各档概率之和 %d != %d", ppmSum, PpmDen))
+		}
+	}
+
+	if set.LargePrizeAlertStardust > 0 && total >= set.LargePrizeAlertStardust {
 		// 日志这一条留着,它与二次确认不重复:确认发生在请求里、只有当事人看得到,
 		// 而这一行是事后翻后端日志时"这场活动当时越过了阈值"的痕迹。
 		// 阈值判据用 >=,与 requireNetIssueConfirm 逐字同源 —— 两边一个用 >
 		// 一个用 >=,恰好等于阈值的那一场会"日志喊了但没要确认"或者反过来。
 		common.SysError(fmt.Sprintf(
-			"qianye/lottery: 正在创建奖品总额度 %s(%d)的抽奖(二次确认阈值 %s,保本参与人数 %d)—— "+
-				"抽奖派奖是对用户额度的净增发,请确认这不是多写了一个零",
-			quotaText(total), total, quotaText(set.LargePrizeAlertQuota),
+			"qianye/lottery: 正在创建奖品总额 %s(%d)的抽奖(二次确认阈值 %s,保本参与人数 %d)—— "+
+				"抽奖派奖是对用户星屑的净增发,请确认这不是多写了一个零",
+			stardustText(total), total, stardustText(set.LargePrizeAlertStardust),
 			breakEven(total, act.StakeQuota)))
 	}
 
@@ -1779,35 +1989,141 @@ func prizeSpecLineOf(algo string, r Prize) string {
 		Tier: r.Tier, Name: r.Name, PrizeType: r.Type(),
 		AmountQuota: r.AmountQuota, Count: r.Count, WinPpm: r.WinPpm, TextDesc: r.TextDesc,
 		RedMatch: r.RedMatch, BlueMatch: r.BlueMatch, PoolShareBps: r.PoolShareBps,
+		ProductNo: r.ProductNo,
 	})
 }
 
-// normalizePrizeType 校验"额度奖 / 文本奖"这条单选,并返回归一化后的两个字段。
+// normalizePrizeType 校验"星屑奖 / 文本奖 / 商品奖"这条单选,并返回归一化后的三个字段
+// (类型、文本说明、商品号)。
 //
-// 不允许一档既给额度又给文本:混合会让派奖在同一行里分叉(一条腿走跨库资金单、
-// 一条腿只落一行记录),要两者就配两档。
-func normalizePrizeType(p prizeInput) (string, string, error) {
+// prize_type 的取值仍叫 quota:它进 spec 原像,也是前端契约,改名就是一次协议
+// 版本抬升;只是它发的东西现在是星屑。
+//
+// 不允许一档既给星屑又给文本 / 商品:混合会让派奖在同一行里分叉(一条腿要入账星屑、
+// 一条腿只落一行记录或建一张商城单),要两者就配两档。
+//
+// 商品奖只允许 rank / prob / wheel:双色球的奖级由命中数与池子份额定档,一件商品
+// 既劈不开也没有"占池比例";竞猜没有奖档。商品是否存在、库存够不够在**发布期**核
+// (checkPrizeProducts):草稿期运营还在挑商品,这里只认格式。
+func normalizePrizeType(p prizeInput, drawMode string) (string, string, string, error) {
 	desc := strings.TrimSpace(p.TextDesc)
-	switch strings.TrimSpace(p.PrizeType) {
+	productNo := strings.TrimSpace(p.ProductNo)
+	prizeType := strings.TrimSpace(p.PrizeType)
+	if productNo != "" && prizeType != PrizeTypeProduct {
+		return "", "", "", errBadRequest("只有商品奖(prize_type=product)可以指定 product_no")
+	}
+	switch prizeType {
 	case "", PrizeTypeQuota:
 		if desc != "" {
-			return "", "", errBadRequest("额度奖不能填写文本说明;要发文本奖请把奖品类型改成 text")
+			return "", "", "", errBadRequest("星屑奖不能填写文本说明;要发文本奖请把奖品类型改成 text")
 		}
-		return PrizeTypeQuota, "", nil
+		return PrizeTypeQuota, "", "", nil
 	case PrizeTypeText:
 		if p.AmountQuota != 0 {
-			return "", "", errBadRequest("文本奖的额度必须为 0;要同时发额度请另配一个奖档")
+			return "", "", "", errBadRequest("文本奖的" + stardust.UnitName() + "数必须为 0;要同时发" + stardust.UnitName() + "请另配一个奖档")
 		}
 		if desc == "" || utf8.RuneCountInString(desc) > 500 {
-			return "", "", errBadRequest("文本奖必须填写履行说明,且不超过 500 个字")
+			return "", "", "", errBadRequest("文本奖必须填写履行说明,且不超过 500 个字")
 		}
 		// 履行说明同样进 spec 原像(PrizeSpecLineV2 的第 7 位)。
 		if err := rejectControlChars("文本奖履行说明", desc); err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
-		return PrizeTypeText, desc, nil
+		return PrizeTypeText, desc, "", nil
+	case PrizeTypeProduct:
+		if drawMode == DrawModeBall {
+			return "", "", "", errBadRequest("双色球的奖级不能是商品奖:一件商品既不能按池子份额劈开,也没有命中数之外的定档依据")
+		}
+		if p.AmountQuota != 0 {
+			return "", "", "", errBadRequest("商品奖的" + stardust.UnitName() + "数必须为 0;要同时发" + stardust.UnitName() + "请另配一个奖档")
+		}
+		if desc != "" {
+			return "", "", "", errBadRequest("商品奖不填履行说明:兑换 / 发货 / 发订阅的方式由商城商品决定")
+		}
+		if productNo == "" || len(productNo) > 32 {
+			return "", "", "", errBadRequest("商品奖必须指定 product_no(商城商品号)")
+		}
+		// 商品号进 spec 原像(PrizeSpecLineV2 的第 11 位)。
+		if err := rejectControlChars("商品号", productNo); err != nil {
+			return "", "", "", err
+		}
+		return PrizeTypeProduct, "", productNo, nil
+	case PrizeTypeNone:
+		// none 是转盘由服务端在末尾派生的「谢谢参与」行(buildPrizes 已把转盘请求里
+		// 回显的那一行丢掉),运营在任何玩法下都填不了它。
+		return "", "", "", errBadRequest("「谢谢参与」档由服务端按 100% − Σ各档概率自动派生,不能手填;它只存在于转盘")
 	}
-	return "", "", errBadRequest("奖品类型只能是 quota 或 text")
+	return "", "", "", errBadRequest("奖品类型只能是 quota、text 或 product")
+}
+
+// checkPrizeProducts 是商品奖的发布期闸门:每一件被引用的商品必须存在、已上架、
+// 种类合法,且此刻还能发出去的件数(兑换码 = 未用码数;实物 / 套餐 = stock − sold,
+// 不限库存除外)不少于本场引用它的 Σcount。不满足一律 400 qy_lot_prize_product_short。
+//
+// 只在发布期核而不是创建期:草稿期运营还在挑商品、运营同事还在上传码,过早拒绝只是
+// 折磨人;而发布之后不再核 —— 商品下架、库存被商城卖空都不影响已经承诺的奖档,
+// 中奖照常建单(GrantPrizeTx 不看 enabled、不设库存闸门)。
+func checkPrizeProducts(ctx context.Context, prizes []Prize) error {
+	need := make(map[string]int, 4)
+	order := make([]string, 0, 4)
+	for _, p := range prizes {
+		if p.Type() != PrizeTypeProduct {
+			continue
+		}
+		if _, seen := need[p.ProductNo]; !seen {
+			order = append(order, p.ProductNo)
+		}
+		need[p.ProductNo] += p.Count
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	briefs, err := mall.ProductBriefs(ctx, order)
+	if err != nil {
+		return err
+	}
+	for _, no := range order {
+		b, ok := briefs[no]
+		if !ok {
+			return errPrizeProductShort(fmt.Sprintf("商品 %s 不存在(可能已被删除)", no))
+		}
+		if !b.Enabled {
+			return errPrizeProductShort(fmt.Sprintf("商品「%s」(%s)未上架,请先在商城启用它", b.Title, no))
+		}
+		if b.Kind != mall.KindPlan && b.Kind != mall.KindCode && b.Kind != mall.KindPhysical {
+			return errPrizeProductShort(fmt.Sprintf("商品「%s」(%s)的种类 %q 不能作为奖品", b.Title, no, b.Kind))
+		}
+		if b.Remaining != mall.StockUnlimited && b.Remaining < int64(need[no]) {
+			what := "库存"
+			if b.Kind == mall.KindCode {
+				what = "未用兑换码"
+			}
+			return errPrizeProductShort(fmt.Sprintf("商品「%s」(%s)的%s只剩 %d 件,少于本场奖档合计的 %d 份",
+				b.Title, no, what, b.Remaining, need[no]))
+		}
+	}
+	return nil
+}
+
+// productReferenced 回答"这件商品还挂在哪场进行中的活动的奖档上"。由 InstallHooks 赋给
+// mall.ProductReferenced,商城删商品那条路据此拒绝。只看 published / locked / settling:
+// 草稿在发布期会被 checkPrizeProducts 拦下,finished 的活动已经不会再建单。
+func productReferenced(ctx context.Context, productNo string) (bool, error) {
+	gdb := db.Get()
+	if gdb == nil {
+		return false, db.ErrNotReady
+	}
+	var n int64
+	err := gdb.WithContext(ctx).Model(&Prize{}).
+		Joins("JOIN qy_lot_activity ON qy_lot_activity.id = qy_lot_prize.act_id").
+		Where("qy_lot_prize.product_no = ? AND qy_lot_activity.status IN ?", productNo,
+			[]string{StatusPublished, StatusLocked, StatusSettling}).
+		Count(&n).Error
+	if err != nil {
+		db.MarkFailure(err)
+		return false, wrapInternal("检查商品引用", err)
+	}
+	return n > 0, nil
 }
 
 // normalizeWinPpm 校验中奖概率,并把"哪种模式允许填它"这条规则钉死在一处。
@@ -1822,12 +2138,18 @@ func normalizeWinPpm(drawMode string, p prizeInput, prizeType string, entriesCap
 		// rank 按名次切片、ball 按号码匹配定档,两者都不读 win_ppm。
 		// 填了却不生效是最坏的一种界面谎言,所以直接拒绝而不是静默忽略。
 		if p.WinPpm != 0 {
-			return 0, errBadRequest("只有概率制(draw_mode=prob)的奖档才能设置中奖概率")
+			return 0, errBadRequest("只有概率制(draw_mode=prob)与转盘(draw_mode=wheel)的奖档才能设置中奖概率")
 		}
 		return 0, nil
 	}
 	if p.WinPpm <= 0 || p.WinPpm > PpmDen {
-		return 0, errBadRequest("概率制下每一档的中奖概率必须落在 (0, 1000000] ppm")
+		return 0, errBadRequest("概率制与转盘下每一档的中奖概率必须落在 (0, 1000000] ppm")
+	}
+	if drawMode == DrawModeWheel {
+		// 转盘是硬库存:每人拿定额、发完即止,永远不摊薄,prob 那条
+		// "count × amount ≥ entriesCap" 的均分规则对它没有意义。count ≥ 1 与
+		// quota 档 amount ≥ 1 已由 buildPrizes 的循环钉住,这里只认概率。
+		return p.WinPpm, nil
 	}
 	// count 已被 MaxTotalEntriesHard 夹住、amount 已被 MaxQuota(int32)夹住,
 	// 乘积最多在 1e14 量级,int64 上不会溢出。
@@ -1918,16 +2240,16 @@ func applyBetBounds(act *Activity, in *activityInput, cfg config.Lottery) error 
 	// int32 这一条是**新补的**,而且不是洁癖:acceptAmount 无条件拒绝
 	// amount > MaxQuota,所以一个填在它之上的单注上限是一句界面谎言 ——
 	// 页面上写着"单注最高 100 亿",实际到 21 亿就报"投注金额不符合本场规则",
-	// 而那句话不会告诉用户真正的上界是多少。max_stake_quota 放开(0 = 不限)
+	// 而那句话不会告诉用户真正的上界是多少。max_stake_stardust 放开(0 = 不限)
 	// 之后,原先顺带兜住这件事的那道闸门没有了,必须自己说清。
 	if maxQ > int64(common.MaxQuota) {
-		return errBadRequest(quotaColumnCeilingText("单注上限"))
+		return errBadRequest(stardustCeilingText("单注上限"))
 	}
 	// 站点自选的硬顶,0 = 不限(默认)。
-	if maxQ > 0 && cfg.MaxStakeQuota > 0 && maxQ > cfg.MaxStakeQuota {
+	if maxQ > 0 && cfg.MaxStakeStardust > 0 && maxQ > cfg.MaxStakeStardust {
 		return errBadRequest(fmt.Sprintf(
-			"单注上限不得超过本站设置的 %s(lottery.max_stake_quota,配成 0 即不限制)",
-			quotaText(cfg.MaxStakeQuota)))
+			"单注上限不得超过本站设置的 %s(lottery.max_stake_stardust,配成 0 即不限制)",
+			stardustText(cfg.MaxStakeStardust)))
 	}
 	if maxQ > 0 && minQ > maxQ {
 		return errBadRequest("单注下限不得大于上限")
@@ -2120,6 +2442,10 @@ func writeResultOf(act *Activity, prizes []Prize) activityWriteResult {
 		WorstCaseNetIssue: total,
 		ExpectPayoutQuota: total,
 	}
+	// rank 一定发满;wheel 是硬库存,最坏就是每一档都发完 —— 两者的期望与上界
+	// 都是 Σcount(转盘派生的 none 行 count 恒 0,不计)。文本奖的最坏履行份数
+	// 同理只数 text 真实档的 count;商品奖不数 —— 它的履行走商城(发码自动、发货 /
+	// 发订阅各有自己的队列),不占这条"要人工填码"的口径。
 	if act.DrawMode != DrawModeProb {
 		for _, p := range prizes {
 			out.ExpectWinners += int64(p.Count)

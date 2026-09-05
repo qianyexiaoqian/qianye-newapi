@@ -712,6 +712,7 @@ func (user *User) finishInsert(inviterId int) {
 			_ = inviteUser(inviterId)
 		}
 	}
+	QyOnUserRegistered(user.Id, inviterId)
 }
 
 func (user *User) FinishInsert(inviterId int) {
@@ -768,6 +769,7 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 			_ = inviteUser(inviterId)
 		}
 	}
+	QyOnUserRegistered(user.Id, inviterId)
 }
 
 func (user *User) Update(updatePassword bool) error {

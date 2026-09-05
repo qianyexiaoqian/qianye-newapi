@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""抽奖/竞猜公正性离线验证脚本(协议 lot-v1 / lot-v2)。
+"""抽奖/竞猜/转盘公正性离线验证脚本(协议 lot-v1 / lot-v2)。
 
 用法:
     curl 'https://<站点>/api/qy/lottery/public/<act_no>/proof?format=ndjson' > proof.ndjson
@@ -29,6 +29,11 @@
   4. 中奖名单可复算 —— 用公开的种子重跑一遍,结果必须一模一样
   5. **概率制下"我为什么没中"同样可复算** —— 落选者与中奖者用的是同一组公开
      输入、走的是同一段代码,平台无法制造一个只有失败者看不到的暗门
+  6. **转盘(draw_mode=wheel)的每一转可逐转复算** —— 票面 = HMAC(seed, act_no ‖ seq ‖
+     client_seed),按公示奖档(含派生的「谢谢参与」档)落档,再按 seq 顺序重放各档
+     库存递减;seq 必须从 1 起连续无缺口,否则服务端可跳号挑结果。转盘的
+     open_at / close_at / draw_at **不进承诺**(票面里没有时刻,排期只是收转的
+     上下架时间,运营可在发布后改),复算承诺时跳过这三个分量
 
 它**不能**证明什么(诚实说明,不粉饰):
   - 竞猜的 win_opt_no 是不是符合外部事实。那是链下事实,任何密码学都证不了
@@ -49,6 +54,10 @@
   - 一场被取消/流局的抽奖里"管理员是不是看了结果才决定不开"。种子在取消后
     同样公开,所以本脚本会把**本应中奖的名单**算出来打印给你 —— 那是判断
     这件事的唯一材料,但判断本身要人来做。
+  - **转盘里"内部人不可能中奖"**。转盘是即时开奖,票面不混名单哈希,能读到种子
+    的人可以对自己的下一转离线挑 client_seed;并发转动时谁拿到 seq N 与 N+1 由
+    服务端串行化决定,理论上有一次二选一的重排空间。本脚本能证的只有"服务端
+    确实按公示公式算了每一转、库存耗尽落空是真的"。
 """
 
 import hashlib
@@ -111,9 +120,10 @@ def spec_lines_v1(kind, spec):
 def spec_lines_v2(kind, spec):
     """lot-v2 的奖档/选项逐行编码。
 
-    奖档行多出六个分量:奖品类型、中奖概率、公开的文本说明,以及双色球的
-    两个命中门槛与占池比例。**非双色球活动这些位恒为 0,但仍然占一个分量位**
-    —— 少一个占位就等于允许管理员把一场普通抽奖悄悄改成双色球。
+    奖档行多出七个分量:奖品类型、中奖概率、公开的文本说明,双色球的
+    两个命中门槛与占池比例,以及商品奖引用的商城商品号。**非双色球活动那三位
+    恒为 0、非商品奖的商品号恒为空串,但仍然占一个分量位** —— 少一个占位就等于
+    允许管理员把一场普通抽奖悄悄改成双色球、或把一档商品奖悄悄换成另一件商品。
 
     竞猜的选项行在 v2 里没有变化(只有域前缀不同)。
     """
@@ -124,6 +134,7 @@ def spec_lines_v2(kind, spec):
             d(g(s, "amount_quota")), d(g(s, "count")), d(g(s, "win_ppm")),
             g(s, "text_desc", ""),
             d(g(s, "red_match")), d(g(s, "blue_match")), d(g(s, "pool_share_bps")),
+            g(s, "product_no", ""),
         ]) for s in rows]
     rows = sorted(spec, key=lambda s: g(s, "opt_no"))
     return [SEP.join([d(g(s, "opt_no")), g(s, "label", ""),
@@ -138,22 +149,37 @@ def commit_hash_v1(p, seed):
 
 
 def commit_hash_v2(p, seed):
-    """lot-v2 的承诺原像:v1 的全部分量 + 定档方式 + 整段期次快照。"""
-    return H("qylot-commit-v2", p["act_no"], p["kind"], p["algo"], p["rules_hash"],
-             p["spec_hash"], d(p["stake_quota"]), d(p["open_at"]), d(p["close_at"]),
-             d(p["draw_at"]), d(p["settle_deadline"]), b(p["allow_multi_win"]),
-             d(p["fee_bps"]), p["no_winner_policy"], d(p["min_entries_to_hold"]),
-             g(p, "draw_mode", ""), g(p, "series_no", ""), d(g(p, "issue_no")),
-             d(g(p, "pool_seed_quota")), d(g(p, "pool_carry_quota")),
-             d(g(p, "pool_open_quota")), d(g(p, "pool_share_bps")),
-             d(g(p, "ball_red_pool")), d(g(p, "ball_red_pick")),
-             d(g(p, "ball_blue_pool")), d(g(p, "ball_blue_pick")), seed)
+    """lot-v2 的承诺原像:v1 的全部分量 + 定档方式 + 整段期次快照。
+
+    转盘(draw_mode=wheel)**整段省略** open_at / close_at / draw_at 三个分量(不是填
+    空串,分量数直接少三个)。转盘的票面 = HMAC(seed, act_no ‖ seq ‖ client_seed),
+    里面没有时刻;排期只决定"什么时候收转",像抽卡卡池的上下架时间,运营可以在
+    发布后延期、提前收转、立即开始(改动写在事件流的 schedule_changed 里)。把它们
+    钉进承诺换不来任何公平性。draw_mode 分量在前,两种原像形状不可能互相重放。
+    """
+    mode = g(p, "draw_mode", "")
+    parts = ["qylot-commit-v2", p["act_no"], p["kind"], p["algo"], p["rules_hash"],
+             p["spec_hash"], d(p["stake_quota"])]
+    if mode != "wheel":
+        parts += [d(p["open_at"]), d(p["close_at"]), d(p["draw_at"])]
+    parts += [d(p["settle_deadline"]), b(p["allow_multi_win"]),
+              d(p["fee_bps"]), p["no_winner_policy"], d(p["min_entries_to_hold"]),
+              mode, g(p, "series_no", ""), d(g(p, "issue_no")),
+              d(g(p, "pool_seed_quota")), d(g(p, "pool_carry_quota")),
+              d(g(p, "pool_open_quota")), d(g(p, "pool_share_bps")),
+              d(g(p, "ball_red_pool")), d(g(p, "ball_red_pick")),
+              d(g(p, "ball_blue_pool")), d(g(p, "ball_blue_pick")), seed]
+    return H(*parts)
 
 
-def chain_next(algo, prev, p, e):
+def chain_next(algo, prev, p, e, pick=None):
+    """推进一环。pick 缺省取条目自己的选号;转盘传 wheel_pick(spin)——
+    那一转的结果就编码在 lot-v2 链原像的 pick 分量里。"""
+    if pick is None:
+        pick = g(e, "pick", "")
     if algo == "lot-v2":
         return H("qylot-chain-v2", prev, p["act_no"], d(e["seq"]), e["entry_no"],
-                 e["user_ref"], d(g(e, "opt_no")), d(g(e, "amount")), g(e, "pick", ""))
+                 e["user_ref"], d(g(e, "opt_no")), d(g(e, "amount")), pick)
     return H("qylot-chain-v1", prev, p["act_no"], d(e["seq"]), e["entry_no"],
              e["user_ref"], d(g(e, "opt_no")), d(g(e, "amount")))
 
@@ -228,9 +254,9 @@ def prize_shares(band, w):
     是 win_ppm × min(1, count/W),依赖当期人数 —— 卡片上公示的"中奖概率 1%"
     在超募时就是假的。均分制下 P(命中) 严格等于公示值,浮动的是金额。
 
-    文本奖不摊薄(兑换码劈不开),全部命中者都中,金额恒为 0。
+    文本奖与商品奖不摊薄(兑换码 / 一件商品劈不开),全部命中者都中,金额恒为 0。
     """
-    if band["prize_type"] == "text":
+    if band["prize_type"] in ("text", "product"):
         return [0] * w
     if w <= band["count"]:
         return [band["amount"]] * w
@@ -391,6 +417,77 @@ def ball_winners(p, R):
     return expect, None, reds, blues
 
 
+# ─────────────────────────── 转盘(draw_mode=wheel)───────────────────────────
+#
+# 转盘是**即时开奖**:每一转在服务端当场摇号、当场扣库存、当场派奖。票面不混
+# 名单哈希(即时开奖没有名单可冻结),密钥就是种子本身,原像里没有 user_ref、
+# 也没有任何服务端当场生成的量 —— 后者一旦进原像,服务端就能"多摇几次挑一个"。
+# seq 在活动行锁内单调、连续无缺口,验证者必须显式检查这一点。
+
+def wheel_ticket(seed, act_no, seq, client_seed):
+    return hmac.new(bytes.fromhex(seed),
+                    SEP.join(["qylot-wheel-v2", act_no, d(seq), client_seed]).encode("utf-8"),
+                    hashlib.sha256).hexdigest()
+
+
+def wheel_pick(s):
+    """一转的结果在 lot-v2 链原像 pick 分量里的编码:w|tier|ppm|exhausted_tier|client_seed。
+    client_seed 的字符集不含 "|",编码因此是单射的;四个量少一个进链,平台就能
+    事后把某一转改成另一档而链照常通过。"""
+    return "|".join(["w", d(g(s, "tier")), d(g(s, "ppm")), d(g(s, "exhausted_tier")),
+                     g(s, "client_seed", "")])
+
+
+def wheel_spins_by_seq(p):
+    """转动记录按 seq 索引。JSON 版来自文档级 spins,NDJSON 版由 load() 从条目行重建。"""
+    return {int(s["seq"]): s for s in (p.get("spins") or [])}
+
+
+def wheel_replay(p, entries, spins, upto=None):
+    """按 seq 顺序逐转复算并重放库存。
+
+    返回 (mismatches, stock, err):mismatches 是"平台公布的与我算出来的对不上"
+    的那些转;stock 是重放到最后(或 upto 那一转之前)各真实档剩余;err 是
+    结构性错误(奖档表不合法、缺转动记录)。
+
+    落到 none 档不动库存;落到真实档而库存已为 0 → 结果落空、记 exhausted_tier。
+    这两条与生产实现逐字同一口径,验证的正是"库存耗尽落空是真的"。
+    """
+    bands, err = bands_of(p["spec"])
+    if err is not None:
+        return None, None, "奖档表不合法:%s" % err
+    if not bands or bands[-1]["hi"] != PPM_DEN:
+        return None, None, "转盘的各档概率之和必须恰好铺满 100%%(当前 %d ppm)" % (
+            bands[-1]["hi"] if bands else 0)
+    seed = p.get("seed", "")
+    stock = {b["tier"]: b["count"] for b in bands if b["prize_type"] != "none"}
+    mismatches = []
+    for e in sorted(entries, key=lambda e: e["seq"]):
+        seq = int(e["seq"])
+        if upto is not None and seq >= upto:
+            break
+        s = spins.get(seq)
+        if s is None:
+            return None, None, "第 %d 转缺少转动记录(spins 里没有这一 seq)" % seq
+        r = roll_ppm(wheel_ticket(seed, p["act_no"], seq, g(s, "client_seed", "")))
+        band = next((b for b in bands if b["lo"] <= r < b["hi"]), None)
+        if band is None:
+            return None, None, "第 %d 转的摇号量 %d 落在全部区间之外" % (seq, r)
+        if band["prize_type"] == "none":
+            tier, ex = 0, 0
+        elif stock[band["tier"]] > 0:
+            stock[band["tier"]] -= 1
+            tier, ex = band["tier"], 0
+        else:
+            tier, ex = 0, band["tier"]
+        got = (int(g(s, "ppm")), int(g(s, "tier")), int(g(s, "exhausted_tier")))
+        if (r, tier, ex) != got:
+            mismatches.append((seq, (r, tier, ex), got))
+        if s.get("user_ref") != e["user_ref"] or s.get("chain") != e["chain_hash"]:
+            mismatches.append((seq, "user_ref/chain 与条目对不上", (s.get("user_ref"), s.get("chain"))))
+    return mismatches, stock, None
+
+
 def rank_winners(p, R, allow_multi_win, tick):
     """名次制(draw_mode=rank,也是 lot-v1 的唯一玩法)的复算。"""
     ranked = sorted(R, key=lambda e: (tick[e["entry_no"]], e["entry_no"]))
@@ -473,6 +570,11 @@ def load(path):
         if bad:
             raise SystemExit("下载在中途出错(%s),这一份不完整,请重新下载" % bad[0]["error"])
         doc["entries"] = entries
+        # 转盘:NDJSON 里每一转随条目行一起流下来(entry.spin),这里重建成
+        # 与 JSON 版同形的 spins 数组,后面的代码只认一种形状。
+        spins = [e["spin"] for e in entries if isinstance(e.get("spin"), dict)]
+        if spins:
+            doc["spins"] = spins
         return doc
 
     doc = json.loads(text)
@@ -515,14 +617,16 @@ def explain(p, entry_no):
         return 1
     me = mine[0]
 
-    final = H("qylot-final-v1", p["act_no"], seed, p["roster_hash"],
-              d(p["roster_count"]), algo)
-    tick = ticket(final, p["act_no"], me["entry_no"])
-    print("票号 %s" % entry_no)
-    print("  final_seed = %s" % final)
-    print("  票面       = %s" % tick)
-
     mode = g(p, "draw_mode", "") or "rank"
+    print("票号 %s" % entry_no)
+    if mode != "wheel":
+        # 转盘没有 final_seed:它的票面直接由种子推出(见 wheel_ticket)。
+        final = H("qylot-final-v1", p["act_no"], seed, p["roster_hash"],
+                  d(p["roster_count"]), algo)
+        tick = ticket(final, p["act_no"], me["entry_no"])
+        print("  final_seed = %s" % final)
+        print("  票面       = %s" % tick)
+
     if p["kind"] != "draw":
         print("  这是竞猜,不抽签:你押的是 %s 号选项,本场结果是 %s 号。"
               % (g(me, "opt_no"), p.get("win_opt_no")))
@@ -570,6 +674,49 @@ def explain(p, entry_no):
         print("  结论:%s" % ("未达最低奖级,没中" if tier == 0 else "你中了第 %d 档" % tier))
         print("  注意开奖号只依赖 final_seed 与号池大小 —— 它在你下注之前就已经"
               "被种子决定了,只是当时谁都算不出来(名单还没冻结)。")
+        return 0
+
+    if mode == "wheel":
+        spins = wheel_spins_by_seq(p)
+        s = spins.get(int(me["seq"]))
+        if s is None:
+            print("  这一转没有转动记录(spins 里没有 seq %s)。" % me["seq"])
+            return 1
+        tick = wheel_ticket(seed, p["act_no"], int(me["seq"]), g(s, "client_seed", ""))
+        r = roll_ppm(tick)
+        bands, err = bands_of(p["spec"])
+        if err is not None:
+            print("  奖档表本身不合法(%s),这一场根本不该被开出去。" % err)
+            return 1
+        _, stock_before, err = wheel_replay(p, entries, spins, upto=int(me["seq"]))
+        if err is not None:
+            print("  重放到这一转之前时出错:%s" % err)
+            return 1
+        print("  转盘票面   = HMAC(seed, act_no ‖ seq=%s ‖ client_seed=%r) = %s"
+              % (me["seq"], g(s, "client_seed", ""), tick))
+        print("  摇号结果 r = %d(取值范围 0 ~ 999999)" % r)
+        print("  本场各档的摇号区间(以及转到这一转之前各档还剩几份):")
+        hit = None
+        for band in bands:
+            mark = " "
+            if band["lo"] <= r < band["hi"]:
+                mark, hit = "*", band
+            left = "" if band["prize_type"] == "none" else "  剩余 %d / %d" % (
+                stock_before[band["tier"]], band["count"])
+            print("   %s 第 %d 档 %-5s [%d, %d)  概率 %.4f%%%s"
+                  % (mark, band["tier"], band["prize_type"], band["lo"], band["hi"],
+                     (band["hi"] - band["lo"]) * 100.0 / PPM_DEN, left))
+        if hit is None or hit["prize_type"] == "none":
+            print("  结论:落在「谢谢参与」档 —— 这就是你没中的全部原因。")
+        elif stock_before[hit["tier"]] > 0:
+            print("  结论:摇中第 %d 档,且当时还有库存,你中了这一档。" % hit["tier"])
+        else:
+            print("  结论:摇中第 %d 档,但轮到你时它已经发完(exhausted_tier=%d),结果落空。"
+                  % (hit["tier"], hit["tier"]))
+        print("  平台公布:ppm=%s tier=%s exhausted_tier=%s"
+              % (g(s, "ppm"), g(s, "tier"), g(s, "exhausted_tier")))
+        print("  注意这个结论只依赖 seed、act_no、seq 与你自己填的 client_seed,"
+              "以及此前每一转按同一规则重放出来的库存。")
         return 0
 
     if mode == "rank":
@@ -633,7 +780,7 @@ def main(path, explain_entry=None):
         return 2
 
     mode = g(p, "draw_mode", "") or ("rank" if p["kind"] == "draw" else "")
-    if p["kind"] == "draw" and mode not in ("rank", "prob", "ball"):
+    if p["kind"] == "draw" and mode not in ("rank", "prob", "ball", "wheel"):
         print("  定档方式 %s 的复算分支尚未合入本脚本。" % mode)
         print("  **不给结论** —— 一个验不了的绿勾比没有绿勾糟糕得多。")
         return 2
@@ -650,6 +797,7 @@ def main(path, explain_entry=None):
             "rank": "名次制(按票面排序抽前 N 位)",
             "prob": "概率制(每张票各摇一次,按公示概率定档)",
             "ball": "双色球(全场共摇一次,按红蓝命中数定档)",
+            "wheel": "转盘(即时开奖:每一转 HMAC(seed, act_no ‖ seq ‖ client_seed) 落档,按序重放库存)",
         }[mode])
 
     print("\n1. 承诺:种子/条件/奖档/概率/时刻/开关一个都不能改")
@@ -664,6 +812,14 @@ def main(path, explain_entry=None):
     if mode == "prob":
         _, err = bands_of(p["spec"])
         failures += not check(err is None, "各档概率之和不超过 100%", err or "")
+    if mode == "wheel":
+        bands, err = bands_of(p["spec"])
+        failures += not check(err is None, "各档概率之和不超过 100%", err or "")
+        failures += not check(err is None and bands and bands[-1]["hi"] == PPM_DEN,
+                              "转盘各档概率(含「谢谢参与」)恰好铺满 100%",
+                              "%s ppm" % (bands[-1]["hi"] if bands else 0))
+        failures += not check(any(g(s, "prize_type", "") == "none" for s in p["spec"]),
+                              "奖档表含服务端派生的「谢谢参与」(none)行")
 
     seed = p.get("seed", "")
     if not seed:
@@ -685,13 +841,21 @@ def main(path, explain_entry=None):
         return 2
 
     print("\n2. 哈希链:没有条目被插入、删除或改动(含失败条目)")
+    spins = wheel_spins_by_seq(p) if mode == "wheel" else {}
     chain, expect_seq, broken = p["commit_hash"], 1, None
     for e in entries:
         if e["seq"] != expect_seq:
             broken = "序号在 %d 处断开(应为 %d)" % (e["seq"], expect_seq); break
         if e["prev_hash"] != chain:
             broken = "第 %d 条的 prev_hash 对不上" % e["seq"]; break
-        chain = chain_next(algo, chain, p, e)
+        pick = None
+        if mode == "wheel":
+            # 转盘的链环带着那一转的结果(WheelPick 编码):缺一条转动记录就推不动链。
+            s = spins.get(int(e["seq"]))
+            if s is None:
+                broken = "第 %d 转缺少转动记录,链推不动" % e["seq"]; break
+            pick = wheel_pick(s)
+        chain = chain_next(algo, chain, p, e, pick)
         if chain != e["chain_hash"]:
             broken = "第 %d 条的 chain_hash 对不上" % e["seq"]; break
         expect_seq += 1
@@ -722,6 +886,38 @@ def main(path, explain_entry=None):
         # 或者更糟——一个碰巧相同的 [OK],让人以为只有名单那一项有问题。
         print("\n名单与已公开的快照对不上,后面的复算没有意义,到此为止。")
         return 1
+
+    if mode == "wheel":
+        # 转盘没有 final_seed:每一转的票面直接由种子、活动号、序号与 client_seed 推出。
+        # 名单哈希对转盘只是"这些转动确实发生过"的公开承诺,不进随机源。
+        print("\n4. 逐转复算:ppm = RollPpm(HMAC(seed, act_no ‖ seq ‖ client_seed)),按公示奖档落档")
+        mismatches, stock, err = wheel_replay(p, entries, spins, None)
+        failures += not check(err is None, "转动记录完整(每一转都有 spin,seq 连续)", err or "")
+        if err is None:
+            failures += not check(len(spins) == len(entries), "转动记录条数 = 条目数",
+                                  "%d vs %d" % (len(spins), len(entries)))
+            failures += not check(not mismatches, "每一转的摇号量 / 落档 / 耗尽档与公布一致",
+                                  str(mismatches[:5]))
+            print("\n5. 库存重放:按 seq 顺序递减,摇中已发完的档落空")
+            tiers = {int(g(t, "tier")): t for t in (p.get("tiers") or [])}
+            for tier in sorted(stock):
+                left = stock[tier]
+                pub = tiers.get(tier)
+                if pub is not None and "stock_left" in pub:
+                    failures += not check(int(pub["stock_left"]) == left,
+                                          "第 %d 档重放后剩余 %d = 公布的 stock_left" % (tier, left),
+                                          str(pub["stock_left"]))
+                else:
+                    print("   第 %d 档重放后剩余 %d(文档未公布 stock_left,无法比对)" % (tier, left))
+            # 已到账的派奖必须与复算出的中奖转一一对应:多一笔就是凭空发钱,少一笔就是没发。
+            paid = sorted(x["entry_no"] for x in p.get("payouts", [])
+                          if x.get("kind") in ("prize", "text", "product") and x.get("status") in ("paid", "granted"))
+            won = sorted(e["entry_no"] for e in entries if int(g(spins.get(int(e["seq"]), {}), "tier")) > 0)
+            failures += not check(paid == won, "已派奖的转 = 复算中奖的转(%d 笔)" % len(won),
+                                  "paid=%s won=%s" % (paid[:5], won[:5]))
+            print("   想看某一转为什么没中:python3 %s %s --explain <entry_no>" % (sys.argv[0], path))
+        print("\n结论:" + ("全部通过。" if failures == 0 else "有 %d 项对不上,请保留这份 proof。" % failures))
+        return 1 if failures else 0
 
     final = H("qylot-final-v1", p["act_no"], seed, p["roster_hash"], d(p["roster_count"]), algo)
     print("\n4. 最终随机源 final_seed = %s" % final)
@@ -782,6 +978,11 @@ def main(path, explain_entry=None):
                 unfulfilled = [w for w in texts if not w.get("fulfilled")]
                 if unfulfilled:
                     print("   其中 %d 位尚未被标记履行。" % len(unfulfilled))
+            products = [w for w in p["winners"] if w.get("prize_type") == "product"]
+            if products:
+                print("   本场有 %d 位中的是商城商品(套餐 / 兑换码 / 实物)。" % len(products))
+                print("   可验证的是:这一档引用的商品号(product_no)与份数在发布时已进承诺、事后没被换。")
+                print("   **不可验证的是**:商品本身的内容与履行进度 —— 它们在商城订单上,不进证据链。")
     else:
         print("\n5. 重算奖池分配")
         pool = sum(e["amount"] for e in R)

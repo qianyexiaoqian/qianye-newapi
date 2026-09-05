@@ -2,45 +2,43 @@ package commission
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// 「读不到上线」有两种形状:主库报错,和主库里根本没有这一行。
+// pricing_missing_inviter_test.go —— "主库里没有这个上线"必须是一次**降级**,
+// 而不是"这个人在 default 组"。
 //
-// 后者才是生产上最常见的那一种(推广人被删/被软删),而它原先走的是
-// err == nil + 零值 entry 那一支:Group 是空串,billingGroup 把空串折成
-// "default",于是这笔佣金被当成"上线就在 default 分组"定价并**冻结进账本**。
-// 表现有三条,每一条都很贵:
+// 上线被删(或被软删后被 deleted_at 作用域过滤掉)时,invite.UserGroupOf 回的是
+// missing=true、err=nil。这一支若被当成正常解析,分组字符串是空串,会被
+// billingGroup 折成 "default":
 //
-//  1. 账本上"读不到上线"与"上线在 default 组"不可区分,事后认不出这批行;
-//  2. 站点只要给 default 配过分组费率(很常见),这批佣金按 default 档发,
-//     而不是设计声明的全局兜底档 —— 实测 5% 变成 33%;
+//  1. 一个已经不存在的推广人名下仍在按 default 组的分组档冻结费率;
+//  2. 运营给 default 配了一档时,那一档而不是全局兜底档会被当成事实写进账本;
 //  3. inviter_group 降级计数器恒不响,没有任何信号。
-//
-// 判据落在 inviterEntry.Missing 上:它的零值是 false = "查到了",所以任何
-// 忘了设置它的新路径退化成旧行为,而不是把全站佣金推进降级分支。
 func TestMissingInviterIsADegradeNotADefaultGroup(t *testing.T) {
-	t.Run("查不到的上线必须带 Missing 标记", func(t *testing.T) {
-		var e inviterEntry
-		assert.False(t, e.Missing, "零值必须是「查到了」,否则忘写的新路径会把佣金整片推进降级")
+	t.Run("查不到的上线走降级:rate_group 必须留空,绝不能是 default", func(t *testing.T) {
+		s := opSettings{ConsumeRateUnits: 500}
+		d := pricingFromInviterGroup(context.Background(), "", true, nil, SourceConsume, s)
+		require.Equal(t, "", d.Group,
+			"读不到上线时 rate_group 必须是空串(降级痕迹);写成 default 就与「上线真的在 default 组」不可区分")
+		assert.False(t, d.Matched, "降级行不允许命中任何分组规则")
+		assert.Equal(t, 500, d.Units, "降级按全局默认档算,不是 0")
 	})
 
-	t.Run("Missing 的条目走降级:rate_group 必须留空,绝不能是 default", func(t *testing.T) {
-		s := opSettings{}
-		d := pricingFromInviterEntry(context.Background(), inviterEntry{Missing: true}, nil, SourceConsume, s)
-		require.Equal(t, "", d.Rate.Group,
-			"读不到上线时 rate_group 必须是空串(降级痕迹);写成 default 就与「上线真的在 default 组」不可区分")
-		assert.False(t, d.Rate.Matched, "降级行不允许命中任何分组规则")
-		assert.Equal(t, "", d.Fiat.Group, "法币比例必须与费率跳过同一层")
+	t.Run("主库报错同样走降级", func(t *testing.T) {
+		s := opSettings{TopupRateUnits: 1000}
+		d := pricingFromInviterGroup(context.Background(), "", false, errors.New("boom"), SourceTopup, s)
+		assert.Equal(t, "", d.Group)
+		assert.Equal(t, 1000, d.Units)
 	})
 
 	t.Run("查得到的上线照常按他自己的分组定价", func(t *testing.T) {
 		s := opSettings{}
-		d := pricingFromInviterEntry(context.Background(), inviterEntry{Group: "vip"}, nil, SourceConsume, s)
-		assert.Equal(t, "vip", d.Rate.Group)
-		assert.Equal(t, "vip", d.Fiat.Group)
+		d := pricingFromInviterGroup(context.Background(), "vip", false, nil, SourceConsume, s)
+		assert.Equal(t, "vip", d.Group)
 	})
 }

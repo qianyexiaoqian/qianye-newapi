@@ -45,6 +45,18 @@ var (
 		"地址名称过长", http.StatusBadRequest)
 	errRemarkTooLong = newBizError("qy_apiaddr_remark_too_long",
 		"备注过长", http.StatusBadRequest)
+	errGroupTooLong = newBizError("qy_apiaddr_group_too_long",
+		"分组名过长", http.StatusBadRequest)
+	errGroupInvalid = newBizError("qy_apiaddr_group_invalid",
+		"分组名不能包含空格或分号", http.StatusBadRequest)
+	errGroupsTooMany = newBizError("qy_apiaddr_groups_too_many",
+		"适用分组数量超出上限", http.StatusBadRequest)
+	errGroupsTooLong = newBizError("qy_apiaddr_groups_too_long",
+		"适用分组总长度超出上限", http.StatusBadRequest)
+	errColorInvalid = newBizError("qy_apiaddr_color_invalid",
+		"颜色取值不在调色板里", http.StatusBadRequest)
+	errSurfaceInvalid = newBizError("qy_apiaddr_surface_invalid",
+		"展示位置取值不合法", http.StatusBadRequest)
 	errURLRequired = newBizError("qy_apiaddr_url_required",
 		"请填写 API 地址", http.StatusBadRequest)
 	errURLTooLong = newBizError("qy_apiaddr_url_too_long",

@@ -21,11 +21,11 @@ import type { TFunction } from 'i18next'
 import type { ContentSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 import { AnnouncementsSection } from './announcements-section'
-import { ApiInfoSection } from './api-info-section'
 import { ChatSettingsSection } from './chat-settings-section'
 import { DashboardSection } from './dashboard-section'
 import { DrawingSettingsSection } from './drawing-settings-section'
 import { FAQSection } from './faq-section'
+import { QyApiInfoMovedSection } from './qy-api-info-moved'
 import { QyRestrictedNoticeMovedSection } from './qy-restricted-notice-moved'
 import { UptimeKumaSection } from './uptime-kuma-section'
 
@@ -83,14 +83,17 @@ const CONTENT_SECTIONS = [
     build: () => <QyRestrictedNoticeMovedSection />,
   },
   {
+    /*
+      「API信息」整块表单并入了 qy「API 地址」（`/qy/admin/api-address`）：
+      站内一度有两张 API 地址表，只有地址簿那张认得用户分组，控制台卡片
+      （`api-info-panel.tsx`）已改读地址簿。这里保留的是一块**路牌**
+      （`QyApiInfoMovedSection`，零输入控件），并被 {@link MOVED_SECTION_IDS}
+      从左侧菜单里滤掉 —— 深链接接得住，菜单上不留噪声。与
+      `qy-restricted-notice` 同一条办法。
+    */
     id: 'api-info',
     titleKey: 'API Addresses',
-    build: (settings: ContentSettings) => (
-      <ApiInfoSection
-        enabled={settings['console_setting.api_info_enabled']}
-        data={settings['console_setting.api_info']}
-      />
-    ),
+    build: () => <QyApiInfoMovedSection />,
   },
   {
     id: 'faq',
@@ -162,7 +165,7 @@ export const CONTENT_DEFAULT_SECTION = contentRegistry.defaultSection
  * 过滤放在这里而不是共享的 `utils/section-registry.ts`：那是 7 个设置页共用的
  * 上游文件，为一次搬家给它加一个字段，等于让另外 6 页都长出一个没人用的概念。
  */
-const MOVED_SECTION_IDS = new Set<string>(['qy-restricted-notice'])
+const MOVED_SECTION_IDS = new Set<string>(['qy-restricted-notice', 'api-info'])
 
 export const getContentSectionNavItems = (t: TFunction) =>
   contentRegistry

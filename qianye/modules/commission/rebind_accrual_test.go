@@ -30,15 +30,15 @@ func TestRebindSendsTheRestOfTheDayToTheNewInviter(t *testing.T) {
 	const invitee, oldInviter, newInviter = 900, 42, 43
 	// 两个上线同分组:法币折算比例按上线分组解析,同分组才能把
 	// "比例不同所以落新行"这条侥幸路径排除掉,让唯一的变量是 inviter_id。
-	cacheUser(oldInviter, 0, "promoter")
-	cacheUser(newInviter, 0, "promoter")
+	cacheUser(t, oldInviter, 0, "promoter")
+	cacheUser(t, newInviter, 0, "promoter")
 
-	cacheUser(invitee, oldInviter, "vip")
+	cacheUser(t, invitee, oldInviter, "vip")
 	require.NoError(t, accrueConsume(context.Background(),
 		consumeEvent{InviteeId: invitee, Quota: 10000, At: at}))
 
 	// 换绑:同一个下线改挂到另一个上线名下,费率/分组/比例一律不动。
-	cacheUser(invitee, newInviter, "vip")
+	cacheUser(t, invitee, newInviter, "vip")
 	require.NoError(t, accrueConsume(context.Background(),
 		consumeEvent{InviteeId: invitee, Quota: 10000, At: at}))
 
@@ -57,7 +57,7 @@ func TestRebindSendsTheRestOfTheDayToTheNewInviter(t *testing.T) {
 	// 每一行仍然自洽,而且两行加起来正好是两笔消费应得的佣金 —— 换绑既不吞钱
 	// 也不多发,只是把归属切开。
 	for _, r := range rows {
-		assert.Equal(t, calcGross(r.BaseQuota, r.RateUnits).String(), r.GrossAmount.String())
+		assert.Equal(t, calcGross(r.BaseQuota, r.RateUnits, r.QuotaPerUnit).String(), r.GrossAmount.String())
 	}
 
 	// 再消费一次,必须继续并进**新上线**那一行,而不是每次都新开一行。

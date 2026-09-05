@@ -13,9 +13,9 @@ type AuditLog struct {
 	// 通常等于 FundOrder.OrderNo 或业务单号。
 	TraceNo string `json:"trace_no" gorm:"type:varchar(64);not null;default:'';index:idx_qy_audit_trace"`
 
-	// Category ∈ {fund, transfer, commission, withdraw, violation, config, admin}
+	// Category ∈ {fund, transfer, invite, commission, violation, config, admin, lottery, ticket, stardust, mall}
 	Category string `json:"category" gorm:"type:varchar(32);not null;index:idx_qy_audit_cat,priority:1"`
-	// Action 是稳定的英文标识(如 withdraw.approve),不存自然语言 —— 前端按
+	// Action 是稳定的英文标识(如 invite.relation.bind),不存自然语言 —— 前端按
 	// qy_audit_<action> 做 i18n 渲染,与上游 RecordOperationAuditLog 的思路一致。
 	Action string `json:"action" gorm:"type:varchar(64);not null"`
 
@@ -54,13 +54,15 @@ func (AuditLog) TableName() string { return "qy_audit_logs" }
 const (
 	AuditCategoryFund       = "fund"
 	AuditCategoryTransfer   = "transfer"
+	AuditCategoryInvite     = "invite"
 	AuditCategoryCommission = "commission"
-	AuditCategoryWithdraw   = "withdraw"
 	AuditCategoryViolation  = "violation"
 	AuditCategoryConfig     = "config"
 	AuditCategoryAdmin      = "admin"
 	AuditCategoryLottery    = "lottery"
 	AuditCategoryTicket     = "ticket"
+	AuditCategoryStardust   = "stardust"
+	AuditCategoryMall       = "mall"
 )
 
 // 操作者类型。

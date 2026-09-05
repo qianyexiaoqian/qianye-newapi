@@ -5,7 +5,6 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/qianye/config"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 
 	"github.com/shopspring/decimal"
@@ -27,19 +26,6 @@ import (
 //     不碰 settleUser;回滚"carry 来源"那一路即失败。
 //   - TestSettleUserFlushesCarryWithoutAccrualRows 只调 settleUser,
 //     不碰 pendingInviters;回滚"len(rows)==0 早退"即失败。
-
-// commissionConfig 返回一份最小可用的扩展配置。
-//
-// 刻意只设被测逻辑真正读到的两项:费率一律走 qy_settings 运营覆盖
-// (见 setSettingOverride),这样费率配置项的单位/命名怎么演进都不会
-// 波及这批调度层测试。
-func commissionConfig(minSettle int64) *config.Config {
-	c := &config.Config{}
-	c.Enabled = true
-	c.Commission.Enabled = true
-	c.Commission.MinSettleQuota = minSettle
-	return c
-}
 
 // setSettingOverride 写一条运营覆盖到 qy_settings 并让缓存立即失效。
 func setSettingOverride(t *testing.T, gdb *gorm.DB, key, value string) {
@@ -282,22 +268,17 @@ func TestSettleUserFlushesCarryWithoutAccrualRows(t *testing.T) {
 		rows := settlementsOf(t, gdb, 42)
 		require.Len(t, rows, 1, "carry-only 结算被跳过 = 这 4000 永远发不出去")
 		s := rows[0]
-		assert.EqualValues(t, 4000, s.GrantedQuota)
-		assert.EqualValues(t, 0, s.ReclaimedQuota)
+		assert.EqualValues(t, 4000, s.Granted)
+		assert.EqualValues(t, 0, s.Reclaimed)
 		assert.Equal(t, 0, s.AccrualCount, "本轮确实没有任何计佣增量")
 		assert.Equal(t, "4000", s.CarryBefore.String())
 		assert.True(t, s.CarryAfter.IsZero(), "余数必须被清空,否则下轮会重复发")
-		// batchRate 在 delta 为零时不能落回 0:那会让额度加了、法币没加,
-		// AvailableFiat 与 AvailableQuota 永久漂移,提现按法币折算会少给钱。
-		assert.True(t, s.UsdRateWeighted.IsPositive(), "carry-only 轮的冻结汇率不能为零")
-		assert.True(t, s.FiatDelta.IsPositive())
 
 		bal := balanceOf(t, gdb, 42)
 		require.NotNil(t, bal)
 		assert.True(t, bal.UnsettledAmount.IsZero())
-		assert.EqualValues(t, 4000, bal.AvailableQuota)
-		assert.EqualValues(t, 4000, bal.TotalEarnedQuota)
-		assert.True(t, bal.AvailableFiat.IsPositive())
+		assert.EqualValues(t, 4000, bal.Available)
+		assert.EqualValues(t, 4000, bal.TotalEarned)
 		assert.False(t, bal.DebtBlocked)
 		assert.Positive(t, bal.LastSettledAt)
 	})
@@ -309,8 +290,8 @@ func TestSettleUserFlushesCarryWithoutAccrualRows(t *testing.T) {
 		useMoneyGlobals(t, 7.3, 500000)
 
 		// 日封顶只能走运营覆盖(qy_settings),YAML 里没有这一项。
-		setSettingOverride(t, gdb, keyDailyCapQuota, "1000")
-		require.EqualValues(t, 1000, effective().DailyCapQuota, "前提:日封顶已生效")
+		setSettingOverride(t, gdb, keyDailyCapStardust, "1000")
+		require.EqualValues(t, 1000, effective().DailyCapStardust, "前提:日封顶已生效")
 
 		// 已成熟计佣合计 5000,第一轮只发得出 1000。
 		seedAccrual(t, gdb, 1, func(a *Accrual) {
@@ -321,7 +302,7 @@ func TestSettleUserFlushesCarryWithoutAccrualRows(t *testing.T) {
 		settleUserOnce(t, 42)
 		bal := balanceOf(t, gdb, 42)
 		require.NotNil(t, bal)
-		require.EqualValues(t, 1000, bal.AvailableQuota)
+		require.EqualValues(t, 1000, bal.Available)
 		require.Equal(t, "4000", bal.UnsettledAmount.String(), "被削掉的部分进了余数")
 
 		var absorbed Accrual
@@ -338,15 +319,15 @@ func TestSettleUserFlushesCarryWithoutAccrualRows(t *testing.T) {
 		assert.Equal(t, "4000", bal.UnsettledAmount.String())
 
 		// 把日封顶去掉,余数必须一次性全额补发出来。
-		require.NoError(t, gdb.Exec("DELETE FROM qy_settings WHERE k = ?", keyDailyCapQuota).Error)
+		require.NoError(t, gdb.Exec("DELETE FROM qy_settings WHERE k = ?", keyDailyCapStardust).Error)
 		invalidateSettings()
 		settleUserOnce(t, 42)
 
 		bal = balanceOf(t, gdb, 42)
 		require.NotNil(t, bal)
 		assert.True(t, bal.UnsettledAmount.IsZero())
-		assert.EqualValues(t, 5000, bal.AvailableQuota, "被日封顶削掉的部分必须一分不少地补发完")
-		assert.EqualValues(t, 5000, bal.TotalEarnedQuota)
+		assert.EqualValues(t, 5000, bal.Available, "被日封顶削掉的部分必须一分不少地补发完")
+		assert.EqualValues(t, 5000, bal.TotalEarned)
 	})
 
 	t.Run("余数不足一个额度时不落单", func(t *testing.T) {
@@ -362,7 +343,7 @@ func TestSettleUserFlushesCarryWithoutAccrualRows(t *testing.T) {
 		bal := balanceOf(t, gdb, 13)
 		require.NotNil(t, bal)
 		assert.Equal(t, "0.4", bal.UnsettledAmount.String())
-		assert.EqualValues(t, 0, bal.AvailableQuota)
+		assert.EqualValues(t, 0, bal.Available)
 	})
 
 	t.Run("对没有余额行的用户不凭空建行", func(t *testing.T) {
@@ -391,9 +372,9 @@ func ledgerDrift(t *testing.T, gdb *gorm.DB, userId int) decimal.Decimal {
 	require.NoError(t, gdb.Model(&Accrual{}).Where("inviter_id = ? AND status <> ?", userId, StatusVoided).
 		Select("COALESCE(SUM(settled_amount), 0)").Scan(&settled).Error)
 	require.NoError(t, gdb.Model(&Settlement{}).Where("user_id = ?", userId).
-		Select("COALESCE(SUM(granted_quota), 0)").Scan(&granted).Error)
+		Select("COALESCE(SUM(granted), 0)").Scan(&granted).Error)
 	require.NoError(t, gdb.Model(&Settlement{}).Where("user_id = ?", userId).
-		Select("COALESCE(SUM(reclaimed_quota), 0)").Scan(&reclaimed).Error)
+		Select("COALESCE(SUM(reclaimed), 0)").Scan(&reclaimed).Error)
 	require.NoError(t, gdb.Model(&Balance{}).Where("user_id = ?", userId).
 		Select("COALESCE(SUM(unsettled_amount), 0)").Scan(&carry).Error)
 	return decimal.RequireFromString(settled).
@@ -441,7 +422,7 @@ func TestSettleUserSkipsZeroValueSettlement(t *testing.T) {
 		bal := balanceOf(t, gdb, 42)
 		require.NotNil(t, bal)
 		assert.Equal(t, "0.4", bal.UnsettledAmount.String())
-		assert.EqualValues(t, 0, bal.AvailableQuota)
+		assert.EqualValues(t, 0, bal.Available)
 		assert.True(t, ledgerDrift(t, gdb, 42).IsZero(), "I1 在不落行的轮次必须成立")
 
 		// 再跑一轮:此时既没有新计佣行,余数也不够发 —— 什么都不该发生。
@@ -477,7 +458,7 @@ func TestSettleUserSkipsZeroValueSettlement(t *testing.T) {
 
 		rows := settlementsOf(t, gdb, 42)
 		require.Len(t, rows, 1, "攒够了就必须落单")
-		assert.EqualValues(t, 1, rows[0].GrantedQuota)
+		assert.EqualValues(t, 1, rows[0].Granted)
 		assert.Equal(t, "0.4", rows[0].CarryBefore.String(),
 			"上一轮虽然没落单,余数已经收下了那 0.4")
 		assert.Equal(t, "0.1", rows[0].CarryAfter.String())
@@ -485,7 +466,7 @@ func TestSettleUserSkipsZeroValueSettlement(t *testing.T) {
 
 		bal := balanceOf(t, gdb, 42)
 		require.NotNil(t, bal)
-		assert.EqualValues(t, 1, bal.AvailableQuota)
+		assert.EqualValues(t, 1, bal.Available)
 		assert.Equal(t, "0.1", bal.UnsettledAmount.String())
 		assert.True(t, ledgerDrift(t, gdb, 42).IsZero(), "I1 在落行的轮次同样必须成立")
 	})
@@ -497,8 +478,8 @@ func TestSettleUserSkipsZeroValueSettlement(t *testing.T) {
 		useMainDB(t, &model.User{})
 		useConfig(t, commissionConfig(1))
 		useMoneyGlobals(t, 7.3, 500000)
-		setSettingOverride(t, gdb, keyDailyCapQuota, "1000")
-		require.EqualValues(t, 1000, effective().DailyCapQuota)
+		setSettingOverride(t, gdb, keyDailyCapStardust, "1000")
+		require.EqualValues(t, 1000, effective().DailyCapStardust)
 
 		seedAccrual(t, gdb, 1, func(a *Accrual) {
 			a.InviterId = 42
@@ -519,16 +500,16 @@ func TestSettleUserSkipsZeroValueSettlement(t *testing.T) {
 		bal := balanceOf(t, gdb, 42)
 		require.NotNil(t, bal)
 		assert.Equal(t, "3000", bal.UnsettledAmount.String(), "被削掉的钱必须留在余数里")
-		assert.EqualValues(t, 1000, bal.AvailableQuota)
+		assert.EqualValues(t, 1000, bal.Available)
 		assert.True(t, ledgerDrift(t, gdb, 42).IsZero())
 
 		// 封顶解除后一分不少地补发出来。
-		require.NoError(t, gdb.Exec("DELETE FROM qy_settings WHERE k = ?", keyDailyCapQuota).Error)
+		require.NoError(t, gdb.Exec("DELETE FROM qy_settings WHERE k = ?", keyDailyCapStardust).Error)
 		invalidateSettings()
 		settleUserOnce(t, 42)
 		bal = balanceOf(t, gdb, 42)
 		require.NotNil(t, bal)
-		assert.EqualValues(t, 4000, bal.AvailableQuota)
+		assert.EqualValues(t, 4000, bal.Available)
 		assert.True(t, bal.UnsettledAmount.IsZero())
 		assert.True(t, ledgerDrift(t, gdb, 42).IsZero())
 	})
@@ -543,8 +524,8 @@ func TestSettleUserSkipsZeroValueSettlement(t *testing.T) {
 
 		seedBalance(t, gdb, 42, "0")
 		require.NoError(t, gdb.Model(&Balance{}).Where("user_id = ?", 42).Updates(map[string]any{
-			"available_quota":    100,
-			"total_earned_quota": 100,
+			"available":    100,
+			"total_earned": 100,
 		}).Error)
 		seedAccrual(t, gdb, 1, func(a *Accrual) {
 			a.InviterId = 42
@@ -556,10 +537,10 @@ func TestSettleUserSkipsZeroValueSettlement(t *testing.T) {
 
 		rows := settlementsOf(t, gdb, 42)
 		require.Len(t, rows, 1, "回收是钱动了,必须留痕")
-		assert.EqualValues(t, 50, rows[0].ReclaimedQuota)
-		assert.EqualValues(t, 0, rows[0].GrantedQuota)
-		assert.EqualValues(t, 0, rows[0].GrantedQuota,
-			"granted_quota=0 但 reclaimed_quota>0 的行不是空行,不能被当成噪音清掉")
+		assert.EqualValues(t, 50, rows[0].Reclaimed)
+		assert.EqualValues(t, 0, rows[0].Granted)
+		assert.EqualValues(t, 0, rows[0].Granted,
+			"granted=0 但 reclaimed>0 的行不是空行,不能被当成噪音清掉")
 		assert.True(t, ledgerDrift(t, gdb, 42).IsZero())
 	})
 }

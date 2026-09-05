@@ -46,6 +46,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { getBgColorClass } from '@/lib/colors'
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
@@ -311,11 +312,50 @@ function AddressRow(props: AddressRowProps) {
 
       <div className='min-w-0 flex-1'>
         <div className='flex flex-wrap items-center gap-2'>
+          <span
+            className={`size-2 shrink-0 rounded-full ${getBgColorClass(props.item.color)}`}
+            aria-hidden='true'
+          />
           <span className='truncate text-sm font-medium'>
             {props.item.name}
           </span>
           {!props.item.enabled && (
             <Badge variant='outline'>{t('qy_aa_disabled')}</Badge>
+          )}
+          {/* 分组与位置的可见状态**常显**：空串（全部可见）也要说出来 ——
+              全表都不绑定时行上一个徽标都没有，运营会以为这功能不存在，
+              只有点开编辑弹窗才能发现（项目方原话要求"在表行内显示"）。 */}
+          {props.item.user_groups !== '' ? (
+            <Badge variant='secondary' className='max-w-56 truncate'>
+              {t('qy_aa_groups_badge', {
+                groups: props.item.user_groups.split(',').join(', '),
+              })}
+            </Badge>
+          ) : (
+            <Badge variant='outline' className='text-muted-foreground'>
+              {t('qy_aa_groups_all')}
+            </Badge>
+          )}
+          {props.item.surfaces !== '' ? (
+            <Badge variant='secondary' className='max-w-56 truncate'>
+              {t('qy_aa_surfaces_badge', {
+                surfaces: props.item.surfaces
+                  .split(',')
+                  .filter((surface) => surface !== '')
+                  .map((surface) =>
+                    t(
+                      surface === 'console'
+                        ? 'qy_aa_surface_console_short'
+                        : 'qy_aa_surface_picker_short'
+                    )
+                  )
+                  .join(' / '),
+              })}
+            </Badge>
+          ) : (
+            <Badge variant='outline' className='text-muted-foreground'>
+              {t('qy_aa_surfaces_all')}
+            </Badge>
           )}
         </div>
         <p className='text-muted-foreground truncate font-mono text-xs'>

@@ -68,9 +68,7 @@ after(cleanupQyLotScreens)
  * 断言就会安静地量到另一张卡上。
  */
 function rosterCardOf(root: HTMLElement, title: string): HTMLElement | null {
-  const cards = Array.from(
-    root.querySelectorAll<HTMLElement>('[data-slot="card"]')
-  )
+  const cards = [...root.querySelectorAll<HTMLElement>('[data-slot="card"]')]
   return cards.find((card) => (card.textContent ?? '').includes(title)) ?? null
 }
 
@@ -93,7 +91,7 @@ const BALL = {
   draw_mode: 'ball' as const,
   issue_no: 12,
   series_no: 'SSQ-2026',
-  pool_open_quota: 12_000_000,
+  pool_open_quota: 12_000,
   ball_red_pool: 33,
   ball_red_pick: 6,
   ball_blue_pool: 16,
@@ -115,7 +113,7 @@ const BALL_SPEC = [
   {
     tier: 2,
     name: '二等奖',
-    amount_quota: 2_000_000,
+    amount_quota: 2_000,
     count: 3,
     win_ppm: 0,
     red_match: 6,
@@ -205,17 +203,17 @@ const FINISHED_BALL = qyLotDetailFixture({
       seq: 1,
       pick: '03,09,12,17,22,31|05',
       status: 'success',
-      amount: 500000,
+      amount: 500,
       won_kind: 'prize',
       won_tier: 2,
-      won_amount: 2_000_000,
+      won_amount: 2_000,
     },
     {
       entry_no: 'LE-MISS',
       seq: 2,
       pick: '01,02,04,05,06,07|01',
       status: 'success',
-      amount: 500000,
+      amount: 500,
       won_kind: '',
       won_tier: 0,
       won_amount: 0,
@@ -240,7 +238,7 @@ const ROSTER_ENTRIES = Array.from({ length: 20 }, (_, i) => ({
   seq: i + 1,
   user_ref: (i + 1).toString(16).padStart(32, '0'),
   opt_no: 0,
-  amount: 500000,
+  amount: 500,
   status: 'confirmed',
   pick: '01,02,03,04,05,06|07',
 }))
@@ -266,22 +264,22 @@ const FINISHED_BALL_PROOF = {
 /* ── 大厅 ─────────────────────────────────────────────────────────── */
 
 describe('大厅首屏：先看到活动，不是先看到一段免责声明', () => {
-  test('抽奖大厅三张卡的可见文字不超过 220 字', SLOW, async () => {
+  test('抽奖大厅三张卡的可见文字不超过 240 字', SLOW, async () => {
     const hall = await mountHall('draw')
-    // 改造前 195（含顶部那块「参与费不退」横幅）。上限留在 220，是为了给
+    // 改造前 195（含顶部那块「参与费不退」横幅）。上限原本留在 220，是为了给
     // 卡片上真正的内容（更长的活动标题、更大的金额）留出余量，而不是给
     // 说明文字留余量：再加一段解释就会越界。
+    // 抬到 240：金额改印星屑之后每个数后面都跟着单位名（" 星屑"，3 字），
+    // 三张卡上有 6 个金额 —— 那 18 字是刻意加上去的单位、不是说明文字。
     assert.ok(
-      hall.chars <= 220,
-      `抽奖大厅一屏 ${hall.chars} 字，超过 220：${hall.text}`
+      hall.chars <= 240,
+      `抽奖大厅一屏 ${hall.chars} 字，超过 240：${hall.text}`
     )
   })
 
   test('四个决策量在每张卡上都看得到', SLOW, async () => {
     const hall = await mountHall('draw')
-    const cards = Array.from(
-      hall.container.querySelectorAll('[data-slot="card"]')
-    )
+    const cards = [...hall.container.querySelectorAll('[data-slot="card"]')]
     assert.equal(cards.length, 3, '三张卡没有全部渲染出来')
 
     /*
@@ -299,7 +297,7 @@ describe('大厅首屏：先看到活动，不是先看到一段免责声明', (
       ['还剩多久', zhKeys['qy_lot_countdown_close']],
     ]
     for (const [index, card] of cards.entries()) {
-      const text = (card.textContent ?? '').replace(/\s+/g, ' ')
+      const text = (card.textContent ?? '').replaceAll(/\s+/g, ' ')
       for (const [why, label] of expectations) {
         assert.ok(
           text.includes(label),
@@ -316,9 +314,9 @@ describe('大厅首屏：先看到活动，不是先看到一段免责声明', (
     ]) {
       assert.ok(hall.text.includes(title), `卡片「${title}」没渲染`)
     }
-    // 金额本身也要出现，而不只是标签。`stake_quota` 是 500000，站内口径 $1。
+    // 金额本身也要出现，而不只是标签。`stake_quota` 是 500 星屑。
     const withStake = cards.filter((card) =>
-      (card.textContent ?? '').includes('$1')
+      (card.textContent ?? '').includes('500 星屑')
     )
     assert.equal(withStake.length, 3, '有卡片只写了标签没写金额')
   })
@@ -454,8 +452,9 @@ describe('活动详情：决策的留在明面上，解释的折起来', () => {
 
   test('公开名单默认展开、标识打码，点一下能看到完整原值', SLOW, async () => {
     const detail = await mountDetail(FINISHED_BALL, FINISHED_BALL_PROOF)
-    const first = ROSTER_ENTRIES[0]!
-    const last = ROSTER_ENTRIES[ROSTER_ENTRIES.length - 1]!
+    const first = ROSTER_ENTRIES.at(0)
+    const last = ROSTER_ENTRIES.at(-1)
+    assert.ok(first != null && last != null, '名单夹具是空的')
 
     // 默认展开：一份要多点一下才看得到的公示名单，在"公示"这件事上等于没有。
     assert.ok(
@@ -532,13 +531,13 @@ describe('活动详情：决策的留在明面上，解释的折起来', () => {
 /* ── 参与弹窗 ─────────────────────────────────────────────────────── */
 
 describe('参与弹窗：一句话说清多少钱、退不退', () => {
-  test('弹窗净增的文字不超过 260 字，且带着具体金额', SLOW, async () => {
+  test('弹窗净增的文字不超过 280 字，且带着具体金额', SLOW, async () => {
     const activity = qyLotDetailFixture({
       ...OPEN,
       ...BALL,
       title: '第 12 期双色球',
       spec: BALL_SPEC,
-      stake_quota: 500_000,
+      stake_quota: 500,
     })
     const screen = await mountDetail(activity, {
       entries: [],
@@ -559,10 +558,15 @@ describe('参与弹窗：一句话说清多少钱、退不退', () => {
     // 弹窗里有 33 + 16 个号码球（近 100 个字符），那是选号器本身，删不得；
     // 上限管的是它之外的说明文字。改造前扣费提示是一个标题加一段 38 字的
     // 说明，两者说的是同一件事。
-    assert.ok(dialogChars <= 260, `参与弹窗净增 ${dialogChars} 字，超过 260`)
+    // 上限从 260 抬到 280：金额改印星屑之后每个数后面都跟着单位名（" 星屑"，
+    // 3 字），这一屏有 4 个金额 —— 那 12 字是刻意加上去的单位、不是说明文字。
+    assert.ok(dialogChars <= 280, `参与弹窗净增 ${dialogChars} 字，超过 280`)
 
     // 决定按不按这颗按钮的是两个具体的量：多少钱、什么情况下退。
-    const warn = zhKeys['qy_lot_join_warn_line'].replace('{{amount}}', '$1')
+    const warn = zhKeys['qy_lot_join_warn_line'].replace(
+      '{{amount}}',
+      '500 星屑'
+    )
     assert.ok(
       after.text.includes(warn),
       `扣费提示里没有带上金额，或措辞漂了：期望「${warn}」`
@@ -588,20 +592,20 @@ describe('我的参与：表底下的脚注折起来', () => {
       title: '第 12 期双色球',
       kind: 'draw',
       draw_mode: 'ball',
-      amount: 500000,
+      amount: 500,
       status: 'confirmed',
       created_at: NOW - 86400,
       chain_hash: 'b'.repeat(64),
       pick: '03,09,12,17,22,31|05',
       ball_result: '03,09,12,17,22,30|05',
-      won: { kind: 'prize', amount: 1000000 },
+      won: { kind: 'prize', amount: 1_000 },
     },
     {
       entry_no: 'LE20260824-7f2a1c9e40b3d618',
       act_no: 'LA-3',
       title: '下个版本会不会涨价',
       kind: 'guess',
-      amount: 500000,
+      amount: 500,
       status: 'confirmed',
       created_at: NOW - 43200,
       chain_hash: 'f'.repeat(64),

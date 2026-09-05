@@ -30,9 +30,9 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyMaskedUser } from '../../../components/qy-masked-user'
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
+import { QySdAmount } from '../../../components/qy-sd-amount'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
 import { qyArray } from '../../../lib/array'
 import { QyPager } from '../../components/qy-pager'
@@ -168,7 +168,7 @@ export function QyLotEntriesTab(props: {
                 id: 'amount',
                 header: t('qy_common_amount'),
                 cell: (row: QyLotAdminEntry) => (
-                  <QyAmountText quota={row.amount} />
+                  <QySdAmount amount={row.amount} />
                 ),
               },
               {
@@ -193,12 +193,6 @@ export function QyLotEntriesTab(props: {
                       {row.order_no}
                     </Link>
                   ),
-              },
-              {
-                id: 'fail_code',
-                header: t('qy_lot_fail_code'),
-                cell: (row: QyLotAdminEntry) =>
-                  row.fail_code === '' ? QY_EMPTY_TEXT : row.fail_code,
               },
               {
                 id: 'created_at',

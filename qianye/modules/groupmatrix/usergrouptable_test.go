@@ -54,14 +54,24 @@ func rowsByName(view *matrixView) map[string]userGroupRow {
 	return out
 }
 
-// assertWarns 断言 warnings 里有一条同时提到这两个词的话。
+// assertWarns 断言警告里有一条同时提到这几个词的话。
 //
-// 判据取"两个词都在同一句里"而不是逐字比对整句:整句会把测试钉在文案上,
+// 判据取"几个词都在同一句里"而不是逐字比对整句:整句会把测试钉在文案上,
 // 而这里要守的是「这件事被说出来了」——一条只写进日志、界面上看不见的异常
 // 与没有发现它是同一回事。
+//
+// 搜索范围 = 顶部横幅(view.Warnings)∪ 每一行的 ⚠ 详情(row.Warnings)。
+// 行级警告不再把用户分组名写进正文(它挂在那一行上),所以行名参与匹配。
 func assertWarns(t *testing.T, view *matrixView, must ...string) {
 	t.Helper()
-	for _, warn := range view.Warnings {
+	candidates := make([]string, 0, len(view.Warnings))
+	candidates = append(candidates, view.Warnings...)
+	for _, row := range view.UserGroups {
+		for _, warn := range row.Warnings {
+			candidates = append(candidates, row.Name+" "+warn.Code+" "+warn.Text)
+		}
+	}
+	for _, warn := range candidates {
 		hit := true
 		for _, word := range must {
 			if !strings.Contains(warn, word) {
@@ -73,7 +83,7 @@ func assertWarns(t *testing.T, view *matrixView, must ...string) {
 			return
 		}
 	}
-	t.Fatalf("warnings 里没有同时提到 %v 的那一条,实际是: %v", must, view.Warnings)
+	t.Fatalf("警告里没有同时提到 %v 的那一条,实际是: %v", must, candidates)
 }
 
 // TestUserGroupTableCarriesEveryColumn 守"一次给全"。

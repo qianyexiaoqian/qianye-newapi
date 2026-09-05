@@ -26,8 +26,8 @@ import (
 // 读成「匿名探测」,方向性地误导仲裁人。
 
 func TestMiddleware_KeepsTheIdentityOfSomeoneDeniedByRole(t *testing.T) {
-	row := runThroughMiddleware(t, http.MethodPost, "/api/qy/admin/commission/settle",
-		"/api/qy/admin/commission/settle", strings.NewReader(`{"user_id":9}`), "application/json",
+	row := runThroughMiddleware(t, http.MethodPost, "/api/qy/admin/invite/relations/block",
+		"/api/qy/admin/invite/relations/block", strings.NewReader(`{"user_id":9}`), "application/json",
 		func(c *gin.Context) {
 			// 凭据验过了(所以 DeniedActor* 有值),但 role 不足 —— 鉴权链
 			// 直接 Abort,"id"/"role" 这两个键一个都没写。
@@ -50,8 +50,8 @@ func TestMiddleware_KeepsTheIdentityOfSomeoneDeniedByRole(t *testing.T) {
 
 // 反向:真匿名请求仍然必须留空。两者不能被这条回落抹平成同一种。
 func TestMiddleware_StillLeavesTrulyAnonymousRequestsBlank(t *testing.T) {
-	row := runThroughMiddleware(t, http.MethodPost, "/api/qy/admin/commission/settle",
-		"/api/qy/admin/commission/settle", strings.NewReader(`{}`), "application/json",
+	row := runThroughMiddleware(t, http.MethodPost, "/api/qy/admin/invite/relations/block",
+		"/api/qy/admin/invite/relations/block", strings.NewReader(`{}`), "application/json",
 		func(c *gin.Context) { c.AbortWithStatus(http.StatusUnauthorized) })
 
 	require.NotNil(t, row)
@@ -62,8 +62,8 @@ func TestMiddleware_StillLeavesTrulyAnonymousRequestsBlank(t *testing.T) {
 
 // 鉴权放行时,"id"/"role" 优先于回落键 —— 回落只在身份取不到时才该起作用。
 func TestMiddleware_PrefersTheAuthenticatedIdentityOverTheFallback(t *testing.T) {
-	row := runThroughMiddleware(t, http.MethodPost, "/api/qy/admin/commission/settle",
-		"/api/qy/admin/commission/settle", strings.NewReader(`{}`), "application/json",
+	row := runThroughMiddleware(t, http.MethodPost, "/api/qy/admin/invite/relations/block",
+		"/api/qy/admin/invite/relations/block", strings.NewReader(`{}`), "application/json",
 		func(c *gin.Context) {
 			c.Set(common.DeniedActorIdKey, 4242)
 			c.Set(common.DeniedActorNameKey, "qy-probe")
@@ -145,13 +145,13 @@ func TestMiddleware_ClassifiesActorByRoleNotByPath(t *testing.T) {
 		},
 		{
 			name:     "管理员走用户面:仍然是 admin(身份决定,不是路径)",
-			path:     "/api/qy/withdraw/payees",
+			path:     "/api/qy/transfer/contacts",
 			role:     common.RoleAdminUser,
 			wantType: qymodel.ActorAdmin,
 		},
 		{
 			name:     "普通用户走用户面:user",
-			path:     "/api/qy/withdraw/payees",
+			path:     "/api/qy/transfer/contacts",
 			role:     common.RoleCommonUser,
 			wantType: qymodel.ActorUser,
 		},

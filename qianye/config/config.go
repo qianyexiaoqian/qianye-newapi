@@ -34,8 +34,8 @@ type Config struct {
 	Audit    Audit    `yaml:"audit"`
 
 	Transfer        Transfer        `yaml:"transfer"`
+	Invite          Invite          `yaml:"invite"`
 	Commission      Commission      `yaml:"commission"`
-	Withdraw        Withdraw        `yaml:"withdraw"`
 	Ticket          Ticket          `yaml:"ticket"`
 	Wallet          Wallet          `yaml:"wallet"`
 	LogMetrics      LogMetrics      `yaml:"log_metrics"`
@@ -46,6 +46,8 @@ type Config struct {
 	GroupNamespace  GroupNamespace  `yaml:"group_namespace"`
 	PlanEntitlement PlanEntitlement `yaml:"plan_entitlement"`
 	Lottery         Lottery         `yaml:"lottery"`
+	Stardust        Stardust        `yaml:"stardust"`
+	Mall            Mall            `yaml:"mall"`
 
 	// GroupPricingDeprecated 是「模型按分组单独定价」留下的配置占位。
 	//
@@ -65,6 +67,13 @@ type Config struct {
 	//
 	// 它**不是开关**:填 true 也不会让任何东西复活。
 	GroupPricingDeprecated map[string]any `yaml:"group_pricing"`
+
+	// WithdrawDeprecated 是 D-14 之后「提现」留下的占位。
+	//
+	// Deprecated: 提现模块已整体删除(D-15 之后佣金以星辉自动入账,没有任何提现)。
+	// 理由与 GroupPricingDeprecated 逐字相同:严格解析下删掉字段会让仍写着这一段的部署
+	// 在升级二进制的那一刻起不来。加载时告警并整段忽略(见 defaults.go);它**不是开关**。
+	WithdrawDeprecated map[string]any `yaml:"withdraw"`
 
 	// declared 是 YAML 文件里【实际写出来】的键路径集合,由 parseFile 填。
 	//
@@ -206,206 +215,95 @@ type Transfer struct {
 	LookupLogRetainDays int `yaml:"lookup_log_retain_days"`
 }
 
-// Commission 邀请返佣。
+// Invite 邀请关系。
+//
+// 它曾经是 commission(佣金)段;D-14 之后邀请人的全部收益只有星屑(stardust 段),
+// 这里只剩关系本身与"一天"的定义。三个键分别决定:
+//
+//	enabled              关掉 = 不建关系、不发任何邀请返、推广页 404
+//	day_offset_minutes   日界(星屑日结与下线日消费报表都用它)
+//	inviter_cache_seconds  users.inviter_id 的进程内缓存时长
+type Invite struct {
+	Enabled bool `yaml:"enabled"`
+	// DayOffsetMinutes 是「一天」相对 UTC 的偏移(分钟),UTC+8 填 480。
+	//
+	// 它同时决定星屑消费返 / 下线消费返的日桶键、日结的"今天"、以及下线日消费
+	// 报表的区间,而且必须同时决定 —— 否则「今天结算的是横跨两个自然日的半截数据」。
+	// **0 是 UTC**。多节点必须填同一个值:日结由租约选主,可以落在任意节点上,
+	// 各节点取值不同时同一笔消费会进两个桶。
+	DayOffsetMinutes int `yaml:"day_offset_minutes"`
+	// InviterCacheSecs 缓存 users.inviter_id 与上线分组。邀请判定在星屑的各条发放
+	// 路径上被反复调用,裸查会给主库加上与事件量等量的读压力。
+	InviterCacheSecs int `yaml:"inviter_cache_seconds"`
+}
+
+// Commission 推广佣金(D-16:以**星屑**结算)。
+//
+// 账本以星屑整数记账:下线充值 / 兑换码 / 消费按比例计佣,金额在计佣那一刻就按
+// 冻结的 stardust.quota_per_unit 折成星屑 → 持有期满结算进可用余额 → 达到
+// min_credit_stardust 后由后台任务**自动入账**成 qy_sd_balance.available。
+// 没有申请、没有审核、没有法币,也**不再碰主库额度** —— 佣金与星屑同在扩展库,
+// D-15 那套跨库两阶段资金单(KindCommissionCredit)整段退役。
+//
+// 它与星屑侧的邀请奖励(stardust.invite_* / 下线消费返)仍是**两条并行的线**,
+// 各按各的比例、各记各的账,只是现在两边发的是同一种钱;日界共用
+// invite.day_offset_minutes。
+//
+// # 与 stardust.invite_* 的基数重叠(运营必须二选一)
+//
+// 本段的三档(充值 / 消费 / 兑换码)与 stardust 的 invite_topup_bps /
+// invite_consume_bps / invite_redeem_bps 打的是**同一笔基数**。两边同时为正,
+// 同一笔下线消费会落两笔星屑 —— 这不是 bug,是配置选择;健康面板会把重叠标红,
+// 但代码不替运营做决定(D-16 拍板)。
 //
 // 口径默认宽松(全返)。三个排除开关默认关闭,发现套利后可单独打开而无需改代码。
-// 违规扣费产生的消费日志(other.violation_fee == true)永不返佣 —— 那属于逻辑
+// 违规扣费产生的消费日志(other.violation_fee == true)永不计佣 —— 那属于逻辑
 // 错误而非口径偏好,因此不设开关。
 type Commission struct {
 	Enabled bool `yaml:"enabled"`
 
-	// TopupRatePercent / ConsumeRatePercent 是全局默认返佣比例,单位是**百分比**,
-	// 最多两位小数:"10"、"10.5"、"10.25"。
-	//
-	// 用字符串而不是 float64:10.25 在二进制浮点里不可精确表示,而这是决定
-	// 平台要付多少钱的参数。加载后由 RatePercentUnits 换算成整数
-	// (百分比 × 100,10.25% → 1025),之后全程整数运算,绝不引入浮点。
-	TopupRatePercent   string `yaml:"topup_rate_percent"`
-	ConsumeRatePercent string `yaml:"consume_rate_percent"`
+	// TopupRateBps / ConsumeRateBps 是全局默认计佣比例,单位**万分比**
+	// (1000 = 10%)。整数、不经浮点;运营在管理端改的百分比也换算成同一尺度。
+	TopupRateBps   int `yaml:"topup_rate_bps"`
+	ConsumeRateBps int `yaml:"consume_rate_bps"`
+	// RedemptionRateBps 是兑换码这一档。**指针**:nil = 没单独配 = 跟随充值档,
+	// 显式 0 才是"兑换码不计佣"。0% 是合法且常见的运营配置,不能拿零值兼任"没配"。
+	RedemptionRateBps *int `yaml:"redemption_rate_bps"`
 
-	// RedemptionRatePercent 是**兑换码**这一档的返佣比例。
-	//
-	// # 空串 = 没单独配 = 跟随充值档,而 "0" 是显式 0%
-	//
-	// 这两件事必须分得开。兑换码在本档出现之前一直走充值档
-	// (grouprate.go 的 resolveRate:source != consume 就取 TopupRateUnits),
-	// 所以本字段的**默认必须是空串**:任何存量站点升级上来,没写这个键,
-	// 兑换码返佣一分不变。用 0 当"没配"会让一次升级把所有站点的兑换码返佣
-	// 静默清零 —— 而 0% 恰恰是一个合法且常见的运营配置(兑换码多用于活动
-	// 赠送,不想为它付佣金),两者必须各自可表达。
-	//
-	// 因此 defaults.go 刻意**不给它设默认值**,validate 也只在非空时校验格式。
-	RedemptionRatePercent string `yaml:"redemption_rate_percent"`
-
-	// TopupRateBpsDeprecated / ConsumeRateBpsDeprecated 是 1.x 的万分比字段。
-	//
-	// Deprecated: 请改用 topup_rate_percent / consume_rate_percent。
-	// 保留它们只为兼容:本包是严格解析(KnownFields(true)),直接删字段会让
-	// 所有已有部署在升级二进制的那一刻启动失败。加载时换算进新字段并告警。
-	//
-	// 必须是指针:0 是合法费率(关掉返佣),普通 int 无法区分"写了 0"和"没写"。
-	TopupRateBpsDeprecated   *int `yaml:"topup_rate_bps"`
-	ConsumeRateBpsDeprecated *int `yaml:"consume_rate_bps"`
-
-	Levels           int   `yaml:"levels"`
-	MinSettleQuota   int64 `yaml:"min_settle_quota"`
-	MaxPerOrderQuota int64 `yaml:"max_per_order_quota"`
-	// HoldingDays 佣金成熟期,从消费所在自然日结束起算(见 modules/commission
-	// 的 bucketMatureAt)。0 是合法策略:当天结束即可结算,不设防套利延迟。
-	// 不写这个键才取默认的 7 天。
+	// Levels 只允许 1:多级分销正是项目方要规避的「拉人头」形状。
+	Levels int `yaml:"levels"`
+	// MinSettleStardust 是一次结算至少要凑够多少星屑才发;不足的留在余数里等下一轮。
+	MinSettleStardust int64 `yaml:"min_settle_stardust"`
+	// MaxPerOrderStardust 是**单次计佣**的封顶(星屑),削掉的部分记进 capped_amount。
+	MaxPerOrderStardust int64 `yaml:"max_per_order_stardust"`
+	// HoldingDays 佣金持有期,从消费所在日结束起算(见 modules/commission 的
+	// bucketMatureAt)。0 是合法策略:当天结束即可结算。不写这个键才取默认的 7 天。
 	HoldingDays int `yaml:"holding_days"`
-	// DayOffsetMinutes 是返佣「一天」相对 UTC 的偏移(分钟),UTC+8 填 480。
-	//
-	// 它同时决定四件事,而且必须同时决定 —— 否则「今天结算的是横跨两个自然日
-	// 的半截数据」:
-	//
-	//   1. 消费日聚合桶的键 bucket_date(accrual.go bucketDate)
-	//   2. 桶的成熟时刻 mature_at(accrual.go bucketMatureAt:桶所在日结束 + 成熟期)
-	//   3. 日封顶的「今日已发」窗口(settle.go dailyRemaining)
-	//   4. 一日一结算的「今天」(settle_daily.go dayKey)
-	//
-	// **0 是 UTC,也就是本字段出现之前的行为**,存量部署不写这一项行为一个字
-	// 不变。这一点是刻意的:bucket_date 已经按 UTC 落了库并进了幂等键,
-	// 默认换时区等于在升级的那一刻把全站日聚合重新分桶。
-	//
-	// 多节点必须填同一个值。填成本地时区(time.Local)而不是显式偏移是不行的:
-	// 结算与计佣可以落在任意节点上,各节点的 TZ 一旦不同,同一笔消费会进两个桶,
-	// 唯一索引失效、行数翻倍,而"今天跑过了没有"也会各说各话。
-	DayOffsetMinutes int `yaml:"day_offset_minutes"`
-	// SettleIntervalSecs 是结算调度的**心跳周期**,不再是结算周期本身。
-	//
-	// 改成一日一结算之后,runSettle 每次心跳只做一件事:看今天这一次跑过没有,
-	// 没跑过就抢占并排空整个队列。所以这个值只影响"日界过后多久开始跑"
-	// (最坏一个心跳)与"今天跑挂了多久后重试",不再影响结算表的行数。
+	// SettleIntervalSecs 是结算调度的**心跳周期**:一日一结算之下它只决定日界过后
+	// 多久开跑、失败后多久重试,不再是结算周期本身。
 	SettleIntervalSecs int `yaml:"settle_interval_seconds"`
-	// InviterCacheSecs 缓存 users.inviter_id。消费返佣挂在 relay 结算路径上,
-	// 裸查会给主库加上与 relay QPS 等量的读压力。
-	InviterCacheSecs     int `yaml:"inviter_cache_seconds"`
-	TopupScanIntervalSec int `yaml:"topup_scan_interval_seconds"`
-	// TopupScanLookbackHours: top_ups 表没有 updated_at,且部分支付路径不写
-	// complete_time,纯 id 游标必然漏单,只能低水位 + 回扫窗口 + 唯一索引去重。
-	TopupScanLookbackHours int `yaml:"topup_scan_lookback_hours"`
+	// CreditIntervalSecs 是自动入账任务(commission.credit)的周期。
+	CreditIntervalSecs int `yaml:"credit_interval_seconds"`
+	// MinCreditStardust 是可用余额达到多少星屑才自动入账(默认 1)。
+	// 它同时是单次入账的下限:低于它的零头留在可用余额里等下一次。
+	MinCreditStardust int64 `yaml:"min_credit_stardust"`
 
 	ExcludeRedemptionAndManual bool `yaml:"exclude_redemption_and_manual"`
 	ExcludeSubscriptionConsume bool `yaml:"exclude_subscription_consume"`
 	RefundClawback             bool `yaml:"refund_clawback"`
+
+	// ── D-16 改名的三个键(单位由额度变成星屑)。────────────────────────────
+	//
+	// 本包是 KnownFields(true) 严格解析:直接删掉旧键名,存量 YAML 会在升级二进制
+	// 的那一刻**启动失败**(全站宕机,而不是某个功能不生效)。所以留占位吸收。
+	//
+	// 刻意**不**做值迁移:旧值是额度(min_credit_quota: 500000 = 1 星辉),新键要的是
+	// 星屑(1)。照着数字搬过来就是把门槛放大 50 万倍,佣金从此永远不入账,而配置文件
+	// 看起来完全正常。加载时告警并置 nil,逼运营显式改写这三行。
+	MinSettleQuotaDeprecated   *int64 `yaml:"min_settle_quota"`
+	MaxPerOrderQuotaDeprecated *int64 `yaml:"max_per_order_quota"`
+	MinCreditQuotaDeprecated   *int64 `yaml:"min_credit_quota"`
 }
-
-// Withdraw 佣金提现。
-//
-// # 系统只做佣金扣除,金额由管理员手动发放
-//
-// 申请即从佣金可用池扣除,审核通过后单据进入「待发放」队列,管理员自己去加站内
-// 额度或线下打款,再回单据上「标记已发放」。本模块不会自动给任何人加一分钱。
-//
-// Methods 因此仍然有意义 —— 它说的不是"系统怎么给钱",而是**用户要的是哪种钱**:
-// quota = 站内额度,fiat = 现金。管理员看着单据上写的这一项决定去哪个入口发。
-type Withdraw struct {
-	Enabled       bool     `yaml:"enabled"`
-	Methods       []string `yaml:"methods"`
-	MinQuota      int64    `yaml:"min_quota"`
-	MinFiatAmount string   `yaml:"min_fiat_amount"`
-	FiatCurrency  string   `yaml:"fiat_currency"`
-	FiatFeeBps    int      `yaml:"fiat_fee_bps"`
-
-	// RateFreezeModeDeprecated / RateFreezeFixedDeprecated 是提现侧那套**独立汇率**
-	// 的两个键。
-	//
-	// Deprecated: 已下线。它们决定的是"提现单按哪个汇率开金额",而佣金账本的
-	// available_fiat 是按计佣当刻的三层折算比例(分组档 -> 兜底档 -> 全站汇率)
-	// 攒起来的 —— 两套计价各算各的,于是账本冻走 850 CNY、单据只让运营付 100 CNY。
-	// 现在单据金额恒等于账本冻走的那个数(见 commission.QuoteWithdrawFiat),
-	// "平台按自己的结算价打款"的落点改为佣金侧的法币折算档。
-	//
-	// 保留这两个字段**仅为**让仍写着这些键的部署能够启动:本包是严格解析
-	// (KnownFields(true),见 Load),直接删字段会让那些部署在升级二进制的那一刻
-	// 启动失败。加载时告警并置 nil。
-	//
-	// 必须是指针:普通 string 的零值分不清"没写"与"写了空串",而这里要靠
-	// "写没写过"来决定要不要喊那一声。
-	RateFreezeModeDeprecated  *string `yaml:"rate_freeze_mode"`
-	RateFreezeFixedDeprecated *string `yaml:"rate_freeze_fixed"`
-
-	// AutoCreditOnApproveDeprecated 是「quota 单审核通过后自动兑现成站内额度」
-	// 的开关。
-	//
-	// Deprecated: 已下线。产品口径改成"提现只做佣金扣除,金额由管理员手动发放"
-	// 之后,自动到账那条跨库链路(两阶段资金单 → 主库 users.quota → outbox 探针
-	// → paying/hold 人工裁决)整条删除,这个开关的两个取值都不再对应任何行为。
-	//
-	// 保留字段**仅为**让仍写着这个键的部署能够启动:本包是严格解析
-	// (KnownFields(true),见 Load),直接删字段会让那些部署在升级二进制的那一刻
-	// 启动失败。加载时告警并置 nil。
-	AutoCreditOnApproveDeprecated *bool `yaml:"auto_credit_on_approve"`
-	// DailyMaxCount 单个用户每日可提交的提现单数,0 表示不限制。
-	DailyMaxCount int `yaml:"daily_max_count"`
-	// PayeeAccountMax 单个用户可保存的收款方式数量,0 表示不限制。
-	PayeeAccountMax int `yaml:"payee_account_max"`
-	// ReviewSLAHours 审核时限,超时的待审单在队列里标红。0 表示不计时限。
-	ReviewSLAHours int `yaml:"review_sla_hours"`
-	// PayoutSLAHours 发放时限:审核通过之后多久没标记已发放算积压。
-	//
-	// 它守的是人工发放模型**新引入**的那个敞口 —— 佣金在申请那一刻就离开了用户
-	// 的可用池,而系统不会替任何人把钱发出去。管理员一直不发也不驳回,用户就是
-	// "钱扣了、东西没拿到",而在这个字段之前站点里没有任何东西会为此出声。
-	//
-	// 从 reviewed_at 起算而不是 created_at:审核花掉的时间归 ReviewSLAHours 管。
-	// 0 表示不计时限(队列角标与积压告警一起关掉)。
-	PayoutSLAHours int `yaml:"payout_sla_hours"`
-	// RemarkMaxRunes 用户自定义说明的字数上限,必须落在 1..2000 —— 0 不是
-	// "不限制"而是"一个字都不许填",validateWithdraw 会拒绝启动。
-	RemarkMaxRunes int `yaml:"remark_max_runes"`
-	// PIIKey 是收款信息的 AES-GCM 密钥(base64,32 字节)。为空则禁止 fiat 方式:
-	// 收款信息属 PII,明文落库不可接受。
-	PIIKey        string `yaml:"pii_key"`
-	PIIKeyVersion int    `yaml:"pii_key_version"`
-	// PIIKeysRetired 是已停用的历史密钥(版本号 → base64 密钥),用于解密轮换之前
-	// 写入的密文。KeyVersion 列存在的全部意义就在这里。
-	//
-	// 轮换步骤:把当前 pii_key 连同它的 pii_key_version 搬进本表,再填新的 pii_key
-	// 与更大的 pii_key_version。少了搬运这一步,队列里全部待打款单的收款账号会
-	// 同时变成不可解密 —— 钱打不出去,而佣金还锁在 frozen 里。
-	//
-	// 旧密钥要留到对应密文被 pii_retention_days 清干净为止,不能提前删。
-	PIIKeysRetired map[int]string `yaml:"pii_keys_retired"`
-	// DigestKey 独立于 PIIKey 且不轮换,用于跨账户风控索引。
-	// 与加密密钥分离,否则轮换后历史 digest 全部失效。
-	DigestKey string `yaml:"digest_key"`
-	// CooldownSecs 两次提现申请之间的最小间隔。0 表示不限制。
-	CooldownSecs int `yaml:"cooldown_seconds"`
-	// MaxPendingOrders 限制同时存在的未终态提现单数量。资金安全由佣金冻结
-	// 保证(不会超提),但没有这个限制时审核队列会被大量小额单淹没。0 表示不限制。
-	MaxPendingOrders int `yaml:"max_pending_orders"`
-	// MaxQuotaPerOrder / DailyMaxQuota 提现额度上限。不设的话单笔上界只有
-	// 主库 int32 容量,一次异常申请就会占满整个佣金池。0 表示不限制。
-	MaxQuotaPerOrder int64 `yaml:"max_quota_per_order"`
-	DailyMaxQuota    int64 `yaml:"daily_max_quota"`
-	// PIIRetentionDays 收款信息的保留天数,到期后清除密文只保留脱敏串。
-	// 收款信息属个人敏感信息,不应在提现完成后无限期留存。
-	//
-	// 不写这个键会取默认的 180 天 —— 清理默认开着是刻意的:少配一个键就让
-	// 一批银行卡号永久留存,不该是默认结局。要彻底关掉清理请显式写 0。
-	PIIRetentionDays int `yaml:"pii_retention_days"`
-	// ProofEnabled 决定是否允许用户给法币提现附一张收款/打款凭证图片。
-	//
-	// 图片落在【本地磁盘】(与本配置文件同级的 qy-withdraw-proofs/),不入库。
-	// 因此它带着一条部署约束:多节点各存各的,A 节点收到的上传 B 节点下载不到。
-	// 单节点部署无碍;多节点需要共享存储(NFS/EFS)或后续接对象存储。
-	// 不想在磁盘上留 PII 图片就显式置 false —— 上传接口会直接拒绝。
-	ProofEnabled *bool `yaml:"proof_enabled"`
-	// ProofMaxBytes 单张凭证的字节上限,上界见 MaxWithdrawProofBytes。
-	// 请求体在读第一个字节之前就被 http.MaxBytesReader 按它截断。
-	// 必须落在 1..MaxWithdrawProofBytes:0 不是"不限制"(那等于把堆交给上传者),
-	// validateWithdraw 会拒绝启动。不想收凭证请用 proof_enabled: false。
-	ProofMaxBytes int64 `yaml:"proof_max_bytes"`
-}
-
-// MaxWithdrawProofBytes 是 withdraw.proof_max_bytes 的硬上界。
-//
-// 存在的理由是上传缓冲:校验魔数需要把整张图读进内存,配得越大,一次
-// CriticalRateLimit 放行的并发上传能吃掉的堆就越多。凭证是手机拍的收款截图,
-// 8 MiB 足够,再大只说明配错了。
-const MaxWithdrawProofBytes = 8 << 20
 
 // Ticket 工单系统。用户提问、管理员答复,正文按 Markdown 渲染,可附图片。
 //
@@ -478,7 +376,7 @@ type Ticket struct {
 
 // MaxTicketImageBytes 是 ticket.image_max_bytes 的硬上界。
 //
-// 与 MaxWithdrawProofBytes 同一条理由(校验魔数要整张读进内存),
+// 校验魔数要整张读进内存,所以必须有硬顶;
 // 真正的判定常量在 qianye/service/imagestore.MaxBytes,这里只是把它搬到
 // config 包里供校验器引用 —— config 是被 imagestore 依赖的一方,不能反向 import。
 const MaxTicketImageBytes = 8 << 20
@@ -486,8 +384,8 @@ const MaxTicketImageBytes = 8 << 20
 // Wallet 钱包页入口开关。
 type Wallet struct {
 	ShowTransferEntry   *bool `yaml:"show_transfer_entry"`
+	ShowInviteEntry     *bool `yaml:"show_invite_entry"`
 	ShowCommissionEntry *bool `yaml:"show_commission_entry"`
-	ShowWithdrawEntry   *bool `yaml:"show_withdraw_entry"`
 }
 
 // LogMetrics 使用日志新增列(推理强度 / 缓存百分比)。
@@ -561,10 +459,10 @@ type Violation struct {
 	// ─────────────────── AI 审核渠道的密钥加密 ───────────────────
 	//
 	// AI 审核渠道(qy_violation_ai_channel)上存的是第三方审核服务的 API Key。
-	// 那是一份凭证,与提现的收款账号同级:落库必须是密文,接口必须永不回显。
-	// 这三个字段与 withdraw.pii_key / pii_key_version / pii_keys_retired **同规格**
-	// (AES-256-GCM + 版本化轮换),刻意不复用后者:两个模块共用一把钥匙意味着
-	// 轮换提现密钥的那一刻,全部审核渠道同时变成不可解密 —— 而那时的表现是
+	// 那是一份凭证:落库必须是密文,接口必须永不回显。
+	// 这三个字段与 lottery.prize_secret_key 三件套**同规格**
+	// (AES-256-GCM + 版本化轮换),刻意不复用:两个模块共用一把钥匙意味着
+	// 轮换另一把密钥的那一刻,全部审核渠道同时变成不可解密 —— 而那时的表现是
 	// 「AI 审核突然全部放行」,没有任何报错。
 	//
 	// 没配 ai_review_key 时本功能仍然可用,但**存不下 api_key**:管理端保存带
@@ -574,6 +472,10 @@ type Violation struct {
 	AIReviewKey         string         `yaml:"ai_review_key"`
 	AIReviewKeyVersion  int            `yaml:"ai_review_key_version"`
 	AIReviewKeysRetired map[int]string `yaml:"ai_review_keys_retired"`
+
+	// cyber 会话自动屏蔽的**全部配置**(开关、TTL、作用分组、触发过滤规则)都在
+	// 管理端配、落 DB 单行表 qy_violation_cyber_setting —— 与 AISetting 同一条理由,
+	// 运营要能自助改、并有「还原默认」。YAML 里一个字段都不留。
 }
 
 // GroupMatrix 用户分组 × 模型分组的**权威可选清单**。
@@ -761,7 +663,7 @@ type Lottery struct {
 	ProofPublic *bool `yaml:"proof_public"`
 
 	MaxActiveActivities int `yaml:"max_active_activities"`
-	// MaxStakeQuota 是单次参与费 / 单注的额度上限。
+	// MaxStakeStardust 是单次参与费 / 单注的额度上限。
 	//
 	// **0 = 不限制**,而且是默认值。它不是"一分钱都不许",那种口径在这里没有
 	// 任何用处 —— 免费场由 stake_quota > 0 那条独立判定拦着,与本项无关。
@@ -769,56 +671,68 @@ type Lottery struct {
 	//
 	// 放开它的理由:参与费是**用户自己付**的钱,配得离谱的后果是没人报名,
 	// 不构成资损。真正会造成资损的是奖品金额,而那一侧现在由
-	// LargePrizeAlertQuota 的二次确认盯着(见 qianye/modules/lottery/caps.go)。
+	// LargePrizeAlertStardust 的二次确认盯着(见 qianye/modules/lottery/caps.go)。
 	// 一次扣款的绝对上界仍然是 common.MaxQuota,那是全站额度换算的
 	// 整数上界(代码写死,不是任何一列的宽度),不受本项影响。
-	MaxStakeQuota int64 `yaml:"max_stake_quota"`
-	// MaxTotalPrizeQuota 是单场奖品总额度 Σ(count × amount) 的硬顶。
+	MaxStakeStardust int64 `yaml:"max_stake_stardust"`
+	// MaxTotalPrizeStardust 是单场奖品总额度 Σ(count × amount) 的硬顶。
 	//
 	// **0 = 不限制**,而且是默认值。
 	//
 	// 它曾经是"派奖是净增发"这件事的唯一防线,现在不是了 —— 一道硬拒绝拦不住
 	// 手滑,只能把手滑推迟到更大的数字上(调大上限,同一个零照样发得出去),
 	// 代价却是运营开一场活动要先去改配置。取而代之的是二次确认:超过
-	// large_prize_alert_quota 的活动必须回显精确金额才能建/改。
+	// large_prize_alert_stardust 的活动必须回显精确金额才能建/改。
 	//
 	// 留着这一项是给"我确实想要一道谁都绕不过去的硬顶"的站点用的:配成正数
 	// 之后行为与从前完全一致(超了就 400),并且在线只能往低调。
-	MaxTotalPrizeQuota int64 `yaml:"max_total_prize_quota"`
-	// LargePrizeAlertQuota 是**二次确认阈值**,不再是"只写一行日志"。
+	MaxTotalPrizeStardust int64 `yaml:"max_total_prize_stardust"`
+	// LargePrizeAlertStardust 是**二次确认阈值**,不再是"只写一行日志"。
 	//
 	// 奖品总额达到它(含相等)时,创建/修改活动必须在请求里回显那个精确金额,
 	// 否则拒绝。**0 = 连确认都不要**(完全不打扰)。
 	//
 	// 它是本模块现在唯一还在盯着"多写一个零"的东西,所以默认值保留 ——
 	// 缺省 500 万额度($10),一场手动测试的小活动碰不到它,一个多写的零一定碰到。
-	LargePrizeAlertQuota int64 `yaml:"large_prize_alert_quota"`
-	// PayPasswordThresholdQuota 是参与费触发支付密码的门槛。参与是不可逆消费,
-	// 盗号者能用"参与抽奖"把余额烧光而不留下划转/提现痕迹。
-	PayPasswordThresholdQuota int64 `yaml:"pay_password_threshold_quota"`
+	LargePrizeAlertStardust int64 `yaml:"large_prize_alert_stardust"`
+	// PayPasswordThresholdStardust 是参与费(一次提交的整批总额,单位星屑)触发
+	// 支付密码的门槛。参与是不可逆消费,而星屑经商城能换成可变现的东西(D-12):
+	// 盗号者能用"参与抽奖"把星屑烧光而不留下划转/提现痕迹。默认 20 星屑(≈ $20 等值)。
+	PayPasswordThresholdStardust int64 `yaml:"pay_password_threshold_stardust"`
 
-	// ── 文本奖兑换码的静态加密(与 withdraw.pii_key 三件套**同规格**)──
+	// ── 文本奖兑换码的静态加密(AES-256-GCM + 版本化轮换)──
 	//
 	// qy_lot_payout.secret_cipher 存的是管理员为中奖者填进去的实际兑换码。
 	// 它此前是**明文直存**(key_version 恒 0、nonce 恒 NULL),而同一个扩展库
-	// 里性质相同的两处 —— qy_withdrawal_payee_accounts(收款账号)与
-	// qy_violation_ai_channel(渠道密钥)—— 都是真密文。也就是说列名叫
+	// 里性质相同的一处 ——
+	// qy_violation_ai_channel(渠道密钥)—— 是真密文。也就是说列名叫
 	// cipher,内容任何拿到库备份/只读账号的人都能直接读走。
 	//
-	// PrizeSecretKey 为空时保持明文(key_version=0),这是**刻意的**向后兼容:
-	// 强制要求它会让每一个现存部署在升级那一刻 FATAL 退出,而那是破坏性变更。
-	// 空值会在自检里报一条告警,配上之后**新写入**的码即刻加密,历史的 v0 行
-	// 仍然读得出来(openPrizeSecret 按行上的版本号选路径)。
+	// PrizeSecretKey 是**必填**(lottery.enabled 为 true 时):没配就 FATAL 退出,
+	// 与 violation.ai_review_key 在开启 AI 审核时的处置逐字相同。
 	//
-	// 轮换步骤与 withdraw 逐字相同:把当前 key 连同它的 version 搬进
-	// prize_secret_keys_retired,再填新的 key 与更大的 version。少了搬运那一步,
-	// 已履行的兑换码会全部变成不可读。
+	// 它曾经可以留空(留空即明文直存,key_version=0),理由是"强制要求会让每一个
+	// 现存部署在升级那一刻起不来"。那个理由站不住:代价的另一头是**这一列在库里
+	// 就是明文**,而列名叫 cipher —— 拿到库备份、只读报表账号或离线 dump 的人
+	// 直接读走全部兑换码,在线侧的脱敏与审计对他们一条都不起作用。一次一次性的
+	// 运维动作(生成一串 32 字节随机数)换一个默认安全的形状,值得。
+	// 这处破坏性变更记在 qianye/version/baseline.txt 的 v1.0.0(MAJOR)。
+	//
+	// 没有兼容路径:库里不存在 v0(明文)行,也不做回填(D-11:当前版本未上线,
+	// 不保留旧数据)。openPrizeSecret 对 key_version=0 一律按"读不出来"处理。
+	//
+	// 轮换步骤:把当前 key 连同它的 version 搬进
+	// prize_secret_keys_retired,再填新的 key 与**更大的** version。少了搬运那一步,
+	// 已履行的兑换码会全部变成不可读;少了抬版本号那一步,同版本的历史密文会
+	// 永久不可读(启动校验会拒绝这种配置)。
 	PrizeSecretKey         string         `yaml:"prize_secret_key"`
 	PrizeSecretKeyVersion  int            `yaml:"prize_secret_key_version"`
 	PrizeSecretKeysRetired map[int]string `yaml:"prize_secret_keys_retired"`
 
-	// EntryCloseGraceSeconds 是封盘前停止受理新报名的提前量,给两阶段的
-	// pending 单留出收敛窗口,让"封盘时还有未决参与"降到近零。
+	// EntryCloseGraceSeconds 只在创建活动时消费:open_at → close_at 的开放时长
+	// 必须大于它。受理路径**不看**它 —— 参与是一个扩展库事务,没有需要收敛的
+	// 未决单,报名一律判 now < close_at(close_at 进承诺原像,任何更早的截止都
+	// 不影响验证)。
 	EntryCloseGraceSeconds int `yaml:"entry_close_grace_seconds"`
 	// RevealDelaySeconds 是 close_at → draw_at 的强制最小间隔。
 	// 它是整个承诺-揭示协议的关键:名单哈希必须先于种子公开,
@@ -829,15 +743,13 @@ type Lottery struct {
 	RevealScanIntervalSeconds int `yaml:"reveal_scan_interval_seconds"`
 	PayoutIntervalSeconds     int `yaml:"payout_interval_seconds"`
 	PayoutMaxAttempts         int `yaml:"payout_max_attempts"`
-	// ExcludedManualAfterSeconds 是"参与单卡在不可判定态多久之后转人工"。
-	ExcludedManualAfterSeconds int `yaml:"excluded_manual_after_seconds"`
 
 	// MaxTotalEntriesHard 是名单规模上界:冻结要在单个事务里流式算完。
 	MaxTotalEntriesHard int `yaml:"max_total_entries_hard"`
 	// EntryBatchMaxMs 是**一次多注提交**整批的时间预算上界(毫秒)。
 	//
-	// 双色球一次买 N 注在服务端是 N 次串行的扣费(每一注一张独立资金单、一条
-	// 链环、一份可复算回执),所以耗时与 N 成正比:本机实测 999 注约 36 秒。
+	// 双色球一次买 N 注在服务端是 N 次串行的扣费(每一注一个扩展库事务:一行
+	// 星屑流水、一条链环、一份可复算回执),所以耗时与 N 成正比:本机实测 999 注约 36 秒。
 	// 预算按 N 线性给,但必须封顶 —— 一个不封顶的预算就是一个不封顶的 HTTP
 	// 请求,而请求在反向代理的读超时那一刻被切断时,服务端仍在逐注扣钱,
 	// 用户拿到的是 504 而钱已经扣了。
@@ -879,6 +791,99 @@ type Lottery struct {
 	SpendRetentionDays   int `yaml:"spend_retention_days"`
 }
 
+// Stardust 星屑:只在扩展库里存在的积分货币(设计见 qianye/docs/design-15-stardust.md)。
+//
+// 娱乐活动(抽奖 / 双色球 / 竞猜 / 转盘)与星屑商城只认它;它不可划转、不可兑回余额、
+// 不能消费模型。获得途径:消费站内余额次日按分组比例返、下线充值 / 用兑换码时邀请人按
+// 比例得、买套餐一次性返、活动中奖、管理员手调。
+type Stardust struct {
+	Enabled bool `yaml:"enabled"`
+	// ShowEntry 是"前端要不要渲染星屑入口"。关掉之后接口仍可用(用户要能查自己的账)。
+	ShowEntry *bool `yaml:"show_entry"`
+	// Name 是单位名的 YAML 基线,默认「星屑」;运营在管理端改的那份存 qy_settings。
+	Name string `yaml:"name"`
+	// QuotaPerUnit 是刻度:1 星屑 = 多少额度。0 = 取 common.QuotaPerUnit(500000 = $1)。
+	// 它被冻结进每一行消费返日桶,改它不追溯。
+	QuotaPerUnit int64 `yaml:"quota_per_unit"`
+	// ConsumeBps 是消费返的全站默认比例(万分比):10000 = 每 1 美元等值消费返 1 星屑。
+	// 按用户分组的覆盖在扩展库 qy_sd_group_rate 表里。
+	ConsumeBps int `yaml:"consume_bps"`
+	// ExcludeSubscriptionConsume 决定订阅额度出资的消费是否不返。默认 true。
+	//
+	// 任务首次扣费与 MJ 日志不带 billing_source,那两类订阅消费排不掉 —— 与佣金的
+	// exclude_subscription_consume 是同一个盲区,只是佣金那边默认关、这里默认开。
+	ExcludeSubscriptionConsume *bool `yaml:"exclude_subscription_consume"`
+	// SettleDelayMinutes 是日界之后多久开始结算昨日。它兜的是 relay 节点写日志的
+	// 时钟偏差与日志库副本 / ClickHouse 摄入延迟 —— 不是任务补扣窗口:logs.created_at
+	// 是写入时刻,任务补扣 / 退款永远落在结算当日,这个窗口覆盖不了它们。
+	SettleDelayMinutes int `yaml:"settle_delay_minutes"`
+	// SettleIntervalSeconds 是调度心跳(与佣金时代的同名键同义):
+	// 每次心跳只回答"昨天这一次跑过了没有"。
+	SettleIntervalSeconds int `yaml:"settle_interval_seconds"`
+	// HeldAlertDays 是暂缓桶的积龄告警阈值:最老的 held 桶超过它进健康面板红点。
+	HeldAlertDays int `yaml:"held_alert_days"`
+	// InviteTopupBps / InviteRedeemBps 是下线充值 / 用兑换码时给邀请人的比例(万分比),
+	// 0 = 关。按**上线**分组解析(D-02 口径)。三个邀请类正值都受支付合规门约束。
+	InviteTopupBps  int `yaml:"invite_topup_bps"`
+	InviteRedeemBps int `yaml:"invite_redeem_bps"`
+	// InviteConsumeBps 是下线消费返的全站默认比例(万分比):下线当日的站内消费按
+	// **邀请人自己的分组**(D-02)取档,日结时一并结给邀请人。0 = 关(默认);
+	// 按分组的覆盖在 qy_sd_group_rate.invite_consume_bps。同样受支付合规门约束。
+	InviteConsumeBps int `yaml:"invite_consume_bps"`
+	// InviteRegisterStardust 是被邀请人注册时给邀请人的固定星屑数,0 = 关。
+	InviteRegisterStardust int64 `yaml:"invite_register_stardust"`
+	// ExcludeManualTopup 决定管理员补单是否不返(星屑自己的键)。
+	ExcludeManualTopup *bool `yaml:"exclude_manual_topup"`
+	// TopupScanIntervalSeconds 是充值扫描周期。
+	TopupScanIntervalSeconds int `yaml:"topup_scan_interval_seconds"`
+	// MaxManualAdjust 是管理员单次手调的绝对值上限(星屑)。
+	MaxManualAdjust int64 `yaml:"max_manual_adjust"`
+}
+
+// Mall 星屑商城:只收星屑的商城,可上架套餐 / 兑换码 / 实物。
+type Mall struct {
+	Enabled   bool  `yaml:"enabled"`
+	ShowEntry *bool `yaml:"show_entry"`
+
+	// SecretKey 是**必填**(enabled 时):AES-256-GCM,加密预存的兑换码库存与
+	// 实物订单的收货地址,与 lottery.prize_secret_key 同规格同纪律。
+	SecretKey         string         `yaml:"secret_key"`
+	SecretKeyVersion  int            `yaml:"secret_key_version"`
+	SecretKeysRetired map[int]string `yaml:"secret_keys_retired"`
+
+	// AddressRetentionDays 是实物订单完结后收货地址密文的保留天数,到期清空。下限 30。
+	AddressRetentionDays int `yaml:"address_retention_days"`
+	MaxProducts          int `yaml:"max_products"`
+	// CodeUploadMax 是一次批量上传兑换码的条数上限。
+	CodeUploadMax int `yaml:"code_upload_max"`
+	// PendingGraceSeconds 是套餐订单在 paid/held 停留多久之后由对账任务按资金单终态收敛。
+	PendingGraceSeconds int `yaml:"pending_grace_seconds"`
+}
+
+// EntryShown 表示前端是否渲染星屑入口。
+func (s Stardust) EntryShown() bool { return boolOr(s.ShowEntry, true) }
+
+// SubscriptionConsumeExcluded 表示订阅额度出资的消费是否不返星屑。默认 true。
+func (s Stardust) SubscriptionConsumeExcluded() bool {
+	return boolOr(s.ExcludeSubscriptionConsume, true)
+}
+
+// ManualTopupExcluded 表示管理员补单是否不给邀请人返星屑。默认 true。
+func (s Stardust) ManualTopupExcluded() bool { return boolOr(s.ExcludeManualTopup, true) }
+
+// EntryShown 表示前端是否渲染商城入口。
+func (m Mall) EntryShown() bool { return boolOr(m.ShowEntry, true) }
+
+// ActiveSecretKeyVersion 归一化当前启用的商城密钥版本:未填(或 <= 0)视为 1。
+// 与 Lottery.ActivePrizeSecretKeyVersion 同一条理由:两个读者(写密文取版本号、
+// 启动校验"退役表不得含当前版本")必须共用一份归一。
+func (m Mall) ActiveSecretKeyVersion() int {
+	if m.SecretKeyVersion <= 0 {
+		return 1
+	}
+	return m.SecretKeyVersion
+}
+
 // EntryShown 表示前端是否渲染娱乐入口。
 func (l Lottery) EntryShown() bool { return boolOr(l.ShowEntry, true) }
 
@@ -890,9 +895,22 @@ func (l Lottery) ProofOpen() bool { return boolOr(l.ProofPublic, true) }
 // 只影响上传:外链封面不看这个开关(它不往磁盘上写任何东西)。
 func (l Lottery) CoverOn() bool { return boolOr(l.CoverEnabled, true) }
 
+// ActivePrizeSecretKeyVersion 归一化当前启用的兑换码密钥版本:未填(或 <= 0)视为 1。
+//
+// 放在 config 包而不是 lottery 包,是因为它有**两个读者**:写密文时给
+// qy_lot_payout.secret_key_version 列取值的那一处,以及启动校验里
+// "退役表不得包含当前版本"的那一处。两边各归一一遍就会漂移,而漂移的表现是
+// 一批行被标成一个查不到密钥的版本 —— 兑换码从此读不出来,且没有任何报错。
+func (l Lottery) ActivePrizeSecretKeyVersion() int {
+	if l.PrizeSecretKeyVersion <= 0 {
+		return 1
+	}
+	return l.PrizeSecretKeyVersion
+}
+
 // MaxLotteryCoverBytes 是 lottery.cover_max_bytes 的硬上界。
 //
-// 与 MaxTicketImageBytes / MaxWithdrawProofBytes 同一条理由(校验魔数要把整张
+// 与 MaxTicketImageBytes 同一条理由(校验魔数要把整张
 // 图读进内存),真正的判定常量在 qianye/service/imagestore.MaxBytes,这里只是把
 // 它搬到 config 包里供校验器引用 —— config 是被 imagestore 依赖的一方,
 // 不能反向 import。
@@ -947,34 +965,14 @@ func (a Audit) ShouldRecordIP() bool   { return boolOr(a.RecordIP, true) }
 func (a Audit) RequestOn() bool                { return a.On() && boolOr(a.RequestEnabled, true) }
 func (t Transfer) ReceiverMustBeEnabled() bool { return boolOr(t.RequireReceiverEnabled, true) }
 func (w Wallet) TransferEntry() bool           { return boolOr(w.ShowTransferEntry, true) }
+func (w Wallet) InviteEntry() bool             { return boolOr(w.ShowInviteEntry, true) }
 func (w Wallet) CommissionEntry() bool         { return boolOr(w.ShowCommissionEntry, true) }
-func (w Wallet) WithdrawEntry() bool           { return boolOr(w.ShowWithdrawEntry, true) }
 func (l LogMetrics) ReasoningColumn() bool     { return boolOr(l.ShowReasoningEffort, true) }
 func (l LogMetrics) CacheRatioColumn() bool    { return boolOr(l.ShowCacheRatio, true) }
 func (g GroupVisibility) On() bool             { return boolOr(g.Enabled, true) }
 func (g GroupVisibility) PricingOn() bool      { return boolOr(g.FilterPricing, true) }
 func (g GroupVisibility) PerfMetricsOn() bool  { return boolOr(g.FilterPerfMetrics, true) }
 func (g GroupVisibility) KeepAutoGroup() bool  { return boolOr(g.IncludeAutoGroup, true) }
-
-// HasWithdrawMethod 判断某种提现方式是否启用。
-func (w Withdraw) HasWithdrawMethod(m string) bool {
-	for _, v := range w.Methods {
-		if v == m {
-			return true
-		}
-	}
-	return false
-}
-
-// ProofOn 表示凭证图片功能当前是否可用。
-//
-// 把"法币方式已开放"并进这一个判定,而不是让每个调用点各写一遍
-// `HasWithdrawMethod(fiat) && ProofEnabled`:凭证只服务于法币打款(站内额度
-// 兑换没有任何要凭证的场景),两个条件漏写一个的方向恰好是"quota-only 的站点
-// 也开始往磁盘上收 PII 图片"。
-func (w Withdraw) ProofOn() bool {
-	return w.HasWithdrawMethod(WithdrawMethodFiat) && boolOr(w.ProofEnabled, true)
-}
 
 // ImageOn 表示工单是否允许附图片。默认开。
 func (t Ticket) ImageOn() bool { return boolOr(t.ImageEnabled, true) }
@@ -1068,7 +1066,7 @@ func parseFile(path string) (*Config, int64, error) {
 // warnIfWorldReadable 在配置文件对所有用户可读时告警。
 // 文件含数据库密码与 PII 密钥,但权限问题不阻塞启动 —— 容器场景下往往无法修正。
 func warnIfWorldReadable(path string, c *Config) {
-	if c.Database.DSN == "" && c.Withdraw.PIIKey == "" {
+	if c.Database.DSN == "" {
 		return
 	}
 	st, err := os.Stat(path)

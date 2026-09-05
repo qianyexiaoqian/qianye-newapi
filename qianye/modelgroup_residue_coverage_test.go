@@ -54,8 +54,8 @@ var modelGroupListFields = map[string]bool{"group_scope": true}
 //
 // 必须逐条给理由,不接受空白豁免 —— 一条没有理由的豁免与一次遗漏长得一模一样。
 var notAModelGroup = map[string]string{
-	"commission:group_name": "返佣费率按**用户分组**分档(这个人属于哪一档 → 抽成几个点)," +
-		"它属于用户分组删除那条链路,见 usergroup_residue_coverage_test.go",
+	"commission:group_name": "星辉佣金费率按**用户分组**分档(这个人属于哪一档 → 抽成几个点)," +
+		"它属于用户分组删除那条链路(commission/residue.go 登记的 groupns.RegisterResidue)",
 }
 
 // knownModelKeyedModules 是此刻确实有模型分组键的模块。

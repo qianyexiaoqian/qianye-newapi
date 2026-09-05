@@ -82,6 +82,11 @@ export type QyLotAdminActivity = {
   outcome: QyLotOutcome
   title: string
   intro: string
+  /**
+   * 币种常量。所有 `*_quota` 字段**字段名不变、单位全是整数星屑**（design-15）：
+   * 字段名进承诺哈希原像，改名等于换协议。老后端不下发时同样按星屑处理。
+   */
+  currency?: 'stardust'
   stake_quota: number
   open_at: number
   close_at: number
@@ -121,7 +126,6 @@ export type QyLotAdminActivity = {
   /** 物化计数。与逐条 COUNT 的差值由对账任务盯着，对不上会落一条 flag。 */
   entry_seq: number
   active_count: number
-  pending_count: number
   pool_quota: number
 
   /** 结算三口径。管理端「本场收支」直读这三个数。 */
@@ -197,11 +201,26 @@ export type QyLotAdminEconomics = {
  * 状态机,奖档是被承诺的内容,两者的生命周期不同(草稿期奖档整体替换,
  * 发布之后连同 spec_hash 一起冻结)。
  */
+/**
+ * 商品奖引用的商城商品摘要（`GET /admin/lottery/activities/:act_no` 的 `products`，
+ * 按商品号索引）。名称 / 形态是展示用的，不进承诺；`remaining` 是此刻还能发几件
+ * （兑换码 = 未用码数，其余 = stock − sold，-1 不限）。
+ */
+export type QyLotPrizeProductBrief = {
+  product_no: string
+  kind: string
+  title: string
+  enabled: boolean
+  remaining: number
+}
+
 export type QyLotAdminActivityView = {
   activity: QyLotAdminActivity
   prizes: QyLotTier[]
   options: QyLotOption[]
   economics: QyLotAdminEconomics
+  /** 只有配了商品奖的活动才非空；老后端不下发。 */
+  products?: Record<string, QyLotPrizeProductBrief>
 }
 
 /** 列表行。刻意不带 `rules_text` / 奖档：列表用不上，几十行加起来就是几百 KB。 */
@@ -307,7 +326,7 @@ export type QyLotCreateInput = {
   /**
    * 「我看清了这场活动最坏会发出多少站内余额」的回执 = Σ(数量 × 额度)。
    *
-   * 只在奖品总额**达到** `large_prize_alert_quota`（阈值 0 = 不要确认）时才被
+   * 只在奖品总额**达到** `large_prize_alert_stardust`（阈值 0 = 不要确认）时才被
    * 后端读。判据是**回显值恰等于总额**，不是一个布尔 —— 布尔会被一个默认 true
    * 的表单或一段抄来的 curl 永久按住，那样它第一次就退化成恒真。
    *
@@ -336,7 +355,6 @@ export type QyLotAdminEntry = {
   status: QyLotEntryStatus
   order_no: string
   chain_hash: string
-  fail_code: string
   created_at: number
   settled_at: number
 }
@@ -352,6 +370,8 @@ export type QyLotAdminPayout = {
   amount_quota: number
   status: QyLotPayoutStatus
   order_no: string
+  /** 商品奖（`kind='product'`）生成的商城订单号；其余类型为空串。 */
+  mall_order_no?: string
   attempts: number
   next_attempt_at: number
   last_error: string
@@ -524,6 +544,8 @@ export type QyLotEffective = {
   show_play_draw_prob: number
   show_play_draw_ball: number
   show_play_guess: number
+  /** 第五种玩法:星屑转盘。它是抽奖竞猜选择夹的第四张标签,关掉只藏那一张标签。 */
+  show_play_wheel: number
   /** 同时进行中的活动数上限。防止运营一口气开出几十场自己也管不过来。 */
   max_active_activities: number
   /** 竞猜默认手续费（万分比）。 */
@@ -536,12 +558,12 @@ export type QyLotEffective = {
    * 它不再是拦住「多写一个零」的那道闸门 —— 一道硬拒绝拦不住手滑，只能把手滑
    * 推迟到更大的数字上。现在盯着它的是下面那条二次确认阈值。
    */
-  max_total_prize_quota: number
+  max_total_prize_stardust: number
   /**
    * 二次确认阈值。奖品总额**达到**它（含相等）时，创建/改活动必须回显精确金额
    * 才能提交（`confirm_net_issue_quota`）。**0 = 连确认都不要**。
    */
-  large_prize_alert_quota: number
+  large_prize_alert_stardust: number
 }
 
 /**
@@ -563,7 +585,7 @@ export type QyLotBound = {
 export type QyLotYamlReadonly = {
   enabled: boolean
   proof_public: boolean
-  pay_password_threshold_quota: number
+  pay_password_threshold_stardust: number
   entry_close_grace_seconds: number
   reveal_delay_seconds: number
   payout_max_attempts: number
@@ -589,17 +611,13 @@ export type QyLotYamlReadonly = {
   max_prize_tiers: number
   max_options: number
   /** 单笔扣款硬上限。它决定一次报名/投注最多能从主额度扣走多少。 */
-  max_stake_quota: number
+  max_stake_stardust: number
   /**
-   * **全站额度换算的整数上界**（`common.MaxQuota`，当前是 2^43 =
-   * 8796093022208，按默认刻度是 ＄17,592,186.04）。它写死在代码里，没有任何
-   * 配置项能抬高它 —— 所以界面上永远读后端下发的这个字段，绝不抄一份常量。
+   * **星屑金额的整数上界**（写死在代码里，没有任何配置项能抬高它）—— 所以界面上
+   * 永远读后端下发的这个字段，绝不抄一份常量。它替代了额度时代的
+   * `system_max_quota`：单位现在是整数星屑，不再经过任何汇率换算。
    *
-   * 刻意不说它是"数据库那一列的宽度"：`users.quota` 在 MySQL / PostgreSQL 上
-   * 落地成 bigint、SQLite 的 INTEGER 也是 8 字节，运营一去查表就会发现每一列
-   * 都是 64 位的，然后连带不再相信整条解释。
-   *
-   * 它与 `max_stake_quota` / `max_total_prize_quota` 的区别是整段文案的分界线：
+   * 它与 `max_stake_stardust` / `max_total_prize_stardust` 的区别是整段文案的分界线：
    *   · 这一项 = 「填不了」。改任何配置、改任何开关都放不开它。
    *   · 那两项 = 「本站不让」。去配置页改一个数，或者把活动的数字调小。
    *
@@ -608,7 +626,7 @@ export type QyLotYamlReadonly = {
    *
    * 可选：旧版本后端不下发它，此时界面只说策略上限，不编一个数出来。
    */
-  system_max_quota?: number
+  system_max_stardust?: number
   spend_max_lookback_days: number
   /**
    * 「近 N 日消费」这个条件从哪一天起才有数据（YYYYMMDD，0 = 尚未回填）。
@@ -642,4 +660,22 @@ export type QyLotAdminConfig = {
   bounds: Record<string, QyLotBound>
   yaml_readonly: QyLotYamlReadonly
   yaml_defaults: QyLotEffective
+}
+
+/**
+ * 改一场已发布转盘的排期（`PUT /admin/lottery/activities/:act_no/schedule`）。
+ * 两个都是 unix 秒；`draw_at` 不在这里 —— 后端按「结束 + reveal_delay_seconds」
+ * 重新派生。转盘的三个时刻不进承诺原像，所以发布后仍可写（见 `updateQyLotSchedule`）。
+ */
+export type QyLotScheduleInput = {
+  open_at: number
+  close_at: number
+}
+
+export type QyLotScheduleResult = {
+  act_no: string
+  status: QyLotStatus
+  open_at: number
+  close_at: number
+  draw_at: number
 }

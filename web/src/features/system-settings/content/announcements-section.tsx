@@ -79,16 +79,26 @@ type AnnouncementsSectionProps = {
   data: string
 }
 
+/**
+ * 与后端 `setting/console_setting/validation.go` 同值同口径：
+ * 条数上限 = maxAnnouncementEntries；字数按 UTF-16 码元计（JS 的
+ * `string.length` 与后端 `utf16.Encode` 数出来的是同一个数）。
+ * 任何一侧改上限必须两边一起改，否则这里的闸门与后端拒绝线错位。
+ */
+const MAX_ANNOUNCEMENTS = 500
+const MAX_CONTENT_CHARS = 500
+const MAX_EXTRA_CHARS = 100
+
 const announcementSchema = z.object({
   content: z
     .string()
     .min(1, 'Content is required')
-    .max(500, 'Content must be less than 500 characters'),
+    .max(MAX_CONTENT_CHARS, 'Content must be less than 500 characters'),
   publishDate: z.string().min(1, 'Publish date is required'),
   type: z.enum(['default', 'ongoing', 'success', 'warning', 'error']),
   extra: z
     .string()
-    .max(100, 'Extra must be less than 100 characters')
+    .max(MAX_EXTRA_CHARS, 'Extra must be less than 100 characters')
     .optional(),
 })
 
@@ -145,8 +155,32 @@ export function AnnouncementsSection({
     useState<Announcement | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<'single' | 'batch'>('single')
 
+  /*
+    与模块级 announcementSchema 同形状，但错误消息过 t()：zod 的消息在 schema
+    构造期就定死了，写在模块级常量里永远是英文原文。模块级那份只用来推导类型。
+  */
+  const translatedSchema = useMemo(
+    () =>
+      z.object({
+        content: z
+          .string()
+          .min(1, t('Content is required'))
+          .max(
+            MAX_CONTENT_CHARS,
+            t('Content must be less than 500 characters')
+          ),
+        publishDate: z.string().min(1, t('Publish date is required')),
+        type: z.enum(['default', 'ongoing', 'success', 'warning', 'error']),
+        extra: z
+          .string()
+          .max(MAX_EXTRA_CHARS, t('Extra must be less than 100 characters'))
+          .optional(),
+      }),
+    [t]
+  )
+
   const form = useForm<AnnouncementFormValues>({
-    resolver: zodResolver(announcementSchema),
+    resolver: zodResolver(translatedSchema),
     defaultValues: {
       content: '',
       publishDate: new Date().toISOString(),
@@ -258,7 +292,26 @@ export function AnnouncementsSection({
       toast.success(t('Announcement updated. Click "Save Settings" to apply.'))
     } else {
       const newId = Math.max(...announcements.map((item) => item.id), 0) + 1
-      setAnnouncements((prev) => [...prev, { id: newId, ...values }])
+      let next = [...announcements, { id: newId, ...values }]
+      /*
+        到顶不再让整包保存被后端拒绝（那个报错的序号是存储序，没人能对上），
+        改成项目方点名的做法：自动删掉**发布日期最旧**的一条，并当场说出来。
+      */
+      if (next.length > MAX_ANNOUNCEMENTS) {
+        const oldest = next.reduce((a, b) =>
+          new Date(a.publishDate).getTime() <= new Date(b.publishDate).getTime()
+            ? a
+            : b
+        )
+        next = next.filter((item) => item.id !== oldest.id)
+        toast.warning(
+          t(
+            'Announcement limit of {{max}} reached — the oldest one was removed automatically.',
+            { max: MAX_ANNOUNCEMENTS }
+          )
+        )
+      }
+      setAnnouncements(next)
       toast.success(t('Announcement added. Click "Save Settings" to apply.'))
     }
     setHasChanges(true)
@@ -267,10 +320,17 @@ export function AnnouncementsSection({
 
   const handleSaveAll = async () => {
     try {
-      await updateOption.mutateAsync({
+      const res = await updateOption.mutateAsync({
         key: 'console_setting.announcements',
         value: JSON.stringify(announcements),
       })
+      /*
+        后端校验失败时接口是 200 + success:false，mutateAsync 正常 resolve，
+        useUpdateOption 已把服务端原话（第几条、内容开头、超了什么）弹出来。
+        这里若不判 success，会紧跟着再弹一句「保存成功」并清掉未保存标记 ——
+        运营看到一红一绿两句话，只能相信绿的那句，改动实际没落库。
+      */
+      if (!res.success) return
       setHasChanges(false)
       toast.success(t('Announcements saved successfully'))
     } catch {
@@ -377,8 +437,22 @@ export function AnnouncementsSection({
             {
               id: 'content',
               header: t('Content'),
-              cellClassName: 'max-w-xs truncate',
-              cell: (announcement) => announcement.content,
+              cellClassName: 'max-w-xs',
+              cell: (announcement) => (
+                <div className='flex min-w-0 items-center gap-1.5'>
+                  <span className='truncate'>{announcement.content}</span>
+                  {/*
+                    存量超长的旧公告是「我这条明明没超也被拒」的真凶：保存是
+                    整表校验，任何一条超限都会挡下全部改动。把它标在行上，
+                    运营才找得到该删改哪一条。
+                  */}
+                  {announcement.content.length > MAX_CONTENT_CHARS && (
+                    <StatusBadge variant='danger' copyable={false}>
+                      {t('Over {{max}} chars', { max: MAX_CONTENT_CHARS })}
+                    </StatusBadge>
+                  )}
+                </div>
+              ),
             },
             {
               id: 'publish-date',
@@ -484,8 +558,23 @@ export function AnnouncementsSection({
                       {...field}
                     />
                   </FormControl>
-                  <FormDescription>
-                    {t('Maximum 500 characters. Supports Markdown and HTML.')}
+                  <FormDescription className='flex items-center justify-between gap-2'>
+                    <span>
+                      {t('Maximum 500 characters. Supports Markdown and HTML.')}
+                    </span>
+                    {/*
+                      实时字数与两侧校验完全同口径（UTF-16 码元），当场可见，
+                      「统计不准确」的观感到此为止。
+                    */}
+                    <span
+                      className={
+                        field.value.length > MAX_CONTENT_CHARS
+                          ? 'text-destructive tabular-nums'
+                          : 'tabular-nums'
+                      }
+                    >
+                      {field.value.length}/{MAX_CONTENT_CHARS}
+                    </span>
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

@@ -183,6 +183,9 @@ func ModelRequestRateLimit() func(c *gin.Context) {
 		if group == "" {
 			group = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 		}
+		// 上面两行在本 fork 里取到的是**模型分组**(auto 令牌下更是字面量 "auto"),
+		// 而这张表是按用户分组配的。口径纠正见 middleware/qy_rate_limit_export.go。
+		group = QyRateLimitGroup(c, group)
 
 		//获取分组的限流配置
 		groupTotalCount, groupSuccessCount, found := setting.GetGroupRateLimit(group)

@@ -35,6 +35,10 @@ import { cn } from '@/lib/utils'
 import { API_KEY_STATUSES } from '../constants'
 import type { ApiKey } from '../types'
 import { ApiKeyGroupSwitchCell } from './api-key-group-switch-cell'
+import {
+  ApiKeyLiveStatsCell,
+  ApiKeyLiveStatsHeader,
+} from './api-key-live-stats-cell'
 import { ApiKeyTimestampCell } from './api-key-timestamp-cell'
 import { ApiKeyTodayUsageCell } from './api-key-today-usage-cell'
 import {
@@ -60,7 +64,7 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
     留一列永远显示「—」等于给上游页面挂一块它自己也解释不了的空白。
     还在取数（undefined）时列要在，那一格显示骨架条。
   */
-  const { todayUsage } = useApiKeys()
+  const { todayUsage, liveStats } = useApiKeys()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const justNowLabel = t('Just now')
   const staleAccessThreshold = dayjs(now).subtract(3, 'month').valueOf()
@@ -184,6 +188,24 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
             cell: ApiKeyTodayUsageCell,
             enableSorting: false,
             size: 130,
+          } satisfies ColumnDef<ApiKey>,
+        ]),
+    ...(liveStats === null
+      ? []
+      : [
+          {
+            id: 'live_stats',
+            // 表头本身也是组件：那颗「自动刷新」开关住在里面（项目方口径
+            // 「默认五秒钟刷新一次，用户可以选择不刷新」）。写成字符串就没地方
+            // 放它了，而放到页面顶部的按钮区会让人以为它管的是整张表。
+            header: ApiKeyLiveStatsHeader,
+            cell: ApiKeyLiveStatsCell,
+            enableSorting: false,
+            size: 150,
+            // 表头是函数时，列显示菜单与手机卡片都取不到标题：前者会退到裸的
+            // 列 id（`live_stats`），后者干脆不给标签。meta.label 是它们唯一的
+            // 来源，漏了不会报错，只会在两处各留一块看不懂的文字。
+            meta: { label: t('Concurrency / min') },
           } satisfies ColumnDef<ApiKey>,
         ]),
     {

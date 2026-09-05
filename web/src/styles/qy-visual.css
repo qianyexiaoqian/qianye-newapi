@@ -1,0 +1,242 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+/*
+ * qy 娱乐板块(转盘 / 抽奖 / 星屑 / 商城)的动效与图形零件。
+ *
+ * ── 为什么单独一个文件、而且不叫 qy-sg-* ──
+ *
+ * Midnight Signal 主题的三个文件(tokens / shape / apply)由
+ * styles/__tests__/qy-sg-apply.test.ts 钉死:文件名单、qy-sg-* 类名 ≤ 20 个、
+ * 辉光 ≤ 2 处、零投影。这里的动效**不属于主题**:它们在任何预设下都要跑,
+ * 而且只描述"怎么动",不描述"长什么样"—— 颜色一律 var(--primary) /
+ * var(--border) / var(--muted),一个十六进制都没有,所以不会与主题打架。
+ * 类名前缀 qy-fx-(动效)与 qy-art-(静态图形),刻意避开 qy-sg- 以免被那份
+ * 双向对账扫进去。
+ *
+ * ── 纪律(task-C-visual)──
+ *
+ *   1. 全部 CSS 驱动:transform / opacity / stroke-dashoffset,没有 JS 定时器。
+ *   2. 每段 ≤ 600ms(转盘那 2 秒是 wheel-face.tsx 里的内联过渡,不在这里)。
+ *   3. prefers-reduced-motion: reduce 下全部关掉,并把终态直接摆出来
+ *      (design-14 §4 第 6 条:停掉位移与过渡,静态形态全部保留)。
+ *   4. 零投影:本文件没有 box-shadow。
+ */
+
+/* ── 环形进度(倒计时环)· 剩余弧长随 stroke-dashoffset 过渡 ── */
+.qy-fx-ring {
+  transition: stroke-dashoffset 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ── 进度条(库存 / 余量)· 宽度过渡 ── */
+.qy-fx-bar {
+  transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 已售罄 / 已耗尽的槽:斜纹而不是空白,空白与"还在加载"长得一样。 */
+.qy-art-hatch {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--border) 0 2px,
+    transparent 2px 6px
+  );
+}
+
+/* ── 选号球:按下缩一点、选中时弹一下 ── */
+.qy-fx-press {
+  transition:
+    transform 0.15s ease-out,
+    background-color 0.15s ease-out,
+    border-color 0.15s ease-out;
+}
+.qy-fx-press:active:not(:disabled) {
+  transform: scale(0.9);
+}
+.qy-fx-pop {
+  animation: qy-fx-pop 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes qy-fx-pop {
+  0% {
+    transform: scale(0.85);
+  }
+  60% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ── 转盘:扇区落档高亮(其余扇区退到半透明)、指针落定时点一下头 ── */
+.qy-fx-sector {
+  transition: opacity 0.4s ease-out;
+}
+.qy-fx-pointer-settle {
+  animation: qy-fx-pointer 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: 50% 0;
+}
+@keyframes qy-fx-pointer {
+  0% {
+    transform: translate(-50%, -33%) scaleY(1);
+  }
+  35% {
+    transform: translate(-50%, -20%) scaleY(0.8);
+  }
+  100% {
+    transform: translate(-50%, -33%) scaleY(1);
+  }
+}
+
+/* ── 中奖粒子:一次性向外散开并淡出。位移由 --qy-fx-dx / --qy-fx-dy 给 ── */
+.qy-fx-burst-particle {
+  animation: qy-fx-burst 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes qy-fx-burst {
+  0% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(
+        calc(-50% + var(--qy-fx-dx)),
+        calc(-50% + var(--qy-fx-dy))
+      )
+      scale(0.4);
+  }
+}
+.qy-fx-burst-ring {
+  animation: qy-fx-burst-ring 0.6s ease-out forwards;
+}
+@keyframes qy-fx-burst-ring {
+  0% {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(0.6);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.4);
+  }
+}
+
+/* ── 数字"到账"滚动:旧值向上滚出、新值从下滚入 ── */
+.qy-fx-roll-in {
+  animation: qy-fx-roll-in 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.qy-fx-roll-out {
+  animation: qy-fx-roll-out 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes qy-fx-roll-in {
+  0% {
+    opacity: 0;
+    transform: translateY(60%);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes qy-fx-roll-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-60%);
+  }
+}
+
+/* ── 进度轨:当前节点呼吸一下 ── */
+.qy-fx-pulse {
+  animation: qy-fx-pulse 1.2s ease-in-out infinite;
+}
+@keyframes qy-fx-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* ── 回执戳记:盖章式落下 ── */
+.qy-fx-stamp {
+  animation: qy-fx-stamp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: 50% 50%;
+}
+@keyframes qy-fx-stamp {
+  0% {
+    opacity: 0;
+    transform: scale(1.6) rotate(-8deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+/* ── 结果块淡入上浮 ── */
+.qy-fx-rise {
+  animation: qy-fx-rise 0.3s ease-out;
+}
+@keyframes qy-fx-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── 缩减动效:全部退化为静态终态 ── */
+@media (prefers-reduced-motion: reduce) {
+  .qy-fx-ring,
+  .qy-fx-bar,
+  .qy-fx-press,
+  .qy-fx-sector {
+    transition: none;
+  }
+  .qy-fx-press:active:not(:disabled) {
+    transform: none;
+  }
+  .qy-fx-pop,
+  .qy-fx-pointer-settle,
+  .qy-fx-roll-in,
+  .qy-fx-pulse,
+  .qy-fx-stamp,
+  .qy-fx-rise {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  /* 指针的静态形态就是它原来的位置(-translate-x-1/2 -translate-y-1/3)。 */
+  .qy-fx-pointer-settle {
+    transform: translate(-50%, -33%);
+  }
+  /* 粒子与旧值层是纯过场,没有静态形态:直接不显示。 */
+  .qy-fx-burst-particle,
+  .qy-fx-burst-ring,
+  .qy-fx-roll-out {
+    animation: none;
+    opacity: 0;
+  }
+}

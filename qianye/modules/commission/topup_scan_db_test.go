@@ -46,6 +46,7 @@ func TestRunTopupScanPinsCursorBeforeFailedOrder(t *testing.T) {
 		gdb := newTestDB(t)
 		mdb := useMainDB(t, &model.TopUp{})
 		useConfig(t, commissionConfig(0))
+		withCompliance(t, true)
 		useMoneyGlobals(t, 7.3, 500000)
 
 		require.NoError(t, gdb.Create(&qymodel.KV{
@@ -58,12 +59,9 @@ func TestRunTopupScanPinsCursorBeforeFailedOrder(t *testing.T) {
 
 		// 901 没有邀请人 → accrueOneShot 一进门就返回 nil,不写任何库;
 		// 900 有邀请人 42 → 会走到 writeAccrual。
-		getInviterCache().Set(901, inviterEntry{})
-		getInviterCache().Set(900, inviterEntry{
-			InviterId:      42,
-			InviteeName:    "u900",
-			InviteeCreated: common.GetTimestamp() - 30*86400,
-		})
+		cacheUser(t, 42, 0, "default")
+		cacheUser(t, 901, 0, "default")
+		cacheUser(t, 900, 42, "default")
 
 		seedTopUp(t, mdb, 101, 901, 0, common.TopUpStatusSuccess)    // 基数为零,直接放行
 		seedTopUp(t, mdb, 102, 900, 1000, common.TopUpStatusSuccess) // 这笔会写库失败
@@ -86,12 +84,13 @@ func TestRunTopupScanPinsCursorBeforeFailedOrder(t *testing.T) {
 		gdb := newTestDB(t)
 		mdb := useMainDB(t, &model.TopUp{})
 		useConfig(t, commissionConfig(0))
+		withCompliance(t, true)
 		useMoneyGlobals(t, 7.3, 500000)
 
 		require.NoError(t, gdb.Create(&qymodel.KV{
 			K: topupCursorKey, V: "100", UpdatedAt: common.GetTimestamp(),
 		}).Error)
-		getInviterCache().Set(901, inviterEntry{})
+		cacheUser(t, 901, 0, "default")
 
 		seedTopUp(t, mdb, 101, 901, 0, common.TopUpStatusSuccess)
 		seedTopUp(t, mdb, 102, 901, 0, common.TopUpStatusSuccess)
@@ -105,12 +104,13 @@ func TestRunTopupScanPinsCursorBeforeFailedOrder(t *testing.T) {
 		gdb := newTestDB(t)
 		mdb := useMainDB(t, &model.TopUp{})
 		useConfig(t, commissionConfig(0))
+		withCompliance(t, true)
 		useMoneyGlobals(t, 7.3, 500000)
 
 		require.NoError(t, gdb.Create(&qymodel.KV{
 			K: topupCursorKey, V: "100", UpdatedAt: common.GetTimestamp(),
 		}).Error)
-		getInviterCache().Set(901, inviterEntry{})
+		cacheUser(t, 901, 0, "default")
 
 		seedTopUp(t, mdb, 101, 901, 0, common.TopUpStatusSuccess)
 		seedTopUp(t, mdb, 102, 901, 0, common.TopUpStatusPending) // 还没付款,不能越过

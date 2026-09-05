@@ -34,6 +34,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"gorm.io/gorm"
@@ -238,12 +239,19 @@ func duplicateUserGroupConfig(tx *gorm.DB, from, to string, operatorId int) erro
 	return nil
 }
 
-// duplicateUserGroupOptions 把 from 在 options 里的两处键复制到 to。
+// duplicateUserGroupOptions 把 from 在 options 里**每一处以用户分组为键**的项复制到 to。
 //
-// 两处键都是**用户分组**为键:
+// 五处键都以用户分组为键:
 //
-//	GroupGroupRatio  外层键 = 用户分组,内层键 = 模型分组
-//	TopupGroupRatio  键     = 用户分组(充值折扣)
+//	GroupGroupRatio               外层键 = 用户分组,内层键 = 模型分组(交叉倍率)
+//	TopupGroupRatio               键     = 用户分组(充值折扣)
+//	ModelRequestRateLimitGroup    键     = 用户分组(按分组的 RPM 上限,安全闸门)
+//	ModelRequestConcurrencyGroup  键     = 用户分组(按分组的在途并发上限,安全闸门)
+//	TokenDefaultGroups            键     = 用户分组(令牌创建界面的默认模型分组)
+//
+// 前两处是计费,后三处是 D-08 之后新增的、同样以 users.group 为键的配置(住在上游
+// setting/,不在扩展库里)。漏掉它们的表现:改名后这一档人的 RPM/并发上限从改名那一秒
+// 起静默回落全站默认 —— 限流是安全设施,静默失效比配错更糟;令牌默认分组也一起没了。
 //
 // 复制而不是移动的理由与 duplicateUserGroupConfig 相同:中断时两个名字都完整。
 func duplicateUserGroupOptions(from, to string) error {
@@ -272,10 +280,49 @@ func duplicateUserGroupOptions(from, to string) error {
 			return err
 		}
 	}
+
+	rate, err := loadRateLimitGroups()
+	if err != nil {
+		return err
+	}
+	if v, ok := rate[from]; ok {
+		rate[to] = v
+		if err := saveRateLimitGroups(rate); err != nil {
+			return err
+		}
+	}
+
+	conc, err := loadConcurrencyGroups()
+	if err != nil {
+		return err
+	}
+	if v, ok := conc[from]; ok {
+		conc[to] = v
+		if err := saveConcurrencyGroups(conc); err != nil {
+			return err
+		}
+	}
+
+	td, err := loadTokenDefaultGroups()
+	if err != nil {
+		return err
+	}
+	if v, ok := td[from]; ok {
+		td[to] = v
+		if err := saveTokenDefaultGroups(td); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-// dropUserGroupOptions 删掉 from 在 options 里的两处键。
+// dropUserGroupOptions 删掉 from 在 options 里**每一处以用户分组为键**的项
+// (清单同 duplicateUserGroupOptions)。漏删的表现:旧名字上留下一条永远不会命中的
+// 限流/并发规则,而这个名字将来被重新用上(新建同名分组)时,一批毫不相干的新用户会
+// 突然落进一条谁都不记得的老规则里 —— 正是 usergroup_residue_coverage_test.go 要防的形状。
+//
+// ModelRequestRateLimitGroup 的键在 D-08 兼容下极少数可能是模型分组名/auto(某个用户
+// 分组未命中时热路径的回落键);这里只按 from 这个**用户分组名**精确删,不触碰其它键。
 func dropUserGroupOptions(from string) error {
 	cross, err := loadCrossRatios()
 	if err != nil {
@@ -295,6 +342,39 @@ func dropUserGroupOptions(from string) error {
 	if _, ok := topup[from]; ok {
 		delete(topup, from)
 		if err := saveTopupRatios(topup); err != nil {
+			return err
+		}
+	}
+
+	rate, err := loadRateLimitGroups()
+	if err != nil {
+		return err
+	}
+	if _, ok := rate[from]; ok {
+		delete(rate, from)
+		if err := saveRateLimitGroups(rate); err != nil {
+			return err
+		}
+	}
+
+	conc, err := loadConcurrencyGroups()
+	if err != nil {
+		return err
+	}
+	if _, ok := conc[from]; ok {
+		delete(conc, from)
+		if err := saveConcurrencyGroups(conc); err != nil {
+			return err
+		}
+	}
+
+	td, err := loadTokenDefaultGroups()
+	if err != nil {
+		return err
+	}
+	if _, ok := td[from]; ok {
+		delete(td, from)
+		if err := saveTokenDefaultGroups(td); err != nil {
 			return err
 		}
 	}
@@ -352,6 +432,73 @@ func saveTopupRatios(m map[string]float64) error {
 		return err
 	}
 	return updateOptionVerified("TopupGroupRatio", string(payload))
+}
+
+// loadRateLimitGroups / saveRateLimitGroups 读写 options.ModelRequestRateLimitGroup
+// (按用户分组的 RPM 上限)。读的是 setting 的内存快照,与热路径 GetGroupRateLimit
+// 乘的是同一份 —— 管理端不能和热路径读不同的表(理由同 loadCrossRatios)。
+func loadRateLimitGroups() (map[string][2]int, error) {
+	out := map[string][2]int{}
+	raw := setting.ModelRequestRateLimitGroup2JSONString()
+	if raw == "" || raw == "null" {
+		return out, nil
+	}
+	if err := common.UnmarshalJsonStr(raw, &out); err != nil {
+		return nil, fmt.Errorf("上游 ModelRequestRateLimitGroup 不是合法 JSON: %w", err)
+	}
+	return out, nil
+}
+
+func saveRateLimitGroups(m map[string][2]int) error {
+	payload, err := common.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return updateOptionVerified("ModelRequestRateLimitGroup", string(payload))
+}
+
+// loadConcurrencyGroups / saveConcurrencyGroups 读写 options.ModelRequestConcurrencyGroup
+// (按用户分组的在途并发上限)。与 RPM 表共用 setting 的同一把锁。
+func loadConcurrencyGroups() (map[string]int, error) {
+	out := map[string]int{}
+	raw := setting.ModelRequestConcurrencyGroup2JSONString()
+	if raw == "" || raw == "null" {
+		return out, nil
+	}
+	if err := common.UnmarshalJsonStr(raw, &out); err != nil {
+		return nil, fmt.Errorf("上游 ModelRequestConcurrencyGroup 不是合法 JSON: %w", err)
+	}
+	return out, nil
+}
+
+func saveConcurrencyGroups(m map[string]int) error {
+	payload, err := common.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return updateOptionVerified("ModelRequestConcurrencyGroup", string(payload))
+}
+
+// loadTokenDefaultGroups / saveTokenDefaultGroups 读写 options.TokenDefaultGroups
+// (令牌创建界面按用户分组预选哪个模型分组)。
+func loadTokenDefaultGroups() (map[string]string, error) {
+	out := map[string]string{}
+	raw := setting.TokenDefaultGroups2JSONString()
+	if raw == "" || raw == "null" {
+		return out, nil
+	}
+	if err := common.UnmarshalJsonStr(raw, &out); err != nil {
+		return nil, fmt.Errorf("上游 TokenDefaultGroups 不是合法 JSON: %w", err)
+	}
+	return out, nil
+}
+
+func saveTokenDefaultGroups(m map[string]string) error {
+	payload, err := common.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return updateOptionVerified("TokenDefaultGroups", string(payload))
 }
 
 // updateOptionVerified 写一条 option 并**回查确认它真的落库了**。

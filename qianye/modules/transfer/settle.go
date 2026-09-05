@@ -114,8 +114,11 @@ func refundReservation(tx *gorm.DB, row Order, now int64) error {
 	}
 
 	// 预占之后若已跨日,日计数早被 rollDay 清零,再减会把今天的额度凭空放大。
-	sameDay := sender.DayBucket == dayBucket(row.CreatedAt)
-	undoReservation(sender, receiver, row.Amount, row.Amount+row.FeeQuota, sameDay, now)
+	// 发起方与收款方各自独立滚动自然日,必须分别判定 —— 用发起方的口径去减收款方的
+	// 当日入账计数,会在"发起方未跨日、收款方已跨日"时凭空放宽 receiver_daily_max_in_count。
+	senderSameDay := sender.DayBucket == dayBucket(row.CreatedAt)
+	receiverSameDay := receiver.DayBucket == dayBucket(row.CreatedAt)
+	undoReservation(sender, receiver, row.Amount, row.Amount+row.FeeQuota, senderSameDay, receiverSameDay, now)
 	if err := saveState(tx, sender); err != nil {
 		return err
 	}

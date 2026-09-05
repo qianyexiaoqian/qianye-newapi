@@ -63,7 +63,8 @@ function summaryRow(
     async_sample_rate_bps: 5000,
     prompt_source: 'inherit',
     category_id: 0,
-    channel_id: 0,
+    channel_ids: [],
+    channel_mode: 'weighted',
     channel_failover: false,
     group_unbound: false,
     shadowed: false,
@@ -93,7 +94,8 @@ describe('作用域草稿与请求体', () => {
       async_sample_rate_bps: 1000,
       prompt: '',
       category_id: 0,
-      channel_id: 0,
+      channel_ids: [],
+      channel_mode: '',
       channel_failover: false,
       remark: '',
       created_at: 0,
@@ -118,7 +120,8 @@ describe('作用域草稿与请求体', () => {
       async_sample_rate_bps: 10000,
       prompt: '本档判定说明',
       category_id: 12,
-      channel_id: 4,
+      channel_ids: [4, 6],
+      channel_mode: 'round_robin',
       channel_failover: true,
       remark: '备注',
       created_at: 0,
@@ -133,9 +136,13 @@ describe('作用域草稿与请求体', () => {
     // 这一档的提示词清空了"，而清空之后它会静默回到继承全局。
     assert.equal(back.prompt, '本档判定说明')
     assert.equal(back.category_id, 12)
-    // 指定渠道同理:往返丢掉它 = 这一档静默回到「按权重随机」,
+    // 指定渠道同理:往返丢掉它 = 这一档静默回到「全部启用渠道」,
     // 于是用户内容开始被发去运营明确没有选的端点,而界面上什么都没变。
-    assert.equal(back.channel_id, 4)
+    // 顺序也要原样:轮询按这个顺序转。
+    assert.deepEqual(back.channel_ids, [4, 6])
+    // 分发方式往返丢掉的表现只能靠统计看出来:界面写着"轮询",线上按权重
+    // 随机,于是同规格的那几台里某一台在某一分钟连吃几倍的量。
+    assert.equal(back.channel_mode, 'round_robin')
     // 故障转移这一位往返丢掉的方向恰好相反、但同样无声:开着的被丢成关着的,
     // 于是运营以为自己配了转移,真到指定渠道挂掉那天,这一档直接放行。
     assert.equal(back.channel_failover, true)
@@ -150,17 +157,54 @@ describe('作用域草稿与请求体', () => {
     const draft = qyAiScopeToDraft()
     const back = qyAiScopeDraftToInput({
       ...draft,
-      channel_id: 0,
+      channel_ids: [],
       channel_failover: true,
     })
     assert.equal(back.channel_failover, false)
 
     const pinned = qyAiScopeDraftToInput({
       ...draft,
-      channel_id: 9,
+      channel_ids: [9],
       channel_failover: true,
     })
     assert.equal(pinned.channel_failover, true, '指定了渠道时必须原样带过去')
+  })
+
+  test('渠道清单去重保序 —— 重复一个 id 在轮询下就是双倍的量', () => {
+    // 界面上勾两次同一个渠道是勾不出来的,但草稿是可以被别处改出来的
+    // (未来的批量编辑、粘贴一段配置)。归一放在这里而不是只放在后端,
+    // 是为了让"我明明只勾了两个"与真正发出去的请求体一致。
+    const draft = qyAiScopeToDraft()
+    const back = qyAiScopeDraftToInput({
+      ...draft,
+      channel_ids: [3, 1, 3, 0, -2],
+    })
+    assert.deepEqual(back.channel_ids, [3, 1])
+  })
+
+  test('分发方式的零值折成 weighted —— 表单上那两个单选必须有一个亮着', () => {
+    // 库里那一列的零值是空串(存量行 ADD COLUMN 回填的就是它),
+    // 而草稿里留一个空串会让两个单选一个都不选中,看起来像"这一格坏了"。
+    const draft = qyAiScopeToDraft({
+      id: 1,
+      name: 'x',
+      enabled: true,
+      priority: 100,
+      model_scope: '',
+      group_scope: 'a',
+      group_scope_mode: 'include',
+      pre_sample_rate_bps: 0,
+      async_sample_rate_bps: 1000,
+      prompt: '',
+      category_id: 0,
+      channel_ids: [1, 2],
+      channel_mode: '',
+      channel_failover: false,
+      remark: '',
+      created_at: 0,
+      updated_at: 0,
+    })
+    assert.equal(draft.channel_mode, 'weighted')
   })
 
   test('抽样率解析失败一律落到 0,绝不落到全量送审', () => {
@@ -240,7 +284,9 @@ describe('汇总行的定性', () => {
 
   test('指定的渠道坏了:抽样照跑,但每次都是「无可用渠道」+ 放行', () => {
     assert.equal(
-      qyAiScopeRowKind(summaryRow({ channel_id: 9 }), { channelBroken: true }),
+      qyAiScopeRowKind(summaryRow({ channel_ids: [9] }), {
+        channelBroken: true,
+      }),
       'channel_down',
       '这一档实际上已经不审核任何内容,而它在列表上与正常策略长得一模一样'
     )
@@ -252,9 +298,10 @@ describe('汇总行的定性', () => {
     // 而真正该说的是另一件事(内容正在发往你没有指定的端点),那是一句提示,
     // 不是一种失效状态,两者不能共用同一种底色。
     assert.equal(
-      qyAiScopeRowKind(summaryRow({ channel_id: 9, channel_failover: true }), {
-        channelBroken: true,
-      }),
+      qyAiScopeRowKind(
+        summaryRow({ channel_ids: [9], channel_failover: true }),
+        { channelBroken: true }
+      ),
       'active'
     )
   })
@@ -265,7 +312,7 @@ describe('汇总行的定性', () => {
         summaryRow({
           pre_sample_rate_bps: 0,
           async_sample_rate_bps: 0,
-          channel_id: 9,
+          channel_ids: [9],
         }),
         { channelBroken: true }
       ),
@@ -282,34 +329,57 @@ describe('指定审核渠道这一格的定性', () => {
   ]
   const cases: {
     name: string
-    channelId: number
+    channelIds: number[]
     channels: { id: number; enabled: boolean }[]
     want: string
   }[] = [
-    { name: '0 = 不指定,按权重随机', channelId: 0, channels, want: 'default' },
-    { name: '指定一个启用中的渠道', channelId: 1, channels, want: 'ok' },
     {
-      name: '指定的渠道被停用了 —— 这一档已经不再审核任何内容',
-      channelId: 2,
+      name: '空 = 不指定,在全部启用渠道之间分发',
+      channelIds: [],
+      channels,
+      want: 'default',
+    },
+    { name: '指定一个启用中的渠道', channelIds: [1], channels, want: 'ok' },
+    {
+      name: '指定的两个都启用中',
+      channelIds: [1, 3],
+      channels: [...channels, { id: 3, enabled: true }],
+      want: 'ok',
+    },
+    {
+      name: '两个里坏了一个:这一档没停摆,但实际在扛的比选的少',
+      channelIds: [1, 2],
+      channels,
+      want: 'partial',
+    },
+    {
+      name: '指定的渠道全被停用了 —— 这一档已经不再审核任何内容',
+      channelIds: [2],
       channels,
       want: 'disabled',
     },
     {
       name: '指定的渠道被删了',
-      channelId: 99,
+      channelIds: [99],
+      channels,
+      want: 'missing',
+    },
+    {
+      name: '一个被删、一个被停用:按偏保守的那一侧报 missing',
+      channelIds: [2, 99],
       channels,
       want: 'missing',
     },
     {
       name: '渠道清单拉不到时报 missing,而不是把一条停止工作的策略画成正常的',
-      channelId: 1,
+      channelIds: [1],
       channels: [],
       want: 'missing',
     },
   ]
   for (const c of cases) {
     test(c.name, () => {
-      assert.equal(qyAiScopeChannelState(c.channelId, c.channels), c.want)
+      assert.equal(qyAiScopeChannelState(c.channelIds, c.channels), c.want)
     })
   }
 })

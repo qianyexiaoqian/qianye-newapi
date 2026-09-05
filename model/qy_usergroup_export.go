@@ -2,7 +2,7 @@ package model
 
 // qy_usergroup_export.go —— 「新用户默认分组」的 hook 声明。
 //
-// 与 qy_export.go / qy_commission_export.go 一样是纯新增文件,合并上游时冲突为 0。
+// 与 qy_export.go / qy_invite_export.go 一样是纯新增文件,合并上游时冲突为 0。
 // 单独成文件是为了让并行开发的各个扩展模块各写各的,不去争同一个文件。
 //
 // 铁律:本文件禁止 import 任何 qianye/* 包。model 是底层包,扩展依赖它,

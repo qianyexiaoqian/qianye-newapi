@@ -27,8 +27,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 
-import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySdAmount } from '../../components/qy-sd-amount'
 import { QyStatusBadge } from '../../components/qy-status-badge'
 import { qyArray } from '../../lib/array'
 import { QyPager } from '../components/qy-pager'
@@ -38,8 +38,9 @@ import { QyLotFinePrint } from '../lottery/components/lottery-fine-print'
 import { QyLotMyTextPrizeDialog } from '../lottery/components/my-text-prize-dialog'
 import { QyLotWhyResultDialog } from '../lottery/components/why-result-dialog'
 import { qyLotBallHits, qyLotBallSafeParsePick } from '../lottery/lib/ball'
-import { qyLotEntryBadgeStatus } from '../lottery/lib/display'
+import { qyLotEntryBadgeStatus, qyLotNoResultKey } from '../lottery/lib/display'
 import type { QyLotMyEntry } from '../lottery/types'
+import { qyMallOrderLink } from '../mall/lib/order-focus'
 import { formatQyTs } from '../ops/format'
 
 const PAGE_SIZE = 20
@@ -140,9 +141,7 @@ export function QyLotteryRecordsBody() {
               {
                 id: 'amount',
                 header: t('qy_common_amount'),
-                cell: (row: QyLotMyEntry) => (
-                  <QyAmountText quota={row.amount} />
-                ),
+                cell: (row: QyLotMyEntry) => <QySdAmount amount={row.amount} />,
               },
               // 选号是这张票唯一由用户决定的内容，而事后争议的第一句话永远是
               // 「我买的明明是那一组」。回执弹窗关掉就没了，这份列表才是留得住
@@ -208,11 +207,7 @@ export function QyLotteryRecordsBody() {
                     // 「未中奖」就是把退款说成输钱，所以回落到「待开奖」。
                     // 其余玩法没有这个判据，仍用原来那个含糊但诚实的占位。
                     <span className='text-muted-foreground text-xs'>
-                      {row.draw_mode !== 'ball'
-                        ? t('qy_lot_result_none')
-                        : (row.ball_result ?? '') === ''
-                          ? t('qy_lot_ball_await_draw')
-                          : t('qy_lot_ball_not_won')}
+                      {t(qyLotNoResultKey(row))}
                     </span>
                   ) : (
                     <span className='inline-flex flex-wrap items-center gap-1.5'>
@@ -223,7 +218,7 @@ export function QyLotteryRecordsBody() {
                       </span>
                       {/* 文本奖没有"到账"这回事：它的金额恒为 0，摆一个
                             +0 出来会让用户以为自己中了个空气。 */}
-                      {row.won.kind === 'text' ? (
+                      {row.won.kind === 'text' && (
                         <Button
                           type='button'
                           variant='outline'
@@ -240,9 +235,45 @@ export function QyLotteryRecordsBody() {
                             ? t('qy_lot_text_view_btn')
                             : t('qy_lot_text_pending')}
                         </Button>
-                      ) : (
-                        <QyAmountText quota={row.won.amount} signed />
                       )}
+                      {/* 商品奖同样 0 星屑：中奖那一刻就落成了一张商城订单，
+                            码 / 发货 / 订阅全在那张单上 —— 按钮直接落到那一单。
+                            老出款行没有单号时退回奖品弹窗（它会说明去哪找）。 */}
+                      {row.won.kind === 'product' &&
+                        ((row.won.mall_order_no ?? '') !== '' ? (
+                          <Button
+                            type='button'
+                            variant='outline'
+                            size='sm'
+                            render={
+                              <Link
+                                {...qyMallOrderLink(
+                                  row.won.mall_order_no ?? ''
+                                )}
+                              />
+                            }
+                          >
+                            <Gift aria-hidden='true' />
+                            {t('qy_lot_product_view_order_btn')}
+                          </Button>
+                        ) : (
+                          <Button
+                            type='button'
+                            variant='outline'
+                            size='sm'
+                            disabled={row.won.payout_no == null}
+                            onClick={() => {
+                              setPrizePayoutNo(row.won?.payout_no ?? null)
+                            }}
+                          >
+                            <Gift aria-hidden='true' />
+                            {t('qy_lot_text_view_btn')}
+                          </Button>
+                        ))}
+                      {row.won.kind !== 'text' &&
+                        row.won.kind !== 'product' && (
+                          <QySdAmount amount={row.won.amount} signed />
+                        )}
                     </span>
                   ),
               },

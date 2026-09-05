@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Info, Pencil, Plus, RefreshCw, ScrollText, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -36,11 +36,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
+import { QyAmountText } from '../../components/qy-amount-text'
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyUsdScaleNotice } from '../../components/qy-usd-scale-notice'
 import { qyErrorMessage } from '../../lib/api'
+import { qyArray } from '../../lib/array'
 import { qyTabTarget } from '../../lib/pages'
 import { qyKeys } from '../../lib/query-keys'
 import {
@@ -53,42 +55,35 @@ import {
 import {
   qyAdminCommissionConfigQuery,
   qyAdminCommissionHealthQuery,
-  qyDeleteCommissionFiatRate,
-  qyRerunDailySettle,
   qyDeleteCommissionGroupRate,
+  qyRerunDailySettle,
   qyUpdateCommissionConfig,
-  qyUpsertCommissionFiatRate,
   qyUpsertCommissionGroupRate,
 } from './api'
 import {
   qyCommissionFieldMeta,
-  qyIsValidFiatRate,
   qyIsValidNullablePercent,
   qyIsValidPercent,
-  qyNormalizeFiatRate,
   qyNormalizePercent,
 } from './lib/fields'
 import type {
   QyCommissionAdminConfig,
-  QyDailySettleRun,
   QyCommissionEffective,
-  QyCommissionFiatRate,
   QyCommissionGroupRate,
-  QyFiatRateLayer,
+  QyDailySettleRun,
 } from './types'
 
 /**
- * 佣金配置页。
+ * 佣金配置页（D-15 从 git HEAD 恢复；法币折算卡删除，加自动入账参数）。
  *
- * 权限只要求 ADMIN，与后端 `AdminAuth` 一致。设计文档建议提到 SUPER_ADMIN，
- * 但后端没跟着收紧 —— 前端单方面加门槛只会让普通管理员在侧边栏看得见、
- * 点进去吃 403，而他们其实调得动这些参数。要收紧应当先改后端。
+ * 权限只要求 ADMIN，与后端 `AdminAuth` 一致。要收紧应当先改后端。
  *
  * **每一次保存都会在后端写审计**（费率直接决定平台出血速度），因此提交前
  * 强制二次确认并复述"改了哪几项、从多少到多少"。
  *
- * 页面分三块：全局默认费率与运营参数、分组差异化费率表、YAML 只读段。
- * 比例一律以百分比呈现与提交，不出现任何万分比。
+ * 页面分四块：全局默认费率与运营参数（含自动入账门槛 / 周期）、YAML 只读段、
+ * 结算与入账调度、分组差异化费率表。比例一律以百分比呈现与提交，不出现任何
+ * 万分比；金额一律是站内额度 —— 这一页上没有任何法币键。
  */
 export function QyAdminCommission() {
   const { t } = useTranslation()
@@ -122,7 +117,6 @@ export function QyAdminCommission() {
               </div>
               <DailySettleCard />
               <GroupRatesCard config={config} />
-              <FiatRatesCard config={config} />
             </div>
           )}
         </QyPageBoundary>
@@ -148,15 +142,12 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
 
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [confirmOpen, setConfirmOpen] = useState(false)
-  // 「回落全站充值汇率」单独一个确认，不走上面那张表单：它提交的是 JSON
-  // null 而不是一个字符串取值，而输入框里的空串在这一档是误操作。
-  const [clearFiatOpen, setClearFiatOpen] = useState(false)
 
   // 服务端值到达（或被别人改过之后重新取到）时重置草稿：
   // 保留旧草稿会让管理员基于过期基线做修改，把别人刚改的值又覆盖回去。
   useEffect(() => {
     const next: Record<string, string> = {}
-    for (const key of config.editable_keys) {
+    for (const key of qyArray(config.editable_keys)) {
       const raw = config.effective[key as keyof QyCommissionEffective] ?? ''
       next[key] =
         typeof raw === 'number'
@@ -178,13 +169,10 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
     onError: (error) => toast.error(qyErrorMessage(error, t)),
   })
 
-  const percentKeys = new Set(config.percent_keys)
+  const percentKeys = new Set(qyArray(config.percent_keys))
   // 可空的百分比键（目前只有兑换码档）。空在这里不是"没填完"，而是一个
   // 要提交上去的取值："取消这一档，跟随充值档"。
-  const nullablePercentKeys = new Set(config.nullable_percent_keys)
-  // 法币折算比例的键。不认它的话它会掉进"整数字段"那一支，`7.3` 直接判非法，
-  // 保存按钮从此永久置灰 —— 而这一页别的字段一个都改不了。
-  const fiatRateKeys = new Set(config.fiat_rate_keys)
+  const nullablePercentKeys = new Set(qyArray(config.nullable_percent_keys))
   const followsTopupLabel = t('qy_cm_f_redemption_follows', {
     percent: config.effective.topup_rate_percent,
   })
@@ -193,7 +181,6 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
     draft,
     percentKeys,
     nullablePercentKeys,
-    fiatRateKeys,
     scale
   )
   const invalidKey = findInvalid(
@@ -201,7 +188,6 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
     draft,
     percentKeys,
     nullablePercentKeys,
-    fiatRateKeys,
     scale
   )
 
@@ -214,30 +200,21 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
         </CardHeader>
         <CardContent className='space-y-4'>
           <QyUsdScaleNotice scale={scale} />
-          {config.editable_keys.map((key) => (
+          {qyArray(config.editable_keys).map((key) => (
             <ConfigField
               key={key}
               fieldKey={key}
               value={draft[key] ?? ''}
               isPercent={percentKeys.has(key)}
-              isFiatRate={fiatRateKeys.has(key)}
               nullable={nullablePercentKeys.has(key)}
-              // 留空时旁边要写清楚"那实际是几个点/按几折算"。只画一个空输入框
-              // 的话，运营看不出这一档实际生效的是什么，而那正是他点进来要看的数。
-              //
-              // 法币兜底档留空**不是**一个可提交的取值（后端 400），这里写的是
-              // "现在还没配，实际走的是全站充值汇率 X" —— 它同时就是"这个人
-              // 走的是哪一层"在兜底这一层上的答案。
+              // 留空时旁边要写清楚"那实际是几个点"。只画一个空输入框的话，
+              // 运营看不出这一档实际生效的是什么，而那正是他点进来要看的数。
               emptyMeansText={
                 nullablePercentKeys.has(key)
                   ? t('qy_cm_f_redemption_follows', {
                       percent: config.effective.topup_rate_percent,
                     })
-                  : fiatRateKeys.has(key)
-                    ? t('qy_cm_f_fiat_rate_follows_global', {
-                        rate: config.effective.fiat_rate_global,
-                      })
-                    : null
+                  : null
               }
               scale={scale}
               overridden={config.overrides[key] != null}
@@ -265,49 +242,8 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
               })}
             </p>
           )}
-          {/*
-            兜底档配过之后必须回得去第三层（全站充值汇率）。手填一个与当前
-            充值汇率相同的数字**顶不了**清空：那只是数值上的巧合，充值汇率
-            此后再改，佣金折算不会跟着走，而界面上仍写着"兜底档"。
-
-            刻意不做成"把输入框清空再保存"：那一步会被一次误触触发，
-            而这一档的空值是资损形状。做成独立按钮 + 独立确认。
-          */}
-          {config.effective.fiat_rate_default !== '' && (
-            <div className='space-y-1'>
-              <Button
-                variant='outline'
-                disabled={saveMutation.isPending}
-                onClick={() => setClearFiatOpen(true)}
-              >
-                {t('qy_cm_f_fiat_rate_clear')}
-              </Button>
-              <p className='text-muted-foreground text-sm'>
-                {t('qy_cm_f_fiat_rate_clear_hint', {
-                  rate: config.effective.fiat_rate_global,
-                })}
-              </p>
-            </div>
-          )}
         </CardContent>
       </Card>
-
-      <QyConfirmDialog
-        open={clearFiatOpen}
-        onOpenChange={setClearFiatOpen}
-        title={t('qy_cm_f_fiat_rate_clear_title')}
-        description={t('qy_cm_f_fiat_rate_clear_desc', {
-          current: config.effective.fiat_rate_default,
-          rate: config.effective.fiat_rate_global,
-        })}
-        confirmText={t('qy_cm_f_fiat_rate_clear')}
-        isLoading={saveMutation.isPending}
-        onConfirm={() => {
-          setClearFiatOpen(false)
-          // null，不是空串。后端据此删掉 qy_settings 那一行。
-          saveMutation.mutate({ fiat_rate_default: null })
-        }}
-      />
 
       <QyConfirmDialog
         open={confirmOpen}
@@ -328,7 +264,6 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
                     change.key,
                     change.from,
                     percentKeys,
-                    fiatRateKeys,
                     scale,
                     followsTopupLabel
                   )}{' '}
@@ -338,7 +273,6 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
                       change.key,
                       change.to,
                       percentKeys,
-                      fiatRateKeys,
                       scale,
                       followsTopupLabel
                     )}
@@ -364,13 +298,6 @@ function ConfigField(props: {
   fieldKey: string
   value: string
   isPercent: boolean
-  /**
-   * 这一项是不是法币折算比例（一个乘数，不是百分比）。
-   *
-   * 它既不带 `%` 也不走额度那一支：区间是 `(0, 1000000]`、最多 8 位小数，
-   * 而且 0 是非法值。当成百分比画的话运营会以为自己配的是 7.3%。
-   */
-  isFiatRate?: boolean
   /** 留空是否合法。为真时空表示"没单独配"，不是"没填完"。 */
   nullable?: boolean
   /** 留空时在提示里补的那一句（"跟随充值档 10%"）。 */
@@ -383,23 +310,16 @@ function ConfigField(props: {
   const meta = qyCommissionFieldMeta(props.fieldKey)
   const label = meta == null ? props.fieldKey : t(meta.labelKey)
   const asUsd = isUsdField(props.fieldKey, props.scale)
-  const isFiatRate = props.isFiatRate === true
-  const parsed =
-    props.isPercent || isFiatRate
-      ? null
-      : parseIntegerDraft(props.fieldKey, props.value, props.scale)
+  const parsed = props.isPercent
+    ? null
+    : parseIntegerDraft(props.fieldKey, props.value, props.scale)
   const emptyDraft = props.value.trim() === ''
-  const invalid = isFiatRate
-    ? // 空不标红：从未配过的站点打开这一页时草稿就是空的，那不是运营填错了。
-      // 真正要挡的"配过之后清空"由 findInvalid 判（它看得到当前值），
-      // 这里只负责非空输入的形状。
-      !emptyDraft && !qyIsValidFiatRate(props.value)
-    : props.isPercent
-      ? !(props.nullable === true
-          ? qyIsValidNullablePercent(props.value)
-          : qyIsValidPercent(props.value))
-      : parsed == null
-  const isEmpty = (props.nullable === true || isFiatRate) && emptyDraft
+  const invalid = props.isPercent
+    ? !(props.nullable === true
+        ? qyIsValidNullablePercent(props.value)
+        : qyIsValidPercent(props.value))
+    : parsed == null
+  const isEmpty = props.nullable === true && emptyDraft
 
   return (
     <div className='space-y-1.5'>
@@ -469,20 +389,24 @@ function YamlReadonlyCard(props: { config: QyCommissionAdminConfig }) {
           <AlertDescription>{t('qy_cm_yaml_note_desc')}</AlertDescription>
         </Alert>
         <dl className='divide-border divide-y text-sm'>
-          {Object.entries(props.config.yaml_readonly).map(([key, value]) => (
-            <div
-              key={key}
-              className='flex items-center justify-between gap-3 py-1.5 first:pt-0 last:pb-0'
-            >
-              <dt className='text-muted-foreground font-mono text-xs'>{key}</dt>
-              <dd className='font-medium tabular-nums'>
-                {typeof value === 'boolean'
-                  ? t(value ? 'qy_common_on' : 'qy_common_off')
-                  : String(value)}
-                {key.endsWith('_percent') ? '%' : ''}
-              </dd>
-            </div>
-          ))}
+          {Object.entries(props.config.yaml_readonly ?? {}).map(
+            ([key, value]) => (
+              <div
+                key={key}
+                className='flex items-center justify-between gap-3 py-1.5 first:pt-0 last:pb-0'
+              >
+                <dt className='text-muted-foreground font-mono text-xs'>
+                  {key}
+                </dt>
+                <dd className='font-medium tabular-nums'>
+                  {typeof value === 'boolean'
+                    ? t(value ? 'qy_common_on' : 'qy_common_off')
+                    : String(value)}
+                  {key.endsWith('_percent') ? '%' : ''}
+                </dd>
+              </div>
+            )
+          )}
         </dl>
       </CardContent>
     </Card>
@@ -573,6 +497,8 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
       // 开关打开就必须填出一个合法比例；关着的时候输入框里剩什么都不算数。
       (draft.redemptionEnabled && !qyIsValidPercent(draft.redemption)))
 
+  const groupRates = qyArray(config.group_rates)
+
   return (
     <Card data-card-hover='false'>
       <CardHeader>
@@ -588,7 +514,7 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
         <Alert>
           <Info />
           <AlertTitle>{t('qy_cm_gr_scope_title')}</AlertTitle>
-          <AlertDescription>{t('qy_cm_gr_scope_desc')}</AlertDescription>
+          <AlertDescription>{t('qy_cm_gr_scope_desc_xh')}</AlertDescription>
         </Alert>
 
         <div className='overflow-x-auto'>
@@ -617,7 +543,7 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
               </tr>
             </thead>
             <tbody className='divide-border divide-y'>
-              {config.group_rates.length === 0 && (
+              {groupRates.length === 0 && (
                 <tr>
                   <td
                     colSpan={7}
@@ -627,7 +553,7 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
                   </td>
                 </tr>
               )}
-              {config.group_rates.map((rule) => (
+              {groupRates.map((rule) => (
                 <tr key={rule.group_name}>
                   <td className='py-2 pe-3 font-mono text-xs'>
                     {rule.group_name}
@@ -777,19 +703,19 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
                 <input
                   type='checkbox'
                   checked={draft.redemptionEnabled}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    // 打开时给一个起始值，免得开关一开就是非法状态；
+                    // 起始值取本组的充值档，也就是关掉时的实际口径。
+                    const seed =
+                      e.target.checked && draft.redemption === ''
+                        ? draft.topup
+                        : draft.redemption
                     setDraft({
                       ...draft,
                       redemptionEnabled: e.target.checked,
-                      // 打开时给一个起始值，免得开关一开就是非法状态；
-                      // 起始值取本组的充值档，也就是关掉时的实际口径。
-                      redemption: e.target.checked
-                        ? draft.redemption === ''
-                          ? draft.topup
-                          : draft.redemption
-                        : draft.redemption,
+                      redemption: seed,
                     })
-                  }
+                  }}
                 />
                 {t('qy_cm_gr_redemption_toggle')}
               </label>
@@ -896,331 +822,6 @@ function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
   )
 }
 
-/** 分组法币比例编辑表单的草稿。空的 groupName 表示"新增"。 */
-type QyFiatRateDraft = {
-  groupName: string
-  rate: string
-  enabled: boolean
-  remark: string
-  /** 编辑既有规则时锁住分组名：改名等于删一条加一条，两条审计比一条清楚。 */
-  locked: boolean
-}
-
-const EMPTY_FIAT_DRAFT: QyFiatRateDraft = {
-  groupName: '',
-  rate: '',
-  enabled: true,
-  remark: '',
-  locked: false,
-}
-
-/**
- * 分组法币折算比例表。
- *
- * 表头必须写清三件事，少一件运营就会做出错误的决定：
- *
- *  1. **口径是上线（推广人）分组**，与上面那张分组费率表**同一个人**。
- *     两张表填的都是推广人所在的分组，不需要在两处按不同口径思考。
- *  2. **层级**：分组档 → 兜底档 → 全站充值汇率，没列出来的分组走后两层。
- *  3. **只对此后的计佣与结算生效**。比例在计佣当刻冻结进账本行，
- *     已经算出来的法币余额是绝对值 —— 改比例不会把它重算，也不该重算。
- *     不写这一句，运营会以为调高比例能给老用户补差价。
- */
-function FiatRatesCard(props: { config: QyCommissionAdminConfig }) {
-  const { config } = props
-  const { t } = useTranslation()
-  const queryClient = useQueryClient()
-
-  const [draft, setDraft] = useState<QyFiatRateDraft | null>(null)
-  const [pendingDelete, setPendingDelete] =
-    useState<QyCommissionFiatRate | null>(null)
-
-  const refresh = async () => {
-    await queryClient.invalidateQueries({
-      queryKey: qyKeys.adminCommissionConfig(),
-    })
-  }
-
-  const upsert = useMutation({
-    mutationFn: qyUpsertCommissionFiatRate,
-    onSuccess: async () => {
-      setDraft(null)
-      toast.success(t('qy_cm_fr_saved'))
-      await refresh()
-    },
-    onError: (error) => toast.error(qyErrorMessage(error, t)),
-  })
-
-  const remove = useMutation({
-    mutationFn: qyDeleteCommissionFiatRate,
-    onSuccess: async () => {
-      setPendingDelete(null)
-      toast.success(t('qy_cm_fr_deleted'))
-      await refresh()
-    },
-    onError: (error) => toast.error(qyErrorMessage(error, t)),
-  })
-
-  const draftInvalid =
-    draft != null &&
-    (draft.groupName.trim() === '' || !qyIsValidFiatRate(draft.rate))
-
-  return (
-    <Card data-card-hover='false'>
-      <CardHeader>
-        <CardTitle>{t('qy_cm_fr_title')}</CardTitle>
-        <CardDescription>
-          {t('qy_cm_fr_desc', {
-            rate: config.effective.fiat_rate_effective,
-            layer: t(
-              fiatLayerLabelKey(config.effective.fiat_rate_effective_layer)
-            ),
-          })}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className='space-y-4'>
-        <Alert>
-          <Info />
-          <AlertTitle>{t('qy_cm_fr_scope_title')}</AlertTitle>
-          <AlertDescription>{t('qy_cm_fr_scope_desc')}</AlertDescription>
-        </Alert>
-        {/* 三层都拿不出一个大于 0 的比例：额度照加、法币不加，两边正在漂。
-            这不是一个可以安静显示的配置状态，必须当成故障画出来。 */}
-        {config.effective.fiat_rate_effective_layer === 'none' && (
-          <Alert variant='destructive'>
-            <Info />
-            <AlertTitle>{t('qy_cm_fr_broken_title')}</AlertTitle>
-            <AlertDescription>{t('qy_cm_fr_broken_desc')}</AlertDescription>
-          </Alert>
-        )}
-
-        <div className='overflow-x-auto'>
-          <table className='w-full min-w-[32rem] text-sm'>
-            <thead>
-              <tr className='text-muted-foreground text-left'>
-                <th className='py-1.5 pe-3 font-medium'>
-                  {t('qy_cm_gr_group')}
-                </th>
-                <th className='py-1.5 pe-3 font-medium'>
-                  {t('qy_cm_fr_rate')}
-                </th>
-                <th className='py-1.5 pe-3 font-medium'>
-                  {t('qy_cm_fr_effective')}
-                </th>
-                <th className='py-1.5 pe-3 font-medium'>
-                  {t('qy_cm_gr_enabled')}
-                </th>
-                <th className='py-1.5 pe-3 font-medium'>
-                  {t('qy_cm_gr_remark')}
-                </th>
-                <th className='py-1.5 font-medium'>{t('qy_common_actions')}</th>
-              </tr>
-            </thead>
-            <tbody className='divide-border divide-y'>
-              {config.fiat_rates.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={6}
-                    className='text-muted-foreground py-3 text-center'
-                  >
-                    {t('qy_cm_fr_empty')}
-                  </td>
-                </tr>
-              )}
-              {config.fiat_rates.map((rule) => (
-                <tr key={rule.group_name}>
-                  <td className='py-2 pe-3 font-mono text-xs'>
-                    {rule.group_name}
-                  </td>
-                  <td className='py-2 pe-3 tabular-nums'>{rule.rate}</td>
-                  {/* 实际生效值 + 层级。禁用的规则在这一列上会显示兜底档的数字
-                      与"兜底档"这个层级标签 —— 关掉一条规则和删掉它于是分得开。 */}
-                  <td className='py-2 pe-3 tabular-nums'>
-                    {rule.effective_rate}
-                    <span className='text-muted-foreground ms-1 text-xs'>
-                      {t(fiatLayerLabelKey(rule.effective_layer))}
-                    </span>
-                  </td>
-                  <td className='py-2 pe-3'>
-                    {t(rule.enabled ? 'qy_common_on' : 'qy_cm_gr_fallback')}
-                  </td>
-                  <td className='text-muted-foreground py-2 pe-3'>
-                    {rule.remark}
-                  </td>
-                  <td className='py-2'>
-                    <div className='flex gap-1'>
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        aria-label={t('qy_common_edit')}
-                        onClick={() =>
-                          setDraft({
-                            groupName: rule.group_name,
-                            rate: rule.rate,
-                            enabled: rule.enabled,
-                            remark: rule.remark,
-                            locked: true,
-                          })
-                        }
-                      >
-                        <Pencil aria-hidden='true' />
-                      </Button>
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        aria-label={t('qy_common_delete')}
-                        onClick={() => setPendingDelete(rule)}
-                      >
-                        <Trash2 aria-hidden='true' />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {draft == null ? (
-          <Button
-            variant='outline'
-            size='sm'
-            onClick={() => setDraft({ ...EMPTY_FIAT_DRAFT })}
-          >
-            <Plus aria-hidden='true' />
-            {t('qy_cm_fr_add')}
-          </Button>
-        ) : (
-          <div className='border-border space-y-3 rounded-md border p-3'>
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <div className='space-y-1.5'>
-                <Label htmlFor='qy-cm-fr-group'>{t('qy_cm_gr_group')}</Label>
-                <Input
-                  id='qy-cm-fr-group'
-                  value={draft.groupName}
-                  disabled={draft.locked}
-                  aria-invalid={draft.groupName.trim() === ''}
-                  onChange={(e) =>
-                    setDraft({ ...draft, groupName: e.target.value })
-                  }
-                />
-                <p className='text-muted-foreground text-xs'>
-                  {t('qy_cm_fr_group_hint')}
-                </p>
-              </div>
-              <div className='space-y-1.5'>
-                <Label htmlFor='qy-cm-fr-remark'>{t('qy_cm_gr_remark')}</Label>
-                <Input
-                  id='qy-cm-fr-remark'
-                  value={draft.remark}
-                  onChange={(e) =>
-                    setDraft({ ...draft, remark: e.target.value })
-                  }
-                />
-              </div>
-              <div className='space-y-1.5'>
-                <Label htmlFor='qy-cm-fr-rate'>{t('qy_cm_fr_rate')}</Label>
-                {/* 刻意不给这个输入框加任何单位后缀。它是一个乘数，
-                    加个 `%` 就会让运营以为自己配的是 7.3%。 */}
-                <Input
-                  id='qy-cm-fr-rate'
-                  inputMode='decimal'
-                  value={draft.rate}
-                  aria-invalid={!qyIsValidFiatRate(draft.rate)}
-                  onChange={(e) => setDraft({ ...draft, rate: e.target.value })}
-                />
-                <p className='text-muted-foreground text-xs'>
-                  {t('qy_cm_fr_rate_hint')}
-                </p>
-              </div>
-            </div>
-            <label className='flex items-center gap-2 text-sm'>
-              <input
-                type='checkbox'
-                checked={draft.enabled}
-                onChange={(e) =>
-                  setDraft({ ...draft, enabled: e.target.checked })
-                }
-              />
-              {t('qy_cm_fr_enabled_hint')}
-            </label>
-            <p className='text-muted-foreground text-xs'>
-              {t('qy_cm_fr_forward_only')}
-            </p>
-            <div className='flex gap-2'>
-              <Button
-                disabled={draftInvalid || upsert.isPending}
-                onClick={() =>
-                  upsert.mutate({
-                    group_name: draft.groupName.trim(),
-                    rate: qyNormalizeFiatRate(draft.rate),
-                    enabled: draft.enabled,
-                    remark: draft.remark,
-                  })
-                }
-              >
-                {t('qy_cm_save')}
-              </Button>
-              <Button variant='outline' onClick={() => setDraft(null)}>
-                {t('qy_common_cancel')}
-              </Button>
-            </div>
-          </div>
-        )}
-      </CardContent>
-
-      <QyConfirmDialog
-        open={pendingDelete != null}
-        onOpenChange={(open) => {
-          if (!open) setPendingDelete(null)
-        }}
-        title={t('qy_cm_fr_delete_title')}
-        // 删除之后这个分组会走哪一层、按几折算，必须现在就写出来 ——
-        // "回落兜底档"这四个字回答不了"那到底是多少钱"。
-        description={t('qy_cm_fr_delete_desc', {
-          rate: config.effective.fiat_rate_effective,
-          layer: t(
-            fiatLayerLabelKey(config.effective.fiat_rate_effective_layer)
-          ),
-        })}
-        confirmText={t('qy_common_delete')}
-        isLoading={remove.isPending}
-        details={
-          pendingDelete == null ? null : (
-            <p className='text-sm'>
-              <span className='font-mono'>{pendingDelete.group_name}</span>：
-              {pendingDelete.rate}
-            </p>
-          )
-        }
-        onConfirm={() => {
-          if (pendingDelete != null) remove.mutate(pendingDelete.group_name)
-        }}
-      />
-    </Card>
-  )
-}
-
-/**
- * 层级 → 文案键。
- *
- * 界面上每一处显示"实际按几折算"的地方都必须同时显示它来自哪一层：
- * 一个孤零零的 7.3 回答不了"我给 vip 配的 9 为什么没生效"，
- * 而"（兜底档）"这三个字当场就回答了 —— 那一行被禁用了。
- */
-function fiatLayerLabelKey(layer: QyFiatRateLayer): string {
-  switch (layer) {
-    case 'group':
-      return 'qy_cm_fr_layer_group'
-    case 'default':
-      return 'qy_cm_fr_layer_default'
-    case 'global':
-      return 'qy_cm_fr_layer_global'
-    default:
-      return 'qy_cm_fr_layer_none'
-  }
-}
-
 /**
  * 一条没单独配兑换码档的分组规则，实际按几个点返。
  *
@@ -1245,7 +846,7 @@ function groupEffectiveRedemptionPercent(
 /**
  * 该字段是否按 USD 录入。
  *
- * 只有金额字段（`unit === 'quota'`）才换算；成熟期天数、注册时长这些不是钱。
+ * 只有金额字段（`unit === 'quota'`）才换算；成熟期天数、入账周期这些不是钱。
  * 换算率无法无损表示时全部退回额度单位，理由见 `lib/quota-usd.ts` 的文件头。
  */
 function isUsdField(key: string, scale: QyUsdScale): boolean {
@@ -1279,16 +880,14 @@ function parseIntegerDraft(
  * 不转成 Number 再比 —— 那会让 10.25 与 10.249999999999998 判成不同。
  *
  * 金额字段比较的是**额度整数**，不是界面那串 USD：草稿文本由
- * `qyQuotaDraftText` 生成、由 `qyQuotaDraftValue` 读回，往返无损（见
- * `lib/__tests__/quota-usd.test.ts`），所以运营什么都不改直接保存时这里
- * 一条改动都挑不出来。
+ * `qyQuotaDraftText` 生成、由 `qyQuotaDraftValue` 读回，往返无损，所以运营
+ * 什么都不改直接保存时这里一条改动都挑不出来。
  */
 function collectChanges(
   config: QyCommissionAdminConfig,
   draft: Record<string, string>,
   percentKeys: Set<string>,
   nullablePercentKeys: Set<string>,
-  fiatRateKeys: Set<string>,
   scale: QyUsdScale
 ): QyConfigChange[] {
   const out: QyConfigChange[] = []
@@ -1296,17 +895,6 @@ function collectChanges(
     const current = String(
       config.effective[key as keyof QyCommissionEffective] ?? ''
     )
-    if (fiatRateKeys.has(key)) {
-      // 非法输入（含空串与 0）一律不进 patch：后端会 400，而 findInvalid
-      // 已经把保存按钮置灰并标红了那一格。规范化之后再比，"7.30" 与 "7.3"
-      // 是同一个比例，不该在审计里留下一条谁都没改过的记录。
-      if (!qyIsValidFiatRate(raw)) continue
-      const next = qyNormalizeFiatRate(raw)
-      if (next !== qyNormalizeFiatRate(current)) {
-        out.push({ key, from: current, to: next })
-      }
-      continue
-    }
     if (percentKeys.has(key)) {
       // 可空键的空串是一个**取值**（"取消这一档"），必须走完整的比较与提交，
       // 不能跟"填了一半的非法输入"一起被 continue 掉 —— 那样运营清空输入框
@@ -1335,34 +923,23 @@ function findInvalid(
   draft: Record<string, string>,
   percentKeys: Set<string>,
   nullablePercentKeys: Set<string>,
-  fiatRateKeys: Set<string>,
   scale: QyUsdScale
 ): string | null {
+  // `config` 仍然进参：后端多下发一个前端不认识的键时，它的值就是判据 ——
+  // 这里不认识的键按"原样字面量"处理，只要草稿等于当前值就不算非法。
   for (const [key, raw] of Object.entries(draft)) {
-    if (fiatRateKeys.has(key)) {
-      const current = String(
-        config.effective[key as keyof QyCommissionEffective] ?? ''
-      )
-      if (raw.trim() === '') {
-        // 空要分两种情况，混起来会锁死整张表单或者放行一次静默的降级：
-        //
-        //   从未配过（升级上来的站点）→ 空就是当前状态，合法。把它判非法的话，
-        //     这一页**别的字段一个都改不了**，因为保存按钮是整张表单共用的。
-        //   配过之后被清空          → 那是一次误触，必须挡下。清空输入框再保存
-        //     会让没配分组档的用户悄悄退回充值页汇率，而运营多半只是想改个数
-        //     改到一半。真想回落第三层有专门的按钮（`qy_cm_f_fiat_rate_clear`），
-        //     它提交 JSON null 并单独确认一次。
-        if (current !== '') return key
-        continue
-      }
-      if (!qyIsValidFiatRate(raw)) return key
-      continue
-    }
     if (percentKeys.has(key)) {
       const ok = nullablePercentKeys.has(key)
         ? qyIsValidNullablePercent(raw)
         : qyIsValidPercent(raw)
       if (!ok) return key
+      continue
+    }
+    if (qyCommissionFieldMeta(key) == null) {
+      const current = String(
+        config.effective[key as keyof QyCommissionEffective] ?? ''
+      )
+      if (raw.trim() !== current) return key
       continue
     }
     if (parseIntegerDraft(key, raw, scale) == null) return key
@@ -1381,15 +958,9 @@ function formatChangeValue(
   key: string,
   value: string,
   percentKeys: Set<string>,
-  fiatRateKeys: Set<string>,
   scale: QyUsdScale,
   emptyLabel: string
 ): string {
-  if (fiatRateKeys.has(key)) {
-    // 法币比例是乘数，绝不能带 `%`。空(从未配过)复述成 `—`：
-    // 确认弹窗上写 "→ 7.3" 而左边是一个空白，读起来就是"从没配过变成 7.3"。
-    return value.trim() === '' ? '—' : value
-  }
   if (percentKeys.has(key)) {
     return value.trim() === '' ? emptyLabel : `${value}%`
   }
@@ -1398,21 +969,18 @@ function formatChangeValue(
 }
 
 /**
- * 结算调度。
+ * 结算与入账调度。
  *
- * 佣金改成**一天结算一次**之后，这一段是运营唯一需要每天扫一眼的东西：
- * 今天那一跑挂在半路，当天剩下所有人的佣金都要等到明天，而用户端、佣金流水页、
- * 余额页上全都没有任何症状 —— 唯一的痕迹就在这里。
- *
- * 「重跑今天这一轮」不是加速按钮：同一天最多自动重试 5 次，次数用完之后即使
- * 故障原因已经消失也不会再自动跑，那时这个按钮是整轮补救的唯一入口（另一条
- * 「立即结算」是按人一条的，救不了整个队列）。
+ * 两段各答一个问题：**今天这一跑成了没有**（一日一结算，跑挂了当天剩下所有人的
+ * 佣金都要等到明天）与**自动入账跑得怎么样**（够门槛的人数、卡在 held 的单数）。
+ * 后者是 D-15 新加的：结算之后到星辉那一跳由它完成，held 非 0 就该去资金对账页。
  */
 function DailySettleCard() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const query = useQuery(qyAdminCommissionHealthQuery())
   const snapshot = query.data?.daily_settle
+  const credit = query.data?.credit
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   const rerunMutation = useMutation({
@@ -1475,6 +1043,33 @@ function DailySettleCard() {
             {t('qy_cm_ds_rerun')}
           </Button>
         </div>
+
+        {/* 自动入账那一段。取不到（后端暂不下发）就说取不到，不画一排 0：
+            0 个 held 与"不知道有几个 held"对运营是两个完全不同的结论。 */}
+        <div className='border-border space-y-2 rounded border p-3 text-sm'>
+          <p className='font-medium'>{t('qy_cm_credit_title')}</p>
+          <p className='text-muted-foreground text-xs'>
+            {t('qy_cm_credit_desc')}
+          </p>
+          {credit == null ? (
+            <p className='text-muted-foreground'>{t('qy_cm_credit_none')}</p>
+          ) : (
+            <div className='grid gap-2 sm:grid-cols-3'>
+              <QyDailySettleField
+                label={t('qy_cm_credit_pending')}
+                value={String(credit.pending)}
+              />
+              <QyDailySettleField
+                label={t('qy_cm_credit_held')}
+                value={String(credit.held)}
+              />
+              <QyDailySettleField
+                label={t('qy_cm_credit_held_quota')}
+                value={<QyAmountText quota={credit.held_quota} />}
+              />
+            </div>
+          )}
+        </div>
       </CardContent>
 
       <QyConfirmDialog
@@ -1493,7 +1088,7 @@ function DailySettleCard() {
   )
 }
 
-function QyDailySettleField(props: { label: string; value: string }) {
+function QyDailySettleField(props: { label: string; value: ReactNode }) {
   return (
     <div className='flex items-baseline justify-between gap-3'>
       <span className='text-muted-foreground'>{props.label}</span>

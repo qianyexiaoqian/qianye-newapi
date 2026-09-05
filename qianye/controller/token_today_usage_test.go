@@ -21,7 +21,7 @@ import (
 
 // token_today_usage_test.go —— 密钥页「今日消耗」那条端点的**窗口**。
 //
-// 聚合本身(分组、过滤、上界)由 qianye/modules/commission 的用例守,
+// 聚合本身(分组、过滤、上界)由 qianye/modules/invite 的用例守,
 // 日界的时区算术由 qianye/serverday 的用例守(含夏令时跳变日的整张表)。
 // 这里守的是这条端点自己唯一会做错的事:**它到底把哪一段叫「今天」**。
 //
@@ -29,25 +29,25 @@ import (
 // 59 分 59 秒是今日的消耗。」
 //
 // 错起来完全没有症状:数字仍然是一个像模像样的金额,只是把昨晚那几笔算到了
-// 今天。所以夹具刻意留着 day_offset_minutes: 480 —— 那是返佣的「消费日」,
+// 今天。所以夹具刻意留着 day_offset_minutes: 480 —— 那是邀请返的「消费日」,
 // 这条端点**不能**再用它;留着它是为了让"用错了"这件事有机会红。
 
 // useTodayUsageEnv 加载一份 day_offset_minutes=480 的配置,并接上一个内存日志库。
 //
-// 480 是**诱饵**:端点若还在读返佣日界,窗口就会变成 UTC+8 的一天,
+// 480 是**诱饵**:端点若还在读邀请返日界,窗口就会变成 UTC+8 的一天,
 // 下面播下去的种子会立刻对不上(除非机器本地时区恰好就是 UTC+8)。
 func useTodayUsageEnv(t *testing.T) *gorm.DB {
 	t.Helper()
 
 	yaml := "enabled: true\n" +
 		"database:\n  dsn: \"u:p@tcp(127.0.0.1:3306)/qy\"\n" +
-		"commission:\n  enabled: true\n  day_offset_minutes: 480\n"
+		"invite:\n  enabled: true\n  day_offset_minutes: 480\n"
 	p := filepath.Join(t.TempDir(), "qianye.yaml")
 	require.NoError(t, os.WriteFile(p, []byte(yaml), 0o600))
 	t.Setenv(config.EnvConfigPath, p)
 	require.NoError(t, config.Load())
-	require.Equal(t, 480, config.Get().Commission.DayOffsetMinutes,
-		"诱饵没放进去的话,下面那条「不许再走返佣日界」的用例就白跑了")
+	require.Equal(t, 480, config.Get().Invite.DayOffsetMinutes,
+		"诱饵没放进去的话,下面那条「不许再走邀请返日界」的用例就白跑了")
 
 	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)

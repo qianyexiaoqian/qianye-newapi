@@ -222,8 +222,8 @@ func TestRedemptionAccrualUsesRedemptionRate(t *testing.T) {
 	seedGlobalRedemptionOverride(t, gdb, "3")
 
 	// 费率按**上线**的分组取:42 在 vip,下线 900 在 default。
-	cacheUser(42, 0, "vip")
-	cacheUser(900, 42, "default")
+	cacheUser(t, 42, 0, "vip")
+	cacheUser(t, 900, 42, "default")
 
 	ctx := context.Background()
 	require.NoError(t, accrueOneShot(ctx, 900, 20000, decimal.Zero,
@@ -245,8 +245,8 @@ func TestRedemptionAccrualFollowsTopupWhenUnset(t *testing.T) {
 	seedRedemptionGroupRate(t, gdb, "vip", "12.5", "8.25", nil)
 
 	// 费率按**上线**的分组取:42 在 vip,下线 900 在 default。
-	cacheUser(42, 0, "vip")
-	cacheUser(900, 42, "default")
+	cacheUser(t, 42, 0, "vip")
+	cacheUser(t, 900, 42, "default")
 
 	ctx := context.Background()
 	require.NoError(t, accrueOneShot(ctx, 900, 20000, decimal.Zero,
@@ -288,7 +288,8 @@ func TestGlobalRedemptionOverrideZeroIsNotUnset(t *testing.T) {
 func TestGlobalRedemptionOverrideBlankFallsBackToYaml(t *testing.T) {
 	gdb := newTestDB(t)
 	cfg := commissionRateConfig("10", "5")
-	cfg.Commission.RedemptionRatePercent = "4"
+	four := 400
+	cfg.Commission.RedemptionRateBps = &four
 	useConfig(t, cfg)
 
 	seedGlobalRedemptionOverride(t, gdb, "   ")
@@ -298,37 +299,15 @@ func TestGlobalRedemptionOverrideBlankFallsBackToYaml(t *testing.T) {
 	assert.Equal(t, 400, *s.RedemptionRateUnits, "空覆盖 ⇒ 回落 YAML 的 4%,不是 0%")
 }
 
-// TestConfigNullableRateUnits 锁定 YAML 侧的换算:空 ⇒ nil,"0" ⇒ 显式 0,
-// 写坏了 ⇒ nil(跟随充值档),而不是 configRateUnits 那种回落 0。
-//
-// 回落方向的选择是有代价差的:回落 nil 只是维持存量行为;回落 0 等于替一个
-// 填错格式的运营做出"兑换码不返佣"的决定,而那笔少发的佣金没人会来投诉。
+// TestConfigNullableRateUnits 锁定 YAML 侧的换算:nil ⇒ 没配(跟随充值档),
+// 0 ⇒ 显式 0%,越界 ⇒ 0(validate 已在启动时拦下,这里只是零值 Config 的兜底)。
 func TestConfigNullableRateUnits(t *testing.T) {
-	cases := []struct {
-		name string
-		raw  string
-		want *int
-	}{
-		{"空串 ⇒ 没配", "", nil},
-		{"纯空白 ⇒ 没配", "   ", nil},
-		{"显式 0 ⇒ 0%", "0", func() *int { v := 0; return &v }()},
-		{"两位小数", "2.55", func() *int { v := 255; return &v }()},
-		{"非数值 ⇒ 没配", "abc", nil},
-		{"负数 ⇒ 没配", "-1", nil},
-		{"超过 100% ⇒ 没配", "101", nil},
-		{"三位小数 ⇒ 没配", "1.005", nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := configNullableRateUnits("redemption_rate_percent", tc.raw)
-			if tc.want == nil {
-				assert.Nil(t, got)
-				return
-			}
-			require.NotNil(t, got)
-			assert.Equal(t, *tc.want, *got)
-		})
-	}
+	zero, some, over := 0, 255, 99999
+	assert.Nil(t, configNullableRateUnits(nil), "nil ⇒ 没配")
+	require.NotNil(t, configNullableRateUnits(&zero))
+	assert.Equal(t, 0, *configNullableRateUnits(&zero), "显式 0 ⇒ 0%")
+	assert.Equal(t, 255, *configNullableRateUnits(&some))
+	assert.Equal(t, 0, *configNullableRateUnits(&over), "越界回落 0")
 }
 
 // TestAdminPutRedemptionRateClearsOverride 守管理端那条"改回跟随"的路。
@@ -430,7 +409,7 @@ func TestAdminPutGroupRateRejectsBadRedemptionPercent(t *testing.T) {
 			`{"group_name":"vip","topup_rate_percent":"12.5","consume_rate_percent":"8.25",`+
 				`"redemption_rate_percent":`+bad+`,"enabled":true}`, adminPutGroupRate)
 		assert.Equal(t, http.StatusBadRequest, rec.Code, "兑换码比例 %s 必须被拒", bad)
-		assert.True(t, strings.Contains(rec.Body.String(), "兑换码返佣比例"),
+		assert.True(t, strings.Contains(rec.Body.String(), "兑换码计佣比例"),
 			"错误信息要点名是哪一档: %s", rec.Body.String())
 	}
 }

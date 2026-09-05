@@ -51,7 +51,15 @@ export type QyPage<T> = {
   items: T[]
   total: number
   p?: number
+  /** 星屑 / 商城这一批新接口的页码参数叫 `page`（从 1 起），响应也原样回显它。 */
+  page?: number
   page_size?: number
+}
+
+/** 星屑 / 商城这一批接口的分页参数：`page` 从 1 起。 */
+export type QyPageParams = {
+  page: number
+  page_size: number
 }
 
 // ───────────────────────────── 引导端点 ─────────────────────────────
@@ -59,8 +67,19 @@ export type QyPage<T> = {
 /** YAML 功能开关。字段名与 `config.go` 的 `features` 段完全一致。 */
 export type QyFeatures = {
   transfer: boolean
+  /**
+   * 邀请返星屑（D-14）。它取代了此前的 `commission` 与 `withdraw` 两格：
+   * 佣金账本、结算、法币折算与提现模块整体删除，邀请人的全部收益只有星屑
+   * （不可提现、不可划转）。关掉 = 不建关系、不发任何邀请返、推广页 404。
+   */
+  invite: boolean
+  /**
+   * 星辉佣金（D-15）。与 `invite` **并存**：D-14 曾把佣金账本整体删除、只留星屑侧
+   * 的邀请返；D-15 把账本请回来，记的是「星辉」（站内余额 `users.quota` 的展示名），
+   * 到期自动入账，没有申请、没有审核、没有法币。关掉 = 不计佣、佣金页与结算台 404，
+   * 星屑侧的邀请返照旧。
+   */
   commission: boolean
-  withdraw: boolean
   availability: boolean
   violation: boolean
   lottery: boolean
@@ -69,20 +88,51 @@ export type QyFeatures = {
   group_matrix: boolean
   /**
    * 支付密码。它没有自己的 `enabled` —— 后端下发的是
-   * `transfer || withdraw || lottery`（`guard.FlagPayPassword`）。
+   * `transfer || lottery`（`guard.FlagPayPassword`；提现模块删除后 OR 链少了一项）。
    *
    * 这一页此前标的是 `feature: 'transfer'`：关掉划转，「支付密码」整页从侧栏
-   * 消失，而提现照旧无条件要求验密 —— 没设过密码的用户提现恒被拒，
-   * 想去设置却连入口都找不到，佣金永久滞留在账上。
+   * 消失，而抽奖报名照旧要求验密 —— 没设过密码的用户想去设置却连入口都找不到。
    */
   pay_password: boolean
+  /**
+   * 星屑（站内积分，与额度不同的第二种货币）。娱乐活动的报名费与派奖全部走它，
+   * 商城也只收它 —— 所以 `mall` 在后端是 `mall.enabled && stardust.enabled`，
+   * 星屑关掉时商城一定跟着关。
+   */
+  stardust: boolean
+  mall: boolean
 }
 
-/** 钱包页三个入口卡的显隐开关。 */
+/**
+ * 星屑段（引导端点 `stardust`）。
+ *
+ * `name` 是运营可改的**货币名**（默认「星屑」）：所有星屑金额旁边印的单位都读它，
+ * 前端**不**硬编码。缺键或空白时由 `useStardustName()` 回落到 i18n 的
+ * `qy_sd_unit_default` —— 回落放在 hook 而不是 `normalizeQyConfig` 里，因为后者
+ * 在模块加载期就要把 localStorage 快照归一化一次，那一刻 i18next 还没初始化，
+ * 而这个回落词本身是要随语言切换的。
+ */
+export type QyStardustOptions = {
+  show_entry: boolean
+  name: string
+}
+
+/** 商城段（引导端点 `mall`）。 */
+export type QyMallOptions = {
+  show_entry: boolean
+}
+
+/**
+ * 钱包页入口的显隐开关。
+ *
+ * 「余额划转」一格照旧；`show_commission_entry` 随 D-15 回到契约里（后端
+ * `wallet.show_commission_entry` 回来）。前端目前仍不读它 —— 推广入口在侧栏而
+ * 不在钱包页 —— 登记只是让引导端点的形状与契约逐字一致。`show_withdraw_entry`
+ * 不回来：提现模块已永久删除。
+ */
 export type QyWalletEntries = {
   show_transfer_entry: boolean
   show_commission_entry: boolean
-  show_withdraw_entry: boolean
 }
 
 /** 日志页扩展列的显隐开关。 */
@@ -90,15 +140,6 @@ export type QyLogMetricsOptions = {
   show_reasoning_effort: boolean
   show_cache_ratio: boolean
   enable_filter: boolean
-}
-
-/** 提现方式。`quota` = 站内额度兑换，`fiat` = 线下法币打款。 */
-export type QyWithdrawMethod = 'fiat' | 'quota'
-
-export type QyWithdrawOptions = {
-  methods: QyWithdrawMethod[]
-  fiat_currency: string
-  remark_max_runes: number
 }
 
 /**
@@ -151,6 +192,15 @@ export type QyLotPlays = {
   draw_prob: boolean
   draw_ball: boolean
   guess: boolean
+  /**
+   * 星屑转盘（`kind='draw', draw_mode='wheel'`）。
+   *
+   * 第五种玩法。项目方 2026-09-05 把它并成「抽奖竞猜」选择夹的第四张标签
+   * （`lib/pages.ts` 的 `QY_TAB_GROUPS`），那张标签的显隐由
+   * `show_entry × plays.wheel` 决定（`nav.ts` 的 `qyEntrySwitches.wheel`）；
+   * 关掉它只藏这一张标签，宿主那一行由其余玩法撑着。
+   */
+  wheel: boolean
 }
 
 /**
@@ -166,9 +216,10 @@ export type QyConfig = {
   features: QyFeatures
   wallet: QyWalletEntries
   log_metrics: QyLogMetricsOptions
-  withdraw_options: QyWithdrawOptions
   transfer_options: QyTransferOptions
   lottery: QyLotteryOptions
+  stardust: QyStardustOptions
+  mall: QyMallOptions
 }
 
 /** 引导端点的原始响应形状（字段可能缺失）。 */
@@ -178,11 +229,12 @@ export type QyConfigPayload = {
   features?: Partial<QyFeatures>
   wallet?: Partial<QyWalletEntries>
   log_metrics?: Partial<QyLogMetricsOptions>
-  withdraw_options?: Partial<QyWithdrawOptions>
   transfer_options?: Partial<QyTransferOptions>
   lottery?: Partial<Omit<QyLotteryOptions, 'plays'>> & {
     plays?: Partial<QyLotPlays>
   }
+  stardust?: Partial<QyStardustOptions>
+  mall?: Partial<QyMallOptions>
 }
 
 // ───────────────────────────── 状态机 ─────────────────────────────
@@ -218,7 +270,7 @@ export type QyStatus =
 // ───────────────────────────── 时间线 ─────────────────────────────
 
 /**
- * 单据时间线的一个节点。提现历史、佣金结算这类多段流程用它渲染。
+ * 单据时间线的一个节点。商城订单这类多段流程用它渲染。
  *
  * `state` 决定视觉：`done` 实心、`current` 高亮 + 呼吸、`pending` 灰显、
  * `failed` 用失败色。未到达的节点必须保留占位而不是不渲染 ——
@@ -233,15 +285,19 @@ export type QyTimelineItem = {
   state?: 'current' | 'done' | 'failed' | 'pending'
 }
 
-/** 资金单业务类型，取自 `qianye/model/fund_order.go` 的 kind 常量。 */
+/**
+ * 资金单业务类型，取自 `qianye/model/fund_order.go` 的 kind 常量。
+ *
+ * 两种提现的 kind 已随 D-14 变成"历史 kind"注释，不再有 Resolver，这里不列；
+ * `commission_credit` 是 D-15 新增的**佣金自动入账**（单号前缀 CC，主库
+ * `IncreaseUserQuota`）。佣金结算 / 冲正两个 kind 由后端决定是否恢复为活的 kind，
+ * 前端不预设 —— 联合里的 `(string & {})` 兜住任何未登记的行，界面上渲染成原样字符串。
+ */
 export type QyFundOrderKind =
-  | 'commission_reverse'
-  | 'commission_settle'
+  | 'commission_credit'
   | 'lottery_entry'
   | 'lottery_payout'
   | 'transfer'
-  | 'withdraw_fiat'
-  | 'withdraw_quota'
   | (string & {})
 
 /**

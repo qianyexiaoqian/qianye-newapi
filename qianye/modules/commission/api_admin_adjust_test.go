@@ -32,7 +32,7 @@ import (
 
 func adjustBody(userId int, delta int64, reason, clientId string) string {
 	return `{"user_id":` + strconv.Itoa(userId) +
-		`,"delta_quota":` + strconv.FormatInt(delta, 10) +
+		`,"delta":` + strconv.FormatInt(delta, 10) +
 		`,"reason":"` + reason + `"` +
 		`,"client_request_id":"` + clientId + `"}`
 }
@@ -50,7 +50,7 @@ type adjustResponse struct {
 	Code int    `json:"-"`
 	Body string `json:"-"`
 	Data struct {
-		DeltaQuota         int64  `json:"delta_quota"`
+		Delta              int64  `json:"delta"`
 		Created            bool   `json:"created"`
 		AccrualNo          string `json:"accrual_no"`
 		ReclaimableCeiling int64  `json:"reclaimable_ceiling"`
@@ -100,14 +100,14 @@ func assertCommissionConservation(t *testing.T, gdb *gorm.DB, userId int) {
 
 	netSettled := int64(0)
 	for _, s := range settlementsOf(t, gdb, userId) {
-		netSettled += s.GrantedQuota - s.ReclaimedQuota
+		netSettled += s.Granted - s.Reclaimed
 	}
 
 	assert.True(t,
 		settledSum.Equal(decimal.NewFromInt(netSettled).Add(bal.UnsettledAmount)),
 		"Σ已吸收计佣(%s)必须等于 Σ结算净额(%d)+ 未结算余数(%s)",
 		settledSum.String(), netSettled, bal.UnsettledAmount.String())
-	assert.Equal(t, netSettled, bal.TotalEarnedQuota-bal.TotalClawbackQuota,
+	assert.Equal(t, netSettled, bal.TotalEarned-bal.TotalClawback,
 		"累计已结算−累计冲正必须等于结算单的净额之和")
 	assertLedgerIdentity(t, bal)
 }
@@ -115,10 +115,10 @@ func assertCommissionConservation(t *testing.T, gdb *gorm.DB, userId int) {
 // TestAdminAdjust_IncreaseLandsAsAccrualNotAColumnEdit 是本接口的本体。
 //
 // 加钱必须落成一条可追溯的账目行(有单号、有理由、有操作人),再由既有的结算
-// 流程吸收进余额 —— 而不是把 available_quota 直接加上去。
+// 流程吸收进余额 —— 而不是把 available 直接加上去。
 //
 // 回滚验证:把 writeAccrualTx 那一段换成
-// applyBalance(tx, userId, map[string]any{"available_quota": bal.AvailableQuota + delta}),
+// applyBalance(tx, userId, map[string]any{"available": bal.Available + delta}),
 // 账目行断言与守恒断言同时变红(库里多了 5000 却没有任何流水解释它)。
 func TestAdminAdjust_IncreaseLandsAsAccrualNotAColumnEdit(t *testing.T) {
 	gdb := newTestDB(t)
@@ -130,7 +130,7 @@ func TestAdminAdjust_IncreaseLandsAsAccrualNotAColumnEdit(t *testing.T) {
 
 	got := callAdjust(t, adjustBody(100, 5000, "客服补偿:漏算的推广佣金", "req-1"))
 	require.Equal(t, http.StatusOK, got.Code, got.Body)
-	assert.EqualValues(t, 5000, got.Data.DeltaQuota)
+	assert.EqualValues(t, 5000, got.Data.Delta)
 	assert.True(t, got.Data.Created)
 	assert.NotEmpty(t, got.Data.AccrualNo)
 
@@ -147,8 +147,8 @@ func TestAdminAdjust_IncreaseLandsAsAccrualNotAColumnEdit(t *testing.T) {
 
 	bal := balanceOf(t, gdb, 100)
 	require.NotNil(t, bal)
-	assert.EqualValues(t, 5000, bal.AvailableQuota, "落账之后必须立刻结算进可提现")
-	assert.EqualValues(t, 5000, bal.TotalEarnedQuota)
+	assert.EqualValues(t, 5000, bal.Available, "落账之后必须立刻结算进可提现")
+	assert.EqualValues(t, 5000, bal.TotalEarned)
 	require.Len(t, settlementsOf(t, gdb, 100), 1, "必须有一张结算单解释这 5000")
 	assertCommissionConservation(t, gdb, 100)
 
@@ -160,8 +160,8 @@ func TestAdminAdjust_IncreaseLandsAsAccrualNotAColumnEdit(t *testing.T) {
 	assert.EqualValues(t, 5000, logs[0].AmountQuota)
 	assert.Equal(t, a.AccrualNo, logs[0].TraceNo, "审计与账本行要互相指得回去")
 	assert.Contains(t, logs[0].Reason, "漏算的推广佣金")
-	assert.Contains(t, logs[0].BeforeSnap, `"available_quota":0`)
-	assert.Contains(t, logs[0].AfterSnap, `"available_quota":5000`)
+	assert.Contains(t, logs[0].BeforeSnap, `"available":0`)
+	assert.Contains(t, logs[0].AfterSnap, `"available":5000`)
 
 	// 审计快照里的身份必须是**这一次真的去主库读到的**。
 	//
@@ -198,25 +198,25 @@ func TestAdminAdjust_DecreaseIsBoundedByReclaimableCeiling(t *testing.T) {
 
 	require.Equal(t, http.StatusOK,
 		callAdjust(t, adjustBody(110, 5000, "补发历史佣金", "seed")).Code)
-	require.EqualValues(t, 5000, balanceOf(t, gdb, 110).AvailableQuota)
+	require.EqualValues(t, 5000, balanceOf(t, gdb, 110).Available)
 
 	over := callAdjust(t, adjustBody(110, -5001, "扣回多发的佣金", "req-over"))
 	require.Equal(t, http.StatusBadRequest, over.Code, over.Body)
 	assert.Contains(t, over.Body, "qy_adj_over_reclaimable")
 
 	after := balanceOf(t, gdb, 110)
-	assert.EqualValues(t, 5000, after.AvailableQuota, "被拒的请求一个字节都不许改到库")
+	assert.EqualValues(t, 5000, after.Available, "被拒的请求一个字节都不许改到库")
 	assert.False(t, after.DebtBlocked, "越界的扣减绝不能变成一笔谁都没批准的欠账")
 	assert.Len(t, manualAccrualsOf(t, gdb, 110), 1, "被拒时不许留下账目行")
 
 	// 边界的另一侧:恰好等于上限必须放行,否则运营永远清不空一个人的佣金。
 	ok := callAdjust(t, adjustBody(110, -5000, "扣回多发的佣金", "req-exact"))
 	require.Equal(t, http.StatusOK, ok.Code, ok.Body)
-	assert.EqualValues(t, -5000, ok.Data.DeltaQuota)
+	assert.EqualValues(t, -5000, ok.Data.Delta)
 
 	after = balanceOf(t, gdb, 110)
-	assert.EqualValues(t, 0, after.AvailableQuota)
-	assert.EqualValues(t, 5000, after.TotalClawbackQuota)
+	assert.EqualValues(t, 0, after.Available)
+	assert.EqualValues(t, 5000, after.TotalClawback)
 	assert.False(t, after.DebtBlocked)
 	assertCommissionConservation(t, gdb, 110)
 
@@ -260,7 +260,7 @@ func TestAdminAdjust_CeilingCountsOnlyMaturedAccruals(t *testing.T) {
 		require.Equal(t, http.StatusOK, got.Code, got.Body)
 		bal := balanceOf(t, gdb, 120)
 		require.NotNil(t, bal)
-		assert.EqualValues(t, 0, bal.AvailableQuota)
+		assert.EqualValues(t, 0, bal.Available)
 		assert.False(t, bal.DebtBlocked, "同一批里正负相抵,不该产生欠账")
 		assertCommissionConservation(t, gdb, 120)
 	})
@@ -294,15 +294,15 @@ func TestAdminAdjust_IsIdempotentPerClientRequestId(t *testing.T) {
 		require.Equal(t, http.StatusOK, got.Code, got.Body)
 		if i == 0 {
 			assert.True(t, got.Data.Created)
-			assert.EqualValues(t, 5000, got.Data.DeltaQuota)
+			assert.EqualValues(t, 5000, got.Data.Delta)
 		} else {
 			assert.False(t, got.Data.Created, "重放不该再落一条账目行")
-			assert.EqualValues(t, 0, got.Data.DeltaQuota)
+			assert.EqualValues(t, 0, got.Data.Delta)
 		}
 	}
 
 	assert.Len(t, manualAccrualsOf(t, gdb, 130), 1)
-	assert.EqualValues(t, 5000, balanceOf(t, gdb, 130).AvailableQuota)
+	assert.EqualValues(t, 5000, balanceOf(t, gdb, 130).Available)
 	assertCommissionConservation(t, gdb, 130)
 
 	logs := adjustAuditLogs(t, gdb)
@@ -335,7 +335,7 @@ func TestAdminAdjust_IdemKeyReusedWithOtherAmountConflicts(t *testing.T) {
 	assert.Contains(t, got.Body, "qy_idem_key_conflict")
 
 	assert.Len(t, manualAccrualsOf(t, gdb, 140), 1)
-	assert.EqualValues(t, 3000, balanceOf(t, gdb, 140).AvailableQuota)
+	assert.EqualValues(t, 3000, balanceOf(t, gdb, 140).Available)
 	assertCommissionConservation(t, gdb, 140)
 }
 
@@ -361,13 +361,13 @@ func TestAdminAdjust_RejectsBadRequests(t *testing.T) {
 		{"零调整没有意义", adjustBody(150, 0, "随便写点理由", "c1"), "qy_invalid_param"},
 		{"事由太短", adjustBody(150, 100, "补", "c2"), "qy_reason_required"},
 		{"缺幂等键", adjustBody(150, 100, "客服补偿佣金", ""), "qy_invalid_param"},
-		{"超过单次上限", `{"user_id":150,"delta_quota":` + overMax +
+		{"超过单次上限", `{"user_id":150,"delta":` + overMax +
 			`,"reason":"客服补偿佣金","client_request_id":"c3"}`, "qy_invalid_param"},
-		{"负方向超过单次上限", `{"user_id":150,"delta_quota":-` + overMax +
+		{"负方向超过单次上限", `{"user_id":150,"delta":-` + overMax +
 			`,"reason":"客服补偿佣金","client_request_id":"c4"}`, "qy_invalid_param"},
 		{"没给调整额度", `{"user_id":150,"reason":"客服补偿佣金","client_request_id":"c5"}`,
 			"qy_invalid_param"},
-		{"没给 user_id", `{"delta_quota":100,"reason":"客服补偿佣金","client_request_id":"c6"}`,
+		{"没给 user_id", `{"delta":100,"reason":"客服补偿佣金","client_request_id":"c6"}`,
 			"qy_invalid_param"},
 	}
 	for _, tc := range cases {
@@ -431,7 +431,7 @@ func TestAdminAdjust_ConservationSurvivesMixedAdjustments(t *testing.T) {
 
 	bal := balanceOf(t, gdb, 160)
 	require.NotNil(t, bal)
-	assert.EqualValues(t, want, bal.AvailableQuota, "四次调整的净额必须原样落在可提现上")
+	assert.EqualValues(t, want, bal.Available, "四次调整的净额必须原样落在可提现上")
 	assert.Len(t, manualAccrualsOf(t, gdb, 160), len(steps))
 }
 
@@ -516,5 +516,4 @@ func TestAdminAdjust_MountPoints(t *testing.T) {
 		return true
 	})
 	assert.True(t, mounted["registerAdjustRoutes"])
-	assert.True(t, mounted["registerRelationRoutes"])
 }

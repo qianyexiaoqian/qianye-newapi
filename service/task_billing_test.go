@@ -224,6 +224,22 @@ func TestTaskBillingOtherFiltersHistoricalOtherRatios(t *testing.T) {
 	assert.NotContains(t, other, "inf")
 }
 
+// TestTaskBillingOtherMarksSubscriptionSource 回归:订阅任务写进账单日志的 Other 必须带
+// billing_source=subscription(与 relay 侧同名)。
+//
+// 佣金 hook 的订阅排除口径(commission.isSubscriptionConsume)只认这个键。少了它,
+// exclude_subscription_consume 对任务补扣/退款完全失效,订阅出资的任务消费会被重复返佣。
+// 钱包任务不得带这个键,否则会被误判成订阅消费而漏返佣。
+func TestTaskBillingOtherMarksSubscriptionSource(t *testing.T) {
+	subTask := makeTask(1, 1, 100, 0, BillingSourceSubscription, 55)
+	assert.Equal(t, BillingSourceSubscription, taskBillingOther(subTask)["billing_source"],
+		"订阅任务必须写 billing_source=subscription,否则佣金侧订阅排除识别不出来")
+
+	walletTask := makeTask(1, 1, 100, 0, BillingSourceWallet, 0)
+	assert.NotContains(t, taskBillingOther(walletTask), "billing_source",
+		"钱包任务不得带 billing_source,否则会被误判成订阅消费而漏返佣")
+}
+
 func TestTaskBillingContextPriceDataFiltersMultiplier(t *testing.T) {
 	priceData := taskBillingContextPriceData(&model.TaskBillingContext{
 		OtherRatios: map[string]float64{

@@ -27,6 +27,7 @@ import {
   qyLotCoverSrc,
   type QyLotCoverSource,
 } from '../lib/cover'
+import { qyLotArtName } from '../lib/cover-art'
 
 /**
  * 活动卡片的背景图，**带兜底**。
@@ -66,6 +67,10 @@ export function QyLotCover(props: {
   useEffect(() => {
     setFailedSrc(null)
   }, [src])
+  // 兜底插画(/qy/art/*.jpg,gpt-image-2 按主题色生成、构建期随 public 目录进二进制)。
+  // 它也可能取不到(CDN 剥离了静态目录),再退一级到玩法图标 —— 终态永远是
+  // "一个明确说出玩法的画面",不是空白块。
+  const [artFailed, setArtFailed] = useState(false)
 
   const shape =
     props.variant === 'hero' ? 'aspect-[3/1] rounded-lg' : 'aspect-[16/6]'
@@ -76,12 +81,7 @@ export function QyLotCover(props: {
   )
 
   if (src == null || failedSrc === src) {
-    const Icon =
-      activity.draw_mode === 'ball'
-        ? CircleDot
-        : activity.kind === 'guess'
-          ? Target
-          : Dices
+    const Icon = qyLotCoverIcon(activity)
     return (
       <div
         className={cn(
@@ -91,7 +91,17 @@ export function QyLotCover(props: {
         // 纯装饰：它不携带任何信息，读屏软件念一句"抽奖图标"只是噪音。
         aria-hidden='true'
       >
-        <Icon className='text-muted-foreground/40 size-8' />
+        {artFailed ? (
+          <Icon className='text-muted-foreground/40 size-8' />
+        ) : (
+          <img
+            src={`/qy/art/${qyLotArtName(activity)}.jpg`}
+            alt=''
+            loading='lazy'
+            className='size-full object-cover'
+            onError={() => setArtFailed(true)}
+          />
+        )}
       </div>
     )
   }
@@ -110,4 +120,11 @@ export function QyLotCover(props: {
       />
     </div>
   )
+}
+
+/** 插画也取不到时的玩法图标(与插画同一套分派)。 */
+function qyLotCoverIcon(activity: { kind?: string; draw_mode?: string }) {
+  if (activity.draw_mode === 'ball') return CircleDot
+  if (activity.kind === 'guess') return Target
+  return Dices
 }

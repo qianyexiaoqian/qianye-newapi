@@ -35,19 +35,24 @@ import {
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
 import { QyStatusBadge } from '../../components/qy-status-badge'
-import { formatQyQuotaLedger } from '../../lib/format'
+import { useStardustName } from '../../hooks/use-stardust-name'
+import { formatSdWithUnit } from '../../lib/format-sd'
 import { qyTabTarget } from '../../lib/pages'
 import { QyStatGrid } from '../components/qy-stat-grid'
 import { QY_EMPTY_TEXT, formatQyDuration, formatQyTs } from '../ops/format'
 import { QyKeyValue } from '../ops/qy-ops-ui'
+import { QyWheelMySpins } from '../wheel/components/wheel-my-spins'
+import { QyWheelSpinPanel } from '../wheel/components/wheel-spin-panel'
 import { qyLotActivityQuery, qyLotEligibilityQuery } from './api'
 import { QyLotBallResultCard } from './components/lottery-ball-result-card'
+import { QyLotCountdownRing } from './components/lottery-countdown-ring'
 import { QyLotCover } from './components/lottery-cover'
 import { QyLotEligibilityCard } from './components/lottery-eligibility-card'
 import { QyLotEntryDialog } from './components/lottery-entry-dialog'
 import { QyLotFairnessPanel } from './components/lottery-fairness-panel'
 import { QyLotFinePrint } from './components/lottery-fine-print'
 import { QyLotGuessBoard } from './components/lottery-guess-board'
+import { QyLotPhaseTrack } from './components/lottery-phase-track'
 import { QyLotRosterCard } from './components/lottery-roster-card'
 import { QyLotRulesList } from './components/lottery-rules-list'
 import { QyLotSpecTable } from './components/lottery-spec-table'
@@ -71,6 +76,7 @@ import { isQyLotOpen } from './types'
  */
 export function QyLotteryDetail() {
   const { t } = useTranslation()
+  const unit = useStardustName()
   const { actNo } = useParams({ from: '/_authenticated/qy/lottery/$actNo/' })
   const now = useQyNowSeconds()
   const [joinOpen, setJoinOpen] = useState(false)
@@ -88,6 +94,22 @@ export function QyLotteryDetail() {
     activity == null ? null : qyLotCountdown(activity, activity.status, now)
   const outcomeKey = activity == null ? null : qyLotOutcomeKey(activity.outcome)
   const isBall = activity?.draw_mode === 'ball'
+  // 转盘是抽奖竞猜选择夹的一张标签（项目方 2026-09-05）；这一张详情页对它换的
+  // 是正文：「参与」那一格换成转盘面板，奖档表多一列剩余库存，公示行换成只声称
+  // 可复算的那句。
+  const isWheel = activity?.draw_mode === 'wheel'
+
+  // 回大厅要落到**这一场所在的那张标签**。判据与后端的 `hallLanes` 是同一套：
+  // 竞猜看 `kind`，双色球与转盘看 `draw_mode`，其余归抽奖。`/qy/wheel` 经
+  // `qyTabTarget` 落到宿主的转盘标签，不再是独立页面。
+  let hallUrl = '/qy/lottery'
+  if (activity?.kind === 'guess') hallUrl = '/qy/lottery-guess'
+  else if (isBall) hallUrl = '/qy/lottery-ball'
+  else if (isWheel) hallUrl = '/qy/wheel'
+
+  let kindLabel = t(`qy_lot_kind_${activity?.kind ?? 'draw'}`)
+  if (isBall) kindLabel = t('qy_lot_mode_ball')
+  else if (isWheel) kindLabel = t('qy_lot_play_wheel')
 
   return (
     <QySectionPageLayout>
@@ -99,25 +121,11 @@ export function QyLotteryDetail() {
           回程要带上标签的 hash，否则竞猜/双色球用户永远落回第一张标签
           （抽奖）—— 他刚才看的那一场不在那张列表里（那张标签发的是
           `lane='draw'`，它排除双色球），得再点一次并重新翻页。
-
-          判据与后端的 `hallLanes` 是同一套：竞猜看 `kind`，双色球看
-          `draw_mode`，其余归抽奖。三张夹恰好把活动分完，所以这里不需要
-          "找不到就回落"的第四支。
         */}
         <Button
           size='sm'
           variant='outline'
-          render={
-            <Link
-              {...qyTabTarget(
-                activity?.kind === 'guess'
-                  ? '/qy/lottery-guess'
-                  : activity?.draw_mode === 'ball'
-                    ? '/qy/lottery-ball'
-                    : '/qy/lottery'
-              )}
-            />
-          }
+          render={<Link {...qyTabTarget(hallUrl)} />}
         >
           <ArrowLeft aria-hidden='true' />
           {t('qy_lot_back_to_hall')}
@@ -135,11 +143,7 @@ export function QyLotteryDetail() {
               <QyLotCover activity={activity} variant='hero' />
 
               <div className='flex flex-wrap items-center gap-2'>
-                <Badge variant='outline'>
-                  {isBall
-                    ? t('qy_lot_mode_ball')
-                    : t(`qy_lot_kind_${activity.kind}`)}
-                </Badge>
+                <Badge variant='outline'>{kindLabel}</Badge>
                 {isBall && (
                   <Badge variant='outline'>
                     {t('qy_lot_ball_issue_no', { no: activity.issue_no ?? 0 })}
@@ -159,53 +163,110 @@ export function QyLotteryDetail() {
                 </span>
               </div>
 
-              <QyStatGrid
-                items={[
-                  {
-                    key: 'stake',
-                    label: t('qy_lot_stake'),
-                    value: formatQyQuotaLedger(activity.stake_quota),
-                  },
-                  {
-                    // 双色球的「奖池」是本期真正可派发的那一份（开局基数 +
-                    // 本期投注入池部分），不是本期收到的投注额。两者在滚存了
-                    // 几期之后可以差出一个数量级，而这正是用户用来决定要不要
-                    // 参与的那个数。
-                    key: 'pool',
-                    label: isBall
-                      ? t('qy_lot_ball_pool_open')
-                      : t('qy_lot_pool'),
-                    value: formatQyQuotaLedger(
-                      isBall
-                        ? (activity.pool_open_quota ?? 0)
-                        : activity.pool_quota
-                    ),
-                    emphasis: true,
-                  },
-                  {
-                    key: 'entries',
-                    label: t('qy_lot_entries_count'),
-                    value: activity.active_count,
-                    hint:
-                      activity.min_entries_to_hold > 0
-                        ? t('qy_lot_min_entries_hint', {
-                            count: activity.min_entries_to_hold,
-                          })
-                        : undefined,
-                  },
-                  {
-                    key: 'countdown',
-                    label:
-                      countdown == null
-                        ? t('qy_lot_draw_at')
-                        : t(countdown.labelKey),
-                    value:
-                      countdown == null
-                        ? formatQyTs(activity.draw_at)
-                        : formatQyDuration(countdown.seconds),
-                  },
-                ]}
+              {/* 现在到哪一步了：四个节点摊平在标题下面，不读字也知道离开奖还有几步。 */}
+              <QyLotPhaseTrack
+                status={activity.status}
+                drawMode={activity.draw_mode}
+                className='max-w-md'
               />
+
+              {/*
+                转盘的四格换一套：它没有"奖池"（平台按库存出奖品，参与费当场花掉），
+                用户要在第一屏看到的是「每转多少 / 我还有多少 / 转过几次 / 还剩多久」。
+              */}
+              {isWheel ? (
+                <QyStatGrid
+                  items={[
+                    {
+                      key: 'stake',
+                      label: t('qy_lot_wheel_stake_label'),
+                      value: formatSdWithUnit(activity.stake_quota, unit),
+                      emphasis: true,
+                    },
+                    {
+                      key: 'balance',
+                      label: t('qy_sd_balance_current', { unit }),
+                      value:
+                        activity.stardust_balance == null
+                          ? QY_EMPTY_TEXT
+                          : formatSdWithUnit(activity.stardust_balance, unit),
+                    },
+                    {
+                      key: 'spins',
+                      label: t('qy_lot_wheel_spin_total'),
+                      value: activity.active_count,
+                    },
+                    {
+                      key: 'countdown',
+                      label:
+                        countdown == null
+                          ? t('qy_lot_draw_at')
+                          : t(countdown.labelKey),
+                      value: (
+                        <QyLotCountdownRing
+                          countdown={countdown}
+                          drawAt={activity.draw_at}
+                          size={28}
+                          hideLabel
+                        />
+                      ),
+                    },
+                  ]}
+                />
+              ) : (
+                <QyStatGrid
+                  items={[
+                    {
+                      key: 'stake',
+                      label: t('qy_lot_stake'),
+                      value: formatSdWithUnit(activity.stake_quota, unit),
+                    },
+                    {
+                      // 双色球的「奖池」是本期真正可派发的那一份（开局基数 +
+                      // 本期投注入池部分），不是本期收到的投注额。两者在滚存了
+                      // 几期之后可以差出一个数量级，而这正是用户用来决定要不要
+                      // 参与的那个数。
+                      key: 'pool',
+                      label: isBall
+                        ? t('qy_lot_ball_pool_open')
+                        : t('qy_lot_pool'),
+                      value: formatSdWithUnit(
+                        isBall
+                          ? (activity.pool_open_quota ?? 0)
+                          : activity.pool_quota,
+                        unit
+                      ),
+                      emphasis: true,
+                    },
+                    {
+                      key: 'entries',
+                      label: t('qy_lot_entries_count'),
+                      value: activity.active_count,
+                      hint:
+                        activity.min_entries_to_hold > 0
+                          ? t('qy_lot_min_entries_hint', {
+                              count: activity.min_entries_to_hold,
+                            })
+                          : undefined,
+                    },
+                    {
+                      key: 'countdown',
+                      label:
+                        countdown == null
+                          ? t('qy_lot_draw_at')
+                          : t(countdown.labelKey),
+                      value: (
+                        <QyLotCountdownRing
+                          countdown={countdown}
+                          drawAt={activity.draw_at}
+                          size={28}
+                          hideLabel
+                        />
+                      ),
+                    },
+                  ]}
+                />
+              )}
 
               {/*
                 「本期开奖 · 我中了没有」排在两列网格**之前**，也就是统计格
@@ -274,6 +335,13 @@ export function QyLotteryDetail() {
                           })}
                         </CardDescription>
                       )}
+                      {isWheel && (
+                        // 「有效中奖率随库存下降」是转盘固有的性质（design-15 §7.4），
+                        // 它决定用户此刻要不要转，所以钉在奖档表头上而不是折叠位里。
+                        <CardDescription>
+                          {t('qy_lot_wheel_prizes_desc')}
+                        </CardDescription>
+                      )}
                     </CardHeader>
                     <CardContent className='space-y-3'>
                       {/*
@@ -314,6 +382,7 @@ export function QyLotteryDetail() {
                             isBall ? qyLotBallPoolOf(activity) : undefined
                           }
                           poolOpenQuota={activity.pool_open_quota ?? 0}
+                          wheel={isWheel}
                         />
                       )}
                       {isBall && (
@@ -352,7 +421,11 @@ export function QyLotteryDetail() {
                       </CardDescription>
                     </CardHeader>
                     <CardContent className='space-y-3'>
-                      <QyLotRulesList rulesText={activity.rules_text} />
+                      <QyLotRulesList
+                        rulesText={activity.rules_text}
+                        kind={activity.kind}
+                        drawMode={activity.draw_mode}
+                      />
                       <div>
                         <QyKeyValue label={t('qy_lot_max_per_user')}>
                           {activity.max_entries_per_user === 0
@@ -399,32 +472,52 @@ export function QyLotteryDetail() {
                         isLoading={eligibility.isLoading}
                       />
                     )}
-                    <Button
-                      // 按钮亮不亮只是"别让用户白按一次"。真正说了算的是后端在
-                      // 活动行锁与主库行锁里的那两次判定 —— 这里放行不代表能报名。
-                      disabled={!open}
-                      onClick={() => setJoinOpen(true)}
-                    >
-                      {open
-                        ? t('qy_lot_join_title')
-                        : t('qy_lot_join_unavailable')}
-                    </Button>
-                    {!playOpen && (
-                      // 置灰的按钮必须带上原因，而且要说清"已参与的不受影响"——
-                      // 用户看到自己参加过的那一场突然不能再买，第一反应是
-                      // 自己那笔钱出事了。
-                      <p className='text-muted-foreground text-xs'>
-                        {t('qy_lot_play_hidden_note')}
-                      </p>
-                    )}
-                    {activity.my_entry_count > 0 && (
-                      <p className='text-muted-foreground text-xs'>
-                        {t('qy_lot_my_entry_count', {
-                          count: activity.my_entry_count,
-                        })}
-                      </p>
+                    {/* 转盘：「参与」那一格换成盘面 + 「转一次」。按钮亮不亮同样只是
+                        "别让用户白按一次"，真正说了算的是转动事务里的那条 CAS。 */}
+                    {isWheel ? (
+                      <QyWheelSpinPanel
+                        activity={activity}
+                        open={open}
+                        playOpen={playOpen}
+                      />
+                    ) : (
+                      <>
+                        <Button
+                          // 按钮亮不亮只是"别让用户白按一次"。真正说了算的是后端在
+                          // 活动行锁与主库行锁里的那两次判定 —— 这里放行不代表能报名。
+                          disabled={!open}
+                          onClick={() => setJoinOpen(true)}
+                        >
+                          {open
+                            ? t('qy_lot_join_title')
+                            : t('qy_lot_join_unavailable')}
+                        </Button>
+                        {!playOpen && (
+                          // 置灰的按钮必须带上原因，而且要说清"已参与的不受影响"——
+                          // 用户看到自己参加过的那一场突然不能再买，第一反应是
+                          // 自己那笔钱出事了。
+                          <p className='text-muted-foreground text-xs'>
+                            {t('qy_lot_play_hidden_note')}
+                          </p>
+                        )}
+                        {activity.my_entry_count > 0 && (
+                          <p className='text-muted-foreground text-xs'>
+                            {t('qy_lot_my_entry_count', {
+                              count: activity.my_entry_count,
+                            })}
+                          </p>
+                        )}
+                      </>
                     )}
                   </div>
+
+                  {/* 我的每一转：序号、种子、链环 —— 回执弹窗关掉之后留得住的那一份。 */}
+                  {isWheel && (
+                    <QyWheelMySpins
+                      actNo={activity.act_no}
+                      spec={activity.spec}
+                    />
+                  )}
                 </div>
 
                 <div className='min-w-0 space-y-4'>
@@ -437,7 +530,9 @@ export function QyLotteryDetail() {
         </QyPageBoundary>
       </QySectionPageLayout.Content>
 
-      {activity != null && (
+      {/* 转盘走自己的弹窗（在面板里）：报名弹窗发的是 /entries，后端对转盘活动
+          直接 400（走错了门）。 */}
+      {activity != null && !isWheel && (
         <QyLotEntryDialog
           activity={activity}
           open={joinOpen}

@@ -18,7 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 )
 
 // proof_e2e_db_test.go —— 一整场抽奖走完全流程,然后**从零复算**中奖名单。
@@ -65,7 +64,7 @@ func recomputeWinnersFromProof(t *testing.T, doc *proofDocument) []string {
 	require.Equal(t, doc.RosterHash, rosterHash, "独立复算的名单哈希必须与公开值一致")
 
 	sum = sha256.Sum256([]byte(strings.Join([]string{
-		"qylot-final-v1", doc.ActNo, doc.Seed, doc.RosterHash,
+		"qylot-final-v1", doc.ActNo, doc.RevealedSeed, doc.RosterHash,
 		strconv.Itoa(doc.RosterCount), doc.Algo,
 	}, sep)))
 	key, err := hex.DecodeString(hex.EncodeToString(sum[:]))
@@ -121,7 +120,7 @@ func TestProofEndpoint_WinnersAreIndependentlyReproducible(t *testing.T) {
 		PayoutMaxAttempts:      8,
 		EntryCloseGraceSeconds: 0,
 		RevealDelaySeconds:     0,
-		MaxStakeQuota:          5_000_000,
+		MaxStakeStardust:       5_000_000,
 	})
 
 	// 四个时刻直接落在"刚刚过去"的位置:封盘与开奖只由时间触发,而承诺哈希
@@ -172,38 +171,18 @@ func TestProofEndpoint_WinnersAreIndependentlyReproducible(t *testing.T) {
 		Update("close_at", now+3600).Error)
 	act = loadAct(t, gdb, act.Id)
 
-	// ── 报名:六个人,其中一个人两张票(用来验去重),外加一条失败条目 ──
+	// ── 报名:六个人,其中一个人两张票(用来验去重)──
+	//
+	// 每一张都走真实的参与事务(扣星屑 + 落票 + 推链)。星屑不足的尝试整笔回滚、
+	// 不在链上留痕,所以这里没有"失败条目"可放:证据链里的每一条都是成交的票。
 	salts, err := loadSalts(context.Background(), gdb, act.Id)
 	require.NoError(t, err)
 	userIds := []int{101, 102, 103, 104, 105, 101}
 	for _, uid := range userIds {
-		e := &Entry{
-			EntryNo: newEntryNo(), ActId: act.Id, IdemKey: buildIdemKey(act.ActNo, newEntryNo()),
+		seedTicket(t, gdb, act, &Entry{
 			UserId: uid, UserRef: UserRef(salts.RefSalt, uid), Amount: act.StakeQuota,
-			Status: EntryPending, OrderNo: "LE-" + newEntryNo(), CreatedAt: common.GetTimestamp(),
-		}
-		// 活动行在事务**之外**读:内存库只有一条连接,事务里再开一次查询会
-		// 自己把自己饿死(线上的 reserveEntry 也是拿调用方读好的活动进来的)。
-		cur := loadAct(t, gdb, act.Id)
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return reserveEntry(tx, cur, Rules{}, e, 0)
-		}))
-		require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-			return markEntrySuccess(tx, e.EntryNo, nil)
-		}))
+		})
 	}
-	failed := &Entry{
-		EntryNo: newEntryNo(), ActId: act.Id, IdemKey: buildIdemKey(act.ActNo, newEntryNo()),
-		UserId: 106, UserRef: UserRef(salts.RefSalt, 106), Amount: act.StakeQuota,
-		Status: EntryPending, CreatedAt: common.GetTimestamp(),
-	}
-	curForFail := loadAct(t, gdb, act.Id)
-	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-		return reserveEntry(tx, curForFail, Rules{}, failed, 0)
-	}))
-	require.NoError(t, gdb.Transaction(func(tx *gorm.DB) error {
-		return markEntryFailed(tx, failed.EntryNo, "qy_lot_insufficient_quota")
-	}))
 
 	// ── 封盘 → 开奖(都只由时间触发)──
 	//
@@ -238,9 +217,14 @@ func TestProofEndpoint_WinnersAreIndependentlyReproducible(t *testing.T) {
 	require.True(t, envelope.Success)
 	doc := &envelope.Data
 
-	require.NotEmpty(t, doc.Seed, "开奖之后种子必须公开,否则没人能复算")
-	require.Equal(t, int64(len(userIds)+1), doc.Total, "失败条目也必须留在证据链里")
+	require.NotEmpty(t, doc.RevealedSeed, "开奖之后种子必须公开,否则没人能复算")
+	require.Equal(t, int64(len(userIds)), doc.Total, "每一张成交的票都必须在证据链里")
 	require.Len(t, doc.Entries, int(doc.Total))
+	assert.Equal(t, CurrencyStardust, doc.Currency, "证据链必须说明金额字段的单位是星屑")
+	for _, e := range doc.Entries {
+		assert.Equal(t, EntrySuccess, e.Status, "单事务之下证据链里没有非 success 的条目")
+		assert.NotEmpty(t, e.OrderNo, "每一张票都带着扣款流水号 —— 持票人凭它在自己的账本里对账")
+	}
 
 	// ── 从零复算,与系统公布的名单逐位比对 ──
 	system := make([]string, 0, len(doc.Winners))

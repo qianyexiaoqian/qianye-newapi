@@ -17,13 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import * as z from 'zod'
 
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
+import { ComboboxInput } from '@/components/ui/combobox-input'
 import {
   Form,
   FormControl,
@@ -34,6 +36,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { getUserGroupOptions } from '@/features/users/api'
 
 const rateLimitDialogSchema = z.object({
   groupName: z.string().min(1, 'Group name is required'),
@@ -45,6 +48,10 @@ const rateLimitDialogSchema = z.object({
     .number()
     .min(1, 'Must be ≥ 1')
     .max(2147483647, 'Must be ≤ 2,147,483,647'),
+  maxConcurrency: z
+    .number()
+    .min(0, 'Must be ≥ 0')
+    .max(2147483647, 'Must be ≤ 2,147,483,647'),
 })
 
 type RateLimitDialogFormValues = z.infer<typeof rateLimitDialogSchema>
@@ -55,6 +62,8 @@ export type RateLimitEntryData = {
   groupName: string
   maxRequests: number
   maxSuccess: number
+  /** 同一时刻最多几个请求在飞。0 = 不限。 */
+  maxConcurrency: number
 }
 
 type RateLimitDialogProps = {
@@ -73,12 +82,33 @@ export function RateLimitDialog({
   const { t } = useTranslation()
   const isEditMode = !!editData
 
+  // 候选清单取**用户分组**,不是模型分组。
+  //
+  // 这一页配的是「哪一档用户每分钟能打几次」,而本 fork 把用户分组与模型分组拆成了
+  // 两个命名空间(/api/user-group/options 与 /api/model-group/options)。之前这里
+  // 是一个自由文本框,运营只能凭记忆敲名字,敲错了也没有任何提示 —— 那一行会安静地
+  // 永不命中。allowCustomValue 保留:升级前配下的键可能是模型分组名或 auto,
+  // 它们仍然有效(见 middleware/qy_rate_limit_export.go 的回落),不能让人改不了。
+  const userGroupsQuery = useQuery({
+    queryKey: ['user-group-options'],
+    queryFn: getUserGroupOptions,
+  })
+  const userGroupOptions = useMemo(
+    () =>
+      (userGroupsQuery.data?.data ?? []).map((name) => ({
+        value: name,
+        label: name,
+      })),
+    [userGroupsQuery.data]
+  )
+
   const form = useForm<RateLimitDialogFormValues>({
     resolver: zodResolver(rateLimitDialogSchema),
     defaultValues: {
       groupName: '',
       maxRequests: 0,
       maxSuccess: 1,
+      maxConcurrency: 0,
     },
   })
 
@@ -90,6 +120,7 @@ export function RateLimitDialog({
         groupName: '',
         maxRequests: 0,
         maxSuccess: 1,
+        maxConcurrency: 0,
       })
     }
   }, [editData, form, open])
@@ -107,8 +138,10 @@ export function RateLimitDialog({
       title={
         isEditMode ? t('Edit group rate limit') : t('Add group rate limit')
       }
+      // 口径句放在弹窗描述里,新增与编辑都看得到:本分支把用户分组与模型分组
+      // 拆开了,「按哪个分组限流」正是回来编辑时最需要确认的一件事。
       description={t(
-        'Configure rate limiting rules for a specific user group.'
+        'Limits apply to the user group (users.group), not the model group on the key.'
       )}
       contentClassName='sm:max-w-[500px]'
       contentHeight='auto'
@@ -139,19 +172,21 @@ export function RateLimitDialog({
             name='groupName'
             render={({ field }) => (
               <FormItem>
-                <FormLabel>{t('Group Name')}</FormLabel>
+                <FormLabel>{t('User group')}</FormLabel>
                 <FormControl>
-                  <Input
-                    placeholder={t('e.g., default, vip, premium')}
-                    {...field}
-                    disabled={isEditMode}
-                  />
+                  {isEditMode ? (
+                    <Input {...field} readOnly />
+                  ) : (
+                    <ComboboxInput
+                      options={userGroupOptions}
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      allowCustomValue
+                      emptyText={t('No user group found')}
+                      placeholder={t('Pick a user group')}
+                    />
+                  )}
                 </FormControl>
-                <FormDescription>
-                  {isEditMode
-                    ? t('Group name cannot be changed when editing.')
-                    : t('Unique identifier for this group.')}
-                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -211,8 +246,38 @@ export function RateLimitDialog({
                     </span>
                   </div>
                 </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='maxConcurrency'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Max concurrent requests')}</FormLabel>
+                <FormControl>
+                  <div className='flex items-center gap-2'>
+                    <Input
+                      type='number'
+                      min={0}
+                      max={2147483647}
+                      step={1}
+                      {...field}
+                      onChange={(e) =>
+                        field.onChange(parseInt(e.target.value) || 0)
+                      }
+                    />
+                    <span className='text-muted-foreground text-sm'>
+                      {t('in flight')}
+                    </span>
+                  </div>
+                </FormControl>
                 <FormDescription>
-                  {t('Only successful requests count toward this limit.')}
+                  {t(
+                    'How many requests from this group may run at the same time. 0 = unlimited. Counted per node.'
+                  )}
                 </FormDescription>
                 <FormMessage />
               </FormItem>

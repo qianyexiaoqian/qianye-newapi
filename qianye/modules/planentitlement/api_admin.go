@@ -338,7 +338,11 @@ func adminPutEntitlement(c *gin.Context) {
 		}
 	}
 
-	next := planEntitlement{PlanId: planId, Groups: groups, Scope: scope, Note: req.Note}
+	// Note 在写入侧会被 newPolicy 截到 maxNoteLen,而 before.Note 是从库里读回的
+	// **已截断**值。这里若拿未截断的 req.Note 去比,note 超过上限时 sameEntitlement
+	// 永远判不等 —— 每次一模一样的保存都重新落库、写空改动审计,并 InvalidateUser(0)
+	// 清空全站 per-user 解锁缓存。先按同一口径截断,让比较看到的是将被持久化的值。
+	next := planEntitlement{PlanId: planId, Groups: groups, Scope: scope, Note: truncate(req.Note, maxNoteLen)}
 	if sameEntitlement(before, next) {
 		// 值没变就不写库、不写审计。少了这条短路,运营每保存一次套餐表单都会
 		// 留下一条没有实际改动的审计,事后查"谁把这个套餐改成仅限了"要从一堆

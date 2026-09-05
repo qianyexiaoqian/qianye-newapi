@@ -51,7 +51,7 @@ import type {
 const SORT_OPTIONS: readonly QyDailyConsumeSort[] = [
   'consume_quota',
   'uncounted_quota',
-  'commission_base_quota',
+  'invite_base_quota',
   'request_count',
   'user_id',
 ]
@@ -129,14 +129,14 @@ function ByDayPanel(props: {
     },
     {
       id: 'base',
-      header: t('qy_dc_commission_base'),
+      header: t('qy_inv_a_dc_base'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => <QyAmountText quota={row.commission_base_quota} />,
+      cell: (row) => <QyAmountText quota={row.invite_base_quota} />,
     },
     {
       id: 'uncounted',
-      header: t('qy_dc_uncounted'),
+      header: t('qy_inv_a_dc_uncounted'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
       cell: (row) =>
@@ -195,25 +195,25 @@ function ByDayPanel(props: {
  *
  * # 这张表上有两个金额列，它们**本来就不相等**
  *
- * 「消费额」来自主库 `logs`（真实扣掉的钱），「计佣基数」来自计佣表。
- * 后者恒 ≤ 前者，差额单独成列（「未计佣」）。差额的来源在页面上写死成一段
- * 说明，因为运营看到两个不一样的数时的下一个动作一定是来问，而这个问题
- * 有七个确定的答案：没有邀请人、自我邀请、关系被拉黑、绑定未成熟、
- * 分组费率 0%、违规扣费 / 渠道测试、订阅额度消费。
+ * 「消费额」来自主库 `logs`（真实扣掉的钱），「返星屑基数」来自日结表
+ * （`qy_sd_invite_accrual`）。后者恒 ≤ 前者，差额单独成列（「未计返」）。差额的
+ * 来源在页面上写死成一段说明，因为运营看到两个不一样的数时的下一个动作一定是
+ * 来问，而这个问题有几个确定的答案：没有邀请人、自我邀请、关系被停止计返、
+ * 分组比例 0%、违规扣费 / 渠道测试、订阅额度消费。
  *
- * 让这两列并排、而不是二选一，是这一页存在的全部意义:只给计佣基数的话,
+ * 让这两列并排、而不是二选一，是这一页存在的全部意义:只给基数的话,
  * 0% 分组与没有上线的客户在报表里根本不存在;只给消费额的话,运营对不上
- * 佣金账。
+ * 日结账。
  *
  * ── 为什么是 Body 而不是整页 ──
- * 本页已被收进「结算台」的选择夹（`QY_TAB_GROUPS`），侧栏上不再有独立的一行。
- * 区段头（`GATE NN` + 大标题）由宿主页 `admin-settlement/hub.tsx` 出，这里只
- * 提供正文 —— 标签里再套一层区段头会得到两级标题。旧地址
- * `/qy/admin/daily-consume` 保留成重定向。
+ * 本页已被收进「邀请管理」的选择夹（`QY_TAB_GROUPS`，D-14 之前是「结算台」），
+ * 侧栏上不再有独立的一行。区段头（`GATE NN` + 大标题）由宿主页
+ * `admin-invite/hub.tsx` 出，这里只提供正文 —— 标签里再套一层区段头会得到
+ * 两级标题。旧地址 `/qy/admin/daily-consume` 保留成重定向。
  *
  * 「导出 CSV」跟着正文走、不进宿主页的 Actions 槽：那个槽是三张标签共用的，
  * 而这个按钮导出的是**本标签当前那组筛选**下的数据。放上去的话，运营在
- * 「提现审核」标签上会看到一个导出按钮，点下去得到一份日消费报表。
+ * 「邀请关系」标签上会看到一个导出按钮，点下去得到一份日消费报表。
  */
 export function QyAdminDailyConsumeBody() {
   const { t } = useTranslation()
@@ -300,17 +300,17 @@ export function QyAdminDailyConsumeBody() {
     },
     {
       id: 'base',
-      header: t('qy_dc_commission_base'),
+      header: t('qy_inv_a_dc_base'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => <QyAmountText quota={row.commission_base_quota} />,
+      cell: (row) => <QyAmountText quota={row.invite_base_quota} />,
     },
     {
       id: 'uncounted',
-      header: t('qy_dc_uncounted'),
+      header: t('qy_inv_a_dc_uncounted'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      // 未计佣额为 0 是最常见也最不需要注意的情形，所以只在 > 0 时才强调。
+      // 未计返额为 0 是最常见也最不需要注意的情形，所以只在 > 0 时才强调。
       cell: (row) =>
         row.uncounted_quota > 0 ? (
           <QyAmountText quota={row.uncounted_quota} />
@@ -342,14 +342,14 @@ export function QyAdminDailyConsumeBody() {
       header: t('qy_dc_inviter'),
       className: staticDataTableClassNames.compactHeaderCell,
       cellClassName: staticDataTableClassNames.compactCell,
-      // “没有上线”与“有上线但一分钱佣金都没产生”是两件不同的事，必须分开显示：
-      // 前者是这个人根本不在返佣体系里，后者才是需要去查费率/拉黑的信号。
+      // “没有上线”与“有上线但一分星屑都没计提”是两件不同的事，必须分开显示：
+      // 前者是这个人根本不在邀请体系里，后者才是需要去查比例/停止计返的信号。
       cell: (row) =>
         row.inviter_id > 0 ? (
           <span className='inline-flex items-center gap-1.5'>
             {row.inviter_username || `#${row.inviter_id}`}
-            {!row.has_commission && (
-              <Badge variant='outline'>{t('qy_dc_no_commission')}</Badge>
+            {!row.has_invite_accrual && (
+              <Badge variant='outline'>{t('qy_inv_a_dc_no_accrual')}</Badge>
             )}
           </span>
         ) : (
@@ -367,7 +367,9 @@ export function QyAdminDailyConsumeBody() {
     <div className='space-y-3'>
       <div className='flex flex-wrap items-start justify-between gap-2'>
         {/* 两个金额列为什么对不上 —— 写死在页面上，而不是等运营来问。 */}
-        <p className='text-muted-foreground text-sm'>{t('qy_dc_gap_hint')}</p>
+        <p className='text-muted-foreground text-sm'>
+          {t('qy_inv_a_dc_gap_hint')}
+        </p>
         <Button
           variant='outline'
           size='sm'
@@ -387,7 +389,7 @@ export function QyAdminDailyConsumeBody() {
       )}
       {(data?.accrual_users_without_logs ?? 0) > 0 && (
         <p className='text-muted-foreground text-sm'>
-          {t('qy_dc_logs_pruned', {
+          {t('qy_inv_a_dc_logs_pruned', {
             count: data?.accrual_users_without_logs ?? 0,
           })}
         </p>

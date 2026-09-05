@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 
 	"gorm.io/gorm"
 )
@@ -48,7 +49,7 @@ func applyBallSpec(ctx context.Context, act *Activity, in *activityInput, rows [
 			// 文本奖在双色球里本轮不做:它与浮动奖池的"按比例摊薄"在语义上
 			// 冲突(兑换码劈不开),而"固定份数的文本奖 + 跨期滚存池"是两套
 			// 完全不同的库存模型。要发文本奖请用 rank 或 prob 模式。
-			return nil, nil, errBadRequest("双色球奖级本轮只支持额度奖")
+			return nil, nil, errBadRequest("双色球奖级本轮只支持星屑奖")
 		}
 		if err := checkBallTierInput(src, s, entriesCap); err != nil {
 			return nil, nil, err
@@ -124,14 +125,14 @@ func checkBallTierInput(p prizeInput, s *Series, entriesCap int) error {
 		// 浮动奖与固定奖互斥:一个奖级同时写"每人 1000"和"占池 30%"时,
 		// 到底按哪个发只能靠代码里的先后顺序回答,而那是最坏的一种规则来源。
 		if p.AmountQuota != 0 {
-			return errBadRequest(fmt.Sprintf("奖级 %d 是浮动奖(占池比例 > 0),额度必须为 0", p.Tier))
+			return errBadRequest(fmt.Sprintf("奖级 %d 是浮动奖(占池比例 > 0),单份%s必须为 0", p.Tier, stardust.UnitName()))
 		}
 		return nil
 	}
 	if p.AmountQuota <= 0 {
-		return errBadRequest(fmt.Sprintf("奖级 %d 必须填写固定额度,或者改成占池比例的浮动奖", p.Tier))
+		return errBadRequest(fmt.Sprintf("奖级 %d 必须填写固定的单份%s,或者改成占池比例的浮动奖", p.Tier, stardust.UnitName()))
 	}
-	// 与概率制同一条:中签人数超过份数时按预算均分,人均不足 1 额度会有人分到 0,
+	// 与概率制同一条:中签人数超过份数时按预算均分,人均不足 1 星屑会有人分到 0,
 	// 而 PlanPayouts 会跳过 amount<=0 的计划 —— 一个真中了奖的人被静默漏发。
 	if p.AmountQuota*int64(p.Count) < int64(entriesCap) {
 		// 与概率制那一条**共用同一个构造器**,不再各写一份格式串。
@@ -219,8 +220,8 @@ func checkBallPoolCovers(tx *gorm.DB, act *Activity) error {
 	if fixed+open*shareBps/10000 > open {
 		return errSeriesPoolShort
 	}
-	// 池子本身也必须落在单笔出款的容量之内:浮动奖独中时那一笔要过 twophase 的
-	// amount ≤ common.MaxQuota。越界时活动会永远收不了尾,拦在发布期。
+	// 池子本身也必须落在单笔出款的容量之内:浮动奖独中时那一笔要过 stardust.Credit
+	// 的 amount ≤ common.MaxQuota。越界时活动会永远收不了尾,拦在发布期。
 	//
 	// 报 errSeriesPoolCeiling 而不是 errSeriesPoolShort:两者的处置**相反**。
 	// pool_short 的文案是「请先注资或调低奖级」,而这一条越注资越糟,

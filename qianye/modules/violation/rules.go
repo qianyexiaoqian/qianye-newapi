@@ -184,6 +184,11 @@ type snapshot struct {
 	// 与 catById 同源同刻:两次查询会让规则、类型计数、AI 闭集来自不同时刻,
 	// 而"规则按新类型过滤、闭集还是旧的"的表现是那条规则永不命中。
 	aiVocab aiVocabulary
+
+	// cyber 是 cyber 会话屏蔽的运行期配置(总开关 + 作用分组 + TTL)。
+	// nil = 本功能不生效。与 ai 同一条理由进快照:cyberSessionPrecheck 每个请求
+	// 都要判一次,不能查库;且改设置必须与规则同一次版本推进一起原子替换。
+	cyber *cyberRuntime
 }
 
 func (s *snapshot) hasPrompt() bool { return s != nil && len(s.promptRules) > 0 }
@@ -351,6 +356,11 @@ func reloadCtx(ctx context.Context, force bool) error {
 	} else {
 		s.ai = rt
 	}
+
+	// cyber 会话屏蔽的设置行,与规则同快照、同版本号 —— 同一条理由:两份独立
+	// TTL 的缓存会让一次请求读到"新规则 + 旧屏蔽范围"。装配失败(返回 nil)按
+	// "未生效"处理,不放弃整份快照。
+	s.cyber = buildCyberRuntime(gdb)
 
 	current.Store(s)
 	return nil

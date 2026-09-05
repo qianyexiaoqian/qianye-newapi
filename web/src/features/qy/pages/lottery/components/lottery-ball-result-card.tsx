@@ -22,7 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
+import { QySdAmount } from '../../../components/qy-sd-amount'
 import { formatQyTs } from '../../ops/format'
 import { qyLotSeriesQuery } from '../api'
 import { qyLotBallHits, qyLotBallSafeParsePick } from '../lib/ball'
@@ -165,27 +165,31 @@ export function QyLotBallResultCard(props: { activity: QyLotActivityDetail }) {
                         })}
                       </span>
                     )}
-                    {won ? (
+                    {won && (
                       <span className='inline-flex flex-wrap items-center gap-1.5'>
                         <Badge>
                           {t('qy_lot_tier_no', { no: ticket.won_tier })}
                           {tierName === '' ? '' : ` ${tierName}`}
                         </Badge>
                         {/* 文本奖在双色球里被后端拒绝（ball_admin.go），
-                            所以这里恒是额度奖，直接写金额。 */}
-                        <QyAmountText quota={ticket.won_amount} signed />
+                            所以这里恒是星屑奖，直接写金额。 */}
+                        <QySdAmount amount={ticket.won_amount} signed />
                       </span>
-                    ) : drawn == null ? (
+                    )}
+                    {!won && drawn == null && (
                       <span className='text-muted-foreground text-xs'>
                         {t('qy_lot_ball_await_draw')}
                       </span>
-                    ) : ticket.status === 'success' ? (
-                      // 「没中」是结论，必须写出来 —— 不显示与没中在屏幕上
-                      // 长得一样，而后者才是这一页要回答的那句话。
-                      <Badge variant='outline'>
-                        {t('qy_lot_ball_not_won')}
-                      </Badge>
-                    ) : null}
+                    )}
+                    {!won &&
+                      drawn != null &&
+                      ticket.status === 'success' && (
+                        // 「没中」是结论，必须写出来 —— 不显示与没中在屏幕上
+                        // 长得一样，而后者才是这一页要回答的那句话。
+                        <Badge variant='outline'>
+                          {t('qy_lot_ball_not_won')}
+                        </Badge>
+                      )}
                   </li>
                 )
               })}
@@ -199,7 +203,7 @@ export function QyLotBallResultCard(props: { activity: QyLotActivityDetail }) {
         <div className='text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 text-xs'>
           <span className='inline-flex items-center gap-1'>
             {t('qy_lot_ball_carry_in')}
-            <QyAmountText quota={activity.pool_carry_quota ?? 0} />
+            <QySdAmount amount={activity.pool_carry_quota ?? 0} />
           </span>
           <span>
             {nextIssue == null

@@ -19,6 +19,13 @@ For commercial licensing, please contact support@quantumnous.com
 import type { QyLotBound } from '../types'
 
 /**
+ * 标题 / 说明的长度上限（按 rune）。与后端创建活动、`PUT …/basics` 同一口径
+ * （`api_admin_basics.go`：标题必填且 ≤60 字、说明 ≤2000 字）。
+ */
+export const QY_LOT_TITLE_MAX_RUNES = 60
+export const QY_LOT_INTRO_MAX_RUNES = 2000
+
+/**
  * 一个取值是否落在后端下发的区间里。
  *
  * 后端对**没有上界**的键不下发 `max`（`settingBound.NoMax`，见
@@ -36,22 +43,22 @@ export function qyLotBoundContains(bound: QyLotBound, value: number): boolean {
 }
 
 /**
- * 「0 = 不限制」的那几个额度上限（键名与后端 `editableKeys` / `yaml_readonly`
+ * 「0 = 不限制」的那几个星屑上限（键名与后端 `editableKeys` / `yaml_readonly`
  * 逐字一致）。
  *
- * 逐条列出而不是按 `_quota` 后缀猜：`pay_password_threshold_quota` 也以 `_quota`
- * 结尾，而它的 0 是「任何金额都不验支付密码」，`large_prize_alert_quota` 的 0 是
+ * 逐条列出而不是按 `_stardust` 后缀猜：`pay_password_threshold_stardust` 也以它
+ * 结尾，而它的 0 是「任何金额都不验支付密码」，`large_prize_alert_stardust` 的 0 是
  * 「连确认都不要」—— 三种 0 的意思互不相同，一句话说不完。
  */
 const UNLIMITED_WHEN_ZERO = new Set([
-  'max_stake_quota',
-  'max_total_prize_quota',
+  'max_stake_stardust',
+  'max_total_prize_stardust',
 ])
 
 /**
  * 这个键的这个**取值**是不是「不限制」。
  *
- * 只读渲染必须据此说「不限」而不是 `$0`：一行写着「单场奖品总额上限 $0」的
+ * 只读渲染必须据此说「不限」而不是 `0 星屑`：一行写着「单场奖品总额上限 0」的
  * 只读文字，任何人读到的都是"一分钱都不许发"，而真实语义恰好相反 ——
  * 这与项目方那句「怎么在抽奖设置这里不能超过 100 站点余额」是同一种误读，
  * 只是方向相反。

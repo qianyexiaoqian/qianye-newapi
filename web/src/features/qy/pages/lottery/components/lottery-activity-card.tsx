@@ -24,15 +24,16 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
+import { QySdAmount } from '../../../components/qy-sd-amount'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
-import { formatQyDuration, formatQyTs } from '../../ops/format'
 import {
   qyLotActivityBadgeStatus,
   qyLotCountdown,
   qyLotOutcomeKey,
 } from '../lib/display'
 import type { QyLotActivityBrief } from '../types'
+import { QyLotBallNumbers } from './lottery-ball-numbers'
+import { QyLotCountdownRing } from './lottery-countdown-ring'
 import { QyLotCover } from './lottery-cover'
 
 /**
@@ -45,19 +46,24 @@ const KIND_ICON: Partial<Record<string, typeof Dices>> = {
 }
 
 /**
- * 大厅里的一张活动卡。
+ * 大厅里的一张活动卡：封面 + 一行标题 + 奖池数字 + 倒计时环。
  *
  * 一屏之内必须回答四个问题：这是什么（抽奖 / 竞猜 / 双色球）、要花多少、
  * 现在到哪一步了、我参加过没有。少任何一个，用户都得点进去才知道，
  * 而大厅的意义就是不用点进去。
+ *
+ * ## 形状：先看图与数，再看字
+ *
+ * 玩法与状态徽章压在封面上，正文只剩三个数：奖池（最大）、参与费、参与数，
+ * 外加一个倒计时环。规则与说明一律折进「详情」—— 大厅上它们只是让每张卡都
+ * 长一截同样的字；双色球多留一行号池（那是中奖难度，不是说明）。
  *
  * ## 双色球为什么不是"换个徽章"就够了
  *
  * 同一张卡上那个最大的数含义整个变了：普通抽奖是 `pool_quota`（本场收到的
  * 投注额），双色球必须是 `pool_open_quota`（本期真正可派发的池子 = 开局基数 +
  * 本期投注入池部分）。滚存几期之后两者能差出一个数量级，而它正是用户用来决定
- * 要不要参与的那个数。除此之外还多两行：期号与号池——号池让人一眼看出这是
- * "12 选 3 + 4 选 1"还是"33 选 6"，那决定了中奖难度。
+ * 要不要参与的那个数。已开出号码的期次把号画成球 —— 那是"中没中"的一半。
  */
 export function QyLotActivityCard(props: {
   activity: QyLotActivityBrief
@@ -76,89 +82,88 @@ export function QyLotActivityCard(props: {
       {/* 背景图压在卡片最顶上，与卡片同宽、无留白 —— 所以这张 Card 去掉了
           顶部 padding 并开了 overflow-hidden，否则图的直角会戳出圆角边框。
           没配封面时这里画的是兜底图案而不是空白：空白与"还在加载"长得一样。 */}
-      <QyLotCover activity={activity} />
-      <CardHeader className='space-y-2'>
-        <div className='flex flex-wrap items-center gap-2'>
-          <Badge variant='outline' className='gap-1'>
-            <KindIcon aria-hidden='true' className='size-3' />
-            {isBall ? t('qy_lot_mode_ball') : t(`qy_lot_kind_${activity.kind}`)}
-          </Badge>
-          {isBall && (
-            <Badge variant='outline'>
-              {t('qy_lot_ball_issue_no', { no: activity.issue_no ?? 0 })}
+      <div className='relative'>
+        <QyLotCover activity={activity} />
+        <div className='absolute inset-x-2 top-2 flex flex-wrap items-center justify-between gap-1'>
+          <span className='flex flex-wrap items-center gap-1'>
+            <Badge variant='outline' className='bg-background/85 gap-1'>
+              <KindIcon aria-hidden='true' className='size-3' />
+              {isBall
+                ? t('qy_lot_mode_ball')
+                : t(`qy_lot_kind_${activity.kind}`)}
             </Badge>
-          )}
+            {isBall && (
+              <Badge variant='outline' className='bg-background/85'>
+                {t('qy_lot_ball_issue_no', { no: activity.issue_no ?? 0 })}
+              </Badge>
+            )}
+          </span>
           {/* 结局揭晓之后，状态与结局是同一件事：颜色与文字合进一枚徽章。
-              此前是两枚并排，一场取消的活动上写着「已取消 已取消(全额退款)」，
-              一场流局的活动上写着「已冲正 人数不足流局(全额退款)」——
-              后者更糟，两枚徽章像是在说两件事。 */}
+              此前是两枚并排，一场取消的活动上写着「已取消 已取消(全额退款)」。 */}
           <QyStatusBadge
             status={qyLotActivityBadgeStatus(activity.status, activity.outcome)}
             label={outcomeKey == null ? undefined : t(outcomeKey)}
-            className='shrink-0'
+            className='bg-background/85 shrink-0'
           />
         </div>
-        <h3 className='text-base font-medium break-words'>{activity.title}</h3>
+      </div>
+      <CardHeader>
+        <h3 className='truncate text-base font-medium' title={activity.title}>
+          {activity.title}
+        </h3>
       </CardHeader>
 
-      <CardContent className='flex-1 space-y-2 text-sm'>
-        <div className='flex items-center justify-between gap-2'>
-          <span className='text-muted-foreground'>{t('qy_lot_stake')}</span>
-          <QyAmountText quota={activity.stake_quota} />
-        </div>
-        <div className='flex items-center justify-between gap-2'>
-          <span className='text-muted-foreground'>
-            {isBall ? t('qy_lot_ball_pool_open') : t('qy_lot_pool')}
+      <CardContent className='flex-1 space-y-3 text-sm'>
+        <div className='flex items-end justify-between gap-3'>
+          <span className='flex min-w-0 flex-col leading-tight'>
+            <span className='text-muted-foreground text-[11px]'>
+              {isBall ? t('qy_lot_ball_pool_open') : t('qy_lot_pool')}
+            </span>
+            <QySdAmount
+              amount={
+                isBall ? (activity.pool_open_quota ?? 0) : activity.pool_quota
+              }
+              variant='hero'
+              className='text-xl'
+            />
           </span>
-          <QyAmountText
-            quota={
-              isBall ? (activity.pool_open_quota ?? 0) : activity.pool_quota
-            }
-            variant='hero'
-          />
+          <QyLotCountdownRing countdown={countdown} drawAt={activity.draw_at} />
         </div>
+        <div className='grid grid-cols-2 gap-2 text-xs'>
+          <span className='flex min-w-0 flex-col leading-tight'>
+            <span className='text-muted-foreground text-[11px]'>
+              {t('qy_lot_stake')}
+            </span>
+            <QySdAmount amount={activity.stake_quota} />
+          </span>
+          <span className='flex min-w-0 flex-col leading-tight'>
+            <span className='text-muted-foreground inline-flex items-center gap-1 text-[11px]'>
+              <Users aria-hidden='true' className='size-3' />
+              {t('qy_lot_entries_count')}
+            </span>
+            <span className='tabular-nums'>{activity.active_count}</span>
+          </span>
+        </div>
+        {/* 号池 = 中奖难度：「12 选 3」与「33 选 6」是两种游戏，这一行是双色球卡片
+            不能折进详情的那一个数（admin-lottery/__tests__/play-visibility 钉着它）。 */}
         {isBall && (
-          <div className='flex items-center justify-between gap-2'>
-            <span className='text-muted-foreground'>
-              {t('qy_lot_ball_pool_label')}
-            </span>
-            <span className='tabular-nums'>
-              {t('qy_lot_ball_pool_desc', {
-                redPick: activity.ball_red_pick ?? 0,
-                redPool: activity.ball_red_pool ?? 0,
-                bluePick: activity.ball_blue_pick ?? 0,
-                bluePool: activity.ball_blue_pool ?? 0,
-              })}
-            </span>
-          </div>
+          <p className='text-muted-foreground text-[11px] tabular-nums'>
+            {t('qy_lot_ball_pool_desc', {
+              redPick: activity.ball_red_pick ?? 0,
+              redPool: activity.ball_red_pool ?? 0,
+              bluePick: activity.ball_blue_pick ?? 0,
+              bluePool: activity.ball_blue_pool ?? 0,
+            })}
+          </p>
         )}
         {isBall && (activity.ball_result ?? '') !== '' && (
-          <div className='flex items-center justify-between gap-2'>
-            <span className='text-muted-foreground'>
+          <div className='flex flex-col gap-1'>
+            <span className='text-muted-foreground text-[11px]'>
               {t('qy_lot_ball_result')}
             </span>
-            <span className='font-mono text-xs break-all tabular-nums'>
-              {activity.ball_result}
-            </span>
+            <QyLotBallNumbers size='sm' pick={activity.ball_result ?? ''} />
           </div>
         )}
-        <div className='flex items-center justify-between gap-2'>
-          <span className='text-muted-foreground inline-flex items-center gap-1'>
-            <Users aria-hidden='true' className='size-3.5' />
-            {t('qy_lot_entries_count')}
-          </span>
-          <span className='tabular-nums'>{activity.active_count}</span>
-        </div>
-        <div className='flex items-center justify-between gap-2'>
-          <span className='text-muted-foreground'>
-            {countdown == null ? t('qy_lot_draw_at') : t(countdown.labelKey)}
-          </span>
-          <span className='tabular-nums'>
-            {countdown == null
-              ? formatQyTs(activity.draw_at)
-              : formatQyDuration(countdown.seconds)}
-          </span>
-        </div>
       </CardContent>
 
       <CardFooter className='flex items-center justify-between gap-2'>

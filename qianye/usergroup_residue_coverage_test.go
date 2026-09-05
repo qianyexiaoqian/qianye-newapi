@@ -8,7 +8,7 @@ package qianye
 // 报错**,只会安静地留下一条挂在死名字上的配置:
 //
 //	漏掉 qy_group_scopes        矩阵页的行轴凭空多出一档已经不存在的用户分组
-//	漏掉 qy_commission_group_rate 一条永远不会命中的返佣费率
+//	漏掉 qy_sd_group_rate       一条永远不会命中的星屑档位
 //	漏掉 qy_transfer_group_rules  一条永远不会命中的**资金闸门** —— 运营以为设了防,
 //	                              而那批人已经迁走了;更糟的是这个名字将来被重新用上时,
 //	                              一批毫不相干的新用户会突然出现在一条老白名单里
@@ -60,6 +60,11 @@ var userGroupListFields = map[string]bool{
 	"deny_groups":  true,
 	"to_groups":    true,
 	"group_scope":  true,
+	// 地址簿的适用分组(qy_api_addresses.user_groups)。它有自己的一列,但列名
+	// 不在上面的单名列清单里 —— 装的是逗号串名单而不是单个分组名,归这一半管。
+	// groupmatrix 的两个同名 json 字段(preview/api_admin 的响应 DTO)会一并
+	// 命中,无需豁免:那个模块本来就登记着 residue。
+	"user_groups": true,
 }
 
 // notAUserGroup 是**显式豁免**:列名/字段名撞上了,但它装的不是用户分组。
@@ -80,7 +85,7 @@ var notAUserGroup = map[string]string{
 //
 // lottery 在列表里,正是因为它命中的是 json tag 那一半判据:少了它,
 // 把 userGroupListFields 整段删掉也不会有任何测试变红。
-var knownKeyedModules = []string{"commission", "groupmatrix", "lottery", "transfer"}
+var knownKeyedModules = []string{"apiaddr", "groupmatrix", "lottery", "stardust", "transfer"}
 
 // TestEveryUserGroupKeyedTableDeclaresItsDisposition 扫全部扩展模块。
 func TestEveryUserGroupKeyedTableDeclaresItsDisposition(t *testing.T) {

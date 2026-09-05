@@ -3,6 +3,7 @@ package violation
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -480,6 +481,118 @@ func runAILegacySampleRateMigration() {
 	if _, err := dropLegacyAISampleRateColumn(ctx, gdb); err != nil {
 		common.SysError("qianye/violation: 删除历史列 " + AISetting{}.TableName() + "." +
 			legacyAISampleRateColumn + " 失败(该列已无任何读写点,保留它不影响任何判定): " + err.Error())
+	}
+}
+
+// ─────────────────── AI 作用域「单渠道」→「渠道清单」 ───────────────────
+
+// legacyAIScopeChannelColumn 是 qy_violation_ai_scope 上那一列单渠道 id。
+//
+// 写成常量的理由与 legacyAISampleRateColumn 一致:探针、迁移读取、删除语句用的
+// 必须是同一个字符串,三处各写一遍字面量时,改错一处的表现是"迁移每次启动都
+// 说自己迁完了、而值一直没搬走" —— 而这里没搬走的后果是**一档正在生效的
+// 数据流向约束凭空消失**:清单是空的,于是那一档改成在全部启用渠道之间分发,
+// 用户内容被发往运营从来没有选过的端点。
+const legacyAIScopeChannelColumn = "channel_id"
+
+// migrateAIScopeChannelIds 把 channel_id 搬进 channel_ids。
+//
+// # 为什么必须搬,而且必须排在预热之前
+//
+// 这两列的零值指向**相反**的行为:channel_id = 0 与 channel_ids = ” 都写作
+// "不指定",而"不指定"的含义是「在全部启用渠道之间分发」。于是一条
+// `channel_id = 7`(只发给自建端点)的存量策略,在没搬之前的第一个刷新周期里
+// 读出来是空清单 —— 它会开始把用户内容发给池子里的每一个渠道,包括云端厂商。
+// 这是本仓最不能接受的那一种变更:没有任何症状的数据出境扩大。
+//
+// # 幂等与多节点
+//
+// 判据是「legacy 列 > 0 且 channel_ids 为空」,搬完不再命中。UPDATE 自带
+// `channel_ids = ”` 条件,两个节点同时跑时后到的那个命中 0 行,不是失败。
+// 因此不需要 lease。
+//
+// 逐行 UPDATE 而不是一句 `SET channel_ids = CAST(channel_id AS CHAR)`:
+// 整数转字符串的函数名在三家数据库上各不相同(CAST ... AS CHAR / TEXT /
+// VARCHAR),而策略表是个位数量级的行。
+func migrateAIScopeChannelIds(ctx context.Context, gdb *gorm.DB) (int64, error) {
+	if gdb == nil {
+		return 0, db.ErrNotReady
+	}
+	m := gdb.WithContext(ctx).Migrator()
+	if !m.HasTable(&AIScope{}) {
+		return 0, nil
+	}
+	// 列已经不在 = 这个站点要么已经迁过,要么是全新建的库(结构体上没有这一
+	// 列,AutoMigrate 根本不会建它)。两种都是 no-op。
+	if !m.HasColumn(&AIScope{}, legacyAIScopeChannelColumn) {
+		return 0, nil
+	}
+	type legacyRow struct {
+		Id        int64
+		ChannelId int64
+	}
+	var rows []legacyRow
+	if err := gdb.WithContext(ctx).Table(AIScope{}.TableName()).
+		Select("id, "+legacyAIScopeChannelColumn+" as channel_id").
+		Where(legacyAIScopeChannelColumn+" > ?", 0).
+		Order("id asc").Scan(&rows).Error; err != nil {
+		db.MarkFailure(err)
+		return 0, err
+	}
+	var moved int64
+	for _, r := range rows {
+		res := gdb.WithContext(ctx).Table(AIScope{}.TableName()).
+			Where("id = ? AND (channel_ids IS NULL OR channel_ids = ?)", r.Id, "").
+			Update("channel_ids", strconv.FormatInt(r.ChannelId, 10))
+		if res.Error != nil {
+			db.MarkFailure(res.Error)
+			return moved, res.Error
+		}
+		moved += res.RowsAffected
+	}
+	return moved, nil
+}
+
+// dropLegacyAIScopeChannelColumn 删掉 qy_violation_ai_scope.channel_id。
+//
+// **必须排在 migrateAIScopeChannelIds 之后**:那一列的存在本身就是迁移的
+// 幂等闩。反过来(先删列)时,任何在删列与搬值之间崩掉的进程都会把那些策略的
+// 渠道约束永久丢掉,而丢掉之后没有任何地方能告诉运营"原来指定的是哪一个"。
+func dropLegacyAIScopeChannelColumn(ctx context.Context, gdb *gorm.DB) (bool, error) {
+	return dropLegacyColumn(ctx, gdb, &AIScope{}, AIScope{}.TableName(), legacyAIScopeChannelColumn)
+}
+
+// runAIScopeChannelListMigration 是启动期调用点:先搬值,再删列,失败只告警。
+//
+// 阻断启动没有意义(与 runRuleModeMigration 同口径),但它必须喊出来:没搬走的
+// 那几档现在是「在全部启用渠道之间分发」,而它们原本写的是「只发给这一个」。
+func runAIScopeChannelListMigration() {
+	if !config.Get().Database.ShouldAutoMigrate() {
+		return
+	}
+	gdb := db.Get()
+	if gdb == nil {
+		return
+	}
+	ctx := context.Background()
+	moved, err := migrateAIScopeChannelIds(ctx, gdb)
+	if err != nil {
+		common.SysError("qianye/violation: AI 审核作用域的「指定渠道」迁移失败 —— " +
+			"未迁移的那几档会按「在全部启用渠道之间分发」运行,也就是把用户内容发往" +
+			"运营没有选过的端点。请重启,或手工在作用域页重新选一次渠道: " + err.Error())
+		return
+	}
+	if moved > 0 {
+		common.SysError(common.MapToJsonStr(map[string]any{
+			"msg": "qianye/violation: 已把 AI 审核作用域的单个「指定渠道」迁移成渠道清单;" +
+				"行为不变(一个渠道的清单与原来的单选逐字节等价),现在这一格可以多选并选择轮询",
+			"rows":  moved,
+			"table": AIScope{}.TableName(),
+		}))
+	}
+	if _, err := dropLegacyAIScopeChannelColumn(ctx, gdb); err != nil {
+		common.SysError("qianye/violation: 删除历史列 " + AIScope{}.TableName() + "." +
+			legacyAIScopeChannelColumn + " 失败(该列已无任何读写点,保留它不影响任何判定): " + err.Error())
 	}
 }
 

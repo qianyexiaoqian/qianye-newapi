@@ -266,6 +266,7 @@ func Redeem(key string, userId int) (*RedeemResult, error) {
 	// plan 只有套餐 / 用户组码会被赋值,兑换成功后靠它区分两条收尾路径。
 	var plan *SubscriptionPlan
 	var subscription *UserSubscription
+	startedAt := common.GetTimestamp()
 	common.RandomSleep()
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		err := lockForUpdate(tx).Where(keyCol+" = ?", key).First(redemption).Error
@@ -400,6 +401,7 @@ func Redeem(key string, userId int) (*RedeemResult, error) {
 		refreshSubscriptionUserGroupCache(userId, "redemption subscription")
 	}
 	RecordLog(userId, LogTypeTopup, fmt.Sprintf("通过兑换码开通订阅 %s，兑换码ID %d", plan.Title, redemption.Id))
+	QyOnSubscriptionGranted(qySubscriptionGrant(subscription, plan, RedemptionSubscriptionSource, "", redemption.Id, 0, startedAt))
 	return &RedeemResult{
 		ProductType:  redemption.ProductKind(),
 		PlanId:       plan.Id,

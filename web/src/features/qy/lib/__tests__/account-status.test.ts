@@ -58,14 +58,16 @@ const t = ((key: string) => key) as unknown as TFunction
 
 const ALL_ON: QyFeatures = {
   transfer: true,
+  invite: true,
   commission: true,
-  withdraw: true,
   availability: true,
   lottery: true,
   violation: true,
   ticket: true,
   group_matrix: true,
   pay_password: true,
+  stardust: true,
+  mall: true,
 }
 
 const ALL_OFF: QyFeatures = { ...ALL_ON }

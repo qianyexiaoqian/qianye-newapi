@@ -55,6 +55,7 @@ const ALL_SHOWN: QyLotPlays = {
   draw_prob: true,
   draw_ball: true,
   guess: true,
+  wheel: true,
 }
 
 /** 一份"扩展开着、娱乐入口也开着"的配置，玩法由用例自己指定。 */
@@ -81,6 +82,7 @@ describe('玩法显隐 — 引导端点的归一化', () => {
       draw_prob: true,
       draw_ball: true,
       guess: true,
+      wheel: true,
     })
   })
 
@@ -95,6 +97,7 @@ describe('玩法显隐 — 引导端点的归一化', () => {
       draw_prob: true,
       draw_ball: false,
       guess: true,
+      wheel: true,
     })
   })
 
@@ -109,6 +112,7 @@ describe('玩法显隐 — 引导端点的归一化', () => {
           draw_prob: false,
           draw_ball: false,
           guess: true,
+          wheel: true,
         },
       },
     })
@@ -117,6 +121,7 @@ describe('玩法显隐 — 引导端点的归一化', () => {
       draw_prob: false,
       draw_ball: false,
       guess: true,
+      wheel: true,
     })
   })
 
@@ -129,31 +134,32 @@ describe('玩法显隐 — 引导端点的归一化', () => {
       draw_prob: false,
       draw_ball: false,
       guess: false,
+      wheel: false,
     })
   })
 })
 
 /**
- * 三张大厅标签 × 四个玩法开关的**合并口径**（本轮：「每个入口都可以单独被
- * 隐藏或显示」）。
+ * 四张玩法标签 × 五个玩法开关的**合并口径**（上一轮：「每个入口都可以单独被
+ * 隐藏或显示」；2026-09-05：「星屑转盘的页面移动到抽奖竞猜里面去」）。
  *
- * 没有第五个开关：「双色球」「竞猜」各自只压着一种玩法，标签可见性就是那一个
- * 开关本身；「抽奖」底下压着按名次与按公示概率两种，**两种都关掉时**它才消失。
- * 所以这里只有一个派生函数要测（`qyLotDrawShown`），另外两张标签直接读
- * `plays.draw_ball` / `plays.guess`。
+ * 没有第六个开关：「双色球」「竞猜」「转盘」各自只压着一种玩法，标签可见性就是
+ * 那一个开关本身；「抽奖」底下压着按名次与按公示概率两种，**两种都关掉时**它才
+ * 消失。所以这里只有一个派生函数要测（`qyLotDrawShown`），另外三张标签直接读
+ * `plays.draw_ball` / `plays.guess` / `plays.wheel`。
  *
  * 关键的一条是第二行：只开双色球时「抽奖」那张标签必须**消失**。改造前它是
  * `rank || prob || ball`，于是只开双色球会留下一张永远空的「抽奖」标签 ——
  * 那正是"两套开关互相打架"的形状，而界面上不会报错。
  */
-describe('玩法显隐 — 三张标签的可见性', () => {
+describe('玩法显隐 — 四张玩法标签的可见性', () => {
   const cases: {
     name: string
     plays: QyLotPlays
     draw: boolean
     any: boolean
   }[] = [
-    { name: '四个都开', plays: ALL_SHOWN, draw: true, any: true },
+    { name: '五个都开', plays: ALL_SHOWN, draw: true, any: true },
     {
       name: '只开双色球：抽奖标签消失（它已经是自己的标签了），整组入口保留',
       plays: { ...ALL_SHOWN, draw_rank: false, draw_prob: false, guess: false },
@@ -179,6 +185,7 @@ describe('玩法显隐 — 三张标签的可见性', () => {
         draw_prob: false,
         draw_ball: true,
         guess: true,
+        wheel: true,
       },
       draw: false,
       any: true,
@@ -190,6 +197,7 @@ describe('玩法显隐 — 三张标签的可见性', () => {
         draw_prob: false,
         draw_ball: false,
         guess: true,
+        wheel: true,
       },
       draw: false,
       any: true,
@@ -207,17 +215,33 @@ describe('玩法显隐 — 三张标签的可见性', () => {
         draw_prob: false,
         draw_ball: false,
         guess: true,
+        wheel: true,
       },
       draw: false,
       any: true,
     },
     {
-      name: '四个全关',
+      // 转盘并入选择夹之后它也是"整组入口"的一票：只开转盘时这一行必须还在，
+      // 否则转盘开着却没有入口。
+      name: '只开转盘：抽奖标签消失，整组入口保留',
       plays: {
         draw_rank: false,
         draw_prob: false,
         draw_ball: false,
         guess: false,
+        wheel: true,
+      },
+      draw: false,
+      any: true,
+    },
+    {
+      name: '五个全关',
+      plays: {
+        draw_rank: false,
+        draw_prob: false,
+        draw_ball: false,
+        guess: false,
+        wheel: false,
       },
       draw: false,
       any: false,
@@ -232,30 +256,45 @@ describe('玩法显隐 — 三张标签的可见性', () => {
   }
 
   /**
-   * 「整组入口」= 三张标签里还有一张在。
+   * 「整组入口」= 四张玩法标签里还有一张在。
    *
-   * 期望值在这里独立算一遍（三张标签各自的可见性取或），而不是再调一次
+   * 期望值在这里独立算一遍（四张标签各自的可见性取或），而不是再调一次
    * `qyAnyLotPlayShown` —— 后者等于断言它等于它自己。守的是"抽奖那张标签
    * 的判据换了之后，整组入口跟着算错"：把 `draw_ball` 从 `qyLotDrawShown`
    * 里摘出来时，若忘了在 `qyAnyLotPlayShown` 里补上，只开双色球的站点会
-   * 整行导航消失，而双色球明明是开着的。
+   * 整行导航消失，而双色球明明是开着的。转盘并入之后同一条：漏掉 `wheel`，
+   * 只开转盘的站点整行消失。
    */
-  test('整组入口 = 三张标签的并集', () => {
+  test('整组入口 = 四张玩法标签的并集', () => {
     for (const tc of cases) {
       const anyTabShown =
-        qyLotDrawShown(tc.plays) || tc.plays.draw_ball || tc.plays.guess
+        qyLotDrawShown(tc.plays) ||
+        tc.plays.draw_ball ||
+        tc.plays.guess ||
+        tc.plays.wheel
       assert.equal(
         qyAnyLotPlayShown(tc.plays),
         anyTabShown,
-        `${tc.name}：整组入口与三张标签的并集不一致`
+        `${tc.name}：整组入口与四张玩法标签的并集不一致`
       )
     }
   })
 })
 
+/**
+ * `configWith` 不下发 stardust / mall 两段，归一化按"显示"补齐，所以下面每一条
+ * 的 `stardust` / `mall` 恒为 true —— 它们不是这组用例要守的东西，写全只是因为
+ * `deepEqual` 认整个对象。转盘那一格是那张标签自己的门；`lottery` 一格自
+ * 2026-09-05 起把转盘也算进"还剩不剩玩法"。
+ */
 describe('玩法显隐 — 侧栏那一行', () => {
   test('还有玩法开着时入口保留', () => {
-    assert.deepEqual(qyEntrySwitches(configWith(ALL_SHOWN)), { lottery: true })
+    assert.deepEqual(qyEntrySwitches(configWith(ALL_SHOWN)), {
+      lottery: true,
+      wheel: true,
+      stardust: true,
+      mall: true,
+    })
   })
 
   test('只剩双色球时入口仍然保留', () => {
@@ -264,8 +303,14 @@ describe('玩法显隐 — 侧栏那一行', () => {
       draw_prob: false,
       draw_ball: true,
       guess: false,
+      wheel: false,
     }
-    assert.deepEqual(qyEntrySwitches(configWith(plays)), { lottery: true })
+    assert.deepEqual(qyEntrySwitches(configWith(plays)), {
+      lottery: true,
+      wheel: false,
+      stardust: true,
+      mall: true,
+    })
   })
 
   test('只剩竞猜时入口仍然保留', () => {
@@ -274,27 +319,83 @@ describe('玩法显隐 — 侧栏那一行', () => {
       draw_prob: false,
       draw_ball: false,
       guess: true,
+      wheel: false,
     }
-    assert.deepEqual(qyEntrySwitches(configWith(plays)), { lottery: true })
+    assert.deepEqual(qyEntrySwitches(configWith(plays)), {
+      lottery: true,
+      wheel: false,
+      stardust: true,
+      mall: true,
+    })
   })
 
-  test('四种玩法全关时整行入口消失', () => {
+  test('五种玩法全关时整行入口消失', () => {
     const plays: QyLotPlays = {
       draw_rank: false,
       draw_prob: false,
       draw_ball: false,
       guess: false,
+      wheel: false,
     }
-    assert.deepEqual(qyEntrySwitches(configWith(plays)), { lottery: false })
+    assert.deepEqual(qyEntrySwitches(configWith(plays)), {
+      lottery: false,
+      wheel: false,
+      stardust: true,
+      mall: true,
+    })
   })
 
-  test('站点级展示开关关掉时，玩法全开也不出现入口', () => {
+  /**
+   * 转盘是抽奖竞猜选择夹的一张标签（项目方 2026-09-05），所以只开转盘时
+   * 那一行入口必须保留：点进去是转盘标签 + 「我的参与」，不是空大厅。
+   * `wheel` 一格同时为真 —— 它是那张标签自己的门。
+   */
+  test('只开转盘：整行入口保留，转盘标签的门也开着', () => {
+    const plays: QyLotPlays = {
+      draw_rank: false,
+      draw_prob: false,
+      draw_ball: false,
+      guess: false,
+      wheel: true,
+    }
+    assert.deepEqual(qyEntrySwitches(configWith(plays)), {
+      lottery: true,
+      wheel: true,
+      stardust: true,
+      mall: true,
+    })
+  })
+
+  test('站点级展示开关关掉时，玩法全开也不出现入口（转盘一并消失）', () => {
     const config = normalizeQyConfig({
       enabled: true,
       features: { lottery: true },
       lottery: { show_entry: false, plays: ALL_SHOWN },
     })
-    assert.deepEqual(qyEntrySwitches(config), { lottery: false })
+    assert.deepEqual(qyEntrySwitches(config), {
+      lottery: false,
+      wheel: false,
+      stardust: true,
+      mall: true,
+    })
+  })
+
+  test('星屑与商城的入口各自跟着自己的 show_entry，缺键按显示', () => {
+    const shown = normalizeQyConfig({
+      enabled: true,
+      features: { stardust: true, mall: true },
+    })
+    assert.equal(qyEntrySwitches(shown).stardust, true)
+    assert.equal(qyEntrySwitches(shown).mall, true)
+
+    const hidden = normalizeQyConfig({
+      enabled: true,
+      features: { stardust: true, mall: true },
+      stardust: { show_entry: false },
+      mall: { show_entry: false },
+    })
+    assert.equal(qyEntrySwitches(hidden).stardust, false)
+    assert.equal(qyEntrySwitches(hidden).mall, false)
   })
 })
 
@@ -314,10 +415,11 @@ describe('玩法显隐 — 我的参与永不隐藏', () => {
     'utf8'
   )
 
-  test('三张大厅标签各自跟着自己的玩法开关', () => {
+  test('四张玩法标签各自跟着自己的玩法开关', () => {
     assert.match(hub, /'\/qy\/lottery':\s*drawShown\s*\?/)
     assert.match(hub, /'\/qy\/lottery-guess':\s*plays\.guess\s*\?/)
     assert.match(hub, /'\/qy\/lottery-ball':\s*plays\.draw_ball\s*\?/)
+    assert.match(hub, /'\/qy\/wheel':\s*plays\.wheel\s*\?/)
   })
 
   test('我的参与那一行是无条件的', () => {

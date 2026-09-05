@@ -21,49 +21,30 @@ import (
 // 这条断言就是那份契约。
 func TestEntryFingerprintIsStableAcrossRetries(t *testing.T) {
 	act := &Activity{ActNo: "LT20260101-0123456789abcdef", Kind: KindDraw, DrawMode: DrawModeBall}
-	newEntry := func(mutate func(*Entry)) *Entry {
-		e := &Entry{
-			// 每次重试都是一条全新的 Entry,entry_no 必然不同 —— 这正是要点。
-			EntryNo: newEntryNo(),
-			IdemKey: buildIdemKey(act.ActNo, "crid-fixed"),
-			UserId:  4242, OptNo: 2, Pick: "01,02,03|01", Amount: 1000,
-		}
-		if mutate != nil {
-			mutate(e)
-		}
-		return e
-	}
-
-	first := fundingFacts(act, newEntry(nil))
-	second := fundingFacts(act, newEntry(nil))
-	require.NotEqual(t, first.RefId, second.RefId,
-		"两次请求的 entry_no 本来就不同,否则这条用例什么都没测")
-	assert.Equal(t, first.Fingerprint, second.Fingerprint,
+	first := entryFingerprint(act, 4242, 1000, 2, "01,02,03|01")
+	second := entryFingerprint(act, 4242, 1000, 2, "01,02,03|01")
+	assert.Equal(t, first, second,
 		"同一个 client_request_id 的重试算出了不同指纹 —— 幂等键在结构上永远命中不了")
+	assert.Len(t, first, 64, "指纹落在 varchar(64) 里,必须恰好是一个 sha256 的十六进制")
 
 	// 换参重放仍然必须被识破:指纹收的是"用户这次请求说了什么"。
-	changed := map[string]func(*Entry){
-		"换选项": func(e *Entry) { e.OptNo = 3 },
-		"换号码": func(e *Entry) { e.Pick = "01,02,04|01" },
-		"换金额": func(e *Entry) { e.Amount = 9000 },
-		"换用户": func(e *Entry) { e.UserId = 4243 },
+	changed := map[string]string{
+		"换选项": entryFingerprint(act, 4242, 1000, 3, "01,02,03|01"),
+		"换号码": entryFingerprint(act, 4242, 1000, 2, "01,02,04|01"),
+		"换金额": entryFingerprint(act, 4242, 9000, 2, "01,02,03|01"),
+		"换用户": entryFingerprint(act, 4243, 1000, 2, "01,02,03|01"),
 	}
-	for name, mutate := range changed {
+	for name, fp := range changed {
 		t.Run(name, func(t *testing.T) {
-			assert.NotEqual(t, first.Fingerprint, fundingFacts(act, newEntry(mutate)).Fingerprint,
-				"换参重放必须算出不同指纹")
+			assert.NotEqual(t, first, fp, "换参重放必须算出不同指纹")
 		})
 	}
 
 	t.Run("换活动", func(t *testing.T) {
 		other := &Activity{ActNo: "LT20260101-fedcba9876543210", Kind: KindDraw, DrawMode: DrawModeBall}
-		assert.NotEqual(t, first.Fingerprint, fundingFacts(other, newEntry(nil)).Fingerprint,
-			"活动维度由 extra 里的 act_no 承载,摘掉 RefId 之后它必须还在")
+		assert.NotEqual(t, first, entryFingerprint(other, 4242, 1000, 2, "01,02,03|01"),
+			"活动维度由 act_no 承载:同一个 crid 在两场活动上是两笔不同的参与")
 	})
-
-	// RefId 仍然要指向 entry_no:补偿任务的 Resolver 靠它精确找回**这一条**明细。
-	assert.Equal(t, "lottery_entry", first.RefType)
-	assert.NotEmpty(t, first.RefId)
 }
 
 // 四个时刻必须有绝对上界。
@@ -76,7 +57,7 @@ func TestEntryFingerprintIsStableAcrossRetries(t *testing.T) {
 func TestValidateScheduleRejectsUnboundedSchedules(t *testing.T) {
 	newPayoutEnv(t, config.Lottery{
 		Enabled: true, EntryCloseGraceSeconds: 60, RevealDelaySeconds: 60,
-		MaxStakeQuota: 5_000_000,
+		MaxStakeStardust: 5_000_000,
 	})
 	now := common.GetTimestamp()
 	const day = int64(86400)

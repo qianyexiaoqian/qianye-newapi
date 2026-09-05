@@ -160,15 +160,21 @@ func applyReservation(sender, receiver *UserState, fromGroup string, amount, tot
 
 // undoReservation 退还预占。
 //
-// sameDay 为 false 表示预占之后已经跨日、日计数已被 rollDay 清零,
-// 此时再减会把今天的额度凭空放大 —— 只退终身累计。
+// senderSameDay / receiverSameDay 各自表示"这一方的当日计数是否仍与建单那天同日"。
+// 为 false 表示预占之后这一方已经跨日、它的日计数早被 rollDay 清零,此时再减会把
+// 它今天的额度凭空放大 —— 只退终身累计。两方必须分别判定:发起方与收款方的自然日
+// 各自独立滚动(任何一方作为收/发方参与别的划转,都会被 reserveRisk 里的 rollDay
+// 单独推进),用同一个标志同时决定两方,会在一方跨日、另一方没跨日时把收款方的
+// receiver_daily_max_in_count 静默放宽(或把它一个名额永久吃掉)。
 //
 // LastOutAt 刻意不回滚:它已被覆盖,无法还原成上一笔的时刻。
 // 结果是失败的划转仍然消耗一次冷却,方向保守,可以接受。
-func undoReservation(sender, receiver *UserState, amount, total int64, sameDay bool, now int64) {
-	if sameDay {
+func undoReservation(sender, receiver *UserState, amount, total int64, senderSameDay, receiverSameDay bool, now int64) {
+	if senderSameDay {
 		sender.DayOutQuota = clampNonNegative64(sender.DayOutQuota - total)
 		sender.DayOutCount = clampNonNegative(sender.DayOutCount - 1)
+	}
+	if receiverSameDay {
 		receiver.DayInCount = clampNonNegative(receiver.DayInCount - 1)
 	}
 	sender.LifetimeOutQuota = clampNonNegative64(sender.LifetimeOutQuota - total)

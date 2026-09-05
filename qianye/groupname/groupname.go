@@ -2,7 +2,7 @@
 //
 // # 为什么要有这个包
 //
-// 扩展库里有多张以分组名为键的表(commission 的 qy_commission_group_rate、
+// 扩展库里有多张以分组名为键的表(stardust 的 qy_sd_group_rate、
 // transfer 的 qy_transfer_group_rules),它们的列都是 varchar(64),而扩展库
 // 固定是 MySQL:AutoMigrate 建表时列继承库默认排序规则,MySQL 5.7 是
 // utf8mb4_general_ci、8.0 是 utf8mb4_0900_ai_ci —— **两者都大小写不敏感**。
