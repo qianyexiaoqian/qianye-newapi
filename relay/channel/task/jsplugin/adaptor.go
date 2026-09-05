@@ -1253,7 +1253,9 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 		a.files = append(a.files[:0], files...)
 	}
 	ctx := routeRequest.JSValue()
-	ctx["requestBody"] = jsonValue(routeRequest.RequestBody)
+	requestBody := jsonValue(routeRequest.RequestBody)
+	stripModelSelectionFromRequestBody(requestBody)
+	ctx["requestBody"] = requestBody
 	ctx["requestHeaders"] = requestHeaders
 	ctx["files"] = files
 	ctx["action"] = info.Action
@@ -1294,6 +1296,37 @@ func (a *TaskAdaptor) submitContext(c *gin.Context, info *relaycommon.RelayInfo)
 		ctx["authError"] = err.Error()
 	}
 	return ctx
+}
+
+// stripModelSelectionFromRequestBody 在把请求体交给 buildSubmitRequest 之前,
+// 删掉 metadata 里所有能改写模型选择的键(model / model_name / req_key …)。
+//
+// ── 为什么这道闸必须在宿主侧 ──
+//
+// 模型由鉴权与计费认定:渠道 models、令牌 model_limits、分组 abilities 三层都按
+// ctx.model / ctx.upstreamModel 放行,预扣与结算也按它算钱。而 metadata 是客户端
+// 完全可控的自由字典,内置插件普遍把它**整包并进上游报文**(kling 并进 body、
+// google 并进 parameters、doubao/jimeng 直接透传),于是
+//
+//	{"model":"便宜模型","metadata":{"model_name":"贵模型"}}
+//
+// 这一条就能做到「按便宜的付费、按贵的出货」,三层授权同时失效,而且全链路不报错
+// —— 消费日志上记的是便宜模型,事后对账查不出来。
+//
+// 逐个插件在 JS 里删是守不住的:上游每次改插件都要重新守一遍,第三方插件更是
+// 完全在名单之外。放在这里,任何插件(内置或第三方)拿到的 metadata 都已经没有
+// 模型字段了。插件照常从 ctx 取模型再写回上游报文,语义等价于「这个字段不接受
+// 用户输入」。名单与 relaycommon 共用一份(kling=model_name、jimeng=req_key)。
+func stripModelSelectionFromRequestBody(body any) {
+	root, ok := body.(map[string]any)
+	if !ok {
+		return
+	}
+	metadata, ok := root["metadata"].(map[string]any)
+	if !ok {
+		return
+	}
+	relaycommon.StripModelSelectionMetadata(metadata)
 }
 
 func (a *TaskAdaptor) usageRatios(ctx context.Context, hook string, args ...any) (map[string]float64, error) {

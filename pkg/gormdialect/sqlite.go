@@ -108,11 +108,25 @@ type sqliteIndexRow struct {
 	Origin   string `gorm:"column:origin"`
 }
 
-// singleColumnUniqueIndexColumns 返回"被单列唯一索引覆盖"的列名集合。
+// singleColumnUniqueIndexColumns 返回"被单列 UNIQUE **约束**覆盖"的列名集合。
 //
-// origin='pk' 的索引排除在外:主键那一列在 gorm 的比较里本来就被 field.PrimaryKey
-// 短路。origin='u'(列定义或表级 UNIQUE 约束自动建的)与 origin='c'
-// (显式 CREATE UNIQUE INDEX)都算。
+// 只认 origin='u',也就是列定义里的 `UNIQUE` 或表级 `CONSTRAINT … UNIQUE (col)`
+// 自动建出来的那条索引。origin='pk'(主键,gorm 比较时被 field.PrimaryKey 短路)与
+// origin='c'(显式 `CREATE UNIQUE INDEX`,即 gorm 的 `uniqueIndex` 标签)都排除。
+//
+// ── 为什么 origin='c' 必须排除(gorm v1.25.12 起) ──
+//
+// 这一层还原的是 gorm.ColumnType.Unique(),而 gorm 拿它跟 field.Unique 比。
+// field.Unique 只由 `gorm:"unique"` 标签决定,`uniqueIndex` 不置它 —— 上游
+// migrator.go 的 MigrateColumnUnique 把这条契约写成了注释:
+// "By default, ColumnType's Unique is not affected by UniqueIndex"。
+//
+// v1.25.2 时不等只是让 alterColumn=true,而本包的默认值归一化恰好把大多数情形
+// 消化掉了;v1.25.12 把这段逻辑独立成 MigrateColumnUnique,不等**直接**调
+// DropConstraint / CreateConstraint —— 在 SQLite 上这两个都走 recreateTable。
+// 于是每一张带 `uniqueIndex` 的表(tokens / redemptions / prefill_groups /
+// login_encryption_keys / system_tasks / smtp_accounts …)在每次启动时被整张重建
+// 一遍,连同全部索引。TestMigrateDBIsIdempotent 抓到的正是这个。
 func (m sqliteMigrator) singleColumnUniqueIndexColumns(table string) map[string]bool {
 	columns := make(map[string]bool)
 
@@ -125,7 +139,7 @@ func (m sqliteMigrator) singleColumnUniqueIndexColumns(table string) map[string]
 	}
 
 	for _, index := range indexes {
-		if !index.IsUnique || index.Origin == "pk" {
+		if !index.IsUnique || index.Origin != "u" {
 			continue
 		}
 		var names []sql.NullString

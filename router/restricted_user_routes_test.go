@@ -94,6 +94,9 @@ var restrictedAnonymousRoutes = []string{
 	"GET /api/qy/lottery/covers/:ref",
 	// 商城封面:与抽奖封面同一档匿名,同样只回已绑定到某件商品的那些。
 	"GET /api/qy/mall/covers/:ref",
+	// 登录密码传输加密的公钥(上游 rc.33 #6743)。登录页在拿到任何凭据**之前**
+	// 就要取它,所以它必然是匿名的;下发的是公钥,私钥留在服务端。
+	"GET /api/user/login/encryption-key",
 	// mj 出图:注册在 TokenAuth 之前
 	"GET /mj/image/:id",
 	"GET /:mode/mj/image/:id",
@@ -134,6 +137,9 @@ var restrictedDeniedSessionPrefixes = []string{
 	"/api/models/",
 	"/api/option/",
 	"/api/performance/",
+	// 任务插件管理(上游 rc.33 #7076)。整棵子树同构(全是 AdminAuth),
+	// 而且它能上传/启用任意 JS 到沙箱里跑 —— 受限账号一条都不该到达。
+	"/api/plugin/",
 	"/api/prefill_group/",
 	"/api/ratio_sync/",
 	"/api/redemption/",
@@ -166,9 +172,12 @@ var restrictedDeniedSessionRoutes = []string{
 	"GET /api/mj/",
 	"GET /api/mj/self",
 	"GET /api/model-group/options",
+	// 任务插件下拉(定价页给模型挑插件用),内容是全站装了哪些插件。
+	"GET /api/task_plugin_options",
 	"GET /api/models",
 	"GET /api/status/test",
-	"GET /api/task/",
+	"GET /api/task",
+	"GET /api/task/:task_id/artifacts",
 	"GET /api/task/self",
 	"GET /api/user-group/options",
 	"GET /api/qy/api-addresses",

@@ -151,14 +151,6 @@ export interface LogOtherData {
       original: number
       clamped: number
     }
-    // Reject / intercept reason (admin only)
-    reject_reason?: string
-    task_plugin?: TaskPluginInfo
-  }
-  root_info?: {
-    task_plugin?: TaskPluginRuntimeInfo
-    upstream_task_id?: string
-    node_name?: string
     // Pre-consume shortfall marker: the reservation taken at request start did
     // not cover the final charge, so the difference was force-collected at
     // settle time — which is allowed to push the wallet negative. This is a
@@ -169,6 +161,14 @@ export interface LogOtherData {
       charged: number
       shortfall: number
     }
+    // Reject / intercept reason (admin only)
+    reject_reason?: string
+    task_plugin?: TaskPluginInfo
+  }
+  root_info?: {
+    task_plugin?: TaskPluginRuntimeInfo
+    upstream_task_id?: string
+    node_name?: string
   }
   // Language-independent operation descriptor (audit/login logs).
   // Frontend renders localized content from action + params via i18n templates.

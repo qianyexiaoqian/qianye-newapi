@@ -52,18 +52,17 @@ func TestChannelTestLogCarriesExclusionMarker(t *testing.T) {
 	require.NotNil(t, fn,
 		"controller/channel-test.go 里必须有 func buildTestLogOther —— 改名了就把这条守卫一起改")
 
+	// 上游 rc.33 起 other 是 model.LogOther,写法从 `other[key] = true` 变成
+	// `other.SetPublic(key, true)`,所以判据认的是「常量名出现在某次调用的实参里」
+	// 而不是某个下标赋值的左值。要抓的东西没变:那一行必须还在。
 	marked := false
 	ast.Inspect(fn, func(n ast.Node) bool {
-		assign, ok := n.(*ast.AssignStmt)
+		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		for _, lhs := range assign.Lhs {
-			idx, ok := lhs.(*ast.IndexExpr)
-			if !ok {
-				continue
-			}
-			sel, ok := idx.Index.(*ast.SelectorExpr)
+		for _, arg := range call.Args {
+			sel, ok := arg.(*ast.SelectorExpr)
 			if ok && sel.Sel.Name == "ChannelTestLogOtherKey" {
 				marked = true
 			}

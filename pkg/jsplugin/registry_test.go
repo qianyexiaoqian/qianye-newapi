@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"strconv"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/stretchr/testify/assert"
@@ -393,7 +395,7 @@ func TestRegistryValidatesUsageExamples(t *testing.T) {
 		},
 		{
 			name:          "token value must stay within the int32 bound",
-			metaFields:    tokenSchema + `usageExamples: [{label: "overflow", facts: {tokens: 2147483648, mode: "std"}}],`,
+			metaFields:    tokenSchema + `usageExamples: [{label: "overflow", facts: {tokens: ` + strconv.Itoa(common.MaxQuota+1) + `, mode: "std"}}],`,
 			expectedError: "exceeds the host limit",
 		},
 		{

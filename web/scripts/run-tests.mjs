@@ -62,18 +62,37 @@ For commercial licensing, please contact support@quantumnous.com
  * 这一行，别把它当成长期豁免。
  */
 import { spawnSync } from 'node:child_process'
-import { readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 /** 目录 → 允许的失败条数。写明来源，否则下一个人不知道能不能删。 */
 const KNOWN_FAILURES = {
-  // 上游 api-key-group-cell.test.tsx 里的 3 条 Auto 动效测试，与本仓改动无关。
-  // 曾经登记成 8：另外 5 条其实是被垫片吞掉的**整份文件**，逐文件重跑之后
-  // 它们全部变绿（26 条此前从未执行过的断言），真实的上游失败只有 3 条。
-  'src/features/keys': 3,
+  // 曾经登记 'src/features/keys': 3 —— 上游 api-key-group-cell.test.tsx 里的
+  // 3 条 Auto 动效测试。上游 rc.33 把那份文件迁到了 vitest,它不再由这套闸门跑
+  // (见 isVitestFile),所以这条登记跟着退役。那 3 条现在归 `bun run test:vitest`。
 }
 
 /** 收集所有含测试文件的"跑测单元"：src/features/<name> 与其余 src/<name>。 */
+/**
+ * 上游 rc.33 起把 61 份前端测试迁到了 vitest(`import … from 'vitest'`),
+ * 本仓这套闸门跑的是 `bun test`,两者不是一个运行器:bun 解析得到 vitest 的模块,
+ * 但 describe/test/expect 需要 vitest 自己的运行时,于是整份文件当场报错。
+ *
+ * 混在一起跑的后果不是"多几条红" —— 一份文件报 error 会让同批的后续文件被
+ * bun 的 node:test 垫片整份吞掉(见文件头那一段),真回归与运行器噪音无法区分。
+ *
+ * 所以两套各跑各的:这里只跑 node:test 的那一批,vitest 的那一批走
+ * `bun run test:vitest`。判据用"文件里有没有 from 'vitest'",而不是维护一份
+ * 会随上游漂移的名单。
+ */
+function isVitestFile(fullPath) {
+  try {
+    return /from ['"]vitest['"]/.test(readFileSync(fullPath, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
 function collectSuites(root) {
   const suites = new Set()
   const walk = (dir) => {
@@ -85,6 +104,7 @@ function collectSuites(root) {
         continue
       }
       if (!/\.(test|spec)\.[cm]?[jt]sx?$/.test(name)) continue
+      if (isVitestFile(full)) continue
       const rel = path.relative(root, full).split(path.sep)
       // src/features/qy/... → src/features/qy;src/lib/... → src/lib
       const depth = rel[0] === 'features' ? 2 : 1
@@ -110,6 +130,7 @@ function collectFiles(suite) {
         continue
       }
       if (!/\.(test|spec)\.[cm]?[jt]sx?$/.test(name)) continue
+      if (isVitestFile(full)) continue
       files.push(full.split(path.sep).join('/'))
     }
   }
@@ -140,35 +161,66 @@ function runBun(target) {
   }
 }
 
+/** 逐文件跑一批测试,把三个计数合并起来。 */
+function runFiles(files) {
+  const merged = { out: '', pass: 0, fail: 0, errors: 0, status: 0 }
+  for (const file of files) {
+    const one = runBun(file)
+    merged.out += `
+----- ${file} -----
+${one.out}`
+    merged.pass += one.pass
+    merged.fail += one.fail
+    merged.errors += one.errors
+    if (one.status !== 0 && one.pass === 0 && one.fail === 0) merged.status = 1
+  }
+  return merged
+}
+
+/** 这个跑测单元下面还有没有 vitest 文件(有的话就不能整批跑)。 */
+function hasVitestFiles(suite) {
+  let found = false
+  const walk = (dir) => {
+    if (found) return
+    for (const name of readdirSync(dir)) {
+      const full = path.join(dir, name)
+      if (statSync(full).isDirectory()) {
+        if (name === 'node_modules') continue
+        walk(full)
+        continue
+      }
+      if (!/\.(test|spec)\.[cm]?[jt]sx?$/.test(name)) continue
+      if (isVitestFile(full)) {
+        found = true
+        return
+      }
+    }
+  }
+  walk(path.join(import.meta.dirname, '..', suite))
+  return found
+}
+
 let totalPass = 0
 let totalFail = 0
 let unexpected = 0
 
 for (const suite of suites) {
-  let result = runBun(suite)
-  let note = ''
+  const nodeTestFiles = collectFiles(suite)
+  const suiteHasVitest = hasVitestFiles(suite)
+  // 目录里混着 vitest 文件时不能整批跑:`bun test <dir>` 会把它们一起捡回来。
+  let result = suiteHasVitest
+    ? runFiles(nodeTestFiles)
+    : runBun(suite)
+  let note = suiteHasVitest ? ' (跳过 vitest 文件,逐文件跑)' : ''
 
   if (result.errors > 0) {
     // 目录整批跑撞上了 bun 的 node:test 垫片（describe() inside another
     // test()，oven-sh/bun#5090）：第一个文件之后的每一份都被静默吞掉。
     // 逐文件重跑，一个进程一个文件，那条分支就不可能触发。
-    const files = collectFiles(suite)
     console.log(
-      `  ..   ${suite}  批量跑报了 ${result.errors} 个 error（整份文件被吞），改为逐文件重跑 ${files.length} 个文件`
+      `  ..   ${suite}  批量跑报了 ${result.errors} 个 error（整份文件被吞），改为逐文件重跑 ${nodeTestFiles.length} 个文件`
     )
-    const merged = { out: '', pass: 0, fail: 0, errors: 0, status: 0 }
-    for (const file of files) {
-      const one = runBun(file)
-      merged.out += `
------ ${file} -----
-${one.out}`
-      merged.pass += one.pass
-      merged.fail += one.fail
-      merged.errors += one.errors
-      if (one.status !== 0 && one.pass === 0 && one.fail === 0)
-        merged.status = 1
-    }
-    result = merged
+    result = runFiles(nodeTestFiles)
     note = ' (逐文件重跑)'
   }
 

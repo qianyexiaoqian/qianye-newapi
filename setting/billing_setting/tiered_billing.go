@@ -113,7 +113,24 @@ func GetPricingSyncData(base map[string]any) map[string]any {
 // Smoke test (called externally for validation before save)
 // ---------------------------------------------------------------------------
 
+// SmokeTestExpr 是**已知这个模型没有任务插件**时的保存期校验。
+//
+// u() 读的是任务插件上报的用量事实;没有插件就没有人去填它,表达式在每一次请求上
+// 都会读到零。这属于配错而不是配置得保守,所以在这一层直接拒。
+//
+// 这道判据故意留在导出的入口上,而不是塞进 smokeTestExpr:同一个烟测还被
+// ValidateBillingExprJSON(options 表的落库前闸门)调用,而那一层拿不到插件注册表
+// 的别名解析结果 —— 把判据写进公共函数体会让「别名模型 + u() 表达式」这条合法组合
+// 在落库闸门上被拒,而 controller 的插件感知分支根本没机会跑。
 func SmokeTestExpr(exprStr string) error {
+	if usageKeys := billingexpr.UsedUsageKeys(exprStr); len(usageKeys) > 0 {
+		sortedKeys := make([]string, 0, len(usageKeys))
+		for key := range usageKeys {
+			sortedKeys = append(sortedKeys, key)
+		}
+		sort.Strings(sortedKeys)
+		return fmt.Errorf("expression references usage keys %v but the model has no task plugin usage schema", sortedKeys)
+	}
 	return smokeTestExpr(exprStr)
 }
 
@@ -196,6 +213,20 @@ func ValidateBillingExprJSON(value string) error {
 	}
 	for modelName, exprStr := range exprs {
 		if strings.TrimSpace(exprStr) == "" {
+			continue
+		}
+		// 引用了 u() 的表达式,数值向量在这一层跑不了:u() 读的是任务插件上报的
+		// 用量事实,而这道闸门在 model 层,拿不到插件注册表(拿了就成 import 环)。
+		// 没有 schema 时每个 u() 都是 nil,烟测必然报 "invalid operation: float(<nil>)"
+		// —— 那是这一层的盲区,不是表达式的缺陷。
+		//
+		// 因此这里只编译(语法错误照样在落库前拒掉),数值判据留给
+		// controller.UpdateOption 的插件感知分支:它按模型解析出插件与 usageSchema,
+		// 用 SmokeTestTaskExpr 跑真实的用量向量,而且它跑在 DB.Save 之前。
+		if len(billingexpr.UsedUsageKeys(exprStr)) > 0 {
+			if _, err := billingexpr.CompileFromCache(exprStr); err != nil {
+				return fmt.Errorf("模型 %s 的计费表达式校验未通过: %w", modelName, err)
+			}
 			continue
 		}
 		if err := smokeTestExpr(exprStr); err != nil {
@@ -1036,17 +1067,6 @@ func smokeTestExpr(exprStr string) error {
 	if _, err := billingexpr.CompileFromCache(exprStr); err != nil {
 		return err
 	}
-	// u() 是任务插件的用量事实,普通模型没有任何东西会去填它 —— 引用了就等于
-	// 这条表达式在每一次请求上都读到零。这属于配错而不是配置得保守,直接拒。
-	if usageKeys := billingexpr.UsedUsageKeys(exprStr); len(usageKeys) > 0 {
-		sortedKeys := make([]string, 0, len(usageKeys))
-		for key := range usageKeys {
-			sortedKeys = append(sortedKeys, key)
-		}
-		sort.Strings(sortedKeys)
-		return fmt.Errorf("expression references usage keys %v but the model has no task plugin usage schema", sortedKeys)
-	}
-
 	baseVectors := smokeTestVectors()
 	vectors := append(append([]billingexpr.TokenParams{}, baseVectors...),
 		smokeTestBoundaryVectors(exprStr)...)

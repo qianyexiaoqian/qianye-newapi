@@ -16,12 +16,44 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { defineConfig } from 'vitest/config'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+/**
+ * 本仓有两套前端测试运行器,`include` 必须把它们分开。
+ *
+ * 上游 rc.33 起用 vitest;本仓原有的一千多条用例写的是 `node:test` +
+ * `node:assert`,由 `bun run test`(scripts/run-tests.mjs)跑。两边同名同后缀,
+ * 靠 glob 分不开:vitest 捡到 node:test 文件会在 bundle 阶段直接失败
+ * (Cannot bundle Node.js built-in "node:test"),200 份文件一起变红,
+ * 真回归被淹掉。scripts/run-tests.mjs 那一侧做的是镜像判断。
+ *
+ * 判据同样是"文件里有没有 from 'vitest'",而不是维护一份会随上游漂移的名单。
+ */
+function collectVitestFiles(): string[] {
+  const root = path.resolve(__dirname, 'src')
+  const files: string[] = []
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const full = path.join(dir, name)
+      if (statSync(full).isDirectory()) {
+        if (name === 'node_modules') continue
+        walk(full)
+        continue
+      }
+      if (!/\.(test|spec)\.tsx?$/.test(name)) continue
+      if (!/from ['"]vitest['"]/.test(readFileSync(full, 'utf8'))) continue
+      files.push(path.relative(__dirname, full).split(path.sep).join('/'))
+    }
+  }
+  walk(root)
+  return files.sort()
+}
 
 export default defineConfig({
   resolve: {
@@ -34,6 +66,6 @@ export default defineConfig({
     setupFiles: ['./src/test-setup.ts'],
     clearMocks: true,
     restoreMocks: true,
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    include: collectVitestFiles(),
   },
 })
