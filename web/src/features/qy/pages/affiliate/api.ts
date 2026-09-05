@@ -108,7 +108,7 @@ export function qyAffiliateCodeQuery() {
   })
 }
 
-// ───────────────────────── 星辉佣金（D-15）─────────────────────────
+// ───────────────────────── 推广佣金（D-16：记星屑）─────────────────────────
 // 路径与契约「用户」三条逐字一致。后端 Z1 并行实现，落地之前它们在
 // `route-contract.test.ts` 的 MISS_EXEMPT 里；清单重新生成后把那一条豁免删掉。
 
@@ -138,7 +138,7 @@ export function qyCommissionRecordsQuery(params: {
   })
 }
 
-/** 自动入账记录（佣金余额 → 星辉的每一笔）。 */
+/** 自动入账记录（佣金余额 → 星屑余额的每一笔）。 */
 export function qyCommissionCreditsQuery(params: {
   p: number
   page_size: number

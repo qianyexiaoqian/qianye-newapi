@@ -80,7 +80,7 @@ func onConsumeLog(c *gin.Context, userId int, params model.RecordConsumeLogParam
 // 违规扣费产生的消费日志绝不能计佣:那笔钱是罚款不是消费,给邀请人分成
 // 等于"下线违规、上线获利"。这属于逻辑错误而非口径偏好,因此不设开关。
 func hardExcluded(p model.RecordConsumeLogParams) bool {
-	if v, ok := p.Other["violation_fee"].(bool); ok && v {
+	if p.Other.PublicBool("violation_fee") {
 		return true
 	}
 	// 渠道可用性测试跑在管理员账号上,不是真实消费。
@@ -88,7 +88,7 @@ func hardExcluded(p model.RecordConsumeLogParams) bool {
 	// 首选判据是写日志那一侧打的显式标记(与 violation_fee 同形)。
 	// TokenName 那条是兜底:它靠一个会被当成文案去改的中文字面量,
 	// 单独用它的话改文案就等于静默恢复计佣。两处共用 model 的常量。
-	if v, ok := p.Other[model.ChannelTestLogOtherKey].(bool); ok && v {
+	if p.Other.PublicBool(model.ChannelTestLogOtherKey) {
 		return true
 	}
 	if p.TokenId == 0 && p.TokenName == model.ChannelTestTokenName {
@@ -101,9 +101,8 @@ func hardExcluded(p model.RecordConsumeLogParams) bool {
 //
 // 不能用 other["wallet_quota_deducted"] 反推:该键只在订阅分支被写入,
 // 钱包分支根本不写,取零值会把所有钱包消费误判成订阅消费。
-func isSubscriptionConsume(other map[string]interface{}) bool {
-	s, _ := other["billing_source"].(string)
-	return s == "subscription"
+func isSubscriptionConsume(other *model.LogOther) bool {
+	return other.PublicString("billing_source") == "subscription"
 }
 
 // accrueConsume 在后台 worker 里完成邀请关系解析与日聚合写入。
@@ -191,7 +190,7 @@ func onTaskBillingLog(params model.RecordTaskBillingLogParams) {
 		return
 	}
 	userId, quota := params.UserId, int64(params.Quota)
-	taskId, _ := params.Other["task_id"].(string)
+	taskId := params.Other.PublicString("task_id")
 
 	switch params.LogType {
 	case model.LogTypeConsume:

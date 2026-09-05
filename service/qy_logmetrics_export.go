@@ -13,6 +13,7 @@ package service
 // 默认实现是空操作,因此调用点不需要 nil 判断;扩展未安装时行为与上游逐字节一致。
 
 import (
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 
 	"github.com/gin-gonic/gin"
@@ -28,7 +29,7 @@ var (
 	// 实现约定:纯内存 map 写入,禁止任何 DB / Redis / 网络 IO ——
 	// 它跑在 relay 的同步结算链路上;并且必须自行吞掉 panic,
 	// 因为 panic 逃逸会让整条计费日志丢失。
-	QyLogMetricsAttachReasoning = func(c *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+	QyLogMetricsAttachReasoning = func(c *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	}
 
 	// QyLogMetricsAttachCacheBasis 在缓存相关字段全部写完、日志落库之前触发,
@@ -37,6 +38,6 @@ var (
 	// 之所以必须挂在这里而不是旁路中间件:isClaudeUsageSemantic 决定了
 	// prompt_tokens 是否已经包含 cached_tokens,而这个判别只有 relay 内部才拿得到。
 	// 分母算错会得到一个看起来合理却是错的百分比,比不显示更糟。
-	QyLogMetricsAttachCacheBasis = func(other map[string]interface{}, promptTokens, cacheReadTokens, cacheWriteTokens int, isClaudeUsageSemantic bool) {
+	QyLogMetricsAttachCacheBasis = func(other *model.LogOther, promptTokens, cacheReadTokens, cacheWriteTokens int, isClaudeUsageSemantic bool) {
 	}
 )

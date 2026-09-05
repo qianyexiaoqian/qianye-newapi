@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/module"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -104,7 +105,7 @@ func init() { module.Register(Mod{}) }
 //
 // ctx 目前未使用。保留它是因为这个签名属于上游耦合面:日后若需要读某个
 // context key,改签名就得再动一次上游文件,而多带一个参数是零成本的。
-func AttachReasoning(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
+func AttachReasoning(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	showReasoning, showCacheRatio := columnsEnabled()
 	if other == nil || (!showReasoning && !showCacheRatio) {
 		return
@@ -114,7 +115,7 @@ func AttachReasoning(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other m
 	statTotal.Add(1)
 	// 水位线与具体哪一列开着无关:它标记的是「这条日志由本模块处理过」,
 	// 前端两列的降级判断都依赖它。
-	other[KeyVer] = LogVersion
+	other.SetPublic(KeyVer, LogVersion)
 
 	if !showReasoning {
 		return
@@ -129,12 +130,12 @@ func AttachReasoning(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other m
 	} else {
 		statFromRequest.Add(1)
 	}
-	other[KeyReasoning] = map[string]interface{}{
+	other.SetPublic(KeyReasoning, map[string]interface{}{
 		"level":  r.Level,
 		"raw":    r.Raw,
 		"budget": r.Budget,
 		"src":    r.Src,
-	}
+	})
 }
 
 // ───────────────────────────── HOOK B:缓存分母 ─────────────────────────────
@@ -143,7 +144,7 @@ func AttachReasoning(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other m
 //
 // 存分子分母而不是存算好的百分比:前端可以按需展示「12.3%」或「1,024 / 8,320」
 // 两种形态,未来做聚合统计(平均命中率)也能正确加权求和。存结果会丢信息。
-func AttachCacheBasis(other map[string]interface{}, promptTokens, cacheReadTokens, cacheWriteTokens int, isClaudeUsageSemantic bool) {
+func AttachCacheBasis(other *model.LogOther, promptTokens, cacheReadTokens, cacheWriteTokens int, isClaudeUsageSemantic bool) {
 	if _, showCacheRatio := columnsEnabled(); other == nil || !showCacheRatio {
 		return
 	}
@@ -153,24 +154,24 @@ func AttachCacheBasis(other map[string]interface{}, promptTokens, cacheReadToken
 	// 无条件写:它同时是「分母已固化」的标记。缺失即代表本 hook 没跑过
 	// (例如 MJ / 异步任务这类不走 PostTextConsumeQuota 的日志)。
 	if isClaudeUsageSemantic {
-		other[KeySemantic] = SemanticAnthropic
+		other.SetPublic(KeySemantic, SemanticAnthropic)
 	} else {
-		other[KeySemantic] = SemanticOpenAI
+		other.SetPublic(KeySemantic, SemanticOpenAI)
 	}
 
 	basis := computeCacheBasis(promptTokens, cacheReadTokens, cacheWriteTokens, isClaudeUsageSemantic)
 	if basis.InputTotal > 0 {
-		other[KeyInputTotal] = basis.InputTotal
+		other.SetPublic(KeyInputTotal, basis.InputTotal)
 	}
 	if basis.CacheRead > 0 {
-		other[KeyCacheRead] = basis.CacheRead
+		other.SetPublic(KeyCacheRead, basis.CacheRead)
 	}
 	if basis.CacheWrite > 0 {
-		other[KeyCacheWrite] = basis.CacheWrite
+		other.SetPublic(KeyCacheWrite, basis.CacheWrite)
 	}
 	if basis.Anomaly {
 		statAnomaly.Add(1)
-		other[KeyCacheAnomaly] = true
+		other.SetPublic(KeyCacheAnomaly, true)
 	}
 }
 

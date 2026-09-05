@@ -33,6 +33,8 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySdAmount } from '../../components/qy-sd-amount'
+import { QySdDecimal } from '../../components/qy-sd-decimal'
 import { qyArray } from '../../lib/array'
 import {
   qyCommissionCreditsQuery,
@@ -54,16 +56,19 @@ const SOURCE_OPTIONS = [
 ] as const
 
 /**
- * 「佣金明细」—— 「我的推广」选择夹的第三张标签（D-15）。
+ * 「佣金明细」—— 「我的推广」选择夹的第三张标签（D-16）。
  *
- * 两张表合成一张标签下的两个次级标签：用户问"这笔星辉是从哪笔消费来的"时看
- * 第一张（佣金账本逐笔，一行 = 一笔计佣），问"我的可用余额什么时候记进星辉了"
+ * 两张表合成一张标签下的两个次级标签：用户问"这笔星屑是从哪笔消费来的"时看
+ * 第一张（佣金账本逐笔，一行 = 一笔计佣），问"我的可用余额什么时候到账的"
  * 时看第二张（自动入账记录，一行 = 一次入账）。次级标签**刻意不进 hash**：
  * hash 只表达"选择夹选了哪一格"这一层。
  *
- * 金额一律走 `QyAmountText`（账本以额度整数记账，界面按站内展示单位印）。
- * 这一屏上没有「提现 / 打款 / 现金」—— 佣金到期自动记入星辉，没有任何要用户
- * 发起的动作。
+ * 金额分两种单位，绝不混用：**计佣基数**是额度（下线实际花掉的那个数，走
+ * `QyAmountText`），**佣金本身**是星屑（走 `QySdAmount`）。两列并排是刻意的 ——
+ * "花了 X 额度、返了 Y 星屑"是用户唯一能自己验算的那条式子。
+ *
+ * 这一屏上没有「提现 / 打款 / 现金」—— 佣金到期自动记入星屑余额，没有任何要
+ * 用户发起的动作。
  */
 export function QyCommissionRecordsBody() {
   const { t } = useTranslation()
@@ -139,10 +144,10 @@ function CommissionRecordsTable() {
       header: t('qy_aff_gross'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      // 与左边的「计佣基数」同一个单位（gross = base_quota × 费率），所以走
-      // 同一个展示件；原样印 decimal(30,10) 字符串换不来精度，只换来一列
-      // `1370.0000000000` 挨着一列 `$2.74`。
-      cell: (row) => <QyAmountText quota={row.gross_amount} />,
+      // gross 是**星屑**的 decimal 字符串（= base_quota × 费率 / 刻度），与左边
+      // 那一列不是同一个单位。原样印 decimal(30,10) 换不来精度，只换来一列
+      // `0.0000123400` 挨着一列 `$2.74`，所以按星屑口径裁到人能读的位数。
+      cell: (row) => <QySdDecimal value={row.gross_amount} />,
     },
     {
       id: 'mature',
@@ -216,11 +221,10 @@ function CommissionRecordsTable() {
 }
 
 /**
- * 自动入账记录。
+ * 自动入账记录：一行 = 一次「佣金可用余额 → 星屑余额」。
  *
- * `held` 是「资金单结局不明、等人工裁决」：钱可能已经进了星辉也可能没有，它用
- * 告警色而不是失败色 —— `failed` 是已经确认没动、余额退回可用，两者对用户的
- * 下一步完全不同（等 / 什么都不用做）。
+ * 每一行都带着星屑流水号：拿它去「星屑 → 流水」按号一查就是同一笔。两张账本之间
+ * 有这一条链，"这 30 星屑是哪来的"才答得上来。
  */
 function CommissionCreditsTable() {
   const { t } = useTranslation()
@@ -246,11 +250,18 @@ function CommissionCreditsTable() {
       cell: (row) => row.credit_no,
     },
     {
-      id: 'quota',
+      id: 'amount',
       header: t('qy_common_amount'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => <QyAmountText quota={row.quota} signed />,
+      cell: (row) => <QySdAmount amount={row.amount} signed />,
+    },
+    {
+      id: 'ledger_no',
+      header: t('qy_sd_col_ledger_no'),
+      className: staticDataTableClassNames.compactHeaderCell,
+      cellClassName: staticDataTableClassNames.compactMutedCodeCell,
+      cell: (row) => (row.ledger_no === '' ? '-' : row.ledger_no),
     },
     {
       id: 'status',

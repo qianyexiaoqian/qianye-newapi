@@ -61,6 +61,33 @@ export function formatSdWithUnit(
 }
 
 /**
+ * 星屑的 decimal 字符串 → 可读文本：去掉尾随零，整数部分加千分位。
+ *
+ * 账本里的全精度金额（计佣 gross、未结算余数、待结算）后端一律以 `decimal(30,10)`
+ * 的字符串下发，因为它超出 JS `number` 的精确表达范围。直接印出来是
+ * `1370.0000000000` 与 `0.0000123400` 这种没人读得下去的列。
+ *
+ * **只去零，不截断**。截断到"够读的位数"会在小额上把非零金额显示成 0 ——
+ * 而佣金的单笔金额本来就落在 1e-5 星屑量级，那正是本模块存在的理由。
+ * `decimal(30,10)` 最多十位小数，去掉尾随零之后已经足够短。
+ *
+ * 非法输入原样返回：它是后端下发的字符串，编一个数出来比显示原文更糟。
+ */
+export function formatSdDecimal(value: string | null | undefined): string {
+  if (value == null) return '-'
+  const raw = value.trim()
+  if (!/^-?\d+(\.\d+)?$/.test(raw)) return raw === '' ? '-' : raw
+
+  const negative = raw.startsWith('-')
+  const [intPart = '0', fracPart = ''] = raw.replace('-', '').split('.')
+  const frac = fracPart.replace(/0+$/, '')
+  const grouped = intPart.replaceAll(/\B(?=(\d{3})+(?!\d))/g, ',')
+  const text = frac === '' ? grouped : `${grouped}.${frac}`
+  // "-0" 是 decimal 在负零上的合法输出，印出来只会让人以为账上欠了钱。
+  return negative && /[1-9]/.test(raw) ? `-${text}` : text
+}
+
+/**
  * 星屑的单位名。运营在星屑配置里改过就用那个词，没配（空白）时回落到 i18n 的
  * 默认词 —— 回落词随语言切换，所以它必须在渲染期取，不能烤进配置快照。
  */

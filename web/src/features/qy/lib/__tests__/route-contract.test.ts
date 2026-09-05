@@ -102,7 +102,7 @@ const MISS_EXEMPT: { file: string; line?: number; why: string }[] = [
   // /api/qy/admin/stardust/*、/api/qy/mall/*、/api/qy/admin/mall/* 与
   // /api/qy/lottery/activities/:act_no/spins{,/me}）一起删除，它们回到正常对账。
   //
-  // 星辉佣金（D-15）四个 api.ts 的豁免已随 `qianye/modules/commission` 落地、清单
+  // 推广佣金四个 api.ts 的豁免已随 `qianye/modules/commission` 落地、清单
   // 重新生成（/api/qy/commission/* 与 /api/qy/admin/commission/* 都在清单里）而删除，
   // 它们回到正常对账。
 ]
@@ -132,7 +132,7 @@ const MANIFEST_PENDING: {
   // 星屑（qianye/modules/stardust）、商城（qianye/modules/mall）与转盘
   // （qianye/modules/lottery 的 /spins 两条）的待定条目已随清单重新生成而删除：
   // 全部路由都在清单里，前端六个 api.ts 已回到正常对账。
-  // 星辉佣金（D-15，qianye/modules/commission）的待定条目已随清单重新生成而删除。
+  // 推广佣金（qianye/modules/commission）的待定条目已随清单重新生成而删除。
 ]
 
 /** Go 源码里的路由注册行 —— 只取字面量路径片段，用作清单过期的廉价兜底。 */
@@ -229,7 +229,7 @@ const ORPHAN_EXEMPT: { route: string; why: string }[] = [
   // 抽奖出款「人工核对落账」（POST …/payouts/:payout_no/adjudicate）的豁免已随
   // 后端删掉那条路由并重新生成清单而一起删除（design-15 §6）。
   {
-    // 星辉佣金（D-15）。项目方原话：「佣金审核的这个：立即结算 移除吧，全部由
+    // 推广佣金。项目方原话：「佣金审核的这个：立即结算 移除吧，全部由
     // 系统到时间自动结算。」界面入口刻意不给；接口保留是"某一个邀请人卡住"时
     // 的兜底，与「重跑今天这一轮」（有按钮，`settle/rerun`）不是同一件事。
     route: 'POST /api/qy/admin/commission/settle',

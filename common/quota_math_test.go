@@ -22,6 +22,7 @@ func TestQuotaFromFloat(t *testing.T) {
 	assert.Equal(t, 42, QuotaFromFloat(42.4))
 	assert.Equal(t, 42, QuotaFromFloat(42.9))
 	assert.Equal(t, -42, QuotaFromFloat(-42.9))
+	assert.Equal(t, MaxQuota, QuotaFromFloat(float64(MaxQuota)+42))
 	assert.Equal(t, MaxQuota, QuotaFromFloat(overflowingProduct))
 	assert.Equal(t, MinQuota, QuotaFromFloat(-overflowingProduct))
 	assert.Equal(t, MaxQuota, QuotaFromFloat(math.Inf(1)))
@@ -35,6 +36,7 @@ func TestQuotaRound(t *testing.T) {
 	assert.Equal(t, 42, QuotaRound(41.5))
 	assert.Equal(t, 43, QuotaRound(42.5))
 	assert.Equal(t, -43, QuotaRound(-42.5))
+	assert.Equal(t, MaxQuota, QuotaRound(float64(MaxQuota)+0.5))
 	assert.Equal(t, MaxQuota, QuotaRound(overflowingProduct))
 	assert.Equal(t, MinQuota, QuotaRound(-overflowingProduct))
 	assert.Equal(t, 0, QuotaRound(math.NaN()))
@@ -124,4 +126,23 @@ func TestQuotaFromDecimalChecked(t *testing.T) {
 		assert.Equal(t, "QuotaFromDecimal", clamp.Op)
 		assert.Equal(t, QuotaClampOverflow, clamp.Kind)
 	}
+}
+
+func TestWalletQuotaFromDecimalStrict(t *testing.T) {
+	quota, err := WalletQuotaFromDecimalStrict(decimal.NewFromInt(4_294_500_000))
+	require.NoError(t, err)
+	assert.Equal(t, 4_294_500_000, quota)
+
+	quota, err = WalletQuotaFromDecimalStrict(decimal.NewFromInt(MaxWalletQuota - 1))
+	require.NoError(t, err)
+	assert.Equal(t, MaxWalletQuota-1, quota)
+
+	// The bound itself already counts as saturated (see saturateQuotaBounded),
+	// so the strict variant rejects it rather than returning the ceiling.
+	quota, err = WalletQuotaFromDecimalStrict(decimal.NewFromInt(MaxWalletQuota))
+	assert.Zero(t, quota)
+	var clamp *QuotaClamp
+	require.ErrorAs(t, err, &clamp)
+	assert.Equal(t, "WalletQuotaFromDecimal", clamp.Op)
+	assert.Equal(t, QuotaClampOverflow, clamp.Kind)
 }

@@ -22,9 +22,12 @@ import type { QyCommissionCreditStatus } from '../../affiliate/types'
  * 自动入账单的状态 → 徽章。用户端「入账记录」与管理端「入账记录」共用一份，
  * 两处各画一遍就会出现"用户看到告警色、运营看到失败色"这种同一笔两种说法。
  *
- * `held` 用告警色而不是失败色：资金单结局不明、等人工裁决，钱可能已经进了
- * 星辉也可能没有；`failed` 是已确认没动、余额已退回可用。两者对看的人的下一步
- * 完全不同（等 / 什么都不用做），颜色不能一样。
+ * D-16 之后只剩 `done`：入账是扩展库里的一个本地事务，佣金余额的搬运与星屑流水
+ * 的写入在同一次提交里，不存在"这一半成了那一半没成"。D-15 的 pending / failed /
+ * held 描述的全是跨库两阶段的中间与失败形状，那套机制已经退役。
+ *
+ * 表保留成一张查找表而不是塌成一个常量：后端将来加态时这里加一行即可，而
+ * 下面的回落分支保证多出来的态只是"不好看"（中性徽章 + 原样字符串），绝不崩。
  */
 const CREDIT_BADGE: Record<
   QyCommissionCreditStatus,
@@ -33,10 +36,7 @@ const CREDIT_BADGE: Record<
     variant: 'destructive' | 'outline' | 'secondary' | 'warning'
   }
 > = {
-  pending: { labelKey: 'qy_aff_credit_st_pending', variant: 'outline' },
   done: { labelKey: 'qy_aff_credit_st_done', variant: 'secondary' },
-  failed: { labelKey: 'qy_aff_credit_st_failed', variant: 'destructive' },
-  held: { labelKey: 'qy_aff_credit_st_held', variant: 'warning' },
 }
 
 export function qyCommissionCreditBadge(status: string): {

@@ -28,12 +28,15 @@ const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(here, '..', '..', '..', '..', '..', '..', '..', '..')
 
 /**
- * 佣金页的额度上界是**抄**过来的一个数,而不是后端下发的。
+ * 佣金页的金额上界是**抄**过来的一个数,而不是后端下发的。
  *
  * 划转与抽奖两页从接口拿 bounds,佣金页没有那条通道 —— 于是 `QY_MAX_QUOTA`
  * 是全站唯一一处把后端 `common.MaxQuota` 硬抄进前端的地方。抄下来的数会漂:
  * 本轮把 MaxQuota 从 2^31-1 抬到 2^43 时,这里若不同步,界面会在一个早就
  * 合法的数字上标红,而运营找不到任何配置能放开它。
+ *
+ * 佣金 D-16 之后记星屑,但上界仍是同一个:`stardust.Credit` 用的也是
+ * `common.MaxQuota`,两套账本共用同一条算术边界,所以常量名保持不变。
  *
  * 所以这条测试直接去读 Go 源文件,把两边钉在一起。它读的是常量声明本身,
  * 不是某个中间产物 —— 后端一改,这里当场红。
@@ -61,15 +64,15 @@ describe('QY_MAX_QUOTA 与后端 common.MaxQuota 同步', () => {
     assert.ok(Number.isSafeInteger(QY_MAX_QUOTA))
   })
 
-  test('每一个 quota 类字段的 max 都取自这个常量', () => {
-    const quotaFields = Object.values(QY_COMMISSION_FIELDS).filter(
-      (meta) => meta.unit === 'quota'
+  test('每一个星屑类字段的 max 都取自这个常量', () => {
+    const amountFields = Object.values(QY_COMMISSION_FIELDS).filter(
+      (meta) => meta.unit === 'stardust'
     )
     assert.ok(
-      quotaFields.length > 0,
-      '佣金页必须至少有一个额度类字段,否则这条断言是空转'
+      amountFields.length > 0,
+      '佣金页必须至少有一个金额字段,否则这条断言是空转'
     )
-    for (const meta of quotaFields) {
+    for (const meta of amountFields) {
       assert.equal(meta.max, QY_MAX_QUOTA)
     }
   })

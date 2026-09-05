@@ -204,7 +204,7 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   // 会让管理员以为自己什么都不用做。
   qy_apiaddr_order_stale: 'qy_err_aa_order_stale',
 
-  // ── 星辉佣金管理端（qianye/modules/commission，D-15 从 git HEAD 恢复）──
+  // ── 推广佣金管理端（qianye/modules/commission，D-16 起记星屑）──
   // 冲正与手工增减那几组 code 随账本一起回来。`qy_withdrawn_*`（已提现额度迁移）
   // **不**回来：`balances/withdrawn` 端点没有恢复，那一列现在叫「已入账」且只由
   // 自动入账任务写。

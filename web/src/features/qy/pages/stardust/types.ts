@@ -77,6 +77,7 @@ export type QyStardustMe = {
 
 /** 流水类型，对齐契约 §2 的 kind 枚举。 */
 export type QyStardustLedgerKind =
+  | 'commission_credit'
   | 'consume_rebate'
   | 'invite_consume'
   | 'invite_register'

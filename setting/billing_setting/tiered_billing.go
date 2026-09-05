@@ -10,7 +10,11 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/samber/lo"
 )
 
@@ -19,6 +23,7 @@ const (
 	BillingModeTieredExpr = "tiered_expr"
 	BillingModeField      = "billing_mode"
 	BillingExprField      = "billing_expr"
+	maxTaskExprSmokeTests = 64
 )
 
 // BillingSetting is managed by config.GlobalConfig.Register.
@@ -45,20 +50,52 @@ func GetBillingMode(model string) string {
 	if mode, ok := billingSetting.BillingMode[model]; ok {
 		return mode
 	}
+	if _, ok := builtinBillingExpr[model]; ok {
+		// Existing administrator-configured legacy prices take precedence over
+		// a newly introduced built-in expression unless a mode was explicit.
+		if ratio_setting.HasConfiguredModelRatio(model) {
+			return BillingModeRatio
+		}
+		if _, configured := ratio_setting.GetModelPrice(model, false); configured {
+			return BillingModeRatio
+		}
+		return BillingModeTieredExpr
+	}
 	return BillingModeRatio
 }
 
 func GetBillingExpr(model string) (string, bool) {
-	expr, ok := billingSetting.BillingExpr[model]
-	return expr, ok
+	if expr, ok := billingSetting.BillingExpr[model]; ok {
+		return expr, true
+	}
+	if GetBillingMode(model) == BillingModeTieredExpr {
+		expr, ok := builtinBillingExpr[model]
+		return expr, ok
+	}
+	return "", false
 }
 
 func GetBillingModeCopy() map[string]string {
-	return lo.Assign(billingSetting.BillingMode)
+	modes := lo.Assign(billingSetting.BillingMode)
+	for model := range builtinBillingExpr {
+		if _, configured := modes[model]; !configured && GetBillingMode(model) == BillingModeTieredExpr {
+			modes[model] = BillingModeTieredExpr
+		}
+	}
+	return modes
 }
 
 func GetBillingExprCopy() map[string]string {
-	return lo.Assign(billingSetting.BillingExpr)
+	expressions := lo.Assign(billingSetting.BillingExpr)
+	for model := range builtinBillingExpr {
+		if _, configured := expressions[model]; configured {
+			continue
+		}
+		if expression, ok := GetBillingExpr(model); ok {
+			expressions[model] = expression
+		}
+	}
+	return expressions
 }
 
 func GetPricingSyncData(base map[string]any) map[string]any {
@@ -863,7 +900,153 @@ func smokeTestClocks(exprStr string) []*billingexpr.ClockOverride {
 // 接受的量级。
 const smokeTestEvalBudget = 300000
 
+// SmokeTestTaskExpr validates a task usage expression against the usage facts
+// declared by its plugin. Literal u() keys must be declared; dynamic calls are
+// still exercised by the generated runtime vectors when possible.
+//
+// 请求环境复用 smokeTestRequests —— 与普通模型表达式同一套探针(param/header
+// 字面量、字符串探针、边界数值),否则「按 param("user") 分档」这类形状在任务
+// 表达式上又会变成没人试过的分支。
+func SmokeTestTaskExpr(exprStr string, schema map[string]jsplugin.UsageFieldSchema) error {
+	if _, err := billingexpr.CompileFromCache(exprStr); err != nil {
+		return err
+	}
+	for key := range billingexpr.UsedUsageKeys(exprStr) {
+		if _, declared := schema[key]; !declared {
+			return fmt.Errorf("usage key %q is not declared by the task plugin", key)
+		}
+	}
+
+	requests := smokeTestRequests(exprStr)
+	for _, usage := range taskUsageSmokeVectors(schema) {
+		for _, request := range requests {
+			request.Usage = usage
+			result, _, err := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{}, request)
+			if err != nil {
+				return fmt.Errorf("usage vector %v: run failed: %w", usage, err)
+			}
+			if math.IsNaN(result) || math.IsInf(result, 0) || result < 0 {
+				return fmt.Errorf("usage vector %v: result must be finite and non-negative, got %f", usage, result)
+			}
+		}
+	}
+	return nil
+}
+
+type usageSmokeDimension struct {
+	name   string
+	values []any
+}
+
+func taskUsageSmokeVectors(schema map[string]jsplugin.UsageFieldSchema) []map[string]any {
+	names := make([]string, 0, len(schema))
+	for name := range schema {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	dimensions := make([]usageSmokeDimension, 0, len(names))
+	for _, name := range names {
+		field := schema[name]
+		if len(field.Enum) > 0 {
+			values := make([]any, len(field.Enum))
+			for index, value := range field.Enum {
+				values[index] = value
+			}
+			dimensions = append(dimensions, usageSmokeDimension{name: name, values: values})
+			continue
+		}
+		if field.Type == "boolean" {
+			dimensions = append(dimensions, usageSmokeDimension{name: name, values: []any{false, true}})
+			continue
+		}
+		limit := relaycommon.MaxTaskDurationSeconds
+		if field.Unit == "count" {
+			limit = dto.MaxImageN
+		}
+		if field.Unit == "token" || field.Unit == "credit" {
+			limit = common.MaxQuota
+		}
+		dimensions = append(dimensions, usageSmokeDimension{
+			name:   name,
+			values: []any{float64(0), float64(1), float64(limit)},
+		})
+	}
+
+	if usageSmokeCombinationCount(dimensions, maxTaskExprSmokeTests) > maxTaskExprSmokeTests {
+		for index := range dimensions {
+			field := schema[dimensions[index].name]
+			if len(field.Enum) <= 2 {
+				continue
+			}
+			dimensions[index].values = []any{field.Enum[0], field.Enum[len(field.Enum)-1]}
+		}
+	}
+
+	vectors := make([]map[string]any, 0, maxTaskExprSmokeTests)
+	var appendVectors func(int, map[string]any)
+	appendVectors = func(index int, current map[string]any) {
+		if len(vectors) >= maxTaskExprSmokeTests {
+			return
+		}
+		if index == len(dimensions) {
+			vector := make(map[string]any, len(current))
+			for key, value := range current {
+				vector[key] = value
+			}
+			vectors = append(vectors, vector)
+			return
+		}
+		for _, value := range dimensions[index].values {
+			current[dimensions[index].name] = value
+			appendVectors(index+1, current)
+		}
+		delete(current, dimensions[index].name)
+	}
+	appendVectors(0, make(map[string]any, len(dimensions)))
+
+	combinationCount := usageSmokeCombinationCount(dimensions, maxTaskExprSmokeTests)
+	if combinationCount > maxTaskExprSmokeTests && len(vectors) > 0 {
+		last := make(map[string]any, len(dimensions))
+		for _, dimension := range dimensions {
+			last[dimension.name] = dimension.values[len(dimension.values)-1]
+		}
+		vectors[len(vectors)-1] = last
+	}
+	return vectors
+}
+
+func usageSmokeCombinationCount(dimensions []usageSmokeDimension, stopAfter int) int {
+	count := 1
+	for _, dimension := range dimensions {
+		if len(dimension.values) == 0 {
+			return 0
+		}
+		if count > stopAfter/len(dimension.values) {
+			return stopAfter + 1
+		}
+		count *= len(dimension.values)
+	}
+	return count
+}
+
 func smokeTestExpr(exprStr string) error {
+	// 编译一次就地报错,而不是等第一条向量跑出 run failed:语法错误的表达式
+	// 报出来的位置差得很远,运营看到的是「vector {p=0,c=0}: run failed」。
+	if _, err := billingexpr.CompileFromCache(exprStr); err != nil {
+		return err
+	}
+	// u() 是任务插件的用量事实,普通模型没有任何东西会去填它 —— 引用了就等于
+	// 这条表达式在每一次请求上都读到零。这属于配错而不是配置得保守,直接拒。
+	if usageKeys := billingexpr.UsedUsageKeys(exprStr); len(usageKeys) > 0 {
+		sortedKeys := make([]string, 0, len(usageKeys))
+		for key := range usageKeys {
+			sortedKeys = append(sortedKeys, key)
+		}
+		sort.Strings(sortedKeys)
+		return fmt.Errorf("expression references usage keys %v but the model has no task plugin usage schema", sortedKeys)
+	}
+
 	baseVectors := smokeTestVectors()
 	vectors := append(append([]billingexpr.TokenParams{}, baseVectors...),
 		smokeTestBoundaryVectors(exprStr)...)

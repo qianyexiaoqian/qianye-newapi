@@ -35,6 +35,7 @@ import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySdDecimal } from '../../components/qy-sd-decimal'
 import { qyArray } from '../../lib/array'
 import { qyDaylineLabel, qyFormatAtDayline } from '../../lib/dayline'
 import { qyTabTarget } from '../../lib/pages'
@@ -64,7 +65,7 @@ const SOURCE_OPTIONS = [
 ] as const
 
 /**
- * 佣金审核（D-15 恢复；账本记的是星辉，界面按站内展示单位印）。
+ * 佣金审核（账本记的是星屑，界面按运营配的星屑单位名印）。
  *
  * 两个动作的语义边界必须分清，否则会误伤：
  *   - **冲正**：写一条负额计佣行并扣减余额，是"把已经发出去的钱要回来"；
@@ -76,7 +77,7 @@ const SOURCE_OPTIONS = [
  * 项目方原话：「佣金审核的这个：立即结算 移除吧，全部由系统到时间自动结算。」
  * 撤掉按钮就必须同屏回答"那什么时候到账"，所以正文第一段是自动结算的时点，
  * 数据来自 `GET /admin/commission/health` 的 `daily_settle`（日界、下一轮开跑
- * 时刻、T+N），前端一个数都不自己算。结算之后到星辉那一跳由自动入账任务完成，
+ * 时刻、T+N），前端一个数都不自己算。结算之后到星屑余额那一跳由自动入账任务完成，
  * 逐笔在「佣金用户 → 入账记录」里看。
  *
  * ── 为什么是 Body 而不是整页 ──
@@ -170,17 +171,18 @@ export function QyAdminCommissionRecordsBody() {
       header: t('qy_aff_gross'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      // 与左边的「计佣基数」同一个单位（gross = base_quota × 费率），所以走
-      // 同一个展示件。原样印 decimal(30,10) 字符串换不来精度 —— 展示只留 4 位
-      // 小数 —— 只换来一列 `1370.0000000000` 挨着一列 `$2.74`。
-      cell: (row) => <QyAmountText quota={row.gross_amount} />,
+      // gross 是**星屑**（= base_quota × 费率 / 刻度），与左边那一列不是同一个
+      // 单位。两列并排是刻意的："花了多少额度、返了多少星屑"是用户与运营唯一
+      // 能自己验算的那条式子；把它们印成同一个单位，验算就变成了一句谎话。
+      // 原样印 decimal(30,10) 换不来精度，只换来一列 `0.3700000000`，所以去零。
+      cell: (row) => <QySdDecimal value={row.gross_amount} />,
     },
     {
       id: 'settled',
       header: t('qy_cm_settled_amount'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactMutedNumericCell,
-      cell: (row) => <QyAmountText quota={row.settled_amount} />,
+      cell: (row) => <QySdDecimal value={row.settled_amount} />,
     },
     {
       id: 'status',
@@ -277,7 +279,7 @@ export function QyAdminCommissionRecordsBody() {
             {t('qy_cm_ds_title')}
           </Link>
         </p>
-        {/* 结算之后到星辉那一跳由自动入账任务完成：这句话回答的是"已结算的钱
+        {/* 结算之后到星屑余额那一跳由自动入账任务完成：这句话回答的是"已结算的钱
             去哪了"，与上面"什么时候结算"是两个问题。 */}
         <p>{t('qy_cm_auto_credit_note')}</p>
       </div>

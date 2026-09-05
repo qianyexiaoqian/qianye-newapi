@@ -25,6 +25,7 @@ import type {
   QyAdminAccrual,
   QyCommissionAdminConfig,
   QyCommissionCreditSnapshot,
+  QyCommissionRateOverlap,
   QyCommissionGroupRate,
   QyDailySettleSnapshot,
 } from './types'
@@ -48,7 +49,7 @@ export function qyAdminCommissionConfigQuery() {
  * 字符串把运营填的那个数字原样交给后端的 decimal 解析。可空的百分比键用
  * 空串表达"取消这一档"。
  *
- * 请求体里**没有任何法币键**：D-15 之后佣金只记星辉、自动入账，
+ * 请求体里**没有任何法币键**：佣金只记星屑、自动入账，
  * `fiat_rate_default` 那一档连同它的清空动作一起删除。
  */
 export function qyUpdateCommissionConfig(patch: Record<string, string>) {
@@ -139,8 +140,9 @@ export function qyClawbackAccrual(input: {
  * 结算 / 入账调度快照。
  *
  * `daily_settle`：一日一结算之后，「今天这一跑成了没有」是运营唯一需要盯的那个数。
- * `credit`：自动入账任务的状态（D-15）—— held 的单数非 0 就该去资金对账页。
- * 后端若暂时不下发 `credit`，界面按"取不到"处理，不编数。
+ * `credit`：自动入账累计发了多少（D-16 起入账是本地事务，没有在途也没有挂起）。
+ * `rate_overlap`：佣金三档与 stardust 三档 invite_* 是否在给同一笔基数各返一次。
+ * 后端若暂时不下发某一段，界面按"取不到"处理，不编数。
  */
 export function qyAdminCommissionHealthQuery() {
   return queryOptions({
@@ -149,6 +151,7 @@ export function qyAdminCommissionHealthQuery() {
       qyGet<{
         daily_settle: QyDailySettleSnapshot
         credit?: QyCommissionCreditSnapshot
+        rate_overlap?: QyCommissionRateOverlap
       }>('/admin/commission/health'),
   })
 }

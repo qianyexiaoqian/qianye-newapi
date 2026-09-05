@@ -269,16 +269,19 @@ func writeConsumeLog(c *gin.Context, info *relaycommon.RelayInfo, cr *compiledRu
 	// 字段归属遵循裁定 C34:用户应知的(单号/原因/费用)放 other 顶层,
 	// 仅管理员可见的(命中词/rule_id/内部阶段/额度饱和)放 admin_info ——
 	// model/log.go 的 formatUserLogs 会为普通用户删掉 admin_info。
-	adminInfo := map[string]any{
+	// 上游 rc.33 起 other 是 model.LogOther:可见性由写入方法决定,不再靠调用方
+	// 自己往 map 里塞一个名叫 "admin_info" 的子对象(那个键现在会被 SetPublic 拒掉)。
+	other := model.NewLogOther()
+	other.MergeAdmin(map[string]any{
 		"qy_rule_id":       cr.R.Id,
 		"qy_rule_name":     cr.R.Name,
 		"qy_phase":         rec.Phase,
 		"qy_matched_terms": rec.MatchedTerms,
-	}
+	})
 	if res.Clamp != "" {
-		adminInfo["quota_saturation"] = res.Clamp
+		other.SetAdmin("quota_saturation", res.Clamp)
 	}
-	other := map[string]any{
+	other.MergePublic(map[string]any{
 		"violation_fee":       true,
 		"violation_fee_code":  violationErrorCode(),
 		"qy_violation_rec_no": rec.RecNo,
@@ -287,8 +290,7 @@ func writeConsumeLog(c *gin.Context, info *relaycommon.RelayInfo, cr *compiledRu
 		"fee_quota_want":      res.Want,
 		"base_amount":         res.BaseUsd.String(),
 		"group_ratio":         res.GroupRatio.String(),
-		"admin_info":          adminInfo,
-	}
+	})
 
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId:      channelId,

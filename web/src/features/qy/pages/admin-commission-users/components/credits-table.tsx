@@ -31,8 +31,8 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
+import { QySdAmount } from '../../../components/qy-sd-amount'
 import { qyArray } from '../../../lib/array'
 import { QY_COMMISSION_CREDIT_STATUSES } from '../../affiliate/types'
 import { qyCommissionCreditBadge } from '../../commission-records/lib/credit-status'
@@ -45,7 +45,7 @@ import type { QyAdminCommissionCredit } from '../types'
 /**
  * 全站自动入账记录（「佣金用户」标签下的次级标签）。
  *
- * 每一行是一次「佣金余额 → 星辉」的两阶段资金单。运营要盯的只有 `held`：那是
+ * 每一行是一次「佣金余额 → 星屑余额」的入账。D-16 之后它是扩展库里的一个本地
  * 结局不明、等人裁决的单子 —— 单号那一格直接链到「资金对账」页，裁决在那边做，
  * 这里只看不动。默认筛选**不**落在 held 上：这张表首先是"钱去哪了"的台账，
  * 其次才是告警队列；告警的入口在资金对账页的默认视图里。
@@ -96,11 +96,11 @@ export function QyAdminCommissionCreditsTable() {
       cell: (row) => row.credit_no,
     },
     {
-      id: 'quota',
+      id: 'amount',
       header: t('qy_common_amount'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => <QyAmountText quota={row.quota} />,
+      cell: (row) => <QySdAmount amount={row.amount} />,
     },
     {
       id: 'status',
@@ -117,21 +117,22 @@ export function QyAdminCommissionCreditsTable() {
       },
     },
     {
-      id: 'fund_order',
-      header: t('qy_aff_credit_fund_order'),
+      id: 'ledger_no',
+      header: t('qy_sd_col_ledger_no'),
       className: staticDataTableClassNames.compactHeaderCell,
       cellClassName: staticDataTableClassNames.compactMutedCodeCell,
-      // 资金单号链到对账台：held 的单子要在那边按单号裁决，这里不再画一遍裁决按钮。
-      // 对账台的路由不收 query 参数，所以只能带人过去、单号靠这一格复制。
+      // 流水号链到星屑账本：这一笔在那边按号一查就是同一行。D-15 时这一格是
+      // 资金单号、链到对账台，因为那时入账跨库、有 held 的单子要人裁决；
+      // 现在入账是本地事务，对账台上不会再出现佣金入账单。
       cell: (row) =>
-        row.fund_order_no === '' ? (
+        row.ledger_no === '' ? (
           '-'
         ) : (
           <Link
-            to='/qy/admin/fund-orders'
+            to='/qy/admin/stardust'
             className='underline underline-offset-2'
           >
-            {row.fund_order_no}
+            {row.ledger_no}
           </Link>
         ),
     },

@@ -25,9 +25,9 @@ import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTimestampToDate } from '@/lib/format'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
 import { QySdAmount } from '../../../components/qy-sd-amount'
+import { QySdDecimal } from '../../../components/qy-sd-decimal'
 import { qyArray } from '../../../lib/array'
 import { qyAdminAccrualsQuery } from '../../admin-commission/api'
 import { qyAdminRelationsQuery } from '../../admin-invite/api'
@@ -55,7 +55,7 @@ type UserCommissionDrilldownProps = {
  * ── 四张标签，四个不同的问题 ──
  *   · 计佣：这些钱**是怎么来的**（逐笔，含手工调整那一类）；
  *   · 结算：其中哪些已经落进余额（`status = settled` 的那一批）；
- *   · 入账：余额里哪些已经**记进星辉**了、有没有卡在 held；
+ *   · 入账：余额里哪些已经**发成星屑**了；
  *   · 下线：他**拉了谁**，以及在这里直接停掉 / 解除某一条关系。
  *
  * ── 全部复用既有接口 ──
@@ -159,15 +159,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                   {t('qy_cb_available_xh')}
                 </dt>
                 <dd>
-                  <QyAmountText quota={user.available_quota} />
-                </dd>
-              </div>
-              <div className='flex flex-col py-1'>
-                <dt className='text-muted-foreground text-xs'>
-                  {t('qy_cb_frozen_xh')}
-                </dt>
-                <dd>
-                  <QyAmountText quota={user.frozen_quota} />
+                  <QySdAmount amount={user.available} />
                 </dd>
               </div>
               <div className='flex flex-col py-1'>
@@ -175,7 +167,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                   {t('qy_cb_credited')}
                 </dt>
                 <dd>
-                  <QyAmountText quota={user.credited_quota} />
+                  <QySdAmount amount={user.credited} />
                 </dd>
               </div>
               <div className='flex flex-col py-1'>
@@ -226,7 +218,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                           {row.invitee_id}
                         </span>
                       </span>
-                      <QyAmountText quota={row.gross_amount} />
+                      <QySdDecimal value={row.gross_amount} />
                     </li>
                   ))}
                 </ul>
@@ -251,7 +243,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                         {formatTimestampToDate(row.created_at)} · #
                         {row.invitee_id}
                       </span>
-                      <QyAmountText quota={row.settled_amount} />
+                      <QySdDecimal value={row.settled_amount} />
                     </li>
                   ))}
                 </ul>
@@ -282,7 +274,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                             {row.credit_no}
                           </span>
                         </span>
-                        <QyAmountText quota={row.quota} />
+                        <QySdAmount amount={row.amount} />
                       </li>
                     )
                   })}
@@ -313,7 +305,7 @@ export function UserCommissionDrilldown(props: UserCommissionDrilldownProps) {
                           )}
                         </span>
                         {/* 关系行上的累计是**星屑**（invite 模块记的那本账），
-                            与本浮层其余三张标签的星辉不是同一种单位，各印各的。 */}
+                            与本浮层其余三张标签的星屑不是同一种单位，各印各的。 */}
                         <span className='text-muted-foreground text-xs'>
                           #{row.invitee_id} ·{' '}
                           <QySdAmount amount={row.total_stardust} />

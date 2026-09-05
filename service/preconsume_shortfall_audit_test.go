@@ -4,6 +4,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 
 	"github.com/gin-gonic/gin"
@@ -30,9 +31,9 @@ func TestPreConsumeShortfallLandsInAdminInfo(t *testing.T) {
 
 	t.Run("兜住了就不写标记", func(t *testing.T) {
 		info := &relaycommon.RelayInfo{}
-		other := map[string]interface{}{}
+		other := model.NewLogOther()
 		attachPreConsumeShortfall(ctx, info, other)
-		assert.NotContains(t, other, "admin_info", "正常笔不该留噪音")
+		assert.NotContains(t, other.Snapshot(), "admin_info", "正常笔不该留噪音")
 	})
 
 	t.Run("没兜住就写标记,数字逐项落地", func(t *testing.T) {
@@ -41,10 +42,10 @@ func TestPreConsumeShortfallLandsInAdminInfo(t *testing.T) {
 				Reserved: 59152, Charged: 194000, Shortfall: 134848,
 			},
 		}
-		other := map[string]interface{}{}
+		other := model.NewLogOther()
 		attachPreConsumeShortfall(ctx, info, other)
 
-		adminInfo, ok := other["admin_info"].(map[string]interface{})
+		adminInfo, ok := other.Snapshot()["admin_info"].(map[string]interface{})
 		require.True(t, ok, "标记必须嵌在 admin_info 下 —— 非管理员日志视图会把它整段剥掉")
 		marker, ok := adminInfo["pre_consume_shortfall"].(map[string]interface{})
 		require.True(t, ok)
@@ -58,9 +59,10 @@ func TestPreConsumeShortfallLandsInAdminInfo(t *testing.T) {
 		info := &relaycommon.RelayInfo{
 			PreConsumeShortfall: &relaycommon.ReservationShortfall{Reserved: 10, Charged: 30, Shortfall: 20},
 		}
-		other := map[string]interface{}{"admin_info": map[string]interface{}{"settle_failed": "boom"}}
+		other := model.NewLogOther()
+		other.SetAdmin("settle_failed", "boom")
 		attachPreConsumeShortfall(ctx, info, other)
-		adminInfo := other["admin_info"].(map[string]interface{})
+		adminInfo := other.Snapshot()["admin_info"].(map[string]interface{})
 		assert.Equal(t, "boom", adminInfo["settle_failed"], "同一块 admin_info 上的别的标记不许被冲掉")
 		assert.NotNil(t, adminInfo["pre_consume_shortfall"])
 	})

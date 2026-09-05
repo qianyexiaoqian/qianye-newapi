@@ -17,7 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /*
- * 「结算台」三合一（日消费明细 / 佣金审核 / 佣金用户）在**真实渲染**上的形状（D-15）。
+ * 「结算台」三合一（日消费明细 / 佣金审核 / 佣金用户）在**真实渲染**上的形状。
+ *
+ * 金额分两种单位，测试要能分开：**日消费基数**是额度（`$…`），**佣金**是星屑
+ * （`… 星屑`，D-16 起）。同屏出现两种口径正是这一屏最容易搞混的地方。
  *
  * # 这里守的三件事
  *
@@ -57,12 +60,15 @@ const ACCRUALS = [
     invitee_id: 42,
     source_type: 'consume',
     source_ref: 'L-1',
+    // 基数是额度（下线实际花掉的 $7.40），计佣是星屑：
+    // 3,700,000 × 5% / 500,000 = 0.37 星屑。两个单位同屏，测试逐个分开断言。
     base_quota: 3_700_000,
     base_money: '7.4000000000',
     rate_bps: 500,
     rate_group: 'vip',
-    gross_amount: '185000.0000000000',
-    settled_amount: '185000.0000000000',
+    quota_per_unit: 500_000,
+    gross_amount: '0.3700000000',
+    settled_amount: '0.3700000000',
     usd_rate: '1',
     status: 'settled',
     risk_flags: '',
@@ -79,12 +85,11 @@ const USERS = [
     user_id: 7,
     username: 'bob',
     user_resolved: true,
-    available_quota: 2_500_000,
-    frozen_quota: 0,
-    credited_quota: 10_000_000,
-    total_earned_quota: 12_500_000,
-    total_clawback_quota: 0,
-    derived_available_quota: 2_500_000,
+    available: 5,
+    credited: 20,
+    total_earned: 25,
+    total_clawback: 0,
+    derived_available: 5,
     ledger_drift: 0,
     unsettled_amount: '0.0000000000',
     debt_blocked: false,
@@ -98,7 +103,7 @@ const USERS = [
     inviter_username: '',
     inviter_resolved: false,
     inviter_blocked: false,
-    inviter_commission_quota: 0,
+    inviter_commission: 0,
     blocked_invitee_count: 1,
     has_balance_row: true,
   },
@@ -152,8 +157,8 @@ function respond(request: QyProbeRequest) {
         total: USERS.length,
         totals: {
           user_count: 1,
-          available_quota: 2_500_000,
-          credited_quota: 10_000_000,
+          available: 2_500_000,
+          credited: 10_000_000,
           invitee_count: 3,
         },
       },
@@ -230,12 +235,14 @@ describe('结算台的三张标签', () => {
     ])
     const text = screen.text()
     assert.ok(text.includes('#42'), '计佣行的下线没渲染')
-    assert.ok(text.includes('$0.37'), '佣金金额没按额度口径印')
-    // 撤掉「立即结算」之后，什么时候到账要写在同一屏上；到星辉那一跳也要说清。
+    // 计佣金额是**星屑**（decimal 字符串，去掉尾随零之后印出来）。
+    assert.ok(text.includes('0.37'), '佣金金额没渲染')
+    assert.ok(!text.includes('$0.37'), '佣金金额被按额度口径印了 —— 它是星屑')
+    // 撤掉「立即结算」之后，什么时候到账要写在同一屏上；到星屑那一跳也要说清。
     assert.ok(text.includes('T+8'), '自动结算的 T+N 没渲染')
     assert.ok(
       text.includes(zh.qy_cm_auto_credit_note),
-      '没有说明已结算的钱怎么进星辉'
+      '没有说明已结算的钱怎么进星屑'
     )
     assertNoForbiddenWords(text)
   })
@@ -257,7 +264,9 @@ describe('结算台的三张标签', () => {
     const text = screen.text()
     assert.ok(text.includes('bob'), '用户没渲染')
     assert.ok(text.includes(zh.qy_cb_credited), '「已入账」列不见了')
-    assert.ok(text.includes('$20'), '已入账金额没按额度口径印')
+    // 20 星屑，不是 $20：佣金账本 D-16 起记星屑，这一列印错单位就是差 50 万倍。
+    assert.ok(text.includes('20 星屑'), '已入账金额没按星屑口径印')
+    assert.ok(!text.includes('$20'), '已入账金额被按额度口径印了')
     assertNoForbiddenWords(text)
   })
 

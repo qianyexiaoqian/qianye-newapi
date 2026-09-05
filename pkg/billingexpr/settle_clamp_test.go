@@ -14,9 +14,9 @@ import (
 // wrapping into a credit, and that the saturation event is surfaced on the
 // result so callers can record it for admin auditing.
 func TestComputeTieredQuota_ClampOnOverflow(t *testing.T) {
-	// exprOutput = p * 1e9 = 1e18; quotaBeforeGroup = 1e18 / 1e6 * 5e5 = 5e17,
-	// which far exceeds common.MaxQuota and must saturate.
-	exprStr := `tier("base", p * 1000000000)`
+	// exprOutput = p * 1e12 = 1e21; quotaBeforeGroup = 1e21 / 1e6 * 5e5 = 5e20,
+	// which far exceeds the supported single-request range and must saturate.
+	exprStr := `tier("base", p * 1000000000000)`
 	snap := &billingexpr.BillingSnapshot{
 		BillingMode:  "tiered_expr",
 		ExprString:   exprStr,

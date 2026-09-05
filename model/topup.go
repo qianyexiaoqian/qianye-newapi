@@ -66,6 +66,10 @@ var (
 	// ErrTopUpQuotaLimitExceeded 到账额度本身合法，但加到收款人现有余额上会
 	// 越过 common.MaxQuota。
 	ErrTopUpQuotaLimitExceeded = errors.New("top-up quota limit exceeded")
+	// ErrWalletQuotaLimitExceeded 钱包余额本身越界(上游 rc.26 起在 model/user.go
+	// 的余额写入路径上使用),与 ErrTopUpQuotaLimitExceeded 分开:后者说的是
+	// 「这笔充值加不进去」,前者说的是「这个余额本身不合法」。
+	ErrWalletQuotaLimitExceeded = errors.New("wallet quota limit exceeded")
 )
 
 // topUpQuotaMaxCurrent 返回「收到这笔 creditedQuota 之前，钱包余额最多能是多少」。
@@ -119,14 +123,14 @@ func (topUp *TopUp) CreditQuota() (int, error) {
 	switch topUp.PaymentProvider {
 	case PaymentProviderCreem:
 		// Creem 的 Amount 本身就是额度（下单时从服务端产品表取），不再乘单价。
-		return common.QuotaFromDecimalStrict(decimal.NewFromInt(topUp.Amount))
+		return common.WalletQuotaFromDecimalStrict(decimal.NewFromInt(topUp.Amount))
 	case PaymentProviderStripe:
 		// Stripe 的 Money 是经分组倍率换算后的金额数量。
-		return common.QuotaFromDecimalStrict(
+		return common.WalletQuotaFromDecimalStrict(
 			decimal.NewFromFloat(topUp.Money).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
 		)
 	default:
-		return common.QuotaFromDecimalStrict(
+		return common.WalletQuotaFromDecimalStrict(
 			decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
 		)
 	}
@@ -623,9 +627,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 		}
 
 		// 构建更新字段，优先使用邮箱，如果邮箱为空则使用用户名
-		updateFields := map[string]interface{}{
-			"quota": gorm.Expr("quota + ?", quota),
-		}
+		updateFields := map[string]interface{}{}
 
 		// 如果有客户邮箱，尝试更新用户邮箱（仅当用户邮箱为空时）
 		if customerEmail != "" {

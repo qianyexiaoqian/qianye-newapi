@@ -51,11 +51,11 @@ export const qyKeys = {
   inviteInviteeDaily: (day: string) =>
     [...qyKeys.all, 'invite', 'invitee-daily', day] as const,
 
-  // ── 星辉佣金（用户端，D-15；与上面的邀请返星屑并行）──
+  // ── 推广佣金（用户端；与上面的邀请返并行，D-16 起两边都是星屑）──
   commissionSummary: () => [...qyKeys.all, 'commission', 'summary'] as const,
   commissionRecords: (params: unknown) =>
     [...qyKeys.all, 'commission', 'records', params] as const,
-  /** 自动入账记录（佣金余额到期批量记入星辉的那几笔）。 */
+  /** 自动入账记录（佣金余额到期批量记入星屑余额的那几笔）。 */
   commissionCredits: (params: unknown) =>
     [...qyKeys.all, 'commission', 'credits', params] as const,
 
@@ -272,7 +272,7 @@ export const qyKeys = {
   adminInviteAccruals: (params: unknown) =>
     [...qyKeys.all, 'admin', 'invite', 'accruals', params] as const,
 
-  // ── 星辉佣金（管理端，D-15）──
+  // ── 推广佣金（管理端）──
   adminCommissionConfig: () =>
     [...qyKeys.all, 'admin', 'commission', 'config'] as const,
   adminCommissionRecords: (params: unknown) =>

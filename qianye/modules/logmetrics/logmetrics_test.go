@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -171,7 +173,7 @@ func TestDetectReasoningByVendor(t *testing.T) {
 			name: "Gemini 只有 includeThoughts 不算强度信号",
 			info: &relaycommon.RelayInfo{Request: &dto.GeminiChatRequest{
 				GenerationConfig: dto.GeminiChatGenerationConfig{
-					ThinkingConfig: &dto.GeminiThinkingConfig{IncludeThoughts: true},
+					ThinkingConfig: &dto.GeminiThinkingConfig{IncludeThoughts: common.GetPointer(true)},
 				},
 			}},
 		},
@@ -377,21 +379,23 @@ log_metrics:
   show_cache_ratio: false
 `)
 
-	other := map[string]interface{}{"cache_tokens": 4000, "prompt_tokens": 10000}
+	other := model.NewLogOther()
+	other.SetPublic("cache_tokens", 4000)
+	other.SetPublic("prompt_tokens", 10000)
 	AttachReasoning(nil, &relaycommon.RelayInfo{ReasoningEffort: "high"}, other)
 	AttachCacheBasis(other, 10000, 4000, 0, false)
 
-	assert.Equal(t, map[string]interface{}{"cache_tokens": 4000, "prompt_tokens": 10000}, other)
+	assert.Equal(t, map[string]interface{}{"cache_tokens": 4000, "prompt_tokens": 10000}, other.Snapshot())
 }
 
 // 扩展整体未启用(没有配置文件)时同样必须零痕迹。
 func TestHooksAreNoOpWhenExtensionDisabled(t *testing.T) {
 	loadConfig(t, "enabled: false\n")
 
-	other := map[string]interface{}{}
+	other := model.NewLogOther()
 	AttachReasoning(nil, &relaycommon.RelayInfo{ReasoningEffort: "high"}, other)
 	AttachCacheBasis(other, 10000, 4000, 0, true)
-	assert.Empty(t, other)
+	assert.Empty(t, other.Snapshot())
 }
 
 // 水位线必须无条件写入,哪怕这次请求根本没用思考模型 ——
@@ -399,22 +403,22 @@ func TestHooksAreNoOpWhenExtensionDisabled(t *testing.T) {
 func TestVersionWatermarkIsAlwaysWritten(t *testing.T) {
 	loadConfig(t, bothColumnsOn)
 
-	other := map[string]interface{}{}
+	other := model.NewLogOther()
 	AttachReasoning(nil, &relaycommon.RelayInfo{Request: &dto.GeneralOpenAIRequest{Model: "gpt-4o"}}, other)
 
-	assert.Equal(t, LogVersion, other[KeyVer])
-	assert.NotContains(t, other, KeyReasoning)
+	assert.Equal(t, LogVersion, other.Snapshot()[KeyVer])
+	assert.NotContains(t, other.Snapshot(), KeyReasoning)
 }
 
 func TestAttachReasoningWritesNormalizedPayload(t *testing.T) {
 	loadConfig(t, bothColumnsOn)
 
-	other := map[string]interface{}{}
+	other := model.NewLogOther()
 	AttachReasoning(nil, &relaycommon.RelayInfo{
 		Request: &dto.ClaudeRequest{Thinking: &dto.Thinking{Type: "enabled", BudgetTokens: intPtr(24576)}},
 	}, other)
 
-	payload, ok := other[KeyReasoning].(map[string]interface{})
+	payload, ok := other.Snapshot()[KeyReasoning].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, LevelHigh, payload["level"])
 	assert.Equal(t, 24576, payload["budget"])
@@ -428,20 +432,22 @@ func TestAttachReasoningWritesNormalizedPayload(t *testing.T) {
 func TestAttachCacheBasisWritesSemanticBothWays(t *testing.T) {
 	loadConfig(t, bothColumnsOn)
 
-	openAI := map[string]interface{}{}
+	openAI := model.NewLogOther()
 	AttachCacheBasis(openAI, 10000, 4000, 0, false)
-	assert.Equal(t, SemanticOpenAI, openAI[KeySemantic])
-	assert.Equal(t, 10000, openAI[KeyInputTotal])
-	assert.Equal(t, 4000, openAI[KeyCacheRead])
-	assert.NotContains(t, openAI, KeyCacheWrite)
-	assert.NotContains(t, openAI, KeyCacheAnomaly)
+	openAILogged := openAI.Snapshot()
+	assert.Equal(t, SemanticOpenAI, openAILogged[KeySemantic])
+	assert.Equal(t, 10000, openAILogged[KeyInputTotal])
+	assert.Equal(t, 4000, openAILogged[KeyCacheRead])
+	assert.NotContains(t, openAILogged, KeyCacheWrite)
+	assert.NotContains(t, openAILogged, KeyCacheAnomaly)
 
-	claude := map[string]interface{}{}
+	claude := model.NewLogOther()
 	AttachCacheBasis(claude, 2000, 6000, 1000, true)
-	assert.Equal(t, SemanticAnthropic, claude[KeySemantic])
-	assert.Equal(t, 9000, claude[KeyInputTotal])
-	assert.Equal(t, 6000, claude[KeyCacheRead])
-	assert.Equal(t, 1000, claude[KeyCacheWrite])
+	claudeLogged := claude.Snapshot()
+	assert.Equal(t, SemanticAnthropic, claudeLogged[KeySemantic])
+	assert.Equal(t, 9000, claudeLogged[KeyInputTotal])
+	assert.Equal(t, 6000, claudeLogged[KeyCacheRead])
+	assert.Equal(t, 1000, claudeLogged[KeyCacheWrite])
 }
 
 // 同一组 usage 在两种语义下必须得出不同的分母 —— 这是本模块存在的全部理由。
@@ -459,8 +465,9 @@ func TestSemanticChangesDenominator(t *testing.T) {
 func TestAttachCacheBasisMarksAnomaly(t *testing.T) {
 	loadConfig(t, bothColumnsOn)
 
-	other := map[string]interface{}{}
+	other := model.NewLogOther()
 	AttachCacheBasis(other, 100, 5000, 0, false)
-	assert.Equal(t, true, other[KeyCacheAnomaly])
-	assert.Equal(t, 5000, other[KeyInputTotal])
+	logged := other.Snapshot()
+	assert.Equal(t, true, logged[KeyCacheAnomaly])
+	assert.Equal(t, 5000, logged[KeyInputTotal])
 }

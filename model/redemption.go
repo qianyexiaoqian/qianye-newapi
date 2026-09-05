@@ -345,13 +345,18 @@ func Redeem(key string, userId int) (*RedeemResult, error) {
 			//
 			// 用 RowsAffected 作判据是安全的:上面已经拒掉了 Quota <= 0,加数恒 >= 1,
 			// 所以"匹配到了但值没变"这种会让 MySQL 报 0 行的情形在这里不存在。
-			credit := tx.Model(&User{}).Where("id = ?", userId).
-				Update("quota", gorm.Expr("quota + ?", redemption.Quota))
-			if credit.Error != nil {
-				return credit.Error
-			}
-			if credit.RowsAffected == 0 {
-				return errors.New("兑换码持有者不存在")
+			//
+			// 走 creditTopUpQuotaTx 而不是自己写 UPDATE:它在同一条语句里带上钱包
+			// 容量谓词(`quota <= 上界`),所以余额接近上界的账号兑换大面值码时会被
+			// 挡下并回滚,而不是把一个越界余额写进库 —— 与五条支付结算路径同一份判据。
+			if err := creditTopUpQuotaTx(tx, userId, nil, redemption.Quota); err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return errors.New("兑换码持有者不存在")
+				}
+				if errors.Is(err, ErrTopUpQuotaLimitExceeded) {
+					return errors.New("兑换后余额将超出系统上限,请先消耗部分额度")
+				}
+				return err
 			}
 			return nil
 		}
@@ -411,6 +416,12 @@ func Redeem(key string, userId int) (*RedeemResult, error) {
 }
 
 func (redemption *Redemption) Insert() error {
+	if redemption.Quota <= 0 {
+		return errors.New("redemption quota must be positive")
+	}
+	if err := common.ValidateWalletQuota(redemption.Quota); err != nil {
+		return err
+	}
 	var err error
 	err = DB.Create(redemption).Error
 	return err
@@ -427,6 +438,12 @@ func (redemption *Redemption) SelectUpdate() error {
 // 允许改的话,一张已经发给用户的"送 10 美元"的码可以被悄悄改成"送年度套餐",
 // 而码面上的字没有任何变化。要换商品就重新建一批。
 func (redemption *Redemption) Update() error {
+	if redemption.Quota <= 0 {
+		return errors.New("redemption quota must be positive")
+	}
+	if err := common.ValidateWalletQuota(redemption.Quota); err != nil {
+		return err
+	}
 	var err error
 	err = DB.Model(redemption).Select("name", "status", "quota", "redeemed_time", "expired_time").Updates(redemption).Error
 	return err

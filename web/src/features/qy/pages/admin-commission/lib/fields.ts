@@ -25,25 +25,32 @@ For commercial licensing, please contact support@quantumnous.com
  * 接口返回的 `editable_keys` 决定** —— 后端收窄白名单时前端自动跟随。
  */
 /**
- * 额度门槛的上界 = 后端 `common.MaxQuota`（`common/quota_math.go`）。
+ * 星屑门槛的上界 = 后端 `common.MaxQuota`（`common/quota_math.go`）。
+ *
+ * 佣金 D-16 之后记星屑，但上界仍是这一个：`stardust.Credit` 用的也是
+ * `common.MaxQuota`，两套账本共用同一条算术边界。
  *
  * # 为什么不能是 Number.MAX_SAFE_INTEGER
  *
  * 结算金额本身在后端已经被 `common.QuotaFromDecimalChecked` 夹在 `common.MaxQuota`
  * 内，所以一个超过它的门槛不是"更宽松"，是**永远无法被满足**。最坏的一个具体
- * 形状：把「最小结算额度」填成一个越界的数（按 USD 录入之后只要多敲几个零），
- * `net < minSettle` 从此恒成立，net 恒为 0 —— 全站所有邀请人的佣金永远不再落账，
- * 不报错、不告警、没有日志，未结算额一路累加。自动入账的门槛同理。
- *
- * 后端改了这个数,这里必须跟着改 —— `fields-max-quota.test.ts` 会因为对不上而红。
+ * 形状：把「最小结算额度」填成一个越界的数（多敲几个零就够），`net < minSettle`
+ * 从此恒成立，net 恒为 0 —— 全站所有邀请人的佣金永远不再落账，不报错、不告警、
+ * 没有日志，未结算额一路累加。自动入账的门槛同理。
  */
 export const QY_MAX_QUOTA = 8_796_093_022_208
 
 export type QyCommissionFieldMeta = {
   labelKey: string
   hintKey: string
-  /** `percent` 百分比（最多两位小数）；`quota` 站内额度；`plain` 纯计数。 */
-  unit: 'percent' | 'plain' | 'quota'
+  /**
+   * `percent` 百分比（最多两位小数）；`stardust` 星屑整数；`plain` 纯计数。
+   *
+   * D-16 之前这里是 `quota`（站内额度），而额度对运营来说不是一个能直接填的数
+   * （500000 = $1），所以那时金额字段按 USD 录入、再换算回额度。星屑本身就是
+   * 运营和用户都直接读的整数，那一整层换算连同它的换算率可用性判定一起去掉了。
+   */
+  unit: 'percent' | 'plain' | 'stardust'
   min: number
   max: number
   /** 0 是否表示"不限"。是的话要在输入框旁提示，否则运营会以为填 0 等于关掉。 */
@@ -72,18 +79,18 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     min: 0,
     max: 100,
   },
-  min_settle_quota: {
+  min_settle_stardust: {
     labelKey: 'qy_cm_f_min_settle',
     hintKey: 'qy_cm_f_min_settle_hint',
     // 后端校验 `v <= 0` 直接 400，下限必须是 1。
-    unit: 'quota',
+    unit: 'stardust',
     min: 1,
     max: QY_MAX_QUOTA,
   },
-  max_per_order_quota: {
+  max_per_order_stardust: {
     labelKey: 'qy_cm_f_max_per_order',
     hintKey: 'qy_cm_f_max_per_order_hint_xh',
-    unit: 'quota',
+    unit: 'stardust',
     min: 0,
     max: QY_MAX_QUOTA,
     zeroMeansUnlimited: true,
@@ -95,17 +102,18 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     min: 0,
     max: 365,
   },
-  // ── 自动入账（D-15 新增）──
-  // 门槛是额度：可用余额攒到它才会被下一轮记入星辉；与 min_settle_quota 是两道门。
-  min_credit_quota: {
+  // ── 自动入账 ──
+  // 门槛是星屑：可用余额攒到它才会被下一轮记入星屑余额；与 min_settle_stardust
+  // 是两道门（前者管"攒到多少才发出去"，后者管"计佣攒到多少才落成余额"）。
+  min_credit_stardust: {
     labelKey: 'qy_cm_f_min_credit',
     hintKey: 'qy_cm_f_min_credit_hint',
-    unit: 'quota',
+    unit: 'stardust',
     min: 1,
     max: QY_MAX_QUOTA,
   },
   // 入账任务的心跳周期（秒）。它不是"多久到账一次"的承诺：每一轮只处理够门槛的
-  // 余额行，调小它只是让够门槛的人早几分钟看到星辉。
+  // 余额行，调小它只是让够门槛的人早几分钟看到星屑到账。
   credit_interval_seconds: {
     labelKey: 'qy_cm_f_credit_interval',
     hintKey: 'qy_cm_f_credit_interval_hint',
@@ -113,18 +121,18 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     min: 30,
     max: 86400,
   },
-  max_daily_quota_per_inviter: {
+  max_daily_stardust_per_inviter: {
     labelKey: 'qy_cm_f_daily_cap',
     hintKey: 'qy_cm_f_unlimited_hint',
-    unit: 'quota',
+    unit: 'stardust',
     min: 0,
     max: QY_MAX_QUOTA,
     zeroMeansUnlimited: true,
   },
-  large_accrual_alert_quota: {
+  large_accrual_alert_stardust: {
     labelKey: 'qy_cm_f_large_alert',
     hintKey: 'qy_cm_f_large_alert_hint',
-    unit: 'quota',
+    unit: 'stardust',
     min: 0,
     max: QY_MAX_QUOTA,
     zeroMeansUnlimited: true,

@@ -78,16 +78,17 @@ func TestAudioConsumeLogCanBeRecomputedFromItsOwnFields(t *testing.T) {
 		modelRatio, groupRatio, completionRatio, audioRatio, audioCompletionRatio, 0, 0)
 
 	// 用日志里的四项明细 + 日志里的四个倍率复算金额。
-	textIn := other["text_input"].(int)
-	textOut := other["text_output"].(int)
-	audioIn := other["audio_input"].(int)
-	audioOut := other["audio_output"].(int)
+	logged := other.Snapshot()
+	textIn := logged["text_input"].(int)
+	textOut := logged["text_output"].(int)
+	audioIn := logged["audio_input"].(int)
+	audioOut := logged["audio_output"].(int)
 	recomputed := int(
 		(float64(textIn) +
-			float64(textOut)*other["completion_ratio"].(float64) +
-			float64(audioIn)*other["audio_ratio"].(float64) +
-			float64(audioOut)*other["audio_ratio"].(float64)*other["audio_completion_ratio"].(float64)) *
-			other["model_ratio"].(float64) * groupRatio)
+			float64(textOut)*logged["completion_ratio"].(float64) +
+			float64(audioIn)*logged["audio_ratio"].(float64) +
+			float64(audioOut)*logged["audio_ratio"].(float64)*logged["audio_completion_ratio"].(float64)) *
+			logged["model_ratio"].(float64) * groupRatio)
 
 	assert.Equal(t, quota, recomputed,
 		"日志里记的是 text_input=%d text_output=%d audio_input=%d audio_output=%d,"+

@@ -34,11 +34,11 @@ import { formatTimestampToDate } from '@/lib/format'
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySdAmount } from '../../components/qy-sd-amount'
+import { QySdDecimal } from '../../components/qy-sd-decimal'
 import { useQyConfig } from '../../hooks/use-qy-config'
 import { useStardustName } from '../../hooks/use-stardust-name'
 import { qyFormatAtDayline } from '../../lib/dayline'
-import { formatQyQuotaLedger } from '../../lib/format'
-import { formatSdWithUnit } from '../../lib/format-sd'
+import { formatSdDecimal, formatSdWithUnit } from '../../lib/format-sd'
 import { QyStatGrid, type QyStatItem } from '../components/qy-stat-grid'
 import { qySdBpsPercent } from '../stardust/lib/display'
 import {
@@ -52,18 +52,20 @@ import { QyReferralProgramCard } from './components/referral-program-card'
 import type { QyCommissionSummary, QyInviteSummary } from './types'
 
 /**
- * 「概览」—— 「我的推广」选择夹的第一张标签（D-15）。
+ * 「概览」—— 「我的推广」选择夹的第一张标签（D-16）。
  *
- * 两条线**并行**（项目方追问后拍板）：
+ * 两条线**并行**，而且发的是**同一种钱**（星屑）：
  *
- *   · 上半：**星辉佣金** —— 待结算 / 可用（待入账）/ 已入账三格、下次入账时间、
- *     我的费率。账本以额度整数记账，界面用 `QyAmountText` 按站内展示单位印；
- *     到期自动记入星辉，没有申请、没有审核 —— 这一屏上从此没有「提现」这件事。
- *   · 下半：**星屑返还** —— 五种来源的分布（沿用 D-14 的组件）、昨日已返 / 暂缓、
- *     今日待返基数、合规声明状态。星屑走 `QySdAmount`。
+ *   · 上半：**推广佣金** —— 待结算 / 可用（待入账）/ 已入账三格、下次入账时间、
+ *     我的费率。到期自动记入星屑余额，没有申请、没有审核 —— 这一屏上没有「提现」。
+ *   · 下半：**邀请返还** —— 五种来源的分布、昨日已返 / 暂缓、今日待返基数、
+ *     合规声明状态。
  *
- * 两种单位并排各印各的，绝不相加：星辉是余额，星屑是积分。佣金关掉、邀请返
- * 照开的站点上，上半整段不渲染（也不发请求），下半照旧。
+ * D-15 时上半记的是「星辉」（站内余额的展示名），所以这一屏上曾有两种单位并排。
+ * D-16 之后两边都是星屑，全部走 `QySdAmount` —— 唯二仍按额度印的是**消费基数**
+ * （昨日下线消费 / 今日待返基数）：那是分母，不是返给谁的钱。
+ *
+ * 佣金关掉、邀请返照开的站点上，上半整段不渲染（也不发请求），下半照旧。
  */
 export function QyAffiliateOverviewBody() {
   const { t } = useTranslation()
@@ -186,10 +188,10 @@ export function QyAffiliateOverviewBody() {
 }
 
 /**
- * 星辉佣金的三格 + 规则卡。
+ * 推广佣金的三格 + 规则卡。
  *
  * 三格是钱在账本里的三个阶段：**待结算**（已计佣、还没过成熟期）→ **可用**
- * （已成熟，等自动入账攒够门槛）→ **已入账**（已经记进星辉）。少任何一格，
+ * （已成熟，等自动入账攒够门槛）→ **已入账**（已经记进星屑余额）。少任何一格，
  * "我用了一天怎么没到账"就答不全 —— 钱可能正停在前两格之一。
  */
 function CommissionOverview(props: {
@@ -198,50 +200,53 @@ function CommissionOverview(props: {
   inviteLinkLoading: boolean
 }) {
   const { t } = useTranslation()
+  const unit = useStardustName()
   const summary = props.summary
 
+  // 余数与待结算是 decimal 字符串（后端全精度下发，前端只展示不运算）。要插进
+  // 句子里的走 `formatSdDecimal` + 单位，能放组件的地方走 `QySdDecimal`；
+  // 两者是同一份去零逻辑，不会出现同一个数在提示里和格子里长得不一样。
+  const carry = `${formatSdDecimal(summary.unsettled_amount)} ${unit}`
   const nextCreditHint =
     summary.next_credit_at > 0
       ? t('qy_aff_next_credit_value', {
-          min: formatQyQuotaLedger(summary.min_credit_quota),
+          min: formatSdWithUnit(summary.min_credit_stardust, unit),
           time: qyFormatAtDayline(
             summary.next_credit_at,
             summary.policy.day_offset_minutes
           ),
         })
       : t('qy_aff_next_credit_unknown', {
-          min: formatQyQuotaLedger(summary.min_credit_quota),
+          min: formatSdWithUnit(summary.min_credit_stardust, unit),
         })
 
   const stats: QyStatItem[] = [
     {
       key: 'pending',
       label: t('qy_aff_pending_settle'),
-      value: <QyAmountText quota={summary.pending_mature_quota} />,
+      value: <QySdDecimal value={summary.pending_mature} />,
       hint:
         summary.pending_earliest_mature_at > 0
           ? t('qy_aff_pending_settle_hint', {
               date: formatTimestampToDate(summary.pending_earliest_mature_at),
-              carry: formatQyQuotaLedger(summary.unsettled_amount),
+              carry,
             })
-          : t('qy_aff_pending_settle_none_hint', {
-              carry: formatQyQuotaLedger(summary.unsettled_amount),
-            }),
+          : t('qy_aff_pending_settle_none_hint', { carry }),
     },
     {
       key: 'available',
       label: t('qy_aff_available_credit'),
-      value: <QyAmountText quota={summary.available_quota} />,
+      value: <QySdAmount amount={summary.available} variant='hero' />,
       hint: nextCreditHint,
       emphasis: true,
     },
     {
       key: 'credited',
       label: t('qy_aff_credited'),
-      value: <QyAmountText quota={summary.credited_quota} />,
+      value: <QySdAmount amount={summary.credited} variant='hero' />,
       hint: t('qy_aff_credited_hint', {
         // 累计是含已入账的总数，与"当前可用"分开展示，避免用户把两者相加。
-        value: formatQyQuotaLedger(summary.total_earned_quota),
+        value: formatSdWithUnit(summary.total_earned, unit),
       }),
     },
   ]
@@ -282,7 +287,7 @@ function rateTierLabel(summary: QyCommissionSummary, t: TFunction): string {
 }
 
 /**
- * 返佣规则说明（星辉侧）。
+ * 返佣规则说明（佣金侧）。
  *
  * 比例后端以 bps（万分比整数）下发，这里只在展示时除以 100 换成百分比 ——
  * 全链路用整数是为了让"5% 到底是多少"可复现，前端不要把它变回浮点再传回去。
@@ -364,15 +369,15 @@ function PolicyCard(props: { summary: QyCommissionSummary }) {
     {
       key: 'min-settle',
       label: t('qy_aff_min_settle'),
-      value: <QyAmountText quota={summary.policy.min_settle_quota} />,
+      value: <QySdAmount amount={summary.policy.min_settle_stardust} />,
     },
     {
-      // 自动入账的门槛与"最小结算额度"是两道门：前者是余额攒到多少才记进星辉，
+      // 自动入账的门槛与"最小结算额度"是两道门：前者是余额攒到多少才记进星屑，
       // 后者是计佣攒到多少才落成余额。两个都显示，少一个就解释不了"可用里有钱
-      // 为什么还没进星辉"。
+      // 为什么还没到账"。
       key: 'min-credit',
       label: t('qy_aff_min_credit'),
-      value: <QyAmountText quota={summary.min_credit_quota} />,
+      value: <QySdAmount amount={summary.min_credit_stardust} />,
     },
     {
       key: 'last-settled',

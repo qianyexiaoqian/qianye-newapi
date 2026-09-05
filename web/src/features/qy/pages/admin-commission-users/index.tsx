@@ -35,10 +35,10 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
-import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySdAmount } from '../../components/qy-sd-amount'
 import { qyArray } from '../../lib/array'
-import { formatQyQuotaLedger } from '../../lib/format'
+import { formatSd } from '../../lib/format-sd'
 import { qyTabTarget } from '../../lib/pages'
 import { QyAdminCommissionBalancesBody } from '../admin-commission-balances'
 import { AdjustCommissionDialog } from '../admin-commission-balances/components/adjust-commission-dialog'
@@ -62,7 +62,7 @@ import {
  * 三个次级标签回答同一件事的三个切面：
  *   · 用户总览：**一行 = 一个用户**，上线是谁、拉了多少人、四列额度、行内改佣金；
  *   · 余额对账：恒等式与 `ledger_drift`，改钱之前先看这一张；
- *   · 入账记录：佣金余额 → 星辉的每一笔资金单，`held` 的在这里露头。
+ *   · 入账记录：佣金余额 → 星屑余额的每一笔入账，带着星屑流水号。
  *
  * D-14 之前这一行是侧栏上独立的「用户佣金」宿主（用户总览 / AFF 关系 / 佣金余额）。
  * AFF 关系归了 invite 模块（「邀请管理」），「提现」那一档永久删除，剩下的两张
@@ -221,35 +221,28 @@ function UsersTable() {
       header: t('qy_cb_available_xh'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => <QyAmountText quota={row.available_quota} />,
-    },
-    {
-      id: 'frozen',
-      header: t('qy_cb_frozen_xh'),
-      className: staticDataTableClassNames.compactHeaderCellRight,
-      cellClassName: staticDataTableClassNames.compactMutedNumericCell,
-      cell: (row) => <QyAmountText quota={row.frozen_quota} />,
+      cell: (row) => <QySdAmount amount={row.available} />,
     },
     {
       id: 'credited',
       header: t('qy_cb_credited'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactMutedNumericCell,
-      cell: (row) => <QyAmountText quota={row.credited_quota} />,
+      cell: (row) => <QySdAmount amount={row.credited} />,
     },
     {
       id: 'earned',
       header: t('qy_cb_earned'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => <QyAmountText quota={row.total_earned_quota} />,
+      cell: (row) => <QySdAmount amount={row.total_earned} />,
     },
     {
       id: 'clawback',
       header: t('qy_cb_clawback'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactMutedNumericCell,
-      cell: (row) => <QyAmountText quota={row.total_clawback_quota} />,
+      cell: (row) => <QySdAmount amount={row.total_clawback} />,
     },
     {
       id: 'check',
@@ -416,7 +409,7 @@ function LedgerCheckBadge(props: { row: QyCommissionUser }) {
   return (
     <Badge variant='destructive'>
       {t('qy_cb_check_drift', {
-        drift: formatQyQuotaLedger(row.ledger_drift),
+        drift: formatSd(row.ledger_drift),
       })}
     </Badge>
   )

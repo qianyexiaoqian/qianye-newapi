@@ -29,18 +29,16 @@ func CovertMjpActionToModelName(mjAction string) string {
 	return modelName
 }
 
-// RefundMidjourneyQuota 把一次 Midjourney 计费**在账面上完整反转**：钱包额度、
-// 令牌额度、用户与渠道的累计用量，外加一条退款台账。
-//
-// 三处与改动前不同，都是漏项而不是口径调整（同步自上游 58d4e9bd3）：
-//   - 令牌额度以前从来不退。提交时预留扣了令牌一次，构图失败后只退了钱包，
-//     令牌那一份就此蒸发 —— 一把设了额度上限的 key 会随着失败次数被磨到 0。
-//   - 用量回减与退款记账都按 GetBillingChannelId()，即**当初真正扣钱的那个渠道**，
-//     而不是任务行上随重试漂移的 ChannelId。
-//   - 退成功后把 Quota 清零。这是幂等闩：轮询会反复看到同一条失败任务，
-//     不清零就会一轮退一次。
-//
-// 返回资金来源是否真的退成功；失败时保留 Quota，留给下一轮或人工对账。
+// Midjourney 的两条计费路径(swap-face 与常规提交)在本 fork 里走**请求前原子预留**
+// (relay/mjproxy_handler.go 的 TryReserveUserQuota / TryReserveTokenQuota,外加一个
+// 失败即退的 defer),而不是上游 rc.33 新引入的 Prepare/Settle 两段式:后者在 settle
+// 时才 postConsumeQuotaWithResult(task.Quota),与预留叠加会把同一笔收两次,而且它
+// 显式拒绝 BillingSource == subscription。因此上游那两个函数在这里没有调用点,
+// 已删除 —— 不留一套无人调用、却会被下一个人当成"正确记账入口"的影子实现。
+// 它们要解决的「任务落库前先写下退款标记」由 mjproxy_handler.go 里 Insert() 之前的
+// `if billed { Quota / BillingChannelId / TokenId }` 承担,位置与作用相同。
+
+// RefundMidjourneyQuota reverses every accounting element recorded for a billed legacy task.
 func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason string) bool {
 	quota := task.Quota
 	if quota == 0 {
@@ -62,11 +60,11 @@ func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason s
 	}
 
 	billingChannelId := task.GetBillingChannelId()
-	// 回减提交时累计的用量；请求次数保持不变（退款不是一次新请求）。
-	// 缺这一步时 quota 退回去了而 used_quota 没减，「总额度」
-	// (quota + used_quota) 随构图失败次数单调虚增。
 	model.UpdateUserUsedQuota(task.UserId, -quota)
 	model.UpdateChannelUsedQuota(billingChannelId, -quota)
+	other := model.NewLogOther()
+	other.SetPublic("task_id", task.MjId)
+	other.SetPublic("reason", reason)
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
 		UserId:    task.UserId,
 		LogType:   model.LogTypeRefund,
@@ -75,10 +73,7 @@ func RefundMidjourneyQuota(ctx context.Context, task *model.Midjourney, reason s
 		ModelName: CovertMjpActionToModelName(task.Action),
 		Quota:     quota,
 		TokenId:   task.TokenId,
-		Other: map[string]interface{}{
-			"task_id": task.MjId,
-			"reason":  reason,
-		},
+		Other:     other,
 	})
 
 	task.Quota = 0

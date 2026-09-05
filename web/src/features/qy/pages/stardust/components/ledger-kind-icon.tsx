@@ -20,6 +20,7 @@ import {
   CircleHelp,
   Crown,
   Gift,
+  Handshake,
   Percent,
   Store,
   Ticket,
@@ -36,11 +37,16 @@ import { cn } from '@/lib/utils'
 import { qySdKindKey } from '../lib/display'
 
 /**
- * 十三种 kind → 图标。同一族用同一个图形（三种一次性的邀请返都是「加人」，
+ * 十四种 kind → 图标。同一族用同一个图形（三种一次性的邀请返都是「加人」，
  * 下线消费返是「一群人」—— 它是逐日持续的、来自整个下线群的那一份；抽奖的
  * 押注 / 派奖 / 退款分别是票 / 礼物 / 回退），列表扫一眼就能按形状归类。
+ *
+ * 佣金入账用「握手」而不是跟着邀请返那一族用「加人」：它与下线消费返虽然常常
+ * 来自同一笔基数，但走的是另一本账（过持有期、攒门槛、批量入账）。用户在流水里
+ * 一天看到两笔金额相近的入账时，唯一能区分它们的就是这一格的形状。
  */
 const KIND_ICON: Record<string, LucideIcon> = {
+  commission_credit: Handshake,
   consume_rebate: Percent,
   invite_consume: Users,
   invite_topup: UserPlus,

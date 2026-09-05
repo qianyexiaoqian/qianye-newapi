@@ -28,10 +28,12 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 
-import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
+import { QySdAmount } from '../../../components/qy-sd-amount'
+import { QySdDecimal } from '../../../components/qy-sd-decimal'
+import { useStardustName } from '../../../hooks/use-stardust-name'
 import { qyErrorMessage } from '../../../lib/api'
-import { formatQyQuotaLedger } from '../../../lib/format'
+import { formatSdWithUnit } from '../../../lib/format-sd'
 import { qyKeys } from '../../../lib/query-keys'
 import { QY_FUND_REASON_MIN_RUNES, qyRuneLength } from '../../lib/constants'
 import { qyAdjustCommission } from '../api'
@@ -52,7 +54,7 @@ export type QyAdjustSubject = {
   user_id: number
   username: string
   user_resolved?: boolean
-  available_quota: number
+  available: number
   /** decimal(30,10) 字符串。只用于算扣减上限的**提示**，判据永远在后端。 */
   unsettled_amount: string
 }
@@ -83,6 +85,7 @@ type AdjustCommissionDialogProps = {
  */
 export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
   const { t } = useTranslation()
+  const unit = useStardustName()
   const queryClient = useQueryClient()
   const amountId = useId()
   const reasonId = useId()
@@ -107,7 +110,7 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
     onSuccess: async (result) => {
       toast.success(
         result.created
-          ? t('qy_adj_ok', { delta: formatQyQuotaLedger(result.delta_quota) })
+          ? t('qy_adj_ok', { delta: formatSdWithUnit(result.delta, unit) })
           : t('qy_adj_replayed')
       )
       await queryClient.invalidateQueries({ queryKey: qyKeys.all })
@@ -126,14 +129,14 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
   // 这里只用来做**提示**，取整方向与后端一致（向下取整）。
   const carry = Math.floor(Number(balance?.unsettled_amount ?? '0'))
   const ceilingHint =
-    balance == null ? 0 : Math.max(0, balance.available_quota + carry)
+    balance == null ? 0 : Math.max(0, balance.available + carry)
   const overCeiling =
     direction === 'sub' && amountValid && amountValue > ceilingHint
   // 上限是**输入框那一格**的上限，而那一格填的是额度整数，所以这里必须双写：
   // 只印 `$0.27` 的话，管理员没有任何办法知道该往框里敲哪个整数。
   const ceilingText = t('qy_common_quota_with_amount', {
     quota: ceilingHint,
-    amount: formatQyQuotaLedger(ceilingHint),
+    amount: formatSdWithUnit(ceilingHint, unit),
   })
   const reasonValid = qyRuneLength(reason.trim()) >= QY_FUND_REASON_MIN_RUNES
 
@@ -166,7 +169,7 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
                 {t('qy_cb_available_xh')}
               </dt>
               <dd>
-                <QyAmountText quota={balance.available_quota} />
+                <QySdAmount amount={balance.available} />
               </dd>
             </div>
             <div className='flex justify-between gap-3 py-1.5 last:pb-0'>
@@ -176,7 +179,7 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
                   一个印 `$0.27`、一个印 `0.4700000000`，看的人会以为它们
                   是两种钱，而调整上限恰恰是这两个数加起来。 */}
               <dd>
-                <QyAmountText quota={balance.unsettled_amount} />
+                <QySdDecimal value={balance.unsettled_amount} />
               </dd>
             </div>
           </dl>
@@ -247,7 +250,7 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
             onClick={() =>
               mutation.mutate({
                 user_id: balance.user_id,
-                delta_quota: delta,
+                delta,
                 reason: reason.trim(),
                 client_request_id: requestId,
               })

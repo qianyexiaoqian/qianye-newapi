@@ -80,7 +80,7 @@ export type QyAdminCommissionCreditFilters = {
  * 全站自动入账记录（`GET /admin/commission/credits`）。
  *
  * 运营在这张表上要盯的只有 `held`：那是资金单结局不明、等人裁决的单子，裁决
- * 在「资金对账」页按 `fund_order_no` 做，这里只负责把它们捞出来。
+ * 在「星屑账本」里按 `ledger_no` 对，这里只负责把它们捞出来。
  */
 export function qyAdminCommissionCreditsQuery(
   filters: QyAdminCommissionCreditFilters

@@ -32,10 +32,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
-import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySdAmount } from '../../components/qy-sd-amount'
+import { useStardustName } from '../../hooks/use-stardust-name'
 import { qyArray } from '../../lib/array'
-import { formatQyQuotaLedger } from '../../lib/format'
+import { formatSd, formatSdWithUnit } from '../../lib/format-sd'
 import { qyTabTarget } from '../../lib/pages'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
@@ -56,17 +57,18 @@ import {
  *
  *   可用 + 入账中 + 已入账 = 累计已结算 − 累计冲正
  *
- * 运营在这个页面上最常问的两个问题——"他明明有佣金为什么还没进星辉""这个人的
+ * 运营在这个页面上最常问的两个问题——"他明明有佣金为什么还没到账""这个人的
  * 可用为什么少了"——答案全在这条式子里：钱要么还在入账中（资金单未落定），
  * 要么已经计入已入账。只给一个"可用"数字，这两个问题永远要靠翻代码回答。
  *
- * `derived_available_quota` / `ledger_drift` 由后端算好下发，本页一个字都不重算。
+ * `derived_available` / `ledger_drift` 由后端算好下发，本页一个字都不重算。
  *
  * ── 为什么是 Body 而不是整页 ──
  * 本页是「佣金用户」标签下的一个次级标签（余额对账），区段头由宿主页出。
  */
 export function QyAdminCommissionBalancesBody() {
   const { t } = useTranslation()
+  const unit = useStardustName()
 
   const [page, setPage] = useState(1)
   const [sort, setSort] = useState<QyBalanceSort>('available')
@@ -106,35 +108,28 @@ export function QyAdminCommissionBalancesBody() {
       header: t('qy_cb_earned'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => <QyAmountText quota={row.total_earned_quota} />,
+      cell: (row) => <QySdAmount amount={row.total_earned} />,
     },
     {
       id: 'clawback',
       header: t('qy_cb_clawback'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactMutedNumericCell,
-      cell: (row) => <QyAmountText quota={row.total_clawback_quota} />,
-    },
-    {
-      id: 'frozen',
-      header: t('qy_cb_frozen_xh'),
-      className: staticDataTableClassNames.compactHeaderCellRight,
-      cellClassName: staticDataTableClassNames.compactMutedNumericCell,
-      cell: (row) => <QyAmountText quota={row.frozen_quota} />,
+      cell: (row) => <QySdAmount amount={row.total_clawback} />,
     },
     {
       id: 'credited',
       header: t('qy_cb_credited'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => <QyAmountText quota={row.credited_quota} />,
+      cell: (row) => <QySdAmount amount={row.credited} />,
     },
     {
       id: 'available',
       header: t('qy_cb_available_xh'),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => <QyAmountText quota={row.available_quota} />,
+      cell: (row) => <QySdAmount amount={row.available} />,
     },
     {
       id: 'check',
@@ -149,7 +144,7 @@ export function QyAdminCommissionBalancesBody() {
             // 漂移必须在改钱**之前**被看见：这一行的账本与结算流水已经对不上了。
             <Badge variant='destructive'>
               {t('qy_cb_check_drift', {
-                drift: formatQyQuotaLedger(row.ledger_drift),
+                drift: formatSd(row.ledger_drift),
               })}
             </Badge>
           )}
@@ -242,8 +237,8 @@ export function QyAdminCommissionBalancesBody() {
       {totals != null && (
         <p className='text-muted-foreground text-xs'>
           {t('qy_cb_totals_xh', {
-            available: formatQyQuotaLedger(totals.available_quota),
-            credited: formatQyQuotaLedger(totals.credited_quota),
+            available: formatSdWithUnit(totals.available, unit),
+            credited: formatSdWithUnit(totals.credited, unit),
           })}
         </p>
       )}

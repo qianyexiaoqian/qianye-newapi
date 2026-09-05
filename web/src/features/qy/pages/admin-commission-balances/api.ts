@@ -62,7 +62,7 @@ export function qyAdminBalancesQuery(filters: QyBalanceFilters) {
 // 人工路径能改它。
 
 /**
- * 手工增加 / 减少某个用户的佣金。`delta_quota` 带符号，负数是扣减。
+ * 手工增加 / 减少某个用户的佣金。`delta` 带符号，负数是扣减。
  *
  * 后端把它落成一条 `source_type = manual` 的**计佣行**，再由既有的结算流程
  * 吸收进余额 —— 直接 UPDATE 余额列会让 Σ计佣 与 Σ结算 当场对不上，
@@ -77,7 +77,7 @@ export function qyAdminBalancesQuery(filters: QyBalanceFilters) {
  */
 export function qyAdjustCommission(input: {
   user_id: number
-  delta_quota: number
+  delta: number
   reason: string
   client_request_id: string
 }) {

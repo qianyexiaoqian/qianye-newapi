@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -253,10 +254,10 @@ func TestSettlementFailureIsRecordedOnTheConsumeLog(t *testing.T) {
 			BillingSource:   BillingSourceWallet,
 			SettleFailure:   "dial tcp: connection refused",
 		}
-		other := map[string]interface{}{}
+		other := model.NewLogOther()
 		attachSettleFailure(ctx, relayInfo, other)
 
-		adminInfo, ok := other["admin_info"].(map[string]interface{})
+		adminInfo, ok := other.Snapshot()["admin_info"].(map[string]interface{})
 		require.True(t, ok, "the marker must live under admin_info so non-admin log views strip it")
 		marker, ok := adminInfo["settle_failed"].(map[string]interface{})
 		require.True(t, ok)
@@ -266,8 +267,8 @@ func TestSettlementFailureIsRecordedOnTheConsumeLog(t *testing.T) {
 
 	t.Run("a successful settlement leaves no marker", func(t *testing.T) {
 		relayInfo := &relaycommon.RelayInfo{UserId: 77, OriginModelName: "settle-fail-model"}
-		other := map[string]interface{}{}
+		other := model.NewLogOther()
 		attachSettleFailure(ctx, relayInfo, other)
-		assert.NotContains(t, other, "admin_info")
+		assert.NotContains(t, other.Snapshot(), "admin_info")
 	})
 }

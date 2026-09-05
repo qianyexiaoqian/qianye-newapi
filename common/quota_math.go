@@ -63,6 +63,17 @@ import (
 const (
 	MaxQuota = 1 << 43 // 8,796,093,022,208 quota
 	MinQuota = -MaxQuota
+
+	// MaxWalletQuota bounds wallet mutations (top-ups, wallet-priced
+	// purchases). Upstream introduced this as a *second, wider* domain
+	// (2^53-1) because its single-request bound is still int32 and that is
+	// far too small for a wallet. Here the single-request bound is already
+	// the arithmetic ceiling derived above, so the wallet must not exceed
+	// it: a 2^53 balance would break ceiling (3) and, more immediately, the
+	// basis-point family — 2*2^53*10^4 ~= 1.8e20 wraps int64. Keeping the
+	// two equal is what makes the derivation above cover persisted balances
+	// as well as single charges.
+	MaxWalletQuota = MaxQuota
 )
 
 // MaxQuotaWorstMultiplier is the largest integer a quota-bounded value is
@@ -97,6 +108,16 @@ const (
 	_ = uint64(MaxQuota + MinQuota)
 )
 
+// ValidateWalletQuota enforces the upper bound shared by wallet mutations.
+// Negative balances remain valid because billing can temporarily overdraw a
+// wallet; callers that accept credits must apply their own positive check.
+func ValidateWalletQuota(quota int) error {
+	if quota > MaxWalletQuota {
+		return fmt.Errorf("wallet quota exceeds %d", MaxWalletQuota)
+	}
+	return nil
+}
+
 // QuotaClampKind identifies why a quota conversion had to be saturated.
 type QuotaClampKind string
 
@@ -108,11 +129,11 @@ const (
 )
 
 // QuotaClamp describes a single saturation event: a quota conversion whose
-// input fell outside the representable quota range (or was NaN) and was
+// input fell outside its supported range (or was NaN) and was
 // therefore clamped. It is surfaced to billing callers so the event can be
 // recorded on the related consume/task log for admin auditing.
 type QuotaClamp struct {
-	Op       string         `json:"op"`       // "QuotaFromFloat" | "QuotaRound" | "QuotaFromDecimal"
+	Op       string         `json:"op"`       // "QuotaFromFloat" | "QuotaRound" | "QuotaFromDecimal" | "WalletQuotaFromDecimal"
 	Kind     QuotaClampKind `json:"kind"`     // "overflow" | "underflow" | "nan"
 	Original float64        `json:"original"` // best-effort pre-clamp value (decimal -> float64 approx)
 	Clamped  int            `json:"clamped"`  // the saturated result actually used
@@ -168,14 +189,22 @@ func (c *QuotaClamp) AuditMap() map[string]interface{} {
 // record the event (e.g. on the consume log); the returned pointer is nil for
 // in-range values.
 func saturateQuota(value float64, op string) (int, *QuotaClamp) {
+	return saturateQuotaBounded(value, op, MaxQuota, MinQuota)
+}
+
+func saturateQuotaBounded(value float64, op string, maxQuota int, minQuota int) (int, *QuotaClamp) {
 	var clamp *QuotaClamp
 	switch {
 	case math.IsNaN(value):
 		clamp = &QuotaClamp{Op: op, Kind: QuotaClampNaN, Original: value, Clamped: 0}
-	case value >= MaxQuota:
-		clamp = &QuotaClamp{Op: op, Kind: QuotaClampOverflow, Original: value, Clamped: MaxQuota}
-	case value <= MinQuota:
-		clamp = &QuotaClamp{Op: op, Kind: QuotaClampUnderflow, Original: value, Clamped: MinQuota}
+	// >= / <= , not > / < : the bound itself already counts as saturated.
+	// Reaching it at all is an anomaly (see the derivation above), so the
+	// *Strict variants must reject it rather than hand back a value sitting
+	// exactly on the ceiling. TestQuotaConversionsAgreeAtTheBoundary pins this.
+	case value >= float64(maxQuota):
+		clamp = &QuotaClamp{Op: op, Kind: QuotaClampOverflow, Original: value, Clamped: maxQuota}
+	case value <= float64(minQuota):
+		clamp = &QuotaClamp{Op: op, Kind: QuotaClampUnderflow, Original: value, Clamped: minQuota}
 	default:
 		return int(value), nil
 	}
@@ -273,4 +302,14 @@ func QuotaAddChecked(base int, delta int) (int, *QuotaClamp) {
 	default:
 		return int(sum), nil
 	}
+}
+
+// WalletQuotaFromDecimalStrict converts wallet and top-up values, rejecting
+// anything outside the wallet domain instead of letting a saturated balance
+// reach the database. Separate from QuotaFromDecimalStrict only so the op name
+// in the audit marker says which domain rejected the value; here both domains
+// share the same bound (see MaxWalletQuota).
+func WalletQuotaFromDecimalStrict(d decimal.Decimal) (int, error) {
+	f, _ := d.Round(0).Float64()
+	return strictQuota(saturateQuotaBounded(f, "WalletQuotaFromDecimal", MaxWalletQuota, -MaxWalletQuota))
 }

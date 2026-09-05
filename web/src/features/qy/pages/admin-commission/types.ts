@@ -40,15 +40,15 @@ export type QyCommissionEffective = {
   redemption_rate_effective_percent: string
   /** `redemption_rate_percent === ''` 的服务端版本，前端不自己推。 */
   redemption_rate_follows_topup: boolean
-  min_settle_quota: number
-  max_per_order_quota: number
+  min_settle_stardust: number
+  max_per_order_stardust: number
   holding_days: number
-  /** 自动入账门槛（额度）。可用余额攒到它才会被下一轮记入星辉。 */
-  min_credit_quota: number
+  /** 自动入账门槛（星屑）。可用余额攒到它才会被下一轮记入星屑余额。 */
+  min_credit_stardust: number
   /** 自动入账任务的心跳周期（秒）。 */
   credit_interval_seconds: number
-  max_daily_quota_per_inviter: number
-  large_accrual_alert_quota: number
+  max_daily_stardust_per_inviter: number
+  large_accrual_alert_stardust: number
   min_invitee_age_hours: number
 }
 
@@ -164,8 +164,8 @@ export type QyDailySettleRun = {
   rounds: number
   processed: number
   failed: number
-  granted_quota: number
-  reclaimed_quota: number
+  granted: number
+  reclaimed: number
   remark: string
 }
 
@@ -197,18 +197,38 @@ export type QyDailySettleSnapshot = {
 }
 
 /**
- * `GET /admin/commission/health` 里 `credit` 那一段（D-15 新增，形状由 Z1 定；
- * 缺省时整段可能不下发，界面按"取不到"处理）。
+ * `GET /admin/commission/health` 里 `credit` 那一段（缺省时整段可能不下发，
+ * 界面按"取不到"处理）。
+ *
+ * D-15 时这里报的是"在途 / 挂起的入账单"——那两个数只在跨库两阶段下才有意义。
+ * D-16 入账是扩展库里的本地事务，没有在途也没有挂起，能报的只有"累计发出去了
+ * 多少"。留一个恒为 0 的在途计数比不留更糟：运维会以为系统在盯着一个其实不存在
+ * 的队列，而真正该看的重叠告警（`rate_overlap`）反倒被那排 0 挤走了注意力。
  */
 export type QyCommissionCreditSnapshot = {
-  /** 在途(pending)入账单数:资金单已开、主库还没落定。 */
-  pending: number
-  /** 卡在 held 的入账单数。非 0 就该去资金对账页裁决。 */
-  held: number
-  /** 挂起单的额度合计(星辉)。 */
-  held_quota: number
-  /** 上一轮处理了几行、成功几行。 */
-  last_processed?: number
-  last_done?: number
-  last_run_at?: number
+  /** 累计已入账的笔数。 */
+  credited_rows: number
+  /** 累计已入账的星屑总数。 */
+  credited_stardust: number
+  /** 后端这次读不出来时的原因，非空就把它原样显示。 */
+  error?: string
+}
+
+/**
+ * `GET /admin/commission/health` 里 `rate_overlap` 那一段（D-16 新增）。
+ *
+ * 佣金的三档与 stardust 的三档 invite_* 打的是**同一笔基数**。两边同时为正就会
+ * 给同一个上线落两笔星屑 —— 这是配置选择不是 bug，但两条线的配置在两个不同的
+ * 管理页上、各自都显示正常，谁也不会主动去做这次比对；而症状是"平台付出的钱是
+ * 账面比例的两倍"，在成本报表上要几周才浮出来。
+ */
+export type QyCommissionRateOverlap = {
+  /** 为真表示没有重叠。 */
+  ok: boolean
+  sources: {
+    /** `topup` | `consume` | `redemption`。 */
+    source: string
+    commission_rate_bps: number
+    invite_rate_bps: number
+  }[]
 }

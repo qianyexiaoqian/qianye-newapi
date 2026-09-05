@@ -33,12 +33,13 @@ import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
 /**
  * 账本上的额度金额。
  *
- * 佣金账本里的 `gross_amount` / `settled_amount` / `unsettled_amount` 与余额行
- * 上的 `available_quota` / `frozen_quota` / `withdrawn_quota` **是同一个单位**
- * （都是站内额度）：`gross = base_quota × 费率`（`accrual.go` 的 `calcGross`），
- * 结算时 `floor(carry + Δgross)` 直接加进 `available_quota`
- * （`settle.go` 的 `computeSettlement`）。差别只有一处 —— 前者是
- * `decimal(30,10)` 的精确值、后端以**字符串**下发以免 JS 丢位，后者是整数。
+ * ⚠ **佣金账本不再走这里**。D-16 之后佣金以星屑记账（`gross = base_quota × 费率
+ * / quota_per_unit`），整数走 `QySdAmount`、decimal 字符串走 `QySdDecimal`。
+ * 佣金那一族里仍然是额度的只剩 `base_quota` —— 下线实际花掉的那个数，它是分母
+ * 不是佣金本身，所以还在这里。
+ *
+ * 现在的消费方是真正的额度金额：渠道已用额度、划转金额、活动参与条件里的三条
+ * 额度门槛、上游注册奖 `aff_quota`。
  *
  * 所以展示层必须把这两类渲染成同一个东西。一列印 `$0.27`、隔壁一列印
  * `1370.0000000000`，看的人无从判断这两个数能不能相加 —— 而它们恰恰能。

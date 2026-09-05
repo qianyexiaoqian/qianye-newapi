@@ -123,19 +123,19 @@ func TestGetChannelRejectsCaseVariantModelOnMySQL(t *testing.T) {
 		"这个 MySQL 的排序规则不是 ci,本用例证明不了任何事")
 
 	// ② 逐字相等的请求照常路由。
-	channel, err := GetChannel("default", "QY-CASE-MODEL", 0, "")
+	channel, err := GetChannel("default", "QY-CASE-MODEL", 0, nil)
 	require.NoError(t, err)
 	require.NotNil(t, channel, "逐字相等的模型名必须能路由到渠道")
 	assert.Equal(t, 990771, channel.Id)
 
 	// ③ 只差大小写的请求必须落空,与 PostgreSQL / SQLite 同口径。
-	channel, err = GetChannel("default", "qy-case-model", 0, "")
+	channel, err = GetChannel("default", "qy-case-model", 0, nil)
 	require.NoError(t, err)
 	assert.Nil(t, channel,
 		"模型名只差大小写时不得路由:PostgreSQL 与 SQLite 上它是 503,MySQL 不能给出 200")
 
 	// ④ 分组名那一半同理。
-	channel, err = GetChannel("DEFAULT", "QY-CASE-MODEL", 0, "")
+	channel, err = GetChannel("DEFAULT", "QY-CASE-MODEL", 0, nil)
 	require.NoError(t, err)
 	assert.Nil(t, channel, "分组名只差大小写时不得路由:VIP 与 vip 不是同一个池子")
 }

@@ -18,19 +18,21 @@ For commercial licensing, please contact support@quantumnous.com
 */
 /**
  * 佣金余额总览 DTO。对应 `qianye/modules/commission/api_admin_balance.go`
- * （D-15 从 git HEAD 恢复：`withdrawn_quota` 改名 `credited_quota`，`available_fiat`
- * 随法币折算一起删除）。
+ * （D-16：账本改记**星屑**）。
  *
- * ── 四个额度列的关系 ──
- * 它们不是四个独立的数字，受同一条恒等式约束：
+ * ── 三个星屑列的关系 ──
+ * 它们不是三个独立的数字，受同一条恒等式约束：
  *
- *   可用 + 入账中 + 已入账 = 累计已结算 − 累计冲正
+ *   可用 + 已入账 = 累计已结算 − 累计冲正
  *
- * `derived_available_quota` 与 `ledger_drift` 由**后端**算好下发，前端一个字都
+ * `derived_available` 与 `ledger_drift` 由**后端**算好下发，前端一个字都
  * 不重算：这条恒等式在后端已经被结算 / 冲正 / 自动入账三条路径各实现了一遍，
  * 让前端再实现第四遍就是在等它漂移。
  *
- * 所有额度都以整数记账、按站内展示单位印（`QyAmountText`）—— 这张表上没有法币。
+ * D-15 时中间还有一列「入账中(frozen)」：佣金记星辉、入账跨库，存在"已开单、
+ * 主库还没落定"的中间态。D-16 入账是扩展库里的本地事务，那一列不再存在。
+ *
+ * 所有金额都是**星屑整数**，走 `QySdAmount` —— 这张表上没有法币、也没有额度。
  */
 export type QyCommissionBalance = {
   user_id: number
@@ -39,17 +41,15 @@ export type QyCommissionBalance = {
   /** 假值表示主库里查不到这个 id（账号已删，或这一次主库读失败）。 */
   user_resolved: boolean
 
-  /** 已成熟、等自动入账攒够门槛的部分。 */
-  available_quota: number
-  /** 已被在途入账单占用（入账行 pending、资金单未落定）的部分。 */
-  frozen_quota: number
-  /** 累计已自动记入星辉的部分。D-14 之前叫 `withdrawn_quota`。 */
-  credited_quota: number
-  total_earned_quota: number
-  total_clawback_quota: number
+  /** 已成熟、等自动入账攒够门槛的星屑。 */
+  available: number
+  /** 累计已自动记入星屑余额的部分。 */
+  credited: number
+  total_earned: number
+  total_clawback: number
 
-  /** 已结算 − 已冲正 − 入账中 − 已入账，即恒等式给出的可用。 */
-  derived_available_quota: number
+  /** 已结算 − 已冲正 − 已入账，即恒等式给出的可用。 */
+  derived_available: number
   /** 实际可用 − 派生可用。非 0 = 账本漂移，改钱之前必须先查清楚。 */
   ledger_drift: number
 
@@ -65,8 +65,8 @@ export type QyCommissionBalance = {
 
 /** 列表页的合计，跟着当前筛选条件走。 */
 export type QyCommissionBalanceTotals = {
-  available_quota: number
-  credited_quota: number
+  available: number
+  credited: number
 }
 
 export type QyCommissionBalancePage = {
@@ -80,13 +80,13 @@ export type QyCommissionBalancePage = {
 /**
  * 手工增减佣金的返回。
  *
- * `delta_quota` 是**实际落账**的那个数：幂等重放时是 0，`created` 同时为假。
+ * `delta` 是**实际落账**的那个数：幂等重放时是 0，`created` 同时为假。
  * `reclaimable_ceiling` 是后端在持锁事务里算出来的扣减上限，回显给前端用于
  * 校准提示——弹窗里那个上限来自列表快照，可能已经过时。
  */
 export type QyAdjustCommissionResult = {
   user_id: number
-  delta_quota: number
+  delta: number
   created: boolean
   accrual_no: string
   reclaimable_ceiling: number
@@ -112,7 +112,7 @@ export type QyBalanceSort = (typeof QY_BALANCE_SORTS)[number]
 
 /**
  * 排序项 → 文案键。走查表而不是模板串：`available` 那一项的旧文案写着「可提现」，
- * 星辉口径下它是「可用（待入账）」，而旧键留在主包里不能改，只能换键。
+ * 现在的口径是「可用（待入账）」，而旧键留在主包里不能改，只能换键。
  */
 export const QY_BALANCE_SORT_LABEL_KEY: Readonly<
   Record<QyBalanceSort, string>

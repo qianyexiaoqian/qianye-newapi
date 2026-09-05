@@ -128,7 +128,6 @@ func RequestWaffoAmount(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": fmt.Sprintf("充值数量不能小于 %d", waffoMinTopup)})
 		return
 	}
-
 	id := c.GetInt("id")
 	// 询价与下单同闸:上界 + 钱包容量。
 	if rejectInvalidTopUpQuota(c, id, req.Amount) {

@@ -43,6 +43,7 @@ import (
 var clientIPCallSiteExemptions = map[string]string{
 	"common/client_ip.go":                          "全站唯一的实现本身;文件里出现的 c.ClientIP() 全在注释里,讲的正是「为什么不用它」。",
 	"common/client_ip_single_source_guard_test.go": "这份守卫自己。",
+	"router/plugin_router_test.go":                 "上游用例,断言的正是「插件内层 gin.Engine 继承了外层的 TrustedProxies 配置」——它要看的就是 gin 自己那套解析结果,换成 common.ClientIP 就测不到那件事了。",
 }
 
 // clientIPGuardSkipDirs 是遍历时跳过的目录。

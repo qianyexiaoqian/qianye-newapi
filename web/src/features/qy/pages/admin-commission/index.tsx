@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Info, Pencil, Plus, RefreshCw, ScrollText, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -34,24 +34,16 @@ import {
 } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { useSystemConfigStore } from '@/stores/system-config-store'
 
-import { QyAmountText } from '../../components/qy-amount-text'
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
+import { QySdAmount } from '../../components/qy-sd-amount'
 import { QySectionPageLayout } from '../../components/qy-section-page-layout'
-import { QyUsdScaleNotice } from '../../components/qy-usd-scale-notice'
+import { useStardustName } from '../../hooks/use-stardust-name'
 import { qyErrorMessage } from '../../lib/api'
 import { qyArray } from '../../lib/array'
 import { qyTabTarget } from '../../lib/pages'
 import { qyKeys } from '../../lib/query-keys'
-import {
-  qyFormatQuotaAsUsd,
-  qyQuotaDraftText,
-  qyQuotaDraftValue,
-  qyUsdScale,
-  type QyUsdScale,
-} from '../../lib/quota-usd'
 import {
   qyAdminCommissionConfigQuery,
   qyAdminCommissionHealthQuery,
@@ -70,6 +62,7 @@ import type {
   QyCommissionAdminConfig,
   QyCommissionEffective,
   QyCommissionGroupRate,
+  QyCommissionRateOverlap,
   QyDailySettleRun,
 } from './types'
 
@@ -133,13 +126,6 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
 
-  // 金额字段按 USD 录入，理由与划转门槛那一页同源：运营要填「满 1 美元才结算」
-  // 不该去数 500000 有几个零。存储一个字没动，仍是额度整数。
-  const quotaPerUnit = useSystemConfigStore(
-    (state) => state.config.currency.quotaPerUnit
-  )
-  const scale = useMemo(() => qyUsdScale(quotaPerUnit), [quotaPerUnit])
-
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [confirmOpen, setConfirmOpen] = useState(false)
 
@@ -149,13 +135,10 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
     const next: Record<string, string> = {}
     for (const key of qyArray(config.editable_keys)) {
       const raw = config.effective[key as keyof QyCommissionEffective] ?? ''
-      next[key] =
-        typeof raw === 'number'
-          ? qyQuotaDraftText(raw, scale, isUsdField(key, scale))
-          : String(raw)
+      next[key] = String(raw)
     }
     setDraft(next)
-  }, [config, scale])
+  }, [config])
 
   const saveMutation = useMutation({
     mutationFn: qyUpdateCommissionConfig,
@@ -180,15 +163,13 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
     config,
     draft,
     percentKeys,
-    nullablePercentKeys,
-    scale
+    nullablePercentKeys
   )
   const invalidKey = findInvalid(
     config,
     draft,
     percentKeys,
-    nullablePercentKeys,
-    scale
+    nullablePercentKeys
   )
 
   return (
@@ -199,7 +180,6 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
           <CardDescription>{t('qy_cm_editable_desc')}</CardDescription>
         </CardHeader>
         <CardContent className='space-y-4'>
-          <QyUsdScaleNotice scale={scale} />
           {qyArray(config.editable_keys).map((key) => (
             <ConfigField
               key={key}
@@ -216,7 +196,6 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
                     })
                   : null
               }
-              scale={scale}
               overridden={config.overrides[key] != null}
               onChange={(value) =>
                 setDraft((prev) => ({ ...prev, [key]: value }))
@@ -264,7 +243,6 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
                     change.key,
                     change.from,
                     percentKeys,
-                    scale,
                     followsTopupLabel
                   )}{' '}
                   →{' '}
@@ -273,7 +251,6 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
                       change.key,
                       change.to,
                       percentKeys,
-                      scale,
                       followsTopupLabel
                     )}
                   </strong>
@@ -302,17 +279,21 @@ function ConfigField(props: {
   nullable?: boolean
   /** 留空时在提示里补的那一句（"跟随充值档 10%"）。 */
   emptyMeansText?: string | null
-  scale: QyUsdScale
   overridden: boolean
   onChange: (value: string) => void
 }) {
   const { t } = useTranslation()
+  const stardustUnit = useStardustName()
   const meta = qyCommissionFieldMeta(props.fieldKey)
   const label = meta == null ? props.fieldKey : t(meta.labelKey)
-  const asUsd = isUsdField(props.fieldKey, props.scale)
   const parsed = props.isPercent
     ? null
-    : parseIntegerDraft(props.fieldKey, props.value, props.scale)
+    : parseIntegerDraft(props.fieldKey, props.value)
+  // 输入框右侧的单位。星屑那一族印运营配的单位名（改过就跟着改），比例印 %，
+  // 天数 / 周期这类纯计数什么都不印。
+  let unitLabel: string | null = null
+  if (meta?.unit === 'stardust') unitLabel = stardustUnit
+  else if (props.isPercent) unitLabel = '%'
   const emptyDraft = props.value.trim() === ''
   const invalid = props.isPercent
     ? !(props.nullable === true
@@ -339,14 +320,9 @@ function ConfigField(props: {
           aria-invalid={invalid}
           onChange={(event) => props.onChange(event.target.value)}
         />
-        {props.isPercent && (
+        {unitLabel != null && (
           <span className='text-muted-foreground text-sm' aria-hidden='true'>
-            %
-          </span>
-        )}
-        {asUsd && (
-          <span className='text-muted-foreground text-sm' aria-hidden='true'>
-            USD
+            {unitLabel}
           </span>
         )}
       </div>
@@ -356,18 +332,6 @@ function ConfigField(props: {
             "那这一档实际返几个点"，而这正是运营点进来要看的那个数。 */}
         {isEmpty && props.emptyMeansText != null && (
           <> {props.emptyMeansText}</>
-        )}
-        {/* 存进库的仍然是额度整数。显示出来，运营翻审计与后端日志时才对得上号。 */}
-        {asUsd && parsed != null && (
-          <> {t('qy_cfg_usd_equals_quota', { quota: parsed })}</>
-        )}
-        {asUsd && (
-          <>
-            {' '}
-            {t('qy_cfg_usd_step_hint', {
-              step: qyFormatQuotaAsUsd(1, props.scale),
-            })}
-          </>
         )}
       </p>
     </div>
@@ -844,29 +808,20 @@ function groupEffectiveRedemptionPercent(
 }
 
 /**
- * 该字段是否按 USD 录入。
- *
- * 只有金额字段（`unit === 'quota'`）才换算；成熟期天数、入账周期这些不是钱。
- * 换算率无法无损表示时全部退回额度单位，理由见 `lib/quota-usd.ts` 的文件头。
- */
-function isUsdField(key: string, scale: QyUsdScale): boolean {
-  return scale.usable && qyCommissionFieldMeta(key)?.unit === 'quota'
-}
-
-/**
  * 草稿文本 → 存储用的整数，并按字段元数据的区间卡一次。非法返回 `null`。
  *
- * 金额字段走 USD 通道：`qyQuotaDraftValue` 全程整数运算，除不尽整数额度或
- * 小数位超限一律判非法而不是四舍五入 —— 替运营把一个金额悄悄改掉，比让他
- * 看见一行红字糟糕得多。
+ * 只收非负整数字面量：星屑没有小数，一个带小数点的输入是运营填错了，判非法
+ * 让他看见红字，比替他四舍五入成另一个金额好得多。
+ *
+ * D-16 之前这里还有一条 USD 通道：金额字段那时是**额度**（500000 = $1），运营
+ * 不该去数零，所以按美元录入再换算回额度。星屑本身就是人直接读的整数，那一层
+ * 连同换算率可用性判定一起没了。
  */
-function parseIntegerDraft(
-  key: string,
-  raw: string,
-  scale: QyUsdScale
-): number | null {
-  const value = qyQuotaDraftValue(raw, scale, isUsdField(key, scale))
-  if (value == null) return null
+function parseIntegerDraft(key: string, raw: string): number | null {
+  const s = raw.trim()
+  if (!/^\d+$/.test(s)) return null
+  const value = Number(s)
+  if (!Number.isSafeInteger(value)) return null
   const meta = qyCommissionFieldMeta(key)
   if (value < (meta?.min ?? 0)) return null
   if (meta != null && value > meta.max) return null
@@ -879,16 +834,14 @@ function parseIntegerDraft(
  * 百分比按规范化后的字面量比较（"10.250" 与 "10.25" 是同一个费率），
  * 不转成 Number 再比 —— 那会让 10.25 与 10.249999999999998 判成不同。
  *
- * 金额字段比较的是**额度整数**，不是界面那串 USD：草稿文本由
- * `qyQuotaDraftText` 生成、由 `qyQuotaDraftValue` 读回，往返无损，所以运营
- * 什么都不改直接保存时这里一条改动都挑不出来。
+ * 金额字段比较的是整数字面量，界面上填的就是存进去的那个数，往返无损，
+ * 所以运营什么都不改直接保存时这里一条改动都挑不出来。
  */
 function collectChanges(
   config: QyCommissionAdminConfig,
   draft: Record<string, string>,
   percentKeys: Set<string>,
-  nullablePercentKeys: Set<string>,
-  scale: QyUsdScale
+  nullablePercentKeys: Set<string>
 ): QyConfigChange[] {
   const out: QyConfigChange[] = []
   for (const [key, raw] of Object.entries(draft)) {
@@ -910,7 +863,7 @@ function collectChanges(
       }
       continue
     }
-    const parsed = parseIntegerDraft(key, raw, scale)
+    const parsed = parseIntegerDraft(key, raw)
     if (parsed == null) continue
     const next = String(parsed)
     if (next !== current) out.push({ key, from: current, to: next })
@@ -922,8 +875,7 @@ function findInvalid(
   config: QyCommissionAdminConfig,
   draft: Record<string, string>,
   percentKeys: Set<string>,
-  nullablePercentKeys: Set<string>,
-  scale: QyUsdScale
+  nullablePercentKeys: Set<string>
 ): string | null {
   // `config` 仍然进参：后端多下发一个前端不认识的键时，它的值就是判据 ——
   // 这里不认识的键按"原样字面量"处理，只要草稿等于当前值就不算非法。
@@ -942,13 +894,13 @@ function findInvalid(
       if (raw.trim() !== current) return key
       continue
     }
-    if (parseIntegerDraft(key, raw, scale) == null) return key
+    if (parseIntegerDraft(key, raw) == null) return key
   }
   return null
 }
 
 /**
- * 复述一处改动的值。`value` 是存储用的字面量（百分比字符串或额度整数）。
+ * 复述一处改动的值。`value` 是存储用的字面量（百分比字符串或星屑整数）。
  *
  * 空的百分比要复述成 `emptyLabel`（"跟随充值档 10%"）而不是一个孤零零的
  * `%`：确认弹窗是运营在动费率之前看到的最后一屏，"3% → %" 读不出来这一次
@@ -958,22 +910,24 @@ function formatChangeValue(
   key: string,
   value: string,
   percentKeys: Set<string>,
-  scale: QyUsdScale,
   emptyLabel: string
 ): string {
   if (percentKeys.has(key)) {
     return value.trim() === '' ? emptyLabel : `${value}%`
   }
-  if (!isUsdField(key, scale)) return value
-  return qyFormatQuotaAsUsd(Number(value), scale)
+  return value
 }
 
 /**
  * 结算与入账调度。
  *
- * 两段各答一个问题：**今天这一跑成了没有**（一日一结算，跑挂了当天剩下所有人的
- * 佣金都要等到明天）与**自动入账跑得怎么样**（够门槛的人数、卡在 held 的单数）。
- * 后者是 D-15 新加的：结算之后到星辉那一跳由它完成，held 非 0 就该去资金对账页。
+ * 三段各答一个问题：
+ *
+ *   · **今天这一跑成了没有**（一日一结算，跑挂了当天剩下所有人的佣金都要等到明天）
+ *   · **自动入账累计发了多少**（D-16 起入账是本地事务，没有在途、没有挂起，
+ *     也就没有要人裁决的单子）
+ *   · **是不是有两条线在给同一笔基数各返一次**（`rate_overlap`）——
+ *     这一段最容易被忽略，因为两条线各自的配置页都显示正常
  */
 function DailySettleCard() {
   const { t } = useTranslation()
@@ -981,6 +935,7 @@ function DailySettleCard() {
   const query = useQuery(qyAdminCommissionHealthQuery())
   const snapshot = query.data?.daily_settle
   const credit = query.data?.credit
+  const overlap = query.data?.rate_overlap
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   const rerunMutation = useMutation({
@@ -1045,7 +1000,7 @@ function DailySettleCard() {
         </div>
 
         {/* 自动入账那一段。取不到（后端暂不下发）就说取不到，不画一排 0：
-            0 个 held 与"不知道有几个 held"对运营是两个完全不同的结论。 */}
+            “0 笔”与“不知道有几笔”对运营是两个完全不同的结论。 */}
         <div className='border-border space-y-2 rounded border p-3 text-sm'>
           <p className='font-medium'>{t('qy_cm_credit_title')}</p>
           <p className='text-muted-foreground text-xs'>
@@ -1054,22 +1009,20 @@ function DailySettleCard() {
           {credit == null ? (
             <p className='text-muted-foreground'>{t('qy_cm_credit_none')}</p>
           ) : (
-            <div className='grid gap-2 sm:grid-cols-3'>
+            <div className='grid gap-2 sm:grid-cols-2'>
               <QyDailySettleField
-                label={t('qy_cm_credit_pending')}
-                value={String(credit.pending)}
+                label={t('qy_cm_credit_rows')}
+                value={String(credit.credited_rows)}
               />
               <QyDailySettleField
-                label={t('qy_cm_credit_held')}
-                value={String(credit.held)}
-              />
-              <QyDailySettleField
-                label={t('qy_cm_credit_held_quota')}
-                value={<QyAmountText quota={credit.held_quota} />}
+                label={t('qy_cm_credit_total')}
+                value={<QySdAmount amount={credit.credited_stardust} />}
               />
             </div>
           )}
         </div>
+
+        <RateOverlapNotice overlap={overlap} />
       </CardContent>
 
       <QyConfirmDialog
@@ -1085,6 +1038,45 @@ function DailySettleCard() {
         }}
       />
     </Card>
+  )
+}
+
+/**
+ * 「两条线在给同一笔基数各返一次」的告警。
+ *
+ * 它刻意画成 destructive 而不是一句灰字提示：这不是一条可以扫一眼跳过的说明，
+ * 而是"平台现在每一笔下线消费都在付双倍"。但它也刻意**不提供任何一键修复** ——
+ * 留哪一条线是运营的决定（即时小额 vs 延迟大额，两条并存也可能是故意的），
+ * 代码替他挑一条清零，才是真正会造成资损的那种"帮忙"。
+ *
+ * 后端不下发这一段（旧版本）时整块不渲染：编一个"没有重叠"出来，比不说更糟。
+ */
+function RateOverlapNotice(props: { overlap?: QyCommissionRateOverlap }) {
+  const { t } = useTranslation()
+  const overlap = props.overlap
+  if (overlap == null || overlap.ok || overlap.sources.length === 0) return null
+  return (
+    <Alert variant='destructive'>
+      <Info />
+      <AlertTitle>{t('qy_cm_overlap_title')}</AlertTitle>
+      <AlertDescription className='space-y-1'>
+        <p>{t('qy_cm_overlap_desc')}</p>
+        <ul className='space-y-0.5'>
+          {overlap.sources.map((row) => (
+            <li key={row.source} className='font-mono text-xs'>
+              {t(`qy_cm_overlap_src_${row.source}`, {
+                defaultValue: row.source,
+              })}
+              {': '}
+              {t('qy_cm_overlap_pair', {
+                commission: row.commission_rate_bps / 100,
+                invite: row.invite_rate_bps / 100,
+              })}
+            </li>
+          ))}
+        </ul>
+      </AlertDescription>
+    </Alert>
   )
 }
 

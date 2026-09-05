@@ -17,16 +17,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /*
- * 「我的推广」在**佣金开着**时的形状（D-15）。
+ * 「我的推广」在**佣金开着**时的形状（D-16：佣金也记星屑）。
  *
- * # 这里守的三件事
+ * # 这里守的四件事
  *
- *  1. 概览一屏同时有**星辉三格**（待结算 / 可用（待入账）/ 已入账）与**星屑五种
- *     来源的分布**：两条线并行是项目方追问后的拍板，少一半就是 D-14 或 D-13 的
- *     形状回来了。三格按额度口径印（`$…`），分布按星屑口径印（`… 星屑`）。
- *  2. 「佣金明细」标签：逐笔那一张打 `/commission/records`，按来源筛选把
+ *  1. 概览一屏同时有**佣金三格**（待结算 / 可用（待入账）/ 已入账）与**邀请返五种
+ *     来源的分布**：两条线并行是项目方拍板，少一半就是 D-14 或 D-13 的形状回来了。
+ *  2. 两条线**都按星屑口径印**（`… 星屑`）。D-15 时上半是星辉（`$…`）、下半是星屑，
+ *     所以这里曾逐格断言两种单位；D-16 之后同屏只剩一种钱，而**唯二**仍按额度印的
+ *     是消费基数（昨日下线消费 / 今日待返基数）—— 那是分母不是返给谁的钱。
+ *     这一条最容易回归成"两边都印成 $"或"基数也被当成星屑"，所以正反都断言。
+ *  3. 「佣金明细」标签：逐笔那一张打 `/commission/records`，按来源筛选把
  *     `source_type` 带进请求并回到第一页；入账记录那一张打 `/commission/credits`。
- *  3. 整屏（概览 + 佣金明细两张标签）不出现「提现 / 打款 / 现金 / 元」。
+ *  4. 整屏（概览 + 佣金明细两张标签）不出现「提现 / 打款 / 现金 / 元」。
  *
  * 文案来自 `zh.json` + `pending-commission.zh.json`（见 `__tests__/commission-screen.ts`）。
  */
@@ -71,19 +74,20 @@ const INVITE_SUMMARY = {
   day_offset_minutes: 480,
 }
 
+// 全部是**星屑**（D-16）。刻意用小整数：星屑是人直接读的刻度，用七位数只会
+// 让每条断言都要先心算一次"这是几美元"。
 const COMMISSION_SUMMARY = {
   invitee_count: 3,
-  available_quota: 2_500_000,
-  frozen_quota: 0,
-  credited_quota: 10_000_000,
-  total_earned_quota: 13_000_000,
-  total_clawback_quota: 0,
+  available: 5,
+  credited: 20,
+  total_earned: 26,
+  total_clawback: 0,
   unsettled_amount: '0.4700000000',
-  pending_mature_quota: '500000.0000000000',
+  pending_mature: '1.0000000000',
   debt_blocked: false,
   last_settled_at: 1_787_000_000,
   next_credit_at: 1_787_100_000,
-  min_credit_quota: 500_000,
+  min_credit_stardust: 1,
   rate: {
     topup_bps: 1000,
     consume_bps: 500,
@@ -98,7 +102,7 @@ const COMMISSION_SUMMARY = {
   pending_earliest_mature_at: 1_787_200_000,
   policy: {
     holding_days: 7,
-    min_settle_quota: 500_000,
+    min_settle_stardust: 1,
     settle_interval_seconds: 300,
     settle_daily: true,
     payout_day_offset: 8,
@@ -115,10 +119,12 @@ const RECORDS = [
     source_ref: '***9',
     invitee_ref: 'u-42',
     invitee_masked_name: 'zh***ng',
+    // 3,700,000 额度 × 5% / 500,000 = 0.37 星屑。基数与佣金两个单位同屏。
     base_quota: 3_700_000,
     rate_bps: 500,
-    gross_amount: '185000.0000000000',
-    settled_amount: '185000.0000000000',
+    quota_per_unit: 500_000,
+    gross_amount: '0.3700000000',
+    settled_amount: '0.3700000000',
     status: 'settled',
     mature_at: 1_787_200_000,
     bucket_date: '20260903',
@@ -132,7 +138,8 @@ const RECORDS = [
     invitee_masked_name: 'li***i',
     base_quota: 5_000_000,
     rate_bps: 1000,
-    gross_amount: '500000.0000000000',
+    quota_per_unit: 500_000,
+    gross_amount: '1.0000000000',
     settled_amount: '0.0000000000',
     status: 'accrued',
     mature_at: 1_787_300_000,
@@ -141,11 +148,13 @@ const RECORDS = [
   },
 ]
 
+// 两笔都是 done：D-16 之后入账是扩展库里的一个本地事务，要么整笔落、要么整笔
+// 回滚，不会留下 pending / failed / held 那三种跨库才有的中间态。
 const CREDITS = [
   {
     credit_no: 'CC-2001',
-    quota: 5_000_000,
-    fund_order_no: 'CC20260904001',
+    amount: 10,
+    ledger_no: 'SD20260904-1',
     status: 'done',
     created_at: 1_787_000_000,
     finished_at: 1_787_000_050,
@@ -153,11 +162,11 @@ const CREDITS = [
   },
   {
     credit_no: 'CC-2002',
-    quota: 5_000_000,
-    fund_order_no: 'CC20260905001',
-    status: 'held',
+    amount: 10,
+    ledger_no: 'SD20260905-1',
+    status: 'done',
     created_at: 1_787_090_000,
-    finished_at: 0,
+    finished_at: 1_787_090_050,
     remark: '',
   },
 ]
@@ -226,8 +235,8 @@ function assertNoForbiddenWords(text: string) {
   }
 }
 
-describe('概览：星辉三格与星屑分布同屏', () => {
-  test('一进页面打两条 summary；三格与五种 kind 的分布都在，各印各的单位', async () => {
+describe('概览：佣金三格与邀请返分布同屏', () => {
+  test('一进页面打两条 summary；三格与五种 kind 的分布都在，全部按星屑印', async () => {
     const screen = await mountHub()
 
     assert.deepEqual(qyUrls(screen.sent), [
@@ -236,7 +245,7 @@ describe('概览：星辉三格与星屑分布同屏', () => {
     ])
 
     const text = screen.text()
-    // 星辉三格：标签与额度口径的数字。
+    // 佣金三格：标签与星屑口径的数字。
     for (const key of [
       'qy_aff_pending_settle',
       'qy_aff_available_credit',
@@ -244,11 +253,14 @@ describe('概览：星辉三格与星屑分布同屏', () => {
     ]) {
       assert.ok(text.includes(zh[key]), `缺三格之一「${zh[key]}」`)
     }
-    // 可用 2,500,000 额度 = $5；已入账 10,000,000 = $20。绝不能印成星屑。
-    assert.ok(text.includes('$5'), `可用没按额度口径印：${text}`)
-    assert.ok(text.includes('$20'), `已入账没按额度口径印：${text}`)
-    assert.ok(!text.includes('2,500,000 星屑'), '可用被当成星屑渲染了')
-    // 下次入账那句话带着门槛（500,000 额度 = $1）。
+    assert.ok(text.includes('5 星屑'), `可用没按星屑口径印：${text}`)
+    assert.ok(text.includes('20 星屑'), `已入账没按星屑口径印：${text}`)
+    // 反面：佣金那三格一旦回到额度口径，就是差 quota_per_unit 倍（默认 50 万）。
+    assert.ok(!text.includes('$5'), '可用被按额度口径印了')
+    assert.ok(!text.includes('$20'), '已入账被按额度口径印了')
+    // 消费基数仍然是额度：3,700,000 = $7.4。它是分母，不是返给谁的钱。
+    assert.ok(text.includes('$7.4'), `昨日下线消费基数没按额度口径印：${text}`)
+    assert.ok(!text.includes('3,700,000 星屑'), '消费基数被当成星屑渲染了')
     assert.ok(
       text.includes(zh.qy_aff_next_credit_value.slice(0, 5)),
       '下次入账那句话没渲染'
@@ -271,7 +283,7 @@ describe('概览：星辉三格与星屑分布同屏', () => {
     )
     assert.ok(text.includes('1,234 星屑'), '星屑总数没带单位名渲染')
 
-    // 两个区段的顺序：星辉在上、星屑在下。
+    // 两个区段的顺序：佣金在上、邀请返在下。
     const sections = [
       ...document.body.querySelectorAll<HTMLElement>('[data-section]'),
     ].map((node) => node.dataset.section)
@@ -299,7 +311,7 @@ describe('概览：星辉三格与星屑分布同屏', () => {
 })
 
 describe('佣金明细标签', () => {
-  test('切到佣金明细：只发 /commission/records，hash 写进地址栏，金额按额度口径印', async () => {
+  test('切到佣金明细：只发 /commission/records，hash 写进地址栏，基数与佣金各印各的单位', async () => {
     const screen = await mountHub()
     screen.sent.length = 0
 
@@ -324,8 +336,11 @@ describe('佣金明细标签', () => {
     const text = screen.text()
     assert.ok(text.includes('zh***ng'), '脱敏下线名没渲染')
     assert.ok(text.includes('li***i'), '第二行没渲染')
-    // gross 185,000 额度 = $0.37。
-    assert.ok(text.includes('$0.37'), `佣金金额没按额度口径印：${text}`)
+    // 计佣基数是额度（$7.40），佣金是星屑（0.37）。同一行两个单位，
+    // 正是用户唯一能自己验算的那条式子，两边都要断言。
+    assert.ok(text.includes('$7.4'), `计佣基数没按额度口径印：${text}`)
+    assert.ok(text.includes('0.37 星屑'), `佣金金额没按星屑口径印：${text}`)
+    assert.ok(!text.includes('$0.37'), '佣金金额被按额度口径印了')
     assertNoForbiddenWords(text)
   })
 
@@ -346,7 +361,7 @@ describe('佣金明细标签', () => {
     assert.ok(!text.includes('zh***ng'), '筛掉的那一种还在列表里')
   })
 
-  test('入账记录次级标签：打 /commission/credits，held 与 done 分成两种说法', async () => {
+  test('入账记录次级标签：打 /commission/credits，金额按星屑印且带星屑流水号', async () => {
     const screen = await mountHub(qyTabHash('/qy/commission-records'))
     screen.sent.length = 0
 
@@ -360,8 +375,10 @@ describe('佣金明细标签', () => {
     const text = screen.text()
     assert.ok(text.includes('CC-2001'))
     assert.ok(text.includes(zh.qy_aff_credit_st_done), 'done 没翻译')
-    assert.ok(text.includes(zh.qy_aff_credit_st_held), 'held 没翻译')
-    assert.ok(text.includes('+$10'), '入账金额没带 + 号按额度口径印')
+    assert.ok(text.includes('+10 星屑'), '入账金额没带 + 号按星屑口径印')
+    // 星屑流水号必须在：两张账本之间只有这一条链，缺了它"这 10 星屑是哪来的"
+    // 就只能靠时间戳猜。
+    assert.ok(text.includes('SD20260904-1'), '入账行没带星屑流水号')
     assertNoForbiddenWords(text)
   })
 })

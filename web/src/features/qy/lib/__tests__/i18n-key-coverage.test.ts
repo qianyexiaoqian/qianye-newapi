@@ -269,18 +269,23 @@ const QY_DYNAMIC_KEYS = [
   // 下线日消费的排序键随后端字段改名（commission_base_quota → invite_base_quota），
   // 走 `t(\`qy_dc_sort_${key}\`)`。
   'qy_dc_sort_invite_base_quota',
-  // 星辉佣金（D-15）。这几组全走查表或模板串，字面量扫描器看不见：
-  //   · 自动入账单的四种状态 → 徽章（`commission-records/lib/credit-status.ts`）；
+  // 推广佣金。这几组全走查表或模板串，字面量扫描器看不见：
+  //   · 自动入账单的状态 → 徽章（`commission-records/lib/credit-status.ts`）。
+  //     D-16 之后只剩 `done`：入账是本地事务，pending / failed / held 那三态
+  //     描述的是跨库两阶段的中间与失败形状，机制退役、键一并删除；
   //   · 佣金用户 / 余额对账的排序项（`QY_*_SORT_LABEL_KEY` 查表）；
   //   · 佣金用户的三个筛选开关（`t(\`qy_cu_filter_${flag}\`)`）；
-  //   · 资金单 kind 的新成员 `commission_credit`（`t(\`qy_cfg_fund_kind_${kind}\`)`）；
-  //   · 计佣行的来源与状态（`t(\`qy_aff_src_${…}\`)` / `t(\`qy_aff_st_${…}\`)`）。
-  // 新键在 `pending-commission.{en,zh}.json` 片段里，主编排合并进主包之前本条对
-  // 它们是红的（预期）。
-  'qy_aff_credit_st_pending',
+  //   · 资金单 kind 的历史成员 `commission_credit`（`t(\`qy_cfg_fund_kind_${kind}\`)`，
+  //     不再产生新单，但历史单据仍要在对账台上读得出来）；
+  //   · 计佣行的来源与状态（`t(\`qy_aff_src_${…}\`)` / `t(\`qy_aff_st_${…}\`)`）；
+  //   · 重叠告警逐档的来源名（`t(\`qy_cm_overlap_src_${source}\`)`），清单对齐
+  //     后端 `api_admin.go` 的 rateOverlap 三行。
   'qy_aff_credit_st_done',
-  'qy_aff_credit_st_failed',
-  'qy_aff_credit_st_held',
+  'qy_cm_overlap_src_topup',
+  'qy_cm_overlap_src_consume',
+  'qy_cm_overlap_src_redemption',
+  // 佣金自动入账在星屑流水里的 kind（`t(qySdKindKey(kind))`）。
+  'qy_sd_kind_commission_credit',
   'qy_cb_sort_available_xh',
   'qy_cb_sort_credited',
   'qy_cb_sort_earned',

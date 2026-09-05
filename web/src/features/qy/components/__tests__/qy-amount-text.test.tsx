@@ -21,11 +21,10 @@ For commercial licensing, please contact support@quantumnous.com
  *
  * # 这条不变量为什么值得单独钉
  *
- * `gross_amount` / `settled_amount` / `unsettled_amount` 与 `available_quota`
- * 是同一个单位：`gross = base_quota × 费率`（`accrual.go` 的 `calcGross`），
- * 结算把 `floor(carry + Δgross)` 直接加进 `available_quota`
- * （`settle.go` 的 `computeSettlement`）。差别只有"后端以字符串下发以免 JS
- * 丢位"这一件事。
+ * 判据是"同一个数不该因为它是整数还是 decimal 字符串而印成两个样子"。
+ * 佣金账本自 D-16 起改记星屑、由 `QySdAmount` / `QySdDecimal` 承担这条不变量，
+ * 但本组件在**额度**那一族里仍然承担它：`base_quota`（下线消费基数）与渠道
+ * 已用额度、划转金额都可能以整数或字符串两种形态到达同一列。
  *
  * 只要展示层把这两条路走岔（一条走换算件、一条 `String()` 一下就印出来），
  * 界面上就会出现 `$0.27` 与 `1370.0000000000` 并排，而它们能相加。所以这里

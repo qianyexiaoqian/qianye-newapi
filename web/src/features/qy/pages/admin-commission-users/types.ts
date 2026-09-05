@@ -54,10 +54,10 @@ export type QyCommissionUser = QyCommissionBalance & {
   /** 「**他作为下线**的这条关系被停止计返了」—— 不是"这个账号被封了"。 */
   inviter_blocked: boolean
   /**
-   * **当前这个上线从这个人身上**已经挣到的佣金额度。`inviter_id === 0` 时恒为 0。
-   * 与 `total_earned_quota`（**他**从自己所有下线身上挣的）是反方向的两个数。
+   * **当前这个上线从这个人身上**已经挣到的佣金(星屑)。`inviter_id === 0` 时恒为 0。
+   * 与 `total_earned`（**他**从自己所有下线身上挣的）是反方向的两个数。
    */
-  inviter_commission_quota: number
+  inviter_commission: number
 
   // ── 下线 ──
   /** 他名下已被停止计返、不再产生新佣金的下线条数。 */
@@ -73,8 +73,8 @@ export type QyCommissionUser = QyCommissionBalance & {
 /** 列表页的合计，跟着当前筛选条件走（逐页心算是不可行的）。 */
 export type QyCommissionUserTotals = {
   user_count: number
-  available_quota: number
-  credited_quota: number
+  available: number
+  credited: number
   invitee_count: number
 }
 
@@ -104,7 +104,7 @@ export type QyCommissionUserSort = (typeof QY_COMMISSION_USER_SORTS)[number]
 
 /**
  * 排序项 → 文案键。走查表而不是模板串：`available` 那一项的旧文案写着「按可提现」，
- * 星辉口径下它是「按可用」，而旧键留在主包里不能改，只能换键。
+ * 现在的口径是「按可用」，而旧键留在主包里不能改，只能换键。
  */
 export const QY_COMMISSION_USER_SORT_LABEL_KEY: Readonly<
   Record<QyCommissionUserSort, string>
@@ -120,8 +120,8 @@ export const QY_COMMISSION_USER_SORT_LABEL_KEY: Readonly<
  * 行内筛选。三个都是**布尔开关**而不是下拉：它们互相独立、可以同时成立。
  *
  * 键名与后端 query 参数逐字一致，`api.ts` 直接把它们摊平进 query。
- * `has_balance` 的后端口径是「账上还挂着钱」（可用 / 入账中 / 未结算余数任一非零），
- * **不含已入账** —— 那笔钱已经进星辉了。
+ * `has_balance` 的后端口径是「账上还挂着钱」（可用 / 未结算余数任一非零），
+ * **不含已入账** —— 那笔钱已经发成星屑、进了对方的星屑余额。
  */
 export const QY_COMMISSION_USER_FILTERS = [
   'has_invitees',
@@ -134,15 +134,21 @@ export type QyCommissionUserFilter = (typeof QY_COMMISSION_USER_FILTERS)[number]
 /**
  * `GET /admin/commission/credits` 的一行：全站的自动入账记录。
  *
- * 与用户端 `QyCommissionCredit` 同形，多一个 `user_id`（用户端不需要：那是"我"）。
- * `held` 的单子在「资金对账」页按 `fund_order_no` 裁决，这里只看、不动。
+ * 与用户端 `QyCommissionCredit` 同形，多两个字段（`user_id` / `username`；
+ * 用户端不需要：那是"我"）。
+ *
+ * D-16 之后这里没有要裁决的单子了：入账是扩展库里的一个本地事务，要么成要么
+ * 整笔回滚，不会留下"结局不明"的行。`ledger_no` 取代了 D-15 的 `fund_order_no`，
+ * 指向星屑账本里的同一笔。
  */
 export type QyAdminCommissionCredit = {
   credit_no: string
   user_id: number
   username: string
-  quota: number
-  fund_order_no: string
+  /** 这一笔入账的星屑数。 */
+  amount: number
+  /** `qy_sd_ledger.ledger_no`，kind=`commission_credit`。 */
+  ledger_no: string
   status: QyCommissionCreditStatus | (string & {})
   created_at: number
   finished_at: number
