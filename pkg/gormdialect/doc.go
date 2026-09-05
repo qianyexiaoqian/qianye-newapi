@@ -26,6 +26,30 @@
 // 归一化都是"把现状翻译成模型标签的写法",不是"把差异抹平":列长度、精度、
 // 可空性一律原样透传,真实的结构变更仍然会被 gorm 检出并执行。
 //
+// # 与上游 model/migration_dialector.go 的关系(2026-09-07,合 rc.34/rc.35 时)
+//
+// 上游在 rc.34 的 `fix(db): avoid redundant schema migrations on restart`
+// (9a8674425)里做了同一件事:`model/migration_dialector.go` 给 PG 与 MySQL 各包
+// 一层只影响比较阶段的 Migrator。合并时**保留本包、不引入那个文件**,理由是本包
+// 覆盖面严格更大:
+//
+//	                          本包   上游 migration_dialector
+//	MySQL 布尔默认值          ✅     ❌ 只归一化 decimal
+//	MySQL decimal 默认值      ✅     ✅
+//	PG bpchar → char          ✅     ✅
+//	PG `''::character varying` ✅     ❌(驱动 v1.5.9 已自带,两边都不再需要)
+//	SQLite 唯一性误判          ✅     靠把 glebarez/sqlite 升到 v1.11.0
+//
+// 布尔那一格是实打实的差:上游 rc.35 的 model/subscription.go 仍写着
+// `gorm:"default:true"`,而它的归一化只认 decimal。本 fork 早把 subscription 那条
+// 标签删了,但 model/custom_oauth_provider.go 的 `default:false` 还在,靠的正是
+// defaultvalue.go 的值相等。
+//
+// **glebarez/sqlite v1.9.0 → v1.11.0 的升级照单收下**(go.mod)。新版能区分唯一
+// 索引与唯一约束,sqlite.go 的覆写因此变成冗余而非冲突 —— 它按 origin='u' 重算,
+// 与新驱动同口径。三库(SQLite / MySQL 8.0.28 / PostgreSQL 16.4)双启动迁移
+// 已复验无 DDL、无报错。下次上游再动这块时,先比这张表再决定要不要换过去。
+//
 // # 什么时候可以删掉它
 //
 // 这些都是上游 gorm 生态的缺陷,部分在新版本里已修:
