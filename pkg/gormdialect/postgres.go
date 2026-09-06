@@ -29,7 +29,6 @@ package gormdialect
 // 大部分 TYPE 语句是上面三类误判的连带产物,不是独立成因。
 
 import (
-	"database/sql"
 	"regexp"
 	"strings"
 
@@ -74,7 +73,6 @@ func (m postgresMigrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, err
 		return columnTypes, err
 	}
 
-	uniqueByIndex := m.singleColumnUniqueIndexColumns(value)
 	for _, columnType := range columnTypes {
 		column, ok := columnType.(*migrator.ColumnType)
 		if !ok {
@@ -88,9 +86,6 @@ func (m postgresMigrator) ColumnTypes(value interface{}) ([]gorm.ColumnType, err
 		if column.DefaultValueValue.Valid {
 			column.DefaultValueValue.String = stripPostgresDefaultCast(column.DefaultValueValue.String)
 		}
-		if uniqueByIndex[column.NameValue.String] {
-			column.UniqueValue = sql.NullBool{Bool: true, Valid: true}
-		}
 	}
 	return columnTypes, nil
 }
@@ -100,33 +95,30 @@ func (m postgresMigrator) MigrateColumn(value interface{}, field *schema.Field, 
 	return m.Migrator.MigrateColumn(value, field, withNormalizedDefault(field, columnType))
 }
 
-// singleColumnUniqueIndexColumns 返回"被单列唯一索引覆盖"的列名集合。
+// ── 曾经这里还有第 4 类修正:唯一性(singleColumnUniqueIndexColumns) ──
 //
-// 主键索引排除在外:主键那一列在 gorm 的比较里本来就被 field.PrimaryKey 短路,
-// 混进来只会让集合的含义变模糊。多列唯一索引也排除 —— gorm 的
-// schema.ParseIndexes 同样只对单列唯一索引置 field.Unique,两边必须同口径。
-func (m postgresMigrator) singleColumnUniqueIndexColumns(value interface{}) map[string]bool {
-	columns := make(map[string]bool)
-	indexes, err := m.GetIndexes(value)
-	if err != nil {
-		// 读不到索引就退回上游行为(全部 unique=false),不要因为这一层让迁移失败。
-		return columns
-	}
-	for _, index := range indexes {
-		if primary, ok := index.PrimaryKey(); ok && primary {
-			continue
-		}
-		if unique, ok := index.Unique(); !ok || !unique {
-			continue
-		}
-		names := index.Columns()
-		if len(names) != 1 {
-			continue
-		}
-		columns[names[0]] = true
-	}
-	return columns
-}
+// 它把「被单列唯一**索引**覆盖的列」也报成 ColumnType.Unique()==true,理由是
+// gorm v1.25.2 的 schema.ParseIndexes 会为单列 uniqueIndex 置 field.Unique
+// (schema/index.go:70 `index.Fields[0].Field.Unique = true`),两边不同口径就会
+// 让 migrateDB 第二遍空转 ALTER。
+//
+// **gorm v1.25.12 把那一行删了**,契约整个反过来:field.Unique 现在只由
+// `unique` 标签决定,而新独立出来的 migrator.MigrateColumnUnique 明确写着
+// "By default, ColumnType's Unique is not affected by UniqueIndex"。
+// 于是旧的覆写从"消除噪音"变成"制造错误":
+//
+//	columnType.Unique()==true(索引) && field.Unique==false(无 unique 标签)
+//	  → DropConstraint(value, "uni_tokens_key")
+//	  → PG 上那是一条**索引**不是约束 → ERROR 42704 constraint does not exist
+//
+// 后果不是多几条空转 DDL,是**第二次启动直接迁移失败**(第一次建表能过)。
+// 实测 PostgreSQL 16.4:migrateDB 第二遍 `constraint "uni_tokens_key" of relation
+// "tokens" does not exist`。SQLite 侧是同一条契约变更的另一种表现(那边
+// Drop/CreateConstraint 走 recreateTable,于是每次启动重建十几张表),
+// 修法也同形 —— 见 sqlite.go 里 origin='u' 那一段。
+//
+// 所以这里不再覆写唯一性:上游 PG 驱动从 information_schema.table_constraints
+// 取 UNIQUE(唯一索引本来就不进那张表),得到的正是 v1.25.12 想要的语义。
 
 // postgresDefaultCastPattern 剥掉 PG 默认值上的 `::type` 后缀,口径与
 // gorm.io/driver/postgres v1.5.3+ 的 parseDefaultValueValue 一致。
