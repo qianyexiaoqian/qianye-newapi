@@ -80,7 +80,13 @@ export default defineConfig({
         // 带 `with { type: 'json' }` —— 于是任何走到品牌图标的用例整份加载失败
         // (报 "needs an import attribute of type json",一条用例都跑不到)。
         // 内联之后由 Vite 转译,JSON 正常解析。
-        inline: ['@lobehub/icons', '@lobehub/ui', '@emoji-mart/data'],
+        inline: [
+          '@lobehub/icons',
+          '@lobehub/ui',
+          '@emoji-mart/data',
+          /@lobehub\//,
+          /antd-style/,
+        ],
       },
     },
   },

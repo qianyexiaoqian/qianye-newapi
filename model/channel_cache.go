@@ -66,7 +66,7 @@ func buildGroup2Model2Channels(channels []*Channel, abilities []*Ability, id2cha
 			if index[group] == nil {
 				index[group] = make(map[string][]int)
 			}
-			for _, modelName := range strings.Split(channel.Models, ",") {
+			for _, modelName := range channel.GetModels() {
 				if _, ok := index[group][modelName]; !ok {
 					index[group][modelName] = make([]int, 0)
 				}
