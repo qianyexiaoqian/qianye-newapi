@@ -23,6 +23,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -49,11 +50,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from '@/components/ui/input-group'
+import { InputGroup, InputGroupAddon } from '@/components/ui/input-group'
 import {
   Sheet,
   SheetContent,
@@ -62,12 +59,22 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  getSitePricingCurrency,
+  isValidPricingCurrency,
+  USD_PRICING_CURRENCY,
+} from '@/features/model-pricing/currency'
+import { PricingAmountInput } from '@/features/model-pricing/pricing-amount-input'
+import { PricingCurrencySelector } from '@/features/model-pricing/pricing-currency-selector'
 import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
 import {
   createDefaultTaskVisualConfig,
   generateTaskExprFromConfig,
 } from '@/features/pricing/lib/task-expr'
+import type { BillingUsageSchema } from '@/features/pricing/types'
 import { cn } from '@/lib/utils'
+import { usePricingPreferencesStore } from '@/stores/pricing-preferences-store'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
   EMPTY_LANE_ENABLED,
@@ -77,7 +84,6 @@ import {
   createModelPricingSchema,
   hasValue,
   laneConfigs,
-  numericDraftRegex,
   ratioFieldByLane,
   toNumberOrNull,
   type LaneKey,
@@ -98,6 +104,7 @@ type ModelPricingSheetProps = {
   editData?: ModelRatioData | null
   onSave?: () => void | Promise<void>
   isSaving?: boolean
+  usageSchema?: BillingUsageSchema
 }
 
 type ModelPricingEditorPanelProps = Omit<
@@ -150,10 +157,22 @@ export const ModelPricingEditorPanel = forwardRef<
   ModelPricingEditorPanelHandle,
   ModelPricingEditorPanelProps
 >(function ModelPricingEditorPanel(
-  { editData, className, onSave, isSaving },
+  { editData, className, onSave, isSaving, usageSchema },
   ref
 ) {
   const { t } = useTranslation()
+  const promptPriceId = useId()
+  const formElementRef = useRef<HTMLFormElement>(null)
+  const currencyConfig = useSystemConfigStore((state) => state.config.currency)
+  const preference = usePricingPreferencesStore((state) => state.currency)
+  const siteCurrency = useMemo(
+    () => getSitePricingCurrency(currencyConfig),
+    [currencyConfig]
+  )
+  const currency =
+    preference === 'site' && isValidPricingCurrency(siteCurrency)
+      ? siteCurrency
+      : USD_PRICING_CURRENCY
   const [pricingMode, setPricingMode] = useState<PricingMode>('per-token')
   const [promptPrice, setPromptPrice] = useState('')
   const [lanePrices, setLanePrices] = useState<Record<LaneKey, string>>({
@@ -204,7 +223,8 @@ export const ModelPricingEditorPanel = forwardRef<
       ),
     [pricingModels]
   )
-  const taskUsageSchema = usageSchemaByModel.get(watchedValues.name.trim())
+  const taskUsageSchema =
+    usageSchema ?? usageSchemaByModel.get(watchedValues.name.trim())
   const taskUsageExamples = usageExamplesByModel.get(watchedValues.name.trim())
   const defaultTaskBillingExpr = useMemo(
     () =>
@@ -275,13 +295,13 @@ export const ModelPricingEditorPanel = forwardRef<
     if (editData.billingMode === 'tiered_expr') return
     if (editData.price || editData.ratio) return
 
-    const usageSchema = usageSchemaByModel.get(editData.name)
-    if (!usageSchema || Object.keys(usageSchema).length === 0) return
+    const schema = usageSchema ?? usageSchemaByModel.get(editData.name)
+    if (!schema || Object.keys(schema).length === 0) return
     if (autoSwitchedForRef.current === editData.name) return
 
     setPricingMode('tiered_expr')
     autoSwitchedForRef.current = editData.name
-  }, [editData, usageSchemaByModel])
+  }, [editData, usageSchemaByModel, usageSchema])
 
   const setFormValue = (field: keyof ModelPricingFormValues, value: string) => {
     form.setValue(field, value, {
@@ -340,13 +360,11 @@ export const ModelPricingEditorPanel = forwardRef<
   }
 
   const handlePromptPriceChange = (value: string) => {
-    if (!numericDraftRegex.test(value)) return
     setPromptPrice(value)
     syncLaneRatios(value, lanePrices, laneEnabled)
   }
 
   const handleLanePriceChange = (lane: LaneKey, value: string) => {
-    if (!numericDraftRegex.test(value)) return
     const nextLanePrices = { ...lanePrices, [lane]: value }
     setLanePrices(nextLanePrices)
 
@@ -413,7 +431,8 @@ export const ModelPricingEditorPanel = forwardRef<
         promptPrice,
         lanePrices,
         laneEnabled,
-        t
+        t,
+        currency
       ),
     [
       resolvedBillingExpr,
@@ -424,6 +443,7 @@ export const ModelPricingEditorPanel = forwardRef<
       requestRuleExpr,
       t,
       watchedValues,
+      currency,
     ]
   )
 
@@ -529,6 +549,13 @@ export const ModelPricingEditorPanel = forwardRef<
     ref,
     () => ({
       commitDraft: async () => {
+        const amounts =
+          formElementRef.current?.querySelectorAll<HTMLInputElement>(
+            'input[data-pricing-amount]'
+          )
+        if (amounts && [...amounts].some((input) => !input.reportValidity())) {
+          return null
+        }
         const isValid = await form.trigger()
         if (!isValid || !validatePricingValues()) return null
         return buildSubmitData(form.getValues())
@@ -558,6 +585,7 @@ export const ModelPricingEditorPanel = forwardRef<
 
       <Form {...form}>
         <form
+          ref={formElementRef}
           onSubmit={(event) => event.preventDefault()}
           className='flex min-h-0 flex-1 flex-col'
           autoComplete='off'
@@ -601,7 +629,10 @@ export const ModelPricingEditorPanel = forwardRef<
                   )}
                 />
 
+                <PricingCurrencySelector siteCurrency={siteCurrency} />
+
                 <Tabs
+                  key={editorReloadToken}
                   value={pricingMode}
                   onValueChange={handleModeChange}
                   className='gap-4'
@@ -647,14 +678,21 @@ export const ModelPricingEditorPanel = forwardRef<
                       )}
                     <FieldGroup className='gap-5'>
                       <Field>
-                        <FieldLabel>{t('Input price')}</FieldLabel>
+                        <FieldLabel htmlFor={promptPriceId}>
+                          {t('Input price')}
+                        </FieldLabel>
                         <PriceInput
+                          id={promptPriceId}
+                          aria-describedby={`${promptPriceId}-description`}
+                          currency={currency}
                           value={promptPrice}
                           placeholder='3'
                           onChange={handlePromptPriceChange}
                         />
-                        <FieldDescription>
-                          {t('USD price per 1M input tokens.')}
+                        <FieldDescription id={`${promptPriceId}-description`}>
+                          {t('{{currency}} price per 1M input tokens.', {
+                            currency: currency.label,
+                          })}
                         </FieldDescription>
                       </Field>
 
@@ -666,6 +704,7 @@ export const ModelPricingEditorPanel = forwardRef<
                               !hasValue(lanePrices.audioInput))
                           return (
                             <PriceLane
+                              currency={currency}
                               key={lane.key}
                               title={t(lane.titleKey)}
                               description={t(lane.descriptionKey)}
@@ -694,31 +733,31 @@ export const ModelPricingEditorPanel = forwardRef<
                         render={({ field }) => (
                           <FormItem className='contents'>
                             <Field>
-                              <FieldLabel>{t('Fixed price')}</FieldLabel>
-                              <FormControl>
-                                <InputGroup>
-                                  <InputGroupAddon>$</InputGroupAddon>
-                                  <InputGroupInput
-                                    inputMode='decimal'
-                                    placeholder='0.01'
+                              <FormLabel>{t('Fixed price')}</FormLabel>
+                              <InputGroup className='has-[[data-pricing-error]]:h-auto has-[[data-pricing-error]]:flex-wrap'>
+                                <InputGroupAddon>
+                                  {currency.symbol}
+                                </InputGroupAddon>
+                                <FormControl>
+                                  <PricingAmountInput
                                     {...field}
-                                    onChange={(event) => {
-                                      const value = event.target.value
-                                      if (numericDraftRegex.test(value)) {
-                                        field.onChange(value)
-                                      }
-                                    }}
+                                    value={field.value ?? ''}
+                                    currency={currency}
+                                    grouped
+                                    placeholder='0.01'
+                                    onChange={field.onChange}
                                   />
-                                  <InputGroupAddon align='inline-end'>
-                                    {t('per request')}
-                                  </InputGroupAddon>
-                                </InputGroup>
-                              </FormControl>
-                              <FieldDescription>
+                                </FormControl>
+                                <InputGroupAddon align='inline-end'>
+                                  {t('per request')}
+                                </InputGroupAddon>
+                              </InputGroup>
+                              <FormDescription>
                                 {t(
-                                  'Cost in USD per request, regardless of tokens used.'
+                                  'Cost in {{currency}} per request, regardless of tokens used.',
+                                  { currency: currency.label }
                                 )}
-                              </FieldDescription>
+                              </FormDescription>
                               <FormMessage />
                             </Field>
                           </FormItem>
@@ -731,6 +770,7 @@ export const ModelPricingEditorPanel = forwardRef<
                     <FieldGroup className='gap-5'>
                       {taskUsageSchema ? (
                         <TaskUsagePricingEditor
+                          currency={currency}
                           key={`${editorReloadToken}:${watchedValues.name}`}
                           billingExpr={resolvedBillingExpr}
                           requestRuleExpr={requestRuleExpr}
@@ -741,6 +781,7 @@ export const ModelPricingEditorPanel = forwardRef<
                         />
                       ) : (
                         <TieredPricingEditor
+                          currency={currency}
                           key={editorReloadToken}
                           modelName={watchedValues.name}
                           billingExpr={billingExpr}
