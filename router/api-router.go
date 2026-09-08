@@ -299,6 +299,7 @@ func SetApiRouter(router *gin.Engine) {
 			// 查/改/删不连坐 —— 它们已经被 redemptionCreatorScope 限制在
 			// 各自那一桶里,而 role=10 从此建不出码,那一桶恒为空。
 			redemptionRoute.POST("/", middleware.RootActionGate(middleware.RootActionRedemptionCreate), controller.AddRedemption)
+			redemptionRoute.POST("/batch", controller.DeleteRedemptionBatch)
 			redemptionRoute.PUT("/", controller.UpdateRedemption)
 			redemptionRoute.DELETE("/invalid", controller.DeleteInvalidRedemption)
 			redemptionRoute.DELETE("/:id", controller.DeleteRedemption)

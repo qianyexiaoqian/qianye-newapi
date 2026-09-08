@@ -158,9 +158,12 @@ export function parseTaskResult() { return {}; }
 	require.NotNil(t, created.BaseURL)
 	assert.Equal(t, "http://10.0.0.5:8000", *created.BaseURL, "the normalized plugin default is stored on the channel row")
 
-	var audits []model.AuditLog
-	require.NoError(t, model.LOG_DB.Where("action = ?", "channel.create").Find(&audits).Error)
+	// 本 fork 的管理审计是主日志表里的 type=LogTypeManage 行,op.action 记在
+	// other 的 JSON 里,没有上游那张 AuditLog 表(rc.34/rc.35 安全重构带的,未合)。
+	var audits []model.Log
+	require.NoError(t, model.LOG_DB.Where("type = ?", model.LogTypeManage).Find(&audits).Error)
 	encoded, err := common.Marshal(audits)
 	require.NoError(t, err)
-	assert.Contains(t, string(encoded), `"base_url_source":"plugin_default"`)
+	assert.Contains(t, string(encoded), `\"action\":\"channel.create\"`)
+	assert.Contains(t, string(encoded), `\"base_url_source\":\"plugin_default\"`)
 }
