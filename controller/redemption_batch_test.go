@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
@@ -19,6 +20,22 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
+
+// auditOther 是本 fork 管理审计落在 model.Log.Other 里的形状:op 由
+// recordManageAudit 写,audit_info 由 finishAdminAudit 的兜底写。
+type auditOther struct {
+	Op struct {
+		Action string `json:"action"`
+		Params struct {
+			Count int64 `json:"count"`
+			Total int   `json:"total"`
+			IDs   []int `json:"requested_redemption_ids"`
+		} `json:"params"`
+	} `json:"op"`
+	AuditInfo struct {
+		Success bool `json:"success"`
+	} `json:"audit_info"`
+}
 
 func TestDeleteRedemptionBatch(t *testing.T) {
 	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
@@ -95,11 +112,19 @@ func TestDeleteRedemptionBatch(t *testing.T) {
 			require.False(t, logDB.Migrator().HasTable(&model.Log{}), "use an empty test log database")
 			require.NoError(t, logDB.AutoMigrate(&model.Log{}))
 			t.Cleanup(func() { require.NoError(t, logDB.Migrator().DropTable(&model.Log{})) })
-			manageAudits := func(t *testing.T) []model.Log {
-				t.Helper()
+			// 被拒的请求由 middleware/audit.go 的 finishAdminAudit 兜底记录,而那一条
+			// 是 gopool.Go 异步写的 —— 断言必须等它落库,不能读一次就下结论。
+			manageAudits := func() []model.Log {
 				var events []model.Log
-				require.NoError(t, logDB.Where("type = ?", model.LogTypeManage).Order("id").Find(&events).Error)
+				if err := logDB.Where("type = ?", model.LogTypeManage).Order("id").Find(&events).Error; err != nil {
+					return nil
+				}
 				return events
+			}
+			awaitAudits := func(t *testing.T, want int) []model.Log {
+				t.Helper()
+				require.Eventually(t, func() bool { return len(manageAudits()) == want }, 5*time.Second, 10*time.Millisecond)
+				return manageAudits()
 			}
 			clearAudits := func(t *testing.T) {
 				t.Helper()
@@ -141,9 +166,11 @@ func TestDeleteRedemptionBatch(t *testing.T) {
 					var count int64
 					require.NoError(t, model.DB.Model(&model.Redemption{}).Count(&count).Error)
 					assert.EqualValues(t, 16, count)
-					// 拒绝的请求不写审计:本 fork 的失败兜底在 middleware/audit.go
-					// 的 finishAdminAudit 里,而这个路由器只挂了 AdminAuth。
-					assert.Empty(t, manageAudits(t))
+					events := awaitAudits(t, 1)
+					var other auditOther
+					require.NoError(t, common.UnmarshalJsonStr(events[0].Other, &other))
+					assert.Equal(t, "redemption.delete_batch", other.Op.Action)
+					assert.False(t, other.AuditInfo.Success)
 				})
 			}
 			_, err = model.BatchDeleteRedemptions(nil)
@@ -169,21 +196,14 @@ func TestDeleteRedemptionBatch(t *testing.T) {
 				require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
 				assert.True(t, result.Success)
 				assert.Equal(t, expectedCount, result.Data)
-				events := manageAudits(t)
+				// handler 自己记了一条,recordManageAudit 会置 ContextKeyAuditLogged,
+				// 兜底那条因此不写 —— 等够时间再数,能同时证明「没有第二条」。
+				events := awaitAudits(t, 1)
 				require.Len(t, events, 1, "one operation event, without a duplicate single-delete fallback")
 				event := events[0]
 				assert.Equal(t, fmt.Sprintf("Batch deleted %d redemption codes", expectedCount), event.Content)
 				assert.Equal(t, admin.Id, event.UserId)
-				var other struct {
-					Op struct {
-						Action string `json:"action"`
-						Params struct {
-							Count int64 `json:"count"`
-							Total int   `json:"total"`
-							IDs   []int `json:"requested_redemption_ids"`
-						} `json:"params"`
-					} `json:"op"`
-				}
+				var other auditOther
 				require.NoError(t, common.UnmarshalJsonStr(event.Other, &other))
 				assert.Equal(t, "redemption.delete_batch", other.Op.Action)
 				assert.Equal(t, expectedCount, other.Op.Params.Count)

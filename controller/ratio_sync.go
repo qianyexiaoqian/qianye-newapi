@@ -52,7 +52,7 @@ func nearlyEqual(a, b float64) bool {
 	return b-a < floatEpsilon
 }
 
-func valuesEqual(a, b interface{}) bool {
+func valuesEqual(a, b any) bool {
 	af, aok := a.(float64)
 	bf, bok := b.(float64)
 	if aok && bok {
@@ -592,18 +592,18 @@ func buildDifferences(localData map[string]any, successfulChannels []struct {
 
 	for modelName := range allModels {
 		for _, ratioType := range pricingSyncFields {
-			var localValue interface{} = nil
+			var localValue any = nil
 			if val, exists := valueMap(localData[ratioType])[modelName]; exists {
 				localValue = normalizeSyncValue(ratioType, val)
 			}
 
-			upstreamValues := make(map[string]interface{})
+			upstreamValues := make(map[string]any)
 			confidenceValues := make(map[string]bool)
 			hasUpstreamValue := false
 			hasDifference := false
 
 			for _, channel := range successfulChannels {
-				var upstreamValue interface{} = nil
+				var upstreamValue any = nil
 
 				if val, exists := valueMap(channel.data[ratioType])[modelName]; exists {
 					upstreamValue = normalizeSyncValue(ratioType, val)

@@ -159,10 +159,10 @@ func SearchRedemptions(creatorId int, keyword string, status string, startIdx in
 
 	if keyword != "" {
 		where := "name LIKE ?"
-		args := []interface{}{keyword + "%"}
+		args := []any{keyword + "%"}
 		if id, err := strconv.Atoi(keyword); err == nil {
 			where = "id = ? OR " + where
-			args = append([]interface{}{id}, args...)
+			args = append([]any{id}, args...)
 		}
 		// 兑换码在日志与错误文本里只留末 4 位(common.MaskCredential)。用户报来的
 		// 就是那 4 位,而在此之前后台只能按名称和 id 搜 —— 于是"客服凭末 4 位把码
@@ -324,7 +324,7 @@ func Redeem(key string, userId int) (*RedeemResult, error) {
 		result := tx.Model(&Redemption{}).
 			Where("id = ? AND status = ? AND redeemed_time = 0 AND used_user_id = 0",
 				redemption.Id, common.RedemptionCodeStatusEnabled).
-			Updates(map[string]interface{}{
+			Updates(map[string]any{
 				"redeemed_time": common.GetTimestamp(),
 				"status":        common.RedemptionCodeStatusUsed,
 				"used_user_id":  userId,

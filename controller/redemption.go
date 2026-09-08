@@ -187,7 +187,7 @@ func AddRedemption(c *gin.Context) {
 		}
 		keys = append(keys, key)
 	}
-	recordManageAudit(c, "redemption.create", map[string]interface{}{
+	recordManageAudit(c, "redemption.create", map[string]any{
 		"name":         redemption.Name,
 		"count":        redemption.Count,
 		"quota":        logger.LogQuota(quota),
@@ -316,7 +316,7 @@ func UpdateRedemption(c *gin.Context) {
 	// 兑换码是一条发钱通道,改它必须能事后追责。在此之前这个接口只落一条
 	// 路由级兜底日志(只有 method/path/status),既没有码 id 也没有前后值 ——
 	// 「哪张码被改过面额、哪张被翻回启用」事后无从判断。
-	recordManageAudit(c, "redemption.update", map[string]interface{}{
+	recordManageAudit(c, "redemption.update", map[string]any{
 		"redemption_id": cleanRedemption.Id,
 		"status_only":   statusOnly != "",
 		"status_before": beforeStatus,

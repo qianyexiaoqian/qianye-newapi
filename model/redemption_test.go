@@ -382,7 +382,7 @@ func countConcurrentRedeemSuccesses(t *testing.T, key string, userId int) int {
 	successes := make([]bool, goroutines)
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(idx int) {
 			defer wg.Done()
 			if _, err := Redeem(key, userId); err == nil {

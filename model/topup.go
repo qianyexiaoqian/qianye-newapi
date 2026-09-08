@@ -153,13 +153,13 @@ func (topUp *TopUp) CreditQuota() (int, error) {
 // 谓词 `quota <= maxCurrent` 与加数写在同一条 UPDATE 里（同步自上游 47ba9d2c6）：
 // 分成「先读余额判一次、再加」两步的话，两个并发回调会各自读到同一个通过的快照，
 // 双双加钱把余额推过 int32 域，之后这个账号的每一次扣费换算都触顶。
-func creditTopUpQuotaTx(tx *gorm.DB, userId int, extra map[string]interface{}, quotaToAdd int) error {
+func creditTopUpQuotaTx(tx *gorm.DB, userId int, extra map[string]any, quotaToAdd int) error {
 	maxCurrentQuota, err := topUpQuotaMaxCurrent(quotaToAdd)
 	if err != nil {
 		return err
 	}
 
-	updates := map[string]interface{}{"quota": gorm.Expr("quota + ?", quotaToAdd)}
+	updates := map[string]any{"quota": gorm.Expr("quota + ?", quotaToAdd)}
 	for k, v := range extra {
 		if k == "quota" {
 			continue
@@ -346,7 +346,7 @@ func Recharge(referenceId string, customerId string, callerIp string) (err error
 		if err != nil || quota <= 0 {
 			return ErrInvalidTopUpQuota
 		}
-		return creditTopUpQuotaTx(tx, topUp.UserId, map[string]interface{}{"stripe_customer": customerId}, quota)
+		return creditTopUpQuotaTx(tx, topUp.UserId, map[string]any{"stripe_customer": customerId}, quota)
 	})
 
 	if err != nil {
@@ -627,7 +627,7 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 		}
 
 		// 构建更新字段，优先使用邮箱，如果邮箱为空则使用用户名
-		updateFields := map[string]interface{}{}
+		updateFields := map[string]any{}
 
 		// 如果有客户邮箱，尝试更新用户邮箱（仅当用户邮箱为空时）
 		if customerEmail != "" {

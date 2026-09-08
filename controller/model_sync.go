@@ -578,9 +578,9 @@ func SyncUpstreamPreview(c *gin.Context) {
 
 	// 4) 计算冲突字段
 	type conflictField struct {
-		Field    string      `json:"field"`
-		Local    interface{} `json:"local"`
-		Upstream interface{} `json:"upstream"`
+		Field    string `json:"field"`
+		Local    any    `json:"local"`
+		Upstream any    `json:"upstream"`
 	}
 	type conflictItem struct {
 		ModelName string          `json:"model_name"`

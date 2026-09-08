@@ -37,7 +37,7 @@ func GetRandomString(length int) string {
 	return lo.RandomString(length, lo.AlphanumericCharset)
 }
 
-func MapToJsonStr(m map[string]interface{}) string {
+func MapToJsonStr(m map[string]any) string {
 	bytes, err := json.Marshal(m)
 	if err == nil {
 		return string(bytes)
@@ -62,7 +62,7 @@ func MapToJsonStr(m map[string]interface{}) string {
 }
 
 // sanitizeJSONValue 递归地把 ±Inf / NaN 换成字符串,返回是否真的改过。
-func sanitizeJSONValue(v interface{}) (interface{}, bool) {
+func sanitizeJSONValue(v any) (any, bool) {
 	switch val := v.(type) {
 	case float64:
 		if math.IsInf(val, 0) || math.IsNaN(val) {
@@ -73,9 +73,9 @@ func sanitizeJSONValue(v interface{}) (interface{}, bool) {
 		if math.IsInf(f, 0) || math.IsNaN(f) {
 			return strconv.FormatFloat(f, 'g', -1, 32), true
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		changed := false
-		out := make(map[string]interface{}, len(val))
+		out := make(map[string]any, len(val))
 		for k, item := range val {
 			fixed, itemChanged := sanitizeJSONValue(item)
 			out[k] = fixed
@@ -84,9 +84,9 @@ func sanitizeJSONValue(v interface{}) (interface{}, bool) {
 		if changed {
 			return out, true
 		}
-	case []interface{}:
+	case []any:
 		changed := false
-		out := make([]interface{}, len(val))
+		out := make([]any, len(val))
 		for i, item := range val {
 			fixed, itemChanged := sanitizeJSONValue(item)
 			out[i] = fixed
@@ -99,8 +99,8 @@ func sanitizeJSONValue(v interface{}) (interface{}, bool) {
 	return v, false
 }
 
-func StrToMap(str string) (map[string]interface{}, error) {
-	m := make(map[string]interface{})
+func StrToMap(str string) (map[string]any, error) {
+	m := make(map[string]any)
 	err := Unmarshal([]byte(str), &m)
 	if err != nil {
 		return nil, err
@@ -108,8 +108,8 @@ func StrToMap(str string) (map[string]interface{}, error) {
 	return m, nil
 }
 
-func StrToJsonArray(str string) ([]interface{}, error) {
-	var js []interface{}
+func StrToJsonArray(str string) ([]any, error) {
+	var js []any
 	err := json.Unmarshal([]byte(str), &js)
 	if err != nil {
 		return nil, err
@@ -118,12 +118,12 @@ func StrToJsonArray(str string) ([]interface{}, error) {
 }
 
 func IsJsonArray(str string) bool {
-	var js []interface{}
+	var js []any
 	return json.Unmarshal([]byte(str), &js) == nil
 }
 
 func IsJsonObject(str string) bool {
-	var js map[string]interface{}
+	var js map[string]any
 	return json.Unmarshal([]byte(str), &js) == nil
 }
 

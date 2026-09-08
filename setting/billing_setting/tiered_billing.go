@@ -2,6 +2,7 @@ package billing_setting
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
 	"sort"
@@ -1022,9 +1023,7 @@ func taskUsageSmokeVectors(schema map[string]jsplugin.UsageFieldSchema) []map[st
 		}
 		if index == len(dimensions) {
 			vector := make(map[string]any, len(current))
-			for key, value := range current {
-				vector[key] = value
-			}
+			maps.Copy(vector, current)
 			vectors = append(vectors, vector)
 			return
 		}

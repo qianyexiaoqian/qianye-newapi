@@ -151,7 +151,7 @@ func (c *QuotaClamp) Error() string {
 // AuditMap renders the clamp as the marker stored under a log's
 // admin_info.quota_saturation. Centralized here so every billing path (consume
 // logs, task billing logs, task compensation logs) records the same shape.
-func (c *QuotaClamp) AuditMap() map[string]interface{} {
+func (c *QuotaClamp) AuditMap() map[string]any {
 	if c == nil {
 		return nil
 	}
@@ -168,11 +168,11 @@ func (c *QuotaClamp) AuditMap() map[string]interface{} {
 	//
 	// 非有限值改记字符串("+Inf" / "-Inf" / "NaN"):这一栏本来就是给人看的
 	// 审计标记,不参与任何算术,字符串比"整段消失"能回答的问题多得多。
-	original := interface{}(c.Original)
+	original := any(c.Original)
 	if math.IsInf(c.Original, 0) || math.IsNaN(c.Original) {
 		original = strconv.FormatFloat(c.Original, 'g', -1, 64)
 	}
-	return map[string]interface{}{
+	return map[string]any{
 		"op":       c.Op,
 		"kind":     c.Kind,
 		"original": original,

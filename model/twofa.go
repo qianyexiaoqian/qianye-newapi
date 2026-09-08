@@ -93,7 +93,7 @@ func (t *TwoFA) updateUsageState() error {
 	if t.Id == 0 {
 		return errors.New("2FA记录ID不能为空")
 	}
-	return DB.Model(&TwoFA{}).Where("id = ?", t.Id).Updates(map[string]interface{}{
+	return DB.Model(&TwoFA{}).Where("id = ?", t.Id).Updates(map[string]any{
 		"failed_attempts": t.FailedAttempts,
 		"locked_until":    t.LockedUntil,
 		"last_used_at":    t.LastUsedAt,
@@ -157,7 +157,7 @@ func (t *TwoFA) IncrementFailedAttempts() error {
 
 		result := DB.Model(&TwoFA{}).
 			Where("id = ? AND failed_attempts = ? AND (locked_until IS NULL OR locked_until <= ?)", current.Id, current.FailedAttempts, now).
-			Updates(map[string]interface{}{
+			Updates(map[string]any{
 				"failed_attempts": nextFailedAttempts,
 				"locked_until":    nextLockedUntil,
 			})
@@ -253,7 +253,7 @@ func ValidateBackupCode(userId int, code string) (bool, error) {
 			now := time.Now()
 			result := DB.Model(&TwoFABackupCode{}).
 				Where("id = ? AND is_used = ?", bc.Id, false).
-				Updates(map[string]interface{}{
+				Updates(map[string]any{
 					"is_used": true,
 					"used_at": now,
 				})
@@ -397,7 +397,7 @@ func (t *TwoFA) ValidateBackupCodeAndUpdateUsage(code string) (bool, error) {
 }
 
 // GetTwoFAStats 获取2FA统计信息（管理员使用）
-func GetTwoFAStats() (map[string]interface{}, error) {
+func GetTwoFAStats() (map[string]any, error) {
 	var totalUsers, enabledUsers int64
 
 	// 总用户数
@@ -415,7 +415,7 @@ func GetTwoFAStats() (map[string]interface{}, error) {
 		enabledRate = float64(enabledUsers) / float64(totalUsers) * 100
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"total_users":   totalUsers,
 		"enabled_users": enabledUsers,
 		"enabled_rate":  fmt.Sprintf("%.1f%%", enabledRate),

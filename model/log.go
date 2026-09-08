@@ -180,7 +180,7 @@ func RecordLog(userId int, logType int, content string) {
 }
 
 // RecordLogWithAdminInfo 记录操作日志，并将管理员相关信息存入 Other.admin_info，
-func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo map[string]interface{}) {
+func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo map[string]any) {
 	if logType == LogTypeConsume && !common.LogConsumeEnabled {
 		return
 	}
@@ -205,8 +205,8 @@ func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo m
 // buildOpField 构建语言无关的操作描述（写入 Other.op）。
 // 前端依据 action(稳定操作标识) + params(结构化参数) 在渲染期用 i18n 本地化展示，
 // 因此不在数据库中存储自然语言句子。
-func buildOpField(action string, params map[string]interface{}) map[string]interface{} {
-	op := map[string]interface{}{
+func buildOpField(action string, params map[string]any) map[string]any {
+	op := map[string]any{
 		"action": action,
 	}
 	if len(params) > 0 {
@@ -219,7 +219,7 @@ func buildOpField(action string, params map[string]interface{}) map[string]inter
 // username 由调用方传入（登录流程已持有用户对象），避免额外的数据库查询。
 // content 为英文兜底文本（用于导出）；action+params 供前端本地化渲染。
 // extra 可携带 login_method、user_agent 等附加信息（普通用户可见）。
-func RecordLoginLog(userId int, username string, content string, ip string, action string, params map[string]interface{}, extra map[string]interface{}) {
+func RecordLoginLog(userId int, username string, content string, ip string, action string, params map[string]any, extra map[string]any) {
 	other := NewLogOther()
 	other.MergePublic(extra)
 	other.SetPublic("op", buildOpField(action, params))
@@ -243,7 +243,7 @@ func RecordLoginLog(userId int, username string, content string, ip string, acti
 // action+params 写入 Other.op，供前端本地化渲染（普通用户可见，不含敏感信息）。
 // adminInfo 存放操作者身份（写入 Other.admin_info，普通用户查询时剥离）；
 // auditInfo 存放路由/方法/结果等中间件兜底信息（写入 Other.audit_info，普通用户查询时剥离）。
-func RecordOperationAuditLog(logUserId int, content string, ip string, action string, params map[string]interface{}, adminInfo map[string]interface{}, auditInfo map[string]interface{}) {
+func RecordOperationAuditLog(logUserId int, content string, ip string, action string, params map[string]any, adminInfo map[string]any, auditInfo map[string]any) {
 	username, _ := GetUsernameById(logUserId, false)
 	other := NewLogOther()
 	other.SetPublic("op", buildOpField(action, params))
@@ -266,7 +266,7 @@ func RecordOperationAuditLog(logUserId int, content string, ip string, action st
 func RecordTopupLog(userId int, content string, callerIp string, paymentMethod string, callbackPaymentMethod string) {
 	username, _ := GetUsernameById(userId, false)
 	other := NewLogOther()
-	other.MergeAdmin(map[string]interface{}{
+	other.MergeAdmin(map[string]any{
 		"server_ip":               common.GetIp(),
 		"node_name":               common.NodeName,
 		"caller_ip":               callerIp,
