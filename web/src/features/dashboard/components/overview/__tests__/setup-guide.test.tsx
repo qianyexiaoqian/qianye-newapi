@@ -231,9 +231,16 @@ describe('overview setup guide', () => {
     keyLookupError = new Error('Key lookup unavailable')
     await renderOverview()
 
-    expect(
-      await screen.findByRole('button', { name: 'Hide setup guide' })
-    ).toBeVisible()
+    // waitFor, not a bare findBy: findBy resolves the moment the accessible name
+    // exists, which on this fork is before the panel finishes its motion — the
+    // dashboard issues one extra query (qyApiAddressesQuery) than upstream's, and
+    // under `vitest run` with file parallelism that gap is wide enough to catch
+    // the button still mid-transition. Sequential runs never saw it.
+    await waitFor(async () =>
+      expect(
+        await screen.findByRole('button', { name: 'Hide setup guide' })
+      ).toBeVisible()
+    )
     expect(
       screen.queryByRole('button', { name: 'Setup guide' })
     ).not.toBeInTheDocument()
