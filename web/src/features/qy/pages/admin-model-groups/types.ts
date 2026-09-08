@@ -57,9 +57,46 @@ export type QyMgRow = {
   usable_description: string
   /** 在 `options.AutoGroups` 里的位次，从 1 起；0 表示不在。 */
   auto_position: number
+  /**
+   * 登记表 `qy_model_groups` 里真的有这一行。
+   *
+   * 列表的行集合是并集（登记表 ∪ `GroupRatio` 键 ∪ 全局可选清单键），所以
+   * 「这一行是不是登记出来的」不能再靠"它在不在 items 里"推 —— 每一行都在。
+   * 它是**联动删除按钮的闸门**：没登记的行删掉只会从 options 里少一个键，
+   * 而 abilities / channels / tokens / 两张授权表 / 套餐解锁里的引用一个都不动。
+   */
+  registered: boolean
 }
 
-export type QyMgListResponse = { items: QyMgRow[] }
+export type QyMgListResponse = {
+  items: QyMgRow[]
+  /** 全量行数。只在请求带了翻页参数时出现。 */
+  total?: number
+  /** 当前页，1 起。只在请求带了翻页参数时出现。 */
+  p?: number
+  page_size?: number
+  /**
+   * **全量**行名，与 `items` 同一个排序。只在翻页时出现。
+   *
+   * 有两个问题只有全表才答得出，而它们都不能只看本页：
+   *
+   *  - auto 顺序的候选清单 —— 只列本页的话，第 11 个以后的模型分组永远进不了
+   *    auto 队列，而界面上看不出少了什么；
+   *  - 新建一行时的重名判定 —— 在第 2 页新建一个与第 1 页同名的分组不会报重名，
+   *    保存时它会静默覆盖那一行的兜底倍率。
+   *
+   * 只有字符串，与整表行相比可以忽略不计。
+   */
+  names?: string[]
+  /**
+   * 「用户可选、却一个启用渠道都没有」的**全量**名单。只在翻页时出现。
+   *
+   * 这一条是故障预警不是统计：那种分组在令牌下拉里长得和正常的一模一样，
+   * 选中之后每一次请求都 503。它必须是全表口径 —— 一条随翻页出现又消失的
+   * 故障预警，读到的人只会认为它不可靠。
+   */
+  no_channel_names?: string[]
+}
 
 /** 各模块声明的一处残留。处置见后端 `qianye/modules/groupns/residue.go`。 */
 export type QyMgResidue = {

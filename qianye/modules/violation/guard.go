@@ -142,7 +142,7 @@ func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.Toke
 	if !block {
 		return nil
 	}
-	return violationBlockError(v.Rule)
+	return violationBlockError(v.Rule, "")
 }
 
 // PostRelayGuard 是能力 A(事后检测扣费)的入口。
@@ -269,8 +269,7 @@ func handleHit(c *gin.Context, info *relaycommon.RelayInfo, phase string, in sca
 		rec.HasPayload = payload != nil
 	}
 
-	weight := v.Rule.R.CountWeight
-	if res.ForceBanWeight {
+	if res.ForceBanWeight && rec.CountWeight > 0 {
 		// insufficient_balance_policy = ban:扣不到钱就直接顶到阈值,立刻进入封号判定。
 		// (只可能来自 chargeFee → applyBalancePolicy,而影子分支根本不调 chargeFee,
 		// 所以这一条不会在影子模式下发生。)
@@ -279,14 +278,38 @@ func handleHit(c *gin.Context, info *relaycommon.RelayInfo, phase string, in sca
 		// 一个分组的阈值被调到 3、YAML 里还写着 10 时,这条"一次顶满"的路径
 		// 会给出 10 —— 比该档要求的还多,而多出来的部分会一直留在计数器里,
 		// 让该用户在解封后的下一次违规立刻再次越线。
-		weight = resolveBanPolicy(info.UsingGroup).Threshold
+		//
+		// `rec.CountWeight > 0` 这道闸把"没选违规类型的规则一条线都不推进"守到底:
+		// 余额策略是**站点级**开关,它不该把一条运营明说了"只拦不罚"的规则
+		// 变成一条能封号的规则 —— 而那正是这条路径唯一的出口。
+		rec.CountWeight = resolveBanPolicy(info.UsingGroup).Threshold
 	}
-	// 影子记录也留下 count_weight:它回答"若真实执行,这一次会给计数加几"。
-	// 它**不会**被写进计数器(persist 里影子直接跳过 bumpCounter),
-	// counted 恒为 false,因此撤销记录时也不会触发计数回退。
-	rec.CountWeight = weight
+
+	// 被拦下的请求要在「使用记录」里留一行,理由与 userListRecords 同源:
+	// 用户看到的是一次没有任何痕迹的失败,而这一页正是他第一个会去翻的地方。
+	//
+	// 必须排在 persist **之前**:persist 把 rec 这个指针交给另一个 goroutine,
+	// 那一侧的 GORM Create 会读遍全部字段并回写 rec.Id。写日志这一步在 relay
+	// 线程上同步把 rec 抄成一行 model.Log(见 blockedUsageLogRow),放在后面
+	// 就是隔着一个 goroutine 边界读一个正在被写的结构体。
+	if blocked {
+		recordBlockedUsageLog(rec)
+	}
 
 	persist(rec, payload)
+}
+
+// blockedReasonOf 是 Record.BlockedReason 的取值:拦了就是回给客户端的那句话,
+// 没拦就是空串。
+//
+// 单独一个函数是因为它表达的是一条契约而不是一步计算 ——「记录里那句话必须与
+// 客户端收到的那句话同源」。把 clientBlockMessage 直接写在结构体字面量里读起来
+// 像是又一个可以随手改的字段,而它恰恰是不能与 violationBlockError 分家的那一个。
+func blockedReasonOf(v *verdict, blocked bool) string {
+	if !blocked {
+		return ""
+	}
+	return clientBlockMessage(v.Rule, v.BlockOverride)
 }
 
 // persist 把记录、证据、计数与封号全部交给异步 worker。
@@ -343,9 +366,23 @@ func persistRecord(ctx context.Context, gdb *gorm.DB, rec *Record, payload *Payl
 			common.SysError("qianye/violation: 归档证据写入失败: " + err.Error())
 		}
 	}
-	// 影子命中在这里止步:记录与证据已经落好(供管理员核查),
+	// 三种命中在这里止步:记录与证据已经落好(供管理员核查),
 	// 真实计数器一个字节都不动。
-	if shadow || weight <= 0 {
+	//
+	//   shadow            影子模式,裁决 2 的原话是"不扣费,不封号,不记录违规次数"。
+	//   weight <= 0       运营把权重配成了 0:只按处置动作办,一条线都不推进。
+	//   CategoryId <= 0   规则没选违规类型。项目方原话:「违规类型未选择的,不应当
+	//                     纳入计数,说明这个类型违规阻断即可,不需要计数处罚」。
+	//
+	// 第三条与 newRecord 里那次把 weight 压成 0 是**同一条口径的两道闸**,不是重复:
+	// 那一道让记录本身诚实(count_weight 写的就是 0),这一道让它为真 ——
+	// 任何绕过 newRecord 的路径(insufficient_balance_policy = ban 会把权重顶到阈值,
+	// cyber 命中的权重是写死的 1)都必须在这里被同一句话挡住。
+	if shadow || weight <= 0 || rec.CategoryId <= 0 {
+		// 不计数不等于不通知:一条"只拦不计数"的规则照样把用户挡在门外,
+		// 而他一样需要知道自己被挡了。影子命中在 notifyViolationEmail 里
+		// 自己被挡掉 —— 判据与上面那一行同源,写在那个函数上。
+		notifyViolationEmail(rec, nil)
 		return nil
 	}
 	// 分组取记录里冻结的那一个(命中当时用户实际在用的分组),不是"现在去查一次"。
@@ -378,6 +415,10 @@ func persistRecord(ctx context.Context, gdb *gorm.DB, rec *Record, payload *Payl
 		}).Error; err != nil {
 		return err
 	}
+	// 通知排在封号判定**之前**:两者都不返回错误,而这个顺序让模板里的
+	// {{banned}} 与这一次的封号结论对齐 —— anyReached 读的是 st,而 st 在
+	// maybeAutoBan 里不会再变。反过来写也能跑,但读的人得先确认这一点。
+	notifyViolationEmail(rec, &st)
 	maybeAutoBan(ctx, gdb, rec, st)
 	return nil
 }
@@ -453,6 +494,20 @@ func newRecord(rc recordCtx, phase string, in scanInput, v *verdict, shadow bool
 	if shadow {
 		catCounterAfter = CounterAfterShadow
 	}
+	// ── 没选违规类型的规则,一条线都不推进 ──
+	//
+	// 项目方原话:「违规类型未选择的,不应当纳入计数,说明这个类型违规阻断即可,
+	// 不需要计数处罚」。压的是 count_weight 而不是只跳过类型线:账号总量线
+	// (qy_violation_counter)同样是一条封号判据,只挡住类型线的话,一条"不计数"
+	// 的规则照样能在总量线上把人封掉 —— 那与这句话的字面意思正好相反。
+	//
+	// 权重落到 0 之后,persistRecord 的 `weight <= 0` 直接 return,counted 恒为 false,
+	// 撤销记录时也不会做无中生有的减法。影子记录写的仍然是"若真实执行会加几",
+	// 而"没类型"这一档的答案本来就是 0。
+	weight := v.Rule.R.CountWeight
+	if cat.Id <= 0 {
+		weight = 0
+	}
 	return &Record{
 		RecNo:        fmt.Sprintf("vr_%s_%d", truncate(rc.RequestId, 40), v.Rule.R.Id),
 		UserId:       rc.UserId,
@@ -462,6 +517,10 @@ func newRecord(rc recordCtx, phase string, in scanInput, v *verdict, shadow bool
 		RuleId:       v.Rule.R.Id,
 		RuleName:     truncate(v.Rule.R.Name, 128),
 		PublicReason: truncate(v.Rule.R.PublicReason, 128),
+		// 只在真的拦了的时候算。没拦的那些(影子、纯扣费规则)客户端什么都没被告知,
+		// 给它们编一句"回给客户端的话"会让纯扣费那条路的消费日志把一句从未发出过的
+		// 拦截文案当成扣费原因写进去。
+		BlockedReason: blockedReasonOf(v, blocked),
 
 		CategoryId:          cat.Id,
 		CategoryName:        truncate(cat.Name, 64),
@@ -492,11 +551,15 @@ func newRecord(rc recordCtx, phase string, in scanInput, v *verdict, shadow bool
 		// 而"只有一半列被脱敏"这种不对称迟早会被下一个人当成 bug 抹平 ——
 		// 抹平的方向大概率是去掉限制。
 		MatchSnippet:         truncate(redactSnippet(v.Snippet), 2048),
+		CountWeight:          weight,
 		CounterAfter:         counterAfter,
 		CategoryCounterAfter: catCounterAfter,
 		Status:               RecordActive,
 		FeeStatus:            FeeStatusNone,
 		CreatedAt:            common.GetTimestamp(),
+		// 通知模板与类型、拦截文案一样在**命中当时**冻结:落库跑在异步 worker 上,
+		// 期间渠道可以被改掉甚至删掉,而按新模板发一封几秒前那次命中的邮件是错的。
+		notice: v.EmailNotice,
 	}
 }
 

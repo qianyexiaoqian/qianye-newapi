@@ -111,6 +111,54 @@ export type QyStardustLedgerParams = QyPageParams & {
   kind?: QyStardustLedgerKind
 }
 
+/**
+ * 「明日预计到账」的一条获得线（消费返 / 下线消费返）。
+ *
+ * 四个中间量与结算那一步逐字对应：`base_quota` 是**额度**口径的基数，`gross` 是
+ * decimal 字符串的全精度计提，`carry` 是上一次结算留下的零头，`estimated` 才是
+ * 会真的记入余额的整数星屑（= `floor(carry + gross)`）。
+ */
+export type QyStardustForecastLine = {
+  base_quota: number
+  rate_bps: number
+  gross: string
+  carry: string
+  estimated: number
+}
+
+/** 下线消费返那一条线，多两个"这条线成不成立"的旗标。 */
+export type QyStardustForecastInviteLine = QyStardustForecastLine & {
+  /** 邀请功能开着且我这一档比例 > 0。为 `false` 时整条线不展示。 */
+  applies: boolean
+  /** 下线太多（> 500）时后端不扫日志：`false` 表示"没统计"，不是"没有"。 */
+  counted: boolean
+}
+
+/**
+ * `GET /stardust/forecast`：今天这一桶明天会发多少。
+ *
+ * 服务端缓存一小时（`expires_at`），用户可手动刷新（`?refresh=1`），但两次真正的
+ * 重算之间至少隔到 `refresh_after`。`computed_at` 是"数据截至"那一刻——它不是实时值，
+ * 界面必须把这一点写出来。
+ */
+export type QyStardustForecast = {
+  /** 今天的桶日 YYYYMMDD。 */
+  day: string
+  /** 这一桶的结算时刻（后端算：下一个日界 + 结算延迟）。 */
+  settle_at: number
+  computed_at: number
+  /** 手动刷新真正生效的最早时刻。在此之前按钮按了也只会拿回同一份。 */
+  refresh_after: number
+  expires_at: number
+  quota_per_unit: number
+  /** 非空表示明天一颗都不会到账，取值同 {@link QyStardustHoldReason}。 */
+  hold_reason: QyStardustHoldReason
+  consume: QyStardustForecastLine
+  invite: QyStardustForecastInviteLine
+  /** 两条线**各自取整后**相加，不是两笔计提相加再取整。 */
+  estimated_total: number
+}
+
 export type QyStardustAccrualRow = {
   bucket_date: string
   user_group: string

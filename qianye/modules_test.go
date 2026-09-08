@@ -1,8 +1,10 @@
 package qianye
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/qianye/module"
@@ -61,4 +63,75 @@ func TestNoRegisteredModuleWithoutDirectory(t *testing.T) {
 	}
 	assert.Empty(t, orphans,
 		"以下模块已注册但找不到对应目录,可能是改名后未同步: %v", orphans)
+}
+
+// 台账表清单与主库表清单必须互斥。
+//
+// 同一个模型同时出现在 Tables() 与 LogTables() 里,在**没有配 log_database 的
+// 部署上完全正常**(两份清单会被 bootstrap 合并,AutoMigrate 幂等),而在配了的
+// 部署上会在两个库里各建一张同名表。写入只落其中一个,读取落哪个取决于代码里
+// 那一行用的是 db.Get() 还是 db.Log() —— 两者随时可能漂移,而症状是"日志页
+// 一直是空的,但表明明在涨"。
+//
+// 这条断言拿的是**运行期注册表**而不是源码文本:模块把模型挪到哪一份清单里
+// 是一次编辑就能做到的事,靠 review 记住不可靠(usergroup 被漏注册过两次)。
+func TestLogTablesAndMainTablesAreDisjoint(t *testing.T) {
+	for _, m := range module.All() {
+		lt, ok := m.(module.LogTabler)
+		if !ok {
+			continue
+		}
+		main := make(map[string]bool)
+		for _, tb := range m.Tables() {
+			main[fmt.Sprintf("%T", tb)] = true
+		}
+		for _, tb := range lt.LogTables() {
+			name := fmt.Sprintf("%T", tb)
+			assert.Falsef(t, main[name],
+				"模块 %s 把 %s 同时登记进了 Tables() 与 LogTables() —— "+
+					"配了 log_database 的部署会在两个库里各建一张,写入与读取会落到不同的库上",
+				m.Name(), name)
+		}
+	}
+}
+
+// 台账表清单不能为空之后又没有人真的用 db.Log() 去读写它。
+//
+// 这条守的是本轮引入的那个新失败面:AIReview 搬进台账库之后,任何一处仍然
+// 用 db.Get() 去查它的代码,在没分家的部署上完全正常(两个句柄是同一个),
+// 只有配了 log_database 的部署会读到一张空表。而那种部署恰恰是量最大的那些。
+//
+// 判据是源码文本,不是类型系统 —— 这里没有类型能表达"这个模型只能用那个句柄"。
+// 文本判据的代价是它可能被绕过(先取句柄再用),换来的是它能在 review 之前就
+// 拦下最自然的那种写法。
+func TestLogTablesAreNotQueriedThroughTheMainHandle(t *testing.T) {
+	for _, m := range module.All() {
+		lt, ok := m.(module.LogTabler)
+		if !ok || len(lt.LogTables()) == 0 {
+			continue
+		}
+		files, err := filepath.Glob(filepath.Join("modules", m.Name(), "*.go"))
+		require.NoError(t, err)
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			raw, err := os.ReadFile(f)
+			require.NoError(t, err)
+			for i, line := range strings.Split(string(raw), "\n") {
+				if !strings.Contains(line, "db.Get()") {
+					continue
+				}
+				for _, tb := range lt.LogTables() {
+					short := fmt.Sprintf("%T", tb)
+					if i := strings.LastIndex(short, "."); i >= 0 {
+						short = short[i+1:]
+					}
+					assert.NotContainsf(t, line, short+"{}",
+						"%s:%d 用 db.Get() 查台账表 %s —— 配了 log_database 的部署会读到一张空表,"+
+							"请改用 db.Log()", f, i+1, short)
+				}
+			}
+		}
+	}
 }

@@ -71,10 +71,16 @@ type Product struct {
 func (Product) TableName() string { return "qy_ml_product" }
 
 // 兑换码库存的状态。
+//
+// CodeTaken 是管理员从库里**提走**的那一枚:明文已经交到人手上,平台不再持有
+// 它的去向。做成独立一态而不是复用 issued,是因为 issued 的语义带着 order_id ——
+// "这枚码发给了哪张单"是履行证据,而提卡没有单。也不能留在 unused:提卡后的码
+// 已经离开平台,若还算进可售库存,同一枚码就会被再卖给一个用户。
 const (
 	CodeUnused  = "unused"
 	CodeIssued  = "issued"
 	CodeRevoked = "revoked"
+	CodeTaken   = "taken"
 )
 
 // CodeStock 是预存的一枚兑换码。
@@ -93,6 +99,13 @@ type CodeStock struct {
 	OrderId   int64 `json:"order_id" gorm:"not null;default:0;index:idx_qy_mlc_order"`
 	CreatedAt int64 `json:"created_at" gorm:"not null;default:0"`
 	IssuedAt  int64 `json:"issued_at" gorm:"not null;default:0"`
+	// TakenAt / TakenBy 记管理员提卡(status=taken):什么时候、谁提走的。
+	//
+	// 审计表里也有这一条,但审计是按时间排的流水,回答不了"这一整页码里哪几枚被
+	// 提走了、分别是谁"—— 而运营对着库存表问的恰恰是这个。两处都留是刻意的:
+	// 审计可被保留期清理,库存行不会。
+	TakenAt int64 `json:"taken_at" gorm:"not null;default:0"`
+	TakenBy int   `json:"taken_by" gorm:"not null;default:0"`
 }
 
 func (CodeStock) TableName() string { return "qy_ml_code_stock" }

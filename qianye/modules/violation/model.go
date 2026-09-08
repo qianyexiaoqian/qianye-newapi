@@ -630,6 +630,26 @@ type Record struct {
 	// 否则"我当时为什么被扣钱"永远对不上。
 	PublicReason string `json:"public_reason" gorm:"type:varchar(128);not null;default:''"`
 
+	// BlockedReason 是这一次**真正回给客户端**的那句话,只在 blocked 时有值。
+	//
+	// # 为什么它不落库
+	//
+	// 它是从 verdict.BlockOverride + 规则的两格文案算出来的**派生值**,三个来源
+	// 都已经落在别处(审核渠道行、规则行、以及本行的 PublicReason)。落库要加一列
+	// varchar,而这一列的唯一读者是同一次请求里同步写出的那两行日志 ——
+	// 换来的是一次 AutoMigrate 与一轮三库迁移验证,买不到任何回答不了的问题。
+	//
+	// # 它解决的是什么
+	//
+	// 「响应体里那句话」与「使用记录里那句话」此前是两条独立的链路:前者走
+	// Rule.BlockMessage(2026-09-06 起可被审核渠道覆盖),后者走 Rule.PublicReason。
+	// 于是在渠道上配了拦截文案的站点,用户在 API 上看到自定义那句、在使用记录里
+	// 看到写死的兜底那句 —— 而使用记录恰恰是他查"我为什么失败"的第一站。
+	//
+	// 空串表示这条记录不经 newRecord(cyber 会话屏蔽那条路自己拼 Record),
+	// 那时两处日志都回落到 PublicReason,与这一格存在之前逐字节一致。
+	BlockedReason string `json:"-" gorm:"-"`
+
 	// CategoryId / CategoryName / CategoryPublicTitle 冻结命中当时的违规类型。
 	//
 	// 三列都要冻结,理由与 PublicReason 完全一致,而且更硬:类型可以被**归档**,
@@ -720,6 +740,14 @@ type Record struct {
 
 	HasPayload bool  `json:"has_payload" gorm:"not null"`
 	CreatedAt  int64 `json:"created_at" gorm:"not null;index:idx_qy_vrec_user,priority:2;index:idx_qy_vrec_created"`
+
+	// notice 是这次命中要发的那封违规通知邮件的模板,来自判出这次违规的**审核渠道**。
+	//
+	// 刻意是未导出字段:GORM 与 encoding/json 都只看导出字段,所以它既不落库
+	// 也不下发 —— 它是一次调用内的传递,不是记录的一部分。审计侧不需要它:
+	// "这一次是哪个渠道判的"已经由 qy_violation_ai_review.channel_id 记着了,
+	// 为了一个通知开关在最忙的那张表上再加一列并不划算。
+	notice *emailNotice
 }
 
 func (Record) TableName() string { return "qy_violation_record" }

@@ -201,6 +201,11 @@ func TestEveryRootOnlyActionConstantIsWired(t *testing.T) {
 			wired[r.action] = true
 		}
 	}
+	// handler 内的闸门同样算"接上了"。少了这一段,一个只能挂在 handler 里的
+	// 档位会被这条断言逼着去挂路由级 RootActionGate,而那恰恰是连坐。
+	for _, g := range handlerRootGates {
+		wired[g.action] = true
+	}
 
 	sort.Strings(declared)
 	for _, name := range declared {
@@ -439,4 +444,121 @@ func TestRootGateRunsBeforeCriticalRateLimit(t *testing.T) {
 			"少了说明解析器认不出某处新写法(这条守卫会静默空转);"+
 			"多了说明新增了这类路由,请确认它的顺序也是闸门在前,再把这个数字改上来",
 		checked, wantChecked)
+}
+
+// ═══════════════════ handler 内的超管闸门 ═══════════════════
+//
+// 少数动作没法挂在路由上:同一条路由同时承载着不该提档的动作,挂路由级
+// RootActionGate 会把它们一起连坐掉 —— 而"不该提的一个都没提"正是本文件
+// 上半部分在守的东西。这类闸门改由 handler 在识别出该动作之后调
+// middleware.RequireRootAction。
+//
+// 它们同样必须进清单:一个只写在 handler 里、没有任何断言看着的档位,
+// 与"忘了挂 RootActionGate"是完全一样的失败形状,而且更难看见 ——
+// 路由级至少还能从注册处一眼扫出来。
+
+// handlerRootGate 是一条挂在 handler 内部的超管闸门。
+type handlerRootGate struct {
+	// route 只用于失败信息:handler 内的闸门没法从注册处反查回来。
+	route string
+	file  string
+	// fn 是**调用 RequireRootAction 的那个函数**,不一定是路由处理器本身。
+	fn     string
+	action string
+	why    string
+}
+
+var handlerRootGates = []handlerRootGate{
+	{
+		route:  "PUT /api/qy/admin/group-matrix(仅 set_ratio / clear_ratio 格)",
+		file:   "qianye/modules/groupmatrix/api_admin.go",
+		fn:     "adminPutMatrix",
+		action: "RootActionGroupRatioWrite",
+		why: "交叉倍率(options 里的 GroupGroupRatio)的另一个写入口 PUT /api/option/ 是 RootAuth," +
+			"同一份配置不能有两扇档位不同的门;而同一条路由上的成员资格与按格备注仍归 role=10," +
+			"所以只能在 handler 里按 action 提档,不能挂路由级 RootActionGate",
+	},
+}
+
+// TestHandlerRootGatesGuardTheirAction 证明清单里每一条都真的在那个函数里,
+// 并且返回值真的影响了控制流。
+//
+// 后半条是重点:`middleware.RequireRootAction(c, x)` 的返回值被丢掉(写成
+// `_ = ...` 或干脆不接)时,函数照样编译、照样跑完,闸门等于不存在 ——
+// 与 actor_gate_guard_test.go 守的是同一种"判据装了但没接上"的形状。
+func TestHandlerRootGatesGuardTheirAction(t *testing.T) {
+	for _, g := range handlerRootGates {
+		fset := token.NewFileSet()
+		f, err := parser.ParseFile(fset, repoFile(g.file), nil, 0)
+		require.NoErrorf(t, err, "解析 %s 失败", g.file)
+
+		var fn *ast.FuncDecl
+		for _, decl := range f.Decls {
+			if d, ok := decl.(*ast.FuncDecl); ok && d.Name.Name == g.fn {
+				fn = d
+				break
+			}
+		}
+		require.NotNilf(t, fn, "%s 里找不到函数 %s", g.file, g.fn)
+
+		guarded := false
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			ifStmt, ok := n.(*ast.IfStmt)
+			if !ok {
+				return true
+			}
+			if !condCallsRequireRootAction(ifStmt.Cond, g.action) {
+				return true
+			}
+			// 闸门的 if 体必须中止这次请求。RequireRootAction 自己已经写了响应,
+			// 这里只需要确认调用方真的 return 了 —— 不 return 的话请求会带着
+			// 已经写好的 403 继续执行下去,把动作照做一遍。
+			for _, stmt := range ifStmt.Body.List {
+				if _, isReturn := stmt.(*ast.ReturnStmt); isReturn {
+					guarded = true
+					return false
+				}
+			}
+			return true
+		})
+
+		assert.Truef(t, guarded,
+			"%s(%s 的 %s)必须有一个形如 `if ... !middleware.RequireRootAction(c, middleware.%s) { return }` 的闸门。\n立档理由:%s",
+			g.route, g.file, g.fn, g.action, g.why)
+	}
+}
+
+// condCallsRequireRootAction 判断一个 if 条件里是否调用了
+// middleware.RequireRootAction(_, middleware.<action>)。
+//
+// 走 ast.Inspect 而不是逐层拆:实际写法是
+// `if containsRatioCell(cells) && !middleware.RequireRootAction(...)`,
+// 调用被埋在 BinaryExpr 里的 UnaryExpr 里,而将来的条件可能更长。
+func condCallsRequireRootAction(cond ast.Expr, action string) bool {
+	found := false
+	ast.Inspect(cond, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "RequireRootAction" {
+			return true
+		}
+		if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != "middleware" {
+			return true
+		}
+		for _, arg := range call.Args {
+			argSel, ok := arg.(*ast.SelectorExpr)
+			if !ok {
+				continue
+			}
+			if pkg, ok := argSel.X.(*ast.Ident); ok && pkg.Name == "middleware" && argSel.Sel.Name == action {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }

@@ -1,6 +1,7 @@
 package commission
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,8 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/qianye/config"
+	qydb "github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
@@ -98,36 +101,44 @@ func TestNormalizeIdemKeyIsInjective(t *testing.T) {
 
 func TestIdemKeyShapes(t *testing.T) {
 	vip := rateDecision{Units: 500, Group: "vip"}
-	assert.Equal(t, "consume:7:20260730:vip:500:h7:u3", consumeIdemKey(3, 7, "20260730", vip, 7))
+	assert.Equal(t, "consume:7:20260730:vip:500:h7:u3:q500000", consumeIdemKey(3, 7, "20260730", vip, 7, 500000))
 
 	// 费率或分组一变就必须换一行:日聚合桶是"边增长边结算"的,把新费率
 	// 算出的 gross 累加进一行标着旧费率的记录里,那一行从此
 	// base × rate ≠ gross,永远对不平也没法向用户解释。
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7),
-		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 800, Group: "vip"}, 7))
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7),
-		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "default"}, 7))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7, 500000),
+		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 800, Group: "vip"}, 7, 500000))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7, 500000),
+		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "default"}, 7, 500000))
 	// Matched 只用于日志与管理端解释,不参与算钱,更不该影响幂等键。
-	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, 7),
-		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "vip", Matched: true}, 7))
+	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, 7, 500000),
+		consumeIdemKey(3, 7, "20260730", rateDecision{Units: 500, Group: "vip", Matched: true}, 7, 500000))
 
 	// 上线换了就必须换一行。ON CONFLICT 的 DoUpdates 只累加金额、不改
 	// inviter_id,上线不在键里的话,换绑当天下线后续的消费会撞上旧上线那一行,
 	// 钱被原子累加进去而 inviter_id 保持旧值 —— 结结实实发给了前一个上线,
 	// 而三条恒等式全部成立,没有任何降级计数器会响。
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7),
-		consumeIdemKey(4, 7, "20260730", vip, 7))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7, 500000),
+		consumeIdemKey(4, 7, "20260730", vip, 7, 500000))
+
+	// 刻度变了也必须换一行。它与费率一样被冻结进行(Accrual.QuotaPerUnit),
+	// 而且事后真的决定这一行怎么被处置 —— 退款冲正按 origin.QuotaPerUnit 重算。
+	// 不在键里的话,运营中午把 quota_per_unit 从 50 万调到 25 万,下午的增量会按
+	// 新刻度算出 gross 累加进一行标着旧刻度的记录,I3 恒等式在那一行上不再成立,
+	// 随后的退款按行上那个已经不对的刻度冲正 —— 调小时冲少了,调大时冲多了。
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7, 500000),
+		consumeIdemKey(3, 7, "20260730", vip, 7, 250000))
 
 	// 成熟期变了也必须换一行。日聚合桶的 ON CONFLICT 只累加金额、**不改
 	// mature_at**:成熟期不在键里的话,运营中午把 holding_days 从 7 改成 0,
 	// 当天已经建过桶的下线在那之后的消费会累加进一行标着旧成熟期的记录里,
 	// 那部分钱按旧策略再压 7 天,而界面按新配置写着 T+1。
-	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7),
-		consumeIdemKey(3, 7, "20260730", vip, 0))
+	assert.NotEqual(t, consumeIdemKey(3, 7, "20260730", vip, 7, 500000),
+		consumeIdemKey(3, 7, "20260730", vip, 0, 500000))
 	// 负的成熟期与 0 必须落同一个键:bucketMatureAt 把负数钳到 0,键里不钳的话
 	// 同一个成熟时刻会分裂成两个桶。
-	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, 0),
-		consumeIdemKey(3, 7, "20260730", vip, -1))
+	assert.Equal(t, consumeIdemKey(3, 7, "20260730", vip, 0, 500000),
+		consumeIdemKey(3, 7, "20260730", vip, -1, 500000))
 
 	assert.Equal(t, "topup:TX-1", topupIdemKey(" TX-1 "))
 	assert.Equal(t, "redemption:99", redemptionIdemKey(99))
@@ -170,6 +181,8 @@ func TestHoldingDaysZeroFromYAMLMaturesSameDay(t *testing.T) {
 enabled: true
 database:
   dsn: "u:p@tcp(127.0.0.1:3306)/qy"
+stardust:
+  enabled: true
 commission:
   enabled: true
   holding_days: 0
@@ -182,6 +195,9 @@ commission:
 
 	holding := config.Get().Commission.HoldingDays
 	require.Equal(t, 0, holding, "显式写的 0 不得被默认值替换")
+	// stardust 段是 D-16 之后 commission.enabled 的前置条件(佣金以星屑结算,
+	// 星屑关着时算得出佣金却无处可发),所以上面那份 YAML 必须带它 —— 否则
+	// config.Load 在校验期就失败,这条用例连 holding_days 都读不到。
 
 	dayStart := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC).Unix()
 	assert.Equal(t, dayStart+86400, bucketMatureAt("20260730", holding),
@@ -193,4 +209,50 @@ func TestAmountSaneRejectsAbsurdValues(t *testing.T) {
 	assert.True(t, amountSane(decimal.NewFromInt(-1000)))
 	assert.False(t, amountSane(decimal.New(1, 20)))
 	assert.False(t, amountSane(decimal.New(-1, 20)))
+}
+
+// 支付合规门必须挡住**全部三条**推广获得线,而不只是充值那一条。
+//
+// 这条断言存在的理由是本仓真实出现过的形状:门只装在 accrueTopUp 上,
+// 下线消费返(accrueConsume)与兑换码返(onRedeemSuccess)一路走到入账。
+// 三条线全部经过 writeAccrual,所以闸门装在那个漏斗上,而这里钉住它 ——
+// 少了这条断言,把闸门挪回某一个来源上不会有任何东西变红。
+//
+// 不需要数据库:闸门排在 db.Get() 之前,这正是它该在的位置。
+func TestWriteAccrualHonorsPaymentComplianceGate(t *testing.T) {
+	ps := operation_setting.GetPaymentSetting()
+	origConfirmed, origVersion := ps.ComplianceConfirmed, ps.ComplianceTermsVersion
+	t.Cleanup(func() {
+		ps.ComplianceConfirmed, ps.ComplianceTermsVersion = origConfirmed, origVersion
+	})
+
+	in := accrualInput{
+		SourceType: SourceConsume,
+		IdemKey:    "compliance-gate-probe",
+		InviterId:  1, InviteeId: 2,
+		BaseQuota: 1_000_000,
+		RateUnits: 500,
+		Gross:     decimal.NewFromFloat(0.1),
+		Status:    StatusAccrued,
+	}
+
+	// 合规未确认:不落账、不报错。返回 (false, nil) 与"幂等命中"同形,
+	// 于是充值扫描的游标照常前进、热路径 worker 不把它当失败去重试。
+	ps.ComplianceConfirmed = false
+	before := complianceSkipped.Load()
+	inserted, err := writeAccrual(context.Background(), in)
+	require.NoError(t, err, "合规未确认不是错误,只是不发")
+	assert.False(t, inserted, "合规未确认时一条计佣行都不该落库")
+	assert.Equal(t, before+1, complianceSkipped.Load(),
+		"静默跳过必须留下计数,否则「为什么一分佣金都没有」在管理端没有任何线索")
+
+	// 合规已确认:闸门放行,后面因为测试环境没有扩展库而停在 ErrNotReady ——
+	// 那正好证明它**越过了闸门**,而不是被闸门挡回来的。
+	ps.ComplianceConfirmed = true
+	ps.ComplianceTermsVersion = operation_setting.CurrentComplianceTermsVersion
+	stillSkipped := complianceSkipped.Load()
+	_, err = writeAccrual(context.Background(), in)
+	require.ErrorIs(t, err, qydb.ErrNotReady,
+		"合规已确认时必须走到取库句柄那一步")
+	assert.Equal(t, stillSkipped, complianceSkipped.Load(), "放行的那次不该计入跳过")
 }

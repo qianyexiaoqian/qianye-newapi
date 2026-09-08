@@ -44,11 +44,60 @@ export type QyAiOutcome =
  *   这一列出现之前的唯一行为**,后端把空串与任何不认识的取值都折到它上面。
  * - `qwen3guard` —— 护栏模型:阿里 Qwen3Guard 一类**专门为安全分类微调**的
  *   小模型。不发提示词,它直接吐 `Safety: Unsafe` / `Categories: ...` 标签。
+ * - `granite_guardian` —— IBM Granite Guardian。**一次只审一种风险**,
+ *   只回 Yes / No;审哪一种由 `risk_name` 决定,类别因此来自"我们问了什么"
+ *   而不是模型的回答。
+ * - `llama_guard` —— Meta Llama Guard。一次给出多标签:`safe`,或者
+ *   `unsafe` + 一行 S 码(S1…S14)。
  *
- * 两条路并列,不互相取代 —— 代价、延迟、准确性、类型体系都不同,界面上必须
+ * 几条路并列,不互相取代 —— 代价、延迟、准确性、类型体系都不同,界面上必须
  * 把差别说出来,不能只给一个下拉框。
  */
-export type QyAiProtocol = 'json_prompt' | 'qwen3guard'
+/**
+ * 审核渠道说哪一种"方言"。**必须与后端 normalizeAIProtocol 的取值集一字不差。**
+ *
+ * 少一档的代价不是"少一个选项":存着那一档的渠道在下拉里匹配不到任何 option,
+ * 触发器显示空白、一动就被重置成第一项 —— 表现就是「已添加的渠道再也改不了协议」。
+ * `granite_guardian` 后端(归一、校验、aireview_granite.go 的解析器)早就齐了,
+ * 而这里漏了一档,于是演示站上那个 granite 渠道整整一段时间改不动。
+ */
+export type QyAiProtocol =
+  | 'json_prompt'
+  | 'qwen3guard'
+  | 'granite_guardian'
+  | 'llama_guard'
+
+/**
+ * Granite Guardian 一次要审的那一种风险。**必须与后端 graniteRisks 的键一字不差。**
+ *
+ * 空串 = `harm` = 不发 system = 这一格出现之前的行为。拼写按 **Ollama 模板**
+ * 那一套(`jailbreak` 而不是 HuggingFace 的 `jailbreaking`)—— 模板对 system
+ * 做的是精确匹配,拼错会静默落回 harm 档,而那是一次看不见的口径改变。
+ *
+ * 后端只放行这七档:另外四档(groundedness / answer_relevance /
+ * context_relevance / function_calling)要 assistant / context / tools 角色,
+ * 转发前审核只有用户消息这一个挂载点,给不出来。
+ */
+export type QyAiGraniteRisk =
+  | ''
+  | 'harm'
+  | 'jailbreak'
+  | 'violence'
+  | 'sexual_content'
+  | 'social_bias'
+  | 'profanity'
+  | 'unethical_behavior'
+
+/** 下拉框的固定出场顺序,与后端 graniteRiskOrder 一致。 */
+export const QY_AI_GRANITE_RISKS: readonly Exclude<QyAiGraniteRisk, ''>[] = [
+  'harm',
+  'jailbreak',
+  'violence',
+  'sexual_content',
+  'social_bias',
+  'profanity',
+  'unethical_behavior',
+]
 
 /**
  * 一档作用域策略在它指定的那几个渠道之间怎么分发。
@@ -90,6 +139,14 @@ export type QyAiChannel = {
   model: string
   /** 后端下发的恒是归一后的取值,**不会是空串**。 */
   protocol: QyAiProtocol
+  /**
+   * Granite 这一次审的风险。非 Granite 渠道上恒为空串(后端写入侧已清空)。
+   *
+   * 与 `protocol` 刻意相反,后端**不**把空串补齐成 `harm`:空串就是运营选的
+   * "默认",把它画成显式选中的 harm 会让"没动过"与"选了 harm"在界面上
+   * 无法区分,而这两者在审计差异页是不同的事。
+   */
+  risk_name: QyAiGraniteRisk
   /** `json_prompt` 渠道上恒为空串,界面据此决定要不要画那一格。 */
   guard_controversial: QyAiGuardControversial
   /**
@@ -106,6 +163,20 @@ export type QyAiChannel = {
    * 想要"完全不升级"请选 `safe` 档 —— 那一格的字面意思就是这个。
    */
   guard_elevate: string[]
+  /** 审核渠道分组。空串是合法值(= 未分组),不是"属于所有分组"。 */
+  group: string
+  /** 这个渠道的审核提示词基底。空 = 用内置默认(发出去的那一份会拼上类型清单)。 */
+  prompt: string
+  /** 别用 `prompt !== ''` 自己算:输入框预填之后那个判断永远为真。 */
+  prompt_source: QyAiPromptSource
+  /** 命中拦截时返回给用户的那句话。空 = 沿用规则自己的那一份。 */
+  block_message: string
+  /** 判出违规时给被判的那个用户发一封邮件。影子命中恒不发。 */
+  notify_email: boolean
+  /** 邮件标题模板。空 = 用内置默认。 */
+  email_subject: string
+  /** 邮件正文模板,按 HTML 发送。空 = 用内置默认。 */
+  email_body: string
   has_key: boolean
   key_hint: string
   /**
@@ -130,9 +201,23 @@ export type QyAiChannel = {
 
 export type QyAiChannelInput = {
   name: string
+  /** 审核渠道分组。空串 = 未分组(合法值)。 */
+  group: string
+  /** 这个渠道的审核提示词。逐字等于内置默认时提交空串,见 qyAiPromptToPayload。 */
+  prompt: string
+  /** 命中拦截时返回给用户的那句话。空 = 沿用规则自己的那一份。 */
+  block_message: string
+  /** 判出违规时给被判的那个用户发一封邮件。 */
+  notify_email: boolean
+  /** 邮件标题模板。空 = 用内置默认。 */
+  email_subject: string
+  /** 邮件正文模板(HTML)。空 = 用内置默认。 */
+  email_body: string
   base_url: string
   model: string
   protocol: QyAiProtocol
+  /** 只在 protocol === 'granite_guardian' 时会被提交,见 qyAiDraftToInput。 */
+  risk_name: QyAiGraniteRisk
   guard_controversial: QyAiGuardControversial
   guard_categories: string[]
   guard_elevate: string[]
@@ -198,14 +283,23 @@ export type QyAiSetting = {
   enabled: boolean
   pre_timeout_ms: number
   async_timeout_ms: number
-  /**
-   * **空串 = 用内置默认提示词,并跟随它的后续升级**;非空 = 本站自定义的一份。
-   * 界面上输入框会被预填成默认全文,所以"输入框非空"绝不等于"已自定义" ——
-   * 那一档要看 `prompt_source`。
-   */
-  prompt: string
+  // **没有 prompt。** 2026-09-06 起提示词住在每个审核渠道上(QyAiChannel.prompt),
+  // 理由是它与协议绑死:护栏协议压根不发提示词。
   max_input_chars: number
   third_party_notice_ack: boolean
+  /** 审核明细里留不留一份(脱敏并截断后的)送审内容。 */
+  log_content: boolean
+  /**
+   * 判定违规的行**始终留存、且留完整**(不受上面那个开关与下面那个字数上限约束)。
+   *
+   * 后端是三态列(NULL = 从没设置过 = 按开处理),但 GET 回显时已经折成布尔,
+   * 所以这里是 `boolean`。保存时原样回传即可 —— 那一次就写下了显式值。
+   */
+  log_content_violation_full: boolean
+  /** 留存内容的字符上限。生效范围见 effective.log_content_range。 */
+  log_content_max_chars: number
+  /** 审核明细的保留天数,1..effective.max_log_retention_days。没有「永久保留」这一档。 */
+  log_retention_days: number
 }
 
 /** 提示词属于哪一档。`default` 才会跟随内置默认提示词的后续升级。 */
@@ -280,15 +374,10 @@ export type QyCyberSettingResponse = {
 export type QyAiSettingResponse = {
   setting: QyAiSetting
   default_prompt: string
-  /** 别用 `setting.prompt !== ''` 自己算:输入框预填之后那个判断永远为真。 */
-  prompt_source: QyAiPromptSource
-  prompt_categories: QyAiPromptCategoryReport
   /** 违规类型表里参与 AI 审核的 key,**由后端从类型表现算**,不是写死的闭集。 */
   categories: string[]
   /** 自动生成的那一段类型清单。前端用它在本地渲染预览与做同一套对账。 */
   category_block: string
-  /** 库里那一份提示词拼上清单之后、**真正发出去**的全文。 */
-  prompt_preview: string
   category_details: QyAiCategoryDetail[]
   key_configured: boolean
   effective: {
@@ -300,6 +389,15 @@ export type QyAiSettingResponse = {
     pre_timeout_hint: string
     max_pre_timeout: number
     max_async_timeout: number
+    /**
+     * 审核明细写在独立的台账库(log_database.dsn)里吗。
+     *
+     * 界面据此说明日志落在哪 —— 没有它,运维改完那一段配置无法确认它到底
+     * 生效没有,而这一段最安静的失败模式是段名写错 → 整段被忽略 → 一切照旧。
+     */
+    log_db_separate: boolean
+    log_content_range: { min: number; max: number }
+    max_log_retention_days: number
   }
 }
 
@@ -309,9 +407,6 @@ export type QyAiSettingResponse = {
  */
 export type QyAiSettingSaveResult = {
   setting: QyAiSetting
-  prompt_source: QyAiPromptSource
-  prompt_categories: QyAiPromptCategoryReport
-  prompt_preview: string
 }
 
 /**
@@ -338,15 +433,15 @@ export type QyAiScope = {
   pre_sample_rate_bps: number
   async_sample_rate_bps: number
   /**
-   * **这一档自己的**审核提示词。空 = 用设置卡片上那一份全局提示词
-   * (全局也空则用内置默认)。
+   * 这一档要用的**审核渠道分组**(见 QyAiChannel.group)。
    *
-   * 它只覆盖「判定说明」那一段:违规类型清单永远由后端从违规类型表现算并拼进去,
-   * **不要在这里手抄一份清单** —— 抄了之后运营在类型页新建一个类型,
-   * 这一档会静默地永远返回旧类型。要指定清单出现的位置,用
-   * {@link QY_AI_CATEGORY_PLACEHOLDER} 占位符。
+   * 与 `channel_ids` 二选一,而且启用中的策略不允许两个都空(后端 400):
+   * 两个都空的旧含义是"发给全部启用渠道",那会让之后新加的任何渠道自动开始
+   * 收到用户内容。两格同时填时 `channel_ids` 是主选,分组是它们全挂之后的补位池。
+   *
+   * **提示词不在这里了** —— 2026-09-06 起它住在渠道上。
    */
-  prompt: string
+  channel_group: string
   /**
    * 这一档的命中**一律**记为哪个违规类型。0 = 不指定(按规则自己绑的类型记)。
    *
@@ -387,15 +482,6 @@ export type QyAiScope = {
   updated_at: number
 }
 
-/**
- * 这一档的提示词属于哪一档。
- *
- * 与全局那一格的 `QyAiPromptSource` **不是同一个枚举**:那边的 `default` 指
- * 「用内置默认并跟随它升级」,这边的 `inherit` 指「用全局那一份」,
- * 而全局那一份完全可能是本站自定义的。混用会让界面把「继承」显示成「默认」。
- */
-export type QyAiScopePromptSource = 'inherit' | 'custom'
-
 /** 新建/编辑入参。`id` 为 0 或省略表示新建。 */
 export type QyAiScopeInput = Omit<
   QyAiScope,
@@ -421,12 +507,12 @@ export type QyAiScopeSummaryRow = {
   pre_sample_rate_bps: number
   async_sample_rate_bps: number
   /**
-   * 这一档用的是继承来的提示词还是自己写的一份。兜底档恒为 `inherit`。
+   * 这一档用的审核渠道分组(空 = 用下面的 channel_ids 指定)。
    *
-   * 摆在汇总表上而不是只在编辑表单里:一份写坏的作用域提示词与一份正常的
-   * 在列表上长得完全一样,而它的后果是这一档的判定口径整体偏掉。
+   * 摆在汇总表上而不是只在编辑表单里:"这一档的用户内容会流到哪个池子"是这张表
+   * 最该一眼看清的事,而一条指错分组的策略与一条正常的在列表上长得完全一样。
    */
-  prompt_source: QyAiScopePromptSource
+  channel_group: string
   /** 这一档指定的「命中一律记为」类型 id,0 = 不指定。类型名去违规类型清单里 join。 */
   category_id: number
   /**
@@ -487,8 +573,8 @@ export type QyAiScopeList = {
     name: string
     pre_sample_rate_bps: number
     async_sample_rate_bps: number
-    /** 提示词原文不下发,只给档位 —— 它已经在表单里了。 */
-    prompt_source: QyAiScopePromptSource
+    /** 快照里那一档用的渠道分组。与表单里的不一致说明还没重载到。 */
+    channel_group: string
     category_id: number
     channel_ids: number[]
     /** 快照里那一档的分发方式(已归一)。与表单里的不一致说明还没重载到。 */
@@ -550,9 +636,43 @@ export type QyAiReviewLog = {
   rule_id: number
   record_id: number
   request_id: string
+  /** 被审那次请求的模型名(不是审核渠道的模型,那是 review_model)。 */
   model_name: string
+  /** 被审那次请求实际使用的用户分组。 */
   using_group: string
+  /**
+   * 送审内容的**原始**字符数(截断入库之前)。
+   *
+   * 列表接口不下发 content 本身(一页几十 KB 的 text 列,而表格里也放不下),
+   * 只给这个数:> 0 表示这一行有内容可看,点开详情接口去取。
+   */
+  content_chars: number
+  /** 列表里恒为 undefined —— 内容只在详情接口返回。 */
+  content?: string
   created_at: number
+}
+
+/** 单条审核明细的详情,含送审内容。 */
+export type QyAiReviewLogDetail = {
+  item: QyAiReviewLog & { content: string }
+  /** 留存的那一段被截断过(content 的字数 < content_chars)。 */
+  truncated: boolean
+  /** 内容留存开关**当前**是否打开 —— 用来解释"为什么这条没有内容"。 */
+  log_content_enabled: boolean
+}
+
+/** 审核日志列表的筛选条件。空串/undefined 一律不参与筛选。 */
+export type QyAiLogFilters = {
+  group?: string
+  model?: string
+  /** 按**审核渠道 id** 筛。用 id 不用名字:渠道改名之后历史明细里存的是旧名。 */
+  channel_id?: number
+  phase?: string
+  outcome?: string
+  /** '1' 只看判违规的,'0' 只看判未违规的,'' 全部。 */
+  violated?: string
+  user_id?: number
+  request_id?: string
 }
 
 export type QyAiChannelTestResult = {

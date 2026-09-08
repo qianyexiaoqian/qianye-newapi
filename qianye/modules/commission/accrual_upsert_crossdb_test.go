@@ -35,6 +35,9 @@ import (
 //
 //	QY_TEST_MYSQL_DSN / QY_TEST_PG_DSN
 func TestWriteAccrualInsertedFlagIsExactOnEveryDialect(t *testing.T) {
+	// 合规门在 writeAccrual 上,没确认时一条行都不落 —— 本用例断言的是
+	// inserted 这个返回值的精确性,不是那道门。
+	withCompliance(t, true)
 	type fixture struct {
 		name string
 		open func(*testing.T) *gorm.DB

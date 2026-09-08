@@ -220,22 +220,61 @@ shadow 已经整体下线(`hook.go`:现在只有「有 scope 行 = 清单立即�
 DROP TABLE qy_group_write_denies;
 ```
 
-## D-14 / D-15:提现整体退场;佣金账本按「星辉」口径恢复
+## D-14 / D-15 / D-16:提现整体退场;佣金账本恢复,随后改记「星屑」
 
-- **退役时间**:2026-09-05(D-14,见 `decisions.md`);**D-15 同日**把佣金账本恢复。
+- **退役时间**:2026-09-05(D-14,见 `decisions.md`);**D-15 同日**把佣金账本恢复;
+  **D-16 同日**把它的记账单位从「星辉」(额度)改成**星屑**。
 - **观察期**:**无**。项目方原话「不需要兼顾旧的,全部改造;当前没有上线」—— 演示库里的数据是测试夹具,
   不导出、不迁移。
-- **D-15 之后仍在用的**:六张 `qy_commission_accrual / balance / settlement / freeze / settle_run / group_rate`
-  **回到** `modules/commission` 的 `Tables()`,由 AutoMigrate 重建(列有变化:`balance.withdrawn_quota` 改名
-  `credited_quota`、法币列全部删除;**不迁旧数据**,演示库里的旧行请先 DROP 再让 AutoMigrate 建新表),
-  外加新表 `qy_commission_credit`(自动入账记录)。它们**不在**下面的退役清单里。
+- **D-16 之后仍在用的**:五张 `qy_commission_accrual / balance / settlement / settle_run / group_rate`
+  加上 `qy_commission_credit`(自动入账记录),由 AutoMigrate 管理。它们**不在**下面的退役清单里,
+  但**必须先 DROP 再让 AutoMigrate 重建**,理由见下面那一段。
+- **D-16 新退役的**:`qy_commission_freeze`。它是 D-15 跨库两阶段入账的幂等表
+  (freeze / settle / unfreeze 三个动作各一行);佣金改记星屑之后入账是扩展库里的一个本地事务,
+  没有中间态可记,那张表连同 `balance.frozen_quota` 列、`credit` 的 pending / failed / held 三态、
+  资金单 kind `commission_credit` 的 Resolver 一起退役。
 - **仍然退役的**:法币折算档、改名重建的失效流水、提现五张表与收款明文查看名册。邀请关系表
   `qy_invite_relation` 归 `modules/invite`,跨节点失效流水改名为 `qy_invite_cache_invalidation`
   (由 AutoMigrate 新建,旧的 `qy_commission_cache_invalidation` 一起退役)。
 
+### ⚠ D-16 升级必做:六张 `qy_commission_*` 先 DROP 再重建
+
+不是"建议",是**必须**。D-16 同时改了列名与**单位**:
+
+| 旧列(D-15,单位=额度) | 新列(D-16,单位=星屑) |
+| --- | --- |
+| `balance.available_quota` | `balance.available` |
+| `balance.frozen_quota` | *(删除)* |
+| `balance.credited_quota` | `balance.credited` |
+| `balance.total_earned_quota` / `total_clawback_quota` | `balance.total_earned` / `total_clawback` |
+| `settlement.granted_quota` / `reclaimed_quota` | `settlement.granted` / `reclaimed` |
+| `credit.quota` / `credit.fund_order_no` | `credit.amount` / `credit.ledger_no` |
+| *(无)* | `accrual.quota_per_unit`(计佣当刻冻结的刻度) |
+
+AutoMigrate 只加列、不改名也不删列。把旧行留着的后果不是"看起来乱",而是:新列全是 0、
+旧列没人读,于是**每个人的佣金余额在界面上变成 0 而账本里那笔钱还在**;更糟的是
+`accrual.quota_per_unit` 补成 0,历史行的复算(`base × rate / 0`)一律得 0 —— I3 恒等式
+在这些行上永远对不上,而没有任何一处会报错。
+
+演示库执行(三种数据库通用;没有外键,顺序无关):
+
+```sql
+DROP TABLE qy_commission_accrual;
+DROP TABLE qy_commission_balance;
+DROP TABLE qy_commission_settlement;
+DROP TABLE qy_commission_settle_run;
+DROP TABLE qy_commission_group_rate;
+DROP TABLE qy_commission_credit;
+DROP TABLE qy_commission_freeze;
+```
+
+分组费率(`qy_commission_group_rate`)也在里面:它的费率列是万分比整数、单位没变,
+但一起重建最省事,重建后在管理端「分组费率」页重录即可。
+
 | 表名                               | 退役时行数 | 说明                                         |
 | ---------------------------------- | ---------- | -------------------------------------------- |
-| `qy_commission_fiat_rate`          | 演示库,未统计 | 分组法币折算比例(D-15 的星辉口径没有法币)    |
+| `qy_commission_freeze`             | 演示库,未统计 | D-15 跨库入账的冻结幂等表(D-16 整层退役)    |
+| `qy_commission_fiat_rate`          | 演示库,未统计 | 分组法币折算比例(D-15 之后没有法币)          |
 | `qy_commission_cache_invalidation` | 同上       | 跨节点失效流水(改名重建)                     |
 | `qy_withdrawals`                   | 同上       | 提现申请                                     |
 | `qy_withdrawal_events`             | 同上       | 提现状态流转                                 |
@@ -247,6 +286,7 @@ DROP TABLE qy_group_write_denies;
 **手工 DROP**(SQLite / MySQL / PostgreSQL 通用;没有外键,顺序无关):
 
 ```sql
+DROP TABLE qy_commission_freeze;
 DROP TABLE qy_commission_fiat_rate;
 DROP TABLE qy_commission_cache_invalidation;
 DROP TABLE qy_withdrawals;
@@ -272,3 +312,16 @@ DROP TABLE qy_pii_audits;
   下线日消费报表(只读 logs)。
 
 ---
+
+## qy_violation_ai_setting.prompt / qy_violation_ai_scope.prompt(2026-09-06,D-18)
+
+审核提示词整体搬到 `qy_violation_ai_channel.prompt`。理由是它与**协议**绑死:
+护栏协议(qwen3guard / granite_guardian / llama_guard)压根不发提示词,而挂在全局/作用域上就允许
+"一份提示词被分发到一个根本不读提示词的渠道" —— 配得出来、不报错、完全不生效。
+
+**先搬后删**:`migrateAIPromptToChannels` 在启动期把作用域那一份抄给它指定的渠道
+(更具体的先赢)、全局那一份抄给其余仍为空的渠道,然后 `DROP COLUMN`。
+直接删等于把每一个改过提示词的站点悄悄退回内置默认 —— 判定口径整体换一份,
+而界面上一切正常。
+
+搬不动的情形(作用域有自己的提示词却没指定任何渠道)逐条打 SysError,交给人工抄。

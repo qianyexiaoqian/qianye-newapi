@@ -783,6 +783,23 @@ type verdict struct {
 	//
 	// 它是**记录归档**的覆盖,不是判据的覆盖:命中与否仍然完全由规则决定。
 	CategoryOverride int64
+	// BlockOverride 非空时压过规则自己的拦截文案,由 newRecord 与
+	// violationBlockError 共同消费。
+	//
+	// 与 CategoryOverride 同一条理由:唯一的来源是 **AI 审核渠道**上配的那一句
+	// (项目方原话「这个返回文案在审核渠道里设定返回」),本地扫描永远留空 ——
+	// 它手上没有渠道。放在 verdict 上而不是多传一个参数,是为了让"响应体里那句话"
+	// 与"使用记录里那句话"只算一次:两边各算一次的后果不是报错,而是用户在
+	// API 上看到 A、在使用记录里看到 B,而那正是本次要修的问题。
+	BlockOverride string
+	// EmailNotice 非 nil 时表示"这次命中要给用户发一封邮件",由 newRecord 抄到
+	// 记录上、persistRecord 消费。与 BlockOverride 完全同构:唯一来源是 **AI 审核
+	// 渠道**上的那个开关与模板,本地扫描永远留 nil —— 它手上没有渠道。
+	//
+	// 放在 verdict 上而不是给 handleHit 多传一个参数:那个函数已经有八个形参,
+	// 而这一格与 BlockOverride 是同一类东西(都来自"这一次是谁判的"那一端),
+	// 让它们住在一起,下一个人找"渠道还能覆盖什么"时只需要看一个结构体。
+	EmailNotice *emailNotice
 }
 
 // scanPrompt 执行 prompt 阶段匹配。

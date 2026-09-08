@@ -207,3 +207,48 @@ func TestInviteeEligibleHonoursTheModuleSwitch(t *testing.T) {
 	assert.False(t, match.Eligible())
 	assert.Nil(t, relationRowOf(t, gdb, 122), "关掉之后连快照都不建")
 }
+
+// 互邀环闭合时**两条腿**都要停,不能只停后发现的那一条。
+//
+// blocked 只在 INSERT 那一刻算一次,而 OnConflict{DoNothing} 保证已存在的行
+// 一个字节都不会变;两条腿又几乎不可能同时出现(先有 A→B,后来 A 的上线才被
+// 绑成 B)。于是环闭合时只有 B→A 被拉黑,A→B 那条陈旧的行此后再也不会被
+// 重新审视 —— "互邀自刷"这条判据的效力被砍掉一半。
+func TestReciprocalInviteBlocksBothLegs(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, inviteConfig(0))
+	mainDB := useMainDB(t, &model.User{})
+
+	now := common.GetTimestamp()
+	// 第一步:B(102)是 A(101)的下线,此时 A 还没有上线,环没闭合。
+	seedUser(t, mainDB, 101, "qy-recip-a", 0, now-90*86400)
+	seedUser(t, mainDB, 102, "qy-recip-b", 101, now-90*86400)
+
+	match, err := InviteeEligible(t.Context(), 102)
+	require.NoError(t, err)
+	require.True(t, match.Eligible(), "环还没闭合,B 这条腿应当正常")
+
+	var legAB InviteRelation
+	require.NoError(t, gdb.Where("invitee_id = ?", 102).First(&legAB).Error)
+	require.False(t, legAB.Blocked, "此刻 A→B 还不该被拉黑")
+
+	// 第二步:管理员把 A 的上线绑成 B,环闭合。A 再消费时落 B→A 这条腿。
+	require.NoError(t, mainDB.Model(&model.User{}).Where("id = ?", 101).
+		Update("inviter_id", 102).Error)
+	invalidateInviter(101)
+
+	match, err = InviteeEligible(t.Context(), 101)
+	require.NoError(t, err)
+	assert.False(t, match.Eligible(), "环闭合时新落的这条腿必须被拉黑")
+
+	// 关键断言:**先前那条腿**也必须停。
+	require.NoError(t, gdb.Where("invitee_id = ?", 102).First(&legAB).Error)
+	assert.True(t, legAB.Blocked,
+		"A→B 这条陈旧的腿也必须停 —— 只停一条等于让互邀环继续按一半的速度发星屑")
+	assert.Equal(t, "reciprocal_invite", legAB.RiskFlags)
+
+	// 缓存也要跟着失效,否则库里对了、判定还按旧快照走 60 秒。
+	match, err = InviteeEligible(t.Context(), 102)
+	require.NoError(t, err)
+	assert.False(t, match.Eligible(), "拉黑之后的判定必须立刻生效,不等 TTL")
+}

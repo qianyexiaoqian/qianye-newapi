@@ -607,8 +607,11 @@ func TestAcceptPickList(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		cap      int
+		name string
+		cap  int
+		// kind / drawMode 留空表示"按双色球构造",这张表原本全是双色球用例。
+		kind     string
+		drawMode string
 		req      entryRequest
 		want     []string
 		wantCode string
@@ -680,6 +683,34 @@ func TestAcceptPickList(t *testing.T) {
 			want: picks(1),
 		},
 		{
+			// 玩法闸门:批量只对双色球成立。非双色球上 acceptPick 接受空串,
+			// 于是 `{"picks":["","",…]}` 曾经在按名次抽 / 按概率摇号 / 竞猜上
+			// 一次就是 N 笔付费参与,而批内第 2..N 注不计冷却。
+			name:     "按名次抽不接受多注",
+			cap:      defaultPicksPerRequest,
+			kind:     KindDraw,
+			drawMode: DrawModeRank,
+			req:      entryRequest{Picks: []string{"", ""}},
+			wantCode: "qy_lot_batch_not_allowed",
+		},
+		{
+			name:     "竞猜不接受多注",
+			cap:      defaultPicksPerRequest,
+			kind:     KindGuess,
+			req:      entryRequest{Picks: []string{"", ""}},
+			wantCode: "qy_lot_batch_not_allowed",
+		},
+		{
+			// 单元素 picks 与单注 pick 等价,批内豁免用不上(batchIndex 恒为 0),
+			// 因此不拦 —— 拦它只会让老客户端的单注提交莫名其妙地失败。
+			name:     "非双色球的单注 picks 照常受理",
+			cap:      defaultPicksPerRequest,
+			kind:     KindDraw,
+			drawMode: DrawModeRank,
+			req:      entryRequest{Picks: []string{""}},
+			want:     []string{""},
+		},
+		{
 			name:     "pick 与 picks 同时提交",
 			cap:      defaultPicksPerRequest,
 			req:      entryRequest{Pick: "01,02,03|01", Picks: []string{"04,05,06|02"}},
@@ -697,7 +728,16 @@ func TestAcceptPickList(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := acceptPickList(tc.cap, tc.req)
+			// 默认按双色球构造:这张表原本全是双色球的受理用例。
+			// 玩法闸门的用例自带 kind/drawMode。
+			act := &Activity{
+				Kind: KindDraw, DrawMode: DrawModeBall,
+				MaxPicksPerRequest: tc.cap,
+			}
+			if tc.kind != "" {
+				act.Kind, act.DrawMode = tc.kind, tc.drawMode
+			}
+			got, err := acceptPickList(act, tc.req)
 			if tc.wantCode != "" {
 				be, ok := AsBizError(err)
 				require.Truef(t, ok, "期望一条业务错误,拿到 %v", err)

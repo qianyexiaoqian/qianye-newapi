@@ -49,6 +49,7 @@ import {
   qySdHoldReasonKey,
 } from '../lib/display'
 import type { QyStardustMe, QyStardustYesterday } from '../types'
+import { QyStardustForecastCard } from './forecast-card'
 
 /**
  * 「余额」—— 星屑选择夹的第一张标签。
@@ -74,6 +75,10 @@ export function QyStardustBalanceBody() {
           <HoldAlert me={me} />
           <BalanceCard me={me} />
           <QyStatGrid items={statItems(me, t)} />
+          {/* 明日在昨日之前：昨天那一桶已成定局，今天这一桶才是用户此刻能
+              影响的那一个。它自己取数（服务端一小时一份），所以挂在这里而不是
+              塞进 /stardust/me —— 后者每进一次页面都要打，而估算要扫 LOG_DB。 */}
+          <QyStardustForecastCard />
           <YesterdayCard yesterday={me.yesterday} unit={unit} />
           {me.pending_held_count > 0 && (
             <Alert>

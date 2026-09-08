@@ -311,6 +311,129 @@ func handleAdminUploadCodes(c *gin.Context) {
 	respondOK(c, gin.H{"accepted": accepted, "rejected": rejected, "filled": filled})
 }
 
+// handleAdminListCodes 分页返回一件商品的码库存行,可按 status 筛。
+//
+// **不回明文,一个字符都不回**:这条是列表,一次越权就是全量泄漏。明文只有
+// handleAdminTakeCode 一条出口,逐枚、验密、写审计。
+func handleAdminListCodes(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagMall) {
+		return
+	}
+	page, size := httpq.Paginate(c, listPaging)
+	ctx := c.Request.Context()
+	handle := db.Get()
+	if handle == nil {
+		respondErr(c, db.ErrNotReady)
+		return
+	}
+	gdb := handle.WithContext(ctx)
+	p, err := loadProductByNo(gdb, c.Param("no"))
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	rows, total, err := listCodes(ctx, gdb, p, c.Query("status"), page, size)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	// 提卡人的用户名从主库批量取,与订单列表同形(Unscoped:管理员账号可能已被删,
+	// 但"当初是谁提走的"必须还能显示)。
+	takers := adminNamesOf(ctx, rows)
+	// 已发出的码要显示"发给了哪张单":order_id 是内部自增 id,不下发,换成单号。
+	orderNos, err := orderNosByIds(gdb, rows)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(rows))
+	for i := range rows {
+		items = append(items, codeStockView(&rows[i], orderNos[rows[i].OrderId], takers[rows[i].TakenBy]))
+	}
+	respondOK(c, gin.H{"items": items, "total": total, "page": page, "page_size": size})
+}
+
+// handleAdminTakeCode 由管理员提走一枚未使用的兑换码,响应体里带明文。
+//
+// 路由上挂着 paypass.Middleware()(请求头 X-Qy-Pay-Password),这里不再验密 ——
+// 判据只有一处。明文只出现在这一次响应里:不进审计、不进请求台账(POST 的响应体
+// 本来就不入库)、不进任何日志。审计记的是"谁在什么时候提走了哪一枚(id)"。
+func handleAdminTakeCode(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagMall) {
+		return
+	}
+	productNo := c.Param("no")
+	id, ok := httpq.PathInt64(c, "id")
+	if !ok {
+		writeAdminAudit(c, "mall.code.take", productNo, 0, 0, qymodel.ResultFail, "码 id 不合法", "", "")
+		respondErr(c, errCodeNotFound)
+		return
+	}
+	ctx, cancel := guard.ColdContext(context.Background())
+	defer cancel()
+	handle := db.Get()
+	if handle == nil {
+		respondErr(c, db.ErrNotReady)
+		return
+	}
+	p, err := loadProductByNo(handle.WithContext(ctx), productNo)
+	if err != nil {
+		writeAdminAudit(c, "mall.code.take", productNo, 0, 0, qymodel.ResultFail, auditReason(err), "", "")
+		respondErr(c, err)
+		return
+	}
+	plain, row, err := takeCode(ctx, p, id, c.GetInt("id"))
+	if err != nil {
+		writeAdminAudit(c, "mall.code.take", productNo, 0, 0, qymodel.ResultFail, auditReason(err),
+			snapText(map[string]any{"code_id": id}), "")
+		respondErr(c, err)
+		return
+	}
+	writeAdminAudit(c, "mall.code.take", productNo, 0, 0, qymodel.ResultOK, fmt.Sprintf("code_id=%d", id),
+		snapText(map[string]any{"code_id": id, "status": CodeUnused}),
+		snapText(map[string]any{"code_id": id, "status": row.Status, "taken_at": row.TakenAt}))
+	respondOK(c, gin.H{"id": row.Id, "code": plain, "status": row.Status, "taken_at": row.TakenAt})
+}
+
+// handleAdminDeleteCode 删掉一枚未使用的兑换码。
+//
+// 已发出 / 已撤回 / 已提取的行删不掉(deleteCode 里判):它们是发放去向的证据。
+func handleAdminDeleteCode(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagMall) {
+		return
+	}
+	productNo := c.Param("no")
+	id, ok := httpq.PathInt64(c, "id")
+	if !ok {
+		writeAdminAudit(c, "mall.code.delete", productNo, 0, 0, qymodel.ResultFail, "码 id 不合法", "", "")
+		respondErr(c, errCodeNotFound)
+		return
+	}
+	ctx, cancel := guard.ColdContext(context.Background())
+	defer cancel()
+	handle := db.Get()
+	if handle == nil {
+		respondErr(c, db.ErrNotReady)
+		return
+	}
+	gdb := handle.WithContext(ctx)
+	p, err := loadProductByNo(gdb, productNo)
+	if err != nil {
+		writeAdminAudit(c, "mall.code.delete", productNo, 0, 0, qymodel.ResultFail, auditReason(err), "", "")
+		respondErr(c, err)
+		return
+	}
+	if err := deleteCode(ctx, gdb, p, id); err != nil {
+		writeAdminAudit(c, "mall.code.delete", productNo, 0, 0, qymodel.ResultFail, auditReason(err),
+			snapText(map[string]any{"code_id": id}), "")
+		respondErr(c, err)
+		return
+	}
+	writeAdminAudit(c, "mall.code.delete", productNo, 0, 0, qymodel.ResultOK, fmt.Sprintf("code_id=%d", id),
+		snapText(map[string]any{"code_id": id, "status": CodeUnused}), "")
+	respondOK(c, gin.H{"id": id})
+}
+
 // handleAdminListOrders 分页返回全部订单,可按 status / kind / user_id 筛;附用户名。
 func handleAdminListOrders(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagMall) {

@@ -920,7 +920,22 @@ func TestBatchStopReason(t *testing.T) {
 // 抽奖(rank / prob)与竞猜在协议上就是"一次一注 / 一次一票":
 // 抽奖没有选号可挑,竞猜的一次提交是"押哪一项 + 押多少",押两次同一项与押一次
 // 双倍金额在结算上完全等价。给它们加批量既没有需求,又要多一条能动钱的路径。
-// 判据在 acceptPick:非双色球带号一律**拒绝**而不是忽略。
+//
+// # 这条断言原先只守住了一半
+//
+// 判据当初只有 acceptPick 那一条:非双色球**带号**一律拒绝。于是本用例发的是
+// 带号的两注,拿到 qy_lot_pick_not_allowed,看起来"批量对非双色球不开口子"已经
+// 成立 —— 而实际上 acceptPick 对非双色球的**空串**是放行的(返回 "", nil),
+// `{"picks":["",""]}` 因此一路走到落单,一次请求 N 笔付费参与。
+//
+// 后果不在"多买几注",而在两道防连发同时失效:checkCaps 对批内第 2..N 注豁免
+// 冷却(batchIndex != 0),账号级 UserCriticalRateLimit 按请求数计 —— 冷却从
+// "每周期 1 笔"变成"每周期 cap 笔",账号桶从 20 笔变成 20×cap 笔,而
+// max_entries_per_user 默认 0 = 不限。
+//
+// 现在闸门提到了 acceptPickList(errBatchNotAllowed),判据从"带没带号"换成
+// "是不是双色球",空号那条路一并堵死。下面三段分别钉住:带号多注、空号多注、
+// 以及不该被误伤的单注。
 func TestPicksBatchStaysBallOnly(t *testing.T) {
 	ext := newPicksCapEnv(t)
 	newBallMainDB(t, 1_000_000)
@@ -945,6 +960,27 @@ func TestPicksBatchStaysBallOnly(t *testing.T) {
 	code, body := callJSON(t, r, http.MethodPost,
 		"/lottery/activities/"+act.ActNo+"/entries",
 		entryBody(t, "rank-1", []string{"01,02,03|01", "04,05,06|02"}))
+	require.Equalf(t, http.StatusBadRequest, code,
+		"普通抽奖的多注提交必须被拒绝: %s", body)
+	assert.Equal(t, "qy_lot_batch_not_allowed", errorCode(t, body),
+		"闸门先判玩法再判选号:批量本身就不该对非双色球成立")
+	assert.Equal(t, before, userStardust(t, ext), "被拒的提交不许扣钱")
+
+	// **空号的多注**:这才是当初漏掉的那一条。acceptPick 对非双色球的空串放行,
+	// 所以它此前一路走到落单,一次请求 N 笔付费参与、且批内不计冷却。
+	code, body = callJSON(t, r, http.MethodPost,
+		"/lottery/activities/"+act.ActNo+"/entries",
+		entryBody(t, "rank-blank", []string{"", "", "", "", ""}))
+	require.Equalf(t, http.StatusBadRequest, code,
+		"空号的多注提交同样必须被拒绝 —— 它是绕开冷却与账号级限流的那条路: %s", body)
+	assert.Equal(t, "qy_lot_batch_not_allowed", errorCode(t, body))
+	assert.Equal(t, before, userStardust(t, ext), "被拒的提交不许扣钱")
+
+	// 单注带号仍旧由 acceptPick 拒:那条判据没有被玩法闸门取代,
+	// 两者管的是不同的错(一次买几注 / 这场能不能选号)。
+	code, body = callJSON(t, r, http.MethodPost,
+		"/lottery/activities/"+act.ActNo+"/entries",
+		entryBody(t, "rank-single-pick", []string{"01,02,03|01"}))
 	require.Equalf(t, http.StatusBadRequest, code,
 		"普通抽奖带号必须被**拒绝**而不是忽略 —— 忽略意味着用户以为自己选了号: %s", body)
 	assert.Equal(t, "qy_lot_pick_not_allowed", errorCode(t, body))

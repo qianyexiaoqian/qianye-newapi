@@ -488,6 +488,7 @@ export function QyAdminLotteryDetail() {
                     ) : (
                       <span className='flex flex-col gap-1'>
                         <QyLotBallNumbers
+                          drawn
                           pick={activity.ball_result ?? ''}
                           size='sm'
                         />

@@ -28,8 +28,12 @@ func GetTopUpInfo(c *gin.Context) {
 
 	// 获取支付方式
 	payMethods := operation_setting.PayMethods
+	// 站外跳转入口跟支付方式并排展示，也跟着合规门禁一起关：它存在的理由就是
+	// 卖兑换码，而兑换码本身在未确认合规时是停用的。
+	externalLinks := operation_setting.GetTopUpExternalLinks()
 	if !complianceConfirmed {
 		payMethods = []map[string]string{}
+		externalLinks = []operation_setting.TopUpExternalLink{}
 	}
 
 	// 如果启用了 Stripe 支付，添加到支付方法列表
@@ -114,6 +118,7 @@ func GetTopUpInfo(c *gin.Context) {
 		}(),
 		"creem_products":          setting.CreemProducts,
 		"pay_methods":             payMethods,
+		"external_links":          externalLinks,
 		"min_topup":               operation_setting.MinTopUp,
 		"stripe_min_topup":        setting.StripeMinTopUp,
 		"waffo_min_topup":         setting.WaffoMinTopUp,

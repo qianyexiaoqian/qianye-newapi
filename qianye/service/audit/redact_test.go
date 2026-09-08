@@ -33,6 +33,11 @@ func TestIsSensitiveKey_MatchesAcrossNamingStyles(t *testing.T) {
 		"id_card", "idCard", "bank_card", "card_no", "iban", "wallet_address",
 		"key", "code", "pin", "cvv", "nonce", "iv", "ciphertext",
 		"account", "account_no", "payee_account",
+		// 收货信息:商城实物单的地址与联系方式。它在 mall 那一侧是加密落盘、
+		// 按单解密、90 天擦除的,台账不能成为同一份数据的明文旁路。
+		"address", "shipping_address", "receiverAddress", "consignee",
+		"contact", "contact_name", "receiver", "phone", "phoneNumber",
+		"mobile", "tel",
 	}
 	for _, k := range sensitive {
 		assert.Truef(t, IsSensitiveKey(k), "键 %q 必须被判定为敏感", k)
@@ -45,6 +50,8 @@ func TestIsSensitiveKey_MatchesAcrossNamingStyles(t *testing.T) {
 		"model_name", "rule_id", "decision", "note", "reason", "label",
 		"channel", "enabled", "status", "remark", "keyword",
 		"error_code", "country_code", "encoding", "idem_key", "cache_key",
+		// mobile / tel 走精确匹配而不是子串,就是为了让这两个不被误伤。
+		"is_mobile", "telemetry",
 	}
 	for _, k := range safe {
 		assert.Falsef(t, IsSensitiveKey(k), "键 %q 不该被误判为敏感", k)
@@ -74,6 +81,25 @@ func TestRedactBody_ErasesNestedAndArrayCredentials(t *testing.T) {
 	var back map[string]any
 	require.NoError(t, common.Unmarshal([]byte(got), &back))
 	assert.Equal(t, redactedPlaceholder, back["pay_password"])
+}
+
+// 商城实物单的下单请求体:地址与联系方式必须擦掉,而 product_no 与
+// client_request_id 必须留下 —— 这条路由刻意不走 credentialBodyRoutes 的整体丢弃,
+// 因为那两个字段是排查"下单失败 / 重复下单"唯一有用的线索。
+func TestRedactBody_ErasesShippingPIIButKeepsOrderTrace(t *testing.T) {
+	raw := []byte(`{
+		"product_no": "P-20260906-0001",
+		"client_request_id": "cri-8f21",
+		"address": "XX省YY市ZZ区某小区3栋201",
+		"contact": "13800138000"
+	}`)
+	got := RedactBody(raw, "application/json")
+
+	for _, leaked := range []string{"XX省YY市ZZ区某小区3栋201", "13800138000"} {
+		assert.NotContainsf(t, got, leaked, "台账里泄露了收货信息 %q", leaked)
+	}
+	assert.Contains(t, got, "P-20260906-0001", "商品编号是排障线索,不该被擦")
+	assert.Contains(t, got, "cri-8f21", "幂等键是排障线索,不该被擦")
 }
 
 // 非 JSON 一律不入库。表单里 pay_password=123456 与 page=2 在字节层面长得一样,

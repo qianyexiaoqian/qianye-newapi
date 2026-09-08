@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -1111,4 +1112,98 @@ func TestGuardCategoryMappingIsThreeTiered(t *testing.T) {
 		assert.Equal(t, CatViolentExtreme, key,
 			"内置目标多半已经绑好了规则与阈值,一个撞名的自建类型不该抢走那条链")
 	})
+}
+
+// 元数据端点闸门必须解析域名,不能只看字面 IP。
+//
+// 上一版是 `ip := net.ParseIP(host); if ip == nil { return nil }` —— 于是**任何
+// 域名直接放行**,而这道闸唯一要挡的那两个写法恰好都是域名:
+// `http://metadata.google.internal`,以及攻击者自己解析到 169.254.169.254 的
+// A 记录。注释里写着"零合法用途 + 拦它没有代价",而它实际上什么都没拦住。
+//
+// 这里只用字面量与不可解析的域名,不依赖真实 DNS:一条会因为断网而红的断言,
+// 最后总会被人加上 skip。
+func TestRejectCloudMetadataHostResolvesNames(t *testing.T) {
+	blocked := []string{
+		"http://169.254.169.254/latest/meta-data/", // AWS / 阿里云 / GCP 共用
+		"https://169.254.170.2/v2/credentials",     // ECS 任务角色
+		"http://[fe80::1]:8080/v1",                 // IPv6 链路本地
+	}
+	for _, raw := range blocked {
+		assert.Errorf(t, rejectCloudMetadataHost(raw), "%s 必须被拒", raw)
+	}
+
+	// 私网与回环是这个功能的**主要部署形态**(自建 Ollama、局域网审核服务),
+	// 一刀切禁掉私网会把功能废掉 —— 这道闸只拦链路本地那一格。
+	allowed := []string{
+		"http://localhost:11434/v1",
+		"http://127.0.0.1:11434/v1",
+		"http://10.0.0.5:8000/v1",
+		"http://192.168.1.20/v1",
+		"https://api.openai.com/v1",
+		// 解析不出来的域名放行:这道闸不是完整的出站白名单,
+		// 因一次解析失败就拒掉管理员刚填对的地址,代价更高。
+		"https://this-name-does-not-resolve.invalid/v1",
+	}
+	for _, raw := range allowed {
+		assert.NoErrorf(t, rejectCloudMetadataHost(raw), "%s 不该被拒", raw)
+	}
+
+	assert.Error(t, rejectCloudMetadataHost("http:///v1"), "缺主机名的地址必须被拒")
+}
+
+// 审核渠道的出站客户端一步都不许跟重定向。
+//
+// 闸门只看得见管理员填进库的那个地址,而 Go 默认跟最多 10 跳:一个 302 就能把
+// 已经过闸的地址换成 169.254.169.254,再由连通性试跑把响应体原样回显 2000 码点。
+func TestAIHTTPClientRefusesRedirects(t *testing.T) {
+	require.NotNil(t, aiHTTPClient.CheckRedirect,
+		"CheckRedirect 为 nil 时 Go 会跟最多 10 跳,元数据闸门等于形同虚设")
+	req := httptest.NewRequest(http.MethodGet, "http://169.254.169.254/latest/meta-data/", nil)
+	assert.Error(t, aiHTTPClient.CheckRedirect(req, nil),
+		"任何一跳重定向都必须让整次调用失败,而不是被跟过去")
+}
+
+// Granite Guardian 是二值分类器,两种既有协议都对不上它 —— 少了这条适配,
+// 把它配上去的后果不是报错而是**静默 fail-open**:解析失败 → 放行 + 落一行
+// bad_json,而运营看到的现象是"违规没被拦下"。
+//
+// 实测(ibm/granite3.1-guardian:2b 经 Ollama 的 OpenAI 兼容端点):良性回 "No",
+// 违规回 "Yes",而且系统提示词被完全无视 —— 要它吐 JSON 它回 "Yes",要它吐
+// Safety: 标签它还是回 "Yes"。这三条是这条协议存在的全部理由。
+func TestParseGraniteVerdict(t *testing.T) {
+	for _, s := range []string{"Yes", "yes", " YES ", "Yes.", "yes！", "\nYes\n"} {
+		v, err := parseGraniteVerdict(s)
+		require.NoErrorf(t, err, "%q 应当解析成功", s)
+		assert.Truef(t, v, "%q 应当判为违规", s)
+	}
+	for _, s := range []string{"No", "no", " NO ", "No.", "\r\nno\r\n"} {
+		v, err := parseGraniteVerdict(s)
+		require.NoErrorf(t, err, "%q 应当解析成功", s)
+		assert.Falsef(t, v, "%q 应当判为未违规", s)
+	}
+	// 不做前缀/包含匹配:那会把一个地址指错、后面挂着通用模型的渠道变成
+	// 随机拦截器。宁可可见地失败(fail-open + bad_json),也不要静默判错。
+	for _, s := range []string{
+		"", "   ", "maybe", "Yes, I can help with that", "unsafe",
+		"Safety: Unsafe", `{"violation":true}`, "是", "Y",
+	} {
+		_, err := parseGraniteVerdict(s)
+		assert.ErrorIsf(t, err, errGraniteInvalidResponse, "%q 必须判为形状不对", s)
+	}
+}
+
+// 协议归一与写入侧校验必须同时认这三种,否则要么保存不进去,要么保存进去了
+// 运行期又被折回 json_prompt —— 后者正是"配了护栏模型却永远 bad_json"那个形状。
+func TestGraniteProtocolIsAcceptedEndToEnd(t *testing.T) {
+	assert.Equal(t, AIProtocolGraniteGuardian, normalizeAIProtocol(AIProtocolGraniteGuardian))
+	assert.Equal(t, AIProtocolGraniteGuardian, normalizeAIProtocol(" granite_guardian "))
+	assert.True(t, aiProtocolValid(AIProtocolGraniteGuardian))
+	assert.False(t, aiProtocolValid("granite"), "拼错的取值必须在写入侧当场 400")
+
+	v := graniteVerdict(true, "")
+	assert.True(t, v.Violated)
+	assert.Equal(t, guardConfidenceUnsafe, v.Confidence, "与 qwen3guard 判 unsafe 同值")
+	assert.Empty(t, v.Category, "harm 档没有对应类别,交给 resolveCategory 折进兜底类型")
+	assert.False(t, graniteVerdict(false, "").Violated)
 }

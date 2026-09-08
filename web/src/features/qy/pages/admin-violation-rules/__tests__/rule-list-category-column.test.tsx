@@ -201,17 +201,24 @@ const categories = {
   ],
 }
 
+// 每次挂载前由 mountList 换成一个干净的实例。路由的 component 在渲染时才读它，
+// 那一刻必然已经赋过值 —— 但类型上仍是可空的，所以断言写在这里而不是用 `!`：
+// 真的为 null 时要在挂载那一刻炸出一句人话，而不是在 Provider 内部报一个
+// "cannot read properties of null" 的堆栈。
 let activeQueryClient: InstanceType<typeof QueryClient> | null = null
 
 const rootRoute = createRootRoute({ component: Outlet })
 const pageRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/qy/admin/violation-rules',
-  component: () => (
-    <QueryClientProvider client={activeQueryClient!}>
-      <QyAdminViolationRules />
-    </QueryClientProvider>
-  ),
+  component: function ViolationRulesRoute() {
+    assert.ok(activeQueryClient, 'mountList 还没准备好 QueryClient')
+    return (
+      <QueryClientProvider client={activeQueryClient}>
+        <QyAdminViolationRules />
+      </QueryClientProvider>
+    )
+  },
 })
 const routeTree = rootRoute.addChildren([pageRoute])
 
@@ -375,23 +382,24 @@ describe('规则列表的违规类型列', () => {
     )
   })
 
-  test('category_id=0 的历史规则按兜底类型显示，与后端口径一致', async () => {
+  test('category_id=0 写成「不指定 · 不计数」，与兜底桶分得开', async () => {
+    // 这一列此前把 0 折进兜底类型显示，因为后端保存时确实会那样改写。
+    // 改写已经取消（项目方口径：「违规类型未选择的，不应当纳入计数」），
+    // 于是这一列必须把两档分开 —— 兜底是一个真实的桶，进了桶就会推进
+    // 账号总量线；不指定一条线都不推进。写成同一句话，运营在列表上
+    // 根本看不出哪些规则其实永远不会封人。
     const container = await mountList([rule({ id: 1, category_id: 0 })])
     const at = headers(container).indexOf(dict.qy_vio_col_category)
     const text = rowCells(container, 0)[at] ?? ''
-    // 不能只看“写了未分类”：读不到清单时的兑底文案本身就是
-    // 「未分类(兜底)」，两者在字面上分不开。真正折进兜底类型时，
-    // 那一行的阈值状态会一起显示 —— 那才是“真的查到了那一行”的证据。
-    assert.notEqual(text, dict.qy_vio_col_category_none)
-    assert.ok(text.includes('未分类'), `没折进兜底类型：${text}`)
     assert.ok(
-      text.includes(dict.qy_vcat_flag_fallback),
-      `兜底标记缺失：${text}`
+      text.includes(dict.qy_vio_field_category_unbound),
+      `没写出「不指定」：${text}`
     )
     assert.ok(
-      text.includes(dict.qy_vcat_threshold_off),
-      `阈值状态缺失：${text}`
+      text.includes(dict.qy_vio_col_category_nocount),
+      `没标出「不计数」：${text}`
     )
+    assert.ok(!text.includes('未分类'), `不指定被写成了兜底桶：${text}`)
   })
 
   test('类型清单读不出来时退回中文措辞，不漏裸主键', async () => {
@@ -445,10 +453,10 @@ describe('规则列表的违规类型列', () => {
  *  L2 把这一列挪到最右（`actions` 之前）                     → 「紧挨着规则名称」红
  *     位置不是审美：类型是"这条规则算给谁"，挤到最右边等于又要横向找一次。
  *  L3 把阈值徽标两档一起删，只留类型名                       → 3 条红
- *  L4 `row.category_id > 0 ? … : categoryFallbackId`
- *     改成 `row.category_id`                                → 「category_id=0 …」红
- *     这一条最初没被抓到：读不到清单时的兜底文案本身就是「未分类(兜底)」，
- *     与真的折进兜底类型在字面上分不开。补上「阈值状态必须一起出现」之后才红 ——
- *     用例现在断言的是"真的查到了那一行"，不是"字里有未分类三个字"。
+ *  L4 删掉 `row.category_id <= 0` 那个提前返回（让 0 重新去查 categoryById）
+ *                                                          → 「category_id=0 …」红
+ *     这一档的历史：它曾经被折进兜底类型显示，因为后端保存时确实会那样改写。
+ *     改写取消之后，折叠就成了一句谎话 —— 列表会把一条永远不会封人的规则
+ *     写得和一条会推进账号总量线的规则一模一样。
  *  L5 读不到清单时改渲染 `row.category_id`                   → 「类型清单读不出来时…」红
  */

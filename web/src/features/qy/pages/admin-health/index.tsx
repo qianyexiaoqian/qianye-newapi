@@ -719,6 +719,23 @@ export function QyAdminHealth() {
                     <QyKeyValue label={t('qy_cfg_health_tables')}>
                       {health.migrate.table_count}
                     </QyKeyValue>
+                    {/* 台账库只在**分家之后**多画两行:没分家时它就是上面那个
+                        连接池,写"是否分家:否"以外的任何数字都是重复读数。
+                        分家了则必须看得见 —— 它自己会熔断,而那时的症状
+                        (审核日志一直是空的)在别处一个信号都没有。 */}
+                    <QyKeyValue label={t('qy_cfg_health_log_db')}>
+                      {health.log_db?.separate
+                        ? t('qy_cfg_health_log_db_separate')
+                        : t('qy_cfg_health_log_db_shared')}
+                    </QyKeyValue>
+                    {health.log_db?.separate ? (
+                      <QyKeyValue label={t('qy_cfg_health_log_db_state')}>
+                        {health.log_db.available
+                          ? t('qy_cfg_health_db_up')
+                          : t('qy_cfg_health_db_down')}
+                        {` · ${t('qy_cfg_health_fail_streak')} ${health.log_db.fail_streak ?? 0}`}
+                      </QyKeyValue>
+                    ) : null}
                   </TitledCard>
 
                   <TitledCard title={t('qy_cfg_health_two_phase')}>

@@ -134,7 +134,7 @@ func TestUpsertAIScopeRejectsUnusableChannel(t *testing.T) {
 			}).Error)
 
 			body := `{"name":"自助注册","enabled":true,"priority":100,` +
-				`"group_scope":"selfserve","group_scope_mode":"include",` +
+				`"group_scope":"selfserve","group_scope_mode":"include","channel_group":"自建护栏",` +
 				`"pre_sample_rate_bps":0,"async_sample_rate_bps":1000,` +
 				`"channel_ids":` + jsonIntList(tc.channelIds) + `}`
 			c, rec := aiScopeCtx(t, http.MethodPut, "/violation/ai-review/scopes", body)
@@ -300,7 +300,7 @@ func TestDisablingAScopeIsNeverBlockedByItsBrokenReferences(t *testing.T) {
 
 			body := `{"id":5,"name":"内部对接","enabled":` +
 				strconv.FormatBool(tc.enabled) + `,"priority":100,` +
-				`"group_scope":"internal","group_scope_mode":"include",` +
+				`"group_scope":"internal","group_scope_mode":"include","channel_group":"自建护栏",` +
 				`"pre_sample_rate_bps":0,"async_sample_rate_bps":1000,` +
 				`"channel_ids":` + jsonIntList(tc.channelIds) + `,` +
 				`"category_id":` + strconv.FormatInt(tc.categoryId, 10) + `}`

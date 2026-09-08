@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -185,6 +186,31 @@ type accrualInput struct {
 // ctx 必须一路传到 GORM 调用上:热路径 worker 的 200ms 上界只对
 // WithContext(ctx) 的语句生效,漏接就会一直等到 innodb_lock_wait_timeout。
 func writeAccrual(ctx context.Context, in accrualInput) (bool, error) {
+	if !operation_setting.IsPaymentComplianceConfirmed() {
+		// 支付合规门(D-G)。放在这个漏斗上而不是三个来源各放一份:
+		// consume / topup / redeem 三条获得线全部经过这里,而**当初只有 topup
+		// 那一条挂了闸** —— 下线消费返与兑换码返一路走到了入账。
+		//
+		// 那不是取舍而是漏:D-16 之后两条线发的是同一种货币(星屑)、打的是同一个
+		// 基数,而星屑侧的 complianceGate 把四个邀请类正值一律归零、写侧还 400 拒绝
+		// 正值。同一件事在两个模块里一个挡一个不挡,对运营就是"以为门关着,实际在发"。
+		// 而 commission.consume_rate_bps 出厂就是 500(5%),合规确认出厂是 false ——
+		// 默认组合恰好落在漏的那一侧。
+		//
+		// 返回 (false, nil) 而不是 error:对调用方这与"幂等命中"同形,
+		// 于是充值扫描的游标照常前进、热路径 worker 不会把它当成失败去重试。
+		// accrueTopUp 那一处的早退保留:它排在解析定价之前,省掉的是白做的工;
+		// 而这里是最后一道,新增第四条获得线时不会有人忘。
+		//
+		// **闸门刻意只在这一层,不在 writeAccrualTx 上。** 那一层还有两个调用方,
+		// 它们都不该被这道门挡住:
+		//   - clawback.go 的冲正 —— 合规没确认时更要能把已发的收回来,
+		//     把退款通道一起关掉是纯粹的反向伤害;
+		//   - api_admin_adjust.go 的手工增减 —— 那不是推广分成,而且它自己
+		//     已经挂了 RootActionStardustAdjust 那一档的闸。
+		complianceSkipped.Add(1)
+		return false, nil
+	}
 	gdb := db.Get()
 	if gdb == nil {
 		return false, db.ErrNotReady
@@ -334,17 +360,28 @@ func itoa64(v int64) string { return strconv.FormatInt(v, 10) }
 // 累加不改 mature_at —— 运营中午把 holding_days 从 7 改成 0,当天已建过桶的下线
 // 在那之后的消费会按旧持有期再压 7 天,而界面都按新配置显示 T+1。
 //
+// **刻度也必须进键**(quotaPerUnit):它与费率一样被冻结进行(Accrual.QuotaPerUnit),
+// 而且事后真的决定这一行怎么被处置 —— 退款冲正用 origin.QuotaPerUnit 重算
+// (clawback.go)。运营中午把 stardust.quota_per_unit 从 50 万调到 25 万,
+// 上午那一桶按 50 万算的 gross 会被下午按 25 万算出来的增量累加进去,于是
+//
+//	base_quota × rate_bps / 10000 / quota_per_unit == gross_amount + capped_amount  (I3)
+//
+// 在那一行上不再成立,账本自检从此验不了它;随后的退款还会按行上那个已经不对的
+// 刻度冲正 —— 调小刻度时冲少了,调大时冲多了。它是这条契约里唯一漏掉的那个值。
+//
 // 凡是被冻结进行、事后又决定这一行怎么处置的策略值,都必须参与聚合身份。
 // 代价只是"改配置当天多出一行",而这正是账面上应该看得见的事实。
 // 传进来的值必须与写进 MatureAt 的那个**同源钳位**(bucketMatureAt 把负数按 0 处理)。
-func consumeIdemKey(inviterId int, inviteeId int, day string, rate rateDecision, holdingDays int) string {
+func consumeIdemKey(inviterId int, inviteeId int, day string, rate rateDecision, holdingDays int, quotaPerUnit int64) string {
 	if holdingDays < 0 {
 		holdingDays = 0
 	}
 	return SourceConsume + ":" + itoa(inviteeId) + ":" + day +
 		":" + rate.Group + ":" + itoa(rate.Units) +
 		":h" + itoa(holdingDays) +
-		":u" + itoa(inviterId)
+		":u" + itoa(inviterId) +
+		":q" + itoa64(quotaPerUnit)
 }
 
 func topupIdemKey(tradeNo string) string { return SourceTopup + ":" + strings.TrimSpace(tradeNo) }

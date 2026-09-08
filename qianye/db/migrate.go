@@ -28,6 +28,50 @@ import (
 // 因此必须固定在同一条 *sql.Conn 上获取和释放。
 const migrateLockName = "qy_schema_migrate"
 
+// migrateLockNameLog 是台账库(log_database)那一把迁移锁。
+//
+// **必须与主库那一把不同名。** MySQL 的 GET_LOCK 是**服务器实例级**的
+// (逐条对照见 acquireMigrateLock),同名锁跨 schema 也互斥 —— 最常见的部署
+// 恰恰是"同一台 MySQL 上两个 schema",那样主库的迁移会把台账库的迁移挡在
+// 门外整整 30 秒,后者拿着 errMigrationInProgress 进降级态,要等下一分钟的
+// 复查才自愈。两把锁各管各的库,这个中间态就不存在了。
+const migrateLockNameLog = "qy_schema_migrate_log"
+
+// migrateTarget 描述"这一轮迁移的是哪一个库"。
+//
+// 它存在的唯一理由是台账库(见 config.Config.LogDatabase):迁移的每一步 ——
+// 建连接、抢锁、跑 DDL、核对表、降级复查 —— 在两个库上逐字相同,不同的只有
+// 连接配置、锁名与日志措辞。抄第二份的话,漏掉的那一处不会有任何症状:
+// 台账库的表建不出来只表现为"审核日志一直是空的"。
+type migrateTarget struct {
+	// label 是日志里的库名,例如"扩展库"/"台账库"。
+	label string
+	// cfg 是这个库的连接配置,决定 DSN、方言与 auto_migrate 闸门。
+	cfg config.Database
+	// lockName 是跨节点迁移互斥锁的名字,两个库必须不同(见上)。
+	lockName string
+	// handle 取这个库的业务句柄。取成函数而不是直接存指针:降级复查是个
+	// 长期运行的循环,而句柄在重连后会被整体替换。
+	handle func() *gorm.DB
+	// schema 是这个库自己的缺表降级态。两个库各记各的,否则台账库缺一张表
+	// 会让主库也被判成降级,而 /admin/health 上那份清单再也分不出是谁缺。
+	schema *schemaState
+}
+
+func mainMigrateTarget() migrateTarget {
+	return migrateTarget{
+		label: "扩展库", cfg: config.Get().Database,
+		lockName: migrateLockName, handle: Get, schema: &mainSchema,
+	}
+}
+
+func logMigrateTarget() migrateTarget {
+	return migrateTarget{
+		label: "台账库", cfg: config.Get().LogDatabase,
+		lockName: migrateLockNameLog, handle: LogHandle, schema: &logSchema,
+	}
+}
+
 // migrateLockTimeoutSeconds 是等待其他节点让出迁移锁的时长。
 // 超时不是错误 —— 说明别的节点正在迁移,本节点跳过即可。
 const migrateLockTimeoutSeconds = 30
@@ -158,10 +202,10 @@ func migrationGorm(sqlDB *sql.DB, dialect Dialect, logger gormlogger.Interface) 
 //
 // ctx 到期一律按"没抢到"处理,与 MySQL 侧等待超时同口径:两者都不是错误,
 // 而是"别的节点正在迁移",调用方据此走降级分支。
-func acquireMigrateLock(ctx context.Context, conn *sql.Conn, dialect Dialect) (bool, error) {
+func acquireMigrateLock(ctx context.Context, conn *sql.Conn, dialect Dialect, lockName string) (bool, error) {
 	wait := migrateLockWaitSeconds(ctx)
 	if dialect == DialectPostgres {
-		key := advisoryLockKey(migrateLockName)
+		key := advisoryLockKey(lockName)
 		deadline := time.Now().Add(time.Duration(wait) * time.Second)
 		for {
 			var got bool
@@ -184,7 +228,7 @@ func acquireMigrateLock(ctx context.Context, conn *sql.Conn, dialect Dialect) (b
 
 	var got sql.NullInt64
 	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, ?)",
-		migrateLockName, wait).Scan(&got); err != nil {
+		lockName, wait).Scan(&got); err != nil {
 		// 预算到期与"锁被别人持有"是同一个结论:本节点这一轮不建表。
 		// 上面留了 1 秒余量,正常情况下走不到这里;真走到了也不该把
 		// 主程序拖成启动失败(与 PostgreSQL 分支在 ctx.Done 上的处理同口径)。
@@ -226,12 +270,12 @@ func migrateLockWaitSeconds(ctx context.Context) int {
 //
 // 两家都会在连接关闭时自动释放,所以这里失败只告警不阻断 —— 但仍然要显式释放:
 // 连接归还给池之后不会立刻关闭,不显式释放会让锁一直挂到连接被池淘汰。
-func releaseMigrateLock(ctx context.Context, conn *sql.Conn, dialect Dialect) {
+func releaseMigrateLock(ctx context.Context, conn *sql.Conn, dialect Dialect, lockName string) {
 	var err error
 	if dialect == DialectPostgres {
-		_, err = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", advisoryLockKey(migrateLockName))
+		_, err = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", advisoryLockKey(lockName))
 	} else {
-		_, err = conn.ExecContext(ctx, "SELECT RELEASE_LOCK(?)", migrateLockName)
+		_, err = conn.ExecContext(ctx, "SELECT RELEASE_LOCK(?)", lockName)
 	}
 	if err != nil {
 		common.SysError("qianye: 释放迁移锁失败: " + err.Error())
@@ -260,19 +304,32 @@ func releaseMigrateLock(ctx context.Context, conn *sql.Conn, dialect Dialect) {
 // 并在表被建出来后自动解除。一次性的启动日志会滚走,每分钟一条的错误日志不会 ——
 // 就"别让故障拖到第一个请求才暴露"这个目的而言,它并不弱于 FatalLog。
 func Migrate(models ...any) error {
-	gdb := Get()
+	return migrateOn(mainMigrateTarget(), models)
+}
+
+// MigrateLog 对台账库(log_database)做同一件事。
+//
+// 契约与 Migrate 逐字相同,包括那条非对称:本节点亲自建完表却仍缺表 → 返回
+// error;无权建表 → 降级 + 持续喊。调用方只在 config.LogDatabaseSeparate()
+// 为真时调它 —— 台账库没分家时那些表跟着主库一起迁,不该走这条路。
+func MigrateLog(models ...any) error {
+	return migrateOn(logMigrateTarget(), models)
+}
+
+func migrateOn(t migrateTarget, models []any) error {
+	gdb := t.handle()
 	if gdb == nil {
 		return ErrNotReady
 	}
 	if len(models) == 0 {
 		return nil
 	}
-	err := runAutoMigrate(gdb, models)
+	err := runAutoMigrate(t, gdb, models)
 	switch {
 	case err == nil:
-		return verifyTables(gdb, models)
+		return verifyTables(t, gdb, models)
 	case errors.Is(err, errNotSchemaOwner):
-		noteMissingTables(gdb, models, err)
+		noteMissingTables(t, gdb, models, err)
 		return nil
 	default:
 		return err
@@ -291,7 +348,7 @@ var (
 
 	errNodeIsSlave = fmt.Errorf("原因:本节点是从节点,表由主节点建(%w)", errNotSchemaOwner)
 
-	errAutoMigrateOff = fmt.Errorf("原因:database.auto_migrate 为 false,表由 DBA 手工建(%w)", errNotSchemaOwner)
+	errAutoMigrateOff = fmt.Errorf("原因:该库的 auto_migrate 为 false,表由 DBA 手工建(%w)", errNotSchemaOwner)
 
 	// errMigrationInProgress:多 master 部署下同时启动,只有一个节点该跑 DDL。
 	errMigrationInProgress = fmt.Errorf("原因:另一节点此刻正持有迁移锁,表清单是中间态(%w)", errNotSchemaOwner)
@@ -317,13 +374,13 @@ var runAutoMigrate = autoMigrate
 //  2. 迁移互斥锁 —— 真正的跨节点互斥(MySQL GET_LOCK / PostgreSQL 咨询锁,
 //     逐条对照见 acquireMigrateLock)。没有它,多 master 并发 AutoMigrate
 //     会互相锁表甚至死锁。
-func autoMigrate(gdb *gorm.DB, models []any) error {
+func autoMigrate(t migrateTarget, gdb *gorm.DB, models []any) error {
 	if !common.IsMasterNode {
-		common.SysLog("qianye: 从节点,跳过扩展库自动迁移")
+		common.SysLog("qianye: 从节点,跳过" + t.label + "自动迁移")
 		return errNodeIsSlave
 	}
-	if !config.Get().Database.ShouldAutoMigrate() {
-		common.SysLog("qianye: database.auto_migrate 为 false,跳过扩展库自动迁移")
+	if !t.cfg.ShouldAutoMigrate() {
+		common.SysLog("qianye: auto_migrate 为 false,跳过" + t.label + "自动迁移")
 		return errAutoMigrateOff
 	}
 
@@ -342,7 +399,7 @@ func autoMigrate(gdb *gorm.DB, models []any) error {
 	//
 	// 之前只把抢锁挪到了专用连接、AutoMigrate 仍走业务池 —— 修了一半,
 	// 而"锁不会超时"恰恰掩盖了"DDL 会超时"这个更严重的问题。
-	migDB, err := openMigrationConn()
+	migDB, err := openMigrationConnWith(t.cfg)
 	if err != nil {
 		return err
 	}
@@ -351,7 +408,7 @@ func autoMigrate(gdb *gorm.DB, models []any) error {
 	ctx, cancel := context.WithTimeout(context.Background(), migrateTimeout)
 	defer cancel()
 
-	dialect := DetectDialect(config.Get().Database.DSN)
+	dialect := DetectDialect(t.cfg.DSN)
 
 	// 抢锁与释放锁必须打在同一条连接上,否则释放会作用到别的连接
 	// (MySQL 与 PostgreSQL 的锁都挂在会话上,这一点两家一致)。
@@ -361,24 +418,24 @@ func autoMigrate(gdb *gorm.DB, models []any) error {
 	}
 	defer conn.Close()
 
-	locked, err := acquireMigrateLock(ctx, conn, dialect)
+	locked, err := acquireMigrateLock(ctx, conn, dialect, t.lockName)
 	if err != nil {
 		return err
 	}
 	if !locked {
-		common.SysLog("qianye: 另一节点正在执行扩展库迁移,本节点跳过")
+		common.SysLog("qianye: 另一节点正在执行" + t.label + "迁移,本节点跳过")
 		return errMigrationInProgress
 	}
-	defer releaseMigrateLock(ctx, conn, dialect)
+	defer releaseMigrateLock(ctx, conn, dialect, t.lockName)
 
 	migGorm, err := migrationGorm(migDB, dialect, gdb.Logger)
 	if err != nil {
 		return err
 	}
 	if err := migGorm.WithContext(ctx).AutoMigrate(models...); err != nil {
-		return fmt.Errorf("qianye: 扩展库自动迁移失败: %w", err)
+		return fmt.Errorf("qianye: %s自动迁移失败: %w", t.label, err)
 	}
-	common.SysLog(fmt.Sprintf("qianye: 扩展库迁移完成,共 %d 张表", len(models)))
+	common.SysLog(fmt.Sprintf("qianye: %s迁移完成,共 %d 张表", t.label, len(models)))
 	return nil
 }
 
@@ -464,22 +521,22 @@ func checkTables(gdb *gorm.DB, models []any) (missing []string, checked bool) {
 // 只有这条路径把缺表判成 error(进而由 bootstrap 冒泡到 FatalLog):AutoMigrate
 // 刚刚返回 nil 却还缺表,是本节点自己的自相矛盾,不是别人的中间态,也不会因为
 // 多等一会儿而自愈。其余三条分支见 noteMissingTables。
-func verifyTables(gdb *gorm.DB, models []any) error {
+func verifyTables(t migrateTarget, gdb *gorm.DB, models []any) error {
 	missing, checked := checkTables(gdb, models)
 	if !checked {
 		return nil
 	}
 	if len(missing) == 0 {
-		schemaMissing.Store(nil)
-		common.SysLog(fmt.Sprintf("qianye: 扩展库缺表自检通过,共核对 %d 张表", len(models)))
+		t.schema.missing.Store(nil)
+		common.SysLog(fmt.Sprintf("qianye: %s缺表自检通过,共核对 %d 张表", t.label, len(models)))
 		return nil
 	}
 	missingList := missing
-	schemaMissing.Store(&missingList)
-	return fmt.Errorf("qianye: 扩展库缺少 %d 张表: %s —— "+
-		"本节点刚执行完自动迁移仍然缺表,请检查这些模型是否登记进了 allTables(),"+
-		"以及 DDL 是否真的在 database.dsn 指向的库上生效",
-		len(missing), strings.Join(missing, ", "))
+	t.schema.missing.Store(&missingList)
+	return fmt.Errorf("qianye: %s缺少 %d 张表: %s —— "+
+		"本节点刚执行完自动迁移仍然缺表,请检查这些模型是否登记进了 allTables()/allLogTables(),"+
+		"以及 DDL 是否真的在该库的 dsn 指向的库上生效",
+		t.label, len(missing), strings.Join(missing, ", "))
 }
 
 // noteMissingTables 是"本节点无权建表"那三条分支上的核对。
@@ -487,47 +544,61 @@ func verifyTables(gdb *gorm.DB, models []any) error {
 // 它没有返回值,因为这条路径上不存在"阻断启动"这个选项(见 Migrate 的契约)。
 // 确认缺表的后果是:置位降级态 + 一条点名到表的错误日志 + 交给
 // StartSchemaRecheck 周期性复查。
-func noteMissingTables(gdb *gorm.DB, models []any, reason error) {
+func noteMissingTables(t migrateTarget, gdb *gorm.DB, models []any, reason error) {
 	missing, checked := checkTables(gdb, models)
 	if !checked {
 		return
 	}
 	if len(missing) == 0 {
-		schemaMissing.Store(nil)
-		common.SysLog(fmt.Sprintf("qianye: 扩展库缺表自检通过,共核对 %d 张表", len(models)))
+		t.schema.missing.Store(nil)
+		common.SysLog(fmt.Sprintf("qianye: %s缺表自检通过,共核对 %d 张表", t.label, len(models)))
 		return
 	}
 	missingList := missing
-	schemaMissing.Store(&missingList)
+	t.schema.missing.Store(&missingList)
 	common.SysError(fmt.Sprintf(
-		"qianye: 扩展库缺少 %d 张表: %s —— %s,无法自行建表,因此不阻断主程序启动。"+
+		"qianye: %s缺少 %d 张表: %s —— %s,无法自行建表,因此不阻断主程序启动。"+
 			"扩展进入 schema 降级态,每 %s 复查一次,表被建出来后自动解除;"+
 			"若这不是滚动升级的中间态,请让主节点完成迁移或让 DBA 按上列表名建表",
-		len(missing), strings.Join(missing, ", "), reason.Error(), schemaRecheckInterval))
+		t.label, len(missing), strings.Join(missing, ", "), reason.Error(), schemaRecheckInterval))
 }
 
 // ─────────────────────── schema 降级态与后台复查 ───────────────────────
 
-// schemaMissing 保存最近一次**成功执行**的自检确认缺失的表名;nil 表示 schema 完整。
+// schemaState 是**一个库**的缺表降级态。
+//
+// missing 保存最近一次**成功执行**的自检确认缺失的表名;nil 表示 schema 完整。
 // 自检自身失败时刻意保持原值不动 —— 那次自检什么都没证明。
-var schemaMissing atomic.Pointer[[]string]
+type schemaState struct {
+	missing atomic.Pointer[[]string]
+	once    sync.Once
+}
+
+// 主库与台账库各记各的。合成一份的话,台账库缺一张表会让主库也被判成降级,
+// 而 /admin/health 上那份清单再也分不出是谁缺 —— 两个库的处置人常常不是同一个。
+var mainSchema, logSchema schemaState
 
 // schemaRecheckInterval 是降级态下的复查周期。
 // 声明成 var 只为让回归测试能把它调小,生产路径永远是这个默认值。
 var schemaRecheckInterval = time.Minute
 
-var schemaRecheckOnce sync.Once
+// SchemaIncomplete 表示**任一**扩展库当前处于"确认缺表"的降级态。
+//
+// 两个库取并集是刻意的:调用方问的是"扩展的表齐了吗",而台账库缺表同样会让
+// 依赖它的功能(AI 审核明细)不可用。要区分是谁缺,看 MissingTables 的表名。
+func SchemaIncomplete() bool {
+	return mainSchema.missing.Load() != nil || logSchema.missing.Load() != nil
+}
 
-// SchemaIncomplete 表示扩展库当前处于"确认缺表"的降级态。
-func SchemaIncomplete() bool { return schemaMissing.Load() != nil }
-
-// MissingTables 返回确认缺失的表名副本(schema 完整时为 nil)。
+// MissingTables 返回确认缺失的表名副本(schema 完整时为 nil),两个库合并。
 func MissingTables() []string {
-	p := schemaMissing.Load()
-	if p == nil {
-		return nil
+	var out []string
+	for _, st := range []*schemaState{&mainSchema, &logSchema} {
+		if p := st.missing.Load(); p != nil {
+			out = append(out, *p...)
+		}
 	}
-	return append([]string(nil), *p...)
+	return out
 }
 
 // StartSchemaRecheck 在降级态下起一个后台协程周期性复查表清单。
@@ -538,15 +609,26 @@ func MissingTables() []string {
 //
 // schema 完整时不起协程,因此正常部署下这里零开销。
 func StartSchemaRecheck(models ...any) {
-	if len(models) == 0 || !SchemaIncomplete() {
+	startSchemaRecheck(mainMigrateTarget(), models)
+}
+
+// StartSchemaRecheckLog 是台账库那一份。分家之后台账库同样可能落在
+// "从节点 / auto_migrate=false / 别人正在迁"这三种建不出表的处境里,
+// 而它缺表的症状比主库更隐蔽:审核日志一直是空的,页面不报任何错。
+func StartSchemaRecheckLog(models ...any) {
+	startSchemaRecheck(logMigrateTarget(), models)
+}
+
+func startSchemaRecheck(t migrateTarget, models []any) {
+	if len(models) == 0 || t.schema.missing.Load() == nil {
 		return
 	}
-	schemaRecheckOnce.Do(func() {
+	t.schema.once.Do(func() {
 		gopool.Go(func() {
 			ticker := time.NewTicker(schemaRecheckInterval)
 			defer ticker.Stop()
 			for range ticker.C {
-				if recheckSchema(models) {
+				if recheckSchema(t, models) {
 					return
 				}
 			}
@@ -555,8 +637,8 @@ func StartSchemaRecheck(models ...any) {
 }
 
 // recheckSchema 复查一次,返回 schema 是否已经完整(完整则调用方停止轮询)。
-func recheckSchema(models []any) bool {
-	gdb := Get()
+func recheckSchema(t migrateTarget, models []any) bool {
+	gdb := t.handle()
 	if gdb == nil {
 		return false
 	}
@@ -565,14 +647,14 @@ func recheckSchema(models []any) bool {
 		return false
 	}
 	if len(missing) == 0 {
-		schemaMissing.Store(nil)
-		common.SysLog("qianye: 扩展库缺失的表已全部建出,schema 降级态解除")
+		t.schema.missing.Store(nil)
+		common.SysLog("qianye: " + t.label + "缺失的表已全部建出,schema 降级态解除")
 		return true
 	}
 	missingList := missing
-	schemaMissing.Store(&missingList)
-	common.SysError(fmt.Sprintf("qianye: 扩展库仍缺少 %d 张表: %s —— 依赖这些表的扩展功能持续不可用",
-		len(missing), strings.Join(missing, ", ")))
+	t.schema.missing.Store(&missingList)
+	common.SysError(fmt.Sprintf("qianye: %s仍缺少 %d 张表: %s —— 依赖这些表的扩展功能持续不可用",
+		t.label, len(missing), strings.Join(missing, ", ")))
 	return false
 }
 

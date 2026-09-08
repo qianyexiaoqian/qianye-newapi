@@ -16,59 +16,69 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ShieldAlert, Ticket } from 'lucide-react'
-import { useId, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { Plus, Ticket } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
 
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  StaticDataTable,
+  staticDataTableClassNames,
+  type StaticDataTableColumn,
+} from '@/components/data-table'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Label } from '@/components/ui/label'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
-import { Textarea } from '@/components/ui/textarea'
 
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { qyErrorMessage } from '../../lib/api'
 import { qyArray } from '../../lib/array'
-import { qyKeys } from '../../lib/query-keys'
+import { QyPager } from '../components/qy-pager'
 import { QyStatGrid, type QyStatItem } from '../components/qy-stat-grid'
-import { qyAdminMallProductsQuery, uploadQyMallCodes } from './api'
-import {
-  QY_MALL_CODE_MAX_RUNES,
-  QY_MALL_CODE_UPLOAD_MAX,
-  qyMallParseCodes,
-} from './lib/codes'
-import type { QyMallCodesUploadResult } from './types'
+import { QY_PAGE_SIZE } from '../lib/constants'
+import { formatQyTs } from '../ops/format'
+import { qyAdminMallCodesQuery, qyAdminMallProductsQuery } from './api'
+import { QyMallCodeDeleteDialog } from './components/code-delete-dialog'
+import { QyMallCodeTakeDialog } from './components/code-take-dialog'
+import { QyMallCodeUploadDialog } from './components/code-upload-dialog'
+import { qyMallCodeStatusKey } from './lib/codes'
+import type { QyMallAdminCode, QyMallCodeStatus } from './types'
+
+const STATUS_OPTIONS: readonly QyMallCodeStatus[] = [
+  'unused',
+  'issued',
+  'taken',
+  'revoked',
+]
 
 /**
- * 码库存（第二张标签）：选一件 `code` 商品 → 粘贴一行一条 → 入库。
+ * 码库存（第二张标签）：选一件 `code` 商品 → **逐枚列出**这件商品的码。
  *
- * ## 明文只出现在这一次请求体里
+ * ## 为什么是列表而不是一个粘贴框
  *
- * 入库即 AES-GCM 密文（后端 `sealCode`），请求体登记在 `credentialBodyRoutes`
- * 不进请求台账；前端这边也一样：不进 react-query、不进 localStorage、
- * 上传成功即清空文本框。留着"方便再传一次"的那份明文就是一份没人管的码库。
+ * 上一版这一屏只有"选商品 + 粘贴上传"，运营看得见的只有三个计数。库里到底有
+ * 哪几枚、哪一枚发给了谁、哪一枚是上周传错的，一概看不到，于是"删掉那一条传错
+ * 的码"这件事在界面上根本不存在。列表是这些动作的落点。
  *
- * ## 不得上架本站余额兑换码（D-K）
+ * ## 这一屏永远不显示码本身
  *
- * 星屑不可兑回余额；"星屑 → 码 → `users.quota`" 隔了一跳就把这条纪律绕过去了。
- * 后端可能对每条明文点查主库 `redemptions.key`，命中即 rejected；但那只是机器
- * 闸门，运营口径要写在这一屏上。
+ * 列表接口不回明文（后端 `codeStockView` 挑字段），列上也没有任何"点一下展开"
+ * 的省略形态。明文只有「提卡」一条出口：逐枚、验密、写审计。一次越权 bug 在
+ * 列表上就是全量泄漏，在提卡上只是一枚。
  *
- * ## 结果逐条回报
+ * ## 三个动作都在弹窗里
  *
- * `accepted` 一个数 + `rejected[{index, reason}]`：粘贴 200 行里第 37 行是空的
- * / 重复的 / 超长的，运营需要知道是**哪一行**，而不是"有 3 条失败"。
+ * 添加库存（粘贴上传）、提卡（验密后拿明文）、删码（不可逆确认）各自一个弹窗。
+ * 它们要么持有明文、要么不可逆，都不适合摊在列表页上被误触。
  */
 export function QyMallAdminCodesTab() {
   const { t } = useTranslation()
-  const queryClient = useQueryClient()
-  const productId = useId()
-  const textId = useId()
   const [productNo, setProductNo] = useState('')
-  const [text, setText] = useState('')
-  const [result, setResult] = useState<QyMallCodesUploadResult | null>(null)
+  const [status, setStatus] = useState('')
+  const [page, setPage] = useState(1)
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const [taking, setTaking] = useState<QyMallAdminCode | null>(null)
+  const [deleting, setDeleting] = useState<QyMallAdminCode | null>(null)
 
   // 只拉 code 类。上限 100 是后端分页硬顶；一个站点不会有一百件兑换码商品。
   const productsQuery = useQuery(
@@ -77,23 +87,14 @@ export function QyMallAdminCodesTab() {
   const products = qyArray(productsQuery.data?.items)
   const selected = products.find((row) => row.product_no === productNo) ?? null
 
-  const codes = qyMallParseCodes(text)
-  const tooMany = codes.length > QY_MALL_CODE_UPLOAD_MAX
-  const tooLong = codes.some(
-    (code) => [...code].length > QY_MALL_CODE_MAX_RUNES
+  const codesQuery = useQuery(
+    qyAdminMallCodesQuery(productNo, {
+      page,
+      page_size: QY_PAGE_SIZE,
+      status: status === '' ? undefined : (status as QyMallCodeStatus),
+    })
   )
-
-  const upload = useMutation({
-    mutationFn: () => uploadQyMallCodes(productNo, codes),
-    onSuccess: async (data) => {
-      setResult(data)
-      // 上传成功就把明文清掉：这份文本框是整个前端里唯一持有明文的地方。
-      setText('')
-      toast.success(t('qy_mladm_codes_uploaded', { count: data.accepted }))
-      await queryClient.invalidateQueries({ queryKey: qyKeys.all })
-    },
-    onError: (error) => toast.error(qyErrorMessage(error, t)),
-  })
+  const codes = qyArray(codesQuery.data?.items)
 
   const stats: QyStatItem[] =
     selected == null
@@ -111,128 +112,240 @@ export function QyMallAdminCodesTab() {
             value: selected.code_stock.issued,
           },
           {
+            key: 'taken',
+            label: t('qy_mladm_stock_taken'),
+            value: selected.code_stock.taken,
+          },
+          {
             key: 'revoked',
             label: t('qy_mladm_stock_revoked'),
             value: selected.code_stock.revoked,
           },
         ]
 
-  const canUpload =
-    selected != null &&
-    codes.length > 0 &&
-    !tooMany &&
-    !tooLong &&
-    !upload.isPending
-
-  return (
-    <QyPageBoundary
-      query={productsQuery}
-      isEmpty={productsQuery.data != null && products.length === 0}
-      emptyIcon={Ticket}
-      emptyTitle={t('qy_mladm_codes_no_product_title')}
-      emptyDescription={t('qy_mladm_codes_no_product_desc')}
-    >
-      <div className='space-y-4'>
-        <Alert>
-          <ShieldAlert />
-          <AlertTitle>{t('qy_mladm_codes_policy_title')}</AlertTitle>
-          <AlertDescription>{t('qy_mladm_codes_policy_desc')}</AlertDescription>
-        </Alert>
-
-        <div className='space-y-1.5'>
-          <Label htmlFor={productId}>{t('qy_mladm_codes_product')}</Label>
-          <NativeSelect
-            id={productId}
-            className='w-full sm:w-96'
-            value={productNo}
-            onChange={(event) => {
-              setProductNo(event.target.value)
-              setResult(null)
-            }}
-          >
-            <NativeSelectOption value=''>
-              {t('qy_mladm_codes_product_pick')}
-            </NativeSelectOption>
-            {products.map((row) => (
-              <NativeSelectOption key={row.product_no} value={row.product_no}>
-                {row.title}
-                {row.enabled ? '' : ` (${t('qy_common_off')})`}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-        </div>
-
-        <QyStatGrid items={stats} />
-
-        {selected != null && (
-          <div className='space-y-1.5'>
-            <Label htmlFor={textId}>{t('qy_mladm_codes_paste')}</Label>
-            <Textarea
-              id={textId}
-              rows={10}
-              value={text}
-              autoComplete='off'
-              spellCheck={false}
-              placeholder={t('qy_mladm_codes_paste_ph')}
-              aria-invalid={tooMany || tooLong}
-              disabled={upload.isPending}
-              className='font-mono text-xs'
-              onChange={(event) => {
-                setText(event.target.value)
-                setResult(null)
-              }}
-            />
-            <p
-              className={
-                tooMany || tooLong
-                  ? 'text-destructive text-xs tabular-nums'
-                  : 'text-muted-foreground text-xs tabular-nums'
-              }
-            >
-              {tooLong
-                ? t('qy_mladm_codes_too_long', {
-                    max: QY_MALL_CODE_MAX_RUNES,
-                  })
-                : t('qy_mladm_codes_count', {
-                    count: codes.length,
-                    max: QY_MALL_CODE_UPLOAD_MAX,
-                  })}
-            </p>
+  const columns: StaticDataTableColumn<QyMallAdminCode>[] = [
+    {
+      id: 'id',
+      header: t('qy_mladm_code_id'),
+      className: staticDataTableClassNames.compactHeaderCell,
+      cellClassName: staticDataTableClassNames.compactTopCell,
+      cell: (row) => (
+        <span className='font-mono text-xs tabular-nums'>#{row.id}</span>
+      ),
+    },
+    {
+      id: 'status',
+      header: t('qy_common_status'),
+      className: staticDataTableClassNames.compactHeaderCell,
+      cellClassName: staticDataTableClassNames.compactTopCell,
+      cell: (row) => (
+        <Badge variant={row.status === 'unused' ? 'outline' : 'secondary'}>
+          {t(qyMallCodeStatusKey(row.status), { defaultValue: row.status })}
+        </Badge>
+      ),
+    },
+    {
+      id: 'created_at',
+      header: t('qy_mladm_code_created_at'),
+      className: staticDataTableClassNames.compactHeaderCell,
+      cellClassName: staticDataTableClassNames.topMutedCell,
+      cell: (row) => (
+        <span className='text-xs tabular-nums'>
+          {formatQyTs(row.created_at)}
+        </span>
+      ),
+    },
+    {
+      id: 'whereabouts',
+      header: t('qy_mladm_code_whereabouts'),
+      className: staticDataTableClassNames.compactHeaderCell,
+      cellClassName: staticDataTableClassNames.compactTopCell,
+      // 「这枚码去哪了」：发出去的指向订单号，提走的指向那位管理员，
+      // 没发出去的一律是一个破折号 —— 三种去向共用一列，看的人只扫一列。
+      cell: (row) => {
+        if (row.order_no !== '') {
+          return (
+            <span className='flex flex-col gap-0.5'>
+              <span className='font-mono text-[11px] break-all'>
+                {row.order_no}
+              </span>
+              <span className='text-muted-foreground text-[11px] tabular-nums'>
+                {formatQyTs(row.issued_at)}
+              </span>
+            </span>
+          )
+        }
+        if (row.status === 'taken') {
+          return (
+            <span className='flex flex-col gap-0.5'>
+              <span className='break-words'>
+                {row.taken_name === ''
+                  ? t('qy_mladm_code_taken_by_unknown', { id: row.taken_by })
+                  : row.taken_name}
+              </span>
+              <span className='text-muted-foreground text-[11px] tabular-nums'>
+                {formatQyTs(row.taken_at)}
+              </span>
+            </span>
+          )
+        }
+        return <span className='text-muted-foreground'>—</span>
+      },
+    },
+    {
+      id: 'actions',
+      header: t('qy_common_actions'),
+      className: staticDataTableClassNames.actionHeaderCell,
+      cellClassName: staticDataTableClassNames.actionCell,
+      // 两个动作都只对 unused 开放：提卡要的是还没发出去的码，删码删的是库存
+      // 而不是证据。对其余状态整块留空，而不是画一个禁用的按钮 —— 后者会让人
+      // 反复去点，然后来问"为什么点不动"。
+      cell: (row) =>
+        row.status === 'unused' ? (
+          <span className='inline-flex items-center gap-1'>
             <Button
               type='button'
-              disabled={!canUpload}
-              onClick={() => upload.mutate()}
+              variant='ghost'
+              size='sm'
+              onClick={() => setTaking(row)}
             >
-              {t('qy_mladm_codes_submit')}
+              {t('qy_mladm_code_take')}
+            </Button>
+            <Button
+              type='button'
+              variant='ghost'
+              size='sm'
+              className='text-destructive'
+              onClick={() => setDeleting(row)}
+            >
+              {t('qy_common_delete')}
+            </Button>
+          </span>
+        ) : (
+          <span className='text-muted-foreground'>—</span>
+        ),
+    },
+  ]
+
+  return (
+    <>
+      <QyPageBoundary
+        query={productsQuery}
+        isEmpty={productsQuery.data != null && products.length === 0}
+        emptyIcon={Ticket}
+        emptyTitle={t('qy_mladm_codes_no_product_title')}
+        emptyDescription={t('qy_mladm_codes_no_product_desc')}
+      >
+        <div className='space-y-3'>
+          <div className='flex flex-wrap items-center gap-2'>
+            <NativeSelect
+              size='sm'
+              className='w-full sm:w-72'
+              aria-label={t('qy_mladm_codes_product')}
+              value={productNo}
+              onChange={(event) => {
+                setPage(1)
+                setProductNo(event.target.value)
+              }}
+            >
+              <NativeSelectOption value=''>
+                {t('qy_mladm_codes_product_pick')}
+              </NativeSelectOption>
+              {products.map((row) => (
+                <NativeSelectOption key={row.product_no} value={row.product_no}>
+                  {row.title}
+                  {row.enabled ? '' : ` (${t('qy_common_off')})`}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+            <NativeSelect
+              size='sm'
+              aria-label={t('qy_common_status')}
+              disabled={selected == null}
+              value={status}
+              onChange={(event) => {
+                setPage(1)
+                setStatus(event.target.value)
+              }}
+            >
+              <NativeSelectOption value=''>
+                {t('qy_common_all')}
+              </NativeSelectOption>
+              {STATUS_OPTIONS.map((value) => (
+                <NativeSelectOption key={value} value={value}>
+                  {t(qyMallCodeStatusKey(value))}
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+            <Button
+              type='button'
+              size='sm'
+              className='ms-auto'
+              disabled={selected == null}
+              onClick={() => setUploadOpen(true)}
+            >
+              <Plus aria-hidden='true' />
+              {t('qy_mladm_codes_add')}
             </Button>
           </div>
-        )}
 
-        {result != null && (
-          <div className='space-y-2 rounded-lg border p-3 text-sm'>
-            <p>
-              {t('qy_mladm_codes_result', {
-                accepted: result.accepted,
-                rejected: qyArray(result.rejected).length,
-              })}
+          {selected == null ? (
+            <p className='text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm'>
+              {t('qy_mladm_codes_pick_first')}
             </p>
-            {qyArray(result.rejected).length > 0 && (
-              <ul className='text-muted-foreground max-h-64 space-y-1 overflow-y-auto text-xs'>
-                {qyArray(result.rejected).map((item) => (
-                  // 同一行只会被拒一次，行号足够做 key。
-                  <li key={item.index} className='flex gap-2'>
-                    <span className='shrink-0 font-mono tabular-nums'>
-                      {/* 后端 index 从 0 起，运营数的是"第几行"。 */}
-                      {t('qy_mladm_codes_line_no', { no: item.index + 1 })}
-                    </span>
-                    <span className='min-w-0 break-words'>{item.reason}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </div>
-    </QyPageBoundary>
+          ) : (
+            <>
+              <QyStatGrid items={stats} />
+              <QyPageBoundary
+                query={codesQuery}
+                isEmpty={codesQuery.data != null && codes.length === 0}
+                emptyIcon={Ticket}
+                emptyTitle={t('qy_mladm_codes_empty_title')}
+                emptyDescription={t('qy_mladm_codes_empty_desc')}
+              >
+                <div className='w-full overflow-x-auto'>
+                  <StaticDataTable
+                    columns={columns}
+                    data={codes}
+                    getRowKey={(row) => row.id}
+                    tableClassName='min-w-[720px]'
+                  />
+                </div>
+                <QyPager
+                  page={page}
+                  pageSize={QY_PAGE_SIZE}
+                  total={codesQuery.data?.total ?? 0}
+                  disabled={codesQuery.isFetching}
+                  onPageChange={setPage}
+                />
+              </QyPageBoundary>
+            </>
+          )}
+
+          {codesQuery.isError && selected != null && (
+            <p className='text-destructive text-xs'>
+              {qyErrorMessage(codesQuery.error, t)}
+            </p>
+          )}
+        </div>
+      </QyPageBoundary>
+
+      <QyMallCodeUploadDialog
+        open={uploadOpen && selected != null}
+        productNo={productNo}
+        productTitle={selected?.title ?? ''}
+        onClose={() => setUploadOpen(false)}
+      />
+      <QyMallCodeTakeDialog
+        productNo={productNo}
+        code={taking}
+        onClose={() => setTaking(null)}
+      />
+      <QyMallCodeDeleteDialog
+        productNo={productNo}
+        code={deleting}
+        onClose={() => setDeleting(null)}
+      />
+    </>
   )
 }

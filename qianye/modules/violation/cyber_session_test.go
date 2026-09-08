@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -255,6 +256,72 @@ func TestBuildCyberRecordFeedsBanCounter(t *testing.T) {
 	assert.Equal(t, 77, rec.UserId)
 	assert.Equal(t, "cyber_abcdef0123456789", rec.RecNo, "RecNo 用会话哈希,天然幂等")
 	assert.Contains(t, rec.MatchedTerms, "cyber_policy")
+}
+
+// ─────────────────── 被屏蔽的请求也要进「使用记录」 ───────────────────
+
+// TestCyberBlockUsageLogSpeaksSessionNotContent 守屏蔽日志那一行的措辞与形状。
+//
+// 项目方问「cyber 会话屏蔽的拦截为什么不加入使用记录」,于是加了。加的时候有两处
+// 一旦抄错就会把用户带向错误的下一步:
+//
+//   - **抬头不能是「请求被内容审核拦截」**。cyber 认的是上游的拒绝码、拦的是整条
+//     会话;沿用内容审核的说法,用户会照着改 prompt,而改 prompt 没有任何用 ——
+//     他要做的是开一条新会话(这正是对外文案那句话)。
+//   - **不能写违规记录号**。屏蔽期内的重复请求不产生 qy_violation_record
+//     (计数只在拉黑那一刻推进一次),写一个查不到的号会让用户拿着它去申诉。
+func TestCyberBlockUsageLogSpeaksSessionNotContent(t *testing.T) {
+	rc := recordCtx{UserId: 77, Username: "alice", TokenId: 9, TokenName: "tk-a",
+		ModelName: "gpt-5", UsingGroup: "vip", RequestId: "r-cyber-1", Ip: "1.2.3.4"}
+
+	row := blockedUsageLogRow(cyberBlockLogRecord(rc))
+	require.NotNil(t, row)
+
+	assert.Equal(t, model.LogTypeError, row.Type)
+	assert.Zero(t, row.Quota, "屏蔽没有产生任何消费")
+	assert.Equal(t, "gpt-5", row.ModelName)
+	assert.Equal(t, "r-cyber-1", row.RequestId)
+	assert.Contains(t, row.Content, "会话已被安全策略屏蔽")
+	assert.Contains(t, row.Content, "请开启新会话", "对外文案要与 403 响应体那句话同源")
+	assert.NotContains(t, row.Content, "内容审核",
+		"会话级屏蔽被写成内容审核,用户会去改 prompt —— 那件事不会有任何效果")
+
+	var payload map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(row.Other, &payload))
+	assert.Equal(t, true, payload["violation_blocked"], "前端靠它认出这是一次拦截")
+	assert.Equal(t, cyberBlockErrorCode, payload["violation_code"],
+		"错误码要与用户在 HTTP 响应里拿到的那个逐字相同,否则带着码来的工单查不到")
+	assert.NotContains(t, payload, "qy_violation_rec_no",
+		"屏蔽期内的重复请求没有违规记录,写一个查不到的号比不写更糟")
+
+	adminInfo, ok := payload["admin_info"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, PhaseCyberBlock, adminInfo["qy_phase"],
+		"管理员要能从这一列分出「规则命中」与「会话屏蔽」两种拦截")
+}
+
+// TestClaimCyberBlockLogThrottlesPerSession 守节流:同一条会话一个屏蔽周期一行。
+//
+// 不节流的后果不是"日志多几行":客户端并不知道自己被本地拦了,重试往往是几十
+// 上百次,使用记录页会被刷成一整屏同一句话 —— 对用户与运营都是纯噪音,而这一页
+// 恰恰是本功能唯一的出口。
+//
+// 走的是进程内兜底路径(测试环境 RDB=nil),与线上 Redis 抖动时同一条代码。
+func TestClaimCyberBlockLogThrottlesPerSession(t *testing.T) {
+	const hash = "hash-cyber-log-throttle"
+
+	assert.True(t, claimCyberBlockLog(nil, hash, 600), "第一次必须写")
+	assert.False(t, claimCyberBlockLog(nil, hash, 600), "同一条会话紧接着的重试不再写")
+	assert.True(t, claimCyberBlockLog(nil, "another-session", 600),
+		"节流是按会话的,不能把别人的那一行也吞掉")
+
+	// 窗口过去之后(手工把标记提前置成已过期)可以再写一行:一次**新的**屏蔽
+	// 周期要有自己的解释,否则用户第二次被拦时又回到"一片空白"。
+	cyberMarkLocal(cyberLogLocalNS+hash, common.GetTimestamp()-1)
+	assert.True(t, claimCyberBlockLog(nil, hash, 600), "窗口过去之后要能再写一行")
+
+	// 下界:TTL 配得极短时窗口不跟着塌到 0，否则等于没有节流。
+	assert.GreaterOrEqual(t, cyberLogMinWindowSeconds, 60)
 }
 
 // TestBuildCyberRuntime 守 DB 设置行 → 运行期形态的装配:关闭/缺行为 nil,

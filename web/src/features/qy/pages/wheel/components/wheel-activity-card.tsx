@@ -61,9 +61,15 @@ export function QyWheelActivityCard(props: {
   const tiers = qyWheelRealTiers(activity.tiers)
 
   return (
-    <Card className='flex h-full flex-col overflow-hidden pt-0'>
-      <div className='relative'>
+    // 与大厅卡片同一条：悬停/聚焦抬 2px、封面推近，纯 transform 不用投影。
+    <Card className='qy-fx-lift flex h-full flex-col overflow-hidden pt-0'>
+      <div className='relative overflow-hidden'>
         <QyLotCover activity={activity} />
+        {/* 顶部压暗，让徽章在任何一张封面上都读得出来（大厅卡片同一条）。 */}
+        <span
+          aria-hidden='true'
+          className='qy-art-scrim pointer-events-none absolute inset-x-0 top-0 h-2/3'
+        />
         {/* 玩法与状态压在封面上：卡片正文只留给数字。 */}
         <div className='absolute inset-x-2 top-2 flex flex-wrap items-center justify-between gap-1'>
           <Badge variant='outline' className='bg-background/85 gap-1'>

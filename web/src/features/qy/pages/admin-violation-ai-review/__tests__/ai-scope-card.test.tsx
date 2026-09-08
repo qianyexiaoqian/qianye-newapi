@@ -153,7 +153,7 @@ const scopes: QyAiScopeList = {
       group_scope_mode: 'include',
       pre_sample_rate_bps: 0,
       async_sample_rate_bps: 5000,
-      prompt_source: 'custom',
+      channel_group: '',
       category_id: 12,
       channel_ids: [3],
       channel_mode: 'weighted',
@@ -199,6 +199,10 @@ const settings = {
     prompt: '',
     max_input_chars: 4000,
     third_party_notice_ack: false,
+    log_content: true,
+    log_content_violation_full: true,
+    log_content_max_chars: 1000,
+    log_retention_days: 3,
   },
   default_prompt: '默认提示词',
   prompt_source: 'default',
@@ -212,13 +216,59 @@ const settings = {
     channels: 0,
     max_pre_timeout: 5000,
     max_async_timeout: 30000,
+    log_db_separate: false,
+    log_content_range: { min: 100, max: 32000 },
+    max_log_retention_days: 365,
   },
+}
+
+/**
+ * 审核日志的一页。
+ *
+ * 与设置卡同一条理由要预置:它现在也在这一页上,任何一张卡在渲染中途抛异常
+ * 都会把整页换成错误态,于是本文件的作用域断言会以"找不到汇总表"的形态失败。
+ */
+const logs = {
+  items: [
+    {
+      id: 900,
+      review_no: 'ai_req-1_prompt',
+      user_id: 42,
+      username: 'alice',
+      phase: 'prompt',
+      channel_name: '自建审核端点',
+      review_model: 'granite-guardian',
+      outcome: 'violation',
+      violated: true,
+      category: 'jailbreak',
+      confidence: '0.9100',
+      reason: '尝试绕过系统提示',
+      prompt_tokens: 100,
+      completion_tokens: 20,
+      total_tokens: 120,
+      cost_usd: '0.0001',
+      cost_unknown: false,
+      attempts: 1,
+      latency_ms: 320,
+      rule_id: 5,
+      record_id: 7,
+      request_id: 'req-1',
+      model_name: 'gpt-5',
+      using_group: 'default',
+      content_chars: 42,
+      created_at: 1_780_000_000,
+    },
+  ],
+  total: 1,
+  page: 1,
+  page_size: 20,
 }
 
 async function mountPage(
   payload: unknown,
   settingPayload: unknown = settings,
-  channelPayload: unknown = { items: [], key_configured: true }
+  channelPayload: unknown = { items: [], key_configured: true },
+  logsPayload: unknown = logs
 ) {
   for (const entry of roots.splice(0)) {
     entry.root.unmount()
@@ -245,6 +295,18 @@ async function mountPage(
   // qy 扩展开关。`QyPageBoundary` 在 `status === 'disabled'` 时整块换成
   // 「本站未启用该功能」的空态，卡片根本不渲染。
   queryClient.setQueryData(qyKeys.config(), { enabled: true })
+  // 审核日志卡与分组下拉。同在这一页上,不预置的话它们会去打真实网络,
+  // 失败之后被换成错误态 —— 而这一页的卡片共用路由那层的错误边界。
+  queryClient.setQueryData(qyKeys.adminGroupOptions(), {
+    options: [
+      { name: 'default', ratio: 1, public_usable: true, has_channels: true },
+    ],
+    probe_ok: true,
+  })
+  queryClient.setQueryData(
+    qyKeys.adminViolationAiLogs({ p: 1, page_size: 20 }),
+    logsPayload
+  )
   activeQueryClient = queryClient
 
   const router = createRouter({
@@ -413,21 +475,27 @@ describe('AI 审核作用域卡', () => {
    * 而那时**绝不能**显示成空白 —— 空白读起来是"这一档没指定"，
    * 与"指定了但名字没查到"是两种完全不同的处置。
    */
-  test('汇总表摆出了提示词档位与「记为类型」，类型清单拉不到时退回显示 id', async () => {
+  test('汇总表摆出了审核渠道池与「记为类型」，类型清单拉不到时退回显示 id', async () => {
     const container = await mountPage(scopes)
     const table = scopeTable(container)
     assert.ok(table, '页面上找不到作用域汇总表')
     const heads = [...table.querySelectorAll('thead th')].map((n) =>
       (n.textContent ?? '').trim()
     )
-    assert.ok(heads.includes(dict.qy_ai_scope_col_prompt), '缺「提示词」列')
+    // 「这一档的用户内容流向哪个池子」是这张表最该一眼看清的事:一条指错
+    // 分组的策略与一条正常的在列表上长得完全一样,而后果是内容发去了另一批端点。
+    assert.ok(
+      heads.includes(dict.qy_ai_scope_col_chgroup),
+      '缺「审核渠道池」列'
+    )
     assert.ok(heads.includes(dict.qy_ai_scope_col_category), '缺「记为类型」列')
 
     const first = (table.querySelectorAll('tbody tr')[0]?.textContent ??
       '') as string
+    // 夹具那一档没填分组、但指定了渠道 → 池子那一格显示「指定渠道」。
     assert.ok(
-      first.includes(dict.qy_ai_scope_prompt_custom),
-      `这一档写了自己的提示词，却没标出来：${first}`
+      first.includes(dict.qy_ai_scope_chgroup_pinned),
+      `指定了渠道的那一档没在池子列上标出来：${first}`
     )
     assert.ok(first.includes('#12'), `类型名查不到时必须退回显示 id：${first}`)
   })
@@ -849,3 +917,54 @@ describe('作用域表单里的渠道多选', () => {
  *  S8 保存键的 `bindingError !== null` 去掉           → 「新建弹窗一开…」红
  *     (保存键可点,而那一档存下去之后永远开不起来)
  */
+
+/*
+ * 审核日志已经**不在这一页上**了 —— 它提成了 `/qy/admin/violation-ai-logs`,
+ * 挂在根侧栏的「风控与审计」组里(理由见那一页的头注释:分类问题,不是排序问题)。
+ *
+ * 这里只剩两条:配置页上要有一条通往它的路,以及保留期/内容留存那两格仍然
+ * 留在配置页上(它们跟 AI 审核设置是同一次保存)。
+ */
+describe('AI 审核配置页与日志页的分工', () => {
+  test('配置页上有一条通往审核日志页的入口', async () => {
+    // 没有这条链接的话,日志页只能靠侧栏找 —— 而运营是在看渠道/抽样率的时候
+    // 才想起要看日志的,那一刻他人在这一页上。
+    const container = await mountPage(scopes)
+    const link = [...container.querySelectorAll('a')].find((a) =>
+      (a.textContent ?? '').includes(dict.qy_ai_go_logs)
+    )
+    assert.ok(link, '配置页右上角找不到「查看审核日志」')
+    assert.equal(
+      link.getAttribute('href'),
+      '/qy/admin/violation-ai-logs',
+      '入口指错了页'
+    )
+  })
+
+  test('日志表本身不再出现在配置页上', async () => {
+    // 两处各画一张同样的表就会有两份筛选状态、两份分页,而它们不同步。
+    const container = await mountPage(scopes)
+    const heads = [...container.querySelectorAll('thead th')].map((n) =>
+      (n.textContent ?? '').trim()
+    )
+    assert.ok(
+      !heads.includes(dict.qy_ai_log_col_content),
+      '配置页上又出现了日志表 —— 它应当只在 /qy/admin/violation-ai-logs 上'
+    )
+  })
+
+  test('保留期与内容留存两格留在配置页上', async () => {
+    // 项目方要的是"管理员可以设置保留多少天"。它们跟 AI 审核设置是同一次
+    // 保存,所以留在这一页;搬到日志页就得再造一条写入路径。
+    const container = await mountPage(scopes)
+    const text = container.textContent ?? ''
+    assert.ok(
+      text.includes(dict.qy_ai_log_retention),
+      '配置页上找不到「日志保留天数」'
+    )
+    assert.ok(
+      text.includes(dict.qy_ai_log_content),
+      '配置页上找不到「留存送审内容」开关'
+    )
+  })
+})

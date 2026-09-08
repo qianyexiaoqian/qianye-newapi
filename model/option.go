@@ -228,6 +228,11 @@ func validateOptionValue(key string, value string) error {
 		return operation_setting.ValidateToolPricesJSON(value)
 	case operation_setting.ChannelTestConcurrencyOptionKey:
 		return operation_setting.ValidateChannelTestConcurrency(value)
+	case operation_setting.TopUpExternalLinksOptionKey:
+		// 这个键的值一路走到用户端的 <a href>。读取侧 GetTopUpExternalLinks 会
+		// 丢掉伪协议，但那只保住了渲染：坏值仍然躺在库里，管理员界面照样显示它
+		// 「已保存」。绕过 controller 的写入(扩展模块、直接改库)只有这里能挡。
+		return operation_setting.ValidateTopUpExternalLinksJSON(value)
 	case "MaxTokenAutoGroups":
 		return setting.ValidateMaxTokenAutoGroups(value)
 	case "TokenDefaultGroups":

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/db"
@@ -116,11 +117,18 @@ func aiPreReview(c *gin.Context, info *relaycommon.RelayInfo, snap *snapshot, in
 		return nil
 	}
 
+	// 送审内容在**这里**组装,不是落库那一刻:文本还在手上,而 persistAIReview
+	// 是异步的。两条出口(没命中 / 命中)共用同一份,避免只有命中时才留内容 ——
+	// 那恰好把最需要复核的一类("判了未违规,但看起来该拦")排除在外。
+	// out.Violated 是模型这一次的判定。判了违规的行走"始终留、留完整"那一档
+	// (见 reviewLogContent),所以这一步必须排在 runAIReview 之后。
+	content, contentChars := reviewLogContent(snap.ai, text, out.Violated)
+
 	v := matchAIVerdict(snap.promptRules, in, out, sc)
 	if v == nil || v.Rule == nil {
 		noteScan(false)
 		// 没命中也要落审核明细:抽样跑了、钱花了,而这是唯一的痕迹。
-		persistAIReview(newAIReviewRow(rc, PhasePrompt, out, 0, 0))
+		persistAIReview(newAIReviewRow(rc, PhasePrompt, out, 0, 0, content, contentChars))
 		return nil
 	}
 
@@ -128,14 +136,40 @@ func aiPreReview(c *gin.Context, info *relaycommon.RelayInfo, snap *snapshot, in
 	block := blocks(v.Rule.R.Action) && !shadow
 	noteScan(block)
 
+	// 拦截文案优先取**判出这次违规的那个渠道**上配的那一句。
+	//
+	// 项目方的原话是"这个返回文案在审核渠道里设定返回"。规则那一份留着:
+	// 本地词表/正则规则根本没有渠道可言,它们的拦截文案只可能来自规则。
+	// 两者都有时以渠道为准 —— 渠道是更靠近"这一次是谁判的"那一端的信息。
+	//
+	// 必须算在 handleHit **之前**:那一步会把这句话抄进使用记录里的那一行
+	// (Record.BlockedReason)。算在后面的话,日志拿不到它,于是用户在 API 上
+	// 看到渠道那句、在使用记录里看到写死的兜底那句 —— 这正是 2026-09-07 报上来的问题。
+	v.BlockOverride = aiChannelBlockMessage(snap.ai, out.ChannelId)
+	// 邮件通知与拦截文案取自同一个渠道,也在同一处算好:两者都是"这一次是谁判的"
+	// 那一端的信息,而 newRecord 是它们唯一的消费点。
+	v.EmailNotice = aiChannelEmailNotice(snap.ai, out.ChannelId)
+
 	in.AI = out
 	handleHit(c, info, PhasePrompt, in, v, shadow, shadowReason, block)
-	persistAIReview(newAIReviewRow(rc, PhasePrompt, out, v.Rule.R.Id, 0))
+	persistAIReview(newAIReviewRow(rc, PhasePrompt, out, v.Rule.R.Id, 0, content, contentChars))
 
 	if !block {
 		return nil
 	}
-	return violationBlockError(v.Rule)
+	return violationBlockError(v.Rule, v.BlockOverride)
+}
+
+// aiChannelBlockMessage 取某个审核渠道配的拦截文案,取不到时返回空串。
+//
+// 走快照而不是查库:这是热路径,而快照里本来就有(装配期抄进了 aiChannelRT)。
+// 渠道刚被删掉、或这一轮解不开密钥被跳过时找不到 —— 那时返回空串,
+// 调用方回落到规则自己的那一份,与这一列存在之前逐字节一致。
+func aiChannelBlockMessage(rt *aiRuntime, channelId int64) string {
+	if ch := rt.channelById(channelId); ch != nil {
+		return ch.BlockMessage
+	}
+	return ""
 }
 
 // violationBlockError 构造返回给客户端的拦截错误。
@@ -144,18 +178,35 @@ func aiPreReview(c *gin.Context, info *relaycommon.RelayInfo, snap *snapshot, in
 // ErrOption 都是**必须**的:漏掉 SkipRetry 会让一次违规被放大成 N 次上游调用,
 // 漏掉 NoRecordErrorLog 会把违规拒绝算进渠道错误统计、进而触发渠道自动禁用。
 // 抄第二份迟早会漏掉其中一个,而漏掉之后没有任何症状能指向这里。
-func violationBlockError(cr *compiledRule) error {
-	msg := cr.R.BlockMessage
-	if msg == "" {
-		msg = defaultBlockMessage
-	}
+// override 非空时压过规则自己那一份(AI 审核这条路上由渠道提供),
+// 空串表示"不覆盖" —— 本地规则那条路恒传空串,它手上没有渠道。
+func violationBlockError(cr *compiledRule, override string) error {
 	return types.NewErrorWithStatusCode(
-		errors.New(msg),
+		errors.New(clientBlockMessage(cr, override)),
 		types.ErrorCode(violationErrorCode()),
 		http.StatusBadRequest,
 		types.ErrOptionWithSkipRetry(),
 		types.ErrOptionWithNoRecordErrorLog(),
 	)
+}
+
+// clientBlockMessage 算出这一次**真正回给客户端**的那句话。
+//
+// 提成函数是因为它有第二个调用方:newRecord 要把同一个结果抄进 Record.BlockedReason,
+// 好让使用记录里那一行与用户在 API 上看到的完全一致。两边各算一次的后果不是报错,
+// 而是同一次拦截在两个地方长出两句话 —— 那正是这段代码要消灭的东西。
+//
+// 优先级:渠道 → 规则 → 内置兜底。渠道排在最前,与 aiPreReview 的注释同源:
+// 它是更靠近"这一次是谁判的"那一端的信息。
+func clientBlockMessage(cr *compiledRule, override string) string {
+	msg := strings.TrimSpace(override)
+	if msg == "" {
+		msg = cr.R.BlockMessage
+	}
+	if msg == "" {
+		msg = defaultBlockMessage
+	}
+	return msg
 }
 
 // matchAIVerdict 在给定的规则桶里找出第一条被这次审核结论命中的规则。
@@ -227,18 +278,24 @@ func runAIAsyncReview(ctx context.Context, gdb *gorm.DB, rt *aiRuntime, sc *aiSc
 	if out == nil {
 		out = runAIReview(ctx, rt, sc, text, rt.AsyncTimeoutMs)
 	}
+	content, contentChars := reviewLogContent(rt, text, out != nil && out.Violated)
 	v := matchAIVerdict(rules, in, out, sc)
 	if v == nil || v.Rule == nil {
-		return persistAIReviewCtx(ctx, gdb, newAIReviewRow(rc, PhasePostAsync, out, 0, 0))
+		return persistAIReviewCtx(ctx, logDB(gdb), newAIReviewRow(rc, PhasePostAsync, out, 0, 0, content, contentChars))
 	}
 	// 异步时机恒不阻断、恒不扣费(ValidateRule 已经把 action 钉死在 record),
 	// 所以这里不走 handleHit —— 那条路会去算费、读余额、碰 gin.Context,
 	// 而这三样在异步 worker 上要么不存在、要么已经属于别的请求了。
 	shadow, shadowReason := effectiveShadow(v.Rule)
+	// 转发后审核恒不阻断,所以这条路上没有 BlockOverride;但**通知照发** ——
+	// 用户的内容确实被判成了违规、确实计了次,只是这一次没拦住他而已。
+	v.EmailNotice = aiChannelEmailNotice(rt, out.ChannelId)
 	in.AI = out
+	// CountWeight 由 newRecord 自己算(它是唯一知道这次命中落在哪个违规类型上的
+	// 地方,而"没选类型 = 不计数"这条口径就挂在那上面)。这里曾经抄一份
+	// `rec.CountWeight = v.Rule.R.CountWeight`,抄本会绕过那道闸。
 	rec := newRecord(rc, PhasePostAsync, in, v, shadow, shadowReason, false)
 	rec.FeeStatus = FeeStatusNone
-	rec.CountWeight = v.Rule.R.CountWeight
 
 	var payload *Payload
 	if v.Rule.R.ArchiveContext {
@@ -252,14 +309,15 @@ func runAIAsyncReview(ctx context.Context, gdb *gorm.DB, rt *aiRuntime, sc *aiSc
 	if err := persistRecord(ctx, gdb, rec, payload, rec.CountWeight, shadow); err != nil {
 		return err
 	}
-	return persistAIReviewCtx(ctx, gdb, newAIReviewRow(rc, PhasePostAsync, out, v.Rule.R.Id, rec.Id))
+	return persistAIReviewCtx(ctx, logDB(gdb), newAIReviewRow(rc, PhasePostAsync, out, v.Rule.R.Id, rec.Id, content, contentChars))
 }
 
 // newAIReviewRow 把一次调用的结果组装成待写入的审核明细。
 //
 // out 为 nil 也要落一行(记成 no_channel):那说明"抽中了但一次调用都没发出去",
 // 而那是配置问题,必须能在成本页上看见,不能静默消失。
-func newAIReviewRow(rc recordCtx, phase string, out *aiOutcome, ruleId, recordId int64) *AIReview {
+func newAIReviewRow(rc recordCtx, phase string, out *aiOutcome, ruleId, recordId int64,
+	content string, contentChars int) *AIReview {
 	if out == nil {
 		out = &aiOutcome{Outcome: OutcomeNoChannel}
 	}
@@ -294,18 +352,44 @@ func newAIReviewRow(rc recordCtx, phase string, out *aiOutcome, ruleId, recordId
 		RequestId:   truncate(rc.RequestId, 64),
 		ModelName:   rc.ModelName,
 		UsingGroup:  rc.UsingGroup,
-		CreatedAt:   common.GetTimestamp(),
+		// 内容已经在 reviewLogContent 里脱敏并截到设置的字符上限,这里不再加工。
+		// 再截一次的诱惑要忍住:两处上限迟早会漂移,而漂移的症状是
+		// "设置里写着 1000 字,日志里只有 500" —— 没有人查得出第二把剪刀在哪。
+		Content:      content,
+		ContentChars: contentChars,
+		CreatedAt:    common.GetTimestamp(),
 	}
+}
+
+// logDB 把一个主库句柄换成台账库句柄,并保留调用方已经接好的 ctx。
+//
+// 存在的理由:异步 worker 拿到的是 db.Get()(它还要写 qy_violation_record 那些
+// 主库表),而审核明细住在台账库。分家之后用错句柄不会报错 —— 主库里同样有
+// 一张同名表(没分家的部署迁出来的),写进去之后管理端从台账库读,永远是空的。
+//
+// 没分家时 db.Log() 返回的就是主库句柄,这一步是恒等的。
+func logDB(gdb *gorm.DB) *gorm.DB {
+	ldb := db.Log()
+	if ldb == nil {
+		return gdb
+	}
+	if gdb != nil && gdb.Statement != nil && gdb.Statement.Context != nil {
+		return ldb.WithContext(gdb.Statement.Context)
+	}
+	return ldb
 }
 
 // persistAIReview 把审核明细交给异步队列(同步时机用)。
 func persistAIReview(row *AIReview) {
-	if !db.Available() {
+	// 判据是**台账库**可用,不是主库。没分家时两者是同一件事;分家之后主库
+	// 好好的、台账库熔断打开时,这一行必须被丢弃而不是排进队列 —— 队列只有
+	// 4096 个槽,而热路径每一次抽中都会来这里排一次。
+	if !db.LogAvailable() {
 		recordDrops.Add(1)
 		return
 	}
 	guard.HotAsync("violation.ai_review_log", func(ctx context.Context) error {
-		gdb := db.Get()
+		gdb := db.Log()
 		if gdb == nil {
 			return db.ErrNotReady
 		}
@@ -322,7 +406,12 @@ func persistAIReviewCtx(ctx context.Context, gdb *gorm.DB, row *AIReview) error 
 		return db.ErrNotReady
 	}
 	// review_no 唯一索引兜住重入路径(defer 重入、重试循环),冲突直接跳过。
-	return gdb.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(row).Error
+	err := gdb.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(row).Error
+	// 失败计进**台账库**自己的熔断计数。用 db.MarkFailure 会让一次日志库故障
+	// 把主库的熔断也顶开,而那一刻 relay 与资金路径全都是好的
+	// (没分家时 MarkLogFailure 自动转发给 MarkFailure,行为不变)。
+	db.MarkLogFailure(err)
+	return err
 }
 
 // ensureAISetting 补建设置行。启动期调用,幂等。
@@ -339,9 +428,19 @@ func ensureAISetting(ctx context.Context, gdb *gorm.DB) error {
 	row := AISetting{
 		Id: 1, Enabled: false,
 		PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
-		Prompt: "", MaxInputChars: defaultAIMaxInputChars,
+		MaxInputChars:       defaultAIMaxInputChars,
 		ThirdPartyNoticeAck: false,
-		CreatedAt:           now, UpdatedAt: now,
+		// 审核日志的出厂档:留内容、留 1000 字、保 3 天。
+		//
+		// 与上面那三个"出厂即关闭"的字段方向相反,但不矛盾:那几个决定
+		// **要不要把用户内容发出去**(要花钱、要出境,不该由一次升级替站点决定),
+		// 这三个决定**已经发出去的那一次在自己库里留不留痕**。后者没有"先别开"
+		// 的理由 —— 功能整体没开时它一行都不会写。
+		LogContent:              true,
+		LogContentViolationFull: boolPtr(true),
+		LogContentMaxChars:      defaultAIReviewContentChars,
+		LogRetentionDays:        defaultAIReviewRetentionDays,
+		CreatedAt:               now, UpdatedAt: now,
 	}
 	return gdb.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
 }

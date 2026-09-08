@@ -62,6 +62,12 @@ func Init() error {
 	if err := db.Init(config.Get().Database); err != nil {
 		return err
 	}
+	// 台账库:log_database.dsn 留空时这一句什么都不做,台账表跟着主库走
+	// (见 qianye/db/logdb.go 的零值方向)。填了却连不上一律 FatalLog ——
+	// 静默回落到主库会让同一张表的数据分在两个库里,那是最难查的一种状态。
+	if err := db.InitLog(config.Get().LogDatabase); err != nil {
+		return err
+	}
 	// 缺表自检在 db.Migrate 内部完成,但它的结论是分级的(见 db.Migrate 的契约):
 	//   - 本节点刚亲自跑完 AutoMigrate 却仍缺表 → 返回 error,在此 FatalLog;
 	//     那是本节点自己的 bug(模型漏登记 / DDL 没生效),重启多少次都一样。
@@ -69,13 +75,27 @@ func Init() error {
 	//     这些节点结构性地建不出表,让整台网关(含全部上游 relay 流量)退出
 	//     既修不好 schema,又会在主节点尚未迁移完的窗口里把从节点打进重启循环。
 	tables := allTables()
+	// 台账表分家时走另一条迁移(另一个库、另一把迁移锁);没分家就并进主清单,
+	// 与本段存在之前逐字节一致。判据只有一处,就在这里 —— 各模块只管声明
+	// 自己有哪些台账表,不必知道这一轮分没分家。
+	logTables := allLogTables()
+	if !db.LogSeparate() {
+		tables = append(tables, logTables...)
+		logTables = nil
+	}
 	if err := db.Migrate(tables...); err != nil {
 		return err
+	}
+	if len(logTables) > 0 {
+		if err := db.MigrateLog(logTables...); err != nil {
+			return err
+		}
 	}
 	// 上面那条"不阻断"换来的可见性在这里补齐:确认缺表时扩展进入 schema 降级态,
 	// 后台每分钟点名一次缺哪张表,主节点/DBA 把表建出来后自动解除,无需重启本节点。
 	// 启动时那一行日志会被滚走,这个循环不会。
 	db.StartSchemaRecheck(tables...)
+	db.StartSchemaRecheckLog(logTables...)
 
 	// 主库探针表。它与资金变更写在同一个主库事务里,是判定
 	// "主库副作用是否已生效"的唯一权威依据。
@@ -86,6 +106,9 @@ func Init() error {
 	}
 
 	db.StartHealthLoop()
+	// 台账库自己的探测循环。没分家时它直接返回 —— 那时 Log() 就是主库句柄,
+	// 上面那个循环已经在探它了。
+	db.StartLogHealthLoop()
 
 	// 分组倍率失配登记簿必须先接上:ratio_setting.QyNoteGroupRatioMiss 的默认值是
 	// 空函数,不赋值的话三条计费路径每一次"静默按 1.0 扣费"都打进空气,而
@@ -104,11 +127,27 @@ func Init() error {
 	return nil
 }
 
-// allTables 汇总地基表与各模块表。
+// allTables 汇总地基表与各模块表。**不含**台账表,见 allLogTables。
 func allTables() []any {
 	tables := qymodel.FoundationTables()
 	for _, m := range module.All() {
 		tables = append(tables, m.Tables()...)
+	}
+	return tables
+}
+
+// allLogTables 汇总各模块声明的台账表(module.LogTabler)。
+//
+// 它与 allTables 是**互斥**的两份清单:同一张表出现在两边,分家之后会在两个
+// 库里各建一张,而写入只落其中一个 —— 管理端从哪一边读取决于代码里那一行
+// 用的是 db.Get() 还是 db.Log(),两者随时可能漂移。qianye/module_import_guard_test.go
+// 那一族守卫里有一条钉住这个互斥。
+func allLogTables() []any {
+	var tables []any
+	for _, m := range module.All() {
+		if lt, ok := m.(module.LogTabler); ok {
+			tables = append(tables, lt.LogTables()...)
+		}
 	}
 	return tables
 }

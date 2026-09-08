@@ -185,3 +185,170 @@ describe('详情页的阶段轨与折叠的规则解释', () => {
     assert.deepEqual(states, ['done', 'done', 'done', 'done'])
   })
 })
+
+/* ────────────────────────────────────────────────────────────────────────
+ * 号码球与奖档清单（2026-09-05：项目方「文字画太多，观感很差」那一轮）
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** 一场已开奖的双色球，我买了两注：一注中五红一蓝，一注全落空。 */
+const BALL_DRAWN = qyLotDetailFixture({
+  draw_mode: 'ball',
+  issue_no: 12,
+  status: 'finished',
+  outcome: 'drawn',
+  pool_open_quota: 12_000,
+  ball_red_pool: 33,
+  ball_red_pick: 6,
+  ball_blue_pool: 16,
+  ball_blue_pick: 1,
+  ball_result: '03,09,12,17,22,30|05',
+  my_entry_count: 2,
+  my_tickets: [
+    {
+      entry_no: 'E-hit',
+      pick: '03,09,12,17,22,31|05',
+      status: 'success',
+      won_kind: 'quota',
+      won_tier: 2,
+      won_amount: 2_000,
+    },
+    {
+      entry_no: 'E-miss',
+      pick: '01,02,04,05,06,07|01',
+      status: 'success',
+      won_kind: '',
+      won_tier: 0,
+      won_amount: 0,
+    },
+  ],
+  spec: [
+    {
+      tier: 1,
+      name: '一等奖',
+      amount_quota: 0,
+      count: 0,
+      win_ppm: 0,
+      red_match: 6,
+      blue_match: 1,
+      pool_share_bps: 5000,
+    },
+    {
+      tier: 2,
+      name: '二等奖',
+      amount_quota: 2_000,
+      count: 3,
+      win_ppm: 0,
+      red_match: 5,
+      blue_match: 1,
+    },
+  ],
+} as never)
+
+/** 本期开出的那一行球（详情页上放大到 `lg` 的那一组）。 */
+function drawnBalls(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>('.qy-fx-ball-drop')]
+}
+
+describe('号码球画成球', () => {
+  test(
+    '开出的号每颗都是实心球、逐颗落位，且一个「命中」标签都不挂',
+    SLOW,
+    async () => {
+      const detail = await mountDetail(BALL_DRAWN)
+      const balls = drawnBalls(detail.container)
+      // 6 红 + 1 蓝。少一颗就说明那一行不是开奖号那一组。
+      assert.equal(balls.length, 7, '开奖号那一行应当恰好 7 颗球')
+      for (const ball of balls) {
+        assert.equal(
+          ball.getAttribute('data-solid'),
+          'true',
+          '开奖号必须是实心球：空心是"这颗没中"的形态，而开奖号没有可对照的对象'
+        )
+        assert.equal(
+          ball.getAttribute('aria-label'),
+          null,
+          '开奖号不能挂「命中」标签，否则读屏把七颗号逐个念成「命中 03、命中 09…」'
+        )
+      }
+      // 逐颗落位：第 N 颗延迟 N × 90ms，`backwards` 让未开始的那几颗停在起始帧。
+      const delays = balls.map((ball) => ball.style.animationDelay)
+      assert.deepEqual(delays, [
+        '0ms',
+        '90ms',
+        '180ms',
+        '270ms',
+        '360ms',
+        '450ms',
+        '540ms',
+      ])
+    }
+  )
+
+  test(
+    '我的号：命中的实心 + 挂「命中」标签，落空的空心 —— 差别不只是颜色',
+    SLOW,
+    async () => {
+      const detail = await mountDetail(BALL_DRAWN)
+      // 落位动效只给开奖号那一行，所以「我的号」在剩下的球里。
+      const mine = [
+        ...detail.container.querySelectorAll<HTMLElement>('.qy-art-ball'),
+      ].filter((ball) => !ball.classList.contains('qy-fx-ball-drop'))
+      assert.ok(mine.length > 0, '我的号一颗球都没画出来')
+
+      const solid = mine.filter(
+        (ball) => ball.getAttribute('data-solid') === 'true'
+      )
+      const hollow = mine.filter(
+        (ball) => ball.getAttribute('data-solid') === 'false'
+      )
+      // 第一注命中 5 红 + 1 蓝 = 6 颗实心；第二注 7 颗全落空。
+      assert.equal(solid.length, 6, '命中的号应当恰好 6 颗画成实心球')
+      assert.equal(hollow.length, 8, '未命中的号应当留在空心态')
+      // 实心 / 空心是**形态**差，`aria-label` 是给读屏的第二条独立线索：
+      // 只靠颜色区分命中在色弱与灰度截图下会整个塌掉。
+      for (const ball of solid) {
+        assert.ok(
+          (ball.getAttribute('aria-label') ?? '').includes('命中'),
+          '命中的球必须同时挂 aria-label'
+        )
+      }
+      for (const ball of hollow) {
+        assert.equal(ball.getAttribute('aria-label'), null)
+      }
+    }
+  )
+})
+
+describe('奖档清单排成一档一行', () => {
+  test(
+    '每一档一枚档位牌，条件与概率都还在，且行末不留孤立的分隔点',
+    SLOW,
+    async () => {
+      const detail = await mountDetail(BALL_DRAWN)
+      // 一档一行：两档奖 → 两枚档位牌。牌是纯装饰（档位号在文字里已经说过），
+      // 判据用 testid 而不是类名 —— 排版会调，"一档一枚牌"不会。
+      const medals = [
+        ...detail.container.querySelectorAll<HTMLElement>(
+          '[data-testid="qy-tier-medal"]'
+        ),
+      ]
+      assert.equal(medals.length, 2, `档位牌应当两枚，实际 ${medals.length}`)
+
+      // 精简掉的是排版，不是内容：命中门槛与"整档预算"这两句一个都不许少。
+      for (const piece of ['需红 6 蓝 1', '需红 5 蓝 1', '整档预算']) {
+        assert.ok(detail.text.includes(piece), `奖档清单少了「${piece}」`)
+      }
+
+      // 脚注项之间用「·」分隔，分隔点画在每一项**之前**。某一项渲染成空却
+      // 仍占着一个位置时，行末会挂一个没有下文的孤立分隔点（实测「50.0000% ·」）。
+      for (const medal of medals) {
+        const row = medal.closest('li')
+        const text = (row?.textContent ?? '').replaceAll(/\s+/g, ' ').trim()
+        assert.ok(
+          !text.endsWith('·'),
+          `奖档行末尾挂着孤立的分隔点：「${text}」`
+        )
+      }
+    }
+  )
+})

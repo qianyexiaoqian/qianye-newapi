@@ -23,7 +23,9 @@ import type {
   QyAiChannelInput,
   QyAiChannelList,
   QyAiChannelTestResult,
+  QyAiLogFilters,
   QyAiReviewLog,
+  QyAiReviewLogDetail,
   QyAiScopeInput,
   QyAiScopeList,
   QyAiSetting,
@@ -58,11 +60,35 @@ export function qyAiStatsQuery(days: number) {
   }
 }
 
-export function qyAiLogsQuery(params: { p: number; page_size: number }) {
+/**
+ * 审核日志列表。**不含送审内容** —— 那是一个 text 列,一页几十 KB 而表格里
+ * 也放不下;列表只给 content_chars(有没有、多长),点开某一行才去取。
+ *
+ * 空串筛选项要在这里剥掉而不是原样传:后端把空串当"不筛选"处理是对的,
+ * 但空串会进 queryKey,于是"清空筛选"与"从没填过"变成两个不同的缓存键,
+ * 同一份数据被拉两次。
+ */
+export function qyAiLogsQuery(
+  params: { p: number; page_size: number } & QyAiLogFilters
+) {
+  const query = Object.fromEntries(
+    Object.entries(params).filter(
+      ([, v]) => v !== '' && v !== undefined && v !== null
+    )
+  )
   return {
-    queryKey: qyKeys.adminViolationAiLogs(params),
+    queryKey: qyKeys.adminViolationAiLogs(query),
     queryFn: () =>
-      qyGet<QyPage<QyAiReviewLog>>('/admin/violation/ai-review/logs', params),
+      qyGet<QyPage<QyAiReviewLog>>('/admin/violation/ai-review/logs', query),
+  }
+}
+
+/** 单条审核明细的详情,**含送审内容**。只在用户点开某一行时才发。 */
+export function qyAiLogDetailQuery(id: number) {
+  return {
+    queryKey: qyKeys.adminViolationAiLogDetail(id),
+    queryFn: () =>
+      qyGet<QyAiReviewLogDetail>(`/admin/violation/ai-review/logs/${id}`),
   }
 }
 

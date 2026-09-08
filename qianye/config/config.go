@@ -29,9 +29,23 @@ type Config struct {
 	Enabled bool `yaml:"enabled"`
 
 	Database Database `yaml:"database"`
-	Runtime  Runtime  `yaml:"runtime"`
-	TwoPhase TwoPhase `yaml:"two_phase"`
-	Audit    Audit    `yaml:"audit"`
+	// LogDatabase 是**高频只读台账**(目前只有 AI 审核明细)的可选独立库。
+	//
+	// dsn 留空 = 不启用,那些表留在 database 指向的库里,与本段存在之前逐字节
+	// 一致 —— 升级不要求任何部署去加一个新库。填了 dsn 才分家。
+	//
+	// 为什么值得分:qy_violation_ai_review 的行数正比于**被抽中的请求数**,
+	// 而资金表的行数正比于成交笔数,两者可以差三到四个数量级。全站几百万到
+	// 几千万请求/天的站点开 10% 抽样,这一张表一天就是几十万行、带上送审内容
+	// 是数 GB;它每小时还要按保留期批量删一遍(见 modules/violation 的
+	// runAIReviewRetentionGC)。大批量删除在 InnoDB 上留碎片、在 PostgreSQL 上
+	// 攒死元组等 autovacuum,这些代价落在与佣金账本、两阶段资金单同一个库上
+	// 毫无必要 —— 那些表靠 SELECT ... FOR UPDATE 串行化,最不该跟一条清理任务
+	// 抢 IO。备份口径也不同:资金要能按时间点恢复,一份滚动三天的审核台账不要。
+	LogDatabase Database `yaml:"log_database"`
+	Runtime     Runtime  `yaml:"runtime"`
+	TwoPhase    TwoPhase `yaml:"two_phase"`
+	Audit       Audit    `yaml:"audit"`
 
 	Transfer        Transfer        `yaml:"transfer"`
 	Invite          Invite          `yaml:"invite"`
@@ -952,6 +966,14 @@ func boolOr(p *bool, def bool) bool {
 
 func (d Database) ShouldAutoMigrate() bool { return boolOr(d.AutoMigrate, true) }
 
+// LogDatabaseSeparate 回答「台账表这一轮住在自己的库里吗」。
+//
+// 判据只有 dsn 一格:留空即整段不生效(连接池那些键写了也不会被读),
+// 而这正是升级前的形态 —— 台账表跟着 database 走。
+func (c *Config) LogDatabaseSeparate() bool {
+	return c != nil && strings.TrimSpace(c.LogDatabase.DSN) != ""
+}
+
 func (r Runtime) FailOpen() bool       { return boolOr(r.HotPathFailOpen, true) }
 func (r Runtime) BackgroundOn() bool   { return boolOr(r.BackgroundEnabled, true) }
 func (t TwoPhase) OutboxEnabled() bool { return boolOr(t.MainOutboxEnabled, true) }
@@ -1025,7 +1047,20 @@ func parseFile(path string) (*Config, int64, error) {
 	if st, statErr := os.Stat(path); statErr == nil {
 		mod = st.ModTime().Unix()
 	}
+	c, err := parseBytes(raw)
+	if err != nil {
+		return nil, 0, err
+	}
+	return c, mod, nil
+}
 
+// parseBytes 是 parseFile 去掉磁盘 IO 之后的那一半:严格解析 + 默认值 + 校验。
+//
+// 抽出来只为一件事:引导向导在**写盘之前**必须能拿这份字节走一遍与启动
+// 逐字相同的判据。若向导自己另写一套检查,两个读者必然漂移,而漂移的代价
+// 是写出一份让进程起不来的配置 —— 那时界面已经关了,运维手上只有一句
+// "容器启动失败"。ValidateBytes 是它的导出面。
+func parseBytes(raw []byte) (*Config, error) {
 	c := &Config{}
 	// 解析前给数值字段打哨兵,解析后由 applyDefaults 判定"这个键写没写"。
 	// yaml.v3 只写它在文件里见到的键,没见到的字段原样留着哨兵。
@@ -1043,12 +1078,12 @@ func parseFile(path string) (*Config, int64, error) {
 	dec.KnownFields(true)
 	if err := dec.Decode(c); err != nil {
 		if strings.Contains(err.Error(), "not found in type") {
-			return nil, 0, fmt.Errorf(
+			return nil, fmt.Errorf(
 				"qianye: 配置文件含无法识别的字段: %w\n"+
 					"  这通常是字段名拼写错误;若你刚回滚过版本,请同步移除新版本才有的配置项。\n"+
 					"  为避免风控开关静默失效,此处不做兼容处理", err)
 		}
-		return nil, 0, fmt.Errorf("qianye: 解析配置文件失败: %w", err)
+		return nil, fmt.Errorf("qianye: 解析配置文件失败: %w", err)
 	}
 
 	// 严格解析已经过关,文件语法必定合法。再走一遍 yaml.Node 只为记下
@@ -1058,9 +1093,9 @@ func parseFile(path string) (*Config, int64, error) {
 
 	applyDefaults(c)
 	if err := validate(c); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return c, mod, nil
+	return c, nil
 }
 
 // warnIfWorldReadable 在配置文件对所有用户可读时告警。

@@ -21,7 +21,9 @@ import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { cn } from '@/lib/utils'
 
+import { QyBurst } from '../../../components/art/qy-burst'
 import { QySdAmount } from '../../../components/qy-sd-amount'
 import { formatQyTs } from '../../ops/format'
 import { qyLotSeriesQuery } from '../api'
@@ -73,6 +75,9 @@ export function QyLotBallResultCard(props: { activity: QyLotActivityDetail }) {
   const drawn = qyLotBallSafeParsePick(activity.ball_result ?? '')
   const tickets = activity.my_tickets ?? []
   const tiers = qyLotTiers(activity.spec)
+  // 「这一期我有没有中」：粒子只在真的中了的时候放。落空是这份清单上最常见的
+  // 结果，给它撒花是在庆祝用户输钱。
+  const anyWon = tickets.some((ticket) => ticket.won_kind !== '')
   // 后端把 my_tickets 截到 50 条（api_user.go 的 myTicketsCap），而
   // my_entry_count 是同一个事务视图、同一组过滤条件下的**全量** COUNT。
   // 标题原先直接写 tickets.length，于是买了 60 张票的人会在同一屏上看到
@@ -97,23 +102,37 @@ export function QyLotBallResultCard(props: { activity: QyLotActivityDetail }) {
         <CardTitle>{t('qy_lot_ball_draw_title')}</CardTitle>
       </CardHeader>
       <CardContent className='space-y-3'>
-        <div className='rounded-lg border p-3'>
-          <p className='text-muted-foreground text-xs'>
+        {/*
+          开出的号是这一屏的主角：居中、放大到 `lg`、逐颗落位。此前它与我的号、
+          与旁边的说明同一个字号排在一起，"本期开的是哪几个号"要靠读标签才能
+          分辨出是哪一行——而项目方那句原话正是「买彩票一样，中不中」。
+
+          中奖时在这一块上撒一次粒子（`QyBurst`，与转盘落定共用）。key 绑在
+          开奖号上：同一期只放一次，换一期才会再放。
+        */}
+        <div className='relative overflow-hidden rounded-lg border p-3'>
+          <p className='text-muted-foreground text-center text-xs'>
             {t('qy_lot_ball_result')}
           </p>
           {drawn == null ? (
-            <p className='mt-1 text-sm'>{t('qy_lot_ball_await_draw')}</p>
+            <p className='mt-1 text-center text-sm'>
+              {t('qy_lot_ball_await_draw')}
+            </p>
           ) : (
             <>
               <QyLotBallNumbers
-                className='mt-1'
+                className='mt-2 justify-center'
+                size='lg'
+                drawn
+                reveal
                 pick={activity.ball_result ?? ''}
               />
               {/* 规范化串留在球下面：进哈希链的是这份字节，用户拿它去比对
                   证据链。球是给人看的，串是给核对用的，两者缺一不可。 */}
-              <p className='text-muted-foreground mt-1 font-mono text-xs break-all tabular-nums'>
+              <p className='text-muted-foreground mt-2 text-center font-mono text-xs break-all tabular-nums'>
                 {activity.ball_result}
               </p>
+              {anyWon && <QyBurst key={activity.ball_result} />}
             </>
           )}
           {/* 「这串号怎么来的、能不能自己验」是信任问题而不是决策问题：
@@ -151,11 +170,20 @@ export function QyLotBallResultCard(props: { activity: QyLotActivityDetail }) {
                 return (
                   <li
                     key={ticket.entry_no}
-                    className='flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border p-3'
+                    // 中了的那一注挑出来：左侧一条主色的边。一列长得一模一样
+                    // 的卡片里，"哪一注中了"此前只能靠读每一行末尾的徽章。
+                    className={cn(
+                      'flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border p-3',
+                      won && 'border-primary/60 bg-primary/5 border-s-4'
+                    )}
                   >
-                    <QyLotBallNumbers pick={ticket.pick} hits={hits} />
-                    <span className='text-muted-foreground font-mono text-xs break-all tabular-nums'>
-                      {ticket.pick}
+                    <span className='flex min-w-0 flex-1 flex-col gap-1'>
+                      <QyLotBallNumbers pick={ticket.pick} hits={hits} />
+                      {/* 进哈希链的那份字节。它是核对用的，不是读的 —— 降到
+                          最小字号、自己一行，不再和球挤在同一行里争位置。 */}
+                      <span className='text-muted-foreground font-mono text-[11px] break-all tabular-nums'>
+                        {ticket.pick}
+                      </span>
                     </span>
                     {drawn != null && (
                       <span className='text-xs tabular-nums'>

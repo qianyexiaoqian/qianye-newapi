@@ -19,7 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 
 import type { TFunction } from 'i18next'
-
 import { describe, expect, test } from 'vitest'
 
 import type { LoginSession } from '@/stores/auth-store'

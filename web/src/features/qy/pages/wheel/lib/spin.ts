@@ -127,7 +127,7 @@ export function qyWheelSectors(spec: QyLotSpecItem[]): QyWheelSector[] {
 /**
  * 扇区色。**只用四支语义色 + 两档图表色**（design-15 §11 对 Midnight Signal 的
  * 让步：一支色相 / 辉光 ≤2 / 零投影，转盘的多色扇区只能从"族外允许项"里取）。
- * none 档恒为中性的 `--muted`。全部走 CSS 变量，昼夜与各主题预设下自动跟随。
+ * 全部走 CSS 变量，昼夜与各主题预设下自动跟随。
  */
 const SECTOR_PALETTE = [
   'var(--success)',
@@ -138,8 +138,23 @@ const SECTOR_PALETTE = [
   'var(--chart-2)',
 ] as const
 
+/**
+ * 「谢谢参与」那一格的中性色。
+ *
+ * 它**不能**是 `--muted`：`--muted` 是浅色下的 `oklch(0.97)`、深色下的
+ * `oklch(0.305)`，两边都紧贴卡片底色（`--card` 分别是 1.0 与 0.285）。而这一格
+ * 通常是盘上最大的一块（落空概率常在 50% 以上），于是盘面被挖掉一个与背景同色
+ * 的大缺口 —— 看起来像一只没画完的转盘，而不是"这一格是谢谢参与"。
+ *
+ * 兑一份前景色进背景色，两套主题下都落在离底色足够远、又明显比彩色扇区安静的
+ * 位置：浅色约 0.80、深色约 0.40。取值仍是纯中性（没有色相），所以它不占
+ * design-14 那"一支色相"的配额。
+ */
+const SECTOR_NONE_COLOR =
+  'color-mix(in oklch, var(--foreground) 22%, var(--background))'
+
 export function qyWheelSectorColor(colorIndex: number): string {
-  if (colorIndex < 0) return 'var(--muted)'
+  if (colorIndex < 0) return SECTOR_NONE_COLOR
   return SECTOR_PALETTE[colorIndex % SECTOR_PALETTE.length]
 }
 

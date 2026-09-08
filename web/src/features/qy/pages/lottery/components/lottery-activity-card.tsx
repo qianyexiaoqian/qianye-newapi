@@ -78,12 +78,22 @@ export function QyLotActivityCard(props: {
   const KindIcon = isBall ? CircleDot : (KIND_ICON[activity.kind] ?? Target)
 
   return (
-    <Card className='flex h-full flex-col overflow-hidden pt-0'>
+    // 悬停/聚焦时整张卡抬 2px、封面轻微推近（`.qy-fx-lift` / `.qy-fx-zoom`，
+    // 纯 transform，不用投影 —— design-14 的零投影是硬约束）。大厅是一屏
+    // 十几张卡的网格，"这一张可以点进去"此前只能靠边框色的微弱变化表达。
+    <Card className='qy-fx-lift flex h-full flex-col overflow-hidden pt-0'>
       {/* 背景图压在卡片最顶上，与卡片同宽、无留白 —— 所以这张 Card 去掉了
           顶部 padding 并开了 overflow-hidden，否则图的直角会戳出圆角边框。
           没配封面时这里画的是兜底图案而不是空白：空白与"还在加载"长得一样。 */}
-      <div className='relative'>
+      <div className='relative overflow-hidden'>
         <QyLotCover activity={activity} />
+        {/* 顶部压暗。徽章压在管理员随手配的封面上，底图是亮是暗无从预知 ——
+            一张浅色封面会让「进行中」那枚徽章的白底与图糊在一起。徽章自己那层
+            `bg-background/85` 只解决了半透明，解决不了图本身的对比度。 */}
+        <span
+          aria-hidden='true'
+          className='qy-art-scrim pointer-events-none absolute inset-x-0 top-0 h-2/3'
+        />
         <div className='absolute inset-x-2 top-2 flex flex-wrap items-center justify-between gap-1'>
           <span className='flex flex-wrap items-center gap-1'>
             <Badge variant='outline' className='bg-background/85 gap-1'>
@@ -161,7 +171,11 @@ export function QyLotActivityCard(props: {
             <span className='text-muted-foreground text-[11px]'>
               {t('qy_lot_ball_result')}
             </span>
-            <QyLotBallNumbers size='sm' pick={activity.ball_result ?? ''} />
+            <QyLotBallNumbers
+              size='sm'
+              drawn
+              pick={activity.ball_result ?? ''}
+            />
           </div>
         )}
       </CardContent>

@@ -441,6 +441,12 @@ func TestAIAsyncReviewRecordsWithoutCharging(t *testing.T) {
 		assert.Equal(t, "0.00026", log.CostUsd.String())
 		assert.Equal(t, rec.Id, log.RecordId, "明细要能连回它产生的那条违规记录")
 		assert.Equal(t, int64(51), log.RuleId)
+
+		// 送审内容也要在这一行上 —— 这是"审核日志能回答凭什么"的落点。
+		// 单测只证明 reviewLogContent 算得对;这里证明它**真的被接进了写入路径**,
+		// 而那正是本仓反复出现的失败形状("写了但没接上")。
+		assert.Equal(t, in.Text, log.Content, "留存的必须是模型读到的那一段")
+		assert.Equal(t, len([]rune(in.Text)), log.ContentChars)
 	})
 }
 
@@ -473,6 +479,9 @@ func TestAIAsyncReviewLogsEvenWithoutHit(t *testing.T) {
 	require.NoError(t, gdb.Find(&logs).Error)
 	require.Len(t, logs, 1, "没命中也必须留一行审核明细,否则成本统计会系统性偏低")
 	assert.Equal(t, OutcomeClean, logs[0].Outcome)
+	// 没命中的那一行同样要带内容。只在命中时留内容的话,最需要复核的一类
+	// ——"判了未违规,但看起来该拦"—— 恰好一个字都查不到。
+	assert.Equal(t, "正常内容", logs[0].Content)
 	assert.Equal(t, 170, logs[0].TotalTokens)
 	assert.Zero(t, logs[0].RuleId)
 	assert.Zero(t, logs[0].RecordId)

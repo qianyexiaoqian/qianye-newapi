@@ -42,7 +42,6 @@ import { cn } from '@/lib/utils'
 import { LOG_TYPE_ENUM } from '../constants'
 import type { UsageLog } from '../data/schema'
 import { parseLogOther } from '../lib/format'
-import { TASK_MOBILE_SUMMARY_FIELDS } from '../lib/task-mobile-layout'
 import {
   cacheRateTextClass,
   formatCacheRate,
@@ -52,6 +51,7 @@ import {
   reasoningLabelKey,
   reasoningVariant,
 } from '../lib/qy-log-metrics'
+import { TASK_MOBILE_SUMMARY_FIELDS } from '../lib/task-mobile-layout'
 import {
   getLogTypeConfig,
   isDisplayableLogType,

@@ -261,3 +261,37 @@ func TestMigrationPoolLeavesRoomForBothLockAndDDL(t *testing.T) {
 		require.NoError(t, sqlDB.Close())
 	}
 }
+
+// ─────────────────────────── 台账库 ───────────────────────────
+
+// TestLogHandleFallsBackToMainWhenNotSeparate 钉住台账库的零值方向。
+//
+// log_database.dsn 留空是**绝大多数部署的形态**,也是升级路径:那时 Log() 必须
+// 返回主库句柄,LogSeparate() 必须是 false,LogAvailable() 必须跟着主库走。
+// 任何一处不成立,升级那一刻审核明细就会写到 nil 句柄上 —— 而写入是异步的,
+// 表现只是"日志页从此一直是空的"。
+func TestLogHandleFallsBackToMainWhenNotSeparate(t *testing.T) {
+	gdb := useOfflineHandle(t)
+	require.Nil(t, LogHandle(), "没配 dsn 时不该有独立句柄")
+	assert.False(t, LogSeparate())
+	assert.Same(t, gdb, Log(), "没分家时 Log() 必须就是主库句柄")
+
+	prev := healthy.Load()
+	t.Cleanup(func() { healthy.Store(prev) })
+	healthy.Store(true)
+	assert.True(t, LogAvailable(), "没分家时可用性判据必须跟着主库")
+	healthy.Store(false)
+	assert.False(t, LogAvailable())
+}
+
+// TestMigrateLockNamesDifferPerDatabase 钉住两把迁移锁不同名。
+//
+// MySQL 的 GET_LOCK 是**服务器实例级**的(逐条对照见 acquireMigrateLock),
+// 同名锁跨 schema 也互斥。而最常见的部署恰恰是"同一台 MySQL 上两个 schema" ——
+// 同名的话主库迁移会把台账库迁移挡在门外 30 秒,后者拿着 errMigrationInProgress
+// 进降级态,要等下一分钟的复查才自愈。
+func TestMigrateLockNamesDifferPerDatabase(t *testing.T) {
+	assert.NotEqual(t, migrateLockName, migrateLockNameLog)
+	assert.NotEqual(t, advisoryLockKey(migrateLockName), advisoryLockKey(migrateLockNameLog),
+		"PostgreSQL 侧的咨询锁键由锁名折叠而来,两个名字折成同一个 key 等于没分开")
+}

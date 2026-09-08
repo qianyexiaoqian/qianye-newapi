@@ -178,6 +178,7 @@ export function QyLotteryRecordsBody() {
                       header: t('qy_lot_ball_result'),
                       cell: (row: QyLotMyEntry) => (
                         <QyLotBallNumbers
+                          drawn
                           emptyText={t('qy_lot_ball_await_draw')}
                           pick={row.ball_result ?? ''}
                           size='sm'

@@ -2,9 +2,12 @@ package violation
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/db"
@@ -30,6 +33,28 @@ import (
 
 // ───────────────────────────── 渠道 ─────────────────────────────
 
+// aiChannelWritableColumns 是渠道编辑接口**写回的列清单**。
+//
+// # 为什么是白名单而不是 Save/Updates 全字段
+//
+// 密钥那三列由 applyAIChannelKey 单独落库(它要加密、要算掩码、要记绑定地址),
+// 全字段写回会拿 row 里的旧值把刚落好的密文再盖一遍;而"请求里没传 api_key"
+// 那一档 row 上的密文是空的 —— 全字段写回等于每次编辑都静默清空密钥。
+//
+// # 加了新列必须同时加进这里
+//
+// 漏掉的表现**没有任何报错**:接口 200、响应体里那个字段是新值(它来自内存里的
+// row),刷新之后变回旧值。2026-09-07 加通知邮件那三列时就漏了一次,而它是
+// 在真站点上点了一次保存才被发现的。TestAIChannelWritableColumnsCoverEveryEditableField
+// 从模型反射出列名与这份清单对账,把这一类遗漏钉在编译-测试期。
+var aiChannelWritableColumns = []string{
+	"name", "base_url", "model", "protocol", "risk_name", "group_name", "prompt",
+	"block_message", "notify_email", "email_subject", "email_body",
+	"guard_controversial", "guard_categories", "guard_elevate",
+	"timeout_ms", "weight", "enabled",
+	"price_in_per_m", "price_out_per_m", "remark", "updated_at", "updated_by",
+}
+
 // aiChannelUpsertReq 是渠道的新建/编辑入参。
 //
 // 单价走字符串:JSON number 在前端是 float64,0.1 往返一次会变成
@@ -47,6 +72,9 @@ type aiChannelUpsertReq struct {
 	// Protocol 空串 = json_prompt(提示词 + JSON),这是零值档也是出厂行为。
 	// 见 aireview_guard.go。
 	Protocol string `json:"protocol"`
+	// RiskName 只在 protocol = granite_guardian 时有意义,空串 = harm。
+	// Granite 一次只审一种风险,取值见 graniteRisks(aireview_granite.go)。
+	RiskName string `json:"risk_name"`
 	// GuardControversial 只在 protocol = qwen3guard 时有意义,空串 = safe。
 	// 取值 safe / sensitive / unsafe,见 aireview_guard.go。
 	GuardControversial string `json:"guard_controversial"`
@@ -58,12 +86,27 @@ type aiChannelUpsertReq struct {
 	GuardCategories []string `json:"guard_categories"`
 	// GuardElevate 是 sensitive 档下"命中即拦截"的敏感类别。空数组 = 参考实现的三类。
 	GuardElevate []string `json:"guard_elevate"`
-	TimeoutMs    int      `json:"timeout_ms"`
-	Weight       int      `json:"weight"`
-	Enabled      bool     `json:"enabled"`
-	PriceInPerM  string   `json:"price_in_per_m"`
-	PriceOutPerM string   `json:"price_out_per_m"`
-	Remark       string   `json:"remark"`
+	// Group 是审核渠道分组;空串是合法值(= 未分组),不是"属于所有分组"。
+	Group string `json:"group"`
+	// Prompt 是这个渠道的审核提示词。空 = 用内置默认(defaultAIPrompt)。
+	// 与渠道密钥那三态不同,它**不是**指针:表单每次整段提交,而空串是一个
+	// 有意义的取值(回到内置默认),没有"不动它"这一档。
+	Prompt string `json:"prompt"`
+	// BlockMessage 是这个渠道判违规、规则又要拦截时返回给用户的那句话。
+	// 空 = 不覆盖,沿用规则自己的那一份。
+	BlockMessage string `json:"block_message"`
+	// NotifyEmail 是"这个渠道判违规就给用户发邮件"的开关;两格模板留空 = 用内置默认。
+	// 与 Prompt 同一档:表单整段提交,空串是有意义的取值(回到内置默认),
+	// 没有"不动它"那一态,所以不是指针。
+	NotifyEmail  bool   `json:"notify_email"`
+	EmailSubject string `json:"email_subject"`
+	EmailBody    string `json:"email_body"`
+	TimeoutMs    int    `json:"timeout_ms"`
+	Weight       int    `json:"weight"`
+	Enabled      bool   `json:"enabled"`
+	PriceInPerM  string `json:"price_in_per_m"`
+	PriceOutPerM string `json:"price_out_per_m"`
+	Remark       string `json:"remark"`
 }
 
 func (r *aiChannelUpsertReq) apply(dst *AIChannel) error {
@@ -79,6 +122,18 @@ func (r *aiChannelUpsertReq) apply(dst *AIChannel) error {
 	dst.BaseUrl = r.BaseUrl
 	dst.Model = r.Model
 	dst.Protocol = r.Protocol
+	dst.Group = strings.TrimSpace(r.Group)
+	// 提示词的归一放在这里(而不是各 handler 里):这是渠道唯一的写入路径,
+	// 放这儿意味着以后新增任何一条写入路径都自动带上"逐字等于内置默认 → 存空串"。
+	// 那条折叠是为了让站点跟随 defaultAIPrompt 的后续加固,完整理由见 aireview_prompt.go。
+	dst.Prompt = normalizeAIPrompt(r.Prompt)
+	dst.BlockMessage = strings.TrimSpace(r.BlockMessage)
+	dst.NotifyEmail = r.NotifyEmail
+	// 标题 Trim、正文只 TrimRight:HTML 模板的首行缩进是作者写的排版,
+	// 而尾部空白纯属编辑器留下的。两格都留空即回落内置默认(见 renderViolationEmail)。
+	dst.EmailSubject = strings.TrimSpace(r.EmailSubject)
+	dst.EmailBody = strings.TrimRight(r.EmailBody, " \t\r\n")
+	dst.RiskName = r.RiskName
 	dst.GuardControversial = r.GuardControversial
 	dst.GuardCategories = strings.Join(r.GuardCategories, ",")
 	dst.GuardElevate = strings.Join(r.GuardElevate, ",")
@@ -103,6 +158,12 @@ type aiChannelView struct {
 	// 前端拿空串去填一个下拉框会得到"未选择",而库里的空串含义是明确的
 	// json_prompt。让界面显示"未选择"等于把一个确定的配置画成半配好的。
 	Protocol string `json:"protocol"`
+	// RiskName 在非 Granite 渠道上恒为空串(写入侧已清空)。**这里不做
+	// 「空串下发成 harm」的补齐** —— 与 Protocol 那一格刻意相反:协议的空串
+	// 是历史遗留、含义要靠归一才明确,而这一格的空串本身就是运营选的
+	// "默认(harm)",把它画成显式选中的 harm 会让"没动过"与"选了 harm"
+	// 在界面上无法区分,而这两者在审计差异页是不同的事。
+	RiskName string `json:"risk_name"`
 	// GuardControversial 在 json_prompt 渠道上恒为空串(写入侧已清空),
 	// 前端据此决定要不要画那一格。
 	GuardControversial string `json:"guard_controversial"`
@@ -116,14 +177,29 @@ type aiChannelView struct {
 	// 于是它既不会被送到新地址,渠道也不会参与审核。**必须下发**:不下发的话
 	// 界面上这一行看起来配得好好的(有密钥、启用中),而它实际上一次都不会被调用,
 	// 而 AI 审核失败的方向是放行。下发的是一个布尔,不泄漏那个旧地址之外的任何东西。
-	KeyBoundElsewhere bool   `json:"key_bound_elsewhere"`
-	TimeoutMs         int    `json:"timeout_ms"`
-	Weight            int    `json:"weight"`
-	Enabled           bool   `json:"enabled"`
-	PriceInPerM       string `json:"price_in_per_m"`
-	PriceOutPerM      string `json:"price_out_per_m"`
-	Remark            string `json:"remark"`
-	UpdatedAt         int64  `json:"updated_at"`
+	KeyBoundElsewhere bool `json:"key_bound_elsewhere"`
+	// Group / Prompt / BlockMessage 原样回显:提示词从设置页搬来之后,
+	// 渠道表单是它唯一的编辑入口,不回显就没法在原有基础上改。
+	// 提示词可能有几千字,而这个接口本来就是"打开渠道表单"才调的。
+	Group        string `json:"group"`
+	Prompt       string `json:"prompt"`
+	BlockMessage string `json:"block_message"`
+	// NotifyEmail / EmailSubject / EmailBody 原样回显。两格模板可能有几千字,
+	// 与 Prompt 同一条理由:渠道表单是它们唯一的编辑入口,不回显就没法在原有基础上改。
+	NotifyEmail  bool   `json:"notify_email"`
+	EmailSubject string `json:"email_subject"`
+	EmailBody    string `json:"email_body"`
+	// PromptSource 是界面上「默认 / 已自定义」那个标记的唯一来源。前端不能靠
+	// "文本是不是空"自己判断:预填内置默认之后输入框永远非空,那样每个渠道
+	// 看起来都是"已自定义"。见 aireview_prompt.go。
+	PromptSource string `json:"prompt_source"`
+	TimeoutMs    int    `json:"timeout_ms"`
+	Weight       int    `json:"weight"`
+	Enabled      bool   `json:"enabled"`
+	PriceInPerM  string `json:"price_in_per_m"`
+	PriceOutPerM string `json:"price_out_per_m"`
+	Remark       string `json:"remark"`
+	UpdatedAt    int64  `json:"updated_at"`
 }
 
 // splitGuardCategoryCSV 把库里那一列读成接口要下发的数组。
@@ -145,6 +221,14 @@ func toAIChannelView(ch AIChannel) aiChannelView {
 	return aiChannelView{
 		Id: ch.Id, Name: ch.Name, BaseUrl: ch.BaseUrl, Model: ch.Model,
 		Protocol:           normalizeAIProtocol(ch.Protocol),
+		Group:              ch.Group,
+		Prompt:             ch.Prompt,
+		BlockMessage:       ch.BlockMessage,
+		NotifyEmail:        ch.NotifyEmail,
+		EmailSubject:       ch.EmailSubject,
+		EmailBody:          ch.EmailBody,
+		PromptSource:       aiPromptSource(ch.Prompt),
+		RiskName:           ch.RiskName,
 		GuardControversial: ch.GuardControversial,
 		GuardCategories:    splitGuardCategoryCSV(ch.GuardCategories),
 		GuardElevate:       splitGuardCategoryCSV(ch.GuardElevate),
@@ -303,14 +387,8 @@ func adminUpdateAIChannel(c *gin.Context) {
 				"该密钥不会被发往新地址,渠道将被跳过,请在表单里重填一次密钥(操作人 %d)",
 			row.Id, before.BaseUrl, row.BaseUrl, row.KeyEndpoint, c.GetInt("id")))
 	}
-	// Select 显式列出要写的列:Save/Updates 全字段写回会把上面刚算好的
-	// KeyCipher/KeyNonce 再覆盖一次(applyAIChannelKey 已经落过库了),
-	// 而 nil 密钥 + 全字段写回 = 静默清空密钥。
 	if err := gdb.Model(&AIChannel{}).Where("id = ?", row.Id).
-		Select("name", "base_url", "model", "protocol", "guard_controversial",
-			"guard_categories", "guard_elevate",
-			"timeout_ms", "weight", "enabled",
-			"price_in_per_m", "price_out_per_m", "remark", "updated_at", "updated_by").
+		Select(aiChannelWritableColumns).
 		Updates(&row).Error; err != nil {
 		writeAIReviewAudit(c, "ai_channel_update", qymodel.ResultFail, &before, &row, err)
 		internalError(c, err)
@@ -469,6 +547,7 @@ func adminTestAIChannel(c *gin.Context) {
 		Id: row.Id, Name: row.Name, URL: url, Model: row.Model, APIKey: key,
 		Protocol:  protocol,
 		Guard:     guardPolicyFromChannel(row),
+		RiskName:  normalizeGraniteRisk(row.RiskName),
 		TimeoutMs: row.TimeoutMs, Weight: 1,
 		PriceInPerM: row.PriceInPerM, PriceOutPerM: row.PriceOutPerM,
 	}
@@ -480,7 +559,10 @@ func adminTestAIChannel(c *gin.Context) {
 	// (护栏协议下这一份根本不会被发出去,见 aiRequestPayload —— 照样渲染,
 	// 是为了让这一段代码只有一条路径。)
 	vocab := Snapshot().aiVocab
-	out := callAIChannel(ctx, rt, renderAIPrompt(aiStoredPrompt(), vocab),
+	// 提示词取**这个渠道自己**存的那一份(2026-09-06 起它住在渠道上)。
+	// 用别处的一份试通了、线上发的是另一份,是查不出来的 —— 而这正是
+	// 连通性试跑存在的意义。
+	out := callAIChannel(ctx, rt, renderAIPrompt(row.Prompt, vocab),
 		aiTestProbeText, timeout, vocab, true)
 	body := gin.H{
 		"protocol": protocol,
@@ -509,7 +591,7 @@ func adminTestAIChannel(c *gin.Context) {
 		// 有任何用户内容。热路径永远不填这一格(captureRaw=false)。
 		"raw_response": out.rawSample,
 	}
-	if out.Outcome == OutcomeTimeout && protocol == AIProtocolQwen3Guard {
+	if out.Outcome == OutcomeTimeout && isGuardProtocol(protocol) {
 		// 本地部署的护栏模型**首次调用要先把权重加载进显存**,秒级甚至十几秒
 		// 都正常,而第二次通常在一百毫秒内。不说这一句的话,第一次试跑的超时
 		// 看起来与"地址填错了"完全一样,而正确的下一步是再点一次。
@@ -530,6 +612,11 @@ const (
 
 	// aiTestGuardColdStartMs 是护栏渠道试跑时的**下限**预算。
 	//
+	// 三条护栏协议一视同仁(isGuardProtocol):冷启动是**本地部署**的性质,
+	// 不是某一个模型的性质 —— Granite 与 Llama Guard 同样是挂在 Ollama /
+	// vLLM 上的本地权重。早先只放宽 qwen3guard 是个疏漏,症状是一个配得
+	// 完全正确的 Granite 渠道第一次试跑必然红。
+	//
 	// 本地 Ollama 首次调用要加载模型,0.6B 在冷盘上十几秒是常态。而护栏渠道
 	// 的正常配置恰恰是一个很小的 timeout_ms(热态 100ms 就够),于是照搬
 	// 生产预算去试跑,第一次必然超时 —— 一个"配得完全正确的渠道,按一下
@@ -549,7 +636,7 @@ func aiTestTimeoutMs(protocol string, channelTimeoutMs int) int {
 	if timeout <= 0 {
 		timeout = maxPreTimeoutMs
 	}
-	if protocol == AIProtocolQwen3Guard && timeout < aiTestGuardColdStartMs {
+	if isGuardProtocol(protocol) && timeout < aiTestGuardColdStartMs {
 		timeout = aiTestGuardColdStartMs
 	}
 	return timeout
@@ -561,12 +648,23 @@ func aiTestTimeoutMs(protocol string, channelTimeoutMs int) int {
 // 送不送审只由作用域策略表回答。多留一个被忽略的字段,下一个人照着它写前端
 // 时会得到一个"填了、保存成功、完全没用"的输入框。
 type aiSettingReq struct {
-	Enabled             bool   `json:"enabled"`
-	PreTimeoutMs        int    `json:"pre_timeout_ms"`
-	AsyncTimeoutMs      int    `json:"async_timeout_ms"`
-	Prompt              string `json:"prompt"`
-	MaxInputChars       int    `json:"max_input_chars"`
-	ThirdPartyNoticeAck bool   `json:"third_party_notice_ack"`
+	Enabled             bool `json:"enabled"`
+	PreTimeoutMs        int  `json:"pre_timeout_ms"`
+	AsyncTimeoutMs      int  `json:"async_timeout_ms"`
+	MaxInputChars       int  `json:"max_input_chars"`
+	ThirdPartyNoticeAck bool `json:"third_party_notice_ack"`
+	// 审核日志三格。**没有**"不传即保持原值"这一档:整张表单是一次性提交的,
+	// 少传一个字段就该按它的零值走 —— 而零值会被 validateAISetting 挡下,
+	// 于是"前端漏传"表现为一次显式的 400,而不是一次静默的行为变更。
+	LogContent bool `json:"log_content"`
+	// LogContentViolationFull 是**指针**:三态列不能在这一层被折成两态。
+	//   nil  → 请求里没这个字段(老前端 / 脚本)→ 保持库里原值
+	//   true / false → 运维做过决定,原样写下去
+	// 值类型会把"没传"读成"显式关掉",于是一个还没更新的前端每保存一次设置,
+	// 就把违规行的完整留存悄悄关一次。
+	LogContentViolationFull *bool `json:"log_content_violation_full"`
+	LogContentMaxChars      int   `json:"log_content_max_chars"`
+	LogRetentionDays        int   `json:"log_retention_days"`
 }
 
 func adminGetAISetting(c *gin.Context) {
@@ -578,32 +676,36 @@ func adminGetAISetting(c *gin.Context) {
 		// 设置行还没建时回默认值而不是 404:界面要能显示"默认是什么",
 		// 而 404 只会让表单空着,分不清"没配"与"配成了空"。
 		row = AISetting{Id: 1, PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
-			MaxInputChars: defaultAIMaxInputChars}
+			MaxInputChars: defaultAIMaxInputChars, LogContent: true,
+			LogContentViolationFull: boolPtr(true),
+			LogContentMaxChars:      defaultAIReviewContentChars,
+			LogRetentionDays:        defaultAIReviewRetentionDays}
+	}
+	// 存量行(启动期迁移还没跑到,或跑失败了)那两格是 0,而 0 在表单上会被
+	// 读成"不留内容 / 不保留",两句话都不对 —— 实际生效的是默认值。把生效值
+	// 填回去,表单显示的就是真的。它只影响这一次回显,不写库。
+	if row.LogContentMaxChars <= 0 {
+		row.LogContentMaxChars = defaultAIReviewContentChars
+	}
+	row.LogRetentionDays = effectiveAIReviewRetentionDays(row.LogRetentionDays)
+	// 三态列在**回显**这一层折成两态是对的:表单上那个开关只有开与关,
+	// 而 NULL 生效起来就是 true。折在这里、不折在库里,是为了让下一次保存
+	// 写下一个显式值 —— 从此这一行再也不依赖默认。
+	if row.LogContentViolationFull == nil {
+		row.LogContentViolationFull = boolPtr(true)
 	}
 	snap := Snapshot()
 	vocab := snap.aiVocab
 	respond(c, gin.H{
 		"setting": row,
-		// default_prompt 一起下发,界面才能把它**预填**进输入框 ——
-		// 不预填的话运营看不见内置提示词的内容,也就无从在它基础上改。
-		// 它同时是"恢复默认"那个按钮要填回去的东西。
+		// 提示词整块搬去渠道了(2026-09-06),这里只剩**渲染素材**:
+		// default_prompt 是渠道表单预填与「恢复默认」要用的全文,
+		// categories / category_block 让渠道表单能就地做同一套对账与预览。
+		// 少了它们,渠道表单就得自己再抄一份类型清单 —— 而抄出来的那一份
+		// 会在类型表变动时静默过期。
 		"default_prompt": defaultAIPrompt,
-		// prompt_source 是界面上「默认 / 已自定义」那个标记的唯一来源。
-		// 前端不能靠"文本是不是空"自己判断:预填之后输入框永远非空,
-		// 那样每个站点看起来都是"已自定义"。见 aireview_prompt.go。
-		"prompt_source": aiPromptSource(row.Prompt),
-		// 对账的是**渲染之后**的那一份 —— 类型清单是自动拼进去的,拿库里
-		// 存的那一段去对账会把每一个类型都报成"缺失"。
-		"prompt_categories": inspectAIPromptCategories(renderAIPrompt(row.Prompt, vocab), vocab),
-		"categories":        vocab.keyList(),
-		// category_block 是自动生成的那一段类型清单;prompt_preview 是它拼进
-		// 提示词之后**真正发出去**的全文。
-		//
-		// 两个都下发,因为它们回答两个不同的问题:前者让界面能在编辑框旁边
-		// 就地做同一套对账(前端要的是"清单本身"),后者让运营在保存前看见
-		// 模型到底会读到什么 —— 而"到底发了什么"在这之前是不可见的。
+		"categories":     vocab.keyList(),
 		"category_block": vocab.categoryBlock(),
-		"prompt_preview": renderAIPrompt(row.Prompt, vocab),
 		// category_details 让界面把 key 与"给 AI 的判定说明有没有填"摆在一起。
 		// 只给一串 key 的话,运营看不出哪几类是裸奔的(模型只拿到一个英文单词)。
 		"category_details": aiCategoryDetails(vocab),
@@ -619,6 +721,15 @@ func adminGetAISetting(c *gin.Context) {
 			"pre_timeout_hint":  fmt.Sprintf("转发前审核会给被抽中的请求增加最多 %d 毫秒延迟", clampInt(row.PreTimeoutMs, minAITimeoutMs, maxPreTimeoutMs)),
 			"max_pre_timeout":   maxPreTimeoutMs,
 			"max_async_timeout": maxAsyncTimeoutMs,
+			// 台账库分没分家。界面据此说明"审核日志写在独立库"还是"与扩展库同库"——
+			// 没有它,运维改完 log_database.dsn 无法确认它到底生效没有,而这一段
+			// 配置的失败模式(拼错 dsn → 启动失败)之外还有一种更安静的:
+			// 段名写错 → 整段被忽略 → 一切照旧。
+			"log_db_separate": db.LogSeparate(),
+			"log_content_range": gin.H{
+				"min": minAIReviewContentChars, "max": maxAIReviewContentChars,
+			},
+			"max_log_retention_days": maxAIReviewRetentionDays,
 		},
 	})
 }
@@ -652,20 +763,6 @@ func aiCategoryDetails(v aiVocabulary) []gin.H {
 	return out
 }
 
-// aiStoredPrompt 读库里存的那一段提示词(空 = 默认档)。
-// 连通性测试要用它,而那条路径手上只有一个渠道行。
-func aiStoredPrompt() string {
-	gdb := db.Get()
-	if gdb == nil {
-		return ""
-	}
-	var row AISetting
-	if err := gdb.Where("id = ?", 1).Take(&row).Error; err != nil {
-		return ""
-	}
-	return row.Prompt
-}
-
 func adminPutAISetting(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return
@@ -683,9 +780,13 @@ func adminPutAISetting(c *gin.Context) {
 	row := AISetting{
 		Id: 1, Enabled: req.Enabled,
 		PreTimeoutMs: req.PreTimeoutMs, AsyncTimeoutMs: req.AsyncTimeoutMs,
-		Prompt: req.Prompt, MaxInputChars: req.MaxInputChars,
-		ThirdPartyNoticeAck: req.ThirdPartyNoticeAck,
-		CreatedAt:           now, UpdatedAt: now, UpdatedBy: c.GetInt("id"),
+		MaxInputChars:           req.MaxInputChars,
+		ThirdPartyNoticeAck:     req.ThirdPartyNoticeAck,
+		LogContent:              req.LogContent,
+		LogContentViolationFull: req.LogContentViolationFull,
+		LogContentMaxChars:      req.LogContentMaxChars,
+		LogRetentionDays:        req.LogRetentionDays,
+		CreatedAt:               now, UpdatedAt: now, UpdatedBy: c.GetInt("id"),
 	}
 	if err := validateAISetting(&row); err != nil {
 		writeAISettingAudit(c, qymodel.ResultFail, before, row, err)
@@ -695,41 +796,75 @@ func adminPutAISetting(c *gin.Context) {
 	if before.CreatedAt > 0 {
 		row.CreatedAt = before.CreatedAt
 	}
+	// 请求里没带这个字段时保持原值(见 aiSettingReq 的说明)。Save 写全字段,
+	// 不补这一句的话 nil 会把库里的显式值抹成 NULL,行为上等于"被重置成默认"。
+	if row.LogContentViolationFull == nil {
+		row.LogContentViolationFull = before.LogContentViolationFull
+	}
 	if err := gdb.Save(&row).Error; err != nil {
 		writeAISettingAudit(c, qymodel.ResultFail, before, row, err)
 		internalError(c, err)
 		return
 	}
 	afterAIChange(c, "", nil, nil, func() { writeAISettingAudit(c, qymodel.ResultOK, before, row, nil) })
-	// 回显与 GET 同形。多出来的两个字段不是装饰:提示词把类型闭集改坏时
-	// 接口仍然返回 200(那是刻意的,见 aiPromptCategoryReport.Missing 的说明),
-	// 所以"哪里坏了"必须随这一次响应一起回去,而不是等运营下次刷新页面。
-	// 非界面客户端(脚本改配置)只有这一条路能知道自己刚刚改坏了什么。
-	savedVocab := Snapshot().aiVocab
-	respond(c, gin.H{
-		"setting":           row,
-		"prompt_source":     aiPromptSource(row.Prompt),
-		"prompt_categories": inspectAIPromptCategories(renderAIPrompt(row.Prompt, savedVocab), savedVocab),
-		// 保存之后运营最想确认的就是"现在发出去的到底是什么"。回显它,
-		// 界面就不需要为了看一眼而再拉一次 GET(那一次 GET 拿到的可能已经
-		// 是另一个人改过的版本)。
-		"prompt_preview": renderAIPrompt(row.Prompt, savedVocab),
-	})
+	// 提示词的回显三件套(source / 对账 / 预览)跟着那一列搬去渠道接口了。
+	// 这一页保存之后没有别的东西需要当场回读 —— 剩下的全是数值与开关,
+	// 它们保存成功就是生效。
+	respond(c, gin.H{"setting": row})
 }
 
 // ───────────────────────────── 明细与成本 ─────────────────────────────
 
-func adminListAIReviews(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagViolation) {
-		return
-	}
-	page, size := httpq.Paginate(c, listPaging)
-	q := db.Get().Model(&AIReview{})
+// aiReviewQuery 组装审核明细的筛选条件。
+//
+// 列表与详情共用它是为了让两者的可见范围永远一致 —— 详情按 id 直取,
+// 不共用的话"列表里筛不出来的行,拿 id 照样点得开"。
+//
+// 每一个筛法都对应界面上一个具体的问题,这不是把列都加一遍:
+//
+//	group / model    「哪个分组的哪个模型在被审」—— 这张表存在的第一个问题
+//	phase            「转发前(同步、会拦)还是转发后(异步、只记录)」
+//	user_id          「这次审核是谁触发的」
+//	violated         「只看判了违规的那些」
+//	outcome          排障:timeout 找网络、bad_json 找提示词、no_channel 找配置
+//	request_id       从使用日志的一条请求跳过来对照
+//
+// group 与 model 是**精确**匹配,不是模糊搜索:两者都是闭集里的取值
+// (分组名、模型名),界面上给的是下拉而不是输入框。模糊匹配在几百万行上
+// 会退化成全表扫,而它换来的能力(输入 gpt 匹配一批模型)对"这个模型被审了
+// 多少次"这个问题是有害的 —— 数出来的是一批模型的合计。
+func aiReviewQuery(c *gin.Context) *gorm.DB {
+	q := db.Log().Model(&AIReview{})
 	if v := strings.TrimSpace(c.Query("outcome")); v != "" {
 		q = q.Where("outcome = ?", v)
 	}
 	if v := strings.TrimSpace(c.Query("phase")); v != "" {
 		q = q.Where("phase = ?", v)
+	}
+	if v := strings.TrimSpace(c.Query("group")); v != "" {
+		q = q.Where("using_group = ?", v)
+	}
+	if v := strings.TrimSpace(c.Query("model")); v != "" {
+		q = q.Where("model_name = ?", v)
+	}
+	if v := strings.TrimSpace(c.Query("request_id")); v != "" {
+		q = q.Where("request_id = ?", v)
+	}
+	// 按**审核渠道**筛。挂了两个以上渠道的站点,"哪个渠道在误判 / 哪个渠道一直超时"
+	// 是这一页最常被问的问题之一,而 channel_id 早就在行上,只是没人能筛。
+	// 用 id 而不是名字:渠道可以改名,而历史明细里冗余的是改名前那一份
+	// (见 adminDeleteAIChannel 的说明),按名字筛会漏掉改名之前的全部记录。
+	if v := httpq.Int64(c, "channel_id", 0); v > 0 {
+		q = q.Where("channel_id = ?", v)
+	}
+	// 三态:不传 = 全部,1 = 只看判违规的,0 = 只看判未违规的。
+	// 布尔用占位符传 Go 的 bool,不写字面量 0/1 —— PostgreSQL 的 boolean
+	// 不接受整数字面量(runRetentionGC 顶上记着同一条教训)。
+	switch strings.TrimSpace(c.Query("violated")) {
+	case "1", "true":
+		q = q.Where("violated = ?", true)
+	case "0", "false":
+		q = q.Where("violated = ?", false)
 	}
 	if v := httpq.Int(c, "user_id", 0); v > 0 {
 		q = q.Where("user_id = ?", v)
@@ -740,17 +875,81 @@ func adminListAIReviews(c *gin.Context) {
 	if v := httpq.Int64(c, "end", 0); v > 0 {
 		q = q.Where("created_at <= ?", v)
 	}
+	return q
+}
+
+func adminListAIReviews(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagViolation) {
+		return
+	}
+	page, size := httpq.Paginate(c, listPaging)
+	q := aiReviewQuery(c)
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		internalError(c, err)
 		return
 	}
 	rows := make([]AIReview, 0, size)
-	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
+	// 列表**不带内容**。它是一个 text 列,一页 20 行就是几十 KB 的无用传输,
+	// 而列表上根本放不下一段千字文本 —— 界面显示的是 content_chars(有没有、
+	// 多长),点开某一行才去详情接口取那一段。
+	//
+	// 用 Omit 而不是 Select 一串列名:后者要在这里维护一份与模型同步的白名单,
+	// 而下一个人加列时不会想到回来改它,结果是新列在列表上永远缺失。
+	if err := q.Omit("content").Order("id desc").
+		Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		internalError(c, err)
 		return
 	}
 	respond(c, gin.H{"items": rows, "total": total, "page": page, "page_size": size})
+}
+
+// adminGetAIReview 是单条审核明细的详情,**含送审内容**。
+//
+// 单独一条路由而不是在列表上加一个 with_content 参数:内容是这一页上唯一一段
+// 用户原文(已脱敏、已截断),它该有自己的访问点,审计与限流才有得挂。
+// 一个开关参数则会让"谁在批量拉取用户内容"与"谁在看一条记录"长得一模一样。
+func adminGetAIReview(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagViolation) {
+		return
+	}
+	id, ok := httpq.PathInt64(c, "id")
+	if !ok {
+		badRequest(c, "记录 id 非法")
+		return
+	}
+	var row AIReview
+	if err := db.Log().Where("id = ?", id).Take(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 保留期到了就是查不到,这不是异常。文案要说清楚是"过期了"而不是
+			// "你没权限"或"系统坏了" —— 三天的窗口很短,这一定会被撞上。
+			respondFail(c, http.StatusNotFound, "qy_vio_not_found",
+				"审核明细不存在或已超过保留期")
+			return
+		}
+		internalError(c, err)
+		return
+	}
+	respond(c, gin.H{
+		"item": row,
+		// truncated 让界面能明确地说"这段是截断过的",而不是让人对着一段
+		// 突然结束的文本猜。判据是两个数不等 —— 只看有没有 ...[truncated]...
+		// 标记会被一段正好包含那几个字的用户内容骗过去。
+		"truncated": row.ContentChars > utf8.RuneCountInString(row.Content),
+		// 内容留存**当前**开着吗。一行空内容有两种成因(那时没开 / 那次没内容),
+		// 而运营最常问的是"为什么这条没有内容"。给出当前开关,至少能把
+		// "整个功能没开"这一种当场排除掉。
+		"log_content_enabled": aiLogContentEnabled(),
+	})
+}
+
+// aiLogContentEnabled 读当前的内容留存开关。
+//
+// 走快照而不是查库:这是详情页每次打开都要问一次的东西,而快照里就有。
+// 快照为 nil(AI 审核整体关闭)时答 false —— 那时确实不会再写任何内容。
+func aiLogContentEnabled() bool {
+	rt := Snapshot().ai
+	return rt != nil && rt.LogContent
 }
 
 // adminAIReviewStats 是成本可见性的那一页。
@@ -786,7 +985,7 @@ func adminAIReviewStats(c *gin.Context) {
 	// 空结果必须是 [] 而不是 null:前端对着 null 调 .map 会整页白屏。
 	rows := make([]row, 0, 8)
 	// GROUP BY outcome:每一种失败各自的次数是排障的全部信息(见 Outcome 的说明)。
-	if err := db.Get().Model(&AIReview{}).
+	if err := db.Log().Model(&AIReview{}).
 		Select("outcome, COUNT(*) AS cnt, COALESCE(SUM(prompt_tokens),0) AS prompt_tok, "+
 			"COALESCE(SUM(completion_tokens),0) AS comp_tok, COALESCE(SUM(total_tokens),0) AS total_tok, "+
 			"COALESCE(SUM(cost_usd),0) AS cost_usd_sum").
@@ -811,14 +1010,14 @@ func adminAIReviewStats(c *gin.Context) {
 	// 的 cost_usd 是正数,于是它不会被算进来 —— 界面把一个偏低的数字当成准确值
 	// 展示,而"这个月比预算省了 40%"没有人会来查。见 AIReview.CostUnknown。
 	var unpriced int64
-	if err := db.Get().Model(&AIReview{}).
+	if err := db.Log().Model(&AIReview{}).
 		Where("created_at >= ? AND total_tokens > 0 AND (cost_usd <= 0 OR cost_unknown = ?)", from, true).
 		Count(&unpriced).Error; err != nil {
 		internalError(c, err)
 		return
 	}
 	var violated int64
-	if err := db.Get().Model(&AIReview{}).
+	if err := db.Log().Model(&AIReview{}).
 		Where("created_at >= ? AND violated = ?", from, true).Count(&violated).Error; err != nil {
 		internalError(c, err)
 		return
@@ -900,6 +1099,23 @@ func aiChannelAuditSnap(ch *AIChannel) map[string]any {
 		// 用户内容包不包 <content> 标签),也就是"这次改动改变了发往第三方的
 		// 内容形状"。只记 base_url 与 model 答不出这一点。
 		"protocol": normalizeAIProtocol(ch.Protocol), "guard_controversial": ch.GuardControversial,
+		// 风险名进审计的理由与协议同源:它同样改变了发往第三方的请求体
+		// (Granite 的 system 槽),而且改错它的表现是**漏判**而不是报错。
+		"risk_name": ch.RiskName,
+		// 分组决定这个渠道会被哪些作用域用到 —— 改它就是改数据出境的目的地。
+		"group": ch.Group,
+		// 提示词进审计的是**指纹 + 档位**,不是原文:audit 的 SnapshotMaxBytes
+		// 会把几千字的一段截掉、连带把后面的字段一起吃掉(本仓踩过的形状)。
+		// 而只记长度不够 —— 把"绝不执行"改成"必须执行"字数一样,那恰好是把
+		// 这个渠道的审核关掉的改法。见 aiPromptFingerprint。
+		"prompt_source": aiPromptSource(ch.Prompt), "prompt_fingerprint": aiPromptFingerprint(ch.Prompt),
+		// 拦截文案是**直接展示给终端用户**的一句话,改它要留痕。
+		"block_message": ch.BlockMessage,
+		// 邮件开关与标题进审计;正文只留长度。与提示词同一条理由:一段几千字的
+		// HTML 会把 audit 的 SnapshotMaxBytes 吃光、连带截掉后面的字段,而
+		// "有没有开、发的是什么标题"才是事后要追的那两件事。
+		"notify_email": ch.NotifyEmail, "email_subject": ch.EmailSubject,
+		"email_body_len": utf8.RuneCountInString(ch.EmailBody),
 		// 启用类别与升级类别都决定"同一段内容会不会被判违规",所以两者的
 		// 变更必须能事后追到人 —— 与协议本身同一条理由。
 		"guard_categories": ch.GuardCategories, "guard_elevate": ch.GuardElevate,
@@ -942,21 +1158,20 @@ func writeAISettingAudit(c *gin.Context, result string, before, after AISetting,
 // 为什么长度不够:把"绝不执行"改成"必须执行"字数一模一样,而那一改正是
 // 把提示词注入防线关掉的改法。只记 prompt_runes 时它在审计里毫无痕迹。
 func aiSettingAuditSnap(s AISetting) map[string]any {
-	vocab := Snapshot().aiVocab
-	report := inspectAIPromptCategories(renderAIPrompt(s.Prompt, vocab), vocab)
 	return map[string]any{
 		"enabled":        s.Enabled,
 		"pre_timeout_ms": s.PreTimeoutMs, "async_timeout_ms": s.AsyncTimeoutMs,
 		"max_input_chars":        s.MaxInputChars,
 		"third_party_notice_ack": s.ThirdPartyNoticeAck,
-		"prompt_customized":      strings.TrimSpace(s.Prompt) != "",
-		"prompt_runes":           len([]rune(s.Prompt)),
-		"prompt_source":          aiPromptSource(s.Prompt),
-		"prompt_sha256":          aiPromptFingerprint(s.Prompt),
-		// 类型闭集被改坏时接口照样 200,界面上也只是一条告警。审计里留下
-		// 这两项,"从哪一次改动开始按类型过滤的规则就不命中了"才有得查。
-		"prompt_unknown_categories": report.Unknown,
-		"prompt_missing_categories": report.Missing,
+		// 内容留存与保留期都要进审计。前者决定"用户请求内容有没有被抄进我们
+		// 自己的库",后者决定"抄下来的那份活多久" —— 两个问题在事后追责时
+		// 都会被问到,而它们唯一的书面痕迹就是这一行。
+		"log_content": s.LogContent,
+		// 三态原样进审计:nil 与 false 在这里必须分得开 —— 前者是"从没设置过",
+		// 后者是一次明确的"不要留",而事后追责问的正是后者发生在哪一次。
+		"log_content_violation_full": s.LogContentViolationFull,
+		"log_content_max_chars":      s.LogContentMaxChars,
+		"log_retention_days":         s.LogRetentionDays,
 	}
 }
 

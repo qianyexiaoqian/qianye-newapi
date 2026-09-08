@@ -327,9 +327,14 @@ func manualClawback(ctx context.Context, accrualId int64, quota int64, idemSuffi
 			// 不能拿 Gross 反推:Gross 已被 remaining 削过,同一个请求在不同
 			// 时刻会落出不同的值,拿它比对会把合法重试误判成冲突。
 			// 取负号与自动冲正路径(clawback)保持同一符号约定。
-			BaseQuota:    -quota,
-			RateUnits:    origin.RateUnits,
-			RateGroup:    origin.RateGroup,
+			BaseQuota: -quota,
+			RateUnits: origin.RateUnits,
+			RateGroup: origin.RateGroup,
+			// 与自动冲正同样复制原单的刻度。手工冲正直接给 Gross,不经过
+			// calcGross,所以它今天不影响金额 —— 但留一个 quota_per_unit = 0
+			// 的行,正是 testdb_test.go 顶部点名的那个形状:谁将来照着这一行
+			// 重算,calcGross 会**静默返回 0**。
+			QuotaPerUnit: origin.QuotaPerUnit,
 			Gross:        amount.Neg(),
 			MatureAt:     0,
 			Status:       StatusAccrued,

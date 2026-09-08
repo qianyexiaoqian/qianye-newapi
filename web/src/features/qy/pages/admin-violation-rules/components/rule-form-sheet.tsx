@@ -138,12 +138,13 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
   // 两格都要读「当前选中的类型 + 它的阈值」，所以在这里算一次，两边共用。
   const categoryRows = categoryQuery.data?.items ?? []
   const categoryId = form.watch('category_id')
-  // 0 = 没显式选。后端保存时会把它落到兜底类型，所以界面此刻就按兜底那一行显示，
-  // 让「存之前」与「存之后」是同一句话。
-  const effectiveCategoryId =
-    categoryId > 0 ? categoryId : (categoryQuery.data?.fallback_id ?? 0)
+  // 0 = 「不指定」，而且它现在是一档**真实存在的配置**，不再是「保存时会被改写成
+  // 兜底类型」的临时状态：项目方要的是「违规类型未选择的，不应当纳入计数，说明这个
+  // 类型违规阻断即可，不需要计数处罚」。后端 resolveRuleCategory 因此不再改写 0，
+  // 界面也不能再替它显示成兜底那一行 —— 那两者现在是两种不同的处置。
+  const categoryUnbound = categoryId <= 0
   const selectedCategory = categoryRows.find(
-    (row) => row.category.id === effectiveCategoryId
+    (row) => row.category.id === categoryId
   )
   const countWeight = form.watch('count_weight')
   // 「N 次命中 × 权重 ≥ 阈值」里的 N。向上取整：计数是整数步进的，权重 3 配阈值
@@ -152,6 +153,74 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
     selectedCategory != null && countWeight > 0
       ? Math.ceil(selectedCategory.category.threshold / countWeight)
       : 0
+  // ── 两句结论行 ──
+  //
+  // 「这条规则触发了会记到哪」与「几次命中到线」是管理员在这张表单上唯一真正
+  // 要读的两句话，它们各有四档。写成嵌套三元既撞上 web/AGENTS.md「禁止 2 层
+  // 及以上嵌套三元」，也让四档的边界（尤其新加的「不指定」）淹没在括号里。
+  let categoryDestText = t('qy_vio_field_category_dest_unknown')
+  if (categoryUnbound) {
+    categoryDestText = t('qy_vio_field_category_dest_unbound')
+  } else if (selectedCategory != null) {
+    if (selectedCategory.threshold_state === 'active') {
+      // 不限期限时整句换掉，而不是把 -1 塞进「{{hours}} 小时内」—— 后者读起来
+      // 完全正常，却让管理员照着一个不存在的配置去绑规则。
+      categoryDestText = t(
+        qyWindowIsUnlimited(selectedCategory.category.window_hours)
+          ? 'qy_vio_field_category_dest_active_unlimited'
+          : 'qy_vio_field_category_dest_active',
+        {
+          name: selectedCategory.category.name,
+          count: selectedCategory.category.threshold,
+          hours: selectedCategory.category.window_hours,
+        }
+      )
+    } else {
+      categoryDestText = t(
+        selectedCategory.category.is_fallback
+          ? 'qy_vio_field_category_dest_fallback_idle'
+          : 'qy_vio_field_category_dest_idle',
+        { name: selectedCategory.category.name }
+      )
+    }
+  }
+  // 「不指定」排在最前面：没有类型就没有计数，这一格填多少都不生效，
+  // 先说这一句比先说「权重 0」更贴近管理员此刻看到的状态。
+  let countWeightMathText = t('qy_vio_field_count_weight_math_unknown', {
+    weight: countWeight,
+  })
+  if (categoryUnbound) {
+    countWeightMathText = t('qy_vio_field_count_weight_math_unbound')
+  } else if (countWeight <= 0) {
+    countWeightMathText = t('qy_vio_field_count_weight_math_zero')
+  } else if (selectedCategory != null) {
+    if (selectedCategory.threshold_state === 'active') {
+      countWeightMathText = t(
+        qyWindowIsUnlimited(selectedCategory.category.window_hours)
+          ? 'qy_vio_field_count_weight_math_active_unlimited'
+          : 'qy_vio_field_count_weight_math_active',
+        {
+          name: selectedCategory.category.name,
+          weight: countWeight,
+          threshold: selectedCategory.category.threshold,
+          hours: selectedCategory.category.window_hours,
+          hits: hitsToThreshold,
+        }
+      )
+    } else {
+      countWeightMathText = t('qy_vio_field_count_weight_math_idle', {
+        name: selectedCategory.category.name,
+        weight: countWeight,
+      })
+    }
+  }
+  // 结论行的配色：能真正触发处置的那一档是中性的，「配了也不会封人」的其余
+  // 几档（不指定、权重 0、类型没阈值）一律告警色 —— 那是运营最容易误以为
+  // 「配了就会封」的地方。
+  const categoryLineIsActive =
+    !categoryUnbound &&
+    selectedCategory != null &&
+    selectedCategory.threshold_state === 'active'
   const groupOptions = groupQuery.data?.options ?? []
   const groupScopeEntries = qySplitViolationGroupScope(
     form.watch('group_scope')
@@ -262,7 +331,12 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
 
           {/* 违规类型。它决定这条规则的命中累加到**哪一个计数桶** ——
               同一类型下多条规则的命中会加到一起，而每个类型有自己的次数阈值。
-              不选 = 落到「未分类」兜底类型。
+
+              「不指定」是一档真实配置，不是"还没填"：项目方原话「违规类型未选择的，
+              不应当纳入计数，说明这个类型违规阻断即可，不需要计数处罚」。选它之后
+              这条规则照常拦截、照常扣费，但**一条计数线都不推进**，永远不会把人
+              推向封号。它与「未分类(兜底)」是两回事 —— 后者是一个真实的桶，
+              进了桶就会推进账号总量线。
 
               这一格上一轮做出来了，项目方还是回了「怎么没有绑定违规类型的
               选项」。三处原因，都在这里修：
@@ -277,20 +351,23 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
                    以及清单里真实的那一行兜底类型。保存时后端
                    `resolveRuleCategory` 把 0 改写成兜底类型的真实 id，
                    于是存之前显示前者、重新打开显示后者，同一条规则的同一格
-                   会**自己变一次**。这里统一按兜底那一行显示。 */}
+                   会**自己变一次**。
+
+              第 3 条现在从另一头解决：后端不再改写 0，`0` 这一格因此有了自己
+              独立的语义（「不指定 · 不计数」），与清单里那一行「未分类(兜底)」
+              不再是同一个东西 —— 存之前与存之后显示的都是运营真正选的那一档。 */}
           <FormField
             control={form.control}
             name='category_id'
             render={({ field }) => {
-              // 三个取值在组件顶部算好（计数权重那一格要读同一份），这里只起别名。
+              // 两个取值在组件顶部算好（计数权重那一格要读同一份），这里只起别名。
               const rows = categoryRows
-              const effectiveId = effectiveCategoryId
               const selected = selectedCategory
               return (
                 <FormItem>
                   <FormLabel>{t('qy_vio_field_category')}</FormLabel>
                   <Select
-                    value={String(effectiveId)}
+                    value={String(categoryId > 0 ? categoryId : 0)}
                     onValueChange={(value) =>
                       field.onChange(Number(value) || 0)
                     }
@@ -301,20 +378,25 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {/* 清单还没到（加载中 / 拉取失败）时给一格占位。少了它，
-                          Base UI 查不到译名就把取值原样渲染成一个裸数字。 */}
-                      {rows.length === 0 && (
-                        <SelectItem value={String(effectiveId)}>
-                          {t('qy_vio_field_category_unset')}
-                        </SelectItem>
-                      )}
-                      {/* 规则指向的类型已归档、已不在清单里时同理：宁可写
-                          「已归档 #12」也不要漏一个孤零零的 12 出去。 */}
-                      {rows.length > 0 && selected == null && (
-                        <SelectItem value={String(effectiveId)}>
-                          {t('qy_vio_field_category_missing', {
-                            id: effectiveId,
-                          })}
+                      {/* 「不指定」永远在第一格，而且**恒在**：它不是占位符，
+                          是一档真实配置（只拦不计数）。清单拉不到时它同时兼任
+                          占位符 —— 少了它，Base UI 查不到译名会把取值原样渲染成
+                          一个裸数字。 */}
+                      <SelectItem value='0'>
+                        {t('qy_vio_field_category_unbound')}
+                      </SelectItem>
+                      {/* 规则指向的类型不在清单里时：宁可写「已归档 #12」也不要
+                          漏一个孤零零的 12 出去。清单**整个**拉不到（加载中 /
+                          请求失败）时不能说「已归档」—— 那是一句我们此刻答不上来
+                          的话，而管理员会照着它去重新绑一个类型。 */}
+                      {!categoryUnbound && selected == null && (
+                        <SelectItem value={String(categoryId)}>
+                          {t(
+                            rows.length === 0
+                              ? 'qy_vio_field_category_pending'
+                              : 'qy_vio_field_category_missing',
+                            { id: categoryId }
+                          )}
                         </SelectItem>
                       )}
                       {rows.map((row) => (
@@ -352,34 +434,12 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
                       是运营最容易误以为「配了就会封」的地方。 */}
                   <p
                     className={
-                      selected != null && selected.threshold_state === 'active'
+                      categoryLineIsActive
                         ? 'text-muted-foreground rounded-md border border-dashed px-3 py-2 text-xs'
                         : 'text-warning border-warning/40 bg-warning/5 rounded-md border px-3 py-2 text-xs'
                     }
                   >
-                    {selected == null
-                      ? t('qy_vio_field_category_dest_unknown')
-                      : selected.threshold_state === 'active'
-                        ? t(
-                            // 这一句是「规则触发了会记到哪、几次触发处置」的
-                            // 唯一答案。不限期限时整句换掉，而不是把 -1 塞进
-                            // 「{{hours}} 小时内」—— 后者读起来完全正常，
-                            // 却让管理员照着一个不存在的配置去绑规则。
-                            qyWindowIsUnlimited(selected.category.window_hours)
-                              ? 'qy_vio_field_category_dest_active_unlimited'
-                              : 'qy_vio_field_category_dest_active',
-                            {
-                              name: selected.category.name,
-                              count: selected.category.threshold,
-                              hours: selected.category.window_hours,
-                            }
-                          )
-                        : t(
-                            selected.category.is_fallback
-                              ? 'qy_vio_field_category_dest_fallback_idle'
-                              : 'qy_vio_field_category_dest_idle',
-                            { name: selected.category.name }
-                          )}
+                    {categoryDestText}
                   </p>
                   <FormDescription>
                     {t('qy_vio_field_category_desc')}
@@ -828,43 +888,16 @@ export function QyRuleFormSheet(props: QyRuleFormSheetProps) {
                   />
                 </FormControl>
                 {/* 与类型那一格同一套配色约定：能真正触发处置的那一档是中性的，
-                    「配了也不会封人」的那两档（权重 0、类型没阈值）用告警色。 */}
+                    「配了也不会封人」的其余几档（不指定、权重 0、类型没阈值）
+                    用告警色。 */}
                 <p
                   className={
-                    countWeight > 0 &&
-                    selectedCategory != null &&
-                    selectedCategory.threshold_state === 'active'
+                    categoryLineIsActive && countWeight > 0
                       ? 'text-muted-foreground rounded-md border border-dashed px-3 py-2 text-xs'
                       : 'text-warning border-warning/40 bg-warning/5 rounded-md border px-3 py-2 text-xs'
                   }
                 >
-                  {countWeight <= 0
-                    ? t('qy_vio_field_count_weight_math_zero')
-                    : selectedCategory == null
-                      ? t('qy_vio_field_count_weight_math_unknown', {
-                          weight: countWeight,
-                        })
-                      : selectedCategory.threshold_state === 'active'
-                        ? t(
-                            // 同上：这一句在算「几次命中到线」，窗口印错等于
-                            // 让那笔账建立在一个不存在的时间口径上。
-                            qyWindowIsUnlimited(
-                              selectedCategory.category.window_hours
-                            )
-                              ? 'qy_vio_field_count_weight_math_active_unlimited'
-                              : 'qy_vio_field_count_weight_math_active',
-                            {
-                              name: selectedCategory.category.name,
-                              weight: countWeight,
-                              threshold: selectedCategory.category.threshold,
-                              hours: selectedCategory.category.window_hours,
-                              hits: hitsToThreshold,
-                            }
-                          )
-                        : t('qy_vio_field_count_weight_math_idle', {
-                            name: selectedCategory.category.name,
-                            weight: countWeight,
-                          })}
+                  {countWeightMathText}
                 </p>
                 <FormDescription>
                   {t('qy_vio_field_count_weight_desc')}

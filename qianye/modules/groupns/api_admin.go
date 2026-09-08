@@ -18,12 +18,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/service"
@@ -156,6 +158,20 @@ type ModelGroupRow struct {
 	UsableDescription string `json:"usable_description"`
 	// AutoPosition 是它在 options.AutoGroups 里的位次(从 1 起),0 表示不在。
 	AutoPosition int `json:"auto_position"`
+
+	// Registered 表示登记表 qy_model_groups 里**真的有这一行**。
+	//
+	// ══════════ 为什么它必须是一个显式字段 ══════════
+	//
+	// 这个列表的行集合是并集(登记表 ∪ GroupRatio 键 ∪ 全局可选清单键),而在并集
+	// 里"这一行是不是登记出来的"再也不能靠"它在不在 items 里"来判断 —— 每一行都在。
+	// 前端拿它当**联动删除按钮的闸门**:只有登记过的行才能走那套带影响面的删除,
+	// 没登记的行删掉只会从 options 里少一个键,而 abilities / channels / tokens /
+	// 两张授权表 / 套餐解锁里的引用一个都不动。
+	//
+	// 早先它由前端"看这个名字在不在登记表返回的数组里"推出来。翻页之后那个推法
+	// 结构上不成立:第 2 页的数组里当然没有第 1 页的名字。
+	Registered bool `json:"registered"`
 }
 
 func adminListUserGroups(c *gin.Context) {
@@ -192,6 +208,22 @@ func adminListUserGroups(c *gin.Context) {
 	respond(c, gin.H{"items": out})
 }
 
+// adminListModelGroups 返回「模型分组」这一张表。
+//
+// ══════════════ 行集合是并集,而且这件事必须在服务端做 ══════════════
+//
+// 一个模型分组的名字可能只出现在三个地方之一:登记表 qy_model_groups、
+// options.GroupRatio 的键、options.UserUsableGroups 的键。三者都要列出来 ——
+// 「在全局可选清单里、没有兜底倍率、也没登记过」那一档是资金泄漏里最容易造出来
+// 的一种(用户选得到,每次请求按凭空的 1.0 计费),它不出现在表上就永远没人处理。
+//
+// 并集此前是**前端**算的。翻页之后那个位置结构上不成立:服务端切出第 2 页的
+// 10 行,前端再并上 options 里的全部键 —— 第 2 页会显示成"10 行 + 全站其余所有
+// 名字"。谁切页,谁就必须持有完整的行集合,所以并集搬到这里。
+//
+// ── 不带翻页参数时逐位兼容 ──
+//
+// 除了新增的 registered 字段与并集补进来的那些行,响应形状不变。
 func adminListModelGroups(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagCore) {
 		return
@@ -213,6 +245,10 @@ func adminListModelGroups(c *gin.Context) {
 	// "白名单里本来写着什么、现在被备注盖成了什么"。拿覆盖后的值填它,
 	// 两列会显示成一模一样,而那正是"哪一份生效"这个问题的原样重现。
 	usable := setting.RawUserUsableGroupsCopy()
+	// 一条聚合换掉逐行的 HasRoute。原先每一行一次 `SELECT COUNT(*) FROM abilities`,
+	// 三十个分组就是三十条查询,而它们问的是同一个问题的三十个切片 ——
+	// 项目方说的"分组过多加载会卡"里,这是可测量的那一份。
+	routed := RoutedModelGroupNames(c)
 	autoPos := map[string]int{}
 	for i, g := range setting.GetAutoGroups() {
 		if _, dup := autoPos[g]; !dup {
@@ -220,13 +256,33 @@ func adminListModelGroups(c *gin.Context) {
 		}
 	}
 
-	out := make([]ModelGroupRow, 0, len(rows))
+	registry := make(map[string]ModelGroup, len(rows))
 	for _, row := range rows {
-		ratio, ok := ratios[row.Name]
-		hasRoute, _ := HasRoute(c, model.DB, row.Name)
-		desc, inUsable := usable[row.Name]
+		registry[row.Name] = row
+	}
+	names := unionModelGroupNames(registry, ratios, usable)
+
+	page, size := httpq.Paginate(c, httpq.Spec{DefaultSize: httpq.GroupTablePageSize})
+	pageNames := names
+	paged := c.Query("p") != "" || c.Query("page_size") != ""
+	if paged {
+		pageNames = httpq.Slice(names, page, size)
+	}
+
+	out := make([]ModelGroupRow, 0, len(pageNames))
+	for _, name := range pageNames {
+		reg, registered := registry[name]
+		if !registered {
+			// 并集补进来的行:登记表里没有它,所以除了名字之外全是零值。
+			// **不要在这里替它编一个 Enabled=true** —— 那会让"没登记"在界面上
+			// 长得和"登记过并且启用了"一模一样,而两者的删除路径完全不同。
+			reg = ModelGroup{Name: name}
+		}
+		ratio, hasRatio := ratios[name]
+		hasRoute := routed[name]
+		desc, inUsable := usable[name]
 		sources := make([]string, 0, 2)
-		if ok {
+		if hasRatio {
 			sources = append(sources, SourceRatio)
 		}
 		if hasRoute {
@@ -236,19 +292,81 @@ func adminListModelGroups(c *gin.Context) {
 			sources = append(sources, SourceRegistryOnly)
 		}
 		out = append(out, ModelGroupRow{
-			ModelGroup:        row,
+			ModelGroup:        reg,
 			BaseRatio:         ratio,
-			RatioMissing:      !ok,
+			RatioMissing:      !hasRatio,
 			HasRoute:          hasRoute,
-			ChannelCount:      channelCounts[row.Name],
-			LegacyDual:        userNames[row.Name],
+			ChannelCount:      channelCounts[name],
+			LegacyDual:        userNames[name],
 			Sources:           sources,
 			InUsableGroups:    inUsable,
 			UsableDescription: desc,
-			AutoPosition:      autoPos[row.Name],
+			AutoPosition:      autoPos[name],
+			Registered:        registered,
 		})
 	}
-	respond(c, gin.H{"items": out})
+
+	body := gin.H{"items": out}
+	if paged {
+		body["p"], body["page_size"], body["total"] = page, size, len(names)
+		// names 是**全量**行名,按同一个顺序。前端需要它来回答几个只有全表才成立
+		// 的问题:auto 顺序的候选清单、以及新加一行时的重名判定 —— 两者都不能
+		// 只看本页(在第 2 页新建一个与第 1 页同名的分组会静默覆盖那一行的倍率)。
+		// 只有字符串,与整表行相比可以忽略不计。
+		body["names"] = names
+		// 「用户可选、但一个启用渠道都没有」的全量名单。
+		//
+		// 这一条是**故障预警**不是统计:那种分组在令牌下拉里长得和正常的一模一样,
+		// 选中之后每一次请求都 503。它必须是全表口径 —— 一条随翻页出现又消失的
+		// 故障预警,读到的人只会认为它不可靠。
+		body["no_channel_names"] = noChannelModelGroups(names, usable, routed)
+	}
+	respond(c, body)
+}
+
+// noChannelModelGroups 挑出「在全局可选清单里、却一个启用渠道都没有」的模型分组。
+//
+// 判据刻意收窄到 in_usable_groups:一个既不可选、也没有渠道的名字(纯登记残留)
+// 不在任何请求路径上,把它一起报出来会让这条告警变成常驻噪音,而噪音里的
+// 真警报没有人看。
+func noChannelModelGroups(names []string, usable map[string]string, routed map[string]bool) []string {
+	out := make([]string, 0)
+	for _, name := range names {
+		if _, selectable := usable[name]; !selectable {
+			continue
+		}
+		if routed[name] {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// unionModelGroupNames 把三个来源并成这张表的行轴,按名字升序。
+//
+// 排序在服务端定死是翻页的前提:切页与渲染必须用同一个顺序,否则第 1 页与第 2 页
+// 会重复或漏掉行。刻意用字节序(sort.Strings)而不是让前端再 localeCompare 一次 ——
+// 两个顺序在中文名上结论不同,而本站的分组名大半是中文。
+func unionModelGroupNames(registry map[string]ModelGroup,
+	ratios map[string]float64, usable map[string]string) []string {
+	seen := make(map[string]struct{}, len(registry)+len(ratios)+len(usable))
+	for name := range registry {
+		seen[name] = struct{}{}
+	}
+	for name := range ratios {
+		seen[name] = struct{}{}
+	}
+	for name := range usable {
+		seen[name] = struct{}{}
+	}
+	delete(seen, "")
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // adminReport 是 S0 的三份体检报表:重名、两个方向的差集、空分组令牌分布。

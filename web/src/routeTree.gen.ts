@@ -114,6 +114,7 @@ import { Route as AuthenticatedQyAdminTicketsIndexRouteImport } from './routes/_
 import { Route as AuthenticatedQyAdminTransferConfigIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-config/index'
 import { Route as AuthenticatedQyAdminTransferGroupRulesIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-group-rules/index'
 import { Route as AuthenticatedQyAdminTransferRecordsIndexRouteImport } from './routes/_authenticated/qy/admin/transfer-records/index'
+import { Route as AuthenticatedQyAdminViolationAiLogsIndexRouteImport } from './routes/_authenticated/qy/admin/violation-ai-logs/index'
 import { Route as AuthenticatedQyAdminViolationAiReviewIndexRouteImport } from './routes/_authenticated/qy/admin/violation-ai-review/index'
 import { Route as AuthenticatedQyAdminViolationCategoriesIndexRouteImport } from './routes/_authenticated/qy/admin/violation-categories/index'
 import { Route as AuthenticatedQyAdminViolationRulesIndexRouteImport } from './routes/_authenticated/qy/admin/violation-rules/index'
@@ -719,6 +720,12 @@ const AuthenticatedQyAdminTransferRecordsIndexRoute =
     path: '/transfer-records/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
+const AuthenticatedQyAdminViolationAiLogsIndexRoute =
+  AuthenticatedQyAdminViolationAiLogsIndexRouteImport.update({
+    id: '/violation-ai-logs/',
+    path: '/violation-ai-logs/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
 const AuthenticatedQyAdminViolationAiReviewIndexRoute =
   AuthenticatedQyAdminViolationAiReviewIndexRouteImport.update({
     id: '/violation-ai-review/',
@@ -860,6 +867,7 @@ export interface FileRoutesByFullPath {
   '/qy/admin/transfer-config/': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/qy/admin/transfer-records/': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
+  '/qy/admin/violation-ai-logs/': typeof AuthenticatedQyAdminViolationAiLogsIndexRoute
   '/qy/admin/violation-ai-review/': typeof AuthenticatedQyAdminViolationAiReviewIndexRoute
   '/qy/admin/violation-categories/': typeof AuthenticatedQyAdminViolationCategoriesIndexRoute
   '/qy/admin/violation-rules/': typeof AuthenticatedQyAdminViolationRulesIndexRoute
@@ -968,6 +976,7 @@ export interface FileRoutesByTo {
   '/qy/admin/transfer-config': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/qy/admin/transfer-group-rules': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/qy/admin/transfer-records': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
+  '/qy/admin/violation-ai-logs': typeof AuthenticatedQyAdminViolationAiLogsIndexRoute
   '/qy/admin/violation-ai-review': typeof AuthenticatedQyAdminViolationAiReviewIndexRoute
   '/qy/admin/violation-categories': typeof AuthenticatedQyAdminViolationCategoriesIndexRoute
   '/qy/admin/violation-rules': typeof AuthenticatedQyAdminViolationRulesIndexRoute
@@ -1082,6 +1091,7 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/transfer-config/': typeof AuthenticatedQyAdminTransferConfigIndexRoute
   '/_authenticated/qy/admin/transfer-group-rules/': typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   '/_authenticated/qy/admin/transfer-records/': typeof AuthenticatedQyAdminTransferRecordsIndexRoute
+  '/_authenticated/qy/admin/violation-ai-logs/': typeof AuthenticatedQyAdminViolationAiLogsIndexRoute
   '/_authenticated/qy/admin/violation-ai-review/': typeof AuthenticatedQyAdminViolationAiReviewIndexRoute
   '/_authenticated/qy/admin/violation-categories/': typeof AuthenticatedQyAdminViolationCategoriesIndexRoute
   '/_authenticated/qy/admin/violation-rules/': typeof AuthenticatedQyAdminViolationRulesIndexRoute
@@ -1195,6 +1205,7 @@ export interface FileRouteTypes {
     | '/qy/admin/transfer-config/'
     | '/qy/admin/transfer-group-rules/'
     | '/qy/admin/transfer-records/'
+    | '/qy/admin/violation-ai-logs/'
     | '/qy/admin/violation-ai-review/'
     | '/qy/admin/violation-categories/'
     | '/qy/admin/violation-rules/'
@@ -1303,6 +1314,7 @@ export interface FileRouteTypes {
     | '/qy/admin/transfer-config'
     | '/qy/admin/transfer-group-rules'
     | '/qy/admin/transfer-records'
+    | '/qy/admin/violation-ai-logs'
     | '/qy/admin/violation-ai-review'
     | '/qy/admin/violation-categories'
     | '/qy/admin/violation-rules'
@@ -1416,6 +1428,7 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/transfer-config/'
     | '/_authenticated/qy/admin/transfer-group-rules/'
     | '/_authenticated/qy/admin/transfer-records/'
+    | '/_authenticated/qy/admin/violation-ai-logs/'
     | '/_authenticated/qy/admin/violation-ai-review/'
     | '/_authenticated/qy/admin/violation-categories/'
     | '/_authenticated/qy/admin/violation-rules/'
@@ -2180,6 +2193,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminTransferRecordsIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
+    '/_authenticated/qy/admin/violation-ai-logs/': {
+      id: '/_authenticated/qy/admin/violation-ai-logs/'
+      path: '/violation-ai-logs'
+      fullPath: '/qy/admin/violation-ai-logs/'
+      preLoaderRoute: typeof AuthenticatedQyAdminViolationAiLogsIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
     '/_authenticated/qy/admin/violation-ai-review/': {
       id: '/_authenticated/qy/admin/violation-ai-review/'
       path: '/violation-ai-review'
@@ -2275,6 +2295,7 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminTransferConfigIndexRoute: typeof AuthenticatedQyAdminTransferConfigIndexRoute
   AuthenticatedQyAdminTransferGroupRulesIndexRoute: typeof AuthenticatedQyAdminTransferGroupRulesIndexRoute
   AuthenticatedQyAdminTransferRecordsIndexRoute: typeof AuthenticatedQyAdminTransferRecordsIndexRoute
+  AuthenticatedQyAdminViolationAiLogsIndexRoute: typeof AuthenticatedQyAdminViolationAiLogsIndexRoute
   AuthenticatedQyAdminViolationAiReviewIndexRoute: typeof AuthenticatedQyAdminViolationAiReviewIndexRoute
   AuthenticatedQyAdminViolationCategoriesIndexRoute: typeof AuthenticatedQyAdminViolationCategoriesIndexRoute
   AuthenticatedQyAdminViolationRulesIndexRoute: typeof AuthenticatedQyAdminViolationRulesIndexRoute
@@ -2326,6 +2347,8 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
       AuthenticatedQyAdminTransferGroupRulesIndexRoute,
     AuthenticatedQyAdminTransferRecordsIndexRoute:
       AuthenticatedQyAdminTransferRecordsIndexRoute,
+    AuthenticatedQyAdminViolationAiLogsIndexRoute:
+      AuthenticatedQyAdminViolationAiLogsIndexRoute,
     AuthenticatedQyAdminViolationAiReviewIndexRoute:
       AuthenticatedQyAdminViolationAiReviewIndexRoute,
     AuthenticatedQyAdminViolationCategoriesIndexRoute:

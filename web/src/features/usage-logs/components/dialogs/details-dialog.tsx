@@ -58,8 +58,8 @@ import { Button } from '@/components/ui/button'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { Label } from '@/components/ui/label'
 import { DynamicPricingBreakdown } from '@/features/pricing/components/dynamic-pricing-breakdown'
-import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
 import { usePricingData } from '@/features/pricing/hooks/use-pricing-data'
+import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
@@ -73,7 +73,9 @@ import {
   decodeBillingExprB64,
   getTieredBillingSummary,
   hasAnyCacheTokens,
+  isViolationBlockedLog,
   isViolationFeeLog,
+  violationBlockLabelKey,
   getFirstResponseTimeColor,
   getResponseTimeColor,
   getReasoningEffortVariant,
@@ -532,6 +534,8 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const typeConfig = getLogTypeConfig(props.log.type)
 
   const isViolation = isViolationFeeLog(other)
+  // 千夜扩展：这一次请求在转发上游之前就被内容审核拦下了。与 isViolation 正交。
+  const isViolationBlocked = isViolationBlockedLog(other)
   const isRefund = props.log.type === 6
   const isConsume = props.log.type === 2
   const isTopup = props.log.type === 1
@@ -925,6 +929,42 @@ export function DetailsDialog(props: DetailsDialogProps) {
             variant='danger'
           >
             <p className='text-xs wrap-break-word'>{adminInfo.reject_reason}</p>
+          </DetailSection>
+        )}
+
+        {/* 千夜扩展：内容审核拦截。
+            与下面的「违规扣费」板块并列而不是二选一 —— 拦了也罚的那一次两块都
+            要出现：前者回答"我的请求为什么没发出去"，后者回答"这笔钱是怎么算的"。
+            规则名与命中词不在这里，它们在 admin_info 里，普通用户拿不到。 */}
+        {isViolationBlocked && other && (
+          <DetailSection
+            icon={<AlertTriangle className='size-3.5' aria-hidden='true' />}
+            label={t(violationBlockLabelKey(other))}
+            variant='danger'
+          >
+            {other.qy_violation_category && (
+              <DetailRow
+                label={t('qy_log_violation_category')}
+                value={other.qy_violation_category}
+              />
+            )}
+            {other.qy_reason && (
+              <DetailRow label={t('Reason')} value={other.qy_reason} />
+            )}
+            {other.violation_code && (
+              <DetailRow
+                label={t('Violation Code')}
+                value={other.violation_code}
+                mono
+              />
+            )}
+            {other.qy_violation_rec_no && (
+              <DetailRow
+                label={t('qy_log_violation_rec_no')}
+                value={other.qy_violation_rec_no}
+                mono
+              />
+            )}
           </DetailSection>
         )}
 

@@ -35,6 +35,27 @@ export type QyAdminHealth = {
     wait_count?: number
     max_open?: number
   }
+  /**
+   * `db.LogStats()` —— 台账库(`log_database`,AI 审核明细住在那里)。
+   *
+   * `separate: false` 时**只有这一个键**:没分家时它与上面的 `db` 是同一个
+   * 连接池,再抄一份读数只会摆出两组一模一样的数字。整段可能缺失
+   * (老版本后端 / 接口降级),所以读它一律走可选链。
+   */
+  log_db?: {
+    separate: boolean
+    available?: boolean
+    connected?: boolean
+    breaker_open_until?: number
+    fail_streak?: number
+    last_ping_ms?: number
+    last_ping_at?: number
+    open_conns?: number
+    in_use?: number
+    idle?: number
+    wait_count?: number
+    max_open?: number
+  }
   hot_queue: QyHotQueueStats
   /** `twophase.Stats()`。扩展库不可用时为空对象。 */
   two_phase: {

@@ -24,6 +24,10 @@ import (
 // 只有这个函数能调用 engine.Group:各业务模块通过 registerXxx(user, admin) 挂子路由,
 // 避免每个模块各建一个组、各挂一套中间件。
 func RegisterRoutes(engine *gin.Engine) {
+	// 引导向导的扩展库配置面。必须挂在 config.Enabled() 闸门**之前** ——
+	// 它存在的全部意义就是在"扩展还没配"的那一刻可用,而那一刻闸门正是关的。
+	registerSetupRoutes(engine)
+
 	if !config.Enabled() {
 		return
 	}
@@ -163,4 +167,37 @@ func registerAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/request-audits", qyctl.AdminListRequestAudits)
 	g.GET("/leases", qyctl.AdminListLeases)
 	g.POST("/config/reload", middleware.CriticalRateLimit(), qyctl.AdminReloadConfig)
+}
+
+// registerSetupRoutes 挂载引导向导的扩展库配置端点。
+//
+// # 为什么单独一个组,而不是并进下面那个 /api/qy
+//
+// 那个组整体活在 config.Enabled() 之后,且 Use 了 audit.Middleware() —— 请求台账
+// 写的是扩展库,而这里的前提恰恰是扩展库还不存在。合并的话,向导的每一次调用
+// 都会去撞一个连不上的库。
+//
+// # 鉴权
+//
+// /status 匿名:向导要靠它决定渲染哪一屏,而那时人还没登录。它只回布尔。
+//
+// 其余三条一律 RootAuth。这里刻意用整组 RootAuth 而不是 RootActionGate ——
+// 后者是给"混合组里单独提档某一个动作"用的,而这个组里每一条都在写数据库
+// 凭据或重启进程,没有一条属于普通管理员。root_action_guard_test.go 守的是
+// 提档不要连坐,这里没有可连坐的对象。
+//
+// 写侧不经过 audit.Middleware,因此 PostSetupApplyDatabase 自己打了一条 SysLog:
+// 一次写入数据库凭据的操作不该只留在 access log 里。
+func registerSetupRoutes(engine *gin.Engine) {
+	g := engine.Group("/api/qy/setup")
+	g.Use(middleware.RouteTag("api"))
+	g.Use(middleware.GlobalAPIRateLimit())
+
+	g.GET("/status", qyctl.GetSetupStatus)
+
+	rooted := g.Group("")
+	rooted.Use(middleware.RootAuth())
+	rooted.POST("/test", qyctl.PostSetupTestDatabase)
+	rooted.POST("/apply", qyctl.PostSetupApplyDatabase)
+	rooted.POST("/restart", qyctl.PostSetupRestart)
 }

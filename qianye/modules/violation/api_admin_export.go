@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/csvsafe"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
@@ -181,41 +181,20 @@ func exportRows(c *gin.Context, gdb *gorm.DB, limit int) error {
 func recordRow(r *Record) []string {
 	return []string{
 		strconv.FormatInt(r.CreatedAt, 10),
-		csvCell(r.RecNo), csvCell(r.RequestId),
-		strconv.Itoa(r.UserId), csvCell(r.Username),
-		strconv.Itoa(r.TokenId), csvCell(r.TokenName), csvCell(r.Ip),
-		strconv.FormatInt(r.RuleId, 10), csvCell(r.RuleName), csvCell(r.Phase), csvCell(r.Action),
-		strconv.FormatBool(r.Shadow), csvCell(r.ShadowReason), strconv.FormatBool(r.Blocked),
+		csvsafe.Cell(r.RecNo), csvsafe.Cell(r.RequestId),
+		strconv.Itoa(r.UserId), csvsafe.Cell(r.Username),
+		strconv.Itoa(r.TokenId), csvsafe.Cell(r.TokenName), csvsafe.Cell(r.Ip),
+		strconv.FormatInt(r.RuleId, 10), csvsafe.Cell(r.RuleName), csvsafe.Cell(r.Phase), csvsafe.Cell(r.Action),
+		strconv.FormatBool(r.Shadow), csvsafe.Cell(r.ShadowReason), strconv.FormatBool(r.Blocked),
 		// would_block 回答"这一条若真实执行会不会被拦"。影子记录的 blocked 恒为
 		// false,只看那一列会以为这些请求本来也会放行。
 		strconv.FormatBool(blocks(r.Action) && r.Phase == PhasePrompt),
-		csvCell(r.ModelName), csvCell(r.UsingGroup),
-		strconv.Itoa(r.ChannelId), csvCell(r.RelayFormat),
-		csvCell(r.MatchedTerms), csvCell(r.MatchSnippet),
-		csvCell(r.FeeMode),
-		strconv.FormatInt(r.FeeQuotaWant, 10), strconv.FormatInt(r.FeeQuota, 10), csvCell(r.FeeStatus),
+		csvsafe.Cell(r.ModelName), csvsafe.Cell(r.UsingGroup),
+		strconv.Itoa(r.ChannelId), csvsafe.Cell(r.RelayFormat),
+		csvsafe.Cell(r.MatchedTerms), csvsafe.Cell(r.MatchSnippet),
+		csvsafe.Cell(r.FeeMode),
+		strconv.FormatInt(r.FeeQuotaWant, 10), strconv.FormatInt(r.FeeQuota, 10), csvsafe.Cell(r.FeeStatus),
 		strconv.Itoa(r.CountWeight), strconv.FormatBool(r.Counted), strconv.Itoa(r.CounterAfter),
-		csvCell(r.Status), strconv.FormatBool(r.HasPayload),
+		csvsafe.Cell(r.Status), strconv.FormatBool(r.HasPayload),
 	}
-}
-
-// csvCell 让一个单元格在电子表格里只能是文本,不可能是公式。
-//
-// matched_terms 与 match_snippet 直接来自用户输入。Excel / WPS / Sheets 会把以
-// `=` `+` `-` `@` 开头的单元格当公式求值,于是一段 `=cmd|'…'!A1` 的 prompt
-// 就变成了打开这份 CSV 的运营机器上的一次命令执行(CSV 注入)。前缀一个单引号是
-// 各家电子表格通用的"强制文本"写法,而 csv.Writer 只负责引号转义,管不到这一层。
-//
-// 制表符与换行同时压平:它们不会造成安全问题,但会让一行记录在表格里裂成几行,
-// 而"一行 = 一次命中"是这份文件唯一的阅读约定。
-func csvCell(s string) string {
-	s = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ").Replace(s)
-	if s == "" {
-		return s
-	}
-	switch s[0] {
-	case '=', '+', '-', '@':
-		return "'" + s
-	}
-	return s
 }

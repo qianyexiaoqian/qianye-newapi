@@ -293,6 +293,14 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_ml_address_exists: 'qy_err_ml_address_exists',
   qy_ml_address_missing: 'qy_err_ml_address_missing',
   qy_ml_max_products: 'qy_err_ml_max_products',
+  // 码库存的三条（管理端提卡 / 删码）。不登记的话 404 与 409 会塌成
+  // 「资源不存在」「该申请已被其他人处理」——后者尤其误导：这里没有任何申请，
+  // 真正的下一步是「刷新看看这枚码是不是刚被另一位管理员提走了」。
+  // 「不能提」与「不能删」也必须是两句话：前者要去订单里查这枚码发给了谁，
+  // 后者压根没有下一步（证据行永久保留）。
+  qy_ml_code_not_found: 'qy_err_ml_code_not_found',
+  qy_ml_code_not_takeable: 'qy_err_ml_code_not_takeable',
+  qy_ml_code_not_deletable: 'qy_err_ml_code_not_deletable',
   // 退款会把余额顶过系统上界：处置是"先花掉一部分"，与"星屑不足"方向相反。
   qy_sd_overflow: 'qy_err_sd_overflow',
   // 商品封面。七个 code 各自要求的下一步不同，与抽奖封面同一套理由。

@@ -24,8 +24,9 @@ For commercial licensing, please contact support@quantumnous.com
  *  1. 余额那一屏把后端下发的东西**原样**摆出来：大数字 + 单位名、暂缓原因的那句
  *     人话、下次结算时刻（后端算的 `next_settle_at`，前端不复刻日界）、昨日摘要里
  *     "消费 X 额度 → 已发 Y 星屑"两种单位各印各的。
- *  2. 不可见的标签一个请求都不发：一进页面只有 `/stardust/me`；切到流水才打
- *     `/stardust/ledger`，而且 hash 写进地址栏。
+ *  2. 不可见的标签一个请求都不发：一进页面只有余额那一张标签自己的两条
+ *     （`/stardust/me` + `/stardust/forecast`）；切到流水才打 `/stardust/ledger`，
+ *     而且 hash 写进地址栏。
  *  3. 流水与日桶的枚举各有一句人话（kind 十二种、状态三种、暂缓原因三种）；
  *     键漏译时 i18next 原样吐键名，下面的中文断言当场变红。
  *
@@ -73,6 +74,34 @@ const ME = {
     quota_per_unit: 500_000,
   },
   pending_held_count: 2,
+}
+
+/** 明日预计到账。这里只要它能渲染出来；口径与刷新在 forecast-card.test.tsx。 */
+const FORECAST = {
+  day: '20260904',
+  settle_at: 1_800_000_000,
+  computed_at: 1_787_000_000,
+  refresh_after: 1_787_000_060,
+  expires_at: 1_787_003_600,
+  quota_per_unit: 500_000,
+  hold_reason: '',
+  consume: {
+    base_quota: 1_000_000,
+    rate_bps: 10_000,
+    gross: '2.0000000000',
+    carry: '0.3700000000',
+    estimated: 2,
+  },
+  invite: {
+    applies: false,
+    counted: true,
+    base_quota: 0,
+    rate_bps: 0,
+    gross: '0',
+    carry: '0',
+    estimated: 0,
+  },
+  estimated_total: 2,
 }
 
 const LEDGER = [
@@ -133,6 +162,7 @@ const ACCRUALS = [
 
 function respond(request: QyProbeRequest) {
   if (request.url.endsWith('/stardust/me')) return { data: ME }
+  if (request.url.endsWith('/stardust/forecast')) return { data: FORECAST }
   if (request.url.endsWith('/stardust/ledger')) {
     const items =
       request.params.kind == null
@@ -166,10 +196,15 @@ function qyUrls(sent: QyProbeRequest[]): string[] {
 }
 
 describe('余额标签', () => {
-  test('一进页面只打 /stardust/me；大数字、单位名、四个累计与余数都在屏幕上', async () => {
+  test('一进页面只打余额那一张标签的两条；大数字、单位名、四个累计与余数都在屏幕上', async () => {
     const screen = await mountHub()
 
-    assert.deepEqual(qyUrls(screen.sent), ['/api/qy/stardust/me'])
+    assert.deepEqual(qyUrls(screen.sent), [
+      '/api/qy/stardust/me',
+      // 明日预计到账自己取数：它在服务端一小时一份，塞进 /stardust/me 会让
+      // 每一次进页面都拖一次 LOG_DB 聚合。
+      '/api/qy/stardust/forecast',
+    ])
     const text = screen.text()
     assert.ok(text.includes('1,234 星屑'), `大数字没带单位名渲染出来：${text}`)
     assert.ok(text.includes('2,000 星屑'), '累计获得没渲染')

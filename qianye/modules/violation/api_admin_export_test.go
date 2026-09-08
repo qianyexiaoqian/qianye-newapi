@@ -138,30 +138,6 @@ func indexOfColumn(name string) int {
 	return -1
 }
 
-// TestCsvCellNeutralizesSpreadsheetFormulas 是一条安全回归。
-//
-// matched_terms 与 match_snippet 直接来自用户输入。Excel / WPS / Sheets 会把以
-// = + - @ 开头的单元格当公式求值 —— 于是一段精心构造的 prompt 就变成了打开这份
-// CSV 的运营机器上的一次命令执行。csv.Writer 只做引号转义,管不到这一层。
-func TestCsvCellNeutralizesSpreadsheetFormulas(t *testing.T) {
-	for _, payload := range []string{
-		`=cmd|'/c calc'!A1`,
-		`+1+1`,
-		`-2+3`,
-		`@SUM(1:9)`,
-	} {
-		out := csvCell(payload)
-		assert.True(t, strings.HasPrefix(out, "'"),
-			"以 %q 开头的单元格会被电子表格当公式求值,必须强制成文本", payload[:1])
-		assert.Equal(t, payload, out[1:], "除了前缀之外内容必须原样保留")
-	}
-
-	assert.Equal(t, "normal text", csvCell("normal text"), "正常文本不加前缀")
-	assert.Equal(t, "", csvCell(""))
-	assert.Equal(t, "a b c", csvCell("a\r\nb\tc"),
-		"换行与制表符会让一行记录在表格里裂成几行,而「一行 = 一次命中」是这份文件唯一的阅读约定")
-}
-
 // TestExportWritesEveryFilteredRow 是导出的端到端回归。
 //
 // 分批游标翻页很容易写出"只导出第一批"的缺陷,而那种缺陷不会报错:

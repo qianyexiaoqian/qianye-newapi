@@ -211,6 +211,7 @@ export function QyLotWhyResultDialog(props: WhyResultDialogProps) {
                     来自后端，所以它同时是"平台报的那组号对不对"的检验点。 */}
                 <QyKeyValue label={t('qy_lot_ball_result')}>
                   <QyLotBallNumbers
+                    drawn
                     pick={qyLotBallFormatPick({
                       blues: explain.drawnBlues,
                       reds: explain.drawnReds,

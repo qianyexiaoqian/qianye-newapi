@@ -64,10 +64,33 @@ const ctxKeyCyberSession = constant.ContextKey("qy_violation_cyber_session")
 const (
 	cyberBlockErrorCode = "session_blocked_by_cyber_policy"
 	cyberBlockMessage   = "此会话已被安全策略屏蔽,请开启新会话 / This session is blocked by the security policy; please start a new session"
+	// cyberBlockPublicReason 是同一句话在**使用记录**里的形态。
+	//
+	// 单独一个常量而不是复用 cyberBlockMessage:后者要同时服务国际客户端,
+	// 所以是中英双语的一整行;日志那一列前面已经有「会话已被安全策略屏蔽:」
+	// 的抬头,再拼一遍双语只会让那一格读不下去。两处口径必须一致 ——
+	// 用户先看到 403、再来翻使用记录,说法不一样会让他以为是两回事。
+	cyberBlockPublicReason = "此会话已被安全策略屏蔽,请开启新会话"
 )
 
 // cyberKeyPrefix 与 reqrate 的命名空间刻意分开,理由同 rateKeyPrefix。
 const cyberKeyPrefix = "qy:vio:cyberblk:"
+
+// cyberLogKeyPrefix 是"这条会话的屏蔽已经写过一行使用记录"的节流键。
+//
+// 与黑名单本身分开的命名空间:两者语义不同(一个是"还拦不拦",一个是"还写不写"),
+// 而且管理员手工清掉黑名单时不该顺带让日志重新开始刷。
+const cyberLogKeyPrefix = "qy:vio:cyberlog:"
+
+// cyberLogLocalNS 是同一个节流键在**进程内兜底表**里的前缀。
+// 兜底表与黑名单共用一张(自带过期清扫与条目上界),靠这个前缀分开。
+const cyberLogLocalNS = "log:"
+
+// cyberLogMinWindowSeconds 是两行屏蔽日志之间的最小间隔。
+//
+// 节流窗口正常取屏蔽 TTL 本身("一个屏蔽周期一行"),这个下界只兜住把 TTL 配得
+// 极短的站点:TTL=5 秒 + 客户端硬重试,那就是每 5 秒一行。
+const cyberLogMinWindowSeconds = 60
 
 // cyberRedisTimeout 是拉黑读写允许占用 relay 热路径的时间上界,同 rateRedisTimeout。
 const cyberRedisTimeout = 200 * time.Millisecond
@@ -98,11 +121,92 @@ func cyberSessionPrecheck(c *gin.Context, info *relaycommon.RelayInfo, rt *cyber
 	common.SetContextKey(c, ctxKeyCyberSession, h)
 
 	if cyberBlocked(c, h) {
-		// 刻意不在这里逐条打日志:一条被拉黑的会话可能高频重试,那会把日志刷爆。
-		// "这条会话被封了"在拉黑那一刻(maybeBlockCyberSession)已经记过一次。
+		// ── 被屏蔽的请求同样要在「使用记录」里留一行 ──
+		//
+		// 这里一度什么都不写,理由是"一条被拉黑的会话可能高频重试,会把日志刷爆"。
+		// 那条理由只站在运维一侧:站在用户一侧,他刚刚收到一个 403、而使用记录页
+		// 一片空白,与规则命中被拦时的处境一模一样(见 usagelog.go 顶部)。
+		// 现在两件事都要:写,但**按会话节流**,同一条会话一个屏蔽周期只写一行。
+		// 用户要的是"我这次为什么失败了"的解释,一行就够;而"它一直在被拦"
+		// 这件事在拉黑那一刻的审计里另有完整记录。
+		if claimCyberBlockLog(c, h, rt.ttlSeconds) {
+			recordBlockedUsageLog(cyberBlockLogRecord(captureRecordCtx(c, info)))
+		}
 		return cyberSessionBlockError()
 	}
 	return nil
+}
+
+// cyberBlockLogRecord 把一次"会话已被屏蔽"折成一条**只用于写使用记录**的记录。
+//
+// 它不会被 persist,也没有对应的 qy_violation_record —— 屏蔽期内的重复请求本来
+// 就不该各留一条违规记录(计数只在拉黑那一刻推进一次,见 recordCyberHit)。
+// 借 Record 这个形状是因为 blockedUsageLogRow 的入参就是它,而这里要填的字段
+// (谁、什么模型、哪个分组、对外文案)与规则命中那条路径逐格相同 ——
+// 两条路径写出来的日志行必须长得一样,否则前端得认两种形状。
+//
+// RecNo 刻意留空:只有开了「计入自动封号计数」时那条 qy_violation_record 才存在,
+// 写一个查不到的记录号比不写更糟。管理员要定位靠 admin_info 里的 phase。
+func cyberBlockLogRecord(rc recordCtx) *Record {
+	return &Record{
+		UserId:   rc.UserId,
+		Username: rc.Username,
+		TokenId:  rc.TokenId, TokenName: rc.TokenName,
+		RuleId: 0, RuleName: "cyber 会话屏蔽",
+		// 对外文案与 403 响应体里那句话同源:用户先看到响应、再来翻使用记录,
+		// 两处说法不一致会让他以为是两回事。
+		PublicReason: cyberBlockPublicReason,
+		Phase:        PhaseCyberBlock,
+		Action:       ActionBlock,
+		Blocked:      true,
+		ModelName:    rc.ModelName,
+		UsingGroup:   rc.UsingGroup,
+		ChannelId:    rc.ChannelId,
+		RelayFormat:  rc.RelayFormat,
+		RequestId:    truncate(rc.RequestId, 64),
+		Ip:           rc.Ip,
+		Status:       RecordActive,
+		FeeStatus:    FeeStatusNone,
+		CreatedAt:    common.GetTimestamp(),
+	}
+}
+
+// claimCyberBlockLog 抢一次"这条会话的屏蔽由我来写进使用记录"的资格。
+//
+// 每一次被拦的请求都写一行是不行的:客户端并不知道自己被本地拦了,重试往往是
+// 几十上百次,那会把使用记录页刷成一整屏同一句话 —— 对用户和运营都是纯噪音。
+//
+// 节流窗口取**屏蔽本身的 TTL**(下界 cyberLogMinWindowSeconds),不另立一个魔数:
+// 这样"一个屏蔽周期一行"是字面意思 —— 会话被拉黑写一行,TTL 到期后若再次被拉黑,
+// 又是一行。窗口独立于黑名单键(命名空间不同),因此管理员手工清掉黑名单也不会
+// 让日志重新开始刷。
+//
+// 存储形状与 cyberMark / cyberBlocked 逐行对应:Redis 优先(SetNX 是原子的),
+// 抖动时回落进程内那张表。回落路径上"查完再写"不是原子的,多节点或高并发下
+// 可能多写一两行 —— 那个方向是安全的(多一行解释),不值得为它加锁。
+func claimCyberBlockLog(c *gin.Context, hash string, ttl int) bool {
+	window := ttl
+	if window < cyberLogMinWindowSeconds {
+		window = cyberLogMinWindowSeconds
+	}
+	if common.RedisEnabled && common.RDB != nil {
+		ctx, cancel := context.WithTimeout(cyberCtx(c), cyberRedisTimeout)
+		defer cancel()
+		ok, err := common.RDB.SetNX(ctx, cyberLogKeyPrefix+hash, "1",
+			time.Duration(window)*time.Second).Result()
+		if err == nil {
+			return ok
+		}
+	}
+	// 进程内兜底复用同一张表,靠命名空间前缀与黑名单本身分开 ——
+	// 它自带过期清扫与条目上界,不必再维护第二张。
+	key := cyberLogLocalNS + hash
+	now := common.GetTimestamp()
+	if cyberBlockedLocal(key, now) {
+		return false
+	}
+	cyberMarkLocal(key, now+int64(window))
+	return true
 }
 
 // maybeBlockCyberSession 在事后判定这次上游拒绝是不是 cyber 命中,是则拉黑本会话。
@@ -150,7 +254,17 @@ func maybeBlockCyberSession(c *gin.Context, info *relaycommon.RelayInfo, apiErr 
 func recordCyberHit(c *gin.Context, info *relaycommon.RelayInfo, categoryId int64, matched string, apiErr *types.NewAPIError) {
 	rc := captureRecordCtx(c, info)
 	sessionHash := common.GetContextKeyString(c, ctxKeyCyberSession)
-	cat := categoryForRule(Snapshot(), categoryId)
+	snap := Snapshot()
+	cat := categoryForRule(snap, categoryId)
+	// ── cyber 的「不指定」与规则的「不指定」不是同一件事 ──
+	//
+	// 规则那边没选类型就是"只拦不罚,不计数"(见 categoryForRule)。cyber 这边
+	// 另有一个显式开关 count_toward_ban:管理员打开它,说的就是"这一档要计入
+	// 自动封号计数"。此时把类型绑定留空只表示"没挑具体哪一类",不表示"别计数"——
+	// 按前者处理会让那个开关变成一个打开了也不起作用的摆设。所以这里显式回落兜底桶。
+	if cat.Id <= 0 && snap != nil {
+		cat = snap.catFallback
+	}
 	persist(buildCyberRecord(rc, sessionHash, cat, matched, apiErr), nil)
 }
 

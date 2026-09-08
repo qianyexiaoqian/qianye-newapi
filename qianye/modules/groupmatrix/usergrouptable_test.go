@@ -116,7 +116,7 @@ func TestUserGroupTableCarriesEveryColumn(t *testing.T) {
 	}).Error)
 	require.NoError(t, reload())
 
-	view, err := buildMatrixView(gdb)
+	view, err := buildMatrixView(gdb, nil)
 	require.NoError(t, err)
 	rows := rowsByName(view)
 
@@ -222,7 +222,7 @@ func TestUserGroupTableTellsTheTruthAboutEnforcement(t *testing.T) {
 		UserGroup: "shadowed", ModelGroup: "paid", CreatedAt: 1, UpdatedAt: 1}).Error)
 	require.NoError(t, reload())
 
-	view, err := buildMatrixView(gdb)
+	view, err := buildMatrixView(gdb, nil)
 	require.NoError(t, err)
 	rows := rowsByName(view)
 
@@ -272,7 +272,7 @@ func TestUserGroupTableExcludesModelGroups(t *testing.T) {
 	require.NoError(t, gdb.Create(newScope("scoped_only", ModeEnforce, false, nil, "", 1, 1)).Error)
 	require.NoError(t, reload())
 
-	view, err := buildMatrixView(gdb)
+	view, err := buildMatrixView(gdb, nil)
 	require.NoError(t, err)
 	rows := rowsByName(view)
 
@@ -316,7 +316,7 @@ func TestUsableColumnSurvivesGrantsOutsideTheRatioTable(t *testing.T) {
 
 	seedScope(t, gdb, "vip", ModeEnforce, false, "已被删掉的池子", "另一个消失的池子")
 
-	view, err := buildMatrixView(gdb)
+	view, err := buildMatrixView(gdb, nil)
 	require.NoError(t, err)
 	row, ok := rowsByName(view)["vip"]
 	require.True(t, ok)
@@ -344,11 +344,88 @@ func TestUsableColumnExcludesAutoPseudoGroup(t *testing.T) {
 	useCrossRatios(t, `{}`)
 	useModelGroupNote(t, map[string]string{})
 
-	view, err := buildMatrixView(gdb)
+	view, err := buildMatrixView(gdb, nil)
 	require.NoError(t, err)
 	row, ok := rowsByName(view)["unmanaged"]
 	require.True(t, ok)
 	assert.NotContains(t, row.ModelGroups, autoGroup)
 	assert.Contains(t, row.ModelGroups, "paid",
 		"没设清单的那一档列的是上游此刻的实际可选集合")
+}
+
+// TestPagedMatrixKeepsWholeTableCounts 守行轴翻页的三件事。
+//
+// 项目方要的是「分组过多时不卡」,而翻页最容易埋进去的三个坑各有一个具体的
+// 错误方向,所以三条断言都在同一个用例里(它们说的是同一次调用的同一份响应):
+//
+//  1. **行与格子一起切**。格子是 行×列 的乘积,也就是这个响应里唯一随分组数
+//     平方增长的一段 —— 只切行不切格子,翻页一点也不省。
+//  2. **计数不跟着切**。scope_policy 的四个数回答的是"全站还有几档没设范围",
+//     按本页算会让它随翻页跳变,而运营会照着第 2 页那个数去汇报。
+//  3. **不带参数 = 整张表**。同一个端点还养着高级视图(整列批量、跨档对比),
+//     默认翻页会让第 11 档之后的整列批量静默只做一部分。
+func TestPagedMatrixKeepsWholeTableCounts(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, true)
+	syncHotAsync(t)
+	useUpstreamGroups(t,
+		map[string]string{"paid": ""},
+		map[string]float64{"paid": 1, "extra": 1})
+	// 五档人,名字刻意按字典序可预测:行轴排序是切页的前提。
+	useTopupRatios(t, map[string]float64{
+		"g1": 0.9, "g2": 0.9, "g3": 0.9, "g4": 0.9, "g5": 0.9,
+	})
+	useCrossRatios(t, `{}`)
+	useModelGroupNote(t, map[string]string{})
+	// 其中两档设了范围,一档设成空 —— 三个计数各有一个非零值可断言。
+	seedScope(t, gdb, "g2", ModeEnforce, false, "paid")
+	seedScope(t, gdb, "g4", ModeEnforce, false)
+	require.NoError(t, reload())
+
+	full, err := buildMatrixView(gdb, nil)
+	require.NoError(t, err)
+	require.Len(t, full.UserGroups, 5)
+	assert.Nil(t, full.Pagination,
+		"不带翻页参数时不下发游标 —— 前端据此判断「要不要画翻页条」")
+
+	page2, err := buildMatrixView(gdb, &pageWindow{Page: 2, Size: 2})
+	require.NoError(t, err)
+
+	names := make([]string, 0, len(page2.UserGroups))
+	for _, row := range page2.UserGroups {
+		names = append(names, row.Name)
+	}
+	assert.Equal(t, []string{"g3", "g4"}, names,
+		"切页必须按行轴自己的排序,否则相邻两页会重复或漏掉行")
+
+	require.NotNil(t, page2.Pagination)
+	assert.Equal(t, 5, page2.Pagination.Total, "总数是全量,不是本页行数")
+	assert.Equal(t, 2, page2.Pagination.Page)
+	assert.Equal(t, 2, page2.Pagination.Size)
+
+	// 1) 格子只对本页的行铺开。
+	assert.Len(t, page2.Cells, len(page2.UserGroups)*len(page2.ModelGroups))
+	for _, cell := range page2.Cells {
+		assert.Contains(t, names, cell.UserGroup,
+			"格子里出现了不在本页的用户分组 —— 那说明只切了行、没切格子")
+	}
+	assert.Equal(t, full.ModelGroups, page2.ModelGroups,
+		"列轴不翻页:它是编辑弹窗里那一格一格的坐标系,切掉一半列等于让弹窗少显示"+
+			"一批可授权的池子,而运营看不出少了什么")
+
+	// 2) 三个计数与整表口径逐位相同 —— 本页里只有 g3(未设)与 g4(空范围)。
+	assert.Equal(t, full.ScopePolicy, page2.ScopePolicy,
+		"scope_policy 的四个计数必须是全站口径:一个随翻页跳变的分母比没有分母更糟")
+	assert.Equal(t, 3, page2.ScopePolicy.UnsetGroups)
+	assert.Equal(t, 2, page2.ScopePolicy.ScopedGroups)
+	assert.Equal(t, 1, page2.ScopePolicy.EmptyScopedGroups)
+
+	// 越界的页码给空行而不是 panic(httpq.Slice 的职责),游标仍然如实报总数 ——
+	// 前端据此把页码回落到最后一页。
+	beyond, err := buildMatrixView(gdb, &pageWindow{Page: 99, Size: 2})
+	require.NoError(t, err)
+	assert.Empty(t, beyond.UserGroups)
+	assert.Empty(t, beyond.Cells)
+	require.NotNil(t, beyond.Pagination)
+	assert.Equal(t, 5, beyond.Pagination.Total)
 }

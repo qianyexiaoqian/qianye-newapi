@@ -279,6 +279,26 @@ export interface LogOtherData {
   violation_fee_code?: string
   violation_fee_marker?: string
   fee_quota?: number
+  // 千夜扩展：请求在转发上游**之前**被内容审核拦下。
+  //
+  // 两种日志都会带 `violation_blocked`：扣到费的走消费日志（type=2，与上面那组
+  // violation_fee_* 同行），没扣到费的单独写一行错误日志（type=5）。后者刻意
+  // 不带 `violation_fee_code` —— 那个键是「这是一条扣费日志」的判据，借用它会
+  // 弹出一个「违规扣费 · 费用 0」的板块。
+  violation_blocked?: boolean
+  violation_code?: string
+  /**
+   * 拦的是什么：`content` = 内容审核（规则命中），`session` = 会话被安全策略屏蔽
+   * （cyber，与这一次发的内容无关，用户要做的是开一条新会话）。
+   *
+   * 后端显式下发这一位，而不是让这里去比对 `violation_code` 的字面量或读
+   * `admin_info.qy_phase` —— 前者是把后端常量抄一份，后者对普通用户会被剥掉，
+   * 于是同一行在管理端与用户端会长出两个标题。缺省（老日志）按 content 处理。
+   */
+  violation_block_kind?: 'content' | 'session'
+  qy_violation_rec_no?: string
+  qy_violation_category?: string
+  qy_reason?: string
   // Task-related fields (for refund logs, type=6)
   is_task?: boolean
   task_id?: string

@@ -31,12 +31,8 @@ import { qyAppendViolationGroupScope } from '../../admin-violation-rules/lib/rul
 import {
   qyAiAppendScopeGroup,
   qyAiScopeDraftToInput,
-  qyAiScopeEffectivePrompt,
-  qyAiScopePromptSource,
   qyAiScopeToDraft,
   qyAiSplitScopeList,
-  qyAiRenderPrompt,
-  QY_AI_CATEGORY_PLACEHOLDER,
 } from '../lib/ai-review'
 import type { QyAiScope } from '../types'
 
@@ -181,84 +177,42 @@ describe('追加一项时的分隔符与后端逐字一致', () => {
 
 // ─────────────────────── 二、作用域提示词 ───────────────────────
 
-describe('作用域提示词覆盖全局', () => {
-  const DEFAULT = '内置默认提示词'
-  const GLOBAL = '本站全局提示词'
-  const SCOPE = '本档提示词'
+/*
+ * 「作用域提示词覆盖全局」这一组已经整体退役。
+ *
+ * 2026-09-06 提示词从「全局设置 / 作用域」搬到了**审核渠道**上,三档回落
+ * 不再存在。理由是它与协议绑死:护栏协议压根不发提示词,而挂在作用域上就
+ * 允许"一条作用域的提示词被分发到一个根本不读提示词的渠道"。
+ *
+ * 接替它的是:
+ *   后端  aireview_scope_prompt_test.go 的 TestAIChannelPromptIsTheOnlySource
+ *         与 TestAIChannelPromptReachesUpstreamRequest(逐渠道渲染)
+ *   前端  本文件下面那一组「作用域选审核渠道分组」
+ */
 
-  test('三档回落:作用域 → 全局 → 内置默认', () => {
-    const cases: [string, string, string, string, string][] = [
-      ['作用域写了 → 用它', SCOPE, GLOBAL, DEFAULT, SCOPE],
-      ['作用域留空 → 全局', '', GLOBAL, DEFAULT, GLOBAL],
-      ['只有空白 → 全局', '  \n ', GLOBAL, DEFAULT, GLOBAL],
-      ['作用域与全局都空 → 内置默认', '', '', DEFAULT, DEFAULT],
-      ['全局空、作用域写了 → 作用域', SCOPE, '', DEFAULT, SCOPE],
-    ]
-    for (const [why, scope, global, def, want] of cases) {
-      assert.equal(qyAiScopeEffectivePrompt(scope, global, def), want, why)
-    }
+describe('作用域选的是审核渠道分组,不再是"全部启用渠道"', () => {
+  test('草稿往返带着 channel_group', () => {
+    const draft = qyAiScopeToDraft()
+    draft.channel_group = '自建护栏'
+    assert.equal(draft.channel_group, '自建护栏')
+    assert.equal(qyAiScopeDraftToInput(draft).channel_group, '自建护栏')
   })
 
-  /**
-   * 空串在这一格的含义是**继承全局**,而全局那一份完全可能是本站自定义的。
-   * 复用全局那一格的 `qyAiPromptIsDefault`(它把"逐字等于内置默认"也算默认档)
-   * 会把一段逐字等于内置默认的作用域提示词判成"继承",于是保存时被折成空串 ——
-   * 从此它悄悄跟着全局那份自定义走,与运营写下它时的意思完全相反。
-   */
-  test('逐字等于内置默认的作用域提示词是「自定义」,不是「继承」', () => {
-    assert.equal(qyAiScopePromptSource(''), 'inherit')
-    assert.equal(qyAiScopePromptSource('  \n\t '), 'inherit')
-    assert.equal(qyAiScopePromptSource(DEFAULT), 'custom')
-    assert.equal(qyAiScopePromptSource(SCOPE), 'custom')
+  test('分组名两侧的空白在提交前就被去掉', () => {
+    // 不归一的话「自建护栏」与「自建护栏 」会是两个分组,而界面上一模一样。
+    // 后端也会 trim 一次(它才是权威),这里折是为了让界面显示的与入库的一致。
+    const draft = qyAiScopeToDraft()
+    draft.channel_group = '  自建护栏  '
+    assert.equal(qyAiScopeDraftToInput(draft).channel_group, '自建护栏')
   })
 
-  test('只有空白的提示词提交时折成空串(= 回到继承)', () => {
-    const draft = { ...qyAiScopeToDraft(), name: '自助注册', prompt: '  \n ' }
-    assert.equal(qyAiScopeDraftToInput(draft).prompt, '')
-    assert.equal(
-      qyAiScopeDraftToInput({ ...draft, prompt: SCOPE }).prompt,
-      SCOPE,
-      '真正写了内容时必须原样提交,连首尾的换行都不要动 —— 提示词里的空行是有意义的排版'
-    )
-  })
-
-  /**
-   * 任务里那条硬约束:**作用域提示词只覆盖「判定说明」,类型清单仍然自动生成。**
-   *
-   * 反面是让运营手工维护两份清单。他在类型页新建一个类型之后,漏改的那几档
-   * 会静默地永远返回旧类型 —— 而界面上类型建好了、规则也绑上了,一切看起来都对。
-   */
-  test('不管用哪一档基底,类型清单都仍然拼进去', () => {
-    const block = '可用的 category 取值:none / jailbreak / distill'
-    for (const base of [SCOPE, GLOBAL, DEFAULT]) {
-      const rendered = qyAiRenderPrompt(base, DEFAULT, block)
-      assert.ok(rendered.includes(base), `基底 "${base}" 必须原样出现`)
-      assert.ok(
-        rendered.includes(block),
-        `基底 "${base}" 也要带上自动生成的清单`
-      )
-    }
-    // 占位符决定清单出现在哪一段,而不是被迫接受"总在最后"。
-    const withPlaceholder = qyAiRenderPrompt(
-      `头部\n${QY_AI_CATEGORY_PLACEHOLDER}\n尾部`,
-      DEFAULT,
-      block
-    )
-    assert.ok(withPlaceholder.includes(`头部\n${block}\n尾部`))
-    assert.ok(!withPlaceholder.includes(QY_AI_CATEGORY_PLACEHOLDER))
-  })
-
-  test('编辑框不预填,预填会让每一档都悄悄与全局脱钩', () => {
-    assert.equal(
-      qyAiScopeToDraft().prompt,
-      '',
-      '新建一档时提示词必须是空的 —— 预填之后随手一存就固化了一份副本,' +
-        '运营改全局提示词时这些档一个都不会跟着变'
-    )
+  test('新建时默认不选分组 —— 保存时由后端那道闸提醒', () => {
+    // 前端不替运营猜一个分组:猜错的后果是用户内容发去了他没选过的端点。
+    // 空着提交会被后端 400(启用中的策略必须选分组或指定渠道),那句话
+    // 比一个悄悄填好的默认值有用得多。
+    assert.equal(qyAiScopeToDraft().channel_group, '')
   })
 })
-
-// ─────────────────────── 三、违规类型绑定 ───────────────────────
 
 describe('作用域绑定违规类型', () => {
   const row = (over: Partial<QyAiScope> = {}): QyAiScope => ({
@@ -271,7 +225,7 @@ describe('作用域绑定违规类型', () => {
     group_scope_mode: 'include',
     pre_sample_rate_bps: 0,
     async_sample_rate_bps: 5000,
-    prompt: '',
+    channel_group: '',
     category_id: 0,
     channel_ids: [],
     channel_mode: '',
@@ -316,8 +270,8 @@ describe('作用域绑定违规类型', () => {
       'qy_ai_scope_col_category',
       'qy_ai_scope_category_none',
       'qy_ai_scope_f_category',
-      'qy_ai_scope_col_prompt',
-      'qy_ai_scope_prompt_inherit',
+      'qy_ai_scope_col_chgroup',
+      'qy_ai_scope_f_chgroup',
     ]) {
       assert.ok(page.includes(key), `缺少 ${key}`)
       assert.ok(dict[key], `${key} 没有中文文案`)

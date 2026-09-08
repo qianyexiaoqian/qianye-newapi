@@ -73,6 +73,10 @@ func rtForServer(url string, timeoutMs int) *aiRuntime {
 	return &aiRuntime{
 		PreTimeoutMs: timeoutMs, AsyncTimeoutMs: timeoutMs,
 		MaxInputChars: defaultAIMaxInputChars,
+		// 内容留存跟着出厂档打开(ensureAISetting 播的就是这个)。
+		// 夹具留零值的话,全部接线用例都会跑在"关掉留存"那条支路上,
+		// 而生产里的默认恰恰是另一条 —— 那种夹具测的是没人会遇到的形态。
+		LogContent: true, LogContentMaxChars: defaultAIReviewContentChars,
 		// 一条覆盖全部分组、两个时机都 100% 的策略。
 		//
 		// 全局抽样率与兜底档已经下线,"送不送审"只由策略表回答,所以这个夹具
@@ -125,7 +129,9 @@ func TestSampleAIBoundaries(t *testing.T) {
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
+// boolPtr 曾经在这里定义;它现在是生产代码的一员(aireview.go),
+// 因为 AISetting.LogContentViolationFull 那个三态列要用它写出厂档。
+// 两份同名定义会编译失败,所以这里只留这条说明。
 
 // ─────────────────────── 失败方向:每一种都必须放行 ───────────────────────
 
@@ -582,7 +588,9 @@ func TestValidateAIRule(t *testing.T) {
 func TestValidateAISetting(t *testing.T) {
 	base := AISetting{
 		PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
-		MaxInputChars: defaultAIMaxInputChars,
+		MaxInputChars:      defaultAIMaxInputChars,
+		LogContentMaxChars: defaultAIReviewContentChars,
+		LogRetentionDays:   defaultAIReviewRetentionDays,
 	}
 	tests := []struct {
 		name    string
@@ -609,10 +617,38 @@ func TestValidateAISetting(t *testing.T) {
 			name:   "开启且已确认 合法",
 			mutate: func(s *AISetting) { s.Enabled = true; s.ThirdPartyNoticeAck = true },
 		},
+		// 「提示词过长被拒」这一条搬去了 aireview_scope_prompt_test.go 的
+		// TestAIChannelPromptLengthCapped:提示词 2026-09-06 从这里搬到了渠道上,
+		// 校验也跟着搬。留在这里会变成一条断言不到任何东西的空壳。
+		// 审核日志那两格**不接受 0**。这不是多余的严格:0 是
+		// migrateAIReviewLogDefaults 判定"从未被人设置过"的唯一依据,
+		// 放它过去就等于让一次手工保存伪装成"没设置过",下次启动被迁移覆盖。
 		{
-			name:    "提示词过长被拒",
-			mutate:  func(s *AISetting) { s.Prompt = strings.Repeat("字", maxAIPromptRunes+1) },
-			wantErr: "提示词过长",
+			name:    "保留天数为 0 被拒(它是迁移判定「从未设置过」的依据)",
+			mutate:  func(s *AISetting) { s.LogRetentionDays = 0 },
+			wantErr: "保留天数",
+		},
+		{
+			name:    "保留天数超过上界被拒",
+			mutate:  func(s *AISetting) { s.LogRetentionDays = maxAIReviewRetentionDays + 1 },
+			wantErr: "保留天数",
+		},
+		{
+			name:    "内容留存上限为 0 被拒",
+			mutate:  func(s *AISetting) { s.LogContentMaxChars = 0 },
+			wantErr: "内容留存上限",
+		},
+		{
+			name:    "内容留存上限超过送审上限被拒(超出的部分根本不存在)",
+			mutate:  func(s *AISetting) { s.LogContentMaxChars = maxAIReviewContentChars + 1 },
+			wantErr: "内容留存上限",
+		},
+		{
+			// 关掉留存不该顺带放宽另外两格:关了之后再开回来,上限仍然要是
+			// 一个合法值,否则界面上那一格会显示 0 而实际按默认值生效。
+			name:    "关掉内容留存也仍然要求上限合法",
+			mutate:  func(s *AISetting) { s.LogContent = false; s.LogContentMaxChars = 0 },
+			wantErr: "内容留存上限",
 		},
 	}
 	for _, tc := range tests {

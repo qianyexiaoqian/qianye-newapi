@@ -22,7 +22,12 @@ import {
   DEFAULT_PAYMENT_TYPE,
   DEFAULT_MIN_TOPUP,
 } from '../constants'
-import type { PaymentMethod, PresetAmount, TopupInfo } from '../types'
+import type {
+  PaymentMethod,
+  PresetAmount,
+  TopupExternalLink,
+  TopupInfo,
+} from '../types'
 
 // ============================================================================
 // Payment Processing Functions
@@ -172,6 +177,51 @@ export function getMinTopupAmount(topupInfo: TopupInfo | null): number {
   }
 
   return DEFAULT_MIN_TOPUP
+}
+
+/**
+ * Keep only the external topup entries that are safe to render as buttons.
+ *
+ * The backend filters the same way, but the value originates in an admin text
+ * field and lands in an `href`: a `javascript:` URL that slipped through a
+ * stale backend would be stored XSS, so the destination is re-checked here
+ * before it reaches the DOM.
+ */
+export function usableExternalLinks(
+  links: TopupExternalLink[] | undefined
+): TopupExternalLink[] {
+  if (!Array.isArray(links)) {
+    return []
+  }
+
+  return links.filter((link) => {
+    if (!(link?.amount > 0) || !link?.name?.trim() || !link?.url?.trim()) {
+      return false
+    }
+    try {
+      const url = new URL(link.url.trim())
+      return (
+        (url.protocol === 'http:' || url.protocol === 'https:') &&
+        !!url.hostname
+      )
+    } catch {
+      return false
+    }
+  })
+}
+
+/**
+ * The links bound to the amount the user currently has selected.
+ *
+ * Matching on the amount rather than on the preset tile is deliberate: typing
+ * 50 by hand and clicking the 50 tile are the same intent, and a code sold at
+ * that denomination is equally relevant either way.
+ */
+export function externalLinksForAmount(
+  links: TopupExternalLink[] | undefined,
+  amount: number
+): TopupExternalLink[] {
+  return usableExternalLinks(links).filter((link) => link.amount === amount)
 }
 
 /**

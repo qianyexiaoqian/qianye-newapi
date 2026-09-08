@@ -2,6 +2,7 @@ package mall
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -10,6 +11,9 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
+	"github.com/QuantumNous/new-api/qianye/httpq"
+
+	"gorm.io/gorm"
 )
 
 // codes.go —— 兑换码库存的批量上传(design §6.1)。
@@ -108,4 +112,128 @@ func isSiteRedemptionCode(ctx context.Context, plain string) (bool, error) {
 		return false, wrapInternal("核对主库兑换码", err)
 	}
 	return n > 0, nil
+}
+
+// listCodes 分页返回一件商品的码库存行。status 为空 = 不筛。
+//
+// 回给前端的是 codeStockView 挑出来的字段,**没有任何一列密文**:
+// CodeStock 上那三列虽然带 json:"-",但一旦有人把这里改成直接 Find 出结构体再
+// 整行下发,后来者只会看到"它一直是这么写的"。挑字段是让泄漏需要一次显式的新增。
+func listCodes(ctx context.Context, gdb *gorm.DB, p *Product, status string, page, size int) ([]CodeStock, int64, error) {
+	if p.Kind != KindCode {
+		return nil, 0, errBadRequest("只有兑换码商品有码库存")
+	}
+	q := gdb.WithContext(ctx).Model(&CodeStock{}).Where("product_id = ?", p.Id)
+	switch status {
+	case "":
+	case CodeUnused, CodeIssued, CodeRevoked, CodeTaken:
+		q = q.Where("status = ?", status)
+	default:
+		return nil, 0, errBadRequest("status 只能是 unused / issued / revoked / taken")
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		db.MarkFailure(err)
+		return nil, 0, wrapInternal("统计兑换码库存", err)
+	}
+	rows := make([]CodeStock, 0, size)
+	// id desc:最近入库的排在前面,运营刚粘完一批就想核对的就是那一批。
+	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
+		db.MarkFailure(err)
+		return nil, 0, wrapInternal("查询兑换码库存", err)
+	}
+	return rows, total, nil
+}
+
+// takeCode 由管理员从库里提走一枚**未使用**的码:解出明文并把它标成 taken。
+//
+// # 为什么必须在同一个事务里连锁带改
+//
+// 解密与改状态之间若隔着一次提交,两个管理员可以同时提走同一枚码,两个人各拿到
+// 一份明文,而库里只留下一次状态变更 —— 事后无从知道那枚码流到了几个人手上。
+// 行锁 + `status = 'unused'` 的条件读把这一步压成一次:第二个人读到的是
+// "已经不是 unused",拿到 409。
+//
+// # 为什么先解密再改状态
+//
+// 解不开(密钥版本没登记、密文被搬过)时这枚码对谁都没有价值,把它标成 taken 只会
+// 让一枚还能被修复的码永久离开可售库存。顺序反过来才是"先扣后给"。
+func takeCode(ctx context.Context, p *Product, id int64, adminId int) (string, *CodeStock, error) {
+	if p.Kind != KindCode {
+		return "", nil, errBadRequest("只有兑换码商品有码库存")
+	}
+	handle := db.Get()
+	if handle == nil {
+		return "", nil, db.ErrNotReady
+	}
+	var (
+		plain string
+		row   CodeStock
+	)
+	err := handle.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := db.LockForUpdate(tx).
+			Where("id = ? AND product_id = ?", id, p.Id).Take(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errCodeNotFound
+			}
+			return err
+		}
+		if row.Status != CodeUnused {
+			return errCodeNotTakeable
+		}
+		opened, err := openCode(&row, p.ProductNo)
+		if err != nil {
+			return err
+		}
+		plain = opened
+		now := common.GetTimestamp()
+		res := tx.Model(&CodeStock{}).Where("id = ? AND status = ?", row.Id, CodeUnused).
+			Updates(map[string]any{"status": CodeTaken, "taken_at": now, "taken_by": adminId})
+		if res.Error != nil {
+			return res.Error
+		}
+		// SQLite 上 LockForUpdate 退化成空操作(没有行锁),条件更新的影响行数是那里
+		// 唯一还剩下的并发判据 —— 0 行意味着另一个事务刚把它领走。
+		if res.RowsAffected == 0 {
+			return errCodeNotTakeable
+		}
+		row.Status, row.TakenAt, row.TakenBy = CodeTaken, now, adminId
+		return nil
+	})
+	if err != nil {
+		return "", nil, bizOrInternal("提取兑换码", err)
+	}
+	return plain, &row, nil
+}
+
+// deleteCode 删掉一枚**未使用**的码。
+//
+// issued / revoked / taken 一律不许删:前两者是"这个人拿到的是哪一枚"的履行证据,
+// taken 是"这枚码被哪个管理员提走了"的去向证据。删商品时只清 unused 也是同一条
+// 理由(handleAdminDeleteProduct)。
+func deleteCode(ctx context.Context, gdb *gorm.DB, p *Product, id int64) error {
+	if p.Kind != KindCode {
+		return errBadRequest("只有兑换码商品有码库存")
+	}
+	var row CodeStock
+	if err := gdb.WithContext(ctx).Select("id", "status").
+		Where("id = ? AND product_id = ?", id, p.Id).Take(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errCodeNotFound
+		}
+		db.MarkFailure(err)
+		return wrapInternal("读取兑换码库存", err)
+	}
+	if row.Status != CodeUnused {
+		return errCodeNotDeletable
+	}
+	res := gdb.WithContext(ctx).Where("id = ? AND status = ?", id, CodeUnused).Delete(&CodeStock{})
+	if res.Error != nil {
+		db.MarkFailure(res.Error)
+		return wrapInternal("删除兑换码", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return errCodeNotDeletable
+	}
+	return nil
 }

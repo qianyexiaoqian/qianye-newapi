@@ -14,6 +14,7 @@ DELETE /api/qy/admin/lottery/activities/:act_no
 DELETE /api/qy/admin/lottery/covers/:ref
 DELETE /api/qy/admin/mall/covers/:ref
 DELETE /api/qy/admin/mall/products/:no
+DELETE /api/qy/admin/mall/products/:no/codes/:id
 DELETE /api/qy/admin/stardust/group-rates/:group
 DELETE /api/qy/admin/stardust/plan-rewards/:plan_id
 DELETE /api/qy/admin/ticket/images/:ref
@@ -65,6 +66,7 @@ GET /api/qy/admin/lottery/text-prizes
 GET /api/qy/admin/mall/orders
 GET /api/qy/admin/mall/orders/:no/address
 GET /api/qy/admin/mall/products
+GET /api/qy/admin/mall/products/:no/codes
 GET /api/qy/admin/overdraft
 GET /api/qy/admin/pay-password/:user_id
 GET /api/qy/admin/request-audits
@@ -95,6 +97,7 @@ GET /api/qy/admin/version
 GET /api/qy/admin/version/check-update
 GET /api/qy/admin/violation/ai-review/channels
 GET /api/qy/admin/violation/ai-review/logs
+GET /api/qy/admin/violation/ai-review/logs/:id
 GET /api/qy/admin/violation/ai-review/scopes
 GET /api/qy/admin/violation/ai-review/settings
 GET /api/qy/admin/violation/ai-review/stats
@@ -142,7 +145,9 @@ GET /api/qy/mall/products/:no
 GET /api/qy/pay-password
 GET /api/qy/restricted-notice
 GET /api/qy/session-stats
+GET /api/qy/setup/status
 GET /api/qy/stardust/accruals
+GET /api/qy/stardust/forecast
 GET /api/qy/stardust/ledger
 GET /api/qy/stardust/me
 GET /api/qy/subscription/entitlements
@@ -204,6 +209,7 @@ POST /api/qy/admin/mall/orders/:no/revoke-code
 POST /api/qy/admin/mall/orders/:no/ship
 POST /api/qy/admin/mall/products
 POST /api/qy/admin/mall/products/:no/codes
+POST /api/qy/admin/mall/products/:no/codes/:id/take
 POST /api/qy/admin/pay-password/:user_id/reset
 POST /api/qy/admin/pay-password/:user_id/unlock
 POST /api/qy/admin/stardust/adjust
@@ -236,6 +242,9 @@ POST /api/qy/mall/orders/:no/cancel
 POST /api/qy/pay-password
 POST /api/qy/pay-password/recover/code
 POST /api/qy/pay-password/recover/reset
+POST /api/qy/setup/apply
+POST /api/qy/setup/restart
+POST /api/qy/setup/test
 POST /api/qy/ticket
 POST /api/qy/ticket/:no/close
 POST /api/qy/ticket/:no/reply

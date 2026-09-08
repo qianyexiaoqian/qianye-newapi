@@ -190,6 +190,12 @@ const QY_DYNAMIC_KEYS = [
   'qy_ml_kind_plan',
   'qy_ml_kind_code',
   'qy_ml_kind_physical',
+  // 码库存的四态徽章与筛选项 `t(qyMallCodeStatusKey(status))`（模板字符串键），
+  // 对齐后端 `qianye/modules/mall/model.go` 的四个 Code* 常量。
+  'qy_mladm_code_status_unused',
+  'qy_mladm_code_status_issued',
+  'qy_mladm_code_status_revoked',
+  'qy_mladm_code_status_taken',
   'qy_ml_block_ended',
   'qy_ml_block_limit',
   'qy_ml_block_sold_out',

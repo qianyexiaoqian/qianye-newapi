@@ -61,10 +61,12 @@ import { safeNumberFieldProps } from '../utils/numeric-field'
 import { AmountDiscountVisualEditor } from './amount-discount-visual-editor'
 import { AmountOptionsVisualEditor } from './amount-options-visual-editor'
 import { CreemProductsVisualEditor } from './creem-products-visual-editor'
+import { ExternalLinksVisualEditor } from './external-links-visual-editor'
 import { PaymentMethodsVisualEditor } from './payment-methods-visual-editor'
 import {
   formatJsonForEditor,
   getJsonError,
+  isSafeExternalLinkUrl,
   normalizeJsonForComparison,
   removeTrailingSlash,
 } from './utils'
@@ -94,6 +96,44 @@ function isHttpOriginUrl(value: string) {
   }
 }
 
+/**
+ * The JSON editor is the escape hatch around the link dialog, so the same
+ * name + http(s) URL contract the dialog enforces has to hold here too.
+ */
+function isExternalLinkArray(parsed: unknown): boolean {
+  if (!Array.isArray(parsed)) return false
+  return parsed.every(
+    (item) =>
+      typeof item === 'object' &&
+      item !== null &&
+      'amount' in item &&
+      'name' in item &&
+      'url' in item &&
+      typeof item.amount === 'number' &&
+      item.amount > 0 &&
+      typeof item.name === 'string' &&
+      item.name.trim() !== '' &&
+      typeof item.url === 'string' &&
+      isSafeExternalLinkUrl(item.url)
+  )
+}
+
+/**
+ * The amounts the link picker offers, read live off the sibling field so a
+ * freshly added preset is bindable before the form is saved.
+ */
+function parseAmountOptions(value: string): number[] {
+  try {
+    const parsed: unknown = JSON.parse(value.trim() || '[]')
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (item): item is number => typeof item === 'number' && item > 0
+    )
+  } catch {
+    return []
+  }
+}
+
 const paymentSchema = z.object({
   PayAddress: z.string().refine((value) => {
     const trimmed = value.trim()
@@ -112,6 +152,15 @@ const paymentSchema = z.object({
     ),
   PayMethods: z.string().superRefine((value, ctx) => {
     const error = getJsonError(value)
+    if (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: error,
+      })
+    }
+  }),
+  ExternalLinks: z.string().superRefine((value, ctx) => {
+    const error = getJsonError(value, isExternalLinkArray)
     if (error) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -239,6 +288,8 @@ export function PaymentSettingsSection({
   )
 
   const [payMethodsVisualMode, setPayMethodsVisualMode] = React.useState(true)
+  const [externalLinksVisualMode, setExternalLinksVisualMode] =
+    React.useState(true)
   const [amountOptionsVisualMode, setAmountOptionsVisualMode] =
     React.useState(true)
   const [amountDiscountVisualMode, setAmountDiscountVisualMode] =
@@ -353,6 +404,7 @@ export function PaymentSettingsSection({
     defaultValues: {
       ...initialFormValues,
       PayMethods: formatJsonForEditor(initialFormValues.PayMethods),
+      ExternalLinks: formatJsonForEditor(initialFormValues.ExternalLinks),
       AmountOptions: formatJsonForEditor(initialFormValues.AmountOptions),
       AmountDiscount: formatJsonForEditor(initialFormValues.AmountDiscount),
       CreemProducts: formatJsonForEditor(initialFormValues.CreemProducts),
@@ -360,6 +412,12 @@ export function PaymentSettingsSection({
   })
 
   const { isSubmitting } = form.formState
+
+  const amountOptionsValue = form.watch('AmountOptions')
+  const bindableAmountOptions = React.useMemo(
+    () => parseAmountOptions(amountOptionsValue),
+    [amountOptionsValue]
+  )
 
   const setPaymentValue = React.useCallback(
     (
@@ -410,6 +468,7 @@ export function PaymentSettingsSection({
     form.reset({
       ...parsedDefaults,
       PayMethods: formatJsonForEditor(parsedDefaults.PayMethods),
+      ExternalLinks: formatJsonForEditor(parsedDefaults.ExternalLinks),
       AmountOptions: formatJsonForEditor(parsedDefaults.AmountOptions),
       AmountDiscount: formatJsonForEditor(parsedDefaults.AmountDiscount),
       CreemProducts: formatJsonForEditor(parsedDefaults.CreemProducts),
@@ -425,6 +484,7 @@ export function PaymentSettingsSection({
       MinTopUp: values.MinTopUp,
       CustomCallbackAddress: removeTrailingSlash(values.CustomCallbackAddress),
       PayMethods: values.PayMethods.trim(),
+      ExternalLinks: values.ExternalLinks.trim(),
       AmountOptions: values.AmountOptions.trim(),
       AmountDiscount: values.AmountDiscount.trim(),
       StripeApiSecret: values.StripeApiSecret.trim(),
@@ -469,6 +529,7 @@ export function PaymentSettingsSection({
         initialRef.current.CustomCallbackAddress
       ),
       PayMethods: initialRef.current.PayMethods.trim(),
+      ExternalLinks: initialRef.current.ExternalLinks.trim(),
       AmountOptions: initialRef.current.AmountOptions.trim(),
       AmountDiscount: initialRef.current.AmountDiscount.trim(),
       StripeApiSecret: initialRef.current.StripeApiSecret.trim(),
@@ -540,6 +601,16 @@ export function PaymentSettingsSection({
       normalizeJsonForComparison(initial.PayMethods)
     ) {
       updates.push({ key: 'PayMethods', value: sanitized.PayMethods })
+    }
+
+    if (
+      normalizeJsonForComparison(sanitized.ExternalLinks) !==
+      normalizeJsonForComparison(initial.ExternalLinks)
+    ) {
+      updates.push({
+        key: 'payment_setting.external_links',
+        value: sanitized.ExternalLinks,
+      })
     }
 
     if (
@@ -1003,6 +1074,67 @@ export function PaymentSettingsSection({
                       <FormDescription>
                         {t(
                           'Configured as PayMethods JSON. The type value decides which payment flow is used: stripe for Stripe, waffo_pancake for Waffo Pancake, and other values are sent to Epay as the type parameter.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='ExternalLinks'
+                  render={({ field }) => (
+                    <FormItem>
+                      <div className='mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
+                        <FormLabel>{t('External links')}</FormLabel>
+                        <Button
+                          type='button'
+                          variant='outline'
+                          size='sm'
+                          onClick={() =>
+                            setExternalLinksVisualMode(!externalLinksVisualMode)
+                          }
+                          className='w-full sm:w-auto'
+                        >
+                          {externalLinksVisualMode ? (
+                            <>
+                              <Code2 className='mr-2 h-3 w-3' />
+                              {t('JSON Editor')}
+                            </>
+                          ) : (
+                            <>
+                              <Eye className='mr-2 h-3 w-3' />
+                              {t('Visual Editor')}
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                      <FormControl>
+                        {externalLinksVisualMode ? (
+                          <ExternalLinksVisualEditor
+                            value={field.value}
+                            onChange={field.onChange}
+                            amountOptions={bindableAmountOptions}
+                          />
+                        ) : (
+                          <JsonCodeEditor
+                            value={field.value}
+                            onChange={field.onChange}
+                            name={field.name}
+                            onBlur={field.onBlur}
+                            textareaRef={field.ref}
+                            placeholder='[{"amount":50,"name":"50 元兑换码","url":"https://shop.example.com/item/50"}]'
+                            heightClassName='h-40 min-h-40 max-h-40'
+                            aria-invalid={Boolean(
+                              form.formState.errors.ExternalLinks
+                            )}
+                          />
+                        )}
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Each link is bound to one top-up amount: pick that amount and the link appears next to the payment methods, opening its URL in a new tab. Amounts with no link keep only the payment methods.'
                         )}
                       </FormDescription>
                       <FormMessage />

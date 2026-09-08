@@ -48,12 +48,24 @@ function path(name: string, suffix = '') {
  * 这类实时事实，而它们正是删除闸门的判据。缓存一份旧清单的后果是运营对着
  * 一个已经没有渠道的绿色徽标做决定。
  */
-export function qyMgListQuery() {
+export function qyMgListQuery(page?: QyMgPageParams) {
   return queryOptions({
-    queryKey: qyKeys.adminModelGroups(),
-    queryFn: () => qyGet<QyMgListResponse>(QY_MG_BASE),
+    queryKey: qyKeys.adminModelGroupList(page?.p, page?.page_size),
+    queryFn: () => qyGet<QyMgListResponse>(QY_MG_BASE, page),
     staleTime: 0,
   })
+}
+
+/**
+ * 翻页参数。省略 = 整张表（**行集合仍是并集**，只是不切页）。
+ *
+ * 行轴的排序与并集都在服务端算：谁切页，谁就必须持有完整的行集合。前端再并一次
+ * options 的键，第 2 页会渲染成「10 行 + 全站其余所有名字」。
+ */
+export type QyMgPageParams = {
+  /** 1 起。 */
+  p: number
+  page_size: number
 }
 
 /**

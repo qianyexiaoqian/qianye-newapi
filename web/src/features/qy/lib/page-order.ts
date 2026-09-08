@@ -127,4 +127,9 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   '/qy/admin/commission-records',
   '/qy/admin/commission-users',
   '/qy/admin/commission',
+  // AI 审核日志(项目方原话:「可以通过审核日志,查看哪个分组哪个模型…内容是什么」)。
+  // 它从 AI 审核配置页底下的一张卡提成独立页 —— 提页就是新页面,因此要有自己的号。
+  // 按维护规则 1 **追加到末尾取空号**:绝不插到 `/qy/admin/violation-ai-review`
+  // 后面,那会让它之后的每一页集体错位,而那些编号已经发出去了。
+  '/qy/admin/violation-ai-logs',
 ]

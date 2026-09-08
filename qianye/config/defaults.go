@@ -127,6 +127,23 @@ func applyDefaults(c *Config) {
 	intDefault(&d.SlowThresholdMs, 200)
 	strDefault(&d.LogLevel, "warn")
 
+	// 台账库共用同一套默认值。补默认是无条件的(dsn 留空时这些值不会被任何
+	// 代码读到),因为反过来会让 /admin/health 上那一段在未启用时显示一排 0,
+	// 而 0 在这几格上恰好都是非法值 —— 看起来像配错了。
+	//
+	// 池子刻意比主库小一档:台账写入全部走异步队列,worker 只有个位数,
+	// 给它一百条连接只会在库侧白占内存。
+	ld := &c.LogDatabase
+	intDefault(&ld.MaxIdleConns, 5)
+	intDefault(&ld.MaxOpenConns, 20)
+	intDefault(&ld.ConnMaxLifetimeSeconds, 600)
+	intDefault(&ld.ConnMaxIdleTimeSeconds, 120)
+	intDefault(&ld.ConnectTimeoutSeconds, 5)
+	intDefault(&ld.ReadTimeoutSeconds, 30)
+	intDefault(&ld.WriteTimeoutSeconds, 30)
+	intDefault(&ld.SlowThresholdMs, 200)
+	strDefault(&ld.LogLevel, "warn")
+
 	r := &c.Runtime
 	intDefault(&r.HotPathTimeoutMs, 200)
 	intDefault(&r.HotAsyncTimeoutMs, 3000)

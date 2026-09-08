@@ -37,10 +37,24 @@ func (Mod) Tables() []any {
 		&AIChannel{},
 		&AISetting{},
 		&AIScope{},
-		&AIReview{},
 		&CyberSetting{},
 	}
 }
+
+// LogTables 把 AI 审核明细声明成台账表(见 module.LogTabler)。
+//
+// 它是全仓唯一一张:行数正比于**被抽中的请求数**(百万级站点开 10% 抽样就是
+// 一天十万行),而且每小时按保留期批量删一遍。配了 log_database.dsn 的部署
+// 会把它建到那个库,没配的照旧跟着上面那张清单进主扩展库 —— 两种部署下
+// 业务代码完全相同,句柄由 db.Log() 给出。
+//
+// 它凭什么能搬:这张表与主库的表**没有任何 JOIN,也不参与任何事务**。
+// rule_id / record_id 只是两个 int64 冗余列,管理端按 id 单独取详情,
+// 从来不 JOIN 回 qy_violation_record —— 加一次 JOIN 就会在配了 log_database 的
+// 部署上直接报错,而在没配的部署上完全正常。qianye/modules_test.go 的
+// TestLogTablesAreNotQueriedThroughTheMainHandle 守的是同一件事的另一半
+// (句柄用错),JOIN 这一半只能靠这条纪律。
+func (Mod) LogTables() []any { return []any{&AIReview{}} }
 
 // InstallHooks 注册补偿回调、注入上游 service 包的两个挂载点,并预热一次规则快照。
 //
@@ -83,6 +97,24 @@ func (Mod) InstallHooks() {
 	// 并按绑定决定跳不跳过某个渠道,回填晚了的话升级后的第一个刷新周期里
 	// 那些存量渠道全都还是"无绑定"。详见 migrateAIChannelKeyEndpoint。
 	runAIChannelKeyEndpointBackfill()
+
+	// 审核日志的出厂档补写。**必须排在下面那次预热之前**:预热会把 log_content
+	// 与 log_content_max_chars 装进快照,补写晚了的话升级后的第一个刷新周期里
+	// 抽中的请求全部不留内容 —— 而那正是这一页新增的全部价值。详见
+	// migrateAIReviewLogDefaults。
+	runAIReviewLogDefaultsMigration()
+
+	// 审核提示词从「全局设置 / 作用域」搬到渠道。**必须排在下面那次预热之前**:
+	// 预热会把渠道的提示词装进快照,搬晚了的话升级后的第一个刷新周期里,每一个
+	// 改过提示词的站点都在用内置默认提示词判定 —— 判定口径整体换一份,而界面上
+	// 一切正常。详见 migrateAIPromptToChannels。
+	runAIPromptToChannelMigration()
+
+	// 「既没选渠道分组、也没指定渠道」的存量作用域巡检。只读、只打日志,排在
+	// 迁移之后。不自动处置:自动停用等于一次升级悄悄关掉一条正在生效的风控,
+	// 自动补一个分组则是替运营决定用户内容发往哪里 —— 与
+	// runUnboundGroupScopeReport 同一条纪律。
+	runUnboundChannelScopeReport()
 
 	// AI 作用域的「指定渠道」从单个 id 搬进渠道清单。**必须排在下面那次预热
 	// 之前**:两列的零值指向相反的行为(空清单 = 在全部启用渠道之间分发),
@@ -209,6 +241,10 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/violation/ai-review/scopes", adminListAIScopes)
 	g.GET("/violation/ai-review/settings", adminGetAISetting)
 	g.GET("/violation/ai-review/logs", adminListAIReviews)
+	// 单条明细,**含送审内容**。刻意是一条独立路由而不是列表上的一个开关参数:
+	// 内容是这一页唯一一段用户原文(已脱敏、已截断),它该有自己的访问点,
+	// 否则"批量拉取用户内容"与"看一条记录"在日志里长得一模一样。
+	g.GET("/violation/ai-review/logs/:id", adminGetAIReview)
 	g.GET("/violation/ai-review/stats", adminAIReviewStats)
 	g.POST("/violation/ai-review/channels", crit, adminCreateAIChannel)
 	g.PUT("/violation/ai-review/channels/:id", crit, adminUpdateAIChannel)
@@ -257,6 +293,10 @@ func (Mod) StartTasks() {
 	// 必须走 lease.Run:common.IsMasterNode 只是个环境变量,多节点都配成 master
 	// 时清理任务会并发删同一批行,补偿任务会重复执行封号。
 	lease.Run("violation.retention_gc", time.Hour, runRetentionGC)
+	// AI 审核明细的清理单独一条租约,不并进上面那条。两条理由:它可能跑在
+	// 另一个库上(台账库),而且一轮要删的行数可能是证据表的几百倍 ——
+	// 合成一个作业时,前半段的批量删会把后半段挤出这一小时的窗口。
+	lease.Run("violation.ai_review_gc", time.Hour, runAIReviewRetentionGC)
 	lease.Run("violation.ban_compensate", 5*time.Minute, runBanCompensate)
 }
 

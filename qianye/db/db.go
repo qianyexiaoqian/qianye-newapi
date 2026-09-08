@@ -50,12 +50,36 @@ var ErrNotReady = errors.New("qianye: 扩展数据库不可用")
 // 启动期连不上视为配置错误,返回 error 让主程序 FatalLog —— DSN 写错就该立刻炸,
 // 而不是带着一个永远不可用的扩展跑起来。运行期断连才走熔断 + fail-open。
 func Init(cfg config.Database) error {
+	gdb, pingMs, err := openDatabase(cfg, "扩展", "[QY-DB] ")
+	if err != nil {
+		return err
+	}
+	lastPingMs.Store(pingMs)
+	lastPingAt.Store(common.GetTimestamp())
+	handle.Store(gdb)
+	healthy.Store(true)
+	failStreak.Store(0)
+	openUntil.Store(0)
+	common.SysLog("qianye: 扩展数据库已连接")
+	return nil
+}
+
+// openDatabase 建连接池并做一次带超时的 Ping,返回句柄与那次 Ping 的毫秒数。
+//
+// 主库与台账库(见 config.Config.LogDatabase)共用它。抽出来不是为了缩短
+// Init:两个库的连接参数、探针注册、超时口径必须逐字相同,而这里每一项都
+// 是"漏掉之后没有任何症状"的那一类 —— 忘了 registerOpProbe 只表现为熔断
+// 在"可达但慢"时打不开,忘了 SetConnMaxLifetime 只表现为几小时后偶发断连。
+//
+// label 只进错误文案与日志(“扩展”/“台账”),prefix 是 GORM 日志的行首标记 ——
+// 两个库的慢查询混在同一个前缀下,排障时分不清是谁慢。
+func openDatabase(cfg config.Database, label, logPrefix string) (*gorm.DB, int64, error) {
 	dsn := normalizeDSN(cfg)
 
 	gcfg := &gorm.Config{
 		PrepareStmt: true,
 		Logger: gormlogger.New(
-			log.New(os.Stdout, "[QY-DB] ", log.LstdFlags),
+			log.New(os.Stdout, logPrefix, log.LstdFlags),
 			gormlogger.Config{
 				SlowThreshold:             time.Duration(cfg.SlowThresholdMs) * time.Millisecond,
 				LogLevel:                  parseLogLevel(cfg.LogLevel),
@@ -70,18 +94,18 @@ func Init(cfg config.Database) error {
 
 	dialector, err := DialectorFor(dsn)
 	if err != nil {
-		return err
+		return nil, 0, err
 	}
 	gdb, err := gorm.Open(dialector, gcfg)
 	if err != nil {
-		return fmt.Errorf("qianye: 连接扩展数据库失败: %w", err)
+		return nil, 0, fmt.Errorf("qianye: 连接%s数据库失败: %w", label, err)
 	}
 	if err := registerOpProbe(gdb); err != nil {
-		return fmt.Errorf("qianye: 注册扩展数据库访问探针失败: %w", err)
+		return nil, 0, fmt.Errorf("qianye: 注册%s数据库访问探针失败: %w", label, err)
 	}
 	sqlDB, err := gdb.DB()
 	if err != nil {
-		return fmt.Errorf("qianye: 获取扩展数据库连接池失败: %w", err)
+		return nil, 0, fmt.Errorf("qianye: 获取%s数据库连接池失败: %w", label, err)
 	}
 	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
 	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
@@ -97,17 +121,9 @@ func Init(cfg config.Database) error {
 	start := time.Now()
 	if err := sqlDB.PingContext(ctx); err != nil {
 		_ = sqlDB.Close()
-		return fmt.Errorf("qianye: 扩展数据库 Ping 失败(请检查 database.dsn 与网络): %w", err)
+		return nil, 0, fmt.Errorf("qianye: %s数据库 Ping 失败(请检查 dsn 与网络): %w", label, err)
 	}
-	lastPingMs.Store(time.Since(start).Milliseconds())
-	lastPingAt.Store(common.GetTimestamp())
-
-	handle.Store(gdb)
-	healthy.Store(true)
-	failStreak.Store(0)
-	openUntil.Store(0)
-	common.SysLog("qianye: 扩展数据库已连接")
-	return nil
+	return gdb, time.Since(start).Milliseconds(), nil
 }
 
 // Get 返回 GORM 句柄。未初始化时返回 nil,调用方应先用 Available() 判断。

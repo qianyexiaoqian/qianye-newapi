@@ -49,6 +49,14 @@ import { qyLotArtName } from '../lib/cover-art'
  * 空白块与"图还在加载"长得一模一样，用户会一直等。所以兜底画的是**这场活动
  * 的玩法图标 + 一层与主题一致的渐变** —— 它是一个明确的终态，而且顺带把
  * "这是抽奖还是竞猜还是双色球"再说一遍。
+ *
+ * ## 图上那个 `.qy-fx-zoom`
+ *
+ * 悬停时把图推近 5%（外层的 `overflow-hidden` 把溢出裁掉），与卡片整体抬起
+ * 是同一个动作的两半 —— 触发器是**卡片**上的 `.qy-fx-lift`，所以这个类挂在
+ * 图上是无害的：详情页的头图不在任何 `.qy-fx-lift` 里面，那里它一辈子不动。
+ * 放大必须落在 `<img>` 而不是外框上：外框自己带着 `overflow-hidden`，放大它
+ * 会把整块图连框一起顶出卡片的圆角。
  */
 export function QyLotCover(props: {
   activity: QyLotCoverSource & { kind?: string; draw_mode?: string }
@@ -98,7 +106,7 @@ export function QyLotCover(props: {
             src={`/qy/art/${qyLotArtName(activity)}.jpg`}
             alt=''
             loading='lazy'
-            className='size-full object-cover'
+            className='qy-fx-zoom size-full object-cover'
             onError={() => setArtFailed(true)}
           />
         )}
@@ -115,7 +123,7 @@ export function QyLotCover(props: {
         // 外链指向管理员随手填的第三方主机。不加这一条的话，每一位打开大厅的
         // 访客都会把本站地址(含路径)送给那台机器 —— 一个纯粹白送的信息泄漏。
         referrerPolicy={isLink ? 'no-referrer' : undefined}
-        className='size-full object-cover'
+        className='qy-fx-zoom size-full object-cover'
         onError={() => setFailedSrc(src)}
       />
     </div>

@@ -154,10 +154,14 @@ func handleInviteSummary(c *gin.Context) {
 		}
 	}
 
-	pendingBase, err := pendingTodayBaseQuota(ctx, me, now)
+	pendingRows, _, err := pendingTodayInviteeConsume(ctx, me, now)
 	if err != nil {
 		respondErr(c, wrapInternal("汇总下线今日消费", err))
 		return
+	}
+	var pendingBase int64
+	for _, r := range pendingRows {
+		pendingBase += r.BaseQuota
 	}
 
 	group := inviterGroupOf(ctx, me)
@@ -196,32 +200,33 @@ func handleInviteSummary(c *gin.Context) {
 // firstOf 只取 inviteRateFor 的比例那一半,分组名在 rate.group 里已经给过了。
 func firstOf(bps int, _ string) int { return bps }
 
-// pendingTodayBaseQuota 是"我的下线今天到现在花了多少"——明天日结的基数。
+// pendingTodayInviteeConsume 是"我的下线今天到现在各花了多少"——明天日结的基数,
+// 按下线一行。第二个返回值为假表示下线太多、这一次没扫。
 //
 // 口径与日结逐字相同(aggregateDayConsume 的排除项),只是限定在我名下绑定中、
-// 没被拉黑的下线;下线太多时直接给 0,不扫。
-func pendingTodayBaseQuota(ctx context.Context, me int, now int64) (int64, error) {
+// 没被拉黑的下线。"没扫"与"扫了、都是 0"必须由调用方分得开:推广页把两者
+// 一起显示成 0,而「明日预计到账」要把前者说成"下线过多,未统计"。
+func pendingTodayInviteeConsume(ctx context.Context, me int, now int64) ([]consumeAgg, bool, error) {
 	gdb := db.Get()
 	ids := make([]int, 0, 64)
 	if err := gdb.WithContext(ctx).Model(&invite.InviteRelation{}).
 		Where("inviter_id = ? AND unbound_at = ? AND blocked = ?", me, 0, false).
 		Limit(maxPendingInvitees+1).Pluck("invitee_id", &ids).Error; err != nil {
 		db.MarkFailure(err)
-		return 0, err
+		return nil, false, err
 	}
-	if len(ids) == 0 || len(ids) > maxPendingInvitees {
-		return 0, nil
+	if len(ids) > maxPendingInvitees {
+		return nil, false, nil
+	}
+	if len(ids) == 0 {
+		return nil, true, nil
 	}
 	start := invite.DayStart(now)
 	rows, err := aggregateDayConsume(ctx, start, start+secondsPerDay, ids)
 	if err != nil {
-		return 0, err
+		return nil, true, err
 	}
-	var sum int64
-	for _, r := range rows {
-		sum += r.BaseQuota
-	}
-	return sum, nil
+	return rows, true, nil
 }
 
 // handleInviteInvitees 分页列出我的下线(绑定中的),带累计基数与累计星屑。

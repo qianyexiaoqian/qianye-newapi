@@ -3,6 +3,8 @@ package qianye
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,8 @@ import (
 	"gorm.io/gorm"
 	glogger "gorm.io/gorm/logger"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/config"
 	qydb "github.com/QuantumNous/new-api/qianye/db"
 
 	"github.com/stretchr/testify/assert"
@@ -64,8 +68,13 @@ func TestExtensionAutoMigrateIsIdempotent(t *testing.T) {
 			gdb, err := gorm.Open(dialector, &gorm.Config{Logger: migrateSQLRecorder{&stmts}})
 			require.NoError(t, err)
 
-			tables := allTables()
+			// 台账表必须一起数进来。它们从 allTables() 搬进 allLogTables() 之后,
+			// 只跑前者就等于让 qy_violation_ai_review 悄悄掉出这条防线 ——
+			// 而它恰恰是最新、字段最多、最可能带一条空转 DDL 的那张表。
+			// 合成一份跑正好也是**没配 log_database 的部署**的真实形态。
+			tables := append(allTables(), allLogTables()...)
 			require.NotEmpty(t, tables)
+			require.NotEmpty(t, allLogTables(), "台账表清单不该是空的")
 			require.NoError(t, gdb.AutoMigrate(tables...), "首次迁移必须成功")
 
 			stmts = stmts[:0]
@@ -113,4 +122,109 @@ func (migrateSQLRecorder) Error(context.Context, string, ...interface{}) {}
 func (r migrateSQLRecorder) Trace(_ context.Context, _ time.Time, fc func() (string, int64), _ error) {
 	sql, _ := fc()
 	*r.stmts = append(*r.stmts, sql)
+}
+
+// TestLogDatabaseMigratesOnItsOwnHandle 是台账库分家之后**唯一**能证明它真的
+// 分开了的测试,只能在真库上跑。
+//
+// 它守的三条,每一条坏了都不会有任何报错:
+//
+//	台账表建在台账库里    句柄接错的话它们会建回主库,而管理端从台账库读 → 永远空表
+//	主库表不会跑到台账库  两份清单串了会让资金表在台账库里也建一份,写入落哪边看运气
+//	第二次迁移零 DDL      两个库各有一把迁移锁,锁名撞了会让其中一个每次启动都退化
+//	                     成"另一节点正在迁移"的降级态,而降级态下它一张表都建不出来
+//
+// 需要两个**一次性**库的 DSN:
+//
+//	QY_TEST_MYSQL_MIGRATE_DSN + QY_TEST_MYSQL_LOG_MIGRATE_DSN
+//	QY_TEST_PG_MIGRATE_DSN    + QY_TEST_PG_LOG_MIGRATE_DSN
+//
+// 缺任何一个就干净 SKIP —— sqlite 上验证不了这件事(扩展库压根不支持它)。
+func TestLogDatabaseMigratesOnItsOwnHandle(t *testing.T) {
+	cases := []struct{ name, mainEnv, logEnv string }{
+		{"mysql", "QY_TEST_MYSQL_MIGRATE_DSN", "QY_TEST_MYSQL_LOG_MIGRATE_DSN"},
+		{"postgres", "QY_TEST_PG_MIGRATE_DSN", "QY_TEST_PG_LOG_MIGRATE_DSN"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mainDSN, logDSN := os.Getenv(tc.mainEnv), os.Getenv(tc.logEnv)
+			if mainDSN == "" || logDSN == "" {
+				t.Skipf("未同时设置 %s 与 %s,跳过", tc.mainEnv, tc.logEnv)
+			}
+
+			// 走真实的配置加载路径,不是手搓一个 Config:validateLogDatabase
+			// (两个 dsn 不能相同、方言必须受支持)也是这条接线的一部分,
+			// 绕过它就等于测了一条生产里不存在的路径。
+			useTwoDatabaseConfig(t, mainDSN, logDSN)
+
+			prevMaster := common.IsMasterNode
+			common.IsMasterNode = true
+			t.Cleanup(func() { common.IsMasterNode = prevMaster })
+
+			require.NoError(t, qydb.Init(config.Get().Database))
+			require.NoError(t, qydb.InitLog(config.Get().LogDatabase))
+			t.Cleanup(func() { _ = qydb.Close() })
+			require.True(t, qydb.LogSeparate(), "配了 dsn 就必须分家")
+
+			mainTables, logTables := allTables(), allLogTables()
+			require.NotEmpty(t, logTables)
+
+			// 先把台账表从主库里删干净。
+			//
+			// 不是洁癖:同一个一次性库很可能刚被 TestExtensionAutoMigrateIsIdempotent
+			// 用过,而那条测试**故意**把两份清单合起来迁(它验的是"没配
+			// log_database 的部署"),于是主库里已经有一张 qy_violation_ai_review。
+			// 不删的话下面那条"不该出现在主库里"的断言测的是历史残留,
+			// 而不是这一轮 Migrate 的行为 —— 它会红,而根因与被测代码无关。
+			for _, model := range logTables {
+				require.NoError(t, qydb.Get().Migrator().DropTable(model))
+			}
+
+			require.NoError(t, qydb.Migrate(mainTables...))
+			require.NoError(t, qydb.MigrateLog(logTables...))
+
+			// ① 台账表在台账库里,不在主库里。
+			for _, model := range logTables {
+				name := tableNameFor(t, qydb.LogHandle(), model)
+				assert.Truef(t, qydb.LogHandle().Migrator().HasTable(name),
+					"%s 必须建在台账库里", name)
+				assert.Falsef(t, qydb.Get().Migrator().HasTable(name),
+					"%s 不该出现在主库里 —— 出现了就说明两份清单串了,"+
+						"写入与读取会落到不同的库上", name)
+			}
+
+			// ② 主库表不会跑到台账库。抽一张就够:串清单是整体行为,不会只串一张。
+			mainName := tableNameFor(t, qydb.Get(), mainTables[0])
+			assert.True(t, qydb.Get().Migrator().HasTable(mainName))
+			assert.Falsef(t, qydb.LogHandle().Migrator().HasTable(mainName),
+				"%s 不该出现在台账库里", mainName)
+
+			// ③ 第二次迁移零 DDL。锁名撞了的话这一步会静默退化成降级分支,
+			//    表面上也"没有 DDL" —— 所以上面 ① 的建表断言必须排在它前面。
+			require.NoError(t, qydb.MigrateLog(logTables...), "第二次台账库迁移必须成功")
+			assert.False(t, qydb.SchemaIncomplete(),
+				"迁移跑完还处于缺表降级态,说明台账库这一轮根本没建成表:%v",
+				qydb.MissingTables())
+		})
+	}
+}
+
+// useTwoDatabaseConfig 写一份带 log_database 段的临时配置并加载它。
+func useTwoDatabaseConfig(t *testing.T, mainDSN, logDSN string) {
+	t.Helper()
+	yaml := "enabled: true\n" +
+		"database:\n  dsn: " + strconv.Quote(mainDSN) + "\n" +
+		"log_database:\n  dsn: " + strconv.Quote(logDSN) + "\n"
+	path := filepath.Join(t.TempDir(), "qianye.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(yaml), 0o600))
+	t.Setenv(config.EnvConfigPath, path)
+	require.NoError(t, config.Load())
+	require.True(t, config.Get().LogDatabaseSeparate())
+}
+
+func tableNameFor(t *testing.T, gdb *gorm.DB, model any) string {
+	t.Helper()
+	stmt := &gorm.Statement{DB: gdb}
+	require.NoError(t, stmt.Parse(model))
+	return stmt.Table
 }

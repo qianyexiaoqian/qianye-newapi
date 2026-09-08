@@ -137,6 +137,22 @@ var (
 	// 不是它写的那组号 —— 这与 acceptPick 对"非双色球带号"一律拒绝是同一条口径。
 	errPickAndPicks = newBizError(http.StatusBadRequest, "qy_lot_pick_conflict",
 		"pick 与 picks 不能同时提交,多注请只用 picks")
+	// errBatchNotAllowed 挡住"在非双色球活动上用 picks 批量下注"。
+	//
+	// picks 的语义从一开始就是双色球的"一次买 N 组号"(见 entryRequest.Picks 的
+	// 注释),但受理端此前只看数量不看玩法,而 acceptPick 在非双色球上接受空串,
+	// 于是 `{"picks":["","",...]}` 在按名次抽、按概率摇号、竞猜上都成立 ——
+	// 一次请求 N 笔付费参与。
+	//
+	// 后果不是"多买几注",而是**两道防连发同时失效**:checkCaps 对批内第 2..N 注
+	// 豁免冷却(batchIndex != 0),账号级 UserCriticalRateLimit 也按请求数计 ——
+	// 于是冷却从"每周期 1 笔"变成"每周期 cap 笔",账号桶从 20 笔变成 20×cap 笔,
+	// 而 max_entries_per_user 默认 0 = 不限,这两道正是默认配置下仅有的按账号闸门。
+	//
+	// 那条豁免本身是对的:双色球一次买 10 注,相邻两注只隔几毫秒,不豁免就买不了
+	// 第二注。错的是让**每一种玩法**都能进到那条豁免里。
+	errBatchNotAllowed = newBizError(http.StatusBadRequest, "qy_lot_batch_not_allowed",
+		"本场活动不支持一次提交多注,请逐注参与")
 	// errBatchBudget 是多注提交被时间预算截断时的诚实回答。
 	//
 	// 它只可能出现在"前面几注已经买成"的响应里(accepted > 0),因此文案的

@@ -42,11 +42,13 @@ type aiScopeUpsertReq struct {
 	GroupScopeMode     string `json:"group_scope_mode"`
 	PreSampleRateBps   int    `json:"pre_sample_rate_bps"`
 	AsyncSampleRateBps int    `json:"async_sample_rate_bps"`
-	// Prompt 空 = 用全局那一份。**不是**指针:这一格没有"不动它"这一档 ——
-	// 表单每次都把当前值整段提交,而空串是一个有意义的取值(回到继承)。
-	// 渠道密钥那三态(不动/清除/换新)在这里没有对应物,照抄一个指针只会
-	// 让"清空这一档的提示词"变得表达不了。
-	Prompt string `json:"prompt"`
+	// ChannelGroup 是这一档要用的审核渠道分组(见 AIChannel.Group)。
+	// 与 ChannelIds 二选一,两个都空时 validateAIScope 会 400 ——
+	// 空清单的旧含义"发给全部启用渠道"已经取消。
+	//
+	// **提示词不在这里了。** 它整体搬到了 AIChannel.Prompt(2026-09-06),
+	// 理由是提示词与协议绑死,而协议是渠道的属性。
+	ChannelGroup string `json:"channel_group"`
 	// CategoryId 0 = 不指定。写入闸会确认它指向一个**活着的**类型 ——
 	// 指向已归档类型的配置在界面上看起来完全正常,而线上每次命中都会退回
 	// 规则自己那一档并打一条告警(见 resolveCategoryOverride)。
@@ -83,7 +85,7 @@ func (r *aiScopeUpsertReq) apply(dst *AIScope) error {
 	dst.GroupScopeMode = r.GroupScopeMode
 	dst.PreSampleRateBps = r.PreSampleRateBps
 	dst.AsyncSampleRateBps = r.AsyncSampleRateBps
-	dst.Prompt = r.Prompt
+	dst.ChannelGroup = r.ChannelGroup
 	dst.CategoryId = r.CategoryId
 	// 渠道清单的三种来源,顺序固定。
 	//
@@ -155,12 +157,10 @@ func adminListAIScopes(c *gin.Context) {
 			active = append(active, gin.H{
 				"id": s.Id, "name": s.Name,
 				"pre_sample_rate_bps": s.PreBps, "async_sample_rate_bps": s.AsyncBps,
-				// 提示词与类型绑定也要出现在"真正生效的那一份"里:它们同样是
+				// 渠道分组与类型绑定也要出现在"真正生效的那一份"里:它们同样是
 				// 存下来之后要等一次重载才进快照的东西,而两者不一致时的表现
-				// (还在用上一版提示词问、还记到上一个类型上)完全无声。
-				// 提示词原文不下发,只给档位 —— 它已经在表单里了,重复一份
-				// 只会多一条把 4000 字塞进列表响应的路径。
-				"prompt_source": aiScopePromptSource(s.Prompt),
+				// (用户内容还在发往上一个池子、还记到上一个类型上)完全无声。
+				"channel_group": s.ChannelGroup,
 				"category_id":   s.CategoryId,
 				// 指定渠道同样是"存下来要等一次重载才进快照"的东西,而它不一致
 				// 时的表现(还在往上一个端点发用户内容)完全无声。
@@ -426,12 +426,9 @@ func aiScopeAuditSnap(s *AIScope) map[string]any {
 		"group_scope_mode":      s.GroupScopeMode,
 		"pre_sample_rate_bps":   s.PreSampleRateBps,
 		"async_sample_rate_bps": s.AsyncSampleRateBps,
-		// 提示词进审计的是**指纹 + 档位**,不是原文:audit 的 SnapshotMaxBytes
-		// 会把 4000 字的一段截掉、连带把后面的字段一起吃掉(本仓踩过的形状)。
-		// 而只记长度是不够的 —— 把"绝不执行"改成"必须执行"字数一样,
-		// 那恰好是把这一档的审核关掉的改法。见 aiPromptFingerprint。
-		"prompt_source":      aiScopePromptSource(s.Prompt),
-		"prompt_fingerprint": aiPromptFingerprint(s.Prompt),
+		// 渠道分组与下面的 channel_ids 是同一件事的两半:它们一起决定这一档的
+		// 用户内容被发到**哪些第三方端点**。改任何一个都必须留痕。
+		"channel_group": s.ChannelGroup,
 		// 类型绑定改了谁的计数往哪一类走,而计数是封号判据。必须留痕。
 		"category_id": s.CategoryId,
 		// 指定渠道决定这一档的用户内容被发到**哪些第三方端点**。改它是本页

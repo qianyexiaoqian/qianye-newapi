@@ -58,6 +58,7 @@ import {
   qyUgrMigrateEntry,
 } from '@/features/qy/pages/admin-user-groups/roster/lib/gates'
 import type { QyUgrCreateRequest } from '@/features/qy/pages/admin-user-groups/roster/types'
+import { QyPager } from '@/features/qy/pages/components/qy-pager'
 import { qyOpsErrorMessage } from '@/features/qy/pages/ops/errors'
 
 import { SettingsSwitchField } from '../components/settings-form-layout'
@@ -73,6 +74,13 @@ const QY_UG_NO_ROWS: readonly QyGmUserGroup[] = []
 
 /** 单元格里直接列出几个名字，超出的折进 `+N`。理由见 `usable` 那一列。 */
 const QY_UG_USABLE_INLINE_LIMIT = 3
+
+/**
+ * 每页行数。与「令牌默认分组」「模型分组」两张表同一个数（服务端那一侧是
+ * `httpq.GroupTablePageSize`）—— 三张表在同一个菜单组里，页长不一致会让人
+ * 以为其中一张漏了几行。
+ */
+const QY_UG_PAGE_SIZE = 10
 
 const QY_UGR_EMPTY_DRAFT: QyUgrCreateRequest = {
   display_name: '',
@@ -134,8 +142,30 @@ export function UserGroupsSection(props: {
    * 让「加载中」赖着不走。拉不到时整张表是空的，并在顶部说明这一点 ——
    * 编空一张表比按半份数据画一张看起来正常的表安全。
    */
-  const matrixQuery = useQuery({ ...qyGmMatrixQuery(), retry: false })
+  /*
+    ── 服务端翻页 ────────────────────────────────────────────────────────
+
+    项目方原话：「若分组过多加载会出现卡顿不易编辑」。卡在两处，两处都在服务端：
+    响应体里的 `cells` 是 行 × 列 的乘积（唯一按分组数平方增长的一段），而每一档
+    未设范围的行还要单独解析一次上游可选集合。分页把这两段都收窄到本页。
+
+    `page` 不进 URL：这一段是设置页里的一张表，不是一条可以分享的路由，而
+    system-settings 的路由 search schema 是整组共用的 —— 为一张表往那份 schema
+    里加一个键，会让另外七个 section 也带上一个与它们无关的参数。
+  */
+  const [page, setPage] = useState(1)
+  const pageParams = useMemo(
+    () => ({ p: page, page_size: QY_UG_PAGE_SIZE }),
+    [page]
+  )
+  const matrixQuery = useQuery({ ...qyGmMatrixQuery(pageParams), retry: false })
   const rows = matrixQuery.data?.user_groups ?? QY_UG_NO_ROWS
+  /*
+    总条数拿不到时回落成**本页行数**而不是 0：0 会让翻页条整条隐藏（见 QyPager），
+    于是老后端（不认翻页参数、原样回整表）上这一页会一次性画出全部行且没有任何
+    翻页控件 —— 那与"翻页功能没做"长得一模一样，而真实原因是后端没升级。
+  */
+  const total = matrixQuery.data?.pagination?.total ?? rows.length
 
   const [defaultUseAutoGroup, setDefaultUseAutoGroup] = useState(
     defaultValues.DefaultUseAutoGroup
@@ -356,6 +386,20 @@ export function UserGroupsSection(props: {
   }, [])
 
   const editingRow = editing == null ? null : rowsByName.get(editing)
+
+  /*
+    删掉最后一页上最后一档人之后，页码会停在一个已经不存在的页上 —— 表格空、
+    翻页条写着「第 4 页 / 共 3 页」，而运营刚刚做的是一次成功的删除。回落到
+    最后一页而不是第 1 页：他正在处理的是列表尾部那几档。
+
+    判据用 `total`（服务端全量计数）而不是 `rows.length`：后者在取数途中恒为空，
+    按它回落会在每一次翻页的加载帧里把页码弹回第 1 页。
+  */
+  useEffect(() => {
+    if (matrixQuery.data == null) return
+    const lastPage = Math.max(1, Math.ceil(total / QY_UG_PAGE_SIZE))
+    if (page > lastPage) setPage(lastPage)
+  }, [matrixQuery.data, total, page])
 
   return (
     <SettingsSection title={t('qy_gs_user_groups_title')}>
@@ -686,6 +730,14 @@ export function UserGroupsSection(props: {
         ]}
       />
 
+      <QyPager
+        page={page}
+        pageSize={QY_UG_PAGE_SIZE}
+        total={total}
+        onPageChange={setPage}
+        disabled={matrixQuery.isFetching}
+      />
+
       <div className='text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-5'>
         <span className='min-w-0'>{t('qy_gs_topup_hint')}</span>
         {/*
@@ -712,6 +764,9 @@ export function UserGroupsSection(props: {
         }}
         userGroup={editing}
         row={editingRow ?? null}
+        // 弹窗内部走同一份状态机、同一个 query key。不把这一页传进去，
+        // 每次点「编辑」都会另外拉一次全量矩阵 —— 正好抵消掉翻页要省的那一份。
+        page={pageParams}
         onSaved={refreshRoster}
       />
 

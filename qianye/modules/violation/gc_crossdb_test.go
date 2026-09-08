@@ -102,3 +102,92 @@ func TestRetentionGCIsIdenticalAcrossDialects(t *testing.T) {
 		})
 	}
 }
+
+// TestAIReviewRetentionGCIsIdenticalAcrossDialects 是上一条测试的同形防线,
+// 换成了审核明细那张表。
+//
+// 为什么值得单独跑一遍而不是相信 sqlite 上的那条:上一条测试顶上列的两处
+// MySQL 专有写法,是**先在 sqlite 上全绿、再在 PostgreSQL 上静默失效**的。
+// 审核明细的清理是新写的同一类代码(先取主键、再按主键批量删),而它的失败
+// 方向一模一样 —— 错误只进日志,表现是"清理一直在跑、表一直在涨"。
+// 这张表还是全模块最大的一张,静默不清理的代价也最大。
+func TestAIReviewRetentionGCIsIdenticalAcrossDialects(t *testing.T) {
+	useTestConfig(t, "  enabled: true\n")
+
+	type fixture struct {
+		name string
+		open func(*testing.T) *gorm.DB
+	}
+	fixtures := []fixture{{
+		name: "sqlite",
+		open: func(t *testing.T) *gorm.DB {
+			g, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: gormlogger.Discard})
+			require.NoError(t, err)
+			sqlDB, err := g.DB()
+			require.NoError(t, err)
+			sqlDB.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = sqlDB.Close() })
+			return g
+		},
+	}}
+	for _, env := range []struct{ name, key string }{
+		{"mysql", "QY_TEST_MYSQL_DSN"}, {"postgres", "QY_TEST_PG_DSN"},
+	} {
+		dsn := os.Getenv(env.key)
+		if dsn == "" {
+			continue
+		}
+		fixtures = append(fixtures, fixture{name: env.name, open: func(t *testing.T) *gorm.DB {
+			d, err := qydb.DialectorFor(dsn)
+			require.NoError(t, err)
+			g, err := gorm.Open(d, &gorm.Config{Logger: gormlogger.Discard})
+			require.NoError(t, err)
+			require.NoError(t, g.Migrator().DropTable(&AIReview{}, &AISetting{}))
+			t.Cleanup(func() { _ = g.Migrator().DropTable(&AIReview{}, &AISetting{}) })
+			return g
+		}})
+	}
+
+	for _, fx := range fixtures {
+		t.Run(fx.name, func(t *testing.T) {
+			gdb := fx.open(t)
+			require.NoError(t, gdb.AutoMigrate(&AIReview{}, &AISetting{}))
+
+			// 台账库没分家时 db.Log() 回落到主句柄,所以接一个就够 ——
+			// 这也正是绝大多数部署的形态。
+			prev := qyDBHandleForCtxTest.Swap(gdb)
+			t.Cleanup(func() { qyDBHandleForCtxTest.Store(prev) })
+
+			now := common.GetTimestamp()
+			require.NoError(t, gdb.Create(&AISetting{
+				Id: 1, LogRetentionDays: 1,
+				PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
+				MaxInputChars: defaultAIMaxInputChars,
+				CreatedAt:     now, UpdatedAt: now,
+			}).Error)
+
+			// 内容列一起塞进去:它是 text,而"批量删一张带 text 列的表"正是
+			// 这条清理在生产里要做的事。空内容的行删起来与真实情形不同。
+			for i, ts := range []int64{now - 3*86400, now} {
+				require.NoError(t, gdb.Create(&AIReview{
+					ReviewNo:     "ai-gc-" + string(rune('a'+i)),
+					UserId:       800 + i,
+					Phase:        PhasePrompt,
+					Outcome:      OutcomeClean,
+					ModelName:    "gpt-5",
+					UsingGroup:   "default",
+					Content:      "一段送审内容,足够长到落在 text 列上",
+					ContentChars: 20,
+					CreatedAt:    ts,
+				}).Error)
+			}
+
+			runAIReviewRetentionGC(context.Background())
+
+			var left []string
+			require.NoError(t, gdb.Model(&AIReview{}).Pluck("review_no", &left).Error)
+			assert.Equal(t, []string{"ai-gc-b"}, left,
+				"%s:保留期 1 天,3 天前那条必须删掉、今天那条必须留下", fx.name)
+		})
+	}
+}

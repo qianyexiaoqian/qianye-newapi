@@ -391,6 +391,23 @@ export type QyGmMatrixResponse = {
    * 后端未下发时为 `undefined`，此时界面退化成只描述可见状态、不解释口径。
    */
   scope_policy?: QyGmScopePolicy
+  /**
+   * 行轴翻页游标。**只在请求带了翻页参数时出现**，不带就是整张表。
+   *
+   * ⚠ 翻的只有 `user_groups` 与 `cells`。`model_groups`（列轴）、`warnings`、
+   * `scope_policy` 的四个计数恒为全量口径 —— 一个随翻页跳变的
+   * 「还有 N 档没设范围」比没有这个数字更糟：运营会照着第 2 页那个数去汇报。
+   */
+  pagination?: QyGmPagination
+}
+
+/** 服务端翻页游标。见 {@link QyGmMatrixResponse.pagination}。 */
+export type QyGmPagination = {
+  /** 当前页，1 起。 */
+  p: number
+  page_size: number
+  /** 全量行数（不是本页行数）。 */
+  total: number
 }
 
 /** 口径与三态计数。见 {@link QyGmMatrixResponse.scope_policy}。 */

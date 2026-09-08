@@ -141,6 +141,9 @@ func (e *creditEnv) accrueDaysAndSettle(t *testing.T, days int, quota int64) {
 }
 
 func TestAutoCredit_EndToEndSplitsByMaxPerOrderAndLandsInStardust(t *testing.T) {
+	// 合规门在 writeAccrual 上:没确认时一条计佣行都不落,
+	// 本用例断言的是封顶拆分与入账,不是那道门。
+	withCompliance(t, true)
 	env := newCreditEnv(t, nil)
 	// 两天各 10,000,000 额度 × 5% / 10,000 = 50 星屑,共 100;max_per_order 70 ⇒ 70 + 30。
 	env.accrueAndSettle(t, 10_000_000)

@@ -256,7 +256,7 @@ func TestMigrateAIScopeChannelIdsMovesTheConstraint(t *testing.T) {
 // 抽样率的保存里悄悄变宽。真想清空的新页面发的是空数组,与缺席分得开。
 func TestUpsertAIScopeRejectsMissingChannelList(t *testing.T) {
 	base := `{"id":5,"name":"内部对接","enabled":true,"priority":100,` +
-		`"group_scope":"internal","group_scope_mode":"include",` +
+		`"group_scope":"internal","group_scope_mode":"include","channel_group":"自建护栏",` +
 		`"pre_sample_rate_bps":0,"async_sample_rate_bps":1000`
 
 	tests := []struct {

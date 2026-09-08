@@ -88,6 +88,43 @@ const (
 	// maxAIPromptRunes 是审核提示词的长度上限(Prompt 是 text 列,这里挡的是
 	// "把一整本手册当提示词",它每次调用都要作为 token 付一遍钱)。
 	maxAIPromptRunes = 4000
+
+	// maxBlockMessageRunes 是渠道拦截文案的长度上限。
+	//
+	// 它是**直接显示给终端用户**的一句话,不是日志 —— 200 字已经足够说清
+	// "为什么被拦、能怎么办",再长的一段只会被客户端截断或糊成一坨。
+	// 列宽是 varchar(512) 字节,200 个汉字(UTF-8 最多 600 字节)会溢出,
+	// 所以这道闸不能省:溢出的表现是插入报错、整次保存失败,而运营看到的
+	// 是一句与长度无关的数据库错误。
+	maxBlockMessageRunes = 160
+
+	// ─────────────────── 审核日志的两个体积乘数 ───────────────────
+	//
+	// 这张表的字节数 ≈ 抽中请求数/天 × 保留天数 × (元数据 ~400B + 留存内容)。
+	// 下面两个默认值把一个"百万请求/天、10% 抽样"的站点钉在 10 万行/天、
+	// 3 天、每行约 1.4 KB —— 合计几百 MB,一个不需要额外规划的量级。
+	// 再往上就该配 log_database 分家(见 qianye/db/logdb.go)。
+
+	// defaultAIReviewContentChars 是留存送审内容的默认字符上限。
+	//
+	// 1000 字刻意远小于 defaultAIMaxInputChars(4000):送审要完整才判得准,
+	// 留存只需要够回答"这是什么内容、大概在说什么"。差额由 ContentChars 那一列
+	// 标出来,界面显示"已截断",不假装完整。
+	defaultAIReviewContentChars = 1000
+	// minAIReviewContentChars / maxAIReviewContentChars 是那一格的可填范围。
+	// 下界 100 挡的是"填 5 等于开着却什么都看不出来";上界与送审上限对齐,
+	// 因为超过送审上限的部分**根本不存在**,填进去只会让人以为留得更全。
+	minAIReviewContentChars = 100
+	maxAIReviewContentChars = maxAIMaxInputChars
+
+	// defaultAIReviewRetentionDays 是审核明细的默认保留天数。
+	//
+	// 3 天是"排障够用的最短窗口":误判申诉、抽样率调整、渠道故障复盘都发生在
+	// 出事后的一两天内。更长的窗口没有换来更多决策,只换来线性增长的磁盘。
+	defaultAIReviewRetentionDays = 3
+	// maxAIReviewRetentionDays 是可填上界。365 已经远超这张表的用途,
+	// 设它只是不让人填出一个"看起来是天数、其实是毫秒"的数字。
+	maxAIReviewRetentionDays = 365
 )
 
 // defaultAIPrompt 是开箱可用的审核提示词。
@@ -167,6 +204,20 @@ var aiHTTPClient = &http.Client{
 		MaxIdleConnsPerHost: 8,
 		IdleConnTimeout:     90 * time.Second,
 	},
+	// 一步都不跟重定向。
+	//
+	// Go 默认跟最多 10 跳,而 rejectCloudMetadataHost 只看得见管理员填进库的那个
+	// 地址 —— 一个 302 就能把已经过闸的地址换成 169.254.169.254,再由连通性试跑
+	// 把响应体原样回显 2000 码点。那正是那道闸自称"零合法用途、拦它没有代价"的
+	// 那一格,却从旁边绕了过去。
+	//
+	// 直接拒而不是逐跳复验:一个 OpenAI 兼容的 /chat/completions 不会用 302 应答
+	// (Go 还会把 302 之后的 POST 降级成 GET,那个请求本来也没有意义),
+	// 所以这里没有需要保留的合法用法,复验只会多一份要跟着 rejectCloudMetadataHost
+	// 一起维护的判据。
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return fmt.Errorf("审核渠道地址不允许重定向(上游要求跳转到 %s)", req.URL.Host)
+	},
 }
 
 // aiChannelRT 是渠道的运行期形态:密钥已解密,只活在进程内存的快照里。
@@ -185,7 +236,25 @@ type aiChannelRT struct {
 	Protocol string
 	// Guard 是护栏协议下的判定策略(Controversial 档 + 启用类别 + 升级类别),
 	// 已经过归一。json_prompt 渠道上它是零值且从不被读。见 guardPolicy。
-	Guard        guardPolicy
+	Guard guardPolicy
+	// RiskName 是 Granite 这一次要审的风险,已经过归一(恒是 graniteRisks
+	// 的键之一)。其他协议上它恒是 harm 且从不被读。见 AIChannel.RiskName。
+	RiskName string
+	// Group 是审核渠道分组。作用域按它选池子,故障转移也只在池子内补位
+	// (见 pickAIChannels)—— 空串是"未分组"这一档,不是"属于所有分组"。
+	Group string
+	// Prompt 是这个渠道的审核提示词基底(空 = 内置默认)。发出去的那一份
+	// 由 renderAIPrompt 拼上类型清单,见 runAIReview 里逐渠道渲染那一段。
+	Prompt string
+	// BlockMessage 是这个渠道判出违规、规则又要拦截时返回给用户的那句话。
+	// 空 = 不覆盖,沿用规则自己的那一份。见 AIChannel.BlockMessage。
+	BlockMessage string
+	// NotifyEmail / EmailSubject / EmailBody 是这个渠道的"判违规就给用户发邮件"
+	// 那一组配置,装配期原样抄下来。理由与 BlockMessage 那一行相同:异步落库的
+	// worker 在几百毫秒之后才用得上它们,那时手上只有快照。见 AIChannel.NotifyEmail。
+	NotifyEmail  bool
+	EmailSubject string
+	EmailBody    string
 	TimeoutMs    int
 	Weight       int
 	PriceInPerM  decimal.Decimal
@@ -203,13 +272,20 @@ func (ch *aiChannelRT) priced() bool {
 type aiRuntime struct {
 	PreTimeoutMs   int
 	AsyncTimeoutMs int
-	// Prompt 是**库里存的**那一份(空 = 用默认)。发出去的那一份要经
-	// renderAIPrompt 把类型清单拼进来 —— 不要直接把这一列发给模型。
-	Prompt string
+	// **没有 Prompt。** 它跟着 AISetting.Prompt 一起退役了,现在住在每个
+	// aiChannelRT 上 —— 提示词与协议绑死,而协议是渠道的属性。
 	// Vocab 是本轮的违规类型闭集,与规则、类型表同一份快照(见 aireview_vocab.go)。
 	Vocab         aiVocabulary
 	MaxInputChars int
-	Channels      []*aiChannelRT
+	// LogContent / LogContentMaxChars 决定审核明细里留不留送审内容、留多少。
+	// 放在快照里(而不是每次落库现查设置行)是因为它在热路径上被读:
+	// 每一次抽中都要问一次,查库等于把一次审核变成两次往返。
+	LogContent         bool
+	LogContentMaxChars int
+	// LogContentViolationFull:判定违规的行始终留、而且留完整的那一份。
+	// 装配时已经把 NULL 折成 true(见 buildAIRuntime),这里是普通 bool。
+	LogContentViolationFull bool
+	Channels                []*aiChannelRT
 	// Scopes 是按 priority 升序排好的作用域策略,第一条匹配的说了算。
 	// 一条都不匹配 = 不审核,没有兜底档。
 	// 见 aireview_scope.go —— 它是"只盯某几个分组"与"分组分档抽样"的实现。
@@ -499,14 +575,29 @@ func pickAIChannels(rt *aiRuntime, sc *aiScopeRT) []*aiChannelRT {
 	}
 	mode, rrKey, failover := AIChannelModeWeighted, int64(0), false
 	var wanted []int64
+	group := ""
 	if sc != nil {
 		mode, rrKey, wanted, failover = sc.ChannelMode, sc.Id, sc.ChannelIds, sc.ChannelFailover
-	}
-	// 没指定:全部启用渠道之间分发,一条链走完。
-	if len(wanted) == 0 {
-		return orderAIChannels(rt.Channels, mode, rrKey, maxAIAttempts)
+		group = sc.ChannelGroup
 	}
 
+	// ① 选了渠道分组:池子就是这个分组,一条链在组内走完。
+	//
+	// 2026-09-06 之前这一格不存在,"没指定渠道"的含义是**全部启用渠道**。
+	// 那一档已经取消:它意味着新启用一个渠道,全站每一条没指定渠道的作用域
+	// 都会立刻开始往它发用户内容 —— 一次没人按下过的数据出境扩大。
+	if len(wanted) == 0 {
+		if group == "" {
+			// 存量行(写入闸之前存下来的,两格都空)。**照老口径走全部**,
+			// 不在这里静默停审:那会让升级那一刻这些作用域集体失效,而界面上
+			// 一切正常。它们由 runUnboundChannelScopeReport 在启动期点名,
+			// 保存时也再也存不出新的一条(validateAIScope 会 400)。
+			return orderAIChannels(rt.Channels, mode, rrKey, maxAIAttempts)
+		}
+		return orderAIChannels(aiChannelsInGroup(rt.Channels, group), mode, rrKey, maxAIAttempts)
+	}
+
+	// ② 指定了渠道:只发给这几个。
 	pinned := make(map[int64]bool, len(wanted))
 	chosen := make([]*aiChannelRT, 0, len(wanted))
 	for _, id := range wanted {
@@ -528,13 +619,64 @@ func pickAIChannels(rt *aiRuntime, sc *aiScopeRT) []*aiChannelRT {
 	if len(out) >= maxAIAttempts {
 		return out
 	}
+
+	// ③ 故障转移的补位池:**只在分组内**,不再是"其余全部启用渠道"。
+	//
+	// 分组从哪来:作用域自己填的那个优先;没填就取**被指定的这几个渠道自己
+	// 所属的分组**(可能不止一个,取并集)。后者是唯一说得通的推断 ——
+	// 运营指定 A、B 两个端点时,他心里的"可以顶替 A 的东西"就是 A 那一类,
+	// 而不是全站任何一个启用的渠道。
+	//
+	// 补位池为空(这些渠道都没分组、或组里就它们几个)时补不出东西来,
+	// 结果与关掉故障转移一样 —— 那正确:没有同类可退,就不该退到别处去。
+	pool := group
 	rest := make([]*aiChannelRT, 0, len(rt.Channels))
 	for _, ch := range rt.Channels {
-		if !pinned[ch.Id] {
+		if pinned[ch.Id] {
+			continue
+		}
+		if pool != "" {
+			if ch.Group == pool {
+				rest = append(rest, ch)
+			}
+			continue
+		}
+		if aiChannelGroupCovered(chosen, ch.Group) {
 			rest = append(rest, ch)
 		}
 	}
 	return append(out, orderAIChannels(rest, AIChannelModeWeighted, rrKey, maxAIAttempts-len(out))...)
+}
+
+// aiChannelsInGroup 挑出属于某个审核渠道分组的渠道。
+//
+// group 为空串时返回**空**而不是全部:空串是"未分组"这一档的名字,
+// 而"属于所有分组"这个含义在这一层根本不该存在 —— 它就是被取消掉的那一档。
+func aiChannelsInGroup(all []*aiChannelRT, group string) []*aiChannelRT {
+	if group == "" {
+		return nil
+	}
+	out := make([]*aiChannelRT, 0, len(all))
+	for _, ch := range all {
+		if ch.Group == group {
+			out = append(out, ch)
+		}
+	}
+	return out
+}
+
+// aiChannelGroupCovered 回答"这个分组是被指定的那几个渠道之一所属的分组吗"。
+//
+// 空分组同样算数:两个都没分组的渠道**互为同类**(它们同属「未分组」那一档),
+// 把空串特殊处理成"谁都不是同类"会让一批还没分组的存量渠道失去故障转移,
+// 而那是升级带来的能力倒退,不是谁做过的决定。
+func aiChannelGroupCovered(chosen []*aiChannelRT, group string) bool {
+	for _, ch := range chosen {
+		if ch.Group == group {
+			return true
+		}
+	}
+	return false
 }
 
 // orderAIChannels 把一组渠道排成本次要尝试的顺序,最多 limit 个。
@@ -588,6 +730,58 @@ func orderAIChannels(chans []*aiChannelRT, mode string, rrKey int64, limit int) 
 //
 // 与扫描用的 clipHeadTail 同样取头尾:违规内容常被刷子塞在长 padding 之后,
 // 只取开头等于给出一条"前面垫 5000 个字就不会被审"的绕过路径。
+// reviewLogContent 组装要落进审核明细的那一份内容,并返回送审文本的原始字符数。
+//
+// 顺序是契约,三步都不能换位置:
+//
+//  1. reviewText   先截到送审上限 —— 这一列的语义是"模型读到的是这些",
+//     拿未截断的原文去脱敏、去数字数,得到的都是另一段文本的属性。
+//  2. 剥离内联二进制 base64 图片换成描述符。不剥的话一行就是几百 KB,
+//     而那几百 KB 对"这是什么内容"没有任何贡献。
+//  3. 脱敏 + 再截断  手机号/邮箱/密钥在**入库前**替换,库里从不存在未脱敏的原文;
+//     截断排在脱敏之后,反过来会让被砍掉的那一半从未参与替换
+//     (与 buildEvidence 里 error_message 那一处同一条理由)。
+//
+// rt 为 nil、或两条留存判据都不成立时返回空串与 0:这一列的空值语义是"未留存",而
+// ContentChars 跟着一起为 0,界面就不会显示一个"原文 3000 字、留存 0 字"的
+// 自相矛盾的行。
+// violated 是**模型这一次的判定**(不是"有没有规则命中")。为真且设置里开着
+// LogContentViolationFull 时,字数上限整个跳过,而且总开关关着也照留 —— 判了违规的
+// 行要回答的是"凭什么",给它一段砍掉后半截的文本,砍掉的常常就是违规的那一段。
+//
+// 判据取模型判定而不是规则命中,因为后者是前者的子集:模型判了违规、但类型不在
+// 任何规则的过滤表里的那些行,恰恰是"规则配漏了"的唯一线索,而它们一条记录都不会产生。
+func reviewLogContent(rt *aiRuntime, text string, violated bool) (string, int) {
+	if rt == nil {
+		return "", 0
+	}
+	full := violated && rt.LogContentViolationFull
+	if !rt.LogContent && !full {
+		return "", 0
+	}
+	sent := reviewText(text, rt.MaxInputChars)
+	if sent == "" {
+		return "", 0
+	}
+	chars := utf8.RuneCountInString(sent)
+	stored, _ := stripInlineBinary(sent)
+	stored = redactSnippet(stored)
+	if full {
+		// 不再截第二刀。sent 已经被送审上限(≤ maxAIMaxInputChars)夹过一次,
+		// 所以这里不存在"无上界" —— 上界就是这个站点自己配的送审上限。
+		return stored, chars
+	}
+	maxChars := rt.LogContentMaxChars
+	if maxChars <= 0 {
+		maxChars = defaultAIReviewContentChars
+	}
+	// 复用 reviewText 而不是直接切前 N 个 rune:它取的是**头尾**。刷子习惯把
+	// 违规内容塞在长 padding 之后,只留开头的日志会一整页都是无意义的填充,
+	// 而那一页恰好长得像"模型误判了一段正常文本"。它还会插一个
+	// ...[truncated]... 标记,界面因此不必猜这一段是不是完整的。
+	return reviewText(stored, maxChars), chars
+}
+
 func reviewText(text string, maxChars int) string {
 	if maxChars <= 0 {
 		maxChars = defaultAIMaxInputChars
@@ -618,9 +812,16 @@ func runAIReview(ctx context.Context, rt *aiRuntime, sc *aiScopeRT, text string,
 		return &aiOutcome{Outcome: OutcomeNoChannel, LatencyMs: msSince(started)}
 	}
 	body := reviewText(text, rt.MaxInputChars)
-	// 类型清单在这里拼进提示词。渲染一次、全部渠道共用同一份文本 ——
-	// 逐渠道渲染只会让"两个渠道拿到的清单不一样"变成可能。
-	prompt := renderAIPrompt(rt.promptFor(sc), rt.Vocab)
+	// 提示词**逐渠道渲染**,不再是整条链共用一份。
+	//
+	// 2026-09-06 提示词从作用域/全局搬到渠道之后,这一步必须进循环:一条链上的
+	// 两个渠道可以是两种协议(比如"先打便宜的护栏机、挂了再退到通用模型"),
+	// 而护栏协议压根不读提示词。渲染一次再发给所有渠道,等于让第二个渠道拿到
+	// 第一个渠道的提示词 —— 配得出来、不报错、只是判据悄悄换了一份。
+	//
+	// 类型清单仍然由 renderAIPrompt 从**同一份** rt.Vocab 拼进去,所以
+	// "两个渠道拿到的清单不一样"这件事仍然不可能发生 —— 那正是上一版
+	// 提前渲染想守住的东西,而它守的是清单,不是基底。
 
 	// timeoutMs 是**整次审核**的预算,不是每个渠道各一份。
 	//
@@ -659,7 +860,8 @@ func runAIReview(ctx context.Context, rt *aiRuntime, sc *aiScopeRT, text string,
 			budget = aiAttemptBudget(remaining, len(channels)-i, ch.TimeoutMs)
 		}
 		// captureRaw=false:热路径绝不留响应原文,见 aiOutcome.rawSample。
-		res := callAIChannel(ctx, ch, prompt, body, budget, rt.Vocab, false)
+		res := callAIChannel(ctx, ch, renderAIPrompt(rt.promptFor(ch), rt.Vocab),
+			body, budget, rt.Vocab, false)
 		chain.add(res)
 		if res.decided() {
 			res.LatencyMs = msSince(started)
@@ -829,13 +1031,31 @@ type aiVerdict struct {
 func aiRequestPayload(ch *aiChannelRT, prompt, body string) ([]byte, error) {
 	// 0 是有意义的取值(要的就是确定性输出),必须走指针,见 chatRequest。
 	temperature := 0.0
-	if ch.Protocol == AIProtocolQwen3Guard {
+	// 护栏类协议一律不发系统提示词:它们是分类器,提示词要么被无视
+	// (Granite 实测),要么会把标签输出拧歪(Qwen3Guard)。
+	if isGuardProtocol(ch.Protocol) {
 		seed := guardSeed
+		maxTok := guardMaxTokens
+		// Granite 是唯一发 system 的护栏协议,而发过去的不是提示词 ——
+		// 是**风险名**。它的模板把 system 当风险槽做精确匹配,详见
+		// aireview_granite.go 文件头。harm 档返回空串,那时与另外两条
+		// 协议一样只发一条 user 消息。
+		msgs := make([]chatMsg, 0, 2)
+		switch normalizeAIProtocol(ch.Protocol) {
+		case AIProtocolGraniteGuardian:
+			maxTok = graniteMaxTokens
+			if risk := graniteSystemMessage(ch.RiskName); risk != "" {
+				msgs = append(msgs, chatMsg{Role: "system", Content: risk})
+			}
+		case AIProtocolLlamaGuard:
+			maxTok = llamaGuardMaxTokens
+		}
+		msgs = append(msgs, chatMsg{Role: "user", Content: body})
 		return common.Marshal(chatRequest{
 			Model:       ch.Model,
-			Messages:    []chatMsg{{Role: "user", Content: body}},
+			Messages:    msgs,
 			Stream:      false,
-			MaxTokens:   guardMaxTokens,
+			MaxTokens:   maxTok,
 			Temperature: &temperature,
 			Seed:        &seed,
 		})
@@ -867,6 +1087,22 @@ func aiInterpretContent(ch *aiChannelRT, content string, vocab aiVocabulary) (ai
 		if err != nil {
 			return aiVerdict{}, err
 		}
+		return labels.toVerdict(ch.Guard, vocab), nil
+	}
+	if ch.Protocol == AIProtocolGraniteGuardian {
+		violated, err := parseGraniteVerdict(content)
+		if err != nil {
+			return aiVerdict{}, err
+		}
+		return graniteVerdict(violated, ch.RiskName), nil
+	}
+	if ch.Protocol == AIProtocolLlamaGuard {
+		labels, err := parseLlamaGuardVerdict(content)
+		if err != nil {
+			return aiVerdict{}, err
+		}
+		// 走的是与 qwen3guard 同一个 toVerdict —— 九类启用子集、类别解析、
+		// 置信度降档因此对这条协议原样生效,不存在第二套处置语义。
 		return labels.toVerdict(ch.Guard, vocab), nil
 	}
 	v, err := parseAIVerdict(content)
@@ -1048,7 +1284,7 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 		// 对那条路说"补一段判定说明"是一句照着做也没用的话,而一条照着做没用
 		// 的告警会让人把这一类告警整体忽略掉。
 		fix := "请在违规类型页把它建成一个类型,或补一段「给 AI 的判定说明」把它引导到既有类型上"
-		if ch.Protocol == AIProtocolQwen3Guard {
+		if isGuardProtocol(ch.Protocol) {
 			fix = "护栏模型的类别在训练时就固定了,改提示词无效 —— " +
 				"要单独处置这一类,请在违规类型页新建一个标识为该值的类型"
 		}
@@ -1155,3 +1391,12 @@ func chatCompletionsURL(base string) string {
 	}
 	return base + "/chat/completions"
 }
+
+// boolPtr / boolOrTrue 是 AISetting.LogContentViolationFull 那个三态列的两个端点。
+//
+// 它必须是 *bool:NULL(从没设置过)、显式 true、显式 false 三个状态,plain bool
+// 只装得下两个 —— 于是"升级带来的 false"与"运维想清楚了、就是不想留"在库里长得
+// 一模一样,而这两者的正确处置正好相反。完整理由写在那一列上。
+func boolPtr(v bool) *bool { return &v }
+
+func boolOrTrue(p *bool) bool { return p == nil || *p }

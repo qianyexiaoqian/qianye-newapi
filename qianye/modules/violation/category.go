@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/db"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -521,24 +522,29 @@ func mergeCategoryCounters(tx *gorm.DB, dupId, keepId int64) error {
 
 // ───────────────────────────── 快照读取 ─────────────────────────────
 
-// categoryForRule 给出一条规则实际生效的违规类型,**永不返回孤儿**。
+// categoryForRule 给出一条规则实际生效的违规类型。
 //
-// 三种输入都折进兜底类型:id 为 0(从未绑过)、id 指向一个已归档的类型、
-// 快照里根本没有这个 id(类型刚建、本节点还没刷新到)。折叠的方向只能是兜底,
-// 不能是"不计数":后者会让一次归档静默关掉一整批规则的类型计数,
-// 而这件事没有任何报错、没有任何日志,只有几天后"他怎么没被封"才会被发现。
+// ── id 为 0(没选类型)与 id 指向一个查不到的类型,是两回事 ──
 //
-// 兜底类型也不在快照里时返回零值 Category(Id=0):此时 bumpCategoryCounter 直接跳过,
-// 账号总量线照常工作。这是扩展库刚起来、种子还没落地的那几毫秒,fail-open 与
-// 本模块其余部分同口径。
+// **没选类型返回零值 Category(Id=0)**,也就是「不指定」。项目方的原话是
+// 「违规类型未选择的,不应当纳入计数,说明这个类型违规阻断即可,不需要计数处罚」:
+// 一条不指定类型的规则该做的就是拦下这一次请求并把对外文案说清楚,而不是
+// 顺手把这个人往封号线上推一格。newRecord 据此把 count_weight 压成 0,
+// 于是账号总量线与类型线一条都不推进(见那里的注释)。
+//
+// **id 指向一个查不到的类型则折进兜底**(已归档、或类型刚建本节点还没刷新到)。
+// 这一半必须保持原样:运营明确选过一个类型,把它折成"不计数"会让一次归档
+// 静默关掉一整批规则的计数,而这件事没有任何报错、没有任何日志,
+// 只有几天后"他怎么没被封"才会被发现。
+//
+// 兜底类型自己也不在快照里时同样返回零值(扩展库刚起来、种子还没落地的那几毫秒),
+// 与本模块其余部分的 fail-open 同口径。
 func categoryForRule(s *snapshot, categoryId int64) Category {
-	if s == nil {
+	if s == nil || categoryId <= 0 {
 		return Category{}
 	}
-	if categoryId > 0 {
-		if c, ok := s.catById[categoryId]; ok {
-			return c
-		}
+	if c, ok := s.catById[categoryId]; ok {
+		return c
 	}
 	return s.catFallback
 }
@@ -962,6 +968,80 @@ func validateCategory(cat *Category) error {
 
 // ───────────────────────────── 存量迁移 ─────────────────────────────
 
+// ruleCategoryMigrationKey 是"规则类型绑定迁移已经跑过"的标记,住在 qy_kv 上。
+//
+// 单独一张表是浪费:qymodel.KV 的定义就是"轻量的运行期状态,各模块不要各建一张"。
+const ruleCategoryMigrationKey = "violation.rule_category_migrated"
+
+// fallbackUnbindMigrationKey 是"兜底桶规则已改判不指定"的标记,同样只跑一次。
+const fallbackUnbindMigrationKey = "violation.fallback_rules_unbound"
+
+// unbindFallbackRules 把落在「未分类」兜底桶上的存量规则改判为「不指定」(0)。
+//
+// # 为什么需要这一步
+//
+// 项目方定了「违规类型未选择的,不应当纳入计数」之后,`category_id = 0` 才是
+// "没选类型"。但**在此之前**保存过的规则,0 已经被 resolveRuleCategory 与
+// migrateRuleCategory 静默改写成了兜底桶的真实 id —— 库里根本不存在 0 这个状态。
+// 只改新逻辑而不动存量,结果是"这条规则我从来没选过类型,它却还在把人往封号线上推",
+// 而运营在界面上看到的只是一句「未分类」,与主动选了未分类的规则一模一样。
+//
+// # 它确实是不可逆的一次判定
+//
+// "当初是自动折进去的"与"运营明确在下拉里点了未分类"在数据里分不出来 ——
+// 那两个选项曾经在界面上就是同一格(合成的 `0` 与兜底那一行保存后指向同一个 id)。
+// 所以这一步按前者处理:把它们全部改判为不指定。方向是**收敛处置**(少封人),
+// 而不是放大;要恢复计数,在规则页给它选一个类型即可(选「未分类(兜底)」就是原状)。
+// 迁移日志把行数与恢复办法一起打出来,不做静默改动。
+//
+// Unscoped:软删的规则也要改,理由与 migrateRuleCategory 一致 ——
+// 它们不进快照,但管理端复核申诉时会读到,留一个与活规则不同的状态只会让人误判。
+//
+// 归档过的兜底行(archive_seq > 0、软删)也算在内:它们同样是"没选类型"的落点,
+// 而且 categoryForRule 对这些 id 会折回**活着的**兜底桶,照样推进总量线。
+func unbindFallbackRules(ctx context.Context, gdb *gorm.DB) (int64, error) {
+	if gdb == nil {
+		return 0, db.ErrNotReady
+	}
+	var marker qymodel.KV
+	switch err := gdb.WithContext(ctx).Where("k = ?", fallbackUnbindMigrationKey).
+		Take(&marker).Error; {
+	case err == nil:
+		return 0, nil
+	case !errors.Is(err, gorm.ErrRecordNotFound):
+		db.MarkFailure(err)
+		return 0, err
+	}
+
+	var fallbackIds []int64
+	if err := gdb.WithContext(ctx).Unscoped().Model(&Category{}).
+		Where("is_fallback = ?", true).Pluck("id", &fallbackIds).Error; err != nil {
+		db.MarkFailure(err)
+		return 0, err
+	}
+	var moved int64
+	if len(fallbackIds) > 0 {
+		res := gdb.WithContext(ctx).Unscoped().Model(&Rule{}).
+			Where("category_id IN ?", fallbackIds).Update("category_id", 0)
+		if res.Error != nil {
+			db.MarkFailure(res.Error)
+			return 0, res.Error
+		}
+		moved = res.RowsAffected
+	}
+	// 标记在成功之后才打,与 migrateRuleCategory 同理:兜底类型读不出来时这一步
+	// 会失败返回,标记要是已经写下,存量规则就永远等不到第二次机会。
+	if err := gdb.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&qymodel.KV{
+			K: fallbackUnbindMigrationKey, V: "fallback rules unbound",
+			UpdatedAt: common.GetTimestamp(),
+		}).Error; err != nil {
+		common.SysError("qianye/violation: 兜底桶改判「不指定」的完成标记写入失败," +
+			"下次启动会再跑一遍(幂等,但期间被主动改绑到兜底桶的规则会被再清一次): " + err.Error())
+	}
+	return moved, nil
+}
+
 // migrateRuleCategory 把存量规则一次性绑到违规类型上。
 //
 // # 迁移策略:内置规则精确落位,手写规则进「未分类」
@@ -981,14 +1061,36 @@ func validateCategory(cat *Category) error {
 // 账号总量线(BanPolicy)仍然是唯一的封号判据。这与 migrateRuleMode 一律置 shadow
 // 是同一条纪律:迁移只搬结构,绝不顺手改变谁会被处置。
 //
-// # 幂等与多节点
+// # 它现在是**真的一次性**,由 qy_kv 上的一个标记闸住
 //
-// 判据是 `category_id = 0`,命中 0 行不算失败,重复执行不改变任何已有取值,
-// 因此不需要 lease。运行期还有第二层:categoryForRule 把 0 折进兜底类型,
-// 所以哪怕这次迁移完全没跑到,也不会出现"不计数的规则"。
+// 这曾经是一条"每次启动都跑一遍、命中 0 行即无害"的幂等迁移,理由是运行期还有
+// 第二层兜底(categoryForRule 把 0 折进兜底类型),两层同向。
+//
+// 那个前提已经不成立:项目方定了「违规类型未选择的,不应当纳入计数,说明这个
+// 类型违规阻断即可,不需要计数处罚」,于是 `category_id = 0` 从"还没绑"变成了
+// **一档运营主动选的配置**(见 categoryForRule)。再让这条 UPDATE 每次启动跑一遍,
+// 就是每次重启都把管理员刚配好的「不指定」改写成兜底桶 —— 一条他明说了
+// "只拦不罚"的规则,重启之后开始推进账号总量线,而界面上什么都没变。
+//
+// 所以判据换成 qy_kv 上的一个标记:标记在时直接返回,之后永不再跑。
+// 存量站点因此仍然会被迁移一次,而新配的「不指定」不会被任何一次重启碰到。
+//
+// 标记**在迁移成功之后**才打,不是进门就打:兜底类型缺失(种子没落地)时这条
+// 迁移会失败返回,此时若标记已经写下,存量规则就永远等不到第二次机会了。
+// 多节点同时首启时两边都会跑一遍 —— 无害,两条 UPDATE 的判据都是 `category_id = 0`,
+// 第二个节点命中 0 行。
 func migrateRuleCategory(ctx context.Context, gdb *gorm.DB) (int64, error) {
 	if gdb == nil {
 		return 0, db.ErrNotReady
+	}
+	var marker qymodel.KV
+	switch err := gdb.WithContext(ctx).Where("k = ?", ruleCategoryMigrationKey).
+		Take(&marker).Error; {
+	case err == nil:
+		return 0, nil
+	case !errors.Is(err, gorm.ErrRecordNotFound):
+		db.MarkFailure(err)
+		return 0, err
 	}
 	var cats []Category
 	if err := gdb.WithContext(ctx).Find(&cats).Error; err != nil {
@@ -1039,6 +1141,20 @@ func migrateRuleCategory(ctx context.Context, gdb *gorm.DB) (int64, error) {
 		db.MarkFailure(res.Error)
 		return moved, res.Error
 	}
+	// 打标记:从此这条迁移不再跑,`category_id = 0` 回归它现在的语义
+	// ——「运营选了不指定,一条计数线都不推进」。
+	//
+	// 写标记失败只告警:下次启动会再跑一遍,那是幂等的(两条 UPDATE 的判据都是
+	// category_id = 0)。代价只在"这中间有人新配了一条不指定的规则"那个窗口,
+	// 而让整条迁移因为一次 KV 写失败而回滚,代价是全站规则都不绑类型。
+	if err := gdb.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&qymodel.KV{
+			K: ruleCategoryMigrationKey, V: "rule category backfill",
+			UpdatedAt: common.GetTimestamp(),
+		}).Error; err != nil {
+		common.SysError("qianye/violation: 规则类型绑定迁移的完成标记写入失败," +
+			"下次启动会再跑一遍(幂等,但期间新配的「不指定」规则会被改写成兜底桶): " + err.Error())
+	}
 	return moved + res.RowsAffected, nil
 }
 
@@ -1081,6 +1197,22 @@ func runCategoryMigration() {
 			"rows":  n,
 			"scope": "qy_violation_rule",
 			"note":  "「未分类」阈值为 0,迁移不改变任何用户的封号判定",
+		}))
+	}
+	// 顺序不能反:上面那条(存量绑定)只在从未跑过的库上执行,而下面这条要把它
+	// 刚刚落到兜底桶里的那批也一起收走。反过来的话,首次升级的库会先被清空、
+	// 再被绑定迁移重新塞回兜底桶,净效果等于本轮改动没生效。
+	m, err := unbindFallbackRules(context.Background(), gdb)
+	if err != nil {
+		common.SysError("qianye/violation: 兜底桶规则改判「不指定」失败(它们仍会推进账号总量线): " + err.Error())
+		return
+	}
+	if m > 0 {
+		common.SysError(common.MapToJsonStr(map[string]any{
+			"msg":   "qianye/violation: 原来落在「未分类」兜底桶上的规则已改判为「不指定」——命中照常拦截/扣费,但不再推进任何违规计数",
+			"rows":  m,
+			"scope": "qy_violation_rule",
+			"note":  "要恢复计数,去「违规判定规则」页给这些规则选一个违规类型(选「未分类(兜底)」即恢复原状)",
 		}))
 	}
 }

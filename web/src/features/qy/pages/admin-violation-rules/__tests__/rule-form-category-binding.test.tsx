@@ -376,16 +376,26 @@ describe('绑定违规类型这一格', () => {
 /* ── 2. 「加到哪里」这句话，按当前选择实时给答案 ───────────────────────── */
 
 describe('命中之后加到哪里', () => {
-  test('没选类型时写明落到兜底桶、而且不会触发任何处置', async () => {
+  test('没指定类型时写明「一条计数线都不推进」', async () => {
+    // 项目方原话：「违规类型未选择的，不应当纳入计数，说明这个类型违规阻断即可，
+    // 不需要计数处罚」。这一档此前会被后端静默改写成兜底桶，于是界面上写的是
+    // 「记到未分类」—— 而未分类是一个真实的桶，进了桶就会推进账号总量线。
+    // 两句话的差别正是"会不会封人"。
     await mountSheet(null)
     const text = fieldItem(CATEGORY_LABEL).textContent ?? ''
-    const expected = dict.qy_vio_field_category_dest_fallback_idle.replace(
-      '{{name}}',
-      '未分类'
-    )
+    const expected = dict.qy_vio_field_category_dest_unbound
     assert.ok(
       text.includes(expected),
-      `没选类型时缺少兜底结论：${text.slice(0, 400)}`
+      `没指定类型时缺少「不计数」结论：${text.slice(0, 400)}`
+    )
+    assert.ok(
+      !text.includes(
+        dict.qy_vio_field_category_dest_fallback_idle.replace(
+          '{{name}}',
+          '未分类'
+        )
+      ),
+      '不指定不该再写成"记到未分类兜底桶"——那会推进账号总量线'
     )
     // 这句话必须是显眼的一档，不能和普通说明文字混在一起 —— 否则等于把
     // "配了也不会封人"再藏一次。
@@ -394,7 +404,18 @@ describe('命中之后加到哪里', () => {
     )
     assert.ok(
       (callout?.getAttribute('class') ?? '').includes('text-warning'),
-      '兜底结论没有用告警样式'
+      '「不计数」结论没有用告警样式'
+    )
+  })
+
+  test('没指定类型时，计数权重那一格说明填多少都不生效', async () => {
+    // 两格是同一件事的两半。只改类型那一格的话，权重那一格会继续写
+    // 「命中 1 次给所属违规类型加 N」—— 一句在这一档下完全不成立的话。
+    await mountSheet(null)
+    const text = fieldItem(dict.qy_vio_field_count_weight).textContent ?? ''
+    assert.ok(
+      text.includes(dict.qy_vio_field_count_weight_math_unbound),
+      `权重那一格没有跟着改口：${text.slice(0, 400)}`
     )
   })
 
@@ -428,15 +449,21 @@ describe('命中之后加到哪里', () => {
     )
   })
 
-  test('类型清单读不出来时不漏裸主键，并说明保存不受影响', async () => {
+  test('类型清单读不出来时不漏裸主键，也不谎称已归档', async () => {
     // 清单拉取失败是常态（权限、网络、后端抖动）。这一档原来会让 Base UI
     // 查不到译名而把取值原样渲染成一个数字。
+    //
+    // 「已归档 #7」在这一档同样是错的：那是一句我们此刻答不上来的话，
+    // 而管理员会照着它去把一条配好的规则改绑到别的类型上。
     await mountSheet({ ...editedRule, category_id: 7 }, null)
     const item = fieldItem(CATEGORY_LABEL)
     const value = item
       .querySelector('[data-slot="select-value"]')
       ?.textContent?.trim()
-    assert.equal(value, dict.qy_vio_field_category_unset)
+    assert.equal(
+      value,
+      dict.qy_vio_field_category_pending.replace('{{id}}', '7')
+    )
     assert.ok(
       (item.textContent ?? '').includes(dict.qy_vio_field_category_dest_unknown)
     )
@@ -454,23 +481,37 @@ describe('命中之后加到哪里', () => {
   })
 })
 
-/* ── 3. 下拉里不能有两个"未分类" ───────────────────────────────────────── */
+/* ── 3. 「不指定」与「未分类(兜底)」是两档不同的东西 ─────────────────── */
 
-describe('兜底桶只出现一次', () => {
-  test('展开的选项里不存在与兜底类型重复的合成项', async () => {
+describe('不指定与兜底桶各占一格', () => {
+  test('展开的选项里「不指定」与「未分类(兜底)」各出现一次', async () => {
     await mountSheet(null)
     await openSelect(CATEGORY_LABEL)
     // 下拉走 Portal，展开后挂在 document 上而不是那一格里。
     const options = [
       ...document.querySelectorAll('[data-slot="select-item"]'),
     ].map((node) => (node.textContent ?? '').trim())
-    // 清单里给了两类（破限 + 兜底），下拉就只能有两项。多出来的那一项正是
-    // 老写法里的合成 `0`，它与兜底那一行在保存后指向同一个桶。
-    assert.equal(options.length, 2, `下拉项数不对：${JSON.stringify(options)}`)
+    // 清单里给了两类（破限 + 兜底），加上恒在的「不指定」一共三项。
+    //
+    // 这一格曾经因为"同一个桶出现两次"被删掉过合成的 `0`：那时后端把 0 改写成
+    // 兜底 id，两项确实指向同一个桶。现在 0 有了自己的语义（只拦不计数），
+    // 它必须回来 —— 而且必须与兜底那一行**分得开**，否则「不计数」这一档
+    // 在界面上根本选不到。
+    assert.equal(options.length, 3, `下拉项数不对：${JSON.stringify(options)}`)
+    assert.equal(
+      options.filter((text) => text === dict.qy_vio_field_category_unbound)
+        .length,
+      1,
+      `「不指定」不是恰好一项：${JSON.stringify(options)}`
+    )
     assert.equal(
       options.filter((text) => text.startsWith('未分类')).length,
       1,
       `「未分类」在下拉里出现了不止一次：${JSON.stringify(options)}`
+    )
+    assert.ok(
+      !dict.qy_vio_field_category_unbound.startsWith('未分类'),
+      '「不指定」的文案不能长得像兜底桶——那正是上一版分不开的原因'
     )
   })
 
@@ -480,10 +521,7 @@ describe('兜底桶只出现一次', () => {
     await mountSheet(null, categoryList({ jailbreakActive: true }))
     assert.ok(
       (fieldItem(CATEGORY_LABEL).textContent ?? '').includes(
-        dict.qy_vio_field_category_dest_fallback_idle.replace(
-          '{{name}}',
-          '未分类'
-        )
+        dict.qy_vio_field_category_dest_unbound
       )
     )
 
@@ -526,21 +564,30 @@ describe('兜底桶只出现一次', () => {
     )
   })
 
-  test('没选类型时收起态显示的就是兜底那一行，与保存后回读一致', async () => {
-    // 后端 `resolveRuleCategory` 把 0 改写成兜底类型的真实 id，所以"存之前"
-    // 与"存之后重开"必须是同一句话。
+  test('没指定类型时收起态写的就是「不指定」，保存后回读还是它', async () => {
+    // 后端 `resolveRuleCategory` 不再把 0 改写成兜底 id，所以"存之前"与
+    // "存之后重开"是同一句话 —— 而且是**运营真正选的那一句**。
+    // 上一版这里断言的是"两次都显示未分类"，那是改写留下的形状：
+    // 界面替后端撒了一个谎，好让前后一致。
     await mountSheet(null)
     const before = fieldItem(CATEGORY_LABEL)
       .querySelector('[data-slot="select-value"]')
       ?.textContent?.trim()
+    assert.equal(before, dict.qy_vio_field_category_unbound)
 
-    await mountSheet({ ...editedRule, category_id: 1 })
+    await mountSheet({ ...editedRule, category_id: 0 })
     const after = fieldItem(CATEGORY_LABEL)
       .querySelector('[data-slot="select-value"]')
       ?.textContent?.trim()
+    assert.equal(after, before)
 
-    assert.equal(before, after)
-    assert.ok(before?.startsWith('未分类'), `收起态写的是：${before}`)
+    // 明确选了兜底桶是**另一档**：它会照常推进账号总量线。
+    await mountSheet({ ...editedRule, category_id: 1 })
+    const fallback = fieldItem(CATEGORY_LABEL)
+      .querySelector('[data-slot="select-value"]')
+      ?.textContent?.trim()
+    assert.ok(fallback?.startsWith('未分类'), `兜底档写的是：${fallback}`)
+    assert.notEqual(fallback, before)
   })
 })
 
@@ -577,13 +624,15 @@ describe('类型归属的往返', () => {
  *                                             → 「宽度与其它下拉一致」红
  *  M4  `<FormControl>` 挪回包在 `<Select>` 外面 → 红 4 条（含「点标签…」）
  *  M5  结论行的告警样式换成 `text-muted-foreground`
- *                                             → 「没选类型时…」红，文本断言仍绿
+ *                                             → 「没指定类型时…」红，文本断言仍绿
  *                                                （两条各守各的：写没写、显不显眼）
- *  M6  结论行三档合并成恒定输出                → 红 4 条
- *  M7  恢复合成的 `<SelectItem value='0'>`     → 「兜底桶只出现一次」红
- *  M8  `effectiveId` 改回 `field.value`        → 红 4 条（含存前/存后一致那条）
- *  M9  去掉清单为空时的占位 `<SelectItem>`     → 「读不出来时不漏裸主键」红
+ *  M6  结论行各档合并成恒定输出                → 红 5 条
+ *  M7  删掉 `<SelectItem value='0'>`           → 「不指定与兜底桶各占一格」红
+ *  M8  `categoryId` 改回"0 时显示兜底 id"      → 红 3 条（含存前/存后那条）
+ *  M9  清单为空时改用 `..._missing`（谎称已归档）
+ *                                             → 「不谎称已归档」红
+ *  M10 权重结论行去掉 `categoryUnbound` 分支   → 「权重那一格说明填多少都不生效」红
  *
  * `lib/rule-form.ts`：
- *  M10 `rule.category_id ?? 0` 去掉兜底        → 「老规则回落到 0」红
+ *  M11 `rule.category_id ?? 0` 去掉兜底        → 「老规则回落到 0」红
  */

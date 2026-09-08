@@ -16,6 +16,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+/**
+ * Only http(s) may reach the wallet page: a configured top-up external link
+ * becomes an `href` there, so a `javascript:` URL would be stored XSS for every
+ * user who opens the wallet.
+ */
+export function isSafeExternalLinkUrl(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  try {
+    const url = new URL(trimmed)
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') && !!url.hostname
+    )
+  } catch {
+    return false
+  }
+}
+
 export function removeTrailingSlash(value: string) {
   const trimmed = value.trim()
   if (!trimmed) return ''

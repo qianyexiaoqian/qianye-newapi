@@ -36,7 +36,10 @@ func TestValidateAIScopeRequiresGroupBinding(t *testing.T) {
 	base := func() AIScope {
 		return AIScope{Name: "自助注册", Enabled: true, Priority: 100,
 			GroupScope: "selfserve", GroupScopeMode: GroupScopeInclude,
-			PreSampleRateBps: 0, AsyncSampleRateBps: 1000}
+			PreSampleRateBps: 0, AsyncSampleRateBps: 1000,
+			// 启用中的策略必须有渠道来源(2026-09-06 的写入闸)。这一组用例
+			// 测的是**分组绑定**那道闸,不给渠道来源的话每一行都会先撞在另一道闸上。
+			ChannelGroup: "自建护栏"}
 	}
 	tests := []struct {
 		name    string
@@ -141,7 +144,8 @@ func TestAIScopeGroupUnboundIsOneJudgement(t *testing.T) {
 		// 一条被标成"未绑定分组"、却能一键启用的策略。
 		for _, tc := range tests {
 			row := AIScope{Name: "x", Enabled: true, Priority: 100,
-				GroupScope: tc.scope, GroupScopeMode: tc.mode,
+				ChannelGroup: "自建护栏",
+				GroupScope:   tc.scope, GroupScopeMode: tc.mode,
 				AsyncSampleRateBps: 1000}
 			err := validateAIScope(&row)
 			assert.Equal(t, tc.want, err != nil,
@@ -279,8 +283,11 @@ func TestUpsertAIScopeGroupBindingGate(t *testing.T) {
 		},
 		{
 			name: "新建一条绑好分组的启用策略:200",
+			// 渠道来源也要给:2026-09-06 起启用中的作用域必须选一个渠道分组
+			// 或指定渠道。不给的话这一行会撞在那道闸上,而它要测的是分组绑定。
 			body: `{"name":"自助注册","enabled":true,"priority":100,` +
 				`"group_scope":"selfserve","group_scope_mode":"include",` +
+				`"channel_group":"自建护栏",` +
 				`"pre_sample_rate_bps":0,"async_sample_rate_bps":1000}`,
 			wantStatus: http.StatusOK,
 		},

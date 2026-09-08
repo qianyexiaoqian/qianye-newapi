@@ -134,6 +134,8 @@ func TestWildcardGroupScopeIsRejected(t *testing.T) {
 		s := &AIScope{
 			Name: "全站", Enabled: true, GroupScope: "*", GroupScopeMode: GroupScopeInclude,
 			PreSampleRateBps: 100, AsyncSampleRateBps: 100,
+			// 渠道来源给足,否则先撞在那道闸上,测不到通配符这一条。
+			ChannelGroup: "自建护栏",
 		}
 		err := validateAIScope(s)
 		require.Error(t, err, "这道闸是'哪些用户的请求正文会被发往第三方'的唯一入口")

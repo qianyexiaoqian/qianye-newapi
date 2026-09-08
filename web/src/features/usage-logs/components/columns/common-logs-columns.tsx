@@ -47,7 +47,9 @@ import {
   getTieredBillingSummary,
   hasAnyCacheTokens,
   parseLogOther,
+  isViolationBlockedLog,
   isViolationFeeLog,
+  violationBlockLabelKey,
   renderAuditContent,
 } from '../../lib/format'
 import {
@@ -145,12 +147,37 @@ function buildTypeDetailSegments(
     return [{ text: t('Async task refund') }]
   }
 
+  // 千夜扩展：转发前被内容审核拦下、且没有扣到费的那一行（type=5）。
+  //
+  // 它必须有自己的一档：走到下面 `log.type !== 2` 那个提前返回的话，这一格
+  // 只会退回渲染原始 content —— 一整句话被截在 200px 里，而这一行正是用户
+  // 在这一页唯一能读到的"我的请求为什么失败了"。
+  if (log.type === 5 && isViolationBlockedLog(other)) {
+    const segments: DetailSegment[] = [
+      { text: t(violationBlockLabelKey(other)), danger: true },
+    ]
+    if (other?.qy_violation_category) {
+      segments.push({ text: other.qy_violation_category, muted: true })
+    }
+    if (other?.qy_reason) {
+      segments.push({ text: other.qy_reason, muted: true })
+    }
+    return segments
+  }
+
   if (log.type !== 2) return []
 
   const isViolation = isViolationFeeLog(other)
   if (isViolation) {
     const segments: DetailSegment[] = []
-    segments.push({ text: t('Violation Fee'), danger: true })
+    // 拦下来的那一次要在第一段就说清楚"请求没发出去"。只写「违规扣费」时，
+    // 用户看到的是一行扣了钱的调用，他会以为请求成功了、钱花在了模型上。
+    segments.push({
+      text: isViolationBlockedLog(other)
+        ? t('qy_log_violation_blocked_charged')
+        : t('Violation Fee'),
+      danger: true,
+    })
     if (other?.violation_fee_code) {
       segments.push({
         text: other.violation_fee_code,

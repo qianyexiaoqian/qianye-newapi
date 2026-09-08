@@ -57,6 +57,7 @@ function registryRow(name: string, patch: Partial<QyMgRow> = {}): QyMgRow {
     in_usable_groups: false,
     usable_description: '',
     auto_position: 0,
+    registered: true,
     ...patch,
   }
 }
@@ -231,5 +232,97 @@ describe('模型分组表：「用户可选」只动键，不动 value', () => {
       ])
     ) as Record<string, string>
     assert.deepEqual(out, { fresh: '' })
+  })
+})
+
+describe('模型分组表：服务端翻页之后，这一页只对自己持有的行负责', () => {
+  /*
+    ── 这一组用例守的是本轮最贵的那个失败方式 ──
+
+    保存写的是**整份** `options.GroupRatio`（一个 JSON blob，没有按键写回的
+    接口）。服务端切页之后表上只剩 10 行，而序列化的产物会被原样 PUT 回去 ——
+    不带基线的一次保存会把第 2 页往后每一个模型分组的兜底倍率全部删掉，
+    界面上只有一句绿色的「已保存」。那些分组随即落进 `GetGroupRatio` 的
+    fail-open 分支，按凭空的 1.0 计费。
+  */
+
+  test('页外的键原样保留 —— 一次保存不会删掉没显示出来的分组', () => {
+    const baseline = { onPage: 1, offPage: 2.5 }
+    const out = JSON.parse(
+      qyMgSerializeRatios(
+        [mergedRow({ name: 'onPage', ratio: '0.4' })],
+        baseline
+      )
+    ) as Record<string, number>
+    assert.equal(out.onPage, 0.4, '本页改过的行按本页写')
+    assert.equal(
+      out.offPage,
+      2.5,
+      '不在本页的分组必须原样带过去 —— 丢掉它等于把那个池子改成按 1.0 静默计费'
+    )
+  })
+
+  test('关掉「用户可选」仍然是一次删除，不会被基线原样带回来', () => {
+    // 基线合并最容易写反的一处：只做 `{...baseline, ...本页}` 的话，
+    // 关掉开关这个动作在产物里根本不存在，运营按完保存开关又亮回来。
+    const out = JSON.parse(
+      qyMgSerializeUsableGroups(
+        [mergedRow({ name: 'gone', selectable: false })],
+        { gone: '旧文案', kept: '别页的文案' }
+      )
+    ) as Record<string, string>
+    assert.equal(Object.hasOwn(out, 'gone'), false)
+    assert.equal(out.kept, '别页的文案')
+  })
+
+  test('一行都没改时，产物与基线逐键相同 —— 保存不会写一份自己的快照', () => {
+    const baseline = { a: 1, b: 0, c: 0.3 }
+    assert.deepEqual(
+      JSON.parse(qyMgSerializeRatios([], baseline)) as Record<string, number>,
+      baseline
+    )
+    const usable = { a: '', b: '文案' }
+    assert.deepEqual(
+      JSON.parse(qyMgSerializeUsableGroups([], usable)) as Record<
+        string,
+        string
+      >,
+      usable
+    )
+  })
+
+  test('不给基线时行为与改造之前逐位相同（本页即全表）', () => {
+    const out = JSON.parse(
+      qyMgSerializeRatios([mergedRow({ name: 'only', ratio: '2' })])
+    ) as Record<string, number>
+    assert.deepEqual(out, { only: 2 })
+  })
+
+  test('names 给定时原样用它的顺序，不再本地并集 —— 否则第 2 页会长出全站的名字', () => {
+    const rows = qyMgBuildRows({
+      registry: [registryRow('g3'), registryRow('g4')],
+      // 基线里有全站五个分组的倍率。翻页时它们**不能**变成行。
+      groupRatios: { g1: 1, g2: 1, g3: 1, g4: 1, g5: 1 },
+      usableGroups: { g5: '只在可选清单里' },
+      autoGroups: [],
+      names: ['g3', 'g4'],
+    })
+    assert.deepEqual(
+      rows.map((row) => row.name),
+      ['g3', 'g4']
+    )
+  })
+
+  test('registered 取服务端字段，不是"它在不在返回的数组里"', () => {
+    // 并集之后每一行都在数组里，而其中一部分没有登记行 —— 推错的方向是
+    // 给一个没登记的名字亮起联动删除，而那条路径清不掉任何一处引用。
+    const rows = qyMgBuildRows({
+      registry: [registryRow('ghost', { registered: false })],
+      groupRatios: {},
+      usableGroups: { ghost: '' },
+      autoGroups: [],
+      names: ['ghost'],
+    })
+    assert.equal(rows[0].registered, false)
   })
 })

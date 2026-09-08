@@ -67,6 +67,12 @@ var credentialBodyRoutes = map[string]bool{
 	"POST /api/qy/pay-password/recover/reset":        true,
 	"POST /api/qy/admin/pay-password/:user_id/reset": true,
 	"POST /api/qy/admin/mall/products/:no/codes":     true, // 批量上传兑换码明文,body 整体是凭证
+	// 补填收货地址:body 就是「地址 + 联系方式」两个字段,除 PII 之外没有别的内容,
+	// 与支付密码接口同形。下单接口 POST /api/qy/mall/orders 刻意**不**列在这里 ——
+	// 它的 body 还带 product_no 与 client_request_id,那两个是排查"下单失败/重复下单"
+	// 唯一有用的线索,整体丢掉代价太大;那条路由由 redact.go 的键级脱敏覆盖
+	// (address / contact / receiver / consignee / phone)。
+	"POST /api/qy/mall/orders/:no/address": true,
 }
 
 // targetUserParams 是"这次操作针对哪个用户"的路径参数名。

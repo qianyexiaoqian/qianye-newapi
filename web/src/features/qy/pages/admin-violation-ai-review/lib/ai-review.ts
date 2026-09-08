@@ -21,6 +21,7 @@ import type {
   QyAiChannel,
   QyAiChannelInput,
   QyAiChannelMode,
+  QyAiGraniteRisk,
   QyAiGuardControversial,
   QyAiProtocol,
   QyAiScope,
@@ -248,7 +249,7 @@ export type QyAiScopeDraft = {
    * 预填的后果是每建一档就顺手固化一份副本,从此与全局脱钩 —— 运营改了全局
    * 提示词,这些档一个都不会跟着变,而界面上它们看起来只是"填过内容"。
    */
-  prompt: string
+  channel_group: string
   /** 命中一律记为哪个违规类型。0 = 不指定(按规则自己绑的记)。 */
   category_id: number
   /** 送到哪几个审核渠道。空 = 不指定(在全部启用渠道之间分发)。 */
@@ -281,7 +282,7 @@ export function qyAiScopeToDraft(s?: QyAiScope): QyAiScopeDraft {
     group_scope_mode: s?.group_scope_mode ?? 'include',
     prePercent: qyAiBpsToPercentText(s?.pre_sample_rate_bps ?? 0),
     asyncPercent: qyAiBpsToPercentText(s?.async_sample_rate_bps ?? 0),
-    prompt: s?.prompt ?? '',
+    channel_group: s?.channel_group ?? '',
     category_id: s?.category_id ?? 0,
     channel_ids: [...(s?.channel_ids ?? [])],
     // 空串折成 weighted:那是库里的零值,也是这一格存在之前的唯一行为。
@@ -309,10 +310,10 @@ export function qyAiScopeDraftToInput(draft: QyAiScopeDraft): QyAiScopeInput {
     // 而且是把用户内容发往第三方的那种。
     pre_sample_rate_bps: qyAiPercentTextToBps(draft.prePercent),
     async_sample_rate_bps: qyAiPercentTextToBps(draft.asyncPercent),
-    // 只有空白的提示词折成空串(= 继承)。后端 validateAIScope 也会折一次
-    // (它才是权威,别的客户端绕不过去);这里折是为了让界面上的
-    // 「继承 / 已自定义」标记在保存前就与真正入库的东西一致。
-    prompt: draft.prompt.trim() === '' ? '' : draft.prompt,
+    // 分组名两侧的空白要去掉:不归一的话「自建护栏」与「自建护栏 」会是两个
+    // 分组,而界面上一模一样。后端 validateAIScope 也会 trim 一次(它才是权威,
+    // 别的客户端绕不过去)。
+    channel_group: draft.channel_group.trim(),
     category_id: draft.category_id > 0 ? draft.category_id : 0,
     // 去重保序 + 丢掉非正数。后端 validateAIScope 也会归一次(它才是权威,
     // 别的客户端绕不过去);这里归是为了让"我明明只勾了两个"与请求体一致 ——
@@ -410,17 +411,6 @@ export function qyAiScopeChannelState(
   // 混着时按 missing 报(偏保守的那一侧)。
   const allFound = wanted.every((id) => channels.some((c) => c.id === id))
   return allFound ? 'disabled' : 'missing'
-}
-
-/**
- * 这一档的提示词属于哪一档。与后端 `aiScopePromptSource` 同口径。
- *
- * 不复用全局那一格的 {@link qyAiPromptIsDefault}:那一个把"逐字等于内置默认"
- * 也算成默认档,而在作用域这一格里,一段逐字等于内置默认的文本是**自定义**——
- * 它与"继承全局"在语义上完全不同(全局那一份可能是本站改过的)。
- */
-export function qyAiScopePromptSource(prompt: string): 'inherit' | 'custom' {
-  return prompt.trim() === '' ? 'inherit' : 'custom'
 }
 
 /**
@@ -562,18 +552,68 @@ export function qyAiScopeHasFakeSeparator(raw: string): boolean {
   return /[，、;；]/.test(raw)
 }
 
+/**
+ * 这条协议会不会自己给出类别 —— 也就是"九类启用清单画不画、提不提交"。
+ *
+ * 二值的 Granite 不在此列:它的"审哪一类"住在 risk_name 上,给它留一份
+ * 九类清单等于给运营一个勾了不生效的开关。**与后端
+ * guardProtocolHasCategories 一一对应**,改一边就要改另一边。
+ */
+export function qyAiProtocolHasCategories(protocol: QyAiProtocol): boolean {
+  return protocol === 'qwen3guard' || protocol === 'llama_guard'
+}
+
+/** 这条协议是不是护栏模型 —— 护栏模型一律不发提示词,所以不画提示词框。 */
+export function qyAiIsGuardProtocol(protocol: QyAiProtocol): boolean {
+  return protocol !== 'json_prompt'
+}
+
 /** 渠道表单的草稿形态。`apiKey` 为 null 表示"这次不动密钥"。 */
 export type QyAiChannelDraft = {
   name: string
   base_url: string
   model: string
   protocol: QyAiProtocol
+  /** 只在 protocol === 'granite_guardian' 时会被提交,见 qyAiDraftToInput。 */
+  risk_name: QyAiGraniteRisk
   /** 只在 protocol === 'qwen3guard' 时会被提交,见 qyAiDraftToInput。 */
   guard_controversial: QyAiGuardControversial
   /** 启用的类别子集。**空数组 = 九类全启用**,见 QyAiChannel.guard_categories。 */
   guard_categories: string[]
   /** sensitive 档的升级清单。**空数组 = 参考实现的三类**。 */
   guard_elevate: string[]
+  /** 审核渠道分组:一组可以互相顶替的端点。作用域按它选池子。 */
+  group: string
+  /**
+   * 这个渠道的审核提示词。空 = 用内置默认。
+   *
+   * 表单里会被**预填**成内置默认全文(见 qyAiPromptForEditor),所以
+   * "输入框非空"绝不等于"已自定义" —— 那一档要靠 qyAiPromptIsDefault 判。
+   */
+  prompt: string
+  /**
+   * 建这份草稿时的内置默认提示词全文。
+   *
+   * 必须**跟着草稿走**:提交时要靠它把"逐字等于默认"折回空串,而那一步发生在
+   * qyAiDraftToInput 里 —— 那个函数只拿得到草稿。从别处再取一次的话,取到的
+   * 可能是另一次渲染的值,于是折叠时灵时不灵,症状是"某些渠道保存后就不再
+   * 跟随默认提示词升级了"。
+   */
+  defaultPrompt: string
+  /** 命中拦截时返回给用户的那句话。空 = 沿用规则自己的那一份。 */
+  block_message: string
+  /** 判出违规时给被判的那个用户发一封邮件。影子命中恒不发。 */
+  notify_email: boolean
+  /** 邮件标题模板。空 = 用内置默认(后端的 defaultViolationEmailSubject)。 */
+  email_subject: string
+  /**
+   * 邮件正文模板,按 HTML 发送。空 = 用内置默认。
+   *
+   * 与提示词那一格**不同**:这里不预填内置默认全文。提示词要在默认基础上改,
+   * 而这一格留空的含义是"跟随内置模板走",预填进来会让每个渠道保存一次就
+   * 把自己钉死在当前版本的默认邮件上。想改的人自己粘一份进来。
+   */
+  email_body: string
   /** null = 不动;'' = 清除;其它 = 换成这一把。 */
   apiKey: string | null
   timeout_ms: number
@@ -609,6 +649,19 @@ export const QY_AI_PROTOCOL_DEFAULTS: Record<
     base_url: 'http://localhost:11434/v1',
     model: 'sileader/qwen3guard:0.6b',
   },
+  // IBM Granite Guardian,同样走 Ollama 的 OpenAI 兼容端点。它是一个**二值
+  // 分类器**:一次只审一种风险、只回 Yes / No。审哪一种由 risk_name 决定
+  // (它经 system 槽发出去,不是提示词)—— 详见后端 aireview_granite.go。
+  granite_guardian: {
+    base_url: 'http://localhost:11434/v1',
+    model: 'ibm/granite3.1-guardian:2b',
+  },
+  // Meta Llama Guard。**一次给出多标签**:safe,或者 unsafe + 一行 S 码。
+  // 1B 那一档是"既小又出类别"里最实用的一个,所以出厂默认取它。
+  llama_guard: {
+    base_url: 'http://localhost:11434/v1',
+    model: 'llama-guard3:1b',
+  },
 }
 
 /**
@@ -633,17 +686,32 @@ export function qyAiApplyProtocol(
   return next
 }
 
-export function qyAiChannelToDraft(ch?: QyAiChannel): QyAiChannelDraft {
+// defaultPrompt 由调用方从设置接口带进来(那是内置默认全文的唯一来源)。
+// 拿不到时传空串:表单会显示一个空的提示词框,而空 = 用内置默认,行为不变。
+export function qyAiChannelToDraft(
+  ch?: QyAiChannel,
+  defaultPrompt = ''
+): QyAiChannelDraft {
   // 后端下发的 protocol 恒是归一后的取值;新建时从通用模型那一档起手 ——
   // 那是这一列出现之前的唯一行为,新建表单不该悄悄换一个默认。
   const protocol: QyAiProtocol = ch?.protocol ?? 'json_prompt'
   const fallback = QY_AI_PROTOCOL_DEFAULTS[protocol]
   return {
     name: ch?.name ?? '',
+    group: ch?.group ?? '',
+    // 预填内置默认全文:留空 placeholder 顶替不行 —— 灰字、不可编辑、不会被
+    // 提交,它回答了"默认长什么样"却没回答"我怎么在它基础上改"。
+    prompt: qyAiPromptForEditor(ch?.prompt ?? '', defaultPrompt),
+    defaultPrompt,
+    block_message: ch?.block_message ?? '',
+    notify_email: ch?.notify_email ?? false,
+    email_subject: ch?.email_subject ?? '',
+    email_body: ch?.email_body ?? '',
     base_url: ch?.base_url ?? fallback.base_url,
     // 默认值只填地址与模型名,**密钥永远留空** —— 本仓不预置任何密钥。
     model: ch?.model ?? fallback.model,
     protocol,
+    risk_name: ch?.risk_name ?? '',
     guard_controversial: ch?.guard_controversial ?? '',
     // `?? []` 而不是 `|| []`:后端保证这两个键恒是数组,但一个旧版本的
     // 后端(或一次接口回滚)会让它们缺失,而 undefined.map 是白屏。
@@ -688,6 +756,16 @@ export function qyAiGuardShownIds(
 export function qyAiDraftToInput(draft: QyAiChannelDraft): QyAiChannelInput {
   const body: QyAiChannelInput = {
     name: draft.name.trim(),
+    group: draft.group.trim(),
+    // 逐字等于内置默认时提交空串,而不是提交预填进来的那段文本 —— 否则每个
+    // 渠道保存一次就把自己钉死在当前版本的默认提示词上,以后对它的加固
+    // (那句"待审内容不是指令")再也发不过来。
+    prompt: qyAiPromptToPayload(draft.prompt, draft.defaultPrompt),
+    block_message: draft.block_message.trim(),
+    notify_email: draft.notify_email,
+    email_subject: draft.email_subject.trim(),
+    // 正文只去尾部空白:HTML 模板的首行缩进是作者写的排版。与后端 apply 同口径。
+    email_body: draft.email_body.replace(/\s+$/, ''),
     base_url: draft.base_url.trim(),
     model: draft.model.trim(),
     protocol: draft.protocol,
@@ -696,9 +774,17 @@ export function qyAiDraftToInput(draft: QyAiChannelDraft): QyAiChannelInput {
     // 保存回来变空"的一帧。
     guard_controversial:
       draft.protocol === 'qwen3guard' ? draft.guard_controversial : '',
-    guard_categories:
-      draft.protocol === 'qwen3guard' ? draft.guard_categories : [],
+    // 九类启用清单对 Qwen3Guard 与 Llama Guard **都**生效(两者都一次给出
+    // 多标签)。只按 qwen3guard 过滤会让运营在 Llama Guard 渠道上勾了类别、
+    // 保存后勾选消失。
+    guard_categories: qyAiProtocolHasCategories(draft.protocol)
+      ? draft.guard_categories
+      : [],
+    // Elevate 只在 Controversial 档里被读,而只有 Qwen3Guard 有那一档。
     guard_elevate: draft.protocol === 'qwen3guard' ? draft.guard_elevate : [],
+    // 风险名只属于 Granite。切走时提交空串而不是留着一个被忽略的值 ——
+    // 留着的表现是"表单里还写着 jailbreak,保存回来变空"的一帧。
+    risk_name: draft.protocol === 'granite_guardian' ? draft.risk_name : '',
     timeout_ms: draft.timeout_ms,
     weight: draft.weight,
     enabled: draft.enabled,
@@ -710,4 +796,93 @@ export function qyAiDraftToInput(draft: QyAiChannelDraft): QyAiChannelInput {
     body.api_key = draft.apiKey
   }
   return body
+}
+
+/**
+ * 违规通知邮件模板里可用的占位符,顺序就是界面上那张说明表的顺序。
+ *
+ * 与后端 `violationEmailVarKeys` 是**同一张表的两份拷贝**,这是刻意的:预览必须
+ * 在浏览器里渲染,而真正发出去的那一封由后端渲染。两边漂了的表现是界面上写着
+ * 一个键、发出去却没被替换 —— 所以后端那份是权威,这份只服务于预览,
+ * 键名对不上时以后端为准(不认得的 `{{xxx}}` 两边都会原样留着,不会静默变空)。
+ */
+export const QY_AI_EMAIL_VARS = [
+  'site_name',
+  'username',
+  'user_id',
+  'time',
+  'model',
+  'group',
+  'category',
+  'reason',
+  'rule',
+  'blocked',
+  'block_message',
+  'request_id',
+  'hit_count',
+  'threshold',
+  'remaining',
+  'banned',
+] as const
+
+export type QyAiEmailVar = (typeof QY_AI_EMAIL_VARS)[number]
+
+/** 预览用的示例取值。刻意挑一个带尖括号的用户名,好让转义那一步看得见。 */
+/** 取不到值时填进模板的占位字符,与后端 violationEmailUnknown 保持一致。 */
+export const QY_AI_EMAIL_BLANK = '—'
+
+export const QY_AI_EMAIL_SAMPLE: Record<QyAiEmailVar, string> = {
+  site_name: 'New API',
+  username: '<user@example>',
+  user_id: '10086',
+  time: '2026-09-07 02:47:01',
+  model: 'gpt-5',
+  group: 'default',
+  category: '违禁品与非法交易',
+  reason: '内容违反使用策略',
+  rule: 'AI 内容审核',
+  blocked: '是',
+  block_message: '你的请求触发了安全策略',
+  request_id: '2026090702470112345',
+  hit_count: '2',
+  threshold: '3',
+  remaining: '1',
+  banned: '否',
+}
+
+/**
+ * HTML 转义,只用于**替换进模板的那些值**。
+ *
+ * 方向与后端 `substituteViolationVars` 逐字相同:模板是管理员写的可信 HTML,
+ * 原样输出;值来自站外(用户名、模型名、判定理由),不转义就等于把模板的
+ * 编辑权分给了任何能改自己用户名的人。
+ */
+function qyAiEscapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&#34;')
+    .replaceAll("'", '&#39;')
+}
+
+/**
+ * 把邮件模板渲染成预览 HTML。
+ *
+ * `escape` 为假时用于标题(它进的是信头,HTML 实体在那里会被原样显示)。
+ * 认不出来的 `{{xxx}}` 原样留着 —— 那正是运营发现自己写错键名的方式。
+ */
+export function qyAiRenderEmailPreview(
+  template: string,
+  escape: boolean,
+  sample: Record<string, string> = QY_AI_EMAIL_SAMPLE
+): string {
+  let out = template
+  for (const key of QY_AI_EMAIL_VARS) {
+    // 空值渲染成 '—',与后端 substituteViolationVars 同一条口径 —— 预览这一格
+    // 存在的意义就是「发出去长什么样」,两边不一致的话它就在骗人。
+    const raw = sample[key] || QY_AI_EMAIL_BLANK
+    out = out.replaceAll(`{{${key}}}`, escape ? qyAiEscapeHtml(raw) : raw)
+  }
+  return out
 }

@@ -24,8 +24,14 @@ For commercial licensing, please contact support@quantumnous.com
  * Midnight Signal 主题的三个文件(tokens / shape / apply)由
  * styles/__tests__/qy-sg-apply.test.ts 钉死:文件名单、qy-sg-* 类名 ≤ 20 个、
  * 辉光 ≤ 2 处、零投影。这里的动效**不属于主题**:它们在任何预设下都要跑,
- * 而且只描述"怎么动",不描述"长什么样"—— 颜色一律 var(--primary) /
- * var(--border) / var(--muted),一个十六进制都没有,所以不会与主题打架。
+ * 而且只描述"怎么动",不描述"长什么样"—— 色相一律 var(--primary) /
+ * var(--border) / var(--muted),一支自带的色相都没有,所以不会与主题打架。
+ *
+ * 唯二的例外是**光**:球体的高光/暗面(`.qy-art-ball`)与封面上的压暗
+ * (`.qy-art-scrim`)用白与黑的低透明度叠加。它们不是色相,是照在底色上的光,
+ * 合成在任何 `currentColor` 或任何一张管理员配的封面之上都成立 —— 换成调色板
+ * 里的某支颜色反而会在另一套预设下露馅。
+ *
  * 类名前缀 qy-fx-(动效)与 qy-art-(静态图形),刻意避开 qy-sg- 以免被那份
  * 双向对账扫进去。
  *
@@ -55,6 +61,55 @@ For commercial licensing, please contact support@quantumnous.com
     var(--border) 0 2px,
     transparent 2px 6px
   );
+}
+
+/* ── 号码球:一颗球,不是一个圆 ──
+ *
+ * 球体的颜色由 `currentColor` 给(红球 / 蓝球在组件上用文字色表达),这里只叠
+ * **光**:左上一层高光、右下一层暗面。所以这两层用的是白与黑的低透明度,而不是
+ * 调色板里的某支颜色 —— 它们是照在球上的光,合成在任何 `currentColor` 之上都
+ * 成立,主题换色时不需要跟着改。本文件"不写十六进制"的纪律针对的是**色相**,
+ * 白与黑不是色相。
+ *
+ * `data-solid` 两态:实心(开出的号 / 命中 / 已选)是一颗球;空心(未命中 / 未选)
+ * 只留描边与一层极淡的内高光 —— 两者的差别不能只靠颜色(红球本来就是红的),
+ * 所以填充、边框、字重三处同时变,色弱与灰度截图下照样分得开。 */
+.qy-art-ball[data-solid='true'] {
+  background-color: currentColor;
+  background-image:
+    radial-gradient(
+      circle at 32% 26%,
+      rgb(255 255 255 / 0.55),
+      rgb(255 255 255 / 0) 46%
+    ),
+    radial-gradient(circle at 72% 84%, rgb(0 0 0 / 0.32), rgb(0 0 0 / 0) 58%);
+}
+.qy-art-ball[data-solid='false'] {
+  background-image: radial-gradient(
+    circle at 32% 26%,
+    color-mix(in oklch, currentColor 16%, transparent),
+    transparent 55%
+  );
+}
+
+/* 开奖那一刻逐颗落位。延迟由内联 `animation-delay` 给(第 N 颗 = N × 90ms),
+   `backwards` 让未开始的那几颗保持在起始帧而不是先闪一下满态。 */
+.qy-fx-ball-drop {
+  animation: qy-fx-ball-drop 0.42s cubic-bezier(0.34, 1.4, 0.64, 1) backwards;
+}
+@keyframes qy-fx-ball-drop {
+  0% {
+    opacity: 0;
+    transform: translateY(-70%) scale(0.6);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(8%) scale(1.06);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* ── 选号球:按下缩一点、选中时弹一下 ── */
@@ -100,6 +155,67 @@ For commercial licensing, please contact support@quantumnous.com
   100% {
     transform: translate(-50%, -33%) scaleY(1);
   }
+}
+
+/* 转动中的一道扫光:一个半透明的扇形绕轴匀速转,读起来是"盘在转"而不是
+   "盘定在那里、只是换了角度"。它画在盘面**之外**(盘面自己那 2 秒过渡是
+   `wheel-face.tsx` 的内联 transform),所以停下之后这一层直接卸载。 */
+.qy-fx-spin-sheen {
+  animation: qy-fx-spin-sheen 1.1s linear infinite;
+  transform-origin: 50% 50%;
+}
+@keyframes qy-fx-spin-sheen {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 落档那一格弹一下。扇区是 SVG `<g>`,transform-origin 必须给在盘心
+   (viewBox 200×200 的 100 100),否则它会绕左上角甩出去。 */
+.qy-fx-land {
+  animation: qy-fx-land 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: 100px 100px;
+}
+@keyframes qy-fx-land {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.045);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ── 卡片抬一下(悬停 / 聚焦)──
+ * 位移而不是投影:design-14 的零投影是硬约束,而 1px 的上移 + 封面轻微放大
+ * 已经足够表达"这张卡可以点"。封面的放大挂在卡片的 hover 上(组内选择器),
+ * 所以图与卡是同一个动作的两半。 */
+.qy-fx-lift {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.qy-fx-lift:hover,
+.qy-fx-lift:focus-within {
+  transform: translateY(-2px);
+}
+.qy-fx-zoom {
+  transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.qy-fx-lift:hover .qy-fx-zoom,
+.qy-fx-lift:focus-within .qy-fx-zoom {
+  transform: scale(1.05);
+}
+
+/* 封面上的压暗:徽章压在管理员随手配的图上,底图是亮是暗无从预知。
+   自上而下一层由深到无的渐变,让顶栏那两枚徽章在任何图上都读得出来。 */
+.qy-art-scrim {
+  background-image: linear-gradient(
+    to bottom,
+    rgb(0 0 0 / 0.38) 0%,
+    rgb(0 0 0 / 0.12) 38%,
+    rgb(0 0 0 / 0) 68%
+  );
 }
 
 /* ── 中奖粒子:一次性向外散开并淡出。位移由 --qy-fx-dx / --qy-fx-dy 给 ── */
@@ -212,10 +328,19 @@ For commercial licensing, please contact support@quantumnous.com
   .qy-fx-ring,
   .qy-fx-bar,
   .qy-fx-press,
-  .qy-fx-sector {
+  .qy-fx-sector,
+  .qy-fx-lift,
+  .qy-fx-zoom {
     transition: none;
   }
   .qy-fx-press:active:not(:disabled) {
+    transform: none;
+  }
+  /* 抬起与放大是纯位移,静态形态就是"没抬、没放大"。 */
+  .qy-fx-lift:hover,
+  .qy-fx-lift:focus-within,
+  .qy-fx-lift:hover .qy-fx-zoom,
+  .qy-fx-lift:focus-within .qy-fx-zoom {
     transform: none;
   }
   .qy-fx-pop,
@@ -223,10 +348,17 @@ For commercial licensing, please contact support@quantumnous.com
   .qy-fx-roll-in,
   .qy-fx-pulse,
   .qy-fx-stamp,
-  .qy-fx-rise {
+  .qy-fx-rise,
+  .qy-fx-ball-drop,
+  .qy-fx-land {
     animation: none;
     opacity: 1;
     transform: none;
+  }
+  /* 扫光只在转动过程里存在,没有静态形态:不显示。 */
+  .qy-fx-spin-sheen {
+    animation: none;
+    opacity: 0;
   }
   /* 指针的静态形态就是它原来的位置(-translate-x-1/2 -translate-y-1/3)。 */
   .qy-fx-pointer-settle {

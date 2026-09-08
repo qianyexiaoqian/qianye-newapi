@@ -188,6 +188,10 @@ func invalidateSettings() {
 	settingsLoaded = 0
 	settingsEpoch++
 	settingsMu.Unlock()
+	// 「明日预计到账」的估算里冻着算它那一刻的比例,而它缓存一小时:比例改了却不清,
+	// 用户页面上会有整整一小时写着按旧档算出来的数 —— 正是本仓反复栽的
+	// 「以为改了其实没改」。估算是只读的,多算几次没有代价。
+	forecastCache.Purge()
 }
 
 // complianceGate 是支付合规门(D-G):`!IsPaymentComplianceConfirmed()` 时四个邀请类

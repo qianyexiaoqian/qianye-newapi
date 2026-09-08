@@ -144,7 +144,6 @@ export function QyAdminViolationRules() {
     }
     return map
   }, [categoryQuery.data])
-  const categoryFallbackId = categoryQuery.data?.fallback_id ?? 0
 
   const statsQuery = useQuery({
     queryKey: qyKeys.adminViolationStats(),
@@ -440,13 +439,23 @@ export function QyAdminViolationRules() {
                     // 与「已经配好了」长得一模一样 —— 所以它单独染成 outline
                     // 徽标，而不是和生效中的那一档共用一种写法。
                     cell: (row: QyViolationRule) => {
-                      // category_id=0 的历史规则在运行期折进兜底类型，这里按
-                      // 同一口径显示，别让列表说「未分类」而后端记到别处。
-                      const target =
-                        row.category_id > 0
-                          ? row.category_id
-                          : categoryFallbackId
-                      const entry = categoryById.get(target)
+                      // category_id=0 是「不指定」，运行期一条计数线都不推进
+                      // （项目方口径：没选类型就只拦截、不计数处罚）。列表必须
+                      // 把它与「记到未分类兜底桶」分开说 —— 后者是一个真实的桶，
+                      // 进了桶就会推进账号总量线，而前者不会。
+                      if (row.category_id <= 0) {
+                        return (
+                          <span className='flex flex-wrap items-center gap-1'>
+                            <span className='text-muted-foreground'>
+                              {t('qy_vio_field_category_unbound')}
+                            </span>
+                            <Badge variant='outline'>
+                              {t('qy_vio_col_category_nocount')}
+                            </Badge>
+                          </span>
+                        )
+                      }
+                      const entry = categoryById.get(row.category_id)
                       if (entry == null) {
                         return (
                           <span className='text-muted-foreground'>

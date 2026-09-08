@@ -123,6 +123,9 @@ func validate(c *Config) error {
 	if err := validateDatabase(&c.Database); err != nil {
 		return err
 	}
+	if err := validateLogDatabase(c); err != nil {
+		return err
+	}
 	if err := validateRuntime(&c.Runtime); err != nil {
 		return err
 	}
@@ -551,6 +554,32 @@ func validateGroupMatrix(g *GroupMatrix) error {
 //
 // 拒绝的措辞必须说出这个理由:只写"仅支持 MySQL"会让人以为是适配工作量问题,
 // 于是下一个人把 sqlite 驱动接上去,而资金串行化在那一刻静默失效。
+// validateLogDatabase 校验可选的台账库。
+//
+// dsn 留空 = 整段不生效,一个字都不校验 —— 那是升级前的形态,而
+// applyDefaults 会把连接池那几格补成合法值,不豁免的话每个没写这一段的
+// 部署都会被下面那条"dsn 不能为空"拦在启动之前。
+//
+// 填了 dsn 就与主库同规格:同样只认 MySQL 与 PostgreSQL。这不是照抄 ——
+// 台账库自己不跑资金路径,但它与主库共用 qianye/db 的整套迁移、租约与
+// 方言分支(GET_LOCK / 咨询锁、information_schema 取当前 schema),
+// 而那一套对 SQLite 没有实现。放宽这里只会把失败推迟到第一次迁移。
+func validateLogDatabase(c *Config) error {
+	if !c.LogDatabaseSeparate() {
+		return nil
+	}
+	if err := validateDatabase(&c.LogDatabase); err != nil {
+		// 错误文案里的键名都是 database.*,原样冒泡会让运维照着去改错那一段。
+		return fmt.Errorf("qianye: log_database 段校验未通过(把下文的 database. 读作 log_database.): %w", err)
+	}
+	if strings.EqualFold(strings.TrimSpace(c.LogDatabase.DSN), strings.TrimSpace(c.Database.DSN)) {
+		return fmt.Errorf("qianye: log_database.dsn 与 database.dsn 完全相同 —— " +
+			"那等于没有分家,却多开了一整套连接池、多跑一次迁移、多一把迁移锁。" +
+			"要让台账表留在主库请把 log_database.dsn 留空")
+	}
+	return nil
+}
+
 func validateDatabase(d *Database) error {
 	if strings.TrimSpace(d.DSN) == "" {
 		return fmt.Errorf("qianye: database.dsn 不能为空(扩展需要独立的 MySQL 或 PostgreSQL)")

@@ -3,6 +3,7 @@ package mall
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -325,4 +326,102 @@ func TestAdminRefundActorGate(t *testing.T) {
 	rows := auditRows(t, env, "mall.order.fail")
 	require.Len(t, rows, 1)
 	assert.Equal(t, qymodel.ResultFail, rows[0].Result)
+}
+
+// TestAdminCodeStockListTakeDelete 钉住码库存的三条管理端契约(列表 / 提卡 / 删码)。
+//
+// 提卡是管理端唯一一条会吐出兑换码明文的路由,它同时改状态。三件事必须一起成立,
+// 少一件都会变成一个安静的漏洞:
+//
+//	列表不带明文    —— 一次越权就是全量泄漏,所以明文只能逐枚、过验密地出来;
+//	提走即出库      —— 还留在 unused 里的话,同一枚码会被再卖给一个用户;
+//	证据行删不掉    —— 已发出 / 已提取的行是"这枚码去哪了"的唯一答案。
+func TestAdminCodeStockListTakeDelete(t *testing.T) {
+	env := newMallEnv(t, nil)
+	r := newRouter()
+	seedPayPassword(t, env, testAdminId, testPayPwd)
+	p := seedProduct(t, env, KindCode, 30, nil)
+	seedCodes(t, env, p, "TAKE-AAA", "TAKE-BBB")
+	base := "/api/qy/admin/mall/products/" + p.ProductNo + "/codes"
+
+	var rows []CodeStock
+	require.NoError(t, env.ext.Order("id asc").Find(&rows).Error)
+	require.Len(t, rows, 2)
+
+	// 列表:两枚 unused,响应里一个明文字符、一个密文列名都没有。
+	status, resp := call(t, r, http.MethodGet, base, "", nil)
+	requireOK(t, status, resp)
+	assert.EqualValues(t, 2, dataOf(resp)["total"])
+	raw, err := json.Marshal(resp)
+	require.NoError(t, err)
+	for _, forbidden := range []string{"TAKE-AAA", "TAKE-BBB", "code_cipher", "code_nonce"} {
+		assert.NotContainsf(t, string(raw), forbidden, "码库存列表泄漏了 %s", forbidden)
+	}
+	// status 筛选是闭集:不认识的取值要拒,不能静默返回全部。
+	status, _ = call(t, r, http.MethodGet, base+"?status=issued", "", nil)
+	requireOK(t, status, nil)
+	status, _ = call(t, r, http.MethodGet, base+"?status=whatever", "", nil)
+	assert.Equal(t, http.StatusBadRequest, status)
+
+	takePath := func(id int64) string { return base + "/" + strconv.FormatInt(id, 10) + "/take" }
+
+	// 不带密码 / 密码错:都不给码,那一枚仍是 unused。
+	for _, headers := range []map[string]string{nil, {payHeader: "wrong-pwd"}} {
+		status, resp = call(t, r, http.MethodPost, takePath(rows[0].Id), "", headers)
+		assert.Equal(t, http.StatusForbidden, status)
+		assert.NotEqual(t, "", codeOf(resp))
+	}
+	var after CodeStock
+	require.NoError(t, env.ext.Where("id = ?", rows[0].Id).Take(&after).Error)
+	assert.Equal(t, CodeUnused, after.Status, "验密没过就不能改状态")
+
+	// 提卡:拿到明文,行变 taken 并记下提卡人。
+	status, resp = call(t, r, http.MethodPost, takePath(rows[0].Id), "", map[string]string{payHeader: testPayPwd})
+	requireOK(t, status, resp)
+	assert.Equal(t, "TAKE-AAA", dataOf(resp)["code"])
+	assert.Equal(t, CodeTaken, dataOf(resp)["status"])
+	require.NoError(t, env.ext.Where("id = ?", rows[0].Id).Take(&after).Error)
+	assert.Equal(t, CodeTaken, after.Status)
+	assert.Equal(t, testAdminId, after.TakenBy)
+	assert.NotZero(t, after.TakenAt)
+
+	// 提走的码不再是可售库存:商品列表上 unused 少一枚、taken 多一枚。
+	status, resp = call(t, r, http.MethodGet, "/api/qy/admin/mall/products?kind=code", "", nil)
+	requireOK(t, status, resp)
+	items, _ := dataOf(resp)["items"].([]any)
+	require.Len(t, items, 1)
+	stockView, _ := items[0].(map[string]any)["code_stock"].(map[string]any)
+	assert.EqualValues(t, 1, stockView["unused"])
+	assert.EqualValues(t, 1, stockView["taken"])
+
+	// 同一枚不能被提第二次(第二位管理员看到的就是这个 409)。
+	status, resp = call(t, r, http.MethodPost, takePath(rows[0].Id), "", map[string]string{payHeader: testPayPwd})
+	assert.Equal(t, http.StatusConflict, status)
+	assert.Equal(t, "qy_ml_code_not_takeable", codeOf(resp))
+
+	// 删除:unused 的删得掉;已提取的是去向证据,删不掉。
+	status, resp = call(t, r, http.MethodDelete, base+"/"+strconv.FormatInt(rows[0].Id, 10), "", nil)
+	assert.Equal(t, http.StatusConflict, status)
+	assert.Equal(t, "qy_ml_code_not_deletable", codeOf(resp))
+	status, resp = call(t, r, http.MethodDelete, base+"/"+strconv.FormatInt(rows[1].Id, 10), "", nil)
+	requireOK(t, status, resp)
+	var left int64
+	require.NoError(t, env.ext.Model(&CodeStock{}).Where("id = ?", rows[1].Id).Count(&left).Error)
+	assert.Zero(t, left)
+	// 不存在的 id 与非数字的 id 都是 404,不能变成 500。
+	status, _ = call(t, r, http.MethodDelete, base+"/999999", "", nil)
+	assert.Equal(t, http.StatusNotFound, status)
+	status, _ = call(t, r, http.MethodDelete, base+"/abc", "", nil)
+	assert.Equal(t, http.StatusNotFound, status)
+
+	// 审计:提卡与删码各留一条成功 + 失败若干,而且**一个明文字符都没有**。
+	takes := auditRows(t, env, "mall.code.take")
+	require.NotEmpty(t, takes)
+	deletes := auditRows(t, env, "mall.code.delete")
+	require.NotEmpty(t, deletes)
+	for _, row := range append(takes, deletes...) {
+		joined := row.Reason + row.BeforeSnap + row.AfterSnap
+		assert.NotContains(t, joined, "TAKE-", "审计里一个字符的码都不能有")
+	}
+	assert.Equal(t, qymodel.ResultOK, takes[len(takes)-2].Result, "成功那次要留痕")
 }

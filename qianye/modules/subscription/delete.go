@@ -134,6 +134,10 @@ func adminDeletePlan(c *gin.Context) {
 		return
 	}
 
+	// 操作人身份一律取鉴权中间件写进 context 的那一份,调用点不许自己传 ——
+	// 与 guard.ActorMayActOnCtx 同一条口径。
+	actor := deleteActor{Id: c.GetInt("id"), Role: c.GetInt("role")}
+
 	var (
 		before    string
 		impact    planImpact
@@ -164,7 +168,7 @@ func adminDeletePlan(c *gin.Context) {
 		if !req.Force && impact.blocking() {
 			return errPlanInUse
 		}
-		cascade, err = cascadePlan(tx, planId)
+		cascade, err = cascadePlan(tx, planId, actor)
 		if err != nil {
 			return err
 		}
@@ -181,6 +185,17 @@ func adminDeletePlan(c *gin.Context) {
 
 	if err != nil {
 		writeDeleteAudit(c, planId, qymodel.ResultFail, "删除订阅套餐失败: "+reason+" / "+err.Error(), before)
+		var protected *protectedHoldersError
+		if errors.As(err, &protected) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"code":    "qy_subscription_plan_protected_holders",
+				"message": fmt.Sprintf("该套餐有 %d 位持有人的权限等级不低于你,已拒绝删除 —— "+
+					"强制删除会作废他们已付款的订阅并把分组打回兜底组。请由超级管理员执行这次删除。",
+					protected.Count),
+			})
+			return
+		}
 		if errors.Is(err, errPlanInUse) {
 			c.JSON(http.StatusConflict, gin.H{
 				"success": false,
@@ -227,7 +242,7 @@ func adminDeletePlan(c *gin.Context) {
 	// 幂等重试(套餐早就不在了)那一档同样要扫:那正是上一次删除留下竞态行时,
 	// 管理员唯一会做的动作。此处不看 force —— 套餐都没了,这些行指向一个不存在的
 	// 套餐,留着只会让这些用户的每一次模型调用都失败,作废它们是修复而不是破坏。
-	sweep, sweptBack = sweepPlanRace(planId)
+	sweep, sweptBack = sweepPlanRace(planId, actor)
 
 	// 扩展库收尾。失败不回滚主库(见函数头 §2:孤儿行零影响),但必须留下痕迹,
 	// 否则"为什么这条名额配置还在"事后没人说得清。
@@ -296,6 +311,92 @@ type cascadeResult struct {
 	DowngradedUsers []int
 }
 
+// deleteActor 是发起这次删除的管理员。
+//
+// 单独成类型而不是传两个 int:cascadePlan 与 sweepPlanRace 都要接,
+// 而 (int, int) 的两个参数在调用点写反了不会有任何编译错误 —— 那会让判据
+// 变成"用目标的角色去判目标",恒真。
+type deleteActor struct {
+	Id   int
+	Role int
+}
+
+// protectedHoldersError 是「这个套餐下有操作人无权处置的持有人」。
+//
+// 带计数是因为它要变成一条给人看的 403:管理员需要知道的不是"被拒了",
+// 而是"有几个人挡着、该去找谁"。
+type protectedHoldersError struct{ Count int }
+
+func (e *protectedHoldersError) Error() string {
+	return fmt.Sprintf("该套餐有 %d 位持有人的权限等级不低于你", e.Count)
+}
+
+// ensureActorMayCancelAll 回答「操作人有没有资格作废这一整批订阅」。
+//
+// # 为什么强删必须有这道闸
+//
+// force 删除会把该套餐下**每一条**活跃订阅置成 cancelled、把 end_time 推到此刻,
+// 再逐行把持有人的 users.group 打回兜底组(见 cascadePlan)。这是纯损害方向,
+// 而目标不在报文里 —— 它藏在订阅行的归属人上,与 relations/unbind 完全同形。
+//
+// 本仓已经为**单条**订阅的作废与硬删接上了 requireManageableUser
+// (actor_gate_guard_test.go 的注释写明了理由:"于是 role=10 能作废并硬删
+// role=100 的有效订阅"),也为**整盘**的已用量重置把 actor 下沉到了逐行判据。
+// 这一条是「整盘 + 纯损害」,是那两类的并集,却两道都没有。
+//
+// # 为什么是拒绝整次删除,而不是逐行跳过
+//
+// 逐行跳过会留下"套餐已删、但还有活跃订阅指着它"的状态 —— 那是一种此前不存在、
+// 没人想过后果的孤儿形状。而单条作废/硬删那两条(同样是纯损害)的既有口径就是
+// 直接拒绝。拒绝也让管理员拿到一个可行动的下一步:找超管来删。
+//
+// # 为什么只用 ManageableTarget,不走 ActorMayActOn
+//
+// ActorMayActOn 还带 SelfDealing 那一半,而作废**自己**的订阅是自损不是自益:
+// 带上它会让一个自己也持有该套餐的超管永远删不掉这个套餐。
+//
+// 持有人账号已经不存在(连 Unscoped 都查不到)时不拦:这道闸保护的是"一个权限
+// 不低于你的账号",而那里没有账号 —— 那条订阅本来就已经是孤儿了。
+func ensureActorMayCancelAll(tx *gorm.DB, actor deleteActor, subs []model.UserSubscription) error {
+	ids := make([]int, 0, len(subs))
+	seen := make(map[int]struct{}, len(subs))
+	for i := range subs {
+		uid := subs[i].UserId
+		if uid <= 0 || uid == actor.Id {
+			continue
+		}
+		if _, dup := seen[uid]; dup {
+			continue
+		}
+		seen[uid] = struct{}{}
+		ids = append(ids, uid)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	// Unscoped:与 guard.ActorMayActOn 同一条理由 —— 软删掉的 role=100 账号
+	// 如果因为 deleted_at 非空就查不到,判据会当成"目标不存在"而放行,
+	// 而放行的正是"对一个更高权限账号动手"。
+	var rows []struct {
+		Id   int
+		Role int
+	}
+	if err := tx.Unscoped().Model(&model.User{}).
+		Select("id, role").Where("id IN ?", ids).Find(&rows).Error; err != nil {
+		return err
+	}
+	blocked := 0
+	for _, r := range rows {
+		if !guard.ManageableTarget(actor.Role, r.Role) {
+			blocked++
+		}
+	}
+	if blocked > 0 {
+		return &protectedHoldersError{Count: blocked}
+	}
+	return nil
+}
+
 // cascadePlan 把一个套餐的活跃订阅与待处理订单一并作废。调用方保证已在事务内。
 //
 // 订阅逐条处理而不是一条批量 UPDATE:作废一条订阅从来不只是改 status。上游的
@@ -311,13 +412,17 @@ type cascadeResult struct {
 //	                     命中,系统此后没有任何路径能把他们降回来,只能人工进库。
 //
 // 订单仍走批量 UPDATE:它没有跨行的派生状态,一条 SQL 就是完整语义。
-func cascadePlan(tx *gorm.DB, planId int) (cascadeResult, error) {
+func cascadePlan(tx *gorm.DB, planId int, actor deleteActor) (cascadeResult, error) {
 	var out cascadeResult
 	now := common.GetTimestamp()
 
 	var subs []model.UserSubscription
 	if err := tx.Where("plan_id = ? AND status = ?", planId, statusActive).
 		Order("id asc").Find(&subs).Error; err != nil {
+		return out, err
+	}
+	// 闸门排在任何一行被改之前:它一旦拒绝,整个事务里连一条 UPDATE 都还没发出去。
+	if err := ensureActorMayCancelAll(tx, actor, subs); err != nil {
 		return out, err
 	}
 	for i := range subs {
@@ -367,11 +472,11 @@ func cascadePlan(tx *gorm.DB, planId int) (cascadeResult, error) {
 // 失败不回滚、不改接口结果:套餐已经删掉了,这一步只是把窗口里漏进来的行收干净。
 // 它失败的表现与"没做扫尾"完全一致(留下孤儿订阅),而把已经成功的删除改报失败
 // 只会让管理员重试一次删除 —— 那条路径本来就是幂等的,自会再扫一遍。
-func sweepPlanRace(planId int) (cascadeResult, bool) {
+func sweepPlanRace(planId int, actor deleteActor) (cascadeResult, bool) {
 	var out cascadeResult
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
-		out, err = cascadePlan(tx, planId)
+		out, err = cascadePlan(tx, planId, actor)
 		return err
 	})
 	if err != nil {

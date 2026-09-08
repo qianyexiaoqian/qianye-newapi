@@ -1,6 +1,7 @@
 package mall
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"unicode/utf8"
@@ -147,15 +148,16 @@ func saleWindowOpen(p *Product, now int64) bool {
 	return true
 }
 
-// codeCounts 是一件 code 商品的库存三态计数。
+// codeCounts 是一件 code 商品的库存分态计数。
 type codeCounts struct {
 	Unused  int64
 	Issued  int64
 	Revoked int64
+	Taken   int64
 }
 
 // codeCountsByProduct 一次分组查出一批商品的库存计数。列表页逐行各查一次就是
-// 一页 20×3 次往返。
+// 一页 20×4 次往返。
 func codeCountsByProduct(gdb *gorm.DB, productIds []int64) (map[int64]codeCounts, error) {
 	out := make(map[int64]codeCounts, len(productIds))
 	if len(productIds) == 0 {
@@ -165,7 +167,7 @@ func codeCountsByProduct(gdb *gorm.DB, productIds []int64) (map[int64]codeCounts
 		ProductId int64
 		Status    string
 		Cnt       int64
-	}, 0, len(productIds)*3)
+	}, 0, len(productIds)*4)
 	err := gdb.Model(&CodeStock{}).
 		Select("product_id, status, COUNT(*) AS cnt").
 		Where("product_id IN ?", productIds).
@@ -183,6 +185,8 @@ func codeCountsByProduct(gdb *gorm.DB, productIds []int64) (map[int64]codeCounts
 			c.Issued = r.Cnt
 		case CodeRevoked:
 			c.Revoked = r.Cnt
+		case CodeTaken:
+			c.Taken = r.Cnt
 		}
 		out[r.ProductId] = c
 	}
@@ -294,7 +298,10 @@ func adminProductView(p *Product, counts codeCounts, now int64) gin.H {
 	v["enabled"] = p.Enabled
 	v["sort_order"] = p.SortOrder
 	v["cover_ref"] = p.CoverRef
-	v["code_stock"] = gin.H{"unused": counts.Unused, "issued": counts.Issued, "revoked": counts.Revoked}
+	v["code_stock"] = gin.H{
+		"unused": counts.Unused, "issued": counts.Issued,
+		"revoked": counts.Revoked, "taken": counts.Taken,
+	}
 	v["created_at"] = p.CreatedAt
 	v["updated_at"] = p.UpdatedAt
 	return v
@@ -320,4 +327,80 @@ func productIdsOf(rows []Product) []int64 {
 		ids = append(ids, rows[i].Id)
 	}
 	return ids
+}
+
+// codeStockView 是一行码库存下发给管理端的形状。
+//
+// 显式挑字段,**不含任何密文列**:CodeStock 上的 code_cipher / code_nonce /
+// key_version 虽然带 json:"-",但把整行交给序列化器等于把"不泄漏"这件事托付给
+// 三个 tag —— 而 secret_guard 守的是包内引用,守不住 tag 被谁删掉。
+func codeStockView(row *CodeStock, orderNo, takerName string) gin.H {
+	return gin.H{
+		"id":         row.Id,
+		"status":     row.Status,
+		"order_no":   orderNo,
+		"created_at": row.CreatedAt,
+		"issued_at":  row.IssuedAt,
+		"taken_at":   row.TakenAt,
+		"taken_by":   row.TakenBy,
+		"taken_name": takerName,
+	}
+}
+
+// orderNosByIds 把一页码库存行上的 order_id 批量换成单号。
+//
+// 换而不是直下发:order_id 是内部自增 id,可枚举,而单号才是这个系统里对外说
+// "哪一张单"的那个词(前端订单页也只认单号)。
+func orderNosByIds(gdb *gorm.DB, rows []CodeStock) (map[int64]string, error) {
+	out := make(map[int64]string, len(rows))
+	ids := make([]int64, 0, len(rows))
+	for i := range rows {
+		if rows[i].OrderId > 0 {
+			ids = append(ids, rows[i].OrderId)
+		}
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	orders := make([]Order, 0, len(ids))
+	if err := gdb.Model(&Order{}).Select("id", "order_no").Where("id IN ?", ids).
+		Find(&orders).Error; err != nil {
+		db.MarkFailure(err)
+		return nil, wrapInternal("读取兑换码对应的订单", err)
+	}
+	for i := range orders {
+		out[orders[i].Id] = orders[i].OrderNo
+	}
+	return out, nil
+}
+
+// adminNamesOf 把一页码库存行上的提卡人 id 批量换成用户名(主库)。
+//
+// Unscoped:提走码的那个管理员账号可能已经被删,但"当初是谁提走的"必须还能显示 ——
+// 一个只剩数字 id 的去向记录在事后追问时等于没有。主库不可用时退化成空名字而不是
+// 整个列表失败:码库存本身在扩展库里,读得到。
+func adminNamesOf(ctx context.Context, rows []CodeStock) map[int]string {
+	out := make(map[int]string, len(rows))
+	if model.DB == nil {
+		return out
+	}
+	ids := make([]int, 0, len(rows))
+	for i := range rows {
+		if rows[i].TakenBy > 0 {
+			ids = append(ids, rows[i].TakenBy)
+		}
+	}
+	if len(ids) == 0 {
+		return out
+	}
+	users := make([]model.User, 0, len(ids))
+	if err := model.DB.WithContext(ctx).Unscoped().Model(&model.User{}).
+		Select("id", "username").Where("id IN ?", ids).Find(&users).Error; err != nil {
+		common.SysError("qianye/mall: 读取提卡管理员用户名失败: " + err.Error())
+		return out
+	}
+	for _, u := range users {
+		out[u.Id] = u.Username
+	}
+	return out
 }

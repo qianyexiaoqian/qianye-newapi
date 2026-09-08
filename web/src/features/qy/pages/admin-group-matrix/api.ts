@@ -41,16 +41,37 @@ import type {
 const QY_GM_BASE = '/admin/group-matrix'
 
 /**
+ * 行轴翻页参数。`undefined` = 要整张表。
+ *
+ * ── 为什么它必须一路带到写接口上 ──
+ *
+ * 三个写接口的响应都是服务端**强制回读**的整个 matrixView（见 {@link qyGmSaveMatrix}），
+ * 而调用方会拿它直接替换缓存。回读时不带同一个窗口，分页外壳按完保存的下一帧
+ * 就会从 10 行涨成全站几十行 —— 运营刚刚按的是「保存」，屏幕上却发生了一次
+ * 他没要求过的翻页。
+ */
+export type QyGmPageParams = {
+  /** 1 起。 */
+  p: number
+  page_size: number
+}
+
+/**
  * 矩阵本体。
  *
  * `staleTime: 0`：这一页每个数字都决定「谁能用哪批渠道、按什么价」，
  * 而两个管理员同屏编辑是设计里明确预期的场景。缓存住一份旧矩阵的直接后果是
  * 运营基于过期状态构造草稿，保存时吃一个 409 却看不出哪里对不上。
  */
-export function qyGmMatrixQuery() {
+/*
+  `page` 省略时逐位等于改造之前：整张表。`/qy/admin/group-matrix` 那张高级视图
+  （整列批量、跨档对比）要的就是全量行轴 —— 只给它前 10 档，整列批量会静默只
+  作用于看得见的那一段，而一次误配横跨两个数据库改六张表。
+*/
+export function qyGmMatrixQuery(page?: QyGmPageParams) {
   return queryOptions({
-    queryKey: qyKeys.adminGroupMatrixData(),
-    queryFn: () => qyGet<QyGmMatrixResponse>(QY_GM_BASE),
+    queryKey: qyKeys.adminGroupMatrixData(page?.p, page?.page_size),
+    queryFn: () => qyGet<QyGmMatrixResponse>(QY_GM_BASE, page),
     staleTime: 0,
   })
 }
@@ -62,8 +83,8 @@ export function qyGmMatrixQuery() {
  * 「倍率已生效、清单未生效」这种半成状态，而乐观本地渲染画出来的是一个从未
  * 存在过的成功画面 —— 运营会据此以为改完了然后走人。
  */
-export function qyGmSaveMatrix(body: QyGmSaveRequest) {
-  return qyPut<QyGmSaveResponse>(QY_GM_BASE, body)
+export function qyGmSaveMatrix(body: QyGmSaveRequest, page?: QyGmPageParams) {
+  return qyPut<QyGmSaveResponse>(QY_GM_BASE, body, { params: page })
 }
 
 /**
@@ -73,10 +94,15 @@ export function qyGmSaveMatrix(body: QyGmSaveRequest) {
  * 这类名字），必须 `encodeURIComponent`，否则含 `/` 或 `#` 的名字会把请求
  * 打到另一条路由上并静默改错一行。
  */
-export function qyGmSaveScope(userGroup: string, body: QyGmScopeRequest) {
+export function qyGmSaveScope(
+  userGroup: string,
+  body: QyGmScopeRequest,
+  page?: QyGmPageParams
+) {
   return qyPut<QyGmSaveResponse>(
     `${QY_GM_BASE}/scope/${encodeURIComponent(userGroup)}`,
-    body
+    body,
+    { params: page }
   )
 }
 

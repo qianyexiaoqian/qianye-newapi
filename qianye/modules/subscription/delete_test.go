@@ -31,6 +31,10 @@ func callDelete(t *testing.T, planId, body string) *httptest.ResponseRecorder {
 	c.Params = gin.Params{{Key: "plan_id", Value: planId}}
 	c.Set("id", 7)
 	c.Set("username", "admin7")
+	// 操作人角色必须显式设:cascadePlan 的操作人闸门(ensureActorMayCancelAll)
+	// 判的就是它,缺省的 0 会 fail-closed 把每一次删除都拒掉 —— 那正是这道闸
+	// 该有的零值行为,但它会把这里全部用例的语义从"删除成功"悄悄换成"被拒"。
+	c.Set("role", common.RoleAdminUser)
 
 	adminDeletePlan(c)
 	return rec
@@ -338,4 +342,49 @@ func TestDeletePlan_IsIdempotentAndPurgesOrphanSeatRow(t *testing.T) {
 	var seatRows int64
 	require.NoError(t, ext.Model(&PlanSeat{}).Count(&seatRows).Error)
 	assert.EqualValues(t, 0, seatRows, "重试删除必须能把孤儿名额行清掉")
+}
+
+// 强删的级联是纯损害方向:一次调用作废该套餐下每一条活跃订阅,并把每个持有人的
+// users.group 打回兜底组。目标不在报文里,而在订阅行的归属人上 —— 与
+// relations/unbind 完全同形,而当初这条路由两道闸一道都没接上。
+//
+// 这条断言证明 role=10 动不了 role=100 花钱买的订阅,并且是**整次拒绝**而不是
+// 逐行跳过:逐行跳过会留下"套餐已删、还有活跃订阅指着它"这种此前不存在的孤儿态,
+// 而单条作废/硬删那两条(同样是纯损害)的既有口径就是直接拒绝。
+func TestDeletePlan_ForceRefusesWhenHolderOutranksActor(t *testing.T) {
+	newExtDB(t)
+	main := newMainDB(t)
+	seedUser(t, main, 100, "root-buyer")
+	require.NoError(t, main.Model(&model.User{}).Where("id = ?", 100).
+		Update("role", common.RoleRootUser).Error)
+	seedPlan(t, main, 1, "VIP 月卡")
+	seedSubscription(t, main, 100, 1, "active")
+
+	rec := callDelete(t, "1", `{"force":true,"reason":"活动结束"}`)
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "qy_subscription_plan_protected_holders")
+
+	// 被拒必须是**整次**回滚:套餐还在,订阅还是 active。
+	assert.True(t, planExists(t, main, 1), "闸门拒绝之后套餐不该被删掉")
+	var sub model.UserSubscription
+	require.NoError(t, main.Where("user_id = ? AND plan_id = ?", 100, 1).First(&sub).Error)
+	assert.Equal(t, "active", sub.Status, "闸门拒绝之后订阅不该被作废")
+}
+
+// 自己持有该套餐不该挡住自己删它:作废**自己**的订阅是自损不是自益,
+// 而 guard.ActorMayActOn 的 SelfDealing 那一半会把这条路堵死 —— 于是一个
+// 自己也买过这个套餐的超管永远删不掉它。这条断言钉住"只用 ManageableTarget"。
+func TestDeletePlan_ForceAllowsActorToCancelOwnSubscription(t *testing.T) {
+	newExtDB(t)
+	main := newMainDB(t)
+	// 7 就是 callDelete 里那个操作人。
+	seedUser(t, main, 7, "admin7")
+	require.NoError(t, main.Model(&model.User{}).Where("id = ?", 7).
+		Update("role", common.RoleAdminUser).Error)
+	seedPlan(t, main, 1, "月度套餐")
+	seedSubscription(t, main, 7, 1, "active")
+
+	rec := callDelete(t, "1", `{"force":true,"reason":"活动结束"}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.False(t, planExists(t, main, 1))
 }

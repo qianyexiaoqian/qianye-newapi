@@ -34,6 +34,45 @@ export type QyMallCodeStock = {
   unused: number
   issued: number
   revoked: number
+  /** 管理员提走的（`taken`）。不再计入可售库存。 */
+  taken: number
+}
+
+/**
+ * 一枚码在库存里的状态。
+ *
+ * `taken` 是管理员提卡：明文已经交到人手上，那一枚从此不再计入可售库存，
+ * 也不会再发给任何用户（后端 `qianye/modules/mall/model.go` 的 `CodeTaken`）。
+ */
+export type QyMallCodeStatus = 'issued' | 'revoked' | 'taken' | 'unused'
+
+/**
+ * 码库存列表的一行。**没有明文，也没有任何密文列** —— 明文只有「提卡」
+ * 一条出口（逐枚、验密、写审计）。
+ */
+export type QyMallAdminCode = {
+  id: number
+  status: QyMallCodeStatus
+  /** 发给了哪张订单（`issued` / `revoked` 时非空）。 */
+  order_no: string
+  created_at: number
+  issued_at: number
+  taken_at: number
+  taken_by: number
+  /** 提卡管理员的用户名；账号已删或主库读不到时是空串。 */
+  taken_name: string
+}
+
+export type QyMallAdminCodesParams = QyPageParams & {
+  status?: QyMallCodeStatus
+}
+
+/** 提卡的响应。`code` 只存在于这一次响应里，不进缓存、不进日志。 */
+export type QyMallCodeTakeResult = {
+  id: number
+  code: string
+  status: QyMallCodeStatus
+  taken_at: number
 }
 
 export type QyMallAdminProduct = QyMallProduct & {

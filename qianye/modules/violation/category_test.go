@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	qymodel "github.com/QuantumNous/new-api/qianye/model"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -42,7 +43,9 @@ func newCategoryDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	// 内存库按连接隔离,多连接会各看到一个空库。
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, gdb.AutoMigrate(&Category{}, &CategoryCounter{}, &Rule{}, &Record{}))
+	// qy_kv 也要建:migrateRuleCategory 现在靠它上面的一个标记做到"只跑一次"
+	// (见那里的注释)。缺了这张表,迁移会在读标记那一步就报错返回。
+	require.NoError(t, gdb.AutoMigrate(&Category{}, &CategoryCounter{}, &Rule{}, &Record{}, &qymodel.KV{}))
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return gdb
 }
@@ -80,9 +83,18 @@ func useCategorySnapshot(t *testing.T, s *snapshot) {
 
 // TestCategoryForRuleNeverOrphans 是"规则绑到类型"这条链路的核心判据。
 //
-// 孤儿的后果是静默的:这条规则照样命中、照样扣钱、照样推进账号总量线,
-// 只是它的命中**不计入任何类型线**。没有任何报错,只有几天后
-// "他在破限上都犯了 8 次了怎么还没被处置"才会暴露。
+// 两半必须分开,而且方向相反:
+//
+//   - **没选类型(id ≤ 0)→ 零值**,也就是「不指定」。项目方原话:「违规类型未选择的,
+//     不应当纳入计数,说明这个类型违规阻断即可,不需要计数处罚」。折进兜底会让
+//     这句话失效 —— 兜底类型是一个真实的桶,进了桶就会推进账号总量线。
+//   - **选了一个查不到的类型(已归档 / 本节点还没刷新到)→ 兜底**。这一半的孤儿
+//     后果是静默的:规则照样命中、照样扣钱、照样推进账号总量线,只是不计入任何
+//     类型线。没有任何报错,只有几天后"他在破限上都犯了 8 次了怎么还没被处置"
+//     才会暴露。
+//
+// 把两半合成一条(不管是"都折兜底"还是"都返回零值")就会毁掉其中一条口径,
+// 所以这张表刻意把它们并排列出来。
 func TestCategoryForRuleNeverOrphans(t *testing.T) {
 	fallback := Category{Id: 1, Key: FallbackCategoryKey, Name: "未分类", IsFallback: true}
 	jailbreak := Category{Id: 2, Key: CatJailbreak, Name: "破限", Enabled: true, Threshold: 3, WindowHours: 24}
@@ -99,8 +111,8 @@ func TestCategoryForRuleNeverOrphans(t *testing.T) {
 		wantId int64
 	}{
 		{"绑了类型 → 就是那一类", snap, 2, 2},
-		{"从未绑过(0)→ 兜底", snap, 0, 1},
-		{"负数(手工 SQL 写坏)→ 兜底", snap, -7, 1},
+		{"从未绑过(0)→ 不指定,一条线都不推进", snap, 0, 0},
+		{"负数(手工 SQL 写坏)→ 与 0 同档", snap, -7, 0},
 		{"指向一个已归档 / 不存在的类型 → 兜底,而不是不计数", snap, 999, 1},
 		// 快照没有类型表(扩展库刚起来、种子还没落地)时返回零值:
 		// 此时 bumpCategoryCounter 直接跳过,账号总量线照常工作。
@@ -794,6 +806,94 @@ func TestSeedAndMigrationBindsExistingRules(t *testing.T) {
 		var n int64
 		require.NoError(t, gdb.Model(&Category{}).Count(&n).Error)
 		assert.EqualValues(t, len(seedCategories), n, "重复补建不该造出重复的类型行")
+	})
+
+	// ── 这一格是本轮加的,守的是"重启不会吃掉管理员配的「不指定」" ──
+	//
+	// 迁移曾经每次启动都跑,判据是 `category_id = 0`,当时那是安全的:0 只表示
+	// "还没绑"。项目方定了「违规类型未选择的,不应当纳入计数」之后,0 变成了一档
+	// **运营主动选的配置**,而那条 UPDATE 会在每次重启时把它改写成兜底桶 ——
+	// 一条他明说了"只拦不罚"的规则,重启之后开始推进账号总量线,界面上毫无提示。
+	//
+	// 判据落在"新建一条 category_id=0 的规则再跑一次迁移,它必须还是 0",
+	// 而不是"moved == 0":后者在把标记判据写反时同样为真(没有待迁移的行)。
+	t.Run("跑过之后不再碰新配的「不指定」规则", func(t *testing.T) {
+		unbound := &Rule{Name: "只拦不罚", Phase: PhasePrompt, MatchType: MatchKeyword,
+			Pattern: "z", Mode: ModeEnforce, Action: ActionBlock}
+		require.NoError(t, gdb.Create(unbound).Error)
+
+		moved, err := migrateRuleCategory(ctx, gdb)
+		require.NoError(t, err)
+		assert.Zero(t, moved)
+
+		var got Rule
+		require.NoError(t, gdb.Where("id = ?", unbound.Id).Take(&got).Error)
+		assert.Zero(t, got.CategoryId,
+			"重启把管理员配的「不指定」改写成了兜底桶 —— 这条规则从此会把人推向封号")
+	})
+}
+
+// TestUnbindFallbackRulesConvertsLegacyRows 守存量规则那一步。
+//
+// # 为什么必须动存量
+//
+// 项目方定了「违规类型未选择的,不应当纳入计数」之后,`category_id = 0` 才是
+// "没选类型"。但在此之前保存过的规则,0 早就被 resolveRuleCategory 与
+// migrateRuleCategory 静默改写成了兜底桶的真实 id —— 库里根本不存在 0 这个状态。
+// 只改新逻辑而不动存量,结果是"这条规则我从来没选过类型,它却还在把人往封号线上推",
+// 而运营在界面上看到的只是一句「未分类」。
+//
+// # 这张表刻意把"不该动的"和"该动的"并排列出来
+//
+// 改判范围只有兜底桶。绑了真实类型的规则少动一条,就是静默关掉一条线上规则的
+// 计数 —— 与本轮要修的问题同一个形状、方向相反。
+func TestUnbindFallbackRulesConvertsLegacyRows(t *testing.T) {
+	gdb := newCategoryDB(t)
+	ctx := context.Background()
+	require.NoError(t, ensureSeedCategories(ctx, gdb))
+
+	var fallback, jailbreak Category
+	require.NoError(t, gdb.Where("is_fallback = ?", true).Take(&fallback).Error)
+	require.NoError(t, gdb.Where("`key` = ?", CatJailbreak).Take(&jailbreak).Error)
+
+	mk := func(name string, catId int64) *Rule {
+		r := &Rule{Name: name, Phase: PhasePrompt, MatchType: MatchKeyword,
+			Pattern: "x", Mode: ModeShadow, CategoryId: catId}
+		require.NoError(t, gdb.Create(r).Error)
+		return r
+	}
+	onFallback := mk("历史·自动折进兜底", fallback.Id)
+	onReal := mk("绑了真实类型", jailbreak.Id)
+	alreadyUnbound := mk("本来就是不指定", 0)
+	deletedOnFallback := mk("软删的也在兜底桶上", fallback.Id)
+	require.NoError(t, gdb.Delete(deletedOnFallback).Error)
+
+	moved, err := unbindFallbackRules(ctx, gdb)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, moved, "两条兜底桶上的规则(含软删那条)都要改判")
+
+	catOf := func(id int64) int64 {
+		var got Rule
+		require.NoError(t, gdb.Unscoped().Where("id = ?", id).Take(&got).Error)
+		return got.CategoryId
+	}
+	assert.Zero(t, catOf(onFallback.Id), "兜底桶上的规则要改判成「不指定」")
+	assert.Zero(t, catOf(deletedOnFallback.Id),
+		"软删的也要改:管理端复核申诉时会读到它们,留两种状态只会让人误判")
+	assert.Equal(t, jailbreak.Id, catOf(onReal.Id),
+		"绑了真实类型的规则一个字节都不能动 —— 动了就是静默关掉一条线上规则的计数")
+	assert.Zero(t, catOf(alreadyUnbound.Id))
+
+	t.Run("只跑一次:之后主动改绑到兜底桶的规则不会被再清一次", func(t *testing.T) {
+		// 运营完全可以在升级之后**主动**把一条规则绑到「未分类」——那是一个
+		// 真实的桶,他要的就是"记到这里、照常推进总量线"。每次启动再清一遍
+		// 等于把这个选择也一起吃掉。
+		deliberate := mk("升级后主动选了未分类", fallback.Id)
+
+		again, err := unbindFallbackRules(ctx, gdb)
+		require.NoError(t, err)
+		assert.Zero(t, again)
+		assert.Equal(t, fallback.Id, catOf(deliberate.Id))
 	})
 }
 

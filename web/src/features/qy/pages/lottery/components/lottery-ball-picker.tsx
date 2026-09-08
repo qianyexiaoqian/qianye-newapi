@@ -154,10 +154,7 @@ function BallGroup(props: {
 }) {
   const balls = Array.from({ length: props.poolSize }, (_, i) => i + 1)
   const full = props.selected.length >= props.limit
-  const activeClass =
-    props.tone === 'red'
-      ? 'border-transparent bg-red-500 text-white'
-      : 'border-transparent bg-blue-500 text-white'
+  const toneClass = props.tone === 'red' ? 'text-red-500' : 'text-blue-500'
 
   return (
     <div className='space-y-2'>
@@ -174,16 +171,26 @@ function BallGroup(props: {
               // 以为的那一组。
               disabled={props.disabled || (full && !active)}
               aria-pressed={active}
+              data-solid={active ? 'true' : 'false'}
               onClick={() => props.onToggle(ball)}
               // 按下缩一点、选中弹一下（`.qy-fx-press` / `.qy-fx-pop`，CSS 驱动，
               // 缩减动效下静止）：一颗球被选中这件事要能被手感确认，不只靠颜色。
+              //
+              // 选中态与展示位的号码球是同一颗球（`.qy-art-ball`，底色取
+              // `currentColor`、CSS 叠光）：用户在这里点出来的那一组，和确认之后
+              // 在回执与开奖行里看到的那一组，必须长得一模一样，否则"我买的是
+              // 哪几个号"要靠读数字来确认。
               className={cn(
-                'qy-fx-press size-9 rounded-full border text-sm font-medium tabular-nums',
+                'qy-art-ball qy-fx-press inline-flex size-9 items-center justify-center rounded-full text-sm font-medium tabular-nums',
                 'disabled:cursor-not-allowed disabled:opacity-40',
-                active ? cn('qy-fx-pop', activeClass) : 'hover:bg-muted'
+                active
+                  ? cn('qy-fx-pop font-bold', toneClass)
+                  : 'hover:bg-muted border'
               )}
             >
-              {String(ball).padStart(2, '0')}
+              <span className={active ? 'text-white' : undefined}>
+                {String(ball).padStart(2, '0')}
+              </span>
             </button>
           )
         })}

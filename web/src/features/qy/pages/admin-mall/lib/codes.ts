@@ -44,3 +44,14 @@ export function qyMallParseCodes(text: string): string[] {
     .map((line) => line.trim())
     .filter((line) => line !== '')
 }
+
+/**
+ * 一枚码的状态 → i18n 键。
+ *
+ * 做成函数而不是查表：键名与后端状态字面量一一对应（`unused` / `issued` /
+ * `revoked` / `taken`），后端加一态时这里不需要改，只要补一条文案。
+ * 键本身在 `i18n-key-coverage.test.ts` 的 `QY_DYNAMIC_KEYS` 里登记。
+ */
+export function qyMallCodeStatusKey(status: string): string {
+  return `qy_mladm_code_status_${status}`
+}

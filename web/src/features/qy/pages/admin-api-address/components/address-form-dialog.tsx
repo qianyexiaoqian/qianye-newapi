@@ -128,7 +128,7 @@ export function QyApiAddressFormDialog(props: Props) {
   // 地址可见性按的是**用户分组**。queryKey 与订阅套餐编辑那边共用同一份缓存。
   const userGroupsQuery = useQuery({
     queryKey: ['user-group-options'],
-    queryFn: getUserGroupOptions,
+    queryFn: () => getUserGroupOptions(),
     staleTime: 5 * 60 * 1000,
     enabled: props.open,
   })

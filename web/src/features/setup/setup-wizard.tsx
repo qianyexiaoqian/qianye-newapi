@@ -36,6 +36,7 @@ import {
 } from '@/components/ui/card'
 import { Form } from '@/components/ui/form'
 import { Skeleton } from '@/components/ui/skeleton'
+import { getQySetupStatus, QyDatabaseStep } from '@/features/qy/setup'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { cn } from '@/lib/utils'
 
@@ -80,6 +81,8 @@ export function SetupWizard() {
   const { systemName, logo, loading: systemConfigLoading } = useSystemConfig()
 
   const [currentStep, setCurrentStep] = useState(0)
+  // qianye:初始化完成后是否接着配置扩展数据库。见 features/qy/setup。
+  const [qyPhase, setQyPhase] = useState(false)
   const [setupStatus, setSetupStatus] = useState<SetupStatus | undefined>()
 
   const form = useForm<SetupFormValues>({
@@ -105,6 +108,19 @@ export function SetupWizard() {
     mutationFn: submitSetup,
     onSuccess: async (response) => {
       if (response.success) {
+        // qianye:扩展库还没配过就接着走那一屏。拿不到状态(上游原版没有这条
+        // 端点)时 getQySetupStatus 返回 null,行为与改动之前逐字一致。
+        //
+        // 这一段必须排在 invalidateQueries **之前**,而且走这条分支时一次都
+        // 不 invalidate:重新拉 setup-status 会拿到 status:true,上面那个
+        // useEffect 见到它就立刻 navigate('/'),扩展这一屏连渲染的机会都没有。
+        // 实测过一次 —— 表现是点完"初始化系统"直接落到首页。
+        const qyStatus = await getQySetupStatus()
+        if (qyStatus && !qyStatus.configured) {
+          setCurrentStep(STEPS.length)
+          setQyPhase(true)
+          return
+        }
         toast.success(t('System initialized successfully! Redirecting…'))
         await queryClient.invalidateQueries({ queryKey: ['setup-status'] })
         setTimeout(() => {
@@ -123,6 +139,10 @@ export function SetupWizard() {
 
   useEffect(() => {
     if (!statusResponse) return
+    // qianye:扩展那一屏是在初始化**之后**显示的,此时 setup 状态本就该是
+    // 已完成。让这个 effect 继续跑会把 currentStep 拨回 0、并重置管理员字段,
+    // 把那一屏连同它需要的账密一起搅乱。
+    if (qyPhase) return
 
     if (!statusResponse.success) {
       toast.error(statusResponse.message || t('Failed to load setup status'))
@@ -132,7 +152,8 @@ export function SetupWizard() {
     const status = statusResponse.data
     if (!status) return
 
-    if (status.status) {
+    // qianye:qyPhase 期间不跳转 —— 那一屏正是在 status 已经变 true 之后显示的。
+    if (status.status && !qyPhase) {
       navigate({ to: '/' })
       return
     }
@@ -187,6 +208,15 @@ export function SetupWizard() {
   }, [setupStatus, form])
 
   const currentStepComponent = useMemo(() => {
+    if (qyPhase) {
+      return (
+        <QyDatabaseStep
+          adminUsername={form.getValues('username')}
+          adminPassword={form.getValues('password')}
+          onFinish={() => navigate({ to: '/' })}
+        />
+      )
+    }
     if (currentStep === 0) {
       return <DatabaseStep status={setupStatus} />
     }
@@ -202,7 +232,7 @@ export function SetupWizard() {
       return <UsageModeStep form={form} />
     }
     return <CompleteStep status={setupStatus} values={watchedValues} />
-  }, [currentStep, setupStatus, form, watchedValues])
+  }, [currentStep, setupStatus, form, watchedValues, qyPhase, navigate])
 
   const validateAdminStep = () => {
     if (setupStatus?.root_init) return true
@@ -383,7 +413,9 @@ export function SetupWizard() {
             )}
           </CardContent>
 
-          {!isLoading && !isError && (
+          {/* qianye:扩展库那一屏自带「测试连接 / 保存并继续 / 跳过」三个按钮,
+              向导的上一步/下一步在那里没有意义。 */}
+          {!isLoading && !isError && !qyPhase && (
             <CardFooter className='w-full justify-end border-t'>
               <StepNavigation
                 currentStep={currentStep}

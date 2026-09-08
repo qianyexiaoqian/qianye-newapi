@@ -164,6 +164,11 @@ export const qyKeys = {
   /** 日桶（消费返的逐日计提，含 held 的那几天）。 */
   stardustAccruals: (params: unknown) =>
     [...qyKeys.all, 'stardust', 'accruals', params] as const,
+  /**
+   * 明日预计到账。缓存与节流都在**服务端**（一小时一份），所以这里不带参数：
+   * 手动刷新是同一份数据的重算，写回同一个键，不另开缓存条目。
+   */
+  stardustForecast: () => [...qyKeys.all, 'stardust', 'forecast'] as const,
 
   // ── 商城（用户端）──
   mallProducts: (params: unknown) =>
@@ -354,6 +359,10 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'violation', 'ai-review', 'stats', days] as const,
   adminViolationAiLogs: (params: unknown) =>
     [...qyKeys.all, 'admin', 'violation', 'ai-review', 'logs', params] as const,
+  // 详情按 id 单独缓存:它比列表行多一段送审内容,而那一段最长有几千字。
+  // 挂在列表 key 下会让任何一次筛选变更都把已经取回的内容一起作废。
+  adminViolationAiLogDetail: (id: number) =>
+    [...qyKeys.all, 'admin', 'violation', 'ai-review', 'logs', id] as const,
   // 影响面预览带参数：阈值/窗口/动作任意一项变了，那个数字就必须重算。
   // 不把参数放进 key 的话，管理员改完阈值看到的仍是上一次的数 —— 而这个数
   // 正是他决定要不要按下保存的唯一依据。
@@ -444,6 +453,9 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'mall', 'products', params] as const,
   adminMallOrders: (params: unknown) =>
     [...qyKeys.all, 'admin', 'mall', 'orders', params] as const,
+  /** 一件兑换码商品的码库存（状态与时间，**永远不含明文**）。 */
+  adminMallCodes: (productNo: string, params: unknown) =>
+    [...qyKeys.all, 'admin', 'mall', 'codes', productNo, params] as const,
   /**
    * 套餐商品表单里「选哪个套餐」的候选清单（上游 `/api/subscription/admin/plans`）。
    *
@@ -492,11 +504,41 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'plan-entitlement', planId] as const,
 
   adminGroupMatrix: () => [...qyKeys.all, 'admin', 'group-matrix'] as const,
-  adminGroupMatrixData: () => [...qyKeys.adminGroupMatrix(), 'data'] as const,
+  /**
+   * 矩阵本体。**按行轴窗口分键。**
+   *
+   * 不带页码 = 全量（`/qy/admin/group-matrix` 那张高级视图要的那一份），与
+   * 「第 1 页 / 每页 10 行」是两份不同的数据，混用一个键会让两个外壳互相把
+   * 对方的结果读成自己的：分页外壳读到全量就一屏几十行，高级视图读到一页
+   * 就会把整列批量静默做成只作用于前 10 档。
+   *
+   * 两者都挂在 `adminGroupMatrix()` 前缀下 —— 任何一次写入 invalidate 那个前缀，
+   * 每一页连同全量一起失效。
+   */
+  adminGroupMatrixData: (page?: number, pageSize?: number) =>
+    [
+      ...qyKeys.adminGroupMatrix(),
+      'data',
+      page ?? null,
+      pageSize ?? null,
+    ] as const,
   adminGroupMatrixOrphans: () =>
     [...qyKeys.adminGroupMatrix(), 'orphans'] as const,
 
   adminModelGroups: () => [...qyKeys.all, 'admin', 'model-groups'] as const,
+  /**
+   * 模型分组列表。**按翻页窗口分键**——理由同 {@link qyKeys.adminGroupMatrixData}：
+   * 不分键的话翻页时 React Query 会先把上一页的内容原样渲染出来，运营看到的是
+   * "点了下一页、内容没变"。挂在 `adminModelGroups()` 前缀下，一次 invalidate
+   * 让每一页连同全量一起失效。
+   */
+  adminModelGroupList: (page?: number, pageSize?: number) =>
+    [
+      ...qyKeys.adminModelGroups(),
+      'list',
+      page ?? null,
+      pageSize ?? null,
+    ] as const,
   /**
    * 单个模型分组的删除影响面。
    *

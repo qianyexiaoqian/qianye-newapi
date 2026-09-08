@@ -116,7 +116,7 @@ export function UsersMutateDrawer({
     // 键里带 user-：渠道/令牌下拉用的是模型分组那一份，两者共用一个
     // ['groups'] 缓存键会让先加载的那一页把另一页的候选清单也换掉。
     queryKey: ['user-group-options'],
-    queryFn: getUserGroupOptions,
+    queryFn: () => getUserGroupOptions(),
     staleTime: 5 * 60 * 1000,
   })
 

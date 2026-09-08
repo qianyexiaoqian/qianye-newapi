@@ -658,6 +658,26 @@ func Close() error {
 
 `Close()` **不**接进 `main.go:71-76` 的 defer（省 1 行预算）；进程退出由 OS 回收，租约按 TTL 自然过期。
 
+### 2.5 台账库（可选的第二个库，`qianye/db/logdb.go`）
+
+**2026-09-06 追加（D-17）。** 高频只读明细可以住在自己的库里，由顶层 `log_database` 段配置。
+目前只有一张表：`qy_violation_ai_review`（AI 审核明细）。
+
+- **`log_database.dsn` 留空 = 不启用**，那些表跟着 `allTables()` 一起迁进主扩展库，
+  与本节存在之前逐字节一致。升级不要求任何部署去准备新库。
+- 业务代码一律用 `db.Log()`（没分家时它就是 `db.Get()`），**不要**在调用点自己判断分没分家。
+- 各模块通过可选接口 `module.LogTabler` 声明自己的台账表；`bootstrap.go` 里那一处
+  `db.LogSeparate()` 是全仓唯一一处需要知道分没分家的地方。
+- 两个库各有一把**不同名**的迁移锁（`qy_schema_migrate` / `qy_schema_migrate_log`）。
+  MySQL 的 `GET_LOCK` 是服务器实例级的，同名会让"同一台 MySQL 上两个 schema"
+  这种最常见的部署互相阻塞 30 秒。
+- 熔断计数也是分开的（`db.MarkLogFailure`）：合用一个会让一次日志库故障把主库的
+  熔断也顶开，而那一刻 relay 与资金路径全都是好的。
+- **硬约束**：台账表不得与主库的表 JOIN、不得参与跨库事务。分家之后那种查询会在
+  配了 `log_database` 的部署上直接报错，而在没配的部署上完全正常。
+
+判据与取舍的完整版见 [decisions.md](decisions.md) 的 D-17。
+
 ---
 
 ## 3. 降级语义统一实现：`qianye/guard`

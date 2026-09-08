@@ -571,6 +571,21 @@ DELETE+INSERT 整日重算**形状**,**不借它的日界**(`dayBucket/dayRange`
 下次结算时刻 = `nextDayStart(now) + settle_delay_minutes×60`,只由后端下发(D-03),前端不复刻。
 任务补扣按补扣当日返、按补扣当日分组定档。
 
+**明日预计到账**(`GET /stardust/forecast`,2026-09-06 补):昨日摘要在一整个白天里是个不会动的数,
+而"我今天花了这么多到底会返多少"此前界面上没有答案。这一条按**今天到现在**的消费估下一次结算会记入多少:
+口径与日结逐字相同(同一批排除项、`grossOf` 的截断、`floor(carry + Σgross)`),两条线各自取整再相加
+(消费返按我自己的消费、下线消费返按我名下绑定中未拉黑的下线,后者与 `/invite/summary` 的
+`pending_today_base_quota` 共用 `pendingTodayInviteeConsume`);账号处于三种暂缓之一时两条都估 0 并写明原因。
+`settle_at` 恒等于 `nextDayStart(now) + delay` —— 它回答的是**今天这一桶**什么时候结,与
+`/stardust/me` 的 `next_settle_at`(下一次结算在什么时候)不是同一个问题。
+
+**它只读,不写任何库、不建任何桶**。估算要扫 LOG_DB(下线那一段最多 500 个 `user_id`),而余额是星屑宿主的
+第一张标签,所以缓存在进程内一小时(`forecastTTL`),用户可 `?refresh=1` 请它提前重算,但两次**真正的**重算
+之间至少隔 `forecastManualMinSecs`(60 秒)—— 否则那颗按钮就是一个人人可按的 LOG_DB 压测器。窗口内的强制刷新
+原样退回缓存那一份,响应里的 `refresh_after` 让界面把按钮按住。缓存是 per-node 的(同 `invite/inviter.go` 的
+判断),`computed_at` 下发给界面写成"数据截至",不假装它是实时的;运营改全站比例或分组档时
+(`invalidateSettings` / `invalidateGroupRates`)整个缓存清空,避免"改了比例、页面上一小时还是旧数"。
+
 ### 4.2 ② 娱乐活动中奖
 
 §5 / §7。派奖走 `Credit(kind=lot_prize)`。
@@ -636,7 +651,8 @@ hook 体只做内存判定后 `guard.HotAsync`(购买是低频事件,丢弃面�
 ### 4.6 invite 共享设施(原 commission,D-14 之后)
 
 D-14 把 commission 瘦身改名成 `invite`:现金佣金账本、结算、冲正、法币折算全部删除(**D-15 又把账本 /
-结算 / 余额按「星辉」口径恢复到 `modules/commission`,与本节的星屑邀请奖励并行**,方向 commission → invite),留下的是
+结算 / 余额恢复到 `modules/commission`、按「星辉」口径,D-16 再把记账单位改成星屑**,与本节的星屑邀请
+奖励并行且同币种;方向 commission → invite,D-16 起再加一条 commission → stardust),留下的是
 被 stardust 复用的几样东西 —— 邀请关系(绑定 / 换绑 / 解绑 / 拉黑、互邀自动拉黑、`InviteeEligible` /
 `InviteMatch` 判定)、邀请人缓存与跨节点失效通道(`cachesync`,表 `qy_invite_cache_invalidation`)、
 日界 `dayline`(`invite.day_offset_minutes`,星屑日桶 / 日结 / 下线日消费报表共用的唯一"一天")、
@@ -677,8 +693,14 @@ held 桶 gross 冻结于首次计算值,管理端 `settle/rerun` 用 `sdinviterr
 `bps=0`、下线被拉黑、没有上线、合规未确认:**不写行**。
 
 **不做的**:不追溯 D-14 之前的消费;不给多级;下线自己的消费返与上线的状态无关(507 透支不影响 506)。
-**与星辉佣金并行**(D-15):同一天同一个下线的消费,这里按邀请人分组档折成星屑,`modules/commission`
-按佣金费率计成额度并自动入账星辉,两边各记各的账、互不抵扣。
+**与推广佣金并行**(D-15/D-16):同一天同一个下线的消费,这里按邀请人分组档折成星屑当天日结发出去,
+`modules/commission` 按佣金费率也折成星屑、过持有期、攒够门槛再自动入账。两边各记各的账、互不抵扣。
+
+⚠ D-16 之后两边发的是**同一种钱**,而 `invite_consume_bps` 与 `commission.consume_rate_bps` 打的是
+**同一笔基数**:两边同时为正,同一笔下线消费会给上线落两笔星屑。这是运营的配置选择(即时小额 +
+延迟大额两条并存完全可能是故意的),代码不拒绝也不清零,只在 `/admin/commission/health` 的
+`rate_overlap` 段逐档标出来。充值档(`invite_topup_bps` ↔ `topup_rate_bps`)与兑换码档
+(`invite_redeem_bps` ↔ `redemption_rate_bps`)同理。详见 `decisions.md` D-16。
 用户端看它走「我的推广」(`/api/qy/invite/summary|invitees|records|invitee-daily`,住 stardust 包),
 管理端看日桶走 `/api/qy/admin/invite/invite-accruals`。
 
@@ -848,7 +870,11 @@ lottery 健康面板加「星屑活动在途 N / stardust 已关」红项(与 D-
 `per_user_limit`、`sale_start_at / sale_end_at`、`enabled`、`sort_order`、`plan_id`、时间戳。
 
 **`qy_ml_code_stock`**:`id`、`product_id` idx、`code_cipher`(`qymodel.Blob`)、`key_version`、`nonce`、
-`status`(`unused|issued|revoked`)、`order_id`、`created_at / issued_at`。
+`status`(`unused|issued|revoked|taken`)、`order_id`、`created_at / issued_at`、`taken_at / taken_by`。
+`taken` 是**管理员提卡**:明文交到人手上,那一枚从此不计入可售库存、也不会再发给任何用户。
+做成独立一态而不是复用 `issued`,是因为 `issued` 的语义带着 `order_id`(履行证据),而提卡没有单;
+留在 `unused` 更不行 —— 同一枚码会被再卖给一个用户。`taken_at / taken_by` 与审计双写:
+审计可被保留期清理,库存行不会,而运营对着库存表问的正是"这一页里哪几枚被提走了、分别是谁"。
 密钥 `mall.secret_key`(必填,与 `withdraw.pii_key` 同规格,登记 `SecretKeys`)。
 管理端批量粘贴上传(≤ 500 条/次),入库即密文,明文只出现在上传请求体里
 (登记 `credentialBodyRoutes`,键格式 `POST /api/qy/admin/mall/products/:no/codes`)。
@@ -1207,6 +1233,7 @@ lottery 段新增:`max_stake_stardust`(YAML-only)/ `max_total_prize_stardust` / 
 | GET | `/stardust/me` | 余额、余数、暂缓状态、昨日结算摘要、下次结算时刻(后端算) |
 | GET | `/stardust/ledger` | 流水分页(`httpq.Paginate`),按 kind 筛 |
 | GET | `/stardust/accruals` | 待结算 / 暂缓的日桶 |
+| GET | `/stardust/forecast` | 明日预计到账(§4.1;`?refresh=1` 手动重算,服务端缓存一小时 + 60 秒节流) |
 | GET | `/mall/products` / `/mall/products/:no` | 在售商品;`kind=plan` 附 Preview 结果与名额预检 |
 | POST | `/mall/orders` | 下单(**验密** for code/physical) |
 | GET | `/mall/orders` / `/mall/orders/:no` | 我的订单(不含码、不含地址明文) |
@@ -1228,6 +1255,9 @@ lottery 段新增:`max_stake_stardust`(YAML-only)/ `max_total_prize_stardust` / 
 | POST | `/stardust/settle/rerun` | 审计;`{day}` 是桶日;只对 computed/held 桶生效 |
 | GET/POST/PUT/DELETE | `/mall/products(/:no)` | 审计;`kind=plan` 需 outbox |
 | POST | `/mall/products/:no/codes` | 批量上传(`credentialBodyRoutes`) |
+| GET | `/mall/products/:no/codes` | 码库存分页(`?status=`);**不回明文**,只回状态 / 时间 / 去向 |
+| POST | `/mall/products/:no/codes/:id/take` | 管理员提卡:**验密中间件** + 审计;解出明文并标 `taken` |
+| DELETE | `/mall/products/:no/codes/:id` | 删一枚 `unused` 的码;`issued/revoked/taken` 是证据,409 |
 | GET | `/mall/orders`;POST `/mall/orders/:no/ship` `/fail` `/revoke-code`;GET `/mall/orders/:no/address` | 审计;地址揭示 `sensitiveReads` |
 | POST | `/mall/orders/:no/adjudicate` | **RootActionGate**(`Failed + MainApplied/MainUnknown` 的 held 单) |
 
@@ -1271,6 +1301,24 @@ lottery 段新增:`max_stake_stardust`(YAML-only)/ `max_total_prize_stardust` / 
 主题:转盘的多色扇区与旋转动效撞 Midnight Signal 的"一支色相 / 辉光 ≤2 / 零投影"(`design-14 §4`)。
 扇区只用四支语义色 + 两档图表色(族外允许项),不加辉光,`prefers-reduced-motion` 下不旋转直接显示结果;
 "真·霓虹转盘"需要单独的主题豁免拍板。
+
+**2026-09-05 补(项目方:「娱乐功能文字画太多,让人观感很差」,要求加动画与 SVG)**——
+上面那条"只用六支色"在**色相**上一字未改,另加了两件不属于色相的东西,口径写在
+`web/src/styles/qy-visual.css` 的头注释里:
+
+1. **光**。盘面与号码球各盖一层白/黑的低透明度渐变(左上高光、右下暗面)。它不是色相
+   (合成在任何一支扇区色或任何一张管理员配的封面之上都成立,换主题预设时不用跟着改)、
+   不是辉光(那两处配额仍归后台页头与落地页首屏)、也不是投影(零投影管的是 `box-shadow`)。
+   同一条口径下还有大厅封面顶部那层压暗 `.qy-art-scrim` —— 徽章压在管理员随手配的图上,
+   底图是亮是暗无从预知。
+2. **「谢谢参与」那一格换色**:`--muted` → `color-mix(in oklch, var(--foreground) 22%, var(--background))`。
+   `--muted` 在浅色下是 `oklch(0.97)`、深色下是 `oklch(0.305)`,两边都紧贴 `--card`,而这一格
+   通常是盘上最大的一块(落空概率常在 50% 以上) —— 盘面因此被挖掉一个与背景同色的大缺口。
+   取值仍是纯中性,不占那"一支色相"的配额。`wheel/lib/__tests__/spin.test.ts` 钉着它不许退回 `--muted`。
+
+动效一律 CSS 驱动(`transform` / `opacity` / `stroke-dashoffset`),`prefers-reduced-motion: reduce`
+下全部退化成静态终态。奖档表(抽奖 / 双色球 / 转盘三份)从 `StaticDataTable` 改成"一档一行"的清单,
+原文一个字没删,只是换了位置与字号 —— 字数上限仍由 `lottery/__tests__/text-budget.test.tsx` 守。
 
 金额组件:§8.2。报名 / 转动 / 商城 code/physical 成功后 `invalidate(qyKeys.all)`;商城套餐(动主库)
 才 `useQyAfterMoneyChange`。
@@ -1405,3 +1453,49 @@ S2 / S3 / S5 三条线可并行;S4 依赖 S3。
 - 商城购物车、多件、优惠券、自动生成主库兑换码、本站余额码上架。
 - 转盘的主题豁免、转盘管理员参与(D-J)。
 - 消费时刻的分组快照(§4.1 按结算时刻)。
+
+---
+
+## D-16 · 推广佣金也改记星屑(2026-09-05,与 D-15 同日)
+
+拍板与完整后果在 `decisions.md` D-16。这里只补本文档口径上受影响的三处。
+
+### 1) 折算口径:佣金与消费返共用同一条式子
+
+佣金的 gross 从"额度"变成"星屑",算法与 §4.7 的下线消费返逐字同形:
+
+```
+gross = base_quota × rate_bps / 10000 / quota_per_unit
+```
+
+刻度与费率、分组一样**逐行冻结**(`qy_commission_accrual.quota_per_unit`),与
+`qy_sd_accrual.quota_per_unit` / `qy_sd_invite_accrual.quota_per_unit` 同一条纪律、
+同一个来源(`stardust.QuotaPerUnit()`)。冲正取**原单**冻结的刻度,不取当刻的。
+
+`base_quota` 仍然是额度 —— 它是分母(下线实际花掉多少),不是返给谁的钱。用户端与
+管理端因此同屏出现两种单位:基数印 `$…`,佣金印 `… 星屑`。这不是遗漏,是"花了多少、
+返了多少"这条唯一能自己验算的式子必须两边都看得见。
+
+### 2) 跨库两阶段入账整层退役
+
+§8.3「星辉」那一节描述的是**站内余额的展示名**,仍然成立(`users.quota` 的 CUSTOM 符号)。
+但 D-15 建立在它之上的那条**佣金入账链路**没有了:
+
+| D-15(佣金记星辉) | D-16(佣金记星屑) |
+| --- | --- |
+| 扩展库冻结 → 主库 `IncreaseUserQuota` → 扩展库销账 | 一个扩展库事务:`stardust.Credit` + `available → credited` |
+| 两阶段资金单 `KindCommissionCredit`、主库探针、人工裁决、对账循环 | 无 |
+| `qy_commission_freeze` 表、`balance.frozen_quota` 列 | 已删 |
+| credit 状态 pending / done / failed / held | 只剩 `done` |
+| `credit.fund_order_no` 指向资金单 | `credit.ledger_no` 指向 `qy_sd_ledger` 那一行 |
+
+理由是一句话:那一整层回答的是"主库到底动没动",而佣金账本与星屑账本同库之后
+这个问题不存在了。新增依赖 `commission → stardust`(无环:commission → stardust → invite)。
+
+星屑账本新增 kind `commission_credit`(落 `total_earned`),幂等键
+`(idem_scope=commission_credit, idem_key=credit_no)`。
+
+### 3) D-G ③ 的订正
+
+原文写着"上游推广卡本来就只在 `aff_quota>0` 时显示"——读错了源码,`hasRewards` 只控制
+「转入余额」按钮。已在 §D-G 就地订正,门开在 qy 宿主一侧。

@@ -72,6 +72,9 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 // RegisterAdminRoutes 挂载管理端接口。传入的组已挂 AdminAuth(自带上游操作审计)。
 func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.GET("/mall/products", handleAdminListProducts)
+	// 码库存列表。**不回明文**,只回状态与时间 —— 明文的唯一管理端出口是下面的
+	// take,逐枚、验密、写审计。
+	g.GET("/mall/products/:no/codes", handleAdminListCodes)
 	g.GET("/mall/orders", handleAdminListOrders)
 	// 地址明文是 PII 的唯一出口:登记 sensitiveReads(请求台账)+ 业务审计。
 	g.GET("/mall/orders/:no/address", handleAdminRevealAddress)
@@ -83,6 +86,14 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	g.DELETE("/mall/products/:no", crit, handleAdminDeleteProduct)
 	// 兑换码批量上传:整个 body 由凭证构成,登记 credentialBodyRoutes。
 	g.POST("/mall/products/:no/codes", crit, handleAdminUploadCodes)
+	// 管理员提卡:把一枚未使用的码解出明文并标成 taken(它从此不再计入可售库存)。
+	// 挂 paypass.Middleware() 与用户端揭示自己的码同一档(D-12,密码走
+	// X-Qy-Pay-Password 请求头):码可以是任意第三方卡密,一次揭示即离开平台,
+	// 一个被盗的管理员会话不该只凭 cookie 就能把整库码捞走。
+	// 是 POST 不是 GET:它改状态,而且写方法本来就无条件进请求台账。
+	g.POST("/mall/products/:no/codes/:id/take", crit, paypass.Middleware(), handleAdminTakeCode)
+	// 删一枚未使用的码(打错、传重了)。已发出 / 已撤回 / 已提取的行删不掉。
+	g.DELETE("/mall/products/:no/codes/:id", crit, handleAdminDeleteCode)
 	// 封面。上传要落磁盘,是本模块唯一一条能消耗宿主机存储的入口。
 	g.POST("/mall/covers", crit, handleAdminUploadCover)
 	g.DELETE("/mall/covers/:ref", crit, handleAdminDiscardCover)

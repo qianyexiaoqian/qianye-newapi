@@ -144,7 +144,7 @@ func accrueConsume(ctx context.Context, ev consumeEvent) error {
 	day := bucketDate(ev.At)
 	_, err = writeAccrual(ctx, accrualInput{
 		SourceType:   SourceConsume,
-		IdemKey:      consumeIdemKey(match.InviterId, ev.InviteeId, day, rate, s.HoldingDays),
+		IdemKey:      consumeIdemKey(match.InviterId, ev.InviteeId, day, rate, s.HoldingDays, qpu),
 		InviterId:    match.InviterId,
 		InviteeId:    ev.InviteeId,
 		BaseQuota:    ev.Quota,

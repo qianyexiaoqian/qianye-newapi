@@ -20,6 +20,14 @@ import (
 // 必须显式决定它属于哪一边。
 var quotaCapExempt = map[string]string{
 	"image_user_quota_bytes": "它是**字节数**不是额度,与 common.MaxQuota 不同量纲",
+	// D-16 把这三个门槛改名成 *_stardust 并换了单位;旧键名只剩一个 Deprecated
+	// 占位,唯一的作用是让仍写着它们的存量 YAML 在严格解析下不至于启动失败
+	// (adoptRenamedCommissionQuotaKeys 告警并置 nil)。它们的值一个字节都不参与
+	// 任何计算,给一个永远不会被读的字段加上界只会让下一个人以为它还生效。
+	// 真正的上界在同名的 *_stardust 键上,由 validateCommission 逐个 checkQuotaCap。
+	"min_settle_quota":    "已废弃的占位键(→ min_settle_stardust),加载时置 nil,不参与任何计算",
+	"max_per_order_quota": "已废弃的占位键(→ max_per_order_stardust),加载时置 nil,不参与任何计算",
+	"min_credit_quota":    "已废弃的占位键(→ min_credit_stardust),加载时置 nil,不参与任何计算",
 }
 
 // TestEveryQuotaConfigFieldHasAnUpperBound 逐个额度类 YAML 字段核对上界。

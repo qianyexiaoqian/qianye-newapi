@@ -274,6 +274,9 @@ describe('qy nav merge — admin, all features on', () => {
     ])
     assert.deepEqual(urlsOf(merged, 'qy-risk'), [
       '/qy/admin/violations',
+      // AI 审核日志紧跟违规记录:两者是同一件事的两半 —— 那边是"判了违规之后
+      // 怎么处置",这边是"到底审了什么、凭什么这么判"。
+      '/qy/admin/violation-ai-logs',
       '/qy/admin/tickets',
       '/qy/admin/audit-logs',
     ])

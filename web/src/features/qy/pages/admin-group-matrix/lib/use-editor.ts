@@ -30,6 +30,7 @@ import {
   qyGmPreviewForEnforce,
   qyGmSaveMatrix,
   qyGmSaveScope,
+  type QyGmPageParams,
 } from '../api'
 import type {
   QyGmPreviewResponse,
@@ -85,6 +86,19 @@ export type QyGmEditor = ReturnType<typeof useQyGmEditor>
 
 export type QyGmEditorOptions = {
   /**
+   * 行轴翻页窗口。省略 = 整张表。
+   *
+   * ── 为什么弹窗外壳必须把外面那一页原样传进来 ──
+   *
+   * 这份状态机的取数走的是与外壳同一个 query key。外壳分页而弹窗不传，
+   * 弹窗打开的那一刻会**另外发一次全量矩阵**：一个为了"分组过多加载卡顿"
+   * 而做的翻页，会在每次点「编辑」时把整张表重新拉一遍 —— 恰好抵消掉它。
+   *
+   * 它同时一路带到三个写接口上，让保存后的强制回读落在同一段行轴（见
+   * {@link QyGmPageParams}）。
+   */
+  page?: QyGmPageParams
+  /**
    * 范围设置**保存成功之后**的回调。
    *
    * 只有整页那个外壳需要它（把独立的范围抽屉关掉）。刻意不在提交的那一刻关：
@@ -100,7 +114,8 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
 
-  const query = useQuery(qyGmMatrixQuery())
+  const page = options?.page
+  const query = useQuery(qyGmMatrixQuery(page))
   const data = query.data
 
   const [draft, setDraft] = useState<Map<string, QyGmDraftEntry>>(new Map())
@@ -388,14 +403,20 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
    */
   const applyServerState = useCallback(
     (fresh: QyGmSaveResponse) => {
-      queryClient.setQueryData(qyKeys.adminGroupMatrixData(), fresh)
+      queryClient.setQueryData(
+        qyKeys.adminGroupMatrixData(page?.p, page?.page_size),
+        fresh
+      )
       setDraft(new Map())
       setPreview(null)
+      // 报告窗跟着关。`preview` 已经清成 null，窗留着的话它会退回「正在统计
+      // 影响面…」那一屏 —— 一句针对刚刚那次保存的假陈述。
+      setPreviewOpen(false)
       setPreviewedFingerprint(null)
       setEnforcePreview(null)
       setPartial(fresh.partial ?? null)
     },
-    [queryClient]
+    [queryClient, page]
   )
 
   const previewMutation = useMutation({
@@ -403,9 +424,14 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
     onSuccess: (result) => {
       setPreview(result)
       setPreviewedFingerprint(fingerprint)
-      setPreviewOpen(true)
     },
-    onError: (error) => toast.error(qyOpsErrorMessage(error, t)),
+    // 窗是 `runPreview` 在发请求之前开的（见那里的说明），失败时得由这里收回：
+    // 留着它等于让一次失败永远停在「正在统计影响面…」上，而真正的原因只在那条
+    // 一闪而过的 toast 里。
+    onError: (error) => {
+      setPreviewOpen(false)
+      toast.error(qyOpsErrorMessage(error, t))
+    },
   })
 
   /**
@@ -429,12 +455,15 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
 
   const saveMutation = useMutation({
     mutationFn: () =>
-      qyGmSaveMatrix({
-        cells: changes,
-        draft_hash: preview?.draft_hash,
-        impact_hash: preview?.impact_hash,
-        base_ratio_hash: data?.base_ratio_hash ?? '',
-      }),
+      qyGmSaveMatrix(
+        {
+          cells: changes,
+          draft_hash: preview?.draft_hash,
+          impact_hash: preview?.impact_hash,
+          base_ratio_hash: data?.base_ratio_hash ?? '',
+        },
+        page
+      ),
     onSuccess: (fresh) => {
       // 部分失败绝不能报成功：那正是这套两库设计最坏的失败方式 —— 运营看到
       // 一句绿色的「已保存」然后走人，而线上是半成状态。
@@ -450,7 +479,7 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
       userGroup: string
       body: QyGmScopeRequest
       afterApply?: () => void
-    }) => qyGmSaveScope(input.userGroup, input.body),
+    }) => qyGmSaveScope(input.userGroup, input.body, page),
     onSuccess: (fresh, input) => {
       toast.success(t('qy_group_matrix_scope_saved'))
       onScopeSaved?.()
@@ -518,7 +547,18 @@ export function useQyGmEditor(options?: QyGmEditorOptions) {
     copyRow,
     resetDraft,
     reload,
-    runPreview: () => previewMutation.mutate(),
+    /**
+     * 预览。**先开报告窗、再发请求。**
+     *
+     * 统计要几秒（要铺开全部已设定范围的组合、还要去日志库聚合），窗里那句
+     * 「正在统计影响面…」是这次点击唯一的回声。等结果回来才开窗的话，屏幕上
+     * 好几秒纹丝不动，运营的下一个动作是再点一次 —— 而那是又一次全量重算。
+     * 失败由 `previewMutation.onError` 把窗收回去。
+     */
+    runPreview: () => {
+      setPreviewOpen(true)
+      previewMutation.mutate()
+    },
     runSave: () => saveMutation.mutate(),
     runEnforcePreview: (userGroup: string) =>
       enforcePreviewMutation.mutate(userGroup),

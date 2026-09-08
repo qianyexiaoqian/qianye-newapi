@@ -192,6 +192,88 @@ func TestPersistRecordFeedsTheSameWeightToBothLines(t *testing.T) {
 			"表单上「两条线加同样多」这句话就此失效,而线上没有任何症状")
 }
 
+// ─────────────────────── 没选违规类型 = 一条线都不推进 ───────────────────────
+
+// TestUnboundCategoryRuleNeverCounts 固化项目方那句话:
+// 「违规类型未选择的,不应当纳入计数,说明这个类型违规阻断即可,不需要计数处罚」。
+//
+// # 为什么必须连**账号总量线**一起挡住
+//
+// 只挡类型线是最容易犯的错,而且看起来是对的("没类型自然没类型线")。
+// 但账号总量线(qy_violation_counter)是一条独立的封号判据:挡了一半之后,
+// 一条运营明说了"只拦不罚"的规则照样能在总量线上把人封掉 ——
+// 与那句话的字面意思正好相反,而界面上什么都看不出来。
+//
+// # 两道闸,不是两份拷贝
+//
+//	newRecord      把 count_weight 压成 0 —— 让落库的记录**诚实**:
+//	               管理端看到的就是"这一次加 0"。
+//	persistRecord  按 rec.CategoryId 再挡一次 —— 让它**为真**:
+//	               insufficient_balance_policy = ban 会把权重顶到阈值,
+//	               绕过 newRecord 那一道,只有这一道拦得住。
+func TestUnboundCategoryRuleNeverCounts(t *testing.T) {
+	jailbreak := Category{Id: 2, Key: CatJailbreak, Name: "破限", Enabled: true,
+		Threshold: 3, WindowHours: 24}
+	fallback := Category{Id: 1, Key: FallbackCategoryKey, Name: "未分类", IsFallback: true}
+	useCategorySnapshot(t, &snapshot{
+		catById:     map[int64]Category{1: fallback, 2: jailbreak},
+		catFallback: fallback,
+	})
+
+	newRecordFor := func(t *testing.T, categoryId int64) *Record {
+		t.Helper()
+		cr, err := compile(Rule{
+			Id: 71, Name: "破限词表", Enabled: true, Mode: ModeEnforce,
+			Phase: PhasePrompt, MatchType: MatchKeyword, Pattern: "越狱",
+			Action: ActionBlock, CategoryId: categoryId, CountWeight: 4,
+		})
+		require.NoError(t, err)
+		return newRecord(recordCtx{UserId: 4210, RequestId: "req-uncat"},
+			PhasePrompt, scanInput{Model: "gpt-4o", Text: "越狱"},
+			&verdict{Rule: cr, Terms: []string{"越狱"}}, false, "", true)
+	}
+
+	t.Run("没选类型:记录落 0,权重压成 0,但照样标着已拦截", func(t *testing.T) {
+		rec := newRecordFor(t, 0)
+		assert.Zero(t, rec.CategoryId, "没选类型不该被折进兜底桶——进了桶就会推进总量线")
+		assert.Zero(t, rec.CountWeight,
+			"规则配的是 4,但没有类型时这一次该加 0:「不需要计数处罚」")
+		assert.True(t, rec.Blocked, "不计数不等于不拦截,拦截照做")
+	})
+
+	t.Run("选了类型:权重原样是运营配的那个数", func(t *testing.T) {
+		rec := newRecordFor(t, jailbreak.Id)
+		assert.Equal(t, jailbreak.Id, rec.CategoryId)
+		assert.Equal(t, 4, rec.CountWeight,
+			"绑了类型的规则必须还是老样子,否则这次改动会静默关掉全站计数")
+	})
+
+	// persistRecord 那道闸:直接喂一条"没有类型但权重被顶到 5"的记录
+	// (insufficient_balance_policy = ban 与 cyber 写死权重都会产生这种形状),
+	// 断言它连计数那一步都不进。
+	//
+	// 判据里"没有报错"这一条是活的:newCategoryDB 刻意不建 qy_violation_counter,
+	// 所以一旦这道闸被拆掉,persistRecord 会立刻在账号总量线那一步撞上
+	// "no such table" 并把错误返回上来 —— 这一格会红在 require 上,而不是悄悄绿着。
+	t.Run("权重被别处顶上去了也进不了计数", func(t *testing.T) {
+		gdb := newCategoryDB(t)
+		ctx := context.Background()
+		rec := newRecordFor(t, 0)
+		rec.CountWeight = 5
+
+		require.NoError(t, persistRecord(ctx, gdb, rec, nil, rec.CountWeight, false))
+
+		var counters int64
+		require.NoError(t, gdb.Model(&CategoryCounter{}).Count(&counters).Error)
+		assert.Zero(t, counters, "没有类型的命中不该写出任何类型计数")
+
+		var saved Record
+		require.NoError(t, gdb.Where("rec_no = ?", rec.RecNo).Take(&saved).Error)
+		assert.False(t, saved.Counted, "记录必须如实写着「没有计数」")
+		assert.Zero(t, saved.CounterAfter)
+	})
+}
+
 // ─────────────────────── severity 退场之后 ───────────────────────
 
 // TestRuleUpsertKeepsCountWeightAndIgnoresLegacySeverity 固化写入面的两件事。

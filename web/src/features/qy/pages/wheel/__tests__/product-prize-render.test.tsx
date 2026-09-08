@@ -234,3 +234,61 @@ describe('转盘商品奖的展示', () => {
     assert.ok(screen.text().includes(zhKeys.qy_ml_prize_address_done))
   })
 })
+
+/* ────────────────────────────────────────────────────────────────────────
+ * 奖档清单改成"一档一行"之后的形状（2026-09-05：「文字画太多，观感很差」）
+ * ──────────────────────────────────────────────────────────────────────── */
+
+describe('转盘奖档清单的形状', () => {
+  test('一档一枚档位牌，牌面颜色与盘面扇区同色；行末不留孤立的分隔点', async () => {
+    const screen = await mountQyWheelScreen({
+      element: <QyWheelTierTable spec={SPEC} />,
+      respond: () => undefined,
+    })
+    const medals = [
+      ...screen.container.querySelectorAll<HTMLElement>(
+        '[data-testid="qy-tier-medal"]'
+      ),
+    ]
+    assert.equal(
+      medals.length,
+      SPEC.length,
+      `档位牌应当与奖档一一对应（含「谢谢参与」），实际 ${medals.length}`
+    )
+
+    // 清单与盘面是同一份数据的两种画法，颜色是它们之间唯一的对应关系：
+    // 真实档的牌面取扇区色，「谢谢参与」不取（它在牌上画成空心）。
+    const painted = medals.filter((node) => node.style.background !== '')
+    assert.equal(
+      painted.length,
+      SPEC.filter((item) => item.prize_type !== 'none').length,
+      '真实档的档位牌必须带上盘面那一格的扇区色'
+    )
+
+    // 脚注项之间的「·」画在每一项**之前**。某一项渲染成空却仍占着位置时，
+    // 行末会挂一个没有下文的分隔点 ——「谢谢参与」没有库存、也没有复算值，
+    // 正是最容易踩到这条的那一行（实测「50.0000% · ·」）。
+    for (const medal of medals) {
+      const row = medal.closest('li')
+      const text = (row?.textContent ?? '').replaceAll(/\s+/g, ' ').trim()
+      assert.ok(!text.endsWith('·'), `奖档行末尾挂着孤立的分隔点：「${text}」`)
+    }
+  })
+
+  test('复算库存与公布库存对不上时，那一格自己变成警示色', async () => {
+    const screen = await mountQyWheelScreen({
+      // 第 1 档公布剩 1，复算出来是 0 —— 揭示之后这两个数必须相等。
+      element: <QyWheelTierTable spec={SPEC} replayStock={new Map([[1, 0]])} />,
+      respond: () => undefined,
+    })
+    const mismatch = screen.container.querySelector('.text-destructive')
+    assert.ok(
+      mismatch != null,
+      '复算值与公布值对不上，却没有任何一格喊出来 —— 一个只是灰着的数字对不上，没有人会发现'
+    )
+    assert.ok(
+      (mismatch.textContent ?? '').includes('0'),
+      '喊出来的应当是复算得到的那个数'
+    )
+  })
+})

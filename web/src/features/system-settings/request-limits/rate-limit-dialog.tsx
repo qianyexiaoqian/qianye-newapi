@@ -91,7 +91,7 @@ export function RateLimitDialog({
   // 它们仍然有效(见 middleware/qy_rate_limit_export.go 的回落),不能让人改不了。
   const userGroupsQuery = useQuery({
     queryKey: ['user-group-options'],
-    queryFn: getUserGroupOptions,
+    queryFn: () => getUserGroupOptions(),
   })
   const userGroupOptions = useMemo(
     () =>

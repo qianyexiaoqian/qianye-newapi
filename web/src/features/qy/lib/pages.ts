@@ -25,6 +25,7 @@ import {
   LifeBuoy,
   Megaphone,
   Repeat,
+  ScanEye,
   ScrollText,
   ShieldAlert,
   ShoppingBag,
@@ -760,6 +761,21 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'qy-risk',
     icon: TriangleAlert,
     codeKey: 'qy_sg_code_a_violations',
+  },
+  // AI 审核日志。紧挨着违规记录,因为它们是同一件事的两半:那边是"判了违规
+  // 之后怎么处置",这边是"到底审了什么、凭什么这么判"。
+  //
+  // **在根侧栏而不是设置抽屉里**,理由就是本文件顶部那条界线:抽屉里放的是
+  // "改一次影响之后每一笔"的配置(AI 审核的渠道、密钥、抽样率在那儿),
+  // 根侧栏放的是每天要开的流水页。它第一版被塞在 AI 审核配置页最底下当一张卡,
+  // 结果是项目方打开那一页根本没看见它 —— 那不是排序问题,是分类问题。
+  {
+    url: '/qy/admin/violation-ai-logs',
+    titleKey: 'qy_nav_a_violation_ai_logs',
+    feature: 'violation',
+    group: 'qy-risk',
+    icon: ScanEye,
+    codeKey: 'qy_sg_code_a_violation_ai_logs',
   },
   {
     // 工单审核台留在根侧栏而不是进系统设置抽屉：它是**每天要开**的流水页，

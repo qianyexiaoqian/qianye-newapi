@@ -23,11 +23,14 @@ import { qyKeys } from '../../lib/query-keys'
 import type { QyPage } from '../../lib/types'
 import type {
   QyMallAdjudicateInput,
+  QyMallAdminCode,
+  QyMallAdminCodesParams,
   QyMallAdminOrder,
   QyMallAdminOrdersParams,
   QyMallAdminProduct,
   QyMallAdminProductsParams,
   QyMallCodesUploadResult,
+  QyMallCodeTakeResult,
   QyMallCoverUpload,
   QyMallOrderAddress,
   QyMallProductInput,
@@ -111,6 +114,47 @@ export function uploadQyMallCodes(
   return qyPost<QyMallCodesUploadResult>(productPath(productNo, '/codes'), {
     codes,
   })
+}
+
+/** 一件兑换码商品的码库存分页。响应里**没有明文**，只有状态与时间。 */
+export function qyAdminMallCodesQuery(
+  productNo: string,
+  params: QyMallAdminCodesParams
+) {
+  return queryOptions({
+    queryKey: qyKeys.adminMallCodes(productNo, params),
+    queryFn: () =>
+      qyGet<QyPage<QyMallAdminCode>>(productPath(productNo, '/codes'), params),
+    staleTime: 15_000,
+    enabled: productNo !== '',
+  })
+}
+
+/**
+ * 管理员提卡：解出一枚未使用的码的明文，那一枚同时被标成 `taken`。
+ *
+ * 走验密中间件（`X-Qy-Pay-Password` 请求头），与用户端揭示自己的码同一档：
+ * 码可以是任意第三方卡密，一次揭示即离开平台。刻意**不是** queryOptions ——
+ * 明文不进 react-query 缓存，只活在弹窗组件的内存里。
+ */
+export function takeQyMallCode(
+  productNo: string,
+  id: number,
+  payPassword: string
+): Promise<QyMallCodeTakeResult> {
+  return qyPost<QyMallCodeTakeResult>(
+    productPath(productNo, `/codes/${id}/take`),
+    undefined,
+    { headers: { 'X-Qy-Pay-Password': payPassword } }
+  )
+}
+
+/** 删掉一枚**未使用**的码。已发出 / 已撤回 / 已提取的行是证据，后端 409。 */
+export function deleteQyMallCode(
+  productNo: string,
+  id: number
+): Promise<unknown> {
+  return qyDelete<unknown>(productPath(productNo, `/codes/${id}`))
 }
 
 export function qyAdminMallOrdersQuery(params: QyMallAdminOrdersParams) {

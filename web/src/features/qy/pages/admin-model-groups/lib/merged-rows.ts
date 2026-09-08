@@ -117,7 +117,7 @@ export type QyMgMergedRow = {
 }
 
 export type QyMgBuildRowsInput = {
-  /** 登记表返回的行。拉不到时传空数组。 */
+  /** 服务端返回的行。拉不到时传空数组。 */
   registry: readonly QyMgRow[]
   /** 已解析的 `options.GroupRatio`。 */
   groupRatios: Readonly<Record<string, number>>
@@ -125,6 +125,18 @@ export type QyMgBuildRowsInput = {
   usableGroups: Readonly<Record<string, string>>
   /** `options.AutoGroups` 的顺序。 */
   autoGroups: readonly string[]
+  /**
+   * 只渲染这些名字，按给定顺序。**服务端翻页时必传。**
+   *
+   * ── 为什么翻页之后并集不能再在这里算 ──
+   *
+   * 下面那份并集（`GroupRatio` ∪ 全局可选清单 ∪ 服务端行）是前端持有完整行集合
+   * 时的正确做法。服务端切出第 2 页的 10 行之后它就错了：并上 options 里的全部
+   * 键，第 2 页会渲染成「10 行 + 全站其余所有名字」。
+   *
+   * 谁切页谁就持有完整行集合，所以翻页时行轴与排序都由服务端给出，这里原样用。
+   */
+  names?: readonly string[]
 }
 
 /**
@@ -136,19 +148,23 @@ export type QyMgBuildRowsInput = {
  * 登记过」这一档在界面上根本不存在 —— 而它是资金泄漏集合里最容易造出来的一种：
  * 用户选得到它，每一次请求按凭空的 1.0 计费。
  *
- * 排序按名字升序（`localeCompare`）。
+ * 未给 `names` 时在这里并集并按名字升序（`localeCompare`）；给了就原样用它。
  */
 export function qyMgBuildRows(input: QyMgBuildRowsInput): QyMgMergedRow[] {
   const registryByName = new Map(input.registry.map((row) => [row.name, row]))
-  const names = new Set<string>([
-    ...registryByName.keys(),
-    ...Object.keys(input.groupRatios),
-    ...Object.keys(input.usableGroups),
-  ])
+  const ordered =
+    input.names ??
+    [
+      ...new Set<string>([
+        ...registryByName.keys(),
+        ...Object.keys(input.groupRatios),
+        ...Object.keys(input.usableGroups),
+      ]),
+    ].sort((a, b) => a.localeCompare(b))
 
   const rows: QyMgMergedRow[] = []
-  for (const name of names) {
-    const registered = registryByName.get(name)
+  for (const name of ordered) {
+    const server = registryByName.get(name)
     const hasRatio = Object.hasOwn(input.groupRatios, name)
     const autoIndex = input.autoGroups.indexOf(name)
     rows.push({
@@ -159,18 +175,20 @@ export function qyMgBuildRows(input: QyMgBuildRowsInput): QyMgMergedRow[] {
       // 否则运营改完一个数、下一次回读又被快照盖回去。
       ratio: hasRatio ? String(input.groupRatios[name]) : null,
       selectable: Object.hasOwn(input.usableGroups, name),
-      note: registered?.note ?? '',
+      note: server?.note ?? '',
       usableDescription: input.usableGroups[name] ?? '',
-      sources: registered?.sources ?? [],
-      hasRoute: registered?.has_route ?? null,
-      channelCount: registered?.channel_count ?? null,
-      legacyDual: registered?.legacy_dual ?? false,
+      sources: server?.sources ?? [],
+      hasRoute: server?.has_route ?? null,
+      channelCount: server?.channel_count ?? null,
+      legacyDual: server?.legacy_dual ?? false,
       autoPosition: autoIndex < 0 ? 0 : autoIndex + 1,
-      registered: registered != null,
+      // 服务端的显式字段，**不是**"它在不在返回的数组里"：并集之后每一行都在
+      // 数组里，而其中一部分并没有登记行（见 {@link QyMgRow.registered}）。
+      registered: server?.registered ?? false,
       isNew: false,
     })
   }
-  return rows.sort((a, b) => a.name.localeCompare(b.name))
+  return rows
 }
 
 /**
@@ -185,13 +203,37 @@ export function qyMgBuildRows(input: QyMgBuildRowsInput): QyMgMergedRow[] {
  *     照抄的话，清空一个倍率输入框会静默把那个模型分组改成免费。想要免费必须
  *     显式敲一个 `0`，那一条仍然逐位保持上游语义。
  *  3. 名字两侧去空白、空名丢弃。
+ *
+ * ══════════ `baseline`：这一页只对**它手上有的那些行**负责 ══════════
+ *
+ * 保存写的是整份 `options.GroupRatio`（一个 JSON blob，没有按键写回的接口）。
+ * 服务端翻页之后 `rows` 只剩 10 行，而这个函数产出的 JSON 会被原样写回 ——
+ * 也就是说，**不带 baseline 的一次保存会把第 2 页往后的每一个模型分组的兜底
+ * 倍率全部删掉**，界面上只有一句绿色的「已保存」。
+ *
+ * 所以：`baseline` 里那些**没有出现在 `rows` 里**的键原样带过去，出现了的
+ * 由行决定（包括"这一行现在 ratio 为 null，所以这个键要消失"）。判据是
+ * 「这一页此刻持有哪些行」，不是「这一页显示了哪些行」—— 跨页草稿里的行也算，
+ * 见 `model-groups-section` 的 `drafts`。
+ *
+ * 顺带修掉一个翻页之前就存在的问题：另一个管理员在别的标签页新增的模型分组，
+ * 此前会被本页打开那一刻的快照静默删掉；现在只有本页真的动过的键才会被改写。
  */
-export function qyMgSerializeRatios(rows: readonly QyMgMergedRow[]): string {
-  const out: Record<string, number> = {}
+export function qyMgSerializeRatios(
+  rows: readonly QyMgMergedRow[],
+  baseline?: Readonly<Record<string, number>>
+): string {
+  const out: Record<string, number> = { ...baseline }
   for (const row of rows) {
     const name = row.name.trim()
     if (name === '') continue
-    if (row.ratio === null) continue
+    if (row.ratio === null) {
+      // 「这一行不该在倍率表里」是一个**显式结论**（新加的行还没填倍率，
+      // 或者本来就只在别处出现），必须能把 baseline 里那个键删掉 ——
+      // 否则一次"移除倍率"在保存后会原样回来。
+      delete out[name]
+      continue
+    }
     const raw = row.ratio.trim()
     const parsed = raw === '' ? Number.NaN : Number(raw)
     out[name] = Number.isFinite(parsed) ? parsed : 1
@@ -214,12 +256,20 @@ export function qyMgSerializeRatios(rows: readonly QyMgMergedRow[]): string {
  * 填的那些行上，被清掉的恰好是用户此刻真正看到的那句话。
  */
 export function qyMgSerializeUsableGroups(
-  rows: readonly QyMgMergedRow[]
+  rows: readonly QyMgMergedRow[],
+  baseline?: Readonly<Record<string, string>>
 ): string {
-  const out: Record<string, string> = {}
+  const out: Record<string, string> = { ...baseline }
   for (const row of rows) {
     const name = row.name.trim()
-    if (name === '' || !row.selectable) continue
+    if (name === '') continue
+    // 关掉开关 = 从清单里删这个键。这一步必须在 baseline 之上显式执行，
+    // 否则关掉开关按保存之后它会原样回来（理由见 qyMgSerializeRatios 的
+    // baseline 那一段）。
+    if (!row.selectable) {
+      delete out[name]
+      continue
+    }
     out[name] = row.usableDescription
   }
   return JSON.stringify(out, null, 2)

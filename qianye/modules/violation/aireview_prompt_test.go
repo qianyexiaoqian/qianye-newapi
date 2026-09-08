@@ -1,8 +1,11 @@
 package violation
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/QuantumNous/new-api/common"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -205,14 +208,14 @@ func TestInspectAIPromptCategoriesReportsMissingWhenRenderBreaks(t *testing.T) {
 	assert.Empty(t, quiet.Unknown)
 }
 
-// TestValidateAISettingNormalizesPrompt 钉住"折叠发生在唯一的写入闸上"。
+// TestValidateAIChannelNormalizesPrompt 钉住"折叠发生在唯一的写入闸上"。
 //
-// 折叠要是留在 handler 里,下一条写入路径(批量导入、脚本、迁移)就会
-// 绕过它 —— 而绕过之后没有任何症状,只是那个站点从此收不到默认提示词的升级。
-func TestValidateAISettingNormalizesPrompt(t *testing.T) {
-	base := AISetting{
-		PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
-		MaxInputChars: defaultAIMaxInputChars,
+// 提示词 2026-09-06 从 AISetting 搬到了 AIChannel,这条闸跟着搬 —— 折叠要是留在
+// handler 里,下一条写入路径(批量导入、脚本、迁移)就会绕过它,而绕过之后没有
+// 任何症状,只是那个渠道从此收不到默认提示词的升级。
+func TestValidateAIChannelNormalizesPrompt(t *testing.T) {
+	base := AIChannel{
+		Name: "c", BaseUrl: "https://api.deepseek.com/v1", Model: "m", Weight: 1,
 	}
 	tests := []struct {
 		name string
@@ -225,32 +228,95 @@ func TestValidateAISettingNormalizesPrompt(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			s := base
-			s.Prompt = tc.in
-			require.NoError(t, validateAISetting(&s))
-			assert.Equal(t, tc.want, s.Prompt)
+			ch := base
+			// 走 apply(而不是直接调 validateAIChannel):折叠就发生在那一步,
+			// 直接构造一个已经折好的结构体去校验,测的是一条不存在的路径。
+			req := aiChannelUpsertReq{
+				Name: ch.Name, BaseUrl: ch.BaseUrl, Model: ch.Model, Weight: 1,
+				Prompt: tc.in, PriceInPerM: "0", PriceOutPerM: "0",
+			}
+			require.NoError(t, req.apply(&ch))
+			assert.Equal(t, tc.want, ch.Prompt)
 		})
 	}
 }
 
-// TestAISettingAuditSnapRecordsPromptChange:提示词决定"什么算违规",
+// TestAIChannelAuditSnapRecordsPromptChange:提示词决定"什么算违规",
 // 改它必须在审计里留下可对比的痕迹。
-func TestAISettingAuditSnapRecordsPromptChange(t *testing.T) {
-	def := aiSettingAuditSnap(AISetting{Prompt: ""})
+func TestAIChannelAuditSnapRecordsPromptChange(t *testing.T) {
+	def := aiChannelAuditSnap(&AIChannel{Prompt: ""})
 	assert.Equal(t, aiPromptSourceDefault, def["prompt_source"])
-	assert.Equal(t, "", def["prompt_sha256"])
-	assert.Equal(t, false, def["prompt_customized"])
+	assert.Equal(t, "", def["prompt_fingerprint"])
 
 	broken := defaultAIPrompt + "\ncategory 只取 jailbreak, sexual, porn 之一。"
-	snap := aiSettingAuditSnap(AISetting{Prompt: broken})
+	snap := aiChannelAuditSnap(&AIChannel{Prompt: broken})
 	assert.Equal(t, aiPromptSourceCustom, snap["prompt_source"])
-	assert.NotEmpty(t, snap["prompt_sha256"])
+	assert.NotEmpty(t, snap["prompt_fingerprint"])
 
-	// 等长改写:prompt_runes 相同,快照必须仍然分得开。
-	flipped := aiSettingAuditSnap(AISetting{
+	// 等长改写:字数相同,快照必须仍然分得开 —— 把"绝不执行"改成"必须执行"
+	// 恰好是把这个渠道的审核关掉的改法。
+	flipped := aiChannelAuditSnap(&AIChannel{
 		Prompt: strings.Replace(defaultAIPrompt, "绝不执行", "必须执行", 1),
 	})
-	verbatim := aiSettingAuditSnap(AISetting{Prompt: defaultAIPrompt})
-	require.Equal(t, verbatim["prompt_runes"], flipped["prompt_runes"])
-	assert.NotEqual(t, verbatim["prompt_sha256"], flipped["prompt_sha256"])
+	verbatim := aiChannelAuditSnap(&AIChannel{Prompt: defaultAIPrompt})
+	assert.NotEqual(t, verbatim["prompt_fingerprint"], flipped["prompt_fingerprint"])
+}
+
+// TestMigrateAIPromptToChannelsPrefersTheScopePrompt 钉住搬家的**顺序**。
+//
+// 两轮都只写"prompt 仍为空"的渠道,所以先跑的那一轮赢。更具体的那一份必须赢:
+// 一个渠道既被某条作用域指着、站点又配过全局提示词时,运营写下那条作用域
+// 提示词的意思就是"这一档要用它"。
+//
+// 反过来(全局在先)在演示站的真库克隆上实测过一次:全局那一份把唯一的渠道
+// 占掉,作用域那一份只留下一条"未覆盖"的告警 —— 那正是这个迁移最不该有的结果。
+func TestMigrateAIPromptToChannelsPrefersTheScopePrompt(t *testing.T) {
+	gdb := newAIWiringDB(t)
+	now := common.GetTimestamp()
+
+	require.NoError(t, gdb.Create(&AISetting{
+		Id: 1, PreTimeoutMs: 1500, AsyncTimeoutMs: 8000,
+		MaxInputChars: defaultAIMaxInputChars, CreatedAt: now, UpdatedAt: now,
+	}).Error)
+	// 存量的两份提示词。列已经被模型删掉了,所以只能用裸 SQL 造出"升级前"的形状。
+	require.NoError(t, gdb.Exec(
+		"ALTER TABLE qy_violation_ai_setting ADD COLUMN prompt text").Error)
+	require.NoError(t, gdb.Exec(
+		"ALTER TABLE qy_violation_ai_scope ADD COLUMN prompt text").Error)
+	require.NoError(t, gdb.Exec(
+		"UPDATE qy_violation_ai_setting SET prompt = ? WHERE id = 1", "全局那一份").Error)
+
+	for _, ch := range []AIChannel{
+		{Id: 1, Name: "被作用域指着的", BaseUrl: "http://a.invalid", Model: "m", Weight: 1, CreatedAt: now, UpdatedAt: now},
+		{Id: 2, Name: "没人指的", BaseUrl: "http://b.invalid", Model: "m", Weight: 1, CreatedAt: now, UpdatedAt: now},
+	} {
+		require.NoError(t, gdb.Create(&ch).Error)
+	}
+	require.NoError(t, gdb.Create(&AIScope{
+		Id: 7, Name: "自助注册", Enabled: true, Priority: 10,
+		GroupScope: "selfserve", GroupScopeMode: GroupScopeInclude,
+		ChannelIds: AIChannelIds{1}, CreatedAt: now, UpdatedAt: now,
+	}).Error)
+	require.NoError(t, gdb.Exec(
+		"UPDATE qy_violation_ai_scope SET prompt = ? WHERE id = 7", "这一档自己的").Error)
+
+	moved, conflicts, err := migrateAIPromptToChannels(context.Background(), gdb)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, moved)
+	assert.Empty(t, conflicts, "两份提示词各有各的去处,不该产生冲突告警")
+
+	var pinned, loose AIChannel
+	require.NoError(t, gdb.Where("id = ?", 1).Take(&pinned).Error)
+	require.NoError(t, gdb.Where("id = ?", 2).Take(&loose).Error)
+	assert.Equal(t, "这一档自己的", pinned.Prompt,
+		"被作用域指着的渠道必须拿到那一档自己的提示词 —— 更具体的赢")
+	assert.Equal(t, "全局那一份", loose.Prompt,
+		"没被任何作用域指着的渠道回落到全局那一份")
+
+	// 两列都删掉了,而且第二次是幂等的。
+	assert.False(t, gdb.Migrator().HasColumn(&AISetting{}, "prompt"))
+	assert.False(t, gdb.Migrator().HasColumn(&AIScope{}, "prompt"))
+	moved2, _, err := migrateAIPromptToChannels(context.Background(), gdb)
+	require.NoError(t, err)
+	assert.Zero(t, moved2, "列都不在了,第二次不该再搬任何东西")
 }

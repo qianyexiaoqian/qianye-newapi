@@ -3,6 +3,7 @@ package commission
 import (
 	"go/ast"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync/atomic"
@@ -132,14 +133,32 @@ func useConfig(t *testing.T, cfg *config.Config) {
 //
 // invite.enabled 必须为真:邀请关系判定(invite.InviteeEligible)在它关着时对
 // 所有人回"不合格",本包的每一条计佣路径都会安静地什么都不写。
+// commissionConfig 返回一份最小可用配置。
+//
+// # quota_per_unit 刻意设成 1
+//
+// 佣金 D-16 起记星屑,gross = base_quota × rate / 10000 / quota_per_unit。刻度设成 1
+// 之后 gross 的**数值**与 D-16 之前逐位相同,于是本包里那一大批断言费率冻结、单笔封顶、
+// 冲正等比、分组档解析的用例不必为了单位改动而全部重算一遍期望值 —— 它们守的是
+// 那几条语义,不是折算本身。
+//
+// 折算那一步由三处按**真实刻度**单独钉住,不会因为这里设 1 而失去覆盖:
+//
+//	· accrual_test.go 的 TestCalcGrossKeepsFullPrecision(qpu=500000 的真实量级);
+//	· topup_late_sweep_db_test.go(断言 quota_per_unit 冻结进行 + gross 折算后的值);
+//	· autocredit_db_test.go(qpu=10000,端到端到星屑余额的金额守恒)。
 func commissionConfig(minSettle int64) *config.Config {
 	c := &config.Config{}
 	c.Enabled = true
 	c.Invite.Enabled = true
 	c.Invite.InviterCacheSecs = 300
+	c.Stardust.Enabled = true
+	c.Stardust.QuotaPerUnit = 1
 	c.Commission.Enabled = true
 	c.Commission.MinSettleStardust = minSettle
 	c.Commission.Levels = 1
+	// 门槛设得足够高 = 这些用例里自动入账永远不触发。它们测的是计佣与结算,
+	// 入账链路由 autocredit_db_test.go 单独覆盖。
 	c.Commission.MinCreditStardust = 500000
 	c.Commission.CreditIntervalSecs = 300
 	c.Commission.SettleIntervalSecs = 300
@@ -263,15 +282,20 @@ func seedAccrual(t *testing.T, gdb *gorm.DB, seq int, mutate func(*Accrual)) *Ac
 	t.Helper()
 	now := common.GetTimestamp()
 	a := &Accrual{
-		AccrualNo:     "CA-SEED-" + strconv.Itoa(seq),
-		IdemScope:     SourceTopup,
-		IdemKey:       "topup:seed-" + strconv.Itoa(seq),
-		InviterId:     1,
-		InviteeId:     900,
-		SourceType:    SourceTopup,
-		BaseQuota:     10000,
-		BaseMoney:     decimal.Zero,
-		RateUnits:     500, // 5%(万分比)
+		AccrualNo:  "CA-SEED-" + strconv.Itoa(seq),
+		IdemScope:  SourceTopup,
+		IdemKey:    "topup:seed-" + strconv.Itoa(seq),
+		InviterId:  1,
+		InviteeId:  900,
+		SourceType: SourceTopup,
+		BaseQuota:  10000,
+		BaseMoney:  decimal.Zero,
+		RateUnits:  500, // 5%(万分比)
+		// 刻度与费率一样是**逐行冻结**的:真实写入路径(consume.go)一定会填它,
+		// 夹具漏填的后果不是"数字小一点",而是冲正路径按 qpu=0 算出 0 之后
+		// 整条冲正行不落库(calcGross 对 qpu<=0 返回 0)。默认取当前生效刻度,
+		// 与 commissionConfig 的 quota_per_unit: 1 配套。
+		QuotaPerUnit:  stardust.QuotaPerUnit(),
 		GrossAmount:   decimal.NewFromInt(500),
 		SettledAmount: decimal.Zero,
 		Status:        StatusAccrued,
@@ -331,8 +355,12 @@ func isSelectorCall(call *ast.CallExpr, name string) bool {
 	return ok && sel.Sel.Name == name
 }
 
-// withCompliance 把支付合规门置成 confirmed:充值计佣与星屑侧的下线充值返共用这道闸,
-// 没确认时 accrueTopUp 一进门就返回 nil、什么都不写。
+// withCompliance 把支付合规门置成 confirmed。
+//
+// 闸门在 writeAccrual —— 也就是 consume / topup / redeem **三条**推广获得线共同的
+// 那个漏斗(它此前只装在 accrueTopUp 上,于是另外两条一路走到了入账)。没确认时
+// writeAccrual 直接返回 (false, nil),一条计佣行都不落,所以凡是断言"落了账"的
+// 用例都必须先调它。
 func withCompliance(t *testing.T, confirmed bool) {
 	t.Helper()
 	ps := operation_setting.GetPaymentSetting()
@@ -359,3 +387,19 @@ func callUserHandler(t *testing.T, userId int, method, target string, h gin.Hand
 }
 
 func decimalZero() decimal.Decimal { return decimal.Zero }
+
+// TestMain 让整个包的默认环境是「支付合规已确认」。
+//
+// 合规门装在 writeAccrual —— consume / topup / redeem 三条推广获得线共同的漏斗
+// (它此前只装在 accrueTopUp 上,于是另外两条一路走到了入账)。装上之后,本包里
+// 几乎每一个"断言账落下来了"的用例都要先确认合规,否则它们断言的其实是那道门。
+//
+// 与其在三十来个用例里各写一行,不如把**默认**摆成生产站的常态:一个正在收款的
+// 站点必然已经确认过合规条款。要测那道门本身的用例,自己用 withCompliance 翻转
+// (它带 t.Cleanup 还原),TestWriteAccrualHonorsPaymentComplianceGate 就是这么做的。
+func TestMain(m *testing.M) {
+	ps := operation_setting.GetPaymentSetting()
+	ps.ComplianceConfirmed = true
+	ps.ComplianceTermsVersion = operation_setting.CurrentComplianceTermsVersion
+	os.Exit(m.Run())
+}

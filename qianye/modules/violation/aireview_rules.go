@@ -1,10 +1,12 @@
 package violation
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/url"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
@@ -95,11 +97,8 @@ func validateAIRule(r *Rule) error {
 
 // validateAISetting 校验全局设置。上下界都不是装饰:
 // 每一个越界值都对应一种"看起来开着、实际不生效或代价失控"的状态。
+// **提示词的校验不在这里** —— 它跟着那一列搬到 validateAIChannel 去了。
 func validateAISetting(s *AISetting) error {
-	// 提示词的归一放在校验里,而不是各个 handler 里:这是唯一的写入校验闸,
-	// 放这里意味着以后新增任何一条写入路径都自动带上"逐字等于默认 → 存空串"。
-	// 见 aireview_prompt.go 顶部对这条折叠的完整理由。
-	s.Prompt = normalizeAIPrompt(s.Prompt)
 	if s.PreTimeoutMs < minAITimeoutMs || s.PreTimeoutMs > maxPreTimeoutMs {
 		return fmt.Errorf("转发前审核超时必须在 %d..%d 毫秒之间(它直接加在被抽中请求的响应延迟上),当前为 %d",
 			minAITimeoutMs, maxPreTimeoutMs, s.PreTimeoutMs)
@@ -111,9 +110,16 @@ func validateAISetting(s *AISetting) error {
 	if s.MaxInputChars < 200 || s.MaxInputChars > maxAIMaxInputChars {
 		return fmt.Errorf("送审内容上限必须在 200..%d 字之间,当前为 %d", maxAIMaxInputChars, s.MaxInputChars)
 	}
-	if n := utf8.RuneCountInString(s.Prompt); n > maxAIPromptRunes {
-		return fmt.Errorf("审核提示词过长(%d 字,上限 %d 字)—— 它每次调用都要作为 token 付一遍钱",
-			n, maxAIPromptRunes)
+	// 审核日志的三格。**不接受 0**,而不是把 0 当成"用默认值":
+	// 这两列的 0 是 migrateAIReviewLogDefaults 判定"从未被人设置过"的唯一依据,
+	// 允许保存 0 就等于让一次手工保存伪装成"没设置过",下次启动会被迁移覆盖。
+	if s.LogContentMaxChars < minAIReviewContentChars || s.LogContentMaxChars > maxAIReviewContentChars {
+		return fmt.Errorf("审核日志的内容留存上限必须在 %d..%d 字之间,当前为 %d",
+			minAIReviewContentChars, maxAIReviewContentChars, s.LogContentMaxChars)
+	}
+	if s.LogRetentionDays < 1 || s.LogRetentionDays > maxAIReviewRetentionDays {
+		return fmt.Errorf("审核日志保留天数必须在 1..%d 天之间(这张表按被抽中的请求数增长,没有「永久保留」这一档),当前为 %d",
+			maxAIReviewRetentionDays, s.LogRetentionDays)
 	}
 	// 打开总开关必须先确认"用户请求内容会被发往第三方"。
 	// 这是本功能唯一一个**对用户有外部影响**的事实,不能靠一句会被下次改版
@@ -126,18 +132,50 @@ func validateAISetting(s *AISetting) error {
 
 // validateAIChannel 校验一个审核渠道。
 func validateAIChannel(ch *AIChannel) error {
+	// 提示词的长度闸跟着那一列从 AISetting 搬过来。它每次调用都要作为 token
+	// 付一遍钱,而"把一整本手册当提示词"是这一格唯一真正危险的用法。
+	if n := utf8.RuneCountInString(ch.Prompt); n > maxAIPromptRunes {
+		return fmt.Errorf("审核提示词过长(%d 字,上限 %d 字)—— 它每次调用都要作为 token 付一遍钱",
+			n, maxAIPromptRunes)
+	}
+	if n := utf8.RuneCountInString(ch.BlockMessage); n > maxBlockMessageRunes {
+		return fmt.Errorf("拦截文案过长(%d 字,上限 %d 字)—— 它是直接显示给用户的一句话",
+			n, maxBlockMessageRunes)
+	}
+	if err := validateViolationEmailTemplate(ch.EmailSubject, ch.EmailBody); err != nil {
+		return err
+	}
+	if n := utf8.RuneCountInString(ch.Group); n > 64 {
+		return fmt.Errorf("审核渠道分组名过长(%d 字,上限 64 字)", n)
+	}
 	ch.Name = strings.TrimSpace(ch.Name)
 	ch.BaseUrl = strings.TrimSpace(ch.BaseUrl)
 	ch.Model = strings.TrimSpace(ch.Model)
 	ch.Protocol = strings.TrimSpace(ch.Protocol)
+	ch.RiskName = strings.ToLower(strings.TrimSpace(ch.RiskName))
 	ch.GuardControversial = strings.TrimSpace(ch.GuardControversial)
 
 	// 写入侧比运行期严格:拼错的协议名在这里当场 400,而运行期一律折回
 	// json_prompt。理由写在 aiProtocolValid 上 —— 保存那一刻还有人看得到
 	// 错误消息,而热路径上没有。
 	if !aiProtocolValid(ch.Protocol) {
-		return fmt.Errorf("审核协议只能是 %q(提示词 + JSON)或 %q(护栏模型安全标签),当前为 %q",
-			AIProtocolJSONPrompt, AIProtocolQwen3Guard, ch.Protocol)
+		return fmt.Errorf("审核协议只能是 %q(提示词 + JSON)、%q(护栏模型安全标签)、%q(Granite Guardian 二值)或 %q(Llama Guard 安全码),当前为 %q",
+			AIProtocolJSONPrompt, AIProtocolQwen3Guard, AIProtocolGraniteGuardian,
+			AIProtocolLlamaGuard, ch.Protocol)
+	}
+	// 风险名只对 Granite 有意义,而且只放行能挂在用户消息上的那七档。
+	// 那四个 RAG/Agentic 档(groundedness / answer_relevance /
+	// context_relevance / function_calling)需要 assistant / context / tools
+	// 角色,本模块给不出 —— 放它们过去等于给运营一个选了之后模型在答非所问的
+	// 提示词下瞎判的开关。理由详见 graniteRisks。
+	if !graniteRiskValid(ch.RiskName) {
+		return fmt.Errorf("Granite 审核风险只能是 %s 之一(留空 = %s),当前为 %q",
+			strings.Join(graniteRiskOrder, "、"), graniteRiskHarm, ch.RiskName)
+	}
+	// 其他协议上把它清空:留着一个被忽略的取值,下一个人照着界面回显去查
+	// "为什么选了 jailbreak 却没生效",而答案是这条路根本不读这一列。
+	if normalizeAIProtocol(ch.Protocol) != AIProtocolGraniteGuardian {
+		ch.RiskName = ""
 	}
 	if !guardControversialValid(ch.GuardControversial) {
 		return fmt.Errorf("「有争议」档的处理只能是 %q、%q 或 %q,当前为 %q",
@@ -154,13 +192,23 @@ func validateAIChannel(ch *AIChannel) error {
 	if ch.GuardElevate, err = canonicalGuardCategoryCSV(ch.GuardElevate, "升级为拦截的敏感类别"); err != nil {
 		return err
 	}
-	// json_prompt 渠道上把这三格清空:留着一个被忽略的取值,下一个人照着
-	// 界面回显去查"为什么设了 unsafe 却没生效",而答案是这条路根本没有
-	// Controversial 这一档。
+	// 三格各自清在不同的协议集合上 —— 它们不是同一个条件,合成一个会让
+	// 其中一格在某条协议上"设了却不生效",而那正是这段代码要避免的事。
+	//
+	//	Controversial / Elevate  只有 Qwen3Guard 有"有争议"这一档,
+	//	                         而 Elevate 只在那一档里被读。
+	//	Categories               Qwen3Guard 与 Llama Guard 都会给出类别,
+	//	                         这份启用子集对两者都真的生效
+	//	                         (见 guardLabels.toVerdict)。
+	//
+	// Granite 一次只审一种风险、只回二值,三格对它一律无意义 —— 它的
+	// "审哪一类"住在 RiskName 上。
 	if normalizeAIProtocol(ch.Protocol) != AIProtocolQwen3Guard {
 		ch.GuardControversial = ""
-		ch.GuardCategories = ""
 		ch.GuardElevate = ""
+	}
+	if !guardProtocolHasCategories(ch.Protocol) {
+		ch.GuardCategories = ""
 	}
 
 	if ch.Name == "" {
@@ -230,16 +278,55 @@ func rejectCloudMetadataHost(rawURL string) error {
 		return fmt.Errorf("地址无法解析: %v", err)
 	}
 	host := u.Hostname()
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return nil
+	if host == "" {
+		return fmt.Errorf("地址缺少主机名")
 	}
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return fmt.Errorf("地址不能指向链路本地网段(%s)—— 那个网段上不会有审核服务,"+
-			"它在云上的唯一用途是实例元数据服务(169.254.169.254),"+
-			"而连通性试跑会把上游响应体原样回显", host)
+	for _, ip := range resolveHostIPs(host) {
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("地址不能指向链路本地网段(%s → %s)—— 那个网段上不会有审核服务,"+
+				"它在云上的唯一用途是实例元数据服务(169.254.169.254),"+
+				"而连通性试跑会把上游响应体原样回显", host, ip)
+		}
 	}
 	return nil
+}
+
+// metadataResolveTimeout 是上面那次域名解析的上界。
+//
+// 解析失败不拦(见 resolveHostIPs):这道闸是"堵掉零合法用途的那一格",
+// 不是一道完整的出站白名单。因解析超时而拒绝一个管理员刚填对的自建地址,
+// 代价比放过一次可疑地址更高 —— 后者还有下面那道 CheckRedirect 与
+// role>=10 的信任假设兜着。
+const metadataResolveTimeout = 3 * time.Second
+
+// resolveHostIPs 把主机名解析成 IP 列表;host 本身就是字面 IP 时直接返回它。
+//
+// # 为什么必须解析,而不是只看字面量
+//
+// 上一版是 `ip := net.ParseIP(host); if ip == nil { return nil }` —— 于是**任何
+// 域名直接放行**:`http://metadata.google.internal` 是域名,攻击者自己解析到
+// 169.254.169.254 的 A 记录也是域名,两者都一字不落地走过了这道本来专门为它们
+// 立的闸。那道闸的注释写着"2000 码点足够带走一整份 IAM 凭据 JSON"、
+// "零合法用途 + 拦它没有代价",而它实际拦不住任何一个真会被用上的写法。
+//
+// 残余风险仍旧是 DNS 重绑定(校验时解析到公网 IP、拨号时解析到元数据地址)。
+// 那一档与文件头写的口径一致:交给 role>=10 的信任假设、关键操作限流与全程审计,
+// 本函数不假装自己是一道完整的 SSRF 防线。
+func resolveHostIPs(host string) []net.IP {
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IP{ip}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), metadataResolveTimeout)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil
+	}
+	out := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		out = append(out, a.IP)
+	}
+	return out
 }
 
 // buildAIRuntime 把设置行与启用中的渠道装配成快照里的那一份。
@@ -283,10 +370,17 @@ func buildAIRuntime(gdb *gorm.DB, needed bool, vocab aiVocabulary) (*aiRuntime, 
 	rt := &aiRuntime{
 		PreTimeoutMs:   clampInt(setting.PreTimeoutMs, minAITimeoutMs, maxPreTimeoutMs),
 		AsyncTimeoutMs: clampInt(setting.AsyncTimeoutMs, minAITimeoutMs, maxAsyncTimeoutMs),
-		Prompt:         setting.Prompt,
 		Vocab:          vocab,
 		MaxInputChars:  clampInt(setting.MaxInputChars, 200, maxAIMaxInputChars),
-		Scopes:         scopes,
+		// 留存开关与上限跟着快照走(热路径每次抽中都要读一次,查库不可接受)。
+		// 保留天数**不进快照**:它只被每小时一次的清理任务读,而那个任务必须
+		// 在 AI 审核关闭时照样工作 —— 关闭时快照整体是 nil。
+		LogContent: setting.LogContent,
+		// NULL(从没设置过)读作 true:这一档是一次新增能力,而不是谁做过的决定。
+		// 靠 *bool 的第三个状态区分它与"运维显式关掉",因此不需要任何回填迁移。
+		LogContentViolationFull: boolOrTrue(setting.LogContentViolationFull),
+		LogContentMaxChars:      clampInt(setting.LogContentMaxChars, minAIReviewContentChars, maxAIReviewContentChars),
+		Scopes:                  scopes,
 	}
 	// 闭集只剩兜底那一条(或干脆是空的)时告警一次:此时模型只能回 none 或
 	// 「未分类」,按具体类型过滤的规则一条都不会命中。原因通常是类型表这一轮
@@ -335,6 +429,16 @@ func buildAIRuntime(gdb *gorm.DB, needed bool, vocab aiVocabulary) (*aiRuntime, 
 			// 在这里就折回 json_prompt,热路径不再判第二遍。
 			Protocol: normalizeAIProtocol(row.Protocol),
 			Guard:    guardPolicyFromChannel(row),
+			// 风险名同样在装配期归一一次,理由与协议那一行相同。
+			RiskName: normalizeGraniteRisk(row.RiskName),
+			// 分组、提示词、拦截文案三样在装配期原样带上:热路径需要它们时
+			// 已经拿不到 AIChannel 行了(快照是只读副本,库可能已经断了)。
+			Group:        row.Group,
+			Prompt:       row.Prompt,
+			BlockMessage: row.BlockMessage,
+			NotifyEmail:  row.NotifyEmail,
+			EmailSubject: row.EmailSubject,
+			EmailBody:    row.EmailBody,
 			// 策略在装配期归一一次:热路径不再解析那两列 CSV,而每次审核都
 			// 重新 split 一遍一整轮快照都不会变的字符串,只是白烧 CPU。
 			TimeoutMs: row.TimeoutMs, Weight: weight,

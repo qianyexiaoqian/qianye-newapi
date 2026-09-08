@@ -146,34 +146,29 @@ func (r *ruleUpsertReq) apply(dst *Rule) error {
 	return ValidateRule(dst)
 }
 
-// resolveRuleCategory 把规则的类型归属落实到一个**真实存在且未归档**的类型 id。
+// resolveRuleCategory 校验规则选中的违规类型**真实存在且未归档**。
 //
 // 刻意不放进 ruleUpsertReq.apply / ValidateRule:那两个函数是纯的(不碰数据库),
 // 而"这个类型存不存在"只能查库。混进去会让全部规则校验用例都必须先建一张类型表,
 // 而它们要断言的是匹配方式与作用域,与类型无关。
 //
-// 落不到任何类型时**不是**报错,而是回落兜底:一次类型表抖动不该让运营连规则
-// 都保存不了 —— 而漏掉 category_id 的规则在运行期由 categoryForRule 兜住,
-// 影响仅限于管理端列表上显示成「未分类」。指向一个已归档类型才报错:
-// 那是运营明确选错了,静默改写会让他以为自己配的是另一类。
+// ── category_id = 0 原样保留,不再改写成兜底类型 ──
+//
+// 这里一度把 0 静默改写成「未分类」兜底类型的真实 id。改写之后"没选类型"这个
+// 状态在库里就不存在了,而它恰恰是项目方要的那一档:「违规类型未选择的,不应当
+// 纳入计数,说明这个类型违规阻断即可,不需要计数处罚」。0 现在一路留到运行期,
+// 由 categoryForRule / newRecord 消费成"只处置、不计数"。
+//
+// 指向一个已归档类型才报错:那是运营明确选错了,静默改写会让他以为自己配的是另一类。
 func resolveRuleCategory(row *Rule) error {
 	gdb := db.Get()
-	if gdb == nil {
+	if gdb == nil || row.CategoryId <= 0 {
 		return nil
 	}
-	if row.CategoryId > 0 {
-		var cat Category
-		if err := gdb.Where("id = ?", row.CategoryId).Take(&cat).Error; err != nil {
-			return fmt.Errorf("违规类型 %d 不存在或已归档,请重新选择", row.CategoryId)
-		}
-		return nil
+	var cat Category
+	if err := gdb.Where("id = ?", row.CategoryId).Take(&cat).Error; err != nil {
+		return fmt.Errorf("违规类型 %d 不存在或已归档,请重新选择", row.CategoryId)
 	}
-	var fallback Category
-	if err := gdb.Where("is_fallback = ?", true).Take(&fallback).Error; err != nil {
-		common.SysError("qianye/violation: 「未分类」兜底类型缺失,本次规则保存不带类型: " + err.Error())
-		return nil
-	}
-	row.CategoryId = fallback.Id
 	return nil
 }
 

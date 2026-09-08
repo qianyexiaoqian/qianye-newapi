@@ -10,11 +10,13 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/groupratio"
 	"github.com/QuantumNous/new-api/qianye/guard"
+	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/modules/groupns"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
@@ -401,6 +403,11 @@ type matrixView struct {
 	Warnings []string     `json:"warnings"`
 	Partial  *savePartial `json:"partial,omitempty"`
 
+	// Pagination 只在请求带了翻页参数时出现。**行轴之外的一切仍然是全量口径**:
+	// ScopePolicy 的四个计数、Warnings、ModelGroups 都按整张表算 —— 一个
+	// 「本页有几档没设范围」的数字会随翻页跳变,而运营读它的方式是"全站还有几档没配"。
+	Pagination *pageInfo `json:"pagination,omitempty"`
+
 	// SupportsGrantNote 恒为 true:本版本认 set_note / clear_note 两个动作。
 	//
 	// ══════════ 为什么要一个显式的能力位,而不是让前端嗅探 ══════════
@@ -484,11 +491,42 @@ func effectiveTopupRatio(v float64) float64 {
 	return v
 }
 
+// pageWindow 是「这一次只要行轴的哪一段」。**nil = 整张表**。
+//
+// 行轴是用户分组,列轴(模型分组)不参与翻页:列轴是编辑弹窗里那一格一格的
+// 坐标系,切掉一半列等于让弹窗少显示一批可授权的池子,而运营看不出少了什么。
+type pageWindow struct {
+	Page int
+	Size int
+}
+
+// pageInfo 随分页响应一起下发,让前端画得出「第几页 / 共几条」。
+type pageInfo struct {
+	Page  int `json:"p"`
+	Size  int `json:"page_size"`
+	Total int `json:"total"`
+}
+
+// matrixPageWindow 解析行轴翻页参数。**不带任何分页参数时返回 nil**,响应逐位
+// 等于改造之前的整表。
+//
+// 这条向后兼容不是客气:同一个端点还养着 /qy/admin/group-matrix 那张高级视图
+// (整列批量、跨档对比),它要的就是全量行轴。默认翻页会让那一页在第 11 档之后
+// 的整列批量静默只作用于前 10 档 —— 一次误配横跨两个数据库,而界面上没有任何
+// 迹象说明它只做了一部分。
+func matrixPageWindow(c *gin.Context) *pageWindow {
+	if c.Query("p") == "" && c.Query("page_size") == "" {
+		return nil
+	}
+	page, size := httpq.Paginate(c, httpq.Spec{DefaultSize: httpq.GroupTablePageSize})
+	return &pageWindow{Page: page, Size: size}
+}
+
 func adminGetMatrix(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagGroupMatrix) {
 		return
 	}
-	view, err := buildMatrixView(db.Get())
+	view, err := buildMatrixView(db.Get(), matrixPageWindow(c))
 	if err != nil {
 		internalError(c, err)
 		return
@@ -507,7 +545,11 @@ func adminGetMatrix(c *gin.Context) {
 //
 // 所以这里一次给全:分组名称 / 注册用户数 / 充值倍率 / 可用模型分组(名称清单)/
 // 分组备注 + 编辑弹窗要的每一格(勾选、倍率、备注)。前端**禁止**再去拼第二个接口。
-func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
+//
+// window 非 nil 时只组装行轴的那一段(见 pageWindow)。切页发生在
+// **全表口径的统计算完之后**:policy 的四个计数与 Warnings 都是"全站还有几档"
+// 的答案,按本页算会让它们随翻页跳变。
+func buildMatrixView(gdb *gorm.DB, window *pageWindow) (*matrixView, error) {
 	scopes, err := loadScopes(gdb)
 	if err != nil {
 		return nil, err
@@ -563,11 +605,26 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 		}
 	}
 
+	// ── 行轴切页 ────────────────────────────────────────────────────────
+	//
+	// 切在这里、而不是更早:上面几行全是**一次聚合出全站一张表**的查询
+	// (人数、活跃令牌、空分组令牌、同名渠道池),按页重发只会让翻页变成 N 次全表
+	// 扫描。切在这里之后,真正按行付费的两段 —— 上游可选集合的逐档解析、
+	// 以及 行×列 的格子 —— 才只对本页算。
+	total := len(userGroups)
+	pageGroups := userGroups
+	if window != nil {
+		pageGroups = httpq.Slice(userGroups, window.Page, window.Size)
+	}
+
 	// 未设定范围的行必须显示**上游此刻的实际可选集合**(见 cellView.Granted)。
 	// 走 service.GetUserUsableGroups 是安全的:该分组没有 scope 行时
 	// Resolve 恒等返回上游,读不到我们自己写的东西。每个分组只算一次。
-	upstreamUsable := make(map[string]map[string]string, len(userGroups))
-	for _, ug := range userGroups {
+	//
+	// 只对本页算:它是这个接口里唯一一段**按行付费**的解析(每档一次差分 +
+	// 一次自我补入判定),而它的产物只喂给本页要渲染的那些行。
+	upstreamUsable := make(map[string]map[string]string, len(pageGroups))
+	for _, ug := range pageGroups {
 		if _, managed := scopes[ug]; !managed {
 			upstreamUsable[ug] = service.GetUserUsableGroups(ug)
 		}
@@ -581,12 +638,26 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 	globalWarnings, rowWarnings := matrixWarnings(userGroups, modelGroups, grants,
 		topupRatios, userRegistry, routedPools, emptyTokens)
 
+	// 四个计数按**全量**行轴算,不受切页影响。它们回答的是"全站还有几档没设范围"
+	// 这类问题,而一个随翻页跳变的分母比没有分母更糟 —— 运营会照着第 2 页那个
+	// 「还有 3 档未设范围」去汇报,而全站其实有 30 档。
 	policy := scopePolicy{
 		UnsetMeansAll:        true,
 		SubscriptionUnlockOn: PlanUnlockEnabled(),
 	}
-	rows := make([]userGroupRow, 0, len(userGroups))
 	for _, ug := range userGroups {
+		if _, managed := scopes[ug]; !managed {
+			policy.UnsetGroups++
+			continue
+		}
+		policy.ScopedGroups++
+		if len(grants[ug]) == 0 {
+			policy.EmptyScopedGroups++
+		}
+	}
+
+	rows := make([]userGroupRow, 0, len(pageGroups))
+	for _, ug := range pageGroups {
 		sc, managed := scopes[ug]
 		reg, registered := userRegistry[ug]
 		row := userGroupRow{
@@ -621,7 +692,6 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 			if _, self := upstreamUsable[ug][ug]; self && ratio_setting.ContainsGroupRatio(ug) {
 				row.SelfInserted = true
 			}
-			policy.UnsetGroups++
 		default:
 			row.Mode, row.AllowAuto, row.ScopeNote = sc.Mode, sc.AllowAuto, sc.Note
 			// 有 scope 行就是生效,与 Resolve 同一个谓词。**不许回头判 sc.Mode**:
@@ -633,11 +703,9 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 			row.SelfExcluded = !self
 			if len(grants[ug]) == 0 {
 				row.ScopeState = ScopeStateEmpty
-				policy.EmptyScopedGroups++
 			} else {
 				row.ScopeState = ScopeStateSet
 			}
-			policy.ScopedGroups++
 		}
 		row.Warnings = rowWarnings[ug]
 		if row.Warnings == nil {
@@ -683,8 +751,10 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 		rows[i].ModelGroups = filtered
 	}
 
-	cells := make([]cellView, 0, len(userGroups)*len(modelGroups))
-	for _, ug := range userGroups {
+	// 格子只对本页的行铺开:它是 行×列 的乘积,也就是这个响应里唯一会随分组数
+	// 平方增长的一段 —— 项目方说的"分组过多就卡"最直接的那一份。
+	cells := make([]cellView, 0, len(pageGroups)*len(modelGroups))
+	for _, ug := range pageGroups {
 		upstream, unmanaged := upstreamUsable[ug]
 		// 按格备注只在**设过范围**的那一档被 Resolve 读到(没设范围时它逐位返回上游,
 		// 按格备注一个字节都到不了用户眼前),管理端的解析必须用同一个谓词。
@@ -750,18 +820,27 @@ func buildMatrixView(gdb *gorm.DB) (*matrixView, error) {
 		snapInfo["stale"] = age > maxStaleSeconds()
 	}
 
-	return &matrixView{
+	view := &matrixView{
 		UserGroups: rows, ModelGroups: modelGroups, Cells: cells,
 		BaseRatioHash: baseHash, Snapshot: snapInfo,
 		Warnings:          globalWarnings,
 		ScopePolicy:       policy,
 		SupportsGrantNote: true,
-	}, nil
+	}
+	if window != nil {
+		view.Pagination = &pageInfo{Page: window.Page, Size: window.Size, Total: total}
+	}
+	return view, nil
 }
 
 // respondMatrix 把写接口的响应统一成"回读后的真实状态"。
+//
+// 回读的**行轴窗口取自这次请求自己的查询串**:前端把它正在看的那一页原样带在
+// 写请求上,于是保存后替换本地状态的那一份与屏幕上的那一页是同一段。不带就是
+// 整表,与改造之前逐位相同。少了这一步,分页外壳保存完会被一份全量矩阵覆盖 ——
+// 表格当场从 10 行涨到全站,而运营刚刚按的是「保存」。
 func respondMatrix(c *gin.Context, gdb *gorm.DB, partial *savePartial) {
-	view, err := buildMatrixView(gdb)
+	view, err := buildMatrixView(gdb, matrixPageWindow(c))
 	if err != nil {
 		internalError(c, err)
 		return
@@ -1259,6 +1338,17 @@ func adminPutMatrix(c *gin.Context) {
 		badRequest(c, "cells 为空,没有任何要保存的改动")
 		return
 	}
+	// 倍率格提到超管档,理由见 middleware.RootActionGroupRatioWrite:这份 option
+	// (GroupGroupRatio)的另一个写入口 PUT /api/option/ 是 RootAuth,同一份配置
+	// 不能有两扇档位不同的门。
+	//
+	// 闸门排在这里而不是路由上,是因为要提的只有**倍率那一格**:同一个请求体里的
+	// 成员资格与按格备注仍归 role=10,挂路由级 RootActionGate 会把整张页面连坐掉。
+	// 位置刻意在参数解析之后、loadRatioMatrix / loadScopes 与 ratioMu 之前 ——
+	// 一次被拒的越权尝试不该占住这把全局锁,也不该在扩展库上打三次查询。
+	if containsRatioCell(cells) && !middleware.RequireRootAction(c, middleware.RootActionGroupRatioWrite) {
+		return
+	}
 
 	ratioMu.Lock()
 	defer ratioMu.Unlock()
@@ -1490,6 +1580,21 @@ func checkGrantBudget(gdb *gorm.DB, cells []Cell, before map[string]map[string]s
 		return fmt.Errorf("清单行数将达到 %d,超过 group_matrix.max_grants(%d)", cur+delta, limit)
 	}
 	return nil
+}
+
+// containsRatioCell 回答「这一批格子里有没有动到计费倍率的」。
+//
+// 它是 adminPutMatrix 里那道超管闸门的判据。写成独立函数而不是内联,是因为
+// 「哪些 action 算改倍率」这件事必须与 applyRatioCells 的 switch 逐字同步:
+// 将来加第三个倍率动作时,漏改这里的后果是那个动作静默回到 role=10 可写,
+// 而不会有任何测试变红 —— 与本仓 root_action_guard_test.go 反复守的是同一种形状。
+func containsRatioCell(cells []Cell) bool {
+	for _, cell := range cells {
+		if cell.Action == ActionSetRatio || cell.Action == ActionClearRatio {
+			return true
+		}
+	}
+	return false
 }
 
 // applyRatioCells 把倍率动作作用在矩阵上,返回是否真的有改动。

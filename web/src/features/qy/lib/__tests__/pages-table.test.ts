@@ -120,6 +120,11 @@ const ROOT_ADMIN_URLS = [
   '/qy/admin/transfer-records',
   '/qy/admin/fund-orders',
   '/qy/admin/violations',
+  // AI 审核日志:逐条明细的流水页,与违规记录并列。它**不**进设置抽屉 ——
+  // 抽屉里那一页(`/qy/admin/violation-ai-review`)管的是渠道、密钥、抽样率、
+  // 保留期,改一次影响之后每一笔;这一页是每天要开的记录。
+  // 第一版把它做成配置页底下的一张卡,项目方打开那一页根本没看见它。
+  '/qy/admin/violation-ai-logs',
   '/qy/admin/audit-logs',
   '/qy/admin/health',
   '/qy/admin/lottery',

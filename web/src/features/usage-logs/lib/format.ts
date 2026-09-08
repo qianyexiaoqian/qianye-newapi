@@ -92,6 +92,32 @@ export function isViolationFeeLog(other: LogOtherData | null): boolean {
   )
 }
 
+/**
+ * 千夜扩展：这一次请求在转发上游**之前**就被内容审核拦下了。
+ *
+ * 与 `isViolationFeeLog` 是两个正交的问题，不能合成一个：
+ * 「拦没拦下」说的是请求有没有发出去，「扣没扣费」说的是这次拦截罚不罚钱。
+ * 四种组合全都存在（拦了不罚 / 拦了也罚 / 不拦只罚 / 都没有），而用户最需要
+ * 看懂的恰恰是第一种 —— 在这一行出现之前，它在使用记录页里一点痕迹都没有。
+ */
+export function isViolationBlockedLog(other: LogOtherData | null): boolean {
+  return other?.violation_blocked === true
+}
+
+/**
+ * 那一行拦截该用哪句抬头。
+ *
+ * 两种拦截给用户的下一步完全相反：内容审核是"改内容"，会话屏蔽是"开新会话"
+ * —— 后者改多少遍内容都没有用。共用一句话等于把人按在一个不会有结果的循环里。
+ *
+ * 缺省按内容审核处理：`violation_block_kind` 上线前的日志只有内容审核那一种。
+ */
+export function violationBlockLabelKey(other: LogOtherData | null): string {
+  return other?.violation_block_kind === 'session'
+    ? 'qy_log_session_blocked'
+    : 'qy_log_violation_blocked'
+}
+
 function isPositiveFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
 }

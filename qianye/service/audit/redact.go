@@ -67,6 +67,10 @@ var sensitiveExactKeys = map[string]bool{
 	"account":        true,
 	"accountno":      true,
 	"payeeaccount":   true,
+	// 收件人手机号的两种常见写法。放精确匹配而不是子串:mobile 作为子串会命中
+	// is_mobile 这类布尔开关,tel 会命中 telemetry。
+	"mobile": true,
+	"tel":    true,
 }
 
 // nonSecretKeySuffixes 是**以 key 结尾但不是凭证**的归一化键名。
@@ -96,6 +100,16 @@ var sensitiveSubstrings = []string{
 	// 收款信息:提现的钱最终去哪。它在 qy_pii_audits 里有独立的、
 	// 保留期更长的明文访问审计,绝不能在请求台账里再落一份明文。
 	"idcard", "bankcard", "cardno", "iban", "swift", "wallet",
+	// 收货信息:实物单的收件地址与联系方式。与上一行同一条理由 ——
+	// 商城为这份数据配了 AES-256-GCM 落盘(mall/model.go)、唯一的按单明文出口
+	// (GET /admin/mall/orders/:no/address,自带 PII 访问审计)与 90 天擦除
+	// (mall.address_retention_days)。台账要是再落一份明文,这三样就同时作废:
+	// 它不加密、可按 path 批量拉、不写 PII 访问审计,而且 audit.retention_days
+	// 默认 0 = 永久,擦除任务扫不到它。
+	//
+	// address 走子串是有意的:它会顺带命中 ip_address / email_address,
+	// 而那两样落进台账同样没有排障价值(台账自己有独立的 IP 列)。
+	"address", "contact", "receiver", "consignee", "phone",
 }
 
 // normalizeKey 归一化键名:小写并去掉 _ - . 与空格。

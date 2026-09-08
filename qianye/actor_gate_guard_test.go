@@ -74,6 +74,12 @@ var actorGates = []actorGate{
 	// 于是 role=10 能作废并硬删 role=100 的有效订阅。
 	{"POST /api/subscription/admin/user_subscriptions/:id/invalidate", "controller/subscription.go", "AdminInvalidateUserSubscription", "requireManageableUser"},
 	{"DELETE /api/subscription/admin/user_subscriptions/:id", "controller/subscription.go", "AdminDeleteUserSubscription", "requireManageableUser"},
+	// 套餐强删的级联是上面两条的**整盘**版本:一次调用作废该套餐下每一条活跃订阅
+	// 并把每个持有人的分组打回兜底组。它是「整盘 + 纯损害」,也就是"整盘重置已用量"
+	// 与"单条作废/硬删"两类的并集,而当初两道闸一道都没接上 —— 它没进这张清单,
+	// 于是守卫全绿而 role=10 能一次删掉 role=100 花钱买的订阅。
+	// 判据下沉到 ensureActorMayCancelAll:目标不在报文里,而在每一条订阅行的归属人上。
+	{"POST /api/qy/admin/subscription/plans/:plan_id/delete", "qianye/modules/subscription/delete.go", "ensureActorMayCancelAll", "ManageableTarget"},
 
 	// ── 扩展侧:邀请关系(D-14 之后从 commission 搬进 invite,判据原样保留)──
 	{"POST /api/qy/admin/invite/relations/bind", "qianye/modules/invite/api_admin_relation.go", "adminBindRelation", "denyActorOverTarget"},

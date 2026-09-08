@@ -872,9 +872,17 @@ type entryRequest struct {
 // 唯一一处能算出进链字节的地方,复制一份到这里就等于给自己留了一个会漂移的
 // 第二口径。这里只回答"几注、哪几组"。
 //
-// cap 由调用方从**这一场活动**上取(picksCapOf),不再是一个包级常量:同一个
-// 站点上一场配 10、另一场配 999 是正常的,而一个写死的上界会在其中一场上说谎。
-func acceptPickList(cap int, req entryRequest) ([]string, error) {
+// 上界从**这一场活动**上取(picksCapOf),不是包级常量:同一个站点上一场配 10、
+// 另一场配 999 是正常的,而一个写死的上界会在其中一场上说谎。因此这里收的是
+// 活动本身而不是一个算好的 cap —— 调用方自己算 cap 的写法多了一处可以传错的地方,
+// 而传错的方向(把别场的 cap 传进来)不会有任何东西报错。
+//
+// 玩法闸门也在这里:批量只对双色球成立,理由见 errBatchNotAllowed。
+func acceptPickList(act *Activity, req entryRequest) ([]string, error) {
+	if len(req.Picks) > 1 && (act.Kind != KindDraw || act.DrawMode != DrawModeBall) {
+		return nil, errBatchNotAllowed
+	}
+	cap := picksCapOf(act)
 	if len(req.Picks) == 0 {
 		// 单注:选号仍旧走 Pick。空串在非双色球上是合法的(不带号),
 		// 在双色球上会被 acceptPick 判成 errBadPickInput —— 判定点仍然只有一处。
@@ -1059,7 +1067,7 @@ func handleCreateEntry(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	picks, err := acceptPickList(picksCapOf(act), req)
+	picks, err := acceptPickList(act, req)
 	if err != nil {
 		respondErr(c, err)
 		return

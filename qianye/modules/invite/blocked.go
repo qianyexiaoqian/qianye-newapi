@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/db"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -47,7 +48,48 @@ func ensureRelation(ctx context.Context, inviterId, inviteeId int, rawName strin
 		db.MarkFailure(err)
 	}
 	if blocked {
+		// 参数是**对侧那一行**的坐标,所以两个 id 相对本行是交换的:
+		// 本行是 inviter→invitee,对侧是 invitee→inviter。
+		blockReciprocalPeer(gdb, inviterId, inviteeId, now)
 		invalidateBlocked()
+	}
+}
+
+// blockReciprocalPeer 把互邀环里**另一条腿**也拉黑。
+//
+// # 为什么少了它环就只堵住一半
+//
+// blocked 只在 INSERT 那一刻算一次,而 OnConflict{DoNothing} 保证已存在的行
+// 一个字节都不会变。互邀环的两条腿几乎不可能同时出现:
+//
+//  1. B 用 A 的邀请码注册并消费 → 落 A→B,此时 resolveInviter(A).InviterId 还是 0,
+//     这一行 blocked=false;
+//  2. 之后 A 的上线被绑/换绑成 B(admin 的 relations/bind、rebind),A 再消费 →
+//     落 B→A,这一次环闭合了,于是**只有 B→A**被拉黑。
+//
+// 结果是 A→B 停了、B→A 永远继续发 —— 而 blockedInvitees 按 invitee 缓存,
+// 那条陈旧的行此后再也不会被重新审视。这不会凭空造币(两条腿都要有真实消费),
+// 但它把"互邀自刷"这条判据的效力砍掉了一半。
+//
+// # 为什么用条件 UPDATE 而不是无条件覆写
+//
+// 「blocked 为 false 且 risk_flags 为空串」这两个条件合起来的意思是"这一行从来
+// 没有被任何判据标记过",也就是纯粹的自动默认值。管理员如果看过这一对关系并
+// 决定放行(那样的行会留着 risk_flags='reciprocal_invite'、blocked=false),
+// 这条 UPDATE 就命中不到它 —— 与上面那句"自动流程不该覆盖人的决定"是同一条口径。
+func blockReciprocalPeer(gdb *gorm.DB, peerInviteeId, peerInviterId int, now int64) {
+	err := gdb.Model(&InviteRelation{}).
+		Where("invitee_id = ? AND inviter_id = ? AND blocked = ? AND risk_flags = ?",
+			peerInviteeId, peerInviterId, false, "").
+		Updates(map[string]any{
+			"risk_flags": "reciprocal_invite",
+			"blocked":    true,
+			// 必须显式写 updated_at:GORM 的钩子在 map 形态的 Updates 上
+			// 改不到实际发出的 SQL。
+			"updated_at": now,
+		}).Error
+	if err != nil {
+		db.MarkFailure(err)
 	}
 }
 

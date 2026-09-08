@@ -107,7 +107,19 @@ describe('扇区几何', () => {
   })
 
   test('none 档恒为中性色，真实档在六色调色板里循环', () => {
-    assert.equal(qyWheelSectorColor(-1), 'var(--muted)')
+    // 中性 = 由前景色兑背景色调出，不含任何色相；而且**不是** `--muted`
+    // ——「谢谢参与」常占盘面一半以上，用一支紧贴卡片底色的灰会在盘上挖出
+    // 一个与背景同色的大缺口。
+    const none = qyWheelSectorColor(-1)
+    assert.match(none, /^color-mix\(in oklch, var\(--foreground\) \d+%,/)
+    assert.notEqual(none, 'var(--muted)')
+    for (const index of [0, 1, 2, 3, 4, 5]) {
+      assert.notEqual(
+        qyWheelSectorColor(index),
+        none,
+        `第 ${index} 支彩色扇区与「谢谢参与」同色了`
+      )
+    }
     assert.equal(qyWheelSectorColor(0), qyWheelSectorColor(6))
     assert.notEqual(qyWheelSectorColor(0), qyWheelSectorColor(1))
   })

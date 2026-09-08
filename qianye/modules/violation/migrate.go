@@ -678,3 +678,256 @@ func runAIChannelKeyEndpointBackfill() {
 		}))
 	}
 }
+
+// migrateAIReviewLogDefaults 把**从未被人设置过**的审核日志三列补成出厂档。
+//
+// 判据是三列同时为零值。这不是"看起来像默认",而是"这一行在这三列上从来没有
+// 被写过":任何一次管理端保存都会把 log_content_max_chars 与 log_retention_days
+// 写成 100..32000 / 1..365 里的一个正数(validateAISetting 不接受 0),
+// 所以三列同时为零只可能来自 AutoMigrate 的 ADD COLUMN 回填。
+//
+// 也就是说这个迁移**不可能覆盖任何人做过的决定**,包括"我就是不想留内容"——
+// 那个决定保存下来是 log_content=false + max_chars=1000 + retention=3,
+// 第二列非零,条件不成立。
+//
+// 补的是什么:留内容(1000 字)+ 保留 3 天。前者见 AISetting.LogContent 的
+// 零值方向说明;后者更硬 —— 在此之前这张表**从来没有被清理过**,而它的行数
+// 正比于被抽中的请求数。不补的话,升级之后它会继续无限长下去。
+func migrateAIReviewLogDefaults(ctx context.Context, gdb *gorm.DB) (int64, error) {
+	if gdb == nil {
+		return 0, db.ErrNotReady
+	}
+	res := gdb.WithContext(ctx).Model(&AISetting{}).
+		Where("log_content = ? AND log_content_max_chars = ? AND log_retention_days = ?", false, 0, 0).
+		Updates(map[string]any{
+			"log_content":           true,
+			"log_content_max_chars": defaultAIReviewContentChars,
+			"log_retention_days":    defaultAIReviewRetentionDays,
+		})
+	if res.Error != nil {
+		db.MarkFailure(res.Error)
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}
+
+// runAIReviewLogDefaultsMigration 是启动期调用点,失败只告警不阻断。
+//
+// 不阻断的理由与其余一次性迁移一致:补不上的话保留期读取会回落到同一个
+// 默认值(见 effectiveAIReviewRetentionDays),清理照常跑 —— 只是设置页上
+// 那两格显示成 0,运营看不出默认是多少。让主程序起不来才是真的事故。
+func runAIReviewLogDefaultsMigration() {
+	if !config.Get().Database.ShouldAutoMigrate() {
+		return
+	}
+	gdb := db.Get()
+	if gdb == nil {
+		return
+	}
+	rows, err := migrateAIReviewLogDefaults(context.Background(), gdb)
+	if err != nil {
+		common.SysError("qianye/violation: AI 审核日志默认档补写失败(保留期仍按 " +
+			"默认值生效,但设置页会显示 0): " + err.Error())
+		return
+	}
+	if rows > 0 {
+		common.SysLog(common.MapToJsonStr(map[string]any{
+			"msg": "qianye/violation: 已为 AI 审核日志补上出厂档 —— 开始留存**脱敏并截断后**的送审内容," +
+				"并按保留期滚动清理(在此之前这张表从不清理)。要关掉内容留存或改保留期," +
+				"去管理端「AI 审核」页的审核日志一节",
+			"log_content":           true,
+			"log_content_max_chars": defaultAIReviewContentChars,
+			"log_retention_days":    defaultAIReviewRetentionDays,
+			"table":                 AIReview{}.TableName(),
+		}))
+	}
+}
+
+// ─────────────────── 审核提示词搬进渠道 ───────────────────
+
+// legacyPromptColumn 是 qy_violation_ai_setting / qy_violation_ai_scope 上那两列提示词。
+//
+// 写成常量与 legacySeverityColumn 同一条理由:探针、搬运、删除用的必须是同一个
+// 字符串,三处各写一遍字面量时,改错一处的表现是"迁移每次启动都说自己迁完了、
+// 而值一直没搬走"。两张表的列名恰好相同,所以只要一个常量。
+const legacyPromptColumn = "prompt"
+
+// migrateAIPromptToChannels 把存量的审核提示词搬到渠道上,然后删掉那两列。
+//
+// # 为什么必须先搬后删
+//
+// 2026-09-06 拍板"提示词只在渠道上写",而站点自定义过的提示词就住在那两列里。
+// 直接 DROP 等于把每一个改过提示词的站点悄悄退回内置默认 —— 判定口径整体
+// 换一份,而界面上一切正常,没有任何症状。
+//
+// # 搬运口径
+//
+//	全局 AISetting.Prompt  → 抄给**所有** prompt 为空的启用/停用渠道
+//	                         (它本来就是所有渠道的兜底,一对多是它的原义)
+//	AIScope.Prompt         → 抄给该档**指定的那几个**渠道里 prompt 仍为空的
+//	                         (作用域的提示词只作用于它自己那一档,而那一档
+//	                          能到达的渠道就是它指定的那几个)
+//
+// 顺序是**作用域在先、全局在后**。两轮都只写"prompt 仍为空"的渠道,所以先跑的
+// 那一轮赢 —— 而更具体的那一份应当赢:一个渠道既被某条作用域指着、站点又配过
+// 全局提示词时,运营写下那条作用域提示词的意思就是"这一档要用它"。
+//
+// 反过来(全局在先)在演示站上实测过一次:全局那一份把唯一的渠道占掉,
+// 作用域那一份只留下一条"未覆盖"的告警 —— 那正是这个迁移最不该有的结果。
+//
+// 一个渠道被两条作用域指着时,先到的那一份留下,后到的被跳过并告警。
+// **不做合并**:把两段判定说明拼在一起会得到一份谁也没写过、谁也不为它负责的提示词。
+//
+// 没指定渠道的作用域(旧的"全部启用渠道"那一档)的提示词无处可搬 —— 它本来
+// 就作用于全部渠道,而全局那一份已经占了那个位置。这种冲突逐条告警,交给人看。
+func migrateAIPromptToChannels(ctx context.Context, gdb *gorm.DB) (moved int64, conflicts []string, err error) {
+	if gdb == nil {
+		return 0, nil, db.ErrNotReady
+	}
+	m := gdb.WithContext(ctx).Migrator()
+	settingHas := m.HasTable(&AISetting{}) && m.HasColumn(&AISetting{}, legacyPromptColumn)
+	scopeHas := m.HasTable(&AIScope{}) && m.HasColumn(&AIScope{}, legacyPromptColumn)
+	if !settingHas && !scopeHas {
+		return 0, nil, nil // 已经搬过了(列不在了),幂等退出
+	}
+
+	// ① 每条作用域那一份 → 它指定的渠道里还空着的那些。**先跑它**,见下。
+	if scopeHas {
+		type legacyScope struct {
+			Id         int64
+			Name       string
+			Prompt     string
+			ChannelIds AIChannelIds
+		}
+		var scopes []legacyScope
+		if err := gdb.WithContext(ctx).Table(AIScope{}.TableName()).
+			Select("id, name, prompt, channel_ids").Scan(&scopes).Error; err != nil {
+			db.MarkFailure(err)
+			return moved, nil, err
+		}
+		for _, sc := range scopes {
+			if strings.TrimSpace(sc.Prompt) == "" {
+				continue
+			}
+			if len(sc.ChannelIds) == 0 {
+				conflicts = append(conflicts, fmt.Sprintf(
+					"作用域 %d(%s)有自己的提示词,但它没指定任何渠道 —— 无处可搬,请手工抄到对应渠道上", sc.Id, sc.Name))
+				continue
+			}
+			res := gdb.WithContext(ctx).Model(&AIChannel{}).
+				Where("id IN ? AND (prompt IS NULL OR prompt = ?)", []int64(sc.ChannelIds), "").
+				Update("prompt", sc.Prompt)
+			if res.Error != nil {
+				db.MarkFailure(res.Error)
+				return moved, conflicts, res.Error
+			}
+			moved += res.RowsAffected
+			if int(res.RowsAffected) < len(sc.ChannelIds) {
+				conflicts = append(conflicts, fmt.Sprintf(
+					"作用域 %d(%s)指定的 %d 个渠道里只有 %d 个是空提示词,其余已被别处占用,未覆盖",
+					sc.Id, sc.Name, len(sc.ChannelIds), res.RowsAffected))
+			}
+		}
+	}
+
+	// ② 全局那一份 → 剩下的、仍然空着的渠道。
+	if settingHas {
+		var global string
+		if err := gdb.WithContext(ctx).Table(AISetting{}.TableName()).
+			Where("id = ?", 1).Limit(1).Pluck(legacyPromptColumn, &global).Error; err != nil {
+			db.MarkFailure(err)
+			return 0, nil, err
+		}
+		if strings.TrimSpace(global) != "" {
+			res := gdb.WithContext(ctx).Model(&AIChannel{}).
+				Where("prompt IS NULL OR prompt = ?", "").
+				Update("prompt", global)
+			if res.Error != nil {
+				db.MarkFailure(res.Error)
+				return 0, nil, res.Error
+			}
+			moved += res.RowsAffected
+		}
+	}
+
+	// ③ 两列都删掉。删失败不回滚搬运 —— 搬运本身是幂等的(只写空的那些),
+	//    而列留着不影响任何判定:代码里已经没有任何地方读它。
+	if settingHas {
+		if _, err := dropLegacyColumn(ctx, gdb, &AISetting{}, AISetting{}.TableName(), legacyPromptColumn); err != nil {
+			return moved, conflicts, err
+		}
+	}
+	if scopeHas {
+		if _, err := dropLegacyColumn(ctx, gdb, &AIScope{}, AIScope{}.TableName(), legacyPromptColumn); err != nil {
+			return moved, conflicts, err
+		}
+	}
+	return moved, conflicts, nil
+}
+
+// runAIPromptToChannelMigration 是启动期调用点,失败只告警不阻断。
+//
+// **必须排在快照预热之前**:预热会把渠道的提示词装进快照,搬晚了的话升级后的
+// 第一个刷新周期里,每一个改过提示词的站点都在用内置默认提示词判定 ——
+// 判定口径整体换一份,而界面上一切正常。
+func runAIPromptToChannelMigration() {
+	if !config.Get().Database.ShouldAutoMigrate() {
+		return
+	}
+	gdb := db.Get()
+	if gdb == nil {
+		return
+	}
+	moved, conflicts, err := migrateAIPromptToChannels(context.Background(), gdb)
+	if err != nil {
+		common.SysError("qianye/violation: 审核提示词搬运到渠道失败 —— " +
+			"在搬完之前,改过提示词的渠道会按内置默认提示词判定,请重启重试: " + err.Error())
+		return
+	}
+	if moved > 0 || len(conflicts) > 0 {
+		common.SysLog(common.MapToJsonStr(map[string]any{
+			"msg": "qianye/violation: 审核提示词已从「全局设置 / 作用域」搬到审核渠道上," +
+				"那两列已删除。此后提示词只在「审核渠道」表单里写",
+			"channels_filled": moved,
+			"conflicts":       conflicts,
+		}))
+	}
+	for _, c := range conflicts {
+		common.SysError("qianye/violation: 提示词搬运需要人工确认: " + c)
+	}
+}
+
+// runUnboundChannelScopeReport 点名"既没选渠道分组、也没指定渠道"的存量作用域。
+//
+// 这类行在写入侧已经不可能再产生(validateAIScope 会 400),但升级上来的库里
+// 会有一批 —— 它们按老口径继续在**全部启用渠道**之间分发。
+//
+// 只读、只打日志,**不自动处置**:自动停用等于一次升级悄悄关掉一条正在生效的
+// 风控;自动补一个分组则是替运营决定用户内容发往哪里。两者都比"喊出来"糟。
+func runUnboundChannelScopeReport() {
+	gdb := db.Get()
+	if gdb == nil {
+		return
+	}
+	var rows []AIScope
+	if err := gdb.WithContext(context.Background()).
+		Where("enabled = ? AND channel_group = ? AND (channel_ids IS NULL OR channel_ids = ?)",
+			true, "", "").
+		Order("id asc").Limit(50).Find(&rows).Error; err != nil {
+		db.MarkFailure(err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	names := make([]string, 0, len(rows))
+	for _, r := range rows {
+		names = append(names, fmt.Sprintf("%d(%s)", r.Id, r.Name))
+	}
+	common.SysError(common.MapToJsonStr(map[string]any{
+		"msg": "qianye/violation: 这些启用中的 AI 审核作用域既没选渠道分组、也没指定渠道," +
+			"仍按旧口径把用户内容发给**全部启用渠道** —— 新启用任何一个渠道,它们都会立刻开始往那里发。" +
+			"请在管理端给它们各选一个审核渠道分组(保存时已不再允许两个都空)",
+		"scopes": names,
+	}))
+}

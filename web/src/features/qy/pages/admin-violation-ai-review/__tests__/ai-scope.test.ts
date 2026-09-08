@@ -61,7 +61,7 @@ function summaryRow(
     group_scope_mode: 'include',
     pre_sample_rate_bps: 5000,
     async_sample_rate_bps: 5000,
-    prompt_source: 'inherit',
+    channel_group: '',
     category_id: 0,
     channel_ids: [],
     channel_mode: 'weighted',
@@ -92,7 +92,7 @@ describe('作用域草稿与请求体', () => {
       group_scope_mode: 'include',
       pre_sample_rate_bps: 5000,
       async_sample_rate_bps: 1000,
-      prompt: '',
+      channel_group: '',
       category_id: 0,
       channel_ids: [],
       channel_mode: '',
@@ -118,7 +118,7 @@ describe('作用域草稿与请求体', () => {
       group_scope_mode: 'exclude',
       pre_sample_rate_bps: 250,
       async_sample_rate_bps: 10000,
-      prompt: '本档判定说明',
+      channel_group: '自建护栏',
       category_id: 12,
       channel_ids: [4, 6],
       channel_mode: 'round_robin',
@@ -132,9 +132,9 @@ describe('作用域草稿与请求体', () => {
     assert.equal(back.async_sample_rate_bps, 10000)
     assert.equal(back.group_scope_mode, 'exclude')
     assert.equal(back.id, 7)
-    // 提示词与类型绑定同样要原样往返：往返丢字段的表现是"编辑一下抽样率就把
-    // 这一档的提示词清空了"，而清空之后它会静默回到继承全局。
-    assert.equal(back.prompt, '本档判定说明')
+    // 渠道分组与类型绑定同样要原样往返：往返丢字段的表现是"编辑一下抽样率就把
+    // 这一档的渠道池清空了"，而清空之后启用中的策略连保存都保存不了。
+    assert.equal(back.channel_group, '自建护栏')
     assert.equal(back.category_id, 12)
     // 指定渠道同理:往返丢掉它 = 这一档静默回到「全部启用渠道」,
     // 于是用户内容开始被发去运营明确没有选的端点,而界面上什么都没变。
@@ -195,7 +195,7 @@ describe('作用域草稿与请求体', () => {
       group_scope_mode: 'include',
       pre_sample_rate_bps: 0,
       async_sample_rate_bps: 1000,
-      prompt: '',
+      channel_group: '',
       category_id: 0,
       channel_ids: [1, 2],
       channel_mode: '',

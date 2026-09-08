@@ -218,3 +218,96 @@ func runBanCompensate(ctx context.Context) {
 }
 
 func isSkipped(err error) bool { return errors.Is(err, errBanSkipped) }
+
+// effectiveAIReviewRetentionDays 把设置行上的保留期折成实际生效的天数。
+//
+// 0 在这一格上是"没设置过",不是"永久保留"—— 这张表没有永久保留这一档,
+// 理由写在 AISetting.LogRetentionDays 上。上界同样要夹:一个手滑填成
+// 毫秒数的值会让清理任务在几年后才第一次删到东西,而那与"没清理"没有区别。
+func effectiveAIReviewRetentionDays(days int) int {
+	if days <= 0 {
+		return defaultAIReviewRetentionDays
+	}
+	if days > maxAIReviewRetentionDays {
+		return maxAIReviewRetentionDays
+	}
+	return days
+}
+
+// aiReviewRetentionDays 读出当前生效的保留天数。
+//
+// 刻意直接查设置行而不是读快照(Snapshot().ai):快照在 AI 审核**关闭**时
+// 整体为 nil,而关闭不会让历史明细消失 —— 那时清理反而是最需要跑的
+// (再也不会有新行,旧行却还占着几个 GB)。这个任务一小时才跑一次,
+// 多一次往返没有任何代价。
+func aiReviewRetentionDays(ctx context.Context, gdb *gorm.DB) int {
+	if gdb == nil {
+		return defaultAIReviewRetentionDays
+	}
+	var row AISetting
+	if err := gdb.WithContext(ctx).Where("id = ?", 1).Take(&row).Error; err != nil {
+		// 读不到设置行(还没建、或库抖了一下)时按默认值清理。回落到"不清理"
+		// 是更危险的方向:它把一次瞬时读失败变成一张永远不清的表,而症状要
+		// 几个月后才出现。
+		return defaultAIReviewRetentionDays
+	}
+	return effectiveAIReviewRetentionDays(row.LogRetentionDays)
+}
+
+// runAIReviewRetentionGC 按保留期滚动清理 AI 审核明细。
+//
+// # 为什么它必须单独存在,不能并进 runRetentionGC
+//
+// 两张表的量级差三个数量级:证据表按"命中次数"增长(千行/天),审核明细按
+// "被抽中的请求数"增长(可达几十万行/天)。更硬的一条是**库不同** ——
+// 明细可能住在台账库(见 qianye/db/logdb.go),而证据与记录永远在主库。
+// 合成一个函数就必须在里面切句柄,而切错的症状是"清理一直在跑、表一直在涨"。
+//
+// 清理走"先取一批主键再按主键删"。DELETE ... ORDER BY / LIMIT 是 MySQL 专有
+// 扩展,PostgreSQL 直接语法错误,而这里出错只被写进日志 —— 那会让这张最大的
+// 表在 PG 部署上静默地永远不清理(runRetentionGC 顶上记着同一条教训)。
+func runAIReviewRetentionGC(ctx context.Context) {
+	gdb := db.Log()
+	if gdb == nil {
+		return
+	}
+	days := aiReviewRetentionDays(ctx, db.Get())
+	before := common.GetTimestamp() - int64(days)*86400
+
+	deleted := int64(0)
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		var ids []int64
+		if err := gdb.WithContext(ctx).Model(&AIReview{}).
+			Where("created_at < ?", before).
+			Order("id").
+			Limit(gcBatchSize).
+			Pluck("id", &ids).Error; err != nil {
+			db.MarkLogFailure(err)
+			common.SysError("qianye/violation: 清理 AI 审核明细失败: " + err.Error())
+			return
+		}
+		if len(ids) == 0 {
+			break
+		}
+		res := gdb.WithContext(ctx).Where("id IN ?", ids).Delete(&AIReview{})
+		if res.Error != nil {
+			db.MarkLogFailure(res.Error)
+			common.SysError("qianye/violation: 清理 AI 审核明细失败: " + res.Error.Error())
+			return
+		}
+		deleted += res.RowsAffected
+		if len(ids) < gcBatchSize {
+			break
+		}
+		// 与证据清理同一个理由:每批之间主动让出,不与业务抢 IO。
+		// 这里尤其重要 —— 这张表一轮可能要删几十万行。
+		time.Sleep(200 * time.Millisecond)
+	}
+	if deleted > 0 {
+		common.SysLog(fmt.Sprintf(
+			"qianye/violation: 已清理 %d 条超过 %d 天的 AI 审核明细", deleted, days))
+	}
+}

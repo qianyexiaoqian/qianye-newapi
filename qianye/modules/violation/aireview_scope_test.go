@@ -285,7 +285,10 @@ func TestValidateAIScope(t *testing.T) {
 	base := func() AIScope {
 		return AIScope{Name: "自助注册", Enabled: true, Priority: 100,
 			GroupScope: "selfserve", GroupScopeMode: GroupScopeInclude,
-			PreSampleRateBps: 5000, AsyncSampleRateBps: 5000}
+			PreSampleRateBps: 5000, AsyncSampleRateBps: 5000,
+			// 启用中的策略必须有渠道来源(2026-09-06 的写入闸),
+			// 不给的话每一行用例都会撞在那道闸上,测不到它本来要测的东西。
+			ChannelGroup: "自建护栏"}
 	}
 	tests := []struct {
 		name    string

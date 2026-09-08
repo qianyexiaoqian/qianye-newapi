@@ -169,9 +169,37 @@ export async function resetUserTwoFA(id: number): Promise<ApiResponse> {
  *
  * 后端口径见 `controller/group.go` 的 `GetUserGroupOptions`。
  */
-export async function getUserGroupOptions(): Promise<ApiResponse<string[]>> {
-  const res = await api.get('/api/user-group/options')
+export async function getUserGroupOptions(
+  params?: UserGroupOptionsPageParams
+): Promise<UserGroupOptionsResponse> {
+  const res = await api.get('/api/user-group/options', { params })
   return res.data
+}
+
+/**
+ * 用户分组清单的翻页参数。**省略 = 要全量**。
+ *
+ * 全量是绝大多数消费方要的口径：用户编辑、限流规则、API 地址、套餐升降级 ——
+ * 它们画的是一个下拉，只列前 10 档等于让第 11 档以后的分组永远选不上，
+ * 而界面上看不出少了什么。
+ *
+ * 只有「令牌默认分组」那一页按**行**消费它（每个用户分组一行、每行一个装着
+ * 全部模型分组的下拉），也只有它传这个参数。
+ */
+export type UserGroupOptionsPageParams = {
+  /** 1 起。 */
+  p: number
+  page_size: number
+}
+
+/**
+ * `total` / `p` / `page_size` 只在请求带了翻页参数时出现，因此全是可选的 ——
+ * 老后端（不认这两个参数）会原样回整表且不带这三个字段，调用方据此退回不分页。
+ */
+export type UserGroupOptionsResponse = ApiResponse<string[]> & {
+  total?: number
+  p?: number
+  page_size?: number
 }
 
 /**

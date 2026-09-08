@@ -188,4 +188,6 @@ func invalidateGroupRates() {
 	groupRateLoaded = 0
 	groupRateEpoch++
 	groupRateMu.Unlock()
+	// 分组档同样冻进「明日预计到账」的估算里,理由见 invalidateSettings。
+	forecastCache.Purge()
 }

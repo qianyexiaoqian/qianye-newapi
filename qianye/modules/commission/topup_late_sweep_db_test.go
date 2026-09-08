@@ -62,7 +62,13 @@ func TestSweepLateTopupsRecoversOrdersTheCursorPassed(t *testing.T) {
 	t.Run("窗口外的未决订单被越过后再付款,佣金必须补上", func(t *testing.T) {
 		gdb := newTestDB(t)
 		mdb := useMainDB(t, &model.TopUp{})
-		useConfig(t, commissionConfig(0))
+		// 这一条刻意用**生产默认刻度**(1 星屑 = 500000 额度),不用夹具的 1:
+		// 它是本包里少数几条端到端验证"额度 → 星屑"折算的用例之一,下面既断言
+		// quota_per_unit 冻结进行,也断言折算后的 gross。刻度取 1 的话这两条
+		// 断言会同时退化成"什么都没验"。
+		cfg := commissionConfig(0)
+		cfg.Stardust.QuotaPerUnit = 500_000
+		useConfig(t, cfg)
 		withCompliance(t, true)
 		useMoneyGlobals(t, 7.3, 500000)
 		setSettingOverride(t, gdb, keyTopupRatePercent, "10")

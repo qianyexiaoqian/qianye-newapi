@@ -88,40 +88,42 @@ import {
   upsertQyAiScope,
 } from './api'
 import {
+  QY_AI_EMAIL_VARS,
   qyAiAppendScopeGroup,
   qyAiBpsToPercentText,
   qyAiChannelToDraft,
   qyAiDraftToInput,
   qyAiPromptCategoryIssues,
   qyAiRenderPrompt,
-  qyAiPromptForEditor,
   qyAiPromptIsDefault,
-  qyAiPromptToPayload,
   qyAiScopeAudience,
   qyAiScopeChannelState,
   qyAiScopeDraftToInput,
-  qyAiScopeEffectivePrompt,
   qyAiScopeGroupBindingError,
   qyAiScopeHasFakeSeparator,
-  qyAiScopePromptSource,
   qyAiScopeRowKind,
   qyAiScopeToDraft,
   qyAiSplitScopeList,
   qyAiApplyProtocol,
   qyAiGuardShownIds,
+  qyAiIsGuardProtocol,
+  qyAiProtocolHasCategories,
+  qyAiRenderEmailPreview,
   type QyAiChannelDraft,
   type QyAiScopeChannelState,
   type QyAiScopeDraft,
   type QyAiScopeGroupBindingError,
   type QyAiScopeRowKind,
 } from './lib/ai-review'
-import type {
-  QyAiChannel,
-  QyAiChannelTestResult,
-  QyAiGuardCategory,
-  QyAiProtocol,
-  QyAiScope,
-  QyAiScopeSummaryRow,
+import {
+  QY_AI_GRANITE_RISKS,
+  type QyAiChannel,
+  type QyAiChannelTestResult,
+  type QyAiGraniteRisk,
+  type QyAiGuardCategory,
+  type QyAiProtocol,
+  type QyAiScope,
+  type QyAiScopeSummaryRow,
 } from './types'
 
 /**
@@ -153,6 +155,16 @@ export function QyAdminViolationAiReview() {
         {t('qy_nav_a_violation_ai_review')}
       </QySectionPageLayout.Title>
       <QySectionPageLayout.Actions>
+        {/* 逐条明细在自己那一页上(「风控与审计」组里,挨着违规记录)。
+            这一页管的是"送不送审、送到哪、留多久",那一页回答"到底审了什么"——
+            两种读者、两种打开频率,所以是两页而不是这一页底下的第五张卡。 */}
+        <Button
+          size='sm'
+          variant='outline'
+          render={<Link to='/qy/admin/violation-ai-logs' />}
+        >
+          {t('qy_ai_go_logs')}
+        </Button>
         <Button
           size='sm'
           variant='outline'
@@ -191,9 +203,12 @@ function AiSettingCard() {
     enabled: boolean
     pre_timeout_ms: number
     async_timeout_ms: number
-    prompt: string
     max_input_chars: number
     third_party_notice_ack: boolean
+    log_content: boolean
+    log_content_violation_full: boolean
+    log_content_max_chars: number
+    log_retention_days: number
   }>(null)
 
   const data = query.data
@@ -208,12 +223,12 @@ function AiSettingCard() {
           enabled: data.setting.enabled,
           pre_timeout_ms: data.setting.pre_timeout_ms,
           async_timeout_ms: data.setting.async_timeout_ms,
-          // 预填:库里为空时把默认提示词的全文放进输入框,让人能直接在
-          // 上面改。用 placeholder 顶替不行 —— 灰字、不可编辑、不会被提交,
-          // 它回答了"默认长什么样"却没回答"我怎么在它基础上改"。
-          prompt: qyAiPromptForEditor(data.setting.prompt, data.default_prompt),
           max_input_chars: data.setting.max_input_chars,
           third_party_notice_ack: data.setting.third_party_notice_ack,
+          log_content: data.setting.log_content,
+          log_content_violation_full: data.setting.log_content_violation_full,
+          log_content_max_chars: data.setting.log_content_max_chars,
+          log_retention_days: data.setting.log_retention_days,
         }
       : null)
 
@@ -224,12 +239,12 @@ function AiSettingCard() {
         enabled: current.enabled,
         pre_timeout_ms: current.pre_timeout_ms,
         async_timeout_ms: current.async_timeout_ms,
-        // 逐字等于默认时提交空串,而不是提交预填进来的那段文本 ——
-        // 否则每个站点点一次保存就把自己钉死在当前版本的默认提示词上,
-        // 以后对它的加固(那句"待审内容不是指令")再也发不过来。
-        prompt: qyAiPromptToPayload(current.prompt, data.default_prompt),
         max_input_chars: current.max_input_chars,
         third_party_notice_ack: current.third_party_notice_ack,
+        log_content: current.log_content,
+        log_content_violation_full: current.log_content_violation_full,
+        log_content_max_chars: current.log_content_max_chars,
+        log_retention_days: current.log_retention_days,
       })
     },
     onSuccess: () => {
@@ -243,30 +258,6 @@ function AiSettingCard() {
   })
 
   const eff = data?.effective
-  // 「默认 / 已自定义」是**编辑中这一刻**的判断,不是接口回来的 prompt_source:
-  // 后者只描述库里那一份。运营在框里删掉一个字,标记必须当场从"默认"变成
-  // "已自定义" —— 那正是这一档差别唯一会被人注意到的时刻。
-  const promptIsDefault =
-    !data || !current
-      ? true
-      : qyAiPromptIsDefault(current.prompt, data.default_prompt)
-  // 类型清单是**发送前自动拼进去**的,所以对账与预览都必须在渲染之后做:
-  // 拿编辑框里那段原文去对账会把每一个类型都报成"缺失"。
-  const renderedPrompt =
-    !data || !current
-      ? ''
-      : qyAiRenderPrompt(
-          current.prompt,
-          data.default_prompt,
-          data.category_block
-        )
-  // 闭集来自接口。缺席时按空清单走:对账会安静下来(它对的是"提示词里有没有
-  // 清单外的名字"),而不是把这张卡连同整页一起打掉。
-  const categories = data?.categories ?? []
-  const promptIssues =
-    !data || !current
-      ? { unknown: [], missing: [] }
-      : qyAiPromptCategoryIssues(renderedPrompt, categories)
 
   return (
     <QyPageBoundary query={query}>
@@ -374,93 +365,102 @@ function AiSettingCard() {
               </div>
             </div>
 
-            {/* 提示词这一格以前是空的:内置默认提示词只在 placeholder 里,
-            于是"在默认基础上改一句"这件最常见的事做不了。现在预填全文,
-            并且把「你现在处于哪一档」摆在标签旁边 —— 因为两档的差别
-            (自定义之后不再跟随默认提示词升级)没有任何其它可见症状。 */}
-            <div className='flex flex-col gap-1.5'>
-              <div className='flex items-center gap-2'>
-                <Label>{t('qy_ai_prompt')}</Label>
-                <Badge variant={promptIsDefault ? 'outline' : 'default'}>
-                  {promptIsDefault
-                    ? t('qy_ai_prompt_badge_default')
-                    : t('qy_ai_prompt_badge_custom')}
-                </Badge>
-              </div>
-              <Textarea
-                rows={12}
-                value={current.prompt}
-                onChange={(e) =>
-                  setDraft({ ...current, prompt: e.target.value })
-                }
-              />
-              <p className='text-muted-foreground text-xs'>
-                {promptIsDefault
-                  ? t('qy_ai_prompt_source_default_desc')
-                  : t('qy_ai_prompt_source_custom_desc')}
-              </p>
-              <p className='text-muted-foreground text-xs'>
-                {t('qy_ai_prompt_hint', {
-                  categories: categories.join(', '),
-                })}
-              </p>
+            {/* **提示词不在这一页了。** 2026-09-06 起它住在每个审核渠道上
+            (「审核渠道」卡 → 编辑 → 审核提示词),理由是提示词与协议绑死:
+            护栏协议压根不发提示词,而挂在全局/作用域上就允许"一份提示词被分发到
+            一个根本不读提示词的渠道" —— 配得出来、不报错、完全不生效。 */}
 
-              {/* 类型清单不再需要手工同步:它由后端从违规类型表现算,发送前
-              自动拼进提示词。运营要改哪些类型,去违规类型页改 —— 这里只说
-              清单从哪来,以及"到底发出去的是什么"。
+            {/* ── 审核日志 ──
 
-              预览是必要的而不是锦上添花:清单是拼上去的,编辑框里那段文本
-              **不是**模型读到的东西。没有预览时,"我改的那一下到底生效没有"
-              在界面上完全不可回答。 */}
-              <details className='rounded-md border p-2'>
-                <summary className='cursor-pointer text-xs font-medium'>
-                  {t('qy_ai_prompt_preview_title')}
-                </summary>
-                <p className='text-muted-foreground mt-2 text-xs'>
-                  {t('qy_ai_prompt_preview_desc')}
-                </p>
-                <pre className='bg-muted mt-2 max-h-72 overflow-auto rounded p-2 text-xs whitespace-pre-wrap'>
-                  {renderedPrompt}
-                </pre>
-              </details>
+            三格放在一起,因为它们回答的是同一个问题:「这次审核在我们自己的
+            库里留下什么、留多久」。分散到别处的话,运营改保留期时看不见
+            "留了内容"这件事,而这两者的隐私含义是绑在一起的。
 
-              {/* 提示词里手抄了一行旧类型清单时不拒绝保存(那份文本可能还有
-              别的用处),但必须当场说出来:模型照着它回一个类型表里没有的
-              名字,那一票会被折进「未分类」—— 一条零症状的静默失效。 */}
-              {promptIssues.unknown.length > 0 && (
-                <Alert>
-                  <AlertTriangle className='size-4' />
-                  <AlertTitle>{t('qy_ai_prompt_cat_unknown_title')}</AlertTitle>
-                  <AlertDescription>
-                    {t('qy_ai_prompt_cat_unknown_desc', {
-                      names: promptIssues.unknown.join(', '),
-                    })}
-                  </AlertDescription>
-                </Alert>
-              )}
-              {promptIssues.missing.length > 0 && (
-                <Alert>
-                  <AlertTriangle className='size-4' />
-                  <AlertTitle>{t('qy_ai_prompt_cat_missing_title')}</AlertTitle>
-                  <AlertDescription>
-                    {t('qy_ai_prompt_cat_missing_desc')}
-                  </AlertDescription>
-                </Alert>
-              )}
-
+            保留期没有"永久"这一档:这张表按**被抽中的请求数**增长,给它一个
+            永久选项等于在设置页上放一个几个月后撑爆磁盘的开关。 */}
+            <div className='flex flex-col gap-3 rounded-md border p-3'>
               <div>
-                {/* 恢复默认:把文本填回默认全文,保存时它会被折成空串,
-                本站因此重新跟随默认提示词的后续升级。 */}
-                <Button
-                  size='sm'
-                  variant='outline'
-                  disabled={promptIsDefault}
-                  onClick={() =>
-                    setDraft({ ...current, prompt: data.default_prompt })
+                <p className='text-sm font-medium'>{t('qy_ai_log_title')}</p>
+                <p className='text-muted-foreground text-xs'>
+                  {eff.log_db_separate
+                    ? t('qy_ai_log_db_separate')
+                    : t('qy_ai_log_db_shared')}
+                </p>
+              </div>
+
+              <label className='flex items-center gap-2'>
+                <Switch
+                  checked={current.log_content}
+                  onCheckedChange={(v) =>
+                    setDraft({ ...current, log_content: v })
                   }
-                >
-                  {t('qy_ai_prompt_reset')}
-                </Button>
+                />
+                <span className='text-sm'>{t('qy_ai_log_content')}</span>
+              </label>
+              <p className='text-muted-foreground -mt-1 text-xs'>
+                {t('qy_ai_log_content_hint')}
+              </p>
+
+              {/* 违规行单独一档。它**不是**上面那个开关的子选项 —— 上面关掉时
+                  它照样生效,所以必须并排画、并排说,不能做成缩进的从属项。 */}
+              <label className='flex items-center gap-2'>
+                <Switch
+                  checked={current.log_content_violation_full}
+                  onCheckedChange={(v) =>
+                    setDraft({ ...current, log_content_violation_full: v })
+                  }
+                />
+                <span className='text-sm'>
+                  {t('qy_ai_log_content_violation_full')}
+                </span>
+              </label>
+              <p className='text-muted-foreground -mt-1 text-xs'>
+                {t('qy_ai_log_content_violation_full_hint')}
+              </p>
+
+              <div className='grid gap-4 sm:grid-cols-2'>
+                <div className='flex flex-col gap-1.5'>
+                  <Label>{t('qy_ai_log_content_max')}</Label>
+                  <Input
+                    type='number'
+                    value={current.log_content_max_chars}
+                    onChange={(e) =>
+                      setDraft({
+                        ...current,
+                        log_content_max_chars: Number(e.target.value) || 0,
+                      })
+                    }
+                  />
+                  <p className='text-muted-foreground text-xs'>
+                    {/* 用 `?.` 读一个类型上必有的字段不是多余的:这一页由五张卡
+                        拼成、共用路由那一层的错误边界,任何一张卡在渲染中途抛
+                        异常都会把整页换成错误态。滚动升级时前端可能先于后端到位,
+                        那一刻这个字段确实不在 —— 少一行提示远好过少一整页。 */}
+                    {t('qy_ai_log_content_max_hint', {
+                      min: eff.log_content_range?.min ?? 100,
+                      max: eff.log_content_range?.max ?? 32000,
+                    })}
+                  </p>
+                </div>
+
+                <div className='flex flex-col gap-1.5'>
+                  <Label>{t('qy_ai_log_retention')}</Label>
+                  <Input
+                    type='number'
+                    value={current.log_retention_days}
+                    onChange={(e) =>
+                      setDraft({
+                        ...current,
+                        log_retention_days: Number(e.target.value) || 0,
+                      })
+                    }
+                  />
+                  <p className='text-muted-foreground text-xs'>
+                    {t('qy_ai_log_retention_hint', {
+                      max: eff.max_log_retention_days ?? 365,
+                    })}
+                  </p>
+                </div>
               </div>
             </div>
 
@@ -977,7 +977,7 @@ function AiScopeCard() {
                     <th className='py-1'>{t('qy_ai_scope_col_async')}</th>
                     {/* 「问什么」「送到哪」与「记成哪一类」是这一档的另外三半，
                         它们与抽样率一样没有任何用户可见的症状 —— 只能摆在表上。 */}
-                    <th className='py-1'>{t('qy_ai_scope_col_prompt')}</th>
+                    <th className='py-1'>{t('qy_ai_scope_col_chgroup')}</th>
                     <th className='py-1'>{t('qy_ai_scope_col_channel')}</th>
                     <th className='py-1'>{t('qy_ai_scope_col_category')}</th>
                     <th className='py-1'>{t('qy_ai_scope_col_state')}</th>
@@ -1106,13 +1106,21 @@ function ScopeRow({
       <td className='py-1.5 pe-2'>
         {qyAiBpsToPercentText(row.async_sample_rate_bps)}%
       </td>
-      <td className='py-1.5 pe-2'>
-        <Badge
-          variant={row.prompt_source === 'custom' ? 'secondary' : 'outline'}
-          className='font-normal'
-        >
-          {t(`qy_ai_scope_prompt_${row.prompt_source}` as never)}
-        </Badge>
+      {/* 「用哪个池子」。它与右边那一列(指定渠道)是同一件事的两种写法:
+          填了分组就在组内分发,指定了渠道就只发给那几个。两格都空是**存量行**
+          ——那时按老口径发给全部启用渠道,而新存的策略再也不允许这样。 */}
+      <td className='py-1.5 pe-2 text-xs'>
+        {row.channel_group ? (
+          <Badge variant='secondary' className='font-normal'>
+            {row.channel_group}
+          </Badge>
+        ) : (
+          <span className='text-muted-foreground'>
+            {row.channel_ids.length > 0
+              ? t('qy_ai_scope_chgroup_pinned')
+              : t('qy_ai_scope_chgroup_legacy')}
+          </span>
+        )}
       </td>
       {/* 「送到哪」。留空那一档写的是"全部启用渠道",不是"默认渠道" ——
           渠道表上没有 priority,两个渠道各 50% 时"默认渠道"这句话就是假的。
@@ -1326,15 +1334,16 @@ function ScopeForm({
     unknown: unknownGroups.includes(qyNormalizeGroupName(name)),
   }))
 
-  // 全局那一份提示词与内置默认：这一格留空时到底继承的是哪一段文本，
-  // 只有摆出来运营才知道自己"什么都不填"意味着什么。
-  const settingQuery = useQuery(qyAiSettingsQuery())
-  const promptSource = qyAiScopePromptSource(draft.prompt)
-  const effectivePrompt = qyAiScopeEffectivePrompt(
-    draft.prompt,
-    settingQuery.data?.setting.prompt ?? '',
-    settingQuery.data?.default_prompt ?? ''
-  )
+  // 已有的审核渠道分组:下拉里列出来,免得运营手打一个不存在的名字 ——
+  // 那不会报错,只会让这一档一个渠道都挑不到(no_channel),而界面上完全正常。
+  const channelQuery = useQuery(qyAiChannelsQuery())
+  const channelGroups = [
+    ...new Set(
+      (channelQuery.data?.items ?? [])
+        .map((ch) => ch.group)
+        .filter((g) => g.trim() !== '')
+    ),
+  ]
 
   return (
     <div className='flex flex-col gap-3'>
@@ -1682,51 +1691,24 @@ function ScopeForm({
         </Field>
       </div>
 
-      {/* 这一档自己的审核提示词。
-          刻意**不预填**：空着本身就是默认且有意义的取值（继承全局那一份）。
-          预填的后果是每建一档就顺手固化一份副本，从此与全局脱钩 —— 运营改了
-          全局提示词，这些档一个都不会跟着变，而界面上它们只是"填过内容"。 */}
-      <div className='flex flex-col gap-2'>
-        <div className='flex items-center gap-2'>
-          <Label className='text-sm'>{t('qy_ai_scope_f_prompt')}</Label>
-          <Badge
-            variant={promptSource === 'custom' ? 'secondary' : 'outline'}
-            className='font-normal'
-          >
-            {t(`qy_ai_scope_prompt_${promptSource}` as never)}
-          </Badge>
-          {promptSource === 'custom' && (
-            <Button
-              size='sm'
-              variant='outline'
-              onClick={() => onChange({ ...draft, prompt: '' })}
-            >
-              {t('qy_ai_scope_prompt_reset')}
-            </Button>
-          )}
-        </div>
-        <Textarea
-          rows={6}
-          value={draft.prompt}
-          placeholder={t('qy_ai_scope_prompt_placeholder')}
-          onChange={(e) => onChange({ ...draft, prompt: e.target.value })}
+      {/* 审核渠道分组:这一档的用户内容会流到哪个池子。
+          它与下面的「指定审核渠道」是二选一(启用时两个都空会被后端 400)——
+          旧的"两个都空 = 发给全部启用渠道"已经取消:那意味着之后新启用的
+          任何一个渠道都会自动开始收到用户内容,而没有人按下过那个动作。
+
+          下拉里列的是**已有渠道上出现过的分组名**。手打一个不存在的名字不会
+          报错,只会让这一档一个渠道都挑不到(no_channel),而界面上完全正常。 */}
+      <Field
+        label={t('qy_ai_scope_f_chgroup')}
+        hint={t('qy_ai_scope_f_chgroup_hint')}
+      >
+        <ComboboxInput
+          value={draft.channel_group}
+          onValueChange={(v) => onChange({ ...draft, channel_group: v })}
+          options={channelGroups.map((g) => ({ value: g, label: g }))}
+          placeholder={t('qy_ai_scope_f_chgroup_ph')}
         />
-        <p className='text-muted-foreground text-xs'>
-          {t('qy_ai_scope_f_prompt_hint')}
-        </p>
-        {/* 留空时把继承来的那一段摆出来：不摆的话，"什么都不填"到底意味着
-            什么完全不可见 —— 而它可能是内置默认，也可能是本站改过的全局那一份。 */}
-        {promptSource === 'inherit' && effectivePrompt !== '' && (
-          <details className='text-muted-foreground text-xs'>
-            <summary className='cursor-pointer'>
-              {t('qy_ai_scope_prompt_inherited_show')}
-            </summary>
-            <pre className='mt-1 break-words whitespace-pre-wrap'>
-              {effectivePrompt}
-            </pre>
-          </details>
-        )}
-      </div>
+      </Field>
 
       {/* 全角逗号是中文输入法下最容易发生的一次手滑,而后端不认它:
           `vip,svip` 会被当成一个分组名去精确匹配,永远匹配不到任何人,
@@ -1759,6 +1741,10 @@ function AiChannelsCard() {
   const { t } = useTranslation()
   const qc = useQueryClient()
   const query = useQuery(qyAiChannelsQuery())
+  // 内置默认提示词全文:新建/编辑渠道时用来**预填**输入框,并在提交时把
+  // "逐字等于默认"折回空串。取不到时传空串 —— 那时输入框是空的,而空 = 用
+  // 内置默认,行为不变(只是运营看不见默认长什么样)。
+  const defaultPrompt = useQuery(qyAiSettingsQuery()).data?.default_prompt ?? ''
   const [editing, setEditing] = useState<null | {
     id?: number
     draft: QyAiChannelDraft
@@ -1859,7 +1845,10 @@ function AiChannelsCard() {
                     channel={ch}
                     testing={probe.isPending && probe.variables === ch.id}
                     onEdit={() =>
-                      setEditing({ id: ch.id, draft: qyAiChannelToDraft(ch) })
+                      setEditing({
+                        id: ch.id,
+                        draft: qyAiChannelToDraft(ch, defaultPrompt),
+                      })
                     }
                     onTest={() => probe.mutate(ch.id)}
                     onDelete={() => remove.mutate(ch.id)}
@@ -1883,7 +1872,11 @@ function AiChannelsCard() {
               <Button
                 size='sm'
                 variant='outline'
-                onClick={() => setEditing({ draft: qyAiChannelToDraft() })}
+                onClick={() =>
+                  setEditing({
+                    draft: qyAiChannelToDraft(undefined, defaultPrompt),
+                  })
+                }
               >
                 <Plus className='size-4' />
                 {t('qy_ai_channel_add')}
@@ -1913,6 +1906,20 @@ function AiChannelsCard() {
   )
 }
 
+/**
+ * 协议 → 列表徽章的 i18n 键。
+ *
+ * 写成表而不是三元链:每加一条协议,漏改这里的表现是列表上出现一个
+ * 空徽章,而不是编译错误 —— 所以键的类型钉死在 QyAiProtocol 上,
+ * 加了协议不补这一行就过不了 tsc。
+ */
+const QY_AI_PROTOCOL_TAGS: Record<QyAiProtocol, string> = {
+  json_prompt: 'qy_ai_proto_json_short',
+  qwen3guard: 'qy_ai_proto_guard_short',
+  granite_guardian: 'qy_ai_proto_granite_short',
+  llama_guard: 'qy_ai_proto_llama_short',
+}
+
 function ChannelRow({
   channel,
   testing,
@@ -1928,17 +1935,39 @@ function ChannelRow({
 }) {
   const { t } = useTranslation()
   const guard = channel.protocol === 'qwen3guard'
+  const granite = channel.protocol === 'granite_guardian'
+  // 查表而不是嵌套三元:协议还会继续加(护栏模型不止两家),而一串三元
+  // 每加一档就再嵌一层,读的人分不清哪个冒号配哪个问号。
+  const protocolTag = QY_AI_PROTOCOL_TAGS[channel.protocol]
   return (
     <div className='flex flex-wrap items-center gap-2 rounded-md border p-3'>
       <span className='font-medium'>{channel.name}</span>
+      {/* 分组摆在名字后面,不能只藏在编辑弹窗里:作用域策略选的是**分组**,
+          所以"这个渠道属于哪个池子"决定了它会不会被用到 —— 一个填错分组的
+          渠道在列表上与一个正常的长得完全一样,而它一条流量都收不到。
+          未分组的渠道同样要标出来:它只有被显式指定时才会被用到。 */}
+      {channel.group ? (
+        <Badge variant='secondary'>{channel.group}</Badge>
+      ) : (
+        <Badge variant='outline' className='text-muted-foreground'>
+          {t('qy_ai_f_group_none')}
+        </Badge>
+      )}
       <Badge variant={channel.enabled ? 'default' : 'outline'}>
         {channel.enabled ? t('qy_ai_on') : t('qy_ai_off')}
       </Badge>
-      {/* 协议摆在列表上,不能只藏在编辑弹窗里:两种渠道的请求体、成本、
+      {/* 协议摆在列表上,不能只藏在编辑弹窗里:三种渠道的请求体、成本、
           类型体系完全不同,而它们在列表上原本长得一模一样。 */}
-      <Badge variant='outline'>
-        {guard ? t('qy_ai_proto_guard_short') : t('qy_ai_proto_json_short')}
-      </Badge>
+      <Badge variant='outline'>{t(protocolTag as never)}</Badge>
+      {/* Granite 的"审哪一类"住在风险名上,而它决定了这个渠道**判得出什么**
+          —— 一个选了 violence 的渠道对越狱内容一律判 No(实测,见后端
+          aireview_granite.go)。藏在编辑弹窗里的话,列表上两个判据完全不同的
+          渠道长得一模一样。默认档不画:每一行都挂一个「harm」只是噪声。 */}
+      {granite && channel.risk_name && channel.risk_name !== 'harm' && (
+        <Badge variant='outline'>
+          {t(`qy_ai_risk_${channel.risk_name}` as never)}
+        </Badge>
+      )}
       {/* 收紧档改变的是"多少内容会被判违规",与启停同一个量级的事实。
           宽松档是零值,不画 —— 每一行都挂一个「有争议: 放行」只是噪声。 */}
       {guard && channel.guard_controversial === 'unsafe' && (
@@ -2108,6 +2137,27 @@ function ProtocolExplainer({
   const { t } = useTranslation()
   // hook 要在提前 return 之前无条件调用。
   const [mapOpen, setMapOpen] = useState(false)
+  if (protocol === 'granite_guardian') {
+    // 单独一段而不是并进 json_prompt 那一句:它**一次只审一种风险**,
+    // 类别来自"问了什么"而不是模型的回答,而且没有置信度
+    // (`ai_min_confidence` 配了也筛不掉什么)—— 这几件事只在这里说得出来,
+    // 而选错的表现是"某一类的计数一直是 0"。
+    return (
+      <p className='text-muted-foreground text-xs'>
+        {t('qy_ai_proto_granite_desc')}
+      </p>
+    )
+  }
+  if (protocol === 'llama_guard') {
+    // 单独一段:它与 Qwen3Guard 同样是一次多标签,但类别是**另一套分类法**
+    // (13 类 S 码,折进本站九类时是多对一)。不说这一句的话,运营会拿
+    // Qwen3Guard 的九类去核对它的判定,而对不上是设计使然。
+    return (
+      <p className='text-muted-foreground text-xs'>
+        {t('qy_ai_proto_llama_desc')}
+      </p>
+    )
+  }
   if (protocol !== 'qwen3guard') {
     return (
       <p className='text-muted-foreground text-xs'>
@@ -2260,6 +2310,29 @@ function ChannelForm({
   onChange: (d: QyAiChannelDraft) => void
 }) {
   const { t } = useTranslation()
+  // 类型闭集与内置默认提示词都从设置接口来 —— 它是这两样的唯一权威来源。
+  // 在这里各取一次(而不是从上层一路传下来)是因为这张表单可能被独立打开,
+  // 而漏传的表现是预览区空白、对账恒为"没问题"。
+  const settingQuery = useQuery(qyAiSettingsQuery())
+  const categories = settingQuery.data?.categories ?? []
+  const categoryBlock = settingQuery.data?.category_block ?? ''
+  // 「默认 / 已自定义」是**编辑中这一刻**的判断,不是接口回来的 prompt_source:
+  // 后者只描述库里那一份。运营在框里删掉一个字,标记必须当场翻档 ——
+  // 那正是这一档差别(自定义之后不再跟随默认提示词升级)唯一会被注意到的时刻。
+  const promptIsDefault = qyAiPromptIsDefault(draft.prompt, draft.defaultPrompt)
+  const renderedPrompt = qyAiRenderPrompt(
+    draft.prompt,
+    draft.defaultPrompt,
+    categoryBlock
+  )
+  const promptIssues = qyAiPromptCategoryIssues(renderedPrompt, categories)
+  // 护栏协议不读提示词。说出来而不是把那一格藏掉:藏掉之后换回通用模型
+  // 会发现提示词"没了",而它其实一直在库里。
+  const guardProtocol = qyAiIsGuardProtocol(draft.protocol)
+  // 本地部署那几句提示(地址、超时、密钥可留空)对**三条**护栏协议都成立 ——
+  // 它们说的是"这类模型通常挂在本机 Ollama / vLLM 上",与是哪一家无关。
+  // 早先只按 qwen3guard 判,于是 Granite 渠道拿到的是云端模型那套说明。
+  const localGuard = guardProtocol
   // 外框、内边距与「保存 / 取消」都归 ChannelFormDialog 管:按钮必须留在
   // 弹窗的 footer 上,跟着正文滚出屏幕的保存键等于没有保存键。
   return (
@@ -2277,6 +2350,12 @@ function ChannelForm({
           <SelectContent>
             <SelectItem value='json_prompt'>{t('qy_ai_proto_json')}</SelectItem>
             <SelectItem value='qwen3guard'>{t('qy_ai_proto_guard')}</SelectItem>
+            <SelectItem value='granite_guardian'>
+              {t('qy_ai_proto_granite')}
+            </SelectItem>
+            <SelectItem value='llama_guard'>
+              {t('qy_ai_proto_llama')}
+            </SelectItem>
           </SelectContent>
         </Select>
       </Field>
@@ -2300,6 +2379,15 @@ function ChannelForm({
             onChange={(e) => onChange({ ...draft, name: e.target.value })}
           />
         </Field>
+        {/* 审核渠道分组:一组可以互相顶替的端点。作用域按它选池子,故障转移
+            也只在组内补位 —— 留空是"未分组"这一档,不是"属于所有分组"。 */}
+        <Field label={t('qy_ai_f_group')} hint={t('qy_ai_f_group_hint')}>
+          <Input
+            value={draft.group}
+            placeholder={t('qy_ai_f_group_ph')}
+            onChange={(e) => onChange({ ...draft, group: e.target.value })}
+          />
+        </Field>
         <Field label={t('qy_ai_f_model')}>
           <Input
             value={draft.model}
@@ -2309,21 +2397,47 @@ function ChannelForm({
         <Field
           label={t('qy_ai_f_base_url')}
           hint={
-            draft.protocol === 'qwen3guard'
+            localGuard
               ? t('qy_ai_f_base_url_hint_guard')
               : t('qy_ai_f_base_url_hint')
           }
         >
           <Input
             value={draft.base_url}
-            placeholder={
-              draft.protocol === 'qwen3guard'
-                ? 'http://localhost:11434/v1'
-                : undefined
-            }
+            placeholder={localGuard ? 'http://localhost:11434/v1' : undefined}
             onChange={(e) => onChange({ ...draft, base_url: e.target.value })}
           />
         </Field>
+        {/* Granite 一次只审**一种**风险,而审哪一种就是这一格。
+            它不是提示词:发出去的是一个裸的风险名,模板拿它精确匹配一份
+            内置的风险定义(见后端 aireview_granite.go)。
+            选错的后果是**漏判**而不是报错 —— 实测同一段越狱文本在
+            violence 档下判 No、在 jailbreak / harm 档下判 Yes —— 所以每一档
+            都要有一句说明,而不是只给一个下拉框。 */}
+        {draft.protocol === 'granite_guardian' && (
+          <Field
+            label={t('qy_ai_f_risk')}
+            hint={t(`qy_ai_risk_${draft.risk_name || 'harm'}_hint` as never)}
+          >
+            <Select
+              value={draft.risk_name || 'harm'}
+              onValueChange={(v) =>
+                onChange({ ...draft, risk_name: v as QyAiGraniteRisk })
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {QY_AI_GRANITE_RISKS.map((r) => (
+                  <SelectItem key={r} value={r}>
+                    {t(`qy_ai_risk_${r}` as never)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        )}
         {/* 只在护栏协议下画:通用模型那条路根本没有 Controversial 这一档,
             画一个存不下去的输入框只会让人以为它生效了。 */}
         {draft.protocol === 'qwen3guard' && (
@@ -2364,7 +2478,7 @@ function ChannelForm({
           hint={
             existingHint
               ? t('qy_ai_f_api_key_hint_existing', { hint: existingHint })
-              : draft.protocol === 'qwen3guard'
+              : localGuard
                 ? // 本地 Ollama / vLLM 通常没有密钥。不说这一句的话,运营会
                   // 以为这一格是必填,而后端从来不要求它。
                   t('qy_ai_f_api_key_hint_local')
@@ -2391,7 +2505,7 @@ function ChannelForm({
         <Field
           label={t('qy_ai_f_timeout')}
           hint={
-            draft.protocol === 'qwen3guard'
+            localGuard
               ? t('qy_ai_f_timeout_hint_guard')
               : t('qy_ai_f_timeout_hint')
           }
@@ -2425,7 +2539,10 @@ function ChannelForm({
           {t('qy_ai_f_price_hint')}
         </p>
       </div>
-      {draft.protocol === 'qwen3guard' && (
+      {/* 九类启用清单对 Qwen3Guard 与 Llama Guard 都生效(两者都一次给出
+          多标签)。Granite 不画:它一次只审一种风险,"审哪一类"住在风险名上,
+          给它留一份九类清单等于给运营一个勾了不生效的开关。 */}
+      {qyAiProtocolHasCategories(draft.protocol) && (
         <GuardCategoryPickers
           draft={draft}
           guardCatalog={guardCatalog}
@@ -2440,6 +2557,221 @@ function ChannelForm({
         />
         <span className='text-sm'>{t('qy_ai_f_enabled')}</span>
       </label>
+
+      {/* ── 审核提示词 ──
+
+          2026-09-06 从「全局设置 / 作用域」整体搬到这里。理由是它与**协议**绑死:
+          护栏协议压根不发提示词(aiRequestPayload 对它们只发一条 user 消息),
+          而挂在别处就允许"一份提示词被分发到一个根本不读提示词的渠道" ——
+          配得出来、不报错、完全不生效。
+
+          所以护栏协议下**整块不渲染**,只留一句话说明为什么没有这一格。
+          画一个填了不生效的输入框比不画更糟:运营会对着它以为判据换过了,
+          而线上一个字都没送出去。
+
+          Granite 是个例外中的例外:它**确实**收一条 system 消息,但那不是提示词
+          而是**风险名槽** —— 模板拿它去精确匹配一份内置的风险定义
+          (见后端 aireview_granite.go 引的那段 Modelfile)。所以它在这里同样
+          不画提示词框,改判据要用下面那个「审核风险」下拉。 */}
+      {guardProtocol ? (
+        <p className='text-muted-foreground text-xs'>
+          {t('qy_ai_prompt_none_for_guard')}
+        </p>
+      ) : (
+        <div className='flex flex-col gap-1.5'>
+          <div className='flex items-center gap-2'>
+            <Label className='text-sm'>{t('qy_ai_prompt')}</Label>
+            <Badge variant={promptIsDefault ? 'outline' : 'default'}>
+              {promptIsDefault
+                ? t('qy_ai_prompt_badge_default')
+                : t('qy_ai_prompt_badge_custom')}
+            </Badge>
+            {!promptIsDefault && (
+              <Button
+                size='sm'
+                variant='outline'
+                onClick={() =>
+                  onChange({ ...draft, prompt: draft.defaultPrompt })
+                }
+              >
+                {t('qy_ai_prompt_reset')}
+              </Button>
+            )}
+          </div>
+          <Textarea
+            rows={10}
+            value={draft.prompt}
+            onChange={(e) => onChange({ ...draft, prompt: e.target.value })}
+          />
+          <p className='text-muted-foreground text-xs'>
+            {t('qy_ai_prompt_hint', { categories: categories.join(', ') })}
+          </p>
+          {/* 类型清单是**发送前自动拼进去**的,编辑框里那段文本不是模型读到的
+              东西。没有预览时,"我改的那一下到底生效没有"完全不可回答。 */}
+          <details className='rounded-md border p-2'>
+            <summary className='cursor-pointer text-xs font-medium'>
+              {t('qy_ai_prompt_preview_title')}
+            </summary>
+            <p className='text-muted-foreground mt-2 text-xs'>
+              {t('qy_ai_prompt_preview_desc')}
+            </p>
+            <pre className='bg-muted mt-2 max-h-72 overflow-auto rounded p-2 text-xs whitespace-pre-wrap'>
+              {renderedPrompt}
+            </pre>
+          </details>
+          {promptIssues.unknown.length > 0 && (
+            <Alert>
+              <AlertTriangle className='size-4' />
+              <AlertTitle>{t('qy_ai_prompt_cat_unknown_title')}</AlertTitle>
+              <AlertDescription>
+                {t('qy_ai_prompt_cat_unknown_desc', {
+                  names: promptIssues.unknown.join(', '),
+                })}
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
+      )}
+
+      {/* 拦截文案:命中拦截时**直接显示给终端用户**的一句话。
+          留空 = 沿用规则自己配的那一份(本地词表规则没有渠道,只可能用它)。 */}
+      <Field
+        label={t('qy_ai_f_block_message')}
+        hint={t('qy_ai_f_block_message_hint')}
+      >
+        <Input
+          value={draft.block_message}
+          placeholder={t('qy_ai_f_block_message_ph')}
+          onChange={(e) =>
+            onChange({ ...draft, block_message: e.target.value })
+          }
+        />
+      </Field>
+
+      <ChannelEmailNotice draft={draft} onChange={onChange} />
+    </div>
+  )
+}
+
+/**
+ * 「判违规就给用户发一封邮件」那一段。
+ *
+ * ══════════════ 为什么两格模板留空不预填 ══════════════
+ *
+ * 与提示词那一格刻意相反:提示词要在内置默认的基础上改,所以预填全文;
+ * 而这两格留空的含义是「跟随内置模板走」。预填进来的话,每个渠道保存一次
+ * 就把自己钉死在当前版本的默认邮件上,以后对默认模板的任何改动都发不过来。
+ * 想改的人自己粘一份进来 —— 预览区里那一份就是内置默认长什么样的答案。
+ *
+ * ══════════════ 预览为什么用 iframe 而不是 dangerouslySetInnerHTML ══════════════
+ *
+ * 这段 HTML 是管理员自己写的,不是外部输入 —— 但它会被原样发出去,而管理端
+ * 与它同源。用 sandbox 过的 iframe 渲染,等于预览里的脚本、表单、外链都跑不动,
+ * 而"发出去之后长什么样"这个问题照样答得上。
+ */
+function ChannelEmailNotice({
+  draft,
+  onChange,
+}: {
+  draft: QyAiChannelDraft
+  onChange: (next: QyAiChannelDraft) => void
+}) {
+  const { t } = useTranslation()
+  const previewBody = qyAiRenderEmailPreview(
+    draft.email_body.trim() || t('qy_ai_email_body_builtin'),
+    true
+  )
+  const previewSubject = qyAiRenderEmailPreview(
+    draft.email_subject.trim() || t('qy_ai_email_subject_builtin'),
+    false
+  )
+
+  return (
+    <div className='flex flex-col gap-3 rounded-md border p-3'>
+      <label className='flex items-start gap-2'>
+        <Switch
+          checked={draft.notify_email}
+          onCheckedChange={(v) => onChange({ ...draft, notify_email: v })}
+        />
+        <span className='flex flex-col gap-0.5'>
+          <span className='text-sm font-medium'>{t('qy_ai_email_notify')}</span>
+          <span className='text-muted-foreground text-xs'>
+            {t('qy_ai_email_notify_hint')}
+          </span>
+        </span>
+      </label>
+
+      {draft.notify_email && (
+        <>
+          <Field
+            label={t('qy_ai_email_subject')}
+            hint={t('qy_ai_email_subject_hint')}
+          >
+            <Input
+              value={draft.email_subject}
+              placeholder={t('qy_ai_email_subject_builtin')}
+              onChange={(e) =>
+                onChange({ ...draft, email_subject: e.target.value })
+              }
+            />
+          </Field>
+
+          <Field
+            label={t('qy_ai_email_body')}
+            hint={t('qy_ai_email_body_hint')}
+          >
+            <Textarea
+              className='font-mono text-xs'
+              rows={10}
+              value={draft.email_body}
+              placeholder={t('qy_ai_email_body_ph')}
+              onChange={(e) =>
+                onChange({ ...draft, email_body: e.target.value })
+              }
+            />
+          </Field>
+
+          {/* 占位符表由 QY_AI_EMAIL_VARS 派生,不手抄:抄本会在下一次加占位符
+              时过期,而过期的表现是运营照着界面写了一个不会被替换的 {{xxx}}。 */}
+          <div className='flex flex-col gap-1.5'>
+            <p className='text-xs font-medium'>{t('qy_ai_email_vars')}</p>
+            <div className='flex flex-wrap gap-1'>
+              {QY_AI_EMAIL_VARS.map((key) => (
+                <code
+                  key={key}
+                  className='bg-muted rounded px-1.5 py-0.5 text-[11px]'
+                >
+                  {`{{${key}}}`}
+                </code>
+              ))}
+            </div>
+            <p className='text-muted-foreground text-xs'>
+              {t('qy_ai_email_vars_hint')}
+            </p>
+          </div>
+
+          <details className='rounded-md border p-2'>
+            <summary className='cursor-pointer text-xs font-medium'>
+              {t('qy_ai_email_preview_title')}
+            </summary>
+            <p className='text-muted-foreground mt-2 text-xs'>
+              {t('qy_ai_email_preview_desc')}
+            </p>
+            <p className='mt-2 text-xs'>
+              <span className='text-muted-foreground'>
+                {t('qy_ai_email_preview_subject')}
+              </span>{' '}
+              <span className='font-medium'>{previewSubject}</span>
+            </p>
+            <iframe
+              title={t('qy_ai_email_preview_title')}
+              sandbox=''
+              srcDoc={previewBody}
+              className='bg-background mt-2 h-64 w-full rounded border'
+            />
+          </details>
+        </>
+      )}
     </div>
   )
 }

@@ -522,6 +522,9 @@ func TestMigrateThenDropKeepsTheNumberSomewhere(t *testing.T) {
 	// 这一步是"停用"与"丢弃"的分界线 —— 少了它,上面那条断言只证明了库里
 	// 躺着一行谁也用不上的数据。
 	row.GroupScope = "selfserve"
+	// 渠道来源也要补:2026-09-06 起启用中的作用域必须选一个渠道分组或指定渠道。
+	// 这一步与补分组是同一件事的两半 —— 少了它,这条用例测的就变成了那道新闸。
+	row.ChannelGroup = "自建护栏"
 	require.NoError(t, validateAIScope(&row))
 	require.NoError(t, gdb.Save(&row).Error)
 	rt, err := buildAIRuntime(gdb, true, seedAIVocabulary())

@@ -83,6 +83,9 @@ func newTestDB(t *testing.T) *gorm.DB {
 func resetCaches() {
 	invalidateSettings()
 	invalidateGroupRates()
+	// 「明日预计到账」的缓存按 user_id 索引、活在进程里,不随测试库重建而失效 ——
+	// 不清的话上一个用例算出的数会被下一个用例当成"后端算的"读回来。
+	forecastCache.Purge()
 }
 
 // useConfig 临时替换扩展的全局配置快照。

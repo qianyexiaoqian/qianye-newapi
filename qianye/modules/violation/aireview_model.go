@@ -114,6 +114,21 @@ type AIChannel struct {
 	// 一个全局开关会让这变得不可能。
 	Protocol string `json:"protocol" gorm:"type:varchar(24);not null;default:''"`
 
+	// RiskName 只在 Protocol = granite_guardian 时有意义:Granite Guardian
+	// 一次只审**一种**风险,而审哪一种由这一格决定(取值见 graniteRisks)。
+	//
+	// # 零值:空串 = harm 档 = 不发 system
+	//
+	// 实测(见 aireview_granite.go 文件头)"不发 system"与 system="harm" 在
+	// 每一个样本上结果相同 —— 模板对认不出来的 system 一律落回 harm 那段
+	// 风险定义。所以空串既是"这一列加入之前的行为",也是语义上的默认档,
+	// 存量渠道 ADD COLUMN 之后逐字节无变化。
+	//
+	// 选错风险名的后果是**漏判**而不是报错(越狱内容在 violence 档下判 No),
+	// 所以界面上这一格必须逐档给出说明,写入侧也只放行能挂在用户消息上的
+	// 那七档 —— 理由见 graniteRisks。
+	RiskName string `json:"risk_name" gorm:"type:varchar(32);not null;default:''"`
+
 	// GuardControversial 只在 Protocol = qwen3guard 时有意义:Qwen3Guard 比常见
 	// 护栏模型多一档 Controversial(有争议),这一格决定把它当违规还是不当。
 	//
@@ -201,6 +216,68 @@ type AIChannel struct {
 	PriceInPerM  decimal.Decimal `json:"price_in_per_m" gorm:"type:decimal(18,8);not null;default:0.00000000"`
 	PriceOutPerM decimal.Decimal `json:"price_out_per_m" gorm:"type:decimal(18,8);not null;default:0.00000000"`
 
+	// Group 是**审核渠道分组**:一组可以互相顶替的审核端点。
+	//
+	// 与用户分组、模型分组都不是一回事 —— 它只在这一页里有意义。作用域策略
+	// 从此选的是"哪一个渠道分组"(或明确指定几个渠道),而不再是"全部启用渠道":
+	// 后者会让一条本来只该发给自建端点的流量,在别的渠道被启用的那一刻起
+	// 悄悄流向它。分组把这件事变成一次显式的归属声明。
+	//
+	// 空串是一个**合法的分组名**(可以理解为"未分组"),不是"属于所有分组" ——
+	// 后者会让分组这层约束在存量渠道上直接失效。存量行 ADD COLUMN 回填空串,
+	// 于是它们全部落进"未分组"这一档,而作用域必须显式选中它才会用到。
+	Group string `json:"group" gorm:"column:group_name;type:varchar(64);not null;default:'';index:idx_qy_vac_group"`
+
+	// Prompt 是**这个渠道的**审核提示词(空 = 用内置默认 defaultAIPrompt)。
+	//
+	// 它以前住在两个地方:AISetting 的全局那一份,以及每条作用域自己那一份。
+	// 2026-09-06 项目方拍板整体搬到渠道上并删掉另外两处 —— 理由是提示词与
+	// **协议**绑死:json_prompt 要求模型吐 JSON,而护栏协议(qwen3guard /
+	// granite_guardian)压根不发提示词。把它挂在作用域上,就允许"一条作用域
+	// 的提示词被分发到一个根本不读提示词的渠道"这种配得出来、也不报错、
+	// 只是完全不生效的组合。挂在渠道上,提示词与读它的那个端点永远在一起。
+	//
+	// 发出去的那一份仍由 renderAIPrompt 把违规类型清单拼进来 —— 这一列是**基底**。
+	// 护栏协议的渠道上它恒被忽略(见 buildReviewRequest),写入侧不拦:
+	// 换协议是一次编辑就能做的事,清空它反而会让人换回来时发现提示词没了。
+	Prompt string `json:"prompt" gorm:"type:text"`
+
+	// BlockMessage 是这个渠道判出违规、并且规则动作是拦截时,**返回给用户**的那句话。
+	//
+	// 空 = 不覆盖,沿用规则自己的 Rule.BlockMessage(它再空则用 defaultBlockMessage)。
+	// 优先级是「渠道 > 规则 > 内置」:项目方要的是"这个返回文案在审核渠道里设定",
+	// 而规则那一份要留着 —— 本地词表/正则规则根本没有渠道可言,它们的拦截文案
+	// 只可能来自规则。两者都存在时以渠道为准,因为渠道是更靠近"这一次是谁判的"
+	// 那一端的信息。
+	//
+	// 它只影响 **AI 审核**这条路的拦截:本地规则命中时手上没有渠道,取不到也用不上。
+	BlockMessage string `json:"block_message" gorm:"type:varchar(512);not null;default:''"`
+
+	// NotifyEmail 决定这个渠道判出违规时,要不要给**被判的那个用户**发一封邮件。
+	//
+	// # 为什么挂在渠道上而不是规则或全局
+	//
+	// 与 BlockMessage 同一条理由:发不发、发什么,是"谁判的"这一端的属性。
+	// 本地词表/正则规则根本没有渠道,它们那条路不发邮件 —— 那不是遗漏,
+	// 是这一格的作用域本来就只覆盖 AI 审核。
+	//
+	// # 影子命中恒不发
+	//
+	// 影子模式的契约是「不扣费,不封号,不记录违规次数」,而给用户发一封
+	// "你违规了"的邮件是**执行**里最外露的一种。判据写在 persistRecord 上,
+	// 与"影子不推进计数"是同一道闸。
+	NotifyEmail bool `json:"notify_email" gorm:"not null;default:false"`
+	// EmailSubject / EmailBody 是这封邮件的标题与正文模板,空 = 用内置默认
+	// (defaultViolationEmailSubject / defaultViolationEmailBody)。
+	//
+	// 正文按 **HTML** 发送:common.SendEmail 的信头恒是 text/html,所以模板
+	// 里写标签就是所见即所得。占位符与转义规则见 aireview_notify.go ——
+	// 简言之:模板本身是管理员写的、当作可信 HTML 原样输出,而**替换进去的
+	// 每一个值**(用户名、模型名、判定理由)都先过一遍 HTML 转义。
+	// 少了后半句,一个把用户名改成 <script> 的人就能往站点发出的邮件里注入脚本。
+	EmailSubject string `json:"email_subject" gorm:"type:varchar(200);not null;default:''"`
+	EmailBody    string `json:"email_body" gorm:"type:text"`
+
 	Remark    string `json:"remark" gorm:"type:varchar(512);not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"not null"`
 	UpdatedAt int64  `json:"updated_at" gorm:"not null"`
@@ -255,9 +332,11 @@ type AISetting struct {
 	// 所以可以宽松得多,只受 guard 异步 worker 自己的预算约束。
 	AsyncTimeoutMs int `json:"async_timeout_ms" gorm:"not null;default:0"`
 
-	// Prompt 是审核提示词。空串时回落到 defaultAIPrompt ——
-	// "可配,但要有一个能用的默认值"。
-	Prompt string `json:"prompt" gorm:"type:text"`
+	// **这里没有 Prompt。** 2026-09-06 起提示词整体搬到 AIChannel.Prompt,
+	// 全局这一份连同 AIScope.Prompt 一起删了(存量值由 migrateAIPromptToChannels
+	// 抄到各渠道之后才 DROP 列)。理由写在 AIChannel.Prompt 上:提示词与协议绑死,
+	// 而协议是渠道的属性。留一个全局兜底会让"渠道说它不读提示词、却仍然从别处
+	// 继承到一份"这种组合继续存在,而它配得出来、不报错、完全不生效。
 
 	// MaxInputChars 是送审内容的字符上限。它既是成本闸(按 token 计费),
 	// 也是隐私闸(送出去的越少越好)。0 时回落到 defaultAIMaxInputChars。
@@ -269,6 +348,79 @@ type AISetting struct {
 	// 不做成纯前端提示,是因为纯前端的提示在下一次改版里会被顺手删掉,
 	// 而"用户内容出境"这件事需要一条查得到的记录(它连同审计一起留痕)。
 	ThirdPartyNoticeAck bool `json:"third_party_notice_ack" gorm:"not null"`
+
+	// ─────────────────── 审核日志(qy_violation_ai_review)───────────────────
+
+	// LogContent 决定审核明细里要不要留一份**送审内容**。
+	//
+	// # 为什么默认打开
+	//
+	// 它看起来是在扩大隐私面,其实不是:能走到这一行的前提是站点已经显式勾过
+	// ThirdPartyNoticeAck —— 也就是承认「被抽中的请求内容会被发送到第三方」。
+	// 相比之下,在自己的库里留一份**脱敏后、截断到几百字、三天就滚掉**的副本
+	// 是严格更小的暴露面。而没有它,审核日志只能回答"判了违规",回答不了
+	// "凭什么" —— 误判申诉、提示词调优、以及"这条规则是不是配错了"三件事
+	// 全都无从下手。
+	//
+	// 关掉之后只是不再写新的内容,历史行原样保留到保留期结束。
+	//
+	// # 零值方向:ADD COLUMN 回填 false,但启动期会**一次性**补成 true
+	//
+	// 这是本模块少数几处"升级会改变行为"的地方之一,写在这里是为了让它可查:
+	// AutoMigrate 给存量行填 false,而 migrateAIReviewLogDefaults 在启动时把
+	// 那些**从未被人设置过**的行(三列全是零值)补成出厂档并打一条日志。
+	//
+	// 为什么不留 false:留存内容是这张表**唯一**回答"凭什么"的东西,而升级前
+	// 它压根不存在,所以 false 不是"运维做过的决定",只是一个新列的零值。让
+	// 每个站点都从"日志开着但看不出内容"起步,只会让人以为功能没做完。
+	// 一旦有人在设置页保存过一次,那三列就是显式值,迁移永远不再碰它们。
+	LogContent bool `json:"log_content" gorm:"not null"`
+
+	// LogContentViolationFull 决定**判定违规**的那些行要不要特殊对待:
+	// 始终留存,而且留**完整**的送审内容(不受上面那个开关与下面那个字数上限约束)。
+	//
+	// # 为什么违规行该单独一档
+	//
+	// 上面那个上限(默认 1000 字)是为**量**设的:未违规的行占九成九以上,它们只需要
+	// 够看清"这是什么内容"。而判了违规的行是另一种东西 —— 它要回答的是"凭什么",
+	// 而回答它的人是在处理申诉、复核误判、调提示词。给这种行一段砍掉后半截的文本,
+	// 恰好砍掉的常常就是违规的那一段。它们的量也不构成问题:命中是稀有事件,
+	// 一个开了 10% 抽样的站点一天几十万次审核里,判违规的通常是三位数。
+	//
+	// # 零值方向:NULL = 打开
+	//
+	// 用 *bool 而不是 bool,是因为这一列需要三个状态:**从没设置过**(NULL,
+	// AutoMigrate 给存量行填的就是它)、显式开、显式关。plain bool 只有两个,
+	// 于是"升级带来的 false"与"运维想清楚了、就是不想留"在库里长得一模一样,
+	// 而这两者的正确处置正好相反。
+	//
+	// NULL 读作 true(见 aiRuntime 的装配):它是一次新增能力,而不是谁做过的决定。
+	// 这样也就**不需要**任何回填迁移 —— 少一次"会改变行为的启动期写库"。
+	// 一旦有人在设置页保存过一次,这一列就是显式值,再也不会被当成默认。
+	LogContentViolationFull *bool `json:"log_content_violation_full"`
+
+	// LogContentMaxChars 是留存内容的字符上限,0 回落到 defaultAIReviewContentChars。
+	//
+	// 它是这张表体积的两个乘数之一(另一个是保留期)。刻意比 MaxInputChars
+	// 小一档:送审要完整(判得准),留存只要够看清"这是什么内容"。
+	//
+	// **判定违规的行不受它约束**,见 LogContentViolationFull。
+	LogContentMaxChars int `json:"log_content_max_chars" gorm:"not null;default:0"`
+
+	// LogRetentionDays 是审核明细的保留天数,0 回落到 defaultAIReviewRetentionDays(3)。
+	//
+	// # 为什么没有"永久保留"这一档
+	//
+	// 这张表的行数正比于**被抽中的请求数**。一个百万级站点开 10% 抽样就是一天
+	// 十万行,带内容是数百 MB;给它一个"0 = 永久"的档位,等于在设置页上放一个
+	// 会在三个月后撑爆磁盘的选项,而那一天到来之前没有任何征兆。要长期留存的
+	// 站点应该配 log_database 分家,再按自己的备份策略归档 —— 那是有人负责的
+	// 保留,而不是一个忘了改的开关。
+	//
+	// 存量行回填 0 → 3 天,这是唯一一处"升级会开始删数据"的地方,刻意如此:
+	// 在此之前这张表**从来没有被清理过**,那是缺陷不是特性(证据表、计数表
+	// 都有保留期,唯独它没有)。
+	LogRetentionDays int `json:"log_retention_days" gorm:"not null;default:0"`
 
 	CreatedAt int64 `json:"created_at" gorm:"not null"`
 	UpdatedAt int64 `json:"updated_at" gorm:"not null"`
@@ -372,11 +524,46 @@ type AIReview struct {
 	RuleId   int64 `json:"rule_id" gorm:"not null;default:0"`
 	RecordId int64 `json:"record_id" gorm:"not null;default:0"`
 
-	RequestId  string `json:"request_id" gorm:"type:varchar(64);not null;default:'';index:idx_qy_vai_reqid"`
-	ModelName  string `json:"model_name" gorm:"type:varchar(128);not null;default:''"`
-	UsingGroup string `json:"using_group" gorm:"column:using_group;type:varchar(64);not null;default:''"`
+	RequestId string `json:"request_id" gorm:"type:varchar(64);not null;default:'';index:idx_qy_vai_reqid"`
+	// ModelName / UsingGroup 是**被审那次请求**的模型与用户分组,不是审核渠道的。
+	//
+	// 两列都带索引,而且索引是给**筛选**用的,不是给统计用的:这张表存在的
+	// 第一个问题是「哪个分组的哪个模型在被审」,而它的量级(抽中即一行)让
+	// 全表扫在几百万行之后就不可接受。前缀 idx_qy_vai_model / _group 与
+	// idx_qy_vai_created 组合,是列表页三种最常见筛法的直接支撑。
+	ModelName  string `json:"model_name" gorm:"type:varchar(128);not null;default:'';index:idx_qy_vai_model,priority:1"`
+	UsingGroup string `json:"using_group" gorm:"column:using_group;type:varchar(64);not null;default:'';index:idx_qy_vai_group,priority:1"`
 
-	CreatedAt int64 `json:"created_at" gorm:"not null;index:idx_qy_vai_user,priority:2;index:idx_qy_vai_created"`
+	// Content 是**这一次真正送去审核的那一段文本**,脱敏与截断之后的副本。
+	//
+	// # 为什么必须是它,而不是"原始请求内容"
+	//
+	// 送审文本经过 reviewText 的头尾截断(max_input_chars),模型看到的就是这一段。
+	// 存原文会让审核日志与判定依据对不上:一条判"未违规"的记录旁边放着一段
+	// 明显违规的原文,而真相是那一段根本没被送出去 —— 那不是可用的排障材料,
+	// 是误导。这一列的契约因此是「模型读到的是这些」。
+	//
+	// # 三道闸
+	//
+	//	内联二进制剥离  base64 图片一律换成描述符,与证据归档同一套(stripInlineBinary)
+	//	脱敏           手机号/邮箱/密钥/证件号在**入库前**替换,库里从不存在未脱敏的原文
+	//	字符上限       log_content_max_chars,与保留期一起决定这张表的体积上界
+	//
+	// # 零值:空串
+	//
+	// 三种情况都落空串,且都是正确的:管理员关掉了留存(log_content=false)、
+	// 这一行写于本列存在之前、以及这一次压根没有可送审的内容。它们在界面上
+	// 都显示成"未留存",不区分 —— 区分需要第四种状态,而那要么骗人要么没用。
+	Content string `json:"content" gorm:"type:text"`
+	// ContentChars 是送审文本**截断入库之前**的字符数。
+	//
+	// 它不是 len(Content):后者是留存的那一份,前者是模型读到的那一份。两者
+	// 不等就说明日志里这一段是**残缺**的,界面必须据此打上"已截断"——
+	// 没有这一列的话,一段被砍掉后半截的内容看起来与完整内容一模一样,
+	// 而"后半截才是违规的那部分"恰恰是最常见的情形。
+	ContentChars int `json:"content_chars" gorm:"not null;default:0"`
+
+	CreatedAt int64 `json:"created_at" gorm:"not null;index:idx_qy_vai_user,priority:2;index:idx_qy_vai_created;index:idx_qy_vai_model,priority:2;index:idx_qy_vai_group,priority:2"`
 }
 
 func (AIReview) TableName() string { return "qy_violation_ai_review" }

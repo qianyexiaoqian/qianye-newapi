@@ -50,7 +50,6 @@ func chRT(id int64, name, url string, weight int) *aiChannelRT {
 func rtWith(channels ...*aiChannelRT) *aiRuntime {
 	return &aiRuntime{
 		MaxInputChars: defaultAIMaxInputChars,
-		Prompt:        defaultAIPrompt,
 		Vocab:         seedAIVocabulary(),
 		Channels:      channels,
 	}
@@ -81,7 +80,10 @@ func TestPickAIChannelsFailoverChain(t *testing.T) {
 		why       string
 	}{
 		{
-			name:  "没指定渠道:按权重随机排,取到上界为止",
+			// 两格都空是**存量行**的形态(写入闸之后再也存不出新的一条)。
+			// 它照老口径走全部启用渠道 —— 在这里静默停审会让升级那一刻这些
+			// 作用域集体失效,而界面上一切正常。
+			name:  "两格都空(存量行):按权重随机排,取到上界为止",
 			scope: &aiScopeRT{}, wantLen: maxAIAttempts,
 			why: "权重是运营表达主备的唯一方式;恒定顺序会让备用渠道永远不被验证",
 		},
@@ -105,9 +107,13 @@ func TestPickAIChannelsFailoverChain(t *testing.T) {
 				"而「只能发给这一个」往往正是指定它的全部理由",
 		},
 		{
-			name:    "指定的渠道不在快照里 + 转移开着:整条链都是池子",
+			// 2026-09-06 改口径:补位池不再是"其余全部启用渠道",而是**分组内**。
+			// 指定的渠道一个都不在快照里时,连"它属于哪个分组"都推断不出来,
+			// 于是补不出东西 —— 这正确:没有同类可退,就不该退到别处去。
+			// 要让这一档在指定渠道全挂时仍有去处,给它填一个 channel_group。
+			name:    "指定的渠道不在快照里 + 转移开着 + 没有分组:补不出池子",
 			scope:   &aiScopeRT{ChannelIds: []int64{404}, ChannelFailover: true},
-			wantLen: maxAIAttempts,
+			wantLen: 0,
 			why: "开关的字面意思就是「这一档可以用别的渠道」," +
 				"而「已经被停掉」与「刚刚开始超时」对这一档的用户是同一件事",
 		},
@@ -735,4 +741,58 @@ func TestSummarizeAIScopesShowsFailover(t *testing.T) {
 	assert.False(t, got[1].ChannelFailover)
 	assert.False(t, got[2].ChannelFailover,
 		"没指定渠道时恒假 —— 「全部启用渠道 · 故障转移: 开」不是一个存在的状态")
+}
+
+// TestPickAIChannelsRespectsChannelGroup 钉住 2026-09-06 那条新口径:
+// **池子是渠道分组,不再是"全部启用渠道";故障转移的补位也只在组内。**
+//
+// 它守的是一次数据出境面的收窄。旧口径下,新启用一个渠道 = 全站每一条没指定
+// 渠道的作用域立刻开始往它发用户内容,而没有任何人按下过那个动作。
+func TestPickAIChannelsRespectsChannelGroup(t *testing.T) {
+	guardA := chRT(1, "护栏A", "http://a.invalid", 1)
+	guardA.Group = "自建护栏"
+	guardB := chRT(2, "护栏B", "http://b.invalid", 1)
+	guardB.Group = "自建护栏"
+	cloud := chRT(3, "云端通用", "http://c.invalid", 1)
+	cloud.Group = "云端"
+	rt := rtWith(guardA, guardB, cloud)
+
+	names := func(chs []*aiChannelRT) []string {
+		out := make([]string, 0, len(chs))
+		for _, ch := range chs {
+			out = append(out, ch.Name)
+		}
+		return out
+	}
+
+	t.Run("选了分组:只在组内分发,组外的一个都不碰", func(t *testing.T) {
+		got := names(pickAIChannels(rt, &aiScopeRT{ChannelGroup: "自建护栏"}))
+		assert.ElementsMatch(t, []string{"护栏A", "护栏B"}, got,
+			"云端那个不在这个分组里,一次都不该被排进链")
+	})
+
+	t.Run("分组里一个渠道都没有:空链(而不是回落到全部)", func(t *testing.T) {
+		assert.Empty(t, pickAIChannels(rt, &aiScopeRT{ChannelGroup: "不存在的组"}),
+			"回落到全部正是被取消掉的那一档 —— 它会把用户内容发给运营没有选过的端点")
+	})
+
+	t.Run("指定渠道 + 转移:补位只从它们所属的分组里补", func(t *testing.T) {
+		got := names(pickAIChannels(rt, &aiScopeRT{
+			ChannelIds: []int64{1}, ChannelFailover: true,
+		}))
+		assert.Equal(t, "护栏A", got[0])
+		assert.NotContains(t, got, "云端通用",
+			"指定护栏A时,运营心里的「可以顶替它的东西」是护栏那一类,不是全站任何一个渠道")
+		assert.Contains(t, got, "护栏B")
+	})
+
+	t.Run("指定渠道 + 显式分组:分组就是补位池", func(t *testing.T) {
+		// 两格同时填是允许的(写入闸只要求至少一个):指定的排在前面,
+		// 分组是它们全挂之后的去处。这也是"指定的渠道被停用/删除"之后
+		// 唯一还能退的形态 —— 那时从 chosen 推不出任何分组。
+		got := names(pickAIChannels(rt, &aiScopeRT{
+			ChannelIds: []int64{404}, ChannelGroup: "云端", ChannelFailover: true,
+		}))
+		assert.Equal(t, []string{"云端通用"}, got)
+	})
 }

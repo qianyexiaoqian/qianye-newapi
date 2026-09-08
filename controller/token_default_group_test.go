@@ -1,11 +1,19 @@
 package controller
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 
+	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // TestResolveTokenDefaultGroup 钉住「运营配了什么」与「这个人能选什么」的求交。
@@ -108,4 +116,91 @@ func TestUpdateTokenDefaultGroupsRejectsPartialWrite(t *testing.T) {
 
 	require.Error(t, setting.UpdateTokenDefaultGroupsByJSONString(`{"a":`))
 	require.Equal(t, "vip-pool", setting.GetTokenDefaultGroup("vip"), "解析失败后原映射必须原样保留")
+}
+
+// TestGetUserGroupOptionsPaging 守用户分组候选清单的翻页。
+//
+// 这份清单同时喂着五个下拉(用户编辑、限流规则、API 地址、套餐、令牌默认分组),
+// 而只有「令牌默认分组」那一页按**行**消费它 —— 它每个用户分组画一行、每行一个
+// 装着全部模型分组的下拉,分组一多就是几千个可聚焦节点。
+//
+// 因此这里有两条必须同时成立的断言,而它们的错误方向相反:
+//
+//	不带参数 → 全量。少给一档的表现是那一档人在用户编辑页永远选不上,
+//	          而界面上看不出少了什么(下拉里"没有"和"不存在"长得一样)。
+//	带了参数 → 一页 + 全量总数。总数按本页算的话翻页条会写「共 10 条」,
+//	          运营据此认为分组只有 10 个。
+func TestGetUserGroupOptionsPaging(t *testing.T) {
+	setupUserGroupOptionsDB(t)
+	for _, group := range []string{"g5", "g1", "g3", "g2", "g4"} {
+		// aff_code 上有唯一索引,空串会在第二行撞掉 —— 与本用例无关,
+		// 但不给的话建到第二个用户就失败。
+		require.NoError(t, model.DB.Create(&model.User{
+			Username: group + "-user", Password: "x", Group: group, AffCode: group,
+		}).Error)
+	}
+
+	full := callUserGroupOptions(t, "")
+	assert.Equal(t, []string{"g1", "g2", "g3", "g4", "g5"}, full.Data,
+		"不带翻页参数必须是全量且已排序 —— 五个下拉都在按全量消费它")
+	assert.Equal(t, 0, full.Total, "不带翻页参数时不下发总数")
+
+	page2 := callUserGroupOptions(t, "?p=2&page_size=2")
+	assert.Equal(t, []string{"g3", "g4"}, page2.Data)
+	assert.Equal(t, 5, page2.Total, "总数是全量,不是本页条数")
+	assert.Equal(t, 2, page2.Page)
+	assert.Equal(t, 2, page2.PageSize)
+
+	// 越界页码给空数组而不是 500/panic,总数仍然如实上报 —— 前端据此回落页码。
+	beyond := callUserGroupOptions(t, "?p=99&page_size=2")
+	assert.Empty(t, beyond.Data)
+	assert.Equal(t, 5, beyond.Total)
+}
+
+type userGroupOptionsBody struct {
+	Success  bool     `json:"success"`
+	Data     []string `json:"data"`
+	Total    int      `json:"total"`
+	Page     int      `json:"p"`
+	PageSize int      `json:"page_size"`
+}
+
+func callUserGroupOptions(t *testing.T, query string) userGroupOptionsBody {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/user-group/options"+query, nil)
+	GetUserGroupOptions(c)
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+
+	var body userGroupOptionsBody
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &body))
+	require.True(t, body.Success)
+	return body
+}
+
+func setupUserGroupOptionsDB(t *testing.T) {
+	t.Helper()
+	previousDB := model.DB
+	previousType := common.MainDatabaseType()
+	previousCache := common.MemoryCacheEnabled
+	previousRedis := common.RedisEnabled
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(&model.User{}))
+	model.DB = database
+	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+	// 直接换 model.DB 会绕过 InitDB,而 QyDistinctUserGroups 走的是裸 SQL 片段:
+	// 不调 InitCol,那句 SELECT DISTINCT 的列名会是空串,SQL 直接语法错误。
+	model.InitCol()
+	common.MemoryCacheEnabled = false
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		model.DB = previousDB
+		common.SetMainDatabaseType(previousType)
+		model.InitCol()
+		common.MemoryCacheEnabled = previousCache
+		common.RedisEnabled = previousRedis
+	})
 }

@@ -87,10 +87,41 @@ const (
 // 「不认识就按老路走」的最坏后果是多付一点提示词的钱;反过来(不认识就
 // 拒绝调用)会让整个渠道静默失效,而失效在本模块一律等于放行。
 func normalizeAIProtocol(p string) string {
-	if strings.TrimSpace(p) == AIProtocolQwen3Guard {
+	switch strings.TrimSpace(p) {
+	case AIProtocolQwen3Guard:
 		return AIProtocolQwen3Guard
+	case AIProtocolGraniteGuardian:
+		return AIProtocolGraniteGuardian
+	case AIProtocolLlamaGuard:
+		return AIProtocolLlamaGuard
 	}
 	return AIProtocolJSONPrompt
+}
+
+// isGuardProtocol 认"这是一条护栏协议"。
+//
+// 它把三处本来一模一样的枚举合成一处。合并不是为了少打字:每加一条护栏
+// 协议就要同时改「组请求不发系统提示词」「未知类别的告警措辞」「写入侧
+// 清空提示词」这几处,而漏掉任何一处的表现都不是报错 —— 是这条新协议
+// 悄悄按 json_prompt 的规矩跑,也就是收了钱却判不准。
+func isGuardProtocol(p string) bool {
+	switch normalizeAIProtocol(p) {
+	case AIProtocolQwen3Guard, AIProtocolGraniteGuardian, AIProtocolLlamaGuard:
+		return true
+	}
+	return false
+}
+
+// guardProtocolHasCategories 认"这条护栏协议自己会给出类别"。
+//
+// 只有二值的 Granite 不在此列。它决定的是**写入侧要不要保留九类启用清单**:
+// 对拿不出类别的协议保留那份清单,等于给运营一个勾了也不生效的开关。
+func guardProtocolHasCategories(p string) bool {
+	switch normalizeAIProtocol(p) {
+	case AIProtocolQwen3Guard, AIProtocolLlamaGuard:
+		return true
+	}
+	return false
 }
 
 // aiProtocolValid 是**写入侧**的判据,比 normalizeAIProtocol 严格。
@@ -99,7 +130,7 @@ func normalizeAIProtocol(p string) string {
 // 运行期则必须容忍任何脏值(那时已经没有人能被告知了)。
 func aiProtocolValid(p string) bool {
 	switch p {
-	case "", AIProtocolJSONPrompt, AIProtocolQwen3Guard:
+	case "", AIProtocolJSONPrompt, AIProtocolQwen3Guard, AIProtocolGraniteGuardian, AIProtocolLlamaGuard:
 		return true
 	}
 	return false
@@ -473,6 +504,19 @@ type guardLabels struct {
 	// 参考实现直接忽略这一行;我们解析并留在 Reason 里,免得日后有人把渠道
 	// 指向 Stream / 回答审核变体时,看不出返回形状其实变了。
 	Refusal string
+	// Source 是产出这组标签的协议名,只进 Reason。
+	//
+	// 空串读作 qwen3guard —— 那是第一个填充这个结构体的协议,留空即旧行为,
+	// 存量明细行的 Reason 因此逐字节不变。多协议共用一个结构体之后这一列
+	// 是必需的:一行 `safety=unsafe` 若不说明是谁判的,事后就无从判断该去
+	// 哪个模型的分类法里查它的类别口径。
+	Source string
+	// Detail 是协议自己的补充说明,原样接在 Reason 末尾。
+	//
+	// 存在的理由是**有损映射要留痕**:Llama Guard 的十三类要折进本仓的九类
+	// (见 aireview_llamaguard.go),折进去之后原始 S 码只剩这里说得出来。
+	// 与 Reason 其余部分同样会被调用方过一次 redactSnippet。
+	Detail string
 }
 
 // guardFieldValue 认一行是不是 `<name>:` 开头的字段行,并返回冒号右边那一段。
@@ -809,8 +853,12 @@ func (g guardLabels) anyEnabled(p guardPolicy) bool {
 // 唯一查得到的痕迹 —— RawCategory 只在整票落兜底时才有值,而一次
 // "Violent, Weapons" 会挑中 Violent 落到真类型上,那一列就是空的。
 func (g guardLabels) summary() string {
-	parts := make([]string, 0, 4)
-	parts = append(parts, "qwen3guard safety="+g.Safety)
+	parts := make([]string, 0, 5)
+	src := g.Source
+	if src == "" {
+		src = AIProtocolQwen3Guard
+	}
+	parts = append(parts, src+" safety="+g.Safety)
 	if len(g.Categories) > 0 {
 		parts = append(parts, "categories="+strings.Join(g.Categories, ","))
 	}
@@ -819,6 +867,9 @@ func (g guardLabels) summary() string {
 	}
 	if g.Refusal != "" {
 		parts = append(parts, "refusal="+g.Refusal)
+	}
+	if g.Detail != "" {
+		parts = append(parts, g.Detail)
 	}
 	return strings.Join(parts, "; ")
 }

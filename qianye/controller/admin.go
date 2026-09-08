@@ -51,10 +51,12 @@ var retiredTables = []gin.H{
 		"note":       "未 DROP:观察期内保留以便回读。数据未迁移。",
 	},
 
-	// D-14:提现整体退场;D-15 把佣金账本按「星辉」口径恢复,六张 qy_commission_* 表回到
-	// modules/commission 的 Tables() 由 AutoMigrate 重建(不迁旧数据)。仍退役的是法币折算档、
-	// 改名重建的失效流水,以及提现的五张表 + 收款明文查看名册。这批表没有观察期,
-	// 只等运维手工 DROP(语句见 retired_tables.md)。
+	// D-14:提现整体退场;D-15 把佣金账本恢复(六张 qy_commission_* 表回到
+	// modules/commission 的 Tables() 由 AutoMigrate 重建,不迁旧数据);D-16 把记账单位
+	// 改成星屑,跨库两阶段入账那一整层退役 —— qy_commission_freeze 跟着退。
+	// 仍退役的还有法币折算档、改名重建的失效流水,以及提现的五张表 + 收款明文查看名册。
+	// 这批表没有观察期,只等运维手工 DROP(语句见 retired_tables.md)。
+	{"table": "qy_commission_freeze", "retired_by": "D-16:佣金改记星屑,入账变成同库本地事务,跨库两阶段的冻结幂等表不再需要", "note": "未 DROP:等运维手工执行。"},
 	{"table": "qy_commission_fiat_rate", "retired_by": "同上(分组法币折算比例)", "note": "未 DROP:等运维手工执行。"},
 	{"table": "qy_commission_cache_invalidation", "retired_by": "同上(跨节点失效流水;改名成 qy_invite_cache_invalidation 重建)", "note": "未 DROP:等运维手工执行。"},
 	{"table": "qy_withdrawals", "retired_by": "D-14:提现(withdraw)整模块删除,没有现金推广收益也就没有提现", "note": "未 DROP:等运维手工执行。数据不迁移。"},
@@ -78,7 +80,12 @@ func AdminHealth(c *gin.Context) {
 		leases = []qymodel.TaskLease{}
 	}
 	ok(c, gin.H{
-		"db":        db.Stats(),
+		"db": db.Stats(),
+		// 台账库(log_database)。separate=false 时只有这一个键 —— 没分家时
+		// 它与上面的 db 是同一个连接池,再抄一份读数只会在面板上摆出两组
+		// 一模一样的数字。分家了才有意义:它自己的连接池、自己的熔断,
+		// 而"审核日志突然一直是空的"这件事在别处一个信号都没有。
+		"log_db":    db.LogStats(),
 		"hot_queue": guard.QueueStats(),
 		// request_audit.dropped > 0 意味着那段时间的写请求没有 HTTP 留痕。
 		// 台账允许异步、允许丢,但绝不允许**静默**丢 —— 悄悄缺失的审计

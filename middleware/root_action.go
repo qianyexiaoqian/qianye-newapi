@@ -96,6 +96,24 @@ const (
 	// 卡密与实物,手调是凭空造出可变现的东西 —— 与抽奖人工落账同档,只许超管。
 	RootActionStardustAdjust RootOnlyAction = "stardust.adjust"
 
+	// RootActionGroupRatioWrite 是「改写交叉倍率」——(用户分组 × 模型分组)那一格的
+	// 计费倍率,也就是 options 表里的 GroupGroupRatio。
+	//
+	// 提档的理由是**同一份配置不能有两扇档位不同的门**:这份 option 全站只有两个
+	// 写入口,上游的 PUT /api/option/ 走 RootAuth(),而扩展的用户分组矩阵页
+	// (PUT /api/qy/admin/group-matrix 的 set_ratio / clear_ratio 格)走 AdminAuth()。
+	// 于是 role=10 从后一扇门就能改掉前一扇门保留给 root 的东西:给自己所在的分组
+	// 写 0 是**显式免费**(applyRatioCells 的注释与 GetGroupGroupRatio 的命中语义都
+	// 认这个 0),给别人那一档写 1e6 是超收 —— 而这正是 guard/fund_actor.go 在
+	// 资金账本上堵死的那种自益,只是绕到了定价这一侧。
+	//
+	// 提的只有倍率那一格。同一条路由上的成员资格(grant / revoke)与按格备注
+	// (set_note / clear_note)**不提档**:那些改的是"谁能选到这个模型分组",
+	// 上游对应能力本来就在 role=10 手里,连坐会把这张页面整个废掉。
+	// 因此这一档不挂 RootActionGate,而是由 handler 在识别出倍率格之后调
+	// RequireRootAction —— 闸门排在参数解析之后、任何库操作与 ratioMu 之前。
+	RootActionGroupRatioWrite RootOnlyAction = "group_ratio.write"
+
 	// RootActionMallAdjudicate 是「凭人工核对结论给一笔套餐订单落定」:资金单 Failed
 	// 但探针说不清主库到底动没动的那一档。它是全站唯一一处人工推翻资金单结论的
 	// 动作(抽奖派奖自 v2.0.0 起只动扩展库星屑账本,没有这一档),两支各有后果:

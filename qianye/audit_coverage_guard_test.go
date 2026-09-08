@@ -479,6 +479,13 @@ var auditRequired = []struct {
 		"删除后行消失,before 快照是唯一能回答「删的是哪一件、还剩多少库存」的东西"},
 	{"modules/mall/api_admin.go", "handleAdminUploadCodes", 4,
 		"批量上传兑换码明文是往密文库存里塞可变现的东西;被本站码判重拒掉的那次是最需要留痕的形状"},
+	{"modules/mall/api_admin.go", "handleAdminTakeCode", 4,
+		"提卡把一枚码的明文交到管理员手上,它从此离开可售库存 —— 与用户端揭示码同一档," +
+			"「谁在什么时候提走了哪一枚」只有这条能回答;被验密之外的判据(不是 unused、" +
+			"另一位管理员刚抢走)拒掉的那次同样是信号"},
+	{"modules/mall/api_admin.go", "handleAdminDeleteCode", 4,
+		"删码让一枚未发出的库存凭空消失,行删了就没有 before 可查;对已发出 / 已提取的码" +
+			"删除被拒的那次是「有人想抹掉发放记录」的形状,必须留痕"},
 	{"modules/mall/api_admin.go", "handleAdminShipOrder", 3,
 		"发货是实物订单唯一的履行动作,谁在什么时候发了哪一单(以及是否一步完结)必须可查"},
 	{"modules/mall/api_admin.go", "handleAdminFailOrder", 4,

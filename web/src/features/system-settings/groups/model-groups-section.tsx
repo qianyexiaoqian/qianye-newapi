@@ -61,6 +61,7 @@ import {
   qyMgSilentlyBilledNames,
   type QyMgMergedRow,
 } from '@/features/qy/pages/admin-model-groups/lib/merged-rows'
+import { QyPager } from '@/features/qy/pages/components/qy-pager'
 import { qyOpsErrorMessage } from '@/features/qy/pages/ops/errors'
 
 import { SettingsPageFormActions } from '../components/settings-page-context'
@@ -81,6 +82,13 @@ import {
   changedGroupOptionKeys,
   useGroupOptionSave,
 } from './lib/use-group-option-save'
+
+/**
+ * 每页几个模型分组。与「用户分组」「令牌默认分组」两张表同一个数（服务端那一侧
+ * 是 `httpq.GroupTablePageSize`）—— 三张表在同一个菜单组里，页长不一致会让人
+ * 以为其中一张漏了几行。
+ */
+const MODEL_GROUP_PAGE_SIZE = 10
 
 export type ModelGroupsSectionValues = {
   GroupRatio: string
@@ -118,9 +126,46 @@ export function ModelGroupsSection(props: {
   const { defaultValues } = props
   const queryClient = useQueryClient()
 
-  const registryQuery = useQuery({ ...qyMgListQuery(), retry: false })
+  /*
+    ── 服务端翻页 ────────────────────────────────────────────────────────
 
-  const [rows, setRows] = useState<QyMgMergedRow[]>([])
+    项目方原话：「若分组过多加载会出现卡顿不易编辑」。这一页的服务端成本此前是
+    **每行一条** `SELECT COUNT(*) FROM abilities`（「这个池子还有没有渠道」），
+    三十个分组就是三十条查询；前端成本是三十行受控输入框在每一次按键上一起重算。
+    翻页把两者都收窄到本页，行集合与排序改由服务端给出（并集必须与切页在同一侧，
+    见 `qyMgBuildRows` 的 `names`）。
+
+    `page` 不进 URL：这是设置页里的一张表，不是一条可以分享的路由，而
+    system-settings 的路由 search schema 是整组共用的。
+  */
+  const [page, setPage] = useState(1)
+  const pageParams = useMemo(
+    () => ({ p: page, page_size: MODEL_GROUP_PAGE_SIZE }),
+    [page]
+  )
+  const registryQuery = useQuery({ ...qyMgListQuery(pageParams), retry: false })
+
+  /** 服务端这一页的行，未经本地草稿覆盖。 */
+  const [pageRows, setPageRows] = useState<QyMgMergedRow[]>([])
+  /**
+   * 改过的行，**按名字索引且跨页留存**。
+   *
+   * ── 为什么草稿不能只活在 `pageRows` 里 ──
+   *
+   * 保存写的是整份 `options.GroupRatio` / `UserUsableGroups`，一次提交涵盖全站。
+   * 草稿跟着 `pageRows` 走的话，翻一页就把上一页改过而没保存的倍率静默丢掉 ——
+   * 而运营翻页的动机恰恰是"我要把这一批都改一遍再保存"。所以草稿按名字存，
+   * 翻页只换显示的那一段，改动一条不掉。
+   */
+  const [drafts, setDrafts] = useState<Record<string, QyMgMergedRow>>({})
+  /**
+   * 本地新加、还没保存过的行。**在每一页上都渲染**（钉在表格最上面）。
+   *
+   * 让它只属于某一页是做不到的：它还没有名字，也就没有在服务端行轴上的位置。
+   * 藏起来的表现是「点了『添加分组』什么也没发生」，或者更糟 —— 敲了一半的一行
+   * 在翻页之后消失。
+   */
+  const [newRows, setNewRows] = useState<QyMgMergedRow[]>([])
   const [autoGroups, setAutoGroups] = useState<string[]>(() =>
     parseAutoGroups(defaultValues.AutoGroups)
   )
@@ -141,27 +186,61 @@ export function ModelGroupsSection(props: {
     UserUsableGroups: defaultValues.UserUsableGroups,
   })
 
-  const registryItems = registryQuery.data?.items
+  const listData = registryQuery.data
+  const registryItems = listData?.items
+  /*
+    总条数拿不到时回落成**本页行数**而不是 0：0 会让翻页条整条隐藏，于是老后端
+    （不认翻页参数、原样回整表）上这一页会一次性画出全部行且没有任何翻页控件 ——
+    那与"翻页功能没做"长得一模一样，而真实原因是后端没升级。
+  */
+  const total = listData?.total ?? registryItems?.length ?? 0
+  /** 全量行名（服务端排序）。老后端不下发它，此时退回"只知道本页"。 */
+  const allNames = listData?.names
+  const serverNoChannelNames = listData?.no_channel_names
 
   /*
-    服务端回读到达时，用它替换本地一切（草稿 + 基线）。
+    ── 两个 effect，因为它们回答的是两个问题 ──────────────────────────────
 
-    本地草稿是「我请求过什么」，回读是「服务端现在是什么」，把前者当成后者渲染，
-    一次部分失败就会画出一个从未存在过的成功画面。另一个管理员在别的标签页改了
-    同一份 option 时同理 —— 服务端赢。
+    A) 「这一页现在该画哪几行」—— 服务端这一页 ⊗ 当前 option。翻页会重跑它。
+    B) 「本地草稿还算数吗」—— 只有 option 本身变了才不算数。
+
+    合成一个（也就是让 A 的依赖里那个 `registryItems` 一并触发清空草稿）会让
+    **翻一页就丢掉上一页所有没保存的改动** —— 而运营翻页的动机恰恰是"我要把
+    这一批都改一遍再一起保存"。这是本轮翻页最容易埋进去的那个坑。
 
     依赖刻意逐个列**原始值**：上层 `build(settings)` 每次渲染都新造一个对象，
-    按对象比会让这个 effect 在每一次父级重渲染时把正在编辑的内容清掉。
+    按对象比会让这两个 effect 在每一次父级重渲染时把正在编辑的内容清掉。
   */
   useEffect(() => {
-    setRows(
+    setPageRows(
       qyMgBuildRows({
         registry: registryItems ?? [],
         groupRatios: parseGroupRatioMap(defaultValues.GroupRatio),
         usableGroups: parseGroupDescriptionMap(defaultValues.UserUsableGroups),
         autoGroups: parseAutoGroups(defaultValues.AutoGroups),
+        // 服务端下发行轴时原样用它（含排序与并集）。取数未回来时是 undefined，
+        // 此时退回 qyMgBuildRows 自己的本地并集 —— 那正是老后端上的行为。
+        names: registryItems?.map((row) => row.name),
       })
     )
+  }, [
+    registryItems,
+    defaultValues.GroupRatio,
+    defaultValues.UserUsableGroups,
+    defaultValues.AutoGroups,
+  ])
+
+  /*
+    option 变了 = 保存落地了，或者另一个管理员在别的标签页改了同一份。两种情况下
+    本地草稿都必须整体丢弃：草稿是「我请求过什么」，option 是「服务端现在是什么」，
+    把前者当后者渲染，一次部分失败就会画出一个从未存在过的成功画面 —— 服务端赢。
+
+    `newRows` 一起清掉：保存成功之后那几行已经是服务端的行了，留着会让同一个分组
+    在表上出现两次（一次钉在顶部的"新行"、一次在服务端那一页里）。
+  */
+  useEffect(() => {
+    setDrafts({})
+    setNewRows([])
     setAutoGroups(parseAutoGroups(defaultValues.AutoGroups))
     setMaxTokenAutoGroups(String(defaultValues.MaxTokenAutoGroups))
     resetBaseline({
@@ -175,35 +254,166 @@ export function ModelGroupsSection(props: {
     defaultValues.AutoGroups,
     defaultValues.MaxTokenAutoGroups,
     defaultValues.UserUsableGroups,
-    registryItems,
     resetBaseline,
   ])
 
-  const duplicates = useMemo(() => duplicateRowNames(rows), [rows])
-  const invalidRatios = useMemo(() => qyMgInvalidRatioNames(rows), [rows])
-  const silentlyBilled = useMemo(() => qyMgSilentlyBilledNames(rows), [rows])
-  const freeGroups = useMemo(() => qyMgFreeNames(rows), [rows])
-  const emptyPools = useMemo(
-    () =>
-      rows
-        .filter((row) => row.selectable && row.hasRoute === false)
-        .map((row) => row.name),
-    [rows]
+  /*
+    删掉最后一页上最后一个分组之后，页码会停在一个不存在的页上 —— 表格空、
+    翻页条写着「第 4 页 / 共 3 页」，而运营刚做的是一次成功的删除。
+  */
+  useEffect(() => {
+    if (listData == null) return
+    const lastPage = Math.max(1, Math.ceil(total / MODEL_GROUP_PAGE_SIZE))
+    if (page > lastPage) setPage(lastPage)
+  }, [listData, total, page])
+
+  /** 屏幕上这一张表：新加的行钉在最上面，其余是本页的行叠上草稿。 */
+  const rows = useMemo(
+    () => [...newRows, ...pageRows.map((row) => drafts[row.name] ?? row)],
+    [newRows, pageRows, drafts]
   )
+
+  /**
+   * 这一页此刻**持有**的行 —— 保存时它有权改写的那些键。
+   *
+   * 与 `rows` 的区别是刻意的：`rows` 是"屏幕上画什么"，这一份是"保存写什么"。
+   * 没被动过的本页行不在里面 —— 把它们一起写回去，只会让另一个管理员在这期间
+   * 对同一个键的改动被本页打开那一刻的快照覆盖，而两边都看不出发生过什么。
+   */
+  const ownedRows = useMemo(
+    () => [...newRows, ...Object.values(drafts)],
+    [newRows, drafts]
+  )
+
+  /** 基线：服务端此刻的整份 option。保存时未被本页持有的键原样带过去。 */
+  const baseRatios = useMemo(
+    () => parseGroupRatioMap(defaultValues.GroupRatio),
+    [defaultValues.GroupRatio]
+  )
+  const baseUsable = useMemo(
+    () => parseGroupDescriptionMap(defaultValues.UserUsableGroups),
+    [defaultValues.UserUsableGroups]
+  )
+
+  const nextRatios = useMemo(
+    () => qyMgSerializeRatios(ownedRows, baseRatios),
+    [ownedRows, baseRatios]
+  )
+  const nextUsable = useMemo(
+    () => qyMgSerializeUsableGroups(ownedRows, baseUsable),
+    [ownedRows, baseUsable]
+  )
+
+  /*
+    ── 三条告警按**全站**口径算，不是按本页 ────────────────────────────
+
+    它们说的都是钱：「用户选得到、却没有兜底倍率」的分组按凭空的 1.0 计费，
+    「倍率是 0」的分组白送。一条随翻页出现又消失的资金告警，读到的人只会认为
+    它不可靠 —— 那比没有告警更糟。
+
+    判据取**保存后会写进去的那两份 map**（基线叠上本页草稿），而不是屏幕上的行：
+    前者恰好就是"按下保存之后全站会变成什么样"，也正是运营需要在按之前看到的。
+  */
+  const mergedRatios = useMemo(
+    () => parseGroupRatioMap(nextRatios),
+    [nextRatios]
+  )
+  const mergedUsable = useMemo(
+    () => parseGroupDescriptionMap(nextUsable),
+    [nextUsable]
+  )
+  /*
+    把那两份 map 铺成一套**全站**的行，再喂给与本页表格同一批判据函数。
+
+    不另写一份 `Object.keys(...).filter(...)`：那两条判据（「可选却没有兜底倍率」
+    = 正按凭空的 1.0 计费、「倍率是 0」= 白送）是有测试盯着的，而它们的第二份
+    实现会照着本仓一贯的形状漂移 —— 漂移的方向恰好是"某一档钱的问题不再报警"。
+    `registry: []` 是刻意的：这里只关心倍率与可选性，登记表那些列（渠道数、
+    来源徽标）与这两条判据无关。
+  */
+  const mergedRows = useMemo(
+    () =>
+      qyMgBuildRows({
+        registry: [],
+        groupRatios: mergedRatios,
+        usableGroups: mergedUsable,
+        autoGroups,
+      }),
+    [mergedRatios, mergedUsable, autoGroups]
+  )
+  const silentlyBilled = useMemo(
+    () => qyMgSilentlyBilledNames(mergedRows),
+    [mergedRows]
+  )
+  const freeGroups = useMemo(() => qyMgFreeNames(mergedRows), [mergedRows])
+  const emptyPools = useMemo(() => {
+    // 服务端给的是**全量**「可选却没有渠道」名单（no_channel_names）。本页动过的
+    // 行再叠一遍，让开关刚被关掉的那一行立刻从告警里消失、刚被打开的立刻出现。
+    const names = new Set(
+      (serverNoChannelNames ?? []).filter((name) =>
+        Object.hasOwn(mergedUsable, name)
+      )
+    )
+    for (const row of rows) {
+      const name = row.name.trim()
+      if (name === '') continue
+      if (row.selectable && row.hasRoute === false) names.add(name)
+      else if (!row.selectable) names.delete(name)
+    }
+    return [...names]
+  }, [serverNoChannelNames, mergedUsable, rows])
+
+  /*
+    重名判据要跨页：在第 2 页新建一个与第 1 页同名的分组，保存时会静默覆盖
+    那一行的兜底倍率。`allNames` 是服务端下发的全量行名；拿不到（老后端）时
+    退回只比本页，与改造之前一致。
+  */
+  const duplicates = useMemo(() => {
+    const found = new Set(duplicateRowNames(rows))
+    const existing = new Set(allNames ?? [])
+    for (const row of newRows) {
+      const name = row.name.trim()
+      if (name !== '' && existing.has(name)) found.add(name)
+    }
+    return [...found]
+  }, [rows, newRows, allNames])
+  const invalidRatios = useMemo(() => qyMgInvalidRatioNames(rows), [rows])
 
   const parsedMax = Number(maxTokenAutoGroups)
   const maxInvalid =
     !Number.isInteger(parsedMax) || parsedMax < 1 || maxTokenAutoGroups === ''
 
-  const updateRow = useCallback((id: string, patch: Partial<QyMgMergedRow>) => {
-    setRows((current) =>
-      current.map((row) => (row.id === id ? { ...row, ...patch } : row))
-    )
-  }, [])
+  /**
+   * 改一行。新加的行改在 `newRows` 里，已存在的行落进跨页草稿。
+   *
+   * 定位用 `id` 而不是名字：新加那一行的名字正在被敲，按名字定位会在每一个
+   * 字符上换一次索引键。
+   */
+  const updateRow = useCallback(
+    (id: string, patch: Partial<QyMgMergedRow>) => {
+      if (newRows.some((row) => row.id === id)) {
+        setNewRows((current) =>
+          current.map((row) => (row.id === id ? { ...row, ...patch } : row))
+        )
+        return
+      }
+      const target = pageRows.find((row) => row.id === id)
+      if (target == null) return
+      setDrafts((current) => ({
+        ...current,
+        [target.name]: { ...(current[target.name] ?? target), ...patch },
+      }))
+    },
+    [newRows, pageRows]
+  )
 
   const addRow = useCallback(() => {
-    setRows((current) => {
-      const taken = new Set(current.map((row) => row.name.trim()))
+    const taken = new Set([
+      ...(allNames ?? []),
+      ...pageRows.map((row) => row.name.trim()),
+    ])
+    setNewRows((current) => {
+      for (const row of current) taken.add(row.name.trim())
       let index = 1
       let name = `group_${index}`
       while (taken.has(name)) {
@@ -231,16 +441,16 @@ export function ModelGroupsSection(props: {
         },
       ]
     })
-  }, [])
+  }, [allNames, pageRows])
 
   const handleSave = useCallback(() => {
     void save({
-      GroupRatio: qyMgSerializeRatios(rows),
-      UserUsableGroups: qyMgSerializeUsableGroups(rows),
+      GroupRatio: nextRatios,
+      UserUsableGroups: nextUsable,
       AutoGroups: serializeAutoGroups(autoGroups),
       MaxTokenAutoGroups: parsedMax,
     })
-  }, [save, rows, autoGroups, parsedMax])
+  }, [save, nextRatios, nextUsable, autoGroups, parsedMax])
 
   const refreshRegistry = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: qyKeys.adminModelGroups() })
@@ -298,13 +508,20 @@ export function ModelGroupsSection(props: {
     setForceOrphanTokens(false)
   }, [])
 
-  const autoCandidates = useMemo(
-    () =>
-      rows
-        .map((row) => row.name.trim())
-        .filter((name) => name !== '' && !autoGroups.includes(name)),
-    [rows, autoGroups]
-  )
+  /*
+    auto 顺序的候选清单必须是**全站**的：只列本页的话，第 11 个以后的模型分组
+    永远进不了 auto 队列，而界面上看不出少了什么。`allNames` 是服务端下发的
+    全量行名，再并上本地新加、还没保存过的那几行。
+  */
+  const autoCandidates = useMemo(() => {
+    const names = new Set([
+      ...(allNames ?? rows.map((row) => row.name)),
+      ...newRows.map((row) => row.name),
+    ])
+    return [...names]
+      .map((name) => name.trim())
+      .filter((name) => name !== '' && !autoGroups.includes(name))
+  }, [allNames, rows, newRows, autoGroups])
 
   const saveBlocked =
     duplicates.length > 0 || invalidRatios.length > 0 || maxInvalid
@@ -321,9 +538,9 @@ export function ModelGroupsSection(props: {
     changedGroupOptionKeys(
       {
         AutoGroups: serializeAutoGroups(autoGroups),
-        GroupRatio: qyMgSerializeRatios(rows),
+        GroupRatio: nextRatios,
         MaxTokenAutoGroups: parsedMax,
-        UserUsableGroups: qyMgSerializeUsableGroups(rows),
+        UserUsableGroups: nextUsable,
       },
       {
         AutoGroups: defaultValues.AutoGroups,
@@ -352,12 +569,14 @@ export function ModelGroupsSection(props: {
               {
                 key: 'GroupRatio',
                 label: t('Group ratios'),
-                value: qyMgSerializeRatios(rows),
+                // **整份**而不是本页：抽屉是"直接编 JSON"的逃生口，给它一份只有
+                // 10 个键的文本，运营按下应用就等于删掉了其余全部分组的倍率。
+                value: nextRatios,
               },
               {
                 key: 'UserUsableGroups',
                 label: t('Selectable groups'),
-                value: qyMgSerializeUsableGroups(rows),
+                value: nextUsable,
                 description: t('qy_mg_usable_value_is_legacy'),
               },
               {
@@ -367,21 +586,29 @@ export function ModelGroupsSection(props: {
               },
             ]}
             onApply={(next) => {
-              // 三份 option 一起重建行：只应用其中一份的话，另外两份仍是旧值，
-              // 而它们共用同一批行 —— 表现是勾选状态与倍率对不上号。
-              setRows(
-                qyMgBuildRows({
-                  registry: registryItems ?? [],
-                  groupRatios: parseGroupRatioMap(
-                    next.GroupRatio ?? qyMgSerializeRatios(rows)
-                  ),
-                  usableGroups: parseGroupDescriptionMap(
-                    next.UserUsableGroups ?? qyMgSerializeUsableGroups(rows)
-                  ),
-                  autoGroups: parseAutoGroups(
-                    next.AutoGroups ?? serializeAutoGroups(autoGroups)
-                  ),
-                })
+              /*
+                三份 option 一起重建行：只应用其中一份的话，另外两份仍是旧值，
+                而它们共用同一批行 —— 表现是勾选状态与倍率对不上号。
+
+                重建的是**本页的行**，然后整页登记成草稿：抽屉编的是整份 JSON，
+                它对本页之外的键的改动必须原样保留到保存那一刻，而这一页只对
+                自己持有的行负责（见 `ownedRows`）。所以本页每一行都进草稿，
+                页外的差异靠 `nextRatios` 的基线带过去。
+              */
+              const applied = qyMgBuildRows({
+                registry: registryItems ?? [],
+                groupRatios: parseGroupRatioMap(next.GroupRatio ?? nextRatios),
+                usableGroups: parseGroupDescriptionMap(
+                  next.UserUsableGroups ?? nextUsable
+                ),
+                autoGroups: parseAutoGroups(
+                  next.AutoGroups ?? serializeAutoGroups(autoGroups)
+                ),
+                names: registryItems?.map((row) => row.name),
+              })
+              setPageRows(applied)
+              setDrafts(
+                Object.fromEntries(applied.map((row) => [row.name, row]))
               )
               if (next.AutoGroups !== undefined) {
                 setAutoGroups(parseAutoGroups(next.AutoGroups))
@@ -602,7 +829,7 @@ export function ModelGroupsSection(props: {
                       size='sm'
                       aria-label={t('Delete')}
                       onClick={() =>
-                        setRows((current) =>
+                        setNewRows((current) =>
                           current.filter((item) => item.id !== row.id)
                         )
                       }
@@ -645,6 +872,24 @@ export function ModelGroupsSection(props: {
               },
             ]}
           />
+
+          <QyPager
+            page={page}
+            pageSize={MODEL_GROUP_PAGE_SIZE}
+            total={total}
+            onPageChange={setPage}
+            disabled={registryQuery.isFetching}
+          />
+
+          {/*
+            保存写的是**整份** `GroupRatio` / `UserUsableGroups`，不只是屏幕上这
+            10 行（页外的键由基线原样带过去，见 `ownedRows`）。说出来是因为翻页
+            会让人自然以为保存的粒度也跟着变成一页 —— 而那个误解的方向是危险的：
+            他会在每一页上各按一次保存，其中任何一次失败都看不出来。
+          */}
+          <p className='text-muted-foreground mt-2 text-xs leading-5'>
+            {t('qy_mg_save_scope')}
+          </p>
         </CardContent>
       </Card>
 
@@ -712,7 +957,12 @@ export function ModelGroupsSection(props: {
                 >
                   <GripVertical className='text-muted-foreground h-4 w-4' />
                   <span className='font-medium'>{group}</span>
-                  {!rows.some((row) => row.name.trim() === group) && (
+                  {/*
+                    判据是**全站**的兜底倍率表（保存后会写进去的那一份），不是
+                    屏幕上这一页：按本页判，auto 队列里的每一项在别的页上都会被
+                    标成"不在倍率表里"——一条恒亮的假红标。
+                  */}
+                  {!Object.hasOwn(mergedRatios, group) && (
                     <StatusBadge variant='danger' copyable={false}>
                       <AlertTriangle className='mr-1 h-3 w-3' />
                       {t('Not in pricing table')}

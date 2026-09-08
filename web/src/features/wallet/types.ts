@@ -122,6 +122,25 @@ export interface PaymentMethod {
 }
 
 /**
+ * An entry that only sends the user away. It sits next to the real gateways and
+ * looks the same, but new-api creates no order and credits no quota for it —
+ * it is how a site points users at wherever it sells redemption codes.
+ *
+ * Each link is bound to one top-up amount and only shows while that amount is
+ * the selected one, because what it links to is a fixed-denomination code.
+ */
+export interface TopupExternalLink {
+  /** Top-up amount this link is bound to; it shows only for that amount */
+  amount: number
+  /** Button label */
+  name: string
+  /** Absolute http(s) destination */
+  url: string
+  /** Optional react-icons component name or safe icon URL */
+  icon?: string
+}
+
+/**
  * Waffo payment method configuration
  */
 export interface WaffoPayMethod {
@@ -145,6 +164,8 @@ export interface TopupInfo {
   enable_stripe_topup: boolean
   /** Available payment methods */
   pay_methods: PaymentMethod[]
+  /** External jump entries displayed alongside the payment methods */
+  external_links?: TopupExternalLink[]
   /** Minimum topup amount for online topup */
   min_topup: number
   /** Minimum topup amount for Stripe */

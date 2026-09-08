@@ -11,6 +11,7 @@ package model
 // 连 import 都不必改。
 
 import (
+	"context"
 	"errors"
 	"sort"
 
@@ -50,6 +51,35 @@ func QyLogDB() *gorm.DB { return LOG_DB }
 // 未配置 LOG_SQL_DSN 时两者相同,此时可以把 logs 与主库表放进同一个查询;
 // 分库时则不能 join,必须分别查询后在内存里合并。
 func QyLogDBSharesMainDB() bool { return LOG_DB == DB }
+
+// QyCreateLog 写一条已经组装好的 logs 记录。
+//
+// 与 QyRecordLedgerLog 的分工:后者是"资金单号"专用的窄入口(只填 content 与
+// request_id),而扩展里另有一类日志要填齐 model_name / token_name / group ——
+// 违规拦截就是其中之一,它必须在使用记录页与真实调用并排显示,少一列就少一个筛选条件。
+//
+// 复用 ensureLogRequestId 而不是裸 Create:request_id 空着的行会全部落在
+// idx_logs_request_id 的空串上,而那一列是"扩展记录 ↔ 使用记录"唯一的对账钥匙。
+//
+// ctx 由调用方注入并真的接到语句上:扩展的热路径 worker 有自己的超时预算,
+// 漏接会让一条慢插入一直等到驱动层 readTimeout,期间占着仅有的几个 worker。
+func QyCreateLog(ctx context.Context, log *Log) error {
+	ensureLogRequestId(log)
+	return LOG_DB.WithContext(ctx).Create(log).Error
+}
+
+// QyUserRecordsIpInLog 回答"这个用户是否同意在日志里记 IP"。
+//
+// 判据必须与 RecordConsumeLog / RecordErrorLog 完全一致(user_setting.RecordIpLog),
+// 否则扩展写出来的行会在同一张表里对同一个用户给出两种口径。读失败按不记处理:
+// 少一列 IP 只是少一点排障线索,记错了却是隐私事故。
+func QyUserRecordsIpInLog(userId int) bool {
+	settingMap, err := GetUserSetting(userId, false)
+	if err != nil {
+		return false
+	}
+	return settingMap.RecordIpLog
+}
 
 // ────────────────── 2. 主库 outbox:跨库两阶段的唯一精确探针 ──────────────────
 

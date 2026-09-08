@@ -32,9 +32,9 @@ var zeroExemptions = map[string]string{
 
 	"invite.inviter_cache_seconds": "validateInvite 要求 > 0,为 0 会让每一条消费日志都回主库解析一次上线",
 
-	"commission.levels":           "validateCommission 只接受 1:0 级佣金没有任何含义,而静默降级会让运营以为多级在发",
-	"commission.min_settle_quota": "validateCommission 要求 > 0:佣金按 decimal 累计,门槛为 0 会让每一个零头都白跑一次加锁事务",
-	"commission.min_credit_quota": "validateCommission 要求 > 0:它是自动入账的起点,也是单张资金单的下限",
+	"commission.levels":              "validateCommission 只接受 1:0 级佣金没有任何含义,而静默降级会让运营以为多级在发",
+	"commission.min_settle_stardust": "validateCommission 要求 > 0:佣金按 decimal 累计,门槛为 0 会让每一个零头都白跑一次加锁事务",
+	"commission.min_credit_stardust": "validateCommission 要求 > 0:它是自动入账的起点,也是单次入账的下限",
 
 	"availability.bucket_seconds":         "必须是 3600 的因数,0 会让小时级汇总跨桶错位",
 	"availability.flush_interval_seconds": "validateAvailability 要求 > 0",

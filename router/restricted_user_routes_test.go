@@ -56,6 +56,9 @@ var restrictedAnonymousRoutes = []string{
 	"GET /api/uptime/status",
 	"GET /api/user-agreement",
 	"GET /api/qy/config",
+	// 引导向导据此决定要不要渲染"配置扩展数据库"那一屏,而那时人还没登录。
+	// 只回布尔,不回配置路径 —— 见 qianye/controller/setup.go 的 GetSetupStatus。
+	"GET /api/qy/setup/status",
 	// 注册 / 找回 / 验证码
 	"GET /api/reset_password",
 	"GET /api/verification",
@@ -180,6 +183,11 @@ var restrictedDeniedSessionRoutes = []string{
 	"GET /api/task/:task_id/artifacts",
 	"GET /api/task/self",
 	"GET /api/user-group/options",
+	// 引导向导的扩展库写侧:写数据库凭据 / 重启进程,整组 RootAuth。
+	// 列在这里是对"受限账号"这一档的显式表态,与鉴权是两回事。
+	"POST /api/qy/setup/apply",
+	"POST /api/qy/setup/restart",
+	"POST /api/qy/setup/test",
 	"GET /api/qy/api-addresses",
 	"GET /api/qy/availability/matrix",
 	"GET /api/qy/availability/series",
@@ -257,10 +265,11 @@ var restrictedDeniedSessionRoutes = []string{
 	// 星屑转盘:一次转动与我的转动记录,与报名同档
 	"POST /api/qy/lottery/activities/:act_no/spins",
 	"GET /api/qy/lottery/activities/:act_no/spins/me",
-	// 星屑:余额、流水、日桶都是本人只读,受限账号一律不给看(与佣金同档)
+	// 星屑:余额、流水、日桶、明日预计到账都是本人只读,受限账号一律不给看(与佣金同档)
 	"GET /api/qy/stardust/me",
 	"GET /api/qy/stardust/ledger",
 	"GET /api/qy/stardust/accruals",
+	"GET /api/qy/stardust/forecast",
 	// 星屑商城:看货架、下单、看单、揭示码、取消
 	"GET /api/qy/mall/products",
 	"GET /api/qy/mall/products/:no",

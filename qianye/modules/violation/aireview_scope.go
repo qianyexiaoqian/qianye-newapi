@@ -104,30 +104,11 @@ type AIScope struct {
 	PreSampleRateBps   int `json:"pre_sample_rate_bps" gorm:"not null;default:0"`
 	AsyncSampleRateBps int `json:"async_sample_rate_bps" gorm:"not null;default:0"`
 
-	// Prompt 是**这一档自己的**审核提示词。空 = 用 AISetting.Prompt(它再空则用
-	// defaultAIPrompt)。项目方的原话是「设置这个分组的AI审核提示词」。
-	//
-	// # 为什么一份全局提示词不够
-	//
-	// 作用域已经能表达"只盯自助注册分组",但送过去问的仍然是同一句话。而运营给
-	// 不同分组开审核的**理由**本来就不同:自助注册分组要看的是批量套模型,
-	// 内部对接分组要看的是有没有人拿它跑越权内容。用一份提示词同时问这两件事,
-	// 只能写成一份把两边都稀释掉的通用文案 —— 那正是"开了审核但判不准"的来源。
-	//
-	// # 它只覆盖"判定说明",类型清单仍然自动生成
-	//
-	// 发出去的那一份由 renderAIPrompt 拼:这一列(或全局那一列)是**基底**,
-	// 违规类型闭集永远由 qy_violation_category 现算并追加/替换占位符。
-	// 所以作用域提示词**不需要、也不应该**手抄一份类型清单 —— 抄了就会在
-	// 运营新建一个类型的第二天开始说谎(见 aireview_vocab.go 顶部)。
-	//
-	// # 与全局那一列的一个刻意差别:这里不做"逐字等于默认 → 存空"的折叠
-	//
-	// 全局那一列折叠是为了让站点跟随 defaultAIPrompt 的后续加固。这一列的空串
-	// 语义是**"用全局那一份"**,而全局那一份可能是本站自定义的 —— 把一段逐字
-	// 等于默认的作用域提示词折成空串,会把它悄悄换成"跟随全局自定义",
-	// 与运营写下它时的意思完全相反。
-	Prompt string `json:"prompt" gorm:"type:text"`
+	// **这里没有 Prompt。** 2026-09-06 起提示词整体搬到 AIChannel.Prompt。
+	// 理由写在那一列上:提示词与**协议**绑死(护栏协议压根不发提示词),而协议是
+	// 渠道的属性。挂在作用域上就允许"一条作用域的提示词被分发到一个根本不读
+	// 提示词的渠道" —— 配得出来、不报错、完全不生效。存量值由
+	// migrateAIPromptToChannels 搬到该档指定的渠道之后才 DROP 列。
 
 	// CategoryId 是「这一档的命中一律记为哪个违规类型」。0 = 不指定。
 	//
@@ -189,6 +170,26 @@ type AIScope struct {
 	// 若还有策略指着它则直接拒绝(见 api_admin_aiscope.go / adminDeleteAIChannel)。
 	// 两道闸的方向一致 —— 让"这一档不再审核"永远是一次显式动作的结果。
 	ChannelIds AIChannelIds `json:"channel_ids" gorm:"column:channel_ids;type:varchar(256);not null;default:''"`
+
+	// ChannelGroup 是这一档要用的**审核渠道分组**(见 AIChannel.Group)。
+	//
+	// 它与 ChannelIds 是**二选一**,而且不允许两个都空(validateAIScope 会 400):
+	//
+	//	填了 ChannelGroup   → 在该分组内的启用渠道之间按 ChannelMode 分发
+	//	填了 ChannelIds     → 只发给这几个;开了故障转移时补位也**只从它们所属的
+	//	                      分组里**补,不再是"其余全部启用渠道"
+	//
+	// # 为什么不允许两个都空
+	//
+	// 2026-09-06 之前空清单的含义是"在全部启用渠道之间分发"。项目方拍板去掉
+	// 这一档:那意味着新启用一个渠道,全站每一条没指定渠道的作用域都会立刻
+	// 开始往它发用户内容 —— 一次没人按下过的数据出境扩大。
+	//
+	// 处置刻意是**保存时 400**,而不是"运行期当成不审核"。后者会让升级那一刻
+	// 存量里每一条空清单的作用域静默失效,而界面上一切正常 —— 这个模块反复
+	// 警惕的正是这种形状。存量行由 runUnboundChannelScopeReport 在启动期点名,
+	// 由人去补,补完之前它们照旧按老口径工作。
+	ChannelGroup string `json:"channel_group" gorm:"type:varchar(64);not null;default:''"`
 
 	// ChannelMode 是这一档在多个渠道之间怎么分发。
 	//
@@ -366,8 +367,9 @@ type aiScopeRT struct {
 	scopeMatcher
 	PreBps   int
 	AsyncBps int
-	// Prompt 空 = 用 aiRuntime.Prompt。取值见 aiRuntime.promptFor。
-	Prompt string
+	// **没有 Prompt。** 它跟着 AIScope.Prompt 一起退役了,现在住在渠道上
+	// (aiChannelRT.Prompt),由 renderAIPrompt 在发出去那一刻拼类型清单。
+	ChannelGroup string
 	// CategoryId 0 = 不指定,命中仍按规则自己绑的类型记。见 resolveCategoryOverride。
 	CategoryId int64
 	// ChannelIds 空 = 不指定,在全部启用渠道之间分发。见 pickAIChannels。
@@ -454,18 +456,17 @@ func (rt *aiRuntime) scopeFor(model, group string) (sc *aiScopeRT, pre, async in
 
 // promptFor 给出这一次审核真正要用的**基底**提示词(类型清单还没拼进来)。
 //
-// 三档回落,顺序固定:作用域自己的 → 全局 AISetting.Prompt → defaultAIPrompt
-// (最后一档在 renderAIPrompt 里)。空白串按"没写"处理:一个只按了几下空格的
+// **只剩一档**:渠道自己的那一份(空则由 renderAIPrompt 落到 defaultAIPrompt)。
+// 作用域与全局那两份已经退役 —— 提示词与协议绑死,而协议是渠道的属性。
+// 保留这个方法而不是让调用点直接读 ch.Prompt,是因为"哪一份提示词发出去"
+// 这个问题值得有一个能被 grep 到的名字;空白串按"没写"处理:一个只按了几下空格的
 // 输入框与真正留空在运营心里是同一件事,而在这里分开会让那一档送出去一份
 // 只有空白的判定说明。
-func (rt *aiRuntime) promptFor(sc *aiScopeRT) string {
-	if sc != nil && strings.TrimSpace(sc.Prompt) != "" {
-		return sc.Prompt
-	}
-	if rt == nil {
+func (rt *aiRuntime) promptFor(ch *aiChannelRT) string {
+	if ch == nil {
 		return ""
 	}
-	return rt.Prompt
+	return ch.Prompt
 }
 
 // scopeCategoryId 是这一档指定的"命中一律记为"类型 id,0 = 不指定。
@@ -500,7 +501,7 @@ func buildAIScopes(gdb *gorm.DB) ([]*aiScopeRT, error) {
 			scopeMatcher: compileScope(row.ModelScope, row.GroupScope, row.GroupScopeMode),
 			PreBps:       clampInt(row.PreSampleRateBps, 0, 10000),
 			AsyncBps:     clampInt(row.AsyncSampleRateBps, 0, 10000),
-			Prompt:       row.Prompt,
+			ChannelGroup: row.ChannelGroup,
 			CategoryId:   row.CategoryId,
 			// 库里那一列是 CSV,读回来已经是 []int64(见 AIChannelIds.Scan)。
 			// 这里拷成普通切片:运行期不需要 Scanner/Valuer,而带着列类型跑
@@ -536,6 +537,9 @@ func validateAIScope(s *AIScope) error {
 	s.Name = strings.TrimSpace(s.Name)
 	s.ModelScope = strings.TrimSpace(s.ModelScope)
 	s.GroupScope = strings.TrimSpace(s.GroupScope)
+	// 归一必须排在下面那道渠道来源闸之前:一个只按了几下空格的分组名
+	// 在闸看来非空、在库里却等于没填,而那正是这道闸要挡住的状态。
+	s.ChannelGroup = strings.TrimSpace(s.ChannelGroup)
 	s.Remark = strings.TrimSpace(s.Remark)
 	if s.GroupScopeMode == "" {
 		s.GroupScopeMode = GroupScopeInclude
@@ -588,6 +592,25 @@ func validateAIScope(s *AIScope) error {
 				"请改用「包含」并逐个列出要监控的分组;要豁免某几个分组," +
 				"给它们单建一档高优先级、两个抽样率都填 0 的策略")
 		}
+		// 渠道来源二选一,而且**不允许两个都空**。
+		//
+		// 空清单以前的含义是"在全部启用渠道之间分发",2026-09-06 拍板去掉那一档:
+		// 它意味着新启用一个渠道,全站每一条没指定渠道的作用域都会立刻开始往它
+		// 发用户内容 —— 一次没人按下过的数据出境扩大。
+		//
+		// 判据放在 Enabled 上,与下面那道分组绑定闸同一条纪律:一条**正在生效**的
+		// 空来源策略必须还能被"关掉"(那次提交带的两格仍然是空的),否则一道本意是
+		// 收缩暴露面的校验会反过来把唯一能立刻收缩暴露面的动作堵死。停用的行在
+		// buildAIScopes 里根本不装配,与不存在等价;想生效就必须再过一次这道闸。
+		//
+		// 两格**同时**填是允许的:那时 ChannelIds 是主选,ChannelGroup 是它们
+		// 全挂之后的补位池 —— 那也是"指定的渠道被停用/删除"之后唯一还退得了的形态
+		// (那时从快照里推不出任何分组,见 pickAIChannels)。
+		if s.ChannelGroup == "" && len(s.ChannelIds) == 0 {
+			return fmt.Errorf("启用中的作用域策略必须选一个审核渠道分组,或者指定至少一个审核渠道 —— " +
+				"两个都空的旧含义是「发给全部启用渠道」,那会让之后新加的任何渠道自动开始收到用户内容。" +
+				"想先存草稿,可以把这一档保存为停用")
+		}
 	}
 	if n := utf8.RuneCountInString(s.ModelScope); n > 2048 {
 		return fmt.Errorf("模型作用域过长(%d 字,上限 2048 字)", n)
@@ -610,15 +633,15 @@ func validateAIScope(s *AIScope) error {
 	if s.AsyncSampleRateBps < 0 || s.AsyncSampleRateBps > 10000 {
 		return fmt.Errorf("转发后抽样率必须在 0..10000 之间(万分比,30%% = 3000),当前为 %d", s.AsyncSampleRateBps)
 	}
-	// 只有空白的提示词一律归成空串(= 用全局那一份)。留着它会让这一档发出去
-	// 一份只有空白的判定说明,而界面上"这一档有自己的提示词"那个标记是亮的。
-	if strings.TrimSpace(s.Prompt) == "" {
-		s.Prompt = ""
-	}
-	if n := utf8.RuneCountInString(s.Prompt); n > maxAIPromptRunes {
-		return fmt.Errorf("这一档的审核提示词过长(%d 字,上限 %d 字)—— 它每次调用都要作为 token 付一遍钱",
-			n, maxAIPromptRunes)
-	}
+	// 渠道来源二选一,而且**不允许两个都空**。
+	//
+	// 空清单以前的含义是"在全部启用渠道之间分发",2026-09-06 拍板去掉那一档:
+	// 它意味着新启用一个渠道,全站每一条没指定渠道的作用域都会立刻开始往它
+	// 发用户内容 —— 一次没人按下过的数据出境扩大。
+	//
+	// 处置是保存时 400,不是运行期静默失效:后者会让升级那一刻存量里每一条
+	// 空清单的作用域集体停审,而界面上一切正常。存量行照旧按老口径工作,
+	// 由 runUnboundChannelScopeReport 在启动期点名,交给人去补。
 	// 提示词里禁止手抄类型清单的**占位符之外**的东西这件事不在这里挡(那是自由
 	// 文本,挡不住也不该挡),但负数 id 是纯粹的脏数据:它永远解析不到任何类型,
 	// 而 resolveCategoryOverride 会因此每次命中打一条告警。
@@ -689,19 +712,6 @@ func aiScopeGroupUnbound(groupScope, mode string) bool {
 	return strings.TrimSpace(groupScope) == "" || mode == GroupScopeExclude
 }
 
-// aiScopePromptSource 回答"这一档的提示词是继承全局的还是自己写的"。
-// 与全局那一格的 aiPromptSource 分开:两者的空串含义不同(那边空 = 内置默认,
-// 这边空 = 跟随全局),共用一个函数会让界面上把"继承"显示成"默认"。
-func aiScopePromptSource(prompt string) string {
-	if strings.TrimSpace(prompt) == "" {
-		return aiScopePromptInherit
-	}
-	return aiPromptSourceCustom
-}
-
-// aiScopePromptInherit 是"这一档没写自己的提示词,用全局那一份"。
-const aiScopePromptInherit = "inherit"
-
 // aiScopeSummaryRow 是「现在到底哪些分组在被监控、各自多少」这个问题的一行答案。
 //
 // 它不是策略行的回显:Shadowed 列在库里不存在,它是**这一份配置作为整体**的
@@ -720,12 +730,12 @@ type aiScopeSummaryRow struct {
 	GroupScopeMode string `json:"group_scope_mode"`
 	PreBps         int    `json:"pre_sample_rate_bps"`
 	AsyncBps       int    `json:"async_sample_rate_bps"`
-	// PromptSource 是 "inherit"(用全局那一份)或 "custom"(这一档自己写了一份)。
+	// ChannelGroup 是这一档用的审核渠道分组(空 = 用下面的 ChannelIds 指定)。
 	//
-	// 摆在汇总表上而不是只在编辑表单里:一份写坏的作用域提示词与一份正常的
-	// 在列表上长得完全一样,而它的后果是这一档的判定口径整体偏掉 ——
-	// 抽样率照跑、花销照付、结论全是 clean。兜底档恒为 inherit。
-	PromptSource string `json:"prompt_source"`
+	// 摆在汇总表上而不是只在编辑表单里:"这一档的用户内容会流到哪个池子"
+	// 是这张表最该一眼看清的事,而一条指错分组的策略与一条正常的在列表上
+	// 长得完全一样 —— 它的后果是内容发去了另一批端点。
+	ChannelGroup string `json:"channel_group"`
 	// CategoryId 是这一档指定的"命中一律记为"类型,0 = 不指定(按规则自己绑的记)。
 	// 只下发 id,类型名由界面用**已有的**违规类型清单接口去 join ——
 	// 在这里再拼一份名字就是第二份会漂移的事实。
@@ -783,8 +793,8 @@ func summarizeAIScopes(rows []AIScope) []aiScopeSummaryRow {
 			ModelScope: r.ModelScope, GroupScope: r.GroupScope,
 			GroupScopeMode: r.GroupScopeMode,
 			PreBps:         r.PreSampleRateBps, AsyncBps: r.AsyncSampleRateBps,
-			PromptSource: aiScopePromptSource(r.Prompt),
 			CategoryId:   r.CategoryId,
+			ChannelGroup: r.ChannelGroup,
 			// 空清单要下发成 `[]` 而不是 `null`,理由与 AIChannelIds.MarshalJSON
 			// 同一条:界面拿到 null 之后第一件事就是 filter,那是一次白屏。
 			ChannelIds:  append(make([]int64, 0, len(r.ChannelIds)), r.ChannelIds...),

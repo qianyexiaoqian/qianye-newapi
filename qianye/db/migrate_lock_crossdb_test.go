@@ -51,7 +51,7 @@ func TestMigrateLockMutualExclusionAcrossDialects(t *testing.T) {
 			holder, err := pool.Conn(ctx)
 			require.NoError(t, err)
 
-			got, err := acquireMigrateLock(ctx, holder, dialect)
+			got, err := acquireMigrateLock(ctx, holder, dialect, migrateLockName)
 			require.NoError(t, err)
 			require.True(t, got, "第一个抢锁的必须拿到")
 
@@ -60,7 +60,7 @@ func TestMigrateLockMutualExclusionAcrossDialects(t *testing.T) {
 			require.NoError(t, err)
 			bounded, cancel := context.WithTimeout(ctx, 3*time.Second)
 			start := time.Now()
-			got2, err := acquireMigrateLock(bounded, rival, dialect)
+			got2, err := acquireMigrateLock(bounded, rival, dialect, migrateLockName)
 			cancel()
 			require.NoError(t, err)
 			assert.False(t, got2, "锁被别人持有时不得抢到")
@@ -68,8 +68,8 @@ func TestMigrateLockMutualExclusionAcrossDialects(t *testing.T) {
 				"抢不到必须有界返回;PostgreSQL 的阻塞版咨询锁会永远等下去")
 
 			// ③ 释放之后立刻可得。
-			releaseMigrateLock(ctx, holder, dialect)
-			got3, err := acquireMigrateLock(ctx, rival, dialect)
+			releaseMigrateLock(ctx, holder, dialect, migrateLockName)
+			got3, err := acquireMigrateLock(ctx, rival, dialect, migrateLockName)
 			require.NoError(t, err)
 			assert.True(t, got3, "释放之后别的节点必须能立刻接手")
 
@@ -82,7 +82,7 @@ func TestMigrateLockMutualExclusionAcrossDialects(t *testing.T) {
 			got4, err := acquireMigrateLockAfterConnDrop(ctx, third, dialect)
 			require.NoError(t, err)
 			assert.True(t, got4, "持锁连接关闭之后锁必须自动释放")
-			releaseMigrateLock(ctx, third, dialect)
+			releaseMigrateLock(ctx, third, dialect, migrateLockName)
 			require.NoError(t, holder.Close())
 		})
 	}
@@ -96,7 +96,7 @@ func TestMigrateLockMutualExclusionAcrossDialects(t *testing.T) {
 func acquireMigrateLockAfterConnDrop(ctx context.Context, conn *sql.Conn, dialect Dialect) (bool, error) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		got, err := acquireMigrateLock(ctx, conn, dialect)
+		got, err := acquireMigrateLock(ctx, conn, dialect, migrateLockName)
 		if err != nil || got || time.Now().After(deadline) {
 			return got, err
 		}

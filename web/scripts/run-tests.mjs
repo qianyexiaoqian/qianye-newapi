@@ -208,9 +208,7 @@ for (const suite of suites) {
   const nodeTestFiles = collectFiles(suite)
   const suiteHasVitest = hasVitestFiles(suite)
   // 目录里混着 vitest 文件时不能整批跑:`bun test <dir>` 会把它们一起捡回来。
-  let result = suiteHasVitest
-    ? runFiles(nodeTestFiles)
-    : runBun(suite)
+  let result = suiteHasVitest ? runFiles(nodeTestFiles) : runBun(suite)
   let note = suiteHasVitest ? ' (跳过 vitest 文件,逐文件跑)' : ''
 
   if (result.errors > 0) {

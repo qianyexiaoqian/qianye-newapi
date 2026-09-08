@@ -73,6 +73,24 @@ var fieldConsumers = map[string]consumer{
 	"database.log_level":                  {"qianye/db/db.go", "GORM 日志级别"},
 	"database.auto_migrate":               {"qianye/db/migrate.go", "false 时跳过 AutoMigrate,由 DBA 手工建表"},
 
+	// 台账库(可选,dsn 留空即整段不生效)。
+	//
+	// 消费点与主库**是同一处代码**:InitLog 把这一段交给 db.go 的 openDatabase,
+	// MigrateLog 把它交给 migrate.go 的 autoMigrate,两个函数都只认传进来的
+	// config.Database,不关心它来自哪一段。所以这里登记的文件与 database.* 相同 ——
+	// 那正是事实,而"看起来该写 logdb.go"是错的:那个文件一格都没有自己读。
+	"log_database.dsn":                        {"qianye/db/db.go", "台账库连接串,openDatabase 的输入;留空则台账表留在 database"},
+	"log_database.max_idle_conns":             {"qianye/db/db.go", "台账库 sql.DB.SetMaxIdleConns"},
+	"log_database.max_open_conns":             {"qianye/db/db.go", "台账库 sql.DB.SetMaxOpenConns"},
+	"log_database.conn_max_lifetime_seconds":  {"qianye/db/db.go", "台账库 sql.DB.SetConnMaxLifetime"},
+	"log_database.conn_max_idle_time_seconds": {"qianye/db/db.go", "台账库 sql.DB.SetConnMaxIdleTime"},
+	"log_database.connect_timeout_seconds":    {"qianye/db/db.go", "写进台账库 DSN 的 timeout="},
+	"log_database.read_timeout_seconds":       {"qianye/db/db.go", "写进台账库 DSN 的 readTimeout="},
+	"log_database.write_timeout_seconds":      {"qianye/db/db.go", "写进台账库 DSN 的 writeTimeout="},
+	"log_database.slow_threshold_ms":          {"qianye/db/db.go", "台账库 GORM 慢查询日志阈值"},
+	"log_database.log_level":                  {"qianye/db/db.go", "台账库 GORM 日志级别"},
+	"log_database.auto_migrate":               {"qianye/db/migrate.go", "false 时跳过台账库 AutoMigrate,由 DBA 手工建表"},
+
 	// ─────────────────────────── runtime ───────────────────────────
 	"runtime.hot_path_fail_open": {"qianye/config/validate.go",
 		"⚠ 只被校验器消费:置 false 只打一条告警,运行时恒为 fail-open —— " +
@@ -148,6 +166,14 @@ var fieldConsumers = map[string]consumer{
 	"commission.credit_interval_seconds": {"qianye/modules/commission/module.go", "自动入账任务(commission.credit)的周期"},
 	"commission.min_credit_stardust": {"qianye/modules/commission/autocredit.go",
 		"可用余额攒够多少星屑才自动入账进 qy_sd_balance(默认 1);可被 qy_settings 在线覆盖"},
+	// D-16 改名的三个门槛。占位键的"消费方"就是那句告警本身:它们的值一个字节
+	// 都不参与计算,登记在这里是为了让"已废弃但仍可写在 YAML 里"这件事有据可查。
+	"commission.min_settle_quota": {"qianye/config/defaults.go",
+		"⚠ 已废弃(→ commission.min_settle_stardust,单位由额度变星屑)。由 adoptRenamedCommissionQuotaKeys 告警并置 nil,填任何值都不生效"},
+	"commission.max_per_order_quota": {"qianye/config/defaults.go",
+		"⚠ 已废弃(→ commission.max_per_order_stardust,单位由额度变星屑)。同上,不参与任何计算"},
+	"commission.min_credit_quota": {"qianye/config/defaults.go",
+		"⚠ 已废弃(→ commission.min_credit_stardust,单位由额度变星屑)。同上,不参与任何计算"},
 	"commission.exclude_redemption_and_manual": {"qianye/modules/commission/consume.go", "兑换码与管理员补单是否不计佣"},
 	"commission.exclude_subscription_consume":  {"qianye/modules/commission/consume.go", "订阅消费是否不计佣"},
 	"commission.refund_clawback":               {"qianye/modules/commission/consume.go", "退款时是否追回已发佣金"},

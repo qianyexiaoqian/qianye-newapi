@@ -29,6 +29,8 @@ export {
   getParamOverrideActionLabel,
   parseAuditLine,
   isViolationFeeLog,
+  isViolationBlockedLog,
+  violationBlockLabelKey,
 } from './format'
 
 // Filter utilities

@@ -29,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { QyPager } from '@/features/qy/pages/components/qy-pager'
 import { getModelGroupOptions, getUserGroupOptions } from '@/features/users/api'
 
 import { SettingsSection } from '../components/settings-section'
@@ -42,6 +43,19 @@ import { useGroupOptionSave } from './lib/use-group-option-save'
  */
 const NONE = '__none__'
 
+/**
+ * 每页几行用户分组。与「用户分组」「模型分组」两张表同一个数（服务端那一侧是
+ * `httpq.GroupTablePageSize`）—— 三张表在同一个菜单组里，页长不一致会让人以为
+ * 其中一张漏了几行。
+ *
+ * ── 为什么这一页尤其需要它 ──
+ *
+ * 它渲染的是 `用户分组数 × 模型分组数` 个 `SelectItem`：40 档用户分组 × 30 个
+ * 模型分组就是 1200 个选项节点，而每一个都是一个带 Portal 的可聚焦元素。
+ * 项目方说的「不易编辑」在这一页上是字面意思 —— 输入延迟来自这批节点本身。
+ */
+const TOKEN_DEFAULT_PAGE_SIZE = 10
+
 /** 保存到 option 的 JSON 键域：用户分组名 → 模型分组名。 */
 type DefaultsMap = Record<string, string>
 
@@ -49,8 +63,9 @@ function parseDefaults(raw: string | undefined): DefaultsMap {
   if (!raw) return {}
   try {
     const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return {}
+    }
     const out: DefaultsMap = {}
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof v === 'string' && k !== '' && v !== '') out[k] = v
@@ -86,9 +101,20 @@ export function TokenDefaultGroupsSection(props: {
   const { t } = useTranslation()
   const { defaultValues } = props
 
+  /*
+    行轴（用户分组）走服务端翻页；列（模型分组下拉里的候选）不翻 —— 那是一个
+    下拉的选项集合，切掉一半等于让某些模型分组无法被选成默认值，而界面上看不出
+    少了什么。
+
+    query key 带上页码：不带的话两页共用一个缓存条目，翻页时 React Query 会先把
+    上一页的内容原样渲染出来（同一个 key 的旧数据），运营看到的是"点了下一页、
+    内容没变"。
+  */
+  const [page, setPage] = useState(1)
   const userGroupsQuery = useQuery({
-    queryKey: ['user-group-options'],
-    queryFn: getUserGroupOptions,
+    queryKey: ['user-group-options', page, TOKEN_DEFAULT_PAGE_SIZE],
+    queryFn: () =>
+      getUserGroupOptions({ p: page, page_size: TOKEN_DEFAULT_PAGE_SIZE }),
   })
   const modelGroupsQuery = useQuery({
     queryKey: ['model-group-options'],
@@ -103,6 +129,12 @@ export function TokenDefaultGroupsSection(props: {
     () => modelGroupsQuery.data?.data ?? [],
     [modelGroupsQuery.data]
   )
+  /*
+    总数拿不到时回落成**本页行数**而不是 0：0 会让翻页条整条隐藏，于是老后端
+    （不认翻页参数、原样回整表）上这一页会一次性画出全部行且没有任何翻页控件 ——
+    那与"翻页功能没做"长得一模一样，而真实原因是后端没升级。
+  */
+  const total = userGroupsQuery.data?.total ?? userGroups.length
 
   const [draft, setDraft] = useState<DefaultsMap>(() =>
     parseDefaults(defaultValues.TokenDefaultGroups)
@@ -125,6 +157,17 @@ export function TokenDefaultGroupsSection(props: {
     setDraft(parseDefaults(defaultValues.TokenDefaultGroups))
     resetBaseline({ TokenDefaultGroups: defaultValues.TokenDefaultGroups })
   }, [defaultValues.TokenDefaultGroups, resetBaseline])
+
+  /*
+    另一个管理员删掉几档人之后，页码可能停在一个已经不存在的页上 —— 那一屏会
+    渲染成「本站还没有任何用户分组」，也就是一句在此刻明显为假的话。
+    回落到最后一页而不是第 1 页：他正在处理的是列表尾部那几档。
+  */
+  useEffect(() => {
+    if (userGroupsQuery.data == null) return
+    const lastPage = Math.max(1, Math.ceil(total / TOKEN_DEFAULT_PAGE_SIZE))
+    if (page > lastPage) setPage(lastPage)
+  }, [userGroupsQuery.data, total, page])
 
   const setOne = useCallback((userGroup: string, modelGroup: string) => {
     setDraft((prev) => {
@@ -206,10 +249,31 @@ export function TokenDefaultGroupsSection(props: {
             </div>
           ))}
 
+          {/*
+            翻页条排在保存键**之前**：草稿是整份 `TokenDefaultGroups`（见
+            `setOne`），翻页不会丢掉任何一页上已经改过的行 —— 但保存键必须仍然
+            在视线里，否则运营会以为"这一页有一个保存、要一页一页地按"。
+          */}
+          <QyPager
+            page={page}
+            pageSize={TOKEN_DEFAULT_PAGE_SIZE}
+            total={total}
+            onPageChange={setPage}
+            disabled={userGroupsQuery.isFetching}
+          />
+
           <div className='pt-2'>
             <Button onClick={onSave} disabled={isSaving}>
               {t('Save')}
             </Button>
+            {/*
+              保存写的是**整份**草稿，不只是屏幕上这 10 行。说出来是因为翻页会让
+              人自然以为保存的粒度也跟着变成一页 —— 而那个误解的方向是危险的：
+              他会在每一页上各按一次保存，其中任何一次失败都看不出来。
+            */}
+            <p className='text-muted-foreground mt-2 text-xs leading-5'>
+              {t('qy_gs_token_default_save_scope')}
+            </p>
           </div>
         </div>
       )}

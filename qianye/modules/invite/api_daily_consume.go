@@ -50,6 +50,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/qianye/csvsafe"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
@@ -737,14 +738,21 @@ func renderDailyConsumeCSV(c *gin.Context, r dailyRange, rows []dailyConsumeRow)
 		"account_removed",
 	})
 	for _, row := range rows {
+		// 五个字符串列全部过 csvsafe.Cell:用户名、昵称、邮箱、分组名与上线用户名
+		// 都是用户自己填的,而这份文件写了 BOM 就是为了让运营用 Excel 打开它。
+		// 数字列不需要 —— strconv 的输出不可能以 = + - @ 开头(负数会,但那是
+		// 我们自己算出来的数,不是用户输入)。InviteGross 是 decimal 的字符串形态,
+		// 同理由服务端产生,留原样以免在表格里被当成文本而无法求和。
 		_ = w.Write([]string{
-			strconv.Itoa(row.UserId), row.Username, row.DisplayName, row.Email, row.UserGroup,
+			strconv.Itoa(row.UserId),
+			csvsafe.Cell(row.Username), csvsafe.Cell(row.DisplayName),
+			csvsafe.Cell(row.Email), csvsafe.Cell(row.UserGroup),
 			strconv.FormatInt(row.RequestCount, 10),
 			strconv.FormatInt(row.ConsumeQuota, 10),
 			strconv.FormatInt(row.InviteBaseQuota, 10),
 			strconv.FormatInt(row.UncountedQuota, 10),
 			row.InviteGross,
-			strconv.Itoa(row.InviterId), row.InviterUsername,
+			strconv.Itoa(row.InviterId), csvsafe.Cell(row.InviterUsername),
 			strconv.FormatBool(row.AccountRemoved),
 		})
 	}

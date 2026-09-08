@@ -33,6 +33,13 @@
 
 ## 文档结构
 
+### 部署(**上线与备份前必读**)
+
+[deploy-database.md](deploy-database.md) — 数据库部署基线:**全 MySQL 8.0、两个库**。
+为什么不选 PostgreSQL(以及这个选择的代价)、两个库的边界、`qy_fund_outbox`
+为什么必须留在主库,以及由它推出的唯一运维硬规则 —— **两个库的备份必须成对做
+PITR**,分别 dump、分别恢复会让资金探针失真。另含双启动验收与同步上游时的三条检查。
+
 ### 设计(按实施顺序阅读)
 
 | 文件 | 内容 |
@@ -43,7 +50,7 @@
 | [design-04-wallet-ui.md](design-04-wallet-ui.md) | 需求 3:钱包页选项卡、套餐详情截断、订阅弹窗 |
 | [design-01-transfer.md](design-01-transfer.md) | 需求 1:用户余额划转 |
 | [design-05-logs.md](design-05-logs.md) | 需求 4:使用日志推理强度/缓存百分比两列 |
-| [design-02-commission.md](design-02-commission.md) | 需求 2a:佣金账本与返佣触发 —— **现行(星辉口径,无提现)**:D-15 把账本 / 结算 / 余额按「星辉」恢复并加自动入账(`modules/commission`,见 `decisions.md` D-15);邀请关系与日界在 `modules/invite`,与星屑邀请奖励(design-15 §4.3 / §4.7)并行 |
+| [design-02-commission.md](design-02-commission.md) | 需求 2a:佣金账本与返佣触发 —— **现行(星屑口径,无提现)**:D-15 把账本 / 结算 / 余额恢复并加自动入账,D-16 把记账单位从「星辉」改成**星屑**、跨库两阶段入账整层退役(`modules/commission`,见 `decisions.md` D-15 / D-16);邀请关系与日界在 `modules/invite`,与星屑邀请奖励(design-15 §4.3 / §4.7)**并行且同币种** —— 两条线的三档打同一笔基数,重叠由健康面板 `rate_overlap` 标出 |
 | ~~[design-03-withdraw.md](design-03-withdraw.md)~~ | 需求 2b:提现申请、审核、历史 —— **已被 D-14 取代,模块已删除**(没有现金推广收益,也就没有提现) |
 | [design-07-violation.md](design-07-violation.md) | 需求 7:违规检测 |
 | [design-15-stardust.md](design-15-stardust.md) | **现行口径,v2.0.0 已实施**(D-11/12/13):星屑独立货币、星屑商城、星屑转盘;娱乐活动从 users.quota 整体切到扩展库账本,不保留旧路径;实施偏差见 §12.1 |

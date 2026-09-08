@@ -53,6 +53,10 @@ func hitRecord(recNo string, userId int, shadow bool, weight int) *Record {
 	return &Record{
 		RecNo: recNo, UserId: userId, RuleId: 1, Phase: PhasePrompt,
 		Action: ActionRecord, Shadow: shadow, CountWeight: weight,
+		// CategoryId 必须是个真类型:persistRecord 把"没选违规类型"当成
+		// "一条线都不推进"(项目方口径,见 TestUnboundCategoryRuleNeverCounts)。
+		// 留 0 的话本文件全部用例都会因为那道闸而绿,而它们要验的是影子与权重。
+		CategoryId:   2,
 		CounterAfter: counterAfter, Status: RecordActive, FeeStatus: FeeStatusNone,
 		CreatedAt: common.GetTimestamp(),
 	}

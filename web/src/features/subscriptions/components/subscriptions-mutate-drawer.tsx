@@ -219,7 +219,7 @@ export function SubscriptionsMutateDrawer({
   // 这个集合，两边取不同的清单会让下拉里选得到的名字在保存时被 400 挡回来。
   const userGroupsQuery = useQuery({
     queryKey: ['user-group-options'],
-    queryFn: getUserGroupOptions,
+    queryFn: () => getUserGroupOptions(),
     staleTime: 5 * 60 * 1000,
   })
   const userGroups = userGroupsQuery.data?.data || []

@@ -82,6 +82,13 @@ var (
 		"这张订单已经有收货地址,如需修改请联系客服")
 	errAddressMissing = newBizError(http.StatusConflict, "qy_ml_address_missing",
 		"中奖者尚未填写收货地址,请等待用户在「我的订单」里补填后再发货")
+	// 码库存的三条。「不能提」与「不能删」刻意分成两个 code:两者的下一步不同 ——
+	// 前者要去订单里查这枚码发给了谁,后者压根没有下一步(证据行不删)。
+	errCodeNotFound    = newBizError(http.StatusNotFound, "qy_ml_code_not_found", "这枚兑换码不存在,或不属于该商品")
+	errCodeNotTakeable = newBizError(http.StatusConflict, "qy_ml_code_not_takeable",
+		"只有「未使用」的兑换码可以提取;这一枚已经发出、被撤回或刚刚被另一位管理员提走")
+	errCodeNotDeletable = newBizError(http.StatusConflict, "qy_ml_code_not_deletable",
+		"只有「未使用」的兑换码可以删除;已发出 / 已撤回 / 已提取的码是发放去向的证据,永久保留")
 	errProductReferenced = newBizError(http.StatusConflict, "qy_ml_product_referenced",
 		"该商品仍挂在进行中的抽奖活动的奖档上,不能删除;请先等活动结束或取消")
 	errHasOpenOrders  = newBizError(http.StatusConflict, codeHasOpenOrders, "该商品还有未完结的订单,不能删除")

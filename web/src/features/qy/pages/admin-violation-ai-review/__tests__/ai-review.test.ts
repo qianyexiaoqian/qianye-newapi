@@ -24,9 +24,12 @@ import en from '@/i18n/qy/en.json'
 import zh from '@/i18n/qy/zh.json'
 
 import {
+  QY_AI_EMAIL_SAMPLE,
+  QY_AI_EMAIL_VARS,
   qyAiBpsToPercentText,
   qyAiChannelToDraft,
   qyAiDraftToInput,
+  qyAiRenderEmailPreview,
   qyAiPercentTextToBps,
   QY_AI_CATEGORY_PLACEHOLDER,
   qyAiPromptCategoryIssues,
@@ -94,6 +97,14 @@ describe('渠道密钥的三态', () => {
     id: 1,
     name: 'deepseek',
     base_url: 'https://api.deepseek.com/v1',
+    group: '',
+    prompt: '',
+    prompt_source: 'default',
+    block_message: '',
+    risk_name: '',
+    notify_email: false,
+    email_subject: '',
+    email_body: '',
     model: 'deepseek-v4-flash',
     protocol: 'json_prompt',
     guard_controversial: '',
@@ -333,15 +344,19 @@ ${QY_AI_CATEGORY_PLACEHOLDER}`
 })
 
 describe('提示词那一格的页面接线', () => {
+  // 2026-09-06 提示词整块从「设置卡」搬到了「渠道表单」,预填与折叠也跟着
+  // 搬进了 lib(qyAiChannelToDraft / qyAiDraftToInput)。两处各扫各的:
+  // 只扫 index.tsx 会让这一组在搬家之后集体变成断言不到任何东西的空壳。
   const src = read('index.tsx')
+  const lib = read('lib/ai-review.ts')
 
-  test('输入框的值走预填函数,而不是直接绑 setting.prompt', () => {
+  test('渠道草稿预填内置默认全文,而不是靠 placeholder', () => {
     assert.ok(
-      src.includes('qyAiPromptForEditor('),
+      lib.includes('qyAiPromptForEditor('),
       '库里为空时输入框必须有内容 —— 这正是项目方要的「方便修改」'
     )
     assert.equal(
-      /placeholder=\{data\.default_prompt\}/.test(src),
+      /placeholder=\{[a-zA-Z.]*default_prompt\}/.test(src),
       false,
       'placeholder 是灰字、不可编辑、也不会被提交:它回答了「默认长什么样」,' +
         '却没回答「我怎么在它基础上改」'
@@ -349,11 +364,12 @@ describe('提示词那一格的页面接线', () => {
   })
 
   test('提交走折叠函数,不会把预填的文本原样存进库', () => {
-    assert.ok(src.includes('qyAiPromptToPayload('))
+    assert.ok(lib.includes('qyAiPromptToPayload('))
     assert.equal(
-      /prompt: current\.prompt/.test(src),
+      /prompt: draft\.prompt(?![a-zA-Z])/.test(lib),
       false,
-      '直接提交输入框内容 = 每个站点点一次保存就变成「已自定义」'
+      '直接提交输入框内容 = 每个渠道点一次保存就变成「已自定义」,' +
+        '从此收不到内置默认提示词的后续加固'
     )
   })
 
@@ -367,18 +383,43 @@ describe('提示词那一格的页面接线', () => {
     )
   })
 
-  test('有「恢复默认」动作,并在已经是默认时禁用', () => {
+  test('有「恢复默认」动作,并且只在已自定义时出现', () => {
     assert.ok(src.includes('qy_ai_prompt_reset'))
     assert.ok(
-      /disabled=\{promptIsDefault\}/.test(src),
-      '已经在默认档时按钮该是灰的,否则它看起来像一个没有效果的按钮'
+      src.includes('!promptIsDefault && ('),
+      '已经在默认档时不该画这个按钮 —— 画一个按下去什么都不变的按钮更糟'
     )
   })
 
   test('类型闭集被改坏时页面上有告警', () => {
     assert.ok(src.includes('qy_ai_prompt_cat_unknown_title'))
-    assert.ok(src.includes('qy_ai_prompt_cat_missing_title'))
     assert.ok(src.includes('qyAiPromptCategoryIssues('))
+  })
+
+  test('护栏协议下整块不渲染,只留一句说明', () => {
+    // 护栏协议压根不发提示词(后端 aiRequestPayload 对它们只发一条 user 消息)。
+    // 画一个填了不生效的输入框比不画更糟:运营会对着它以为判据换过了,
+    // 而线上一个字都没送出去。
+    assert.ok(
+      src.includes('guardProtocol ? ('),
+      '提示词那一块必须按协议分叉 —— 护栏协议下不该有输入框'
+    )
+    assert.ok(src.includes('qy_ai_prompt_none_for_guard'))
+    assert.ok(
+      (zh as Record<string, string>).qy_ai_prompt_none_for_guard,
+      'zh.json 里没有这句话 —— 界面上会直接显示原始键名'
+    )
+  })
+
+  test('渠道列表行上直接显示分组,不用点开编辑', () => {
+    // 作用域策略选的是**分组**,所以"这个渠道属于哪个池子"决定了它会不会被
+    // 用到。藏在编辑弹窗里的话,一个填错分组的渠道在列表上与正常的一模一样,
+    // 而它一条流量都收不到。未分组的也要标出来:它只有被显式指定时才会被用到。
+    assert.ok(src.includes('qy_ai_f_group_none'))
+    assert.ok(
+      /<Badge variant='secondary'>\{channel\.group\}<\/Badge>/.test(src),
+      '渠道行上必须直接画出分组名'
+    )
   })
 })
 
@@ -405,6 +446,9 @@ describe('i18n 键齐全', () => {
   const zhKeys = zh as Record<string, string>
 
   test('页面里用到的 qy_ai_ 键在中英两侧都存在', () => {
+    // 日志卡已经搬去 `../admin-violation-ai-logs`(它自己一页了),所以这里
+    // 只扫本页。那一页的文案由它自己 __tests__ 下的挂载用例守着 ——
+    // 两边各扫各的,免得这条扫描跟着页面拆分不断追加路径。
     const src = read('index.tsx')
     const used = new Set(src.match(/qy_ai_[a-z0-9_]+/g) ?? [])
     assert.ok(used.size > 0, '页面应当走 i18n 而不是写死中文')
@@ -435,6 +479,24 @@ describe('i18n 键齐全', () => {
     }
   })
 
+  test('审核日志那一族文案两侧都在', () => {
+    // 上面那条扫的是源码里出现过的键,拼出来的那一族它抓不到。这一族里
+    // 少任何一个,界面上就会直接显示原始键名 —— 而这张卡是运营查
+    // "这次审核审的是谁、内容是什么"的唯一入口。
+    for (const key of [
+      'qy_ai_log_card_title',
+      'qy_ai_log_content_title',
+      'qy_ai_log_content_empty_on',
+      'qy_ai_log_content_empty_off',
+      'qy_ai_log_retention_hint',
+      'qy_ai_log_db_separate',
+      'qy_ai_log_db_shared',
+    ]) {
+      assert.ok(key in zhKeys, `zh.json 缺少 ${key}`)
+      assert.ok(key in enKeys, `en.json 缺少 ${key}`)
+    }
+  })
+
   test('导航标题两侧都在', () => {
     for (const key of [
       'qy_nav_a_violation_ai_review',
@@ -442,6 +504,140 @@ describe('i18n 键齐全', () => {
     ]) {
       assert.ok(key in zhKeys, `zh.json 缺少 ${key}`)
       assert.ok(key in enKeys, `en.json 缺少 ${key}`)
+    }
+  })
+})
+
+/**
+ * 违规通知邮件那三格。
+ *
+ * 1. 两格模板**不预填**内置默认(与提示词刻意相反):留空的含义是"跟随内置模板",
+ *    预填进来会让每个渠道保存一次就把自己钉死在当前版本的默认邮件上。
+ * 2. 预览里替换进去的值必须转义,模板自己的标签必须原样留着 —— 这是"支持 HTML"
+ *    与"别人改不了你的模板结构"同时成立的唯一写法。
+ * 3. 占位符表由 QY_AI_EMAIL_VARS 派生,界面上那张表读的就是它。
+ */
+describe('违规通知邮件模板', () => {
+  const base = {
+    id: 3,
+    name: 'guard',
+    base_url: 'http://localhost:11434/v1',
+    group: '',
+    prompt: '',
+    prompt_source: 'default' as const,
+    block_message: '',
+    risk_name: '' as const,
+    notify_email: true,
+    email_subject: '  【{{site_name}}】拦截通知  ',
+    email_body: '<p>{{username}}</p>\n\n',
+    model: 'm',
+    protocol: 'json_prompt' as const,
+    guard_controversial: '' as const,
+    guard_categories: [],
+    guard_elevate: [],
+    has_key: false,
+    key_hint: '',
+    key_bound_elsewhere: false,
+    timeout_ms: 0,
+    weight: 1,
+    enabled: true,
+    price_in_per_m: '0',
+    price_out_per_m: '0',
+    remark: '',
+    updated_at: 0,
+  }
+
+  test('取不到值的占位符渲染成破折号,与后端一致', () => {
+    // 预览这一格的全部意义是「发出去长什么样」。后端把空值渲染成 '—'
+    // (violationEmailUnknown),预览留空的话运营会以为自己的模板有问题。
+    assert.equal(
+      qyAiRenderEmailPreview('<td>{{reason}}</td>', true, {
+        ...QY_AI_EMAIL_SAMPLE,
+        reason: '',
+      }),
+      '<td>—</td>'
+    )
+  })
+
+  test('草稿原样带上三格,正文不预填内置默认', () => {
+    const draft = qyAiChannelToDraft(base, '默认提示词')
+
+    assert.equal(draft.notify_email, true)
+    assert.equal(draft.email_subject, '  【{{site_name}}】拦截通知  ')
+    assert.equal(draft.email_body, '<p>{{username}}</p>\n\n')
+  })
+
+  test('新建渠道时开关关着、两格模板留空', () => {
+    const draft = qyAiChannelToDraft(undefined, '默认提示词')
+
+    assert.equal(draft.notify_email, false)
+    assert.equal(draft.email_subject, '')
+    assert.equal(draft.email_body, '')
+  })
+
+  test('提交时标题两端去空白、正文只去尾部空白', () => {
+    const input = qyAiDraftToInput(qyAiChannelToDraft(base, '默认提示词'))
+
+    assert.equal(input.notify_email, true)
+    assert.equal(input.email_subject, '【{{site_name}}】拦截通知')
+    assert.equal(input.email_body, '<p>{{username}}</p>')
+  })
+
+  test('预览转义替换进去的值,但不动模板自己的标签', () => {
+    const html = qyAiRenderEmailPreview('<b>{{username}}</b>', true, {
+      username: '<img src=x onerror=1>',
+    })
+
+    assert.equal(html, '<b>&lt;img src=x onerror=1&gt;</b>')
+  })
+
+  test('预览里认不出来的占位符原样留着', () => {
+    const html = qyAiRenderEmailPreview('{{username}} {{nope}}', true, {
+      username: 'u1',
+    })
+
+    assert.equal(html, 'u1 {{nope}}')
+  })
+
+  test('标题预览不转义(它进的是信头)', () => {
+    const line = qyAiRenderEmailPreview('{{username}}', false, {
+      username: 'a & b',
+    })
+
+    assert.equal(line, 'a & b')
+  })
+
+  test('三格的文案两侧语言都在', () => {
+    for (const key of [
+      'qy_ai_email_notify',
+      'qy_ai_email_notify_hint',
+      'qy_ai_email_subject',
+      'qy_ai_email_subject_hint',
+      'qy_ai_email_subject_builtin',
+      'qy_ai_email_body',
+      'qy_ai_email_body_hint',
+      'qy_ai_email_body_ph',
+      'qy_ai_email_body_builtin',
+      'qy_ai_email_vars',
+      'qy_ai_email_vars_hint',
+      'qy_ai_email_preview_title',
+      'qy_ai_email_preview_desc',
+      'qy_ai_email_preview_subject',
+    ]) {
+      assert.ok(key in (zh as Record<string, string>), `zh.json 缺少 ${key}`)
+      assert.ok(key in (en as Record<string, string>), `en.json 缺少 ${key}`)
+    }
+  })
+
+  test('内置模板样例里的占位符都在可用清单里', () => {
+    // 界面上那份 placeholder 与预览兜底文案里写的键,必须是后端认得的那一批;
+    // 不然运营照着它写出来的模板会带着一个永远不会被替换的 {{xxx}} 发出去。
+    const builtin = (zh as Record<string, string>).qy_ai_email_body_builtin
+    for (const [, key] of builtin.matchAll(/\{\{(\w+)\}\}/g)) {
+      assert.ok(
+        (QY_AI_EMAIL_VARS as readonly string[]).includes(key),
+        `内置正文用了未登记的占位符 ${key}`
+      )
     }
   })
 })

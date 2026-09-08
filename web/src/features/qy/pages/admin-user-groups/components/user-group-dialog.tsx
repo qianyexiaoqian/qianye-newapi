@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Eye, EyeOff } from 'lucide-react'
+import { Eye } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -28,8 +28,9 @@ import { Label } from '@/components/ui/label'
 
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
+import type { QyGmPageParams } from '../../admin-group-matrix/api'
 import { QyGmDiffBar } from '../../admin-group-matrix/components/diff-bar'
-import { QyGmPreviewBody } from '../../admin-group-matrix/components/preview-dialog'
+import { QyGmPreviewDialog } from '../../admin-group-matrix/components/preview-dialog'
 import { qyGmGroupRowWarnings } from '../../admin-group-matrix/components/row-warnings'
 import { QyGmStatusBanners } from '../../admin-group-matrix/components/status-banners'
 import { useQyGmEditor } from '../../admin-group-matrix/lib/use-editor'
@@ -62,8 +63,9 @@ import { QyUgGroupDetail } from './user-group-detail'
  *
  * 勾掉一个模型分组会让一批正在跑的令牌当场 403，改一格倍率会在保存成功那一秒
  * 起按新价扣钱。所以状态横幅 → 差异条（含「没预览过不许保存」）→ 范围设置 →
- * 逐格可选性 / 倍率 / 备注 → 影响面报告，一段都不能少：少任何一段，弹窗就成了
- * 一条绕开闸门的近路，而绕开闸门的那次点击恰好是最危险的一次。
+ * 逐格可选性 / 倍率 / 备注 → 影响面报告（开在第二层弹窗里），一段都不能少：
+ * 少任何一段，弹窗就成了一条绕开闸门的近路，而绕开闸门的那次点击恰好是最危险
+ * 的一次。
  * 实现上共用 {@link useQyGmEditor} 这一份状态机，两个外壳的闸门不可能松紧不一。
  *
  * ── 关掉即卸载，草稿不跨次留存 ──
@@ -83,6 +85,14 @@ export function QyUgGroupDialog(props: {
    * 一份的表现是表上写 0.8、点开弹窗是 0.9，而运营会照着弹窗里的那个数按保存。
    */
   row: QyGmUserGroup | null
+  /**
+   * 外壳此刻在看的那一段行轴。省略 = 整张表。
+   *
+   * 弹窗内部的状态机与外壳读同一个 query key（见 {@link useQyGmEditor}）。
+   * 外壳分页而这里不传，每一次点「编辑」都会另外拉一次全量矩阵 —— 一个为了
+   * 「分组过多加载卡顿」而做的翻页，会在打开弹窗时把整张表重新拉一遍。
+   */
+  page?: QyGmPageParams
   /** 保存成功之后刷新外壳那张表。 */
   onSaved: () => Promise<void> | void
 }) {
@@ -100,6 +110,7 @@ export function QyUgGroupDialog(props: {
         <QyUgGroupDialogBody
           userGroup={props.userGroup}
           row={props.row}
+          page={props.page}
           onSaved={props.onSaved}
         />
       )}
@@ -110,21 +121,13 @@ export function QyUgGroupDialog(props: {
 function QyUgGroupDialogBody(props: {
   userGroup: string
   row: QyGmUserGroup | null
+  page?: QyGmPageParams
   onSaved: () => Promise<void> | void
 }) {
   const { t } = useTranslation()
-  const editor = useQyGmEditor()
+  const editor = useQyGmEditor({ page: props.page })
   const data = editor.data
   const row = editor.userGroups.find((item) => item.name === props.userGroup)
-
-  /**
-   * 影响面报告**内联展开**，不叠第二层浮层。
-   *
-   * 报告是保存前的必读材料，而握着草稿的是这个弹窗本身：再叠一层浮层之后，
-   * Esc 键关掉的是哪一层不确定，运营按一次可能连草稿一起丢。
-   */
-  const [reportOpen, setReportOpen] = useState(false)
-  const showReport = reportOpen || editor.isPreviewing
 
   return (
     <QyPageBoundary
@@ -183,42 +186,25 @@ function QyUgGroupDialogBody(props: {
             needsPreview={editor.needsPreview}
             isPreviewing={editor.isPreviewing}
             isSaving={editor.isSaving}
-            onPreview={() => {
-              setReportOpen(true)
-              editor.runPreview()
-            }}
+            onPreview={editor.runPreview}
             onSave={editor.runSave}
             onReset={editor.resetDraft}
           />
 
-          {showReport && (
-            <section className='space-y-2 rounded-lg border p-3'>
-              <div className='flex flex-wrap items-center justify-between gap-2'>
-                <h3 className='text-sm font-medium'>
-                  {t('qy_group_matrix_preview_title')}
-                </h3>
-                <Button
-                  type='button'
-                  variant='ghost'
-                  size='sm'
-                  onClick={() => setReportOpen(false)}
-                >
-                  <EyeOff aria-hidden='true' />
-                  {t('qy_group_scope_dialog_hide_report')}
-                </Button>
-              </div>
-              <QyGmPreviewBody
-                preview={editor.preview}
-                isLoading={editor.isPreviewing}
-              />
-            </section>
-          )}
-          {!showReport && editor.preview != null && (
+          {/*
+            看过之后再回头看一次，不必重新统计一遍。
+
+            报告本身开在下面那个 {@link QyGmPreviewDialog} 里；关掉它之后
+            `editor.preview` 还在手上（指纹也还对得上，保存键仍然是亮的），
+            所以这里只是把同一份结果重新摆出来。省掉的那次重算不便宜：它要铺开
+            全部组合再去日志库聚合，而运营此刻要找的往往只是刚才那一行数字。
+          */}
+          {editor.preview != null && !editor.previewOpen && (
             <Button
               type='button'
               variant='outline'
               size='sm'
-              onClick={() => setReportOpen(true)}
+              onClick={() => editor.setPreviewOpen(true)}
             >
               <Eye aria-hidden='true' />
               {t('qy_group_scope_dialog_show_report')}
@@ -270,6 +256,27 @@ function QyUgGroupDialogBody(props: {
                 editor.submitScope(row.name, body, afterApply),
             }}
             scrollList={false}
+          />
+
+          {/*
+            ── 影响面报告开在第二层弹窗里，不再摊在这一屏上 ──
+
+            项目方原话：「这个预览面改成第二个弹窗显示吧，都在一个页面显得太乱
+            了。」报告是十来块统计，内联展开时它插在差异条与模型分组清单之间，
+            把运营真正要动的那张表整个挤到一屏之外 —— 而他点预览恰恰是为了回头
+            改那张表。
+
+            这里曾经写着「不能叠第二层浮层，Esc 关掉的是哪一层不确定，可能连草稿
+            一起丢」。那条顾虑在 Base UI 上不成立：嵌套弹窗挂在同一棵 floating
+            树上，内层开着时 Esc 不会冒泡到外层（`useDismiss` 的
+            `hasBlockingChild`），关掉的只有报告，草稿留在下面那一层。同一个弹窗
+            里的改名确认框本来就是这么叠着的。
+          */}
+          <QyGmPreviewDialog
+            open={editor.previewOpen}
+            onOpenChange={editor.setPreviewOpen}
+            preview={editor.preview}
+            isLoading={editor.isPreviewing}
           />
         </div>
       )}

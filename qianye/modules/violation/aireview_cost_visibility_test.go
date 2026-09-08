@@ -79,7 +79,7 @@ func TestAIReviewRowFlagsUnderstatedCost(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			row := newAIReviewRow(recordCtx{RequestId: "req-1", UserId: 7}, PhasePrompt, tc.out, 0, 0)
+			row := newAIReviewRow(recordCtx{RequestId: "req-1", UserId: 7}, PhasePrompt, tc.out, 0, 0, "", 0)
 			require.NotNil(t, row)
 			assert.Equal(t, tc.want, row.CostUnknown, tc.why)
 		})
@@ -119,7 +119,7 @@ func TestAIReviewStatsCountsUnderstatedCostChains(t *testing.T) {
 	// 另外那 1000 个 token 算不出钱,所以 0.0012 是**下界**,不是真值。
 	require.Equal(t, "0.0012", out.CostUsd.String())
 
-	mixed := newAIReviewRow(recordCtx{RequestId: "mixed", UserId: 7}, PhasePrompt, out, 0, 0)
+	mixed := newAIReviewRow(recordCtx{RequestId: "mixed", UserId: 7}, PhasePrompt, out, 0, 0, "", 0)
 	require.True(t, mixed.CostUnknown)
 	require.NoError(t, gdb.Create(mixed).Error)
 

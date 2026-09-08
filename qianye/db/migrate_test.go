@@ -86,14 +86,19 @@ func loadConfigWithAutoMigrate(t *testing.T, autoMigrate bool) {
 // 会让后一个用例的 SchemaIncomplete() 断言"碰巧"通过。
 func resetSchemaState(t *testing.T) {
 	t.Helper()
-	prevMissing := schemaMissing.Load()
+	prevMissing := mainSchema.missing.Load()
+	prevLogMissing := logSchema.missing.Load()
 	prevInterval := schemaRecheckInterval
-	schemaMissing.Store(nil)
-	schemaRecheckOnce = sync.Once{}
+	mainSchema.missing.Store(nil)
+	mainSchema.once = sync.Once{}
+	logSchema.missing.Store(nil)
+	logSchema.once = sync.Once{}
 	t.Cleanup(func() {
-		schemaMissing.Store(prevMissing)
+		mainSchema.missing.Store(prevMissing)
+		logSchema.missing.Store(prevLogMissing)
 		schemaRecheckInterval = prevInterval
-		schemaRecheckOnce = sync.Once{}
+		mainSchema.once = sync.Once{}
+		logSchema.once = sync.Once{}
 	})
 }
 
@@ -104,7 +109,7 @@ func resetSchemaState(t *testing.T) {
 func stubAutoMigrate(t *testing.T, err error) {
 	t.Helper()
 	prev := runAutoMigrate
-	runAutoMigrate = func(*gorm.DB, []any) error { return err }
+	runAutoMigrate = func(migrateTarget, *gorm.DB, []any) error { return err }
 	t.Cleanup(func() { runAutoMigrate = prev })
 }
 
@@ -198,7 +203,7 @@ func TestVerifyTablesTreatsAnUnreadableSchemaAsUnknown(t *testing.T) {
 		resetSchemaState(t)
 		stubExistingTables(t, nil, errors.New("information_schema 暂时读不到"))
 
-		assert.NoError(t, verifyTables(gdb, models),
+		assert.NoError(t, verifyTables(mainMigrateTarget(), gdb, models),
 			"自检自身失败不能让主程序起不来 —— 扩展绝不成为主程序的单点故障")
 		assert.False(t, SchemaIncomplete())
 	})
@@ -238,12 +243,12 @@ func TestSchemaRecheckClearsTheDegradedStateWhenTablesAppear(t *testing.T) {
 	require.True(t, SchemaIncomplete())
 
 	// 主节点的 DDL 还没跑完:复查仍然缺表,不能自行解除。
-	assert.False(t, recheckSchema(models))
+	assert.False(t, recheckSchema(mainMigrateTarget(), models))
 	assert.Equal(t, []string{"qy_test_module"}, MissingTables())
 
 	// 表建出来了。
 	stubExistingTables(t, []string{"qy_test_foundation", "qy_test_module"}, nil)
-	assert.True(t, recheckSchema(models), "表齐全后必须报告完成,让后台循环停下来")
+	assert.True(t, recheckSchema(mainMigrateTarget(), models), "表齐全后必须报告完成,让后台循环停下来")
 	assert.False(t, SchemaIncomplete())
 	assert.Nil(t, MissingTables())
 }

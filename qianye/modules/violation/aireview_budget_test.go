@@ -56,7 +56,7 @@ func TestPreReviewBudgetCoversTheWholeCallNotEachChannel(t *testing.T) {
 				{Id: 1, Name: "a", URL: chatCompletionsURL(a.URL), Model: "m", Weight: 1, TimeoutMs: chTimeoutMs},
 				{Id: 2, Name: "b", URL: chatCompletionsURL(b.URL), Model: "m", Weight: 1, TimeoutMs: chTimeoutMs},
 			},
-			Prompt: defaultAIPrompt, MaxInputChars: defaultAIMaxInputChars,
+			MaxInputChars: defaultAIMaxInputChars,
 		}
 		started := time.Now()
 		out := runAIReview(context.Background(), rt, nil, "待审内容", budgetMs)
@@ -74,7 +74,6 @@ func TestPreReviewBudgetCoversTheWholeCallNotEachChannel(t *testing.T) {
 			Channels: []*aiChannelRT{
 				{Id: 1, Name: "a", URL: chatCompletionsURL(a.URL), Model: "m", Weight: 1, TimeoutMs: chTimeoutMs},
 			},
-			Prompt:        defaultAIPrompt,
 			MaxInputChars: defaultAIMaxInputChars,
 		}
 		started := time.Now()
@@ -92,7 +91,7 @@ func TestPreReviewBudgetCoversTheWholeCallNotEachChannel(t *testing.T) {
 				{Id: 1, Name: "a", URL: chatCompletionsURL(a.URL), Model: "m", Weight: 1, TimeoutMs: chTimeoutMs},
 				{Id: 2, Name: "b", URL: chatCompletionsURL(b.URL), Model: "m", Weight: 1, TimeoutMs: chTimeoutMs},
 			},
-			Prompt: defaultAIPrompt, MaxInputChars: defaultAIMaxInputChars,
+			MaxInputChars: defaultAIMaxInputChars,
 		}
 		out := runAIReview(context.Background(), rt, nil, "待审内容", budgetMs)
 		require.NotNil(t, out)

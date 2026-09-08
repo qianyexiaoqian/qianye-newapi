@@ -257,7 +257,17 @@ func chargeFee(c *gin.Context, info *relaycommon.RelayInfo, cr *compiledRule, re
 // 这是需求原文"给用户写入一条计费记录说明扣费原因"的落点,也是所有前端改动
 // 全部回滚后的最后防线 —— 用户在原生使用日志页就能看到扣费与原因,前端零改动。
 func writeConsumeLog(c *gin.Context, info *relaycommon.RelayInfo, cr *compiledRule, rec *Record, res *feeResult) {
-	reason := cr.R.PublicReason
+	// 拦下来的那一次,原因必须与用户在 API 上收到的那句话逐字一致 ——
+	// 理由与 usagelog.go 里那一段完全相同,而这里是**同一次拦截**在扣到费时
+	// 走的另一条出口。只修其中一条的话,同一个站点会时而对得上、时而对不上,
+	// 而分水岭(这条规则配没配扣费)对用户完全不可见。
+	//
+	// 没拦的那些(纯扣费规则、影子)BlockedReason 恒空,照旧走规则的对外原因:
+	// 那时客户端根本没被告知任何拦截文案,借用一句会凭空捏造一个事实。
+	reason := rec.BlockedReason
+	if reason == "" {
+		reason = cr.R.PublicReason
+	}
 	if reason == "" {
 		reason = "内容违反使用策略"
 	}
@@ -282,22 +292,34 @@ func writeConsumeLog(c *gin.Context, info *relaycommon.RelayInfo, cr *compiledRu
 		other.SetAdmin("quota_saturation", res.Clamp)
 	}
 	other.MergePublic(map[string]any{
-		"violation_fee":       true,
-		"violation_fee_code":  violationErrorCode(),
-		"qy_violation_rec_no": rec.RecNo,
-		"qy_reason":           reason,
-		"fee_quota":           res.Charged,
-		"fee_quota_want":      res.Want,
-		"base_amount":         res.BaseUsd.String(),
-		"group_ratio":         res.GroupRatio.String(),
+		"violation_fee":      true,
+		"violation_fee_code": violationErrorCode(),
+		// violation_blocked 与 usagelog.go 写的那一行同名同义:这一次请求有没有
+		// 真的被拦下。两条路径(扣到费 / 没扣到费)在使用记录页必须能用**同一个**
+		// 判据区分"拦截"与"只罚款不拦",否则前端得写两套判断,而它们迟早会漂移。
+		"violation_blocked":     rec.Blocked,
+		"qy_violation_rec_no":   rec.RecNo,
+		"qy_reason":             reason,
+		"qy_violation_category": rec.CategoryPublicTitle,
+		"fee_quota":             res.Charged,
+		"fee_quota_want":        res.Want,
+		"base_amount":           res.BaseUsd.String(),
+		"group_ratio":           res.GroupRatio.String(),
 	})
+
+	// 拦下来的那一次要在标题上就说清楚"请求没发出去"。写成一律的「违规扣费」时,
+	// 用户在使用记录页看到的是一行扣了钱的调用,他会以为请求成功了、钱花在了模型上。
+	content := "违规扣费:" + reason
+	if rec.Blocked {
+		content = "请求被内容审核拦截并扣费:" + reason
+	}
 
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId:      channelId,
 		ModelName:      info.OriginModelName,
 		TokenName:      c.GetString("token_name"),
 		Quota:          int(res.Charged),
-		Content:        "违规扣费:" + reason,
+		Content:        content,
 		TokenId:        info.TokenId,
 		UseTimeSeconds: int(common.GetTimestamp() - info.StartTime.Unix()),
 		IsStream:       info.IsStream,
