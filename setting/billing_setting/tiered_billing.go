@@ -294,6 +294,7 @@ func smokeTestVectors() []billingexpr.TokenParams {
 			func(t *billingexpr.TokenParams) { t.CC = m; t.Len = m },
 			func(t *billingexpr.TokenParams) { t.CC1h = m; t.Len = m },
 			func(t *billingexpr.TokenParams) { t.Img = m },
+			func(t *billingexpr.TokenParams) { t.ImgCR = m; t.Len = m },
 			func(t *billingexpr.TokenParams) { t.ImgO = m },
 			func(t *billingexpr.TokenParams) { t.AI = m },
 			func(t *billingexpr.TokenParams) { t.AO = m },
@@ -304,9 +305,15 @@ func smokeTestVectors() []billingexpr.TokenParams {
 		}
 		// 全部子类同时拉满,兜住「单项都不为负、合起来为负」的交叉项。
 		vectors = append(vectors, billingexpr.TokenParams{
-			P: m, C: m, Len: m, CR: m, CC: m, CC1h: m, Img: m, ImgO: m, AI: m, AO: m,
+			P: m, C: m, Len: m, CR: m, CC: m, CC1h: m, Img: m, ImgCR: m, ImgO: m, AI: m, AO: m,
 		})
 	}
+	// 上游 f256e40bc 的三条形状:图片缓存拆分、音频输入输出、超大上下文只有图片缓存。
+	vectors = append(vectors,
+		billingexpr.TokenParams{P: 300, C: 100, Len: 1000, CR: 100, Img: 400, ImgCR: 200},
+		billingexpr.TokenParams{P: 800, C: 50, Len: 1000, AI: 200, AO: 50},
+		billingexpr.TokenParams{Len: math.MaxInt32, ImgCR: math.MaxInt32},
+	)
 	return vectors
 }
 
@@ -315,16 +322,17 @@ func smokeTestVectors() []billingexpr.TokenParams {
 // 键名与 billingexpr 求值时的 env 逐字一致(见 pkg/billingexpr/run.go)。
 // 少一个键的表现是:那个变量上的分档边界永远不会被烟测踩到。
 var smokeTestVarSetters = map[string]func(*billingexpr.TokenParams, float64){
-	"p":     func(t *billingexpr.TokenParams, v float64) { t.P = v },
-	"c":     func(t *billingexpr.TokenParams, v float64) { t.C = v },
-	"len":   func(t *billingexpr.TokenParams, v float64) { t.Len = v },
-	"cr":    func(t *billingexpr.TokenParams, v float64) { t.CR = v },
-	"cc":    func(t *billingexpr.TokenParams, v float64) { t.CC = v },
-	"cc1h":  func(t *billingexpr.TokenParams, v float64) { t.CC1h = v },
-	"img":   func(t *billingexpr.TokenParams, v float64) { t.Img = v },
-	"img_o": func(t *billingexpr.TokenParams, v float64) { t.ImgO = v },
-	"ai":    func(t *billingexpr.TokenParams, v float64) { t.AI = v },
-	"ao":    func(t *billingexpr.TokenParams, v float64) { t.AO = v },
+	"p":      func(t *billingexpr.TokenParams, v float64) { t.P = v },
+	"c":      func(t *billingexpr.TokenParams, v float64) { t.C = v },
+	"len":    func(t *billingexpr.TokenParams, v float64) { t.Len = v },
+	"cr":     func(t *billingexpr.TokenParams, v float64) { t.CR = v },
+	"cc":     func(t *billingexpr.TokenParams, v float64) { t.CC = v },
+	"cc1h":   func(t *billingexpr.TokenParams, v float64) { t.CC1h = v },
+	"img":    func(t *billingexpr.TokenParams, v float64) { t.Img = v },
+	"img_cr": func(t *billingexpr.TokenParams, v float64) { t.ImgCR = v },
+	"img_o":  func(t *billingexpr.TokenParams, v float64) { t.ImgO = v },
+	"ai":     func(t *billingexpr.TokenParams, v float64) { t.AI = v },
+	"ao":     func(t *billingexpr.TokenParams, v float64) { t.AO = v },
 }
 
 // exprNumberRe 抓表达式里的数字字面量。
