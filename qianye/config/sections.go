@@ -178,6 +178,11 @@ var moduleGates = []ModuleGate{
 		},
 	},
 	{
+		Module: "riskwatch", Section: "risk_watch", Key: "enabled",
+		Effect: "风控预警整个不注册:管理端页面 404、监听任务建不了、热路径上一条记录都不抓 —— " +
+			"而「这个账号上周到底在问什么」没有任何补抓路径,过去的请求不会再来一次",
+	},
+	{
 		Module: "groupmatrix", Section: "group_matrix", Key: "enabled",
 		// 关掉之后的结果在新口径下**恰好等于「所有用户分组都未设定范围」**,
 		// 也就是全部模型分组按兜底倍率可用 —— 那是一个合法的运营状态,不是故障。

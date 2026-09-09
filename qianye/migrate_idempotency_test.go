@@ -72,9 +72,16 @@ func TestExtensionAutoMigrateIsIdempotent(t *testing.T) {
 			// 只跑前者就等于让 qy_violation_ai_review 悄悄掉出这条防线 ——
 			// 而它恰恰是最新、字段最多、最可能带一条空转 DDL 的那张表。
 			// 合成一份跑正好也是**没配 log_database 的部署**的真实形态。
+			// 风控预警的表也一起数进来。它们在生产上住在单独配置的存储节点上
+			// (与台账库不同,那个库**没有**"不分家"这一档),所以这一次合并跑
+			// 不对应任何一种真实部署形态 —— 但这条判据量的是**每张表自己**
+			// 的性质(第二次 AutoMigrate 会不会重发 DDL),它与表住在哪个库无关。
+			// 不合进来的代价是最新、字段最多的两张表悄悄掉出这条防线。
 			tables := append(allTables(), allLogTables()...)
+			tables = append(tables, allWatchTables()...)
 			require.NotEmpty(t, tables)
 			require.NotEmpty(t, allLogTables(), "台账表清单不该是空的")
+			require.NotEmpty(t, allWatchTables(), "风控预警表清单不该是空的")
 			require.NoError(t, gdb.AutoMigrate(tables...), "首次迁移必须成功")
 
 			stmts = stmts[:0]
@@ -207,6 +214,101 @@ func TestLogDatabaseMigratesOnItsOwnHandle(t *testing.T) {
 				qydb.MissingTables())
 		})
 	}
+}
+
+// TestRiskWatchMigratesOnItsOwnHandle 是风控预警存储节点的同一条防线。
+//
+// 与台账库那条**不能**合并:两者的零值方向相反(台账库留空 = 跟着主库走,
+// 存储节点留空 = 整个功能不注册),而这条测试最要紧的一条恰恰卡在那个差别上 ——
+// 用错句柄时监听记录会默默写进主扩展库,而那正是这个功能被单独拆出去要避免的事。
+//
+// 三条断言与台账库那条同形,第三条尤其要紧:MySQL 的 GET_LOCK 是**服务器实例级**
+// 的,三把迁移锁同名会让其中两个库在"同一台 MySQL 上三个 schema"这种最常见的
+// 部署里互相把对方挡进降级态,而降级态下一张表都建不出来。
+//
+// 需要两个**一次性**库的 DSN:
+//
+//	QY_TEST_MYSQL_MIGRATE_DSN + QY_TEST_MYSQL_WATCH_MIGRATE_DSN
+//	QY_TEST_PG_MIGRATE_DSN    + QY_TEST_PG_WATCH_MIGRATE_DSN
+//
+// 缺任何一个就干净 SKIP。
+func TestRiskWatchMigratesOnItsOwnHandle(t *testing.T) {
+	cases := []struct{ name, mainEnv, watchEnv string }{
+		{"mysql", "QY_TEST_MYSQL_MIGRATE_DSN", "QY_TEST_MYSQL_WATCH_MIGRATE_DSN"},
+		{"postgres", "QY_TEST_PG_MIGRATE_DSN", "QY_TEST_PG_WATCH_MIGRATE_DSN"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mainDSN, watchDSN := os.Getenv(tc.mainEnv), os.Getenv(tc.watchEnv)
+			if mainDSN == "" || watchDSN == "" {
+				t.Skipf("未同时设置 %s 与 %s,跳过", tc.mainEnv, tc.watchEnv)
+			}
+
+			// 走真实的配置加载路径:validateRiskWatch(enabled 必须配 dsn、
+			// 方言必须受支持)也是这条接线的一部分,手搓 Config 等于测了一条
+			// 生产里不存在的路径。
+			useRiskWatchConfig(t, mainDSN, watchDSN)
+
+			prevMaster := common.IsMasterNode
+			common.IsMasterNode = true
+			t.Cleanup(func() { common.IsMasterNode = prevMaster })
+
+			require.NoError(t, qydb.Init(config.Get().Database))
+			require.NoError(t, qydb.InitWatch(config.Get().RiskWatch.Database))
+			t.Cleanup(func() { _ = qydb.Close() })
+			require.True(t, qydb.WatchConnected(), "配了 dsn 就必须连上")
+
+			mainTables, watchTables := allTables(), allWatchTables()
+			require.NotEmpty(t, watchTables)
+
+			// 先把监听表从主库里删干净:同一个一次性库很可能刚被
+			// TestExtensionAutoMigrateIsIdempotent 用过,而那条测试故意把三份
+			// 清单合起来迁。不删的话下面那条"不该出现在主库里"的断言测的是
+			// 历史残留,而不是这一轮 Migrate 的行为。
+			for _, model := range watchTables {
+				require.NoError(t, qydb.Get().Migrator().DropTable(model))
+			}
+
+			require.NoError(t, qydb.Migrate(mainTables...))
+			require.NoError(t, qydb.MigrateWatch(watchTables...))
+
+			// ① 监听表在存储节点里,不在主库里。
+			for _, model := range watchTables {
+				name := tableNameFor(t, qydb.Watch(), model)
+				assert.Truef(t, qydb.Watch().Migrator().HasTable(name),
+					"%s 必须建在风控预警存储节点里", name)
+				assert.Falsef(t, qydb.Get().Migrator().HasTable(name),
+					"%s 不该出现在主库里 —— 出现了就说明两份清单串了,"+
+						"监听记录会写进佣金账本所在的那个库", name)
+			}
+
+			// ② 主库表不会跑到存储节点。抽一张就够:串清单是整体行为。
+			mainName := tableNameFor(t, qydb.Get(), mainTables[0])
+			assert.True(t, qydb.Get().Migrator().HasTable(mainName))
+			assert.Falsef(t, qydb.Watch().Migrator().HasTable(mainName),
+				"%s 不该出现在风控预警存储节点里", mainName)
+
+			// ③ 第二次迁移零 DDL。锁名撞了的话这一步会静默退化成降级分支,
+			//    表面上也"没有 DDL" —— 所以 ① 的建表断言必须排在它前面。
+			require.NoError(t, qydb.MigrateWatch(watchTables...), "第二次存储节点迁移必须成功")
+			assert.False(t, qydb.SchemaIncomplete(),
+				"迁移跑完还处于缺表降级态,说明存储节点这一轮根本没建成表:%v",
+				qydb.MissingTables())
+		})
+	}
+}
+
+// useRiskWatchConfig 写一份带 risk_watch 段的临时配置并加载它。
+func useRiskWatchConfig(t *testing.T, mainDSN, watchDSN string) {
+	t.Helper()
+	yaml := "enabled: true\n" +
+		"database:\n  dsn: " + strconv.Quote(mainDSN) + "\n" +
+		"risk_watch:\n  enabled: true\n  database:\n    dsn: " + strconv.Quote(watchDSN) + "\n"
+	path := filepath.Join(t.TempDir(), "qianye.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(yaml), 0o600))
+	t.Setenv(config.EnvConfigPath, path)
+	require.NoError(t, config.Load())
+	require.True(t, config.Get().RiskWatch.On())
 }
 
 // useTwoDatabaseConfig 写一份带 log_database 段的临时配置并加载它。

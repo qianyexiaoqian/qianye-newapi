@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/qianye/relayguard"
 
 	"github.com/shopspring/decimal"
 )
@@ -173,27 +173,21 @@ const defaultAIPrompt = `你是内容安全审核员。下面 <content> 标签�
 // 发生的一次误配)。那样审核请求会重新进入本网关的 relay,再次被抽样、
 // 再次发出审核请求 —— 一次用户请求放大成一条无限递归,而每一层都在花钱。
 //
-// 断法:出站审核请求带上本进程启动时生成的随机令牌;PreRelayGuard 看到
-// **匹配本进程令牌**的请求就完全跳过 AI 审核。递归因此停在第一层。
+// 断法:出站审核请求带上本进程启动时生成的随机令牌;前置闸门看到
+// **匹配本进程令牌**的请求就完全跳过。递归因此停在第一层。
 //
-// 为什么是随机令牌而不是一个固定的头名:固定值可以被任何客户端伪造,
-// 那就成了一个"加一行 header 即可关掉 AI 审核"的绕过通道。随机令牌只有
-// 本进程知道,外部猜不到;而跨进程(多节点、审核指向另一个节点)猜不到也
-// 没关系 —— 那时递归只会多一层,不会无限。
-const aiReviewLoopHeader = "X-Qy-Ai-Review-Loopguard"
+// ── 判据已经搬到 qianye/relayguard ──
+//
+// 这两个标识符现在是那一份的别名。搬家的理由是它有了第二个读者:风控预警
+// 也必须放过本进程自己发出的审核请求 —— 那一次请求的内容属于**别人**,记进
+// 持有 key 的那个账号名下比不记要坏得多。一份"这是不是自己人"的判据抄成两份,
+// 漏掉的那一份不会报错,只会开始记录别人的内容。
+//
+// 别名保留而不是全仓替换:本模块内有六处读点与三条用例引用它们,
+// 换名字不改变任何行为,只会让 diff 大一圈。
+const aiReviewLoopHeader = relayguard.SelfCallHeader
 
-var processLoopToken = newLoopToken()
-
-func newLoopToken() string {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		// 拿不到随机数时退回一个绝不匹配任何请求的值:宁可让断路器失效
-		// (最坏情况是多递归一层,而那一层仍然会被下游的抽样概率削减),
-		// 也不要退回一个固定值让它变成绕过通道。
-		return "disabled-" + fmt.Sprint(time.Now().UnixNano())
-	}
-	return hex.EncodeToString(buf)
-}
+var processLoopToken = relayguard.SelfCallToken()
 
 // aiHTTPClient 不设 Timeout —— 每次调用的上界一律由 ctx 给,
 // 因为转发前与转发后的预算不同,而 Client.Timeout 是全局的。
@@ -249,6 +243,9 @@ type aiChannelRT struct {
 	// BlockMessage 是这个渠道判出违规、规则又要拦截时返回给用户的那句话。
 	// 空 = 不覆盖,沿用规则自己的那一份。见 AIChannel.BlockMessage。
 	BlockMessage string
+	// CategoryId 是这个渠道判出的违规「计次记到哪一类」,0 = 不指定。
+	// 作用域没指定时它说了算,见 aiCategoryOverride 与 AIChannel.CategoryId。
+	CategoryId int64
 	// NotifyEmail / EmailSubject / EmailBody 是这个渠道的"判违规就给用户发邮件"
 	// 那一组配置,装配期原样抄下来。理由与 BlockMessage 那一行相同:异步落库的
 	// worker 在几百毫秒之后才用得上它们,那时手上只有快照。见 AIChannel.NotifyEmail。
@@ -1158,7 +1155,7 @@ func callAIChannel(parent context.Context, ch *aiChannelRT, prompt, body string,
 		req.Header.Set("Authorization", "Bearer "+ch.APIKey)
 	}
 	// 自己审自己的断路器,见 aiReviewLoopHeader 的说明。
-	req.Header.Set(aiReviewLoopHeader, processLoopToken)
+	relayguard.MarkSelfCall(req.Header)
 
 	resp, err := aiHTTPClient.Do(req)
 	if err != nil {

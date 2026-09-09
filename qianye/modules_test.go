@@ -77,20 +77,77 @@ func TestNoRegisteredModuleWithoutDirectory(t *testing.T) {
 // 是一次编辑就能做到的事,靠 review 记住不可靠(usergroup 被漏注册过两次)。
 func TestLogTablesAndMainTablesAreDisjoint(t *testing.T) {
 	for _, m := range module.All() {
-		lt, ok := m.(module.LogTabler)
-		if !ok {
-			continue
-		}
 		main := make(map[string]bool)
 		for _, tb := range m.Tables() {
 			main[fmt.Sprintf("%T", tb)] = true
 		}
-		for _, tb := range lt.LogTables() {
+		if lt, ok := m.(module.LogTabler); ok {
+			for _, tb := range lt.LogTables() {
+				name := fmt.Sprintf("%T", tb)
+				assert.Falsef(t, main[name],
+					"模块 %s 把 %s 同时登记进了 Tables() 与 LogTables() —— "+
+						"配了 log_database 的部署会在两个库里各建一张,写入与读取会落到不同的库上",
+					m.Name(), name)
+			}
+		}
+		// 风控预警存储节点那一份更硬:它**没有**"没配就跟着主库走"这一档
+		// (见 module.WatchTabler),所以同一个模型出现在两边不是"某些部署上
+		// 会分家",而是每一个部署都会在两个库里各建一张。
+		wt, ok := m.(module.WatchTabler)
+		if !ok {
+			continue
+		}
+		logged := make(map[string]bool)
+		if lt, ok := m.(module.LogTabler); ok {
+			for _, tb := range lt.LogTables() {
+				logged[fmt.Sprintf("%T", tb)] = true
+			}
+		}
+		for _, tb := range wt.WatchTables() {
 			name := fmt.Sprintf("%T", tb)
-			assert.Falsef(t, main[name],
-				"模块 %s 把 %s 同时登记进了 Tables() 与 LogTables() —— "+
-					"配了 log_database 的部署会在两个库里各建一张,写入与读取会落到不同的库上",
+			assert.Falsef(t, main[name] || logged[name],
+				"模块 %s 把 %s 同时登记进了 WatchTables() 与 Tables()/LogTables() —— "+
+					"两个库里会各建一张同名表,写入只落其中一个,而读取落哪个取决于"+
+					"代码里那一行用的是 db.Get()/db.Log() 还是 db.Watch()",
 				m.Name(), name)
+		}
+	}
+}
+
+// 风控预警的表不能用主库或台账库的句柄去查。
+//
+// 与 TestLogTablesAreNotQueriedThroughTheMainHandle 是同一条防线的另一半,
+// 但失败形状更彻底:台账表用错句柄只在配了 log_database 的部署上读到空表,
+// 而这里存储节点是**必配**的,用错句柄的那一行在**每一个**部署上都读空 ——
+// 或者更糟,把监听记录写进主扩展库,而那正是这个功能被单独拆出去要避免的事。
+func TestWatchTablesAreNotQueriedThroughOtherHandles(t *testing.T) {
+	for _, m := range module.All() {
+		wt, ok := m.(module.WatchTabler)
+		if !ok || len(wt.WatchTables()) == 0 {
+			continue
+		}
+		files, err := filepath.Glob(filepath.Join("modules", m.Name(), "*.go"))
+		require.NoError(t, err)
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			raw, err := os.ReadFile(f)
+			require.NoError(t, err)
+			for i, line := range strings.Split(string(raw), "\n") {
+				if !strings.Contains(line, "db.Get()") && !strings.Contains(line, "db.Log()") {
+					continue
+				}
+				for _, tb := range wt.WatchTables() {
+					short := fmt.Sprintf("%T", tb)
+					if i := strings.LastIndex(short, "."); i >= 0 {
+						short = short[i+1:]
+					}
+					assert.NotContainsf(t, line, short+"{}",
+						"%s:%d 用主库/台账库句柄查风控预警表 %s —— 请改用 db.Watch()",
+						f, i+1, short)
+				}
+			}
 		}
 	}
 }

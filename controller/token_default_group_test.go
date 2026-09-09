@@ -157,6 +157,40 @@ func TestGetUserGroupOptionsPaging(t *testing.T) {
 	assert.Equal(t, 5, beyond.Total)
 }
 
+// TestGetUserGroupOptionsSearch 守「先筛后切」以及大小写折叠。
+//
+// 先切后筛得到的是"第 1 页里恰好命中的那几行" —— 一个每翻一页就换一批结果、
+// 且永远搜不到第 2 页之后任何东西的搜索框,而它看起来完全正常。
+func TestGetUserGroupOptionsSearch(t *testing.T) {
+	setupUserGroupOptionsDB(t)
+	for _, group := range []string{"a-vip", "b-plain", "c-plain", "d-vip", "e-vip"} {
+		require.NoError(t, model.DB.Create(&model.User{
+			Username: group + "-user", Password: "x", Group: group, AffCode: group,
+		}).Error)
+	}
+
+	p1 := callUserGroupOptions(t, "?keyword=vip&p=1&page_size=2")
+	assert.Equal(t, []string{"a-vip", "d-vip"}, p1.Data)
+	assert.Equal(t, 3, p1.Total, "total 是筛完的条数,不是全站条数")
+
+	// 命中的第三档在整表第 5 位:先切后筛在这里会返回空。
+	p2 := callUserGroupOptions(t, "?keyword=vip&p=2&page_size=2")
+	assert.Equal(t, []string{"e-vip"}, p2.Data)
+
+	// 大小写折叠:运营在搜索框里不会去区分。
+	assert.Equal(t, []string{"a-vip", "d-vip", "e-vip"},
+		callUserGroupOptions(t, "?keyword=VIP&p=1&page_size=10").Data)
+
+	// 不翻页时同样筛,而且**不下发**总数(与不带任何参数时一致)。
+	filtered := callUserGroupOptions(t, "?keyword=plain")
+	assert.Equal(t, []string{"b-plain", "c-plain"}, filtered.Data)
+	assert.Equal(t, 0, filtered.Total)
+
+	// 空关键词 = 不筛选。判错的话空搜索框会让整张表变成零行,
+	// 而那与"这张表是空的"长得一模一样。
+	assert.Len(t, callUserGroupOptions(t, "?keyword=%20%20").Data, 5)
+}
+
 type userGroupOptionsBody struct {
 	Success  bool     `json:"success"`
 	Data     []string `json:"data"`

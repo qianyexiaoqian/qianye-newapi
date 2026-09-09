@@ -204,6 +204,32 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   // 会让管理员以为自己什么都不用做。
   qy_apiaddr_order_stale: 'qy_err_aa_order_stale',
 
+  // ── 风控预警（qianye/modules/riskwatch/errors.go）──
+  //
+  // 不登记的话这些 code 会按 HTTP 状态码归类：409 → `qy_err_conflict`
+  //（"该申请已被其他人处理"，与监听任务毫不相干）、400 → "请求参数不合法"。
+  // 而 `qy_rw_scope_empty` 那一条尤其不能塌：它要说的是"三项都不填等于全站
+  // 监听，会在很短时间内写满存储节点"，塌成"参数不合法"之后管理员只会随手
+  // 补一个字段再提交。
+  qy_rw_invalid_param: 'qy_err_rw_invalid_param',
+  qy_rw_name_required: 'qy_err_rw_name_required',
+  qy_rw_name_too_long: 'qy_err_rw_name_too_long',
+  qy_rw_note_too_long: 'qy_err_rw_note_too_long',
+  qy_rw_scope_empty: 'qy_err_rw_scope_empty',
+  qy_rw_sample_range: 'qy_err_rw_sample_range',
+  qy_rw_max_records_range: 'qy_err_rw_max_records_range',
+  qy_rw_window_mode: 'qy_err_rw_window_mode',
+  qy_rw_window_range: 'qy_err_rw_window_range',
+  qy_rw_countdown_range: 'qy_err_rw_countdown_range',
+  qy_rw_retention_range: 'qy_err_rw_retention_range',
+  qy_rw_target_user_not_found: 'qy_err_rw_target_user_not_found',
+  qy_rw_too_many_active: 'qy_err_rw_too_many_active',
+  qy_rw_not_found: 'qy_err_rw_not_found',
+  qy_rw_capture_not_found: 'qy_err_rw_capture_not_found',
+  qy_rw_conflict: 'qy_err_rw_conflict',
+  qy_rw_already_full: 'qy_err_rw_already_full',
+  qy_rw_not_restartable: 'qy_err_rw_not_restartable',
+
   // ── 推广佣金管理端（qianye/modules/commission，D-16 起记星屑）──
   // 冲正与手工增减那几组 code 随账本一起回来。`qy_withdrawn_*`（已提现额度迁移）
   // **不**回来：`balances/withdrawn` 端点没有恢复，那一列现在叫「已入账」且只由

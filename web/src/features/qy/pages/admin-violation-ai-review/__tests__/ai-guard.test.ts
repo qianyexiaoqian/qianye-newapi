@@ -60,6 +60,7 @@ const guardChannel: QyAiChannel = {
   prompt: '',
   prompt_source: 'default',
   block_message: '',
+  category_id: 41,
   risk_name: '',
   notify_email: false,
   email_subject: '',
@@ -338,4 +339,39 @@ describe('接口键与后端同源', () => {
       )
     })
   }
+})
+
+/**
+ * 渠道上的「计次记为」:这个渠道判出违规时,违规计次加到哪个违规类型上。
+ *
+ * 它挡的是护栏协议这条路的静默失效:护栏模型的类别是训练时钉死的,本站没有
+ * 同名标识的那几类会落进兜底「未分类」,而兜底类型的阈值出厂是 0 —— 判了、
+ * 记了,却一次都不推进封号线。这一格是"不想逐个建类型"时的另一条路。
+ */
+describe('渠道的「计次记为」', () => {
+  test('不随协议被过滤掉', () => {
+    // 与「有争议」档和两张类别清单刻意不同:那几格只在自己那条协议上有意义,
+    // 而这一格对每一种协议都生效。跟着协议一起清空的表现是运营在护栏渠道上
+    // 选了类型、保存后变回「不指定」,而症状是那个渠道判出的违规一次都不计次。
+    const body = qyAiDraftToInput(qyAiChannelToDraft(guardChannel))
+    assert.equal(body.protocol, 'qwen3guard')
+    assert.equal(body.category_id, 41)
+  })
+
+  test('新建渠道默认「不指定」', () => {
+    // 0 是零值档,含义是"按规则自己绑的类型记"。新建表单替运营挑一个类型,
+    // 会改掉这个渠道全部命中的计数落点,而界面上看不出是谁挑的。
+    assert.equal(qyAiChannelToDraft().category_id, 0)
+  })
+
+  test('后端没下发这个键时落回不指定', () => {
+    // 一次接口回滚 / 一个旧版本的后端。落成 undefined 会让下拉框在"未选择"与
+    // "不指定"之间闪一帧,而提交上去的 undefined 会被 JSON 整键丢掉。
+    const legacy = { ...guardChannel } as Record<string, unknown>
+    delete legacy.category_id
+    assert.equal(
+      qyAiChannelToDraft(legacy as unknown as QyAiChannel).category_id,
+      0
+    )
+  })
 })

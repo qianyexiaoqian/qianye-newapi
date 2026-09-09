@@ -190,6 +190,12 @@ export type UserGroupOptionsPageParams = {
   /** 1 起。 */
   p: number
   page_size: number
+  /**
+   * 空串 = 不筛选。服务端按分组名匹配，大小写不敏感。
+   *
+   * 这个端点只有名字可搜：它的事实源是 `users.group`，那张表没有备注这一列。
+   */
+  keyword?: string
 }
 
 /**

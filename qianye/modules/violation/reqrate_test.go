@@ -194,7 +194,7 @@ func TestPreRelayGuardDrivesRequestRate(t *testing.T) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 		info := &relaycommon.RelayInfo{UserId: 4242, IsStream: stream}
-		return PreRelayGuard(c, info, nil, nil)
+		return PreRelayGuard(c, info, nil)
 	}
 
 	// 前两条非流式请求只是把计数推到 2,还没到阈值。

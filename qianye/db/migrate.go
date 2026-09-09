@@ -37,6 +37,10 @@ const migrateLockName = "qy_schema_migrate"
 // 复查才自愈。两把锁各管各的库,这个中间态就不存在了。
 const migrateLockNameLog = "qy_schema_migrate_log"
 
+// migrateLockNameWatch 是风控预警存储节点那一把迁移锁。
+// 与上面那条同一条理由:三把锁必须各不同名。
+const migrateLockNameWatch = "qy_schema_migrate_watch"
+
 // migrateTarget 描述"这一轮迁移的是哪一个库"。
 //
 // 它存在的唯一理由是台账库(见 config.Config.LogDatabase):迁移的每一步 ——
@@ -69,6 +73,13 @@ func logMigrateTarget() migrateTarget {
 	return migrateTarget{
 		label: "台账库", cfg: config.Get().LogDatabase,
 		lockName: migrateLockNameLog, handle: LogHandle, schema: &logSchema,
+	}
+}
+
+func watchMigrateTarget() migrateTarget {
+	return migrateTarget{
+		label: "风控预警库", cfg: config.Get().RiskWatch.Database,
+		lockName: migrateLockNameWatch, handle: Watch, schema: &watchSchema,
 	}
 }
 
@@ -314,6 +325,14 @@ func Migrate(models ...any) error {
 // 为真时调它 —— 台账库没分家时那些表跟着主库一起迁,不该走这条路。
 func MigrateLog(models ...any) error {
 	return migrateOn(logMigrateTarget(), models)
+}
+
+// MigrateWatch 对风控预警存储节点做同一件事。
+//
+// 契约同上。与台账库的区别只有一条:这个库没有"不分家"那一档 —— 没配 dsn 时
+// 风控预警模块整个不注册,连模型清单都是空的,调用方压根不会走到这里。
+func MigrateWatch(models ...any) error {
+	return migrateOn(watchMigrateTarget(), models)
 }
 
 func migrateOn(t migrateTarget, models []any) error {
@@ -574,9 +593,9 @@ type schemaState struct {
 	once    sync.Once
 }
 
-// 主库与台账库各记各的。合成一份的话,台账库缺一张表会让主库也被判成降级,
-// 而 /admin/health 上那份清单再也分不出是谁缺 —— 两个库的处置人常常不是同一个。
-var mainSchema, logSchema schemaState
+// 三个库各记各的。合成一份的话,台账库缺一张表会让主库也被判成降级,
+// 而 /admin/health 上那份清单再也分不出是谁缺 —— 几个库的处置人常常不是同一个。
+var mainSchema, logSchema, watchSchema schemaState
 
 // schemaRecheckInterval 是降级态下的复查周期。
 // 声明成 var 只为让回归测试能把它调小,生产路径永远是这个默认值。
@@ -587,13 +606,14 @@ var schemaRecheckInterval = time.Minute
 // 两个库取并集是刻意的:调用方问的是"扩展的表齐了吗",而台账库缺表同样会让
 // 依赖它的功能(AI 审核明细)不可用。要区分是谁缺,看 MissingTables 的表名。
 func SchemaIncomplete() bool {
-	return mainSchema.missing.Load() != nil || logSchema.missing.Load() != nil
+	return mainSchema.missing.Load() != nil || logSchema.missing.Load() != nil ||
+		watchSchema.missing.Load() != nil
 }
 
 // MissingTables 返回确认缺失的表名副本(schema 完整时为 nil),两个库合并。
 func MissingTables() []string {
 	var out []string
-	for _, st := range []*schemaState{&mainSchema, &logSchema} {
+	for _, st := range []*schemaState{&mainSchema, &logSchema, &watchSchema} {
 		if p := st.missing.Load(); p != nil {
 			out = append(out, *p...)
 		}
@@ -617,6 +637,12 @@ func StartSchemaRecheck(models ...any) {
 // 而它缺表的症状比主库更隐蔽:审核日志一直是空的,页面不报任何错。
 func StartSchemaRecheckLog(models ...any) {
 	startSchemaRecheck(logMigrateTarget(), models)
+}
+
+// StartSchemaRecheckWatch 是风控预警存储节点那一份。它缺表的症状最隐蔽:
+// 监听任务建得出来(那张表在)、热路径照常抽样,只有记录一条都落不下去。
+func StartSchemaRecheckWatch(models ...any) {
+	startSchemaRecheck(watchMigrateTarget(), models)
 }
 
 func startSchemaRecheck(t migrateTarget, models []any) {

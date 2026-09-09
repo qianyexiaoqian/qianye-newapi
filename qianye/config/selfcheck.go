@@ -253,6 +253,40 @@ var fieldConsumers = map[string]consumer{
 	"violation.ai_review_keys_retired": {"qianye/modules/violation/aireview_crypto.go",
 		"历史密钥,解密轮换前写入的密文"},
 
+	// ─────────────────────────── risk_watch ───────────────────────────
+	//
+	// database.* 那一族与 log_database.* 同一条理由:消费点是 db.go 的
+	// openDatabase 与 migrate.go 的 autoMigrate,它们只认传进来的 config.Database,
+	// 不关心它来自哪一段。写 watchdb.go 是错的 —— 那个文件一格都没有自己读。
+	"risk_watch.enabled": {"qianye/modules/riskwatch/module.go",
+		"风控预警总开关:false 时不建连、不建表、不注册路由,热路径上一次判断都不做"},
+	"risk_watch.database.dsn": {"qianye/db/db.go",
+		"监听记录存储节点的连接串,openDatabase 的输入。**必填**:enabled 为 true 而它为空一律拒绝启动"},
+	"risk_watch.database.max_idle_conns":             {"qianye/db/db.go", "存储节点 sql.DB.SetMaxIdleConns"},
+	"risk_watch.database.max_open_conns":             {"qianye/db/db.go", "存储节点 sql.DB.SetMaxOpenConns"},
+	"risk_watch.database.conn_max_lifetime_seconds":  {"qianye/db/db.go", "存储节点 sql.DB.SetConnMaxLifetime"},
+	"risk_watch.database.conn_max_idle_time_seconds": {"qianye/db/db.go", "存储节点 sql.DB.SetConnMaxIdleTime"},
+	"risk_watch.database.connect_timeout_seconds":    {"qianye/db/db.go", "写进存储节点 DSN 的 timeout="},
+	"risk_watch.database.read_timeout_seconds":       {"qianye/db/db.go", "写进存储节点 DSN 的 readTimeout="},
+	"risk_watch.database.write_timeout_seconds":      {"qianye/db/db.go", "写进存储节点 DSN 的 writeTimeout="},
+	"risk_watch.database.slow_threshold_ms":          {"qianye/db/db.go", "存储节点 GORM 慢查询日志阈值"},
+	"risk_watch.database.log_level":                  {"qianye/db/db.go", "存储节点 GORM 日志级别"},
+	"risk_watch.database.auto_migrate":               {"qianye/db/migrate.go", "false 时跳过存储节点 AutoMigrate,由 DBA 手工建表"},
+	"risk_watch.snapshot_seconds": {"qianye/modules/riskwatch/snapshot.go",
+		"监听任务内存快照的刷新周期,决定新建/停止任务多久后在热路径上生效"},
+	"risk_watch.max_active_tasks": {"qianye/modules/riskwatch/api_admin.go",
+		"同时运行的监听任务数上限,0 = 不限制。超出时新建/启动接口拒绝"},
+	"risk_watch.capture_max_chars": {"qianye/modules/riskwatch/capture.go",
+		"单条记录留存的上下文字符上限(按 rune),超出掐头去尾保留"},
+	"risk_watch.retention_days": {"qianye/modules/riskwatch/snapshot.go",
+		"任务没单独指定保留期时的默认天数,0 = 永久保留;快照在这里把它折算成每个任务最终生效的天数"},
+	"risk_watch.max_retention_days": {"qianye/modules/riskwatch/api_admin.go",
+		"任务能配的保留天数上界,0 = 不设上界"},
+	"risk_watch.gc_interval_minutes": {"qianye/modules/riskwatch/module.go",
+		"过期记录清理任务的租约周期"},
+	"risk_watch.gc_batch_size": {"qianye/modules/riskwatch/gc.go",
+		"每轮清理删除的行数上限,分批是为了不在这个正在被热路径写入的库上攒出巨大的 undo / 死元组"},
+
 	// ─────────────────────── group_pricing(已下线)───────────────────────
 	//
 	// 整段只剩一个 map 占位。登记它不是为了描述一个功能,而是为了让这条对账

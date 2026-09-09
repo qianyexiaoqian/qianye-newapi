@@ -124,7 +124,7 @@ func aiPreReview(c *gin.Context, info *relaycommon.RelayInfo, snap *snapshot, in
 	// (见 reviewLogContent),所以这一步必须排在 runAIReview 之后。
 	content, contentChars := reviewLogContent(snap.ai, text, out.Violated)
 
-	v := matchAIVerdict(snap.promptRules, in, out, sc)
+	v := matchAIVerdict(snap.ai, snap.promptRules, in, out, sc)
 	if v == nil || v.Rule == nil {
 		noteScan(false)
 		// 没命中也要落审核明细:抽样跑了、钱花了,而这是唯一的痕迹。
@@ -172,6 +172,32 @@ func aiChannelBlockMessage(rt *aiRuntime, channelId int64) string {
 	return ""
 }
 
+// aiCategoryOverride 给出这一次命中「计次记到哪一类」的类型 id,0 = 两处都没指定。
+//
+// 三个候选按 **作用域 > 渠道 > 规则** 取,规则那一档由 newRecord 自己兜底
+// (这里返回 0 就是它)。为什么是这个顺序:
+//
+//   - 作用域那一格写着「这一档的命中**一律**记为」,而"一律"没有第二种读法。
+//     它同时是更窄的选择器(一组分组 + 一组模型),而同一个渠道会被多档作用域用到。
+//   - 渠道压过规则,与拦截文案、通知邮件同一条理由:渠道是更靠近"这一次是谁判的"
+//     那一端的信息,而一条 ai_review 规则会被分发到协议、类别体系都不同的多个渠道。
+//   - 模型自己回的 category 一档都不参与。它逐次调用波动,而类型计数是封号判据的
+//     一条线 —— 挂在一个不可复现的值上,"这个用户在这一类上第几次"就没有答案了。
+//     它仍然完整落在 AIReview.Category / RawCategory 上,也仍然是规则类型白名单的
+//     唯一判据:模型说了什么决定**命不命中**,运营配了什么决定**记成哪一类**。
+//
+// 渠道在快照里找不到(刚被停用、删除,或这一轮密钥解不开)时返回 0 —— 与这一列
+// 存在之前逐字节一致,而不是拿一个猜来的类型去推封号线。
+func aiCategoryOverride(rt *aiRuntime, channelId int64, sc *aiScopeRT) int64 {
+	if id := scopeCategoryId(sc); id > 0 {
+		return id
+	}
+	if ch := rt.channelById(channelId); ch != nil {
+		return ch.CategoryId
+	}
+	return 0
+}
+
 // violationBlockError 构造返回给客户端的拦截错误。
 //
 // 提成函数是因为本地规则与 AI 审核两条路径都要构造它,而其中的两个
@@ -215,14 +241,14 @@ func clientBlockMessage(cr *compiledRule, override string) string {
 // 按优先级取第一条 —— 管理端试跑与线上判据必须逐字节相同,而"作用域"这一半
 // 最容易在第二份实现里被漏掉。
 //
-// # 作用域指定的类型只影响"记成哪一类",绝不影响"命中不命中"
+// # 指定的类型只影响"记成哪一类",绝不影响"命中不命中"
 //
-// sc.CategoryId 落在 verdict.CategoryOverride 上,由 newRecord 消费。它**不**
-// 参与 matchAIRule 的类型白名单判定:那张白名单问的是"模型说了什么",而覆盖
-// 问的是"我们怎么归档"。混在一起的后果是一条作用域指定了类型 X 之后,
-// 全站所有白名单为 X 的规则会突然命中这一档里的**每一次**违规判定 ——
+// 作用域与渠道上那两格落在 verdict.CategoryOverride 上(取舍见 aiCategoryOverride),
+// 由 newRecord 消费。它们**不**参与 matchAIRule 的类型白名单判定:那张白名单问的是
+// "模型说了什么",而覆盖问的是"我们怎么归档"。混在一起的后果是一条作用域指定了
+// 类型 X 之后,全站所有白名单为 X 的规则会突然命中这一档里的**每一次**违规判定 ——
 // 一次静默的、成数量级的判据放宽,而界面上什么都没变。
-func matchAIVerdict(rules []*compiledRule, in scanInput, out *aiOutcome, sc *aiScopeRT) *verdict {
+func matchAIVerdict(rt *aiRuntime, rules []*compiledRule, in scanInput, out *aiOutcome, sc *aiScopeRT) *verdict {
 	if out == nil || !out.decided() {
 		return nil
 	}
@@ -236,7 +262,7 @@ func matchAIVerdict(rules []*compiledRule, in scanInput, out *aiOutcome, sc *aiS
 		}
 		return &verdict{
 			Rule: cr, Terms: terms, Snippet: out.Reason,
-			CategoryOverride: scopeCategoryId(sc),
+			CategoryOverride: aiCategoryOverride(rt, out.ChannelId, sc),
 		}
 	}
 	return nil
@@ -279,7 +305,7 @@ func runAIAsyncReview(ctx context.Context, gdb *gorm.DB, rt *aiRuntime, sc *aiSc
 		out = runAIReview(ctx, rt, sc, text, rt.AsyncTimeoutMs)
 	}
 	content, contentChars := reviewLogContent(rt, text, out != nil && out.Violated)
-	v := matchAIVerdict(rules, in, out, sc)
+	v := matchAIVerdict(rt, rules, in, out, sc)
 	if v == nil || v.Rule == nil {
 		return persistAIReviewCtx(ctx, logDB(gdb), newAIReviewRow(rc, PhasePostAsync, out, 0, 0, content, contentChars))
 	}

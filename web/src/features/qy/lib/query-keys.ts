@@ -363,6 +363,22 @@ export const qyKeys = {
   // 挂在列表 key 下会让任何一次筛选变更都把已经取回的内容一起作废。
   adminViolationAiLogDetail: (id: number) =>
     [...qyKeys.all, 'admin', 'violation', 'ai-review', 'logs', id] as const,
+
+  // ── 风控预警(可疑用户监听取证)──
+  //
+  // 与 violation 那一族分开一整段,而不是挂在它下面:两者住在**不同的数据库**上
+  // (监听记录在单独配置的存储节点),失效范围也从来不重合 —— 建一个监听任务
+  // 不该把违规规则列表一起冲掉。
+  adminRiskWatchTasks: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'risk-watch', 'tasks', params] as const,
+  adminRiskWatchCaptures: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'risk-watch', 'captures', params] as const,
+  // 详情按 id 单独缓存:它比列表行多一整段上下文正文(最长几千字)。
+  // 挂在列表 key 下会让任何一次筛选变更都把已经取回的正文一起作废。
+  adminRiskWatchCapture: (id: number) =>
+    [...qyKeys.all, 'admin', 'risk-watch', 'captures', id] as const,
+  adminRiskWatchStats: () =>
+    [...qyKeys.all, 'admin', 'risk-watch', 'stats'] as const,
   // 影响面预览带参数：阈值/窗口/动作任意一项变了，那个数字就必须重算。
   // 不把参数放进 key 的话，管理员改完阈值看到的仍是上一次的数 —— 而这个数
   // 正是他决定要不要按下保存的唯一依据。
@@ -505,22 +521,25 @@ export const qyKeys = {
 
   adminGroupMatrix: () => [...qyKeys.all, 'admin', 'group-matrix'] as const,
   /**
-   * 矩阵本体。**按行轴窗口分键。**
+   * 矩阵本体。**按行轴窗口（搜索词 + 页码）分键。**
    *
    * 不带页码 = 全量（`/qy/admin/group-matrix` 那张高级视图要的那一份），与
    * 「第 1 页 / 每页 10 行」是两份不同的数据，混用一个键会让两个外壳互相把
    * 对方的结果读成自己的：分页外壳读到全量就一屏几十行，高级视图读到一页
-   * 就会把整列批量静默做成只作用于前 10 档。
+   * 就会把整列批量静默做成只作用于前 10 档。搜索词进键同理 —— 不进的话，
+   * 敲下关键词的那一帧 React Query 会先把上一次的结果原样渲染出来，
+   * 运营看到的是"搜了、没反应"。
    *
-   * 两者都挂在 `adminGroupMatrix()` 前缀下 —— 任何一次写入 invalidate 那个前缀，
-   * 每一页连同全量一起失效。
+   * 全都挂在 `adminGroupMatrix()` 前缀下 —— 任何一次写入 invalidate 那个前缀，
+   * 每一页、每个搜索词连同全量一起失效。
    */
-  adminGroupMatrixData: (page?: number, pageSize?: number) =>
+  adminGroupMatrixData: (page?: number, pageSize?: number, keyword?: string) =>
     [
       ...qyKeys.adminGroupMatrix(),
       'data',
       page ?? null,
       pageSize ?? null,
+      keyword ?? '',
     ] as const,
   adminGroupMatrixOrphans: () =>
     [...qyKeys.adminGroupMatrix(), 'orphans'] as const,
@@ -532,12 +551,13 @@ export const qyKeys = {
    * "点了下一页、内容没变"。挂在 `adminModelGroups()` 前缀下，一次 invalidate
    * 让每一页连同全量一起失效。
    */
-  adminModelGroupList: (page?: number, pageSize?: number) =>
+  adminModelGroupList: (page?: number, pageSize?: number, keyword?: string) =>
     [
       ...qyKeys.adminModelGroups(),
       'list',
       page ?? null,
       pageSize ?? null,
+      keyword ?? '',
     ] as const,
   /**
    * 单个模型分组的删除影响面。

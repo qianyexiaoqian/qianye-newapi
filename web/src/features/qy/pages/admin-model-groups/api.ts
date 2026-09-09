@@ -50,7 +50,11 @@ function path(name: string, suffix = '') {
  */
 export function qyMgListQuery(page?: QyMgPageParams) {
   return queryOptions({
-    queryKey: qyKeys.adminModelGroupList(page?.p, page?.page_size),
+    queryKey: qyKeys.adminModelGroupList(
+      page?.p,
+      page?.page_size,
+      page?.keyword
+    ),
     queryFn: () => qyGet<QyMgListResponse>(QY_MG_BASE, page),
     staleTime: 0,
   })
@@ -66,6 +70,8 @@ export type QyMgPageParams = {
   /** 1 起。 */
   p: number
   page_size: number
+  /** 空串 = 不筛选。服务端匹配分组名与备注，大小写不敏感。 */
+  keyword?: string
 }
 
 /**

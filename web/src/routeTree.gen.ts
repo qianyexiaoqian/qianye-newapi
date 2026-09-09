@@ -107,6 +107,7 @@ import { Route as AuthenticatedQyAdminLotteryConfigIndexRouteImport } from './ro
 import { Route as AuthenticatedQyAdminLotteryIndexRouteImport } from './routes/_authenticated/qy/admin/lottery/index'
 import { Route as AuthenticatedQyAdminMallIndexRouteImport } from './routes/_authenticated/qy/admin/mall/index'
 import { Route as AuthenticatedQyAdminRestrictedAccountsIndexRouteImport } from './routes/_authenticated/qy/admin/restricted-accounts/index'
+import { Route as AuthenticatedQyAdminRiskWatchIndexRouteImport } from './routes/_authenticated/qy/admin/risk-watch/index'
 import { Route as AuthenticatedQyAdminSettlementIndexRouteImport } from './routes/_authenticated/qy/admin/settlement/index'
 import { Route as AuthenticatedQyAdminStardustConfigIndexRouteImport } from './routes/_authenticated/qy/admin/stardust-config/index'
 import { Route as AuthenticatedQyAdminStardustIndexRouteImport } from './routes/_authenticated/qy/admin/stardust/index'
@@ -678,6 +679,12 @@ const AuthenticatedQyAdminRestrictedAccountsIndexRoute =
     path: '/restricted-accounts/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
+const AuthenticatedQyAdminRiskWatchIndexRoute =
+  AuthenticatedQyAdminRiskWatchIndexRouteImport.update({
+    id: '/risk-watch/',
+    path: '/risk-watch/',
+    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
+  } as any)
 const AuthenticatedQyAdminSettlementIndexRoute =
   AuthenticatedQyAdminSettlementIndexRouteImport.update({
     id: '/settlement/',
@@ -860,6 +867,7 @@ export interface FileRoutesByFullPath {
   '/qy/admin/lottery/': typeof AuthenticatedQyAdminLotteryIndexRoute
   '/qy/admin/mall/': typeof AuthenticatedQyAdminMallIndexRoute
   '/qy/admin/restricted-accounts/': typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
+  '/qy/admin/risk-watch/': typeof AuthenticatedQyAdminRiskWatchIndexRoute
   '/qy/admin/settlement/': typeof AuthenticatedQyAdminSettlementIndexRoute
   '/qy/admin/stardust-config/': typeof AuthenticatedQyAdminStardustConfigIndexRoute
   '/qy/admin/stardust/': typeof AuthenticatedQyAdminStardustIndexRoute
@@ -969,6 +977,7 @@ export interface FileRoutesByTo {
   '/qy/admin/lottery': typeof AuthenticatedQyAdminLotteryIndexRoute
   '/qy/admin/mall': typeof AuthenticatedQyAdminMallIndexRoute
   '/qy/admin/restricted-accounts': typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
+  '/qy/admin/risk-watch': typeof AuthenticatedQyAdminRiskWatchIndexRoute
   '/qy/admin/settlement': typeof AuthenticatedQyAdminSettlementIndexRoute
   '/qy/admin/stardust-config': typeof AuthenticatedQyAdminStardustConfigIndexRoute
   '/qy/admin/stardust': typeof AuthenticatedQyAdminStardustIndexRoute
@@ -1084,6 +1093,7 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/lottery/': typeof AuthenticatedQyAdminLotteryIndexRoute
   '/_authenticated/qy/admin/mall/': typeof AuthenticatedQyAdminMallIndexRoute
   '/_authenticated/qy/admin/restricted-accounts/': typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
+  '/_authenticated/qy/admin/risk-watch/': typeof AuthenticatedQyAdminRiskWatchIndexRoute
   '/_authenticated/qy/admin/settlement/': typeof AuthenticatedQyAdminSettlementIndexRoute
   '/_authenticated/qy/admin/stardust-config/': typeof AuthenticatedQyAdminStardustConfigIndexRoute
   '/_authenticated/qy/admin/stardust/': typeof AuthenticatedQyAdminStardustIndexRoute
@@ -1198,6 +1208,7 @@ export interface FileRouteTypes {
     | '/qy/admin/lottery/'
     | '/qy/admin/mall/'
     | '/qy/admin/restricted-accounts/'
+    | '/qy/admin/risk-watch/'
     | '/qy/admin/settlement/'
     | '/qy/admin/stardust-config/'
     | '/qy/admin/stardust/'
@@ -1307,6 +1318,7 @@ export interface FileRouteTypes {
     | '/qy/admin/lottery'
     | '/qy/admin/mall'
     | '/qy/admin/restricted-accounts'
+    | '/qy/admin/risk-watch'
     | '/qy/admin/settlement'
     | '/qy/admin/stardust-config'
     | '/qy/admin/stardust'
@@ -1421,6 +1433,7 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/lottery/'
     | '/_authenticated/qy/admin/mall/'
     | '/_authenticated/qy/admin/restricted-accounts/'
+    | '/_authenticated/qy/admin/risk-watch/'
     | '/_authenticated/qy/admin/settlement/'
     | '/_authenticated/qy/admin/stardust-config/'
     | '/_authenticated/qy/admin/stardust/'
@@ -2144,6 +2157,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminRestrictedAccountsIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
+    '/_authenticated/qy/admin/risk-watch/': {
+      id: '/_authenticated/qy/admin/risk-watch/'
+      path: '/risk-watch'
+      fullPath: '/qy/admin/risk-watch/'
+      preLoaderRoute: typeof AuthenticatedQyAdminRiskWatchIndexRouteImport
+      parentRoute: typeof AuthenticatedQyAdminRouteRoute
+    }
     '/_authenticated/qy/admin/settlement/': {
       id: '/_authenticated/qy/admin/settlement/'
       path: '/settlement'
@@ -2288,6 +2308,7 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminLotteryIndexRoute: typeof AuthenticatedQyAdminLotteryIndexRoute
   AuthenticatedQyAdminMallIndexRoute: typeof AuthenticatedQyAdminMallIndexRoute
   AuthenticatedQyAdminRestrictedAccountsIndexRoute: typeof AuthenticatedQyAdminRestrictedAccountsIndexRoute
+  AuthenticatedQyAdminRiskWatchIndexRoute: typeof AuthenticatedQyAdminRiskWatchIndexRoute
   AuthenticatedQyAdminSettlementIndexRoute: typeof AuthenticatedQyAdminSettlementIndexRoute
   AuthenticatedQyAdminStardustConfigIndexRoute: typeof AuthenticatedQyAdminStardustConfigIndexRoute
   AuthenticatedQyAdminStardustIndexRoute: typeof AuthenticatedQyAdminStardustIndexRoute
@@ -2333,6 +2354,8 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
     AuthenticatedQyAdminMallIndexRoute: AuthenticatedQyAdminMallIndexRoute,
     AuthenticatedQyAdminRestrictedAccountsIndexRoute:
       AuthenticatedQyAdminRestrictedAccountsIndexRoute,
+    AuthenticatedQyAdminRiskWatchIndexRoute:
+      AuthenticatedQyAdminRiskWatchIndexRoute,
     AuthenticatedQyAdminSettlementIndexRoute:
       AuthenticatedQyAdminSettlementIndexRoute,
     AuthenticatedQyAdminStardustConfigIndexRoute:

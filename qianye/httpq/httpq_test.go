@@ -191,6 +191,38 @@ func TestSliceNeverPanics(t *testing.T) {
 	}
 }
 
+// MatchKeyword 的两条契约:大小写折叠,以及"空关键词 = 全都要"。
+//
+// 两条各有一个具体的错误方向。不折叠大小写时 `VIP` 搜不到 `vip`,而运营在
+// 搜索框里不会去区分 —— 表现是"有些词能搜到、有些搜不到",不是"搜索坏了"。
+// 空关键词判错时,一个空搜索框会让整张表变成零行,而那与"这张表是空的"
+// 长得一模一样。
+func TestMatchKeyword(t *testing.T) {
+	cases := []struct {
+		name    string
+		keyword string
+		fields  []string
+		want    bool
+	}{
+		{"空关键词 = 全都要", "", []string{"anything"}, true},
+		{"只有空白也算空", "   ", []string{"anything"}, true},
+		{"关键词首尾空白被忽略", "  vip  ", []string{"qy-vip-a"}, true},
+		{"子串命中", "bl", []string{"qy-bl-g"}, true},
+		{"大小写不敏感:关键词大写", "VIP", []string{"qy-vip-a"}, true},
+		{"大小写不敏感:字段大写", "vip", []string{"QY-VIP-A"}, true},
+		{"命中第二个字段", "年付", []string{"vip", "这一档是年付用户"}, true},
+		{"一个都不含", "zzz", []string{"vip", "备注"}, false},
+		{"没有可搜字段", "vip", nil, false},
+		{"空字段不会被空关键词以外的词命中", "vip", []string{""}, false},
+		{"中文子串", "专属", []string{"浅夜の梦专属号池"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, MatchKeyword(tc.keyword, tc.fields...))
+		})
+	}
+}
+
 // Int / Int64 的上界必须是解析的一部分。
 //
 // 上界收得太紧同样是缺陷:这两个函数被 user_id 与 Unix 时间戳复用,

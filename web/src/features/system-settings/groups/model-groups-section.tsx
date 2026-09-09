@@ -63,6 +63,7 @@ import {
 } from '@/features/qy/pages/admin-model-groups/lib/merged-rows'
 import { QyPager } from '@/features/qy/pages/components/qy-pager'
 import { qyOpsErrorMessage } from '@/features/qy/pages/ops/errors'
+import { useDebounce } from '@/hooks'
 
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
@@ -139,9 +140,19 @@ export function ModelGroupsSection(props: {
     system-settings 的路由 search schema 是整组共用的。
   */
   const [page, setPage] = useState(1)
+  /*
+    搜索走**服务端**。这一点不是可选的：翻页已经在服务端，客户端筛选只能筛到
+    当前这 10 行 —— 那会变成一个"每翻一页就换一批结果、且永远搜不到第 2 页
+    之后任何东西"的搜索框，而它看起来完全正常。
+
+    输入去抖 300ms：`keyword` 是输入框里的值（立即回显），`searchTerm` 是真正
+    发出去的那个。
+  */
+  const [keyword, setKeyword] = useState('')
+  const searchTerm = useDebounce(keyword.trim(), 300)
   const pageParams = useMemo(
-    () => ({ p: page, page_size: MODEL_GROUP_PAGE_SIZE }),
-    [page]
+    () => ({ p: page, page_size: MODEL_GROUP_PAGE_SIZE, keyword: searchTerm }),
+    [page, searchTerm]
   )
   const registryQuery = useQuery({ ...qyMgListQuery(pageParams), retry: false })
 
@@ -676,10 +687,24 @@ export function ModelGroupsSection(props: {
               <CardTitle>{t('qy_gs_model_groups_title')}</CardTitle>
               <CardDescription>{t('qy_mg_table_desc')}</CardDescription>
             </div>
-            <Button onClick={addRow} size='sm' className='sm:self-start'>
-              <Plus className='mr-2 h-4 w-4' />
-              {t('Add group')}
-            </Button>
+            <div className='flex flex-wrap items-center gap-2 sm:self-start'>
+              <Input
+                className='h-8 w-56'
+                value={keyword}
+                aria-label={t('qy_mg_search_label')}
+                placeholder={t('qy_mg_search_ph')}
+                onChange={(event) => {
+                  // 立刻回到第 1 页：留在第 3 页上搜索，得到的是"筛完之后的
+                  // 第 3 页"，而筛完通常只有一页 —— 屏幕上是一张空表。
+                  setPage(1)
+                  setKeyword(event.target.value)
+                }}
+              />
+              <Button onClick={addRow} size='sm'>
+                <Plus className='mr-2 h-4 w-4' />
+                {t('Add group')}
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -687,7 +712,14 @@ export function ModelGroupsSection(props: {
             data={rows}
             getRowKey={(row) => row.id}
             emptyClassName='text-muted-foreground h-20 text-sm'
-            emptyContent={t('No groups yet. Add a group to get started.')}
+            // 「一个分组都没有」与「这个词没搜到」是两件完全不同的事，前者要人
+            // 去建一个、后者只要换个词。共用一句话会让运营在搜错字时以为整张
+            // 倍率表被清空了 —— 而这一页正好是改价的地方。
+            emptyContent={
+              searchTerm === ''
+                ? t('No groups yet. Add a group to get started.')
+                : t('qy_mg_search_no_match', { keyword: searchTerm })
+            }
             columns={[
               {
                 id: 'name',

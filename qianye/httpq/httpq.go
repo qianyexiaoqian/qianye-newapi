@@ -265,6 +265,37 @@ func SearchLike(keyword string, mode LikeMatch, cols ...string) (string, string)
 	return strings.Join(parts, " OR "), pattern
 }
 
+// MatchKeyword 报告 fields 里有没有任何一个包含 keyword(**大小写不敏感**)。
+//
+// 它是 SearchLike 的**内存版**:同一个概念,两种执行环境。SearchLike 编译出一条
+// 打给数据库的 LIKE,这一个用在"清单已经在内存里、筛完再切页"的列表上
+// (分组名单就是这种 —— 它们来自 options 的键与一次 DISTINCT,不是一张可以
+// WHERE 的表)。
+//
+// # 为什么必须折叠大小写
+//
+// 与 SearchLike 逐字同源:裸 strings.Contains 会让 `VIP` 搜不到 `vip`,而运营
+// 在搜索框里不会去区分。分组名里 ASCII 与中文混排(`qy-bl-g`、`浅夜の梦专属号池`),
+// 折叠对中文是空操作、对 ASCII 才起作用 —— 也正因如此,漏掉它的表现是
+// "有些词能搜到、有些搜不到",而不是"搜索坏了"。
+//
+// # 空关键词恒为真
+//
+// "没有筛选"就是"全都要"。让调用方各自写一遍 `if kw != ""` 的判断,漏掉的那一处
+// 会把空搜索框变成"一条都不匹配",而那与"这张表是空的"长得一模一样。
+func MatchKeyword(keyword string, fields ...string) bool {
+	kw := strings.ToLower(strings.TrimSpace(keyword))
+	if kw == "" {
+		return true
+	}
+	for _, field := range fields {
+		if strings.Contains(strings.ToLower(field), kw) {
+			return true
+		}
+	}
+	return false
+}
+
 // LikeMatch 选择前缀匹配还是子串匹配。
 //
 // 前缀是默认:`%kw%` 用不上索引,而运营是边打字边查的。子串留给"单号/标题里

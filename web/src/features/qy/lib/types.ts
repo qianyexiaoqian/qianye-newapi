@@ -82,6 +82,15 @@ export type QyFeatures = {
   commission: boolean
   availability: boolean
   violation: boolean
+  /**
+   * 风控预警(可疑用户监听取证)。
+   *
+   * 后端下发的是 `enabled && 配了存储节点`(`guard.FlagRiskWatch`):存储节点
+   * 是这个功能的一部分而不是它的一个依赖,只看 enabled 会让一个漏填 dsn 的
+   * 部署在侧栏里渲染出一个每条接口都 404 的入口。表达式只在后端那一处,
+   * 前端不许再拼一份。
+   */
+  risk_watch: boolean
   lottery: boolean
   ticket: boolean
   /** 用户分组 × 模型分组 矩阵。关掉时隐藏管理端入口与上游分组倍率页的指路提示。 */

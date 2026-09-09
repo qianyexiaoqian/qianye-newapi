@@ -666,7 +666,16 @@ body[data-theme-preset='steins-gate']
 }
 
 /* ══════════════════════════════════════════════════════════════
- * §12 公共落地页
+ * §12 公共落地页(上游 features/home)
+ *
+ * ⚠ 【本节当前不生效】路由 `/` 已经指向二开自己的落地页
+ *    `features/qy/landing`,那一页照主题原生画,自带
+ *    `styles/qy-landing.css`,不需要本节这层补救式改写 —— 它的类名前缀
+ *    是 qy-lp-,与本节的作用域根(`.landing-animate-fade-up`)不相交。
+ *
+ *    留着不删,是因为本节是上游首页的**兜底皮**:`routes/index.tsx` 那一行
+ *    import 换回 `@/features/home` 的瞬间它就重新生效。删掉的话,那次回退
+ *    会让上游首页以默认调色板出现在一个近黑站点里。
  *
  * ── 锚点为什么是 Tailwind 类名 ──
  * 落地页(features/home)通篇工具类,一个 data-slot 都没有。拿类名当锚点确实脆,

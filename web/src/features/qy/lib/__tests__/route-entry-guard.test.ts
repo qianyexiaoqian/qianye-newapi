@@ -47,6 +47,7 @@ const ALL_ON: QyFeatures = {
   availability: true,
   lottery: true,
   violation: true,
+  risk_watch: true,
   ticket: true,
   group_matrix: true,
   pay_password: true,

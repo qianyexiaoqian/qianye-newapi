@@ -132,4 +132,8 @@ export const QY_PAGE_URL_ORDER: readonly string[] = [
   // 按维护规则 1 **追加到末尾取空号**:绝不插到 `/qy/admin/violation-ai-review`
   // 后面,那会让它之后的每一页集体错位,而那些编号已经发出去了。
   '/qy/admin/violation-ai-logs',
+  // 风控预警。按维护规则 1 **追加到末尾取空号** —— 它在侧栏上紧挨着 AI 审核
+  // 日志,但绝不能插到那一行后面:编号是对外可见的稳定标识,插一行会让它之后的
+  // 每一页集体错位。
+  '/qy/admin/risk-watch',
 ]

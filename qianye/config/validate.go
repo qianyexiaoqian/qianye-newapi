@@ -153,6 +153,9 @@ func validate(c *Config) error {
 	if err := validateViolation(&c.Violation); err != nil {
 		return err
 	}
+	if err := validateRiskWatch(&c.RiskWatch); err != nil {
+		return err
+	}
 	if err := validateGroupNamespace(&c.GroupNamespace); err != nil {
 		return err
 	}
@@ -1018,6 +1021,54 @@ func validateViolation(v *Violation) error {
 	// 现在"会不会真实扣费"取决于库里有几条 mode=enforce 的规则,不是一个配置项,
 	// 启动期读不到也不该猜。等价的可见性由 GET /admin/violation/stats 的
 	// rules.enforce_rule 提供,管理端每次打开规则页都会看到。
+	return nil
+}
+
+// validateRiskWatch 校验风控预警。
+//
+// 这一段与别处的方向相反:**没配存储节点就拒绝启动**,而不是静默禁用。
+//
+// 理由是这个功能被单独拆出去的全部原因就是那个库。缺 dsn 时静默降级只有两种
+// 落法,两种都错:写进主扩展库(那正是"某次监管操作把佣金账本的磁盘写满"的
+// 路径),或者功能开着但一条都不抓(本仓最不愿再遇到的那种失效 —— 界面正常、
+// 日志正常、线上零记录)。所以在这里炸,并且错误信息要说出这两个字:存储节点。
+func validateRiskWatch(rw *RiskWatch) error {
+	if !rw.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(rw.Database.DSN) == "" {
+		return fmt.Errorf("qianye: risk_watch.enabled 为 true 但 risk_watch.database.dsn 为空 —— " +
+			"风控预警强制要求一个**单独配置的存储节点**:它存的是被抽中请求的完整上下文," +
+			"抽多少、抽多久由管理员在页面上临时决定,一个「永久监听 + 100%% 概率」的任务一天就能写进几十 GB。" +
+			"把它并进任何一个已有的库,迟早会由一次监管操作把佣金账本的磁盘写满。" +
+			"不想启用请写 risk_watch.enabled: false")
+	}
+	if err := validateDatabase(&rw.Database); err != nil {
+		// 错误文案里的键名都是 database.*,原样冒泡会让运维照着去改错那一段。
+		return fmt.Errorf("qianye: risk_watch.database 段校验未通过(把下文的 database. 读作 risk_watch.database.): %w", err)
+	}
+	if rw.MaxActiveTasks < 0 {
+		return fmt.Errorf("qianye: risk_watch.max_active_tasks 不得为负数(0 表示不限制),收到 %d", rw.MaxActiveTasks)
+	}
+	if rw.CaptureMaxChars <= 0 {
+		return fmt.Errorf("qianye: risk_watch.capture_max_chars 必须大于 0 —— " +
+			"0 表示每条记录都不留上下文,而上下文正是这个功能唯一的产出")
+	}
+	if rw.RetentionDays < 0 {
+		return fmt.Errorf("qianye: risk_watch.retention_days 不得为负数(0 表示永久保留),收到 %d", rw.RetentionDays)
+	}
+	if rw.MaxRetentionDays < 0 {
+		return fmt.Errorf("qianye: risk_watch.max_retention_days 不得为负数(0 表示不设上界),收到 %d", rw.MaxRetentionDays)
+	}
+	// 默认保留期高于上界不是"更宽松",而是自相矛盾:新建任务不填保留期时会拿到
+	// 一个连手填都通不过校验的值。
+	if rw.MaxRetentionDays > 0 && rw.RetentionDays > rw.MaxRetentionDays {
+		return fmt.Errorf("qianye: risk_watch.retention_days(%d)大于 max_retention_days(%d)—— "+
+			"不填保留期的新任务会拿到一个手填时会被拒绝的值", rw.RetentionDays, rw.MaxRetentionDays)
+	}
+	if rw.GCBatchSize < 0 {
+		return fmt.Errorf("qianye: risk_watch.gc_batch_size 不得为负数,收到 %d", rw.GCBatchSize)
+	}
 	return nil
 }
 

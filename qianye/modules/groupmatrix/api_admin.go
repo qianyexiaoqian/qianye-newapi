@@ -491,42 +491,64 @@ func effectiveTopupRatio(v float64) float64 {
 	return v
 }
 
-// pageWindow 是「这一次只要行轴的哪一段」。**nil = 整张表**。
+// rowWindow 是「这一次要行轴的哪些行」:**先按关键词筛,再切页**。
 //
-// 行轴是用户分组,列轴(模型分组)不参与翻页:列轴是编辑弹窗里那一格一格的
-// 坐标系,切掉一半列等于让弹窗少显示一批可授权的池子,而运营看不出少了什么。
-type pageWindow struct {
-	Page int
-	Size int
+// 零值 = 整张表,响应逐位等于改造之前。
+//
+// 行轴是用户分组;列轴(模型分组)既不筛也不切:列轴是编辑弹窗里那一格一格的
+// 坐标系,少一列等于让弹窗少显示一批可授权的池子,而运营看不出少了什么。
+type rowWindow struct {
+	// Keyword 空 = 不筛选。匹配的是**表上看得见的那两列** —— 分组名与备注,
+	// 见 matchUserGroupRow。
+	Keyword string
+	// Paged 为 false 时 Page/Size 无意义,返回筛选后的全部行。
+	Paged bool
+	Page  int
+	Size  int
 }
 
 // pageInfo 随分页响应一起下发,让前端画得出「第几页 / 共几条」。
+//
+// Total 是**筛选之后**的条数 —— 翻页翻的就是筛选结果,分母写成全站条数会让
+// 「共 116 条」配着 3 行结果出现。
 type pageInfo struct {
 	Page  int `json:"p"`
 	Size  int `json:"page_size"`
 	Total int `json:"total"`
 }
 
-// matrixPageWindow 解析行轴翻页参数。**不带任何分页参数时返回 nil**,响应逐位
-// 等于改造之前的整表。
+// matrixRowWindow 解析行轴的筛选与翻页参数。
 //
-// 这条向后兼容不是客气:同一个端点还养着 /qy/admin/group-matrix 那张高级视图
-// (整列批量、跨档对比),它要的就是全量行轴。默认翻页会让那一页在第 11 档之后
-// 的整列批量静默只作用于前 10 档 —— 一次误配横跨两个数据库,而界面上没有任何
-// 迹象说明它只做了一部分。
-func matrixPageWindow(c *gin.Context) *pageWindow {
+// **不带分页参数时不切页**,响应逐位等于改造之前的整表。这条向后兼容不是客气:
+// 同一个端点还养着 /qy/admin/group-matrix 那张高级视图(整列批量、跨档对比),
+// 它要的就是全量行轴。默认翻页会让那一页在第 11 档之后的整列批量静默只作用于
+// 前 10 档 —— 一次误配横跨两个数据库,而界面上没有任何迹象说明它只做了一部分。
+//
+// 关键词与翻页**互相独立**:只给 keyword 就是"筛完不切页"。
+func matrixRowWindow(c *gin.Context) rowWindow {
+	w := rowWindow{Keyword: c.Query("keyword")}
 	if c.Query("p") == "" && c.Query("page_size") == "" {
-		return nil
+		return w
 	}
-	page, size := httpq.Paginate(c, httpq.Spec{DefaultSize: httpq.GroupTablePageSize})
-	return &pageWindow{Page: page, Size: size}
+	w.Paged = true
+	w.Page, w.Size = httpq.Paginate(c, httpq.Spec{DefaultSize: httpq.GroupTablePageSize})
+	return w
+}
+
+// matchUserGroupRow 判断一档人是否命中搜索词。
+//
+// 匹配面刻意只有**表上看得见的那两列**:分组名与备注。登记表里还有 display_name,
+// 但那一列不在表上 —— 拿它参与匹配会让运营得到一行"看不出为什么会中"的结果,
+// 而搜索最要紧的性质是可解释。
+func matchUserGroupRow(name string, registry map[string]groupns.UserGroup, keyword string) bool {
+	return httpq.MatchKeyword(keyword, name, registry[name].Note)
 }
 
 func adminGetMatrix(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagGroupMatrix) {
 		return
 	}
-	view, err := buildMatrixView(db.Get(), matrixPageWindow(c))
+	view, err := buildMatrixView(db.Get(), matrixRowWindow(c))
 	if err != nil {
 		internalError(c, err)
 		return
@@ -546,10 +568,10 @@ func adminGetMatrix(c *gin.Context) {
 // 所以这里一次给全:分组名称 / 注册用户数 / 充值倍率 / 可用模型分组(名称清单)/
 // 分组备注 + 编辑弹窗要的每一格(勾选、倍率、备注)。前端**禁止**再去拼第二个接口。
 //
-// window 非 nil 时只组装行轴的那一段(见 pageWindow)。切页发生在
+// window 说明这次要行轴的哪些行(见 rowWindow)。筛选与切页都发生在
 // **全表口径的统计算完之后**:policy 的四个计数与 Warnings 都是"全站还有几档"
-// 的答案,按本页算会让它们随翻页跳变。
-func buildMatrixView(gdb *gorm.DB, window *pageWindow) (*matrixView, error) {
+// 的答案,跟着搜索框变会让它们在一次筛选之后集体归零。
+func buildMatrixView(gdb *gorm.DB, window rowWindow) (*matrixView, error) {
 	scopes, err := loadScopes(gdb)
 	if err != nil {
 		return nil, err
@@ -605,16 +627,28 @@ func buildMatrixView(gdb *gorm.DB, window *pageWindow) (*matrixView, error) {
 		}
 	}
 
-	// ── 行轴切页 ────────────────────────────────────────────────────────
+	// ── 行轴:先筛后切 ──────────────────────────────────────────────────
 	//
-	// 切在这里、而不是更早:上面几行全是**一次聚合出全站一张表**的查询
+	// 都发生在这里、而不是更早:上面几行全是**一次聚合出全站一张表**的查询
 	// (人数、活跃令牌、空分组令牌、同名渠道池),按页重发只会让翻页变成 N 次全表
-	// 扫描。切在这里之后,真正按行付费的两段 —— 上游可选集合的逐档解析、
-	// 以及 行×列 的格子 —— 才只对本页算。
-	total := len(userGroups)
-	pageGroups := userGroups
-	if window != nil {
-		pageGroups = httpq.Slice(userGroups, window.Page, window.Size)
+	// 扫描。收窄在这里之后,真正按行付费的两段 —— 上游可选集合的逐档解析、
+	// 以及 行×列 的格子 —— 才只对留下来的行算。
+	//
+	// 顺序不能反:切完再筛会得到"第 1 页里恰好命中的那几行",也就是一个每翻一页
+	// 就换一批结果、且永远搜不到第 2 页之后任何东西的搜索框。
+	matched := userGroups
+	if strings.TrimSpace(window.Keyword) != "" {
+		matched = make([]string, 0, len(userGroups))
+		for _, ug := range userGroups {
+			if matchUserGroupRow(ug, userRegistry, window.Keyword) {
+				matched = append(matched, ug)
+			}
+		}
+	}
+	total := len(matched)
+	pageGroups := matched
+	if window.Paged {
+		pageGroups = httpq.Slice(matched, window.Page, window.Size)
 	}
 
 	// 未设定范围的行必须显示**上游此刻的实际可选集合**(见 cellView.Granted)。
@@ -638,9 +672,9 @@ func buildMatrixView(gdb *gorm.DB, window *pageWindow) (*matrixView, error) {
 	globalWarnings, rowWarnings := matrixWarnings(userGroups, modelGroups, grants,
 		topupRatios, userRegistry, routedPools, emptyTokens)
 
-	// 四个计数按**全量**行轴算,不受切页影响。它们回答的是"全站还有几档没设范围"
-	// 这类问题,而一个随翻页跳变的分母比没有分母更糟 —— 运营会照着第 2 页那个
-	// 「还有 3 档未设范围」去汇报,而全站其实有 30 档。
+	// 四个计数按**全量**行轴算,不受筛选与切页影响。它们回答的是"全站还有几档
+	// 没设范围"这类问题,而一个跟着搜索框变的分母比没有分母更糟 —— 运营会照着
+	// 「还有 3 档未设范围」去汇报,而那只是他刚才搜的那个词命中的三档。
 	policy := scopePolicy{
 		UnsetMeansAll:        true,
 		SubscriptionUnlockOn: PlanUnlockEnabled(),
@@ -827,7 +861,7 @@ func buildMatrixView(gdb *gorm.DB, window *pageWindow) (*matrixView, error) {
 		ScopePolicy:       policy,
 		SupportsGrantNote: true,
 	}
-	if window != nil {
+	if window.Paged {
 		view.Pagination = &pageInfo{Page: window.Page, Size: window.Size, Total: total}
 	}
 	return view, nil
@@ -835,12 +869,12 @@ func buildMatrixView(gdb *gorm.DB, window *pageWindow) (*matrixView, error) {
 
 // respondMatrix 把写接口的响应统一成"回读后的真实状态"。
 //
-// 回读的**行轴窗口取自这次请求自己的查询串**:前端把它正在看的那一页原样带在
-// 写请求上,于是保存后替换本地状态的那一份与屏幕上的那一页是同一段。不带就是
-// 整表,与改造之前逐位相同。少了这一步,分页外壳保存完会被一份全量矩阵覆盖 ——
-// 表格当场从 10 行涨到全站,而运营刚刚按的是「保存」。
+// 回读的**行轴窗口取自这次请求自己的查询串**:前端把它正在看的那一页(以及那个
+// 搜索词)原样带在写请求上,于是保存后替换本地状态的那一份与屏幕上的那一段是
+// 同一段。不带就是整表,与改造之前逐位相同。少了这一步,分页外壳保存完会被一份
+// 全量矩阵覆盖 —— 表格当场从 10 行涨到全站,而运营刚刚按的是「保存」。
 func respondMatrix(c *gin.Context, gdb *gorm.DB, partial *savePartial) {
-	view, err := buildMatrixView(gdb, matrixPageWindow(c))
+	view, err := buildMatrixView(gdb, matrixRowWindow(c))
 	if err != nil {
 		internalError(c, err)
 		return

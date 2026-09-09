@@ -90,4 +90,68 @@ func TestInitKeepsSchemaCheckMountPoints(t *testing.T) {
 	assert.True(t, called["StartSchemaRecheck"],
 		"Init 必须调用 db.StartSchemaRecheck —— 缺表不再杀进程之后,"+
 			"降级态的持续可见性与自愈全靠它,删掉它自检就退化成一行会被滚走的日志")
+
+	// 风控预警存储节点那一路。它与主库那两条是同一种形状的断链,而症状更隐蔽:
+	// 少了 InitWatch,db.Watch() 恒为 nil,热路径每次抽中都静默丢弃;
+	// 少了 MigrateWatch,连接是好的、任务表却压根不存在,管理端建任务恒 500。
+	assert.True(t, called["InitWatch"],
+		"Init 必须调用 db.InitWatch —— 少了它风控预警一条记录都落不下去,而功能开关是开着的")
+	assert.True(t, called["MigrateWatch"],
+		"Init 必须调用 db.MigrateWatch —— 存储节点连上了但表没建,管理端建任务恒 500")
+}
+
+// TestInitWiresTheRelayGuardDispatcher 锁住 relayguard.Install() 这个挂载点。
+//
+// # 为什么它必须单独锁
+//
+// 上游 controller/relay.go 里那个前置挂钩是**单槽变量**,而它现在有两个消费方
+// (违规检测的闸门、风控预警的观察者)。两者都在自己的 InstallHooks 里向
+// qianye/relayguard 登记,而真正把分发器接到那个插槽上的只有 Init 末尾这一行。
+//
+// 删掉它之后:两个模块登记完毕、编译通过、单测全绿、启动日志一个字都不少 ——
+// 而线上违规检测零命中、风控预警零记录。这正是本仓反复出现的第一种缺陷形状。
+//
+// 顺序也一并锁住:必须排在 InstallHooks 的循环**之后**,否则登记表还是空的,
+// Install 会判定"一个挂钩都没有"而直接返回,结果与删掉它完全一样。
+func TestInitWiresTheRelayGuardDispatcher(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "bootstrap.go", nil, 0)
+	require.NoError(t, err)
+
+	var init *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Recv == nil && fn.Name.Name == "Init" {
+			init = fn
+		}
+	}
+	require.NotNil(t, init, "bootstrap.go 里必须有 func Init()")
+
+	installPos, hooksPos := token.NoPos, token.NoPos
+	ast.Inspect(init.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "relayguard" && sel.Sel.Name == "Install" {
+			installPos = call.Pos()
+		}
+		// m.InstallHooks() —— 接收者是循环变量,只认方法名。
+		if sel.Sel.Name == "InstallHooks" {
+			hooksPos = call.Pos()
+		}
+		return true
+	})
+
+	require.NotEqual(t, token.NoPos, installPos,
+		"Init 必须调用 relayguard.Install() —— 少了它,违规检测与风控预警的前置挂钩"+
+			"全部登记完毕却没有人调用,线上零命中、零记录,而一切看起来都正常")
+	require.NotEqual(t, token.NoPos, hooksPos, "Init 必须调用各模块的 InstallHooks")
+	assert.Less(t, int(hooksPos), int(installPos),
+		"relayguard.Install() 必须排在 InstallHooks 之后 —— 排在前面时登记表还是空的,"+
+			"Install 会判定「一个挂钩都没有」直接返回,效果与删掉它完全一样")
 }

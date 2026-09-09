@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Select,
   SelectContent,
@@ -31,6 +32,7 @@ import {
 } from '@/components/ui/select'
 import { QyPager } from '@/features/qy/pages/components/qy-pager'
 import { getModelGroupOptions, getUserGroupOptions } from '@/features/users/api'
+import { useDebounce } from '@/hooks'
 
 import { SettingsSection } from '../components/settings-section'
 import { useGroupOptionSave } from './lib/use-group-option-save'
@@ -111,10 +113,23 @@ export function TokenDefaultGroupsSection(props: {
     内容没变"。
   */
   const [page, setPage] = useState(1)
+  /*
+    搜索走**服务端**，与翻页同侧。客户端筛选只能筛到当前这 10 行 —— 那会变成
+    一个"每翻一页就换一批结果、且永远搜不到第 2 页之后任何东西"的搜索框。
+
+    这一页能搜的只有分组名：清单里就只有名字（端点的事实源是 `users.group`，
+    那张表没有备注这一列）。
+  */
+  const [keyword, setKeyword] = useState('')
+  const searchTerm = useDebounce(keyword.trim(), 300)
   const userGroupsQuery = useQuery({
-    queryKey: ['user-group-options', page, TOKEN_DEFAULT_PAGE_SIZE],
+    queryKey: ['user-group-options', page, TOKEN_DEFAULT_PAGE_SIZE, searchTerm],
     queryFn: () =>
-      getUserGroupOptions({ p: page, page_size: TOKEN_DEFAULT_PAGE_SIZE }),
+      getUserGroupOptions({
+        p: page,
+        page_size: TOKEN_DEFAULT_PAGE_SIZE,
+        keyword: searchTerm,
+      }),
   })
   const modelGroupsQuery = useQuery({
     queryKey: ['model-group-options'],
@@ -197,13 +212,37 @@ export function TokenDefaultGroupsSection(props: {
         {t('qy_gs_token_default_desc')}
       </p>
 
+      {/*
+        搜索框在加载态之外**常驻**：跟着 isLoading 一起消失的话，去抖那 300ms
+        加上一次请求的往返里输入框会整个卸载，运营正在敲的字连同焦点一起丢掉。
+      */}
+      <div className='mb-4'>
+        <Input
+          className='h-8 w-56'
+          value={keyword}
+          aria-label={t('qy_gs_token_default_search_label')}
+          placeholder={t('qy_gs_token_default_search_ph')}
+          onChange={(event) => {
+            // 立刻回到第 1 页：留在第 3 页上搜索，得到的是"筛完之后的第 3 页"。
+            setPage(1)
+            setKeyword(event.target.value)
+          }}
+        />
+      </div>
+
       {isLoading && (
         <p className='text-muted-foreground text-sm'>{t('Loading...')}</p>
       )}
 
+      {/*
+        「本站还没有任何用户分组」与「这个词没搜到」是两件完全不同的事 ——
+        前者是故障，后者是正常结果。共用一句话会让运营在搜错字时以为分组没了。
+      */}
       {!isLoading && userGroups.length === 0 && (
         <p className='text-muted-foreground text-sm'>
-          {t('qy_gs_token_default_no_user_groups')}
+          {searchTerm === ''
+            ? t('qy_gs_token_default_no_user_groups')
+            : t('qy_gs_token_default_search_no_match', { keyword: searchTerm })}
         </p>
       )}
 

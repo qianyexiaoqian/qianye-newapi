@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/db"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/module"
+	"github.com/QuantumNous/new-api/qianye/relayguard"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
 	"github.com/QuantumNous/new-api/qianye/service/twophase"
 	"github.com/QuantumNous/new-api/service"
@@ -73,7 +74,11 @@ func (Mod) InstallHooks() {
 	if !config.Get().Violation.Enabled {
 		return
 	}
-	service.QyPreRelayGuard = PreRelayGuard
+	// 转发前那一道闸挂进分发器而不是直接抢上游插槽:插槽只有一个,而它的
+	// 消费方现在有两个(风控预警要在同一个位置抄走提示词文本)。直接赋值的话,
+	// 后接进来的那一个会把先接的整个顶掉,而编译、单测、启动日志全部正常 ——
+	// 唯一的表现是其中一个功能线上零命中。理由详见 qianye/relayguard 的包注释。
+	relayguard.RegisterGate("violation", PreRelayGuard)
 	service.QyPostRelayGuard = PostRelayGuard
 
 	// 迁移必须排在预热之前:预热会把规则编译进快照,而未迁移的行 mode 是空串,

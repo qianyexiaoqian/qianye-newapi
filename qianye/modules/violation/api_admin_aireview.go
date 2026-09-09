@@ -49,7 +49,7 @@ import (
 // 从模型反射出列名与这份清单对账,把这一类遗漏钉在编译-测试期。
 var aiChannelWritableColumns = []string{
 	"name", "base_url", "model", "protocol", "risk_name", "group_name", "prompt",
-	"block_message", "notify_email", "email_subject", "email_body",
+	"block_message", "category_id", "notify_email", "email_subject", "email_body",
 	"guard_controversial", "guard_categories", "guard_elevate",
 	"timeout_ms", "weight", "enabled",
 	"price_in_per_m", "price_out_per_m", "remark", "updated_at", "updated_by",
@@ -95,6 +95,9 @@ type aiChannelUpsertReq struct {
 	// BlockMessage 是这个渠道判违规、规则又要拦截时返回给用户的那句话。
 	// 空 = 不覆盖,沿用规则自己的那一份。
 	BlockMessage string `json:"block_message"`
+	// CategoryId 是「这个渠道判出的违规,计次记到哪个类型上」。0 = 不指定
+	// (仍按规则自己绑的类型记)。见 AIChannel.CategoryId。
+	CategoryId int64 `json:"category_id"`
 	// NotifyEmail 是"这个渠道判违规就给用户发邮件"的开关;两格模板留空 = 用内置默认。
 	// 与 Prompt 同一档:表单整段提交,空串是有意义的取值(回到内置默认),
 	// 没有"不动它"那一态,所以不是指针。
@@ -128,6 +131,7 @@ func (r *aiChannelUpsertReq) apply(dst *AIChannel) error {
 	// 那条折叠是为了让站点跟随 defaultAIPrompt 的后续加固,完整理由见 aireview_prompt.go。
 	dst.Prompt = normalizeAIPrompt(r.Prompt)
 	dst.BlockMessage = strings.TrimSpace(r.BlockMessage)
+	dst.CategoryId = r.CategoryId
 	dst.NotifyEmail = r.NotifyEmail
 	// 标题 Trim、正文只 TrimRight:HTML 模板的首行缩进是作者写的排版,
 	// 而尾部空白纯属编辑器留下的。两格都留空即回落内置默认(见 renderViolationEmail)。
@@ -184,6 +188,10 @@ type aiChannelView struct {
 	Group        string `json:"group"`
 	Prompt       string `json:"prompt"`
 	BlockMessage string `json:"block_message"`
+	// CategoryId 是「这个渠道判出的违规计次记到哪一类」,0 = 不指定。
+	// 下发 id 而不是名字:名字由界面拿**已有的**违规类型清单去 join,与作用域
+	// 那一格同一条路 —— 抄一份名字下来就是第二份事实,类型改名之后它会漂。
+	CategoryId int64 `json:"category_id"`
 	// NotifyEmail / EmailSubject / EmailBody 原样回显。两格模板可能有几千字,
 	// 与 Prompt 同一条理由:渠道表单是它们唯一的编辑入口,不回显就没法在原有基础上改。
 	NotifyEmail  bool   `json:"notify_email"`
@@ -224,6 +232,7 @@ func toAIChannelView(ch AIChannel) aiChannelView {
 		Group:              ch.Group,
 		Prompt:             ch.Prompt,
 		BlockMessage:       ch.BlockMessage,
+		CategoryId:         ch.CategoryId,
 		NotifyEmail:        ch.NotifyEmail,
 		EmailSubject:       ch.EmailSubject,
 		EmailBody:          ch.EmailBody,
@@ -293,6 +302,27 @@ func aiGuardCategoryView(v aiVocabulary) []gin.H {
 	return out
 }
 
+// ensureAIChannelCategoryAlive 确认这个渠道指定的「计次记为」类型还活着。
+//
+// 只在渠道**启用中**时拦,与作用域那道闸同形(完整理由写在 adminUpsertAIScope 上):
+// 归档一个违规类型是被支持的日常动作,而无条件拦下来会让指着它的渠道从此任何保存
+// 都 400 —— 包括列表上那个停用开关本身走的也是这条写入路径,于是运营连关掉它
+// 都做不到。停用的渠道一次都不会被调用,拦它挡不住任何东西。
+//
+// 归档走的是软删,已归档的行不在这张表的可见行里,所以这一次 Take 同时挡住
+// "不存在"与"已归档"。
+func ensureAIChannelCategoryAlive(gdb *gorm.DB, row *AIChannel) error {
+	if gdb == nil || row == nil || !row.Enabled || row.CategoryId <= 0 {
+		return nil
+	}
+	var cat Category
+	if err := gdb.Where("id = ?", row.CategoryId).Take(&cat).Error; err != nil {
+		return fmt.Errorf("「计次记为」指向的违规类型(id=%d)不存在或已归档 —— "+
+			"请在违规类型页确认它还在,或把这一格改回「不指定」", row.CategoryId)
+	}
+	return nil
+}
+
 func adminCreateAIChannel(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagViolation) {
 		return
@@ -312,6 +342,11 @@ func adminCreateAIChannel(c *gin.Context) {
 	row.UpdatedBy = c.GetInt("id")
 
 	gdb := db.Get()
+	if err := ensureAIChannelCategoryAlive(gdb, &row); err != nil {
+		writeAIReviewAudit(c, "ai_channel_create", qymodel.ResultFail, nil, &row, err)
+		badRequest(c, err.Error())
+		return
+	}
 	// 密钥在**拿到 id 之后**才能封:AAD 绑的是渠道 id(见 aiChannelAAD),
 	// 而 id 要等 Create 之后才存在。所以先插一行不带密钥的,再回填 ——
 	// 中间失败的后果是一条没有密钥的渠道,运营再填一次即可;
@@ -354,6 +389,11 @@ func adminUpdateAIChannel(c *gin.Context) {
 	}
 	before := row
 	if err := req.apply(&row); err != nil {
+		writeAIReviewAudit(c, "ai_channel_update", qymodel.ResultFail, &before, &row, err)
+		badRequest(c, err.Error())
+		return
+	}
+	if err := ensureAIChannelCategoryAlive(gdb, &row); err != nil {
 		writeAIReviewAudit(c, "ai_channel_update", qymodel.ResultFail, &before, &row, err)
 		badRequest(c, err.Error())
 		return

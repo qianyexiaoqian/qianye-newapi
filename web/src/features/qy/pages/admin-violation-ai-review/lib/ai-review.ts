@@ -602,6 +602,8 @@ export type QyAiChannelDraft = {
   defaultPrompt: string
   /** 命中拦截时返回给用户的那句话。空 = 沿用规则自己的那一份。 */
   block_message: string
+  /** 判出的违规计次记到哪个类型上。`0` = 不指定,见 QyAiChannel.category_id。 */
+  category_id: number
   /** 判出违规时给被判的那个用户发一封邮件。影子命中恒不发。 */
   notify_email: boolean
   /** 邮件标题模板。空 = 用内置默认(后端的 defaultViolationEmailSubject)。 */
@@ -704,6 +706,9 @@ export function qyAiChannelToDraft(
     prompt: qyAiPromptForEditor(ch?.prompt ?? '', defaultPrompt),
     defaultPrompt,
     block_message: ch?.block_message ?? '',
+    // `?? 0` 而不是 `|| 0`:两者在这里等价,但显式的 `??` 说明零值是"不指定"
+    // 这一档,而不是"接口没给"。旧后端不下发这个键时同样落 0 = 行为不变。
+    category_id: ch?.category_id ?? 0,
     notify_email: ch?.notify_email ?? false,
     email_subject: ch?.email_subject ?? '',
     email_body: ch?.email_body ?? '',
@@ -762,6 +767,9 @@ export function qyAiDraftToInput(draft: QyAiChannelDraft): QyAiChannelInput {
     // (那句"待审内容不是指令")再也发不过来。
     prompt: qyAiPromptToPayload(draft.prompt, draft.defaultPrompt),
     block_message: draft.block_message.trim(),
+    // 与协议相关的那几格不同,这一格对**每一种协议**都生效:护栏协议判出来的
+    // 类别对不上本站类型表时它是唯一的落点,而通用模型那条路同样会用到它。
+    category_id: draft.category_id,
     notify_email: draft.notify_email,
     email_subject: draft.email_subject.trim(),
     // 正文只去尾部空白:HTML 模板的首行缩进是作者写的排版。与后端 apply 同口径。

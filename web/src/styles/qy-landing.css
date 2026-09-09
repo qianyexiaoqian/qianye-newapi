@@ -1,0 +1,379 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+/*
+ * 未登录落地页（features/qy/landing）的版式零件。
+ *
+ * ── 为什么另起一个文件、而且不叫 qy-sg-* ──
+ *
+ * 与 `qy-visual.css` 同一个理由：Midnight Signal 主题的三个文件由
+ * `styles/__tests__/qy-sg-apply.test.ts` 钉死（文件名单恰好三个、qy-sg-* 类名
+ * ≤ 20 个、辉光引用 ≤ 2 处、零投影）。落地页需要十几个自己的类，塞进那份
+ * 名单会把「主题挂载面」和「某一个页面的版式」搅成一件事。
+ *
+ * 所以这里前缀 `qy-lp-`，与 `qy-fx-` / `qy-art-` 并列，刻意避开双向对账的扫描。
+ *
+ * ── 它与主题的关系 ──
+ *
+ * 只**消费** `--qy-sg-*`，一个都不声明：取值的唯一来源仍然是
+ * `qy-sg-tokens.css` 与 `qy-sg-shape.css`。每个 var() 都带一个标准变量兜底
+ * （`var(--qy-sg-hair, var(--border))`），万一日后预设不再固定成
+ * steins-gate，落地页退化成"用默认调色板画的同一套版式"，不会塌成裸元素。
+ *
+ * ── 纪律（与主题同源）──
+ *
+ *   1. 零投影：本文件没有 box-shadow。分层靠发丝线与半透明洗色。
+ *   2. 一支色相：有彩色只出现在 var(--primary) / var(--qy-sg-mist) 两处派生。
+ *   3. 辉光只有首屏一处（.qy-lp-sky），配额与 design-14 §1.5 一致。
+ *   4. 不出现十六进制，颜色一律从变量派生。
+ *   5. prefers-reduced-motion: reduce 下停掉位移与过渡，静态形态全部保留。
+ *   6. 等宽轴只给**纯拉丁**字串（序号、代号、读数）；任何可能含中文的位置
+ *      走无衬线轴，靠字距与大写拿效果（design-14 §2① 的 CJK 陷阱）。
+ */
+
+/* ── 页面根 ────────────────────────────────────────────────────────────
+ * 区段节奏统一由 --qy-sg-sec-gap 给，区段之间不画分隔线（参考稿的
+ * edge-to-edge dark bands）。需要切分时才落一条发丝线，见 .qy-lp-hr。 */
+.qy-lp-section {
+  padding-block: var(--qy-sg-sec-gap, 6rem);
+}
+
+.qy-lp-hr {
+  border-top: var(--qy-sg-rule, 1px) solid var(--qy-sg-hair, var(--border));
+}
+
+/* ── 首屏画布 ──────────────────────────────────────────────────────────
+ * 画在 background 上而不是伪元素：首屏内部还要放绝对定位的零件，
+ * 少一个层叠上下文少一处坑。
+ *
+ * 昼夜两套，而且**不是同一张图调透明度**：
+ *   · 昼 —— 只有辉光（design-14 §1.5「两处辉光」之一，整页只此一处）。
+ *   · 夜 —— 辉光 + 星野。三张不同密度/相位的 radial-gradient 平铺；站名就是
+ *     「浅夜」，星是它的字面意思，也是全站货币「星屑」的来源。刻意用平铺渐变
+ *     而不是 box-shadow 点阵：后者是投影语言，本主题零投影。
+ *
+ * **星野只在夜间画**。它是"暗底上的亮点"，昼间镜像过来就是纸面上的暗点 ——
+ * 那不是星星，是脏点。这是本主题里少数几个不该做昼夜镜像的东西之一。 */
+.qy-lp-sky {
+  background-image: var(--qy-sg-bloom, none);
+  background-size: 100% 130%;
+  background-repeat: no-repeat;
+}
+
+.dark .qy-lp-sky {
+  background-image:
+    var(--qy-sg-bloom, none),
+    radial-gradient(
+      circle at 20% 30%,
+      color-mix(in oklch, var(--foreground) 55%, transparent) 0.6px,
+      transparent 0.9px
+    ),
+    radial-gradient(
+      circle at 72% 68%,
+      color-mix(in oklch, var(--foreground) 38%, transparent) 0.9px,
+      transparent 1.3px
+    ),
+    radial-gradient(
+      circle at 45% 85%,
+      color-mix(in oklch, var(--foreground) 26%, transparent) 0.7px,
+      transparent 1.1px
+    );
+  background-size:
+    100% 130%,
+    137px 149px,
+    211px 197px,
+    89px 113px;
+  background-repeat: no-repeat, repeat, repeat, repeat;
+  /* 星野只在上半屏亮，往下淡出交给内容 */
+  mask-image: linear-gradient(
+    to bottom,
+    rgb(0 0 0 / 100%) 0%,
+    rgb(0 0 0 / 100%) 45%,
+    rgb(0 0 0 / 0%) 100%
+  );
+}
+
+/* ── 戳记三档（design-14 §2①）─────────────────────────────────────────
+ *
+ * ⚠ 等宽轴与中文的分工是这套排版里最容易搞错的一条：`--qy-sg-mono` 的回退栈
+ * 末端只有 `monospace`，中文字形会掉进浏览器的通用等宽回退（Windows 上通常是
+ * Courier New → SimSun），字形不受控、字距还被拉宽。
+ *
+ * 所以这里按**字串会不会含中文**分家，而不是按"哪个位置好看"：
+ *   · `.qy-lp-code`  —— 确定纯拉丁（页面代号、序号、模型名、OFFICIAL）→ 等宽轴；
+ *   · 其余全部走无衬线轴，效果由大写与字距承担，不由字体承担。 */
+
+/* micro：小号丝印。默认无衬线，需要等宽时再叠 .qy-lp-code。 */
+.qy-lp-micro {
+  font-family: var(--qy-sg-sans, inherit);
+  font-size: var(--qy-sg-micro-size, 10px);
+  letter-spacing: var(--qy-sg-micro-track, 0.3em);
+  text-transform: uppercase;
+  color: var(--qy-sg-faint, var(--muted-foreground));
+}
+
+/* label：区段眉标。 */
+.qy-lp-label {
+  font-family: var(--qy-sg-sans, inherit);
+  font-size: var(--qy-sg-label-size, 10.5px);
+  font-weight: 500;
+  letter-spacing: var(--qy-sg-label-track, 0.2em);
+  text-transform: uppercase;
+  color: var(--qy-sg-mist, var(--muted-foreground));
+}
+
+/* 坐标戳记的收尾行（形状六）。+ 号由伪元素出，与 .qy-sg-readout 同形。 */
+.qy-lp-readout {
+  font-family: var(--qy-sg-sans, inherit);
+  font-size: var(--qy-sg-micro-size, 10px);
+  letter-spacing: var(--qy-sg-readout-track, 0.12em);
+  color: var(--muted-foreground);
+}
+
+.qy-lp-readout::before {
+  content: var(--qy-sg-mark, '+');
+  margin-right: var(--qy-sg-mark-gap, 0.5em);
+  color: var(--qy-sg-mist, var(--primary));
+}
+
+/* 等宽轴。**只叠在确定不含中文的字串上**（见上面那段）。
+ * 必须排在 micro / readout 之后：三条都是单类选择器，同特异度靠源序分胜负。 */
+.qy-lp-code {
+  font-family: var(--qy-sg-mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 展示级标题 ────────────────────────────────────────────────────────
+ * 字重 300 + 收紧字距 + 大字号，与后台的 .qy-sg-sec-title 是同一套语言的
+ * 展示档。中文标题，绝不走等宽轴。 */
+.qy-lp-display {
+  font-family: var(--qy-sg-sans, inherit);
+  font-weight: 300;
+  letter-spacing: -0.02em;
+  line-height: 1.18;
+  color: var(--foreground);
+  text-wrap: balance;
+}
+
+/* 首屏大标题的字号。
+ *
+ * **两段而不是一条 clamp**：`lg` 之前标题独占整行，`lg` 起它只占 7/12 栏。
+ * 同一个 vw 系数没法同时喂饱这两种可用宽度 —— 单条 clamp 调到窄屏够用，
+ * 1024px 那一档就会把「夜色不深，星光刚好」挤成两行（左栏只有 ~537px，
+ * 而 9 个中文字撑到 576px）。窄屏那一档的下限 2rem 是反解出来的：
+ * 375px 上「极致纯粹的 API 中转」按 28px 排是 261px，落在 327px 的可用宽度内，
+ * 于是不会掉出一个孤零零的「转」。 */
+.qy-lp-hero-title {
+  font-size: clamp(2rem, 7.5vw, 3.25rem);
+}
+
+@media (min-width: 1024px) {
+  .qy-lp-hero-title {
+    font-size: clamp(2.5rem, 4.4vw, 4rem);
+  }
+}
+
+/* 副标那一行的渐变字。品牌色 → Mist，只有这一处用到有彩色的文字。 */
+.qy-lp-accent {
+  background-image: linear-gradient(
+    100deg,
+    var(--primary) 0%,
+    var(--qy-sg-mist, var(--primary)) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ── 票面（design-14 §2②）─────────────────────────────────────────────
+ * 19.2px 圆角 + 发丝线 + 洗色底，零投影。hover 的反馈是**线变亮**。 */
+.qy-lp-panel {
+  border: var(--qy-sg-pass-line, 1px) solid var(--qy-sg-hair, var(--border));
+  border-radius: var(--qy-sg-pass-radius, 19.2px);
+  background: var(--qy-sg-wash, transparent);
+  box-shadow: none;
+  transition: border-color 0.3s var(--qy-sg-ease, ease);
+}
+
+.qy-lp-panel:hover {
+  border-color: var(--qy-sg-hair-strong, var(--border));
+}
+
+/* 票面内部的横向分隔。TSX 侧一律只写语义类名，颜色留在本文件里 ——
+ * 与主题同一条纪律：组件里不出现取值。 */
+.qy-lp-panel-head {
+  border-bottom: var(--qy-sg-rule, 1px) solid var(--qy-sg-hair, var(--border));
+}
+
+.qy-lp-panel-foot {
+  border-top: var(--qy-sg-rule, 1px) solid var(--qy-sg-hair, var(--border));
+}
+
+/* 三支派生文字色。
+ *
+ * ⚠ `--qy-sg-faint` 是主题的第三档，`qy-sg-tokens.css` 里写明它**不保证
+ * 4.5:1**，语义是「可以不读的字」——序号、页面代号、轴标。任何承载信息的
+ * 字串（哪怕只有 10px）都要走 `.qy-lp-muted`，那一档是有对比度保证的。
+ *
+ * 这三条必须排在版式类之后：本文件是 index.css 顶层的无层导入，无层恒胜
+ * `@layer utilities`，所以 Tailwind 的 `text-muted-foreground` 压不过
+ * 上面那些设了 color 的版式类 —— 想改色只能用这里的类。 */
+.qy-lp-mist {
+  color: var(--qy-sg-mist, var(--primary));
+}
+
+.qy-lp-muted {
+  color: var(--muted-foreground);
+}
+
+.qy-lp-faint {
+  color: var(--qy-sg-faint, var(--muted-foreground));
+}
+
+/* ── 信号板 ────────────────────────────────────────────────────────────
+ * 参考稿把卡片比较区画成航班信息板；首屏右侧这一块就是它的正题用法 ——
+ * 上游那里放的是一段 curl 演示（示意图），这里放的是本站真实在跑的模型。
+ * 行内只有横发丝线，没有单元格盒、没有斑马纹（design-14 §2③）。 */
+.qy-lp-board-row {
+  display: grid;
+  grid-template-columns: 2.25rem 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding-block: 0.6875rem;
+  border-top: var(--qy-sg-rule, 1px) solid var(--qy-sg-hair, var(--border));
+  font-size: 0.8125rem;
+  letter-spacing: var(--qy-sg-num-track, 0.02em);
+}
+
+.qy-lp-board-row:first-child {
+  border-top: none;
+}
+
+/* 状态灯。参考稿把那支高饱和色叫跑道灯 —— 这里就是字面意义的跑道灯。 */
+.qy-lp-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--qy-sg-pill, 999px);
+  background: var(--primary);
+}
+
+/* ── 编号行（承诺清单）────────────────────────────────────────────────
+ * 与后台工作区索引的 .qy-sg-row 同形：没有卡片、没有斑马纹，只有一条发丝线，
+ * hover 时整行右移。刻意复刻而不是复用那套选择器 —— 那些类名被主题的双向
+ * 对账钉住，跨页复用会把「主题挂载面」与「某一页的版式」绑死。 */
+.qy-lp-row {
+  display: grid;
+  grid-template-columns: 3.25rem 1fr;
+  align-items: baseline;
+  gap: clamp(0.75rem, 2vw, 1.5rem);
+  padding-block: clamp(1.125rem, 2.2vw, 1.5rem);
+  border-top: var(--qy-sg-rule, 1px) solid var(--qy-sg-hair, var(--border));
+  transition: padding-left 0.3s var(--qy-sg-ease, ease);
+}
+
+.qy-lp-row:hover {
+  padding-left: 0.875rem;
+}
+
+.qy-lp-row:hover .qy-lp-idx {
+  color: var(--qy-sg-mist, var(--primary));
+}
+
+.qy-lp-idx {
+  font-family: var(--qy-sg-mono, monospace);
+  font-size: var(--qy-sg-label-size, 10.5px);
+  letter-spacing: var(--qy-sg-label-track, 0.2em);
+  color: var(--qy-sg-faint, var(--muted-foreground));
+  transition: color 0.3s var(--qy-sg-ease, ease);
+}
+
+/* ── 航线（design-14 §2④）────────────────────────────────────────────
+ * 发丝线 + 节点圆点。用内联 SVG 当遮罩、颜色由 background-color 提供，
+ * 这样昼夜切换时走线会跟随；把 stroke 写死进 SVG 就不会。 */
+.qy-lp-route {
+  height: var(--qy-sg-route-h, 8px);
+  background-color: var(--qy-sg-route-color, var(--border));
+  mask-image: var(--qy-sg-route-tile);
+  mask-size: var(--qy-sg-route-tile-size, 160px 8px);
+  mask-repeat: repeat-x;
+  mask-position: left center;
+}
+
+/* 窄屏收起首屏那截航线：两个戳记本身就占满一行，中间再插 4rem 走线会把
+ * 「MIDNIGHT SIGNAL」折成两行。与主题给 `.qy-sg-code` 的处理同一条理由 ——
+ * 它是装饰件，不是信息。 */
+@media (max-width: 640px) {
+  .qy-lp-stamp-route {
+    display: none;
+  }
+}
+
+/* ── 胶囊（客户端条）────────────────────────────────────────────────── */
+.qy-lp-chip {
+  border: var(--qy-sg-rule, 1px) solid var(--qy-sg-hair, var(--border));
+  border-radius: var(--qy-sg-pill, 999px);
+  background: var(--qy-sg-wash, transparent);
+  transition:
+    border-color 0.3s var(--qy-sg-ease, ease),
+    background-color 0.3s var(--qy-sg-ease, ease);
+}
+
+.qy-lp-chip:hover {
+  border-color: var(--qy-sg-hair-strong, var(--border));
+  background: var(--qy-sg-wash-strong, transparent);
+}
+
+/* ── 入场 ──────────────────────────────────────────────────────────────
+ * 只有一种：淡入 + 6px 上移。data-revealed 由 <QyLandingReveal> 在
+ * IntersectionObserver 命中时翻成 true。**刻意不复用上游的
+ * .landing-animate-fade-up**：主题 §12 的作用域根正是
+ * `.min-h-svh:has(> section .landing-animate-fade-up)`，用了那个类名会让
+ * 为上游首页写的那整块改写规则也压到本页上，两套版式打架。 */
+.qy-lp-reveal {
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    opacity 0.5s var(--qy-sg-ease, ease),
+    transform 0.5s var(--qy-sg-ease, ease);
+  transition-delay: var(--qy-lp-delay, 0ms);
+}
+
+.qy-lp-reveal[data-revealed='true'] {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qy-lp-reveal,
+  .qy-lp-reveal[data-revealed='true'] {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  .qy-lp-row,
+  .qy-lp-row:hover,
+  .qy-lp-panel,
+  .qy-lp-chip {
+    transition: none;
+  }
+
+  .qy-lp-row:hover {
+    padding-left: 0;
+  }
+}

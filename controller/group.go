@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -84,7 +85,7 @@ func GetUserGroupOptions(c *gin.Context) {
 	}
 	sort.Strings(names)
 
-	// ── 翻页是**可选的**,而且只有显式带了参数才生效 ────────────────────
+	// ── 搜索与翻页都是**可选的**,而且只有显式带了参数才生效 ──────────────
 	//
 	// 这份清单同时喂着五个下拉(用户编辑、限流规则、API 地址、套餐、令牌默认分组),
 	// 下拉要的是全量 —— 一个只列前 10 档的用户分组下拉会让第 11 档以后的人
@@ -93,7 +94,20 @@ func GetUserGroupOptions(c *gin.Context) {
 	// 「令牌默认分组」那一页是唯一按**行**消费它的地方:每个用户分组一行、
 	// 每行一个装着全部模型分组的下拉。分组一多,那一页渲染的是
 	// 用户分组数 × 模型分组数 个选项 —— 项目方说的"卡顿不易编辑"就是它。
-	// 那一页(且只有那一页)带上 ?p= 与 ?page_size=。
+	// 那一页(且只有那一页)带上 ?keyword= / ?p= / ?page_size=。
+	//
+	// 这里能搜的只有分组名:清单里就只有名字,登记表的备注不在这个端点的口径内
+	// (它的事实源是 users.group,而那张表没有备注这一列)。
+	if kw := c.Query("keyword"); strings.TrimSpace(kw) != "" {
+		matched := make([]string, 0, len(names))
+		for _, name := range names {
+			if httpq.MatchKeyword(kw, name) {
+				matched = append(matched, name)
+			}
+		}
+		names = matched
+	}
+
 	page, size := httpq.Paginate(c, httpq.Spec{DefaultSize: httpq.GroupTablePageSize})
 	if c.Query("p") == "" && c.Query("page_size") == "" {
 		c.JSON(http.StatusOK, gin.H{

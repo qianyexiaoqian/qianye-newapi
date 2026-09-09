@@ -116,7 +116,7 @@ func TestUserGroupTableCarriesEveryColumn(t *testing.T) {
 	}).Error)
 	require.NoError(t, reload())
 
-	view, err := buildMatrixView(gdb, nil)
+	view, err := buildMatrixView(gdb, rowWindow{})
 	require.NoError(t, err)
 	rows := rowsByName(view)
 
@@ -222,7 +222,7 @@ func TestUserGroupTableTellsTheTruthAboutEnforcement(t *testing.T) {
 		UserGroup: "shadowed", ModelGroup: "paid", CreatedAt: 1, UpdatedAt: 1}).Error)
 	require.NoError(t, reload())
 
-	view, err := buildMatrixView(gdb, nil)
+	view, err := buildMatrixView(gdb, rowWindow{})
 	require.NoError(t, err)
 	rows := rowsByName(view)
 
@@ -272,7 +272,7 @@ func TestUserGroupTableExcludesModelGroups(t *testing.T) {
 	require.NoError(t, gdb.Create(newScope("scoped_only", ModeEnforce, false, nil, "", 1, 1)).Error)
 	require.NoError(t, reload())
 
-	view, err := buildMatrixView(gdb, nil)
+	view, err := buildMatrixView(gdb, rowWindow{})
 	require.NoError(t, err)
 	rows := rowsByName(view)
 
@@ -316,7 +316,7 @@ func TestUsableColumnSurvivesGrantsOutsideTheRatioTable(t *testing.T) {
 
 	seedScope(t, gdb, "vip", ModeEnforce, false, "已被删掉的池子", "另一个消失的池子")
 
-	view, err := buildMatrixView(gdb, nil)
+	view, err := buildMatrixView(gdb, rowWindow{})
 	require.NoError(t, err)
 	row, ok := rowsByName(view)["vip"]
 	require.True(t, ok)
@@ -344,7 +344,7 @@ func TestUsableColumnExcludesAutoPseudoGroup(t *testing.T) {
 	useCrossRatios(t, `{}`)
 	useModelGroupNote(t, map[string]string{})
 
-	view, err := buildMatrixView(gdb, nil)
+	view, err := buildMatrixView(gdb, rowWindow{})
 	require.NoError(t, err)
 	row, ok := rowsByName(view)["unmanaged"]
 	require.True(t, ok)
@@ -382,13 +382,13 @@ func TestPagedMatrixKeepsWholeTableCounts(t *testing.T) {
 	seedScope(t, gdb, "g4", ModeEnforce, false)
 	require.NoError(t, reload())
 
-	full, err := buildMatrixView(gdb, nil)
+	full, err := buildMatrixView(gdb, rowWindow{})
 	require.NoError(t, err)
 	require.Len(t, full.UserGroups, 5)
 	assert.Nil(t, full.Pagination,
 		"不带翻页参数时不下发游标 —— 前端据此判断「要不要画翻页条」")
 
-	page2, err := buildMatrixView(gdb, &pageWindow{Page: 2, Size: 2})
+	page2, err := buildMatrixView(gdb, rowWindow{Paged: true, Page: 2, Size: 2})
 	require.NoError(t, err)
 
 	names := make([]string, 0, len(page2.UserGroups))
@@ -422,10 +422,81 @@ func TestPagedMatrixKeepsWholeTableCounts(t *testing.T) {
 
 	// 越界的页码给空行而不是 panic(httpq.Slice 的职责),游标仍然如实报总数 ——
 	// 前端据此把页码回落到最后一页。
-	beyond, err := buildMatrixView(gdb, &pageWindow{Page: 99, Size: 2})
+	beyond, err := buildMatrixView(gdb, rowWindow{Paged: true, Page: 99, Size: 2})
 	require.NoError(t, err)
 	assert.Empty(t, beyond.UserGroups)
 	assert.Empty(t, beyond.Cells)
 	require.NotNil(t, beyond.Pagination)
 	assert.Equal(t, 5, beyond.Pagination.Total)
+}
+
+// TestMatrixSearchFiltersBeforePaging 守搜索的三件事。
+//
+//  1. **先筛后切**。反过来的话得到的是"第 1 页里恰好命中的那几行" —— 一个每翻
+//     一页就换一批结果、且永远搜不到第 2 页之后任何东西的搜索框,而它看起来
+//     完全正常。这是本功能唯一一个改错了不会报错的地方。
+//  2. total 是**筛完**的条数。写成全站条数会让「共 116 条」配着 2 行结果出现。
+//  3. scope_policy 的四个计数**不跟着筛**。它们回答的是"全站还有几档没设范围",
+//     跟着搜索框变的话运营会照着一个只属于当前关键词的数字去汇报。
+func TestMatrixSearchFiltersBeforePaging(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, true)
+	syncHotAsync(t)
+	useUpstreamGroups(t, map[string]string{"paid": ""}, map[string]float64{"paid": 1})
+	// 五档人:三档名字里有 vip,其中两档排在第 2 页之后 —— 只有"先筛后切"才找得到。
+	useTopupRatios(t, map[string]float64{
+		"a-vip": 0.9, "b-plain": 0.9, "c-plain": 0.9, "d-vip": 0.9, "e-vip": 0.9,
+	})
+	useCrossRatios(t, `{}`)
+	useModelGroupNote(t, map[string]string{})
+	seedUserGroupRegistry(t, gdb,
+		groupns.UserGroup{Name: "b-plain", Note: "这一档是年付用户",
+			Enabled: true, DefaultMode: groupns.DefaultModeInherit})
+	seedScope(t, gdb, "c-plain", ModeEnforce, false, "paid")
+	require.NoError(t, reload())
+
+	names := func(view *matrixView) []string {
+		out := make([]string, 0, len(view.UserGroups))
+		for _, row := range view.UserGroups {
+			out = append(out, row.Name)
+		}
+		return out
+	}
+
+	// 每页 2 行,而命中的第三档在整表的第 5 位 —— 先切后筛会把它整个丢掉。
+	hit, err := buildMatrixView(gdb, rowWindow{Keyword: "vip", Paged: true, Page: 1, Size: 2})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a-vip", "d-vip"}, names(hit))
+	require.NotNil(t, hit.Pagination)
+	assert.Equal(t, 3, hit.Pagination.Total, "total 是筛完的条数,不是全站条数")
+
+	page2, err := buildMatrixView(gdb, rowWindow{Keyword: "vip", Paged: true, Page: 2, Size: 2})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"e-vip"}, names(page2),
+		"命中项排在整表第 5 位:先切后筛的实现在这里会返回空")
+
+	// 全站口径的计数不受关键词影响。
+	full, err := buildMatrixView(gdb, rowWindow{})
+	require.NoError(t, err)
+	assert.Equal(t, full.ScopePolicy, hit.ScopePolicy,
+		"scope_policy 是全站口径 —— 跟着搜索框变会让分母只属于当前这个关键词")
+	assert.Equal(t, 4, hit.ScopePolicy.UnsetGroups)
+	assert.Equal(t, 1, hit.ScopePolicy.ScopedGroups)
+
+	// 备注也在匹配面里(表上有这一列),而 display_name 不在表上、也就不参与。
+	byNote, err := buildMatrixView(gdb, rowWindow{Keyword: "年付"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"b-plain"}, names(byNote),
+		"备注是表上看得见的一列,搜得到它;搜不到的字段会让运营拿到一行"+
+			"看不出为什么会中的结果")
+
+	// 大小写折叠:运营在搜索框里不会去区分。
+	upper, err := buildMatrixView(gdb, rowWindow{Keyword: "VIP"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a-vip", "d-vip", "e-vip"}, names(upper))
+
+	// 空关键词 = 不筛选,逐位等于整表。
+	blank, err := buildMatrixView(gdb, rowWindow{Keyword: "   "})
+	require.NoError(t, err)
+	assert.Equal(t, names(full), names(blank))
 }

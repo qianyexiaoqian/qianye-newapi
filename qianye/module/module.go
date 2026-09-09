@@ -72,6 +72,26 @@ type LogTabler interface {
 	LogTables() []any
 }
 
+// WatchTabler 是可选接口:实现它的模块把表声明到**风控预警存储节点**
+// (config.Config.RiskWatch.Database)上。
+//
+// 它与 LogTabler 是两件事,不要合并:
+//
+//	LogTabler    台账库是**可选**的。没配 dsn 时那些表跟着主库走,
+//	             与该接口存在之前逐字节一致 —— 升级不要求任何部署准备新库。
+//	WatchTabler  存储节点是**必选**的。没配 dsn 时声明它的模块整个不注册,
+//	             因此这份清单要么全在那个库里,要么根本不存在。
+//
+// 合并成一个"附属库"接口会立刻丢掉这条区别,而它正是风控预警被单独拆出去的
+// 全部理由(见 qianye/db/watchdb.go 的文件头)。
+//
+// 硬约束与 LogTabler 逐字相同:声明到这里的表**不得**与主库或台账库的表 JOIN,
+// 也不得参与任何跨表事务 —— 它们在不同的连接上,那种查询会直接报错。
+type WatchTabler interface {
+	// WatchTables 返回该模块要迁移到风控预警存储节点的 GORM 模型。
+	WatchTables() []any
+}
+
 var registry []Module
 
 // Register 由各模块在 init() 中调用。

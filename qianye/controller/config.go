@@ -90,6 +90,11 @@ func GetConfig(c *gin.Context) {
 			// 商城只认星屑,所以这里下发的是"配置上真的能用"(mall ∧ stardust),
 			// 表达式只此一处(guard.featureOn),前端不许再拼一份。
 			"mall": guard.FeatureConfigured(guard.FlagMall),
+			// risk_watch 下发的是"配置上真的能用"(enabled ∧ 配了存储节点):
+			// 存储节点是这个功能的一部分,不是它的一个依赖。只看 enabled 的话,
+			// 一个漏填 dsn 的部署会在侧栏里渲染出一个每一条接口都 404 的入口。
+			// 表达式只此一处(guard.featureOn),前端不许再拼一份。
+			"risk_watch": guard.FeatureConfigured(guard.FlagRiskWatch),
 		},
 		// 星屑的展示参数:单位名(运营可改,随 qy_settings)与入口开关。
 		"stardust": QyStardustSection(),

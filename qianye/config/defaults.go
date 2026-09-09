@@ -231,6 +231,31 @@ func applyDefaults(c *Config) {
 	// 默认值一致 —— 三者取值一旦不同,新写入的行就会被标成一个查不到密钥的版本。
 	intDefault(&v.AIReviewKeyVersion, 1)
 
+	// 风控预警存储节点共用同一套连接池默认值,理由与台账库逐字相同 ——
+	// 补默认是无条件的,而 0 在这几格上恰好都是非法值(会被 validateDatabase
+	// 拒绝启动),不补的话每个只写了 dsn 的部署都起不来。
+	//
+	// 池子与台账库同一档:监听记录的写入全部走异步队列,读取只在管理端。
+	rwd := &c.RiskWatch.Database
+	intDefault(&rwd.MaxIdleConns, 5)
+	intDefault(&rwd.MaxOpenConns, 20)
+	intDefault(&rwd.ConnMaxLifetimeSeconds, 600)
+	intDefault(&rwd.ConnMaxIdleTimeSeconds, 120)
+	intDefault(&rwd.ConnectTimeoutSeconds, 5)
+	intDefault(&rwd.ReadTimeoutSeconds, 30)
+	intDefault(&rwd.WriteTimeoutSeconds, 30)
+	intDefault(&rwd.SlowThresholdMs, 200)
+	strDefault(&rwd.LogLevel, "warn")
+
+	rw := &c.RiskWatch
+	intDefault(&rw.SnapshotSeconds, 30)
+	intDefault(&rw.MaxActiveTasks, 50)
+	intDefault(&rw.CaptureMaxChars, 4000)
+	intDefault(&rw.RetentionDays, 30)
+	intDefault(&rw.MaxRetentionDays, 365)
+	intDefault(&rw.GCIntervalMinutes, 60)
+	intDefault(&rw.GCBatchSize, 2000)
+
 	adoptRetiredGroupPricing(c)
 	adoptRetiredWithdraw(c)
 	adoptRenamedCommissionQuotaKeys(&c.Commission)

@@ -42,6 +42,7 @@ const (
 	FlagTicket       Flag = "ticket"
 	FlagStardust     Flag = "stardust"
 	FlagMall         Flag = "mall"
+	FlagRiskWatch    Flag = "risk_watch"
 
 	// FlagPayPassword 是支付密码自身的可用性,它不属于任何一个模块。
 	//
@@ -75,9 +76,13 @@ func Enabled() bool { return config.Enabled() }
 // Available 表示扩展启用且扩展库当前可用(含熔断状态)。
 func Available() bool { return Enabled() && db.Available() }
 
-// Feature 判断单个功能是否可用(功能开关 ∧ Available)。
+// Feature 判断单个功能是否可用(功能开关 ∧ 它依赖的那个库可用)。
+//
+// "它依赖的那个库"绝大多数时候就是主扩展库,风控预警是唯一的例外
+// (见 storeAvailable)。这里与 RequireAPI 必须用同一个判据 —— 两处分叉的话,
+// 会出现"入口渲染出来了、点进去 503"或者反过来"接口好好的、入口不见了"。
 func Feature(f Flag) bool {
-	if !Available() {
+	if !storeAvailable(f) {
 		return false
 	}
 	return featureOn(f)
@@ -118,6 +123,12 @@ func featureOn(f Flag) bool {
 	case FlagMall:
 		// 商城只认星屑,星屑没开商城就没有任何可花的东西。
 		return c.Mall.Enabled && c.Stardust.Enabled
+	case FlagRiskWatch:
+		// 存储节点是这个功能的一部分,不是它的一个依赖:没配就等于没这个功能
+		// (validate 已经把「enabled 却没填 dsn」拦成启动错误,所以这里两格
+		// 同真只可能出现在热载出错等边角状态)。判据写全的理由是前端引导端点
+		// 会读 FeatureConfigured —— 它必须如实回答"这一格现在到底有没有"。
+		return c.RiskWatch.On()
 	case FlagPayPassword:
 		// 四条会要求验密的路径,任意一条开着,支付密码就必须可设、可改、可找回。
 		// 与 withdraw/api_user.go 的 paypass.Require、transfer/handler.go 的
@@ -378,12 +389,29 @@ func RequireAPI(c *gin.Context, f Flag) bool {
 		abort(c, http.StatusNotFound, CodeFeatureOff, "该功能未启用")
 		return false
 	}
-	if !db.Available() {
+	if !storeAvailable(f) {
 		c.Header("Retry-After", "30")
 		abort(c, http.StatusServiceUnavailable, CodeUnavailable, "扩展服务暂时不可用,请稍后再试")
 		return false
 	}
 	return true
+}
+
+// storeAvailable 回答"这个功能依赖的那个库此刻可用吗"。
+//
+// 绝大多数功能的答案是主扩展库。风控预警是唯一的例外:它的两张表全都住在
+// 单独配置的存储节点上(见 qianye/db/watchdb.go),主扩展库挂掉与它无关。
+//
+// 判据必须在这里分叉,不能让调用方各写一句 `if !db.WatchAvailable()`:
+// 那样"扩展库挂了"会让风控预警的取证页面一起 503 —— 而排查一次疑似刷子
+// 恰恰常常发生在站点出问题的那一刻。反过来,漏掉这个分叉的另一半更糟:
+// 存储节点挂了而接口照常 200,管理员看到的是一张空列表,与"这个用户很干净"
+// 长得一模一样。
+func storeAvailable(f Flag) bool {
+	if f == FlagRiskWatch {
+		return db.WatchAvailable()
+	}
+	return db.Available()
 }
 
 func abort(c *gin.Context, status int, code, msg string) {

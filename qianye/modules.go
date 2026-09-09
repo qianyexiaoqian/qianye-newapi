@@ -21,6 +21,7 @@ import (
 	_ "github.com/QuantumNous/new-api/qianye/modules/mall"
 	_ "github.com/QuantumNous/new-api/qianye/modules/paypass"
 	_ "github.com/QuantumNous/new-api/qianye/modules/planentitlement"
+	_ "github.com/QuantumNous/new-api/qianye/modules/riskwatch"
 	_ "github.com/QuantumNous/new-api/qianye/modules/stardust"
 	_ "github.com/QuantumNous/new-api/qianye/modules/subscription"
 	_ "github.com/QuantumNous/new-api/qianye/modules/ticket"

@@ -56,6 +56,7 @@ type Config struct {
 	GroupVisibility GroupVisibility `yaml:"group_visibility"`
 	Availability    Availability    `yaml:"availability"`
 	Violation       Violation       `yaml:"violation"`
+	RiskWatch       RiskWatch       `yaml:"risk_watch"`
 	GroupMatrix     GroupMatrix     `yaml:"group_matrix"`
 	GroupNamespace  GroupNamespace  `yaml:"group_namespace"`
 	PlanEntitlement PlanEntitlement `yaml:"plan_entitlement"`
@@ -490,6 +491,77 @@ type Violation struct {
 	// cyber 会话自动屏蔽的**全部配置**(开关、TTL、作用分组、触发过滤规则)都在
 	// 管理端配、落 DB 单行表 qy_violation_cyber_setting —— 与 AISetting 同一条理由,
 	// 运营要能自助改、并有「还原默认」。YAML 里一个字段都不留。
+}
+
+// RiskWatch 是风控预警(可疑用户监听取证)。
+//
+// # 它与违规检测不是一件事
+//
+// 违规检测回答"这一次请求该不该被拦",判据是规则,处置是拦截与扣费。
+// 风控预警回答"这个账号最近到底在做什么",它**只观察不处置**:按管理员设定的
+// 作用域与概率抽样,把命中请求的上下文原样留档,供人事后翻看。
+//
+// 因此它挂在 relayguard 的观察者一侧,永远不返回错误,连被违规规则拦下来的
+// 那一次也照抓 —— 一个账号连续撞违规词、每次都被拒,恰恰是最该有记录的形状。
+//
+// # 为什么它有自己的一段 database
+//
+// 监听记录存的是被抽中请求的**完整上下文**,而抽多少、抽多久由运营在管理端
+// 临时决定:一个"永久监听 + 100% 概率"的任务,一天就能写进几十 GB。这个量
+// 既不由代码决定,也不由部署时的配置决定,而是由某个管理员下午三点点的那一下
+// 决定 —— 把它放进任何一个已有的库,都会得到"某次监管操作把磁盘写满,跟着
+// 躺下的是佣金账本"这个结局。
+//
+// 所以存储节点是**必填**的:enabled: true 而 database.dsn 为空一律拒绝启动
+// (见 validateRiskWatch)。静默禁用在这里是错的 —— 那会让"忘了配存储节点"
+// 表现成"功能开着但一条都不抓",而这正是本仓最不愿再遇到的那种失效。
+type RiskWatch struct {
+	Enabled bool `yaml:"enabled"`
+
+	// Database 是监听记录的独立存储节点。与 log_database 同规格(MySQL /
+	// PostgreSQL),但**没有**"留空就跟着主库走"那一档。
+	Database Database `yaml:"database"`
+
+	// SnapshotSeconds 是监听任务内存快照的刷新周期。
+	//
+	// 热路径每一次请求都要问"这一条在不在某个监听任务的作用域里",查库不可接受。
+	// 代价是新建/停止一个任务最多晚这么多秒生效 —— 对取证来说完全可以接受,
+	// 而"条数上限"那一条不受它影响:上限由落库时的原子预留保证,不是靠快照。
+	SnapshotSeconds int `yaml:"snapshot_seconds"`
+
+	// MaxActiveTasks 是同时处于运行中的监听任务数上限。
+	//
+	// 它是成本闸门而不是功能限制:每个运行中的任务都会让热路径多做一次作用域
+	// 比较,而更要紧的是每个任务都在往同一个库里写。0 表示不限制。
+	MaxActiveTasks int `yaml:"max_active_tasks"`
+
+	// CaptureMaxChars 是单条记录留存的上下文字符上限(按 rune 计)。
+	//
+	// 超出部分掐头去尾保留(见 clipHeadTail):违规提示词的特征通常在开头的
+	// 指令和结尾的载荷上,截中间比截尾部保留的信息多。
+	CaptureMaxChars int `yaml:"capture_max_chars"`
+
+	// RetentionDays 是任务没有单独指定保留期时的默认天数。0 = 永久保留。
+	//
+	// 永久保留是一个合法选择(取证材料要跟着申诉/仲裁走完),但它必须是运营
+	// **写下来**的选择,所以出厂值是 30 天而不是 0。
+	RetentionDays int `yaml:"retention_days"`
+
+	// MaxRetentionDays 是任务能配的保留天数上界,0 = 不设上界。
+	//
+	// 存在的理由是这个功能的空间账:一个"永久监听 + 保留 3650 天"的任务
+	// 在管理端只是两个输入框,而它的代价是这个存储节点再也不会缩小。
+	MaxRetentionDays int `yaml:"max_retention_days"`
+
+	// GCIntervalMinutes 是过期记录清理任务的周期。
+	GCIntervalMinutes int `yaml:"gc_interval_minutes"`
+
+	// GCBatchSize 是每轮清理删除的行数上限。
+	//
+	// 分批不是优化:一次 DELETE 掉几百万行会在 InnoDB 上持有巨大的 undo、
+	// 在 PostgreSQL 上一次性攒出同等数量的死元组,而这个库随时可能正在被
+	// 热路径写入。
+	GCBatchSize int `yaml:"gc_batch_size"`
 }
 
 // GroupMatrix 用户分组 × 模型分组的**权威可选清单**。
@@ -972,6 +1044,17 @@ func (d Database) ShouldAutoMigrate() bool { return boolOr(d.AutoMigrate, true) 
 // 而这正是升级前的形态 —— 台账表跟着 database 走。
 func (c *Config) LogDatabaseSeparate() bool {
 	return c != nil && strings.TrimSpace(c.LogDatabase.DSN) != ""
+}
+
+// On 回答「风控预警这一轮到底开着吗」,是全仓判定这件事的**唯一**口径。
+//
+// 与 LogDatabaseSeparate 形状相同、方向相反:那一个的零值是"跟着主库走",
+// 这一个的零值是"整个功能不存在"。两格都要看是因为存储节点是这个功能的
+// 一部分而不是它的一个依赖 —— validate 已经把「enabled 却没填 dsn」拦成
+// 启动错误,所以两格同真才等价于"配好了",而只判 enabled 会让一个漏填 dsn
+// 的部署去建一个空句柄,只判 dsn 又会让写着 enabled: false 的部署白建一个连接池。
+func (r RiskWatch) On() bool {
+	return r.Enabled && strings.TrimSpace(r.Database.DSN) != ""
 }
 
 func (r Runtime) FailOpen() bool       { return boolOr(r.HotPathFailOpen, true) }

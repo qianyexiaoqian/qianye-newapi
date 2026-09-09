@@ -15,6 +15,7 @@ DELETE /api/qy/admin/lottery/covers/:ref
 DELETE /api/qy/admin/mall/covers/:ref
 DELETE /api/qy/admin/mall/products/:no
 DELETE /api/qy/admin/mall/products/:no/codes/:id
+DELETE /api/qy/admin/risk-watch/tasks/:id
 DELETE /api/qy/admin/stardust/group-rates/:group
 DELETE /api/qy/admin/stardust/plan-rewards/:plan_id
 DELETE /api/qy/admin/ticket/images/:ref
@@ -72,6 +73,10 @@ GET /api/qy/admin/pay-password/:user_id
 GET /api/qy/admin/request-audits
 GET /api/qy/admin/restricted-accounts
 GET /api/qy/admin/restricted-notice
+GET /api/qy/admin/risk-watch/captures
+GET /api/qy/admin/risk-watch/captures/:id
+GET /api/qy/admin/risk-watch/stats
+GET /api/qy/admin/risk-watch/tasks
 GET /api/qy/admin/stardust/accruals
 GET /api/qy/admin/stardust/balances
 GET /api/qy/admin/stardust/config
@@ -212,6 +217,9 @@ POST /api/qy/admin/mall/products/:no/codes
 POST /api/qy/admin/mall/products/:no/codes/:id/take
 POST /api/qy/admin/pay-password/:user_id/reset
 POST /api/qy/admin/pay-password/:user_id/unlock
+POST /api/qy/admin/risk-watch/tasks
+POST /api/qy/admin/risk-watch/tasks/:id/start
+POST /api/qy/admin/risk-watch/tasks/:id/stop
 POST /api/qy/admin/stardust/adjust
 POST /api/qy/admin/stardust/settle/rerun
 POST /api/qy/admin/subscription/plans/:plan_id/delete
@@ -269,6 +277,7 @@ PUT /api/qy/admin/lottery/activities/:act_no/schedule
 PUT /api/qy/admin/lottery/config
 PUT /api/qy/admin/mall/products/:no
 PUT /api/qy/admin/restricted-notice
+PUT /api/qy/admin/risk-watch/tasks/:id
 PUT /api/qy/admin/stardust/config
 PUT /api/qy/admin/stardust/group-rates/:group
 PUT /api/qy/admin/stardust/plan-rewards/:plan_id

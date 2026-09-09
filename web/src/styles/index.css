@@ -42,6 +42,8 @@ For commercial licensing, please contact support@quantumnous.com
 @import './qy-steins-gate.css';
 /* 娱乐板块的动效与图形零件(不属于主题,任何预设下都跑;见文件头)。 */
 @import './qy-visual.css';
+/* 未登录落地页的版式零件(同样不属于主题,只消费主题的取值;见文件头)。 */
+@import './qy-landing.css';
 
 /* Shiki dual themes: token colors follow dark theme (pre background stays `bg-background` on the block) */
 @layer components {

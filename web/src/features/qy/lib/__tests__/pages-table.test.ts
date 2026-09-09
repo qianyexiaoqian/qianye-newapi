@@ -125,6 +125,9 @@ const ROOT_ADMIN_URLS = [
   // 保留期,改一次影响之后每一笔;这一页是每天要开的记录。
   // 第一版把它做成配置页底下的一张卡,项目方打开那一页根本没看见它。
   '/qy/admin/violation-ai-logs',
+  // 风控预警:每天要开的取证流水页,与上面两页并列。它没有站点级配置可以进
+  // 抽屉 —— 存储节点在 YAML 里,其余全是逐任务的参数。
+  '/qy/admin/risk-watch',
   '/qy/admin/audit-logs',
   '/qy/admin/health',
   '/qy/admin/lottery',
@@ -416,6 +419,7 @@ describe('qy 选择夹（需求 2 / 3）', () => {
       availability: true,
       lottery: true,
       violation: true,
+      risk_watch: true,
       ticket: true,
       group_matrix: true,
       pay_password: true,
@@ -448,6 +452,7 @@ describe('qy 选择夹（需求 2 / 3）', () => {
       availability: true,
       lottery: true,
       violation: true,
+      risk_watch: true,
       ticket: true,
       group_matrix: true,
       pay_password: true,
@@ -482,6 +487,7 @@ describe('qy 选择夹（需求 2 / 3）', () => {
       availability: true,
       lottery: true,
       violation: true,
+      risk_watch: true,
       ticket: true,
       group_matrix: true,
       pay_password: true,
@@ -531,6 +537,7 @@ describe('qy 选择夹（需求 2 / 3）', () => {
       availability: true,
       lottery: true,
       violation: true,
+      risk_watch: true,
       ticket: true,
       group_matrix: true,
       pay_password: true,

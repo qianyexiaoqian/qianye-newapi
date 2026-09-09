@@ -232,6 +232,12 @@ func registerOpProbe(gdb *gorm.DB) error {
 // 刻意不挂进 main.go 的 defer(省一行改动预算):进程退出由操作系统回收连接,
 // 后台任务持有的租约会按 TTL 自然过期被其他节点接管。
 func Close() error {
+	// 两个附属库先关:它们各自持有一个独立的连接池,漏掉的那一个会在进程
+	// 长时间不退出的场景(测试、平滑重启)里一直占着对端的连接数。
+	// 它们的错误不掩盖主库的错误 —— 主库关不上才是要报上去的那一个。
+	_ = logStore.close()
+	_ = watchStore.close()
+
 	gdb := handle.Load()
 	if gdb == nil {
 		return nil

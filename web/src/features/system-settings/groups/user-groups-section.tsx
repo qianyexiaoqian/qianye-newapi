@@ -35,6 +35,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { qyKeys } from '@/features/qy/lib/query-keys'
 import { qyGmMatrixQuery } from '@/features/qy/pages/admin-group-matrix/api'
 import { QyGmRowWarningIcons } from '@/features/qy/pages/admin-group-matrix/components/row-warnings'
@@ -60,6 +61,7 @@ import {
 import type { QyUgrCreateRequest } from '@/features/qy/pages/admin-user-groups/roster/types'
 import { QyPager } from '@/features/qy/pages/components/qy-pager'
 import { qyOpsErrorMessage } from '@/features/qy/pages/ops/errors'
+import { useDebounce } from '@/hooks'
 
 import { SettingsSwitchField } from '../components/settings-form-layout'
 import { SettingsPageFormActions } from '../components/settings-page-context'
@@ -154,9 +156,20 @@ export function UserGroupsSection(props: {
     里加一个键，会让另外七个 section 也带上一个与它们无关的参数。
   */
   const [page, setPage] = useState(1)
+  /*
+    搜索走**服务端**。这一点不是可选的：翻页已经在服务端，客户端筛选只能筛到
+    当前这 10 行 —— 那会变成一个"每翻一页就换一批结果、且永远搜不到第 2 页
+    之后任何东西"的搜索框，而它看起来完全正常。
+
+    输入去抖 300ms：这个端点每一次调用都要跑几条全表聚合，逐字符触发等于
+    敲一个词就打十次。`keyword` 是输入框里的值（立即回显），`searchTerm` 是
+    真正发出去的那个。
+  */
+  const [keyword, setKeyword] = useState('')
+  const searchTerm = useDebounce(keyword.trim(), 300)
   const pageParams = useMemo(
-    () => ({ p: page, page_size: QY_UG_PAGE_SIZE }),
-    [page]
+    () => ({ p: page, page_size: QY_UG_PAGE_SIZE, keyword: searchTerm }),
+    [page, searchTerm]
   )
   const matrixQuery = useQuery({ ...qyGmMatrixQuery(pageParams), retry: false })
   const rows = matrixQuery.data?.user_groups ?? QY_UG_NO_ROWS
@@ -497,16 +510,30 @@ export function UserGroupsSection(props: {
         <p className='text-muted-foreground min-w-0 text-xs leading-5'>
           {t('qy_ug_table_hint')}
         </p>
-        <Button
-          size='sm'
-          onClick={() => {
-            setCreateDraft(QY_UGR_EMPTY_DRAFT)
-            setCreating(true)
-          }}
-        >
-          <Plus className='h-4 w-4' />
-          {t('qy_ugr_create_title')}
-        </Button>
+        <div className='flex shrink-0 flex-wrap items-center gap-2'>
+          <Input
+            className='h-8 w-56'
+            value={keyword}
+            aria-label={t('qy_ug_search_label')}
+            placeholder={t('qy_ug_search_ph')}
+            onChange={(event) => {
+              // 立刻回到第 1 页：留在第 3 页上搜索，得到的是"筛完之后的第 3 页"，
+              // 而筛完通常只有一页 —— 屏幕上是一张空表加一句「共 2 条」。
+              setPage(1)
+              setKeyword(event.target.value)
+            }}
+          />
+          <Button
+            size='sm'
+            onClick={() => {
+              setCreateDraft(QY_UGR_EMPTY_DRAFT)
+              setCreating(true)
+            }}
+          >
+            <Plus className='h-4 w-4' />
+            {t('qy_ugr_create_title')}
+          </Button>
+        </div>
       </div>
 
       {/*
@@ -529,7 +556,13 @@ export function UserGroupsSection(props: {
         data={[...rows]}
         getRowKey={(row) => row.name}
         emptyClassName='text-muted-foreground h-20 text-sm'
-        emptyContent={t('qy_gs_user_groups_empty')}
+        // 「一档人都没有」与「这个词没搜到」是两件完全不同的事，前者是故障、
+        // 后者是正常结果。共用一句话会让运营在搜错字时以为清单被清空了。
+        emptyContent={
+          searchTerm === ''
+            ? t('qy_gs_user_groups_empty')
+            : t('qy_ug_search_no_match', { keyword: searchTerm })
+        }
         columns={[
           {
             id: 'name',

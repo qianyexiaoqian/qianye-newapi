@@ -18,8 +18,11 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { createFileRoute } from '@tanstack/react-router'
 
-import { Home } from '@/features/home'
+import { QyLanding } from '@/features/qy/landing'
 
+// 未登录首页走二开自己的落地页（`features/qy/landing`）。上游的
+// `features/home` 一行不改，仍然承担「管理员配了自定义首页内容」那一支，
+// 由 QyLanding 在检测到内容后交回给它。
 export const Route = createFileRoute('/')({
-  component: Home,
+  component: QyLanding,
 })

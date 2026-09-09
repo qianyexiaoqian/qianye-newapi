@@ -24,6 +24,7 @@ import {
   Landmark,
   LifeBuoy,
   Megaphone,
+  Radar,
   Repeat,
   ScanEye,
   ScrollText,
@@ -776,6 +777,21 @@ export const QY_PAGES: readonly QyPageDef[] = [
     group: 'qy-risk',
     icon: ScanEye,
     codeKey: 'qy_sg_code_a_violation_ai_logs',
+  },
+  // 风控预警。与上面两页同一组、同一档:它是每天要开的流水页(今天有几个任务在跑、
+  // 抓到了什么),而不是"改一次影响之后每一笔"的配置 —— 这个功能压根没有站点级配置,
+  // 存储节点在 YAML 里,其余全是逐任务的参数。
+  //
+  // 紧跟 AI 审核日志:两页的关系是"自动判的"与"人工盯的"。AI 审核回答
+  // 「这一条内容违不违规」,风控预警回答「这个账号最近在做什么」——
+  // 一个刚被举报的账号,规则库里没有任何一条能命中他,而这一页是唯一能看的地方。
+  {
+    url: '/qy/admin/risk-watch',
+    titleKey: 'qy_nav_a_risk_watch',
+    feature: 'risk_watch',
+    group: 'qy-risk',
+    icon: Radar,
+    codeKey: 'qy_sg_code_a_risk_watch',
   },
   {
     // 工单审核台留在根侧栏而不是进系统设置抽屉：它是**每天要开**的流水页，

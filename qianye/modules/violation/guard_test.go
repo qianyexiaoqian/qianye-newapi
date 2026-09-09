@@ -49,22 +49,20 @@ func TestBlockErrorSurvivesUpstreamWrapping(t *testing.T) {
 
 // TestPreRelayGuardIsFailOpen 保证挂载点在任何异常输入下都不改变主流程行为。
 //
-// 扩展是附加物,relay 是主业务:上游已经失败时必须原样透传,
-// 未启用或参数缺失时必须放行,绝不能在这里制造新的失败模式。
+// 扩展是附加物,relay 是主业务:未启用或参数缺失时必须放行,
+// 绝不能在这里制造新的失败模式。
+//
+// "上游已经失败时原样透传"那一条不在这里了 —— 它随插槽一起搬进了
+// qianye/relayguard 的分发器,由那一侧的用例直接断言。
 func TestPreRelayGuardIsFailOpen(t *testing.T) {
 	useTestConfig(t, "  enabled: true\n  precheck_enabled: true\n")
 
-	t.Run("上游错误原样透传", func(t *testing.T) {
-		upstream := errors.New("model price error")
-		assert.Same(t, upstream, PreRelayGuard(nil, nil, nil, upstream))
-	})
-
 	t.Run("参数缺失时放行", func(t *testing.T) {
-		assert.NoError(t, PreRelayGuard(nil, nil, nil, nil))
+		assert.NoError(t, PreRelayGuard(nil, nil, nil))
 	})
 
 	t.Run("功能关闭时放行", func(t *testing.T) {
 		useTestConfig(t, "  enabled: false\n")
-		assert.NoError(t, PreRelayGuard(nil, nil, nil, nil))
+		assert.NoError(t, PreRelayGuard(nil, nil, nil))
 	})
 }

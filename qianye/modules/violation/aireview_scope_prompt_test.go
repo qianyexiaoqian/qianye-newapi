@@ -304,7 +304,7 @@ func TestAIScopeCategoryDoesNotWidenRuleMatching(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			out := &aiOutcome{Outcome: OutcomeViolation, Violated: true, Category: tc.aiCat}
 			in := scanInput{Model: "gpt-4o", Group: "selfserve", AI: out}
-			v := matchAIVerdict([]*compiledRule{distillRule}, in, out, scope)
+			v := matchAIVerdict(nil, []*compiledRule{distillRule}, in, out, scope)
 			if !tc.wantHit {
 				assert.Nil(t, v, tc.why)
 				return
@@ -314,13 +314,36 @@ func TestAIScopeCategoryDoesNotWidenRuleMatching(t *testing.T) {
 		})
 	}
 
-	t.Run("兜底档(sc 为 nil)不带覆盖位", func(t *testing.T) {
+	t.Run("兜底档(sc 为 nil、渠道也没配)不带覆盖位", func(t *testing.T) {
 		out := &aiOutcome{Outcome: OutcomeViolation, Violated: true, Category: CatDistill}
-		v := matchAIVerdict([]*compiledRule{distillRule},
+		v := matchAIVerdict(nil, []*compiledRule{distillRule},
 			scanInput{Model: "gpt-4o", Group: "default", AI: out}, out, nil)
 		require.NotNil(t, v)
 		assert.Zero(t, v.CategoryOverride,
 			"没有匹配到任何策略时不该凭空产生一个类型覆盖")
+	})
+
+	// 渠道那一格是第二个来源,优先级排在作用域之后、规则之前。
+	// 两条子用例合起来钉住的是**顺序**本身:让渠道压过作用域,第二条立刻红;
+	// 让渠道那一档失效(读不到 aiChannelRT.CategoryId),第一条立刻红。
+	rt := &aiRuntime{Channels: []*aiChannelRT{{Id: 7, Name: "qwen3guard", CategoryId: 34}}}
+	t.Run("作用域没指定时,渠道的「计次记为」说了算", func(t *testing.T) {
+		out := &aiOutcome{Outcome: OutcomeViolation, Violated: true,
+			Category: CatDistill, ChannelId: 7}
+		v := matchAIVerdict(rt, []*compiledRule{distillRule},
+			scanInput{Model: "gpt-4o", Group: "default", AI: out}, out, nil)
+		require.NotNil(t, v)
+		assert.Equal(t, int64(34), v.CategoryOverride,
+			"护栏渠道判出的违规要能被钉到运营指定的那一类上,否则它只会落进兜底「未分类」")
+	})
+	t.Run("作用域指定了就压过渠道", func(t *testing.T) {
+		out := &aiOutcome{Outcome: OutcomeViolation, Violated: true,
+			Category: CatDistill, ChannelId: 7}
+		v := matchAIVerdict(rt, []*compiledRule{distillRule},
+			scanInput{Model: "gpt-4o", Group: "selfserve", AI: out}, out, scope)
+		require.NotNil(t, v)
+		assert.Equal(t, int64(12), v.CategoryOverride,
+			"作用域那一格写的是「一律记为」,一个更宽的渠道配置不该把它推翻")
 	})
 }
 

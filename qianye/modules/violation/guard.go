@@ -38,16 +38,15 @@ const defaultBlockMessage = "您的请求因违反内容策略被拒绝"
 //   - 尚未预扣费 → 拦截时不产生预扣费/退款的往返;
 //   - 早于重试循环 → 这才是真正的"转发上游之前"。
 //
-// 入参 upstreamErr 是 ModelPriceHelper 的错误,原样透传:调用点复用了上游已有的
-// `if err != nil` 分支,因此这个函数必须在上游已经失败时什么都不做。
+// 它不再直接占用上游那个单槽变量,而是登记成 relayguard 的一道闸门
+// (见 module.go 的 InstallHooks)。"上游已经失败时什么都不做"这条透传契约
+// 随之搬进了分发器 —— 那里是它唯一该存在的地方,插槽只有一个,而消费方已经
+// 有两个了。
 //
 // 返回的 *types.NewAPIError 会被上游的 types.NewError 原样保留(errors.As 命中),
 // 再由 relay.go 的 defer 按 relayFormat 序列化成 OpenAI / Claude / Realtime 三种
 // 格式 —— 本模块不写任何序列化代码。
-func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.TokenCountMeta, upstreamErr error) error {
-	if upstreamErr != nil {
-		return upstreamErr
-	}
+func PreRelayGuard(c *gin.Context, info *relaycommon.RelayInfo, meta *types.TokenCountMeta) error {
 	if c == nil || info == nil {
 		return nil
 	}

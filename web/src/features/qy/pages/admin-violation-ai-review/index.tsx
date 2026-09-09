@@ -1745,6 +1745,12 @@ function AiChannelsCard() {
   // "逐字等于默认"折回空串。取不到时传空串 —— 那时输入框是空的,而空 = 用
   // 内置默认,行为不变(只是运营看不见默认长什么样)。
   const defaultPrompt = useQuery(qyAiSettingsQuery()).data?.default_prompt ?? ''
+  // 违规类型清单只为把每一行的「计次记为」显示成名字。与作用域卡共用同一个
+  // query key,react-query 会去重,同一页上不会多打一次请求。
+  const categoryQuery = useQuery(qyAdminViolationCategoriesQuery())
+  const categoryName = (id: number) =>
+    (categoryQuery.data?.items ?? []).find((r) => r.category.id === id)
+      ?.category.name ?? ''
   const [editing, setEditing] = useState<null | {
     id?: number
     draft: QyAiChannelDraft
@@ -1843,6 +1849,7 @@ function AiChannelsCard() {
                 <div key={ch.id} className='flex flex-col gap-2'>
                   <ChannelRow
                     channel={ch}
+                    categoryName={categoryName(ch.category_id)}
                     testing={probe.isPending && probe.variables === ch.id}
                     onEdit={() =>
                       setEditing({
@@ -1922,12 +1929,15 @@ const QY_AI_PROTOCOL_TAGS: Record<QyAiProtocol, string> = {
 
 function ChannelRow({
   channel,
+  categoryName,
   testing,
   onEdit,
   onTest,
   onDelete,
 }: {
   channel: QyAiChannel
+  /** 「计次记为」那一格指向的类型名。清单还没拉到时是空串。 */
+  categoryName: string
   testing: boolean
   onEdit: () => void
   onTest: () => void
@@ -1984,6 +1994,17 @@ function ChannelRow({
         <Badge variant='outline'>
           {t('qy_ai_f_guard_cats_tag', {
             n: (channel.guard_categories ?? []).length,
+          })}
+        </Badge>
+      )}
+      {/* 「计次记为」改的是这个渠道判出的违规计到谁的封号线上 —— 与启停同一个
+          量级的事实。藏在编辑弹窗里的话,两个计数落点完全不同的渠道在列表上
+          长得一模一样。不指定(0)是零值,不画:每一行都挂一个「按规则记」只是噪声。
+          清单没拉到就显示 id,而不是显示空白 —— 空白看起来像"这一格没配"。 */}
+      {channel.category_id > 0 && (
+        <Badge variant='outline'>
+          {t('qy_ai_f_category_tag', {
+            name: categoryName || `#${channel.category_id}`,
           })}
         </Badge>
       )}
@@ -2316,6 +2337,16 @@ function ChannelForm({
   const settingQuery = useQuery(qyAiSettingsQuery())
   const categories = settingQuery.data?.categories ?? []
   const categoryBlock = settingQuery.data?.category_block ?? ''
+  // 「计次记为」那一格要的是 id,而上面那份 `categories` 是拼进提示词的**名字**
+  // 闭集,两者不是一回事。这里复用违规类型页那个 query(与作用域表单同一份),
+  // 不另开端点:同一份事实开两个来源,迟早会出现两页各自认为对方是错的那种状态。
+  const categoryQuery = useQuery(qyAdminViolationCategoriesQuery())
+  // 只取下拉用得上的两样。**不**把整行传下去:那一行里有 `remark`(内部备注)
+  // 与 `ai_guidance`(判定说明),两者都不该出现在一个"挑一个类型"的下拉里。
+  const categoryOptions = (categoryQuery.data?.items ?? []).map((row) => ({
+    id: row.category.id,
+    name: row.category.name,
+  }))
   // 「默认 / 已自定义」是**编辑中这一刻**的判断,不是接口回来的 prompt_source:
   // 后者只描述库里那一份。运营在框里删掉一个字,标记必须当场翻档 ——
   // 那正是这一档差别(自定义之后不再跟随默认提示词升级)唯一会被注意到的时刻。
@@ -2646,6 +2677,45 @@ function ChannelForm({
             onChange({ ...draft, block_message: e.target.value })
           }
         />
+      </Field>
+
+      {/* 「计次记为」:这个渠道判出的违规,计次加到哪个违规类型上。
+
+          它是护栏协议那条路的落点。护栏模型的类别是训练时钉死的,本站类型表里
+          没有同名标识的那几类会折进兜底「未分类」,而兜底类型的阈值出厂是 0 ——
+          判了、记了,却一次都不推进封号线。要么去类型页把缺的标识逐个建出来,
+          要么在这里指定一个类型,让这个渠道判出来的每一条都记进它并计次。
+
+          优先级是**作用域 > 渠道 > 规则**:作用域那一格写的是「一律记为」,
+          而同一个渠道会被多档作用域用到。留「不指定」时行为与这一格出现之前
+          完全一致。 */}
+      <Field label={t('qy_ai_f_category')} hint={t('qy_ai_f_category_hint')}>
+        <Select
+          value={String(draft.category_id)}
+          onValueChange={(v) =>
+            onChange({ ...draft, category_id: Number(v) || 0 })
+          }
+        >
+          <SelectTrigger>
+            <SelectValue placeholder={t('qy_ai_scope_category_none')} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value='0'>{t('qy_ai_scope_category_none')}</SelectItem>
+            {categoryOptions.map((cat) => (
+              <SelectItem key={cat.id} value={String(cat.id)}>
+                {cat.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {/* 清单拉不到时说出来,而不是显示一个只有「不指定」的下拉:后者看起来
+            像"这个站点没有违规类型",那是一句谎话。文案与作用域那一格共用 ——
+            同一句话抄两遍,改的时候只会改一遍。 */}
+        {!categoryQuery.isSuccess && (
+          <p className='text-muted-foreground text-xs'>
+            {t('qy_ai_scope_category_loading')}
+          </p>
+        )}
       </Field>
 
       <ChannelEmailNotice draft={draft} onChange={onChange} />

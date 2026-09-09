@@ -150,3 +150,47 @@ func TestModelGroupListPagesOverTheUnion(t *testing.T) {
 	assert.Empty(t, listedNames(t, beyond))
 	assert.Equal(t, float64(5), beyond["total"])
 }
+
+// TestModelGroupSearchFiltersBeforePaging 守搜索与两份"必须不跟着筛"的附加数据。
+//
+// 先筛后切的理由见 groupmatrix 那一侧同名用例。这里额外守的是:
+//
+//	names             全量行名。跟着筛的话,在搜索「vip」的同时新建一个与某个
+//	                  没被搜到的分组同名的行不会报重名,保存时它会静默覆盖
+//	                  那一行的兜底倍率。
+//	no_channel_names  故障预警。一条随搜索出现又消失的预警,读到的人只会认为
+//	                  它不可靠。
+func TestModelGroupSearchFiltersBeforePaging(t *testing.T) {
+	gdb := newTestDB(t)
+	enableExtAPI(t, gdb)
+	useUpstreamGroups(t,
+		map[string]string{"e-vip": ""},
+		map[string]float64{"a-vip": 1, "b-plain": 1, "c-plain": 1, "d-vip": 1, "e-vip": 1})
+	require.NoError(t, gdb.Create(&ModelGroup{
+		Name: "b-plain", Note: "三方对接的池子", Enabled: true,
+	}).Error)
+
+	// 命中的第三档在整表第 5 位:先切后筛的实现在第 2 页会返回空。
+	p1 := listModelGroups(t, "?keyword=vip&p=1&page_size=2")
+	assert.Equal(t, []string{"a-vip", "d-vip"}, listedNames(t, p1))
+	assert.Equal(t, float64(3), p1["total"], "total 是筛完的条数")
+
+	p2 := listModelGroups(t, "?keyword=vip&p=2&page_size=2")
+	assert.Equal(t, []string{"e-vip"}, listedNames(t, p2))
+
+	names, ok := p1["names"].([]any)
+	require.True(t, ok)
+	assert.Len(t, names, 5, "names 是**未经筛选**的全量行名 —— 重名判定与 auto "+
+		"候选清单都不能跟着搜索框缩小")
+	assert.ElementsMatch(t, []any{"e-vip"}, p1["no_channel_names"],
+		"故障预警同样是全表口径,不跟着搜索变")
+
+	// 备注在匹配面里(表上有这一列)。
+	byNote := listModelGroups(t, "?keyword=三方&p=1&page_size=10")
+	assert.Equal(t, []string{"b-plain"}, listedNames(t, byNote))
+
+	// 大小写折叠 + 空关键词不筛选。
+	assert.Equal(t, []string{"a-vip", "d-vip", "e-vip"},
+		listedNames(t, listModelGroups(t, "?keyword=VIP&p=1&page_size=10")))
+	assert.Len(t, listedNames(t, listModelGroups(t, "?keyword=%20%20&p=1&page_size=10")), 5)
+}

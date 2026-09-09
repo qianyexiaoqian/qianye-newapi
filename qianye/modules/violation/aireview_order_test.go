@@ -101,7 +101,7 @@ func TestLocalRuleHitSkipsAIReviewEntirely(t *testing.T) {
 			meta := &types.TokenCountMeta{CombineText: tc.text}
 
 			before := aiSampleRolls.Load()
-			err := PreRelayGuard(c, info, meta, nil)
+			err := PreRelayGuard(c, info, meta)
 
 			require.Error(t, err, tc.why)
 			assert.Contains(t, err.Error(), tc.wantMsg,

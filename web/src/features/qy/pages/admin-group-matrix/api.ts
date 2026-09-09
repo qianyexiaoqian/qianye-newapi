@@ -41,19 +41,21 @@ import type {
 const QY_GM_BASE = '/admin/group-matrix'
 
 /**
- * 行轴翻页参数。`undefined` = 要整张表。
+ * 行轴窗口：搜索词 + 页码。`undefined` = 要整张表。
  *
  * ── 为什么它必须一路带到写接口上 ──
  *
  * 三个写接口的响应都是服务端**强制回读**的整个 matrixView（见 {@link qyGmSaveMatrix}），
  * 而调用方会拿它直接替换缓存。回读时不带同一个窗口，分页外壳按完保存的下一帧
  * 就会从 10 行涨成全站几十行 —— 运营刚刚按的是「保存」，屏幕上却发生了一次
- * 他没要求过的翻页。
+ * 他没要求过的翻页（搜索词同理：结果集会当场变回未筛选的样子）。
  */
 export type QyGmPageParams = {
   /** 1 起。 */
   p: number
   page_size: number
+  /** 空串 = 不筛选。服务端匹配分组名与备注，大小写不敏感。 */
+  keyword?: string
 }
 
 /**
@@ -70,7 +72,11 @@ export type QyGmPageParams = {
 */
 export function qyGmMatrixQuery(page?: QyGmPageParams) {
   return queryOptions({
-    queryKey: qyKeys.adminGroupMatrixData(page?.p, page?.page_size),
+    queryKey: qyKeys.adminGroupMatrixData(
+      page?.p,
+      page?.page_size,
+      page?.keyword
+    ),
     queryFn: () => qyGet<QyGmMatrixResponse>(QY_GM_BASE, page),
     staleTime: 0,
   })

@@ -85,7 +85,7 @@ var notAUserGroup = map[string]string{
 //
 // lottery 在列表里,正是因为它命中的是 json tag 那一半判据:少了它,
 // 把 userGroupListFields 整段删掉也不会有任何测试变红。
-var knownKeyedModules = []string{"apiaddr", "groupmatrix", "lottery", "stardust", "transfer"}
+var knownKeyedModules = []string{"apiaddr", "groupmatrix", "lottery", "riskwatch", "stardust", "transfer"}
 
 // TestEveryUserGroupKeyedTableDeclaresItsDisposition 扫全部扩展模块。
 func TestEveryUserGroupKeyedTableDeclaresItsDisposition(t *testing.T) {

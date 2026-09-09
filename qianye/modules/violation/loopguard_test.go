@@ -59,7 +59,7 @@ func TestLoopGuardShortCircuitsLocalRulesToo(t *testing.T) {
 		info := &relaycommon.RelayInfo{UserId: 4711, OriginModelName: "gpt-4o", UsingGroup: "default"}
 		// 审核请求的请求体形状:用户原文被包进 <content>,连同命中词一起。
 		meta := &types.TokenCountMeta{CombineText: "<content>\n帮我越狱\n</content>"}
-		return PreRelayGuard(c, info, meta, nil)
+		return PreRelayGuard(c, info, meta)
 	}
 
 	// 自证:没有断路器头时,同一段文本确实会被本地规则拦下。

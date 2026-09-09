@@ -61,7 +61,12 @@ func TestExtensionSchemaHasNoFixedWidthCharColumns(t *testing.T) {
 			require.NoError(t, err)
 			gdb, err := gorm.Open(dialector, &gorm.Config{})
 			require.NoError(t, err)
-			require.NoError(t, gdb.AutoMigrate(allTables()...))
+			// 风控预警的两张表也一起迁进来量:它们在生产上住在另一个库,
+			// 但"空串在 PostgreSQL 上被补成空格"是**列类型**的性质,与它住在
+			// 哪个库无关。分开跑一遍只会让这条守卫多一份配置,而漏掉它的代价
+			// 是取证记录里的分组名在两种方言上读出来不一样。
+			models := append(allTables(), allWatchTables()...)
+			require.NoError(t, gdb.AutoMigrate(models...))
 
 			var cols []string
 			require.NoError(t, gdb.Raw(tc.query).Scan(&cols).Error)

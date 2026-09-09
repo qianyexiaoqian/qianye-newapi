@@ -248,6 +248,12 @@ func validateAIChannel(ch *AIChannel) error {
 	if ch.PriceInPerM.IsNegative() || ch.PriceOutPerM.IsNegative() {
 		return fmt.Errorf("单价不得为负数")
 	}
+	// 「计次记为」只校验取值范围。这一格指向的类型**还在不在**由接口层单独查库
+	// (ensureAIChannelCategoryAlive)——本函数不碰数据库:它同时被试跑那条只读
+	// 路径调用,而在那里多一次查库只会让"连不连得通"这个问题依赖另一张表。
+	if ch.CategoryId < 0 {
+		return fmt.Errorf("违规类型 id 非法(%d);不指定请留 0", ch.CategoryId)
+	}
 	if utf8.RuneCountInString(ch.Remark) > 512 {
 		return fmt.Errorf("备注过长(上限 512 字)")
 	}
@@ -431,11 +437,12 @@ func buildAIRuntime(gdb *gorm.DB, needed bool, vocab aiVocabulary) (*aiRuntime, 
 			Guard:    guardPolicyFromChannel(row),
 			// 风险名同样在装配期归一一次,理由与协议那一行相同。
 			RiskName: normalizeGraniteRisk(row.RiskName),
-			// 分组、提示词、拦截文案三样在装配期原样带上:热路径需要它们时
-			// 已经拿不到 AIChannel 行了(快照是只读副本,库可能已经断了)。
+			// 分组、提示词、拦截文案、计次类型四样在装配期原样带上:热路径需要
+			// 它们时已经拿不到 AIChannel 行了(快照是只读副本,库可能已经断了)。
 			Group:        row.Group,
 			Prompt:       row.Prompt,
 			BlockMessage: row.BlockMessage,
+			CategoryId:   row.CategoryId,
 			NotifyEmail:  row.NotifyEmail,
 			EmailSubject: row.EmailSubject,
 			EmailBody:    row.EmailBody,

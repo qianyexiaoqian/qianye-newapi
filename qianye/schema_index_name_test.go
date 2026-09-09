@@ -38,7 +38,28 @@ import (
 // 而且能同时覆盖三种方言的部署 —— 真库判据(TestExtensionAutoMigrateIsIdempotent)
 // 只在设了 DSN 时才跑。
 func TestExtensionIndexNamesAreSchemaUnique(t *testing.T) {
-	tables := allTables()
+	// 每个库各算各的:索引名的唯一性是 schema 级的,而扩展现在有三份表清单
+	// (主库 / 台账库 / 风控预警存储节点)。合起来量会把跨库的重名误报成冲突,
+	// 分开量则会漏掉同一个库内的真冲突 —— 后者正是这条守卫要抓的。
+	//
+	// 台账表在没配 log_database 的部署上会并进主库清单(见 bootstrap.allTables
+	// 上方的注释),所以它跟主库一起量;风控预警的表没有"并进主库"那一档,
+	// 单独一组。
+	for _, group := range []struct {
+		name   string
+		tables []any
+	}{
+		{"main", append(allTables(), allLogTables()...)},
+		{"riskwatch", allWatchTables()},
+	} {
+		t.Run(group.name, func(t *testing.T) {
+			assertIndexNamesUnique(t, group.tables)
+		})
+	}
+}
+
+func assertIndexNamesUnique(t *testing.T, tables []any) {
+	t.Helper()
 	require.NotEmpty(t, tables)
 
 	cache := &sync.Map{}

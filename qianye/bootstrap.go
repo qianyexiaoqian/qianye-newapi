@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/groupratio"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/module"
+	"github.com/QuantumNous/new-api/qianye/relayguard"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
 	"github.com/QuantumNous/new-api/qianye/service/twophase"
@@ -68,6 +69,12 @@ func Init() error {
 	if err := db.InitLog(config.Get().LogDatabase); err != nil {
 		return err
 	}
+	// 风控预警存储节点。与台账库的方向相反:这一段**没有**"留空就跟着主库走"
+	// 那一档 —— 没配就是整个功能不注册(validate 已经把「enabled 却没填 dsn」
+	// 拦成启动错误)。连不上同样 FatalLog,理由见 qianye/db/watchdb.go。
+	if err := db.InitWatch(config.Get().RiskWatch.Database); err != nil {
+		return err
+	}
 	// 缺表自检在 db.Migrate 内部完成,但它的结论是分级的(见 db.Migrate 的契约):
 	//   - 本节点刚亲自跑完 AutoMigrate 却仍缺表 → 返回 error,在此 FatalLog;
 	//     那是本节点自己的 bug(模型漏登记 / DDL 没生效),重启多少次都一样。
@@ -83,6 +90,10 @@ func Init() error {
 		tables = append(tables, logTables...)
 		logTables = nil
 	}
+	// 风控预警的表**不并进任何一份**:没配存储节点时声明它们的模块整个不注册,
+	// 这份清单本来就是空的;配了就只能建在那个库里。它没有"回落"这一档,
+	// 所以这里也没有对应的 if(见 module.WatchTabler 的注释)。
+	watchTables := allWatchTables()
 	if err := db.Migrate(tables...); err != nil {
 		return err
 	}
@@ -91,11 +102,17 @@ func Init() error {
 			return err
 		}
 	}
+	if len(watchTables) > 0 {
+		if err := db.MigrateWatch(watchTables...); err != nil {
+			return err
+		}
+	}
 	// 上面那条"不阻断"换来的可见性在这里补齐:确认缺表时扩展进入 schema 降级态,
 	// 后台每分钟点名一次缺哪张表,主节点/DBA 把表建出来后自动解除,无需重启本节点。
 	// 启动时那一行日志会被滚走,这个循环不会。
 	db.StartSchemaRecheck(tables...)
 	db.StartSchemaRecheckLog(logTables...)
+	db.StartSchemaRecheckWatch(watchTables...)
 
 	// 主库探针表。它与资金变更写在同一个主库事务里,是判定
 	// "主库副作用是否已生效"的唯一权威依据。
@@ -109,6 +126,8 @@ func Init() error {
 	// 台账库自己的探测循环。没分家时它直接返回 —— 那时 Log() 就是主库句柄,
 	// 上面那个循环已经在探它了。
 	db.StartLogHealthLoop()
+	// 风控预警存储节点同理。没配时直接返回。
+	db.StartWatchHealthLoop()
 
 	// 分组倍率失配登记簿必须先接上:ratio_setting.QyNoteGroupRatioMiss 的默认值是
 	// 空函数,不赋值的话三条计费路径每一次"静默按 1.0 扣费"都打进空气,而
@@ -122,6 +141,12 @@ func Init() error {
 	for _, m := range module.All() {
 		m.InstallHooks()
 	}
+	// 把前置挂钩的分发器接到上游那**唯一一个**插槽上。必须排在 InstallHooks
+	// 之后:模块是在那一步里登记自己的观察者与闸门的。
+	//
+	// 这一行不能省。少了它,违规检测与风控预警两个模块的前置挂钩全部登记完毕
+	// 却没有人调用 —— 编译、单测、启动日志一切正常,线上零命中、零记录。
+	relayguard.Install()
 
 	common.SysLog("qianye: 扩展初始化完成")
 	return nil
@@ -147,6 +172,22 @@ func allLogTables() []any {
 	for _, m := range module.All() {
 		if lt, ok := m.(module.LogTabler); ok {
 			tables = append(tables, lt.LogTables()...)
+		}
+	}
+	return tables
+}
+
+// allWatchTables 汇总各模块声明的风控预警表(module.WatchTabler)。
+//
+// 与 allLogTables 的互斥要求相同,但少一个坑:这份清单没有"回落进主库"那一档,
+// 所以一张表同时出现在两边不会得到"两个库各建一张"的中间态,而是直接建在
+// 两个库里各一张、写入只落其中一个 —— 症状一样难查。
+// qianye/modules_test.go 那一族守卫里有一条钉住这个互斥。
+func allWatchTables() []any {
+	var tables []any
+	for _, m := range module.All() {
+		if wt, ok := m.(module.WatchTabler); ok {
+			tables = append(tables, wt.WatchTables()...)
 		}
 	}
 	return tables

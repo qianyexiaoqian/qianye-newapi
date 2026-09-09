@@ -181,7 +181,7 @@ func TestMatrixCellsCarryTheHotPathRatio(t *testing.T) {
 	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"vip":{"paid":0.5,"free":0}}`))
 	require.NoError(t, reload())
 
-	view, err := buildMatrixView(gdb, nil)
+	view, err := buildMatrixView(gdb, rowWindow{})
 	require.NoError(t, err)
 	require.NotEmpty(t, view.Cells)
 
@@ -219,7 +219,7 @@ func TestScopePolicyReportsUnsetGroups(t *testing.T) {
 		map[string]float64{"default": 1, "vip": 1, "paid": 1, "iso": 1})
 
 	require.NoError(t, reload())
-	view, err := buildMatrixView(gdb, nil)
+	view, err := buildMatrixView(gdb, rowWindow{})
 	require.NoError(t, err)
 	assert.True(t, view.ScopePolicy.UnsetMeansAll)
 	assert.Zero(t, view.ScopePolicy.ScopedGroups, "一条 scope 行都没有")
@@ -232,7 +232,7 @@ func TestScopePolicyReportsUnsetGroups(t *testing.T) {
 	seedScope(t, gdb, "vip", ModeEnforce, false, "paid")
 	seedScope(t, gdb, "iso", ModeEnforce, false)
 
-	view, err = buildMatrixView(gdb, nil)
+	view, err = buildMatrixView(gdb, rowWindow{})
 	require.NoError(t, err)
 	assert.Equal(t, 2, view.ScopePolicy.ScopedGroups)
 	assert.Equal(t, 1, view.ScopePolicy.EmptyScopedGroups,

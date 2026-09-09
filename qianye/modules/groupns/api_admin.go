@@ -262,11 +262,30 @@ func adminListModelGroups(c *gin.Context) {
 	}
 	names := unionModelGroupNames(registry, ratios, usable)
 
+	// ── 先筛后切 ────────────────────────────────────────────────────────
+	//
+	// 顺序不能反:切完再筛会得到"第 1 页里恰好命中的那几行",也就是一个每翻一页
+	// 就换一批结果、且永远搜不到第 2 页之后任何东西的搜索框。
+	//
+	// 匹配面刻意只有**表上看得见的那两列**:分组名与备注。登记表里还有
+	// display_name,但那一列不在表上 —— 拿它参与匹配会让运营得到一行"看不出
+	// 为什么会中"的结果,而搜索最要紧的性质是可解释。
+	keyword := c.Query("keyword")
+	matched := names
+	if strings.TrimSpace(keyword) != "" {
+		matched = make([]string, 0, len(names))
+		for _, name := range names {
+			if httpq.MatchKeyword(keyword, name, registry[name].Note) {
+				matched = append(matched, name)
+			}
+		}
+	}
+
 	page, size := httpq.Paginate(c, httpq.Spec{DefaultSize: httpq.GroupTablePageSize})
-	pageNames := names
+	pageNames := matched
 	paged := c.Query("p") != "" || c.Query("page_size") != ""
 	if paged {
-		pageNames = httpq.Slice(names, page, size)
+		pageNames = httpq.Slice(matched, page, size)
 	}
 
 	out := make([]ModelGroupRow, 0, len(pageNames))
@@ -308,17 +327,20 @@ func adminListModelGroups(c *gin.Context) {
 
 	body := gin.H{"items": out}
 	if paged {
-		body["p"], body["page_size"], body["total"] = page, size, len(names)
-		// names 是**全量**行名,按同一个顺序。前端需要它来回答几个只有全表才成立
-		// 的问题:auto 顺序的候选清单、以及新加一行时的重名判定 —— 两者都不能
-		// 只看本页(在第 2 页新建一个与第 1 页同名的分组会静默覆盖那一行的倍率)。
+		// total 是**筛选之后**的条数 —— 翻页翻的就是筛选结果,分母写成全站条数
+		// 会让「共 100 条」配着 3 行结果出现。
+		body["p"], body["page_size"], body["total"] = page, size, len(matched)
+		// names 反过来是**未经筛选**的全量行名,按同一个顺序。前端需要它来回答
+		// 几个只有全表才成立的问题:auto 顺序的候选清单、以及新加一行时的重名
+		// 判定 —— 两者都不能跟着搜索框缩小。在搜索"vip"的同时新建一个与某个
+		// 没被搜到的分组同名的行,保存时会静默覆盖那一行的兜底倍率。
 		// 只有字符串,与整表行相比可以忽略不计。
 		body["names"] = names
-		// 「用户可选、但一个启用渠道都没有」的全量名单。
+		// 「用户可选、但一个启用渠道都没有」的全量名单。**同样不受搜索影响。**
 		//
 		// 这一条是**故障预警**不是统计:那种分组在令牌下拉里长得和正常的一模一样,
-		// 选中之后每一次请求都 503。它必须是全表口径 —— 一条随翻页出现又消失的
-		// 故障预警,读到的人只会认为它不可靠。
+		// 选中之后每一次请求都 503。它必须是全表口径 —— 一条随翻页或搜索出现又
+		// 消失的故障预警,读到的人只会认为它不可靠。
 		body["no_channel_names"] = noChannelModelGroups(names, usable, routed)
 	}
 	respond(c, body)

@@ -8,6 +8,10 @@
    方言按 DSN 前缀分派:**MySQL 5.7.8+(默认与主推)或 PostgreSQL 9.6+**;
    SQLite / ClickHouse 明确不支持 —— 资金路径靠 `SELECT ... FOR UPDATE` 的行锁
    串行化读改写,它们提供不了(见 `design-00-foundation.md` §配置校验)
+1b. 扩展最多用到**三个**库:主扩展库(必需)、台账库(`log_database`,可选,
+   留空即跟着主库走)、风控预警存储节点(`risk_watch.database`,**开了这个功能就必填**,
+   没有"回落主库"那一档)。机制共用一份(`qianye/db/secondary.go`),
+   零值方向不同 —— 见 [design-16](design-16-riskwatch.md) §2
 2. 原项目文件只做"只增不改"的单行 hook,把合并冲突面压到最小
 3. 配置缺失 → 扩展静默禁用,主程序行为与上游**逐字节一致**
 
@@ -53,6 +57,7 @@ PITR**,分别 dump、分别恢复会让资金探针失真。另含双启动验�
 | [design-02-commission.md](design-02-commission.md) | 需求 2a:佣金账本与返佣触发 —— **现行(星屑口径,无提现)**:D-15 把账本 / 结算 / 余额恢复并加自动入账,D-16 把记账单位从「星辉」改成**星屑**、跨库两阶段入账整层退役(`modules/commission`,见 `decisions.md` D-15 / D-16);邀请关系与日界在 `modules/invite`,与星屑邀请奖励(design-15 §4.3 / §4.7)**并行且同币种** —— 两条线的三档打同一笔基数,重叠由健康面板 `rate_overlap` 标出 |
 | ~~[design-03-withdraw.md](design-03-withdraw.md)~~ | 需求 2b:提现申请、审核、历史 —— **已被 D-14 取代,模块已删除**(没有现金推广收益,也就没有提现) |
 | [design-07-violation.md](design-07-violation.md) | 需求 7:违规检测 |
+| [design-16-riskwatch.md](design-16-riskwatch.md) | **风控预警**:管理员对可疑账号的定向监听取证。与违规检测不是一件事 —— 那边回答「这一条内容违不违规」(全站自动、要处置),这边回答「这个账号最近到底在做什么」(指名立案、只观察)。**强制一个单独配置的存储节点**,理由与代价见文档 §2 |
 | [design-15-stardust.md](design-15-stardust.md) | **现行口径,v2.0.0 已实施**(D-11/12/13):星屑独立货币、星屑商城、星屑转盘;娱乐活动从 users.quota 整体切到扩展库账本,不保留旧路径;实施偏差见 §12.1 |
 
 ### UI 主题

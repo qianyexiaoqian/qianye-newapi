@@ -51,6 +51,7 @@ const ALL_ON: QyFeatures = {
   availability: true,
   lottery: true,
   violation: true,
+  risk_watch: true,
   ticket: true,
   group_matrix: true,
   pay_password: true,
@@ -65,6 +66,7 @@ const ALL_OFF: QyFeatures = {
   availability: false,
   lottery: false,
   violation: false,
+  risk_watch: false,
   ticket: false,
   group_matrix: false,
   pay_password: false,
@@ -277,6 +279,9 @@ describe('qy nav merge — admin, all features on', () => {
       // AI 审核日志紧跟违规记录:两者是同一件事的两半 —— 那边是"判了违规之后
       // 怎么处置",这边是"到底审了什么、凭什么这么判"。
       '/qy/admin/violation-ai-logs',
+      // 风控预警再紧跟一行:AI 审核回答"这一条内容违不违规"(自动判的),
+      // 它回答"这个账号最近在做什么"(人工盯的)。
+      '/qy/admin/risk-watch',
       '/qy/admin/tickets',
       '/qy/admin/audit-logs',
     ])
