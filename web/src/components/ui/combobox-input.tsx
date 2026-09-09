@@ -46,6 +46,7 @@ interface ComboboxInputProps {
   onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>
   'aria-label'?: string
   'aria-labelledby'?: string
+  'aria-invalid'?: React.AriaAttributes['aria-invalid']
 }
 
 export function ComboboxInput({
@@ -63,6 +64,7 @@ export function ComboboxInput({
   onKeyDown,
   'aria-label': ariaLabel,
   'aria-labelledby': ariaLabelledBy,
+  'aria-invalid': ariaInvalid,
 }: ComboboxInputProps) {
   const { t } = useTranslation()
   const listId = React.useId()
@@ -188,6 +190,7 @@ export function ComboboxInput({
         role='combobox'
         aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
+        aria-invalid={ariaInvalid}
         aria-expanded={!!showDropdown}
         aria-controls={
           showDropdown && filteredOptions.length > 0 ? listId : undefined
