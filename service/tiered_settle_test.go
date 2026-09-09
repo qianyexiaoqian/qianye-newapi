@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -749,6 +750,42 @@ func TestBuildTieredTokenParams_GPT_WithImage(t *testing.T) {
 	}
 }
 
+func TestImageCacheBilling(t *testing.T) {
+	const expression = `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 2 + c * 30)`
+	for _, tc := range []struct {
+		name              string
+		details           *dto.CachedTokenDetails
+		expression        string
+		p, cr, img, imgCR float64
+		quota             int
+	}{
+		{"mixed cache", &dto.CachedTokenDetails{ImageTokens: common.GetPointer(200), TextTokens: common.GetPointer(100)}, expression, 300, 100, 400, 200, 4113},
+		{"explicit free image cache price", &dto.CachedTokenDetails{ImageTokens: common.GetPointer(200)}, `tier("standard", p * 5 + cr * 1.25 + img * 8 + img_cr * 0 + c * 30)`, 300, 100, 400, 200, 3913},
+		{"explicit zero", &dto.CachedTokenDetails{ImageTokens: common.GetPointer(0)}, expression, 100, 300, 600, 0, 4338},
+		{"missing breakdown", nil, expression, 100, 300, 600, 0, 4338},
+		{"missing image modality", &dto.CachedTokenDetails{TextTokens: common.GetPointer(100)}, expression, 100, 300, 600, 0, 4338},
+		{"negative image count", &dto.CachedTokenDetails{ImageTokens: common.GetPointer(-1)}, expression, 100, 300, 600, 0, 4338},
+		{"image count exceeds cache", &dto.CachedTokenDetails{ImageTokens: common.GetPointer(301)}, expression, 100, 300, 600, 0, 4338},
+		{"modality sum exceeds cache", &dto.CachedTokenDetails{ImageTokens: common.GetPointer(200), TextTokens: common.GetPointer(101)}, expression, 100, 300, 600, 0, 4338},
+		{"old expression unchanged", &dto.CachedTokenDetails{ImageTokens: common.GetPointer(200)}, `p * 5 + cr * 1.25 + img * 8 + c * 30`, 100, 300, 600, 0, 4338},
+		{"only image cache separately priced", &dto.CachedTokenDetails{ImageTokens: common.GetPointer(200)}, `p * 5 + img_cr * 2 + c * 30`, 800, 100, 400, 200, 3700},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := &dto.Usage{PromptTokens: 1000, CompletionTokens: 100,
+				PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 300, ImageTokens: 600, CachedTokensDetails: tc.details}}
+			params := BuildTieredTokenParams(usage, false, billingexpr.UsedVars(tc.expression))
+			assert.Equal(t, tc.p, params.P)
+			assert.Equal(t, tc.cr, params.CR)
+			assert.Equal(t, tc.img, params.Img)
+			assert.Equal(t, tc.imgCR, params.ImgCR)
+			assert.Equal(t, float64(1000), params.Len)
+			result, err := billingexpr.ComputeTieredQuota(makeSnapshot(tc.expression, 1, 1000, 100), params)
+			require.NoError(t, err)
+			assert.Equal(t, tc.quota, result.ActualQuotaAfterGroup)
+		})
+	}
+}
+
 func TestBuildTieredTokenParams_Claude_WithCache(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokens:     800,
@@ -1093,9 +1130,40 @@ func TestBuildTieredTokenParams_Claude_CacheCreationWithoutSplit(t *testing.T) {
 	t.Run("len 必须把缓存写入算进去,否则分档掉档", func(t *testing.T) {
 		const tiered = `len <= 1000 ? tier("cheap", p * 1) : tier("pricey", p * 1000)`
 		got := tieredQuota(tiered, mk(5000, 0, 0), true, 1.0)
-		// len = 100 + 200 + 5000 = 5300 > 1000 → pricey → 100*1000/1e6*500000 = 50000
-		if math.Abs(got-50000) > 0.01 {
-			t.Fatalf("quota = %f, want 50000(掉进 cheap 档说明 len 没把 cc 算进去)", got)
+		// len = 100 + 200 + 5000 = 5300 > 1000 → pricey。
+		// 表达式没单独给 cr 定价,上游 f064bffa2 起 Anthropic 语义下的缓存读取并回 p
+		// (此前这 200 token 白送):p = 100 + 200 = 300 → 300*1000/1e6*500000 = 150000。
+		// 掉进 cheap 档时是 300*1/1e6*500000 = 150,与之相差三个数量级。
+		if math.Abs(got-150000) > 0.01 {
+			t.Fatalf("quota = %f, want 150000(掉进 cheap 档说明 len 没把 cc 算进去)", got)
 		}
 	})
+}
+
+func TestSamePriceCacheReadsRemainInInput(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		usage       dto.Usage
+		extra       string
+		input, cost float64
+	}{
+		{"openai", dto.Usage{PromptTokens: 1000, CompletionTokens: 100, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 200}}, "", 1000, 72000},
+		{"anthropic", dto.Usage{PromptTokens: 800, CompletionTokens: 100, UsageSemantic: "anthropic", PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 200}}, "", 1000, 72000},
+		{"anthropic mixed cache TTLs", dto.Usage{PromptTokens: 750, CompletionTokens: 100, UsageSemantic: "anthropic", ClaudeCacheCreation5mTokens: 30, ClaudeCacheCreation1hTokens: 20, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 200, CachedCreationTokens: 50}}, " + cc * 75 + cc1h * 120", 950, 73650},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			merged := `tier("base", p * 60 + c * 120` + tc.extra + `)`
+			separate := `tier("base", p * 60 + c * 120 + cr * 60` + tc.extra + `)`
+			params := BuildTieredTokenParams(&tc.usage, tc.usage.UsageSemantic == "anthropic", billingexpr.UsedVars(merged))
+			assert.Equal(t, tc.input, params.P)
+			cost, _, err := billingexpr.RunExpr(merged, params)
+			require.NoError(t, err)
+			assert.Equal(t, tc.cost, cost)
+			separateParams := BuildTieredTokenParams(&tc.usage, tc.usage.UsageSemantic == "anthropic", billingexpr.UsedVars(separate))
+			previousCost, _, err := billingexpr.RunExpr(separate, separateParams)
+			require.NoError(t, err)
+			assert.Equal(t, previousCost, cost, "folding cache reads into input must preserve the charge")
+			assert.Equal(t, separateParams.Len, params.Len, "tier conditions keep the full context length")
+		})
+	}
 }

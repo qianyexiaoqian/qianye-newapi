@@ -73,7 +73,8 @@ func TestAudioPathDoesNotFreeAPerCallRequestWhenTotalTokensIsZero(t *testing.T) 
 			to = len(src)
 		}
 		window := src[at:to]
-		assert.Containsf(t, window, "if !usePrice {",
+		// 只认前缀:按次表达式(fixed())也豁免,写作 `if !usePrice && !fixedPriceBilling {`。
+		assert.Containsf(t, window, "if !usePrice ",
 			"第 %d 处 `totalTokens == 0` 兜底仍然无条件把 quota 清零 —— "+
 				"按次计费的金额与 token 数严格无关,这等于把一次已经完成的调用整笔免单", sites)
 	}
