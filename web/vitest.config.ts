@@ -67,5 +67,15 @@ export default defineConfig({
     clearMocks: true,
     restoreMocks: true,
     include: collectVitestFiles(),
+    server: {
+      deps: {
+        // `@lobehub/icons` 传递依赖 `@emoji-mart/data` 的 JSON 资源。默认它被
+        // 外部化,交给 Node 的 ESM loader 去 import,而 Node 22+ 要求 JSON 导入
+        // 带 `with { type: 'json' }` —— 于是任何走到品牌图标的用例整份加载失败
+        // (报 "needs an import attribute of type json",一条用例都跑不到)。
+        // 内联之后由 Vite 转译,JSON 正常解析。
+        inline: ['@lobehub/icons', '@lobehub/ui', '@emoji-mart/data'],
+      },
+    },
   },
 })

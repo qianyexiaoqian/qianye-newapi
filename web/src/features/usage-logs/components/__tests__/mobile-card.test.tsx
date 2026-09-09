@@ -31,14 +31,6 @@ import { useCommonLogsColumns } from '../columns/common-logs-columns'
 import { UsageLogsMobileList } from '../usage-logs-mobile-card'
 import { UsageLogsProvider, useUsageLogsContext } from '../usage-logs-provider'
 
-// @lobehub/icons transitively imports @emoji-mart JSON assets that vitest's
-// externalized ESM loader rejects. This fork's log columns reach that loader
-// through the model/vendor badges, which are irrelevant to the mobile card
-// layout under test, so the icon loader boundary is stubbed.
-vi.mock('@/lib/lobe-icon', () => ({
-  getLobeIcon: () => null,
-}))
-
 const longName = 'enterprise-production-failover-2026-without-any-short-alias'
 const log = usageLogSchema.parse({
   id: 1,
