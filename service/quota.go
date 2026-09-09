@@ -367,6 +367,9 @@ func CalcOpenRouterCacheCreateTokens(usage dto.Usage, priceData types.PriceData)
 }
 
 func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent string) {
+	if usage == nil {
+		usage = &dto.Usage{PromptTokens: relayInfo.GetEstimatePromptTokens(), TotalTokens: relayInfo.GetEstimatePromptTokens()}
+	}
 
 	var tieredUsedVars map[string]bool
 	if snap := relayInfo.TieredBillingSnapshot; snap != nil {
@@ -377,6 +380,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	if tieredOk {
 		tieredResult = tieredRes
 	}
+	fixedPriceBilling := tieredOk && isFixedPriceSettlement(relayInfo, tieredRes)
 
 	useTimeSeconds := time.Now().Unix() - relayInfo.StartTime.Unix()
 	textInputTokens := usage.PromptTokensDetails.TextTokens
@@ -454,7 +458,8 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		// 按次定价的音频模型上,HTTP 200 拿到回答而扣 0;把 total_tokens 改回 150
 		// 就正常收 375000。上游把 token 明细报全了却漏报 total_tokens,是二手中转站
 		// 与自建 OpenAI 兼容服务里常见的形状。
-		if !usePrice {
+		// 按次表达式(fixed())同理:它的价格与 token 数无关(上游 064ed943e)。
+		if !usePrice && !fixedPriceBilling {
 			quota = 0
 		}
 		logContent += "（可能是上游超时）"
