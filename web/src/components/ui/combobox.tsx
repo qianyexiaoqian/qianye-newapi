@@ -50,6 +50,8 @@ type LegacyComboboxProps = {
   className?: string
   id?: string
   openOnFocus?: boolean
+  disabled?: boolean
+  'aria-label'?: string
 }
 
 function Combobox(props: LegacyComboboxProps): React.ReactElement
@@ -73,6 +75,8 @@ function Combobox(
         className={props.className}
         allowCustomValue={props.allowCustomValue}
         openOnFocus={props.openOnFocus}
+        disabled={props.disabled}
+        aria-label={props['aria-label']}
       />
     )
   }
