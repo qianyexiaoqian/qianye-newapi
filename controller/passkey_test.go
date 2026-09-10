@@ -128,3 +128,71 @@ func TestPasskeyRegisterFinishRejectsMissingOrWrongProofWithoutConsumingFlow(t *
 		})
 	}
 }
+
+// passkey 登录是本仓唯一一条**刻意绕过两步验证闸门**的登录通道
+// (controller/passkey.go 的 setupLoginAtAuthVersion,理由是「passkey 本身就是强因子」)。
+// 那个理由只有在 authenticator 真的做过用户验证(PIN / 生物识别)时才成立:
+// go-webauthn 只有在 sessionData.UserVerification == required 时才校验 UV 位,
+// 而系统设置的默认值是 "preferred"。所以这三条挑战必须**无视系统设置**恒发 required,
+// 否则 passkey 退化成「持有这把钥匙即可」的单因子,而且还跳过 TOTP。
+func TestPasskeyChallengesAlwaysRequireUserVerification(t *testing.T) {
+	for _, configured := range []string{"preferred", "discouraged", ""} {
+		t.Run("system_setting="+configured, func(t *testing.T) {
+			settings := system_setting.GetPasskeySettings()
+			previousSettings := *settings
+			// Origins / RPID 写死成一个安全来源:留空的话 GetPasskeySettings 会从
+			// ServerAddress 推导,而包内别的用例把它设成过 http://localhost:3000,
+			// BuildWebAuthn 会以「不安全 Origin」拒绝,测不到 UV 这条。
+			*settings = system_setting.PasskeySettings{
+				Enabled:          true,
+				UserVerification: configured,
+				RPID:             "example.com",
+				Origins:          "https://example.com",
+			}
+			previousDB := model.DB
+			previousRedis := common.RedisEnabled
+			previousSecret := common.SessionSecret
+			dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
+			db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+			require.NoError(t, err)
+			require.NoError(t, db.AutoMigrate(&model.AuthFlow{}))
+			model.DB = db
+			common.RedisEnabled = false
+			common.SessionSecret = "passkey-uv-test-secret"
+			t.Cleanup(func() {
+				*settings = previousSettings
+				model.DB = previousDB
+				common.RedisEnabled = previousRedis
+				common.SessionSecret = previousSecret
+				if sqlDB, dbErr := db.DB(); dbErr == nil {
+					_ = sqlDB.Close()
+				}
+			})
+
+			gin.SetMode(gin.TestMode)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/user/passkey/login/begin", nil)
+			c.Request.Host = "example.com"
+			PasskeyLoginBegin(c)
+
+			require.Equal(t, http.StatusOK, recorder.Code)
+			var response struct {
+				Success bool `json:"success"`
+				Data    struct {
+					Options struct {
+						PublicKey struct {
+							UserVerification string `json:"userVerification"`
+						} `json:"publicKey"`
+					} `json:"options"`
+					FlowToken string `json:"flow_token"`
+				} `json:"data"`
+			}
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response), recorder.Body.String())
+			require.True(t, response.Success, recorder.Body.String())
+			assert.Equal(t, "required", response.Data.Options.PublicKey.UserVerification,
+				"系统设置为 %q 时挑战仍必须是 required", configured)
+			require.NotEmpty(t, response.Data.FlowToken)
+		})
+	}
+}

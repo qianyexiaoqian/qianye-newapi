@@ -361,7 +361,7 @@ func DeleteRedemptionBatch(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
-	count, err := model.BatchDeleteRedemptions(request.Ids)
+	count, err := model.BatchDeleteRedemptions(redemptionCreatorScope(c), request.Ids)
 	if err != nil {
 		common.ApiError(c, err)
 		return

@@ -84,7 +84,11 @@ func PasskeyRegisterBegin(c *gin.Context) {
 	}
 
 	waUser := passkeysvc.NewWebAuthnUser(user, credential)
-	var options []webauthnlib.RegistrationOption
+	// 注册期就把 UV 钉死:一个在注册时没做过用户验证的凭证,登录端此后
+	// 永远只能是单因子。selection 从 wa.Config 复制,保留 ResidentKey 等其余偏好。
+	selection := wa.Config.AuthenticatorSelection
+	selection.UserVerification = protocol.VerificationRequired
+	options := []webauthnlib.RegistrationOption{webauthnlib.WithAuthenticatorSelection(selection)}
 	if credential != nil {
 		descriptor := credential.ToWebAuthnCredential().Descriptor()
 		options = append(options, webauthnlib.WithExclusions([]protocol.CredentialDescriptor{descriptor}))
@@ -184,6 +188,18 @@ func PasskeyRegisterFinish(c *gin.Context) {
 	)
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	// 强制要求 authenticator 真的做过用户验证(PIN / 生物识别)。
+	// go-webauthn v0.14.0 的 webauthn/login.go:390 是
+	// `shouldVerifyUser := session.UserVerification == protocol.VerificationRequired`
+	// —— 只有 required 时它才校验 authenticator data 里的 UV 位。系统设置默认是
+	// "preferred",于是不加这道复核的话,passkey 退化成「持有这把钥匙即可」的
+	// 单因子。而本仓的 passkey 登录是刻意绕过两步验证闸门的
+	// (理由是「passkey 本身就是强因子」),那个理由只有在 UV 真的被强制时才成立。
+	// 口径同上游 6f2333990。
+	if sessionData.UserVerification != protocol.VerificationRequired {
+		common.ApiError(c, errors.New("passkey 未完成用户验证,请使用支持 PIN 或生物识别的认证器"))
 		return
 	}
 
@@ -308,7 +324,7 @@ func PasskeyLoginBegin(c *gin.Context) {
 		return
 	}
 
-	assertion, sessionData, err := wa.BeginDiscoverableLogin()
+	assertion, sessionData, err := wa.BeginDiscoverableLogin(webauthnlib.WithUserVerification(protocol.VerificationRequired))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -371,6 +387,18 @@ func PasskeyLoginFinish(c *gin.Context) {
 	)
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	// 强制要求 authenticator 真的做过用户验证(PIN / 生物识别)。
+	// go-webauthn v0.14.0 的 webauthn/login.go:390 是
+	// `shouldVerifyUser := session.UserVerification == protocol.VerificationRequired`
+	// —— 只有 required 时它才校验 authenticator data 里的 UV 位。系统设置默认是
+	// "preferred",于是不加这道复核的话,passkey 退化成「持有这把钥匙即可」的
+	// 单因子。而本仓的 passkey 登录是刻意绕过两步验证闸门的
+	// (理由是「passkey 本身就是强因子」),那个理由只有在 UV 真的被强制时才成立。
+	// 口径同上游 6f2333990。
+	if sessionData.UserVerification != protocol.VerificationRequired {
+		common.ApiError(c, errors.New("passkey 未完成用户验证,请使用支持 PIN 或生物识别的认证器"))
 		return
 	}
 
@@ -531,7 +559,7 @@ func PasskeyVerifyBegin(c *gin.Context) {
 	}
 
 	waUser := passkeysvc.NewWebAuthnUser(user, credential)
-	assertion, sessionData, err := wa.BeginLogin(waUser)
+	assertion, sessionData, err := wa.BeginLogin(waUser, webauthnlib.WithUserVerification(protocol.VerificationRequired))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -622,6 +650,18 @@ func PasskeyVerifyFinish(c *gin.Context) {
 	)
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	// 强制要求 authenticator 真的做过用户验证(PIN / 生物识别)。
+	// go-webauthn v0.14.0 的 webauthn/login.go:390 是
+	// `shouldVerifyUser := session.UserVerification == protocol.VerificationRequired`
+	// —— 只有 required 时它才校验 authenticator data 里的 UV 位。系统设置默认是
+	// "preferred",于是不加这道复核的话,passkey 退化成「持有这把钥匙即可」的
+	// 单因子。而本仓的 passkey 登录是刻意绕过两步验证闸门的
+	// (理由是「passkey 本身就是强因子」),那个理由只有在 UV 真的被强制时才成立。
+	// 口径同上游 6f2333990。
+	if sessionData.UserVerification != protocol.VerificationRequired {
+		common.ApiError(c, errors.New("passkey 未完成用户验证,请使用支持 PIN 或生物识别的认证器"))
 		return
 	}
 

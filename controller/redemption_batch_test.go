@@ -133,9 +133,12 @@ func TestDeleteRedemptionBatch(t *testing.T) {
 			token := "redemption-audit-test-token"
 			admin := model.User{Username: "redemption-audit-admin", Password: "unused", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, Group: "default", AccessToken: &token}
 			require.NoError(t, db.Create(&admin).Error)
+			// UserId 必须落上:生产里 AddRedemption 就是这么写的(controller/redemption.go
+			// 的 `UserId: c.GetInt("id")`),而删除路径按发码人分桶。不落的话这批码
+			// 谁都删不掉,测的就不是真实形状了。
 			codes := make([]model.Redemption, 16)
 			for index := range codes {
-				codes[index] = model.Redemption{Name: "selected", Key: fmt.Sprintf("%032d", index+1), Quota: 100, Status: common.RedemptionCodeStatusEnabled}
+				codes[index] = model.Redemption{UserId: admin.Id, Name: "selected", Key: fmt.Sprintf("%032d", index+1), Quota: 100, Status: common.RedemptionCodeStatusEnabled}
 			}
 			codes[1].Status = common.RedemptionCodeStatusUsed
 			codes[15].Name = "unselected"
@@ -173,8 +176,20 @@ func TestDeleteRedemptionBatch(t *testing.T) {
 					assert.False(t, other.AuditInfo.Success)
 				})
 			}
-			_, err = model.BatchDeleteRedemptions(nil)
+			_, err = model.BatchDeleteRedemptions(0, nil)
 			require.Error(t, err)
+
+			// 发码人分桶:非 root 管理员只能删自己发的码。上游没有这道闸,
+			// 从上游合批量删除时补的,判据与单条删除的 requireOwnRedemption 一致。
+			otherAdminToken := "redemption-scope-other-admin"
+			otherAdmin := model.User{Username: "redemption-scope-other", Password: "unused", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, Group: "default", AccessToken: &otherAdminToken, AffCode: "scopeoth"}
+			require.NoError(t, db.Create(&otherAdmin).Error)
+			scoped, err := model.BatchDeleteRedemptions(otherAdmin.Id, []int{codes[0].Id, codes[2].Id})
+			require.NoError(t, err)
+			assert.Zero(t, scoped, "别的管理员发的码,非 root 一张都删不掉")
+			var stillThere int64
+			require.NoError(t, model.DB.Model(&model.Redemption{}).Where("id IN ?", []int{codes[0].Id, codes[2].Id}).Count(&stillThere).Error)
+			assert.EqualValues(t, 2, stillThere)
 			requestedIDs := make([]int, 0, 17)
 			for _, code := range codes[:15] {
 				requestedIDs = append(requestedIDs, code.Id)

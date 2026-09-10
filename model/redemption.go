@@ -481,7 +481,13 @@ func DeleteInvalidRedemptions(creatorId int) (int64, error) {
 }
 
 // BatchDeleteRedemptions soft-deletes the selected codes in one statement.
-func BatchDeleteRedemptions(ids []int) (int64, error) {
+//
+// creatorId 的口径与 DeleteInvalidRedemptions 完全一致:0 = root,看全量;
+// 其余管理员只能删自己发的码。上游没有这道分桶(它那边任何管理员都能删任何码),
+// 所以从上游合进批量删除时**必须**在这里补上 —— 否则一个 role=10 只要猜到 id
+// 就能把别人发行的在售码整批作废,而单条删除那条路(requireOwnRedemption)是挡着的,
+// 同一个动作走两条路结果不同本身就是缺陷。
+func BatchDeleteRedemptions(creatorId int, ids []int) (int64, error) {
 	if len(ids) == 0 || len(ids) > 1000 {
 		return 0, errors.New("select between 1 and 1000 redemption codes")
 	}
@@ -490,6 +496,7 @@ func BatchDeleteRedemptions(ids []int) (int64, error) {
 			return 0, errors.New("redemption IDs must be positive")
 		}
 	}
-	result := DB.Where("id IN ?", ids).Delete(&Redemption{})
+	query := scopeRedemptionsToCreator(DB, creatorId)
+	result := query.Where("id IN ?", ids).Delete(&Redemption{})
 	return result.RowsAffected, result.Error
 }
