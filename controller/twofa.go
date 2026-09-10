@@ -26,6 +26,10 @@ type Verify2FARequest struct {
 
 type twoFALoginFlowPayload struct {
 	AuthVersion int64 `json:"auth_version"`
+	// Method 是第一步走的那条登录通道("password" / "oauth:github" / "wechat"
+	// …),只为让登录审计记的是真实来源。旧流程签发的 flow 没有这一栏,读出来
+	// 是空串,loginMethodFromContext 会回落到按路由推导。
+	Method string `json:"method,omitempty"`
 }
 
 // Setup2FAResponse 设置2FA响应结构
@@ -523,6 +527,9 @@ func Verify2FALogin(c *gin.Context) {
 		return
 	}
 
+	if flowPayload.Method != "" {
+		c.Set("login_method", flowPayload.Method)
+	}
 	setupLoginAtAuthVersion(user, flowPayload.AuthVersion, c)
 }
 

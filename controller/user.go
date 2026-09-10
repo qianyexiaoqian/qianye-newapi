@@ -102,48 +102,17 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	// 检查是否启用2FA
-	twoFAEnabled, err := model.IsTwoFAEnabled(user.Id)
-	if err != nil {
-		common.SysLog(fmt.Sprintf("Login failed to load 2FA status for user %d: %v", user.Id, err))
-		common.ApiErrorI18n(c, i18n.MsgDatabaseError)
-		return
-	}
-	if twoFAEnabled {
-		expiresAt := time.Now().Add(5 * time.Minute)
-		payload, err := common.Marshal(twoFALoginFlowPayload{AuthVersion: user.AuthVersion})
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		flowToken, _, err := model.CreateAuthFlow(model.AuthFlowCreate{
-			Purpose:   model.AuthFlowPurposeTwoFALogin,
-			UserId:    user.Id,
-			Payload:   string(payload),
-			ExpiresAt: expiresAt,
-		})
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"message": i18n.T(c, i18n.MsgUserRequire2FA),
-			"success": true,
-			"data": map[string]any{
-				"require_2fa": true,
-				"flow_token":  flowToken,
-				"expires_at":  expiresAt.Unix(),
-			},
-		})
-		return
-	}
-
 	setupLogin(&user, c)
 }
 
 // loginMethodFromContext 根据请求路径推导登录方式，用于登录审计日志。
 func loginMethodFromContext(c *gin.Context) string {
+	// 两步验证是登录的第二步,它自己那条路由说明不了用户当初是从哪条通道进来的。
+	// 第一步把通道名写进 flow payload,Verify2FALogin 再放回 context,审计日志
+	// 因此记的仍然是 "oauth:github" 而不是笼统的 "2fa"。
+	if method := strings.TrimSpace(c.GetString("login_method")); method != "" {
+		return method
+	}
 	switch c.FullPath() {
 	case "/api/user/login":
 		return "password"
@@ -179,10 +148,78 @@ func recordLoginAudit(user *model.User, c *gin.Context) {
 	}, extra)
 }
 
-// setupLogin creates a server-controlled login Session and returns the shared
-// authentication bundle used by every login method.
+// setupLogin 是除 passkey 之外每一条主登录通道的共同出口:先过两步验证这道闸,
+// 再签发会话。
+//
+// 闸门必须放在这里,不能放回各个 handler。它原先只写在密码登录那一条上
+// (`Login` 里内联的 IsTwoFAEnabled),于是 OAuth / Telegram / 微信 三条通道
+// 签发会话时压根不看两步验证:一个开了两步验证又绑了 GitHub 的账号,攻击者
+// 拿下 GitHub 就能直接登进来,一次动态码都不用输 —— 而"主凭据已失守"正是
+// 两步验证唯一要防的情形。上游 6f2333990 修的是同一处。
+//
+// passkey 不走这里:它本身已经是一个强因子,再要一次动态码等于把两个因子
+// 叠成串联,既不提高强度也会让只用 passkey 的人登不进来。
 func setupLogin(user *model.User, c *gin.Context) {
+	if requireTwoFALoginChallenge(user, c) {
+		return
+	}
 	setupLoginAtAuthVersion(user, 0, c)
+}
+
+// requireTwoFALoginChallenge 在签发会话之前拦一道两步验证。返回 true 表示应答
+// 已经写出(挑战或错误),调用方不得再签发会话。
+func requireTwoFALoginChallenge(user *model.User, c *gin.Context) bool {
+	if user == nil || user.Id <= 0 {
+		return false
+	}
+	twoFAEnabled, err := model.IsTwoFAEnabled(user.Id)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("Login failed to load 2FA status for user %d: %v", user.Id, err))
+		common.ApiErrorI18n(c, i18n.MsgDatabaseError)
+		return true
+	}
+	if !twoFAEnabled {
+		return false
+	}
+	// AuthVersion 从库里重新读,不取调用方手上那个 user:OAuth / 微信 那几条
+	// 通道的 user 是按 provider 列查出来的,select 不保证带上 auth_version,
+	// 而 Verify2FALogin 会拿 payload 里的值与库里的当前值做相等比较 ——
+	// 带一个 0 进去,第二步会直接判成"会话已过期"。
+	current, err := model.GetUserById(user.Id, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return true
+	}
+	expiresAt := time.Now().Add(5 * time.Minute)
+	payload, err := common.Marshal(twoFALoginFlowPayload{
+		AuthVersion: current.AuthVersion,
+		Method:      loginMethodFromContext(c),
+	})
+	if err != nil {
+		common.ApiError(c, err)
+		return true
+	}
+	flowToken, _, err := model.CreateAuthFlow(model.AuthFlowCreate{
+		Purpose:   model.AuthFlowPurposeTwoFALogin,
+		UserId:    user.Id,
+		Payload:   string(payload),
+		ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		common.ApiError(c, err)
+		return true
+	}
+	setAuthNoStore(c)
+	c.JSON(http.StatusOK, gin.H{
+		"message": i18n.T(c, i18n.MsgUserRequire2FA),
+		"success": true,
+		"data": map[string]any{
+			"require_2fa": true,
+			"flow_token":  flowToken,
+			"expires_at":  expiresAt.Unix(),
+		},
+	})
+	return true
 }
 
 func setupLoginAtAuthVersion(user *model.User, expectedAuthVersion int64, c *gin.Context) {

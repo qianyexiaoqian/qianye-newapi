@@ -115,7 +115,9 @@ func TestSessionLimitDoesNotRecordRejectedLoginAsSuccessful(t *testing.T) {
 	previousIssuanceWindow := common.UserSessionIssuanceWindowSeconds
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}))
+	// setupLogin 现在会先查两步验证(闸门从密码登录挪到了这条共同出口),
+	// 缺表会让它按“数据库出错”拒绝登录,这条用例要断言的会话上限就到不了。
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.TwoFA{}))
 	model.DB = db
 	common.RedisEnabled = false
 	common.UserSessionActiveLimit = 1

@@ -23,8 +23,10 @@ import { toast } from 'sonner'
 
 import { wechatLoginByCode } from '@/features/auth/api'
 import { sanitizeAuthRedirect } from '@/features/auth/lib/auth-redirect'
+import { pickTwoFALoginChallenge } from '@/features/auth/lib/two-fa-challenge'
 import { applyAuthBundle, isAuthBundle } from '@/lib/api'
 import { getServerErrorMessageKey } from '@/lib/server-error-message'
+import { useAuthStore } from '@/stores/auth-store'
 
 function OAuthComponent() {
   const navigate = useNavigate()
@@ -40,6 +42,16 @@ function OAuthComponent() {
       try {
         if (search?.provider === 'wechat' && search.code) {
           const res = await wechatLoginByCode(search.code)
+          const challenge = res?.success
+            ? pickTwoFALoginChallenge(res.data)
+            : null
+          if (challenge) {
+            useAuthStore
+              .getState()
+              .auth.setPending2FAFlowToken(challenge.flow_token)
+            navigate({ to: '/otp', replace: true })
+            return
+          }
           if (res?.success && isAuthBundle(res.data)) {
             applyAuthBundle(res.data)
             const target =

@@ -49,10 +49,12 @@ import {
   getAffiliateCode,
   saveAffiliateCode,
 } from '@/features/auth/lib/storage'
+import { pickTwoFALoginChallenge } from '@/features/auth/lib/two-fa-challenge'
 import { useStatus } from '@/hooks/use-status'
 import { isAuthBundle } from '@/lib/api'
 import { getServerErrorMessageKey } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 export function SignUpForm({
   className,
@@ -76,7 +78,11 @@ export function SignUpForm({
     setTurnstileToken,
     validateTurnstile,
   } = useTurnstile()
-  const { redirectToLogin, handleLoginSuccess } = useAuthRedirect()
+  const { redirectToLogin, handleLoginSuccess, redirectTo2FA } =
+    useAuthRedirect()
+  const setPending2FAFlowToken = useAuthStore(
+    (state) => state.auth.setPending2FAFlowToken
+  )
   const {
     isSending: isSendingCode,
     secondsLeft,
@@ -215,6 +221,15 @@ export function SignUpForm({
     setIsWeChatSubmitting(true)
     try {
       const res = await wechatLoginByCode(wechatCode)
+      const wechatChallenge = res?.success
+        ? pickTwoFALoginChallenge(res.data)
+        : null
+      if (wechatChallenge) {
+        setPending2FAFlowToken(wechatChallenge.flow_token)
+        handleWeChatDialogChange(false)
+        redirectTo2FA()
+        return
+      }
       if (res?.success && isAuthBundle(res.data)) {
         await handleLoginSuccess(res.data)
         toast.success(t('Signed in via WeChat'))

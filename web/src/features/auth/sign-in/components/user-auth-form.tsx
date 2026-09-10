@@ -46,6 +46,7 @@ import { OAuthProviders } from '@/features/auth/components/oauth-providers'
 import { loginFormSchema } from '@/features/auth/constants'
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { useTurnstile } from '@/features/auth/hooks/use-turnstile'
+import { pickTwoFALoginChallenge } from '@/features/auth/lib/two-fa-challenge'
 import { beginPasskeyLogin, finishPasskeyLogin } from '@/features/auth/passkey'
 import type { AuthFormProps } from '@/features/auth/types'
 import { useStatus } from '@/hooks/use-status'
@@ -179,13 +180,19 @@ export function UserAuthForm({
       })
 
       if (res.success) {
-        if (res.data && 'require_2fa' in res.data && res.data.require_2fa) {
-          if (!res.data.flow_token) {
-            throw new Error(t('Login flow expired. Please sign in again.'))
-          }
-          setPending2FAFlowToken(res.data.flow_token)
+        const challenge = pickTwoFALoginChallenge(res.data)
+        if (challenge) {
+          setPending2FAFlowToken(challenge.flow_token)
           redirectTo2FA()
           return
+        }
+        if (
+          res.data &&
+          typeof res.data === 'object' &&
+          'require_2fa' in res.data &&
+          res.data.require_2fa
+        ) {
+          throw new Error(t('Login flow expired. Please sign in again.'))
         }
 
         if (!isAuthBundle(res.data)) {
@@ -228,6 +235,15 @@ export function UserAuthForm({
     setIsWeChatSubmitting(true)
     try {
       const res = await wechatLoginByCode(wechatCode)
+      const wechatChallenge = res?.success
+        ? pickTwoFALoginChallenge(res.data)
+        : null
+      if (wechatChallenge) {
+        setPending2FAFlowToken(wechatChallenge.flow_token)
+        handleWeChatDialogChange(false)
+        redirectTo2FA()
+        return
+      }
       if (res?.success && isAuthBundle(res.data)) {
         await handleLoginSuccess(res.data, redirectTo)
         toast.success(t('Signed in via WeChat'))

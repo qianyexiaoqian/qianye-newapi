@@ -42,8 +42,10 @@ import {
   getOAuthSessionStorage,
   resolveOAuthCallbackMode,
 } from '@/features/auth/lib/oauth-callback-mode'
+import { pickTwoFALoginChallenge } from '@/features/auth/lib/two-fa-challenge'
 import { api, applyAuthBundle, isAuthBundle } from '@/lib/api'
 import { getServerErrorMessageKey } from '@/lib/server-error-message'
+import { useAuthStore } from '@/stores/auth-store'
 
 type OAuthRequestConfig = AxiosRequestConfig & {
   skipBusinessError?: boolean
@@ -198,6 +200,19 @@ function OAuthCallback() {
           skipBusinessError: true,
         }
         const response = await api.get(`/api/oauth/${provider}`, config)
+        // 后端在 setupLogin 上拦了一道两步验证,任何一条主登录通道都可能收到
+        // 挑战而不是会话。这里不认它的话,开了两步验证的人从 OAuth 登录会
+        // 停在"OAuth failed"上,而闸门本身是对的。
+        const challenge = response.data?.success
+          ? pickTwoFALoginChallenge(response.data?.data)
+          : null
+        if (challenge) {
+          useAuthStore
+            .getState()
+            .auth.setPending2FAFlowToken(challenge.flow_token)
+          void navigate({ to: '/otp', replace: true })
+          return
+        }
         if (response.data?.success && isAuthBundle(response.data?.data)) {
           applyAuthBundle(response.data.data)
           safeNavigate(search.redirect)

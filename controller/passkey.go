@@ -433,7 +433,10 @@ func PasskeyLoginFinish(c *gin.Context) {
 		return
 	}
 
-	setupLogin(modelUser, c)
+	// 不走 setupLogin:passkey 本身就是一个强因子,那条出口上的两步验证闸门
+	// 对它是重复的第二因子。口径与上游 6f2333990 一致("Only a completed
+	// Passkey ceremony may go directly to session issuance")。
+	setupLoginAtAuthVersion(modelUser, 0, c)
 }
 
 func AdminResetPasskey(c *gin.Context) {
