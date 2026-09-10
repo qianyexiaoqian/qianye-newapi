@@ -72,7 +72,8 @@ async function renderFilter(
       return {
         data: {
           success: true,
-          data: url === '/api/model-group/options' ? Object.keys(groups) : groups,
+          data:
+            url === '/api/model-group/options' ? Object.keys(groups) : groups,
         },
       }
     }
