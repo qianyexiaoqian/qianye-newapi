@@ -134,13 +134,15 @@ func setupBillingAliasOptionDB(t *testing.T) {
 }
 
 func TestUpdateOptionAliasBillingExprUsesPluginSchema(t *testing.T) {
-	setupBillingAliasOptionDB(t)
+	database := modelManagementDB(t, "sqlite", "")
+	require.NoError(t, database.AutoMigrate(&model.Log{}))
 	const pluginKey = "billing-alias-probe"
 	source := `
 export const meta = {
   apiVersion: 1, key: "billing-alias-probe", name: "Billing Alias Probe", version: "1.0.0", author: {name: "Test"},
   models: ["declared-model"], fetchMode: "per_task",
-  usageSchema: {seconds: {type: "number", unit: "second"}}
+  usageSchema: {seconds: {type: "number", unit: "second"}, image_count: {type: "number", unit: "count"}},
+  usageProfiles: [{models: ["declared-model"], schema: {seconds: {type: "number", unit: "second"}}}]
 };
 export function buildSubmitRequest() { return {}; }
 export function parseSubmitResponse() { return {}; }
@@ -193,10 +195,14 @@ export function parseTaskResult() { return {}; }
 	assert.Equal(t, http.StatusOK, accepted.Code)
 	assert.Contains(t, accepted.Body.String(), `"success":true`)
 
-	rejectedKey := putExpr("alias-model", `u("clips")`)
+	rejectedKey := putExpr("alias-model", `u("image_count")`)
 	assert.Equal(t, http.StatusOK, rejectedKey.Code)
 	assert.Contains(t, rejectedKey.Body.String(), `"success":false`)
-	assert.Contains(t, rejectedKey.Body.String(), `usage key \"clips\" is not declared`)
+	assert.Contains(t, rejectedKey.Body.String(), `usage key \"image_count\" is not declared`)
+
+	rejectedDeclared := putExpr("declared-model", `u("image_count")`)
+	assert.Contains(t, rejectedDeclared.Body.String(), `"success":false`)
+	assert.Contains(t, rejectedDeclared.Body.String(), `usage key \"image_count\" is not declared`)
 
 	unresolvable := putExpr("unknown-alias-model", `u("seconds")`)
 	assert.Equal(t, http.StatusOK, unresolvable.Code)
