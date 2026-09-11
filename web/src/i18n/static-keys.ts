@@ -37,7 +37,8 @@ export const STATIC_I18N_KEYS = [
   'vLLM server address, without /v1',
   'vLLM API key, or EMPTY if authentication is disabled',
   'For this channel, map the model name in client requests to the model name sent upstream.',
-  // Channel provider descriptions and presentation badges.
+  // Channel provider labels, descriptions and presentation badges.
+  'Zhipu GLM',
   'Connect to the OpenAI API or compatible services',
   'Generate Midjourney images through MjProxy',
   'Connect to OpenAI models deployed on Azure',

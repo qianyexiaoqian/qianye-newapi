@@ -437,7 +437,7 @@ func TestMasterSwitchEmptiesOptionsAndKeepsList(t *testing.T) {
 	assert.Equal(t, "kling", item.Meta.Key)
 }
 
-func TestGetTaskPluginOptionsIncludesDescriptionUsageSchemaIconAndBaseURL(t *testing.T) {
+func TestGetTaskPluginOptionsIncludesDescriptionUsageSchemaIconBaseURLAndChannelTypes(t *testing.T) {
 	setupTaskPluginControllerTest(t)
 	const key = "usage-options-probe"
 	source := `
@@ -445,6 +445,7 @@ export const meta = {
   apiVersion: 1, key: "usage-options-probe", name: "Usage Options", version: "1.0.0", author: {name: "Test"},
   description: {en: "Video generation via the vendor API", zh: "通过厂商接口生成视频"},
   icon: "text:UO", baseUrl: "http://localhost:9000/",
+  channelTypes: [1990, 1991],
   models: ["usage-options-model"], fetchMode: "per_task",
   usageSchema: {seconds: {type: "number", unit: "second", description: "Video generation unit price"}},
   usageProfiles: [{models:["usage-options-model"],schema:{image_count:{type:"number",unit:"count"}}}]
@@ -489,6 +490,7 @@ export function parseTaskResult() { return {}; }
 		assert.Equal(t, []string{"usage-options-model"}, option.UsageProfiles[0].Models)
 		assert.Equal(t, "count", option.UsageProfiles[0].Schema["image_count"].Unit)
 		assert.Equal(t, "text:UO", option.Icon)
+		assert.Equal(t, []int{1990, 1991}, option.ChannelTypes)
 		assert.Equal(t, "http://localhost:9000", option.BaseURL, "the drawer prefills the normalized plugin default")
 		return
 	}
