@@ -18,11 +18,15 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { createFileRoute } from '@tanstack/react-router'
 
-import { QyLanding } from '@/features/qy/landing'
+import { Home } from '@/features/home'
 
-// 未登录首页走二开自己的落地页（`features/qy/landing`）。上游的
-// `features/home` 一行不改，仍然承担「管理员配了自定义首页内容」那一支，
-// 由 QyLanding 在检测到内容后交回给它。
+// 首页暂时走回上游的 `features/home`。
+//
+// 二开落地页(`features/qy/landing`)的代码留在树里,没有删,但它用的 40 个
+// `qy_home_*` 文案键**从未写进任何语言包** —— 页面因此整页显示变量名
+// (qy_home_title_1、QY_HOME_STAMP_STATION…),自 2026-09-08 的 v208 构建起
+// 一直是这个样子。文案要按站点口径中英两套地写,不是机械补键,所以先切回默认,
+// 等文案定了再把 component 换回 QyLanding。
 export const Route = createFileRoute('/')({
-  component: QyLanding,
+  component: Home,
 })
