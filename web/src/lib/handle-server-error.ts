@@ -44,7 +44,23 @@ export function handleServerError(error: unknown) {
   }
 
   if (error instanceof AxiosError) {
-    errMsg = error.response?.data.title
+    // 取第一个**非空字符串**,不要无条件覆盖 errMsg。
+    //
+    // 原来这里是 `errMsg = error.response?.data.title` —— 而本仓后端的错误体
+    // 恒为 `{success:false, message:"..."}`(common/gin.go 的 ApiError),
+    // 根本没有 title 这一栏。于是 errMsg 变成 undefined,`toast.error(undefined)`
+    // 弹出一个**空白提示**:用户只看到一个没有字的红条,既不知道哪儿错了,
+    // 也不知道要不要重试。凡是走到这个兜底的失败操作都是这个样子。
+    const body = error.response?.data as
+      | { message?: unknown; title?: unknown }
+      | undefined
+    const candidates = [body?.message, body?.title, error.message]
+    const resolved = candidates.find(
+      (value) => typeof value === 'string' && value.trim() !== ''
+    )
+    if (typeof resolved === 'string') {
+      errMsg = resolved
+    }
   }
 
   toast.error(errMsg)
