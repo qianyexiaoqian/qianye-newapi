@@ -32,6 +32,11 @@ import {
   getQyVersion,
 } from '@/features/qy/pages/admin-health/api'
 import type { QyUpdateCheck } from '@/features/qy/pages/admin-health/types'
+import {
+  compareSystemVersions,
+  getSystemReleaseUrl,
+  selectLatestRelease,
+} from '@/features/system-update/releases'
 import { formatTimestamp, formatTimestampToDate } from '@/lib/format'
 
 import { SettingsSection } from '../components/settings-section'
@@ -126,8 +131,11 @@ export function UpdateCheckerSection({
   const handleCheckUpdates = async () => {
     setChecking(true)
     try {
+      // 仓库是 QuantumNous/new-api,不是早已搬走的 Calcium-Ion;而且必须列
+      // releases 而不是 /releases/latest —— 后者**排除预发布**,而内核版本一路
+      // 都是 rc.* 预发布,取 latest 永远取不到当前这一版,于是必定报"有新版本"。
       const response = await fetch(
-        'https://api.github.com/repos/Calcium-Ion/new-api/releases/latest',
+        'https://api.github.com/repos/QuantumNous/new-api/releases?per_page=100',
         {
           headers: {
             Accept: 'application/vnd.github+json',
@@ -140,24 +148,33 @@ export function UpdateCheckerSection({
         throw new Error(t('Failed to contact GitHub releases API'))
       }
 
-      const data = (await response.json()) as ReleaseInfo
-      if (!data?.tag_name) {
+      const latest = selectLatestRelease(await response.json())
+      if (!latest) {
         throw new Error(t('Unexpected release payload'))
       }
 
-      // 这条相等比较是内核版本号**必须与上游逐字一致**的原因：只要
-      // common.Version 上带了任何二开后缀，这里就永远不相等，于是永远弹
-      // "有新版本"，哪怕跑的就是最新的那一版。
-      if (currentVersion && data.tag_name === currentVersion) {
+      // 语义化比较,不再用字符串相等。相等比较在预发布号上必然失败
+      // (v1.0.0-rc.36 与 v1.0.0-rc.37 不等 → 永远提示有新版),而且
+      // 比不出"远端其实更旧"这种情况。!== -1 表示"本地不比远端旧"。
+      if (
+        currentVersion &&
+        compareSystemVersions(currentVersion, latest.tag_name) !== -1
+      ) {
         toast.success(
           t('You are running the latest version ({{version}}).', {
-            version: data.tag_name,
+            version: currentVersion,
           })
         )
         return
       }
 
-      setRelease(data)
+      setRelease({
+        tag_name: latest.tag_name,
+        name: latest.name ?? '',
+        body: latest.body ?? '',
+        html_url: getSystemReleaseUrl(latest),
+        published_at: latest.published_at ?? '',
+      })
       setDialogOpen(true)
     } catch (error) {
       const message =
