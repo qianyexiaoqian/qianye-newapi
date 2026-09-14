@@ -144,6 +144,8 @@ import {
   CHANNEL_STATUS_LABELS,
   CHANNEL_TYPE_OPTIONS,
   CHANNEL_TYPE_TASK_PLUGIN,
+  CHANNEL_TYPE_VLLM,
+  CHANNEL_TYPE_SGLANG,
   channelTypeOptionsForTaskPluginBind,
   CHANNEL_TYPE_WARNINGS,
   ERROR_MESSAGES,
@@ -177,6 +179,7 @@ import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
 } from '../../lib/status-code-risk-guard'
+import { getChannelTypeConfig } from '../../lib/channel-type-config'
 import {
   assessBaseUrlTrust,
   nextTaskPluginBaseUrl,
@@ -717,8 +720,14 @@ export function ChannelMutateDrawer({
   const keyMode = form.watch('key_mode')
   const currentGroups = form.watch('group')
   const currentType = form.watch('type')
-  const baseUrlPlaceholder =
-    defaultBaseURLs?.[currentType] || t(FIELD_PLACEHOLDERS.BASE_URL)
+  const baseUrlPlaceholder = [CHANNEL_TYPE_VLLM, CHANNEL_TYPE_SGLANG].includes(
+    currentType
+  )
+    ? t(
+        getChannelTypeConfig(currentType).hints?.baseUrl ||
+          FIELD_PLACEHOLDERS.BASE_URL
+      )
+    : defaultBaseURLs?.[currentType] || t(FIELD_PLACEHOLDERS.BASE_URL)
   const currentStatus = form.watch('status')
   const currentBaseUrl = form.watch('base_url')
   const currentTaskPluginKey = form.watch('task_plugin_key')
@@ -2907,7 +2916,9 @@ export function ChannelMutateDrawer({
                                 render={({ field }) => (
                                   <FormItem>
                                     <FormLabel>
-                                      {currentType === CHANNEL_TYPE_TASK_PLUGIN
+                                      {currentType === CHANNEL_TYPE_TASK_PLUGIN ||
+                                      currentType === CHANNEL_TYPE_VLLM ||
+                                      currentType === CHANNEL_TYPE_SGLANG
                                         ? t('Base URL *')
                                         : t('Base URL')}
                                     </FormLabel>
