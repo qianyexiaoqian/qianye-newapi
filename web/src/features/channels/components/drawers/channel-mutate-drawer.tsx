@@ -193,6 +193,7 @@ import {
 import { ParamOverrideEditorDialog } from '../dialogs/param-override-editor-dialog'
 import { StatusCodeRiskDialog } from '../dialogs/status-code-risk-dialog'
 import { ModelMappingEditor } from '../model-mapping-editor'
+import { ResponsesWebSocketSetting } from '../responses-websocket-setting'
 import {
   ChannelAdvancedSection,
   ChannelApiAccessSection,
@@ -298,6 +299,7 @@ const SENSITIVE_FORM_FIELDS = [
   'http_protocol',
   'http2_connection_shards',
   'pass_through_body_enabled',
+  'responses_websocket_enabled',
   'system_prompt',
   'system_prompt_override',
   'allow_service_tier',
@@ -4313,6 +4315,11 @@ export function ChannelMutateDrawer({
                                     </FormControl>
                                   </FormItem>
                                 )}
+                              />
+
+                              <ResponsesWebSocketSetting
+                                channelType={currentType}
+                                disabled={sensitiveLocked || isSubmitting}
                               />
 
                               <FormField

@@ -70,6 +70,11 @@ func SetRelayRouter(router *gin.Engine) {
 	relayV1Router.Use(middleware.RouteTag("relay"))
 	relayV1Router.Use(middleware.SystemPerformanceCheck())
 	relayV1Router.Use(middleware.TokenAuth())
+	{
+		// Responses WebSocket route. Channel selection happens after the first
+		// response.create event; each event runs the ordinary request limiter.
+		relayV1Router.GET("/responses", controller.ResponsesWebSocket)
+	}
 	// 「API 密钥」页那一列的实时计数(当前并发 / 近 1 分钟请求数)。紧跟在 TokenAuth
 	// 之后是刻意的:被限流挡掉的请求也要计入,理由见 middleware/qy_token_live_export.go。
 	relayV1Router.Use(middleware.QyTokenLiveStats())
