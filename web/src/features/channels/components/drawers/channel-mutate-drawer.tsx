@@ -4365,6 +4365,7 @@ export function ChannelMutateDrawer({
                                 />
                               )}
 
+                              {currentType !== CHANNEL_TYPE_ADVANCED_CUSTOM && (
                               <FormField
                                 control={form.control}
                                 name='pass_through_body_enabled'
@@ -4389,6 +4390,7 @@ export function ChannelMutateDrawer({
                                   </FormItem>
                                 )}
                               />
+                              )}
 
                               <FormField
                                 control={form.control}
