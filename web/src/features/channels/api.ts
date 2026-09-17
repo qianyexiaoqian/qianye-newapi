@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { getModelGroupOptions } from '@/features/users/api'
 import { api, type ApiRequestConfig } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type { InferenceStatus } from './lib/inference-status'
 import type {

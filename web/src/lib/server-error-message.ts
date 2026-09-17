@@ -58,3 +58,24 @@ export function getServerErrorMessageKey(value: unknown): string | null {
     ] ?? null
   )
 }
+
+/**
+ * Wrap a failed business response as an Error, keeping the payload as cause.
+ * Same signature as upstream's helper so synced callers compile unchanged.
+ */
+export function createServerError(value: unknown, fallback?: string): Error {
+  const payload = serverErrorPayload(value)
+  const message =
+    payload && typeof payload.message === 'string' && payload.message.trim()
+      ? payload.message
+      : (fallback ?? '')
+  return new Error(message, { cause: value })
+}
+
+/** Queries reject failed business responses without changing the raw API contract. */
+export function requireServerSuccess<T>(response: T): T {
+  if (isRecord(response) && response.success === false) {
+    throw createServerError(response)
+  }
+  return response
+}
