@@ -24,11 +24,12 @@ func stopReasonClaude2OpenAI(reason string) string {
 	return relayconvert.StopReasonClaudeToOpenAI(reason)
 }
 
-func maybeMarkClaudeRefusal(c *gin.Context, stopReason string) {
+func maybeMarkClaudeRefusal(c *gin.Context, info *relaycommon.RelayInfo, stopReason string) {
 	if c == nil {
 		return
 	}
 	if strings.EqualFold(stopReason, "refusal") {
+		info.PerformanceBusinessRejection = true
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "claude_stop_reason=refusal")
 	}
 }
@@ -95,10 +96,13 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
 	if claudeResponse.StopReason != "" {
-		maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
+		maybeMarkClaudeRefusal(c, info, claudeResponse.StopReason)
 	}
 	if claudeResponse.Delta != nil && claudeResponse.Delta.StopReason != nil {
-		maybeMarkClaudeRefusal(c, *claudeResponse.Delta.StopReason)
+		maybeMarkClaudeRefusal(c, info, *claudeResponse.Delta.StopReason)
+	}
+	if claudeResponse.Type == "message_stop" {
+		info.StreamStatus.MarkCompleted()
 	}
 	if info.RelayFormat == types.RelayFormatClaude {
 		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
@@ -299,6 +303,7 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 			sr.Stop(err)
 		}
 	})
+	info.StreamStatus.RequireTerminal()
 	if err != nil {
 		// 上游在流中途报错(Anthropic 流式协议里的 overloaded_error / api_error,
 		// 或某一行 data 的 JSON 解不开)。此前这里 `return nil, err` 把已经累计的
@@ -332,7 +337,7 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
 	}
-	maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
+	maybeMarkClaudeRefusal(c, info, claudeResponse.StopReason)
 	if claudeInfo.Usage == nil {
 		claudeInfo.Usage = &dto.Usage{}
 	}
