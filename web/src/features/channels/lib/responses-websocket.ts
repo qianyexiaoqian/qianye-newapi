@@ -16,17 +16,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_SUB2API } from '../constants'
+import { CHANNEL_TYPE_ADVANCED_CUSTOM } from './advanced-custom'
 
 /**
  * Channel types whose upstream can carry the Responses WebSocket protocol.
- *
- * 本仓后端只对 OpenAI(1)与 Codex(57)开了 Responses WebSocket;上游
- * fa3cc1c6b 把高级自定义 / Sub2API / New API 也加进来,但那依赖挂起的
- * ae249f4ec(WS 与 HTTP 共用路由)。这里只列后端真能用的类型,免得在别的
- * 渠道上给出一个保存了也不生效的开关(channel-form.ts 的 buildSettingJSON
- * 同样只对这两类写入)。
+ * Mirrors the backend FilterResponsesWebSocket allow list; the per-channel
+ * toggle still decides whether a channel is actually used.
  */
-const RESPONSES_WEBSOCKET_CHANNEL_TYPES: ReadonlySet<number> = new Set([1, 57])
+const RESPONSES_WEBSOCKET_CHANNEL_TYPES: ReadonlySet<number> = new Set([
+  1,
+  57,
+  CHANNEL_TYPE_ADVANCED_CUSTOM,
+  CHANNEL_TYPE_SUB2API,
+  CHANNEL_TYPE_NEW_API,
+])
 
 export function supportsResponsesWebSocket(channelType: number): boolean {
   return RESPONSES_WEBSOCKET_CHANNEL_TYPES.has(channelType)
