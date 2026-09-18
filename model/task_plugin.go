@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"slices"
 	"sort"
 	"time"
 
@@ -17,17 +18,19 @@ import (
 type TaskPluginChannelRef struct {
 	Id   int    `json:"id"`
 	Name string `json:"name"`
+	Type int    `json:"type"`
 }
 
 func GetTaskPluginUsage(key string) ([]TaskPluginChannelRef, int64, error) {
 	var channels []Channel
-	if err := DB.Where("type = ? AND status = ?", constant.ChannelTypeTaskPlugin, common.ChannelStatusEnabled).Find(&channels).Error; err != nil {
+	boundTypes := []int{constant.ChannelTypeTaskPlugin, constant.ChannelTypeNewAPI}
+	if err := DB.Where("type IN ? AND status = ?", boundTypes, common.ChannelStatusEnabled).Find(&channels).Error; err != nil {
 		return nil, 0, err
 	}
 	refs := make([]TaskPluginChannelRef, 0)
 	for _, channel := range channels {
-		if channel.GetSetting().TaskPluginKey == key {
-			refs = append(refs, TaskPluginChannelRef{Id: channel.Id, Name: channel.Name})
+		if channel.GetSetting().BindsTaskPlugin(key) {
+			refs = append(refs, TaskPluginChannelRef{Id: channel.Id, Name: channel.Name, Type: channel.Type})
 		}
 	}
 	var inFlight int64
@@ -50,6 +53,26 @@ func (LongText) GormDBDataType(db *gorm.DB, _ *schema.Field) string {
 		return "longtext"
 	}
 	return "text"
+}
+
+// UnbindTaskPlugin removes one plugin from a channel's bindings and reports
+// whether the channel changed. A New API gateway channel keeps serving its other
+// plugins and its ordinary traffic.
+func UnbindTaskPlugin(channelID int, key string) (bool, error) {
+	channel, err := GetChannelById(channelID, false)
+	if err != nil {
+		return false, err
+	}
+	setting := channel.GetSetting()
+	if !setting.BindsTaskPlugin(key) {
+		return false, nil
+	}
+	if setting.TaskPluginKey == key {
+		setting.TaskPluginKey = ""
+	}
+	setting.TaskExtendPluginKeys = slices.DeleteFunc(setting.TaskExtendPluginKeys, func(bound string) bool { return bound == key })
+	channel.SetSetting(setting)
+	return true, DB.Model(&Channel{}).Where("id = ?", channelID).Update("setting", channel.Setting).Error
 }
 
 type TaskPlugin struct {
