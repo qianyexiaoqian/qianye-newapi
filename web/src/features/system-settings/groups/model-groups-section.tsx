@@ -796,7 +796,7 @@ export function ModelGroupsSection(props: {
                     <Input
                       type='number'
                       min={0}
-                      step={0.1}
+                      step={0.0001}
                       value={row.ratio}
                       aria-label={t('qy_gs_col_base_ratio')}
                       aria-invalid={invalidRatios.includes(row.name.trim())}
