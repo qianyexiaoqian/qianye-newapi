@@ -220,8 +220,7 @@ func AppendResponseModelLogInfo(relayInfo *relaycommon.RelayInfo, other *model.L
 		return
 	}
 	observation := relayInfo.ResponseModel
-	if !observation.Mismatch &&
-		observation.ReturnedModel == observation.RequestedModel &&
+	if observation.ReturnedModel == observation.RequestedModel &&
 		(observation.UpstreamModel == "" || observation.UpstreamModel == observation.RequestedModel) &&
 		(relayInfo.ChannelMeta == nil || !relayInfo.IsModelMapped) {
 		return
