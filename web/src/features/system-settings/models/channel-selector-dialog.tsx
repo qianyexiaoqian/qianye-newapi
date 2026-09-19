@@ -323,7 +323,7 @@ export function ChannelSelectorDialog({
       description={t(
         'Choose channels to sync upstream ratio configurations from'
       )}
-      contentClassName='flex max-h-[90vh] max-w-[calc(100%-2rem)] flex-col sm:max-w-[90vw] xl:max-w-[1400px]'
+      contentClassName='flex max-h-[min(90dvh,var(--dialog-available-height))] max-w-[calc(100%-2rem)] flex-col sm:max-w-[90vw] xl:max-w-[1400px]'
       contentHeight='min(72vh, 720px)'
       bodyClassName='flex h-full min-h-0 flex-col overflow-hidden'
       footer={
