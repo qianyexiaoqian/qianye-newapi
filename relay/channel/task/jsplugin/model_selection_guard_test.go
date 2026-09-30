@@ -45,9 +45,8 @@ func TestBuiltInTaskPluginsNeverTakeTheModelFromTheRequestBody(t *testing.T) {
 		if len(plugin.Meta.Models) == 0 {
 			continue
 		}
-		hasSubmit, err := plugin.Engine.HasExport(t.Context(), "buildSubmitRequest")
-		require.NoError(t, err)
-		if !hasSubmit {
+		// moejs 起导出与否在加载时判定一次,HasExport 不再占执行槽、也不再返回错误。
+		if !plugin.Engine.HasExport("buildSubmitRequest") {
 			continue
 		}
 		billedModel := plugin.Meta.Models[0]
