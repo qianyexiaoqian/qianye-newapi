@@ -176,11 +176,11 @@ import {
   validateModelMappingJson,
   hasAdvancedSettingsErrors,
 } from '../../lib'
+import { getChannelTypeConfig } from '../../lib/channel-type-config'
 import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
 } from '../../lib/status-code-risk-guard'
-import { getChannelTypeConfig } from '../../lib/channel-type-config'
 import {
   assessBaseUrlTrust,
   nextTaskPluginBaseUrl,
@@ -2918,7 +2918,8 @@ export function ChannelMutateDrawer({
                                 render={({ field }) => (
                                   <FormItem>
                                     <FormLabel>
-                                      {currentType === CHANNEL_TYPE_TASK_PLUGIN ||
+                                      {currentType ===
+                                        CHANNEL_TYPE_TASK_PLUGIN ||
                                       currentType === CHANNEL_TYPE_VLLM ||
                                       currentType === CHANNEL_TYPE_SGLANG
                                         ? t('Base URL *')
@@ -4366,30 +4367,30 @@ export function ChannelMutateDrawer({
                               )}
 
                               {currentType !== CHANNEL_TYPE_ADVANCED_CUSTOM && (
-                              <FormField
-                                control={form.control}
-                                name='pass_through_body_enabled'
-                                render={({ field }) => (
-                                  <FormItem className='flex items-center justify-between px-4 py-3'>
-                                    <div className='space-y-0.5'>
-                                      <FormLabel>
-                                        {t('Pass Through Body')}
-                                      </FormLabel>
-                                      <FormDescription>
-                                        {t(
-                                          'Pass request body directly to upstream'
-                                        )}
-                                      </FormDescription>
-                                    </div>
-                                    <FormControl>
-                                      <Switch
-                                        checked={field.value}
-                                        onCheckedChange={field.onChange}
-                                      />
-                                    </FormControl>
-                                  </FormItem>
-                                )}
-                              />
+                                <FormField
+                                  control={form.control}
+                                  name='pass_through_body_enabled'
+                                  render={({ field }) => (
+                                    <FormItem className='flex items-center justify-between px-4 py-3'>
+                                      <div className='space-y-0.5'>
+                                        <FormLabel>
+                                          {t('Pass Through Body')}
+                                        </FormLabel>
+                                        <FormDescription>
+                                          {t(
+                                            'Pass request body directly to upstream'
+                                          )}
+                                        </FormDescription>
+                                      </div>
+                                      <FormControl>
+                                        <Switch
+                                          checked={field.value}
+                                          onCheckedChange={field.onChange}
+                                        />
+                                      </FormControl>
+                                    </FormItem>
+                                  )}
+                                />
                               )}
 
                               <FormField

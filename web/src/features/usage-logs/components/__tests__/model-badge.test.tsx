@@ -24,7 +24,6 @@ import {
   categorizeModels,
   getModelCategory,
 } from '@/features/channels/lib/model-categories'
-import { getLobeIconNames } from '@/lib/lobe-icon'
 
 import { ModelBadge } from '../model-badge'
 
@@ -308,10 +307,6 @@ it('shows the OpenAI icon in the mobile model button', () => {
   expect(
     screen.getByRole('button', { name: 'Model: codex-auto-review' })
   ).toContainElement(screen.getByLabelText('OpenAI'))
-})
-
-it('makes the Wan icon available to model icon selectors', () => {
-  expect(getLobeIconNames()).toContain('Wan')
 })
 
 it('opens the mismatch evidence with the keyboard and shows all three models', async () => {

@@ -115,7 +115,7 @@ export function SystemTaskHistory(props: { activeRefreshAt: number }) {
       setPagination((previous) => ({ ...previous, pageIndex: 0 }))
       await queryClient.invalidateQueries({ queryKey: HISTORY_QUERY_KEY })
     },
-    onError: (error) => handleServerError(error, t('Cleanup failed')),
+    onError: (error) => handleServerError(error),
   })
 
   return (

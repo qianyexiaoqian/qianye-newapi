@@ -86,7 +86,14 @@ func newResponsesWSRequestRunner(c *gin.Context) relay.ResponsesWSRequestRunner 
 	for _, name := range []string{"Connection", "Upgrade", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Extensions", "Sec-WebSocket-Protocol", "Content-Length", "Content-Encoding"} {
 		headers.Del(name)
 	}
-	remoteAddr := net.JoinHostPort(c.ClientIP(), "0")
+	// 客户端 IP 只在握手时按本仓唯一口径 common.ClientIP 解析一次。内层每个事件
+	// 的请求以这个结果作为对端地址,并去掉全部转发头 —— 否则当解析结果本身落在
+	// 受信网段(内网客户端)时,内层会把它当成代理再读一遍 X-Forwarded-For,
+	// 同一连接前后得出两个不同的 IP(令牌 IP 白名单与限流都按它判)。
+	for _, name := range []string{"X-Forwarded-For", "X-Real-IP", "Forwarded", "CF-Connecting-IP", "True-Client-IP", "Fastly-Client-IP", "X-Client-IP", "X-Cluster-Client-IP", "X-Appengine-Remote-Addr", "Fly-Client-IP"} {
+		headers.Del(name)
+	}
+	remoteAddr := net.JoinHostPort(common.ClientIP(c), "0")
 	return func(request *http.Request, requestID string, handle func(*gin.Context) *types.NewAPIError) *types.NewAPIError {
 		state := &responsesWSRequestState{requestID: requestID, handle: handle}
 		ctx := context.WithValue(request.Context(), responsesWSRequestContextKey{}, state)

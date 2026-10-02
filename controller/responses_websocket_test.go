@@ -92,6 +92,16 @@ func newResponsesWSTestRunner(t *testing.T, token *model.Token) (relay.Responses
 	var runner relay.ResponsesWSRequestRunner
 	engine := gin.New()
 	require.NoError(t, engine.SetTrustedProxies([]string{"127.0.0.1"}))
+	// 本仓的客户端 IP 只认 common.ClientIP 的策略(gin 的 TrustedProxies 不参与),
+	// 夹具要把同一个受信对端也装进那份策略。
+	t.Setenv("TRUSTED_PROXIES", "127.0.0.1/32")
+	t.Setenv("CLIENT_IP_HEADERS", "")
+	t.Setenv("BIND_ADDRESS", "")
+	t.Setenv("TRUSTED_PROXIES_CLOUDFLARE_FILE", "")
+	policy, err := common.BuildClientIPPolicy()
+	require.NoError(t, err)
+	common.SetClientIPPolicy(policy)
+	t.Cleanup(func() { common.SetClientIPPolicy(nil) })
 	engine.GET("/v1/responses", middleware.TokenAuth(), func(c *gin.Context) {
 		runner = newResponsesWSRequestRunner(c)
 	})
@@ -128,7 +138,8 @@ func TestResponsesWSRequestRunnerRefreshesBillingContextAndCleansBody(t *testing
 	require.Nil(t, runner(request, "ws-first", func(c *gin.Context) *types.NewAPIError {
 		assert.Equal(t, user.Id, c.GetInt("id"))
 		assert.Equal(t, 100, c.GetInt("token_quota"))
-		assert.Equal(t, "203.0.113.8", c.ClientIP())
+		assert.Equal(t, "203.0.113.8", common.ClientIP(c))
+		assert.Empty(t, c.GetHeader("X-Forwarded-For"))
 		assert.Equal(t, "ws-first", c.GetString(common.RequestIdKey))
 		assert.Equal(t, "ws-first", c.Request.Context().Value(common.RequestIdKey))
 		for _, header := range []string{"Connection", "Upgrade", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Extensions", "Sec-WebSocket-Protocol", "Content-Length", "Content-Encoding"} {
@@ -357,7 +368,7 @@ func newResponsesWSBillingTest(t *testing.T, expression string, handle func(*web
 		"group_ratio_setting.group_ratio": `{"default":1}`,
 		"perf_metrics_setting.enabled":    "true",
 	}))
-	require.NoError(t, model.DB.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Log{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.Log{}, &model.UserSubscription{}))
 	require.NoError(t, model.DB.Model(user).Updates(map[string]any{"quota": 100000, "setting": `{"billing_preference":"wallet_only"}`}).Error)
 	require.NoError(t, model.DB.Model(token).Update("remain_quota", 3000).Error)
 
@@ -545,6 +556,9 @@ func TestResponsesWebSocketDisconnectSettlesDeliveredOutputOnce(t *testing.T) {
 	delta := readResponsesWSTestEvent(t, fixture.client)
 	require.Equal(t, "response.output_text.delta", delta["type"])
 	assert.Equal(t, "hello", delta["delta"])
+	// 客户端断开属于 OutcomeIgnored,不产生性能采样(请求边界采样,见上游 a5b40663d),
+	// 所以这一条消费日志没有对应的指标通知要等。
+	fixture.completedMetrics++
 	fixture.closeAndWait(t)
 	assertResponsesWSAccounting(t, fixture, []int{1})
 }

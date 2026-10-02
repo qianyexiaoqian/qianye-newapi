@@ -64,12 +64,24 @@ export function getServerErrorMessageKey(value: unknown): string | null {
  * Same signature as upstream's helper so synced callers compile unchanged.
  */
 export function createServerError(value: unknown, fallback?: string): Error {
+  return new Error(getServerErrorMessage(value, fallback), { cause: value })
+}
+
+/** Business message of a failed response or thrown error, else the fallback. */
+export function getServerErrorMessage(
+  value: unknown,
+  fallback?: string
+): string {
   const payload = serverErrorPayload(value)
-  const message =
-    payload && typeof payload.message === 'string' && payload.message.trim()
-      ? payload.message
-      : (fallback ?? '')
-  return new Error(message, { cause: value })
+  if (
+    payload &&
+    typeof payload.message === 'string' &&
+    payload.message.trim()
+  ) {
+    return payload.message
+  }
+  if (value instanceof Error && value.message) return value.message
+  return fallback ?? ''
 }
 
 /** Queries reject failed business responses without changing the raw API contract. */

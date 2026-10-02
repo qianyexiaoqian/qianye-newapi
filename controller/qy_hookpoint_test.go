@@ -36,24 +36,33 @@ import (
 
 const relayGoPath = "relay.go"
 
+// requestBillingGoPath 是上游 9fe0457ee 抽出来的计费入口(HTTP 与 Responses
+// WebSocket 共用)。守卫随估算/预扣一起搬到了这里,约束 2 在这个文件里判。
+const requestBillingGoPath = "../relay/request_billing.go"
+
 // TestPreRelayGuardSitsBetweenRelayInfoAndPreConsume 锁死上面那两条约束。
 func TestPreRelayGuardSitsBetweenRelayInfoAndPreConsume(t *testing.T) {
 	seq := qyCallsByFunc(t, relayGoPath)["Relay"]
 	require.NotEmpty(t, seq, "controller/relay.go 里找不到 Relay() —— 上游改了函数名?")
+	billing := qyCallsByFunc(t, requestBillingGoPath)["PrepareRequestBilling"]
+	require.NotEmpty(t, billing, "relay/request_billing.go 里找不到 PrepareRequestBilling()")
 
-	guardIdx := qyIndexOf(seq, "QyPreRelayGuard")
+	// 守卫在 PrepareRequestBilling 里,Relay() 对它的调用就是守卫的位置。
+	guardIdx := qyIndexOf(seq, "PrepareRequestBilling")
 	genIdx := qyIndexOf(seq, "GenRelayInfo")
-	preConsumeIdx := qyIndexOf(seq, "PreConsumeBilling")
+	innerGuardIdx := qyIndexOf(billing, "QyPreRelayGuard")
+	preConsumeIdx := qyIndexOf(billing, "PreConsumeBilling")
 
-	require.GreaterOrEqual(t, guardIdx, 0,
-		"Relay() 里缺少 QyPreRelayGuard 挂载点:防蒸馏规则整个失效,而接口照常返回 200")
+	require.GreaterOrEqual(t, guardIdx, 0, "Relay() 不再调用 PrepareRequestBilling")
+	require.GreaterOrEqual(t, innerGuardIdx, 0,
+		"PrepareRequestBilling() 里缺少 QyPreRelayGuard 挂载点:防蒸馏规则整个失效,而接口照常返回 200")
 	require.GreaterOrEqual(t, genIdx, 0, "Relay() 里找不到 GenRelayInfo")
-	require.GreaterOrEqual(t, preConsumeIdx, 0, "Relay() 里找不到 PreConsumeBilling")
+	require.GreaterOrEqual(t, preConsumeIdx, 0, "PrepareRequestBilling() 里找不到 PreConsumeBilling")
 
 	assert.Greater(t, guardIdx, genIdx,
 		"QyPreRelayGuard 必须排在 GenRelayInfo 之后:relayInfo.IsStream 在那一步才确定, "+
 			"提前调用会拿到零值,防蒸馏规则对所有流式请求静默失效")
-	assert.Less(t, guardIdx, preConsumeIdx,
+	assert.Less(t, innerGuardIdx, preConsumeIdx,
 		"QyPreRelayGuard 必须排在 PreConsumeBilling 之前:放到预扣费之后, "+
 			"被拦截的请求已经扣过钱,只能靠退款补回来,退款失败即漏钱")
 }
@@ -61,8 +70,11 @@ func TestPreRelayGuardSitsBetweenRelayInfoAndPreConsume(t *testing.T) {
 // TestPostRelayGuardStillMounted:失败路径上的收尾守卫也不能在合并里被丢掉。
 func TestPostRelayGuardStillMounted(t *testing.T) {
 	seq := qyCallsByFunc(t, relayGoPath)["Relay"]
-	assert.GreaterOrEqual(t, qyIndexOf(seq, "QyPostRelayGuard"), 0,
-		"Relay() 里缺少 QyPostRelayGuard:失败请求不再进入违规计数/收尾统计")
+	assert.GreaterOrEqual(t, qyIndexOf(seq, "RefundFailedRequestBilling"), 0,
+		"Relay() 不再调用 RefundFailedRequestBilling")
+	refund := qyCallsByFunc(t, requestBillingGoPath)["RefundFailedRequestBilling"]
+	assert.GreaterOrEqual(t, qyIndexOf(refund, "QyPostRelayGuard"), 0,
+		"RefundFailedRequestBilling() 里缺少 QyPostRelayGuard:失败请求不再进入违规计数/收尾统计")
 }
 
 // ─────────────────────────────── 测试辅助 ───────────────────────────────

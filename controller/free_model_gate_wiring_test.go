@@ -24,7 +24,9 @@ func TestFreeModelBranchesStillCheckTheWalletGate(t *testing.T) {
 		file string
 		fn   string
 	}{
-		{"同步中继", "relay.go", "Relay"},
+		// 上游 9fe0457ee 把 Relay() 的估算/预扣抽成 relay.PrepareRequestBilling(HTTP 与
+		// Responses WebSocket 共用),闸门随之落在那里。
+		{"同步中继", "../relay/request_billing.go", "PrepareRequestBilling"},
 		{"异步任务", "../relay/relay_task.go", "RelayTaskSubmit"},
 	}
 
