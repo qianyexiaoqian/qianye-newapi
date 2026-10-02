@@ -180,3 +180,34 @@ func TestManageUserQuotaRespectsWalletCeiling(t *testing.T) {
 	require.NoError(t, db.First(&updated, user.Id).Error)
 	assert.Equal(t, common.MaxWalletQuota-1, updated.Quota)
 }
+
+func TestCreateUserRejectsNonStandardRole(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	gin.SetMode(gin.TestMode)
+	for i, tc := range []struct {
+		name         string
+		role         int
+		operatorRole int
+	}{
+		{"between common and admin", 5, common.RoleAdminUser},
+		{"negative", -1, common.RoleAdminUser},
+		{"between admin and root", 99, common.RoleRootUser},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			username := fmt.Sprintf("odd-role-%d", i)
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/user/",
+				strings.NewReader(fmt.Sprintf(`{"username":%q,"password":"member-password-1","role":%d}`, username, tc.role)))
+			c.Request.Header.Set("Content-Type", "application/json")
+			c.Set("id", 9999)
+			c.Set("role", tc.operatorRole)
+			CreateUser(c)
+
+			assert.Contains(t, recorder.Body.String(), `"success":false`)
+			var count int64
+			require.NoError(t, db.Model(&model.User{}).Where("username = ?", username).Count(&count).Error)
+			assert.Zero(t, count)
+		})
+	}
+}

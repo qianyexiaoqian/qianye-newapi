@@ -1144,6 +1144,12 @@ func CreateUser(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": err.Error()})
 		return
 	}
+	// 只接受 guest/common/admin/root 四档(上游 2506e1b98):原先只比「低于操作者」,
+	// 管理员能建出 role=5 或 -1 这种不在任何权限判据里的账号。
+	if !common.IsValidateRole(user.Role) {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
 	if user.DisplayName == "" {
 		user.DisplayName = user.Username
 	}
