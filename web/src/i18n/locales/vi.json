@@ -5062,6 +5062,7 @@
     "Unable to read clipboard": "Không thể đọc bảng tạm",
     "Unauthorized": "Chưa xác thực",
     "Unauthorized Access": "Truy cập trái phép",
+    "Unavailable": "Không thể hiển thị",
     "Unbind": "Hủy liên kết",
     "Unbind failed": "Hủy liên kết thất bại",
     "Unbound {{provider}}": "Đã hủy liên kết {{provider}}",

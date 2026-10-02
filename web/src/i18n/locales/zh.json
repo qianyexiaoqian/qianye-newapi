@@ -5062,6 +5062,7 @@
     "Unable to read clipboard": "无法读取剪贴板",
     "Unauthorized": "未授权",
     "Unauthorized Access": "未经授权的访问",
+    "Unavailable": "无法展示",
     "Unbind": "解绑",
     "Unbind failed": "解绑失败",
     "Unbound {{provider}}": "已解绑 {{provider}}",

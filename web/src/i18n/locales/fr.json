@@ -5062,6 +5062,7 @@
     "Unable to read clipboard": "Impossible de lire le presse-papiers",
     "Unauthorized": "Non autorisé",
     "Unauthorized Access": "Accès non autorisé",
+    "Unavailable": "Indisponible",
     "Unbind": "Dissocier",
     "Unbind failed": "Échec de la dissociation",
     "Unbound {{provider}}": "{{provider}} dissocié",

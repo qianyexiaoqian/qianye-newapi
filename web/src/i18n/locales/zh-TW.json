@@ -5062,6 +5062,7 @@
     "Unable to read clipboard": "無法讀取剪貼簿",
     "Unauthorized": "未經授權",
     "Unauthorized Access": "未經授權的存取",
+    "Unavailable": "無法顯示",
     "Unbind": "解綁",
     "Unbind failed": "解綁失敗",
     "Unbound {{provider}}": "已解綁 {{provider}}",

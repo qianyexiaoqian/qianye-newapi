@@ -5062,6 +5062,7 @@
     "Unable to read clipboard": "クリップボードを読み取れません",
     "Unauthorized": "未認証",
     "Unauthorized Access": "不正アクセス",
+    "Unavailable": "表示不可",
     "Unbind": "連携解除",
     "Unbind failed": "連携解除に失敗しました",
     "Unbound {{provider}}": "{{provider}}の連携を解除しました",

@@ -5062,6 +5062,7 @@
     "Unable to read clipboard": "Unable to read clipboard",
     "Unauthorized": "Unauthorized",
     "Unauthorized Access": "Unauthorized Access",
+    "Unavailable": "Unavailable",
     "Unbind": "Unbind",
     "Unbind failed": "Unbind failed",
     "Unbound {{provider}}": "Unbound {{provider}}",

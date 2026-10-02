@@ -1278,3 +1278,171 @@ var defaultTrustedProxyCIDRs = []string{
   启动期 `migrateAIChannelKeyEndpoint` 把存量行回填成它们当前的地址,回填之后闸门
   才对存量数据生效。空串**不能**当成失配 —— 那会让回填没跑到的部署在升级那一秒
   全部审核渠道同时失效,而 AI 审核失败的方向是放行(一次静默的风控关闭)。
+
+---
+
+# 上游同步记录:rc.37 → rc.41 + main(2026-10-02)
+
+**范围**:`v1.0.0-rc.37..upstream/main`(`1a4166d8e`,2026-10-01),非合并提交共 **123** 个。
+**方式**:与 rc.34–37 两轮相同,逐提交挑拣(`cherry-pick -x`),不做真 merge ——
+整体 merge 会有 210 个文件冲突,而且会把之前刻意挂起的 32 个提交一并带进来。
+**结果**:取 70(其中 2 个手工移植)、挂起 50、空提交/本仓早已修过 3。
+**内核版本号未改**:`qianye/version/baseline.txt` 仍声明 `v1.0.0-rc.37`。挂起项里有
+请求策略、Responses WebSocket 后续修复、插件图片接口、预扣口径、moejs 引擎等动到
+relay/计费面的提交,按该文件「下次同步前必读」的要求,是否抬到 rc.41 由项目方拍板。
+
+## 一、取了的(含冲突处理说明)
+
+| SHA | 标题 | 处理 |
+|---|---|---|
+| `129f21b69` | fix(plugins): normalize invalid UTF-8 in JSON state | 干净应用 |
+| `c9a110190` | fix(channels): show built-in base URLs as placeholders | 手工適配舊版渠道編輯器；新渠道配置測試檔不取 |
+| `007d69942` | fix(model): migrate renamed prefill group unique indexes | 干净应用 |
+| `2ba615761` | feat(web): share collapsible mobile table filters | 渠道表手工合 |
+| `043ff99a5` | fix: handle legacy database constraints and scoped policies | 只取 authz 權限策略部分；migration_dialector.go 本倉沒有,屬挂起的 4fc9d1f1f |
+| `815217ba6` | test(web): stabilize flaky frontend suite timeouts and motion visibility races (#7367) | 干净应用 |
+| `d92612038` | fix: unify model provider detection and add Wan icon (#7373) | 干净应用 |
+| `d1c79d728` | fix(dashboard): align weekly default range (#7355) | 干净应用 |
+| `76f7dafd2` | fix(audio): normalize file extension case in GetAudioDuration (#7321) | import 衝突 |
+| `9fe0457ee` | Add Responses WebSocket relay support (#5062) | 計費入口抽到 relay/request_billing.go 時保留本倉的違規閘/欠費閘/QyPostRelayGuard、不恢復已移除的敏感詞過濾；WS 每個事件額外過本倉的實時計數與分組並發閘；開關接進舊版渠道編輯器 |
+| `8529f209c` | feat: vllm channel && sglang channel (#7332) | 後端全取；前端接進舊版渠道編輯器(佔位與必填)，新版供應商選擇器的展示文案不取 |
+| `2bfb89c1b` | fix(pricing): prevent sort menu layout shift (#7145) | 干净应用 |
+| `8e5e09166` | fix(ollama): preserve tool calls from final stream frame (#7376) | 干净应用 |
+| `62f8db775` | feat(channel): 修复获取DeepSeek余额错误 (#6814) | 干净应用 |
+| `d3874db61` | feat(rate-limit): optimize in-memory limiter allocation and cleanup (#6807) | 干净应用 |
+| `5caafd3d8` | feat(ollama): add per-channel OpenAI-compatible chat switch (#7382) | 開關接進舊版渠道編輯器 |
+| `fa90b2312` | fix(gemini): accept case-insensitive thinkingLevel and log canonical effort (#7387) | 干净应用 |
+| `81336fc69` | fix(gemini): reject :countTokens as an unknown route instead of relaying it as generateContent (#7388) | 干净应用 |
+| `610334dbd` | fix(relay): request stream usage on every cross-protocol conversion to OpenAI chat (#7389) | 干净应用 |
+| `69a500298` | feat(channel): per-route pass-through for advanced custom channels (#7386) | 舊版渠道編輯器裡對高級自定義渠道隱藏全局透傳開關 |
+| `7209b6db9` | fix(middleware): 隐藏无可用渠道错误中的任务插件标识 (#7414) | 干净应用 |
+| `57791e31c` | docs(github): tighten issue and PR templates for pass-through and unfiltered AI text (#7438) | 干净应用 |
+| `07578faf2` | fix(billing): count upstream images by payload instead of data length | 按本倉的 n 倍率口徑(updateOpenAIImageCount 帶 MaxImageN 上界)落地；新回歸用例已加且通過 |
+| `8b2c7105f` | feat(relay): classify the protocol outcome on StreamStatus | 干净应用 |
+| `8a11b4305` | refactor(relaykit): surface reasoning conversion diagnostics | 測試檔 import 衝突 |
+| `a5b40663d` | perf(metrics): record relay outcomes at the request boundary and classify stream results | 只取後端(請求邊界採樣+流結果分類)；保留本倉分組可見性過濾與可用率模塊 hook；前端依賴挂起的模型卡片重寫,不取；同時修了 9fe0457ee 測試裡引用的審計表 |
+| `6237d9d77` | fix(rate-limit): reserve model rate-limit slots and judge success by response outcome | 干净应用 |
+| `90134d5b6` | feat(system-tasks): add filtered task history with cleanup | 面板取上游版本；本倉 server-error-message 補上 createServerError/requireServerSuccess 兩個同簽名小工具,c9a110190/8529f209c 的 api.ts 也要用 |
+| `a8ed7f7c5` | fix(plugins/hailuo): bill only the dimensions each model family supports | 干净应用 |
+| `ed7c4e35d` | feat(log): flag upstream response model mismatches (#7418) | 七语种 i18n 三方合并 |
+| `e2bb05f70` | fix(relay): map Images output_tokens_details into img_o billing (#7410) | 測試併入本倉測試檔 |
+| `55a6cd2a4` | fix(responses): estimate usage for streams cut before terminal usage (#7427) | 干净应用 |
+| `3524fe0b1` | fix issue template (#7441) | 干净应用 |
+| `2906e4f77` | fix(oauth): require account evidence before migrating legacy GitHub bindings | 手工移植:只保留「已驗證郵箱一致才遷移」,無 2FA 驗證後遷移路徑；加了回歸測試 |
+| `3e8c358da` | fix: forward reasoning_effort to zhipu upstream (#7124) | 干净应用 |
+| `946c730ed` | perf: avoid repeated Claude tool-name lookups (#7447) | 干净应用 |
+| `e04c05c2b` | fix(web): 修复小数输入限制和日志分组选项未遮挡的问题 (#7453) | 隱私模式遮擋分組下拉 + 工具價格小數步長；分組倍率的小數步長改到本倉自己的模型分組頁(上游那個編輯器本倉沒有) |
+| `972aed197` | fix(log): derive response model mismatch from names instead of a stored flag (#7464) | 干净应用 |
+| `33320407f` | fix(web): isolate OIDC discovery when saving OAuth settings | 干净应用 |
+| `58a9eff4c` | style: refresh logo | 干净应用 |
+| `3fdf9083d` | fix(settings): move documentation link to site settings | 干净应用 |
+| `da2540dda` | fix(channels): align card metrics and remove badge spacing | 干净应用 |
+| `585c4610e` | feat(keys): show and copy configured API addresses | 七语种 i18n 三方合并 |
+| `c49972441` | fix(web): keep mobile dialog actions within visible viewport | 公共對話框視口修正全取；各業務對話框只改本倉存在且同款寫法的兩處 |
+| `a5bf94022` | fix(web): correct dialog viewport fallbacks and editor gutter alignment | 代碼全取；編輯器測試檔保留本倉版本(本倉測試寫法不同) |
+| `3abbb8198` | feat: record perf metrics when async tasks reach terminal status (#7481) | 測試去掉依賴挂起 5c7cca015 的那一條 |
+| `47713bcb1` | feat: update plugins | 干净应用 |
+| `e537dc380` | fix(web): expose plugin activation after upload | 七语种 i18n 三方合并 |
+| `c0cff23a3` | fix(plugins): store task plugin source as longtext on MySQL and raise the upload cap to 8 MiB | LongText 列類型全取(去掉屬於 4c34f25a4 的 UnbindTaskPlugin)；測試輔助函數從上游搬入,夾具按本倉插件體積撐過 64KiB。MySQL/PG 實庫遷移未在本機驗證 |
+| `2c175190c` | perf(plugins): sync task plugins from hashes and load source only for changed rows | 干净应用 |
+| `d61d6be75` | fix(task): accept any 2xx upstream status on task submission | 回歸測試併入本倉測試檔,用最小計費樁代替上游的 imageReservation |
+| `6e9de44a7` | fix(relayconvert): hoist Responses tool-output media into a user message (#7510) | 干净应用 |
+| `4eb3b9160` | fix(relayconvert): hoist Claude tool_result images and segment Responses reasoning items (#7512) | 干净应用 |
+| `b6809a52d` | fix(web): resolve safe constants in plugin metadata previews | 干净应用 |
+| `9310231b3` | fix(logs): keep model badge text readable and compact (#7504) | 干净应用 |
+| `996adffe5` | fix(web): keep text selection when opening a model pricing row for editing (#7403) | 干净应用 |
+| `5401874c6` | fix(ci): align ldflags -X package path with module path so release binaries embed the real version (#7536) | 干净应用 |
+| `c76452d22` | fix(playground): add break-all to playground input (#6600) | 干净应用 |
+| `c2b7a9a9e` | fix(claude): preserve per-message output_config in Claude messages (#7561) | 干净应用 |
+| `789c97019` | fix(claude): preserve auto mode safeguards in native requests (#7598) | 干净应用 |
+| `f5e54ccdb` | fix(web): revalidate marketplace fetches so stale caches do not fail integrity checks | 干净应用 |
+| `2506e1b98` | fix(auth): reject non-standard roles when creating a user | 手工移植:手工移植到本倉 CreateUser,測試改寫為本倉夾具 |
+| `335ebcff7` | fix(relayconvert): keep Responses custom tools on Chat Completions upstreams | 干净应用 |
+| `2035a82ae` | feat(web): add a refresh button to the channels table | 手工合入本倉渠道表(保留本倉清零入口) |
+| `feefe09f2` | fix: isolate TLS configs across HTTP transports (#7627) | 干净应用 |
+| `d0cb7347c` | fix: use max_completion_tokens for gpt-6-sol and gpt-6-luna (#7559) | 干净应用 |
+| `811212067` | fix(web): Add class to wrap the long strings at auto-disable status tooltip content in channel manage page (#7604) | 干净应用 |
+| `5fe8917be` | fix(i18n): keep cached zhTW/zhCN interface codes stable across page loads (#7139) | 干净应用 |
+| `56758edf9` | fix(web): correct translations, chart ordering, and font loading (#7628) | 翻譯/圖表排序/字體修正全取；本倉改過的充值卡片與日誌列手工套用同樣的 i18n 改動；訂閱列(本倉有自己的售賣狀態標籤)與刪除賬號對話框(本倉無)不取 |
+| `1a4166d8e` | fix(relayconvert): keep Responses custom tools on Claude and Gemini upstreams (#7636) | 干净应用 |
+
+## 二、挂起的(未同步)及理由
+
+| SHA | 标题 | 理由 |
+|---|---|---|
+| `33142f0ae` | fix: refine sign-in page behavior | 依賴挂起的 385d2dfd1(多 RP ID passkey) |
+| `7fd063819` | fix(auth): restore saved compatible passkey domains | 依賴挂起的 385d2dfd1(多 RP ID passkey) |
+| `2509e25fa` | fix(web): prevent combobox dropdowns opening on dialog autofocus (#7365) | 本倉沒有上游重寫後的 OptionCombobox(挂起的組件重構),修的那段代碼不存在 |
+| `ed0ad6e3f` | feat(channels): add compact quick options to channel editor | 純 UI，建在上游重寫後的渠道編輯器(挂起的 505805a4c)上，本倉沒有那套 channel-configuration 面板 |
+| `d82678a97` | docs: move billing rules to .agents/rules/billing.md behind a read gate | 純文檔重排；本倉 AGENTS.md 的計費規則段已按 fork 改寫(星屑/抽獎上界等)，不拆 |
+| `0cde9d94f` | feat(channels): add floating model redirect workbench to channel editor | 純 UI 新功能(模型重定向浮動工作台)，建在上游重寫後的渠道編輯器(挂起的 505805a4c)上 |
+| `73a471f3a` | feat(policy): add request policies settings and routing decision records | 大型設置頁重構(請求策略/路由決策記錄)，含本倉已整體移除的敏感詞檢查、改寫渠道親和/重試/MJ 計費入口；69 個檔,單獨評估 |
+| `75f3d246e` | fix(responses-ws): carry stream_id through events and correlate errors | WS 後續,依賴挂起的 73a471f3a(請求策略);其中「請求邊界性能採樣」一處已手工移植 |
+| `e2471403c` | fix(pricing): adjust billing expression condition display | 改的檔來自挂起的 d52bdc0b4(按時段計價編輯器)，本倉沒有 |
+| `42cbe6206` | chore(web): add intl-locale lint plugin and update agent rules | 開發工具(新增 intl-locale lint 規則)+ 改 AGENTS.md；本倉的測試收集方式與 lint 基線不同,引入會讓既有代碼 lint 失敗 |
+| `d80694366` | fix(web): tidy channel health policy layout | 只改 73a471f3a 新建的「請求策略」頁(未取) |
+| `ae249f4ec` | feat(responses-ws): extend channel support and share routing with HTTP | WS 後續,依賴挂起的 73a471f3a(請求策略) |
+| `fa3cc1c6b` | feat(web): offer the Responses WebSocket toggle for advanced custom, sub2api and new-api channels | WS 後續 UI(依賴 ae249f4ec) |
+| `32ef6d216` | feat(web): add channel passthrough controls and usage guidance | 純 UI，建在上游重寫後渠道編輯器的快捷選項面板上(本倉無) |
+| `9e905a83e` | refactor: show subscription deductions and improve cost display (#7272) | 本倉日誌費用列已有自己的訂閱/錢包補收拆分顯示(9e427b460),與上游這套重寫衝突,保留本倉 |
+| `ea336ed66` | fix(log): hide funding source labels when subscriptions are not in play (#7450) | 9e905a83e 的後續(訂閱來源標籤) |
+| `96b0da227` | refactor(log): 恢复费用气泡并用图标区分订阅来源 (#7451) | 9e905a83e 的後續(費用氣泡圖標) |
+| `1ea24a050` | docs: refresh project README across languages | README 文案(本倉 README 是自己的) |
+| `b0bf2580e` | docs: restore README badge and partner placement | README 文案(本倉 README 是自己的) |
+| `a89037d0b` | fix(web): start linked-account verification from the provider button | 純 UX，改的是上游重構後的安全驗證對話框(挂起的安全/審計重構),本倉版本結構不同 |
+| `ef70d1b79` | chore: drop trailing blank line from .gitignore | 只刪 .gitignore 末尾空行,本倉 .gitignore 有自己的條目 |
+| `b932e6d87` | fix(web): robustly display conditional task billing prices | 定價頁顯示,建在挂起的計費表達式編輯器/任務矩陣那條鏈(d52bdc0b4/39294418a 等)上 |
+| `9c3d3aeb3` | perf(web): lazy-load provider icons and reduce page rerenders | 純前端性能優化,動到本倉改過的多個表格列(密鑰/用戶/日誌);非功能性,風險大於收益 |
+| `4c34f25a4` | feat(channel): bind multiple task plugins to New API channels | 新功能(New API 渠道綁定多個任務插件),配置界面建在挂起的 ab489ab88(渠道插件擴展選擇器)上,本倉無入口；同時改分發器與任務輪詢 |
+| `2d7aef741` | fix(web): restore CC Switch model dropdown | 修的回歸來自挂起的密鑰頁改版；本倉 CC Switch 對話框仍是改版前寫法,沒有這個 bug |
+| `6b638788c` | fix(channels): preview upstream model changes before applying | UX 改進(上游模型變更先預覽再應用),依賴挂起的 12be9975c(統一錯誤提示)與新版公共組件 |
+| `db536ec8b` | fix(channels): simplify model redirects and clarify panel controls | 純 UI，修的是 0cde9d94f 的模型重定向浮窗(未取) |
+| `d904b9700` | feat(settings): improve group configuration UX and drag sorting | 上游分組配置頁的 UX；本倉分組配置已整體換成自己的用戶分組/模型分組頁(system-settings/groups),上游這幾個編輯器本倉沒有 |
+| `03563a4a7` | feat(plugins): serve OpenAI Images API through task plugins | 大型新功能(任務插件提供 OpenAI Images 接口),依賴挂起的圖片計費表達式鏈(f362c7c51/f064bffa2/f256e40bc) |
+| `2fddb863f` | feat(models): add bulk field selection to metadata sync | 改的是上游重寫後的元數據同步嚮導(挂起的 0c76e4dae 模型/供應商管理重構),本倉是舊版 |
+| `65d3a2171` | fix(plugins): price only the resolutions each Seedance and Wan model offers | 內置插件 alibaba/doubao 的分辨率定價,疊在挂起的 03563a4a7 對同兩個插件的改動之上 |
+| `9978ee1e2` | feat(billing): configure trust threshold and input pre-consume multiplier | 【刻意不取】上游把預扣改成「只按輸入 × 倍數」,去掉了輸出側預估;本倉恰好修過這個缺口(省略 max_tokens 時用 8192 兜底,否則一次請求就能把餘額扣成負數,見 relay/helper/price.go 註釋)。另依賴挂起的圖片計費 |
+| `9a0be8750` | fix(web): keep task pricing editable after a plugin narrows its enum values | 定價頁表達式顯示,建在挂起的計費表達式顯示重構上(本倉無 display.ts/task-display.ts) |
+| `9c293e8c0` | test(billing): fix websocket rejection refund test after pre-consume dropped output estimation (#7491) | WS 測試修正,依賴 75f3d246e 的測試改寫 |
+| `474ed66fb` | fix(plugins/alibaba): keep upstream metadata in openai_image render (#7507) | 內置插件 alibaba 的 openai_image 渲染,依賴挂起的 03563a4a7 |
+| `00e8a00cb` | fix(web): include provider icons in Windows builds | 修的是 9c3d3aeb3 引入的圖標懶加載在 Windows 構建下丟失(未取 9c3d3aeb3 則無此問題) |
+| `54eee488b` | fix(web): isolate theme preferences in local storage | 本倉主題系統已大改(移除主題設置、站點默認主題、Steins Gate 等),上游這次主題存儲重構與之衝突 |
+| `8cb88ebd1` | fix: move force operation into confirm slot so plugin-in-use dialog has one cancel button (#7528) | 插件表對話框按鈕排版,本倉插件表對話框結構與上游不同(UI 小修) |
+| `a46f045d6` | fix: match current price column width to source columns so expressions wrap alike (#7542) | 上游價格同步表格列寬,改的是挂起的定價同步重構版本 |
+| `6c14c0762` | feat: highlight differing values in source price expressions (#7543) | 上游價格同步表格的表達式差異高亮,改的組件(upstream-price-cells)本倉沒有或為舊版 |
+| `d04c118c8` | fix(channel): preserve Responses WebSocket setting on save (#7468) | WS 後續 UI,修的是上游新編輯器的保存邏輯 |
+| `87bb71e7f` | feat(plugins): serve Seedream images through the OpenAI Images protocol in doubao | 內置插件 doubao 走 OpenAI Images,依賴挂起的 03563a4a7 |
+| `3509ae7c1` | fix(pricing): keep prices saved before a usage profile narrows editable | 改的是挂起的 0c76e4dae 引入的 model_pricing_config.go(本倉定價保存校驗在 model/pricing.go,且你工作區正有未提交改動) |
+| `6cbb1c7ed` | feat(auth): require step-up verification for admin user management | 管理員用戶管理的二次驗證,建在挂起的安全驗證重構(d8cb17744/0973dc2b8 等)上 |
+| `caca52f8d` | feat(auth): replace the dashboard access token with scoped access tokens | 大型安全重構(用可授權範圍的訪問令牌替換控制台訪問令牌,59 個檔),建在挂起的 d8cb17744/0973dc2b8/3f8a50cf8 安全審計重構上 |
+| `2ffc59590` | feat(jsplugin): run task plugins on moejs | 【刻意不取】把插件 JS 引擎從 Sobek 換成 moejs v0.1.0-alpha.3(alpha 版),禁用 eval,並連帶升級 clickhouse 等依賴;基礎設施級變更,單獨評估 |
+| `c71eefbcd` | docs: update readme | README 文案(本倉 README 是自己的) |
+| `4924361ae` | feat(auth): edit the name and permissions of an access token | 訪問令牌改名/改權限,依賴 caca52f8d |
+| `ae73ef8e2` | feat(plugins): add Seedream 5.0 flash and price each Seedream model by its own tiers | 內置插件 doubao Seedream 定價,疊在 03563a4a7/87bb71e7f 之上 |
+| `04c64734c` | fix(pricing): keep model status bar spacing uniform (#7284) | 依賴挂起的 5c7cca015/0c76e4dae(模型卡片 UI 重寫)，本倉狀態條是舊版 |
+
+空提交 / 无需同步:`be36cbb8f`(只改本仓没有的安全测试)、`0aec08fee`(空提交)、
+`dfd3cd893`(本仓早已同样修过「非 root 管理员隐藏系统设置」)。
+
+## 三、行为变化需要知道的
+
+- **计费入口重构**(`9fe0457ee`):`controller/relay.go` 的估算/预扣/失败退款抽成
+  `relay.PrepareRequestBilling` / `RefundFailedRequestBilling`(HTTP 与 Responses
+  WebSocket 共用)。本仓的违规闸 `QyPreRelayGuard`、欠费免费模型闸
+  `RejectOverdrawnFreeModelCall`、`QyPostRelayGuard` 全部搬进新函数;上游的敏感词
+  检查**没有**带回来(本仓已整体移除)。AST 守卫测试同步改为在新文件里判位置。
+- **Responses WebSocket**(`/v1/responses` GET 升级):按渠道开关,默认关。每个
+  `response.create` 额外过本仓的实时计数与分组在途并发闸;客户端 IP 走
+  `common.ClientIP`,内层请求去掉转发头。
+- **图片计费**:`07578faf2` 按真实图片载荷计张数(仍受 `dto.MaxImageN` 上界);
+  `e2bb05f70` 把 Images 接口的 `output_tokens_details` 映射进补全明细,配置了图片
+  输出倍率的模型,输出图片 token 会按图片输出价计。
+- **旧版 GitHub 绑定**(安全):登录名形式的旧绑定只有在 GitHub 已验证邮箱与账号邮箱
+  一致时才迁移并登录,否则拒绝并提示用其他方式登录后重新绑定。
+- **创建用户**只接受 guest/common/admin/root 四档角色。
+- **任务插件源码列**改为 MySQL `longtext`(PostgreSQL/SQLite 仍为 `text`),上传上限
+  8 MiB。**这是表结构变更,本机只验证了 SQLite**;MySQL/PostgreSQL 的实库升级验证
+  (上游在提交说明里写了已跑过 5.7/8.4/9.6/17)本轮未在本机复跑。
+- **性能指标**:改为请求边界采样并区分流结果,任务插件终态也采样;客户端主动断开等
+  不计入成功率。
+- **新渠道类型**:vLLM(62)、SGLang(63);Ollama 渠道可切 OpenAI 兼容接口。
