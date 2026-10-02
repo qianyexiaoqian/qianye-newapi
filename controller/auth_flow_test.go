@@ -223,3 +223,69 @@ func TestOAuthBindProviderErrorConsumesSessionBoundFlow(t *testing.T) {
 	assert.Zero(t, provider.exchangeCalls)
 	assert.Zero(t, provider.userInfoCalls)
 }
+
+// legacyGitHubTestProvider stores a legacy (login-name) GitHub binding and
+// reports the verified emails GitHub would return for the signed-in account.
+type legacyGitHubTestProvider struct {
+	authFlowTestOAuthProvider
+	legacyID       string
+	user           model.User
+	verifiedEmails []string
+	emailsErr      error
+}
+
+func (p *legacyGitHubTestProvider) IsUserIDTaken(id string) bool { return id == p.legacyID }
+func (p *legacyGitHubTestProvider) FillUserByProviderID(user *model.User, id string) error {
+	if id == p.legacyID {
+		*user = p.user
+	}
+	return nil
+}
+func (p *legacyGitHubTestProvider) GetVerifiedEmails(context.Context, *oauth.OAuthToken) ([]string, error) {
+	return p.verifiedEmails, p.emailsErr
+}
+
+// A GitHub login name can be renamed and re-registered by someone else, so a
+// legacy login-name match alone must never sign into the existing account.
+func TestLegacyGitHubBindingMigratesOnlyWithVerifiedEmail(t *testing.T) {
+	setupAuthFlowControllerTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.User{}))
+	previousRegister := common.RegisterEnabled
+	common.RegisterEnabled = false
+	t.Cleanup(func() { common.RegisterEnabled = previousRegister })
+
+	for _, tc := range []struct {
+		name      string
+		legacyID  string
+		emails    []string
+		emailsErr error
+		migrated  bool
+	}{
+		{name: "verified email matches", legacyID: "alice", emails: []string{"other@example.com", "Alice@Example.com"}, migrated: true},
+		{name: "no matching verified email", legacyID: "alice", emails: []string{"attacker@example.com"}},
+		{name: "verified emails unavailable", legacyID: "alice", emailsErr: errors.New("github down")},
+		{name: "all-digit legacy id never compared", legacyID: "12345", emails: []string{"alice@example.com"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			existing := model.User{Username: "legacy-" + strings.ReplaceAll(tc.name, " ", "-"), AffCode: strings.ReplaceAll(tc.name, " ", "-"), Email: "alice@example.com", GitHubId: tc.legacyID, Status: common.UserStatusEnabled}
+			require.NoError(t, model.DB.Create(&existing).Error)
+			provider := &legacyGitHubTestProvider{legacyID: tc.legacyID, user: existing, verifiedEmails: tc.emails, emailsErr: tc.emailsErr}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/oauth/github", nil)
+
+			user, err := findOrCreateOAuthUser(c, provider, &oauth.OAuthUser{ProviderUserID: "987654", Extra: map[string]any{"legacy_id": tc.legacyID}}, &oauth.OAuthToken{}, "")
+
+			var stored model.User
+			require.NoError(t, model.DB.First(&stored, existing.Id).Error)
+			if tc.migrated {
+				require.NoError(t, err)
+				assert.Equal(t, existing.Id, user.Id)
+				assert.Equal(t, "987654", stored.GitHubId)
+				return
+			}
+			assert.Nil(t, user)
+			assert.Error(t, err, "a legacy match without evidence must not sign in")
+			assert.Equal(t, tc.legacyID, stored.GitHubId)
+		})
+	}
+}
