@@ -117,6 +117,8 @@ func setupBillingAliasOptionDB(t *testing.T) {
 	model.DB = database
 	model.LOG_DB = database
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+	// 定价写入改走 model_pricing_config(原生 SQL 片段用到 commonKeyCol),手搭的库要自己初始化列名。
+	model.InitCol()
 	common.MemoryCacheEnabled = false
 	common.RedisEnabled = false
 	common.OptionMap = map[string]string{}
