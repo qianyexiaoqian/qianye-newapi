@@ -22,11 +22,14 @@ import { toast } from 'sonner'
 
 import { getServerErrorMessageKey } from '@/lib/server-error-message'
 
-export function handleServerError(error: unknown) {
+/**
+ * @param fallback 没有可读错误信息时显示的文案(与上游同签名,可省略)。
+ */
+export function handleServerError(error: unknown, fallback?: string) {
   // eslint-disable-next-line no-console
   console.log(error)
 
-  let errMsg = i18next.t('Something went wrong!')
+  let errMsg = fallback || i18next.t('Something went wrong!')
 
   const messageKey = getServerErrorMessageKey(error)
   if (messageKey) {

@@ -103,6 +103,7 @@ function renderEditor(
   client.setQueryData(['status'], null)
   clients.push(client)
   const ref = createRef<ModelPricingEditorPanelHandle>()
+  const dirty = vi.fn()
   const view = (entry: Partial<ModelRatioData>) => (
     <QueryClientProvider client={client}>
       <ModelPricingEditorPanel
@@ -115,6 +116,7 @@ function renderEditor(
           ...entry,
         }}
         usageSchema={usageSchema}
+        onDirtyChange={dirty}
       />
     </QueryClientProvider>
   )
@@ -122,6 +124,7 @@ function renderEditor(
   return {
     ...result,
     ref,
+    dirty,
     reload: (entry: Partial<ModelRatioData>) => result.rerender(view(entry)),
   }
 }

@@ -125,7 +125,10 @@ function OptionCombobox(props: LegacyComboboxProps) {
       }}
       filter={(option, query) => {
         const term = query.trim().toLowerCase()
-        return option.label.toLowerCase().includes(term) || option.value.toLowerCase().includes(term)
+        return (
+          option.label.toLowerCase().includes(term) ||
+          option.value.toLowerCase().includes(term)
+        )
       }}
       isItemEqualToValue={(item, value) => item.value === value.value}
     >
@@ -144,18 +147,33 @@ function OptionCombobox(props: LegacyComboboxProps) {
           aria-labelledby={props['aria-labelledby']}
           aria-describedby={props['aria-describedby']}
           aria-invalid={props['aria-invalid']}
-          placeholder={props.searchPlaceholder ?? props.placeholder ?? t('Search...')}
+          placeholder={
+            props.searchPlaceholder ?? props.placeholder ?? t('Search...')
+          }
           triggerAriaLabel={props['aria-label'] ?? t('Open')}
           className='h-full min-h-8 w-full'
         />
       </div>
       <ComboboxContent anchor={anchor} className={props.popupClassName}>
-        <ComboboxEmpty>{props.emptyText ?? t('No results found')}</ComboboxEmpty>
+        <ComboboxEmpty>
+          {props.emptyText ?? t('No results found')}
+        </ComboboxEmpty>
         <ComboboxList>
           {(option: ComboboxInputOption) => (
-            <ComboboxItem key={option.value} value={option} disabled={option.disabled}>
+            <ComboboxItem
+              key={option.value}
+              value={option}
+              disabled={option.disabled}
+            >
               {option.icon && <span aria-hidden>{option.icon}</span>}
-              <span className='min-w-0 break-words'>{option.label}{option.description && <span className='text-muted-foreground block text-xs break-all'>{option.description}</span>}</span>
+              <span className='min-w-0 break-words'>
+                {option.label}
+                {option.description && (
+                  <span className='text-muted-foreground block text-xs break-all'>
+                    {option.description}
+                  </span>
+                )}
+              </span>
             </ComboboxItem>
           )}
         </ComboboxList>

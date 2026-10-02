@@ -191,7 +191,7 @@ export function RatioSettingsCard({
       toast.success(t('Model prices reset successfully'))
       setConfirmOpen(false)
     },
-    onError: handleServerError,
+    onError: (error) => handleServerError(error),
   })
 
   const modelNormalizedDefaults = useRef({
