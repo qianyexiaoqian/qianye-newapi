@@ -197,6 +197,9 @@ func GetTokenKey(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	params := tokenAuditParams(c)
+	params["id"], params["name"] = token.Id, token.Name
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	common.ApiSuccess(c, gin.H{
 		"key": token.GetFullKey(),
 	})
@@ -284,6 +287,8 @@ func AddToken(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgTokenNameTooLong)
 		return
 	}
+	params := tokenAuditParams(c)
+	params["name"] = token.Name
 	// 非无限额度时，检查额度值是否超出有效范围
 	if !token.UnlimitedQuota {
 		if token.RemainQuota < 0 {
@@ -349,6 +354,8 @@ func AddToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	params["id"] = cleanToken.Id
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -358,11 +365,19 @@ func AddToken(c *gin.Context) {
 func DeleteToken(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	userId := c.GetInt("id")
-	err := model.DeleteTokenById(id, userId)
+	token, err := model.GetTokenByIds(id, userId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	params := tokenAuditParams(c)
+	params["id"], params["name"] = token.Id, token.Name
+	err = token.Delete()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -400,6 +415,10 @@ func UpdateToken(c *gin.Context) {
 		return
 	}
 	token := request.Token
+	params := tokenAuditParams(c)
+	if token.Id > 0 {
+		params["id"] = token.Id
+	}
 	// group_only 的请求体里只有 id 与 group,其余字段全是零值。拿零值去过
 	// 名称/额度校验虽然恰好都能过,但那是巧合不是设计:一旦某天给这两条
 	// 校验加一句"名称不能为空",行内快切就会在一个它根本没碰的字段上 400。
@@ -425,6 +444,8 @@ func UpdateToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	params["name"] = cleanToken.Name
+	previous := *cleanToken
 	if groupOnly != "" {
 		// 分组的可选性判据与整表替换那一条是同一处调用(见下面 else 分支)。
 		if err := service.QyCheckTokenGroupChange(c, cleanToken.Group, token.Group); err != nil {
@@ -461,6 +482,8 @@ func UpdateToken(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		params["changed_fields"] = tokenGroupChangedFields(&previous, cleanToken)
+		common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "",
@@ -509,6 +532,9 @@ func UpdateToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	params["name"] = cleanToken.Name
+	recordTokenUpdateAuditChanges(params, statusOnly != "", &previous, cleanToken)
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -522,7 +548,12 @@ type TokenBatch struct {
 
 func DeleteTokenBatch(c *gin.Context) {
 	tokenBatch := TokenBatch{}
-	if err := c.ShouldBindJSON(&tokenBatch); err != nil || len(tokenBatch.Ids) == 0 {
+	if err := c.ShouldBindJSON(&tokenBatch); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	params := tokenBatchAuditParams(c, tokenBatch.Ids)
+	if len(tokenBatch.Ids) == 0 {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
@@ -532,6 +563,8 @@ func DeleteTokenBatch(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	params["count"] = count
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -541,7 +574,12 @@ func DeleteTokenBatch(c *gin.Context) {
 
 func GetTokenKeysBatch(c *gin.Context) {
 	tokenBatch := TokenBatch{}
-	if err := c.ShouldBindJSON(&tokenBatch); err != nil || len(tokenBatch.Ids) == 0 {
+	if err := c.ShouldBindJSON(&tokenBatch); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	params := tokenBatchAuditParams(c, tokenBatch.Ids)
+	if len(tokenBatch.Ids) == 0 {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
@@ -556,8 +594,60 @@ func GetTokenKeysBatch(c *gin.Context) {
 		return
 	}
 	keysMap := make(map[int]string)
+	returnedIDs := make([]int, 0, len(tokens))
 	for _, t := range tokens {
 		keysMap[t.Id] = t.GetFullKey()
+		returnedIDs = append(returnedIDs, t.Id)
 	}
+	params["count"] = len(tokens)
+	params["returned_ids"] = returnedIDs
+	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	common.ApiSuccess(c, gin.H{"keys": keysMap})
+}
+
+// tokenGroupChangedFields 是 group_only 快切的审计口径:它只可能动这三个字段。
+func tokenGroupChangedFields(previous, current *model.Token) []string {
+	changed := []string{}
+	if previous.Group != current.Group {
+		changed = append(changed, "group")
+	}
+	if previous.CrossGroupRetry != current.CrossGroupRetry {
+		changed = append(changed, "cross_group_retry")
+	}
+	if previous.AutoGroups != current.AutoGroups {
+		changed = append(changed, "auto_groups")
+	}
+	return changed
+}
+
+// recordTokenUpdateAuditChanges 把整表替换/状态切换的审计口径收进一个函数,
+// 让 UpdateToken 里只保留一处 `if statusOnly` 分支(groupmatrix 的写入侧
+// 守卫按那一处 else 定位 QyCheckTokenGroupChange)。
+func recordTokenUpdateAuditChanges(params model.AuditFields, statusOnly bool, previous, current *model.Token) {
+	if statusOnly {
+		params["from"], params["to"] = previous.Status, current.Status
+	} else {
+		changedFields := []string{}
+		for _, field := range []struct {
+			name    string
+			changed bool
+		}{
+			{"name", previous.Name != current.Name},
+			{"expired_time", previous.ExpiredTime != current.ExpiredTime},
+			{"remain_quota", previous.RemainQuota != current.RemainQuota},
+			{"unlimited_quota", previous.UnlimitedQuota != current.UnlimitedQuota},
+			{"model_limits_enabled", previous.ModelLimitsEnabled != current.ModelLimitsEnabled},
+			{"model_limits", previous.ModelLimits != current.ModelLimits},
+			{"allow_ips", (previous.AllowIps == nil) != (current.AllowIps == nil) ||
+				(previous.AllowIps != nil && current.AllowIps != nil && *previous.AllowIps != *current.AllowIps)},
+			{"group", previous.Group != current.Group},
+			{"cross_group_retry", previous.CrossGroupRetry != current.CrossGroupRetry},
+			{"auto_groups", previous.AutoGroups != current.AutoGroups},
+		} {
+			if field.changed {
+				changedFields = append(changedFields, field.name)
+			}
+		}
+		params["changed_fields"] = changedFields
+	}
 }

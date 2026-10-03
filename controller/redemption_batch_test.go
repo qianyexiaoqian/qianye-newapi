@@ -21,7 +21,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// auditOther 是本 fork 管理审计落在 model.Log.Other 里的形状:op 由
+// auditOther 是管理审计落在 model.AuditLog.Other 里的形状:op 由
 // recordManageAudit 写,audit_info 由 finishAdminAudit 的兜底写。
 type auditOther struct {
 	Op struct {
@@ -35,6 +35,14 @@ type auditOther struct {
 	AuditInfo struct {
 		Success bool `json:"success"`
 	} `json:"audit_info"`
+}
+
+func decodeAuditOther(other model.AuditOther, target *auditOther) error {
+	encoded, err := common.Marshal(other)
+	if err != nil {
+		return err
+	}
+	return common.Unmarshal(encoded, target)
 }
 
 func TestDeleteRedemptionBatch(t *testing.T) {
@@ -107,28 +115,27 @@ func TestDeleteRedemptionBatch(t *testing.T) {
 				require.NoError(t, db.AutoMigrate(table))
 				t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(table)) })
 			}
-			// 本 fork 的管理审计写在主日志表(model.Log, type=LogTypeManage)里,
-			// 没有上游那张 AuditLog 表 —— 那是 rc.34/rc.35 安全重构带的,本仓未合。
-			require.False(t, logDB.Migrator().HasTable(&model.Log{}), "use an empty test log database")
-			require.NoError(t, logDB.AutoMigrate(&model.Log{}))
-			t.Cleanup(func() { require.NoError(t, logDB.Migrator().DropTable(&model.Log{})) })
-			// 被拒的请求由 middleware/audit.go 的 finishAdminAudit 兜底记录,而那一条
-			// 是 gopool.Go 异步写的 —— 断言必须等它落库,不能读一次就下结论。
-			manageAudits := func() []model.Log {
-				var events []model.Log
-				if err := logDB.Where("type = ?", model.LogTypeManage).Order("id").Find(&events).Error; err != nil {
+			// 管理审计写在独立的 audit_logs 表(上游 d8cb17744),category=operation。
+			require.False(t, logDB.Migrator().HasTable(&model.AuditLog{}), "use an empty test log database")
+			require.NoError(t, logDB.AutoMigrate(&model.AuditLog{}))
+			t.Cleanup(func() { require.NoError(t, logDB.Migrator().DropTable(&model.AuditLog{})) })
+			// 被拒的请求由 middleware/audit.go 的 finishAdminAudit 兜底记录;现在是同步写,
+			// 保留 Eventually 只为把「没有第二条」也一并等稳。
+			manageAudits := func() []model.AuditLog {
+				var events []model.AuditLog
+				if err := logDB.Where("category = ?", model.AuditCategoryOperation).Order("id").Find(&events).Error; err != nil {
 					return nil
 				}
 				return events
 			}
-			awaitAudits := func(t *testing.T, want int) []model.Log {
+			awaitAudits := func(t *testing.T, want int) []model.AuditLog {
 				t.Helper()
 				require.Eventually(t, func() bool { return len(manageAudits()) == want }, 5*time.Second, 10*time.Millisecond)
 				return manageAudits()
 			}
 			clearAudits := func(t *testing.T) {
 				t.Helper()
-				require.NoError(t, logDB.Where("type = ?", model.LogTypeManage).Delete(&model.Log{}).Error)
+				require.NoError(t, logDB.Where("category = ?", model.AuditCategoryOperation).Delete(&model.AuditLog{}).Error)
 			}
 			token := "redemption-audit-test-token"
 			admin := model.User{Username: "redemption-audit-admin", Password: "unused", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, Group: "default", AccessToken: &token}
@@ -171,7 +178,7 @@ func TestDeleteRedemptionBatch(t *testing.T) {
 					assert.EqualValues(t, 16, count)
 					events := awaitAudits(t, 1)
 					var other auditOther
-					require.NoError(t, common.UnmarshalJsonStr(events[0].Other, &other))
+					require.NoError(t, decodeAuditOther(events[0].Other, &other))
 					assert.Equal(t, "redemption.delete_batch", other.Op.Action)
 					assert.False(t, other.AuditInfo.Success)
 				})
@@ -219,7 +226,7 @@ func TestDeleteRedemptionBatch(t *testing.T) {
 				assert.Equal(t, fmt.Sprintf("Batch deleted %d redemption codes", expectedCount), event.Content)
 				assert.Equal(t, admin.Id, event.UserId)
 				var other auditOther
-				require.NoError(t, common.UnmarshalJsonStr(event.Other, &other))
+				require.NoError(t, decodeAuditOther(event.Other, &other))
 				assert.Equal(t, "redemption.delete_batch", other.Op.Action)
 				assert.Equal(t, expectedCount, other.Op.Params.Count)
 				assert.Equal(t, len(requestedIDs), other.Op.Params.Total)

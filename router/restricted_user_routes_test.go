@@ -158,6 +158,9 @@ var restrictedDeniedSessionPrefixes = []string{
 // 这几棵下面既有匿名路由也有会话路由,所以一律精确列举 —— 那正是「新增一条
 // 匿名接口而没人注意」最可能发生的地方。
 var restrictedDeniedSessionRoutes = []string{
+	// 审计查询(上游 d8cb17744):与 /api/log/self 同属自助只读面,受限账号一并拒绝。
+	"GET /api/audit",
+	"GET /api/audit/self",
 	// 令牌(API Key)管理之外的自助只读面:不在最小渲染集合内
 	"GET /api/data/",
 	"GET /api/data/flow",

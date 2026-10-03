@@ -86,6 +86,11 @@ export default defineConfig({
           '@emoji-mart/data',
           /@lobehub\//,
           /antd-style/,
+          // 在 Bun 运行时下跑 vitest 时,外部化的 zod 会丢掉 `export * as z` 这个绑定,
+          // `import { z } from 'zod'` 拿到 undefined —— 任何间接引到用这种写法的
+          // 设置页的用例(审计页经 @/components/layout 就会)整份加载失败。
+          // Node 下没有这个问题;内联后两种运行时一致。
+          'zod',
         ],
       },
     },

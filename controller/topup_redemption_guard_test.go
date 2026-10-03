@@ -93,7 +93,7 @@ func setupRedemptionAdminTest(t *testing.T) *gorm.DB {
 	dsn := fmt.Sprintf("file:%s_rdm?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.Redemption{}, &model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.Redemption{}, &model.Log{}, &model.AuditLog{}))
 	model.DB, model.LOG_DB = db, db
 
 	t.Cleanup(func() {
@@ -216,13 +216,16 @@ func TestUpdateRedemptionWritesManageAudit(t *testing.T) {
 	rec := callUpdateRedemption(t, "?status_only=true", `{"id":990004,"status":2}`)
 	require.Contains(t, rec.Body.String(), `"success":true`)
 
-	var logs []model.Log
-	require.NoError(t, db.Where("type = ?", model.LogTypeManage).Find(&logs).Error)
+	var logs []model.AuditLog
+	require.NoError(t, db.Where("category = ?", model.AuditCategoryOperation).Find(&logs).Error)
 	require.Len(t, logs, 1, "一次成功的兑换码改动必须且只留一行管理审计")
-	assert.Contains(t, logs[0].Other, `"redemption.update"`)
-	assert.Contains(t, logs[0].Other, `"redemption_id":990004`)
-	assert.Contains(t, logs[0].Other, `"status_before":1`)
-	assert.Contains(t, logs[0].Other, `"status_after":2`)
+	encodedOther, err := common.Marshal(logs[0].Other)
+	require.NoError(t, err)
+	other := string(encodedOther)
+	assert.Contains(t, other, `"redemption.update"`)
+	assert.Contains(t, other, `"redemption_id":990004`)
+	assert.Contains(t, other, `"status_before":1`)
+	assert.Contains(t, other, `"status_after":2`)
 }
 
 // 下单侧必须真的把上界这道闸挂上。

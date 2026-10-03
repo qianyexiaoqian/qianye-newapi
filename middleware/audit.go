@@ -2,12 +2,13 @@ package middleware
 
 import (
 	"bytes"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 
-	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 )
 
@@ -159,26 +160,27 @@ func finishAdminAudit(c *gin.Context, writer *auditResponseWriter) {
 	// content 为英文兜底文本（供导出等非本地化消费者使用）。
 	content := method + " " + route
 
-	adminInfo := map[string]interface{}{
-		"admin_id":       operatorId,
-		"admin_username": operatorName,
-		"admin_role":     operatorRole,
-		"auth_method":    auditAuthMethod(c),
+	adminInfo := &model.AuditAdminInfo{
+		AdminID:       operatorId,
+		AdminUsername: operatorName,
+		AdminRole:     operatorRole,
+		AuthMethod:    auditAuthMethod(c),
 	}
-	auditInfo := map[string]interface{}{
-		"method":  method,
-		"route":   route,
-		"path":    c.Request.URL.Path,
-		"status":  status,
-		"success": success,
+	// 审计表只存路由模板,不存原始 URL(查询串里可能带凭据),与上游一致。
+	auditInfo := &model.AuditRequestInfo{
+		Method:  method,
+		Route:   route,
+		Path:    route,
+		Status:  status,
+		Success: success,
 	}
 	if len(routeParams) > 0 {
-		auditInfo["params"] = routeParams
+		auditInfo.Params = routeParams
 	}
 
-	gopool.Go(func() {
-		model.RecordOperationAuditLog(operatorId, content, ip, action, opParams, adminInfo, auditInfo)
-	})
+	// 同步写:RecordAuditLog 要从 gin.Context 取请求号与 UA,而请求结束后
+	// Context 会被复用,不能交给 goroutine。
+	model.RecordOperationAuditLog(operatorId, operatorRole, content, ip, action, opParams, adminInfo, auditInfo, c)
 }
 
 func auditAuthMethod(c *gin.Context) string {
@@ -204,4 +206,108 @@ func auditResponseSuccess(status int, body []byte) bool {
 		}
 	}
 	return status < 400
+}
+
+// TokenOperationAudit 把 API 令牌的增删改与查看明文 key 记进独立审计表
+// (上游 3f8a50cf8)。只取路由层能拿到的元数据:动作、令牌 id、结果;上游在各
+// handler 里补的令牌名/变更字段需要改写本仓的令牌接口,这一轮不取。
+// 请求体与原始错误都不落库。
+func TokenOperationAudit() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var action, content string
+		switch c.Request.Method + " " + c.FullPath() {
+		case "POST /api/token/":
+			action, content = "token.create", "API token creation"
+		case "PUT /api/token/":
+			action, content = "token.update", "API token configuration update"
+			if c.Query("status_only") != "" {
+				action, content = "token.status_update", "API token status update"
+			}
+		case "DELETE /api/token/:id":
+			action, content = "token.delete", "API token deletion"
+		case "POST /api/token/batch":
+			action, content = "token.delete_batch", "API token batch deletion"
+		case "POST /api/token/:id/key":
+			action, content = "token.key_view", "API token key access"
+		case "POST /api/token/batch/keys":
+			action, content = "token.key_view_batch", "API token batch key access"
+		default:
+			c.Next()
+			return
+		}
+
+		params := model.AuditFields{}
+		if id, err := strconv.Atoi(c.Param("id")); err == nil && id > 0 {
+			params["id"] = id
+		}
+		common.SetContextKey(c, constant.ContextKeyTokenAuditParams, params)
+		entry := model.AuditLog{
+			UserId: c.GetInt("id"), Username: c.GetString("username"), ActorRole: c.GetInt("role"),
+			Category: model.AuditCategorySecurity, Action: action, Content: content,
+			Other: model.AuditOther{Op: &model.AuditOperation{Action: action, Params: params}},
+		}
+		writer := &auditResponseWriter{ResponseWriter: c.Writer, body: bytes.NewBuffer(nil), maxSize: 64 * 1024}
+		c.Writer = writer
+		c.Next()
+		entry.Status = writer.Status()
+		entry.Success = auditResponseSuccess(entry.Status, writer.body.Bytes())
+		if writer.body.Len() == writer.maxSize {
+			// 响应被截断时读不到 success 字段:由 handler 在真正完成时打的标记来判定。
+			entry.Success = entry.Status < 400 && common.GetContextKeyBool(c, constant.ContextKeyTokenAuditSucceeded)
+		}
+		model.RecordAuditLog(c, entry)
+	}
+}
+
+const accessTokenAuditContextKey = "access_token_request_audit"
+
+type accessTokenRequestAudit struct {
+	entry  model.AuditLog
+	writer *auditResponseWriter
+}
+
+// AccessTokenAudit 记录每一次用控制台访问令牌发起的请求(含被限流、鉴权前就被拒的),
+// 写进独立审计表的 access_token 类别。它不参与鉴权,只旁路记账。
+// 取的是上游 d8cb17744 的版本:上游后来改成可授权范围的访问令牌查找(caca52f8d),本仓不取。
+func AccessTokenAudit() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		raw, present := authorizationToken(c.GetHeader("Authorization"))
+		if present {
+			_, internal, _ := service.ParseDashboardAccessToken(raw)
+			if !internal {
+				user, err := model.ValidateAccessToken(raw)
+				if err == nil && user != nil && user.Id > 0 {
+					beginAccessTokenAudit(c, user, raw)
+					defer finishAccessTokenAudit(c)
+				}
+			}
+		}
+		c.Next()
+	}
+}
+
+func beginAccessTokenAudit(c *gin.Context, user *model.User, token string) {
+	if _, exists := c.Get(accessTokenAuditContextKey); exists {
+		return
+	}
+	writer := &auditResponseWriter{ResponseWriter: c.Writer, body: bytes.NewBuffer(nil), maxSize: 64 * 1024}
+	c.Writer = writer
+	c.Set(accessTokenAuditContextKey, &accessTokenRequestAudit{
+		entry:  model.AuditLog{UserId: user.Id, Username: user.Username, ActorRole: user.Role, Category: model.AuditCategoryAccessToken, AuthMethod: "access_token", TokenRef: model.AccessTokenFingerprint(token), CreatedAt: common.GetTimestamp(), EventId: common.NewRequestId()},
+		writer: writer,
+	})
+}
+
+func finishAccessTokenAudit(c *gin.Context) {
+	value, exists := c.Get(accessTokenAuditContextKey)
+	if !exists {
+		return
+	}
+	audit, ok := value.(*accessTokenRequestAudit)
+	if !ok {
+		return
+	}
+	audit.entry.Status = audit.writer.Status()
+	audit.entry.Success = auditResponseSuccess(audit.entry.Status, audit.writer.body.Bytes())
+	model.RecordAuditLog(c, audit.entry)
 }

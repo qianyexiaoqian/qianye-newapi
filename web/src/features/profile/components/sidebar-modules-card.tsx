@@ -103,6 +103,11 @@ export function SidebarModulesCard() {
           title: t('Task Logs'),
           description: t('System task records'),
         },
+        {
+          key: 'audit',
+          title: t('Audit Logs'),
+          description: t('Login, security and access records'),
+        },
       ],
     },
     {

@@ -138,14 +138,14 @@ func loginMethodFromContext(c *gin.Context) string {
 func recordLoginAudit(user *model.User, c *gin.Context) {
 	method := loginMethodFromContext(c)
 	ip := common.ClientIP(c)
-	extra := map[string]any{
-		"login_method": method,
-		"user_agent":   c.Request.UserAgent(),
+	extra := model.AuditOther{
+		LoginMethod: method,
+		UserAgent:   c.Request.UserAgent(),
 	}
 	content := fmt.Sprintf("Logged in successfully via %s", method)
-	model.RecordLoginLog(user.Id, user.Username, content, ip, "login", map[string]any{
+	model.RecordLoginLog(user.Id, user.Role, user.Username, content, ip, "login", map[string]any{
 		"method": method,
-	}, extra)
+	}, extra, c)
 }
 
 // setupLogin 是除 passkey 之外每一条主登录通道的共同出口:先过两步验证这道闸,
@@ -506,6 +506,8 @@ func GenerateAccessToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+
+	recordUserSecurityAudit(c, id, "access_token.generate", map[string]interface{}{"token_ref": model.AccessTokenFingerprint(key)})
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

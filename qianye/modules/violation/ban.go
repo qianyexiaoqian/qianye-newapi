@@ -98,16 +98,17 @@ func disableUserForViolation(ctx context.Context, userId int, ban *Ban) error {
 		}
 	}
 
-	model.RecordLogWithAdminInfo(userId, model.LogTypeManage,
+	recordViolationBanAudit(userId, u.Role, "qy.violation.auto_ban",
 		fmt.Sprintf("账号因违规次数达到阈值(%d 次)被系统自动置为受限", ban.HitCountAt),
-		map[string]interface{}{
+		nil,
+		map[string]any{
 			"source":            "qy_violation",
 			"qy_ban_id":         ban.Id,
 			"qy_ban_cycle":      ban.BanCycle,
 			"qy_threshold":      ban.Threshold,
 			"qy_hit_count":      ban.HitCountAt,
 			"qy_trigger_record": ban.TriggerRecordId,
-			// 策略档必须进用户日志:同一个"受限"结果可能来自不同分组的不同阈值,
+			// 策略档必须进管理端可见的记录:同一个"受限"结果可能来自不同分组的不同阈值,
 			// 而客服在工单里首先要回答的就是"我为什么在第 3 次就被限制了"。
 			"qy_policy_group":  ban.PolicyGroup,
 			"qy_policy_action": ban.PolicyAction,
@@ -174,12 +175,45 @@ func enableUserAfterUnban(userId int, ban *Ban, operatorId int) error {
 		common.SysError("qianye/violation: 解封后 InvalidateUserTokensCache 失败: " + e.Error())
 	}
 
-	model.RecordLogWithAdminInfo(userId, model.LogTypeManage, "违规自动封禁已由管理员解除",
-		map[string]interface{}{
+	actorRole := common.RoleAdminUser
+	var admin *model.AuditAdminInfo
+	if operator, e := model.GetUserById(operatorId, false); e == nil && operator != nil {
+		actorRole = operator.Role
+		admin = &model.AuditAdminInfo{AdminID: operator.Id, AdminUsername: operator.Username, AdminRole: operator.Role}
+	}
+	recordViolationBanAudit(userId, actorRole, "qy.violation.unban", "违规自动封禁已由管理员解除", admin,
+		map[string]any{
 			"source":       "qy_violation",
 			"qy_ban_id":    ban.Id,
 			"qy_ban_cycle": ban.BanCycle,
 			"qy_operator":  operatorId,
 		})
 	return nil
+}
+
+// recordViolationBanAudit 把封禁/解封写进独立审计表(上游 d8cb17744 起管理类事件不再进使用日志)。
+//
+// 细节放在 audit_info.params:与迁移前放在 admin_info 时同一个可见性 —— 管理端可见、
+// 用户自己查看时剥离(阈值与策略档不该让用户反推)。actorRole 取被处置用户的角色
+// (解封取操作管理员的角色):审计表按 actor_role 决定可见范围,系统事件若记成 0
+// 就只剩 root 看得到,用户与普通管理员都查不到这次处置。
+func recordViolationBanAudit(userId, actorRole int, action, content string, admin *model.AuditAdminInfo, fields map[string]any) {
+	params := make(map[string]string, len(fields))
+	for key, value := range fields {
+		params[key] = fmt.Sprint(value)
+	}
+	model.RecordAuditLog(nil, model.AuditLog{
+		UserId:    userId,
+		ActorRole: actorRole,
+		Category:  model.AuditCategoryOperation,
+		Action:    action,
+		Content:   content,
+		Status:    200,
+		Success:   true,
+		Other: model.AuditOther{
+			Op:        &model.AuditOperation{Action: action},
+			AdminInfo: admin,
+			AuditInfo: &model.AuditRequestInfo{Method: "SYSTEM", Route: "qy_violation", Path: "qy_violation", Status: 200, Success: true, Params: params},
+		},
+	})
 }

@@ -162,8 +162,8 @@ func TestAdminAdjustGates(t *testing.T) {
 	assert.Equal(t, middleware.RootActionRequiredCode, codeOf(t, rec, http.StatusForbidden))
 	assert.Nil(t, balanceOf(t, env.ext, 802))
 	assert.Empty(t, auditRowsOf(t, env.ext, adjustAuditAction))
-	var denied []model.Log
-	require.NoError(t, env.main.Where("type = ?", model.LogTypeManage).Find(&denied).Error)
+	var denied []model.AuditLog
+	require.NoError(t, env.main.Where("category = ?", model.AuditCategoryOperation).Find(&denied).Error)
 	require.Len(t, denied, 1, "被拒的越权尝试由闸门写一条上游操作审计")
 	assert.Contains(t, denied[0].Content, string(middleware.RootActionStardustAdjust))
 

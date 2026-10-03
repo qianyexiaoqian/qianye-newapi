@@ -286,6 +286,10 @@ func InitLogDB() (err error) {
 		LOG_DB = DB
 		common.SetLogDatabaseType(common.MainDatabaseType())
 		InitCol()
+		// 审计表与使用日志同库(上游 d8cb17744):不分家时跟主库走,只由主节点迁移。
+		if common.IsMasterNode {
+			return MigrateAuditLogs()
+		}
 		return
 	}
 	db, dbType, err := chooseDB("LOG_SQL_DSN", true)
@@ -446,6 +450,9 @@ func migrateDB() error {
 }
 
 func migrateLOGDB() error {
+	if err := MigrateAuditLogs(); err != nil {
+		return err
+	}
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		return migrateClickHouseLogDB()
 	}

@@ -69,7 +69,7 @@ func newAPIEnv(t *testing.T, mutate func(*config.Stardust)) apiEnv {
 	sqlDB, err := main.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, main.AutoMigrate(&model.User{}, &model.Log{}))
+	require.NoError(t, main.AutoMigrate(&model.User{}, &model.Log{}, &model.AuditLog{}))
 	prevMain, prevLog := model.DB, model.LOG_DB
 	prevType, prevLogType := common.MainDatabaseType(), common.LogDatabaseType()
 	model.DB, model.LOG_DB = main, main

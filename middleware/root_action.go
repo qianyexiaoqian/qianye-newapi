@@ -156,25 +156,25 @@ func RequireRootAction(c *gin.Context, action RootOnlyAction) bool {
 	// 也压根不覆盖 GET(收款人明文与凭证图片恰好都是 GET)。
 	operatorId := c.GetInt("id")
 	ip := common.ClientIP(c)
-	adminInfo := map[string]interface{}{
-		"admin_id":       operatorId,
-		"admin_username": c.GetString("username"),
-		"admin_role":     c.GetInt("role"),
-		"auth_method":    auditAuthMethod(c),
+	adminInfo := &model.AuditAdminInfo{
+		AdminID:       operatorId,
+		AdminUsername: c.GetString("username"),
+		AdminRole:     c.GetInt("role"),
+		AuthMethod:    auditAuthMethod(c),
 	}
-	auditInfo := map[string]interface{}{
-		"method":  c.Request.Method,
-		"route":   c.FullPath(),
-		"path":    c.Request.URL.Path,
-		"status":  http.StatusForbidden,
-		"success": false,
+	auditInfo := &model.AuditRequestInfo{
+		Method:  c.Request.Method,
+		Route:   c.FullPath(),
+		Path:    c.FullPath(),
+		Status:  http.StatusForbidden,
+		Success: false,
 	}
 	if len(c.Params) > 0 {
 		params := map[string]string{}
 		for _, p := range c.Params {
 			params[p.Key] = p.Value
 		}
-		auditInfo["params"] = params
+		auditInfo.Params = params
 	}
 	opParams := map[string]interface{}{
 		"attempted_action": string(action),
@@ -188,7 +188,7 @@ func RequireRootAction(c *gin.Context, action RootOnlyAction) bool {
 	// 记录。异步意味着进程在这一刻退出就把它丢了,而"管理员反复戳超管专属
 	// 接口"正是最不该丢的那类事件。代价是给一个已经注定失败的请求多加一次
 	// insert,与它本来就会触发的兜底那条一样。
-	model.RecordOperationAuditLog(operatorId, content, ip, "authz.root_action_denied", opParams, adminInfo, auditInfo)
+	model.RecordOperationAuditLog(operatorId, c.GetInt("role"), content, ip, "authz.root_action_denied", opParams, adminInfo, auditInfo, c)
 	common.SetContextKey(c, constant.ContextKeyAuditLogged, true)
 
 	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{

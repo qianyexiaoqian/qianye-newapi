@@ -1505,3 +1505,42 @@ relay/计费面的提交,按该文件「下次同步前必读」的要求,是否
   用旧二进制(`b5f28ada9`)在空库初始化并写入定价行,再用新二进制连起两次 —— MySQL 与 SQLite 均无 DDL、
   无报错、定价行原样保留。**PostgreSQL 本机没有,未验证。**
 - 前端:typecheck 干净;qy 套件 7 条失败与基线相同(首页 hero/promises,工作区正在改)。
+
+# 上游同步记录(第三批):独立审计日志(2026-10-02)
+
+**分支**:`sync/audit-log`(叠在 `sync/billing-expr` 之上)。
+**范围**:`d8cb17744`(访问令牌管理与审计日志)、`3f8a50cf8`(补全令牌与额度操作记录)里**审计日志那一半**。
+项目方选择「只做审计日志」:访问令牌管理(作用域令牌、轮换/吊销、「安全与访问」独立页)、
+管理员权限面板重构、额度调整事务化重写**都不取**。
+
+## 取了的
+
+| 部分 | 内容 | 本仓适配 |
+|---|---|---|
+| 存储 | 独立 `audit_logs` 表(`model/audit_log.go`、`audit_other.go`),`other` 为 JSON 列;放在日志库,共享日志库时只由主节点迁移 | 去掉 `UserAccessToken` 状态查询那一节;IP 走 `common.ClientIP`(单一来源守卫) |
+| 写入 | 管理操作、登录、账户安全、访问令牌请求、API 令牌操作全部改写到审计表;`RecordLogWithAdminInfo`/`RecordLoginLog`/`RecordOperationAuditLog` 换上游签名,写入改为同步 | 根动作闸门(`middleware/root_action.go`)、违规封禁/解封(`qianye/modules/violation/ban.go`)一并改写到审计表;封禁细节放在仅管理员可见的 `audit_info` |
+| 中间件 | `AccessTokenAudit`(全局,含被限流/鉴权前拒绝的请求)、`TokenOperationAudit`(API 令牌路由);`authHelper`/`TryUserAuth` 补开/收尾审计,覆盖直挂在 `/api` 组外的扩展路由 | 用 d8cb17744 版本的令牌校验(上游后来改成作用域令牌查找,不取) |
+| 令牌目标 | `controller/token.go` 把 id/名称/状态前后/变更字段交给审计 | 本仓 `group_only` 行内快切也记 `changed_fields`;审计口径收进 `recordTokenUpdateAuditChanges`,保证 `UpdateToken` 只有一处 `if statusOnly` 分支(groupmatrix 写入侧守卫按它定位) |
+| 接口与权限 | `GET /api/audit`(`audit.read` 权限)、`GET /api/audit/self`;root 记录对非 root 永不可见 | 受限账号对两条路由一律拒绝(与 `/api/log/self` 同口径) |
+| 前端 | `/usage-logs/audit` 页、侧栏「审计日志」、侧栏模块开关、用户权限里的 `audit` 资源;使用日志的「管理」「登录」类型标为「已弃用」(只用来查历史) | 详情弹窗不查作用域字典(本仓没有作用域令牌),遇到 scopes 只计数;`loginMethodLabel` 指向本仓 `profile/` 下的位置;`DetailSection` 补进 `log-detail-layout.tsx` |
+| 其他 | `RelayNotFound` 禁缓存 404(升级后旧页面请求新接口不会被缓存成 404);`GenerateAccessToken` 记 `access_token.generate` | — |
+
+不取:`controller/access_token.go` 的令牌管理接口、`model/user.go` 的 `access_token_created_at` 列、
+`features/security/` 整页、`controller/user_quota.go` / `model/user_quota_adjustment.go`(额度调整事务化)。
+`quota-audit-operation.ts` 只作为展示格式化取了(老的 `user.quota_*` 记录照样能读)。
+
+## 行为变化需要知道的
+
+- 新的管理/登录/安全记录**不再进 `logs` 表**,在「审计日志」页看;`logs` 里的历史记录保留,类型筛选里标「已弃用」。
+- 清理旧日志(`DeleteOldLogBatch`)不会删审计表。
+- 本仓原有的 `/qy/admin/audit-logs`(扩展模块自己的审计轨迹,写在扩展库)与新审计页是两回事,互不替代。
+
+## 验证
+
+- Go:build / vet / gofmt 干净;全量 `go test` 只剩 `relay/channel` 的 HTTP2 用例(基线即红)。
+  移植上游审计测试(去掉访问令牌管理部分)与 API 令牌审计矩阵:**SQLite 3.50.4 与 MySQL 8.4.9** 全过,
+  含全新库/旧版本库升级、迁移跑两次、共享与独立日志库。**PostgreSQL / ClickHouse 本机没有,未验证。**
+- 本机 MySQL 预览实例升级:`audit_logs` 建表正确(JSON 列与索引),登录与令牌操作实际写入并在页面正确展示。
+- 前端:typecheck、涉及文件 lint/format 干净;审计页 + 类型筛选 vitest 86 条全过;bun 套件与基线一致。
+- vitest 配置把 `zod` 加进内联依赖:在 Bun 运行时下,外部化的 zod 丢 `export * as z`,
+  凡间接引到 `import { z } from 'zod'` 的用例整份加载失败。改后失败文件 32 → 3,剩下 3 个基线同样失败。

@@ -18,10 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { ReactNode } from 'react'
 
+import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
+import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
 
-// 只取上游同名文件里的 DetailRow(模型徽标的不一致提示要用);
-// 同文件的 DetailSection 属于未同步的日志详情改版。
 export function DetailRow(props: {
   label: ReactNode
   value: ReactNode
@@ -42,6 +42,44 @@ export function DetailRow(props: {
       >
         {props.value}
       </span>
+    </div>
+  )
+}
+
+export function DetailSection(props: {
+  icon?: ReactNode
+  iconTone?: IconBadgeTone
+  label: string
+  variant?: 'default' | 'danger'
+  children: ReactNode
+}) {
+  const isDanger = props.variant === 'danger'
+  const iconTone = isDanger ? 'destructive' : props.iconTone
+  return (
+    <div className='min-w-0 space-y-1.5'>
+      <Label
+        className={cn(
+          'flex items-center gap-1.5 text-xs font-semibold',
+          isDanger && 'text-red-500'
+        )}
+      >
+        {props.icon && (
+          <IconBadge tone={iconTone} size='xs'>
+            {props.icon}
+          </IconBadge>
+        )}
+        {props.label}
+      </Label>
+      <div
+        className={cn(
+          'min-w-0 space-y-1 overflow-hidden rounded-md border p-2.5 max-sm:p-2',
+          isDanger
+            ? 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/20'
+            : 'bg-muted/30'
+        )}
+      >
+        {props.children}
+      </div>
     </div>
   )
 }

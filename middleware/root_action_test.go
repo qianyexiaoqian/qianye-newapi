@@ -32,7 +32,7 @@ func setupRootActionTest(t *testing.T) {
 	previousRedis := common.RedisEnabled
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}, &model.AuditLog{}))
 	model.DB = db
 	model.LOG_DB = db
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
@@ -128,13 +128,15 @@ func TestRootActionGateDenialWritesAudit(t *testing.T) {
 	recorder, _ := rootActionTestRequest(t, common.RoleAdminUser)
 	require.Equal(t, http.StatusForbidden, recorder.Code)
 
-	var logs []model.Log
+	var logs []model.AuditLog
 	require.NoError(t, model.LOG_DB.Find(&logs).Error)
 	require.Len(t, logs, 1, "被拒的越权尝试必须留下恰好一条审计")
 	entry := logs[0]
-	assert.Equal(t, model.LogTypeManage, entry.Type)
+	assert.Equal(t, model.AuditCategoryOperation, entry.Category)
 	assert.Equal(t, 7, entry.UserId)
-	other, err := common.StrToMap(entry.Other)
+	encoded, err := common.Marshal(entry.Other)
+	require.NoError(t, err)
+	other, err := common.StrToMap(string(encoded))
 	require.NoError(t, err)
 
 	op, ok := other["op"].(map[string]any)
@@ -184,6 +186,6 @@ func TestRootActionGateSuppressesGenericFallbackAudit(t *testing.T) {
 	assert.True(t, marked, "闸门必须标记 ContextKeyAuditLogged,否则兜底会再写一条 generic")
 
 	var count int64
-	require.NoError(t, model.LOG_DB.Model(&model.Log{}).Count(&count).Error)
+	require.NoError(t, model.LOG_DB.Model(&model.AuditLog{}).Count(&count).Error)
 	assert.EqualValues(t, 1, count, "一次被拒只该留一条审计")
 }
