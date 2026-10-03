@@ -624,27 +624,10 @@ func TestResponsesWebSocketReusesConnectionAndSettlesEachRequest(t *testing.T) {
 		assert.Equal(t, 1000, logs[index].PromptTokens)
 		assert.Equal(t, 10, logs[index].CompletionTokens)
 	}
-	// Routing decisions are persisted per request: the first create selects a
-	// channel, later creates on the same connection reuse it as a pin.
-	for index, wantDecision := range []string{"attempt:channel_selected", "select:pinned_channel"} {
-		var other struct {
-			AdminInfo struct {
-				RequestPolicy []struct {
-					ChannelID int `json:"channel_id"`
-					Decision  struct {
-						Action string `json:"action"`
-						Reason string `json:"reason"`
-					} `json:"decision"`
-				} `json:"request_policy"`
-			} `json:"admin_info"`
-		}
-		require.NoError(t, common.UnmarshalJsonStr(logs[index].Other, &other))
-		var decisions []string
-		for _, event := range other.AdminInfo.RequestPolicy {
-			assert.Equal(t, fixture.channel.Id, event.ChannelID)
-			decisions = append(decisions, event.Decision.Action+":"+event.Decision.Reason)
-		}
-		assert.Contains(t, decisions, wantDecision, "request %d policy events: %v", index, decisions)
+	// 上游这里断言请求策略的路由决策记录(属于未取的 73a471f3a,本仓日志里没有)。
+	// 本仓能验的是同一件事的结果:同一连接上的后续请求复用首个请求选中的渠道。
+	for index := range logs {
+		assert.Equal(t, fixture.channel.Id, logs[index].ChannelId, "request %d must stay on the pinned channel", index)
 	}
 	require.NoError(t, model.DB.First(token, token.Id).Error)
 	require.NoError(t, model.DB.First(user, user.Id).Error)
