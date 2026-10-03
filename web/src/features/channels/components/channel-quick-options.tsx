@@ -162,7 +162,7 @@ export function ChannelQuickOptions(props: ChannelQuickOptionsProps) {
       disabled: sensitiveDisabled,
     })
   }
-  if (props.channelType === 1 || props.channelType === 57) {
+  if (supportsResponsesWebSocket(props.channelType)) {
     options.push({
       key: 'websocket',
       label: t('Responses WebSocket'),

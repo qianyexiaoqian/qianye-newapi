@@ -32,11 +32,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 import { Form } from '@/components/ui/form'
 import { api } from '@/lib/api'
 
-import {
-  CHANNEL_TYPE_NEW_API,
-  CHANNEL_TYPE_SUB2API,
-  CHANNEL_TYPE_TASK_PLUGIN,
-} from '../../constants'
+import { CHANNEL_TYPE_NEW_API, CHANNEL_TYPE_TASK_PLUGIN } from '../../constants'
 import { CHANNEL_TYPE_ADVANCED_CUSTOM } from '../../lib/advanced-custom'
 import {
   CHANNEL_FORM_DEFAULT_VALUES,
@@ -278,13 +274,9 @@ test('task plugin channels hide both passthrough switches', () => {
 describe('responses websocket quick option', () => {
   const WEBSOCKET_SWITCH = { name: 'Responses WebSocket' }
 
-  test.each([
-    1,
-    57,
-    CHANNEL_TYPE_ADVANCED_CUSTOM,
-    CHANNEL_TYPE_SUB2API,
-    CHANNEL_TYPE_NEW_API,
-  ])('is offered for channel type %s', (channelType) => {
+  // 本仓后端只对 OpenAI(1)与 Codex(57)开了 Responses WebSocket,
+  // 其余类型(上游 fa3cc1c6b 放开的那几种)不给开关,见 lib/responses-websocket.ts。
+  test.each([1, 57])('is offered for channel type %s', (channelType) => {
     render(
       <QuickOptionsHarness
         channelType={channelType}
@@ -294,18 +286,22 @@ describe('responses websocket quick option', () => {
     expect(screen.getByRole('switch', WEBSOCKET_SWITCH)).toBeInTheDocument()
   })
 
-  test.each([14, CHANNEL_TYPE_TASK_PLUGIN])(
-    'is hidden for channel type %s',
-    (channelType) => {
-      render(
-        <QuickOptionsHarness
-          channelType={channelType}
-          confirm={() => Promise.resolve(true)}
-        />
-      )
-      expect(
-        screen.queryByRole('switch', WEBSOCKET_SWITCH)
-      ).not.toBeInTheDocument()
-    }
-  )
+  test.each([
+    14,
+    CHANNEL_TYPE_TASK_PLUGIN,
+    CHANNEL_TYPE_ADVANCED_CUSTOM,
+    CHANNEL_TYPE_NEW_API,
+    // Sub2API
+    59,
+  ])('is hidden for channel type %s', (channelType) => {
+    render(
+      <QuickOptionsHarness
+        channelType={channelType}
+        confirm={() => Promise.resolve(true)}
+      />
+    )
+    expect(
+      screen.queryByRole('switch', WEBSOCKET_SWITCH)
+    ).not.toBeInTheDocument()
+  })
 })
