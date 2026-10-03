@@ -1559,3 +1559,36 @@ relay/计费面的提交,按该文件「下次同步前必读」的要求,是否
 - `group-contact.ts` 的 `no-control-regex` 豁免注释移到正则所在行(格式化把正则折到了下一行,原注释失效)。
 
 主工作区里同期的其他未提交改动(风控预警建表开关、插件分模型 usageSchema、兑换码、定价、任务转发、版本基线)**没有**带过来。
+
+# 上游同步记录(第四批):新版渠道编辑器与渠道插件扩展(2026-10-03)
+
+**分支**:`sync/channel-editor`(叠在 `sync/audit-log` 之上)。
+**起因**:项目方要上游渠道编辑器里的「插件扩展」(OpenAI 等渠道勾选任务插件模型,如 Sora)
+与 New API 渠道绑定多个任务插件。两者都建在上游重写后的渠道编辑器(`505805a4c`)上,此前随它一起挂起。
+本仓旧编辑器没有自己的改动(只有后来移植进去的上游功能与多密钥策略修正,后者上游 `d4c26bfb8` 有同款),
+所以整体换成新编辑器。
+
+| SHA | 标题 | 处理 |
+|---|---|---|
+| `505805a4c` | 统一渠道配置界面 | 编辑器取上游;后端 options 保留本仓更全的字段;**Passkey 域名确认那部分不取**(本仓 Passkey 设置页不同) |
+| `d4c26bfb8` | 编辑时可改多密钥策略 | 干净应用(本仓 `fed9d1d3d` 的同款修正) |
+| `ab489ab88` | 供应商与模型选择里的插件扩展 | 后端 options 已有 channelTypes,保留本仓;供应商排序取上游最终版 |
+| (补) | c9a110190 / 9fe0457ee / 8529f209c / 5caafd3d8 / 69a500298 的新编辑器那一半 | 这几条当初接进旧编辑器,这里补上新编辑器侧 |
+| `ed0ad6e3f` `0cde9d94f` `32ef6d216` `db536ec8b` | 快捷选项 / 模型重定向浮窗 / 透传说明 / 重定向简化 | 取;`combobox-input.tsx` 用上游最终版 |
+| `4c34f25a4` | New API 渠道绑定多个任务插件 | 全取(分发器、任务轮询、插件 upstream 上下文、内置插件);无表结构变化,查询为可移植 GORM |
+| `d04c118c8` | 保存时保留 Responses WebSocket 设置 | 只取 channel-form.ts |
+| `6b638788c` | 上游模型变更先预览再应用 | 取;旧式错误提示换成已有的兼容 `handleServerError` |
+
+本仓适配:
+
+- `useChannelKeyDisclosure`:上游建在未合的 `45c3fbe8a`(验证凭据绑定会话)上,用本仓 `withVerification` 流程实现同形 hook。
+- `lib/responses-websocket.ts`:上游 `fa3cc1c6b` 把开关放开到高级自定义 / Sub2API / New API,依赖挂起的 `ae249f4ec`;
+  本仓后端只支持 OpenAI(1)与 Codex(57),只列这两类。
+- 测试里的 `createAppQueryClient`(属于挂起的 `12be9975c`)换成与 `main.tsx` 同口径的本地 QueryClient。
+
+仍挂起:`73a471f3a`(请求策略)、`ae249f4ec` / `fa3cc1c6b`(WS 扩到更多渠道)、`03563a4a7` 链(阿里图片迁插件)、`2ffc59590`(moejs)。
+
+验证:Go 全量 build / vet / test 全过,relaykit 独立构建与测试通过;前端 typecheck、涉及文件 lint/format 干净,
+渠道与公共组件 vitest 37 个文件 332 条全过;bun 套件只剩基线那条 `QyResponsiveDialog` 宽屏用例。
+本机预览实测:新建渠道选 OpenAI 出现「插件扩展 · Sora 已选 0/2」,可勾 sora-2 / sora-2-pro 并单独重定向;
+选 New API 出现「上游任务插件」多选。

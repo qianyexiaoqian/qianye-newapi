@@ -1748,6 +1748,8 @@
     "Downgrade to this group after the subscription expires": "Downgrade to this group after the subscription expires",
     "Download": "Download",
     "Drag {{group}} to reorder": "Drag {{group}} to reorder",
+    "Drag to move": "Drag to move",
+    "Drag to resize": "Drag to resize",
     "Draw": "Draw",
     "Drawing": "Drawing",
     "Drawing Logs": "Drawing Logs",
