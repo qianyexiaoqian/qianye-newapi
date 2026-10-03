@@ -1655,3 +1655,26 @@ bun 套件只剩基线 `QyResponsiveDialog` 用例(另一条受限账号扫描�
 验证:Go 全量 build / vet / test 全过(无后台负载时连基线那两条 HTTP2 用例也过了),relaykit 独立通过;
 前端 typecheck、涉及文件 lint/format、渠道 vitest 22 个文件 272 条、i18n 覆盖用例全过;
 本机预览新建 Sub2API 渠道出现「Responses WebSocket」开关。
+
+# 上游同步记录(第七批):插件引擎换 moejs(2026-10-03)
+
+**分支**:`sync/moejs`(叠在 `sync/ws-channels` 之上)。项目方考虑到上游后续插件提交都会建在 moejs 上,
+不取的话以后每次同步插件都要多一层适配,决定跟进。
+
+| SHA | 标题 | 处理 |
+|---|---|---|
+| `2ffc59590` | 任务插件改跑在 moejs(v0.1.0-alpha.3)上 | 取 |
+
+冲突处理:
+
+- `relay/channel/task/jsplugin/adaptor.go`:上游起对纯 JSON 请求体不再做防御性拷贝。本仓的模型字段闸
+  (`stripModelSelectionFromRequestBody`,metadata 里不许改写模型)要改请求体,所以仍先拷一份再剥,
+  不碰宿主的原始请求体,行为与之前逐字一致。
+- `go.mod`:取上游(加 moejs、去 Sobek,连带 ClickHouse 驱动 2.32 → 2.46 等依赖升级),`go mod tidy`。
+- 本仓测试 `model_selection_guard_test.go` 跟上 `HasExport` 新签名(导出在加载时判定,不再返回错误)。
+
+**行为变化**:插件里 `eval` 与 `new Function` 会抛 EvalError。内置插件都不用;**后台上传过第三方插件的,
+上线前要确认插件源码里没有这两种写法**。插件 API 本身不变。
+
+验证:Go 全量 build / vet / test 只剩基线那两条 `relay/channel` HTTP2 用例;relaykit 独立通过;
+`pkg/jsplugin`、插件适配器、全部内置插件、本仓模型字段闸用例全过。
