@@ -1628,3 +1628,30 @@ relay/计费面的提交,按该文件「下次同步前必读」的要求,是否
 前端 typecheck 干净,usage-logs / task-plugins / channels vitest 只剩基线那两个文件(model-badge、mobile-card);
 bun 套件只剩基线 `QyResponsiveDialog` 用例(另一条受限账号扫描用例负载下超时,单独跑通过)。
 本机预览:阿里渠道「插件扩展 · 阿里云百炼 已选 0/55」,列出 qwen-image 系列等图片模型。
+
+# 上游同步记录(第六批):Responses WebSocket 扩到更多渠道(2026-10-03)
+
+**分支**:`sync/ws-channels`(叠在 `sync/ali-plugin` 之上)。
+项目方要求「协议相关的能兼容就尽量同步」。这三条此前随请求策略 `73a471f3a` 一起挂起;
+实际只依赖它的几行记录调用,单独移植可行。
+
+| SHA | 标题 | 处理 |
+|---|---|---|
+| `75f3d246e` | WS 事件携带 stream_id、错误归属到对应请求 | 取;去掉请求策略记录调用;重试判定保持本仓 `ShouldRetryRelayError`(与 HTTP 同口径);本仓违规费用错误归一化保留 |
+| `ae249f4ec` | WS 扩到 Sub2API / New API / 高级自定义,与 HTTP 共用选渠道 | 取;选渠道逻辑搬进 `service/channel_select.go`(与上游 main 逐字一致,已含 4c34f25a4 的多插件绑定);去掉请求策略的 strict 会话绑定分支;本仓 playground 分组校验 `QyPlaygroundGroupAllowed` 不在搬动范围内,原样保留 |
+| `fa3cc1c6b` | 前端 WS 开关放开到上述渠道 | 取;换掉第四批里本仓临时只列 1/57 的 `responses-websocket.ts` 与对应测试 |
+| `d04c118c8` | 保存时保留 WS 设置 | 补上第四批未取的测试部分 |
+
+测试适配(上游用例断言的是请求策略写进日志的路由决策,本仓没有):
+- `relay` 的 strict 会话绑定用例改为守「亲和渠道不可用时回落到别的渠道」;
+- `controller` 的路由决策断言改为「同一连接的两条消费日志都落在首个请求选中的渠道上」。
+
+本仓 WS 每事件的闸(QyTokenLiveStats / RPM / 分组并发 / 单一来源客户端 IP)在 `controller/responses_websocket.go`,
+三条提交都没动到。无表结构变化。
+
+仍不取:`73a471f3a` 请求策略本体(69 个文件,含本仓已整体移除的敏感词检查)及其设置页 `d80694366`;
+`9c293e8c0`(依赖未取的 9978ee1e2 预扣口径)。
+
+验证:Go 全量 build / vet / test 全过(无后台负载时连基线那两条 HTTP2 用例也过了),relaykit 独立通过;
+前端 typecheck、涉及文件 lint/format、渠道 vitest 22 个文件 272 条、i18n 覆盖用例全过;
+本机预览新建 Sub2API 渠道出现「Responses WebSocket」开关。

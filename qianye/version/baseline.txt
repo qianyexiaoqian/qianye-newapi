@@ -78,9 +78,10 @@
 #
 # 本次审计的协议面结论:rc.37 → rc.41 里动过 relay/ dto/ types/ relaykit/ plugins/
 # pkg/jsplugin/ 的上游提交,只有下面这些未取,均为项目方知情的决定:
-#   - 73a471f3a 请求策略与路由决策记录(含本仓已整体移除的敏感词检查),及其下游
-#     75f3d246e / ae249f4ec(Responses WebSocket 扩到更多渠道、与 HTTP 共用路由);
-#     本仓 WS 仍只支持 OpenAI(1)与 Codex(57)。
+#   - 73a471f3a 请求策略与路由决策记录(含本仓已整体移除的敏感词检查)。
+#     它的 WS 下游 75f3d246e / ae249f4ec / fa3cc1c6b 已于同日单独移植(第六批):
+#     WS 支持 OpenAI / Codex / Sub2API / New API / 高级自定义(原生 /v1/responses 路由),
+#     与 HTTP 共用选渠道;只去掉了其中写请求策略记录的那几行。
 #   - 9978ee1e2 预扣改成「只按输入 × 倍数」:与本仓「输出侧 8192 兜底」的资金安全
 #     修复冲突,不取。
 #   - 2ffc59590 插件引擎换 moejs(alpha 版):不取,仍用 Sobek。
