@@ -16,7 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  QueryCache,
+  QueryClient,
+  QueryClientProvider,
+} from '@tanstack/react-query'
 import {
   act,
   cleanup,
@@ -35,6 +39,11 @@ import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import type { TaskPluginOption } from '../../api'
+import {
+  CHANNEL_TYPE_OLLAMA,
+  CHANNEL_TYPE_SGLANG,
+  CHANNEL_TYPE_VLLM,
+} from '../../constants'
 import { channelSchema, type Channel } from '../../types'
 import { ChannelPluginExtensions } from '../channel-plugin-extensions'
 import { ChannelsProvider } from '../channels-provider'
@@ -42,6 +51,21 @@ import { ChannelMutateDrawer } from '../drawers/channel-mutate-drawer'
 
 const originalAuth = useAuthStore.getState().auth
 let client: QueryClient
+
+// 与 src/main.tsx 的全局 QueryCache 同口径:查询报 500 就跳错误页。
+// 上游这里用 @/lib/query-client 的 createAppQueryClient(属于挂起的 12be9975c)。
+function createAppLikeQueryClient(onInternalServerError: () => void) {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+    queryCache: new QueryCache({
+      onError: (error) => {
+        const status = (error as { response?: { status?: number } }).response
+          ?.status
+        if (status === 500) onInternalServerError()
+      },
+    }),
+  })
+}
 let editingChannel: Channel
 let pluginOptions: TaskPluginOption[]
 const plugins: TaskPluginOption[] = [
@@ -143,6 +167,19 @@ beforeEach(() => {
     if (url === '/api/channel/models') {
       return { data: { success: true, data: [{ id: 'custom-model' }] } }
     }
+    if (url === '/api/channel/default_base_urls') {
+      return {
+        data: {
+          success: true,
+          data: {
+            22: 'https://fastgpt.server.example/api/openapi',
+            24: 'https://gemini.server.example',
+            43: 'https://deepseek.server.example',
+            45: 'https://volcengine.server.example',
+          },
+        },
+      }
+    }
     if (url === '/api/group/') {
       return { data: { success: true, data: ['default', 'premium'] } }
     }
@@ -158,6 +195,131 @@ afterEach(() => {
   client.clear()
   useAuthStore.setState({ auth: originalAuth })
   vi.restoreAllMocks()
+})
+
+test('changing built-in providers updates server-provided URL placeholders without replacing the draft address', async () => {
+  const user = userEvent.setup()
+  render(<ConfigurationHarness />)
+  await user.click(screen.getByRole('option', { name: /^DeepSeek / }))
+  const address = screen.getByRole('textbox', { name: 'Base URL' })
+  await waitFor(() =>
+    expect(address).toHaveAttribute(
+      'placeholder',
+      'https://deepseek.server.example'
+    )
+  )
+  expect(address).toHaveValue('')
+  await user.type(address, 'https://custom.example')
+
+  await user.click(screen.getByRole('button', { name: 'Change provider' }))
+  await user.click(screen.getByRole('option', { name: /^Gemini / }))
+  const geminiAddress = screen.getByRole('textbox', { name: 'Base URL' })
+  expect(geminiAddress).toHaveAttribute(
+    'placeholder',
+    'https://gemini.server.example'
+  )
+  expect(geminiAddress).toHaveValue('https://custom.example')
+  await user.clear(geminiAddress)
+  expect(geminiAddress).toHaveValue('')
+
+  await user.click(screen.getByRole('button', { name: 'Change provider' }))
+  await user.click(screen.getByRole('option', { name: /^New API / }))
+  expect(screen.getByRole('textbox', { name: 'Base URL' })).toHaveAttribute(
+    'placeholder',
+    'Leave empty to use default'
+  )
+})
+
+test.each([
+  {
+    type: 43,
+    label: /^Base URL$/,
+    url: 'https://deepseek.server.example',
+    savedUrl: '',
+  },
+  {
+    type: 22,
+    label: /^Private Deployment URL$/,
+    url: 'https://fastgpt.server.example/api/openapi',
+    savedUrl: '',
+  },
+  {
+    type: 45,
+    label: /^API Base URL/,
+    url: 'https://volcengine.server.example',
+    savedUrl: 'https://custom.example',
+  },
+  {
+    type: CHANNEL_TYPE_VLLM,
+    label: /^Base URL/,
+    url: 'vLLM server address, without /v1',
+    savedUrl: 'http://localhost:8000',
+  },
+  {
+    type: CHANNEL_TYPE_SGLANG,
+    label: /^Base URL/,
+    url: 'SGLang server address, without /v1',
+    savedUrl: 'http://localhost:30000',
+  },
+])(
+  'editing type $type keeps the URL placeholder out of the saved address',
+  async ({ type, label, url, savedUrl }) => {
+    editingChannel.type = type
+    const put = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+    const user = userEvent.setup()
+    render(<ConfigurationHarness currentRow={editingChannel} />)
+    await screen.findByDisplayValue('Existing channel')
+    if (type === 45) {
+      const addressLabel = screen.getByText('API Base URL')
+      for (let click = 0; click < 10; click++) {
+        fireEvent.click(addressLabel)
+      }
+    }
+    const address = screen.getByRole('textbox', { name: label })
+    await waitFor(() => expect(address).toHaveAttribute('placeholder', url))
+    expect(address).toHaveValue('https://saved.example')
+    await user.clear(address)
+    expect(address).toHaveValue('')
+    if (savedUrl) await user.type(address, savedUrl)
+    await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    expect(put.mock.calls[0]?.[1]).toMatchObject({ id: 42, base_url: savedUrl })
+  }
+)
+
+test('an unavailable default URL endpoint keeps the fallback placeholder and allows saving a custom address', async () => {
+  const onInternalServerError = vi.fn()
+  client = createAppLikeQueryClient(onInternalServerError)
+  const originalGet = vi.mocked(api.get).getMockImplementation()
+  vi.mocked(api.get).mockImplementation(async (url, config) => {
+    if (url === '/api/channel/default_base_urls') {
+      throw Object.assign(new Error('Endpoint unavailable'), {
+        response: { status: 500 },
+      })
+    }
+    return originalGet?.(url, config)
+  })
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  const address = screen.getByRole('textbox', { name: 'Base URL' })
+  expect(address).toHaveAttribute('placeholder', 'Leave empty to use default')
+  expect(address).toHaveValue('https://saved.example')
+  await user.clear(address)
+  await user.type(address, 'https://custom.example')
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  expect(put.mock.calls[0]?.[1]).toMatchObject({
+    id: 42,
+    base_url: 'https://custom.example',
+  })
+  expect(api.get).toHaveBeenCalledWith('/api/channel/default_base_urls')
+  expect(onInternalServerError).not.toHaveBeenCalled()
 })
 
 test('model mapping help opens on click, stays open after pointer exit, and closes without dismissing the channel', async () => {
@@ -439,7 +601,15 @@ test('without plugin binding permission only built-in providers are offered', ()
 })
 
 test('plugin loading failure can be retried while built-in providers remain selectable', async () => {
-  vi.mocked(api.get).mockRejectedValueOnce(new Error('Offline'))
+  const originalGet = vi.mocked(api.get).getMockImplementation()
+  let fail = true
+  vi.mocked(api.get).mockImplementation(async (url, config) => {
+    if (url === '/api/task_plugin_options' && fail) {
+      fail = false
+      throw new Error('Offline')
+    }
+    return originalGet?.(url, config)
+  })
   render(<ConfigurationHarness />)
   expect(await screen.findByText('Failed to load plugins')).toBeVisible()
   expect(screen.getByRole('option', { name: /^OpenAI / })).toBeVisible()
@@ -1177,13 +1347,41 @@ test('request processing configuration does not mark the network category as con
   ).not.toHaveAccessibleName(/Configured/)
 })
 
+test.each([1, 57])(
+  'provider %s marks a saved Responses WebSocket setting in Request & Response and clears the mark when disabled',
+  async (type) => {
+    editingChannel = {
+      ...editingChannel,
+      type,
+      setting: '{"responses_websocket_enabled":true}',
+    }
+    const user = userEvent.setup()
+    render(<ConfigurationHarness currentRow={editingChannel} />)
+    await screen.findByDisplayValue('Existing channel')
+    const requestTab = screen.getByRole('tab', { name: /Request & Response/ })
+    expect(requestTab).toHaveAccessibleName(/Configured/)
+    expect(
+      screen.getByRole('tab', { name: /Other Settings/ })
+    ).not.toHaveAccessibleName(/Configured/)
+    await user.click(requestTab)
+    const toggle = screen.getByRole('switch', {
+      name: 'Enable Responses WebSocket',
+    })
+    expect(toggle).toBeChecked()
+    await user.click(toggle)
+    expect(toggle).not.toBeChecked()
+    expect(requestTab).not.toHaveAccessibleName(/Configured/)
+  }
+)
+
 test('configuration from fields unsupported by the selected provider stays unmarked', async () => {
   editingChannel = {
     ...editingChannel,
     type: 61,
-    setting: '{"task_plugin_key":"video-a","force_format":true}',
+    setting:
+      '{"task_plugin_key":"video-a","force_format":true,"responses_websocket_enabled":true}',
     settings:
-      '{"allow_speed":true,"allow_service_tier":true,"upstream_model_update_check_enabled":true}',
+      '{"allow_speed":true,"allow_service_tier":true,"upstream_model_update_check_enabled":true,"ollama_openai_chat":true}',
   }
   render(<ConfigurationHarness currentRow={editingChannel} />)
   await screen.findByDisplayValue('Existing channel')
@@ -1193,6 +1391,41 @@ test('configuration from fields unsupported by the selected provider stays unmar
   expect(
     screen.getByRole('tab', { name: /Other Settings/ })
   ).not.toHaveAccessibleName(/Configured/)
+  expect(
+    screen.queryByRole('switch', {
+      name: 'Use OpenAI-compatible Ollama chat API',
+    })
+  ).not.toBeInTheDocument()
+})
+
+test('an Ollama channel marks a saved OpenAI-compatible chat setting in Request & Response and saves the toggled value', async () => {
+  editingChannel = {
+    ...editingChannel,
+    type: CHANNEL_TYPE_OLLAMA,
+    settings: '{"ollama_openai_chat":true}',
+  }
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  const requestTab = screen.getByRole('tab', { name: /Request & Response/ })
+  expect(requestTab).toHaveAccessibleName(/Configured/)
+  await user.click(requestTab)
+  const toggle = screen.getByRole('switch', {
+    name: 'Use OpenAI-compatible Ollama chat API',
+  })
+  expect(toggle).toBeChecked()
+  await user.click(toggle)
+  expect(toggle).not.toBeChecked()
+  expect(requestTab).not.toHaveAccessibleName(/Configured/)
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const payload = put.mock.calls[0]?.[1] as { settings: string }
+  expect(JSON.parse(payload.settings)).toMatchObject({
+    ollama_openai_chat: false,
+  })
 })
 
 test('an invalid edit switches categories and replaces configured styling with the field error', async () => {

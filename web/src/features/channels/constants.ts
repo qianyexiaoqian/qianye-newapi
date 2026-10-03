@@ -171,6 +171,8 @@ export const CHANNEL_PROVIDER_PRESENTATION: Partial<
   60: {
     descriptionKey: 'Connect to model services from another New API instance',
   },
+  62: { descriptionKey: 'Connect to self-hosted models served by vLLM' },
+  63: { descriptionKey: 'Connect to self-hosted models served by SGLang' },
 } satisfies Record<
   Exclude<keyof typeof CHANNEL_TYPES, 0 | typeof CHANNEL_TYPE_TASK_PLUGIN>,
   ChannelProviderPresentation

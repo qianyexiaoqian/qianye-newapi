@@ -127,6 +127,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import {
   getAllModels,
   getChannel,
+  getChannelDefaultBaseURLs,
   getGroups,
   getPrefillGroups,
   getTaskPluginOptions,
@@ -136,8 +137,11 @@ import {
   ADD_MODE_OPTIONS,
   CLAUDE_FIELD_PASSTHROUGH_TYPES,
   CHANNEL_STATUS_LABELS,
+  CHANNEL_TYPE_OLLAMA,
   CHANNEL_TYPE_OPTIONS,
   CHANNEL_TYPE_TASK_PLUGIN,
+  CHANNEL_TYPE_VLLM,
+  CHANNEL_TYPE_SGLANG,
   CHANNEL_TYPE_WARNINGS,
   ERROR_MESSAGES,
   FIELD_PASSTHROUGH_TYPES,
@@ -181,6 +185,7 @@ import {
   getChannelPluginExtensions,
   supportsChannelPluginExtensions,
 } from '../../lib/channel-plugin-extensions'
+import { getChannelTypeConfig } from '../../lib/channel-type-config'
 import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
@@ -202,6 +207,7 @@ import {
 import { ParamOverrideEditorDialog } from '../dialogs/param-override-editor-dialog'
 import { StatusCodeRiskDialog } from '../dialogs/status-code-risk-dialog'
 import { ModelMappingEditor } from '../model-mapping-editor'
+import { ResponsesWebSocketSetting } from '../responses-websocket-setting'
 import { UpstreamModelSelection } from '../upstream-model-selection'
 import {
   ChannelConfiguration,
@@ -269,6 +275,7 @@ const SENSITIVE_FORM_FIELDS = [
   'http_protocol',
   'http2_connection_shards',
   'pass_through_body_enabled',
+  'responses_websocket_enabled',
   'system_prompt',
   'system_prompt_override',
   'allow_service_tier',
@@ -278,6 +285,7 @@ const SENSITIVE_FORM_FIELDS = [
   'allow_inference_geo',
   'allow_speed',
   'claude_beta_query',
+  'ollama_openai_chat',
   'disable_task_polling_sleep',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
@@ -447,6 +455,14 @@ export function ChannelMutateDrawer({
     null
   )
 
+  const { data: defaultBaseURLs } = useQuery({
+    queryKey: channelsQueryKeys.defaultBaseURLs(),
+    // Optional hints must not trigger the global error-page redirect.
+    queryFn: () => getChannelDefaultBaseURLs().catch(() => null),
+    enabled: open,
+    staleTime: 5 * 60 * 1000,
+  })
+
   // Fetch channel details if editing
   const {
     data: channelData,
@@ -504,6 +520,14 @@ export function ChannelMutateDrawer({
   const keyMode = formValues.key_mode
   const currentGroups = formValues.group
   const currentType = formValues.type
+  const baseUrlPlaceholder = [CHANNEL_TYPE_VLLM, CHANNEL_TYPE_SGLANG].includes(
+    currentType
+  )
+    ? t(
+        getChannelTypeConfig(currentType).hints?.baseUrl ||
+          FIELD_PLACEHOLDERS.BASE_URL
+      )
+    : defaultBaseURLs?.[currentType] || t(FIELD_PLACEHOLDERS.BASE_URL)
   const currentStatus = formValues.status
   const currentBaseUrl = formValues.base_url
   const currentTaskPluginKey = formValues.task_plugin_key
@@ -1637,6 +1661,32 @@ export function ChannelMutateDrawer({
             <Switch
               disabled={sensitiveLocked}
               checked={field.value}
+              onCheckedChange={field.onChange}
+            />
+          </FormControl>
+        </FormItem>
+      )}
+    />
+  )
+
+  const ollamaOpenAIChatFields = currentType === CHANNEL_TYPE_OLLAMA && (
+    <FormField
+      control={form.control}
+      name='ollama_openai_chat'
+      render={({ field }) => (
+        <FormItem className='flex items-center justify-between px-4 py-3'>
+          <div className='space-y-0.5'>
+            <FormLabel>{t('Use OpenAI-compatible Ollama chat API')}</FormLabel>
+            <FormDescription>
+              {t(
+                'Send chat completions to the OpenAI-compatible /v1/chat/completions instead of the native Ollama /api/chat'
+              )}
+            </FormDescription>
+          </div>
+          <FormControl>
+            <Switch
+              disabled={sensitiveLocked}
+              checked={field.value === true}
               onCheckedChange={field.onChange}
             />
           </FormControl>
@@ -3261,10 +3311,7 @@ export function ChannelMutateDrawer({
                   <FormItem>
                     <FormLabel>{t('Private Deployment URL')}</FormLabel>
                     <FormControl>
-                      <Input
-                        placeholder={t('e.g., https://fastgpt.run/api/openapi')}
-                        {...field}
-                      />
+                      <Input placeholder={baseUrlPlaceholder} {...field} />
                     </FormControl>
                     <FormDescription>
                       {t(
@@ -3550,12 +3597,7 @@ export function ChannelMutateDrawer({
                   <FormItem>
                     <FormLabel required>{t('API Base URL')}</FormLabel>
                     <FormControl>
-                      <Input
-                        placeholder={t(
-                          'e.g., https://ark.cn-beijing.volces.com'
-                        )}
-                        {...field}
-                      />
+                      <Input placeholder={baseUrlPlaceholder} {...field} />
                     </FormControl>
                     <FormDescription>
                       {t('Enter custom API endpoint URL')}
@@ -3597,15 +3639,16 @@ export function ChannelMutateDrawer({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel
-                      required={currentType === CHANNEL_TYPE_TASK_PLUGIN}
+                      required={
+                        currentType === CHANNEL_TYPE_TASK_PLUGIN ||
+                        currentType === CHANNEL_TYPE_VLLM ||
+                        currentType === CHANNEL_TYPE_SGLANG
+                      }
                     >
                       {t('Base URL')}
                     </FormLabel>
                     <FormControl>
-                      <Input
-                        placeholder={t(FIELD_PLACEHOLDERS.BASE_URL)}
-                        {...field}
-                      />
+                      <Input placeholder={baseUrlPlaceholder} {...field} />
                     </FormControl>
                     {currentType !== CHANNEL_TYPE_TASK_PLUGIN && (
                       <FormDescription>
@@ -4138,9 +4181,15 @@ export function ChannelMutateDrawer({
                 disabled={sensitiveLocked}
                 className='space-y-4 disabled:opacity-60'
               >
+                <ResponsesWebSocketSetting
+                  channelType={currentType}
+                  disabled={sensitiveLocked || isSubmitting}
+                />
                 {formatFields}
+                {ollamaOpenAIChatFields}
                 {thinkingFields}
-                {passthroughFields}
+                {currentType !== CHANNEL_TYPE_ADVANCED_CUSTOM &&
+                  passthroughFields}
                 {systemPromptFields}
                 {systemPromptOverrideFields}
               </fieldset>
