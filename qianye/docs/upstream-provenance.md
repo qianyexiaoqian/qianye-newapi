@@ -1592,3 +1592,39 @@ relay/计费面的提交,按该文件「下次同步前必读」的要求,是否
 渠道与公共组件 vitest 37 个文件 332 条全过;bun 套件只剩基线那条 `QyResponsiveDialog` 宽屏用例。
 本机预览实测:新建渠道选 OpenAI 出现「插件扩展 · Sora 已选 0/2」,可勾 sora-2 / sora-2-pro 并单独重定向;
 选 New API 出现「上游任务插件」多选。
+
+# 上游同步记录(第五批):阿里百炼图片迁入任务插件(2026-10-03)
+
+**分支**:`sync/ali-plugin`(叠在 `sync/channel-editor` 之上)。项目方 2026-10-03 同意取此前挂起的 `03563a4a7` 链。
+
+| SHA | 标题 | 处理 |
+|---|---|---|
+| `03563a4a7` | 任务插件提供 OpenAI Images 接口;阿里百炼图片迁到 alibaba 插件 | 见下 |
+| `65d3a2171` | Seedance / Wan 只对各模型实际提供的分辨率定价 | 干净应用 |
+| `474ed66fb` | alibaba 插件的 openai_image 渲染保留上游元数据 | 干净应用 |
+| `87bb71e7f` | doubao 插件经 OpenAI Images 提供 Seedream | 干净应用 |
+| `ae73ef8e2` | Seedream 5.0 flash,各 Seedream 模型按自己的阶梯定价 | 干净应用 |
+
+`03563a4a7` 的冲突处理:
+
+- `relay/helper/price.go`:去掉 Ali 专门分支(按阿里口径数张数、z-image 的 prompt_extend 加价),保留本仓口径
+  (张数只乘按次价格、按量路径的 size×quality)。
+- `relay/channel/task/jsplugin/adaptor.go`:保留本仓 `stripModelSelectionFromRequestBody`(metadata 里不许改写模型),
+  取上游新的 `usageRatios` 签名。
+- `controller/plugin_protocol_image.go`:去掉 `RecordRequestPolicyTermination`(属于挂起的请求策略 `73a471f3a`)。
+- **路由链**:`/v1/images/generations` 与 `/images/edits` 从 relayV1Router 搬进宿主协议路由时,补回本仓那组上的
+  `QyTokenLiveStats` 与 `QyModelRequestConcurrencyLimit`(同序);新增 `router/qy_image_protocol_chain_test.go` 钉住
+  (`qy_token_live_coverage_test.go` 只沿 `.Use` 追链,看不见协议路由返回的切片)。
+- 使用日志里依赖上游 `96b0da227` 日志改版的那部分(StreamTpsCell、计费来源标记)不取,保留本仓列与费用展示;
+  任务产物展示取上游。`.agents/rules/billing.md` 本仓没有,不取。
+- 测试:重复的 `openTaskDialectDatabase` 去掉一份;结算用例补本仓计费会话要的 `UserSubscription` 表。
+
+**行为变化(需要知道)**:阿里渠道(类型 17)不再直接处理图片请求。图片模型(Qwen-Image、万相图像、Z-Image)
+改由 alibaba 插件处理:在原阿里渠道的编辑器里「插件扩展 → 阿里云百炼」勾选要用的图片模型即可(沿用同一把密钥),
+或单独建一个 alibaba 插件渠道。没勾的话,这些模型的图片请求会回落到普通图片转发,而阿里渠道已经不支持了。
+
+验证:Go 全量 build / vet / test 只剩基线那两条 `relay/channel` HTTP2 用例;relaykit 独立构建与测试通过;
+任务插件相关用例另在 **MySQL 8.4.9** 实库跑过(含保留结果 / 省略 data 列写入 / 即时结算);无表结构变化。
+前端 typecheck 干净,usage-logs / task-plugins / channels vitest 只剩基线那两个文件(model-badge、mobile-card);
+bun 套件只剩基线 `QyResponsiveDialog` 用例(另一条受限账号扫描用例负载下超时,单独跑通过)。
+本机预览:阿里渠道「插件扩展 · 阿里云百炼 已选 0/55」,列出 qwen-image 系列等图片模型。
