@@ -40,7 +40,8 @@ For commercial licensing, please contact support@quantumnous.com
  *   1. 零投影：本文件没有 box-shadow。分层靠发丝线与半透明洗色。
  *   2. 一支色相：有彩色只出现在 var(--primary) / var(--qy-sg-mist) 两处派生。
  *   3. 辉光只有首屏一处（.qy-lp-sky），配额与 design-14 §1.5 一致。
- *   4. 不出现十六进制，颜色一律从变量派生。
+ *   4. 不出现十六进制，颜色一律从变量派生 —— 唯一例外是 .qy-lp-qr-plate 的
+ *      白底黑码，理由写在该处（二维码的对比度是可扫性的前提，不能随主题翻转）。
  *   5. prefers-reduced-motion: reduce 下停掉位移与过渡，静态形态全部保留。
  *   6. 等宽轴只给**纯拉丁**字串（序号、代号、读数）；任何可能含中文的位置
  *      走无衬线轴，靠字距与大写拿效果（design-14 §2① 的 CJK 陷阱）。
@@ -262,6 +263,18 @@ For commercial licensing, please contact support@quantumnous.com
 
 .qy-lp-board-row:first-child {
   border-top: none;
+}
+
+/* 二维码白板。**本文件唯一的十六进制**，破纪律第 4 条是刻意的：
+ * 二维码的可扫性取决于码块与底色的对比度，它不是装饰而是功能。跟着主题
+ * 在夜间翻成深底浅码之后，相当一部分手机扫码器直接识别不出来。所以这块
+ * 白板与码色都钉死，昼夜同形；补一圈发丝线，让它在夜间不像一块贴上去的补丁。 */
+.qy-lp-qr-plate {
+  padding: 0.75rem;
+  border: var(--qy-sg-rule, 1px) solid var(--qy-sg-hair, var(--border));
+  border-radius: var(--qy-sg-pass-radius, 19.2px);
+  background: #ffffff;
+  line-height: 0;
 }
 
 /* 状态灯。参考稿把那支高饱和色叫跑道灯 —— 这里就是字面意义的跑道灯。 */

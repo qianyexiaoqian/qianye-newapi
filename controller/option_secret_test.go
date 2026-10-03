@@ -28,6 +28,10 @@ func TestGetOptionsWithholdsSecretsWithoutASensitiveSuffix(t *testing.T) {
 			`"account":"no-reply@example.com","token":"` + smtpAccountsSecret + `"}]`,
 		"SMTPToken":  legacyTokenSecret,
 		"SystemName": "new-api",
+		// 二开自建键,结尾刻意不是 Key/Token/Secret:一旦改成那几个后缀,
+		// 这个接口会整条剔掉它,于是设置页永远显示空、保存却把空值写回去,
+		// 而 /api/status 那边照样公开着旧值 —— 而且全程没有任何报错。
+		"QyHomeGroupJoinUrl": "https://qm.qq.com/q/abc?k=xyz",
 	}
 	t.Cleanup(func() { common.OptionMap = previousMap })
 
@@ -59,4 +63,6 @@ func TestGetOptionsWithholdsSecretsWithoutASensitiveSuffix(t *testing.T) {
 	assert.NotContains(t, delivered, "SMTPAccounts")
 	assert.NotContains(t, delivered, "SMTPToken")
 	assert.Equal(t, "new-api", delivered["SystemName"], "普通配置项必须照常下发")
+	assert.Equal(t, "https://qm.qq.com/q/abc?k=xyz", delivered["QyHomeGroupJoinUrl"],
+		"首屏群聊链接必须下发给设置页,否则管理员看到的是空值")
 }

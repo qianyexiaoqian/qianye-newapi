@@ -18,6 +18,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useTranslation } from 'react-i18next'
 
+import { sanitizeQyGroupNumber } from '@/features/qy/lib/group-contact'
+import { useStatus } from '@/hooks/use-status'
+
 import { QyLandingReveal } from './reveal'
 
 /**
@@ -33,6 +36,11 @@ import { QyLandingReveal } from './reveal'
  */
 export function QyLandingPromises() {
   const { t } = useTranslation()
+  const { status } = useStatus()
+  // 社群那一条里的群号跟着「系统设置 → 站点 → 系统信息」的配置走,与首屏二维码卡
+  // 同一个来源 —— 否则改了后台、这一段还写着旧号,而且不会有任何东西报错。
+  // 没配(或值非法)时换成不含号码的那句,不留一个空洞。
+  const groupNumber = sanitizeQyGroupNumber(status?.qy_home_group_number)
 
   const promises = [
     {
@@ -61,7 +69,9 @@ export function QyLandingPromises() {
     },
     {
       title: t('qy_home_promise_group_title'),
-      desc: t('qy_home_promise_group_desc'),
+      desc: groupNumber
+        ? t('qy_home_promise_group_desc_number', { number: groupNumber })
+        : t('qy_home_promise_group_desc'),
     },
   ]
 

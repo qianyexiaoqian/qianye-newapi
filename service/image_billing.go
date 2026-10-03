@@ -53,9 +53,12 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 			snap.GroupRatio = info.PriceData.GroupRatioInfo.GroupRatio
 		}
 	} else {
-		// 本仓口径:张数对按次与按量都生效(与 relay/helper/price.go 预扣同口径)。
-		// 上游这里对按量且非阿里的请求固定为 1。
-		quantity := count
+		// 张数只乘按次价格。旧倍率(按量)定价按上游返回的 token 用量计费,
+		// 多张图的成本已经在 usage 里,再乘 n 会重复收(与上游同口径)。
+		quantity := 1
+		if info.PriceData.UsePrice {
+			quantity = count
+		}
 		// Overwrite per-attempt ratios so a failed Ali attempt cannot leak its
 		// quantity or prompt-extension surcharge into another channel.
 		info.PriceData.AddOtherRatio("n", float64(quantity))

@@ -110,6 +110,13 @@ func GetStatus(c *gin.Context) {
 		"HeaderNavModules":    common.OptionMap["HeaderNavModules"],
 		"SidebarModulesAdmin": common.OptionMap["SidebarModulesAdmin"],
 
+		// 首屏群聊二维码卡(二开)。读取侧再净化一次:手改库、恢复备份、或者日后
+		// 某条不走 UpdateOption 的写入都会绕过落库前那道闸,而这两个值会进匿名
+		// 访客的 <a href>。Sanitized* 是纯函数,在这段读锁里调用是安全的 ——
+		// 但**不能**改调 GetHomePageContent 那类自带 RLock 的封装:RWMutex 不可重入。
+		"qy_home_group_join_url": operation_setting.SanitizedQyHomeGroupJoinUrl(common.OptionMap[operation_setting.QyHomeGroupJoinUrlOptionKey]),
+		"qy_home_group_number":   operation_setting.SanitizedQyHomeGroupNumber(common.OptionMap[operation_setting.QyHomeGroupNumberOptionKey]),
+
 		"oidc_enabled":                system_setting.GetOIDCSettings().Enabled,
 		"oidc_client_id":              system_setting.GetOIDCSettings().ClientId,
 		"oidc_authorization_endpoint": system_setting.GetOIDCSettings().AuthorizationEndpoint,

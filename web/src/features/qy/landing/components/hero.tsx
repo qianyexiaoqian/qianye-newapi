@@ -21,8 +21,10 @@ import { ArrowRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
+import { readQyGroupContact } from '@/features/qy/lib/group-contact'
 import { useStatus } from '@/hooks/use-status'
 
+import { QyLandingGroupQrCard } from './group-qr-card'
 import { QyLandingReveal } from './reveal'
 import { QyLandingSignalBoard } from './signal-board'
 
@@ -42,6 +44,10 @@ export function QyLandingHero(props: { isAuthenticated: boolean }) {
   const docsUrl =
     (status?.docs_link as string | undefined) || 'https://docs.newapi.pro'
   const docsIsExternal = docsUrl.startsWith('http')
+  // 后台配了入群链接或群号就把右侧那一格换成群聊二维码卡，两项皆空（或值非法）
+  // 时返回 null，回落到模型信号板 —— 全新装的站不会开天窗。这里读的是同一条
+  // ['status'] 缓存，不新起请求。
+  const groupContact = readQyGroupContact(status)
 
   const readout = [
     { value: '50+', label: t('upstream services integrated') },
@@ -143,7 +149,14 @@ export function QyLandingHero(props: { isAuthenticated: boolean }) {
         </div>
 
         <QyLandingReveal delay={360} className='w-full lg:col-span-5'>
-          <QyLandingSignalBoard />
+          {groupContact ? (
+            <QyLandingGroupQrCard
+              joinUrl={groupContact.joinUrl}
+              number={groupContact.number}
+            />
+          ) : (
+            <QyLandingSignalBoard />
+          )}
         </QyLandingReveal>
       </div>
     </section>

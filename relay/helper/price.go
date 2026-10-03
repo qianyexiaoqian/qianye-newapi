@@ -237,19 +237,15 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		CacheCreation1hRatio: cacheCreationRatio1h,
 		QuotaToPreConsume:    preConsumedQuota,
 	}
-	// 请求形状决定的计费倍率（图片张数 n、dall-e 的 size×quality）与“按次还是
-	// 按量”无关：一次 n=10 的请求就是真的生了十张图。它们原先整段写在
-	// `if usePrice` 里，于是把图片模型按 ModelRatio（开箱默认就把 gpt-image-1
-	// 放在这条路上：defaultModelRatio 有它、defaultModelPrice 没有）定价时，n 在
-	// 预扣与结算两侧都被丢掉 —— 再叠上图片处理器在上游不回 usage 时把
-	// TotalTokens 强设为 1，一次 n=128 的请求与 n=1 收同样的钱，而那点钱等于
-	// 一个 token（实测：同一个 mock 上游、同样 128 张图，按次 16,000,000 vs
-	// 按倍率 3）。
-	//
-	// 结算侧本来就两条路都调 ApplyOtherRatios（service/text_quota.go:487/499），
-	// 真正的断点只是“n 从来没被放进去”。
-	for name, ratio := range meta.BillingRatios {
-		priceData.AddOtherRatio(name, ratio)
+	// dall-e 的 size×quality 与“按次还是按量”无关,两条路都要带上(按量路径在下面
+	// 放进 OtherRatios)。图片张数 n 不同:只乘按次价格,按量路径以上游返回的
+	// token 为准 —— 上游不回 usage 时处理器把 TotalTokens 记为 1,这一笔就只按
+	// 1 个 token 收,这是项目方确认过的口径(2026-10-03)。
+	// BillingRatios 是请求声明的数量倍率(目前只有图片张数 n),同样只乘按次价格。
+	if usePrice {
+		for name, ratio := range meta.BillingRatios {
+			priceData.AddOtherRatio(name, ratio)
+		}
 	}
 	if request, image := info.Request.(*dto.ImageRequest); image {
 		channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
@@ -257,9 +253,11 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		if err != nil {
 			return hosttypes.PriceData{}, err
 		}
-		// 本仓口径:张数对按次与按量都生效(理由见上方注释,结算侧 PrepareImageBillingForRequest
-		// 同口径)。上游 f064bffa2 只对按次/阿里乘张数,差异记在 upstream-provenance.md。
-		priceData.AddOtherRatio("n", float64(count))
+		// 张数只乘按次价格(结算侧 PrepareImageBillingForRequest 同口径)。
+		// 旧倍率(按量)按上游返回的 token 计费,多张图的成本已在 usage 里。
+		if usePrice {
+			priceData.AddOtherRatio("n", float64(count))
+		}
 		if channelType == constant.ChannelTypeAli && request.BillingParameters != nil && request.BillingParameters.PromptExtend != nil && *request.BillingParameters.PromptExtend {
 			// Resolve only routing identity; do not initialize ChannelMeta on the
 			// real request, which also distinguishes the first channel attempt.

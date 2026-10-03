@@ -80,6 +80,13 @@ func InitOptionMap() {
 	common.OptionMap["Notice"] = ""
 	common.OptionMap["About"] = ""
 	common.OptionMap["HomePageContent"] = ""
+	// 首屏群聊卡片(二开)。两项皆空时首屏右侧保持模型信号板。登记在这里的作用
+	// 只有一个:让 GetOptions 在「从未保存过」时也把这两个键下发给设置页,
+	// 否则管理端只能吃前端默认值。读取侧一律直接读 OptionMap,**不要**给它们
+	// 建 Go 包级镜像变量 —— 建了就必须在 updateOptionMap 的主 switch 里加 case,
+	// 否则同步重放与重启装载都不更新它,内存与库分家。
+	common.OptionMap[operation_setting.QyHomeGroupJoinUrlOptionKey] = ""
+	common.OptionMap[operation_setting.QyHomeGroupNumberOptionKey] = ""
 	common.OptionMap["Footer"] = common.Footer
 	common.OptionMap["SystemName"] = common.SystemName
 	common.OptionMap["Logo"] = common.Logo
@@ -222,6 +229,10 @@ func SyncOptions(frequency int) {
 // 而内存里的表在装载失败时就此停在旧值 —— 库与内存分家,重启也不自愈。
 func validateOptionValue(key string, value string) error {
 	switch key {
+	case operation_setting.QyHomeGroupJoinUrlOptionKey:
+		return operation_setting.ValidateQyHomeGroupJoinUrl(value)
+	case operation_setting.QyHomeGroupNumberOptionKey:
+		return operation_setting.ValidateQyHomeGroupNumber(value)
 	case operation_setting.ToolPriceOptionKey:
 		return operation_setting.ValidateToolPricesJSON(value)
 	case operation_setting.ChannelTestConcurrencyOptionKey:

@@ -80,8 +80,8 @@ if (!enabled || !features.transfer) return null
 
 - **i18n**：键名 `qy_<domain>_<name>`，全小写下划线，**禁止点号**
   （i18next 默认 `keySeparator: '.'`，带点的键会被当成嵌套路径查不到）。
-  domain 白名单:`nav common err tr aff inv vio avl cfg log plan lot sd sdadm ml mladm wh rw`
-  （`sd` = 星屑、`ml` = 商城、`wh` = 转盘、`rw` = 风控预警）。
+  domain 白名单:`nav common err tr aff inv vio avl cfg log plan lot sd sdadm ml mladm wh rw home`
+  （`sd` = 星屑、`ml` = 商城、`wh` = 转盘、`rw` = 风控预警、`home` = 定制落地页）。
   传 `count` 的键不要自带 `_one` / `_other` 后缀。
 - **禁止运行 `bun run i18n:sync`**：它只扫 `src/i18n/locales`，跑了只会给上游
   7 个大 JSON 制造噪声 diff。

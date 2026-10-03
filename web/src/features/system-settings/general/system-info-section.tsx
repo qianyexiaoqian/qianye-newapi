@@ -32,6 +32,10 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import {
+  sanitizeQyGroupJoinUrl,
+  sanitizeQyGroupNumber,
+} from '@/features/qy/lib/group-contact'
 
 import { FormDirtyIndicator } from '../components/form-dirty-indicator'
 import { FormNavigationGuard } from '../components/form-navigation-guard'
@@ -54,6 +58,11 @@ const _systemInfoSchema = z.object({
   Footer: z.string().optional(),
   About: z.string().optional(),
   HomePageContent: z.string().optional(),
+  // 首屏群聊卡片(二开)。**这两个字段必须同时出现在下面那份
+  // systemInfoSchemaWithI18n 里** —— 那一份才是交给 zodResolver 的运行时 schema,
+  // zod 默认剥掉未声明的键,漏了就会 PUT 一个空串上去而界面照样弹「保存成功」。
+  QyHomeGroupJoinUrl: z.string().optional(),
+  QyHomeGroupNumber: z.string().optional(),
   general_setting: z.object({
     docs_link: z.string(),
   }),
@@ -86,6 +95,8 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
     Footer: normalizeValue(defaultValues.Footer),
     About: normalizeValue(defaultValues.About),
     HomePageContent: normalizeValue(defaultValues.HomePageContent),
+    QyHomeGroupJoinUrl: normalizeValue(defaultValues.QyHomeGroupJoinUrl),
+    QyHomeGroupNumber: normalizeValue(defaultValues.QyHomeGroupNumber),
     general_setting: {
       docs_link: normalizeValue(defaultValues.general_setting?.docs_link),
     },
@@ -110,6 +121,20 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
     Footer: z.string().optional(),
     About: z.string().optional(),
     HomePageContent: z.string().optional(),
+    // 判据与后端同源,复用 group-contact 那两个函数,不在这里写第二份。
+    // 空串一律放行:清空等于关掉首屏那块卡。
+    QyHomeGroupJoinUrl: z
+      .string()
+      .optional()
+      .refine((value) => !value || sanitizeQyGroupJoinUrl(value) !== '', {
+        error: () => t('qy_home_opt_group_url_invalid'),
+      }),
+    QyHomeGroupNumber: z
+      .string()
+      .optional()
+      .refine((value) => !value || sanitizeQyGroupNumber(value) !== '', {
+        error: () => t('qy_home_opt_group_number_invalid'),
+      }),
     general_setting: z.object({
       docs_link: z.string(),
     }),
@@ -132,6 +157,11 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
           let v = normalizeValue(value)
           if (key === 'ServerAddress' || key === 'TaskPublicAddress') {
             v = v.replace(/\/+$/, '')
+          }
+          // 运营粘贴链接常带尾随空格,不该因此报错,也不该把空格存进公开 payload。
+          // 刻意不对它们去尾斜杠 —— 群邀请链接的路径尾部有意义。
+          if (key === 'QyHomeGroupJoinUrl' || key === 'QyHomeGroupNumber') {
+            v = v.trim()
           }
           await updateOption.mutateAsync({
             key,
@@ -326,6 +356,43 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
                   )}
                 />
               </SettingsFormGridItem>
+
+              <FormField
+                control={form.control}
+                name='QyHomeGroupJoinUrl'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('qy_home_opt_group_url_label')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder='https://qm.qq.com/q/xxxxxxxx'
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t('qy_home_opt_group_url_desc')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='QyHomeGroupNumber'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('qy_home_opt_group_number_label')}</FormLabel>
+                    <FormControl>
+                      <Input placeholder='1013106587' {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      {t('qy_home_opt_group_number_desc')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
 
               <FormField
                 control={form.control}

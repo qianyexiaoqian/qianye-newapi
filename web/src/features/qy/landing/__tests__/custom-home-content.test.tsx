@@ -29,6 +29,10 @@ For commercial licensing, please contact support@quantumnous.com
  *
  * 所以两支都要钉：配了内容显示内容，没配才显示二开落地页。
  *
+ * 顺带钉住落地页里**唯一跟着后台配置变的一段文案**：承诺区社群那一条的群号。
+ * 它与首屏二维码卡读同一个配置,漏接的表现同样是「不会报错的假话」——
+ * 管理员改了群号,这一段还印着旧号。
+ *
  * # 为什么整页真渲染而不是断言源码
  *
  * 这一支的失效方式包括「渲染了但被包在错误的布局里」「上游 Home 自己那层
@@ -144,7 +148,10 @@ after(async () => {
   }
 })
 
-async function renderHome(content: string): Promise<HTMLElement> {
+async function renderHome(
+  content: string,
+  status?: Record<string, unknown>
+): Promise<HTMLElement> {
   homeContent = content
   localStorage.clear()
 
@@ -158,6 +165,8 @@ async function renderHome(content: string): Promise<HTMLElement> {
   // 首屏信号板的目录预置成空：它自己的兜底由 signal-board 那份用例守，
   // 这里预置只是为了让它不再发一次异步请求，免得断言跑在半途的那一帧上。
   queryClient.setQueryData(['pricing'], { success: true, data: [] })
+  // 同理预置 /api/status：不预置时适配器回的是 data:null，等价于「两项都没配」。
+  if (status) queryClient.setQueryData(['status'], status)
   const container = document.createElement('div')
   document.body.append(container)
   const root = createRoot(container)
@@ -190,5 +199,23 @@ describe('首页与管理员自定义内容', () => {
     const text = container.textContent ?? ''
     assert.match(text, /Purity is the first rule/)
     assert.match(text, /The star you picked is the star you get/)
+  })
+
+  test('承诺区的群号跟着后台配置走，没配时那句话里不留号码', async () => {
+    const withNumber = await renderHome('', {
+      qy_home_group_number: '1013106587',
+    })
+    assert.match(withNumber.textContent ?? '', /QQ group 1013106587\./)
+
+    // 非法值与没配走同一条路：那一条承诺仍在，只是句子里不再提号码，
+    // 而不是留下一个 {{number}} 或一段空白。
+    const withoutNumber = await renderHome('', {
+      qy_home_group_number: '浅夜群',
+    })
+    const text = withoutNumber.textContent ?? ''
+    assert.match(text, /Join the group, unlock member rates/)
+    assert.doesNotMatch(text, /1013106587/)
+    assert.doesNotMatch(text, /\{\{number\}\}/)
+    assert.doesNotMatch(text, /QQ group/)
   })
 })

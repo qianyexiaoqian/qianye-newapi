@@ -37,6 +37,10 @@ const STATUS_RELATED_KEYS = new Set([
   'general_setting.custom_currency_symbol',
   'general_setting.custom_currency_exchange_rate',
   'oidc.display_name',
+  // 首屏群聊卡片(二开)。不列在这里的话,保存成功后 ['status'] 查询的
+  // staleTime 与 localStorage 快照会让首页最长 5 分钟还是旧样子。
+  'QyHomeGroupJoinUrl',
+  'QyHomeGroupNumber',
 ])
 
 export function useUpdateOption() {

@@ -420,14 +420,12 @@ func TestOpenaiImageHandlerUsesPositiveActualCountForFixedPrice(t *testing.T) {
 			wantCount: 3,
 		},
 		{
-			// 张数是请求形状，与定价方式无关：按倍率定价的图片模型同样要按
-			// 上游真正返回的张数收钱。原先这一格期望 3（即“按倍率时忽略实际
-			// 张数”），而它叠上 relay/helper/price.go 那边“n 根本没进 OtherRatios”，
-			// 合起来就是一次 n=128 与 n=1 收同样的钱。
-			name:      "ratio billing also follows data length",
+			// 按倍率(按量)定价以上游返回的 token 为准,张数不进价格:
+			// 返回几张图都不改 n(项目方 2026-10-03 确认,与上游同口径)。
+			name:      "ratio billing ignores data length",
 			body:      `{"data":[{"b64_json":"first"},{"b64_json":"second"}]}`,
 			usePrice:  false,
-			wantCount: 2,
+			wantCount: 3,
 		},
 		{
 			name:      "object data with url and b64_json counts one image",

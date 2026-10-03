@@ -31,6 +31,8 @@ const defaultSiteSettings: SiteSettings = {
   Footer: '',
   About: '',
   HomePageContent: '',
+  QyHomeGroupJoinUrl: '',
+  QyHomeGroupNumber: '',
   ServerAddress: '',
   TaskPublicAddress: '',
   'general_setting.docs_link': '',
