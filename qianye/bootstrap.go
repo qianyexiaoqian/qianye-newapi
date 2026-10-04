@@ -90,10 +90,18 @@ func Init() error {
 		tables = append(tables, logTables...)
 		logTables = nil
 	}
-	// 风控预警的表**不并进任何一份**:没配存储节点时声明它们的模块整个不注册,
-	// 这份清单本来就是空的;配了就只能建在那个库里。它没有"回落"这一档,
-	// 所以这里也没有对应的 if(见 module.WatchTabler 的注释)。
+	// 风控预警的表**不并进任何一份**:它没有"回落主库"那一档(见 qianye/db/watchdb.go),
+	// 配了存储节点就只能建在那个库里。
 	watchTables := allWatchTables()
+	// **但这份清单是无条件的**:模块的 WatchTables() 声明的是「这两张表归我」,
+	// 不是「现在要把它们建出来」。所以这里必须自己判开关 —— 没开风控预警时
+	// db.Watch() 返回 nil,迁移返回 ErrNotReady,这条 error 一路到 main 就是 FatalLog。
+	// 漏掉这个判断的表现不是「功能没启用」,而是**整台网关起不来**,而且报错文案
+	// 指向「扩展数据库不可用」,会把排障带到另一个库上。仓库里发布的样例配置
+	// 写的正是 risk_watch.enabled: false,照着配就会踩中。
+	if !config.Get().RiskWatch.On() {
+		watchTables = nil
+	}
 	if err := db.Migrate(tables...); err != nil {
 		return err
 	}

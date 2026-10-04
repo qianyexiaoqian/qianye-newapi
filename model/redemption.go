@@ -416,11 +416,18 @@ func Redeem(key string, userId int) (*RedeemResult, error) {
 }
 
 func (redemption *Redemption) Insert() error {
-	if redemption.Quota <= 0 {
-		return errors.New("redemption quota must be positive")
-	}
-	if err := common.ValidateWalletQuota(redemption.Quota); err != nil {
-		return err
+	// 面额判据只对**余额码**成立。套餐码与用户组商品码的面额是死数据:
+	// Redeem 的那一支压根不读它,建码侧刻意把它归零(见 controller.AddRedemption)。
+	// 上游这道闸是无差别的 Quota<=0,照搬的后果是这两类码 100% 建不出来 ——
+	// 归零之后正好撞在这里,而运营只会看到一句英文报错。
+	// 兑换那一刻的同名判据(见 Redeem)本来就是按 ProductKind 分的,这里对齐它。
+	if redemption.ProductKind() == RedemptionProductQuota {
+		if redemption.Quota <= 0 {
+			return errors.New("redemption quota must be positive")
+		}
+		if err := common.ValidateWalletQuota(redemption.Quota); err != nil {
+			return err
+		}
 	}
 	var err error
 	err = DB.Create(redemption).Error

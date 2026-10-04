@@ -2,11 +2,16 @@ package controller
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,6 +66,75 @@ func TestRedemptionQuotaIsBoundedOnBothWriteSides(t *testing.T) {
 	})
 }
 
+// 套餐码与用户组商品码的面额是死数据,建码侧会把它归零 —— 面额的上下界因此
+// 只对余额码成立,**不能提到商品类型判断之外**。
+//
+// 上游在 rc.26 加的是一道无差别的 Quota<=0,与本仓的归零逻辑正面冲突:
+// 前端送 0 被入口判据打回,运营手填正数被归零后撞在 Insert() 那道同名判据上,
+// 三种 payload 全失败、实际创建 0 行,而运营只看到一句英文报错。
+// 这条用例走**真实的 AddRedemption + Insert()**,不用 DB.Create 绕过去 ——
+// 现有的套餐兑换用例正是因为夹具直接写库,才让这个回归全程没有信号。
+func TestPlanAndUserGroupRedemptionsAreNotRejectedByTheQuotaFloor(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		productType string
+		bodyQuota   string
+	}{
+		{"套餐码:前端送 0", model.RedemptionProductPlan, "0"},
+		{"套餐码:运营手填正数", model.RedemptionProductPlan, "500000"},
+		{"用户组商品码", model.RedemptionProductUserGroup, "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupRedemptionAdminTest(t)
+			allowRedemptionCreation(t)
+			require.NoError(t, db.AutoMigrate(&model.SubscriptionPlan{}))
+			require.NoError(t, db.Create(&model.SubscriptionPlan{
+				Id: 77, Title: "qy-plan", Enabled: true,
+			}).Error)
+
+			gin.SetMode(gin.TestMode)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			body := `{"name":"qy-plan-code","count":1,"quota":` + tc.bodyQuota +
+				`,"expired_time":0,"product_type":"` + tc.productType + `","product_id":77}`
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/redemption/", strings.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			c.Set("id", 4242)
+			c.Set("role", common.RoleRootUser)
+			c.Set("username", "redemption-operator")
+			AddRedemption(c)
+
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.Contains(t, rec.Body.String(), `"success":true`, rec.Body.String())
+
+			var stored model.Redemption
+			require.NoError(t, db.Where("name = ?", "qy-plan-code").First(&stored).Error,
+				"码必须真的落库 —— 接口回 success 但零行才是这个回归最难查的形态")
+			assert.Equal(t, tc.productType, stored.ProductKind())
+			assert.Equal(t, 77, stored.ProductId)
+		})
+	}
+
+	t.Run("余额码的下界仍然挡着", func(t *testing.T) {
+		setupRedemptionAdminTest(t)
+		allowRedemptionCreation(t)
+		gin.SetMode(gin.TestMode)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/redemption/",
+			strings.NewReader(`{"name":"qy-zero","count":1,"quota":0,"expired_time":0}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Set("id", 4242)
+		c.Set("role", common.RoleRootUser)
+		c.Set("username", "redemption-operator")
+		AddRedemption(c)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Contains(t, rec.Body.String(), `"success":false`,
+			"非正面额的余额码兑出去是一笔倒扣,这道闸不能被顺手拆掉")
+	})
+}
+
 // 划转到钱包的加法必须饱和，不能是裸的 int64 `+=`。
 func TestQuotaAddSaturatesInsteadOfWrapping(t *testing.T) {
 	cases := []struct {
@@ -80,4 +154,17 @@ func TestQuotaAddSaturatesInsteadOfWrapping(t *testing.T) {
 			assert.Equal(t, tc.wantClamp, clamp != nil, "饱和事件必须可审计")
 		})
 	}
+}
+
+// 建码走的是本仓那道支付合规漏斗(三条发钱线共用),不确认就一律拒。
+// 这里放行的是**合规门**,与本用例要测的面额判据无关。
+func allowRedemptionCreation(t *testing.T) {
+	t.Helper()
+	payment := operation_setting.GetPaymentSetting()
+	prevConfirmed, prevVersion := payment.ComplianceConfirmed, payment.ComplianceTermsVersion
+	payment.ComplianceConfirmed = true
+	payment.ComplianceTermsVersion = operation_setting.CurrentComplianceTermsVersion
+	t.Cleanup(func() {
+		payment.ComplianceConfirmed, payment.ComplianceTermsVersion = prevConfirmed, prevVersion
+	})
 }

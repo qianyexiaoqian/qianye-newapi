@@ -284,9 +284,20 @@ type SubscriptionPlan struct {
 	//	NoQuota=false, Total>0  有限额度
 	//
 	// 平凡 bool(默认 false)是刻意的:存量套餐全都是带余额的,而
-	// AGENTS.md 禁止给 bool 加 gorm default —— MySQL 与 PostgreSQL 对布尔默认值
-	// 的归一化不同,会让 AutoMigrate 每次重启都发一条 ALTER TABLE。
-	NoQuota bool `json:"no_quota" gorm:"not null"`
+	// **这一列是「bool 不加 default」那条规则的唯一例外**,理由在下面,别照着规则改回去。
+	//
+	// 规则本身仍然成立(MySQL 与 PostgreSQL 对布尔默认值的归一化不同,可能让
+	// AutoMigrate 每次重启都发一条 ALTER TABLE),但这一列还要同时满足另一个更硬的
+	// 约束:**滚动升级与回滚窗口内,旧版本节点仍然要能写这张表**。旧版的 INSERT 不带
+	// 这一列,而 NOT NULL 无 DEFAULT 在 STRICT_TRANS_TABLES 下是 ERROR 1364 ——
+	// 后果最贵的一条是支付回调:钱已经在支付平台收掉,本地事务在这条 INSERT 上回滚,
+	// 用户付了钱什么也没拿到。
+	//
+	// 写 `false` 而不是 `0`:PostgreSQL 的 boolean 不接受整数字面量做默认值。
+	// 2026-09-15 在 MySQL 8.0.28 上实测:升级既有表只发一次 MODIFY,列变成
+	// DEFAULT '0',存量行原样保留,**连跑三次 AutoMigrate 列定义零变化** ——
+	// 规则担心的那个反复 ALTER 在 MySQL 上没有出现。PostgreSQL 与 SQLite 未验。
+	NoQuota bool `json:"no_quota" gorm:"not null;default:false"`
 
 	// Quota reset period for plan
 	QuotaResetPeriod        string `json:"quota_reset_period" gorm:"type:varchar(16);default:'never'"`
@@ -596,7 +607,8 @@ type UserSubscription struct {
 	// 快照而不是每次回查套餐:运营事后把套餐从"纯商品"改成"带余额",不该让
 	// 已经卖出去的那批订阅凭空长出一份余额;反过来同理。这与本表其它几个
 	// 快照字段(upgrade_group / downgrade_group / allow_wallet_overflow)同一口径。
-	NoQuota bool `json:"no_quota" gorm:"not null"`
+	// 与 SubscriptionPlan.NoQuota 同一个例外,理由见那一处。
+	NoQuota bool `json:"no_quota" gorm:"not null;default:false"`
 
 	StartTime int64  `json:"start_time" gorm:"bigint"`
 	EndTime   int64  `json:"end_time" gorm:"bigint;index;index:idx_user_sub_active,priority:3"`

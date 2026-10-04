@@ -110,14 +110,6 @@ func AddRedemption(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgRedemptionCountMax)
 		return
 	}
-	if redemption.Quota <= 0 {
-		common.ApiError(c, errors.New("redemption quota must be positive"))
-		return
-	}
-	if err := common.ValidateWalletQuota(redemption.Quota); err != nil {
-		common.ApiError(c, err)
-		return
-	}
 	if valid, msg := validateExpiredTime(c, redemption.ExpiredTime); !valid {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": msg})
 		return
@@ -129,8 +121,15 @@ func AddRedemption(c *gin.Context) {
 	planId := 0
 	switch productType {
 	case model.RedemptionProductQuota:
+		// 面额的上下界都只对余额码成立。**别把它们提到 switch 外面** ——
+		// 套餐码与用户组商品码的面额在下面那一支会被归零,提到外面就等于
+		// 让这两类码永远建不出来(上游正是无差别判的,照搬会把功能判死)。
 		if quota <= 0 {
 			common.ApiErrorI18n(c, i18n.MsgRedemptionQuotaPositive)
+			return
+		}
+		if err := common.ValidateWalletQuota(quota); err != nil {
+			common.ApiError(c, err)
 			return
 		}
 		// 上界与下界同样是硬性的。quota 是 Go int(64 位),库里 redemptions.quota 与
