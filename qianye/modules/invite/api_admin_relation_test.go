@@ -1,6 +1,7 @@
 package invite
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -422,4 +423,49 @@ func TestAdminRelationRoutes_AreMounted(t *testing.T) {
 		}
 	}
 	assert.Equal(t, want, got, "关系与报表的路由必须真的挂上去")
+}
+
+// TestSyncRelationSnapshots_BackfillsLazySnapshotFromMainDb 守用户侧「我的推广」的数据源。
+//
+// 用户侧的下线列表与人数读的是懒建快照 qy_invite_relation;上线前绑定的关系、
+// 还没产生返还的新下线在那里整行缺失。补建任务必须把主库的每一条绑定都落成快照,
+// 同时不碰已有的行(管理员拉黑的决定)、不建自邀请与无上线的行,并且能接住游标之后的新注册。
+//
+// 回滚验证:删掉 syncRelationSnapshots 里的 ensureRelation 调用,第一组断言立刻变红;
+// 把 DoNothing 换成覆盖写,alice 的 blocked 断言变红。
+func TestSyncRelationSnapshots_BackfillsLazySnapshotFromMainDb(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, inviteConfig(0))
+	mainDB := useMainDB(t, &model.User{})
+	relationSyncCursor.Store(0)
+	t.Cleanup(func() { relationSyncCursor.Store(0) })
+
+	seedUser(t, mainDB, 1, "boss", 0, 1000)
+	seedUser(t, mainDB, 2, "alice", 1, 2000)
+	seedUser(t, mainDB, 3, "bob", 1, 3000)
+	seedUser(t, mainDB, 4, "selfie", 4, 4000)
+	seedUser(t, mainDB, 5, "carol", 0, 5000)
+	now := common.GetTimestamp()
+	require.NoError(t, gdb.Create(&InviteRelation{
+		InviteeId: 2, InviterId: 1, MaskedName: "a**e", InviteeRef: "ref2",
+		BoundAt: 2000, Blocked: true, BlockReason: "admin", CreatedAt: now, UpdatedAt: now,
+	}).Error)
+
+	require.NoError(t, syncRelationSnapshots(context.Background()))
+
+	var rels []InviteRelation
+	require.NoError(t, gdb.Order("invitee_id asc").Find(&rels).Error)
+	require.Len(t, rels, 2, "只补 bob;自邀请与无上线的账号不建行")
+	assert.Equal(t, 2, rels[0].InviteeId)
+	assert.True(t, rels[0].Blocked, "已有的快照行一个字节都不能动")
+	assert.Equal(t, 3, rels[1].InviteeId)
+	assert.Equal(t, 1, rels[1].InviterId)
+	assert.EqualValues(t, 3000, rels[1].BoundAt, "绑定时间取注册时刻")
+	assert.NotEqual(t, "bob", rels[1].MaskedName, "快照里只能有脱敏名")
+
+	seedUser(t, mainDB, 6, "dave", 3, 6000)
+	require.NoError(t, syncRelationSnapshots(context.Background()))
+	var dave InviteRelation
+	require.NoError(t, gdb.Where("invitee_id = ?", 6).Take(&dave).Error, "游标之后的新注册下一轮就要出现")
+	assert.Equal(t, 3, dave.InviterId)
 }

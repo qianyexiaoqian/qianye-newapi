@@ -1,8 +1,14 @@
 package invite
 
 import (
+	"context"
+	"time"
+
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/module"
+	"github.com/QuantumNous/new-api/qianye/service/lease"
 
 	"github.com/gin-gonic/gin"
 )
@@ -43,9 +49,17 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 
 func (Mod) StartTasks() {
 	// 跨节点失效通道与 logs 覆盖索引是本包与星屑**共用**的设施,谁开着都得起
-	// (见 export.go StartSharedInfra)。本包自己没有别的后台任务。
+	// (见 export.go StartSharedInfra)。
 	if SharedInfraWanted() {
 		StartSharedInfra()
+	}
+	// 关系快照补建(见 relation_sync.go)。邀请关掉的含义是"不建关系",所以只跟 invite.enabled。
+	if config.Get().Invite.Enabled {
+		lease.Run("invite.relation_sync", time.Minute, func(ctx context.Context) {
+			if err := syncRelationSnapshots(ctx); err != nil {
+				common.SysError("qianye/invite: 邀请关系快照补建失败: " + err.Error())
+			}
+		})
 	}
 }
 
