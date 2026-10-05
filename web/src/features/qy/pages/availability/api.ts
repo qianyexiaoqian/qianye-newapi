@@ -17,7 +17,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { qyGet } from '../../lib/api'
-import type { QyAvailMatrix, QyAvailMatrixParams, QyAvailSeries } from './types'
+import type {
+  QyAvailMatrix,
+  QyAvailMatrixParams,
+  QyAvailSeries,
+  QyPlazaCards,
+} from './types'
 
 /**
  * 分组 × 模型可用率矩阵。
@@ -48,4 +53,15 @@ export function getQyAvailabilitySeries(params: {
   groups?: string
 }): Promise<QyAvailSeries> {
   return qyGet<QyAvailSeries>('/availability/series', params)
+}
+
+/**
+ * 模型广场卡片列表的状态:一页模型在选中分组上的可用率与 24 格小时线。
+ * `group` 传前端的分组筛选值,`all` 表示可见分组合计。服务端要求 `models` ≤ 20 个。
+ */
+export function getQyAvailabilityPlazaCards(params: {
+  models: string
+  group: string
+}): Promise<QyPlazaCards> {
+  return qyGet<QyPlazaCards>('/availability/plaza/cards', params)
 }

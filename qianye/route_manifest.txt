@@ -123,6 +123,7 @@ GET /api/qy/admin/violation/rules/builtin
 GET /api/qy/admin/violation/stats
 GET /api/qy/api-addresses
 GET /api/qy/availability/matrix
+GET /api/qy/availability/plaza/cards
 GET /api/qy/availability/plaza/matrix
 GET /api/qy/availability/series
 GET /api/qy/commission/credits

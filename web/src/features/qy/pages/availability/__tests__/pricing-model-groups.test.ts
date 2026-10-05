@@ -19,8 +19,12 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { qyModelGroupRows, qyPricingPerfSource } from '../constants'
-import type { QyAvailCell, QyAvailState } from '../types'
+import {
+  qyModelGroupRows,
+  qyPlazaCardToPerfBadge,
+  qyPricingPerfSource,
+} from '../constants'
+import type { QyAvailCell, QyAvailState, QyPlazaCard } from '../types'
 
 /**
  * 模型广场详情页「性能」标签的口径。
@@ -111,5 +115,55 @@ describe('qyModelGroupRows', () => {
 
   test('returns an empty list when the model has no cells at all', () => {
     assert.deepEqual(qyModelGroupRows([], 'gpt-x'), [])
+  })
+})
+
+function plazaCard(overrides: Partial<QyPlazaCard>): QyPlazaCard {
+  return {
+    model: 'gpt-x',
+    availability: 99.72,
+    state: 'ok',
+    hours: [],
+    avg_latency_ms: 21000,
+    avg_ttft_ms: null,
+    avg_tps: 23.6,
+    latency_samples: 30,
+    ttft_samples: 0,
+    speed_samples: 30,
+    ...overrides,
+  }
+}
+
+describe('qyPlazaCardToPerfBadge', () => {
+  test('passes the selected group availability straight to the status bar', () => {
+    const badge = qyPlazaCardToPerfBadge(plazaCard({ availability: 99.72 }))
+    assert.equal(badge.success_rate, 99.72)
+    assert.equal(badge.avg_latency_ms, 21000)
+    assert.equal(badge.avg_tps, 23.6)
+  })
+
+  test('shows no percentage instead of 0% when samples are insufficient', () => {
+    // 0% 会被读成「这个分组全挂了」;NaN 让状态条显示「—%」。
+    const badge = qyPlazaCardToPerfBadge(
+      plazaCard({ availability: null, state: 'low_sample', avg_tps: null })
+    )
+    assert.ok(Number.isNaN(badge.success_rate))
+    assert.equal(badge.avg_tps, 0)
+  })
+
+  test('drops hours without counted samples so they render as gray slots', () => {
+    const badge = qyPlazaCardToPerfBadge(
+      plazaCard({
+        hours: [
+          { ts: 3600, success_rate: 100 },
+          { ts: 7200, success_rate: null },
+          { ts: 10800, success_rate: 96.5 },
+        ],
+      })
+    )
+    assert.deepEqual(badge.recent_success_series, [
+      { ts: 3600, success_rate: 100 },
+      { ts: 10800, success_rate: 96.5 },
+    ])
   })
 })

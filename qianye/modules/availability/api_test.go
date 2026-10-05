@@ -430,3 +430,74 @@ func TestPlazaMatrixRouteAdmitsAnonymousVisitors(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, get("models="+strings.Join(many, ",")).Code,
 		"匿名入口一次查的模型数必须有上界")
 }
+
+// 模型广场卡片的状态必须随「选中的分组」变化。
+//
+// 项目方截图:同一个模型切到「专属」与「促销」,价格变了,状态都是 99.3% ——
+// 那是上游 perf_metrics 的全站汇总。这里用两个成功率明显不同的分组钉住:
+// 选哪个分组就是哪个分组的数,「全部分组」是可见分组合计,看不见的分组不得回落成全部。
+func TestPlazaCardsFollowSelectedGroup(t *testing.T) {
+	newMatrixEnv(t)
+	gdb := qyDBHandle.Load()
+	now := common.GetTimestamp()
+	ts := alignBucket(now-600, bucketSeconds())
+	require.NoError(t, gdb.Create(&Bucket{BucketTs: ts, GroupName: "pool-a", ModelName: "mx",
+		ReqTotal: 40, SuccessCount: 40, UpdatedAt: now}).Error)
+	require.NoError(t, gdb.Create(&Bucket{BucketTs: ts, GroupName: "pool-b", ModelName: "mx",
+		ReqTotal: 40, SuccessCount: 30, FailUpstream: 10, UpdatedAt: now}).Error)
+
+	prevNewUser, prevResolve := model.QyNewUserGroup, service.QyResolveUsableGroups
+	model.QyNewUserGroup = func() string { return "newbie" }
+	service.QyResolveUsableGroups = func(string, map[string]string) map[string]string {
+		return map[string]string{"pool-a": "", "pool-b": ""}
+	}
+	t.Cleanup(func() {
+		model.QyNewUserGroup, service.QyResolveUsableGroups = prevNewUser, prevResolve
+	})
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	Mod{}.RegisterPublicRoutes(engine.Group("/api/qy"))
+
+	type cardsBody struct {
+		Data struct {
+			Cards []struct {
+				Model        string   `json:"model"`
+				Availability *float64 `json:"availability"`
+				State        string   `json:"state"`
+				Hours        []struct {
+					Ts          int64    `json:"ts"`
+					SuccessRate *float64 `json:"success_rate"`
+				} `json:"hours"`
+			} `json:"cards"`
+		} `json:"data"`
+	}
+	card := func(group string) (string, *float64, int) {
+		res := httptest.NewRecorder()
+		engine.ServeHTTP(res, httptest.NewRequest(http.MethodGet,
+			"/api/qy/availability/plaza/cards?models=mx&group="+group, nil))
+		require.Equal(t, http.StatusOK, res.Code, "body=%q", res.Body.String())
+		var body cardsBody
+		require.NoError(t, common.Unmarshal(res.Body.Bytes(), &body))
+		require.Len(t, body.Data.Cards, 1)
+		c := body.Data.Cards[0]
+		return c.State, c.Availability, len(c.Hours)
+	}
+
+	_, a, hours := card("pool-a")
+	require.NotNil(t, a)
+	assert.InDelta(t, 100, *a, 0.001)
+	assert.Equal(t, 1, hours, "有流量的那一小时要出现在状态条上")
+
+	_, b, _ := card("pool-b")
+	require.NotNil(t, b)
+	assert.InDelta(t, 75, *b, 0.001, "切到另一个分组,数字必须跟着变")
+
+	_, all, _ := card(plazaAllGroups)
+	require.NotNil(t, all)
+	assert.InDelta(t, 87.5, *all, 0.001, "全部分组 = 可见分组合计")
+
+	state, hidden, _ := card("pool-hidden")
+	assert.Nil(t, hidden, "看不见的分组不得回落成全部分组")
+	assert.Equal(t, StateNoData, state)
+}

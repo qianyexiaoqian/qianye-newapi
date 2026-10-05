@@ -175,6 +175,62 @@ func querySeriesPoints(r timeRange, modelName string, groups []string) (map[stri
 	return out, nil
 }
 
+// querySeriesByModel 按 (模型, 小时) 聚合一批模型在给定分组集合上的趋势。
+//
+// 模型广场卡片一页要 20 个模型各一条 24 格小时线,逐个调 querySeriesPoints 是
+// 20 条查询;这里一条查询取回,分组维度在库里就合掉(卡片只看「选中的分组」或
+// 「可见分组合计」,不需要逐分组的线)。时间桶统一对齐到整点,与卡片的格子一一对应。
+func querySeriesByModel(r timeRange, models, groups []string) (map[string]map[int64]*Bucket, error) {
+	out := map[string]map[int64]*Bucket{}
+	if len(groups) == 0 || len(models) == 0 {
+		return out, nil
+	}
+	gdb := db.Get()
+	if gdb == nil {
+		return nil, db.ErrNotReady
+	}
+
+	var rows []Bucket
+	err := gdb.Table(r.tableName()).
+		Select(selectSums("model_name, bucket_ts")).
+		Where("bucket_ts >= ? AND bucket_ts <= ?", r.StartTs, r.EndTs).
+		Where("group_name IN ?", groups).
+		Where("model_name IN ?", models).
+		Group("model_name, bucket_ts").
+		Find(&rows).Error
+	if err != nil {
+		db.MarkFailure(err)
+		return nil, err
+	}
+	for i := range rows {
+		row := rows[i]
+		putSeriesPoint(out, row.ModelName, alignHour(row.BucketTs), &row)
+	}
+
+	if !r.useHourTable() {
+		allowedGroups, allowedModels := toSet(groups), toSet(models)
+		hotBuckets.Range(func(key, value any) bool {
+			k := key.(dimKey)
+			if k.bucketTs < r.StartTs || k.bucketTs > r.EndTs {
+				return true
+			}
+			if _, ok := allowedGroups[k.group]; !ok {
+				return true
+			}
+			if _, ok := allowedModels[k.model]; !ok {
+				return true
+			}
+			snap := value.(*counters).snapshot()
+			if snap.ReqTotal == 0 {
+				return true
+			}
+			putSeriesPoint(out, k.model, alignHour(k.bucketTs), &snap)
+			return true
+		})
+	}
+	return out, nil
+}
+
 func putSeriesPoint(dst map[string]map[int64]*Bucket, group string, ts int64, row *Bucket) {
 	if dst[group] == nil {
 		dst[group] = map[int64]*Bucket{}

@@ -196,3 +196,27 @@ export type QyAvailSortMode =
 
 /** 矩阵的主指标。切换它只换展示与排序，不改变已经拿到的数据。 */
 export type QyAvailMetricKey = 'availability' | 'latency' | 'tps' | 'ttft'
+
+/** 卡片状态条的一格。`success_rate` 为 `null` 表示这一小时没有计入样本(灰格)。 */
+export type QyPlazaHour = {
+  ts: number
+  success_rate: number | null
+}
+
+/**
+ * 模型广场卡片的状态(`/availability/plaza/cards`)。
+ *
+ * 按「选中的分组」取数,全部分组时为可见分组合计;`availability` 与状态判定和
+ * 「模型可用率」页同一口径,样本不足时为 `null`。
+ */
+export type QyPlazaCard = QyAvailPerf & {
+  model: string
+  availability: number | null
+  state: QyAvailState
+  hours: QyPlazaHour[]
+}
+
+export type QyPlazaCards = {
+  cards: QyPlazaCard[]
+  definition: QyAvailDefinition
+}

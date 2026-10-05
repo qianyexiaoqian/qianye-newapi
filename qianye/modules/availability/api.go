@@ -2,6 +2,7 @@ package availability
 
 import (
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -106,6 +107,94 @@ func getPlazaMatrix(c *gin.Context) {
 
 // maxPlazaModels 是模型广场入口一次能查的模型数上界。
 const maxPlazaModels = 20
+
+// plazaAllGroups 是前端「全部分组」筛选的取值(web 侧 FILTER_ALL)。
+const plazaAllGroups = "all"
+
+// plazaHour 是卡片状态条的一格。
+type plazaHour struct {
+	Ts int64 `json:"ts"`
+	// SuccessRate 是这一小时计入口径的成功率,不套 min_samples:状态条是一条
+	// 走势线,低流量时段画成灰色会让绝大多数模型整条发灰。没有计入样本时为 nil(灰格)。
+	SuccessRate *float64 `json:"success_rate"`
+}
+
+// plazaCard 是一张模型卡片的状态:可用率与状态判定和「模型可用率」页同一口径。
+type plazaCard struct {
+	Model        string   `json:"model"`
+	Availability *float64 `json:"availability"`
+	State        string   `json:"state"`
+	perf
+	Hours []plazaHour `json:"hours"`
+}
+
+// getPlazaCards 给模型广场卡片列表用:一页模型在「选中分组」上的可用率与 24 格小时线。
+//
+// 截图里的问题:切换分组时价格变了,卡片上的状态始终是同一个 99.3% —— 它读的是
+// 上游 perf_metrics 的全站汇总,不分分组。这里按 group 参数取:选中具体分组就只看
+// 那一个(必须在可见集合内),「全部分组」则把可见分组合在一起。可见集合的身份
+// 规则与 getPlazaMatrix 相同(未登录 = 注册默认分组)。
+func getPlazaCards(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagAvailability) {
+		return
+	}
+	models := splitCSV(c.Query("models"), maxModelFilter)
+	switch {
+	case len(models) == 0:
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "models 必填"})
+		return
+	case len(models) > maxPlazaModels:
+		c.JSON(http.StatusBadRequest, gin.H{"success": false,
+			"message": "models 最多 " + strconv.Itoa(maxPlazaModels) + " 个"})
+		return
+	}
+
+	visible := plazaVisibleGroups(c)
+	var requested []string
+	if g := strings.TrimSpace(c.Query("group")); g != "" && g != plazaAllGroups {
+		requested = []string{g}
+	}
+	// 选了一个看不见的分组时交集为空,整页按"无数据"回答,而不是悄悄换成全部分组。
+	groups := intersectGroups(requested, visible)
+
+	r := resolveRange(0, 0, 24)
+	d := definitionOf(config.Get().Availability)
+	cells, err := queryCells(r, groups, models)
+	if err != nil {
+		unavailable(c)
+		return
+	}
+	series, err := querySeriesByModel(r, models, groups)
+	if err != nil {
+		unavailable(c)
+		return
+	}
+
+	out := make([]plazaCard, 0, len(models))
+	for _, name := range models {
+		total := &Bucket{}
+		for _, g := range groups {
+			if b := cells[cellKey{group: g, model: name}]; b != nil {
+				total.addFrom(b)
+			}
+		}
+		state, av := stateOf(total, true, d)
+		card := plazaCard{Model: name, Availability: av, State: state, perf: perfOf(total)}
+		hours := series[name]
+		timestamps := make([]int64, 0, len(hours))
+		for ts := range hours {
+			timestamps = append(timestamps, ts)
+		}
+		slices.Sort(timestamps)
+		card.Hours = make([]plazaHour, 0, len(timestamps))
+		for _, ts := range timestamps {
+			b := hours[ts]
+			card.Hours = append(card.Hours, plazaHour{Ts: ts, SuccessRate: availabilityOf(b.SuccessCount, counted(b, d))})
+		}
+		out = append(out, card)
+	}
+	respond(c, gin.H{"cards": out, "definition": d})
+}
 
 // serveMatrix 是两个入口共用的矩阵查询;visible 是调用方按身份算好的可见分组。
 func serveMatrix(c *gin.Context, visible map[string]string) {

@@ -65,6 +65,10 @@ func (Mod) RegisterPublicRoutes(g *gin.RouterGroup) {
 	g.GET("/availability/plaza/matrix",
 		middleware.HeaderNavModuleAuth("pricing"),
 		getPlazaMatrix)
+	// 卡片列表:一页模型在「选中分组」上的状态条(见 getPlazaCards)。
+	g.GET("/availability/plaza/cards",
+		middleware.HeaderNavModuleAuth("pricing"),
+		getPlazaCards)
 }
 
 // 管理端总览(/admin/availability/stats)已按项目方要求整体移除,

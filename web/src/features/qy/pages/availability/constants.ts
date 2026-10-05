@@ -25,6 +25,7 @@ import type {
   QyAvailPerf,
   QyAvailSortMode,
   QyAvailState,
+  QyPlazaCard,
 } from './types'
 
 /** 时间范围。上限 720 小时（30 天）与后端 `maxRangeHours` 对齐。 */
@@ -336,4 +337,32 @@ export function qyModelGroupRows(
   return cells.filter(
     (cell) => cell.model === model && cell.state !== 'not_offered'
   )
+}
+
+/** 模型广场卡片状态条要的形状(与上游 ModelPerfBadgeData 结构一致)。 */
+export type QyPlazaPerfBadge = {
+  avg_latency_ms: number
+  success_rate: number
+  avg_tps: number
+  recent_success_series: { ts: number; success_rate: number }[]
+}
+
+/**
+ * 把扩展口径的卡片状态换成状态条组件吃的形状。
+ *
+ * 可用率为 `null`(样本不足 / 无数据)时给 NaN:状态条据此显示「—%」,
+ * 而不是 0% —— 0% 会被读成「这个分组全挂了」。延迟 / 吞吐同理给 0,组件把 0 渲染成横杠。
+ * 没有计入样本的小时直接丢掉,组件按缺失格画灰。
+ */
+export function qyPlazaCardToPerfBadge(card: QyPlazaCard): QyPlazaPerfBadge {
+  return {
+    success_rate: card.availability ?? Number.NaN,
+    avg_latency_ms: card.avg_latency_ms ?? 0,
+    avg_tps: card.avg_tps ?? 0,
+    recent_success_series: card.hours.flatMap((hour) =>
+      hour.success_rate == null
+        ? []
+        : [{ ts: hour.ts, success_rate: hour.success_rate }]
+    ),
+  }
 }
