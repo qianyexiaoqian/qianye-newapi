@@ -171,6 +171,8 @@ export type QyAvailSeries = {
 export type QyAvailMatrixParams = {
   hours: number
   groups?: string
+  /** 精确的模型名 CSV(后端 `models`)。与 `q` 的模糊匹配不同,模型广场详情页按它取单个模型。 */
+  models?: string
   q?: string
   sort?: QyAvailSortMode
   page: number

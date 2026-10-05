@@ -300,3 +300,40 @@ export function qyAvailCellState(
 export function qyAvailOutcomeKey(outcome: string): string {
   return `qy_avl_outcome_${outcome}`
 }
+
+/**
+ * 模型广场详情页「性能」标签用哪一份数据。
+ *
+ * 登录后与「模型可用率」页同一口径(扩展的分组可用率:按口径排除用户自身错误、
+ * 限流等样本,分组按可见白名单裁剪);接口要求登录,所以匿名访客、扩展关闭或
+ * 可用率功能关闭时回落上游 perf_metrics。配置还在加载时返回 `pending`,
+ * 而不是先画一屏上游数据再整片换掉 —— 那会让同一屏先后出现两套对不上的成功率。
+ */
+export type QyPricingPerfSource = 'pending' | 'qy' | 'upstream'
+
+export function qyPricingPerfSource(input: {
+  signedIn: boolean
+  configLoading: boolean
+  extensionEnabled: boolean
+  availabilityOn: boolean
+}): QyPricingPerfSource {
+  if (!input.signedIn) return 'upstream'
+  if (input.configLoading) return 'pending'
+  return input.extensionEnabled && input.availabilityOn ? 'qy' : 'upstream'
+}
+
+/**
+ * 模型广场详情页那张分组表的行:只要这个模型,且不要「该分组不提供」的分组。
+ *
+ * 不提供的分组在可用率页的矩阵里有意义(整行横向对比),放进单个模型的详情里
+ * 只是一排噪声。无数据 / 样本不足**保留**:它们是「这个分组能用,只是最近没人用」,
+ * 删掉会被读成该分组根本没有这个模型。
+ */
+export function qyModelGroupRows(
+  cells: QyAvailCell[],
+  model: string
+): QyAvailCell[] {
+  return cells.filter(
+    (cell) => cell.model === model && cell.state !== 'not_offered'
+  )
+}

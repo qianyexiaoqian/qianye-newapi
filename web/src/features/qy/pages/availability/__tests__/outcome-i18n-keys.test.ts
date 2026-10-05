@@ -114,6 +114,15 @@ describe('qy availability i18n keys', () => {
     }
   })
 
+  // 项目方要求从 KPI 行移除「最差分组」「不可用模型数」两张卡。它们的文案键只有那两张卡在用,
+  // 留下就是零消费方的死键;谁把卡片加回来,也必须先回到这里说明理由。
+  test('drops the removed worst-group and down-models KPI keys', () => {
+    for (const key of ['qy_avl_kpi_worst_group', 'qy_avl_kpi_down_models']) {
+      assert.ok(!(key in enMap), `en.json 残留已移除的 KPI 键 ${key}`)
+      assert.ok(!(key in zhMap), `zh.json 残留已移除的 KPI 键 ${key}`)
+    }
+  })
+
   test('keeps en and zh key sets identical', () => {
     assert.deepEqual(Object.keys(enMap).sort(), Object.keys(zhMap).sort())
   })

@@ -799,8 +799,6 @@
   "qy_avl_empty_no_data": "所选时间范围内没有请求记录。",
   "qy_avl_kpi_overall": "整体可用率",
   "qy_avl_kpi_overall_hint": "按当前页的模型汇总",
-  "qy_avl_kpi_worst_group": "最差分组",
-  "qy_avl_kpi_down_models": "不可用模型数",
   "qy_avl_kpi_excluded": "被排除占比",
   "qy_avl_kpi_excluded_hint": "按口径排除了 {{n}} 条样本",
   "qy_avl_kpi_none": "无",
@@ -5005,5 +5003,10 @@
   "qy_ai_f_category_tag": "计次记为 {{name}}",
   "qy_gs_token_default_search_label": "搜索用户分组",
   "qy_gs_token_default_search_ph": "搜索分组",
-  "qy_gs_token_default_search_no_match": "没有匹配「{{keyword}}」的用户分组。换个词，或清空搜索框看完整清单。"
+  "qy_gs_token_default_search_no_match": "没有匹配「{{keyword}}」的用户分组。换个词，或清空搜索框看完整清单。",
+  "qy_avl_pricing_title": "各分组可用率（近 24 小时）",
+  "qy_avl_pricing_desc": "与「模型可用率」页同一口径：只统计你可用的分组，并排除了你自身请求错误等不代表渠道状况的样本。",
+  "qy_avl_pricing_empty": "近 24 小时内，这个模型在你可用的分组里还没有请求记录。",
+  "qy_avl_pricing_open_full": "查看完整的模型可用率",
+  "qy_avl_pricing_loading": "正在加载可用率…"
 }

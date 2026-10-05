@@ -301,3 +301,22 @@ test('径向辉光最多出现两处', () => {
   )
   assert.ok(uses > 0, '辉光一处都没有,形状五就没有落点了')
 })
+
+/* ── 8. 固定列不透明 ─────────────────────────────────────────────────── */
+
+test('固定列(sticky)的表头与单元格保持实色底', () => {
+  // 本主题把表头 / 单元格一律刷成透明,而它的优先级高过上游固定列自带的
+  // bg-background。漏掉这条例外时,窄屏下被操作列盖住的其它列文字会从按钮底下
+  // 透出来(API 密钥页「创建时间」与操作列重叠)。
+  const css = stripComments(applyCss)
+  const rule =
+    /:is\(\[data-slot='table-cell'\],\s*\[data-slot='table-head'\]\)\.sticky\s*\{([^}]*)\}/.exec(
+      css
+    )
+  assert.ok(rule, 'apply 层缺少固定列的实色底规则')
+  assert.match(rule[1], /background-color:\s*var\(--background\)/)
+  assert.ok(
+    css.indexOf(rule[0]) > css.search(/\[data-slot='table-cell'\]\s*\{/),
+    '固定列规则必须写在「单元格透明」之后,否则同优先级下会被它盖回透明'
+  )
+})

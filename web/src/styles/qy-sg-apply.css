@@ -275,6 +275,21 @@ body[data-theme-preset='steins-gate']
   padding-block: var(--qy-sg-row-pad);
 }
 
+/* 固定列例外:上游 column-pinning 给它挂 sticky + bg-background,压在横向滚动的
+ * 其它列上面。上面两条把表头/单元格一律刷成透明,优先级又高过 bg-background,
+ * 于是固定列也透了 —— 窄屏下被它盖住的「创建时间」等文字会从操作按钮底下透出来
+ * (API 密钥页)。固定列只能是实色;hover 时在实色上再叠同一层洗色,与整行一致。 */
+[data-theme-preset='steins-gate']
+  :is([data-slot='table-cell'], [data-slot='table-head']).sticky {
+  background-color: var(--background);
+}
+
+[data-theme-preset='steins-gate']
+  [data-slot='table-row']:hover
+  [data-slot='table-cell'].sticky {
+  background-image: linear-gradient(var(--qy-sg-wash), var(--qy-sg-wash));
+}
+
 /* hover:整行洗一层色,首格左侧补一条 2px 品牌色竖线 —— 参考稿允许的那「一处强调
  * 笔画」。用 background-image 画而不是 border-left(会让整行位移 2px)
  * 也不是 box-shadow: inset(违反零投影)。 */

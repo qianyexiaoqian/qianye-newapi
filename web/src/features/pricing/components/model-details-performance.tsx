@@ -34,7 +34,11 @@ import {
   getSuccessRateTextClass,
 } from '@/features/performance-metrics/lib/format'
 import type { PerformanceGroup } from '@/features/performance-metrics/types'
+import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
+import { QyModelGroupAvailability } from '@/features/qy/pages/availability/components/model-group-availability'
+import { qyPricingPerfSource } from '@/features/qy/pages/availability/constants'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { type UptimeDayPoint } from '../lib/mock-stats'
 import type { PricingModel } from '../types'
@@ -163,10 +167,20 @@ function average(
 
 export function ModelDetailsPerformance(props: { model: PricingModel }) {
   const { t } = useTranslation()
+  const signedIn = useAuthStore((state) => state.auth.user != null)
+  const qyConfig = useQyConfig()
+  // 登录后与「模型可用率」页同一口径(见 qyPricingPerfSource 的说明)。
+  const source = qyPricingPerfSource({
+    signedIn,
+    configLoading: qyConfig.isLoading,
+    extensionEnabled: qyConfig.status === 'enabled',
+    availabilityOn: qyConfig.features.availability,
+  })
   const metricsQuery = useQuery({
     queryKey: ['perf-metrics', props.model.model_name],
     queryFn: () => getPerfMetrics(props.model.model_name, 24),
     staleTime: 60 * 1000,
+    enabled: source === 'upstream',
   })
   const groups = useMemo(
     () => metricsQuery.data?.data.groups ?? [],
@@ -193,7 +207,15 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
     return map
   }, [groups])
 
-  if (metricsQuery.isLoading || performances.length === 0) {
+  if (source === 'qy') {
+    return <QyModelGroupAvailability modelName={props.model.model_name} />
+  }
+
+  if (
+    source === 'pending' ||
+    metricsQuery.isLoading ||
+    performances.length === 0
+  ) {
     return (
       <div className='text-muted-foreground rounded-lg border p-6 text-center text-sm'>
         {t('Performance data is not yet available for this model.')}

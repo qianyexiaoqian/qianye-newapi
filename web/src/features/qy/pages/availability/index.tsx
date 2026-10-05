@@ -109,15 +109,6 @@ export function QyAvailability() {
   const matrix = query.data
   const overall = matrix?.overall
 
-  const downModels = useMemo(() => {
-    if (matrix == null) return 0
-    const models = new Set<string>()
-    for (const cell of matrix.cells) {
-      if (cell.state === 'down') models.add(cell.model)
-    }
-    return models.size
-  }, [matrix])
-
   const excludedRatio =
     overall == null || overall.req_total <= 0
       ? null
@@ -178,7 +169,7 @@ export function QyAvailability() {
           >
             {matrix != null && (
               <div className='space-y-3'>
-                {/* KPI 行固定展示四个维度，**不跟随主指标切换**：卡片标题写死
+                {/* KPI 行的维度是固定的，**不跟随主指标切换**：卡片标题写死
                     「整体可用率」却填一个延迟数字，是最容易被误读的一种错。
                     主指标只影响矩阵、趋势图与排序。 */}
                 <QyStatGrid
@@ -214,27 +205,7 @@ export function QyAvailability() {
                         n: formatQyCount(overall?.speed_samples),
                       }),
                     },
-                    {
-                      key: 'worst_group',
-                      label: t('qy_avl_kpi_worst_group'),
-                      value:
-                        overall?.group == null || overall.group === ''
-                          ? t('qy_avl_kpi_none')
-                          : overall.group,
-                    },
-                    {
-                      key: 'down_models',
-                      label: t('qy_avl_kpi_down_models'),
-                      value: (
-                        <span
-                          className={
-                            downModels > 0 ? 'text-destructive' : undefined
-                          }
-                        >
-                          {downModels}
-                        </span>
-                      ),
-                    },
+                    // 「最差分组」「不可用模型数」两张卡已按项目方要求移除。
                     {
                       key: 'excluded',
                       label: t('qy_avl_kpi_excluded'),
