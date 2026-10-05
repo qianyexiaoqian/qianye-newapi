@@ -36,6 +36,10 @@ import {
   sanitizeQyGroupJoinUrl,
   sanitizeQyGroupNumber,
 } from '@/features/qy/lib/group-contact'
+import {
+  QY_VIOLATION_NOTICE_KEYS,
+  QY_VIOLATION_NOTICE_MAX_CHARS,
+} from '@/features/qy/lib/violation-notice'
 
 import { FormDirtyIndicator } from '../components/form-dirty-indicator'
 import { FormNavigationGuard } from '../components/form-navigation-guard'
@@ -63,6 +67,10 @@ const _systemInfoSchema = z.object({
   // zod 默认剥掉未声明的键,漏了就会 PUT 一个空串上去而界面照样弹「保存成功」。
   QyHomeGroupJoinUrl: z.string().optional(),
   QyHomeGroupNumber: z.string().optional(),
+  // 「我的违规记录」页横幅(二开)。同上:运行时 schema 里也必须有这三项。
+  QyViolationNotice1: z.string().optional(),
+  QyViolationNotice2: z.string().optional(),
+  QyViolationNotice3: z.string().optional(),
   general_setting: z.object({
     docs_link: z.string(),
   }),
@@ -97,6 +105,9 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
     HomePageContent: normalizeValue(defaultValues.HomePageContent),
     QyHomeGroupJoinUrl: normalizeValue(defaultValues.QyHomeGroupJoinUrl),
     QyHomeGroupNumber: normalizeValue(defaultValues.QyHomeGroupNumber),
+    QyViolationNotice1: normalizeValue(defaultValues.QyViolationNotice1),
+    QyViolationNotice2: normalizeValue(defaultValues.QyViolationNotice2),
+    QyViolationNotice3: normalizeValue(defaultValues.QyViolationNotice3),
     general_setting: {
       docs_link: normalizeValue(defaultValues.general_setting?.docs_link),
     },
@@ -105,6 +116,21 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
       privacy_policy: normalizeValue(defaultValues.legal?.privacy_policy),
     },
   }
+
+  // 违规记录页横幅:长度上限与后端 ValidateQyViolationNotice 同值,后端仍是最终判据。
+  const violationNoticeSchema = z
+    .string()
+    .optional()
+    .refine(
+      (value) =>
+        !value || [...value.trim()].length <= QY_VIOLATION_NOTICE_MAX_CHARS,
+      {
+        error: () =>
+          t('qy_vio_notice_opt_too_long', {
+            max: QY_VIOLATION_NOTICE_MAX_CHARS,
+          }),
+      }
+    )
 
   const systemInfoSchemaWithI18n = z.object({
     SystemName: z.string().min(1, {
@@ -135,6 +161,9 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
       .refine((value) => !value || sanitizeQyGroupNumber(value) !== '', {
         error: () => t('qy_home_opt_group_number_invalid'),
       }),
+    QyViolationNotice1: violationNoticeSchema,
+    QyViolationNotice2: violationNoticeSchema,
+    QyViolationNotice3: violationNoticeSchema,
     general_setting: z.object({
       docs_link: z.string(),
     }),
@@ -160,7 +189,11 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
           }
           // 运营粘贴链接常带尾随空格,不该因此报错,也不该把空格存进公开 payload。
           // 刻意不对它们去尾斜杠 —— 群邀请链接的路径尾部有意义。
-          if (key === 'QyHomeGroupJoinUrl' || key === 'QyHomeGroupNumber') {
+          if (
+            key === 'QyHomeGroupJoinUrl' ||
+            key === 'QyHomeGroupNumber' ||
+            (QY_VIOLATION_NOTICE_KEYS as readonly string[]).includes(key)
+          ) {
             v = v.trim()
           }
           await updateOption.mutateAsync({
@@ -393,6 +426,35 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
                   </FormItem>
                 )}
               />
+
+              {QY_VIOLATION_NOTICE_KEYS.map((key, index) => (
+                <SettingsFormGridItem key={key} span='full'>
+                  <FormField
+                    control={form.control}
+                    name={key}
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          {t('qy_vio_notice_opt_label', { n: index + 1 })}
+                        </FormLabel>
+                        <FormControl>
+                          <Textarea
+                            placeholder={t('qy_vio_notice_opt_placeholder')}
+                            rows={3}
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t('qy_vio_notice_opt_desc', {
+                            max: QY_VIOLATION_NOTICE_MAX_CHARS,
+                          })}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </SettingsFormGridItem>
+              ))}
 
               <FormField
                 control={form.control}

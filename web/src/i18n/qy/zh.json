@@ -5008,5 +5008,10 @@
   "qy_avl_pricing_desc": "与「模型可用率」页同一口径。已登录按你可用的分组统计，未登录按新注册用户的默认分组统计；已排除调用方自身请求错误等不代表渠道状况的样本。",
   "qy_avl_pricing_empty": "近 24 小时内，这个模型在这些分组里还没有请求记录。",
   "qy_avl_pricing_open_full": "查看完整的模型可用率",
-  "qy_avl_pricing_loading": "正在加载可用率…"
+  "qy_avl_pricing_loading": "正在加载可用率…",
+  "qy_vio_notice_region": "站点公告",
+  "qy_vio_notice_opt_label": "违规记录页公告 {{n}}",
+  "qy_vio_notice_opt_placeholder": "例如：浅梦号池促销、免费の渠道分组的请求会进行违规审计。",
+  "qy_vio_notice_opt_desc": "以横幅形式显示在用户「我的违规记录」页顶部，按纯文本展示并保留换行，最多 {{max}} 字。留空则不显示这一条。",
+  "qy_vio_notice_opt_too_long": "公告最多 {{max}} 字"
 }

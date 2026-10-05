@@ -37,6 +37,7 @@ import { formatQyTs } from '../ops/format'
 import { listQyMyViolationCategories, listQyMyViolations } from './api'
 import { QyViolationAppealDialog } from './components/appeal-dialog'
 import { QyMyViolationCategoriesCard } from './components/categories-card'
+import { QyViolationNoticeBanners } from './components/notice-banners'
 import type { QyMyViolationRecord } from './types'
 
 const PAGE_SIZE = 20
@@ -121,6 +122,9 @@ export function QyMyViolations() {
       </QySectionPageLayout.Title>
       <QySectionPageLayout.Content>
         <div className='space-y-3'>
+          {/* 站点横幅排在最前:运营用它告知哪些分组会做违规审计。 */}
+          <QyViolationNoticeBanners />
+
           {/* 公示卡片排在记录列表**之前**：用户打开这一页时最该先看到的是
               「有哪些类型、各自几次会被处置、我现在各是几次」，而不是
               一条条已经发生的记录。规则本身永远不公示 —— 那等于教人绕过。 */}

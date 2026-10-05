@@ -123,6 +123,9 @@ export type SiteSettings = {
   HomePageContent: string
   QyHomeGroupJoinUrl: string
   QyHomeGroupNumber: string
+  QyViolationNotice1: string
+  QyViolationNotice2: string
+  QyViolationNotice3: string
   ServerAddress: string
   TaskPublicAddress: string
   'general_setting.docs_link': string

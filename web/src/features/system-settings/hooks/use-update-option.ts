@@ -41,6 +41,10 @@ const STATUS_RELATED_KEYS = new Set([
   // staleTime 与 localStorage 快照会让首页最长 5 分钟还是旧样子。
   'QyHomeGroupJoinUrl',
   'QyHomeGroupNumber',
+  // 「我的违规记录」页横幅(二开),同样经 /api/status 下发。
+  'QyViolationNotice1',
+  'QyViolationNotice2',
+  'QyViolationNotice3',
 ])
 
 export function useUpdateOption() {

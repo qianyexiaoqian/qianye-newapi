@@ -5008,5 +5008,10 @@
   "qy_avl_pricing_desc": "Same definition as the Model Availability page. Signed in: the groups you can use; not signed in: the groups available to newly registered users. Samples that do not reflect channel health (such as request errors on the caller side) are excluded.",
   "qy_avl_pricing_empty": "This model has no requests in these groups during the last 24 hours yet.",
   "qy_avl_pricing_open_full": "Open Model Availability",
-  "qy_avl_pricing_loading": "Loading availability…"
+  "qy_avl_pricing_loading": "Loading availability…",
+  "qy_vio_notice_region": "Site notices",
+  "qy_vio_notice_opt_label": "Violation records page notice {{n}}",
+  "qy_vio_notice_opt_placeholder": "e.g. Requests in the promo and free groups are audited for violations.",
+  "qy_vio_notice_opt_desc": "Shown as a banner at the top of users' \"My violation records\" page, as plain text with line breaks kept. Up to {{max}} characters. Leave empty to hide this banner.",
+  "qy_vio_notice_opt_too_long": "The notice can be at most {{max}} characters"
 }

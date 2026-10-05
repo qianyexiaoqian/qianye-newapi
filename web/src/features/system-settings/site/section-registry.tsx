@@ -43,6 +43,9 @@ const SITE_SECTIONS = [
           HomePageContent: settings.HomePageContent,
           QyHomeGroupJoinUrl: settings.QyHomeGroupJoinUrl,
           QyHomeGroupNumber: settings.QyHomeGroupNumber,
+          QyViolationNotice1: settings.QyViolationNotice1,
+          QyViolationNotice2: settings.QyViolationNotice2,
+          QyViolationNotice3: settings.QyViolationNotice3,
           ServerAddress: settings.ServerAddress,
           TaskPublicAddress: settings.TaskPublicAddress,
           general_setting: {

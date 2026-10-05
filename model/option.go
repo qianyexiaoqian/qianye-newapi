@@ -87,6 +87,10 @@ func InitOptionMap() {
 	// 否则同步重放与重启装载都不更新它,内存与库分家。
 	common.OptionMap[operation_setting.QyHomeGroupJoinUrlOptionKey] = ""
 	common.OptionMap[operation_setting.QyHomeGroupNumberOptionKey] = ""
+	// 「我的违规记录」页的三条横幅公告(二开),登记理由与上面两项相同。
+	for _, key := range operation_setting.QyViolationNoticeOptionKeys {
+		common.OptionMap[key] = ""
+	}
 	common.OptionMap["Footer"] = common.Footer
 	common.OptionMap["SystemName"] = common.SystemName
 	common.OptionMap["Logo"] = common.Logo
@@ -233,6 +237,10 @@ func validateOptionValue(key string, value string) error {
 		return operation_setting.ValidateQyHomeGroupJoinUrl(value)
 	case operation_setting.QyHomeGroupNumberOptionKey:
 		return operation_setting.ValidateQyHomeGroupNumber(value)
+	case operation_setting.QyViolationNoticeOptionKeys[0],
+		operation_setting.QyViolationNoticeOptionKeys[1],
+		operation_setting.QyViolationNoticeOptionKeys[2]:
+		return operation_setting.ValidateQyViolationNotice(value)
 	case operation_setting.ToolPriceOptionKey:
 		return operation_setting.ValidateToolPricesJSON(value)
 	case operation_setting.ChannelTestConcurrencyOptionKey:

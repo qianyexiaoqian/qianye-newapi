@@ -116,6 +116,8 @@ func GetStatus(c *gin.Context) {
 		// 但**不能**改调 GetHomePageContent 那类自带 RLock 的封装:RWMutex 不可重入。
 		"qy_home_group_join_url": operation_setting.SanitizedQyHomeGroupJoinUrl(common.OptionMap[operation_setting.QyHomeGroupJoinUrlOptionKey]),
 		"qy_home_group_number":   operation_setting.SanitizedQyHomeGroupNumber(common.OptionMap[operation_setting.QyHomeGroupNumberOptionKey]),
+		// 「我的违规记录」页横幅(二开):只下发非空且校验通过的条目,按 1、2、3 的顺序。
+		"qy_violation_notices": operation_setting.QyViolationNotices(common.OptionMap),
 
 		"oidc_enabled":                system_setting.GetOIDCSettings().Enabled,
 		"oidc_client_id":              system_setting.GetOIDCSettings().ClientId,
