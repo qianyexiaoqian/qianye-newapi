@@ -33,6 +33,13 @@ test('shows configured notices in order and skips blank ones', () => {
   )
 })
 
+test('shows identical notices only once', () => {
+  assert.deepEqual(
+    qyViolationNotices({ qy_violation_notices: ['同一句', ' 同一句 ', '另一句'] }),
+    ['同一句', '另一句']
+  )
+})
+
 test('shows at most three banners', () => {
   assert.deepEqual(
     qyViolationNotices({ qy_violation_notices: ['1', '2', '3', '4'] }),

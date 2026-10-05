@@ -37,16 +37,17 @@ export const QY_VIOLATION_NOTICE_MAX_CHARS = 500
  *
  * 后端已经筛过,这里再防一层:`/api/status` 有 localStorage 快照,旧版本缓存里
  * 可能没有这个字段或形状不对;字段缺失、不是数组、元素不是字符串都按「没有」处理,
- * 最多取 3 条。
+ * 最多取 3 条。内容完全相同的条目只留一条:同一句话挂两遍没有意义,去重之后
+ * 正文本身就能当渲染 key。
  */
 export function qyViolationNotices(
   status: Record<string, unknown> | null | undefined
 ): string[] {
   const raw = status?.qy_violation_notices
   if (!Array.isArray(raw)) return []
-  return raw
+  const notices = raw
     .filter((item): item is string => typeof item === 'string')
     .map((item) => item.trim())
     .filter((item) => item !== '')
-    .slice(0, QY_VIOLATION_NOTICE_KEYS.length)
+  return [...new Set(notices)].slice(0, QY_VIOLATION_NOTICE_KEYS.length)
 }

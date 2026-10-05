@@ -39,8 +39,9 @@ export function QyViolationNoticeBanners() {
 
   return (
     <section aria-label={t('qy_vio_notice_region')} className='space-y-2'>
-      {notices.map((notice, index) => (
-        <Alert key={`${index}-${notice}`}>
+      {/* qyViolationNotices 已去重,正文本身就是稳定的 key。 */}
+      {notices.map((notice) => (
+        <Alert key={notice}>
           <Megaphone className='h-4 w-4' aria-hidden='true' />
           <AlertDescription className='break-words whitespace-pre-wrap'>
             {notice}
