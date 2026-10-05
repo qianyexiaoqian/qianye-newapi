@@ -280,7 +280,8 @@ func modelGroupRejectCode(err error) (string, bool) {
 //
 //  1. **零 I/O、零锁。** 它被 setting.GetUserUsableGroupsCopy 调用,而后者挂在
 //     middleware/auth.go 的令牌分组校验上,每一个带令牌分组的 relay 请求会为
-//     白名单里的**每一个键**调用一次。只允许 atomic.Pointer.Load 与 map 查找。
+//     白名单里的**每一个键**调用一次。只允许 atomic.Pointer.Load、map 查找,
+//     以及 activeSnapshot 里 maybeRefresh 的那一次 atomic 比较(回源在 HotAsync 上)。
 //  2. **未配置必须返回空串。** 空串是"回落上游文案"的唯一信号;返回分组名会把
 //     每一个没写备注的分组的说明都覆盖成它自己的名字。
 //  3. 刻意**不看 enabled**:停用只在可见性层遮断,而一个已经渲染出来的分组

@@ -86,7 +86,12 @@ func maxStaleSeconds() int64 {
 	return n
 }
 
+// activeSnapshot 是**所有**读路径的唯一入口,刷新也挂在这里:
+// 只挂在 ResolveDefaultModelGroup 上时,空分组令牌流量一少,快照就会一直陈旧,
+// 其它节点也看不到管理端的改动。maybeRefresh 在快照为 nil 时同样要跑,
+// 否则一次启动加载失败就再也没人重试。
 func activeSnapshot() *Snapshot {
+	maybeRefresh()
 	s := current.Load()
 	if s == nil {
 		return nil

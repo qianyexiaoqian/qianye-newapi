@@ -134,3 +134,47 @@ func TestGroupRatioMissingDeniedDefaultsToLegacy(t *testing.T) {
 	assert.False(t, GroupRatioMissingDenied("任何分组"),
 		"模块关闭时严格模式必须一起失效 —— kill switch 不能只关一半")
 }
+
+// TestSnapshotReadersOtherThanResolveScheduleRefresh 钉死「每条读路径都会触发刷新」。
+//
+// 刷新曾经只挂在 ResolveDefaultModelGroup 上,而它只在空分组令牌的 relay 请求里跑:
+// 这类流量一少,ModelGroupNote 之类的高频读者就会一直读一份越来越旧的快照
+// (线上见过「已陈旧 488 秒」),多节点部署里其它节点也一直看不到管理端的改动。
+func TestSnapshotReadersOtherThanResolveScheduleRefresh(t *testing.T) {
+	gdb := newTestDB(t)
+	syncHotAsync(t)
+	nsConfig(t, true, config.MissingRatioPolicyLegacyOne, config.FundingGateOff)
+
+	row := newModelGroup("夜间号池", 1, now())
+	row.Note = "旧备注"
+	require.NoError(t, gdb.Create(row).Error)
+	require.NoError(t, InvalidateAndReload())
+
+	// 另一个节点改了备注:本节点只能靠周期刷新感知。
+	require.NoError(t, gdb.Model(&ModelGroup{}).Where("name = ?", "夜间号池").
+		Update("note", "新备注").Error)
+
+	staleLoadedAt := now() - 488
+	loadedAt.Store(staleLoadedAt)
+
+	t.Run("缓存窗口内不回源", func(t *testing.T) {
+		nextRefreshAt.Store(now() + cacheSeconds())
+		assert.Equal(t, "旧备注", ModelGroupNote("夜间号池"))
+		assert.Equal(t, staleLoadedAt, loadedAt.Load())
+	})
+
+	t.Run("窗口过后 ModelGroupNote 自己触发刷新", func(t *testing.T) {
+		nextRefreshAt.Store(now() - 1)
+		assert.Equal(t, "新备注", ModelGroupNote("夜间号池"))
+		assert.Greater(t, loadedAt.Load(), staleLoadedAt)
+		assert.Greater(t, nextRefreshAt.Load(), now(), "刷新后必须重新排下一个窗口")
+	})
+
+	t.Run("窗口过后 DeclaredUserGroups 也会触发刷新", func(t *testing.T) {
+		seedUserGroup(t, gdb, "新登记组", DefaultModeInherit, "")
+		loadedAt.Store(staleLoadedAt)
+		nextRefreshAt.Store(now() - 1)
+		assert.Contains(t, DeclaredUserGroups(), "新登记组")
+		assert.Greater(t, loadedAt.Load(), staleLoadedAt)
+	})
+}

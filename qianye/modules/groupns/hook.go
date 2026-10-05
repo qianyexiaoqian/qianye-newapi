@@ -42,9 +42,6 @@ func ResolveDefaultModelGroup(userId int, userGroup string) (string, string) {
 	if !defaultResolveOn() {
 		return userGroup, DefaultModeInherit
 	}
-	// 刷新只做一次 atomic 比较,到期由 HotAsync 在别的 goroutine 上回源。
-	maybeRefresh()
-
 	if userGroup == "" {
 		// 匿名 / 无身份口径。没有身份就没有"这个人的默认模型分组"这回事。
 		return userGroup, DefaultModeInherit
