@@ -28,6 +28,7 @@ import {
   QY_AVAIL_NO_VALUE_STYLE,
   QY_AVAIL_TONE_STYLES,
   qyAvailCellState,
+  qyAvailOfferedGroups,
   qyAvailOutcomeKey,
   qyAvailRowScale,
   qyAvailToneOf,
@@ -74,7 +75,11 @@ export function QyAvailabilityMatrix(props: QyAvailabilityMatrixProps) {
   }, [props.matrix.cells])
 
   const metric = props.metric
-  const groups = props.matrix.groups
+  // 整列都「不提供」的分组不画(见 qyAvailOfferedGroups)。
+  const groups = useMemo(
+    () => qyAvailOfferedGroups(props.matrix),
+    [props.matrix]
+  )
 
   // 被截断掉的模型整行都没查过。用后端显式下发的 covered_models 判定，
   // 而不是「格子在不在 cells 里」——后者与「该分组不提供这个模型」不可分辨。

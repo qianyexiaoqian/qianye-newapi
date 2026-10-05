@@ -93,6 +93,29 @@ func TestClientCancellationDuringUpstreamRead(t *testing.T) {
 	assert.Equal(t, OutcomeFailure, ClassifyRelayOutcome(context.Background(), &relaycommon.RelayInfo{StreamStatus: deadline}, nil))
 }
 
+// 客户端在收到完整响应之后才断开时,这次请求是成功的,不得被当成「客户端取消」丢掉。
+//
+// 采样发生在响应写完之后,而部分客户端一收到响应就关闭连接,于是采样那一刻 ctx
+// 已经被取消。原先一律判 Ignored,生产上一个用户的 1206 次非流式成功请求只剩 1 条样本。
+func TestClientDisconnectAfterDeliveredResponseCountsAsSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	assert.Equal(t, OutcomeSuccess, ClassifyRelayOutcome(ctx, &relaycommon.RelayInfo{}, nil),
+		"非流式:没有错误就说明响应已完整返回")
+
+	completed := relaycommon.NewStreamStatus()
+	completed.RequireTerminal()
+	completed.MarkCompleted()
+	completed.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+	assert.Equal(t, OutcomeSuccess, ClassifyRelayOutcome(ctx, &relaycommon.RelayInfo{StreamStatus: completed}, nil),
+		"流式:流已正常结束")
+
+	assert.Equal(t, OutcomeIgnored, ClassifyRelayOutcome(ctx, &relaycommon.RelayInfo{},
+		types.NewOpenAIError(errors.New("upstream reset"), types.ErrorCodeDoRequestFailed, 500)),
+		"响应没送达时 ctx 取消仍然是客户端放弃,照旧忽略")
+}
+
 func TestPerformanceWindowIncludesCurrentHour(t *testing.T) {
 	now := time.Date(2026, 9, 14, 12, 37, 0, 0, time.UTC)
 	start, end := queryWindow(now, 24)

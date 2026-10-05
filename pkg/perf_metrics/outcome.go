@@ -24,7 +24,15 @@ func ClassifyRelayOutcome(ctx context.Context, info *relaycommon.RelayInfo, apiE
 	if info == nil || info.PerformanceBusinessRejection {
 		return OutcomeIgnored
 	}
-	if ctx != nil && ctx.Err() == context.Canceled {
+	// qy: 采样发生在响应写完之后。客户端收到响应即断开连接(部分 SDK / 脚本的常见
+	// 行为)时,这里的 ctx 已经被取消,而这次请求其实已经完整成功 —— 原先一律判
+	// Ignored,导致这类用户的请求几乎全部从成功率里消失(生产实测:某用户 1206 次
+	// 非流式请求只剩 1 条样本)。只有响应**没有**完整送达时,ctx 取消才说明是客户端
+	// 中途放弃:没有流状态(非流式)看 apiErr,有流状态看流是否正常结束。
+	// 判据用 StreamStatus 而不是 IsStream:流状态只在真正走流式读取时才分配。
+	delivered := apiErr == nil &&
+		(info.StreamStatus == nil || info.StreamStatus.OutcomeSnapshot().Response == relaycommon.ResponseOutcomeCompleted)
+	if ctx != nil && ctx.Err() == context.Canceled && !delivered {
 		return OutcomeIgnored
 	}
 	if apiErr != nil && errors.Is(apiErr, context.Canceled) {

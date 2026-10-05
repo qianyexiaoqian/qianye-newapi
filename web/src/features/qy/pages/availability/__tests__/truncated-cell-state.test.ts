@@ -22,8 +22,12 @@ import { test } from 'node:test'
 import en from '@/i18n/qy/en.json'
 import zh from '@/i18n/qy/zh.json'
 
-import { getQyAvailStateStyle, qyAvailCellState } from '../constants'
-import type { QyAvailCell } from '../types'
+import {
+  getQyAvailStateStyle,
+  qyAvailCellState,
+  qyAvailOfferedGroups,
+} from '../constants'
+import type { QyAvailCell, QyAvailMatrix } from '../types'
 
 /**
  * 后端 `max_series_per_query` 默认 200，本页一页 30 个模型，于是**只要有 ≥7 个
@@ -101,4 +105,60 @@ test('截断提示与未覆盖提示在两种语言里都在', () => {
     assert.ok(enMap[key], `en.json 缺少 ${key}`)
     assert.ok(zhMap[key], `zh.json 缺少 ${key}`)
   }
+})
+
+// ── 热力图只画「有模型」的分组列 ──
+//
+// 项目方要求:只显示该分组有的模型。整列都是「不提供」的分组(含 auto 伪分组)不画。
+
+function matrixOf(
+  groups: string[],
+  cells: Array<[string, string, QyAvailCell['state']]>,
+  covered: string[]
+): QyAvailMatrix {
+  return {
+    groups: groups.map((group) => ({ group, desc: '' })),
+    cells: cells.map(([model, group, state]) => ({
+      ...cellOf(state),
+      model,
+      group,
+    })),
+    covered_models: covered,
+    models: covered,
+  } as unknown as QyAvailMatrix
+}
+
+test('整列都不提供的分组不画成热力图的一列', () => {
+  const matrix = matrixOf(
+    ['auto', 'pool-a', 'pool-b', 'pool-c'],
+    [
+      ['m1', 'auto', 'not_offered'],
+      ['m1', 'pool-a', 'ok'],
+      ['m1', 'pool-b', 'not_offered'],
+      ['m1', 'pool-c', 'not_offered'],
+      ['m2', 'auto', 'not_offered'],
+      ['m2', 'pool-a', 'not_offered'],
+      ['m2', 'pool-b', 'degraded'],
+      ['m2', 'pool-c', 'not_offered'],
+    ],
+    ['m1', 'm2']
+  )
+  assert.deepEqual(
+    qyAvailOfferedGroups(matrix).map((group) => group.group),
+    ['pool-a', 'pool-b']
+  )
+})
+
+test('提供但最近没数据的分组仍然保留成一列', () => {
+  // 无数据是「有这个模型、最近没人用」,不是「不提供」。
+  const matrix = matrixOf(['pool-a'], [['m1', 'pool-a', 'no_data']], ['m1'])
+  assert.deepEqual(
+    qyAvailOfferedGroups(matrix).map((group) => group.group),
+    ['pool-a']
+  )
+})
+
+test('被截断没查过的模型不能证明某个分组有模型', () => {
+  const matrix = matrixOf(['pool-a'], [['m9', 'pool-a', 'ok']], [])
+  assert.deepEqual(qyAvailOfferedGroups(matrix), [])
 })

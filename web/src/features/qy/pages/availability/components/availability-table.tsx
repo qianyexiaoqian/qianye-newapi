@@ -55,6 +55,13 @@ export function QyAvailabilityTable(props: {
 }) {
   const { t } = useTranslation()
 
+  // 「该分组不提供这个模型」的组合不占行:表格按 (模型, 分组) 逐行列,
+  // 不过滤的话每个模型都会拖出一串只写着「不提供」的行。
+  const rows = useMemo(
+    () => props.cells.filter((cell) => cell.state !== 'not_offered'),
+    [props.cells]
+  )
+
   const columns = useMemo(
     () => [
       {
@@ -145,7 +152,7 @@ export function QyAvailabilityTable(props: {
     <div className='space-y-2'>
       <StaticDataTable
         columns={columns}
-        data={props.cells}
+        data={rows}
         getRowKey={(row) => `${row.model} ${row.group}`}
         emptyContent={t('qy_avl_empty_no_data')}
       />

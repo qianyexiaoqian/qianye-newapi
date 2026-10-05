@@ -21,6 +21,8 @@ import type { StatusVariant } from '@/components/status-badge'
 import { formatQyAvailability, formatQyMs, QY_EMPTY_TEXT } from '../ops/format'
 import type {
   QyAvailCell,
+  QyAvailGroupInfo,
+  QyAvailMatrix,
   QyAvailMetricKey,
   QyAvailPerf,
   QyAvailSortMode,
@@ -365,4 +367,24 @@ export function qyPlazaCardToPerfBadge(card: QyPlazaCard): QyPlazaPerfBadge {
         : [{ ts: hour.ts, success_rate: hour.success_rate }]
     ),
   }
+}
+
+/**
+ * 热力图该画哪些分组列:当前页至少有一个模型「提供」的分组。
+ *
+ * 管理员能看到十几个分组,而一页里的模型往往只在两三个分组有渠道,其余列整列都是
+ * 「/」(不提供)——项目方的原话是「只显示该分组有的模型」。整列不提供的分组直接
+ * 不画;`auto` 伪分组永远是不提供,因此同样被去掉。
+ *
+ * 只看 `covered_models` 里的模型:被截断的模型没查过,不能拿来证明某个分组「有」。
+ */
+export function qyAvailOfferedGroups(matrix: QyAvailMatrix): QyAvailGroupInfo[] {
+  const covered = new Set(matrix.covered_models)
+  const offered = new Set<string>()
+  for (const cell of matrix.cells) {
+    if (covered.has(cell.model) && cell.state !== 'not_offered') {
+      offered.add(cell.group)
+    }
+  }
+  return matrix.groups.filter((group) => offered.has(group.group))
 }

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { test } from 'node:test'
 
 import {
   qyModelGroupRows,
@@ -39,30 +39,28 @@ const base = {
   availabilityOn: true,
 }
 
-describe('qyPricingPerfSource', () => {
-  test('uses the extension availability whenever the feature is on', () => {
-    // 项目方要求:登录与否都用扩展口径,所以判据里根本没有登录态 ——
-    // 未登录访客的分组由后端按注册默认用户分组裁剪。
-    assert.equal(qyPricingPerfSource(base), 'qy')
-  })
+test('uses the extension availability whenever the feature is on', () => {
+  // 项目方要求:登录与否都用扩展口径,所以判据里根本没有登录态 ——
+  // 未登录访客的分组由后端按注册默认用户分组裁剪。
+  assert.equal(qyPricingPerfSource(base), 'qy')
+})
 
-  test('waits instead of flashing upstream numbers while the config loads', () => {
-    assert.equal(
-      qyPricingPerfSource({ ...base, configLoading: true }),
-      'pending'
-    )
-  })
+test('waits instead of flashing upstream numbers while the config loads', () => {
+  assert.equal(
+    qyPricingPerfSource({ ...base, configLoading: true }),
+    'pending'
+  )
+})
 
-  test('falls back to upstream only when the availability feature is off', () => {
-    assert.equal(
-      qyPricingPerfSource({ ...base, availabilityOn: false }),
-      'upstream'
-    )
-    assert.equal(
-      qyPricingPerfSource({ ...base, extensionEnabled: false }),
-      'upstream'
-    )
-  })
+test('falls back to upstream only when the availability feature is off', () => {
+  assert.equal(
+    qyPricingPerfSource({ ...base, availabilityOn: false }),
+    'upstream'
+  )
+  assert.equal(
+    qyPricingPerfSource({ ...base, extensionEnabled: false }),
+    'upstream'
+  )
 })
 
 function cell(model: string, group: string, state: QyAvailState): QyAvailCell {
@@ -85,37 +83,35 @@ function cell(model: string, group: string, state: QyAvailState): QyAvailCell {
   }
 }
 
-describe('qyModelGroupRows', () => {
-  test('keeps only the requested model and drops groups that do not offer it', () => {
-    const rows = qyModelGroupRows(
-      [
-        cell('gpt-x', 'pool-a', 'ok'),
-        cell('gpt-x', 'pool-b', 'not_offered'),
-        cell('other', 'pool-a', 'ok'),
-      ],
-      'gpt-x'
-    )
-    assert.deepEqual(
-      rows.map((row) => row.group),
-      ['pool-a']
-    )
-  })
+test('keeps only the requested model and drops groups that do not offer it', () => {
+  const rows = qyModelGroupRows(
+    [
+      cell('gpt-x', 'pool-a', 'ok'),
+      cell('gpt-x', 'pool-b', 'not_offered'),
+      cell('other', 'pool-a', 'ok'),
+    ],
+    'gpt-x'
+  )
+  assert.deepEqual(
+    rows.map((row) => row.group),
+    ['pool-a']
+  )
+})
 
-  test('keeps groups with no recent data instead of hiding them', () => {
-    // 无数据 / 样本不足是「能用、最近没人用」,删掉会被读成该分组没有这个模型。
-    const rows = qyModelGroupRows(
-      [cell('gpt-x', 'quiet', 'no_data'), cell('gpt-x', 'thin', 'low_sample')],
-      'gpt-x'
-    )
-    assert.deepEqual(
-      rows.map((row) => row.state),
-      ['no_data', 'low_sample']
-    )
-  })
+test('keeps groups with no recent data instead of hiding them', () => {
+  // 无数据 / 样本不足是「能用、最近没人用」,删掉会被读成该分组没有这个模型。
+  const rows = qyModelGroupRows(
+    [cell('gpt-x', 'quiet', 'no_data'), cell('gpt-x', 'thin', 'low_sample')],
+    'gpt-x'
+  )
+  assert.deepEqual(
+    rows.map((row) => row.state),
+    ['no_data', 'low_sample']
+  )
+})
 
-  test('returns an empty list when the model has no cells at all', () => {
-    assert.deepEqual(qyModelGroupRows([], 'gpt-x'), [])
-  })
+test('returns an empty list when the model has no cells at all', () => {
+  assert.deepEqual(qyModelGroupRows([], 'gpt-x'), [])
 })
 
 function plazaCard(overrides: Partial<QyPlazaCard>): QyPlazaCard {
@@ -134,36 +130,34 @@ function plazaCard(overrides: Partial<QyPlazaCard>): QyPlazaCard {
   }
 }
 
-describe('qyPlazaCardToPerfBadge', () => {
-  test('passes the selected group availability straight to the status bar', () => {
-    const badge = qyPlazaCardToPerfBadge(plazaCard({ availability: 99.72 }))
-    assert.equal(badge.success_rate, 99.72)
-    assert.equal(badge.avg_latency_ms, 21000)
-    assert.equal(badge.avg_tps, 23.6)
-  })
+test('passes the selected group availability straight to the status bar', () => {
+  const badge = qyPlazaCardToPerfBadge(plazaCard({ availability: 99.72 }))
+  assert.equal(badge.success_rate, 99.72)
+  assert.equal(badge.avg_latency_ms, 21000)
+  assert.equal(badge.avg_tps, 23.6)
+})
 
-  test('shows no percentage instead of 0% when samples are insufficient', () => {
-    // 0% 会被读成「这个分组全挂了」;NaN 让状态条显示「—%」。
-    const badge = qyPlazaCardToPerfBadge(
-      plazaCard({ availability: null, state: 'low_sample', avg_tps: null })
-    )
-    assert.ok(Number.isNaN(badge.success_rate))
-    assert.equal(badge.avg_tps, 0)
-  })
+test('shows no percentage instead of 0% when samples are insufficient', () => {
+  // 0% 会被读成「这个分组全挂了」;NaN 让状态条显示「—%」。
+  const badge = qyPlazaCardToPerfBadge(
+    plazaCard({ availability: null, state: 'low_sample', avg_tps: null })
+  )
+  assert.ok(Number.isNaN(badge.success_rate))
+  assert.equal(badge.avg_tps, 0)
+})
 
-  test('drops hours without counted samples so they render as gray slots', () => {
-    const badge = qyPlazaCardToPerfBadge(
-      plazaCard({
-        hours: [
-          { ts: 3600, success_rate: 100 },
-          { ts: 7200, success_rate: null },
-          { ts: 10800, success_rate: 96.5 },
-        ],
-      })
-    )
-    assert.deepEqual(badge.recent_success_series, [
-      { ts: 3600, success_rate: 100 },
-      { ts: 10800, success_rate: 96.5 },
-    ])
-  })
+test('drops hours without counted samples so they render as gray slots', () => {
+  const badge = qyPlazaCardToPerfBadge(
+    plazaCard({
+      hours: [
+        { ts: 3600, success_rate: 100 },
+        { ts: 7200, success_rate: null },
+        { ts: 10800, success_rate: 96.5 },
+      ],
+    })
+  )
+  assert.deepEqual(badge.recent_success_series, [
+    { ts: 3600, success_rate: 100 },
+    { ts: 10800, success_rate: 96.5 },
+  ])
 })
