@@ -31,6 +31,7 @@ import {
   Radio,
   ServerCog,
   Settings,
+  Store,
   Ticket,
   User,
   Users,
@@ -39,7 +40,13 @@ import {
 import { useTranslation } from 'react-i18next'
 
 import type { SidebarData } from '@/components/layout/types'
+import { useQyIsRestricted } from '@/features/qy/lib/account-status'
 import { useQySidebarGroups } from '@/features/qy/nav'
+import { useStatus } from '@/hooks/use-status'
+import {
+  isModelSquareNavShown,
+  parseHeaderNavModulesFromStatus,
+} from '@/lib/nav-modules'
 import { ROLE } from '@/lib/roles'
 
 /**
@@ -50,6 +57,12 @@ import { ROLE } from '@/lib/roles'
  */
 export function useSidebarData(): SidebarData {
   const { t } = useTranslation()
+  const { status } = useStatus()
+  const restricted = useQyIsRestricted()
+  const showModelSquare = isModelSquareNavShown(
+    parseHeaderNavModulesFromStatus(status as Record<string, unknown> | null),
+    restricted
+  )
 
   return {
     // qy 扩展的页面不再自成一坨，而是由 `useQySidebarGroups` 按语义并入下面的
@@ -87,6 +100,12 @@ export function useSidebarData(): SidebarData {
             url: '/dashboard/models',
             icon: LayoutDashboard,
           },
+          // 登录后的手机端只有侧栏、没有顶部导航,模型广场原本无处可点。
+          // 与顶部导航同一判据;qy 的「模型可用率」锚在 /dashboard/models 之后,
+          // 所以最终顺序是 Dashboard → 模型可用率 → 模型广场。
+          ...(showModelSquare
+            ? [{ title: t('Model Square'), url: '/pricing', icon: Store }]
+            : []),
           {
             title: t('API Keys'),
             url: '/keys',

@@ -145,6 +145,22 @@ export function parseHeaderNavModulesFromStatus(
 }
 
 /**
+ * Whether a "Model Square" (/pricing) entry should be rendered at all.
+ *
+ * Shared by the top navigation and the console sidebar so the two entries can
+ * never disagree: the module switch in System Settings hides both, and so does
+ * a restricted account (pricing is served through `TryUserAuth`, which does not
+ * check account status, so such a user would see prices they cannot use).
+ */
+export function isModelSquareNavShown(
+  modules: HeaderNavModules,
+  restricted: boolean
+): boolean {
+  if (restricted) return false
+  return modules.pricing?.enabled === true
+}
+
+/**
  * Resolve one module's access flags from an already-loaded status payload.
  *
  * Falls back to the module's default when status is missing or does not carry

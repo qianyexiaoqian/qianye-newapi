@@ -21,7 +21,10 @@ import { useTranslation } from 'react-i18next'
 
 import { useQyIsRestricted } from '@/features/qy/lib/account-status'
 import { useStatus } from '@/hooks/use-status'
-import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
+import {
+  isModelSquareNavShown,
+  parseHeaderNavModulesFromStatus,
+} from '@/lib/nav-modules'
 import { useAuthStore } from '@/stores/auth-store'
 
 export type TopNavLink = {
@@ -84,9 +87,8 @@ export function useTopNavLinks(): TopNavLink[] {
   // Home / Console / Docs / About 保留：前三者是公开页，任何匿名访客都看得到，
   // 藏起来毫无意义；Console 指向 `/dashboard`，受限账号在那里得到的是受限落地页
   // ——那是它**应该**去的地方，不是一个点了才发现不能用的入口。
-  const pricing = restricted ? undefined : modules?.pricing
-  if (pricing && typeof pricing === 'object' && pricing.enabled) {
-    const requiresAuth = pricing.requireAuth && !isAuthed
+  if (isModelSquareNavShown(modules, restricted)) {
+    const requiresAuth = modules.pricing.requireAuth && !isAuthed
     links.push({ title: t('Model Square'), href: '/pricing', requiresAuth })
   }
 
