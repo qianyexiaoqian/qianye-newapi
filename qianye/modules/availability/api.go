@@ -90,12 +90,22 @@ func getPlazaMatrix(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagAvailability) {
 		return
 	}
-	if len(splitCSV(c.Query("models"), maxModelFilter)) == 0 {
+	// 上界比 maxModelFilter 小得多:详情页一次只查一个模型,而这条路没有按用户的
+	// 搜索限流,不封顶就等于给匿名访客开了一个分批拉全站矩阵的口子。
+	switch n := len(splitCSV(c.Query("models"), maxModelFilter)); {
+	case n == 0:
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "models 必填"})
+		return
+	case n > maxPlazaModels:
+		c.JSON(http.StatusBadRequest, gin.H{"success": false,
+			"message": "models 最多 " + strconv.Itoa(maxPlazaModels) + " 个"})
 		return
 	}
 	serveMatrix(c, plazaVisibleGroups(c))
 }
+
+// maxPlazaModels 是模型广场入口一次能查的模型数上界。
+const maxPlazaModels = 20
 
 // serveMatrix 是两个入口共用的矩阵查询;visible 是调用方按身份算好的可见分组。
 func serveMatrix(c *gin.Context, visible map[string]string) {

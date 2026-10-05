@@ -388,3 +388,45 @@ func TestPlazaMatrixUsesNewUserGroupForAnonymousVisitors(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, res.Code)
 	})
 }
+
+// 公开路由必须让**未登录**请求穿过整条中间件链到达 handler。
+//
+// 上一版在这条路由上挂了 SearchRateLimit:它按用户 id 计数,匿名请求在那里直接
+// 401(空响应体),而上面那组用例直接调用 getPlazaMatrix、绕开了中间件,全绿。
+// 这一条从 RegisterPublicRoutes 挂出来的真实路由进,中间少一根线就变红。
+func TestPlazaMatrixRouteAdmitsAnonymousVisitors(t *testing.T) {
+	newMatrixEnv(t)
+	prevNewUser, prevResolve := model.QyNewUserGroup, service.QyResolveUsableGroups
+	model.QyNewUserGroup = func() string { return "newbie" }
+	service.QyResolveUsableGroups = func(string, map[string]string) map[string]string {
+		return map[string]string{"default": ""}
+	}
+	t.Cleanup(func() {
+		model.QyNewUserGroup, service.QyResolveUsableGroups = prevNewUser, prevResolve
+	})
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	Mod{}.RegisterPublicRoutes(engine.Group("/api/qy"))
+
+	get := func(query string) *httptest.ResponseRecorder {
+		res := httptest.NewRecorder()
+		engine.ServeHTTP(res, httptest.NewRequest(http.MethodGet,
+			"/api/qy/availability/plaza/matrix?"+query, nil))
+		return res
+	}
+
+	res := get("models=m01")
+	require.Equal(t, http.StatusOK, res.Code, "匿名请求被中间件挡下: body=%q", res.Body.String())
+	var body plazaBody
+	require.NoError(t, common.Unmarshal(res.Body.Bytes(), &body))
+	require.Len(t, body.Data.Cells, 1)
+	assert.Equal(t, "default", body.Data.Cells[0].Group)
+
+	many := make([]string, maxPlazaModels+1)
+	for i := range many {
+		many[i] = "m" + strconv.Itoa(i)
+	}
+	assert.Equal(t, http.StatusBadRequest, get("models="+strings.Join(many, ",")).Code,
+		"匿名入口一次查的模型数必须有上界")
+}

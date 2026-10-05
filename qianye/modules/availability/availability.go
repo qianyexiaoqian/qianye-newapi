@@ -57,10 +57,13 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 
 // RegisterPublicRoutes 挂模型广场详情页用的单模型查询(见 getPlazaMatrix)。
 // 匿名可达,鉴权跟随模型广场的 HeaderNavModules 开关。
+//
+// **不能挂 SearchRateLimit**:它按用户 id 计数,匿名请求在那里直接 401(空响应体),
+// 整个入口对未登录访客失效。限流与上游 /api/pricing、/api/perf-metrics 同一档,
+// 靠 /api/qy 根组上按 IP 的 GlobalAPIRateLimit;查询规模由 getPlazaMatrix 自己封顶。
 func (Mod) RegisterPublicRoutes(g *gin.RouterGroup) {
 	g.GET("/availability/plaza/matrix",
 		middleware.HeaderNavModuleAuth("pricing"),
-		middleware.SearchRateLimit(),
 		getPlazaMatrix)
 }
 
