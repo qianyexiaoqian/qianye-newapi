@@ -193,3 +193,29 @@ func TestMatrixReportsZeroCoverageWhenOneRowExceedsLimit(t *testing.T) {
 	assert.Empty(t, body.Data.Cells)
 	assert.NotNil(t, body.Data.CoveredModels, "covered_models 必须是 [] 而不是 null")
 }
+
+// 「不提供」的格子不占 max_series_per_query 的配额。
+//
+// 生产上的形状:管理员可见 16 个分组,一页 39 个模型里只有 12 个被覆盖 —— 每行按
+// 16 格计,而其中绝大多数是「不提供」。全部 Gemini 因此整行显示成「未知」。
+// 这里让 vip 分组一个模型都不提供:每行只有 1 格有内容,上限 7 就该覆盖全部 7 个模型,
+// 而 vip 那一列仍然逐格下发成 not_offered(前端靠它区分「不提供」与「没查过」)。
+func TestMatrixNotOfferedCellsDoNotConsumeSeriesBudget(t *testing.T) {
+	newTruncationEnv(t, len(matrixModels))
+	require.NoError(t, qyDBHandle.Load().Where("group_name = ?", "vip").Delete(&Bucket{}).Error)
+	channelModelMu.Lock()
+	channelModelCache["vip"] = channelModelEntry{models: map[string]struct{}{}, expireAt: time.Now().Add(time.Hour)}
+	channelModelMu.Unlock()
+
+	body := callMatrix(t, "page=1&page_size=7")
+
+	assert.False(t, body.Data.Truncated, "只有「不提供」的格子不该触发截断")
+	assert.Equal(t, matrixModels, body.Data.CoveredModels)
+	require.Len(t, body.Data.Cells, len(matrixModels)*len(truncationGroups),
+		"被覆盖的模型仍然整行下发,包括「不提供」的那一格")
+	for _, cl := range body.Data.Cells {
+		if cl.Group == "vip" {
+			assert.Equal(t, StateNotOffered, cl.State)
+		}
+	}
+}

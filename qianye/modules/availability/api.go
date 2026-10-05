@@ -237,20 +237,33 @@ func serveMatrix(c *gin.Context, visible map[string]string) {
 	out := make([]cell, 0, min(limit, len(pageModels)*len(groups)))
 	covered := make([]string, 0, len(pageModels))
 	truncated := false
+	// used 只数「有内容」的格子:该分组提供这个模型,或时段内有样本。
+	//
+	// 「不提供」的格子仍然整行下发(前端靠它区分「不提供」与「没查过」),但它们
+	// 没有任何数据,不该占 max_series_per_query 的配额。原先按 行数 × 分组数 计:
+	// 管理员可见 16 个分组,200 / 16 ≈ 12 个模型就截断,一页 30 个模型里 18 个
+	// (包括全部 Gemini)整行变成「未知」,而那 16 格里绝大多数都是「不提供」。
+	used := 0
 	for _, name := range pageModels {
-		// ★ 整行要么全给、要么不给。逐格截断是最坏的一种:半行留下的空缺在响应里
-		// 与"该分组不提供这个模型"完全不可分辨,前端于是把根本没查过的格子画成
-		// "未提供"。默认 max_series_per_query=200、前端一页 30 个模型,
-		// 只要有 ≥7 个可见分组就必然每页都撞上,这不是边角情况。
-		if len(out)+len(groups) > limit {
-			truncated = true
-			break
-		}
+		row := make([]cell, 0, len(groups))
+		weight := 0
 		for _, g := range groups {
 			key := cellKey{group: g, model: name}
 			_, offered := groupOfferedModels(g)[name]
-			out = append(out, buildCell(key, cells[key], offered, d))
+			b := cells[key]
+			if offered || b != nil {
+				weight++
+			}
+			row = append(row, buildCell(key, b, offered, d))
 		}
+		// ★ 整行要么全给、要么不给。逐格截断是最坏的一种:半行留下的空缺在响应里
+		// 与"该分组不提供这个模型"完全不可分辨,前端于是把根本没查过的格子画成"未提供"。
+		if used+weight > limit {
+			truncated = true
+			break
+		}
+		used += weight
+		out = append(out, row...)
 		covered = append(covered, name)
 	}
 	sortCells(out, sortMode)
