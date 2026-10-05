@@ -304,20 +304,20 @@ export function qyAvailOutcomeKey(outcome: string): string {
 /**
  * 模型广场详情页「性能」标签用哪一份数据。
  *
- * 登录后与「模型可用率」页同一口径(扩展的分组可用率:按口径排除用户自身错误、
- * 限流等样本,分组按可见白名单裁剪);接口要求登录,所以匿名访客、扩展关闭或
- * 可用率功能关闭时回落上游 perf_metrics。配置还在加载时返回 `pending`,
- * 而不是先画一屏上游数据再整片换掉 —— 那会让同一屏先后出现两套对不上的成功率。
+ * 项目方要求:模型广场一律用扩展的分组可用率(与「模型可用率」页同一口径),
+ * **登录与否都一样**,不再用上游 perf_metrics。未登录访客由后端按「注册默认用户
+ * 分组」裁剪可见分组(/availability/plaza/matrix),所以这里不看登录态。
+ *
+ * 只剩一种回落:扩展或可用率功能整体关闭 —— 那时根本没有扩展口径的数据可用。
+ * 配置还在加载时返回 `pending`,而不是先画一屏上游数据再整片换掉。
  */
 export type QyPricingPerfSource = 'pending' | 'qy' | 'upstream'
 
 export function qyPricingPerfSource(input: {
-  signedIn: boolean
   configLoading: boolean
   extensionEnabled: boolean
   availabilityOn: boolean
 }): QyPricingPerfSource {
-  if (!input.signedIn) return 'upstream'
   if (input.configLoading) return 'pending'
   return input.extensionEnabled && input.availabilityOn ? 'qy' : 'upstream'
 }

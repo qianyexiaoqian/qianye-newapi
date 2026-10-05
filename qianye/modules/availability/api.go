@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/httpq"
@@ -72,12 +73,37 @@ func getMatrix(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagAvailability) {
 		return
 	}
+	serveMatrix(c, visibleGroups(c))
+}
+
+// getPlazaMatrix 是模型广场详情页的入口,登录与否都能访问。
+//
+// 项目方要求:模型广场一律用扩展的分组可用率,不再用上游 perf_metrics;未登录访客
+// 看到的是「注册默认用户分组」的口径。可见分组因此按 plazaVisibleGroups 取 ——
+// 已登录走本人,未登录走默认分组,与 /api/pricing 的匿名口径同一条链路,
+// 保证「访客看到的 == 刚注册的用户看到的」。
+//
+// 鉴权由路由上的 HeaderNavModuleAuth("pricing") 决定(模型广场关掉 → 403,
+// 要求登录 → UserAuth),与模型广场本身同进同退。匿名可访问,所以只许按模型查:
+// models 必填,拉全量矩阵仍然只有登录后的可用率页一个入口。
+func getPlazaMatrix(c *gin.Context) {
+	if !guard.RequireAPI(c, guard.FlagAvailability) {
+		return
+	}
+	if len(splitCSV(c.Query("models"), maxModelFilter)) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "models 必填"})
+		return
+	}
+	serveMatrix(c, plazaVisibleGroups(c))
+}
+
+// serveMatrix 是两个入口共用的矩阵查询;visible 是调用方按身份算好的可见分组。
+func serveMatrix(c *gin.Context, visible map[string]string) {
 	r := resolveRange(httpq.Int64(c, "start_ts", 0), httpq.Int64(c, "end_ts", 0), httpq.Int(c, "hours", 24))
 	d := definitionOf(config.Get().Availability)
 
 	// 权限:服务端强制裁剪,绝不依赖前端传什么就查什么。
 	// groups 参数只用于在可见集合内进一步收窄,永远先取交集。
-	visible := visibleGroups(c)
 	groups := intersectGroups(splitCSV(c.Query("groups"), maxGroupFilter), visible)
 	if len(groups) == 0 {
 		// 交集为空返回空矩阵而不是 403:用"有没有权限"的差异去探测分组是否存在,
@@ -274,6 +300,16 @@ func getSeries(c *gin.Context) {
 // 而那正是 QyUsableGroupsForUser 这个封装存在的全部理由。
 func visibleGroups(c *gin.Context) map[string]string {
 	return service.QyUsableGroupsForUser(c.GetInt("id"), c.GetString("group"))
+}
+
+// plazaVisibleGroups 是模型广场口径的可见分组:已登录取本人,未登录取注册默认
+// 用户分组。model.QyNewUserGroup 绝不返回空串,所以匿名不会落进上游「空分组 =
+// 全站白名单」那条语义(见 controller/qy_plaza_viewer.go)。
+func plazaVisibleGroups(c *gin.Context) map[string]string {
+	if c.GetInt("id") > 0 {
+		return visibleGroups(c)
+	}
+	return service.QyUsableGroupsForUser(0, model.QyNewUserGroup())
 }
 
 // intersectGroups 把请求的分组收窄到可见集合。requested 为空表示"全部可见分组"。

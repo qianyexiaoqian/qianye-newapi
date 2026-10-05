@@ -38,7 +38,6 @@ import { useQyConfig } from '@/features/qy/hooks/use-qy-config'
 import { QyModelGroupAvailability } from '@/features/qy/pages/availability/components/model-group-availability'
 import { qyPricingPerfSource } from '@/features/qy/pages/availability/constants'
 import { cn } from '@/lib/utils'
-import { useAuthStore } from '@/stores/auth-store'
 
 import type { UptimeDayPoint } from '../lib/mock-stats'
 import type { PricingModel } from '../types'
@@ -167,11 +166,9 @@ function average(
 
 export function ModelDetailsPerformance(props: { model: PricingModel }) {
   const { t } = useTranslation()
-  const signedIn = useAuthStore((state) => state.auth.user != null)
   const qyConfig = useQyConfig()
-  // 登录后与「模型可用率」页同一口径(见 qyPricingPerfSource 的说明)。
+  // 登录与否都用扩展的分组可用率,未登录按注册默认分组(见 qyPricingPerfSource)。
   const source = qyPricingPerfSource({
-    signedIn,
     configLoading: qyConfig.isLoading,
     extensionEnabled: qyConfig.status === 'enabled',
     availabilityOn: qyConfig.features.availability,

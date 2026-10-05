@@ -55,6 +55,15 @@ func (Mod) RegisterUserRoutes(g *gin.RouterGroup) {
 	g.GET("/availability/series", middleware.SearchRateLimit(), getSeries)
 }
 
+// RegisterPublicRoutes 挂模型广场详情页用的单模型查询(见 getPlazaMatrix)。
+// 匿名可达,鉴权跟随模型广场的 HeaderNavModules 开关。
+func (Mod) RegisterPublicRoutes(g *gin.RouterGroup) {
+	g.GET("/availability/plaza/matrix",
+		middleware.HeaderNavModuleAuth("pricing"),
+		middleware.SearchRateLimit(),
+		getPlazaMatrix)
+}
+
 // 管理端总览(/admin/availability/stats)已按项目方要求整体移除,
 // 本模块因此不实现 RegisterAdminRoutes,沿用 module.Base 的空实现。
 // 可用率是给全体用户看的,用户端两个接口与采样/聚合/落库/清理全部保留。

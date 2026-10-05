@@ -11,8 +11,10 @@ import (
 	_ "unsafe" // //go:linkname 需要
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 	"github.com/QuantumNous/new-api/qianye/httpq"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -317,5 +319,72 @@ func TestSplitCSVIsAlwaysBounded(t *testing.T) {
 		for _, g := range got {
 			assert.NotContains(t, g, ",", "截断产物里绝不能残留分隔符")
 		}
+	})
+}
+
+// ─────────────────── 模型广场入口:未登录按注册默认分组 ───────────────────
+
+type plazaBody struct {
+	Success bool `json:"success"`
+	Data    struct {
+		Cells []struct {
+			Group string `json:"group"`
+			Model string `json:"model"`
+		} `json:"cells"`
+	} `json:"data"`
+}
+
+func callPlazaMatrix(t *testing.T, query string, userId int, group string) (*httptest.ResponseRecorder, plazaBody) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	res := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(res)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/qy/availability/plaza/matrix?"+query, nil)
+	if userId > 0 {
+		c.Set("id", userId)
+		c.Set("group", group)
+	}
+	getPlazaMatrix(c)
+	var body plazaBody
+	if res.Code == http.StatusOK {
+		require.NoError(t, common.Unmarshal(res.Body.Bytes(), &body))
+	}
+	return res, body
+}
+
+// 项目方要求:模型广场一律用扩展的分组可用率,未登录访客看「注册默认用户分组」的口径。
+// 用一个只对默认分组放行 default 模型分组的可选清单,把两条身份分支分开断言:
+// 匿名必须拿到 default 的格子;已登录的人按本人分组走,不能被默认分组顶替。
+func TestPlazaMatrixUsesNewUserGroupForAnonymousVisitors(t *testing.T) {
+	newMatrixEnv(t)
+	prevNewUser, prevResolve := model.QyNewUserGroup, service.QyResolveUsableGroups
+	model.QyNewUserGroup = func() string { return "newbie" }
+	service.QyResolveUsableGroups = func(userGroup string, _ map[string]string) map[string]string {
+		if userGroup == "newbie" {
+			return map[string]string{"default": ""}
+		}
+		return map[string]string{}
+	}
+	t.Cleanup(func() {
+		model.QyNewUserGroup, service.QyResolveUsableGroups = prevNewUser, prevResolve
+	})
+
+	t.Run("匿名访客按注册默认分组取可见分组", func(t *testing.T) {
+		res, body := callPlazaMatrix(t, "models=m01", 0, "")
+		require.Equal(t, http.StatusOK, res.Code, "body=%s", res.Body.String())
+		require.Len(t, body.Data.Cells, 1)
+		assert.Equal(t, "default", body.Data.Cells[0].Group)
+		assert.Equal(t, "m01", body.Data.Cells[0].Model)
+	})
+
+	t.Run("已登录用户按本人分组,不被默认分组顶替", func(t *testing.T) {
+		res, body := callPlazaMatrix(t, "models=m01", 7, "vip")
+		require.Equal(t, http.StatusOK, res.Code, "body=%s", res.Body.String())
+		assert.Empty(t, body.Data.Cells, "vip 在这份清单里一个分组都不可见")
+	})
+
+	t.Run("匿名可达所以 models 必填,不能拉全量矩阵", func(t *testing.T) {
+		res, _ := callPlazaMatrix(t, "", 0, "")
+		assert.Equal(t, http.StatusBadRequest, res.Code)
 	})
 }

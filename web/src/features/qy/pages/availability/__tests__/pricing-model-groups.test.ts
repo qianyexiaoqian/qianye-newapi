@@ -25,25 +25,21 @@ import type { QyAvailCell, QyAvailState } from '../types'
 /**
  * 模型广场详情页「性能」标签的口径。
  *
- * 项目方要求:登录后各分组的模型状态必须与「模型可用率」页同一口径。
+ * 项目方要求:各分组的模型状态必须与「模型可用率」页同一口径,未登录按注册默认分组。
  * 两件事钉在这里:什么时候用扩展口径、单个模型那张表留哪些分组。
  */
 
 const base = {
-  signedIn: true,
   configLoading: false,
   extensionEnabled: true,
   availabilityOn: true,
 }
 
 describe('qyPricingPerfSource', () => {
-  test('uses the extension availability for a signed-in user when the feature is on', () => {
+  test('uses the extension availability whenever the feature is on', () => {
+    // 项目方要求:登录与否都用扩展口径,所以判据里根本没有登录态 ——
+    // 未登录访客的分组由后端按注册默认用户分组裁剪。
     assert.equal(qyPricingPerfSource(base), 'qy')
-  })
-
-  test('falls back to upstream metrics for an anonymous visitor', () => {
-    // 可用率接口要求登录;匿名访客拿不到扩展口径,只能回落。
-    assert.equal(qyPricingPerfSource({ ...base, signedIn: false }), 'upstream')
   })
 
   test('waits instead of flashing upstream numbers while the config loads', () => {
@@ -53,7 +49,7 @@ describe('qyPricingPerfSource', () => {
     )
   })
 
-  test('falls back to upstream when the availability feature is off', () => {
+  test('falls back to upstream only when the availability feature is off', () => {
     assert.equal(
       qyPricingPerfSource({ ...base, availabilityOn: false }),
       'upstream'

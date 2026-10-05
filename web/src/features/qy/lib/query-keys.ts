@@ -190,6 +190,8 @@ export const qyKeys = {
 
   availabilityMatrix: (params: unknown) =>
     [...qyKeys.all, 'availability', 'matrix', params] as const,
+  availabilityPlaza: (params: unknown) =>
+    [...qyKeys.all, 'availability', 'plaza', params] as const,
   availabilitySeries: (params: unknown) =>
     [...qyKeys.all, 'availability', 'series', params] as const,
 

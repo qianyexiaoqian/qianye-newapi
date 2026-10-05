@@ -31,6 +31,16 @@ export function getQyAvailabilityMatrix(
   return qyGet<QyAvailMatrix>('/availability/matrix', params)
 }
 
+/**
+ * 模型广场详情页用的矩阵。登录与否都能调:已登录按本人可见分组,未登录按
+ * 注册默认用户分组(服务端裁剪)。匿名可达,所以服务端要求 `models` 必填。
+ */
+export function getQyAvailabilityPlazaMatrix(
+  params: QyAvailMatrixParams
+): Promise<QyAvailMatrix> {
+  return qyGet<QyAvailMatrix>('/availability/plaza/matrix', params)
+}
+
 /** 单个模型在各可见分组下的可用率趋势。`groups` 为逗号分隔 CSV。 */
 export function getQyAvailabilitySeries(params: {
   model: string

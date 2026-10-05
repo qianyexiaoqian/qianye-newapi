@@ -28,7 +28,7 @@ import { StatusBadge } from '@/components/status-badge'
 
 import { qyKeys } from '../../../lib/query-keys'
 import { formatQyAvailability, formatQyMs } from '../../ops/format'
-import { getQyAvailabilityMatrix } from '../api'
+import { getQyAvailabilityPlazaMatrix } from '../api'
 import {
   formatQyTps,
   getQyAvailStateStyle,
@@ -51,8 +51,8 @@ export function QyModelGroupAvailability(props: { modelName: string }) {
     [props.modelName]
   )
   const query = useQuery({
-    queryKey: qyKeys.availabilityMatrix(params),
-    queryFn: () => getQyAvailabilityMatrix(params),
+    queryKey: qyKeys.availabilityPlaza(params),
+    queryFn: () => getQyAvailabilityPlazaMatrix(params),
     staleTime: 60_000,
   })
   const rows = useMemo(

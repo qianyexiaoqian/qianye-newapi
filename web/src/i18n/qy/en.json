@@ -5005,8 +5005,8 @@
   "qy_gs_token_default_search_ph": "Search groups",
   "qy_gs_token_default_search_no_match": "No user group matches \"{{keyword}}\". Try another word, or clear the box for the full list.",
   "qy_avl_pricing_title": "Availability by group (last 24 hours)",
-  "qy_avl_pricing_desc": "Same definition as the Model Availability page: only groups you can use, and samples that do not reflect channel health (such as your own request errors) are excluded.",
-  "qy_avl_pricing_empty": "This model has no requests in your groups during the last 24 hours yet.",
+  "qy_avl_pricing_desc": "Same definition as the Model Availability page. Signed in: the groups you can use; not signed in: the groups available to newly registered users. Samples that do not reflect channel health (such as request errors on the caller side) are excluded.",
+  "qy_avl_pricing_empty": "This model has no requests in these groups during the last 24 hours yet.",
   "qy_avl_pricing_open_full": "Open Model Availability",
   "qy_avl_pricing_loading": "Loading availability…"
 }
