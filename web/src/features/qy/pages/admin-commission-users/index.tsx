@@ -46,6 +46,7 @@ import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
 import { qyAdminCommissionUsersQuery } from './api'
 import { QyAdminCommissionCreditsTable } from './components/credits-table'
+import { QyAdminStardustOverviewTable } from './components/stardust-overview-table'
 import { UserCommissionDrilldown } from './components/user-commission-drilldown'
 import {
   QY_COMMISSION_USER_FILTERS,
@@ -59,7 +60,8 @@ import {
 /**
  * 「佣金用户」——「结算台」的第三张标签（D-15 恢复）。
  *
- * 三个次级标签回答同一件事的三个切面：
+ * 四个次级标签：
+ *   · 星屑总览（默认）：每个用户的星屑按来源拆开 —— 自身返还 / 下游返还 / 其他 / 已花费；
  *   · 用户总览：**一行 = 一个用户**，上线是谁、拉了多少人、四列额度、行内改佣金；
  *   · 余额对账：恒等式与 `ledger_drift`，改钱之前先看这一张；
  *   · 入账记录：佣金余额 → 星屑余额的每一笔入账，带着星屑流水号。
@@ -78,12 +80,17 @@ export function QyAdminCommissionUsersBody() {
   const { t } = useTranslation()
 
   return (
-    <Tabs defaultValue='users' className='gap-3'>
+    <Tabs defaultValue='stardust' className='gap-3'>
       <TabsList>
+        {/* 星屑总览排第一:项目方要看的是「每个人手上有多少星屑、从哪来的」。 */}
+        <TabsTrigger value='stardust'>{t('qy_sdo_title')}</TabsTrigger>
         <TabsTrigger value='users'>{t('qy_cu_title')}</TabsTrigger>
         <TabsTrigger value='balances'>{t('qy_cb_title')}</TabsTrigger>
         <TabsTrigger value='credits'>{t('qy_cu_tab_credits')}</TabsTrigger>
       </TabsList>
+      <TabsContent value='stardust'>
+        <QyAdminStardustOverviewTable />
+      </TabsContent>
       <TabsContent value='users'>
         <UsersTable />
       </TabsContent>

@@ -85,6 +85,7 @@ GET /api/qy/admin/stardust/ledger
 GET /api/qy/admin/stardust/ledger-check
 GET /api/qy/admin/stardust/plan-rewards/:plan_id
 GET /api/qy/admin/stardust/settle/status
+GET /api/qy/admin/stardust/user-summary
 GET /api/qy/admin/subscription/plans-usage
 GET /api/qy/admin/subscription/plans/:plan_id/entitlement
 GET /api/qy/admin/subscription/plans/:plan_id/holders

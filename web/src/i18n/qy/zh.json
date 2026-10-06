@@ -5013,5 +5013,20 @@
   "qy_vio_notice_opt_label": "违规记录页公告 {{n}}",
   "qy_vio_notice_opt_placeholder": "例如：浅梦号池促销、免费の渠道分组的请求会进行违规审计。",
   "qy_vio_notice_opt_desc": "以横幅形式显示在用户「我的违规记录」页顶部，按纯文本展示并保留换行，最多 {{max}} 字。留空则不显示这一条。",
-  "qy_vio_notice_opt_too_long": "公告最多 {{max}} 字"
+  "qy_vio_notice_opt_too_long": "公告最多 {{max}} 字",
+  "qy_sdo_title": "星屑总览",
+  "qy_sdo_scope": "每个用户的星屑，按来源拆开",
+  "qy_sdo_scope_hint": "自身返还：自己消费、自己买套餐返的。下游返还：下线消费 / 充值 / 兑换码 / 注册返给他的、下线买套餐返给他的，以及推广佣金入账。其他：活动派奖、退款、管理员手调（净额）。可用 = 自身 + 下游 + 其他 − 已花费。",
+  "qy_sdo_col_available": "可用",
+  "qy_sdo_col_self": "自身返还",
+  "qy_sdo_col_downline": "下游返还",
+  "qy_sdo_col_other": "其他",
+  "qy_sdo_col_spent": "已花费",
+  "qy_sdo_sort_available": "可用最多",
+  "qy_sdo_sort_self": "自身返还最多",
+  "qy_sdo_sort_downline": "下游返还最多",
+  "qy_sdo_sort_other": "其他最多",
+  "qy_sdo_sort_spent": "已花费最多",
+  "qy_sdo_empty_title": "还没有人有星屑",
+  "qy_sdo_empty_desc": "用户获得或花费过星屑之后，会出现在这里。"
 }

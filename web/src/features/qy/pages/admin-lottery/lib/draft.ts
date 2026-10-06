@@ -21,6 +21,7 @@ import {
   qyLotBallUnreachableTiers,
   type QyLotBallPool,
 } from '../../lottery/lib/ball'
+import { newQyRequestId } from '../../lib/request-id'
 import { parseQyLotRules } from '../../lottery/lib/rules'
 import {
   QY_LOT_EMPTY_RULES,
@@ -131,7 +132,7 @@ export type QyLotOptionDraft = {
 
 /** 新增一行选项。`id` 只活在表单里，提交时被丢弃。 */
 export function qyLotNewOption(isCatchAll = false): QyLotOptionDraft {
-  return { id: crypto.randomUUID(), label: '', is_catch_all: isCatchAll }
+  return { id: newQyRequestId(), label: '', is_catch_all: isCatchAll }
 }
 
 export type QyLotDraft = {
@@ -329,7 +330,7 @@ export function qyLotDraftFromActivity(
     options:
       activity.kind === 'guess'
         ? options.map((option) => ({
-            id: crypto.randomUUID(),
+            id: newQyRequestId(),
             label: option.label,
             is_catch_all: option.is_catch_all,
           }))

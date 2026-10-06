@@ -104,3 +104,70 @@ func TestAdminListsBalancesLedgerAndAccruals(t *testing.T) {
 	assert.Equal(t, codeBadRequest, codeOf(t,
 		call(t, r, http.MethodGet, "/api/qy/admin/stardust/accruals?status=weird", ""), http.StatusBadRequest))
 }
+
+// 「结算台 → 佣金用户 → 星屑总览」:每个用户的星屑按来源拆成 自身 / 下游 / 其他 / 已花费。
+//
+// 每一类都至少灌一笔,外加一个没有任何流水的余额行;断言拆分正确、
+// 可用 = 自身 + 下游 + 其他 − 已花费,以及排序列与关键词检索生效。
+func TestAdminStardustUserSummarySplitsBySource(t *testing.T) {
+	env := newAPIEnv(t, nil)
+	env.seedUser(t, 901, "alice", common.RoleCommonUser)
+	env.seedUser(t, 902, "bob", common.RoleCommonUser)
+	env.seedUser(t, 903, "carol", common.RoleCommonUser)
+
+	credit := func(uid int, kind Kind, amount int64, key string) {
+		_, err := Credit(env.ext, Posting{UserId: uid, Kind: kind, Amount: amount, IdemScope: "t", IdemKey: key, PeerUserId: 999})
+		require.NoError(t, err)
+	}
+	// alice:自身 30+5,下游 7+3+2,其他 100(派奖),花掉 20。
+	credit(901, KindConsumeRebate, 30, "a1")
+	credit(901, KindPlanBuyer, 5, "a2")
+	credit(901, KindInviteConsume, 7, "a3")
+	credit(901, KindCommissionCredit, 3, "a4")
+	credit(901, KindPlanInviter, 2, "a5")
+	credit(901, KindLotPrize, 100, "a6")
+	_, err := Debit(env.ext, Posting{UserId: 901, Kind: KindLotStake, Amount: 20, IdemScope: "t", IdemKey: "a7", ActNo: "LT-1"})
+	require.NoError(t, err)
+	// bob:只有下游 50。
+	credit(902, KindInviteTopup, 50, "b1")
+	// carol:有余额行、没有任何流水(手工建行,模拟历史上建过行的账号)。
+	require.NoError(t, env.ext.Create(&Balance{UserId: 903}).Error)
+
+	r := adminRouter(7, common.RoleAdminUser)
+	data := dataOf(t, call(t, r, http.MethodGet, "/api/qy/admin/stardust/user-summary", ""))
+	assert.EqualValues(t, 3, data["total"])
+	byUser := map[float64]map[string]any{}
+	order := []float64{}
+	for _, it := range itemsOf(t, data) {
+		byUser[it["user_id"].(float64)] = it
+		order = append(order, it["user_id"].(float64))
+	}
+	assert.Equal(t, []float64{901, 902, 903}, order, "默认按可用星屑降序")
+
+	alice := byUser[901]
+	assert.Equal(t, "alice", alice["username"])
+	assert.EqualValues(t, 35, alice["self_earned"])
+	assert.EqualValues(t, 12, alice["downline_earned"])
+	assert.EqualValues(t, 100, alice["other_earned"])
+	assert.EqualValues(t, 20, alice["spent"])
+	assert.EqualValues(t, 127, alice["available"])
+	assert.EqualValues(t,
+		alice["self_earned"].(float64)+alice["downline_earned"].(float64)+alice["other_earned"].(float64)-alice["spent"].(float64),
+		alice["available"], "可用 = 自身 + 下游 + 其他 − 已花费")
+
+	assert.EqualValues(t, 50, byUser[902]["downline_earned"])
+	assert.EqualValues(t, 0, byUser[902]["self_earned"])
+	for _, col := range []string{"available", "self_earned", "downline_earned", "other_earned", "spent"} {
+		assert.EqualValues(t, 0, byUser[903][col], "没有流水的余额行 %s 必须是 0", col)
+	}
+
+	data = dataOf(t, call(t, r, http.MethodGet, "/api/qy/admin/stardust/user-summary?sort=downline", ""))
+	first := itemsOf(t, data)[0]
+	assert.EqualValues(t, 902, first["user_id"], "按下游返还排序时 bob(50)排第一")
+
+	data = dataOf(t, call(t, r, http.MethodGet, "/api/qy/admin/stardust/user-summary?keyword=bob", ""))
+	assert.EqualValues(t, 1, data["total"])
+	assert.EqualValues(t, 902, itemsOf(t, data)[0]["user_id"])
+
+	codeOf(t, call(t, r, http.MethodGet, "/api/qy/admin/stardust/user-summary?sort=password", ""), http.StatusBadRequest)
+}

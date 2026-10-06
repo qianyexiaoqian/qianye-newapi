@@ -150,3 +150,40 @@ export type QyStardustSettleRerunResult = {
   /** 这一跑真正发出去的星屑总数。 */
   granted: number
 }
+
+/**
+ * 「结算台 → 佣金用户 → 星屑总览」的一行:这个用户的星屑按来源拆开。
+ *
+ * 归类按流水种类(后端 `api_admin_user_summary.go`):
+ * - 自身返还:自己消费返、自己买套餐返;
+ * - 下游返还:下线消费 / 充值 / 兑换码 / 注册返给他、下线买套餐返给他、推广佣金入账;
+ * - 其他:活动派奖、退款、管理员手调(净额),以及以后新增的种类;
+ * - 已花费:活动报名 / 投注、商城下单(正数)。
+ *
+ * 可用 = 自身 + 下游 + 其他 − 已花费。
+ */
+export type QyStardustUserSummaryRow = {
+  user_id: number
+  username: string
+  available: number
+  self_earned: number
+  downline_earned: number
+  other_earned: number
+  spent: number
+}
+
+export const QY_STARDUST_USER_SUMMARY_SORTS = [
+  'available',
+  'self',
+  'downline',
+  'other',
+  'spent',
+] as const
+
+export type QyStardustUserSummarySort =
+  (typeof QY_STARDUST_USER_SUMMARY_SORTS)[number]
+
+export type QyStardustUserSummaryParams = QyPageParams & {
+  sort: QyStardustUserSummarySort
+  keyword?: string
+}

@@ -37,6 +37,7 @@ import { isQyError, qyErrorMessage } from '../../../lib/api'
 import { formatSdWithUnit } from '../../../lib/format-sd'
 import { qyTabTarget } from '../../../lib/pages'
 import { qyKeys } from '../../../lib/query-keys'
+import { newQyRequestId } from '../../lib/request-id'
 import { QyKeyValue } from '../../ops/qy-ops-ui'
 import { submitQyLotEntry } from '../api'
 import {
@@ -125,7 +126,7 @@ export function QyLotEntryDialog(props: {
   // 每次**打开**重置一次：请求号在这一刻定死，后续重试沿用同一个。
   useEffect(() => {
     if (!props.open) return
-    setRequestId(crypto.randomUUID())
+    setRequestId(newQyRequestId())
     setOptNo(0)
     setPick({ reds: [], blues: [] })
     setLines([])

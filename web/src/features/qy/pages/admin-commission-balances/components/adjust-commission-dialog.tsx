@@ -36,6 +36,7 @@ import { qyErrorMessage } from '../../../lib/api'
 import { formatSdWithUnit } from '../../../lib/format-sd'
 import { qyKeys } from '../../../lib/query-keys'
 import { QY_FUND_REASON_MIN_RUNES, qyRuneLength } from '../../lib/constants'
+import { newQyRequestId } from '../../lib/request-id'
 import { qyAdjustCommission } from '../api'
 
 /**
@@ -102,7 +103,7 @@ export function AdjustCommissionDialog(props: AdjustCommissionDialogProps) {
     setDirection('add')
     setAmount('')
     setReason('')
-    setRequestId(crypto.randomUUID())
+    setRequestId(newQyRequestId())
   }, [props.balance])
 
   const mutation = useMutation({

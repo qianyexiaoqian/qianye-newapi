@@ -89,23 +89,9 @@ func handleAdminListBalances(c *gin.Context) {
 		q = q.Where("user_id = ?", uid)
 	}
 	if kw := strings.TrimSpace(c.Query("keyword")); kw != "" {
-		if model.DB == nil {
-			respondErr(c, db.ErrNotReady)
-			return
-		}
-		// 纯数字优先当 id 精确匹配,同时仍然 OR 上用户名 / 邮箱的前缀匹配 ——
-		// 用户名叫 "123" 的账号确实存在。检索走 httpq.SearchLike:转义通配符、折叠大小写,
-		// 三种数据库同一口径。
-		expr, pattern := httpq.SearchLike(kw, httpq.MatchPrefix, "username", "email")
-		uq := model.DB.WithContext(ctx).Unscoped().Model(&model.User{})
-		if id := httpq.Int(c, "keyword", 0); id > 0 {
-			uq = uq.Where("id = ? OR "+expr, id, pattern, pattern)
-		} else {
-			uq = uq.Where(expr, pattern, pattern)
-		}
-		ids := make([]int, 0, maxKeywordMatches)
-		if err := uq.Order("id asc").Limit(maxKeywordMatches).Pluck("id", &ids).Error; err != nil {
-			respondErr(c, wrapInternal("按关键词检索用户", err))
+		ids, err := keywordUserIds(ctx, c, kw)
+		if err != nil {
+			respondErr(c, err)
 			return
 		}
 		if len(ids) == 0 {
@@ -144,6 +130,29 @@ func handleAdminListBalances(c *gin.Context) {
 		})
 	}
 	respondOK(c, gin.H{"items": items, "total": total, "page": page, "page_size": size})
+}
+
+// keywordUserIds 把 keyword(id / 用户名 / 邮箱前缀)解析成主库的 user_id 列表,
+// 最多 maxKeywordMatches 个。余额列表与星屑总览两张管理表共用这一份判据。
+func keywordUserIds(ctx context.Context, c *gin.Context, kw string) ([]int, error) {
+	if model.DB == nil {
+		return nil, db.ErrNotReady
+	}
+	// 纯数字优先当 id 精确匹配,同时仍然 OR 上用户名 / 邮箱的前缀匹配 ——
+	// 用户名叫 "123" 的账号确实存在。检索走 httpq.SearchLike:转义通配符、折叠大小写,
+	// 三种数据库同一口径。
+	expr, pattern := httpq.SearchLike(kw, httpq.MatchPrefix, "username", "email")
+	uq := model.DB.WithContext(ctx).Unscoped().Model(&model.User{})
+	if id := httpq.Int(c, "keyword", 0); id > 0 {
+		uq = uq.Where("id = ? OR "+expr, id, pattern, pattern)
+	} else {
+		uq = uq.Where(expr, pattern, pattern)
+	}
+	ids := make([]int, 0, maxKeywordMatches)
+	if err := uq.Order("id asc").Limit(maxKeywordMatches).Pluck("id", &ids).Error; err != nil {
+		return nil, wrapInternal("按关键词检索用户", err)
+	}
+	return ids, nil
 }
 
 // handleAdminListLedger 分页返回流水,可按 user_id / kind / act_no 筛。

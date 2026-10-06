@@ -33,6 +33,8 @@ import type {
   QyStardustLedgerCheck,
   QyStardustSettleRerunResult,
   QyStardustSettleStatus,
+  QyStardustUserSummaryParams,
+  QyStardustUserSummaryRow,
 } from './types'
 
 /**
@@ -111,5 +113,20 @@ export function rerunQyStardustSettle(
 ): Promise<QyStardustSettleRerunResult> {
   return qyPost<QyStardustSettleRerunResult>('/admin/stardust/settle/rerun', {
     day,
+  })
+}
+
+/** 「结算台 → 佣金用户 → 星屑总览」:每个用户的星屑按来源拆分,可排序、可检索。 */
+export function qyAdminStardustUserSummaryQuery(
+  params: QyStardustUserSummaryParams
+) {
+  return queryOptions({
+    queryKey: qyKeys.adminStardustUserSummary(params),
+    queryFn: () =>
+      qyGet<QyPage<QyStardustUserSummaryRow>>(
+        '/admin/stardust/user-summary',
+        params
+      ),
+    staleTime: 15_000,
   })
 }

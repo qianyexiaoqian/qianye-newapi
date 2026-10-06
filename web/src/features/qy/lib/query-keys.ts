@@ -444,6 +444,8 @@ export const qyKeys = {
     [...qyKeys.all, 'admin', 'stardust', 'plan-rewards', planId] as const,
   adminStardustBalances: (params: unknown) =>
     [...qyKeys.all, 'admin', 'stardust', 'balances', params] as const,
+  adminStardustUserSummary: (params: unknown) =>
+    [...qyKeys.all, 'admin', 'stardust', 'user-summary', params] as const,
   adminStardustLedger: (params: unknown) =>
     [...qyKeys.all, 'admin', 'stardust', 'ledger', params] as const,
   adminStardustAccruals: (params: unknown) =>

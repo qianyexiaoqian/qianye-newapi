@@ -5013,5 +5013,20 @@
   "qy_vio_notice_opt_label": "Violation records page notice {{n}}",
   "qy_vio_notice_opt_placeholder": "e.g. Requests in the promo and free groups are audited for violations.",
   "qy_vio_notice_opt_desc": "Shown as a banner at the top of users' \"My violation records\" page, as plain text with line breaks kept. Up to {{max}} characters. Leave empty to hide this banner.",
-  "qy_vio_notice_opt_too_long": "The notice can be at most {{max}} characters"
+  "qy_vio_notice_opt_too_long": "The notice can be at most {{max}} characters",
+  "qy_sdo_title": "Stardust overview",
+  "qy_sdo_scope": "Every user's stardust, split by where it came from",
+  "qy_sdo_scope_hint": "Own rebates: their own usage and plan purchases. Downline rebates: invitee usage / top-ups / redemption codes / sign-ups, invitee plan purchases, and commission credits. Other: event prizes, refunds and manual adjustments (net). Available = own + downline + other − spent.",
+  "qy_sdo_col_available": "Available",
+  "qy_sdo_col_self": "Own rebates",
+  "qy_sdo_col_downline": "Downline rebates",
+  "qy_sdo_col_other": "Other",
+  "qy_sdo_col_spent": "Spent",
+  "qy_sdo_sort_available": "Most available first",
+  "qy_sdo_sort_self": "Most own rebates first",
+  "qy_sdo_sort_downline": "Most downline rebates first",
+  "qy_sdo_sort_other": "Most other first",
+  "qy_sdo_sort_spent": "Most spent first",
+  "qy_sdo_empty_title": "No stardust yet",
+  "qy_sdo_empty_desc": "Users appear here once they have received or spent any stardust."
 }

@@ -46,6 +46,7 @@ import { useStardustName } from '../../../hooks/use-stardust-name'
 import { isQyError, qyErrorMessage } from '../../../lib/api'
 import { formatSdWithUnit } from '../../../lib/format-sd'
 import { qyKeys } from '../../../lib/query-keys'
+import { newQyRequestId } from '../../lib/request-id'
 import { QyLotFinePrint } from '../../lottery/components/lottery-fine-print'
 import { qyLotTiers, type QyLotActivityDetail } from '../../lottery/types'
 import { QyMallKindBadge } from '../../mall/components/mall-kind-badge'
@@ -127,7 +128,7 @@ export function QyWheelSpinDialog(props: {
   const payPasswordRequired = activity.pay_password_required === true
   const reset = useCallback(
     (keepPasswordGate: boolean) => {
-      setRequestId(crypto.randomUUID())
+      setRequestId(newQyRequestId())
       setClientSeed(qyWheelRandomClientSeed())
       setPayPassword('')
       if (!keepPasswordGate) setNeedsPayPassword(payPasswordRequired)
