@@ -285,13 +285,21 @@ describe('QyResponsiveDialog 的两种形态', () => {
     const contentClasses = classes(content)
     for (const token of [
       'fixed',
-      'top-1/2',
       'left-1/2',
       '-translate-x-1/2',
       '-translate-y-1/2',
     ]) {
       assert.ok(contentClasses.has(token), `居中定位缺少 ${token}`)
     }
+    // 上游 rc.41 把纵向中点从 top-1/2 换成了可视视口中线（软键盘弹起时仍居中），
+    // 两种写法都是「垂直居中」。
+    assert.ok(
+      contentClasses.has('top-1/2') ||
+        [...contentClasses].some((c) =>
+          c.startsWith('top-[var(--dialog-viewport-center')
+        ),
+      '居中定位缺少纵向中点'
+    )
     assert.ok(
       [...contentClasses].some((c) => c.startsWith('max-h-')),
       '窗口必须有高度上限，否则内容一多就整体超出视口（截图里被裁掉的正是这种）'

@@ -49,3 +49,29 @@ export function qyResolveAddressOptions(
     },
   ]
 }
+
+/** 上游「API 地址」弹出列表(`ApiKeysPrimaryButtons`)的一项。 */
+export type QyApiInfoItem = {
+  url: string
+  route: string
+  description: string
+}
+
+/**
+ * 把二开地址簿换成上游「API 地址」弹出列表的形状。
+ *
+ * 密钥页右上角那个弹出列表原先只读上游「控制台设置 → API 信息」,与页面左侧
+ * 地址卡(二开地址簿)是两份数据,运营改了地址簿,右上角仍挂着旧地址。现在地址簿
+ * 优先;返回空数组表示地址簿一条都没有(或扩展未启用),调用方照旧回落上游配置。
+ */
+export function qyAddressBookAsApiInfo(
+  list: QyApiAddressOption[] | undefined
+): QyApiInfoItem[] {
+  return (list ?? [])
+    .filter((option) => option.url.trim() !== '')
+    .map((option) => ({
+      url: option.url,
+      route: option.name,
+      description: option.remark,
+    }))
+}

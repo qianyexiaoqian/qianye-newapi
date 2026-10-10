@@ -20,7 +20,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { BookUser, CircleCheck, TriangleAlert } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -59,7 +59,18 @@ import { QY_TRANSFER_REMARK_MAX_RUNES, qyRuneLength } from '../../lib/constants'
 import { useQyRequestId } from '../../lib/request-id'
 import { qyCreateTransfer, qyPreviewTransfer } from '../api'
 import { qyTransferBlockedKey } from '../lib/blocked-reason'
-import type { QyTransferLimits, QyTransferPreview } from '../types'
+import {
+  qyIsAmbiguousPreview,
+  qyPinnedBy,
+  qyRecipientInputHints,
+  type QyPinnedRecipient,
+} from '../lib/recipient-lookup'
+import type {
+  QyRecipientCandidate,
+  QyTransferLimits,
+  QyTransferPreview,
+} from '../types'
+import { RecipientCandidates } from './recipient-candidates'
 import { TransferContactsDialog } from './transfer-contacts'
 
 type TransferFormProps = {
@@ -95,8 +106,12 @@ export function TransferForm(props: TransferFormProps) {
   const [payBlocked, setPayBlocked] = useState(false)
   const [contactsOpen, setContactsOpen] = useState(false)
 
+  // 用户在歧义候选里（或从通讯录）选定的查找方式，绑定在当时的输入上。
+  // 用 ref 而不是 state：选定之后紧接着就要发预校验，state 要等下一次渲染才可见。
+  const pinnedRef = useRef<QyPinnedRecipient | null>(null)
+
   const limits = props.limits
-  const acceptsEmail = limits.recipient_lookup === 'id_or_email'
+  const hints = qyRecipientInputHints(limits.recipient_lookup)
 
   const schema = useMemo(
     () =>
@@ -192,11 +207,32 @@ export function TransferForm(props: TransferFormProps) {
   const canSubmit =
     !props.degraded && senderBlockedKey == null && !cooling && !outOfDailyCount
 
+  const ambiguous = qyIsAmbiguousPreview(preview)
   const recipientBlockedKey =
-    preview == null || preview.receivable
+    preview == null || preview.receivable || ambiguous
       ? null
       : (qyTransferBlockedKey(preview.blocked_reason) ??
         'qy_tr_blk_unavailable')
+
+  const runPreview = form.handleSubmit((data) =>
+    previewMutation.mutate({
+      identifier: data.identifier,
+      amount: data.quota,
+      by: qyPinnedBy(pinnedRef.current, data.identifier),
+    })
+  )
+
+  // 选定一个候选 = 把输入框改成对方的用户 ID，并钉住「按 ID」重新预校验。
+  // 不钉住的话，那串数字回到自动判断，又会命中同样的两个人。
+  const pickCandidate = (candidate: QyRecipientCandidate) => {
+    const identifier = String(candidate.user_id)
+    pinnedRef.current = { identifier, by: 'id' }
+    form.setValue('identifier', identifier, {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+    void runPreview()
+  }
 
   const remarkLength = qyRuneLength(form.watch('remark') ?? '')
 
@@ -223,15 +259,7 @@ export function TransferForm(props: TransferFormProps) {
         )}
 
         <Form {...form}>
-          <form
-            className='space-y-4'
-            onSubmit={form.handleSubmit((data) =>
-              previewMutation.mutate({
-                identifier: data.identifier,
-                amount: data.quota,
-              })
-            )}
-          >
+          <form className='space-y-4' onSubmit={runPreview}>
             <FormField
               control={form.control}
               name='identifier'
@@ -248,12 +276,8 @@ export function TransferForm(props: TransferFormProps) {
                       <Input
                         {...field}
                         autoComplete='off'
-                        inputMode={acceptsEmail ? 'text' : 'numeric'}
-                        placeholder={
-                          acceptsEmail
-                            ? t('qy_tr_recipient_ph_id_email')
-                            : t('qy_tr_recipient_ph_id')
-                        }
+                        inputMode={hints.inputMode}
+                        placeholder={t(hints.placeholderKey)}
                         disabled={!canSubmit}
                       />
                     </FormControl>
@@ -269,9 +293,7 @@ export function TransferForm(props: TransferFormProps) {
                     </Button>
                   </div>
                   <FormDescription className='text-xs'>
-                    {acceptsEmail
-                      ? t('qy_tr_recipient_help_id_email')
-                      : t('qy_tr_recipient_help_id')}
+                    {t(hints.helpKey)}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -335,6 +357,15 @@ export function TransferForm(props: TransferFormProps) {
           </form>
         </Form>
 
+        {ambiguous && preview?.candidates != null && (
+          <RecipientCandidates
+            identifier={previewMutation.variables?.identifier ?? ''}
+            candidates={preview.candidates}
+            disabled={!canSubmit || previewMutation.isPending}
+            onPick={pickCandidate}
+          />
+        )}
+
         {recipientBlockedKey != null && (
           <Alert variant='destructive'>
             <TriangleAlert />
@@ -374,10 +405,12 @@ export function TransferForm(props: TransferFormProps) {
       <TransferContactsDialog
         open={contactsOpen}
         onOpenChange={setContactsOpen}
-        acceptsEmail={acceptsEmail}
+        recipientLookup={limits.recipient_lookup}
         pickDisabled={!canSubmit}
         degraded={props.degraded}
         onPick={(contact) => {
+          // 联系人存的是用户 ID：钉住「按 ID」，免得这串数字恰好也是别人的用户名。
+          pinnedRef.current = { identifier: String(contact.user_id), by: 'id' }
           form.setValue('identifier', String(contact.user_id), {
             shouldDirty: true,
             shouldValidate: true,

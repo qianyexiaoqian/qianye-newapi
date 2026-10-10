@@ -5028,5 +5028,13 @@
   "qy_sdo_sort_other": "其他最多",
   "qy_sdo_sort_spent": "已花费最多",
   "qy_sdo_empty_title": "还没有人有星屑",
-  "qy_sdo_empty_desc": "用户获得或花费过星屑之后，会出现在这里。"
+  "qy_sdo_empty_desc": "用户获得或花费过星屑之后，会出现在这里。",
+  "qy_tr_recipient_ph_id_username": "请输入收款人的用户 ID 或完整用户名",
+  "qy_tr_recipient_help_id_username": "支持用户 ID 或完整用户名精确匹配，不提供模糊搜索。",
+  "qy_tr_ambiguous_title": "匹配到多个账号",
+  "qy_tr_ambiguous_desc": "「{{identifier}}」既是一个用户 ID，又是另一个人的用户名。请确认你要的是哪一个：",
+  "qy_tr_matched_by_id": "按用户 ID 匹配",
+  "qy_tr_matched_by_username": "按用户名匹配",
+  "qy_tr_pick_candidate": "选这个",
+  "qy_err_contact_ambiguous": "这个输入同时匹配一个用户 ID 和另一个人的用户名，请选择要添加的账号"
 }

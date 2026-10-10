@@ -892,3 +892,45 @@ func verifyAPITokenAudit(t *testing.T) {
 		assert.EqualValues(t, 1, count)
 	})
 }
+
+// 额度用完(已耗尽)的令牌在密钥页加了额度,保存当场就要恢复成「启用」。
+//
+// 用户反馈:设 200 额度、用完、再加额度,密钥仍然显示已耗尽。保存只改了额度,
+// 状态停在 4,要等发一次请求由鉴权入口自愈 —— 用户看到「已耗尽」不会去试。
+// 请求体与前端编辑抽屉 transformFormDataToPayload 一致:不带 status。
+func TestUpdateTokenRevivesExhaustedTokenWhenQuotaIsRaised(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		remain     int
+		unlimited  bool
+		wantStatus int
+	}{
+		{"加了额度:已耗尽 → 启用", common.TokenStatusExhausted, 200 * 500000, false, common.TokenStatusEnabled},
+		{"改成无限额度:已耗尽 → 启用", common.TokenStatusExhausted, 0, true, common.TokenStatusEnabled},
+		{"额度仍是 0:保持已耗尽", common.TokenStatusExhausted, 0, false, common.TokenStatusExhausted},
+		{"手动停用的令牌加额度也不会被打开", common.TokenStatusDisabled, 200 * 500000, false, common.TokenStatusDisabled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupTokenControllerTestDB(t)
+			token := seedToken(t, db, 1, "limited", "revive"+strconv.Itoa(tc.status)+strconv.Itoa(tc.remain))
+			require.NoError(t, db.Model(token).Updates(map[string]any{
+				"remain_quota": 0, "unlimited_quota": false, "status": tc.status,
+			}).Error)
+
+			body := map[string]any{
+				"id": token.Id, "name": "limited", "expired_time": -1,
+				"remain_quota": tc.remain, "unlimited_quota": tc.unlimited,
+				"model_limits_enabled": false, "model_limits": "", "allow_ips": "",
+				"group": "default", "auto_groups": []string{}, "cross_group_retry": false,
+			}
+			ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", body, 1)
+			UpdateToken(ctx)
+			require.True(t, decodeAPIResponse(t, recorder).Success)
+
+			var row model.Token
+			require.NoError(t, db.First(&row, token.Id).Error)
+			assert.Equal(t, tc.wantStatus, row.Status)
+		})
+	}
+}

@@ -31,9 +31,10 @@ import { Spinner } from '@/components/ui/spinner'
 import { QyConfirmDialog } from '../../../components/qy-confirm-dialog'
 import { QyMaskedUser } from '../../../components/qy-masked-user'
 import { QyResponsiveDialog } from '../../../components/qy-responsive-dialog'
-import { qyErrorMessage } from '../../../lib/api'
+import { isQyError, qyErrorMessage } from '../../../lib/api'
 import { qyKeys } from '../../../lib/query-keys'
 import { qyRuneLength } from '../../lib/constants'
+import { qyPreviewTransfer } from '../api'
 import {
   QY_CONTACT_ALIAS_MAX_RUNES,
   qyAddContact,
@@ -44,12 +45,15 @@ import {
   qyTransferContactsQuery,
   type QyContact,
 } from '../contacts'
+import { qyRecipientInputHints } from '../lib/recipient-lookup'
+import type { QyRecipientCandidate } from '../types'
+import { RecipientCandidates } from './recipient-candidates'
 
 type TransferContactsDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** `recipient_lookup === 'id_or_email'`，决定添加框接受什么。 */
-  acceptsEmail: boolean
+  /** `recipient_lookup`（id / id_or_email / id_or_username），决定添加框接受什么。 */
+  recipientLookup: string
   /**
    * 划转入口本身不可用（冷却中、今日次数用尽、风控阻断）。
    *
@@ -96,8 +100,8 @@ type TransferContactsDialogProps = {
  * ## 搜索的边界
  *
  * 搜索框只过滤**已经存下的联系人**（`qyFilterContacts`，纯前端）。它不是
- * "按用户名找陌生人"：那需要一个新的后端接口，而现有的 `lookup.go` 刻意
- * 只支持 ID / 邮箱精确匹配以防用户枚举。**添加**联系人这一步没有变，仍然走
+ * "按用户名找陌生人"：`lookup.go` 刻意只做 ID / 邮箱 / 用户名的**全等**匹配，
+ * 没有模糊搜索，以防用户枚举。**添加**联系人这一步没有变，仍然走
  * `POST /transfer/contacts` → `resolveRecipient`，与 `/transfer/preview`
  * 共用查找方式开关、反枚举日志与按用户限流。
  *
@@ -121,12 +125,31 @@ export function TransferContactsDialog(props: TransferContactsDialogProps) {
   const [adding, setAdding] = useState(false)
   const [identifier, setIdentifier] = useState('')
   const [newAlias, setNewAlias] = useState('')
+  // 添加时输入同时命中一个 ID 和另一个人的用户名：候选在这里，等用户手动选。
+  const [candidates, setCandidates] = useState<QyRecipientCandidate[] | null>(
+    null
+  )
+  const hints = qyRecipientInputHints(props.recipientLookup)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editingAlias, setEditingAlias] = useState('')
   const [pendingDelete, setPendingDelete] = useState<QyContact | null>(null)
 
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: qyKeys.transferContacts() })
+
+  const candidatesMutation = useMutation({
+    mutationFn: (value: string) =>
+      qyPreviewTransfer({ identifier: value, amount: 0 }),
+    onSuccess: (preview) => {
+      if ((preview.candidates?.length ?? 0) > 1) {
+        setCandidates(preview.candidates ?? null)
+        return
+      }
+      // 两次请求之间有人改了用户名，歧义已经不存在：让用户再点一次保存。
+      toast.error(t('qy_err_contact_ambiguous'))
+    },
+    onError: (error) => toast.error(qyErrorMessage(error, t)),
+  })
 
   const addMutation = useMutation({
     mutationFn: qyAddContact,
@@ -135,9 +158,18 @@ export function TransferContactsDialog(props: TransferContactsDialogProps) {
       setAdding(false)
       setIdentifier('')
       setNewAlias('')
+      setCandidates(null)
       await refresh()
     },
-    onError: (error) => toast.error(qyErrorMessage(error, t)),
+    onError: (error, variables) => {
+      if (isQyError(error) && error.code === 'qy_contact_ambiguous') {
+        // 添加接口只回一个错误码；候选（脱敏名 + ID）走预校验取，
+        // 与划转表单同一个解析入口、同一张反枚举日志。
+        candidatesMutation.mutate(variables.identifier)
+        return
+      }
+      toast.error(qyErrorMessage(error, t))
+    },
   })
 
   const renameMutation = useMutation({
@@ -169,7 +201,8 @@ export function TransferContactsDialog(props: TransferContactsDialogProps) {
     identifier.trim() !== '' &&
     identifier.trim().length <= 64 &&
     !aliasTooLong &&
-    !addMutation.isPending
+    !addMutation.isPending &&
+    !candidatesMutation.isPending
 
   return (
     <QyResponsiveDialog
@@ -228,24 +261,36 @@ export function TransferContactsDialog(props: TransferContactsDialogProps) {
                 className='h-8'
                 value={identifier}
                 autoComplete='off'
-                inputMode={props.acceptsEmail ? 'text' : 'numeric'}
-                placeholder={
-                  props.acceptsEmail
-                    ? t('qy_tr_recipient_ph_id_email')
-                    : t('qy_tr_recipient_ph_id')
-                }
-                onChange={(event) => setIdentifier(event.target.value)}
+                inputMode={hints.inputMode}
+                placeholder={t(hints.placeholderKey)}
+                onChange={(event) => {
+                  setIdentifier(event.target.value)
+                  setCandidates(null)
+                }}
               />
               {/* 与收款人输入框同一句提示：添加联系人走的是**同一套**解析
                   （同一个查找方式开关、同一张反枚举日志、同一个限流器），
                   因此接受什么、不接受什么必须显示成同一句话。
                   上面那个搜索框只翻自己已存的记录，两者不是一回事。 */}
               <p className='text-muted-foreground text-xs'>
-                {props.acceptsEmail
-                  ? t('qy_tr_recipient_help_id_email')
-                  : t('qy_tr_recipient_help_id')}
+                {t(hints.helpKey)}
               </p>
             </div>
+
+            {candidates != null && (
+              <RecipientCandidates
+                identifier={identifier.trim()}
+                candidates={candidates}
+                disabled={props.degraded || addMutation.isPending}
+                onPick={(candidate) =>
+                  addMutation.mutate({
+                    identifier: String(candidate.user_id),
+                    alias: newAlias,
+                    by: 'id',
+                  })
+                }
+              />
+            )}
 
             <div className='space-y-1.5'>
               <Label htmlFor='qy-ct-alias'>{t('qy_tr_ct_alias')}</Label>

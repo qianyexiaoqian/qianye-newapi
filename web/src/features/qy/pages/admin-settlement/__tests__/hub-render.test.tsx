@@ -149,6 +149,9 @@ function respond(request: QyProbeRequest) {
       },
     }
   }
+  if (request.url.endsWith('/admin/stardust/user-summary')) {
+    return { data: EMPTY_PAGE }
+  }
   if (request.url.endsWith('/admin/commission/users')) {
     return {
       data: {
@@ -260,6 +263,12 @@ describe('结算台的三张标签', () => {
       screen.router.state.location.hash,
       qyTabHash('/qy/admin/commission-users')
     )
+    // 次级标签「星屑总览」排第一、默认打开：此时只取总览，用户列表还没取。
+    assert.deepEqual(qyUrls(screen.sent), [
+      '/api/qy/admin/stardust/user-summary',
+    ])
+    screen.sent.length = 0
+    assert.ok(await screen.click(zh.qy_cu_title), '次级标签栏上没有「用户总览」')
     assert.deepEqual(qyUrls(screen.sent), ['/api/qy/admin/commission/users'])
     const text = screen.text()
     assert.ok(text.includes('bob'), '用户没渲染')
@@ -272,6 +281,8 @@ describe('结算台的三张标签', () => {
 
   test('带 hash 打开佣金用户时不先问第一张标签', async () => {
     const screen = await mountHub(qyTabHash('/qy/admin/commission-users'))
-    assert.deepEqual(qyUrls(screen.sent), ['/api/qy/admin/commission/users'])
+    assert.deepEqual(qyUrls(screen.sent), [
+      '/api/qy/admin/stardust/user-summary',
+    ])
   })
 })

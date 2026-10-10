@@ -568,6 +568,10 @@ func TestClassifyIdentifier(t *testing.T) {
 		{name: "拒绝零号用户", raw: "0", mode: config.RecipientLookupID},
 		{name: "拒绝空输入", raw: "", mode: config.RecipientLookupIDEmail},
 		{name: "拒绝超长输入", raw: strings.Repeat("a", maxIdentifierLen) + "@x.com", mode: config.RecipientLookupIDEmail},
+		{name: "用户名模式:非数字按用户名", raw: "alice", mode: config.RecipientLookupIDUsername, wantOK: true, wantByType: lookupByUsername},
+		{name: "用户名模式:纯数字两边都查", raw: "123", mode: config.RecipientLookupIDUsername, wantOK: true, wantByType: lookupByIDOrUsername},
+		{name: "用户名模式:不可能是 ID 的数字串只按用户名", raw: "0", mode: config.RecipientLookupIDUsername, wantOK: true, wantByType: lookupByUsername},
+		{name: "用户名模式仍拒绝空输入", raw: "", mode: config.RecipientLookupIDUsername},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

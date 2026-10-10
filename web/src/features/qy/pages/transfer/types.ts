@@ -23,8 +23,21 @@ For commercial licensing, please contact support@quantumnous.com
  * 直接变成对不上的账。
  */
 
-/** 收款人查找方式。后端 `config/validate.go` 只有这两档，**没有用户名模糊搜索**。 */
-export type QyRecipientLookup = 'id' | 'id_or_email' | (string & {})
+/**
+ * 收款人查找方式。后端 `config/validate.go` 只有这三档，全部是**精确**匹配，
+ * **没有用户名模糊搜索**。
+ */
+export type QyRecipientLookup =
+  | 'id'
+  | 'id_or_email'
+  | 'id_or_username'
+  | (string & {})
+
+/**
+ * 显式指定的查找方式。不传 = 按输入自动判断；歧义时用户选定候选后带 `id`
+ * 重新预校验。后端只允许它**收窄**配置允许的范围，不能放宽。
+ */
+export type QyRecipientBy = 'id' | 'username'
 
 /**
  * `GET /api/qy/transfer/limits`。
@@ -76,13 +89,22 @@ export type QyTransferPreviewRequest = {
   identifier: string
   /** 传 0 表示只解析收款人、不回填金额明细。 */
   amount: number
+  by?: QyRecipientBy
+}
+
+/** 歧义时的一个候选。与单个命中同一口径：只有 ID 与**后端脱敏**的用户名。 */
+export type QyRecipientCandidate = {
+  user_id: number
+  masked_username: string
+  matched_by: QyRecipientBy
 }
 
 /**
  * 预校验结果。
  *
  * `masked_username` / `masked_email` **已由后端脱敏**，前端只做展示。
- * `blocked_reason` 取值：`not_found` | `self` | `disabled`。
+ * `blocked_reason` 取值：`not_found` | `self` | `disabled` | `group_denied` |
+ * `ambiguous`（此时 `candidates` 里是命中的几个人，由用户手动选）。
  */
 export type QyTransferPreview = {
   exists: boolean
@@ -94,6 +116,7 @@ export type QyTransferPreview = {
   amount: number
   fee_quota: number
   total: number
+  candidates?: QyRecipientCandidate[]
 }
 
 /** `POST /api/qy/transfer` 的请求体。 */

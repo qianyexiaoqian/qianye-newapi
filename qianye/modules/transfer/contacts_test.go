@@ -534,3 +534,61 @@ func TestContactIdPathParamIsRejectedWhenNotPositiveInteger(t *testing.T) {
 		})
 	}
 }
+
+// 划转收款人支持「用户名 + ID」精确匹配(recipient_lookup = id_or_username)。
+//
+// 项目方要求:匹配方式精确匹配;用户名与 ID 撞车时,列出符合条件的用户让用户手动选。
+// 这里 3 号用户的用户名恰好是 "2",输入 "2" 同时命中 2 号(按 ID)与 3 号(按用户名)。
+func TestRecipientLookupByUsernameAndIDWithManualDisambiguation(t *testing.T) {
+	newContactsExtDB(t)
+	main := newMainDB(t)
+	cfg := baseConfig()
+	cfg.NewAccountFreezeHours = 0
+	cfg.RecipientLookup = config.RecipientLookupIDUsername
+	prev := qyConfig.Swap(&config.Config{Enabled: true, Transfer: cfg})
+	t.Cleanup(func() { qyConfig.Store(prev) })
+
+	seedContactUser(t, main, 1, "owner1", "owner1@example.com", common.UserStatusEnabled)
+	seedContactUser(t, main, 2, "alice", "alice@example.com", common.UserStatusEnabled)
+	seedContactUser(t, main, 3, "2", "two@example.com", common.UserStatusEnabled)
+
+	gin.SetMode(gin.TestMode)
+	resolve := func(identifier, by string) previewResponse {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/transfer/preview", nil)
+		return resolveRecipient(c, 1, identifier, by, groupRuleSet{})
+	}
+
+	byName := resolve("alice", byAuto)
+	assert.True(t, byName.Exists)
+	assert.Equal(t, 2, byName.UserId, "非数字输入按用户名精确匹配")
+	assert.NotContains(t, byName.MaskedUsername, "alice", "回显仍然是脱敏名")
+
+	assert.False(t, resolve("alic", byAuto).Exists, "只做全等,不做前缀 / 模糊匹配")
+
+	clash := resolve("2", byAuto)
+	assert.False(t, clash.Exists)
+	assert.Equal(t, blockedAmbiguous, clash.BlockedReason)
+	require.Len(t, clash.Candidates, 2)
+	assert.Equal(t, recipientCandidate{UserId: 2, MaskedUsername: maskUsername("alice"), MatchedBy: lookupByID}, clash.Candidates[0])
+	assert.Equal(t, recipientCandidate{UserId: 3, MaskedUsername: maskUsername("2"), MatchedBy: lookupByUsername}, clash.Candidates[1])
+
+	assert.Equal(t, 2, resolve("2", byID).UserId, "选定候选后带 by=id 重查,不再歧义")
+	assert.Equal(t, 3, resolve("2", byUsername).UserId)
+
+	// 联系人添加走同一套解析:歧义时 409,选定后带 by=id 能加上。
+	rec := addContactVia(t, 1, "2", "")
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	assert.Equal(t, "qy_contact_ambiguous", bodyCode(t, rec))
+	body, err := common.Marshal(addContactRequest{Identifier: "2", By: byID})
+	require.NoError(t, err)
+	rec = callContact(t, http.MethodPost, "/transfer/contacts", string(body), 1, nil, handleAddContact)
+	assert.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// by 只能收窄不能放宽:默认的 id 模式下,显式要求按用户名查也查不到。
+	cfg.RecipientLookup = config.RecipientLookupID
+	qyConfig.Store(&config.Config{Enabled: true, Transfer: cfg})
+	assert.False(t, resolve("alice", byAuto).Exists)
+	assert.False(t, resolve("2", byUsername).Exists)
+	assert.Equal(t, 2, resolve("2", byAuto).UserId, "id 模式下 \"2\" 只当 ID")
+}

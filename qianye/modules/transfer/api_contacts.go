@@ -24,6 +24,8 @@ import (
 type addContactRequest struct {
 	Identifier string `json:"identifier"`
 	Alias      string `json:"alias"`
+	// By 同 previewRequest.By:歧义时用户选定候选后带 by=id 重新添加。
+	By string `json:"by"`
 }
 
 type renameContactRequest struct {
@@ -78,8 +80,11 @@ func handleAddContact(c *gin.Context) {
 	}
 
 	me := c.GetInt("id")
-	resolved := resolveRecipient(c, me, req.Identifier, rules)
+	resolved := resolveRecipient(c, me, req.Identifier, req.By, rules)
 	switch {
+	case resolved.BlockedReason == blockedAmbiguous:
+		respondErr(c, errContactAmbiguous)
+		return
 	case !resolved.Exists:
 		respondErr(c, errContactUserNotFound)
 		return

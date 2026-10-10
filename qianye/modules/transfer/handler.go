@@ -46,6 +46,8 @@ type createResponse struct {
 }
 
 type previewRequest struct {
+	// By 可选:id / username。用户在歧义候选里选定之后带 by=id 重查,其余情况留空。
+	By         string `json:"by"`
 	Identifier string `json:"identifier"`
 	Amount     int64  `json:"amount"`
 }
@@ -61,6 +63,9 @@ type previewResponse struct {
 	Amount   int64 `json:"amount"`
 	FeeQuota int64 `json:"fee_quota"`
 	Total    int64 `json:"total"`
+	// Candidates 只在 blocked_reason = ambiguous 时出现:输入同时命中一个用户 ID
+	// 与另一个人的用户名,由用户手动二选一(脱敏名 + ID)。
+	Candidates []recipientCandidate `json:"candidates,omitempty"`
 }
 
 // recordItem 是普通用户可见的流水视图。
@@ -166,7 +171,7 @@ func handlePreview(c *gin.Context) {
 	// 否则用户先看到一个手续费、提交时被另一个数字收费。
 	cfg := settings.Transfer
 
-	resp := resolveRecipient(c, c.GetInt("id"), req.Identifier, rules)
+	resp := resolveRecipient(c, c.GetInt("id"), req.Identifier, req.By, rules)
 	if req.Amount > 0 {
 		// 金额非法时不报错,只是不回填:预览的主要用途是确认收款人,
 		// 真正的金额判定在提交时统一做,两处各判一次会出现口径漂移。

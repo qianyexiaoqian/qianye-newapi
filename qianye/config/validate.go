@@ -16,6 +16,9 @@ import (
 const (
 	RecipientLookupID      = "id"
 	RecipientLookupIDEmail = "id_or_email"
+	// RecipientLookupIDUsername 额外允许按完整用户名**精确**匹配(仍然没有模糊搜索)。
+	// 纯数字输入同时可能是 ID 与用户名,两边命中不同的人时由用户手动二选一。
+	RecipientLookupIDUsername = "id_or_username"
 
 	InsufficientClamp    = "clamp"
 	InsufficientNegative = "negative"
@@ -830,9 +833,9 @@ func ValidateTransfer(t *Transfer) error {
 			t.DailyMaxQuota, t.MinQuota)
 	}
 	switch t.RecipientLookup {
-	case RecipientLookupID, RecipientLookupIDEmail:
+	case RecipientLookupID, RecipientLookupIDEmail, RecipientLookupIDUsername:
 	default:
-		return fmt.Errorf("qianye: transfer.recipient_lookup 取值非法: %q(可选 id|id_or_email;"+
+		return fmt.Errorf("qianye: transfer.recipient_lookup 取值非法: %q(可选 id|id_or_email|id_or_username;"+
 			"刻意不提供用户名模糊搜索,那等于开放用户枚举)", t.RecipientLookup)
 	}
 	return nil

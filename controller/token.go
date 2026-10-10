@@ -509,6 +509,14 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.ExpiredTime = token.ExpiredTime
 		cleanToken.RemainQuota = token.RemainQuota
 		cleanToken.UnlimitedQuota = token.UnlimitedQuota
+		// 额度用完被标成「已耗尽」的令牌,加了额度(或改成无限额度)就当场恢复。
+		// 不改的话库里仍是 4,密钥页一直显示「已耗尽」,要等用户真的发一次请求、
+		// 由 model.reviveExhaustedToken 在鉴权入口自愈 —— 用户看到「已耗尽」根本
+		// 不会去试。只动「已耗尽」:手动停用(2)、已过期(3)不归这里管。
+		if cleanToken.Status == common.TokenStatusExhausted &&
+			(cleanToken.UnlimitedQuota || cleanToken.RemainQuota > 0) {
+			cleanToken.Status = common.TokenStatusEnabled
+		}
 		cleanToken.ModelLimitsEnabled = token.ModelLimitsEnabled
 		cleanToken.ModelLimits = token.ModelLimits
 		cleanToken.AllowIps = token.AllowIps

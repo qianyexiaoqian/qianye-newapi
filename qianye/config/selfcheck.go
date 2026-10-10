@@ -137,7 +137,7 @@ var fieldConsumers = map[string]consumer{
 	"transfer.fee_bps":                     {"qianye/modules/transfer/validate.go", "手续费率,computeFee 的输入;可被 qy_settings 在线覆盖"},
 	"transfer.fee_min_quota":               {"qianye/modules/transfer/validate.go", "手续费下限;可被 qy_settings 在线覆盖"},
 	"transfer.cooldown_seconds":            {"qianye/modules/transfer/risk.go", "两笔划转之间的最小间隔;可被 qy_settings 在线覆盖"},
-	"transfer.recipient_lookup":            {"qianye/modules/transfer/lookup.go", "收款人可按什么解析(id / id_or_email)"},
+	"transfer.recipient_lookup":            {"qianye/modules/transfer/lookup.go", "收款人可按什么解析(id / id_or_email / id_or_username)"},
 	"transfer.new_account_freeze_hours":    {"qianye/modules/transfer/service.go", "新注册账号多久内不可转出;可被 qy_settings 在线覆盖"},
 	"transfer.require_receiver_enabled":    {"qianye/modules/transfer/lookup.go", "收款方被封禁时是否拒绝"},
 	"transfer.receiver_daily_max_in_count": {"qianye/modules/transfer/risk.go", "单账号每日可接收的笔数上限;可被 qy_settings 在线覆盖"},

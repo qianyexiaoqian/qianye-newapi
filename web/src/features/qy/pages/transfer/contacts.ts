@@ -36,6 +36,7 @@ import { queryOptions } from '@tanstack/react-query'
 
 import { qyDelete, qyGet, qyPost, qyPut } from '../../lib/api'
 import { qyKeys } from '../../lib/query-keys'
+import type { QyTransferPreviewRequest } from './types'
 
 /**
  * 联系人对应账号的当前状态，由后端回读主库得出。
@@ -72,15 +73,18 @@ export type QyContactList = {
 /** `POST /api/qy/transfer/contacts` 的请求体。 */
 export type QyAddContactRequest = {
   /**
-   * 与 `/transfer/preview` 完全相同的字段语义：用户 ID，或（当
-   * `recipient_lookup === 'id_or_email'` 时）完整邮箱。
+   * 与 `/transfer/preview` 完全相同的字段语义：用户 ID，或（按
+   * `recipient_lookup` 开放的）完整邮箱 / 完整用户名。
    *
    * 传 identifier 而不是 user_id 是后端的要求：解析那一步挂着反枚举日志、
    * 查找方式开关与按用户限流，绕过它等于把三道防线一起绕过。
    */
   identifier: string
   alias: string
-}
+  // 可选的 `by` 与 preview 同义：歧义时用户选定候选后带 `id` 重新添加。
+  // 借 Pick 沿用那边的可选字段，而不是在本文件里写可选标记 ——
+  // 下面的测试把本文件出现「问号」当成关键字被拼进 URL 的信号。
+} & Pick<QyTransferPreviewRequest, 'by'>
 
 /**
  * 联系人列表。

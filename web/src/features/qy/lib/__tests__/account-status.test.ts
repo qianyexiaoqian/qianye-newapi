@@ -304,8 +304,14 @@ describe('接线不许被摘掉', () => {
       needle: '{!restricted && (',
     },
     {
+      // 模型广场的判据抽成了顶部导航与侧栏共用的 isModelSquareNavShown，
+      // 受限判定在它第一行（下一条钉住）。
       file: ['hooks', 'use-top-nav-links.ts'],
-      needle: 'restricted ? undefined : modules?.pricing',
+      needle: 'isModelSquareNavShown(modules, restricted)',
+    },
+    {
+      file: ['lib', 'nav-modules.ts'],
+      needle: 'if (restricted) return false',
     },
   ]
 

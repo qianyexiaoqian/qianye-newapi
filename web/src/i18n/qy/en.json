@@ -5028,5 +5028,13 @@
   "qy_sdo_sort_other": "Most other first",
   "qy_sdo_sort_spent": "Most spent first",
   "qy_sdo_empty_title": "No stardust yet",
-  "qy_sdo_empty_desc": "Users appear here once they have received or spent any stardust."
+  "qy_sdo_empty_desc": "Users appear here once they have received or spent any stardust.",
+  "qy_tr_recipient_ph_id_username": "Enter the recipient's user ID or full username",
+  "qy_tr_recipient_help_id_username": "Exact user ID or full username — no fuzzy search.",
+  "qy_tr_ambiguous_title": "More than one account matches",
+  "qy_tr_ambiguous_desc": "\"{{identifier}}\" is both a user ID and someone else's username. Choose the account you mean:",
+  "qy_tr_matched_by_id": "Matched by user ID",
+  "qy_tr_matched_by_username": "Matched by username",
+  "qy_tr_pick_candidate": "Choose",
+  "qy_err_contact_ambiguous": "This input matches both a user ID and another person's username. Choose the account to add."
 }

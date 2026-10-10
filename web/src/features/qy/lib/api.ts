@@ -120,6 +120,7 @@ export const QY_ERROR_CODE_I18N: Record<string, string> = {
   qy_contact_self: 'qy_err_contact_self',
   qy_contact_duplicate: 'qy_err_contact_duplicate',
   qy_contact_limit: 'qy_err_contact_limit',
+  qy_contact_ambiguous: 'qy_err_contact_ambiguous',
 
   // ── 支付密码（qianye/modules/paypass/errors.go）──
   // 四个验密结果必须映射到四句不同的话：引导去设置 / 请输入 / 输错了 /

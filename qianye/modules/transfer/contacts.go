@@ -150,6 +150,10 @@ var (
 	// 这里该提示"检查一下 ID 是不是打错了",而不是"换个收款人"。
 	errContactUserNotFound = newBizError("qy_contact_user_not_found",
 		"未找到该账号", http.StatusBadRequest)
+	// errContactAmbiguous 输入同时命中一个用户 ID 与另一个人的用户名。前端收到后走
+	// /transfer/preview 拿候选让用户选,再带 by=id 重新添加。
+	errContactAmbiguous = newBizError("qy_contact_ambiguous",
+		"这个输入同时匹配一个用户 ID 和另一个人的用户名,请选择要添加的账号", http.StatusConflict)
 	errContactSelf = newBizError("qy_contact_self",
 		"不能把自己加为联系人", http.StatusBadRequest)
 	errContactDuplicate = newBizError("qy_contact_duplicate",
