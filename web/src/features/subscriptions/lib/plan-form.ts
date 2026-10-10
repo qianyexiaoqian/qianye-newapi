@@ -60,6 +60,26 @@ export function saleTimeToUnix(input: string | undefined): number {
   return Math.floor(ms / 1000)
 }
 
+/**
+ * 套餐的站外买码地址是否可用：空串（不提供），或 http(s) 完整地址。
+ *
+ * 与后端 `model.NormalizePlanRedeemPurchaseLink` 同一条判据。这个值会原样成为
+ * 用户点击的链接，`javascript:` 之类的协议放进来就是存储型 XSS —— 所以购买
+ * 弹窗渲染前也再过一遍，不只信任表单。
+ */
+export function isPlanRedeemPurchaseLink(raw: string | undefined): boolean {
+  const link = (raw ?? '').trim()
+  if (link === '') return true
+  try {
+    const url = new URL(link)
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') && url.host !== ''
+    )
+  } catch {
+    return false
+  }
+}
+
 export function getPlanFormSchema(t: TFunction) {
   return z
     .object({
@@ -111,6 +131,12 @@ export function getPlanFormSchema(t: TFunction) {
       stripe_price_id: z.string().optional(),
       creem_product_id: z.string().optional(),
       waffo_pancake_product_id: z.string().optional(),
+      // 与后端 model.NormalizePlanRedeemPurchaseLink 同一条判据：空串，或 http(s) 完整地址。
+      redeem_purchase_link: z
+        .string()
+        .trim()
+        .max(512, t('qy_plan_redeem_link_invalid'))
+        .refine(isPlanRedeemPurchaseLink, t('qy_plan_redeem_link_invalid')),
     })
     .superRefine((values, ctx) => {
       const start = saleTimeToUnix(values.sale_start_at_input)
@@ -157,6 +183,7 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   stripe_price_id: '',
   creem_product_id: '',
   waffo_pancake_product_id: '',
+  redeem_purchase_link: '',
 }
 
 export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
@@ -187,6 +214,7 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     stripe_price_id: plan.stripe_price_id || '',
     creem_product_id: plan.creem_product_id || '',
     waffo_pancake_product_id: plan.waffo_pancake_product_id || '',
+    redeem_purchase_link: plan.redeem_purchase_link || '',
   }
 }
 
@@ -249,6 +277,8 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
       // 所以这里传什么就是什么，包括把已配的分组清回空。
       upgrade_group: (values.upgrade_group || '').trim(),
       downgrade_group: (values.downgrade_group || '').trim(),
+      // 恒带上（含空串）：后端更新是显式 map 全量覆盖，传空串就是清掉已配的地址。
+      redeem_purchase_link: (values.redeem_purchase_link || '').trim(),
     },
   }
 }

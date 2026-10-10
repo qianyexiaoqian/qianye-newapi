@@ -5036,5 +5036,12 @@
   "qy_tr_matched_by_id": "Matched by user ID",
   "qy_tr_matched_by_username": "Matched by username",
   "qy_tr_pick_candidate": "Choose",
-  "qy_err_contact_ambiguous": "This input matches both a user ID and another person's username. Choose the account to add."
+  "qy_err_contact_ambiguous": "This input matches both a user ID and another person's username. Choose the account to add.",
+  "qy_plan_redeem_link_label": "Redemption code purchase link",
+  "qy_plan_redeem_link_hint": "Optional. When set, the purchase dialog shows a \"Buy a redemption code\" option that opens this address (e.g. a card shop). After buying a code, users redeem it on the wallet page to activate this plan.",
+  "qy_plan_redeem_link_invalid": "Enter a full address starting with http:// or https:// (up to 512 characters), or leave it empty",
+  "qy_plan_redeem_buy_title": "Buy a redemption code",
+  "qy_plan_redeem_buy_hint": "Buy a redemption code for this plan on an external site, then redeem it under Wallet → Redemption code to activate.",
+  "qy_plan_redeem_buy_action": "Go buy a redemption code",
+  "qy_plan_redeem_buy_opened": "Purchase page opened. Redeem the code on the wallet page once you have it."
 }

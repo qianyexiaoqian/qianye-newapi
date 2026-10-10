@@ -84,6 +84,8 @@ export const subscriptionPlanSchema = z.object({
   stripe_price_id: z.string().optional(),
   creem_product_id: z.string().optional(),
   waffo_pancake_product_id: z.string().optional(),
+  /** 站外购买本套餐兑换码的地址（发卡站等），空串 = 不提供。 */
+  redeem_purchase_link: z.string().optional(),
 })
 
 export type SubscriptionPlan = z.infer<typeof subscriptionPlanSchema>

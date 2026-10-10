@@ -19,8 +19,12 @@ For commercial licensing, please contact support@quantumnous.com
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
+import type { TFunction } from 'i18next'
+
 import {
   PLAN_FORM_DEFAULTS,
+  getPlanFormSchema,
+  isPlanRedeemPurchaseLink,
   formValuesToPlanPayload,
   planToFormValues,
 } from '@/features/subscriptions/lib/plan-form'
@@ -160,4 +164,56 @@ describe('套餐表单的字段边界', () => {
     })
     assert.equal('max_total_users' in payload.plan, false)
   })
+})
+
+// ── 站外买码地址 ──────────────────────────────────────────────────────────
+// 这个值会原样成为用户点击的链接：判据与后端 NormalizePlanRedeemPurchaseLink 一致。
+
+test('redeem purchase link accepts empty or a full http(s) address only', () => {
+  for (const ok of ['', '   ', 'https://shop.example/item/9', 'http://a.example']) {
+    assert.equal(isPlanRedeemPurchaseLink(ok), true, ok)
+  }
+  for (const bad of [
+    'javascript:alert(1)',
+    'data:text/html,hi',
+    'shop.example/item',
+    'ftp://shop.example',
+  ]) {
+    assert.equal(isPlanRedeemPurchaseLink(bad), false, bad)
+  }
+})
+
+test('plan form rejects a non-http redeem link on the field itself', () => {
+  const t = ((key: string) => key) as unknown as TFunction
+  const result = getPlanFormSchema(t).safeParse({
+    ...PLAN_FORM_DEFAULTS,
+    title: 'x',
+    redeem_purchase_link: 'javascript:alert(1)',
+  })
+  assert.equal(result.success, false)
+  assert.deepEqual(
+    result.error?.issues.map((issue) => issue.path.join('.')),
+    ['redeem_purchase_link']
+  )
+})
+
+test('redeem link survives an edit round trip and an emptied field is sent to clear it', () => {
+  const values = planToFormValues({
+    ...groupProductPlan,
+    redeem_purchase_link: 'https://shop.example/item/9',
+  })
+  assert.equal(values.redeem_purchase_link, 'https://shop.example/item/9')
+  assert.equal(
+    formValuesToPlanPayload({
+      ...values,
+      redeem_purchase_link: '  https://shop.example/x  ',
+    }).plan.redeem_purchase_link,
+    'https://shop.example/x'
+  )
+  // 更新接口是全量覆盖：空串必须真的发出去，后端才会清掉已配的地址。
+  assert.equal(
+    formValuesToPlanPayload({ ...values, redeem_purchase_link: '' }).plan
+      .redeem_purchase_link,
+    ''
+  )
 })

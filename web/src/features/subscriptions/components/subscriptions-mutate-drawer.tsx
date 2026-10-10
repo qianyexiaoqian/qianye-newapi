@@ -1429,6 +1429,29 @@ export function SubscriptionsMutateDrawer({
               {t('Third-party Payment Config')}
             </h3>
 
+            {/* 站外买码：购买弹窗把它列成一种付款方式，跳出去买兑换码、回钱包页兑换。
+                本站不经手这笔钱，兑换时照常过发售时间窗与限购。 */}
+            <FormField
+              control={form.control}
+              name='redeem_purchase_link'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('qy_plan_redeem_link_label')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      type='url'
+                      inputMode='url'
+                      autoComplete='off'
+                      placeholder='https://'
+                    />
+                  </FormControl>
+                  <FormDescription>{t('qy_plan_redeem_link_hint')}</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
             <FormField
               control={form.control}
               name='stripe_price_id'

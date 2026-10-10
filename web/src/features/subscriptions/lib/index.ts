@@ -40,6 +40,7 @@ export {
 } from './sale-window'
 export {
   getPlanFormSchema,
+  isPlanRedeemPurchaseLink,
   PLAN_FORM_DEFAULTS,
   planToFormValues,
   formValuesToPlanPayload,

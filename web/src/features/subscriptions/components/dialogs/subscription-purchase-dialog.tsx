@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Crown } from 'lucide-react'
+import { Crown, ExternalLink } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -48,6 +48,7 @@ import {
   buildPlanFacts,
   formatPlanPrice,
   formatSaleTime,
+  isPlanRedeemPurchaseLink,
   planSaleState,
   type PlanEntitlementDisclosure,
 } from '../../lib'
@@ -157,6 +158,18 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const saleWindowBlocked = saleState !== 'on_sale'
   const payBlocked =
     paying || limitReached || entitlementPending || saleWindowBlocked
+  // 站外买码。渲染前再过一遍判据：这个值会原样成为用户点击的链接，
+  // 不能只信任管理端表单（库可能被手工改过）。
+  const redeemLink = (plan.redeem_purchase_link ?? '').trim()
+  const hasRedeemLink = redeemLink !== '' && isPlanRedeemPurchaseLink(redeemLink)
+
+  // 同步打开（不跨 await），点击手势还在，不会被浏览器当弹窗拦掉。
+  // 买到的码在钱包页兑换，所以顺手关掉弹窗，让用户回来时直接看到兑换框。
+  const handleBuyRedeemCode = () => {
+    window.open(redeemLink, '_blank', 'noopener,noreferrer')
+    toast.success(t('qy_plan_redeem_buy_opened'))
+    props.onOpenChange(false)
+  }
 
   const handlePayStripe = async () => {
     setPaying(true)
@@ -463,12 +476,10 @@ export function SubscriptionPurchaseDialog(props: Props) {
             {hasEpay && (
               <div className='grid grid-cols-[minmax(0,1fr)_auto] gap-2'>
                 <Select
-                  items={[
-                    ...(props.epayMethods || []).map((m) => ({
-                      value: m.type,
-                      label: m.name || m.type,
-                    })),
-                  ]}
+                  items={(props.epayMethods || []).map((m) => ({
+                    value: m.type,
+                    label: m.name || m.type,
+                  }))}
                   value={selectedEpayMethod}
                   onValueChange={(v) => v !== null && setSelectedEpayMethod(v)}
                   disabled={payBlocked}
@@ -494,6 +505,27 @@ export function SubscriptionPurchaseDialog(props: Props) {
                 </Button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* 与站内各付款方式同一组闸门（发售时间窗、限购、披露未读完）：
+            兑换码兑换时后端照样会拒，别让用户先在站外付了钱才发现。 */}
+        {hasRedeemLink && (
+          <div className='flex flex-col gap-2 rounded-md border p-3'>
+            <p className='text-sm font-medium'>
+              {t('qy_plan_redeem_buy_title')}
+            </p>
+            <p className='text-muted-foreground text-xs leading-5'>
+              {t('qy_plan_redeem_buy_hint')}
+            </p>
+            <Button
+              variant='outline'
+              onClick={handleBuyRedeemCode}
+              disabled={payBlocked}
+            >
+              <ExternalLink aria-hidden='true' />
+              {t('qy_plan_redeem_buy_action')}
+            </Button>
           </div>
         )}
       </div>

@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -257,6 +258,11 @@ type SubscriptionPlan struct {
 	CreemProductId        string `json:"creem_product_id" gorm:"type:varchar(128);default:''"`
 	WaffoPancakeProductId string `json:"waffo_pancake_product_id" gorm:"type:varchar(128);default:''"`
 
+	// RedeemPurchaseLink 是站外购买这个套餐兑换码的地址(发卡站等),空 = 不提供。
+	// 购买弹窗把它列成一种付款方式:点了跳出去买码,回来在钱包页兑换。
+	// 本站不经手这笔钱,兑换时照常过发售时间窗与限购(model.Redeem)。
+	RedeemPurchaseLink string `json:"redeem_purchase_link" gorm:"type:varchar(512);default:''"`
+
 	// Max purchases per user (0 = unlimited)
 	MaxPurchasePerUser int `json:"max_purchase_per_user" gorm:"type:int;default:0"`
 
@@ -372,6 +378,28 @@ func ValidatePlanSaleWindow(startAt, endAt int64) error {
 		return errors.New("停售时间必须晚于发售时间")
 	}
 	return nil
+}
+
+// PlanRedeemPurchaseLinkMaxLen 与 redeem_purchase_link 列宽一致。
+const PlanRedeemPurchaseLinkMaxLen = 512
+
+// NormalizePlanRedeemPurchaseLink 校验并规范化套餐的站外买码地址,空串表示不提供。
+//
+// 只收 http(s) 绝对地址:这个值会原样成为用户点击的链接,javascript: / data:
+// 之类的协议在这里放行就是一条存储型 XSS。
+func NormalizePlanRedeemPurchaseLink(raw string) (string, error) {
+	link := strings.TrimSpace(raw)
+	if link == "" {
+		return "", nil
+	}
+	if len(link) > PlanRedeemPurchaseLinkMaxLen {
+		return "", fmt.Errorf("兑换码购买链接不能超过 %d 个字符", PlanRedeemPurchaseLinkMaxLen)
+	}
+	u, err := url.Parse(link)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", errors.New("兑换码购买链接必须是 http:// 或 https:// 开头的完整地址")
+	}
+	return link, nil
 }
 
 // PlanSaleWindowError 是「此刻能不能**新买**这个套餐」在时间窗上的唯一判据。

@@ -57,6 +57,23 @@ export function getConfiguredGroupRatio(
  * available to the viewer. When a group filter is active, it shows that
  * group's price instead.
  */
+export function getDisplayedModelGroups(
+  model: PricingModel,
+  selectedGroup?: string
+): string[] {
+  // 选了具体分组时，价格已经是那个分组的价，卡片 / 表格行也只报那一个分组；
+  // 「+N」只在「所有分组」下出现。与 getDisplayGroupRatio 同一条判据。
+  const groups = Array.isArray(model.enable_groups) ? model.enable_groups : []
+  if (
+    selectedGroup &&
+    selectedGroup !== FILTER_ALL &&
+    groups.includes(selectedGroup)
+  ) {
+    return [selectedGroup]
+  }
+  return groups
+}
+
 export function getDisplayGroupRatio(
   model: PricingModel,
   selectedGroup?: string

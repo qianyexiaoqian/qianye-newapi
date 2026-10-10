@@ -29,6 +29,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { getLobeIcon } from '@/lib/lobe-icon'
 
 import { parseTags } from '../lib/filters'
+import { getDisplayedModelGroups } from '../lib/model-helpers'
 import type { PricingModel } from '../types'
 import { CachedPriceCell } from './cached-price-cell'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
@@ -187,7 +188,10 @@ export function usePricingColumns(
       accessorKey: 'enable_groups',
       header: t('Groups'),
       cell: ({ row }) => {
-        const groups = row.original.enable_groups || []
+        const groups = getDisplayedModelGroups(
+          row.original,
+          options.selectedGroup
+        )
         return (
           <BadgeListCell
             items={groups.map((group) => (

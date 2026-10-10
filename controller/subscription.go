@@ -129,6 +129,9 @@ func planAuditSnapshot(p *model.SubscriptionPlan) map[string]any {
 		"upgrade_group":         p.UpgradeGroup,
 		"downgrade_group":       p.DowngradeGroup,
 		"quota_reset_period":    p.QuotaResetPeriod,
+		// 站外买码地址决定用户的钱付到哪里:被悄悄换成别的发卡站,
+		// 事后只能靠这一格追到是谁、什么时候换的。
+		"redeem_purchase_link": p.RedeemPurchaseLink,
 	}
 }
 
@@ -274,6 +277,12 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, err.Error())
 		return
 	}
+	redeemLink, err := model.NormalizePlanRedeemPurchaseLink(req.Plan.RedeemPurchaseLink)
+	if err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
+	req.Plan.RedeemPurchaseLink = redeemLink
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
 	req.Plan.DowngradeGroup = strings.TrimSpace(req.Plan.DowngradeGroup)
 	if err := validatePlanUserGroups(req.Plan.UpgradeGroup, req.Plan.DowngradeGroup); err != nil {
@@ -285,7 +294,7 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "自定义重置周期需大于0秒")
 		return
 	}
-	err := model.DB.Create(&req.Plan).Error
+	err = model.DB.Create(&req.Plan).Error
 	if err != nil {
 		writePlanAudit(c, auditActionPlanCreate, qymodel.ResultFail, err.Error(), nil, &req.Plan)
 		common.ApiError(c, err)
@@ -349,6 +358,12 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, err.Error())
 		return
 	}
+	redeemLink, err := model.NormalizePlanRedeemPurchaseLink(req.Plan.RedeemPurchaseLink)
+	if err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
+	req.Plan.RedeemPurchaseLink = redeemLink
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
 	req.Plan.DowngradeGroup = strings.TrimSpace(req.Plan.DowngradeGroup)
 	if err := validatePlanUserGroups(req.Plan.UpgradeGroup, req.Plan.DowngradeGroup); err != nil {
@@ -371,7 +386,7 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		beforePtr = nil
 	}
 
-	err := model.DB.Transaction(func(tx *gorm.DB) error {
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		// update plan (allow zero values updates with map)
 		updateMap := map[string]any{
 			"title":          req.Plan.Title,
@@ -390,6 +405,7 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"stripe_price_id":            req.Plan.StripePriceId,
 			"creem_product_id":           req.Plan.CreemProductId,
 			"waffo_pancake_product_id":   req.Plan.WaffoPancakeProductId,
+			"redeem_purchase_link":       req.Plan.RedeemPurchaseLink,
 			"max_purchase_per_user":      req.Plan.MaxPurchasePerUser,
 			"no_quota":                   req.Plan.NoQuota,
 			"total_amount":               req.Plan.TotalAmount,

@@ -5036,5 +5036,12 @@
   "qy_tr_matched_by_id": "按用户 ID 匹配",
   "qy_tr_matched_by_username": "按用户名匹配",
   "qy_tr_pick_candidate": "选这个",
-  "qy_err_contact_ambiguous": "这个输入同时匹配一个用户 ID 和另一个人的用户名，请选择要添加的账号"
+  "qy_err_contact_ambiguous": "这个输入同时匹配一个用户 ID 和另一个人的用户名，请选择要添加的账号",
+  "qy_plan_redeem_link_label": "兑换码购买链接",
+  "qy_plan_redeem_link_hint": "选填。填写后，购买弹窗会多出「购买兑换码」入口，跳转到此地址（发卡站等）；用户买到兑换码后在钱包页兑换即可开通本套餐。",
+  "qy_plan_redeem_link_invalid": "请填写以 http:// 或 https:// 开头的完整地址（不超过 512 个字符），或留空",
+  "qy_plan_redeem_buy_title": "购买兑换码",
+  "qy_plan_redeem_buy_hint": "跳转到站外购买本套餐的兑换码，买到后在「钱包 → 兑换码」中兑换即可开通。",
+  "qy_plan_redeem_buy_action": "前往购买兑换码",
+  "qy_plan_redeem_buy_opened": "已打开购买页面，买到兑换码后在钱包页兑换即可"
 }

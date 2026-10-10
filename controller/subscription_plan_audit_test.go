@@ -215,10 +215,48 @@ func TestPlanAuditSnapshotCarriesMoneyFields(t *testing.T) {
 		"enabled", "price_amount", "sale_start_at", "sale_end_at",
 		"total_amount", "max_purchase_per_user", "no_quota",
 		"duration_unit", "duration_value", "upgrade_group", "downgrade_group",
+		"redeem_purchase_link",
 	} {
 		assert.Containsf(t, snap, key, "审计快照必须含 %s —— 它直接决定谁能付款/付多少/得到什么", key)
 	}
 	assert.EqualValues(t, 111, snap["sale_start_at"])
 	assert.EqualValues(t, 222, snap["sale_end_at"])
 	assert.Nil(t, planAuditSnapshot(nil), "没有 before 的场景必须给 nil,让 snapshotJSON 落成空串")
+}
+
+// TestPlanRedeemPurchaseLinkRoundTrip 走真实的新建 / 更新接口:
+// 站外买码地址能存、能清空,非 http(s) 的地址(会成为用户点击的链接)一律拒绝且不落库。
+func TestPlanRedeemPurchaseLinkRoundTrip(t *testing.T) {
+	mainDB, _ := setupPlanAuditTest(t)
+
+	planBody := func(id int, link string) string {
+		return fmt.Sprintf(
+			`{"plan":{"id":%d,"title":"redeem-link-plan","price_amount":1,"currency":"USD",`+
+				`"duration_unit":"month","duration_value":1,"enabled":true,`+
+				`"redeem_purchase_link":%q}}`, id, link)
+	}
+	stored := func(id int) string {
+		var plan model.SubscriptionPlan
+		require.NoError(t, mainDB.Where("id = ?", id).First(&plan).Error)
+		return plan.RedeemPurchaseLink
+	}
+
+	rec := callPlanAdmin(t, AdminCreateSubscriptionPlan, http.MethodPost,
+		"/api/subscription/admin/plans", "", planBody(0, "  https://shop.example/item/9  "))
+	require.Contains(t, rec.Body.String(), `"success":true`)
+	var created model.SubscriptionPlan
+	require.NoError(t, mainDB.Where("title = ?", "redeem-link-plan").First(&created).Error)
+	assert.Equal(t, "https://shop.example/item/9", created.RedeemPurchaseLink, "首尾空白要去掉")
+
+	id := fmt.Sprint(created.Id)
+	path := "/api/subscription/admin/plans/" + id
+	for _, bad := range []string{"javascript:alert(1)", "shop.example/item", "ftp://shop.example"} {
+		rec = callPlanAdmin(t, AdminUpdateSubscriptionPlan, http.MethodPut, path, id, planBody(created.Id, bad))
+		assert.Contains(t, rec.Body.String(), `"success":false`, bad)
+		assert.Equal(t, "https://shop.example/item/9", stored(created.Id), "被拒的地址不能落库: %s", bad)
+	}
+
+	rec = callPlanAdmin(t, AdminUpdateSubscriptionPlan, http.MethodPut, path, id, planBody(created.Id, ""))
+	require.Contains(t, rec.Body.String(), `"success":true`)
+	assert.Equal(t, "", stored(created.Id), "清空必须真的清掉,而不是被当成零值跳过")
 }

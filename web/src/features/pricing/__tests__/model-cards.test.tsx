@@ -230,6 +230,24 @@ describe('model cards', () => {
     ).toBeVisible()
   })
 
+  it('names only the selected group, without a +N count, when a group filter is active', () => {
+    const model = pricingModel({ enable_groups: ['default', 'premium', 'vip'] })
+    const { rerender } = render(
+      <ModelCard model={model} onClick={vi.fn()} selectedGroup='premium' />
+    )
+    const groupField = () => {
+      const field = screen.getByText('Groups').parentElement
+      if (!field) throw new Error('Expected a labeled group field')
+      return field
+    }
+    expect(within(groupField()).getByText('premium')).toBeVisible()
+    expect(within(groupField()).queryByText(/^\+\d+$/)).not.toBeInTheDocument()
+
+    rerender(<ModelCard model={model} onClick={vi.fn()} selectedGroup='all' />)
+    expect(within(groupField()).getByText('default')).toBeVisible()
+    expect(within(groupField()).getByText('+2')).toBeVisible()
+  })
+
   it('omits metadata fields when the model has no groups, endpoints or tags', () => {
     render(
       <ModelCard
