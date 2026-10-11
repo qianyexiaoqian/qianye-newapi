@@ -36,8 +36,12 @@ type consumeEvent struct {
 func installHooks() {
 	model.QyOnConsumeLog = onConsumeLog
 	model.QyOnTaskBillingLog = onTaskBillingLog
-	// 兑换码事件的单槽变量由 invite 占着,再转发给星屑与本包各自的槽。
+	// 兑换码事件的单槽变量由 invite 占着,再转发给本包的槽。
 	invite.AfterRedeemSuccessCommission = onRedeemSuccess
+	// 「下线带来多少」的三个汇总槽:下线返只走佣金,这些数字以计佣行为准(invite_slots.go)。
+	invite.PairCommissionTotals = pairCommissionTotals
+	invite.InviteAccrualByInvitee = consumeAccrualByInvitee
+	invite.InviteAccrualByDay = consumeAccrualByDay
 	// 本包两把进程内缓存的跨节点失效走 invite 的通道。
 	invite.OnInvalidation(cacheKindSettings, func(int) { invalidateSettingsLocal() })
 	invite.OnInvalidation(cacheKindGroupRate, func(int) { invalidateGroupRatesLocal() })

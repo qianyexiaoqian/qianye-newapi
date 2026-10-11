@@ -118,35 +118,3 @@ export type QyBlockRelationResult = {
   blocked: boolean
 }
 
-/**
- * 日结明细的一行 = 一个（邀请人 × 下线 × 日）的那一桶（`qy_sd_invite_accrual`）。
- * 对应 `GET /admin/invite/invite-accruals?day=&inviter_id=`。
- *
- * `base_quota` 是额度（下线当日 type=2 消费，排除口径与消费返相同），`gross` 是
- * 按邀请人分组档算出来的星屑（decimal 字符串，只展示）；`status` 与星屑日桶
- * 同一套三态，`ledger_no` 是发放那一笔在星屑账本上的流水号（未发放为空）。
- */
-export type QyInviteAccrualRow = {
-  inviter_id: number
-  inviter_username: string
-  invitee_id: number
-  invitee_username: string
-  bucket_date: string
-  base_quota: number
-  rate_group: string
-  bps: number
-  quota_per_unit: number
-  gross: string
-  status: string
-  hold_reason: string
-  ledger_no: string
-  created_at: number
-  updated_at: number
-}
-
-export type QyInviteAccrualPage = {
-  items: QyInviteAccrualRow[]
-  total: number
-  p: number
-  page_size: number
-}

@@ -135,7 +135,6 @@ func TestForecastEstimatesTomorrowAndThrottlesManualRefresh(t *testing.T) {
 	env := newTaskEnv(t, func(s *config.Stardust) {
 		s.SettleDelayMinutes = 30
 		s.ConsumeBps = 10_000
-		s.InviteConsumeBps = 1_000
 	})
 	withCompliance(t, true)
 	now := common.GetTimestamp()
@@ -148,7 +147,7 @@ func TestForecastEstimatesTomorrowAndThrottlesManualRefresh(t *testing.T) {
 	seedRelation(t, env, 801, 803, "in***03", now-86400, true)
 	require.NoError(t, env.ext.Create(&Balance{
 		UserId: 801,
-		Carry:  decimal.RequireFromString("0.37"), InviteCarry: decimal.RequireFromString("0.9"),
+		Carry:  decimal.RequireFromString("0.37"),
 	}).Error)
 	require.NoError(t, env.main.Create(&[]model.Log{
 		consumeLog(801, today+10, 3_000_000, ""),
@@ -159,11 +158,11 @@ func TestForecastEstimatesTomorrowAndThrottlesManualRefresh(t *testing.T) {
 		// 昨天的消费属于昨天那一桶,不该被算进"明天要发的"。
 		consumeLog(801, today-10, 9_000_000, ""),
 		consumeLog(802, today+10, 1_000_000, ""),
-		// 803 已被停止计返:它的消费一分都不进上线的估算。
+		// 下线的消费只给上线计佣金(commission),一分都不进上线的星屑估算。
 		consumeLog(803, today+10, 9_000_000, ""),
 	}).Error)
 
-	t.Run("两条线各自取整再相加", func(t *testing.T) {
+	t.Run("只估消费返这一条线", func(t *testing.T) {
 		data := dataOf(t, call(t, userRouter(801), http.MethodGet, "/api/qy/stardust/forecast", ""))
 		assert.Equal(t, invite.DayKey(now), data["day"], "估的是今天这一桶")
 		assert.EqualValues(t, invite.NextDayStart(now)+30*60, data["settle_at"],
@@ -177,18 +176,9 @@ func TestForecastEstimatesTomorrowAndThrottlesManualRefresh(t *testing.T) {
 		assertDecimalEq(t, "0.37", consume["carry"])
 		assert.EqualValues(t, 7, consume["estimated"], "floor(0.37 + 7.4)")
 
-		inv := data["invite"].(map[string]any)
-		assert.Equal(t, true, inv["applies"])
-		assert.Equal(t, true, inv["counted"])
-		assert.EqualValues(t, 1_000_000, inv["base_quota"], "被拉黑的下线不计")
-		assert.EqualValues(t, 1_000, inv["rate_bps"])
-		assertDecimalEq(t, "0.2", inv["gross"])
-		assertDecimalEq(t, "0.9", inv["carry"])
-		assert.EqualValues(t, 1, inv["estimated"], "floor(0.9 + 0.2)")
-
-		// 8 而不是 9:两条线各自 floor(0.37+7.4)=7 与 floor(0.9+0.2)=1,
-		// 先把两笔计提加起来再取整会多发一颗。
-		assert.EqualValues(t, 8, data["estimated_total"])
+		_, hasInvite := data["invite"]
+		assert.False(t, hasInvite, "下线带来的返还只走推广佣金,星屑估算里不再有下线那一条线")
+		assert.EqualValues(t, 7, data["estimated_total"], "下线 802 / 803 的消费不进我的估算")
 	})
 
 	t.Run("手动刷新在节流窗口内不重算", func(t *testing.T) {
@@ -228,26 +218,6 @@ func TestForecastEstimatesTomorrowAndThrottlesManualRefresh(t *testing.T) {
 		assert.EqualValues(t, 0, consume["estimated"])
 		assert.EqualValues(t, 0, data["estimated_total"])
 		assert.Nil(t, balanceOf(t, env.ext, 804), "估算是只读的,不得凭空建余额行")
-	})
-
-	t.Run("邀请功能关掉时下线那一条线整条不成立", func(t *testing.T) {
-		useConfig(t, &config.Config{
-			Enabled:  true,
-			Stardust: config.Stardust{Enabled: true, Name: "星屑", ConsumeBps: 10_000, InviteConsumeBps: 1_000},
-			Invite:   config.Invite{Enabled: false, InviterCacheSecs: 300},
-		})
-		seedMainUser(t, env.main, model.User{Id: 805})
-		seedMainUser(t, env.main, model.User{Id: 806, InviterId: 805})
-		seedRelation(t, env, 805, 806, "in***06", now-86400, false)
-		require.NoError(t, env.main.Create(&model.Log{
-			UserId: 806, CreatedAt: today + 10, Type: model.LogTypeConsume, Quota: 5_000_000,
-		}).Error)
-
-		inv := dataOf(t, call(t, userRouter(805), http.MethodGet,
-			"/api/qy/stardust/forecast", ""))["invite"].(map[string]any)
-		assert.Equal(t, false, inv["applies"])
-		assert.EqualValues(t, 0, inv["base_quota"])
-		assert.EqualValues(t, 0, inv["rate_bps"])
 	})
 }
 

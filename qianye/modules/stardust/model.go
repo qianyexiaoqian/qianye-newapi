@@ -38,14 +38,13 @@ type Balance struct {
 	// Carry 是消费返结算的余数结转,落在 [0,1):日桶 gross 是 decimal,而账本只发整数,
 	// 不足 1 星屑的零头留在这里等下一次结算 —— 否则小额消费的用户会一直拿到 0。
 	Carry decimal.Decimal `json:"carry" gorm:"type:decimal(30,10);not null;default:0.0000000000"`
-	// InviteCarry 是**下线消费返**结算的余数结转,与 Carry 分开:两条日结各自 floor、
-	// 各自结转,混在一列里会让消费返的零头被邀请返那一笔顺手发出去,I2 / I3 两条
-	// 恒等式就再也分不开谁欠谁。
-	InviteCarry decimal.Decimal `json:"invite_carry" gorm:"type:decimal(30,10);not null;default:0.0000000000"`
+	// 库里还有一列 invite_carry(NOT NULL DEFAULT 0):那是已下线的「下线消费返」的余数
+	// 结转。下线带来的返还只走推广佣金之后,本模块不再读写它;列留着不删,存量值是
+	// 当时不足 1 星屑的零头,不回收。
 
 	// HoldReason 是暂缓发放的原因(HoldOverdraft / HoldAccountRemoved /
-	// HoldAccountDisabled),空串 = 正常;消费返与下线消费返共用这一列 ——
-	// 两条日结对同一个人读的是同一份主库快照,判据相同;该用户名下的 held 桶归零时
+	// HoldAccountDisabled),空串 = 正常;由消费返日结维护 ——
+	// 判据来自结算那一刻的主库快照;该用户名下的 held 桶归零时
 	// 由结算清空。
 	HoldReason string `json:"hold_reason" gorm:"type:varchar(32);not null;default:''"`
 
@@ -146,43 +145,12 @@ const (
 	AccrualHeld     = "held"
 )
 
-// InviteAccrual 是**下线消费返**的日桶:某个邀请人名下某个下线某天的站内消费,
-// 按邀请人自己的分组档换算出的应返星屑(D-14:邀请收益只有星屑)。
-//
-// 一天一对 (inviter, invitee) 一行;status 与 Accrual 同一套(computed → settled / held)。
-// 基数口径与消费返完全相同(同一次 logs 聚合),档位按**邀请人**分组(D-02),
-// bps=0 时不写行。已 held 的桶 gross 冻结于首次计算值,rerun 不追溯。
-type InviteAccrual struct {
-	Id        int64 `json:"id" gorm:"primaryKey;autoIncrement"`
-	InviterId int   `json:"inviter_id" gorm:"not null;uniqueIndex:uk_qy_sdia_bucket,priority:1"`
-	InviteeId int   `json:"invitee_id" gorm:"not null;uniqueIndex:uk_qy_sdia_bucket,priority:2;index:idx_qy_sdia_invitee"`
-	// BucketDate 是 YYYYMMDD,日界读 invite.day_offset_minutes。varchar(8) 而不是 char(8),
-	// 理由同 Accrual.BucketDate。
-	BucketDate string `json:"bucket_date" gorm:"type:varchar(8);not null;uniqueIndex:uk_qy_sdia_bucket,priority:3"`
-	// BaseQuota 是下线当日 type=2 的消费额度(排除口径与消费返相同)。
-	BaseQuota int64 `json:"base_quota" gorm:"not null;default:0"`
-	// RateGroup 是结算那一刻读到的**邀请人**分组(groupname.Effective 归一化后),
-	// 对 groupns 的残留处置是 keep —— 它是"这一笔当时按哪个分组算的"这个事实。
-	RateGroup string `json:"rate_group" gorm:"type:varchar(64);not null;default:''"`
-	// Bps / QuotaPerUnit 是冻结的比例与刻度。
-	Bps          int   `json:"bps" gorm:"column:bps;not null;default:0"`
-	QuotaPerUnit int64 `json:"quota_per_unit" gorm:"not null;default:0"`
-	// Gross = base_quota × bps / 10000 / quota_per_unit,全精度;整数化在结算时按邀请人汇总做。
-	Gross decimal.Decimal `json:"gross" gorm:"type:decimal(30,10);not null;default:0.0000000000"`
-	// Status ∈ AccrualComputed / AccrualSettled / AccrualHeld。
-	Status     string `json:"status" gorm:"type:varchar(16);not null;index:idx_qy_sdia_status"`
-	HoldReason string `json:"hold_reason" gorm:"type:varchar(32);not null;default:''"`
-	// LedgerNo 是结算后指向的流水单号;net=0 的桶 settled 且为空串。
-	LedgerNo  string `json:"ledger_no" gorm:"type:varchar(32);not null;default:''"`
-	CreatedAt int64  `json:"created_at" gorm:"not null;default:0"`
-	UpdatedAt int64  `json:"updated_at" gorm:"not null;default:0"`
-}
-
-func (InviteAccrual) TableName() string { return "qy_sd_invite_accrual" }
+// qy_sd_invite_accrual(「下线消费返」日桶)已随下线返只走推广佣金一起下线:本模块不再
+// 建表、读写这张表。库里已有的表与行原样保留(已发放的星屑不回收,held 的桶不再结算)。
 
 // GroupRate 是按用户分组的比例覆盖;没有这一行(或 Enabled=false)的分组回落全站默认。
 //
-// 四个比例都是指针三态:nil = 本组没单独配这一档,回落全站;0 是显式的"这一档不返"。
+// 比例是指针三态:nil = 本组没单独配,回落全站;0 是显式的"不返"。
 // 哨兵值(-1 之类)迟早会有人当成比例算,所以用可空列。
 type GroupRate struct {
 	// UserGroup 是主库 users.group 的取值,**一律以 groupname.Normalize 归一化后的形式存储**:
@@ -190,10 +158,9 @@ type GroupRate struct {
 	// 不折叠就会出现"管理端写 VIP、库里改的是 vip 那一行"的三方错位(见 groupname 包)。
 	UserGroup string `json:"user_group" gorm:"type:varchar(64);primaryKey"`
 
-	ConsumeBps       *int `json:"consume_bps" gorm:"column:consume_bps"`
-	InviteTopupBps   *int `json:"invite_topup_bps" gorm:"column:invite_topup_bps"`
-	InviteRedeemBps  *int `json:"invite_redeem_bps" gorm:"column:invite_redeem_bps"`
-	InviteConsumeBps *int `json:"invite_consume_bps" gorm:"column:invite_consume_bps"`
+	ConsumeBps *int `json:"consume_bps" gorm:"column:consume_bps"`
+	// 库里还有 invite_topup_bps / invite_redeem_bps / invite_consume_bps 三列(可空):
+	// 已下线的星屑侧下线返的分组档。下线带来的返还只走推广佣金,本模块不再读写它们。
 
 	// Enabled 为 false 时整行回落全站,不等于零比例。不写 default 标签:
 	// MySQL 与 PostgreSQL 对布尔默认值的归一化不同,会让 AutoMigrate 每次启动都发 ALTER。
@@ -298,13 +265,8 @@ type SettleRun struct {
 	Held int `json:"held" gorm:"not null;default:0"`
 	// Granted 是这一跑发出去的星屑总数。
 	Granted int64 `json:"granted" gorm:"not null;default:0"`
-	// InviteProcessed / InviteHeld / InviteFailed / InviteGranted 是同一跑里
-	// **下线消费返**那一段的四个数,按邀请人计。与上面四个分开记:两条日结的
-	// 候选集不同(一个按消费者、一个按邀请人),合在一起哪个数都说不清。
-	InviteProcessed int   `json:"invite_processed" gorm:"not null;default:0"`
-	InviteHeld      int   `json:"invite_held" gorm:"not null;default:0"`
-	InviteFailed    int   `json:"invite_failed" gorm:"not null;default:0"`
-	InviteGranted   int64 `json:"invite_granted" gorm:"not null;default:0"`
+	// 库里还有 invite_processed / invite_held / invite_failed / invite_granted 四列
+	// (NOT NULL DEFAULT 0):已下线的「下线消费返」那一段的计数,不再写入。
 
 	Remark    string `json:"remark" gorm:"type:varchar(255);not null;default:''"`
 	CreatedAt int64  `json:"created_at" gorm:"not null;default:0"`
@@ -322,29 +284,30 @@ const (
 
 // Tables 是本模块交给 AutoMigrate 的全部模型。
 //
-// Ledger 是永不清理的证据表;Balance / Accrual / InviteAccrual / GroupRate / PlanReward
+// Ledger 是永不清理的证据表;Balance / Accrual / GroupRate / PlanReward
 // 是账目与配置;SettleRun 是运行记录。本模块不注册任何清理任务。
 func Tables() []any {
-	return []any{&Balance{}, &Ledger{}, &Accrual{}, &InviteAccrual{}, &GroupRate{}, &PlanReward{}, &SettleRun{}}
+	return []any{&Balance{}, &Ledger{}, &Accrual{}, &GroupRate{}, &PlanReward{}, &SettleRun{}}
 }
 
 // ─────────────────────────── kind → 累计列 ───────────────────────────
 
 // 流水种类。取值同时是 qy_sd_ledger.kind 的字面量,改任何一个都是一次数据迁移。
 const (
-	KindConsumeRebate  Kind = "consume_rebate"  // 消费返日结,+
-	KindInviteConsume  Kind = "invite_consume"  // 下线消费返上线(日结),+
-	KindInviteTopup    Kind = "invite_topup"    // 下线充值返上线,+
-	KindInviteRedeem   Kind = "invite_redeem"   // 下线用兑换码返上线,+
+	KindConsumeRebate Kind = "consume_rebate" // 消费返日结,+
+	// 下面三种已下线(下线带来的返还只走佣金 commission_credit),不再产生新行;
+	// 常量与 kindColumn 映射留着,是为了让历史流水照常展示、照常通过 I0 / I1 核对。
+	KindInviteConsume  Kind = "invite_consume"  // 下线消费返上线(日结),+ 已下线
+	KindInviteTopup    Kind = "invite_topup"    // 下线充值返上线,+ 已下线
+	KindInviteRedeem   Kind = "invite_redeem"   // 下线用兑换码返上线,+ 已下线
 	KindInviteRegister Kind = "invite_register" // 下线注册奖,+
 	KindPlanBuyer      Kind = "plan_buyer"      // 买套餐返买家,+
 	KindPlanInviter    Kind = "plan_inviter"    // 买套餐返上线,+
 	// KindCommissionCredit 是推广佣金账本的自动入账(D-16)。
 	//
-	// 它与上面四个 invite_* 是**两条线**:invite_* 由本模块自己的 hook / 日结当场发,
-	// 佣金那条线先在 qy_commission_* 里计佣、过持有期、按门槛攒够,才落成这一行。
-	// 两条线的基数可以重叠(同一笔下线消费),重叠与否是运营的配置选择,不是本表的事 ——
-	// 但流水上必须分得开,否则"这 10 星屑是邀请返还是佣金"永远答不上来。
+	// 下线充值 / 兑换码 / 消费带来的返还只有这一条线:先在 qy_commission_* 里计佣、
+	// 过持有期、按门槛攒够,才落成这一行。星屑侧曾有一套按同一笔基数当场发的
+	// invite_topup / invite_redeem / invite_consume,已下线(两条并存会给上线落两笔)。
 	KindCommissionCredit Kind = "commission_credit" // 推广佣金自动入账,+
 	KindLotPrize         Kind = "lot_prize"         // 活动派奖,+
 	KindLotStake         Kind = "lot_stake"         // 报名 / 投注 / 转一次,−

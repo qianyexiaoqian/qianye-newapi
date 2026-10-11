@@ -24,7 +24,6 @@ import { qyKeys } from '../../lib/query-keys'
 import type {
   QyBindRelationResult,
   QyBlockRelationResult,
-  QyInviteAccrualPage,
   QyInviteRelationPage,
   QyRebindRelationResult,
   QyRelationScope,
@@ -155,34 +154,4 @@ export function qyBlockRelationErrorMessage(
 ): string {
   if (isQyError(error) && error.kind === 'network') return t('qy_err_network')
   return qyErrorMessage(error, t)
-}
-
-export type QyInviteAccrualFilters = {
-  p: number
-  page_size: number
-  /** `YYYYMMDD`。留空 = 后端缺省（昨天那一桶）。 */
-  day?: string
-  inviter_id?: string
-}
-
-/**
- * 日结明细。对应 `GET /admin/invite/invite-accruals?day=&inviter_id=`。
- *
- * 一行一个（邀请人 × 下线 × 日）的桶：运营对账时问的是"这个人昨天为什么
- * 返了 / 没返这么多"，答案全在这一行上（基数、分组档、比例、状态、暂缓原因）。
- */
-export function qyAdminInviteAccrualsQuery(filters: QyInviteAccrualFilters) {
-  const query: Record<string, unknown> = {
-    p: filters.p,
-    page_size: filters.page_size,
-  }
-  if (filters.day != null && filters.day !== '') query.day = filters.day
-  if (filters.inviter_id != null && filters.inviter_id !== '') {
-    query.inviter_id = filters.inviter_id
-  }
-  return queryOptions({
-    queryKey: qyKeys.adminInviteAccruals(query),
-    queryFn: () =>
-      qyGet<QyInviteAccrualPage>('/admin/invite/invite-accruals', query),
-  })
 }

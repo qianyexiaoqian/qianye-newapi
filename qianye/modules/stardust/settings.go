@@ -21,8 +21,8 @@ import (
 // settings.go —— 运营可在管理端修改的参数(qy_settings, scope=stardust)。
 //
 // 与 YAML 的分工:YAML 承载启动级、涉及资金与调度的闸门(enabled、刻度、结算延迟、
-// 手调上限、扫描周期);这里承载"上线后要频繁调"的参数:单位名、入口开关、
-// 四档比例、注册奖、告警阈值。改一次比例不该需要重启进程,但也绝不能让它落进
+// 手调上限);这里承载"上线后要频繁调"的参数:单位名、入口开关、
+// 消费返比例、注册奖、告警阈值。改一次比例不该需要重启进程,但也绝不能让它落进
 // 上游主库的 options 表。形状照 lottery/settings.go。
 
 const settingScope = "stardust"
@@ -33,9 +33,6 @@ const (
 	keyName                   = "name"
 	keyShowEntry              = "show_entry"
 	keyConsumeBps             = "consume_bps"
-	keyInviteTopupBps         = "invite_topup_bps"
-	keyInviteRedeemBps        = "invite_redeem_bps"
-	keyInviteConsumeBps       = "invite_consume_bps"
 	keyInviteRegisterStardust = "invite_register_stardust"
 	keyHeldAlertDays          = "held_alert_days"
 )
@@ -47,7 +44,7 @@ const (
 // 那是一次看得见、留得下痕迹的动作。
 var editableKeys = []string{
 	keyName, keyShowEntry, keyConsumeBps,
-	keyInviteTopupBps, keyInviteRedeemBps, keyInviteConsumeBps, keyInviteRegisterStardust,
+	keyInviteRegisterStardust,
 	keyHeldAlertDays,
 }
 
@@ -55,7 +52,7 @@ var editableKeys = []string{
 func EditableKeys() []string { return append([]string(nil), editableKeys...) }
 
 const (
-	// maxBps 是三档比例的上界:1000:1(每 1 美元等值返 1000 星屑)。
+	// maxBps 是消费返比例的上界:1000:1(每 1 美元等值返 1000 星屑)。
 	// 必须与 qianye/config/validate.go 的 maxStardustBps 一致 —— 那是 YAML 一侧的
 	// 同一道闸;两边不同的后果是"YAML 拒绝启动、在线却能写进去"。
 	maxBps = 10_000_000
@@ -75,10 +72,7 @@ type opSettings struct {
 	ShowEntry bool
 	// ConsumeBps 是消费返的全站默认比例(万分比);分组覆盖在 qy_sd_group_rate。
 	ConsumeBps int
-	// 四个邀请类正值都受支付合规门约束(D-G):合规未确认时按 0 生效,见 complianceGate。
-	InviteTopupBps         int
-	InviteRedeemBps        int
-	InviteConsumeBps       int
+	// 注册奖受支付合规门约束(D-G):合规未确认时按 0 生效,见 complianceGate。
 	InviteRegisterStardust int64
 	HeldAlertDays          int
 }
@@ -97,9 +91,6 @@ func baseSettings(c config.Stardust) opSettings {
 		Name:                   name,
 		ShowEntry:              c.EntryShown(),
 		ConsumeBps:             c.ConsumeBps,
-		InviteTopupBps:         c.InviteTopupBps,
-		InviteRedeemBps:        c.InviteRedeemBps,
-		InviteConsumeBps:       c.InviteConsumeBps,
 		InviteRegisterStardust: c.InviteRegisterStardust,
 		HeldAlertDays:          c.HeldAlertDays,
 	}
@@ -168,20 +159,6 @@ func effective() opSettings {
 	return effectiveCtx(ctx)
 }
 
-// InviteRateSnapshot 交出**生效**的三档邀请类比例(万分比)与注册奖星屑数。
-//
-// 唯一的消费方是 commission 的健康面板:佣金的三档(充值 / 消费 / 兑换码)与这里的
-// 三档打的是同一笔基数,两边同时为正就会给同一个上线落两笔星屑。谁也无权替运营
-// 决定留哪一条,但"现在两条都开着"必须能在一个屏幕上看见 —— 光看各自的配置页
-// 永远看不出重叠。
-//
-// 给的是全站生效值(YAML + qy_settings 覆盖 + 合规门),**不含**分组覆盖:
-// 分组档只会让某些人更高或更低,不会让"两条线都在发"这件事从真变假。
-func InviteRateSnapshot() (topupBps, redeemBps, consumeBps int, registerStardust int64) {
-	s := effective()
-	return s.InviteTopupBps, s.InviteRedeemBps, s.InviteConsumeBps, s.InviteRegisterStardust
-}
-
 func invalidateSettings() {
 	settingsMu.Lock()
 	settingsCache = nil
@@ -194,23 +171,27 @@ func invalidateSettings() {
 	forecastCache.Purge()
 }
 
-// complianceGate 是支付合规门(D-G):`!IsPaymentComplianceConfirmed()` 时四个邀请类
-// 正值一律按 0 处理。星屑能在商城换套餐,有真实价值,与上游的邀请奖励同一道门。
+// complianceGate 是支付合规门(D-G):`!IsPaymentComplianceConfirmed()` 时注册奖
+// 按 0 处理。星屑能在商城换套餐,有真实价值,与上游的邀请奖励同一道门。
+//
+// 下线充值 / 兑换码 / 消费带来的返还只走推广佣金,星屑侧已没有那三档。
 func complianceGate(s opSettings) opSettings {
 	if operation_setting.IsPaymentComplianceConfirmed() {
 		return s
 	}
-	s.InviteTopupBps, s.InviteRedeemBps, s.InviteConsumeBps, s.InviteRegisterStardust = 0, 0, 0, 0
+	s.InviteRegisterStardust = 0
 	return s
 }
 
 // isInviteKey 回答"这个键是不是受合规门约束的邀请类奖励"。写侧拒绝正值与
 // 读侧归零必须是同一组键。
 func isInviteKey(key string) bool {
-	return key == keyInviteTopupBps || key == keyInviteRedeemBps ||
-		key == keyInviteConsumeBps || key == keyInviteRegisterStardust
+	return key == keyInviteRegisterStardust
 }
 
+// loadOverrides 只读白名单里的键。已下线的 invite_topup_bps / invite_redeem_bps /
+// invite_consume_bps 可能还躺在 qy_settings 里,读进来既不生效、又会被配置页当成
+// 「运营覆盖」回显 —— 一个看得见却不起作用的数字正是要消灭的那种冲突。
 func loadOverrides(ctx context.Context) (map[string]string, error) {
 	gdb := db.Get()
 	if gdb == nil {
@@ -218,7 +199,7 @@ func loadOverrides(ctx context.Context) (map[string]string, error) {
 	}
 	rows := make([]qymodel.Setting, 0, len(editableKeys))
 	if err := gdb.WithContext(ctx).
-		Where("scope = ?", settingScope).Find(&rows).Error; err != nil {
+		Where("scope = ? AND k IN ?", settingScope, editableKeys).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		return nil, err
 	}
@@ -253,15 +234,6 @@ func mergeOverrides(base opSettings, rows map[string]string) opSettings {
 	bounds := settingBounds()
 	if v, ok := overrideInt(rows, keyConsumeBps, bounds[keyConsumeBps]); ok {
 		base.ConsumeBps = int(v)
-	}
-	if v, ok := overrideInt(rows, keyInviteTopupBps, bounds[keyInviteTopupBps]); ok {
-		base.InviteTopupBps = int(v)
-	}
-	if v, ok := overrideInt(rows, keyInviteRedeemBps, bounds[keyInviteRedeemBps]); ok {
-		base.InviteRedeemBps = int(v)
-	}
-	if v, ok := overrideInt(rows, keyInviteConsumeBps, bounds[keyInviteConsumeBps]); ok {
-		base.InviteConsumeBps = int(v)
 	}
 	if v, ok := overrideInt(rows, keyInviteRegisterStardust, bounds[keyInviteRegisterStardust]); ok {
 		base.InviteRegisterStardust = v
@@ -314,16 +286,13 @@ func (b Bound) Contains(v int64) bool { return v >= b.Lo && v <= b.Hi }
 
 // settingBounds 是每个**数值**键的区间;name 是字符串,由 validName 单独管。
 //
-// 上界写死而不是取自 YAML(与 lottery 不同):这三档比例在 YAML 里的值是**默认值**
+// 上界写死而不是取自 YAML(与 lottery 不同):消费返比例在 YAML 里的值是**默认值**
 // 而不是硬顶(分组表也可以配得比它高),真正的硬顶是 config.validate 那道
 // maxStardustBps,两侧同值。
 func settingBounds() map[string]Bound {
 	return map[string]Bound{
 		keyShowEntry:              {Lo: 0, Hi: 1},
 		keyConsumeBps:             {Lo: 0, Hi: maxBps},
-		keyInviteTopupBps:         {Lo: 0, Hi: maxBps},
-		keyInviteRedeemBps:        {Lo: 0, Hi: maxBps},
-		keyInviteConsumeBps:       {Lo: 0, Hi: maxBps},
 		keyInviteRegisterStardust: {Lo: 0, Hi: int64(common.MaxQuota)},
 		keyHeldAlertDays:          {Lo: 0, Hi: maxHeldAlertDays},
 	}
@@ -345,9 +314,6 @@ func settingsSnapshot(s opSettings) map[string]any {
 		keyName:                   s.Name,
 		keyShowEntry:              showEntry,
 		keyConsumeBps:             int64(s.ConsumeBps),
-		keyInviteTopupBps:         int64(s.InviteTopupBps),
-		keyInviteRedeemBps:        int64(s.InviteRedeemBps),
-		keyInviteConsumeBps:       int64(s.InviteConsumeBps),
 		keyInviteRegisterStardust: s.InviteRegisterStardust,
 		keyHeldAlertDays:          int64(s.HeldAlertDays),
 	}

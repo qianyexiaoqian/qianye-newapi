@@ -61,15 +61,15 @@ const (
 )
 
 var (
-	// errComplianceRequired:邀请类奖励(invite_topup_bps / invite_redeem_bps /
-	// invite_register_stardust)收到正值,而系统设置里的支付合规声明还没确认。
+	// errComplianceRequired:注册奖(invite_register_stardust)收到正值,
+	// 而系统设置里的支付合规声明还没确认。
 	// 星屑能在商城换套餐,有真实价值,与上游的邀请奖励同一道门(D-G)。
 	errComplianceRequired = newBizError(http.StatusBadRequest, codeComplianceRequired,
-		"邀请类奖励需要先在「系统设置」确认支付合规声明;未确认时这三项一律按 0 生效")
-	// errGroupUnknown:分组费率只接受已登记于 qy_user_groups 的分组名,
-	// 让"费率行挂在未登记名字上"不可能出现。
+		"邀请注册奖需要先在「系统设置」确认支付合规声明;未确认时一律按 0 生效")
+	// errGroupUnknown:分组比例只接受用户分组(登记表 ∪ 在用的 users.group),
+	// 模型分组不行 —— 比例按账号的 users.group 取档,挂在模型分组上的行一个人都不命中。
 	errGroupUnknown = newBizError(http.StatusBadRequest, codeGroupUnknown,
-		"该用户分组未登记,请先在「用户分组」里创建它")
+		"这不是用户分组(模型分组不能配星屑比例);请选择用户分组,或先在「用户分组」里创建它")
 	errBadSource = newBizError(http.StatusBadRequest, codeBadSource,
 		"套餐返还来源只接受 order / balance / admin / redemption 的组合")
 	errIdemConflict = newBizError(http.StatusConflict, codeIdemConflict,

@@ -260,16 +260,10 @@ type Invite struct {
 // 没有申请、没有审核、没有法币,也**不再碰主库额度** —— 佣金与星屑同在扩展库,
 // D-15 那套跨库两阶段资金单(KindCommissionCredit)整段退役。
 //
-// 它与星屑侧的邀请奖励(stardust.invite_* / 下线消费返)仍是**两条并行的线**,
-// 各按各的比例、各记各的账,只是现在两边发的是同一种钱;日界共用
-// invite.day_offset_minutes。
-//
-// # 与 stardust.invite_* 的基数重叠(运营必须二选一)
-//
-// 本段的三档(充值 / 消费 / 兑换码)与 stardust 的 invite_topup_bps /
-// invite_consume_bps / invite_redeem_bps 打的是**同一笔基数**。两边同时为正,
-// 同一笔下线消费会落两笔星屑 —— 这不是 bug,是配置选择;健康面板会把重叠标红,
-// 但代码不替运营做决定(D-16 拍板)。
+// 下线充值 / 兑换码 / 消费带来的返还**只走这一条线**。星屑侧曾有一套按同一笔
+// 基数计返的 invite_topup / invite_redeem / invite_consume,已下线(两条线并存会让
+// 同一笔下线消费给上线落两笔星屑);星屑侧只保留注册奖与套餐返上线这两种
+// 与本段基数不重叠的奖励。日界共用 invite.day_offset_minutes。
 //
 // 口径默认宽松(全返)。三个排除开关默认关闭,发现套利后可单独打开而无需改代码。
 // 违规扣费产生的消费日志(other.violation_fee == true)永不计佣 —— 那属于逻辑
@@ -908,22 +902,24 @@ type Stardust struct {
 	SettleIntervalSeconds int `yaml:"settle_interval_seconds"`
 	// HeldAlertDays 是暂缓桶的积龄告警阈值:最老的 held 桶超过它进健康面板红点。
 	HeldAlertDays int `yaml:"held_alert_days"`
-	// InviteTopupBps / InviteRedeemBps 是下线充值 / 用兑换码时给邀请人的比例(万分比),
-	// 0 = 关。按**上线**分组解析(D-02 口径)。三个邀请类正值都受支付合规门约束。
-	InviteTopupBps  int `yaml:"invite_topup_bps"`
-	InviteRedeemBps int `yaml:"invite_redeem_bps"`
-	// InviteConsumeBps 是下线消费返的全站默认比例(万分比):下线当日的站内消费按
-	// **邀请人自己的分组**(D-02)取档,日结时一并结给邀请人。0 = 关(默认);
-	// 按分组的覆盖在 qy_sd_group_rate.invite_consume_bps。同样受支付合规门约束。
-	InviteConsumeBps int `yaml:"invite_consume_bps"`
 	// InviteRegisterStardust 是被邀请人注册时给邀请人的固定星屑数,0 = 关。
 	InviteRegisterStardust int64 `yaml:"invite_register_stardust"`
-	// ExcludeManualTopup 决定管理员补单是否不返(星屑自己的键)。
-	ExcludeManualTopup *bool `yaml:"exclude_manual_topup"`
-	// TopupScanIntervalSeconds 是充值扫描周期。
-	TopupScanIntervalSeconds int `yaml:"topup_scan_interval_seconds"`
 	// MaxManualAdjust 是管理员单次手调的绝对值上限(星屑)。
 	MaxManualAdjust int64 `yaml:"max_manual_adjust"`
+
+	// ── 已下线的「下线充值 / 兑换码 / 消费返」五个键 ──────────────────────────
+	//
+	// Deprecated: 下线带来的返还只走推广佣金(commission 段),星屑侧不再发
+	// invite_topup / invite_redeem / invite_consume,也不再扫充值单。两条线打的是
+	// 同一笔基数,并存的结果是同一笔下线消费给上线落两笔星屑。
+	//
+	// 保留占位**仅为**让仍写着这些键的部署能够启动(KnownFields(true) 严格解析)。
+	// 加载时由 adoptRetiredStardustInviteKeys 告警并置 nil,填任何值都不生效。
+	InviteTopupBpsDeprecated           *int  `yaml:"invite_topup_bps"`
+	InviteRedeemBpsDeprecated          *int  `yaml:"invite_redeem_bps"`
+	InviteConsumeBpsDeprecated         *int  `yaml:"invite_consume_bps"`
+	ExcludeManualTopupDeprecated       *bool `yaml:"exclude_manual_topup"`
+	TopupScanIntervalSecondsDeprecated *int  `yaml:"topup_scan_interval_seconds"`
 }
 
 // Mall 星屑商城:只收星屑的商城,可上架套餐 / 兑换码 / 实物。
@@ -953,9 +949,6 @@ func (s Stardust) EntryShown() bool { return boolOr(s.ShowEntry, true) }
 func (s Stardust) SubscriptionConsumeExcluded() bool {
 	return boolOr(s.ExcludeSubscriptionConsume, true)
 }
-
-// ManualTopupExcluded 表示管理员补单是否不给邀请人返星屑。默认 true。
-func (s Stardust) ManualTopupExcluded() bool { return boolOr(s.ExcludeManualTopup, true) }
 
 // EntryShown 表示前端是否渲染商城入口。
 func (m Mall) EntryShown() bool { return boolOr(m.ShowEntry, true) }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -15,7 +16,7 @@ import (
 
 // api_admin_rates_test.go —— 分组比例档与套餐返还定义的读写契约(契约 §3)。
 
-// useUpstreamGroups 钉住"在册 ∪ 登记表"两份清单,测完还原。
+// useUpstreamGroups 钉住分组倍率表(模型分组)与用户分组登记表两份清单,测完还原。
 func useUpstreamGroups(t *testing.T, ratios map[string]float64, declared []string) {
 	t.Helper()
 	prevJSON := ratio_setting.GroupRatio2JSONString()
@@ -30,45 +31,58 @@ func useUpstreamGroups(t *testing.T, ratios map[string]float64, declared []strin
 	})
 }
 
-func TestAdminGroupRatesRequireKnownGroupAndInvalidateCache(t *testing.T) {
+// TestAdminGroupRatesRequireUserGroupAndInvalidateCache —— 星屑比例按账号的 users.group 取档,
+// 所以只能配**用户分组**(登记表 ∪ 在用的 users.group)。分组倍率表里的模型分组(例如
+// 「反重力的哈基米」)不在可选清单里、也写不进去:挂在它上面的行一个人都不会命中。
+func TestAdminGroupRatesRequireUserGroupAndInvalidateCache(t *testing.T) {
 	env := newAPIEnv(t, nil)
-	useUpstreamGroups(t, map[string]float64{"default": 1, "VIP": 2, "auto": 1}, []string{"Silver"})
+	useUpstreamGroups(t, map[string]float64{"default": 1, "反重力的哈基米": 0.25, "auto": 1}, []string{"Silver"})
+	seedMainUser(t, env.main, model.User{Id: 901, Group: "VIP"})
+	seedMainUser(t, env.main, model.User{Id: 902, Group: "default"})
 	r := adminRouter(7, common.RoleAdminUser)
 	ctx := context.Background()
 
-	assert.Equal(t, codeGroupUnknown, codeOf(t, call(t, r, http.MethodPut,
-		"/api/qy/admin/stardust/group-rates/ghost", `{"consume_bps":7000,"enabled":true}`), http.StatusBadRequest))
+	for _, notUserGroup := range []string{"ghost", "反重力的哈基米", "auto"} {
+		assert.Equal(t, codeGroupUnknown, codeOf(t, call(t, r, http.MethodPut,
+			"/api/qy/admin/stardust/group-rates/"+notUserGroup, `{"consume_bps":7000,"enabled":true}`), http.StatusBadRequest),
+			notUserGroup)
+	}
 
-	// 大小写折叠后落到 vip 那一行;null 的档位存 NULL,不是 0。
+	// 在用的 users.group 大小写折叠后落到 vip 那一行;null 存 NULL,不是 0。
 	data := dataOf(t, call(t, r, http.MethodPut, "/api/qy/admin/stardust/group-rates/VIP",
-		`{"consume_bps":7000,"invite_topup_bps":null,"enabled":true}`))
+		`{"consume_bps":7000,"enabled":true}`))
 	assert.Equal(t, "vip", data["user_group"])
 	assert.EqualValues(t, 7000, data["consume_bps"])
-	assert.Nil(t, data["invite_topup_bps"])
-	assert.Nil(t, data["invite_redeem_bps"])
+	for _, gone := range []string{"invite_topup_bps", "invite_redeem_bps", "invite_consume_bps"} {
+		assert.NotContains(t, data, gone, "星屑侧下线返已下线,分组档只剩消费返")
+	}
 	assert.Equal(t, true, data["enabled"])
 	assert.EqualValues(t, 7, data["operator_id"])
 	got, ok := groupRateFor(ctx, "VIP")
 	require.True(t, ok, "写入后缓存必须立即失效")
 	require.NotNil(t, got.ConsumeBps)
 	assert.Equal(t, 7000, *got.ConsumeBps)
-	assert.Nil(t, got.InviteTopupBps)
 
 	assert.Equal(t, codeBadRequest, codeOf(t, call(t, r, http.MethodPut,
 		"/api/qy/admin/stardust/group-rates/Silver", `{"consume_bps":-1,"enabled":true}`), http.StatusBadRequest))
 	assert.Equal(t, codeBadRequest, codeOf(t, call(t, r, http.MethodPut,
-		"/api/qy/admin/stardust/group-rates/Silver", `{"invite_redeem_bps":10000001,"enabled":true}`), http.StatusBadRequest))
-	// 登记表里的分组同样可配;整行禁用等价于没配。
+		"/api/qy/admin/stardust/group-rates/Silver", `{"consume_bps":10000001,"enabled":true}`), http.StatusBadRequest))
+	// 登记表里还没有人的用户分组同样可配;整行禁用等价于没配。
 	dataOf(t, call(t, r, http.MethodPut, "/api/qy/admin/stardust/group-rates/silver", `{"enabled":false}`))
 	_, ok = groupRateFor(ctx, "silver")
 	assert.False(t, ok, "禁用的行等价于没配")
 
+	// 以前从混着模型分组的下拉里误配的行:照常列出,并标成 stale。
+	bps := 100
+	require.NoError(t, env.ext.Create(&GroupRate{UserGroup: "反重力的哈基米", ConsumeBps: &bps, Enabled: true}).Error)
+
 	data = dataOf(t, call(t, r, http.MethodGet, "/api/qy/admin/stardust/group-rates", ""))
 	items := itemsOf(t, data)
-	require.Len(t, items, 2)
-	assert.Equal(t, "silver", items[0]["user_group"])
-	assert.Equal(t, "vip", items[1]["user_group"])
-	assert.Equal(t, []any{"default", "silver", "vip"}, data["groups"], "在册 ∪ 登记表,去掉 auto,已排序")
+	require.Len(t, items, 3)
+	assert.Equal(t, []any{"default", "silver", "vip"}, data["groups"],
+		"只列用户分组(登记表 ∪ 在用的 users.group),不含模型分组与 auto,已排序")
+	assert.Equal(t, []any{"反重力的哈基米"}, data["stale_groups"])
+	require.NoError(t, env.ext.Where("user_group = ?", "反重力的哈基米").Delete(&GroupRate{}).Error)
 
 	// 再写同一分组是 upsert,不是第二行。
 	dataOf(t, call(t, r, http.MethodPut, "/api/qy/admin/stardust/group-rates/vip", `{"consume_bps":1,"enabled":true}`))
@@ -87,7 +101,7 @@ func TestAdminGroupRatesRequireKnownGroupAndInvalidateCache(t *testing.T) {
 
 	okPut, failPut := countResults(auditRowsOf(t, env.ext, auditGroupRatePut))
 	assert.Equal(t, 3, okPut)
-	assert.Equal(t, 3, failPut, "未登记 / 两次越界都要留痕")
+	assert.Equal(t, 5, failPut, "三个非用户分组 / 两次越界都要留痕")
 	okDel, failDel := countResults(auditRowsOf(t, env.ext, auditGroupRateDelete))
 	assert.Equal(t, 2, okDel)
 	assert.Zero(t, failDel)

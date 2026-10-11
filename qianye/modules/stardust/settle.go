@@ -153,23 +153,15 @@ type settleStats struct {
 	Skipped   int
 	Failed    int
 	Granted   int64
-	// Invite* 是同一跑里**下线消费返**那一段的结果,按邀请人计(settle_invite.go)。
-	// 它在消费返排空之后跑;消费返没排空(轮次上界 / 租约丢失)时这一段整个不跑,
-	// 留给当天的 partial 重试。
-	InviteProcessed int
-	InviteHeld      int
-	InviteSkipped   int
-	InviteFailed    int
-	InviteGranted   int64
 	// Drained 为真表示候选集取空了;Aborted 为真表示租约中途丢了。
 	Drained bool
 	Aborted bool
 	Note    string
 }
 
-// complete 回答"这一跑能不能算 done":两段都排空、一个人都没失败、租约没丢。
+// complete 回答"这一跑能不能算 done":排空、一个人都没失败、租约没丢。
 func (st settleStats) complete() bool {
-	return st.Drained && !st.Aborted && st.Failed == 0 && st.InviteFailed == 0
+	return st.Drained && !st.Aborted && st.Failed == 0
 }
 
 // settleDay 结 D 这一天:重算日桶,然后排空候选集(D 的 computed ∪ 任意日期的 held)。
@@ -178,7 +170,7 @@ func (st settleStats) complete() bool {
 // 不可接受的。选人用键集游标(user_id 递增)而不是"再查一次":held 的用户结完还在
 // 候选集里,不推进游标就会一直取到同一批。
 func settleDay(ctx context.Context, day string, key settleKey) (st settleStats) {
-	n, rows, err := recomputeDay(ctx, day)
+	n, err := recomputeDay(ctx, day)
 	if err != nil {
 		st.Note = "重算 " + day + " 失败: " + err.Error()
 		warnf("%s", st.Note)
@@ -202,9 +194,6 @@ func settleDay(ctx context.Context, day string, key settleKey) (st settleStats) 
 		st.Rounds++
 		if len(ids) == 0 {
 			st.Drained = true
-			// 消费返排空之后才轮到下线消费返:两段用同一批 logs 聚合、同一把日界,
-			// 但候选集不同(一个按消费者、一个按邀请人),所以分两段排空。
-			settleInviteDay(ctx, day, key, rows, &st)
 			return st
 		}
 		for _, id := range ids {
@@ -249,20 +238,19 @@ type consumeAgg struct {
 //
 // (U,D) 已存在的(只可能是 held / settled)跳过不重算 —— 已 held 的桶 gross 冻结于
 // 首次计算值,rerun 不追溯(D-D 的既定代价)。gross / rate 此时先不填,定档在结算事务里。
-// 返回真正插入的行数,以及这一天的 logs 聚合本身 —— 下线消费返用同一份聚合分桶,
-// 不再扫第二遍 LOG_DB。
-func recomputeDay(ctx context.Context, day string) (int, []consumeAgg, error) {
+// 返回真正插入的行数。
+func recomputeDay(ctx context.Context, day string) (int, error) {
 	start, ok := invite.DayKeyStart(day)
 	if !ok {
-		return 0, nil, errBadRequest("day 必须是 YYYYMMDD")
+		return 0, errBadRequest("day 必须是 YYYYMMDD")
 	}
 	rows, err := aggregateDayConsume(ctx, start, start+secondsPerDay, nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, err
 	}
 	gdb := db.Get()
 	if gdb == nil {
-		return 0, nil, db.ErrNotReady
+		return 0, db.ErrNotReady
 	}
 	now := common.GetTimestamp()
 	inserted := 0
@@ -296,9 +284,9 @@ func recomputeDay(ctx context.Context, day string) (int, []consumeAgg, error) {
 	})
 	if err != nil {
 		db.MarkFailure(err)
-		return 0, nil, wrapInternal("重算 "+day+" 的日桶", err)
+		return 0, wrapInternal("重算 "+day+" 的日桶", err)
 	}
-	return inserted, rows, nil
+	return inserted, nil
 }
 
 // aggregateDayConsume 在 LOG_DB 上按用户汇总 [start, end) 的 type=2 消费。
@@ -576,19 +564,13 @@ func holdBuckets(tx *gorm.DB, userId int, buckets []Accrual, reason, group strin
 }
 
 // RerunStats 是管理端重跑一天的结果(契约 §3 settle/rerun)。
-//
-// Invite* 是下线消费返那一段(按邀请人计),与消费返的四个数分开报。
 type RerunStats struct {
-	Recomputed    int   `json:"recomputed"`
-	Settled       int   `json:"settled"`
-	Held          int   `json:"held"`
-	Skipped       int   `json:"skipped"`
-	Failed        int   `json:"failed"`
-	Granted       int64 `json:"granted"`
-	InviteSettled int   `json:"invite_settled"`
-	InviteHeld    int   `json:"invite_held"`
-	InviteFailed  int   `json:"invite_failed"`
-	InviteGranted int64 `json:"invite_granted"`
+	Recomputed int   `json:"recomputed"`
+	Settled    int   `json:"settled"`
+	Held       int   `json:"held"`
+	Skipped    int   `json:"skipped"`
+	Failed     int   `json:"failed"`
+	Granted    int64 `json:"granted"`
 }
 
 // rerunDay 同步重跑桶日 D:只对 computed / held 桶生效,已 settled 的一律不动。
@@ -616,8 +598,6 @@ func rerunDay(ctx context.Context, day string) (RerunStats, error) {
 	out := RerunStats{
 		Recomputed: st.Recomputed, Settled: st.Processed, Held: st.Held,
 		Skipped: st.Skipped, Failed: st.Failed, Granted: st.Granted,
-		InviteSettled: st.InviteProcessed, InviteHeld: st.InviteHeld,
-		InviteFailed: st.InviteFailed, InviteGranted: st.InviteGranted,
 	}
 	if !st.Drained {
 		return out, wrapInternal("重跑 "+day, errors.New(st.Note))
@@ -668,21 +648,17 @@ func settleStatus(ctx context.Context) map[string]any {
 	}
 	r := rows[0]
 	out["last_run"] = map[string]any{
-		"run_date":         r.RunDate,
-		"target_date":      r.TargetDate,
-		"status":           r.Status,
-		"attempts":         r.Attempts,
-		"started_at":       r.StartedAt,
-		"finished_at":      r.FinishedAt,
-		"processed":        r.Processed,
-		"failed":           r.Failed,
-		"held":             r.Held,
-		"granted":          r.Granted,
-		"invite_processed": r.InviteProcessed,
-		"invite_held":      r.InviteHeld,
-		"invite_failed":    r.InviteFailed,
-		"invite_granted":   r.InviteGranted,
-		"remark":           r.Remark,
+		"run_date":    r.RunDate,
+		"target_date": r.TargetDate,
+		"status":      r.Status,
+		"attempts":    r.Attempts,
+		"started_at":  r.StartedAt,
+		"finished_at": r.FinishedAt,
+		"processed":   r.Processed,
+		"failed":      r.Failed,
+		"held":        r.Held,
+		"granted":     r.Granted,
+		"remark":      r.Remark,
 	}
 	if r.RunDate == runDate && r.Status == SettleRunDone {
 		out["next_settle_at"] = invite.NextDayStart(now) + int64(delay)*60

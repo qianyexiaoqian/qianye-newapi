@@ -22,9 +22,9 @@ For commercial licensing, please contact support@quantumnous.com
  * # 两种单位，绝不混用
  *
  *  - 额度：下线的消费基数（`base_quota` / `total_base_quota` /
- *    `pending_today_base_quota` / 日消费明细的三列）—— 只能走 `quota=`
+ *    日消费明细的三列）—— 只能走 `quota=`
  *    （`QyAmountText`）或 `formatQyQuota*`；
- *  - 星屑：返给邀请人的一切（`amount` / `total_stardust` / `granted` / `held` /
+ *  - 星屑：返给邀请人的一切（`amount` / `total_stardust` /
  *    `invite_register_stardust` / `kept_stardust`）—— 只能走 `amount=`
  *    （`QySdAmount`）或 `formatSd*`。
  *
@@ -61,7 +61,6 @@ const SCANNED_DIRS = [
 const QUOTA_FIELDS = [
   'base_quota',
   'total_base_quota',
-  'pending_today_base_quota',
   'consume_quota',
   'invite_base_quota',
   'uncounted_quota',
@@ -71,8 +70,6 @@ const QUOTA_FIELDS = [
 const STARDUST_FIELDS = [
   'amount',
   'total_stardust',
-  'granted',
-  'held',
   'invite_register_stardust',
   'kept_stardust',
 ]

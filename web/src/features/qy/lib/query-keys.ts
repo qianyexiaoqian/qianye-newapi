@@ -47,11 +47,8 @@ export const qyKeys = {
   /** 我的星屑流水里邀请类那五种 kind 的行（按 kind 筛，参数进 key）。 */
   inviteRecords: (params: unknown) =>
     [...qyKeys.all, 'invite', 'records', params] as const,
-  /** 我名下的下线在某一天的消费返基数与计提（一天一份）。 */
-  inviteInviteeDaily: (day: string) =>
-    [...qyKeys.all, 'invite', 'invitee-daily', day] as const,
 
-  // ── 推广佣金（用户端；与上面的邀请返并行，D-16 起两边都是星屑）──
+  // ── 推广佣金（用户端；下线充值 / 兑换码 / 消费的返还只走这一条线）──
   commissionSummary: () => [...qyKeys.all, 'commission', 'summary'] as const,
   commissionRecords: (params: unknown) =>
     [...qyKeys.all, 'commission', 'records', params] as const,
@@ -277,9 +274,6 @@ export const qyKeys = {
       'by-day',
       params,
     ] as const,
-  /** 下线消费返的日结明细（`qy_sd_invite_accrual`），按日 × 邀请人筛。 */
-  adminInviteAccruals: (params: unknown) =>
-    [...qyKeys.all, 'admin', 'invite', 'accruals', params] as const,
 
   // ── 推广佣金（管理端）──
   adminCommissionConfig: () =>

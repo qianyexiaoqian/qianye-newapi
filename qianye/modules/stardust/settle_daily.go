@@ -145,17 +145,13 @@ func heartbeatDailyRun(ctx context.Context, runDate string, st settleStats, now 
 	return gdb.WithContext(ctx).Model(&SettleRun{}).
 		Where("run_date = ? AND holder = ? AND status = ?", runDate, lease.Holder(), SettleRunRunning).
 		Updates(map[string]any{
-			"heartbeat_at":     now,
-			"rounds":           st.Rounds,
-			"processed":        st.Processed,
-			"failed":           st.Failed,
-			"held":             st.Held,
-			"granted":          st.Granted,
-			"invite_processed": st.InviteProcessed,
-			"invite_held":      st.InviteHeld,
-			"invite_failed":    st.InviteFailed,
-			"invite_granted":   st.InviteGranted,
-			"updated_at":       now,
+			"heartbeat_at": now,
+			"rounds":       st.Rounds,
+			"processed":    st.Processed,
+			"failed":       st.Failed,
+			"held":         st.Held,
+			"granted":      st.Granted,
+			"updated_at":   now,
 		}).Error
 }
 
@@ -174,20 +170,16 @@ func finishDailyRun(ctx context.Context, runDate string, st settleStats, now int
 	return gdb.WithContext(ctx).Model(&SettleRun{}).
 		Where("run_date = ? AND holder = ? AND status = ?", runDate, lease.Holder(), SettleRunRunning).
 		Updates(map[string]any{
-			"status":           status,
-			"finished_at":      now,
-			"heartbeat_at":     now,
-			"rounds":           st.Rounds,
-			"processed":        st.Processed,
-			"failed":           st.Failed,
-			"held":             st.Held,
-			"granted":          st.Granted,
-			"invite_processed": st.InviteProcessed,
-			"invite_held":      st.InviteHeld,
-			"invite_failed":    st.InviteFailed,
-			"invite_granted":   st.InviteGranted,
-			"remark":           clip(st.Note, 255),
-			"updated_at":       now,
+			"status":       status,
+			"finished_at":  now,
+			"heartbeat_at": now,
+			"rounds":       st.Rounds,
+			"processed":    st.Processed,
+			"failed":       st.Failed,
+			"held":         st.Held,
+			"granted":      st.Granted,
+			"remark":       clip(st.Note, 255),
+			"updated_at":   now,
 		}).Error
 }
 

@@ -39,14 +39,12 @@ export const QY_SD_BOOLEAN_KEYS: ReadonlySet<string> = new Set(['show_entry'])
 export const QY_SD_NAME_KEY = 'name'
 
 /**
- * 受支付合规门约束的三个邀请类键（后端 `isInviteKey`）。
+ * 受支付合规门约束的邀请类键（后端 `isInviteKey`）：只剩注册奖。下线充值 / 兑换码 /
+ * 消费带来的返还只走推广佣金，星屑侧没有那三档。
  * 合规未确认时后端对它们的正值 400 `qy_sd_compliance_required`，
  * 界面上要在保存之前就把这件事说出来 —— 输入框禁用 + 一句提示。
  */
 export const QY_SD_INVITE_KEYS: ReadonlySet<string> = new Set([
-  'invite_consume_bps',
-  'invite_topup_bps',
-  'invite_redeem_bps',
   'invite_register_stardust',
 ])
 

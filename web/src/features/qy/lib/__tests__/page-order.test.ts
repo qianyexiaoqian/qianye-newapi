@@ -107,10 +107,10 @@ describe('qy page order', () => {
     assert.equal(qyPageMeta('/qy/admin').no, '00')
     // 详情页继承所属功能页的编号（最长前缀），不掉进未登记分支。
     assert.equal(qyPageMeta('/qy/admin/violations/123').no, '12')
-    // D-14 新增的三页追加在末尾，各有自己的号；标签页继承自己那一行而不是宿主。
-    assert.notEqual(qyPageMeta('/qy/admin/invite-accruals').no, '00')
+    // 标签页继承自己那一行而不是宿主。
+    assert.notEqual(qyPageMeta('/qy/admin/daily-consume').no, '00')
     assert.notEqual(
-      qyPageMeta('/qy/admin/invite-accruals').no,
+      qyPageMeta('/qy/admin/daily-consume').no,
       qyPageMeta('/qy/admin/invite').no
     )
   })

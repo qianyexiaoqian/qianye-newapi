@@ -92,15 +92,6 @@ const FORECAST = {
     carry: '0.3700000000',
     estimated: 2,
   },
-  invite: {
-    applies: false,
-    counted: true,
-    base_quota: 0,
-    rate_bps: 0,
-    gross: '0',
-    carry: '0',
-    estimated: 0,
-  },
   estimated_total: 2,
 }
 

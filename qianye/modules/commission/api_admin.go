@@ -17,7 +17,6 @@ import (
 	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/modules/invite"
-	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
@@ -742,10 +741,8 @@ func adminHealth(c *gin.Context) {
 		// failed 持续增长,意味着别的节点可能仍在按旧费率计佣。
 		"cache_sync": invite.CacheSyncStats(),
 		// daily_settle 是一日一结算之后**唯一**能回答"今天的佣金结了没有"的一段。
-		"daily_settle": dailySettleSnapshot(common.GetTimestamp()),
-		"credit":       creditSnapshot(ctx),
-		// rate_overlap 是 D-16 之后**必须**摆在运营面前的一件事,见下面的说明。
-		"rate_overlap":    rateOverlap(ctx),
+		"daily_settle":    dailySettleSnapshot(common.GetTimestamp()),
+		"credit":          creditSnapshot(ctx),
 		"topup_low_water": peekTopupCursor(),
 		// pending_inviters 只取第一页,封顶 settleInviterBatch,不是队列全长。
 		"pending_inviters":   len(pending),
@@ -758,49 +755,6 @@ func adminHealth(c *gin.Context) {
 			"inviter_group": inviterGroupDegrade.stats(),
 		},
 	})
-}
-
-// rateOverlap 报告"同一笔基数正在被两条线同时计返"。
-//
-// # 为什么这是一个健康检查项而不是一条校验
-//
-// D-16 之后佣金与星屑侧的邀请返发的是**同一种钱**,而两边的三档打的是同一笔基数:
-//
-//	commission.topup_rate_bps       ↔ stardust.invite_topup_bps      (下线充值)
-//	commission.consume_rate_bps     ↔ stardust.invite_consume_bps    (下线消费)
-//	commission.redemption_rate_bps  ↔ stardust.invite_redeem_bps     (下线用兑换码)
-//
-// 两边同时为正,同一笔下线消费就会给上线落两笔星屑:一笔由星屑侧日结当场发,一笔
-// 由佣金侧计佣、过持有期、攒够门槛再发。这**不是** bug —— 运营完全可能故意让"即时
-// 小额 + 延迟大额"两条并存。所以代码不拒绝、不清零、不替谁做决定。
-//
-// 但它必须**看得见**。两条线的配置在两个不同的管理页上,各自都显示正常,谁也不会
-// 主动去做这次比对;而症状是"平台付出的钱是账面比例的两倍",在成本报表上要几周
-// 才浮出来。所以健康面板逐档报出重叠,由人来定留哪一条。
-func rateOverlap(ctx context.Context) gin.H {
-	cs := effectiveCtx(ctx)
-	topupBps, redeemBps, consumeBps, _ := stardust.InviteRateSnapshot()
-
-	rows := []struct {
-		key        string
-		commission int
-		invite     int
-	}{
-		{"topup", cs.TopupRateUnits, topupBps},
-		{"consume", cs.ConsumeRateUnits, consumeBps},
-		{"redemption", cs.EffectiveRedemptionRateUnits(), redeemBps},
-	}
-	overlapping := make([]gin.H, 0, len(rows))
-	for _, r := range rows {
-		if r.commission > 0 && r.invite > 0 {
-			overlapping = append(overlapping, gin.H{
-				"source":              r.key,
-				"commission_rate_bps": r.commission,
-				"invite_rate_bps":     r.invite,
-			})
-		}
-	}
-	return gin.H{"ok": len(overlapping) == 0, "sources": overlapping}
 }
 
 // maxLedgerCheckUsers 是一次体检最多核对多少行余额。

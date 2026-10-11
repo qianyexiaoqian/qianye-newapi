@@ -151,3 +151,30 @@ group_matrix:
 	assert.True(t, c.GroupMatrix.WriteGuardOn())
 	assert.True(t, c.GroupMatrix.Enabled)
 }
+
+// TestRetiredStardustInviteKeysStillParse 钉住星屑侧「下线充值 / 兑换码 / 消费返」下线之后,
+// 仍写着那五个键(含正比例)的 YAML 照样能起来,而且加载后一个都观测不到 ——
+// 下线带来的返还只走推广佣金,星屑侧留着一个读得到的比例,迟早有人把它接回去。
+func TestRetiredStardustInviteKeysStillParse(t *testing.T) {
+	c, _, err := parseFile(writeTemp(t, `
+enabled: true
+database:
+  dsn: "u:p@tcp(127.0.0.1:3306)/qy"
+stardust:
+  enabled: true
+  invite_topup_bps: 500
+  invite_redeem_bps: 500
+  invite_consume_bps: 250
+  exclude_manual_topup: true
+  topup_scan_interval_seconds: 60
+  invite_register_stardust: 3
+`))
+	require.NoError(t, err, "仍写着已下线星屑邀请返键的 YAML 必须能加载")
+	sd := c.Stardust
+	assert.Nil(t, sd.InviteTopupBpsDeprecated)
+	assert.Nil(t, sd.InviteRedeemBpsDeprecated)
+	assert.Nil(t, sd.InviteConsumeBpsDeprecated)
+	assert.Nil(t, sd.ExcludeManualTopupDeprecated)
+	assert.Nil(t, sd.TopupScanIntervalSecondsDeprecated)
+	assert.EqualValues(t, 3, sd.InviteRegisterStardust, "注册奖不在下线范围内,必须照常读到")
+}

@@ -210,10 +210,10 @@ database:
   dsn: "u:p@tcp(h:3306)/d"
 stardust:
   enabled: true
-  invite_consume_bps: 20000000
+  consume_bps: 20000000
 `))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invite_consume_bps")
+	assert.Contains(t, err.Error(), "consume_bps")
 }
 
 // 日界偏移必须落在真实时区的范围里:一个 -1500 分钟的偏移不会报错,只会让每一天的

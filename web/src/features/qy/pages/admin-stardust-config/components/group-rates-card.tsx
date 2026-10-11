@@ -61,24 +61,24 @@ import type {
   QyStardustGroupRateInput,
 } from '../types'
 
-/** 四个可覆盖的比例列，顺序 = 表格列顺序 = 弹窗字段顺序。 */
-const RATE_KEYS = [
-  'consume_bps',
-  'invite_consume_bps',
-  'invite_topup_bps',
-  'invite_redeem_bps',
-] as const
+/**
+ * 可覆盖的比例列，顺序 = 表格列顺序 = 弹窗字段顺序。只剩消费返：下线充值 / 兑换码 /
+ * 消费带来的返还只走推广佣金（佣金配置里的分组费率），星屑侧没有那三档。
+ */
+const RATE_KEYS = ['consume_bps'] as const
 type RateKey = (typeof RATE_KEYS)[number]
 
 /**
- * 「分组比例」—— 按用户分组覆盖四档比例（`qy_sd_group_rate`）。
+ * 「分组比例」—— 按**用户分组**覆盖消费返比例（`qy_sd_group_rate`）。
  *
- * 每一项都是三态：`null` = 本档不覆盖、沿用全站默认；`0` = 显式不返；正数 = 覆盖。
+ * 三态：`null` = 不覆盖、沿用全站默认；`0` = 显式不返；正数 = 覆盖。
  * 界面上空输入框就是 `null`，所以"清空"与"填 0"必须是两个看得出来的动作 ——
  * 运营最常犯的错正是把"想关掉"填成了"想回落"。
  *
- * 分组名只能从后端下发的 `groups`（在册 ∪ 登记表）里选，不给自由文本：
- * 打错一个字母的比例行永远不会命中，而界面上看起来"已配置"。
+ * 分组名只能从后端下发的 `groups`（用户分组登记表 ∪ 在用的 `users.group`）里选，
+ * 不给自由文本，也**不含模型分组**：比例按账号自己的用户分组取档，挂在模型分组
+ * （例如「反重力的哈基米」）上的一行一个人都不会命中，而界面上看起来"已配置"。
+ * 以前误配上的那种行由后端以 `stale_groups` 标出来，这里标红提示删除。
  */
 export function QySdGroupRatesCard(props: {
   bpsBound: QyStardustBound | null
@@ -88,6 +88,7 @@ export function QySdGroupRatesCard(props: {
   const query = useQuery(qyAdminStardustGroupRatesQuery())
   const items = qyArray(query.data?.items)
   const groups = qyArray(query.data?.groups)
+  const stale = new Set(qyArray(query.data?.stale_groups))
 
   const [editing, setEditing] = useState<QyStardustGroupRate | 'new' | null>(
     null
@@ -124,6 +125,11 @@ export function QySdGroupRatesCard(props: {
           <span className='font-mono'>{row.user_group}</span>
           {!row.enabled && (
             <Badge variant='outline'>{t('qy_sdadm_gr_disabled')}</Badge>
+          )}
+          {stale.has(row.user_group) && (
+            <Badge variant='destructive' title={t('qy_sdadm_gr_stale_hint')}>
+              {t('qy_sdadm_gr_stale')}
+            </Badge>
           )}
         </span>
       ),
@@ -199,7 +205,7 @@ export function QySdGroupRatesCard(props: {
               columns={columns}
               data={items}
               getRowKey={(row) => row.user_group}
-              tableClassName='min-w-[760px]'
+              tableClassName='min-w-[520px]'
             />
           </div>
         </QyPageBoundary>
@@ -257,8 +263,8 @@ type GroupRateDialogProps = {
 }
 
 /**
- * 新增 / 编辑一个分组的比例档。四个比例是文本草稿：空串 = `null`（沿用全站）。
- * PUT 是整行 upsert，所以编辑时四个格子都要按当前行回填，少填一格就是把它清成 null。
+ * 新增 / 编辑一个用户分组的比例档。比例是文本草稿：空串 = `null`（沿用全站）。
+ * PUT 是整行 upsert，所以编辑时要按当前行回填，少填就是把它清成 null。
  */
 function GroupRateDialog(props: GroupRateDialogProps) {
   const { t } = useTranslation()
@@ -270,24 +276,16 @@ function GroupRateDialog(props: GroupRateDialogProps) {
   const [enabled, setEnabled] = useState(true)
   const [draft, setDraft] = useState<Record<RateKey, string>>({
     consume_bps: '',
-    invite_consume_bps: '',
-    invite_topup_bps: '',
-    invite_redeem_bps: '',
   })
 
-  // 每次打开都按目标行回填：编辑 A 之后接着新增，留着 A 的三个数字会被当成
+  // 每次打开都按目标行回填：编辑 A 之后接着新增，留着 A 的数字会被当成
   // 新分组的默认值写进去。
   useEffect(() => {
     if (props.target == null) return
     if (props.target === 'new') {
       setGroup(props.freeGroups[0] ?? '')
       setEnabled(true)
-      setDraft({
-        consume_bps: '',
-        invite_consume_bps: '',
-        invite_topup_bps: '',
-        invite_redeem_bps: '',
-      })
+      setDraft({ consume_bps: '' })
       return
     }
     const row = props.target
@@ -295,12 +293,6 @@ function GroupRateDialog(props: GroupRateDialogProps) {
     setEnabled(row.enabled)
     setDraft({
       consume_bps: row.consume_bps == null ? '' : String(row.consume_bps),
-      invite_consume_bps:
-        row.invite_consume_bps == null ? '' : String(row.invite_consume_bps),
-      invite_topup_bps:
-        row.invite_topup_bps == null ? '' : String(row.invite_topup_bps),
-      invite_redeem_bps:
-        row.invite_redeem_bps == null ? '' : String(row.invite_redeem_bps),
     })
     // freeGroups 只在新增那一支用作默认选项，随列表刷新变化时不该重置正在编辑的草稿。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -350,9 +342,6 @@ function GroupRateDialog(props: GroupRateDialogProps) {
               group,
               body: {
                 consume_bps: parsed('consume_bps') ?? null,
-                invite_consume_bps: parsed('invite_consume_bps') ?? null,
-                invite_topup_bps: parsed('invite_topup_bps') ?? null,
-                invite_redeem_bps: parsed('invite_redeem_bps') ?? null,
                 enabled,
               },
             })
@@ -381,6 +370,9 @@ function GroupRateDialog(props: GroupRateDialogProps) {
           ) : (
             <Input id={groupId} value={group} readOnly />
           )}
+          <p className='text-muted-foreground text-xs'>
+            {t('qy_sdadm_gr_group_hint')}
+          </p>
         </div>
 
         {RATE_KEYS.map((key) => {

@@ -20,10 +20,10 @@ import (
 //	model/subscription.go    CompleteSubscriptionOrder / PurchaseSubscriptionWithBalance /
 //	                         AdminBindSubscription → QyOnSubscriptionGranted
 //	model/redemption.go      Redeem(套餐码分支)→ QyOnSubscriptionGranted
-//	qianye/modules/invite/hook.go     onRedeemSuccess → AfterRedeemSuccess(无条件转发)
+//	qianye/modules/invite/hook.go     onRedeemSuccess → AfterRedeemSuccessCommission(无条件转发,兑换码佣金)
 //
 // 少一行的表现不是报错,是"管理端比例配得好好的,线上零效果":注册奖一个都不发、
-// 买套餐一颗星屑都不返、兑换码返跟着消失。本仓的 groupns / planentitlement /
+// 买套餐一颗星屑都不返、兑换码佣金跟着消失。本仓的 groupns / planentitlement /
 // subscription 三条 hookpoint 守卫存在的理由与此相同 —— "写了但没接"在这个仓库里
 // 已经真实发生过不止一次。
 
@@ -118,11 +118,10 @@ func TestStardustHookDefaultsAreNoop(t *testing.T) {
 	}
 }
 
-// 星屑吃兑换码事件靠 invite.AfterRedeemSuccess 这个第二级转发槽。D-14 之前它住在
-// commission 里,而且必须排在佣金自己的 `!cm.Enabled` 早退之前 —— 佣金一关星屑的
-// 兑换码返就一起静默消失。现在 invite 的 onRedeemSuccess 只做一件事:无条件转发。
-// 这条锁守的是"无条件"这三个字:任何人在转发前面加一道 `Enabled` 判断,都会把
-// invite 关着(星屑仍开着)的部署里的兑换码返静默吃掉。
+// 兑换码佣金靠 invite.AfterRedeemSuccessCommission 这个转发槽(星屑侧的兑换码返已下线,
+// 下线带来的返还只走佣金)。这条锁守的是"无条件"这三个字:任何人在转发前面加一道
+// `Enabled` 判断,都会把 invite 关着(佣金仍开着)的部署里的兑换码佣金静默吃掉 ——
+// 佣金自己判自己的开关。
 func TestAfterRedeemSuccessIsForwardedUnconditionally(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "modules/invite/hook.go", nil, 0)
@@ -134,7 +133,7 @@ func TestAfterRedeemSuccessIsForwardedUnconditionally(t *testing.T) {
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.CallExpr:
-			if ident, ok := x.Fun.(*ast.Ident); ok && ident.Name == "AfterRedeemSuccess" && hookPos == token.NoPos {
+			if ident, ok := x.Fun.(*ast.Ident); ok && ident.Name == "AfterRedeemSuccessCommission" && hookPos == token.NoPos {
 				hookPos = x.Pos()
 			}
 		case *ast.SelectorExpr:
@@ -144,9 +143,9 @@ func TestAfterRedeemSuccessIsForwardedUnconditionally(t *testing.T) {
 		}
 		return true
 	})
-	require.NotEqual(t, token.NoPos, hookPos, "onRedeemSuccess 里缺少 AfterRedeemSuccess 转发")
+	require.NotEqual(t, token.NoPos, hookPos, "onRedeemSuccess 里缺少 AfterRedeemSuccessCommission 转发")
 	assert.Equal(t, token.NoPos, gatePos,
-		"onRedeemSuccess 不许读任何 Enabled 开关:invite 关着时星屑的兑换码返不能跟着消失")
+		"onRedeemSuccess 不许读任何 Enabled 开关:invite 关着时兑换码佣金不能跟着消失")
 }
 
 // ─────────────────────────────── 测试辅助 ───────────────────────────────

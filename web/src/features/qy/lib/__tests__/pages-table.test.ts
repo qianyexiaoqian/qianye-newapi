@@ -111,7 +111,6 @@ const ROOT_ADMIN_URLS = [
   // 日消费明细是运营每天要开的报表（"昨天谁消费了多少"），不是"改一次影响
   // 后续每一笔"的配置，所以留根侧栏。
   '/qy/admin/daily-consume',
-  '/qy/admin/invite-accruals',
   // 「结算台」（D-15 恢复）：日消费明细 / 佣金审核 / 佣金用户三张标签的宿主与
   // 两个成员。全是每天要过的流水与台账。
   '/qy/admin/settlement',
@@ -146,10 +145,8 @@ const ROOT_ADMIN_URLS = [
  * 把三页搬错宿主也照样全绿。
  */
 const HOSTED_URLS = [
-  // 「邀请管理」的后两张标签（D-14）：下线日消费 / 日结明细。旧的
-  // daily-consume 地址保留成重定向。
+  // 「邀请管理」的第二张标签：下线日消费。旧的 daily-consume 地址保留成重定向。
   '/qy/admin/daily-consume',
-  '/qy/admin/invite-accruals',
   // 「结算台」的后两张标签（D-15）：佣金审核 / 佣金用户。第一张是宿主自己。
   '/qy/admin/commission-records',
   '/qy/admin/commission-users',
@@ -299,15 +296,10 @@ describe('qy 选择夹（需求 2 / 3）', () => {
           ],
         ],
         [
-          // 「邀请管理」（D-14）。顺序 = 运营对账时的追问顺序：谁邀请了谁 →
-          // 下线昨天花了多少 → 按邀请人分组档该返多少。它取代了「结算台」与
-          // 「用户佣金」两个选择夹。
+          // 「邀请管理」。顺序 = 运营对账时的追问顺序：谁邀请了谁 → 下线昨天花了
+          // 多少、其中多少计了推广佣金。
           '/qy/admin/invite',
-          [
-            '/qy/admin/invite',
-            '/qy/admin/daily-consume',
-            '/qy/admin/invite-accruals',
-          ],
+          ['/qy/admin/invite', '/qy/admin/daily-consume'],
         ],
         [
           // 「结算台」（D-15 恢复）：日消费明细（宿主自己）/ 佣金审核 / 佣金用户。

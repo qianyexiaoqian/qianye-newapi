@@ -33,7 +33,7 @@ func withCompliance(t *testing.T, confirmed bool) {
 func stardustConfig(mutate func(*config.Stardust)) *config.Config {
 	sd := config.Stardust{
 		Enabled: true, Name: "星屑", ConsumeBps: 10_000,
-		InviteTopupBps: 300, InviteRedeemBps: 200, InviteRegisterStardust: 50, HeldAlertDays: 7,
+		InviteRegisterStardust: 50, HeldAlertDays: 7,
 	}
 	if mutate != nil {
 		mutate(&sd)
@@ -44,23 +44,43 @@ func stardustConfig(mutate func(*config.Stardust)) *config.Config {
 	}
 }
 
-func TestInviteRewardsCollapseToZeroUntilComplianceConfirmed(t *testing.T) {
+func TestRegisterRewardCollapsesToZeroUntilComplianceConfirmed(t *testing.T) {
 	newTestDB(t)
 	useConfig(t, stardustConfig(nil))
 
 	withCompliance(t, false)
 	got := effective()
-	assert.Zero(t, got.InviteTopupBps)
-	assert.Zero(t, got.InviteRedeemBps)
 	assert.Zero(t, got.InviteRegisterStardust)
 	assert.Equal(t, 10_000, got.ConsumeBps, "消费返不受合规门约束")
 
 	// 确认合规之后**立即**生效,不受 60 秒快照钉住。
 	withCompliance(t, true)
 	got = effective()
-	assert.Equal(t, 300, got.InviteTopupBps)
-	assert.Equal(t, 200, got.InviteRedeemBps)
 	assert.EqualValues(t, 50, got.InviteRegisterStardust)
+}
+
+// TestRetiredInviteOverridesAreIgnored 钉住星屑侧下线返下线之后,qy_settings 里残留的
+// invite_topup_bps / invite_redeem_bps / invite_consume_bps 既不生效、也不被当成
+// 「运营覆盖」回显,而且再也写不进去 —— 下线带来的返还只走推广佣金。
+func TestRetiredInviteOverridesAreIgnored(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, stardustConfig(nil))
+	withCompliance(t, true)
+	ctx := context.Background()
+	for _, k := range []string{"invite_topup_bps", "invite_redeem_bps", "invite_consume_bps"} {
+		require.NoError(t, gdb.Create(&qymodel.Setting{Scope: settingScope, K: k, V: "500"}).Error)
+	}
+	require.NoError(t, gdb.Create(&qymodel.Setting{Scope: settingScope, K: keyConsumeBps, V: "2500"}).Error)
+	invalidateSettings()
+
+	rows, err := loadOverrides(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{keyConsumeBps: "2500"}, rows, "已下线的键不进覆盖表")
+	assert.Equal(t, 2500, effective().ConsumeBps)
+
+	be, ok := AsBizError(saveOverrides(ctx, map[string]string{"invite_consume_bps": "1"}, 1))
+	require.True(t, ok)
+	assert.Equal(t, codeBadSetting, be.ErrCode(), "已下线的键不在白名单里")
 }
 
 func TestOutOfRangeOverridesFallBackToYaml(t *testing.T) {
@@ -73,14 +93,14 @@ func TestOutOfRangeOverridesFallBackToYaml(t *testing.T) {
 		want opSettings
 	}{
 		{"合法覆盖全部采纳", map[string]string{
-			keyName: " 星尘 ", keyShowEntry: "0", keyConsumeBps: "5000", keyInviteTopupBps: "0",
+			keyName: " 星尘 ", keyShowEntry: "0", keyConsumeBps: "5000",
 			keyInviteRegisterStardust: "12", keyHeldAlertDays: "30",
-		}, opSettings{Name: "星尘", ShowEntry: false, ConsumeBps: 5000, InviteTopupBps: 0,
-			InviteRedeemBps: 200, InviteRegisterStardust: 12, HeldAlertDays: 30}},
+		}, opSettings{Name: "星尘", ShowEntry: false, ConsumeBps: 5000,
+			InviteRegisterStardust: 12, HeldAlertDays: 30}},
 		{"空白名字回落", map[string]string{keyName: "   "}, base},
 		{"超长名字回落", map[string]string{keyName: strings.Repeat("星", 17)}, base},
 		{"比例超上界回落", map[string]string{keyConsumeBps: "10000001"}, base},
-		{"比例为负回落", map[string]string{keyInviteRedeemBps: "-1"}, base},
+		{"比例为负回落", map[string]string{keyConsumeBps: "-1"}, base},
 		{"告警天数超上界回落", map[string]string{keyHeldAlertDays: "366"}, base},
 		{"非数字回落", map[string]string{keyInviteRegisterStardust: "many"}, base},
 		{"show_entry 认 true/false", map[string]string{keyShowEntry: "false"}, func() opSettings {
@@ -111,7 +131,7 @@ func TestSaveOverridesRejectsBeforeWriting(t *testing.T) {
 		{"比例越界", map[string]string{keyConsumeBps: "10000001"}, codeBadSetting},
 		{"名字超长", map[string]string{keyName: strings.Repeat("a", 17)}, codeBadSetting},
 		{"show_entry 非布尔", map[string]string{keyShowEntry: "yes"}, codeBadSetting},
-		{"合规未确认时邀请类正值", map[string]string{keyInviteTopupBps: "1"}, codeComplianceRequired},
+
 		{"合规未确认时注册奖正值", map[string]string{keyInviteRegisterStardust: "1"}, codeComplianceRequired},
 	}
 	for _, tc := range cases {
@@ -126,9 +146,9 @@ func TestSaveOverridesRejectsBeforeWriting(t *testing.T) {
 	require.NoError(t, gdb.Model(&qymodel.Setting{}).Where("scope = ?", settingScope).Count(&n).Error)
 	assert.Zero(t, n, "被拒绝的保存一行都不该落库")
 
-	// 合规未确认时邀请类写 0 是允许的(那是"关掉"),其余键照常写入并立即生效。
+	// 合规未确认时注册奖写 0 是允许的(那是"关掉"),其余键照常写入并立即生效。
 	require.NoError(t, saveOverrides(ctx, map[string]string{
-		keyName: "星尘", keyShowEntry: "true", keyConsumeBps: "2500", keyInviteTopupBps: "0",
+		keyName: "星尘", keyShowEntry: "true", keyConsumeBps: "2500", keyInviteRegisterStardust: "0",
 	}, 42))
 	got := effective()
 	assert.Equal(t, "星尘", got.Name)
@@ -146,9 +166,9 @@ func TestSaveOverridesRejectsBeforeWriting(t *testing.T) {
 	}
 	assert.Equal(t, "星尘", UnitName())
 	assert.Equal(t, map[string]any{
-		keyName: "星尘", keyShowEntry: int64(1), keyConsumeBps: int64(2500), keyInviteTopupBps: int64(0),
-		keyInviteRedeemBps: int64(0), keyInviteRegisterStardust: int64(0), keyInviteConsumeBps: int64(0), keyHeldAlertDays: int64(7),
-	}, snapshot(), "快照键名与白名单逐字一致;邀请类三项在合规未确认时按 0 下发")
+		keyName: "星尘", keyShowEntry: int64(1), keyConsumeBps: int64(2500),
+		keyInviteRegisterStardust: int64(0), keyHeldAlertDays: int64(7),
+	}, snapshot(), "快照键名与白名单逐字一致;注册奖在合规未确认时按 0 下发")
 }
 
 func TestGroupRateLookupNormalizesAndInvalidates(t *testing.T) {
@@ -162,7 +182,6 @@ func TestGroupRateLookupNormalizesAndInvalidates(t *testing.T) {
 	require.True(t, ok, "查表按 groupname.Effective 归一,大小写与空白不影响命中")
 	require.NotNil(t, r.ConsumeBps)
 	assert.Equal(t, 7000, *r.ConsumeBps)
-	assert.Nil(t, r.InviteTopupBps, "没配的档位是 nil,不是 0")
 
 	_, ok = groupRateFor(ctx, "off")
 	assert.False(t, ok, "禁用的行等价于没配")

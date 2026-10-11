@@ -501,10 +501,7 @@ describe('qy 路由 ↔ 导航入口', () => {
 
     const group = QY_TAB_GROUPS.find((item) => item.host === hubUrl)
     assert.ok(group != null, `${hubUrl} 不再是任何选择夹的宿主`)
-    for (const url of [
-      '/qy/admin/daily-consume',
-      '/qy/admin/invite-accruals',
-    ]) {
+    for (const url of ['/qy/admin/daily-consume']) {
       assert.ok(
         group.pages.includes(url),
         `${url} 从邀请管理的选择夹里掉出去了 —— 它既不是标签也不是一级项，等于整页没了入口`

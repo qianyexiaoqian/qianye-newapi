@@ -28,8 +28,8 @@ func (Mod) InstallHooks() {
 		s := effective()
 		return map[string]any{"show_entry": s.ShowEntry, "name": s.Name}
 	}
-	// 上游事件的接管(invite.AfterRedeemSuccess / model.QyOnUserRegistered /
-	// model.QyOnSubscriptionGranted)由 hooks.go 登记进 hookInstallers,这里只遍历。
+	// 上游事件的接管(model.QyOnUserRegistered / model.QyOnSubscriptionGranted)与
+	// invite.PairRewardTotals 槽由 hooks.go / invite_stats.go 登记进 hookInstallers,这里只遍历。
 	for _, install := range hookInstallers {
 		install()
 	}
@@ -68,10 +68,10 @@ func (Mod) RegisterAdminRoutes(g *gin.RouterGroup) {
 	}
 }
 
-// StartTasks 启动后台任务(日结、充值扫描等,由各文件登记进 taskStarters)。
+// StartTasks 启动后台任务(消费返日结等,由各文件登记进 taskStarters)。
 //
 // 总闸在这里判一次:stardust.enabled=false 时一个任务都不起,与 sections.go 登记的
-// 效果("消费返 / 邀请返 / 套餐返全部停止")一致。各任务实现必须用 lease.Run
+// 效果("消费返 / 注册奖 / 套餐返全部停止")一致。各任务实现必须用 lease.Run
 // 而非裸 goroutine,否则多节点会重复执行。
 func (Mod) StartTasks() {
 	if !config.Get().Stardust.Enabled {

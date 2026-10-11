@@ -130,8 +130,8 @@ type relationView struct {
 	UnboundAt int64 `json:"unbound_at"`
 
 	// TotalStardust 是这条关系(这一对 inviter/invitee)累计给邀请人带来的星屑,
-	// 各 kind 合计(下线消费返 / 充值返 / 兑换码返 / 注册奖 / 套餐返)。
-	// 由星屑账本按 peer_user_id 汇总(PairRewardTotals),星屑没装上时恒 0。
+	// = 推广佣金毛额(充值 / 兑换码 / 消费,含尚未结算的,向下取整)+ 星屑账本上直接得到的
+	// 注册奖 / 套餐返(以及已下线的星屑侧下线返留下的历史流水)。见 relationTotals。
 	TotalStardust int64 `json:"total_stardust"`
 
 	// SnapshotPresent 为假表示扩展库里还没有这条关系的快照行。它不是异常 ——
@@ -380,7 +380,7 @@ func hydrateRelationViews(ctx context.Context, views []relationView) error {
 			snaps[relationPair{InviterId: r.InviterId, InviteeId: r.InviteeId}] = r
 		}
 	}
-	totals := PairRewardTotals(ctx, pairs)
+	totals := relationTotals(ctx, pairs)
 
 	for i := range views {
 		v := &views[i]
@@ -765,12 +765,23 @@ func rebindRelation(ctx context.Context, newInviterId, inviteeId int) (*rebindOu
 	}, nil
 }
 
+// relationTotals 是每条关系一共给邀请人带来的星屑:推广佣金的计佣毛额(含尚未结算进
+// 余额的,向下取整)加上星屑账本上直接得到的注册奖 / 套餐返。下线带来的返还只走佣金,
+// 两半的基数不重叠,相加不会重复计。
+func relationTotals(ctx context.Context, pairs [][2]int) map[[2]int]int64 {
+	out := PairRewardTotals(ctx, pairs)
+	for key, c := range PairCommissionTotals(ctx, pairs) {
+		out[key] += int64(common.QuotaFromDecimal(c.Gross.Floor()))
+	}
+	return out
+}
+
 // pairStardust 返回 (邀请人, 被邀请人) 这一对历史上累计给邀请人带来的星屑。
 //
-// 它只用于回显与审计,不参与任何资金动作;读失败由 PairRewardTotals 自己兜成 0,
+// 它只用于回显与审计,不参与任何资金动作;读失败由两个汇总槽自己兜成 0,
 // 不中断整个动作 —— 主库那一侧已经改完了,为了一个回显数字把它回滚才是真的坏。
 func pairStardust(ctx context.Context, inviterId, inviteeId int) int64 {
-	return PairRewardTotals(ctx, [][2]int{{inviterId, inviteeId}})[[2]int{inviterId, inviteeId}]
+	return relationTotals(ctx, [][2]int{{inviterId, inviteeId}})[[2]int{inviterId, inviteeId}]
 }
 
 // ───────────────────────── 解绑 ─────────────────────────

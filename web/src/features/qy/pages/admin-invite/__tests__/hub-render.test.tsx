@@ -17,17 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /*
- * 「邀请管理」选择夹（邀请关系 / 下线日消费 / 日结明细）在**真实渲染**上的形状（D-14）。
+ * 「邀请管理」选择夹（邀请关系 / 下线日消费）在**真实渲染**上的形状。
  *
- * # 这里守的三件事
+ * # 这里守的两件事
  *
  *  1. 一进页面只打 `/admin/invite/relations`：下线日消费那一条是主库大表的聚合，
  *     不可见的标签一个请求都不能发。
  *  2. 「添加关系」走 `POST /admin/invite/relations/bind`，请求体恰好是
  *     `{invitee_id, inviter_id, reason}` 三个字段、id 是数字 —— 这是与后端之间
  *     唯一一份没有类型的契约。
- *  3. 日结明细把 `day` 与 `inviter_id` 带进请求，一行上同时印出基数（额度）、
- *     分组档 · 比例、计提（星屑）与状态徽章。
  */
 import assert from 'node:assert/strict'
 import { after, describe, test } from 'node:test'
@@ -40,7 +38,6 @@ import {
   setQyProbeRole,
   type QyProbeRequest,
 } from '../../../__tests__/invite-screen'
-import { qyTabHash } from '../../../lib/pages'
 import { QyAdminInviteHub } from '../hub'
 
 after(cleanupQyStardustScreens)
@@ -69,30 +66,6 @@ const RELATIONS = {
   page_size: 20,
 }
 
-const ACCRUALS = {
-  items: [
-    {
-      inviter_id: 7,
-      inviter_username: 'bob',
-      invitee_id: 42,
-      invitee_username: 'alice',
-      bucket_date: '20260903',
-      base_quota: 3_700_000,
-      rate_group: 'vip',
-      bps: 500,
-      quota_per_unit: 500_000,
-      gross: '0.3700000000',
-      status: 'held',
-      hold_reason: 'overdraft',
-      ledger_no: '',
-      created_at: 1_787_000_000,
-      updated_at: 1_787_000_000,
-    },
-  ],
-  total: 1,
-  p: 1,
-  page_size: 20,
-}
 
 function respond(request: QyProbeRequest) {
   if (request.url.endsWith('/admin/invite/relations')) {
@@ -100,9 +73,6 @@ function respond(request: QyProbeRequest) {
   }
   if (request.url.endsWith('/admin/invite/relations/bind')) {
     return { data: { invitee_id: 12, inviter_id: 7, bound: true } }
-  }
-  if (request.url.endsWith('/admin/invite/invite-accruals')) {
-    return { data: ACCRUALS }
   }
   return undefined
 }
@@ -169,42 +139,5 @@ describe('邀请关系标签', () => {
       inviter_id: 7,
       reason: '工单 T-1 核实',
     })
-  })
-})
-
-describe('日结明细标签', () => {
-  test('带 hash 打开只问日结那一条；day 与 inviter_id 进请求；一行四种口径各印各的', async () => {
-    const screen = await mountHub(qyTabHash('/qy/admin/invite-accruals'))
-    assert.deepEqual(
-      qyUrls(screen.sent),
-      ['/api/qy/admin/invite/invite-accruals'],
-      '带 hash 打开时仍然先问了第一张标签'
-    )
-    const first = screen.sent.find((row) =>
-      row.url.endsWith('/admin/invite/invite-accruals')
-    )
-    assert.ok(first != null)
-    assert.match(String(first.params.day), /^\d{8}$/, 'day 必须是 YYYYMMDD')
-    assert.equal(first.params.inviter_id, undefined, '没填邀请人时不该发空串')
-
-    const text = screen.text()
-    assert.ok(text.includes('2026-09-03'), '桶日没按 YYYY-MM-DD 渲染')
-    assert.ok(text.includes('vip · 5%'), '分组档 · 比例没并排渲染')
-    assert.ok(text.includes('0.3700000000 星屑'), '计提没带单位渲染')
-    assert.ok(text.includes(zh.qy_sd_accrual_st_held), 'held 没翻译')
-    assert.ok(text.includes(zh.qy_sd_hold_overdraft), '暂缓原因没写出来')
-    assert.ok(!text.includes('3,700,000 星屑'), '消费基数被当成星屑渲染了')
-
-    screen.sent.length = 0
-    assert.ok(
-      await screen.type(zh.qy_rel_inviter_id_ph, '7'),
-      '找不到邀请人筛选框'
-    )
-    const asked = screen.sent.filter((row) =>
-      row.url.endsWith('/admin/invite/invite-accruals')
-    )
-    assert.equal(asked.length, 1)
-    assert.equal(asked[0].params.inviter_id, '7')
-    assert.equal(asked[0].params.p, 1, '换筛选必须回到第一页')
   })
 })

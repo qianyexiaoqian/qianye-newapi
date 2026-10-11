@@ -17,51 +17,61 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 /**
- * 邀请返星屑（用户端）的 DTO。与契约 `invite-contract.md` 「用户端接口」逐字对应
- * （D-14：佣金账本 / 提现整体删除，邀请人的全部收益只有星屑）。
+ * 「我的推广」里星屑账本那一半（用户端）的 DTO。与契约 `invite-contract.md`
+ * 「用户端接口」逐字对应。
+ *
+ * 下线充值 / 兑换码 / 消费带来的返还**只走推广佣金**（下面的 `QyCommission*`）。
+ * 星屑侧只剩与佣金基数不重叠的注册奖 / 套餐返上线，以及已下线的星屑侧下线返
+ * 留下的历史流水（已发放的不回收，合成一行 `legacy`）。
  *
  * 金额分两种单位，绝不混用：
  *   · `*_quota` —— **额度**（下线的消费基数），走 `QyAmountText`；
- *   · 其余整数（`totals.*`、`granted`、`held`、`amount`、`total_stardust`）——
- *     **星屑**，走 `QySdAmount`。
- * `gross` 是 decimal，后端以字符串下发，前端只展示、不运算。时间戳 unix 秒。
+ *   · 其余整数（`totals.*`、`amount`、`total_stardust`）—— **星屑**，走 `QySdAmount`。
+ * decimal（`commission_gross`）后端以字符串下发，前端只展示、不运算。时间戳 unix 秒。
  */
 
-/** 邀请类的五种流水 kind，顺序 = 概览里图形化分布的顺序 = 明细筛选下拉的顺序。 */
+/**
+ * 邀请类的五种流水 kind，顺序 = 明细筛选下拉的顺序。前三种已下线、不再产生新行，
+ * 留在这里是为了历史流水照常可查、可筛。
+ */
 export const QY_INVITE_KINDS = [
+  'invite_register',
+  'plan_inviter',
   'invite_consume',
   'invite_topup',
   'invite_redeem',
-  'invite_register',
-  'plan_inviter',
 ] as const
 export type QyInviteKind = (typeof QY_INVITE_KINDS)[number]
+
+/** 已下线的三种星屑侧下线返：界面上合成一行「历史下线返」。 */
+export const QY_INVITE_RETIRED_KINDS: ReadonlySet<string> = new Set([
+  'invite_consume',
+  'invite_topup',
+  'invite_redeem',
+])
+
+/** 概览分布里的三块，顺序 = 图形化分布的顺序。 */
+export const QY_INVITE_SUMMARY_PARTS = [
+  'invite_register',
+  'plan_inviter',
+  'legacy',
+] as const
+export type QyInviteSummaryPart = (typeof QY_INVITE_SUMMARY_PARTS)[number]
 
 /** `GET /invite/summary`。 */
 export type QyInviteSummary = {
   invitee_count: number
   /** 被停止计返的下线数。 */
   blocked_count: number
-  /** 累计返给我的星屑，按 kind 拆开；`all` 是五项之和（后端算好，前端不复刻）。 */
-  totals: Record<QyInviteKind, number> & { all: number }
-  /** 昨日下线消费返：基数是额度；已返 / 暂缓是星屑。 */
-  yesterday: {
-    base_quota: number
-    granted: number
-    held: number
-  }
-  /** 今天到目前为止下线的消费基数（额度），下一次日结按它算。 */
-  pending_today_base_quota: number
-  /** 我自己所在分组档的四个比例 / 奖励（费率按邀请人自己的分组，既有拍板）。 */
+  /** 星屑账本上因下线直接得到的星屑；`all` 是三项之和（后端算好，前端不复刻）。 */
+  totals: Record<QyInviteSummaryPart, number> & { all: number }
   rate: {
+    /** 我所在的用户分组（佣金按它取档）。 */
     group: string
-    invite_consume_bps: number
-    invite_topup_bps: number
-    invite_redeem_bps: number
     /** 每个注册下线一次性返的星屑（整数）。 */
     invite_register_stardust: number
   }
-  /** 支付合规声明。未确认时邀请返一律不发，界面要把这件事说出来。 */
+  /** 支付合规声明。未确认时注册奖不发，界面要把这件事说出来。 */
   compliance_confirmed: boolean
   /** 日界相对 UTC 的偏移（分钟）。0 = UTC，480 = UTC+8。 */
   day_offset_minutes: number
@@ -73,11 +83,13 @@ export type QyInvitee = {
   username_masked: string
   bound_at: number
   blocked: boolean
-  /** `YYYYMMDD`，空串 = 没有过消费。 */
+  /** 最近一次消费计佣的桶日 `YYYYMMDD`，空串 = 还没有过。 */
   last_active_day: string
-  /** 累计消费基数（额度）。 */
+  /** 累计计佣的消费基数（额度）。 */
   total_base_quota: number
-  /** 我因 TA 得到的全部星屑（各 kind 合计）。 */
+  /** TA 给我带来的佣金（含尚未结算进余额的），decimal 字符串，星屑。 */
+  commission_gross: string
+  /** 星屑账本上因 TA 直接得到的（注册奖 / 套餐返 / 历史下线返）。不与佣金相加。 */
   total_stardust: number
 }
 
@@ -87,7 +99,7 @@ export type QyInviteRecord = {
   kind: QyInviteKind | (string & {})
   /** 星屑，入账为正。 */
   amount: number
-  /** 由 ref / accrual 反查；拿不到时为 0。 */
+  /** 拿不到时为 0（历史的下线消费返按邀请人汇总发，没有单个下线）。 */
   invitee_id: number
   invitee_masked: string
   ref_no: string
@@ -95,35 +107,11 @@ export type QyInviteRecord = {
   created_at: number
 }
 
-/** `GET /invite/invitee-daily?day=` 的整包响应。 */
-export type QyInviteeDailyPage = {
-  day: string
-  items: QyInviteeDailyRow[]
-  total_base_quota: number
-  /** decimal 字符串。 */
-  total_gross: string
-}
-
-export type QyInviteeDailyRow = {
-  invitee_id: number
-  invitee_masked: string
-  /** 消费基数（额度）。 */
-  base_quota: number
-  bps: number
-  /** 计提的星屑，decimal 字符串。 */
-  gross: string
-  /** `computed` / `settled` / `held`，与星屑日桶同一套状态。 */
-  status: string
-}
-
 // ───────────────────────── 推广佣金（D-16：以星屑结算）─────────────────────────
 //
-// 与上面的邀请返星屑**并行**，而且 D-16 之后两边发的是**同一种钱**：佣金账本以
-// 星屑记账，金额在计佣那一刻按 `stardust.quota_per_unit` 折算，界面一律走
-// `QySdAmount`。这一页上没有「元 / 现金 / 提现 / 打款」，也不再有「星辉」。
-//
-// ⚠ 两条线的三档（充值 / 消费 / 兑换码）打的是**同一笔基数**。两边同时为正就会给
-//   同一个上线落两笔星屑 —— 这是运营的配置选择，管理端健康面板会把重叠标出来。
+// 下线充值 / 兑换码 / 消费带来的返还只有这一条线。佣金账本以星屑记账，金额在计佣
+// 那一刻按 `stardust.quota_per_unit` 折算，界面一律走 `QySdAmount`。这一页上没有
+// 「元 / 现金 / 提现 / 打款」，也不再有「星辉」。
 //
 // D-15 那一版记的是「星辉」（站内余额 `users.quota` 的展示名），入账要跨库，所以
 // 这里曾有 `frozen_quota`（在途）与 `fund_order_no`（两阶段资金单号）。D-16 入账

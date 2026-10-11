@@ -30,7 +30,6 @@ import type {
   QyInviteRecord,
   QyInviteSummary,
   QyInvitee,
-  QyInviteeDailyPage,
 } from './types'
 
 /**
@@ -67,20 +66,6 @@ export function qyInviteRecordsQuery(params: {
   return queryOptions({
     queryKey: qyKeys.inviteRecords(query),
     queryFn: () => qyGet<QyPage<QyInviteRecord>>('/invite/records', query),
-    staleTime: 15_000,
-  })
-}
-
-/**
- * 我名下的下线在某一天贡献了多少消费基数、按我的分组档计提了多少星屑。
- *
- * 一天一份而不是区间：日结就是按天跑的，一行 = 一个下线在那一天的那一桶，
- * 与管理端「日结明细」同一口径，用户看到的数与运营看到的数才对得上。
- */
-export function qyInviteeDailyQuery(day: string) {
-  return queryOptions({
-    queryKey: qyKeys.inviteInviteeDaily(day),
-    queryFn: () => qyGet<QyInviteeDailyPage>('/invite/invitee-daily', { day }),
     staleTime: 15_000,
   })
 }

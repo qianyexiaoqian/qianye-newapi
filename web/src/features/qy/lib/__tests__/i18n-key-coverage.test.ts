@@ -263,13 +263,11 @@ const QY_DYNAMIC_KEYS = [
   'qy_lot_wheel_won_product_note',
   'qy_lot_event_basics_changed',
   // 邀请返星屑（D-14）。下线消费返是第十三种 kind，走 `t(qySdKindKey(kind))`；
-  // 星屑配置页的字段名与说明由后端 `editable_keys` 驱动、模板字符串取文案；
-  // 停止 / 恢复计返留空事由时落的默认事由是 `t(cond ? 'a' : 'b')`，三者字面量
-  // 扫描器都看不见。新键在 `pending-invite.{en,zh}.json` 片段里，主编排合并进
-  // 主包之前本条对它们是红的（预期）。
+  // 它已下线、不再产生新行，但历史流水仍要读得出来；概览分布里「历史下线返」
+  // 那一块走 `partLabelKey`；停止 / 恢复计返留空事由时落的默认事由是
+  // `t(cond ? 'a' : 'b')`，三者字面量扫描器都看不见。
   'qy_sd_kind_invite_consume',
-  'qy_sdadm_cfg_k_invite_consume_bps',
-  'qy_sdadm_cfg_h_invite_consume_bps',
+  'qy_inv_part_legacy',
   'qy_inv_a_block_default_reason',
   'qy_inv_a_unblock_default_reason',
   // 下线日消费的排序键随后端字段改名（commission_base_quota → invite_base_quota），
@@ -283,13 +281,8 @@ const QY_DYNAMIC_KEYS = [
   //   · 佣金用户的三个筛选开关（`t(\`qy_cu_filter_${flag}\`)`）；
   //   · 资金单 kind 的历史成员 `commission_credit`（`t(\`qy_cfg_fund_kind_${kind}\`)`，
   //     不再产生新单，但历史单据仍要在对账台上读得出来）；
-  //   · 计佣行的来源与状态（`t(\`qy_aff_src_${…}\`)` / `t(\`qy_aff_st_${…}\`)`）；
-  //   · 重叠告警逐档的来源名（`t(\`qy_cm_overlap_src_${source}\`)`），清单对齐
-  //     后端 `api_admin.go` 的 rateOverlap 三行。
+  //   · 计佣行的来源与状态（`t(\`qy_aff_src_${…}\`)` / `t(\`qy_aff_st_${…}\`)`）。
   'qy_aff_credit_st_done',
-  'qy_cm_overlap_src_topup',
-  'qy_cm_overlap_src_consume',
-  'qy_cm_overlap_src_redemption',
   // 佣金自动入账在星屑流水里的 kind（`t(qySdKindKey(kind))`）。
   'qy_sd_kind_commission_credit',
   'qy_cb_sort_available_xh',

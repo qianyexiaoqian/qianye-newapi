@@ -13,23 +13,22 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// ledger_check.go —— 星屑账本的自洽性体检(design §3.1 的三条恒等式 + 下线消费返的 I3)。
+// ledger_check.go —— 星屑账本的自洽性体检(design §3.1 的三条恒等式)。
 //
 // # 为什么必须由服务端报,而不是留给谁去写 SQL
 //
-// 四条恒等式都不会自己喊疼:
+// 三条恒等式都不会自己喊疼:
 //
 //	I0  available == total_earned − total_spent + total_refunded + total_adjusted
 //	I1  available == Σ qy_sd_ledger.amount(per user)
 //	I2  Σ qy_sd_accrual.gross(settled) == Σ ledger.amount(kind=consume_rebate) + carry
-//	I3  Σ qy_sd_invite_accrual.gross(settled) == Σ ledger.amount(kind=invite_consume) + invite_carry
 //
-// I0 由 kindColumn 的"一个 kind 只落一列"保证,I1 由账本只追加保证,I2 / I3 由结算的
+// I0 由 kindColumn 的"一个 kind 只落一列"保证,I1 由账本只追加保证,I2 由结算的
 // 余数结转保证 —— 前提是没有人绕过 Credit / Debit 直接改过表。直接 UPDATE 余额列、
 // 删掉一行流水、手工改一个日桶的 status,接口全都照常 200,只有这里能看见。
 // 所以报的是"哪几行对不上、差多少、最坏的是谁",让漂移在发生当天就有人看得见。
 //
-// I2 / I3 允许 |diff| < 1:gross 是 decimal 而账本只发整数,尚未结算吸收的零头就在 carry
+// I2 允许 |diff| < 1:gross 是 decimal 而账本只发整数,尚未结算吸收的零头就在 carry
 // 里,两边的差不可能达到 1 —— 达到了就是某一次结算发错了整数。
 //
 // 只读:本文件不改任何一行。修复由人拿着流水行去做,体检只负责指出来。
@@ -54,7 +53,7 @@ type ledgerCheckReport struct {
 	CheckedUsers int `json:"checked_users"`
 	DriftedUsers int `json:"drifted_users"`
 	WorstUserId  int `json:"worst_user_id"`
-	// WorstDrift 是最坏那个人四条恒等式里偏得最远的一条的差值(带符号),decimal 字符串。
+	// WorstDrift 是最坏那个人三条恒等式里偏得最远的一条的差值(带符号),decimal 字符串。
 	WorstDrift string `json:"worst_drift"`
 
 	HeldRows      int64  `json:"held_rows"`
@@ -70,7 +69,10 @@ func handleLedgerCheck(c *gin.Context) {
 	respondOK(c, ledgerCheck(c.Request.Context()))
 }
 
-// ledgerCheck 逐用户核对 I0 / I1 / I2 / I3,并统计暂缓桶(两张日桶表)的积龄。
+// ledgerCheck 逐用户核对 I0 / I1 / I2,并统计消费返暂缓桶的积龄。
+//
+// 已下线的「下线消费返」(invite_consume)不再有 I3:那一段余数结转(invite_carry)
+// 不再变化,历史流水仍由 I0 / I1 覆盖。
 func ledgerCheck(ctx context.Context) ledgerCheckReport {
 	rep := ledgerCheckReport{WorstDrift: "0"}
 	gdb := db.Get()
@@ -147,44 +149,6 @@ func ledgerCheck(ctx context.Context) ledgerCheckReport {
 		rebateByUser[r.UserId] = r.Total
 	}
 
-	// I3:下线消费返与 I2 同形 —— 每个邀请人已结算日桶的 gross 之和 == 他名下
-	// invite_consume 流水之和 + invite_carry。两条各自闭合,谁欠谁才分得开。
-	var inviteGross []struct {
-		InviterId int
-		Gross     string
-	}
-	if err := gdb.WithContext(ctx).Model(&InviteAccrual{}).
-		Select("inviter_id, COALESCE(SUM(gross), 0) AS gross").
-		Where("status = ?", AccrualSettled).Group("inviter_id").Scan(&inviteGross).Error; err != nil {
-		db.MarkFailure(err)
-		rep.Error = err.Error()
-		return rep
-	}
-	inviteGrossByUser := make(map[int]decimal.Decimal, len(inviteGross))
-	for _, r := range inviteGross {
-		d, err := decimal.NewFromString(r.Gross)
-		if err != nil {
-			rep.Error = "下线消费返日桶 gross 汇总值无法解析: " + r.Gross
-			return rep
-		}
-		inviteGrossByUser[r.InviterId] = d
-	}
-	var inviteSums []struct {
-		UserId int
-		Total  int64
-	}
-	if err := gdb.WithContext(ctx).Model(&Ledger{}).
-		Select("user_id, COALESCE(SUM(amount), 0) AS total").
-		Where("kind = ?", string(KindInviteConsume)).Group("user_id").Scan(&inviteSums).Error; err != nil {
-		db.MarkFailure(err)
-		rep.Error = err.Error()
-		return rep
-	}
-	inviteByUser := make(map[int]int64, len(inviteSums))
-	for _, r := range inviteSums {
-		inviteByUser[r.UserId] = r.Total
-	}
-
 	one := decimal.NewFromInt(1)
 	worst := decimal.Zero
 	drifted := 0
@@ -194,12 +158,11 @@ func ledgerCheck(ctx context.Context) ledgerCheckReport {
 		i0 := decimal.NewFromInt(b.Available - (b.TotalEarned - b.TotalSpent + b.TotalRefunded + b.TotalAdjusted))
 		i1 := decimal.NewFromInt(b.Available - sumByUser[b.UserId])
 		i2 := grossByUser[b.UserId].Sub(decimal.NewFromInt(rebateByUser[b.UserId])).Sub(b.Carry)
-		i3 := inviteGrossByUser[b.UserId].Sub(decimal.NewFromInt(inviteByUser[b.UserId])).Sub(b.InviteCarry)
-		if i0.IsZero() && i1.IsZero() && i2.Abs().LessThan(one) && i3.Abs().LessThan(one) {
+		if i0.IsZero() && i1.IsZero() && i2.Abs().LessThan(one) {
 			continue
 		}
 		drifted++
-		for _, d := range []decimal.Decimal{i0, i1, i2, i3} {
+		for _, d := range []decimal.Decimal{i0, i1, i2} {
 			if d.Abs().GreaterThan(worst.Abs()) {
 				worst, rep.WorstUserId = d, b.UserId
 			}
@@ -220,23 +183,17 @@ func ledgerCheck(ctx context.Context) ledgerCheckReport {
 	rep.DriftedUsers = drifted
 	rep.WorstDrift = worst.String()
 
-	// 暂缓桶的积龄:消费返与下线消费返两张日桶表的 held 行一并计,最老的桶按
-	// bucket_date 取(uk 与 idx_qy_sd*_status 都在),不做 MIN() 聚合 ——
-	// 一次 ORDER BY LIMIT 1 三种数据库同一口径。
-	var inviteHeld int64
+	// 暂缓桶的积龄:消费返日桶的 held 行,最老的桶按 bucket_date 取(唯一键与
+	// status 索引都在),不做 MIN() 聚合 —— 一次 ORDER BY LIMIT 1 三种数据库同一口径。
+	//
+	// 已下线的「下线消费返」日桶表(qy_sd_invite_accrual)里残留的 held 行不计:它们
+	// 不会再被结算,计进来就是一个永远亮着、谁也处理不了的红点。
 	if err := gdb.WithContext(ctx).Model(&Accrual{}).Where("status = ?", AccrualHeld).
 		Count(&rep.HeldRows).Error; err != nil {
 		db.MarkFailure(err)
 		rep.Error = err.Error()
 		return rep
 	}
-	if err := gdb.WithContext(ctx).Model(&InviteAccrual{}).Where("status = ?", AccrualHeld).
-		Count(&inviteHeld).Error; err != nil {
-		db.MarkFailure(err)
-		rep.Error = err.Error()
-		return rep
-	}
-	rep.HeldRows += inviteHeld
 	if rep.HeldRows > 0 {
 		var oldest []Accrual
 		if err := gdb.WithContext(ctx).Select("bucket_date").Where("status = ?", AccrualHeld).
@@ -247,16 +204,6 @@ func ledgerCheck(ctx context.Context) ledgerCheckReport {
 		}
 		if len(oldest) == 1 {
 			rep.OldestHeldDay = oldest[0].BucketDate
-		}
-		var oldestInvite []InviteAccrual
-		if err := gdb.WithContext(ctx).Select("bucket_date").Where("status = ?", AccrualHeld).
-			Order("bucket_date asc").Limit(1).Find(&oldestInvite).Error; err != nil {
-			db.MarkFailure(err)
-			rep.Error = err.Error()
-			return rep
-		}
-		if len(oldestInvite) == 1 && (rep.OldestHeldDay == "" || oldestInvite[0].BucketDate < rep.OldestHeldDay) {
-			rep.OldestHeldDay = oldestInvite[0].BucketDate
 		}
 	}
 	if alertDays := effectiveCtx(ctx).HeldAlertDays; alertDays > 0 && rep.OldestHeldDay != "" {

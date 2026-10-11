@@ -164,8 +164,14 @@ function EditableCard(props: { config: QyStardustAdminConfig }) {
           <CardDescription>{t('qy_sdadm_cfg_editable_desc')}</CardDescription>
         </CardHeader>
         <CardContent className='space-y-4'>
+          {/* 下线充值 / 兑换码 / 消费带来的返还只走推广佣金。运营以前在这一页配过
+              那三档，这里要直说它们搬去了哪里，而不是让人以为功能没了。 */}
+          <p className='text-muted-foreground text-xs'>
+            {t('qy_sdadm_cfg_invite_moved')}
+          </p>
+
           {!compliance && (
-            // 邀请类三项此刻一律按 0 生效。这句话必须在保存之前出现，否则运营
+            // 注册奖此刻按 0 生效。这句话必须在保存之前出现，否则运营
             // 看到的是一个写不进去的输入框，或者一个"已保存"却不生效的数字。
             <Alert variant='destructive'>
               <ShieldAlert />
@@ -422,9 +428,6 @@ function YamlCard(props: { config: QyStardustAdminConfig }) {
         </QyKeyValue>
         <QyKeyValue label={t('qy_sdadm_cfg_k_exclude_subscription_consume')}>
           {yesNo(yaml.exclude_subscription_consume)}
-        </QyKeyValue>
-        <QyKeyValue label={t('qy_sdadm_cfg_k_exclude_manual_topup')}>
-          {yesNo(yaml.exclude_manual_topup)}
         </QyKeyValue>
         {/* 手调上限配成 0 就是"关掉手调"（后端 fail-closed），要明说，
             否则运营会在手调弹窗里反复吃 400。 */}

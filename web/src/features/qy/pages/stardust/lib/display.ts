@@ -35,12 +35,9 @@ import type {
  */
 export const QY_SD_LEDGER_KINDS: readonly QyStardustLedgerKind[] = [
   'consume_rebate',
-  // 推广佣金的自动入账（D-16）。它与下面的 invite_* 是两条线：那几种由本模块
-  // 自己的 hook / 日结当场发，这一种先在佣金账本里计佣、过持有期、攒够门槛才落。
-  // 两条线的基数可以重叠，所以流水上必须分得开。
+  // 推广佣金的自动入账：下线充值 / 兑换码 / 消费带来的返还只有这一条线。
   'commission_credit',
-  // 下线消费返（D-14）：邀请人按自己的分组档、就下线当日消费拿的那一份。
-  // 它与 consume_rebate 是两笔不同的账（一笔给消费者自己、一笔给他的上线）。
+  // 下面三种是已下线的星屑侧下线返，不再产生新行；留着是为了历史流水照常显示。
   'invite_consume',
   'invite_topup',
   'invite_redeem',

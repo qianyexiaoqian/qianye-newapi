@@ -106,6 +106,43 @@ func adoptRetiredNewGroupDeny(gm *GroupMatrix) {
 	}
 }
 
+// adoptRetiredStardustInviteKeys 处置已下线的星屑侧「下线充值 / 兑换码 / 消费返」五个键。
+//
+// 下线带来的返还只走推广佣金:两条线打的是同一笔基数,并存就是同一笔下线消费给上线
+// 落两笔星屑。占位吸收旧键(严格解析下直接删字段会让旧部署启动失败)。
+//
+// 告警分轻重:写着正比例的部署是**以为还在发**的,走 SysError;写着 0 / 布尔 / 周期
+// 的只是示例文件里残留的行,SysLog 提示可以删掉即可 —— 每次启动都喊 error 的告警
+// 很快就没人看了。
+func adoptRetiredStardustInviteKeys(sd *Stardust) {
+	for _, k := range []struct {
+		name string
+		v    *int
+	}{
+		{"invite_topup_bps", sd.InviteTopupBpsDeprecated},
+		{"invite_redeem_bps", sd.InviteRedeemBpsDeprecated},
+		{"invite_consume_bps", sd.InviteConsumeBpsDeprecated},
+	} {
+		switch {
+		case k.v == nil:
+		case *k.v > 0:
+			common.SysError("qianye: stardust." + k.name + " 已下线并被忽略 —— 下线带来的返还只走推广佣金" +
+				"(commission 段的 topup / consume / redemption 三档),星屑侧不再按这个比例发放。请删掉这一行")
+		default:
+			common.SysLog("qianye: stardust." + k.name + " 已下线,可以从 YAML 里删掉这一行")
+		}
+	}
+	if sd.ExcludeManualTopupDeprecated != nil || sd.TopupScanIntervalSecondsDeprecated != nil {
+		common.SysLog("qianye: stardust.exclude_manual_topup / topup_scan_interval_seconds 已随星屑侧的" +
+			"下线充值返一起下线,可以从 YAML 里删掉这两行")
+	}
+	sd.InviteTopupBpsDeprecated = nil
+	sd.InviteRedeemBpsDeprecated = nil
+	sd.InviteConsumeBpsDeprecated = nil
+	sd.ExcludeManualTopupDeprecated = nil
+	sd.TopupScanIntervalSecondsDeprecated = nil
+}
+
 // applyDefaults 把 YAML 里没有出现的键补成默认值。
 //
 // 判据是"键缺失",不是"值为零" —— 见本文件末尾 markNumbersUnset 的说明。
@@ -329,8 +366,8 @@ func applyDefaults(c *Config) {
 	intDefault(&sd.SettleDelayMinutes, 30)
 	intDefault(&sd.SettleIntervalSeconds, 300)
 	intDefault(&sd.HeldAlertDays, 7)
-	intDefault(&sd.TopupScanIntervalSeconds, 60)
 	int64Default(&sd.MaxManualAdjust, 100_000)
+	adoptRetiredStardustInviteKeys(sd)
 
 	ml := &c.Mall
 	intDefault(&ml.AddressRetentionDays, 90)

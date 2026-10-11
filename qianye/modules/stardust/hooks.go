@@ -11,31 +11,26 @@ import (
 	"github.com/QuantumNous/new-api/qianye/groupname"
 	"github.com/QuantumNous/new-api/qianye/guard"
 	"github.com/QuantumNous/new-api/qianye/modules/invite"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
-// hooks.go —— 三个事件型获得途径:兑换码返(§4.3)、注册奖(D-G)、套餐返(§4.4 / D-F),
-// 以及一次性来源共用的档位解析与换算。
+// hooks.go —— 两个事件型获得途径:注册奖(D-G)、套餐返(§4.4 / D-F),
+// 以及套餐返的换算。下线充值 / 兑换码 / 消费带来的返还只走推广佣金,不在本包。
 //
 // hook 体跑在用户请求线程上,必须 O(1) 无 I/O:只读 config 快照与已缓存的运营参数,
 // 所有查库都在 guard.HotAsync 的 worker 里,ctx 透传到每个 GORM 调用。
 // 依赖方向只有 stardust → invite(邀请关系判定 InviteeEligible);invite
-// 只暴露 AfterRedeemSuccess 等 func 变量给这里赋值(qianye/module_import_guard_test.go)。
+// 只暴露 PairRewardTotals 等 func 变量给这里赋值(qianye/module_import_guard_test.go)。
 
 const (
-	redeemIdemScope   = "sd_redeem"
 	registerIdemScope = "sd_register"
 	planIdemScope     = "sd_plan"
 )
 
 func init() {
 	hookInstallers = append(hookInstallers, func() {
-		// 兑换码:model.QyOnRedeemSuccess 单槽已被 invite 占,它不设任何早退、
-		// 无条件转发到这个变量(由 qianye/stardust_hookpoint_guard_test.go 钉住)。
-		invite.AfterRedeemSuccess = onRedeemSuccess
 		model.QyOnUserRegistered = onUserRegistered
 		model.QyOnSubscriptionGranted = onSubscriptionGranted
 	})
@@ -50,61 +45,6 @@ func cachedSettings() (opSettings, bool) {
 		return opSettings{}, false
 	}
 	return complianceGate(*settingsCache), true
-}
-
-// inviteRateKind 区分一次性来源用分组表的哪一档。
-type inviteRateKind int
-
-const (
-	inviteTopupRate inviteRateKind = iota
-	inviteRedeemRate
-)
-
-// inviteRateFor 解析邀请返的档位:按**上线**分组(D-02)查 qy_sd_group_rate,
-// 没配(nil)或整行未启用就回落全站 stardust.invite_*_bps。
-//
-// 合规门套在两层之外:effective() 已按 D-G 把三个邀请类正值归零,分组表那一档
-// 不经 effective(),这里再判一次 —— 否则"分组表配了 10%"就是一条绕过合规门的路。
-// 第二个返回值是归一化后的分组名,冻结进流水的 rate_group。
-func inviteRateFor(ctx context.Context, inviterGroup string, kind inviteRateKind) (int, string) {
-	group := groupname.Effective(inviterGroup)
-	if !operation_setting.IsPaymentComplianceConfirmed() {
-		return 0, group
-	}
-	s := effective()
-	fallback := s.InviteTopupBps
-	if kind == inviteRedeemRate {
-		fallback = s.InviteRedeemBps
-	}
-	if r, ok := groupRateFor(ctx, inviterGroup); ok {
-		v := r.InviteTopupBps
-		if kind == inviteRedeemRate {
-			v = r.InviteRedeemBps
-		}
-		if v != nil {
-			return *v, group
-		}
-	}
-	return fallback, group
-}
-
-// stardustFromQuota 是一次性来源的换算:floor(base × bps / 10000 / quota_per_unit),
-// 一单一行、余数不结转(§4.3)。QuoRem 取精确整数商,再经饱和转换钉在 MaxQuota 之内。
-func stardustFromQuota(base int64, bps int, qpu int64) int64 {
-	if base <= 0 || bps <= 0 || qpu <= 0 {
-		return 0
-	}
-	num := decimal.NewFromInt(base).Mul(decimal.NewFromInt(int64(bps)))
-	den := decimal.NewFromInt(10_000).Mul(decimal.NewFromInt(qpu))
-	q, _ := num.QuoRem(den, 0)
-	v, clamp := common.QuotaFromDecimalChecked(q)
-	if clamp != nil {
-		warnf("星屑换算触顶(base=%d bps=%d): %s", base, bps, clamp.Error())
-	}
-	if v < 0 {
-		return 0
-	}
-	return int64(v)
 }
 
 // stardustFromMoney 是套餐返的换算:1 星屑 = $1 等值。price 是美元;
@@ -157,50 +97,6 @@ func postCredit(ctx context.Context, p Posting) (Result, error) {
 		return Result{}, err
 	}
 	return out, nil
-}
-
-// ───────────────────────────── ① 兑换码返 ─────────────────────────────
-
-// onRedeemSuccess 是余额兑换码兑换成功之后的第二级转发槽(invite.AfterRedeemSuccess)。
-// 只对余额码触发(套餐码走 onSubscriptionGranted);基数 = 码面额。
-// 自判 stardust.enabled / invite_redeem_bps > 0 / quota > 0;invite.enabled 由 InviteeEligible 判。
-func onRedeemSuccess(userId int, redemptionId int, quota int) {
-	if !config.Get().Stardust.Enabled || userId <= 0 || redemptionId <= 0 || quota <= 0 {
-		return
-	}
-	if s, ok := cachedSettings(); ok && s.InviteRedeemBps <= 0 {
-		return
-	}
-	base := int64(quota)
-	guard.HotAsync("stardust.redeem", func(ctx context.Context) error {
-		return accrueRedeem(ctx, userId, redemptionId, base)
-	})
-}
-
-// accrueRedeem 给兑换人的上线记一笔 invite_redeem。幂等键 redeem:<redemption_id>。
-func accrueRedeem(ctx context.Context, userId, redemptionId int, base int64) error {
-	if base <= 0 {
-		return nil
-	}
-	match, err := invite.InviteeEligible(ctx, userId)
-	if err != nil {
-		return err
-	}
-	if !match.Eligible() {
-		return nil
-	}
-	bps, group := inviteRateFor(ctx, match.InviterGroup, inviteRedeemRate)
-	amount := stardustFromQuota(base, bps, QuotaPerUnit())
-	if amount <= 0 {
-		return nil
-	}
-	_, err = postCredit(ctx, Posting{
-		UserId: match.InviterId, Kind: KindInviteRedeem, Amount: amount,
-		IdemScope: redeemIdemScope, IdemKey: "redeem:" + strconv.Itoa(redemptionId),
-		RefType: "redemption", RefNo: strconv.Itoa(redemptionId),
-		PeerUserId: userId, RateBps: bps, RateGroup: group, BaseQuota: base,
-	})
-	return err
 }
 
 // ───────────────────────────── ② 注册奖 ─────────────────────────────

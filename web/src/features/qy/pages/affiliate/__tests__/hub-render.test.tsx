@@ -56,20 +56,13 @@ const SUMMARY = {
   invitee_count: 3,
   blocked_count: 1,
   totals: {
-    invite_consume: 600,
-    invite_topup: 300,
-    invite_redeem: 100,
     invite_register: 200,
     plan_inviter: 34,
+    legacy: 1000,
     all: 1234,
   },
-  yesterday: { base_quota: 3_700_000, granted: 7, held: 2 },
-  pending_today_base_quota: 1_000_000,
   rate: {
     group: 'vip',
-    invite_consume_bps: 500,
-    invite_topup_bps: 1000,
-    invite_redeem_bps: 0,
     invite_register_stardust: 50,
   },
   compliance_confirmed: false,
@@ -105,8 +98,13 @@ const RECORDS = [
  */
 let affSelf = { id: 1, aff_quota: 0, aff_history_quota: 0, aff_count: 0 }
 
+/** 概览接口的局部覆盖（mountHub 的第三个参数），每次挂载重置。 */
+let summaryOverride: Partial<typeof SUMMARY> = {}
+
 function respond(request: QyProbeRequest) {
-  if (request.url.endsWith('/invite/summary')) return { data: SUMMARY }
+  if (request.url.endsWith('/invite/summary')) {
+    return { data: { ...SUMMARY, ...summaryOverride } }
+  }
   if (request.url.endsWith('/invite/records')) {
     const items =
       request.params.kind == null
@@ -133,7 +131,12 @@ function respond(request: QyProbeRequest) {
   return undefined
 }
 
-async function mountHub(hash?: string, aff?: Partial<typeof affSelf>) {
+async function mountHub(
+  hash?: string,
+  aff?: Partial<typeof affSelf>,
+  summary?: Partial<typeof SUMMARY>
+) {
+  summaryOverride = summary ?? {}
   affSelf = { id: 1, aff_quota: 0, aff_history_quota: 0, aff_count: 0, ...aff }
   await setQyProbeRole(ROLE.USER)
   return mountQyInviteScreen({
@@ -153,74 +156,77 @@ function qyUrls(sent: QyProbeRequest[]): string[] {
 }
 
 describe('概览标签', () => {
-  test('一进页面只打 /invite/summary；五种 kind 逐项摆出来且合计等于大数字', async () => {
+  test('一进页面只打 /invite/summary；三块来源逐项摆出来且合计等于大数字', async () => {
     const screen = await mountHub()
 
     assert.deepEqual(qyUrls(screen.sent), ['/api/qy/invite/summary'])
     const text = screen.text()
     assert.ok(text.includes('1,234 星屑'), `大数字没带单位名渲染出来：${text}`)
 
-    // 堆叠条上的五格，每一格带着翻译好的 kind 名、金额与占比。
+    // 堆叠条上的三格：注册奖 / 套餐返上线 / 历史下线返（已下线，已发放的不回收）。
     const segments = [
       ...document.body.querySelectorAll<HTMLElement>('[data-segment]'),
     ]
     assert.deepEqual(
       segments.map((node) => node.dataset.segment),
-      [
-        'invite_consume',
-        'invite_topup',
-        'invite_redeem',
-        'invite_register',
-        'plan_inviter',
-      ],
-      '五种 kind 必须各占一格，且按契约顺序'
+      ['invite_register', 'plan_inviter', 'legacy'],
+      '三块必须各占一格，且按契约顺序'
     )
     const widths = segments.map((node) =>
       Number.parseFloat(node.style.width.replace('%', ''))
     )
     assert.ok(
       Math.abs(widths.reduce((a, b) => a + b, 0) - 100) < 0.01,
-      `五格宽度加起来必须是 100%：${widths.join(' + ')}`
+      `各格宽度加起来必须是 100%：${widths.join(' + ')}`
     )
     assert.ok(
-      segments[0]?.getAttribute('aria-label')?.includes('600 星屑'),
+      segments[0]?.getAttribute('aria-label')?.includes('200 星屑'),
       '第一格的读屏文本没带金额'
     )
     assert.ok(
-      segments[0]?.getAttribute('aria-label')?.includes('49%'),
-      '第一格的读屏文本没带占比（600 / 1234）'
+      segments[0]?.getAttribute('aria-label')?.includes('16%'),
+      '第一格的读屏文本没带占比（200 / 1234）'
     )
-    // 图例逐行：五个数字都在。
-    for (const amount of [
-      '600 星屑',
-      '300 星屑',
-      '100 星屑',
-      '200 星屑',
-      '34 星屑',
-    ]) {
+    for (const amount of ['200 星屑', '34 星屑', '1,000 星屑']) {
       assert.ok(text.includes(amount), `图例缺 ${amount}`)
     }
+    assert.ok(text.includes(zh.qy_inv_part_legacy), '历史下线返那一行没标出来')
     assert.ok(!text.includes('qy_sd_kind_'), '种类的 i18n 键没翻译')
     assert.ok(!text.includes('qy_inv_'), `有 qy_inv_ 键没翻译：${text}`)
   })
 
-  test('昨日「已返 / 暂缓」两个数并排，基数按额度印而不是星屑', async () => {
-    const screen = await mountHub()
-    const text = screen.text()
-    assert.ok(text.includes('已返 7 星屑'), '昨日已返没渲染')
-    assert.ok(text.includes('暂缓 2 星屑'), '昨日暂缓没渲染')
-    // 基数 3,700,000 额度是 $7.40：它必须走额度口径，绝不能印成 3,700,000 星屑。
-    assert.ok(!text.includes('3,700,000 星屑'), '消费基数被当成星屑渲染了')
+  test('没有历史下线返时那一行不出现', async () => {
+    const screen = await mountHub(undefined, undefined, {
+      totals: { invite_register: 200, plan_inviter: 34, legacy: 0, all: 234 },
+    })
+    const segments = [
+      ...document.body.querySelectorAll<HTMLElement>('[data-segment]'),
+    ].map((node) => node.dataset.segment)
+    assert.deepEqual(segments, ['invite_register', 'plan_inviter'])
+    assert.ok(!screen.text().includes(zh.qy_inv_part_legacy))
   })
 
-  test('合规门关着时那句话在数字之前出现；费率卡说出所在分组档', async () => {
+  test('星屑侧不再有下线消费 / 充值 / 兑换码的比例与日结数字', async () => {
+    const screen = await mountHub()
+    const text = screen.text()
+    for (const gone of [
+      zh.qy_sd_kind_invite_consume,
+      zh.qy_sd_kind_invite_topup,
+      zh.qy_sd_kind_invite_redeem,
+    ]) {
+      assert.ok(!text.includes(gone), `星屑那半又出现了「${gone}」：${text}`)
+    }
+    assert.ok(!text.includes('3,700,000'), '星屑侧又出现了昨日下线消费基数')
+  })
+
+  test('合规门关着时那句话在数字之前出现；费率卡说出所在分组档与注册奖', async () => {
     const screen = await mountHub()
     const text = screen.text()
     const alertAt = text.indexOf(zh.qy_inv_compliance_title)
     assert.ok(alertAt >= 0, '缺「邀请返已暂停」')
     assert.ok(alertAt < text.indexOf('1,234 星屑'), '合规提示排在大数字后面')
     assert.ok(text.includes('vip'), '所在分组档没渲染')
-    assert.ok(text.includes('5%'), '下线消费返比例没换算成百分数')
+    assert.ok(text.includes('50 星屑'), '注册奖没渲染')
   })
 
   test('没有存量 aff_quota 时，顶部不挂上游那张星辉口径的推荐计划卡', async () => {

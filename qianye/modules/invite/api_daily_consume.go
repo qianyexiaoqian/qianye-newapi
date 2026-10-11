@@ -2,17 +2,17 @@ package invite
 
 // api_daily_consume.go —— 「昨天哪个用户消费了多少」。
 //
-// # 数据源:主库 logs,不是星屑的日桶
+// # 数据源:主库 logs,不是佣金的计佣行
 //
-// 星屑那一侧的 qy_sd_invite_accrual 看着现成 —— 它天生就有 (bucket_date, invitee_id,
+// 推广佣金的消费计佣行(qy_commission_accrual, source_type=consume)看着现成 —— 它天生就有 (bucket_date, invitee_id,
 // base_quota) 三列,一条 GROUP BY 就出报表。但它**结构性地**答不了这个问题:
-// 它是「谁给谁挣了星屑」,不是「谁消费了多少」。没有上线的账号、被拉黑的关系、
-// 邀请人分组档是 0 的下线、违规扣费、渠道测试 —— 每一条都是"这笔消费在日桶里
+// 它是「谁给谁挣了佣金」,不是「谁消费了多少」。没有上线的账号、被拉黑的关系、
+// 邀请人分组档是 0 的下线、违规扣费、渠道测试 —— 每一条都是"这笔消费在计佣行里
 // 不存在",而运营打开这张表恰恰是为了"谁在花钱"。所以口径只能是主库 logs 的 type=2。
 //
 // # 两个数并排,而不是二选一
 //
-// 进了下线消费返的基数照样给,放在消费额旁边,并给出 uncounted = 消费额 − 基数。
+// 计了佣金的基数照样给(下线带来的返还只走佣金),放在消费额旁边,并给出 uncounted = 消费额 − 基数。
 // 运营看到两个数不一样的时候必须能当场知道为什么,不能让他自己猜。
 //
 // # 性能:这条查询上线前必须先有索引
@@ -267,12 +267,12 @@ type dailyConsumeRow struct {
 	RequestCount int64  `json:"request_count"`
 	// ConsumeQuota 是这个区间里**真实扣掉**的额度,口径 = 主库 logs 的 type=2。
 	ConsumeQuota int64 `json:"consume_quota"`
-	// InviteBaseQuota 是同一区间进了下线消费返日桶的基数。它天然 <= ConsumeQuota。
+	// InviteBaseQuota 是同一区间计了推广佣金的消费基数(InviteAccrualByInvitee)。
 	InviteBaseQuota int64 `json:"invite_base_quota"`
-	// UncountedQuota = ConsumeQuota − InviteBaseQuota,即"消费了但没给上线返"的部分。
+	// UncountedQuota = ConsumeQuota − InviteBaseQuota,即"消费了但没给上线计佣"的部分。
 	// 单列出来是因为运营的下一个问题永远是"那少的那块去哪了"。
 	UncountedQuota int64 `json:"uncounted_quota"`
-	// InviteGross 是同一区间给上线的下线消费返毛额(星屑,全精度字符串)。
+	// InviteGross 是同一区间给上线的消费计佣毛额(星屑,全精度字符串)。
 	InviteGross      string `json:"invite_gross"`
 	HasInviteAccrual bool   `json:"has_invite_accrual"`
 	InviterId        int    `json:"inviter_id"`

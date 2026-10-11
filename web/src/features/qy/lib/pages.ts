@@ -259,20 +259,17 @@ export const QY_TAB_GROUPS: readonly QyTabGroupDef[] = [
     ],
   },
   {
-    // 「邀请管理」（D-14）：邀请关系 / 下线日消费 / 日结明细。
+    // 「邀请管理」：邀请关系 / 下线日消费。
     //
-    // 它取代了「结算台」（日消费明细 / 佣金审核 / 提现审核）与「用户佣金」
-    // （用户总览 / AFF 关系 / 佣金余额）两个选择夹：佣金审核、提现审核、佣金余额、
-    // 用户佣金四张表连同它们的账本一起删除，剩下的三张表回答的仍是同一件事的
-    // 三个切面 —— 谁邀请了谁（主库 users.inviter_id）、下线昨天花了多少（主库
-    // logs 的聚合）、按邀请人分组档算出来该返多少星屑（qy_sd_invite_accrual）。
+    // 两个切面：谁邀请了谁（主库 users.inviter_id）、下线昨天花了多少以及其中多少
+    // 计了推广佣金（主库 logs 的聚合 + 佣金计佣行）。星屑侧的「日结明细」随星屑
+    // 下线返一起下线：下线带来的返还只走推广佣金，逐笔明细在「结算台」。
     // 宿主 = 第一张（与 /qy/affiliate 同形），旧的 daily-consume 地址仍是重定向。
     host: '/qy/admin/invite',
     titleKey: 'qy_nav_a_invite_hub',
     pages: [
       '/qy/admin/invite',
       '/qy/admin/daily-consume',
-      '/qy/admin/invite-accruals',
     ],
   },
   {
@@ -672,7 +669,7 @@ export const QY_PAGES: readonly QyPageDef[] = [
   },
 
   // ── 新组「资金与推广」（id 仍是 qy-settlement）：钱怎么流动，管理员视角 ──
-  // 「邀请管理」选择夹的宿主：邀请关系 / 下线日消费 / 日结明细三张标签。
+  // 「邀请管理」选择夹的宿主：邀请关系 / 下线日消费两张标签。
   // 侧栏上这一行写的是组名（`QY_TAB_GROUPS.titleKey`），组里每张标签才写各自
   // 页面的 `titleKey`。它取代了此前的「结算台」与「用户佣金」两行（D-14：佣金
   // 审核 / 提现审核 / 佣金余额 / 用户佣金四张表连同账本一起删除）。
@@ -684,24 +681,18 @@ export const QY_PAGES: readonly QyPageDef[] = [
     icon: Users,
     codeKey: 'qy_sg_code_a_invite',
   },
-  // 以下两页已被收进「邀请管理」的选择夹，因此**不写 group / icon**：
-  // 它们没有独立的侧栏入口，路由文件只做重定向。
+  // 以下一页已被收进「邀请管理」的选择夹，因此**不写 group / icon**：
+  // 它没有独立的侧栏入口，路由文件只做重定向。
   //
   // 日消费明细。项目方原话：「可以查询昨日使用记录哪个用户消费了多少」。
-  // 它同时也是日结明细答不了的那一半问题（0% 分组、没有上线、被罚过款的
-  // 用户在日结表里一行都没有），所以两者必须同屏，否则运营会以为日结明细
+  // 它同时也是计佣行答不了的那一半问题（0% 分组、没有上线、被罚过款的
+  // 用户在计佣行里一行都没有），所以消费额与计佣基数必须并排，否则运营会以为计佣
   // 就是全部的消费。
   {
     url: '/qy/admin/daily-consume',
     titleKey: 'qy_dc_title',
     feature: 'invite',
     codeKey: 'qy_sg_code_a_daily_consume',
-  },
-  {
-    url: '/qy/admin/invite-accruals',
-    titleKey: 'qy_nav_a_invite_accruals',
-    feature: 'invite',
-    codeKey: 'qy_sg_code_a_invite_accruals',
   },
   // 「结算台」选择夹的宿主（D-15 恢复）：日消费明细 / 佣金审核 / 佣金用户。
   // 侧栏上这一行写组名「结算台」，宿主自己那张标签写「日消费明细」。

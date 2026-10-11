@@ -62,7 +62,6 @@ import type {
   QyCommissionAdminConfig,
   QyCommissionEffective,
   QyCommissionGroupRate,
-  QyCommissionRateOverlap,
   QyDailySettleRun,
 } from './types'
 
@@ -921,13 +920,11 @@ function formatChangeValue(
 /**
  * 结算与入账调度。
  *
- * 三段各答一个问题：
+ * 两段各答一个问题：
  *
  *   · **今天这一跑成了没有**（一日一结算，跑挂了当天剩下所有人的佣金都要等到明天）
  *   · **自动入账累计发了多少**（D-16 起入账是本地事务，没有在途、没有挂起，
  *     也就没有要人裁决的单子）
- *   · **是不是有两条线在给同一笔基数各返一次**（`rate_overlap`）——
- *     这一段最容易被忽略，因为两条线各自的配置页都显示正常
  */
 function DailySettleCard() {
   const { t } = useTranslation()
@@ -935,7 +932,6 @@ function DailySettleCard() {
   const query = useQuery(qyAdminCommissionHealthQuery())
   const snapshot = query.data?.daily_settle
   const credit = query.data?.credit
-  const overlap = query.data?.rate_overlap
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   const rerunMutation = useMutation({
@@ -1021,8 +1017,6 @@ function DailySettleCard() {
             </div>
           )}
         </div>
-
-        <RateOverlapNotice overlap={overlap} />
       </CardContent>
 
       <QyConfirmDialog
@@ -1041,44 +1035,6 @@ function DailySettleCard() {
   )
 }
 
-/**
- * 「两条线在给同一笔基数各返一次」的告警。
- *
- * 它刻意画成 destructive 而不是一句灰字提示：这不是一条可以扫一眼跳过的说明，
- * 而是"平台现在每一笔下线消费都在付双倍"。但它也刻意**不提供任何一键修复** ——
- * 留哪一条线是运营的决定（即时小额 vs 延迟大额，两条并存也可能是故意的），
- * 代码替他挑一条清零，才是真正会造成资损的那种"帮忙"。
- *
- * 后端不下发这一段（旧版本）时整块不渲染：编一个"没有重叠"出来，比不说更糟。
- */
-function RateOverlapNotice(props: { overlap?: QyCommissionRateOverlap }) {
-  const { t } = useTranslation()
-  const overlap = props.overlap
-  if (overlap == null || overlap.ok || overlap.sources.length === 0) return null
-  return (
-    <Alert variant='destructive'>
-      <Info />
-      <AlertTitle>{t('qy_cm_overlap_title')}</AlertTitle>
-      <AlertDescription className='space-y-1'>
-        <p>{t('qy_cm_overlap_desc')}</p>
-        <ul className='space-y-0.5'>
-          {overlap.sources.map((row) => (
-            <li key={row.source} className='font-mono text-xs'>
-              {t(`qy_cm_overlap_src_${row.source}`, {
-                defaultValue: row.source,
-              })}
-              {': '}
-              {t('qy_cm_overlap_pair', {
-                commission: row.commission_rate_bps / 100,
-                invite: row.invite_rate_bps / 100,
-              })}
-            </li>
-          ))}
-        </ul>
-      </AlertDescription>
-    </Alert>
-  )
-}
 
 function QyDailySettleField(props: { label: string; value: ReactNode }) {
   return (

@@ -74,16 +74,7 @@ function forecast(patch: Partial<QyStardustForecast> = {}): QyStardustForecast {
       carry: '0.3700000000',
       estimated: 2,
     },
-    invite: {
-      applies: true,
-      counted: true,
-      base_quota: 500_000,
-      rate_bps: 1_000,
-      gross: '0.1000000000',
-      carry: '0.9500000000',
-      estimated: 1,
-    },
-    estimated_total: 3,
+    estimated_total: 2,
     ...patch,
   }
 }
@@ -114,21 +105,21 @@ function refreshButton(): HTMLButtonElement | null {
 }
 
 describe('明日预计到账', () => {
-  test('两条线各自摆出基数、比例、计提、余数与预计，合计是那个大数字', async () => {
+  test('消费返摆出基数、比例、计提、余数与预计，合计是那个大数字', async () => {
     const screen = await mountCard({ first: forecast() })
 
     const text = screen.text()
-    assert.ok(text.includes('+3 星屑'), `合计没按带符号的星屑渲染：${text}`)
+    assert.ok(text.includes('+2 星屑'), `合计没按带符号的星屑渲染：${text}`)
     // 基数是额度口径（$2.00 / $1.00），绝不能印成星屑。
     assert.ok(!text.includes('1,000,000 星屑'), '消费基数被当成星屑渲染了')
     assert.ok(text.includes('2.0000000000 星屑'), '消费返的计提没原样渲染')
     assert.ok(text.includes('0.3700000000 星屑'), '消费返的结转余数没渲染')
-    assert.ok(text.includes('0.1000000000 星屑'), '下线消费返的计提没渲染')
-    assert.ok(text.includes('0.9500000000 星屑'), '下线消费返的结转余数没渲染')
     assert.ok(text.includes('100%'), '消费返比例没渲染')
-    assert.ok(text.includes('10%'), '下线消费返比例没渲染')
-    assert.ok(text.includes('+2 星屑'), '消费返这一条的预计没渲染')
-    assert.ok(text.includes('+1 星屑'), '下线消费返这一条的预计没渲染')
+    // 下线带来的返还只走推广佣金（有持有期），这张卡上不再有下线那一条线。
+    assert.ok(
+      !text.includes(zh.qy_sd_kind_invite_consume),
+      '星屑估算里又出现了下线消费返'
+    )
     assert.ok(!text.includes('qy_sd_fc_'), '这张卡的 i18n 键没翻译')
   })
 
@@ -185,7 +176,6 @@ describe('明日预计到账', () => {
       first: forecast({
         hold_reason: 'overdraft',
         consume: { ...base.consume, estimated: 0 },
-        invite: { ...base.invite, estimated: 0 },
         estimated_total: 0,
       }),
     })
@@ -195,50 +185,5 @@ describe('明日预计到账', () => {
     assert.ok(!text.includes('qy_sd_hold_'), '暂缓原因的 i18n 键没翻译')
     // 计提照常摆出来：钱是算出来了的，只是要等账号恢复才发。
     assert.ok(text.includes('2.0000000000 星屑'), '暂缓时计提也必须摆出来')
-  })
-
-  test('下线消费返不适用时整条线不出现', async () => {
-    const screen = await mountCard({
-      first: forecast({
-        invite: {
-          applies: false,
-          counted: true,
-          base_quota: 0,
-          rate_bps: 0,
-          gross: '0',
-          carry: '0',
-          estimated: 0,
-        },
-        estimated_total: 2,
-      }),
-    })
-
-    const text = screen.text()
-    assert.ok(
-      !text.includes(zh.qy_sd_fc_base_invitees),
-      '这条线对我不成立，却摆了一行永远为 0 的数'
-    )
-    assert.ok(text.includes('+2 星屑'), '消费返那一条仍然要在')
-  })
-
-  test('下线太多没统计时那一行写清是"没统计"而不是"没有"', async () => {
-    const base = forecast()
-    const screen = await mountCard({
-      first: forecast({
-        invite: {
-          ...base.invite,
-          counted: false,
-          base_quota: 0,
-          gross: '0',
-          estimated: 0,
-        },
-        estimated_total: 2,
-      }),
-    })
-
-    assert.ok(
-      screen.text().includes(zh.qy_sd_fc_invitees_too_many),
-      '没统计与统计了是 0 在界面上分不开'
-    )
   })
 })

@@ -29,7 +29,7 @@ const configAuditAction = "stardust.config.update"
 func init() {
 	adminRouteInstallers = append(adminRouteInstallers, func(g *gin.RouterGroup) {
 		g.GET("/stardust/config", handleGetConfig)
-		// 三档比例决定平台会发出去多少星屑,写接口挂关键操作限流。
+		// 消费返比例与注册奖决定平台会发出去多少星屑,写接口挂关键操作限流。
 		g.PUT("/stardust/config", middleware.CriticalRateLimit(), handlePutConfig)
 	})
 }
@@ -58,17 +58,16 @@ func handleGetConfig(c *gin.Context) {
 		"overrides":     overrides,
 		"editable_keys": EditableKeys(),
 		"bounds":        bounds,
-		// YAML 段:刻度、结算调度、两个排除开关与手调上限只能改文件后重启 ——
+		// YAML 段:刻度、结算调度、订阅排除开关与手调上限只能改文件后重启 ——
 		// 那是一次看得见、留得下痕迹的动作。quota_per_unit 下发的是**实际生效**的刻度
 		// (YAML 为 0 时取 common.QuotaPerUnit),运营要的是"1 星屑现在等于多少额度",
-		// 不是"配置文件里写了几"。compliance_confirmed 让配置页能直说"邀请类三项
+		// 不是"配置文件里写了几"。compliance_confirmed 让配置页能直说"注册奖
 		// 现在为什么按 0 生效",而不是让运营对着一个写不进去的输入框猜。
 		"yaml_readonly": gin.H{
 			"quota_per_unit":               QuotaPerUnit(),
 			"settle_delay_minutes":         cfg.SettleDelayMinutes,
 			"settle_interval_seconds":      cfg.SettleIntervalSeconds,
 			"exclude_subscription_consume": cfg.SubscriptionConsumeExcluded(),
-			"exclude_manual_topup":         cfg.ManualTopupExcluded(),
 			"max_manual_adjust":            cfg.MaxManualAdjust,
 			"compliance_confirmed":         operation_setting.IsPaymentComplianceConfirmed(),
 		},
@@ -77,8 +76,8 @@ func handleGetConfig(c *gin.Context) {
 
 // handlePutConfig 保存一批运营参数(稀疏 patch,只传改动键)。
 //
-// 成功与失败都写审计:三档比例与注册奖决定平台会发出去多少星屑,"谁在什么时候把
-// 比例调高了"必须可查,而被拒绝的那次(越界、合规未确认时的邀请类正值)同样是
+// 成功与失败都写审计:消费返比例与注册奖决定平台会发出去多少星屑,"谁在什么时候把
+// 比例调高了"必须可查,而被拒绝的那次(越界、合规未确认时的注册奖正值)同样是
 // 重要信号。
 func handlePutConfig(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagStardust) {

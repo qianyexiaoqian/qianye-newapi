@@ -34,15 +34,10 @@ export type QyStardustEffective = {
   /** 消费返（万分比）。 */
   consume_bps: number
   /**
-   * 下线消费返（万分比，D-14）：下线当日消费 × 邀请人分组档的这一比例 → 邀请人
-   * 得到的星屑，日结与消费返同一次 run。默认 0；`bps=0` 时后端不写日结行。
+   * 下线注册一次性返（整数星屑）。合规未确认时正值被 400 `qy_sd_compliance_required`。
+   *
+   * 下线充值 / 兑换码 / 消费带来的返还只走推广佣金（佣金配置），星屑侧没有那三档。
    */
-  invite_consume_bps: number
-  /** 下线充值返（万分比）。合规未确认时正值被 400 `qy_sd_compliance_required`。 */
-  invite_topup_bps: number
-  /** 下线用兑换码返（万分比）。同上受合规闸门约束。 */
-  invite_redeem_bps: number
-  /** 下线注册一次性返（整数星屑）。同上受合规闸门约束。 */
   invite_register_stardust: number
   /** 日桶被扣住超过 N 天就在对账页告警。 */
   held_alert_days: number
@@ -61,10 +56,9 @@ export type QyStardustYamlReadonly = {
   settle_delay_minutes: number
   settle_interval_seconds: number
   exclude_subscription_consume: boolean
-  exclude_manual_topup: boolean
   /** 单次手调的绝对值上限（整数星屑）。 */
   max_manual_adjust: number
-  /** 合规确认。为 false 时三个邀请类键不能配正值。 */
+  /** 合规确认。为 false 时注册奖不能配正值。 */
   compliance_confirmed: boolean
 }
 
@@ -84,13 +78,10 @@ export type QyStardustConfigSaveResult = {
   effective: QyStardustEffective
 }
 
-/** 按用户分组覆盖的费率。`null` = 该项不覆盖、沿用全站。 */
+/** 按**用户分组**覆盖的消费返比例。`null` = 不覆盖、沿用全站。 */
 export type QyStardustGroupRate = {
   user_group: string
   consume_bps: number | null
-  invite_consume_bps: number | null
-  invite_topup_bps: number | null
-  invite_redeem_bps: number | null
   enabled: boolean
   updated_at: number
   operator_id: number
@@ -98,15 +89,17 @@ export type QyStardustGroupRate = {
 
 export type QyStardustGroupRatesView = {
   items: QyStardustGroupRate[]
-  /** 可选分组名清单：在册 ∪ 登记表。 */
+  /**
+   * 可选的**用户分组**：登记表 ∪ 在用的 `users.group`。不含模型分组 —— 比例按账号
+   * 自己的用户分组取档，挂在模型分组上的一行一个人都不会命中。
+   */
   groups: string[]
+  /** 已配的行里挂在非用户分组上的（例如以前误选的模型分组）：不会生效，应当删除。 */
+  stale_groups?: string[]
 }
 
 export type QyStardustGroupRateInput = {
   consume_bps?: number | null
-  invite_consume_bps?: number | null
-  invite_topup_bps?: number | null
-  invite_redeem_bps?: number | null
   enabled: boolean
 }
 

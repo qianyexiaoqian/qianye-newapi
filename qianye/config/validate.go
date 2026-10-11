@@ -199,19 +199,9 @@ func validateStardust(s *Stardust) error {
 	if err := checkQuotaCap("stardust.quota_per_unit", s.QuotaPerUnit); err != nil {
 		return err
 	}
-	for _, item := range []struct {
-		name  string
-		value int
-	}{
-		{"stardust.consume_bps", s.ConsumeBps},
-		{"stardust.invite_topup_bps", s.InviteTopupBps},
-		{"stardust.invite_redeem_bps", s.InviteRedeemBps},
-		{"stardust.invite_consume_bps", s.InviteConsumeBps},
-	} {
-		if item.value < 0 || item.value > maxStardustBps {
-			return fmt.Errorf("qianye: %s 必须落在 [0, %d](万分比;10000 = 每 1 美元等值 1 星屑),收到 %d",
-				item.name, maxStardustBps, item.value)
-		}
+	if s.ConsumeBps < 0 || s.ConsumeBps > maxStardustBps {
+		return fmt.Errorf("qianye: stardust.consume_bps 必须落在 [0, %d](万分比;10000 = 每 1 美元等值 1 星屑),收到 %d",
+			maxStardustBps, s.ConsumeBps)
 	}
 	// 两个星屑数量的上界与额度类字段同一条算术上界(星屑面值比额度小五个数量级,
 	// 沿用 common.MaxQuota 不需要重做推导);名字不含 quota 不代表不受它约束。
@@ -229,9 +219,6 @@ func validateStardust(s *Stardust) error {
 	}
 	if s.HeldAlertDays < 0 {
 		return fmt.Errorf("qianye: stardust.held_alert_days 不能为负(0 = 不告警)")
-	}
-	if s.TopupScanIntervalSeconds <= 0 {
-		return fmt.Errorf("qianye: stardust.topup_scan_interval_seconds 必须大于 0")
 	}
 	return nil
 }

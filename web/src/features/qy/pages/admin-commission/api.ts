@@ -25,7 +25,6 @@ import type {
   QyAdminAccrual,
   QyCommissionAdminConfig,
   QyCommissionCreditSnapshot,
-  QyCommissionRateOverlap,
   QyCommissionGroupRate,
   QyDailySettleSnapshot,
 } from './types'
@@ -141,7 +140,6 @@ export function qyClawbackAccrual(input: {
  *
  * `daily_settle`：一日一结算之后，「今天这一跑成了没有」是运营唯一需要盯的那个数。
  * `credit`：自动入账累计发了多少（D-16 起入账是本地事务，没有在途也没有挂起）。
- * `rate_overlap`：佣金三档与 stardust 三档 invite_* 是否在给同一笔基数各返一次。
  * 后端若暂时不下发某一段，界面按"取不到"处理，不编数。
  */
 export function qyAdminCommissionHealthQuery() {
@@ -151,7 +149,6 @@ export function qyAdminCommissionHealthQuery() {
       qyGet<{
         daily_settle: QyDailySettleSnapshot
         credit?: QyCommissionCreditSnapshot
-        rate_overlap?: QyCommissionRateOverlap
       }>('/admin/commission/health'),
   })
 }

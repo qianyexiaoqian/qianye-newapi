@@ -27,59 +27,32 @@ import {
   type StaticDataTableColumn,
 } from '@/components/data-table'
 import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { formatTimestampToDate } from '@/lib/format'
 
 import { QyAmountText } from '../../components/qy-amount-text'
 import { QyMaskedUser } from '../../components/qy-masked-user'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySdAmount } from '../../components/qy-sd-amount'
-import { QyStatusBadge } from '../../components/qy-status-badge'
-import { useStardustName } from '../../hooks/use-stardust-name'
+import { QySdDecimal } from '../../components/qy-sd-decimal'
 import { qyArray } from '../../lib/array'
-import { qyInviteeDailyQuery, qyInviteesQuery } from '../affiliate/api'
-import type { QyInvitee, QyInviteeDailyRow } from '../affiliate/types'
+import { qyInviteesQuery } from '../affiliate/api'
+import type { QyInvitee } from '../affiliate/types'
 import { QyPager } from '../components/qy-pager'
 import { QY_PAGE_SIZE } from '../lib/constants'
-import {
-  qySdAccrualBadge,
-  qySdBpsPercent,
-  qySdFormatDay,
-} from '../stardust/lib/display'
+import { qySdFormatDay } from '../stardust/lib/display'
 
 /**
- * 「下线」—— 「我的推广」选择夹的第二张标签（D-14）。
+ * 「下线」—— 「我的推广」选择夹的第二张标签。
  *
- * 两张表合成一张标签下的两个次级标签：用户问"这个人一共给我带来了多少"时看
- * 第一张（开天辟地以来的累计），问"我上周推的那批人昨天还在用吗"时看第二张
- * （按天）。次级标签**刻意不进 hash**：hash 只表达"选择夹选了哪一格"这一层。
+ * 回答"这个人一共给我带来了多少"。下线充值 / 兑换码 / 消费带来的返还只走推广佣金，
+ * 所以"带来的佣金"一列来自佣金账本（含尚未结算进余额的部分），逐笔明细在「佣金记录」
+ * 那一张标签。星屑账本上因 TA 直接得到的（注册奖 / 套餐返 / 已下线的旧版下线返）单列
+ * 一格，**不与佣金相加**：一个还在持有期里、一个已经到账，加成一个数就再也解释不了。
  *
- * **列表里的用户名已由后端脱敏**，前端不得再处理，也不要试图去补一个真实
- * 用户名。累计消费是**额度**（走 `QyAmountText`），我因 TA 得到的是**星屑**
- * （走 `QySdAmount`）：两种单位并排各印各的，用户要看的正是"TA 花了多少、
- * 我换回来多少"。
+ * **列表里的用户名已由后端脱敏**，前端不得再处理。消费基数是**额度**（`QyAmountText`），
+ * 两笔收益是**星屑**（`QySdDecimal` / `QySdAmount`）。
  */
 export function QyInviteesBody() {
-  const { t } = useTranslation()
-
-  return (
-    <Tabs defaultValue='invitees' className='gap-3'>
-      <TabsList>
-        <TabsTrigger value='invitees'>{t('qy_inv_tab_people')}</TabsTrigger>
-        <TabsTrigger value='daily'>{t('qy_inv_tab_daily')}</TabsTrigger>
-      </TabsList>
-      <TabsContent value='invitees'>
-        <InviteesTable />
-      </TabsContent>
-      <TabsContent value='daily'>
-        <InviteeDailyTable />
-      </TabsContent>
-    </Tabs>
-  )
-}
-
-function InviteesTable() {
   const { t } = useTranslation()
   const [page, setPage] = useState(1)
   const query = useQuery(qyInviteesQuery({ p: page, page_size: QY_PAGE_SIZE }))
@@ -118,6 +91,13 @@ function InviteesTable() {
       cell: (row) => <QyAmountText quota={row.total_base_quota} />,
     },
     {
+      id: 'commission',
+      header: t('qy_inv_col_commission'),
+      className: staticDataTableClassNames.compactHeaderCellRight,
+      cellClassName: staticDataTableClassNames.compactNumericCell,
+      cell: (row) => <QySdDecimal value={row.commission_gross} />,
+    },
+    {
       id: 'stardust',
       header: t('qy_inv_col_total_stardust'),
       className: staticDataTableClassNames.compactHeaderCellRight,
@@ -146,12 +126,15 @@ function InviteesTable() {
       emptyTitle={t('qy_inv_empty_people_title')}
       emptyDescription={t('qy_inv_empty_people_desc')}
     >
+      <p className='text-muted-foreground mb-3 text-xs'>
+        {t('qy_inv_people_hint')}
+      </p>
       <div className='w-full overflow-x-auto'>
         <StaticDataTable
           columns={columns}
           data={items}
           getRowKey={(row) => row.user_id}
-          tableClassName='min-w-[760px]'
+          tableClassName='min-w-[860px]'
         />
       </div>
       <QyPager
@@ -162,123 +145,5 @@ function InviteesTable() {
         onPageChange={setPage}
       />
     </QyPageBoundary>
-  )
-}
-
-/** 昨天的 `yyyy-mm-dd`，用作日期框的初值（与后端的缺省口径一致）。 */
-function yesterdayInputValue(): string {
-  const d = new Date()
-  d.setDate(d.getDate() - 1)
-  return d.toISOString().slice(0, 10)
-}
-
-/**
- * 我的下线在某一天贡献了多少（「下线」旁边的第二张次级标签）。
- *
- * 一行 = 一个下线在那一天的那一桶，与管理端「日结明细」同一口径：基数是
- * **额度**、按我的分组档计提出来的是 **星屑**（decimal 字符串，只展示），
- * 状态是日桶那三态（待发放 / 已发放 / 已暂缓）。两个数都要在 —— 只给基数
- * 用户算不出自己该拿多少，只给星屑他不知道那个数是按什么算的。
- *
- * 真实用户名 / 邮箱一个都不下发，人名只有后端算好的脱敏名。
- */
-function InviteeDailyTable() {
-  const { t } = useTranslation()
-  const unit = useStardustName()
-  const [date, setDate] = useState(yesterdayInputValue)
-
-  const query = useQuery(qyInviteeDailyQuery(date.replaceAll('-', '')))
-  const items = qyArray(query.data?.items)
-
-  const columns: StaticDataTableColumn<QyInviteeDailyRow>[] = [
-    {
-      id: 'name',
-      header: t('qy_inv_col_invitee'),
-      className: staticDataTableClassNames.compactHeaderCell,
-      cellClassName: staticDataTableClassNames.compactCell,
-      cell: (row) => (
-        <QyMaskedUser userId={row.invitee_id} maskedName={row.invitee_masked} />
-      ),
-    },
-    {
-      id: 'base',
-      header: t('qy_inv_col_base'),
-      className: staticDataTableClassNames.compactHeaderCellRight,
-      cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => <QyAmountText quota={row.base_quota} />,
-    },
-    {
-      id: 'bps',
-      header: t('qy_inv_col_bps'),
-      className: staticDataTableClassNames.compactHeaderCellRight,
-      cellClassName: staticDataTableClassNames.compactMutedNumericCell,
-      cell: (row) => t('qy_sd_percent', { percent: qySdBpsPercent(row.bps) }),
-    },
-    {
-      id: 'gross',
-      header: t('qy_inv_col_gross'),
-      className: staticDataTableClassNames.compactHeaderCellRight,
-      cellClassName: staticDataTableClassNames.compactNumericCell,
-      cell: (row) => t('qy_sd_amount_with_unit', { amount: row.gross, unit }),
-    },
-    {
-      id: 'status',
-      header: t('qy_common_status'),
-      className: staticDataTableClassNames.compactHeaderCell,
-      cellClassName: staticDataTableClassNames.compactCell,
-      cell: (row) => {
-        const badge = qySdAccrualBadge(row.status)
-        return (
-          <QyStatusBadge
-            status={badge.status}
-            label={badge.labelKey === '' ? undefined : t(badge.labelKey)}
-          />
-        )
-      },
-    },
-  ]
-
-  return (
-    <div className='flex flex-col gap-3'>
-      <p className='text-muted-foreground text-sm'>
-        {t('qy_inv_daily_hint', { unit })}
-      </p>
-      <div className='flex flex-wrap items-end gap-2'>
-        <label className='flex flex-col gap-1 text-xs'>
-          {t('qy_inv_daily_date')}
-          <Input
-            type='date'
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
-        </label>
-      </div>
-      {query.data !== undefined && (
-        <p className='text-muted-foreground text-sm'>
-          {t('qy_inv_daily_summary', {
-            day: qySdFormatDay(query.data.day),
-            invitees: query.data.items.length,
-            gross: query.data.total_gross,
-            unit,
-          })}
-        </p>
-      )}
-      <QyPageBoundary
-        query={query}
-        isEmpty={query.data != null && items.length === 0}
-        emptyIcon={Users}
-        emptyTitle={t('qy_inv_daily_empty_title')}
-        emptyDescription={t('qy_inv_daily_empty_desc')}
-      >
-        <div className='w-full overflow-x-auto'>
-          <StaticDataTable
-            columns={columns}
-            data={items}
-            getRowKey={(row) => row.invitee_id}
-            tableClassName='min-w-[640px]'
-          />
-        </div>
-      </QyPageBoundary>
-    </div>
   )
 }

@@ -144,7 +144,7 @@ var moduleGates = []ModuleGate{
 	},
 	{
 		Module: "invite", Section: "invite", Key: "enabled",
-		Effect: "不再建立任何邀请关系,星屑的下线消费返 / 充值返 / 兑换码返 / 注册奖全部停发,推广页 404 —— 这段时间的邀请返没有任何补算路径",
+		Effect: "不再建立任何邀请关系,推广佣金与星屑注册奖全部停发,推广页 404 —— 这段时间的邀请返没有任何补算路径",
 	},
 	{
 		Module: "commission", Section: "commission", Key: "enabled",
@@ -234,7 +234,7 @@ var moduleGates = []ModuleGate{
 		// 关掉之后**只关入口不关账**:星屑的记账函数不看这个开关,在途的星屑活动照扣照派,
 		// 用户暂时看不见自己的账;消费返日结、充值 / 兑换码 / 注册 / 套餐返全部停止且没有补算路径。
 		Effect: "引导端点下发 features.stardust=false,星屑入口与商城入口不渲染,用户端与管理端接口 404;" +
-			"消费返 / 邀请返 / 套餐返全部停止且没有补算路径;在途的星屑活动仍在往一本用户看不见的账里扣与派",
+			"消费返 / 注册奖 / 套餐返全部停止且没有补算路径;在途的星屑活动仍在往一本用户看不见的账里扣与派",
 	},
 	{
 		Module: "mall", Section: "mall", Key: "enabled",

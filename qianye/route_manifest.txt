@@ -51,7 +51,6 @@ GET /api/qy/admin/invite/daily-consume
 GET /api/qy/admin/invite/daily-consume/by-day
 GET /api/qy/admin/invite/daily-consume/export
 GET /api/qy/admin/invite/health
-GET /api/qy/admin/invite/invite-accruals
 GET /api/qy/admin/invite/relations
 GET /api/qy/admin/leases
 GET /api/qy/admin/log-metrics/health
@@ -131,7 +130,6 @@ GET /api/qy/commission/credits
 GET /api/qy/commission/records
 GET /api/qy/commission/summary
 GET /api/qy/config
-GET /api/qy/invite/invitee-daily
 GET /api/qy/invite/invitees
 GET /api/qy/invite/records
 GET /api/qy/invite/summary

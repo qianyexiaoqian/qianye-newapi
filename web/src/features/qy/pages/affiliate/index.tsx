@@ -31,7 +31,6 @@ import {
 } from '@/components/ui/card'
 import { formatTimestampToDate } from '@/lib/format'
 
-import { QyAmountText } from '../../components/qy-amount-text'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
 import { QySdAmount } from '../../components/qy-sd-amount'
 import { QySdDecimal } from '../../components/qy-sd-decimal'
@@ -40,7 +39,6 @@ import { useStardustName } from '../../hooks/use-stardust-name'
 import { qyFormatAtDayline } from '../../lib/dayline'
 import { formatSdDecimal, formatSdWithUnit } from '../../lib/format-sd'
 import { QyStatGrid, type QyStatItem } from '../components/qy-stat-grid'
-import { qySdBpsPercent } from '../stardust/lib/display'
 import {
   qyAffiliateCodeQuery,
   qyCommissionSummaryQuery,
@@ -54,16 +52,14 @@ import type { QyCommissionSummary, QyInviteSummary } from './types'
 /**
  * 「概览」—— 「我的推广」选择夹的第一张标签（D-16）。
  *
- * 两条线**并行**，而且发的是**同一种钱**（星屑）：
+ * 下线充值 / 兑换码 / 消费带来的返还**只走推广佣金**，所以这一屏只有一套"下线返"：
  *
  *   · 上半：**推广佣金** —— 待结算 / 可用（待入账）/ 已入账三格、下次入账时间、
  *     我的费率。到期自动记入星屑余额，没有申请、没有审核 —— 这一屏上没有「提现」。
- *   · 下半：**邀请返还** —— 五种来源的分布、昨日已返 / 暂缓、今日待返基数、
- *     合规声明状态。
+ *   · 下半：**其他邀请奖励** —— 星屑账本上与佣金基数不重叠的注册奖、套餐返上线，
+ *     以及已下线的星屑侧下线返留下的历史（已发放的不回收）。
  *
- * D-15 时上半记的是「星辉」（站内余额的展示名），所以这一屏上曾有两种单位并排。
- * D-16 之后两边都是星屑，全部走 `QySdAmount` —— 唯二仍按额度印的是**消费基数**
- * （昨日下线消费 / 今日待返基数）：那是分母，不是返给谁的钱。
+ * 两边都是星屑，全部走 `QySdAmount`。
  *
  * 佣金关掉、邀请返照开的站点上，上半整段不渲染（也不发请求），下半照旧。
  */
@@ -101,25 +97,6 @@ export function QyAffiliateOverviewBody() {
                     count: summary.blocked_count,
                   })
                 : t('qy_inv_blocked_none_hint'),
-          },
-          {
-            // 昨日：基数是额度、已返 / 暂缓是星屑。两个星屑数都要在 —— 只给已返，
-            // 被暂缓的那部分看起来就像被吞了。
-            key: 'yesterday',
-            label: t('qy_inv_yesterday_base'),
-            value: <QyAmountText quota={summary.yesterday.base_quota} />,
-            hint: t('qy_inv_yesterday_hint', {
-              granted: formatSdWithUnit(summary.yesterday.granted, unit),
-              held: formatSdWithUnit(summary.yesterday.held, unit),
-            }),
-          },
-          {
-            key: 'pending',
-            label: t('qy_inv_pending_today'),
-            value: <QyAmountText quota={summary.pending_today_base_quota} />,
-            hint: t('qy_inv_pending_today_hint', {
-              percent: qySdBpsPercent(summary.rate.invite_consume_bps),
-            }),
           },
         ]
 
@@ -177,7 +154,7 @@ export function QyAffiliateOverviewBody() {
                     isLoading={codeQuery.isLoading}
                   />
                 )}
-                <RateCard summary={summary} />
+                <RateCard summary={summary} commissionOn={commissionOn} />
               </div>
             </div>
           )}
@@ -422,14 +399,10 @@ function PolicyCard(props: { summary: QyCommissionSummary }) {
 }
 
 /**
- * 我的费率（星屑侧）。
- *
- * 四个数全部是**这个账号自己**的生效值：费率按邀请人自己所在的用户分组解析
- * （既有拍板：与下线在哪个分组无关），所以这一页必须同时回答"我走哪一档"，
- * 否则一个走 vip 档的人看到一个数字却不知道它从哪来。比例后端以 bps 下发，
- * 这里只在展示时换成百分数 —— 全链路用整数是为了让"5% 到底是多少"可复现。
+ * 星屑侧的邀请奖励：只剩注册奖（固定星屑，不按分组分档）与合规状态。下线充值 /
+ * 兑换码 / 消费的返佣比例在上方的佣金规则卡里 —— 两边各列一套比例正是要消灭的冲突。
  */
-function RateCard(props: { summary: QyInviteSummary }) {
+function RateCard(props: { summary: QyInviteSummary; commissionOn: boolean }) {
   const { t } = useTranslation()
   const unit = useStardustName()
   const summary = props.summary
@@ -442,27 +415,6 @@ function RateCard(props: { summary: QyInviteSummary }) {
         summary.rate.group === ''
           ? t('qy_inv_rate_group_unknown')
           : summary.rate.group,
-    },
-    {
-      key: 'consume',
-      label: t('qy_sd_kind_invite_consume'),
-      value: t('qy_sd_percent', {
-        percent: qySdBpsPercent(summary.rate.invite_consume_bps),
-      }),
-    },
-    {
-      key: 'topup',
-      label: t('qy_sd_kind_invite_topup'),
-      value: t('qy_sd_percent', {
-        percent: qySdBpsPercent(summary.rate.invite_topup_bps),
-      }),
-    },
-    {
-      key: 'redeem',
-      label: t('qy_sd_kind_invite_redeem'),
-      value: t('qy_sd_percent', {
-        percent: qySdBpsPercent(summary.rate.invite_redeem_bps),
-      }),
     },
     {
       key: 'register',
@@ -500,13 +452,7 @@ function RateCard(props: { summary: QyInviteSummary }) {
         </dl>
         <ul className='text-muted-foreground list-inside list-disc space-y-1 text-xs'>
           <li>{t('qy_inv_rate_scope_note')}</li>
-          {/* 「次日到账」要说清是谁的次日：站点配 0 时，国内用户的"次日"其实
-              是北京时间早上 8 点。 */}
-          <li>
-            {summary.day_offset_minutes === 0
-              ? t('qy_inv_settle_note_utc')
-              : t('qy_inv_settle_note')}
-          </li>
+          {props.commissionOn && <li>{t('qy_inv_rate_commission_note')}</li>}
         </ul>
       </CardContent>
     </Card>

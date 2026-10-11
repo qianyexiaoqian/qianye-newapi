@@ -3,38 +3,43 @@ package stardust
 import (
 	"context"
 
-	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/modules/invite"
-
-	"github.com/shopspring/decimal"
 )
 
-// invite_stats.go —— 回答 invite 模块留的三个槽(export.go 的 func 变量):
-// 按 (邀请人, 下线) 汇总的星屑、下线消费返按下线 / 按天的汇总。
+// invite_stats.go —— 回答 invite 模块留的 PairRewardTotals 槽(export.go 的 func 变量):
+// 按 (邀请人, 下线) 汇总邀请人在**星屑账本**上因这个下线直接得到的星屑。
 //
-// invite 不能 import 本包(qianye/module_import_guard_test.go),它的管理端关系列表
-// 与下线日消费报表要的这几个数只有星屑账本答得出,所以由本包在 InstallHooks 里赋值。
+// 下线充值 / 兑换码 / 消费带来的返还只走推广佣金,那一半由 commission 注入的
+// PairCommissionTotals 回答;这里只剩与佣金基数不重叠的注册奖 / 套餐返上线,以及已下线的
+// 星屑侧下线返留下的历史流水(已发放的不回收,所以照常计入)。
+//
+// invite 不能 import 本包(qianye/module_import_guard_test.go),所以由本包在 InstallHooks 里赋值。
 
 func init() {
 	hookInstallers = append(hookInstallers, func() {
 		invite.PairRewardTotals = pairRewardTotals
-		invite.InviteAccrualByInvitee = inviteAccrualByInvitee
-		invite.InviteAccrualByDay = inviteAccrualByDay
 	})
 }
 
-// inviteKinds 是"邀请人因下线得到"的全部流水种类:用户端「我的推广」与管理端关系列表
-// 的星屑口径都取它。
+// inviteKinds 是"邀请人因下线在星屑账本上得到"的全部流水种类:用户端「我的推广」的
+// 星屑口径与上面那个槽都取它。前三种已下线、不再产生新行,留在这里是为了历史流水
+// 照常计入、照常可查。
 var inviteKinds = []string{
 	string(KindInviteConsume), string(KindInviteTopup), string(KindInviteRedeem),
 	string(KindInviteRegister), string(KindPlanInviter),
 }
 
+// retiredInviteKinds 是已下线的三种星屑侧下线返。界面上把它们合成一行「历史下线返」,
+// 不再与佣金并排各报一个"下线消费返",那正是要消灭的冲突统计。
+var retiredInviteKinds = []string{
+	string(KindInviteConsume), string(KindInviteTopup), string(KindInviteRedeem),
+}
+
 // pairRewardTotals 按 (user_id=邀请人, peer_user_id=下线) 汇总邀请类流水。
 //
-// invite_consume 那一行是按邀请人汇总发的,peer_user_id 恒 0 —— 它**不在**这里:
-// 下线消费返按下线拆开只能看日桶(inviteAccrualTotalsByInvitee),这里把两者相加。
+// 历史上的 invite_consume 是按邀请人汇总发的,peer_user_id 恒 0,按下线拆不开 ——
+// 它只出现在「我的推广」的合计里,不出现在这里。
 // 读失败返回空表而不是错误:调用方要么已经改完了主库,要么只是在渲染一个列表,
 // 都不该为一个回显数字失败。
 func pairRewardTotals(ctx context.Context, pairs [][2]int) map[[2]int]int64 {
@@ -74,85 +79,5 @@ func pairRewardTotals(ctx context.Context, pairs [][2]int) map[[2]int]int64 {
 			out[key] += r.Total
 		}
 	}
-	// 下线消费返:已结算日桶的 gross 向下取整。零头在 invite_carry 里等下一次发,
-	// 列表上的数宁可略小于账本也不能虚报。
-	var accs []struct {
-		InviterId int
-		InviteeId int
-		Gross     string
-	}
-	if err := gdb.WithContext(ctx).Model(&InviteAccrual{}).
-		Select("inviter_id, invitee_id, COALESCE(SUM(gross), 0) AS gross").
-		Where("invitee_id IN ? AND status = ?", invitees, AccrualSettled).
-		Group("inviter_id, invitee_id").Scan(&accs).Error; err != nil {
-		db.MarkFailure(err)
-		return out
-	}
-	for _, a := range accs {
-		key := [2]int{a.InviterId, a.InviteeId}
-		if !wanted[key] {
-			continue
-		}
-		d, err := decimal.NewFromString(a.Gross)
-		if err != nil {
-			continue
-		}
-		out[key] += int64(common.QuotaFromDecimal(d.Floor()))
-	}
 	return out
-}
-
-// inviteAccrualByInvitee 汇总 [startDay, endDay] 内每个下线的下线消费返基数与毛额。
-// 全部状态都算(computed / settled / held):报表回答的是"这段消费有多少进了日桶",
-// 不是"发出去了多少"。
-func inviteAccrualByInvitee(ctx context.Context, startDay, endDay string, inviterId int) (map[int]invite.DayAccrual, error) {
-	gdb := db.Get()
-	if gdb == nil {
-		return nil, db.ErrNotReady
-	}
-	q := gdb.WithContext(ctx).Model(&InviteAccrual{}).
-		Select("invitee_id, COALESCE(SUM(base_quota), 0) AS base_quota, COALESCE(SUM(gross), 0) AS gross").
-		Where("bucket_date >= ? AND bucket_date <= ?", startDay, endDay)
-	if inviterId > 0 {
-		q = q.Where("inviter_id = ?", inviterId)
-	}
-	var rows []struct {
-		InviteeId int
-		BaseQuota int64
-		Gross     decimal.Decimal
-	}
-	if err := q.Group("invitee_id").Scan(&rows).Error; err != nil {
-		db.MarkFailure(err)
-		return nil, err
-	}
-	out := make(map[int]invite.DayAccrual, len(rows))
-	for _, r := range rows {
-		out[r.InviteeId] = invite.DayAccrual{BaseQuota: r.BaseQuota, Gross: r.Gross}
-	}
-	return out, nil
-}
-
-// inviteAccrualByDay 汇总一个下线在 [startDay, endDay] 内逐日的下线消费返,按 YYYYMMDD 索引。
-func inviteAccrualByDay(ctx context.Context, inviteeId int, startDay, endDay string) (map[string]invite.DayAccrual, error) {
-	gdb := db.Get()
-	if gdb == nil {
-		return nil, db.ErrNotReady
-	}
-	var rows []struct {
-		BucketDate string
-		BaseQuota  int64
-		Gross      decimal.Decimal
-	}
-	if err := gdb.WithContext(ctx).Model(&InviteAccrual{}).
-		Select("bucket_date, COALESCE(SUM(base_quota), 0) AS base_quota, COALESCE(SUM(gross), 0) AS gross").
-		Where("invitee_id = ? AND bucket_date >= ? AND bucket_date <= ?", inviteeId, startDay, endDay).
-		Group("bucket_date").Scan(&rows).Error; err != nil {
-		db.MarkFailure(err)
-		return nil, err
-	}
-	out := make(map[string]invite.DayAccrual, len(rows))
-	for _, r := range rows {
-		out[r.BucketDate] = invite.DayAccrual{BaseQuota: r.BaseQuota, Gross: r.Gross}
-	}
-	return out, nil
 }

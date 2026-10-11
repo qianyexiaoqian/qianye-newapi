@@ -54,20 +54,13 @@ const INVITE_SUMMARY = {
   invitee_count: 3,
   blocked_count: 0,
   totals: {
-    invite_consume: 600,
-    invite_topup: 300,
-    invite_redeem: 100,
     invite_register: 200,
     plan_inviter: 34,
+    legacy: 1000,
     all: 1234,
   },
-  yesterday: { base_quota: 3_700_000, granted: 7, held: 2 },
-  pending_today_base_quota: 1_000_000,
   rate: {
     group: 'vip',
-    invite_consume_bps: 500,
-    invite_topup_bps: 1000,
-    invite_redeem_bps: 0,
     invite_register_stardust: 50,
   },
   compliance_confirmed: true,
@@ -258,29 +251,28 @@ describe('概览：佣金三格与邀请返分布同屏', () => {
     // 反面：佣金那三格一旦回到额度口径，就是差 quota_per_unit 倍（默认 50 万）。
     assert.ok(!text.includes('$5'), '可用被按额度口径印了')
     assert.ok(!text.includes('$20'), '已入账被按额度口径印了')
-    // 消费基数仍然是额度：3,700,000 = $7.4。它是分母，不是返给谁的钱。
-    assert.ok(text.includes('$7.4'), `昨日下线消费基数没按额度口径印：${text}`)
-    assert.ok(!text.includes('3,700,000 星屑'), '消费基数被当成星屑渲染了')
     assert.ok(
       text.includes(zh.qy_aff_next_credit_value.slice(0, 5)),
       '下次入账那句话没渲染'
     )
 
-    // 星屑那半：五种 kind 各占一格。
+    // 星屑那半：只剩与佣金基数不重叠的注册奖 / 套餐返，加上一行历史下线返。
     const segments = [
       ...document.body.querySelectorAll<HTMLElement>('[data-segment]'),
     ]
     assert.deepEqual(
       segments.map((node) => node.dataset.segment),
-      [
-        'invite_consume',
-        'invite_topup',
-        'invite_redeem',
-        'invite_register',
-        'plan_inviter',
-      ],
-      '星屑分布的五格不见了 —— 上半有了佣金，下半的星屑不能少'
+      ['invite_register', 'plan_inviter', 'legacy'],
+      '星屑那半应当是注册奖 / 套餐返 / 历史下线返三块'
     )
+    // 下线返只有佣金那一套比例：星屑那半不再印下线消费 / 充值 / 兑换码的比例。
+    for (const gone of [
+      zh.qy_sd_kind_invite_consume,
+      zh.qy_sd_kind_invite_topup,
+      zh.qy_sd_kind_invite_redeem,
+    ]) {
+      assert.ok(!text.includes(gone), `星屑那半又出现了「${gone}」：${text}`)
+    }
     assert.ok(text.includes('1,234 星屑'), '星屑总数没带单位名渲染')
 
     // 两个区段的顺序：佣金在上、邀请返在下。

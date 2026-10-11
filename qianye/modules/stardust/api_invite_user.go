@@ -2,9 +2,9 @@ package stardust
 
 import (
 	"context"
+	"slices"
 	"strings"
 
-	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/groupname"
@@ -14,31 +14,27 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
-	"github.com/shopspring/decimal"
 )
 
-// api_invite_user.go —— 「我的推广」:邀请人看自己的下线与因他们得到的星屑(D-14)。
+// api_invite_user.go —— 「我的推广」里星屑账本那一半:下线名单与因他们直接得到的星屑。
 //
-// 四条都挂在 /api/qy/invite/* 下,但住在本包而不是 invite 包:它们读的全是星屑账本
-// (流水、下线消费返日桶、分组档),而 invite 不能 import 本包。闸门是 FlagInvite ——
-// 邀请功能关掉时推广页整页 404,这是契约定的。
+// 三条都挂在 /api/qy/invite/* 下,但住在本包而不是 invite 包:它们读的是星屑账本,
+// 而 invite 不能 import 本包。闸门是 FlagInvite —— 邀请功能关掉时推广页整页 404。
 //
-// 隐私边界与旧版一致:下线只以脱敏名出现,真实用户名 / 邮箱一律不下发;下线 id 按
-// 契约下发(前端要用它下钻某个下线的逐日明细)。
+// 下线充值 / 兑换码 / 消费带来的返还只走推广佣金(/api/qy/commission/*),这里不再有
+// 自己的比例、昨日已返、今日待返基数 —— 两条线各报一套"下线返"正是要消灭的冲突统计。
+// 「我的下线」那一列"带来多少佣金"由佣金侧经 invite.PairCommissionTotals 回答。
+//
+// 隐私边界与旧版一致:下线只以脱敏名出现,真实用户名 / 邮箱一律不下发。
 
-// invitePaging 是这四条列表的分页口径:?p= / ?page_size=(契约与 invite 的管理端同形)。
+// invitePaging 是这几条列表的分页口径:?p= / ?page_size=(契约与 invite 的管理端同形)。
 var invitePaging = httpq.Spec{}
-
-// maxPendingInvitees 是"我的下线今天花了多少"一次最多看多少个下线:超过就不算了
-// (下发 0)—— 一个几千下线的推广人每刷新一次页面就扫一遍 logs,不值。
-const maxPendingInvitees = 500
 
 func init() {
 	userRouteInstallers = append(userRouteInstallers, func(g *gin.RouterGroup) {
 		g.GET("/invite/summary", handleInviteSummary)
 		g.GET("/invite/invitees", handleInviteInvitees)
 		g.GET("/invite/records", handleInviteRecords)
-		g.GET("/invite/invitee-daily", handleInviteInviteeDaily)
 	})
 }
 
@@ -69,8 +65,7 @@ func inviteTotals(ctx context.Context, userId int) (map[string]int64, int64, err
 }
 
 // inviterGroupOf 读邀请人自己的账号分组(users.group),给"我现在走哪一档"用。
-// 读不到时回空串,由 groupname.Effective 折成 default —— 界面上写的档要与账本按同一条
-// 路径算出来,而账本那一侧(InviteeEligible)读不到上线时也不按任何分组档发。
+// 读不到时回空串,由 groupname.Effective 折成 default。
 func inviterGroupOf(ctx context.Context, userId int) string {
 	if model.DB == nil {
 		return ""
@@ -83,7 +78,8 @@ func inviterGroupOf(ctx context.Context, userId int) string {
 	return rows[0].Group
 }
 
-// handleInviteSummary 是推广页的概览。
+// handleInviteSummary 是推广页星屑那一半的概览:下线数、注册奖 / 套餐返上线的累计,
+// 以及已下线的星屑侧下线返留下的历史合计(legacy,> 0 才值得界面提一句)。
 func handleInviteSummary(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagInvite) {
 		return
@@ -115,81 +111,24 @@ func handleInviteSummary(c *gin.Context) {
 		respondErr(c, wrapInternal("汇总邀请返流水", err))
 		return
 	}
-
-	// 昨天:按日界算,昨天的桶就是刚结完(或正等着结)的那一批。
-	now := common.GetTimestamp()
-	yesterday := invite.DayKey(invite.DayStart(now) - 1)
-	var yRows []InviteAccrual
-	if err := gdb.WithContext(ctx).Where("inviter_id = ? AND bucket_date = ?", me, yesterday).
-		Find(&yRows).Error; err != nil {
-		db.MarkFailure(err)
-		respondErr(c, wrapInternal("读取昨日下线消费返", err))
-		return
-	}
-	var yBase int64
-	yHeld := 0
-	ledgerNos := map[string]bool{}
-	for _, r := range yRows {
-		yBase += r.BaseQuota
-		if r.Status == AccrualHeld {
-			yHeld++
-		}
-		if r.LedgerNo != "" {
-			ledgerNos[r.LedgerNo] = true
-		}
-	}
-	// granted 取流水行上真正发出去的整数,而不是 gross 取整:两者差着 invite_carry
-	// 那一截余数,用户看到的"到账"必须与流水页上那一行逐字相同。
-	var yGranted int64
-	if len(ledgerNos) > 0 {
-		nos := make([]string, 0, len(ledgerNos))
-		for no := range ledgerNos {
-			nos = append(nos, no)
-		}
-		if err := gdb.WithContext(ctx).Model(&Ledger{}).
-			Select("COALESCE(SUM(amount), 0)").Where("ledger_no IN ?", nos).Scan(&yGranted).Error; err != nil {
-			db.MarkFailure(err)
-			respondErr(c, wrapInternal("读取昨日结算流水", err))
-			return
-		}
+	var legacy int64
+	for _, k := range retiredInviteKinds {
+		legacy += totals[k]
 	}
 
-	pendingRows, _, err := pendingTodayInviteeConsume(ctx, me, now)
-	if err != nil {
-		respondErr(c, wrapInternal("汇总下线今日消费", err))
-		return
-	}
-	var pendingBase int64
-	for _, r := range pendingRows {
-		pendingBase += r.BaseQuota
-	}
-
-	group := inviterGroupOf(ctx, me)
 	s := effectiveCtx(ctx)
 	respondOK(c, gin.H{
 		"invitee_count": inviteeCount,
 		"blocked_count": blockedCount,
 		"totals": gin.H{
-			"invite_consume":  totals[string(KindInviteConsume)],
-			"invite_topup":    totals[string(KindInviteTopup)],
-			"invite_redeem":   totals[string(KindInviteRedeem)],
 			"invite_register": totals[string(KindInviteRegister)],
 			"plan_inviter":    totals[string(KindPlanInviter)],
+			"legacy":          legacy,
 			"all":             all,
 		},
-		"yesterday": gin.H{
-			"base_quota": yBase,
-			"granted":    yGranted,
-			"held":       yHeld,
-		},
-		"pending_today_base_quota": pendingBase,
-		// 档位按**我自己**的分组解析(D-02),与发放路径同一条判定(inviteRateFor /
-		// inviteConsumeRateFor);合规未确认时三档比例都是 0,界面据 compliance_confirmed 解释。
+		// 注册奖不按分组分档;group 留着给界面说明"我是哪一档的推广人"(佣金按它取档)。
 		"rate": gin.H{
-			"group":                    groupname.Effective(group),
-			"invite_consume_bps":       inviteConsumeRateFor(ctx, group),
-			"invite_topup_bps":         firstOf(inviteRateFor(ctx, group, inviteTopupRate)),
-			"invite_redeem_bps":        firstOf(inviteRateFor(ctx, group, inviteRedeemRate)),
+			"group":                    groupname.Effective(inviterGroupOf(ctx, me)),
 			"invite_register_stardust": s.InviteRegisterStardust,
 		},
 		"compliance_confirmed": operation_setting.IsPaymentComplianceConfirmed(),
@@ -197,39 +136,11 @@ func handleInviteSummary(c *gin.Context) {
 	})
 }
 
-// firstOf 只取 inviteRateFor 的比例那一半,分组名在 rate.group 里已经给过了。
-func firstOf(bps int, _ string) int { return bps }
-
-// pendingTodayInviteeConsume 是"我的下线今天到现在各花了多少"——明天日结的基数,
-// 按下线一行。第二个返回值为假表示下线太多、这一次没扫。
+// handleInviteInvitees 分页列出我的下线(绑定中的)。
 //
-// 口径与日结逐字相同(aggregateDayConsume 的排除项),只是限定在我名下绑定中、
-// 没被拉黑的下线。"没扫"与"扫了、都是 0"必须由调用方分得开:推广页把两者
-// 一起显示成 0,而「明日预计到账」要把前者说成"下线过多,未统计"。
-func pendingTodayInviteeConsume(ctx context.Context, me int, now int64) ([]consumeAgg, bool, error) {
-	gdb := db.Get()
-	ids := make([]int, 0, 64)
-	if err := gdb.WithContext(ctx).Model(&invite.InviteRelation{}).
-		Where("inviter_id = ? AND unbound_at = ? AND blocked = ?", me, 0, false).
-		Limit(maxPendingInvitees+1).Pluck("invitee_id", &ids).Error; err != nil {
-		db.MarkFailure(err)
-		return nil, false, err
-	}
-	if len(ids) > maxPendingInvitees {
-		return nil, false, nil
-	}
-	if len(ids) == 0 {
-		return nil, true, nil
-	}
-	start := invite.DayStart(now)
-	rows, err := aggregateDayConsume(ctx, start, start+secondsPerDay, ids)
-	if err != nil {
-		return nil, true, err
-	}
-	return rows, true, nil
-}
-
-// handleInviteInvitees 分页列出我的下线(绑定中的),带累计基数与累计星屑。
+// 每个下线两个数分开下发,不相加:commission_gross 是佣金(含尚未结算进余额的,
+// decimal 字符串),total_stardust 是星屑账本上因他直接得到的(注册奖 / 套餐返 / 历史)。
+// 两者口径不同(一个还在持有期里、一个已经到账),加成一个数就再也解释不了。
 func handleInviteInvitees(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagInvite) {
 		return
@@ -258,51 +169,33 @@ func handleInviteInvitees(c *gin.Context) {
 		return
 	}
 
-	ids := make([]int, 0, len(rels))
 	pairs := make([][2]int, 0, len(rels))
 	for _, r := range rels {
-		ids = append(ids, r.InviteeId)
 		pairs = append(pairs, [2]int{me, r.InviteeId})
 	}
-	type inviteeAgg struct {
-		InviteeId int
-		BaseQuota int64
-		LastDay   string
-	}
-	aggs := map[int]inviteeAgg{}
-	if len(ids) > 0 {
-		var rows []inviteeAgg
-		if err := gdb.WithContext(ctx).Model(&InviteAccrual{}).
-			Select("invitee_id, COALESCE(SUM(base_quota), 0) AS base_quota, MAX(bucket_date) AS last_day").
-			Where("inviter_id = ? AND invitee_id IN ?", me, ids).
-			Group("invitee_id").Scan(&rows).Error; err != nil {
-			db.MarkFailure(err)
-			respondErr(c, wrapInternal("汇总下线消费", err))
-			return
-		}
-		for _, r := range rows {
-			aggs[r.InviteeId] = r
-		}
-	}
+	commission := invite.PairCommissionTotals(ctx, pairs)
 	totals := pairRewardTotals(ctx, pairs)
 
 	items := make([]gin.H, 0, len(rels))
 	for _, r := range rels {
-		agg := aggs[r.InviteeId]
+		key := [2]int{me, r.InviteeId}
+		comm := commission[key]
 		items = append(items, gin.H{
 			"user_id":          r.InviteeId,
 			"username_masked":  r.MaskedName,
 			"bound_at":         r.BoundAt,
 			"blocked":          r.Blocked,
-			"last_active_day":  agg.LastDay,
-			"total_base_quota": agg.BaseQuota,
-			"total_stardust":   totals[[2]int{me, r.InviteeId}],
+			"last_active_day":  comm.LastDay,
+			"total_base_quota": comm.ConsumeBaseQuota,
+			"commission_gross": comm.Gross.String(),
+			"total_stardust":   totals[key],
 		})
 	}
 	respondOK(c, gin.H{"items": items, "total": total, "p": page, "page_size": size})
 }
 
-// handleInviteRecords 分页返回我的邀请类流水,可按 kind 筛(只认邀请类的五种)。
+// handleInviteRecords 分页返回我的邀请类流水,可按 kind 筛(只认邀请类的五种;
+// 其中三种已下线,只剩历史行)。
 func handleInviteRecords(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagInvite) {
 		return
@@ -376,77 +269,5 @@ func handleInviteRecords(c *gin.Context) {
 }
 
 func isInviteKind(kind string) bool {
-	for _, k := range inviteKinds {
-		if k == kind {
-			return true
-		}
-	}
-	return false
-}
-
-// handleInviteInviteeDaily 是某一天我名下每个下线的消费返明细(?day=YYYYMMDD,默认昨天)。
-func handleInviteInviteeDaily(c *gin.Context) {
-	if !guard.RequireAPI(c, guard.FlagInvite) {
-		return
-	}
-	ctx := c.Request.Context()
-	me := c.GetInt("id")
-	day := strings.TrimSpace(c.Query("day"))
-	if day == "" {
-		day = invite.DayKey(invite.DayStart(common.GetTimestamp()) - 1)
-	}
-	if _, ok := invite.DayKeyStart(day); !ok {
-		respondErr(c, errBadRequest("day 必须是 YYYYMMDD"))
-		return
-	}
-	gdb := db.Get()
-	if gdb == nil {
-		respondErr(c, db.ErrNotReady)
-		return
-	}
-	rows := make([]InviteAccrual, 0, 32)
-	if err := gdb.WithContext(ctx).Where("inviter_id = ? AND bucket_date = ?", me, day).
-		Order("base_quota desc, invitee_id asc").Find(&rows).Error; err != nil {
-		db.MarkFailure(err)
-		respondErr(c, wrapInternal("查询下线日消费返", err))
-		return
-	}
-	ids := make([]int, 0, len(rows))
-	for _, r := range rows {
-		ids = append(ids, r.InviteeId)
-	}
-	masked := map[int]string{}
-	if len(ids) > 0 {
-		var rels []invite.InviteRelation
-		if err := gdb.WithContext(ctx).Select("invitee_id", "masked_name").
-			Where("invitee_id IN ?", ids).Find(&rels).Error; err != nil {
-			db.MarkFailure(err)
-			respondErr(c, wrapInternal("读取下线脱敏名", err))
-			return
-		}
-		for _, rel := range rels {
-			masked[rel.InviteeId] = rel.MaskedName
-		}
-	}
-	var totalBase int64
-	totalGross := decimal.Zero
-	items := make([]gin.H, 0, len(rows))
-	for _, r := range rows {
-		totalBase += r.BaseQuota
-		totalGross = totalGross.Add(r.Gross)
-		items = append(items, gin.H{
-			"invitee_id":     r.InviteeId,
-			"invitee_masked": masked[r.InviteeId],
-			"base_quota":     r.BaseQuota,
-			"bps":            r.Bps,
-			"gross":          r.Gross.String(),
-			"status":         r.Status,
-		})
-	}
-	respondOK(c, gin.H{
-		"day":              day,
-		"items":            items,
-		"total_base_quota": totalBase,
-		"total_gross":      totalGross.String(),
-	})
+	return slices.Contains(inviteKinds, kind)
 }

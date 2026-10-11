@@ -102,7 +102,6 @@ import { Route as AuthenticatedQyAdminDailyConsumeIndexRouteImport } from './rou
 import { Route as AuthenticatedQyAdminFundOrdersIndexRouteImport } from './routes/_authenticated/qy/admin/fund-orders/index'
 import { Route as AuthenticatedQyAdminGroupMatrixIndexRouteImport } from './routes/_authenticated/qy/admin/group-matrix/index'
 import { Route as AuthenticatedQyAdminHealthIndexRouteImport } from './routes/_authenticated/qy/admin/health/index'
-import { Route as AuthenticatedQyAdminInviteAccrualsIndexRouteImport } from './routes/_authenticated/qy/admin/invite-accruals/index'
 import { Route as AuthenticatedQyAdminInviteIndexRouteImport } from './routes/_authenticated/qy/admin/invite/index'
 import { Route as AuthenticatedQyAdminLotteryConfigIndexRouteImport } from './routes/_authenticated/qy/admin/lottery-config/index'
 import { Route as AuthenticatedQyAdminLotteryIndexRouteImport } from './routes/_authenticated/qy/admin/lottery/index'
@@ -219,9 +218,9 @@ const AuthenticatedQyRouteRoute = AuthenticatedQyRouteRouteImport.update({
 } as any)
 const AuthenticatedSystemSettingsRouteRoute =
   AuthenticatedSystemSettingsRouteRouteImport.update({
-    id: '/system-settings',
-    path: '/system-settings',
-    getParentRoute: () => AuthenticatedRouteRoute,
+id: '/system-settings',
+path: '/system-settings',
+getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AboutIndexRoute = AboutIndexRouteImport.update({
   id: '/about/',
@@ -650,12 +649,6 @@ const AuthenticatedQyAdminHealthIndexRoute =
     path: '/health/',
     getParentRoute: () => AuthenticatedQyAdminRouteRoute,
   } as any)
-const AuthenticatedQyAdminInviteAccrualsIndexRoute =
-  AuthenticatedQyAdminInviteAccrualsIndexRouteImport.update({
-    id: '/invite-accruals/',
-    path: '/invite-accruals/',
-    getParentRoute: () => AuthenticatedQyAdminRouteRoute,
-  } as any)
 const AuthenticatedQyAdminInviteIndexRoute =
   AuthenticatedQyAdminInviteIndexRouteImport.update({
     id: '/invite/',
@@ -869,7 +862,6 @@ export interface FileRoutesByFullPath {
   '/qy/admin/fund-orders/': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/qy/admin/group-matrix/': typeof AuthenticatedQyAdminGroupMatrixIndexRoute
   '/qy/admin/health/': typeof AuthenticatedQyAdminHealthIndexRoute
-  '/qy/admin/invite-accruals/': typeof AuthenticatedQyAdminInviteAccrualsIndexRoute
   '/qy/admin/invite/': typeof AuthenticatedQyAdminInviteIndexRoute
   '/qy/admin/lottery-config/': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/qy/admin/lottery/': typeof AuthenticatedQyAdminLotteryIndexRoute
@@ -980,7 +972,6 @@ export interface FileRoutesByTo {
   '/qy/admin/fund-orders': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/qy/admin/group-matrix': typeof AuthenticatedQyAdminGroupMatrixIndexRoute
   '/qy/admin/health': typeof AuthenticatedQyAdminHealthIndexRoute
-  '/qy/admin/invite-accruals': typeof AuthenticatedQyAdminInviteAccrualsIndexRoute
   '/qy/admin/invite': typeof AuthenticatedQyAdminInviteIndexRoute
   '/qy/admin/lottery-config': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/qy/admin/lottery': typeof AuthenticatedQyAdminLotteryIndexRoute
@@ -1097,7 +1088,6 @@ export interface FileRoutesById {
   '/_authenticated/qy/admin/fund-orders/': typeof AuthenticatedQyAdminFundOrdersIndexRoute
   '/_authenticated/qy/admin/group-matrix/': typeof AuthenticatedQyAdminGroupMatrixIndexRoute
   '/_authenticated/qy/admin/health/': typeof AuthenticatedQyAdminHealthIndexRoute
-  '/_authenticated/qy/admin/invite-accruals/': typeof AuthenticatedQyAdminInviteAccrualsIndexRoute
   '/_authenticated/qy/admin/invite/': typeof AuthenticatedQyAdminInviteIndexRoute
   '/_authenticated/qy/admin/lottery-config/': typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   '/_authenticated/qy/admin/lottery/': typeof AuthenticatedQyAdminLotteryIndexRoute
@@ -1213,7 +1203,6 @@ export interface FileRouteTypes {
     | '/qy/admin/fund-orders/'
     | '/qy/admin/group-matrix/'
     | '/qy/admin/health/'
-    | '/qy/admin/invite-accruals/'
     | '/qy/admin/invite/'
     | '/qy/admin/lottery-config/'
     | '/qy/admin/lottery/'
@@ -1324,7 +1313,6 @@ export interface FileRouteTypes {
     | '/qy/admin/fund-orders'
     | '/qy/admin/group-matrix'
     | '/qy/admin/health'
-    | '/qy/admin/invite-accruals'
     | '/qy/admin/invite'
     | '/qy/admin/lottery-config'
     | '/qy/admin/lottery'
@@ -1440,7 +1428,6 @@ export interface FileRouteTypes {
     | '/_authenticated/qy/admin/fund-orders/'
     | '/_authenticated/qy/admin/group-matrix/'
     | '/_authenticated/qy/admin/health/'
-    | '/_authenticated/qy/admin/invite-accruals/'
     | '/_authenticated/qy/admin/invite/'
     | '/_authenticated/qy/admin/lottery-config/'
     | '/_authenticated/qy/admin/lottery/'
@@ -2135,13 +2122,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedQyAdminHealthIndexRouteImport
       parentRoute: typeof AuthenticatedQyAdminRouteRoute
     }
-    '/_authenticated/qy/admin/invite-accruals/': {
-      id: '/_authenticated/qy/admin/invite-accruals/'
-      path: '/invite-accruals'
-      fullPath: '/qy/admin/invite-accruals/'
-      preLoaderRoute: typeof AuthenticatedQyAdminInviteAccrualsIndexRouteImport
-      parentRoute: typeof AuthenticatedQyAdminRouteRoute
-    }
     '/_authenticated/qy/admin/invite/': {
       id: '/_authenticated/qy/admin/invite/'
       path: '/invite'
@@ -2322,7 +2302,6 @@ interface AuthenticatedQyAdminRouteRouteChildren {
   AuthenticatedQyAdminFundOrdersIndexRoute: typeof AuthenticatedQyAdminFundOrdersIndexRoute
   AuthenticatedQyAdminGroupMatrixIndexRoute: typeof AuthenticatedQyAdminGroupMatrixIndexRoute
   AuthenticatedQyAdminHealthIndexRoute: typeof AuthenticatedQyAdminHealthIndexRoute
-  AuthenticatedQyAdminInviteAccrualsIndexRoute: typeof AuthenticatedQyAdminInviteAccrualsIndexRoute
   AuthenticatedQyAdminInviteIndexRoute: typeof AuthenticatedQyAdminInviteIndexRoute
   AuthenticatedQyAdminLotteryConfigIndexRoute: typeof AuthenticatedQyAdminLotteryConfigIndexRoute
   AuthenticatedQyAdminLotteryIndexRoute: typeof AuthenticatedQyAdminLotteryIndexRoute
@@ -2364,8 +2343,6 @@ const AuthenticatedQyAdminRouteRouteChildren: AuthenticatedQyAdminRouteRouteChil
     AuthenticatedQyAdminGroupMatrixIndexRoute:
       AuthenticatedQyAdminGroupMatrixIndexRoute,
     AuthenticatedQyAdminHealthIndexRoute: AuthenticatedQyAdminHealthIndexRoute,
-    AuthenticatedQyAdminInviteAccrualsIndexRoute:
-      AuthenticatedQyAdminInviteAccrualsIndexRoute,
     AuthenticatedQyAdminInviteIndexRoute: AuthenticatedQyAdminInviteIndexRoute,
     AuthenticatedQyAdminLotteryConfigIndexRoute:
       AuthenticatedQyAdminLotteryConfigIndexRoute,

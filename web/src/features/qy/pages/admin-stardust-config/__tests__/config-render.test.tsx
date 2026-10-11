@@ -19,11 +19,11 @@ For commercial licensing, please contact support@quantumnous.com
 /*
  * 星屑配置页在**真实渲染**上的四件事：
  *
- *  1. 合规门：`compliance_confirmed=false` 时三个邀请类输入框禁用、旁边写着
+ *  1. 合规门：`compliance_confirmed=false` 时注册奖输入框禁用、旁边写着
  *     「需先确认支付合规声明」，而消费返那一格照常可写。
  *  2. 只 PUT 改动键：改一格 → 保存 → 确认弹窗复述 `旧 → 新` → 确认 → 请求体里
  *     只有那一个键。全量提交会污染审计。
- *  3. 分组比例表：`null` 印成「沿用全站」而不是 0，数字带百分数。
+ *  3. 分组比例表：`null` 印成「沿用全站」而不是 0，数字带百分数；只能选用户分组。
  *  4. 套餐返还：选套餐 → 取那一份定义 → 勾一个来源 → 保存的 sources 按闭集顺序。
  */
 import assert from 'node:assert/strict'
@@ -47,9 +47,6 @@ const CONFIG = {
     name: '星屑',
     show_entry: 1,
     consume_bps: 10_000,
-    invite_consume_bps: 0,
-    invite_topup_bps: 0,
-    invite_redeem_bps: 0,
     invite_register_stardust: 0,
     held_alert_days: 7,
   },
@@ -58,18 +55,12 @@ const CONFIG = {
     'name',
     'show_entry',
     'consume_bps',
-    'invite_consume_bps',
-    'invite_topup_bps',
-    'invite_redeem_bps',
     'invite_register_stardust',
     'held_alert_days',
   ],
   bounds: {
     show_entry: { lo: 0, hi: 1 },
     consume_bps: { lo: 0, hi: 10_000_000 },
-    invite_consume_bps: { lo: 0, hi: 10_000_000 },
-    invite_topup_bps: { lo: 0, hi: 10_000_000 },
-    invite_redeem_bps: { lo: 0, hi: 10_000_000 },
     invite_register_stardust: { lo: 0, hi: 8_796_093_022_208 },
     held_alert_days: { lo: 0, hi: 365 },
   },
@@ -78,7 +69,6 @@ const CONFIG = {
     settle_delay_minutes: 30,
     settle_interval_seconds: 300,
     exclude_subscription_consume: true,
-    exclude_manual_topup: true,
     max_manual_adjust: 100_000,
     compliance_confirmed: false,
   },
@@ -89,15 +79,29 @@ const GROUP_RATES = {
     {
       user_group: 'vip',
       consume_bps: 12_000,
-      invite_consume_bps: 500,
-      invite_topup_bps: null,
-      invite_redeem_bps: 0,
+      enabled: true,
+      updated_at: 1_787_000_000,
+      operator_id: 1,
+    },
+    {
+      user_group: 'svip',
+      consume_bps: null,
+      enabled: true,
+      updated_at: 1_787_000_000,
+      operator_id: 1,
+    },
+    // 以前从混着模型分组的下拉里误配的一行:后端以 stale_groups 标出。
+    {
+      user_group: '反重力的哈基米',
+      consume_bps: 0,
       enabled: true,
       updated_at: 1_787_000_000,
       operator_id: 1,
     },
   ],
-  groups: ['default', 'vip'],
+  // 只有用户分组(登记表 ∪ 在用的 users.group),没有模型分组。
+  groups: ['default', 'svip', 'vip', '浅梦'],
+  stale_groups: ['反重力的哈基米'],
 }
 
 const PLANS = [
@@ -157,7 +161,7 @@ function inputByLabel(label: string): HTMLInputElement | null {
 }
 
 describe('合规门', () => {
-  test('未确认时三个邀请类输入框禁用并说明原因，消费返那一格照常可写', async () => {
+  test('未确认时注册奖输入框禁用并说明原因，消费返那一格照常可写', async () => {
     const screen = await mountConfig()
     const text = screen.text()
     assert.ok(
@@ -165,20 +169,16 @@ describe('合规门', () => {
       '缺「需先确认支付合规声明」'
     )
 
-    for (const key of [
-      'invite_topup_bps',
-      'invite_redeem_bps',
-      'invite_register_stardust',
-    ]) {
-      const field = inputByLabel(zh[`qy_sdadm_cfg_k_${key}`])
-      assert.ok(field != null, `找不到 ${key} 的输入框`)
-      assert.equal(field.disabled, true, `${key} 应当被禁用`)
-    }
+    const register = inputByLabel(zh.qy_sdadm_cfg_k_invite_register_stardust)
+    assert.ok(register != null, '找不到注册奖的输入框')
+    assert.equal(register.disabled, true, '注册奖应当被禁用')
     const consume = inputByLabel(zh.qy_sdadm_cfg_k_consume_bps)
     assert.ok(consume != null)
     assert.equal(consume.disabled, false, '消费返不受合规门约束')
     // 被运营覆盖过的键要说出来。
     assert.ok(text.includes(zh.qy_sdadm_cfg_overridden), '覆盖提示没渲染')
+    // 下线充值 / 兑换码 / 消费返只走推广佣金：这一页要指过去，而不是自己再给一套比例。
+    assert.ok(text.includes(zh.qy_sdadm_cfg_invite_moved), '缺「下线返在佣金配置里」的说明')
   })
 })
 
@@ -222,7 +222,7 @@ describe('只提交改动键', () => {
 })
 
 describe('分组比例', () => {
-  test('null 印成「沿用全站」，数字带百分数', async () => {
+  test('null 印成「沿用全站」，数字带百分数，误配在模型分组上的行标红', async () => {
     const screen = await mountConfig()
     const text = screen.text()
     assert.ok(text.includes('vip'), '分组名没渲染')
@@ -232,6 +232,23 @@ describe('分组比例', () => {
       'null 没有印成「沿用全站」'
     )
     assert.ok(text.includes('0(0%)'), '显式的 0 必须与 null 分开印')
+    assert.ok(
+      text.includes(zh.qy_sdadm_gr_stale),
+      '挂在非用户分组上的行没有标出来'
+    )
+  })
+
+  test('新增一档时下拉只给还没配过的用户分组，没有模型分组', async () => {
+    const screen = await mountConfig()
+    assert.ok(await screen.click(zh.qy_sdadm_gr_add), '找不到新增按钮')
+    // 页面上还有套餐返还的下拉：只看新增弹窗里的那一个。
+    const select = document.body.querySelector('[role="dialog"] select')
+    assert.ok(select != null, '新增弹窗里没有分组下拉')
+    const options = [...select.querySelectorAll('option')].map(
+      (node) => node.value
+    )
+    assert.deepEqual(options, ['default', '浅梦'], 'vip / svip 已配过，模型分组不在清单里')
+    assert.ok(screen.text().includes(zh.qy_sdadm_gr_group_hint), '缺「只列用户分组」的说明')
   })
 })
 

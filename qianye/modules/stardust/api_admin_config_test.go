@@ -28,7 +28,7 @@ func TestAdminConfigGetFiveSectionsAndPutSparsePatch(t *testing.T) {
 	eff, ok := data["effective"].(map[string]any)
 	require.True(t, ok)
 	assert.EqualValues(t, 10_000, eff[keyConsumeBps])
-	assert.EqualValues(t, 0, eff[keyInviteTopupBps], "合规未确认时邀请类按 0 下发")
+	assert.EqualValues(t, 0, eff[keyInviteRegisterStardust], "合规未确认时注册奖按 0 下发")
 	keys, ok := data["editable_keys"].([]any)
 	require.True(t, ok)
 	assert.Len(t, keys, len(editableKeys))
@@ -47,7 +47,6 @@ func TestAdminConfigGetFiveSectionsAndPutSparsePatch(t *testing.T) {
 	assert.EqualValues(t, 300, yaml["settle_interval_seconds"])
 	assert.EqualValues(t, 5000, yaml["max_manual_adjust"])
 	assert.Equal(t, true, yaml["exclude_subscription_consume"])
-	assert.Equal(t, true, yaml["exclude_manual_topup"])
 	assert.Equal(t, false, yaml["compliance_confirmed"])
 
 	// 稀疏保存:数字、带空白的字符串、字符串形式的布尔都收。
@@ -83,7 +82,8 @@ func TestAdminConfigPutRejectionsLeaveAnAuditTrail(t *testing.T) {
 		body string
 		code string
 	}{
-		{"合规未确认时邀请类正值", `{"invite_topup_bps": 5}`, codeComplianceRequired},
+		{"合规未确认时注册奖正值", `{"invite_register_stardust": 5}`, codeComplianceRequired},
+		{"已下线的星屑侧下线返", `{"invite_topup_bps": 5}`, codeBadSetting},
 		{"白名单之外的键", `{"max_manual_adjust": 1}`, codeBadSetting},
 		{"比例越界", `{"consume_bps": 10000001}`, codeBadSetting},
 		{"请求体不是对象", `[1,2]`, codeBadRequest},

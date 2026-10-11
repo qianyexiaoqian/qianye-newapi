@@ -147,16 +147,6 @@ function ForecastBody(props: { forecast: QyStardustForecast }) {
         baseLabel={t('qy_sd_fc_base_mine')}
         line={f.consume}
       />
-      {/* 下线消费返只在它对我成立时出现：功能关着、或我这一档比例是 0 时，
-          摆一行永远为 0 的数只会让人以为是坏了。 */}
-      {f.invite.applies && (
-        <ForecastLine
-          label={t('qy_sd_kind_invite_consume')}
-          baseLabel={t('qy_sd_fc_base_invitees')}
-          line={f.invite}
-          note={f.invite.counted ? undefined : t('qy_sd_fc_invitees_too_many')}
-        />
-      )}
       <p className='text-muted-foreground text-xs'>
         {t('qy_sd_fc_as_of', { time: formatQyTs(f.computed_at) })}
       </p>
@@ -176,7 +166,6 @@ function ForecastLine(props: {
   label: string
   baseLabel: string
   line: QyStardustForecastLine
-  note?: string
 }) {
   const { t } = useTranslation()
   const unit = useStardustName()
@@ -198,9 +187,6 @@ function ForecastLine(props: {
       <QyKeyValue label={t('qy_sd_fc_line_estimated', { line: props.label })}>
         <QySdAmount amount={props.line.estimated} signed />
       </QyKeyValue>
-      {props.note != null && (
-        <p className='text-muted-foreground pt-1 text-xs'>{props.note}</p>
-      )}
     </div>
   )
 }

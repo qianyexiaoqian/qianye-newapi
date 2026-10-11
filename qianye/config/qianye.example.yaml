@@ -230,7 +230,7 @@ invite:
   #
   # 它一个人同时决定三件事,这正是它存在的理由 —— 这三处必须永远同源,
   # 否则"今天结算的"会是横跨两个自然日的半截数据:
-  #   1. 星屑消费返与下线消费返的日桶 bucket_date(它进了唯一键)
+  #   1. 星屑消费返与推广佣金的日桶 bucket_date(它进了唯一键)
   #   2. 星屑日结的「今天」与开跑时刻(日界 + stardust.settle_delay_minutes)
   #   3. 管理端「下线日消费」报表的区间
   #
@@ -250,10 +250,8 @@ invite:
 # ⚠ 佣金以**星屑**结算(D-16),因此 enabled: true 时 stardust.enabled 也必须为 true,
 #   否则启动即拒绝 —— 佣金算得出来却无处可发。
 #
-# ⚠ 本段的三档(充值 / 消费 / 兑换码)与 stardust 的 invite_topup_bps /
-#   invite_consume_bps / invite_redeem_bps 打的是**同一笔基数**。两边同时为正,
-#   同一笔下线消费会给上线落两笔星屑。要哪一条线自己选,把另一条置 0;
-#   都留着不是 bug,但那是你的决定,管理端健康面板会把重叠标出来。
+# ⚠ 下线充值 / 消费 / 兑换码带来的返还**只走本段**。星屑侧(stardust 段)只保留
+#   注册奖与套餐返上线,不再有按同一笔基数计返的 invite_*_bps(那会给上线落两笔星屑)。
 commission:
   enabled: false
   # 计佣比例,单位万分比(1000 = 10%)。管理端「佣金配置」里改的是百分比,同一尺度。
@@ -674,14 +672,7 @@ stardust:
   settle_delay_minutes: 30
   settle_interval_seconds: 300        # 调度心跳:每次心跳只回答"昨天这一次跑过了没有"
   held_alert_days: 7                  # 暂缓桶(透支 / 注销 / 封禁账号)的积龄告警阈值,0 = 不告警
-  invite_topup_bps: 0                 # 下线充值时给邀请人的比例(万分比),0 = 关;受支付合规门约束
-  invite_redeem_bps: 0                # 下线用余额兑换码时给邀请人的比例
-  # 下线当日消费给邀请人的比例(万分比):按**邀请人自己的分组**取档,在日结里与消费返
-  # 同一次 run 结给邀请人;按分组的覆盖在管理端「星屑配置 → 分组档」。0 = 关;受支付合规门约束。
-  invite_consume_bps: 0
   invite_register_stardust: 0         # 被邀请人注册时给邀请人的固定星屑,0 = 关
-  exclude_manual_topup: true          # 管理员补单不给邀请人返(stardust 自己的键)
-  topup_scan_interval_seconds: 60     # 充值扫描周期(游标存在 qy_kv;首启不补历史)
   max_manual_adjust: 100000           # 管理员单次手调的绝对值上限(星屑)
 
 # ═══════════════════════════ 星屑商城 ═══════════════════════════

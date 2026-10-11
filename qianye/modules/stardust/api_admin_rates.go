@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/db"
 	"github.com/QuantumNous/new-api/qianye/groupname"
 	"github.com/QuantumNous/new-api/qianye/guard"
@@ -16,13 +17,12 @@ import (
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm/clause"
 )
 
-// api_admin_rates.go —— 两张按键覆盖的比例表:按用户分组的比例档(qy_sd_group_rate)
+// api_admin_rates.go —— 两张按键覆盖的比例表:按用户分组的消费返比例档(qy_sd_group_rate)
 // 与套餐上的返还定义(qy_sd_plan_reward)。
 //
 // 两张表都是"改一次就改变此后每一笔返还"的配置,所以每个写动作成功与失败各留一条审计,
@@ -48,26 +48,43 @@ func init() {
 	})
 }
 
-// knownGroups 返回可配比例档的分组名集合,键已经 groupname.Normalize。
+// knownGroups 返回可配比例档的**用户分组**名集合,键已经 groupname.Normalize。
 //
-// 口径与 usergroup/groups.go 的 groupExists 同源:分组倍率表(GroupRatio 的键)∪
-// 用户分组登记表(qy_user_groups,经 service.QyDeclaredUserGroups),去掉 auto ——
-// 那是令牌的伪分组,users.group 里不会有它。GET 下发的 groups 与 PUT 的判据都取自
-// 这一个函数:两份清单各列一遍的表现永远是同一种,下拉里选得到、保存时报"未登记"。
-// 两份清单都是内存查找,没有 I/O。
-func knownGroups() map[string]bool {
+// 比例按账号自己的 users.group 取档(settle.go 的 consumeRateFor),所以这里只列用户分组:
+// 用户分组登记表(qy_user_groups,经 service.QyDeclaredUserGroups)∪ 当前确有账号在用的
+// users.group 取值(登记表之前就跑着的历史分组也得能配)。
+//
+// **不**并入分组倍率表(GroupRatio)的键:那是模型分组 —— 渠道池子的兜底价,由「模型分组」
+// 页编辑。并进来的后果是下拉里混着「反重力的哈基米」这类模型分组,运营给它配一档比例,
+// 而 users.group 永远不会等于它,那一行一个人都不命中,界面却显示"已配置"。
+// 去掉 auto:那是令牌的伪分组。
+//
+// GET 下发的 groups 与 PUT 的判据都取自这一个函数:两份清单各列一遍的表现永远是同一种,
+// 下拉里选得到、保存时报"未登记"。
+func knownGroups(ctx context.Context) (map[string]bool, error) {
 	out := map[string]bool{}
-	for name := range ratio_setting.GetGroupRatioCopy() {
+	add := func(name string) {
 		if n := groupname.Normalize(name); n != "" && n != "auto" {
 			out[n] = true
 		}
 	}
 	for _, name := range service.QyDeclaredUserGroups() {
-		if n := groupname.Normalize(name); n != "" && n != "auto" {
-			out[n] = true
-		}
+		add(name)
 	}
-	return out
+	if model.DB == nil {
+		return out, nil
+	}
+	// group 是保留字:交给 Pluck 以列名(clause.Column)生成,GORM 按方言加引号;
+	// Model(&model.User{}) 自带软删除过滤。
+	var used []string
+	if err := model.DB.WithContext(ctx).Model(&model.User{}).
+		Distinct().Pluck("group", &used).Error; err != nil {
+		return nil, wrapInternal("读取在用的用户分组", err)
+	}
+	for _, name := range used {
+		add(name)
+	}
+	return out, nil
 }
 
 // writeConfigUpdateAudit 是本文件全部写动作的审计出口,成功与失败同一出口。
@@ -95,19 +112,31 @@ func handleListGroupRates(c *gin.Context) {
 		respondErr(c, wrapInternal("读取分组比例档", err))
 		return
 	}
-	known := knownGroups()
+	known, err := knownGroups(ctx)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
 	groups := make([]string, 0, len(known))
 	for name := range known {
 		groups = append(groups, name)
 	}
 	sort.Strings(groups)
-	respondOK(c, gin.H{"items": rows, "groups": groups})
+	// stale_groups:已配的行里挂在非用户分组上的(例如以前从下拉里误选的模型分组)。
+	// 它们一个人都不会命中,界面据此标红并提示删除,而不是让它们继续显示成"已配置"。
+	stale := make([]string, 0)
+	for _, row := range rows {
+		if !known[row.UserGroup] {
+			stale = append(stale, row.UserGroup)
+		}
+	}
+	respondOK(c, gin.H{"items": rows, "groups": groups, "stale_groups": stale})
 }
 
 // handlePutGroupRate 整行 upsert 一个分组的比例档。
 //
 // 分组名必须在 knownGroups 里:让"比例行挂在一个不存在的分组名上"不可能出现 ——
-// 那样的行永远不会命中,而运营会一直以为自己配了。四个比例都是指针三态:
+// 那样的行永远不会命中,而运营会一直以为自己配了。比例是指针三态:
 // 缺失 / null = 本档回落全站默认,0 = 显式不返。
 func handlePutGroupRate(c *gin.Context) {
 	if !guard.RequireAPI(c, guard.FlagStardust) {
@@ -115,40 +144,32 @@ func handlePutGroupRate(c *gin.Context) {
 	}
 	key := groupname.Normalize(c.Param("group"))
 	var req struct {
-		ConsumeBps       *int `json:"consume_bps"`
-		InviteTopupBps   *int `json:"invite_topup_bps"`
-		InviteRedeemBps  *int `json:"invite_redeem_bps"`
-		InviteConsumeBps *int `json:"invite_consume_bps"`
-		Enabled          bool `json:"enabled"`
+		ConsumeBps *int `json:"consume_bps"`
+		Enabled    bool `json:"enabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeConfigUpdateAudit(c, auditGroupRatePut, qymodel.ResultFail, "请求体解析失败: "+key, nil, nil)
 		respondErr(c, errBadRequest("请求参数不合法"))
 		return
 	}
-	if key == "" || !knownGroups()[key] {
-		writeConfigUpdateAudit(c, auditGroupRatePut, qymodel.ResultFail, "分组未登记: "+key, nil, nil)
+	ctx := c.Request.Context()
+	known, err := knownGroups(ctx)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	if key == "" || !known[key] {
+		writeConfigUpdateAudit(c, auditGroupRatePut, qymodel.ResultFail, "不是用户分组: "+key, nil, nil)
 		respondErr(c, errGroupUnknown)
 		return
 	}
-	for _, item := range []struct {
-		name  string
-		value *int
-	}{
-		{"consume_bps", req.ConsumeBps},
-		{"invite_topup_bps", req.InviteTopupBps},
-		{"invite_redeem_bps", req.InviteRedeemBps},
-		{"invite_consume_bps", req.InviteConsumeBps},
-	} {
-		if item.value != nil && (*item.value < 0 || *item.value > maxBps) {
-			reason := item.name + " 必须落在 [0, " + strconv.Itoa(maxBps) + "],收到 " + strconv.Itoa(*item.value)
-			writeConfigUpdateAudit(c, auditGroupRatePut, qymodel.ResultFail, reason+"(分组 "+key+")", nil, nil)
-			respondErr(c, errBadRequest(reason))
-			return
-		}
+	if req.ConsumeBps != nil && (*req.ConsumeBps < 0 || *req.ConsumeBps > maxBps) {
+		reason := "consume_bps 必须落在 [0, " + strconv.Itoa(maxBps) + "],收到 " + strconv.Itoa(*req.ConsumeBps)
+		writeConfigUpdateAudit(c, auditGroupRatePut, qymodel.ResultFail, reason+"(分组 "+key+")", nil, nil)
+		respondErr(c, errBadRequest(reason))
+		return
 	}
 
-	ctx := c.Request.Context()
 	gdb := db.Get()
 	if gdb == nil {
 		respondErr(c, db.ErrNotReady)
@@ -160,15 +181,12 @@ func handlePutGroupRate(c *gin.Context) {
 		return
 	}
 	row := GroupRate{
-		UserGroup: key, ConsumeBps: req.ConsumeBps, InviteTopupBps: req.InviteTopupBps,
-		InviteRedeemBps: req.InviteRedeemBps, InviteConsumeBps: req.InviteConsumeBps, Enabled: req.Enabled,
+		UserGroup: key, ConsumeBps: req.ConsumeBps, Enabled: req.Enabled,
 		OperatorId: c.GetInt("id"), UpdatedAt: common.GetTimestamp(),
 	}
 	err = gdb.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "user_group"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"consume_bps", "invite_topup_bps", "invite_redeem_bps", "invite_consume_bps", "enabled", "operator_id", "updated_at",
-		}),
+		Columns:   []clause.Column{{Name: "user_group"}},
+		DoUpdates: clause.AssignmentColumns([]string{"consume_bps", "enabled", "operator_id", "updated_at"}),
 	}).Create(&row).Error
 	if err != nil {
 		db.MarkFailure(err)

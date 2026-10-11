@@ -112,7 +112,7 @@ export type QyStardustLedgerParams = QyPageParams & {
 }
 
 /**
- * 「明日预计到账」的一条获得线（消费返 / 下线消费返）。
+ * 「明日预计到账」的获得线（消费返）。
  *
  * 四个中间量与结算那一步逐字对应：`base_quota` 是**额度**口径的基数，`gross` 是
  * decimal 字符串的全精度计提，`carry` 是上一次结算留下的零头，`estimated` 才是
@@ -124,14 +124,6 @@ export type QyStardustForecastLine = {
   gross: string
   carry: string
   estimated: number
-}
-
-/** 下线消费返那一条线，多两个"这条线成不成立"的旗标。 */
-export type QyStardustForecastInviteLine = QyStardustForecastLine & {
-  /** 邀请功能开着且我这一档比例 > 0。为 `false` 时整条线不展示。 */
-  applies: boolean
-  /** 下线太多（> 500）时后端不扫日志：`false` 表示"没统计"，不是"没有"。 */
-  counted: boolean
 }
 
 /**
@@ -154,8 +146,7 @@ export type QyStardustForecast = {
   /** 非空表示明天一颗都不会到账，取值同 {@link QyStardustHoldReason}。 */
   hold_reason: QyStardustHoldReason
   consume: QyStardustForecastLine
-  invite: QyStardustForecastInviteLine
-  /** 两条线**各自取整后**相加，不是两笔计提相加再取整。 */
+  /** 恒等于 `consume.estimated`：下线带来的返还只走推广佣金（有持有期，不是"明天到账"）。 */
   estimated_total: number
 }
 

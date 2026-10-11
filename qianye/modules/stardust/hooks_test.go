@@ -5,62 +5,14 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/qianye/config"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// hooks_test.go —— 三个事件型获得途径。hook 体只做内存预过滤后经 guard.HotAsync 投递,
+// hooks_test.go —— 两个事件型获得途径(注册奖、套餐返)。hook 体只做内存预过滤后经 guard.HotAsync 投递,
 // 用例直接调 worker 里跑的 accrue* 函数:要钉住的是"给谁、给多少、幂等键是什么、
 // 什么情况下一颗都不给"。
-
-func TestAccrueRedeemPaysInviterOncePerRedemption(t *testing.T) {
-	env := newTaskEnv(t, func(s *config.Stardust) { s.InviteRedeemBps = 2000 })
-	withCompliance(t, true)
-	ctx := context.Background()
-	require.NoError(t, env.ext.Create(&GroupRate{UserGroup: "vip", InviteRedeemBps: bpsPtr(5000), Enabled: true}).Error)
-	invalidateGroupRates()
-	seedMainUser(t, env.main, model.User{Id: 301})
-	seedMainUser(t, env.main, model.User{Id: 302, InviterId: 301})
-	seedMainUser(t, env.main, model.User{Id: 303, InviterId: 304})
-	seedMainUser(t, env.main, model.User{Id: 304, InviterId: 303})
-	seedMainUser(t, env.main, model.User{Id: 305})
-	seedMainUser(t, env.main, model.User{Id: 306, Group: "vip"})
-	seedMainUser(t, env.main, model.User{Id: 307, InviterId: 306})
-
-	const face = int64(10_000_000) // $20 面额的余额码
-	require.NoError(t, accrueRedeem(ctx, 302, 7, face))
-	require.NoError(t, accrueRedeem(ctx, 302, 7, face), "同一次兑换投递两次")
-	l := ledgerOf(t, env.ext, 301)
-	require.Len(t, l, 1)
-	assert.Equal(t, string(KindInviteRedeem), l[0].Kind)
-	assert.EqualValues(t, 4, l[0].Amount, "全站 20%:$20 → 4 星屑")
-	assert.Equal(t, redeemIdemScope, l[0].IdemScope)
-	assert.Equal(t, "redeem:7", l[0].IdemKey)
-	assert.Equal(t, "redemption", l[0].RefType)
-	assert.Equal(t, "7", l[0].RefNo)
-	assert.Equal(t, 302, l[0].PeerUserId)
-	assert.Equal(t, 2000, l[0].RateBps)
-	assert.Equal(t, "default", l[0].RateGroup)
-	assert.EqualValues(t, face, l[0].BaseQuota)
-
-	require.NoError(t, accrueRedeem(ctx, 307, 8, face))
-	l = ledgerOf(t, env.ext, 306)
-	require.Len(t, l, 1)
-	assert.EqualValues(t, 10, l[0].Amount, "上线在 vip 档:50%")
-	assert.Equal(t, 5000, l[0].RateBps)
-	assert.Equal(t, "vip", l[0].RateGroup)
-
-	require.NoError(t, accrueRedeem(ctx, 304, 9, face))
-	assert.Empty(t, ledgerOf(t, env.ext, 303), "互邀环路被拉黑")
-	require.NoError(t, accrueRedeem(ctx, 305, 10, face))
-	assert.EqualValues(t, 2, ledgerCount(t, env.ext), "没有上线、被拉黑:都不记账")
-
-	withCompliance(t, false)
-	require.NoError(t, accrueRedeem(ctx, 302, 11, face))
-	assert.EqualValues(t, 2, ledgerCount(t, env.ext), "合规未确认:全站与分组档一律按 0 生效")
-}
 
 func TestAccrueRegisterPaysFixedRewardOnce(t *testing.T) {
 	env := newTaskEnv(t, nil) // invite_register_stardust = 50

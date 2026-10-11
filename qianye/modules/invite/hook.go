@@ -5,7 +5,7 @@ import "github.com/QuantumNous/new-api/model"
 // installHooks 把实现注入上游 model 包的 hook 变量。
 // 调用时机在 qianye.Init(),早于任何 HTTP 请求与后台协程。
 func installHooks() {
-	// 兑换码事件的单槽变量由本包占着,再转发给星屑(见 AfterRedeemSuccess)。
+	// 兑换码事件的单槽变量由本包占着,再转发给推广佣金(见 AfterRedeemSuccessCommission)。
 	// 本包自己对这个事件已经没有任何动作 —— 保留这一层只是为了让占槽方与
 	// 转发槽的所有权在一个地方说清楚。
 	model.QyOnRedeemSuccess = onRedeemSuccess
@@ -17,11 +17,9 @@ func installHooks() {
 
 // onRedeemSuccess 是余额兑换码兑换成功的入口,只做转发。
 //
-// 不设任何早退:这里没有本包自己的开关可判(invite.enabled 由星屑侧的
-// InviteeEligible 在真正发放前判),多一道闸只会让星屑的兑换码返多一个
-// 无人知晓的关闭条件。位置由 qianye/stardust_hookpoint_guard_test.go 钉住。
+// 不设任何早退:这里没有本包自己的开关可判(佣金自己判 commission.enabled,
+// invite.enabled 由 InviteeEligible 在真正计佣前判),多一道闸只会让兑换码佣金
+// 多一个无人知晓的关闭条件。位置由 qianye/stardust_hookpoint_guard_test.go 钉住。
 func onRedeemSuccess(userId int, redemptionId int, quota int) {
-	AfterRedeemSuccess(userId, redemptionId, quota)
-	// 星辉佣金(D-15)是并行的第二条线,各自判各自的开关。
 	AfterRedeemSuccessCommission(userId, redemptionId, quota)
 }

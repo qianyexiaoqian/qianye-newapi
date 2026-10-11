@@ -23,9 +23,8 @@ import (
 // 要到 nextDayStart(now) + settle_delay 才发。这一条接口回答的就是那一刻会到多少 ——
 // 用户端此前只看得见"昨天发了多少",于是每一个白天都在盯一个不会动的数字。
 //
-// 两条线都算(D-16「两条线都发星屑」):消费返按我自己的消费,下线消费返按我名下
-// 绑定中、未拉黑的下线的消费。两条在同一次运行里结、各自 floor、各自结转,所以
-// 这里也分开算再相加 —— 把两笔 gross 先加起来再取整会比账本多发一颗星屑。
+// 只算消费返这一条线(按我自己的消费)。下线带来的返还只走推广佣金,那条线有持有期、
+// 不是"明天到账",它的待结算与预计入账时间在推广页的佣金卡上。
 //
 // **它是估算,不是账**:口径与日结逐字相同(aggregateDayConsume 的排除项、grossOf 的
 // 截断、floor(carry + Σgross)),但四个输入在结算之前都还会变 —— 今天还没过完、
@@ -34,8 +33,8 @@ import (
 //
 // # 为什么要缓存
 //
-// 消费聚合打的是 LOG_DB,而下线那一段还要按最多 500 个 user_id 扫一遍。余额页是
-// 星屑宿主的第一张标签、每次进星屑都会打开,不缓存等于把一次日结级别的聚合挂在
+// 消费聚合打的是 LOG_DB。余额页是星屑宿主的第一张标签、每次进星屑都会打开,
+// 不缓存等于把一次日结级别的聚合挂在
 // 一个人人都会点的页面上。所以:进程内缓存一小时(forecastTTL),到期后下一次请求
 // 自己重算;用户可以手动刷新(?refresh=1),但两次真正的重算之间至少隔
 // forecastManualMinSecs —— 否则那颗按钮就是一个人人可按的 LOG_DB 压测器。
@@ -61,7 +60,7 @@ const (
 // 还是 0"没有答案 —— 答案通常是零头还没攒够 1 颗。
 //
 // 没有 json 标签:下发的形状由 handleGetForecast 的 gin.H 写死(照 handleGetMe),
-// 因为下线那一条线还要多带 applies / counted 两个旗标,两条线不是同一个 JSON 形状。
+// 与上游其它下发接口同一种写法。
 type forecastLine struct {
 	BaseQuota int64
 	RateBps   int
@@ -82,14 +81,7 @@ type forecastData struct {
 	ComputedAt int64
 	HoldReason string
 	Consume    forecastLine
-	Invite     forecastLine
-	// InviteApplies 表示下线消费返这条线对我生效(邀请功能开着且我这一档比例 > 0)。
-	// 不生效时不扫 LOG_DB,界面上整条线不出现。
-	InviteApplies bool
-	// InviteCounted 为假表示下线太多(> maxPendingInvitees),这一次没扫 ——
-	// 与"扫了、是 0"必须分得开,否则界面会把"没算"说成"没有"。
-	InviteCounted bool
-	Total         int64
+	Total      int64
 }
 
 var (
@@ -137,15 +129,6 @@ func handleGetForecast(c *gin.Context) {
 			"carry":      data.Consume.Carry.String(),
 			"estimated":  data.Consume.Estimated,
 		},
-		"invite": gin.H{
-			"applies":    data.InviteApplies,
-			"counted":    data.InviteCounted,
-			"base_quota": data.Invite.BaseQuota,
-			"rate_bps":   data.Invite.RateBps,
-			"gross":      data.Invite.Gross.String(),
-			"carry":      data.Invite.Carry.String(),
-			"estimated":  data.Invite.Estimated,
-		},
 		"estimated_total": data.Total,
 	})
 }
@@ -177,7 +160,7 @@ func forecastFor(ctx context.Context, userId int, force bool) (forecastData, err
 }
 
 // computeForecast 算一份估算。全程只读:主库快照一次、扩展库余额行一次、
-// LOG_DB 今日聚合一到两次。
+// LOG_DB 今日聚合一次。
 func computeForecast(ctx context.Context, userId int, now int64) (forecastData, error) {
 	delay := config.Get().Stardust.SettleDelayMinutes
 	if delay < 0 {
@@ -222,34 +205,12 @@ func computeForecast(ctx context.Context, userId int, now int64) (forecastData, 
 	}
 	out.Consume.Gross = grossOf(out.Consume.BaseQuota, out.Consume.RateBps, qpu)
 
-	// 下线消费返:功能关着、或我这一档比例是 0(含合规门未确认)时整条线不成立,
-	// 一次 LOG_DB 都不扫。
-	out.Invite = forecastLine{Carry: bal.InviteCarry, Gross: decimal.Zero}
-	if guard.Feature(guard.FlagInvite) {
-		out.Invite.RateBps = inviteConsumeRateFor(ctx, snap.Group)
-	}
-	if out.Invite.RateBps > 0 {
-		out.InviteApplies = true
-		rows, counted, err := pendingTodayInviteeConsume(ctx, userId, now)
-		if err != nil {
-			return forecastData{}, wrapInternal("汇总下线今日消费", err)
-		}
-		out.InviteCounted = counted
-		// 逐个下线取整再求和,而不是把基数加起来再算一次:日结落的是一对
-		// (邀请人, 下线) 一桶,每一桶各自截断到 10 位小数(recomputeInviteDay)。
-		for _, r := range rows {
-			out.Invite.BaseQuota += r.BaseQuota
-			out.Invite.Gross = out.Invite.Gross.Add(grossOf(r.BaseQuota, out.Invite.RateBps, qpu))
-		}
-	}
-
 	// 暂缓中的账号明天一颗都拿不到:三种原因都不 Credit(§4.1 步骤 3),
 	// 计提照常发生但要等账号恢复。基数与计提照样下发,界面据此解释"算了、没发"。
 	if out.HoldReason == "" {
 		out.Consume.Estimated = floorToStardust(out.Consume.Carry.Add(out.Consume.Gross))
-		out.Invite.Estimated = floorToStardust(out.Invite.Carry.Add(out.Invite.Gross))
 	}
-	out.Total = out.Consume.Estimated + out.Invite.Estimated
+	out.Total = out.Consume.Estimated
 	return out, nil
 }
 
