@@ -177,7 +177,9 @@ func (GroupRate) TableName() string { return "qy_sd_group_rate" }
 type PlanReward struct {
 	// PlanId 是主库 subscription_plans.id 的软引用;autoIncrement:false 的理由同 Balance.UserId。
 	PlanId int `json:"plan_id" gorm:"primaryKey;autoIncrement:false"`
-	// BuyerBps / InviterBps:0 = 不返;10000 = 按售价 1:1。
+	// BuyerBps:0 = 不返;10000 = 按售价 1:1。
+	// InviterBps 已停用:上线的套餐返移到了推广佣金(按在线 / 余额 / 兑换码三档)。列保留不删,
+	// 新写入一律为 0,读路径不再看它。
 	BuyerBps   int `json:"buyer_bps" gorm:"not null;default:0"`
 	InviterBps int `json:"inviter_bps" gorm:"not null;default:0"`
 	// Sources 是逗号分隔的触发来源,取值只能是 planRewardSources 这个闭集的子集

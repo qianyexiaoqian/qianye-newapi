@@ -58,8 +58,11 @@ import type { QyStardustBound, QyStardustPlanReward } from '../types'
  * 「套餐返还」—— 单个套餐买了之后返多少（`qy_sd_plan_reward`）。
  *
  * 一次只编辑一个套餐：先选套餐（下拉从上游套餐清单来，也可以直接填 plan_id），
- * 再改买家比例 / 上线比例 / 来源。没配过的套餐显示默认口径（买家 1:1、上线 0、
- * 只有 order + balance 两个来源返），并明说"这是默认，不是你配的"。
+ * 再改买家比例 / 来源。没配过的套餐显示默认口径（买家 1:1、只有 order + balance
+ * 两个来源返），并明说"这是默认，不是你配的"。
+ *
+ * 这里只有**买家本人**那份。上线因下线买套餐得到的返利在「佣金配置」按在线 / 余额 /
+ * 兑换码三档分别配，不在这张卡上。
  *
  * 来源是四个固定复选项、不给自由文本：闭集之外的词后端整个拒绝
  * （`qy_sd_bad_source`），而且 `stardust`（商城自购）刻意不在里面 ——
@@ -181,11 +184,9 @@ function PlanRewardEditor(props: {
   const unit = useStardustName()
   const queryClient = useQueryClient()
   const buyerId = useId()
-  const inviterId = useId()
   const reward = props.reward
 
   const [buyer, setBuyer] = useState(String(reward.buyer_bps))
-  const [inviter, setInviter] = useState(String(reward.inviter_bps))
   const [sources, setSources] = useState<string[]>(reward.sources)
   const [resetOpen, setResetOpen] = useState(false)
 
@@ -193,7 +194,6 @@ function PlanRewardEditor(props: {
   // 基于过期基线再改一次。
   useEffect(() => {
     setBuyer(String(reward.buyer_bps))
-    setInviter(String(reward.inviter_bps))
     setSources(reward.sources)
   }, [reward])
 
@@ -206,7 +206,6 @@ function PlanRewardEditor(props: {
     mutationFn: () =>
       putQyStardustPlanReward(reward.plan_id, {
         buyer_bps: qySdParseDraftText(buyer) ?? 0,
-        inviter_bps: qySdParseDraftText(inviter) ?? 0,
         sources,
       }),
     onSuccess: async () => {
@@ -235,8 +234,7 @@ function PlanRewardEditor(props: {
     return value
   }
   const buyerValue = parseBps(buyer)
-  const inviterValue = parseBps(inviter)
-  const invalid = buyerValue == null || inviterValue == null
+  const invalid = buyerValue == null
   // 一个来源都不勾时后端会按默认口径（order + balance）存 —— 那与运营看到的
   // 空勾选框对不上，所以这里直接不让保存，而不是让它静默变成默认。
   const noSource = sources.length === 0
@@ -275,15 +273,6 @@ function PlanRewardEditor(props: {
           parsed={buyerValue}
           bound={props.bpsBound}
           onChange={setBuyer}
-        />
-        <BpsField
-          id={inviterId}
-          label={t('qy_sdadm_pr_inviter_bps')}
-          hint={t('qy_sdadm_pr_inviter_hint')}
-          value={inviter}
-          parsed={inviterValue}
-          bound={props.bpsBound}
-          onChange={setInviter}
         />
       </div>
 

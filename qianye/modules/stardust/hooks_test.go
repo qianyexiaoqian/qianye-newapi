@@ -51,7 +51,7 @@ func TestAccruePlanGrantFollowsPlanRewardDefinition(t *testing.T) {
 	seedMainUser(t, env.main, model.User{Id: 321})
 	seedMainUser(t, env.main, model.User{Id: 322, InviterId: 321})
 
-	// 没配过的套餐:按售价 1:1 返买家、不返上线、只有 order / balance 两条来源。
+	// 没配过的套餐:按售价 1:1 返买家、只有 order / balance 两条来源。
 	order := model.QySubscriptionGrant{UserId: 322, PlanId: 5, SubscriptionId: 9, Source: PlanSourceOrder, TradeNo: "SUB-1", PriceAmount: 10, Money: 8}
 	require.NoError(t, accruePlanGrant(ctx, order, 1_000))
 	require.NoError(t, accruePlanGrant(ctx, order, 2_000), "同一订单再投递一次")
@@ -80,7 +80,8 @@ func TestAccruePlanGrantFollowsPlanRewardDefinition(t *testing.T) {
 	require.NoError(t, accruePlanGrant(ctx, mall, 5_000))
 	assert.Len(t, ledgerOf(t, env.ext, 322), 2, "admin 默认不在来源里;商城自购永远不返")
 
-	// 配过的套餐:买家 50%、上线 25%、来源 admin + order。
+	// 配过的套餐:买家 50%、来源 admin + order。历史行里的 InviterBps 不再生效 ——
+	// 上线的套餐返已移到推广佣金。
 	require.NoError(t, savePlanReward(ctx, PlanReward{PlanId: 6, BuyerBps: 5000, InviterBps: 2500, Sources: "admin,order"}))
 	adminGrant := model.QySubscriptionGrant{UserId: 322, PlanId: 6, SubscriptionId: 10, Source: PlanSourceAdmin, PriceAmount: 20, Renewed: true}
 	require.NoError(t, accruePlanGrant(ctx, adminGrant, 6_000))
@@ -91,18 +92,9 @@ func TestAccruePlanGrantFollowsPlanRewardDefinition(t *testing.T) {
 	assert.Equal(t, "sub:admin10:6000", l[2].IdemKey)
 	assert.Equal(t, "10", l[2].RefNo)
 	assert.Equal(t, 5000, l[2].RateBps)
-	inv := ledgerOf(t, env.ext, 321)
-	require.Len(t, inv, 1)
-	assert.Equal(t, string(KindPlanInviter), inv[0].Kind)
-	assert.EqualValues(t, 5, inv[0].Amount)
-	assert.Equal(t, "sub:admin10:6000:inviter", inv[0].IdemKey)
-	assert.Equal(t, "10", inv[0].RefNo)
-	assert.Equal(t, 322, inv[0].PeerUserId)
-	assert.Equal(t, 2500, inv[0].RateBps)
-	assert.Equal(t, "default", inv[0].RateGroup)
-	assert.EqualValues(t, 10_000_000, inv[0].BaseQuota)
+	assert.Empty(t, ledgerOf(t, env.ext, 321), "星屑不再记 plan_inviter:上线那份走推广佣金")
 
 	redeemGrant := model.QySubscriptionGrant{UserId: 322, PlanId: 6, SubscriptionId: 11, Source: PlanSourceRedemption, RedemptionId: 3, PriceAmount: 20}
 	require.NoError(t, accruePlanGrant(ctx, redeemGrant, 7_000))
-	assert.EqualValues(t, 4, ledgerCount(t, env.ext), "redemption 不在这份套餐的来源里")
+	assert.EqualValues(t, 3, ledgerCount(t, env.ext), "redemption 不在这份套餐的来源里")
 }

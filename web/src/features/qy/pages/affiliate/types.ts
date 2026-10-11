@@ -163,6 +163,13 @@ export type QyCommissionSummary = {
     global_topup_percent: string
     global_consume_percent: string
     global_redemption_percent: string
+    /**
+     * 下线买套餐的三档（百分比字符串，只有全局档、不分分组）：在线支付 / 余额 / 套餐兑换码。
+     * 在线那档后端已把「没单独配就跟随充值档」算完。旧后端不下发时为 undefined。
+     */
+    plan_order_percent?: string
+    plan_balance_percent?: string
+    plan_redemption_percent?: string
   }
   /**
    * 名下还没被结算吸收的计佣行里**最早的那个成熟时刻**（unix 秒）。0 表示没有

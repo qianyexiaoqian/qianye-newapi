@@ -243,7 +243,18 @@ func accrueTopUp(ctx context.Context, t *model.TopUp) error {
 	if !operation_setting.IsPaymentComplianceConfirmed() {
 		return nil
 	}
-	if invite.ExcludedTopUp(t, config.Get().Commission.ExcludeRedemptionAndManual) {
+	if invite.ExcludedTopUp(t, effective().ExcludeRedemptionAndManual) {
+		return nil
+	}
+	// 在线买套餐的付费单也会在 top_ups 里留一行(upsertSubscriptionTopUpTx)。它改由
+	// 套餐购买事件按「在线支付买套餐」那档计佣(plan.go),这里必须跳过,否则同一笔
+	// 付款计两次。判据是 subscription_orders 里有同一个 trade_no —— 两行在同一个
+	// 事务里写入,不存在一边有一边没有的窗口。读失败返回错误,游标钉在这一笔之前重试。
+	isPlan, err := isSubscriptionTopUp(ctx, t)
+	if err != nil {
+		return err
+	}
+	if isPlan {
 		return nil
 	}
 	baseQuota, money := invite.TopUpBaseQuota(t)
@@ -374,4 +385,22 @@ func saveKV(key string, v int64) error {
 		db.MarkFailure(err)
 	}
 	return err
+}
+
+// isSubscriptionTopUp 回答一笔充值单是不是订阅付费单:subscription_orders 里有同一个
+// trade_no。
+//
+// 先按形状预筛:订阅付费单只由 upsertSubscriptionTopUpTx 写入,Amount 恒为 0、
+// payment_provider 恒为空。其余形状的充值单(绝大多数)不回主库。
+func isSubscriptionTopUp(ctx context.Context, t *model.TopUp) (bool, error) {
+	tradeNo := t.TradeNo
+	if t.Amount != 0 || t.PaymentProvider != "" || tradeNo == "" || model.DB == nil {
+		return false, nil
+	}
+	var n int64
+	if err := model.DB.WithContext(ctx).Model(&model.SubscriptionOrder{}).
+		Where("trade_no = ?", tradeNo).Count(&n).Error; err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }

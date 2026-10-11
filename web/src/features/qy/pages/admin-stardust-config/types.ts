@@ -130,14 +130,12 @@ export type QyStardustPlanRewardSource =
 export type QyStardustPlanReward = {
   plan_id: number
   buyer_bps: number
-  inviter_bps: number
   sources: QyStardustPlanRewardSource[]
-  /** false = 没配过，上面三项是默认值（buyer 10000 / inviter 0 / order+balance）。 */
+  /** false = 没配过，上面两项是默认值（buyer 10000 / order+balance）。 */
   exists: boolean
 }
 
 export type QyStardustPlanRewardInput = {
   buyer_bps: number
-  inviter_bps: number
   sources: QyStardustPlanRewardSource[]
 }

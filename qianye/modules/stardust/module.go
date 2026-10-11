@@ -28,7 +28,7 @@ func (Mod) InstallHooks() {
 		s := effective()
 		return map[string]any{"show_entry": s.ShowEntry, "name": s.Name}
 	}
-	// 上游事件的接管(model.QyOnUserRegistered / model.QyOnSubscriptionGranted)与
+	// 上游事件的接管(model.QyOnUserRegistered;套餐授予经 invite.AfterSubscriptionGranted 转发)与
 	// invite.PairRewardTotals 槽由 hooks.go / invite_stats.go 登记进 hookInstallers,这里只遍历。
 	for _, install := range hookInstallers {
 		install()

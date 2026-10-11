@@ -29,6 +29,9 @@ type consumeEvent struct {
 	InviteeId int
 	Quota     int64
 	At        int64
+	// Subscription 表示这笔扣的是订阅额度。要不要计佣由 worker 按运营开关
+	// exclude_subscription_consume 决定 —— 开关可在管理端改,而 relay 线程上不许读库。
+	Subscription bool
 }
 
 // installHooks 把实现注入上游 model 包与 invite 的转发槽。
@@ -38,6 +41,8 @@ func installHooks() {
 	model.QyOnTaskBillingLog = onTaskBillingLog
 	// 兑换码事件的单槽变量由 invite 占着,再转发给本包的槽。
 	invite.AfterRedeemSuccessCommission = onRedeemSuccess
+	// 套餐授予事件同理,由 invite 转发;套餐佣金见 plan.go。
+	invite.AfterSubscriptionGrantedCommission = onSubscriptionGranted
 	// 「下线带来多少」的三个汇总槽:下线返只走佣金,这些数字以计佣行为准(invite_slots.go)。
 	invite.PairCommissionTotals = pairCommissionTotals
 	invite.InviteAccrualByInvitee = consumeAccrualByInvitee
@@ -59,9 +64,6 @@ func onConsumeLog(c *gin.Context, userId int, params model.RecordConsumeLogParam
 	if hardExcluded(params) {
 		return
 	}
-	if cm.ExcludeSubscriptionConsume && isSubscriptionConsume(params.Other) {
-		return
-	}
 	// 负缓存命中即到此为止 —— 绝大多数用户没有邀请人,这是最热的分支,
 	// 全程一次 map 查找,不产生任何后续工作。
 	if invite.KnownWithoutInviter(userId) {
@@ -69,9 +71,10 @@ func onConsumeLog(c *gin.Context, userId int, params model.RecordConsumeLogParam
 	}
 
 	ev := consumeEvent{
-		InviteeId: userId,
-		Quota:     int64(params.Quota),
-		At:        common.GetTimestamp(),
+		InviteeId:    userId,
+		Quota:        int64(params.Quota),
+		At:           common.GetTimestamp(),
+		Subscription: isSubscriptionConsume(params.Other),
 	}
 	consumeEvents.Add(1)
 	guard.HotAsync("commission.consume", func(ctx context.Context) error {
@@ -128,6 +131,12 @@ func accrueConsume(ctx context.Context, ev consumeEvent) error {
 	}
 
 	s := effective()
+	// 订阅额度的消费:开关打开时不计佣 —— 套餐只在**购买**那一刻按套餐档计一次佣
+	// (plan.go),用套餐额度再消费不再重复计。
+	if ev.Subscription && s.ExcludeSubscriptionConsume {
+		accrualSkipped.Add(1)
+		return nil
+	}
 	// 绑定成熟期:防"注册即充值→拿佣金→退款"的一次性套利账号。
 	if s.MinInviteeAgeHours > 0 && match.InviteeCreated > 0 &&
 		ev.At-match.InviteeCreated < int64(s.MinInviteeAgeHours)*3600 {
@@ -174,10 +183,11 @@ func onRedeemSuccess(userId int, redemptionId int, quota int) {
 	if !cm.Enabled || quota <= 0 {
 		return
 	}
-	if cm.ExcludeRedemptionAndManual {
-		return
-	}
 	guard.HotAsync("commission.redeem", func(ctx context.Context) error {
+		// 开关可在管理端改,只能在 worker 里读(effective 可能查库)。
+		if effective().ExcludeRedemptionAndManual {
+			return nil
+		}
 		// 兑换码没有付款金额,金额域留空。
 		return accrueOneShot(ctx, userId, int64(quota), decimal.Zero, SourceRedemption,
 			redemptionIdemKey(redemptionId), "RD"+itoa(redemptionId))
@@ -207,13 +217,14 @@ func onTaskBillingLog(params model.RecordTaskBillingLogParams) {
 			return accrueConsume(ctx, ev)
 		})
 	case model.LogTypeRefund:
-		if !cm.RefundClawback {
-			return
-		}
 		// 幂等键必须在投递前定死:worker 重试时要复用同一个键,
 		// 否则一次退款会被冲正两次。
 		key := clawbackIdemKey(taskId, userId, quota)
 		guard.HotAsync("commission.task_refund", func(ctx context.Context) error {
+			// 开关可在管理端改,只能在 worker 里读。
+			if !effective().RefundClawback {
+				return nil
+			}
 			return clawback(ctx, userId, quota, key, taskId, "task refund")
 		})
 	}

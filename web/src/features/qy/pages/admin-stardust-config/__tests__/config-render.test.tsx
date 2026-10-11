@@ -19,8 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 /*
  * 星屑配置页在**真实渲染**上的四件事：
  *
- *  1. 合规门：`compliance_confirmed=false` 时注册奖输入框禁用、旁边写着
- *     「需先确认支付合规声明」，而消费返那一格照常可写。
+ *  1. 上线返利不在这一页：注册奖搬去了佣金配置，这一页只留一句指路；消费返照常可写。
  *  2. 只 PUT 改动键：改一格 → 保存 → 确认弹窗复述 `旧 → 新` → 确认 → 请求体里
  *     只有那一个键。全量提交会污染审计。
  *  3. 分组比例表：`null` 印成「沿用全站」而不是 0，数字带百分数；只能选用户分组。
@@ -130,7 +129,6 @@ function respond(request: QyProbeRequest) {
       data: {
         plan_id: 3,
         buyer_bps: 10_000,
-        inviter_bps: 0,
         sources: ['order', 'balance'],
         exists: false,
       },
@@ -160,25 +158,26 @@ function inputByLabel(label: string): HTMLInputElement | null {
   return field instanceof HTMLInputElement ? field : null
 }
 
-describe('合规门', () => {
-  test('未确认时注册奖输入框禁用并说明原因，消费返那一格照常可写', async () => {
+describe('上线返利搬去佣金配置', () => {
+  test('注册奖不在这一页渲染，指向佣金配置；消费返照常可写', async () => {
     const screen = await mountConfig()
     const text = screen.text()
-    assert.ok(
-      text.includes(zh.qy_sdadm_cfg_compliance_hint),
-      '缺「需先确认支付合规声明」'
-    )
 
-    const register = inputByLabel(zh.qy_sdadm_cfg_k_invite_register_stardust)
-    assert.ok(register != null, '找不到注册奖的输入框')
-    assert.equal(register.disabled, true, '注册奖应当被禁用')
+    assert.equal(
+      inputByLabel(zh.qy_sdadm_cfg_k_invite_register_stardust),
+      null,
+      '注册奖是给上线的返利，已搬去佣金配置'
+    )
     const consume = inputByLabel(zh.qy_sdadm_cfg_k_consume_bps)
     assert.ok(consume != null)
     assert.equal(consume.disabled, false, '消费返不受合规门约束')
     // 被运营覆盖过的键要说出来。
     assert.ok(text.includes(zh.qy_sdadm_cfg_overridden), '覆盖提示没渲染')
-    // 下线充值 / 兑换码 / 消费返只走推广佣金：这一页要指过去，而不是自己再给一套比例。
-    assert.ok(text.includes(zh.qy_sdadm_cfg_invite_moved), '缺「下线返在佣金配置里」的说明')
+    // 一切给上线的返利只在佣金配置：这一页要指过去，而不是自己再给一套比例。
+    assert.ok(
+      text.includes(zh.qy_sdadm_cfg_invite_moved),
+      '缺「上线返利在佣金配置里」的说明'
+    )
   })
 })
 
@@ -247,8 +246,15 @@ describe('分组比例', () => {
     const options = [...select.querySelectorAll('option')].map(
       (node) => node.value
     )
-    assert.deepEqual(options, ['default', '浅梦'], 'vip / svip 已配过，模型分组不在清单里')
-    assert.ok(screen.text().includes(zh.qy_sdadm_gr_group_hint), '缺「只列用户分组」的说明')
+    assert.deepEqual(
+      options,
+      ['default', '浅梦'],
+      'vip / svip 已配过，模型分组不在清单里'
+    )
+    assert.ok(
+      screen.text().includes(zh.qy_sdadm_gr_group_hint),
+      '缺「只列用户分组」的说明'
+    )
   })
 })
 
@@ -306,7 +312,6 @@ describe('套餐返还', () => {
     assert.equal(puts.length, 1)
     assert.deepEqual(puts[0].body, {
       buyer_bps: 10_000,
-      inviter_bps: 0,
       sources: ['order', 'balance', 'admin'],
     })
   })

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/qianye/config"
 
 	"github.com/shopspring/decimal"
@@ -24,6 +25,18 @@ import (
 // 星屑侧曾经有一个并列的 AfterRedeemSuccess(兑换码返),已随「下线返只走佣金」下线。
 // 由 commission.InstallHooks 赋值;依赖方向仍是 commission → invite。
 var AfterRedeemSuccessCommission = func(userId int, redemptionId int, quota int) {}
+
+// AfterSubscriptionGranted / AfterSubscriptionGrantedCommission 是套餐授予事件
+// (model.QyOnSubscriptionGranted,四条购买路径的事务提交之后)的两个转发槽。
+// 那个单槽变量由本包独占(hook.go installHooks),再无条件转发给两边:
+//   - 星屑(modules/stardust):买家本人的套餐返;
+//   - 推广佣金(modules/commission):上线按「在线 / 余额 / 兑换码」三档计的套餐佣金。
+//
+// 两边各自判自己的开关,依赖方向仍是 stardust / commission → invite。
+var (
+	AfterSubscriptionGranted           = func(g model.QySubscriptionGrant) {}
+	AfterSubscriptionGrantedCommission = func(g model.QySubscriptionGrant) {}
+)
 
 // UserGroupOf 回答一个账号**自己**的分组(users.group),给星辉佣金按上线分组取档用。
 //

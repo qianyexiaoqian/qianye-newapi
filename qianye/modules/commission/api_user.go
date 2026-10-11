@@ -103,8 +103,9 @@ func getSummary(c *gin.Context) {
 			"payout_day_offset":       payoutDayOffset(s.HoldingDays),
 			"credit_interval_seconds": cm.CreditIntervalSecs,
 			"day_offset_minutes":      invite.DayOffsetMinutes(),
-			"exclude_redemption":      cm.ExcludeRedemptionAndManual,
-			"exclude_subscription":    cm.ExcludeSubscriptionConsume,
+			// 两个开关可在管理端改,以运营参数(effective)为准,不是 YAML 基线。
+			"exclude_redemption":   s.ExcludeRedemptionAndManual,
+			"exclude_subscription": s.ExcludeSubscriptionConsume,
 		},
 	})
 }
@@ -142,6 +143,10 @@ func rateSummary(c *gin.Context, userId int, s opSettings) gin.H {
 		"global_topup_percent":      s.TopupRatePercent(),
 		"global_consume_percent":    s.ConsumeRatePercent(),
 		"global_redemption_percent": s.EffectiveRedemptionRatePercent(),
+		// 套餐购买三档只有全局档(不分分组):在线支付 / 余额购买 / 套餐兑换码。
+		"plan_order_percent":      config.FormatRatePercent(s.EffectivePlanOrderRateUnits()),
+		"plan_balance_percent":    config.FormatRatePercent(s.PlanBalanceRateUnits),
+		"plan_redemption_percent": config.FormatRatePercent(s.PlanRedemptionRateUnits),
 	}
 }
 

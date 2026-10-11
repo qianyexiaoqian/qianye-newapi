@@ -60,6 +60,9 @@ const SOURCE_OPTIONS = [
   'topup',
   'redemption',
   'consume',
+  'plan_order',
+  'plan_balance',
+  'plan_redemption',
   'clawback',
   'manual',
 ] as const

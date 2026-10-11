@@ -34,6 +34,7 @@ import {
 } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
@@ -52,8 +53,11 @@ import {
   qyUpdateCommissionConfig,
   qyUpsertCommissionGroupRate,
 } from './api'
+import { QyCmRegisterRewardCard } from './components/register-reward-card'
 import {
+  QY_COMMISSION_SECTIONS,
   qyCommissionFieldMeta,
+  qyCommissionSectionOf,
   qyIsValidNullablePercent,
   qyIsValidPercent,
   qyNormalizePercent,
@@ -73,8 +77,10 @@ import type {
  * **每一次保存都会在后端写审计**（费率直接决定平台出血速度），因此提交前
  * 强制二次确认并复述"改了哪几项、从多少到多少"。
  *
- * 页面分四块：全局默认费率与运营参数（含自动入账门槛 / 周期）、YAML 只读段、
- * 结算与入账调度、分组差异化费率表。比例一律以百分比呈现与提交，不出现任何
+ * 页面分五块：运营参数（按分区：给上线的下线充值 / 消费 / 兑换码比例、下线买套餐的
+ * 在线 / 余额 / 兑换码三档、计佣口径开关、结算与风控）、下线注册奖、YAML 只读段、
+ * 结算与入账调度、分组差异化费率表。一切给上线的返利都在这一页（星屑配置页只管
+ * 用户自己得到的返还）。比例一律以百分比呈现与提交，不出现任何
  * 万分比；金额一律是站内额度 —— 这一页上没有任何法币键。
  */
 export function QyAdminCommission() {
@@ -105,7 +111,10 @@ export function QyAdminCommission() {
             <div className='space-y-4'>
               <div className='grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] lg:items-start'>
                 <EditableSettingsCard config={config} />
-                <YamlReadonlyCard config={config} />
+                <div className='space-y-4'>
+                  <QyCmRegisterRewardCard />
+                  <YamlReadonlyCard config={config} />
+                </div>
               </div>
               <DailySettleCard />
               <GroupRatesCard config={config} />
@@ -133,8 +142,7 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
   useEffect(() => {
     const next: Record<string, string> = {}
     for (const key of qyArray(config.editable_keys)) {
-      const raw = config.effective[key as keyof QyCommissionEffective] ?? ''
-      next[key] = String(raw)
+      next[key] = currentValue(config, key)
     }
     setDraft(next)
   }, [config])
@@ -155,6 +163,8 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
   // 可空的百分比键（目前只有兑换码档）。空在这里不是"没填完"，而是一个
   // 要提交上去的取值："取消这一档，跟随充值档"。
   const nullablePercentKeys = new Set(qyArray(config.nullable_percent_keys))
+  // 开关键（"1" / "0"）。旧后端不下发 bool_keys 时为空集，不影响其余字段。
+  const boolKeys = new Set(qyArray(config.bool_keys))
   const followsTopupLabel = t('qy_cm_f_redemption_follows', {
     percent: config.effective.topup_rate_percent,
   })
@@ -162,14 +172,17 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
     config,
     draft,
     percentKeys,
-    nullablePercentKeys
+    nullablePercentKeys,
+    boolKeys
   )
   const invalidKey = findInvalid(
     config,
     draft,
     percentKeys,
-    nullablePercentKeys
+    nullablePercentKeys,
+    boolKeys
   )
+  const editableKeys = qyArray(config.editable_keys)
 
   return (
     <>
@@ -178,29 +191,62 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
           <CardTitle>{t('qy_cm_editable_title')}</CardTitle>
           <CardDescription>{t('qy_cm_editable_desc')}</CardDescription>
         </CardHeader>
-        <CardContent className='space-y-4'>
-          {qyArray(config.editable_keys).map((key) => (
-            <ConfigField
-              key={key}
-              fieldKey={key}
-              value={draft[key] ?? ''}
-              isPercent={percentKeys.has(key)}
-              nullable={nullablePercentKeys.has(key)}
-              // 留空时旁边要写清楚"那实际是几个点"。只画一个空输入框的话，
-              // 运营看不出这一档实际生效的是什么，而那正是他点进来要看的数。
-              emptyMeansText={
-                nullablePercentKeys.has(key)
-                  ? t('qy_cm_f_redemption_follows', {
-                      percent: config.effective.topup_rate_percent,
-                    })
-                  : null
-              }
-              overridden={config.overrides[key] != null}
-              onChange={(value) =>
-                setDraft((prev) => ({ ...prev, [key]: value }))
-              }
-            />
-          ))}
+        <CardContent className='space-y-6'>
+          {/* 分区渲染：先「给上线返多少」（下线充值 / 消费 / 兑换码，与下线买套餐的
+              三条渠道），再计佣口径开关，最后结算与风控。一张平铺的长表单里，运营
+              找不到"余额买套餐返几个点"这种问题的答案。 */}
+          {QY_COMMISSION_SECTIONS.map((section) => {
+            const keys = editableKeys.filter(
+              (key) => qyCommissionSectionOf(key) === section
+            )
+            if (keys.length === 0) return null
+            return (
+              <section
+                key={section}
+                className='space-y-4'
+                data-qy-cm-section={section}
+              >
+                <div className='space-y-0.5 border-b pb-1.5'>
+                  <h3 className='text-sm font-semibold'>
+                    {t(`qy_cm_sec_${section}`)}
+                  </h3>
+                  <p className='text-muted-foreground text-xs'>
+                    {t(`qy_cm_sec_${section}_desc`)}
+                  </p>
+                </div>
+                {keys.map((key) =>
+                  boolKeys.has(key) ? (
+                    <SwitchField
+                      key={key}
+                      fieldKey={key}
+                      checked={draft[key] === '1'}
+                      overridden={config.overrides[key] != null}
+                      onChange={(on) =>
+                        setDraft((prev) => ({ ...prev, [key]: on ? '1' : '0' }))
+                      }
+                    />
+                  ) : (
+                    <ConfigField
+                      key={key}
+                      fieldKey={key}
+                      value={draft[key] ?? ''}
+                      isPercent={percentKeys.has(key)}
+                      nullable={nullablePercentKeys.has(key)}
+                      // 留空时旁边要写清楚"那实际是几个点"。只画一个空输入框的话，
+                      // 运营看不出这一档实际生效的是什么，而那正是他点进来要看的数。
+                      emptyMeansText={
+                        nullablePercentKeys.has(key) ? followsTopupLabel : null
+                      }
+                      overridden={config.overrides[key] != null}
+                      onChange={(value) =>
+                        setDraft((prev) => ({ ...prev, [key]: value }))
+                      }
+                    />
+                  )
+                )}
+              </section>
+            )
+          })}
           <Button
             disabled={
               changes.length === 0 ||
@@ -238,20 +284,20 @@ function EditableSettingsCard(props: { config: QyCommissionAdminConfig }) {
                   {t(qyCommissionFieldMeta(change.key)?.labelKey ?? change.key)}
                 </span>
                 <span className='tabular-nums'>
-                  {formatChangeValue(
-                    change.key,
-                    change.from,
+                  {formatChangeValue(change.key, change.from, {
                     percentKeys,
-                    followsTopupLabel
-                  )}{' '}
+                    boolKeys,
+                    emptyLabel: followsTopupLabel,
+                    onOff: [t('qy_common_on'), t('qy_common_off')],
+                  })}{' '}
                   →{' '}
                   <strong>
-                    {formatChangeValue(
-                      change.key,
-                      change.to,
+                    {formatChangeValue(change.key, change.to, {
                       percentKeys,
-                      followsTopupLabel
-                    )}
+                      boolKeys,
+                      emptyLabel: followsTopupLabel,
+                      onOff: [t('qy_common_on'), t('qy_common_off')],
+                    })}
                   </strong>
                 </span>
               </li>
@@ -333,6 +379,43 @@ function ConfigField(props: {
           <> {props.emptyMeansText}</>
         )}
       </p>
+    </div>
+  )
+}
+
+/**
+ * 计佣口径开关。说明文案必须写清「打开之后哪笔钱不再计佣」—— 这三个开关以前只能
+ * 改 YAML，运营在这里第一次看到它们，名字本身回答不了这个问题。
+ */
+function SwitchField(props: {
+  fieldKey: string
+  checked: boolean
+  overridden: boolean
+  onChange: (on: boolean) => void
+}) {
+  const { t } = useTranslation()
+  const meta = qyCommissionFieldMeta(props.fieldKey)
+  const id = `qy-cm-${props.fieldKey}`
+  return (
+    <div className='flex items-start justify-between gap-4 rounded-lg border p-3'>
+      <div className='min-w-0 space-y-0.5'>
+        <Label htmlFor={id}>
+          {meta == null ? props.fieldKey : t(meta.labelKey)}
+          {props.overridden && (
+            <span className='text-muted-foreground ms-1 text-xs'>
+              {t('qy_cm_overridden')}
+            </span>
+          )}
+        </Label>
+        <p className='text-muted-foreground text-xs'>
+          {meta == null ? props.fieldKey : t(meta.hintKey)}
+        </p>
+      </div>
+      <Switch
+        id={id}
+        checked={props.checked}
+        onCheckedChange={(checked) => props.onChange(checked)}
+      />
     </div>
   )
 }
@@ -828,6 +911,16 @@ function parseIntegerDraft(key: string, raw: string): number | null {
 }
 
 /**
+ * 一个键此刻的生效值，按草稿的字面量形状给出。开关是布尔，草稿里存 "1" / "0"
+ * （与后端落库的形状一致）；其余原样转字符串。
+ */
+function currentValue(config: QyCommissionAdminConfig, key: string): string {
+  const raw = config.effective[key as keyof QyCommissionEffective]
+  if (typeof raw === 'boolean') return raw ? '1' : '0'
+  return String(raw ?? '')
+}
+
+/**
  * 只挑出真正改动过的键。未改动的键不该出现在 PUT 里，也不该污染审计。
  *
  * 百分比按规范化后的字面量比较（"10.250" 与 "10.25" 是同一个费率），
@@ -840,13 +933,16 @@ function collectChanges(
   config: QyCommissionAdminConfig,
   draft: Record<string, string>,
   percentKeys: Set<string>,
-  nullablePercentKeys: Set<string>
+  nullablePercentKeys: Set<string>,
+  boolKeys: Set<string>
 ): QyConfigChange[] {
   const out: QyConfigChange[] = []
   for (const [key, raw] of Object.entries(draft)) {
-    const current = String(
-      config.effective[key as keyof QyCommissionEffective] ?? ''
-    )
+    const current = currentValue(config, key)
+    if (boolKeys.has(key)) {
+      if (raw !== current) out.push({ key, from: current, to: raw })
+      continue
+    }
     if (percentKeys.has(key)) {
       // 可空键的空串是一个**取值**（"取消这一档"），必须走完整的比较与提交，
       // 不能跟"填了一半的非法输入"一起被 continue 掉 —— 那样运营清空输入框
@@ -874,11 +970,16 @@ function findInvalid(
   config: QyCommissionAdminConfig,
   draft: Record<string, string>,
   percentKeys: Set<string>,
-  nullablePercentKeys: Set<string>
+  nullablePercentKeys: Set<string>,
+  boolKeys: Set<string>
 ): string | null {
   // `config` 仍然进参：后端多下发一个前端不认识的键时，它的值就是判据 ——
   // 这里不认识的键按"原样字面量"处理，只要草稿等于当前值就不算非法。
   for (const [key, raw] of Object.entries(draft)) {
+    if (boolKeys.has(key)) {
+      if (raw !== '1' && raw !== '0') return key
+      continue
+    }
     if (percentKeys.has(key)) {
       const ok = nullablePercentKeys.has(key)
         ? qyIsValidNullablePercent(raw)
@@ -887,10 +988,7 @@ function findInvalid(
       continue
     }
     if (qyCommissionFieldMeta(key) == null) {
-      const current = String(
-        config.effective[key as keyof QyCommissionEffective] ?? ''
-      )
-      if (raw.trim() !== current) return key
+      if (raw.trim() !== currentValue(config, key)) return key
       continue
     }
     if (parseIntegerDraft(key, raw) == null) return key
@@ -903,16 +1001,23 @@ function findInvalid(
  *
  * 空的百分比要复述成 `emptyLabel`（"跟随充值档 10%"）而不是一个孤零零的
  * `%`：确认弹窗是运营在动费率之前看到的最后一屏，"3% → %" 读不出来这一次
- * 改的是什么，而它改的恰恰是一整档比例。
+ * 改的是什么，而它改的恰恰是一整档比例。开关复述成「已开启 / 已关闭」，不是 1 / 0。
  */
 function formatChangeValue(
   key: string,
   value: string,
-  percentKeys: Set<string>,
-  emptyLabel: string
+  opts: {
+    percentKeys: Set<string>
+    boolKeys: Set<string>
+    emptyLabel: string
+    onOff: [string, string]
+  }
 ): string {
-  if (percentKeys.has(key)) {
-    return value.trim() === '' ? emptyLabel : `${value}%`
+  if (opts.boolKeys.has(key)) {
+    return value === '1' ? opts.onOff[0] : opts.onOff[1]
+  }
+  if (opts.percentKeys.has(key)) {
+    return value.trim() === '' ? opts.emptyLabel : `${value}%`
   }
   return value
 }
@@ -1034,7 +1139,6 @@ function DailySettleCard() {
     </Card>
   )
 }
-
 
 function QyDailySettleField(props: { label: string; value: ReactNode }) {
   return (

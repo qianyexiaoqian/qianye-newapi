@@ -63,7 +63,7 @@ func calcGross(baseQuota int64, rateUnits int, quotaPerUnit int64) decimal.Decim
 // # I3 的适用范围:只有正额计佣行,不是全表
 //
 // 它只在 consume.go 那两处经由 capGross 落库的行上成立,也就是
-// source_type ∈ {consume, topup, redemption}。另外两类来源按设计就不满足它:
+// source_type ∈ {consume, topup, redemption, plan_*}。另外两类来源按设计就不满足它:
 //
 //	manual(api_admin_adjust.go)—— 手工增减既没有下线也没有费率,rate_bps 落 0
 //	  而 gross 落管理员填的那个数。

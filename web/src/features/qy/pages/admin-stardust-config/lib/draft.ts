@@ -49,6 +49,15 @@ export const QY_SD_INVITE_KEYS: ReadonlySet<string> = new Set([
 ])
 
 /**
+ * 存在星屑运营参数里、但只在「佣金配置」页编辑的键。注册奖是给**上线**的返利，
+ * 与其余上线返利（下线充值 / 兑换码 / 消费 / 买套餐）放在同一页，运营才不会在两页
+ * 之间找同一件事。星屑配置页渲染时跳过它们，草稿里照常保留生效值（不会被当成改动）。
+ */
+export const QY_SD_COMMISSION_PAGE_KEYS: ReadonlySet<string> = new Set([
+  'invite_register_stardust',
+])
+
+/**
  * 套餐返还的来源闭集，顺序与后端 `NormalizeSources` 的规范顺序一致。
  * `stardust`（商城自购）刻意不在里面：星屑买套餐再返星屑是自供回路（D-F）。
  */

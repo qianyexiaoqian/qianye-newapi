@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import type { TFunction } from 'i18next'
-import { Info, ShieldAlert } from 'lucide-react'
+import { Info } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -51,7 +51,7 @@ import { QySdGroupRatesCard } from './components/group-rates-card'
 import { QySdPlanRewardCard } from './components/plan-reward-card'
 import {
   QY_SD_BOOLEAN_KEYS,
-  QY_SD_INVITE_KEYS,
+  QY_SD_COMMISSION_PAGE_KEYS,
   QY_SD_NAME_KEY,
   QY_SD_NAME_MAX_RUNES,
   qySdConfigChanges,
@@ -66,18 +66,15 @@ import { qySdAdminErrorMessage } from './lib/errors'
 import type { QyStardustAdminConfig, QyStardustBound } from './types'
 
 /**
- * 星屑配置：货币名 / 入口显隐 / 消费返与邀请返（含下线消费返）费率 / 分组费率覆盖 / 套餐返。
+ * 星屑配置：货币名 / 入口显隐 / 个人消费返比例 / 分组费率覆盖 / 买家本人的套餐返。
+ *
+ * 这一页只管**用户自己**得到的返还。一切给上线的返利（下线充值 / 兑换码 / 消费、
+ * 下线注册奖、下线买套餐）都在「佣金配置」—— 注册奖的键仍存在星屑的运营参数里，
+ * 但只在佣金配置页上编辑（`QY_SD_COMMISSION_PAGE_KEYS`）。
  *
  * 形状照 `admin-lottery-config`：可写段一张卡（按后端下发的 `editable_keys`
  * 渲染、按 `bounds` 校验、保存前复述改动键、只 PUT 改动键），YAML 只读段一张卡。
  * 同页再挂两块：按用户分组覆盖的比例表、按套餐配的返还。
- *
- * ## 合规门为什么要在这一页说出来
- *
- * 三个邀请类键（下线充值返 / 下线兑换返 / 下线注册奖）受支付合规声明约束：
- * 未确认时后端把正值 400 掉、生效值一律按 0。不在字段旁边说清楚，运营看到的
- * 就是"填了保存不了、或者保存了却不生效"两种谜题 —— 所以未确认时这三格直接
- * 禁用，旁边写「需先确认支付合规声明」。
  *
  * ## 为什么保存后全量失效
  *
@@ -154,7 +151,6 @@ function EditableCard(props: { config: QyStardustAdminConfig }) {
 
   const changes = qySdConfigChanges(config, draft)
   const invalidKey = qySdInvalidKey(config, draft)
-  const compliance = config.yaml_readonly.compliance_confirmed
 
   return (
     <>
@@ -164,23 +160,11 @@ function EditableCard(props: { config: QyStardustAdminConfig }) {
           <CardDescription>{t('qy_sdadm_cfg_editable_desc')}</CardDescription>
         </CardHeader>
         <CardContent className='space-y-4'>
-          {/* 下线充值 / 兑换码 / 消费带来的返还只走推广佣金。运营以前在这一页配过
-              那三档，这里要直说它们搬去了哪里，而不是让人以为功能没了。 */}
+          {/* 一切给上线的返利（下线充值 / 兑换码 / 消费 / 注册 / 买套餐）都在佣金配置。
+              运营以前在这一页配过其中几档，这里要直说它们搬去了哪里。 */}
           <p className='text-muted-foreground text-xs'>
             {t('qy_sdadm_cfg_invite_moved')}
           </p>
-
-          {!compliance && (
-            // 注册奖此刻按 0 生效。这句话必须在保存之前出现，否则运营
-            // 看到的是一个写不进去的输入框，或者一个"已保存"却不生效的数字。
-            <Alert variant='destructive'>
-              <ShieldAlert />
-              <AlertTitle>{t('qy_sdadm_cfg_compliance_title')}</AlertTitle>
-              <AlertDescription>
-                {t('qy_sdadm_cfg_compliance_desc')}
-              </AlertDescription>
-            </Alert>
-          )}
 
           <Alert>
             <Info />
@@ -190,21 +174,22 @@ function EditableCard(props: { config: QyStardustAdminConfig }) {
             </AlertDescription>
           </Alert>
 
-          {config.editable_keys.map((key) => (
-            <ConfigField
-              key={key}
-              fieldKey={key}
-              value={draft[key] ?? ''}
-              bound={config.bounds[key] ?? null}
-              unit={unit}
-              overridden={config.overrides[key] != null}
-              gated={!compliance && QY_SD_INVITE_KEYS.has(key)}
-              valid={qySdParseDraft(config, key, draft[key] ?? '') != null}
-              onChange={(value) =>
-                setDraft((prev) => ({ ...prev, [key]: value }))
-              }
-            />
-          ))}
+          {config.editable_keys
+            .filter((key) => !QY_SD_COMMISSION_PAGE_KEYS.has(key))
+            .map((key) => (
+              <ConfigField
+                key={key}
+                fieldKey={key}
+                value={draft[key] ?? ''}
+                bound={config.bounds[key] ?? null}
+                unit={unit}
+                overridden={config.overrides[key] != null}
+                valid={qySdParseDraft(config, key, draft[key] ?? '') != null}
+                onChange={(value) =>
+                  setDraft((prev) => ({ ...prev, [key]: value }))
+                }
+              />
+            ))}
 
           <Button
             disabled={
@@ -262,8 +247,6 @@ function ConfigField(props: {
   unit: string
   /** 该项已被运营覆盖（`overrides` 里有它），此刻生效的不再是配置文件的基线。 */
   overridden: boolean
-  /** 合规门关着且这是邀请类键：禁用输入并说明原因。 */
-  gated: boolean
   /** 与保存判定同一口径的字段级合法性（区间 / 单位名长度）。 */
   valid: boolean
   onChange: (value: string) => void
@@ -329,7 +312,6 @@ function ConfigField(props: {
           id={id}
           inputMode='numeric'
           value={props.value}
-          disabled={props.gated}
           aria-invalid={!props.valid}
           // 全部数值字段都是整数（万分比、天数、星屑）：只留数字。真正的判定在
           // qySdParseDraft，这里只是少让人敲出一串明显没用的字符。
@@ -346,12 +328,6 @@ function ConfigField(props: {
       </div>
       <div className='text-muted-foreground space-y-0.5 text-xs'>
         {hint !== '' && <p>{hint}</p>}
-        {props.gated && (
-          // 「需先确认支付合规声明」—— 这一格为什么灰着，答案就在它旁边。
-          <p className='text-destructive'>
-            {t('qy_sdadm_cfg_compliance_hint')}
-          </p>
-        )}
         {asBps && numeric != null && (
           <p>
             {t('qy_sdadm_cfg_bps_hint', { percent: qySdBpsPercent(numeric) })}

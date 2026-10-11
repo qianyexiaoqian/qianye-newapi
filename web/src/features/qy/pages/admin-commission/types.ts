@@ -40,6 +40,25 @@ export type QyCommissionEffective = {
   redemption_rate_effective_percent: string
   /** `redemption_rate_percent === ''` 的服务端版本，前端不自己推。 */
   redemption_rate_follows_topup: boolean
+  /**
+   * 下线**在线支付**买套餐那一档。与兑换码档同形：空串 = 没单独配 = 跟随充值档。
+   * 在线买套餐的付费单不再按充值档重复计（后端充值扫描跳过它）。
+   */
+  plan_order_rate_percent: string
+  /** 在线套餐档实际按几个点算。只读。 */
+  plan_order_rate_effective_percent: string
+  plan_order_rate_follows_topup: boolean
+  /** 下线用**余额**买套餐那一档（基数 = 实扣的余额购买价）。默认 0。 */
+  plan_balance_rate_percent: string
+  /** 下线用**套餐兑换码**开通那一档（基数 = 套餐售价）。默认 0。 */
+  plan_redemption_rate_percent: string
+  /**
+   * 三个计佣口径开关。以前只能改 YAML，现在在这一页开关（落 `qy_settings`，值 "1" / "0"）。
+   * 生效值是布尔，提交时发 "1" / "0"。
+   */
+  exclude_subscription_consume: boolean
+  exclude_redemption_and_manual: boolean
+  refund_clawback: boolean
   min_settle_stardust: number
   max_per_order_stardust: number
   holding_days: number
@@ -55,7 +74,7 @@ export type QyCommissionEffective = {
 /**
  * YAML 只读段。
  *
- * 这些开关涉及安全与启动行为（是否计佣、排除哪些口径、扫描周期），
+ * 这些项涉及安全与启动行为（是否计佣、扫描周期），
  * 只能改文件后重载。管理端展示它们是为了让人看到"当前到底跑在什么口径下"，
  * 而不是让人以为可以在这里改。渲染按 `Object.entries` 走，后端多下发一个键
  * 也照常显示 —— 所以这里只列已知的，剩下的兜在索引签名里。
@@ -66,9 +85,6 @@ export type QyCommissionYamlReadonly = {
   consume_rate_percent: string
   /** YAML 里的兑换码档。空串就是"没写这一项"，也就是跟随充值档。 */
   redemption_rate_percent: string
-  exclude_redemption_and_manual: boolean
-  exclude_subscription_consume: boolean
-  refund_clawback: boolean
   /**
    * 结算调度的**心跳周期**，不是结算周期：佣金一日一结算，每次心跳只判断"今天
    * 这一次跑过了没有"。展示时不要把它说成"多久结算一次"。
@@ -114,6 +130,10 @@ export type QyCommissionAdminConfig = {
    * 同样由后端给出：前端猜错的方向恰好是把空当成 `0` 提交上去。
    */
   nullable_percent_keys: string[]
+  /**
+   * 取值是开关的键（"1" / "0"）。渲染成开关而不是输入框。旧后端不下发时按空处理。
+   */
+  bool_keys?: string[]
   group_rates: QyCommissionGroupRate[]
   yaml_readonly: QyCommissionYamlReadonly
 }

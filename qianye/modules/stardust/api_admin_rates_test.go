@@ -116,7 +116,8 @@ func TestAdminPlanRewardsRoundTrip(t *testing.T) {
 	assert.Equal(t, false, data["exists"])
 	assert.EqualValues(t, 9, data["plan_id"])
 	assert.EqualValues(t, 10_000, data["buyer_bps"])
-	assert.EqualValues(t, 0, data["inviter_bps"])
+	_, hasInviter := data["inviter_bps"]
+	assert.False(t, hasInviter, "上线的套餐返已移到推广佣金,这里不再下发")
 	assert.Equal(t, []any{"order", "balance"}, data["sources"], "没配过的套餐按默认口径下发")
 
 	assert.Equal(t, codeBadSource, codeOf(t, call(t, r, http.MethodPut, "/api/qy/admin/stardust/plan-rewards/9",
@@ -135,7 +136,7 @@ func TestAdminPlanRewardsRoundTrip(t *testing.T) {
 	got, exists := planRewardFor(ctx, 9)
 	require.True(t, exists, "写入后缓存必须立即失效")
 	assert.Equal(t, 5000, got.BuyerBps)
-	assert.Equal(t, 100, got.InviterBps)
+	assert.Zero(t, got.InviterBps, "请求里带的 inviter_bps 被忽略,停用的列一律写 0")
 	assert.True(t, got.SourceAllowed(PlanSourceAdmin))
 	assert.False(t, got.SourceAllowed(PlanSourceBalance))
 	assert.Equal(t, 7, got.OperatorId)

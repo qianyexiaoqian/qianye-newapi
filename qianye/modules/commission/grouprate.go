@@ -268,6 +268,7 @@ type rateDecision struct {
 //
 //	SourceConsume     消费档
 //	SourceRedemption  兑换码档(可空,见下)
+//	SourcePlan*       买套餐三档(在线支付 / 余额 / 兑换码,仅全局)
 //	其余(充值/任务补扣/…) 充值档
 //
 // 未配置或被禁用的分组回落全局默认费率。分组名为空按 default 分组判定
@@ -300,6 +301,14 @@ func rateUnitsFor(rule GroupRate, matched bool, source string, s opSettings) int
 		return s.ConsumeRateUnits
 	case SourceRedemption:
 		return redemptionRateUnits(rule, matched, s)
+	// 买套餐的三档只有全局这一层:分组费率表管的是充值 / 消费 / 兑换码,
+	// 套餐按渠道分档已经是运营要的那一层粒度。
+	case SourcePlanOrder:
+		return s.EffectivePlanOrderRateUnits()
+	case SourcePlanBalance:
+		return s.PlanBalanceRateUnits
+	case SourcePlanRedemption:
+		return s.PlanRedemptionRateUnits
 	default:
 		if matched {
 			return rule.TopupRateUnits

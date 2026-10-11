@@ -260,6 +260,10 @@ commission:
   consume_rate_bps: 500              # 消费计佣 5%
   # 兑换码单独一档。**整行删掉 = 没单独配 = 跟随充值档**;写 0 才是显式 0%。
   # redemption_rate_bps: 300
+  # 下线买套餐(三条渠道各一档)。在线支付那档整行删掉 = 跟随充值档;余额 / 兑换码默认 0。
+  # plan_order_rate_bps: 1000
+  plan_balance_rate_bps: 0
+  plan_redemption_rate_bps: 0
   levels: 1                          # 只允许一级,多级分销正是要规避的形状
   # ↓ 三个门槛的单位都是**星屑**(D-16;此前叫 *_quota、单位是额度)。
   #   仍写着旧键名的配置能起来,但那三行一个字节都不生效 —— 加载时会告警。
@@ -273,7 +277,7 @@ commission:
   settle_interval_seconds: 300       # 一日一结算的心跳:日界过后多久开跑、失败后多久重试
   credit_interval_seconds: 300       # 自动入账任务周期
   min_credit_stardust: 1             # 可用余额攒够 1 星屑才自动入账进星屑余额
-  # ↓ 三个风控开关。默认宽松,打开即收紧。
+  # ↓ 三个风控开关。默认宽松,打开即收紧。这里是基线,管理端「佣金配置」可随时开关(覆盖这里)。
   exclude_redemption_and_manual: false  # true = 兑换码充值与管理员补单不计佣
   exclude_subscription_consume: false   # true = 订阅额度消费不计佣
   refund_clawback: false                # true = 退款时冲正已发放的佣金

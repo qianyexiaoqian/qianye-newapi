@@ -17,10 +17,10 @@ import (
 // 两边由不同的人并行写,所以数据访问先在这里定死:读只经 planRewardFor,
 // 写只经 savePlanReward / deletePlanReward,写完必须 invalidatePlanRewards。
 
-// DefaultPlanReward 是没有配过的套餐的口径:按售价 1:1 返给买家、不返上线、
+// DefaultPlanReward 是没有配过的套餐的口径:按售价 1:1 返给买家、
 // 只有真花了钱的两条来源返(项目方原话"默认是根据售价一比一返还,或者直接不返还")。
 func DefaultPlanReward(planId int) PlanReward {
-	return PlanReward{PlanId: planId, BuyerBps: 10_000, InviterBps: 0, Sources: DefaultPlanRewardSources}
+	return PlanReward{PlanId: planId, BuyerBps: 10_000, Sources: DefaultPlanRewardSources}
 }
 
 // SourceAllowed 回答"这个来源要不要返"。`stardust`(商城自购)不在闭集里,

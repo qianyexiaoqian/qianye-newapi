@@ -33,6 +33,19 @@ const (
 	// "0" 才是显式 0%。理由见 config.Commission.RedemptionRateBps。
 	keyRedemptionRatePercent = "redemption_rate_percent"
 
+	// 下线买套餐的三档,按购买渠道分开:在线支付 / 余额 / 套餐兑换码。
+	// 在线支付那档与兑换码档同形 —— 可空,空 = 跟随充值档(这一档出现之前,在线买
+	// 套餐的订单就按充值档计佣)。余额与兑换码两档是普通百分比,默认 0。
+	keyPlanOrderRatePercent      = "plan_order_rate_percent"
+	keyPlanBalanceRatePercent    = "plan_balance_rate_percent"
+	keyPlanRedemptionRatePercent = "plan_redemption_rate_percent"
+
+	// 三个风控开关。值是 "1" / "0"。此前只能改 YAML 并重启,现在管理端可随时开关;
+	// YAML 里那三行降为没有覆盖时的基线。
+	keyExcludeSubscriptionConsume = "exclude_subscription_consume"
+	keyExcludeRedemptionManual    = "exclude_redemption_and_manual"
+	keyRefundClawback             = "refund_clawback"
+
 	keyMinSettleStardust   = "min_settle_stardust"
 	keyMaxPerOrderStardust = "max_per_order_stardust"
 	keyHoldingDays         = "holding_days"
@@ -46,6 +59,8 @@ const (
 // 让管理端能往共享 KV 表里写任意键,等于把别的模块的配置面也交出去了。
 var editableKeys = []string{
 	keyTopupRatePercent, keyConsumeRatePercent, keyRedemptionRatePercent,
+	keyPlanOrderRatePercent, keyPlanBalanceRatePercent, keyPlanRedemptionRatePercent,
+	keyExcludeSubscriptionConsume, keyExcludeRedemptionManual, keyRefundClawback,
 	keyMinSettleStardust, keyMaxPerOrderStardust, keyHoldingDays, keyMinCreditStardust,
 	keyDailyCapStardust, keyLargeAlertStardust, keyMinInviteeAgeHour,
 }
@@ -53,7 +68,13 @@ var editableKeys = []string{
 // percentKeys 是取值为百分比字符串的键,其余键一律是整数。
 func isPercentKey(k string) bool {
 	return k == keyTopupRatePercent || k == keyConsumeRatePercent ||
+		k == keyPlanBalanceRatePercent || k == keyPlanRedemptionRatePercent ||
 		isNullablePercentKey(k)
+}
+
+// isBoolKey 是取值为开关("1" / "0")的键。
+func isBoolKey(k string) bool {
+	return k == keyExcludeSubscriptionConsume || k == keyExcludeRedemptionManual || k == keyRefundClawback
 }
 
 // isNullablePercentKey 是百分比键里**允许为空**的那一部分。
@@ -62,7 +83,7 @@ func isPercentKey(k string) bool {
 // 单独列出来是因为写入路径要为它分叉 —— 其余百分比键收到空串必须 400
 // (那是运营把输入框清空了),而这些键收到空串要去**删掉**那一行覆盖。
 func isNullablePercentKey(k string) bool {
-	return k == keyRedemptionRatePercent
+	return k == keyRedemptionRatePercent || k == keyPlanOrderRatePercent
 }
 
 // opSettings 是 YAML 与运营覆盖合并后的生效配置。
@@ -85,6 +106,16 @@ type opSettings struct {
 	DailyCapStardust   int64 // 0 = 不限
 	LargeAlertStardust int64 // 0 = 不告警
 	MinInviteeAgeHours int   // 0 = 不限
+
+	// PlanOrderRateUnits 是在线支付买套餐那档,指针:nil = 跟随充值档(同兑换码档)。
+	PlanOrderRateUnits      *int
+	PlanBalanceRateUnits    int
+	PlanRedemptionRateUnits int
+
+	// 三个风控开关的生效值(YAML 基线 + 管理端覆盖)。
+	ExcludeSubscriptionConsume bool
+	ExcludeRedemptionAndManual bool
+	RefundClawback             bool
 }
 
 // TopupRatePercent / ConsumeRatePercent 是下发给接口与前端的百分比形式。
@@ -110,6 +141,23 @@ func (s opSettings) EffectiveRedemptionRateUnits() int {
 		return s.TopupRateUnits
 	}
 	return *s.RedemptionRateUnits
+}
+
+// EffectivePlanOrderRateUnits 是在线支付买套餐**实际按几个点算**:没单独配时跟随充值档。
+// 套餐三档只有全局这一层,不看分组费率规则。
+func (s opSettings) EffectivePlanOrderRateUnits() int {
+	if s.PlanOrderRateUnits == nil {
+		return s.TopupRateUnits
+	}
+	return *s.PlanOrderRateUnits
+}
+
+// PlanOrderRatePercent 是**配的是什么**(没单独配时空串),理由同 RedemptionRatePercent。
+func (s opSettings) PlanOrderRatePercent() string {
+	if s.PlanOrderRateUnits == nil {
+		return ""
+	}
+	return config.FormatRatePercent(*s.PlanOrderRateUnits)
 }
 
 // EffectiveRedemptionRatePercent 是上面那个数的百分比形式,给接口与界面回显。
@@ -169,6 +217,12 @@ func effectiveCtx(ctx context.Context) opSettings {
 	base.MaxPerOrderStardust = cm.MaxPerOrderStardust
 	base.HoldingDays = cm.HoldingDays
 	base.MinCreditStardust = cm.MinCreditStardust
+	base.PlanOrderRateUnits = configNullableRateUnits(cm.PlanOrderRateBps)
+	base.PlanBalanceRateUnits = configRateUnits(cm.PlanBalanceRateBps)
+	base.PlanRedemptionRateUnits = configRateUnits(cm.PlanRedemptionRateBps)
+	base.ExcludeSubscriptionConsume = cm.ExcludeSubscriptionConsume
+	base.ExcludeRedemptionAndManual = cm.ExcludeRedemptionAndManual
+	base.RefundClawback = cm.RefundClawback
 
 	settingsMu.Lock()
 	if settingsCache != nil && common.GetTimestamp()-settingsLoaded < settingsCacheSeconds {
@@ -294,6 +348,26 @@ func applyOverrides(s *opSettings, m map[string]string) {
 	amountOverride(&s.DailyCapStardust, keyDailyCapStardust, m[keyDailyCapStardust])
 	amountOverride(&s.LargeAlertStardust, keyLargeAlertStardust, m[keyLargeAlertStardust])
 	intOverride(&s.MinInviteeAgeHours, m[keyMinInviteeAgeHour])
+	nullableRateOverride(&s.PlanOrderRateUnits, m[keyPlanOrderRatePercent])
+	rateOverride(&s.PlanBalanceRateUnits, m[keyPlanBalanceRatePercent])
+	rateOverride(&s.PlanRedemptionRateUnits, m[keyPlanRedemptionRatePercent])
+	boolOverride(&s.ExcludeSubscriptionConsume, keyExcludeSubscriptionConsume, m[keyExcludeSubscriptionConsume])
+	boolOverride(&s.ExcludeRedemptionAndManual, keyExcludeRedemptionManual, m[keyExcludeRedemptionManual])
+	boolOverride(&s.RefundClawback, keyRefundClawback, m[keyRefundClawback])
+}
+
+// boolOverride 应用一个开关覆盖。不认得的值丢弃并告警,回落 YAML 基线 ——
+// 与费率同一条理由:被手工写坏的一行不能被猜成某个方向。
+func boolOverride(dst *bool, key, raw string) {
+	if strings.TrimSpace(raw) == "" {
+		return
+	}
+	v, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		warnf("qy_settings 里的 commission.%s = %q 不是开关值,已忽略", key, raw)
+		return
+	}
+	*dst = v
 }
 
 // rateOverride 应用运营覆盖的费率(百分比字符串)。

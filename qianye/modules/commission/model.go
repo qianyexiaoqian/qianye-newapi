@@ -33,7 +33,12 @@ const (
 	SourceTopup      = "topup"
 	SourceRedemption = "redemption"
 	SourceConsume    = "consume"
-	SourceClawback   = "clawback"
+	// 下线买套餐,按购买渠道分三个来源(各自一档费率,见 settings.go):
+	// 在线支付 / 余额 / 套餐兑换码。一笔购买一行,幂等键是订单号或兑换码 id。
+	SourcePlanOrder      = "plan_order"
+	SourcePlanBalance    = "plan_balance"
+	SourcePlanRedemption = "plan_redemption"
+	SourceClawback       = "clawback"
 	// SourceManual 是管理员手工增减佣金落下的账目行(见 api_admin_adjust.go)。
 	//
 	// 它必须是一条 accrual 而不是直接改 qy_commission_balance 的某一列:
@@ -118,7 +123,7 @@ type Accrual struct {
 	//
 	//	base_quota × rate_bps / 10000 / quota_per_unit == gross_amount + capped_amount   (I3)
 	//
-	// **适用范围只有正额计佣行**:source_type ∈ {consume, topup, redemption}。
+	// **适用范围只有正额计佣行**:source_type ∈ {consume, topup, redemption, plan_*}。
 	// manual 的 rate_bps 恒为 0、clawback 的 base_quota 是负数的幂等指纹且金额
 	// 可被等比冲正与 remaining 削减 —— 那两类按设计就不满足 I3。逐条理由写在
 	// accrual.go 的 capGross 上。

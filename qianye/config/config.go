@@ -279,6 +279,17 @@ type Commission struct {
 	// 显式 0 才是"兑换码不计佣"。0% 是合法且常见的运营配置,不能拿零值兼任"没配"。
 	RedemptionRateBps *int `yaml:"redemption_rate_bps"`
 
+	// ── 下线买套餐的计佣(三条购买渠道各一档,万分比)────────────────────
+	//
+	// PlanOrderRateBps 是在线支付买套餐。**指针**:nil = 跟随充值档 —— 这一档出现
+	// 之前,在线买套餐的订单就是按充值档计佣的(top_ups 里那一行),存量站点升级后不变。
+	// PlanBalanceRateBps 是用余额买套餐(默认 0:那笔余额充值时已经计过一次佣);
+	// PlanRedemptionRateBps 是用套餐兑换码开通(默认 0;基数是套餐售价)。
+	// 用订阅额度的**消费**是否计佣由 exclude_subscription_consume 决定,与这三档无关。
+	PlanOrderRateBps      *int `yaml:"plan_order_rate_bps"`
+	PlanBalanceRateBps    int  `yaml:"plan_balance_rate_bps"`
+	PlanRedemptionRateBps int  `yaml:"plan_redemption_rate_bps"`
+
 	// Levels 只允许 1:多级分销正是项目方要规避的「拉人头」形状。
 	Levels int `yaml:"levels"`
 	// MinSettleStardust 是一次结算至少要凑够多少星屑才发;不足的留在余数里等下一轮。

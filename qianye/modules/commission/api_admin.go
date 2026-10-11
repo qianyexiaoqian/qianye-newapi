@@ -55,18 +55,18 @@ func adminGetConfig(c *gin.Context) {
 		// 百分比字符串;nullable_percent_keys 是其中**允许留空**的那些,空
 		// 表示"没单独配,跟随充值档"。前端不猜哪个键可空 —— 猜错的方向恰好是
 		// 把空当成 0 提交上来,那是一次没有人批准的费率归零。
-		"editable_keys":         editableKeys,
-		"percent_keys":          []string{keyTopupRatePercent, keyConsumeRatePercent, keyRedemptionRatePercent},
-		"nullable_percent_keys": []string{keyRedemptionRatePercent},
-		"group_rates":           groupRateViews(rules),
+		"editable_keys": editableKeys,
+		"percent_keys": []string{keyTopupRatePercent, keyConsumeRatePercent, keyRedemptionRatePercent,
+			keyPlanOrderRatePercent, keyPlanBalanceRatePercent, keyPlanRedemptionRatePercent},
+		"nullable_percent_keys": []string{keyRedemptionRatePercent, keyPlanOrderRatePercent},
+		// bool_keys 是开关("1" / "0"),前端渲染成开关而不是输入框。
+		"bool_keys":   []string{keyExcludeSubscriptionConsume, keyExcludeRedemptionManual, keyRefundClawback},
+		"group_rates": groupRateViews(rules),
 		"yaml_readonly": gin.H{
-			"enabled":                       cm.Enabled,
-			"topup_rate_bps":                cm.TopupRateBps,
-			"consume_rate_bps":              cm.ConsumeRateBps,
-			"redemption_rate_bps":           cm.RedemptionRateBps,
-			"exclude_redemption_and_manual": cm.ExcludeRedemptionAndManual,
-			"exclude_subscription_consume":  cm.ExcludeSubscriptionConsume,
-			"refund_clawback":               cm.RefundClawback,
+			"enabled":             cm.Enabled,
+			"topup_rate_bps":      cm.TopupRateBps,
+			"consume_rate_bps":    cm.ConsumeRateBps,
+			"redemption_rate_bps": cm.RedemptionRateBps,
 			// 一日一结算之后这一项是**心跳周期**,不再是结算周期。
 			"settle_interval_seconds": cm.SettleIntervalSecs,
 			"credit_interval_seconds": cm.CreditIntervalSecs,
@@ -108,6 +108,18 @@ func adminPutConfig(c *gin.Context) {
 		// 记成空串,写库那一步据此走 DELETE 而不是 UPSERT。
 		if isNullablePercentKey(k) && (isJSONNull(raw) || strings.TrimSpace(lit) == "") {
 			normalized[k] = ""
+			continue
+		}
+		if isBoolKey(k) {
+			on, err := strconv.ParseBool(strings.TrimSpace(lit))
+			if err != nil {
+				badRequest(c, "qy_invalid_param", "配置项 "+k+" 只接受开 / 关")
+				return
+			}
+			normalized[k] = "0"
+			if on {
+				normalized[k] = "1"
+			}
 			continue
 		}
 		if isPercentKey(k) {
@@ -236,6 +248,15 @@ func settingsSnapshot(s opSettings) map[string]any {
 		keyDailyCapStardust:                 s.DailyCapStardust,
 		keyLargeAlertStardust:               s.LargeAlertStardust,
 		keyMinInviteeAgeHour:                s.MinInviteeAgeHours,
+		// 在线支付买套餐那档同兑换码档:配的是什么 + 实际按几个点算,两个都要。
+		keyPlanOrderRatePercent:             s.PlanOrderRatePercent(),
+		"plan_order_rate_effective_percent": config.FormatRatePercent(s.EffectivePlanOrderRateUnits()),
+		"plan_order_rate_follows_topup":     s.PlanOrderRateUnits == nil,
+		keyPlanBalanceRatePercent:           config.FormatRatePercent(s.PlanBalanceRateUnits),
+		keyPlanRedemptionRatePercent:        config.FormatRatePercent(s.PlanRedemptionRateUnits),
+		keyExcludeSubscriptionConsume:       s.ExcludeSubscriptionConsume,
+		keyExcludeRedemptionManual:          s.ExcludeRedemptionAndManual,
+		keyRefundClawback:                   s.RefundClawback,
 	}
 }
 
@@ -771,7 +792,7 @@ const maxLedgerCheckUsers = 20000
 //	I2  可用 + 已入账 == 累计earned − 累计clawback
 //	I3  base_quota × rate_bps / 10000 / quota_per_unit == gross_amount + capped_amount(逐行)
 //
-// I3 不在这里:它不是一条全表恒等式,只有 source_type ∈ {consume, topup, redemption}
+// I3 不在这里:它不是一条全表恒等式,只有 source_type ∈ {consume, topup, redemption, plan_*}
 // 的正额计佣行满足它(逐条理由写在 accrual.go 的 capGross 上),无限定地全表算
 // 报出来的"漂移行数"绝大多数会是 manual / clawback 这两类完全正常的行。
 //

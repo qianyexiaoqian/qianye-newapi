@@ -40,6 +40,19 @@ For commercial licensing, please contact support@quantumnous.com
  */
 export const QY_MAX_QUOTA = 8_796_093_022_208
 
+/**
+ * 配置页上的分区。顺序即渲染顺序：先「给上线返多少」的两组比例，再口径开关，
+ * 最后是结算与风控参数。没登记元数据的键落进 `settle`（后端新加的键照常可见）。
+ */
+export type QyCommissionSection = 'rates' | 'plan' | 'switch' | 'settle'
+
+export const QY_COMMISSION_SECTIONS: readonly QyCommissionSection[] = [
+  'rates',
+  'plan',
+  'switch',
+  'settle',
+]
+
 export type QyCommissionFieldMeta = {
   labelKey: string
   hintKey: string
@@ -50,7 +63,8 @@ export type QyCommissionFieldMeta = {
    * （500000 = $1），所以那时金额字段按 USD 录入、再换算回额度。星屑本身就是
    * 运营和用户都直接读的整数，那一整层换算连同它的换算率可用性判定一起去掉了。
    */
-  unit: 'percent' | 'plain' | 'stardust'
+  unit: 'percent' | 'plain' | 'stardust' | 'switch'
+  section: QyCommissionSection
   min: number
   max: number
   /** 0 是否表示"不限"。是的话要在输入框旁提示，否则运营会以为填 0 等于关掉。 */
@@ -62,6 +76,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     labelKey: 'qy_cm_f_topup_rate',
     hintKey: 'qy_cm_f_percent_hint',
     unit: 'percent',
+    section: 'rates',
     min: 0,
     max: 100,
   },
@@ -69,6 +84,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     labelKey: 'qy_cm_f_consume_rate',
     hintKey: 'qy_cm_f_percent_hint',
     unit: 'percent',
+    section: 'rates',
     min: 0,
     max: 100,
   },
@@ -76,14 +92,69 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     labelKey: 'qy_cm_f_redemption_rate',
     hintKey: 'qy_cm_f_redemption_rate_hint',
     unit: 'percent',
+    section: 'rates',
     min: 0,
     max: 100,
+  },
+  // ── 下线买套餐（给上线）──
+  // 三条购买渠道各一档、只有全局这一层（不看分组费率规则）。套餐只在**购买时**计这一次，
+  // 之后用套餐额度的消费是否再计由下面的「套餐消费不计佣」开关决定。
+  plan_order_rate_percent: {
+    labelKey: 'qy_cm_f_plan_order_rate',
+    hintKey: 'qy_cm_f_plan_order_rate_hint',
+    unit: 'percent',
+    section: 'plan',
+    min: 0,
+    max: 100,
+  },
+  plan_balance_rate_percent: {
+    labelKey: 'qy_cm_f_plan_balance_rate',
+    hintKey: 'qy_cm_f_plan_balance_rate_hint',
+    unit: 'percent',
+    section: 'plan',
+    min: 0,
+    max: 100,
+  },
+  plan_redemption_rate_percent: {
+    labelKey: 'qy_cm_f_plan_redemption_rate',
+    hintKey: 'qy_cm_f_plan_redemption_rate_hint',
+    unit: 'percent',
+    section: 'plan',
+    min: 0,
+    max: 100,
+  },
+  // ── 计佣口径开关 ──
+  // 以前只能改 YAML 再重启。每个开关的说明（hintKey）要写清「打开之后哪笔钱不再计佣」。
+  exclude_subscription_consume: {
+    labelKey: 'qy_cm_f_exclude_subscription',
+    hintKey: 'qy_cm_f_exclude_subscription_hint',
+    unit: 'switch',
+    section: 'switch',
+    min: 0,
+    max: 1,
+  },
+  exclude_redemption_and_manual: {
+    labelKey: 'qy_cm_f_exclude_redemption',
+    hintKey: 'qy_cm_f_exclude_redemption_hint',
+    unit: 'switch',
+    section: 'switch',
+    min: 0,
+    max: 1,
+  },
+  refund_clawback: {
+    labelKey: 'qy_cm_f_refund_clawback',
+    hintKey: 'qy_cm_f_refund_clawback_hint',
+    unit: 'switch',
+    section: 'switch',
+    min: 0,
+    max: 1,
   },
   min_settle_stardust: {
     labelKey: 'qy_cm_f_min_settle',
     hintKey: 'qy_cm_f_min_settle_hint',
     // 后端校验 `v <= 0` 直接 400，下限必须是 1。
     unit: 'stardust',
+    section: 'settle',
     min: 1,
     max: QY_MAX_QUOTA,
   },
@@ -91,6 +162,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     labelKey: 'qy_cm_f_max_per_order',
     hintKey: 'qy_cm_f_max_per_order_hint_xh',
     unit: 'stardust',
+    section: 'settle',
     min: 0,
     max: QY_MAX_QUOTA,
     zeroMeansUnlimited: true,
@@ -99,6 +171,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     labelKey: 'qy_cm_f_holding_days',
     hintKey: 'qy_cm_f_holding_days_hint_xh',
     unit: 'plain',
+    section: 'settle',
     min: 0,
     max: 365,
   },
@@ -109,6 +182,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     labelKey: 'qy_cm_f_min_credit',
     hintKey: 'qy_cm_f_min_credit_hint',
     unit: 'stardust',
+    section: 'settle',
     min: 1,
     max: QY_MAX_QUOTA,
   },
@@ -118,6 +192,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     labelKey: 'qy_cm_f_credit_interval',
     hintKey: 'qy_cm_f_credit_interval_hint',
     unit: 'plain',
+    section: 'settle',
     min: 30,
     max: 86400,
   },
@@ -125,6 +200,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     labelKey: 'qy_cm_f_daily_cap',
     hintKey: 'qy_cm_f_unlimited_hint',
     unit: 'stardust',
+    section: 'settle',
     min: 0,
     max: QY_MAX_QUOTA,
     zeroMeansUnlimited: true,
@@ -133,6 +209,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     labelKey: 'qy_cm_f_large_alert',
     hintKey: 'qy_cm_f_large_alert_hint',
     unit: 'stardust',
+    section: 'settle',
     min: 0,
     max: QY_MAX_QUOTA,
     zeroMeansUnlimited: true,
@@ -141,6 +218,7 @@ export const QY_COMMISSION_FIELDS: Record<string, QyCommissionFieldMeta> = {
     labelKey: 'qy_cm_f_min_invitee_age',
     hintKey: 'qy_cm_f_min_invitee_age_hint',
     unit: 'plain',
+    section: 'settle',
     min: 0,
     max: 8760,
   },
@@ -188,4 +266,9 @@ export function qyNormalizePercent(raw: string): string {
   if (!s.includes('.')) return String(Number(s))
   const trimmed = s.replace(/0+$/, '').replace(/\.$/, '')
   return String(Number(trimmed))
+}
+
+/** 一个键落在哪个分区。没登记元数据的键归「结算与风控」，照常可见。 */
+export function qyCommissionSectionOf(key: string): QyCommissionSection {
+  return qyCommissionFieldMeta(key)?.section ?? 'settle'
 }

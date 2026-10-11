@@ -860,6 +860,17 @@ func validateCommission(cm *Commission, stardustEnabled bool) error {
 			return err
 		}
 	}
+	if cm.PlanOrderRateBps != nil {
+		if err := checkBps("commission.plan_order_rate_bps", *cm.PlanOrderRateBps); err != nil {
+			return err
+		}
+	}
+	if err := checkBps("commission.plan_balance_rate_bps", cm.PlanBalanceRateBps); err != nil {
+		return err
+	}
+	if err := checkBps("commission.plan_redemption_rate_bps", cm.PlanRedemptionRateBps); err != nil {
+		return err
+	}
 	if cm.Levels != 1 {
 		return fmt.Errorf("qianye: commission.levels 当前仅支持 1 级,收到 %d"+
 			"(多级分销正是要规避的「拉人头」形状)", cm.Levels)

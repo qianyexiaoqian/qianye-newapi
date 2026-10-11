@@ -252,12 +252,12 @@ func findGroupRate(ctx context.Context, key string) (*GroupRate, error) {
 }
 
 // planRewardView 是套餐返还定义的下发形状;sources 拆成数组,exists 说明是否配过。
+// 只有买家本人那份:上线那份在推广佣金的配置页(plan_*_rate_percent)。
 type planRewardView struct {
-	PlanId     int      `json:"plan_id"`
-	BuyerBps   int      `json:"buyer_bps"`
-	InviterBps int      `json:"inviter_bps"`
-	Sources    []string `json:"sources"`
-	Exists     bool     `json:"exists"`
+	PlanId   int      `json:"plan_id"`
+	BuyerBps int      `json:"buyer_bps"`
+	Sources  []string `json:"sources"`
+	Exists   bool     `json:"exists"`
 }
 
 func newPlanRewardView(r PlanReward, exists bool) planRewardView {
@@ -267,7 +267,7 @@ func newPlanRewardView(r PlanReward, exists bool) planRewardView {
 			sources = append(sources, s)
 		}
 	}
-	return planRewardView{PlanId: r.PlanId, BuyerBps: r.BuyerBps, InviterBps: r.InviterBps, Sources: sources, Exists: exists}
+	return planRewardView{PlanId: r.PlanId, BuyerBps: r.BuyerBps, Sources: sources, Exists: exists}
 }
 
 // planIdParam 解析 /:plan_id。主库 subscription_plans.id 是 int,超出 int32 的值
@@ -309,9 +309,8 @@ func handlePutPlanReward(c *gin.Context) {
 		return
 	}
 	var req struct {
-		BuyerBps   int      `json:"buyer_bps"`
-		InviterBps int      `json:"inviter_bps"`
-		Sources    []string `json:"sources"`
+		BuyerBps int      `json:"buyer_bps"`
+		Sources  []string `json:"sources"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeConfigUpdateAudit(c, auditPlanRewardPut, qymodel.ResultFail, "请求体解析失败: plan "+strconv.Itoa(planId), nil, nil)
@@ -328,7 +327,7 @@ func handlePutPlanReward(c *gin.Context) {
 	for _, item := range []struct {
 		name  string
 		value int
-	}{{"buyer_bps", req.BuyerBps}, {"inviter_bps", req.InviterBps}} {
+	}{{"buyer_bps", req.BuyerBps}} {
 		if item.value < 0 || item.value > maxBps {
 			reason := item.name + " 必须落在 [0, " + strconv.Itoa(maxBps) + "],收到 " + strconv.Itoa(item.value)
 			writeConfigUpdateAudit(c, auditPlanRewardPut, qymodel.ResultFail, reason+"(plan "+strconv.Itoa(planId)+")", nil, nil)
@@ -344,7 +343,7 @@ func handlePutPlanReward(c *gin.Context) {
 		before = newPlanRewardView(prev, true)
 	}
 	row := PlanReward{
-		PlanId: planId, BuyerBps: req.BuyerBps, InviterBps: req.InviterBps,
+		PlanId: planId, BuyerBps: req.BuyerBps,
 		Sources: sources, OperatorId: c.GetInt("id"),
 	}
 	if err := savePlanReward(ctx, row); err != nil {

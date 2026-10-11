@@ -32,7 +32,8 @@ const (
 func init() {
 	hookInstallers = append(hookInstallers, func() {
 		model.QyOnUserRegistered = onUserRegistered
-		model.QyOnSubscriptionGranted = onSubscriptionGranted
+		// 套餐授予事件的单槽变量由 invite 占着,再转发到这里(invite/hook.go)。
+		invite.AfterSubscriptionGranted = onSubscriptionGranted
 	})
 }
 
@@ -141,7 +142,8 @@ func accrueRegister(ctx context.Context, userId int) error {
 
 // ───────────────────────────── ③ 套餐返 ─────────────────────────────
 
-// onSubscriptionGranted 在四条购买路径的事务提交之后触发(model.QyOnSubscriptionGranted)。
+// onSubscriptionGranted 在四条购买路径的事务提交之后触发(model.QyOnSubscriptionGranted,
+// 经 invite.AfterSubscriptionGranted 转发)。
 // 购买是低频事件,丢弃面可接受;续期(Renewed=true)照返 —— 钱已收。
 // 商城自购(source=stardust)不经此 hook,且它永远不在来源闭集里(D-F)。
 func onSubscriptionGranted(g model.QySubscriptionGrant) {
@@ -154,11 +156,14 @@ func onSubscriptionGranted(g model.QySubscriptionGrant) {
 	})
 }
 
-// accruePlanGrant 按套餐的返还定义给买家(plan_buyer)与上线(plan_inviter)各记一笔。
+// accruePlanGrant 按套餐的返还定义给买家本人记一笔套餐返(plan_buyer)。
+//
+// 上线因下线买套餐得到的那份已移到推广佣金(commission/plan.go,按在线 / 余额 / 兑换码
+// 三档分别配);本包不再记 plan_inviter,历史流水照常保留、照常计入统计。
 //
 // 基数:order 来源优先用实付 Money(快照);balance 来源一律用 Money —— 余额购买价可以与
 // 在线支付价分开配置(含 0 = 免费),按实际扣的那个价返;其余用套餐售价 PriceAmount(美元)。
-// 两笔各自一个事务:上线那笔失败不该回滚买家已经到手的那笔;各自幂等,重投无害。
+// 幂等,重投无害。
 func accruePlanGrant(ctx context.Context, g model.QySubscriptionGrant, grantedAt int64) error {
 	reward, _ := planRewardFor(ctx, g.PlanId)
 	if !reward.SourceAllowed(g.Source) {
@@ -178,37 +183,15 @@ func accruePlanGrant(ctx context.Context, g model.QySubscriptionGrant, grantedAt
 	refNo := strconv.Itoa(g.SubscriptionId)
 	baseQuota := quotaOfMoney(price)
 
-	if buyer := stardustFromMoney(price, reward.BuyerBps); buyer > 0 {
-		if _, err := postCredit(ctx, Posting{
-			UserId: g.UserId, Kind: KindPlanBuyer, Amount: buyer,
-			IdemScope: planIdemScope, IdemKey: key,
-			RefType: "subscription", RefNo: refNo,
-			RateBps: reward.BuyerBps, BaseQuota: baseQuota,
-			Remark: "套餐 " + strconv.Itoa(g.PlanId) + " / " + g.Source,
-		}); err != nil {
-			return err
-		}
-	}
-	if reward.InviterBps <= 0 {
+	buyer := stardustFromMoney(price, reward.BuyerBps)
+	if buyer <= 0 {
 		return nil
 	}
-	match, err := invite.InviteeEligible(ctx, g.UserId)
-	if err != nil {
-		return err
-	}
-	if !match.Eligible() {
-		return nil
-	}
-	inviter := stardustFromMoney(price, reward.InviterBps)
-	if inviter <= 0 {
-		return nil
-	}
-	_, err = postCredit(ctx, Posting{
-		UserId: match.InviterId, Kind: KindPlanInviter, Amount: inviter,
-		IdemScope: planIdemScope, IdemKey: key + ":inviter",
+	_, err := postCredit(ctx, Posting{
+		UserId: g.UserId, Kind: KindPlanBuyer, Amount: buyer,
+		IdemScope: planIdemScope, IdemKey: key,
 		RefType: "subscription", RefNo: refNo,
-		PeerUserId: g.UserId, RateBps: reward.InviterBps,
-		RateGroup: groupname.Effective(match.InviterGroup), BaseQuota: baseQuota,
+		RateBps: reward.BuyerBps, BaseQuota: baseQuota,
 		Remark: "套餐 " + strconv.Itoa(g.PlanId) + " / " + g.Source,
 	})
 	return err

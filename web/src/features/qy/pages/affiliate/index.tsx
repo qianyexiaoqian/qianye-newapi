@@ -303,6 +303,32 @@ function PolicyCard(props: { summary: QyCommissionSummary }) {
             percent: summary.rate.redemption_bps / 100,
           }),
     },
+    // 下线买套餐只在购买时计这一次，三种买法各一档（不分分组，后端算好的生效值）。
+    ...(
+      [
+        [
+          'plan-order',
+          'qy_aff_rate_plan_order',
+          summary.rate.plan_order_percent,
+        ],
+        [
+          'plan-balance',
+          'qy_aff_rate_plan_balance',
+          summary.rate.plan_balance_percent,
+        ],
+        [
+          'plan-redemption',
+          'qy_aff_rate_plan_redemption',
+          summary.rate.plan_redemption_percent,
+        ],
+      ] as const
+    )
+      .filter(([, , percent]) => percent != null)
+      .map(([key, labelKey, percent]) => ({
+        key,
+        label: t(labelKey),
+        value: t('qy_aff_rate_value', { percent }),
+      })),
     {
       // 「你走哪一档」。group 为空表示后端这次没解析出账号分组，此时既不说
       // 命中也不说回落：编一个分组名比不说更糟。

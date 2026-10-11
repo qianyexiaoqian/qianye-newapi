@@ -63,12 +63,26 @@ const CONFIG = {
     max_daily_stardust_per_inviter: 0,
     large_accrual_alert_stardust: 0,
     min_invitee_age_hours: 0,
+    plan_order_rate_percent: '',
+    plan_order_rate_effective_percent: '10',
+    plan_order_rate_follows_topup: true,
+    plan_balance_rate_percent: '0',
+    plan_redemption_rate_percent: '0',
+    exclude_subscription_consume: false,
+    exclude_redemption_and_manual: true,
+    refund_clawback: true,
   },
   overrides: {},
   editable_keys: [
     'topup_rate_percent',
     'consume_rate_percent',
     'redemption_rate_percent',
+    'plan_order_rate_percent',
+    'plan_balance_rate_percent',
+    'plan_redemption_rate_percent',
+    'exclude_subscription_consume',
+    'exclude_redemption_and_manual',
+    'refund_clawback',
     'min_settle_stardust',
     'max_per_order_stardust',
     'holding_days',
@@ -79,8 +93,16 @@ const CONFIG = {
     'topup_rate_percent',
     'consume_rate_percent',
     'redemption_rate_percent',
+    'plan_order_rate_percent',
+    'plan_balance_rate_percent',
+    'plan_redemption_rate_percent',
   ],
-  nullable_percent_keys: ['redemption_rate_percent'],
+  nullable_percent_keys: ['redemption_rate_percent', 'plan_order_rate_percent'],
+  bool_keys: [
+    'exclude_subscription_consume',
+    'exclude_redemption_and_manual',
+    'refund_clawback',
+  ],
   group_rates: [
     {
       group_name: 'vip',
@@ -98,9 +120,6 @@ const CONFIG = {
     topup_rate_percent: '10',
     consume_rate_percent: '5',
     redemption_rate_percent: '',
-    exclude_redemption_and_manual: true,
-    exclude_subscription_consume: false,
-    refund_clawback: true,
     settle_interval_seconds: 300,
     day_offset_minutes: 480,
     topup_scan_interval_seconds: 60,
@@ -108,10 +127,46 @@ const CONFIG = {
   },
 }
 
+/** 注册奖那张卡读写的是星屑运营参数。 */
+const STARDUST_CONFIG = {
+  effective: {
+    name: '星屑',
+    show_entry: 1,
+    consume_bps: 10_000,
+    invite_register_stardust: 50,
+    held_alert_days: 3,
+  },
+  overrides: {},
+  editable_keys: [
+    'name',
+    'show_entry',
+    'consume_bps',
+    'invite_register_stardust',
+    'held_alert_days',
+  ],
+  bounds: {
+    consume_bps: { lo: 0, hi: 100_000 },
+    invite_register_stardust: { lo: 0, hi: 8_796_093_022_208 },
+    held_alert_days: { lo: 1, hi: 365 },
+  },
+  yaml_readonly: {
+    quota_per_unit: 500_000,
+    settle_delay_minutes: 10,
+    settle_interval_seconds: 300,
+    exclude_subscription_consume: false,
+    max_manual_adjust: 0,
+    compliance_confirmed: true,
+  },
+}
+
 function respond(request: QyProbeRequest) {
   if (request.url.endsWith('/admin/commission/config')) {
     if (request.method === 'PUT') return { data: {} }
     return { data: CONFIG }
+  }
+  if (request.url.endsWith('/admin/stardust/config')) {
+    if (request.method === 'PUT') return { data: { effective: {} } }
+    return { data: STARDUST_CONFIG }
   }
   if (request.url.endsWith('/admin/commission/health')) {
     return {
@@ -200,5 +255,88 @@ describe('佣金配置页', () => {
     for (const key of Object.keys(puts[0].body as Record<string, unknown>)) {
       assert.ok(!key.includes('fiat'), `提交体里出现了法币键 ${key}`)
     }
+  })
+})
+
+/** 点一个开关（按 id 定位：Switch 的可见文字是空的）。 */
+async function toggleSwitch(key: string): Promise<boolean> {
+  const node = document.querySelector(`[id="qy-cm-${key}"]`)
+  if (node == null) return false
+  await act(async () => {
+    node.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 60))
+  })
+  return true
+}
+
+describe('给上线的返利都在这一页', () => {
+  test('套餐三档、三个开关（带说明）、注册奖都画出来了', async () => {
+    const screen = await mountPage()
+    const text = screen.text()
+    for (const key of [
+      'qy_cm_sec_rates',
+      'qy_cm_sec_plan',
+      'qy_cm_sec_switch',
+      'qy_cm_f_plan_order_rate',
+      'qy_cm_f_plan_balance_rate',
+      'qy_cm_f_plan_redemption_rate',
+      'qy_cm_f_exclude_subscription',
+      'qy_cm_f_exclude_subscription_hint',
+      'qy_cm_f_exclude_redemption_hint',
+      'qy_cm_f_refund_clawback_hint',
+      'qy_cm_reg_title',
+      'qy_sdadm_cfg_k_invite_register_stardust',
+    ] as const) {
+      assert.ok(text.includes(zh[key]), `缺「${zh[key]}」`)
+    }
+    // 在线套餐那档留空 = 跟随充值档，旁边必须写出实际几个点。
+    assert.ok(
+      text.includes(zh.qy_cm_f_redemption_follows.replace('{{percent}}', '10')),
+      '在线套餐档留空时没写「跟随充值档 10%」'
+    )
+    assert.ok(!text.includes('qy_cm_'), `有 qy_cm_ 键没翻译：${text}`)
+  })
+
+  test('打开「套餐消费不计佣」并确认：PUT 的 body 是 exclude_subscription_consume=1', async () => {
+    const screen = await mountPage()
+    assert.ok(
+      await toggleSwitch('exclude_subscription_consume'),
+      '找不到「套餐消费不计佣」开关'
+    )
+    assert.ok(await screen.click(zh.qy_cm_save), '找不到「保存改动」')
+    const dialog = screen.text()
+    assert.ok(dialog.includes(zh.qy_cm_confirm_title), '确认弹窗没打开')
+    assert.ok(
+      dialog.includes(`${zh.qy_common_off} → ${zh.qy_common_on}`),
+      `确认弹窗没有把开关复述成 关 → 开：${dialog}`
+    )
+
+    screen.sent.length = 0
+    assert.ok(await clickLast(zh.qy_cm_save), '弹窗里找不到确认键')
+    const puts = screen.sent.filter(
+      (row) =>
+        row.method === 'PUT' && row.url.endsWith('/admin/commission/config')
+    )
+    assert.equal(puts.length, 1, '应当恰好发一次 PUT')
+    assert.deepEqual(puts[0].body, { exclude_subscription_consume: '1' })
+  })
+
+  test('填余额买套餐 3%：PUT 的 body 恰好那一个键', async () => {
+    const screen = await mountPage()
+    assert.ok(
+      await screen.type(zh.qy_cm_f_plan_balance_rate, '3'),
+      '找不到余额买套餐输入框'
+    )
+    assert.ok(await screen.click(zh.qy_cm_save), '找不到「保存改动」')
+    screen.sent.length = 0
+    assert.ok(await clickLast(zh.qy_cm_save), '弹窗里找不到确认键')
+    const puts = screen.sent.filter(
+      (row) =>
+        row.method === 'PUT' && row.url.endsWith('/admin/commission/config')
+    )
+    assert.equal(puts.length, 1)
+    assert.deepEqual(puts[0].body, { plan_balance_rate_percent: '3' })
   })
 })
