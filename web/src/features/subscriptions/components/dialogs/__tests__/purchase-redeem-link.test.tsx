@@ -184,3 +184,16 @@ test('redeem entry is disabled once the sale window has ended', async () => {
   assert.ok(button)
   assert.equal(button.disabled, true)
 })
+
+test('a separate balance price is shown and is what the balance button charges', async () => {
+  await mountDialog(planRecord({ price_amount: 10, balance_price_amount: 0.5 }))
+  const text = document.body.textContent ?? ''
+  assert.ok(text.includes('qy_plan_balance_price'), '余额购买价那一行没出现')
+  assert.ok(text.includes('$0.50'), `余额购买价没印出来：${text}`)
+})
+
+test('without a separate balance price no extra price row appears', async () => {
+  await mountDialog(planRecord({ price_amount: 10, balance_price_amount: null }))
+  const text = document.body.textContent ?? ''
+  assert.ok(!text.includes('qy_plan_balance_price'))
+})

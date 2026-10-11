@@ -80,6 +80,17 @@ export function isPlanRedeemPurchaseLink(raw: string | undefined): boolean {
   }
 }
 
+/**
+ * 余额购买价的输入框是否合法：空串（与在线支付价相同），或 [0, 9999] 的数。
+ * 与后端 `model.ValidatePlanBalancePrice` 同一判据。
+ */
+export function isPlanBalancePriceInput(raw: string): boolean {
+  const text = raw.trim()
+  if (text === '') return true
+  const value = Number(text)
+  return Number.isFinite(value) && value >= 0 && value <= 9999
+}
+
 export function getPlanFormSchema(t: TFunction) {
   return z
     .object({
@@ -88,6 +99,11 @@ export function getPlanFormSchema(t: TFunction) {
       // "Data too long" from MySQL or a silently truncated description.
       subtitle: z.string().max(255, t('qy_plan_subtitle_too_long')).optional(),
       price_amount: z.coerce.number().min(0, t('Please enter amount')),
+      // 余额购买价：空串 = 与在线支付价相同（落库 NULL），否则 [0, 9999]，与后端
+      // model.ValidatePlanBalancePrice 同一判据。
+      balance_price_input: z
+        .string()
+        .refine(isPlanBalancePriceInput, t('qy_plan_balance_price_invalid')),
       duration_unit: z.enum([
         'year',
         'month',
@@ -128,9 +144,6 @@ export function getPlanFormSchema(t: TFunction) {
       // 不是"没填"，所以这里不做 min(1) 之类的必填校验。
       upgrade_group: z.string(),
       downgrade_group: z.string(),
-      stripe_price_id: z.string().optional(),
-      creem_product_id: z.string().optional(),
-      waffo_pancake_product_id: z.string().optional(),
       // 与后端 model.NormalizePlanRedeemPurchaseLink 同一条判据：空串，或 http(s) 完整地址。
       redeem_purchase_link: z
         .string()
@@ -162,6 +175,7 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   title: '',
   subtitle: '',
   price_amount: 0,
+  balance_price_input: '',
   duration_unit: 'month',
   duration_value: 1,
   custom_seconds: 0,
@@ -180,9 +194,6 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   no_quota: false,
   upgrade_group: '',
   downgrade_group: '',
-  stripe_price_id: '',
-  creem_product_id: '',
-  waffo_pancake_product_id: '',
   redeem_purchase_link: '',
 }
 
@@ -191,6 +202,8 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     title: plan.title || '',
     subtitle: plan.subtitle || '',
     price_amount: Number(plan.price_amount || 0),
+    balance_price_input:
+      plan.balance_price_amount == null ? '' : String(plan.balance_price_amount),
     duration_unit: plan.duration_unit || 'month',
     duration_value: Number(plan.duration_value || 1),
     custom_seconds: Number(plan.custom_seconds || 0),
@@ -211,9 +224,6 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     no_quota: plan.no_quota === true,
     upgrade_group: plan.upgrade_group || '',
     downgrade_group: plan.downgrade_group || '',
-    stripe_price_id: plan.stripe_price_id || '',
-    creem_product_id: plan.creem_product_id || '',
-    waffo_pancake_product_id: plan.waffo_pancake_product_id || '',
     redeem_purchase_link: plan.redeem_purchase_link || '',
   }
 }
@@ -230,6 +240,7 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
     max_total_users,
     sale_start_at_input,
     sale_end_at_input,
+    balance_price_input,
     ...planValues
   } = values
   const pureProduct = values.no_quota === true
@@ -241,6 +252,9 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
       sale_start_at: saleTimeToUnix(sale_start_at_input),
       sale_end_at: saleTimeToUnix(sale_end_at_input),
       price_amount: Number(values.price_amount || 0),
+      // 恒带上（含 null）：后端更新是显式 map 全量覆盖，null 就是清回「与在线支付价相同」。
+      balance_price_amount:
+        balance_price_input.trim() === '' ? null : Number(balance_price_input),
       currency: 'USD',
       // 永久档没有时长可言，落 0。后端的 `duration_value <= 0` 兜底只对**非**
       // 永久/自定义档补 1，所以 0 会原样留在库里 —— 列表页才不会把一个永久套餐

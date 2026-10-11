@@ -67,11 +67,11 @@ func TestAccruePlanGrantFollowsPlanRewardDefinition(t *testing.T) {
 	assert.EqualValues(t, 4_000_000, l[0].BaseQuota)
 	assert.Empty(t, ledgerOf(t, env.ext, 321), "默认 inviter_bps=0")
 
-	balance := model.QySubscriptionGrant{UserId: 322, PlanId: 5, SubscriptionId: 9, Source: PlanSourceBalance, TradeNo: "SUB-2", PriceAmount: 10, Renewed: true}
+	balance := model.QySubscriptionGrant{UserId: 322, PlanId: 5, SubscriptionId: 9, Source: PlanSourceBalance, TradeNo: "SUB-2", PriceAmount: 10, Money: 6, Renewed: true}
 	require.NoError(t, accruePlanGrant(ctx, balance, 3_000))
 	l = ledgerOf(t, env.ext, 322)
 	require.Len(t, l, 2)
-	assert.EqualValues(t, 10, l[1].Amount, "balance 来源按售价;续期照返")
+	assert.EqualValues(t, 6, l[1].Amount, "balance 来源按实扣的余额购买价($6),不是在线支付价;续期照返")
 	assert.Equal(t, "sub:SUB-2", l[1].IdemKey)
 
 	admin := model.QySubscriptionGrant{UserId: 322, PlanId: 5, SubscriptionId: 9, Source: PlanSourceAdmin, PriceAmount: 10}

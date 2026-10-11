@@ -5014,5 +5014,18 @@
   "qy_inv_part_legacy": "历史下线返(已停用)",
   "qy_inv_rate_commission_note": "下线充值 / 兑换码 / 消费带来的返还只走推广佣金,比例见上方的佣金规则。",
   "qy_inv_col_commission": "带来佣金",
-  "qy_inv_people_hint": "「带来佣金」含尚未结算进余额的部分,逐笔明细在「佣金记录」;「其他奖励」是注册奖、套餐返等直接入账的星屑,两者不相加。"
+  "qy_inv_people_hint": "「带来佣金」含尚未结算进余额的部分,逐笔明细在「佣金记录」;「其他奖励」是注册奖、套餐返等直接入账的星屑,两者不相加。",
+  "qy_sort_none": "点击排序",
+  "qy_sort_desc": "从多到少",
+  "qy_sort_asc": "从少到多",
+  "qy_plan_direct_price": "直接购买价格",
+  "qy_plan_direct_price_hint": "在线支付(支付宝 / 微信等)购买这个套餐的价格,实际币种取决于支付渠道。",
+  "qy_plan_balance_price": "余额购买价格",
+  "qy_plan_balance_price_ph": "留空 = 与直接购买价格相同",
+  "qy_plan_balance_price_hint": "用账户余额购买时扣的价格,可以与直接购买价格不同;留空则两者相同,填 0 = 余额购买免费。需要同时打开「允许余额兑换」才会生效。",
+  "qy_plan_balance_price_invalid": "请填写 0 到 9999 之间的价格,或留空",
+  "qy_plan_balance_price_short": "余额 {{price}}",
+  "qy_plan_channel_balance": "余额购买",
+  "qy_plan_channel_redeem": "兑换码",
+  "qy_plan_external_purchase": "站外购买"
 }

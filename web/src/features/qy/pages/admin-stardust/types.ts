@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { QySortOrder } from '../../lib/sort'
 import type { QyPageParams } from '../../lib/types'
 import type {
   QyStardustAccrualRow,
@@ -63,29 +64,50 @@ export type QyStardustBalanceRow = {
   updated_at: number
 }
 
+/** 余额列表可排序的列(后端白名单 balanceSorts)。 */
+export type QyStardustBalanceSort =
+  | 'available'
+  | 'earned'
+  | 'spent'
+  | 'refunded'
+  | 'adjusted'
+  | 'updated_at'
+
 export type QyStardustBalancesParams = QyPageParams & {
   user_id?: number
   keyword?: string
+  sort?: QyStardustBalanceSort
+  order?: QySortOrder
 }
 
 export type QyStardustAdminLedgerRow = QyStardustLedgerRow & {
   user_id: number
 }
 
+/** 流水可排序的列(后端白名单 ledgerSorts)。 */
+export type QyStardustLedgerSort = 'created_at' | 'amount' | 'balance_after'
+
 export type QyStardustAdminLedgerParams = QyPageParams & {
   user_id?: number
   kind?: QyStardustLedgerKind
   act_no?: string
+  sort?: QyStardustLedgerSort
+  order?: QySortOrder
 }
 
 export type QyStardustAdminAccrualRow = QyStardustAccrualRow & {
   user_id: number
 }
 
+/** 日桶可排序的列(后端白名单 accrualSorts)。 */
+export type QyStardustAccrualSort = 'bucket_date' | 'base_quota' | 'gross'
+
 export type QyStardustAdminAccrualsParams = QyPageParams & {
   user_id?: number
   bucket_date?: string
   status?: QyStardustAccrualStatus
+  sort?: QyStardustAccrualSort
+  order?: QySortOrder
 }
 
 /** 最近一次结算运行（`qy_sd_settle_run` 的一行）。字段与后端 `settleStatus` 逐字一致。 */

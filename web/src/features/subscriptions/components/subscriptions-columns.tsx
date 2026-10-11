@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { type ColumnDef } from '@tanstack/react-table'
+import type { ColumnDef } from '@tanstack/react-table'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -29,8 +29,11 @@ import { formatQuota } from '@/lib/format'
 
 import {
   formatDuration,
+  formatPlanBalancePrice,
+  formatPlanPrice,
   formatResetPeriod,
   formatSaleTime,
+  hasSeparateBalancePrice,
   planSaleBadge,
 } from '../lib'
 import type { PlanRecord, PlanSeatUsage } from '../types'
@@ -102,11 +105,21 @@ export function useSubscriptionsColumns(
         id: 'price',
         header: t('Price'),
         cell: ({ row }) => (
-          <span className='font-semibold text-emerald-600'>
-            ${Number(row.original.plan.price_amount || 0).toFixed(2)}
+          <span className='flex flex-col'>
+            <span className='font-semibold text-emerald-600'>
+              {formatPlanPrice(row.original.plan)}
+            </span>
+            {/* 余额购买价单独配了才印第二行：同价时重复一遍只是噪音。 */}
+            {hasSeparateBalancePrice(row.original.plan) && (
+              <span className='text-muted-foreground text-xs'>
+                {t('qy_plan_balance_price_short', {
+                  price: formatPlanBalancePrice(row.original.plan),
+                })}
+              </span>
+            )}
           </span>
         ),
-        size: 100,
+        size: 120,
       },
       {
         id: 'duration',
@@ -283,20 +296,19 @@ export function useSubscriptionsColumns(
         cell: ({ row }) => {
           const plan = row.original.plan
           return (
+            // Stripe / Creem / Waffo Pancake 已从套餐配置里移除：这一列只列本站真正
+            // 在用的两条额外渠道 —— 余额购买与站外买兑换码（在线支付对每个套餐都开）。
             <BadgeCell>
-              {plan.stripe_price_id && (
+              {plan.allow_balance_pay !== false && (
                 <StatusBadge
-                  label='Stripe'
+                  label={t('qy_plan_channel_balance')}
                   variant='neutral'
                   copyable={false}
                 />
               )}
-              {plan.creem_product_id && (
-                <StatusBadge label='Creem' variant='neutral' copyable={false} />
-              )}
-              {plan.waffo_pancake_product_id && (
+              {(plan.redeem_purchase_link ?? '') !== '' && (
                 <StatusBadge
-                  label='Waffo Pancake'
+                  label={t('qy_plan_channel_redeem')}
                   variant='neutral'
                   copyable={false}
                 />

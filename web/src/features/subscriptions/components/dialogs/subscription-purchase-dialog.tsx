@@ -49,6 +49,7 @@ import {
   formatPlanPrice,
   formatSaleTime,
   isPlanRedeemPurchaseLink,
+  planBalancePrice,
   planSaleState,
   type PlanEntitlementDisclosure,
 } from '../../lib'
@@ -114,7 +115,8 @@ export function SubscriptionPurchaseDialog(props: Props) {
       : DEFAULT_CURRENCY_CONFIG.quotaPerUnit
   const balanceCost = Math.max(
     0,
-    Math.ceil(Number(plan.price_amount || 0) * quotaPerUnit)
+    // 余额购买按余额购买价扣（没单独配时与在线支付价相同），与后端同一条规则。
+    Math.ceil(planBalancePrice(plan) * quotaPerUnit)
   )
   const userQuota = Math.max(0, Number(props.userQuota || 0))
   const allowBalancePay = plan.allow_balance_pay !== false

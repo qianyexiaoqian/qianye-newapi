@@ -27,6 +27,11 @@ export const subscriptionPlanSchema = z.object({
   title: z.string(),
   subtitle: z.string().optional(),
   price_amount: z.number(),
+  /**
+   * 余额购买价（美元），与在线支付价 `price_amount` 分开配置。`null` / 缺省 = 与
+   * `price_amount` 相同；0 是显式的「余额购买免费」。展示一律走 `planBalancePrice`。
+   */
+  balance_price_amount: z.number().nullable().optional(),
   currency: z.string().default('USD'),
   // 'permanent' 是永久档：后端 `model.SubscriptionDurationPermanent`，end_time
   // 存 0，到期扫描的 `end_time > 0` 天然扫不到它。duration_value 对它无意义。

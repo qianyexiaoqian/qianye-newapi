@@ -5014,5 +5014,18 @@
   "qy_inv_part_legacy": "Retired invitee returns (history)",
   "qy_inv_rate_commission_note": "Returns from invitee top-ups, redemptions and spending go through referral commission only; see the commission rules above for the rates.",
   "qy_inv_col_commission": "Commission",
-  "qy_inv_people_hint": "Commission includes the part not yet settled into your balance; see Commission records for each entry. Other rewards are Stardust credited directly (sign-up, plan rewards). The two are not added together."
+  "qy_inv_people_hint": "Commission includes the part not yet settled into your balance; see Commission records for each entry. Other rewards are Stardust credited directly (sign-up, plan rewards). The two are not added together.",
+  "qy_sort_none": "Click to sort",
+  "qy_sort_desc": "High to low",
+  "qy_sort_asc": "Low to high",
+  "qy_plan_direct_price": "Direct purchase price",
+  "qy_plan_direct_price_hint": "Price when paying online (Alipay, WeChat Pay, …); the actual currency depends on the payment gateway.",
+  "qy_plan_balance_price": "Balance purchase price",
+  "qy_plan_balance_price_ph": "Empty = same as the direct price",
+  "qy_plan_balance_price_hint": "Charged when buying with account balance; may differ from the direct price. Leave empty to use the direct price; 0 means free with balance. “Allow balance redemption” must also be on.",
+  "qy_plan_balance_price_invalid": "Enter a price between 0 and 9999, or leave it empty",
+  "qy_plan_balance_price_short": "Balance {{price}}",
+  "qy_plan_channel_balance": "Balance",
+  "qy_plan_channel_redeem": "Redemption code",
+  "qy_plan_external_purchase": "External purchase"
 }

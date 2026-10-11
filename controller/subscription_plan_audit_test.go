@@ -215,7 +215,7 @@ func TestPlanAuditSnapshotCarriesMoneyFields(t *testing.T) {
 		"enabled", "price_amount", "sale_start_at", "sale_end_at",
 		"total_amount", "max_purchase_per_user", "no_quota",
 		"duration_unit", "duration_value", "upgrade_group", "downgrade_group",
-		"redeem_purchase_link",
+		"redeem_purchase_link", "balance_price_amount",
 	} {
 		assert.Containsf(t, snap, key, "审计快照必须含 %s —— 它直接决定谁能付款/付多少/得到什么", key)
 	}
@@ -259,4 +259,46 @@ func TestPlanRedeemPurchaseLinkRoundTrip(t *testing.T) {
 	rec = callPlanAdmin(t, AdminUpdateSubscriptionPlan, http.MethodPut, path, id, planBody(created.Id, ""))
 	require.Contains(t, rec.Body.String(), `"success":true`)
 	assert.Equal(t, "", stored(created.Id), "清空必须真的清掉,而不是被当成零值跳过")
+}
+
+// TestPlanBalancePriceRoundTrip 走真实的新建 / 更新接口:余额购买价能单独存、能清回"跟随
+// 在线支付价"(NULL),负数与超上限一律拒绝且不落库。
+func TestPlanBalancePriceRoundTrip(t *testing.T) {
+	mainDB, _ := setupPlanAuditTest(t)
+
+	planBody := func(id int, balance string) string {
+		return fmt.Sprintf(
+			`{"plan":{"id":%d,"title":"balance-price-plan","price_amount":30,"currency":"USD",`+
+				`"duration_unit":"month","duration_value":1,"enabled":true,`+
+				`"balance_price_amount":%s}}`, id, balance)
+	}
+	stored := func(id int) *float64 {
+		var plan model.SubscriptionPlan
+		require.NoError(t, mainDB.Where("id = ?", id).First(&plan).Error)
+		return plan.BalancePriceAmount
+	}
+
+	rec := callPlanAdmin(t, AdminCreateSubscriptionPlan, http.MethodPost,
+		"/api/subscription/admin/plans", "", planBody(0, "25"))
+	require.Contains(t, rec.Body.String(), `"success":true`)
+	var created model.SubscriptionPlan
+	require.NoError(t, mainDB.Where("title = ?", "balance-price-plan").First(&created).Error)
+	require.NotNil(t, created.BalancePriceAmount)
+	assert.InDelta(t, 25, *created.BalancePriceAmount, 1e-9)
+	assert.InDelta(t, 25, created.EffectiveBalancePrice(), 1e-9)
+
+	id := fmt.Sprint(created.Id)
+	path := "/api/subscription/admin/plans/" + id
+	for _, bad := range []string{"-1", "10000"} {
+		rec = callPlanAdmin(t, AdminUpdateSubscriptionPlan, http.MethodPut, path, id, planBody(created.Id, bad))
+		assert.Contains(t, rec.Body.String(), `"success":false`, bad)
+		assert.InDelta(t, 25, *stored(created.Id), 1e-9, "被拒的价格不能落库: %s", bad)
+	}
+
+	rec = callPlanAdmin(t, AdminUpdateSubscriptionPlan, http.MethodPut, path, id, planBody(created.Id, "null"))
+	require.Contains(t, rec.Body.String(), `"success":true`)
+	assert.Nil(t, stored(created.Id), "清空必须真的写回 NULL,之后跟随在线支付价")
+	var after model.SubscriptionPlan
+	require.NoError(t, mainDB.Where("id = ?", created.Id).First(&after).Error)
+	assert.InDelta(t, 30, after.EffectiveBalancePrice(), 1e-9)
 }

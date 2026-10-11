@@ -346,3 +346,38 @@ describe('结算标签', () => {
     assert.ok(text.includes('2026-08-20'), '最老的暂缓桶日没渲染')
   })
 })
+
+describe('按列排序', () => {
+  test('点「可用」表头：先从多到少，再点一次从少到多；排序交给后端并回到第 1 页', async () => {
+    const screen = await mountAdmin(ROLE.ADMIN, NO_ADJUST)
+    const header = () =>
+      document.body.querySelector<HTMLButtonElement>(
+        'button[data-sort-key="available"]'
+      )
+    const lastBalancesParams = () =>
+      screen.sent.filter((row) => row.url.endsWith('/admin/stardust/balances'))
+        .at(-1)?.params
+
+    assert.equal(lastBalancesParams()?.sort, 'updated_at', '缺省按更新时间排')
+    assert.ok(header() != null, '「可用」那一列不能点排序')
+
+    await act(async () => header()?.click())
+    await screen.settle()
+    assert.deepEqual(
+      [lastBalancesParams()?.sort, lastBalancesParams()?.order, lastBalancesParams()?.page],
+      ['available', 'desc', 1]
+    )
+    assert.equal(header()?.dataset.sortOrder, 'desc')
+
+    await act(async () => header()?.click())
+    await screen.settle()
+    assert.deepEqual(
+      [lastBalancesParams()?.sort, lastBalancesParams()?.order],
+      ['available', 'asc']
+    )
+    assert.ok(
+      header()?.getAttribute('aria-label')?.includes(zh.qy_sort_asc),
+      '读屏要念出当前方向'
+    )
+  })
+})

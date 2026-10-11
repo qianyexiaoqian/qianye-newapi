@@ -156,7 +156,8 @@ func onSubscriptionGranted(g model.QySubscriptionGrant) {
 
 // accruePlanGrant 按套餐的返还定义给买家(plan_buyer)与上线(plan_inviter)各记一笔。
 //
-// 基数:order 来源优先用实付 Money(快照),其余用套餐售价 PriceAmount(美元)。
+// 基数:order 来源优先用实付 Money(快照);balance 来源一律用 Money —— 余额购买价可以与
+// 在线支付价分开配置(含 0 = 免费),按实际扣的那个价返;其余用套餐售价 PriceAmount(美元)。
 // 两笔各自一个事务:上线那笔失败不该回滚买家已经到手的那笔;各自幂等,重投无害。
 func accruePlanGrant(ctx context.Context, g model.QySubscriptionGrant, grantedAt int64) error {
 	reward, _ := planRewardFor(ctx, g.PlanId)
@@ -164,7 +165,10 @@ func accruePlanGrant(ctx context.Context, g model.QySubscriptionGrant, grantedAt
 		return nil
 	}
 	price := decimal.NewFromFloat(g.PriceAmount)
-	if g.Source == PlanSourceOrder && g.Money > 0 {
+	switch {
+	case g.Source == PlanSourceBalance:
+		price = decimal.NewFromFloat(g.Money)
+	case g.Source == PlanSourceOrder && g.Money > 0:
 		price = decimal.NewFromFloat(g.Money)
 	}
 	if !price.IsPositive() {

@@ -31,9 +31,11 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
 import { QyAmountText } from '../../../components/qy-amount-text'
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
+import { QySortHeader } from '../../../components/qy-sort-header'
 import { QyStatusBadge } from '../../../components/qy-status-badge'
 import { useStardustName } from '../../../hooks/use-stardust-name'
 import { qyArray } from '../../../lib/array'
+import type { QySortState } from '../../../lib/sort'
 import { QyPager } from '../../components/qy-pager'
 import { QY_PAGE_SIZE } from '../../lib/constants'
 import { formatQyTs } from '../../ops/format'
@@ -45,7 +47,10 @@ import {
   qySdHoldReasonKey,
 } from '../../stardust/lib/display'
 import { qyAdminStardustAccrualsQuery } from '../api'
-import type { QyStardustAdminAccrualRow } from '../types'
+import type {
+  QyStardustAdminAccrualRow,
+  QyStardustAccrualSort,
+} from '../types'
 
 /**
  * 「日桶」—— 消费返的逐日计提，一行一个 (用户, 桶日)。
@@ -62,12 +67,24 @@ export function QySdAdminAccrualsTab() {
   const [day, setDay] = useState('')
   const [status, setStatus] = useState('')
 
+  // 排序在后端做(白名单列 + asc / desc);换一列或换方向都回到第 1 页。
+  const [sort, setSort] = useState<QySortState<QyStardustAccrualSort>>({
+    key: 'bucket_date',
+    order: 'desc',
+  })
+  const changeSort = (next: QySortState<QyStardustAccrualSort>) => {
+    setSort(next)
+    setPage(1)
+  }
+
   // 桶日只在凑齐八位数字之后才发出去：半截日期后端会 400，而运营正在敲。
   const dayFilter = /^\d{8}$/.test(day) ? day : ''
   const query = useQuery(
     qyAdminStardustAccrualsQuery({
       page,
       page_size: QY_PAGE_SIZE,
+      sort: sort.key,
+      order: sort.order,
       ...(/^\d+$/.test(userId) ? { user_id: Number(userId) } : {}),
       ...(dayFilter === '' ? {} : { bucket_date: dayFilter }),
       ...(status === '' ? {} : { status }),
@@ -78,7 +95,14 @@ export function QySdAdminAccrualsTab() {
   const columns: StaticDataTableColumn<QyStardustAdminAccrualRow>[] = [
     {
       id: 'bucket_date',
-      header: t('qy_sd_col_day'),
+      header: (
+        <QySortHeader
+          label={t('qy_sd_col_day')}
+          sortKey='bucket_date'
+          state={sort}
+          onChange={changeSort}
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCell,
       cellClassName: staticDataTableClassNames.compactCell,
       cell: (row) => qySdFormatDay(row.bucket_date),
@@ -99,7 +123,15 @@ export function QySdAdminAccrualsTab() {
     },
     {
       id: 'base_quota',
-      header: t('qy_sd_yesterday_base'),
+      header: (
+        <QySortHeader
+          label={t('qy_sd_yesterday_base')}
+          sortKey='base_quota'
+          state={sort}
+          onChange={changeSort}
+          align='right'
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
       cell: (row) => <QyAmountText quota={row.base_quota} />,
@@ -114,7 +146,15 @@ export function QySdAdminAccrualsTab() {
     },
     {
       id: 'gross',
-      header: t('qy_sd_yesterday_gross'),
+      header: (
+        <QySortHeader
+          label={t('qy_sd_yesterday_gross')}
+          sortKey='gross'
+          state={sort}
+          onChange={changeSort}
+          align='right'
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
       cell: (row) => t('qy_sd_amount_with_unit', { amount: row.gross, unit }),

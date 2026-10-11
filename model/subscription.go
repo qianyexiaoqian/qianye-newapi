@@ -191,7 +191,11 @@ type SubscriptionPlan struct {
 
 	// Display money amount (follow existing code style: float64 for money)
 	PriceAmount float64 `json:"price_amount" gorm:"type:decimal(10,6);not null;default:0"`
-	Currency    string  `json:"currency" gorm:"type:varchar(8);not null;default:'USD'"`
+	// BalancePriceAmount 是用余额购买时的价格(美元),与在线支付的 PriceAmount 分开配置。
+	// 可空:nil = 与 PriceAmount 相同(存量套餐升级后行为不变);0 是显式的"余额购买免费"。
+	// 读一律走 EffectiveBalancePrice,不要直接解引用。
+	BalancePriceAmount *float64 `json:"balance_price_amount" gorm:"type:decimal(10,6)"`
+	Currency           string   `json:"currency" gorm:"type:varchar(8);not null;default:'USD'"`
 
 	DurationUnit  string `json:"duration_unit" gorm:"type:varchar(16);not null;default:'month'"`
 	DurationValue int    `json:"duration_value" gorm:"type:int;not null;default:1"`
@@ -1761,6 +1765,32 @@ func AdminBindSubscription(userId int, planId int, sourceNote string) (string, e
 	return "", nil
 }
 
+// EffectiveBalancePrice 是用余额购买这个套餐要付的价格(美元):单独配了就用它,
+// 没配(nil)就与在线支付价 PriceAmount 相同。
+func (p *SubscriptionPlan) EffectiveBalancePrice() float64 {
+	if p.BalancePriceAmount != nil {
+		return *p.BalancePriceAmount
+	}
+	return p.PriceAmount
+}
+
+// MaxPlanPriceAmount 是两个价格的共同上限,与管理端"价格不能超过9999"同值。
+const MaxPlanPriceAmount = 9999
+
+// ValidatePlanBalancePrice 校验余额购买价:nil(跟随在线支付价)或 [0, MaxPlanPriceAmount]。
+func ValidatePlanBalancePrice(v *float64) error {
+	if v == nil {
+		return nil
+	}
+	if *v < 0 {
+		return errors.New("余额购买价格不能为负数")
+	}
+	if *v > MaxPlanPriceAmount {
+		return errors.New("余额购买价格不能超过9999")
+	}
+	return nil
+}
+
 func calcSubscriptionBalanceQuota(priceAmount float64) (int, error) {
 	if priceAmount <= 0 {
 		return 0, nil
@@ -1800,14 +1830,16 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 		if err := PlanSaleWindowError(plan, common.GetTimestamp()); err != nil {
 			return err
 		}
-		if plan.PriceAmount < 0 {
+		// 余额购买按余额价扣款(没单独配时与在线支付价相同),订单金额、套餐返基数同一个数。
+		balancePrice := plan.EffectiveBalancePrice()
+		if balancePrice < 0 {
 			return errors.New("套餐价格不能为负数")
 		}
 		if plan.AllowBalancePay != nil && !*plan.AllowBalancePay {
 			return errors.New("该套餐不允许使用余额兑换")
 		}
 
-		requiredQuota, err := calcSubscriptionBalanceQuota(plan.PriceAmount)
+		requiredQuota, err := calcSubscriptionBalanceQuota(balancePrice)
 		if err != nil {
 			return err
 		}
@@ -1836,7 +1868,7 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 		order := &SubscriptionOrder{
 			UserId:          userId,
 			PlanId:          plan.Id,
-			Money:           plan.PriceAmount,
+			Money:           balancePrice,
 			TradeNo:         tradeNo,
 			PaymentMethod:   PaymentMethodBalance,
 			PaymentProvider: PaymentProviderBalance,
@@ -1848,10 +1880,10 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 		if err := tx.Create(order).Error; err != nil {
 			return err
 		}
-		grant = qySubscriptionGrant(subscription, plan, PaymentMethodBalance, tradeNo, 0, plan.PriceAmount, startedAt)
+		grant = qySubscriptionGrant(subscription, plan, PaymentMethodBalance, tradeNo, 0, balancePrice, startedAt)
 
 		logPlanTitle = plan.Title
-		logMoney = plan.PriceAmount
+		logMoney = balancePrice
 		chargedQuota = requiredQuota
 		if subscription.PrevUserGroup != "" {
 			upgradeGroup = strings.TrimSpace(subscription.UpgradeGroup)

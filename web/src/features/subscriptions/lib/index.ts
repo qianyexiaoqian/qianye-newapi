@@ -22,6 +22,9 @@ export {
   formatPlanBalanceScope,
   formatPlanExpiryPreview,
   formatPlanPrice,
+  formatPlanBalancePrice,
+  hasSeparateBalancePrice,
+  planBalancePrice,
   formatPlanUnlockGroups,
   type BuildPlanFactsOptions,
   type PlanEntitlementDisclosure,
@@ -40,6 +43,7 @@ export {
 } from './sale-window'
 export {
   getPlanFormSchema,
+  isPlanBalancePriceInput,
   isPlanRedeemPurchaseLink,
   PLAN_FORM_DEFAULTS,
   planToFormValues,

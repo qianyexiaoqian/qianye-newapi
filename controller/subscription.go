@@ -117,6 +117,7 @@ func planAuditSnapshot(p *model.SubscriptionPlan) map[string]any {
 		"title":                 p.Title,
 		"enabled":               p.Enabled,
 		"price_amount":          p.PriceAmount,
+		"balance_price_amount":  p.BalancePriceAmount,
 		"currency":              p.Currency,
 		"duration_unit":         p.DurationUnit,
 		"duration_value":        p.DurationValue,
@@ -246,6 +247,10 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "价格不能超过9999")
 		return
 	}
+	if err := model.ValidatePlanBalancePrice(req.Plan.BalancePriceAmount); err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
 	if req.Plan.Currency == "" {
 		req.Plan.Currency = "USD"
 	}
@@ -332,6 +337,10 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "价格不能超过9999")
 		return
 	}
+	if err := model.ValidatePlanBalancePrice(req.Plan.BalancePriceAmount); err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
 	req.Plan.Id = id
 	if req.Plan.Currency == "" {
 		req.Plan.Currency = "USD"
@@ -389,15 +398,17 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		// update plan (allow zero values updates with map)
 		updateMap := map[string]any{
-			"title":          req.Plan.Title,
-			"subtitle":       req.Plan.Subtitle,
-			"price_amount":   req.Plan.PriceAmount,
-			"currency":       req.Plan.Currency,
-			"duration_unit":  req.Plan.DurationUnit,
-			"duration_value": req.Plan.DurationValue,
-			"custom_seconds": req.Plan.CustomSeconds,
-			"enabled":        req.Plan.Enabled,
-			"sort_order":     req.Plan.SortOrder,
+			"title":        req.Plan.Title,
+			"subtitle":     req.Plan.Subtitle,
+			"price_amount": req.Plan.PriceAmount,
+			// 恒在 map 里(含 nil):清空余额购买价 = 回到"与在线支付价相同"。
+			"balance_price_amount": req.Plan.BalancePriceAmount,
+			"currency":             req.Plan.Currency,
+			"duration_unit":        req.Plan.DurationUnit,
+			"duration_value":       req.Plan.DurationValue,
+			"custom_seconds":       req.Plan.CustomSeconds,
+			"enabled":              req.Plan.Enabled,
+			"sort_order":           req.Plan.SortOrder,
 			// 两列恒在 map 里,所以「把已配的发售/停售时间清回不限制」是做得到的。
 			// 走 Updates(struct) 的话 0 会被当成零值跳过,运营再也取消不了停售时间。
 			"sale_start_at":              req.Plan.SaleStartAt,

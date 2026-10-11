@@ -30,6 +30,40 @@ func init() {
 // 关键词命中上千人时这张表已经没法看了,运营要做的是换一个更具体的词。
 const maxKeywordMatches = 500
 
+// 三张列表可排序的列:前端传的是 key,SQL 里拼的永远是这里的列名(白名单)。
+var (
+	balanceSorts = map[string]string{
+		"available": "available", "earned": "total_earned", "spent": "total_spent",
+		"refunded": "total_refunded", "adjusted": "total_adjusted", "updated_at": "updated_at",
+	}
+	ledgerSorts = map[string]string{
+		"created_at": "created_at", "amount": "amount", "balance_after": "balance_after",
+	}
+	accrualSorts = map[string]string{
+		"bucket_date": "bucket_date", "base_quota": "base_quota", "gross": "gross",
+	}
+)
+
+// listOrder 把 ?sort=&order= 解析成 ORDER BY 子句:sort 只认白名单里的 key,order 只认
+// asc / desc(缺省 desc,即从多到少 / 从新到旧);都缺省时按 def 排。tiebreak 同方向追加在
+// 后面,同值的行在翻页时顺序稳定,不会一行出现两次或一次都不出现。
+func listOrder(c *gin.Context, cols map[string]string, def, tiebreak string) (string, error) {
+	key := strings.TrimSpace(c.DefaultQuery("sort", def))
+	col, ok := cols[key]
+	if !ok {
+		return "", errBadRequest("未知的排序列: " + key)
+	}
+	dir := "DESC"
+	switch strings.ToLower(strings.TrimSpace(c.DefaultQuery("order", "desc"))) {
+	case "asc":
+		dir = "ASC"
+	case "desc":
+	default:
+		return "", errBadRequest("order 只接受 asc / desc")
+	}
+	return col + " " + dir + ", " + tiebreak + " " + dir, nil
+}
+
 // adminBalanceView 是余额列表的一行:用户端形状之外多 user_id / username / updated_at。
 type adminBalanceView struct {
 	UserId   int    `json:"user_id"`
@@ -100,6 +134,11 @@ func handleAdminListBalances(c *gin.Context) {
 		}
 		q = q.Where("user_id IN ?", ids)
 	}
+	order, err := listOrder(c, balanceSorts, "updated_at", "user_id")
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
@@ -108,7 +147,7 @@ func handleAdminListBalances(c *gin.Context) {
 		return
 	}
 	rows := make([]Balance, 0, size)
-	if err := q.Order("updated_at desc, user_id desc").Offset(httpq.Offset(page, size)).
+	if err := q.Order(order).Offset(httpq.Offset(page, size)).
 		Limit(size).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, wrapInternal("查询余额行", err))
@@ -182,6 +221,11 @@ func handleAdminListLedger(c *gin.Context) {
 	if actNo := strings.TrimSpace(c.Query("act_no")); actNo != "" {
 		q = q.Where("act_no = ?", clip(actNo, 32))
 	}
+	order, err := listOrder(c, ledgerSorts, "created_at", "id")
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		db.MarkFailure(err)
@@ -189,7 +233,7 @@ func handleAdminListLedger(c *gin.Context) {
 		return
 	}
 	rows := make([]Ledger, 0, size)
-	if err := q.Order("id desc").Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
+	if err := q.Order(order).Offset(httpq.Offset(page, size)).Limit(size).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, wrapInternal("查询流水", err))
 		return
@@ -234,6 +278,11 @@ func handleAdminListAccruals(c *gin.Context) {
 		}
 		q = q.Where("status = ?", status)
 	}
+	order, err := listOrder(c, accrualSorts, "bucket_date", "id")
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
 		db.MarkFailure(err)
@@ -241,7 +290,7 @@ func handleAdminListAccruals(c *gin.Context) {
 		return
 	}
 	rows := make([]Accrual, 0, size)
-	if err := q.Order("bucket_date desc, id desc").Offset(httpq.Offset(page, size)).
+	if err := q.Order(order).Offset(httpq.Offset(page, size)).
 		Limit(size).Find(&rows).Error; err != nil {
 		db.MarkFailure(err)
 		respondErr(c, wrapInternal("查询日桶", err))

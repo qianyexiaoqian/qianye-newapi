@@ -76,8 +76,6 @@ import {
   updatePlan,
   getPlanUsage,
   setPlanSeatLimit,
-  createWaffoPancakeSubscriptionProduct,
-  listWaffoPancakeSubscriptionProductOptions,
 } from '../api'
 import {
   getDurationUnitOptions,
@@ -128,10 +126,6 @@ export function SubscriptionsMutateDrawer({
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [seatUsage, setSeatUsage] = useState<PlanUsage | null>(null)
   const [seatCapState, setSeatCapState] = useState<SeatCapState>('hidden')
-  const [creatingPancakeProduct, setCreatingPancakeProduct] = useState(false)
-  const [pancakeProducts, setPancakeProducts] = useState<
-    { id: string; name: string; status: string }[]
-  >([])
 
   // 解锁模型分组：与总名额同一个形状（扩展库、独立的一次写入、读不到就禁用），
   // 所以判据也用同一个 seatCapSupported。
@@ -154,23 +148,6 @@ export function SubscriptionsMutateDrawer({
       } else {
         form.reset(PLAN_FORM_DEFAULTS)
       }
-      // Best-effort — empty list still lets the operator use "+ Create".
-      listWaffoPancakeSubscriptionProductOptions()
-        .then((res) => {
-          if (
-            res.message === 'success' &&
-            typeof res.data === 'object' &&
-            res.data &&
-            Array.isArray((res.data as { products?: unknown }).products)
-          ) {
-            setPancakeProducts(
-              (res.data as { products: typeof pancakeProducts }).products
-            )
-          } else {
-            setPancakeProducts([])
-          }
-        })
-        .catch(() => setPancakeProducts([]))
     }
   }, [open, currentRow, form])
 
@@ -253,13 +230,6 @@ export function SubscriptionsMutateDrawer({
     sale_start_at: saleTimeToUnix(saleStartInput),
     sale_end_at: saleTimeToUnix(saleEndInput),
   })
-  // Gate "+ Create on Pancake" on the same checks the mint handler runs.
-  const watchedTitle = form.watch('title')
-  const watchedPrice = form.watch('price_amount')
-  const pancakeCreateReady =
-    typeof watchedTitle === 'string' &&
-    watchedTitle.trim().length > 0 &&
-    Number(watchedPrice ?? 0) > 0
 
   const onSubmit = async (values: PlanFormValues) => {
     setIsSubmitting(true)
@@ -338,75 +308,6 @@ export function SubscriptionsMutateDrawer({
       toast.error(t('Request failed'))
     } finally {
       setIsSubmitting(false)
-    }
-  }
-
-  // Mints a Pancake OnetimeProduct (not SubscriptionProduct — see
-  // controller) using persisted creds + the form's title/price, then
-  // pins the returned PROD_ ID into the form field.
-  const handleCreatePancakeProduct = async () => {
-    const title = form.getValues('title').trim()
-    const priceAmount = Number(form.getValues('price_amount') || 0)
-    if (!title) {
-      toast.error(t('Plan title is required'))
-      return
-    }
-    if (priceAmount <= 0) {
-      toast.error(t('Plan price must be greater than zero'))
-      return
-    }
-    setCreatingPancakeProduct(true)
-    try {
-      const res = await createWaffoPancakeSubscriptionProduct({
-        name: title,
-        amount: priceAmount.toFixed(2),
-      })
-      if (
-        res.message === 'success' &&
-        typeof res.data === 'object' &&
-        res.data
-      ) {
-        const created = res.data as {
-          product_id: string
-          product_name: string
-        }
-        form.setValue('waffo_pancake_product_id', created.product_id, {
-          shouldDirty: true,
-        })
-        // Refetch from GraphQL so the dropdown reflects authoritative state.
-        try {
-          const refresh = await listWaffoPancakeSubscriptionProductOptions()
-          if (
-            refresh.message === 'success' &&
-            typeof refresh.data === 'object' &&
-            refresh.data &&
-            Array.isArray((refresh.data as { products?: unknown }).products)
-          ) {
-            setPancakeProducts(
-              (refresh.data as { products: typeof pancakeProducts }).products
-            )
-          }
-        } catch {
-          // Best-effort — form value already points at the new product;
-          // raw-ID fallback covers the missing label.
-        }
-        toast.success(
-          `${t('Waffo Pancake product created')}: ${created.product_id}`
-        )
-      } else {
-        const reason = typeof res.data === 'string' ? res.data : undefined
-        toast.error(
-          reason
-            ? `${t('Waffo Pancake product creation failed')}: ${reason}`
-            : t('Waffo Pancake product creation failed')
-        )
-      }
-    } catch (err) {
-      toast.error(
-        `${t('Waffo Pancake product creation failed')}: ${err instanceof Error ? err.message : String(err)}`
-      )
-    } finally {
-      setCreatingPancakeProduct(false)
     }
   }
 
@@ -517,7 +418,7 @@ export function SubscriptionsMutateDrawer({
                 name='price_amount'
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>{t('Plan Price')}</FormLabel>
+                    <FormLabel>{t('qy_plan_direct_price')}</FormLabel>
                     <FormControl>
                       <Input
                         {...field}
@@ -530,9 +431,33 @@ export function SubscriptionsMutateDrawer({
                       />
                     </FormControl>
                     <FormDescription>
-                      {t(
-                        'Amount the user pays to purchase this plan; the actual currency depends on the payment gateway.'
-                      )}
+                      {t('qy_plan_direct_price_hint')}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {/* 余额购买价：与上面的直接购买价分开。空 = 跟随直接购买价（落库 NULL），
+                  这样存量套餐与"不想分开定价"的运营什么都不用填。 */}
+              <FormField
+                control={form.control}
+                name='balance_price_input'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('qy_plan_balance_price')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        {...field}
+                        type='number'
+                        step='0.01'
+                        min={0}
+                        inputMode='decimal'
+                        placeholder={t('qy_plan_balance_price_ph')}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t('qy_plan_balance_price_hint')}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -1420,13 +1345,15 @@ export function SubscriptionsMutateDrawer({
             </div>
           </SideDrawerSection>
 
-          {/* ── 7. 第三方支付 ─────────────────────────────────────────── */}
+          {/* ── 7. 站外购买 ──────────────────────────────────────────────
+              Stripe / Creem / Waffo Pancake 三个产品 ID 已从套餐配置里移除：
+              本站只用易支付（在线支付对每个套餐都开）与余额购买。 */}
           <SideDrawerSection>
             <h3 className='flex items-center gap-2 text-sm font-medium'>
               <IconBadge tone='chart-1' size='xs'>
                 <CreditCard />
               </IconBadge>
-              {t('Third-party Payment Config')}
+              {t('qy_plan_external_purchase')}
             </h3>
 
             {/* 站外买码：购买弹窗把它列成一种付款方式，跳出去买兑换码、回钱包页兑换。
@@ -1450,93 +1377,6 @@ export function SubscriptionsMutateDrawer({
                   <FormMessage />
                 </FormItem>
               )}
-            />
-
-            <FormField
-              control={form.control}
-              name='stripe_price_id'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Stripe Price ID</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder='price_...' />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='creem_product_id'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Creem Product ID</FormLabel>
-                  <FormControl>
-                    <Input {...field} placeholder='prod_...' />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='waffo_pancake_product_id'
-              render={({ field }) => {
-                // Raw-ID fallback for IDs not yet in the catalog.
-                const items = pancakeProducts.map((p) => ({
-                  value: p.id,
-                  label: `${p.name} (${p.id})`,
-                }))
-                if (
-                  field.value &&
-                  !pancakeProducts.some((p) => p.id === field.value)
-                ) {
-                  items.push({ value: field.value, label: field.value })
-                }
-                return (
-                  <FormItem>
-                    <FormLabel>Waffo Pancake Product ID</FormLabel>
-                    <div className='flex gap-2'>
-                      <Select
-                        items={items}
-                        value={field.value || ''}
-                        onValueChange={(v) => field.onChange(v)}
-                        disabled={items.length === 0}
-                      >
-                        <SelectTrigger className='w-full flex-1'>
-                          <SelectValue placeholder={t('Select a product')} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {items.map((item) => (
-                            <SelectItem key={item.value} value={item.value}>
-                              {item.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        onClick={handleCreatePancakeProduct}
-                        disabled={creatingPancakeProduct || !pancakeCreateReady}
-                        className='shrink-0'
-                      >
-                        {creatingPancakeProduct
-                          ? t('Creating...')
-                          : `+ ${t('Create')}`}
-                      </Button>
-                    </div>
-                    <FormDescription>
-                      {t(
-                        'Creates a Pancake product in the saved store using this plan’s title and price. Requires Waffo Pancake to be fully configured in Payment settings first.'
-                      )}
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )
-              }}
             />
           </SideDrawerSection>
         </form>

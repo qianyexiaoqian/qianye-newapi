@@ -346,3 +346,41 @@ func TestRedeemPlanRollsBackWhenPlanSaleEnded(t *testing.T) {
 		Count(&subCount).Error)
 	assert.Zero(t, subCount)
 }
+
+// TestPurchaseWithBalanceChargesBalancePrice 守「余额购买价与在线支付价分开配置」:
+// 配了余额价就按它扣、订单金额也记它;没配(nil)就与在线支付价相同 —— 存量套餐行为不变。
+func TestPurchaseWithBalanceChargesBalancePrice(t *testing.T) {
+	half := 0.5
+	cases := []struct {
+		name         string
+		planId       int
+		balancePrice *float64
+		wantCharged  int
+		wantMoney    float64
+	}{
+		{name: "单独配了余额价", planId: 7411, balancePrice: &half, wantCharged: 250_000, wantMoney: 0.5},
+		{name: "没配时跟随在线支付价", planId: 7412, balancePrice: nil, wantCharged: 1_000_000, wantMoney: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withMultiConnDB(t)
+			seedSaleWindowPlan(t, &SubscriptionPlan{
+				Id: tc.planId, Title: "分价套餐", PriceAmount: 2, BalancePriceAmount: tc.balancePrice,
+				DurationUnit: SubscriptionDurationMonth, DurationValue: 1,
+				TotalAmount: 1000, Enabled: true,
+			}, 0, 0)
+			user := &User{Username: "qy-balance-price", Password: "password",
+				Status: common.UserStatusEnabled, Quota: 10_000_000, Group: "default"}
+			require.NoError(t, DB.Create(user).Error)
+
+			require.NoError(t, PurchaseSubscriptionWithBalance(user.Id, tc.planId))
+
+			var after User
+			require.NoError(t, DB.First(&after, "id = ?", user.Id).Error)
+			assert.Equal(t, 10_000_000-tc.wantCharged, after.Quota)
+			var order SubscriptionOrder
+			require.NoError(t, DB.Where("user_id = ?", user.Id).First(&order).Error)
+			assert.InDelta(t, tc.wantMoney, order.Money, 1e-9, "订单金额记实际扣的余额价")
+		})
+	}
+}

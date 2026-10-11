@@ -31,15 +31,17 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
+import { QySortHeader } from '../../../components/qy-sort-header'
 import { QySdAmount } from '../../../components/qy-sd-amount'
 import { useStardustName } from '../../../hooks/use-stardust-name'
 import { qyArray } from '../../../lib/array'
+import type { QySortState } from '../../../lib/sort'
 import { QyPager } from '../../components/qy-pager'
 import { QY_PAGE_SIZE } from '../../lib/constants'
 import { formatQyTs } from '../../ops/format'
 import { qySdHoldReasonKey } from '../../stardust/lib/display'
 import { qyAdminStardustBalancesQuery } from '../api'
-import type { QyStardustBalanceRow } from '../types'
+import type { QyStardustBalanceRow, QyStardustBalanceSort } from '../types'
 import type { QySdAdjustTarget } from './adjust-stardust-dialog'
 
 type BalancesTabProps = {
@@ -64,10 +66,22 @@ export function QySdAdminBalancesTab(props: BalancesTabProps) {
   const [keyword, setKeyword] = useState('')
   const [userId, setUserId] = useState('')
 
+  // 排序在后端做(白名单列 + asc / desc);换一列或换方向都回到第 1 页。
+  const [sort, setSort] = useState<QySortState<QyStardustBalanceSort>>({
+    key: 'updated_at',
+    order: 'desc',
+  })
+  const changeSort = (next: QySortState<QyStardustBalanceSort>) => {
+    setSort(next)
+    setPage(1)
+  }
+
   const query = useQuery(
     qyAdminStardustBalancesQuery({
       page,
       page_size: QY_PAGE_SIZE,
+      sort: sort.key,
+      order: sort.order,
       ...(keyword.trim() === '' ? {} : { keyword: keyword.trim() }),
       ...(/^\d+$/.test(userId) ? { user_id: Number(userId) } : {}),
     })
@@ -91,35 +105,75 @@ export function QySdAdminBalancesTab(props: BalancesTabProps) {
     },
     {
       id: 'available',
-      header: t('qy_sdadm_col_available'),
+      header: (
+        <QySortHeader
+          label={t('qy_sdadm_col_available')}
+          sortKey='available'
+          state={sort}
+          onChange={changeSort}
+          align='right'
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
       cell: (row) => <QySdAmount amount={row.available} />,
     },
     {
       id: 'earned',
-      header: t('qy_sd_total_earned'),
+      header: (
+        <QySortHeader
+          label={t('qy_sd_total_earned')}
+          sortKey='earned'
+          state={sort}
+          onChange={changeSort}
+          align='right'
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactMutedNumericCell,
       cell: (row) => <QySdAmount amount={row.total_earned} />,
     },
     {
       id: 'spent',
-      header: t('qy_sd_total_spent'),
+      header: (
+        <QySortHeader
+          label={t('qy_sd_total_spent')}
+          sortKey='spent'
+          state={sort}
+          onChange={changeSort}
+          align='right'
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactMutedNumericCell,
       cell: (row) => <QySdAmount amount={row.total_spent} />,
     },
     {
       id: 'refunded',
-      header: t('qy_sd_total_refunded'),
+      header: (
+        <QySortHeader
+          label={t('qy_sd_total_refunded')}
+          sortKey='refunded'
+          state={sort}
+          onChange={changeSort}
+          align='right'
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactMutedNumericCell,
       cell: (row) => <QySdAmount amount={row.total_refunded} />,
     },
     {
       id: 'adjusted',
-      header: t('qy_sd_total_adjusted'),
+      header: (
+        <QySortHeader
+          label={t('qy_sd_total_adjusted')}
+          sortKey='adjusted'
+          state={sort}
+          onChange={changeSort}
+          align='right'
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactMutedNumericCell,
       cell: (row) => <QySdAmount amount={row.total_adjusted} signed />,
@@ -140,7 +194,14 @@ export function QySdAdminBalancesTab(props: BalancesTabProps) {
     },
     {
       id: 'updated_at',
-      header: t('qy_common_updated_at'),
+      header: (
+        <QySortHeader
+          label={t('qy_common_updated_at')}
+          sortKey='updated_at'
+          state={sort}
+          onChange={changeSort}
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCell,
       cellClassName: staticDataTableClassNames.compactMutedCell,
       cell: (row) => formatQyTs(row.updated_at),

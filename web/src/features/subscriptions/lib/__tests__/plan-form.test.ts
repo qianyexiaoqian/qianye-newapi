@@ -24,6 +24,7 @@ import type { TFunction } from 'i18next'
 import {
   PLAN_FORM_DEFAULTS,
   getPlanFormSchema,
+  isPlanBalancePriceInput,
   isPlanRedeemPurchaseLink,
   formValuesToPlanPayload,
   planToFormValues,
@@ -216,4 +217,38 @@ test('redeem link survives an edit round trip and an emptied field is sent to cl
       .redeem_purchase_link,
     ''
   )
+})
+
+// ── 余额购买价 ─────────────────────────────────────────────────────────────
+// 与在线支付价分开配置;空 = 跟随在线支付价(落库 NULL),判据与后端 ValidatePlanBalancePrice 一致。
+
+test('balance price input accepts empty or 0..9999 only', () => {
+  for (const ok of ['', '  ', '0', '25', '0.5', '9999']) {
+    assert.equal(isPlanBalancePriceInput(ok), true, ok)
+  }
+  for (const bad of ['-1', '10000', 'abc']) {
+    assert.equal(isPlanBalancePriceInput(bad), false, bad)
+  }
+})
+
+test('balance price round trips: empty is sent as null, a number as a number', () => {
+  const unset = planToFormValues({ ...groupProductPlan, balance_price_amount: null })
+  assert.equal(unset.balance_price_input, '')
+  assert.equal(formValuesToPlanPayload(unset).plan.balance_price_amount, null)
+
+  const set = planToFormValues({ ...groupProductPlan, balance_price_amount: 7.5 })
+  assert.equal(set.balance_price_input, '7.5')
+  assert.equal(formValuesToPlanPayload(set).plan.balance_price_amount, 7.5)
+  assert.equal(
+    'balance_price_input' in formValuesToPlanPayload(set).plan,
+    false,
+    '表单自己的输入串不能被当成套餐字段发出去'
+  )
+})
+
+test('stripe / creem / waffo product ids are no longer part of the plan form', () => {
+  const values = planToFormValues({ ...groupProductPlan, stripe_price_id: 'price_x' })
+  for (const gone of ['stripe_price_id', 'creem_product_id', 'waffo_pancake_product_id']) {
+    assert.equal(gone in values, false, gone)
+  }
 })

@@ -171,3 +171,37 @@ func TestAdminStardustUserSummarySplitsBySource(t *testing.T) {
 
 	codeOf(t, call(t, r, http.MethodGet, "/api/qy/admin/stardust/user-summary?sort=password", ""), http.StatusBadRequest)
 }
+
+// TestAdminListsSortByColumnBothWays 守「按列从多到少 / 从少到多」:白名单里的列两个方向都能排,
+// 白名单外的列与非法方向一律 400(列名永远不从请求里直接拼进 SQL)。
+func TestAdminListsSortByColumnBothWays(t *testing.T) {
+	env := newAPIEnv(t, nil)
+	r := adminRouter(7, common.RoleAdminUser)
+	for i, amount := range []int64{30, 10, 20} {
+		uid := 951 + i
+		env.seedUser(t, uid, "sort-"+itoa(uid), common.RoleCommonUser)
+		_, err := Credit(env.ext, Posting{UserId: uid, Kind: KindLotPrize, Amount: amount, IdemScope: "t", IdemKey: "s" + itoa(uid)})
+		require.NoError(t, err)
+	}
+	amounts := func(path, field string) []float64 {
+		items := itemsOf(t, dataOf(t, call(t, r, http.MethodGet, path, "")))
+		out := make([]float64, 0, len(items))
+		for _, it := range items {
+			out = append(out, it[field].(float64))
+		}
+		return out
+	}
+
+	assert.Equal(t, []float64{30, 20, 10}, amounts("/api/qy/admin/stardust/balances?sort=available&order=desc", "available"))
+	assert.Equal(t, []float64{10, 20, 30}, amounts("/api/qy/admin/stardust/balances?sort=available&order=asc", "available"))
+	assert.Equal(t, []float64{30, 20, 10}, amounts("/api/qy/admin/stardust/ledger?sort=amount", "amount"), "缺省方向是从多到少")
+	assert.Equal(t, []float64{10, 20, 30}, amounts("/api/qy/admin/stardust/ledger?sort=amount&order=asc", "amount"))
+
+	for _, bad := range []string{
+		"/api/qy/admin/stardust/balances?sort=hold_reason",
+		"/api/qy/admin/stardust/ledger?sort=amount&order=sideways",
+		"/api/qy/admin/stardust/accruals?sort=status",
+	} {
+		assert.Equal(t, codeBadRequest, codeOf(t, call(t, r, http.MethodGet, bad, ""), http.StatusBadRequest), bad)
+	}
+}

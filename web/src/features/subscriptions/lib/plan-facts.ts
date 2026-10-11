@@ -78,6 +78,33 @@ export function formatPlanPrice(plan: Partial<SubscriptionPlan>): string {
 }
 
 /**
+ * 用余额购买这个套餐要付的价（美元）：单独配了余额购买价就用它，没配（null）就与
+ * 在线支付价相同。与后端 `SubscriptionPlan.EffectiveBalancePrice` 同一条规则。
+ */
+export function planBalancePrice(plan: Partial<SubscriptionPlan>): number {
+  if (plan?.balance_price_amount != null) {
+    return Number(plan.balance_price_amount)
+  }
+  return Number(plan?.price_amount || 0)
+}
+
+/** 余额购买价是否与在线支付价不同（相同时界面只印一个价，不重复）。 */
+export function hasSeparateBalancePrice(plan: Partial<SubscriptionPlan>): boolean {
+  return (
+    plan?.balance_price_amount != null &&
+    Number(plan.balance_price_amount) !== Number(plan?.price_amount || 0)
+  )
+}
+
+/** 带币种的余额购买价文案。 */
+export function formatPlanBalancePrice(plan: Partial<SubscriptionPlan>): string {
+  return formatPlanPrice({
+    currency: plan?.currency,
+    price_amount: planBalancePrice(plan),
+  })
+}
+
+/**
  * 客户端预估到期时间。
  *
  * 仅供购买前参考：真实到期时间由后端按下单时刻计算，跨月钳位（1/31 + 1 月）
@@ -220,6 +247,14 @@ export function buildPlanFacts(
   }
 
   const facts: (PlanFact | null)[] = [
+    // 余额购买价与在线支付价不同时单列一行：用户掏钱前要看到两种付法各是多少。
+    hasSeparateBalancePrice(plan)
+      ? {
+          id: 'balance_price',
+          label: t('qy_plan_balance_price'),
+          value: formatPlanBalancePrice(plan),
+        }
+      : null,
     {
       id: 'duration',
       label: t('Validity Period'),

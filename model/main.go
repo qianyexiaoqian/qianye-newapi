@@ -604,6 +604,7 @@ func ensureSubscriptionPlanTableSQLite() error {
 ` + "`title`" + ` varchar(128) NOT NULL,
 ` + "`subtitle`" + ` varchar(255) DEFAULT '',
 ` + "`price_amount`" + ` decimal(10,6) NOT NULL,
+` + "`balance_price_amount`" + ` decimal(10,6),
 ` + "`currency`" + ` varchar(8) NOT NULL DEFAULT 'USD',
 ` + "`duration_unit`" + ` varchar(16) NOT NULL DEFAULT 'month',
 ` + "`duration_value`" + ` integer NOT NULL DEFAULT 1,
@@ -645,6 +646,8 @@ PRIMARY KEY (` + "`id`" + `)
 		{Name: "title", DDL: "`title` varchar(128) NOT NULL"},
 		{Name: "subtitle", DDL: "`subtitle` varchar(255) DEFAULT ''"},
 		{Name: "price_amount", DDL: "`price_amount` decimal(10,6) NOT NULL"},
+		// 余额购买价,可空:NULL = 与 price_amount 相同,存量套餐升级后行为不变。
+		{Name: "balance_price_amount", DDL: "`balance_price_amount` decimal(10,6)"},
 		{Name: "currency", DDL: "`currency` varchar(8) NOT NULL DEFAULT 'USD'"},
 		{Name: "duration_unit", DDL: "`duration_unit` varchar(16) NOT NULL DEFAULT 'month'"},
 		{Name: "duration_value", DDL: "`duration_value` integer NOT NULL DEFAULT 1"},

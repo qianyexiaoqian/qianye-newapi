@@ -31,14 +31,16 @@ import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
 import { QyPageBoundary } from '../../../components/qy-page-boundary'
+import { QySortHeader } from '../../../components/qy-sort-header'
 import { QySdAmount } from '../../../components/qy-sd-amount'
 import { qyArray } from '../../../lib/array'
+import type { QySortState } from '../../../lib/sort'
 import { QyPager } from '../../components/qy-pager'
 import { QY_PAGE_SIZE } from '../../lib/constants'
 import { formatQyTs } from '../../ops/format'
 import { QY_SD_LEDGER_KINDS, qySdKindKey } from '../../stardust/lib/display'
 import { qyAdminStardustLedgerQuery } from '../api'
-import type { QyStardustAdminLedgerRow } from '../types'
+import type { QyStardustAdminLedgerRow, QyStardustLedgerSort } from '../types'
 
 type LedgerTabProps = {
   /** 从余额表点「流水」过来时预填的用户 ID；`0` = 不筛。 */
@@ -61,10 +63,22 @@ export function QySdAdminLedgerTab(props: LedgerTabProps) {
   const [kind, setKind] = useState('')
   const [actNo, setActNo] = useState('')
 
+  // 排序在后端做(白名单列 + asc / desc);换一列或换方向都回到第 1 页。
+  const [sort, setSort] = useState<QySortState<QyStardustLedgerSort>>({
+    key: 'created_at',
+    order: 'desc',
+  })
+  const changeSort = (next: QySortState<QyStardustLedgerSort>) => {
+    setSort(next)
+    setPage(1)
+  }
+
   const query = useQuery(
     qyAdminStardustLedgerQuery({
       page,
       page_size: QY_PAGE_SIZE,
+      sort: sort.key,
+      order: sort.order,
       ...(/^\d+$/.test(userId) ? { user_id: Number(userId) } : {}),
       ...(kind === '' ? {} : { kind }),
       ...(actNo.trim() === '' ? {} : { act_no: actNo.trim() }),
@@ -75,7 +89,14 @@ export function QySdAdminLedgerTab(props: LedgerTabProps) {
   const columns: StaticDataTableColumn<QyStardustAdminLedgerRow>[] = [
     {
       id: 'created_at',
-      header: t('qy_common_time'),
+      header: (
+        <QySortHeader
+          label={t('qy_common_time')}
+          sortKey='created_at'
+          state={sort}
+          onChange={changeSort}
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCell,
       cellClassName: staticDataTableClassNames.compactMutedCell,
       cell: (row) => formatQyTs(row.created_at),
@@ -96,14 +117,30 @@ export function QySdAdminLedgerTab(props: LedgerTabProps) {
     },
     {
       id: 'amount',
-      header: t('qy_common_amount'),
+      header: (
+        <QySortHeader
+          label={t('qy_common_amount')}
+          sortKey='amount'
+          state={sort}
+          onChange={changeSort}
+          align='right'
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactNumericCell,
       cell: (row) => <QySdAmount amount={row.amount} signed />,
     },
     {
       id: 'balance_after',
-      header: t('qy_sd_col_balance_after'),
+      header: (
+        <QySortHeader
+          label={t('qy_sd_col_balance_after')}
+          sortKey='balance_after'
+          state={sort}
+          onChange={changeSort}
+          align='right'
+        />
+      ),
       className: staticDataTableClassNames.compactHeaderCellRight,
       cellClassName: staticDataTableClassNames.compactMutedNumericCell,
       cell: (row) => <QySdAmount amount={row.balance_after} />,
