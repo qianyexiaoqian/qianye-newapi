@@ -355,6 +355,7 @@ func TestAdminPutGroupRateRedemptionRoundTrip(t *testing.T) {
 	gdb := newTestDB(t)
 	useConfig(t, commissionRateConfig("10", "5"))
 	useAdminAPI(t)
+	cacheUser(t, 42, 0, "vip") // 分组名必须是在用的用户分组
 
 	put := func(body string) *httptest.ResponseRecorder {
 		return callAdminHandler(t, http.MethodPut, "/admin/commission/group-rates",

@@ -71,6 +71,10 @@ export function qyUpsertCommissionGroupRate(input: {
    * upsert**，把它漏掉就等于每次保存都在悄悄取消这一档。传 `'0'` 是显式 0%。
    */
   redemption_rate_percent: string | null
+  /** 套餐三档同兑换码档：`null` = 本组不单独配（跟随全局套餐档），`'0'` 是显式 0%。 */
+  plan_order_rate_percent: string | null
+  plan_balance_rate_percent: string | null
+  plan_redemption_rate_percent: string | null
   enabled: boolean
   remark: string
 }) {

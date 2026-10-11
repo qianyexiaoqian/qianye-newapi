@@ -112,7 +112,7 @@ func getSummary(c *gin.Context) {
 
 // rateSummary 是"我现在走哪一档、为什么"这个问题的应答。
 //
-// 三次 resolveInviterPricing 而不是一次解析出分组再自己查三档:那样就要在
+// 每档各 resolveInviterPricing 一次,而不是一次解析出分组再自己查各档:那样就要在
 // 展示路径上复刻一份"取谁的分组、命中哪一档"的判定,而复刻品迟早会与计佣
 // 路径漂移 —— 界面上写着 8%、账本按 5% 发钱,是本仓最忌讳的形状。
 //
@@ -124,6 +124,9 @@ func rateSummary(c *gin.Context, userId int, s opSettings) gin.H {
 	topup := resolveInviterPricing(ctx, userId, SourceTopup, s)
 	consume := resolveInviterPricing(ctx, userId, SourceConsume, s)
 	redemption := resolveInviterPricing(ctx, userId, SourceRedemption, s)
+	planOrder := resolveInviterPricing(ctx, userId, SourcePlanOrder, s)
+	planBalance := resolveInviterPricing(ctx, userId, SourcePlanBalance, s)
+	planRedemption := resolveInviterPricing(ctx, userId, SourcePlanRedemption, s)
 	return gin.H{
 		"topup_percent":      config.FormatRatePercent(topup.Units),
 		"consume_percent":    config.FormatRatePercent(consume.Units),
@@ -143,10 +146,11 @@ func rateSummary(c *gin.Context, userId int, s opSettings) gin.H {
 		"global_topup_percent":      s.TopupRatePercent(),
 		"global_consume_percent":    s.ConsumeRatePercent(),
 		"global_redemption_percent": s.EffectiveRedemptionRatePercent(),
-		// 套餐购买三档只有全局档(不分分组):在线支付 / 余额购买 / 套餐兑换码。
-		"plan_order_percent":      config.FormatRatePercent(s.EffectivePlanOrderRateUnits()),
-		"plan_balance_percent":    config.FormatRatePercent(s.PlanBalanceRateUnits),
-		"plan_redemption_percent": config.FormatRatePercent(s.PlanRedemptionRateUnits),
+		// 下线买套餐三档(在线支付 / 余额购买 / 套餐兑换码),同样是本人这一档的生效值:
+		// 分组单独配了按分组,否则跟随全局套餐档。
+		"plan_order_percent":      config.FormatRatePercent(planOrder.Units),
+		"plan_balance_percent":    config.FormatRatePercent(planBalance.Units),
+		"plan_redemption_percent": config.FormatRatePercent(planRedemption.Units),
 	}
 }
 

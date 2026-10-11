@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/modules/invite"
 	"github.com/QuantumNous/new-api/qianye/service/lease"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -473,6 +474,32 @@ func dailySettleSnapshot(now int64) map[string]any {
 		if _, dup := out["previous"]; !dup {
 			out["previous"] = view
 		}
+	}
+	// holding 回答「跑了却发了 0」最常见的那个原因:佣金都还在持有期里。
+	// 一日一结算只吸收已成熟的行,持有期内的行此刻不该、也不会被结算。没有这一段,
+	// 面板上连续几天的 0 看起来就像结算坏了。口径与结算取数一致:
+	// status = accrued 且还有没结清的部分,mature_at 晚于此刻。
+	var holding struct {
+		HoldRows     int64
+		HoldAmount   string
+		HoldEarliest *int64
+	}
+	if err := gdb.Model(&Accrual{}).
+		Where("status = ? AND settled_amount <> gross_amount AND mature_at > ?", StatusAccrued, now).
+		Select("COUNT(*) AS hold_rows, COALESCE(SUM(gross_amount - settled_amount), 0) AS hold_amount, MIN(mature_at) AS hold_earliest").
+		Scan(&holding).Error; err != nil {
+		db.MarkFailure(err)
+		return out
+	}
+	amount, _ := decimal.NewFromString(holding.HoldAmount)
+	earliest := int64(0)
+	if holding.HoldEarliest != nil {
+		earliest = *holding.HoldEarliest
+	}
+	out["holding"] = map[string]any{
+		"rows":               holding.HoldRows,
+		"amount":             amount.Floor().String(),
+		"earliest_mature_at": earliest,
 	}
 	return out
 }

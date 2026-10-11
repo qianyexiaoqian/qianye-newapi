@@ -3,6 +3,7 @@ package commission
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -248,4 +249,87 @@ func TestAdminPutSwitchesAndPlanRates(t *testing.T) {
 	assert.Contains(t, body, `"plan_order_rate_follows_topup":true`)
 	assert.Contains(t, body, `"exclude_subscription_consume":true`)
 	assert.NotContains(t, body, `"yaml_readonly":{"exclude`, "三个开关不再只读")
+}
+
+// TestPlanGroupRates 守分组层的套餐三档:本组配了按本组(含显式 0%),没配跟随全局套餐档;
+// 在线档两级都没配时与升级前一样走充值档(分组充值档优先)。
+func TestPlanGroupRates(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, commissionRateConfig("10", "5"))
+	setSettingOverride(t, gdb, keyPlanBalanceRatePercent, "3")
+	ctx := context.Background()
+	units := func(v int) *int { return &v }
+	now := common.GetTimestamp()
+	require.NoError(t, gdb.Create(&GroupRate{
+		GroupName: "vip", TopupRateUnits: 1250, ConsumeRateUnits: 800, Enabled: true,
+		PlanBalanceRateUnits: units(500), PlanRedemptionRateUnits: units(0),
+		CreatedAt: now, UpdatedAt: now,
+	}).Error)
+	invalidateGroupRates()
+	s := effective()
+
+	cases := []struct {
+		name   string
+		group  string
+		source string
+		want   int
+	}{
+		{"vip 余额档单独配了", "vip", SourcePlanBalance, 500},
+		{"vip 兑换码档显式 0%", "vip", SourcePlanRedemption, 0},
+		{"vip 在线档没配:两级都没配 ⇒ 本组充值档", "vip", SourcePlanOrder, 1250},
+		{"没有规则的分组:余额档跟随全局", "default", SourcePlanBalance, 300},
+		{"没有规则的分组:在线档跟随全局充值档", "default", SourcePlanOrder, 1000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, resolveRate(ctx, tc.group, tc.source, s).Units)
+		})
+	}
+
+	// 全局在线档配了之后,没单独配的 vip 跟随全局套餐档,不再落到本组充值档。
+	setSettingOverride(t, gdb, keyPlanOrderRatePercent, "6")
+	assert.Equal(t, 600, resolveRate(ctx, "vip", SourcePlanOrder, effective()).Units)
+}
+
+// TestAdminGroupRatePlanFieldsAndUserGroups 守分组费率接口:套餐三档可空往返、
+// 分组名只能是用户分组、配置接口下发可选的用户分组清单。
+func TestAdminGroupRatePlanFieldsAndUserGroups(t *testing.T) {
+	gdb := newTestDB(t)
+	useConfig(t, commissionRateConfig("10", "5"))
+	useAdminAPI(t)
+	cacheUser(t, 42, 0, "vip")
+	cacheUser(t, 43, 0, "default")
+
+	put := func(body string) *httptest.ResponseRecorder {
+		return callAdminHandler(t, http.MethodPut, "/admin/commission/group-rates", body, adminPutGroupRate)
+	}
+	rec := put(`{"group_name":"vip","topup_rate_percent":"10","consume_rate_percent":"5",` +
+		`"plan_order_rate_percent":"8","plan_balance_rate_percent":"0","enabled":true}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var row GroupRate
+	require.NoError(t, gdb.Where("group_name = ?", "vip").First(&row).Error)
+	require.NotNil(t, row.PlanOrderRateUnits)
+	assert.Equal(t, 800, *row.PlanOrderRateUnits)
+	require.NotNil(t, row.PlanBalanceRateUnits, `"0" 是显式 0%`)
+	assert.Equal(t, 0, *row.PlanBalanceRateUnits)
+	assert.Nil(t, row.PlanRedemptionRateUnits, "缺失 = 本组不单独配")
+	assert.Contains(t, rec.Body.String(), `"plan_redemption_rate_percent":null`)
+
+	// 取消:改回 null(DoUpdates 漏掉这一列时会读到 800)。
+	rec = put(`{"group_name":"vip","topup_rate_percent":"10","consume_rate_percent":"5","plan_order_rate_percent":null,"enabled":true}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	row = GroupRate{}
+	require.NoError(t, gdb.Where("group_name = ?", "vip").First(&row).Error)
+	assert.Nil(t, row.PlanOrderRateUnits)
+
+	rec = put(`{"group_name":"vip","topup_rate_percent":"10","consume_rate_percent":"5","plan_balance_rate_percent":"101","enabled":true}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "余额买套餐计佣比例")
+
+	rec = put(`{"group_name":"no-such-group","topup_rate_percent":"10","consume_rate_percent":"5","enabled":true}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "不是用户分组的名字不能配")
+
+	rec = callAdminHandler(t, http.MethodGet, "/admin/commission/config", "", adminGetConfig)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"user_groups":["default","vip"]`)
 }

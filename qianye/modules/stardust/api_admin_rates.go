@@ -48,7 +48,8 @@ func init() {
 	})
 }
 
-// knownGroups 返回可配比例档的**用户分组**名集合,键已经 groupname.Normalize。
+// KnownUserGroups 返回可配比例档的**用户分组**名集合,键已经 groupname.Normalize。
+// 推广佣金的分组费率表同样按账号自己的用户分组取档,也用这一份清单(commission 的配置接口)。
 //
 // 比例按账号自己的 users.group 取档(settle.go 的 consumeRateFor),所以这里只列用户分组:
 // 用户分组登记表(qy_user_groups,经 service.QyDeclaredUserGroups)∪ 当前确有账号在用的
@@ -61,7 +62,7 @@ func init() {
 //
 // GET 下发的 groups 与 PUT 的判据都取自这一个函数:两份清单各列一遍的表现永远是同一种,
 // 下拉里选得到、保存时报"未登记"。
-func knownGroups(ctx context.Context) (map[string]bool, error) {
+func KnownUserGroups(ctx context.Context) (map[string]bool, error) {
 	out := map[string]bool{}
 	add := func(name string) {
 		if n := groupname.Normalize(name); n != "" && n != "auto" {
@@ -112,7 +113,7 @@ func handleListGroupRates(c *gin.Context) {
 		respondErr(c, wrapInternal("读取分组比例档", err))
 		return
 	}
-	known, err := knownGroups(ctx)
+	known, err := KnownUserGroups(ctx)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -135,7 +136,7 @@ func handleListGroupRates(c *gin.Context) {
 
 // handlePutGroupRate 整行 upsert 一个分组的比例档。
 //
-// 分组名必须在 knownGroups 里:让"比例行挂在一个不存在的分组名上"不可能出现 ——
+// 分组名必须在 KnownUserGroups 里:让"比例行挂在一个不存在的分组名上"不可能出现 ——
 // 那样的行永远不会命中,而运营会一直以为自己配了。比例是指针三态:
 // 缺失 / null = 本档回落全站默认,0 = 显式不返。
 func handlePutGroupRate(c *gin.Context) {
@@ -153,7 +154,7 @@ func handlePutGroupRate(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	known, err := knownGroups(ctx)
+	known, err := KnownUserGroups(ctx)
 	if err != nil {
 		respondErr(c, err)
 		return

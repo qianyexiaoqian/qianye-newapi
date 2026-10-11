@@ -5,6 +5,7 @@ import (
 	"encoding/json" // 仅取 RawMessage 类型;编解码一律走 common.*
 	"errors"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/httpq"
 	qymodel "github.com/QuantumNous/new-api/qianye/model"
 	"github.com/QuantumNous/new-api/qianye/modules/invite"
+	"github.com/QuantumNous/new-api/qianye/modules/stardust"
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
@@ -45,6 +47,16 @@ func adminGetConfig(c *gin.Context) {
 		internalError(c, err)
 		return
 	}
+	known, err := stardust.KnownUserGroups(ctx)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	userGroups := make([]string, 0, len(known))
+	for name := range known {
+		userGroups = append(userGroups, name)
+	}
+	slices.Sort(userGroups)
 	respond(c, gin.H{
 		// 费率一律以**百分比字符串**下发。用字符串而不是 JSON 数字:
 		// 10.25 在 JS 的 Number 里同样是二进制浮点,回填输入框时可能变成
@@ -62,6 +74,8 @@ func adminGetConfig(c *gin.Context) {
 		// bool_keys 是开关("1" / "0"),前端渲染成开关而不是输入框。
 		"bool_keys":   []string{keyExcludeSubscriptionConsume, keyExcludeRedemptionManual, keyRefundClawback},
 		"group_rates": groupRateViews(rules),
+		// user_groups 是分组费率可选的用户分组(登记表 ∪ 在用的 users.group),给新增规则的下拉用。
+		"user_groups": userGroups,
 		"yaml_readonly": gin.H{
 			"enabled":             cm.Enabled,
 			"topup_rate_bps":      cm.TopupRateBps,
@@ -292,24 +306,31 @@ type groupRateView struct {
 	// RedemptionPercent 是本组的兑换码档。**null = 本组没单独配**,
 	// 按 redemptionRateUnits 的顺序回落(全局兑换码档 → 本组充值档)。
 	RedemptionPercent *string `json:"redemption_rate_percent"`
-	Enabled           bool    `json:"enabled"`
-	Remark            string  `json:"remark"`
-	OperatorId        int     `json:"operator_id"`
-	UpdatedAt         int64   `json:"updated_at"`
+	// 套餐三档,同样 null = 本组没单独配(跟随全局套餐档)。
+	PlanOrderPercent      *string `json:"plan_order_rate_percent"`
+	PlanBalancePercent    *string `json:"plan_balance_rate_percent"`
+	PlanRedemptionPercent *string `json:"plan_redemption_rate_percent"`
+	Enabled               bool    `json:"enabled"`
+	Remark                string  `json:"remark"`
+	OperatorId            int     `json:"operator_id"`
+	UpdatedAt             int64   `json:"updated_at"`
 }
 
 func groupRateViews(rows []GroupRate) []groupRateView {
 	out := make([]groupRateView, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, groupRateView{
-			GroupName:         r.GroupName,
-			TopupPercent:      r.TopupPercent(),
-			ConsumePercent:    r.ConsumePercent(),
-			RedemptionPercent: r.RedemptionPercent(),
-			Enabled:           r.Enabled,
-			Remark:            r.Remark,
-			OperatorId:        r.OperatorId,
-			UpdatedAt:         r.UpdatedAt,
+			GroupName:             r.GroupName,
+			TopupPercent:          r.TopupPercent(),
+			ConsumePercent:        r.ConsumePercent(),
+			RedemptionPercent:     r.RedemptionPercent(),
+			PlanOrderPercent:      optionalPercent(r.PlanOrderRateUnits),
+			PlanBalancePercent:    optionalPercent(r.PlanBalanceRateUnits),
+			PlanRedemptionPercent: optionalPercent(r.PlanRedemptionRateUnits),
+			Enabled:               r.Enabled,
+			Remark:                r.Remark,
+			OperatorId:            r.OperatorId,
+			UpdatedAt:             r.UpdatedAt,
 		})
 	}
 	return out
@@ -332,8 +353,12 @@ func adminPutGroupRate(c *gin.Context) {
 		ConsumePercent string `json:"consume_rate_percent"`
 		// RedemptionPercent 可空,而且**字段缺失与 null 是同一个意思**:本组不单独配兑换码档。
 		RedemptionPercent *string `json:"redemption_rate_percent"`
-		Enabled           bool    `json:"enabled"`
-		Remark            string  `json:"remark"`
+		// 套餐三档同兑换码档:缺失、null、空串都表示本组不单独配。
+		PlanOrderPercent      *string `json:"plan_order_rate_percent"`
+		PlanBalancePercent    *string `json:"plan_balance_rate_percent"`
+		PlanRedemptionPercent *string `json:"plan_redemption_rate_percent"`
+		Enabled               bool    `json:"enabled"`
+		Remark                string  `json:"remark"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		badRequest(c, "qy_invalid_param", "请求格式错误")
@@ -358,32 +383,53 @@ func adminPutGroupRate(c *gin.Context) {
 		badRequest(c, "qy_invalid_param", "消费计佣比例"+err.Error())
 		return
 	}
-	// 兑换码档:null 与空串都表示"本组不单独配"。只有填了内容才校验并落值,
+	// 兑换码档与套餐三档:null 与空串都表示"本组不单独配"。只有填了内容才校验并落值,
 	// 而 "0" 走的是这条正常路径 —— 显式 0% 与不配是两件事。
-	var redemptionUnits *int
-	if req.RedemptionPercent != nil && strings.TrimSpace(*req.RedemptionPercent) != "" {
-		units, err := config.RatePercentUnits(*req.RedemptionPercent)
-		if err != nil {
-			badRequest(c, "qy_invalid_param", "兑换码计佣比例"+err.Error())
-			return
-		}
-		redemptionUnits = &units
+	redemptionUnits, ok := optionalRateUnits(c, req.RedemptionPercent, "兑换码计佣比例")
+	if !ok {
+		return
+	}
+	planOrderUnits, ok := optionalRateUnits(c, req.PlanOrderPercent, "在线买套餐计佣比例")
+	if !ok {
+		return
+	}
+	planBalanceUnits, ok := optionalRateUnits(c, req.PlanBalancePercent, "余额买套餐计佣比例")
+	if !ok {
+		return
+	}
+	planRedemptionUnits, ok := optionalRateUnits(c, req.PlanRedemptionPercent, "套餐兑换码计佣比例")
+	if !ok {
+		return
 	}
 
 	ctx := c.Request.Context()
+	// 分组名必须是**用户分组**:费率按上线自己的 users.group 取档,挂在模型分组
+	// (或打错的名字)上的规则一个人都不会命中,界面却会显示"已配置"。
+	known, err := stardust.KnownUserGroups(ctx)
+	if err != nil {
+		internalError(c, err)
+		return
+	}
+	if !known[group] {
+		badRequest(c, "qy_invalid_param", "分组 "+group+" 不是用户分组(没有登记,也没有账号在用)")
+		return
+	}
 	before, err := findGroupRate(ctx, group)
 	if err != nil {
 		internalError(c, err)
 		return
 	}
 	row := GroupRate{
-		GroupName:           group,
-		TopupRateUnits:      topupUnits,
-		ConsumeRateUnits:    consumeUnits,
-		RedemptionRateUnits: redemptionUnits,
-		Enabled:             req.Enabled,
-		Remark:              truncate(req.Remark, 255),
-		OperatorId:          c.GetInt("id"),
+		GroupName:               group,
+		TopupRateUnits:          topupUnits,
+		ConsumeRateUnits:        consumeUnits,
+		RedemptionRateUnits:     redemptionUnits,
+		PlanOrderRateUnits:      planOrderUnits,
+		PlanBalanceRateUnits:    planBalanceUnits,
+		PlanRedemptionRateUnits: planRedemptionUnits,
+		Enabled:                 req.Enabled,
+		Remark:                  truncate(req.Remark, 255),
+		OperatorId:              c.GetInt("id"),
 	}
 	if err := upsertGroupRate(ctx, &row); err != nil {
 		internalError(c, err)
@@ -968,4 +1014,18 @@ func pairCommissionQuotas(ctx context.Context, pairs [][2]int) map[[2]int]int64 
 		out[key] = int64(common.QuotaFromDecimal(d.Floor()))
 	}
 	return out
+}
+
+// optionalRateUnits 解析一个**可空**的分组费率百分比:nil 与空串 = 本组不单独配(返回 nil),
+// 其余按百分比校验。校验失败时已经写好 400,调用方直接返回。
+func optionalRateUnits(c *gin.Context, raw *string, label string) (*int, bool) {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return nil, true
+	}
+	units, err := config.RatePercentUnits(*raw)
+	if err != nil {
+		badRequest(c, "qy_invalid_param", label+err.Error())
+		return nil, false
+	}
+	return &units, true
 }

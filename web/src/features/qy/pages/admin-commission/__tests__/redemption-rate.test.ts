@@ -42,7 +42,13 @@ import {
  * 读起来永远比 `x != null ? … : …` 顺眼）。
  */
 
-const INDEX = readFileSync(new URL('../index.tsx', import.meta.url), 'utf8')
+// 分组费率表已拆到 components/group-rates-card.tsx：两份源码一起看。
+const INDEX =
+  readFileSync(new URL('../index.tsx', import.meta.url), 'utf8') +
+  readFileSync(
+    new URL('../components/group-rates-card.tsx', import.meta.url),
+    'utf8'
+  )
 
 describe('兑换码档的空值语义', () => {
   test('空是合法输入，与 0% 分得开', () => {

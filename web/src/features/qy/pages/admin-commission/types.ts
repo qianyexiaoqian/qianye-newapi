@@ -112,6 +112,13 @@ export type QyCommissionGroupRate = {
    * JS 里 `''` 与 `'0'` 都是假值，只有 `null` 不会被真值判断把显式 0% 画成"跟随"。
    */
   redemption_rate_percent: string | null
+  /**
+   * 本组的下线买套餐三档（在线支付 / 余额 / 套餐兑换码）。同样 **`null` = 本组没单独配**，
+   * 跟随全局套餐档（在线档两级都没配时跟随本组充值档）。
+   */
+  plan_order_rate_percent?: string | null
+  plan_balance_rate_percent?: string | null
+  plan_redemption_rate_percent?: string | null
   enabled: boolean
   remark: string
   operator_id: number
@@ -135,6 +142,11 @@ export type QyCommissionAdminConfig = {
    */
   bool_keys?: string[]
   group_rates: QyCommissionGroupRate[]
+  /**
+   * 分组费率可选的用户分组（登记的用户分组 ∪ 在用的 users.group）。新增规则时从这里选，
+   * 不再手填。旧后端不下发时为 undefined，界面退回手填。
+   */
+  user_groups?: string[]
   yaml_readonly: QyCommissionYamlReadonly
 }
 
@@ -211,6 +223,15 @@ export type QyDailySettleSnapshot = {
   payout_day_offset: number
   /** 只有 `status=done` 才为真 —— 有人失败绝不报“今天跑过了”。 */
   ran_today: boolean
+  /**
+   * 还在持有期里、此刻不会被结算的佣金：笔数、星屑（向下取整）、最早成熟时刻（unix 秒）。
+   * 「跑了却发了 0」最常见的原因就是它 —— 面板必须同屏说出来。旧后端不下发。
+   */
+  holding?: {
+    rows: number
+    amount: string
+    earliest_mature_at: number
+  }
   current?: QyDailySettleRun
   /** 昨天那一跑。昨天没跑成是今天才会被发现的事，必须同屏可见。 */
   previous?: QyDailySettleRun

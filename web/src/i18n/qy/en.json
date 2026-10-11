@@ -1067,7 +1067,7 @@
   "qy_cm_gr_scope_title": "Based on the promoter's (inviter's) group, not the invitee's",
   "qy_cm_gr_scope_desc": "The commission rate is an attribute of the promoter's own tier: whichever group he is in decides the rate for every downline he brings. Keying it on the invitee's group means a downline who buys a plan and switches group silently changes the promoter's rate — invisible to him, unpredictable, and impossible for him to influence, while every ledger row still balances and nothing raises an alert. This table and the fiat conversion table below both resolve against the same person's group, so you never have to reason about two different rules. The rate is frozen into the ledger row at accrual time, so later changes never rewrite historical commission; if the promoter changes group mid-day, that day splits into two rows and the earlier stretch keeps the old rate.",
   "qy_cm_gr_group": "Group",
-  "qy_cm_gr_group_hint": "The user group name from the main database. Enter the **promoter's (inviter's)** group.",
+  "qy_cm_gr_group_hint": "Pick a user group: the group the promoter (upline) is in.",
   "qy_cm_gr_enabled": "Status",
   "qy_cm_gr_enabled_hint": "Enable this rule",
   "qy_cm_gr_fallback": "Disabled (falls back to global default)",
@@ -5029,7 +5029,7 @@
   "qy_cm_sec_rates": "Upline rewards: downline top-up / usage / redemption codes",
   "qy_cm_sec_rates_desc": "Each time a downline tops up, spends, or redeems a balance code, their upline earns commission at these rates. Per-group rates can be set in the group rate table below.",
   "qy_cm_sec_plan": "Upline rewards: downline buys a plan",
-  "qy_cm_sec_plan_desc": "A plan earns the upline commission once, at purchase, with a separate rate per purchase method (not per group). Base: online = amount paid; balance = balance price charged; plan code = plan price. Admin grants earn nothing.",
+  "qy_cm_sec_plan_desc": "A plan earns the upline commission once, at purchase, with a separate rate per purchase method; per-group rates can be set in the group rate table below. Base: online = amount paid; balance = balance price charged; plan code = plan price. Admin grants earn nothing.",
   "qy_cm_sec_switch": "Commission scope switches",
   "qy_cm_sec_switch_desc": "Decide which money is excluded from commission. Takes effect immediately for new transactions; existing commission is unchanged.",
   "qy_cm_sec_settle": "Settlement and risk control",
@@ -5053,5 +5053,14 @@
   "qy_aff_src_plan_redemption": "Plan code",
   "qy_aff_rate_plan_order": "Downline buys a plan online",
   "qy_aff_rate_plan_balance": "Downline buys a plan with balance",
-  "qy_aff_rate_plan_redemption": "Downline redeems a plan code"
+  "qy_aff_rate_plan_redemption": "Downline redeems a plan code",
+  "qy_cm_ds_granted": "Stardust granted",
+  "qy_cm_ds_holding_title": "Commission still in the holding period",
+  "qy_cm_ds_holding_desc": "{{rows}} commission entries (about {{amount}} stardust) are still in the holding period. The daily settlement only pays matured commission; the earliest matures at {{time}} and is paid by the first daily run after that (day {{days}} after usage). Zero processed / zero granted during the holding period is expected.",
+  "qy_cm_gr_plan_title": "Downline plan purchases (this group only; empty = follow global)",
+  "qy_cm_gr_plan_inherit": "Follows {{percent}}%",
+  "qy_cm_gr_plan_hint": "Empty = not set for this group, pays {{percent}}%; 0 = none for this group.",
+  "qy_cm_gr_group_pick": "Choose a user group",
+  "qy_cm_gr_group_none": "Every user group already has a rule",
+  "qy_cm_gr_stale": "Not a user group; never applies, delete it"
 }

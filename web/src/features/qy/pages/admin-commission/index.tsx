@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Info, Pencil, Plus, RefreshCw, ScrollText, Trash2 } from 'lucide-react'
+import { Info, RefreshCw, ScrollText } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -35,6 +35,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { formatTimestampToDate } from '@/lib/format'
 
 import { QyConfirmDialog } from '../../components/qy-confirm-dialog'
 import { QyPageBoundary } from '../../components/qy-page-boundary'
@@ -48,11 +49,10 @@ import { qyKeys } from '../../lib/query-keys'
 import {
   qyAdminCommissionConfigQuery,
   qyAdminCommissionHealthQuery,
-  qyDeleteCommissionGroupRate,
   qyRerunDailySettle,
   qyUpdateCommissionConfig,
-  qyUpsertCommissionGroupRate,
 } from './api'
+import { QyCmGroupRatesCard } from './components/group-rates-card'
 import { QyCmRegisterRewardCard } from './components/register-reward-card'
 import {
   QY_COMMISSION_SECTIONS,
@@ -65,7 +65,6 @@ import {
 import type {
   QyCommissionAdminConfig,
   QyCommissionEffective,
-  QyCommissionGroupRate,
   QyDailySettleRun,
 } from './types'
 
@@ -117,7 +116,7 @@ export function QyAdminCommission() {
                 </div>
               </div>
               <DailySettleCard />
-              <GroupRatesCard config={config} />
+              <QyCmGroupRatesCard config={config} />
             </div>
           )}
         </QyPageBoundary>
@@ -459,436 +458,6 @@ function YamlReadonlyCard(props: { config: QyCommissionAdminConfig }) {
   )
 }
 
-/** 分组费率编辑表单的草稿。空的 groupName 表示"新增"。 */
-type QyGroupRateDraft = {
-  groupName: string
-  topup: string
-  consume: string
-  /**
-   * 本组是否单独设兑换码档。
-   *
-   * 用一个**独立的开关**而不是"输入框空着就算不配"：兑换码档的 0% 是合法
-   * 配置，而空输入框与"填了 0"在一个只有输入框的界面上长得太像。开关关掉时
-   * 提交 `null`，打开时提交 `redemption` 的内容（含 `'0'`）。
-   */
-  redemptionEnabled: boolean
-  redemption: string
-  enabled: boolean
-  remark: string
-  /** 编辑既有规则时锁住分组名：改名等于删一条加一条，两条审计比一条清楚。 */
-  locked: boolean
-}
-
-const EMPTY_GROUP_DRAFT: QyGroupRateDraft = {
-  groupName: '',
-  topup: '',
-  consume: '',
-  redemptionEnabled: false,
-  redemption: '',
-  enabled: true,
-  remark: '',
-  locked: false,
-}
-
-/**
- * 分组差异化费率表。
- *
- * 表头必须写清口径（按**推广人自己**的分组）与回落规则（没配的分组走全局默认），
- * 否则运营会以为"只有表里这几个分组返佣"。
- *
- * 口径这一句尤其不能含糊：2026-08-18 之前这一档按**下线**分组算，界面上写的
- * 也是那个口径。填表的人如果按旧口径理解，会给"客户档位"配费率，而实际生效的
- * 是"推广人档位" —— 每一行都保存成功、每一笔佣金都自洽，只是全站发错了钱。
- */
-function GroupRatesCard(props: { config: QyCommissionAdminConfig }) {
-  const { config } = props
-  const { t } = useTranslation()
-  const queryClient = useQueryClient()
-
-  const [draft, setDraft] = useState<QyGroupRateDraft | null>(null)
-  const [pendingDelete, setPendingDelete] =
-    useState<QyCommissionGroupRate | null>(null)
-
-  const refresh = async () => {
-    await queryClient.invalidateQueries({
-      queryKey: qyKeys.adminCommissionConfig(),
-    })
-  }
-
-  const upsert = useMutation({
-    mutationFn: qyUpsertCommissionGroupRate,
-    onSuccess: async () => {
-      setDraft(null)
-      toast.success(t('qy_cm_gr_saved'))
-      await refresh()
-    },
-    onError: (error) => toast.error(qyErrorMessage(error, t)),
-  })
-
-  const remove = useMutation({
-    mutationFn: qyDeleteCommissionGroupRate,
-    onSuccess: async () => {
-      setPendingDelete(null)
-      toast.success(t('qy_cm_gr_deleted'))
-      await refresh()
-    },
-    onError: (error) => toast.error(qyErrorMessage(error, t)),
-  })
-
-  const draftInvalid =
-    draft != null &&
-    (draft.groupName.trim() === '' ||
-      !qyIsValidPercent(draft.topup) ||
-      !qyIsValidPercent(draft.consume) ||
-      // 开关打开就必须填出一个合法比例；关着的时候输入框里剩什么都不算数。
-      (draft.redemptionEnabled && !qyIsValidPercent(draft.redemption)))
-
-  const groupRates = qyArray(config.group_rates)
-
-  return (
-    <Card data-card-hover='false'>
-      <CardHeader>
-        <CardTitle>{t('qy_cm_gr_title')}</CardTitle>
-        <CardDescription>
-          {t('qy_cm_gr_desc', {
-            topup: config.effective.topup_rate_percent,
-            consume: config.effective.consume_rate_percent,
-          })}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className='space-y-4'>
-        <Alert>
-          <Info />
-          <AlertTitle>{t('qy_cm_gr_scope_title')}</AlertTitle>
-          <AlertDescription>{t('qy_cm_gr_scope_desc_xh')}</AlertDescription>
-        </Alert>
-
-        <div className='overflow-x-auto'>
-          <table className='w-full min-w-[36rem] text-sm'>
-            <thead>
-              <tr className='text-muted-foreground text-left'>
-                <th className='py-1.5 pe-3 font-medium'>
-                  {t('qy_cm_gr_group')}
-                </th>
-                <th className='py-1.5 pe-3 font-medium'>
-                  {t('qy_cm_f_topup_rate')}
-                </th>
-                <th className='py-1.5 pe-3 font-medium'>
-                  {t('qy_cm_f_consume_rate')}
-                </th>
-                <th className='py-1.5 pe-3 font-medium'>
-                  {t('qy_cm_f_redemption_rate')}
-                </th>
-                <th className='py-1.5 pe-3 font-medium'>
-                  {t('qy_cm_gr_enabled')}
-                </th>
-                <th className='py-1.5 pe-3 font-medium'>
-                  {t('qy_cm_gr_remark')}
-                </th>
-                <th className='py-1.5 font-medium'>{t('qy_common_actions')}</th>
-              </tr>
-            </thead>
-            <tbody className='divide-border divide-y'>
-              {groupRates.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={7}
-                    className='text-muted-foreground py-3 text-center'
-                  >
-                    {t('qy_cm_gr_empty')}
-                  </td>
-                </tr>
-              )}
-              {groupRates.map((rule) => (
-                <tr key={rule.group_name}>
-                  <td className='py-2 pe-3 font-mono text-xs'>
-                    {rule.group_name}
-                  </td>
-                  <td className='py-2 pe-3 tabular-nums'>
-                    {rule.topup_rate_percent}%
-                  </td>
-                  <td className='py-2 pe-3 tabular-nums'>
-                    {rule.consume_rate_percent}%
-                  </td>
-                  {/* null 与 "0" 必须画成两样东西。用 `!= null` 而不是真值
-                      判断：`'0'` 在 JS 里是假值，写成 `rule.x ? … : 跟随`
-                      会把一个显式 0% 的分组显示成"跟随充值档"，而那两者
-                      在钱上差的正是一整档比例。 */}
-                  <td className='py-2 pe-3 tabular-nums'>
-                    {rule.redemption_rate_percent != null ? (
-                      `${rule.redemption_rate_percent}%`
-                    ) : (
-                      <span className='text-muted-foreground'>
-                        {t('qy_cm_gr_redemption_inherit', {
-                          percent: groupEffectiveRedemptionPercent(
-                            rule,
-                            config
-                          ),
-                        })}
-                      </span>
-                    )}
-                  </td>
-                  <td className='py-2 pe-3'>
-                    {t(rule.enabled ? 'qy_common_on' : 'qy_cm_gr_fallback')}
-                  </td>
-                  <td className='text-muted-foreground py-2 pe-3'>
-                    {rule.remark}
-                  </td>
-                  <td className='py-2'>
-                    <div className='flex gap-1'>
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        aria-label={t('qy_common_edit')}
-                        onClick={() =>
-                          setDraft({
-                            groupName: rule.group_name,
-                            topup: rule.topup_rate_percent,
-                            consume: rule.consume_rate_percent,
-                            redemptionEnabled:
-                              rule.redemption_rate_percent != null,
-                            redemption: rule.redemption_rate_percent ?? '',
-                            enabled: rule.enabled,
-                            remark: rule.remark,
-                            locked: true,
-                          })
-                        }
-                      >
-                        <Pencil aria-hidden='true' />
-                      </Button>
-                      <Button
-                        variant='ghost'
-                        size='sm'
-                        aria-label={t('qy_common_delete')}
-                        onClick={() => setPendingDelete(rule)}
-                      >
-                        <Trash2 aria-hidden='true' />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {draft == null ? (
-          <Button
-            variant='outline'
-            size='sm'
-            onClick={() => setDraft({ ...EMPTY_GROUP_DRAFT })}
-          >
-            <Plus aria-hidden='true' />
-            {t('qy_cm_gr_add')}
-          </Button>
-        ) : (
-          <div className='border-border space-y-3 rounded-md border p-3'>
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <div className='space-y-1.5'>
-                <Label htmlFor='qy-cm-gr-group'>{t('qy_cm_gr_group')}</Label>
-                <Input
-                  id='qy-cm-gr-group'
-                  value={draft.groupName}
-                  disabled={draft.locked}
-                  aria-invalid={draft.groupName.trim() === ''}
-                  onChange={(e) =>
-                    setDraft({ ...draft, groupName: e.target.value })
-                  }
-                />
-                <p className='text-muted-foreground text-xs'>
-                  {t('qy_cm_gr_group_hint')}
-                </p>
-              </div>
-              <div className='space-y-1.5'>
-                <Label htmlFor='qy-cm-gr-remark'>{t('qy_cm_gr_remark')}</Label>
-                <Input
-                  id='qy-cm-gr-remark'
-                  value={draft.remark}
-                  onChange={(e) =>
-                    setDraft({ ...draft, remark: e.target.value })
-                  }
-                />
-              </div>
-              <div className='space-y-1.5'>
-                <Label htmlFor='qy-cm-gr-topup'>
-                  {t('qy_cm_f_topup_rate')}
-                </Label>
-                <div className='flex items-center gap-2'>
-                  <Input
-                    id='qy-cm-gr-topup'
-                    inputMode='decimal'
-                    value={draft.topup}
-                    aria-invalid={!qyIsValidPercent(draft.topup)}
-                    onChange={(e) =>
-                      setDraft({ ...draft, topup: e.target.value })
-                    }
-                  />
-                  <span className='text-muted-foreground text-sm'>%</span>
-                </div>
-              </div>
-              <div className='space-y-1.5'>
-                <Label htmlFor='qy-cm-gr-consume'>
-                  {t('qy_cm_f_consume_rate')}
-                </Label>
-                <div className='flex items-center gap-2'>
-                  <Input
-                    id='qy-cm-gr-consume'
-                    inputMode='decimal'
-                    value={draft.consume}
-                    aria-invalid={!qyIsValidPercent(draft.consume)}
-                    onChange={(e) =>
-                      setDraft({ ...draft, consume: e.target.value })
-                    }
-                  />
-                  <span className='text-muted-foreground text-sm'>%</span>
-                </div>
-              </div>
-            </div>
-            <div className='space-y-1.5'>
-              <label className='flex items-center gap-2 text-sm'>
-                <input
-                  type='checkbox'
-                  checked={draft.redemptionEnabled}
-                  onChange={(e) => {
-                    // 打开时给一个起始值，免得开关一开就是非法状态；
-                    // 起始值取本组的充值档，也就是关掉时的实际口径。
-                    const seed =
-                      e.target.checked && draft.redemption === ''
-                        ? draft.topup
-                        : draft.redemption
-                    setDraft({
-                      ...draft,
-                      redemptionEnabled: e.target.checked,
-                      redemption: seed,
-                    })
-                  }}
-                />
-                {t('qy_cm_gr_redemption_toggle')}
-              </label>
-              {draft.redemptionEnabled ? (
-                <div className='flex items-center gap-2'>
-                  <Input
-                    id='qy-cm-gr-redemption'
-                    inputMode='decimal'
-                    aria-label={t('qy_cm_f_redemption_rate')}
-                    value={draft.redemption}
-                    aria-invalid={!qyIsValidPercent(draft.redemption)}
-                    onChange={(e) =>
-                      setDraft({ ...draft, redemption: e.target.value })
-                    }
-                  />
-                  <span className='text-muted-foreground text-sm'>%</span>
-                </div>
-              ) : (
-                <p className='text-muted-foreground text-xs'>
-                  {t('qy_cm_gr_redemption_off_hint', {
-                    percent: qyIsValidPercent(draft.topup)
-                      ? qyNormalizePercent(draft.topup)
-                      : config.effective.topup_rate_percent,
-                  })}
-                </p>
-              )}
-            </div>
-            <label className='flex items-center gap-2 text-sm'>
-              <input
-                type='checkbox'
-                checked={draft.enabled}
-                onChange={(e) =>
-                  setDraft({ ...draft, enabled: e.target.checked })
-                }
-              />
-              {t('qy_cm_gr_enabled_hint')}
-            </label>
-            <p className='text-muted-foreground text-xs'>
-              {t('qy_cm_f_percent_hint')}
-            </p>
-            <div className='flex gap-2'>
-              <Button
-                disabled={draftInvalid || upsert.isPending}
-                onClick={() =>
-                  upsert.mutate({
-                    group_name: draft.groupName.trim(),
-                    topup_rate_percent: qyNormalizePercent(draft.topup),
-                    consume_rate_percent: qyNormalizePercent(draft.consume),
-                    // 开关关着就显式发 null。这个接口是整行 upsert，
-                    // 省掉这个字段与发 null 后端是同一个结果，但写出来
-                    // 才看得见"这一次保存把兑换码档取消了"。
-                    redemption_rate_percent: draft.redemptionEnabled
-                      ? qyNormalizePercent(draft.redemption)
-                      : null,
-                    enabled: draft.enabled,
-                    remark: draft.remark,
-                  })
-                }
-              >
-                {t('qy_cm_save')}
-              </Button>
-              <Button variant='outline' onClick={() => setDraft(null)}>
-                {t('qy_common_cancel')}
-              </Button>
-            </div>
-          </div>
-        )}
-      </CardContent>
-
-      <QyConfirmDialog
-        open={pendingDelete != null}
-        onOpenChange={(open) => {
-          if (!open) setPendingDelete(null)
-        }}
-        title={t('qy_cm_gr_delete_title')}
-        description={t('qy_cm_gr_delete_desc', {
-          topup: config.effective.topup_rate_percent,
-          consume: config.effective.consume_rate_percent,
-        })}
-        confirmText={t('qy_common_delete')}
-        isLoading={remove.isPending}
-        details={
-          pendingDelete == null ? null : (
-            <p className='text-sm'>
-              <span className='font-mono'>{pendingDelete.group_name}</span>：
-              {pendingDelete.topup_rate_percent}% /{' '}
-              {pendingDelete.consume_rate_percent}% /{' '}
-              {pendingDelete.redemption_rate_percent != null
-                ? `${pendingDelete.redemption_rate_percent}%`
-                : t('qy_cm_gr_redemption_inherit', {
-                    percent: groupEffectiveRedemptionPercent(
-                      pendingDelete,
-                      config
-                    ),
-                  })}
-            </p>
-          )
-        }
-        onConfirm={() => {
-          if (pendingDelete != null) remove.mutate(pendingDelete.group_name)
-        }}
-      />
-    </Card>
-  )
-}
-
-/**
- * 一条没单独配兑换码档的分组规则，实际按几个点返。
- *
- * 与后端 `redemptionRateUnits` 的取值顺序逐条对齐：本组没配 ⇒ 全局兑换码档
- * ⇒ 本组充值档。表格必须把这个数算出来写在"跟随"旁边，否则运营看着一列
- * "跟随"根本不知道跟到了哪儿 —— 而这一列决定的是平台真金白银要付多少。
- *
- * 注意判定用的是 `redemption_rate_follows_topup` 而不是
- * `redemption_rate_percent === ''`：显式 0% 的全局档必须压过本组充值档，
- * 而 `'0'` 与 `''` 在任何真值判断里都是同一边。
- */
-function groupEffectiveRedemptionPercent(
-  rule: QyCommissionGroupRate,
-  config: QyCommissionAdminConfig
-): string {
-  if (!config.effective.redemption_rate_follows_topup) {
-    return config.effective.redemption_rate_percent
-  }
-  return rule.topup_rate_percent
-}
-
 /**
  * 草稿文本 → 存储用的整数，并按字段元数据的区间卡一次。非法返回 `null`。
  *
@@ -1086,6 +655,24 @@ function DailySettleCard() {
               title={t('qy_cm_ds_previous')}
               run={snapshot.previous}
             />
+            {/* 「跑了却处理 0 人」最常见的原因是佣金都还在持有期：一日一结算只吸收已成熟的行。
+                不在这里说出来，连续几天的 0 看起来就像结算坏了。 */}
+            {snapshot.holding != null && snapshot.holding.rows > 0 && (
+              <Alert>
+                <Info />
+                <AlertTitle>{t('qy_cm_ds_holding_title')}</AlertTitle>
+                <AlertDescription>
+                  {t('qy_cm_ds_holding_desc', {
+                    rows: snapshot.holding.rows,
+                    amount: snapshot.holding.amount,
+                    time: formatTimestampToDate(
+                      snapshot.holding.earliest_mature_at
+                    ),
+                    days: snapshot.payout_day_offset,
+                  })}
+                </AlertDescription>
+              </Alert>
+            )}
           </>
         )}
         <div>
@@ -1181,6 +768,10 @@ function QyDailySettleRunView(props: {
       <QyDailySettleField
         label={t('qy_cm_ds_failed')}
         value={String(run.failed)}
+      />
+      <QyDailySettleField
+        label={t('qy_cm_ds_granted')}
+        value={<QySdAmount amount={run.granted} />}
       />
       {run.remark !== '' && (
         <p className='text-muted-foreground text-xs'>{run.remark}</p>

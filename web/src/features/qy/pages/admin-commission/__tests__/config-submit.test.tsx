@@ -103,6 +103,7 @@ const CONFIG = {
     'exclude_redemption_and_manual',
     'refund_clawback',
   ],
+  user_groups: ['default', 'svip', 'vip'],
   group_rates: [
     {
       group_name: 'vip',
@@ -178,6 +179,11 @@ function respond(request: QyProbeRequest) {
           max_attempts: 5,
           payout_day_offset: 8,
           ran_today: true,
+          holding: {
+            rows: 225,
+            amount: '113',
+            earliest_mature_at: 1_791_849_600,
+          },
         },
         credit: {
           pending: 2,
@@ -257,6 +263,21 @@ describe('佣金配置页', () => {
     }
   })
 })
+
+/** 按 id 往输入框里敲字（React 19 要走原型上的 setter 再派发 input）。 */
+async function typeById(id: string, value: string): Promise<boolean> {
+  const field = document.querySelector(`[id="${id}"]`)
+  if (!(field instanceof HTMLInputElement)) return false
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      'value'
+    )?.set
+    setter?.call(field, value)
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  return true
+}
 
 /** 点一个开关（按 id 定位：Switch 的可见文字是空的）。 */
 async function toggleSwitch(key: string): Promise<boolean> {
@@ -338,5 +359,77 @@ describe('给上线的返利都在这一页', () => {
     )
     assert.equal(puts.length, 1)
     assert.deepEqual(puts[0].body, { plan_balance_rate_percent: '3' })
+  })
+})
+
+describe('分组费率：选用户分组、按分组设套餐三档', () => {
+  test('新增规则从下拉选分组（已配过的不再出现），套餐档留空发 null、填了发规范化的值', async () => {
+    const screen = await mountPage()
+    assert.ok(await screen.click(zh.qy_cm_gr_add), '找不到「新增分组费率」')
+
+    const select = document.querySelector('[id="qy-cm-gr-group"]')
+    assert.ok(select instanceof HTMLSelectElement, '分组必须是下拉而不是输入框')
+    const options = [...select.options].map((option) => option.value)
+    assert.deepEqual(
+      options,
+      ['', 'default', 'svip'],
+      'vip 已经配过，不该再出现'
+    )
+
+    await act(async () => {
+      select.value = 'svip'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    // 同名 label 在上面的运营参数卡里也有一份，按 id 定位本组表单里的那一格。
+    assert.ok(await typeById('qy-cm-gr-topup', '12'))
+    assert.ok(await typeById('qy-cm-gr-consume', '6'))
+    assert.ok(
+      await typeById('qy-cm-gr-plan_balance_rate_percent', '4.50'),
+      '找不到本组余额买套餐输入框'
+    )
+
+    screen.sent.length = 0
+    assert.ok(await clickLast(zh.qy_cm_save), '找不到保存键')
+    const puts = screen.sent.filter(
+      (row) =>
+        row.method === 'PUT' &&
+        row.url.endsWith('/admin/commission/group-rates')
+    )
+    assert.equal(puts.length, 1)
+    assert.deepEqual(puts[0].body, {
+      group_name: 'svip',
+      topup_rate_percent: '12',
+      consume_rate_percent: '6',
+      redemption_rate_percent: null,
+      plan_order_rate_percent: null,
+      plan_balance_rate_percent: '4.5',
+      plan_redemption_rate_percent: null,
+      enabled: true,
+      remark: '',
+    })
+  })
+
+  test('没单独配套餐档的分组，表格写出实际跟随几个点', async () => {
+    const screen = await mountPage()
+    const text = screen.text()
+    // vip：在线档全局跟随充值档 ⇒ 本组充值档 12%；余额 / 兑换码跟随全局 0%。
+    assert.ok(
+      text.includes(zh.qy_cm_gr_plan_inherit.replace('{{percent}}', '12')),
+      `在线套餐档没写「跟随 12%」：${text}`
+    )
+    assert.ok(
+      text.includes(zh.qy_cm_gr_plan_inherit.replace('{{percent}}', '0'))
+    )
+  })
+})
+
+describe('结算卡：持有期', () => {
+  test('有佣金在持有期时说出来，免得连续几天的 0 像是结算坏了', async () => {
+    const screen = await mountPage()
+    assert.ok(
+      screen.text().includes(zh.qy_cm_ds_holding_title),
+      '持有期说明没画出来'
+    )
+    assert.ok(screen.text().includes('225'), '笔数没写出来')
   })
 })

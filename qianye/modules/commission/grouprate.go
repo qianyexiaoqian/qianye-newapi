@@ -52,8 +52,9 @@ package commission
 //
 // # 三档比例
 //
-// 充值、消费、兑换码。前两档在两级(全局/分组)上都是必填的整数;兑换码档
-// 在两级上都**可空**,空 = 没单独配。取值顺序与"为什么必须可空"见
+// 充值、消费、兑换码,外加下线买套餐的三档。充值与消费在两级(全局/分组)上都是
+// 必填的整数;兑换码档在两级上都**可空**,空 = 没单独配;套餐三档在分组上可空,
+// 空 = 跟随全局套餐档。取值顺序与"为什么必须可空"见
 // redemptionRateUnits 的说明 —— 一句话:0% 是合法配置,不能拿它表示没配。
 
 import (
@@ -104,6 +105,13 @@ type GroupRate struct {
 	// 这正是选可空列而不是哨兵值(-1 之类)的理由:哨兵值迟早会有人当成费率算。
 	RedemptionRateUnits *int `json:"redemption_rate_units" gorm:"column:redemption_rate_units"`
 
+	// 下线买套餐的三档(在线支付 / 余额 / 套餐兑换码),本组单独配。**可空**,理由同
+	// RedemptionRateUnits:列是后加的,NULL = 本组没单独配,跟随全局套餐档 —— 存量
+	// 分组规则升级上来,套餐佣金一分不变。0 是显式 0%。
+	PlanOrderRateUnits      *int `json:"plan_order_rate_units" gorm:"column:plan_order_rate_units"`
+	PlanBalanceRateUnits    *int `json:"plan_balance_rate_units" gorm:"column:plan_balance_rate_units"`
+	PlanRedemptionRateUnits *int `json:"plan_redemption_rate_units" gorm:"column:plan_redemption_rate_units"`
+
 	// Enabled 为 false 时该规则不生效,等价于回落全局默认 ——
 	// 不是"零费率"。想要零费率请把两个比例显式填 0。
 	Enabled bool `json:"enabled" gorm:"not null"`
@@ -125,11 +133,14 @@ func (g GroupRate) ConsumePercent() string { return config.FormatRatePercent(g.C
 // 返回指针而不是空串:管理端要把"没配(跟随)"与"显式 0%"渲染成两种东西,
 // JSON 里的 null 与 "0" 是唯一不会被前端的假值判断("" 与 "0" 都会被
 // `!value` 吃掉)误读的一对。
-func (g GroupRate) RedemptionPercent() *string {
-	if g.RedemptionRateUnits == nil {
+func (g GroupRate) RedemptionPercent() *string { return optionalPercent(g.RedemptionRateUnits) }
+
+// optionalPercent 把可空的费率列换成可空的百分比:nil = 本组没单独配。
+func optionalPercent(units *int) *string {
+	if units == nil {
 		return nil
 	}
-	p := config.FormatRatePercent(*g.RedemptionRateUnits)
+	p := config.FormatRatePercent(*units)
 	return &p
 }
 
@@ -268,7 +279,7 @@ type rateDecision struct {
 //
 //	SourceConsume     消费档
 //	SourceRedemption  兑换码档(可空,见下)
-//	SourcePlan*       买套餐三档(在线支付 / 余额 / 兑换码,仅全局)
+//	SourcePlan*       买套餐三档(在线支付 / 余额 / 兑换码;分组没配就跟随全局)
 //	其余(充值/任务补扣/…) 充值档
 //
 // 未配置或被禁用的分组回落全局默认费率。分组名为空按 default 分组判定
@@ -301,13 +312,31 @@ func rateUnitsFor(rule GroupRate, matched bool, source string, s opSettings) int
 		return s.ConsumeRateUnits
 	case SourceRedemption:
 		return redemptionRateUnits(rule, matched, s)
-	// 买套餐的三档只有全局这一层:分组费率表管的是充值 / 消费 / 兑换码,
-	// 套餐按渠道分档已经是运营要的那一层粒度。
+	// 买套餐的三档:本组单独配了(含显式 0%)就按本组,否则跟随全局套餐档。
+	//
+	// 在线支付那档的全局档本身可空(空 = 跟随充值档),所以它走与兑换码档同一条梯子:
+	// 分组套餐档 → 全局套餐档 → 分组充值档 → 全局充值档。在线买套餐在这一档出现之前
+	// 就是按充值档计的(含分组充值档),两级都没配时必须原样如此。
 	case SourcePlanOrder:
-		return s.EffectivePlanOrderRateUnits()
+		if matched && rule.PlanOrderRateUnits != nil {
+			return *rule.PlanOrderRateUnits
+		}
+		if s.PlanOrderRateUnits != nil {
+			return *s.PlanOrderRateUnits
+		}
+		if matched {
+			return rule.TopupRateUnits
+		}
+		return s.TopupRateUnits
 	case SourcePlanBalance:
+		if matched && rule.PlanBalanceRateUnits != nil {
+			return *rule.PlanBalanceRateUnits
+		}
 		return s.PlanBalanceRateUnits
 	case SourcePlanRedemption:
+		if matched && rule.PlanRedemptionRateUnits != nil {
+			return *rule.PlanRedemptionRateUnits
+		}
 		return s.PlanRedemptionRateUnits
 	default:
 		if matched {
@@ -387,6 +416,7 @@ func upsertGroupRate(ctx context.Context, row *GroupRate) error {
 		// 给这批用户发钱,而这正是本仓最忌讳的"看到的与生效的不一致"。
 		DoUpdates: clause.AssignmentColumns([]string{
 			"topup_rate_units", "consume_rate_units", "redemption_rate_units",
+			"plan_order_rate_units", "plan_balance_rate_units", "plan_redemption_rate_units",
 			"enabled", "remark", "operator_id", "updated_at",
 		}),
 	}).Create(row).Error

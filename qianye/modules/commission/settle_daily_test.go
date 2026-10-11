@@ -420,6 +420,28 @@ func TestDailySettleSnapshotAnswersThePanelQuestions(t *testing.T) {
 		assert.Equal(t, yesterday, prev["run_date"])
 		assert.Equal(t, settleRunDone, prev["status"])
 	})
+
+	// 「跑了、发了 0」最常见的原因是佣金都还在持有期:面板要说出有几笔、多少、最早哪天成熟,
+	// 否则连续几天的 0 看起来就是结算坏了。已成熟的、已结清的都不算在里面。
+	t.Run("持有期内的佣金同屏可见", func(t *testing.T) {
+		seedAccrual(t, gdb, 1, func(a *Accrual) { a.MatureAt = now + 2*86400 })
+		seedAccrual(t, gdb, 2, func(a *Accrual) {
+			a.MatureAt = now + 86400
+			a.GrossAmount = decimal.RequireFromString("12.7")
+		})
+		seedAccrual(t, gdb, 3, nil) // 已成熟:下一次日结就发,不算持有
+		seedAccrual(t, gdb, 4, func(a *Accrual) {
+			a.MatureAt = now + 86400
+			a.SettledAmount = a.GrossAmount // 已结清
+		})
+
+		snap := dailySettleSnapshot(now)
+		holding, _ := snap["holding"].(map[string]any)
+		require.NotNil(t, holding)
+		assert.EqualValues(t, 2, holding["rows"])
+		assert.Equal(t, "512", holding["amount"], "500 + 12.7 向下取整")
+		assert.Equal(t, now+86400, holding["earliest_mature_at"])
+	})
 }
 
 // TestDailySettleSnapshotCarriesThePayoutOffset 钉住健康面板下发的 T+N。
