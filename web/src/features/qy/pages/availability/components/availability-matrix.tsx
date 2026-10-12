@@ -30,12 +30,14 @@ import {
   qyAvailCellState,
   qyAvailOfferedGroups,
   qyAvailOutcomeKey,
+  qyAvailRecovered,
   qyAvailRowScale,
   qyAvailToneOf,
   type QyAvailMetricDef,
   type QyAvailRowScale,
 } from '../constants'
 import type { QyAvailCell, QyAvailMatrix } from '../types'
+import { QyAvailRecentBar } from './recent-status-bar'
 
 function cellKey(model: string, group: string): string {
   return `${model} ${group}`
@@ -151,6 +153,12 @@ export function QyAvailabilityMatrix(props: QyAvailabilityMatrixProps) {
                   measured={covered.has(model)}
                   metric={metric}
                   scale={rowScales.get(model) ?? null}
+                  recovered={qyAvailRecovered(
+                    cell,
+                    props.matrix.definition,
+                    props.matrix.end_ts
+                  )}
+                  nowSec={props.matrix.end_ts}
                   onSelect={props.onSelectCell}
                 />
               )
@@ -184,6 +192,10 @@ function QyAvailabilityMatrixCell(props: {
   measured: boolean
   metric: QyAvailMetricDef
   scale: QyAvailRowScale
+  /** 整段可用率仍是降级 / 不可用,但最近有请求的那一小时已回到可用阈值以上。 */
+  recovered: boolean
+  /** 状态条的锚点(响应的 end_ts),让格子与数据同一个"现在"。 */
+  nowSec: number
   onSelect: (cell: QyAvailCell) => void
 }) {
   const { t } = useTranslation()
@@ -216,6 +228,7 @@ function QyAvailabilityMatrixCell(props: {
     lines.push(t('qy_avl_not_measured'))
   } else if (metric.key === 'availability') {
     lines.push(t(stateStyle.labelKey))
+    if (props.recovered) lines.push(t('qy_avl_recovered_hint'))
   } else if (value != null && tone !== 'none') {
     lines.push(t(toneStyle.labelKey))
   }
@@ -230,6 +243,8 @@ function QyAvailabilityMatrixCell(props: {
     }
   }
   const title = lines.join('\n')
+  // 状态条只画在「该分组提供、且查过」的格子上:不提供 / 没查过的格子没有"最近"可言。
+  const showRecent = props.measured && cell != null && state !== 'not_offered'
 
   return (
     <button
@@ -243,6 +258,7 @@ function QyAvailabilityMatrixCell(props: {
       className={cn(
         'm-0.5 flex flex-col items-center justify-center rounded-md py-1.5 text-xs font-medium tabular-nums transition-colors',
         style.cellClass,
+        props.recovered && 'ring-1 ring-emerald-500 ring-inset',
         disabled
           ? 'cursor-default'
           : 'focus-visible:ring-ring cursor-pointer hover:brightness-110 focus-visible:ring-2 focus-visible:outline-none'
@@ -252,6 +268,18 @@ function QyAvailabilityMatrixCell(props: {
         {style.glyph}
       </span>
       <span className='leading-tight'>{metric.format(value)}</span>
+      {showRecent && (
+        <QyAvailRecentBar
+          hours={cell?.recent_hours}
+          nowSec={props.nowSec}
+          className='mt-1'
+        />
+      )}
+      {props.recovered && (
+        <span className='mt-0.5 text-[10px] leading-none text-emerald-700 dark:text-emerald-300'>
+          {t('qy_avl_recovered')}
+        </span>
+      )}
     </button>
   )
 }

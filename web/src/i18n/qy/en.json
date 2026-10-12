@@ -5062,5 +5062,10 @@
   "qy_cm_gr_plan_hint": "Empty = not set for this group, pays {{percent}}%; 0 = none for this group.",
   "qy_cm_gr_group_pick": "Choose a user group",
   "qy_cm_gr_group_none": "Every user group already has a rule",
-  "qy_cm_gr_stale": "Not a user group; never applies, delete it"
+  "qy_cm_gr_stale": "Not a user group; never applies, delete it",
+  "qy_avl_recent": "Last 24 hours",
+  "qy_avl_recent_bar": "Recent requests: hourly success rate over the last 24 hours; the rightmost bar is the current hour, gray means no requests that hour",
+  "qy_avl_recovered": "Recovered recently",
+  "qy_avl_recovered_hint": "Recovered recently: the latest hour is back above the available threshold; availability is cumulative over the whole range and catches up gradually",
+  "qy_avl_recent_legend": "The percentage is cumulative availability over the selected range; the small bar below it is the hourly success rate over the last 24 hours (rightmost = current hour, gray = no requests). After an outage, cumulative availability takes a while to climb back, so trust the latest bars; recovered cells are marked Recovered recently."
 }

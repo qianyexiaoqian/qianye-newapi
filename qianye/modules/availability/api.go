@@ -111,8 +111,8 @@ const maxPlazaModels = 20
 // plazaAllGroups 是前端「全部分组」筛选的取值(web 侧 FILTER_ALL)。
 const plazaAllGroups = "all"
 
-// plazaHour 是卡片状态条的一格。
-type plazaHour struct {
+// hourRate 是状态条的一格(模型广场卡片与模型可用率页的「最近请求」共用)。
+type hourRate struct {
 	Ts int64 `json:"ts"`
 	// SuccessRate 是这一小时计入口径的成功率,不套 min_samples:状态条是一条
 	// 走势线,低流量时段画成灰色会让绝大多数模型整条发灰。没有计入样本时为 nil(灰格)。
@@ -125,7 +125,7 @@ type plazaCard struct {
 	Availability *float64 `json:"availability"`
 	State        string   `json:"state"`
 	perf
-	Hours []plazaHour `json:"hours"`
+	Hours []hourRate `json:"hours"`
 }
 
 // getPlazaCards 给模型广场卡片列表用:一页模型在「选中分组」上的可用率与 24 格小时线。
@@ -180,20 +180,25 @@ func getPlazaCards(c *gin.Context) {
 		}
 		state, av := stateOf(total, true, d)
 		card := plazaCard{Model: name, Availability: av, State: state, perf: perfOf(total)}
-		hours := series[name]
-		timestamps := make([]int64, 0, len(hours))
-		for ts := range hours {
-			timestamps = append(timestamps, ts)
-		}
-		slices.Sort(timestamps)
-		card.Hours = make([]plazaHour, 0, len(timestamps))
-		for _, ts := range timestamps {
-			b := hours[ts]
-			card.Hours = append(card.Hours, plazaHour{Ts: ts, SuccessRate: availabilityOf(b.SuccessCount, counted(b, d))})
-		}
+		card.Hours = hourRates(series[name], d)
 		out = append(out, card)
 	}
 	respond(c, gin.H{"cards": out, "definition": d})
+}
+
+// hourRates 把一条小时线排成状态条的格子(按时间升序;没有流量的小时不出现,前端画灰格)。
+func hourRates(hours map[int64]*Bucket, d Definition) []hourRate {
+	timestamps := make([]int64, 0, len(hours))
+	for ts := range hours {
+		timestamps = append(timestamps, ts)
+	}
+	slices.Sort(timestamps)
+	out := make([]hourRate, 0, len(timestamps))
+	for _, ts := range timestamps {
+		b := hours[ts]
+		out = append(out, hourRate{Ts: ts, SuccessRate: availabilityOf(b.SuccessCount, counted(b, d))})
+	}
+	return out
 }
 
 // serveMatrix 是两个入口共用的矩阵查询;visible 是调用方按身份算好的可见分组。
@@ -265,6 +270,17 @@ func serveMatrix(c *gin.Context, visible map[string]string) {
 		used += weight
 		out = append(out, row...)
 		covered = append(covered, name)
+	}
+	// 「最近请求」状态条:每一格最近 24 小时的逐小时成功率,与所选时间范围无关。
+	// 可用率是整段时间的累计,一个刚恢复的模型要很久才爬得回阈值,只看那个数字会被
+	// 当成仍然不可用;状态条把「最近几小时已经全绿」直接画出来。取不到时只少这一条,
+	// 不让整张矩阵失败。
+	if recent, err := querySeriesByCell(resolveRange(0, 0, 24), covered, groups); err == nil {
+		for i := range out {
+			if hours := recent[cellKey{group: out[i].Group, model: out[i].Model}]; len(hours) > 0 {
+				out[i].RecentHours = hourRates(hours, d)
+			}
+		}
 	}
 	sortCells(out, sortMode)
 

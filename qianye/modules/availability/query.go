@@ -175,13 +175,12 @@ func querySeriesPoints(r timeRange, modelName string, groups []string) (map[stri
 	return out, nil
 }
 
-// querySeriesByModel 按 (模型, 小时) 聚合一批模型在给定分组集合上的趋势。
+// querySeriesByCell 按 (分组, 模型, 小时) 聚合一批模型在给定分组集合上的趋势。
 //
-// 模型广场卡片一页要 20 个模型各一条 24 格小时线,逐个调 querySeriesPoints 是
-// 20 条查询;这里一条查询取回,分组维度在库里就合掉(卡片只看「选中的分组」或
-// 「可见分组合计」,不需要逐分组的线)。时间桶统一对齐到整点,与卡片的格子一一对应。
-func querySeriesByModel(r timeRange, models, groups []string) (map[string]map[int64]*Bucket, error) {
-	out := map[string]map[int64]*Bucket{}
+// 一条查询取回整页:模型可用率页每一格都要一条 24 格小时线(「最近请求」状态条),
+// 逐格查是 分组 × 模型 条查询。时间桶统一对齐到整点,与状态条的格子一一对应。
+func querySeriesByCell(r timeRange, models, groups []string) (map[cellKey]map[int64]*Bucket, error) {
+	out := map[cellKey]map[int64]*Bucket{}
 	if len(groups) == 0 || len(models) == 0 {
 		return out, nil
 	}
@@ -192,19 +191,31 @@ func querySeriesByModel(r timeRange, models, groups []string) (map[string]map[in
 
 	var rows []Bucket
 	err := gdb.Table(r.tableName()).
-		Select(selectSums("model_name, bucket_ts")).
+		Select(selectSums("group_name, model_name, bucket_ts")).
 		Where("bucket_ts >= ? AND bucket_ts <= ?", r.StartTs, r.EndTs).
 		Where("group_name IN ?", groups).
 		Where("model_name IN ?", models).
-		Group("model_name, bucket_ts").
+		Group("group_name, model_name, bucket_ts").
 		Find(&rows).Error
 	if err != nil {
 		db.MarkFailure(err)
 		return nil, err
 	}
+	put := func(key cellKey, ts int64, row *Bucket) {
+		if out[key] == nil {
+			out[key] = map[int64]*Bucket{}
+		}
+		if cur, ok := out[key][ts]; ok {
+			cur.addFrom(row)
+			return
+		}
+		cp := *row
+		cp.BucketTs = ts
+		out[key][ts] = &cp
+	}
 	for i := range rows {
 		row := rows[i]
-		putSeriesPoint(out, row.ModelName, alignHour(row.BucketTs), &row)
+		put(cellKey{group: row.GroupName, model: row.ModelName}, alignHour(row.BucketTs), &row)
 	}
 
 	if !r.useHourTable() {
@@ -224,9 +235,25 @@ func querySeriesByModel(r timeRange, models, groups []string) (map[string]map[in
 			if snap.ReqTotal == 0 {
 				return true
 			}
-			putSeriesPoint(out, k.model, alignHour(k.bucketTs), &snap)
+			put(cellKey{group: k.group, model: k.model}, alignHour(k.bucketTs), &snap)
 			return true
 		})
+	}
+	return out, nil
+}
+
+// querySeriesByModel 是模型广场卡片要的口径:同一模型在给定分组集合上**合并**的小时线
+// (卡片只看「选中的分组」或「可见分组合计」,不需要逐分组的线)。
+func querySeriesByModel(r timeRange, models, groups []string) (map[string]map[int64]*Bucket, error) {
+	byCell, err := querySeriesByCell(r, models, groups)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]map[int64]*Bucket{}
+	for key, hours := range byCell {
+		for ts, b := range hours {
+			putSeriesPoint(out, key.model, ts, b)
+		}
 	}
 	return out, nil
 }
@@ -323,6 +350,9 @@ type cell struct {
 	ExcludedTotal int64    `json:"excluded_total"`
 	TopReason     string   `json:"top_reason,omitempty"`
 	HasChannel    bool     `json:"has_channel"`
+	// RecentHours 是最近 24 小时的逐小时成功率(状态条),与矩阵所选的时间范围无关;
+	// 这 24 小时里没有流量时省略。口径同模型广场卡片的状态条(不套 min_samples)。
+	RecentHours []hourRate `json:"recent_hours,omitempty"`
 	// 延迟 / 首字 / 速度。内嵌摊平成同级 JSON 字段,口径见 perf.go。
 	perf
 }

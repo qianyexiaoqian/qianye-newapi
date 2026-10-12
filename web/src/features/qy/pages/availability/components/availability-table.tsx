@@ -34,8 +34,10 @@ import {
   formatQyTps,
   getQyAvailStateStyle,
   qyAvailOutcomeKey,
+  qyAvailRecovered,
 } from '../constants'
-import type { QyAvailCell } from '../types'
+import type { QyAvailCell, QyAvailDefinition } from '../types'
+import { QyAvailRecentBar } from './recent-status-bar'
 
 /**
  * 矩阵的表格视图。
@@ -51,6 +53,10 @@ export function QyAvailabilityTable(props: {
   cells: QyAvailCell[]
   /** 响应命中 `max_series_per_query`，表格里少了若干模型。 */
   truncated: boolean
+  /** 判定「近期已恢复」用的口径(可用阈值)。 */
+  definition: QyAvailDefinition | null
+  /** 状态条的锚点(响应的 end_ts)。 */
+  nowSec: number
   onSelectCell: (cell: QyAvailCell) => void
 }) {
   const { t } = useTranslation()
@@ -89,6 +95,22 @@ export function QyAvailabilityTable(props: {
         header: t('qy_avl_availability'),
         cellClassName: 'tabular-nums',
         cell: (row: QyAvailCell) => formatQyAvailability(row.availability),
+      },
+      {
+        // 「最近请求」:可用率是整段累计,刚恢复的模型要很久才回到阈值;
+        // 这一列把最近 24 小时逐小时画出来,并点明「近期已恢复」。
+        id: 'recent',
+        header: t('qy_avl_recent'),
+        cell: (row: QyAvailCell) => (
+          <div className='space-y-0.5'>
+            <QyAvailRecentBar hours={row.recent_hours} nowSec={props.nowSec} />
+            {qyAvailRecovered(row, props.definition, props.nowSec) && (
+              <span className='block text-[11px] text-emerald-700 dark:text-emerald-300'>
+                {t('qy_avl_recovered')}
+              </span>
+            )}
+          </div>
+        ),
       },
       {
         id: 'state',

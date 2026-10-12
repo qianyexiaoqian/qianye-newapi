@@ -220,6 +220,11 @@ export function QyAvailability() {
                   ]}
                 />
 
+                {/* 状态条的读法:可用率是整段累计，状态条才是「现在」。 */}
+                <p className='text-muted-foreground text-xs'>
+                  {t('qy_avl_recent_legend')}
+                </p>
+
                 <Tabs defaultValue='heatmap'>
                   <TabsList>
                     <TabsTrigger value='heatmap'>
@@ -240,6 +245,8 @@ export function QyAvailability() {
                     <QyAvailabilityTable
                       cells={matrix.cells}
                       truncated={matrix.truncated}
+                      definition={matrix.definition}
+                      nowSec={matrix.end_ts}
                       onSelectCell={setSelectedCell}
                     />
                   </TabsContent>

@@ -501,3 +501,60 @@ func TestPlazaCardsFollowSelectedGroup(t *testing.T) {
 	assert.Nil(t, hidden, "看不见的分组不得回落成全部分组")
 	assert.Equal(t, StateNoData, state)
 }
+
+// 矩阵的每一格都要带「最近请求」状态条:最近 24 小时逐小时的成功率。
+//
+// 项目方的原话是"恢复了,可用率上不去,被当做不可用":整段时间的累计可用率要很久才
+// 爬回阈值,格子却一直是红的。状态条把"最近几小时已经全绿"画出来。这里钉住:
+// 有流量的小时按时间升序各占一格、成功率按小时算而不是整段平均;没有流量的格子不带这一条。
+func TestMatrixCellsCarryRecentHours(t *testing.T) {
+	newMatrixEnv(t)
+	gdb := qyDBHandle.Load()
+	now := common.GetTimestamp()
+	// m01:两小时前那一小时挂了一半,最近这一小时 9/10(newMatrixEnv 灌的那一桶)。
+	earlier := alignBucket(now-2*3600, bucketSeconds())
+	require.NoError(t, gdb.Create(&Bucket{BucketTs: earlier, GroupName: "default", ModelName: "m01",
+		ReqTotal: 10, SuccessCount: 5, FailUpstream: 5, UpdatedAt: now}).Error)
+	// m08:该分组提供它,但一条请求都没有。
+	channelModelMu.Lock()
+	channelModelCache["default"].models["m08"] = struct{}{}
+	channelModelMu.Unlock()
+
+	gin.SetMode(gin.TestMode)
+	res := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(res)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/qy/availability/matrix?groups=default&models=m01,m02,m08", nil)
+	c.Set("id", 1)
+	c.Set("group", "default")
+	getMatrix(c)
+	require.Equal(t, http.StatusOK, res.Code, "body=%s", res.Body.String())
+
+	var body struct {
+		Data struct {
+			Cells []struct {
+				Model       string `json:"model"`
+				RecentHours []struct {
+					Ts          int64    `json:"ts"`
+					SuccessRate *float64 `json:"success_rate"`
+				} `json:"recent_hours"`
+			} `json:"cells"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(res.Body.Bytes(), &body))
+	recent := map[string][]float64{}
+	for _, cell := range body.Data.Cells {
+		var rates []float64
+		for i, h := range cell.RecentHours {
+			require.NotNil(t, h.SuccessRate)
+			assert.Zero(t, h.Ts%3600, "格子对齐到整点")
+			if i > 0 {
+				assert.Greater(t, h.Ts, cell.RecentHours[i-1].Ts, "按时间升序")
+			}
+			rates = append(rates, *h.SuccessRate)
+		}
+		recent[cell.Model] = rates
+	}
+	assert.Equal(t, []float64{50, 90}, recent["m01"], "逐小时的成功率,不是整段平均")
+	assert.Equal(t, []float64{90}, recent["m02"])
+	assert.Empty(t, recent["m08"], "没有流量的格子不带状态条")
+}

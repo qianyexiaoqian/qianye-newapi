@@ -32,9 +32,11 @@ import { getQyAvailabilityPlazaMatrix } from '../api'
 import {
   formatQyTps,
   getQyAvailStateStyle,
+  qyAvailRecovered,
   qyModelGroupRows,
 } from '../constants'
 import type { QyAvailCell, QyAvailMatrixParams } from '../types'
+import { QyAvailRecentBar } from './recent-status-bar'
 
 /**
  * 模型广场详情页「性能」标签的扩展口径版本:单个模型在各可见分组下的可用率。
@@ -59,6 +61,10 @@ export function QyModelGroupAvailability(props: { modelName: string }) {
     () => qyModelGroupRows(query.data?.cells ?? [], props.modelName),
     [query.data, props.modelName]
   )
+
+  // 状态条锚在响应的 end_ts 上,与数据同一个"现在"。
+  const nowSec = query.data?.end_ts ?? Math.floor(Date.now() / 1000)
+  const definition = query.data?.definition ?? null
 
   const columns = useMemo(
     () => [
@@ -88,6 +94,20 @@ export function QyModelGroupAvailability(props: { modelName: string }) {
         cell: (row: QyAvailCell) => formatQyAvailability(row.availability),
       },
       {
+        id: 'recent',
+        header: t('qy_avl_recent'),
+        cell: (row: QyAvailCell) => (
+          <div className='space-y-0.5'>
+            <QyAvailRecentBar hours={row.recent_hours} nowSec={nowSec} />
+            {qyAvailRecovered(row, definition, nowSec) && (
+              <span className='block text-[11px] text-emerald-700 dark:text-emerald-300'>
+                {t('qy_avl_recovered')}
+              </span>
+            )}
+          </div>
+        ),
+      },
+      {
         id: 'latency',
         header: t('qy_avl_latency'),
         cellClassName: 'tabular-nums',
@@ -106,7 +126,7 @@ export function QyModelGroupAvailability(props: { modelName: string }) {
         cell: (row: QyAvailCell) => formatQyTps(row.avg_tps),
       },
     ],
-    [t]
+    [definition, nowSec, t]
   )
 
   return (

@@ -21,6 +21,7 @@ import type { StatusVariant } from '@/components/status-badge'
 import { formatQyAvailability, formatQyMs, QY_EMPTY_TEXT } from '../ops/format'
 import type {
   QyAvailCell,
+  QyAvailDefinition,
   QyAvailGroupInfo,
   QyAvailMatrix,
   QyAvailMetricKey,
@@ -28,6 +29,7 @@ import type {
   QyAvailSortMode,
   QyAvailState,
   QyPlazaCard,
+  QyPlazaHour,
 } from './types'
 
 /** 时间范围。上限 720 小时（30 天）与后端 `maxRangeHours` 对齐。 */
@@ -378,7 +380,9 @@ export function qyPlazaCardToPerfBadge(card: QyPlazaCard): QyPlazaPerfBadge {
  *
  * 只看 `covered_models` 里的模型:被截断的模型没查过,不能拿来证明某个分组「有」。
  */
-export function qyAvailOfferedGroups(matrix: QyAvailMatrix): QyAvailGroupInfo[] {
+export function qyAvailOfferedGroups(
+  matrix: QyAvailMatrix
+): QyAvailGroupInfo[] {
   const covered = new Set(matrix.covered_models)
   const offered = new Set<string>()
   for (const cell of matrix.cells) {
@@ -387,4 +391,50 @@ export function qyAvailOfferedGroups(matrix: QyAvailMatrix): QyAvailGroupInfo[] 
     }
   }
   return matrix.groups.filter((group) => offered.has(group.group))
+}
+
+/** 「最近请求」状态条的格数:最近 24 小时,一小时一格,最后一格是当前(未满)的这一小时。 */
+export const QY_AVAIL_RECENT_SLOTS = 24
+
+/**
+ * 把后端的小时线摆进 24 个固定格子(锚定在 `nowSec` 所在的整点),没有流量的小时为 `null`(灰格)。
+ *
+ * 与模型广场卡片的状态条同一摆法:格子按"距现在几小时"定位,而不是按数组下标 ——
+ * 后端只下发有流量的小时,按下标摆会把中间的空档压没,看起来像一直有请求。
+ */
+export function qyAvailRecentSlots(
+  hours: QyPlazaHour[] | undefined,
+  nowSec: number
+): (number | null)[] {
+  const currentHour = Math.floor(nowSec / 3600) * 3600
+  const byHour = new Map<number, number>()
+  for (const hour of hours ?? []) {
+    if (hour.success_rate != null && Number.isFinite(hour.success_rate)) {
+      byHour.set(hour.ts, hour.success_rate)
+    }
+  }
+  return Array.from({ length: QY_AVAIL_RECENT_SLOTS }, (_, slot) => {
+    const ts = currentHour - (QY_AVAIL_RECENT_SLOTS - 1 - slot) * 3600
+    return byHour.get(ts) ?? null
+  })
+}
+
+/**
+ * 「近期已恢复」:整段可用率仍判为降级 / 不可用,但最近有请求的那一小时(只看当前与上一小时)
+ * 成功率已经回到可用阈值以上。
+ *
+ * 可用率是整段时间的累计,一次故障之后要很久才爬得回阈值,格子会一直是红的 ——
+ * 项目方的原话是「恢复了,可用率上不去,被当做不可用」。这一位让页面把"已经好了"说出来,
+ * 可用率数字本身照旧保留。最近两小时都没有请求时不下结论。
+ */
+export function qyAvailRecovered(
+  cell: QyAvailCell | undefined,
+  definition: QyAvailDefinition | null,
+  nowSec: number
+): boolean {
+  if (cell == null || definition == null) return false
+  if (cell.state !== 'down' && cell.state !== 'degraded') return false
+  const slots = qyAvailRecentSlots(cell.recent_hours, nowSec)
+  const latest = slots.at(-1) ?? slots.at(-2) ?? null
+  return latest != null && latest >= definition.ok_threshold
 }

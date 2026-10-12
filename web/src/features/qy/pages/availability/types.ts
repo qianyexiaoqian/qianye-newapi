@@ -88,6 +88,11 @@ export type QyAvailCell = QyAvailPerf & {
   excluded_total: number
   top_reason?: string
   has_channel: boolean
+  /**
+   * 「最近请求」状态条:最近 24 小时逐小时的成功率(与所选时间范围无关),只含有流量的小时。
+   * 这 24 小时一条请求都没有时省略。
+   */
+  recent_hours?: QyPlazaHour[]
 }
 
 /**
