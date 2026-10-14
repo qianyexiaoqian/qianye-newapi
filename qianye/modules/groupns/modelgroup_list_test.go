@@ -194,3 +194,48 @@ func TestModelGroupSearchFiltersBeforePaging(t *testing.T) {
 		listedNames(t, listModelGroups(t, "?keyword=VIP&p=1&page_size=10")))
 	assert.Len(t, listedNames(t, listModelGroups(t, "?keyword=%20%20&p=1&page_size=10")), 5)
 }
+
+// TestModelGroupNoteRegistersARealGroupOnFirstWrite 守「保存了,备注却解不开锁」。
+//
+// 「模型分组」页的「保存」只写 options(GroupRatio 等),不建登记行;登记原本只靠回填。
+// 于是一个刚在倍率表里建好的分组,备注一直写不进去。写备注时按回填的同一条判据就地
+// 登记:在倍率表里(或有启用渠道)的名字登记并写入;只在全局可选清单里的名字仍然拒绝
+// —— 为它建一行登记等于凭空造出一个模型分组。
+func TestModelGroupNoteRegistersARealGroupOnFirstWrite(t *testing.T) {
+	gdb := newTestDB(t)
+	newMainTestDB(t)
+	enableExtAPI(t, gdb)
+	useUpstreamGroups(t,
+		map[string]string{"ghost": "白名单原文"},
+		map[string]float64{"pool": 1, "专属-GPT分组": 1})
+
+	put := func(name, body string) *httptest.ResponseRecorder {
+		return callGroupHandler(t, http.MethodPut, "/model-groups/x",
+			gin.Param{Key: "name", Value: name}, body, adminUpdateModelGroup)
+	}
+
+	res := put("专属-GPT分组", `{"note":"GPT 专属号池"}`)
+	require.Equal(t, http.StatusOK, res.Code, res.Body.String())
+	var row ModelGroup
+	require.NoError(t, gdb.Where("name = ?", "专属-GPT分组").First(&row).Error)
+	assert.Equal(t, "GPT 专属号池", row.Note)
+	assert.True(t, row.Enabled, "就地登记与回填同形:启用")
+	assert.Equal(t, true, listedRow(t, listModelGroups(t, ""), "专属-GPT分组")["registered"],
+		"写过一次备注之后这一行就是登记过的:删除与备注都不再锁着")
+
+	// 已登记的行再写一次只改备注,不重建、不覆盖别的字段。
+	require.NoError(t, gdb.Model(&ModelGroup{}).Where("name = ?", "专属-GPT分组").
+		Update("display_name", "专属").Error)
+	res = put("专属-GPT分组", `{"note":"改过的备注"}`)
+	require.Equal(t, http.StatusOK, res.Code, res.Body.String())
+	row = ModelGroup{}
+	require.NoError(t, gdb.Where("name = ?", "专属-GPT分组").First(&row).Error)
+	assert.Equal(t, "改过的备注", row.Note)
+	assert.Equal(t, "专属", row.DisplayName)
+
+	res = put("ghost", `{"note":"不该落库"}`)
+	assert.Equal(t, http.StatusBadRequest, res.Code, "不在倍率表、也没有渠道的名字不登记")
+	var n int64
+	require.NoError(t, gdb.Model(&ModelGroup{}).Where("name = ?", "ghost").Count(&n).Error)
+	assert.Zero(t, n)
+}

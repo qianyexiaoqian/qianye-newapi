@@ -54,6 +54,7 @@ import {
 import { QyMgDeleteDialog } from '@/features/qy/pages/admin-model-groups/components/delete-dialog'
 import {
   qyMgBuildRows,
+  qyMgNoteWritable,
   qyMgFreeNames,
   qyMgInvalidRatioNames,
   qyMgSerializeRatios,
@@ -481,7 +482,21 @@ export function ModelGroupsSection(props: {
   const noteMutation = useMutation({
     mutationFn: (input: { name: string; note: string }) =>
       qyMgUpdate(input.name, { note: input.note }),
-    onSuccess: () => toast.success(t('qy_mg_note_saved')),
+    onSuccess: (_, input) => {
+      // 第一次写备注时后端会就地登记这一行（见后端 adminUpdateModelGroup）。只把这一行
+      // 本地标成已登记，不整表刷新 —— 理由同上。
+      setPageRows((current) =>
+        current.map((row) =>
+          row.name === input.name ? { ...row, registered: true } : row
+        )
+      )
+      setDrafts((current) => {
+        const draft = current[input.name]
+        if (draft == null) return current
+        return { ...current, [input.name]: { ...draft, registered: true } }
+      })
+      toast.success(t('qy_mg_note_saved'))
+    },
     onError: (error) => toast.error(qyOpsErrorMessage(error, t)),
   })
 
@@ -835,6 +850,7 @@ export function ModelGroupsSection(props: {
                 cell: (row) => (
                   <QyMgNoteCell
                     row={row}
+                    writable={qyMgNoteWritable(row, baseRatios)}
                     isSaving={
                       noteMutation.isPending &&
                       noteMutation.variables?.name === row.name
@@ -1091,6 +1107,8 @@ export function ModelGroupsSection(props: {
  */
 function QyMgNoteCell(props: {
   row: QyMgMergedRow
+  /** 这一行能不能写备注（见 {@link qyMgNoteWritable}）。 */
+  writable: boolean
   isSaving: boolean
   onDraftChange: (value: string) => void
   onSave: (value: string) => void
@@ -1104,15 +1122,15 @@ function QyMgNoteCell(props: {
     <div className='min-w-0 space-y-1'>
       <div className='flex items-center gap-2'>
         {/*
-          未登记的行（刚用「新建分组」加出来的、以及只存在于 options 里的历史
-          名字）在 `qy_model_groups` 里没有行，备注端点无从下手。禁用而不是隐藏，
-          但**必须带上 title**：新建流程必然命中这一档，而一个灰掉且不作任何解释
-          的输入框会让运营以为这一列坏了，而不是"先按顶部保存"。
+          已保存进倍率表（或有渠道）却还没登记的行，第一次写备注时由后端就地登记，
+          所以照常可写。仍然锁着的只有两种：刚用「新建分组」加出来、还没按顶部保存的行，
+          与只在全局可选清单里的名字。禁用而不是隐藏，但**必须带上 title**：一个灰掉
+          且不作任何解释的输入框会让运营以为这一列坏了，而不是"先按顶部保存"。
         */}
         <Input
           value={row.note}
-          disabled={!row.registered}
-          title={row.registered ? undefined : t('qy_mg_note_needs_registry')}
+          disabled={!props.writable}
+          title={props.writable ? undefined : t('qy_mg_note_needs_registry')}
           aria-label={t('qy_mg_col_note')}
           placeholder={t('qy_mg_note_placeholder')}
           onChange={(event) => props.onDraftChange(event.target.value)}
@@ -1120,14 +1138,14 @@ function QyMgNoteCell(props: {
         <Button
           size='sm'
           variant='outline'
-          disabled={!row.registered || props.isSaving}
-          title={row.registered ? undefined : t('qy_mg_note_needs_registry')}
+          disabled={!props.writable || props.isSaving}
+          title={props.writable ? undefined : t('qy_mg_note_needs_registry')}
           onClick={() => props.onSave(row.note)}
         >
           {props.isSaving ? t('Saving...') : t('Save')}
         </Button>
       </div>
-      {!row.registered && (
+      {!props.writable && (
         <p className='text-muted-foreground text-[11px] leading-4'>
           {t('qy_mg_note_needs_registry')}
         </p>
@@ -1139,7 +1157,7 @@ function QyMgNoteCell(props: {
             size='sm'
             variant='ghost'
             className='h-6 px-1.5 text-xs'
-            disabled={!row.registered}
+            disabled={!props.writable}
             onClick={() => props.onDraftChange(legacy)}
           >
             {t('qy_mg_note_adopt_legacy')}

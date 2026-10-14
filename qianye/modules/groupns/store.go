@@ -263,6 +263,31 @@ func Backfill(ctx context.Context, mainDB, extDB *gorm.DB, operatorId int) (Back
 	return res, nil
 }
 
+// registerObservedModelGroup 就地登记**一个**模型分组,判据与 Backfill 相同:名字在分组倍率表里,
+// 或 abilities 里有 enabled 的行;而且能登记(长度)。不满足时返回 false、什么都不写。
+//
+// 管理端「模型分组」页的「保存」只写 options,不建登记行,而备注等字段只能写在登记行上;
+// 编辑接口遇到「真实存在却还没登记」的分组时用它补上,免得运营保存完仍然写不了备注。
+// DoNothing:与回填并发时先到者为准,已有的行(可能已被运营改过)绝不覆盖。
+func registerObservedModelGroup(ctx context.Context, extDB *gorm.DB, name string, operatorId int) (bool, error) {
+	if !registrableGroupName(name) {
+		return false, nil
+	}
+	_, rated := ratio_setting.GetGroupRatioCopy()[name]
+	if !rated {
+		routed, err := HasRoute(ctx, model.DB, name)
+		if err != nil {
+			return false, err
+		}
+		if !routed {
+			return false, nil
+		}
+	}
+	err := extDB.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).
+		Create(newModelGroup(name, operatorId, now())).Error
+	return err == nil, err
+}
+
 // HasRoute 报告一个模型分组此刻**是否真的有渠道**。
 //
 // 判据冻结为「abilities 里存在 group=M AND enabled=true 的行」,前后端共用。

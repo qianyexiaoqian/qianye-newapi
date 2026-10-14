@@ -24,6 +24,7 @@ import {
   qyMgBuildRows,
   qyMgFreeNames,
   qyMgInvalidRatioNames,
+  qyMgNoteWritable,
   qyMgSerializeRatios,
   qyMgSerializeUsableGroups,
   qyMgSilentlyBilledNames,
@@ -324,5 +325,57 @@ describe('模型分组表：服务端翻页之后，这一页只对自己持有�
       names: ['ghost'],
     })
     assert.equal(rows[0].registered, false)
+  })
+})
+
+describe('模型分组表：备注什么时候能写', () => {
+  // 截图里的 bug：倍率已经保存进 GroupRatio，但没有登记行，备注一直锁着。
+  // 后端写备注时会就地登记这样的分组，所以前端必须放开它。
+  test('已保存进倍率表、但还没登记的行：可写', () => {
+    assert.equal(
+      qyMgNoteWritable(mergedRow({ name: 'group_1', registered: false }), {
+        group_1: 1,
+      }),
+      true
+    )
+  })
+
+  test('没有倍率、但有启用渠道的行：可写', () => {
+    assert.equal(
+      qyMgNoteWritable(
+        mergedRow({ name: 'routed', registered: false, hasRoute: true }),
+        {}
+      ),
+      true
+    )
+  })
+
+  test('新建还没保存的行、只在可选清单里的行：锁着', () => {
+    assert.equal(
+      qyMgNoteWritable(
+        mergedRow({ name: 'group_2', registered: false, isNew: true }),
+        { group_2: 1 }
+      ),
+      false,
+      '新建行在服务端什么都不是'
+    )
+    assert.equal(
+      qyMgNoteWritable(
+        mergedRow({ name: 'ghost', registered: false, hasRoute: false }),
+        {}
+      ),
+      false,
+      '只在可选清单里的名字后端不登记'
+    )
+  })
+
+  test('只在本地草稿里填了倍率（还没保存）不算：判据是已保存的倍率表', () => {
+    assert.equal(
+      qyMgNoteWritable(
+        mergedRow({ name: 'draft', registered: false, ratio: '2' }),
+        {}
+      ),
+      false
+    )
   })
 })

@@ -322,3 +322,23 @@ export function qyMgFreeNames(rows: readonly QyMgMergedRow[]): string[] {
     .map((row) => row.name.trim())
     .filter((name) => name !== '')
 }
+
+/**
+ * 这一行此刻能不能写备注。
+ *
+ * 备注落在登记表（`qy_model_groups`）上，而页面顶部的「保存」只写 options、不建登记行。
+ * 后端写备注时会按回填的判据**就地登记**真实存在的模型分组：在**已保存的**倍率表里，
+ * 或者有启用的渠道。所以可写 = 已登记，或者是满足那条判据的已有行。
+ *
+ * 判据用 `savedRatios`（服务端此刻的 `options.GroupRatio`）而不是行上的草稿倍率：
+ * 本地刚填、还没保存的倍率在后端看来并不存在，放开输入框只会换来一次 400。
+ * 新建且未保存的行（`isNew`）永远锁着 —— 它在服务端什么都不是。
+ */
+export function qyMgNoteWritable(
+  row: QyMgMergedRow,
+  savedRatios: Readonly<Record<string, number>>
+): boolean {
+  if (row.registered) return true
+  if (row.isNew) return false
+  return Object.hasOwn(savedRatios, row.name) || row.hasRoute === true
+}

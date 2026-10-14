@@ -14,6 +14,7 @@ package groupns
 // 那三次之间的任何一次中断都会留下一个说不清的中间态。
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -26,6 +27,7 @@ import (
 	"github.com/QuantumNous/new-api/qianye/service/audit"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // maxModelGroupNoteLen 与 qy_model_groups.note 的列宽一致(varchar(255))。
@@ -91,10 +93,34 @@ func adminUpdateModelGroup(c *gin.Context) {
 		return
 	}
 	var before ModelGroup
-	if err := gdb.WithContext(c).Where("name = ?", name).First(&before).Error; err != nil {
-		badRequest(c, "qy_groupns_unknown",
-			"模型分组 "+name+" 还没有登记。请先执行一次回填,"+
-				"或确认这个名字确实存在于分组倍率表 / abilities 里")
+	autoRegistered := false
+	err := gdb.WithContext(c).Where("name = ?", name).First(&before).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// 管理端「模型分组」页的「保存」写的是 options(GroupRatio 等),并不建登记行;
+		// 登记原本只靠回填。于是刚建好、已经在倍率表里的分组,备注永远是锁着的
+		// —— 页面让运营"先保存再写备注",保存完却仍然写不了。
+		//
+		// 这里按回填的同一条判据就地登记这一行:名字确实是一个模型分组(在分组倍率表
+		// 或有 enabled 渠道),而且能登记(长度)。与回填一样 DoNothing,并发的另一次
+		// 登记或回填先到时什么也不覆盖。不是模型分组的名字(打错的、只在可选清单里的)
+		// 仍然拒绝:为它建一行登记等于凭空造出一个分组。
+		var registered bool
+		registered, err = registerObservedModelGroup(c, gdb, name, c.GetInt("id"))
+		if err != nil {
+			internalError(c, err)
+			return
+		}
+		if !registered {
+			badRequest(c, "qy_groupns_unknown",
+				"模型分组 "+name+" 不在分组倍率表里,也没有任何启用的渠道。"+
+					"请先给它设兜底倍率并点页面顶部的「保存」")
+			return
+		}
+		autoRegistered = true
+		err = gdb.WithContext(c).Where("name = ?", name).First(&before).Error
+	}
+	if err != nil {
+		internalError(c, err)
 		return
 	}
 
@@ -135,6 +161,9 @@ func adminUpdateModelGroup(c *gin.Context) {
 	}
 
 	reason := "编辑模型分组登记"
+	if autoRegistered {
+		reason += ";这个分组此前没有登记行,本次按分组倍率表 / 渠道就地登记"
+	}
 	if req.Note != nil {
 		// 备注**面向用户**:它会出现在令牌分组下拉与模型广场上,并且**覆盖**
 		// options.UserUsableGroups 里那段说明。改它等于改一段对外文案,
